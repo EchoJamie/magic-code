@@ -12,6 +12,9 @@
     "check": "bun run typecheck && bun run test",
     "prepare": "git config core.hooksPath .githooks || true"
   },
+  "dependencies": {
+    "@magic/app": "workspace:*"
+  },
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "typescript": "^5.7.0"

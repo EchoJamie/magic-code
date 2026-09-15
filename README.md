@@ -22,9 +22,16 @@ Bun workspaces 分包，依赖单向 `kernel` ← `tui` ← `app`（越界由 `t
 
 ```sh
 bun install      # 装配依赖（prepare 顺带配置 git 钩子）
-bun run check    # 质量闸：typecheck + test——提交前由 .githooks/pre-commit 自动跑
+bun run magic    # 跑 CLI（可执行名 magic；装配落位前只有占位输出）
+bun run check    # 质量闸：typecheck + test
 bun run typecheck
 bun test
 ```
+
+## 质量闸
+
+- **提交前自动跑**——`.githooks/pre-commit`，经 `bun install` 的 prepare 装配 `core.hooksPath`。
+- **校验对象＝暂存内容**——闸把暂存区物化到临时目录再跑，故「暂存到坏版本」会被拦下，未跟踪的本地草稿不会误拦。
+- **覆盖范围＝入库目录**——仓库级守护在 `test/`，包级测试在 `packages/<pkg>/test/`；`playground/` 是试跑区，内容不参与（见 `bunfig.toml`）。
 
 > 建仓：2026-09-16（规划侧）。

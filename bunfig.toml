@@ -1,0 +1,4 @@
+# Bun 配置——测试范围只覆盖入库目录。
+# playground/ 是试跑区（内容不入库、可随意折腾清空），其中的草稿不该干扰质量闸。
+[test]
+pathIgnorePatterns = ["playground/**", "**/node_modules/**"]

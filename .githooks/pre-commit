@@ -1,6 +1,29 @@
 #!/usr/bin/env sh
-# 质量闸（技术方案 · 代码治理）：提交前 typecheck + test。
+# 质量闸（技术方案 · 代码治理）：typecheck + test。
+#
+# 校验对象＝**暂存内容**（即将写进提交的那棵树），不是工作树——把暂存区物化到临时目录
+# 再跑闸，故：暂存到坏版本会被拦下；未跟踪的本地草稿（本就不会入提交）不会误拦。
 # 由 `bun install` 的 prepare 脚本经 core.hooksPath 装配。
 set -e
 
+snapshot="$(mktemp -d)"
+trap 'rm -rf "$snapshot"' EXIT INT TERM
+
+git checkout-index -a -f --prefix="$snapshot/"
+
+# 依赖不入提交，用工作区的 node_modules 顶上（只读引用）
+if [ ! -d node_modules ]; then
+  echo "质量闸：缺 node_modules——请先跑 bun install" >&2
+  exit 1
+fi
+
+ln -s "$PWD/node_modules" "$snapshot/node_modules"
+
+for package_dir in packages/*/; do
+  if [ -d "${package_dir}node_modules" ]; then
+    ln -s "$PWD/${package_dir}node_modules" "$snapshot/${package_dir}node_modules"
+  fi
+done
+
+cd "$snapshot"
 bun run check
