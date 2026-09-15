@@ -13,6 +13,7 @@ import {
   TOOLSET_V1,
   TRANSIENT_EVENT_KINDS,
   apiKeyEnvVarOf,
+  expandDataDir,
 } from '../src/contracts/index.ts'
 import type { EventEnvelope } from '../src/contracts/index.ts'
 
@@ -59,6 +60,15 @@ describe('配置契约', () => {
     expect(apiKeyEnvVarOf('minimax')).toBe('MAGIC_MINIMAX_API_KEY')
     expect(apiKeyEnvVarOf('my-vendor')).toBe('MAGIC_MY_VENDOR_API_KEY')
     expect(apiKeyEnvVarOf('a.b')).toBe('MAGIC_A_B_API_KEY')
+  })
+
+  test('dataDir 展开——前导 ~ 换家目录，其余字面', () => {
+    expect(expandDataDir('~/.magic', '/home/u')).toBe('/home/u/.magic')
+    expect(expandDataDir('~', '/home/u')).toBe('/home/u')
+    expect(expandDataDir('/abs/path', '/home/u')).toBe('/abs/path')
+    expect(expandDataDir('rel/path', '/home/u')).toBe('rel/path')
+    // 中段 `~` 不是前导——不展开
+    expect(expandDataDir('/a/~/b', '/home/u')).toBe('/a/~/b')
   })
 })
 

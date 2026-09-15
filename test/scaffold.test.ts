@@ -253,13 +253,25 @@ function isFsAllowed(relativeToSrc: string): boolean {
   return head !== undefined && FS_ALLOWED_DIRS.includes(head)
 }
 
-/** 内核源码里的 fs 越界触达（`文件 → 触达点`）。 */
+/**
+ * fs 纪律的扫描面——**只查内核产物**（`src/`）。
+ *
+ * 测试用 fs 是测试的正常需求（`mkdtemp` 建临时目录、直读库表断言 blob 落盘），
+ * 不属「内核不直碰文件系统」——**测试不是内核产物**，其 fs 使用不产生该纪律要防的风险。
+ * （第 3 轮曾把包目录整体纳入，反而拦下 U02/U05 的独立验证测试。）
+ */
+async function fsScannedFilesOf(): Promise<string[]> {
+  const srcPrefix = `src${sep}`
+  return (await sourceFilesOf('kernel')).filter((file) => file.startsWith(srcPrefix))
+}
+
+/** 内核产物里的 fs 越界触达（`文件 → 触达点`）。 */
 async function fsCrossingsOf(): Promise<string[]> {
   const crossings: string[] = []
   const srcPrefix = `src${sep}`
 
-  for (const file of await sourceFilesOf('kernel')) {
-    const relativeToSrc = file.startsWith(srcPrefix) ? file.slice(srcPrefix.length) : file
+  for (const file of await fsScannedFilesOf()) {
+    const relativeToSrc = file.slice(srcPrefix.length)
     if (isFsAllowed(relativeToSrc)) continue
 
     const absolute = join(ROOT, 'packages', 'kernel', file)
@@ -373,8 +385,12 @@ describe('越界判定（反向用例）', () => {
 
 describe('内核 fs 边界', () => {
   test('fs 触达只许出现在 records/ · sandbox/（豁免：内核自用存储）', async () => {
-    // 守护面不得为空——目录改名 / 清空时宁可失败，也不要静默空转
-    expect((await sourceFilesOf('kernel')).length).toBeGreaterThan(0)
+    const scanned = await fsScannedFilesOf()
+
+    // 扫描面不得为空——目录改名 / 清空时宁可失败，也不要静默空转
+    expect(scanned.length).toBeGreaterThan(0)
+    // 扫描面只含内核产物——测试用 fs 不在此列
+    expect(scanned.every((file) => file.startsWith(`src${sep}`))).toBe(true)
     expect(await fsCrossingsOf()).toEqual([])
   })
 

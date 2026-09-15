@@ -11,7 +11,10 @@
 /** 配置文件落点。 */
 export const CONFIG_FILE = '~/.magic/config.json'
 
-/** 数据目录默认值（`dataDir` 缺省时）——`records.db` + `blobs/` 落于此。 */
+/**
+ * 数据目录默认值（`dataDir` 键缺省时由加载器补）——`records.db` + `blobs/` 落于此。
+ * ⚠️ 用前须经 `expandDataDir`（下文）——字面 `~` 直接交给运行时库会静默落于 cwd。
+ */
 export const DEFAULT_DATA_DIR = '~/.magic'
 
 /**
@@ -45,6 +48,13 @@ export function apiKeyEnvVarOf(providerId: string): string {
 }
 
 /**
- * `dataDir` 解析规则——前导 `~` 在**加载时**展开为家目录；无 `~` 即字面路径。
- * 运行时库（`Bun.file` / `node:fs` / `bun:sqlite`）**不展开 `~`**——处理归配置加载器（U11）。
+ * 展开 `dataDir`——前导 `~` 在**加载时**展开为家目录；无 `~` 即字面路径。
+ * 运行时库（`Bun.file` / `node:fs` / `bun:sqlite`）**不展开 `~`**（且写侧静默），故这一步须显式做。
+ *
+ * 家目录由调用方注入（配置加载器取 `node:os` 的 `homedir()`）——契约层保持无依赖。
  */
+export function expandDataDir(raw: string, home: string): string {
+  if (raw === '~') return home
+  if (raw.startsWith('~/')) return home + raw.slice(1)
+  return raw
+}
