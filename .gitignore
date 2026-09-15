@@ -1,0 +1,12 @@
+# 依赖与构建
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 系统与日志
+.DS_Store
+*.log
+
+# 试跑区（内容不入库，保留 README）
+playground/*
+!playground/README.md
