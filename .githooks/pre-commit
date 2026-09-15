@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# 质量闸（技术方案 · 代码治理）：提交前 typecheck + test。
+# 由 `bun install` 的 prepare 脚本经 core.hooksPath 装配。
+set -e
+
+bun run check
