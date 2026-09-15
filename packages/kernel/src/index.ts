@@ -12,4 +12,4 @@
  * 记录 U02 · 接缝 U03 · 循环 U04 · 沙箱 U05 · 工具 U06 · 权限 U07 ·
  * 控制面 U08 · 提示词 U10。
  */
-export {}
+export * from './contracts/index.ts'

@@ -1,10 +1,11 @@
 /**
  * 仓库级脚手架守护（U01）。
  *
- * 三组守护，对应三条已冻结合同（技术方案 · 代码治理）：
+ * 四组守护，对应已冻结合同（技术方案 · 代码治理）：
  * 1. 分包可用 —— 三包经 Bun workspaces 链接、可被消费者解析加载；
  * 2. 依赖单向 —— kernel ← tui ← app，**声明**与**源码落点**皆不得越界；
- * 3. 可执行名 —— `magic` 已装配到根 `.bin`。
+ * 3. 内核 fs 边界 —— fs 触达只许出现在 `records/` · `sandbox/`（豁免：内核自用存储）；
+ * 4. 可执行名 —— `magic` 已装配到根 `.bin`。
  *
  * 机制不靠记性（设计准则 3）：越界在这里失败，而不是等人想起。
  */
@@ -26,6 +27,26 @@ const ALLOWED: Record<string, readonly string[]> = {
 
 /** 扫描面——包目录下的全部源码（含包级 test）；扩展名不设限：.tsx 是 tui 的将来形态。 */
 const SOURCE_GLOB = '**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'
+
+/**
+ * 内核内允许触达文件系统的目录——**豁免：内核自用存储**（技术方案 · 代码治理 · 边界纪律）：
+ * 「内核不直碰文件系统（经沙箱）——豁免：内核自用存储（`~/.magic/` 下的记录库与 blob——
+ * 非工作区内容，不经沙箱）；内核内 fs 调用只许出现在 `records/` · `sandbox/` 两处」。
+ */
+const FS_ALLOWED_DIRS = ['records', 'sandbox']
+
+/** fs 模块族——import 即触达文件系统。 */
+const FS_MODULES = [
+  'node:fs',
+  'fs',
+  'node:fs/promises',
+  'fs/promises',
+  'bun:sqlite',
+  'node:sqlite',
+]
+
+/** 不经 import 的 fs 全局调用——`Bun.write` 写侧静默（不报错、落错地方），尤需拦。 */
+const FS_GLOBAL_METHODS = ['file', 'write']
 
 /** 相对说明符的补全候选（按序试探）。 */
 const RESOLVE_SUFFIXES = ['', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts']
@@ -187,6 +208,69 @@ async function crossingsOf(packageDir: string, packageName: string): Promise<str
   return crossings
 }
 
+// —— 内核 fs 边界 ——
+
+/** 不经 import 的 fs 全局调用（`Bun.file` / `Bun.write`）——单查说明符会漏。 */
+function fsGlobalCallsOf(fileName: string, source: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    scriptKindOf(fileName),
+  )
+  const calls: string[] = []
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression
+      if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+        const { expression, name } = callee
+        if (expression.text === 'Bun' && FS_GLOBAL_METHODS.includes(name.text)) {
+          calls.push(`Bun.${name.text}`)
+        }
+      }
+    }
+
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return calls
+}
+
+/** 文件里的 fs 触达点——模块说明符（含 `require` / 动态 `import`）与 `Bun` 全局调用。 */
+function fsTouchesOf(fileName: string, source: string): string[] {
+  const modules = importSpecifiersOf(fileName, source).filter((specifier) =>
+    FS_MODULES.includes(specifier),
+  )
+  return [...modules, ...fsGlobalCallsOf(fileName, source)]
+}
+
+/** 某文件（相对 `packages/kernel/src` 的路径）是否落在 fs 允许目录内。 */
+function isFsAllowed(relativeToSrc: string): boolean {
+  const [head] = relativeToSrc.split(sep)
+  return head !== undefined && FS_ALLOWED_DIRS.includes(head)
+}
+
+/** 内核源码里的 fs 越界触达（`文件 → 触达点`）。 */
+async function fsCrossingsOf(): Promise<string[]> {
+  const crossings: string[] = []
+  const srcPrefix = `src${sep}`
+
+  for (const file of await sourceFilesOf('kernel')) {
+    const relativeToSrc = file.startsWith(srcPrefix) ? file.slice(srcPrefix.length) : file
+    if (isFsAllowed(relativeToSrc)) continue
+
+    const absolute = join(ROOT, 'packages', 'kernel', file)
+    for (const touch of fsTouchesOf(absolute, readFileSync(absolute, 'utf8'))) {
+      crossings.push(`${file} → ${touch}`)
+    }
+  }
+
+  return crossings
+}
+
 describe('分包可用', () => {
   test('各包能解析并加载其声明的 workspace 依赖', async () => {
     for (const dir of PACKAGES) {
@@ -283,6 +367,41 @@ describe('越界判定（反向用例）', () => {
       './c.cjs',
       './d.ts',
       '@magic/tui',
+    ])
+  })
+})
+
+describe('内核 fs 边界', () => {
+  test('fs 触达只许出现在 records/ · sandbox/（豁免：内核自用存储）', async () => {
+    // 守护面不得为空——目录改名 / 清空时宁可失败，也不要静默空转
+    expect((await sourceFilesOf('kernel')).length).toBeGreaterThan(0)
+    expect(await fsCrossingsOf()).toEqual([])
+  })
+
+  test('允许清单判定（反向用例）', () => {
+    expect(isFsAllowed(join('records', 'db.ts'))).toBe(true)
+    expect(isFsAllowed(join('sandbox', 'exec.ts'))).toBe(true)
+    expect(isFsAllowed(join('contracts', 'records.ts'))).toBe(false)
+    expect(isFsAllowed(join('provider', 'ai-sdk.ts'))).toBe(false)
+    expect(isFsAllowed('index.ts')).toBe(false)
+  })
+
+  test('fs 触达提取——模块 import / require 与 Bun 全局调用都被抓', () => {
+    const source = [
+      `import { Database } from 'bun:sqlite'`,
+      `import { mkdir } from 'node:fs/promises'`,
+      `import { join } from 'node:path'`,
+      `const legacy = require('node:fs')`,
+      `await Bun.write(path, data)`,
+      `const f = Bun.file(path)`,
+    ].join('\n')
+
+    expect(fsTouchesOf('probe.ts', source)).toEqual([
+      'bun:sqlite',
+      'node:fs/promises',
+      'node:fs',
+      'Bun.write',
+      'Bun.file',
     ])
   })
 })

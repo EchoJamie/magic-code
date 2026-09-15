@@ -12,9 +12,11 @@
 
 Bun workspaces 分包，依赖单向 `kernel` ← `tui` ← `app`（越界由 `test/scaffold.test.ts` 拦截）：
 
+包间只经**契约**交互——六份已冻契约的代码落点在 `packages/kernel/src/contracts/`，经 kernel 入口转出（见 `工作分解.md`·契约清单）。
+
 | 包 | 职责 |
 | --- | --- |
-| `packages/kernel` | 内核——主循环 / 工具 / 权限 / 上下文 / 记录 / 事件 / 模型接缝；零外壳依赖、不直碰文件系统 |
+| `packages/kernel` | 内核——主循环 / 工具 / 权限 / 上下文 / 记录 / 事件 / 模型接缝；零外壳依赖、不直接碰文件系统（豁免内核自用存储——fs 触达限 `src/records/` · `src/sandbox/`，守护拦截） |
 | `packages/tui` | 外壳——渲染组件库；只经控制面接口 + 事件订阅使用内核 |
 | `packages/app` | 装配与入口——可执行名 `magic` |
 
