@@ -22,9 +22,7 @@ export type ExecResult = {
 
 /**
  * `exec` 选项——cwd 约束 · 超时 / 输出上限（超限截断、大块落 blob）。
- * 阈值为实现级常量（技术方案 · 工具 · 阶段 1 集）。
- *
- * TODO(规划侧)：技术方案只写「超时 / 输出上限为常量」，未定字段名与单位；占位如下。
+ * **毫秒 / 字节**；缺省＝实现级常量（技术方案 · 执行 · 原语形态）。
  */
 export type ExecOptions = {
   readonly cwd?: string

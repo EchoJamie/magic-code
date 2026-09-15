@@ -27,10 +27,8 @@ export type ProviderConfig = {
 
 /**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`。
- * 权限规则 · 工作区根为阶段 2 / 3 加键。
- *
- * TODO(规划侧)：技术方案 :263 提到 providers 含「参数」而 :265 的字面冻结只列三字段；
- * 该键是否属首站形制未定——此处从其字面冻结（三字段）。
+ * 权限规则 · 工作区根为阶段 2 / 3 加键；
+ * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
   readonly defaultProvider: string
@@ -39,14 +37,11 @@ export type MagicConfig = {
 }
 
 /**
- * 密钥的环境变量回退名——`apiKey` 空 / 缺省时读 `MAGIC_<PROVIDER>_API_KEY`（ID 大写）。
- * 例：`providers.minimax` → `MAGIC_MINIMAX_API_KEY`。
- *
- * TODO(规划侧)：技术方案只写「ID 大写」——ID 含 `-` / `.` 等环境变量名非法字符时的
- * 处理（替换 / 拒绝）未定。
+ * 密钥的环境变量回退名——`apiKey` 空 / 缺省时读 `MAGIC_<PROVIDER>_API_KEY`：
+ * ID 大写，**非字母数字字符映射为 `_`**——如 `my-vendor` → `MAGIC_MY_VENDOR_API_KEY`。
  */
 export function apiKeyEnvVarOf(providerId: string): string {
-  return `MAGIC_${providerId.toUpperCase()}_API_KEY`
+  return `MAGIC_${providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_API_KEY`
 }
 
 /**
