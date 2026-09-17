@@ -199,6 +199,37 @@ describe('判据 2 · 呈现轻重（重——必闸清单 v0）', () => {
   })
 })
 
+describe('命令分解 · 段文本（记号原样回写）', () => {
+  test('描述符复制 `2>&1` —— 记号不吞，段文本原样', () => {
+    const { weight, material } = weigh(call('exec', { cmd: 'ls -la 2>&1' }))
+
+    expect(material).toContain('  1. ls -la 2>&1 —— 只读')
+    expect(weight).toBe('light') // 复制描述符不是写入——归类不受影响
+  })
+
+  test('丢弃 `2>/dev/null` —— 段文本原样，且仍不算覆盖', () => {
+    const { weight, material } = weigh(call('exec', { cmd: 'ls -la 2>/dev/null' }))
+
+    expect(material).toContain('  1. ls -la 2>/dev/null —— 只读')
+    expect(weight).toBe('light')
+  })
+
+  test('重定向 —— 记号与目标都留在段文本里', () => {
+    const out = weigh(call('exec', { cmd: 'cat a.txt > out.txt' }))
+    expect(out.material).toContain('  1. cat a.txt > out.txt —— 覆盖 / 整写（不可逆）')
+
+    const append = weigh(call('exec', { cmd: 'echo x >> log.txt' }))
+    expect(append.material).toContain('  1. echo x >> log.txt —— 覆盖 / 整写（不可逆）')
+  })
+
+  test('记号回写不改「判不出」那条语义路径——目标里的命令替换照旧入单', () => {
+    const { weight, material } = weigh(call('exec', { cmd: 'cat a.txt > $(mktemp)' }))
+
+    expect(weight).toBe('heavy')
+    expect(material).toContain('命令替换') // UNRESOLVABLE 仍按 raw 判定
+  })
+})
+
 describe('判断材料——不许有假影响面（误报比缺报更坏）', () => {
   test('重定向的正文不是路径：echo 的操作数不入影响面', () => {
     const { material } = weigh(call('exec', { cmd: 'echo hi > config.json' }))
