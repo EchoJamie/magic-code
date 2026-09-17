@@ -7,6 +7,11 @@
  *
  * 两个端口之外的东西也在此（技术方案 · 领域划分：端口内类型）——
  * **沙箱原语**（`exec` / 读 / 写 / 列 / 匹配）与**工具规格**（`ToolSpec` / 危险归类 / 工具集 v1）。
+ *
+ * **三个 id 各有空间，不许混**（技术方案 · 领域划分 · 端口内类型）：
+ * ① `ToolCall.id` ＝**供应商侧**调用 id（只用于回填配对）；
+ * ② 事件的 `call`（`RecordId` 空间）＝贯穿调用链（请求 / 询问 / 裁决 / 结果）的那次调用；
+ * ③ `DecisionId` ＝裁决配对的**请求事件** id。
  */
 
 import type { Command, UserInput } from './control.ts'
@@ -95,18 +100,27 @@ export interface ControlHub {
 /**
  * 模型消息（内核侧形态——供应商无关）。
  *
- * TODO(规划侧)：形态未定；占位为角色 + 文本。
+ * **上下文由对话域装配**——系统提示词即 `role:'system'` 的首条消息；工具结果回填即
+ * `role:'tool'`（`callId` 配对**供应商侧**调用 id——见文件头注 ①）；条目里的 blob 引用
+ * 在装配时解析为文本（按策略截断）（技术方案 · 领域划分 · 端口内类型）。
  */
-export type ModelMessage = {
-  readonly role: 'user' | 'assistant' | 'tool'
-  readonly content: string
-}
+export type ModelMessage =
+  | { readonly role: 'system'; readonly content: string }
+  | { readonly role: 'user'; readonly content: string }
+  | {
+      readonly role: 'assistant'
+      readonly content: string
+      readonly toolCalls?: readonly ToolCall[]
+    }
+  | {
+      readonly role: 'tool'
+      /** **供应商侧**调用 id——与发起它的 assistant 消息里的 `ToolCall.id` 配对。 */
+      readonly callId: string
+      readonly ok: boolean
+      readonly output: string
+    }
 
-/**
- * 模型请求（内核侧请求形制）。
- *
- * TODO(规划侧)：形态未定；占位为模型名 + 消息 + 可选工具规格。
- */
+/** 模型请求（内核侧请求形制）。 */
 export type ModelRequest = {
   readonly model: string
   readonly messages: readonly ModelMessage[]
@@ -124,14 +138,40 @@ export type ModelStream = {
 }
 
 /**
+ * 模型结束原因——词表**对齐取件层（SDK）的结束原因，接缝近恒等映射**
+ * （技术方案 · 领域划分 · 端口内类型）。
+ */
+export type ModelFinishReason =
+  | 'stop'
+  | 'tool-calls'
+  | 'length'
+  | 'content-filter'
+  | 'error'
+  | 'other'
+
+/**
  * 模型聚合结果。
- *
- * TODO(规划侧)：形态未定；占位为结束原因 + 用量 + 是否完整。
+ * `finishReason` **可缺**——供应商未给 / 出错 / 提前 `break` 时缺省；
+ * 「是否走完」由 `complete` 表述（技术方案 · 领域划分 · 端口内类型）。
  */
 export type ModelResult = {
-  readonly finishReason?: string
+  readonly finishReason?: ModelFinishReason
   readonly usage?: ModelUsage
   readonly complete: boolean
+}
+
+/**
+ * 模型特征标记——**覆盖位**（技术方案 · 领域划分 · 端口内类型 · 模型策略）。
+ *
+ * **内置表**（模型域持有 · **不入契约**）给默认；配置非空则**整组覆盖**；
+ * **两处皆无 → 常规行为**（不猜、不切）。空缺不是「无特征」的断言。
+ *
+ * 首站一条：`inlineThinking`——思考**内嵌在正文**（`<think>…</think>` 是少数模型的行为，
+ * 不当通例处理）；`tag` 给出包裹标签，归一据它把标签内容切出到 `thinking` 通道
+ * （`text` 通道不带标签）。
+ */
+export type ModelTraits = {
+  readonly inlineThinking?: { readonly tag: string }
 }
 
 /** token 用量。 */
@@ -144,8 +184,7 @@ export type ModelUsage = {
 
 /**
  * 工具调用（模型请求的一次调用）。
- *
- * TODO(规划侧)：`id` 的形态未定（供应商侧的调用 id）；占位为不透明串。
+ * `id` ＝**供应商侧**调用 id——只用于回填配对（三个 id 空间见文件头注）。
  */
 export type ToolCall = {
   readonly id: string
@@ -166,18 +205,21 @@ export type ToolResult = {
 // —— 权限域 ——
 
 /**
- * 裁决上下文（机械分析的输入）。
+ * 裁决上下文——**纯数据**（技术方案 · 领域划分 · 端口内类型）。
  *
- * TODO(规划侧)：形态未定；占位为空对象——判定依据（工具 / 参数 / 路径 / 工作区）待权限域落位时定。
+ * 越界判定所需的根视图由**调用方（工具域）给出**：**不传端口进端口**。
+ * 越界判据与执行域**同源**（相对按默认根 · 绝对须落根内）——两处须一致。
  */
-export type PermissionContext = Readonly<Record<string, never>>
+export type PermissionContext = {
+  readonly roots: readonly string[]
+  readonly defaultRoot: string
+}
 
 // —— 记录域 ——
 
 /**
  * blob 存取——**写权唯一归记录域**（技术方案 · 记录 · 标量口径 v0）。
- *
- * TODO(规划侧)：签名形态未定（同步 / 异步）；占位为异步。
+ * **取异步**——`bun:sqlite` 同步、文件读写异步，异步面容两者（技术方案 · 领域划分 · 端口内类型）。
  */
 export type BlobStore = {
   put(data: Uint8Array | string): Promise<BlobRef>
@@ -284,23 +326,20 @@ export type ResolvedPath = {
 /**
  * 命令路由（装配 → 控制域，技术方案 · 领域划分 · 装配视图：`input.submit` / `turn.interrupt`
  * → 对话域；`decision.answer` → 权限域）。
- *
- * TODO(规划侧)：形态未定；占位为三条命令各一路由。
  */
 export type CommandRoutes = {
-  readonly onInput: (input: UserInput) => void
-  readonly onInterrupt: () => void
-  readonly onDecision: (id: DecisionId, decision: Decision) => void
+  onInput(input: UserInput): void
+  onInterrupt(): void
+  onDecision(id: DecisionId, decision: Decision): void
 }
 
 /**
  * 控制传输（外壳 ↔ 控制域）——首站同进程直连；跨进程（第二站）/ 跨设备（第三站）接同一接口。
- *
- * TODO(规划侧)：形态未定；占位为「命令进 / 事件出」的最小契约。
  */
 export type ControlTransport = {
-  readonly send: (command: Command) => void
-  readonly subscribe: (listener: (event: KernelEvent) => void) => () => void
+  send(command: Command): void
+  /** 订阅事件；返回**退订**。 */
+  subscribe(listener: (event: KernelEvent) => void): () => void
 }
 
 // ══ 工具规格（端口内类型）════════════════════════════════════════════

@@ -19,13 +19,21 @@ import {
 } from '../src/index.ts'
 import type {
   Command,
+  DecisionId,
   Entry,
   EntryRange,
   EventEnvelope,
   ExecResult,
   KernelEvent,
+  ModelFinishReason,
+  ModelMessage,
+  ModelResult,
+  ModelTraits,
   NewEntry,
+  ProviderConfig,
+  RecordId,
   Sandbox,
+  ToolCall,
   ToolCallPayload,
   ToolResultPayload,
 } from '../src/index.ts'
@@ -139,6 +147,89 @@ export function entryCarriesToolPayload(): void {
 export function entryRangeIsOptional(): void {
   const range: EntryRange = { from: 1, to: 9 }
   void range
+}
+
+// —— 端口内类型（M01 第 2 轮 · v0 锚定）——
+
+/** 模型消息——判别联合按 `role` 收窄。 */
+export function modelMessageNarrowsByRole(): void {
+  const messages: readonly ModelMessage[] = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'hi' },
+    {
+      role: 'assistant',
+      content: 'ok',
+      toolCalls: [{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }],
+    },
+    { role: 'tool', callId: 'call_1', ok: true, output: 'done' },
+  ]
+
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      const callId: string = m.callId // 收窄生效——联合里只有它带 callId
+      void callId
+    }
+    if (m.role === 'assistant') {
+      const calls: readonly ToolCall[] | undefined = m.toolCalls
+      void calls
+    }
+  }
+
+  // @ts-expect-error 收窄生效——`tool` 支不带 `toolCalls`
+  const bad: ModelMessage = { role: 'tool', callId: 'x', ok: true, output: '', toolCalls: [] }
+  void bad
+}
+
+/** 三个 id 空间不混——供应商侧调用 id 不是 `RecordId`。 */
+export function threeIdSpacesAreDistinct(): void {
+  const vendorCallId: ToolCall['id'] = 'call_abc' // ① 供应商侧调用 id
+  const chainCall: RecordId = 7 // ② 事件的 call（RecordId 空间）
+  const decisionPair: DecisionId = 9 // ③ 裁决配对的请求事件 id
+
+  // @ts-expect-error ① 与 ② 不同空间——供应商侧 id 不可当 RecordId 用
+  const wrong: RecordId = vendorCallId
+
+  void chainCall
+  void decisionPair
+  void wrong
+}
+
+/** 模型特征标记——覆盖位**可空**（空缺＝常规行为，不是「无特征」的断言）。 */
+export function traitsIsOptionalOverride(): void {
+  const none: ModelTraits = {}
+  const one: ModelTraits = { inlineThinking: { tag: 'think' } }
+  const providerPlain: ProviderConfig = { baseURL: 'https://api.example/v1', model: 'm' }
+  const providerWithTraits: ProviderConfig = {
+    baseURL: 'https://api.example/v1',
+    model: 'm',
+    traits: one,
+  }
+
+  void none
+  void providerPlain
+  void providerWithTraits
+}
+
+/** 模型结束原因——词表对齐取件层；`finishReason` 可缺、`complete` 表「是否走完」。 */
+export function modelResultShape(): void {
+  const reasons: readonly ModelFinishReason[] = [
+    'stop',
+    'tool-calls',
+    'length',
+    'content-filter',
+    'error',
+    'other',
+  ]
+  const minimal: ModelResult = { complete: false } // finishReason 可缺（未给 / 出错 / 提前 break）
+  const full: ModelResult = {
+    finishReason: 'tool-calls',
+    usage: { inputTokens: 1, outputTokens: 2 },
+    complete: true,
+  }
+
+  void reasons
+  void minimal
+  void full
 }
 
 // ══ 运行时断言 ════════════════════════════════════════════════════════

@@ -8,6 +8,8 @@
  * 本文件是共享语言中**唯一带物的地方**——两个无依赖纯函数（规则载体）；其余皆类型。
  */
 
+import type { ModelTraits } from './ports.ts'
+
 /** 配置文件落点。 */
 export const CONFIG_FILE = '~/.magic/config.json'
 
@@ -16,25 +18,6 @@ export const CONFIG_FILE = '~/.magic/config.json'
  * ⚠️ 用前须经 `expandDataDir`（下文）——字面 `~` 直接交给运行时库会静默落于 cwd。
  */
 export const DEFAULT_DATA_DIR = '~/.magic'
-
-/**
- * 模型特征标记——供应商无关的行为开关（技术方案 · 模型策略）。
- *
- * 常规模型的思考走**独立通道**；**内嵌在正文里**（`<think>…</think>`）是少数模型的行为，
- * 不当通例处理。首站只落一条：`inlineThinking`——归一据它决定是否把标签内容切出到
- * `thinking` 通道（`text` 通道不带标签）。
- *
- * 生长——标记集合随用生长（如是否支持工具调用 / 上下文窗）。
- * 归属——标记是**模型域内概念**（供应商细节封在接缝之后）；渲染侧据通道分列呈现，不感知标记。
- */
-export type ModelTrait = 'inlineThinking'
-
-/**
- * 模型特征标记集合。
- *
- * TODO(规划侧)：承载形态未定（数组 / 记录）；占位为标记数组——「配置有则覆盖」＝整组替换内置表判定。
- */
-export type ModelTraits = readonly ModelTrait[]
 
 /**
  * 供应商条目（`providers.<id>`——`<id>` 任意命名）。
@@ -47,8 +30,8 @@ export type ProviderConfig = {
   readonly model: string
   /**
    * **模型特征标记的覆盖位**——内置表未覆盖的模型在此标注（表外模型 / 私有端点 /
-   * 供应商改了行为的唯一出口）；配置有则**覆盖**内置表的判定。
-   * **空缺＝按常规行为处理**，不是「无特征」的断言。
+   * 供应商改了行为的唯一出口）；配置非空则**整组覆盖**内置表的判定。
+   * **空缺＝按常规行为处理**，不是「无特征」的断言。形态见 `ports.ts` · `ModelTraits`。
    */
   readonly traits?: ModelTraits
 }
