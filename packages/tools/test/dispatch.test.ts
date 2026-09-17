@@ -13,6 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import type { ToolResult, ToolRuntime as ToolRuntimePort } from '@magic/contracts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { FIXED_AT } from '@magic/faux'
 import { execCall, makeToolDeps, ROOT, SESSION } from './helpers.ts'
@@ -174,6 +175,20 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
     expect(outcome.ok).toBe(false)
     expect(outcome.output).toContain('执行体炸了')
     expect(deps.sink.byKind('tool.result')[0]?.data.ok).toBe(false)
+  })
+
+  test('端口面：只认契约端口的消费者照常工作（结构超集不破换插）', async () => {
+    const deps = makeToolDeps()
+
+    // 编译期探针——工具域的实现须能当契约端口用（U11 装配按端口注入各域）。
+    // 这一行若因「超集把参数或返回类型写歪了」而红，换插就断了。
+    const port: ToolRuntimePort = deps.runtime
+    const result: ToolResult = await port.invoke(execCall('ls'), {})
+
+    expect(result.ok).toBe(true)
+    expect(result.output).toBe('')
+    // 端口面只承诺两件——多出来的两件是「本域多知道的」，不是消费者必须处理的
+    expect(port.definitions().map((d) => d.name)).toEqual(['exec'])
   })
 
   test('瞬时增量不进持久面——扇出照契约的不落库清单判别', async () => {
