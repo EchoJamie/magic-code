@@ -48,7 +48,15 @@ export interface ToolRuntime {
 
 /** 工具域 → 权限域。 */
 export interface PermissionGate {
-  decide(call: ToolCall, ctx: PermissionContext): Promise<Decision>
+  /**
+   * 请裁决。
+   *
+   * `callRef` ＝**该次 `tool.call` 事件的 id**（事件载荷 `call` 的来处）——「请求 → 询问 →
+   * 裁决 → 结果」四事件串链的依据（审计与阶段 2 恢复的**在途识别**都按它找）。
+   * 权限域自己拿不到（那是工具域发的事件），故由调用方传入；**必填**——
+   * 不设哨兵兜底：静默的 `-1` 比缺参更坏，接线漏了应当在**编译期**就报。
+   */
+  decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
   /** 控制域答复路由至此。 */
   resolve(requestId: DecisionId, decision: Decision): void
 }
@@ -83,7 +91,10 @@ export interface Sandbox {
 export interface WorkspaceService {
   roots(): readonly string[]
   defaultRoot(): string
-  /** 越界即拒。 */
+  /**
+   * 解析路径——**越界即拒：抛**（沙箱侧捕之、归 `reason: 'out-of-bounds'`）。
+   * 越界判据与执行域**同源**：相对按默认根 · 绝对须落根内。
+   */
   resolve(path: string): ResolvedPath
 }
 
@@ -440,6 +451,14 @@ export type ToolSpec = {
  * 参数模式由各工具实现时给出。
  */
 export type ToolSetRow = Omit<ToolSpec, 'parameters'>
+
+/**
+ * **参数键（部分锚定）**——`exec` 的命令字段名＝**`cmd`**（阶段 1 唯一工具）。
+ *
+ * 工具域**分发**与权限域**分析**都按它取命令（危险归类＝按命令解析，见 `by-call` 支）；
+ * 已按候选键兜底者**收窄为单一键**。
+ * 其余工具的键名随 U13 定（与 `JsonSchema` 承载形态一并）——未定处不得依赖。
+ */
 
 /**
  * 工具集 v1 规格（阶段 2 · 已冻结）——供并行实现。

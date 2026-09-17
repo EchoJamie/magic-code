@@ -79,6 +79,30 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
 }
 
 /**
+ * 测试面**额外**许可的包（技术方案 · 代码治理 · 边界纪律「**测试面分面**」）——
+ * 测试替身包（`@magic/faux` · Faux Provider）：它只依赖契约，**各包测试皆可安全取用**，
+ * 取用它不构成域间依赖。**不加进生产面**——那会连生产代码一起放行。
+ */
+const TEST_ONLY_DEP = '@magic/faux'
+
+/** blobs 落点的唯一主人（U02 判据 2 · 仓库级不变量）——其余包不得出现 `blobs/` 字面量。 */
+const BLOB_OWNER_PACKAGE = '@magic/records'
+
+/** 文件相对包根的**面**——依赖纪律按面分（与 fs 纪律只扫 `src/` 同一条分面原则）。 */
+function faceOf(relativeToPackage: string): 'src' | 'test' | 'other' {
+  const [head] = relativeToPackage.split(sep)
+  if (head === 'src') return 'src'
+  if (head === 'test') return 'test'
+  return 'other'
+}
+
+/** 某包某面许可的 `@magic/*` 依赖——测试面额外许可测试替身包。 */
+function allowedMagicDepsFor(name: string, face: 'src' | 'test' | 'other'): readonly string[] {
+  const base = allowedMagicDeps(name)
+  return face === 'test' ? [...base, TEST_ONLY_DEP] : base
+}
+
+/**
  * fs 直触许可（技术方案 · 边界纪律）——内核仅 `records` · `execution` 两域
  * （记录库 / blob 与沙箱工作区）。
  */
@@ -213,11 +237,12 @@ function isCrossing(
   fromFile: string,
   packageName: string,
   packageDir: string,
+  allowed: readonly string[],
 ): boolean {
   if (specifier.startsWith('@magic/')) {
     const target = specifier.split('/', 2).join('/')
     if (target === packageName) return false // 自引用——不经包边界
-    if (!allowedMagicDeps(packageName).includes(target)) return true
+    if (!allowed.includes(target)) return true
     return specifier.length > target.length // 已允许的包：深链他人内部同样越界
   }
 
@@ -293,22 +318,77 @@ async function sourceFilesOf(packageDir: string): Promise<string[]> {
   return files
 }
 
-/** 某包源码里的越界引用（`文件 → 说明符 [分类]`，便于定位）。 */
+/** 某包源码里的越界引用（`文件 → 说明符 [分类]`，便于定位）——**按面**取许可。 */
 async function crossingsOf(packageDir: string, packageName: string): Promise<string[]> {
   const crossings: string[] = []
 
   for (const file of await sourceFilesOf(packageDir)) {
     const absolute = join(PACKAGES_DIR, packageDir, file)
     const source = readFileSync(absolute, 'utf8')
+    const allowed = allowedMagicDepsFor(packageName, faceOf(file))
 
     for (const specifier of importSpecifiersOf(absolute, source)) {
-      if (isCrossing(specifier, absolute, packageName, packageDir)) {
+      if (isCrossing(specifier, absolute, packageName, packageDir, allowed)) {
         crossings.push(`${file} → ${specifier}（${classifyCrossing(packageName, specifier)}）`)
       }
     }
   }
 
   return crossings
+}
+
+// —— blobs 落点（仓库级不变量 · U02 判据 2 并入）——
+
+/** 源码里的**字符串字面量**（注释与标识符天然排除）。 */
+function stringLiteralsOf(fileName: string, source: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    scriptKindOf(fileName),
+  )
+  const literals: string[] = []
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      literals.push(node.text)
+    } else if (ts.isTemplateExpression(node)) {
+      // 模板插值——头与各段分别取（`` `${dir}/blobs/y` `` → `''` ＋ `'/blobs/y'`）
+      literals.push(node.head.text)
+      for (const span of node.templateSpans) literals.push(span.literal.text)
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return literals
+}
+
+/**
+ * blobs 落点的越界者——**写权唯一归记录域**（技术方案 · 记录 · 标量口径 v0）。
+ * 扫描面＝各包 `src/`（测试不属内核产物）；判定＝字符串字面量里出现 `blobs/` 写法。
+ */
+async function blobPathOffendersOf(): Promise<string[]> {
+  const offenders: string[] = []
+  const srcPrefix = `src${sep}`
+
+  for (const { dir, name } of packagesOf()) {
+    if (name === BLOB_OWNER_PACKAGE) continue
+
+    for (const file of await sourceFilesOf(dir)) {
+      if (!file.startsWith(srcPrefix)) continue
+
+      const absolute = join(PACKAGES_DIR, dir, file)
+      for (const literal of stringLiteralsOf(absolute, readFileSync(absolute, 'utf8'))) {
+        if (/(^|\/)blobs(\/|$)/.test(literal)) {
+          offenders.push(`${name}/${file} → ${JSON.stringify(literal)}`)
+        }
+      }
+    }
+  }
+
+  return offenders
 }
 
 // —— 内核 fs 边界 ——
@@ -408,15 +488,30 @@ describe('分包可用', () => {
 })
 
 describe('依赖单向（声明）', () => {
-  test('包声明的 `@magic/*` 依赖不越界（dependencies 与 devDependencies 同查）', async () => {
-
+  test('生产依赖（dependencies）——`@magic/*` 不越界（分面：生产面只许契约）', () => {
     for (const { dir, name } of packagesOf()) {
-      const { dependencies, devDependencies } = manifestOfDir(dir)
-      const allowed = allowedMagicDeps(name)
-      const declared = [...Object.keys(dependencies ?? {}), ...Object.keys(devDependencies ?? {})]
-      const crossed = declared.filter((dep) => dep.startsWith('@magic/') && !allowed.includes(dep))
+      const { dependencies } = manifestOfDir(dir)
+      const allowed = allowedMagicDepsFor(name, 'src')
+      const crossed = Object.keys(dependencies ?? {}).filter(
+        (dep) => dep.startsWith('@magic/') && !allowed.includes(dep),
+      )
 
       expect(crossed).toEqual([])
+    }
+  })
+
+  test('开发依赖（devDependencies）——额外许可测试替身包（`@magic/faux`）', () => {
+    for (const { dir, name } of packagesOf()) {
+      const { devDependencies } = manifestOfDir(dir)
+      const allowed = allowedMagicDepsFor(name, 'test')
+      const crossed = Object.keys(devDependencies ?? {}).filter(
+        (dep) => dep.startsWith('@magic/') && !allowed.includes(dep),
+      )
+
+      expect(crossed).toEqual([])
+
+      // 生产面不得因测试面而放宽——faux 不进 `dependencies`
+      expect(Object.keys(manifestOfDir(dir).dependencies ?? {})).not.toContain(TEST_ONLY_DEP)
     }
   })
 
@@ -450,6 +545,31 @@ describe('内核 fs 边界', () => {
   })
 })
 
+describe('blobs 落点（仓库级不变量 · U02 判据 2 并入）', () => {
+  test('写权唯一——全仓只许记录域出现 `blobs/` 字面量', async () => {
+    expect(await blobPathOffendersOf()).toEqual([])
+  })
+
+  test('字面量提取——注释天然排除 · 模板插值也被取到各段', () => {
+    const source = [
+      `// 注释里的 blobs/ 不算`,
+      `const a = 'blobs/x'`,
+      'const b = `${dir}/blobs/y`',
+    ].join('\n')
+
+    expect(stringLiteralsOf('probe.ts', source)).toEqual(['blobs/x', '', '/blobs/y'])
+  })
+
+  test('越界判定——认 `blobs/` 与 `~/.magic/blobs`，不误伤近形名', () => {
+    const pattern = /(^|\/)blobs(\/|$)/
+    expect(pattern.test('blobs/x')).toBe(true)
+    expect(pattern.test('/home/u/.magic/blobs')).toBe(true)
+    expect(pattern.test('/home/u/.magic/blobs/abc')).toBe(true)
+    expect(pattern.test('/home/u/.magic/blobstore')).toBe(false)
+    expect(pattern.test('/home/u/blobx')).toBe(false)
+  })
+})
+
 describe('契约包零运行时依赖', () => {
   test('`@magic/contracts` 无任何运行时依赖', async () => {
     const { dependencies, peerDependencies, optionalDependencies } = manifestOfDir('contracts')
@@ -472,7 +592,58 @@ describe('公开面', () => {
 
 describe('越界判定（反向用例）', () => {
   const probe = (specifier: string, name = '@magic/conversation', dir = 'conversation'): boolean =>
-    isCrossing(specifier, join(PACKAGES_DIR, dir, 'src', 'index.ts'), name, dir)
+    isCrossing(
+      specifier,
+      join(PACKAGES_DIR, dir, 'src', 'index.ts'),
+      name,
+      dir,
+      allowedMagicDepsFor(name, 'src'),
+    )
+
+  test('测试面分面——src 拦 faux · test 放行 faux · 生产面不放宽', () => {
+    const srcAllowed = allowedMagicDepsFor('@magic/model', 'src')
+    const testAllowed = allowedMagicDepsFor('@magic/model', 'test')
+
+    expect(srcAllowed).not.toContain(TEST_ONLY_DEP)
+    expect(testAllowed).toContain(TEST_ONLY_DEP)
+
+    // src 面：faux 越界
+    expect(
+      isCrossing(
+        TEST_ONLY_DEP,
+        join(PACKAGES_DIR, 'model', 'src', 'gateway.ts'),
+        '@magic/model',
+        'model',
+        srcAllowed,
+      ),
+    ).toBe(true)
+
+    // test 面：faux 放行
+    expect(
+      isCrossing(
+        TEST_ONLY_DEP,
+        join(PACKAGES_DIR, 'model', 'test', 'model.test.ts'),
+        '@magic/model',
+        'model',
+        testAllowed,
+      ),
+    ).toBe(false)
+
+    // test 面：只是多放 faux——域间仍越界
+    expect(
+      isCrossing(
+        '@magic/records',
+        join(PACKAGES_DIR, 'model', 'test', 'model.test.ts'),
+        '@magic/model',
+        'model',
+        testAllowed,
+      ),
+    ).toBe(true)
+
+    // 面判定本身
+    expect(faceOf(join('src', 'index.ts'))).toBe('src')
+    expect(faceOf(join('test', 'a.test.ts'))).toBe('test')
+  })
 
   test('相对路径跨包＝越界（旧教训一：只认裸名会漏）', () => {
     expect(probe('../../model/src/index.ts')).toBe(true)
