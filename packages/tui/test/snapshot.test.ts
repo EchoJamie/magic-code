@@ -1,0 +1,162 @@
+/**
+ * 一屏快照（U09）——**渲染起步**，U20 / U21 在此之上打磨。
+ *
+ * 取景方式：事件经 `reduce` 走真归约 → `AppView` 渲染成字符串（`renderToString`——
+ * 同步、不开终端、`columns` 定宽）。于是快照钉住的是**整条链**（事件 → 视图 → 一屏），
+ * 而非手搓的视图对象。
+ *
+ * 快照文件：`test/__snapshots__/snapshot.test.ts.snap`（入库——改动即进 diff 可评审）。
+ */
+
+import { describe, expect, test } from 'bun:test'
+import { renderToString } from 'ink'
+import { createElement as h } from 'react'
+import type { KernelEvent } from '@magic/contracts'
+import { AppView } from '../src/components/app.ts'
+import { appendEcho, createView, reduce } from '../src/view.ts'
+import type { ShellView } from '../src/view.ts'
+import { event } from './events.ts'
+
+const COLUMNS = 80
+
+/** 一屏渲染成字符串（取景用——同一条链，只有最后一跳是纯函数）。 */
+function screen(view: ShellView, draft = ''): string {
+  return renderToString(h(AppView, { view, draft }), { columns: COLUMNS })
+}
+
+function viewed(events: readonly KernelEvent[], from: ShellView = createView()): ShellView {
+  return events.reduce(reduce, from)
+}
+
+describe('一屏 · 空屏与输入', () => {
+  test('启动即用——开场提示与输入行在位', () => {
+    expect(screen(createView())).toMatchSnapshot()
+  })
+
+  test('交代写完还没发——输入行的草稿显示出来', () => {
+    expect(screen(createView(), '看下工作区')).toMatchSnapshot()
+  })
+
+  test('交代已发——对话流里留下用户那一行', () => {
+    expect(screen(appendEcho(createView(), '看下工作区'))).toMatchSnapshot()
+  })
+})
+
+describe('一屏 · 流式', () => {
+  test('思考与正文各成块（流式累积中途的样子）', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('model.call.start', { model: 'MiniMax-M3' }),
+      event('model.delta', { channel: 'thinking', text: '先看看工作区。' }),
+      event('model.delta', { channel: 'text', text: '好，我跑一下 ——' }),
+    ])
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+
+  test('工具调用流式（参数还没到齐）', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '我调用 exec：' }),
+      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'tc_1', text: '{"cmd":"ls"' }),
+    ])
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+})
+
+describe('一屏 · 审批', () => {
+  test('审批提示 —— 材料 · 轻重 · 两个答复键', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
+      event(
+        'tool.decision.request',
+        {
+          call: 71,
+          name: 'exec',
+          material: '在工作区根执行：ls\n（只读，不改动任何文件）',
+          weight: 'heavy',
+        },
+        { id: 88 },
+      ),
+    ])
+
+    expect(screen(view, '继续')).toMatchSnapshot()
+  })
+})
+
+describe('一屏 · 工具执行与收束', () => {
+  test('工具输出两路流 ＋ 结果 ＋ 裁决留痕', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'tc_1', text: '{"cmd":"ls"}' }),
+      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
+      event(
+        'tool.decision.request',
+        { call: 71, name: 'exec', material: 'ls', weight: 'light' },
+        { id: 88 },
+      ),
+      event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 1200 }),
+      event('tool.output.delta', { call: 71, channel: 'stdout', text: 'README.md\npackages\n' }),
+      event('tool.output.delta', { call: 71, channel: 'stderr', text: 'ls: 无此目录：tmp\n' }),
+      event('tool.result', { call: 71, ok: true, output: { text: 'README.md\npackages\n' } }),
+      event('model.delta', { channel: 'text', text: '看完了：目录是干净的。' }),
+      event('model.usage', { inputTokens: 1284, outputTokens: 96 }),
+      event('turn.end', { reason: 'settled' }),
+    ], appendEcho(createView(), '跑一下 ls'))
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+
+  test('未获批准——结果说明未执行', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('tool.call', { name: 'exec', args: { cmd: 'rm -rf tmp' } }, { id: 71 }),
+      event(
+        'tool.decision.request',
+        { call: 71, name: 'exec', material: 'rm -rf tmp', weight: 'heavy' },
+        { id: 88 },
+      ),
+      event('tool.decision', { call: 71, decision: 'reject', decider: 'user', elapsedMs: 3000 }),
+      event('tool.result', { call: 71, ok: false, output: { text: '（未获批准，未执行）' } }),
+      event('turn.end', { reason: 'settled' }),
+    ], appendEcho(createView(), '跑一下 ls'))
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+
+  test('大负载转存——结果只留 blob 引用（外壳不解析）', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('tool.call', { name: 'exec', args: { cmd: 'cat big' } }, { id: 71 }),
+      event('tool.result', { call: 71, ok: true, output: { blob: 'blob_7' } }),
+      event('turn.end', { reason: 'settled' }),
+    ], appendEcho(createView(), '跑一下 ls'))
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+})
+
+describe('一屏 · 异常与中断', () => {
+  test('错误行分档呈现', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('model.error', { tier: 'context-limit', message: '上下文超了' }),
+      event('error', { message: '内核自身异常' }, { turn: null }),
+      event('turn.end', { reason: 'error' }),
+    ])
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+
+  test('中断——本轮以 aborted 收束', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '好，我跑一下 ——' }),
+      event('turn.end', { reason: 'aborted' }),
+    ], appendEcho(createView(), '看下工作区'))
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+})
