@@ -1,22 +1,23 @@
 /**
  * 控制面通道 —— **命令进 · 事件出**（技术方案 · 接入：控制面与外壳）。
  *
- * 形态——类型化接口 + 事件订阅；首站同进程直连（本文件即直连实现：无线程、无 socket、
- * 不建常驻服务）。**即便同进程也走此协议**（不走内部直调）——壳只经此处碰内核，
- * 内核只经此处被碰；换壳（第二站多形态）与换传输（跨设备）都不动两侧代码。
+ * ⚠️ **实现内部**（领域划分 · 依赖规则 1）——本文件**不出** `@magic/control` 公开面：
+ * 对外只经 `ControlHub`（域端口）与 `ControlTransport`（外壳侧传输）两个端口。
+ * 通道是这些端口背后的**接线**：同进程直连（无线程、无 socket、不建常驻服务）。
+ * **即便同进程也走此协议**（不走内部直调）——壳只经此处碰内核，内核只经此处被碰。
  *
- * 方向与持有者：
- * - 外壳（U09 起）——`send` 发命令 · `subscribe` 收事件；
- * - 内核（主循环 U04 · 权限 U07）——`onCommand` 收命令 · `publish` 出事件。
+ * 方向与持有者（经 `transport.ts` 的两端接出去）：
+ * - 外壳侧（`ControlTransport`）——`send` 发命令 · `subscribe` 收事件；
+ * - 内核侧（`KernelTransport`）——`send` 出事件 · `subscribe` 收命令。
  *
  * 纪律：
  * - **消息是纯数据**——`send` / `publish` 投递前经 `assertSerializable` 校验（见 `serializable.ts`），
  *   不是纯数据就抛，**不投递**；
- * - 消息形态**不在本目录另立**——`Command` / `KernelEvent` 以契约（`../contracts/control.ts`）为准；
+ * - 消息形态**不在本包另立**——`Command` / `KernelEvent` 以契约（`@magic/contracts`）为准；
  * - 订阅方抛错照常上抛（不吞——吞错掩盖缺陷）；投递按订阅快照，投递中的增退订不影响本轮。
  */
 
-import type { Command, KernelEvent } from '../contracts/index.ts'
+import type { Command, KernelEvent } from '@magic/contracts'
 import { assertSerializable } from './serializable.ts'
 
 /** 内核侧命令订阅方（主循环）——收命令，不返回值。 */
@@ -48,8 +49,8 @@ export type ControlChannel = {
 /**
  * 建一条控制面通道——首站＝同进程直连。
  *
- * 第二站换传输（跨进程桥接）时替换本实现即可：桥接侧订阅 `publish` 往对端送、
- * 把对端来信喂回 `send`，两侧的接口与消息一字不动。
+ * 第二站换传输（跨进程桥接）时替换 `transport.ts` 的两端实现即可：桥接侧订阅一端
+ * 往对端送、把对端来信喂回另一端，`ControlHub` 与外壳的接口与消息一字不动。
  */
 export function createControlChannel(): ControlChannel {
   const handlers = new Set<CommandHandler>()

@@ -27,6 +27,13 @@
       "name": "@magic/contracts",
       "version": "0.0.0",
     },
+    "packages/control": {
+      "name": "@magic/control",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
     "packages/kernel": {
       "name": "@magic/kernel",
       "version": "0.0.0",
@@ -60,6 +67,8 @@
     "@magic/app": ["@magic/app@workspace:packages/app"],
 
     "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
+
+    "@magic/control": ["@magic/control@workspace:packages/control"],
 
     "@magic/kernel": ["@magic/kernel@workspace:packages/kernel"],
 
