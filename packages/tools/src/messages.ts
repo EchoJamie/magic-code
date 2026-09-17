@@ -70,12 +70,14 @@ export const OUTPUT_EDIT_NOT_FOUND = '未找到待替换文本——文件未改
 export const OUTPUT_EDIT_AMBIGUOUS = '待替换文本出现多处——无法唯一定位，文件未改'
 
 /**
- * 文件超长（读到的只是前一段）——**拒绝编辑**。
+ * 文件超长（读到的只是前一段）——**拒绝编辑并指出出口**。
  *
  * 这一条是数据安全件：读回的是截断文本，改完写回去＝把文件尾巴整段抹掉。
- * 宁可让模型自己去分段读 / 用 `exec` 改，也不能让它以为「编辑成功」。
+ * 报文的落点不是「失败」，而是**换条路**——`exec` 的 `sed` / `python` 分段改，
+ * 这是本工具的出口（第一阶段 `edit` 只做「整读 → 唯一替换 → 写回」这一种改法）。
  */
-export const OUTPUT_EDIT_TRUNCATED = '文件超长（读取被截断）——不做编辑，以免写回截断内容'
+export const editTooLargeOutput = (limitBytes: number): string =>
+  `文件超长（超过 ${Math.round(limitBytes / 1024 / 1024)} MiB）——不做编辑，以免写回截断内容；改用 exec（如 sed / python）分段改`
 
 /** 新旧文本相同——没有要改的（照实说，别写一遍骗一次「已替换」）。 */
 export const OUTPUT_EDIT_SAME = 'old 与 new 相同——无需修改'

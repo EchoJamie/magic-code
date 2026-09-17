@@ -160,6 +160,38 @@ describe('U13 · read —— 读文件（超长截断）', () => {
     await expect(box.read('../escape.txt')).rejects.toThrow(/工作区越界/)
     await expect(box.read('/etc/hosts')).rejects.toThrow(/工作区越界/)
   })
+
+  test('opts.maxBytes 可**放大**上限（`edit` 的「读 → 改 → 写回」靠它）', async () => {
+    const { box, root } = freshSandbox()
+    const doubled = 'x'.repeat(DEFAULT_MAX_READ_BYTES + 1024)
+    seed(root, 'big.txt', doubled)
+
+    const result = await box.read('big.txt', { maxBytes: doubled.length + 1 })
+
+    expect(result.truncated).toBeUndefined()
+    expect(result.content).toBe(doubled)
+  })
+
+  test('opts.maxBytes 可**收紧**上限（按字节截）', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'txt.txt', 'abcdefghij')
+
+    const result = await box.read('txt.txt', { maxBytes: 4 })
+
+    expect(result.truncated).toBe(true)
+    expect(result.content).toBe('abcd')
+  })
+
+  test('opts.maxBytes 非法（NaN / 0 / 负数）→ 回落实现常量，不悄悄变语义', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'ok.txt', 'hello')
+
+    for (const maxBytes of [Number.NaN, 0, -1]) {
+      const result = await box.read('ok.txt', { maxBytes })
+      expect(result.content).toBe('hello')
+      expect(result.truncated).toBeUndefined()
+    }
+  })
 })
 
 // ══ write ═════════════════════════════════════════════════════════════
@@ -197,11 +229,14 @@ describe('U13 · write —— 新建 / 整写文件', () => {
     expect(existsSync(join(root, 'no-dir'))).toBe(false)
   })
 
-  test('blob 支 → 明确报错拒绝（沙箱没有 blob 面），不落一个空文件', async () => {
+  test('字节支 → **原样落盘**（不经文本往返；blob 引用不在此——存取归记录域）', async () => {
     const { box, root } = freshSandbox()
+    // 含 0xff / 0x00——若被当成 UTF-8 文本往返，这两个字节必变形（替换符 / 截断）
+    const bytes = new Uint8Array([0xff, 0x00, 0x41, 0xfe])
 
-    await expect(box.write('from-blob.txt', { blob: 'blob_1' })).rejects.toThrow(/blob/)
-    expect(existsSync(join(root, 'from-blob.txt'))).toBe(false)
+    await box.write('raw.bin', { bytes })
+
+    expect([...readFileSync(join(root, 'raw.bin'))]).toEqual([0xff, 0x00, 0x41, 0xfe])
   })
 
   test('越界 → 抛，且副作用不发生', async () => {

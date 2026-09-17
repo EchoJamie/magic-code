@@ -33,7 +33,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   runCommand,
 } from './exec.ts'
-import { DEFAULT_MAX_READ_BYTES, listDir, readText, writeText } from './files.ts'
+import { DEFAULT_MAX_READ_BYTES, listDir, readText, writeInto } from './files.ts'
 import { matchIn } from './match.ts'
 
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
@@ -84,12 +84,13 @@ export function createSandbox(options: SandboxOptions): Sandbox {
       })
     },
 
-    async read(path: string): Promise<ReadResult> {
-      return readText(inRoot(path), DEFAULT_MAX_READ_BYTES)
+    async read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult> {
+      // 上限可被调用方放大（`edit` 的「读 → 改 → 写回」靠它）；非法值回落实现常量
+      return readText(inRoot(path), positiveOr(opts?.maxBytes, DEFAULT_MAX_READ_BYTES))
     },
 
     async write(path: string, data: WriteData): Promise<void> {
-      return writeText(inRoot(path), data)
+      return writeInto(inRoot(path), data)
     },
 
     async list(path: string): Promise<readonly ListEntry[]> {

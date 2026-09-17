@@ -4,11 +4,12 @@
  * 与 `sandbox.ts` 的分工：那里管**路径与工作区**（解析 / 越界），本文件只看**文件**
  * ——进来时已是绝对路径（且已落根内）。
  *
- * 三件形态选择（都在契约 `ports.ts` 的同名注里）：
- * - **失败＝抛 ＋ 报文精确**——四个原语的冻签名载不下失败位（`write` 是 `void`、
- *   `list` 是数组），故「错误＝返回值」落在**工具边界**：文件类工具捕之、以 `ok: false`
- *   回填模型。报文把「名分」摆前面（不存在 / 是目录 / 不是目录 / 上级目录不存在 / 无权限），
- *   原委接在后面——模型据此改法（换路径 / 先建目录）而不是重试同一件事。
+ * 三件形态选择：
+ * - **失败形态分两路**（技术方案 · 执行 · 原语形态；契约 `Sandbox` 头注）——
+ *   **正常结果用判别式**（读到上限＝`ReadResult.truncated`），**调用不成立用抛**
+ *   （越界 / 不存在 / 是否目录 / 无权限）：本文件抛**精确报文**，「名分」摆前面、
+ *   原委接在后面，由**工具边界**捕之、收敛为 `ToolResult` 的判别式——模型据此改法
+ *   （换路径 / 先建目录）而不是重试同一件事。
  * - **上限是字节**——`read` 的截断按 **UTF-8 字节**算（字符数在阈值内、字节数已超的中文串
  *   照样会撑爆调用方的上下文预算）。
  * - **列目录不跟链接**——`readdir` 的类型位对符号链接既非目录也非文件，归 `'other'`：
@@ -106,18 +107,17 @@ export async function readText(absolute: string, cap: number): Promise<ReadResul
 }
 
 /**
- * 整写文件——**覆盖**（不是追加）；不建上级目录。
+ * 整写文件——**覆盖**（不是追加）；不建上级目录；**两选一都收**。
+ *
+ * - **文本支**——按 UTF-8 落；
+ * - **字节支**——原样落（不经文本往返：给 `Uint8Array` 就是要那些字节）。
  *
  * 为什么不顺手 `mkdir -p`：那是**目录层的副作用**，模型没要（要就先 `exec mkdir` 或写全路径）。
  * 悄悄建目录 = 把「一次文件写」扩张成「动了两层结构」——闸门与审计都只看见前者。
  */
-export async function writeText(absolute: string, data: WriteData): Promise<void> {
-  if ('blob' in data) {
-    throw new Error('写入失败：沙箱不解析 blob 引用（blob 存取归记录域）——请先转成文本')
-  }
-
+export async function writeInto(absolute: string, data: WriteData): Promise<void> {
   try {
-    await writeFile(absolute, data.text, 'utf8')
+    await writeFile(absolute, 'text' in data ? data.text : data.bytes)
   } catch (error) {
     throw failureOf('写入', absolute, error)
   }

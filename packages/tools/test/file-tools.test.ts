@@ -14,6 +14,7 @@ import type { ReadResult } from '@magic/contracts'
 import { TOOLSET_V1 } from '@magic/contracts'
 import { makeFauxSandbox } from '@magic/faux'
 import { BLOB_THRESHOLD_BYTES } from '../src/blobs.ts'
+import { EDIT_MAX_READ_BYTES } from '../src/file-tools.ts'
 import { makeToolDeps } from './helpers.ts'
 
 /** 取工具集 v1 的冻结行（断言「声明」时对照用）。 */
@@ -33,7 +34,8 @@ describe('U13 · read', () => {
 
     const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: 'src/a.ts' } }, {})
 
-    expect(sandbox.reads).toEqual(['src/a.ts'])
+    // 不带上限——缺省由沙箱定（`opts` 原样记：没给就是没给，桩不改写成缺省值）
+    expect(sandbox.reads).toEqual([{ path: 'src/a.ts', opts: undefined }])
     expect(result.ok).toBe(true)
     expect(result.output).toBe('export const a = 1\n')
   })
@@ -222,7 +224,20 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
     expect(sandbox.writes).toEqual([])
   })
 
-  test('文件超长（读到的只是前一段）→ **拒绝编辑**（否则写回即抹掉尾巴）', async () => {
+  test('读时**放大上限**（1 MiB）——`edit` 的「读 → 改 → 写回」靠它，别按缺省 64 KiB 读', async () => {
+    const { runtime, sandbox } = makeToolDeps({
+      sandbox: makeFauxSandbox({ files: { 'a.ts': ORIGINAL } }),
+    })
+
+    await runtime.invoke(
+      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'const c = 3', new: 'const c = 33' } },
+      {},
+    )
+
+    expect(sandbox.reads).toEqual([{ path: 'a.ts', opts: { maxBytes: EDIT_MAX_READ_BYTES } }])
+  })
+
+  test('放大后**仍**超限 → 拒绝编辑并指出出口（否则写回即抹掉尾巴）', async () => {
     const truncated = {
       ...makeFauxSandbox(),
       read: () => Promise.resolve({ content: 'const a = 1\n', truncated: true }),
@@ -235,7 +250,9 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('文件超长（读取被截断）——不做编辑，以免写回截断内容')
+    expect(result.output).toBe(
+      '文件超长（超过 1 MiB）——不做编辑，以免写回截断内容；改用 exec（如 sed / python）分段改',
+    )
     expect(sandbox.writes).toEqual([])
   })
 

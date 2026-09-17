@@ -8,8 +8,9 @@
  * - **规格的静态三件取自契约 `TOOLSET_V1` 的冻结行**（经 `rowOf`——本域不另抄一份），
  *   只有**参数模式**与**执行体**在本文件；
  * - **执行一律经沙箱**（内核不直碰文件系统），路径解析与越界拒绝归执行域；
- * - **失败以 `ok:false` 回填**——沙箱四原语的冻签名载不下失败位（见契约 `ports.ts`），
- *   它们以**抛**表达失败；「错误＝返回值」这一条就落在这里：捕之、翻成模型读得懂的一句话。
+ * - **失败形态分两路**（技术方案 · 执行 · 原语形态；契约 `Sandbox` 头注）——正常结果的失败
+ *   （读到上限＝`truncated`）是**判别式**；**调用不成立**（越界 / 不存在 / 是否目录 / 无权限 /
+ *   参数无效）沙箱侧**抛**，捕在**这里**、收敛成 `ToolResult` 的判别式（`ok:false` ＋ 一句话）。
  *
  * 一处刻意的**不猜**：`edit` 的「唯一」是全部语义——找不到、找到多处，都**不动文件**并照实报。
  */
@@ -20,11 +21,11 @@ import { byteLength } from './blobs.ts'
 import {
   editDoneOutput,
   editFailedOutput,
+  editTooLargeOutput,
   OUTPUT_CONTENT_REQUIRED,
   OUTPUT_EDIT_AMBIGUOUS,
   OUTPUT_EDIT_NOT_FOUND,
   OUTPUT_EDIT_SAME,
-  OUTPUT_EDIT_TRUNCATED,
   OUTPUT_FILE_EMPTY,
   OUTPUT_NEW_REQUIRED,
   OUTPUT_OLD_REQUIRED,
@@ -162,6 +163,17 @@ export const EDIT_PARAMETERS = {
   additionalProperties: false,
 } as const
 
+/**
+ * `edit` 的读取上限——**1 MiB**（实现级常量）。
+ *
+ * 为什么比沙箱缺省的 64 KiB 大：`edit` 走「读 → 改 → 写回」，按缺省读到的若是**截断文本**，
+ * 原样写回就抹掉尾巴——上限小，闸门就得对**大文件**一律关门。放大到 1 MiB 让源码 / 配置
+ * 这类文件都够得着；**仍超限才拒**（并指出 `exec` 这条出口）。
+ *
+ * 代价如实说：一次编辑最多在内存里拿 1 MiB 文本 ＋ 读一遍磁盘。对单机自用可接受。
+ */
+export const EDIT_MAX_READ_BYTES = 1024 * 1024
+
 /** 出现次数——逐字扫描（**不用正则**：`old` 里的元字符是字面量，不是模式）。 */
 function countOccurrences(text: string, needle: string): number {
   let count = 0
@@ -199,11 +211,12 @@ export function defineEditTool(): ToolDefinition {
       if (replacement === old) return refused(OUTPUT_EDIT_SAME)
 
       try {
-        const current = await ctx.sandbox.read(path)
+        // 显式放大读取上限（沙箱缺省 64 KiB 对源码文件偏小）——见 EDIT_MAX_READ_BYTES
+        const current = await ctx.sandbox.read(path, { maxBytes: EDIT_MAX_READ_BYTES })
 
-        // 读到的是截断文本 ⇒ 改完写回去会抹掉文件尾巴。**先拒**——这是唯一一处
-        // 「宁可做不成也不能做错」的分支（截断是沙箱的读取上限，不是文件的问题）。
-        if (current.truncated === true) return refused(OUTPUT_EDIT_TRUNCATED)
+        // 放大之后**仍**截断 ⇒ 改完写回去会抹掉文件尾巴。**先拒**——这是唯一一处
+        // 「宁可做不成也不能做错」的分支（截断是读取上限，不是文件的问题）。
+        if (current.truncated === true) return refused(editTooLargeOutput(EDIT_MAX_READ_BYTES))
 
         const count = countOccurrences(current.content, old)
         if (count === 0) return refused(OUTPUT_EDIT_NOT_FOUND)
