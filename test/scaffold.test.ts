@@ -75,7 +75,8 @@ const ASSEMBLY_PACKAGE = '@magic/app'
 /** 许可外部库（技术方案 · 工程结构 · 包表的「依赖」列）——非 `@magic` 的运行时依赖。 */
 const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   '@magic/model': ['ai', '@ai-sdk/openai-compatible'],
-  '@magic/tui': ['ink'],
+  // `@magic/tui`——Ink 上游本身把 react 声明为 peer：外壳自持显示组件，react 是**正当依赖**。
+  '@magic/tui': ['ink', 'react'],
 }
 
 /**
@@ -544,6 +545,30 @@ describe('依赖单向（声明）', () => {
       const stray = external.filter((dep) => !allowed.includes(dep))
 
       expect(stray).toEqual([])
+    }
+  })
+
+  /**
+   * **对等依赖同受两条纪律**——此前守护**漏扫 `peerDependencies`**：任何包都能把未许可的
+   * 依赖藏进 peerDeps 绕过白名单。U09 的 `@magic/tui` 用 `react` 时暴露了这个洞
+   * ——`react` 是**正当依赖**（Ink 上游即声明为 peer），但守护**当时没拦**本身就是洞。
+   */
+  test('对等依赖（peerDependencies）——`@magic/*` 按生产面 · 外部须在白名单', () => {
+    for (const { dir, name } of packagesOf()) {
+      const { peerDependencies } = manifestOfDir(dir)
+      const peers = Object.keys(peerDependencies ?? {})
+
+      const allowedMagic = allowedMagicDepsFor(name, 'src')
+      const crossedMagic = peers.filter(
+        (dep) => dep.startsWith('@magic/') && !allowedMagic.includes(dep),
+      )
+      expect(crossedMagic).toEqual([])
+
+      const allowedExternal = ALLOWED_EXTERNAL[name] ?? []
+      const strayExternal = peers.filter(
+        (dep) => !dep.startsWith('@magic/') && !allowedExternal.includes(dep),
+      )
+      expect(strayExternal).toEqual([])
     }
   })
 })

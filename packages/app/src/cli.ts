@@ -2,18 +2,18 @@
 /**
  * `magic` —— 命令行入口（可执行名，技术方案 · 工程结构）。
  *
- * 两件活，都不承载逻辑：
- * - **默认**——装配一次，报一份自检（配置来处 · 数据落点 · 工作区根 · 会话 · 模型），
+ * 三件活，都不承载逻辑：
+ * - **默认**——装配 → **起真外壳**（`@magic/tui`，U09）。装配根只做「接线 ＋ 起外壳」：
+ *   **交互逻辑全在 `@magic/tui`**，本入口一行呈现都不写（装配视图第 5 步）。
+ * - **`--script <文件>`**——装配 → 接**脚本化驱动**（`./shell.ts`）→ 按脚本放开输入 →
+ *   打印持久类事件的 JSONL 轨迹（瞬时增量是渲染用的，塞进终端只会淹掉轨迹，故不印）。
+ * - **`--check`**——装配一次并报一份自检（配置来处 · 数据落点 · 工作区根 · 会话 · 模型），
  *   然后收尾。装配成不成，本身就是一次全链体检：网关构造缺 key 即抛、工作区根不存在即抛、
  *   数据目录不可写即抛——都在这一跑里现形。
- * - **`--script <文件>`**——装配 → **接外壳位** → 按脚本放开输入 → 打印持久类事件的
- *   JSONL 轨迹（瞬时增量是渲染用的，塞进终端只会淹掉轨迹，故不印）。
- *
- * 外壳（TUI）归 U09——本入口把控制面外壳侧一端交出去的地方就是它的接入点（见 `./shell.ts`
- * 文件头注）。**本文件不含呈现逻辑**：只把协议消息原样印出来。
  */
 
 import type { KernelEvent } from '@magic/contracts'
+import { runTui } from '@magic/tui'
 import { assemble } from './assembly.ts'
 import type { Assembly } from './assembly.ts'
 import { ConfigError, describeConfig } from './config.ts'
@@ -23,7 +23,8 @@ import type { ShellScript } from './shell.ts'
 const USAGE = `magic —— 软件工程智能体（首站）
 
 用法：
-  magic                  装配自检（读 ~/.magic/config.json，全链构造一遍后收尾）
+  magic                  起外壳（TUI）——装配 → 接控制面 → 一屏
+  magic --check          装配自检（读 ~/.magic/config.json，全链构造一遍后收尾）
   magic --script <文件>  无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
   magic --help           本说明
 
@@ -33,14 +34,19 @@ const USAGE = `magic —— 软件工程智能体（首站）
      ⚠️ 无人值守替人批准是**验收装置的方便**，不是产品行为（阶段 1 一律人工门）。
 `
 
-type Args = { readonly help: boolean; readonly script?: string | undefined }
+type Args = { readonly help: boolean; readonly check: boolean; readonly script?: string | undefined }
 
 function parseArgs(argv: readonly string[]): Args {
   let script: string | undefined
+  let check = false
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--help' || arg === '-h') return { help: true }
+    if (arg === '--help' || arg === '-h') return { help: true, check: false }
+    if (arg === '--check') {
+      check = true
+      continue
+    }
     if (arg === '--script') {
       const value = argv[i + 1]
       if (value === undefined || value.startsWith('--')) {
@@ -53,7 +59,7 @@ function parseArgs(argv: readonly string[]): Args {
     throw new Error(`不认得的参数「${arg}」（见 magic --help）`)
   }
 
-  return { help: false, script }
+  return { help: false, check, script }
 }
 
 /** 读脚本文件——`Bun.file` 是 fs 触达，本包（装配根）在守护的域外，用得起（见守护注）。 */
@@ -89,7 +95,7 @@ function report(assembly: Assembly): void {
   console.log(`  数据落点　${assembly.paths.database}`)
   console.log(`             ${assembly.paths.blobs}/`)
   console.log('  工具集　　exec（阶段 1 唯一工具——经沙箱 · 途中过闸门）')
-  console.log('  外壳位　　@magic/tui 未到站（U09）——本步用脚本驱动：magic --script <文件>')
+  console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')
 }
 
 async function runScript(assembly: Assembly, path: string): Promise<void> {
@@ -137,12 +143,19 @@ async function main(): Promise<number> {
   }
 
   try {
-    if (args.script === undefined) {
+    if (args.script !== undefined) {
+      await runScript(assembly, args.script)
+      return 0
+    }
+
+    if (args.check) {
       report(assembly)
       return 0
     }
 
-    await runScript(assembly, args.script)
+    // 默认：起真外壳——装配只做「接线 ＋ 起外壳」，交互逻辑全在 @magic/tui
+    const tui = runTui({ transport: assembly.shell })
+    await tui.waitUntilExit()
     return 0
   } finally {
     assembly.close()

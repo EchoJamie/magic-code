@@ -96,7 +96,8 @@ describe('入口 magic', () => {
     })()
 
     try {
-      const result = await run(home)
+      // 无参现在是「起真外壳」（要 TTY，测试跑不了）——自检改由 `--check` 触发
+      const result = await run(home, '--check')
 
       expect(result.stderr).toBe('')
       expect(result.exitCode).toBe(0)
