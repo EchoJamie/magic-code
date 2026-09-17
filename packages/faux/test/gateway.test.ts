@@ -244,6 +244,46 @@ describe('脚本 · 一段一轮', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
+// 二·五 · 请求留痕（回填链路的断言面）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('请求留痕', () => {
+  test('每次 stream 的请求都留痕——「回填送达模型」可断言', async () => {
+    const { gateway } = fauxOf([{ toolCalls: [{ name: 'exec', args: {} }] }, { text: '好了' }])
+
+    await drainStream(gateway.stream(REQUEST))
+    await drainStream(
+      gateway.stream({
+        model: 'faux-1',
+        messages: [
+          ...REQUEST.messages,
+          { role: 'assistant', content: '', toolCalls: [{ id: 'call_1', name: 'exec', args: {} }] },
+          { role: 'tool', callId: 'call_1', name: 'exec', ok: true, output: 'a.txt' },
+        ],
+      }),
+    )
+
+    expect(gateway.requests).toHaveLength(2)
+    expect(gateway.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'tool',
+      callId: 'call_1',
+      ok: true,
+    })
+  })
+
+  test('留痕不参与回放——Faux 不看请求（脚本说了算），请求只作观察面', async () => {
+    const { gateway } = fauxOf([{ text: '固定产出' }, { text: '固定产出' }])
+
+    const a = await drainStream(gateway.stream(REQUEST))
+    const b = await drainStream(
+      gateway.stream({ model: '完全不同的模型名', messages: [{ role: 'user', content: '别的' }] }),
+    )
+
+    expect(shape(a.events)).toEqual(shape(b.events))
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
 // 三 · 流的收场：中断 · 提前 break · 未消费
 // ═══════════════════════════════════════════════════════════════════════
 

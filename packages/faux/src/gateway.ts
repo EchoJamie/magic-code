@@ -73,6 +73,16 @@ export type FauxStream = {
  */
 export interface FauxGateway extends ModelGateway {
   stream(request: ModelRequest, options?: { signal?: AbortSignal }): FauxStream
+  /**
+   * **请求留痕**（按调用序）——观察面，不是回放依据。
+   *
+   * Faux 的产出**只看脚本、不看请求**（假模型不必理解上下文）；留痕是给测试用的：
+   * 「回填送达模型了吗」「这轮带上了哪些工具规格」——循环测试绕不开这几问。
+   *
+   * 存的是**快照**（`messages` / `tools` 各拷一份）——循环多半持有同一个数组继续回填，
+   * 存引用会让留痕随后续 push 一起变。
+   */
+  readonly requests: readonly ModelRequest[]
 }
 
 // —— 构造 ——
@@ -124,9 +134,22 @@ export function createFauxGateway(options: FauxGatewayOptions): FauxGateway {
   const stepDelayMs = options.stepDelayMs ?? 0
 
   let cursor = 0
+  const requests: ModelRequest[] = []
 
   return {
-    stream(_request: ModelRequest, streamOptions?: { signal?: AbortSignal }): FauxStream {
+    get requests(): readonly ModelRequest[] {
+      return requests
+    },
+
+    stream(request: ModelRequest, streamOptions?: { signal?: AbortSignal }): FauxStream {
+      // **快照**，不是存引用——循环通常持有同一个 `messages` 数组继续回填，
+      // 存引用会让「第一轮请求长什么样」随后续 push 一起变（测试抓到的第一处真问题）。
+      requests.push({
+        ...request,
+        messages: [...request.messages],
+        ...(request.tools === undefined ? {} : { tools: [...request.tools] }),
+      })
+
       const turn = turns[cursor]
       cursor += 1
       if (turn === undefined) throw new FauxScriptExhaustedError(cursor, turns.length)
@@ -195,10 +218,9 @@ function runTurn(context: TurnContext): FauxStream {
         if (signal?.aborted === true) return abandon()
 
         // 增量片段同时攒进聚合（与真实现同源：事件流与结果不是两套结论）
-        if (piece.kind === 'delta') {
-          if (piece.channel === 'text') state.text += piece.text
-          if (piece.channel === 'thinking') state.thinking += piece.text
-        }
+        if (piece.channel === 'text') state.text += piece.text
+        if (piece.channel === 'thinking') state.thinking += piece.text
+
         yield stampPiece(stamper, piece)
       }
 
@@ -232,17 +254,20 @@ function runTurn(context: TurnContext): FauxStream {
 }
 
 /** 收束原因——出错缺省（供应商未给）；有工具调用＝`tool-calls`；其余＝`stop`。 */
-function finishReasonOf(turn: FauxTurn, toolCalls: readonly ToolCall[]): ModelFinishReason | undefined {
+function finishReasonOf(
+  turn: FauxTurn,
+  toolCalls: readonly ToolCall[],
+): ModelFinishReason | undefined {
   if (turn.error !== undefined) return undefined
   return toolCalls.length > 0 ? 'tool-calls' : 'stop'
 }
 
 // —— 事件规格（展开是一回事，铸造是另一回事——信封只在产出时盖）——
 
+/** 一个 `model.delta` 的规格——信封只在产出时盖，这里只管「发什么」。 */
 type Piece =
-  | { readonly kind: 'delta'; readonly channel: 'text' | 'thinking'; readonly text: string }
+  | { readonly channel: 'text' | 'thinking'; readonly text: string }
   | {
-      readonly kind: 'delta'
       readonly channel: 'toolcall'
       readonly text: string
       readonly name: string
@@ -256,15 +281,15 @@ const callIdOf = (call: FauxToolCall, index: number): string => call.id ?? `call
 function piecesOf(turn: FauxTurn): readonly Piece[] {
   const pieces: Piece[] = []
 
-  for (const text of toPieces(turn.thinking)) pieces.push({ kind: 'delta', channel: 'thinking', text })
-  for (const text of toPieces(turn.text)) pieces.push({ kind: 'delta', channel: 'text', text })
+  for (const text of toPieces(turn.thinking)) pieces.push({ channel: 'thinking', text })
+  for (const text of toPieces(turn.text)) pieces.push({ channel: 'text', text })
 
-  ;(turn.toolCalls ?? []).forEach((call, index) => {
+  for (const [index, call] of (turn.toolCalls ?? []).entries()) {
     const id = callIdOf(call, index)
     // 名字先于参数——零参工具也见得着名字（真实现的 `tool-input-start` 即发空文本增量）
-    pieces.push({ kind: 'delta', channel: 'toolcall', text: '', name: call.name, id })
-    pieces.push({ kind: 'delta', channel: 'toolcall', text: argsJsonOf(call), name: call.name, id })
-  })
+    pieces.push({ channel: 'toolcall', text: '', name: call.name, id })
+    pieces.push({ channel: 'toolcall', text: argsJsonOf(call), name: call.name, id })
+  }
 
   return pieces
 }

@@ -180,6 +180,18 @@ describe('骨架 · 循环', () => {
     expect(deps.tools.calls.map((c) => c.name)).toEqual(['exec']) // 调了工具
     expect(deps.sink.byKind('model.call.start')).toHaveLength(2) // 两轮模型调用
     expect(deps.sink.byKind('model.call.end')).toHaveLength(2)
+
+    // —— 回填**送达模型**（U04 最要紧的那一问）：第二轮的请求尾巴上挂着工具结果 ——
+    expect(deps.gateway.requests).toHaveLength(2)
+    expect(deps.gateway.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'tool',
+      callId: 'call_1', // 配对用的是**供应商侧**调用 id
+      name: 'exec',
+      ok: true,
+      output: '跑了 ls',
+    })
+    // 工具规格随每次调用送模型（`ToolRuntime.definitions()` 的去处）
+    expect(deps.gateway.requests[0]?.tools?.map((t) => t.name)).toEqual(['exec'])
   })
 
   test('模型产出的正文可从事件流拼出（`result` 只载契约四项）', async () => {
