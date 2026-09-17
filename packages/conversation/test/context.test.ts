@@ -7,13 +7,20 @@
  *    （`callId` / `name` / `ok` / `output`）；
  * ③ 条目里的 blob 引用在装配时**解析为文本**（按策略截断）。
  *
+ * **工具结果的正文取哪一份**（第 2 轮 · 契约补锚后）——工具条目两个字段载两样东西：
+ * **正文**（`content`）＝**面向模型的文本**（工具域 `ToolResult.output`，按上限截断）；
+ * **载荷**（`payload.output`）＝**记录侧形态**（`ToolResult.content`，内联或 blob，与该次
+ * `tool.result` 事件的 `output` 同物）。装配送模型的是**正文**——重放时逐字复原模型当时
+ * 看到的那一份；载荷留给审计与阶段 2 恢复的处置。
+ *
  * 测的是**域内件**（相对路径取 `../src/context.ts`）——装配面不上公开面
  * （技术方案 · 代码治理 · 公开面：域包只出端口实现 ＋ 装配期构造入参形态）。
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { ModelMessage } from '@magic/contracts'
+import type { Content, ModelMessage } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
+import type { FauxRecords } from '@magic/faux'
 import { assembleContext } from '../src/context.ts'
 
 /** 会话 id——条目按会话读（本单元装配时必带）。 */
@@ -31,10 +38,37 @@ function textOfMessage(message: ModelMessage): string {
 }
 
 /** 造一束记录域桩——装配只经 `RecordsService` 读（不认知记录域内部）。 */
-function recordsWith(): ReturnType<typeof makeFauxRecords> {
+function recordsWith(): FauxRecords {
   const records = makeFauxRecords()
   records.appendEntry({ kind: 'user', content: { text: '看下目录' }, at: AT })
   return records
+}
+
+/**
+ * 一条工具结果条目——**两样输出各归其位**（第 2 轮 · 契约补锚）：
+ * 正文 ＝ 面向模型的文本（`ToolResult.output`）· 载荷 ＝ 记录侧形态（`ToolResult.content`）。
+ * 缺省两处同源（小输出：记什么、给模型看什么，是一回事）。
+ */
+function appendToolResult(
+  records: FauxRecords,
+  input: { readonly ok: boolean; readonly text: string; readonly record?: Content },
+): number {
+  return records.appendEntry({
+    kind: 'tool-result',
+    content: { text: input.text },
+    payload: { ok: input.ok, output: input.record ?? { text: input.text } },
+    at: AT,
+  })
+}
+
+/** 一条工具调用条目——`{ name, args }` 载荷（重放真源）。 */
+function appendToolCall(records: FauxRecords, command: string): number {
+  return records.appendEntry({
+    kind: 'tool-call',
+    content: { text: '' },
+    payload: { name: 'exec', args: { cmd: command } },
+    at: AT,
+  })
 }
 
 describe('Context 装配 · 骨架', () => {
@@ -70,18 +104,8 @@ describe('Context 装配 · 工具往返', () => {
   test('助手消息带 `toolCalls`，工具结果即工具消息——配对键两处同一', async () => {
     const records = makeFauxRecords()
     records.appendEntry({ kind: 'assistant', content: { text: '我跑一下' }, at: AT })
-    const callEntry = records.appendEntry({
-      kind: 'tool-call',
-      content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
-      at: AT,
-    })
-    records.appendEntry({
-      kind: 'tool-result',
-      content: { text: '' },
-      payload: { ok: true, output: { text: 'a.txt\n' } },
-      at: AT,
-    })
+    const callEntry = appendToolCall(records, 'ls')
+    appendToolResult(records, { ok: true, text: 'a.txt\n' })
 
     const messages = await assembleContext({
       records,
@@ -119,18 +143,8 @@ describe('Context 装配 · 工具往返', () => {
   test('失败回填——`ok:false` 与失败输出原样进工具消息（被拒 / 出错同一形状）', async () => {
     const records = makeFauxRecords()
     records.appendEntry({ kind: 'assistant', content: { text: '' }, at: AT })
-    records.appendEntry({
-      kind: 'tool-call',
-      content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'rm -rf /' } },
-      at: AT,
-    })
-    records.appendEntry({
-      kind: 'tool-result',
-      content: { text: '' },
-      payload: { ok: false, output: { text: '用户拒绝' } },
-      at: AT,
-    })
+    appendToolCall(records, 'rm -rf /')
+    appendToolResult(records, { ok: false, text: '用户拒绝' })
 
     const messages = await assembleContext({
       records,
@@ -149,18 +163,8 @@ describe('Context 装配 · 工具往返', () => {
       ['pwd', '/w\n'],
     ] as const) {
       records.appendEntry({ kind: 'assistant', content: { text: `跑 ${command}` }, at: AT })
-      records.appendEntry({
-        kind: 'tool-call',
-        content: { text: '' },
-        payload: { name: 'exec', args: { cmd: command } },
-        at: AT,
-      })
-      records.appendEntry({
-        kind: 'tool-result',
-        content: { text: '' },
-        payload: { ok: true, output: { text: output } },
-        at: AT,
-      })
+      appendToolCall(records, command)
+      appendToolResult(records, { ok: true, text: output })
     }
 
     const messages = await assembleContext({
@@ -184,18 +188,8 @@ describe('Context 装配 · 工具往返', () => {
     records.appendEntry({ kind: 'assistant', content: { text: '' }, at: AT })
 
     for (const [index, command] of ['a', 'b', 'c'].entries()) {
-      records.appendEntry({
-        kind: 'tool-call',
-        content: { text: '' },
-        payload: { name: 'exec', args: { cmd: command } },
-        at: AT,
-      })
-      records.appendEntry({
-        kind: 'tool-result',
-        content: { text: '' },
-        payload: { ok: true, output: { text: `出了 ${index}` } },
-        at: AT,
-      })
+      appendToolCall(records, command)
+      appendToolResult(records, { ok: true, text: `出了 ${index}` })
     }
 
     const messages = await assembleContext({
@@ -218,12 +212,7 @@ describe('Context 装配 · 工具往返', () => {
   test('落单的 `tool-call`（无结果）不进上下文——在途调用的处置归阶段 2 恢复', async () => {
     const records = makeFauxRecords()
     records.appendEntry({ kind: 'assistant', content: { text: '我跑一下' }, at: AT })
-    records.appendEntry({
-      kind: 'tool-call',
-      content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls' } },
-      at: AT,
-    })
+    appendToolCall(records, 'ls')
     // 无 tool-result——进程被杀 / 中止留下的在途调用
 
     const messages = await assembleContext({
@@ -253,22 +242,14 @@ describe('Context 装配 · blob 引用', () => {
     expect(messages[1]).toEqual({ role: 'assistant', content: '很长很长的正文' })
   })
 
-  test('工具结果的大输出（载荷里的 blob 引用）同样解析为文本', async () => {
+  test('工具结果：送模型的是**条目正文**（面向模型的截断文本），不是载荷里的记录形态', async () => {
     const records = makeFauxRecords()
-    const ref = await records.blobs.put('一屏刷不完的输出')
+    // 记录形态是大输出（blob 全量）；面向模型的那份由工具域截好（两处**刻意不同**，
+    // 好让断言能分辨装配取的是哪一份）
+    const ref = await records.blobs.put('全量输出（记录形态，可能很大）')
     records.appendEntry({ kind: 'assistant', content: { text: '' }, at: AT })
-    records.appendEntry({
-      kind: 'tool-call',
-      content: { text: '' },
-      payload: { name: 'exec', args: { cmd: 'ls -R' } },
-      at: AT,
-    })
-    records.appendEntry({
-      kind: 'tool-result',
-      content: { text: '' },
-      payload: { ok: true, output: { blob: ref } },
-      at: AT,
-    })
+    appendToolCall(records, 'ls -R')
+    appendToolResult(records, { ok: true, text: '截断后的输出', record: { blob: ref } })
 
     const messages = await assembleContext({
       records,
@@ -276,7 +257,9 @@ describe('Context 装配 · blob 引用', () => {
       systemPrompt: SYSTEM_PROMPT,
     })
 
-    expect(messages[2]).toMatchObject({ role: 'tool', ok: true, output: '一屏刷不完的输出' })
+    expect(messages[2]).toMatchObject({ role: 'tool', ok: true, output: '截断后的输出' })
+    // 顺带钉住「载荷里的记录形态不参与上下文」——取错源会拿到全量那句
+    expect(textOfMessage(messages[2] as ModelMessage)).not.toContain('全量输出')
   })
 
   test('blob 文本按策略截断——取前 N 字符，并留可读的截断标记（原文长度在内）', async () => {

@@ -8,16 +8,28 @@
  * | --- | --- | --- |
  * | `user` / `assistant` | 正文（超阈值转 blob） | ——（非工具条目不带载荷） |
  * | `tool-call` | 空 | `{ name, args }`——**重放真源** |
- * | `tool-result` | 空 | `{ ok, output }`——**重放真源**（大输出转 blob） |
+ * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物 |
  *
- * **工具条目的正文为什么留空**——它的「正文」就是载荷（结构对齐事件侧，契约规定）；
- * 两处各写一份只会让大输出在库里翻倍。装配读它时也只认载荷。
+ * **工具结果为什么两个字段各载一样**（第 2 轮 · 契约补锚）——契约 `ToolResult` 载**两样输出**：
+ * `output` 是面向模型的文本（按上限截断），`content` 是记录侧形态（内联或 blob）。
+ * 本域照此落两处：**正文**取 `output`（重放时逐字复原模型当时看到的那一份）；
+ * **载荷**取 `content`（重放真源——大输出在库里是全量，不因截断丢尾巴）。
+ * 此前把面向模型的文本当内联记，大输出下条目与事件会当场分叉——现已对齐。
+ *
+ * `tool-call` 条目的正文则留空：那次调用没有「给模型看的文本」（调用本身在助手消息里）。
  *
  * **`at` 由调用方给**——记录域不取时钟（U02 备案）；本域取时钟只经 `now` 一处，
  * 装配时可注入固定钟（测试可复现）。
  */
 
-import type { Content, RecordId, RecordsService, Timestamp, ToolCall, ToolResult } from '@magic/contracts'
+import type {
+  Content,
+  RecordId,
+  RecordsService,
+  Timestamp,
+  ToolCall,
+  ToolResult,
+} from '@magic/contracts'
 
 /** 落账的依赖束——记录面 ＋ 时钟 ＋ 阈值（由循环的构造入参给出）。 */
 export type EntryLog = {
@@ -26,6 +38,27 @@ export type EntryLog = {
   readonly now: () => Timestamp
   /** 正文字数阈值——超者转 blob（见 `./policy.ts`）。 */
   readonly blobThreshold: number
+}
+
+/**
+ * 一条工具结果的**落账形态**——两样输出各归其位（见文件头注）：
+ * `text` → 条目正文（面向模型）· `content` → 条目载荷（记录侧形态）。
+ *
+ * **为何不直接收 `ToolResult`**——违约路径（工具域抛异常，见 `./agent-loop.ts`）造不出
+ * 一份 `ToolResult`：链引用 `callRef` 在违约路径上**无从取得**（`tool.call` 事件由工具域发，
+ * 本域没见过）。落账只用到这两样，中间的形态差由本类型吸收——**不编造链引用**。
+ */
+export type ToolOutcome = {
+  readonly ok: boolean
+  /** 面向模型的文本——条目正文（重放时逐字复原模型看到的那份）。 */
+  readonly text: string
+  /** 记录侧形态——条目载荷（与该次 `tool.result` 事件的 `output` 同物）。 */
+  readonly content: Content
+}
+
+/** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
+export function toolOutcomeOf(result: ToolResult): ToolOutcome {
+  return { ok: result.ok, text: result.output, content: result.content }
 }
 
 /** 正文条目（`user` / `assistant`）——落账并回 id（事件按它引用这条内容）。 */
@@ -50,12 +83,12 @@ export function appendToolCallEntry(log: EntryLog, call: ToolCall): RecordId {
   })
 }
 
-/** 工具结果条目——`{ ok, output }` 载荷（大输出转 blob）。 */
-export async function appendToolResultEntry(log: EntryLog, result: ToolResult): Promise<RecordId> {
+/** 工具结果条目——正文取面向模型的文本、载荷取记录侧形态（见 `ToolOutcome`）。 */
+export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): RecordId {
   return log.records.appendEntry({
     kind: 'tool-result',
-    content: { text: '' },
-    payload: { ok: result.ok, output: await contentOf(result.output, log) },
+    content: { text: outcome.text },
+    payload: { ok: outcome.ok, output: outcome.content },
     at: log.now(),
   })
 }

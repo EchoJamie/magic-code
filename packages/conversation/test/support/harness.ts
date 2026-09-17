@@ -11,11 +11,13 @@
  */
 
 import type {
+  Content,
   EventStamper,
   KernelEvent,
   OutputDelta,
   PermissionContext,
   PermissionGate,
+  RecordId,
   ToolCall,
   ToolResult,
   ToolRuntime,
@@ -23,6 +25,7 @@ import type {
 } from '@magic/contracts'
 import type {
   FauxDecider,
+  FauxGateway,
   FauxPermissionGate,
   FauxRecords,
   FauxSink,
@@ -79,6 +82,20 @@ export type ToolDomainOptions = {
   readonly ctx: PermissionContext
   /** 工具体——复用 `@magic/faux` 的工具桩（处理器分发 ＋ `calls` 留痕）。 */
   readonly tools: FauxToolRuntime
+  /**
+   * **记录侧形态**的产法——真工具域在此把输出转成记录形态（小则内联、大则落 blob）。
+   * 缺省一律内联（够多数用例）；要给「大输出落 blob」做端到端用例时，传一个会转存的实现。
+   */
+  readonly record?: (text: string) => Content | Promise<Content>
+}
+
+/**
+ * 拒绝的结果——工具域把「拒绝」也做成一条记录形态的结果（契约：以「拒绝」回填，不执行）。
+ * `content`（记录侧）与 `output`（面向模型的文本）在此同源：拒绝没有大输出可言，一律内联。
+ */
+function rejected(call: ToolCall, callRef: RecordId): ToolResult {
+  const output = `已拒绝：${call.name}`
+  return { ok: false, output, content: { text: output }, callRef }
 }
 
 /**
@@ -92,12 +109,18 @@ export type ToolDomainOptions = {
  * 不发明行为），而真工具域**要发** `tool.call` / `tool.result`（技术方案 · 领域划分 ·
  * 事件产出）。U04 的判据（拒绝只影响该调用 · 同轮按序）要在这条**与真装配同形**的接线下面验。
  *
+ * **两处照契约补锚（第 2 轮）**——`ToolResult` 载两样输出：`content`（记录侧形态）进
+ * `tool.result` 事件的 `output`；`callRef`（链引用）进事件的 `call` 与条目侧。替身扮演工具域，
+ * 故 `callRef` 取**本次** `tool.call` 事件的 id（桩的 `callRef` 是构造期占位，不作数）。
+ *
  * 已知不替的两件（与真工具域的差距，集成时对不上要看这里）：
  * - 不转 `tool.output.delta`（执行输出增量归 `onOutput`，本替身不透传）；
  * - 不产 `tool.decision.request` / `tool.decision`（那是**权限域**的产出，桩不发事件）。
+ * - 不按大小转 blob——`content` 一律内联（桩的 `content` 本就内联；阈值归真工具域）。
  */
 export function makeToolDomain(options: ToolDomainOptions): ToolRuntime {
   const { stamper, sink, gate, ctx, tools } = options
+  const record = options.record ?? ((text: string): Content => ({ text }))
 
   return {
     definitions: (): readonly ToolSpec[] => tools.definitions(),
@@ -111,17 +134,22 @@ export function makeToolDomain(options: ToolDomainOptions): ToolRuntime {
       const decision = await gate.decide(call, ctx, callEvent.id)
 
       // ③ 拒绝＝**只影响该调用**——以「拒绝」回填，不执行
-      const result: ToolResult =
-        decision === 'approve'
-          ? await tools.invoke(call, opts)
-          : { ok: false, output: `已拒绝：${call.name}` }
+      const raw = decision === 'approve' ? await tools.invoke(call, opts) : rejected(call, callEvent.id)
 
-      // ④ 铸 `tool.result`（`call` ＝该次 `tool.call` 事件的 id）
+      // 替身在此扮演**工具域**：记录侧形态由它转（桩一律内联，故经 `record` 钩子按需转存）；
+      // 链引用取**本次**调用的事件 id（桩的 `callRef` 是构造期占位，不作数）
+      const result: ToolResult = {
+        ...raw,
+        content: await record(raw.output),
+        callRef: callEvent.id,
+      }
+
+      // ④ 铸 `tool.result`——`call` 取结果的链引用；`output` 取**记录侧形态**（与条目载荷同物）
       sink.emit(
         stamper.stamp('tool.result', {
-          call: callEvent.id,
+          call: result.callRef,
           ok: result.ok,
-          output: { text: result.output },
+          output: result.content,
         }),
       )
 
@@ -149,17 +177,15 @@ export type StageOptions = {
   readonly promptVars?: PromptVars
   /** 记录桩起始 id——缺省 1。 */
   readonly fromId?: number
+  /** 工具域替身的**记录侧形态**产法——缺省一律内联（见 `ToolDomainOptions.record`）。 */
+  readonly record?: (text: string) => Content | Promise<Content>
 }
 
 export type Stage = {
   readonly stamper: TestStamper
   readonly sink: FauxSink
   readonly records: FauxRecords
-  /**
-   * Faux 网关——类型走 `ReturnType`（`@magic/faux` 的公开面漏出了接口名 `FauxGateway`，
-   * 只出了它的两个伴生类型；见回报「待决」）。
-   */
-  readonly gateway: ReturnType<typeof createFauxGateway>
+  readonly gateway: FauxGateway
   readonly tools: FauxToolRuntime
   readonly gate: FauxPermissionGate
   readonly toolDomain: ToolRuntime
@@ -188,7 +214,14 @@ export function makeStage(options: StageOptions = {}): Stage {
     }),
     tools,
     gate,
-    toolDomain: makeToolDomain({ stamper, sink, gate, ctx: ROOTS, tools }),
+    toolDomain: makeToolDomain({
+      stamper,
+      sink,
+      gate,
+      ctx: ROOTS,
+      tools,
+      ...(options.record === undefined ? {} : { record: options.record }),
+    }),
     promptVars: options.promptVars ?? PROMPT_VARS,
   }
 }

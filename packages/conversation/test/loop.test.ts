@@ -136,6 +136,52 @@ describe('主循环 · Faux 全链', () => {
   })
 })
 
+describe('主循环 · 工具结果的两样输出', () => {
+  test('条目载荷与该次 `tool.result` 事件的 `output` **同物**；条目正文＝面向模型的那份', async () => {
+    const stage = makeStage({
+      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }, { text: '完事了' }],
+    })
+
+    await run(makeLoopRuntime(stage), '看下目录')
+
+    const recorded = stage.records.entries.find((entry) => entry.kind === 'tool-result')
+    const event = stage.sink.byKind('tool.result')[0]
+    if (event === undefined) throw new Error('没铸 `tool.result` 事件')
+
+    // 记录侧形态：条目载荷 ≡ 事件 `output`（契约：两者同物——重放真源，不各记一份）
+    expect(recorded?.payload).toEqual({ ok: event.data.ok, output: event.data.output })
+    // 面向模型的正文：工具域截好的那份（送给模型的就是它）
+    expect(recorded?.content).toEqual({ text: '跑了 ls' })
+    expect(stage.gateway.requests[1]?.messages.at(-1)).toMatchObject({ output: '跑了 ls' })
+  })
+
+  test('大输出：记录侧落 blob（全量）· 面向模型侧取文本——条目与事件**不分叉**', async () => {
+    const stage = makeStage({
+      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls -R' } }] }, { text: '完事了' }],
+      handlers: { exec: () => ({ ok: true, output: '目录太长，只给前几行' }) },
+      // 工具域把输出转成记录形态——大则落 blob（真工具域的活；替身照此模拟）。
+      // 回调要到循环跑起来才被调用，那时 `stage` 已赋好值，闭包取值没问题
+      record: async (text) => ({ blob: await stage.records.blobs.put(text) }),
+    })
+
+    await run(makeLoopRuntime(stage), '看下目录')
+
+    const recorded = stage.records.entries.find((entry) => entry.kind === 'tool-result')
+    const [event] = stage.sink.byKind('tool.result')
+    if (event === undefined) throw new Error('没铸 `tool.result` 事件')
+
+    // 记录形态是 blob 引用——若把面向模型的文本当内联记，条目与事件在此当场分叉
+    expect('blob' in event.data.output).toBe(true)
+    expect(recorded?.payload).toEqual({ ok: true, output: event.data.output })
+
+    // 面向模型侧仍取文本（给模型看的），不因记录侧落了 blob 而变成引用
+    expect(recorded?.content).toEqual({ text: '目录太长，只给前几行' })
+    expect(stage.gateway.requests[1]?.messages.at(-1)).toMatchObject({
+      output: '目录太长，只给前几行',
+    })
+  })
+})
+
 describe('主循环 · 提示词装配', () => {
   test('首条消息是系统提示词——四段 ＋ 环境注入块齐，注入三项对', async () => {
     const stage = makeStage({ turns: [{ text: '好' }] })

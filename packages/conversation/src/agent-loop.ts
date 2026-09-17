@@ -45,15 +45,19 @@ import type {
   SessionId,
   Timestamp,
   ToolCall,
-  ToolResult,
   ToolRuntime,
   TurnEndReason,
   TurnId,
   UserInput,
 } from '@magic/contracts'
 import { assembleContext } from './context.ts'
-import type { EntryLog } from './entries.ts'
-import { appendTextEntry, appendToolCallEntry, appendToolResultEntry } from './entries.ts'
+import type { EntryLog, ToolOutcome } from './entries.ts'
+import {
+  appendTextEntry,
+  appendToolCallEntry,
+  appendToolResultEntry,
+  toolOutcomeOf,
+} from './entries.ts'
 
 /**
  * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
@@ -192,6 +196,9 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
  *
  * 对话域**不经手闸门、不经手沙箱**：`ToolRuntime.invoke` 内部才是「请求 → 闸门 →
  * 执行 → 回填」（技术方案 · 工具域）——本域只把结果回填给模型。
+ *
+ * 结果的两样输出（第 2 轮 · 契约补锚）由 `toolOutcomeOf` 各归其位：面向模型的文本进条目
+ * 正文、记录侧形态进载荷（见 `./entries.ts`）。
  */
 async function runToolCall(
   runtime: LoopRuntime,
@@ -203,18 +210,20 @@ async function runToolCall(
   // 调用条目先落账——它与结果条目成对，「有调用无结果」＝在途（阶段 2 恢复按它找）
   appendToolCallEntry(log, call)
 
-  let result: ToolResult
+  let outcome: ToolOutcome
   try {
     // `opts.onOutput` 留空：`tool.output.delta` 是**工具域**的产出（事件产出表）——
     // 本域不越俎；该位留给将来的消费方（如外壳侧的实时视图）。
-    result = await runtime.tools.invoke(call, { signal })
+    outcome = toolOutcomeOf(await runtime.tools.invoke(call, { signal }))
   } catch (error) {
     // 端口承诺「结果，不是异常」（与沙箱同法）；抛了＝工具域违约。
-    // 不炸掉整轮：以失败回填——模型与用户都看得到「这次没成」
-    result = { ok: false, output: `工具调用异常：${describeError(error)}` }
+    // 不炸掉整轮：以失败回填——模型与用户都看得到「这次没成」。
+    // 违约路径**编不出** `ToolResult`（链引用无从取得），故就地造落账形态：两样都内联
+    const text = `工具调用异常：${describeError(error)}`
+    outcome = { ok: false, text, content: { text } }
   }
 
-  await appendToolResultEntry(log, result)
+  appendToolResultEntry(log, outcome)
 }
 
 // ══ 收场 ══════════════════════════════════════════════════════════════

@@ -6,6 +6,11 @@
  * ② 条目按序展开——`user` / `assistant`（带 `toolCalls`）/ `tool`（`callId` / `name` / `ok` / `output`）；
  * ③ 条目里的 blob 引用在装配时**解析为文本**（按策略截断）——记录只存引用，正文归装配取回。
  *
+ * **工具消息的正文取条目正文、不取载荷**（第 2 轮 · 契约补锚）——工具条目的两个字段载两样
+ * 东西：正文＝**面向模型的文本**（工具域 `ToolResult.output`，按上限截断）；载荷＝**记录侧
+ * 形态**（`ToolResult.content`，全量，可能是 blob）。送模型的是前者——重放时逐字复原模型
+ * 当时看到的那一份；后者留给审计与阶段 2 恢复的处置。
+ *
  * **为什么由条目重建**（不是维护一个内存数组）——技术方案 · 记录：「上下文由条目重建」；
  * 恢复（阶段 2）走的也是这条路。代价是每轮多读一次条目，换来的是**记录即真源**：
  * 循环中途崩掉 / 被中止，下一轮装配出来的仍是记录里那个现场。
@@ -107,7 +112,10 @@ export async function assembleContext(
           // 工具名**取自发起它的调用条目**，不从助手消息反查——压缩（阶段 3）来时反查会静默退化
           name: call.name,
           ok: result.ok,
-          output: await contentText(result.output, input, limit),
+          // 正文取**条目正文**（面向模型的文本，工具域按上限截断的那份）——
+          // **不是**载荷里的记录形态：那是全量（可能是 blob），送模型的是这份截断文本。
+          // 重放时因此逐字复原模型当时看到的那一份。
+          output: await contentText(resultEntry.content, input, limit),
         })
         cursor += 2
       }
