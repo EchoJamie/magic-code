@@ -1,0 +1,249 @@
+/**
+ * 记录库——`RecordsService` 的实现（判据 1–6 的落点）。
+ *
+ * 出处：技术方案 · 记录（存储 · 数据落点）· 领域划分（`RecordsService`）。
+ *
+ * **一处形态缺口，按规约 4 自决（只增不改）**——契约的 `appendEntry(entry: NewEntry)`
+ * 入参**不带会话**，而 `readEntries(sessionId)` 按会话读；条目形态（`entries.ts`）里
+ * 也没有会话字段（那是「来源引用」`source`，属协作预留，另有所指）。故写入侧的会话归属
+ * 只能由**实例**承载：`store.serviceFor(session)` 取一个会话实例，其 `appendEntry`
+ * 落进该会话，其 `appendEvent` 校验信封的 `session` 与之一致（不一致＝跨会话串线，拒）。
+ *
+ * 这与设计的其它条款同向：装配按会话实例构造（`EventStamper` 亦然）· 构造与资源引用
+ * 按实例化设计（多智能体预留：多会话并行＝多实例）。见回报「待决」。
+ *
+ * **fs 直触**——本域是内核仅有的两处之一（技术方案 · 代码治理 · 边界纪律）；
+ * 库文件与 blob 目录都在本文件落下（`bun:sqlite` ＋ `node:fs/promises`）。
+ */
+
+import { Database } from 'bun:sqlite'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import type {
+  Entry,
+  EntryRange,
+  KernelEvent,
+  NewEntry,
+  RecordId,
+  RecordsService,
+  SessionId,
+  SessionSummary,
+} from '@magic/contracts'
+import { BLOBS_DIR, createBlobStore } from './blobs.ts'
+import { assertEntryShape, entryOfRow, entryParamsOf, type EntryRow } from './entries.ts'
+import { eventOfRow, eventParamsOf, isTransientEvent, type EventRow } from './events.ts'
+import { createIdSpace } from './ids.ts'
+import {
+  ENTRIES_TABLE,
+  EVENTS_TABLE,
+  SESSIONS_TABLE,
+  initSchema,
+  type NamedParams,
+} from './schema.ts'
+
+/** 库文件名——`<dataDir>/records.db`（技术方案 · 记录 · 存储）。 */
+export const DATABASE_FILE = 'records.db'
+
+/**
+ * 分页读的块大小——**keyset 分页**（按 id 往后挪），不用活游标：
+ * `bun:sqlite` 的 `.iterate()` 在迭代期间独占连接，而「读日志」与「写日志」
+ * 在同一个连接上交替（循环边读边写）——块读每块一条语句、取完即散，没有这个互斥。
+ * 顺带把内存也钉在常数上（恢复 / 审计要读长会话）。
+ */
+const READ_CHUNK = 512
+
+/** 装配期构造入参——**只有数据目录**（其余选择归装配根）。 */
+export type RecordsStoreOptions = {
+  /**
+   * 数据落点。**须是字面路径**——前导 `~` 的展开归配置加载器
+   * （`@magic/contracts` · `expandDataDir`），本库不展开（见 `assertPlainDataDir`）。
+   */
+  readonly dataDir: string
+}
+
+/**
+ * 记录库（域侧把手）——库文件与 blob 目录的**唯一持有者**。
+ * 会话实例经 `serviceFor` 取（条目写入的会话来处，见文件头注）。
+ */
+export type RecordsStore = {
+  serviceFor(session: SessionId): RecordsService
+  listSessions(): Promise<readonly SessionSummary[]>
+  /** 关连接（blob 无需收尾）。 */
+  close(): void
+  /** 落点（验收查询脚本 / 装配期日志用）。 */
+  readonly paths: { readonly database: string; readonly blobs: string }
+}
+
+export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
+  const dataDir = assertPlainDataDir(options.dataDir)
+  mkdirSync(dataDir, { recursive: true })
+
+  const blobsDir = join(dataDir, BLOBS_DIR)
+  mkdirSync(blobsDir, { recursive: true })
+
+  const databasePath = join(dataDir, DATABASE_FILE)
+  const db = new Database(databasePath, { create: true })
+  // WAL ＋ NORMAL：读者不挡写者（循环边写边读）；应用崩溃不丢已提交（「崩溃 / 重启后的重建依据」）。
+  db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA synchronous = NORMAL')
+  initSchema(db, databasePath)
+
+  const ids = createIdSpace(db)
+  const blobs = createBlobStore(blobsDir)
+
+  // —— 语句（`query` 走缓存；参数一律具名，免得列序漂移悄悄错位）——
+  const ensureSession = db.query<never, [string, number]>(
+    `INSERT INTO ${SESSIONS_TABLE} (id, at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING`,
+  )
+  const insertEntry = db.query<never, [NamedParams]>(
+    `INSERT INTO ${ENTRIES_TABLE}
+       (id, session, kind, content_kind, content_text, content_blob, payload, at, source)
+     VALUES ($id, $session, $kind, $contentKind, $contentText, $contentBlob, $payload, $at, $source)`,
+  )
+  const insertEvent = db.query<never, [NamedParams]>(
+    `INSERT INTO ${EVENTS_TABLE} (id, session, turn, at, kind, data)
+     VALUES ($id, $session, $turn, $at, $kind, $data)`,
+  )
+  const selectEntries = db.query<EntryRow, [string, number, number, number]>(
+    `SELECT id, session, kind, content_kind, content_text, content_blob, payload, at, source
+       FROM ${ENTRIES_TABLE}
+      WHERE session = ? AND id > ? AND id <= ?
+      ORDER BY id
+      LIMIT ?`,
+  )
+  const selectEvents = db.query<EventRow, [string, number, number]>(
+    `SELECT id, session, turn, at, kind, data
+       FROM ${EVENTS_TABLE}
+      WHERE session = ? AND id > ?
+      ORDER BY id
+      LIMIT ?`,
+  )
+  const selectSessions = db.query<{ id: string; at: number }, []>(
+    `SELECT id, at FROM ${SESSIONS_TABLE} ORDER BY at DESC, id ASC`,
+  )
+
+  // 一次写入＝一个事务：会话表先落（首写即建会话，`at` 用该次写入的时间——不另取时钟），
+  // 条目 / 事件随后。半截写入不会留下「有行无会话」的孤儿。
+  const writeEntry = db.transaction((session: SessionId, entry: NewEntry, id: RecordId): void => {
+    ensureSession.run(session, entry.at)
+    insertEntry.run(entryParamsOf(id, session, entry))
+  })
+  const writeEvent = db.transaction((event: KernelEvent): void => {
+    ensureSession.run(event.session, event.at)
+    insertEvent.run(eventParamsOf(event))
+  })
+
+  function appendEntry(session: SessionId, entry: NewEntry): RecordId {
+    assertEntryShape(entry) // 硬闸在取号之前——不合形态的条目连号都不吃
+    // **号在事务外取**：取号可能触发一次水位预留（写库）——若在事务内，写失败回滚会连
+    // 水位一起回滚，而内存窗口已经推进，重启 / 后续预留便会**重发已发过的号**。
+    // 代价只是失败时留个空档——单调性与唯一性都比「号连续」要紧。
+    const id = ids.next()
+    writeEntry(session, entry, id)
+    return id
+  }
+
+  function appendEvent(session: SessionId, event: KernelEvent): void {
+    if (isTransientEvent(event.kind)) return // 规则 ①：流式增量不落库
+    if (event.session !== session) {
+      throw new Error(
+        `事件信封的 session（${event.session}）与服务实例绑定（${session}）不一致——` +
+          `信封由产出方按会话实例铸（技术方案 · 领域划分 · 信封的归属），跨会话串线此处即拒`,
+      )
+    }
+    writeEvent(event)
+  }
+
+  /** keyset 分页——每块一条语句，取完即散（无活游标）。 */
+  async function* paginate<Row extends { readonly id: number }, T>(
+    fetch: (after: number) => readonly Row[],
+    map: (row: Row) => T,
+  ): AsyncGenerator<T> {
+    let after = 0
+    for (;;) {
+      const rows = fetch(after)
+      if (rows.length === 0) return
+      for (const row of rows) yield map(row)
+
+      const last = rows.at(-1)
+      if (last === undefined || rows.length < READ_CHUNK) return
+      after = last.id
+    }
+  }
+
+  function readEntries(sessionId: SessionId, range?: EntryRange): AsyncIterable<Entry> {
+    assertSessionId(sessionId)
+    // 闭区间含端点：`from ≤ id ≤ to`；缺省＝该端不限。倒挂（from > to）自然读空。
+    const floor = range?.from === undefined ? 0 : range.from - 1
+    const ceiling = range?.to ?? Number.MAX_SAFE_INTEGER
+
+    return paginate(
+      (after) => selectEntries.all(sessionId, Math.max(after, floor), ceiling, READ_CHUNK),
+      entryOfRow,
+    )
+  }
+
+  function readEvents(sessionId: SessionId): AsyncIterable<KernelEvent> {
+    assertSessionId(sessionId)
+    return paginate(
+      (after) => selectEvents.all(sessionId, after, READ_CHUNK),
+      eventOfRow,
+    )
+  }
+
+  /** 会话列表——写入过的会话各现一次，最近在前（同刻按 id 定序，结果稳定）。 */
+  async function listSessions(): Promise<readonly SessionSummary[]> {
+    return selectSessions.all().map((row) => ({ id: row.id, at: row.at }))
+  }
+
+  return {
+    paths: { database: databasePath, blobs: blobsDir },
+
+    serviceFor(session: SessionId): RecordsService {
+      assertSessionId(session)
+      return {
+        nextId: () => ids.next(),
+        appendEntry: (entry) => appendEntry(session, entry),
+        appendEvent: (event) => appendEvent(session, event),
+        readEntries: (sessionId, range) => readEntries(sessionId, range),
+        readEvents: (sessionId) => readEvents(sessionId),
+        listSessions,
+        blobs,
+      }
+    },
+
+    listSessions,
+
+    close(): void {
+      db.close()
+    },
+  }
+}
+
+/**
+ * `dataDir` 只收**字面路径**——前导 `~` 的展开归配置加载器（`expandDataDir`），本库不展开。
+ *
+ * ⚠️ 已踩过的坑：字面 `~` 直接交给运行时库会在 **cwd 下造一个名为 `~` 的目录**，
+ * 不报错、且回环测试全绿（读写都在同一个错位置）。故此处**拒绝**而非放行——
+ * 把静默错位换成一声响（能靠设计兜底的，别靠自觉）。
+ */
+function assertPlainDataDir(dataDir: string): string {
+  if (dataDir.trim() === '') {
+    throw new Error('dataDir 不得为空——数据落点须由配置加载器给出（技术方案 · 配置与密钥）')
+  }
+  if (dataDir === '~' || dataDir.startsWith('~/')) {
+    throw new Error(
+      `dataDir 含前导 \`~\`（${dataDir}）——记录库**不展开** \`~\`：展开归配置加载器` +
+        `（@magic/contracts · expandDataDir），库只写字面路径。直通运行时库会静默落到 ` +
+        `cwd 下的 \`~\` 目录（错误位置且不报错）——故此处拒绝。`,
+    )
+  }
+  return dataDir
+}
+
+/** 会话 id 是事件分束的键——空串不是会话。 */
+function assertSessionId(session: SessionId): void {
+  if (session === '') {
+    throw new Error('session 不得为空——SessionId 是事件分束的键（技术方案 · 记录 · 信封）')
+  }
+}
