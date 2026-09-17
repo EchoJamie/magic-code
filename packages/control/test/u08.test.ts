@@ -20,11 +20,14 @@ import { describe, expect, test } from 'bun:test'
 import type {
   Command,
   CommandRoutes,
+  ControlHub,
   ControlTransport,
   DecisionId,
   EventEnvelope,
   EventKind,
+  EventSink,
   KernelEvent,
+  KernelTransport,
 } from '@magic/contracts'
 import {
   assertSerializable,
@@ -95,6 +98,34 @@ export function kernelEventRejectsWrongPayload(): void {
 export function shellEndIsContractTransport(): void {
   const { shell } = createInProcessTransportPair()
   const transport: ControlTransport = shell
+  void transport
+}
+
+/**
+ * 域面即端口——`createControlHub()` 的产物**直接就是**契约 `ControlHub`（两动作），
+ * 其 `emit` 即契约 `EventSink`。**编译期自证**：端口与实现靠 tsc 钉住，不靠注释对齐。
+ */
+export function hubFaceRealizesPort(): void {
+  const hub = createControlHub()
+
+  // 两动作 → 契约 `ControlHub`
+  const port: ControlHub = hub
+  port.bind({
+    onInput: () => undefined,
+    onInterrupt: () => undefined,
+    onDecision: () => undefined,
+  })
+  port.attach({ send: () => undefined, subscribe: () => () => undefined })
+
+  // 广播入口 → 契约 `EventSink`
+  const sink: EventSink = hub
+  sink.emit(envelope(1, 'agent.end', {}))
+}
+
+/** 内核侧一端即契约 `KernelTransport`——`attach` 的入参就是它（端口内类型）。 */
+export function kernelEndIsContractTransport(): void {
+  const { kernel } = createInProcessTransportPair()
+  const transport: KernelTransport = kernel
   void transport
 }
 

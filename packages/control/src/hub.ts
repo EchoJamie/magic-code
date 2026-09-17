@@ -4,7 +4,8 @@
  * 域的两个动作：
  * - **`bind(routes)`**——装命令路由：`input.submit` / `turn.interrupt` → 对话域；
  *   `decision.answer` → 权限域（技术方案 · 装配视图 4）；
- * - **`attach(transport)`**——接传输：内核侧一端接上后，命令自传输进来、事件自传输出去。
+ * - **`attach(transport)`**——接传输：接**内核侧一端**（契约 `KernelTransport`）后，
+ *   命令自传输进来、事件自传输出去。外壳侧一端（`ControlTransport`）由外壳自持。
  *
  * 另有一处**广播入口 `emit`**——装配的 `EventSink` 扇出把事件送到此处（装配视图 4：
  * 「控制广播全部」）。用契约 `EventSink` 的动词，不另立名字。
@@ -16,21 +17,25 @@
  * - 消息经传输投递，**可序列化校验在传输那侧**（投递前逐条，违者拒投并点名路径）。
  */
 
-import type { Command, CommandRoutes, KernelEvent } from '@magic/contracts'
-import type { KernelTransport, Unsubscribe } from './transport.ts'
+import type {
+  Command,
+  CommandRoutes,
+  KernelEvent,
+  KernelTransport,
+} from '@magic/contracts'
+import type { Unsubscribe } from './transport.ts'
 
 /**
  * 控制域公开面——端口两动作 ＋ 广播入口。
  *
- * ⚠️ **`attach` 的入参是内核侧传输**（`KernelTransport`）。契约 `ControlHub` 把入参写成
- * `ControlTransport`（**外壳侧**形状：`send` 发命令 / `subscribe` 收事件）；内核侧与之镜像
- * （`send` 出事件 / `subscribe` 收命令），契约未给此形态——本域按规约 4 自定，见回报待决 1。
- * 域的两个动作名与语义与端口一字不差，只有这一个入参形态待规划侧锚定。
+ * 三个成员的形态**皆取自契约**：`bind` 入参 `CommandRoutes` · `attach` 入参
+ * `KernelTransport`（端口内类型）· `emit` 事件 `KernelEvent`；`emit` 即 `EventSink.emit`。
+ * 本域面与契约两个端口（`ControlHub` / `EventSink`）的相容由测试的类型探针钉住。
  */
 export type ControlHubFace = {
   /** 命令 → 各域（契约 `ControlHub.bind`）。 */
   bind(routes: CommandRoutes): void
-  /** 接传输（契约 `ControlHub.attach`）。 */
+  /** 接**内核侧**一端（契约 `ControlHub.attach`）。 */
   attach(transport: KernelTransport): void
   /** 广播入口（契约 `EventSink`）——装配扇出把事件送到此处，再推给传输的对端。 */
   emit(event: KernelEvent): void
