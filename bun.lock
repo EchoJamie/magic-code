@@ -19,15 +19,37 @@
         "magic": "./src/cli.ts",
       },
       "dependencies": {
-        "@magic/kernel": "workspace:*",
+        "@magic/contracts": "workspace:*",
+        "@magic/control": "workspace:*",
+        "@magic/conversation": "workspace:*",
+        "@magic/model": "workspace:*",
         "@magic/tui": "workspace:*",
       },
     },
-    "packages/kernel": {
-      "name": "@magic/kernel",
+    "packages/contracts": {
+      "name": "@magic/contracts",
+      "version": "0.0.0",
+    },
+    "packages/control": {
+      "name": "@magic/control",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/conversation": {
+      "name": "@magic/conversation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
+    "packages/model": {
+      "name": "@magic/model",
       "version": "0.0.0",
       "dependencies": {
         "@ai-sdk/openai-compatible": "3.0.49",
+        "@magic/contracts": "workspace:*",
         "ai": "7.0.102",
       },
     },
@@ -35,7 +57,7 @@
       "name": "@magic/tui",
       "version": "0.0.0",
       "dependencies": {
-        "@magic/kernel": "workspace:*",
+        "@magic/contracts": "workspace:*",
       },
     },
   },
@@ -50,7 +72,13 @@
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
 
-    "@magic/kernel": ["@magic/kernel@workspace:packages/kernel"],
+    "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
+
+    "@magic/control": ["@magic/control@workspace:packages/control"],
+
+    "@magic/conversation": ["@magic/conversation@workspace:packages/conversation"],
+
+    "@magic/model": ["@magic/model@workspace:packages/model"],
 
     "@magic/tui": ["@magic/tui@workspace:packages/tui"],
 
