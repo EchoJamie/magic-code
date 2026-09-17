@@ -23,6 +23,17 @@
         "@magic/tui": "workspace:*",
       },
     },
+    "packages/contracts": {
+      "name": "@magic/contracts",
+      "version": "0.0.0",
+    },
+    "packages/control": {
+      "name": "@magic/control",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
     "packages/kernel": {
       "name": "@magic/kernel",
       "version": "0.0.0",
@@ -49,6 +60,10 @@
     "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@5.0.41", "https://registry.npmmirror.com/@ai-sdk/provider-utils/-/provider-utils-5.0.41.tgz", { "dependencies": { "@ai-sdk/provider": "4.0.15", "@standard-schema/spec": "^1.1.0", "@workflow/serde": "4.1.0", "eventsource-parser": "^3.0.8", "undici": "^7.29.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-hSosMII5k33z0buaZ6dugH/g8yIJjPQBILuQvr4ThdiMJxrkiZxFWTgIkvKsT6Dk493JbsnGz5W/q88Y5bR7WA=="],
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
+
+    "@magic/contracts": ["@magic/contracts@workspace:packages/contracts"],
+
+    "@magic/control": ["@magic/control@workspace:packages/control"],
 
     "@magic/kernel": ["@magic/kernel@workspace:packages/kernel"],
 
