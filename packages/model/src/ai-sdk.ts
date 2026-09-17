@@ -7,14 +7,15 @@
  * - 关掉 SDK 的自动重试——分档与回退归内核（技术方案：回退逻辑放内核、不依赖 SDK 自动机制）。
  *
  * 本文件不 import `node:fs`（内核 fs 纪律），**也拿不到记录的写入口**——
- * 它只知道 `ProviderConfig`（形制见配置契约），于是 key 到不了记录 / 事件。
+ * 它只知道 `ProviderConfig`（形制见共享语言 · 配置形制），于是 key 到不了记录 / 事件。
  */
 
 import { jsonSchema, streamText, tool } from 'ai'
 import type { JSONSchema7, ModelMessage as AiSdkMessage, ToolSet } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import type { ProviderConfig } from '../contracts/index.ts'
-import type { ModelMessage, ModelRequest, ModelStreamOptions, ModelToolSpec } from './call.ts'
+import type { ModelMessage, ModelRequest, ToolSpec } from '@magic/contracts'
+import type { ProviderConfig } from '@magic/contracts'
+import type { ModelStreamOptions } from './call.ts'
 import type { VendorStreamPart } from './normalize.ts'
 
 // —— 首接供应商：MiniMax（配置模板定稿 2026-09-16；`~/.magic/config.json` 已有条目）——
@@ -96,25 +97,27 @@ function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
               {
                 type: 'tool-result' as const,
                 toolCallId: message.callId,
+                // 工具名由契约的 `tool` 支直接给（M01-3 补锚）——不再从上下文反查
                 toolName: message.name,
                 output:
-                  message.isError === true
-                    ? { type: 'error-text' as const, value: message.content }
-                    : { type: 'text' as const, value: message.content },
+                  message.ok
+                    ? { type: 'text' as const, value: message.output }
+                    : { type: 'error-text' as const, value: message.output },
               },
             ],
           }
-    }
-  })
+      }
+    })
 }
 
 /** 工具定义——**不带执行体**：模型只出请求，执行归内核工具机制 + 权限闸门。 */
-function toAiSdkTools(specs: readonly ModelToolSpec[] | undefined): ToolSet | undefined {
+function toAiSdkTools(specs: readonly ToolSpec[] | undefined): ToolSet | undefined {
   if (specs === undefined || specs.length === 0) return undefined
   const tools: ToolSet = {}
   for (const spec of specs) {
     tools[spec.name] = tool({
-      description: spec.description,
+      // 共享语言 `ToolSpec` 的 `summary` 即工具描述（危险归类不上线——那是闸门的事）
+      description: spec.summary,
       inputSchema: jsonSchema(spec.parameters as JSONSchema7),
     })
   }
@@ -125,7 +128,7 @@ function toAiSdkTools(specs: readonly ModelToolSpec[] | undefined): ToolSet | un
 
 /**
  * 注入用 fetch（测试：假端点回放 SSE，不经网络）。
- * 取 `globalThis.fetch` 的入参类型——契约层保持无依赖，也不引 DOM lib 之名。
+ * 取 `globalThis.fetch` 的入参类型——共享语言保持无依赖，也不引 DOM lib 之名。
  */
 export type FetchLike = (
   input: Parameters<typeof globalThis.fetch>[0],
@@ -143,6 +146,9 @@ export type VendorStreamerOptions = {
 /**
  * 取件层流——内核请求进，取件层 chunk 出。
  * 产出的 `VendorStreamPart` **只在接缝内部流通**（`normalize.ts` 的输入）。
+ *
+ * 模型名取自**请求**（`request.model`）——契约 `ModelRequest` 载之；
+ * 配置条目的 `model` 是「这个供应商默认用哪个」，请求可覆盖（运行时切换的落点，U17）。
  */
 export type VendorStreamer = (
   request: ModelRequest,
@@ -163,10 +169,10 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       : { fetch: options.fetch as unknown as typeof globalThis.fetch }),
   })
 
-  const model = provider.chatModel(options.config.model)
   const maxOutputTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS
 
   return (request, streamOptions) => {
+    const model = provider.chatModel(request.model)
     const instructions = toInstructions(request.messages)
     const result = streamText({
       model,

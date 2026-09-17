@@ -5,7 +5,7 @@
  * 聚合结果，不碰网络、不碰配置、不碰 key。故循环 / 渲染所依赖的归一规则，
  * 用**假的流式响应**即可测（工作分解 · U03 测试策略）。
  *
- * ⚠️ `VendorStreamPart` 是取件层形态，**只在接缝内部流通**；越过这一层的是 `ModelEvent`。
+ * ⚠️ `VendorStreamPart` 是取件层形态，**只在接缝内部流通**；越过这一层的是 `KernelEvent`。
  *
  * 流的**不变式**（渲染与控制面可依赖）：
  * ① 首条恒为 `model.call.start`；
@@ -17,11 +17,13 @@
 
 import type { FinishReason, LanguageModelUsage, TextStreamPart, ToolSet } from 'ai'
 import type {
-  ModelCallResult,
+  EventStamper,
+  KernelEvent,
   ModelFinishReason,
-  ModelStream,
-  ModelToolCall,
-} from './call.ts'
+  ModelTraits,
+  ToolCall,
+} from '@magic/contracts'
+import type { ModelCallResult, ModelStream } from './call.ts'
 import { classifyModelError, describeModelError, isAbortError } from './errors.ts'
 import {
   modelCallEnd,
@@ -30,7 +32,8 @@ import {
   modelErrorEvent,
   modelUsage,
 } from './events.ts'
-import type { ModelEvent } from './events.ts'
+import type { InlineDelta, TextSplitter } from './inline-thinking.ts'
+import { inlineThinkingSplitter, passthroughSplitter } from './inline-thinking.ts'
 
 /** 取件层的流形态——**接缝内部**。AI SDK 的 `TextStreamPart` 不越过接缝。 */
 export type VendorStreamPart = TextStreamPart<ToolSet>
@@ -40,6 +43,16 @@ export type NormalizeOptions = {
   readonly model: string
   /** 用于错误消息脱敏（key 永不入记录 / 事件）。 */
   readonly secret?: string | undefined
+  /**
+   * **生效的**模型特征标记——由 `resolveModelTraits` 裁定后传入（见 `traits.ts`）。
+   * 缺省 / 无 `inlineThinking` ＝ 常规行为：正文原样走 `text`，**不猜、不切**。
+   */
+  readonly traits?: ModelTraits | undefined
+  /**
+   * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
+   * `id` / `session` / `turn` / `at` 四件全由它盖；归一不自造计数、不取时钟。
+   */
+  readonly stamper: EventStamper
 }
 
 /** 流中在途的工具调用——名字先到、参数片段陆续到、`tool-call` 落定。 */
@@ -54,11 +67,15 @@ type PendingToolCall = {
 type NormalizeState = {
   readonly model: string
   readonly secret: string | undefined
+  readonly stamper: EventStamper
+  /** 正文切分位——生效标记决定实现（见 `inline-thinking.ts`）。 */
+  readonly splitter: TextSplitter
   text: string
   thinking: string
   readonly pending: Map<string, PendingToolCall>
   usage: { inputTokens: number; outputTokens: number } | undefined
-  finishReason: ModelFinishReason
+  /** 供应商未给 / 未走完＝`undefined`（「是否走完」由 `complete` 表述）。 */
+  finishReason: ModelFinishReason | undefined
   error: { tier: ReturnType<typeof classifyModelError>; message: string } | undefined
   aborted: boolean
   complete: boolean
@@ -66,15 +83,26 @@ type NormalizeState = {
   closed: boolean
 }
 
+/**
+ * 正文切分位——**标记驱动**（技术方案 · 模型策略：不当通例处理）。
+ * 命中 `inlineThinking` 才切；否则原样走 `text`。
+ */
+function createSplitter(traits: ModelTraits | undefined): TextSplitter {
+  const tag = traits?.inlineThinking?.tag
+  return tag === undefined || tag.length === 0 ? passthroughSplitter() : inlineThinkingSplitter(tag)
+}
+
 function createState(options: NormalizeOptions): NormalizeState {
   return {
     model: options.model,
     secret: options.secret,
+    stamper: options.stamper,
+    splitter: createSplitter(options.traits),
     text: '',
     thinking: '',
     pending: new Map(),
     usage: undefined,
-    finishReason: 'unknown',
+    finishReason: undefined,
     error: undefined,
     aborted: false,
     complete: false,
@@ -84,8 +112,8 @@ function createState(options: NormalizeOptions): NormalizeState {
 
 // —— 收束原因的归一 ——
 
-/** 取件层的 `FinishReason` → 内核词表；缺省 / 未知一律 `unknown`。 */
-function toFinishReason(reason: FinishReason | string | undefined): ModelFinishReason {
+/** 取件层的 `FinishReason` → 内核词表；缺省 / 未知一律**缺省**（契约 `finishReason` 可缺）。 */
+function toFinishReason(reason: FinishReason | string | undefined): ModelFinishReason | undefined {
   switch (reason) {
     case 'stop':
     case 'length':
@@ -95,7 +123,7 @@ function toFinishReason(reason: FinishReason | string | undefined): ModelFinishR
     case 'other':
       return reason
     default:
-      return 'unknown'
+      return undefined
   }
 }
 
@@ -119,23 +147,40 @@ function toArgs(input: unknown): { args: Readonly<Record<string, unknown>>; inva
   return { args: {}, invalid: input !== undefined }
 }
 
+// —— 正文增量（过切分位）——
+
+/** 切出的增量落进状态并转事件——两处出口（`text` / `thinking`）同源，故聚合与事件不会打架。 */
+function emitText(state: NormalizeState, deltas: readonly InlineDelta[]): KernelEvent[] {
+  const events: KernelEvent[] = []
+  for (const delta of deltas) {
+    if (delta.channel === 'thinking') state.thinking += delta.text
+    else state.text += delta.text
+    events.push(modelDelta(state.stamper, delta.channel, delta.text))
+  }
+  return events
+}
+
+/** 收尾——把切分器手里留的残片吐出（不完整的标签按正文算，见 `inline-thinking.ts`）。 */
+function flushText(state: NormalizeState): KernelEvent[] {
+  return emitText(state, state.splitter.flush())
+}
+
 // —— 逐 chunk 消费 ——
 
-function consume(part: VendorStreamPart, state: NormalizeState): ModelEvent[] {
+function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
   switch (part.type) {
-    // —— 正文 ——
+    // —— 正文（过切分位：内嵌思考可能被切到 thinking 通道）——
     case 'text-delta': {
-      state.text += part.text
-      return [modelDelta('text', part.text)]
+      return emitText(state, state.splitter.push(part.text))
     }
 
     // —— 思考 ——
     case 'reasoning-delta': {
       state.thinking += part.text
-      return [modelDelta('thinking', part.text)]
+      return [modelDelta(state.stamper, 'thinking', part.text)]
     }
 
-    // —— 工具调用：名字先到，参数片段随后 ——
+    // —— 工具调用：名字先到，参数片段随后（增量一律带上供应商侧调用 id——渲染侧据以分组）——
     case 'tool-input-start': {
       state.pending.set(part.id, {
         id: part.id,
@@ -145,12 +190,13 @@ function consume(part: VendorStreamPart, state: NormalizeState): ModelEvent[] {
         invalid: false,
       })
       // 空文本增量——零参工具不会有参数片段，工具名只在流里出现这一次
-      return [modelDelta('toolcall', '', part.toolName)]
+      return [modelDelta(state.stamper, 'toolcall', '', part.toolName, part.id)]
     }
     case 'tool-input-delta': {
       const call = state.pending.get(part.id)
       if (call !== undefined) call.argsRaw += part.delta
-      return [modelDelta('toolcall', part.delta, call?.name)]
+      // 名字取自在途记录（缺 `tool-input-start` 时可能没有），id 一律直给
+      return [modelDelta(state.stamper, 'toolcall', part.delta, call?.name, part.id)]
     }
     case 'tool-call': {
       const existing = state.pending.get(part.toolCallId)
@@ -180,32 +226,32 @@ function consume(part: VendorStreamPart, state: NormalizeState): ModelEvent[] {
     case 'finish': {
       state.usage = toUsage(part.totalUsage) ?? state.usage
       state.finishReason = toFinishReason(part.finishReason)
-      const events: ModelEvent[] = []
+      // 收束前先吐残片——否则标签尾部的半截留在切分器里，正文截掉一截
+      const events: KernelEvent[] = flushText(state)
       if (state.usage !== undefined) {
-        events.push(modelUsage(state.usage.inputTokens, state.usage.outputTokens))
+        events.push(modelUsage(state.stamper, state.usage.inputTokens, state.usage.outputTokens))
       }
-      events.push(modelCallEnd())
+      events.push(modelCallEnd(state.stamper))
       state.closed = true
       return events
     }
 
     // —— 失败 / 中断 ——
     case 'error': {
+      state.closed = true
       if (isAbortError(part.error)) {
         state.aborted = true
-        state.closed = true
-        return []
+        return flushText(state)
       }
       const tier = classifyModelError(part.error)
       const message = describeModelError(part.error, state.secret)
       state.error = { tier, message }
-      state.closed = true
-      return [modelErrorEvent(tier, message)]
+      return [...flushText(state), modelErrorEvent(state.stamper, tier, message)]
     }
     case 'abort': {
       state.aborted = true
       state.closed = true
-      return []
+      return flushText(state)
     }
 
     // —— 不入内核的 chunk（供应商细节 / 非文本模态 / 由 SDK 自己跑的工具）——
@@ -236,8 +282,8 @@ function consume(part: VendorStreamPart, state: NormalizeState): ModelEvent[] {
 // —— 落定 ——
 
 /** 在途工具调用收口——`tool-call` 未到者，用攒下的参数片段兜底。 */
-function settleToolCalls(state: NormalizeState): ModelToolCall[] {
-  const calls: ModelToolCall[] = []
+function settleToolCalls(state: NormalizeState): ToolCall[] {
+  const calls: ToolCall[] = []
   for (const call of state.pending.values()) {
     if (call.args !== undefined) {
       calls.push(
@@ -299,9 +345,9 @@ export function toKernelEvents(
     settle = resolve
   })
 
-  async function* pump(): AsyncGenerator<ModelEvent> {
+  async function* pump(): AsyncGenerator<KernelEvent> {
     try {
-      yield modelCallStart(state.model)
+      yield modelCallStart(state.stamper, state.model)
 
       for await (const part of parts) {
         for (const event of consume(part, state)) yield event
@@ -319,7 +365,7 @@ export function toKernelEvents(
         const tier = classifyModelError(error)
         const message = describeModelError(error, state.secret)
         state.error = { tier, message }
-        yield modelErrorEvent(tier, message)
+        yield modelErrorEvent(state.stamper, tier, message)
       }
     } finally {
       settle(snapshot(state))

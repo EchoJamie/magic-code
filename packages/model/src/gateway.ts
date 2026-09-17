@@ -1,27 +1,28 @@
 /**
- * 接缝装配 —— 配置 + 取件层 + 归一 + 中间件位（工作分解 · U03；技术方案 · 模型策略）。
+ * 网关装配 —— 配置 + 取件层 + 归一 + 中间件位（技术方案 · 模型策略 · 接缝自留）。
  *
  * 数据流（单向，供应商细节不回流）：
  *
  *   ModelRequest ─〔中间件 · transformRequest〕→ 取件层（AI SDK · OpenAI 兼容）
- *     → 供应商 chunk ─〔normalize〕→ ModelEvent（内核自家事件）
+ *     → 供应商 chunk ─〔normalize〕→ KernelEvent（内核自家事件）
  *     ─〔中间件 · transformEvents〕→ 循环 / 控制面
  *
- * 密钥纪律（配置契约）：key 只在**本层向下**流动——解析一次、交给取件层，
+ * 密钥纪律（共享语言 · 配置形制）：key 只在**本层向下**流动——解析一次、交给取件层，
  * 并作为脱敏种子交给归一（错误消息里若混进 key，先被换掉）。key **不进事件、不进结果**。
  *
  * 配置加载（读 `~/.magic/config.json`、展开 `~/.magic`）**不在这里**——那是 U11 的活；
- * 本层只吃已解析好的 `ProviderConfig`（本目录不碰文件系统）。
+ * 本层只吃已解析好的 `ProviderConfig`（本域不碰文件系统）。
  */
 
-import type { ProviderConfig } from '../contracts/index.ts'
-import { apiKeyEnvVarOf } from '../contracts/index.ts'
-import type { ModelRequest, ModelSeam, ModelStream, ModelStreamOptions } from './call.ts'
+import type { EventStamper, ModelRequest, ProviderConfig } from '@magic/contracts'
+import { apiKeyEnvVarOf } from '@magic/contracts'
+import type { ModelCallContext, ModelMiddleware } from './middleware.ts'
+import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import { createVendorStreamer } from './ai-sdk.ts'
 import type { FetchLike } from './ai-sdk.ts'
 import { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
-import type { ModelCallContext, ModelMiddleware } from './middleware.ts'
 import { toKernelEvents } from './normalize.ts'
+import { resolveModelTraits } from './traits.ts'
 
 // —— 缺 key ——
 
@@ -46,7 +47,7 @@ export class MissingApiKeyError extends Error {
 
 /**
  * key 解析——次序：显式注入（测试用）→ 配置 `apiKey` → 环境变量回退。
- * 「apiKey 空 / 缺省 → 回退环境变量」是配置契约的明文（`apiKeyEnvVarOf` 给名字）。
+ * 「apiKey 空 / 缺省 → 回退环境变量」是配置形制的明文（`apiKeyEnvVarOf` 给名字）。
  */
 export function resolveApiKey(input: {
   readonly providerId: string
@@ -69,10 +70,10 @@ export function resolveApiKey(input: {
 
 // —— 装配 ——
 
-export type ModelSeamOptions = {
+export type ModelGatewayOptions = {
   /** 供应商 id——`providers.<id>` 的键（也是环境变量回退名的来源）。 */
   readonly providerId: string
-  /** 已解析的供应商条目（配置契约 `ProviderConfig`）。 */
+  /** 已解析的供应商条目（共享语言 `ProviderConfig`——含 `traits` 覆盖位）。 */
   readonly config: ProviderConfig
   /** 中间件链（数组由外到内）——阶段 1 只留位，缺省为空。 */
   readonly middleware?: readonly ModelMiddleware[] | undefined
@@ -84,14 +85,26 @@ export type ModelSeamOptions = {
   readonly env?: Readonly<Record<string, string | undefined>> | undefined
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
+  /**
+   * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
+   *
+   * 由**装配按会话实例**构造并注入：`id` 取自记录域（`RecordsService.nextId()`）、
+   * `session` 由装配设定、`turn` 由对话域在轮起止时经 `beginTurn` 调、`at` 由铸造器盖。
+   *
+   * ⚠️ **必填，本域无缺省**——模型域不自造计数、不自取时钟（缺省只留给测试的桩）。
+   */
+  readonly stamper: EventStamper
 }
 
 /**
- * 造一个模型接缝——内核通往供应商的唯一界面。
+ * 造一个模型网关——内核通往供应商的唯一界面（契约端口 `ModelGateway` 的落地）。
  *
  * 缺 key 在**此处**抛 `MissingApiKeyError`（启动期就能报，不留到第一次调用）。
+ *
+ * **模型名取自请求**（`req.model`）：配置条目的 `model` 是该供应商的默认，
+ * 请求可覆盖——运行时切换（U17）的落点。特征标记也随之按请求的模型名裁定。
  */
-export function createModelSeam(options: ModelSeamOptions): ModelSeam {
+export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
   const { providerId, config } = options
   const apiKey = resolveApiKey({
     providerId,
@@ -109,15 +122,19 @@ export function createModelSeam(options: ModelSeamOptions): ModelSeam {
   })
   const middleware = options.middleware ?? []
 
+  // 返回类型即 `ModelGateway`——`extends ModelGatewayPort` 处已由 tsc 钉住结构兼容（见 `call.ts`）
   return {
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       // 上下文取「中间件链之前」的原始请求——改写是对账对象，不是判据基线
-      const context: ModelCallContext = { provider: providerId, model: config.model, request }
+      const context: ModelCallContext = { provider: providerId, model: request.model, request }
       const effective = applyRequestMiddleware(middleware, request, context)
 
       const { events, result } = toKernelEvents(streamVendor(effective, streamOptions), {
-        model: config.model,
+        model: effective.model,
         secret: apiKey,
+        // 生效标记（查内置表 → 配置接管位）——标记驱动的切分只在此处裁定
+        traits: resolveModelTraits(effective.model, config.traits),
+        stamper: options.stamper,
       })
 
       return { events: applyEventMiddleware(middleware, events, context), result }
