@@ -205,27 +205,35 @@ export function scan(command: string): readonly Segment[] {
       const fd = /^\d+$/.test(word) && !wordQuoted ? word : undefined
       if (fd !== undefined) word = ''
 
+      // `raw` 是材料里显示的**段文本**——喂给 `UNRESOLVABLE` 的也是它（见 `analyzeSegment`），
+      // 故记号与目标必须原样回写：吞掉 `>&1` 会让分解显示成尾随一个 `2`，
+      // 吞掉重定向目标则会让目标里的命令替换躲过「判不出」。
+      const operatorAt = index
       const append = command[index + 1] === '>'
       if (append) index += 1
 
       if (command[index + 1] === '&') {
         // 复制描述符（`2>&1`）——不是文件写入
         index += 2
-        let target = ''
-        while (index < command.length && /[\w-]/.test(command[index] ?? '')) {
-          target += command[index] ?? ''
-          index += 1
-        }
+        raw += command.slice(operatorAt, index)
+
+        const targetAt = index
+        while (index < command.length && /[\w-]/.test(command[index] ?? '')) index += 1
+        const target = command.slice(targetAt, index)
+        raw += target
+
         tokens.push({ kind: 'dup', fd, target })
         continue
       }
 
       index += 1
+      raw += command.slice(operatorAt, index) // `>` / `>>`
       while (command[index] === ' ' || command[index] === '\t') {
         raw += command[index] ?? ''
         index += 1
       }
 
+      const targetAt = index
       let target = ''
       const targetQuote = command[index] === "'" || command[index] === '"' ? command[index] : undefined
       if (targetQuote !== undefined) {
@@ -241,6 +249,7 @@ export function scan(command: string): readonly Segment[] {
           index += 1
         }
       }
+      raw += command.slice(targetAt, index) // 目标原样（引号一并保留）
 
       tokens.push({ kind: 'redirect', append, target, fd })
       continue

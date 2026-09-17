@@ -16,6 +16,7 @@
 import type { DangerReason, DecisionWeight, PermissionContext, ToolCall } from '@magic/contracts'
 import type { SegmentAnalysis } from './commands.ts'
 import { OP_LABEL, OP_REASON, WRITE_OPS, decompose } from './commands.ts'
+import type { RuleOp } from './ops.ts'
 import type { Landing } from './paths.ts'
 import { describeLanding, landPath } from './paths.ts'
 
@@ -24,12 +25,19 @@ import { describeLanding, landPath } from './paths.ts'
  *
  * - `weight: 'heavy'` ＝ 必闸类（技术方案 · 权限：危险分级 v0 必闸清单）——材料须给足判断依据；
  * - `weight: 'light'` ＝ 放行区方向（读与搜索 · 新建 · 增量编辑 · 只读命令）；
- * - `reason` 只在 `heavy` 时给——命中的必闸判据（`unknown` ＝看不懂）。
+ * - `reason` 只在 `heavy` 时给——命中的必闸判据（`unknown` ＝看不懂）；
+ * - `ops` / `landings` ＝ **规则轴**（阶段 2）：规则条目是（工具 × 路径模式 × 操作类型），
+ *   后两格照这两个字段比对。它们与 `weight` **同一处产出**——规则匹配与危险判定读的是
+ *   同一份结论，两条路径因此结构上无从分叉（必闸 ＞ 规则 ＞ 默认问）。
  */
 export type Analysis = {
   readonly weight: DecisionWeight
   readonly reason?: DangerReason
   readonly material: string
+  /** 本次调用的**操作类型**——多段命令取并集（每一段都算数）。 */
+  readonly ops: readonly RuleOp[]
+  /** **影响面词条**——路径模式的对照面（与越界判据同一处产出）。 */
+  readonly landings: readonly Landing[]
 }
 
 /** 必闸判据的中文（材料用——呈现是给人的）。 */
@@ -109,6 +117,8 @@ export function unclassifiable(tool: string, why: string): Analysis {
       `判不出：${why}`,
       `处置：按不可逆假定问（${REASON_LABEL.unknown}）。`,
     ].join('\n'),
+    ops: ['unknown'],
+    landings: [],
   }
 }
 
@@ -159,7 +169,7 @@ function analyzeSearch(call: ToolCall, ctx: PermissionContext): Analysis {
   }
 
   const landing = landPath(path.value, ctx)
-  return { weight: 'light', material: `影响面：${describeLanding(landing)}` }
+  return { weight: 'light', material: `影响面：${describeLanding(landing)}`, ops: ['read'], landings: [landing] }
 }
 
 /** 增量编辑（`edit`）——放行区方向（diff 可审）；**但工作区外的写＝必闸**。 */
@@ -170,12 +180,16 @@ function analyzeEdit(call: ToolCall, ctx: PermissionContext): Analysis {
   }
 
   const landing = landPath(path.value, ctx)
-  if (landing.inside) return { weight: 'light', material: `影响面：${describeLanding(landing)}` }
+  if (landing.inside) {
+    return { weight: 'light', material: `影响面：${describeLanding(landing)}`, ops: ['edit'], landings: [landing] }
+  }
 
   return {
     weight: 'heavy',
     reason: 'out-of-bounds',
     material: impact([landing], '工作区外的写——越界即必闸（技术方案 · 权限：必闸清单 · 越界）'),
+    ops: ['edit'],
+    landings: [landing],
   }
 }
 
@@ -193,11 +207,17 @@ function analyzeWrite(call: ToolCall, ctx: PermissionContext): Analysis {
   }
 
   const landing = landPath(path.value, ctx)
+  // 操作类型记 `overwrite`：按**覆盖**假定（判不出新建还是覆盖＝从严那一侧），
+  // 故本格的显示与规则都按「整写」认它——待存在性进得来（见回报「待决」）再分流 `create`。
+  const ops: readonly RuleOp[] = ['overwrite']
+
   if (!landing.inside) {
     return {
       weight: 'heavy',
       reason: 'out-of-bounds',
       material: impact([landing], '工作区外的写——越界即必闸（技术方案 · 权限：必闸清单 · 越界）'),
+      ops,
+      landings: [landing],
     }
   }
 
@@ -209,6 +229,8 @@ function analyzeWrite(call: ToolCall, ctx: PermissionContext): Analysis {
       '判不出：新建还是覆盖——本域不碰文件系统，问不到存在性。',
       `处置：按不可逆假定问（覆盖＝必闸——工具集 v1：write 新建＝轻、覆盖＝必闸）。`,
     ].join('\n'),
+    ops,
+    landings: [landing],
   }
 }
 
@@ -247,9 +269,14 @@ function judge(segments: readonly SegmentAnalysis[]): Analysis {
   const reason = representative(reasons)
   const material = renderDecomposition(segments, reason === undefined ? [] : reasons)
 
+  // 规则轴：操作类型取**并集**（每一段都算数——规则须覆盖全部才命中），
+  // 影响面取各段词条之并
+  const ops = [...new Set(segments.map((segment) => segment.op))]
+  const landings = segments.flatMap((segment) => segment.landings)
+
   return reason === undefined
-    ? { weight: 'light', material }
-    : { weight: 'heavy', reason, material }
+    ? { weight: 'light', material, ops, landings }
+    : { weight: 'heavy', reason, material, ops, landings }
 }
 
 /** 命令分解 —— 重呈现的判断材料（逐段：做了什么 · 影响面）。 */

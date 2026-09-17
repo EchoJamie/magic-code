@@ -63,6 +63,18 @@ export function landPath(given: string, ctx: PermissionContext): Landing {
   return { given, absolute, inside: root !== undefined, root }
 }
 
+/**
+ * 把**规则里的路径模式**展开成绝对形——相对按默认根、绝对按字面（与 `landPath` 同源：
+ * 「相对按默认根 · 绝对须落根内」）。
+ *
+ * 通配符（`**` / `*` / `?`）在这套归一里是**普通段**：`resolve` 只收 `.` / `..` / 重复斜杠，
+ * 不碰它们，故 `src/**` 恰好拼成 `<根>/src/**`。模式里写 `..` 的，归一照做——
+ * 用户写明的范围就是用户的范围（且放行与否仍过必闸禁区那关）。
+ */
+export function expandPattern(pattern: string, ctx: PermissionContext): string {
+  return resolve(normalizeRoot(ctx.defaultRoot), pattern)
+}
+
 /** 落点的材料显示——`影响面：<绝对或原样>（根内 / 根外 / 判不出）`。 */
 export function describeLanding(landing: Landing): string {
   if (landing.absolute === undefined) return `${landing.given}（判不出——按根外处置）`
