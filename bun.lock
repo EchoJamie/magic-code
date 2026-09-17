@@ -53,6 +53,13 @@
         "ai": "7.0.102",
       },
     },
+    "packages/permission": {
+      "name": "@magic/permission",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
     "packages/tui": {
       "name": "@magic/tui",
       "version": "0.0.0",
@@ -79,6 +86,8 @@
     "@magic/conversation": ["@magic/conversation@workspace:packages/conversation"],
 
     "@magic/model": ["@magic/model@workspace:packages/model"],
+
+    "@magic/permission": ["@magic/permission@workspace:packages/permission"],
 
     "@magic/tui": ["@magic/tui@workspace:packages/tui"],
 
