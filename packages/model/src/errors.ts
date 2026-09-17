@@ -1,7 +1,7 @@
 /**
  * 错误归一 —— 接缝的**分档**（技术方案 · 模型策略 · 错误分档）。
  *
- * 三档（记录契约 `ModelErrorTier`）与内核动作：
+ * 三档（共享语言 `ModelErrorTier`）与内核动作：
  * - `transient`（限流 / 网络）→ 退避重试；
  * - `context-limit`（上下文超限）→ 触发压缩后重发（不换模型）；
  * - `terminal`（内容策略等）→ 停下报告用户。
@@ -10,13 +10,11 @@
  * 故取件层关掉 SDK 自动重试，见 `ai-sdk.ts` 的 `maxRetries: 0`）；退避 / 压缩 / 停下的
  * 策略是 U04 / U17 的事，本层只把「是哪一档」判准并归一成 `model.error`。
  *
- * 密钥纪律：本层产出的**一切文本**先经脱敏——key 永不入记录 / 事件（配置契约）。
+ * 密钥纪律：本层产出的**一切文本**先经脱敏——key 永不入记录 / 事件（共享语言 · 配置形制）。
  */
 
 import { APICallError, LoadAPIKeyError } from 'ai'
-import type { ModelErrorTier } from '../contracts/index.ts'
-import { modelErrorEvent } from './events.ts'
-import type { ModelEvent } from './events.ts'
+import type { ModelErrorTier } from '@magic/contracts'
 
 /** 判档用的文本上限——足够容纳错误体，又不至于把整段回声喂进正则。 */
 const CLASSIFY_TEXT_LIMIT = 4000
@@ -156,7 +154,7 @@ const GENERIC_SECRET_PATTERNS: readonly RegExp[] = [
 
 /**
  * 脱敏——把具体 key 与形似令牌的串换成 `***`。
- * key 永不入记录 / 事件（配置契约 · 密钥纪律）——这是最后一道闸，不是唯一一道。
+ * key 永不入记录 / 事件（共享语言 · 配置形制 · 密钥纪律）——这是最后一道闸，不是唯一一道。
  */
 export function redactSecrets(text: string, secret?: string | undefined): string {
   let out = text
@@ -174,9 +172,4 @@ export function describeModelError(error: unknown, secret?: string | undefined):
   const raw = errorTextOf(error, MESSAGE_TEXT_LIMIT).trim()
   const message = raw.length > 0 ? raw : '模型调用失败（未提供错误详情）'
   return redactSecrets(message, secret)
-}
-
-/** 归一后的错误事件——分档 + 脱敏消息，二者同出于此。 */
-export function modelErrorOf(error: unknown, secret?: string | undefined): ModelEvent {
-  return modelErrorEvent(classifyModelError(error), describeModelError(error, secret))
 }

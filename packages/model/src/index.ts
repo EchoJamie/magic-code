@@ -1,0 +1,68 @@
+/**
+ * `@magic/model` —— 模型域公开面（技术方案 · 领域划分：模型域）。
+ *
+ * 职责：**模型接入接缝**——注册 · 流式归一 · 错误分档 · 用量 · 模型特征标记。
+ * 对外端口：**`ModelGateway`**（`stream(req, opts) → { events; result }`）。
+ *
+ * 域纪律（技术方案 · 代码治理）：
+ * - **只依赖 `@magic/contracts`**（＋许可外部库：AI SDK）——域之间互不 import、域不认知外壳与装配；
+ * - **供应商细节不出域**（防腐层）——端点常量 · 字段改写 · SDK chunk 形态皆封在域内；
+ * - **key 永不入事件与记录**——只在装配层解析（`resolveApiKey`），产出的一切文本先过 `redactSecrets`；
+ * - 不碰文件系统、不读配置文件（配置加载是 U11 的活）。
+ *
+ * 出口四件：
+ * ① **端口装配**——`createModelGateway`；
+ * ② **形态**——`ModelGateway` / `ModelStream` / `ModelCallResult` / 中间件位；
+ * ③ **构造子**——事件构造子与信封来源（Faux Provider 与循环测试用）；
+ * ④ **纯函数**——错误分档 / 脱敏 / 特征标记裁定。
+ *
+ * 不出去的：取件层 chunk 形态（`VendorStreamPart`）· SDK 类型 · 错误分档的正则表 ·
+ * 归一过程 · 内嵌思考的切分器。
+ */
+
+// —— ② 形态 ——
+
+export type {
+  ModelCallResult,
+  ModelError,
+  ModelGateway,
+  ModelStream,
+  ModelStreamOptions,
+  ModelToolCall,
+} from './call.ts'
+
+export type { ModelCallContext, ModelMiddleware } from './middleware.ts'
+export { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
+
+// —— ① 端口装配 ——
+
+export { createModelGateway, MissingApiKeyError, resolveApiKey } from './gateway.ts'
+export type { ModelGatewayOptions } from './gateway.ts'
+
+// —— ③ 构造子（Faux Provider 与循环测试用）——
+
+export {
+  modelCallEnd,
+  modelCallStart,
+  modelDelta,
+  modelErrorEvent,
+  modelUsage,
+} from './events.ts'
+
+export { localEnvelopeSource, stampEvent } from './envelope.ts'
+export type { EventEnvelopeSource } from './envelope.ts'
+
+// —— ④ 纯函数 ——
+
+export { classifyModelError, describeModelError, isAbortError, redactSecrets } from './errors.ts'
+
+export { MODEL_TRAITS_BUILTIN, resolveModelTraits } from './traits.ts'
+
+// —— 首接供应商常量（装配根取用；供应商细节本身仍是域内物，这里只出「默认值」）——
+
+export {
+  MAX_COMPLETION_TOKENS,
+  MINIMAX_BASE_URL,
+  MINIMAX_MODEL,
+  MINIMAX_PROVIDER_ID,
+} from './ai-sdk.ts'

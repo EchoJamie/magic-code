@@ -1,11 +1,15 @@
 /**
- * U03 · 模型接缝 —— 单元测试（工作分解 · U03 测试策略）。
+ * M02 · 模型域 —— 单元测试（工作分解 · 迁移轨道 M02；沿用旧 U03 判据）。
  *
  * 分三层，**都不经网络**：
  * 1. **归一**——直接喂假的流式 chunk（`VendorStreamPart`），断言内核事件序列与聚合结果；
- * 2. **分档 / 密钥纪律 / 中间件**——纯函数级断言；
- * 3. **假端点回环**——给接缝注入假 fetch，回放真格式的 OpenAI 兼容 SSE，
+ * 2. **分档 / 密钥纪律 / 中间件 / 特征标记**——纯函数级断言；
+ * 3. **假端点回环**——给网关注入假 fetch，回放真格式的 OpenAI 兼容 SSE，
  *    把「取件层 SSE 解析 → 归一 → 中间件」整条路走通（真端点另跑，见回报）。
+ *
+ * 契约消费姿势（M01 备案）：**构造用 `EventEnvelope<'kind'>` · 消费用 `KernelEvent` ＋
+ * `if (e.kind === '…')` 自动收窄**。事件带信封（`id` / `session` / `turn` / `at`），
+ * 逐条比不得——`payloads()` 剥掉信封只比 `kind` ＋ `data`。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -17,13 +21,20 @@ import type {
   TextStreamPart,
   ToolSet,
 } from 'ai'
-import type { ModelCallResult, ModelEvent, ModelStream } from '../src/provider/index.ts'
+import type { KernelEvent, ModelMessage, ModelTraits, ToolSpec } from '@magic/contracts'
+import type {
+  EventEnvelopeSource,
+  ModelCallResult,
+  ModelGateway,
+  ModelMiddleware,
+  ModelStream,
+} from '../src/index.ts'
 import {
   MAX_COMPLETION_TOKENS,
   MINIMAX_MODEL,
   MissingApiKeyError,
   classifyModelError,
-  createModelSeam,
+  createModelGateway,
   describeModelError,
   isAbortError,
   modelCallEnd,
@@ -33,15 +44,34 @@ import {
   modelUsage,
   redactSecrets,
   resolveApiKey,
-} from '../src/provider/index.ts'
-import type { ModelMiddleware } from '../src/provider/index.ts'
-import { toKernelEvents } from '../src/provider/normalize.ts'
+  resolveModelTraits,
+} from '../src/index.ts'
+import { toKernelEvents } from '../src/normalize.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
 // 夹具 —— 假的流式 chunk（形态＝取件层 `TextStreamPart`）
 // ═══════════════════════════════════════════════════════════════════════
 
 type Part = TextStreamPart<ToolSet>
+
+/** 信封来源——测试用固定的 session / turn 与可控的 id / at。 */
+function testEnvelope(session = 'test-session'): EventEnvelopeSource {
+  let next = 0
+  return { session, turn: null, nextId: () => (next += 1), now: () => 1_700_000_000_000 }
+}
+
+/**
+ * 剥信封——只比 `kind` 与 `data`。
+ * 信封（`id` / `at`）是流水，且**它的归属尚未锚定**（见 `src/envelope.ts` 文件头注）；
+ * 逐条比整条事件会把测试钉死在一种归属上，反而不该。
+ */
+function bare(event: KernelEvent): { kind: string; data: unknown } {
+  return { kind: event.kind, data: event.data }
+}
+
+function payloads(events: readonly KernelEvent[]): { kind: string; data: unknown }[] {
+  return events.map(bare)
+}
 
 function usageOf(inputTokens: number, outputTokens: number): LanguageModelUsage {
   return {
@@ -85,16 +115,30 @@ async function* fromParts(parts: readonly Part[]): AsyncIterable<Part> {
 
 /** 消费整条流——事件与结果一并取回。 */
 async function drain(stream: ModelStream): Promise<{
-  events: ModelEvent[]
+  events: KernelEvent[]
   result: ModelCallResult
 }> {
-  const events: ModelEvent[] = []
+  const events: KernelEvent[] = []
   for await (const event of stream.events) events.push(event)
   return { events, result: await stream.result }
 }
 
-function normalize(parts: readonly Part[], model = MINIMAX_MODEL): ModelStream {
-  return toKernelEvents(fromParts(parts), { model })
+/**
+ * 归一的直接入口——绕开取件层，喂假 chunk。
+ *
+ * 第三个参数是**配置覆盖位**（`providers.<id>.traits`），不是生效标记：
+ * 这里扮演装配侧，走与 `gateway.ts` 同一条裁定路（查内置表 → 配置非空则整组覆盖）。
+ */
+function normalize(
+  parts: readonly Part[],
+  model = MINIMAX_MODEL,
+  override?: ModelTraits,
+): ModelStream {
+  return toKernelEvents(fromParts(parts), {
+    model,
+    envelope: testEnvelope(),
+    traits: resolveModelTraits(model, override),
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -115,13 +159,16 @@ describe('归一 · 正文流', () => {
       ]),
     )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('text', '你'),
-      modelDelta('text', '好'),
-      modelUsage(12, 3),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, MINIMAX_MODEL),
+        modelDelta(stamp, 'text', '你'),
+        modelDelta(stamp, 'text', '好'),
+        modelUsage(stamp, 12, 3),
+        modelCallEnd(stamp),
+      ]),
+    )
     expect(result.text).toBe('你好')
     expect(result.thinking).toBe('')
     expect(result.toolCalls).toEqual([])
@@ -137,11 +184,10 @@ describe('归一 · 正文流', () => {
       normalize([{ type: 'start' }, textDelta('嗨'), finishPart('stop')]),
     )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('text', '嗨'),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '嗨'), modelCallEnd(stamp)]),
+    )
     expect(result.usage).toBeUndefined()
   })
 
@@ -162,7 +208,7 @@ describe('归一 · 正文流', () => {
       ]),
     )
 
-    expect(events).toContainEqual(modelUsage(7, 2))
+    expect(payloads(events)).toContainEqual(bare(modelUsage(testEnvelope(), 7, 2)))
   })
 })
 
@@ -187,17 +233,20 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('thinking', '让我想想'),
-      modelDelta('text', '我来执行'),
-      // 工具名先于参数出现——零参工具在流里也有名可示
-      modelDelta('toolcall', '', 'exec'),
-      modelDelta('toolcall', '{"cmd"', 'exec'),
-      modelDelta('toolcall', ':"ls"}', 'exec'),
-      modelUsage(30, 10),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, MINIMAX_MODEL),
+        modelDelta(stamp, 'thinking', '让我想想'),
+        modelDelta(stamp, 'text', '我来执行'),
+        // 工具名先于参数出现——零参工具在流里也有名可示
+        modelDelta(stamp, 'toolcall', '', 'exec'),
+        modelDelta(stamp, 'toolcall', '{"cmd"', 'exec'),
+        modelDelta(stamp, 'toolcall', ':"ls"}', 'exec'),
+        modelUsage(stamp, 30, 10),
+        modelCallEnd(stamp),
+      ]),
+    )
     expect(result.thinking).toBe('让我想想')
     expect(result.text).toBe('我来执行')
     expect(result.toolCalls).toEqual([{ id: 'call-1', name: 'exec', args: { cmd: 'ls' } }])
@@ -241,7 +290,7 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    expect(events).toContainEqual(modelDelta('toolcall', '', 'ls'))
+    expect(payloads(events)).toContainEqual(bare(modelDelta(testEnvelope(), 'toolcall', '', 'ls')))
     expect(result.toolCalls).toEqual([{ id: 'call-0', name: 'ls', args: {} }])
   })
 
@@ -262,11 +311,10 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('text', '正文'),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '正文'), modelCallEnd(stamp)]),
+    )
   })
 })
 
@@ -281,11 +329,13 @@ describe('归一 · 错误与中断', () => {
     )
 
     expect(events).toHaveLength(3)
-    expect(events[0]).toEqual(modelCallStart(MINIMAX_MODEL))
-    expect(events[2]).toEqual({
-      kind: 'model.error',
-      data: { tier: 'transient', message: 'Rate limit exceeded, please retry later' },
-    })
+    expect(events[0]?.kind).toBe('model.call.start')
+    expect(payloads(events.slice(2))).toEqual([
+      {
+        kind: 'model.error',
+        data: { tier: 'transient', message: 'Rate limit exceeded, please retry later' },
+      },
+    ])
     expect(result.error?.tier).toBe('transient')
     expect(result.text).toBe('说到一半')
   })
@@ -299,7 +349,10 @@ describe('归一 · 错误与中断', () => {
       ]),
     )
 
-    expect(events).toEqual([modelCallStart(MINIMAX_MODEL), modelDelta('text', '半句')])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '半句')]),
+    )
     expect(result.aborted).toBe(true)
     expect(result.error).toBeUndefined()
   })
@@ -313,9 +366,14 @@ describe('归一 · 错误与中断', () => {
       throw abort
     }
 
-    const { events, result } = await drain(toKernelEvents(throwing(), { model: MINIMAX_MODEL }))
+    const { events, result } = await drain(
+      toKernelEvents(throwing(), { model: MINIMAX_MODEL, envelope: testEnvelope() }),
+    )
 
-    expect(events).toEqual([modelCallStart(MINIMAX_MODEL), modelDelta('text', '半句')])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '半句')]),
+    )
     expect(result.aborted).toBe(true)
   })
 
@@ -325,7 +383,9 @@ describe('归一 · 错误与中断', () => {
       throw new TypeError('fetch failed')
     }
 
-    const { events, result } = await drain(toKernelEvents(throwing(), { model: MINIMAX_MODEL }))
+    const { events, result } = await drain(
+      toKernelEvents(throwing(), { model: MINIMAX_MODEL, envelope: testEnvelope() }),
+    )
 
     expect(events.at(-1)?.kind).toBe('model.error')
     expect(result.error?.tier).toBe('transient')
@@ -340,14 +400,17 @@ describe('归一 · 错误与中断', () => {
       finishPart('stop', usageOf(1, 1)),
     ])
 
-    const seen: ModelEvent[] = []
+    const seen: KernelEvent[] = []
     for await (const event of stream.events) {
       seen.push(event)
       if (seen.length === 2) break
     }
     const result = await stream.result
 
-    expect(seen).toEqual([modelCallStart(MINIMAX_MODEL), modelDelta('text', '一')])
+    const stamp = testEnvelope()
+    expect(payloads(seen)).toEqual(
+      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '一')]),
+    )
     expect(result.complete).toBe(false)
     expect(result.text).toBe('一')
   })
@@ -355,7 +418,10 @@ describe('归一 · 错误与中断', () => {
   test('空流也成立：起 → 止（无 delta / 无 usage）', async () => {
     const { events } = await drain(normalize([finishPart('other')]))
 
-    expect(events).toEqual([modelCallStart(MINIMAX_MODEL), modelCallEnd()])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelCallEnd(stamp)]),
+    )
   })
 
   test('思考通道走 reasoning-delta（供应商回 reasoning_content 时）', async () => {
@@ -365,16 +431,21 @@ describe('归一 · 错误与中断', () => {
 
     expect(result.thinking).toBe('想过了')
   })
+})
 
+// ═══════════════════════════════════════════════════════════════════════
+// 一之二 · 模型特征标记（技术方案 · 模型策略）—— 三条判据
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('特征标记 · 内置表', () => {
   /**
    * 真端点实测（2026-09-16）的**行为钉子**：MiniMax-M3 经 OpenAI 兼容端点
    * **不回** `reasoning_content`，而是把思考写在 `content` 里、用 `<think>…</think>` 包住。
-   * 于是 thinking 通道在该供应商下为空，思考原样走 text 通道。
    *
-   * 把 `<think>` 拆进 thinking 通道＝**改写型横切**，而技术方案定「横切逻辑走中间件位
-   * （阶段 1 留位不展开）」——故此处原样保留，是否拆归规划侧锚定（见 U03 回报 · pending）。
+   * 内置表按**模型名**命中 → 归一据生效标记把标签内容切到 `thinking` 通道，
+   * 标签本身**不出现在正文增量里**（判据 ①）。
    */
-  test('MiniMax-M3 的思考内嵌在正文（<think> 标签）——原样走 text 通道', async () => {
+  test('MiniMax-M3 的 <think> 内容走 thinking 通道，标签不进正文（判据 ①）', async () => {
     const { events, result } = await drain(
       normalize([
         { type: 'start' },
@@ -383,14 +454,143 @@ describe('归一 · 错误与中断', () => {
       ]),
     )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('text', '<think>想想</think>\n\n正文'),
-      modelUsage(9, 4),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, MINIMAX_MODEL),
+        modelDelta(stamp, 'thinking', '想想'),
+        modelDelta(stamp, 'text', '\n\n正文'),
+        modelUsage(stamp, 9, 4),
+        modelCallEnd(stamp),
+      ]),
+    )
+    expect(result.thinking).toBe('想想')
+    expect(result.text).toBe('\n\n正文')
+    // 标签不出现在任何通道的增量里
+    expect(JSON.stringify(payloads(events))).not.toContain('think>')
+  })
+
+  test('内置表确有那一条（按模型名匹配，不是按供应商）', () => {
+    expect(resolveModelTraits(MINIMAX_MODEL)).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(resolveModelTraits('MiniMax-M2')).toBeUndefined()
+  })
+
+  test('标签跨增量边界也切得干净（半截标签留住，不吐错通道）', async () => {
+    const { events, result } = await drain(
+      normalize([
+        { type: 'start' },
+        textDelta('<thi'),
+        textDelta('nk>半'),
+        textDelta('句'),
+        textDelta('</thi'),
+        textDelta('nk>正'),
+        textDelta('文'),
+        finishPart('stop'),
+      ]),
+    )
+
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, MINIMAX_MODEL),
+        modelDelta(stamp, 'thinking', '半'),
+        modelDelta(stamp, 'thinking', '句'),
+        modelDelta(stamp, 'text', '正'),
+        modelDelta(stamp, 'text', '文'),
+        modelCallEnd(stamp),
+      ]),
+    )
+    expect(result).toMatchObject({ thinking: '半句', text: '正文' })
+  })
+
+  test('标签开在流末尾、收不到合——残留按当前通道吐出（不吞字）', async () => {
+    const { result } = await drain(
+      normalize([{ type: 'start' }, textDelta('正文<think>没写完'), finishPart('stop')]),
+    )
+
+    expect(result.text).toBe('正文')
+    expect(result.thinking).toBe('没写完')
+  })
+})
+
+describe('特征标记 · 覆盖位', () => {
+  /** 判据 ②——表外模型在 `providers.<id>.traits` 标注，同一切分生效。 */
+  test('表外模型经配置覆盖位标注 → 同一切分生效（判据 ②）', async () => {
+    const { events, result } = await drain(
+      normalize(
+        [{ type: 'start' }, textDelta('<think>想</think>正文'), finishPart('stop')],
+        'my-local-llama',
+        { inlineThinking: { tag: 'think' } },
+      ),
+    )
+
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, 'my-local-llama'),
+        modelDelta(stamp, 'thinking', '想'),
+        modelDelta(stamp, 'text', '正文'),
+        modelCallEnd(stamp),
+      ]),
+    )
+    expect(result).toMatchObject({ thinking: '想', text: '正文' })
+  })
+
+  /** 覆盖是**整组**的：配置给了别的标记，内置表那条即失效。 */
+  test('覆盖位压过内置表——给 MiniMax-M3 改标 tag 后 <think> 不再切', async () => {
+    const { result } = await drain(
+      normalize(
+        [{ type: 'start' }, textDelta('<think>不切</think><reasoning>切</reasoning>'), finishPart('stop')],
+        MINIMAX_MODEL,
+        { inlineThinking: { tag: 'reasoning' } },
+      ),
+    )
+
+    expect(result.text).toBe('<think>不切</think>')
+    expect(result.thinking).toBe('切')
+  })
+
+  test('覆盖位裁定：非空即覆盖，空对象视同空缺（回落内置表）', () => {
+    expect(resolveModelTraits(MINIMAX_MODEL, {})).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(resolveModelTraits(MINIMAX_MODEL, { inlineThinking: { tag: 'reasoning' } })).toEqual({
+      inlineThinking: { tag: 'reasoning' },
+    })
+  })
+})
+
+describe('特征标记 · 皆未命中', () => {
+  /** 判据 ③——不猜、不切：正文原样走 text。 */
+  test('表外模型无标注 → 正文原样走 text，标签也不动（判据 ③）', async () => {
+    const { events, result } = await drain(
+      normalize(
+        [{ type: 'start' }, textDelta('<think>想想</think>\n\n正文'), finishPart('stop')],
+        'gpt-4o',
+      ),
+    )
+
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, 'gpt-4o'),
+        modelDelta(stamp, 'text', '<think>想想</think>\n\n正文'),
+        modelCallEnd(stamp),
+      ]),
+    )
     expect(result.thinking).toBe('')
     expect(result.text).toBe('<think>想想</think>\n\n正文')
+    expect(resolveModelTraits('gpt-4o')).toBeUndefined()
+  })
+
+  test('切分**不是接缝通例**——同一段文本，常规模型原样、命中标记才切', async () => {
+    const parts = [{ type: 'start' } as Part, textDelta('<think>x</think>y'), finishPart('stop')]
+
+    const plain = await drain(normalize(parts, 'gpt-4o'))
+    const inline = await drain(normalize(parts, MINIMAX_MODEL))
+
+    expect(plain.result.text).toBe('<think>x</think>y')
+    expect(plain.result.thinking).toBe('')
+    expect(inline.result.text).toBe('y')
+    expect(inline.result.thinking).toBe('x')
   })
 })
 
@@ -486,7 +686,7 @@ describe('错误分档', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 三 · 密钥纪律（配置契约：key 永不入记录 / 事件）
+// 三 · 密钥纪律（共享语言 · 配置形制：key 永不入记录 / 事件）
 // ═══════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
@@ -496,12 +696,12 @@ const CONFIG = {
 
 describe('密钥纪律', () => {
   test('缺 key 在构造期就报——消息给的是环境变量名，不是 key', () => {
-    expect(() => createModelSeam({ providerId: 'minimax', config: CONFIG, env: {} })).toThrow(
+    expect(() => createModelGateway({ providerId: 'minimax', config: CONFIG, env: {} })).toThrow(
       MissingApiKeyError,
     )
 
     try {
-      createModelSeam({ providerId: 'minimax', config: CONFIG, env: {} })
+      createModelGateway({ providerId: 'minimax', config: CONFIG, env: {} })
     } catch (error) {
       const fault = error as MissingApiKeyError
       expect(fault.envVar).toBe('MAGIC_MINIMAX_API_KEY')
@@ -565,7 +765,7 @@ describe('密钥纪律', () => {
         { type: 'start' },
         { type: 'error', error: new Error(`bad auth header: Bearer ${secret}`) },
       ]),
-      { model: MINIMAX_MODEL, secret },
+      { model: MINIMAX_MODEL, secret, envelope: testEnvelope() },
     )
 
     const { events, result } = await drain(stream)
@@ -624,7 +824,7 @@ describe('中间件位', () => {
 
   test('数组由外到内：请求方向先列先见，事件方向先列包住后列', async () => {
     trace.length = 0
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -632,7 +832,9 @@ describe('中间件位', () => {
       middleware: [probe('outer', '外层'), probe('inner', '内层')],
     })
 
-    const { events } = await drain(seam.stream({ messages: [{ role: 'user', content: '嗨' }] }))
+    const { events } = await drain(
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
 
     expect(trace).toEqual([
       'request:outer',
@@ -642,24 +844,29 @@ describe('中间件位', () => {
       'events-out:inner',
       'events-out:outer',
     ])
-    expect(events.at(-1)).toEqual(modelCallEnd())
+    expect(events.at(-1)?.kind).toBe('model.call.end')
   })
 
   test('无中间件时事件原样通过', async () => {
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
       fetch: echoFetch(),
     })
 
-    const { events } = await drain(seam.stream({ messages: [{ role: 'user', content: '嗨' }] }))
+    const { events } = await drain(
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('text', 'ok'),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, MINIMAX_MODEL),
+        modelDelta(stamp, 'text', 'ok'),
+        modelCallEnd(stamp),
+      ]),
+    )
   })
 
   test('改写确实落到请求上（内层看见外层的产物）', async () => {
@@ -672,7 +879,7 @@ describe('中间件位', () => {
       })
     }) as unknown as typeof globalThis.fetch
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -689,7 +896,9 @@ describe('中间件位', () => {
     })
 
     // 流会因缺 finish_reason 而报错——此处只关心请求体
-    await drain(seam.stream({ messages: [{ role: 'user', content: '嗨' }] }))
+    await drain(
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
 
     expect(body?.messages[0]).toEqual({ role: 'system', content: '改写过的系统提示' })
     expect(body?.messages[1]).toEqual({ role: 'user', content: '嗨' })
@@ -745,7 +954,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -754,7 +963,8 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const { events, result } = await drain(
-      seam.stream({
+      gateway.stream({
+        model: MINIMAX_MODEL,
         messages: [
           { role: 'system', content: '你是 Magic Code' },
           { role: 'user', content: '打个招呼' },
@@ -762,14 +972,17 @@ describe('假端点回环 · 流式事件序列', () => {
       }),
     )
 
-    expect(events).toEqual([
-      modelCallStart(MINIMAX_MODEL),
-      modelDelta('text', '你'),
-      modelDelta('text', '好'),
-      modelDelta('thinking', '简短想'),
-      modelUsage(11, 5),
-      modelCallEnd(),
-    ])
+    const stamp = testEnvelope()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamp, MINIMAX_MODEL),
+        modelDelta(stamp, 'text', '你'),
+        modelDelta(stamp, 'text', '好'),
+        modelDelta(stamp, 'thinking', '简短想'),
+        modelUsage(stamp, 11, 5),
+        modelCallEnd(stamp),
+      ]),
+    )
     expect(result.text).toBe('你好')
     expect(result.thinking).toBe('简短想')
     expect(result.finishReason).toBe('stop')
@@ -801,7 +1014,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -810,7 +1023,8 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     await drain(
-      seam.stream({
+      gateway.stream({
+        model: MINIMAX_MODEL,
         messages: [
           { role: 'system', content: '身份段' },
           { role: 'system', content: '工具段' },
@@ -833,7 +1047,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -842,7 +1056,8 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     await drain(
-      seam.stream({
+      gateway.stream({
+        model: MINIMAX_MODEL,
         messages: [
           { role: 'user', content: '列目录' },
           {
@@ -850,7 +1065,8 @@ describe('假端点回环 · 流式事件序列', () => {
             content: '',
             toolCalls: [{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }],
           },
-          { role: 'tool', callId: 'call_1', name: 'exec', content: 'a.ts\nb.ts' },
+          // 共享语言的工具消息：`callId` 是**供应商侧**调用 id；工具名由上文的 assistant 消息推出
+          { role: 'tool', callId: 'call_1', ok: true, output: 'a.ts\nb.ts' },
         ],
       }),
     )
@@ -869,6 +1085,47 @@ describe('假端点回环 · 流式事件序列', () => {
         ],
       },
       { role: 'tool', content: 'a.ts\nb.ts', tool_call_id: 'call_1' },
+    ])
+  })
+
+  test('工具失败回填：ok=false → error-text（不是 text）', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'minimax',
+      config: CONFIG,
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    await drain(
+      gateway.stream({
+        model: MINIMAX_MODEL,
+        messages: [
+          { role: 'user', content: '跑一下' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'call_9', name: 'exec', args: { cmd: 'nope' } }],
+          },
+          { role: 'tool', callId: 'call_9', ok: false, output: 'command not found' },
+        ],
+      }),
+    )
+
+    expect(seen[0]?.body.messages).toEqual([
+      { role: 'user', content: '跑一下' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call_9', type: 'function', function: { name: 'exec', arguments: '{"cmd":"nope"}' } },
+        ],
+      },
+      { role: 'tool', content: 'command not found', tool_call_id: 'call_9' },
     ])
   })
 
@@ -901,7 +1158,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -909,22 +1166,27 @@ describe('假端点回环 · 流式事件序列', () => {
       env: {},
     })
 
+    const TOOLS: readonly ToolSpec[] = [
+      {
+        name: 'exec',
+        summary: '在工作目录里执行命令',
+        parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] },
+        danger: { level: 'by-call', note: '按命令解析' },
+      },
+    ]
+
     const { events, result } = await drain(
-      seam.stream({
+      gateway.stream({
+        model: MINIMAX_MODEL,
         messages: [{ role: 'user', content: '列一下目录' }],
-        tools: [
-          {
-            name: 'exec',
-            description: '在工作目录里执行命令',
-            parameters: { type: 'object', properties: { cmd: { type: 'string' } }, required: ['cmd'] },
-          },
-        ],
+        tools: TOOLS,
       }),
     )
 
     const toolcallNames = new Set<string | undefined>()
     let toolcallDeltaCount = 0
     for (const event of events) {
+      // 消费侧按 kind 自动收窄（不再需要显式 `as`）
       if (event.kind !== 'model.delta') continue
       if (event.data.channel !== 'toolcall') continue
       toolcallDeltaCount += 1
@@ -935,7 +1197,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     expect(result.toolCalls).toEqual([{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }])
     expect(result.finishReason).toBe('tool-calls')
-    expect(events.at(-1)).toEqual(modelCallEnd())
+    expect(events.at(-1)?.kind).toBe('model.call.end')
 
     // 工具定义确实送出去了（模型只出请求，执行不在接缝）
     const tools = seen[0]?.body.tools as { function: { name: string } }[] | undefined
@@ -951,7 +1213,7 @@ describe('假端点回环 · 流式事件序列', () => {
         ),
     )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'sk-secret-abcdefghijklmnop',
@@ -960,10 +1222,10 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const { events, result } = await drain(
-      seam.stream({ messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
 
-    expect(events[0]).toEqual(modelCallStart(MINIMAX_MODEL))
+    expect(events[0]?.kind).toBe('model.call.start')
     expect(events.at(-1)?.kind).toBe('model.error')
     expect(result.error?.tier).toBe('terminal')
     expect(JSON.stringify(events)).not.toContain('sk-secret-abcdefghijklmnop')
@@ -978,7 +1240,7 @@ describe('假端点回环 · 流式事件序列', () => {
         }),
     )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       apiKey: 'test-key',
@@ -986,65 +1248,125 @@ describe('假端点回环 · 流式事件序列', () => {
       env: {},
     })
 
-    const { result } = await drain(seam.stream({ messages: [{ role: 'user', content: '嗨' }] }))
+    const { result } = await drain(
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
 
     expect(result.error?.tier).toBe('transient')
     expect(result.error?.message).toContain('rate limit')
   })
 
   test('环境变量回退——key 从 MAGIC_MINIMAX_API_KEY 取，落到鉴权头', async () => {
-    const { fetch, seen } = capture(() => sse(chunk({ choices: [{ index: 0, delta: { content: '嗨' } }] })))
+    const { fetch, seen } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: { content: '嗨' } }] })),
+    )
 
-    const seam = createModelSeam({
+    const gateway = createModelGateway({
       providerId: 'minimax',
       config: CONFIG,
       fetch,
       env: { MAGIC_MINIMAX_API_KEY: 'env-key-123' },
     })
 
-    await drain(seam.stream({ messages: [{ role: 'user', content: '嗨' }] }))
+    await drain(
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
 
     expect(seen[0]?.authorization).toBe('Bearer env-key-123')
+  })
+
+  test('模型名取自请求——配置的默认被请求覆盖（运行时切换的落点）', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'minimax',
+      config: CONFIG,
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    const { events } = await drain(
+      gateway.stream({ model: 'MiniMax-M4', messages: [{ role: 'user', content: '嗨' }] }),
+    )
+
+    expect(seen[0]?.body.model).toBe('MiniMax-M4')
+    expect(events[0]?.kind).toBe('model.call.start')
+    // 特征标记随请求的模型名裁定——表外模型不切（判据 ③）
+    expect(events[0]).toMatchObject({ data: { model: 'MiniMax-M4' } })
   })
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 六 · 接缝形态（Faux Provider 与循环依赖的表面）
+// 六 · 端口形态（契约 `ModelGateway` 与 Faux 的界面）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('接缝形态', () => {
+describe('端口形态', () => {
   test('事件构造子产出的 kind 与 data 与契约逐 kind 配对', () => {
-    expect(modelCallStart('MiniMax-M3')).toEqual({
-      kind: 'model.call.start',
-      data: { model: 'MiniMax-M3' },
-    })
-    expect(modelDelta('text', '嗨')).toEqual({
-      kind: 'model.delta',
-      data: { channel: 'text', text: '嗨' },
-    })
-    expect(modelDelta('toolcall', '{}', 'exec')).toEqual({
-      kind: 'model.delta',
-      data: { channel: 'toolcall', text: '{}', name: 'exec' },
-    })
-    expect(modelUsage(1, 2)).toEqual({
-      kind: 'model.usage',
-      data: { inputTokens: 1, outputTokens: 2 },
-    })
-    expect(modelCallEnd()).toEqual({ kind: 'model.call.end', data: {} })
-    expect(modelErrorEvent('terminal', '停了')).toEqual({
-      kind: 'model.error',
-      data: { tier: 'terminal', message: '停了' },
-    })
+    const stamp = testEnvelope()
+
+    expect(payloads([modelCallStart(stamp, 'MiniMax-M3')])).toEqual([
+      { kind: 'model.call.start', data: { model: 'MiniMax-M3' } },
+    ])
+    expect(payloads([modelDelta(stamp, 'text', '嗨')])).toEqual([
+      { kind: 'model.delta', data: { channel: 'text', text: '嗨' } },
+    ])
+    expect(payloads([modelDelta(stamp, 'toolcall', '{}', 'exec')])).toEqual([
+      { kind: 'model.delta', data: { channel: 'toolcall', text: '{}', name: 'exec' } },
+    ])
+    expect(payloads([modelUsage(stamp, 1, 2)])).toEqual([
+      { kind: 'model.usage', data: { inputTokens: 1, outputTokens: 2 } },
+    ])
+    expect(payloads([modelCallEnd(stamp)])).toEqual([{ kind: 'model.call.end', data: {} }])
+    expect(payloads([modelErrorEvent(stamp, 'terminal', '停了')])).toEqual([
+      { kind: 'model.error', data: { tier: 'terminal', message: '停了' } },
+    ])
   })
 
-  test('Faux 可直接实现 ModelSeam（U12 的界面）', async () => {
-    async function* scripted(): AsyncIterable<ModelEvent> {
-      yield modelCallStart('faux')
-      yield modelDelta('text', '假的')
-      yield modelCallEnd()
+  test('构造面即信封——id 单调、session / turn / at 由来源给', () => {
+    const source = testEnvelope('sess-1')
+    const first = modelCallStart(source, MINIMAX_MODEL)
+    const second = modelCallEnd(source)
+
+    expect(first.session).toBe('sess-1')
+    expect(first.turn).toBeNull()
+    expect(first.at).toBe(1_700_000_000_000)
+    expect(second.id).toBeGreaterThan(first.id)
+  })
+
+  test('事件来源可注入——装配根按锚定结论换归属（`envelope` 选项）', async () => {
+    const { fetch } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: { content: '嗨' } }] })),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'minimax',
+      config: CONFIG,
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+      envelope: { session: 'injected', turn: 7, nextId: () => 100, now: () => 42 },
+    })
+
+    const { events } = await drain(
+      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
+
+    expect(events[0]).toMatchObject({ id: 100, session: 'injected', turn: 7, at: 42 })
+  })
+
+  test('Faux 可直接实现 ModelGateway（U12 的界面）', async () => {
+    const stamp = testEnvelope()
+
+    async function* scripted(): AsyncIterable<KernelEvent> {
+      yield modelCallStart(stamp, 'faux')
+      yield modelDelta(stamp, 'text', '假的')
+      yield modelCallEnd(stamp)
     }
 
-    const faux = {
+    const faux: ModelGateway = {
       stream(): ModelStream {
         return {
           events: scripted(),
@@ -1063,7 +1385,52 @@ describe('接缝形态', () => {
       },
     }
 
-    const { events } = await drain(faux.stream())
-    expect(events).toEqual([modelCallStart('faux'), modelDelta('text', '假的'), modelCallEnd()])
+    const { events } = await drain(faux.stream({ model: 'faux', messages: [] }))
+    expect(payloads(events)).toEqual(
+      payloads([modelCallStart(stamp, 'faux'), modelDelta(stamp, 'text', '假的'), modelCallEnd(stamp)]),
+    )
+  })
+
+  test('消费者按契约端口取用——只见 stream(req, opts) → { events; result }', () => {
+    // 类型层面：`createModelGateway` 的返回可赋给契约端口（`@magic/contracts` 的 `ModelGateway`）
+    const gateway = createModelGateway({ providerId: 'minimax', config: CONFIG, apiKey: 'k', env: {} })
+    const stream = gateway.stream(
+      { model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] },
+      { signal: new AbortController().signal },
+    )
+
+    expect(typeof stream.events[Symbol.asyncIterator]).toBe('function')
+    expect(stream.result).toBeInstanceOf(Promise)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 七 · 消息装配（共享语言 `ModelMessage` 的判别联合）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('消息装配', () => {
+  test('四支判别联合按 role 收窄——system / user / assistant / tool', async () => {
+    const { fetch } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'minimax',
+      config: CONFIG,
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    const messages: ModelMessage[] = [
+      { role: 'system', content: '段一' },
+      { role: 'user', content: '嗨' },
+      { role: 'assistant', content: '在', toolCalls: [{ id: 'c1', name: 'ls', args: {} }] },
+      { role: 'tool', callId: 'c1', ok: true, output: 'a.ts' },
+    ]
+
+    const { events } = await drain(gateway.stream({ model: MINIMAX_MODEL, messages }))
+
+    expect(events.at(-1)?.kind).toBe('model.call.end')
   })
 })

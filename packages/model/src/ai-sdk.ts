@@ -7,14 +7,15 @@
  * - 关掉 SDK 的自动重试——分档与回退归内核（技术方案：回退逻辑放内核、不依赖 SDK 自动机制）。
  *
  * 本文件不 import `node:fs`（内核 fs 纪律），**也拿不到记录的写入口**——
- * 它只知道 `ProviderConfig`（形制见配置契约），于是 key 到不了记录 / 事件。
+ * 它只知道 `ProviderConfig`（形制见共享语言 · 配置形制），于是 key 到不了记录 / 事件。
  */
 
 import { jsonSchema, streamText, tool } from 'ai'
 import type { JSONSchema7, ModelMessage as AiSdkMessage, ToolSet } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import type { ProviderConfig } from '../contracts/index.ts'
-import type { ModelMessage, ModelRequest, ModelStreamOptions, ModelToolSpec } from './call.ts'
+import type { ModelMessage, ModelRequest, ToolSpec } from '@magic/contracts'
+import type { ProviderConfig } from '@magic/contracts'
+import type { ModelStreamOptions } from './call.ts'
 import type { VendorStreamPart } from './normalize.ts'
 
 // —— 首接供应商：MiniMax（配置模板定稿 2026-09-16；`~/.magic/config.json` 已有条目）——
@@ -64,7 +65,26 @@ function toInstructions(messages: readonly ModelMessage[]): string | undefined {
   return systems.map((message) => message.content).join('\n\n')
 }
 
+/**
+ * 工具消息带 `name`——取件层回填工具结果时需要（OpenAI 兼容族的 `tool` 消息同此）。
+ *
+ * 共享语言的 `ModelMessage('tool')` 只有 `callId`（**供应商侧**调用 id），没有工具名：
+ * 名字**可从上文推出**——发起它的 assistant 消息里 `ToolCall.id ↔ name` 成对。
+ * 故此处按 `callId` 反查（前缀扫描，assistant 消息必在 tool 消息之前）。
+ * 查不到（如上下文被压缩过）退 `''`——线上 OpenAI 兼容形制只认 `tool_call_id`，工具名不上线。
+ */
+function toolNamesOf(messages: readonly ModelMessage[]): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    for (const call of message.toolCalls ?? []) names.set(call.id, call.name)
+  }
+  return names
+}
+
 function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
+  const toolNames = toolNamesOf(messages)
+
   return messages
     .filter((message) => message.role !== 'system')
     .map((message): AiSdkMessage => {
@@ -96,25 +116,26 @@ function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
               {
                 type: 'tool-result' as const,
                 toolCallId: message.callId,
-                toolName: message.name,
+                toolName: toolNames.get(message.callId) ?? '',
                 output:
-                  message.isError === true
-                    ? { type: 'error-text' as const, value: message.content }
-                    : { type: 'text' as const, value: message.content },
+                  message.ok
+                    ? { type: 'text' as const, value: message.output }
+                    : { type: 'error-text' as const, value: message.output },
               },
             ],
           }
-    }
-  })
+      }
+    })
 }
 
 /** 工具定义——**不带执行体**：模型只出请求，执行归内核工具机制 + 权限闸门。 */
-function toAiSdkTools(specs: readonly ModelToolSpec[] | undefined): ToolSet | undefined {
+function toAiSdkTools(specs: readonly ToolSpec[] | undefined): ToolSet | undefined {
   if (specs === undefined || specs.length === 0) return undefined
   const tools: ToolSet = {}
   for (const spec of specs) {
     tools[spec.name] = tool({
-      description: spec.description,
+      // 共享语言 `ToolSpec` 的 `summary` 即工具描述（危险归类不上线——那是闸门的事）
+      description: spec.summary,
       inputSchema: jsonSchema(spec.parameters as JSONSchema7),
     })
   }
@@ -125,7 +146,7 @@ function toAiSdkTools(specs: readonly ModelToolSpec[] | undefined): ToolSet | un
 
 /**
  * 注入用 fetch（测试：假端点回放 SSE，不经网络）。
- * 取 `globalThis.fetch` 的入参类型——契约层保持无依赖，也不引 DOM lib 之名。
+ * 取 `globalThis.fetch` 的入参类型——共享语言保持无依赖，也不引 DOM lib 之名。
  */
 export type FetchLike = (
   input: Parameters<typeof globalThis.fetch>[0],
@@ -143,6 +164,9 @@ export type VendorStreamerOptions = {
 /**
  * 取件层流——内核请求进，取件层 chunk 出。
  * 产出的 `VendorStreamPart` **只在接缝内部流通**（`normalize.ts` 的输入）。
+ *
+ * 模型名取自**请求**（`request.model`）——契约 `ModelRequest` 载之；
+ * 配置条目的 `model` 是「这个供应商默认用哪个」，请求可覆盖（运行时切换的落点，U17）。
  */
 export type VendorStreamer = (
   request: ModelRequest,
@@ -163,10 +187,10 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       : { fetch: options.fetch as unknown as typeof globalThis.fetch }),
   })
 
-  const model = provider.chatModel(options.config.model)
   const maxOutputTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS
 
   return (request, streamOptions) => {
+    const model = provider.chatModel(request.model)
     const instructions = toInstructions(request.messages)
     const result = streamText({
       model,

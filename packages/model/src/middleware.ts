@@ -13,14 +13,13 @@
  * 与取件层 `wrapLanguageModel` 的嵌套直觉一致（参考文档 · 模型接入调研 · 设计观察 3）。
  */
 
-import type { ModelRequest } from './call.ts'
-import type { ModelEvent } from './events.ts'
+import type { KernelEvent, ModelRequest } from '@magic/contracts'
 
 /** 调用上下文——横切逻辑的判据（谁在调、调什么）。不含 key。 */
 export type ModelCallContext = {
   /** 供应商 id（配置 `providers.<id>` 的键）。 */
   readonly provider: string
-  /** 模型名（配置条目里的 `model`）。 */
+  /** 模型名（**生效**的那个——请求里给的）。 */
   readonly model: string
   /** 中间件链**之前**的原始请求（免受改写影响，便于对账）。 */
   readonly request: ModelRequest
@@ -34,9 +33,9 @@ export type ModelMiddleware = {
   readonly name: string
   transformRequest?: (request: ModelRequest, ctx: ModelCallContext) => ModelRequest
   transformEvents?: (
-    events: AsyncIterable<ModelEvent>,
+    events: AsyncIterable<KernelEvent>,
     ctx: ModelCallContext,
-  ) => AsyncIterable<ModelEvent>
+  ) => AsyncIterable<KernelEvent>
 }
 
 /** 依序应用请求改写（数组由外到内：`[a, b]` → `b(a(request))`）。 */
@@ -58,9 +57,9 @@ export function applyRequestMiddleware(
  */
 export function applyEventMiddleware(
   middlewares: readonly ModelMiddleware[],
-  events: AsyncIterable<ModelEvent>,
+  events: AsyncIterable<KernelEvent>,
   ctx: ModelCallContext,
-): AsyncIterable<ModelEvent> {
+): AsyncIterable<KernelEvent> {
   let current = events
   for (let index = middlewares.length - 1; index >= 0; index -= 1) {
     const middleware = middlewares[index]
