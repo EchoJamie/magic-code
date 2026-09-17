@@ -27,7 +27,7 @@
 // —— ① Faux Provider ——
 
 export { createFauxGateway, FAUX_MODEL, FauxScriptExhaustedError } from './gateway.ts'
-export type { FauxGatewayOptions, FauxResult, FauxStream } from './gateway.ts'
+export type { FauxGateway, FauxGatewayOptions, FauxResult, FauxStream } from './gateway.ts'
 
 export { argsJsonOf, toPieces } from './script.ts'
 export type { FauxText, FauxToolCall, FauxTurn } from './script.ts'
@@ -45,7 +45,12 @@ export { makeFauxSandbox } from './stubs/sandbox.ts'
 export type { FauxExecScript, FauxSandbox, FauxSandboxOptions } from './stubs/sandbox.ts'
 
 export { makeFauxToolRuntime } from './stubs/tools.ts'
-export type { FauxToolHandler, FauxToolRuntime, FauxToolRuntimeOptions } from './stubs/tools.ts'
+export type {
+  FauxToolHandler,
+  FauxToolHandlerResult,
+  FauxToolRuntime,
+  FauxToolRuntimeOptions,
+} from './stubs/tools.ts'
 
 export { makeFauxPermissionGate } from './stubs/permission.ts'
 export type {
@@ -57,6 +62,9 @@ export type {
 
 export { makeFauxSink } from './stubs/sink.ts'
 export type { FauxSink } from './stubs/sink.ts'
+
+export { makeFauxWorkspace } from './stubs/workspace.ts'
+export type { FauxWorkspace, FauxWorkspaceOptions } from './stubs/workspace.ts'
 
 // —— 消费助手 ——
 

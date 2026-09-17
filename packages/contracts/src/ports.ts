@@ -15,7 +15,7 @@
  */
 
 import type { Command, UserInput } from './control.ts'
-import type { Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
+import type { Content, Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
 import type { Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
 
@@ -229,13 +229,24 @@ export type ToolCall = {
 }
 
 /**
- * 工具结果。
+ * 工具结果——**载两样输出**（一字之差，别混）。
  *
- * TODO(规划侧)：形态未定；占位为 ok / error + 输出。
+ * - `output` ＝**面向模型的文本**（按上限截断）——回填给模型看的那份；
+ * - `content` ＝**记录侧形态**（内联或 blob 引用）——**即该次 `tool.result` 事件的
+ *   `output`，两者同物**。
+ *
+ * **两样都要**：只给文本，条目就只能当内联记——大输出下条目与事件**当场分叉**、重放丢尾巴；
+ * 只给 Content，模型侧拿不到截断文本（blob 要取回才知道长度）。
+ * `callRef` 同理——条目侧 `tool-result` 的 `call` 字段取它，**四事件才串得成一条链**。
  */
 export type ToolResult = {
   readonly ok: boolean
+  /** 面向模型的文本（按上限截断）。 */
   readonly output: string
+  /** 记录侧形态（内联或 blob 引用）——即 `tool.result` 事件的 `output`。 */
+  readonly content: Content
+  /** 该次 `tool.call` 事件的 id（链引用）。 */
+  readonly callRef: RecordId
 }
 
 // —— 权限域 ——

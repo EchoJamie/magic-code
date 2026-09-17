@@ -281,7 +281,12 @@ describe('骨架 · 循环', () => {
     const call: ToolCall = { id: 'call_1', name: 'exec', args: { cmd: 'ls' } }
     const out = await tools.invoke(call, {})
 
-    expect(out).toEqual({ ok: true, output: 'a.txt\n' })
+    expect(out).toEqual({
+      ok: true,
+      output: 'a.txt\n',
+      content: { text: 'a.txt\n' },
+      callRef: 1,
+    })
     expect(sandbox.execs.map((e) => e.cmd)).toEqual(['ls'])
   })
 })

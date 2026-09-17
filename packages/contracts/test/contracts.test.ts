@@ -19,6 +19,7 @@ import {
 } from '../src/index.ts'
 import type {
   Command,
+  Content,
   DecisionId,
   Entry,
   EntryRange,
@@ -43,6 +44,7 @@ import type {
   Sandbox,
   ToolCall,
   ToolCallPayload,
+  ToolResult,
   ToolResultPayload,
   TurnId,
 } from '../src/index.ts'
@@ -237,6 +239,40 @@ export function recordsServiceIsImplementable(): void {
     },
   }
   void records
+}
+
+// —— 第 10 轮补锚（波次 2 · U04 / U06 共同报出的缺口）——
+
+/** 工具结果——**载两样输出 ＋ 链引用**，三字段皆必填。 */
+export function toolResultCarriesThreeParts(): void {
+  const result: ToolResult = {
+    ok: true,
+    output: '截断后的文本',
+    content: { text: '完整输出' },
+    callRef: 7,
+  }
+
+  // content 两选一——内联或 blob 引用
+  const inline: ToolResult = {
+    ok: false,
+    output: 'err',
+    content: { text: 'e' },
+    callRef: 1,
+  }
+  const blob: ToolResult = { ok: true, output: '…', content: { blob: 'b_1' }, callRef: 2 }
+
+  // callRef 落在 RecordId 空间（链引用——条目侧 tool-result 的 call 取它）
+  const ref: RecordId = result.callRef
+  const asContent: Content = result.content
+
+  void inline
+  void blob
+  void ref
+  void asContent
+
+  // @ts-expect-error 三字段皆必填——缺 `content` 不算数
+  const missing: ToolResult = { ok: true, output: 'x', callRef: 3 }
+  void missing
 }
 
 /** 条目的工具载荷——结构对齐事件侧。 */

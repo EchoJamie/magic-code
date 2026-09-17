@@ -251,7 +251,13 @@ describe('makeFauxToolRuntime', () => {
 
     const result = await tools.invoke(CALL, {})
 
-    expect(result).toEqual({ ok: true, output: '跑了 ls' })
+    // `content`（记录侧内联）与 `callRef`（链引用）由桩补——handler 只管 ok / output
+    expect(result).toEqual({
+      ok: true,
+      output: '跑了 ls',
+      content: { text: '跑了 ls' },
+      callRef: 1,
+    })
     expect(tools.calls.map((c) => c.name)).toEqual(['exec'])
   })
 
