@@ -207,6 +207,11 @@ describe('Context 装配 · 工具往返', () => {
     const assistant = messages[1]
     const calls = assistant?.role === 'assistant' ? (assistant.toolCalls ?? []) : []
     expect(calls.map((call) => call.args['cmd'])).toEqual(['a', 'b', 'c'])
+
+    // 配对键**两两不同**——同轮多调用共用一个键，供应商侧就分不清哪条回填配哪次调用
+    const keys = calls.map((call) => call.id)
+    expect(new Set(keys).size).toBe(3)
+    expect(messages.slice(2).map((m) => (m.role === 'tool' ? m.callId : ''))).toEqual(keys)
     expect(messages.slice(2).map(textOfMessage)).toEqual(['出了 0', '出了 1', '出了 2'])
   })
 
