@@ -6,7 +6,7 @@
  * 2. **分包可用** —— 各包经 Bun workspaces 链接、可被消费者解析加载；
  * 3. **域 → 契约** —— 非装配包只 import `@magic/contracts`（＋许可外部库白名单）；
  * 4. **域不认知外壳与装配** —— 域包不得 import `@magic/tui` / `@magic/app`；
- * 5. **内核 fs 边界** —— fs 触达只许 `@magic/records` · `@magic/execution`（扫描面＝各包 `src/`）；
+ * 5. **内核 fs 边界** —— fs 触达只许 `@magic/records` · `@magic/execution`（扫描面＝**域包** `src/`）；
  * 6. **契约包零运行时依赖**；
  * 7. **公开面** —— 各包 `exports` 只出 `.`（不出子路径、不暴露内部目录）。
  *
@@ -107,6 +107,21 @@ function allowedMagicDepsFor(name: string, face: 'src' | 'test' | 'other'): read
  * （记录库 / blob 与沙箱工作区）。
  */
 const FS_ALLOWED_PACKAGES = ['@magic/records', '@magic/execution']
+
+/**
+ * **非内核包**——外壳 · 装配根 · 测试层。fs 纪律**不约束它们**。
+ *
+ * 出处：技术方案 · 代码治理 · 边界纪律——「内核仅 `records` · `execution` 两域；**其余域**
+ * 不得出现 `node:fs` …」。约束面是**域包**（内核诸域）；而按领域划分，外壳与装配根是**层**、
+ * 测试层（`@magic/faux`）非域。装配根读取配置与密钥是装配视图第 1 步的明文
+ * （`~/.magic/config.json`——key 解析只此一处），外壳自持显示组件。
+ *
+ * ⚠️ 本清单由 U11 补（2026-09-18）——此前扫描面铺到**全部包**，是守护**扫宽了**：
+ * 它把装配根挡在「读配置」之外，而那是设计明写要它做的事。规划侧已把这条澄清写进
+ * `技术方案.md`·代码治理·边界纪律（扫描面＝域包）。**白名单断言不动**——它钉的是
+ * 「域包里谁可以碰 fs」，与扫描面是两件事。
+ */
+const NON_KERNEL_PACKAGES = [...SHELL_PACKAGES, '@magic/faux']
 
 /** fs 模块族——import 即触达文件系统。 */
 const FS_MODULES = [
@@ -431,10 +446,14 @@ function fsTouchesOf(fileName: string, source: string): string[] {
 }
 
 /**
- * fs 纪律的扫描面——**只查各包的 `src/`**（内核产物）。
+ * fs 纪律的扫描面——**只查域包的 `src/`**（内核产物）。
  *
- * 测试用 fs 是测试的正常需求（`mkdtemp` 建临时目录、直读库表断言 blob 落盘），
- * 不属「内核不直碰文件系统」——**测试不是内核产物**，其 fs 使用不产生该纪律要防的风险。
+ * 两重收窄，各按同一条分面原则：
+ * - **只查 `src/`**——测试用 fs 是测试的正常需求（`mkdtemp` 建临时目录、直读库表断言
+ *   blob 落盘），不属「内核不直碰文件系统」：**测试不是内核产物**，其 fs 使用不产生
+ *   该纪律要防的风险；
+ * - **只查域包**——纪律的原文约束「其余**域**」；外壳 / 装配根 / 测试层不是域
+ *   （`NON_KERNEL_PACKAGES` 头注）。
  */
 async function fsCrossingsOf(): Promise<string[]> {
   const crossings: string[] = []
@@ -442,6 +461,7 @@ async function fsCrossingsOf(): Promise<string[]> {
 
   for (const { dir, name } of packagesOf()) {
     if (FS_ALLOWED_PACKAGES.includes(name)) continue
+    if (NON_KERNEL_PACKAGES.includes(name)) continue
 
     for (const file of await sourceFilesOf(dir)) {
       if (!file.startsWith(srcPrefix)) continue
@@ -540,7 +560,7 @@ describe('依赖单向（源码落点）', () => {
 })
 
 describe('内核 fs 边界', () => {
-  test('fs 触达只许 records / execution 两域（扫描面＝各包 src/）', async () => {
+  test('fs 触达只许 records / execution 两域（扫描面＝域包 src/）', async () => {
     expect(await fsCrossingsOf()).toEqual([])
   })
 })
@@ -738,6 +758,17 @@ describe('fs 触达提取（反向用例）', () => {
     expect(FS_ALLOWED_PACKAGES).toEqual(['@magic/records', '@magic/execution'])
     expect(FS_ALLOWED_PACKAGES).not.toContain('@magic/model')
     expect(FS_ALLOWED_PACKAGES).not.toContain('@magic/contracts')
+  })
+
+  test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
+    expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/faux'])
+    // 域包一个都不许溜进这道豁免——否则扫描面会被悄悄挖空
+    for (const domain of Object.keys(PACKAGE_TABLE)) {
+      if (domain === ASSEMBLY_PACKAGE || domain === '@magic/tui' || domain === '@magic/faux') {
+        continue
+      }
+      expect(NON_KERNEL_PACKAGES).not.toContain(domain)
+    }
   })
 })
 

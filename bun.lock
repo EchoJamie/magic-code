@@ -22,8 +22,15 @@
         "@magic/contracts": "workspace:*",
         "@magic/control": "workspace:*",
         "@magic/conversation": "workspace:*",
+        "@magic/execution": "workspace:*",
         "@magic/model": "workspace:*",
+        "@magic/permission": "workspace:*",
+        "@magic/records": "workspace:*",
+        "@magic/tools": "workspace:*",
         "@magic/tui": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
       },
     },
     "packages/contracts": {
