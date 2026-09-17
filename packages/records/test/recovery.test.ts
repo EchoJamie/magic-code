@@ -133,6 +133,39 @@ describe('判据 ① · 在途识别（真库）', () => {
     }
   })
 
+  test('已了结的调用**不报**——只报还在途的那笔（别把历史全倒出来）', async () => {
+    const dir = tempDataDir()
+    try {
+      const store = createRecordsStore({ dataDir: dir })
+      const records = store.serviceFor(SESSION)
+      const { stamp } = makeStamper(records)
+
+      records.appendEvent(stamp('turn.start', {}, 1))
+      const done = startCall(records, stamp, { cmd: 'ls' })
+      records.appendEntry({
+        kind: 'tool-result',
+        content: { text: 'a.txt\n' },
+        payload: { ok: true, output: { text: 'a.txt\n' } },
+        at: T0,
+      })
+      records.appendEvent(
+        stamp('tool.result', { call: done.callRef, ok: true, output: { text: 'a.txt\n' } }, 1),
+      )
+
+      const pending = startCall(records, stamp, { cmd: 'pwd' })
+
+      const scan = await store.recoveryScan(SESSION)
+
+      expect(scan.calls).toHaveLength(1)
+      expect(scan.calls[0]?.call).toBe(pending.callRef)
+      expect(scan.calls[0]?.args).toEqual({ cmd: 'pwd' })
+
+      store.close()
+    } finally {
+      removeDataDir(dir)
+    }
+  })
+
   test('顺带在途的两笔各自成行（同轮多工具按序）', async () => {
     const dir = tempDataDir()
     try {
