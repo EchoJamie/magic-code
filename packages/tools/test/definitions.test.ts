@@ -30,15 +30,45 @@ function pokeTool(log: string[]): ToolDefinition {
 }
 
 describe('U06 · 定义与注册', () => {
-  test('definitions() 出 exec 一条——名称 / 描述 / 危险归类逐字段照工具集 v1 的冻结行', () => {
+  test('definitions() 出七件——顺序与名称 / 描述 / 危险归类逐字段照工具集 v1 的冻结表', () => {
     const { runtime } = makeToolDeps()
-    const definitions = runtime.definitions()
 
-    expect(definitions.map((d) => d.name)).toEqual(['exec'])
+    // 一件不漏、一件不多、次序照表（U13 到站后默认集＝工具集 v1）
+    expect(
+      runtime.definitions().map((d) => ({ name: d.name, summary: d.summary, danger: d.danger })),
+    ).toEqual(
+      TOOLSET_V1.map((row) => ({ name: row.name, summary: row.summary, danger: row.danger })),
+    )
+  })
 
-    const row = TOOLSET_V1.find((r) => r.name === 'exec')
-    expect(definitions[0]?.summary).toBe(row?.summary)
-    expect(definitions[0]?.danger).toEqual(row?.danger)
+  test('参数键——六件的键名与必填位照契约「参数键」注锚定（键名不带方言）', () => {
+    const { runtime } = makeToolDeps()
+
+    const keysOf = (name: string): { properties: string[]; required: unknown } => {
+      const parameters = runtime.definitions().find((d) => d.name === name)?.parameters
+      return {
+        properties: Object.keys((parameters?.properties ?? {}) as Record<string, unknown>),
+        required: parameters?.required,
+      }
+    }
+
+    expect(keysOf('read')).toEqual({ properties: ['path'], required: ['path'] })
+    expect(keysOf('write')).toEqual({ properties: ['path', 'content'], required: ['path', 'content'] })
+    expect(keysOf('edit')).toEqual({
+      properties: ['path', 'old', 'new'],
+      required: ['path', 'old', 'new'],
+    })
+    expect(keysOf('grep')).toEqual({ properties: ['pattern', 'path'], required: ['pattern'] })
+    expect(keysOf('glob')).toEqual({ properties: ['pattern', 'path'], required: ['pattern'] })
+    expect(keysOf('ls')).toEqual({ properties: ['path'], required: [] })
+  })
+
+  test('七件的参数模式都可序列化（送模型＝JSON 往返不变）', () => {
+    const { runtime } = makeToolDeps()
+
+    for (const definition of runtime.definitions()) {
+      expect(definition.parameters).toEqual(JSON.parse(JSON.stringify(definition.parameters)))
+    }
   })
 
   test('危险归类＝「按调用判定（按命令解析）」——本域只声明，不判定', () => {
@@ -64,18 +94,28 @@ describe('U06 · 定义与注册', () => {
     expect(Object.keys(properties ?? {})).toEqual(['cmd'])
   })
 
-  test('阶段 1 集＝仅 exec——不顺手把工具集 v1 的其余六件做进来（归 U13）', () => {
-    const { runtime } = makeToolDeps()
+  test('默认集＝工具集 v1 七件（阶段 1 的「仅 exec」随 U13 到站作废）；追加仍是追加', () => {
+    const log: string[] = []
+    const { runtime } = makeToolDeps({ tools: [pokeTool(log)] })
 
-    expect(runtime.definitions()).toHaveLength(1)
-    expect(runtime.definitions().map((d) => d.name)).toEqual(['exec'])
+    expect(runtime.definitions()).toHaveLength(8) // 七件默认 ＋ 一件追加
+    expect(runtime.definitions().at(-1)?.name).toBe('poke')
   })
 
   test('注册：自定义工具进 definitions，且真能分发到它的执行体', async () => {
     const log: string[] = []
     const { runtime, sandbox } = makeToolDeps({ tools: [pokeTool(log)] })
 
-    expect(runtime.definitions().map((d) => d.name)).toEqual(['exec', 'poke'])
+    expect(runtime.definitions().map((d) => d.name)).toEqual([
+      'exec',
+      'read',
+      'write',
+      'edit',
+      'grep',
+      'glob',
+      'ls',
+      'poke',
+    ])
 
     const outcome = await runtime.invoke({ id: 'c1', name: 'poke', args: { who: '阿吉' } }, {})
     expect(log).toEqual(['阿吉'])

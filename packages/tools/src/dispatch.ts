@@ -28,7 +28,6 @@
 import type { OutputDelta, RecordId, ToolCall, ToolResult, ToolRuntime } from '@magic/contracts'
 import { toContent } from './blobs.ts'
 import { toolCallEvent, toolOutputDeltaEvent, toolResultEvent } from './events.ts'
-import { defineExecTool } from './exec-tool.ts'
 import {
   crashedOutput,
   OUTPUT_CANCELED_BEFORE_RUN,
@@ -39,6 +38,8 @@ import {
 import { createRegistry } from './registry.ts'
 import type { ToolDefinition, ToolRegistry, ToolRunResult } from './registry.ts'
 import type { ToolInvokeOptions, ToolRuntimeOptions } from './runtime.ts'
+import { refused, reasonOf } from './toolkit.ts'
+import { defineToolsetV1 } from './toolset.ts'
 
 /** 竞速的哨兵——与任何裁决值都不同型，收窄时不会与 `Decision` 撞。 */
 const ABORTED = Symbol('aborted')
@@ -79,10 +80,11 @@ async function raceAbort<T>(
 /**
  * 造一个工具域实例。
  *
- * 默认工具集**只有 `exec`**——`options.tools` 是**追加**（U13 的工具集 v1 从这里进来）。
+ * 默认工具集＝**工具集 v1（七件）**——`options.tools` 是**追加**出口（自定义 / 未来的 MCP
+ * 集从这里进来，不替换默认集）。阶段 1 的默认集只有 `exec`；其余六件随工具集 v1（U13）到站。
  */
 export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
-  const registry: ToolRegistry = createRegistry([defineExecTool(), ...(options.tools ?? [])])
+  const registry: ToolRegistry = createRegistry([...defineToolsetV1(), ...(options.tools ?? [])])
 
   /**
    * 闸门要的根视图——**纯数据**，由本域给出（契约：不传端口进端口）。
@@ -99,10 +101,10 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
   ): Promise<ToolRunResult> => {
-    if (call.invalid === true) return { ok: false, output: OUTPUT_INVALID_ARGS }
+    if (call.invalid === true) return refused(OUTPUT_INVALID_ARGS)
 
     const definition: ToolDefinition | undefined = registry.get(call.name)
-    if (definition === undefined) return { ok: false, output: unknownToolOutput(call.name) }
+    if (definition === undefined) return refused(unknownToolOutput(call.name))
 
     try {
       return await definition.run(call.args, {
@@ -111,7 +113,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         onOutput,
       })
     } catch (error) {
-      return { ok: false, output: crashedOutput(error instanceof Error ? error.message : String(error)) }
+      return refused(crashedOutput(reasonOf(error)))
     }
   }
 
@@ -123,11 +125,11 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     onOutput: (delta: OutputDelta) => void,
   ): Promise<ToolRunResult> => {
     // 入口即中止——不问、不跑（理由见文件头注）
-    if (opts.signal?.aborted === true) return { ok: false, output: OUTPUT_CANCELED_BEFORE_RUN }
+    if (opts.signal?.aborted === true) return refused(OUTPUT_CANCELED_BEFORE_RUN)
 
     const decision = await raceAbort(options.gate.decide(call, contextOf(), callRef), opts.signal)
-    if (decision === ABORTED) return { ok: false, output: OUTPUT_CANCELED_BEFORE_RUN }
-    if (decision === 'reject') return { ok: false, output: OUTPUT_REJECTED }
+    if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)
+    if (decision === 'reject') return refused(OUTPUT_REJECTED)
 
     return execute(call, opts, onOutput)
   }

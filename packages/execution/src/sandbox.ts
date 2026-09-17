@@ -1,13 +1,15 @@
 /**
  * `Sandbox` —— 沙箱端口实现（技术方案 · 领域划分：工具域 → 执行域）。
  *
- * **阶段 1 只实装 `exec`**；`read` / `write` / `list` / `match` 留桩——那是**工具集 v1
- * （阶段 2 · U13）**的事，本单元不做（技术方案 · 执行 · 原语形态末句）。
+ * **五原语齐**（阶段 1 实装 `exec`；`read` / `write` / `list` / `match` 四件归工具集 v1
+ * ＝U13，本单元补齐——技术方案 · 执行 · 原语形态末句）。
  *
- * 两件分工：
- * - 本文件＝**路径与工作区**——cwd 解析经 `WorkspaceService`，越界**在进程启动之前**
- *   就归位为 `reason: 'out-of-bounds'`（判据 4 第二例：越界＝进程不启动）；
- * - `exec.ts`＝**进程**——启动 · 流 · 超时 · 取消。
+ * 三件分工（各管一摊，互不越界）：
+ * - 本文件＝**路径与工作区**——一切路径经 `WorkspaceService.resolve` 归位：`exec` 的 cwd
+ *   越界**在进程启动之前**归 `reason: 'out-of-bounds'`（判据 4 第二例：越界＝进程不启动）；
+ *   余四原语**让 `resolve` 的抛照原样上去**（它们没有判别式位置——见 `files.ts` 头注）。
+ * - `exec.ts` ＝ **进程**——启动 · 流 · 超时 · 取消。
+ * - `files.ts` / `match.ts` ＝ **文件与匹配**——进来时已绝对、已落根内。
  *
  * `maxOutputBytes` 的取舍（实现级自由度——「命令执行的超时 / 输出上限」由实现裁量）：
  * **每道流各自计**。理由：判据与消费都按「这道流被截了没有」读，`truncated` 因而
@@ -15,12 +17,24 @@
  * 对首站（单机自用 · 上限由调用方给）可接受。
  */
 
-import type { ExecOptions, ExecResult, Sandbox, WorkspaceService } from '@magic/contracts'
+import type {
+  ExecOptions,
+  ExecResult,
+  ListEntry,
+  MatchHit,
+  MatchOptions,
+  ReadResult,
+  Sandbox,
+  WorkspaceService,
+  WriteData,
+} from '@magic/contracts'
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_TIMEOUT_MS,
   runCommand,
 } from './exec.ts'
+import { DEFAULT_MAX_READ_BYTES, listDir, readText, writeInto } from './files.ts'
+import { matchIn } from './match.ts'
 
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type SandboxOptions = {
@@ -40,9 +54,11 @@ function positiveOr(value: number | undefined, fallback: number): number {
 export function createSandbox(options: SandboxOptions): Sandbox {
   const { workspace } = options
 
-  const unimplemented = (primitive: string): never => {
-    throw new Error(`沙箱原语 \`${primitive}\` 阶段 1 未实装——归工具集 v1（U13）`)
-  }
+  /**
+   * 归位一个路径——**唯一的入口**：相对按默认根、绝对须落根内，越界即抛（`resolve`）。
+   * 四个文件 / 匹配原语共用；`exec` 另有一份（它要把这个抛折成 `reason`，见下）。
+   */
+  const inRoot = (path: string): string => workspace.resolve(path).absolute
 
   return {
     async exec(cmd: string, opts: ExecOptions): Promise<ExecResult> {
@@ -68,9 +84,22 @@ export function createSandbox(options: SandboxOptions): Sandbox {
       })
     },
 
-    read: () => unimplemented('read'),
-    write: () => unimplemented('write'),
-    list: () => unimplemented('list'),
-    match: () => unimplemented('match'),
+    async read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult> {
+      // 上限可被调用方放大（`edit` 的「读 → 改 → 写回」靠它）；非法值回落实现常量
+      return readText(inRoot(path), positiveOr(opts?.maxBytes, DEFAULT_MAX_READ_BYTES))
+    },
+
+    async write(path: string, data: WriteData): Promise<void> {
+      return writeInto(inRoot(path), data)
+    },
+
+    async list(path: string): Promise<readonly ListEntry[]> {
+      return listDir(inRoot(path))
+    },
+
+    async match(pattern: string, opts: MatchOptions): Promise<readonly MatchHit[]> {
+      // 起点缺省＝默认根（相对按默认根 —— 与 exec 的 cwd 缺省同一姿势）
+      return matchIn(inRoot(opts.path ?? '.'), pattern, opts)
+    },
   }
 }

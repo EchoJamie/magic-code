@@ -237,8 +237,8 @@ describe('makeFauxSandbox', () => {
   test('match 返回预置命中——并记下模式与选项（grep / glob 共用底）', async () => {
     const sandbox = makeFauxSandbox({ hits: [{ path: '/w/a.txt' }] })
 
-    expect(await sandbox.match('内容', { glob: '*.txt' })).toEqual([{ path: '/w/a.txt' }])
-    expect(sandbox.matches).toEqual([{ pattern: '内容', opts: { glob: '*.txt' } }])
+    expect(await sandbox.match('内容', { mode: 'glob' })).toEqual([{ path: '/w/a.txt' }])
+    expect(sandbox.matches).toEqual([{ pattern: '内容', opts: { mode: 'glob' } }])
   })
 })
 

@@ -511,15 +511,25 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
 
 // ══ 阶段边界 · 选项韧性 ═══════════════════════════════════════════════
 
-describe('阶段边界——只实装 `exec`', () => {
-  test('`read` / `write` / `list` / `match` 留桩：阶段 1 未实装（**不顺手做完**）', () => {
-    const { box } = freshSandbox()
+describe('阶段边界——五原语齐（U13 补齐四件）', () => {
+  test('四原语不再是桩：桩的「未实装」报文消失，真实现按名分报错', async () => {
+    const { box, root } = freshSandbox()
+    writeFileSync(join(root, 'a.txt'), 'x')
 
-    // 归工具集 v1（阶段 2 · U13）——桩要响，别静默给空结果（静默＝更难查的假象）
-    expect(() => box.read('a.txt')).toThrow(/未实装/)
-    expect(() => box.write('a.txt', { text: 'x' })).toThrow(/未实装/)
-    expect(() => box.list('.')).toThrow(/未实装/)
-    expect(() => box.match('*.ts', {})).toThrow(/未实装/)
+    // 阶段 1 的留桩曾**同步抛「未实装」**（桩要响，不静默给空结果）；
+    // U13 实装后同一处是真行为——读得到、写得上、列得出、匹配得中
+    expect((await box.read('a.txt')).content).toBe('x')
+    await box.write('b.txt', { text: 'y' })
+    expect((await box.list('.')).map((entry) => entry.name)).toEqual(['a.txt', 'b.txt'])
+    expect(await box.match('a.txt', { mode: 'glob' })).toHaveLength(1)
+
+    // 认不出的路径：给的是**精确名分**（不存在），不是「未实装」
+    const failure = await box.read('no-such.txt').then(
+      () => '（没抛）',
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    )
+    expect(failure).toMatch(/不存在/)
+    expect(failure).not.toMatch(/未实装/)
   })
 })
 
