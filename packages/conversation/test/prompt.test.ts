@@ -1,8 +1,9 @@
 /**
- * U10 系统提示词 —— **Faux 校验**（工作分解 · 验收：段齐 · 注入对）。
+ * 系统提示词 —— **Faux 校验**（工作分解 · 验收判据 M04：段齐 · 注入对 · 装配之逆 · 注入来源纪律）。
  *
+ * 由旧结构 `kernel/test/u10.test.ts` 随 M04 迁入（判据一字未改，落点与 import 改指新包）。
  * 不需要模型、不需要端点：装配是纯函数，故这里直接以产物为证据——
- * 1. **段齐**——契约四段都在、顺序即 `PROMPT_SECTIONS`、正文非空、边界锚唯一且严格递增；
+ * 1. **段齐**——段结构四段都在、顺序即 `PROMPT_SECTIONS`、正文非空、边界锚唯一且严格递增；
  * 2. **注入对**——给定 cwd / platform / date，产物里看得到对应值；缺失（未给 / 空串 / 纯空白）报错；
  * 3. **段边界**——`splitSystemPrompt` 是装配之逆：往返逐块相符；产物被改即读不到该段（读取真读产物）；
  * 4. **注入来源纪律**——本单元不就地取材（源码里不得出现运行环境 / 时间读取）。
@@ -13,36 +14,35 @@
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROMPT_SECTIONS } from '../src/contracts/index.ts'
-import type { PromptRuntimeVar } from '../src/contracts/index.ts'
 import {
   ENVIRONMENT_BLOCK_ID,
   ENVIRONMENT_HEADING,
   PROMPT_RUNTIME_VARS,
+  PROMPT_SECTIONS,
   PromptVarsError,
   buildPromptBlocks,
   buildSystemPrompt,
   sectionHeading,
   splitSystemPrompt,
 } from '../src/prompt/index.ts'
-import type { PromptBlockId, PromptVars } from '../src/prompt/index.ts'
+import type { PromptBlockId, PromptRuntimeVar, PromptVars } from '../src/prompt/index.ts'
 
 const VARS: PromptVars = { cwd: '/ws/magic-code', platform: 'darwin', date: '2026-09-16' }
 
-/** 装配产物的块标识序——契约四段（顺序即结构）+ 环境注入块（殿后）。 */
+/** 装配产物的块标识序——段结构四段（顺序即结构）+ 环境注入块（殿后）。 */
 const BLOCK_IDS: PromptBlockId[] = [...PROMPT_SECTIONS, ENVIRONMENT_BLOCK_ID]
 
 // —— ① 段齐 ——
 
-describe('U10 · 段齐', () => {
-  test('四段尽在，顺序即契约结构；环境注入块殿后', () => {
+describe('M04 · 段齐', () => {
+  test('四段尽在，顺序即段结构；环境注入块殿后', () => {
     const ids = buildPromptBlocks(VARS).map((block) => block.id)
 
     expect(ids).toEqual(BLOCK_IDS)
     expect(ids.slice(0, PROMPT_SECTIONS.length)).toEqual([...PROMPT_SECTIONS])
   })
 
-  test('契约段表未被改——四段，且不含环境块（环境是追加块，不是新段）', () => {
+  test('段结构未被改——四段，且不含环境块（环境是追加块，不是新段）', () => {
     expect(PROMPT_SECTIONS).toEqual(['identity', 'conduct', 'tools', 'permission'])
     expect(PROMPT_SECTIONS as readonly string[]).not.toContain(ENVIRONMENT_BLOCK_ID)
   })
@@ -61,7 +61,7 @@ describe('U10 · 段齐', () => {
     }
   })
 
-  test('字符串产物：段标题按契约序依次出现（唯一、严格递增）', () => {
+  test('字符串产物：段标题按段结构序依次出现（唯一、严格递增）', () => {
     const prompt = buildSystemPrompt(VARS)
     const indexes = BLOCK_IDS.map((id) =>
       prompt.indexOf(id === ENVIRONMENT_BLOCK_ID ? ENVIRONMENT_HEADING : sectionHeading(id)),
@@ -80,7 +80,7 @@ describe('U10 · 段齐', () => {
 
 // —— ② 注入对 ——
 
-describe('U10 · 注入对', () => {
+describe('M04 · 注入对', () => {
   test('给定 cwd / platform / date，产物里看得到对应值（逐项一行）', () => {
     const prompt = buildSystemPrompt(VARS)
 
@@ -104,7 +104,7 @@ describe('U10 · 注入对', () => {
     }
   })
 
-  test('注入项齐项——覆盖契约 PromptRuntimeVar 全量', () => {
+  test('注入项齐项——覆盖段结构 PromptRuntimeVar 全量', () => {
     expect([...PROMPT_RUNTIME_VARS].sort()).toEqual(['cwd', 'date', 'platform'])
   })
 
@@ -122,7 +122,7 @@ describe('U10 · 注入对', () => {
 
 // —— ③ 缺失行为（明确：报错，不静默降级） ——
 
-describe('U10 · 缺失行为', () => {
+describe('M04 · 缺失行为', () => {
   test('全缺 → PromptVarsError，报出全部缺项（按呈现顺序）', () => {
     const error = (() => {
       try {
@@ -166,7 +166,7 @@ describe('U10 · 缺失行为', () => {
 
 // —— ④ 段边界（装配之逆） ——
 
-describe('U10 · 段边界', () => {
+describe('M04 · 段边界', () => {
   test('往返：split(build(vars)) 与 buildPromptBlocks(vars) 逐块相符', () => {
     const prompt = buildSystemPrompt(VARS)
 
@@ -197,7 +197,7 @@ describe('U10 · 段边界', () => {
 
 // —— ⑤ 注入来源纪律（就地取材即失败） ——
 
-describe('U10 · 注入来源纪律', () => {
+describe('M04 · 注入来源纪律', () => {
   /** 禁止的就地取材点——运行环境 / 运行时 / 时钟。fs 触达另由 scaffold 守护（prompt/ 不在放行清单）。 */
   const FORBIDDEN: ReadonlyArray<readonly [token: string, pattern: RegExp]> = [
     ['process（环境变量 / 平台）', /\bprocess\b/],

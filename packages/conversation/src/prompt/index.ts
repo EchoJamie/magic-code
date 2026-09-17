@@ -1,8 +1,9 @@
 /**
- * 系统提示词 —— U10 **公开面**（工作分解 · 单元落位：kernel `prompt/`）。
+ * 系统提示词 —— **公开面**（M04 迁入 · 对话域内部件 · `@magic/conversation`）。
  *
  * 段结构 v0（技术方案 ·「系统提示词（内核持有）」）——模板 + 运行时注入（工作目录 · 平台 · 日期）。
- * 装配产物供 U04（主循环 · 提示词装配）消费；跨单元请只 import 本文件（并行规约 1）。
+ * 域内消费者（U04 · 主循环 · 提示词装配）请只 import 本文件；段结构归 `./structure.ts`
+ * （**域内部件**——已不占契约位，跨域语言里没有它）。
  *
  * 消费面：
  * - `buildSystemPrompt(vars) → string` —— 一步取全量系统提示词；
@@ -11,6 +12,9 @@
  *
  * 注入值的来源由调用方给——本模块不读文件系统、不读环境变量、不取当前时间。
  */
+
+export { PROMPT_SECTIONS } from './structure.ts'
+export type { PromptSectionId, PromptRuntimeVar } from './structure.ts'
 
 export {
   HEADING_PREFIX,

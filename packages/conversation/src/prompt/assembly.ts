@@ -1,15 +1,15 @@
 /**
  * 系统提示词装配 —— 模板 + 运行时注入（技术方案 ·「系统提示词（内核持有）」）。
  *
- * 装配产物 ＝ 契约四段（`PROMPT_SECTIONS` 顺序）+ 环境注入块；
+ * 装配产物 ＝ 段结构四段（`PROMPT_SECTIONS` 顺序）+ 环境注入块；
  * 消费面是 `buildSystemPrompt(vars) → string`——U04（主循环 · 提示词装配）直接取用。
  *
  * **注入值的来源由调用方给**——本单元不读文件系统、不读环境变量、不取当前时间
  * （那是装配方的事；缺值报错而非就地取材）。
  */
 
-import { PROMPT_SECTIONS } from '../contracts/index.ts'
-import type { PromptRuntimeVar, PromptSectionId } from '../contracts/index.ts'
+import { PROMPT_SECTIONS } from './structure.ts'
+import type { PromptRuntimeVar, PromptSectionId } from './structure.ts'
 import { renderSections, sectionHeading } from './sections.ts'
 
 // —— 块 ——
@@ -17,15 +17,15 @@ import { renderSections, sectionHeading } from './sections.ts'
 /**
  * 环境注入块标识。
  *
- * 技术方案「段结构 v0」列了环境注入，但契约 `PROMPT_SECTIONS` 只冻四段（身份 / 行为 / 工具 / 权限）
- * ——故环境以**追加块**落于四段之后，不改契约、不新增 `PromptSectionId`（只增不改）。
+ * 技术方案「段结构 v0」列了环境注入，但段结构 `PROMPT_SECTIONS` 只冻四段（身份 / 行为 / 工具 / 权限）
+ * ——故环境以**追加块**落于四段之后，不改段结构、不新增 `PromptSectionId`（只增不改）。
  */
 export const ENVIRONMENT_BLOCK_ID = 'environment'
 
 /** 环境注入块的标题行（**边界锚**）。 */
 export const ENVIRONMENT_HEADING = '## 环境'
 
-/** 块的标识——契约四段之一，或环境注入块。 */
+/** 块的标识——段结构四段之一，或环境注入块。 */
 export type PromptBlockId = PromptSectionId | typeof ENVIRONMENT_BLOCK_ID
 
 /** 装配产物的一块。 */
@@ -44,11 +44,11 @@ export const BLOCK_SEPARATOR = '\n\n'
 
 // —— 运行时注入 ——
 
-/** 注入值——契约 `PromptRuntimeVar` 的取值（来源由调用方给）。 */
+/** 注入值——段结构 `PromptRuntimeVar` 的取值（来源由调用方给）。 */
 export type PromptVars = Readonly<Record<PromptRuntimeVar, string>>
 
 /**
- * 注入项与**呈现顺序**——契约只给类型，未给齐序表（实现级补充：只增不改）。
+ * 注入项与**呈现顺序**——段结构只给类型，未给齐序表（实现级补充：只增不改）。
  * `satisfies` 保证不写错名；漏项由测试的齐项断言拦下。
  */
 export const PROMPT_RUNTIME_VARS = [
@@ -113,7 +113,7 @@ export function renderEnvironment(vars: PromptVars): PromptBlock {
 
 // —— 装配 / 边界读取 ——
 
-/** 装配全部块——契约四段（`PROMPT_SECTIONS` 顺序）+ 环境注入块（殿后）。 */
+/** 装配全部块——段结构四段（`PROMPT_SECTIONS` 顺序）+ 环境注入块（殿后）。 */
 export function buildPromptBlocks(vars: PromptVars): readonly PromptBlock[] {
   return [...renderSections(), renderEnvironment(vars)]
 }
