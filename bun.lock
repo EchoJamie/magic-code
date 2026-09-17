@@ -43,6 +43,9 @@
       "dependencies": {
         "@magic/contracts": "workspace:*",
       },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
     },
     "packages/execution": {
       "name": "@magic/execution",

@@ -1,0 +1,267 @@
+/**
+ * 主循环 —— `agentLoop`：模型调用（流式）→ 工具调用 → 结果回填 → 往复，直到收束。
+ *
+ * 出处：技术方案 · 主循环（轮 ＝ 一次模型调用 ＋ 它请求的工具执行〔可为 0 个〕·
+ * 中断 · 同轮多工具按序逐个）。
+ *
+ * ```
+ *   一个用户输入 ─→ 落账（message.user）─┐
+ *                                        ↓
+ *      ┌───────────── 轮 ──────────────┐ │   轮 = 一次模型调用 + 它请求的工具
+ *      │  turn.start                   │ │
+ *      │  模型流（事件原样转发）        │ │
+ *      │  message.assistant（落账）     │ │
+ *      │  tool.call → tool.result ×n    │ │   闸门在执行路径内（工具域的事）
+ *      │  turn.end                     │ │
+ *      └───────────────────────────────┘ │
+ *                                        ↓
+ *              无工具调用 → 收束（回到等待输入）／被中止／出错
+ * ```
+ *
+ * **本域发的事件**（技术方案 · 领域划分 · 事件产出）——`message.user` · `message.assistant`
+ * · `turn.start` · `turn.end` · 兜底 `error`。模型域的事件（`model.*`）**原样转发**；
+ * 工具域 / 权限域的事件（`tool.*`）由它们各自直发 `EventSink`——**本域不越俎**。
+ *
+ * **轮起止由本域调**（`stamper.beginTurn`）——信封的归属 v0 锚定：「对话域在轮起止时调」。
+ * 模型域被测试钉死「不调 `beginTurn`」（M02 备案），接上时必须自己调：轮外的事件
+ * （`message.user`）信封 `turn` 为 `null`，轮内的都带本轮号。
+ *
+ * **上下文每轮由条目重建**（`./context.ts`）——记录即真源：中途被中止 / 崩掉，
+ * 下一轮装配出来的仍是记录里那个现场（恢复〔阶段 2〕走同一条路）。
+ *
+ * **中断**（`signal`）——模型流停止（`signal` 交给接缝）· 执行中命令终止（交给工具域）
+ * · 本轮以 `turn.end{reason:'aborted'}` 收束 · 回到等待输入。中断**不是**错误：
+ * 半截流式消息丢弃（技术方案 · 恢复：「未完成流式消息丢弃、记中止」）。
+ *
+ * **留缝**——错误分档的处置（瞬时退避 / 超限压缩重发 / 终态停下）归 U17（阶段 2）：
+ * 首站一律「停下报告用户」，即 `turn.end{reason:'error'}` ＋ 模型域的 `model.error` 已在事件流里。
+ */
+
+import type {
+  EventSink,
+  EventStamper,
+  ModelGateway,
+  RecordsService,
+  SessionId,
+  Timestamp,
+  ToolCall,
+  ToolRuntime,
+  TurnEndReason,
+  TurnId,
+  UserInput,
+} from '@magic/contracts'
+import { assembleContext } from './context.ts'
+import type { EntryLog, ToolOutcome } from './entries.ts'
+import {
+  appendTextEntry,
+  appendToolCallEntry,
+  appendToolResultEntry,
+  toolOutcomeOf,
+} from './entries.ts'
+
+/**
+ * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
+ * 每个字段都是一件「不知道自己是谁的」依赖：模型 / 工具 / 记录皆经端口，实现在别处。
+ */
+export type LoopRuntime = {
+  /** 会话——条目按会话读（信封的 `session` 由铸造器持，两处同源）。 */
+  readonly session: SessionId
+  /** 模型名——随每次调用送模型域（`ModelRequest.model`）。 */
+  readonly model: string
+  /** 系统提示词全文——已由提示词部件装配好（本文件不认知段结构）。 */
+  readonly systemPrompt: string
+  readonly gateway: ModelGateway
+  readonly tools: ToolRuntime
+  readonly records: RecordsService
+  readonly sink: EventSink
+  readonly stamper: EventStamper
+  /**
+   * 轮号发号器——阶段 1 单调自增（端口实现持计数器）。
+   * **留缝**：阶段 2 恢复改由记录派生（同一会话续跑要接着那串轮号）。
+   */
+  readonly nextTurnId: () => TurnId
+  /** 时钟——条目时间戳（见 `./entries.ts`）。 */
+  readonly now: () => Timestamp
+  readonly blobThreshold: number
+  readonly blobTextLimit: number
+}
+
+/**
+ * 一轮的收场。
+ * `reason` 进 `turn.end`；`continues` ＝本轮请求了工具且都处置完——**须再开一轮**。
+ */
+export type TurnOutcome = {
+  readonly reason: TurnEndReason
+  readonly continues: boolean
+}
+
+/**
+ * 跑一个用户输入——从落账到收束（可含多轮）。
+ *
+ * 返回**最后一轮的结束方式**：`settled`（收束 · 回到等待输入）· `aborted`（被中止）·
+ * `error`（出错 / 内核自身异常）。
+ */
+export async function agentLoop(
+  runtime: LoopRuntime,
+  input: UserInput,
+  signal: AbortSignal,
+): Promise<TurnEndReason> {
+  const log = entryLogOf(runtime)
+
+  try {
+    // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
+    const entryId = await appendTextEntry(log, 'user', input.text)
+    runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
+  } catch (error) {
+    return reportError(runtime, error)
+  }
+
+  for (;;) {
+    // 轮间中止——不再开新轮（「回到等待输入」）
+    if (signal.aborted) return 'aborted'
+
+    const turn = await runTurn(runtime, signal)
+    if (turn.reason !== 'settled' || !turn.continues) return turn.reason
+  }
+}
+
+// ══ 一轮 ══════════════════════════════════════════════════════════════
+
+async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnOutcome> {
+  const { gateway, tools, sink, stamper } = runtime
+
+  // 轮起——铸造器的 `turn` 自此生效（轮内所有事件共用它）
+  stamper.beginTurn(runtime.nextTurnId())
+
+  try {
+    sink.emit(stamper.stamp('turn.start', {}))
+
+    const messages = await assembleContext({
+      records: runtime.records,
+      session: runtime.session,
+      systemPrompt: runtime.systemPrompt,
+      blobTextLimit: runtime.blobTextLimit,
+    })
+
+    const stream = gateway.stream(
+      { model: runtime.model, messages, tools: tools.definitions() },
+      { signal },
+    )
+
+    let text = ''
+    let errored = false
+
+    for await (const event of stream.events) {
+      // 模型域的事件**原样转发**（`model.call.start` / `model.delta` / `model.usage` /
+      // `model.call.end` / `model.error`）——过程流的消费方（渲染 / 记录）按 kind 收窄
+      sink.emit(event)
+
+      if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
+      // `model.error` 是本轮定论的信号（不变式 ④：其后无事件）；聚合结果里没有错误位
+      if (event.kind === 'model.error') errored = true
+    }
+
+    const result = await stream.result
+
+    // 被中止——半截流式消息**丢弃**，本轮就此收束
+    if (signal.aborted) return close(runtime, 'aborted', false)
+    // 出错——首站一律停下（分档处置归阶段 2 / U17）；半截正文同样不落账
+    if (errored) return close(runtime, 'error', false)
+
+    // 正文落账 ＋ `message.assistant`（事件只记「发生 + 引用」）
+    const assistantId = await appendTextEntry(entryLogOf(runtime), 'assistant', text)
+    sink.emit(stamper.stamp('message.assistant', { entry: assistantId }))
+
+    const calls = result.toolCalls ?? []
+    if (calls.length === 0) return close(runtime, 'settled', false) // 收束——回到等待输入
+
+    // 同轮多工具——**按序逐个**（并行执行留后评估）；一个被拒只影响该调用
+    for (const call of calls) {
+      if (signal.aborted) return close(runtime, 'aborted', false)
+      await runToolCall(runtime, call, signal)
+    }
+
+    return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted)
+  } catch (error) {
+    // 兜底——内核自身异常（非模型 / 工具域）：产生方就近发 `error`，本轮以「错误」收束
+    return close(runtime, 'error', false, error)
+  } finally {
+    // 轮止——`undefined` ＝轮外（信封的 `turn` 落 `null`）
+    stamper.beginTurn(undefined)
+  }
+}
+
+/**
+ * 一次工具调用——调用条目落账 → `invoke`（闸门在路径内）→ 结果条目落账。
+ *
+ * 对话域**不经手闸门、不经手沙箱**：`ToolRuntime.invoke` 内部才是「请求 → 闸门 →
+ * 执行 → 回填」（技术方案 · 工具域）——本域只把结果回填给模型。
+ *
+ * 结果的两样输出（第 2 轮 · 契约补锚）由 `toolOutcomeOf` 各归其位：面向模型的文本进条目
+ * 正文、记录侧形态进载荷（见 `./entries.ts`）。
+ */
+async function runToolCall(
+  runtime: LoopRuntime,
+  call: ToolCall,
+  signal: AbortSignal,
+): Promise<void> {
+  const log = entryLogOf(runtime)
+
+  // 调用条目先落账——它与结果条目成对，「有调用无结果」＝在途（阶段 2 恢复按它找）
+  appendToolCallEntry(log, call)
+
+  let outcome: ToolOutcome
+  try {
+    // `opts.onOutput` 留空：`tool.output.delta` 是**工具域**的产出（事件产出表）——
+    // 本域不越俎；该位留给将来的消费方（如外壳侧的实时视图）。
+    outcome = toolOutcomeOf(await runtime.tools.invoke(call, { signal }))
+  } catch (error) {
+    // 端口承诺「结果，不是异常」（与沙箱同法）；抛了＝工具域违约。
+    // 不炸掉整轮：以失败回填——模型与用户都看得到「这次没成」。
+    // 违约路径**编不出** `ToolResult`（链引用无从取得），故就地造落账形态：两样都内联
+    const text = `工具调用异常：${describeError(error)}`
+    outcome = { ok: false, text, content: { text } }
+  }
+
+  appendToolResultEntry(log, outcome)
+}
+
+// ══ 收场 ══════════════════════════════════════════════════════════════
+
+/** 本轮收束——发 `turn.end` 并交回结束方式。`error` 给了就顺带发兜底的 `error` 事件。 */
+function close(
+  runtime: LoopRuntime,
+  reason: TurnEndReason,
+  continues: boolean,
+  error?: unknown,
+): TurnOutcome {
+  if (error !== undefined) {
+    runtime.sink.emit(
+      runtime.stamper.stamp('error', { message: `对话域异常：${describeError(error)}` }),
+    )
+  }
+
+  runtime.sink.emit(runtime.stamper.stamp('turn.end', { reason }))
+  return { reason, continues }
+}
+
+/** 兜底（轮外）——内核自身异常：发 `error` 事件并交回结束方式。 */
+function reportError(runtime: LoopRuntime, error: unknown): TurnEndReason {
+  runtime.sink.emit(
+    runtime.stamper.stamp('error', { message: `对话域异常：${describeError(error)}` }),
+  )
+  return 'error'
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** 落账依赖束——由运行时装配（时钟与阈值只此一处传给条目侧）。 */
+function entryLogOf(runtime: LoopRuntime): EntryLog {
+  return {
+    records: runtime.records,
+    now: runtime.now,
+    blobThreshold: runtime.blobThreshold,
+  }
+}
