@@ -16,6 +16,10 @@
  * **裁决口径**（无人值守替人批准）——阶段 1 一律人工门；本驱动替人按下按钮，是**验收
  * 装置的方便**，不是产品行为（产品里裁决只来自用户；自动放行归阶段 2 的规则化）。
  * 故缺省 `decide` 写得显眼，脚本可逐条改写；用尽的答复走同一个缺省。
+ *
+ * **答复的加宽位**（第 16 轮补）——`ShellAnswer` 收两形：裸 `Decision`（一次性，旧写法一字不动）
+ * 或 `{ decision, remember? }`。**「总是允许」由此脚本化**：没有这个位，那条链就只
+ * 在真 TTY 里按得出来、无人值守验不了（本轮的端到端真跑正是靠它）。
  */
 
 import type { Command, ControlTransport, Decision, KernelEvent } from '@magic/contracts'
@@ -30,8 +34,23 @@ export type ShellDecisionRequest = {
   readonly weight: 'light' | 'heavy'
 }
 
-/** 已答复的裁决（询问 ＋ 答复）。 */
-export type ShellDecision = ShellDecisionRequest & { readonly decision: Decision }
+/**
+ * 一次答复——裸词，或**裸词 ＋ 加宽位**。
+ *
+ * 给 `Decision` ＝一次性（与阶段 1 逐字同义）；给对象形才谈得上「总是允许」。
+ * 两形并存是**向后兼容**的形态：旧脚本 `decisions: ['approve']`、旧钩子 `() => 'approve'`
+ * 一字不动照常工作。
+ *
+ * ⚠️ `remember` **只在批准时生效**（规则的条目只有「允许」这一形，没有「总是拒绝」——
+ * 见契约 · `DecisionAnswer.remember`）。
+ */
+export type ShellAnswer = Decision | { readonly decision: Decision; readonly remember?: boolean }
+
+/** 已答复的裁决（询问 ＋ 答复）——`remember` **原样记**：给了就在，没给就不在这个键上。 */
+export type ShellDecision = ShellDecisionRequest & {
+  readonly decision: Decision
+  readonly remember?: boolean
+}
 
 /** 接上外壳位之后拿到的把手——驱动全链用。 */
 export type ShellHandle = {
@@ -62,15 +81,25 @@ export type AttachShellOptions = {
   /**
    * 裁决答复——**无人值守替人批准**（见文件头注）。
    * 缺省 `() => 'approve'`：验收脚本要跑通全链，被闸门挡下就什么也验不到；
-   * 要验「拒绝路径」请显式传 `() => 'reject'`。
+   * 要验「拒绝路径」请显式传 `() => 'reject'`；要验**「总是允许」**返回对象形
+   * `() => ({ decision: 'approve', remember: true })`（见 `ShellAnswer`）。
    */
-  readonly decide?: (request: ShellDecisionRequest) => Decision
+  readonly decide?: (request: ShellDecisionRequest) => ShellAnswer
   /** 等待上限（毫秒）——缺省 120 秒（真端点 + 真命令的余量）。 */
   readonly timeoutMs?: number
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const APPROVE: Decision = 'approve'
+
+/** 答复归一——裸词与对象形收成同两件（`remember` 没给就是 `undefined`，不补 `false`）。 */
+function normalizeAnswer(answer: ShellAnswer): {
+  readonly decision: Decision
+  readonly remember: boolean | undefined
+} {
+  if (typeof answer === 'string') return { decision: answer, remember: undefined }
+  return { decision: answer.decision, remember: answer.remember }
+}
 
 /** 一个「`timeoutMs` 后无论如何都拒绝」的 promise——挂死比慢更坏（无订阅方＝丢命令，不报错）。 */
 function deadline(timeoutMs: number, what: string): { promise: Promise<never>; cancel(): void } {
@@ -138,10 +167,22 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
         material: event.data.material,
         weight: event.data.weight,
       }
-      const decision = decide(request)
-      decisions.push({ ...request, decision })
-      // **同一调用栈里答复**——权限域先登记、后扇出，故这条答复落不到空表上
-      shell.send({ type: 'decision.answer', id: request.id, decision })
+      const answer = normalizeAnswer(decide(request))
+      decisions.push({
+        ...request,
+        decision: answer.decision,
+        // 给了才落键——没给＝这次答复里没有这一位（与线上消息同形）
+        ...(answer.remember === undefined ? {} : { remember: answer.remember }),
+      })
+
+      // **同一调用栈里答复**——权限域先登记、后扇出，故这条答复落不到空表上。
+      // `remember` 只在 `true` 时才带上键：`undefined` 过不了通道的可序列化门（丢键＝有损），
+      // 而 `false` 与不给同义（规则的条目只有「允许」这一形）
+      shell.send(
+        answer.remember === true
+          ? { type: 'decision.answer', id: request.id, decision: answer.decision, remember: true }
+          : { type: 'decision.answer', id: request.id, decision: answer.decision },
+      )
     }
   })
 
@@ -200,8 +241,12 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
 export type ShellScript = {
   /** 依次发出的交代。 */
   readonly inputs: readonly string[]
-  /** 裁决答复（按询问次序取，用尽后走 `options.decide`）。 */
-  readonly decisions?: readonly Decision[]
+  /**
+   * 裁决答复（按询问次序取，用尽后走 `options.decide`）。
+   *
+   * 混着写也认：`['approve', { decision: 'approve', remember: true }]`——第 2 条即「总是允许」。
+   */
+  readonly decisions?: readonly ShellAnswer[]
   /** 每条交代的等待上限（毫秒）。 */
   readonly timeoutMs?: number
 }
@@ -216,7 +261,7 @@ export async function runShellScript(
   options: AttachShellOptions = {},
 ): Promise<ShellHandle> {
   const queued = [...(script.decisions ?? [])]
-  const fallback = options.decide ?? ((): Decision => APPROVE)
+  const fallback = options.decide ?? ((): ShellAnswer => APPROVE)
 
   const handle = attachShell(shell, {
     ...options,
