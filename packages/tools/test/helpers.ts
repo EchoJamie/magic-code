@@ -43,10 +43,15 @@ export type ToolDepsOptions = {
   readonly exec?: FauxExecScript
   /** 闸门姿势；缺省 `'approve'`（问了立答）。`'manual'` ＝ 问了不答（在途裁决用例）。 */
   readonly decider?: FauxDecider | 'manual'
-  /** 追加注册的工具（默认集只有 `exec`）。 */
+  /** 追加注册的工具（默认集＝工具集 v1 七件，这里是**追加**）。 */
   readonly tools?: readonly ToolDefinition[]
   /** 覆盖转存面（转存失败用例）。 */
   readonly blobs?: BlobStore
+  /**
+   * 覆盖沙箱——给「替身也给不出的形态」用（如 `read` 报截断：`FauxSandboxOptions`
+   * 没有那一档，而截断是 `edit` 的**数据安全件**，非测不可）。
+   */
+  readonly sandbox?: FauxSandbox
 }
 
 /** 一束现成的替身——多数用例照这样拼。铸造器**一束一份**（信封同源）。 */
@@ -63,7 +68,8 @@ export type ToolDeps = {
 /** 造一束替身 —— 真装配（U11）里这一束由装配根拼。 */
 export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
   const stamper = makeTestStamper({ session: SESSION })
-  const sandbox = makeFauxSandbox(options.exec === undefined ? {} : { exec: options.exec })
+  const sandbox =
+    options.sandbox ?? makeFauxSandbox(options.exec === undefined ? {} : { exec: options.exec })
   const gate =
     options.decider === 'manual'
       ? makeFauxPermissionGate()

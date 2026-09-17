@@ -344,7 +344,10 @@ export type ExecOptions = {
 /**
  * `read` 返回——读文件（超长截断）。
  *
- * TODO(规划侧)：截断标记与「超长转存」的规则未定；占位如下。
+ * 落形态（U13）：`content` ＝**解码后的文本**；`truncated` ＝**到上限为止**，
+ * **字段缺席＝没截**（与 `ExecResult.truncated` 同口径——缺省态不占位）。
+ * 上限是**字节**：调用方可经 `Sandbox.read` 的 `opts.maxBytes` 指定（缺省＝实现常量 64 KiB）——
+ * `truncated` 即「到上限为止」，工具侧据它措辞（`edit` 放大到 1 MiB 再读，仍超限才拒）。
  */
 export type ReadResult = {
   readonly content: string
@@ -363,34 +366,59 @@ export type ReadResult = {
 export type WriteData = { readonly text: string } | { readonly bytes: Uint8Array }
 
 /**
- * `list` 条目。
+ * `list` 条目——名（必给）＋ 类型 / 尺寸（可选）。
  *
- * TODO(规划侧)：条目形态（名 / 类型 / 尺寸）未定；占位仅名。
+ * 两个可选位是**只增不改的兼容位**（既有桩只给 `name`）；真实现两件都给。
+ * 名**不是路径**——相对被列的那个目录。
  */
 export type ListEntry = {
   readonly name: string
+  readonly kind?: 'file' | 'directory' | 'other'
+  /** 字节数（仅文件——`kind: 'file'` 时有意义）。 */
+  readonly size?: number
 }
 
 /**
- * `match` 命中。
+ * `match` 命中——`glob` 只给 `path`；`grep` 另给行 / 列 / 该行文本。
  *
- * TODO(规划侧)：命中形态（路径 / 行号 / 片段）未定；占位仅路径。
+ * `path` ＝**根内的绝对路径**（沙箱解析后的真身——消费方不必再拼）。
+ * 行 / 列**从 1 起**（人看的数，不是偏移量）。
  */
 export type MatchHit = {
   readonly path: string
+  readonly line?: number
+  readonly column?: number
+  /** 命中行原文（不含行尾换行）。 */
+  readonly text?: string
 }
+
+/** 匹配模式——`grep`（内容搜索）/ `glob`（文件名匹配）**共用一条底**（技术方案 · 执行）。 */
+export type MatchMode = 'grep' | 'glob'
 
 /**
  * `match` 选项（grep / glob 共用底）。
  *
- * TODO(规划侧)：字段未定；占位为不透明负载。
+ * - `mode` —— 判别式：按内容搜、还是按名匹配（同一条原语的两个面）；
+ * - `path` —— 搜索起点；缺省＝**默认根**（相对按默认根 · 绝对须落根内——与执行域同一判据）；
+ * - `maxResults` —— 命中数**上限**，至多返回这么多条（`grep` 的「输出截断」据此：
+ *   取满即**可能**还有更多——消费方按此措辞，不当作「恰好这么多」）；缺省＝实现级常量；
+ * - `signal` —— 取消：中止在途，**返回已收到的**（不抛——与 `exec` 的取消同一姿态）。
  */
-export type MatchOptions = Readonly<Record<string, unknown>>
+export type MatchOptions = {
+  readonly mode: MatchMode
+  readonly path?: string
+  readonly maxResults?: number
+  readonly signal?: AbortSignal
+}
 
 /**
  * 已解析的工作区路径。
  *
- * TODO(规划侧)：形态未定；占位为绝对路径 + 承载它的根。
+ * `absolute` 已归一化（**词法**——同步纯词法判定，见 `WorkspaceService.resolve` 的限度）；
+ * `root` ＝承载它的那条根。
+ *
+ * **越界即拒＝抛**（端口注释）——沙箱各原语捕之：`exec` 归 `reason: 'out-of-bounds'`；
+ * 余四者的「正常结果 vs 调用不成立」两路之分见 `Sandbox` 头注（失败形态分两路）。
  */
 export type ResolvedPath = {
   readonly absolute: string
@@ -500,11 +528,23 @@ export type ToolSpec = {
 export type ToolSetRow = Omit<ToolSpec, 'parameters'>
 
 /**
- * **参数键（部分锚定）**——`exec` 的命令字段名＝**`cmd`**（阶段 1 唯一工具）。
+ * **参数键（工具集 v1 全表 · U13 锚定）**——工具的参数模式按此命名：工具域**分发**与
+ * 权限域**分析**都按它取字段（危险归类＝按命令 / 按路径判定，见 `by-call` 支）。
  *
- * 工具域**分发**与权限域**分析**都按它取命令（危险归类＝按命令解析，见 `by-call` 支）；
- * 已按候选键兜底者**收窄为单一键**。
- * 其余工具的键名随 U13 定（与 `JsonSchema` 承载形态一并）——未定处不得依赖。
+ * - `exec` —— `cmd`（命令；阶段 1 即锚定，**收窄为单一键**，不按候选键兜底）
+ * - `read` —— `path`
+ * - `write` —— `path` · `content`（**整写**——不是追加；空串＝写空文件）
+ * - `edit` —— `path` · `old` · `new`（`old` 须在文件中**唯一**出现；`new` 空串＝删除）
+ * - `grep` —— `pattern`（正则）· `path?`（搜索起点）
+ * - `glob` —— `pattern`（glob 模式）· `path?`
+ * - `ls` —— `path?`
+ *
+ * 通例：`path` 一律按工作区规则解析（相对按默认根 · 绝对须落根内）；**可选键缺席即取缺省**
+ * （不是空串）；**错键名不被猜中**——取不到即报「参数错误」，故键名不带方言
+ * （没有 `file` / `filepath` / `query` / `old_string` 一类近义变体）。
+ *
+ * 承载形态＝**自写朴素 JSON Schema**（`JsonSchema` 的类型不动——手写对象字面量本就落在
+ * 它的形态内：不取件、不加依赖，送模型即 JSON 往返不变量）。
  */
 
 /**

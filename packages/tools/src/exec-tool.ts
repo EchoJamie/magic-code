@@ -1,5 +1,6 @@
 /**
- * `exec` —— 阶段 1 唯一实装的工具（工具集 v1 的其余六件归 U13）。
+ * `exec` —— 命令执行（阶段 1 唯一实装的工具；工具集 v1 到站后与六件文件 / 搜索工具并列，
+ * 见 `toolset.ts`）。
  *
  * 出处：技术方案 · 工具「阶段 1 集」——命令执行：**经沙箱 · 工作目录约束**；危险归类
  * **按命令解析**（按调用判定）；超时 / 输出上限为常量（超限截断；大块转存归调用方）。
@@ -19,9 +20,9 @@
  */
 
 import type { ExecResult } from '@magic/contracts'
-import { TOOLSET_V1 } from '@magic/contracts'
 import { OUTPUT_CANCELED_RUNNING, OUTPUT_EXEC_NO_CMD } from './messages.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
+import { rowOf } from './toolkit.ts'
 
 /**
  * 超时常量——缺省 120 秒。
@@ -56,18 +57,6 @@ export const EXEC_PARAMETERS = {
   required: ['cmd'],
   additionalProperties: false,
 } as const
-
-/**
- * 取工具集 v1 的 `exec` 行——**规格的静态三件只此一处**（契约冻结表）。
- * 取不到即抛：那是契约被动了，不该在本域静默退化成一份手抄。
- */
-function execRow(): { name: string; summary: string; danger: ToolDefinition['spec']['danger'] } {
-  const row = TOOLSET_V1.find((candidate) => candidate.name === 'exec')
-  if (row === undefined) {
-    throw new Error('工具集 v1 表里没有 exec —— 契约的冻结行被动过了')
-  }
-  return row
-}
 
 /**
  * 把沙箱的判别式结果转成**面向模型的文本**。
@@ -114,7 +103,7 @@ function composeOutcome(result: ExecResult, signal: AbortSignal | undefined): To
 
 /** 造 `exec` 的工具定义。 */
 export function defineExecTool(): ToolDefinition {
-  const row = execRow()
+  const row = rowOf('exec')
 
   return {
     spec: { name: row.name, summary: row.summary, parameters: EXEC_PARAMETERS, danger: row.danger },
