@@ -119,6 +119,8 @@ export type EventDataOf = {
     readonly text: string
     /** toolcall 通道——工具名。 */
     readonly name?: string
+    /** toolcall 通道——**供应商侧调用 id**；渲染侧据以按调用分组（同轮可多次调用）。 */
+    readonly id?: string
   }
   // tool——请求 → 裁决询问 → 裁决 → 结果
   'tool.call': {

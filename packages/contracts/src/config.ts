@@ -30,8 +30,9 @@ export type ProviderConfig = {
   readonly model: string
   /**
    * **模型特征标记的覆盖位**——内置表未覆盖的模型在此标注（表外模型 / 私有端点 /
-   * 供应商改了行为的唯一出口）；配置非空则**整组覆盖**内置表的判定。
-   * **空缺＝按常规行为处理**，不是「无特征」的断言。形态见 `ports.ts` · `ModelTraits`。
+   * 供应商改了行为的唯一出口）。
+   * 判据「**键在即接管**」——本键存在即**整组覆盖**内置表（含 `{}` ＝显式声明无特征）；
+   * 键缺省 → 常规行为（不猜、不切）。形态见 `ports.ts` · `ModelTraits`。
    */
   readonly traits?: ModelTraits
 }

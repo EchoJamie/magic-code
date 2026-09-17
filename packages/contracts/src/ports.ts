@@ -16,8 +16,8 @@
 
 import type { Command, UserInput } from './control.ts'
 import type { Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
-import type { Decision, KernelEvent, OutputDelta } from './events.ts'
-import type { BlobRef, DecisionId, RecordId, SessionId } from './ids.ts'
+import type { Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
+import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
 
 // ══ 端口 ══════════════════════════════════════════════════════════════
 
@@ -55,6 +55,11 @@ export interface PermissionGate {
 
 /** 对话域 → 记录域。 */
 export interface RecordsService {
+  /**
+   * 取下一个记录 id——**id 空间归记录域**（条目 / 事件共用）。
+   * 装配据以构造 `EventStamper`（技术方案 · 领域划分 · 信封的归属）。
+   */
+  nextId(): RecordId
   appendEntry(entry: NewEntry): RecordId
   appendEvent(event: KernelEvent): void
   readEntries(sessionId: SessionId, range?: EntryRange): AsyncIterable<Entry>
@@ -86,7 +91,8 @@ export interface WorkspaceService {
 export interface ControlHub {
   /** 命令 → 各域。 */
   bind(routes: CommandRoutes): void
-  attach(transport: ControlTransport): void
+  /** 接**内核侧**一端（`KernelTransport`）——外壳侧一端由外壳自持。 */
+  attach(transport: KernelTransport): void
 }
 
 // ══ 端口内类型 ════════════════════════════════════════════════════════
@@ -116,6 +122,11 @@ export type ModelMessage =
       readonly role: 'tool'
       /** **供应商侧**调用 id——与发起它的 assistant 消息里的 `ToolCall.id` 配对。 */
       readonly callId: string
+      /**
+       * 工具名——**取件层回填需要**。不补就得从上下文里的 assistant 消息反查，
+       * 而上下文压缩（阶段 3）正是设计目标——反查届时会**静默退化成空串**。
+       */
+      readonly name: string
       readonly ok: boolean
       readonly output: string
     }
@@ -158,13 +169,22 @@ export type ModelResult = {
   readonly finishReason?: ModelFinishReason
   readonly usage?: ModelUsage
   readonly complete: boolean
+  /**
+   * 模型本轮请求的工具调用——**循环据以回填**（面向端口者不解析事件流拼装）。
+   * 注：`model.delta(toolcall)` 是**流式片段**，事件流拼不出归属——故聚合结果必须载它
+   * （双出口设计的完成，非重复）。
+   */
+  readonly toolCalls?: readonly ToolCall[]
 }
 
 /**
  * 模型特征标记——**覆盖位**（技术方案 · 领域划分 · 端口内类型 · 模型策略）。
  *
- * **内置表**（模型域持有 · **不入契约**）给默认；配置非空则**整组覆盖**；
- * **两处皆无 → 常规行为**（不猜、不切）。空缺不是「无特征」的断言。
+ * **内置表**（模型域持有 · **不入契约**）给默认；判据取「**键在即接管**」——
+ * `traits` 存在就**整组覆盖**（含 `{}` ＝**显式声明无特征**）；两处皆无 → 常规行为（不猜、不切）。
+ *
+ * 理由——一条规则胜过一个二级判据，且**内置表判错时用户关得掉**：若 `{}` 回落内置表，
+ * 错的模型就没有出口。
  *
  * 首站一条：`inlineThinking`——思考**内嵌在正文**（`<think>…</think>` 是少数模型的行为，
  * 不当通例处理）；`tag` 给出包裹标签，归一据它把标签内容切出到 `thinking` 通道
@@ -190,6 +210,11 @@ export type ToolCall = {
   readonly id: string
   readonly name: string
   readonly args: Readonly<Record<string, unknown>>
+  /**
+   * 参数**解析不出**（模式不符 / JSON 残缺）——工具域据以决定回填什么。
+   * 不靠各消费者重新解析参数串（重复劳动，且丢掉「哪一次调用坏了」的定位）。
+   */
+  readonly invalid?: boolean
 }
 
 /**
@@ -334,12 +359,43 @@ export type CommandRoutes = {
 }
 
 /**
- * 控制传输（外壳 ↔ 控制域）——首站同进程直连；跨进程（第二站）/ 跨设备（第三站）接同一接口。
+ * 控制传输 · **外壳侧**一端——首站同进程直连；跨进程（第二站）/ 跨设备（第三站）接同一接口。
  */
 export type ControlTransport = {
   send(command: Command): void
   /** 订阅事件；返回**退订**。 */
   subscribe(listener: (event: KernelEvent) => void): () => void
+}
+
+/**
+ * 控制传输 · **内核侧**一端（镜像：收命令 / 出事件）——`ControlHub.attach` 的入参。
+ */
+export type KernelTransport = {
+  send(event: KernelEvent): void
+  /** 订阅命令；返回**退订**。 */
+  subscribe(handler: (command: Command) => void): () => void
+}
+
+// —— 信封铸造 ——
+
+/**
+ * 信封铸造器——**产出方铸**（技术方案 · 领域划分 · 信封的归属 v0 锚定）。
+ *
+ * **为什么必须产出方铸**——裁决配对要求产出方**当场知道事件 id**：权限域发
+ * `tool.decision.request`，外壳的答复按**该事件的 id** 回来（`PermissionGate.resolve`）。
+ * id 若由扇出处或落库处后配，这条回路就断了。
+ *
+ * 铸造器由**装配按会话实例**构造并注入各域：
+ * - `id` 取自记录域（`RecordsService.nextId()`）；
+ * - 上下文（`session` / `turn`）按实例持有——装配设 `session`，对话域在轮起止时调 `beginTurn`；
+ * - `at` 由铸造器盖——**产出方不各自取时钟**。
+ *
+ * **跨实例不共享**——多会话 / 多 Agent 时各持一份。
+ */
+export type EventStamper = {
+  stamp<K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent
+  /** 对话域在轮起止时调。 */
+  beginTurn(turn: TurnId | undefined): void
 }
 
 // ══ 工具规格（端口内类型）════════════════════════════════════════════

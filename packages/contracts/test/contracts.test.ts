@@ -22,20 +22,29 @@ import type {
   DecisionId,
   Entry,
   EntryRange,
+  EventDataOf,
   EventEnvelope,
+  EventKind,
+  EventStamper,
   ExecResult,
   KernelEvent,
+  KernelTransport,
   ModelFinishReason,
+  ModelGateway,
   ModelMessage,
+  ModelRequest,
   ModelResult,
+  ModelStream,
   ModelTraits,
   NewEntry,
   ProviderConfig,
   RecordId,
+  RecordsService,
   Sandbox,
   ToolCall,
   ToolCallPayload,
   ToolResultPayload,
+  TurnId,
 } from '../src/index.ts'
 
 // ══ 类型层探针（tsc 校验；运行时无操作）══════════════════════════════
@@ -67,6 +76,22 @@ export function kernelEventNarrowsByKind(): void {
       kind: 'model.usage',
       data: { inputTokens: 12, outputTokens: 3 },
     },
+    {
+      id: 4,
+      session: 's1',
+      turn: 1,
+      at: 3,
+      kind: 'model.delta',
+      data: { channel: 'toolcall', text: '', name: 'exec', id: 'call_x' },
+    },
+    {
+      id: 5,
+      session: 's1',
+      turn: 1,
+      at: 4,
+      kind: 'model.error',
+      data: { tier: 'transient', message: 'rate limited' },
+    },
   ]
 
   for (const e of events) {
@@ -81,6 +106,16 @@ export function kernelEventNarrowsByKind(): void {
     if (e.kind === 'model.usage') {
       const tokens: number = e.data.inputTokens
       void tokens
+    }
+    if (e.kind === 'model.delta') {
+      const ch: 'text' | 'thinking' | 'toolcall' = e.data.channel
+      const callId: string | undefined = e.data.id // toolcall 分组用（供应商侧 id）
+      void ch
+      void callId
+    }
+    if (e.kind === 'model.error') {
+      const tier: 'transient' | 'context-limit' | 'terminal' = e.data.tier
+      void tier
     }
   }
 }
@@ -130,7 +165,78 @@ export function portsAreImplementable(): void {
       return []
     },
   }
+
+  // 模型网关——双出口（事件序列 ＋ 聚合结果）可被实现
+  const gateway: ModelGateway = {
+    stream(req: ModelRequest, opts: { signal?: AbortSignal }): ModelStream {
+      void req
+      void opts
+      return {
+        events: (async function* (): AsyncIterable<KernelEvent> {})(),
+        result: Promise.resolve({ complete: true, finishReason: 'stop' }),
+      }
+    },
+  }
+
   void sandbox
+  void gateway
+}
+
+// —— 第 3 轮补锚（M02 / M03 回报收口）——
+
+/** 信封铸造器——`stamp` 返回可收窄 · `beginTurn` 可调。 */
+export function eventStamperIsUsable(): void {
+  const stamper: EventStamper = {
+    stamp<K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent {
+      return { id: 1, session: 's1', turn: null, at: 0, kind, data } as KernelEvent
+    },
+    beginTurn(turn: TurnId | undefined): void {
+      void turn
+    },
+  }
+
+  const e = stamper.stamp('tool.call', { name: 'exec', args: { cmd: 'ls' } })
+  if (e.kind === 'tool.call') {
+    const name: string = e.data.name // 收窄生效
+    void name
+  }
+
+  stamper.beginTurn(7)
+  stamper.beginTurn(undefined)
+}
+
+/** 内核侧传输——可被实现（镜像：收命令 / 出事件）。 */
+export function kernelTransportIsImplementable(): void {
+  const transport: KernelTransport = {
+    send(event: KernelEvent): void {
+      void event
+    },
+    subscribe(handler: (command: Command) => void): () => void {
+      void handler
+      return () => {}
+    },
+  }
+
+  const off = transport.subscribe((command) => void command)
+  off()
+}
+
+/** 记录域桩——`nextId`（铸造器取号的来源）可被桩实现。 */
+export function recordsServiceIsImplementable(): void {
+  let next = 1
+  const records: RecordsService = {
+    nextId: () => next++,
+    appendEntry: () => next++,
+    appendEvent: () => {},
+    readEntries: () => (async function* (): AsyncIterable<Entry> {})(),
+    readEvents: () => (async function* (): AsyncIterable<KernelEvent> {})(),
+    listSessions: async () => [],
+    blobs: {
+      put: async () => 'blob_1',
+      get: async () => new Uint8Array(),
+    },
+  }
+  void records
 }
 
 /** 条目的工具载荷——结构对齐事件侧。 */
@@ -161,7 +267,8 @@ export function modelMessageNarrowsByRole(): void {
       content: 'ok',
       toolCalls: [{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }],
     },
-    { role: 'tool', callId: 'call_1', ok: true, output: 'done' },
+    // 补锚：`tool` 支带 `name`（取件层回填需要工具名——反查在压缩后会静默退化）
+    { role: 'tool', callId: 'call_1', name: 'exec', ok: true, output: 'done' },
   ]
 
   for (const m of messages) {
@@ -175,8 +282,8 @@ export function modelMessageNarrowsByRole(): void {
     }
   }
 
-  // @ts-expect-error 收窄生效——`tool` 支不带 `toolCalls`
-  const bad: ModelMessage = { role: 'tool', callId: 'x', ok: true, output: '', toolCalls: [] }
+  // @ts-expect-error 收窄生效——`tool` 支不带 `toolCalls`（单行：错误须落在被抑制的那一行）
+  const bad: ModelMessage = { role: 'tool', callId: 'x', name: 'exec', ok: true, output: '', toolCalls: [] }
   void bad
 }
 
