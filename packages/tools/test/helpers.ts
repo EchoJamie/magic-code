@@ -1,51 +1,42 @@
 /**
- * 本包用例的共用夹具——一束替身 ＋ 一个工作区小桩。
+ * 本包用例的共用夹具——一束替身（全部取自 `@magic/faux`）。
  *
- * 替身取自 `@magic/faux`（依赖纪律：`src/**` 只许 `@magic/contracts`，**`test/**` 额外许可
- * 测试替身包**——见 `test/scaffold.test.ts` 的分面规则）。工具域要的四个端口正好都有：
- * 沙箱 · 权限 · 扇出 · 铸造器 ＋ 记录域的 blob 面。
+ * 依赖纪律按面分（`test/scaffold.test.ts`）：`src/**` 只许 `@magic/contracts`，
+ * **`test/**` 额外许可测试替身包**。工具域要的**五个端口桩正好都在 faux 里**：
+ * 沙箱 · 权限 · 工作区 · 扇出 · 铸造器（＋记录域的 blob 面）。
  *
- * 唯一的自造件是**工作区小桩**：`@magic/faux` 的五个桩里**没有 `WorkspaceService`**
- * （U12 未造，见回报「待决」），而工具域要从它取「根视图」交给闸门
- * （契约 · `PermissionContext` 是纯数据——端口不进端口）。
+ * 第 1 轮曾自持一个工作区小桩（当时 faux 没有 `WorkspaceService`）——第 2 轮补锚
+ * faux 补了 `makeFauxWorkspace`，自持件随之删掉：**这才是 faux 存在的意义**
+ * （别再各写一份，两份迟早对不上）。
  */
 
 import type { BlobStore, OutputDelta, WorkspaceService } from '@magic/contracts'
-import type { FauxDecider, FauxExecScript } from '@magic/faux'
+import type {
+  FauxDecider,
+  FauxExecScript,
+  FauxPermissionGate,
+  FauxRecords,
+  FauxSandbox,
+  FauxSink,
+  TestStamper,
+} from '@magic/faux'
 import {
   makeFauxPermissionGate,
   makeFauxRecords,
   makeFauxSandbox,
   makeFauxSink,
+  makeFauxWorkspace,
   makeTestStamper,
 } from '@magic/faux'
+import type { ToolDefinition } from '../src/index.ts'
+import type { ToolRuntime } from '@magic/contracts'
 import { createToolRuntime } from '../src/index.ts'
-import type { ToolDefinition, ToolRuntime } from '../src/index.ts'
 
 /** 工作区根——权限与沙箱两处同源的锚（契约：越界判据两处须一致）。 */
 export const ROOT = '/work/proj'
 
 /** 会话 id——本包用例只一个会话。 */
 export const SESSION = 's1'
-
-/**
- * 工作区小桩——本阶段工具域**只取它的根视图**（`roots` / `defaultRoot`）。
- *
- * `resolve` 照执行域口径「越界即拒：**抛**」实现，只为接口完整；本阶段工具域不经此路
- * （`exec` 不传 `cwd`，工作目录约束由沙箱按默认根落）。到 U13 有文件类工具时再谈。
- */
-export function makeTestWorkspace(root: string = ROOT): WorkspaceService {
-  return {
-    roots: () => [root],
-    defaultRoot: () => root,
-    resolve: (path: string) => {
-      if (path.startsWith('/') || path.startsWith('..')) {
-        throw new Error(`工作区越界：${path}（落在根 ${root} 之外）`)
-      }
-      return { absolute: `${root}/${path}`, root }
-    },
-  }
-}
 
 export type ToolDepsOptions = {
   /** 命令 → 沙箱结果（查表或按调用算）；缺省「成功 · 空输出」。 */
@@ -60,11 +51,11 @@ export type ToolDepsOptions = {
 
 /** 一束现成的替身——多数用例照这样拼。铸造器**一束一份**（信封同源）。 */
 export type ToolDeps = {
-  readonly stamper: ReturnType<typeof makeTestStamper>
-  readonly sandbox: ReturnType<typeof makeFauxSandbox>
-  readonly gate: ReturnType<typeof makeFauxPermissionGate>
-  readonly sink: ReturnType<typeof makeFauxSink>
-  readonly records: ReturnType<typeof makeFauxRecords>
+  readonly stamper: TestStamper
+  readonly sandbox: FauxSandbox
+  readonly gate: FauxPermissionGate
+  readonly sink: FauxSink
+  readonly records: FauxRecords
   readonly workspace: WorkspaceService
   readonly runtime: ToolRuntime
 }
@@ -79,7 +70,7 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
       : makeFauxPermissionGate({ auto: options.decider ?? 'approve' })
   const sink = makeFauxSink()
   const records = makeFauxRecords()
-  const workspace = makeTestWorkspace()
+  const workspace = makeFauxWorkspace({ root: ROOT })
 
   const runtime = createToolRuntime({
     sandbox,
@@ -95,7 +86,10 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
 }
 
 /** 一个 `exec` 调用（用例里反复要）。 */
-export function execCall(cmd: string, id = 'call_1'): { id: string; name: string; args: { cmd: string } } {
+export function execCall(
+  cmd: string,
+  id = 'call_1',
+): { id: string; name: string; args: { cmd: string } } {
   return { id, name: 'exec', args: { cmd } }
 }
 
@@ -118,5 +112,10 @@ export function collector(): {
   readonly push: (delta: OutputDelta) => void
 } {
   const deltas: OutputDelta[] = []
-  return { get deltas(): readonly OutputDelta[] { return deltas }, push: (d) => deltas.push(d) }
+  return {
+    get deltas(): readonly OutputDelta[] {
+      return deltas
+    },
+    push: (d) => deltas.push(d),
+  }
 }

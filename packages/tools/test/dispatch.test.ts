@@ -177,18 +177,43 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
     expect(deps.sink.byKind('tool.result')[0]?.data.ok).toBe(false)
   })
 
-  test('端口面：只认契约端口的消费者照常工作（结构超集不破换插）', async () => {
+  test('端口面：返回的就是契约 ToolResult——三件齐备，且不自造补充', async () => {
     const deps = makeToolDeps()
 
-    // 编译期探针——工具域的实现须能当契约端口用（U11 装配按端口注入各域）。
-    // 这一行若因「超集把参数或返回类型写歪了」而红，换插就断了。
+    // 编译期探针——工具域的实现**即**契约端口（U11 装配按端口注入各域）。
+    // 第 1 轮的「结构超集」已随契约补锚撤掉：本域不再有第二套形态。
     const port: ToolRuntimePort = deps.runtime
     const result: ToolResult = await port.invoke(execCall('ls'), {})
 
     expect(result.ok).toBe(true)
     expect(result.output).toBe('')
-    // 端口面只承诺两件——多出来的两件是「本域多知道的」，不是消费者必须处理的
+
+    // 键集钉死：契约三件之外**不许再多**（谁再塞回一个自造补充字段，这一条当场红）
+    expect(Object.keys(result).sort()).toEqual(['callRef', 'content', 'ok', 'output'])
+
     expect(port.definitions().map((d) => d.name)).toEqual(['exec'])
+  })
+
+  test('两处 callRef 是同一次调用的同一个 id；content 与事件同物（第 2 轮契约补锚核对）', async () => {
+    const deps = makeToolDeps()
+
+    const outcome = await deps.runtime.invoke(execCall('ls'), {})
+
+    const call = deps.sink.byKind('tool.call')[0]
+    const result = deps.sink.byKind('tool.result')[0]
+    const request = deps.gate.requests[0]
+    if (call === undefined || result === undefined || request === undefined) {
+      throw new Error('请求 / 询问 / 结果三者没发全')
+    }
+
+    // ① 条目侧的来处（`ToolResult.callRef`）＝ 询问侧的来处（`decide` 第三参）＝ `tool.call` 的 id
+    //    ——**同一次调用、同一个 id**，四事件才串得成一条链
+    expect(outcome.callRef).toBe(request.callRef)
+    expect(outcome.callRef).toBe(call.id)
+
+    // ② `content` 与 `tool.result` 事件的 `output` **同物**（不是「值相等」，是同一个）
+    //    ——各造一份就会在重放时分叉
+    expect(result.data.output).toBe(outcome.content)
   })
 
   test('瞬时增量不进持久面——扇出照契约的不落库清单判别', async () => {

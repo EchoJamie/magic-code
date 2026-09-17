@@ -16,22 +16,23 @@
  * - **blob 写权唯一归记录域**——大块转存经其公开面（`BlobStore`），本域只调用。
  *
  * 公开面三件（技术方案 · 代码治理 · 公开面：端口实现 ＋ 装配期构造入参形态）：
- * ① **端口装配**——`createToolRuntime`；
- * ② **形态**——`ToolRuntime`（契约端口的**结构超集**：`invoke` 多回 `callRef` ＋ `content`）·
- *    `ToolInvocation` · `ToolInvokeOptions`；
- * ③ **构造入参形态**——`ToolRuntimeOptions` ＋ 工具定义的形态（`ToolDefinition` /
- *    `ToolRunContext` / `ToolRunResult`——`options.tools` 的类型，U13 的工具集从这里进）。
+ * ① **端口装配**——`createToolRuntime`（返回类型＝契约端口 `ToolRuntime`，
+ *    **本域不自持第二套形态**——`ToolResult` 的三件已在契约里，见 `runtime.ts` 头注）；
+ * ② **构造入参形态**——`ToolRuntimeOptions`；
+ * ③ **工具定义的形态**——`ToolDefinition` / `ToolRunContext` / `ToolRunResult`
+ *    （`options.tools` 的类型，U13 的工具集从这里进）。
  *
- * 不出去的：`exec` 的规格常量与超时 / 上限常量 · 回填报文 · 注册表实现 · 大块转存阈值。
+ * 不出去的：`exec` 的规格常量与超时 / 上限常量 · 回填报文 · 注册表实现 · 大块转存阈值 ·
+ * `invoke` 第二参的别名（契约里它是内联类型，消费者不必引名字）。
  */
 
 // —— ① 端口装配 ——
 
 export { createToolRuntime } from './dispatch.ts'
 
-// —— ② 形态 ——
+// —— ② 构造入参形态 ——
 
-export type { ToolInvocation, ToolInvokeOptions, ToolRuntime, ToolRuntimeOptions } from './runtime.ts'
+export type { ToolRuntimeOptions } from './runtime.ts'
 
 // —— ③ 工具定义的形态（`options.tools` 的类型——U13 的入口）——
 

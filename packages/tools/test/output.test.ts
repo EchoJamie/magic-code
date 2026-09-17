@@ -143,8 +143,10 @@ describe('U06 · 大块转存（写权唯一归记录域）', () => {
     const ref = deps.records.blobRefs[0]
     if (ref === undefined) throw new Error('应已转存一个 blob')
 
-    // 事件只留引用
-    expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ blob: ref })
+    // 事件只留引用——且与返回值里的 `content` **同物**（各造一份就会在重放时分叉）
+    const result = deps.sink.byKind('tool.result')[0]
+    expect(result?.data.output).toEqual({ blob: ref })
+    expect(result?.data.output).toBe(outcome.content)
     expect(outcome.content).toEqual({ blob: ref })
 
     // 面向模型的文本照旧是全文——转存改的是「记录怎么存」，不是「模型看见什么」

@@ -12,6 +12,10 @@
  * ③ **执行**——注册表查定义、交沙箱。执行体**不碰**闸门与事件面（职责单一）；
  * ④ **回填**——终值定记录侧形态（大块转存经记录域），发 `tool.result`，再返回给调用方。
  *
+ * 返回的那一份就是契约 `ToolResult` 的三件（`ok` / `output` ／ `content` / `callRef`），
+ * **本域不自造补充**：`content` 与 `tool.result` 事件的 `output` **同物**（同一个值），
+ * `callRef` 与传给闸门的 `callRef` **同一次调用的同一个 id**——两处都由这里一次算出。
+ *
  * 三处判断，各有理由（都写在下面对应位置）：
  * - **每个调用都问闸门**——包括未注册的工具名与解析不出的参数。不给「这些不必问」的
  *   分支，就少一条能被误用的岔路；权限域的机械分析本就把「表外 / 解析不出」归入从严
@@ -21,7 +25,7 @@
  * - **闸门在途被中止则不再等**（U07 备案把这一环交给本域：`invoke` 的 `signal` 竞速）。
  */
 
-import type { OutputDelta, RecordId, ToolCall } from '@magic/contracts'
+import type { OutputDelta, RecordId, ToolCall, ToolResult, ToolRuntime } from '@magic/contracts'
 import { toContent } from './blobs.ts'
 import { toolCallEvent, toolOutputDeltaEvent, toolResultEvent } from './events.ts'
 import { defineExecTool } from './exec-tool.ts'
@@ -34,7 +38,7 @@ import {
 } from './messages.ts'
 import { createRegistry } from './registry.ts'
 import type { ToolDefinition, ToolRegistry, ToolRunResult } from './registry.ts'
-import type { ToolInvocation, ToolInvokeOptions, ToolRuntime, ToolRuntimeOptions } from './runtime.ts'
+import type { ToolInvokeOptions, ToolRuntimeOptions } from './runtime.ts'
 
 /** 竞速的哨兵——与任何裁决值都不同型，收窄时不会与 `Decision` 撞。 */
 const ABORTED = Symbol('aborted')
@@ -131,7 +135,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
   return {
     definitions: () => registry.definitions,
 
-    async invoke(call: ToolCall, opts: ToolInvokeOptions): Promise<ToolInvocation> {
+    async invoke(call: ToolCall, opts: ToolInvokeOptions): Promise<ToolResult> {
       // ① 请求——链引用的来处（信封归产出方铸：派生的 id 当场就要用）
       const callEvent = toolCallEvent(options.stamper, call)
       options.sink.emit(callEvent)
