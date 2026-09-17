@@ -44,6 +44,13 @@
         "@magic/contracts": "workspace:*",
       },
     },
+    "packages/execution": {
+      "name": "@magic/execution",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+    },
     "packages/model": {
       "name": "@magic/model",
       "version": "0.0.0",
@@ -77,6 +84,8 @@
     "@magic/control": ["@magic/control@workspace:packages/control"],
 
     "@magic/conversation": ["@magic/conversation@workspace:packages/conversation"],
+
+    "@magic/execution": ["@magic/execution@workspace:packages/execution"],
 
     "@magic/model": ["@magic/model@workspace:packages/model"],
 
