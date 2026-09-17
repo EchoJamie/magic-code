@@ -2,15 +2,15 @@
  * 段结构 v0 · 文本层 —— 四段模板（身份 / 行为规范 / 工具使用指引 / 权限姿态）。
  *
  * 出处：技术方案 ·「系统提示词（内核持有）」——**段结构冻结，具体文字属实现级**（措辞可调，随内核迭代）。
- * 契约侧（`contracts/prompt.ts` 的 `PromptSectionId` · `PROMPT_SECTIONS`）只定段标识与顺序；
- * 本文件落四段的标题与正文，**顺序取自契约**（`PROMPT_SECTIONS`），不另立序表——
- * 契约增删段时，此处 `Record<PromptSectionId, …>` 与映射循环会同时报错，结构不会静默漂移。
+ * 段结构（`./structure.ts` 的 `PromptSectionId` · `PROMPT_SECTIONS`）只定段标识与顺序；
+ * 本文件落四段的标题与正文，**顺序取自段结构**（`PROMPT_SECTIONS`），不另立序表——
+ * 增删段时，此处 `Record<PromptSectionId, …>` 与映射循环会同时报错，结构不会静默漂移。
  *
  * 段的**边界**＝标题行（`sectionHeading`）：装配产物里段以此为起点，段齐 / 段界断言据此定位。
  */
 
-import { PROMPT_SECTIONS } from '../contracts/index.ts'
-import type { PromptSectionId } from '../contracts/index.ts'
+import { PROMPT_SECTIONS } from './structure.ts'
+import type { PromptSectionId } from './structure.ts'
 
 /** 标题行前缀——markdown 二级标题。 */
 export const HEADING_PREFIX = '## '
@@ -90,7 +90,7 @@ export function renderSection(id: PromptSectionId): PromptSection {
   return { id, heading, body: sectionBody, text: `${heading}\n${sectionBody}` }
 }
 
-/** 四段渲染产物——**顺序即契约结构**（`PROMPT_SECTIONS`）。 */
+/** 四段渲染产物——**顺序即段结构**（`PROMPT_SECTIONS`）。 */
 export function renderSections(): readonly PromptSection[] {
   return PROMPT_SECTIONS.map((id) => renderSection(id))
 }
