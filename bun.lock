@@ -81,6 +81,16 @@
         "@magic/contracts": "workspace:*",
       },
     },
+    "packages/tools": {
+      "name": "@magic/tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
     "packages/tui": {
       "name": "@magic/tui",
       "version": "0.0.0",
@@ -115,6 +125,8 @@
     "@magic/permission": ["@magic/permission@workspace:packages/permission"],
 
     "@magic/records": ["@magic/records@workspace:packages/records"],
+
+    "@magic/tools": ["@magic/tools@workspace:packages/tools"],
 
     "@magic/tui": ["@magic/tui@workspace:packages/tui"],
 

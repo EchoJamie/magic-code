@@ -1,0 +1,17 @@
+{
+  "name": "@magic/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@magic/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@magic/faux": "workspace:*"
+  }
+}
