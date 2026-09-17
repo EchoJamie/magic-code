@@ -12,7 +12,10 @@
     "magic": "./src/cli.ts"
   },
   "dependencies": {
-    "@magic/kernel": "workspace:*",
+    "@magic/contracts": "workspace:*",
+    "@magic/control": "workspace:*",
+    "@magic/conversation": "workspace:*",
+    "@magic/model": "workspace:*",
     "@magic/tui": "workspace:*"
   }
 }

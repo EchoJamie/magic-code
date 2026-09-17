@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@magic/kernel": "workspace:*"
+    "@magic/contracts": "workspace:*"
   }
 }
