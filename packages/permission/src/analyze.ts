@@ -57,8 +57,11 @@ function representative(reasons: readonly DangerReason[]): DangerReason | undefi
 
 // —— 参数取值 ——
 
-/** 命令字段的候选键（工具集 v1 的参数模式未锚定——键名按惯例多选，全落空即从严）。 */
-const COMMAND_KEYS = ['cmd', 'command', 'script', 'shell']
+/**
+ * 命令字段名——**单一键**（技术方案 · 工具：参数键部分锚定——`exec` 的命令字段名＝`cmd`）。
+ * 取不到即从严（不再按候选键兜底：写错的键名不该被猜中）。
+ */
+const COMMAND_KEY = 'cmd'
 
 /** 路径字段的候选键——`path` / `file` / `dir` 系的常见拼法（去分隔符后比对）。 */
 function isPathKey(key: string): boolean {
@@ -217,9 +220,9 @@ function analyzeWrite(call: ToolCall, ctx: PermissionContext): Analysis {
  * 逐段分解 → 归类 → 越界比对；多段取并集，**任一段入必闸即重**。
  */
 function analyzeExec(call: ToolCall, ctx: PermissionContext): Analysis {
-  const command = firstString(call.args, (key) => COMMAND_KEYS.includes(key.toLowerCase()))
+  const command = firstString(call.args, (key) => key === COMMAND_KEY)
   if (command === undefined) {
-    return unclassifiable('exec', `参数里找不到命令字段（候选：${COMMAND_KEYS.join(' / ')}）`)
+    return unclassifiable('exec', `参数里找不到命令字段（该字段名锚定为「${COMMAND_KEY}」）`)
   }
 
   const segments = decompose(command.value, ctx)

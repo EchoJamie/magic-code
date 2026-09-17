@@ -13,7 +13,7 @@
  *
  * 出口四件：
  * ① **端口装配**——`createPermissionGate`；
- * ② **形态**——`PermissionGate` / `DecideOptions` / `CALL_REF_UNKNOWN`；
+ * ② **形态**——`PermissionGate`（＝契约端口，三参 `decide` ＋ `resolve`）；
  * ③ **机械分析**——`analyze`（判定 ＋ 材料），供外壳预览与测试直取；
  * ④ **事件构造子**——两个 kind（装配与测试用）。
  *
@@ -22,8 +22,7 @@
 
 // —— ② 形态 ——
 
-export type { DecideOptions, PermissionGate, PermissionGateOptions } from './gate.ts'
-export { CALL_REF_UNKNOWN } from './gate.ts'
+export type { PermissionGate, PermissionGateOptions } from './gate.ts'
 
 // —— ① 端口装配 ——
 

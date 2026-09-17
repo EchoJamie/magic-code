@@ -12,6 +12,11 @@
  * 纪律（技术方案 · 领域划分 · 权限域）：**裁决独立**（不自证、不押模型自述）·
  * **只走事件、不入条目**——故本域注入面只有 `EventSink`（`emit` 一件）与 `EventStamper`，
  * **结构上拿不到条目面**（`RecordsService` 才是条目面，本域不注入）。
+ *
+ * **调用链引用（`callRef`）必填**（第 2 轮契约对齐 · `PermissionGate.decide` 三参）——
+ * 它是「请求 → 询问 → 裁决 → 结果」四事件**串链**的依据（审计与阶段 2 恢复的在途识别
+ * 都按它找）；而它产生在本域之外（工具域铸 `tool.call` 时才有），故只能由调用方传入。
+ * **不设哨兵兜底**：静默的 `-1` 比缺参更坏——接线漏了应当在**编译期**就报。
  */
 
 import type {
@@ -28,32 +33,12 @@ import { analyze } from './analyze.ts'
 import { decisionMade, decisionRequest } from './events.ts'
 
 /**
- * 调用链引用的**未提供哨兵**——事件 `call` 是 `RecordId` 空间，值须由**发 `tool.call` 的
- * 工具域**给出；缺省时用 `-1`：**显式可辨**（记录域 id 单调非负，撞不上），
- * 且事件不静默冒充一条真实调用的引用。
+ * 权限域公开面——**即契约端口**（`decide` 三参 · `resolve` 两件），本域不另立形态、不加宽。
  *
- * ⚠️ 这是**契约缺口的权宜**——`PermissionGate.decide(call, ctx)` 的入参 `ToolCall.id` 是
- * **供应商侧**调用 id（契约三空间不混），带不出 `tool.call` 的事件 id。见回报「待决」。
- */
-export const CALL_REF_UNKNOWN: RecordId = -1
-
-/**
- * `decide` 的第三参——**结构超集**，承端口签名而只增不改（规约 4）。
- *
- * 契约端口写死两参，而事件载荷 `call` 需要调用链引用；此处留**注入位**，
- * 由调用方（工具域）把 `tool.call` 事件的 `id` 带进来。不传则记哨兵（见上）。
- */
-export type DecideOptions = {
-  /** `tool.call` 事件的 `id`——贯穿请求 / 询问 / 裁决 / 结果的**调用链引用**。 */
-  readonly call?: RecordId | undefined
-}
-
-/**
- * 权限域公开面——**结构超集**（契约端口 ＋ 注入位），与模型域 `ModelGateway` 同一姿势。
- * **消费者按契约端口取用即可**（`decide` 两参调用照常工作）。
+ * 第 2 轮契约对齐：`callRef` 由可选注入位**升为必填参数**（见 `decide` 头注）。
  */
 export interface PermissionGate extends PermissionGatePort {
-  decide(call: ToolCall, ctx: PermissionContext, opts?: DecideOptions): Promise<Decision>
+  decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
   /** 控制域答复路由至此——配对键＝**请求事件** `id`。 */
   resolve(requestId: DecisionId, decision: Decision): void
 }
@@ -93,9 +78,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   const pending = new Map<DecisionId, Pending>()
 
   return {
-    decide(call, ctx, opts) {
+    decide(call, ctx, callRef) {
       const { weight, material } = analyze(call, ctx)
-      const callRef = opts?.call ?? CALL_REF_UNKNOWN
 
       const request = decisionRequest(stamper, {
         call: callRef,

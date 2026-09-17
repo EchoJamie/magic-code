@@ -20,7 +20,7 @@ import type {
   PermissionGate as PermissionGatePort,
   ToolCall,
 } from '@magic/contracts'
-import { CALL_REF_UNKNOWN, createPermissionGate } from '../src/index.ts'
+import { createPermissionGate } from '../src/index.ts'
 import { call, context, harness, type Harness } from './helpers.ts'
 
 /**
@@ -33,12 +33,32 @@ function weigh(
 ): { readonly weight: DecisionWeight; readonly material: string; readonly seq: Harness } {
   const h = harness()
   const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
-  void gate.decide(toolCall, context(roots))
+  void gate.decide(toolCall, context(roots), 1) // 链引用必填（本轮契约）
 
   const request = h.eventsOf('tool.decision.request')[0]
   if (request === undefined) throw new Error('未发询问事件')
   return { weight: request.data.weight, material: request.data.material, seq: h }
 }
+
+// ══ 参数键（技术方案 · 工具：参数键部分锚定）═════════════════════════
+
+describe('参数键', () => {
+  test('exec 的命令字段＝单一键 `cmd`——别的键名不再兜底（从严）', () => {
+    expect(weigh(call('exec', { cmd: 'ls' })).weight).toBe('light')
+
+    // 「已按候选键兜底者收窄为单一键」（技术方案 · 工具）——写错的键名不该被猜中
+    expect(weigh(call('exec', { command: 'ls' })).weight).toBe('heavy')
+    expect(weigh(call('exec', { script: 'ls' })).weight).toBe('heavy')
+    expect(weigh(call('exec', { shell: 'ls' })).weight).toBe('heavy')
+  })
+
+  test('路径类工具的键名**仍是候选集**——其余工具键名随 U13 定（未定处不得依赖）', () => {
+    expect(weigh(call('read', { path: 'src/a.ts' })).weight).toBe('light')
+    expect(weigh(call('read', { filePath: 'src/a.ts' })).weight).toBe('light')
+    expect(weigh(call('edit', { file_path: 'src/a.ts' })).weight).toBe('light')
+    expect(weigh(call('ls', { dir: 'src' })).weight).toBe('light')
+  })
+})
 
 // ══ 判据 1 · 一律经人工门 ════════════════════════════════════════════
 
@@ -47,7 +67,7 @@ describe('判据 1 · 一律经人工门', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
 
-    void gate.decide(call('read', { path: 'a.txt' }), context())
+    void gate.decide(call('read', { path: 'a.txt' }), context(), 1)
 
     const requests = h.eventsOf('tool.decision.request')
     expect(requests.length).toBe(1)
@@ -60,19 +80,19 @@ describe('判据 1 · 一律经人工门', () => {
 
     let verdict: Decision | undefined
     void gate
-      .decide(call('read', { path: 'a.txt' }), context())
+      .decide(call('read', { path: 'a.txt' }), context(), 1)
       .then((decision) => void (verdict = decision))
 
     await Promise.resolve()
     expect(verdict).toBeUndefined()
   })
 
-  test('契约端口面：两参调用照常工作（消费者只认已冻的 `PermissionGate`）', async () => {
+  test('契约端口面：三参调用（消费者只认已冻的 `PermissionGate`）', async () => {
     const h = harness()
-    // 按**契约端口**取用——不加任何本域扩展参（工具域的姿势）
+    // 按**契约端口**取用（工具域的姿势）：`callRef` ＝ 该次 `tool.call` 事件的 id
     const gate: PermissionGatePort = createPermissionGate({ sink: h.sink, stamper: h.stamper })
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context())
+    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 42)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -80,6 +100,7 @@ describe('判据 1 · 一律经人工门', () => {
 
     expect(await verdict).toBe('approve')
     expect(request.data.weight).toBe('heavy')
+    expect(request.data.call).toBe(42)
   })
 })
 
@@ -274,7 +295,7 @@ describe('判据 3 · 答复流转', () => {
     const clock = { value: 1_000 }
     const { gate, h } = timed(clock)
 
-    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), { call: 7 })
+    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 7)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -295,7 +316,7 @@ describe('判据 3 · 答复流转', () => {
   test('配对键是请求事件 id——拿调用链引用去答复＝配不上（不落定）', async () => {
     const { gate, h } = timed({ value: 0 })
     let verdict: Decision | undefined
-    void gate.decide(call('read', { path: 'a.txt' }), context(), { call: 7 }).then((d) => void (verdict = d))
+    void gate.decide(call('read', { path: 'a.txt' }), context(), 7).then((d) => void (verdict = d))
 
     gate.resolve(7 as never, 'approve') // 7 ＝ `call`，不是请求事件 id
     await Promise.resolve()
@@ -306,7 +327,7 @@ describe('判据 3 · 答复流转', () => {
 
   test('陌生 id 的答复＝忽略（不抛、不发裁决事件）', () => {
     const { gate, h } = timed({ value: 0 })
-    void gate.decide(call('read', { path: 'a.txt' }), context())
+    void gate.decide(call('read', { path: 'a.txt' }), context(), 1)
 
     expect(() => gate.resolve(9_999, 'approve')).not.toThrow()
     expect(h.countOf('tool.decision')).toBe(0)
@@ -314,7 +335,7 @@ describe('判据 3 · 答复流转', () => {
 
   test('重复答复＝只认第一次（第二次不覆盖、不重发事件）', async () => {
     const { gate, h } = timed({ value: 0 })
-    const verdict = gate.decide(call('read', { path: 'a.txt' }), context())
+    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -339,15 +360,19 @@ describe('判据 3 · 答复流转', () => {
 
     gate = createPermissionGate({ sink: answering, stamper: h.stamper })
 
-    expect(await gate.decide(call('read', { path: 'a.txt' }), context())).toBe('approve')
+    expect(await gate.decide(call('read', { path: 'a.txt' }), context(), 1)).toBe('approve')
     expect(h.countOf('tool.decision')).toBe(1)
   })
 
-  test('未给调用链引用＝哨兵（不冒充一条真实调用的引用）', () => {
+  test('调用链引用原样入事件——不加工、不冒充', () => {
     const { gate, h } = timed({ value: 0 })
-    void gate.decide(call('read', { path: 'a.txt' }), context())
+    void gate.decide(call('read', { path: 'a.txt' }), context(), 7)
 
-    expect(h.eventsOf('tool.decision.request')[0]?.data.call).toBe(CALL_REF_UNKNOWN)
+    // 事件 `call` ＝ 调用方给的 `tool.call` 事件 id（串链依据）
+    expect(h.eventsOf('tool.decision.request')[0]?.data.call).toBe(7)
+
+    void gate.decide(call('read', { path: 'b.txt' }), context(), 8_888)
+    expect(h.eventsOf('tool.decision.request')[1]?.data.call).toBe(8_888)
   })
 })
 
@@ -358,7 +383,7 @@ describe('判据 4 · 拒绝回填', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context())
+    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -373,9 +398,9 @@ describe('判据 4 · 拒绝回填', () => {
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
 
     // 同轮三个调用（首站按序逐个：各自过闸 → 执行 → 回填）
-    const first = gate.decide(call('read', { path: 'a.txt' }), context(), { call: 1 })
-    const second = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), { call: 2 })
-    const third = gate.decide(call('edit', { path: 'b.ts' }), context(), { call: 3 })
+    const first = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
+    const second = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 2)
+    const third = gate.decide(call('edit', { path: 'b.ts' }), context(), 3)
 
     const requests = h.eventsOf('tool.decision.request')
     expect(requests.length).toBe(3)
@@ -403,9 +428,9 @@ describe('判据 4 · 拒绝回填', () => {
 
     let firstVerdict: Decision | undefined
     void gate
-      .decide(call('read', { path: 'a.txt' }), context())
+      .decide(call('read', { path: 'a.txt' }), context(), 1)
       .then((decision) => void (firstVerdict = decision))
-    const second = gate.decide(call('read', { path: 'b.txt' }), context())
+    const second = gate.decide(call('read', { path: 'b.txt' }), context(), 1)
 
     const requests = h.eventsOf('tool.decision.request')
     gate.resolve(requests[1]?.id ?? -1, 'approve') // 只答第二个
@@ -423,7 +448,7 @@ describe('判据 6 · 裁决不入记录', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
 
-    const verdict = gate.decide(call('read', { path: 'a.txt' }), context())
+    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
     gate.resolve(request.id, 'approve')
@@ -468,6 +493,23 @@ export function gateHasNoEntryFace(): void {
 
   // @ts-expect-error `EventSink` 只有 `emit`——没有条目写入的动词
   h.sink.appendEntry({ kind: 'user', content: 'x' })
+}
+
+/**
+ * 类型层探针（tsc 校验）——**调用链引用必填**（技术方案 · 领域划分 · 端口签名 v0）。
+ *
+ * 链引用是「请求 → 询问 → 裁决 → 结果」四事件**串链**的依据；它在权限域之外产生
+ * （工具域发 `tool.call` 时铸），故只能由调用方传入。**不设哨兵兜底**：
+ * 静默的 `-1` 比缺参更坏——接线漏了应当在**编译期**就报。
+ */
+export function chainRefIsRequired(): void {
+  const h = harness()
+  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+
+  void gate.decide(call('read', { path: 'a.txt' }), context(), 42) // 三参＝唯一姿势
+
+  // @ts-expect-error 两参调用不再被支持——链引用必填
+  void gate.decide(call('read', { path: 'a.txt' }), context())
 }
 
 /**
