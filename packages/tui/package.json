@@ -9,6 +9,17 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@magic/contracts": "workspace:*"
+    "@magic/contracts": "workspace:*",
+    "ink": "^7.1.1"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@magic/faux": "workspace:*",
+    "@types/react": "^19.3.0"
+  },
+  "scripts": {
+    "demo": "bun run scripts/demo.ts"
   }
 }
