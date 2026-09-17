@@ -14,11 +14,9 @@
  * 本层只吃已解析好的 `ProviderConfig`（本域不碰文件系统）。
  */
 
-import type { ModelRequest, ProviderConfig } from '@magic/contracts'
+import type { EventStamper, ModelRequest, ProviderConfig } from '@magic/contracts'
 import { apiKeyEnvVarOf } from '@magic/contracts'
 import type { ModelCallContext, ModelMiddleware } from './middleware.ts'
-import type { EventEnvelopeSource } from './envelope.ts'
-import { localEnvelopeSource } from './envelope.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import { createVendorStreamer } from './ai-sdk.ts'
 import type { FetchLike } from './ai-sdk.ts'
@@ -88,10 +86,14 @@ export type ModelGatewayOptions = {
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
   /**
-   * 信封来源（`id` / `session` / `turn` / `at`）——缺省＝本地单调计数 ＋ 空 session。
-   * **归属未定，故做成注入位**（见 `envelope.ts` 文件头注）；装配根按锚定结论注入。
+   * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
+   *
+   * 由**装配按会话实例**构造并注入：`id` 取自记录域（`RecordsService.nextId()`）、
+   * `session` 由装配设定、`turn` 由对话域在轮起止时经 `beginTurn` 调、`at` 由铸造器盖。
+   *
+   * ⚠️ **必填，本域无缺省**——模型域不自造计数、不自取时钟（缺省只留给测试的桩）。
    */
-  readonly envelope?: EventEnvelopeSource | undefined
+  readonly stamper: EventStamper
 }
 
 /**
@@ -130,9 +132,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       const { events, result } = toKernelEvents(streamVendor(effective, streamOptions), {
         model: effective.model,
         secret: apiKey,
-        // 生效标记（查内置表 → 配置覆盖位）——标记驱动的切分只在此处裁定
+        // 生效标记（查内置表 → 配置接管位）——标记驱动的切分只在此处裁定
         traits: resolveModelTraits(effective.model, config.traits),
-        envelope: options.envelope ?? localEnvelopeSource(),
+        stamper: options.stamper,
       })
 
       return { events: applyEventMiddleware(middleware, events, context), result }

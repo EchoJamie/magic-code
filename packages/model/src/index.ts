@@ -28,7 +28,6 @@ export type {
   ModelGateway,
   ModelStream,
   ModelStreamOptions,
-  ModelToolCall,
 } from './call.ts'
 
 export type { ModelCallContext, ModelMiddleware } from './middleware.ts'
@@ -39,7 +38,7 @@ export { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 export { createModelGateway, MissingApiKeyError, resolveApiKey } from './gateway.ts'
 export type { ModelGatewayOptions } from './gateway.ts'
 
-// —— ③ 构造子（Faux Provider 与循环测试用）——
+// —— ③ 构造子（Faux Provider 与循环测试用；信封由注入的 `EventStamper` 铸）——
 
 export {
   modelCallEnd,
@@ -48,9 +47,6 @@ export {
   modelErrorEvent,
   modelUsage,
 } from './events.ts'
-
-export { localEnvelopeSource, stampEvent } from './envelope.ts'
-export type { EventEnvelopeSource } from './envelope.ts'
 
 // —— ④ 纯函数 ——
 

@@ -65,26 +65,7 @@ function toInstructions(messages: readonly ModelMessage[]): string | undefined {
   return systems.map((message) => message.content).join('\n\n')
 }
 
-/**
- * 工具消息带 `name`——取件层回填工具结果时需要（OpenAI 兼容族的 `tool` 消息同此）。
- *
- * 共享语言的 `ModelMessage('tool')` 只有 `callId`（**供应商侧**调用 id），没有工具名：
- * 名字**可从上文推出**——发起它的 assistant 消息里 `ToolCall.id ↔ name` 成对。
- * 故此处按 `callId` 反查（前缀扫描，assistant 消息必在 tool 消息之前）。
- * 查不到（如上下文被压缩过）退 `''`——线上 OpenAI 兼容形制只认 `tool_call_id`，工具名不上线。
- */
-function toolNamesOf(messages: readonly ModelMessage[]): Map<string, string> {
-  const names = new Map<string, string>()
-  for (const message of messages) {
-    if (message.role !== 'assistant') continue
-    for (const call of message.toolCalls ?? []) names.set(call.id, call.name)
-  }
-  return names
-}
-
 function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
-  const toolNames = toolNamesOf(messages)
-
   return messages
     .filter((message) => message.role !== 'system')
     .map((message): AiSdkMessage => {
@@ -116,7 +97,8 @@ function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
               {
                 type: 'tool-result' as const,
                 toolCallId: message.callId,
-                toolName: toolNames.get(message.callId) ?? '',
+                // 工具名由契约的 `tool` 支直接给（M01-3 补锚）——不再从上下文反查
+                toolName: message.name,
                 output:
                   message.ok
                     ? { type: 'text' as const, value: message.output }

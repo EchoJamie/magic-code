@@ -7,9 +7,10 @@
  * 3. **假端点回环**——给网关注入假 fetch，回放真格式的 OpenAI 兼容 SSE，
  *    把「取件层 SSE 解析 → 归一 → 中间件」整条路走通（真端点另跑，见回报）。
  *
- * 契约消费姿势（M01 备案）：**构造用 `EventEnvelope<'kind'>` · 消费用 `KernelEvent` ＋
- * `if (e.kind === '…')` 自动收窄**。事件带信封（`id` / `session` / `turn` / `at`），
- * 逐条比不得——`payloads()` 剥掉信封只比 `kind` ＋ `data`。
+ * 契约消费姿势：**构造经注入的 `EventStamper` · 消费用 `KernelEvent` ＋
+ * `if (e.kind === '…')` 自动收窄**。事件带信封（`id` / `session` / `turn` / `at`）——
+ * 信封由铸造器盖（M01-3 锚定「产出方铸」），逐条比不得；`payloads()` 剥掉信封只比
+ * `kind` ＋ `data`，信封本身另有用例专钉。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -21,9 +22,17 @@ import type {
   TextStreamPart,
   ToolSet,
 } from 'ai'
-import type { KernelEvent, ModelMessage, ModelTraits, ToolSpec } from '@magic/contracts'
 import type {
-  EventEnvelopeSource,
+  EventDataOf,
+  EventKind,
+  EventStamper,
+  KernelEvent,
+  ModelMessage,
+  ModelTraits,
+  ToolSpec,
+  TurnId,
+} from '@magic/contracts'
+import type {
   ModelCallResult,
   ModelGateway,
   ModelMiddleware,
@@ -54,16 +63,38 @@ import { toKernelEvents } from '../src/normalize.ts'
 
 type Part = TextStreamPart<ToolSet>
 
-/** 信封来源——测试用固定的 session / turn 与可控的 id / at。 */
-function testEnvelope(session = 'test-session'): EventEnvelopeSource {
+/**
+ * 信封铸造器**桩**——测试替身，模型域自身不提供缺省（技术方案 · 领域划分 · 信封的归属）。
+ *
+ * `id` 本地单调、`at` 固定、`session` / `turn` 可设；`beginTurn` 在此**无人调**
+ * （锚定：轮起止由**对话域**调，模型域只 `stamp`），留一个记录用的桩以便将来钉。
+ */
+function testStamper(session = 'test-session', turn: TurnId | null = null): EventStamper & {
+  readonly turns: (TurnId | undefined)[]
+} {
   let next = 0
-  return { session, turn: null, nextId: () => (next += 1), now: () => 1_700_000_000_000 }
+  const turns: (TurnId | undefined)[] = []
+  return {
+    turns,
+    // 泛型 `K` 与 `data: EventDataOf[K]` 的对应关系 TS 无法在函数体内自证（构造面的固有限制，
+    // M01-3 备案同此）；真实实现由装配提供四件后自然成立，此处桩用一次断言收口。
+    stamp: <K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent =>
+      ({
+        id: (next += 1),
+        session,
+        turn,
+        at: 1_700_000_000_000,
+        kind,
+        data,
+      }) as KernelEvent,
+    beginTurn: (value) => turns.push(value),
+  }
 }
 
 /**
  * 剥信封——只比 `kind` 与 `data`。
- * 信封（`id` / `at`）是流水，且**它的归属尚未锚定**（见 `src/envelope.ts` 文件头注）；
- * 逐条比整条事件会把测试钉死在一种归属上，反而不该。
+ * 信封（`id` / `at`）是流水，逐条比整条事件会把用例钉死在一种铸造节奏上，反而不该；
+ * 信封本身另有用例专钉（「构造面即信封」·「信封由注入的铸造器盖」）。
  */
 function bare(event: KernelEvent): { kind: string; data: unknown } {
   return { kind: event.kind, data: event.data }
@@ -127,7 +158,7 @@ async function drain(stream: ModelStream): Promise<{
  * 归一的直接入口——绕开取件层，喂假 chunk。
  *
  * 第三个参数是**配置覆盖位**（`providers.<id>.traits`），不是生效标记：
- * 这里扮演装配侧，走与 `gateway.ts` 同一条裁定路（查内置表 → 配置非空则整组覆盖）。
+ * 这里扮演装配侧，走与 `gateway.ts` 同一条裁定路（查内置表 → **键在即接管**）。
  */
 function normalize(
   parts: readonly Part[],
@@ -136,7 +167,7 @@ function normalize(
 ): ModelStream {
   return toKernelEvents(fromParts(parts), {
     model,
-    envelope: testEnvelope(),
+    stamper: testStamper(),
     traits: resolveModelTraits(model, override),
   })
 }
@@ -159,14 +190,14 @@ describe('归一 · 正文流', () => {
       ]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, MINIMAX_MODEL),
-        modelDelta(stamp, 'text', '你'),
-        modelDelta(stamp, 'text', '好'),
-        modelUsage(stamp, 12, 3),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'text', '你'),
+        modelDelta(stamper, 'text', '好'),
+        modelUsage(stamper, 12, 3),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result.text).toBe('你好')
@@ -184,9 +215,9 @@ describe('归一 · 正文流', () => {
       normalize([{ type: 'start' }, textDelta('嗨'), finishPart('stop')]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
-      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '嗨'), modelCallEnd(stamp)]),
+      payloads([modelCallStart(stamper, MINIMAX_MODEL), modelDelta(stamper, 'text', '嗨'), modelCallEnd(stamper)]),
     )
     expect(result.usage).toBeUndefined()
   })
@@ -208,7 +239,7 @@ describe('归一 · 正文流', () => {
       ]),
     )
 
-    expect(payloads(events)).toContainEqual(bare(modelUsage(testEnvelope(), 7, 2)))
+    expect(payloads(events)).toContainEqual(bare(modelUsage(testStamper(), 7, 2)))
   })
 })
 
@@ -233,18 +264,18 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, MINIMAX_MODEL),
-        modelDelta(stamp, 'thinking', '让我想想'),
-        modelDelta(stamp, 'text', '我来执行'),
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'thinking', '让我想想'),
+        modelDelta(stamper, 'text', '我来执行'),
         // 工具名先于参数出现——零参工具在流里也有名可示
-        modelDelta(stamp, 'toolcall', '', 'exec'),
-        modelDelta(stamp, 'toolcall', '{"cmd"', 'exec'),
-        modelDelta(stamp, 'toolcall', ':"ls"}', 'exec'),
-        modelUsage(stamp, 30, 10),
-        modelCallEnd(stamp),
+        modelDelta(stamper, 'toolcall', '', 'exec', 'call-1'),
+        modelDelta(stamper, 'toolcall', '{"cmd"', 'exec', 'call-1'),
+        modelDelta(stamper, 'toolcall', ':"ls"}', 'exec', 'call-1'),
+        modelUsage(stamper, 30, 10),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result.thinking).toBe('让我想想')
@@ -290,7 +321,9 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    expect(payloads(events)).toContainEqual(bare(modelDelta(testEnvelope(), 'toolcall', '', 'ls')))
+    expect(payloads(events)).toContainEqual(
+      bare(modelDelta(testStamper(), 'toolcall', '', 'ls', 'call-0')),
+    )
     expect(result.toolCalls).toEqual([{ id: 'call-0', name: 'ls', args: {} }])
   })
 
@@ -311,9 +344,9 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
-      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '正文'), modelCallEnd(stamp)]),
+      payloads([modelCallStart(stamper, MINIMAX_MODEL), modelDelta(stamper, 'text', '正文'), modelCallEnd(stamper)]),
     )
   })
 })
@@ -349,9 +382,9 @@ describe('归一 · 错误与中断', () => {
       ]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
-      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '半句')]),
+      payloads([modelCallStart(stamper, MINIMAX_MODEL), modelDelta(stamper, 'text', '半句')]),
     )
     expect(result.aborted).toBe(true)
     expect(result.error).toBeUndefined()
@@ -367,12 +400,12 @@ describe('归一 · 错误与中断', () => {
     }
 
     const { events, result } = await drain(
-      toKernelEvents(throwing(), { model: MINIMAX_MODEL, envelope: testEnvelope() }),
+      toKernelEvents(throwing(), { model: MINIMAX_MODEL, stamper: testStamper() }),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
-      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '半句')]),
+      payloads([modelCallStart(stamper, MINIMAX_MODEL), modelDelta(stamper, 'text', '半句')]),
     )
     expect(result.aborted).toBe(true)
   })
@@ -384,7 +417,7 @@ describe('归一 · 错误与中断', () => {
     }
 
     const { events, result } = await drain(
-      toKernelEvents(throwing(), { model: MINIMAX_MODEL, envelope: testEnvelope() }),
+      toKernelEvents(throwing(), { model: MINIMAX_MODEL, stamper: testStamper() }),
     )
 
     expect(events.at(-1)?.kind).toBe('model.error')
@@ -407,9 +440,9 @@ describe('归一 · 错误与中断', () => {
     }
     const result = await stream.result
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(seen)).toEqual(
-      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelDelta(stamp, 'text', '一')]),
+      payloads([modelCallStart(stamper, MINIMAX_MODEL), modelDelta(stamper, 'text', '一')]),
     )
     expect(result.complete).toBe(false)
     expect(result.text).toBe('一')
@@ -418,9 +451,9 @@ describe('归一 · 错误与中断', () => {
   test('空流也成立：起 → 止（无 delta / 无 usage）', async () => {
     const { events } = await drain(normalize([finishPart('other')]))
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
-      payloads([modelCallStart(stamp, MINIMAX_MODEL), modelCallEnd(stamp)]),
+      payloads([modelCallStart(stamper, MINIMAX_MODEL), modelCallEnd(stamper)]),
     )
   })
 
@@ -454,14 +487,14 @@ describe('特征标记 · 内置表', () => {
       ]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, MINIMAX_MODEL),
-        modelDelta(stamp, 'thinking', '想想'),
-        modelDelta(stamp, 'text', '\n\n正文'),
-        modelUsage(stamp, 9, 4),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'thinking', '想想'),
+        modelDelta(stamper, 'text', '\n\n正文'),
+        modelUsage(stamper, 9, 4),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result.thinking).toBe('想想')
@@ -489,15 +522,15 @@ describe('特征标记 · 内置表', () => {
       ]),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, MINIMAX_MODEL),
-        modelDelta(stamp, 'thinking', '半'),
-        modelDelta(stamp, 'thinking', '句'),
-        modelDelta(stamp, 'text', '正'),
-        modelDelta(stamp, 'text', '文'),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'thinking', '半'),
+        modelDelta(stamper, 'thinking', '句'),
+        modelDelta(stamper, 'text', '正'),
+        modelDelta(stamper, 'text', '文'),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result).toMatchObject({ thinking: '半句', text: '正文' })
@@ -524,13 +557,13 @@ describe('特征标记 · 覆盖位', () => {
       ),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, 'my-local-llama'),
-        modelDelta(stamp, 'thinking', '想'),
-        modelDelta(stamp, 'text', '正文'),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, 'my-local-llama'),
+        modelDelta(stamper, 'thinking', '想'),
+        modelDelta(stamper, 'text', '正文'),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result).toMatchObject({ thinking: '想', text: '正文' })
@@ -550,11 +583,40 @@ describe('特征标记 · 覆盖位', () => {
     expect(result.thinking).toBe('切')
   })
 
-  test('覆盖位裁定：非空即覆盖，空对象视同空缺（回落内置表）', () => {
-    expect(resolveModelTraits(MINIMAX_MODEL, {})).toEqual({ inlineThinking: { tag: 'think' } })
+  /**
+   * 判据＝「**键在即接管**」（技术方案 · 领域划分 · 端口内类型）：`traits` 存在就整组覆盖，
+   * **`{}` ＝显式声明无特征**——不再回落内置表。理由：内置表判错时用户**关得掉**。
+   */
+  test('覆盖位裁定：键在即接管——`{}` 即显式无特征，不回落内置表', () => {
+    expect(resolveModelTraits(MINIMAX_MODEL, {})).toEqual({})
     expect(resolveModelTraits(MINIMAX_MODEL, { inlineThinking: { tag: 'reasoning' } })).toEqual({
       inlineThinking: { tag: 'reasoning' },
     })
+    // 缺省（未给键）才查内置表
+    expect(resolveModelTraits(MINIMAX_MODEL, undefined)).toEqual({
+      inlineThinking: { tag: 'think' },
+    })
+  })
+
+  test('内置表判错时用户关得掉——配置给 `{}` 后 MiniMax-M3 不再切', async () => {
+    const { events, result } = await drain(
+      normalize(
+        [{ type: 'start' }, textDelta('<think>想想</think>\n\n正文'), finishPart('stop')],
+        MINIMAX_MODEL,
+        {},
+      ),
+    )
+
+    const stamper = testStamper()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'text', '<think>想想</think>\n\n正文'),
+        modelCallEnd(stamper),
+      ]),
+    )
+    expect(result.thinking).toBe('')
+    expect(result.text).toBe('<think>想想</think>\n\n正文')
   })
 })
 
@@ -568,12 +630,12 @@ describe('特征标记 · 皆未命中', () => {
       ),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, 'gpt-4o'),
-        modelDelta(stamp, 'text', '<think>想想</think>\n\n正文'),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, 'gpt-4o'),
+        modelDelta(stamper, 'text', '<think>想想</think>\n\n正文'),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result.thinking).toBe('')
@@ -696,12 +758,12 @@ const CONFIG = {
 
 describe('密钥纪律', () => {
   test('缺 key 在构造期就报——消息给的是环境变量名，不是 key', () => {
-    expect(() => createModelGateway({ providerId: 'minimax', config: CONFIG, env: {} })).toThrow(
+    expect(() => createModelGateway({ providerId: 'minimax', config: CONFIG, env: {}, stamper: testStamper() })).toThrow(
       MissingApiKeyError,
     )
 
     try {
-      createModelGateway({ providerId: 'minimax', config: CONFIG, env: {} })
+      createModelGateway({ providerId: 'minimax', config: CONFIG, env: {}, stamper: testStamper() })
     } catch (error) {
       const fault = error as MissingApiKeyError
       expect(fault.envVar).toBe('MAGIC_MINIMAX_API_KEY')
@@ -765,7 +827,7 @@ describe('密钥纪律', () => {
         { type: 'start' },
         { type: 'error', error: new Error(`bad auth header: Bearer ${secret}`) },
       ]),
-      { model: MINIMAX_MODEL, secret, envelope: testEnvelope() },
+      { model: MINIMAX_MODEL, secret, stamper: testStamper() },
     )
 
     const { events, result } = await drain(stream)
@@ -826,6 +888,7 @@ describe('中间件位', () => {
     trace.length = 0
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch: echoFetch(),
@@ -850,6 +913,7 @@ describe('中间件位', () => {
   test('无中间件时事件原样通过', async () => {
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch: echoFetch(),
@@ -859,12 +923,12 @@ describe('中间件位', () => {
       gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, MINIMAX_MODEL),
-        modelDelta(stamp, 'text', 'ok'),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'text', 'ok'),
+        modelCallEnd(stamper),
       ]),
     )
   })
@@ -881,6 +945,7 @@ describe('中间件位', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch: capturingFetch,
@@ -956,6 +1021,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -972,15 +1038,15 @@ describe('假端点回环 · 流式事件序列', () => {
       }),
     )
 
-    const stamp = testEnvelope()
+    const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamp, MINIMAX_MODEL),
-        modelDelta(stamp, 'text', '你'),
-        modelDelta(stamp, 'text', '好'),
-        modelDelta(stamp, 'thinking', '简短想'),
-        modelUsage(stamp, 11, 5),
-        modelCallEnd(stamp),
+        modelCallStart(stamper, MINIMAX_MODEL),
+        modelDelta(stamper, 'text', '你'),
+        modelDelta(stamper, 'text', '好'),
+        modelDelta(stamper, 'thinking', '简短想'),
+        modelUsage(stamper, 11, 5),
+        modelCallEnd(stamper),
       ]),
     )
     expect(result.text).toBe('你好')
@@ -1016,6 +1082,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1049,6 +1116,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1066,7 +1134,7 @@ describe('假端点回环 · 流式事件序列', () => {
             toolCalls: [{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }],
           },
           // 共享语言的工具消息：`callId` 是**供应商侧**调用 id；工具名由上文的 assistant 消息推出
-          { role: 'tool', callId: 'call_1', ok: true, output: 'a.ts\nb.ts' },
+          { role: 'tool', callId: 'call_1', name: 'exec', ok: true, output: 'a.ts\nb.ts' },
         ],
       }),
     )
@@ -1095,6 +1163,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1111,7 +1180,7 @@ describe('假端点回环 · 流式事件序列', () => {
             content: '',
             toolCalls: [{ id: 'call_9', name: 'exec', args: { cmd: 'nope' } }],
           },
-          { role: 'tool', callId: 'call_9', ok: false, output: 'command not found' },
+          { role: 'tool', callId: 'call_9', name: 'exec', ok: false, output: 'command not found' },
         ],
       }),
     )
@@ -1160,6 +1229,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1184,6 +1254,7 @@ describe('假端点回环 · 流式事件序列', () => {
     )
 
     const toolcallNames = new Set<string | undefined>()
+    const toolcallIds = new Set<string | undefined>()
     let toolcallDeltaCount = 0
     for (const event of events) {
       // 消费侧按 kind 自动收窄（不再需要显式 `as`）
@@ -1191,9 +1262,12 @@ describe('假端点回环 · 流式事件序列', () => {
       if (event.data.channel !== 'toolcall') continue
       toolcallDeltaCount += 1
       toolcallNames.add(event.data.name)
+      toolcallIds.add(event.data.id)
     }
     expect(toolcallDeltaCount).toBeGreaterThan(0)
     expect([...toolcallNames]).toEqual(['exec'])
+    // toolcall 增量一律带**供应商侧调用 id**（渲染侧据以按调用分组）
+    expect([...toolcallIds]).toEqual(['call_1'])
 
     expect(result.toolCalls).toEqual([{ id: 'call_1', name: 'exec', args: { cmd: 'ls' } }])
     expect(result.finishReason).toBe('tool-calls')
@@ -1215,6 +1289,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'sk-secret-abcdefghijklmnop',
       fetch,
@@ -1242,6 +1317,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1263,6 +1339,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       fetch,
       env: { MAGIC_MINIMAX_API_KEY: 'env-key-123' },
@@ -1282,6 +1359,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1305,65 +1383,71 @@ describe('假端点回环 · 流式事件序列', () => {
 
 describe('端口形态', () => {
   test('事件构造子产出的 kind 与 data 与契约逐 kind 配对', () => {
-    const stamp = testEnvelope()
+    const stamper = testStamper()
 
-    expect(payloads([modelCallStart(stamp, 'MiniMax-M3')])).toEqual([
+    expect(payloads([modelCallStart(stamper, 'MiniMax-M3')])).toEqual([
       { kind: 'model.call.start', data: { model: 'MiniMax-M3' } },
     ])
-    expect(payloads([modelDelta(stamp, 'text', '嗨')])).toEqual([
+    expect(payloads([modelDelta(stamper, 'text', '嗨')])).toEqual([
       { kind: 'model.delta', data: { channel: 'text', text: '嗨' } },
     ])
-    expect(payloads([modelDelta(stamp, 'toolcall', '{}', 'exec')])).toEqual([
-      { kind: 'model.delta', data: { channel: 'toolcall', text: '{}', name: 'exec' } },
+    expect(payloads([modelDelta(stamper, 'toolcall', '{}', 'exec', 'c1')])).toEqual([
+      { kind: 'model.delta', data: { channel: 'toolcall', text: '{}', name: 'exec', id: 'c1' } },
     ])
-    expect(payloads([modelUsage(stamp, 1, 2)])).toEqual([
+    expect(payloads([modelUsage(stamper, 1, 2)])).toEqual([
       { kind: 'model.usage', data: { inputTokens: 1, outputTokens: 2 } },
     ])
-    expect(payloads([modelCallEnd(stamp)])).toEqual([{ kind: 'model.call.end', data: {} }])
-    expect(payloads([modelErrorEvent(stamp, 'terminal', '停了')])).toEqual([
+    expect(payloads([modelCallEnd(stamper)])).toEqual([{ kind: 'model.call.end', data: {} }])
+    expect(payloads([modelErrorEvent(stamper, 'terminal', '停了')])).toEqual([
       { kind: 'model.error', data: { tier: 'terminal', message: '停了' } },
     ])
   })
 
-  test('构造面即信封——id 单调、session / turn / at 由来源给', () => {
-    const source = testEnvelope('sess-1')
-    const first = modelCallStart(source, MINIMAX_MODEL)
-    const second = modelCallEnd(source)
+  test('构造面即信封——信封四件由**注入的铸造器**盖（模型域不自造）', () => {
+    const stamper = testStamper('sess-1', 7)
+    const first = modelCallStart(stamper, MINIMAX_MODEL)
+    const second = modelCallEnd(stamper)
 
     expect(first.session).toBe('sess-1')
-    expect(first.turn).toBeNull()
+    expect(first.turn).toBe(7)
     expect(first.at).toBe(1_700_000_000_000)
     expect(second.id).toBeGreaterThan(first.id)
   })
 
-  test('事件来源可注入——装配根按锚定结论换归属（`envelope` 选项）', async () => {
+  test('信封归产出方铸——装配注入的铸造器说了算（换一个即换一套信封）', async () => {
     const { fetch } = capture(() =>
       sse(chunk({ choices: [{ index: 0, delta: { content: '嗨' } }] })),
     )
 
+    const injected = testStamper('session-of-assembly', 42)
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: injected,
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
       env: {},
-      envelope: { session: 'injected', turn: 7, nextId: () => 100, now: () => 42 },
     })
 
     const { events } = await drain(
       gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
 
-    expect(events[0]).toMatchObject({ id: 100, session: 'injected', turn: 7, at: 42 })
+    // 每一条事件都盖着装配给的那一套——含首条与末条
+    for (const event of events) {
+      expect(event).toMatchObject({ session: 'session-of-assembly', turn: 42 })
+    }
+    // 模型域**不调** `beginTurn`（锚定：轮起止由对话域调）
+    expect(injected.turns).toEqual([])
   })
 
   test('Faux 可直接实现 ModelGateway（U12 的界面）', async () => {
-    const stamp = testEnvelope()
+    const stamper = testStamper()
 
     async function* scripted(): AsyncIterable<KernelEvent> {
-      yield modelCallStart(stamp, 'faux')
-      yield modelDelta(stamp, 'text', '假的')
-      yield modelCallEnd(stamp)
+      yield modelCallStart(stamper, 'faux')
+      yield modelDelta(stamper, 'text', '假的')
+      yield modelCallEnd(stamper)
     }
 
     const faux: ModelGateway = {
@@ -1387,13 +1471,13 @@ describe('端口形态', () => {
 
     const { events } = await drain(faux.stream({ model: 'faux', messages: [] }))
     expect(payloads(events)).toEqual(
-      payloads([modelCallStart(stamp, 'faux'), modelDelta(stamp, 'text', '假的'), modelCallEnd(stamp)]),
+      payloads([modelCallStart(stamper, 'faux'), modelDelta(stamper, 'text', '假的'), modelCallEnd(stamper)]),
     )
   })
 
   test('消费者按契约端口取用——只见 stream(req, opts) → { events; result }', () => {
     // 类型层面：`createModelGateway` 的返回可赋给契约端口（`@magic/contracts` 的 `ModelGateway`）
-    const gateway = createModelGateway({ providerId: 'minimax', config: CONFIG, apiKey: 'k', env: {} })
+    const gateway = createModelGateway({ providerId: 'minimax', config: CONFIG, apiKey: 'k', env: {}, stamper: testStamper() })
     const stream = gateway.stream(
       { model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] },
       { signal: new AbortController().signal },
@@ -1416,6 +1500,7 @@ describe('消息装配', () => {
 
     const gateway = createModelGateway({
       providerId: 'minimax',
+      stamper: testStamper(),
       config: CONFIG,
       apiKey: 'test-key',
       fetch,
@@ -1426,7 +1511,7 @@ describe('消息装配', () => {
       { role: 'system', content: '段一' },
       { role: 'user', content: '嗨' },
       { role: 'assistant', content: '在', toolCalls: [{ id: 'c1', name: 'ls', args: {} }] },
-      { role: 'tool', callId: 'c1', ok: true, output: 'a.ts' },
+      { role: 'tool', callId: 'c1', name: 'ls', ok: true, output: 'a.ts' },
     ]
 
     const { events } = await drain(gateway.stream({ model: MINIMAX_MODEL, messages }))

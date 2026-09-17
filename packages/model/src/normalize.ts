@@ -16,9 +16,14 @@
  */
 
 import type { FinishReason, LanguageModelUsage, TextStreamPart, ToolSet } from 'ai'
-import type { KernelEvent, ModelFinishReason, ModelTraits } from '@magic/contracts'
-import type { EventEnvelopeSource } from './envelope.ts'
-import type { ModelCallResult, ModelStream, ModelToolCall } from './call.ts'
+import type {
+  EventStamper,
+  KernelEvent,
+  ModelFinishReason,
+  ModelTraits,
+  ToolCall,
+} from '@magic/contracts'
+import type { ModelCallResult, ModelStream } from './call.ts'
 import { classifyModelError, describeModelError, isAbortError } from './errors.ts'
 import {
   modelCallEnd,
@@ -43,8 +48,11 @@ export type NormalizeOptions = {
    * 缺省 / 无 `inlineThinking` ＝ 常规行为：正文原样走 `text`，**不猜、不切**。
    */
   readonly traits?: ModelTraits | undefined
-  /** 信封来源——`id` / `session` / `turn` / `at` 的归属未定（见 `envelope.ts` 文件头注）。 */
-  readonly envelope: EventEnvelopeSource
+  /**
+   * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
+   * `id` / `session` / `turn` / `at` 四件全由它盖；归一不自造计数、不取时钟。
+   */
+  readonly stamper: EventStamper
 }
 
 /** 流中在途的工具调用——名字先到、参数片段陆续到、`tool-call` 落定。 */
@@ -59,7 +67,7 @@ type PendingToolCall = {
 type NormalizeState = {
   readonly model: string
   readonly secret: string | undefined
-  readonly envelope: EventEnvelopeSource
+  readonly stamper: EventStamper
   /** 正文切分位——生效标记决定实现（见 `inline-thinking.ts`）。 */
   readonly splitter: TextSplitter
   text: string
@@ -88,7 +96,7 @@ function createState(options: NormalizeOptions): NormalizeState {
   return {
     model: options.model,
     secret: options.secret,
-    envelope: options.envelope,
+    stamper: options.stamper,
     splitter: createSplitter(options.traits),
     text: '',
     thinking: '',
@@ -147,7 +155,7 @@ function emitText(state: NormalizeState, deltas: readonly InlineDelta[]): Kernel
   for (const delta of deltas) {
     if (delta.channel === 'thinking') state.thinking += delta.text
     else state.text += delta.text
-    events.push(modelDelta(state.envelope, delta.channel, delta.text))
+    events.push(modelDelta(state.stamper, delta.channel, delta.text))
   }
   return events
 }
@@ -169,10 +177,10 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
     // —— 思考 ——
     case 'reasoning-delta': {
       state.thinking += part.text
-      return [modelDelta(state.envelope, 'thinking', part.text)]
+      return [modelDelta(state.stamper, 'thinking', part.text)]
     }
 
-    // —— 工具调用：名字先到，参数片段随后 ——
+    // —— 工具调用：名字先到，参数片段随后（增量一律带上供应商侧调用 id——渲染侧据以分组）——
     case 'tool-input-start': {
       state.pending.set(part.id, {
         id: part.id,
@@ -182,12 +190,13 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
         invalid: false,
       })
       // 空文本增量——零参工具不会有参数片段，工具名只在流里出现这一次
-      return [modelDelta(state.envelope, 'toolcall', '', part.toolName)]
+      return [modelDelta(state.stamper, 'toolcall', '', part.toolName, part.id)]
     }
     case 'tool-input-delta': {
       const call = state.pending.get(part.id)
       if (call !== undefined) call.argsRaw += part.delta
-      return [modelDelta(state.envelope, 'toolcall', part.delta, call?.name)]
+      // 名字取自在途记录（缺 `tool-input-start` 时可能没有），id 一律直给
+      return [modelDelta(state.stamper, 'toolcall', part.delta, call?.name, part.id)]
     }
     case 'tool-call': {
       const existing = state.pending.get(part.toolCallId)
@@ -220,9 +229,9 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
       // 收束前先吐残片——否则标签尾部的半截留在切分器里，正文截掉一截
       const events: KernelEvent[] = flushText(state)
       if (state.usage !== undefined) {
-        events.push(modelUsage(state.envelope, state.usage.inputTokens, state.usage.outputTokens))
+        events.push(modelUsage(state.stamper, state.usage.inputTokens, state.usage.outputTokens))
       }
-      events.push(modelCallEnd(state.envelope))
+      events.push(modelCallEnd(state.stamper))
       state.closed = true
       return events
     }
@@ -237,7 +246,7 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
       const tier = classifyModelError(part.error)
       const message = describeModelError(part.error, state.secret)
       state.error = { tier, message }
-      return [...flushText(state), modelErrorEvent(state.envelope, tier, message)]
+      return [...flushText(state), modelErrorEvent(state.stamper, tier, message)]
     }
     case 'abort': {
       state.aborted = true
@@ -273,8 +282,8 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
 // —— 落定 ——
 
 /** 在途工具调用收口——`tool-call` 未到者，用攒下的参数片段兜底。 */
-function settleToolCalls(state: NormalizeState): ModelToolCall[] {
-  const calls: ModelToolCall[] = []
+function settleToolCalls(state: NormalizeState): ToolCall[] {
+  const calls: ToolCall[] = []
   for (const call of state.pending.values()) {
     if (call.args !== undefined) {
       calls.push(
@@ -338,7 +347,7 @@ export function toKernelEvents(
 
   async function* pump(): AsyncGenerator<KernelEvent> {
     try {
-      yield modelCallStart(state.envelope, state.model)
+      yield modelCallStart(state.stamper, state.model)
 
       for await (const part of parts) {
         for (const event of consume(part, state)) yield event
@@ -356,7 +365,7 @@ export function toKernelEvents(
         const tier = classifyModelError(error)
         const message = describeModelError(error, state.secret)
         state.error = { tier, message }
-        yield modelErrorEvent(state.envelope, tier, message)
+        yield modelErrorEvent(state.stamper, tier, message)
       }
     } finally {
       settle(snapshot(state))

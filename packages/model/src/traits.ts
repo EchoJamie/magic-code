@@ -28,23 +28,19 @@ export const MODEL_TRAITS_BUILTIN: Readonly<Record<string, ModelTraits>> = {
   'MiniMax-M3': { inlineThinking: { tag: 'think' } },
 }
 
-/** 覆盖位是否非空——空缺（`undefined` / `{}`）＝按常规行为处理，不是「无特征」的断言。 */
-function hasAnyTrait(traits: ModelTraits | undefined): traits is ModelTraits {
-  return traits !== undefined && Object.keys(traits).length > 0
-}
-
 /**
- * 生效标记——**查表 → 配置有则覆盖**（技术方案 · 模型策略）。
+ * 生效标记——**查表 → 配置有则接管**（技术方案 · 模型策略 · 端口内类型）。
  *
- * 覆盖是**整组**的（不是逐字段合并）：配置非空即以内置表以外的判定为准——
- * 表外模型与「供应商改了行为」都靠这一条出口。
+ * 判据＝「**键在即接管**」：`traits` **存在就整组覆盖**（含 `{}` ＝**显式声明无特征**）。
+ * 理由（锚定原文）——一条规则胜过一个二级判据，且**内置表判错时用户关得掉**：
+ * 若 `{}` 回落内置表，错的模型就没有出口。
  *
- * 皆未命中返回 `undefined`——调用方据此走常规行为（不猜、不切）。
+ * 两处皆无（`undefined`）→ 返回 `undefined`，调用方走常规行为（不猜、不切）。
  */
 export function resolveModelTraits(
   model: string,
   override?: ModelTraits | undefined,
 ): ModelTraits | undefined {
-  if (hasAnyTrait(override)) return override
+  if (override !== undefined) return override
   return MODEL_TRAITS_BUILTIN[model]
 }
