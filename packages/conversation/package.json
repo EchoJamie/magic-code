@@ -10,5 +10,8 @@
   },
   "dependencies": {
     "@magic/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@magic/faux": "workspace:*"
   }
 }

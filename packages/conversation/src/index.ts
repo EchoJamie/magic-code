@@ -1,13 +1,34 @@
 /**
- * `@magic/conversation` —— **对话域**（核心域）。
+ * `@magic/conversation` —— **对话域**（核心域）· 跨域可见面。
  *
  * 职责（技术方案 · 领域划分）：Agent 运行——主循环 · 上下文装配 · 系统提示词 · 中断 / 恢复。
  * 对外端口 `ConversationService`（在 `@magic/contracts`）；本包＝它的实现域。
  * 域内规则：不认知任何域的内部、不认知外壳与供应商；会话推进（条目落账）归本域。
  *
- * 当前进度（M04 · 对话域落位）：本步只落**提示词部件**（`prompt/`）——
- * 主循环 · 上下文装配归 **U04**，到站时在此扩公开面（＋ `ConversationService` 实现）。
+ * **公开面三件**（技术方案 · 代码治理 · 边界纪律：「域包的 exports 只出**端口实现 ＋
+ * 装配期构造入参形态**；域内读取面 / 内部视图 / 测试辅助不上公开面」——
+ * 本条由 U04 落 `ConversationService` 时**定形**，见 M04 回报待决 2）：
+ *
+ * | 件 | 落点 |
+ * | --- | --- |
+ * | **端口实现**——`createConversationService` | `./service.ts` |
+ * | **构造入参形态**——`ConversationDeps` | 同上 |
+ * | 入参用到的两个形态——`PromptVars` · `ContextPolicy` | `./prompt/` · `./policy.ts` |
+ *
+ * **不出去**：提示词部件的读取面（`buildSystemPrompt` / `splitSystemPrompt` / `renderSection` …）·
+ * Context 装配（`assembleContext`）· 主循环（`agentLoop`）· 条目落账（`./entries.ts`）。
+ * 它们只在域内用（域外深链 `@magic/conversation/src/…` 由守护拦下）——**没出，就没承诺**：
+ * 形态要改随时可改，不必当公开契约待。
  *
  * 域内引用一律相对路径（并行规约 1：域不得 import 他人内部）；跨域只经 `@magic/contracts`。
  */
-export * from './prompt/index.ts'
+
+// —— 端口实现 ＋ 装配期构造入参形态 ——
+
+export { createConversationService } from './service.ts'
+export type { ConversationDeps } from './service.ts'
+
+// 构造入参里点名用到、装配根必须拿得到的两件形态：
+// 提示词运行时注入值（`cwd` / `platform` / `date`）与上下文策略（阈值 / 截断）
+export type { PromptVars } from './prompt/index.ts'
+export type { ContextPolicy } from './policy.ts'
