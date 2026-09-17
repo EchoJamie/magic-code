@@ -248,6 +248,36 @@ describe('命令进——外壳 → 内核', () => {
     expect(JSON.parse(JSON.stringify(got))).toEqual(expected)
   })
 
+  test('「总是允许」**原样转手**——控制域不翻译，只把位递给路由', () => {
+    const hub = createControlHub()
+    const { kernel, shell } = createInProcessTransportPair()
+    // 路由侧记下**收到的第三参**——这正是权限域 `resolve` 会拿到的那一件
+    const seen: { readonly id: DecisionId; readonly decision: string; readonly remember: boolean | undefined }[] = []
+
+    hub.bind(
+      routesWith({
+        onDecision: (id, decision, opts) => seen.push({ id, decision, remember: opts?.remember }),
+      }),
+    )
+    hub.attach(kernel)
+
+    shell.send({ type: 'decision.answer', id: 42, decision: 'approve', remember: true })
+    shell.send({ type: 'decision.answer', id: 43, decision: 'approve' })
+
+    // 给了＝递下去；没给＝`undefined`（**不替用户补 `false`**——控制域没有语义可翻）
+    expect(seen).toEqual([
+      { id: 42, decision: 'approve', remember: true },
+      { id: 43, decision: 'approve', remember: undefined },
+    ])
+  })
+
+  test('带 `remember` 的答复照过可序列化门（**布尔位**，不是类实例 / undefined）', () => {
+    // 通道投递前逐条校验（JSON 往返无损）——`remember: true` 必须安然通过。
+    // 反面：若有人图省事写成 `remember: undefined`，那一位会被拒投（丢键＝有损）。
+    expect(isSerializable({ type: 'decision.answer', id: 42, decision: 'approve', remember: true })).toBe(true)
+    expect(isSerializable({ type: 'decision.answer', id: 42, decision: 'approve', remember: undefined })).toBe(false)
+  })
+
   test('裁决答复按**请求事件 id** 配对——与 `call` 字段两 id 不混', () => {
     const hub = createControlHub()
     const { kernel, shell } = createInProcessTransportPair()

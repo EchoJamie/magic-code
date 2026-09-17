@@ -66,7 +66,7 @@ describe('一屏 · 流式', () => {
 })
 
 describe('一屏 · 审批', () => {
-  test('审批提示 —— 材料 · 轻重 · 两个答复键', () => {
+  test('审批提示 · 重 —— 必闸类不给「总是允许」，屏上说清缘由', () => {
     const view = viewed([
       event('turn.start', {}),
       event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
@@ -77,6 +77,25 @@ describe('一屏 · 审批', () => {
           name: 'exec',
           material: '在工作区根执行：ls\n（只读，不改动任何文件）',
           weight: 'heavy',
+        },
+        { id: 88 },
+      ),
+    ])
+
+    expect(screen(view, '继续')).toMatchSnapshot()
+  })
+
+  test('审批提示 · 轻 —— 三个答复键（「总是允许」在这里，且写明管多久）', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
+      event(
+        'tool.decision.request',
+        {
+          call: 71,
+          name: 'exec',
+          material: '在工作区根执行：ls\n（只读，不改动任何文件）',
+          weight: 'light',
         },
         { id: 88 },
       ),

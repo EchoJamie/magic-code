@@ -153,9 +153,22 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     home,
   )
 
+  // 权限段（阶段 2）：`rules` 的值**原样带过**——条目形态的权威是权限域的 `parseRules`
+  // （连「整个值不是数组」都由它给缘由），故加载器**不在这里另做一套校验**，只把它递下去。
+  // ⚠️ 漏带＝配置里写了规则而闸门一条也收不到——**静默失效**（U14 合入后第一次接线就踩过，
+  // 由 app 的权限用例当场抓住）。故这一段有测试钉着，别顺手删。
+  const permissions = raw['permissions'] === undefined
+    ? undefined
+    : asObject(raw['permissions'], path, 'permissions')
+
   return {
     path,
-    config: { defaultProvider: providerId, providers, dataDir },
+    config: {
+      defaultProvider: providerId,
+      providers,
+      dataDir,
+      ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
+    },
     providerId,
     provider,
   }

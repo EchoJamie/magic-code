@@ -85,6 +85,45 @@ describe('命令 · 裁决答复', () => {
     expect(spy.commands).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
   })
 
+  test('「总是允许」——答复带上 `remember` 位（批准 ＋ 记住）', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    spy.emit(
+      event('tool.decision.request', {
+        call: 71,
+        name: 'exec',
+        material: 'ls',
+        weight: 'light',
+      }, { id: 88 }),
+    )
+    shell.answer('approve', { remember: true })
+
+    expect(spy.commands).toEqual([
+      { type: 'decision.answer', id: 88, decision: 'approve', remember: true },
+    ])
+  })
+
+  test('不给 `remember` —— 答复里**没有那个键**（向后兼容：与阶段 1 逐字同义）', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    spy.emit(
+      event('tool.decision.request', {
+        call: 71,
+        name: 'exec',
+        material: 'ls',
+        weight: 'light',
+      }, { id: 88 }),
+    )
+    shell.answer('approve')
+
+    expect(spy.commands).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
+    // 键**在不在**也算判据：`remember: undefined` 过不了通道的可序列化门（丢键＝有损），
+    // 故「没给」必须表现为**键不出现**，而不是键在值为 undefined。
+    expect('remember' in (spy.commands[0] ?? {})).toBe(false)
+  })
+
   test('无待裁决时不发答复', () => {
     const spy = createSpyTransport()
     const shell = createShell(spy.transport)

@@ -23,8 +23,13 @@ export type Shell = {
   subscribe(listener: () => void): () => void
   /** 提交用户输入（本地回显 ＋ `input.submit`）；空白丢弃。 */
   submit(text: string): void
-  /** 答复待裁决的询问（`decision.answer`）；无待裁决时忽略。 */
-  answer(decision: Decision): void
+  /**
+   * 答复待裁决的询问（`decision.answer`）；无待裁决时忽略。
+   *
+   * 第二参 ＝**「总是允许」**（批准 ＋ 记住）：给了就把它带上，由控制域原样转手给权限域
+   * （本层不解释它的含义）。
+   */
+  answer(decision: Decision, opts?: { remember?: boolean }): void
   /** 中断当前轮（`turn.interrupt`）。 */
   interrupt(): void
   /** 收摊——退订传输、清订阅者（此后的命令一律丢弃）。 */
@@ -75,14 +80,21 @@ export function createShell(transport: ControlTransport): Shell {
       send({ type: 'input.submit', text: trimmed })
     },
 
-    answer: (decision) => {
+    answer: (decision, opts) => {
       const pending = view.pending
       if (pending === null) return
 
       // 提示即时撤下（裁决留痕由随后的 `tool.decision` 事件补）
       view = { ...view, pending: null }
       notify()
-      send({ type: 'decision.answer', id: pending.id, decision })
+
+      // 「总是允许」**只在给了才带上键**——通道按「JSON 往返无损」校验，
+      // `remember: undefined` 是丢键（有损）→ 当场拒投。不给＝一次性，与阶段 1 逐字同义。
+      send(
+        opts?.remember === true
+          ? { type: 'decision.answer', id: pending.id, decision, remember: true }
+          : { type: 'decision.answer', id: pending.id, decision },
+      )
     },
 
     interrupt: () => {

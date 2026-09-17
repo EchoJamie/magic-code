@@ -19,7 +19,10 @@ import {
 } from '../src/index.ts'
 import type {
   Command,
+  CommandRoutes,
   Content,
+  Decision,
+  DecisionAnswer,
   DecisionId,
   Entry,
   EntryRange,
@@ -30,6 +33,7 @@ import type {
   ExecResult,
   KernelEvent,
   KernelTransport,
+  MagicConfig,
   ModelFinishReason,
   ModelGateway,
   ModelMessage,
@@ -38,6 +42,7 @@ import type {
   ModelStream,
   ModelTraits,
   NewEntry,
+  PermissionGate,
   ProviderConfig,
   RecordId,
   RecordsService,
@@ -47,6 +52,7 @@ import type {
   ToolResult,
   ToolResultPayload,
   TurnId,
+  WriteData,
 } from '../src/index.ts'
 
 // ══ 类型层探针（tsc 校验；运行时无操作）══════════════════════════════
@@ -373,6 +379,96 @@ export function modelResultShape(): void {
   void reasons
   void minimal
   void full
+}
+
+// —— 第 15 轮补锚（阶段 2 波次 1 · 契约三处 ＋ 「总是允许」）——
+
+/** `WriteData` 两选一——文本或**字节**；`blob` 支已撤（写了即编译不过）。 */
+export function writeDataTakesBytesOrText(): void {
+  const text: WriteData = { text: '内容' }
+  const bytes: WriteData = { bytes: new Uint8Array([1, 2, 3]) }
+
+  void text
+  void bytes
+
+  // 撤 blob 支的判据就在这一行：沙箱没有 blob 面（要写 blob 内容＝调用方先取回字节再传），
+  // 留着那一支只会让人以为传个引用就能落地，实际写个静默的空文件。
+  // @ts-expect-error `WriteData` 上没有 `blob` 这一支
+  const blob: WriteData = { blob: 'blob_7' }
+  void blob
+}
+
+/** `Sandbox.read` 的 `opts` **可省**（省了走实现常量 64 KiB）；给了就是显式上限。 */
+export function sandboxReadOptsAreOptional(): void {
+  const call = (sandbox: Sandbox, path: string): void => {
+    void sandbox.read(path) // 可省——阶段 1 的两参写法一字不动
+    void sandbox.read(path, {}) // 空选项也是合法调用
+    // `edit` 的口子：整文才能唯一定位与安全回写，故显式放大上限（实现常量 1 MiB）
+    void sandbox.read(path, { maxBytes: 1024 * 1024 })
+  }
+
+  void call
+}
+
+/** 「总是允许」＝答复上的**位**——`DecisionAnswer.remember` 可省（**向后兼容**）。 */
+export function decisionAnswerRememberIsOptional(): void {
+  const oneShot: DecisionAnswer = { type: 'decision.answer', id: 1, decision: 'approve' }
+  const always: DecisionAnswer = { type: 'decision.answer', id: 1, decision: 'approve', remember: true }
+
+  void oneShot
+  void always
+
+  // **不是裁决词表的第三词**——`Decision` 仍是两词，`tool.decision.decision` 用的是同一个表。
+  // @ts-expect-error `Decision` 只有 'approve' / 'reject'
+  const thirdWord: DecisionAnswer = { type: 'decision.answer', id: 1, decision: 'always' }
+  void thirdWord
+}
+
+/** 那个位**两个端口都过得去**：`CommandRoutes.onDecision` 与 `PermissionGate.resolve`。 */
+export function rememberTravelsThroughBothPorts(): void {
+  // 两参写法照收——旧装配的字面一字不动（向后兼容）
+  const legacy: CommandRoutes = {
+    onInput: () => undefined,
+    onInterrupt: () => undefined,
+    onDecision: (id, decision) => void [id, decision],
+  }
+  const widened: CommandRoutes = {
+    onInput: () => undefined,
+    onInterrupt: () => undefined,
+    onDecision: (id, decision, opts) => void [id, decision, opts?.remember],
+  }
+
+  // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
+  const gate: PermissionGate = {
+    decide(call: ToolCall): Promise<Decision> {
+      void call
+      return Promise.resolve('approve')
+    },
+    /** 实现面**可以少写参数**——端口上第三参是可选的 */
+    resolve(requestId: DecisionId, decision: Decision): void {
+      void [requestId, decision]
+    },
+  }
+
+  void legacy
+  void widened
+  void gate.resolve(1, 'approve') // 不给＝一次性
+  void gate.resolve(1, 'approve', { remember: true }) // 给了＝批准 ＋ 记住
+}
+
+/** 权限段——`MagicConfig.permissions.rules` 是阶段 2 的加键（缺省＝无规则＝一律问）。 */
+export function configCarriesPermissionRules(): void {
+  const bare: MagicConfig = { defaultProvider: 'p', providers: {}, dataDir: '/tmp' }
+  const withRules: MagicConfig = {
+    defaultProvider: 'p',
+    providers: {},
+    dataDir: '/tmp',
+    // 条目形态**不在这里复述**——权威是权限域的 `parseRules`（故此处是原值，交它解析）
+    permissions: { rules: [{ tool: 'exec', op: 'read' }] },
+  }
+
+  void bare
+  void withRules
 }
 
 // ══ 运行时断言 ════════════════════════════════════════════════════════

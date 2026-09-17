@@ -13,7 +13,8 @@
  * 纪律（技术方案 · 领域划分 · 控制域）：
  * - **无订阅方时命令丢弃**（Emitter 语义，不抛、不排队）——装配须**先接订阅、后放开输入**；
  * - **裁决配对＝请求事件 id**——答复按 `decision.answer.id` 原样路由给权限域，域内不解释
- *   （`call` 是另一 id 空间，见契约 `ids.ts` 头注）；
+ *   （`call` 是另一 id 空间，见契约 `ids.ts` 头注）；答复的**加宽位**（`remember`）同样原样
+ *   转手——本域**不做翻译**，「总是允许」的落地（会话级记忆）归权限域；
  * - 消息经传输投递，**可序列化校验在传输那侧**（投递前逐条，违者拒投并点名路径）。
  */
 
@@ -64,8 +65,10 @@ export function createControlHub(): ControlHubFace {
         target.onInterrupt()
         return
       case 'decision.answer':
-        // 配对键＝请求事件 id，原样交给权限域——此处不解释、不改写
-        target.onDecision(command.id, command.decision)
+        // 配对键＝请求事件 id，原样交给权限域——此处不解释、不改写。
+        // `remember`（「总是允许」）也**原样转手**：它是答复上的位，翻译归权限域
+        // （控制域翻一道＝两处各有一套语义，迟早分叉）。
+        target.onDecision(command.id, command.decision, { remember: command.remember })
         return
     }
   }

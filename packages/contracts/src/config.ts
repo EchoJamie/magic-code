@@ -38,14 +38,33 @@ export type ProviderConfig = {
 }
 
 /**
- * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`。
- * 权限规则 · 工作区根为阶段 2 / 3 加键；
+ * 权限段——`permissions.rules`（阶段 2 加键 · 技术方案 · 配置与密钥 · 权限「规则化」）。
+ *
+ * **条目形态的权威在权限域**——`@magic/permission` 的 `parseRules` 是唯一的解析器
+ * （形态见其 `PermissionRule`：工具 × 路径模式 × 操作类型 → 允许）。**解析从严**：
+ * 读不懂的条目**逐个拒收、连同缘由交回装配**（静默丢弃会让人对着一条不生效的规则发呆）。
+ *
+ * 故本契约只认「**这个键在哪**」，条目长什么样不在这里复述一遍——两处各写一份形态，
+ * 迟早分叉成「配置认一种、解析器认另一种」。取值交 `parseRules`：它连「整个值不是数组」
+ * 这种情形都要给出缘由，所以此处取**原值**。
+ *
+ * **键缺省 ＝ 无规则 ＝ 一律问**（阶段 1 姿态）——故不接线也能跑；**必闸禁区照旧凌驾其上**。
+ */
+export type PermissionsConfig = {
+  readonly rules?: unknown
+}
+
+/**
+ * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
+ * **阶段 2 加键 `permissions`**；工作区根为阶段 3 加键。
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
   readonly defaultProvider: string
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly dataDir: string
+  /** 权限段（阶段 2）——见 `PermissionsConfig`。 */
+  readonly permissions?: PermissionsConfig
 }
 
 /**

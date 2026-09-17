@@ -50,11 +50,17 @@ export type StageAssembleOptions = Omit<AssembleOptions, 'cwd' | 'config' | 'mod
   readonly stepDelayMs?: number
 }
 
-export function makeStage(): Stage {
+/** 沙地的可调项——目前只有配置：权限规则等用例要在**真配置**里加键。 */
+export type StageOptions = {
+  /** 配置字段覆盖（形制照冻结的字面）——如 `{ permissions: { rules: [...] } }`。 */
+  readonly config?: Record<string, unknown>
+}
+
+export function makeStage(options: StageOptions = {}): Stage {
   const root = tempDir('magic-app-')
   const dataDir = join(root, 'data')
   const workspace = join(root, 'ws')
-  const configPath = writeConfig(root, validConfig({ dataDir }))
+  const configPath = writeConfig(root, validConfig({ dataDir, ...options.config }))
   const models: FauxGateway[] = []
 
   // 工作区根须**已存在**（工作区构造取 realpath——宁可在装配期响亮失败）

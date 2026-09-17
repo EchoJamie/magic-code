@@ -47,6 +47,20 @@ export type FauxPermissionRequest = {
   readonly callRef: RecordId
 }
 
+/**
+ * 一次答复的留痕——`remember` **原样记**：给了就在，没给就**不在这个键上**
+ * （不改写成 `false`——「答复里带没带这个位」正是测试要看的那一件事）。
+ */
+export type FauxPermissionAnswer = {
+  readonly id: DecisionId
+  readonly decision: Decision
+  /**
+   * 答复上的**「总是允许」位**——桩**只留痕、不据此记忆**：
+   * 会话级记忆是权限域真实现的事（桩替它记住＝两套语义，测试会照着桩的错样子写）。
+   */
+  readonly remember?: boolean
+}
+
 /** 权限域桩的观察面。 */
 export type FauxPermissionGate = PermissionGate & {
   /** 每次询问的留痕（调用 ＋ 上下文 ＋ 链引用）。 */
@@ -54,7 +68,7 @@ export type FauxPermissionGate = PermissionGate & {
   /** **在途**询问的请求 id（人工模式下测试据此答复）。 */
   readonly pending: readonly DecisionId[]
   /** 已答复的裁决（按答复序）。 */
-  readonly answers: readonly { readonly id: DecisionId; readonly decision: Decision }[]
+  readonly answers: readonly FauxPermissionAnswer[]
 }
 
 /** 造一个权限域桩。 */
@@ -63,7 +77,7 @@ export function makeFauxPermissionGate(
 ): FauxPermissionGate {
   const requests: FauxPermissionRequest[] = []
   const pending: DecisionId[] = []
-  const answers: { id: DecisionId; decision: Decision }[] = []
+  const answers: FauxPermissionAnswer[] = []
   const waiting = new Map<DecisionId, (decision: Decision) => void>()
 
   let nextId: DecisionId = 1
@@ -75,7 +89,7 @@ export function makeFauxPermissionGate(
     get pending(): readonly DecisionId[] {
       return pending
     },
-    get answers(): readonly { readonly id: DecisionId; readonly decision: Decision }[] {
+    get answers(): readonly FauxPermissionAnswer[] {
       return answers
     },
 
@@ -98,7 +112,7 @@ export function makeFauxPermissionGate(
       })
     },
 
-    resolve(requestId: DecisionId, decision: Decision): void {
+    resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void {
       const settle = waiting.get(requestId)
       if (settle === undefined) return // 迟到 / 陌生答复——静默
 
@@ -106,7 +120,13 @@ export function makeFauxPermissionGate(
       const at = pending.indexOf(requestId)
       if (at >= 0) pending.splice(at, 1)
 
-      answers.push({ id: requestId, decision })
+      // 「总是允许」**只留痕**（见 `FauxPermissionAnswer.remember`）——记忆归真实现。
+      // 给了才落键：没给＝这次答复里没有这一位（与线上消息同形）
+      answers.push({
+        id: requestId,
+        decision,
+        ...(opts?.remember === undefined ? {} : { remember: opts.remember }),
+      })
       settle(decision)
     },
   }

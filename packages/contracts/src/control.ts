@@ -35,6 +35,18 @@ export type DecisionAnswer = {
   readonly type: 'decision.answer'
   readonly id: DecisionId
   readonly decision: Decision
+  /**
+   * **「总是允许」——答复意图，不是裁决词表的第三词**（技术方案 · 领域划分 · 端口内类型）。
+   *
+   * `Decision`（`approve` / `reject`）是**结果词**——`tool.decision.decision` 用的是同一个
+   * 两词表，不扩。而「总是允许」是**用户答复时的意图**（批准 ＋ 记住），故落在**命令侧**
+   * 这一个可选的位上。**向后兼容**——不给 ＝ 一次性批准，与阶段 1 逐字同义。
+   *
+   * 流转：控制域**原样转手**（`gate.resolve(id, decision, { remember })`），**不由它翻译**；
+   * 会话级记忆归**权限域**（按 工具 × 路径模式 × 操作类型 记，新会话即清零）。
+   * **只在批准时生效**——规则的条目只有「允许」这一形，没有「总是拒绝」。
+   */
+  readonly remember?: boolean
 }
 
 /** `turn.interrupt`——中断（首站：Ctrl+C）。 */

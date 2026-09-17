@@ -57,8 +57,14 @@ export interface PermissionGate {
    * 不设哨兵兜底：静默的 `-1` 比缺参更坏，接线漏了应当在**编译期**就报。
    */
   decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
-  /** 控制域答复路由至此。 */
-  resolve(requestId: DecisionId, decision: Decision): void
+  /**
+   * 控制域答复路由至此。
+   *
+   * 第三参 `opts.remember` ＝答复上的**「总是允许」位**（见 `control.ts` · `DecisionAnswer.remember`）
+   * ——控制域**原样转手**、不翻译；**会话级记忆归权限域**（凝成会话规则，按
+   * 工具 × 路径模式 × 操作类型 记）。**缺省＝不给＝一次性**（向后兼容）。
+   */
+  resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
 }
 
 /** 对话域 → 记录域。 */
@@ -78,10 +84,29 @@ export interface RecordsService {
   blobs: BlobStore
 }
 
-/** 工具域 → 执行域。 */
+/**
+ * 工具域 → 执行域。
+ *
+ * **失败形态分两路**（技术方案 · 执行 · 原语形态）——**正常结果用判别式 · 调用不成立用抛**：
+ * - **判别式**载正常结果里的失败——命令跑了但 `exit` 非 0、超时（`ExecResult` 的 `ok` /
+ *   `reason`）、读到上限（`ReadResult.truncated`）。这些是「做成了，结果如此」。
+ * - **调用不成立＝抛**——越界 · 不存在 · 是否目录 · 无权限 · 参数无效：沙箱侧抛**精确报文**，
+ *   由**工具边界**捕之、收敛为 `ToolResult` 的判别式。故对模型与其余消费者，
+ *   「错误＝返回值」照旧成立；抛只发生在原语这一层。
+ *
+ * 由头：`write` 的返回是 `void`、`list` / `match` 是数组——**冻签名载不下失败位**，
+ * 兜一个哨兵值比抛更坏（静默的空数组会被当成「这个目录就是空的」）。
+ */
 export interface Sandbox {
   exec(cmd: string, opts: ExecOptions): Promise<ExecResult>
-  read(path: string): Promise<ReadResult>
+  /**
+   * 读文件——`opts.maxBytes` 缺省＝**实现常量**（64 KiB）。
+   *
+   * **为什么要有这个口子**：`write` / `edit` 走「读 → 改 → 写回」时，按缺省上限读到的
+   * 是**截断文本**——原样写回即**抹掉尾巴**（数据安全件）。故 `edit` 显式放大上限
+   * （实现常量 1 MiB），仍超限则**即拒并指出出口**（走 `exec`）。
+   */
+  read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult>
   write(path: string, data: WriteData): Promise<void>
   list(path: string): Promise<readonly ListEntry[]>
   match(pattern: string, opts: MatchOptions): Promise<readonly MatchHit[]>
@@ -327,11 +352,15 @@ export type ReadResult = {
 }
 
 /**
- * `write` 入参内容——文本，或转存 blob 引用。
+ * `write` 入参内容——**收字节，不收引用**。
  *
- * TODO(规划侧)：形态未定；占位对齐 `Content` 的两选一。
+ * 两选一：文本，或字节（`Uint8Array`）。
+ *
+ * **原 `blob` 支已撤**（技术方案 · 领域划分 · 端口内类型）：blob 存取归记录域、**写权唯一**，
+ * 沙箱手上根本没有 blob 面、域间也不许私连——要写 blob 内容 ＝ **调用方先取回字节**再传。
+ * 留着那一支只会让人以为传个引用就能落地，实际写个静默的空文件。
  */
-export type WriteData = { readonly text: string } | { readonly blob: BlobRef }
+export type WriteData = { readonly text: string } | { readonly bytes: Uint8Array }
 
 /**
  * `list` 条目。
@@ -377,7 +406,13 @@ export type ResolvedPath = {
 export type CommandRoutes = {
   onInput(input: UserInput): void
   onInterrupt(): void
-  onDecision(id: DecisionId, decision: Decision): void
+  /**
+   * 裁决答复 → 权限域。
+   *
+   * `opts` 是**答复上的加宽位**（目前只有「总是允许」）——控制域**原样转手**给
+   * `PermissionGate.resolve`，**不由它翻译**（技术方案 · 领域划分 · 端口内类型）。
+   */
+  onDecision(id: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
 }
 
 /**
@@ -443,9 +478,10 @@ export type DangerClass =
   | { readonly level: 'by-call'; readonly note: string }
 
 /**
- * 参数模式。
+ * 参数模式——取**自写朴素 JSON Schema**（技术方案 · 领域划分 · 端口内类型）。
  *
- * TODO(规划侧)：承载形态（自写 JSON Schema / 取件）未定；占位为可序列化的不透明模式。
+ * 工具参数模式只需要「**类型 ＋ 必填 ＋ 描述**」这一层：手写对象字面量本就落在本形态内，
+ * **不取件**（取件会为几个字段背一整套校验器）、不加依赖；送模型即 JSON 往返不变量。
  */
 export type JsonSchema = Readonly<Record<string, unknown>>
 

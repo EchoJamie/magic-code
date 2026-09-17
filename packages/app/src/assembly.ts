@@ -5,8 +5,8 @@
  *    （构造期缺 key 即抛——启动期就报，不留到第一次调用）。
  * 2. **构造各域实现**——记录域（数据目录 · 库 / blob）· 模型域（provider 注册）·
  *    执行域（工作区根注册 · 首站单根＝启动目录）。
- * 3. **依次注入**——权限域 → 工具域（沙箱 · 权限）→ 对话域（模型 · 工具 · 记录 ·
- *    `EventSink` · 提示词变量 `cwd` / `platform` / `date`）。
+ * 3. **依次注入**——权限域（＋ 配置里的**权限规则**）→ 工具域（沙箱 · 权限）→ 对话域
+ *    （模型 · 工具 · 记录 · `EventSink` · 提示词变量 `cwd` / `platform` / `date`）。
  * 4. **控制域与扇出**——`hub.bind(routes)`（命令 → 各域）· `hub.attach(kernel)`；
  *    `EventSink` 扇出＝**控制广播全部、记录落持久类**。
  * 5. **接外壳**——返回外壳侧一端（`ControlTransport`）。
@@ -43,7 +43,8 @@ import type { PromptVars } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createSandbox, createWorkspaceService } from '@magic/execution'
 import { createModelGateway } from '@magic/model'
-import { createPermissionGate } from '@magic/permission'
+import { createPermissionGate, parseRules } from '@magic/permission'
+import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createToolRuntime } from '@magic/tools'
@@ -99,6 +100,16 @@ export type Assembly = {
   readonly records: RecordsStore
   /** 数据落点（`records.db` 与 `blobs/` 的绝对路径）。 */
   readonly paths: { readonly database: string; readonly blobs: string }
+  /**
+   * 本次生效的**权限规则**（配置 `permissions.rules` 经权限域 `parseRules` 的落地）——
+   * 自检 / 验收据以确认「规则真的接进闸门了」。
+   */
+  readonly permissionRules: readonly PermissionRule[]
+  /**
+   * **被拒的规则条目**（连同缘由）——解析从严：读不懂的**不生效**（而不是退化成更宽的规则）。
+   * 缘由交回装配是**给用户看的**：静默丢弃会让人对着一条不生效的规则发呆。
+   */
+  readonly rejectedRules: readonly RuleProblem[]
   /**
    * 工作区**注册根**（首站单根）——执行域构造时取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
@@ -193,7 +204,10 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   // ── 3 依次注入：权限域 → 工具域（沙箱 · 权限）→ 对话域 ──────────────
-  const gate = createPermissionGate({ sink, stamper, now })
+  // 权限规则（阶段 2）：配置里那段的**原值**交给权限域的 `parseRules`——条目形态归它裁
+  // （解析从严：读不懂的条目逐个拒收、连同缘由交回，见 `Assembly.rejectedRules`）
+  const parsedRules = parseRules(loaded.config.permissions?.rules ?? [])
+  const gate = createPermissionGate({ sink, stamper, now, rules: parsedRules.rules })
   const tools = createToolRuntime({
     sandbox,
     workspace,
@@ -220,7 +234,8 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.bind({
     onInput: (input) => conversation.submit(input),
     onInterrupt: () => conversation.interrupt(),
-    onDecision: (id, decision) => gate.resolve(id, decision),
+    // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域
+    onDecision: (id, decision, opts) => gate.resolve(id, decision, opts),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────
@@ -233,6 +248,8 @@ export function assemble(options: AssembleOptions): Assembly {
     config: loaded,
     records: recordsStore,
     paths: recordsStore.paths,
+    permissionRules: parsedRules.rules,
+    rejectedRules: parsedRules.rejected,
     workspaceRoot: workspace.defaultRoot(),
     close: () => recordsStore.close(),
   }

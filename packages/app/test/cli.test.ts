@@ -109,10 +109,36 @@ describe('入口 magic', () => {
       expect(result.stdout).not.toContain('sk-test-not-a-real-key')
       // 外壳位如实交代（真外壳归 U09）
       expect(result.stdout).toContain('U09')
+      // 权限规则：没配也要**明说**（那是阶段 1 姿态，不是漏配——用户得能分辨这两者）
+      expect(result.stdout).toContain('权限规则　无（缺省＝一律问，阶段 1 姿态）')
 
       // 全链真构造过：库与 blob 目录都在
       expect(existsSync(join(dataDir, 'records.db'))).toBe(true)
       expect(existsSync(join(dataDir, 'blobs'))).toBe(true)
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('自检报权限规则——**被拒的条目连同缘由**（解析从严，但不静默丢弃）', async () => {
+    const home = tempDir('magic-cli-')
+    mkdirSync(join(home, '.magic'), { recursive: true })
+    writeConfig(
+      join(home, '.magic'),
+      validConfig({
+        dataDir: join(home, 'data'),
+        // 第 2 条键名写错（`pth`）——权限域从严不收；用户得在自检里看得到这件事
+        permissions: { rules: [{ tool: 'exec', op: 'read' }, { tool: 'exec', pth: '/w' }] },
+      }),
+    )
+
+    try {
+      const result = await run(home, '--check')
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('权限规则　1 条（必闸禁区凌驾其上） · ⚠️ 被拒 1 条')
+      expect(result.stdout).toContain('第 2 条')
+      expect(result.stdout).toContain('pth')
     } finally {
       removeDir(home)
     }

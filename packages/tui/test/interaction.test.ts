@@ -131,6 +131,58 @@ describe('审批答复', () => {
     app.unmount()
   })
 
+  test('按 a ——「总是允许」（批准 ＋ `remember` 位；轻的询问才有这一键）', async () => {
+    const { spy, app, push } = liveApp()
+
+    await push(
+      [
+        event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
+        event(
+          'tool.decision.request',
+          { call: 71, name: 'exec', material: 'ls', weight: 'light' },
+          { id: 88 },
+        ),
+      ],
+      // 键位**写在屏上**才算到位（「总是允许」是本屏新增的那一键，用户不必记）
+      (frame) => frame.includes('需要裁决') && frame.includes('a 总是允许'),
+    )
+
+    await app.type('a')
+    await app.waitForFrame((frame) => !frame.includes('需要裁决'))
+
+    expect(spy.commands).toEqual([
+      { type: 'decision.answer', id: 88, decision: 'approve', remember: true },
+    ])
+
+    app.unmount()
+  })
+
+  test('重的询问按 a 不发命令——必闸类是禁区（屏上明说，键也真的不生效）', async () => {
+    const { spy, app, push } = liveApp()
+
+    await push(
+      [
+        event('tool.call', { name: 'exec', args: { cmd: 'rm -rf x' } }, { id: 71 }),
+        event(
+          'tool.decision.request',
+          { call: 71, name: 'exec', material: 'rm -rf x', weight: 'heavy' },
+          { id: 88 },
+        ),
+      ],
+      (frame) => frame.includes('需要裁决') && frame.includes('必闸类不可「总是允许」'),
+    )
+
+    await app.type('a')
+    expect(spy.commands).toEqual([])
+
+    // 询问还在（没被按掉）——再按 y 照常答复
+    await app.type('y')
+    await app.waitForFrame((frame) => !frame.includes('需要裁决'))
+    expect(spy.commands).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
+
+    app.unmount()
+  })
+
   test('等裁决时打的字不进输入框（先答复，草稿留着）', async () => {
     const { spy, app, push } = liveApp()
 

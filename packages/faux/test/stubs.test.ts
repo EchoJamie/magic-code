@@ -195,6 +195,18 @@ describe('makeFauxSandbox', () => {
     expect(await sandbox.read('/w/没有.txt')).toEqual({ content: '' })
   })
 
+  test('read 的 `opts` 记账——省与不省**都原样记**（`edit` 有没有放大上限看这里）', async () => {
+    const sandbox = makeFauxSandbox({ files: { '/w/a.txt': '内容' } })
+
+    await sandbox.read('/w/a.txt')
+    await sandbox.read('/w/a.txt', { maxBytes: 1024 * 1024 })
+
+    expect(sandbox.reads).toEqual([
+      { path: '/w/a.txt', opts: undefined }, // 没给就是 `undefined`——不替调用方补缺省值
+      { path: '/w/a.txt', opts: { maxBytes: 1024 * 1024 } },
+    ])
+  })
+
   test('write 后能读回来——写作即生效（沙箱该有的行为）', async () => {
     const sandbox = makeFauxSandbox()
 
@@ -202,6 +214,17 @@ describe('makeFauxSandbox', () => {
 
     expect(await sandbox.read('/w/new.txt')).toEqual({ content: '新内容' })
     expect(sandbox.writes).toHaveLength(1)
+  })
+
+  test('write 的**字节支**同样落地——两选一都能读回来（文本按 UTF-8 解）', async () => {
+    const sandbox = makeFauxSandbox()
+
+    await sandbox.write('/w/bin.txt', { bytes: new TextEncoder().encode('字节也写') })
+
+    expect(await sandbox.read('/w/bin.txt')).toEqual({ content: '字节也写' })
+    expect(sandbox.writes).toEqual([
+      { path: '/w/bin.txt', data: { bytes: new Uint8Array([0xe5, 0xad, 0x97, 0xe8, 0x8a, 0x82, 0xe4, 0xb9, 0x9f, 0xe5, 0x86, 0x99]) } },
+    ])
   })
 
   test('list 取预置目录——未预置＝空', async () => {
@@ -339,6 +362,29 @@ describe('makeFauxPermissionGate', () => {
     expect(() => gate.resolve(999, 'approve')).not.toThrow()
   })
 
+  test('「总是允许」位**原样留痕**——给了就在、没给就不在（桩不替它记忆）', async () => {
+    const gate = makeFauxPermissionGate()
+
+    const first = gate.decide(CALL, CTX, CALL_REF)
+    const firstId = gate.pending[0]
+    if (firstId === undefined) throw new Error('没有在途询问')
+    gate.resolve(firstId, 'approve', { remember: true })
+    await first
+
+    const second = gate.decide(CALL, CTX, CALL_REF)
+    const secondId = gate.pending[0]
+    if (secondId === undefined) throw new Error('没有在途询问')
+    gate.resolve(secondId, 'approve') // 不给＝一次性
+    await second
+
+    expect(gate.answers).toEqual([
+      { id: firstId, decision: 'approve', remember: true },
+      // 键**不出现**——没给这一位（与线上消息同形；不是 `remember: false`）
+      { id: secondId, decision: 'approve' },
+    ])
+    expect('remember' in (gate.answers[1] ?? {})).toBe(false)
+  })
+
   test('裁决可逐个编程——按调用给不同答复（同轮多工具次序）', async () => {
     const gate = makeFauxPermissionGate({
       auto: (call) => (call.name === 'read' ? 'approve' : 'reject'),
@@ -372,7 +418,8 @@ describe('makeFauxPermissionGate', () => {
 describe('端口形参面', () => {
   test('各桩的形参与契约端口同形——增删必填参数即红', () => {
     expect(makeFauxPermissionGate().decide.length).toBe(3) // call · ctx · callRef
-    expect(makeFauxPermissionGate().resolve.length).toBe(2) // requestId · decision
+    expect(makeFauxPermissionGate().resolve.length).toBe(3) // requestId · decision · opts?
+    expect(makeFauxSandbox().read.length).toBe(2) // path · opts?（第 15 轮：`edit` 放大上限的口子）
     expect(makeFauxRecords().appendEntry.length).toBe(1) // entry
     expect(makeFauxRecords().readEntries.length).toBe(2) // sessionId · range?
     expect(makeFauxSandbox().exec.length).toBe(2) // cmd · opts

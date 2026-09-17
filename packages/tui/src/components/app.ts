@@ -15,7 +15,7 @@ import { createElement as h, useState, useSyncExternalStore } from 'react'
 import type { Shell } from '../shell.ts'
 import type { ShellView } from '../view.ts'
 import { Composer } from './composer.ts'
-import { DecisionPrompt } from './decision.ts'
+import { DecisionPrompt, REMEMBER_KEY } from './decision.ts'
 import { isPrintable } from './lines.ts'
 import { StatusLine } from './status.ts'
 import { Transcript } from './transcript.ts'
@@ -67,6 +67,11 @@ export function TuiApp({ shell }: TuiAppProps) {
     if (view.pending !== null) {
       if (input === 'y') shell.answer('approve')
       else if (input === 'n') shell.answer('reject')
+      // 「总是允许」——批准 ＋ 记住（本会话同类不再问）。**只在轻的询问上生效**：
+      // 重＝必闸类，必闸是禁区（闸门侧的禁区否决在这里同步一份，免得屏上说了、实际没生效）
+      else if (input === REMEMBER_KEY && view.pending.weight === 'light') {
+        shell.answer('approve', { remember: true })
+      }
 
       return
     }

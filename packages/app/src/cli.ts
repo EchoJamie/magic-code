@@ -95,7 +95,26 @@ function report(assembly: Assembly): void {
   console.log(`  数据落点　${assembly.paths.database}`)
   console.log(`             ${assembly.paths.blobs}/`)
   console.log('  工具集　　exec（阶段 1 唯一工具——经沙箱 · 途中过闸门）')
+  // 权限规则（阶段 2）——**规则真的接进闸门了**吗、有没有被拒的条目，自检里说清楚
+  console.log(`  权限规则　${describeRules(assembly)}`)
   console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')
+}
+
+/**
+ * 权限规则那一行——**被拒的条目要报出来**（解析从严：读不懂的不生效；不说＝用户对着一条
+ * 不生效的规则发呆）。一条都没有时明说「无规则＝一律问」——那是阶段 1 的姿态，不是漏配。
+ */
+function describeRules(assembly: Assembly): string {
+  const count = assembly.permissionRules.length
+  const head = count === 0 ? '无（缺省＝一律问，阶段 1 姿态）' : `${count} 条（必闸禁区凌驾其上）`
+
+  if (assembly.rejectedRules.length === 0) return head
+
+  const reasons = assembly.rejectedRules
+    .map((problem) => `第 ${problem.index + 1} 条：${problem.reason}`)
+    .join('；')
+
+  return `${head} · ⚠️ 被拒 ${assembly.rejectedRules.length} 条——${reasons}`
 }
 
 async function runScript(assembly: Assembly, path: string): Promise<void> {
