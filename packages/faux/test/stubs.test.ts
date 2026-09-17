@@ -285,6 +285,12 @@ describe('makeFauxToolRuntime', () => {
 // 权限域
 // ═══════════════════════════════════════════════════════════════════════
 
+/** 权限上下文——纯数据（根视图由调用方给，不传端口进端口）。 */
+const CTX = { roots: ['/w'], defaultRoot: '/w' }
+
+/** 链引用——该次 `tool.call` 事件的 id（真装配里由工具域发；测试里给个可读的常量）。 */
+const CALL_REF = 42
+
 describe('makeFauxPermissionGate', () => {
   test('满足 `PermissionGate` 签名——可直接当端口用', () => {
     const gate: PermissionGate = makeFauxPermissionGate()
@@ -295,7 +301,7 @@ describe('makeFauxPermissionGate', () => {
   test('自动模式——立即答复（循环测试的便捷路径）', async () => {
     const gate = makeFauxPermissionGate({ auto: 'approve' })
 
-    expect(await gate.decide(CALL, { roots: ['/w'], defaultRoot: '/w' })).toBe('approve')
+    expect(await gate.decide(CALL, CTX, CALL_REF)).toBe('approve')
     expect(gate.requests.map((r) => r.call.name)).toEqual(['exec'])
   })
 
@@ -303,7 +309,7 @@ describe('makeFauxPermissionGate', () => {
     const gate = makeFauxPermissionGate()
     let answered: string | undefined
 
-    const pending = gate.decide(CALL, { roots: ['/w'], defaultRoot: '/w' }).then((d) => {
+    const pending = gate.decide(CALL, CTX, CALL_REF).then((d) => {
       answered = d
       return d
     })
@@ -331,10 +337,41 @@ describe('makeFauxPermissionGate', () => {
     const gate = makeFauxPermissionGate({
       auto: (call) => (call.name === 'read' ? 'approve' : 'reject'),
     })
-    const ctx = { roots: ['/w'], defaultRoot: '/w' }
 
-    expect(await gate.decide({ id: 'a', name: 'read', args: {} }, ctx)).toBe('approve')
-    expect(await gate.decide({ id: 'b', name: 'exec', args: {} }, ctx)).toBe('reject')
+    expect(await gate.decide({ id: 'a', name: 'read', args: {} }, CTX, 1)).toBe('approve')
+    expect(await gate.decide({ id: 'b', name: 'exec', args: {} }, CTX, 2)).toBe('reject')
+  })
+
+  test('链引用留痕——「请求 → 询问 → 裁决 → 结果」串链的依据可查', async () => {
+    const gate = makeFauxPermissionGate({ auto: 'approve' })
+
+    await gate.decide(CALL, CTX, 7)
+    await gate.decide(CALL, CTX, 9)
+
+    expect(gate.requests.map((r) => r.callRef)).toEqual([7, 9])
+    expect(gate.requests.map((r) => r.ctx)).toEqual([CTX, CTX])
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 端口形参面（防漏参的第二道）
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 契约端口是硬约束（`tsc` 守）；这一节把**形参个数**也钉进 `bun test`——
+ * 集成时栽过一次：`PermissionGate.decide` 补第三参（链引用必填），桩漏了，
+ * 合并门当场拦下。类型层已经拦住，此处让**单跑测试**（watch / 只跑 `bun test`）
+ * 也能现形——漏参不只是编译期的事。
+ */
+describe('端口形参面', () => {
+  test('各桩的形参与契约端口同形——增删必填参数即红', () => {
+    expect(makeFauxPermissionGate().decide.length).toBe(3) // call · ctx · callRef
+    expect(makeFauxPermissionGate().resolve.length).toBe(2) // requestId · decision
+    expect(makeFauxRecords().appendEntry.length).toBe(1) // entry
+    expect(makeFauxRecords().readEntries.length).toBe(2) // sessionId · range?
+    expect(makeFauxSandbox().exec.length).toBe(2) // cmd · opts
+    expect(makeFauxToolRuntime().invoke.length).toBe(2) // call · opts
+    expect(makeFauxSink().emit.length).toBe(1) // event
   })
 })
 

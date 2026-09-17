@@ -86,6 +86,7 @@ describe('骨架 · 记录', () => {
  * 接线示例的依赖束——真循环（U04）的构造入参大致就是这一束（名字另定）。
  */
 type ToyDeps = {
+  readonly stamper: ReturnType<typeof makeTestStamper>
   readonly gateway: ReturnType<typeof createFauxGateway>
   readonly sink: ReturnType<typeof makeFauxSink>
   readonly records: ReturnType<typeof makeFauxRecords>
@@ -117,7 +118,12 @@ async function toyLoop(deps: ToyDeps, input: string): Promise<void> {
     if (toolCalls.length === 0) return // 没有工具调用＝收束
 
     for (const call of toolCalls) {
-      const decision = await deps.gate.decide(call, ROOTS)
+      // 工具域发 `tool.call`——**链引用的来处**（真装配里归工具域；玩具循环就地铸一条充任）
+      const callEvent = deps.stamper.stamp('tool.call', { name: call.name, args: call.args })
+      deps.sink.emit(callEvent)
+
+      // `callRef` 必填（契约：不设哨兵兜底——静默的 -1 比缺参更坏）
+      const decision = await deps.gate.decide(call, ROOTS, callEvent.id)
       const output =
         decision === 'approve'
           ? await deps.tools.invoke(call, {})
@@ -149,10 +155,13 @@ async function waitFor<T>(probe: () => T | undefined, what: string): Promise<T> 
   throw new Error(`等不到：${what}`)
 }
 
-/** 一束现成的替身——多数用例照这样拼。 */
+/** 一束现成的替身——多数用例照这样拼。铸造器**一束一份**（信封四件同源）。 */
 function makeToyDeps(options?: Parameters<typeof createFauxGateway>[0]['turns']): ToyDeps {
+  const stamper = makeTestStamper()
+
   return {
-    gateway: createFauxGateway({ stamper: makeTestStamper(), turns: options ?? [] }),
+    stamper,
+    gateway: createFauxGateway({ stamper, turns: options ?? [] }),
     sink: makeFauxSink(),
     records: makeFauxRecords(),
     tools: makeFauxToolRuntime({
@@ -178,6 +187,10 @@ describe('骨架 · 循环', () => {
     expect(deps.gate.requests.map((r) => r.call.name)).toEqual(['exec']) // 问了闸门
     expect(deps.gate.requests[0]?.ctx).toEqual(ROOTS) // 上下文是纯数据、由调用方给
     expect(deps.tools.calls.map((c) => c.name)).toEqual(['exec']) // 调了工具
+
+    // —— 链引用（补锚契约）：询问带的 `callRef` 指向那次 `tool.call` 事件 ——
+    expect(deps.gate.requests[0]?.callRef).toBe(deps.sink.byKind('tool.call')[0]?.id)
+
     expect(deps.sink.byKind('model.call.start')).toHaveLength(2) // 两轮模型调用
     expect(deps.sink.byKind('model.call.end')).toHaveLength(2)
 

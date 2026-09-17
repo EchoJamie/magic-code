@@ -52,6 +52,7 @@ export type {
   FauxDecider,
   FauxPermissionGate,
   FauxPermissionGateOptions,
+  FauxPermissionRequest,
 } from './stubs/permission.ts'
 
 export { makeFauxSink } from './stubs/sink.ts'
