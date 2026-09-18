@@ -313,3 +313,35 @@ describe('第 17 轮 · 供应商与重试位', () => {
     expect(twice.status.retry).toEqual({ attempt: 3, delayMs: 1000 })
   })
 })
+
+// —— 第 18 轮补锚：换模型的结果（model.switched）——
+
+describe('第 18 轮 · 换模型的结果', () => {
+  test('成了——报一句 ＋ 状态行即时改过去（不必等下轮 call.start）', () => {
+    const view = reduce(
+      createView(),
+      event('model.switched', { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
+    )
+
+    const last = view.items.at(-1)
+    expect(last).toMatchObject({ kind: 'notice', tone: 'info' })
+    expect(last?.kind === 'notice' ? last.text : '').toContain('minimax-m2/MiniMax-M2')
+    expect(view.status.provider).toBe('minimax-m2')
+    expect(view.status.model).toBe('MiniMax-M2')
+  })
+
+  test('没成——报缘由，且**不是「内核异常」**（用户命令不成立是另一类）', () => {
+    const view = reduce(
+      createView(),
+      event('model.switched', { ok: false, reason: '未知条目「ollama」——已注册：minimax / minimax-m2' }),
+    )
+
+    const last = view.items.at(-1)
+    const text = last?.kind === 'notice' ? last.text : ''
+    expect(text).toContain('换模型未成')
+    expect(text).toContain('ollama')
+    expect(text).not.toContain('内核异常')
+    // 没成＝原选原样保留：状态行**不动**（切不动就不动）
+    expect(view.status.provider).toBeNull()
+  })
+})

@@ -15,6 +15,7 @@
  */
 
 import type { KernelEvent } from '@magic/contracts'
+import { TOOLSET_V1 } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest } from '@magic/model'
 import { runTui } from '@magic/tui'
 import { assemble } from './assembly.ts'
@@ -163,7 +164,12 @@ function report(assembly: Assembly): void {
   console.log(`  会话　　　${assembly.session}`)
   console.log(`  数据落点　${assembly.paths.database}`)
   console.log(`             ${assembly.paths.blobs}/`)
-  console.log('  工具集　　exec（阶段 1 唯一工具——经沙箱 · 途中过闸门）')
+  // 工具集——**从契约的冻结行现取**（技术方案 · 工具「工具集 v1」）：手抄一份就有对不上的那天
+  //（本行曾写死「exec（阶段 1 唯一工具）」，工具集 v1 到站后它成了假话）
+  console.log(
+    `  工具集　　${TOOLSET_V1.map((row) => row.name).join(' / ')}` +
+      `（${TOOLSET_V1.length} 件——经沙箱 · 途中过闸门）`,
+  )
   // 权限规则（阶段 2）——**规则真的接进闸门了**吗、有没有被拒的条目，自检里说清楚
   console.log(`  权限规则　${describeRules(assembly)}`)
   console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')

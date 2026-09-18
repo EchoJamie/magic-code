@@ -332,3 +332,65 @@ describe('运行时切换 · 装配面', () => {
     }
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// 三 · 命令面：`model.switch`（外壳那条斜杠命令走的就是这条路）
+// 第 18 轮补锚 —— 结果落成 `model.switched`（**落库**），不再借兜底 `error`
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
+  test('成了 —— 发一条 `model.switched{ok:true}`，带上落地后的选中', () => {
+    const land = stage()
+    const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const events: KernelEvent[] = []
+      const off = assembly.shell.subscribe((event) => events.push(event))
+
+      assembly.shell.send({ type: 'model.switch', provider: 'beta' })
+      off()
+      assembly.close()
+
+      const switched = events.filter((event) => event.kind === 'model.switched')
+      expect(switched).toHaveLength(1)
+      expect(switched[0]?.kind === 'model.switched' ? switched[0].data : undefined).toEqual({
+        ok: true,
+        provider: 'beta',
+        model: 'beta-1',
+      })
+      // **不借 `error` 兜底**（那条的语义留给「内核自身异常」）
+      expect(events.map((event) => event.kind)).not.toContain('error')
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('没成 —— `model.switched{ok:false, reason}`，仍**不是 `error`**（用户命令不成立是另一类）', () => {
+    const land = stage()
+    const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const events: KernelEvent[] = []
+      const off = assembly.shell.subscribe((event) => events.push(event))
+
+      assembly.shell.send({ type: 'model.switch', provider: 'nowhere' })
+      off()
+      assembly.close()
+
+      const switched = events.filter((event) => event.kind === 'model.switched')
+      expect(switched).toHaveLength(1)
+      const data = switched[0]?.kind === 'model.switched' ? switched[0].data : undefined
+      expect(data?.ok).toBe(false)
+      expect(data?.reason).toContain('nowhere')
+      // 切的这半句是判据：兜底 kind 不再被这条命令占用
+      expect(events.map((event) => event.kind)).not.toContain('error')
+
+      // 没成 ＝ 原选原样保留（切不动就不动）：注册表仍指 alpha
+      expect(assembly.models?.selection()).toBeUndefined()
+    } finally {
+      land.dispose()
+    }
+  })
+})

@@ -503,9 +503,12 @@ describe('特征标记 · 内置表', () => {
     expect(JSON.stringify(payloads(events))).not.toContain('think>')
   })
 
-  test('内置表确有那一条（按模型名匹配，不是按供应商）', () => {
+  test('内置表确有那两条（按模型名匹配，不是按供应商）', () => {
     expect(resolveModelTraits(MINIMAX_MODEL)).toEqual({ inlineThinking: { tag: 'think' } })
-    expect(resolveModelTraits('MiniMax-M2')).toBeUndefined()
+    // 第 18 轮补锚：M2 同样内嵌正文（第 17 轮真跑暴露，屏上曾看得见裸标签）
+    expect(resolveModelTraits('MiniMax-M2')).toEqual({ inlineThinking: { tag: 'think' } })
+    // 表外（同家的其余变体 / 别家）＝常规行为：不猜、不切
+    expect(resolveModelTraits('MiniMax-M2.7')).toBeUndefined()
   })
 
   test('标签跨增量边界也切得干净（半截标签留住，不吐错通道）', async () => {

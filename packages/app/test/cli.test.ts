@@ -111,6 +111,9 @@ describe('入口 magic', () => {
       expect(result.stdout).toContain('U09')
       // 权限规则：没配也要**明说**（那是阶段 1 姿态，不是漏配——用户得能分辨这两者）
       expect(result.stdout).toContain('权限规则　无（缺省＝一律问，阶段 1 姿态）')
+      // 工具集：**从契约的冻结行现取**（第 18 轮补锚——此行曾写死「exec（阶段 1 唯一工具）」，
+      // 工具集 v1 到站后它成了假话）；七件按表的次序
+      expect(result.stdout).toContain('工具集　　exec / read / write / edit / grep / glob / ls（7 件')
 
       // 全链真构造过：库与 blob 目录都在
       expect(existsSync(join(dataDir, 'records.db'))).toBe(true)

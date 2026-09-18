@@ -270,28 +270,43 @@ export function assemble(options: AssembleOptions): Assembly {
   /**
    * 换模型 —— **判别式处置**（技术方案 · 领域划分：「切不动就不动」）。
    *
-   * **成功不发事件**——状态的真相在「**真的用了哪个**」：下一次 `model.call.start` 会带上
-   * 新条目的 `provider`，外壳状态行随之更正。再发一条「已切换」等于**多一个状态源**，
-   * 它与事实分叉的那天没人知道该信谁。（外壳在换完到下轮之间仍显示上一条目——那是**实话**：
-   * 上一条确实是最后真跑过的那条。）
+   * **成败都发一条 `model.switched`**（**落库**）——切换是**会话的可观测事实**：
+   * 「何时改的、改成了谁、没改成是为什么」三件都得能回看，而 `model.call.start` 只说得出
+   * 「这次用了谁」那一面。外壳据它即时呈现（成了报一句、没成报缘由）。
    *
-   * **失败必须出声**——用户打了 `/model x` 总得知道为什么没变（切不动就不动，但不静默）。
-   * 走既有的兜底 kind `error`：它是「内核自身异常——产生方就近」，而装配正是产生方；
-   * **不为一条消息长一个新 kind**（kind 族是 schema 冻结点）。
-   * ⚠️ 这处是**权宜**：`error` 的语义比「用户命令不成立」重，屏上会显示成「内核异常：…」。
-   * 更好的形态是一个专用的切换结果事件——见回报「第 17 轮 · 待决」。
+   * 注：状态行的**最终真相**仍是 `model.call.start`（「真跑过的那一格」）——两条事件同源于
+   * 注册表，不会分叉；前者是「改了什么」，后者是「用了什么」。
+   *
+   * 第 17 轮这里曾借兜底 kind `error` 顶上（「不为一条消息长一个新 kind」）——规划侧裁决
+   * **改判**：`error` 的语义是「内核**自身异常**」，与「用户命令不成立」不是一类，
+   * 混用会污染观测；且切换这件事 `model.call.start` 说不了（它只说「这次用了谁」）。
    */
   const switchModel = (request: ModelSwitchRequest): void => {
+    // 注册表缺席（注入了替身网关）＝如实报「这批装配换不了模型」——同样是一条**切换结果**
     if (models === undefined) {
       sink.emit(
-        stamper.stamp('error', { message: '换模型不适用：本次装配没有供应商注册表（注入了替身网关）' }),
+        stamper.stamp('model.switched', {
+          ok: false,
+          reason: '本次装配没有供应商注册表（注入了替身网关）',
+        }),
       )
       return
     }
 
     const result = models.use(request)
-    // 切不动就不动——原选原样保留（注册表自己保证），此处只把缘由说出来
-    if (!result.ok) sink.emit(stamper.stamp('error', { message: `换模型未成：${result.reason}` }))
+
+    // **结果落库**（技术方案 · 记录 · kind 族）：切换是会话的**可观测事实**——
+    // `model.call.start` 只说「这次用了谁」，说不出「何时改的、为什么没改成」。
+    // 成了＝带上落地后的选中；没成＝原选原样保留（切不动就不动），只说缘由。
+    sink.emit(
+      result.ok
+        ? stamper.stamp('model.switched', {
+            ok: true,
+            provider: result.selection.provider,
+            model: result.selection.model,
+          })
+        : stamper.stamp('model.switched', { ok: false, reason: result.reason }),
+    )
   }
 
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` → 对话域；`decision.answer` → 权限域）──

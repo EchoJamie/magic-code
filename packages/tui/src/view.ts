@@ -204,6 +204,10 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
         retry: { attempt: event.data.attempt, delayMs: event.data.delayMs },
       })
 
+    // — 换模型的结果（用户命令；**落库**）—
+    case 'model.switched':
+      return reduceSwitched(view, event.id, event.data)
+
     // — 错误 —
     case 'model.error':
       return appendNotice(
@@ -368,6 +372,26 @@ function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
     // 询问已收束——提示撤下（同一次询问才清；他次询问的答复不动本案）
     pending: view.pending?.call === data.call ? null : view.pending,
   }
+}
+
+type SwitchedData = Extract<KernelEvent, { kind: 'model.switched' }>['data']
+
+/**
+ * 换模型的结果——成了报一句、没成报缘由。
+ *
+ * **不是「内核异常」**（第 17 轮借兜底 `error` 顶上时屏上就是那么写的）：这是**用户命令的结果**，
+ * 与内核自己出事不是一类。成了顺手把状态行改过去——不必干等下轮 `model.call.start`；
+ * 没成则**状态行不动**：切不动就不动，上一条仍是最后真跑过的那格。
+ */
+function reduceSwitched(view: ShellView, id: RecordId, data: SwitchedData): ShellView {
+  if (!data.ok) {
+    return appendNotice(view, id, `换模型未成：${data.reason ?? '未说缘由'}`, 'error')
+  }
+
+  return patchStatus(
+    appendNotice(view, id, `已换到 ${data.provider ?? '？'}/${data.model ?? '？'}`, 'info'),
+    { provider: data.provider ?? null, model: data.model ?? null },
+  )
 }
 
 /** `message.user`——配平本地回显；配不上（恢复场景）则留一条引用痕。 */

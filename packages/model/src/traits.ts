@@ -26,6 +26,10 @@ export const MODEL_TRAITS_BUILTIN: Readonly<Record<string, ModelTraits>> = {
   // 真端点实测（2026-09-16）：MiniMax-M3 经 OpenAI 兼容端点**不回** `reasoning_content`，
   // 而是把思考写在 `content` 里、用 `<think>…</think>` 包住。
   'MiniMax-M3': { inlineThinking: { tag: 'think' } },
+  // 真端点实测（2026-09-18 · 第 17 轮真跑暴露）：**M2 同样内嵌正文**——
+  // 当时表里只有 M3，M2 的思考原样混进 `text` 通道（屏上看得见裸的 `<think>` 标签）。
+  // 加表即按「出厂即对」处置：用户不必先知道这个怪癖才用得上它。
+  'MiniMax-M2': { inlineThinking: { tag: 'think' } },
 }
 
 /**

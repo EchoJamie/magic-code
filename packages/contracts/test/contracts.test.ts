@@ -505,6 +505,17 @@ export function routesCarryModelSwitch(): void {
   void routes
 }
 
+/**
+ * `model.switched` 的载荷（**落库** · 第 18 轮补锚）——换模型的**结果**（用户命令）。
+ * 成了带选中、没成只带缘由；两件的可选性把这件事说清楚。
+ */
+export function modelSwitchedPayloadShape(): void {
+  const done: EventDataOf['model.switched'] = { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }
+  const refused: EventDataOf['model.switched'] = { ok: false, reason: '未知条目「nowhere」' }
+  void done
+  void refused
+}
+
 /** `model.retry` 的载荷——`attempt` / `delayMs` / `tier`（退避只对瞬时档，见其注）。 */
 export function modelRetryPayloadShape(): void {
   const retry: EventDataOf['model.retry'] = { attempt: 2, delayMs: 1500, tier: 'transient' }
@@ -518,6 +529,12 @@ describe('事件契约', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     expect(TRANSIENT_EVENT_KINDS).toEqual(['model.delta', 'model.retry', 'tool.output.delta'])
+  })
+
+  test('`model.switched` **落库**（换模型是会话的可观测事实，不是实时信号）', () => {
+    // 与 `model.retry` 恰成对照：那条描述「正在等」（重放无意义），这条是「何时改的、改成了谁」
+    // ——回看时正要看它（第 18 轮补锚：`model.call.start` 只说「这次用了谁」）。
+    expect(TRANSIENT_EVENT_KINDS).not.toContain('model.switched')
   })
 
   test('schema 版本自始写入（v0）', () => {

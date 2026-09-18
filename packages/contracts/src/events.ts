@@ -73,6 +73,8 @@ export type EventKind =
   | 'tool.result'
   // tool · 实时——执行输出增量；**不落库**
   | 'tool.output.delta'
+  // model · 会话——换模型的**结果**（用户命令）；**落库**
+  | 'model.switched'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -176,6 +178,19 @@ export type EventDataOf = {
     readonly delayMs: number
     /** 必为 `transient`（退避只对瞬时档；超限 / 终态不重试）——留给渲染侧据以措辞。 */
     readonly tier: ModelErrorTier
+  }
+  // model · 会话——换模型的结果（用户命令）。**落库**（技术方案 · 记录 · kind 族）：
+  // 切换是**会话的可观测事实**——`model.call.start` 只说「这次用了谁」，
+  // 说不出「何时改的、为什么没改成」；而用户命令不成立**不是内核异常**，
+  // 混进 `error` 会污染观测（那一条的语义专留给「内核自身异常」）。
+  'model.switched': {
+    /** 换成了没有。`false` 时**原选原样保留**（切不动就不动）——`reason` 说为什么。 */
+    readonly ok: boolean
+    /** 落地后的选中（`ok: true` 时有 —— 也是「现在走的哪一格」）。 */
+    readonly provider?: string
+    readonly model?: string
+    /** 没换成的缘由（**说给人听**的一句话，含已注册的条目名）。 */
+    readonly reason?: string
   }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
