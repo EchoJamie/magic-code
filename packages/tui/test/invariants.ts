@@ -127,8 +127,13 @@ const MAX_BLANK_RUN = 1
  * 历史标本 `4737930` 里的重复来自**全屏版面的擦行**，而全屏已经拆了。
  *
  * ⇒ **这条规则守的是「成片空行」**（屏上连着好几行什么都没有、又不是设计要的），
- * **不是 D11 的哨兵**。要拦住上面那张屏，判据得收紧成「**空行只许出现在用户消息之前**」
- * （＝密度规则原文）。**这是判据定义，属规划侧裁，本轮按工单原样落 `≤1` 并记在回报「待决」。**
+ * **不是 D11 的哨兵**。
+ *
+ * ⚠️ **第 2 轮的裁决与落法**（规划侧 2026-09-19）：不放宽 `≤1`，而是**加一条收紧的**
+ * ——见下面的 `entryBlanks`（「不夹空行」）：**同一条目之内，空行数不许超过原文的段落分隔数**。
+ * 两条各守一头，本文件里别把 `blankRuns` 当 D11 的哨兵用：
+ * - `blankRuns`——**不认场景**（任何屏都能量），守「成片空行」；
+ * - `entryBlanks`——**认场景原文**，守「那个换行把每行都撑开了」。**D11 归它管。**
  */
 export function blankRuns(screen: Screen): readonly BlankRun[] {
   const rows = recordArea(screen)
@@ -150,6 +155,124 @@ export function blankRuns(screen: Screen): readonly BlankRun[] {
   }
 
   return runs
+}
+
+// —— 二之二 · 不夹空行（「不空行」的收紧形） ——
+
+/**
+ * 场景声明的一条内容——**原文**（外壳收到什么，就是什么）。
+ *
+ * `marker` 是渲染层给这一条加的行首（`› ` 用户 · `⏺ ` 助手 · `（思考）` 思考…）——
+ * 屏上靠它把条目切出来。**原文由场景提供**是这条判据成立的前提：
+ * 「空行多不多」没有绝对的答案，**要看原文本来有几个段落分隔**。
+ */
+export type EntrySpec = {
+  readonly marker: string
+  readonly text: string
+}
+
+export type EntryBlock = {
+  readonly marker: string
+  readonly text: string
+  /** 这一条在屏上占的行（首 → 末，含尾部空行）。 */
+  readonly from: number
+  readonly to: number
+  /**
+   * 屏幕：这一条**内部**有几个空行（掐掉首尾的空）。
+   *
+   * ⚠️ **只数内部**，与 `paragraphBreaks` 对齐——两边口径不一致就不叫「对得上」。两条理由都是实的：
+   * - **尾部那一行空不归它**：`needsSpacer` 那一条合法分段（用户消息之前）落在**上一条的尾部**，
+   *   算进来就会让任何两条用户消息的场景**假红**；
+   * - **旧全屏版面的留白同理**（`Log` 铺满窗口，末条与分隔线之间那一片是版面，不是这一条多写的）。
+   */
+  readonly blanks: number
+  /** 原文：这一条本来有几个**段落分隔**（内部的空行）。 */
+  readonly allowed: number
+}
+
+/**
+ * 原文里的**段落分隔数**——**内部**的空行个数。
+ *
+ * ⚠️ 三个界定，都是量出来的：
+ * - **只数内部**（首个非空行到末个非空行之间）：首尾的空行不是「段落分隔」。
+ *   这一条直接决定 `leadblank` 那一形——正文原文是 `\n\n甲乙丙丁`，前导两个换行
+ *   **本来就该被渲染层去掉**（`trimBlank`），若把它们算进预算，判据就白送 2 个空行的额度。
+ * - **空行＝`trim()` 后为空的行**：`  ` 那种只有缩进的行也算空——它在屏上就是一行空白。
+ * - **单个 `\n` 不算段落分隔**：那是同一段里的折行（`- README.md\n- packages` 是一段列举，
+ *   不是两个段落）。这一条是判据能咬住 D11 的关键——见 `entryBlanks`。
+ */
+export function paragraphBreaks(text: string): number {
+  const lines = text.split('\n')
+  const first = lines.findIndex((line) => line.trim() !== '')
+  const last = lines.findLastIndex((line) => line.trim() !== '')
+
+  if (first === -1) return 0
+
+  return lines.slice(first, last + 1).filter((line) => line.trim() === '').length
+}
+
+/**
+ * 把记录区按场景声明的条目**切块**——找到每条的行首标记，块到**下一条的行首**为止
+ * （末条到记录区末尾）。
+ *
+ * 找不到的条目**不进结果**（不是这条判据的事：那是「该画的没画」，归别的面）。
+ * 正因如此，**用它的用例必须另外断言「找到的条数＝声明的条数」**——
+ * 否则标记写错一个字母，这条判据就成了空转（实测踩过的教训：判据要自己先证明不是空的）。
+ */
+export function entryBlocks(screen: Screen, entries: readonly EntrySpec[]): readonly EntryBlock[] {
+  const rows = recordArea(screen)
+  const located: { readonly spec: EntrySpec; readonly at: number }[] = []
+  let cursor = 0
+
+  for (const spec of entries) {
+    const at = rows.findIndex((row, index) => index >= cursor && row.text.trim().startsWith(spec.marker))
+    if (at === -1) continue
+
+    located.push({ spec, at })
+    cursor = at + 1
+  }
+
+  return located.map((entry, order) => {
+    const end = located[order + 1]?.at ?? rows.length
+    const block = rows.slice(entry.at, end)
+    // 内部＝首个非空行到末个非空行之间（尾部空行不归这一条，见 `EntryBlock.blanks` 的注）
+    const first = block.findIndex((row) => row.text.trim() !== '')
+    const last = block.findLastIndex((row) => row.text.trim() !== '')
+    const inside = first === -1 ? [] : block.slice(first, last + 1)
+
+    return {
+      marker: entry.spec.marker,
+      text: entry.spec.text,
+      from: block[0]?.row ?? 0,
+      to: block.at(-1)?.row ?? 0,
+      blanks: inside.filter((row) => row.text.trim() === '').length,
+      allowed: paragraphBreaks(entry.spec.text),
+    }
+  })
+}
+
+/**
+ * **不夹空行**——同一条目之内，空行数**不许超过**原文的段落分隔数。
+ *
+ * 这是「不空行」的**收紧形**（第 2 轮 · 规划侧裁决）：`blankRuns` 的 `≤1`
+ * 拦不住 D11 的新形态，因为它每处空行**恰好一个**，正落在边界内侧。
+ *
+ * | 情形 | 屏上空行 | 原文段落分隔 | 判 |
+ * | --- | --- | --- | --- |
+ * | 正常（D11 修后） | 0 | 0 | ✓ |
+ * | **D11 的新形态**（每行夹一个空行） | 条目内**每行一个** | 原文**一个都没有**（都是单个 `\n`） | **红** |
+ * | **D19**（该留的段落空行照留） | 与原文相等 | 1 | ✓ |
+ *
+ * **为什么是上界（不许超过）而不是相等**：渲染层**有权去掉**原文首尾的空行
+ * （`trimBlank`——模型爱给 `\n\n` 前缀，那是噪声不是段落）。去掉是好事，不该判红；
+ * **凭空多出来**才是坏。⇒ 上界。D19 那一侧走的是「相等」，自然也落在上界之内。
+ *
+ * **为什么用原文当尺子**：屏上「空行多不多」**没有绝对答案**——纯看屏，
+ * 「条目之间夹一行」和「正文本来就有两个段落」长得一模一样。原文是唯一能分清这两者的东西，
+ * 而场景**本来就知道**它喂进去的是什么（`record.ts` 的 `SCENARIOS`）。
+ */
+export function entryBlanks(screen: Screen, entries: readonly EntrySpec[]): readonly EntryBlock[] {
+  return entryBlocks(screen, entries).filter((block) => block.blanks > block.allowed)
 }
 
 // —— 三 · 不溢出 ——

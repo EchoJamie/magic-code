@@ -17,9 +17,12 @@
  *
  * `fixtures/` 里的字节是**真录的**（`record.ts`），不是手写的：
  *
- * - **`@head`**——当前工作区录的，期望**三条全过**（绿）；
- * - **`@4737930` / `@4ab8358`**——D11 / D13 **修复前**的提交录的，期望**当场红**。
- * - **`mismatch`**——渲染层被告知 120 列、终端只有 80 列（两个宽度分家）。
+ * - **`@head`**——当前工作区录的，期望**全过**（绿）；
+ * - **`@4737930` / `@4ab8358`**——D11 / D13 **修复前**的提交录的，期望**当场红**；
+ * - **`mismatch`**——渲染层被告知 120 列、终端只有 80 列（两个宽度分家）；
+ * - **`@d11relapse`**——**当前代码 ＋ 把 D11 那个换行塞回去**录的（第 2 轮加）。
+ *   它是「不夹空行」的**活体标本**：同一个 bug 换内联之后不再造重复了，
+ *   只剩「每条内容行之间夹一个空行」这一副面孔，而 `≤1` 的旧判据拦不住它。
  *
  * **红标本一并入库**是这一层的关键设计：不变量只要有人「顺手放宽」，
  * 这些用例立刻红——「它咬得住」这件事本身也成了回归面。
@@ -33,27 +36,44 @@
  *
  * ## 反向验证的硬结果（把修复倒回当前代码 · 实测）
  *
- * | 倒回哪一处 | 现录那一路 |
- * | --- | --- |
- * | **D13**（首行按宽度重切整段） | **红** ✓——`stream` 报出重复（`- README.md` 第 4/7 行…） |
- * | **D11**（每行多写一个换行） | **不红** ✗——但屏上**确实坏了**（每行之间夹一个空行） |
+ * | 倒回哪一处 | 现录那一路 | 谁能咬住 |
+ * | --- | --- | --- |
+ * | **D13**（首行按宽度重切整段） | **红** ✓ | `duplicates`——`- README.md` 第 4/7 行… |
+ * | **D11**（每行多写一个换行） | **红** ✓ | `entryBlanks`——每条 `allowed: 0` 而 `blanks ≥ 1` |
  *
- * ⚠️ D11 那格**不是漏测**，是**够不着**：当前架构（`Static` ＋ 内联）下那个换行**不再造成重复**，
- * 只剩「一行空行」，正落在「不空行」的 `≤1` 边界内侧。**要拦住它，判据得收紧**
- * ——详见 `invariants.ts` 的 `blankRuns` 与回报「待决」。**别把这一格当成已覆盖。**
+ * ⚠️ D11 那格第 1 轮是**不红**的（当时的判据是「不空行 `≤1`」，那个形状恰恰落在边界内侧）。
+ * 第 2 轮按规划侧裁决加了**收紧形**「不夹空行」（`entryBlanks`：**同一条目之内，空行数不许超过
+ * 原文的段落分隔数**），它才咬得住——**别把这条收紧当成可有可无**：没有它，D11 那一格就是空的。
  *
  * ⚠️ **看失败信息**：违例对象带着行号与原文，`expect(...).toEqual([])` 失败时
  * 打印的是 bun 自己的深比较，直接读出「屏上第几行坏了、坏成什么样」。
  */
 
 import { describe, expect, test } from 'bun:test'
-import { blankRuns, duplicates, overflows, recordArea } from './invariants.ts'
-import { SCENARIOS, TERMINAL, bytesOf, readFixture } from './record.ts'
+import {
+  blankRuns,
+  duplicates,
+  entryBlanks,
+  entryBlocks,
+  overflows,
+  paragraphBreaks,
+  recordArea,
+} from './invariants.ts'
+import type { EntrySpec } from './invariants.ts'
+import { SCENARIOS, TERMINAL, bytesOf, readFixture, scenarioOf } from './record.ts'
 import { escapeBytes, screenOf, unescapeBytes } from './terminal.ts'
 
 /** 回放一份标本 → 屏幕矩阵（**按录制的终端尺寸**，否则量到的不是同一块屏）。 */
 async function replay(name: string): Promise<Awaited<ReturnType<typeof screenOf>>> {
   return screenOf(readFixture(name).bytes, TERMINAL)
+}
+
+/** 标本的**原文账单**——按文件名里的场景名去 `SCENARIOS` 取（标签只说字节哪儿录的）。 */
+function entriesOf(fixture: string): readonly EntrySpec[] {
+  const scenario = scenarioOf(fixture)
+  if (scenario === undefined) throw new Error(`标本 ${fixture} 没有对应的场景——取不到原文账单`)
+
+  return scenario.entries
 }
 
 // —— 终端层自身：它得真会看屏 ——
@@ -94,8 +114,13 @@ describe('终端层 · 器械自检', () => {
 
 describe('当前工作区 · 现录现量（回归哨兵——src 坏了这条才红）', () => {
   for (const scenario of SCENARIOS) {
-    test(`${scenario.name}——现录一遍，三条不变量全过`, async () => {
+    test(`${scenario.name}——现录一遍，不变量全过`, async () => {
       const screen = await screenOf(await bytesOf(scenario), TERMINAL)
+
+      // 防空转：找到的条目数必须＝场景声明写下的条数。
+      // ⚠️ 少了这一条，「不夹空行」的标记只要写错一个字母就**一声不吭地全过**
+      expect(entryBlocks(screen, scenario.entries)).toHaveLength(scenario.entries.length)
+      expect(entryBlanks(screen, scenario.entries)).toEqual([])
 
       expect(duplicates(screen)).toEqual([])
       expect(blankRuns(screen)).toEqual([])
@@ -106,8 +131,12 @@ describe('当前工作区 · 现录现量（回归哨兵——src 坏了这条�
 
 describe('当前工作区 · 回放标本（不变量咬得住的锚点）', () => {
   for (const name of ['stream@head', 'leadblank@head', 'mismatch@head']) {
-    test(`${name}——不重复 · 不空行 · 不溢出`, async () => {
+    test(`${name}——不重复 · 不空行 · 不夹空行 · 不溢出`, async () => {
       const screen = await replay(name)
+      const entries = entriesOf(name)
+
+      expect(entryBlocks(screen, entries)).toHaveLength(entries.length)
+      expect(entryBlanks(screen, entries)).toEqual([])
 
       expect(duplicates(screen)).toEqual([])
       expect(blankRuns(screen)).toEqual([])
@@ -189,6 +218,78 @@ describe('不空行 · 咬得住的证据', () => {
     const screen = await screenOf(`甲\r\n\r\n\r\n乙\r\n${'─'.repeat(80)}`, { columns: 80, rows: 10 })
 
     expect(blankRuns(screen)).toEqual([{ from: 1, to: 2, count: 2 }])
+  })
+})
+
+// —— 不夹空行（「不空行」的收紧形 · 第 2 轮）——
+//
+// 这一条**要场景给原文**才成立：屏上「空行多不多」没有绝对答案，
+// 「条目之间夹一行」与「正文本来就有两个段落」在屏上长得一模一样。
+
+describe('不夹空行 · 咬得住的证据（本轮的验收重头）', () => {
+  test('D11 的新形态（把那个换行塞回当前代码录的标本）——条目内空行数远超段落数', async () => {
+    const screen = await replay('stream@d11relapse')
+    const entries = entriesOf('stream@d11relapse')
+    const found = entryBlanks(screen, entries)
+
+    // 防空转：三条都画出来了，判据才有资格说话
+    expect(entryBlocks(screen, entries)).toHaveLength(entries.length)
+    expect(found.length).toBeGreaterThan(0)
+
+    // **指名道姓**：正文那一条——原文一个段落分隔都没有，屏上却每行夹一个空行
+    const body = found.find((block) => block.marker === '⏺ ')
+    expect(body).toBeDefined()
+    expect(body?.allowed).toBe(0)
+    expect(body?.blanks).toBeGreaterThanOrEqual(3)
+  })
+
+  test('D19 不误伤——正文**该有的**段落空行照留（两边相等）', async () => {
+    const screen = await screenOf(
+      `› 说两段\r\n⏺ 第一段\r\n\r\n第二段\r\n${'─'.repeat(80)}`,
+      { columns: 80, rows: 10 },
+    )
+    const entries = [
+      { marker: '› ', text: '说两段' },
+      { marker: '⏺ ', text: '第一段\n\n第二段' },
+    ] as const
+
+    expect(entryBlocks(screen, entries)).toHaveLength(2)
+    expect(entryBlanks(screen, entries)).toEqual([])
+
+    // 反过来验一次判据确实看见了那个空行（否则「过」可能只是没量到）
+    expect(entryBlocks(screen, entries)[1]?.blanks).toBe(1)
+  })
+
+  test('多轮：用户消息之前那一条**分段**落在上一条的尾部——不许算到上一条头上', async () => {
+    // 两个来回——第二条用户消息之前那一行分段是**设计要的呼吸**（`needsSpacer`），
+    // 它在屏上落进**上一条**（助手答话）的尾部。要是不掐掉尾部，「不夹空行」就会在
+    // 任何多轮场景上**假红**——这是本轮选「只数内部」的直接理由，钉住它。
+    const screen = await screenOf(
+      `› 第一句\r\n⏺ 答一\r\n\r\n› 第二句\r\n⏺ 答二\r\n${'─'.repeat(80)}`,
+      { columns: 80, rows: 12 },
+    )
+    const entries = [
+      { marker: '› ', text: '第一句' },
+      { marker: '⏺ ', text: '答一' },
+      { marker: '› ', text: '第二句' },
+      { marker: '⏺ ', text: '答二' },
+    ] as const
+
+    expect(entryBlocks(screen, entries)).toHaveLength(4)
+    expect(entryBlanks(screen, entries)).toEqual([])
+    // 那一行分段确实在屏上（不是没画出来才「过」的）
+    expect(entryBlocks(screen, entries)[1]?.to).toBe(2)
+  })
+
+  test('段落分隔数怎么数：单个换行不算，前导空行不算', () => {
+    // 同一段里的折行——不是段落分隔（D11 就是靠这一条被抓的）
+    expect(paragraphBreaks('一段\n又一段\n还一段')).toBe(0)
+    // 段落之间那一个空行才算
+    expect(paragraphBreaks('第一段\n\n第二段')).toBe(1)
+    // **前导**的 `\n\n` 不算（模型爱给，渲染层本来就该去掉——算进去就是白送额度）
+    expect(paragraphBreaks('\n\n甲乙丙丁')).toBe(0)
+    // 全空＝没有段落可言
+    expect(paragraphBreaks('\n\n')).toBe(0)
   })
 })
 

@@ -34,6 +34,7 @@ import { makeTestStamper } from '@magic/faux'
 import { createView, reduce, appendEcho } from '../src/view.ts'
 import type { ShellView } from '../src/view.ts'
 import { AppView } from '../src/components/app.ts'
+import type { EntrySpec } from './invariants.ts'
 import { escapeBytes, record, unescapeBytes } from './terminal.ts'
 
 const COLUMNS = 80
@@ -45,7 +46,7 @@ export const TERMINAL = { columns: COLUMNS, rows: ROWS } as const
 /** 一次交代的样子（与真跑一致：用户回显 · 思考流 · 正文流 · 工具往返）。 */
 const UTTERANCE = '看看工作区里有什么'
 
-type Scenario = {
+export type Scenario = {
   readonly name: string
   /** 说明这个标本是录来干什么的——写进标本文件头，省得日后猜。 */
   readonly about: string
@@ -57,7 +58,21 @@ type Scenario = {
    */
   readonly viewColumns?: number
   /** 逐帧的视图（第 0 帧＝装载）。 */
-  readonly frames: () => readonly ShellView[]
+  readonly frames: readonly ShellView[]
+  /**
+   * 这一趟画了哪些条目、**原文各是什么**——给「不夹空行」当尺子（见 `invariants.ts`）。
+   *
+   * ⚠️ **场景必须自己交代原文**：屏上「空行多不多」没有绝对答案，
+   * 「条目之间夹一行」与「正文本来就有两个段落」在屏上长得一模一样。
+   * 场景是唯一知道「喂进去的是什么」的一方，所以尺子由它给。
+   */
+  readonly entries: readonly EntrySpec[]
+}
+
+/** 一轮造出来的东西：要画的帧 ＋ 原文账单。 */
+type Painted = {
+  readonly frames: readonly ShellView[]
+  readonly entries: readonly EntrySpec[]
 }
 
 /**
@@ -66,7 +81,7 @@ type Scenario = {
  * 为什么从空态起：空态是整个生命周期里最高的一帧（十几行），
  * 后面内容一变短，**擦行数算错**就露馅——D11 的残影正是这个形态。
  */
-function streaming(body: string, thinking: string): readonly ShellView[] {
+function streaming(body: string, thinking: string): Painted {
   const stamper = makeTestStamper({ session: 'u23', turn: 1 })
   const frames: ShellView[] = [createView()]
 
@@ -92,43 +107,66 @@ function streaming(body: string, thinking: string): readonly ShellView[] {
     frames.push(view)
   }
 
-  return frames
+  return {
+    frames,
+    entries: [
+      { marker: '› ', text: UTTERANCE },
+      { marker: '（思考）', text: thinking },
+      { marker: '⏺ ', text: body },
+    ],
+  }
 }
 
 /** 空态起、长出两行内容——`mismatch` 用它，够画出一条分隔线与一行状态行就行。 */
-function shortTurn(): readonly ShellView[] {
+function shortTurn(): Painted {
   const stamper = makeTestStamper({ session: 'u23', turn: 1 })
+  const body = '工作区基本为空。'
 
-  let view = appendEcho(createView(), '看看工作区里有什么')
+  let view = appendEcho(createView(), UTTERANCE)
   view = reduce(view, stamper.stamp('turn.start', {}))
   view = reduce(view, stamper.stamp('model.call.start', { model: 'u23-model' }))
-  view = reduce(view, stamper.stamp('model.delta', { channel: 'text', text: '工作区基本为空。' }))
+  view = reduce(view, stamper.stamp('model.delta', { channel: 'text', text: body }))
 
-  return [createView(), view]
+  return { frames: [createView(), view], entries: [{ marker: '› ', text: UTTERANCE }, { marker: '⏺ ', text: body }] }
 }
+
+/** 正文（原文）——`stream` 那一形：**单换行折行**，一个段落分隔都没有。 */
+const STREAM_BODY = '工作区基本为空：\n- README.md\n- packages\n就这些 —— 需要我做什么？'
+/** 正文（原文）——`leadblank` 那一形：前导 `\n\n`（模型实测如此），渲染层该去掉它。 */
+const LEADBLANK_BODY = '\n\n甲乙丙丁'
 
 export const SCENARIOS: readonly Scenario[] = [
   {
     name: 'stream',
     about: '一轮普通流式（多行正文）——擦行数算错时，屏上会留下上一帧的残影（D11 的形态）',
-    frames: () =>
-      streaming('工作区基本为空：\n- README.md\n- packages\n就这些 —— 需要我做什么？', '先列一下。'),
+    ...streaming(STREAM_BODY, '先列一下。'),
   },
   {
     name: 'leadblank',
     about: '正文以 \\n\\n 开头（模型实测如此）——首行吞换行时，同一段正文会被画两遍（D13 的形态）',
-    frames: () => streaming('\n\n甲乙丙丁', '写四个字就好。'),
+    ...streaming(LEADBLANK_BODY, '写四个字就好。'),
   },
   {
     name: 'mismatch',
     // 渲染层被告知 120 列，终端只有 80——**两个宽度分家**（resize 那一瞬就是这个形状）
     viewColumns: 120,
     about: '渲染层宽度(120) ≠ 终端宽度(80)——分隔线与状态行会被终端折行（不溢出的形态）',
-    frames: shortTurn,
+    ...shortTurn(),
   },
 ]
 
-/** 录一个场景 → 转义文本（含文件头：来源 · 尺寸 · 用途）。 */
+/**
+ * 按名字取场景——**回放标本时用**。
+ *
+ * 标本文件名是 `<场景>@<标签>.txt`，「不夹空行」要的原文在场景里，
+ * 于是回放那一路也得先按场景名把账单捞出来（`标签` 只说字节是哪儿录的，与原文无关）。
+ */
+export function scenarioOf(fixture: string): Scenario | undefined {
+  const name = fixture.split('@')[0] ?? ''
+
+  return SCENARIOS.find((scenario) => scenario.name === name)
+}
+
 /**
  * 把一个场景**现录**成字节——不落盘，直接给不变量量。
  *
@@ -140,7 +178,7 @@ export const SCENARIOS: readonly Scenario[] = [
  */
 export async function bytesOf(scenario: Scenario): Promise<string> {
   const viewColumns = scenario.viewColumns ?? COLUMNS
-  const views = scenario.frames()
+  const views = scenario.frames
 
   return record(
     views.map((view) => h(AppView, { key: 'specimen', view, columns: viewColumns, rows: ROWS })),
@@ -148,8 +186,9 @@ export async function bytesOf(scenario: Scenario): Promise<string> {
   )
 }
 
+/** 录一个场景 → 标本全文（文件头 ＋ 转义字节）。 */
 async function recordScenario(scenario: Scenario, tag: string): Promise<string> {
-  const views = scenario.frames()
+  const views = scenario.frames
   const viewColumns = scenario.viewColumns ?? COLUMNS
   const bytes = await bytesOf(scenario)
 
