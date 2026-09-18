@@ -10,3 +10,6 @@ dist/
 # 试跑区（内容不入库，保留 README）
 playground/*
 !playground/README.md
+
+# JetBrains
+.idea/

@@ -149,6 +149,8 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
     )
 
     let text = ''
+    /** 思考通道的正文——**只为 D6 的判据攒着**（不落条目，条目只载正文）。 */
+    let thinking = ''
     let errored = false
 
     for await (const event of stream.events) {
@@ -157,6 +159,7 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
       sink.emit(event)
 
       if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
+      if (event.kind === 'model.delta' && event.data.channel === 'thinking') thinking += event.data.text
       // `model.error` 是本轮定论的信号（不变式 ④：其后无事件）；聚合结果里没有错误位
       if (event.kind === 'model.error') errored = true
     }
@@ -168,11 +171,24 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
     // 出错——首站一律停下（分档处置归阶段 2 / U17）；半截正文同样不落账
     if (errored) return close(runtime, 'error', false)
 
-    // 正文落账 ＋ `message.assistant`（事件只记「发生 + 引用」）
-    const assistantId = await appendTextEntry(entryLogOf(runtime), 'assistant', text)
-    sink.emit(stamper.stamp('message.assistant', { entry: assistantId }))
-
     const calls = result.toolCalls ?? []
+
+    // 正文落账 ＋ `message.assistant`（事件只记「发生 + 引用」）
+    //
+    // ⚠️ **D6：整轮什么都没产出（正文空 · 思考空 · 没有工具调用）⇒ 不落条目、不发事件**
+    // ——那种轮次毫无内容，落了就是条目流里的一行噪声、上下文里的一条空消息，
+    // 屏上还会多一个孤零零的标记（外壳侧另有一道「空内容不渲染」的兜底）。
+    //
+    // ⚠️ **但有工具调用时这条条目必须落**——它是上下文装配**配对的锚**：
+    // 装配自 `assistant` 条目往后扫「`tool-call` ＋ 紧随的 `tool-result`」对
+    // （见 `context.ts`）；锚没了，这一轮的工具往返**整段进不了上下文**
+    // （实测：第 2 次模型调用的 messages 里连 `role:'tool'` 都没有）。
+    const blank = text.trim() === '' && thinking.trim() === '' && calls.length === 0
+    const assistantId = blank ? undefined : await appendTextEntry(entryLogOf(runtime), 'assistant', text)
+    if (assistantId !== undefined) {
+      sink.emit(stamper.stamp('message.assistant', { entry: assistantId }))
+    }
+
     if (calls.length === 0) return close(runtime, 'settled', false) // 收束——回到等待输入
 
     // 同轮多工具——**按序逐个**（并行执行留后评估）；一个被拒只影响该调用

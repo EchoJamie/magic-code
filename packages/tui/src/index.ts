@@ -33,6 +33,7 @@ export type { Shell, ShellEffect, ShellKey } from './shell.ts'
 // —— 视图与归约 ——
 
 export {
+  COMMANDS,
   HINT_IDLE,
   appendEcho,
   appendOutput,
@@ -40,11 +41,13 @@ export {
   closePicker,
   createView,
   isSessionRow,
+  matchCommands,
   movePicker,
   openPicker,
   picked,
   rebuild,
   reduce,
+  settle,
   stateLabel,
   takeOver,
   textOfLines,
@@ -52,6 +55,8 @@ export {
   withDecisionStatus,
 } from './view.ts'
 export type {
+  CommandSpec,
+  CompletionState,
   Dock,
   LogRow,
   PendingDecision,
@@ -65,13 +70,13 @@ export type {
 
 // —— 一屏（`AppView` 纯呈现 · `TuiApp` 活壳）——
 
-export { AppView, TuiApp, dockHeightOf, toShellKeys } from './components/app.ts'
+export { AppView, TuiApp, dockHeightOf, isEmpty, toShellKeys } from './components/app.ts'
 export type { AppViewProps, TuiAppProps } from './components/app.ts'
 
 // —— 显示部件（快照与自持组件用）——
 
-export { Log, logLines } from './components/log.ts'
-export type { LogLine, Segment } from './components/log.ts'
+export { LogRowView, logLines, needsSpacer, rowLines } from './components/log.ts'
+export type { LogLine, LogRowProps, Segment } from './components/log.ts'
 export { DecisionCard } from './components/decision.ts'
 export { Composer, placeholderOf } from './components/composer.ts'
 export type { ComposerTone } from './components/composer.ts'

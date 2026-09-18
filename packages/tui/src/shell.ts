@@ -16,24 +16,30 @@
  */
 
 import type { Command, ControlTransport, Entry, KernelEvent, SessionId } from '@magic/contracts'
-import type { ShellView } from './view.ts'
 import {
+  COMMANDS,
+  HINT_COMPLETION,
+  HINT_IDLE,
+  HINT_WORKING,
   appendEcho,
   appendOutput,
   appendReceipt,
   closePicker,
   createView,
+  matchCommands,
   movePicker,
   openPicker,
   picked,
   rebuild,
   reduce,
 } from './view.ts'
+import type { ShellView } from './view.ts'
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
   | { readonly kind: 'char'; readonly char: string }
   | { readonly kind: 'enter' }
+  | { readonly kind: 'tab' }
   | { readonly kind: 'backspace' }
   | { readonly kind: 'escape' }
   | { readonly kind: 'up' }
@@ -62,13 +68,30 @@ export type Shell = {
   dispose(): void
 }
 
-/** `/help` 的正文（纯输出型）。 */
+/** `/help` 的正文（纯输出型）——**从命令表出**（一处权威：候选与帮助不会分叉）。 */
 const HELP_TITLE = '可用命令'
-const HELP_LINES: readonly string[] = [
-  '/model　　换模型（列出可用条目，选定即切）',
-  '/session　会话：列表 · 切换 · 新建 · 改名',
-  '/help　　　这张表',
-]
+const HELP_LINES: readonly string[] = COMMANDS.map(
+  (command) => `${command.name}　${command.summary}`,
+)
+
+/**
+ * `/status` 的正文——**本地就能答**（模型 / 用量 / 会话都在外壳手上，不必问内核）。
+ *
+ * 「连得上不」只说实话：最近一次模型调用**出错**就说出错（那是外壳看得见的事实），
+ * 否则说「未见异常」——**不编一个「已连接」**（那要真去连一次才知道）。
+ */
+function statusLines(view: ShellView): readonly string[] {
+  const { status } = view
+
+  return [
+    `会话　${status.session ?? '新会话'}`,
+    `模型　${status.model ?? '（还没调用过）'}`,
+    `用量　${status.usage === null ? '（还没上报）' : String(status.usage)}`,
+    `状态　${status.state === 'error' ? '最近一次模型调用出错' : '未见异常'}`,
+  ]
+}
+
+const STATUS_TITLE = '此刻'
 
 /** 一次「等内核回话再开选择器」的意图——`/session` 与 `/model` 各一种。 */
 type PendingPicker = 'session' | 'model'
@@ -99,6 +122,35 @@ export function createShell(transport: ControlTransport): Shell {
     view = next
     notify()
   }
+
+  /**
+   * 草稿变了 ⇒ **重算候选**（D12：打 `/` 即出、边打边筛）。
+   * 一个口子管全部改草稿的地方——省得每处各刷一次（迟早漏一处）。
+   */
+  const withCompletion = (next: ShellView): ShellView => {
+    if (next.dock.kind !== 'input') return { ...next, completion: null }
+
+    const candidates = matchCommands(next.draft)
+    const open = candidates.length > 0
+
+    return {
+      ...next,
+      completion: open ? { candidates, selected: 0 } : null,
+      // 右位提示跟着候选走（原型 · 场景 11）；候选举起就报键位，收起就回常态
+      status: { ...next.status, hint: open ? HINT_COMPLETION : idleHintOf(next) },
+    }
+  }
+
+  /** 没在补全、没在裁决 / 选择器时的右位提示——按状态给。 */
+  const idleHintOf = (from: ShellView): string => {
+    if (from.status.state === 'working') return HINT_WORKING
+    if (from.status.state === 'retrying') return from.status.hint
+
+    return HINT_IDLE
+  }
+
+  /** 改草稿的统一入口。 */
+  const draft = (next: ShellView): void => commit(withCompletion(next))
 
   const send = (command: Command): void => {
     if (disposed) return
@@ -232,13 +284,15 @@ export function createShell(transport: ControlTransport): Shell {
           commit(said(view, '先答复——此刻粘不了（这一轮在等你）。草稿在，答完接着打。'))
           return NONE
         }
-        commit({ ...view, draft: view.draft + input.text })
+        draft({ ...view, draft: view.draft + input.text })
         return NONE
 
       case 'escape':
         if (view.dock.kind === 'picker') return (commit(closePicker(view)), NONE)
         if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
-        commit(view.draft === '' ? { ...view, expanded: false } : { ...view, draft: '' })
+        // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
+        if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
+        draft(view.draft === '' ? { ...view, expanded: false } : { ...view, draft: '' })
         return NONE
 
       case 'up':
@@ -248,22 +302,32 @@ export function createShell(transport: ControlTransport): Shell {
           commit(movePicker(view, delta))
           return NONE
         }
+        // 候选开着 ⇒ 在候选里选（原型 · 场景 11）；否则才是输入历史
+        if (view.completion !== null) {
+          commit(moveCompletion(view, delta))
+          return NONE
+        }
         recallHistory(delta)
         return NONE
       }
+
+      case 'tab':
+        // `Tab` 补全（原型 · 场景 11）；没有候选时什么也不做（Tab 不当正文）
+        if (view.dock.kind === 'input' && view.completion !== null) commit(applyCompletion(view))
+        return NONE
 
       case 'enter':
         return submit()
 
       case 'backspace':
         if (view.dock.kind === 'decision') return refuse('退格')
-        commit({ ...view, draft: view.draft.slice(0, -1) })
+        draft({ ...view, draft: view.draft.slice(0, -1) })
         return NONE
 
       case 'char':
         if (view.dock.kind === 'decision') return answer(input.char)
         if (view.dock.kind === 'picker') return NONE
-        commit({ ...view, draft: view.draft + input.char })
+        draft({ ...view, draft: view.draft + input.char })
         return NONE
 
       case 'other':
@@ -324,6 +388,13 @@ export function createShell(transport: ControlTransport): Shell {
       return NONE
     }
 
+    // 候选开着 ⇒ 回车**先补全**（原型 · 场景 11）；**已经打全了就直接发**
+    // （全名再补一次＝只多一个空格，却要人多按一次回车——参照物不这么做）
+    if (view.completion !== null && !isComplete(view)) {
+      commit(applyCompletion(view))
+      return NONE
+    }
+
     const text = view.draft.trim()
     if (text === '') return NONE
 
@@ -348,6 +419,7 @@ export function createShell(transport: ControlTransport): Shell {
 
     // —— 纯输出型：输出进记录区，**命令本身不回显** ——
     if (word === '/help') return appendOutput(cleared, HELP_TITLE, HELP_LINES)
+    if (word === '/status') return appendOutput(cleared, STATUS_TITLE, statusLines(from))
 
     // —— 交互配置型：记录区什么都不进 ——
     if (word === '/session') {
@@ -387,6 +459,36 @@ export function createShell(transport: ControlTransport): Shell {
     return appendReceipt(cleared, `不认得的命令「${word}」——试试 /help`)
   }
 
+  /** 草稿是不是已经**打全**了选中的那条命令。 */
+  const isComplete = (from: ShellView): boolean => {
+    const row = from.completion?.candidates[from.completion.selected]
+    if (row === undefined) return false
+
+    return from.draft.trim() === row.name
+  }
+
+  /** 候选里上下选（环形）。 */
+  const moveCompletion = (from: ShellView, delta: number): ShellView => {
+    const completion = from.completion
+    if (completion === null) return from
+
+    const count = completion.candidates.length
+    const selected = (completion.selected + delta + count) % count
+
+    return { ...from, completion: { ...completion, selected } }
+  }
+
+  /**
+   * 补全——把选中的命令写进草稿（**留一个空格**：一条命令多半还要打参数），
+   * 并收起候选（补完那一下，候选的活就干完了）。
+   */
+  const applyCompletion = (from: ShellView): ShellView => {
+    const row = from.completion?.candidates[from.completion.selected]
+    if (row === undefined) return from
+
+    return withCompletion({ ...from, draft: `${row.name} `, completion: null })
+  }
+
   const recallHistory = (delta: number): void => {
     if (history.length === 0) return
 
@@ -394,7 +496,7 @@ export function createShell(transport: ControlTransport): Shell {
     if (next < 0 || next >= history.length) return
 
     historyAt = next
-    commit({ ...view, draft: history[next] ?? '' })
+    draft({ ...view, draft: history[next] ?? '' })
   }
 
   const said = (from: ShellView, message: string): ShellView => ({ ...from, flash: message })

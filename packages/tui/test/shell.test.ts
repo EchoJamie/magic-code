@@ -29,6 +29,10 @@ function live() {
       return shell.key(key)
     },
     view: () => shell.getView(),
+    /** **屏上的全部行**（定局那侧 ＋ 本轮）——「屏上有没有这一行」的断言用它。 */
+    rows: () => [...shell.getView().settled, ...shell.getView().rows],
+    /** 仅本轮（还在流式、还会变）那些行。 */
+    live: () => shell.getView().rows,
     /** 收到的命令（不含订阅动作）。 */
     commands: () => spy.commands as readonly Command[],
   }
@@ -54,7 +58,7 @@ describe('交代（输入 → input.submit）', () => {
 
     app.press(ENTER)
     expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录' }])
-    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'user', text: '看下目录' })
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '看下目录' })
     expect(app.view().draft).toBe('')
   })
 
@@ -63,7 +67,7 @@ describe('交代（输入 → input.submit）', () => {
 
     app.press(ENTER)
     expect(app.commands()).toEqual([])
-    expect(app.view().rows).toEqual([])
+    expect(app.rows()).toEqual([])
   })
 
   test('退格删一个字符；esc 清草稿（有草稿时不清展开位）', () => {
@@ -105,10 +109,10 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([])
-    expect(app.view().rows).toHaveLength(1)
-    expect(app.view().rows[0]).toMatchObject({ kind: 'output' })
+    expect(app.rows()).toHaveLength(1)
+    expect(app.rows()[0]).toMatchObject({ kind: 'output' })
     // 记录区里**没有** `› /help` 那一行（操作不混进对话）
-    expect(app.view().rows.some((row) => row.kind === 'user')).toBe(false)
+    expect(app.rows().some((row) => row.kind === 'user')).toBe(false)
   })
 
   test('`/session`——记录区什么都不进，只发 `session.list`', () => {
@@ -118,7 +122,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([{ type: 'session.list' }])
-    expect(app.view().rows).toEqual([])
+    expect(app.rows()).toEqual([])
   })
 
   test('`/model <条目>`——直接发换模型，不进记录区', () => {
@@ -128,7 +132,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([{ type: 'model.switch', provider: 'minimax-m2' }])
-    expect(app.view().rows).toEqual([])
+    expect(app.rows()).toEqual([])
   })
 
   test('不认得的 slash——**如实说一句**（不发命令、也不当交代发出去）', () => {
@@ -138,7 +142,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([])
-    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 })
 
@@ -252,7 +256,7 @@ describe('选择器（`/session` · `/model`）', () => {
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
 
     expect(app.view().dock.kind).toBe('picker')
-    expect(app.view().rows).toEqual([])
+    expect(app.rows()).toEqual([])
   })
 
   test('上下选 ＋ 回车选定 —— 发 `session.open`，**留一行回执**', () => {
@@ -265,7 +269,7 @@ describe('选择器（`/session` · `/model`）', () => {
     app.press(ENTER)
 
     expect(app.commands()).toContainEqual({ type: 'session.open', session: 's2' })
-    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
     expect(app.view().dock.kind).toBe('input')
   })
 
@@ -278,7 +282,7 @@ describe('选择器（`/session` · `/model`）', () => {
     app.press({ kind: 'escape' })
 
     expect(app.view().dock.kind).toBe('input')
-    expect(app.view().rows).toEqual([])
+    expect(app.rows()).toEqual([])
   })
 
   test('`/model` 不带参数 —— 问一次内核；回话的缘由作列表说明（不解析）', () => {
@@ -327,10 +331,10 @@ describe('重建（`session.history` 分块）', () => {
 
     app.spy.emit(state1('s1'))
     app.spy.emit(event('session.history', { session: 's1', entries: [entry(1, '第一句')], done: false }))
-    expect(app.view().rows).toEqual([]) // 还没收齐——不铺
+    expect(app.rows()).toEqual([]) // 还没收齐——不铺
 
     app.spy.emit(event('session.history', { session: 's1', entries: [entry(2, '第二句')], done: true }))
-    expect(app.view().rows.map((row) => row.kind === 'user' && row.text)).toEqual(['第一句', '第二句'])
+    expect(app.rows().map((row) => row.kind === 'user' && row.text)).toEqual(['第一句', '第二句'])
   })
 
   test('**不是当下那条的块直接丢**（分块会跨切换）', () => {
@@ -339,7 +343,7 @@ describe('重建（`session.history` 分块）', () => {
     app.spy.emit(state1('s1'))
     app.spy.emit(event('session.history', { session: '别的会话', entries: [entry(9, '不该出现')], done: true }))
 
-    expect(app.view().rows).toEqual([])
+    expect(app.rows()).toEqual([])
   })
 
   test('切换 ⇒ 主动读一次历史（重建由那次触发）', () => {
@@ -366,7 +370,7 @@ describe('会话命令的其余分支', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([{ type: 'session.new' }])
-    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
   test('`/session title <文本>`——发 `session.rename`（带上当下那条的 id）', () => {
@@ -388,7 +392,7 @@ describe('会话命令的其余分支', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([])
-    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
   test('`/session <不认得>`——如实说一句，不发命令', () => {
@@ -398,7 +402,7 @@ describe('会话命令的其余分支', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([])
-    expect(app.view().rows.at(-1)?.kind === 'receipt').toBe(true)
+    expect(app.rows().at(-1)?.kind === 'receipt').toBe(true)
   })
 })
 

@@ -24,10 +24,18 @@ import { event } from './events.ts'
 const viewed = (events: readonly Parameters<typeof reduce>[1][], from: ShellView = createView()): ShellView =>
   events.reduce(reduce, from)
 
-/** 一屏里的记录行 kind（断言骨架用）。 */
-const kindsOf = (view: ShellView): readonly string[] => view.rows.map((row) => row.kind)
+/**
+ * 屏上的全部行（**定局那侧 ＋ 本轮**）。
+ *
+ * 第 21 轮起行分两侧：回执 / 命令输出 / 重建的内容走「定局」（写一次即入 scrollback），
+ * 只有还在流式的那些留在本轮。断言「屏上有没有」时两处一起看。
+ */
+const onScreen = (view: ShellView): readonly LogRow[] => [...view.settled, ...view.rows]
 
-const rowAt = (view: ShellView, index: number): LogRow | undefined => view.rows[index]
+/** 一屏里的记录行 kind（断言骨架用）。 */
+const kindsOf = (view: ShellView): readonly string[] => onScreen(view).map((row) => row.kind)
+
+const rowAt = (view: ShellView, index: number): LogRow | undefined => onScreen(view)[index]
 
 // ══ 流式 ═════════════════════════════════════════════════════════════
 
@@ -64,7 +72,7 @@ describe('流式（model.delta 三通道）', () => {
       event('model.delta', { channel: 'toolcall', text: ':1}' }),
     ])
 
-    expect(view.rows).toHaveLength(1)
+    expect(onScreen(view)).toHaveLength(1)
     expect(rowAt(view, 0)).toMatchObject({ argsText: '{"a":1}' })
   })
 })
@@ -78,7 +86,7 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
       event('tool.call', { name: 'ls', args: { path: '.' } }, { id: 71 }),
     ])
 
-    expect(view.rows).toHaveLength(1)
+    expect(onScreen(view)).toHaveLength(1)
     expect(rowAt(view, 0)).toMatchObject({ kind: 'tool', call: 71, name: 'ls', state: 'running' })
   })
 
@@ -222,8 +230,8 @@ describe('状态行（五态固定词）', () => {
       event('model.switched', { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
     )
 
-    expect(view.rows.at(-1)).toMatchObject({ kind: 'receipt' })
-    const last = view.rows.at(-1)
+    expect(rowAt(view, onScreen(view).length - 1)).toMatchObject({ kind: 'receipt' })
+    const last = onScreen(view).at(-1)
     expect(last?.kind === 'receipt' ? last.text : '').toContain('MiniMax-M2')
     expect(view.status.model).toBe('MiniMax-M2')
   })
@@ -318,7 +326,7 @@ describe('回显与陌生引用', () => {
   test('没有回显可配（重建场景）——**不编一行出来**', () => {
     const view = reduce(createView(), event('message.user', { entry: 7 }))
 
-    expect(view.rows).toEqual([])
+    expect(onScreen(view)).toEqual([])
   })
 
   test('陌生 call 的结果 / 裁决——静默忽略（不炸、不新建行）', () => {
@@ -327,7 +335,7 @@ describe('回显与陌生引用', () => {
       event('tool.decision', { call: 998, decision: 'approve', decider: 'user', elapsedMs: 1 }),
     ])
 
-    expect(view.rows).toEqual([])
+    expect(onScreen(view)).toEqual([])
   })
 })
 

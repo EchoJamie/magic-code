@@ -1,13 +1,15 @@
 /**
  * 外壳 · 启动（缺陷轮 II 重画）——把一屏挂上终端。
  *
- * **全屏 ＋ 备用屏**（原型 · 交互逻辑：铺满窗口，resize 整体重绘）：
- * - Ink 原生支持 `alternateScreen` —— 接管整屏、退出时**原样还给终端**；
- * - `useWindowSize` 在 resize 时让组件重渲染，尺寸一变，记录区可视行数 / 抽屉上限 /
- *   状态行两段**全部按新尺寸重算**（那是纯函数，见 `components/app.ts`）。
+ * **内联渲染（经典）· 不接管整屏 · 不捕获鼠标**（原型开篇的渲染模型注）：
+ * 内容写进终端**主缓冲** ⇒ 滚轮滚终端自己的 scrollback ✓ · 原生拖选复制 ✓ ——两个都免费。
+ * （互斥的从来不是「滚轮 ↔ 拖选」，而是「**捕获鼠标** ↔ 原生拖选」。）
  *
- * **代价如实记**：接管整屏＝终端自身的滚动历史没了（备用屏没有回滚），
- * 滚动归我们——记录区自己管视口（只渲染视口内的行，见 `components/log.ts`）。
+ * **代价三条（用户已认下）**：输入框**不钉底**（跟内容走）· resize **不重排已滚出的历史** ·
+ * 退出后内容**留在终端**。
+ *
+ * `useWindowSize` 仍在——尺寸一变，交互区与状态行按新尺寸重算（活动区那一小段就地重绘）；
+ * **已滚出的历史不动**（它们在 `Static` 里，见 `components/app.ts`）。
  *
  * `exitOnCtrlC: false` —— Ctrl+C 归**外壳**判（空闲＝退出 · 工作中＝中断，原型 · 键盘）。
  */
@@ -51,8 +53,12 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const app = render(h(TuiApp, { shell }), {
     stdin,
     stdout,
-    // 铺满窗口：接管整屏（退出即还）
-    alternateScreen: true,
+    // ⚠️ **不接管整屏**（第 21 轮 · 渲染模型＝内联）：内容写进终端主缓冲 ⇒
+    // 滚轮滚终端自己的 scrollback ✓ · 原生拖选复制 ✓ ——两个都免费。
+    // 代价（用户已认下）：输入框不钉底、resize 不重排已滚出的历史、退出后内容留在终端。
+    // 也不捕获鼠标（Ink 默认不捕获；`usePaste` 开的是 bracketed paste `?2004h`，
+    // 那是**粘贴**不是鼠标上报——拖选照旧可用）。
+    alternateScreen: false,
     // Ctrl+C 由外壳判（空闲退出 / 工作中中断）
     exitOnCtrlC: false,
   })

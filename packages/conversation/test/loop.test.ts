@@ -455,3 +455,36 @@ describe('主循环 · 大负载落 blob', () => {
     })
   })
 })
+
+// ══ D6 · 空 assistant 条目（第 21 轮 · 缺陷轮 III）═════════════════════
+
+describe('主循环 · D6（空 assistant 条目）', () => {
+  /** 条目 kind 序列（记录域桩留痕）。 */
+  const entryKinds = (stage: Stage): readonly string[] => stage.records.entries.map((row) => row.kind)
+
+  test('整轮**什么都没产出**（无正文 · 无思考 · 无工具）——不落 `assistant` 条目、不发事件', async () => {
+    const stage = makeStage({ turns: [{ text: '' }] })
+
+    await run(makeLoopRuntime(stage), '说点什么')
+
+    // 只有用户那一条；`message.assistant` 也没发（事件与条目**同进同退**）
+    expect(entryKinds(stage)).toEqual(['user'])
+    expect(kindsOf(stage)).not.toContain('message.assistant')
+  })
+
+  test('**有工具调用时那条条目必须落**——它是上下文配对的锚', async () => {
+    const stage = makeStage({
+      turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'ls' } }] }, { text: '好' }],
+    })
+
+    await run(makeLoopRuntime(stage), '跑一下 ls')
+
+    // 条目：user → assistant（锚）→ tool-call → tool-result → assistant
+    expect(entryKinds(stage)).toEqual(['user', 'assistant', 'tool-call', 'tool-result', 'assistant'])
+    expect(kindsOf(stage)).toContain('message.assistant')
+
+    // **锚的实证**：第二次模型调用的上下文里，工具往返整段都在
+    // （锚一旦被 D6 误删，这里会退化成只有 system ＋ user）
+    expect(rolesOf(stage, 1)).toEqual(['system', 'user', 'assistant', 'tool'])
+  })
+})

@@ -104,7 +104,8 @@ describe('场景 2 · 空闲（有历史）', () => {
     const frame = app.screen()
     expect(frame).toContain('› 看看这个工作区里有什么')
     expect(frame).toContain('⏺ 我先列一下。')
-    expect(frame).toContain('▶')
+    // 工具标记＝`●`（与助手同族 · 只换颜色 · 视觉重量比助手轻——原型 · 组件规格）
+    expect(frame).toContain('●')
     expect(frame).toContain('ls')
     expect(frame).toContain('3.1k')
     expect(frame).toContain('记录查询优化')
@@ -315,7 +316,10 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     const frame = app.screen()
     expect(frame).toContain('可用命令')
     expect(frame).toContain('/session')
-    expect(frame).not.toContain('› /help')
+    // **命令本身不回显**——记录区里没有 `› /help` 那一行（候选里的那条不算：
+    // 它在左下交互区、不在记录区）
+    const view = app.shell.getView()
+    expect([...view.settled, ...view.rows].some((row) => row.kind === 'user')).toBe(false)
     expect(frame).toMatchSnapshot()
   })
 })
@@ -340,7 +344,7 @@ describe('场景 12 · 切换 / 恢复后——重建，且是收拢的', () => 
 
     const frame = app.screen()
     expect(frame).toContain('看看这个工作区里有什么')
-    expect(frame).toContain('▶')
+    expect(frame).toContain('●') // 工具标记（第 21 轮起＝`●`）
     expect(frame).toContain('14 项')
     expect(frame).not.toContain('可用命令') // 屏上痕迹不回
     expect(frame).toMatchSnapshot()
@@ -425,9 +429,11 @@ describe('规格细节（渲染层）', () => {
       }),
     ])
 
-    const frame = app.screen(100, 14)
-    expect(frame).toContain('第 40 句') // 末尾在视口里
-    expect(frame).not.toContain('第 1 句') // 开头被裁掉（不全画出来）
+    // 内联模式下「视口」换了机制：**已定局的行走 `Static`**（终端自己滚），
+    // 活动区只放本轮那些——故这里验的是**分侧**，不再是「裁掉开头」
+    const view = app.shell.getView()
+    expect(view.settled.length).toBe(40)
+    expect(view.rows).toHaveLength(0)
   })
 
   test('行标记与着色——用户行整行背景、工具跑起来换 `⟳`', () => {
@@ -457,5 +463,129 @@ describe('规格细节（渲染层）', () => {
     expect(collapsed.some((line) => line.segments.some((piece) => piece.text.includes('第二行')))).toBe(false)
     expect(expanded.some((line) => line.segments.some((piece) => piece.text.includes('第二行')))).toBe(true)
     expect(expanded.some((line) => line.segments.some((piece) => piece.text.includes('b.txt')))).toBe(true)
+  })
+})
+
+
+// ══ 场景 11 · slash 自动补全（D12）═══════════════════════════════════
+
+describe('场景 11 · slash 自动补全', () => {
+  test('打 `/s` —— 候选列在输入行**上方**，`/session` 与 `/status` 在前（按匹配度）', () => {
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
+
+    app.type('/s')
+
+    const frame = app.screen()
+    expect(frame).toContain('/session')
+    expect(frame).toContain('/status')
+    expect(frame).toContain('↑↓ 选 · Tab 补全 · esc 收起')
+    // 候选在输入行**上方**——输入行是**最后**那条 `› …`（候选行也以 `› ` 起头并且含 `/s`）
+    expect(frame.indexOf('/session')).toBeLessThan(frame.lastIndexOf('› /s'))
+    expect(frame).toMatchSnapshot()
+  })
+
+  test('只列**真存在**的命令——`/grants` 内核还没有，不列', () => {
+    const app = live()
+
+    app.type('/g')
+
+    const frame = app.screen()
+    expect(frame).not.toContain('/grants')
+  })
+
+  test('`Tab` 补全 —— 选中那条落进草稿（留一个空格等参数）；`esc` 收起候选', () => {
+    const app = live()
+
+    app.type('/sess')
+    app.key({ kind: 'tab' })
+    expect(app.shell.getView().draft).toBe('/session ')
+
+    app.key({ kind: 'ctrl+c' }) // 收摊前把草稿清了（下面另起一段输入）
+    app.shell.key({ kind: 'escape' })
+    app.type('/se')
+    expect(app.shell.getView().completion).not.toBeNull()
+    app.key({ kind: 'escape' })
+    expect(app.shell.getView().completion).toBeNull()
+    expect(app.shell.getView().draft).toBe('/se') // 草稿留着
+  })
+})
+
+// ══ 密度 ＋ D11 护栏 ═════════════════════════════════════════════════
+
+describe('密度（原型 · 密度节）', () => {
+  test('条目之间**不插空行**；只有用户消息之前留一行分段', () => {
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
+    app.type('跑一下')
+    app.key(ENTER)
+    app.feed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '好。' }),
+      event('tool.call', { name: 'ls', args: { path: '.' } }, { id: 71 }),
+      event('tool.result', { call: 71, ok: true, output: { text: 'a.txt' } }),
+    ])
+
+    const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
+    const spacers = lines.filter((line) => line.spacer === true).length
+
+    expect(spacers).toBe(0) // 首条用户消息之前不必分段（顶上没有东西）
+    // 分段行只出现在**用户消息之前**：拿一个带两条用户消息的行列来验
+    const withTwo = [
+      { kind: 'user' as const, key: 'u1', text: '甲', echoed: false },
+      { kind: 'assistant' as const, key: 'a1', text: '嗯' },
+      { kind: 'user' as const, key: 'u2', text: '乙', echoed: false },
+    ]
+    const spaced = logLines(withTwo, { columns: 100, expanded: false })
+    const at = spaced.findIndex((line) => line.spacer === true)
+
+    expect(spaced.filter((line) => line.spacer === true)).toHaveLength(1) // 只有乙之前那一条
+    expect(at).toBeGreaterThan(0) // 不在开头（甲之前不必分）
+    expect(spaced[at]?.segments.length).toBe(0) // 就是那一条空行
+  })
+
+  test('**空内容不渲染**（D6 的外壳侧重保险）——只发工具调用的那一轮不产生行', () => {
+    const app = live()
+    app.feed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '   ' }), // 只有空白
+      event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
+    ])
+
+    const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
+    expect(lines.some((line) => line.segments.some((piece) => piece.text.includes('⏺')))).toBe(false)
+  })
+})
+
+describe('D11 护栏（内联渲染的重复）', () => {
+  test('**一行一个 `<Text>`、行内不写换行**——行数就是行数（多写换行＝重绘擦不干净）', () => {
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
+    app.type('看看有什么')
+    app.key(ENTER)
+    app.feed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '列一下。' }),
+    ])
+
+    const rows = app.shell.getView().rows
+    const lines = logLines(rows, { columns: 100, expanded: false })
+
+    // 渲染出来的行数 = 纯函数算出来的行数（不再多一倍）
+    const frame = app.screen(100, 30)
+    const body = frame.split('\n').filter((line) => line.trim() !== '')
+    expect(body.filter((line) => line.includes('列一下。')).length).toBe(1)
+    expect(lines.length).toBeGreaterThan(0)
+  })
+})
+
+describe('slash 候选（D12 · 纯函数级）', () => {
+  test('`/g` —— 一条候选都不出（`/grants` 内核还没有）', async () => {
+    const { matchCommands } = await import('../src/view.ts')
+
+    expect(matchCommands('/g')).toEqual([])
+    expect(matchCommands('/s').map((row) => row.name)).toEqual(['/session', '/status'])
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(4) // 全列（真存在的四条）
+    expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 })

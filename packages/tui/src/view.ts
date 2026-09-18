@@ -105,6 +105,72 @@ export type Dock =
   | { readonly kind: 'decision'; readonly pending: PendingDecision }
   | { readonly kind: 'picker'; readonly picker: Picker }
 
+// ══ slash 候选（D12）═════════════════════════════════════════════════
+
+/** 一条命令的样子（候选里给「名字 ＋ 一句话说明」）。 */
+export type CommandSpec = {
+  readonly name: string
+  readonly summary: string
+}
+
+/**
+ * **命令登记表**——只列**真存在**的命令（原型 · 场景 11 的自律：
+ * 列一个按下去会报错的，比不列更坏）。`/grants` 内核还没有，故**不列**。
+ *
+ * 四条各自的性质：
+ * - `/help` · `/status`——**纯输出型**（本地就能答，不进记录区的对话）；
+ * - `/session` · `/model`——**交互配置型**（开选择器）。
+ */
+export const COMMANDS: readonly CommandSpec[] = [
+  { name: '/session', summary: '会话：列表 · 切换 · 新建 · 改名' },
+  { name: '/status', summary: '看这一趟用了多少、模型是谁' },
+  { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
+  { name: '/help', summary: '这张表' },
+]
+
+/** 候选状态——`selected` 是**筛过之后**的次序。 */
+export type CompletionState = {
+  readonly candidates: readonly CommandSpec[]
+  readonly selected: number
+}
+
+/**
+ * 一条输入该出哪些候选（**边打边筛 · 按匹配度**）。
+ *
+ * 打分：**前缀** ＞ **子串** ＞ **子序列**（`/md` 也认 `/model`）；都不中＝不列。
+ * 输入不是以 `/` 开头、或已经打了空格（进了参数）＝**不出候选**。
+ */
+export function matchCommands(text: string): readonly CommandSpec[] {
+  if (!text.startsWith('/')) return []
+
+  const word = text.split(/\s+/)[0] ?? ''
+  if (text.includes(' ')) return [] // 进了参数——不再筛
+
+  const scored = COMMANDS.map((command) => ({ command, score: scoreOf(command.name, word) }))
+    .filter((row) => row.score > 0)
+    .sort((left, right) => right.score - left.score || left.command.name.localeCompare(right.command.name))
+
+  return scored.map((row) => row.command)
+}
+
+/** 匹配度：前缀 3 · 子串 2 · 子序列 1 · 不中 0。 */
+function scoreOf(name: string, word: string): number {
+  const haystack = name.toLowerCase()
+  const needle = word.toLowerCase()
+  if (needle === '') return 1
+  if (haystack.startsWith(needle)) return 3
+  if (haystack.includes(needle)) return 2
+
+  // 子序列（按序散落也算）
+  let at = 0
+  for (const char of haystack) {
+    if (char === needle[at]) at += 1
+    if (at === needle.length) return 1
+  }
+
+  return 0
+}
+
 // ══ 状态行（左半四格次序恒定 ＋ 右位独立）════════════════════════════
 
 /** 五态固定词（原型 · 状态行规格）——**量挂在状态后面**。 */
@@ -121,6 +187,8 @@ export const HINT_DECIDE_LIGHT = 'y / a / n'
 export const HINT_DECIDE_HEAVY = 'y / n'
 /** 选择器右位提示。 */
 export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
+/** 自动补全右位提示（原型 · 场景 11）。 */
+export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
 
 export type ShellStatus = {
   readonly state: StatusState
@@ -144,7 +212,15 @@ export type ShellStatus = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
   readonly rows: readonly LogRow[]
+  /**
+   * **已定局**的行（上一轮及更早）——写进 `<Static>` 一次，此后不重绘：
+   * 它们落进终端 scrollback（滚动与复制归终端 ✓），也是 D11 的结构性护栏。
+   */
+  readonly settled: readonly LogRow[]
+  /** 输入行的**候选**（D12）——不在补全里就是 `null`。 */
+  readonly completion: CompletionState | null
   readonly status: ShellStatus
   readonly dock: Dock
   /** 输入草稿——**归模型**（接管时收进 `stashed`，答完原样归还）。 */
@@ -167,6 +243,8 @@ export type ShellView = {
 export function createView(): ShellView {
   return {
     rows: [],
+    settled: [],
+    completion: null,
     status: { state: 'idle', amount: null, session: null, model: null, usage: null, hint: HINT_IDLE },
     dock: { kind: 'input' },
     draft: '',
@@ -210,8 +288,9 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
         hint: HINT_WORKING,
       })
     case 'turn.end':
-      // 轮收束 ⇒ 悬着的裁决随之作废（那件工具跑不成了）——**撤卡 ＋ 归还草稿**
-      return patchStatus(undock(view), {
+      // 轮收束 ⇒ ① 悬着的裁决作废（那件工具跑不成了）：**撤卡 ＋ 归还草稿**；
+      //           ② 本轮的**行定局**——交给 `Static` 写一次，此后不再重绘（D11 护栏）
+      return patchStatus(settle(undock(view)), {
         state: event.data.reason === 'error' ? 'error' : 'idle',
         amount: null,
         hint: HINT_IDLE,
@@ -444,7 +523,7 @@ function reduceSessionState(view: ShellView, data: SessionStateData): ShellView 
     status: { ...view.status, session: title },
   }
 
-  return switched ? { ...base, rows: [] } : base
+  return switched ? { ...base, rows: [], settled: [] } : base
 }
 
 /**
@@ -458,6 +537,13 @@ function reduceUserEntry(view: ShellView): ShellView {
   return replaceAt(view, target, (row) => (row.kind === 'user' ? { ...row, echoed: false } : row))
 }
 
+/** 本轮的行 → 定局（`Static` 写一次即入 scrollback）。 */
+export function settle(view: ShellView): ShellView {
+  if (view.rows.length === 0) return view
+
+  return { ...view, settled: [...view.settled, ...view.rows], rows: [] }
+}
+
 // ══ 写入口（外壳用）══════════════════════════════════════════════════
 
 /** 本地回显一次用户输入（提交时立即显示——事件里没有正文）。 */
@@ -465,14 +551,24 @@ export function appendEcho(view: ShellView, text: string): ShellView {
   return appendRow(view, { kind: 'user', key: `user.echo:${view.rows.length}`, text, echoed: true })
 }
 
-/** 一行**回执**（`·`）——一次性的事。**不落库、不重建**。 */
+/**
+ * 一行**回执**（`·`）——一次性的事。**不落库、不重建**。
+ *
+ * ⚠️ 回执进的是 `settled`（已定局那一侧）——它即刻可见、**不该被重绘**：
+ * 活动区只放还在变的东西（D11 的护栏），回执写完就归 scrollback。
+ */
 export function appendReceipt(view: ShellView, text: string): ShellView {
-  return appendRow(view, { kind: 'receipt', key: `recpt:${view.rows.length}`, text })
+  return appendSettled(view, { kind: 'receipt', key: `recpt:${view.settled.length}`, text })
 }
 
-/** 一块**命令输出**（dim 块，无标记）。**不落库、不重建**。 */
+/** 一块**命令输出**（dim 块，无标记）。**不落库、不重建**（同回执，进定局那侧）。 */
 export function appendOutput(view: ShellView, title: string, lines: readonly string[]): ShellView {
-  return appendRow(view, { kind: 'output', key: `out:${view.rows.length}`, lines: [title, ...lines] })
+  return appendSettled(view, { kind: 'output', key: `out:${view.settled.length}`, lines: [title, ...lines] })
+}
+
+/** 追加一行**已定局**的行（写一次即入 scrollback）。 */
+function appendSettled(view: ShellView, row: LogRow): ShellView {
+  return { ...view, settled: [...view.settled, row] }
 }
 
 /**
@@ -480,7 +576,7 @@ export function appendOutput(view: ShellView, title: string, lines: readonly str
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
  */
 export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
-  return { ...view, rows: rebuildRows(entries) }
+  return { ...view, settled: rebuildRows(entries), rows: [] }
 }
 
 /**

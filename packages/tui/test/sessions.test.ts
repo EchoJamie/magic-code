@@ -32,6 +32,7 @@ function live() {
       for (const item of events) spy.emit(item)
     },
     key: (kind: 'enter' | 'down' | 'escape') => shell.key({ kind } as never),
+    rows: () => [...shell.getView().settled, ...shell.getView().rows],
     screen: (columns = COLUMNS, rows = ROWS) =>
       renderToString(h(AppView, { view: shell.getView(), columns, rows }), { columns }),
   }
