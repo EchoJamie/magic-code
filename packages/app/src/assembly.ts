@@ -42,7 +42,8 @@ import { createConversationService } from '@magic/conversation'
 import type { PromptVars } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createSandbox, createWorkspaceService } from '@magic/execution'
-import { createModelGateway } from '@magic/model'
+import type { FetchLike, ModelRegistry } from '@magic/model'
+import { createModelRegistry } from '@magic/model'
 import { createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
@@ -76,8 +77,19 @@ export type AssembleOptions = {
    * **为什么是工厂而不是现成实例**——铸造器按会话实例构造、`id` 取自记录域，故
    * 网关必须用**同一个**铸造器；让调用方先造网关＝它得先自备一个铸造器，两套 id
    * 空间当场打架（同一张库里两串 1、2、3）。工厂把「谁造铸造器」这件事留给装配本身。
+   *
+   * ⚠️ **给了它就没有注册表**（`Assembly.models` 随之缺席）——替身是**单件**，
+   * 没有「多个条目」可言，切换在那条路上不适用（见 `Assembly.models`）。
    */
   readonly modelGateway?: ((stamper: EventStamper) => ModelGateway) | undefined
+  /**
+   * 模型域的注入用 fetch（**假端点回放 SSE，不经网络**）——真路径缺省＝真网络。
+   *
+   * 用途与 `@magic/model` 的同名构造入参一致：让装配层用例能拿**两个真条目**
+   * （真注册表 · 真取件层 · 真归一）跑切换，而不必依赖网络与 key。
+   * 注入了替身网关（`modelGateway`）时本项无意义——那条路不走注册表。
+   */
+  readonly modelFetch?: FetchLike | undefined
   /** 会话 id——首站「启动＝新会话」，缺省现造一个。 */
   readonly session?: SessionId | undefined
   /** 时钟——条目 / 信封的时间戳（域不各自取时钟）；缺省 `Date.now`。 */
@@ -96,6 +108,15 @@ export type Assembly = {
   readonly session: SessionId
   /** 本次装配用的配置（自检报告用；**不含 key**）。 */
   readonly config: LoadedConfig
+  /**
+   * **供应商注册表**（多条目的真路径）——`providers` 里有多少条就注册多少条；
+   * 会话中途换模型＝调它的 `use()`（技术方案 · 模型策略 · 切换）。
+   *
+   * **何时缺席**：注入了替身网关（`AssembleOptions.modelGateway`，测试用）——替身是单件，
+   * 没有条目表可言。缺席是**看得见的**（`undefined`），不是静默失效：调用方据以决定
+   * 「这次装配不谈切换」。
+   */
+  readonly models: ModelRegistry | undefined
   /** 库把手——收尾（`close`）与验收脚本用。 */
   readonly records: RecordsStore
   /** 数据落点（`records.db` 与 `blobs/` 的绝对路径）。 */
@@ -182,10 +203,23 @@ export function assemble(options: AssembleOptions): Assembly {
   // 信封铸造器：按**会话实例**构造（跨会话不共享）
   const stamper = createStamper({ records, session, now })
 
-  // 模型域：provider 注册（`traits` 覆盖位随配置进；缺省＝真端点，**key 在这一步解析**）
-  const gateway =
-    options.modelGateway?.(stamper) ??
-    createModelGateway({ providerId: loaded.providerId, config: loaded.provider, stamper })
+  // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
+  // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
+  let gateway: ModelGateway
+  let models: ModelRegistry | undefined
+
+  if (options.modelGateway !== undefined) {
+    // 替身（测试 / 别的实现）：单件，没有条目表——切换在那条路上不适用
+    gateway = options.modelGateway(stamper)
+  } else {
+    models = createModelRegistry({
+      providers: loaded.config.providers,
+      defaultProvider: loaded.providerId,
+      stamper,
+      fetch: options.modelFetch,
+    })
+    gateway = models
+  }
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────
   // 扇出在代码里先立：它没有依赖，而各域都要它（编号是概念次序，见文件头注）
@@ -219,7 +253,9 @@ export function assemble(options: AssembleOptions): Assembly {
   })
   const conversation = createConversationService({
     session,
-    // 模型名随每次调用送模型域（配置条目里的 `model` 是默认可覆盖——运行时切换 U17 的落点）
+    // **开局的模型名**——缺省条目的 `model`，随每次调用送模型域（技术方案：模型名取自请求）。
+    // 会话中途换模型**不经过这里**：注册表的选中会在这个名字之上接管（换模型＝换接缝下游，
+    // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）
     model: loaded.provider.model,
     prompt: promptVarsOf(workspace.defaultRoot(), options, now),
     gateway,
@@ -246,6 +282,7 @@ export function assemble(options: AssembleOptions): Assembly {
     shell,
     session,
     config: loaded,
+    models,
     records: recordsStore,
     paths: recordsStore.paths,
     permissionRules: parsedRules.rules,

@@ -12,6 +12,9 @@
  *
  * 配置加载（读 `~/.magic/config.json`、展开 `~/.magic`）**不在这里**——那是 U11 的活；
  * 本层只吃已解析好的 `ProviderConfig`（本域不碰文件系统）。
+ *
+ * 本文件造的是**单条目**的网关；「多条目的注册表 ＋ 运行时切换」在 `registry.ts`
+ * （它按条目调用这里，故 key 解析、特征标记、退避重试的裁定各只有一份）。
  */
 
 import type { EventStamper, ModelRequest, ProviderConfig } from '@magic/contracts'
@@ -22,6 +25,8 @@ import { createVendorStreamer } from './ai-sdk.ts'
 import type { FetchLike } from './ai-sdk.ts'
 import { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 import { toKernelEvents } from './normalize.ts'
+import type { RetryPolicy, Sleeper } from './retry.ts'
+import { withTransientRetry } from './retry.ts'
 import { resolveModelTraits } from './traits.ts'
 
 // —— 缺 key ——
@@ -86,6 +91,13 @@ export type ModelGatewayOptions = {
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
   /**
+   * **瞬时档退避重试**的策略（技术方案 · 模型策略 · 错误分档——「回退逻辑放内核」）。
+   * 缺省 `DEFAULT_RETRY_POLICY`；`maxAttempts: 1` ＝ 不重试。策略与判据见 `retry.ts`。
+   */
+  readonly retry?: RetryPolicy | undefined
+  /** 退避等待的实现——注入用（测试不真等）；缺省真等。 */
+  readonly sleep?: Sleeper | undefined
+  /**
    * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
    *
    * 由**装配按会话实例**构造并注入：`id` 取自记录域（`RecordsService.nextId()`）、
@@ -122,6 +134,17 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
   })
   const middleware = options.middleware ?? []
 
+  // 瞬时档的退避重试（技术方案 · 错误分档）——在**归一之下**：内核只看得见最终那一次尝试，
+  // 重试的痕迹只有结果上的 `attempts`（见 `retry.ts` 头注）
+  let attempts = 0
+  const streamRetrying = withTransientRetry(streamVendor, {
+    policy: options.retry,
+    sleep: options.sleep,
+    onAttempt: (attempt) => {
+      attempts = attempt
+    },
+  })
+
   // 返回类型即 `ModelGateway`——`extends ModelGatewayPort` 处已由 tsc 钉住结构兼容（见 `call.ts`）
   return {
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
@@ -129,7 +152,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       const context: ModelCallContext = { provider: providerId, model: request.model, request }
       const effective = applyRequestMiddleware(middleware, request, context)
 
-      const { events, result } = toKernelEvents(streamVendor(effective, streamOptions), {
+      const { events, result } = toKernelEvents(streamRetrying(effective, streamOptions), {
         model: effective.model,
         secret: apiKey,
         // 生效标记（查内置表 → 配置接管位）——标记驱动的切分只在此处裁定
@@ -137,7 +160,11 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         stamper: options.stamper,
       })
 
-      return { events: applyEventMiddleware(middleware, events, context), result }
+      return {
+        events: applyEventMiddleware(middleware, events, context),
+        // 计数在结果落定那一刻已定（重试循环早已退出）——`attempts` 如实记「成功那次是第几次」
+        result: result.then((settled) => ({ ...settled, attempts })),
+      }
     },
   }
 }

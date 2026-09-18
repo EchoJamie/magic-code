@@ -157,3 +157,103 @@ describe('入口 magic', () => {
     }
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// U17 · 运行时切换的**启动参数**入口（`--provider` / `--model`）
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 一份两条目的配置——甲是缺省、乙是「另一种跑法」。 */
+function twoProviderConfig(dataDir: string): Record<string, unknown> {
+  return validConfig({
+    dataDir,
+    defaultProvider: 'alpha',
+    providers: {
+      alpha: { baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12', model: 'alpha-1' },
+      beta: { baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12', model: 'beta-1' },
+    },
+  })
+}
+
+describe('入口 magic · 换模型的启动参数', () => {
+  test('自检报供应商表——几条、当前走哪条', async () => {
+    const { home, dataDir } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+
+    try {
+      const result = await run(home, '--check')
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('供应商表　2 条——alpha（alpha-1） · beta（beta-1）')
+      expect(result.stdout).toContain('当前走 alpha（缺省 · 模型名取自请求）')
+      expect(result.stdout).not.toContain('sk-alpha-key12')
+      void dataDir
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('`--provider` 开局选中另一条——自检里如实说「本次走」', async () => {
+    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+
+    try {
+      const result = await run(home, '--check', '--provider', 'beta')
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('—— 本次走 beta（beta-1）')
+      expect(result.stdout).toContain('当前走 beta（beta-1）')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('`--provider` 单给时取该条目的默认模型；`--model` 可单独用（同条目换模型）', async () => {
+    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+
+    try {
+      const byModel = await run(home, '--check', '--model', 'alpha-experimental')
+      expect(byModel.exitCode).toBe(0)
+      expect(byModel.stdout).toContain('—— 本次走 alpha（alpha-experimental）')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('不认识的条目——退 1，缘由点名已注册的（打错字当场看得见有哪些）', async () => {
+    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+
+    try {
+      const result = await run(home, '--provider', 'betta')
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('换模型不成功')
+      expect(result.stderr).toContain('未知供应商「betta」——已注册：alpha / beta')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('选项缺值——退 1（`--provider --check` 这类笔误不被当成名字）', async () => {
+    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+
+    try {
+      const result = await run(home, '--provider', '--check')
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('--provider 缺值')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('用法里写清了两个入口（启动参数 · 脚本步骤）', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      const result = await run(home, '--help')
+
+      expect(result.stdout).toContain('--provider <id>')
+      expect(result.stdout).toContain('--model <名>')
+      expect(result.stdout).toContain('"switch"')
+    } finally {
+      removeDir(home)
+    }
+  })
+})

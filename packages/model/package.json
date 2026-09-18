@@ -12,5 +12,8 @@
     "@ai-sdk/openai-compatible": "3.0.49",
     "@magic/contracts": "workspace:*",
     "ai": "7.0.102"
+  },
+  "devDependencies": {
+    "@magic/faux": "workspace:*"
   }
 }

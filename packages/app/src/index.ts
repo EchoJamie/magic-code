@@ -38,4 +38,6 @@ export type {
   ShellDecisionRequest,
   ShellHandle,
   ShellScript,
+  ShellStep,
+  ShellSwitch,
 } from './shell.ts'
