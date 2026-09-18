@@ -1,305 +1,269 @@
 /**
- * 外壳 · 视图模型与归约（U09）——**事件 → 一屏**。
+ * 外壳 · 视图模型与归约（缺陷轮 II 重画）——**事件 → 一屏**。
  *
- * 归约是纯函数：显示逻辑全在这层，Ink 只把模型画出来（换皮不动此层——U20）。
- * 事件按 `KernelEvent` 的 `kind` **自动收窄**（契约的判别联合视图——无须强转）。
+ * 出处：`界面原型.html`（已定稿）——组件规格 · 状态行规格 · 十四屏场景 · 交互逻辑。
+ * 本文件是**纯模型**：归约是纯函数；Ink 只把模型画出来（换皮不动此层）。
  *
- * 两条口径（事件只带引用，正文在别处）：
- * - **用户正文**——`message.user` 只带条目引用（`entry: RecordId`），**事件里没有正文**。
- *   故外壳在提交时本地回显（`appendEcho`），`message.user` 到达即为「已记账」的配平；
- *   无回显可配（恢复场景）时留一条引用痕。
- * - **工具结果**——`tool.result.output` 可能是 blob 引用。**外壳不解析引用**
- *   （大负载归记录域），只把引用显示出来。
+ * **记录区三类行**（原型 · 交互逻辑）：
+ * - **会话内容**（`›` 用户 · `⏺` 助手 · `▶` 工具）——落库、进上下文；切走 / 重开时**重建**；
+ * - **命令输出**（纯输出型 slash 的结果）· **命令回执**（交互配置型的完成回执）——
+ *   **不落库、不进上下文、不重建**（「屏上痕迹」：换会话或重开就没了）。
  *
- * 工具条目与 `model.delta(toolcall)` 的**按序配对**：同一次模型产出里，工具调用增量
- * 先到（流式），`tool.call` 后到（模型产出结束后由工具域分发）。两者顺序一致，
- * 故 `tool.call` 认领**最老的未配对**工具条目；没有流式前情时（供应商不流式工具调用）
- * 自建条目。
+ * **左下交互区 `Dock` 四种用法同一位置**（输入 / 裁决 / 会话列表 / 模型候选）——同一开合。
+ *
+ * **状态行只放「此刻」**——一次性的事（「已切到 #2」）进记录区当回执。
  */
 
 import type {
-  AgentState,
-  Decision,
   DecisionWeight,
-  Decider,
+  Entry,
   KernelEvent,
   ModelErrorTier,
-  OutputChannel,
   RecordId,
   SessionId,
   SessionSummary,
-  Timestamp,
-  TurnEndReason,
 } from '@magic/contracts'
 
-// —— 视图模型 ——
+// ══ 记录区（三类行）══════════════════════════════════════════════════
 
-/** 工具输出的一路流（stdout / stderr 各自累积）。 */
-export type ToolStream = {
-  readonly channel: OutputChannel
-  readonly text: string
-}
+/** 工具行的跑动状态——「在跑」（`⟳` ＋ 耗时）与「跑完」（`▶` ＋ 结果）一眼可分。 */
+export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected'
 
-/** 工具条目的结果（收束）。`blob` 为真时 `output` 是**引用**，不是正文。 */
-export type ToolOutcome = {
-  readonly ok: boolean
-  readonly output: string
-  readonly blob: boolean
-}
-
-/** 工具条目上的裁决留痕。 */
-export type ToolVerdict = {
-  readonly decision: Decision
-  readonly decider: Decider
-  readonly elapsedMs: number
-}
-
-/** 对话流条目（判别联合——渲染侧按 `kind` 收窄）。 */
-export type TranscriptItem =
+/** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
+export type LogRow =
+  // —— 会话内容（落库 · 可重建）——
   | { readonly kind: 'user'; readonly key: string; readonly text: string; readonly echoed: boolean }
   | { readonly kind: 'assistant'; readonly key: string; readonly text: string }
   | { readonly kind: 'thinking'; readonly key: string; readonly text: string }
   | {
       readonly kind: 'tool'
       readonly key: string
-      readonly name: string
       /** `tool.call` 事件的 id——请求 / 询问 / 裁决 / 结果四处同指它。未配对时为 `null`。 */
       readonly call: RecordId | null
-      /** 参数（流式片段累积；`tool.call` 到时落定为完整 JSON）。 */
+      readonly name: string
+      /** 参数（流式片段累积；`tool.call` 到时落定）。 */
       readonly argsText: string
-      readonly output: readonly ToolStream[]
-      readonly verdict: ToolVerdict | null
-      readonly result: ToolOutcome | null
+      readonly state: ToolRunState
+      readonly elapsedMs: number | null
+      /** 结果 / 输出的行（dim 缩进块）。 */
+      readonly output: readonly string[]
     }
-  | {
-      readonly kind: 'notice'
-      readonly key: string
-      readonly text: string
-      readonly tone: 'info' | 'error'
-    }
-  /** 会话目录块（`/session` 问了才列——见 `appendSessionList`）。 */
-  | {
-      readonly kind: 'sessions'
-      readonly key: string
-      /** 当前活跃会话（那一条带标记）。 */
-      readonly active: SessionId | null
-      readonly rows: readonly SessionRow[]
-    }
+  /**
+   * 折叠的**一组**工具调用（重建时同轮的连续调用并成一行——原型 · 场景 12：
+   * 「▶ 3 次工具调用（ls · read · grep）」。只有**最近一组**保持逐条展开）。
+   */
+  | { readonly kind: 'toolgroup'; readonly key: string; readonly names: readonly string[] }
+  // —— 屏上痕迹（不落库 · 不重建）——
+  | { readonly kind: 'output'; readonly key: string; readonly lines: readonly string[] }
+  | { readonly kind: 'receipt'; readonly key: string; readonly text: string }
 
-/** 目录里的一行——`title` 已归一（没改过、也派生不出时**退回 id**，屏上不空一格）。 */
-export type SessionRow = {
-  /** 屏上的序号（**从 1 起**——`/session <序号>` 按它解析）。 */
-  readonly index: number
-  readonly id: SessionId
-  readonly title: string
-  readonly at: Timestamp
+/** 是不是**会话内容**那一类（重建只挑它们；其余是屏上痕迹，切走就没了）。 */
+export function isSessionRow(row: LogRow): boolean {
+  return row.kind === 'user' || row.kind === 'assistant' || row.kind === 'thinking' || row.kind === 'tool'
 }
 
-/** 待答的裁决询问——审批提示就是它。 */
+// ══ 左下交互区（四种用法同一位置）════════════════════════════════════
+
+/** 待答的裁决——**接管输入框**的那一件。 */
 export type PendingDecision = {
   /** **配对键**——`tool.decision.request` 事件的 id（答复原样带回）。 */
   readonly id: RecordId
   readonly call: RecordId
   readonly name: string
-  /** 判断材料——diff / 命令分解 / 影响面。 */
+  /** 判断材料——diff / 命令分解 / 影响面（**内联**，不另套容器）。 */
   readonly material: string
   readonly weight: DecisionWeight
+  /**
+   * 多件裁决的**第几件 / 共几件**（原型 · 场景 7：件数报两处——卡上 ＋ 状态行）。
+   * 单件时 `null`（不报数）。
+   */
+  readonly position: { readonly index: number; readonly total: number } | null
 }
 
-/** 一次退避等待的实时状态（`model.retry`）——**只在等待期间亮着**，见 `reduce`。 */
-export type RetryStatus = {
-  /** 第几次尝试即将开工（从 2 起）。 */
-  readonly attempt: number
-  readonly delayMs: number
+/** 选择器的一行。 */
+export type PickerRow = {
+  readonly label: string
+  readonly meta: string
+  /** 当前那一条（原型 · 场景 9：`正在用`）。 */
+  readonly current: boolean
+  /** 选定后要用的值（会话 id / 条目名）。 */
+  readonly value: string
 }
 
-/** 状态行的内容。 */
+/** 选择器（`/session` · `/model`）——**只在左下开，记录区什么都不进**。 */
+export type Picker = {
+  readonly source: 'session' | 'model'
+  readonly rows: readonly PickerRow[]
+  readonly selected: number
+  /** 列表下方那行说明（可选）。 */
+  readonly hint?: string
+}
+
+/** 左下交互区——**四种用法同一位置、同一开合**。 */
+export type Dock =
+  | { readonly kind: 'input' }
+  | { readonly kind: 'decision'; readonly pending: PendingDecision }
+  | { readonly kind: 'picker'; readonly picker: Picker }
+
+// ══ 状态行（左半四格次序恒定 ＋ 右位独立）════════════════════════════
+
+/** 五态固定词（原型 · 状态行规格）——**量挂在状态后面**。 */
+export type StatusState = 'idle' | 'working' | 'waiting' | 'retrying' | 'error'
+
+/** 空闲态右位提示。 */
+export const HINT_IDLE = '/ 命令 · ctrl+c 退出'
+/** 工作中右位提示。 */
+export const HINT_WORKING = 'ctrl+c 中断'
+/** 退避中右位提示（后段动态：`1.6s 后重发 · 不用管`）。 */
+export const HINT_RETRYING_TAIL = '后重发 · 不用管'
+/** 裁决态右位提示（必闸类没有 `a`）。 */
+export const HINT_DECIDE_LIGHT = 'y / a / n'
+export const HINT_DECIDE_HEAVY = 'y / n'
+/** 选择器右位提示。 */
+export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
+
 export type ShellStatus = {
-  readonly phase: 'idle' | 'busy'
-  readonly agent: AgentState | null
-  /**
-   * 当前供应商（`providers` 的键）——**取自真跑过的那次调用**（`model.call.start` 的
-   * `provider`），不是用户命令的自我报告：切不动就不动，拿意图当状态会显示一个并没在用的条目。
-   */
-  readonly provider: string | null
+  readonly state: StatusState
+  /** 挂状态后面的量：耗时 / 第几件 / 第几次（`● 工作中 0.6s` · `● 等你定夺 2/3`）。 */
+  readonly amount: string | null
+  /** ② 会话——**标题**（还没有会话时 `null`，屏上显示「新会话」）。 */
+  readonly session: string | null
+  /** ③ 模型——模型名（条目名在 `/model` 的列表里示人）。 */
   readonly model: string | null
-  /** 退避等待中——非 `null` 即屏上该说「正在重试」。 */
-  readonly retry: RetryStatus | null
-  readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null
-  readonly turnEnd: TurnEndReason | null
   /**
-   * 当前活跃会话（**单活跃**）——`session.state` 报什么就是什么。
-   *
-   * 取的是**内核报的**，不是用户命令的自我报告（同 `provider` 的分寸：命令可能没生效）。
-   * `title` 缺席＝没有名字（屏上退回报 id）——**不编一个出来**。
+   * ④ 用量——已用 token（输入侧）。
+   * 原型写 `3.1k/200k`；**窗口总量当前没有来处**（`model.usage` 只给用量）——
+   * 拿不到就不编（见回报「与原型不符」）。
    */
-  readonly session: { readonly id: SessionId; readonly title: string | null } | null
+  readonly usage: number | null
+  /** 右位提示——**独立一栏，出现/消失不推动左半**。 */
+  readonly hint: string
 }
 
-/** 一屏的全部状态（对话流 ＋ 状态；审批提示在 `pending`）。 */
+// ══ 一屏 ═════════════════════════════════════════════════════════════
+
+/** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
-  readonly items: readonly TranscriptItem[]
-  readonly pending: PendingDecision | null
+  readonly rows: readonly LogRow[]
   readonly status: ShellStatus
-  /**
-   * 会话目录（最近在前）——`session.state` 带回来的那一份。
-   *
-   * 它**不是对话流的一部分**（不进 `items`）：目录是「此刻的事实」，不是「发生过的事」。
-   * `/session` 要列时由 `appendSessionList` 取它渲染成一块（那一块才进流）。
-   */
-  readonly sessions: readonly SessionSummary[]
+  readonly dock: Dock
+  /** 输入草稿——**归模型**（接管时收进 `stashed`，答完原样归还）。 */
+  readonly draft: string
+  /** 接管期间**收起来的草稿**（`null` ＝ 没收着）。 */
+  readonly stashed: string | null
+  /** 接管期间「不静默吞键」的提示（一次性，按下一个键即清）。 */
+  readonly flash: string | null
+  /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
+  readonly expanded: boolean
+  /** 当前会话 id（还没有会话＝`null`）。 */
+  readonly sessionId: SessionId | null
+  /** 会话目录（`session.list` 的答复）。 */
+  readonly catalog: readonly SessionSummary[]
+  /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
+  readonly turnTools: number
 }
 
 /** 空视图。 */
 export function createView(): ShellView {
   return {
-    items: [],
-    pending: null,
-    sessions: [],
-    status: {
-      phase: 'idle',
-      agent: null,
-      provider: null,
-      model: null,
-      retry: null,
-      usage: null,
-      turnEnd: null,
-      session: null,
-    },
+    rows: [],
+    status: { state: 'idle', amount: null, session: null, model: null, usage: null, hint: HINT_IDLE },
+    dock: { kind: 'input' },
+    draft: '',
+    stashed: null,
+    flash: null,
+    expanded: false,
+    sessionId: null,
+    catalog: [],
+    turnTools: 0,
   }
 }
 
-/** 本地回显一次用户输入（提交时立即显示——事件里没有正文，见文件头）。 */
-export function appendEcho(view: ShellView, text: string): ShellView {
-  return append(view, { kind: 'user', key: echoKey(text, view.items.length), text, echoed: true })
-}
-
-/**
- * 屏上怎么称呼一条会话——**标题优先，没有就报 id**（截到 8 位：屏上是人看的，
- * 全 id 36 位会把一行撑爆；要认准一条会话请用列表里的**序号**）。
- *
- * 一个规则三处用（切换提示 · 状态行 · 目录块）——各写各的截法就是三处迟早不一样。
- */
-export function sessionLabel(title: string | undefined | null, id: SessionId): string {
-  if (title !== undefined && title !== null && title !== '') return title
-
-  return id.length <= 8 ? id : `${id.slice(0, 8)}…`
-}
-
-/**
- * 把会话目录渲染成对话流里的一块（`/session` 问了才调——**要看得见**才列）。
- *
- * 与 `appendEcho` 同法：**视图层的纯函数**，由外壳在合适的时机拼进来
- * （归约只管「状态怎么变」，列不列是**呈现的选择**——两件事分开，`reduce` 才保持纯粹）。
- */
-export function appendSessionList(view: ShellView): ShellView {
-  return append(view, {
-    kind: 'sessions',
-    key: `sessions:${view.items.length}`,
-    active: view.status.session?.id ?? null,
-    rows: view.sessions.map((row, index) => ({
-      index: index + 1,
-      id: row.id,
-      // 标题缺席退回 id——屏上留一格空白比报个 id 更让人犯嘀咕
-      title: sessionLabel(row.title, row.id),
-      at: row.at,
-    })),
-  })
-}
-
-// —— 归约 ——
+// ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
 /** 归约一步：`event → 新视图`（纯函数——不改动入参）。 */
 export function reduce(view: ShellView, event: KernelEvent): ShellView {
   switch (event.kind) {
-    // — 对话流 · 模型增量（瞬时——落库收束为调用级）—
     case 'model.delta':
-      // 内容来了 ⇒ 退避结束（重试位撤下——它只描述「正在等」）
-      return reduceDelta(clearRetry(view), event.id, event.data)
+      return reduceDelta(view, event.id, event.data)
 
-    // — 对话流 · 工具调用链 —
     case 'tool.call':
       return reduceToolCall(view, event.id, event.data)
     case 'tool.output.delta':
       return reduceToolOutput(view, event.data)
     case 'tool.result':
       return reduceToolResult(view, event.data)
-
-    // — 审批 —
     case 'tool.decision.request':
-      return { ...view, pending: { id: event.id, ...event.data } }
+      return reduceDecision(view, event.id, event.data)
     case 'tool.decision':
       return reduceVerdict(view, event.data)
 
-    // — 用户条目（正文不在事件内——本地回显配平）—
     case 'message.user':
-      return reduceUserEntry(view, event.data.entry)
+      return reduceUserEntry(view)
     case 'message.assistant':
-      // 正文已由 `model.delta` 流式呈现——此处只是「已记账」的确认。
       return view
 
-    // — 状态行 —
     case 'turn.start':
-      return patchStatus(view, { phase: 'busy', turnEnd: null })
-    case 'turn.end':
-      // 轮收束 ⇒ 悬着的询问随之作废（询问是轮内的：轮结束，那个工具就跑不成了）。
-      // 不撤的话，中断之后那条提示会赖着不走——Ctrl+C 也会一直被它按在「工作中」。
-      return patchStatus(
-        { ...view, pending: null },
-        { phase: 'idle', retry: null, turnEnd: event.data.reason },
-      )
-    case 'agent.start':
-      return patchStatus(view, { agent: 'waiting' })
-    case 'agent.state':
-      return patchStatus(view, { agent: event.data.state })
-    case 'agent.end':
-      return patchStatus(view, { agent: null })
-    case 'model.call.start':
-      // 供应商 + 模型各归各位；**缺席即 `null`**（不拿旧值充数——旧值可能是另一个条目的）
-      return patchStatus(clearRetry(view), {
-        provider: event.data.provider ?? null,
-        model: event.data.model,
+      return patchStatus({ ...clearFlash(view), turnTools: 0 }, {
+        state: 'working',
+        amount: null,
+        hint: HINT_WORKING,
       })
-    case 'model.usage': {
-      const { inputTokens, outputTokens } = event.data
-      return patchStatus(clearRetry(view), { usage: { inputTokens, outputTokens } })
-    }
-    case 'model.call.end':
-      return clearRetry(view)
+    case 'turn.end':
+      // 轮收束 ⇒ 悬着的裁决随之作废（那件工具跑不成了）——**撤卡 ＋ 归还草稿**
+      return patchStatus(undock(view), {
+        state: event.data.reason === 'error' ? 'error' : 'idle',
+        amount: null,
+        hint: HINT_IDLE,
+      })
 
-    // — 退避重试（瞬时档）——**状态位，不是对话流**（退避三次不刷三行）—
+    case 'agent.state':
+    case 'agent.start':
+    case 'agent.end':
+      return view
+
+    case 'model.call.start':
+      return patchStatus(view, { model: event.data.model })
+    case 'model.usage':
+      return patchStatus(view, { usage: event.data.inputTokens })
+    case 'model.call.end':
+      return view
     case 'model.retry':
       return patchStatus(view, {
-        retry: { attempt: event.data.attempt, delayMs: event.data.delayMs },
+        state: 'retrying',
+        amount: `${event.data.attempt}/${RETRY_MAX}`,
+        hint: `${secondsLabel(event.data.delayMs)}${HINT_RETRYING_TAIL}`,
       })
 
-    // — 换模型的结果（用户命令；**落库**）—
     case 'model.switched':
-      return reduceSwitched(view, event.id, event.data)
-
-    // — 错误 —
-    case 'model.error':
-      return appendNotice(
-        clearRetry(view),
-        event.id,
-        `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`,
-        'error',
+      // 一次性的事**进记录区当回执**（状态行只放「此刻」）；成了顺手更新 ③
+      return appendReceipt(
+        patchStatus(view, event.data.ok && event.data.model !== undefined ? { model: event.data.model } : {}),
+        event.data.ok
+          ? `已换模型 → ${event.data.model ?? '？'}`
+          : `换模型未成：${event.data.reason ?? '未说缘由'}`,
       )
-    case 'error':
-      return appendNotice(view, event.id, `内核异常：${event.data.message}`, 'error')
 
-    // — 会话面（阶段 2 · U16）——目录 ＋ 当前在哪条 —
     case 'session.state':
       return reduceSessionState(view, event.data)
 
-    // — 读面答复（第 19 轮）——
-    // ⚠️ **收到就丢，视图不动**：本行只为让**穷尽性检查**过（新增 kind ⇒ `assertNever` 编译不过）。
-    // 真正的消费（按块重建对话流）归**轮 II**（外壳重画）——那一轮把 `reduceSessionState` /
-    // `reduceSwitched` 那类分支一并重做。此处**只此一行**，不动别的。
+    // 读面答复——**攒与重建归外壳**（`shell.ts` 里按块收，收齐了调 `rebuild`）；
+    // 归约这层收到它就丢（它不逐条进记录区）
     case 'session.history':
       return view
 
-    // — 预留（阶段 3）—
+    case 'model.error':
+      return patchStatus(
+        appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`),
+        { state: 'error', amount: null, hint: HINT_IDLE },
+      )
+    case 'error':
+      return patchStatus(appendReceipt(view, `内核异常：${event.data.message}`), {
+        state: 'error',
+        amount: null,
+        hint: HINT_IDLE,
+      })
+
     case 'context.compacted':
       return view
 
@@ -307,6 +271,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return assertNever(event)
   }
 }
+
+/**
+ * 退避重试的档数（状态行报 `n/m` 的 `m`）——**外壳侧的常量**：
+ * `model.retry` 只载 `attempt`，策略里的上限不出模型域（见回报「与原型不符」）。
+ */
+const RETRY_MAX = 3
 
 // —— 各分支实现 ——
 
@@ -319,22 +289,15 @@ function reduceDelta(view: ShellView, id: RecordId, data: DeltaData): ShellView 
   return appendToolFragment(view, id, data.name, data.id, data.text)
 }
 
-/** 正文 / 思考——落到末尾同类条目上（交替出现即分块）。 */
-function appendText(
-  view: ShellView,
-  id: RecordId,
-  kind: 'assistant' | 'thinking',
-  text: string,
-): ShellView {
-  const last = lastItem(view)
-  if (last?.kind === kind) {
-    return replaceLast(view, { ...last, text: last.text + text })
-  }
+/** 正文 / 思考——落到末尾同类行上（交替出现即分块）。 */
+function appendText(view: ShellView, id: RecordId, kind: 'assistant' | 'thinking', text: string): ShellView {
+  const last = view.rows[view.rows.length - 1]
+  if (last?.kind === kind) return replaceLast(view, { ...last, text: last.text + text })
 
-  return append(view, { kind, key: `${kind}:${id}`, text })
+  return appendRow(view, { kind, key: `${kind}:${id}`, text })
 }
 
-/** 工具调用增量——按供应商侧调用 id 分组；无 id 时并进最老的未配对条目。 */
+/** 工具调用增量——按供应商侧调用 id 分组；无 id 时并进最老的未配对工具行。 */
 function appendToolFragment(
   view: ShellView,
   id: RecordId,
@@ -344,50 +307,50 @@ function appendToolFragment(
 ): ShellView {
   const target =
     providerId === undefined
-      ? findToolIndex(view, (item) => item.call === null)
-      : findToolIndex(view, (item) => item.key === toolKey(`tc:${providerId}`))
+      ? findToolIndex(view, (row) => row.call === null)
+      : findToolIndex(view, (row) => row.key === `tool:tc:${providerId}`)
 
   if (target === -1) {
-    return append(view, {
-      kind: 'tool',
-      key: toolKey(providerId === undefined ? `d${id}` : `tc:${providerId}`),
-      name: name ?? '工具',
-      call: null,
-      argsText: text,
-      output: [],
-      verdict: null,
-      result: null,
-    })
+    return countTool(
+      appendRow(view, {
+        kind: 'tool',
+        key: `tool:${providerId === undefined ? `d${id}` : `tc:${providerId}`}`,
+        call: null,
+        name: name ?? '工具',
+        argsText: text,
+        state: 'running',
+        elapsedMs: null,
+        output: [],
+      }),
+    )
   }
 
-  return patchItem(view, target, (item) => ({
-    ...item,
-    name: name ?? item.name,
-    argsText: item.argsText + text,
-  }))
+  return patchTool(view, target, (row) => ({ ...row, name: name ?? row.name, argsText: row.argsText + text }))
 }
 
 type ToolCallData = Extract<KernelEvent, { kind: 'tool.call' }>['data']
 
-/** `tool.call`——认领最老的未配对工具条目（流式前情）；没有则自建。 */
+/** `tool.call`——认领最老的未配对工具行（流式前情）；没有则自建。 */
 function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData): ShellView {
-  const target = findToolIndex(view, (item) => item.call === null)
+  const target = findToolIndex(view, (row) => row.call === null)
 
   if (target === -1) {
-    return append(view, {
-      kind: 'tool',
-      key: toolKey(`call:${id}`),
-      name: data.name,
-      call: id,
-      argsText: argsJson(data.args),
-      output: [],
-      verdict: null,
-      result: null,
-    })
+    return countTool(
+      appendRow(view, {
+        kind: 'tool',
+        key: `tool:call:${id}`,
+        call: id,
+        name: data.name,
+        argsText: argsJson(data.args),
+        state: 'running',
+        elapsedMs: null,
+        output: [],
+      }),
+    )
   }
 
-  return patchItem(view, target, (item) => ({
-    ...item,
+  return patchTool(view, target, (row) => ({
+    ...row,
     name: data.name,
     call: id,
     argsText: argsJson(data.args),
@@ -396,19 +359,12 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData): Shel
 
 type ToolOutputData = Extract<KernelEvent, { kind: 'tool.output.delta' }>['data']
 
+/** 执行输出增量——按行攒（末行继续接），等价于「流式 append」。 */
 function reduceToolOutput(view: ShellView, data: ToolOutputData): ShellView {
   const target = indexOfCall(view, data.call)
   if (target === -1) return view
 
-  return patchItem(view, target, (item) => {
-    const last = item.output[item.output.length - 1]
-    const output =
-      last?.channel === data.channel
-        ? [...item.output.slice(0, -1), { channel: last.channel, text: last.text + data.text }]
-        : [...item.output, { channel: data.channel, text: data.text }]
-
-    return { ...item, output }
-  })
+  return patchTool(view, target, (row) => ({ ...row, output: appendText2(row.output, data.text) }))
 }
 
 type ToolResultData = Extract<KernelEvent, { kind: 'tool.result' }>['data']
@@ -417,12 +373,14 @@ function reduceToolResult(view: ShellView, data: ToolResultData): ShellView {
   const target = indexOfCall(view, data.call)
   if (target === -1) return view
 
-  const content = data.output
-  const blob = 'blob' in content
+  const text = 'text' in data.output ? data.output.text : `（大块转存 ${data.output.blob}）`
 
-  return patchItem(view, target, (item) => ({
-    ...item,
-    result: { ok: data.ok, output: blob ? content.blob : content.text, blob },
+  return patchTool(view, target, (row) => ({
+    ...row,
+    // **被拒是终态**：那件工具压根没跑，结果只是把话说全（「未获批准，未执行」）——
+    // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）
+    state: row.state === 'rejected' ? 'rejected' : data.ok ? 'ok' : 'failed',
+    output: textOfLines(text),
   }))
 }
 
@@ -430,198 +388,389 @@ type VerdictData = Extract<KernelEvent, { kind: 'tool.decision' }>['data']
 
 function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
   const target = indexOfCall(view, data.call)
-  const items =
+  const rows =
     target === -1
-      ? view.items
-      : view.items.map((item, index) =>
-          index === target && item.kind === 'tool'
+      ? view.rows
+      : view.rows.map((row, index) =>
+          index === target && row.kind === 'tool'
             ? {
-                ...item,
-                verdict: {
-                  decision: data.decision,
-                  decider: data.decider,
-                  elapsedMs: data.elapsedMs,
-                },
+                ...row,
+                elapsedMs: data.elapsedMs,
+                ...(data.decision === 'reject' ? { state: 'rejected' as const } : {}),
               }
-            : item,
+            : row,
         )
 
-  return {
-    ...view,
-    items,
-    // 询问已收束——提示撤下（同一次询问才清；他次询问的答复不动本案）
-    pending: view.pending?.call === data.call ? null : view.pending,
-  }
+  // 裁决落定 ⇒ 接管解除、**草稿归还**（多件时下一件会重新接管，草稿再收一次）
+  return undock({ ...view, rows })
 }
 
-type SwitchedData = Extract<KernelEvent, { kind: 'model.switched' }>['data']
+type DecisionRequestData = Extract<KernelEvent, { kind: 'tool.decision.request' }>['data']
 
-/**
- * 换模型的结果——成了报一句、没成报缘由。
- *
- * **不是「内核异常」**（第 17 轮借兜底 `error` 顶上时屏上就是那么写的）：这是**用户命令的结果**，
- * 与内核自己出事不是一类。成了顺手把状态行改过去——不必干等下轮 `model.call.start`；
- * 没成则**状态行不动**：切不动就不动，上一条仍是最后真跑过的那格。
- */
-function reduceSwitched(view: ShellView, id: RecordId, data: SwitchedData): ShellView {
-  if (!data.ok) {
-    return appendNotice(view, id, `换模型未成：${data.reason ?? '未说缘由'}`, 'error')
+/** `tool.decision.request`——挂上裁决（**接管输入框**）。件数从本轮的工具有几条推。 */
+function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData): ShellView {
+  const position =
+    view.turnTools <= 1 ? null : { index: toolIndex(view, data.call), total: view.turnTools }
+
+  const pending: ShellView = {
+    ...view,
+    dock: {
+      kind: 'decision',
+      pending: {
+        id,
+        call: data.call,
+        name: data.name,
+        material: data.material,
+        weight: data.weight,
+        position,
+      },
+    },
   }
 
-  return patchStatus(
-    appendNotice(view, id, `已换到 ${data.provider ?? '？'}/${data.model ?? '？'}`, 'info'),
-    { provider: data.provider ?? null, model: data.model ?? null },
-  )
+  return withDecisionStatus(takeOver(pending))
 }
 
 type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
 
-/**
- * `session.state`——目录 ＋ 当前会话。
- *
- * **当前会话换了＝重开一屏**：上一屏说的是另一条会话的事，留着就是骗人（一次误读的
- * 代价比清屏高）。三处分寸：
- * - **首见不算切换**（`null → 某条`）——启动那一刻没有旧屏可清，也没什么可说的；
- * - **没换不清**——同一会话再报一次（问目录 / 改名）不该把屏清了；
- * - `note` 有话就单起一条（没开成 / 忙时切不动）——**失败不静默**。
- */
+/** `session.state`——目录 ＋ 当前会话。**换了会话＝记录区交给重建**（缺陷 D1）。 */
 function reduceSessionState(view: ShellView, data: SessionStateData): ShellView {
-  const previous = view.status.session?.id ?? null
-  const switched = previous !== null && previous !== data.active
+  const switched = view.sessionId !== null && view.sessionId !== data.active
   const title = data.sessions.find((row) => row.id === data.active)?.title ?? null
 
-  // 换会话＝换一屏：旧的对话流清掉（新旧混在一屏里分不清谁说的）
-  const base: ShellView = switched ? { ...view, items: [] } : view
-  const named: ShellView = {
-    ...base,
-    sessions: data.sessions,
-    status: { ...base.status, session: { id: data.active, title } },
+  const base: ShellView = {
+    ...view,
+    sessionId: data.active,
+    catalog: data.sessions,
+    status: { ...view.status, session: title },
   }
 
-  const withSwitch = switched
-    ? appendLocalNotice(named, `已切到会话：${sessionLabel(title, data.active)}`, 'info')
-    : named
-
-  return data.note === undefined ? withSwitch : appendLocalNotice(withSwitch, data.note, 'error')
-}
-
-/** `message.user`——配平本地回显；配不上（恢复场景）则留一条引用痕。 */
-function reduceUserEntry(view: ShellView, entry: RecordId): ShellView {
-  const target = itemIndex(view, (item) => item.kind === 'user' && item.echoed)
-
-  if (target === -1) {
-    return append(view, {
-      kind: 'user',
-      key: `user.ref:${entry}`,
-      text: `（用户条目 ${entry}）`,
-      echoed: false,
-    })
-  }
-
-  return patchItem(view, target, (item) => ({ ...item, echoed: false }))
-}
-
-// —— 小工具（纯函数）——
-
-function append(view: ShellView, item: TranscriptItem): ShellView {
-  return { ...view, items: [...view.items, item] }
-}
-
-function appendNotice(
-  view: ShellView,
-  id: RecordId,
-  text: string,
-  tone: 'info' | 'error',
-): ShellView {
-  return append(view, { kind: 'notice', key: `notice:${id}`, text, tone })
+  return switched ? { ...base, rows: [] } : base
 }
 
 /**
- * 本地提示（外壳自己说的话——不是内核事件）。
- *
- * 键按位置取（同 `appendEcho` 的 `echoKey`）：本地提示没有事件 id 可借，
- * 而位置在一条流里本就唯一。两处键**前缀不同**（`notice.local:` vs `notice:`），
- * 免得同一位置的内核提示与本地提示撞键。
+ * `message.user`——配平本地回显（`entry` 是条目引用；屏上已有回显那一行，不必再用它）。
+ * 配不上（重建 / 恢复场景）**不编一行出来**——重建走 `rebuild`，不靠这条事件。
  */
-function appendLocalNotice(view: ShellView, text: string, tone: 'info' | 'error'): ShellView {
-  return append(view, {
-    kind: 'notice',
-    key: `notice.local:${view.items.length}:${text}`,
-    text,
-    tone,
+function reduceUserEntry(view: ShellView): ShellView {
+  const target = view.rows.findIndex((row) => row.kind === 'user' && row.echoed)
+  if (target === -1) return view
+
+  return replaceAt(view, target, (row) => (row.kind === 'user' ? { ...row, echoed: false } : row))
+}
+
+// ══ 写入口（外壳用）══════════════════════════════════════════════════
+
+/** 本地回显一次用户输入（提交时立即显示——事件里没有正文）。 */
+export function appendEcho(view: ShellView, text: string): ShellView {
+  return appendRow(view, { kind: 'user', key: `user.echo:${view.rows.length}`, text, echoed: true })
+}
+
+/** 一行**回执**（`·`）——一次性的事。**不落库、不重建**。 */
+export function appendReceipt(view: ShellView, text: string): ShellView {
+  return appendRow(view, { kind: 'receipt', key: `recpt:${view.rows.length}`, text })
+}
+
+/** 一块**命令输出**（dim 块，无标记）。**不落库、不重建**。 */
+export function appendOutput(view: ShellView, title: string, lines: readonly string[]): ShellView {
+  return appendRow(view, { kind: 'output', key: `out:${view.rows.length}`, lines: [title, ...lines] })
+}
+
+/**
+ * 用**重建的会话内容**替换记录区（缺陷 D1）——只挑会话内容那一类，
+ * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
+ */
+export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
+  return { ...view, rows: rebuildRows(entries) }
+}
+
+/**
+ * 条目 → 记录行（重建用）。两件收拢：
+ * - `tool-call` / `tool-result` **配对成一行**（结果并进去，不各占一行）；
+ * - 同一轮的**连续工具调用**并成一行摘要（「3 次工具调用（ls · read · grep）· 1.4s」）。
+ *
+ * 「最近一组展开」——最后一组工具保持逐条行，更早的组并成摘要（原型 · 场景 12）。
+ */
+function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
+  const rows: LogRow[] = []
+  /** 待配对的那条工具行在 `rows` 里的下标（`-1` ＝ 没有）。 */
+  let pendingAt = -1
+
+  for (const entry of entries) {
+    if (entry.kind === 'tool-call') {
+      const payload = entry.payload as { readonly name?: string; readonly args?: unknown } | undefined
+      rows.push({
+        kind: 'tool',
+        key: `rb:c:${entry.id}`,
+        call: entry.id,
+        name: payload?.name ?? '工具',
+        argsText:
+          payload?.args === undefined ? '' : argsJson(payload.args as Readonly<Record<string, unknown>>),
+        state: 'ok',
+        elapsedMs: null,
+        output: [],
+      })
+      pendingAt = rows.length - 1
+      continue
+    }
+
+    if (entry.kind === 'tool-result') {
+      const row = pendingAt === -1 ? undefined : rows[pendingAt]
+      if (row !== undefined && row.kind === 'tool') {
+        const payload = entry.payload as { readonly ok?: boolean } | undefined
+        rows[pendingAt] = {
+          ...row,
+          state: payload?.ok === false ? 'failed' : 'ok',
+          output: textOfLines(contentTextOf(entry)),
+        }
+      }
+      pendingAt = -1
+      continue
+    }
+
+    pendingAt = -1
+    const text = contentTextOf(entry)
+
+    if (entry.kind === 'user') rows.push({ kind: 'user', key: `rb:u:${entry.id}`, text, echoed: false })
+    else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text })
+    else rows.push({ kind: 'receipt', key: `rb:s:${entry.id}`, text: `（摘要）${text}` })
+  }
+
+  return collapseToolGroups(rows)
+}
+
+/**
+ * **收拢**（原型 · 场景 12）：**最近一组**工具调用逐条展开，更早的组并成一行摘要
+ * （「3 次工具调用（ls · read · grep）」）。
+ */
+function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
+  const segments = toolSegments(rows)
+  if (segments.length <= 1) return rows // 只有一组（或没有）＝不必收
+
+  /** 摘要行插在每段的**首行**位置；段内其余行丢掉。 */
+  const summaryAt = new Map<number, readonly string[]>()
+  const dropped = new Set<number>()
+
+  for (const segment of segments.slice(0, -1)) {
+    summaryAt.set(
+      segment.start,
+      rows.slice(segment.start, segment.end + 1).map((row) => (row.kind === 'tool' ? row.name : '')),
+    )
+    for (let index = segment.start + 1; index <= segment.end; index += 1) dropped.add(index)
+  }
+
+  const out: LogRow[] = []
+  rows.forEach((row, index) => {
+    const names = summaryAt.get(index)
+    if (names !== undefined) {
+      out.push({ kind: 'toolgroup', key: `rb:g:${index}`, names })
+      return
+    }
+    if (!dropped.has(index)) out.push(row)
+  })
+
+  return out
+}
+
+/** 相邻工具行的连续段（收拢与「最后一组展开」都按它划）。 */
+function toolSegments(rows: readonly LogRow[]): readonly { readonly start: number; readonly end: number }[] {
+  const segments: { start: number; end: number }[] = []
+
+  for (let index = 0; index < rows.length; index += 1) {
+    if (rows[index]?.kind !== 'tool') continue
+
+    let end = index
+    while (rows[end + 1]?.kind === 'tool') end += 1
+    segments.push({ start: index, end })
+    index = end
+  }
+
+  return segments
+}
+
+/** 条目的正文——内联取文本，blob 引用不解析（外壳的既有姿势）。 */
+function contentTextOf(entry: Entry): string {
+  return 'text' in entry.content ? entry.content.text : `（大块转存 ${entry.content.blob}）`
+}
+
+// ══ 接管（裁决挂着时占住输入框）══════════════════════════════════════
+
+/**
+ * 接管——把草稿收起来（原型：**草稿不丢**，答完原样归还）。
+ *
+ * 多件裁决时草稿**只收一次**：第一件接管时收起，其后各件沿用同一份（`stashed` 非空即已收）。
+ */
+export function takeOver(view: ShellView): ShellView {
+  if (view.dock.kind !== 'decision' || view.stashed !== null) return view
+
+  return { ...view, stashed: view.draft, draft: '', flash: null }
+}
+
+/** 解除接管——**归还草稿**（光标回末尾＝草稿原样，不自动发送）。 */
+export function undock(view: ShellView): ShellView {
+  if (view.dock.kind !== 'decision') return view // 没在接管＝没得解除
+
+  return {
+    ...view,
+    dock: { kind: 'input' },
+    draft: view.stashed ?? view.draft,
+    stashed: null,
+    flash: null,
+  }
+}
+
+/** 「不静默吞键」——接管期间按了不认的键，当场说一句（原型 · 场景 6）。 */
+export function flashTakeover(view: ShellView, message: string): ShellView {
+  return view.dock.kind === 'decision' ? { ...view, flash: message } : view
+}
+
+function clearFlash(view: ShellView): ShellView {
+  return view.flash === null ? view : { ...view, flash: null }
+}
+
+/** 裁决态的状态行（`● 等你定夺` ＋ 件数 ＋ 键位——键位**只在卡上**与右位各一次）。 */
+export function withDecisionStatus(view: ShellView): ShellView {
+  if (view.dock.kind !== 'decision') return view
+
+  const { position, weight } = view.dock.pending
+
+  return patchStatus(view, {
+    state: 'waiting',
+    amount: position === null ? null : `${position.index}/${position.total}`,
+    hint: weight === 'heavy' ? HINT_DECIDE_HEAVY : HINT_DECIDE_LIGHT,
   })
 }
 
-/** 外壳自己说一句——`shell.ts` 用它（本地就有答案的事不必过内核）。 */
-export function appendNoticeText(
-  view: ShellView,
-  text: string,
-  tone: 'info' | 'error' = 'info',
-): ShellView {
-  return appendLocalNotice(view, text, tone)
+/** 状态词（五态固定词——原型 · 状态行规格）。 */
+export function stateLabel(state: StatusState): string {
+  switch (state) {
+    case 'idle':
+      return '○ 空闲'
+    case 'working':
+      return '● 工作中'
+    case 'waiting':
+      return '● 等你定夺'
+    case 'retrying':
+      return '● 正在重试'
+    case 'error':
+      return '▲ 出错'
+  }
+}
+
+// ══ 选择器（`/session` · `/model`）═══════════════════════════════════
+
+/** 开选择器——**记录区什么都不进**（原型：回车不进记录区）。 */
+export function openPicker(view: ShellView, picker: Picker): ShellView {
+  return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: HINT_PICKER })
+}
+
+/** 上下移动选择。 */
+export function movePicker(view: ShellView, delta: number): ShellView {
+  if (view.dock.kind !== 'picker') return view
+
+  const { picker } = view.dock
+  const count = picker.rows.length
+  if (count === 0) return view
+
+  const selected = (picker.selected + delta + count) % count
+  return { ...view, dock: { kind: 'picker', picker: { ...picker, selected } } }
+}
+
+/** 收起选择器——`esc` **不留痕迹**（无回执）。 */
+export function closePicker(view: ShellView): ShellView {
+  return view.dock.kind === 'picker'
+    ? patchStatus({ ...view, dock: { kind: 'input' } }, { hint: HINT_IDLE })
+    : view
+}
+
+/** 当前选中项。 */
+export function picked(view: ShellView): PickerRow | undefined {
+  if (view.dock.kind !== 'picker') return undefined
+
+  return view.dock.picker.rows[view.dock.picker.selected]
+}
+
+// ══ 小工具（纯函数）══════════════════════════════════════════════════
+
+function appendRow(view: ShellView, row: LogRow): ShellView {
+  return { ...view, rows: [...view.rows, row] }
+}
+
+function replaceLast(view: ShellView, row: LogRow): ShellView {
+  return { ...view, rows: [...view.rows.slice(0, -1), row] }
+}
+
+function replaceAt(view: ShellView, index: number, patch: (row: LogRow) => LogRow): ShellView {
+  return { ...view, rows: view.rows.map((row, at) => (at === index ? patch(row) : row)) }
 }
 
 function patchStatus(view: ShellView, patch: Partial<ShellStatus>): ShellView {
   return { ...view, status: { ...view.status, ...patch } }
 }
 
-/**
- * 撤下重试位——**这次调用又在动了**（首块内容到位 / 收束 / 出错终局 / 另起一次调用）。
- *
- * 一条规则胜过四处判断：重试位只描述「正在等」，等完了就该灭；留着它，屏上会一直
- * 挂着「3 秒后重试」，而实际早就答完了。
- */
-function clearRetry(view: ShellView): ShellView {
-  return view.status.retry === null ? view : patchStatus(view, { retry: null })
+/** 本轮工具计数 ＋1（多件裁决报数的取材）。 */
+function countTool(view: ShellView): ShellView {
+  return { ...view, turnTools: view.turnTools + 1 }
 }
 
-function lastItem(view: ShellView): TranscriptItem | undefined {
-  return view.items[view.items.length - 1]
+/** 该次调用在本轮工具里的第几件（从 1 起）。 */
+function toolIndex(view: ShellView, call: RecordId): number {
+  const tools = view.rows.filter(
+    (row): row is Extract<LogRow, { kind: 'tool' }> => row.kind === 'tool',
+  )
+  const at = tools.findIndex((row) => row.call === call)
+
+  return at === -1 ? tools.length : at + 1
 }
 
-/** 换掉末条（流式累积用——只动末条，前面的条目引用不变）。 */
-function replaceLast(view: ShellView, item: TranscriptItem): ShellView {
-  return { ...view, items: [...view.items.slice(0, -1), item] }
-}
-
-function patchItem(
+function patchTool(
   view: ShellView,
   index: number,
-  patch: (item: Extract<TranscriptItem, { kind: 'tool' }>) => TranscriptItem,
+  patch: (row: Extract<LogRow, { kind: 'tool' }>) => LogRow,
 ): ShellView {
-  const item = view.items[index]
-  if (item === undefined || item.kind !== 'tool') return view
+  const row = view.rows[index]
+  if (row === undefined || row.kind !== 'tool') return view
 
-  return { ...view, items: view.items.map((current, at) => (at === index ? patch(item) : current)) }
+  return replaceAt(view, index, () => patch(row))
 }
 
-/** 找工具条目——按条目级谓词。 */
 function findToolIndex(
   view: ShellView,
-  predicate: (item: Extract<TranscriptItem, { kind: 'tool' }>) => boolean,
+  predicate: (row: Extract<LogRow, { kind: 'tool' }>) => boolean,
 ): number {
-  return view.items.findIndex((item) => item.kind === 'tool' && predicate(item))
-}
-
-/** 找任意条目（用户回显配平用）。 */
-function itemIndex(view: ShellView, predicate: (item: TranscriptItem) => boolean): number {
-  return view.items.findIndex(predicate)
+  return view.rows.findIndex(
+    (row): row is Extract<LogRow, { kind: 'tool' }> => row.kind === 'tool' && predicate(row),
+  )
 }
 
 function indexOfCall(view: ShellView, call: RecordId): number {
-  return findToolIndex(view, (item) => item.call === call)
+  return findToolIndex(view, (row) => row.call === call)
 }
 
-function toolKey(scope: string): string {
-  return `tool:${scope}`
-}
+/** 增量 → 行（末行继续接，遇 `\n` 断开）。 */
+function appendText2(lines: readonly string[], text: string): readonly string[] {
+  const chunks = text.split('\n')
+  const last = lines[lines.length - 1]
+  const head = last === undefined ? [] : lines.slice(0, -1)
 
-function echoKey(text: string, index: number): string {
-  return `user.echo:${index}:${text}`
+  if (chunks.length === 1) return [...head, (last ?? '') + (chunks[0] ?? '')]
+
+  return [...head, (last ?? '') + (chunks[0] ?? ''), ...chunks.slice(1)]
 }
 
 function argsJson(args: Readonly<Record<string, unknown>>): string {
   return JSON.stringify(args)
+}
+
+/** 文本 → 行（结果 / 输出共用）。 */
+export function textOfLines(text: string): readonly string[] {
+  const lines = text.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+
+  return lines
+}
+
+function secondsLabel(delayMs: number): string {
+  return `${(delayMs / 1000).toFixed(1)}s `
 }
 
 function tierLabel(tier: ModelErrorTier): string {

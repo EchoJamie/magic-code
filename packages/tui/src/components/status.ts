@@ -1,102 +1,93 @@
 /**
- * 状态行（U09）——一屏的底栏：**此刻是什么状态、Ctrl+C 会怎样**。
+ * 状态行（缺陷轮 II 重画）——**左下最后一行**：此刻是什么状态。
  *
- * 忙碌位是键盘语义的依据（空闲退出 / 工作中中断）——所以它与提示始终同屏。
+ * 规格（原型 · 状态行规格）：
+ * - **左半四格次序恒定**：① 状态（五态固定词，**量挂在状态后面**）· ② 会话 · ③ 模型 · ④ 用量；
+ * - **右位独立**放本状态的键位提示——**出现 / 消失不推动左半**（两段排版，不是一个流）；
+ * - **窄窗口从右往左省**：用量 → 模型 → 标题截断；**省了不改剩余字段的位置**；
+ * - **一次性的事不进状态行**（「已切到 #2」去记录区当回执）。
  */
 
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ShellStatus } from '../view.ts'
-import { sessionLabel } from '../view.ts'
+import { stateLabel } from '../view.ts'
+import { PALETTE, displayWidth, tokenLabel, truncate } from './lines.ts'
 
 export type StatusLineProps = {
   readonly status: ShellStatus
+  /** 终端列数——降级按它算。 */
+  readonly columns: number
 }
 
-export function StatusLine({ status }: StatusLineProps) {
-  const busy = status.phase === 'busy'
+/** 分隔点（`·`）——最弱色，只是分栏，不是内容。 */
+const SEP = ' · '
+
+export function StatusLine({ status, columns }: StatusLineProps) {
+  const left = degrade(status, columns)
 
   return h(
     Box,
-    { paddingX: 1 },
+    { paddingX: 1, justifyContent: 'space-between' },
     h(
       Text,
-      { dimColor: true },
-      h(Text, { color: busy ? 'yellow' : 'green' }, busy ? '● 工作中' : '○ 空闲'),
-      agentPart(status),
-      sessionPart(status),
-      modelPart(status),
-      // 退避期间**必须出声**——不然界面一动不动，用户以为卡死了（技术方案 · 模型策略 · 错误分档）
-      status.retry === null
-        ? ''
-        : h(
-            Text,
-            { color: 'yellow' },
-            ` · 正在重试（第 ${status.retry.attempt} 次，${secondsLabel(status.retry.delayMs)}后）`,
-          ),
-      usagePart(status),
-      turnPart(status),
-      ` · Ctrl+C ${busy ? '中断' : '退出'}`,
+      null,
+      h(Text, { color: stateColor(status.state) }, stateLabel(status.state)),
+      // **量挂状态后面**（耗时 / 第几件 / 第几次）
+      status.amount === null ? '' : h(Text, { color: stateColor(status.state) }, ` ${status.amount}`),
+      ...left.map((cell, index) =>
+        h(Text, { key: `c:${index}`, color: PALETTE.faint }, `${SEP}${cell}`),
+      ),
     ),
+    // 右位——独立一栏；放不下就整段不出现（**不推动左半**）
+    h(Text, { color: PALETTE.ghost }, fitting(status.hint, columns, left)),
   )
 }
 
-/**
- * agent 只在**非常态**时出声——正常态占了位置没用。
- *
- * ⚠️ `resumed` **不再是「非常态」**（U16 修正的阶段 1 遗留）：它的内核语义是
- * 「**正在干活**」（对话域在轮起时发它——`agent.state{resumed}`），不是「从崩溃恢复过来了」。
- * 而「在干活」屏上已经由忙碌位（`● 工作中`）说了，再挂一个「已恢复」是本末倒置：
- * 用户看到的是「它说恢复了，可它明明在跑」。
- *
- * 留 `paused`——那个才是真非常态（阶段 2 的留位：恢复流程 / 人在环的长暂停，首站不产）。
- * 真要报「这次是接着上次没跑完的」，凭据该是**恢复报告**（处置了几笔在途），不是这个状态位。
- */
-function agentPart(status: ShellStatus): string {
-  return status.agent === 'paused' ? ' · 已暂停' : ''
+function stateColor(state: ShellStatus['state']): string {
+  if (state === 'idle') return PALETTE.ok
+  if (state === 'error') return PALETTE.danger
+
+  return PALETTE.warn
 }
 
 /**
- * 当前**会话**（U16）——标题可用就报标题，没有就报 id 前 8 位。
+ * 四格的裁剪（窄窗口从右往左省）——**省了不改剩余字段的位置**：
+ * 省的是整格，剩下的格子仍在原来的次序上，只是「用量 → 模型 → 标题截断」依次让位。
  *
- * 取的是**内核报的**（`session.state.active`），不是用户命令的自我报告：
- * 忙时切不动，拿意图当状态会显示一条并没在用的会话。
- * id 截断只为省屏幕——全 id 在 `/session` 的目录里看得到。
+ * ① 状态**永不省**（它是视觉锚）。
  */
-function sessionPart(status: ShellStatus): string {
-  const session = status.session
-  if (session === null) return ''
-
-  return ` · 会话 ${sessionLabel(session.title, session.id)}`
-}
-
-/**
- * 当前**供应商 / 模型**（技术方案 · 领域划分 ·「运行时切换」：外壳给一条斜杠命令 ＋
- * 状态行显示当前供应商）。
- *
- * 供应商可能缺（产生方没报）——那时只显示模型名，**不编一个出来**。
- * 值是**真跑过的那次调用**报的（`model.call.start`），不是用户命令的自我报告。
- */
-function modelPart(status: ShellStatus): string {
-  if (status.model === null) return ''
-
-  return status.provider === null ? ` · 模型 ${status.model}` : ` · 模型 ${status.provider}/${status.model}`
-}
-
-/** 退避时长按**人读的秒**报（「x 秒后」是屏幕上的话，不是日志里的毫秒）。 */
-function secondsLabel(delayMs: number): string {
-  return `${(delayMs / 1000).toFixed(1)} 秒`
-}
-
-function usagePart(status: ShellStatus): string {
+function degrade(status: ShellStatus, columns: number): readonly string[] {
+  const title = status.session ?? '新会话'
+  const model = status.model
   const usage = status.usage
-  return usage === null ? '' : ` · 用量 ${usage.inputTokens}→${usage.outputTokens}`
+
+  const cells: readonly (string | null)[] = [
+    title,
+    model,
+    usage === null ? null : tokenLabel(usage),
+  ]
+
+  // 逐步省：先去用量，再去模型，最后截标题（每步算一次「连同右位放不放得下」）
+  let kept = [...cells]
+  if (!fits(kept, columns)) kept = [kept[0] ?? '', null, null]
+  if (!fits(kept, columns)) kept = [truncate(kept[0] ?? '', Math.max(4, columns - 20)), null, null]
+
+  return kept.filter((cell): cell is string => cell !== null && cell !== '')
 }
 
-function turnPart(status: ShellStatus): string {
-  const reason = status.turnEnd
-  if (reason === null) return ''
-  if (reason === 'settled') return ' · 上轮 正常收束'
+/** 左段（含状态那格）连同右位放不放得下——粗算即可（留 2 列余量）。 */
+function fits(cells: readonly (string | null)[], columns: number): boolean {
+  const width = cells
+    .filter((cell): cell is string => cell !== null && cell !== '')
+    .reduce((sum, cell) => sum + displayWidth(cell) + SEP.length, 0)
 
-  return reason === 'aborted' ? ' · 上轮 已中断' : ' · 上轮 出错'
+  return width + 24 <= columns - 4
+}
+
+/** 右位放不下就整段不出现。 */
+function fitting(hint: string, columns: number, left: readonly string[]): string {
+  const used = left.reduce((sum, cell) => sum + displayWidth(cell) + SEP.length, 0)
+
+  return displayWidth(hint) + used + 8 <= columns - 2 ? hint : ''
 }

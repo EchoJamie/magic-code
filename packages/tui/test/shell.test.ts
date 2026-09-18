@@ -1,296 +1,430 @@
 /**
- * 外壳 · 协议侧（U09）——命令经控制面收发，不碰内核。
+ * 会话壳（缺陷轮 II 重画）——**键位语义**的判据。
  *
- * 三条纪律在此钉住：
- * ① **先接订阅、后放开输入**（构造即订阅——命令只可能在订阅之后发出）；
- * ② **裁决配对键＝请求事件 id**（不是 `call`——M03 备案点名的坑）；
- * ③ **只认 `ControlTransport`**（发命令 / 收事件；传输由外部注入，外壳不构造）。
+ * 这一层测的是「按键 → 视图 ＋ 命令」：slash 两种走法 · 接管三兜底（看得见 / 草稿不丢 /
+ * 不静默吞键）· 选择器 · 重建分块。**不起 Ink**（键是喂进去的，规矩是纯的）——
+ * 这正是把键位语义收进外壳的理由。
  */
 
 import { describe, expect, test } from 'bun:test'
+import type { Command } from '@magic/contracts'
 import { createShell } from '../src/shell.ts'
+import type { ShellKey } from '../src/shell.ts'
 import { event } from './events.ts'
-import { createScriptedKernel, createSpyTransport } from './fakes.ts'
+import { createSpyTransport } from './fakes.ts'
 
-describe('装配纪律 · 先接订阅、后放开输入', () => {
-  test('构造即订阅——命令只可能在订阅之后发出', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+/** 起一个壳 ＋ 间谍传输。 */
+function live() {
+  const spy = createSpyTransport()
+  const shell = createShell(spy.transport)
 
-    shell.submit('跑一下 ls')
+  return {
+    shell,
+    spy,
+    /** 敲一串字符。 */
+    type(text: string) {
+      for (const char of text) shell.key({ kind: 'char', char })
+    },
+    press(key: ShellKey) {
+      return shell.key(key)
+    },
+    view: () => shell.getView(),
+    /** 收到的命令（不含订阅动作）。 */
+    commands: () => spy.commands as readonly Command[],
+  }
+}
 
-    expect(spy.calls).toEqual(['subscribe', 'send'])
+const ENTER: ShellKey = { kind: 'enter' }
+
+/** 挂一条裁决（接管）。 */
+function ask(shell: ReturnType<typeof live>, weight: 'light' | 'heavy' = 'light'): void {
+  shell.spy.emit(
+    event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight }, { id: 88 }),
+  )
+}
+
+// ══ 交代 ═════════════════════════════════════════════════════════════
+
+describe('交代（输入 → input.submit）', () => {
+  test('打字落进草稿；回车发出并本地回显', () => {
+    const app = live()
+
+    app.type('看下目录')
+    expect(app.view().draft).toBe('看下目录')
+
+    app.press(ENTER)
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录' }])
+    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'user', text: '看下目录' })
+    expect(app.view().draft).toBe('')
   })
 
-  test('退订后不再发命令（外壳已收摊）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('空白不发命令、不清屏', () => {
+    const app = live()
 
-    shell.dispose()
-    shell.submit('跑一下 ls')
+    app.press(ENTER)
+    expect(app.commands()).toEqual([])
+    expect(app.view().rows).toEqual([])
+  })
 
-    expect(spy.listenerCount()).toBe(0)
-    expect(spy.commands).toEqual([])
+  test('退格删一个字符；esc 清草稿（有草稿时不清展开位）', () => {
+    const app = live()
+
+    app.type('abc')
+    app.press({ kind: 'backspace' })
+    expect(app.view().draft).toBe('ab')
+
+    app.press({ kind: 'escape' })
+    expect(app.view().draft).toBe('')
+  })
+
+  test('`↑` 取上一条交代；`ctrl+o` 切展开位', () => {
+    const app = live()
+
+    app.type('第一条')
+    app.press(ENTER)
+    app.type('第二条')
+    app.press(ENTER)
+    app.press({ kind: 'up' })
+    expect(app.view().draft).toBe('第二条')
+    app.press({ kind: 'up' })
+    expect(app.view().draft).toBe('第一条')
+
+    expect(app.view().expanded).toBe(false)
+    app.press({ kind: 'ctrl+o' })
+    expect(app.view().expanded).toBe(true)
   })
 })
 
-describe('命令 · 用户输入', () => {
-  test('提交发 `input.submit`，并立即本地回显', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+// ══ slash 两种走法 ═══════════════════════════════════════════════════
 
-    shell.submit('跑一下 ls')
+describe('slash（纯输出型 / 交互配置型）', () => {
+  test('`/help`——输出进记录区，**命令本身不回显**、不发命令', () => {
+    const app = live()
 
-    expect(spy.commands).toEqual([{ type: 'input.submit', text: '跑一下 ls' }])
-    expect(shell.getView().items).toHaveLength(1)
-    expect(shell.getView().items[0]).toMatchObject({ kind: 'user', text: '跑一下 ls' })
+    app.type('/help')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([])
+    expect(app.view().rows).toHaveLength(1)
+    expect(app.view().rows[0]).toMatchObject({ kind: 'output' })
+    // 记录区里**没有** `› /help` 那一行（操作不混进对话）
+    expect(app.view().rows.some((row) => row.kind === 'user')).toBe(false)
   })
 
-  test('空白输入不发命令、不回显', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('`/session`——记录区什么都不进，只发 `session.list`', () => {
+    const app = live()
 
-    shell.submit('   ')
-    shell.submit('')
+    app.type('/session')
+    app.press(ENTER)
 
-    expect(spy.commands).toEqual([])
-    expect(shell.getView().items).toEqual([])
+    expect(app.commands()).toEqual([{ type: 'session.list' }])
+    expect(app.view().rows).toEqual([])
   })
 
-  test('首尾空白去掉再发', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('`/model <条目>`——直接发换模型，不进记录区', () => {
+    const app = live()
 
-    shell.submit('  看下目录  ')
+    app.type('/model minimax-m2')
+    app.press(ENTER)
 
-    expect(spy.commands).toEqual([{ type: 'input.submit', text: '看下目录' }])
+    expect(app.commands()).toEqual([{ type: 'model.switch', provider: 'minimax-m2' }])
+    expect(app.view().rows).toEqual([])
+  })
+
+  test('不认得的 slash——**如实说一句**（不发命令、也不当交代发出去）', () => {
+    const app = live()
+
+    app.type('/grants')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([])
+    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
   })
 })
 
-describe('命令 · 裁决答复', () => {
-  test('答复带回**请求事件**的 id（配对键）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+// ══ 接管 ═════════════════════════════════════════════════════════════
 
-    spy.emit(
-      event('tool.decision.request', {
-        call: 71,
-        name: 'exec',
-        material: 'rm -rf x',
-        weight: 'heavy',
-      }, { id: 88 }),
-    )
-    shell.answer('approve')
+describe('接管（裁决挂着时占住输入框）', () => {
+  test('作答 `y` —— 发一次答复，带请求事件 id', () => {
+    const app = live()
+    ask(app)
 
-    expect(spy.commands).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
+    app.press({ kind: 'char', char: 'y' })
+    expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
   })
 
-  test('「总是允许」——答复带上 `remember` 位（批准 ＋ 记住）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('作答 `a` ——「总是允许」带上 remember 位（轻的那件）', () => {
+    const app = live()
+    ask(app, 'light')
 
-    spy.emit(
-      event('tool.decision.request', {
-        call: 71,
-        name: 'exec',
-        material: 'ls',
-        weight: 'light',
-      }, { id: 88 }),
-    )
-    shell.answer('approve', { remember: true })
-
-    expect(spy.commands).toEqual([
+    app.press({ kind: 'char', char: 'a' })
+    expect(app.commands()).toEqual([
       { type: 'decision.answer', id: 88, decision: 'approve', remember: true },
     ])
   })
 
-  test('不给 `remember` —— 答复里**没有那个键**（向后兼容：与阶段 1 逐字同义）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('必闸类按 `a` ——**不发命令**，当场说清缘由', () => {
+    const app = live()
+    ask(app, 'heavy')
 
-    spy.emit(
-      event('tool.decision.request', {
-        call: 71,
-        name: 'exec',
-        material: 'ls',
-        weight: 'light',
-      }, { id: 88 }),
-    )
-    shell.answer('approve')
-
-    expect(spy.commands).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
-    // 键**在不在**也算判据：`remember: undefined` 过不了通道的可序列化门（丢键＝有损），
-    // 故「没给」必须表现为**键不出现**，而不是键在值为 undefined。
-    expect('remember' in (spy.commands[0] ?? {})).toBe(false)
+    app.press({ kind: 'char', char: 'a' })
+    expect(app.commands()).toEqual([])
+    expect(app.view().flash).toContain('必闸类不可')
   })
 
-  test('无待裁决时不发答复', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('**草稿不丢**——接管时收起来、答完原样归还、不自动发送', () => {
+    const app = live()
 
-    shell.answer('approve')
+    app.type('打了一半')
+    ask(app)
+    expect(app.view().draft).toBe('')
+    expect(app.view().stashed).toBe('打了一半')
 
-    expect(spy.commands).toEqual([])
+    app.press({ kind: 'char', char: 'y' })
+    // 答复发出去；**裁决落定那一刻**（内核回 `tool.decision`）才归还草稿
+    expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
+    expect(app.view().dock.kind).toBe('decision')
+
+    app.spy.emit(event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 900 }))
+    expect(app.view().draft).toBe('打了一半')
+    expect(app.view().stashed).toBeNull()
+    expect(app.view().dock.kind).toBe('input')
+    // **不自动发送**——归还的草稿仍在输入框里，没被发出去
+    expect(app.commands()).toHaveLength(1)
   })
 
-  test('答复后提示撤下——不再重复答复', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('**不静默吞键**——按了别的字，忽略但当场说一句', () => {
+    const app = live()
+    ask(app)
 
-    spy.emit(
-      event('tool.decision.request', {
-        call: 71,
-        name: 'exec',
-        material: 'ls',
-        weight: 'light',
-      }, { id: 88 }),
+    app.press({ kind: 'char', char: 'x' })
+    expect(app.commands()).toEqual([])
+    expect(app.view().flash).toContain('先答复')
+    expect(app.view().draft).toBe('') // 那一下没有进草稿
+  })
+
+  test('粘贴一律拒并提示；`esc` **无动作**', () => {
+    const app = live()
+    ask(app)
+
+    app.press({ kind: 'paste', text: '粘一段' })
+    expect(app.view().draft).toBe('')
+    expect(app.view().flash).toContain('粘不了')
+
+    app.press({ kind: 'escape' })
+    expect(app.view().dock.kind).toBe('decision') // 还在接管里
+  })
+
+  test('多件逐件问——答完一件接着下一件，草稿一直收着', () => {
+    const app = live()
+
+    app.type('草稿')
+    ask(app)
+    app.press({ kind: 'char', char: 'y' })
+
+    // 第二件到（内核接着问）
+    app.spy.emit(
+      event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
     )
-    shell.answer('reject')
-    shell.answer('reject')
+    expect(app.view().dock.kind).toBe('decision')
+    expect(app.view().stashed).toBe('草稿') // 只收一次
 
-    expect(spy.commands).toHaveLength(1)
-    expect(shell.getView().pending).toBeNull()
+    app.press({ kind: 'char', char: 'n' })
+    app.spy.emit(event('tool.decision', { call: 72, decision: 'reject', decider: 'user', elapsedMs: 100 }))
+    expect(app.view().draft).toBe('草稿')
   })
 })
 
-describe('命令 · 中断', () => {
-  test('中断发 `turn.interrupt`', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+// ══ 选择器 ═══════════════════════════════════════════════════════════
 
-    shell.interrupt()
-
-    expect(spy.commands).toEqual([{ type: 'turn.interrupt' }])
-  })
-})
-
-describe('事件 · 订阅与通知', () => {
-  test('事件归约进视图，订阅者被通知', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
-    let notified = 0
-    shell.subscribe(() => {
-      notified += 1
+describe('选择器（`/session` · `/model`）', () => {
+  const state = (active: string, rows: readonly { id: string; title?: string }[]) =>
+    event('session.state', {
+      active,
+      sessions: rows.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
     })
 
-    spy.emit(event('model.delta', { channel: 'text', text: '嗨' }))
+  test('`/session` 回车后：目录到手才开选择器，记录区仍不进东西', () => {
+    const app = live()
 
-    expect(shell.getView().items[0]).toMatchObject({ kind: 'assistant', text: '嗨' })
-    expect(notified).toBe(1)
+    app.type('/session')
+    app.press(ENTER)
+    app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
+
+    expect(app.view().dock.kind).toBe('picker')
+    expect(app.view().rows).toEqual([])
   })
 
-  test('退订后事件不再进视图', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('上下选 ＋ 回车选定 —— 发 `session.open`，**留一行回执**', () => {
+    const app = live()
 
-    shell.dispose()
-    spy.emit(event('model.delta', { channel: 'text', text: '嗨' }))
+    app.type('/session')
+    app.press(ENTER)
+    app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
+    app.press({ kind: 'down' })
+    app.press(ENTER)
 
-    expect(shell.getView().items).toEqual([])
-  })
-})
-
-describe('端到端（脚本化假内核）', () => {
-  test('交代 → 流式 → 审批 → 答复 → 结果 —— 一屏走完一轮', () => {
-    const kernel = createScriptedKernel()
-    const shell = createShell(kernel.shell)
-
-    shell.submit('看下工作区')
-    const asked = shell.getView()
-
-    // 流式：正文与思考各成块；工具条目已被 `tool.call` 认领
-    expect(asked.status.phase).toBe('busy')
-    expect(asked.items.map((item) => item.kind)).toEqual(['user', 'thinking', 'assistant', 'tool'])
-    expect(asked.items[2]).toMatchObject({ text: '收到：「看下工作区」。我跑一下 ——' })
-    expect(asked.pending).toMatchObject({ name: 'exec', weight: 'heavy', material: '在工作区根执行：ls' })
-
-    shell.answer('approve')
-    const done = shell.getView()
-
-    expect(done.pending).toBeNull()
-    expect(done.status).toMatchObject({ phase: 'idle', turnEnd: 'settled', model: 'faux-kernel' })
-    expect(done.status.usage).toEqual({ inputTokens: 1284, outputTokens: 96 })
-    expect(done.items.map((item) => item.kind)).toEqual([
-      'user',
-      'thinking',
-      'assistant',
-      'tool',
-      'assistant',
-    ])
-    expect(done.items[3]).toMatchObject({
-      kind: 'tool',
-      name: 'exec',
-      verdict: { decision: 'approve' },
-      result: { ok: true },
-      output: [{ channel: 'stdout', text: 'README.md\npackages\n' }],
-    })
-
-    kernel.stop()
+    expect(app.commands()).toContainEqual({ type: 'session.open', session: 's2' })
+    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
+    expect(app.view().dock.kind).toBe('input')
   })
 
-  test('中断——脚本作废，轮以 aborted 收束', () => {
-    const kernel = createScriptedKernel()
-    const shell = createShell(kernel.shell)
+  test('`esc` 取消 —— **不留痕迹**（记录区与回执都没有）', () => {
+    const app = live()
 
-    shell.submit('看下工作区')
-    shell.interrupt()
+    app.type('/session')
+    app.press(ENTER)
+    app.spy.emit(state('s1', [{ id: 's1' }]))
+    app.press({ kind: 'escape' })
 
-    expect(shell.getView().status).toMatchObject({ phase: 'idle', turnEnd: 'aborted' })
+    expect(app.view().dock.kind).toBe('input')
+    expect(app.view().rows).toEqual([])
+  })
 
-    kernel.stop()
+  test('`/model` 不带参数 —— 问一次内核；回话的缘由作列表说明（不解析）', () => {
+    const app = live()
+
+    app.type('/model')
+    app.press(ENTER)
+    expect(app.commands()).toContainEqual({ type: 'model.switch' })
+
+    app.spy.emit(event('model.switched', { ok: false, reason: '不知道要换成什么——已注册：minimax / local' }))
+    expect(app.view().dock.kind).toBe('picker')
+    const dock = app.view().dock
+    expect(dock.kind === 'picker' ? dock.picker.hint : '').toContain('minimax / local')
   })
 })
 
-// —— 第 17 轮补锚（阶段 2 波次 2）：换模型的斜杠命令 ——
+// ══ Ctrl+C ═══════════════════════════════════════════════════════════
 
-describe('命令 · 换模型（斜杠）', () => {
-  test('`/model <供应商>` —— 发 `model.switch`，**不是** `input.submit`', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+describe('Ctrl+C（空闲退出 · 工作中中断）', () => {
+  test('空闲 ⇒ 退出（交回组件去退）；工作中 ⇒ 发 `turn.interrupt`，不退', () => {
+    const idle = live()
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(true)
 
-    shell.submit('/model minimax-m2')
-
-    expect(spy.commands).toEqual([{ type: 'model.switch', provider: 'minimax-m2' }])
+    const busy = live()
+    busy.spy.emit(event('turn.start', {}))
+    expect(busy.press({ kind: 'ctrl+c' }).exit).toBe(false)
+    expect(busy.commands()).toEqual([{ type: 'turn.interrupt' }])
   })
 
-  test('`/model <供应商> <模型>` —— 两件都带上（换条目 ＋ 换模型）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('接管中按 Ctrl+C ⇒ 中断本轮（全局键，接管不吞）', () => {
+    const app = live()
+    ask(app)
 
-    shell.submit('/model minimax MiniMax-M3')
+    expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false)
+    expect(app.commands()).toEqual([{ type: 'turn.interrupt' }])
+  })
+})
 
-    expect(spy.commands).toEqual([
-      { type: 'model.switch', provider: 'minimax', model: 'MiniMax-M3' },
-    ])
+// ══ 重建 ═════════════════════════════════════════════════════════════
+
+describe('重建（`session.history` 分块）', () => {
+  const entry = (id: number, text: string) => ({ id, kind: 'user' as const, content: { text }, at: id })
+
+  test('分块攒、`done` 到了才铺屏；条目按序成行', () => {
+    const app = live()
+
+    app.spy.emit(state1('s1'))
+    app.spy.emit(event('session.history', { session: 's1', entries: [entry(1, '第一句')], done: false }))
+    expect(app.view().rows).toEqual([]) // 还没收齐——不铺
+
+    app.spy.emit(event('session.history', { session: 's1', entries: [entry(2, '第二句')], done: true }))
+    expect(app.view().rows.map((row) => row.kind === 'user' && row.text)).toEqual(['第一句', '第二句'])
   })
 
-  test('`/model` 不带参数 —— 照样发（内核回一句「不知道要换成什么」＋ 可选条目）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('**不是当下那条的块直接丢**（分块会跨切换）', () => {
+    const app = live()
 
-    shell.submit('/model')
+    app.spy.emit(state1('s1'))
+    app.spy.emit(event('session.history', { session: '别的会话', entries: [entry(9, '不该出现')], done: true }))
 
-    expect(spy.commands).toEqual([{ type: 'model.switch' }])
+    expect(app.view().rows).toEqual([])
   })
 
-  test('本地回显这条命令 —— 交代过什么，屏上看得见', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('切换 ⇒ 主动读一次历史（重建由那次触发）', () => {
+    const app = live()
 
-    shell.submit('/model minimax-m2')
+    app.spy.emit(state1('s1'))
+    app.spy.emit(event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0 }] }))
 
-    const last = shell.getView().items.at(-1)
-    expect(last?.kind).toBe('user')
-    expect(last?.kind === 'user' ? last.text : '').toBe('/model minimax-m2')
+    expect(app.commands()).toContainEqual({ type: 'history.read', session: 's2' })
+  })
+})
+
+function state1(active: string) {
+  return event('session.state', { active, sessions: [{ id: active, at: 0 }] })
+}
+
+// ══ 补：会话命令与粘贴的其余分支 ═════════════════════════════════════
+
+describe('会话命令的其余分支', () => {
+  test('`/session new`——发 `session.new` ＋ 留一行回执', () => {
+    const app = live()
+
+    app.type('/session new')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([{ type: 'session.new' }])
+    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
-  test('不认得的斜杠文字**不抢**——当普通交代发出去（自然语言优先）', () => {
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+  test('`/session title <文本>`——发 `session.rename`（带上当下那条的 id）', () => {
+    const app = live()
+    app.spy.emit(
+      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
+    )
 
-    // 用户嘴里说出一个路径是常事（`/usr/bin` 开头就是斜杠）——别把他的话吃掉
-    shell.submit('/usr/bin 里有什么')
+    app.type('/session title 换个名字')
+    app.press(ENTER)
 
-    expect(spy.commands).toEqual([{ type: 'input.submit', text: '/usr/bin 里有什么' }])
+    expect(app.commands()).toEqual([{ type: 'session.rename', session: 's1', title: '换个名字' }])
+  })
+
+  test('`/session title` 不带文本——只提示用法，不发命令', () => {
+    const app = live()
+
+    app.type('/session title')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([])
+    expect(app.view().rows.at(-1)).toMatchObject({ kind: 'receipt' })
+  })
+
+  test('`/session <不认得>`——如实说一句，不发命令', () => {
+    const app = live()
+
+    app.type('/session 乱写的')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([])
+    expect(app.view().rows.at(-1)?.kind === 'receipt').toBe(true)
+  })
+})
+
+describe('粘贴（非接管）', () => {
+  test('落进草稿——不当作按键序列', () => {
+    const app = live()
+
+    app.press({ kind: 'paste', text: '粘一段' })
+    expect(app.view().draft).toBe('粘一段')
+
+    app.press(ENTER)
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '粘一段' }])
+  })
+})
+
+describe('选择器选定模型', () => {
+  test('选定 ⇒ 发 `model.switch`（回执由内核的 `model.switched` 给）', () => {
+    const app = live()
+    app.spy.emit(event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }))
+
+    app.type('/model')
+    app.press(ENTER)
+    app.spy.emit(event('model.switched', { ok: false, reason: '不知道要换成什么——已注册：minimax' }))
+    app.press(ENTER) // 选定当前那一条
+
+    expect(app.commands()).toContainEqual({ type: 'model.switch', provider: 'minimax' })
+    expect(app.view().dock.kind).toBe('input')
   })
 })

@@ -1,173 +1,406 @@
 /**
- * 外壳 · 会话壳（U09）——**只认控制面**。
+ * 外壳 · 会话壳（缺陷轮 II 重画）——**只认控制面**。
  *
- * 一件：把注入的 `ControlTransport`（**外壳侧一端，装配注入——本层不构造**）接成
- * 「事件 → 视图 ＋ 视图 → 命令」的一条线。命令目录（技术方案 · 接入 · 消息目录）：
- * `input.submit` · `decision.answer` · `turn.interrupt`；事件＝事件流 kind 族（订阅收）。
+ * 一件：把注入的 `ControlTransport`（外壳侧一端，装配注入）接成「事件 → 视图 ＋ 键 → 命令」
+ * 的一条线。**键位语义全在这层**（`key()` 收一个按键、改视图、必要时发命令）——
+ * 组件只把 Ink 的键喂进来、把模型画出来。好处：接管 / 草稿 / 选择器这些规矩**不起终端就能测**。
  *
- * 三条纪律：
- * ① **先接订阅、后放开输入**——构造即订阅；未订阅时不发命令（`disposed` 后一律丢）。
- * ② **配对键＝请求事件 id**——答复原样带回 `tool.decision.request` 的 `id`
- *    （不是 payload 里的 `call`——两个 id 空间别混）。
- * ③ **呈现与介入**——视图归约在 `view.ts`；本层只管接线与本地回显。
+ * 四条纪律（原型 · 交互逻辑）：
+ * ① **先接订阅、后放开输入**（构造即订阅）；
+ * ② **slash 两种走法**——纯输出型（`/help`）：输出进记录区、**命令本身不回显**；
+ *    交互配置型（`/session` · `/model`）：**记录区什么都不进**，只在左下开选择器，
+ *    选定后留**一行回执**，`esc` 取消＝**不留痕迹**；
+ * ③ **接管**（裁决挂着）——看得见（占位换掉）· 草稿不丢（收起来、答完归还、**不自动发送**）·
+ *    **不静默吞键**（只认 y/a/n ＋ 全局 ctrl+c，其余忽略但当场说一句；粘贴一律拒）；
+ * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
  */
 
-import type {
-  Command,
-  ControlTransport,
-  Decision,
-  KernelEvent,
-  ModelSwitchRequest,
-} from '@magic/contracts'
+import type { Command, ControlTransport, Entry, KernelEvent, SessionId } from '@magic/contracts'
 import type { ShellView } from './view.ts'
-import { appendEcho, appendNoticeText, appendSessionList, createView, reduce } from './view.ts'
+import {
+  appendEcho,
+  appendOutput,
+  appendReceipt,
+  closePicker,
+  createView,
+  movePicker,
+  openPicker,
+  picked,
+  rebuild,
+  reduce,
+} from './view.ts'
 
-/** 换模型那条斜杠命令（U17）。 */
-const MODEL_COMMAND = '/model'
+/** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
+export type ShellKey =
+  | { readonly kind: 'char'; readonly char: string }
+  | { readonly kind: 'enter' }
+  | { readonly kind: 'backspace' }
+  | { readonly kind: 'escape' }
+  | { readonly kind: 'up' }
+  | { readonly kind: 'down' }
+  | { readonly kind: 'ctrl+c' }
+  | { readonly kind: 'ctrl+o' }
+  | { readonly kind: 'paste'; readonly text: string }
+  | { readonly kind: 'other'; readonly label: string }
 
-/**
- * 会话那条斜杠命令（U16）——固定命令**只此两条**（交互词汇：自然语言优先、固定命令精简）。
- *
- * 四形，一望可记：
- * - `/session`——列出会话（带序号，当前那条有标记）
- * - `/session new`——新建一条
- * - `/session <序号>`——切到第几条（序号就是列表里那个数）
- * - `/session title <文本>`——给当前会话改个名字
- */
-const SESSION_COMMAND = '/session'
+/** 按键的结果——`exit` 由组件去真退出（外壳不碰终端）。 */
+export type ShellEffect = { readonly exit: boolean }
 
-/** 认出会话命令——**同样只认第一个词正好是 `/session`**（理由见 `parseModelSwitch`）。 */
-function parseSession(text: string): { readonly rest: string } | undefined {
-  if (text === SESSION_COMMAND) return { rest: '' }
-  if (!text.startsWith(`${SESSION_COMMAND} `)) return undefined
-
-  return { rest: text.slice(SESSION_COMMAND.length + 1).trim() }
-}
-
-/**
- * 认出换模型的斜杠命令——不认得就交回普通交代。
- *
- * **只认第一个词正好是 `/model`**：`/usr/bin 里有什么` 这类以斜杠开头的**人话**照旧发给模型
- * （用户嘴里说出一个路径是常事，别把他的话吃掉）。同理不做「疑似命令」的模糊匹配——
- * 猜错的代价是这条消息到不了模型。
- *
- * 参数按位取：`/model <供应商> [模型]`。**一个都不给也照发**——内核会回一句
- * 「不知道要换成什么」并列出已注册的条目（U17 的注册表就是这么报的），
- * 于是 `/model` 顺带成了「有哪些可选」的查询。
- */
-function parseModelSwitch(text: string): ModelSwitchRequest | undefined {
-  if (text !== MODEL_COMMAND && !text.startsWith(`${MODEL_COMMAND} `)) return undefined
-
-  const [, provider, model] = text.split(/\s+/)
-
-  return {
-    ...(provider === undefined ? {} : { provider }),
-    ...(model === undefined ? {} : { model }),
-  }
-}
+const NONE: ShellEffect = { exit: false }
+const EXIT: ShellEffect = { exit: true }
 
 export type Shell = {
-  /** 当前视图（引用稳定——只在事件 / 本地回显后才换对象）。 */
+  /** 当前视图（引用稳定——只在事件 / 按键之后才换对象）。 */
   getView(): ShellView
-  /** 订阅视图变化（供渲染层用——React 的 `useSyncExternalStore` 直接吃它）。 */
+  /** 订阅视图变化（React 的 `useSyncExternalStore` 直接吃它）。 */
   subscribe(listener: () => void): () => void
-  /** 提交用户输入（本地回显 ＋ `input.submit`）；空白丢弃。 */
-  submit(text: string): void
-  /**
-   * 答复待裁决的询问（`decision.answer`）；无待裁决时忽略。
-   *
-   * 第二参 ＝**「总是允许」**（批准 ＋ 记住）：给了就把它带上，由控制域原样转手给权限域
-   * （本层不解释它的含义）。
-   */
-  answer(decision: Decision, opts?: { remember?: boolean }): void
-  /** 中断当前轮（`turn.interrupt`）。 */
-  interrupt(): void
-  /**
-   * 安静地问一次会话目录（`session.list`）——启动时用：只为把当前会话与目录拿到手里
-   * （状态行要显示当前会话），**不往对话流里塞目录块**（那是 `/session` 的事）。
-   */
-  refreshSessions(): void
-  /** 收摊——退订传输、清订阅者（此后的命令一律丢弃）。 */
+  /** 一个按键。 */
+  key(key: ShellKey): ShellEffect
+  /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
+  readHistory(session?: SessionId): void
+  /** 收摊——退订传输、清订阅者。 */
   dispose(): void
 }
+
+/** `/help` 的正文（纯输出型）。 */
+const HELP_TITLE = '可用命令'
+const HELP_LINES: readonly string[] = [
+  '/model　　换模型（列出可用条目，选定即切）',
+  '/session　会话：列表 · 切换 · 新建 · 改名',
+  '/help　　　这张表',
+]
+
+/** 一次「等内核回话再开选择器」的意图——`/session` 与 `/model` 各一种。 */
+type PendingPicker = 'session' | 'model'
 
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
 export function createShell(transport: ControlTransport): Shell {
   const watchers = new Set<() => void>()
   let view = createView()
   let disposed = false
-  /** 问过目录、答复还没到——到了把目录块拼进对话流（`/session` 要看得见的那种问法）。 */
-  let listing = false
+
+  /** 输入历史（`↑` 取上一条）。 */
+  const history: string[] = []
+  let historyAt = -1
+
+  /** 重建的攒块——按 `session.history` 的 `data.session` 分（不是当下那条的直接丢）。 */
+  let rebuildFor: SessionId | null = null
+  let rebuildEntries: Entry[] = []
+
+  /** 等回话的选择器意图 ＋ 见过的模型条目（`/model` 的列表取材）。 */
+  let waiting: PendingPicker | null = null
+  const providers = new Map<string, string | undefined>()
 
   const notify = (): void => {
     for (const watcher of [...watchers]) watcher()
   }
 
-  const onEvent = (event: KernelEvent): void => {
-    if (disposed) return
-    view = reduce(view, event)
-    if (listing && event.kind === 'session.state') {
-      view = appendSessionList(view)
-      listing = false
-    }
+  const commit = (next: ShellView): void => {
+    view = next
     notify()
   }
-
-  /** 本地说一句（不去内核绕一圈——本地就有答案的事）。 */
-  const say = (text: string): void => {
-    view = appendNoticeText(view, text, 'error')
-    notify()
-  }
-
-  const unsubscribeTransport = transport.subscribe(onEvent)
 
   const send = (command: Command): void => {
     if (disposed) return
     transport.send(command)
   }
 
+  // —— 事件 ——
+
+  const onEvent = (event: KernelEvent): void => {
+    if (disposed) return
+
+    if (event.kind === 'session.history') {
+      accumulate(event.data)
+      return
+    }
+
+    // 见过的条目（`/model` 的列表取材——条目表不在事件里，见回报「与原型不符」）
+    if (event.kind === 'model.call.start' && event.data.provider !== undefined) {
+      providers.set(event.data.provider, event.data.model)
+    }
+    if (event.kind === 'model.switched' && event.data.provider !== undefined) {
+      providers.set(event.data.provider, event.data.model)
+    }
+
+    const before = view.sessionId
+    commit(reduce(view, event))
+
+    if (event.kind === 'session.state') {
+      // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
+      if (before !== null && before !== event.data.active) readHistory(event.data.active)
+      if (waiting === 'session') {
+        waiting = null
+        openSessionPicker()
+      }
+    }
+
+    if (event.kind === 'model.switched' && waiting === 'model') {
+      waiting = null
+      openModelPicker(event.data.ok ? '' : (event.data.reason ?? ''))
+    }
+  }
+
+  const accumulate = (data: Extract<KernelEvent, { kind: 'session.history' }>['data']): void => {
+    if (view.sessionId !== null && data.session !== view.sessionId) return // 切走之后的尾巴——丢
+
+    if (rebuildFor !== data.session) {
+      rebuildFor = data.session
+      rebuildEntries = []
+    }
+
+    rebuildEntries = [...rebuildEntries, ...data.entries]
+    if (!data.done) return
+
+    commit(rebuild(view, rebuildEntries))
+    rebuildFor = null
+    rebuildEntries = []
+  }
+
+  const unsubscribeTransport = transport.subscribe(onEvent)
+
+  // —— 选择器 ——
+
+  /** `/session`——目录已到手，开它。 */
+  const openSessionPicker = (): void => {
+    const catalog = view.catalog
+
+    commit(
+      openPicker(view, {
+        source: 'session',
+        selected: Math.max(0, catalog.findIndex((row) => row.id === view.sessionId)),
+        rows: catalog.map((row) => ({
+          label: row.title ?? '（无标题）',
+          meta: row.id === view.sessionId ? '正在用' : '',
+          current: row.id === view.sessionId,
+          value: row.id,
+        })),
+        ...(catalog.length === 0 ? { hint: '还没有落过账的会话——交代一句就开张' } : {}),
+      }),
+    )
+  }
+
   /**
-   * 会话命令四形——**能本地判的一律本地判**：序号越界、没给标题文本这些事，
-   * 内核帮不上忙（它不认识屏上的序号），发一条注定没用的命令只是把噪声过一趟协议。
+   * `/model`——**条目表不在事件里**（契约没有读侧），故列表只有「见过的 ＋ 当前那条」，
+   * 而内核回话里的缘由（它本就列出已注册的名字）作列表下方的说明 ✓ 不解析、只照贴。
    */
-  const handleSession = (rest: string): void => {
-    if (rest === '') {
-      // 要看得见的那种问法——答复到了把目录块拼进来
-      listing = true
-      send({ type: 'session.list' })
-      return
+  const openModelPicker = (reason: string): void => {
+    const current = view.status.model
+    const rows = [...providers.entries()].map(([id, model]) => ({
+      label: id,
+      meta: model ?? '',
+      current: model !== undefined && model === current,
+      value: id,
+    }))
+
+    commit(
+      openPicker(view, {
+        source: 'model',
+        selected: Math.max(0, rows.findIndex((row) => row.current)),
+        rows,
+        hint: reason === '' ? '也可直接打 `/model <条目>`' : reason,
+      }),
+    )
+  }
+
+  // —— 键 ——
+
+  const exitOrInterrupt = (): ShellEffect => {
+    const busy = view.status.state === 'working' || view.status.state === 'retrying'
+
+    if (busy || view.dock.kind === 'decision') {
+      send({ type: 'turn.interrupt' })
+      return NONE
     }
 
-    if (rest === 'new') {
-      send({ type: 'session.new' })
-      return
-    }
+    return EXIT
+  }
 
-    if (rest === 'title' || rest.startsWith('title ')) {
-      const title = rest.slice('title'.length).trim()
-      const active = view.status.session?.id
-      if (active === undefined) {
-        say('还不知道当前是哪个会话——先打个 `/session` 看看')
-        return
+  const key = (input: ShellKey): ShellEffect => {
+    if (disposed) return NONE
+
+    switch (input.kind) {
+      case 'ctrl+c':
+        return exitOrInterrupt()
+
+      case 'ctrl+o':
+        commit({ ...view, expanded: !view.expanded })
+        return NONE
+
+      case 'paste':
+        if (view.dock.kind === 'decision') {
+          commit(said(view, '先答复——此刻粘不了（这一轮在等你）。草稿在，答完接着打。'))
+          return NONE
+        }
+        commit({ ...view, draft: view.draft + input.text })
+        return NONE
+
+      case 'escape':
+        if (view.dock.kind === 'picker') return (commit(closePicker(view)), NONE)
+        if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
+        commit(view.draft === '' ? { ...view, expanded: false } : { ...view, draft: '' })
+        return NONE
+
+      case 'up':
+      case 'down': {
+        const delta = input.kind === 'up' ? -1 : 1
+        if (view.dock.kind === 'picker') {
+          commit(movePicker(view, delta))
+          return NONE
+        }
+        recallHistory(delta)
+        return NONE
       }
-      if (title === '') {
-        say('要改成什么？`/session title <文本>`')
-        return
+
+      case 'enter':
+        return submit()
+
+      case 'backspace':
+        if (view.dock.kind === 'decision') return refuse('退格')
+        commit({ ...view, draft: view.draft.slice(0, -1) })
+        return NONE
+
+      case 'char':
+        if (view.dock.kind === 'decision') return answer(input.char)
+        if (view.dock.kind === 'picker') return NONE
+        commit({ ...view, draft: view.draft + input.char })
+        return NONE
+
+      case 'other':
+        return view.dock.kind === 'decision' ? refuse(input.label) : NONE
+    }
+  }
+
+  /** 接管期间的作答键——只认 `y` / `a` / `n`（必闸类没有 `a`）。 */
+  const answer = (char: string): ShellEffect => {
+    const pending = view.dock.kind === 'decision' ? view.dock.pending : undefined
+    if (pending === undefined) return NONE
+
+    if (char === 'y') {
+      send({ type: 'decision.answer', id: pending.id, decision: 'approve' })
+      return NONE
+    }
+    if (char === 'n') {
+      send({ type: 'decision.answer', id: pending.id, decision: 'reject' })
+      return NONE
+    }
+    if (char === 'a') {
+      if (pending.weight === 'heavy') {
+        commit(said(view, '必闸类不可「总是允许」——按 y 批准这一次，或 n 拒绝。'))
+        return NONE
+      }
+      send({ type: 'decision.answer', id: pending.id, decision: 'approve', remember: true })
+      return NONE
+    }
+
+    return refuse(char)
+  }
+
+  /** 接管期间的非答复键——忽略，但**当场说一句**（「不静默吞键」）。 */
+  const refuse = (label: string): ShellEffect => {
+    const what = label === '' ? '这个键' : `「${label}」`
+    commit(said(view, `先答复——${what}此刻不管用（这一轮在等你）。草稿在，答完接着打。`))
+    return NONE
+  }
+
+  /** 回车——接管 / 选择器 / 输入三种归处。 */
+  const submit = (): ShellEffect => {
+    if (view.dock.kind === 'decision') return refuse('回车')
+
+    if (view.dock.kind === 'picker') {
+      const row = picked(view)
+      if (row === undefined) return NONE
+
+      if (view.dock.picker.source === 'session') {
+        send({ type: 'session.open', session: row.value })
+        // **选定后留一行回执**（原型 · 场景 10）；切过去之后重建由 `session.state` 触发
+        commit(appendReceipt(closePicker(view), `已切到 ${row.label}`))
+        return NONE
       }
 
-      send({ type: 'session.rename', session: active, title })
-      return
+      // 换模型：回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）
+      send({ type: 'model.switch', provider: row.value })
+      commit(closePicker(view))
+      return NONE
     }
 
-    // 序号按**目录里的位置**解析（屏上那个数）——越界就说清楚，不猜用户指哪条
-    const index = Number(rest)
-    const row = Number.isInteger(index) ? view.sessions[index - 1] : undefined
-    if (row === undefined) {
-      say(`没有第 ${rest} 条会话——打个 \`/session\` 看看有哪些`)
-      return
+    const text = view.draft.trim()
+    if (text === '') return NONE
+
+    if (text.startsWith('/')) {
+      commit(runSlash(view, text))
+      return NONE
     }
 
-    send({ type: 'session.open', session: row.id })
+    if (history[history.length - 1] !== text) history.push(text)
+    historyAt = -1
+    commit(appendEcho({ ...view, draft: '' }, text))
+    send({ type: 'input.submit', text })
+
+    return NONE
+  }
+
+  /** slash 分发——**两种走法在这一处落定**。 */
+  const runSlash = (from: ShellView, text: string): ShellView => {
+    const [word, ...rest] = text.split(/\s+/)
+    const arg = rest.join(' ')
+    const cleared: ShellView = { ...from, draft: '' }
+
+    // —— 纯输出型：输出进记录区，**命令本身不回显** ——
+    if (word === '/help') return appendOutput(cleared, HELP_TITLE, HELP_LINES)
+
+    // —— 交互配置型：记录区什么都不进 ——
+    if (word === '/session') {
+      if (arg === '' || arg === 'list') {
+        waiting = 'session'
+        send({ type: 'session.list' })
+        return cleared
+      }
+      if (arg === 'new') {
+        send({ type: 'session.new' })
+        return appendReceipt(cleared, '已新建一条会话（首条消息按下回车才落库）')
+      }
+      if (arg === 'title' || arg.startsWith('title ')) {
+        const title = arg.slice('title'.length).trim()
+        if (title === '' || from.sessionId === null) {
+          return appendReceipt(cleared, '要改成什么？`/session title <文本>`')
+        }
+        send({ type: 'session.rename', session: from.sessionId, title })
+        return cleared
+      }
+
+      return appendReceipt(cleared, '认得的用法：/session · /session new · /session title <文本>')
+    }
+
+    if (word === '/model') {
+      if (arg !== '') {
+        send({ type: 'model.switch', provider: arg })
+        return cleared
+      }
+      // 不带参数 ⇒ 问内核「有哪些条目」（它的缘由本就列出已注册的名字）
+      waiting = 'model'
+      send({ type: 'model.switch' })
+      return cleared
+    }
+
+    // 不认得的 slash——**如实说一句**（别静默丢，也别当交代发给模型）
+    return appendReceipt(cleared, `不认得的命令「${word}」——试试 /help`)
+  }
+
+  const recallHistory = (delta: number): void => {
+    if (history.length === 0) return
+
+    const next = historyAt === -1 ? history.length - 1 : historyAt + delta
+    if (next < 0 || next >= history.length) return
+
+    historyAt = next
+    commit({ ...view, draft: history[next] ?? '' })
+  }
+
+  const said = (from: ShellView, message: string): ShellView => ({ ...from, flash: message })
+
+  const readHistory = (session?: SessionId): void => {
+    send(session === undefined ? { type: 'history.read' } : { type: 'history.read', session })
   }
 
   return {
@@ -181,50 +414,8 @@ export function createShell(transport: ControlTransport): Shell {
       }
     },
 
-    submit: (text) => {
-      const trimmed = text.trim()
-      if (trimmed === '') return
-
-      // 本地回显先落（事件只带条目引用，不含正文——见 view.ts 文件头）
-      view = appendEcho(view, trimmed)
-      notify()
-
-      // 斜杠命令与普通交代**同一条入口**：「交代就写在这里」——用户不必先切模式
-      const session = parseSession(trimmed)
-      if (session !== undefined) {
-        handleSession(session.rest)
-        return
-      }
-
-      const request = parseModelSwitch(trimmed)
-      if (request === undefined) send({ type: 'input.submit', text: trimmed })
-      else send({ type: 'model.switch', ...request })
-    },
-
-    answer: (decision, opts) => {
-      const pending = view.pending
-      if (pending === null) return
-
-      // 提示即时撤下（裁决留痕由随后的 `tool.decision` 事件补）
-      view = { ...view, pending: null }
-      notify()
-
-      // 「总是允许」**只在给了才带上键**——通道按「JSON 往返无损」校验，
-      // `remember: undefined` 是丢键（有损）→ 当场拒投。不给＝一次性，与阶段 1 逐字同义。
-      send(
-        opts?.remember === true
-          ? { type: 'decision.answer', id: pending.id, decision, remember: true }
-          : { type: 'decision.answer', id: pending.id, decision },
-      )
-    },
-
-    interrupt: () => {
-      send({ type: 'turn.interrupt' })
-    },
-
-    refreshSessions: () => {
-      send({ type: 'session.list' })
-    },
+    key,
+    readHistory,
 
     dispose: () => {
       disposed = true

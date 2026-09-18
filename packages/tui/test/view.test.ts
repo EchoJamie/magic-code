@@ -1,347 +1,358 @@
 /**
- * 视图归约（U09）——事件 → 一屏视图模型。
+ * 视图模型（缺陷轮 II 重画）——**事件 → 一屏**的判据。
  *
- * 归约是**纯函数**：外壳的显示逻辑全在这里，Ink 只负责把模型画出来。
- * 逐 kind 覆盖（`model.delta` 三通道 · `tool.output.delta` · `tool.decision.*` ·
- * `turn.*` · `agent.*`），断言到「条目形状」一级——U20 换皮不动此层。
+ * 逐类覆盖：流式三通道 · 工具链（跑 / 完 / 被拒）· 裁决接管与草稿 · 回执与输出 ·
+ * 状态行五态 · 会话与重建。取景一律走**真归约**（`reduce`），不手搓视图对象。
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { KernelEvent } from '@magic/contracts'
-import { appendEcho, createView, reduce } from '../src/view.ts'
-import type { ShellView } from '../src/view.ts'
+import type { Entry } from '@magic/contracts'
+import {
+  HINT_IDLE,
+  HINT_WORKING,
+  appendEcho,
+  appendOutput,
+  appendReceipt,
+  createView,
+  isSessionRow,
+  rebuild,
+  reduce,
+} from '../src/view.ts'
+import type { LogRow, ShellView } from '../src/view.ts'
 import { event } from './events.ts'
 
-/** 依次投喂事件（归约是纯函数——每步都返回新视图）。 */
-function feed(events: readonly KernelEvent[], from: ShellView = createView()): ShellView {
-  return events.reduce(reduce, from)
-}
+const viewed = (events: readonly Parameters<typeof reduce>[1][], from: ShellView = createView()): ShellView =>
+  events.reduce(reduce, from)
 
-/** 断言用取条目——越界即抛（免得 `[i]!` 满屏）。 */
-function itemAt(view: ShellView, index: number): ShellView['items'][number] {
-  const item = view.items[index]
-  if (item === undefined) throw new Error(`没有第 ${index} 条条目（共 ${view.items.length} 条）`)
-  return item
-}
+/** 一屏里的记录行 kind（断言骨架用）。 */
+const kindsOf = (view: ShellView): readonly string[] => view.rows.map((row) => row.kind)
 
-describe('对话流 · 模型增量（流式）', () => {
-  test('正文增量累积成一条助手条目', () => {
-    const view = feed([
-      event('model.delta', { channel: 'text', text: '你' }),
-      event('model.delta', { channel: 'text', text: '好' }),
+const rowAt = (view: ShellView, index: number): LogRow | undefined => view.rows[index]
+
+// ══ 流式 ═════════════════════════════════════════════════════════════
+
+describe('流式（model.delta 三通道）', () => {
+  test('正文与思考各成块——交替出现即分块', () => {
+    const view = viewed([
+      event('model.delta', { channel: 'text', text: '先看' }),
+      event('model.delta', { channel: 'text', text: '一下。' }),
+      event('model.delta', { channel: 'thinking', text: '想' }),
+      event('model.delta', { channel: 'text', text: '好。' }),
     ])
 
-    expect(view.items).toHaveLength(1)
-    expect(itemAt(view, 0)).toMatchObject({ kind: 'assistant', text: '你好' })
+    expect(kindsOf(view)).toEqual(['assistant', 'thinking', 'assistant'])
+    expect(rowAt(view, 0)).toMatchObject({ text: '先看一下。' })
+    expect(rowAt(view, 1)).toMatchObject({ text: '想' })
   })
 
-  test('思考与正文各自成块——交替出现也保序', () => {
-    const view = feed([
-      event('model.delta', { channel: 'thinking', text: '先想' }),
-      event('model.delta', { channel: 'thinking', text: '一下' }),
-      event('model.delta', { channel: 'text', text: '答案是' }),
-      event('model.delta', { channel: 'thinking', text: '再想' }),
-      event('model.delta', { channel: 'text', text: '42' }),
+  test('工具调用增量按供应商侧 id 分组——同轮两次调用不成一行', () => {
+    const view = viewed([
+      event('model.delta', { channel: 'toolcall', name: 'ls', id: 'c1', text: '{"path"' }),
+      event('model.delta', { channel: 'toolcall', name: 'ls', id: 'c1', text: ':"."}' }),
+      event('model.delta', { channel: 'toolcall', name: 'read', id: 'c2', text: '{"path":"a"}' }),
     ])
 
-    expect(view.items.map((item) => [item.kind, 'text' in item ? item.text : ''])).toEqual([
-      ['thinking', '先想一下'],
-      ['assistant', '答案是'],
-      ['thinking', '再想'],
-      ['assistant', '42'],
-    ])
+    const tools = view.rows.filter((row) => row.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(tools[0]).toMatchObject({ name: 'ls', argsText: '{"path":"."}' })
+    expect(tools[1]).toMatchObject({ name: 'read' })
   })
 
-  test('工具调用增量按供应商侧调用 id 分组（同轮可多次调用）', () => {
-    const view = feed([
-      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'call_a', text: '{"cmd":' }),
-      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'call_a', text: '"ls"}' }),
-      event('model.delta', { channel: 'toolcall', name: 'read', id: 'call_b', text: '{"path":' }),
+  test('无 id 的增量并进最老的未配对工具行', () => {
+    const view = viewed([
+      event('model.delta', { channel: 'toolcall', name: 'ls', text: '{"a"' }),
+      event('model.delta', { channel: 'toolcall', text: ':1}' }),
     ])
 
-    expect(view.items).toHaveLength(2)
-    expect(itemAt(view, 0)).toMatchObject({ kind: 'tool', name: 'exec', argsText: '{"cmd":"ls"}' })
-    expect(itemAt(view, 1)).toMatchObject({ kind: 'tool', name: 'read', argsText: '{"path":' })
+    expect(view.rows).toHaveLength(1)
+    expect(rowAt(view, 0)).toMatchObject({ argsText: '{"a":1}' })
   })
 })
 
-describe('对话流 · 工具调用链', () => {
-  test('`tool.call` 接管先到的流式片段——按序配成同一条目', () => {
-    const view = feed([
-      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'call_a', text: '{"cmd":' }),
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 77 }),
+// ══ 工具链 ═══════════════════════════════════════════════════════════
+
+describe('工具链（call → 询问 → 裁决 → 结果）', () => {
+  test('`tool.call` 认领流式前情并落定参数——call 与 id 同指', () => {
+    const view = viewed([
+      event('model.delta', { channel: 'toolcall', name: 'ls', id: 'tc1', text: '{"path":"."}' }),
+      event('tool.call', { name: 'ls', args: { path: '.' } }, { id: 71 }),
     ])
 
-    expect(view.items).toHaveLength(1)
-    expect(itemAt(view, 0)).toMatchObject({ kind: 'tool', name: 'exec', call: 77 })
-    expect(itemAt(view, 0)).toHaveProperty('argsText', '{"cmd":"ls"}')
+    expect(view.rows).toHaveLength(1)
+    expect(rowAt(view, 0)).toMatchObject({ kind: 'tool', call: 71, name: 'ls', state: 'running' })
   })
 
-  test('`tool.call` 无流式前情时自建条目', () => {
-    const view = feed([event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 77 })])
-
-    expect(itemAt(view, 0)).toMatchObject({ kind: 'tool', name: 'exec', call: 77 })
-  })
-
-  test('同轮两次调用——各归各的条目', () => {
-    const view = feed([
-      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'call_a', text: '{"cmd":"ls"}' }),
-      event('model.delta', { channel: 'toolcall', name: 'exec', id: 'call_b', text: '{"cmd":"pwd"}' }),
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event('tool.call', { name: 'exec', args: { cmd: 'pwd' } }, { id: 72 }),
+  test('结果落定——`ok: false` 记失败，输出按行摊开', () => {
+    const view = viewed([
+      event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
+      event('tool.result', { call: 71, ok: false, output: { text: '第一行\n第二行' } }, { id: 72 }),
     ])
 
-    expect(view.items).toHaveLength(2)
-    expect(itemAt(view, 0)).toMatchObject({ call: 71, argsText: '{"cmd":"ls"}' })
-    expect(itemAt(view, 1)).toMatchObject({ call: 72, argsText: '{"cmd":"pwd"}' })
+    expect(rowAt(view, 0)).toMatchObject({ state: 'failed', output: ['第一行', '第二行'] })
   })
 
-  test('输出增量按 `call` 归位，两通道各自累积', () => {
-    const view = feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event('tool.output.delta', { call: 71, channel: 'stdout', text: 'a.txt\n' }),
-      event('tool.output.delta', { call: 71, channel: 'stdout', text: 'b.txt\n' }),
-      event('tool.output.delta', { call: 71, channel: 'stderr', text: '警告\n' }),
+  test('被拒的裁决把工具行记成「未执行」', () => {
+    const view = viewed([
+      event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
+      event('tool.decision', { call: 71, decision: 'reject', decider: 'user', elapsedMs: 900 }),
+      event('tool.result', { call: 71, ok: false, output: { text: '（未获批准，未执行）' } }),
     ])
 
-    expect(itemAt(view, 0)).toMatchObject({
-      output: [
-        { channel: 'stdout', text: 'a.txt\nb.txt\n' },
-        { channel: 'stderr', text: '警告\n' },
-      ],
-    })
+    expect(rowAt(view, 0)).toMatchObject({ state: 'rejected', elapsedMs: 900 })
   })
 
-  test('同轮两次调用的输出各归各的条目（不许一律并到同一条上）', () => {
-    const view = feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event('tool.call', { name: 'exec', args: { cmd: 'pwd' } }, { id: 72 }),
-      event('tool.output.delta', { call: 72, channel: 'stdout', text: 'b\n' }),
-      event('tool.output.delta', { call: 71, channel: 'stdout', text: 'a\n' }),
+  test('大块转存——结果只留 blob 引用（外壳不解析）', () => {
+    const view = viewed([
+      event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
+      event('tool.result', { call: 71, ok: true, output: { blob: 'blob_7' } }),
     ])
 
-    expect(itemAt(view, 0)).toMatchObject({ call: 71, output: [{ channel: 'stdout', text: 'a\n' }] })
-    expect(itemAt(view, 1)).toMatchObject({ call: 72, output: [{ channel: 'stdout', text: 'b\n' }] })
+    expect(rowAt(view, 0)).toMatchObject({ output: ['（大块转存 blob_7）'] })
   })
 
-  test('`tool.result` 落到对应条目——ok 与输出文本', () => {
-    const view = feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event('tool.result', { call: 71, ok: true, output: { text: 'a.txt\n' } }),
+  test('执行输出增量按行攒——末行继续接', () => {
+    const view = viewed([
+      event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
+      event('tool.output.delta', { call: 71, channel: 'stdout', text: 'a\nb' }),
+      event('tool.output.delta', { call: 71, channel: 'stdout', text: 'c\nd' }),
     ])
 
-    expect(itemAt(view, 0)).toMatchObject({ result: { ok: true, output: 'a.txt\n' } })
-  })
-
-  test('`tool.result` 的 blob 引用不解析——只留引用（大负载归记录域）', () => {
-    const view = feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event('tool.result', { call: 71, ok: true, output: { blob: 'blob_1' } }),
-    ])
-
-    expect(itemAt(view, 0)).toMatchObject({ result: { ok: true, output: 'blob_1' } })
+    expect(rowAt(view, 0)).toMatchObject({ output: ['a', 'bc', 'd'] })
   })
 })
 
-describe('审批（裁决配对）', () => {
-  test('`tool.decision.request` 呈材料与轻重——配对键＝请求事件 id', () => {
-    const view = feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'rm -rf x' } }, { id: 71 }),
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'exec', material: 'rm -rf x', weight: 'heavy' },
-        { id: 88 },
-      ),
-    ])
+// ══ 接管 ═════════════════════════════════════════════════════════════
 
-    expect(view.pending).toMatchObject({
-      id: 88,
-      call: 71,
-      name: 'exec',
-      material: 'rm -rf x',
-      weight: 'heavy',
-    })
+describe('接管（裁决挂着时占住输入框）', () => {
+  const ask = (weight: 'light' | 'heavy', id = 88) =>
+    event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight }, { id })
+
+  test('裁决到了就接管——dock 换成裁决，状态行转「等你定夺」＋键位', () => {
+    const view = viewed([ask('light')])
+
+    expect(view.dock.kind).toBe('decision')
+    expect(view.status).toMatchObject({ state: 'waiting', hint: 'y / a / n' })
   })
 
-  test('轮收束即撤下悬着的询问——轮都结束了，那条询问已作废', () => {
-    const asked = feed([
-      event('turn.start', {}),
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'exec', material: 'ls', weight: 'light' },
-        { id: 88 },
-      ),
-    ])
-    expect(asked.pending).toMatchObject({ id: 88 })
+  test('必闸类（重）的键位少一个 `a`', () => {
+    const view = viewed([ask('heavy')])
 
-    const aborted = reduce(asked, event('turn.end', { reason: 'aborted' }))
-    expect(aborted.pending).toBeNull()
+    expect(view.status.hint).toBe('y / n')
   })
 
-  test('`tool.decision` 收束提示，并把裁决记在该条目上', () => {
-    const view = feed([
-      event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
-      event(
-        'tool.decision.request',
-        { call: 71, name: 'exec', material: 'ls', weight: 'light' },
-        { id: 88 },
-      ),
-      event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 1200 }),
-    ])
+  test('接管时**草稿收起来**——答完原样归还（不自动发送）', () => {
+    const typed = { ...appendEcho(createView(), '打了一半'), draft: '打了一半' }
+    const taken = reduce(typed, ask('light'))
 
-    expect(view.pending).toBeNull()
-    expect(itemAt(view, 0)).toMatchObject({
-      // 条目上的留痕叫 `verdict`（裁决全量：判定 ＋ 裁者 ＋ 耗时）——`decision` 一词留给判定值本身
-      verdict: { decision: 'approve', decider: 'user', elapsedMs: 1200 },
-    })
+    expect(taken.draft).toBe('')
+    expect(taken.stashed).toBe('打了一半')
+
+    const answered = reduce(taken, event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 }))
+    expect(answered.draft).toBe('打了一半')
+    expect(answered.stashed).toBeNull()
+    expect(answered.dock.kind).toBe('input')
+  })
+
+  test('轮收束 ⇒ 撤卡 ＋ 归还草稿（那件工具跑不成了）', () => {
+    const taken = reduce({ ...createView(), draft: '草稿' }, ask('light'))
+    const ended = reduce(taken, event('turn.end', { reason: 'aborted' }))
+
+    expect(ended.dock.kind).toBe('input')
+    expect(ended.draft).toBe('草稿')
+  })
+
+  test('件数报两处——本轮有几件工具就报几件（单件不报）', () => {
+    const one = viewed([event('tool.call', { name: 'ls', args: {} }, { id: 71 }), ask('light')])
+    expect(one.dock.kind === 'decision' ? one.dock.pending.position : null).toBeNull()
+
+    const three = viewed([
+      event('tool.call', { name: 'a', args: {} }, { id: 71 }),
+      event('tool.call', { name: 'b', args: {} }, { id: 72 }),
+      event('tool.call', { name: 'c', args: {} }, { id: 73 }),
+      event('tool.decision.request', { call: 73, name: 'c', material: 'm', weight: 'light' }, { id: 90 }),
+    ])
+    expect(three.dock.kind === 'decision' ? three.dock.pending.position : null).toEqual({ index: 3, total: 3 })
+    expect(three.status.amount).toBe('3/3')
   })
 })
 
-describe('状态行', () => {
-  test('轮起止驱动忙碌位——结束方式随 `turn.end` 记下', () => {
-    const busy = feed([event('turn.start', {})])
-    expect(busy.status).toMatchObject({ phase: 'busy', turnEnd: null })
+// ══ 状态行 ═══════════════════════════════════════════════════════════
 
-    const settled = reduce(busy, event('turn.end', { reason: 'settled' }))
-    expect(settled.status).toMatchObject({ phase: 'idle', turnEnd: 'settled' })
+describe('状态行（五态固定词）', () => {
+  test('空闲 → 工作中 → 空闲：状态词与右位提示同起同落', () => {
+    const idle = createView()
+    expect(idle.status).toMatchObject({ state: 'idle', hint: HINT_IDLE })
 
-    const aborted = reduce(busy, event('turn.end', { reason: 'aborted' }))
-    expect(aborted.status).toMatchObject({ phase: 'idle', turnEnd: 'aborted' })
+    const working = reduce(idle, event('turn.start', {}))
+    expect(working.status).toMatchObject({ state: 'working', hint: HINT_WORKING })
+
+    const done = reduce(working, event('turn.end', { reason: 'settled' }))
+    expect(done.status).toMatchObject({ state: 'idle', hint: HINT_IDLE })
   })
 
-  test('agent 状态与模型名、用量进状态行', () => {
-    const view = feed([
-      event('agent.start', {}, { turn: null }),
-      event('agent.state', { state: 'waiting' }, { turn: null }),
-      event('model.call.start', { model: 'MiniMax-M3' }),
-      event('model.usage', { inputTokens: 120, outputTokens: 34 }),
-    ])
+  test('退避重试——状态词换掉，右位报「几秒后重发」', () => {
+    const view = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 1600, tier: 'transient' }))
 
-    expect(view.status).toMatchObject({
-      agent: 'waiting',
-      model: 'MiniMax-M3',
-      usage: { inputTokens: 120, outputTokens: 34 },
-    })
+    expect(view.status.state).toBe('retrying')
+    expect(view.status.amount).toBe('2/3')
+    expect(view.status.hint).toContain('1.6s')
   })
 
-  test('模型错误与内核异常都落成错误行（分档只作呈现）', () => {
-    const view = feed([
-      event('model.error', { tier: 'transient', message: '断了一下' }),
-      event('error', { message: '内核自身异常' }, { turn: null }),
-    ])
-
-    expect(view.items.map((item) => [item.kind, 'tone' in item ? item.tone : ''])).toEqual([
-      ['notice', 'error'],
-      ['notice', 'error'],
-    ])
-  })
-})
-
-describe('用户输入的回显', () => {
-  test('本地回显与 `message.user` 配平——不重复显示', () => {
-    const echoed = appendEcho(createView(), '跑一下 ls')
-    const confirmed = feed([event('message.user', { entry: 12 })], echoed)
-
-    expect(confirmed.items.map((item) => item.kind)).toEqual(['user'])
-    expect(confirmed.items).toHaveLength(1)
-    expect(itemAt(confirmed, 0)).toMatchObject({ kind: 'user', text: '跑一下 ls' })
-  })
-
-  test('无本地回显的 `message.user`（恢复场景）留痕——正文不在事件内', () => {
-    const view = feed([event('message.user', { entry: 12 })])
-
-    expect(itemAt(view, 0)).toMatchObject({ kind: 'user', text: '（用户条目 12）' })
-  })
-})
-
-describe('归约是纯函数', () => {
-  test('不改动入参视图', () => {
-    const before = appendEcho(createView(), '你好')
-    const snapshot = structuredClone(before)
-
-    reduce(before, event('model.delta', { channel: 'text', text: '嗨' }))
-
-    expect(before).toEqual(snapshot)
-  })
-})
-
-// —— 第 17 轮补锚（阶段 2 波次 2）：供应商 / 重试位 ——
-
-describe('第 17 轮 · 供应商与重试位', () => {
-  test('`model.call.start` 带条目名——状态行据以显示当前供应商', () => {
-    const view = reduce(
-      createView(),
+  test('模型名与用量随事件更新——③ 与 ④ 各自到位', () => {
+    const view = viewed([
       event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
-    )
+      event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
+    ])
 
-    expect(view.status.provider).toBe('minimax')
     expect(view.status.model).toBe('MiniMax-M3')
+    expect(view.status.usage).toBe(3100)
   })
 
-  test('条目名缺席＝不知道（不拿旧值充数——那是另一个条目的事）', () => {
-    const withProvider = reduce(
-      createView(),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
-    )
-    const withoutProvider = reduce(withProvider, event('model.call.start', { model: 'X' }))
+  test('出错 ⇒ `▲ 出错`；再开工 ⇒ 回「工作中」', () => {
+    const failed = reduce(createView(), event('model.error', { tier: 'terminal', message: '停' }))
+    expect(failed.status.state).toBe('error')
 
-    expect(withoutProvider.status.provider).toBeNull()
+    const again = reduce(failed, event('turn.start', {}))
+    expect(again.status.state).toBe('working')
   })
 
-  test('`model.retry` 亮起重试位——屏上不再是「一动不动」', () => {
-    const view = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 1500, tier: 'transient' }))
-
-    expect(view.status.retry).toEqual({ attempt: 2, delayMs: 1500 })
-  })
-
-  test('重试位只在等待期间亮着——调用再动起来即撤下', () => {
-    const retrying = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 800, tier: 'transient' }))
-    expect(retrying.status.retry).not.toBeNull()
-
-    // 三件都说明「这次调用又在动了」：首块内容到位 / 调用收束 / 出错终局
-    expect(reduce(retrying, event('model.delta', { channel: 'text', text: '来了' })).status.retry).toBeNull()
-    expect(reduce(retrying, event('model.call.start', { model: 'M' })).status.retry).toBeNull()
-    expect(reduce(retrying, event('model.error', { tier: 'terminal', message: '停' })).status.retry).toBeNull()
-  })
-
-  test('重试位不落进对话流——它是状态、不是历史（退避几次不该刷几行）', () => {
-    const once = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 500, tier: 'transient' }))
-    const twice = reduce(once, event('model.retry', { attempt: 3, delayMs: 1000, tier: 'transient' }))
-
-    expect(twice.items).toEqual([])
-    expect(twice.status.retry).toEqual({ attempt: 3, delayMs: 1000 })
-  })
-})
-
-// —— 第 18 轮补锚：换模型的结果（model.switched）——
-
-describe('第 18 轮 · 换模型的结果', () => {
-  test('成了——报一句 ＋ 状态行即时改过去（不必等下轮 call.start）', () => {
+  test('**一次性的事进记录区**——换模型成功＝一行回执，不进状态行', () => {
     const view = reduce(
       createView(),
       event('model.switched', { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
     )
 
-    const last = view.items.at(-1)
-    expect(last).toMatchObject({ kind: 'notice', tone: 'info' })
-    expect(last?.kind === 'notice' ? last.text : '').toContain('minimax-m2/MiniMax-M2')
-    expect(view.status.provider).toBe('minimax-m2')
+    expect(view.rows.at(-1)).toMatchObject({ kind: 'receipt' })
+    const last = view.rows.at(-1)
+    expect(last?.kind === 'receipt' ? last.text : '').toContain('MiniMax-M2')
     expect(view.status.model).toBe('MiniMax-M2')
   })
+})
 
-  test('没成——报缘由，且**不是「内核异常」**（用户命令不成立是另一类）', () => {
-    const view = reduce(
-      createView(),
-      event('model.switched', { ok: false, reason: '未知条目「ollama」——已注册：minimax / minimax-m2' }),
-    )
+// ══ 会话与重建 ═══════════════════════════════════════════════════════
 
-    const last = view.items.at(-1)
-    const text = last?.kind === 'notice' ? last.text : ''
-    expect(text).toContain('换模型未成')
-    expect(text).toContain('ollama')
-    expect(text).not.toContain('内核异常')
-    // 没成＝原选原样保留：状态行**不动**（切不动就不动）
-    expect(view.status.provider).toBeNull()
+describe('会话与重建', () => {
+  const state = (active: string, sessions: readonly { id: string; title?: string }[]) =>
+    event('session.state', {
+      active,
+      sessions: sessions.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
+    })
+
+  test('目录与当前会话落进视图——② 显示标题', () => {
+    const view = reduce(createView(), state('s1', [{ id: 's1', title: '时区修正' }]))
+
+    expect(view.status.session).toBe('时区修正')
+    expect(view.catalog.map((row) => row.id)).toEqual(['s1'])
+  })
+
+  test('没有标题的会话——② 不编一个出来（屏上显示「新会话」由渲染层兜）', () => {
+    const view = reduce(createView(), state('s1', [{ id: 's1' }]))
+
+    expect(view.status.session).toBeNull()
+    expect(view.catalog).toHaveLength(1)
+  })
+
+  test('**换了会话 ⇒ 记录区清空**（换一条＝换一屏，重建随后铺上）', () => {
+    const before = reduce(appendEcho(createView(), '甲的事'), state('s1', [{ id: 's1' }]))
+    const after = reduce(before, state('s2', [{ id: 's1' }, { id: 's2' }]))
+
+    expect(after.rows).toEqual([])
+    expect(after.sessionId).toBe('s2')
+  })
+
+  test('同一会话再报一次（问目录 / 改名）**不清屏**', () => {
+    const before = reduce(appendEcho(createView(), '甲的事'), state('s1', [{ id: 's1' }]))
+    const again = reduce(before, state('s1', [{ id: 's1', title: '改过的' }]))
+
+    expect(again.rows).toHaveLength(1)
+  })
+
+  test('重建：条目配对成行（工具两条并一行）、屏上痕迹不回', () => {
+    const entries: readonly Entry[] = [
+      { id: 1, kind: 'user', content: { text: '看看有什么' }, at: 0 },
+      { id: 2, kind: 'assistant', content: { text: '我列一下。' }, at: 1 },
+      { id: 3, kind: 'tool-call', content: { text: '' }, payload: { name: 'ls', args: { path: '.' } }, at: 2 },
+      { id: 4, kind: 'tool-result', content: { text: 'a.txt\nb.txt' }, payload: { ok: true, output: { text: 'a.txt\nb.txt' } }, at: 3 },
+      { id: 5, kind: 'assistant', content: { text: '两个文件。' }, at: 4 },
+    ]
+
+    const view = rebuild(createView(), entries)
+
+    expect(kindsOf(view)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    expect(rowAt(view, 2)).toMatchObject({ kind: 'tool', name: 'ls', output: ['a.txt', 'b.txt'], state: 'ok' })
+    expect(view.rows.every(isSessionRow)).toBe(true)
+  })
+
+  test('重建不吃屏上痕迹——回执与命令输出不进', () => {
+    const withTraces = appendOutput(appendReceipt(createView(), '已切到 #2'), '可用命令', ['/help　这张表'])
+    const view = rebuild(withTraces, [{ id: 1, kind: 'user', content: { text: '重新来' }, at: 0 }])
+
+    expect(kindsOf(view)).toEqual(['user'])
+  })
+})
+
+// ══ 屏上痕迹 ═════════════════════════════════════════════════════════
+
+describe('屏上痕迹（不落库 · 不重建）', () => {
+  test('回执行有 `·` 标记；命令输出是无标记的 dim 块', () => {
+    const view = appendOutput(appendReceipt(createView(), '已切到 #2'), '可用命令', ['/help　这张表'])
+
+    expect(rowAt(view, 0)).toMatchObject({ kind: 'receipt', text: '已切到 #2' })
+    expect(rowAt(view, 1)).toMatchObject({ kind: 'output', lines: ['可用命令', '/help　这张表'] })
+    expect(isSessionRow(rowAt(view, 0) as LogRow)).toBe(false)
+    expect(isSessionRow(rowAt(view, 1) as LogRow)).toBe(false)
+  })
+})
+
+// ══ 补：回显配平 · 陌生引用 · 错误分档 · 折叠与收拢 ═══════════════════
+
+describe('回显与陌生引用', () => {
+  test('`message.user` 配平本地回显——把 echoed 落回 false', () => {
+    const echoed = appendEcho(createView(), '看下目录')
+    expect(rowAt(echoed, 0)).toMatchObject({ kind: 'user', echoed: true })
+
+    const paired = reduce(echoed, event('message.user', { entry: 7 }))
+    expect(rowAt(paired, 0)).toMatchObject({ echoed: false })
+  })
+
+  test('没有回显可配（重建场景）——**不编一行出来**', () => {
+    const view = reduce(createView(), event('message.user', { entry: 7 }))
+
+    expect(view.rows).toEqual([])
+  })
+
+  test('陌生 call 的结果 / 裁决——静默忽略（不炸、不新建行）', () => {
+    const view = viewed([
+      event('tool.result', { call: 999, ok: true, output: { text: 'x' } }),
+      event('tool.decision', { call: 998, decision: 'approve', decider: 'user', elapsedMs: 1 }),
+    ])
+
+    expect(view.rows).toEqual([])
+  })
+})
+
+describe('错误分档（措辞进记录区）', () => {
+  test('三档各说各的话，且状态行转 `▲ 出错`', () => {
+    const tiers = ['transient', 'context-limit', 'terminal'] as const
+
+    for (const tier of tiers) {
+      const view = reduce(createView(), event('model.error', { tier, message: '炸了' }))
+      expect(view.status.state).toBe('error')
+      expect(rowAt(view, 0)).toMatchObject({ kind: 'receipt' })
+    }
+
+    expect(rowAt(reduce(createView(), event('model.error', { tier: 'transient', message: 'x' })), 0)).toMatchObject({
+      text: '模型错误（瞬时）：x',
+    })
+    expect(rowAt(reduce(createView(), event('model.error', { tier: 'context-limit', message: 'x' })), 0)).toMatchObject({
+      text: '模型错误（超限）：x',
+    })
+  })
+
+  test('内核自身异常（`error`）——同样进记录区当回执，不占状态行', () => {
+    const view = reduce(createView(), event('error', { message: '装配错了' }))
+
+    expect(rowAt(view, 0)).toMatchObject({ kind: 'receipt', text: '内核异常：装配错了' })
+    expect(view.status.state).toBe('error')
   })
 })

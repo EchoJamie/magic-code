@@ -1,84 +1,77 @@
 /**
- * 外壳 · 启动（U09）——把外壳挂上终端。
+ * 外壳 · 启动（缺陷轮 II 重画）——把一屏挂上终端。
  *
- * 装配纪律的落点：**先接订阅、后放开输入**——`createShell` 构造即订阅，订阅之后才
- * `render`（渲染出来输入框才可打）。反过来的话，早发的命令会被内核**丢弃**
- * （控制域语义：无订阅方不排队、不补发）。
+ * **全屏 ＋ 备用屏**（原型 · 交互逻辑：铺满窗口，resize 整体重绘）：
+ * - Ink 原生支持 `alternateScreen` —— 接管整屏、退出时**原样还给终端**；
+ * - `useWindowSize` 在 resize 时让组件重渲染，尺寸一变，记录区可视行数 / 抽屉上限 /
+ *   状态行两段**全部按新尺寸重算**（那是纯函数，见 `components/app.ts`）。
  *
- * Ink 的 `exitOnCtrlC` 关掉——**Ctrl+C 语义归外壳**（空闲退出 / 工作中中断）。
+ * **代价如实记**：接管整屏＝终端自身的滚动历史没了（备用屏没有回滚），
+ * 滚动归我们——记录区自己管视口（只渲染视口内的行，见 `components/log.ts`）。
+ *
+ * `exitOnCtrlC: false` —— Ctrl+C 归**外壳**判（空闲＝退出 · 工作中＝中断，原型 · 键盘）。
  */
 
 import { render } from 'ink'
 import { createElement as h } from 'react'
-import type { ControlTransport } from '@magic/contracts'
-import { TuiApp } from './components/app.ts'
-import type { Shell } from './shell.ts'
 import { createShell } from './shell.ts'
+import { TuiApp } from './components/app.ts'
+import type { ControlTransport } from '@magic/contracts'
 
+/** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
-  /** **外壳侧一端——装配注入**（技术方案 · 领域划分：`ControlTransport` 外壳侧）。 */
   readonly transport: ControlTransport
-  /** 输入流（缺省 `process.stdin`；测试可注入）。 */
-  readonly stdin?: NodeJS.ReadStream
-  /** 输出流（缺省 `process.stdout`）。 */
-  readonly stdout?: NodeJS.WriteStream
   /**
-   * **启动流转**（U16）——在**订阅之后、渲染之前**跑一次（装配给的是「对开局会话跑一次
-   * 恢复」，但这一层不知道它是什么，只知道「放开输入之前有件事要做完」）。
-   *
-   * 次序的道理（技术方案 · 控制域）：恢复要发事件，而**无订阅方时命令 / 事件都丢**——
-   * 订阅已在 `createShell` 里接上，故此处跑得；反过来（先渲染再恢复）用户能在恢复跑完前
-   * 打字，与「回到等待输入」抢同一份记录。缺省不做（假装配 / 演示不必）。
+   * 启动流转（装配给）——恢复 / 重建要发事件，故**必须在订阅之后**跑
+   * （技术方案 · 控制域：无订阅方时命令与事件都丢）。
    */
   readonly boot?: (() => Promise<void>) | undefined
+  /** 注入终端流（测试用）——缺省＝真 stdin / stdout。 */
+  readonly stdin?: NodeJS.ReadStream | undefined
+  readonly stdout?: NodeJS.WriteStream | undefined
 }
 
+/** 挂上终端之后的把手。 */
 export type TuiHandle = {
-  readonly shell: Shell
-  /** 等退出（用户空闲时 Ctrl+C，或装配侧收摊）；退出后自动退订。 */
+  /** 等外壳收摊（用户退出 / Ctrl+C）。 */
   waitUntilExit(): Promise<void>
-  /** 主动收摊。 */
-  unmount(): void
 }
 
 export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const stdin = options.stdin ?? process.stdin
+  const stdout = options.stdout ?? process.stdout
 
-  // 不是终端就直说——Ink 会抛 raw mode 的栈（「Raw mode is not supported…」），用户看不懂。
-  // 交互与 Ctrl+C 都靠终端；管道输入不是本阶段的形态。**停在任何 await 之前**——
-  // 它是同步的前置检查，异步化不该把「当场说清楚」变成「以后再说」。
+  // **不是终端就说人话**（Ink 在非 TTY 上抛 raw mode 的栈——用户看不懂，也不是他的错）
   if (stdin.isTTY !== true) {
     throw new Error('外壳需要一个终端（stdin 不是 TTY）——请在终端里启动。')
   }
 
   const shell = createShell(options.transport)
-  // 安静问一次目录——状态行要显示当前会话（列不列是 `/session` 的事，见 `Shell.refreshSessions`）
-  shell.refreshSessions()
 
-  try {
-    await options.boot?.()
-  } catch (error) {
-    shell.dispose() // 起步就塌了：退订，别把终端吊在订阅态
-    throw error
-  }
-
-  const instance = render(h(TuiApp, { shell }), {
+  const app = render(h(TuiApp, { shell }), {
     stdin,
-    stdout: options.stdout ?? process.stdout,
+    stdout,
+    // 铺满窗口：接管整屏（退出即还）
+    alternateScreen: true,
+    // Ctrl+C 由外壳判（空闲退出 / 工作中中断）
     exitOnCtrlC: false,
   })
 
-  const unmount = (): void => {
-    instance.unmount()
+  try {
+    // **先接订阅（构造即订阅）、后放开输入**——中间这一跳是启动流转
+    await options.boot?.()
+    // 接续 / 恢复之后读一次历史：记录区按条目**重建**（缺陷 D1）
+    shell.readHistory()
+  } catch (error) {
+    app.unmount()
     shell.dispose()
+    throw error
   }
 
   return {
-    shell,
     waitUntilExit: async () => {
-      await instance.waitUntilExit()
+      await app.waitUntilExit()
       shell.dispose()
     },
-    unmount,
   }
 }
