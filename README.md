@@ -34,12 +34,50 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 ```sh
 bun install            # 装配依赖（prepare 顺带配置 git 钩子）
 bun run magic          # 起外壳（TUI）——装配 → 接控制面 → 一屏
-bun run magic --check  # 装配自检（配置来处 · 数据落点 · 工作区根 · 会话 · 模型；不打印 key）
+bun run magic --check  # 装配自检（配置来处 · 供应商表 · 数据落点 · 工作区根 · 会话；不打印 key）
 bun run magic --script <文件>   # 无人值守跑一段脚本，打印事件轨迹
+bun run magic --provider <id>   # 开局走哪个供应商条目（providers 的键）
+bun run magic --model <名>      # 开局用哪个模型（同一条目上换模型，可单用）
 bun run check          # 质量闸：typecheck + test
 bun run typecheck
 bun test
 ```
+
+### 换模型（阶段 2）
+
+**开局**——`--provider <id>` / `--model <名>`（两件可单用；都不给＝走缺省条目）。
+
+**会话中途**——外壳里打 **`/model <供应商> [模型]`**：
+
+```text
+/model minimax-m2          换到另一个条目（模型取该条目的默认）
+/model minimax MiniMax-M3  条目与模型一起换
+/model                     不带参数——内核回一句「不知道要换成什么」并列出已注册的条目
+```
+
+**换模型＝换接缝下游**：上下文由内核构造，对话域 / 记录域不知道发生过切换——**上下文不丢**。
+**切不动就不动**：条目名写错 / 缺 key 时原选原样保留，屏上报一句缘由（不半途改）。
+状态行显示 `模型 <供应商>/<名称>`，**取自真跑过的那次调用**（不是命令的自我报告）。
+
+不认得的斜杠文字**不抢**——`/usr/bin 里有什么` 这类人话照旧发给模型。
+
+### 脚本（`--script`）
+
+```json
+{
+  "inputs": [
+    "看一下工作区",
+    { "switch": { "provider": "minimax-m2" } },
+    "刚才那个文件还在吗"
+  ],
+  "decisions": ["approve", { "decision": "approve", "remember": true }]
+}
+```
+
+- `inputs`：按序走的步骤——**裸字符串**＝一条交代（等它收束再走下一步）；
+  **`{ "switch": { "provider"?, "model"? } }`** ＝会话中途换模型（与 `/model` 同一条链）。
+- `decisions`：裁决答复按询问次序取（用尽＝批准）；对象形带 `remember` ＝**「总是允许」**
+  （本会话同类不再问）。
 
 ## 质量闸与守护
 

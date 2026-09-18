@@ -230,7 +230,13 @@ export function withTransientRetry(
           return
         }
 
-        await sleep(delayAfter(attempt, failure.error, policy), streamOptions?.signal)
+        const delayMs = delayAfter(attempt, failure.error, policy)
+        // **先报、后等**——「正在等」这句话要赶在等待之前说（否则屏上还是先静一会儿）。
+        // 它骑马过流（一块本层自己的 `retry` 信号），由归一铸成 `model.retry` 事件：
+        // 模型域的事件出口就是这条流，另开一条路会让它与前后的增量**丢掉先后的准头**
+        // （而「等之前 / 等之后」正是这条事件唯一的用处）。
+        yield { type: 'retry', attempt: attempt + 1, delayMs }
+        await sleep(delayMs, streamOptions?.signal)
       }
     }
   }

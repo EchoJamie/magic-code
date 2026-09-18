@@ -18,9 +18,31 @@ import type {
   ModelErrorTier,
 } from '@magic/contracts'
 
-/** 调用起——只报模型名；端点 / key / 参数等供应商细节不出此域。 */
-export function modelCallStart(stamper: EventStamper, model: string): KernelEvent {
-  return stamper.stamp('model.call.start', { model })
+/**
+ * 调用起——报模型名；端点 / key / 参数等供应商细节不出此域。
+ *
+ * `provider` ＝这条**条目**的名字（`providers` 的键）——**不是**供应商细节，是「走的哪一格」：
+ * 外壳状态行要显示当前供应商（技术方案 · 领域划分：「运行时切换」锚定），而外壳够不着注册表。
+ * 取「真跑过的这一次」而不是用户命令的自我报告——切不动就不动，拿意图当状态会显示假条目。
+ */
+export function modelCallStart(stamper: EventStamper, model: string, provider?: string): KernelEvent {
+  return stamper.stamp('model.call.start', {
+    model,
+    ...(provider === undefined ? {} : { provider }),
+  })
+}
+
+/**
+ * 退避重试中——**实时信号、不落库**（技术方案 · 记录 · kind 族「model · 实时」）。
+ *
+ * 退避期间事件流原先**静默**（用户只看见界面不动）；它是「正在等」的过程信号，
+ * 不是重放事实——重放只看终局（这次调用成了没有、内容是什么），重试次数另落
+ * `ModelCallResult.attempts`，故不落库不丢信息。
+ *
+ * `attempt` **从 2 起**：第 1 次是首发，谈不上「重试」。
+ */
+export function modelRetry(stamper: EventStamper, attempt: number, delayMs: number): KernelEvent {
+  return stamper.stamp('model.retry', { attempt, delayMs, tier: 'transient' })
 }
 
 /** 调用止——收束。失败走 `modelErrorEvent`，**不另发** `model.call.end`。 */

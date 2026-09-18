@@ -135,7 +135,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
   const middleware = options.middleware ?? []
 
   // 瞬时档的退避重试（技术方案 · 错误分档）——在**归一之下**：内核只看得见最终那一次尝试，
-  // 重试的痕迹只有结果上的 `attempts`（见 `retry.ts` 头注）
+  // 好消息是重试的痕迹有两条出口：结果上的 `attempts`（可断）与 `model.retry` 事件（可看）
   let attempts = 0
   const streamRetrying = withTransientRetry(streamVendor, {
     policy: options.retry,
@@ -143,6 +143,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     onAttempt: (attempt) => {
       attempts = attempt
     },
+    // 退避期间**屏上要有话说**（原先这里静默，用户只看见界面一动不动）——
+    // 那块 `retry` 信号骑马过流，由归一铸成 `model.retry`（见 `retry.ts` 的那一处 yield）
   })
 
   // 返回类型即 `ModelGateway`——`extends ModelGatewayPort` 处已由 tsc 钉住结构兼容（见 `call.ts`）
@@ -154,6 +156,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 
       const { events, result } = toKernelEvents(streamRetrying(effective, streamOptions), {
         model: effective.model,
+        // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
+        provider: providerId,
         secret: apiKey,
         // 生效标记（查内置表 → 配置接管位）——标记驱动的切分只在此处裁定
         traits: resolveModelTraits(effective.model, config.traits),

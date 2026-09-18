@@ -33,6 +33,7 @@ import type {
   EventStamper,
   KernelEvent,
   ModelGateway,
+  ModelSwitchRequest,
   SessionId,
   Timestamp,
   TurnId,
@@ -175,16 +176,6 @@ export function createStamper(input: {
   }
 }
 
-/** 换模型请求的一句话（过渡体的报文用）——两件都没给时说「没说要换成什么」。 */
-function describeSwitch(request: { readonly provider?: string; readonly model?: string }): string {
-  const parts = [
-    ...(request.provider === undefined ? [] : [`条目 ${request.provider}`]),
-    ...(request.model === undefined ? [] : [`模型 ${request.model}`]),
-  ]
-
-  return parts.length === 0 ? '没说要换成什么' : parts.join(' · ')
-}
-
 /** 本地日期（`YYYY-MM-DD`）——提示词的注入项 `date` 取它（用户的一天，不是 UTC 的一天）。 */
 function localDate(at: Timestamp): string {
   const d = new Date(at)
@@ -276,23 +267,41 @@ export function assemble(options: AssembleOptions): Assembly {
     now,
   })
 
+  /**
+   * 换模型 —— **判别式处置**（技术方案 · 领域划分：「切不动就不动」）。
+   *
+   * **成功不发事件**——状态的真相在「**真的用了哪个**」：下一次 `model.call.start` 会带上
+   * 新条目的 `provider`，外壳状态行随之更正。再发一条「已切换」等于**多一个状态源**，
+   * 它与事实分叉的那天没人知道该信谁。（外壳在换完到下轮之间仍显示上一条目——那是**实话**：
+   * 上一条确实是最后真跑过的那条。）
+   *
+   * **失败必须出声**——用户打了 `/model x` 总得知道为什么没变（切不动就不动，但不静默）。
+   * 走既有的兜底 kind `error`：它是「内核自身异常——产生方就近」，而装配正是产生方；
+   * **不为一条消息长一个新 kind**（kind 族是 schema 冻结点）。
+   * ⚠️ 这处是**权宜**：`error` 的语义比「用户命令不成立」重，屏上会显示成「内核异常：…」。
+   * 更好的形态是一个专用的切换结果事件——见回报「第 17 轮 · 待决」。
+   */
+  const switchModel = (request: ModelSwitchRequest): void => {
+    if (models === undefined) {
+      sink.emit(
+        stamper.stamp('error', { message: '换模型不适用：本次装配没有供应商注册表（注入了替身网关）' }),
+      )
+      return
+    }
+
+    const result = models.use(request)
+    // 切不动就不动——原选原样保留（注册表自己保证），此处只把缘由说出来
+    if (!result.ok) sink.emit(stamper.stamp('error', { message: `换模型未成：${result.reason}` }))
+  }
+
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` → 对话域；`decision.answer` → 权限域）──
   hub.bind({
     onInput: (input) => conversation.submit(input),
     onInterrupt: () => conversation.interrupt(),
     // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域
     onDecision: (id, decision, opts) => gate.resolve(id, decision, opts),
-    onModelSwitch: (request) => {
-      // ⚠️ **过渡体**——注册表随 U17 到站（分支 `u17-models`，本轮集成步合入）。
-      // 在它落地之前这条路由**如实报**，不静默吞、也不假装收下：
-      // 外壳的 `/model` 因此当场看得见「这次装配换不了模型」。
-      // 合入后此处换成 `models.use(request)` 的判别式处置（见回报「第 17 轮」）。
-      sink.emit(
-        stamper.stamp('error', {
-          message: `换模型不适用：本次装配没有供应商注册表（${describeSwitch(request)}）`,
-        }),
-      )
-    },
+    // 换模型（阶段 2）——**判别式处置**（技术方案 · 领域划分：「切不动就不动」）
+    onModelSwitch: (request) => switchModel(request),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────

@@ -30,17 +30,43 @@ import {
   modelCallStart,
   modelDelta,
   modelErrorEvent,
+  modelRetry,
   modelUsage,
 } from './events.ts'
 import type { InlineDelta, TextSplitter } from './inline-thinking.ts'
 import { inlineThinkingSplitter, passthroughSplitter } from './inline-thinking.ts'
 
 /** 取件层的流形态——**接缝内部**。AI SDK 的 `TextStreamPart` 不越过接缝。 */
-export type VendorStreamPart = TextStreamPart<ToolSet>
+/**
+ * 退避重试的信号块——**取件层不产它**，是退避层（`retry.ts`）插进流里的一格。
+ *
+ * 为什么要骑马过流而不是另开一条路：模型域的事件出口**就是这条流**
+ * （`ModelStream.events`，由对话域消费后转 `EventSink`）——从别处直发会让
+ * `model.retry` 与它前后的 `model.delta` **丢掉先后的准头**，而「等之前 / 等之后」
+ * 恰恰是这条事件唯一的用处。
+ */
+export type RetryStreamPart = {
+  readonly type: 'retry'
+  /** 下一次尝试的序号（**从 2 起**——第 1 次是首发，谈不上「重试」）。 */
+  readonly attempt: number
+  /** 即将等的时长（毫秒）。 */
+  readonly delayMs: number
+}
+
+/**
+ * 接缝内部的流块。名字沿用「取件层」——主体仍是 SDK 的 `TextStreamPart`；
+ * 额外那一格 `retry` 是本层自己的信号（见 `RetryStreamPart`）。
+ */
+export type VendorStreamPart = TextStreamPart<ToolSet> | RetryStreamPart
 
 export type NormalizeOptions = {
   /** 模型名——写进 `model.call.start`。 */
   readonly model: string
+  /**
+   * 条目名（`providers` 的键）——写进 `model.call.start`，供外壳状态行显示当前供应商
+   * （技术方案 · 领域划分：「运行时切换」锚定）。缺省＝未给（Faux 与直接喂 chunk 的用例）。
+   */
+  readonly provider?: string | undefined
   /** 用于错误消息脱敏（key 永不入记录 / 事件）。 */
   readonly secret?: string | undefined
   /**
@@ -66,6 +92,7 @@ type PendingToolCall = {
 
 type NormalizeState = {
   readonly model: string
+  readonly provider: string | undefined
   readonly secret: string | undefined
   readonly stamper: EventStamper
   /** 正文切分位——生效标记决定实现（见 `inline-thinking.ts`）。 */
@@ -95,6 +122,7 @@ function createSplitter(traits: ModelTraits | undefined): TextSplitter {
 function createState(options: NormalizeOptions): NormalizeState {
   return {
     model: options.model,
+    provider: options.provider,
     secret: options.secret,
     stamper: options.stamper,
     splitter: createSplitter(options.traits),
@@ -169,6 +197,11 @@ function flushText(state: NormalizeState): KernelEvent[] {
 
 function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
   switch (part.type) {
+    // —— 退避重试中（本层自己的信号块，非取件来源）——
+    case 'retry': {
+      return [modelRetry(state.stamper, part.attempt, part.delayMs)]
+    }
+
     // —— 正文（过切分位：内嵌思考可能被切到 thinking 通道）——
     case 'text-delta': {
       return emitText(state, state.splitter.push(part.text))
@@ -347,7 +380,7 @@ export function toKernelEvents(
 
   async function* pump(): AsyncGenerator<KernelEvent> {
     try {
-      yield modelCallStart(state.stamper, state.model)
+      yield modelCallStart(state.stamper, state.model, state.provider)
 
       for await (const part of parts) {
         for (const event of consume(part, state)) yield event

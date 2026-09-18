@@ -192,9 +192,12 @@ describe('退避重试 · 接缝内部', () => {
 
     expect(call).toBe(2)
     expect(attempts).toEqual([1, 2])
-    // 第一次尝试的 `start` 被丢弃——吐出来的只有第二次那一遍，不重复
-    expect(parts.map((part) => part.type)).toEqual(['start', 'text-delta'])
-    expect(parts[1]).toMatchObject({ type: 'text-delta', text: '好的' })
+    // 第一次尝试的 `start` 被丢弃——吐出来的只有第二次那一遍，不重复。
+    // 打头那格 `retry` 是退避层插进来的**自己的信号**（第 17 轮补锚：
+    // 退避期间屏上要有话说），它不属于任何一次尝试——故不随尝试被丢弃
+    expect(parts.map((part) => part.type)).toEqual(['retry', 'start', 'text-delta'])
+    expect(parts[0]).toMatchObject({ type: 'retry', attempt: 2, delayMs: DEFAULT_RETRY_POLICY.baseDelayMs })
+    expect(parts[2]).toMatchObject({ type: 'text-delta', text: '好的' })
   })
 
   test('已定局后失败 → 照原样上报，不重来（半截正文不拼接）', async () => {
@@ -327,11 +330,53 @@ describe('退避重试 · 假端点回环', () => {
 
     expect(requests).toHaveLength(2)
     expect(slept.delays).toEqual([DEFAULT_RETRY_POLICY.baseDelayMs])
-    // 事件序列＝一次干净调用：没有 model.error、没有第二个 call.start
-    expect(kindsOf(events)).toEqual(['model.call.start', 'model.delta', 'model.call.end'])
+    // 事件序列＝一次干净调用 ＋ **一条「正在重试」**（第 17 轮补锚）：没有 model.error、
+    // 没有第二个 call.start。退避期间原先静默——用户只看见界面一动不动
+    expect(kindsOf(events)).toEqual([
+      'model.call.start',
+      'model.retry',
+      'model.delta',
+      'model.call.end',
+    ])
     expect(result.error).toBeUndefined()
     expect(result.text).toBe('重试之后成了')
     expect(result.attempts).toBe(2)
+  })
+
+  test('`model.retry` 说清「第几次、等多久」——且**先报、后等**（不然屏上还是先静一会儿）', async () => {
+    const slept = recorder()
+    const { fetch } = endpoint([tooManyRequests(), tooManyRequests(), okResponse('第三次成了')])
+
+    const { events } = await drainStream(
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({
+        model: CONFIG.model,
+        messages: [{ role: 'user', content: '嗨' }],
+      }),
+    )
+
+    const retries = events.filter((event) => event.kind === 'model.retry')
+    // 从 2 起——第 1 次是首发，谈不上「重试」
+    expect(retries.map((event) => [event.data.attempt, event.data.delayMs])).toEqual([
+      [2, 800],
+      [3, 1_600],
+    ])
+    // 档位恒为瞬时（退避只对该档；超限 / 终态一次都不多打）
+    expect(retries.map((event) => event.data.tier)).toEqual(['transient', 'transient'])
+    // 位置：首条恒为 call.start，重试插在它之后、内容之前
+    expect(kindsOf(events).indexOf('model.retry')).toBeGreaterThan(0)
+    expect(kindsOf(events).indexOf('model.retry')).toBeLessThan(kindsOf(events).indexOf('model.delta'))
+  })
+
+  test('`model.call.start` 带上条目名——外壳状态行据以显示「当前供应商」', async () => {
+    const { fetch } = endpoint([okResponse('一次就好')])
+
+    const { events } = await drainStream(
+      gatewayWith(fetch).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+    )
+
+    const started = events[0]
+    expect(started?.kind).toBe('model.call.start')
+    expect(started?.kind === 'model.call.start' ? started.data.provider : undefined).toBe('minimax')
   })
 
   test('一路顺风时 attempts 为 1（计数如实，不虚报重试）', async () => {
@@ -475,7 +520,9 @@ describe('退避重试 · 假端点回环', () => {
     )
 
     expect(requests).toHaveLength(1)
-    expect(kindsOf(events)).toEqual(['model.call.start'])
+    // **先报、后等**：那句「正在重试」已经说出口了，随后等待被中断、静默收场
+    // （中断不是错误——没有 model.error、没有 call.end）
+    expect(kindsOf(events)).toEqual(['model.call.start', 'model.retry'])
     expect(result.aborted).toBe(true)
     expect(result.error).toBeUndefined()
   })
@@ -527,7 +574,7 @@ describe('退避重试 · 假端点回环', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('退避重试 · 与归一的接缝', () => {
-  test('重试发生在归一之下——事件流里看不出重试（只有结果上的计数）', async () => {
+  test('重试发生在归一之下——**流里不重复内容**，但「正在重试」这件事看得见', async () => {
     // 取件层流两段脚本：第一段（`start` ＋ 掉线）走不通，第二段吐出正文
     let call = 0
     const scriptedGate: VendorStreamer = () => {
@@ -563,7 +610,10 @@ describe('退避重试 · 与归一的接缝', () => {
     )
 
     expect(call).toBe(2)
-    expect(parts.map((part) => part.type)).toEqual(['start', 'text-delta', 'finish'])
+    // 内容层面：第一次尝试的块一个不漏地丢弃，内核只看得见第二次那一遍。
+    // 唯一多出来的是那格 `retry` 信号——它由归一铸成 `model.retry` 事件
+    // （第 17 轮补锚：退避期间原先静默，用户只看见界面一动不动）
+    expect(parts.map((part) => part.type)).toEqual(['retry', 'start', 'text-delta', 'finish'])
   })
 
   test('脚本化的流走通了也照样是原样通过（无重试时不改一个块）', async () => {
