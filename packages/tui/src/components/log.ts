@@ -72,8 +72,11 @@ export function LogRowView({ row, columns, expanded, spaced }: LogRowProps): Rea
       h(
         Text,
         { key: line.key, backgroundColor: line.background },
-        ...(line.spacer === true
-          ? ['']
+        // ⚠️ **空行得给一个「有东西」的孩子**——Ink 7 会把内容为空串的 `<Text>` 整行丢掉
+        // ⇒ 正文里的段落空行被**静默吃掉**（缺陷 D19。**根因在这里，不在 `markdown.ts`**：
+        // 那边把空行好好地交出来了）。一格空格就够，肉眼仍是空行。
+        ...(line.spacer === true || line.segments.length === 0
+          ? [' ']
           : line.segments.map((piece, at) =>
               h(Text, { key: `s:${at}`, color: piece.color, bold: piece.bold }, piece.text),
             )),
@@ -129,13 +132,16 @@ function rowBody(
       if (body.trim() === '') return []
 
       // **正文是 Markdown**（缺陷 D14）——五样渲染 ＋ 流式容忍都在 `markdown.ts` 里，
-      // 这里只做「显示行 → 折好的行」：`⏺` 挂首行，续行按各行的悬挂缩进挂
-      // （列表挂到符号之后；其余按默认缩进）。
+      // 这里只做「显示行 → 折好的行」。
+      // **统一悬挂缩进**（缺陷 D20）——首行的标记占 2 列 ⇒ **正文与所有折行都从第 3 列起**；
+      // markdown 自己的悬挂（列表按标记宽度）再叠在这条基线上。
       return markdown(body).flatMap((line, at) =>
         wrapSegments(
-          at === 0 ? [seg('⏺ ', PALETTE.ok, true), ...line.segments] : line.segments,
+          at === 0
+            ? [seg('⏺ ', PALETTE.ok, true), ...line.segments]
+            : [seg(INDENT), ...line.segments],
           columns,
-          { key: `r:a:${at}`, hang: line.hang ?? INDENT },
+          { key: `r:a:${at}`, hang: `${INDENT}${line.hang ?? ''}` },
         ),
       )
     }
@@ -267,7 +273,9 @@ function wrapSegments(
   options: { readonly key: string; readonly background?: string; readonly hang: string },
 ): readonly LogLine[] {
   const text = segments.map((piece) => piece.text).join('')
-  const width = Math.max(8, columns - 2)
+  // 折行宽度按**悬得最远的那一条**算（首行前缀 2 列 / 续行的 `hang`）——否则续行会
+  // 比首行宽出 `hang - 2` 列，终端再折一次 ⇒ Ink 的行数账目就错了（D11/D13 那族的老病）。
+  const width = Math.max(8, columns - Math.max(2, displayWidth(options.hang)))
   const wrapped = wrap(text, width)
 
   return wrapped.map((line, at) =>

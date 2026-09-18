@@ -383,7 +383,17 @@ describe('场景 14 · 窄窗口降级', () => {
 // ══ 补：收拢 · 视口 · 行标记（原型规格的细节判据）════════════════════
 
 describe('规格细节（渲染层）', () => {
-  test('**收拢**：更早的组并成一行摘要，最近一组逐条展开（原型 · 场景 12）', () => {
+  /**
+   * ⚠️ **本条 2026-09-19 改过**（缺陷轮 VI）——原来的期待值钉的是**当时的输出**
+   * （「只展开最近一组」＋「单次的组也收」），那条判据**没有规格依据**：
+   * 原型场景 12 只画了「更早的一组收成摘要」，从没定过「收几组 / 多大的组才收」。
+   *
+   * - **规格为什么变**——D18：① 单次调用收进摘要占同样一行、却把参数丢了（收拢是为了省行，
+   *   1 次收是**净损失**）；②「只展开最近一组」在长会话恢复时＝**几乎全灰**。
+   * - **新规格**——`collapseToolGroups` 的两条判据：**≥2 次才收** ＋ **末尾 `RECENT_GROUPS` 组不收**。
+   *   数据因此要**够长**（七组）才看得见收拢——这正是判据本身要求的。
+   */
+  test('**收拢**：更早的组并成一行摘要，**末尾五组**逐条展开（原型 · 场景 12 ＋ 缺陷 D18）', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '时区修正' }])])
 
@@ -391,6 +401,7 @@ describe('规格细节（渲染层）', () => {
       { id, kind: 'tool-call', content: { text: '' }, payload: { name, args: {} }, at: id },
       { id: id + 1, kind: 'tool-result', content: { text: '成' }, payload: { ok: true, output: { text: '成' } }, at: id },
     ]
+    const say = (id: number, text: string): Entry => ({ id, kind: 'assistant', content: { text }, at: id })
 
     app.feed([
       event('session.history', {
@@ -400,17 +411,35 @@ describe('规格细节（渲染层）', () => {
           ...tool(10, 'ls'),
           ...tool(20, 'read'),
           ...tool(30, 'grep'),
-          { id: 40, kind: 'user', content: { text: '再看看' }, at: 40 },
+          say(40, '看完了。'),
           ...tool(50, 'write'),
+          ...tool(60, 'edit'),
+          say(70, '改完了。'),
+          ...tool(80, 'ls'),
+          say(90, '再看。'),
+          ...tool(100, 'ls'),
+          say(110, '继续。'),
+          ...tool(120, 'ls'),
+          say(130, '继续。'),
+          ...tool(140, 'ls'),
+          say(150, '继续。'),
+          ...tool(160, 'cat'),
+          say(170, '完了。'),
         ],
         done: true,
       }),
     ])
 
     const frame = app.screen()
-    expect(frame).toContain('3 次工具调用')
-    expect(frame).toContain('（ls · read · grep）')
-    expect(frame).toContain('write') // 最近一组仍逐条
+
+    // 更早的两组（都在末尾五组**之外**，且都 ≥2 次）并成一行摘要
+    expect(frame).toContain('3 次工具调用（ls · read · grep）')
+    expect(frame).toContain('2 次工具调用（write · edit）')
+    // **单次调用不收**（D18①）——`● 1 次工具调用（ls）` 那种行不该出现
+    expect(frame).not.toContain('1 次工具调用')
+    // 末尾五组逐条展开（含最后那组单发的 `cat`）
+    expect(frame).toContain('● ls {}')
+    expect(frame).toContain('● cat {}')
     expect(frame).toMatchSnapshot()
   })
 
@@ -591,7 +620,10 @@ describe('D14 · 记录区渲染 Markdown', () => {
   test('代码块 / 列表 / 标题——**围栏与 `#` 不上屏**，符号留着', () => {
     const texts = textsOf(bodyOf('## 这一段在说什么\n\n```ts\nconst a = 1\n```\n\n- 第一条\n1. 有序'))
 
-    expect(texts).toEqual(['⏺ 这一段在说什么', '', '  const a = 1', '', '- 第一条', '1. 有序'])
+    // 钉的规格＝**D14 五样**（围栏与 `#` 不见、列表符号原样留着）
+    // ＋ **D20 统一悬挂**（正文与所有折行都从第 3 列起 ⇒ 非首行前面那两格基线；
+    //    markdown 自己的缩进——代码块 2 列、列表符号——**叠在基线上**）。
+    expect(texts).toEqual(['⏺ 这一段在说什么', '  ', '    const a = 1', '  ', '  - 第一条', '  1. 有序'])
     expect(texts.join('\n')).not.toContain('```')
     expect(texts.join('\n')).not.toContain('#')
   })
@@ -602,14 +634,17 @@ describe('D14 · 记录区渲染 Markdown', () => {
     expect(texts.filter((line) => line.includes('⏺'))).toHaveLength(1) // 只有首行有标记
     expect(texts).toHaveLength(2)
     expect(texts[0]?.startsWith('⏺ 1. 甲')).toBe(true)
-    expect(texts[1]?.startsWith('   ')).toBe(true) // 挂在 `1. ` 之后（三列）
-    expect(texts[1]?.startsWith('    ')).toBe(false) // 不是默认那两列
+    // D20：助手基线 2 列 ＋ 列表「按标记宽度」（`1. ` ＝ 3 列）⇒ 续行从第 6 列起。
+    expect(texts[1]?.startsWith('     ')).toBe(true)
+    expect(texts[1]?.startsWith('      ')).toBe(false)
   })
 
   test('**流式中间帧**——未闭合的 `**` / 反引号 / 围栏**先按字面**（不闪不跳）', () => {
+    // 「未闭合的先按字面」是 D14 定死的那条细节（**现在还钉它**）；
+    // 非首行的两格基线归 D20。
     expect(textsOf(bodyOf('这是 **Magic Co'))).toEqual(['⏺ 这是 **Magic Co'])
     expect(textsOf(bodyOf('跑 `m02-real'))).toEqual(['⏺ 跑 `m02-real'])
-    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['⏺ ```ts', 'const a = 1'])
+    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['⏺ ```ts', '  const a = 1'])
   })
 
   test('**整屏取景**——帧上见不到 `**` 与反引号（D14 的现象本身）', () => {
@@ -628,6 +663,106 @@ describe('D14 · 记录区渲染 Markdown', () => {
     expect(frame).not.toContain('**')
     expect(frame).not.toContain('`')
     expect(frame).not.toContain('#')
+  })
+})
+
+// ══ D18 · D19 · D20（缺陷轮 VI）═══════════════════════════════════════
+//
+// 这三条的**正向判据**——每条指着一句规格，不是「现在跑出来什么」：
+// - **D18**：`collapseToolGroups` 的两条判据（**≥2 次才收** · **末尾 `RECENT_GROUPS` 组不收**）
+// - **D19**：正文**内部**的段落空行是内容，**一条不删**（「首尾裁、中间留」）
+// - **D20**：**统一悬挂**——首行标记占 N 列 ⇒ **正文与所有折行都从第 N+1 列起**
+
+describe('D18 / D19 / D20（缺陷轮 VI）', () => {
+  const bodyOf = (text: string, columns = 96): readonly LogLine[] => {
+    const app = live()
+    app.feed([event('model.delta', { channel: 'text', text })])
+
+    return logLines(app.shell.getView().rows, { columns, expanded: false })
+  }
+
+  const textsOf = (lines: readonly LogLine[]): readonly string[] =>
+    lines.map((line) => line.segments.map((piece) => piece.text).join(''))
+
+  test('D18① · **单次调用的组不收**——摘要占同样一行，还把参数丢了', () => {
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '甲' }])])
+
+    const call = (id: number, name: string, args: Readonly<Record<string, unknown>>): readonly Entry[] => [
+      { id, kind: 'tool-call', content: { text: '' }, payload: { name, args }, at: id },
+      { id: id + 1, kind: 'tool-result', content: { text: '成' }, payload: { ok: true, output: { text: '成' } }, at: id },
+    ]
+
+    app.feed([
+      event('session.history', {
+        session: SESSION,
+        entries: [
+          { id: 1, kind: 'user', content: { text: '看看' }, at: 0 },
+          ...call(10, 'ls', { path: '.' }),
+          { id: 30, kind: 'user', content: { text: '再来' }, at: 30 },
+          ...call(40, 'grep', { q: 'x' }),
+        ],
+        done: true,
+      }),
+    ])
+
+    const frame = app.screen()
+    expect(frame).not.toContain('次工具调用') // 两组都是单次 ⇒ **一组都不收**
+    expect(frame).toContain('● grep') // 参数留在屏上
+  })
+
+  test('D20 · 助手正文**每一个非首行**都从第 3 列起', () => {
+    expect(textsOf(bodyOf('第一行\n第二行\n第三行'))).toEqual(['⏺ 第一行', '  第二行', '  第三行'])
+  })
+
+  test('D20 · 用户消息的折行同样悬挂（`› ` 也占 2 列）', () => {
+    const lines = logLines([{ kind: 'user', key: 'u', text: '第一行\n第二行', echoed: false }], {
+      columns: 96,
+      expanded: false,
+    })
+
+    expect(textsOf(lines)).toEqual(['› 第一行', '  第二行'])
+  })
+
+  test('D20 · 代码块挂在基线上（基线 2 ＋ 它自己的缩进 2）', () => {
+    expect(textsOf(bodyOf('看：\n\n```\nx\n```'))).toEqual(['⏺ 看：', '  ', '    x'])
+  })
+
+  test('D19 · 正文**内部**的段落空行一条不删（「首尾裁、中间留」）', () => {
+    expect(textsOf(bodyOf('甲\n\n乙\n\n丙'))).toEqual(['⏺ 甲', '  ', '  乙', '  ', '  丙'])
+  })
+
+  test('D19 · 段落空行**在屏上真的占一行**（走真 Ink，不是纯函数）', () => {
+    const app = live()
+    app.feed([event('model.delta', { channel: 'text', text: '甲\n\n乙' })])
+
+    const lines = app.screen().split('\n')
+
+    expect(lines[0]).toBe('⏺ 甲')
+    expect(lines[1]?.trim()).toBe('') // 空行**在**
+    expect(lines[2]).toBe('  乙')
+  })
+
+  test('**分段行**（用户消息之前那一行）真的占一行——空段那条路的哨兵（原型 · 密度）', () => {
+    // ⚠️ 这条钉的是 **Ink 那一跳**：`line.segments` 为空的行只有「分段」这一种，
+    // 而 **Ink 7 会把内容为空串的 `<Text>` 整行丢掉**（D19 的根因，`LogRowView` 里修的）。
+    // 倒回 `['']` ⇒ 这条当场红（段落空行那条测不出来——D20 的基线让它带上了色段）。
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '甲' }])])
+    app.type('甲')
+    app.key(ENTER)
+    app.feed([event('model.delta', { channel: 'text', text: '嗯' })])
+    app.type('乙')
+    app.key(ENTER)
+
+    const lines = app.screen().split('\n')
+
+    // 两条用户消息 ⇒ 第二条之前留了一行分段（**真的画出来**，不是只算出来）
+    expect(lines.filter((line) => line.trim() === '')).toHaveLength(1)
+  })
+
+  test('D19 · 首尾的空行仍然不渲染（那是模型的格式噪声）', () => {
+    expect(textsOf(bodyOf('\n\n甲乙\n\n'))).toEqual(['⏺ 甲乙'])
   })
 })
 

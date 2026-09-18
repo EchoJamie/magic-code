@@ -59,7 +59,8 @@ export type LogRow =
     }
   /**
    * 折叠的**一组**工具调用（重建时同轮的连续调用并成一行——原型 · 场景 12：
-   * 「▶ 3 次工具调用（ls · read · grep）」。只有**最近一组**保持逐条展开）。
+   * 「▶ 3 次工具调用（ls · read · grep）」）。
+   * 收的判据两条（缺陷 D18）：**≥2 次**才收 · **末尾 `RECENT_GROUPS` 组不收**。
    */
   | { readonly kind: 'toolgroup'; readonly key: string; readonly names: readonly string[] }
   // —— 屏上痕迹（不落库 · 不重建）——
@@ -599,7 +600,8 @@ export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
  * - `tool-call` / `tool-result` **配对成一行**（结果并进去，不各占一行）；
  * - 同一轮的**连续工具调用**并成一行摘要（「3 次工具调用（ls · read · grep）· 1.4s」）。
  *
- * 「最近一组展开」——最后一组工具保持逐条行，更早的组并成摘要（原型 · 场景 12）。
+ * 「末尾 `RECENT_GROUPS` 组展开」——最近那几组工具保持逐条行，更早的组并成摘要
+ * （原型 · 场景 12；收的判据见 `collapseToolGroups`）。
  */
 function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
   const rows: LogRow[] = []
@@ -651,18 +653,38 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
 }
 
 /**
- * **收拢**（原型 · 场景 12）：**最近一组**工具调用逐条展开，更早的组并成一行摘要
+ * 末尾保留**逐条展开**的组数（实现级阈值 · 缺陷 D18②）。
+ *
+ * 取 5 的由头：「只展开最近一组」在长会话恢复时＝几乎全灰（前面几十组全是灰摘要，
+ * 读起来像什么都看不清）。视口一屏落得下五组逐条行（每组两行上下），
+ * 既看得见「最近在干什么」，又不至于把几十组全摊开。
+ */
+const RECENT_GROUPS = 5
+
+/**
+ * **收拢**（原型 · 场景 12）：工具调用并成一行摘要
  * （「3 次工具调用（ls · read · grep）」）。
+ *
+ * 收的判据**两条**（缺陷 D18）——两条都是「为什么要收」的账：
+ * - **≥2 次才收**——收拢是为了**省行**：`● 1 次工具调用（ls）` 与 `● ls .` 同样占一行，
+ *   却把参数丢了 ⇒ 1 次收是**净损失**；
+ * - **末尾 `RECENT_GROUPS` 组不收**——展开策略按**条数**，不是「只有最后一组」。
  */
 function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
   const segments = toolSegments(rows)
-  if (segments.length <= 1) return rows // 只有一组（或没有）＝不必收
+  if (segments.length === 0) return rows
+
+  /** 末尾这几段保持逐条展开。 */
+  const recent = new Set(segments.slice(-RECENT_GROUPS).map((segment) => segment.start))
 
   /** 摘要行插在每段的**首行**位置；段内其余行丢掉。 */
   const summaryAt = new Map<number, readonly string[]>()
   const dropped = new Set<number>()
 
-  for (const segment of segments.slice(0, -1)) {
+  for (const segment of segments) {
+    if (recent.has(segment.start)) continue
+    if (segment.end === segment.start) continue // 单次调用不收
+
     summaryAt.set(
       segment.start,
       rows.slice(segment.start, segment.end + 1).map((row) => (row.kind === 'tool' ? row.name : '')),
