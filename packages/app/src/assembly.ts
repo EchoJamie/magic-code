@@ -45,6 +45,7 @@ import type {
   SessionId,
   Timestamp,
   TurnId,
+  WorkspaceService,
 } from '@magic/contracts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { createConversationService, createConversationSession } from '@magic/conversation'
@@ -64,7 +65,7 @@ import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createToolRuntime } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
-import { loadConfig } from './config.ts'
+import { ConfigError, loadConfig } from './config.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
 const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
@@ -236,6 +237,29 @@ export function createStamper(input: {
   }
 }
 
+/**
+ * 开工作区（U18）——**根的校验错转成「配置事故」那一句话**（`ConfigError`）。
+ *
+ * 由头（本轮实测）：`workspaceRoots` 是**用户手写在配置文件里**的东西——路径打错一个字母、
+ * 写成相对路径、两条重复，都是**配置事故**，不是程序异常。而执行域抛的是普通 `Error`
+ * （它**不该**认识 `ConfigError`——那是本层的形态），裸抛出去就是「一句 `error:` ＋ 三段内部栈」，
+ * 栈里还写着「技术方案 · 执行 · 工作区」这种给开发者看的话——**用户读完不知道该改哪儿**。
+ *
+ * 故这里转一道：**域只管判「合不合格」，报给人听的那句话归装配**——它手上正好有
+ * 「是哪份配置」（`loaded.path`），于是用户拿到的是 `配置有问题：<缘由>（<哪份文件>）`
+ * 一行话，与加载期那几条同形（「报错不降级」两条都守，只是把「报得有人看得懂」也补上）。
+ *
+ * ⚠️ **只包根注册这一步**——网关（缺 key）· 记录域那些构造期的抛各有各的处置，
+ * 别顺手一起裹：那是另一件事，得单独议（本轮已随回报备案）。
+ */
+function openWorkspace(loaded: LoadedConfig, cwd: string): WorkspaceService {
+  try {
+    return createWorkspaceService({ roots: loaded.config.workspaceRoots ?? [cwd] })
+  } catch (error) {
+    throw new ConfigError(loaded.path, error instanceof Error ? error.message : String(error))
+  }
+}
+
 /** 本地日期（`YYYY-MM-DD`）——提示词的注入项 `date` 取它（用户的一天，不是 UTC 的一天）。 */
 function localDate(at: Timestamp): string {
   const d = new Date(at)
@@ -273,9 +297,7 @@ export function assemble(options: AssembleOptions): Assembly {
   // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
   // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
-  const workspace = createWorkspaceService({
-    roots: loaded.config.workspaceRoots ?? [options.cwd],
-  })
+  const workspace = openWorkspace(loaded, options.cwd)
   const sandbox = createSandbox({ workspace })
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────

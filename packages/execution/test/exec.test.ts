@@ -22,7 +22,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { ExecResult, OutputDelta, Sandbox } from '@magic/contracts'
 import { createSandbox, createWorkspaceService } from '../src/index.ts'
 
@@ -202,7 +202,18 @@ describe('多根——cwd 与 `resolve` 同源', () => {
     expect(existsSync(marker)).toBe(false) // 命令有副作用也没发生＝确实没启动
   })
 
-  test('cwd 经 `..` 拱出**默认根** → `out-of-bounds`（第二根接不住）', async () => {
+  test('cwd 经 `..` **落进另一条根**＝通过，真在那条根里跑（同 `resolve`）', async () => {
+    // ⚠️ 别读成「多根下 cwd 也锁死在默认根」——**边界是全根之并**（同 `resolve`，
+    // 与权限域 `landPath` 同源）。这条正是「同源」的实测：沙箱若另认一套，此处当场红。
+    const [b1, b2] = [freshRoot(), freshRoot()]
+    const { box, roots: real } = sandboxOnAll([b1, b2])
+
+    const result = await box.exec('pwd', { cwd: `../${basename(nth(real, 1))}` })
+
+    expect(streamsOf(result).stdout.trim()).toBe(nth(real, 1))
+  })
+
+  test('cwd 经 `..` 拱到**所有根之外** → `out-of-bounds`（夹具两根是兄弟，落在共同父级）', async () => {
     const { box } = sandboxOnAll([freshRoot(), freshRoot()])
 
     expect(failureOf(await box.exec('echo hi', { cwd: '..' })).reason).toBe('out-of-bounds')

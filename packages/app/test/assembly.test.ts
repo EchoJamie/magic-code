@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
 import type { EventDataOf, EventKind, KernelEvent } from '@magic/contracts'
-import { attachShell, createStamper } from '../src/index.ts'
+import { ConfigError, attachShell, createStamper } from '../src/index.ts'
 import { eventsOfKind, kindTrail, makeStage, readDatabase } from './support.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
@@ -294,15 +294,19 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
     }
   })
 
-  test('不合格的根 → 装配期抛（**报错不降级**——不是跳过那条继续跑）', () => {
+  test('不合格的根 → 装配期抛，且抛的是 **`ConfigError`**（＝入口打「配置有问题：」那一条）', () => {
     // 四项校验的**语义**那三条（相对 / 不存在 / 空列表）；「不是目录」「重复」由
-    // 执行域自己的用例钉（那里头有造文件 / 造符号链接的夹具），此处只证「装机真接上了」
+    // 执行域自己的用例钉（那里头有造文件 / 造符号链接的夹具），此处只证「装机真接上了」。
+    //
+    // ⚠️ **要的是 `ConfigError` 这个类**，不是「抛了就算」——根的错是**配置事故**，
+    // 得走入口那条一行话的通道（`cli.ts` 只认这个类，其余的裸抛出去就是三段内部栈）。
+    // 故这里连类一起钉：倒回普通 `Error`，本用例当场红。
     const cases: readonly (readonly string[])[] = [['relative/nope'], ['/definitely/not/here'], []]
 
     for (const workspaceRoots of cases) {
       const stage = makeStage({ config: { workspaceRoots } })
       try {
-        expect(() => stage.assemble()).toThrow()
+        expect(() => stage.assemble()).toThrow(ConfigError)
       } finally {
         stage.dispose()
       }

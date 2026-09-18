@@ -147,6 +147,35 @@ describe('入口 magic', () => {
     }
   })
 
+  test('**坏根**退 1 且是「配置有问题：」一行话——不是三段内部栈（U18 守护）', async () => {
+    // 由头（本轮实测）：`workspaceRoots` 是**用户手写在配置文件里**的东西——路径打错
+    // 一个字母就是配置事故。而执行域抛的是普通 `Error`（它不该认识 `ConfigError`），
+    // 裸抛出去用户拿到的是「一句 error: ＋ 三段栈」，栈里还写着给开发者看的设计出处。
+    // 故装配根转一道（`openWorkspace`），入口那条一行话的通道才接得上。
+    //
+    // ⚠️ **这条是守护**：倒回「裸抛」它当场红（`配置有问题：` 不见了、`at ` 栈出来）。
+    const home = tempDir('magic-cli-')
+    mkdirSync(join(home, '.magic'), { recursive: true })
+    writeConfig(
+      join(home, '.magic'),
+      validConfig({ dataDir: join(home, 'data'), workspaceRoots: ['relative/nope'] }),
+    )
+
+    try {
+      const result = await run(home, '--check')
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('配置有问题：')
+      expect(result.stderr).toContain('工作区根须是绝对路径')
+      expect(result.stderr).toContain('第 1 条') // 多条根下用户得知道改哪一行
+      // 栈是「说成程序异常」的样子——这一行把「报得有人看得懂」钉住
+      expect(result.stderr).not.toContain('at normalizeRoot')
+      expect(result.stdout).toBe('') // 自检一步都没走完，别印半份
+    } finally {
+      removeDir(home)
+    }
+  })
+
   test('`--script` 指向不存在的文件——退 1 并点名', async () => {
     const { home } = stageWithConfig(validConfig({ dataDir: '/tmp/magic-cli-never' }))
 

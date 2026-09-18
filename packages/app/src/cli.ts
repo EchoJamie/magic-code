@@ -324,7 +324,7 @@ async function main(): Promise<number> {
 
   let assembly: Assembly
   try {
-    // 启动目录＝工作区根（首站单根）
+    // 启动目录——**只在配置没写 `workspaceRoots` 时**才当工作区根（键在即接管，U18）
     assembly = assemble({ cwd: process.cwd() })
   } catch (error) {
     if (error instanceof ConfigError) {

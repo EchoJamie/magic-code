@@ -12,6 +12,11 @@
  *   相对路径 → 一律**抛**。四项皆在**规范化之后**判——尤其「重复」：`/tmp/x` 与
  *   `/private/tmp/x` 在 macOS 上是**同一个目录**，词法比较漏得掉（下有用例钉着）。
  *
+ * ⚠️ **边界是「全根之并」，不是「默认根」**——相对路径先按默认根拼、**归一之后对全根比对**，
+ * 故 `..` 拱出默认根却落进另一条根者**通过**（有用例钉着）。这与权限域 `landPath` **同源**
+ * （它那条注写得更直白：「相对路径逃出默认根后仍可能落进**另一个**根（多根平铺）——
+ * 故一律对全根比对」）。两域若在此分叉，闸门放行的路径沙箱会拒。
+ *
  * 判定法：临时目录当真工作区（测试用 fs 不受守护拦——守护面收窄至各包 `src/`），
  * 每例断言**解析结果**（绝对路径 ＋ **承载它的那条根**），越界则断言**拒**。
  *
@@ -21,9 +26,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { WorkspaceService } from '@magic/contracts'
 import { createWorkspaceService } from '../src/index.ts'
 
@@ -106,9 +111,9 @@ describe('根注册——列表与默认根', () => {
 
   test('`roots()` 保**声明序**——顺序即语义（第一项承载默认根）', () => {
     const [a, b, c] = [freshRoot(), freshRoot(), freshRoot()]
-    const { ws, roots: real } = workspaceOnAll([b, c, a])
+    const { ws } = workspaceOnAll([b, c, a])
 
-    expect(ws.roots()).toEqual([nth(real, 0), nth(real, 1), nth(real, 2)])
+    // 直写声明原值的规范化形——**别拿 `roots()` 跟它自己做断言**（那除长度外恒真）
     expect(ws.roots()).toEqual([realpathSync(b), realpathSync(c), realpathSync(a)])
   })
 
@@ -227,7 +232,34 @@ describe('相对路径——按默认根', () => {
     expect(resolved.absolute.startsWith(nth(real, 1))).toBe(false)
   })
 
-  test('多根下 `..` 逃出**默认根**＝拒（第二根不在默认根的父级，接不住）', () => {
+  test('`..` 拱出默认根、**落进另一条根＝通过**——边界是**全根之并**，不是默认根', () => {
+    // ⚠️ 这条不是「多根也照样锁在默认根里」——**边界一律按全根判**（归一之后看落点），
+    // 与权限域 `landPath` 同源（它那条注：「相对路径逃出默认根后仍可能落进**另一个**根
+    // （多根平铺）——故一律对全根比对」）。两域若在此分叉，闸门放行的路径沙箱会拒。
+    const [b1, b2] = [freshRoot(), freshRoot()]
+    const { ws, roots: real } = workspaceOnAll([b1, b2])
+
+    // 两根是兄弟（同在 tmpdir 下），故 `../<b2 的名字>/x.txt` 从默认根出去正好落在 b2 里
+    const resolved = ws.resolve(`../${basename(nth(real, 1))}/x.txt`)
+    expect(resolved.absolute).toBe(join(nth(real, 1), 'x.txt'))
+    expect(resolved.root).toBe(nth(real, 1))
+    expect(resolved.root).not.toBe(ws.defaultRoot())
+  })
+
+  test('嵌套根下 `..` 落进外层根＝通过（同一条规则的直白形态）', () => {
+    const outer = freshRoot()
+    const inner = join(outer, 'inner')
+    mkdirSync(inner)
+
+    const ws = createWorkspaceService({ roots: [inner, outer] })
+    const resolved = ws.resolve('..')
+
+    expect(resolved.absolute).toBe(realpathSync(outer))
+    expect(resolved.root).toBe(realpathSync(outer))
+    expect(resolved.root).not.toBe(ws.defaultRoot())
+  })
+
+  test('`..` 拱到**所有根之外**＝拒（夹具两根是兄弟，`../x.txt` 落在共同父级，谁都不接）', () => {
     const { ws } = workspaceOnAll([freshRoot(), freshRoot()])
 
     expect(() => ws.resolve('../x.txt')).toThrow(/越界/)
