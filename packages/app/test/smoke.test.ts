@@ -115,7 +115,9 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       // ══ 记录可直读：关库后拿裸 sqlite 打开文件，全过程看得见 ══
       const raw = readDatabase(assembly.paths.database)
       try {
-        expect(raw.sessions.map((s) => s.id)).toEqual([assembly.session])
+        const session = assembly.session
+        if (session === undefined) throw new Error('交代过之后该有会话了')
+        expect(raw.sessions.map((s) => s.id)).toEqual([session])
 
         // 事件表＝持久类（瞬时类**不在**）
         const kinds = raw.events.map((row) => row.kind)

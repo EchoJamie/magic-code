@@ -13,8 +13,9 @@
  *
  * **多会话（U16）在哪儿**——第 2 / 3 步的会话相关部分收进 `open(session)` 这个工厂：
  * 「开一条会话」＝记录实例 · 铸造器 · 闸门 · 工具域 · 对话实例一整束（单活跃，同时只留一束）。
- * 启动先按「接着最近一条」定下开局会话（`latestSession()`；没有则新造），
- * 之后的切换由对话域的会话主面经 `open` 换束——**装配只出工厂，不出判断**。
+ * **启动不预设会话**（D4：「启动＝新会话，不接续」；D5：会话懒建立）——`startup` 只在
+ * 显式接续时才给 id，否则一条都不开；首条消息按下回车时由对话域经 `open` 开第一束，
+ * 之后的切换同路——**装配只出工厂，不出判断**。
  * 网关（供应商注册表）**不在束里**：选中的模型不该随会话漂，故它拿转发铸造器（见其注）。
  *
  * **本文件只做「选择 ＋ 绑定」**——不承载逻辑：判断归各域，呈现归外壳，机制归域内件。
@@ -99,8 +100,8 @@ export type AssembleOptions = {
    */
   readonly modelFetch?: FetchLike | undefined
   /**
-   * 开局会话——**缺省＝接着最近一条**（库里没有则新造）；给了就按给的来
-   * （测试 / 验收要指定一条时用）。U16 起「启动＝新会话」不再成立，见下 `startup` 的注。
+   * **显式接续**：给 id ＝ 开局就装载这条会话（并跑一次恢复处置在途）。
+   * **不给 ＝ 启动＝新会话**（D4）：一个会话都不开，首条消息按下回车才建立（D5）。
    */
   readonly session?: SessionId | undefined
   /** 时钟——条目 / 信封的时间戳（域不各自取时钟）；缺省 `Date.now`。 */
@@ -117,11 +118,10 @@ export type Assembly = {
    */
   readonly shell: ControlTransport
   /**
-   * **当下活跃**的会话 id（U16 起——单活跃：切换之后跟着变）。
-   *
-   * 与 `boot()` 是同一条会话的两个视角：启动时它就是「接着最近一条」定下来的那条。
+   * **当下活跃**的会话 id（单活跃——切换之后跟着变）；
+   * **`undefined` ＝ 还没有会话**（空手打开；首条消息按下回车才建立——D5）。
    */
-  readonly session: SessionId
+  readonly session: SessionId | undefined
   /** 本次装配用的配置（自检报告用；**不含 key**）。 */
   readonly config: LoadedConfig
   /**
@@ -220,12 +220,18 @@ export function assemble(options: AssembleOptions): Assembly {
   // 记录域：数据目录（`~` 已在加载时展开——记录域拒收 `~`）
   const recordsStore = createRecordsStore({ dataDir: loaded.config.dataDir })
   /**
-   * **启动＝接着最近一条会话**（U16 · 规划侧锚定：产品方案 功能 8「崩溃 / **关闭**后…
-   * 续跑不重来」＋ 阶段 2 验证句「崩溃 / 关掉能接着来」——三份文档对上之后，
-   * 技术方案那句早期措辞「启动＝新会话」不取）；一条都没有＝新造。
-   * 「新建」是显式动作（外壳 `/session new`），不是启动的默认。
+   * **启动＝新会话（不接续）**——第 19 轮按 D4 改回来：给的是「显式接续」的那条路
+   * （启动参数 `--session` 的同义物），**不给就是「还没有会话」**。
+   *
+   * 一度取过「启动＝接着最近一条」（U16 · 以产品方案 功能 8 与阶段 2 验证句为据），
+   * 用户亲跑后推翻：**一个字都没输入却接上了上次的会话**，每次空手打开都落在旧会话上。
+   * 裁决：**接着来是显式的**（`/session` 选，或这里给 id）；验证句的「关掉能接着来」
+   * 由显式 resume 满足即可。
+   *
+   * 与 D5（会话懒建立）同源：不给 id ⇒ **一个会话都不开**——不铸 id、不占存储、
+   * 不把列表塞满空壳；首条消息按下回车才开张（`SessionHost.submit`）。
    */
-  const startup = options.session ?? recordsStore.latestSession() ?? crypto.randomUUID()
+  const startup = options.session
   // 执行域：工作区根注册（首站单根＝启动目录）＋ 沙箱（cwd 约束经工作区）
   const workspace = createWorkspaceService({ root: options.cwd })
   const sandbox = createSandbox({ workspace })
@@ -361,7 +367,8 @@ export function assemble(options: AssembleOptions): Assembly {
   const conversation = createConversationService({
     session: startup,
     open,
-    records: recordsStore.serviceFor(startup),
+    // 记录域**读面**（窄口）：会话未定时也要能读（目录 / 首条消息 / 重建展示）
+    records: recordsStore,
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
     now,
@@ -382,6 +389,18 @@ export function assemble(options: AssembleOptions): Assembly {
    * 混用会污染观测；且切换这件事 `model.call.start` 说不了（它只说「这次用了谁」）。
    */
   const switchModel = (request: ModelSwitchRequest): void => {
+    // **还没有会话**（空手打开就 `/model`，第 19 轮起这是常态）——选中**照换**：
+    // 注册表是**进程级**的（选中的供应商不该随会话漂），换完第一条消息就用新条目。
+    //
+    // 但**不发事件**：`model.switched` 记的是**会话的可观测事实**，而没有会话就没有
+    // 可记之处（信封必带会话 id、铸造器按会话实例构造——`forwardStamper` 会抛）。
+    // 真相不会丢：第一次调用时 `model.call.start` 带上真选中，状态行随之更正。
+    // ⚠️ 代价如实记：这一下（含「条目名写错」）在屏上**没有回声**——见回报「待决」。
+    if (chain === undefined) {
+      models?.use(request)
+      return
+    }
+
     // 注册表缺席（注入了替身网关）＝如实报「这批装配换不了模型」——同样是一条**切换结果**
     if (models === undefined) {
       sink.emit(
@@ -422,6 +441,8 @@ export function assemble(options: AssembleOptions): Assembly {
     onModelSwitch: (request) => switchModel(request),
     // 会话四支（U16）——**原样转手**给对话域（它才是会话的持有者）
     onSession: (command) => void conversation.handle(command),
+    // 读侧命令——**原样转手**给对话域（会话与条目归它）；答复走事件（`session.history`）
+    onHistoryRead: (session) => void conversation.readHistory(session),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────
@@ -430,8 +451,9 @@ export function assemble(options: AssembleOptions): Assembly {
 
   return {
     shell,
-    // **活跃**那条（切换之后跟着变）——不是开局那条（`Assembly.session` 的旧义）
-    get session(): SessionId {
+    // **活跃**那条（切换之后跟着变）——**`undefined` ＝ 还没有会话**（空手打开，
+    // 首条消息才开张）。不是开局那条（`Assembly.session` 的旧义）。
+    get session(): SessionId | undefined {
       return conversation.active()
     },
     config: loaded,
@@ -441,7 +463,10 @@ export function assemble(options: AssembleOptions): Assembly {
     permissionRules: parsedRules.rules,
     rejectedRules: parsedRules.rejected,
     workspaceRoot: workspace.defaultRoot(),
-    boot: () => conversation.recover().then(() => undefined),
+    // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
+    // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。
+    boot: () =>
+      startup === undefined ? Promise.resolve() : conversation.recover().then(() => undefined),
     close: () => recordsStore.close(),
   }
 }

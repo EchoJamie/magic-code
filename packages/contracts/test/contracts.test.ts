@@ -435,6 +435,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onDecision: (id, decision) => void [id, decision],
     onModelSwitch: () => undefined,
     onSession: () => undefined,
+    onHistoryRead: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -442,6 +443,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onDecision: (id, decision, opts) => void [id, decision, opts?.remember],
     onModelSwitch: () => undefined,
     onSession: () => undefined,
+    onHistoryRead: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -505,6 +507,7 @@ export function routesCarryModelSwitch(): void {
     onDecision: () => undefined,
     onModelSwitch: (request: ModelSwitchRequest) => void [request.provider, request.model],
     onSession: () => undefined,
+    onHistoryRead: () => undefined,
   }
   void routes
 }
@@ -554,11 +557,15 @@ describe('事件契约', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
+    // 次序照契约里的声明序（`toEqual` 看次序——它也是读清单时看到的那个序）
     expect(TRANSIENT_EVENT_KINDS).toEqual([
       'model.delta',
       'model.retry',
       'tool.output.delta',
       'session.state',
+      // 第 19 轮：读面答复同列——它是**读出来的**（条目本就在库里），
+      // 落库＝把同一段内容存第二遍；重放要的是「发生过什么」，不是「某人问过一次」
+      'session.history',
     ])
   })
 

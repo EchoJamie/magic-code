@@ -11,7 +11,7 @@
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
-import type { Content, SessionSummary } from './entries.ts'
+import type { Content, Entry, SessionSummary } from './entries.ts'
 import type { RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 
 // —— 标量与枚举 ——
@@ -77,6 +77,8 @@ export type EventKind =
   | 'model.switched'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
   | 'session.state'
+  // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
+  | 'session.history'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -181,6 +183,17 @@ export type EventDataOf = {
     /** 必为 `transient`（退避只对瞬时档；超限 / 终态不重试）——留给渲染侧据以措辞。 */
     readonly tier: ModelErrorTier
   }
+  // 控制 · 会话——`history.read` 的答复（技术方案 · 领域划分：「读面走控制面」）。
+  // **分块**推：长会话一次塞一个事件＝一个巨型载荷；块大小**实现级**。末块 `done: true`。
+  // **不落库**：它是**读出来的**（条目本来就在库里），落库＝把同一段内容存第二遍。
+  'session.history': {
+    /** 这批条目属于哪条会话——外壳据以丢弃**切走之后才到**的块（分块会跨切换）。 */
+    readonly session: SessionId
+    /** 这一块（按条目序；块与块之间拼起来即全日志）。 */
+    readonly entries: readonly Entry[]
+    /** **末块**为 `true`——外壳据此知道重建收尾了。 */
+    readonly done: boolean
+  }
   // model · 会话——换模型的结果（用户命令）。**落库**（技术方案 · 记录 · kind 族）：
   // 切换是**会话的可观测事实**——`model.call.start` 只说「这次用了谁」，
   // 说不出「何时改的、为什么没改成」；而用户命令不成立**不是内核异常**，
@@ -265,6 +278,10 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 而重放要的从来不是快照——是过程（谁切到了哪条）。落库只会把同一张表存 N 遍，
   // 且重放时越读越乱（旧快照会把新快照盖回去）。
   'session.state',
+  // 读面答复同列的理由（第 19 轮）：它是**读出来的**——条目本来就在库里，
+  // 落库＝把同一段内容存第二遍（长会话还会把库撑成两倍）。重放要的是「发生过什么」，
+  // 不是「某人问过一次」。
+  'session.history',
 ]
 
 /** 记录库 schema 版本（`user_version` 自始写入——技术方案 · 记录 · schema 演进）。 */

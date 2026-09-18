@@ -28,7 +28,7 @@ import type { FauxSink } from '@magic/faux'
 import type { ConversationSession } from '../src/service.ts'
 import type { RecoveryReport } from '../src/recovery.ts'
 import type { SessionInstance } from '../src/sessions.ts'
-import { createConversationService } from '../src/sessions.ts'
+import { HISTORY_CHUNK, TITLE_LIMIT, createConversationService } from '../src/sessions.ts'
 
 const T0 = 1_700_000_000_000
 const A = 's-alpha'
@@ -225,15 +225,18 @@ describe('列表（标题＝首条消息摘要 · 改过的取存值）', () => 
     const [row] = await bench.host.listSessions()
     expect(row?.title?.startsWith('第一行 第二行')).toBe(true)
     expect(row?.title?.endsWith('…')).toBe(true)
-    expect((row?.title ?? '').length).toBeLessThanOrEqual(41)
+    expect((row?.title ?? '').length).toBeLessThanOrEqual(TITLE_LIMIT + 1)
     expect(row?.title).not.toContain('\n')
   })
 
-  test('当前会话总在目录里——一条还没落账的新会话也不例外', async () => {
+  test('目录**只列落过账的**——没落账的当前会话不在里头（第 19 轮 · D5）', async () => {
     const bench = makeBench({ session: A, rows: [{ id: B, at: T0, first: '别人的事' }] })
 
     const listed = await bench.host.listSessions()
-    expect(listed.map((row) => row.id)).toEqual([A, B])
+
+    // A 是当下的会话但它一条都没写过 ⇒ 不列（先前它被前置进目录——那正是「空壳塞满列表」）
+    expect(listed.map((row) => row.id)).toEqual([B])
+    expect(bench.host.active()).toBe(A) // 当下还是它——只是还没落账
   })
 })
 
@@ -270,9 +273,13 @@ describe('新建（session.new）', () => {
 
     const after = bench.host.active()
     expect(after).not.toBe(before)
+    if (after === undefined) throw new Error('新建之后该有会话了')
     expect(bench.opened).toEqual([A, after]) // 开局那条 ＋ 新开的这条
     expect(bench.lastState()?.active).toBe(after)
-    expect(bench.lastState()?.sessions.map((row) => row.id)).toContain(after)
+    // **空壳不入目录**（第 19 轮 · D5）：还没落过账的会话不列——它只在 `active` 位上示人。
+    // （先前这里断言「当前会话总在目录里」，为的是 `/session` 刚建完看得见自己；
+    //   用户亲跑后裁决：空壳不该把列表塞满。）
+    expect(bench.lastState()?.sessions.map((row) => row.id)).toEqual([A])
     expect(bench.lastState()?.note).toBeUndefined() // 顺顺当当＝不必赘述
   })
 })
@@ -310,8 +317,8 @@ describe('切换（session.open——只是装载）', () => {
     await bench.host.handle({ type: 'session.open', session: 's-没见过的' })
 
     expect(bench.host.active()).toBe('s-没见过的')
-    // 当前会话在目录**最前**（它就是「最近」——正在用的那条）
-    expect(bench.lastState()?.sessions.map((row) => row.id)).toEqual(['s-没见过的', A])
+    // 它还没落过账 ⇒ **不在目录里**（目录只列库里的；`active` 另说——D5）
+    expect(bench.lastState()?.sessions.map((row) => row.id)).toEqual([A])
   })
 })
 
@@ -403,5 +410,148 @@ describe('启动流转（recover——对当前会话跑一次）', () => {
     expect(bench.instanceOf(A)?.calls).toEqual(['recover'])
     expect(report.dispositions).toEqual([])
     expect(report.session).toBe(A)
+  })
+})
+
+// ══ 第 19 轮补锚的判据（缺陷轮 I）════════════════════════════════════
+
+describe('懒建立（D5）——首条消息才开张', () => {
+  test('不给开局会话＝**一条都不开**：不铸 id、不开实例', () => {
+    const sink = makeFauxSink()
+    const opened: SessionId[] = []
+    const host = createConversationService({
+      // 不给 session——空手打开
+      open: (session) => {
+        opened.push(session)
+        return makeInstance(session)
+      },
+      records: makeLedger([]).records,
+      setTitle: () => undefined,
+      sink,
+      now: () => T0,
+    })
+
+    expect(host.active()).toBeUndefined()
+    expect(opened).toEqual([]) // 一个实例都没开——更没铸 id
+    expect(sink.events).toEqual([]) // 也一个事件都没发
+  })
+
+  test('首条消息按下回车——**这才开张**（铸 id ＋ 开实例）', () => {
+    const sink = makeFauxSink()
+    const opened: SessionId[] = []
+    const host = createConversationService({
+      open: (session) => {
+        opened.push(session)
+        return makeInstance(session)
+      },
+      records: makeLedger([]).records,
+      setTitle: () => undefined,
+      sink,
+      now: () => T0,
+    })
+
+    host.submit({ text: '第一句' })
+
+    expect(opened).toHaveLength(1)
+    expect(host.active()).toBe(opened[0])
+    expect(opened[0]).not.toBeUndefined()
+  })
+
+  test('没有会话时中断 / 恢复＝无事（不开张、不发声）', async () => {
+    const sink = makeFauxSink()
+    const host = createConversationService({
+      open: (session) => makeInstance(session),
+      records: makeLedger([]).records,
+      setTitle: () => undefined,
+      sink,
+      now: () => T0,
+    })
+
+    expect(() => host.interrupt()).not.toThrow()
+    await host.recover()
+    expect(host.active()).toBeUndefined()
+  })
+})
+
+describe('标题上限（D2）——**生成时就截**，不是呈现时截', () => {
+  test('现算那条：一行 · 到上限即止 · 带省略号', async () => {
+    const long = '帮我看一下 src 下这几个文件为什么报错，另外把 README 也更新一下'
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: long }] })
+
+    const [row] = await bench.host.listSessions()
+    const title = row?.title ?? ''
+
+    expect(title.length).toBeLessThanOrEqual(TITLE_LIMIT + 1) // 上限 ＋ 省略号那一个字符
+    expect(title.endsWith('…')).toBe(true)
+    expect(title).not.toContain('\n')
+    expect(long.startsWith(title.slice(0, -1))).toBe(true) // 是**前缀**，不是随便截的
+  })
+
+  test('改名那条走**同一条**裁法（两处各裁一遍＝迟早不一样）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+
+    await bench.host.handle({ type: 'session.rename', session: A, title: '名'.repeat(60) })
+
+    const stored = bench.lastState()?.sessions.find((row) => row.id === A)?.title ?? ''
+    expect(stored.length).toBeLessThanOrEqual(TITLE_LIMIT + 1)
+    expect(stored.endsWith('…')).toBe(true)
+  })
+})
+
+describe('读面（history.read）——重建展示的条目块', () => {
+  test('分块推：块块拼起来是全文，**末块 done**', async () => {
+    const sink = makeFauxSink()
+    const total = HISTORY_CHUNK + 3
+    const host = createConversationService({
+      session: A,
+      open: (session) => makeInstance(session),
+      records: {
+        listSessions: async () => [],
+        readEntries: (): AsyncIterable<Entry> =>
+          (async function* (): AsyncIterable<Entry> {
+            for (let index = 1; index <= total; index += 1) {
+              yield { id: index, kind: 'user', content: { text: `第 ${index} 条` }, at: T0 + index }
+            }
+          })(),
+        blobs: { put: async () => 'blob_1', get: async () => new Uint8Array() },
+      },
+      setTitle: () => undefined,
+      sink,
+      now: () => T0,
+    })
+
+    await host.readHistory()
+
+    const blocks = sink.byKind('session.history').map((event) => event.data)
+    expect(blocks.map((block) => block.done)).toEqual([false, true]) // 一块未完 ＋ 一块收尾
+    expect(blocks.flatMap((block) => block.entries).length).toBe(total) // 一条不多一条不少
+    expect(blocks.every((block) => block.session === A)).toBe(true)
+  })
+
+  test('空会话也收尾——**发一块空的 done**（不能只推空的就哑了）', async () => {
+    const bench = makeBench({ session: A, rows: [] })
+
+    await bench.host.readHistory()
+
+    const blocks = bench.sink.byKind('session.history').map((event) => event.data)
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]).toMatchObject({ session: A, done: true })
+    expect(blocks[0]?.entries).toEqual([])
+  })
+
+  test('没有会话＝不推（没得读，也不为它开一张）', async () => {
+    const sink = makeFauxSink()
+    const host = createConversationService({
+      open: (session) => makeInstance(session),
+      records: makeLedger([]).records,
+      setTitle: () => undefined,
+      sink,
+      now: () => T0,
+    })
+
+    await host.readHistory()
+
+    expect(sink.byKind('session.history')).toEqual([])
+    expect(host.active()).toBeUndefined() // 读一下不该把会话开出来
   })
 })

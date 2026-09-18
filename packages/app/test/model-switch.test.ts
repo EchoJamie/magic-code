@@ -196,7 +196,9 @@ describe('运行时切换 · 会话中途', () => {
       expect(dump).not.toContain(ALPHA_KEY)
       expect(dump).not.toContain(BETA_KEY)
       // 两轮都在同一张库、同一个会话里（条目连着长——记录域全程不知道换过模型）
-      expect(new Set(db.entries.map((entry) => entry.session))).toEqual(new Set([assembly.session]))
+      const session = assembly.session
+      if (session === undefined) throw new Error('交代过之后该有会话了')
+      expect(new Set(db.entries.map((entry) => entry.session))).toEqual(new Set([session]))
       expect(db.entries.length).toBeGreaterThanOrEqual(4)
 
       assembly.close()
@@ -339,7 +341,7 @@ describe('运行时切换 · 装配面', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
-  test('成了 —— 发一条 `model.switched{ok:true}`，带上落地后的选中', () => {
+  test('成了 —— 发一条 `model.switched{ok:true}`，带上落地后的选中', async () => {
     const land = stage()
     const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
 
@@ -348,8 +350,13 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       const events: KernelEvent[] = []
       const off = assembly.shell.subscribe((event) => events.push(event))
 
+      // 先落一条消息——会话**懒建立**（第 19 轮 D5），没有会话就没有可记之处
+      const handle = attachShell(assembly.shell)
+      await handle.submit('起个头')
+
       assembly.shell.send({ type: 'model.switch', provider: 'beta' })
       off()
+      handle.dispose()
       assembly.close()
 
       const switched = events.filter((event) => event.kind === 'model.switched')
@@ -366,7 +373,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
     }
   })
 
-  test('没成 —— `model.switched{ok:false, reason}`，仍**不是 `error`**（用户命令不成立是另一类）', () => {
+  test('没成 —— `model.switched{ok:false, reason}`，仍**不是 `error`**（用户命令不成立是另一类）', async () => {
     const land = stage()
     const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
 
@@ -375,8 +382,12 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       const events: KernelEvent[] = []
       const off = assembly.shell.subscribe((event) => events.push(event))
 
+      const handle = attachShell(assembly.shell)
+      await handle.submit('起个头') // 同上：先有会话
+
       assembly.shell.send({ type: 'model.switch', provider: 'nowhere' })
       off()
+      handle.dispose()
       assembly.close()
 
       const switched = events.filter((event) => event.kind === 'model.switched')

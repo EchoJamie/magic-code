@@ -127,10 +127,14 @@ function isStep(value: unknown): boolean {
 }
 
 async function countEntries(assembly: Assembly): Promise<number> {
+  const session = assembly.session
+  // 还没有会话（空手跑脚本）＝没有条目可数——不是 0 条，是**没这条会话**
+  if (session === undefined) return 0
+
   let count = 0
-  for await (const _entry of assembly.records.serviceFor(assembly.session).readEntries(assembly.session)) {
-    count += 1
-  }
+  // 读不经会话实例（记录域的读面）——会话未定时也走这条路，两处同理
+  for await (const _entry of assembly.records.readEntries(session)) count += 1
+
   return count
 }
 

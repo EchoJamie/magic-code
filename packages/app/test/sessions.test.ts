@@ -31,10 +31,18 @@ function textOf(message: ModelMessage): string {
 
 /** 等一条 `session.state`——会话命令的答复（命令面只发不收，答复走事件）。 */
 async function nextState(handle: ShellHandle, timeoutMs = 5000): Promise<SessionSummary[]> {
+  return [...(await nextStateData(handle, timeoutMs)).sessions]
+}
+
+/** 同上，但把整条载荷交出来（要 `active` 的用例用——目录里可能没有它：空壳不列）。 */
+async function nextStateData(
+  handle: ShellHandle,
+  timeoutMs = 5000,
+): Promise<Extract<KernelEvent, { kind: 'session.state' }>['data']> {
   const event = await handle.until((candidate) => candidate.kind === 'session.state', timeoutMs)
   if (event.kind !== 'session.state') throw new Error('等的就是 session.state')
 
-  return [...event.data.sessions]
+  return event.data
 }
 
 function titleOf(sessions: readonly SessionSummary[], id: string): string | undefined {
@@ -47,45 +55,83 @@ async function twoSessions(
 ): Promise<{ handle: ShellHandle; assembly: ReturnType<Stage['assemble']>; a: string; b: string }> {
   const assembly = stage.assemble({ turns: PLAIN })
   const handle = attach(assembly)
-  const a = assembly.session
+  // 启动时**还没有会话**（D5：首条消息按下回车才建立）
+  expect(assembly.session).toBeUndefined()
 
   await handle.submit('甲这边的事')
+  const a = assembly.session
+  if (a === undefined) throw new Error('首条消息按下回车之后该有会话了')
 
   handle.send({ type: 'session.new' })
-  const listed = await nextState(handle)
-  const b = listed[0]?.id
-  if (b === undefined || b === a) throw new Error(`新建没成：${JSON.stringify(listed)}`)
+  // 新会话的 id 从 `active` 取——**它不在目录里**（还没落账；D5 之后目录只列落过账的）
+  const state = await nextStateData(handle)
+  const b = state.active
+  if (b === a) throw new Error(`新建没成（还是原来那条）：${JSON.stringify(state)}`)
 
   await handle.submit('乙那边的事')
 
   return { handle, assembly, a, b }
 }
 
-describe('启动落点（接着最近一条）', () => {
-  test('库里已有会话——下次装配接着它，不是新造一条', async () => {
+describe('启动落点（**启动＝新会话，不接续** · 第 19 轮 · D4/D5）', () => {
+  test('空手打开——**一个会话都不建**（库里不多一条）', () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({ turns: PLAIN })
+
+      // 没有会话：不铸 id、不落行、目录里也没有它（D5「空手打开不建会话」）
+      expect(assembly.session).toBeUndefined()
+      expect(readDatabase(assembly.paths.database).sessions).toEqual([])
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('库里已有会话——下次装配**不接着它**，首条消息落在新会话', async () => {
     const stage = makeStage()
     try {
       const first = stage.assemble({ turns: PLAIN })
       const handle = attach(first)
       await handle.submit('先来的那句')
-      const session = first.session
+      const earlier = first.session
+      if (earlier === undefined) throw new Error('首条消息之后该有会话了')
       first.close()
 
       const second = stage.assemble({ turns: PLAIN })
-      expect(second.session).toBe(session)
+      // 起手仍是「没有会话」（不接续）——
+      expect(second.session).toBeUndefined()
+
+      const again = attach(second)
+      await again.submit('后来的那句')
+      expect(second.session).not.toBe(earlier)
+
+      const db = readDatabase(second.paths.database)
+      expect(db.sessions.map((row) => row.id).sort()).toEqual(
+        [earlier, second.session ?? ''].sort(),
+      )
+      db.close()
+
       second.close()
     } finally {
       stage.dispose()
     }
   })
 
-  test('库里空着——新造一条（第一次启动）', () => {
+  test('显式接续（给了 id）——开局就装载它，不另造', async () => {
     const stage = makeStage()
     try {
-      const assembly = stage.assemble({ turns: PLAIN })
-      expect(typeof assembly.session).toBe('string')
-      expect(assembly.session.length).toBeGreaterThan(0)
-      assembly.close()
+      const first = stage.assemble({ turns: PLAIN })
+      const handle = attach(first)
+      await handle.submit('先来的那句')
+      const earlier = first.session
+      if (earlier === undefined) throw new Error('首条消息之后该有会话了')
+      first.close()
+
+      const resumed = stage.assemble({ turns: PLAIN, session: earlier })
+      expect(resumed.session).toBe(earlier)
+      resumed.close()
     } finally {
       stage.dispose()
     }
@@ -167,8 +213,10 @@ describe('标题（＝首条消息摘要 · 可改）', () => {
     try {
       const assembly = stage.assemble({ turns: PLAIN })
       const handle = attach(assembly)
-      const a = assembly.session
       await handle.submit('看看工作区里有什么')
+      // **首条消息之后**才有会话（D5）——取到它再去问目录
+      const a = assembly.session
+      if (a === undefined) throw new Error('首条消息之后该有会话了')
 
       // ① 现算：首条消息就是标题
       handle.send({ type: 'session.list' })
@@ -197,13 +245,16 @@ describe('标题（＝首条消息摘要 · 可改）', () => {
     try {
       const first = stage.assemble({ turns: PLAIN })
       const handle = attach(first)
-      const a = first.session
       await handle.submit('原来的首条消息')
+      const a = first.session
+      if (a === undefined) throw new Error('首条消息之后该有会话了')
+
       handle.send({ type: 'session.rename', session: a, title: '改过的' })
       await nextState(handle)
       first.close()
 
-      const second = stage.assemble({ turns: PLAIN })
+      // 显式接续那条（D4）——启动本身不再接着最近一条
+      const second = stage.assemble({ turns: PLAIN, session: a })
       const again = attach(second)
       again.send({ type: 'session.list' })
       expect(titleOf(await nextState(again), a)).toBe('改过的')
@@ -240,8 +291,8 @@ describe('恢复入口（boot——订阅之后、放开输入之前）', () => 
       const session = first.session
       first.close()
 
-      // 重开（模拟崩溃后重启）——boot 对这条会话跑一次恢复
-      const second = stage.assemble({ turns: PLAIN })
+      // 重开——**显式接续**那条会话（D4：启动不再自动接着最近一条）
+      const second = stage.assemble({ turns: PLAIN, session: session })
       expect(second.session).toBe(session)
       const again = attachShell(second.shell)
       await second.boot()
@@ -252,6 +303,66 @@ describe('恢复入口（boot——订阅之后、放开输入之前）', () => 
       )
       expect(recovered).toEqual([])
       second.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+// ══ 第 19 轮（缺陷轮 I）：懒建立 · 启动＝新会话 · 读面 ══════════════════
+
+describe('读面（`history.read` → `session.history`）', () => {
+  test('经控制面真走一遍：条目分块回来、末块 done', async () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({ turns: PLAIN })
+      const handle = attach(assembly)
+
+      // 先落两条：一条交代 ＋ 它的答复
+      await handle.submit('读面用的一句')
+
+      const session = assembly.session
+      if (session === undefined) throw new Error('交代之后该有会话了')
+
+      handle.send({ type: 'history.read' })
+      // 末块——外壳据此知道重建收尾（分块会来多块）
+      let blocks: readonly { readonly entries: readonly unknown[]; readonly done: boolean }[] = []
+      await handle.until((event) => {
+        if (event.kind !== 'session.history') return false
+        blocks = [...blocks, event.data]
+        return event.data.done
+      })
+
+      expect(blocks.length).toBeGreaterThanOrEqual(1)
+      expect(blocks.at(-1)?.done).toBe(true)
+      // 条目真回来了（用户那条 ＋ 助手那条）
+      expect(blocks.flatMap((block) => block.entries).length).toBeGreaterThanOrEqual(2)
+      // **不落库**：直读库表，事件表里没有它（瞬时类是读出来的，不是过程事实）
+      const raw = readDatabase(assembly.paths.database)
+      expect(raw.events.map((row) => row.kind)).not.toContain('session.history')
+      raw.close()
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('空手问读面＝不推（还没有会话，也不为它开一张）', async () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({ turns: PLAIN })
+      const handle = attach(assembly)
+
+      handle.send({ type: 'history.read' })
+      await Bun.sleep(50)
+
+      expect(handle.events.filter((event) => event.kind === 'session.history')).toEqual([])
+      expect(assembly.session).toBeUndefined() // 读一下不该把会话开出来
+
+      handle.dispose()
+      assembly.close()
     } finally {
       stage.dispose()
     }

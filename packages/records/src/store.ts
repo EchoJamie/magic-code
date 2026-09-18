@@ -26,6 +26,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
+  BlobStore,
   Entry,
   EntryRange,
   KernelEvent,
@@ -91,6 +92,19 @@ export type RecordsStoreOptions = {
  */
 export type RecordsStore = {
   serviceFor(session: SessionId): RecordsService
+  /**
+   * **按会话读条目**——**不经会话实例**（第 19 轮补）。
+   *
+   * 由头：会话**懒建立**之后，装配手上可能还没有一条会话实例（首条消息才开张），
+   * 而目录、首条消息摘要、读面（`history.read` 的重建展示）都要按 id 读条目。
+   * 写入仍走实例（会话归属由实例承载，见文件头注）；**读**没有那个约束。
+   */
+  readEntries(session: SessionId, range?: EntryRange): AsyncIterable<Entry>
+  /**
+   * **blob 存取**（写权唯一归本域）——**不经会话实例**：blob 引用与会话无关
+   * （它是记录域内部键，契约里对消费者不透明）。会话未定时取回正文要用它（读面同例）。
+   */
+  readonly blobs: BlobStore
   listSessions(): Promise<readonly SessionSummary[]>
   /**
    * **最近一条会话**——启动流转「接着最近一条」的取材口（U16）；库里没有会话则 `undefined`。
@@ -300,6 +314,9 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
         blobs,
       }
     },
+
+    readEntries,
+    blobs,
 
     listSessions,
     latestSession,

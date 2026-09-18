@@ -31,10 +31,12 @@
  */
 
 import type {
+  BlobStore,
   ConversationService,
+  Entry,
+  EntryRange,
   EventSink,
   EventStamper,
-  RecordsService,
   SessionCommand,
   SessionId,
   SessionSummary,
@@ -44,7 +46,24 @@ import type { ConversationSession } from './service.ts'
 import type { RecoveryReport } from './recovery.ts'
 
 /** 默认标题的字符上限——「首条消息摘要」的**实现级常量**（措辞可调，见回报备案）。 */
-export const TITLE_LIMIT = 40
+export const TITLE_LIMIT = 20
+
+/**
+ * 会话面用到的**记录域读面**（窄口）。
+ *
+ * 为什么不是整个 `RecordsService`：会话**懒建立**之后，装配手上可能还没有一条会话实例
+ * （首条消息才开张），而目录 / 首条消息摘要 / 读面都要按 id 读条目——
+ * **读没有实例约束**（写入才有：会话归属由实例承载，见记录域文件头注）。
+ * 窄口另让「会话面只读记录、不写」这件事在类型上看得见。
+ */
+export type SessionRecordsFace = {
+  listSessions(): Promise<readonly SessionSummary[]>
+  readEntries(session: SessionId, range?: EntryRange): AsyncIterable<Entry>
+  readonly blobs: BlobStore
+}
+
+/** 读面一次推多少条目——**块大小实现级**（技术方案 · 领域划分：「分块是因为长会话」）。 */
+export const HISTORY_CHUNK = 50
 
 /**
  * 一条会话的**实例束**——装配的 `open` 工厂给。
@@ -60,8 +79,14 @@ export type SessionInstance = {
 
 /** 会话主面的构造入参——一切「谁来实现」的选择由装配根给出。 */
 export type SessionHostDeps = {
-  /** **开局会话**——装配按「启动流转」定好（接着最近一条；一条都没有则新造）。 */
-  readonly session: SessionId
+  /**
+   * **开局会话**——**不给＝还没有会话**（技术方案 · 会话与多会话：「会话在首条消息
+   * 按下回车时才建立」；空手打开不占存储、不浪费 id、不把列表塞满空壳）。
+   *
+   * 给的两种场合：显式接续（启动参数给的 id）与测试。**装配的默认启动不给**
+   * （启动＝新会话，不接续——D4）。
+   */
+  readonly session?: SessionId | undefined
   /**
    * **开一条会话的实例链**——装配给（只有它知道怎么造记录实例 / 铸造器 / 闸门 / 工具域）。
    *
@@ -69,8 +94,8 @@ export type SessionHostDeps = {
    * 不是计数；代价如实记：切回来时闸门的会话级「总是允许」记忆不复原，与「新会话清零」同源）。
    */
   readonly open: (session: SessionId) => SessionInstance
-  /** 记录域端口——目录（`listSessions`）与首条消息（`readEntries`）。 */
-  readonly records: RecordsService
+  /** 记录域**读面**——目录 · 按会话读条目 · blob 取回（见 `SessionRecordsFace`）。 */
+  readonly records: SessionRecordsFace
   /**
    * **标题写面**——记录域的**结构超集**（`RecordsService` 端口是只读面）。
    * 装配接 `(s, t, at) => store.setSessionTitle(s, t, at)`。
@@ -98,8 +123,13 @@ export type SessionHost = Omit<ConversationService, 'recover'> & {
    * 而测试与调用方拿得到「跑完了」这个把手。不给的话，用例只能靠轮询猜，那是测试的噪声。
    */
   handle(command: SessionCommand): Promise<void>
-  /** 当前活跃会话（单活跃）。 */
-  active(): SessionId
+  /** 当前活跃会话（单活跃）——**`undefined` ＝ 还没有会话**（首条消息才开张）。 */
+  active(): SessionId | undefined
+  /**
+   * 读侧命令（`history.read` 的落点）——经 `RecordsService.readEntries` 读、分块推
+   * `session.history`（**不落库**）。`session` 不给＝当下这条。
+   */
+  readHistory(session?: SessionId): Promise<void>
 }
 
 /** 一次动作的收场——`undefined` ＝**无事可说**（不发事件）。 */
@@ -115,20 +145,34 @@ const EMPTY_TITLE_NOTE = '标题为空——会话名不能是空的（原来那
 /** 造会话主面——`ConversationService` 的落地。 */
 export function createConversationService(deps: SessionHostDeps): SessionHost {
   const limit = deps.titleLimit ?? TITLE_LIMIT
-  let active = deps.open(deps.session)
+  /**
+   * 当下这条——**`undefined` ＝ 还没有会话**（空手打开的状态）。
+   *
+   * 开张的时机是**首条消息**（`submit`）或**用户显式点了会话面**（`session.list` /
+   * `session.new`——那些要盖章，见 `current()`）。启动那一刻**什么都不开**。
+   */
+  let active: SessionInstance | undefined =
+    deps.session === undefined ? undefined : deps.open(deps.session)
+
+  /** 当下这条；没有就**开一张空壳**（首条消息 / 需要盖章的会话命令走这里）。 */
+  function current(): SessionInstance {
+    active ??= deps.open(crypto.randomUUID())
+    return active
+  }
 
   // —— 目录（列表 ＋ 标题）——
 
   /**
-   * 会话目录——最近在前。**当前会话总在列**：一条还没落账的新会话也该看得见自己
-   * （否则 `/session` 刚建完就问「有哪些会话」，屏上却没有它）。
+   * 会话目录——最近在前，**只列落过账的**。
+   *
+   * 第 19 轮改：先前把「还没落账的当前会话」前置进目录（那时为了让 `/session` 刚建完
+   * 看得见自己）；D5 裁决「空壳不该把列表塞满」，故撤掉——**没写过条目的会话不在列**，
+   * 它只在状态行的「当前」位上示人（`session.state.active`）。
    */
   async function catalog(): Promise<readonly SessionSummary[]> {
     const rows = await deps.records.listSessions()
-    const titled = await Promise.all(rows.map(withTitle))
-    if (titled.some((row) => row.id === active.session)) return titled
 
-    return [{ id: active.session, at: deps.now() }, ...titled]
+    return Promise.all(rows.map(withTitle))
   }
 
   /** 标题：改过的取存值；没改过的按首条用户消息现算。 */
@@ -161,7 +205,9 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
   /** 新建一条并切过去。 */
   function fresh(): Attempt {
-    if (active.service.busy()) return { session: active.session, note: BUSY_NOTE }
+    if (active !== undefined && active.service.busy()) {
+      return { session: active.session, note: BUSY_NOTE }
+    }
 
     active = deps.open(crypto.randomUUID())
     return { session: active.session }
@@ -169,8 +215,10 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
   /** 切到某条会话——**只是装载**；已经在的那条＝无事。 */
   function switchTo(session: SessionId): Attempt | undefined {
-    if (session === active.session) return undefined
-    if (active.service.busy()) return { session: active.session, note: BUSY_NOTE }
+    if (session === active?.session) return undefined
+    if (active !== undefined && active.service.busy()) {
+      return { session: active.session, note: BUSY_NOTE }
+    }
 
     active = deps.open(session)
     return { session: active.session }
@@ -191,9 +239,11 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
   async function announce(attempt: Attempt): Promise<void> {
     const sessions = await catalog()
 
+    const session = current()
+
     deps.sink.emit(
-      active.stamper.stamp('session.state', {
-        active: active.session,
+      session.stamper.stamp('session.state', {
+        active: session.session,
         sessions,
         ...(attempt.note === undefined ? {} : { note: attempt.note }),
       }),
@@ -202,7 +252,9 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
   async function run(command: SessionCommand): Promise<void> {
     if (command.type === 'session.list') {
-      await announce({ session: active.session })
+      // 目录要盖章（事件必带会话）——空手就 `/session` 也照答：那一下开一张空壳，
+      // 于是「有哪些会话可选」问得出来（列表本身只列落过账的，见 `catalog`）
+      await announce({ session: current().session })
       return
     }
     if (command.type === 'session.new') {
@@ -220,12 +272,49 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     await announce(renameTo(command.session, command.title))
   }
 
-  return {
-    submit: (input) => active.service.submit(input),
-    interrupt: () => active.service.interrupt(),
+  /**
+   * 读侧命令——**分块**推条目（技术方案 · 领域划分：「读面走控制面，不靠装配偷接」）。
+   *
+   * 外壳够不着记录域（域不认知外壳），控制面是唯一一直通的路（第二站跨进程也只有它）——
+   * 故重建展示的条目经这里读出来、推给外壳。
+   *
+   * **只读当下这条**：`session` 给了但不是当下那条 ⇒ 不推（外壳切换本就该先
+   * `session.open`，切换之后它才是当下那条）。别的会话**铸不出信封**——铸造器按会话
+   * 实例构造（契约 · 信封的归属），没有实例就没得盖。
+   */
+  async function readHistory(session?: SessionId): Promise<void> {
+    const target = session ?? active?.session
+    if (target === undefined || target !== active?.session) return
 
-    /** 对**当前会话**跑一次恢复——启动流转（装配的 `boot` 就这一跳）。 */
-    recover: () => active.service.recover(),
+    const stamper = current().stamper
+    let batch: Entry[] = []
+    let seen = 0
+
+    for await (const entry of deps.records.readEntries(target)) {
+      batch.push(entry)
+      seen += 1
+      if (batch.length >= HISTORY_CHUNK) {
+        deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: false }))
+        batch = []
+      }
+    }
+
+    // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
+    // 否则外壳等不到收尾，屏上永远停在「正在重建」）
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true }))
+    void seen
+  }
+
+  return {
+    // **首条消息在这里开张**（懒建立）：装配不在启动时铸 id
+    submit: (input) => current().service.submit(input),
+    // 没有会话＝没有在跑的一轮，没什么可中断
+    interrupt: () => active?.service.interrupt(),
+    // 没有会话＝没得恢复（装配不在这个状态下调它）
+    recover: () =>
+      active?.service.recover() ??
+      Promise.resolve({ session: '', turn: null, lastTurn: null, dispositions: [] }),
+    readHistory,
 
     listSessions: () => catalog(),
 
@@ -250,13 +339,16 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     handle(command: SessionCommand): Promise<void> {
       // 兜底——异常不吞：发 `error`（内核自身异常，产生方就近），否则命令石沉大海
       return run(command).catch((error: unknown) => {
+        // `current()`：跑到这儿说明命令**已经被受理过**（`run` 里多半已开张），
+        // 拿当下这条的铸造器盖章；真没有就开一张——异常得说出来，不能因为没会话就沉掉
         deps.sink.emit(
-          active.stamper.stamp('error', { message: `会话面异常：${messageOf(error)}` }),
+          current().stamper.stamp('error', { message: `会话面异常：${messageOf(error)}` }),
         )
       })
     },
 
-    active: () => active.session,
+    // **可缺**：空手打开时还没有会话（首条消息才开张）
+    active: () => active?.session,
   }
 }
 

@@ -489,6 +489,13 @@ export type CommandRoutes = {
    * 也不知道开得成开不成；「打不开就不打开」的处置归对话域。
    */
   onSession(command: SessionCommand): void
+  /**
+   * 读侧命令 → 对话域（技术方案 · 领域划分：「读面走控制面，不靠装配偷接」）。
+   *
+   * 控制域**原样转手**（同 `onSession` 的姿势）——它不认识记录域、也不读条目；
+   * 答复走事件（`session.history`，**不落库**）：命令面只发不收，回话一律经事件流。
+   */
+  onHistoryRead(session?: SessionId): void
 }
 
 /**

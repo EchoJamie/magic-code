@@ -292,6 +292,13 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'session.state':
       return reduceSessionState(view, event.data)
 
+    // — 读面答复（第 19 轮）——
+    // ⚠️ **收到就丢，视图不动**：本行只为让**穷尽性检查**过（新增 kind ⇒ `assertNever` 编译不过）。
+    // 真正的消费（按块重建对话流）归**轮 II**（外壳重画）——那一轮把 `reduceSessionState` /
+    // `reduceSwitched` 那类分支一并重做。此处**只此一行**，不动别的。
+    case 'session.history':
+      return view
+
     // — 预留（阶段 3）—
     case 'context.compacted':
       return view

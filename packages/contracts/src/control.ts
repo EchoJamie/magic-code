@@ -115,13 +115,28 @@ export type SessionRename = {
 /** 会话命令四支——控制域**原样转手**给对话域（它不认识会话）。 */
 export type SessionCommand = SessionList | SessionNew | SessionOpen | SessionRename
 
-/** 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支）——外壳发往内核的全部消息。 */
+/**
+ * `history.read`——**读侧命令**（阶段 2 补 · 技术方案 · 领域划分：「读面走控制面」）。
+ *
+ * **由头**：外壳**重建展示**（恢复第 5 条 / D1 切换后的重画）要条目，而**外壳够不着记录域**
+ * （域不认知外壳）。给外壳注入一个只读端口同进程能跑，但**第二站跨进程时不通**——
+ * **控制面是唯一一直通的路**（跨设备也一样）。故读也走命令面，答复走事件（`session.history`）。
+ *
+ * `session` 不给 ＝ **当下这条**（重建展示的常见情形：切换完就重画，不必先报 id）。
+ */
+export type HistoryRead = {
+  readonly type: 'history.read'
+  readonly session?: SessionId
+}
+
+/** 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧一支）——外壳发往内核的全部消息。 */
 export type Command =
   | InputSubmit
   | DecisionAnswer
   | TurnInterrupt
   | ModelSwitch
   | SessionCommand
+  | HistoryRead
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

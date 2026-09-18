@@ -67,6 +67,15 @@ export function commandSubjectOf(command: Command): string {
       // 第 17 轮第四支——两件都可缺，缺了就说「缺什么」
       return `换模型：${command.provider ?? '（不换条目）'} / ${command.model ?? '（不换模型）'}`
     case 'session.list':
+    case 'session.new':
+    case 'session.open':
+    case 'session.rename':
+      // U16 会话四支
+      return `会话命令：${command.type}`
+    case 'history.read':
+      // 第 19 轮读侧一支——不给孩子条＝读当下这条
+      return `读历史：${command.session ?? '（当下这条）'}`
+    case 'session.list':
       return '列会话'
     case 'session.new':
       return '新会话'
@@ -127,6 +136,7 @@ export function hubFaceRealizesPort(): void {
     onDecision: () => undefined,
     onModelSwitch: () => undefined,
     onSession: () => undefined,
+    onHistoryRead: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -150,6 +160,7 @@ export function routesAreContractShape(): void {
     onDecision: (id, decision) => void [id, decision],
     onModelSwitch: (request) => void [request.provider, request.model],
     onSession: (command) => void command.type,
+    onHistoryRead: () => undefined,
   }
   void routes
 }
@@ -176,6 +187,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onDecision: () => undefined,
     onModelSwitch: () => undefined,
     onSession: () => undefined,
+    onHistoryRead: () => undefined,
     ...overrides,
   }
 }

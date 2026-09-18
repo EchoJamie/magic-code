@@ -5,6 +5,7 @@
  * - **`bind(routes)`**——装命令路由：`input.submit` / `turn.interrupt` → 对话域；
  *   `decision.answer` → 权限域；`model.switch` → 装配（注册表，技术方案 · 装配视图 4）；
  *   `session.*` 四支 → 对话域（会话的持有者——本域只是把话带到）；
+ *   `history.read`（读侧）→ 对话域，答复走 `session.history` 事件；
  * - **`attach(transport)`**——接传输：接**内核侧一端**（契约 `KernelTransport`）后，
  *   命令自传输进来、事件自传输出去。外壳侧一端（`ControlTransport`）由外壳自持。
  *
@@ -83,6 +84,11 @@ export function createControlHub(): ControlHubFace {
         // 会话四支——原样转手给**对话域**（它才是会话的持有者）。
         // 本域不认识会话、也不知道开得成开不成，与 `model.switch` 同一姿势。
         target.onSession(command)
+        return
+      case 'history.read':
+        // 读侧命令——**原样转手**给对话域（会话与条目归它）。答复走事件（`session.history`）
+        // ——命令面只发不收，本域也不读条目（它够不着记录域，这正是读面走控制面的由头）。
+        target.onHistoryRead(command.session)
         return
     }
   }
