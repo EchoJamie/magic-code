@@ -174,6 +174,20 @@ describe('一屏 · 供应商与退避重试（第 17 轮补锚）', () => {
 
     expect(screen(view)).toMatchSnapshot()
   })
+
+  test('干活中——忙碌位说了算；`resumed` **不留「已恢复」**（U16 修正阶段 1 遗留）', () => {
+    const view = viewed([
+      event('agent.start', {}, { turn: null }),
+      event('agent.state', { state: 'resumed' }, { turn: null }),
+      event('turn.start', {}),
+      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+    ])
+    const rendered = screen(view)
+
+    // 「在干活」由忙碌位说；再挂一句「已恢复」＝用户看到「它说恢复了，可它明明在跑」
+    expect(rendered).toContain('工作中')
+    expect(rendered).not.toContain('已恢复')
+  })
 })
 
 describe('一屏 · 会话面（U16）', () => {

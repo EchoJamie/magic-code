@@ -41,12 +41,19 @@ export function StatusLine({ status }: StatusLineProps) {
   )
 }
 
-/** agent 只在非常态时出声（`waiting` 是默认态，占了位置没用）。 */
+/**
+ * agent 只在**非常态**时出声——正常态占了位置没用。
+ *
+ * ⚠️ `resumed` **不再是「非常态」**（U16 修正的阶段 1 遗留）：它的内核语义是
+ * 「**正在干活**」（对话域在轮起时发它——`agent.state{resumed}`），不是「从崩溃恢复过来了」。
+ * 而「在干活」屏上已经由忙碌位（`● 工作中`）说了，再挂一个「已恢复」是本末倒置：
+ * 用户看到的是「它说恢复了，可它明明在跑」。
+ *
+ * 留 `paused`——那个才是真非常态（阶段 2 的留位：恢复流程 / 人在环的长暂停，首站不产）。
+ * 真要报「这次是接着上次没跑完的」，凭据该是**恢复报告**（处置了几笔在途），不是这个状态位。
+ */
 function agentPart(status: ShellStatus): string {
-  if (status.agent === 'paused') return ' · 已暂停'
-  if (status.agent === 'resumed') return ' · 已恢复'
-
-  return ''
+  return status.agent === 'paused' ? ' · 已暂停' : ''
 }
 
 /**
