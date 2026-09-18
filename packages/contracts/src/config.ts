@@ -71,8 +71,27 @@ export type PermissionsConfig = {
 }
 
 /**
+ * 工作区根列表（**阶段 3 加键** · 技术方案 · 执行 · 工作区）。
+ *
+ * **平等平铺 ＋ 一个默认**——**默认根＝列表第一项**（相对路径与新文件落它）；
+ * 不引入「主根」概念（多一个概念就多一处解释）。单根＝一项的特例。
+ *
+ * **判据「键在即接管」**（照 `traits` 的先例）——本键存在即**整组接管**工作区根注册，
+ * **不再并入启动目录**；键缺省 → 装配根回落**启动目录**（阶段 1 的行为原样：
+ * 「阶段 1：启动目录＝默认根（唯一）」）。两义不可混：接管就是接管，
+ * 一边声明三根、一边又悄悄把启动目录塞进去，注册的东西就没人说得清了。
+ *
+ * **校验分两层，两层都不降级**（技术方案 · 执行：「根是绝对路径——加载时校验」）：
+ * - **形制**（须是非空字符串的数组）归**配置加载器**——那是 JSON 的事；
+ * - **语义**（绝对 / 存在 / 是目录 / 重复）归**执行域** `createWorkspaceService`——
+ *   那要碰 fs，且**根的身份**（`realpath` 之后的规范形）只有它说了算。
+ *   一个真源；加载器不另判一遍，免得两处各说一套「什么算合格的根」。
+ */
+export type WorkspaceRoots = readonly string[]
+
+/**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
- * **阶段 2 加键 `permissions`**；工作区根为阶段 3 加键。
+ * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots`**。
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
@@ -81,6 +100,8 @@ export type MagicConfig = {
   readonly dataDir: string
   /** 权限段（阶段 2）——见 `PermissionsConfig`。 */
   readonly permissions?: PermissionsConfig
+  /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */
+  readonly workspaceRoots?: WorkspaceRoots
 }
 
 /**

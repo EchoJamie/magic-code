@@ -12,6 +12,10 @@
  * - 「命令不存在」＝ **exit 127**（经 shell），**不是**沙箱级失败——别与启动失败混为一类；
  * - `Bun.spawn` 对不存在的**可执行文件**直接抛 ENOENT / cwd 不存在同样抛——**抛**才是启动失败。
  *
+ * **多根（U18）**另有一节——判据「`exec` 的 `cwd` 解析与 `WorkspaceService.resolve` **同源**」
+ * （技术方案 · 执行 · 工作区）：沙箱侧不另写一份路径规则，故多根下三条路径
+ * （相对 / 绝对落任一根 / 越界）在此**实测**——同源若破，那一节当场红。
+ *
  * 测试用 fs 不受守护拦（守护面收窄至各包 `src/`）——夹具照用临时目录。
  */
 
@@ -35,8 +39,21 @@ function freshRoot(): string {
 
 /** 造一个落在默认根上的沙箱，返回沙箱与其（规范化后的）根。 */
 function sandboxOn(root: string): { box: Sandbox; root: string } {
-  const workspace = createWorkspaceService({ root })
+  const workspace = createWorkspaceService({ roots: [root] })
   return { box: createSandbox({ workspace }), root: workspace.defaultRoot() }
+}
+
+/** 造一个**多条根**的沙箱——`defaultRoot()` ＝ 列表第一项（技术方案 · 执行 · 工作区）。 */
+function sandboxOnAll(raw: readonly string[]): { box: Sandbox; roots: readonly string[] } {
+  const workspace = createWorkspaceService({ roots: raw })
+  return { box: createSandbox({ workspace }), roots: workspace.roots() }
+}
+
+/** 取规范化后的第 n 条根——索引位在 `noUncheckedIndexedAccess` 下带 `undefined`。 */
+function nth(roots: readonly string[], index: number): string {
+  const root = roots[index]
+  if (root === undefined) throw new Error(`第 ${index + 1} 条根缺席——夹具出问题了`)
+  return root
 }
 
 /** 一步到位：新根 ＋ 新沙箱。 */
@@ -132,6 +149,63 @@ describe('判据 1 · 回环——命令跑了', () => {
     const result = await box.exec('ls', { cwd: '.' })
 
     expect(streamsOf(result).stdout).toContain('marker.txt')
+  })
+})
+
+/**
+ * U18 · **多根下的 `cwd`**——技术方案 · 执行：「`exec` 的 `cwd` 解析与
+ * `WorkspaceService.resolve` **同源**」。
+ *
+ * 这是**实测**不是复述：同源若破，这一节当场红——沙箱认一套根、解析认另一套。
+ * 沙箱侧不另写一份路径规则（`sandbox.ts` 只调 `workspace.resolve` / `defaultRoot`），
+ * 故此处咬住的是「那条路真的接上了」：**进程真起来、真在认的那条根里跑**。
+ */
+describe('多根——cwd 与 `resolve` 同源', () => {
+  test('cwd 缺省＝**默认根**（列表第一项）——不是第二根', async () => {
+    const [first, second] = [freshRoot(), freshRoot()]
+    const { box, roots: real } = sandboxOnAll([first, second])
+
+    expect(streamsOf(await box.exec('pwd', {})).stdout.trim()).toBe(nth(real, 0))
+    expect(streamsOf(await box.exec('pwd', {})).stdout.trim()).not.toBe(nth(real, 1))
+  })
+
+  test('cwd 给相对路径＝落默认根（不落第二根）', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    writeFileSync(join(nth(real, 0), 'in-first.txt'), 'x')
+
+    const result = await box.exec('ls', { cwd: '.' })
+
+    expect(streamsOf(result).stdout).toContain('in-first.txt')
+  })
+
+  test('cwd 给**第二根的绝对路径**＝通过，且真在该根里跑（多根的主要收益）', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    writeFileSync(join(nth(real, 1), 'in-second.txt'), 'x')
+
+    const result = await box.exec('pwd', { cwd: nth(real, 1) })
+
+    expect(streamsOf(result).stdout.trim()).toBe(nth(real, 1))
+    // 相对这个 cwd 的命令也落在第二根（pwd 对了不代表 shell 真在那儿跑，故再落一个文件）
+    writeFileSync(join(nth(real, 1), 'also-here.txt'), 'x')
+    expect(streamsOf(await box.exec('ls', { cwd: nth(real, 1) })).stdout)
+      .toContain('also-here.txt')
+  })
+
+  test('cwd 落**所有根之外** → `out-of-bounds`，且进程不启动', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    const marker = join(nth(real, 0), 'oops.txt')
+
+    // `tmpdir()` 是两根的**共同父级**——不在任何一根内（「越界＝所有根之外」）
+    const result = await box.exec(`touch ${marker}`, { cwd: tmpdir() })
+
+    expect(failureOf(result).reason).toBe('out-of-bounds')
+    expect(existsSync(marker)).toBe(false) // 命令有副作用也没发生＝确实没启动
+  })
+
+  test('cwd 经 `..` 拱出**默认根** → `out-of-bounds`（第二根接不住）', async () => {
+    const { box } = sandboxOnAll([freshRoot(), freshRoot()])
+
+    expect(failureOf(await box.exec('echo hi', { cwd: '..' })).reason).toBe('out-of-bounds')
   })
 })
 

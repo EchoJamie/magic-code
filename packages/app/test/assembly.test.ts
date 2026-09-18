@@ -10,6 +10,7 @@ import { realpathSync } from 'node:fs'
 import type { EventDataOf, EventKind, KernelEvent } from '@magic/contracts'
 import { attachShell, createStamper } from '../src/index.ts'
 import { eventsOfKind, kindTrail, makeStage, readDatabase } from './support.ts'
+import { removeDir, tempDir } from './tmp.ts'
 
 describe('顺序纪律——先接订阅、后放开输入', () => {
   test('未订阅时的事件推送**丢弃**（不排队、不补发）', async () => {
@@ -188,7 +189,7 @@ describe('信封铸造器——产出方铸（按会话实例）', () => {
   })
 })
 
-describe('执行域——首站单根＝启动目录', () => {
+describe('执行域——单根＝启动目录（缺省）／多根＝配置接管（阶段 3）', () => {
   test('注册根是**真路径**——装配对外报的、提示词注入的、沙箱认的是同一个', () => {
     const stage = makeStage()
 
@@ -196,13 +197,115 @@ describe('执行域——首站单根＝启动目录', () => {
       const assembly = stage.assemble()
 
       // 入参是 `mkdtemp` 给的 /var/… 路径；执行域构造时取 realpath（macOS 上 /private/var/…）
-      expect(assembly.workspaceRoot).toBe(realpathSync(stage.workspace))
+      expect(assembly.workspaceRoots).toEqual([realpathSync(stage.workspace)])
       // 且确实是「说过要一致」的那一个：提示词注入的 cwd 与沙箱缺省 cwd 都取它
       //   （后一条由下方 `pwd` 用例实证）
 
       assembly.close()
     } finally {
       stage.dispose()
+    }
+  })
+
+  test('配置**没有** `workspaceRoots` 键 → 回落启动目录（阶段 1 姿态原样）', () => {
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble()
+
+      expect(assembly.workspaceRoots).toHaveLength(1)
+      expect(assembly.workspaceRoots[0]).toBe(realpathSync(stage.workspace))
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('配置**有** `workspaceRoots` → 整组接管（不再并入启动目录）', () => {
+    // 「键在即接管」——启动目录是 `stage.workspace`，两根本不含它：若还悄悄塞进去，
+    // 注册的东西就没人说得清（见契约 `WorkspaceRoots`）
+    const extra = tempDir('magic-extra-')
+
+    try {
+      const stage = makeStage({ config: { workspaceRoots: [extra] } })
+      try {
+        const assembly = stage.assemble()
+
+        expect(assembly.workspaceRoots).toEqual([realpathSync(extra)])
+        expect(assembly.workspaceRoots).not.toContain(realpathSync(stage.workspace))
+
+        assembly.close()
+      } finally {
+        stage.dispose()
+      }
+    } finally {
+      removeDir(extra)
+    }
+  })
+
+  test('多根——**默认根＝列表第一项**，序保声明序（`roots()` 是规范形）', () => {
+    const [first, second] = [tempDir('magic-a-'), tempDir('magic-b-')]
+
+    try {
+      const stage = makeStage({ config: { workspaceRoots: [first, second] } })
+      try {
+        const assembly = stage.assemble()
+
+        expect(assembly.workspaceRoots).toEqual([realpathSync(first), realpathSync(second)])
+        // 提示词注入的 cwd ＝ 第一条（相对路径与新文件落它）——由下方 `pwd` 用例实证
+
+        assembly.close()
+      } finally {
+        stage.dispose()
+      }
+    } finally {
+      removeDir(first)
+      removeDir(second)
+    }
+  })
+
+  test('`exec` 的缺省 cwd ＝ **默认根**（多根下＝第一项，不是启动目录也不是第二根）', async () => {
+    const [first, second] = [tempDir('magic-a-'), tempDir('magic-b-')]
+
+    try {
+      // 故意让第一项 ≠ 启动目录（`stage.workspace`）
+      const stage = makeStage({ config: { workspaceRoots: [second, first] } })
+      try {
+        const assembly = stage.assemble({
+          turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'pwd' } }] }, { text: '好' }],
+        })
+        const shell = attachShell(assembly.shell)
+
+        await shell.submit('我在哪')
+        shell.dispose()
+        assembly.close()
+
+        const result = eventsOfKind(shell.events, 'tool.result')[0]
+        const text = (result?.data.output as { text: string }).text.trim()
+        expect(text).toBe(realpathSync(second)) // 列表第一项——「默认根」那一位
+        expect(text).not.toBe(realpathSync(stage.workspace))
+      } finally {
+        stage.dispose()
+      }
+    } finally {
+      removeDir(first)
+      removeDir(second)
+    }
+  })
+
+  test('不合格的根 → 装配期抛（**报错不降级**——不是跳过那条继续跑）', () => {
+    // 四项校验的**语义**那三条（相对 / 不存在 / 空列表）；「不是目录」「重复」由
+    // 执行域自己的用例钉（那里头有造文件 / 造符号链接的夹具），此处只证「装机真接上了」
+    const cases: readonly (readonly string[])[] = [['relative/nope'], ['/definitely/not/here'], []]
+
+    for (const workspaceRoots of cases) {
+      const stage = makeStage({ config: { workspaceRoots } })
+      try {
+        expect(() => stage.assemble()).toThrow()
+      } finally {
+        stage.dispose()
+      }
     }
   })
 

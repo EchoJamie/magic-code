@@ -182,10 +182,13 @@ export type Assembly = {
    */
   readonly contextWindow: number | null
   /**
-   * 工作区**注册根**（首站单根）——执行域构造时取的 `realpath`，**不是**入参原值：
+   * 工作区**注册根列表**（阶段 3 多根）——执行域构造时逐条取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
+   *
+   * **序即语义**——`[0]` ＝**默认根**（相对路径与新文件的落点）；单根＝一项的特例。
+   * 提示词注入的 `cwd` 取的正是 `[0]`（见 `promptVarsOf`）。
    */
-  readonly workspaceRoot: string
+  readonly workspaceRoots: readonly string[]
   /**
    * **启动流转**（U16）——对当下会话跑一次恢复（处置在途操作；干净会话什么都不做）。
    *
@@ -266,8 +269,13 @@ export function assemble(options: AssembleOptions): Assembly {
    * 不把列表塞满空壳；首条消息按下回车才开张（`SessionHost.submit`）。
    */
   const startup = options.session
-  // 执行域：工作区根注册（首站单根＝启动目录）＋ 沙箱（cwd 约束经工作区）
-  const workspace = createWorkspaceService({ root: options.cwd })
+  // 执行域：工作区根注册 ＋ 沙箱（cwd 约束经工作区）
+  // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
+  // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
+  // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
+  const workspace = createWorkspaceService({
+    roots: loaded.config.workspaceRoots ?? [options.cwd],
+  })
   const sandbox = createSandbox({ workspace })
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────
@@ -566,7 +574,7 @@ export function assemble(options: AssembleOptions): Assembly {
     get contextWindow(): number | null {
       return contextWindowOf(models)
     },
-    workspaceRoot: workspace.defaultRoot(),
+    workspaceRoots: workspace.roots(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。
     boot: () =>

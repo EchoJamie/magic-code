@@ -257,3 +257,61 @@ describe('密钥纪律', () => {
     expect(apiKeyEnvVarOf('my-vendor')).toBe('MAGIC_MY_VENDOR_API_KEY')
   })
 })
+
+/**
+ * U18 · **工作区根列表**（阶段 3 加键）——判据：**形制在此判 · 语义归执行域**。
+ *
+ * 两半合起来才说明「分工不是一句注释」：
+ * - 这里钉**形制**那半（须是非空字符串的数组）——JSON 的事；
+ * - **语义**那半（绝对 / 存在 / 是目录 / 重复）钉在 `@magic/execution` 的
+ *   `workspace.test.ts`——那要碰 fs，且**根的身份**（`realpath` 后）只有执行域说了算。
+ *
+ * ⚠️ **漏带＝静默失效**：配置里写了 `workspaceRoots` 而加载器不接，工作区就悄悄退回
+ * 启动目录单根**且不报错**（同权限段那条教训）。故「加载器真把它带出来了」这一条
+ * 必须有用例钉着，别顺手删。
+ */
+describe('工作区根列表（阶段 3 加键）', () => {
+  test('键缺省 —— **不给这一位**（不是空数组）', () => {
+    // 缺省与空数组是两件事：前者＝回落启动目录（阶段 1 姿态），后者＝「一条根都没有」。
+    // 合成一个，装配就分不出「没配」与「配空了」——前者合法、后者是错。
+    expect(loadFrom(validConfig()).config.workspaceRoots).toBeUndefined()
+  })
+
+  test('照读——顺序原样带出（**第一项＝默认根**，顺序即语义）', () => {
+    const loaded = loadFrom(
+      validConfig({ workspaceRoots: ['/work/a', '/work/b', '/work/c'] }),
+    )
+
+    expect(loaded.config.workspaceRoots).toEqual(['/work/a', '/work/b', '/work/c'])
+  })
+
+  test('单根＝一项的特例——不因只有一条而改成标量', () => {
+    expect(loadFrom(validConfig({ workspaceRoots: ['/work/only'] })).config.workspaceRoots)
+      .toEqual(['/work/only'])
+  })
+
+  test('不是数组 → 拒（报错点名到字段）', () => {
+    expect(() => loadFrom(validConfig({ workspaceRoots: '/work/a' }))).toThrow(ConfigError)
+    expect(() => loadFrom(validConfig({ workspaceRoots: '/work/a' }))).toThrow(/workspaceRoots/)
+    expect(() => loadFrom(validConfig({ workspaceRoots: { 0: '/work/a' } }))).toThrow(/数组/)
+  })
+
+  test('条目不是非空字符串 → 拒，且点名到**第几项**', () => {
+    expect(() => loadFrom(validConfig({ workspaceRoots: [123] }))).toThrow(/workspaceRoots\[0\]/)
+    expect(() => loadFrom(validConfig({ workspaceRoots: ['/work/a', ''] })))
+      .toThrow(/workspaceRoots\[1\]/)
+  })
+
+  test('**相对路径 / 不存在不在这一层判**——形制过了就交给执行域', () => {
+    // 加载器判的是 JSON 形状；「是不是个真目录」它不碰 fs、也不该碰（一个真源在执行域）。
+    // 故这两条**这里必须放行**——若这里就拒了，说明两处各判了一遍（分叉的开始）。
+    expect(loadFrom(validConfig({ workspaceRoots: ['relative/nope'] })).config.workspaceRoots)
+      .toEqual(['relative/nope'])
+    expect(loadFrom(validConfig({ workspaceRoots: ['/definitely/not/here'] })).config.workspaceRoots)
+      .toEqual(['/definitely/not/here'])
+  })
+
+  test('空数组**放行**——「零根」的拒归执行域（它才知道默认根取不出来）', () => {
+    expect(loadFrom(validConfig({ workspaceRoots: [] })).config.workspaceRoots).toEqual([])
+  })
+})
