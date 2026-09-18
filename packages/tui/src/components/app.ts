@@ -22,11 +22,13 @@
 
 import { Box, Static, Text, useApp, useInput, usePaste, useWindowSize } from 'ink'
 import { createElement as h } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { Composer, type ComposerTone } from './composer.ts'
+import { hasRunningTool } from '../view.ts'
+import { Composer, draftHeight, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
@@ -50,11 +52,18 @@ export type AppViewProps = {
   readonly view: ShellView
   readonly columns: number
   readonly rows: number
+  /**
+   * **此刻**（毫秒）——跑动中的工具行拿它报「跑到第几秒了」（`⟳ 0.6s`）。
+   *
+   * 钟归**活壳**（`TuiApp` 按需滴答）；这里是纯的：不给就 `null` ⇒ 屏上回退成
+   * 「运行中」——**不编一个秒数**（取景与快照因此是确定的）。
+   */
+  readonly now?: number | null
 }
 
-export function AppView({ view, columns, rows }: AppViewProps) {
+export function AppView({ view, columns, rows, now = null }: AppViewProps) {
   // 活动区的预算：减去交互区与状态行（**不填满窗口**——内联模式下内容跟内容走）
-  const dock = Math.min(dockHeightOf(view, columns), Math.max(4, Math.floor(rows / 2)))
+  const dock = Math.min(dockHeightOf(view, columns, rows), Math.max(4, Math.floor(rows / 2)))
   const liveBudget = Math.max(1, rows - dock - 2)
   const live = tailWithin(view.rows, columns, view.expanded, liveBudget)
 
@@ -86,11 +95,12 @@ export function AppView({ view, columns, rows }: AppViewProps) {
         columns,
         expanded: view.expanded,
         spaced: index === 0 ? view.settled.length > 0 && row.kind === 'user' : needsSpacer(live.rows, index),
+        now,
       }),
     ),
     // **全屏只有这一条分隔线**（记录区与交互区之间）
     h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns))),
-    h(Box, { flexDirection: 'column' }, ...dockOf(view)),
+    h(Box, { flexDirection: 'column' }, ...dockOf(view, rows)),
     h(StatusLine, { status: view.status, columns }),
   )
 }
@@ -163,7 +173,7 @@ function heightOf(row: LogRow, columns: number, expanded: boolean, spaced: boole
 }
 
 /** 左下交互区的内容（四种用法）。 */
-function dockOf(view: ShellView): readonly ReactElement[] {
+function dockOf(view: ShellView, rows: number): readonly ReactElement[] {
   const flash =
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
 
@@ -183,7 +193,7 @@ function dockOf(view: ShellView): readonly ReactElement[] {
     ...(view.completion === null
       ? []
       : [h(Completion, { key: 'completion', completion: view.completion })]),
-    h(Composer, { key: 'composer', draft: view.draft, tone: toneOf(view) }),
+    h(Composer, { key: 'composer', draft: view.draft, tone: toneOf(view), maxLines: maxDraftLines(rows) }),
     ...flash,
   ]
 }
@@ -208,18 +218,30 @@ function Completion({ completion }: { readonly completion: CompletionState }): R
   )
 }
 
-/** 输入行的面孔——按状态给（显示层不判断业务，只翻状态）。 */
+/**
+ * 输入行的面孔——按状态给（显示层不判断业务，只翻状态）。
+ *
+ * `working` 还要再分一次（U20 · 差距 3「进度感：**工具跑动 / 等待模型 / 退避重试**，
+ * 屏上都要看得出」）：**有工具在跑**时说的是「工作中」（此刻有 `⟳` 那行在动），
+ * **没有工具在跑**时球在模型那边——说的是「等模型回来」。两句话分开，三种状态就
+ * 各自有各自的**屏上痕迹**，不用去看状态行才分得出。
+ */
 function toneOf(view: ShellView): ComposerTone {
   if (view.status.state === 'retrying') return 'retrying'
-  if (view.status.state === 'working') return 'working'
+  if (view.status.state === 'working') return hasRunningTool(view) ? 'working' : 'waiting'
 
   return 'idle'
+}
+
+/** 草稿最多占几行——**半屏**（原型 · 键盘：多行草稿的高度随内容长，上限半屏）。 */
+function maxDraftLines(rows: number): number {
+  return Math.max(1, Math.floor(rows / 2))
 }
 
 /**
  * 交互区要几行——**按内容算**（原型：展开高度＝内容所需，最多半屏）。纯函数：布局与用例都拿它。
  */
-export function dockHeightOf(view: ShellView, columns: number): number {
+export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
   const flash = view.flash === null ? 0 : 1
   const completing = completionLines(view)
 
@@ -236,7 +258,8 @@ export function dockHeightOf(view: ShellView, columns: number): number {
     return view.dock.picker.rows.length + hint + flash
   }
 
-  return 1 + completing + flash
+  // 输入行那一片：草稿有几行就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）
+  return draftHeight(view.draft, maxDraftLines(rows)) + completing + flash
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */
@@ -250,10 +273,44 @@ export type TuiAppProps = {
   readonly shell: Shell
 }
 
+/**
+ * 跑动中滴答的间隔（毫秒）——实现级常量。
+ *
+ * 取 200 的由头：屏上报的是 `0.6s` / `1.2s` 这一档（一位小数），200ms 一跳看着是**连着走**的，
+ * 而不是一格一格蹦；比这更密只是白烧重绘（受控渲染是 U21 的账）。**没有东西在跑就停表**——
+ * 闲着的屏一格都不重绘。
+ */
+const TICK_MS = 200
+
+/**
+ * 活钟（U20 · 差距 3）——**工具跑动时**才滴答；给屏上那行 `⟳ 0.6s` 一个「此刻」。
+ *
+ * 为什么钟归这一层（而不是视图或外壳）：它是**渲染**的事（同一条视图，此刻画出来与
+ * 半秒后画出来不同），而视图要可重放、外壳要可测——两者都不该带一个走着的钟。
+ */
+function useLiveClock(active: boolean): number | null {
+  const [now, setNow] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!active) {
+      setNow(null)
+      return
+    }
+
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+
+    return () => clearInterval(timer)
+  }, [active])
+
+  return now
+}
+
 export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
   const { exit } = useApp()
+  const now = useLiveClock(hasRunningTool(view))
 
   const feed = (key: ShellKey): void => {
     if (shell.key(key).exit) exit()
@@ -266,7 +323,7 @@ export function TuiApp({ shell }: TuiAppProps) {
   // 粘贴走**另一条信道**（bracketed paste）——接管期间一律拒并提示
   usePaste((text) => feed({ kind: 'paste', text }))
 
-  return h(AppView, { view, columns, rows })
+  return h(AppView, { view, columns, rows, now })
 }
 
 /** Ink 的 `(input, key)` → 外壳认得的按键（0 到多条——一次回调可能带一串正文）。 */
@@ -275,6 +332,7 @@ export function toShellKeys(
   key: {
     readonly ctrl?: boolean
     readonly meta?: boolean
+    readonly shift?: boolean
     readonly return?: boolean
     readonly backspace?: boolean
     readonly delete?: boolean
@@ -287,6 +345,15 @@ export function toShellKeys(
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]
   if (key.ctrl === true && input === 'o') return [{ kind: 'ctrl+o' }]
   if (key.tab === true) return [{ kind: 'tab' }]
+
+  // **`shift+回车` ＝ 换行**（原型 · 键盘）。两条来路都要认（这就是「两条来路」那件事）：
+  // ① **kitty 键盘协议**（`run.ts` 开了）——终端把它报成独立的 `CSI 13;2u`，
+  //    Ink 解出 `return ＋ shift`；
+  // ② **裸 LF**——有的终端 `shift+回车` 就发一个 `\n`（而 `\n` 在 Ink 那儿**本来就不是**
+  //    `return`：它名字叫 `enter`；今天落到下面的分支会被当成一个正文字符塞进草稿）。
+  if (key.return === true && key.shift === true) return [{ kind: 'newline' }]
+  if (input === '\n') return [{ kind: 'newline' }]
+
   if (key.return === true) return [{ kind: 'enter' }]
   if (key.backspace === true || key.delete === true) return [{ kind: 'backspace' }]
   if (key.escape === true) return [{ kind: 'escape' }]

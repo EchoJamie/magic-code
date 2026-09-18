@@ -68,6 +68,30 @@ const state = (active: string, rows: readonly { id: string; title?: string }[]) 
     sessions: rows.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
   })
 
+/**
+ * `ls .` 的一条真实结果——**一行一项**（14 项）。
+ *
+ * 为什么不用一句 `'14 项'` 当夹具（原先是那样）：那是把**摘要**当成了**结果**。
+ * 摘要现在按形态自己算（一行一项 ⇒ `14 项`），夹具得给**真的结果**，
+ * 否则算出来的是「1 项」——那才是把假的当真的。
+ */
+const LS_OUTPUT = [
+  'README.md  (1204 字节)',
+  'bun.lock  (19744 字节)',
+  'package.json  (456 字节)',
+  'packages/',
+  'docs/',
+  'src/',
+  'test/',
+  'scripts/',
+  'tsconfig.json  (571 字节)',
+  'bunfig.toml  (237 字节)',
+  'LICENSE  (1063 字节)',
+  'CHANGELOG.md  (2201 字节)',
+  '.gitignore  (192 字节)',
+  '.githooks/',
+].join('\n')
+
 /** 一屏「有历史」的常态（场景 2 的底子）。 */
 function historyShown(app: ReturnType<typeof live>): void {
   app.feed([
@@ -82,7 +106,10 @@ function historyShown(app: ReturnType<typeof live>): void {
     event('model.delta', { channel: 'text', text: '我先列一下。' }),
     event('tool.call', { name: 'ls', args: { path: '.' } }, { id: 71 }),
     event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 200 }),
-    event('tool.result', { call: 71, ok: true, output: { text: '14 项' } }),
+    // `ls .` 的真实结果形态（一行一项）——14 项（原型 · 场景 2 画的 `✓ 0.2s · 14 项` 就是这个数）
+    // 落地事件给**显式 id**：`at` 也随之固定（`TEST_AT + id`），耗时才是确定的 200ms——
+    // 让 id 自动递增的话，钟随**别的用例跑没跑过**变，快照就成了掷骰子。
+    event('tool.result', { call: 71, ok: true, output: { text: LS_OUTPUT } }, { id: 271 }),
     event('model.delta', { channel: 'text', text: '是个 Bun 工作区，packages 下六个包。' }),
     event('turn.end', { reason: 'settled' }),
   ])
@@ -123,7 +150,14 @@ describe('场景 2 · 空闲（有历史）', () => {
 })
 
 describe('场景 3 · 工作中（流式）', () => {
-  test('工具在跑——标记换 `⟳` ＋ **运行中**（不编秒数）；输入行说实话；右位报中断', () => {
+  // ⚠️ 2026-09-19（U20）**标题收窄过**：原先叫「标记换 `⟳` ＋ 运行中（**不编秒数**）」。
+  //    - **原锚**：那时这句其实是在给一个**局限**立碑——「真秒表要一个 ticker，归后续」，
+  //      而 `⟳ 0.6s` 正是原型场景 3 画的那一形（`● read src/utils/date.ts` / `⟳ 0.6s`）；
+  //    - **规格为什么变**：U20 把钟补上了（`TuiApp` 按需滴答 → `AppView` 的 `now`）；
+  //    - **新锚**：钟给得出就报**真耗时**（`差距 3` 那两条用例钉它），**给不出才回退**「运行中」
+  //      ——这一条（`renderToString` 那条路，没有钟）钉的是后半句。**不编**这条规矩没变，
+  //      变的是「真量得出来的时候，量出来的可以上屏」。
+  test('工具在跑——标记换 `⟳`；**没有钟**就回退「运行中」（不编秒数）；输入行说实话；右位报中断', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
@@ -259,7 +293,7 @@ describe('场景 8 · 答完之后', () => {
     app.key({ kind: 'char', char: 'y' })
     app.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 1200 })])
     app.feed([
-      event('tool.result', { call: 71, ok: true, output: { text: '写好了' } }),
+      event('tool.result', { call: 71, ok: true, output: { text: '写好了' } }, { id: 271 }),
       // 第二件：工具先落，再问（件数就是从这里数的）
       event('tool.call', { name: 'write', args: { path: 'README.md' } }, { id: 72 }),
       event('tool.decision.request', { call: 72, name: 'write', material: '目标 README.md', weight: 'light' }, { id: 89 }),
@@ -346,7 +380,7 @@ describe('场景 12 · 切换 / 恢复后——重建，且是收拢的', () => 
       { id: 1, kind: 'user', content: { text: '看看这个工作区里有什么' }, at: 0 },
       { id: 2, kind: 'assistant', content: { text: '我先列一下。' }, at: 1 },
       { id: 3, kind: 'tool-call', content: { text: '' }, payload: { name: 'ls', args: { path: '.' } }, at: 2 },
-      { id: 4, kind: 'tool-result', content: { text: '14 项' }, payload: { ok: true, output: { text: '14 项' } }, at: 3 },
+      { id: 4, kind: 'tool-result', content: { text: LS_OUTPUT }, payload: { ok: true, output: { text: LS_OUTPUT } }, at: 3 },
       { id: 5, kind: 'assistant', content: { text: '是个 Bun 工作区，packages 下六个包。' }, at: 4 },
     ]
     app.feed([event('session.history', { session: SESSION, entries, done: true })])
@@ -492,7 +526,7 @@ describe('规格细节（渲染层）', () => {
     app.feed([
       event('model.delta', { channel: 'thinking', text: '第一行\n第二行\n第三行' }),
       event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
-      event('tool.result', { call: 71, ok: true, output: { text: 'a.txt\nb.txt' } }),
+      event('tool.result', { call: 71, ok: true, output: { text: 'a.txt\nb.txt' } }, { id: 271 }),
     ])
 
     const collapsed = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
@@ -561,7 +595,7 @@ describe('密度（原型 · 密度节）', () => {
       event('turn.start', {}),
       event('model.delta', { channel: 'text', text: '好。' }),
       event('tool.call', { name: 'ls', args: { path: '.' } }, { id: 71 }),
-      event('tool.result', { call: 71, ok: true, output: { text: 'a.txt' } }),
+      event('tool.result', { call: 71, ok: true, output: { text: 'a.txt' } }, { id: 271 }),
     ])
 
     const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })

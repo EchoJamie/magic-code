@@ -61,6 +61,18 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     alternateScreen: false,
     // Ctrl+C 由外壳判（空闲退出 / 工作中中断）
     exitOnCtrlC: false,
+    // **键盘协议**（U20 · 差距 4）——`shift+回车` 要**分得出来**，只能靠它。
+    //
+    // 由头：裸终端里 `shift+回车` 与 `回车` 常常发的是同一个 `\r`，外壳**无从分辨**；
+    // kitty 键盘协议（Ghostty / kitty / WezTerm 等）让它报成独立的 `CSI 13;2u`。
+    // 要的旗标只一样：`disambiguateEscapeCodes`（带修饰的键不再与裸键同形）。
+    //
+    // ⚠️ 取 `enabled`（**不取 `auto`**）——理由是**实测**的：`auto` 那条路要在开工那一下
+    //    发 `CSI ? u` 问终端、**200ms 内**收到应答才开，而那一跳正落在启动最吵的时候
+    //    （pty 里真跑过：应答被终端的回显吃掉、协议没开起来，`shift+回车` 当场与 `回车` 同形）。
+    //     `enabled` 是无条件推一把（`CSI > 1 u`）：支持的终端照办，**不支持的终端按规范忽略
+    //     未知 CSI**——退化成今天的样子（`shift+回车` ＝ `回车`），不会更坏。退出时 Ink 弹回。
+    kittyKeyboard: { mode: 'enabled', flags: ['disambiguateEscapeCodes'] },
   })
 
   try {

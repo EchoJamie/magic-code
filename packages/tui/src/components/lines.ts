@@ -111,6 +111,23 @@ export function tokenLabel(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens)
 }
 
+/** 窗总量 → 人读（`200k`）——**不带小数**：分母是给人一个尺度，不是量出来的细读数。 */
+export function windowLabel(tokens: number): string {
+  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens)
+}
+
+/**
+ * 状态行 ④ 的用量——**有分母才写分母**（`12.4k/200k`）。
+ *
+ * 分母（上下文窗总量）是 `D10` 要从内核侧给的出口；**拿不到就只报已用量**（`12.4k`），
+ * **不编一个 200k** —— 「拿不到的不编」在这条上是硬规矩（`D10` 那三条读数就是这么立起来的）。
+ */
+export function usageLabel(used: number | null, window: number | null): string | null {
+  if (used === null) return null
+
+  return window === null ? tokenLabel(used) : `${tokenLabel(used)}/${windowLabel(window)}`
+}
+
 /** 是否是可录入的字符（控制键、转义序列不算——整段粘贴算）。 */
 export function isPrintable(input: string): boolean {
   if (input === '') return false

@@ -32,13 +32,17 @@ import {
   picked,
   rebuild,
   reduce,
+  withContextWindow,
 } from './view.ts'
+import { usageLabel } from './components/lines.ts'
 import type { ShellView } from './view.ts'
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
   | { readonly kind: 'char'; readonly char: string }
   | { readonly kind: 'enter' }
+  /** `shift+回车`——**换行**（原型 · 键盘：`回车` 发送 · `shift+回车` 换行）。 */
+  | { readonly kind: 'newline' }
   | { readonly kind: 'tab' }
   | { readonly kind: 'backspace' }
   | { readonly kind: 'escape' }
@@ -86,7 +90,8 @@ function statusLines(view: ShellView): readonly string[] {
   return [
     `会话　${status.session ?? '新会话'}`,
     `模型　${status.model ?? '（还没调用过）'}`,
-    `用量　${status.usage === null ? '（还没上报）' : String(status.usage)}`,
+    // 与状态行 ④ **同一个口径**（`usageLabel`）——两处各报各的，迟早分叉
+    `用量　${usageLabel(status.usage, status.window) ?? '（还没上报）'}`,
     `状态　${status.state === 'error' ? '最近一次模型调用出错' : '未见异常'}`,
   ]
 }
@@ -96,10 +101,22 @@ const STATUS_TITLE = '此刻'
 /** 一次「等内核回话再开选择器」的意图——`/session` 与 `/model` 各一种。 */
 type PendingPicker = 'session' | 'model'
 
+/** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
+export type ShellOptions = {
+  /**
+   * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的分母（`12.4k/200k`）。
+   *
+   * ⚠️ **这是给 `D10` 留的位**：内核侧那条出口还没合入，故此刻**没人传**，
+   * 屏上只报已用量。出口合入后由装配把数递进来（见 `withContextWindow`）——
+   * 不编、不猜、不改事件契约。
+   */
+  readonly contextWindow?: number | null | undefined
+}
+
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
-export function createShell(transport: ControlTransport): Shell {
+export function createShell(transport: ControlTransport, options: ShellOptions = {}): Shell {
   const watchers = new Set<() => void>()
-  let view = createView()
+  let view = withContextWindow(createView(), options.contextWindow ?? null)
   let disposed = false
 
   /** 输入历史（`↑` 取上一条）。 */
@@ -151,6 +168,20 @@ export function createShell(transport: ControlTransport): Shell {
 
   /** 改草稿的统一入口。 */
   const draft = (next: ShellView): void => commit(withCompletion(next))
+
+  /**
+   * **人改草稿**的统一入口（打字 / 退格 / 粘贴 / 换行 / `esc` 清）——比 `draft()` 多一件事：
+   * **把翻历史的游标归位**。
+   *
+   * 由头（U20 · 差距 4）：`↑` 翻出一条旧话之后接着改它，再按 `↑` 应当**从末尾重新翻**
+   * （改过的那条不是历史里的那一条了）。不归位的话游标停在历史中间，
+   * 再按 `↑` 只会往回退一格——甚至顶到头上什么都不动（「按了没反应」）。
+   * `recallHistory` 自己要设游标，故它走 `draft()`，不走这里。
+   */
+  const edit = (next: ShellView): void => {
+    historyAt = -1
+    draft(next)
+  }
 
   const send = (command: Command): void => {
     if (disposed) return
@@ -284,7 +315,7 @@ export function createShell(transport: ControlTransport): Shell {
           commit(said(view, '先答复——此刻粘不了（这一轮在等你）。草稿在，答完接着打。'))
           return NONE
         }
-        draft({ ...view, draft: view.draft + input.text })
+        edit({ ...view, draft: view.draft + input.text })
         return NONE
 
       case 'escape':
@@ -292,7 +323,7 @@ export function createShell(transport: ControlTransport): Shell {
         if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
         // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
         if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
-        draft(view.draft === '' ? { ...view, expanded: false } : { ...view, draft: '' })
+        edit(view.draft === '' ? { ...view, expanded: false } : { ...view, draft: '' })
         return NONE
 
       case 'up':
@@ -321,13 +352,20 @@ export function createShell(transport: ControlTransport): Shell {
 
       case 'backspace':
         if (view.dock.kind === 'decision') return refuse('退格')
-        draft({ ...view, draft: view.draft.slice(0, -1) })
+        edit({ ...view, draft: view.draft.slice(0, -1) })
         return NONE
 
       case 'char':
         if (view.dock.kind === 'decision') return answer(input.char)
         if (view.dock.kind === 'picker') return NONE
-        draft({ ...view, draft: view.draft + input.char })
+        edit({ ...view, draft: view.draft + input.char })
+        return NONE
+
+      // `shift+回车`——**换行**（原型 · 键盘）。接管期间同其余键：不静默吞，说一句。
+      case 'newline':
+        if (view.dock.kind === 'decision') return refuse('换行')
+        if (view.dock.kind === 'picker') return NONE
+        edit({ ...view, draft: `${view.draft}\n` })
         return NONE
 
       case 'other':
