@@ -107,7 +107,10 @@ function readScreen(terminal: Terminal, options: ScreenOptions): Screen {
 
   for (let y = 0; y < buffer.length; y += 1) {
     const line = buffer.getLine(y)
-    lines.push(line === undefined ? '' : line.translateToString(true))
+    // ⚠️ `translateToString(true)` 的「裁右」**把带属性的空格也算作内容**——一行铺了背景之后，
+    // 它右侧的补白就不再被裁（缺陷 D21 铺满整行时当场暴露）。本字段的约定是**右侧空白已裁**
+    // （文本面归文本面，属性归 `cellsOf`），故这里再显式裁一道。
+    lines.push(line === undefined ? '' : line.translateToString(true).replace(/\s+$/u, ''))
     wrapped.push(line?.isWrapped ?? false)
   }
 
@@ -157,6 +160,14 @@ export type Cells = {
   readonly screen: Screen
   /** 第 `row` 行的格子（从左到右，**到最后一个非空格为止**）。 */
   cellsOf(row: number): readonly Cell[]
+  /**
+   * 第 `row` 行的格子，**含右侧空白**（整行 `columns` 个）。
+   *
+   * `cellsOf` 按**文本**裁尾（与 `translateToString(true)` 同口径），故它**看不见
+   * 「铺到哪」**——背景铺满整行时，文字之后那些格子的文本仍是空格，会被裁掉。
+   * 量「整行背景」这类东西要用这一条（缺陷 D21 正是这种）。
+   */
+  rawCellsOf(row: number): readonly Cell[]
 }
 
 /** 把一段字节喂进终端，读回屏幕矩阵**＋每格的样式**。 */
@@ -164,18 +175,26 @@ export async function screenCells(bytes: string, options: ScreenOptions): Promis
   const terminal = await openTerminal(bytes, options)
   const buffer = terminal.buffer.active
 
+  /** 整行（`columns` 格）——不裁尾。 */
+  const rawCellsOf = (row: number): readonly Cell[] => {
+    const line = buffer.getLine(row)
+    if (line === undefined) return []
+
+    const cells: Cell[] = []
+    for (let x = 0; x < options.columns; x += 1) {
+      const cell = line.getCell(x)
+      if (cell === undefined) break
+      cells.push(readCell(cell))
+    }
+
+    return cells
+  }
+
   return {
     screen: readScreen(terminal, options),
+    rawCellsOf,
     cellsOf: (row) => {
-      const line = buffer.getLine(row)
-      if (line === undefined) return []
-
-      const cells: Cell[] = []
-      for (let x = 0; x < options.columns; x += 1) {
-        const cell = line.getCell(x)
-        if (cell === undefined) break
-        cells.push(readCell(cell))
-      }
+      const cells = rawCellsOf(row)
 
       // 右侧空白裁掉（与 `translateToString(true)` 同口径——断言不必数尾巴上有几个空格）
       let end = cells.length

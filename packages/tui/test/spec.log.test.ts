@@ -56,9 +56,10 @@ function bodyCells(frame: Frame, needle: string): readonly Cell[] {
 // ══ 一 · 组件规格表：行的标记与颜色 ═══════════════════════════════════
 
 describe('组件规格 · 行的标记与颜色', () => {
-  // ⚠️ 规格原文是「**整行**淡青背景」；实测铺的是**这段文字**那么宽（80 列终端上到第 20 格为止），
-  //    不到终端右缘——见回报「与规格不符」。这条用例锚的是成立的**那一半**：这一段的每一格都在背景里。
-  test('用户行——`›` 起头 · 标记青 · 正文原色 · **整段淡青背景**', async () => {
+  // ⚠️ 本条 2026-09-19 **收紧过**（缺陷 D21）——规格一直是「**整行**淡青背景」，变的不是规格、
+  //    是实装补齐了：修前只铺到**文字末尾**（80 列终端上到第 20 格），当时这条只能锚成立的
+  //    那一半（「这一段在背景里」）。现在它锚的是规格原话——**整行**，含文字之后那些空格格。
+  test('用户行——`›` 起头 · 标记青 · 正文原色 · **整行**淡青背景（铺到右缘）', async () => {
     const stage = live()
     stage.type('看看这个工作区里有什么')
     stage.press({ kind: 'enter' })
@@ -69,9 +70,15 @@ describe('组件规格 · 行的标记与颜色', () => {
 
     expect(cells[0]).toMatchObject({ text: '›', fg: '#56b6c2' }) // 标记青（色板 · 用户）
     expect(cells[2]).toMatchObject({ text: '看', fg: '#d8dce4' }) // 正文原色（色板 · 正文）
-    // **整段**带背景——这一条在纯文本里一个字都看不到
     expect(cells.every((cell) => cell.bg === '#131d23')).toBe(true)
-    expect(cells.length).toBeGreaterThan(2)
+
+    // ⚠️ 量「**整行**」得用 `rawCellsOf`——`cellsOf` 按**文本**裁尾，而背景铺出去的那一截
+    //    文本是空格，正好会被它裁掉（量不到「铺到哪」）。
+    const full = frame.rawCellsOf(row)
+
+    expect(full).toHaveLength(80) // 整行（默认屏宽）
+    expect(full.every((cell) => cell.bg === '#131d23')).toBe(true) // 一格都不落
+    expect(full.at(-1)?.bg).toBe('#131d23') // 铺到**右缘**——短句子才不像块小补丁
   })
 
   test('助手行——`⏺` 起头 · 标记绿（加粗）· 正文**不上色**（原色）', async () => {
@@ -196,6 +203,38 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
     expect(tail.startsWith('   乙')).toBe(false)
     // 折行仍在**那条消息的背景**里（整段淡青背景不因折行而断）
     expect(frame.cellsOf(head + 1).every((cell) => cell.bg === '#131d23')).toBe(true)
+  })
+
+  /**
+   * 缺陷 D22 —— **折行的续行沿用该行的正文色**。
+   *
+   * 钉的规格＝组件规格表里「正文原色」那一格（**助手与用户都是**）。修前 `wrapSegments()`
+   * 把**所有续行**写死成 `dim`（`#8b93a1`）⇒ 同一句话第一行原色、折下去那截变暗，
+   * **读着像两段**（弱化另起一行不是它的活——层次靠缩进与标记）。
+   */
+  test('折行的续行**不暗**——沿用正文色（D22 · 用户）', async () => {
+    const stage = live()
+    stage.type('丙'.repeat(60))
+    stage.press({ kind: 'enter' })
+
+    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const tail = frame.cellsOf(frame.rowOf('› 丙') + 1)
+    const body = tail.filter((cell) => cell.text.trim() !== '')
+
+    expect(body.length).toBeGreaterThan(10) // 确实是折下来的那一截
+    expect(body.every((cell) => cell.fg === '#d8dce4')).toBe(true) // 原色（色板 · 正文）
+    expect(tail.some((cell) => cell.fg === '#8b93a1')).toBe(false) // 一处 dim 都不该有
+  })
+
+  test('折行的续行**不暗**——沿用正文色（D22 · 助手）', async () => {
+    const stage = live()
+    stage.feed([event('model.delta', { channel: 'text', text: '丁'.repeat(60) })])
+
+    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const tail = frame.cellsOf(frame.rowOf('⏺ 丁') + 1)
+
+    expect(tail.filter((cell) => cell.text.trim() !== '').every((cell) => cell.fg === '#d8dce4')).toBe(true)
+    expect(tail.some((cell) => cell.fg === '#8b93a1')).toBe(false)
   })
 
   test('工具——`● ` 同样 2 列 ⇒ 参数与折行都从第 3 列起', async () => {

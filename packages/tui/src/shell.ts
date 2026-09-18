@@ -398,14 +398,17 @@ export function createShell(transport: ControlTransport): Shell {
     const text = view.draft.trim()
     if (text === '') return NONE
 
+    // ⚠️ 两条提交路**都走 `draft()`**（缺陷 D23）——提交也改变了草稿（都清成空串），
+    // 候选与右位提示得跟着重算。走 `commit()` 就**绕过了 `withCompletion` 那个统一口**，
+    // 于是**空输入框下还挂着候选**（右位也停在「↑↓ 选 · Tab 补全」）。
     if (text.startsWith('/')) {
-      commit(runSlash(view, text))
+      draft(runSlash(view, text))
       return NONE
     }
 
     if (history[history.length - 1] !== text) history.push(text)
     historyAt = -1
-    commit(appendEcho({ ...view, draft: '' }, text))
+    draft(appendEcho({ ...view, draft: '' }, text))
     send({ type: 'input.submit', text })
 
     return NONE

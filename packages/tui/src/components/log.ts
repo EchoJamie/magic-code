@@ -16,7 +16,7 @@
  * `rowLines` 是纯函数（一条行 → 显示行）——快照与用例直接拿它取景，不起 Ink。
  */
 
-import { Text } from 'ink'
+import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
 import { markdown } from '../markdown.ts'
@@ -68,20 +68,28 @@ export function LogRowView({ row, columns, expanded, spaced }: LogRowProps): Rea
   return h(
     'ink-box',
     { key: `row:${row.key}`, style: { flexDirection: 'column' } },
-    ...lines.map((line) =>
-      h(
-        Text,
-        { key: line.key, backgroundColor: line.background },
-        // ⚠️ **空行得给一个「有东西」的孩子**——Ink 7 会把内容为空串的 `<Text>` 整行丢掉
-        // ⇒ 正文里的段落空行被**静默吃掉**（缺陷 D19。**根因在这里，不在 `markdown.ts`**：
-        // 那边把空行好好地交出来了）。一格空格就够，肉眼仍是空行。
-        ...(line.spacer === true || line.segments.length === 0
+    ...lines.map((line) => {
+      // ⚠️ **空行得给一个「有东西」的孩子**——Ink 7 会把内容为空串的 `<Text>` 整行丢掉
+      // ⇒ 正文里的段落空行被**静默吃掉**（缺陷 D19。**根因在这里，不在 `markdown.ts`**：
+      // 那边把空行好好地交出来了）。一格空格就够，肉眼仍是空行。
+      const children =
+        line.spacer === true || line.segments.length === 0
           ? [' ']
           : line.segments.map((piece, at) =>
               h(Text, { key: `s:${at}`, color: piece.color, bold: piece.bold }, piece.text),
-            )),
-      ),
-    ),
+            )
+
+      // **背景要铺满整行**（缺陷 D21）——`<Text>` 的 `backgroundColor` 只涂**文字那几格**，
+      // 于是短句子看着像**块小补丁**（规格要的是「一眼看出这句是我说的」）。
+      // 铺满得靠一个 `width: '100%'` 的容器来承这个背景；没有背景的行不多套这一层。
+      return line.background === undefined
+        ? h(Text, { key: line.key }, ...children)
+        : h(
+            Box,
+            { key: line.key, width: '100%', backgroundColor: line.background },
+            h(Text, {}, ...children),
+          )
+    }),
   )
 }
 
@@ -124,6 +132,7 @@ function rowBody(
         key: 'r:u',
         background: USER_BG,
         hang: INDENT,
+        bodyColor: PALETTE.fg, // 续行＝正文原色（缺陷 D22）——别让折下去那截比首行暗
       })
 
     case 'assistant': {
@@ -141,7 +150,7 @@ function rowBody(
             ? [seg('⏺ ', PALETTE.ok, true), ...line.segments]
             : [seg(INDENT), ...line.segments],
           columns,
-          { key: `r:a:${at}`, hang: `${INDENT}${line.hang ?? ''}` },
+          { key: `r:a:${at}`, hang: `${INDENT}${line.hang ?? ''}`, bodyColor: PALETTE.fg },
         ),
       )
     }
@@ -270,7 +279,18 @@ function truncateLine(text: string, width: number): string {
 function wrapSegments(
   segments: readonly Segment[],
   columns: number,
-  options: { readonly key: string; readonly background?: string; readonly hang: string },
+  options: {
+    readonly key: string
+    readonly background?: string
+    readonly hang: string
+    /**
+     * **续行用什么色**（缺陷 D22）——缺省 `dim`。正文类行（助手 / 用户）给 `fg`：
+     * 同一句话第一行原色、折下去那截变暗，**读着像两段**。
+     *
+     * 工具行 / 命令输出的 `dim` 是**它们自己的语义**（参数与输出本就该弱），别改。
+     */
+    readonly bodyColor?: string
+  },
 ): readonly LogLine[] {
   const text = segments.map((piece) => piece.text).join('')
   // 折行宽度按**悬得最远的那一条**算（首行前缀 2 列 / 续行的 `hang`）——否则续行会
@@ -286,9 +306,9 @@ function wrapSegments(
           background: options.background,
         }
       : {
-          // 续行：着色只在首行，续行按 `hang` 缩进
+          // 续行：按 `hang` 缩进，颜色**沿用该行的正文色**（缺省 dim——见 `bodyColor` 注）
           key: `${options.key}:${at}`,
-          segments: [seg(`${options.hang}${line}`, PALETTE.dim)],
+          segments: [seg(`${options.hang}${line}`, options.bodyColor ?? PALETTE.dim)],
           background: options.background,
         },
   )

@@ -320,6 +320,31 @@ describe('slash 的两种走法', () => {
     expect(frame.statusLine).toContain('↑↓ 选 · 回车 定 · esc 收起')
   })
 
+  /**
+   * 缺陷 D23 —— **提交之后候选要收起**。
+   *
+   * 钉的规格＝本节两种走法共有的那半句：**回车之后画面上是什么**。候选是**打字的伴生**
+   * （D12：打 `/` 即出、边打边筛），草稿一清它就**没有来处**了；留着就是
+   * **空输入框下挂着候选** ＋ 右位停在「↑↓ 选 · Tab 补全」。
+   */
+  test('提交之后**候选收起**（D23）——打字的伴生不该跟着提交留下', async () => {
+    const stage = createStage()
+    // ⚠️ 用**纯输出型**（`/status`）而不是 `/session`——选择器一开就把左下整片换掉了，
+    //    候选**看不看得见**在那一支里分不出来（判据会假绿）。这一支 dock 仍是输入区。
+    stage.type('/status')
+    // 先确认候选**真的开着**——不然「提交后没有」可能是假绿（它本来就没开过）
+    expect((await stage.screen(WIDE)).has('看这一趟用了多少、模型是谁')).toBe(true)
+
+    stage.press({ kind: 'enter' })
+
+    const frame = await stage.screen(WIDE)
+
+    expect(frame.has('看这一趟用了多少、模型是谁')).toBe(false) // 候选收起
+    expect(frame.record.some((line) => line.text !== '')).toBe(true) // 提交照旧生效（输出进了记录区）
+    expect(frame.statusLine).not.toContain('Tab 补全') // 右位不再报补全键位
+    expect(frame.statusLine).toContain('/ 命令 · ctrl+c 退出') // 回常态
+  })
+
   test('选定了——留**一行**回执', async () => {
     const stage = createStage()
     const catalog = [

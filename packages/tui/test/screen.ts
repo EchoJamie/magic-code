@@ -77,6 +77,12 @@ export type Frame = {
   readonly statusLine: string
   /** 第 `row` 行的格子（到最后一个非空格为止）。 */
   cellsOf(row: number): readonly Cell[]
+  /**
+   * 第 `row` 行的格子，**含右侧空白**（整行）——量「铺到哪」用它。
+   *
+   * `cellsOf` 按**文本**裁尾，看不见「背景铺满整行」这类事（文字之后的空格格会被裁掉）。
+   */
+  rawCellsOf(row: number): readonly Cell[]
   /** 第 `row` 行的文本。 */
   textAt(row: number): string
   /** 第一条**含** `needle` 的行的行号——找不到**抛**（带整屏）。 */
@@ -133,6 +139,7 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>): Frame {
     dock: divider === -1 ? [] : rows.slice(divider + 1, (lastNonBlank?.row ?? divider) + 1),
     statusLine: lastNonBlank?.text ?? '',
     cellsOf: cells.cellsOf,
+    rawCellsOf: cells.rawCellsOf,
     textAt: (row) => cells.screen.lines[row] ?? '',
     rowOf: (needle) => {
       const at = cells.screen.lines.findIndex((line) => line.includes(needle))
