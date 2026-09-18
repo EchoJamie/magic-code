@@ -255,6 +255,11 @@ export function tuiOptions(assembly: Assembly): RunTuiOptions {
     transport: assembly.shell,
     boot: () => assembly.boot(),
     contextWindow: assembly.contextWindow,
+    // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
+    // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
+    workspaceRoots: assembly.workspaceRoots,
+    // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
+    // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
   }
 }
 

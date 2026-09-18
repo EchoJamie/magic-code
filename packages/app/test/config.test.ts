@@ -14,6 +14,9 @@ import { ConfigError, describeConfig, loadConfig } from '../src/index.ts'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 /** 家目录——注入值（契约层的展开函数不读环境，故由调用方给）。 */
+/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件量的是数据落点，与归属无关。 */
+const ROOTS = ['/work/alpha']
+
 const HOME = '/home/tester'
 
 function loadFrom(body: unknown, extra: { path?: string } = {}) {
@@ -147,12 +150,12 @@ describe('dataDir 解析', () => {
       expect(loaded.config.dataDir).toBe(join(dir, 'magic-data'))
 
       // 加载器展开后的值：记录域收下
-      const store = createRecordsStore({ dataDir: loaded.config.dataDir })
+      const store = createRecordsStore({ dataDir: loaded.config.dataDir, workspace: ROOTS })
       expect(store.paths.database).toBe(join(dir, 'magic-data/records.db'))
       store.close()
 
       // 字面 `~` 直通：记录域当场拒（它不展开——展开归加载器）
-      expect(() => createRecordsStore({ dataDir: '~/.magic' })).toThrow(/不展开/)
+      expect(() => createRecordsStore({ dataDir: '~/.magic', workspace: ROOTS })).toThrow(/不展开/)
     } finally {
       removeDir(dir)
     }

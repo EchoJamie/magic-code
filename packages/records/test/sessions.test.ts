@@ -7,17 +7,23 @@
  * ① `sessions` 加 `title` 列——**改过的标题**存这儿（默认标题由对话域按首条消息现算，
  *    不落库：那是派生物，存两份迟早分叉）；
  * ② `latestSession()`——启动流转「接着最近一条」的取材口；
- * ③ **老库**（加列之前建的）**就地补列**——不丢数据、不动 `user_version`。加列是**结构增列
- *    的补齐**（幂等探测），不是顺序迁移（顺序迁移自冻结点起，那之后走版本号）。
+ * ③ **老库**（加列之前建的）**就地补列**——不丢数据。
+ *    加列是**结构增列的补齐**（幂等探测）。⚠️ U16 时它「不动 `user_version`」；**U26 起
+ *    收进了迁移链的第一步**（`workspace` 列与它同一步，0 → 1），版本号随之前推
+ *    ——见 `src/schema.ts` · `MIGRATIONS`。
  *
  * 扫描面：测试用 fs 不受守护拦（守护面＝各包 `src/`）——老库要**手工建**才造得出。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
+import { RECORD_SCHEMA_VERSION } from '@magic/contracts'
 import type { NewEntry } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
 import { databasePathOf, removeDataDir, tempDataDir } from './tmp.ts'
+
+/** 本文件里那组根——归属与迁移无关，取一件固定的即可（专测见 `workspace.test.ts`）。 */
+const ROOTS = ['/work/alpha']
 
 const A = 's-alpha'
 const B = 's-beta'
@@ -32,7 +38,7 @@ describe('标题列（改过的标题存这儿）', () => {
   test('落定 · 读回 · 重开仍在', async () => {
     const dir = tempDataDir()
     try {
-      const first = createRecordsStore({ dataDir: dir })
+      const first = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       first.serviceFor(A).appendEntry(userEntry('看看工作区里有什么', T0))
       // 没改过＝没有标题（不是空串——缺席可辨，空串不可辨）
       expect((await first.listSessions())[0]?.title).toBeUndefined()
@@ -42,7 +48,7 @@ describe('标题列（改过的标题存这儿）', () => {
       first.close()
 
       // 重开——标题是**持久事实**（append-only 库里少有的可改位；改的是会话属性，不是内容）
-      const second = createRecordsStore({ dataDir: dir })
+      const second = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       expect((await second.listSessions())[0]?.title).toBe('看看工作区')
       second.close()
     } finally {
@@ -53,7 +59,7 @@ describe('标题列（改过的标题存这儿）', () => {
   test('改两次＝后写的说了算（就地更新，不追加）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       store.serviceFor(A).appendEntry(userEntry('第一件', T0))
 
       store.setSessionTitle(A, '甲', T0 + 1)
@@ -70,7 +76,7 @@ describe('标题列（改过的标题存这儿）', () => {
   test('改一条没写过的会话——建行，标题落定（不静默丢）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       store.setSessionTitle(A, '空会话也有名字', T0)
 
       const listed = await store.listSessions()
@@ -86,7 +92,7 @@ describe('最近会话（启动流转的取材口）', () => {
   test('时间降序取第一——没有会话则 undefined', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       expect(store.latestSession()).toBeUndefined()
 
       store.serviceFor(A).appendEntry(userEntry('先来的', T0))
@@ -110,13 +116,13 @@ describe('老库补列（加列之前的库照开）', () => {
     db.close()
   }
 
-  test('老库就地补列——数据不丢、标题可写、版本号不动', async () => {
+  test('老库就地补列——数据不丢、标题可写、版本号推到当前', async () => {
     const dir = tempDataDir()
     try {
       makeLegacyDatabase(dir, A, T0)
 
       // 开库不该抛（加列之前建的库照开——「重建路径可用」的另一半：**不逼人删库**）
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const listed = await store.listSessions()
       expect(listed.map((row) => [row.id, row.at])).toEqual([[A, T0]])
 
@@ -124,9 +130,15 @@ describe('老库补列（加列之前的库照开）', () => {
       expect((await store.listSessions())[0]?.title).toBe('补列之后照样能改')
       store.close()
 
-      // 版本号不动——**这不是顺序迁移**（迁移自冻结点起走版本号；此处只是把缺的列补上）
+      // **原锚**（U16）：`user_version` 不动（＝0）——「这不是顺序迁移，只是把缺的列补上」。
+      // **为何变**：U26 给 `sessions` 又加了一列（`workspace`），冻结点已过 ⇒ 那两处补齐
+      //   收进了**迁移链的第一步**（0 → 1），版本号随之前推——「补齐」与「顺序迁移」不再是
+      //   两件事（见 `src/schema.ts` · `MIGRATIONS`）。
+      // **新锚**：老库照开、数据不丢（上面那三条不变），**版本号推到当前**——跑的正是那条链。
       const db = new Database(databasePathOf(dir))
-      expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(0)
+      expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(
+        RECORD_SCHEMA_VERSION,
+      )
       db.close()
     } finally {
       removeDataDir(dir)
@@ -138,8 +150,8 @@ describe('老库补列（加列之前的库照开）', () => {
     try {
       makeLegacyDatabase(dir, A, T0)
 
-      createRecordsStore({ dataDir: dir }).close()
-      const store = createRecordsStore({ dataDir: dir })
+      createRecordsStore({ dataDir: dir, workspace: ROOTS }).close()
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       expect(store.latestSession()).toBe(A)
       store.close()
 
@@ -159,7 +171,7 @@ describe('老库补列（加列之前的库照开）', () => {
   test('重建路径——空目录建新库，标题列即到位', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       store.serviceFor(A).appendEntry(userEntry('头一件', T0))
       store.setSessionTitle(A, '甲', T0 + 1)
       expect((await store.listSessions())[0]?.title).toBe('甲')

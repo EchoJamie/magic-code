@@ -360,5 +360,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   'model.catalog',
 ]
 
-/** 记录库 schema 版本（`user_version` 自始写入——技术方案 · 记录 · schema 演进）。 */
-export const RECORD_SCHEMA_VERSION = 0
+/**
+ * 记录库 schema 版本（`user_version` 自始写入——技术方案 · 记录 · schema 演进）。
+ *
+ * **版本 0**——阶段 1/2 的形状（冻结点＝阶段 2 末）。
+ * **版本 1**（U26）——`sessions` 加 `workspace` 列（会话归属工作区）：
+ * **冻结点已过，走顺序迁移**——既有库照开、数据一件不丢、**不许重建库**。
+ */
+export const RECORD_SCHEMA_VERSION = 1

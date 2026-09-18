@@ -18,6 +18,12 @@
  * - `appendEvent(event)`——**按信封分束**的落库口（多会话之后扇出是进程级的，
  *   装配不必再维护一份「哪条会话用哪个实例」）。
  *
+ * **U26 补的一件**（会话归属工作区——词典 · Workspace / Session）：
+ * `sessions` 加 `workspace` 列，**建立时锚定 · 随记录持久**——锚定落在 `ensureSession`
+ * 那一句（首写即建会话，就是「首条消息按下回车」那一下）；`ON CONFLICT DO NOTHING`
+ * 保证此后换目录再开同一会话也改不动它。**为何归属随构造而落**、**为何记整组根**，
+ * 见 `RecordsStoreOptions.workspace`。
+ *
  * **fs 直触**——本域是内核仅有的两处之一（技术方案 · 代码治理 · 边界纪律）；
  * 库文件与 blob 目录都在本文件落下（`bun:sqlite` ＋ `node:fs/promises`）。
  */
@@ -46,6 +52,7 @@ import {
   ENTRIES_TABLE,
   EVENTS_TABLE,
   SESSIONS_TABLE,
+  SESSION_WORKSPACE_COLUMN,
   initSchema,
   type NamedParams,
 } from './schema.ts'
@@ -61,29 +68,61 @@ export const DATABASE_FILE = 'records.db'
  */
 const READ_CHUNK = 512
 
-/** `sessions` 的一行（`title` 可空——没改过就没有）。 */
-type SessionRow = { readonly id: string; readonly at: number; readonly title: string | null }
+/** `sessions` 的一行（`title` / `workspace` 可空——没写过就没有）。 */
+type SessionRow = {
+  readonly id: string
+  readonly at: number
+  readonly title: string | null
+  readonly workspace: string | null
+}
 
 /**
  * 会话的两个查询**共用一个序**（`at` 降序、同刻按 id 升序）——`listSessions` 与
  * `latestSession` 各写一份的话，启动落点与列表头名迟早分叉。
  */
 function sessionSelect(): string {
-  return `SELECT id, at, title FROM ${SESSIONS_TABLE} ORDER BY at DESC, id ASC`
+  return `SELECT id, at, title, workspace FROM ${SESSIONS_TABLE} ORDER BY at DESC, id ASC`
 }
 
-/** 行 → 摘要：标题**缺席即不给键**（不是空串——缺席可辨，空串不可辨）。 */
+/** 行 → 摘要：标题 / 工作区**缺席即不给键**（不是空串 / 空数组——缺席可辨，空值不可辨）。 */
 function summaryOf(row: SessionRow): SessionSummary {
-  return { id: row.id, at: row.at, ...(row.title === null ? {} : { title: row.title }) }
+  return {
+    id: row.id,
+    at: row.at,
+    ...(row.title === null ? {} : { title: row.title }),
+    ...(row.workspace === null ? {} : { workspace: parseWorkspace(row.workspace) }),
+  }
 }
 
-/** 装配期构造入参——**只有数据目录**（其余选择归装配根）。 */
+/** 工作区列的落盘形态＝JSON 一列（同 `events.data` 的姿势）——读回即那组根。 */
+function parseWorkspace(column: string): readonly string[] {
+  return JSON.parse(column) as readonly string[]
+}
+
+/** 装配期构造入参——数据目录与**本进程的工作区**（其余选择归装配根）。 */
 export type RecordsStoreOptions = {
   /**
    * 数据落点。**须是字面路径**——前导 `~` 的展开归配置加载器
    * （`@magic/contracts` · `expandDataDir`），本库不展开（见 `assertPlainDataDir`）。
    */
   readonly dataDir: string
+  /**
+   * **本进程工作的那个工作区**（U26）——会话**建立时锚定**的就是它：库里这一列只在
+   * **建行那一次**写（`ON CONFLICT DO NOTHING`），故此后的启动目录改了也改不到它。
+   *
+   * 形态＝执行域 `roots()` 给的**那组根**（`realpath` 后的规范形 · 声明序，`[0]` 默认根）。
+   * **为何是整组而不是默认根**：这一列的用处是**恢复回到原位**——只记默认根，多根工作区
+   * 就重建不回去（词典 · Workspace：「≥ 1 条路径的联合作用域」，`U18` 多根已落地）。
+   *
+   * **归属为何随构造而落、不由每次写入带**：工作区是**进程级**的（配置 `workspaceRoots`
+   * 在则整组接管，缺省则回落启动目录——两者都在装配那一刻定死），同一进程里开的会话
+   * 同属一个工作区。带上它写进本域，是为了让「建立时锚定」**有处可落**——建行的动作在
+   * 本域的事务里（首写即建会话，`D5`）。
+   *
+   * 本域**不当它是工作区**：只当作一列 JSON 存下、读回（根合不合格归执行域，
+   * 见 `@magic/contracts` · `WorkspaceRoots`：一个真源，别处不重判一遍）。
+   */
+  readonly workspace: readonly string[]
 }
 
 /**
@@ -167,8 +206,13 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   const blobs = createBlobStore(blobsDir)
 
   // —— 语句（`query` 走缓存；参数一律具名，免得列序漂移悄悄错位）——
-  const ensureSession = db.query<never, [string, number]>(
-    `INSERT INTO ${SESSIONS_TABLE} (id, at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING`,
+  //
+  // 首写即建会话（D5：会话在首条消息时才建立）——**工作区就在这一句里锚下**，此后
+  // `DO NOTHING`：换目录再开同一会话，那一次写入碰不到这一列（归属在建立时定死）。
+  const workspaceColumn = JSON.stringify(options.workspace)
+  const ensureSession = db.query<never, [string, number, string]>(
+    `INSERT INTO ${SESSIONS_TABLE} (id, at, ${SESSION_WORKSPACE_COLUMN}) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
   )
   const insertEntry = db.query<never, [NamedParams]>(
     `INSERT INTO ${ENTRIES_TABLE}
@@ -204,11 +248,11 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   // 一次写入＝一个事务：会话表先落（首写即建会话，`at` 用该次写入的时间——不另取时钟），
   // 条目 / 事件随后。半截写入不会留下「有行无会话」的孤儿。
   const writeEntry = db.transaction((session: SessionId, entry: NewEntry, id: RecordId): void => {
-    ensureSession.run(session, entry.at)
+    ensureSession.run(session, entry.at, workspaceColumn)
     insertEntry.run(entryParamsOf(id, session, entry))
   })
   const writeEvent = db.transaction((event: KernelEvent): void => {
-    ensureSession.run(event.session, event.at)
+    ensureSession.run(event.session, event.at, workspaceColumn)
     insertEvent.run(eventParamsOf(event))
   })
 

@@ -27,6 +27,9 @@ import type {
 import { createRecordsStore } from '../src/index.ts'
 import { databasePathOf, removeDataDir, tempDataDir } from './tmp.ts'
 
+/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件与归属无关，取一件固定的即可。 */
+const ROOTS = ['/work/alpha']
+
 const SESSION: SessionId = 's-0001'
 const OTHER_SESSION: SessionId = 's-0002'
 const T0 = 1_700_000_000_000
@@ -106,7 +109,7 @@ describe('判据 1 · 落取回环', () => {
   test('四类条目 + 四类事件落库后读回逐字段相等（含键集）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
 
       // 大负载先落 blob——条目只存引用（判据 2 细究 blob 本身，这里验引用往返）
@@ -199,7 +202,7 @@ describe('判据 1 · 落取回环', () => {
   test('条目范围＝按 id 的闭区间（含端点）；越界即空', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
 
       const append = (n: number): RecordId =>
@@ -232,16 +235,19 @@ describe('判据 1 · 落取回环', () => {
   test('会话列表——写入过的会话各现一次，最近在前', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const later = store.serviceFor(OTHER_SESSION)
       const earlier = store.serviceFor(SESSION)
 
       earlier.appendEntry({ kind: 'user', content: { text: '先来的' }, at: T0 + 10 })
       later.appendEntry({ kind: 'user', content: { text: '后来的' }, at: T0 + 20 })
 
+      // **原锚**：列表＝「写入过的会话各现一次，最近在前」（全等断言）。
+      // **为何变**：U26 给摘要加了 `workspace`（会话归属工作区）——行多了一键。
+      // **新锚**：同一条规格，**全等照旧**（不放宽成「只看 id 与 at」——那正是判据定松）。
       expect(await store.listSessions()).toEqual([
-        { id: OTHER_SESSION, at: T0 + 20 },
-        { id: SESSION, at: T0 + 10 },
+        { id: OTHER_SESSION, at: T0 + 20, workspace: ROOTS },
+        { id: SESSION, at: T0 + 10, workspace: ROOTS },
       ])
       expect(await store.serviceFor('s-0003').listSessions()).toEqual(
         await store.listSessions(),
@@ -256,7 +262,7 @@ describe('判据 1 · 落取回环', () => {
   test('kind 与载荷强对应——错配即拒（形态缺口在写入侧落硬闸）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const at = T0 + 1
 
@@ -308,7 +314,7 @@ describe('判据 1 · 落取回环', () => {
   test('写入失败：不留半行 · 号不回退（失败路径也要干净）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
 
       const first = records.appendEntry({
@@ -353,7 +359,7 @@ describe('判据 5 · 独立验证（直读库表）', () => {
     const dir = tempDataDir()
     const blobRef = 'blob-ref-占位' // 本用例只查引用列，不落真 blob
 
-    const store = createRecordsStore({ dataDir: dir })
+    const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
     const records = store.serviceFor(SESSION)
     const entries = fourEntries(blobRef)
     const entryIds = entries.map((entry) => records.appendEntry(entry))

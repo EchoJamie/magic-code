@@ -326,6 +326,9 @@ describe('场景 9 · `/session`（交互配置型）', () => {
     expect(frame).toContain('正在用')
     expect(frame).toContain('↑↓ 选')
     expect(frame).not.toContain('› /session') // 命令本身不进记录区
+    // **U26 起多一行分组头**：目录按工作区分组（本夹具的会话**没有归属**——列加上之前
+    // 落账的那种——故头如实说「未记录」）。分组那一族的判据在 `session-workspace.test.ts`。
+    expect(frame).toContain('（工作区未记录）')
     expect(frame).toMatchSnapshot()
   })
 })

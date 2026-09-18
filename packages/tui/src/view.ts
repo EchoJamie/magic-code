@@ -118,6 +118,16 @@ export type PickerRow = {
   readonly current: boolean
   /** 选定后要用的值（会话 id / 条目名）。 */
   readonly value: string
+  /**
+   * 这一行属于哪一组——**分组头**（`/session` 按工作区分组，U26）。
+   * 分组头画在**这一组第一行之前**（见 `groupHeads`）；`/model` 不给（不分组的列表）。
+   */
+  readonly group?: string
+  /**
+   * **压暗**——「别的项目」的行（工作区≠你此刻所在的那个）。
+   * 这是**视觉次序**，不是可用性：压暗的行**照样选得中、切得过去**。
+   */
+  readonly faint?: boolean
 }
 
 /** 选择器（`/session` · `/model`）——**只在左下开，记录区什么都不进**。 */
@@ -899,6 +909,101 @@ export function stateLabel(state: StatusState): string {
 }
 
 // ══ 选择器（`/session` · `/model`）═══════════════════════════════════
+
+/**
+ * **`/session` 的行** —— 目录按**工作区分组**（U26；词典 · Workspace / Session：
+ * 一个会话属于一个工作区）。
+ *
+ * 三条规格：
+ * ① **分组头 ＋ 全部列出**——每一组顶着它的工作区路径；别的项目**不藏**（列表是
+ *    「找到会话」的地方，藏起来＝找不到；而「换个目录接着上次的活」是真场景）；
+ * ② **本工作区那组在前**——你此刻在那儿，那儿的会话排前头（组内仍是目录的序：最近在前）；
+ * ③ **别的项目压暗**——视觉次序上的区分，**不挡路**（仍可切）。
+ *
+ * 归属**缺席**的（`workspace` 没有——列加上之前落账的会话）单列一组，头是
+ * 「（工作区未记录）」：**不拿「当下的启动目录」顶上**（那正是这一列要断掉的东西），
+ * 也**不压暗**（无从判断它是不是「别处」——**不编**；压暗留给判得实的那些）。
+ *
+ * `here` ＝ **本进程的工作区**（装配递进来，见 `ShellOptions.workspaceRoots`）。
+ * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗——「拿不到的不编」（同 `contextWindow` 那一路）。
+ */
+export function sessionRows(
+  catalog: readonly SessionSummary[],
+  active: SessionId | null,
+  here?: readonly string[],
+): readonly PickerRow[] {
+  const mine = here === undefined ? null : identityOf(here)
+  const found = new Map<string, Group>()
+  const groups: Group[] = []
+
+  for (const session of catalog) {
+    const key = identityOf(session.workspace)
+    let group = found.get(key)
+    if (group === undefined) {
+      const known = session.workspace !== undefined // 归属记着＝判得实；缺席＝无从判断
+      group = {
+        head: headOf(session.workspace),
+        mine: known && key === mine, // 判得实才算「这儿」
+        // 判得实才算「别处」：归属缺席的、以及「不知道自己在哪儿」的，都不压暗
+        elsewhere: known && mine !== null && key !== mine,
+        rows: [],
+      }
+      found.set(key, group)
+      groups.push(group)
+    }
+
+    group.rows.push({
+      label: session.title ?? '（无标题）',
+      meta: session.id === active ? '正在用' : '',
+      current: session.id === active,
+      value: session.id,
+    })
+  }
+
+  // 本工作区那组在前，其余照**出现序**（＝目录的序：组里最近一条的时间先后）
+  const ordered = [...groups.filter((group) => group.mine), ...groups.filter((group) => !group.mine)]
+
+  return ordered.flatMap((group) =>
+    group.rows.map((row) => ({ ...row, group: group.head, faint: group.elsewhere })),
+  )
+}
+
+/** 一组（同一个工作区的那些行）——分组头 ＋ 是不是「这儿」/「别处」。 */
+type Group = {
+  readonly head: string
+  readonly mine: boolean
+  readonly elsewhere: boolean
+  readonly rows: PickerRow[]
+}
+
+/**
+ * 工作区的**身份**——那组根**照序**序列化（序即语义：`[0]` 是默认根）。
+ *
+ * 用 JSON 而不是拿个分隔符拼起来：无歧义、**可打印**（`['/a','/b']` 与 `['/a /b']`
+ * 不会撞成同一个），且恒以 `[` 开头——与「缺席」那个哨兵永不同形。
+ */
+function identityOf(workspace?: readonly string[]): string {
+  return workspace === undefined ? UNRECORDED : JSON.stringify(workspace)
+}
+
+/** 分组头——工作区的路径（多根＝整组报出来，` · ` 隔开）；缺席时如实说「未记录」。 */
+function headOf(workspace?: readonly string[]): string {
+  return workspace === undefined ? UNRECORDED_HEAD : workspace.join(' · ')
+}
+
+/** 归属缺席那一组的键与头（列加上之前落账的会话）——**如实说不知道**，不编。 */
+const UNRECORDED = 'unrecorded'
+const UNRECORDED_HEAD = '（工作区未记录）'
+
+/**
+ * 哪几行**之前**要画一条分组头。
+ *
+ * 一处判定、两处用（`picker.ts` 画它 · `app.ts` 数交互区高度）——各写一遍的话，
+ * 屏上多出一行而预算没算上，记录区就少一行。
+ */
+export function groupHeads(rows: readonly PickerRow[]): readonly boolean[] {
+  return rows.map((row, index) => row.group !== undefined && row.group !== rows[index - 1]?.group)
+}
 
 /** 开选择器——**记录区什么都不进**（原型：回车不进记录区）。 */
 export function openPicker(view: ShellView, picker: Picker): ShellView {

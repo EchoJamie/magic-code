@@ -81,4 +81,20 @@ export type SessionSummary = {
   readonly id: SessionId
   readonly title?: string
   readonly at: Timestamp
+  /**
+   * **这条会话属于哪个工作区**（U26）——**建立时锚定的那组根**（绝对路径 · 声明序，
+   * `[0]` ＝默认根；多根见词典 Workspace：「≥ 1 条路径的联合作用域」）。
+   *
+   * **为何记整组而不是单取默认根**：这一列是给**恢复**用的（「回到原位，不由当下的
+   * 启动目录临时决定」）——只记默认根的话，多根工作区恢复时重建不回去。
+   *
+   * **缺席＝列加上之前落账的会话**（无法知道，**不编**——同 `title` 的缺席之辨）。
+   * 词典 · Workspace / Session（2026-09-19 改）：一个会话属于一个工作区，归属
+   * **随记录持久**。
+   *
+   * ⚠️ 形态与配置的 `WorkspaceRoots`（`config.ts`）同形——**不为它 import 那个名字**：
+   * `entries → config → ports → entries` 会绕成一个环，而共享语言里这一处只是「一组根」。
+   * 两处同形是**一件事的两个入口**（配置声明什么 / 会话记下什么），不是两个概念。
+   */
+  readonly workspace?: readonly string[]
 }

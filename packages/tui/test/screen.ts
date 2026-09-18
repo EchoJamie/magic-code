@@ -172,6 +172,8 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>): Frame {
 export type StageOptions = {
   /** 上下文窗总量（状态行 ④ 的分母）——`D10` 的出口合入前没人传，故缺省 `null`。 */
   readonly contextWindow?: number | null
+  /** 本进程的工作区（U26 · `/session` 分组的取材）——不给＝不知道自己在哪儿。 */
+  readonly workspaceRoots?: readonly string[]
 }
 
 export type Stage = {
@@ -195,7 +197,10 @@ export type Stage = {
 
 export function createStage(options: StageOptions = {}): Stage {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, { contextWindow: options.contextWindow ?? null })
+  const shell = createShell(spy.transport, {
+    contextWindow: options.contextWindow ?? null,
+    workspaceRoots: options.workspaceRoots,
+  })
   let now: number | null = null
 
   return {
