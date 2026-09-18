@@ -90,6 +90,11 @@ export function createControlHub(): ControlHubFace {
         // ——命令面只发不收，本域也不读条目（它够不着记录域，这正是读面走控制面的由头）。
         target.onHistoryRead(command.session)
         return
+      case 'model.list':
+        // 模型条目表（读侧）——**原样转手**给**装配**（注册表在它手上）。本域不认识注册表、
+        // 也不知道有哪些条目；答复走事件（`model.catalog`，不落库）——命令面只发不收。
+        target.onModelList()
+        return
     }
   }
 

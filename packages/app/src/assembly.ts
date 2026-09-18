@@ -441,6 +441,47 @@ export function assemble(options: AssembleOptions): Assembly {
     return result
   }
 
+  /**
+   * 模型条目表 —— 读面的**产出路径**（缺陷 D10 · 第 3 样）。
+   *
+   * **为什么要经过一层「借会话」**：信封必带会话（契约 · `EventEnvelope`），而注册表是
+   * **进程级**的（选中的供应商不随会话漂——见 `forwardStamper` 的注）。于是「还没有会话」
+   * 这个**常态**（D4：启动＝新会话，空手打开）也得答得出来：走法照 `session.list` 的
+   * 先例——**空手也照答，那一下开一张空壳**（对话域 `current()` 的既有姿势）。
+   *
+   * `handle` 的**开壳与铸造器就位是同步的**（`fresh` → 装配的 `open` 一路没有 await），
+   * 故这里不必等它那条 `session.state` 答复就能盖章；那条答复异步随后到，不影响本事件。
+   * 空壳**不列进会话目录**（目录只列落过账的）——不把列表塞满空壳（D5）。
+   *
+   * 注册表缺席（注入了替身网关）＝如实报一句，**不是**静默空表：空表本身就是合法的
+   * 读数（`providers` 可以一条都没有），两者混作一谈会让外壳把「没有注册表」显示成
+   * 「一条都没有」。
+   */
+  const listModels = (): void => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    sink.emit(requireActiveStamper().stamp('model.catalog', catalogOf(models)))
+  }
+
+  /**
+   * 模型条目表 —— 注册表 → 契约载荷。
+   *
+   * 这一层只做**改名**（`id` → `provider`）与**缺席位的转发**：域内叫「条目 id」，事件面上
+   * 叫「条目名」（`model.call.start` / `model.switched` 都是 `provider`，同一件事一个词）。
+   * `contextWindow` **有没有就带不带**——没声明就不给这一位（外壳拿不到就不显示，不编）。
+   */
+  const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
+    if (registry === undefined) return { entries: [], note: NO_REGISTRY }
+
+    return {
+      entries: registry.list().map((entry) => ({
+        provider: entry.id,
+        model: entry.model,
+        ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
+      })),
+      current: registry.current(),
+    }
+  }
+
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；
   //                      `decision.answer` → 权限域；`model.switch` → 装配）──
   hub.bind({
@@ -455,6 +496,9 @@ export function assemble(options: AssembleOptions): Assembly {
     onSession: (command) => void conversation.handle(command),
     // 读侧命令——**原样转手**给对话域（会话与条目归它）；答复走事件（`session.history`）
     onHistoryRead: (session) => void conversation.readHistory(session),
+    // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
+    // 答复走事件（`model.catalog`，不落库）
+    onModelList: () => listModels(),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────

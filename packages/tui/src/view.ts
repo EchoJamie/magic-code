@@ -333,6 +333,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
           : `换模型未成：${event.data.reason ?? '未说缘由'}`,
       )
 
+    // 模型条目表（读侧答复）——**契约加 kind 的连带落点**：这一支现在只是「收到了、不动屏」。
+    // 消费它（`/model` 拿它铺选择器、状态行拿 `usage.contextWindow` 报 `12.4k/200k`）
+    // 归 U20 显示打磨——见 D10 回报的「消费面」。
+    case 'model.catalog':
+      return view
+
     case 'session.state':
       return reduceSessionState(view, event.data)
 

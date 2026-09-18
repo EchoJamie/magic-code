@@ -436,6 +436,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onModelSwitch: () => undefined,
     onSession: () => undefined,
     onHistoryRead: () => undefined,
+    onModelList: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -444,6 +445,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onModelSwitch: () => undefined,
     onSession: () => undefined,
     onHistoryRead: () => undefined,
+    onModelList: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -508,6 +510,7 @@ export function routesCarryModelSwitch(): void {
     onModelSwitch: (request: ModelSwitchRequest) => void [request.provider, request.model],
     onSession: () => undefined,
     onHistoryRead: () => undefined,
+    onModelList: () => undefined,
   }
   void routes
 }
@@ -523,10 +526,62 @@ export function modelSwitchedPayloadShape(): void {
   void refused
 }
 
-/** `model.retry` 的载荷——`attempt` / `delayMs` / `tier`（退避只对瞬时档，见其注）。 */
+/**
+ * `model.retry` 的载荷——`attempt` / `delayMs` / `tier`（退避只对瞬时档，见其注）＋
+ * **`maxAttempts`**（D10 · 第 2 样：`2/3` 的分母）。
+ *
+ * 两形都收：给了分母＝外壳报得出 `2/3`；没给（旧生产者 / Faux）＝外壳只报「第几次」
+ * ——**加词没把老词写松，也没把旧写作方式写死**（可选位是只增不改的落法）。
+ */
 export function modelRetryPayloadShape(): void {
-  const retry: EventDataOf['model.retry'] = { attempt: 2, delayMs: 1500, tier: 'transient' }
-  void retry
+  const withCap: EventDataOf['model.retry'] = {
+    attempt: 2,
+    delayMs: 1500,
+    tier: 'transient',
+    maxAttempts: 3,
+  }
+  const withoutCap: EventDataOf['model.retry'] = { attempt: 2, delayMs: 1500, tier: 'transient' }
+  void withCap
+  void withoutCap
+}
+
+/**
+ * D10 · 三样读数的出口（补锚 · 2026-09-19）——**只增不改**落进契约的三处形。
+ *
+ * 三样各锚一句「我要什么」：
+ * ① `model.usage.contextWindow`——状态行的**分母**跟着**分子**同刻到；没声明窗长的条目
+ *    就没这一位（**拿不到就不显示，不编**）；
+ * ② `model.retry.maxAttempts`——分母跟着分子；外壳不必自钉常量；
+ * ③ `model.list` 命令 → `model.catalog` 事件——`/model` 要**注册表全量** ＋ 「当前是哪条」。
+ */
+export function readoutsShape(): void {
+  // ① 窗长（可选：声明了才有）
+  const usageWithWindow: EventDataOf['model.usage'] = {
+    inputTokens: 3_100,
+    outputTokens: 40,
+    contextWindow: 200_000,
+  }
+  const usageWithout: EventDataOf['model.usage'] = { inputTokens: 3_100, outputTokens: 40 }
+
+  // ③ 条目表 ＋ 当前那条（表按配置顺序；`current` 未必是表里的某一行——见其注）
+  const catalog: EventDataOf['model.catalog'] = {
+    entries: [
+      { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 200_000 },
+      { provider: 'local', model: 'qwen3', contextWindow: 32_768 },
+    ],
+    current: { provider: 'local', model: 'qwen3' },
+  }
+  // 没有注册表的那一次装配——空表 ＋ 一句说明（空表本身合法，两者不混作一谈）
+  const empty: EventDataOf['model.catalog'] = { entries: [], note: '本次装配没有供应商注册表' }
+
+  // 读侧命令：无参（问的就是「都有哪些」）
+  const ask: Command = { type: 'model.list' }
+
+  void usageWithWindow
+  void usageWithout
+  void catalog
+  void empty
+  void ask
 }
 
 /**
@@ -553,7 +608,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 两条读面答复（D10）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -566,6 +621,10 @@ describe('事件契约', () => {
       // 第 19 轮：读面答复同列——它是**读出来的**（条目本就在库里），
       // 落库＝把同一段内容存第二遍；重放要的是「发生过什么」，不是「某人问过一次」
       'session.history',
+      // D10 · 第 3 样：模型面读答案同列——**同一判据、不同来源**（原锚是「读出来的不落库」，
+      // 表在内存里而不是库里；新锚多一格，判据一个字没松）。`/model` 是反复看的动作，
+      // 每次往库里留一笔「问过」只会污染观测；「换过什么模型」另有 `model.switched` 落着。
+      'model.catalog',
     ])
   })
 

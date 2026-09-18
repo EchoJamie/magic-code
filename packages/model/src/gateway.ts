@@ -158,6 +158,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         model: effective.model,
         // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
         provider: providerId,
+        // 窗长随**用量**上报（分母跟着分子走）——条目配置声明了才有；没声明就不给那一格
+        // （缺陷 D10 · 第 1 样：状态行 `12.4k/200k` 的分母出自这里）
+        contextWindow: config.contextWindow,
         secret: apiKey,
         // 生效标记（查内置表 → 配置接管位）——标记驱动的切分只在此处裁定
         traits: resolveModelTraits(effective.model, config.traits),

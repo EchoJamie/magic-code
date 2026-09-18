@@ -367,6 +367,45 @@ describe('退避重试 · 假端点回环', () => {
     expect(kindsOf(events).indexOf('model.retry')).toBeLessThan(kindsOf(events).indexOf('model.delta'))
   })
 
+  /**
+   * D10 · 第 2 样——状态行 `2/3` 的**分母**。它必须出自**策略**：外壳钉一个常量就是编的
+   * （改了策略它不知道），而策略在退避层手上，出来只是一句话的事。
+   */
+  test('`model.retry` 报得出上限——策略里的 `maxAttempts` 是多少就报多少', async () => {
+    const slept = recorder()
+    const { fetch } = endpoint([tooManyRequests(), tooManyRequests(), tooManyRequests(), okResponse('第四次成了')])
+
+    // 换一个**不是 3** 的策略：外壳若自钉常量，这里当场对不上
+    const { events } = await drainStream(
+      gatewayWith(fetch, { sleep: slept.sleep, retry: { maxAttempts: 5, baseDelayMs: 10, maxDelayMs: 100 } }).stream({
+        model: CONFIG.model,
+        messages: [{ role: 'user', content: '嗨' }],
+      }),
+    )
+
+    const retries = events.filter((event) => event.kind === 'model.retry')
+    expect(retries.map((event) => [event.data.attempt, event.data.maxAttempts])).toEqual([
+      [2, 5],
+      [3, 5],
+      [4, 5],
+    ])
+  })
+
+  test('缺省策略照样报得出分母（3）——真实现从不缺席这一位', async () => {
+    const slept = recorder()
+    const { fetch } = endpoint([tooManyRequests(), okResponse('第二次成了')])
+
+    const { events } = await drainStream(
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({
+        model: CONFIG.model,
+        messages: [{ role: 'user', content: '嗨' }],
+      }),
+    )
+
+    const retry = events.find((event) => event.kind === 'model.retry')
+    expect(retry?.data.maxAttempts).toBe(DEFAULT_RETRY_POLICY.maxAttempts)
+  })
+
   test('`model.call.start` 带上条目名——外壳状态行据以显示「当前供应商」', async () => {
     const { fetch } = endpoint([okResponse('一次就好')])
 

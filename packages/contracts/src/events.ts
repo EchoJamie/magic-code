@@ -75,6 +75,8 @@ export type EventKind =
   | 'tool.output.delta'
   // model · 会话——换模型的**结果**（用户命令）；**落库**
   | 'model.switched'
+  // 控制 · 模型——**读侧命令（`model.list`）的答复**：注册表全量（缺陷 D10 · 第 3 样）；**不落库**
+  | 'model.catalog'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
   | 'session.state'
   // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
@@ -96,6 +98,32 @@ export type EmptyPayload = Readonly<Record<string, never>>
 export type OutputDelta = {
   readonly channel: OutputChannel
   readonly text: string
+}
+
+/**
+ * 模型条目表的一行——`model.catalog` 的载荷（缺陷 D10 · 第 3 样）。
+ *
+ * 名字不取 `ModelEntry`：本项目里「条目」专职记录域的 `Entry`（`Entry` / `NewEntry`），
+ * 两个「条目」在同一份契约里撞脸＝日后必混。
+ */
+export type ModelCatalogRow = {
+  /** `providers` 的键（**条目名**）——不是供应商细节，是「哪一格」。 */
+  readonly provider: string
+  /** 该条目的默认模型（`providers.<id>.model`）。 */
+  readonly model: string
+  /** 上下文窗口总量——**配置声明了才有**（见 `ProviderConfig.contextWindow`）；没声明就不给。 */
+  readonly contextWindow?: number
+}
+
+/**
+ * 模型选中——供应商 ＋ 模型两件（`model.switched` 落地后的那种）。
+ *
+ * 与 `ModelCatalogRow` 分开：选中**未必是表里的某一行**——`model.switch { model }`
+ * 可以在同一格上换成本格默认之外的模型，那时选中仍成立，但表里那一行的 `model` 不变。
+ */
+export type ModelSelectionRef = {
+  readonly provider: string
+  readonly model: string
 }
 
 /**
@@ -131,7 +159,24 @@ export type EventDataOf = {
     readonly provider?: string
   }
   'model.call.end': EmptyPayload
-  'model.usage': { readonly inputTokens: number; readonly outputTokens: number }
+  'model.usage': {
+    readonly inputTokens: number
+    readonly outputTokens: number
+    /**
+     * **上下文窗口总量**（token）——`inputTokens/outputTokens` 之外，状态行
+     * `12.4k/200k` 的**分母**（缺陷 D10 · 第 1 样）。
+     *
+     * **分母跟着分子走**：两者同刻同源（都在这一次调用的收束那一刻落定），外壳因此
+     * 不会拿一个滞后的分母配一个新分子。来处＝`providers.<id>.contextWindow`
+     * （配置加键——见其注；模型域的内置表暂不落这一位，没有实测来处就不编）。
+     *
+     * `model.call.start` 也有 `model` / `provider`，但**窗长不从那儿走**：那条事件说的是
+     * 「这次用了谁」，用量事件说的是「用了多少、还剩多少余地」——两件事各归各的 kind。
+     *
+     * 缺省 ＝ 未声明窗长（真实现一律给；Faux 与直接喂 chunk 的用例不记这个）。
+     */
+    readonly contextWindow?: number
+  }
   'model.error': { readonly tier: ModelErrorTier; readonly message: string }
   'model.delta': {
     // 不落库——实时订阅专用
@@ -178,6 +223,16 @@ export type EventDataOf = {
     // 不落库——实时订阅专用
     /** 第几次尝试即将开工（**从 2 起**——第 1 次是首发，谈不上「重试」）。 */
     readonly attempt: number
+    /**
+     * **重试上限**（总尝试次数，含首次）——状态行 `2/3` 的**分母**（缺陷 D10 · 第 2 样）。
+     *
+     * 分母跟着分子走：`attempt` 与 `maxAttempts` 出自**同一个** `RetryPolicy`，外壳因此
+     * 不必自钉一个常量（钉了就是编的——策略改了它不知道）。要关重试就说 `maxAttempts: 1`
+     * （见 `retry.ts`：1 ＝ 不重试，不加开关），那时这一幕压根不会发生。
+     *
+     * 缺省 ＝ 未给（Faux 与直接喂 chunk 的用例不记这个）；取件层真实现一律给。
+     */
+    readonly maxAttempts?: number
     /** 这次退避等多久（毫秒）——呈现「x 秒后」的直接来源。 */
     readonly delayMs: number
     /** 必为 `transient`（退避只对瞬时档；超限 / 终态不重试）——留给渲染侧据以措辞。 */
@@ -206,6 +261,22 @@ export type EventDataOf = {
     readonly model?: string
     /** 没换成的缘由（**说给人听**的一句话，含已注册的条目名）。 */
     readonly reason?: string
+  }
+  // 控制 · 模型——**读侧命令（`model.list`）的答复**（缺陷 D10 · 第 3 样）。
+  // 外壳的 `/model` 要的是**注册表全量**（含从未调用过的条目），而外壳够不着注册表
+  // （那是装配的把手）——与 `session.history` 同一处境、同一走法：**命令进、事件出**。
+  // **不落库**：它是**读出来的**（注册表本来就在内存里），落库＝把同一张表存 N 遍
+  // （照 `session.history` 同一条理由）。
+  'model.catalog': {
+    /** 注册表里的**全部**条目（配置顺序）。空表 ＋ `note` ＝ 这次装配没有注册表。 */
+    readonly entries: readonly ModelCatalogRow[]
+    /**
+     * 此刻会走哪一条——**未切换过＝缺省条目 ＋ 它的默认模型**（`stream` 的实际去向）。
+     * 外壳据以在表里标「当前」；这次装配没有注册表时缺席。
+     */
+    readonly current?: ModelSelectionRef
+    /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
+    readonly note?: string
   }
   // session——会话面（阶段 2 · U16）。**查询答复 ＋ 变更通报**两种时机共用一个 kind：
   // 外壳问一次（`session.list`）、内核切一条（`session.new` / `session.open`）都回这一条
@@ -282,6 +353,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 落库＝把同一段内容存第二遍（长会话还会把库撑成两倍）。重放要的是「发生过什么」，
   // 不是「某人问过一次」。
   'session.history',
+  // 模型面读答案同列的理由（D10 · 第 3 样）：与 `session.history` 同一条——它是
+  // **读出来的**（注册表本来就在内存里），落库＝把同一张表存 N 遍；且外壳的 `/model`
+  // 是**反复看**的动作（原型里就是拿它当选择器），每次按一下往库里留一笔「问过」
+  // 只会污染观测。重放要的是「换过什么模型」（`model.switched` 落着），不是「看过几眼」。
+  'model.catalog',
 ]
 
 /** 记录库 schema 版本（`user_version` 自始写入——技术方案 · 记录 · schema 演进）。 */
