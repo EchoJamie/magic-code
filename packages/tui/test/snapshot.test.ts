@@ -157,6 +157,25 @@ describe('一屏 · 工具执行与收束', () => {
   })
 })
 
+describe('一屏 · 供应商与退避重试（第 17 轮补锚）', () => {
+  test('退避期间屏上有话说 —— 「正在重试（第 n 次，x 秒后）」，不是一动不动', () => {
+    const view = viewed([
+      event('turn.start', {}),
+      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.delta', { channel: 'text', text: '让我想想 ——' }),
+      event('model.retry', { attempt: 2, delayMs: 1500, tier: 'transient' }),
+    ])
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+
+  test('状态行显示当前供应商 / 模型 —— 取自真跑过的那次调用', () => {
+    const view = viewed([event('model.call.start', { model: 'glm-4.6', provider: 'zhipu' })])
+
+    expect(screen(view)).toMatchSnapshot()
+  })
+})
+
 describe('一屏 · 异常与中断', () => {
   test('错误行分档呈现', () => {
     const view = viewed([

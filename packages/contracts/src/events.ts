@@ -64,6 +64,8 @@ export type EventKind =
   | 'model.error'
   // model · 实时——供渲染订阅；**不落库**（落库收束为调用级）
   | 'model.delta'
+  // model · 实时——**退避重试中**（瞬时档）：是「正在等」的信号，不是重放事实（重放只看终局）
+  | 'model.retry'
   // tool——请求 → 裁决询问（带呈现材料）→ 裁决（批准 / 拒绝 + 裁者 + 耗时）→ 结果
   | 'tool.call'
   | 'tool.decision.request'
@@ -109,7 +111,19 @@ export type EventDataOf = {
   'message.user': { readonly entry: RecordId }
   'message.assistant': { readonly entry: RecordId }
   // model——调用级
-  'model.call.start': { readonly model: string }
+  'model.call.start': {
+    readonly model: string
+    /**
+     * 这条条目叫什么（`providers` 的键）——**只增不改**（技术方案 · 代码治理 · 契约生长受控）。
+     *
+     * 由头：外壳状态行要显示**当前供应商 / 模型**（技术方案 · 领域划分：「运行时切换」锚定），
+     * 而外壳够不着注册表（那是装配的把手）。**取「真跑过的那一次」而不是命令的自我报告**：
+     * 切不动就不动——若拿用户的意图当状态，屏上会显示一个并没在用的条目。
+     *
+     * 缺省＝未给（Faux 与直接喂 chunk 的用例不记这个）；取件层真实现一律给。
+     */
+    readonly provider?: string
+  }
   'model.call.end': EmptyPayload
   'model.usage': { readonly inputTokens: number; readonly outputTokens: number }
   'model.error': { readonly tier: ModelErrorTier; readonly message: string }
@@ -154,6 +168,15 @@ export type EventDataOf = {
     readonly channel: OutputChannel
     readonly text: string
   }
+  'model.retry': {
+    // 不落库——实时订阅专用
+    /** 第几次尝试即将开工（**从 2 起**——第 1 次是首发，谈不上「重试」）。 */
+    readonly attempt: number
+    /** 这次退避等多久（毫秒）——呈现「x 秒后」的直接来源。 */
+    readonly delayMs: number
+    /** 必为 `transient`（退避只对瞬时档；超限 / 终态不重试）——留给渲染侧据以措辞。 */
+    readonly tier: ModelErrorTier
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -194,8 +217,18 @@ export type KernelEvent = { readonly [K in EventKind]: EventEnvelope<K> }[EventK
  * ④ 命名以词典规范名族为准。
  */
 
-/** 规则 ① 的清单——**不落库**的事件 kind（实时订阅专用）。 */
-export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = ['model.delta', 'tool.output.delta']
+/**
+ * 规则 ① 的清单——**不落库**的事件 kind（实时订阅专用）。
+ *
+ * `model.retry` 与 `model.delta` 同列的理由：退避期间那个「正在等」**是实时信号、
+ * 不是重放事实**——重放只看终局（这次调用成了没有、内容是什么）。重试次数另落
+ * `ModelCallResult.attempts`（可断），故不落库不丢信息。
+ */
+export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
+  'model.delta',
+  'model.retry',
+  'tool.output.delta',
+]
 
 /** 记录库 schema 版本（`user_version` 自始写入——技术方案 · 记录 · schema 演进）。 */
 export const RECORD_SCHEMA_VERSION = 0

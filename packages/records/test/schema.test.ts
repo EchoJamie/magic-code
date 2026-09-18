@@ -100,8 +100,14 @@ describe('判据 3 · 不落库清单', () => {
     }
   })
 
-  test('不落库清单＝契约常量（两个 kind，一字不差）', () => {
-    expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual(['model.delta', 'tool.output.delta'])
+  test('不落库清单＝契约常量（三个 kind，一字不差）', () => {
+    // 第 17 轮补锚：`model.retry` 与两个实时增量同列——退避期间那个「正在等」是实时信号、
+    // 不是重放事实；重试次数另落 `ModelCallResult.attempts`，故不落库不丢信息。
+    expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
+      'model.delta',
+      'model.retry',
+      'tool.output.delta',
+    ])
   })
 })
 

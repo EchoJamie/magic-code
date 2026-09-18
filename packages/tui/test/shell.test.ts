@@ -240,3 +240,57 @@ describe('端到端（脚本化假内核）', () => {
     kernel.stop()
   })
 })
+
+// —— 第 17 轮补锚（阶段 2 波次 2）：换模型的斜杠命令 ——
+
+describe('命令 · 换模型（斜杠）', () => {
+  test('`/model <供应商>` —— 发 `model.switch`，**不是** `input.submit`', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    shell.submit('/model minimax-m2')
+
+    expect(spy.commands).toEqual([{ type: 'model.switch', provider: 'minimax-m2' }])
+  })
+
+  test('`/model <供应商> <模型>` —— 两件都带上（换条目 ＋ 换模型）', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    shell.submit('/model minimax MiniMax-M3')
+
+    expect(spy.commands).toEqual([
+      { type: 'model.switch', provider: 'minimax', model: 'MiniMax-M3' },
+    ])
+  })
+
+  test('`/model` 不带参数 —— 照样发（内核回一句「不知道要换成什么」＋ 可选条目）', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    shell.submit('/model')
+
+    expect(spy.commands).toEqual([{ type: 'model.switch' }])
+  })
+
+  test('本地回显这条命令 —— 交代过什么，屏上看得见', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    shell.submit('/model minimax-m2')
+
+    const last = shell.getView().items.at(-1)
+    expect(last?.kind).toBe('user')
+    expect(last?.kind === 'user' ? last.text : '').toBe('/model minimax-m2')
+  })
+
+  test('不认得的斜杠文字**不抢**——当普通交代发出去（自然语言优先）', () => {
+    const spy = createSpyTransport()
+    const shell = createShell(spy.transport)
+
+    // 用户嘴里说出一个路径是常事（`/usr/bin` 开头就是斜杠）——别把他的话吃掉
+    shell.submit('/usr/bin 里有什么')
+
+    expect(spy.commands).toEqual([{ type: 'input.submit', text: '/usr/bin 里有什么' }])
+  })
+})

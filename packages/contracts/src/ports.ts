@@ -14,7 +14,7 @@
  * ③ `DecisionId` ＝裁决配对的**请求事件** id。
  */
 
-import type { Command, UserInput } from './control.ts'
+import type { Command, ModelSwitchRequest, UserInput } from './control.ts'
 import type { Content, Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
 import type { Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
@@ -441,6 +441,13 @@ export type CommandRoutes = {
    * `PermissionGate.resolve`，**不由它翻译**（技术方案 · 领域划分 · 端口内类型）。
    */
   onDecision(id: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
+  /**
+   * 换模型 → 模型域（装配接注册表的 `use()`）。
+   *
+   * 控制域**原样转手**（同 `onDecision` 的姿势）——它不认识注册表，也不知道换得成换不成；
+   * 「切不动就不动」的判别式处置归**装配**（技术方案 · 领域划分 · 端口内类型）。
+   */
+  onModelSwitch(request: ModelSwitchRequest): void
 }
 
 /**

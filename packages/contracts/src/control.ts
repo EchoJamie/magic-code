@@ -54,8 +54,31 @@ export type TurnInterrupt = {
   readonly type: 'turn.interrupt'
 }
 
-/** 命令目录（首站）——外壳发往内核的全部消息。 */
-export type Command = InputSubmit | DecisionAnswer | TurnInterrupt
+/**
+ * 换模型的请求（阶段 2）——**命令负载与路由入参同一形态**（同 `UserInput` 之例，两处不各立一份）。
+ *
+ * 两件都可缺，看要换什么：只给 `provider` ＝换条目（模型取该条目的默认）· 只给 `model`
+ * ＝留在这家换模型 · 都给＝一起换 · **都不给＝不晓得更成什么**（如实报，不猜）。
+ */
+export type ModelSwitchRequest = {
+  /** `providers` 的键（条目名）。 */
+  readonly provider?: string
+  readonly model?: string
+}
+
+/**
+ * `model.switch`——运行时换模型（阶段 2 · 技术方案 · 模型策略「切换」）。
+ *
+ * **换模型＝换接缝下游**：上下文由内核构造，对话域 / 记录域**不知道发生过切换**——
+ * 它们照旧把模型名送出去，接缝按选中改道。故本命令**不动会话、不动上下文**。
+ *
+ * **切不动就不动**：装配据注册表的判别式结果处置，失败**不半途改**（原选原样保留）；
+ * 理由——「换了一半」比「没换成」坏得多（条目换了、模型名还是上家的，多半打不通）。
+ */
+export type ModelSwitch = { readonly type: 'model.switch' } & ModelSwitchRequest
+
+/** 命令目录（首站 ＋ 阶段 2 的 `model.switch`）——外壳发往内核的全部消息。 */
+export type Command = InputSubmit | DecisionAnswer | TurnInterrupt | ModelSwitch
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

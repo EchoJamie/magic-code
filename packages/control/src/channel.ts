@@ -36,7 +36,10 @@ export type Unsubscribe = () => void
  * 再开放输入——命令通道空转＝用户输入无声丢失，故不排队、不假装收下。
  */
 export type ControlChannel = {
-  /** 外壳 → 内核：发一条命令（`input.submit` / `decision.answer` / `turn.interrupt`）。 */
+  /**
+   * 外壳 → 内核：发一条命令
+   * （`input.submit` / `decision.answer` / `turn.interrupt` / `model.switch`）。
+   */
   readonly send: (command: Command) => void
   /** 内核 → 外壳：推一条事件给全部订阅方。 */
   readonly publish: (event: KernelEvent) => void

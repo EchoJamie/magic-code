@@ -20,6 +20,7 @@ import {
 import type {
   Command,
   CommandRoutes,
+  ModelSwitchRequest,
   Content,
   Decision,
   DecisionAnswer,
@@ -431,11 +432,13 @@ export function rememberTravelsThroughBothPorts(): void {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: (id, decision) => void [id, decision],
+    onModelSwitch: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: (id, decision, opts) => void [id, decision, opts?.remember],
+    onModelSwitch: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -471,11 +474,50 @@ export function configCarriesPermissionRules(): void {
   void withRules
 }
 
+// —— 第 17 轮补锚（阶段 2 波次 2 · 换模型命令 ＋ 重试事件）——
+
+/** `model.switch` ＝**第四支命令**——两件可选、都不给也合法（内核对空请求报「不知道换什么」）。 */
+export function modelSwitchIsFourthCommand(): void {
+  const byProvider: Command = { type: 'model.switch', provider: 'minimax-m2' }
+  const byModel: Command = { type: 'model.switch', model: 'glm-4.6' }
+  const both: Command = { type: 'model.switch', provider: 'zhipu', model: 'glm-4.6' }
+  const bare: Command = { type: 'model.switch' } // 都不给——内核据以报「不知道要换成什么」
+
+  void byProvider
+  void byModel
+  void both
+  void bare
+
+  // 旧三支**一字不动**：`input.submit` 少了 `text` 照样编译不过（加词没把老词写松）
+  // @ts-expect-error `input.submit` 必须有 `text`
+  const broken: Command = { type: 'input.submit' }
+  void broken
+}
+
+/** 路由侧有 `onModelSwitch`——形态与命令负载同一份（`ModelSwitchRequest`）。 */
+export function routesCarryModelSwitch(): void {
+  const routes: CommandRoutes = {
+    onInput: () => undefined,
+    onInterrupt: () => undefined,
+    onDecision: () => undefined,
+    onModelSwitch: (request: ModelSwitchRequest) => void [request.provider, request.model],
+  }
+  void routes
+}
+
+/** `model.retry` 的载荷——`attempt` / `delayMs` / `tier`（退避只对瞬时档，见其注）。 */
+export function modelRetryPayloadShape(): void {
+  const retry: EventDataOf['model.retry'] = { attempt: 2, delayMs: 1500, tier: 'transient' }
+  void retry
+}
+
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含两个实时增量（model.delta · tool.output.delta）', () => {
-    expect(TRANSIENT_EVENT_KINDS).toEqual(['model.delta', 'tool.output.delta'])
+  test('不落库清单含三个实时增量（model.delta · model.retry · tool.output.delta）', () => {
+    // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
+    // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
+    expect(TRANSIENT_EVENT_KINDS).toEqual(['model.delta', 'model.retry', 'tool.output.delta'])
   })
 
   test('schema 版本自始写入（v0）', () => {
@@ -529,3 +571,4 @@ describe('控制面契约（迁移忠实性）', () => {
     expect(DECISION_REQUEST_KIND).toBe('tool.decision.request')
   })
 })
+

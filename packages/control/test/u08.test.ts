@@ -63,6 +63,9 @@ export function commandSubjectOf(command: Command): string {
       return `${command.id}：${command.decision}`
     case 'turn.interrupt':
       return '中断'
+    case 'model.switch':
+      // 第 17 轮第四支——两件都可缺，缺了就说「缺什么」
+      return `换模型：${command.provider ?? '（不换条目）'} / ${command.model ?? '（不换模型）'}`
   }
 }
 
@@ -114,6 +117,7 @@ export function hubFaceRealizesPort(): void {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: () => undefined,
+    onModelSwitch: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -129,12 +133,13 @@ export function kernelEndIsContractTransport(): void {
   void transport
 }
 
-/** 域侧路由即契约 `CommandRoutes`——三条命令各一路由，不多不少。 */
+/** 域侧路由即契约 `CommandRoutes`——四条命令各一路由，不多不少。 */
 export function routesAreContractShape(): void {
   const routes: CommandRoutes = {
     onInput: (input) => void input.text,
     onInterrupt: () => undefined,
     onDecision: (id, decision) => void [id, decision],
+    onModelSwitch: (request) => void [request.provider, request.model],
   }
   void routes
 }
@@ -153,12 +158,13 @@ function envelope<K extends EventKind>(
   return { id, session: SESSION, turn: 1, at: AT, kind, data }
 }
 
-/** 空路由——只关心某一支时补齐另两支（`CommandRoutes` 三路由皆必填）。 */
+/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 四路由皆必填）。 */
 function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
   return {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: () => undefined,
+    onModelSwitch: () => undefined,
     ...overrides,
   }
 }
@@ -276,6 +282,30 @@ describe('命令进——外壳 → 内核', () => {
     // 反面：若有人图省事写成 `remember: undefined`，那一位会被拒投（丢键＝有损）。
     expect(isSerializable({ type: 'decision.answer', id: 42, decision: 'approve', remember: true })).toBe(true)
     expect(isSerializable({ type: 'decision.answer', id: 42, decision: 'approve', remember: undefined })).toBe(false)
+  })
+
+  test('换模型**原样转手**——控制域不认识注册表，也不知道换得成换不成', () => {
+    const hub = createControlHub()
+    const { kernel, shell } = createInProcessTransportPair()
+    const seen: { readonly provider: string | undefined; readonly model: string | undefined }[] = []
+
+    hub.bind(
+      routesWith({
+        onModelSwitch: (request) => seen.push({ provider: request.provider, model: request.model }),
+      }),
+    )
+    hub.attach(kernel)
+
+    shell.send({ type: 'model.switch', provider: 'minimax-m2' })
+    shell.send({ type: 'model.switch', model: 'glm-4.6' })
+    shell.send({ type: 'model.switch' })
+
+    // 缺的那一件是 `undefined`（**不替用户补空串**——空串是个合法名字，补了就分不清「没给」）
+    expect(seen).toEqual([
+      { provider: 'minimax-m2', model: undefined },
+      { provider: undefined, model: 'glm-4.6' },
+      { provider: undefined, model: undefined },
+    ])
   })
 
   test('裁决答复按**请求事件 id** 配对——与 `call` 字段两 id 不混', () => {

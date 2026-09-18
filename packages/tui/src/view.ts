@@ -86,11 +86,25 @@ export type PendingDecision = {
   readonly weight: DecisionWeight
 }
 
+/** 一次退避等待的实时状态（`model.retry`）——**只在等待期间亮着**，见 `reduce`。 */
+export type RetryStatus = {
+  /** 第几次尝试即将开工（从 2 起）。 */
+  readonly attempt: number
+  readonly delayMs: number
+}
+
 /** 状态行的内容。 */
 export type ShellStatus = {
   readonly phase: 'idle' | 'busy'
   readonly agent: AgentState | null
+  /**
+   * 当前供应商（`providers` 的键）——**取自真跑过的那次调用**（`model.call.start` 的
+   * `provider`），不是用户命令的自我报告：切不动就不动，拿意图当状态会显示一个并没在用的条目。
+   */
+  readonly provider: string | null
   readonly model: string | null
+  /** 退避等待中——非 `null` 即屏上该说「正在重试」。 */
+  readonly retry: RetryStatus | null
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null
   readonly turnEnd: TurnEndReason | null
 }
@@ -107,7 +121,15 @@ export function createView(): ShellView {
   return {
     items: [],
     pending: null,
-    status: { phase: 'idle', agent: null, model: null, usage: null, turnEnd: null },
+    status: {
+      phase: 'idle',
+      agent: null,
+      provider: null,
+      model: null,
+      retry: null,
+      usage: null,
+      turnEnd: null,
+    },
   }
 }
 
@@ -123,7 +145,8 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
   switch (event.kind) {
     // — 对话流 · 模型增量（瞬时——落库收束为调用级）—
     case 'model.delta':
-      return reduceDelta(view, event.id, event.data)
+      // 内容来了 ⇒ 退避结束（重试位撤下——它只描述「正在等」）
+      return reduceDelta(clearRetry(view), event.id, event.data)
 
     // — 对话流 · 工具调用链 —
     case 'tool.call':
@@ -152,7 +175,10 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'turn.end':
       // 轮收束 ⇒ 悬着的询问随之作废（询问是轮内的：轮结束，那个工具就跑不成了）。
       // 不撤的话，中断之后那条提示会赖着不走——Ctrl+C 也会一直被它按在「工作中」。
-      return patchStatus({ ...view, pending: null }, { phase: 'idle', turnEnd: event.data.reason })
+      return patchStatus(
+        { ...view, pending: null },
+        { phase: 'idle', retry: null, turnEnd: event.data.reason },
+      )
     case 'agent.start':
       return patchStatus(view, { agent: 'waiting' })
     case 'agent.state':
@@ -160,17 +186,32 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'agent.end':
       return patchStatus(view, { agent: null })
     case 'model.call.start':
-      return patchStatus(view, { model: event.data.model })
+      // 供应商 + 模型各归各位；**缺席即 `null`**（不拿旧值充数——旧值可能是另一个条目的）
+      return patchStatus(clearRetry(view), {
+        provider: event.data.provider ?? null,
+        model: event.data.model,
+      })
     case 'model.usage': {
       const { inputTokens, outputTokens } = event.data
-      return patchStatus(view, { usage: { inputTokens, outputTokens } })
+      return patchStatus(clearRetry(view), { usage: { inputTokens, outputTokens } })
     }
     case 'model.call.end':
-      return view
+      return clearRetry(view)
+
+    // — 退避重试（瞬时档）——**状态位，不是对话流**（退避三次不刷三行）—
+    case 'model.retry':
+      return patchStatus(view, {
+        retry: { attempt: event.data.attempt, delayMs: event.data.delayMs },
+      })
 
     // — 错误 —
     case 'model.error':
-      return appendNotice(view, event.id, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`, 'error')
+      return appendNotice(
+        clearRetry(view),
+        event.id,
+        `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`,
+        'error',
+      )
     case 'error':
       return appendNotice(view, event.id, `内核异常：${event.data.message}`, 'error')
 
@@ -362,6 +403,16 @@ function appendNotice(
 
 function patchStatus(view: ShellView, patch: Partial<ShellStatus>): ShellView {
   return { ...view, status: { ...view.status, ...patch } }
+}
+
+/**
+ * 撤下重试位——**这次调用又在动了**（首块内容到位 / 收束 / 出错终局 / 另起一次调用）。
+ *
+ * 一条规则胜过四处判断：重试位只描述「正在等」，等完了就该灭；留着它，屏上会一直
+ * 挂着「3 秒后重试」，而实际早就答完了。
+ */
+function clearRetry(view: ShellView): ShellView {
+  return view.status.retry === null ? view : patchStatus(view, { retry: null })
 }
 
 function lastItem(view: ShellView): TranscriptItem | undefined {

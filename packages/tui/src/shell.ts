@@ -12,9 +12,40 @@
  * ③ **呈现与介入**——视图归约在 `view.ts`；本层只管接线与本地回显。
  */
 
-import type { Command, ControlTransport, Decision, KernelEvent } from '@magic/contracts'
+import type {
+  Command,
+  ControlTransport,
+  Decision,
+  KernelEvent,
+  ModelSwitchRequest,
+} from '@magic/contracts'
 import type { ShellView } from './view.ts'
 import { appendEcho, createView, reduce } from './view.ts'
+
+/** 换模型那条斜杠命令——**只此一条**（交互词汇：自然语言优先、固定命令精简）。 */
+const MODEL_COMMAND = '/model'
+
+/**
+ * 认出换模型的斜杠命令——不认得就交回普通交代。
+ *
+ * **只认第一个词正好是 `/model`**：`/usr/bin 里有什么` 这类以斜杠开头的**人话**照旧发给模型
+ * （用户嘴里说出一个路径是常事，别把他的话吃掉）。同理不做「疑似命令」的模糊匹配——
+ * 猜错的代价是这条消息到不了模型。
+ *
+ * 参数按位取：`/model <供应商> [模型]`。**一个都不给也照发**——内核会回一句
+ * 「不知道要换成什么」并列出已注册的条目（U17 的注册表就是这么报的），
+ * 于是 `/model` 顺带成了「有哪些可选」的查询。
+ */
+function parseModelSwitch(text: string): ModelSwitchRequest | undefined {
+  if (text !== MODEL_COMMAND && !text.startsWith(`${MODEL_COMMAND} `)) return undefined
+
+  const [, provider, model] = text.split(/\s+/)
+
+  return {
+    ...(provider === undefined ? {} : { provider }),
+    ...(model === undefined ? {} : { model }),
+  }
+}
 
 export type Shell = {
   /** 当前视图（引用稳定——只在事件 / 本地回显后才换对象）。 */
@@ -77,7 +108,11 @@ export function createShell(transport: ControlTransport): Shell {
       // 本地回显先落（事件只带条目引用，不含正文——见 view.ts 文件头）
       view = appendEcho(view, trimmed)
       notify()
-      send({ type: 'input.submit', text: trimmed })
+
+      // 斜杠命令与普通交代**同一条入口**：「交代就写在这里」——用户不必先切模式
+      const request = parseModelSwitch(trimmed)
+      if (request === undefined) send({ type: 'input.submit', text: trimmed })
+      else send({ type: 'model.switch', ...request })
     },
 
     answer: (decision, opts) => {

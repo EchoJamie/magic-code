@@ -265,3 +265,51 @@ describe('归约是纯函数', () => {
     expect(before).toEqual(snapshot)
   })
 })
+
+// —— 第 17 轮补锚（阶段 2 波次 2）：供应商 / 重试位 ——
+
+describe('第 17 轮 · 供应商与重试位', () => {
+  test('`model.call.start` 带条目名——状态行据以显示当前供应商', () => {
+    const view = reduce(
+      createView(),
+      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+    )
+
+    expect(view.status.provider).toBe('minimax')
+    expect(view.status.model).toBe('MiniMax-M3')
+  })
+
+  test('条目名缺席＝不知道（不拿旧值充数——那是另一个条目的事）', () => {
+    const withProvider = reduce(
+      createView(),
+      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+    )
+    const withoutProvider = reduce(withProvider, event('model.call.start', { model: 'X' }))
+
+    expect(withoutProvider.status.provider).toBeNull()
+  })
+
+  test('`model.retry` 亮起重试位——屏上不再是「一动不动」', () => {
+    const view = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 1500, tier: 'transient' }))
+
+    expect(view.status.retry).toEqual({ attempt: 2, delayMs: 1500 })
+  })
+
+  test('重试位只在等待期间亮着——调用再动起来即撤下', () => {
+    const retrying = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 800, tier: 'transient' }))
+    expect(retrying.status.retry).not.toBeNull()
+
+    // 三件都说明「这次调用又在动了」：首块内容到位 / 调用收束 / 出错终局
+    expect(reduce(retrying, event('model.delta', { channel: 'text', text: '来了' })).status.retry).toBeNull()
+    expect(reduce(retrying, event('model.call.start', { model: 'M' })).status.retry).toBeNull()
+    expect(reduce(retrying, event('model.error', { tier: 'terminal', message: '停' })).status.retry).toBeNull()
+  })
+
+  test('重试位不落进对话流——它是状态、不是历史（退避几次不该刷几行）', () => {
+    const once = reduce(createView(), event('model.retry', { attempt: 2, delayMs: 500, tier: 'transient' }))
+    const twice = reduce(once, event('model.retry', { attempt: 3, delayMs: 1000, tier: 'transient' }))
+
+    expect(twice.items).toEqual([])
+    expect(twice.status.retry).toEqual({ attempt: 3, delayMs: 1000 })
+  })
+})
