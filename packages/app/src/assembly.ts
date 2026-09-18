@@ -51,7 +51,7 @@ import { createConversationService, createConversationSession } from '@magic/con
 import type { ConversationSession, PromptVars, SessionInstance } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createSandbox, createWorkspaceService } from '@magic/execution'
-import type { FetchLike, ModelRegistry } from '@magic/model'
+import type { FetchLike, ModelRegistry, ModelSwitchResult } from '@magic/model'
 import { createModelRegistry } from '@magic/model'
 import { createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
@@ -111,7 +111,16 @@ export type AssembleOptions = {
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
+/** 注册表缺席时那条切换结果的缘由（注入了替身网关＝这批装配换不了模型）。 */
+const NO_REGISTRY = '本次装配没有供应商注册表（注入了替身网关）'
+
 export type Assembly = {
+  /**
+   * **换模型**——装配侧的**唯一**切换入口：命令面（`model.switch`）与 `--script` 的
+   * `{switch}` 都调它，**成败都发一条 `model.switched`（落库）**（缺陷 D16 收拢的产出路径）。
+   * 结果原样交回调用方（脚本据以决定继续还是当场停）。
+   */
+  readonly switchModel: (request: ModelSwitchRequest) => ModelSwitchResult
   /**
    * **外壳侧一端**（契约 `ControlTransport`）——接外壳。
    * 用法＝先 `subscribe(…)`、后 `send(…)`（顺序纪律见文件头注）。
@@ -387,8 +396,14 @@ export function assemble(options: AssembleOptions): Assembly {
    * 第 17 轮这里曾借兜底 kind `error` 顶上（「不为一条消息长一个新 kind」）——规划侧裁决
    * **改判**：`error` 的语义是「内核**自身异常**」，与「用户命令不成立」不是一类，
    * 混用会污染观测；且切换这件事 `model.call.start` 说不了（它只说「这次用了谁」）。
+   *
+   * ⚠️ **两条入口、一条产出路径**（缺陷 D16）——命令面（`model.switch`）与 `--script`
+   * 的 `{switch}` **都走这一个函数**：产事件这件事只在这一处发生，谁调都一样落库。
+   * 第 17 轮曾把两者判为「两条入口、不收拢」，于是脚本那条**直调注册表** ⇒ 库里缺一笔
+   * `model.switched`。收拢的是**产出**，不是入口——入口仍两条（一个是产品路径、一个是
+   * 验收装置的方便），但那不再是「留不留痕」的分叉。
    */
-  const switchModel = (request: ModelSwitchRequest): void => {
+  const switchModel = (request: ModelSwitchRequest): ModelSwitchResult => {
     // **还没有会话**（空手打开就 `/model`，第 19 轮起这是常态）——选中**照换**：
     // 注册表是**进程级**的（选中的供应商不该随会话漂），换完第一条消息就用新条目。
     //
@@ -397,19 +412,14 @@ export function assemble(options: AssembleOptions): Assembly {
     // 真相不会丢：第一次调用时 `model.call.start` 带上真选中，状态行随之更正。
     // ⚠️ 代价如实记：这一下（含「条目名写错」）在屏上**没有回声**——见回报「待决」。
     if (chain === undefined) {
-      models?.use(request)
-      return
+      return models?.use(request) ?? { ok: false, reason: NO_REGISTRY }
     }
 
     // 注册表缺席（注入了替身网关）＝如实报「这批装配换不了模型」——同样是一条**切换结果**
     if (models === undefined) {
-      sink.emit(
-        forwardStamper.stamp('model.switched', {
-          ok: false,
-          reason: '本次装配没有供应商注册表（注入了替身网关）',
-        }),
-      )
-      return
+      const missing: ModelSwitchResult = { ok: false, reason: NO_REGISTRY }
+      sink.emit(forwardStamper.stamp('model.switched', missing))
+      return missing
     }
 
     const result = models.use(request)
@@ -427,6 +437,8 @@ export function assemble(options: AssembleOptions): Assembly {
           })
         : forwardStamper.stamp('model.switched', { ok: false, reason: result.reason }),
     )
+
+    return result
   }
 
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；
@@ -458,6 +470,7 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     config: loaded,
     models,
+    switchModel,
     records: recordsStore,
     paths: recordsStore.paths,
     permissionRules: parsedRules.rules,

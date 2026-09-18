@@ -114,6 +114,30 @@ describe('判据 2 · 呈现轻重（轻——放行区方向）', () => {
     }
   })
 
+  /**
+   * 缺陷 D15 —— **没给路径的读类调用**。
+   *
+   * 钉的规格＝**参数键全表**（契约 · 工具：参数键）的通则「**可选键缺席即取缺省**」：
+   * `ls` / `grep` / `glob` 的 `path` **是可选键**，而缺省就是**默认根**
+   * （工具 schema 的说明一字不差：「缺省＝工作区根」）⇒ 这三种**没给路径**是
+   * **合法且常见**的形态，仍归**轻**，且材料得说清落在哪儿。
+   */
+  test('没给路径的读与搜索（ls / grep / glob）——缺省＝默认根，仍轻、材料说得出落点', () => {
+    const pathless: readonly (readonly [string, Readonly<Record<string, unknown>>])[] = [
+      ['ls', {}],
+      ['grep', { pattern: 'todo' }],
+      ['glob', { pattern: '**/*.ts' }],
+    ]
+
+    for (const [name, args] of pathless) {
+      const { weight, material } = weigh(call(name, args))
+
+      expect(weight, `${name} 没给路径时的呈现轻重`).toBe('light')
+      expect(material, `${name} 的材料该说清落点`).toContain('/work/proj')
+      expect(material, `${name} 的材料该说清那是缺省来的`).toContain('缺省＝默认根')
+    }
+  })
+
   test('增量编辑：edit 轻（diff 可审）', () => {
     const { weight } = weigh(call('edit', { path: 'a.ts', oldString: 'a', newString: 'b' }))
     expect(weight).toBe('light')
@@ -301,8 +325,11 @@ describe('判据 5 · 看不懂从严（按不可逆假定问）', () => {
     expect(weigh(call('exec', { cmd: 'nano notes.md' })).weight).toBe('heavy')
   })
 
-  test('找不到命令字段 / 找不到路径字段——重', () => {
+  test('找不到命令字段 / **缺必填的**路径字段——重', () => {
     expect(weigh(call('exec', {})).weight).toBe('heavy')
+    // `read` 的 `path` 按**参数键全表**是**必填** ⇒ 缺了就是模式不符的调用，此处不假装知道落点。
+    // ⚠️ 这一条**只对必填的键**成立——`ls` / `grep` / `glob` 的 `path` 是可选键，
+    // 没给仍归**轻**（缺陷 D15 · 见「判据 2」那一条）。
     expect(weigh(call('read', {})).weight).toBe('heavy')
   })
 

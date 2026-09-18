@@ -157,19 +157,46 @@ export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
 }
 
 /**
+ * **路径必填**的读类工具——照**参数键全表**（契约 · 工具：`read` —— `path`，
+ * 而 `ls` / `grep` / `glob` 是 `path?`）。「缺席合不合法」只认这张表。
+ */
+const PATH_REQUIRED_TOOLS: readonly string[] = ['read']
+
+/**
+ * 「没给路径」的落点＝**默认根**——`.` 经 `landPath` 的「相对按默认根」正好归一出
+ * 默认根本身，与执行域同一判据（不另造一条算法）。
+ */
+const DEFAULT_ROOT = '.'
+
+/**
  * 读与搜索（`read` · `grep` · `glob` · `ls`）——**放行区方向，一律轻**。
  *
  * 读的**越界不闸**：必闸清单的越界条目限「**工作区外的写 / 删 / 移**」，
  * 而放行区明列「读与搜索」（技术方案 · 权限：放行区）。
+ *
+ * **没给路径**的形态（缺陷 D15）按**参数键全表**分两种——「可选键缺席即取缺省」是通则：
+ * - `ls` / `grep` / `glob` 的 `path` **是可选键**，而缺省就是**默认根**
+ *   （工具 schema 的说明一字不差：「缺省＝工作区根」）⇒ `ls {}`（列当前目录）是
+ *   **合法且常见**的形态，仍归**轻**；
+ * - `read` 的 `path` **是必填**——缺了就是模式不符的调用（工具那边回 `OUTPUT_PATH_REQUIRED`），
+ *   此处**不假装知道落点** ⇒ 归「判不出」。
+ *
+ * ⇒「判不出」只留给**真正看不懂**的形态，不再兜住「没给参数」这种合法写法。
  */
 function analyzeSearch(call: ToolCall, ctx: PermissionContext): Analysis {
   const path = firstString(call.args, isPathKey)
-  if (path === undefined) {
-    return unclassifiable(call.name, '参数里找不到可判的路径字段（键名未锚定——见回报待决）')
+
+  if (path === undefined && PATH_REQUIRED_TOOLS.includes(call.name)) {
+    return unclassifiable(call.name, `参数里缺必填的路径字段（参数键全表：${call.name} 的 path 必填）`)
   }
 
-  const landing = landPath(path.value, ctx)
-  return { weight: 'light', material: `影响面：${describeLanding(landing)}`, ops: ['read'], landings: [landing] }
+  const landing = landPath(path?.value ?? DEFAULT_ROOT, ctx)
+  const material =
+    path === undefined
+      ? `影响面：${describeLanding(landing)}（调用没给路径——参数键全表：缺省＝默认根）`
+      : `影响面：${describeLanding(landing)}`
+
+  return { weight: 'light', material, ops: ['read'], landings: [landing] }
 }
 
 /** 增量编辑（`edit`）——放行区方向（diff 可审）；**但工作区外的写＝必闸**。 */

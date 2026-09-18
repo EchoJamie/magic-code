@@ -16,7 +16,7 @@
 
 import type { KernelEvent } from '@magic/contracts'
 import { TOOLSET_V1 } from '@magic/contracts'
-import type { ModelSelection, ModelSwitchRequest } from '@magic/model'
+import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import { runTui } from '@magic/tui'
 import { assemble } from './assembly.ts'
 import type { Assembly } from './assembly.ts'
@@ -216,29 +216,47 @@ function describeRules(assembly: Assembly): string {
   return `${head} · ⚠️ 被拒 ${assembly.rejectedRules.length} 条——${reasons}`
 }
 
-async function runScript(assembly: Assembly, path: string): Promise<void> {
-  const script = await readScript(path)
-
-  const handle = await runShellScript(assembly.shell, script, {
-    onEvent: (event: KernelEvent) => {
-      // 瞬时增量（model.delta / tool.output.delta）不印——它们是渲染用的
-      if (event.kind === 'model.delta' || event.kind === 'tool.output.delta') return
-      console.log(JSON.stringify(event))
-    },
-    // 会话中途换模型的落点——就是装配手上那张注册表（本文件不另存一份状态）
+/**
+ * 脚本驱动接的那几件——**导出是给用例锚的**（缺陷 D16 的判据要咬住本文件这一行接线，
+ * 而不是只咬住装配那半边）。
+ *
+ * `onSwitch` **走装配那一条产出路径**（`assembly.switchModel`）：与命令面同一处产
+ * `model.switched`（**落库**）——本文件不另存一份状态、也不直调注册表。
+ */
+export function scriptOptions(
+  assembly: Assembly,
+  onEvent: (event: KernelEvent) => void,
+  /** 换成功时那一行人读的痕迹（真跑给 `console.log`；用例给空实现，别往测试输出里漏）。 */
+  note: (line: string) => void = () => {},
+): { readonly onEvent: (event: KernelEvent) => void; readonly onSwitch: (request: ModelSwitchRequest) => ModelSwitchResult } {
+  return {
+    onEvent,
     onSwitch: (request) => {
-      const models = assembly.models
-      if (models === undefined) {
-        return { ok: false, reason: '这次装配没有供应商注册表（注入了替身网关）' }
-      }
-      const result = models.use(request)
+      const result = assembly.switchModel(request)
       if (result.ok) {
-        // 人在看的痕迹（事件流里不会有——换模型是接缝下游的事，不产事件）
-        console.log(`—— 换模型：走 ${result.selection.provider}（${result.selection.model}）`)
+        note(`—— 换模型：走 ${result.selection.provider}（${result.selection.model}）`)
       }
       return result
     },
-  })
+  }
+}
+
+async function runScript(assembly: Assembly, path: string): Promise<void> {
+  const script = await readScript(path)
+
+  const handle = await runShellScript(
+    assembly.shell,
+    script,
+    scriptOptions(
+      assembly,
+      (event: KernelEvent) => {
+        // 瞬时增量（model.delta / tool.output.delta）不印——它们是渲染用的
+        if (event.kind === 'model.delta' || event.kind === 'tool.output.delta') return
+        console.log(JSON.stringify(event))
+      },
+      (line) => console.log(line),
+    ),
+  )
 
   console.log(
     `—— 会话 ${assembly.session} · 事件 ${handle.events.length} 条 · ` +
@@ -304,4 +322,6 @@ async function main(): Promise<number> {
   }
 }
 
-process.exit(await main())
+// **只有被当作入口跑时才真的跑**——`scriptOptions` 导出给用例锚，import 本文件不该起外壳
+// （`bun src/cli.ts` / `bin` 都算「直接跑」，`import.meta.main` 为真）。
+if (import.meta.main) process.exit(await main())

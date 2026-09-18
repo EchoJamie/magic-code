@@ -18,6 +18,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
+import { scriptOptions } from '../src/cli.ts'
 import { assemble, attachShell, loadConfig, runShellScript } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
@@ -256,6 +257,49 @@ describe('运行时切换 · 脚本步骤', () => {
       ])
       expect(seen.map((request) => request.model)).toEqual(['alpha-1', 'beta-1'])
       expect(startModels(handle.events)).toEqual(['alpha-1', 'beta-1'])
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /**
+   * 缺陷 D16 —— **脚本驱动的切换也留痕**。
+   *
+   * 钉的规格＝「**切换是会话的可观测事实**」（`assembly.switchModel` 的头注）：
+   * 「何时改的、改成了谁、没改成是为什么」三件都得能回看，而 `model.call.start` 只说得出
+   * 「这次用了谁」。
+   *
+   * 落法是**收拢产出、不收拢入口**——两条入口（命令面 / `--script`）都调
+   * `assembly.switchModel`，产事件只在这一处发生。
+   *
+   * ⚠️ 接线取自 **`cli.ts` 的 `scriptOptions`**（不是一个写着同样内容的字面量）——
+   * 这一条要咬的是**那一行接线**：D16 的病灶正是在 `cli.ts` 里（脚本那条直调注册表），
+   * 用例自己重写一遍接线就咬不住它。
+   */
+  test('脚本的 `{ switch }` 与命令面**同产 `model.switched`**（D16）', async () => {
+    const land = stage()
+    const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const handle = await runShellScript(
+        assembly.shell,
+        { inputs: ['第一轮', { switch: { provider: 'beta' } }, '第二轮'] },
+        scriptOptions(assembly, () => {}),
+      )
+
+      const switched = handle.events.filter((event) => event.kind === 'model.switched')
+
+      expect(switched).toHaveLength(1)
+      expect(switched[0]?.kind === 'model.switched' ? switched[0].data : undefined).toEqual({
+        ok: true,
+        provider: 'beta',
+        model: 'beta-1',
+      })
+      expect(handle.switches).toHaveLength(1) // 驱动侧那份自记仍在（两处记的不是一件事）
 
       handle.dispose()
       assembly.close()

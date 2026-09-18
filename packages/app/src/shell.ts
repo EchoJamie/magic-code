@@ -23,7 +23,8 @@
  *
  * **换模型的加宽位**（U17 补）——脚本的交代位收两形：裸字符串（一字不改的老写法）或
  * `{ switch: { provider?, model? } }`（**会话中途换模型**）。落点是 `onSwitch`：装配把
- * 注册表的 `use()` 接在那儿，本文件只负责「按脚本的次序喊一声」，不认识注册表。
+ * **换模型那一条产出路径**接在那儿，本文件只负责「按脚本的次序喊一声」，不认识注册表——
+ * 也**因此与命令面同产 `model.switched`**（缺陷 D16：收拢的是产出，不是入口）。
  *
  * ⚠️ **为什么「会话中途换模型」出现在这里**——控制面的命令词表（契约 `Command`）里
  * **没有「换模型」这个词**（`input.submit` / `decision.answer` / `turn.interrupt` 三支），
@@ -110,7 +111,8 @@ export type AttachShellOptions = {
    */
   readonly decide?: (request: ShellDecisionRequest) => ShellAnswer
   /**
-   * **换模型的落点**——装配把注册表的 `use()` 接在这儿（`(request) => registry.use(request)`）。
+   * **换模型的落点**——装配把**换模型那一条产出路径**接在这儿
+   * （`(request) => assembly.switchModel(request)`：产 `model.switched` 并回结果——缺陷 D16）。
    * 缺省不接：脚本里没写 `switch` 就永远用不到它。
    */
   readonly onSwitch?: (request: ModelSwitchRequest) => ModelSwitchResult
