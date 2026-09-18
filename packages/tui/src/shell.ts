@@ -15,7 +15,7 @@
  * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
  */
 
-import type { Command, ControlTransport, Entry, KernelEvent, SessionId } from '@magic/contracts'
+import type { Command, ControlTransport, Entry, EventKind, KernelEvent, SessionId } from '@magic/contracts'
 import {
   COMMANDS,
   HINT_COMPLETION,
@@ -113,6 +113,40 @@ export type ShellOptions = {
   readonly contextWindow?: number | null | undefined
 }
 
+/**
+ * **流式节流**的窗口（毫秒）——实现级常量（`对表.md`·C 组授权：频率归实现级自决）。
+ *
+ * ## 为什么要它
+ *
+ * 事件来得可以很密（一条 token 一条 `model.delta`），而**每一件**都会叫醒 React 去重画一屏。
+ * 实测（`bench-stream.ts` · 优化前）：2000 条增量 **29.5 秒**——每一件都在重算整段正文。
+ *
+ * ## 取 16 的由头
+ *
+ * 一对账就定了：**Ink 自己的写档是 30fps**（`maxFps` 缺省 ⇒ 33ms 一帧，
+ * `renderInteractiveFrame` 那条路）。节流窗口若比 33ms 还宽，就是**在 Ink 本就要合掉的那些
+ * 帧上再加一层等待**——纯亏。16ms（60Hz 那一档）比 Ink 的写档细一半：够把爆发期的
+ * 一串事件收成一两次重绘，又不会成为那笔账里更慢的那一环。
+ *
+ * ## 领头立即、窗口末尾补一次
+ *
+ * **不是**延迟节流——那样每次按键都要白等一个窗口（输入回声正是最不该等的东西）。
+ * 这里第一个事件**当场放行**，其后同一个窗口里的挤到窗口末尾合一次。于是：
+ * 稀疏事件（流式那种 20ms 一条）**一件一放，不加任何延迟**；爆发事件（回放 / 快供应商）
+ * 被收成一窗两次。**按键与其余的**（非流式那几条）走 `flushNow`——一步都不等。
+ */
+const STREAM_WINDOW_MS = 16
+
+/**
+ * 按帧合批的那几件——**流式增量**，且只有它们。
+ *
+ * 判据是「这条事件单看**没有任何**屏上意义」：一条 token 自己能说的只是「正文长了一个字」，
+ * 攒起来一起画与一件一画，**屏上最终一模一样**。别的事件不行——
+ * 按键（`key` 那条路）、`turn.end`、裁决、换会话，每一件都可能把左下那一整片换掉，
+ * 晚一帧就是「按了没反应」。
+ */
+const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'tool.output.delta'])
+
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
 export function createShell(transport: ControlTransport, options: ShellOptions = {}): Shell {
   const watchers = new Set<() => void>()
@@ -130,13 +164,40 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /** 等回话的选择器意图（`/session` / `/model` 各问一次）。 */
   let waiting: PendingPicker | null = null
 
-  const notify = (): void => {
+  /** 攒着的那一次补发（`undefined` ＝ 窗口里没排着）。 */
+  let pending: ReturnType<typeof setTimeout> | undefined
+
+  /** 立刻就通知——键盘、结构性事件、以及窗口末尾那一次补发都走它。 */
+  const flushNow = (): void => {
     for (const watcher of [...watchers]) watcher()
   }
 
-  const commit = (next: ShellView): void => {
+  /**
+   * 合批：领头的**当场放行**，窗口里其余的挤到末尾补一次（理由见 `STREAM_WINDOW_MS`）。
+   *
+   * ⚠️ **视图本身一律是即时更新的**（`commit` 里先落 `view`）——节流的是**通知**
+   * （「叫 React 重画」），不是状态。故 `getView()` / `key()` 拿到的永远是当下这一份，
+   * 晚的只有屏。这条也是 `/model` 那次顺序修复（`2f3fc4c`）赖以成立的前提。
+   */
+  const notifyCoalesced = (): void => {
+    if (pending !== undefined) return // 窗口里已经排着补发了——这一件跟着它走
+    flushNow()
+    pending = setTimeout(() => {
+      pending = undefined
+      flushNow()
+    }, STREAM_WINDOW_MS)
+  }
+
+  const commit = (next: ShellView, streaming = false): void => {
     view = next
-    notify()
+    if (streaming) notifyCoalesced()
+    else {
+      if (pending !== undefined) {
+        clearTimeout(pending)
+        pending = undefined
+      }
+      flushNow()
+    }
   }
 
   /**
@@ -198,7 +259,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
 
     const before = view.sessionId
-    commit(reduce(view, event))
+    // 流式增量按帧合批；其余一律当场（判据见 `STREAMING` 的注）
+    commit(reduce(view, event), STREAMING.has(event.kind))
 
     if (event.kind === 'session.state') {
       // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
@@ -578,6 +640,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     dispose: () => {
       disposed = true
+      if (pending !== undefined) clearTimeout(pending)
+      pending = undefined
       unsubscribeTransport()
       watchers.clear()
     },

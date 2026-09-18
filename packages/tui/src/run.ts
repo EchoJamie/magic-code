@@ -31,6 +31,14 @@ export type RunTuiOptions = {
   /** 注入终端流（测试用）——缺省＝真 stdin / stdout。 */
   readonly stdin?: NodeJS.ReadStream | undefined
   readonly stdout?: NodeJS.WriteStream | undefined
+  /**
+   * **上下文窗总量**（④ 的分母 · U20 留的位）——装配把**缺省条目声明的**那个数递进来
+   * （`providers.<id>.contextWindow`），屏上 ④ 才一开局就是 `12.4k/200k`。
+   *
+   * 不给 / 条目没声明 ⇒ `null` ⇒ 只报已用量——**不编一个总量**（`D10` 那条判据）。
+   * 另有一条来路：`/model` 跑过一次之后由 `model.catalog` 定（那一路要**换过模型**才对得上）。
+   */
+  readonly contextWindow?: number | null | undefined
 }
 
 /** 挂上终端之后的把手。 */
@@ -48,7 +56,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     throw new Error('外壳需要一个终端（stdin 不是 TTY）——请在终端里启动。')
   }
 
-  const shell = createShell(options.transport)
+  // ④ 的分母（装配给）——没给就是「拿不到」，屏上回退成只报已用量（见 `RunTuiOptions`）
+  const shell = createShell(options.transport, { contextWindow: options.contextWindow ?? null })
 
   const app = render(h(TuiApp, { shell }), {
     stdin,

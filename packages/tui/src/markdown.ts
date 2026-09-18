@@ -203,6 +203,117 @@ function inline(text: string, bold = false): readonly MdSegment[] {
   return out
 }
 
+// ══ 流式增量（U21 · 受控渲染）════════════════════════════════════════
+//
+// ## 为什么能增量
+//
+// `markdown()` 是**逐行定夺**的——同一个前缀，无论后面接什么，它前面那些行怎么长
+// **结果都一样**（这条正是「流式不闪不跳」的底子，写在文件头注里）。唯一的跨行耦合是
+// **围栏**：开围栏要找后面的闭合行，找不到就按字面。
+//
+// 于是「可以定稿的前缀」＝**不含「未闭合围栏」的那一段**：
+//
+// - 扫描只吃**完整行**（以 `\n` 结尾的那些）；遇到一道围栏而在已到的完整行里找不到闭合
+//   ⇒ **就地停下**，那一段连同尾巴交给**全量的 `markdown()`** 现算（`O(未闭那段)`）；
+// - 围栏一旦闭合 ⇒ 整块并入定稿前缀，此后不再重算；
+// - 没有围栏的正文（散文那类）⇒ 定稿前缀一路推进到最后一个完整行，每帧只算**新加的那几行**。
+//
+// ⚠️ **判据不是「这一段对不对」，是「与全量逐字一致」**——`markdownStream` 与 `markdown`
+// 对**同一个前缀**必须交出**同一串显示行**。它不是一句口头保证：
+// `markdown.test.ts` 把一段会流式长出来的正文**每个前缀都比一遍**。
+//
+// ## 缓存归谁
+//
+// 状态按 `key`（＝那一条记录行的 `key`）存——正文只会往后长，故下次拿新正文进来时，
+// 旧的那份**仍是新正文的前缀**（不是就当新的从头算）。键用完即弃由调用方管
+// （`log.ts` 那边有个上限，见其注）。
+
+/** 一条正文的流式解析状态。 */
+type StreamState = {
+  /** 上次算过的完整行（`split('\n')` 里除最后那个**可能不完整**的元素）。 */
+  done: number
+  /** `done` 条完整行对应的显示行——**定稿**，不再重算（只往后 `push`）。 */
+  lines: MdLine[]
+  /** 上次的正文（判「还是不是同一段在长」）。 */
+  source: string
+}
+
+const streams = new Map<string, StreamState>()
+
+/** 缓存条数上限——外壳同时只有一两条在长；给个上限是防长会话里攒着不放。 */
+const STREAM_LIMIT = 16
+
+export type MarkdownStream = {
+  /** 全部显示行（定稿前缀 ＋ 尾巴）。 */
+  readonly lines: readonly MdLine[]
+  /** 其中前多少条是**定稿**的——`lines.slice(settled)` 才是每帧要重算的那一段。 */
+  readonly settled: number
+}
+
+/**
+ * 流式正文 → 显示行（`markdown` 的增量版）。
+ *
+ * 结果与 `markdown(source)` **逐字相同**，差别只在「算了多少」：定稿的那一段只算一次。
+ */
+export function markdownStream(key: string, source: string): MarkdownStream {
+  const lines = source.split('\n')
+  const complete = lines.length - 1 // 最后一个元素可能不完整——不进扫描
+
+  const cached = streams.get(key)
+  // 正文不再是「往后长」（换了内容 / 重放）⇒ 从头算——缓存只对「前缀」成立
+  const state = cached !== undefined && source.startsWith(cached.source) ? cached : fresh(key)
+  const grown = state.lines
+  let done = state.done
+
+  while (done < complete) {
+    const line = lines[done] as string
+    const fence = FENCE.exec(line)
+
+    if (fence === null) {
+      grown.push(textLine(line))
+      done += 1
+      continue
+    }
+
+    const open = fence[1] as string
+    const close = closingFence(lines, done + 1, open)
+    // 闭合行**本身也得是完整行**才吃进来（`close < complete`）——否则交给尾巴现算。
+    // 保守那一档只是少赚一次增量，不会算错（尾巴走的是全量那条路）。
+    if (close === -1 || close >= complete) break
+
+    for (let body = done + 1; body < close; body += 1) grown.push(codeLine(lines[body] as string))
+    done = close + 1
+  }
+
+  // **尾巴**——从 `done` 到末尾（含那个不完整的行）交给全量那条路：与 `markdown()` 同源，
+  // 故「未闭合先按字面」那一条在这里自动成立，不另写一份。
+  const tail = markdown(lines.slice(done).join('\n'))
+
+  state.done = done
+  state.source = source
+
+  // ⚠️ **交出去的是副本**——`grown` 是缓存自己那份，还会被下一次 `push` 长出来；
+  // 把同一个对象交出去，上一帧拿到的结果就会**背地里变**（快照那类消费者正中此刀）。
+  return { lines: [...grown, ...tail], settled: grown.length }
+}
+
+/** 起一条新的流式状态（**重置**：把旧的丢掉）。 */
+function fresh(key: string): StreamState {
+  streams.delete(key)
+
+  // 满了就丢最早那一条（`Map` 保序）——早就定稿的那些重算一次也不亏
+  while (streams.size >= STREAM_LIMIT) {
+    const oldest = streams.keys().next().value
+    if (oldest === undefined) break
+    streams.delete(oldest)
+  }
+
+  const state: StreamState = { done: 0, lines: [], source: '' }
+  streams.set(key, state)
+
+  return state
+}
+
 /** 从 `at` 起有几个连续的 `char`。 */
 function runOf(text: string, at: number, char: string): number {
   let size = 0
