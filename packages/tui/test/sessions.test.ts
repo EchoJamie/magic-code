@@ -133,6 +133,7 @@ describe('状态行 · 四格与降级', () => {
     session: '时区修正',
     model: 'MiniMax-M3',
     usage: 12400,
+    window: null,
     hint: HINT_IDLE,
     ...patch,
   })

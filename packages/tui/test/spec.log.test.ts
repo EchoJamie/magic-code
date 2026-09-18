@@ -135,7 +135,12 @@ describe('组件规格 · 行的标记与颜色', () => {
 
     // 结果**不在工具那一行**上（另起一行），且在它下面
     expect(frame.textAt(head)).not.toContain('README.md')
-    expect(frame.rowOf('  ✓ packages')).toBeGreaterThan(head)
+    // ⚠️ 本条 2026-09-19 **收紧过**（U20）——原来钉的是 `✓ packages`（**当时输出的末行**）。
+    //    - **原锚**：这一句其实**没钉规格**，钉的是「摘要＝结果末行」那个当时的实现；
+    //    - **规格为什么变**：摘要改按**形态**出（`对表.md`·B8「就近渲染已知形态」），
+    //      而原型场景 2 对 `ls` 画的正是 `✓ 0.2s · **14 项**`——列表报**项数**，不是报末一项的名字；
+    //    - **新锚**：同一条规格（结果另起一行 · 缩进 · dim）＋ 摘要报项数（两行输出 ⇒ `2 项`）。
+    expect(frame.rowOf('  ✓ 2 项')).toBeGreaterThan(head)
 
     // 结果内容：缩进两行（4 列）＋ 整行 dim
     const cells = frame.cellsOf(frame.rowOf('    README.md'))

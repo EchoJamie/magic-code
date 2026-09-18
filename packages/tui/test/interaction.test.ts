@@ -174,9 +174,20 @@ describe('审批答复（接管）', () => {
     await app.type('y')
     expect(commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
 
-    // 裁决落定（内核回 `tool.decision`）才解除接管——输入行回到常态
+    // 裁决落定（内核回 `tool.decision`）才解除接管——输入行回到**此刻**那张脸。
+    //
+    // ⚠️ 本条 2026-09-19（U20）**换过脸**：原先期待的是「交代一件事」（常态）。
+    //    - **原锚**：它其实没钉规格，钉的是**当时的状态行还没归位**——那一刻底行赖在
+    //      「● 等你定夺」上（答都答完了），而输入行按状态翻脸时看的是 `working/waiting`
+    //      之外的档，于是顺手翻成了「常态」。两处互相打架。
+    //    - **规格为什么变**：状态行「只放此刻」——答完球就回到内核那边（这一轮还在跑），
+    //      底行该说「● 工作中」（U20 真跑留帧时当场看出来的）。
+    //    - **新锚**：同一条规格（接管解除 ⇒ 输入行不再说「等你的答复」）＋ **输入行与底行同口径**
+    //      ——这一轮还在跑 ⇒ 「（工作中——想插话可以打，发不出去就排队）」。
     await push([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })],
-      (frame) => frame.includes('交代一件事'))
+      (frame) => frame.includes('想插话可以打'))
+    expect(app.frame()).not.toContain('等你的答复')
+    expect(app.frame()).toContain('● 工作中')
 
     app.unmount()
   })

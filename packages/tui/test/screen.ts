@@ -105,16 +105,22 @@ const DEFAULT_SCREEN: ScreenOptions = { columns: 80, rows: 24 }
 export async function show(
   views: readonly ShellView[],
   options: ScreenOptions = DEFAULT_SCREEN,
+  /** 「此刻」（毫秒）——跑动中的工具行报 `⟳ 0.6s` 要用；不给＝没有钟（回退「运行中」）。 */
+  now: number | null = null,
 ): Promise<Frame> {
-  const bytes = await rendered(views, options)
+  const bytes = await rendered(views, options, now)
 
   return frameOf(await screenCells(bytes, options))
 }
 
 /** 画成字节（**不读屏**）——给「量字节本身」的场合留的口子。 */
-export async function rendered(views: readonly ShellView[], options: ScreenOptions): Promise<string> {
+export async function rendered(
+  views: readonly ShellView[],
+  options: ScreenOptions,
+  now: number | null = null,
+): Promise<string> {
   const frames = views.map((view) =>
-    h(AppView, { key: 'screen', view, columns: options.columns, rows: options.rows }),
+    h(AppView, { key: 'screen', view, columns: options.columns, rows: options.rows, now }),
   )
 
   const restore = chalk.level
@@ -162,6 +168,12 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>): Frame {
  * 走的是**真链路**：事件喂进 `createShell` → 键喂进外壳 → `AppView` → Ink → 终端。
  * 规格说的是**用户看得见的那一屏**，所以取景从壳起、到屏止。
  */
+/** 取景台的入参——都可省（省了＝按「拿不到」办：没有窗总量、没有钟）。 */
+export type StageOptions = {
+  /** 上下文窗总量（状态行 ④ 的分母）——`D10` 的出口合入前没人传，故缺省 `null`。 */
+  readonly contextWindow?: number | null
+}
+
 export type Stage = {
   readonly shell: Shell
   readonly spy: SpyTransport
@@ -172,13 +184,19 @@ export type Stage = {
   feed(events: readonly KernelEvent[]): void
   /** 发出去的命令（不含订阅动作）。 */
   commands(): readonly Command[]
+  /**
+   * 给活壳一个「此刻」（毫秒）——跑动中的工具行据此报 `⟳ 0.6s`。
+   * 不给就是**没有钟**（回退「运行中」，不编秒数）——帧因此是确定的。
+   */
+  at(now: number | null): void
   /** 此刻的一屏（可换尺寸——窄窗口那条规格要用）。 */
   screen(options?: ScreenOptions): Promise<Frame>
 }
 
-export function createStage(): Stage {
+export function createStage(options: StageOptions = {}): Stage {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { contextWindow: options.contextWindow ?? null })
+  let now: number | null = null
 
   return {
     shell,
@@ -191,6 +209,9 @@ export function createStage(): Stage {
       for (const item of events) spy.emit(item)
     },
     commands: () => spy.commands,
-    screen: (options = DEFAULT_SCREEN) => show([shell.getView()], options),
+    at: (value) => {
+      now = value
+    },
+    screen: (screenOptions = DEFAULT_SCREEN) => show([shell.getView()], screenOptions, now),
   }
 }

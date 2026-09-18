@@ -28,7 +28,12 @@ export type { RunTuiOptions, TuiHandle } from './run.ts'
 // —— 会话壳（控制面接线 ＋ 键位语义）——
 
 export { createShell } from './shell.ts'
-export type { Shell, ShellEffect, ShellKey } from './shell.ts'
+export type { Shell, ShellEffect, ShellKey, ShellOptions } from './shell.ts'
+
+// —— diff（工具输出的已知形态之一：改了什么 · U20）——
+
+export { diffRowsOf, looksLikeDiff, replaceDiff } from './diff.ts'
+export type { DiffKind, DiffRow } from './diff.ts'
 
 // —— 视图与归约 ——
 
@@ -40,6 +45,7 @@ export {
   appendReceipt,
   closePicker,
   createView,
+  hasRunningTool,
   isSessionRow,
   matchCommands,
   movePicker,
@@ -52,6 +58,7 @@ export {
   takeOver,
   textOfLines,
   undock,
+  withContextWindow,
   withDecisionStatus,
 } from './view.ts'
 export type {
@@ -82,4 +89,13 @@ export { Composer, placeholderOf } from './components/composer.ts'
 export type { ComposerTone } from './components/composer.ts'
 export { PickerList } from './components/picker.ts'
 export { StatusLine } from './components/status.ts'
-export { PALETTE, displayWidth, durationLabel, tokenLabel, truncate, wrap } from './components/lines.ts'
+export {
+  PALETTE,
+  displayWidth,
+  durationLabel,
+  tokenLabel,
+  truncate,
+  usageLabel,
+  windowLabel,
+  wrap,
+} from './components/lines.ts'

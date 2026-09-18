@@ -43,6 +43,14 @@ export type LogRow =
       readonly name: string
       /** 参数（流式片段累积；`tool.call` 到时落定）。 */
       readonly argsText: string
+      /**
+       * 参数的**结构化**那一份（`tool.call` 到时落定；流式那几帧还是 `null`）。
+       *
+       * 由头（U20 · 差距 1/2）：已知形态要**就近渲染**——`edit` / `write` 的参数里塞着
+       * 整段正文（JSON 化之后是一条长到没法读的行），而上屏要的是「改了哪个文件、
+       * 这一处改了什么」。`argsText` 留着作**原文回退**（流式片段不全，解析不了）。
+       */
+      readonly args: Readonly<Record<string, unknown>> | null
       readonly state: ToolRunState
       /**
        * 这次调用**经过的墙钟**（`tool.call` 的事件时刻 → `tool.result` 的事件时刻）。
@@ -66,6 +74,16 @@ export type LogRow =
   // —— 屏上痕迹（不落库 · 不重建）——
   | { readonly kind: 'output'; readonly key: string; readonly lines: readonly string[] }
   | { readonly kind: 'receipt'; readonly key: string; readonly text: string }
+
+/**
+ * **有没有工具正在跑**（那类行标记是 `⟳`）——两处据它：
+ * ① 活壳的钟（只在这时候滴答，闲着一格都不动）；② 输入行的面孔（工具在跑 / 等模型回来）。
+ *
+ * 只看**本轮**的行（`rows`）：定局那一侧的行不再变，留着「跑动中」的只可能是被中断的残影。
+ */
+export function hasRunningTool(view: ShellView): boolean {
+  return view.rows.some((row) => row.kind === 'tool' && row.state === 'running')
+}
 
 /** 是不是**会话内容**那一类（重建只挑它们；其余是屏上痕迹，切走就没了）。 */
 export function isSessionRow(row: LogRow): boolean {
@@ -210,10 +228,18 @@ export type ShellStatus = {
   readonly model: string | null
   /**
    * ④ 用量——已用 token（输入侧）。
-   * 原型写 `3.1k/200k`；**窗口总量当前没有来处**（`model.usage` 只给用量）——
-   * 拿不到就不编（见回报「与原型不符」）。
+   * 原型写 `3.1k/200k`；`model.usage` 只给**已用量**，窗总量得另有来处。
    */
   readonly usage: number | null
+  /**
+   * ④ 的**分母**——上下文窗总量（U20 · 差距 5：用量要显示成 `12.4k/200k`）。
+   *
+   * ⚠️ **这一格是给 `D10` 留的位**：内核侧的出口（配置 / 注册表 / 事件）**还没合入**，
+   * 故此刻一律 `null` ⇒ 屏上**只报已用量**（`12.4k`）。**不编一个 200k 出来**——
+   * 「拿不到的不编」是项目反复立的规矩（`D10` 那三条读数、状态行的「工作中」耗时都栽在这上面）。
+   * 出口合入后，`createShell` 的 `contextWindow` 一接即上屏（渲染那半已经写好并有用例）。
+   */
+  readonly window: number | null
   /** 右位提示——**独立一栏，出现/消失不推动左半**。 */
   readonly hint: string
 }
@@ -247,6 +273,15 @@ export type ShellView = {
   readonly catalog: readonly SessionSummary[]
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
+  /**
+   * 回显过几条用户消息（**单调递增**，只给 React 的 key 用）。
+   *
+   * 由头（U24 顺带查出 · 本轮收）：用户行的 key 原先是 `user.echo:${rows.length}`——
+   * 而一轮收束后 `rows` 清进 `settled`，下一条回显**又拿到同一个数** ⇒ 同一个列表里
+   * 两个同 key（React 报 `Encountered two children with the same key`）。同 key 的后果是
+   * **子节点重复或丢失**——那正是「显示」这一摊的账，故记在视图里、随视图走。
+   */
+  readonly echoes: number
 }
 
 /** 空视图。 */
@@ -255,7 +290,15 @@ export function createView(): ShellView {
     rows: [],
     settled: [],
     completion: null,
-    status: { state: 'idle', amount: null, session: null, model: null, usage: null, hint: HINT_IDLE },
+    status: {
+      state: 'idle',
+      amount: null,
+      session: null,
+      model: null,
+      usage: null,
+      window: null,
+      hint: HINT_IDLE,
+    },
     dock: { kind: 'input' },
     draft: '',
     stashed: null,
@@ -264,6 +307,7 @@ export function createView(): ShellView {
     sessionId: null,
     catalog: [],
     turnTools: 0,
+    echoes: 0,
   }
 }
 
@@ -413,6 +457,7 @@ function appendToolFragment(
         call: null,
         name: name ?? '工具',
         argsText: text,
+        args: null, // 流式片段不全——结构化那份要等 `tool.call`
         state: 'running',
         elapsedMs: null,
         startedAt: null,
@@ -438,9 +483,13 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
         call: id,
         name: data.name,
         argsText: argsJson(data.args),
+        args: data.args,
         state: 'running',
         elapsedMs: null,
-        startedAt: null,
+        // **发起时刻就在这条事件上**（`at`）——不取它，屏上就报不出「跑到第几秒」，
+        // 落地后也算不出这次调用花了多久（跑动中的 `⟳ 1.4s` 与落地后的 `✓ 0.2s · …`
+        // 都要它）。流式先建行的那条路（下面那个分支）一直有，这一支原先漏了。
+        startedAt: at,
         output: [],
       }),
     )
@@ -451,6 +500,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
     name: data.name,
     call: id,
     argsText: argsJson(data.args),
+    args: data.args,
     // 发起时刻：**事件自带 `at`**（域不各自取时钟，外壳只做差）
     startedAt: row.startedAt ?? at,
   }))
@@ -480,8 +530,9 @@ function reduceToolResult(view: ShellView, data: ToolResultData, at: number): Sh
     // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）
     state: row.state === 'rejected' ? 'rejected' : data.ok ? 'ok' : 'failed',
     output: textOfLines(text),
-    // 墙钟＝发起 → 落地（`tool.call` 的 `at` → 这条 `tool.result` 的 `at`）
-    elapsedMs: row.startedAt === null ? null : at - row.startedAt,
+    // 墙钟＝发起 → 落地（`tool.call` 的 `at` → 这条 `tool.result` 的 `at`）。
+    // **倒退的钟当没量到**（`null`）：负数上屏就是报了个假的耗时——如实记＝没有就是没有。
+    elapsedMs: row.startedAt === null || at < row.startedAt ? null : at - row.startedAt,
   }))
 }
 
@@ -503,7 +554,13 @@ function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
         )
 
   // 裁决落定 ⇒ 接管解除、**草稿归还**（多件时下一件会重新接管，草稿再收一次）
-  return undock({ ...view, rows })
+  const answered = undock({ ...view, rows })
+  if (view.dock.kind !== 'decision') return answered
+
+  // 答完之后**球在内核那边**——这一轮还在跑（工具要跑、模型要继续）。
+  // 状态行得说回「工作中」：不归位它就停在「等你定夺」上，而那一刻**已经不是**那个状态了
+  // （「状态行只放此刻」——第 23 轮真跑留帧时当场看出来的：卡收了、桌下却在说「等你定夺」）。
+  return patchStatus(answered, { state: 'working', amount: null, hint: HINT_WORKING })
 }
 
 type DecisionRequestData = Extract<KernelEvent, { kind: 'tool.decision.request' }>['data']
@@ -570,7 +627,12 @@ export function settle(view: ShellView): ShellView {
 
 /** 本地回显一次用户输入（提交时立即显示——事件里没有正文）。 */
 export function appendEcho(view: ShellView, text: string): ShellView {
-  return appendRow(view, { kind: 'user', key: `user.echo:${view.rows.length}`, text, echoed: true })
+  // key 用**单调计数**而不是 `rows.length`——后者在收束清空之后会**撞回同一个数**
+  // （同一个列表里两个同 key ⇒ React 说「子节点可能重复或丢失」）。见 `ShellView.echoes`。
+  return {
+    ...appendRow(view, { kind: 'user', key: `user.echo:${view.echoes}`, text, echoed: true }),
+    echoes: view.echoes + 1,
+  }
 }
 
 /**
@@ -586,6 +648,17 @@ export function appendReceipt(view: ShellView, text: string): ShellView {
 /** 一块**命令输出**（dim 块，无标记）。**不落库、不重建**（同回执，进定局那侧）。 */
 export function appendOutput(view: ShellView, title: string, lines: readonly string[]): ShellView {
   return appendSettled(view, { kind: 'output', key: `out:${view.settled.length}`, lines: [title, ...lines] })
+}
+
+/**
+ * ④ 的分母上屏的**唯一入口**（U20 · 差距 5 的位）——见 `ShellStatus.window`。
+ *
+ * `D10` 的出口（内核侧给上下文窗总量）**合入后从这里接**：把数字递给它即可，
+ * 渲染那一半（`12.4k/200k` 的排版与窄窗降级）已经写好并有用例。
+ * 拿不到就传 `null` ⇒ 屏上只报已用量——**不编一个总量**。
+ */
+export function withContextWindow(view: ShellView, window: number | null): ShellView {
+  return patchStatus(view, { window })
 }
 
 /** 追加一行**已定局**的行（写一次即入 scrollback）。 */
@@ -624,6 +697,7 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
         name: payload?.name ?? '工具',
         argsText:
           payload?.args === undefined ? '' : argsJson(payload.args as Readonly<Record<string, unknown>>),
+        args: (payload?.args as Readonly<Record<string, unknown>> | undefined) ?? null,
         state: 'ok',
         elapsedMs: null,
         startedAt: null,

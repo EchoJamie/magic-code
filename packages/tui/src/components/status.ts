@@ -12,7 +12,7 @@ import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ShellStatus } from '../view.ts'
 import { stateLabel } from '../view.ts'
-import { PALETTE, displayWidth, tokenLabel, truncate } from './lines.ts'
+import { PALETTE, displayWidth, truncate, usageLabel } from './lines.ts'
 
 export type StatusLineProps = {
   readonly status: ShellStatus
@@ -65,7 +65,8 @@ function degrade(status: ShellStatus, columns: number): readonly string[] {
   const cells: readonly (string | null)[] = [
     title,
     model,
-    usage === null ? null : tokenLabel(usage),
+    // ④ 用量——`12.4k/200k`（分母拿不到就只报已用量；见 `usageLabel`）
+    usageLabel(usage, status.window),
   ]
 
   // 逐步省：先去用量，再去模型，最后截标题（每步算一次「连同右位放不放得下」）
