@@ -114,7 +114,7 @@ describe('场景 2 · 空闲（有历史）', () => {
 })
 
 describe('场景 3 · 工作中（流式）', () => {
-  test('工具在跑——标记换 `⟳` ＋ 耗时；输入行说实话；右位报中断', () => {
+  test('工具在跑——标记换 `⟳` ＋ **运行中**（不编秒数）；输入行说实话；右位报中断', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
@@ -587,5 +587,40 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     expect(matchCommands('/s').map((row) => row.name)).toEqual(['/session', '/status'])
     expect(matchCommands('/').map((row) => row.name)).toHaveLength(4) // 全列（真存在的四条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
+  })
+})
+
+// ══ D13 · 活动区/定局区的「同一段画两遍」（第 22 轮）══════════════════
+
+describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', () => {
+  test('正文以两个换行开头——**渲染成一行**（不是首行自己展开 ＋ 续行再画一遍）', () => {
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
+    app.type('只回四个字')
+    app.key(ENTER)
+    app.feed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '\n\n甲乙丙丁' }),
+    ])
+
+    const lines = logLines(app.shell.getView().rows, { columns: 96, expanded: false })
+    const reply = lines.filter((line) => line.segments.some((piece) => piece.text.includes('甲乙丙丁')))
+
+    // 只有一条显示行带正文；且它同时带标记（首行＝`⏺ ` ＋ 正文）
+    expect(reply).toHaveLength(1)
+    expect(reply[0]?.segments.map((piece) => piece.text).join('')).toBe('⏺ 甲乙丙丁')
+    // 首尾的空行**不渲染**（密度）
+    expect(lines.some((line) => line.segments.every((piece) => piece.text.trim() === ''))).toBe(false)
+  })
+
+  test('正文中间的换行照旧折行（首尾才去空）', () => {
+    const app = live()
+    app.feed([event('model.delta', { channel: 'text', text: '第一段\n\n第二段' })])
+
+    const lines = logLines(app.shell.getView().rows, { columns: 96, expanded: false })
+    const texts = lines.map((line) => line.segments.map((piece) => piece.text).join(''))
+
+    expect(texts[0]).toBe('⏺ 第一段')
+    expect(texts.some((line) => line.includes('第二段'))).toBe(true)
   })
 })

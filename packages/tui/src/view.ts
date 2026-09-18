@@ -44,7 +44,16 @@ export type LogRow =
       /** 参数（流式片段累积；`tool.call` 到时落定）。 */
       readonly argsText: string
       readonly state: ToolRunState
+      /**
+       * 这次调用**经过的墙钟**（`tool.call` 的事件时刻 → `tool.result` 的事件时刻）。
+       *
+       * ⚠️ **不是**裁决耗时：`tool.decision.elapsedMs` 是权限域「提示 → 答复」那一段
+       * （自动放行时≈0），拿它当工具耗时就会在屏上报「✓ 0ms」（第 22 轮查明并改）。
+       * 语义如实记：这是**发起 → 落地**的墙钟——**含**闸门等待（人工批准时那段是人在想）。
+       */
       readonly elapsedMs: number | null
+      /** 发起时刻（`tool.call` 的 `at`）——算上面那个差用。 */
+      readonly startedAt: number | null
       /** 结果 / 输出的行（dim 缩进块）。 */
       readonly output: readonly string[]
     }
@@ -266,11 +275,11 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return reduceDelta(view, event.id, event.data)
 
     case 'tool.call':
-      return reduceToolCall(view, event.id, event.data)
+      return reduceToolCall(view, event.id, event.data, event.at)
     case 'tool.output.delta':
       return reduceToolOutput(view, event.data)
     case 'tool.result':
-      return reduceToolResult(view, event.data)
+      return reduceToolResult(view, event.data, event.at)
     case 'tool.decision.request':
       return reduceDecision(view, event.id, event.data)
     case 'tool.decision':
@@ -399,6 +408,7 @@ function appendToolFragment(
         argsText: text,
         state: 'running',
         elapsedMs: null,
+        startedAt: null,
         output: [],
       }),
     )
@@ -410,7 +420,7 @@ function appendToolFragment(
 type ToolCallData = Extract<KernelEvent, { kind: 'tool.call' }>['data']
 
 /** `tool.call`——认领最老的未配对工具行（流式前情）；没有则自建。 */
-function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData): ShellView {
+function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: number): ShellView {
   const target = findToolIndex(view, (row) => row.call === null)
 
   if (target === -1) {
@@ -423,6 +433,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData): Shel
         argsText: argsJson(data.args),
         state: 'running',
         elapsedMs: null,
+        startedAt: null,
         output: [],
       }),
     )
@@ -433,6 +444,8 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData): Shel
     name: data.name,
     call: id,
     argsText: argsJson(data.args),
+    // 发起时刻：**事件自带 `at`**（域不各自取时钟，外壳只做差）
+    startedAt: row.startedAt ?? at,
   }))
 }
 
@@ -448,7 +461,7 @@ function reduceToolOutput(view: ShellView, data: ToolOutputData): ShellView {
 
 type ToolResultData = Extract<KernelEvent, { kind: 'tool.result' }>['data']
 
-function reduceToolResult(view: ShellView, data: ToolResultData): ShellView {
+function reduceToolResult(view: ShellView, data: ToolResultData, at: number): ShellView {
   const target = indexOfCall(view, data.call)
   if (target === -1) return view
 
@@ -460,6 +473,8 @@ function reduceToolResult(view: ShellView, data: ToolResultData): ShellView {
     // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）
     state: row.state === 'rejected' ? 'rejected' : data.ok ? 'ok' : 'failed',
     output: textOfLines(text),
+    // 墙钟＝发起 → 落地（`tool.call` 的 `at` → 这条 `tool.result` 的 `at`）
+    elapsedMs: row.startedAt === null ? null : at - row.startedAt,
   }))
 }
 
@@ -474,7 +489,7 @@ function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
           index === target && row.kind === 'tool'
             ? {
                 ...row,
-                elapsedMs: data.elapsedMs,
+                // 裁决的耗时（提示 → 答复）**不进工具行**——那是裁决的账（见行上 `elapsedMs` 的注）
                 ...(data.decision === 'reject' ? { state: 'rejected' as const } : {}),
               }
             : row,
@@ -603,6 +618,7 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
           payload?.args === undefined ? '' : argsJson(payload.args as Readonly<Record<string, unknown>>),
         state: 'ok',
         elapsedMs: null,
+        startedAt: null,
         output: [],
       })
       pendingAt = rows.length - 1

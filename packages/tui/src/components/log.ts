@@ -19,7 +19,7 @@ import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
 import type { LogRow } from '../view.ts'
 import { textOfLines } from '../view.ts'
-import { PALETTE, charWidth, displayWidth, durationLabel, wrap } from './lines.ts'
+import { PALETTE, displayWidth, durationLabel, wrap } from './lines.ts'
 
 /** 一行里的一段（同段一个颜色）。 */
 export type Segment = {
@@ -114,7 +114,7 @@ function rowBody(
   switch (row.kind) {
     case 'user':
       // **整行淡青背景**（一眼看出「这句是我说的」）——正文原色、标记青
-      return wrapSegments([seg('› ', PALETTE.user, true), seg(row.text, PALETTE.fg)], columns, {
+      return wrapSegments([seg('› ', PALETTE.user, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
         key: 'r:u',
         background: USER_BG,
         hang: INDENT,
@@ -123,13 +123,13 @@ function rowBody(
     case 'assistant':
       // **空内容不渲染**（D6 的外壳侧双保险）——模型只发工具调用、不吐正文的那一轮
       if (row.text.trim() === '') return []
-      return wrapSegments([seg('⏺ ', PALETTE.ok, true), seg(row.text, PALETTE.fg)], columns, {
+      return wrapSegments([seg('⏺ ', PALETTE.ok, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
         key: 'r:a',
         hang: INDENT,
       })
 
     case 'thinking': {
-      const lines = textOfLines(row.text).filter((line) => line.trim() !== '')
+      const lines = textOfLines(trimBlank(row.text)).filter((line) => line.trim() !== '')
       if (lines.length === 0) return [] // 空思考不渲染
 
       if (expanded) {
@@ -199,7 +199,9 @@ function toolLines(
   )
 
   if (running) {
-    return [...head, ...prefixLine(INDENT, `⟳ ${durationLabel(row.elapsedMs ?? 0)}`, PALETTE.warn, 'r:run')]
+    // **跑动中不报数**——报一个「0ms」是编的（第 22 轮查明：那是裁决耗时被当成了工具耗时）。
+    // 真秒表要一个 ticker，归后续；此刻说实话即可。
+    return [...head, ...prefixLine(INDENT, '⟳ 运行中', PALETTE.warn, 'r:run')]
   }
 
   const verdict =
@@ -239,7 +241,14 @@ function truncateLine(text: string, width: number): string {
   return displayWidth(clean) <= width ? clean : `${clean.slice(0, width)}…`
 }
 
-/** 一行片段 → 折好的显示行（续行按 `hang` 缩进）。 */
+/**
+ * 一行片段 → 折好的显示行（续行按 `hang` 缩进）。
+ *
+ * ⚠️ **首行的色段按「折好的那一行」切**（`firstLine(segments, wrapped[0])`），
+ * **不是**按宽度把整段重切一遍 ✗——差别在换行上：`wrap` 会把 `\n` 切成新行，
+ * 而按宽度重切会把换行**留在首行里**（宽度只数可见列 ✗）⇒ 首行在终端上自己再展开成几行，
+ * 同时续行又把同一段画一遍 ⇒ **同一段正文出现两遍**（缺陷 D13 的根因）。
+ */
 function wrapSegments(
   segments: readonly Segment[],
   columns: number,
@@ -247,10 +256,15 @@ function wrapSegments(
 ): readonly LogLine[] {
   const text = segments.map((piece) => piece.text).join('')
   const width = Math.max(8, columns - 2)
+  const wrapped = wrap(text, width)
 
-  return wrap(text, width).map((line, at) =>
+  return wrapped.map((line, at) =>
     at === 0
-      ? { key: `${options.key}:0`, segments: firstLine(segments, width), background: options.background }
+      ? {
+          key: `${options.key}:0`,
+          segments: firstLine(segments, line),
+          background: options.background,
+        }
       : {
           // 续行：着色只在首行，续行按 `hang` 缩进
           key: `${options.key}:${at}`,
@@ -260,25 +274,21 @@ function wrapSegments(
   )
 }
 
-/** 首行的色段——把原段**按宽度切**到首行长度为止。 */
-function firstLine(segments: readonly Segment[], width: number): readonly Segment[] {
+/**
+ * 首行的色段——把原段切到**折好的首行**那么多字符为止（**含换行在内逐字对**，
+ * 故换行不会被吞进首行）。
+ */
+function firstLine(segments: readonly Segment[], head: string): readonly Segment[] {
   const out: Segment[] = []
-  let left = width
+  let left = [...head].length
 
   for (const piece of segments) {
     if (left <= 0) break
 
-    let kept = ''
-    let used = 0
-    for (const char of piece.text) {
-      const size = charWidth(char)
-      if (used + size > left) break
-      kept += char
-      used += size
-    }
-
+    const chars = [...piece.text]
+    const kept = chars.slice(0, left).join('')
     if (kept !== '') out.push({ ...piece, text: kept })
-    left -= used
+    left -= chars.length
   }
 
   return out
@@ -287,6 +297,16 @@ function firstLine(segments: readonly Segment[], width: number): readonly Segmen
 /** 缩进 ＋ 单色一行。 */
 function prefixLine(indent: string, text: string, color: string, key: string): readonly LogLine[] {
   return [{ key, segments: [seg(`${indent}${text}`, color)] }]
+}
+
+/**
+ * 正文**首尾的空行不渲染**（密度：空内容不渲染）。
+ *
+ * 由头：模型常在正文前给 `\n\n`（实测 MiniMax 如此）——留着就在屏上留两个空行，
+ * 而条目的正文**原样保留**（只在渲染这一层去掉）。
+ */
+function trimBlank(text: string): string {
+  return text.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '')
 }
 
 /** 折叠一行：取首个非空行，太长的截断。 */

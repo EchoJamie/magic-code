@@ -106,7 +106,9 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
       event('tool.result', { call: 71, ok: false, output: { text: '（未获批准，未执行）' } }),
     ])
 
-    expect(rowAt(view, 0)).toMatchObject({ state: 'rejected', elapsedMs: 900 })
+    // 被拒＝**未执行**（与「失败」两码事）；耗时走**墙钟**（发起 → 落地），
+    // 不是裁决耗时（`tool.decision.elapsedMs` 是「提示 → 答复」那一段——第 22 轮改）
+    expect(rowAt(view, 0)).toMatchObject({ state: 'rejected' })
   })
 
   test('大块转存——结果只留 blob 引用（外壳不解析）', () => {
