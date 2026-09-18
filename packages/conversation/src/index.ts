@@ -25,8 +25,20 @@
 
 // —— 端口实现 ＋ 装配期构造入参形态 ——
 
-export { createConversationService } from './service.ts'
-export type { ConversationDeps, RecoverableConversationService } from './service.ts'
+/**
+ * 「端口实现」在 U16 之后是**两件合起来**：
+ * - `createConversationService` —— **会话主面**，`ConversationService`（含多会话的
+ *   新建 / 切换 / 列表 / 改名 / 恢复）的落地；单活跃，`submit` / `interrupt` 转发给活跃那条；
+ * - `createConversationSession` —— **一条会话的实例**，装配的 `open` 工厂按会话各造一份。
+ *
+ * 两件的名与实一一对应（U04 时 `createConversationService` 就是单会话实例，U16 起
+ * 那个位置归主面——端口名跟着端口走）。
+ */
+export { createConversationService } from './sessions.ts'
+export type { SessionHost, SessionHostDeps, SessionInstance } from './sessions.ts'
+
+export { createConversationSession } from './service.ts'
+export type { ConversationDeps, ConversationSession } from './service.ts'
 
 // 构造入参里点名用到、装配根必须拿得到的两件形态：
 // 提示词运行时注入值（`cwd` / `platform` / `date`）与上下文策略（阈值 / 截断）

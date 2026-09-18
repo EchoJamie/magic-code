@@ -12,6 +12,12 @@
  * 这与设计的其它条款同向：装配按会话实例构造（`EventStamper` 亦然）· 构造与资源引用
  * 按实例化设计（多智能体预留：多会话并行＝多实例）。见回报「待决」。
  *
+ * **U16 补的三件**（会话面——技术方案 · 会话与多会话）：
+ * - `latestSession()`——启动流转「接着最近一条」的取材口（与 `listSessions` 同一个序）；
+ * - `setSessionTitle()`——**改过的标题**落 `sessions.title` 列（默认标题由对话域现算，不落库）；
+ * - `appendEvent(event)`——**按信封分束**的落库口（多会话之后扇出是进程级的，
+ *   装配不必再维护一份「哪条会话用哪个实例」）。
+ *
  * **fs 直触**——本域是内核仅有的两处之一（技术方案 · 代码治理 · 边界纪律）；
  * 库文件与 blob 目录都在本文件落下（`bun:sqlite` ＋ `node:fs/promises`）。
  */
@@ -28,6 +34,7 @@ import type {
   RecordsService,
   SessionId,
   SessionSummary,
+  Timestamp,
 } from '@magic/contracts'
 import { BLOBS_DIR, createBlobStore } from './blobs.ts'
 import { assertEntryShape, entryOfRow, entryParamsOf, type EntryRow } from './entries.ts'
@@ -53,6 +60,22 @@ export const DATABASE_FILE = 'records.db'
  */
 const READ_CHUNK = 512
 
+/** `sessions` 的一行（`title` 可空——没改过就没有）。 */
+type SessionRow = { readonly id: string; readonly at: number; readonly title: string | null }
+
+/**
+ * 会话的两个查询**共用一个序**（`at` 降序、同刻按 id 升序）——`listSessions` 与
+ * `latestSession` 各写一份的话，启动落点与列表头名迟早分叉。
+ */
+function sessionSelect(): string {
+  return `SELECT id, at, title FROM ${SESSIONS_TABLE} ORDER BY at DESC, id ASC`
+}
+
+/** 行 → 摘要：标题**缺席即不给键**（不是空串——缺席可辨，空串不可辨）。 */
+function summaryOf(row: SessionRow): SessionSummary {
+  return { id: row.id, at: row.at, ...(row.title === null ? {} : { title: row.title }) }
+}
+
 /** 装配期构造入参——**只有数据目录**（其余选择归装配根）。 */
 export type RecordsStoreOptions = {
   /**
@@ -69,6 +92,34 @@ export type RecordsStoreOptions = {
 export type RecordsStore = {
   serviceFor(session: SessionId): RecordsService
   listSessions(): Promise<readonly SessionSummary[]>
+  /**
+   * **最近一条会话**——启动流转「接着最近一条」的取材口（U16）；库里没有会话则 `undefined`。
+   *
+   * 与 `listSessions()` 同一个序（`at` 降序、同刻按 id），故恒等于它的第一条
+   * ——两处若各写一个序，启动落点与列表头名就会分叉。
+   * ⚠️ 同步：本地 `bun:sqlite` 本就是同步的（`nextId` 同例）；端口那面保持异步是为远端留缝。
+   */
+  latestSession(): SessionId | undefined
+  /**
+   * **按信封分束落一条事件**（U16）——给**装配的扇出**用。
+   *
+   * 由头：多会话之后扇出是**进程级**的（一个 `EventSink` 服务所有会话），而写事件原先
+   * 只能经 `serviceFor(session)` 那条会话实例——扇出于是得自己维护「哪条会话用哪个实例」，
+   * 那份对应关系与信封里的 `session` 是同一件事，维护它就是**第二真源**。
+   * 此处直接按信封分束：一件事实，一处判定。
+   *
+   * 与 `serviceFor(session).appendEvent` 的关系：后者多一道**实例绑定校验**
+   * （跨会话串线即拒）——域内调用者用那条更严；扇出这条按信封走，天然不会串。
+   */
+  appendEvent(event: KernelEvent): void
+  /**
+   * **写会话标题**（U16 · 技术方案 · 会话与多会话：标题可改）——
+   * 只存「改过的」，默认标题（首条消息摘要）由对话域现算。
+   *
+   * `at` 由调用方给（**记录域不取时钟**——同条目 / 事件的纪律）：目标会话还没有行时
+   * 用它建行（用户明确命名了一条会话，那一下就是它头一次落地）。
+   */
+  setSessionTitle(session: SessionId, title: string, at: Timestamp): void
   /**
    * **恢复查询面**（技术方案 · 领域划分：在途识别由本域提供）——一次扫描说全
    * 「要处置什么」：在途调用（有 `tool.call` 无 `tool.result`）· 中断的轮 · 轮号水位。
@@ -128,8 +179,12 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
       ORDER BY id
       LIMIT ?`,
   )
-  const selectSessions = db.query<{ id: string; at: number }, []>(
-    `SELECT id, at FROM ${SESSIONS_TABLE} ORDER BY at DESC, id ASC`,
+  const selectSessions = db.query<SessionRow, []>(sessionSelect())
+  const selectLatest = db.query<{ id: string }, []>(`${sessionSelect()} LIMIT 1`)
+  // 改名：有行即就地更新，没行即建行（`at` ＝改名那一刻——建行不另取时钟，用调用方给的）
+  const upsertTitle = db.query<never, [string, number, string]>(
+    `INSERT INTO ${SESSIONS_TABLE} (id, at, title) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET title = excluded.title`,
   )
 
   // 一次写入＝一个事务：会话表先落（首写即建会话，`at` 用该次写入的时间——不另取时钟），
@@ -203,7 +258,17 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   /** 会话列表——写入过的会话各现一次，最近在前（同刻按 id 定序，结果稳定）。 */
   async function listSessions(): Promise<readonly SessionSummary[]> {
-    return selectSessions.all().map((row) => ({ id: row.id, at: row.at }))
+    return selectSessions.all().map(summaryOf)
+  }
+
+  /** 最近一条——与 `listSessions()` 同序（见端口注：两处一个序，启动落点才与列表头名一致）。 */
+  function latestSession(): SessionId | undefined {
+    return selectLatest.get()?.id
+  }
+
+  function setSessionTitle(session: SessionId, title: string, at: Timestamp): void {
+    assertSessionId(session)
+    upsertTitle.run(session, at, title)
   }
 
   /**
@@ -237,6 +302,9 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     },
 
     listSessions,
+    latestSession,
+    setSessionTitle,
+    appendEvent: (event) => appendEvent(event.session, event),
     recoveryScan: runRecoveryScan,
 
     close(): void {

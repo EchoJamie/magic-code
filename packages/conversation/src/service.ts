@@ -1,19 +1,15 @@
 /**
- * `ConversationService` —— 对话域的**端口实现**（技术方案 · 领域划分：控制域 → 对话域）。
+ * **一条会话的实例**（`ConversationSession`）——`ConversationService` 的**单会话那一半**。
  *
- * **公开面**（技术方案 · 代码治理 · 边界纪律：「域包的 exports 只出**端口实现 ＋ 装配期
- * 构造入参形态**；域内读取面 / 内部视图 / 测试辅助不上公开面」——M04 回报待决 2 由本单元定形）：
+ * 「`ConversationService`」这个名字在 U16 之后指**会话主面**（`./sessions.ts`）——
+ * 设计原话（技术方案 · 领域划分 · 端口签名）：「多会话（阶段 2）的新建 / 切换 / 列表在此
+ * 扩展」，故端口由主面实现（单活跃：它持一个活跃会话，`submit` / `interrupt` 转发过去）。
+ * 本文件产出的就是**被它持有的那一条**——名字取 `Session` 以免与端口撞脸
+ * （U04 时两者是一件事，U16 起不是了）。
  *
- * | 出 | 件 |
- * | --- | --- |
- * | **端口实现** | `createConversationService` |
- * | **构造入参形态** | `ConversationDeps`（＋它用到的 `PromptVars` · `ContextPolicy`） |
- *
- * 不出去的：提示词部件的读取面（`splitSystemPrompt` / `renderSection` …）· 装配（`assembleContext`）·
- * 循环（`agentLoop`）· 条目落账——那都是**域内件**，域外本不该看见（深链由守护拦）。
- *
- * **本类只做四件**（其余在 `./agent-loop.ts` / `./recovery.ts`）：排队 · 中断 · 状态转场 ·
- * **恢复**（`recover()`——阶段 2 · U15，在放开输入前调一次）。
+ * **本类只做五件**（其余在 `./agent-loop.ts` / `./recovery.ts`）：排队 · 中断 · 状态转场 ·
+ * **恢复**（`recover()`——阶段 2 · U15，在放开输入前调一次）· **忙碌位**（`busy()`——
+ * 主面据以拒绝「忙时切会话」）。
  *
  * - **排队**——一次只干一件；干活时又来交代，排着（收束后接着跑）。端口是 `void`：
  *   工作异步跑，调用方不等。
@@ -23,10 +19,12 @@
  * - **状态转场**——`agent.start`（**首次开工前**发，构造期不发：外壳那时还没订上——装配
  *   纪律「先接订阅、后放开输入」）· `agent.state{resumed}`（干活）· `agent.state{waiting}`
  *   （回到等待输入）。`paused` 是阶段 2 的留位（恢复流程 / 人在环的长暂停），首站不产。
+ *
+ * 域内件（不上公开面）：提示词部件的读取面 · 装配（`assembleContext`）· 循环（`agentLoop`）·
+ * 条目落账——域外本不该看见（深链由守护拦）。
  */
 
 import type {
-  ConversationService,
   EventSink,
   EventStamper,
   ModelGateway,
@@ -80,26 +78,32 @@ export type ConversationDeps = {
 }
 
 /**
- * 端口实现 ＋ **恢复面**（**结构超集** · 契约零改动——U14 的先例）。
+ * 一条会话的实例（域内形态）——主面持它、转发控制面的 `submit` / `interrupt`。
  *
- * 恢复要一个触发点，而契约的 `ConversationService` 只有 `submit` / `interrupt`：
- * 塞进 `submit`（凭会话有没有在途自己决定跑不跑）＝替外壳拿主意，且与「放开输入」的
- * 时机纠缠；故本域**加一个方法**，由调用方在**接好订阅之后、放开输入之前**调
- * （恢复要发事件，外壳得先订上——装配纪律「先接订阅、后放开输入」）。
- * 契约该处的词归阶段 2 的会话面（U16）一并定，见回报「待决」。
+ * **`recover()` 的触发点**（U15 的「结构超集」在 U16 转正）：恢复要发事件，故调用方
+ * 须在**接好订阅之后、放开输入之前**调（装配纪律「先接订阅、后放开输入」）。
+ * 契约上的词已由 U16 补进 `ConversationService.recover()`——此处这一段与它同名同义，
+ * 只是返回值更具体（报告是域内形态，不进契约）。
+ *
+ * **`busy()`** 是主面的判据（U16）：忙时不许切会话——半途切＝一轮的事记到两条会话上。
+ * 它只是**读**一个内部位，不改变任何行为（域内件，不外承诺）。
  */
-export type RecoverableConversationService = ConversationService & {
+export type ConversationSession = {
+  submit(input: UserInput): void
+  interrupt(): void
   /** 恢复一次会话——干净会话「什么都不做」（报告里看得出来）。 */
   recover(): Promise<RecoveryReport>
+  /** 正在干活（一轮在跑 / 排队中的交代还在）——主面据以「忙时切不动」。 */
+  busy(): boolean
 }
 
 /**
- * 造一个对话域实例——契约端口 `ConversationService` 的落地。
+ * 造**一条会话**的实例——装配的 `open` 工厂按会话各造一份（主面经它持有活跃那条）。
  *
  * **构造期即装配提示词**：注入值缺项（未给 / 空串 / 纯空白）当场抛 `PromptVarsError`
  * ——不静默降级，也不拖到第一轮才炸（「缺值报错不降级」，提示词部件的既定口径）。
  */
-export function createConversationService(deps: ConversationDeps): RecoverableConversationService {
+export function createConversationSession(deps: ConversationDeps): ConversationSession {
   const { sink, stamper } = deps
   const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...deps.context }
 
@@ -174,6 +178,8 @@ export function createConversationService(deps: ConversationDeps): RecoverableCo
       // 「停下」就是停下——排队的交代一并清掉（见文件头注）
       pending.length = 0
     },
+
+    busy: () => running,
 
     async recover(): Promise<RecoveryReport> {
       const recovery = deps.recovery

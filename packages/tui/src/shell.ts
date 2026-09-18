@@ -20,10 +20,29 @@ import type {
   ModelSwitchRequest,
 } from '@magic/contracts'
 import type { ShellView } from './view.ts'
-import { appendEcho, createView, reduce } from './view.ts'
+import { appendEcho, appendNoticeText, appendSessionList, createView, reduce } from './view.ts'
 
-/** 换模型那条斜杠命令——**只此一条**（交互词汇：自然语言优先、固定命令精简）。 */
+/** 换模型那条斜杠命令（U17）。 */
 const MODEL_COMMAND = '/model'
+
+/**
+ * 会话那条斜杠命令（U16）——固定命令**只此两条**（交互词汇：自然语言优先、固定命令精简）。
+ *
+ * 四形，一望可记：
+ * - `/session`——列出会话（带序号，当前那条有标记）
+ * - `/session new`——新建一条
+ * - `/session <序号>`——切到第几条（序号就是列表里那个数）
+ * - `/session title <文本>`——给当前会话改个名字
+ */
+const SESSION_COMMAND = '/session'
+
+/** 认出会话命令——**同样只认第一个词正好是 `/session`**（理由见 `parseModelSwitch`）。 */
+function parseSession(text: string): { readonly rest: string } | undefined {
+  if (text === SESSION_COMMAND) return { rest: '' }
+  if (!text.startsWith(`${SESSION_COMMAND} `)) return undefined
+
+  return { rest: text.slice(SESSION_COMMAND.length + 1).trim() }
+}
 
 /**
  * 认出换模型的斜杠命令——不认得就交回普通交代。
@@ -63,6 +82,11 @@ export type Shell = {
   answer(decision: Decision, opts?: { remember?: boolean }): void
   /** 中断当前轮（`turn.interrupt`）。 */
   interrupt(): void
+  /**
+   * 安静地问一次会话目录（`session.list`）——启动时用：只为把当前会话与目录拿到手里
+   * （状态行要显示当前会话），**不往对话流里塞目录块**（那是 `/session` 的事）。
+   */
+  refreshSessions(): void
   /** 收摊——退订传输、清订阅者（此后的命令一律丢弃）。 */
   dispose(): void
 }
@@ -72,6 +96,8 @@ export function createShell(transport: ControlTransport): Shell {
   const watchers = new Set<() => void>()
   let view = createView()
   let disposed = false
+  /** 问过目录、答复还没到——到了把目录块拼进对话流（`/session` 要看得见的那种问法）。 */
+  let listing = false
 
   const notify = (): void => {
     for (const watcher of [...watchers]) watcher()
@@ -80,6 +106,16 @@ export function createShell(transport: ControlTransport): Shell {
   const onEvent = (event: KernelEvent): void => {
     if (disposed) return
     view = reduce(view, event)
+    if (listing && event.kind === 'session.state') {
+      view = appendSessionList(view)
+      listing = false
+    }
+    notify()
+  }
+
+  /** 本地说一句（不去内核绕一圈——本地就有答案的事）。 */
+  const say = (text: string): void => {
+    view = appendNoticeText(view, text, 'error')
     notify()
   }
 
@@ -88,6 +124,50 @@ export function createShell(transport: ControlTransport): Shell {
   const send = (command: Command): void => {
     if (disposed) return
     transport.send(command)
+  }
+
+  /**
+   * 会话命令四形——**能本地判的一律本地判**：序号越界、没给标题文本这些事，
+   * 内核帮不上忙（它不认识屏上的序号），发一条注定没用的命令只是把噪声过一趟协议。
+   */
+  const handleSession = (rest: string): void => {
+    if (rest === '') {
+      // 要看得见的那种问法——答复到了把目录块拼进来
+      listing = true
+      send({ type: 'session.list' })
+      return
+    }
+
+    if (rest === 'new') {
+      send({ type: 'session.new' })
+      return
+    }
+
+    if (rest === 'title' || rest.startsWith('title ')) {
+      const title = rest.slice('title'.length).trim()
+      const active = view.status.session?.id
+      if (active === undefined) {
+        say('还不知道当前是哪个会话——先打个 `/session` 看看')
+        return
+      }
+      if (title === '') {
+        say('要改成什么？`/session title <文本>`')
+        return
+      }
+
+      send({ type: 'session.rename', session: active, title })
+      return
+    }
+
+    // 序号按**目录里的位置**解析（屏上那个数）——越界就说清楚，不猜用户指哪条
+    const index = Number(rest)
+    const row = Number.isInteger(index) ? view.sessions[index - 1] : undefined
+    if (row === undefined) {
+      say(`没有第 ${rest} 条会话——打个 \`/session\` 看看有哪些`)
+      return
+    }
+
+    send({ type: 'session.open', session: row.id })
   }
 
   return {
@@ -110,6 +190,12 @@ export function createShell(transport: ControlTransport): Shell {
       notify()
 
       // 斜杠命令与普通交代**同一条入口**：「交代就写在这里」——用户不必先切模式
+      const session = parseSession(trimmed)
+      if (session !== undefined) {
+        handleSession(session.rest)
+        return
+      }
+
       const request = parseModelSwitch(trimmed)
       if (request === undefined) send({ type: 'input.submit', text: trimmed })
       else send({ type: 'model.switch', ...request })
@@ -134,6 +220,10 @@ export function createShell(transport: ControlTransport): Shell {
 
     interrupt: () => {
       send({ type: 'turn.interrupt' })
+    },
+
+    refreshSessions: () => {
+      send({ type: 'session.list' })
     },
 
     dispose: () => {

@@ -4,6 +4,7 @@
  * 域的两个动作：
  * - **`bind(routes)`**——装命令路由：`input.submit` / `turn.interrupt` → 对话域；
  *   `decision.answer` → 权限域；`model.switch` → 装配（注册表，技术方案 · 装配视图 4）；
+ *   `session.*` 四支 → 对话域（会话的持有者——本域只是把话带到）；
  * - **`attach(transport)`**——接传输：接**内核侧一端**（契约 `KernelTransport`）后，
  *   命令自传输进来、事件自传输出去。外壳侧一端（`ControlTransport`）由外壳自持。
  *
@@ -74,6 +75,14 @@ export function createControlHub(): ControlHubFace {
         // 换模型——原样转手给装配（它握着注册表）。本域**不知道换得成换不成**：
         // 「切不动就不动」的判别式处置归装配，路由只负责把话带到（同 `onDecision` 的姿势）。
         target.onModelSwitch({ provider: command.provider, model: command.model })
+        return
+      case 'session.list':
+      case 'session.new':
+      case 'session.open':
+      case 'session.rename':
+        // 会话四支——原样转手给**对话域**（它才是会话的持有者）。
+        // 本域不认识会话、也不知道开得成开不成，与 `model.switch` 同一姿势。
+        target.onSession(command)
         return
     }
   }

@@ -10,7 +10,7 @@
  */
 
 import type { Decision } from './events.ts'
-import type { DecisionId } from './ids.ts'
+import type { DecisionId, SessionId } from './ids.ts'
 
 /**
  * 用户输入。
@@ -77,8 +77,51 @@ export type ModelSwitchRequest = {
  */
 export type ModelSwitch = { readonly type: 'model.switch' } & ModelSwitchRequest
 
-/** 命令目录（首站 ＋ 阶段 2 的 `model.switch`）——外壳发往内核的全部消息。 */
-export type Command = InputSubmit | DecisionAnswer | TurnInterrupt | ModelSwitch
+// —— 会话面（阶段 2 · U16 · 技术方案 · 会话与多会话）——
+//
+// 四支与别的命令**同一条路**：外壳发命令 → 控制面传输 → 控制域 → 对话域
+// （即便同进程也走协议——「不走内部直调」是并行开发与后续换壳的共同地基）。
+// 结果不回在命令上：内核以事件答复（`session.state`——见 `events.ts`），
+// 与命令面「只发不收」的既有姿势一致。
+
+/** `session.list`——列出会话（外壳要一屏目录时发）。 */
+export type SessionList = { readonly type: 'session.list' }
+
+/** `session.new`——新建一条会话并切过去（产品方案 功能 1：多会话的新建）。 */
+export type SessionNew = { readonly type: 'session.new' }
+
+/**
+ * `session.open`——切换会话（装载它、继续推进）。
+ *
+ * **与恢复是两条路径**（技术方案 · 会话与多会话）：本命令**只是装载**——
+ * 处置在途操作是恢复的活（启动流转那一路），不在这里捎带。
+ *
+ * `session` ＝目标会话 id；**内核之外谁都不解释它**（id 是分束键，不是内容）。
+ */
+export type SessionOpen = { readonly type: 'session.open'; readonly session: SessionId }
+
+/**
+ * `session.rename`——改标题（技术方案 · 会话与多会话：标题＝首条消息摘要、**可改**）。
+ *
+ * 与「新建 / 切换 / 列表」同层：标题是会话的属性，改它既不是换模型也不是交代。
+ * `title` 为**用户给出的原文**——截断 / 归一归对话域（命令面不替它裁剪）。
+ */
+export type SessionRename = {
+  readonly type: 'session.rename'
+  readonly session: SessionId
+  readonly title: string
+}
+
+/** 会话命令四支——控制域**原样转手**给对话域（它不认识会话）。 */
+export type SessionCommand = SessionList | SessionNew | SessionOpen | SessionRename
+
+/** 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支）——外壳发往内核的全部消息。 */
+export type Command =
+  | InputSubmit
+  | DecisionAnswer
+  | TurnInterrupt
+  | ModelSwitch
+  | SessionCommand
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

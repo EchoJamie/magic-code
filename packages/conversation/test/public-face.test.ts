@@ -15,8 +15,11 @@ import type { ContextPolicy, ConversationDeps, PromptVars } from '../src/index.t
 import * as face from '../src/index.ts'
 
 describe('公开面', () => {
-  test('值面只有端口实现一件', () => {
-    expect(Object.keys(face).sort()).toEqual(['createConversationService'])
+  test('值面两件——端口实现（会话主面）＋ 一条会话的实例（装配的 open 工厂造它）', () => {
+    expect(Object.keys(face).sort()).toEqual([
+      'createConversationService',
+      'createConversationSession',
+    ])
   })
 
   test('构造入参形态齐——装配根据此接线（类型面）', () => {
@@ -27,7 +30,8 @@ describe('公开面', () => {
     const shape: Pick<ConversationDeps, 'prompt' | 'context'> = { prompt, context }
     expect(Object.keys(shape)).toEqual(['prompt', 'context'])
 
-    // 端口实现落进契约端口（编译期证据：赋值即结构兼容检查）
+    // 端口实现落进契约端口（编译期证据：赋值即结构兼容检查）——
+    // U16 起 `createConversationService` 返回**主面**，它才是端口的那一半
     const service: ConversationService | undefined = undefined
     expect(service).toBeUndefined()
   })
@@ -43,6 +47,8 @@ describe('公开面', () => {
       'agentLoop', // 主循环
       'pairingKeyOf',
       'DEFAULT_CONTEXT_POLICY',
+      'summarize', // 标题的裁法（域内件——默认标题与改名共用一套，不对外承诺措辞）
+      'TITLE_LIMIT',
     ]) {
       expect(exported.has(internal)).toBe(false)
     }

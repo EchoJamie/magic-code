@@ -1,0 +1,407 @@
+/**
+ * U16 · **会话主面**（`createConversationService`）——列表 / 新建 / 切换 / 改名 · 单活跃。
+ *
+ * 这一层只管**编排**：开哪条、切到哪条、目录长什么样、忙时怎么办。
+ * 「装载上下文」不在这一层——上下文每轮由条目重建（`context.ts`），换一条会话的实例
+ * 就是把 `session` / 铸造器 / 记录实例一并换掉（那一跳归装配的 `open` 工厂）。
+ *
+ * 故本文件的替身是**记账式**的：`open` 每次调用留痕、每条会话的实例各记各的调用，
+ * 「切过去之后 submit 落在谁身上」一眼可断。
+ *
+ * 记录域替身**自持一份**（`@magic/faux` 的记录桩是**单会话**的——`readEntries` 不分束，
+ * 而本单元要验的正是按会话分束；域内测试自持替身，同 U04 对条目载荷的做法）。
+ */
+
+import { describe, expect, test } from 'bun:test'
+import type {
+  Entry,
+  EventDataOf,
+  EventKind,
+  KernelEvent,
+  RecordsService,
+  SessionId,
+  SessionSummary,
+  Timestamp,
+} from '@magic/contracts'
+import { DEFAULT_TEST_SESSION, makeFauxSink } from '@magic/faux'
+import type { FauxSink } from '@magic/faux'
+import type { ConversationSession } from '../src/service.ts'
+import type { RecoveryReport } from '../src/recovery.ts'
+import type { SessionInstance } from '../src/sessions.ts'
+import { createConversationService } from '../src/sessions.ts'
+
+const T0 = 1_700_000_000_000
+const A = 's-alpha'
+const B = 's-beta'
+
+// ══ 记录域替身（多会话 · 按会话分束）══════════════════════════════════
+
+type LedgerRow = {
+  readonly id: SessionId
+  readonly at: Timestamp
+  /** 存下来的标题（改过的）。 */
+  readonly title?: string
+  /** 首条用户消息的正文——默认标题的取材物。 */
+  readonly first?: string
+}
+
+type Ledger = {
+  readonly records: RecordsService
+  /** 改名落点——装配在真库里接 `RecordsStore.setSessionTitle`。 */
+  readonly renames: readonly { readonly session: SessionId; readonly title: string }[]
+  setTitle(session: SessionId, title: string, at: Timestamp): void
+}
+
+function makeLedger(rows: readonly LedgerRow[]): Ledger {
+  const titles = new Map<SessionId, string>()
+  const times = new Map<SessionId, Timestamp>()
+  const renames: { session: SessionId; title: string }[] = []
+
+  for (const row of rows) {
+    times.set(row.id, row.at)
+    if (row.title !== undefined) titles.set(row.id, row.title)
+  }
+
+  const records: RecordsService = {
+    nextId: () => 1,
+    appendEntry: () => 1,
+    appendEvent: () => undefined,
+    readEntries: (sessionId: SessionId): AsyncIterable<Entry> =>
+      (async function* (): AsyncIterable<Entry> {
+        const row = rows.find((candidate) => candidate.id === sessionId)
+        if (row?.first === undefined) return
+        yield { id: 1, kind: 'user', content: { text: row.first }, at: row.at + 1 }
+      })(),
+    readEvents: (): AsyncIterable<KernelEvent> => (async function* (): AsyncIterable<KernelEvent> {})(),
+    listSessions: async (): Promise<readonly SessionSummary[]> =>
+      [...titles.keys(), ...times.keys()]
+        .filter((id, index, all) => all.indexOf(id) === index)
+        .map((id) => ({
+          id,
+          at: times.get(id) ?? T0,
+          ...(titles.has(id) ? { title: titles.get(id) as string } : {}),
+        }))
+        .sort((left, right) => right.at - left.at || (left.id < right.id ? -1 : 1)),
+    blobs: {
+      put: async () => 'blob_1',
+      get: async () => new Uint8Array(),
+    },
+  }
+
+  return {
+    records,
+    get renames(): readonly { readonly session: SessionId; readonly title: string }[] {
+      return renames
+    },
+    setTitle(session, title, at) {
+      titles.set(session, title)
+      if (!times.has(session)) times.set(session, at)
+      renames.push({ session, title })
+    },
+  }
+}
+
+// ══ 会话实例替身（每条会话一份 · 记账）════════════════════════════════
+
+type FakeInstance = SessionInstance & {
+  readonly calls: readonly string[]
+  /** 置真＝这条会话正在干活（忙碌位——`newSession` / `openSession` 的拒绝依据）。 */
+  busy: boolean
+}
+
+function makeInstance(session: SessionId): FakeInstance {
+  const calls: string[] = []
+  const instance: FakeInstance = {
+    session,
+    busy: false,
+    calls,
+    stamper: {
+      // 泛型 `K` 与 `data` 的对应关系 JS 侧无法自证（构造面的固有限制）——故有一次断言
+      // （生产面同法：`app/src/assembly.ts` 的 `createStamper` 与 faux 的 `makeTestStamper`）
+      stamp: <K extends EventKind>(kind: K, data: EventDataOf[K]): KernelEvent =>
+        ({ id: 1, session, turn: null, at: T0, kind, data }) as KernelEvent,
+      beginTurn: () => undefined,
+    },
+    service: {
+      submit: (input) => {
+        calls.push(`submit:${input.text}`)
+      },
+      interrupt: () => {
+        calls.push('interrupt')
+      },
+      recover: async (): Promise<RecoveryReport> => {
+        calls.push('recover')
+        return { session, turn: null, lastTurn: null, dispositions: [] }
+      },
+      busy: () => instance.busy,
+    } satisfies ConversationSession,
+  }
+
+  return instance
+}
+
+// ══ 装配一束（记账式）════════════════════════════════════════════════
+
+type Bench = {
+  readonly host: ReturnType<typeof createConversationService>
+  readonly sink: FauxSink
+  readonly instances: readonly FakeInstance[]
+  readonly opened: readonly SessionId[]
+  instanceOf(session: SessionId): FakeInstance | undefined
+  /** 最后一次 `session.state` 的载荷。 */
+  lastState(): EventDataOf['session.state'] | undefined
+}
+
+function makeBench(options: {
+  readonly session?: SessionId
+  readonly rows: readonly LedgerRow[]
+}): Bench {
+  const sink = makeFauxSink()
+  const ledger = makeLedger(options.rows)
+  const instances: FakeInstance[] = []
+  const opened: SessionId[] = []
+
+  const host = createConversationService({
+    session: options.session ?? DEFAULT_TEST_SESSION,
+    open: (session) => {
+      opened.push(session)
+      const instance = makeInstance(session)
+      instances.push(instance)
+      return instance
+    },
+    records: ledger.records,
+    setTitle: ledger.setTitle,
+    sink,
+    now: () => T0,
+  })
+
+  return {
+    host,
+    sink,
+    get instances(): readonly FakeInstance[] {
+      return instances
+    },
+    get opened(): readonly SessionId[] {
+      return opened
+    },
+    instanceOf: (session) => instances.filter((instance) => instance.session === session).at(-1),
+    lastState: () => sink.byKind('session.state').at(-1)?.data,
+  }
+}
+
+/** 事件流里的 `session.state` 载荷——按到达序。 */
+function statesOf(sink: FauxSink): EventDataOf['session.state'][] {
+  return sink.byKind('session.state').map((event) => event.data)
+}
+
+// ══ 判据 ══════════════════════════════════════════════════════════════
+
+describe('列表（标题＝首条消息摘要 · 改过的取存值）', () => {
+  test('三种来源各就各位：存值 · 现算 · 缺席', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 2000, title: '改过的标题', first: '首条消息' },
+        { id: B, at: T0 + 1000, first: '看看工作区里有什么' },
+        { id: 's-gamma', at: T0 },
+      ],
+    })
+
+    const listed = await bench.host.listSessions()
+
+    expect(listed.map((row) => [row.id, row.title])).toEqual([
+      [A, '改过的标题'], // 改过的——存值说了算（不拿首条消息盖回去）
+      [B, '看看工作区里有什么'], // 没改过——按首条用户消息现算
+      ['s-gamma', undefined], // 派生不出（没有用户消息）——**缺席**，不填空串
+    ])
+  })
+
+  test('现算的要裁：首行 · 折叠空白 · 超长截断', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [{ id: A, at: T0, first: `第一行\n\n第二行${'字'.repeat(80)}` }],
+    })
+
+    const [row] = await bench.host.listSessions()
+    expect(row?.title?.startsWith('第一行 第二行')).toBe(true)
+    expect(row?.title?.endsWith('…')).toBe(true)
+    expect((row?.title ?? '').length).toBeLessThanOrEqual(41)
+    expect(row?.title).not.toContain('\n')
+  })
+
+  test('当前会话总在目录里——一条还没落账的新会话也不例外', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: B, at: T0, first: '别人的事' }] })
+
+    const listed = await bench.host.listSessions()
+    expect(listed.map((row) => row.id)).toEqual([A, B])
+  })
+})
+
+describe('转发（单活跃——submit / interrupt / recover 都落在活跃实例上）', () => {
+  test('开工前是开局会话；切过去之后跟着换', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 1000, first: '甲的事' },
+        { id: B, at: T0, first: '乙的事' },
+      ],
+    })
+
+    bench.host.submit({ text: '问甲' })
+    await bench.host.recover()
+    bench.host.interrupt()
+    expect(bench.instanceOf(A)?.calls).toEqual(['submit:问甲', 'recover', 'interrupt'])
+    expect(bench.instanceOf(B)).toBeUndefined()
+
+    await bench.host.openSession(B)
+    bench.host.submit({ text: '问乙' })
+    expect(bench.instanceOf(B)?.calls).toEqual(['submit:问乙'])
+    // 甲那边不再收——同一时刻只有一个活跃会话
+    expect(bench.instanceOf(A)?.calls).toEqual(['submit:问甲', 'recover', 'interrupt'])
+  })
+})
+
+describe('新建（session.new）', () => {
+  test('开一条新会话、切过去、报当前与目录', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+    const before = bench.host.active()
+
+    await bench.host.handle({ type: 'session.new' })
+
+    const after = bench.host.active()
+    expect(after).not.toBe(before)
+    expect(bench.opened).toEqual([A, after]) // 开局那条 ＋ 新开的这条
+    expect(bench.lastState()?.active).toBe(after)
+    expect(bench.lastState()?.sessions.map((row) => row.id)).toContain(after)
+    expect(bench.lastState()?.note).toBeUndefined() // 顺顺当当＝不必赘述
+  })
+})
+
+describe('切换（session.open——只是装载）', () => {
+  test('切到目标会话：装载它的实例、报当前', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 1000, first: '甲的事' },
+        { id: B, at: T0, first: '乙的事' },
+      ],
+    })
+
+    await bench.host.handle({ type: 'session.open', session: B })
+
+    expect(bench.host.active()).toBe(B)
+    expect(bench.lastState()?.active).toBe(B)
+    expect(bench.lastState()?.sessions.map((row) => row.title)).toEqual(['甲的事', '乙的事'])
+  })
+
+  test('切到当前会话＝无事：不重建实例、不发事件', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+    const openedAtStart = bench.opened.length
+
+    await bench.host.handle({ type: 'session.open', session: A })
+
+    expect(bench.opened.length).toBe(openedAtStart)
+    expect(statesOf(bench.sink).length).toBe(0)
+  })
+
+  test('切到目录里没有的 id＝开一条空的（id 是分束键，不是内容）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+
+    await bench.host.handle({ type: 'session.open', session: 's-没见过的' })
+
+    expect(bench.host.active()).toBe('s-没见过的')
+    // 当前会话在目录**最前**（它就是「最近」——正在用的那条）
+    expect(bench.lastState()?.sessions.map((row) => row.id)).toEqual(['s-没见过的', A])
+  })
+})
+
+describe('忙时切不动（单活跃的结构保证）', () => {
+  test('干活中：新建 / 切换都不动——原样留在当前会话，出声说明', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 1000, first: '甲的事' },
+        { id: B, at: T0, first: '乙的事' },
+      ],
+    })
+    const instance = bench.instanceOf(A)
+    if (instance === undefined) throw new Error('开局实例没建起来')
+    instance.busy = true
+
+    await bench.host.handle({ type: 'session.new' })
+    await bench.host.handle({ type: 'session.open', session: B })
+
+    // 原地不动——**不半途改**（半途改＝一轮的事记到两条会话上）
+    expect(bench.host.active()).toBe(A)
+    expect(bench.instanceOf(B)).toBeUndefined()
+    expect(bench.lastState()?.active).toBe(A)
+    expect(bench.lastState()?.note).toContain('正在跑')
+  })
+
+  test('忙时列表照问（只读的事不必等）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+    const instance = bench.instanceOf(A)
+    if (instance === undefined) throw new Error('开局实例没建起来')
+    instance.busy = true
+
+    await bench.host.handle({ type: 'session.list' })
+
+    expect(bench.lastState()?.sessions.map((row) => row.id)).toEqual([A])
+    expect(bench.lastState()?.note).toBeUndefined()
+  })
+})
+
+describe('改名（session.rename）', () => {
+  test('落定 ＋ 目录随即带出新标题', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '原来那条' }] })
+
+    await bench.host.handle({ type: 'session.rename', session: A, title: '换了个名字' })
+
+    expect(bench.lastState()?.sessions.map((row) => row.title)).toEqual(['换了个名字'])
+    expect(bench.lastState()?.note).toBeUndefined()
+  })
+
+  test('先裁后存——用户给的原文里带换行也存得下（存的是裁过的）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '原来那条' }] })
+
+    await bench.host.handle({ type: 'session.rename', session: A, title: `  两个\n行  ` })
+
+    expect(bench.lastState()?.sessions.map((row) => row.title)).toEqual(['两个 行'])
+  })
+
+  test('空标题＝不认（目录里的名字不归它腾空）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '原来那条' }] })
+
+    await bench.host.handle({ type: 'session.rename', session: A, title: '   ' })
+
+    expect(bench.lastState()?.sessions.map((row) => row.title)).toEqual(['原来那条'])
+    expect(bench.lastState()?.note).toContain('空')
+  })
+
+  test('改别人的标题不影响当前会话（标题是会话的属性，不是活跃位的）', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 1000, first: '甲的事' },
+        { id: B, at: T0, first: '乙的事' },
+      ],
+    })
+
+    await bench.host.handle({ type: 'session.rename', session: B, title: '给乙改的' })
+
+    expect(bench.host.active()).toBe(A)
+    expect(bench.lastState()?.sessions.map((row) => row.title)).toEqual(['甲的事', '给乙改的'])
+  })
+})
+
+describe('启动流转（recover——对当前会话跑一次）', () => {
+  test('落在当前会话上，报告交回调用方（装配的 boot 就这一跳）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+
+    const report = await bench.host.recover()
+
+    expect(bench.instanceOf(A)?.calls).toEqual(['recover'])
+    expect(report.dispositions).toEqual([])
+    expect(report.session).toBe(A)
+  })
+})

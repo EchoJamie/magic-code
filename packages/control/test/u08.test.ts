@@ -66,6 +66,14 @@ export function commandSubjectOf(command: Command): string {
     case 'model.switch':
       // 第 17 轮第四支——两件都可缺，缺了就说「缺什么」
       return `换模型：${command.provider ?? '（不换条目）'} / ${command.model ?? '（不换模型）'}`
+    case 'session.list':
+      return '列会话'
+    case 'session.new':
+      return '新会话'
+    case 'session.open':
+      return `开会话：${command.session}`
+    case 'session.rename':
+      return `改会话名：${command.session} → ${command.title}`
   }
 }
 
@@ -118,6 +126,7 @@ export function hubFaceRealizesPort(): void {
     onInterrupt: () => undefined,
     onDecision: () => undefined,
     onModelSwitch: () => undefined,
+    onSession: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -133,13 +142,14 @@ export function kernelEndIsContractTransport(): void {
   void transport
 }
 
-/** 域侧路由即契约 `CommandRoutes`——四条命令各一路由，不多不少。 */
+/** 域侧路由即契约 `CommandRoutes`——五条命令各一路由，不多不少。 */
 export function routesAreContractShape(): void {
   const routes: CommandRoutes = {
     onInput: (input) => void input.text,
     onInterrupt: () => undefined,
     onDecision: (id, decision) => void [id, decision],
     onModelSwitch: (request) => void [request.provider, request.model],
+    onSession: (command) => void command.type,
   }
   void routes
 }
@@ -158,13 +168,14 @@ function envelope<K extends EventKind>(
   return { id, session: SESSION, turn: 1, at: AT, kind, data }
 }
 
-/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 四路由皆必填）。 */
+/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 五路由皆必填）。 */
 function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
   return {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: () => undefined,
     onModelSwitch: () => undefined,
+    onSession: () => undefined,
     ...overrides,
   }
 }
@@ -305,6 +316,28 @@ describe('命令进——外壳 → 内核', () => {
       { provider: 'minimax-m2', model: undefined },
       { provider: undefined, model: 'glm-4.6' },
       { provider: undefined, model: undefined },
+    ])
+  })
+
+  test('会话命令**原样转手**——控制域不认识会话，也不知道开得成开不成', () => {
+    const hub = createControlHub()
+    const { kernel, shell } = createInProcessTransportPair()
+    const seen: Command[] = []
+
+    hub.bind(routesWith({ onSession: (command) => seen.push(command) }))
+    hub.attach(kernel)
+
+    shell.send({ type: 'session.list' })
+    shell.send({ type: 'session.new' })
+    shell.send({ type: 'session.open', session: 's-beta' })
+    shell.send({ type: 'session.rename', session: 's-beta', title: '换了个名字' })
+
+    // 一字不改地到达——控制域**不做翻译**（同 `remember` 与 `model.switch` 的姿势）
+    expect(seen).toEqual([
+      { type: 'session.list' },
+      { type: 'session.new' },
+      { type: 'session.open', session: 's-beta' },
+      { type: 'session.rename', session: 's-beta', title: '换了个名字' },
     ])
   })
 

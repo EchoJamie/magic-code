@@ -11,7 +11,7 @@
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
-import type { Content } from './entries.ts'
+import type { Content, SessionSummary } from './entries.ts'
 import type { RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 
 // —— 标量与枚举 ——
@@ -75,6 +75,8 @@ export type EventKind =
   | 'tool.output.delta'
   // model · 会话——换模型的**结果**（用户命令）；**落库**
   | 'model.switched'
+  // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
+  | 'session.state'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -192,6 +194,22 @@ export type EventDataOf = {
     /** 没换成的缘由（**说给人听**的一句话，含已注册的条目名）。 */
     readonly reason?: string
   }
+  // session——会话面（阶段 2 · U16）。**查询答复 ＋ 变更通报**两种时机共用一个 kind：
+  // 外壳问一次（`session.list`）、内核切一条（`session.new` / `session.open`）都回这一条
+  // ——三处各立一个 kind 只会让渲染侧写三遍同一段（列表 ＋ 当前）。
+  'session.state': {
+    /** 当前活跃会话（**单活跃**——同一时刻只有一条）。 */
+    readonly active: SessionId
+    /** 会话目录——最近在前；标题用 `SessionSummary.title`（改过的取存值，否则按首条消息现算）。 */
+    readonly sessions: readonly SessionSummary[]
+    /**
+     * 一句话说明——**只在有事要说时给**（没开成 / 新建好了 / 改名落定）。
+     *
+     * 不给＝状态自明，不必赘述。失败**不静默**（打不开就不打开，但得说为什么）——
+     * 且**不借 `error`**：那个 kind 的语义是「内核自身异常」，用户命令未成立混进去会污染观测。
+     */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -243,6 +261,10 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   'model.delta',
   'model.retry',
   'tool.output.delta',
+  // 会话状态同列的理由：它是「此刻有哪些会话、当前在哪条」的**快照**，
+  // 而重放要的从来不是快照——是过程（谁切到了哪条）。落库只会把同一张表存 N 遍，
+  // 且重放时越读越乱（旧快照会把新快照盖回去）。
+  'session.state',
 ]
 
 /** 记录库 schema 版本（`user_version` 自始写入——技术方案 · 记录 · schema 演进）。 */

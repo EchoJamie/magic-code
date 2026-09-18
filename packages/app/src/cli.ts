@@ -289,8 +289,10 @@ async function main(): Promise<number> {
       return 0
     }
 
-    // 默认：起真外壳——装配只做「接线 ＋ 起外壳」，交互逻辑全在 @magic/tui
-    const tui = runTui({ transport: assembly.shell })
+    // 默认：起真外壳——装配只做「接线 ＋ 起外壳」，交互逻辑全在 @magic/tui。
+    // `boot` ＝启动流转（对开局会话跑一次恢复）：`runTui` 会在**订阅之后、渲染之前**跑它
+    // （装配纪律：恢复要发事件，外壳得先订上；反了就是用户能在恢复跑完前打字）
+    const tui = await runTui({ transport: assembly.shell, boot: () => assembly.boot() })
     await tui.waitUntilExit()
     return 0
   } finally {
