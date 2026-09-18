@@ -9,6 +9,7 @@
  * | `user` / `assistant` | 正文（超阈值转 blob） | ——（非工具条目不带载荷） |
  * | `tool-call` | 空 | `{ name, args }`——**重放真源** |
  * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物 |
+ * | `summary` | 摘要全文（超阈值同样转 blob） | ——（阶段 3 压缩的产物，见 `./compact.ts`） |
  *
  * **工具结果为什么两个字段各载一样**（第 2 轮 · 契约补锚）——契约 `ToolResult` 载**两样输出**：
  * `output` 是面向模型的文本（按上限截断），`content` 是记录侧形态（内联或 blob）。
@@ -89,6 +90,21 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): Reco
     kind: 'tool-result',
     content: { text: outcome.text },
     payload: { ok: outcome.ok, output: outcome.content },
+    at: log.now(),
+  })
+}
+
+/**
+ * 摘要条目——压缩的产物（技术方案 · 上下文压缩：「旧段交模型生成摘要 → 以 `summary`
+ * 条目入库」）。
+ *
+ * 它与别的条目**同待遇**：正文超阈值照样转 blob（摘要也可能是长的），时间戳照样取
+ * `log.now`。**只增不改**——旧段那些条目一条都不动，这条只是追加在末尾（append-only 不破）。
+ */
+export async function appendSummaryEntry(log: EntryLog, text: string): Promise<RecordId> {
+  return log.records.appendEntry({
+    kind: 'summary',
+    content: await contentOf(text, log),
     at: log.now(),
   })
 }

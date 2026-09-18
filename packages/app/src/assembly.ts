@@ -48,7 +48,12 @@ import type {
 } from '@magic/contracts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { createConversationService, createConversationSession } from '@magic/conversation'
-import type { ConversationSession, PromptVars, SessionInstance } from '@magic/conversation'
+import type {
+  ContextPolicy,
+  ConversationSession,
+  PromptVars,
+  SessionInstance,
+} from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createSandbox, createWorkspaceService } from '@magic/execution'
 import type { FetchLike, ModelRegistry, ModelSwitchResult } from '@magic/model'
@@ -106,6 +111,15 @@ export type AssembleOptions = {
   readonly session?: SessionId | undefined
   /** 时钟——条目 / 信封的时间戳（域不各自取时钟）；缺省 `Date.now`。 */
   readonly now?: (() => Timestamp) | undefined
+  /**
+   * 上下文策略的覆盖位（对话域的 `ContextPolicy`，**只增不改**）——缺省＝对话域的缺省
+   * （`DEFAULT_CONTEXT_POLICY`：blob 阈值 / 截断 ＋ 压缩的触发阈值 / 近段边界）。
+   *
+   * 由头：策略是**域内件**、缺省值在域里，而「这一次装配用哪一套」只有装配根说了算
+   * （同 `modelGateway` / `now` 的分寸）。**不设配置键**——这是装配期入参，不是用户配置
+   * （阶段 3 的压缩阈值归实现级常量，B4：没有让用户调的需求，就不长配置面）。
+   */
+  readonly context?: Partial<ContextPolicy> | undefined
   /** 提示词的环境注入项（见 `EnvironmentVars`）。 */
   readonly prompt?: EnvironmentVars | undefined
 }
@@ -349,6 +363,8 @@ export function assemble(options: AssembleOptions): Assembly {
       sink,
       stamper,
       now,
+      // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
+      context: options.context,
       // 恢复面（U15）：在途查询归记录域；**幂等声明缺位**（U15 待决 1：`ToolSpec` 该有位、
       // 契约未载）故不传——缺省从严＝一律非幂等＝**什么都不静默重放**，安全但保守
       recovery: { inFlight: (target) => recordsStore.recoveryScan(target) },

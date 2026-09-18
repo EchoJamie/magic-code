@@ -33,14 +33,27 @@
  * · 本轮以 `turn.end{reason:'aborted'}` 收束 · 回到等待输入。中断**不是**错误：
  * 半截流式消息丢弃（技术方案 · 恢复：「未完成流式消息丢弃、记中止」）。
  *
- * **留缝**——错误分档的处置（瞬时退避 / 超限压缩重发 / 终态停下）归 U17（阶段 2）：
- * 首站一律「停下报告用户」，即 `turn.end{reason:'error'}` ＋ 模型域的 `model.error` 已在事件流里。
+ * **错误分档的处置**——瞬时档（退避重试）在**模型域的接缝之下**（见 `@magic/model` 的
+ * `retry.ts`：本域看不见重试，只看得到 `model.retry` 这条实时信号）；`context-limit`
+ * （上下文超限）**归本域**：压一次再重发（见下）；终态档一律停下报告用户
+ * （`turn.end{reason:'error'}` ＋ 模型域的 `model.error` 已在事件流里）。
+ *
+ * ## 压缩的两条触发路径（阶段 3 · U19）
+ *
+ * - **用量达阈值**——开一轮之前问一次（`shouldCompact()`）：上一次调用报回的用量到了
+ *   阈值就先压后跑。**先压后跑**而不是「撞了再压」，是因为撞上超限要白搭一次调用。
+ * - **上下文超限错误**——`model.error{tier:'context-limit'}`：压一次、**本轮重发**
+ *   （不换模型）。只给一次机会（压完还超限＝这条会话确实塞不下了，如实停下报告）。
+ *
+ * 两条路都**不降级**：压不成，本轮照常走原来的上下文（B5——原文本就在，读不完也得接着读）。
  */
 
 import type {
   EventSink,
   EventStamper,
+  ModelErrorTier,
   ModelGateway,
+  ModelResult,
   RecordsService,
   SessionId,
   Timestamp,
@@ -50,7 +63,8 @@ import type {
   TurnId,
   UserInput,
 } from '@magic/contracts'
-import { assembleContext } from './context.ts'
+import type { Compactor } from './compact.ts'
+import { DEFAULT_NEAR_ENTRIES, assembleContext } from './context.ts'
 import type { EntryLog, ToolOutcome } from './entries.ts'
 import {
   appendTextEntry,
@@ -84,6 +98,13 @@ export type LoopRuntime = {
   readonly now: () => Timestamp
   readonly blobThreshold: number
   readonly blobTextLimit: number
+  /**
+   * 压缩器（阶段 3 · U19）——**不接线＝不压缩**（首站无压缩那几轮的行为一字不动；
+   * 用例只想验循环时也不必拖一个压缩器进来）。真装配一律给（见 `./service.ts`）。
+   *
+   * 「近段」条数**不从别处另给**——装配照它的 `nearEntries` 认（见 `Compactor` 的注）。
+   */
+  readonly compact?: Compactor | undefined
 }
 
 /**
@@ -136,40 +157,74 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
   try {
     sink.emit(stamper.stamp('turn.start', {}))
 
-    const messages = await assembleContext({
-      records: runtime.records,
-      session: runtime.session,
-      systemPrompt: runtime.systemPrompt,
-      blobTextLimit: runtime.blobTextLimit,
-    })
-
-    const stream = gateway.stream(
-      { model: runtime.model, messages, tools: tools.definitions() },
-      { signal },
-    )
+    // **触发之一：用量达阈值**——压了再跑（见文件头注：撞上超限要白搭一次调用）。
+    // 压不成也照常往下走：这是「尽力收敛上下文」，不是本轮的前置条件（B5）
+    const compact = runtime.compact
+    if (compact !== undefined && compact.needed()) {
+      await compact.run({ trigger: 'threshold', signal })
+    }
 
     let text = ''
     /** 思考通道的正文——**只为 D6 的判据攒着**（不落条目，条目只载正文）。 */
     let thinking = ''
-    let errored = false
+    /** 本轮的聚合结果——超限重发时会被下一次调用覆盖（上一次的结论已作废）。 */
+    let result: ModelResult
+    /** 超限重发**只给一次机会**（见文件头注）——压完还超限就是真塞不下了。 */
+    let retried = false
 
-    for await (const event of stream.events) {
-      // 模型域的事件**原样转发**（`model.call.start` / `model.delta` / `model.usage` /
-      // `model.call.end` / `model.error`）——过程流的消费方（渲染 / 记录）按 kind 收窄
-      sink.emit(event)
+    // 一次调用 ＋ 消费（超限时整体重来：重装配 → 重发——这才是「压缩后重发」）
+    for (;;) {
+      const messages = await assembleContext({
+        records: runtime.records,
+        session: runtime.session,
+        systemPrompt: runtime.systemPrompt,
+        blobTextLimit: runtime.blobTextLimit,
+        // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
+        nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
+      })
 
-      if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
-      if (event.kind === 'model.delta' && event.data.channel === 'thinking') thinking += event.data.text
-      // `model.error` 是本轮定论的信号（不变式 ④：其后无事件）；聚合结果里没有错误位
-      if (event.kind === 'model.error') errored = true
+      const stream = gateway.stream(
+        { model: runtime.model, messages, tools: tools.definitions() },
+        { signal },
+      )
+
+      text = ''
+      thinking = ''
+      let errored = false
+      let tier: ModelErrorTier | undefined
+
+      for await (const event of stream.events) {
+        // 模型域的事件**原样转发**（`model.call.start` / `model.delta` / `model.usage` /
+        // `model.call.end` / `model.error`）——过程流的消费方（渲染 / 记录）按 kind 收窄
+        sink.emit(event)
+
+        if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
+        if (event.kind === 'model.delta' && event.data.channel === 'thinking') thinking += event.data.text
+        // 用量是**压缩的触发读数**（分子 / 分母一次到齐——D10 的口径）
+        if (event.kind === 'model.usage') compact?.observe(event.data)
+        // `model.error` 是本轮定论的信号（不变式 ④：其后无事件）；聚合结果里没有错误位
+        if (event.kind === 'model.error') {
+          errored = true
+          tier = event.data.tier
+        }
+      }
+
+      result = await stream.result
+
+      // 被中止——半截流式消息**丢弃**，本轮就此收束
+      if (signal.aborted) return close(runtime, 'aborted', false)
+      if (!errored) break
+
+      // **触发之二：上下文超限**——压一次再重发（不换模型）。
+      // 压成了才重发：压不动（或本就没接压缩）就没什么可重发的，照旧停下报告用户
+      if (tier === 'context-limit' && !retried && compact !== undefined) {
+        retried = true
+        const outcome = await compact.run({ trigger: 'context-limit', signal })
+        if (outcome.ok) continue
+      }
+
+      return close(runtime, 'error', false)
     }
-
-    const result = await stream.result
-
-    // 被中止——半截流式消息**丢弃**，本轮就此收束
-    if (signal.aborted) return close(runtime, 'aborted', false)
-    // 出错——首站一律停下（分档处置归阶段 2 / U17）；半截正文同样不落账
-    if (errored) return close(runtime, 'error', false)
 
     const calls = result.toolCalls ?? []
 

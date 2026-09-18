@@ -46,6 +46,9 @@ import {
   makeTestStamper,
 } from '@magic/faux'
 import { DEFAULT_CONTEXT_POLICY } from '../../src/policy.ts'
+import type { ContextPolicy } from '../../src/policy.ts'
+import { createCompactor } from '../../src/compact.ts'
+import type { Compactor } from '../../src/compact.ts'
 import type { LoopRuntime } from '../../src/agent-loop.ts'
 import { buildSystemPrompt } from '../../src/prompt/index.ts'
 import type { PromptVars } from '../../src/prompt/index.ts'
@@ -245,6 +248,35 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
     blobTextLimit: DEFAULT_CONTEXT_POLICY.blobTextLimit,
     ...overrides,
   }
+}
+
+/**
+ * 造一个**接到这一束替身上的**压缩器（U19）——摘要走同一段 Faux 脚本。
+ *
+ * 缺省策略＝生产那一套（阈值高得在测试里自然不触发）；要验触发就传 `policy`
+ * 把阈值压到脚本体量（如 `{ compactAtTokens: 10 }`）。
+ */
+export function makeCompactor(
+  stage: Stage,
+  options: { readonly model?: string; readonly policy?: Partial<ContextPolicy> } = {},
+): Compactor {
+  const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...options.policy }
+
+  return createCompactor({
+    records: stage.records,
+    session: DEFAULT_TEST_SESSION,
+    gateway: stage.gateway,
+    model: options.model ?? FAUX_MODEL,
+    sink: stage.sink,
+    stamper: stage.stamper,
+    now: () => FIXED_AT,
+    blobThreshold: policy.blobThreshold,
+    blobTextLimit: policy.blobTextLimit,
+    nearEntries: policy.nearEntries,
+    compactAtFraction: policy.compactAtFraction,
+    compactAtTokens: policy.compactAtTokens,
+    compactFailureLimit: policy.compactFailureLimit,
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════════════

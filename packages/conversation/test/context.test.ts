@@ -1,11 +1,13 @@
 /**
  * Context 装配 —— **由会话条目重建模型消息**（U04 判据 · 上下文装配）。
  *
- * 装配三步，判据逐条钉在此处：
+ * 装配四步，判据逐条钉在此处：
  * ① 系统提示词即 `role:'system'` 的**首条**消息；
- * ② 条目按序展开——助手消息带 `toolCalls`，工具结果即 `role:'tool'`
+ * ② **定边界**——压过的会话：旧段由一条 `summary` 顶掉、近段与新增照旧（阶段 3 · U19，
+ *    见下文「摘要 ＋ 近段原文」那一组）；
+ * ③ 余下条目按序展开——助手消息带 `toolCalls`，工具结果即 `role:'tool'`
  *    （`callId` / `name` / `ok` / `output`）；
- * ③ 条目里的 blob 引用在装配时**解析为文本**（按策略截断）。
+ * ④ 条目里的 blob 引用在装配时**解析为文本**（按策略截断）。
  *
  * **工具结果的正文取哪一份**（第 2 轮 · 契约补锚后）——工具条目两个字段载两样东西：
  * **正文**（`content`）＝**面向模型的文本**（工具域 `ToolResult.output`，按上限截断）；
@@ -69,6 +71,22 @@ function appendToolCall(records: FauxRecords, command: string): number {
     payload: { name: 'exec', args: { cmd: command } },
     at: AT,
   })
+}
+
+/** 一条摘要条目——压缩的产物（`./compact.ts` 落的那种形态）。 */
+function appendSummary(records: FauxRecords, text: string): number {
+  return records.appendEntry({ kind: 'summary', content: { text }, at: AT })
+}
+
+/** 送模型的那一份拼成一段文本——断言「在不在里面」用。 */
+function sentText(messages: readonly ModelMessage[]): string {
+  return messages.map(textOfMessage).join('\n')
+}
+
+/** 第 `index` 条消息的正文——够不着＝空串（断言里好写，不必逐个 `?.` 加收窄）。 */
+function textAt(messages: readonly ModelMessage[], index: number): string {
+  const message = messages[index]
+  return message === undefined ? '' : textOfMessage(message)
 }
 
 describe('Context 装配 · 骨架', () => {
@@ -224,6 +242,157 @@ describe('Context 装配 · 工具往返', () => {
     // 带 toolCalls 而无对应 tool 消息的助手消息会被供应商拒——故落单调用不进上下文
     expect(messages[1]).toEqual({ role: 'assistant', content: '我跑一下' })
     expect(messages).toHaveLength(2)
+  })
+})
+
+/**
+ * 压缩后（阶段 3 · U19）——**规格**：技术方案 · 上下文压缩
+ * 「上下文＝**摘要 ＋ 近段原文**；**记录不动**——压缩只是上下文装配」。
+ *
+ * 这几条钉的是**送模型的那一份**怎么变（记录里一条不少是记录域的事，
+ * 但「送出去的变短了」正是压缩的全部意义，故在此量它）。
+ */
+describe('Context 装配 · 摘要 ＋ 近段原文', () => {
+  /** 规格：「旧段交模型生成摘要 → 以 `summary` 条目入库；上下文＝摘要 ＋ 近段原文」。 */
+  test('摘要顶掉旧段——摘要块摆在系统提示词之后，旧段正文不再送模型', async () => {
+    const records = makeFauxRecords()
+    records.appendEntry({ kind: 'user', content: { text: '早先的交代' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '早先的答复' }, at: AT })
+    records.appendEntry({ kind: 'user', content: { text: '近段的交代' }, at: AT })
+    appendSummary(records, '此前在做 A，已定 B，待办 C，动过 /w/a.ts')
+
+    const messages = await assembleContext({
+      records,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      nearEntries: 1,
+    })
+
+    // 次序：系统提示词 → 摘要 → 近段原文
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'user'])
+    expect(textAt(messages, 0)).toBe(SYSTEM_PROMPT)
+    expect(textAt(messages, 1)).toContain('此前在做 A')
+    expect(messages[2]).toEqual({ role: 'user', content: '近段的交代' })
+
+    // 旧段那两条**不送了**——「上下文变短」就短在这儿；它们仍在记录里（本单元不删）
+    const sent = sentText(messages)
+    expect(sent).not.toContain('早先的交代')
+    expect(sent).not.toContain('早先的答复')
+  })
+
+  /** 规格：「近段」——摘要**前 N 条**原文照送，再往前的一律被摘要顶掉。 */
+  test('近段边界＝摘要前 N 条——边界之外的不送，边界之内原样', async () => {
+    const records = makeFauxRecords()
+    records.appendEntry({ kind: 'user', content: { text: '第一件事' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '第一件答复' }, at: AT })
+    records.appendEntry({ kind: 'user', content: { text: '第二件事' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '第二件答复' }, at: AT })
+    records.appendEntry({ kind: 'user', content: { text: '第三件事' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '第三件答复' }, at: AT })
+    // 摘要落在末尾——它前面两条（第三件事 / 第三件答复）即近段
+    appendSummary(records, '前两件都办完了')
+
+    const messages = await assembleContext({
+      records,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      nearEntries: 2,
+    })
+
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'user', 'assistant'])
+    const sent = sentText(messages)
+    expect(sent).toContain('第三件事')
+    expect(sent).toContain('第三件答复')
+    expect(sent).not.toContain('第二件事')
+    expect(sent).not.toContain('第一件事')
+  })
+
+  /** 规格：「压缩只是上下文装配」——压完接着干，新增的条目照旧原文送达。 */
+  test('摘要之后的条目照常展开——压完接着干，新内容原样进上下文', async () => {
+    const records = makeFauxRecords()
+    records.appendEntry({ kind: 'user', content: { text: '更早的交代' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '更早的答复' }, at: AT })
+    records.appendEntry({ kind: 'user', content: { text: '近处的交代' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '近处的答复' }, at: AT })
+    const summaryAt = appendSummary(records, '早先的摘要')
+    // 压完接着干的两条——新增的一律在摘要**之后**
+    records.appendEntry({ kind: 'user', content: { text: '压完接着问的' }, at: AT })
+    records.appendEntry({ kind: 'assistant', content: { text: '压完接着答的' }, at: AT })
+
+    const messages = await assembleContext({
+      records,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      nearEntries: 2,
+    })
+
+    // 次序：系统提示词 → 摘要 → 近段原文（两条）→ 新增原文（两条）
+    expect(messages.slice(2)).toEqual([
+      { role: 'user', content: '近处的交代' },
+      { role: 'assistant', content: '近处的答复' },
+      { role: 'user', content: '压完接着问的' },
+      { role: 'assistant', content: '压完接着答的' },
+    ])
+    expect(textAt(messages, 1)).toContain('早先的摘要')
+    expect(sentText(messages)).not.toContain('更早的交代')
+    expect(summaryAt).toBe(5) // 目视锚：摘要落在被压的旧段之后、新增之前
+  })
+
+  /** 规格：「反复压缩——`summary` 条目可被再次摘要」（B6）。 */
+  test('反复压缩——旧摘要离得远就被新摘要一并顶掉；离得近则作为摘要块留在窗口里', async () => {
+    const far = makeFauxRecords()
+    far.appendEntry({ kind: 'user', content: { text: '更早的交代' }, at: AT })
+    appendSummary(far, '第一份摘要')
+    far.appendEntry({ kind: 'user', content: { text: '近处一' }, at: AT })
+    far.appendEntry({ kind: 'user', content: { text: '近处二' }, at: AT })
+    appendSummary(far, '第二份摘要（含第一份的意思）')
+
+    const farMessages = await assembleContext({
+      records: far,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      nearEntries: 2,
+    })
+
+    // 第二份摘要在末尾、它前面留两条——第一份摘要落在**被顶掉**的那一侧
+    expect(farMessages).toHaveLength(4)
+    expect(textAt(farMessages, 1)).toContain('第二份摘要')
+    expect(sentText(farMessages)).not.toContain('第一份摘要')
+
+    // 反过来：旧摘要**就在近段窗口里**（离得近，新摘要没覆盖它）——那就得原样带着，
+    // 丢了就是真丢（它讲的事没有别处可查）
+    const near = makeFauxRecords()
+    near.appendEntry({ kind: 'user', content: { text: '更早的交代' }, at: AT })
+    appendSummary(near, '第一份摘要')
+    near.appendEntry({ kind: 'user', content: { text: '近处' }, at: AT })
+    appendSummary(near, '第二份摘要')
+
+    const nearMessages = await assembleContext({
+      records: near,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      nearEntries: 2,
+    })
+
+    const sent = sentText(nearMessages)
+    expect(sent).toContain('第二份摘要')
+    expect(sent).toContain('第一份摘要')
+  })
+
+  /** 规格：「数据落点 / 大负载落 blob」（记录 schema v0 · 规则 ②）——摘要条目同样适用。 */
+  test('摘要正文是 blob 引用——装配时照样解析回文本', async () => {
+    const records = makeFauxRecords()
+    const ref = await records.blobs.put('很长的摘要正文')
+    records.appendEntry({ kind: 'summary', content: { blob: ref }, at: AT })
+    records.appendEntry({ kind: 'user', content: { text: '接着问' }, at: AT })
+
+    const messages = await assembleContext({
+      records,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+    })
+
+    expect(textAt(messages, 1)).toContain('很长的摘要正文')
   })
 })
 
