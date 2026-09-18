@@ -36,6 +36,9 @@ import {
 const SESSION = 's-schema'
 const T0 = 1_700_000_000_000
 
+/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件量的是库表与版本，与归属无关。 */
+const ROOTS = ['/work/alpha']
+
 /** 条目的内联正文——`Content` 是两选一，测试里按判别取文本（取不到即空串）。 */
 function textOf(entry: Entry): string {
   return 'text' in entry.content ? entry.content.text : ''
@@ -45,7 +48,7 @@ describe('判据 3 · 不落库清单', () => {
   test('瞬时事件不落库，其余 kind 照落（读回与直读两路同证）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
 
       let clock = T0
@@ -123,7 +126,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
   test('新建即认版本：三表在、文件在、版本号＝契约常量', () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       expect(store.paths.database).toBe(databasePathOf(dir))
       store.close()
 
@@ -152,14 +155,14 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
   test('库比程序新即拒开（版本协议是活的——不然这列只是摆设）', () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       store.close()
 
       const db = new Database(databasePathOf(dir))
       db.exec(`PRAGMA user_version = ${RECORD_SCHEMA_VERSION + 1}`)
       db.close()
 
-      expect(() => createRecordsStore({ dataDir: dir })).toThrow(/较本程序新/)
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow(/较本程序新/)
     } finally {
       removeDataDir(dir)
     }
@@ -169,7 +172,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
     const dir = tempDataDir()
     const T1 = T0 + 1
 
-    const firstRun = createRecordsStore({ dataDir: dir })
+    const firstRun = createRecordsStore({ dataDir: dir, workspace: ROOTS })
     const firstRecords = firstRun.serviceFor(SESSION)
     const oldIds: RecordId[] = [1, 2, 3].map((n) =>
       firstRecords.appendEntry({ kind: 'user', content: { text: `第 ${n} 条` }, at: T1 + n }),
@@ -184,7 +187,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
     })
     firstRun.close()
 
-    const secondRun = createRecordsStore({ dataDir: dir })
+    const secondRun = createRecordsStore({ dataDir: dir, workspace: ROOTS })
     const secondRecords = secondRun.serviceFor(SESSION)
 
     // 旧行原样
@@ -201,7 +204,12 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
     expect(fresh).toBeGreaterThan(Math.max(...oldIds))
 
     // 会话表不重复、列表照旧
-    expect(await secondRun.listSessions()).toEqual([{ id: SESSION, at: T1 + 1 }])
+    // **原锚**：`[{ id, at }]`（摘要当时的全部字段）；**为何变**：U26 加了 `workspace`
+    // ——续写那一次**碰不到它**（`ON CONFLICT DO NOTHING`），故重开仍是首写锚下的那一组；
+    // **新锚**：同一条规格（不重复 · 行原样），**全等照旧**。
+    expect(await secondRun.listSessions()).toEqual([
+      { id: SESSION, at: T1 + 1, workspace: ROOTS },
+    ])
 
     secondRun.close()
 
@@ -237,7 +245,7 @@ describe('判据 6 · 数据落点（`~` 展开归配置加载器）', () => {
     const dir = expandDataDir('~/magic-probe', home)
 
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       expect(store.paths.database).toBe(join(home, 'magic-probe', 'records.db'))
       expect(store.paths.blobs).toBe(join(home, 'magic-probe', 'blobs'))
       expect(existsSync(join(home, 'magic-probe', 'records.db'))).toBe(true)
@@ -259,9 +267,9 @@ describe('判据 6 · 数据落点（`~` 展开归配置加载器）', () => {
   test('库自己不展开：字面 `~` ＝一声响，而不是 cwd 下的垃圾目录', () => {
     const home = tempDataDir()
     try {
-      expect(() => createRecordsStore({ dataDir: '~/.magic' })).toThrow(/前导/)
-      expect(() => createRecordsStore({ dataDir: '~' })).toThrow(/前导/)
-      expect(() => createRecordsStore({ dataDir: '  ' })).toThrow(/不得为空/)
+      expect(() => createRecordsStore({ dataDir: '~/.magic', workspace: ROOTS })).toThrow(/前导/)
+      expect(() => createRecordsStore({ dataDir: '~', workspace: ROOTS })).toThrow(/前导/)
+      expect(() => createRecordsStore({ dataDir: '  ', workspace: ROOTS })).toThrow(/不得为空/)
 
       // 坑的样子：静默在 cwd 下造一个名为 `~` 的目录——此处必须没有
       expect(hasTildeDir(process.cwd())).toBe(false)
@@ -276,7 +284,7 @@ describe('判据 6 · 数据落点（`~` 展开归配置加载器）', () => {
     const dir = join(root, 'nested', 'deeper', 'magic')
 
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       expect(existsSync(databasePathOf(dir))).toBe(true)
       expect(existsSync(join(dir, 'blobs'))).toBe(true)
       store.close()

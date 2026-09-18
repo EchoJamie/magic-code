@@ -29,6 +29,7 @@ import {
   matchCommands,
   movePicker,
   openPicker,
+  sessionRows,
   picked,
   rebuild,
   reduce,
@@ -111,6 +112,16 @@ export type ShellOptions = {
    * 不编、不猜、不改事件契约。
    */
   readonly contextWindow?: number | null | undefined
+  /**
+   * **本进程的工作区**（U26）——`/session` 列表据它认「哪个是别的项目」
+   * （分组头永远都有；**压暗**只落在判得实的那些：工作区记着、且与这一组不同）。
+   *
+   * 装配把执行域的 `roots()` 递进来（`realpath` 后的规范形 · 声明序）——与记录域
+   * 构造时交出去的是**同一个值**：一头锚进记录、一头用于认路，两处同源。
+   *
+   * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗（「拿不到的不编」——同 `contextWindow`）。
+   */
+  readonly workspaceRoots?: readonly string[] | undefined
 }
 
 /**
@@ -299,21 +310,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   // —— 选择器 ——
 
-  /** `/session`——目录已到手，开它。 */
+  /** `/session`——目录已到手，开它（行：按工作区分组，U26——见 `sessionRows`）。 */
   const openSessionPicker = (): void => {
-    const catalog = view.catalog
+    const rows = sessionRows(view.catalog, view.sessionId, options.workspaceRoots)
 
     commit(
       openPicker(view, {
         source: 'session',
-        selected: Math.max(0, catalog.findIndex((row) => row.id === view.sessionId)),
-        rows: catalog.map((row) => ({
-          label: row.title ?? '（无标题）',
-          meta: row.id === view.sessionId ? '正在用' : '',
-          current: row.id === view.sessionId,
-          value: row.id,
-        })),
-        ...(catalog.length === 0 ? { hint: '还没有落过账的会话——交代一句就开张' } : {}),
+        // 选中项＝**当前那条**——分组之后行序变了，故在**分好组的行**里找它
+        selected: Math.max(0, rows.findIndex((row) => row.value === view.sessionId)),
+        rows,
+        ...(rows.length === 0 ? { hint: '还没有落过账的会话——交代一句就开张' } : {}),
       }),
     )
   }

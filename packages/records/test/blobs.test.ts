@@ -18,6 +18,9 @@ import type { Entry } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
 import { removeDataDir, tempDataDir } from './tmp.ts'
 
+/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件与归属无关，取一件固定的即可。 */
+const ROOTS = ['/work/alpha']
+
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..')
 const PACKAGES_DIR = join(REPO_ROOT, 'packages')
 
@@ -28,7 +31,7 @@ describe('判据 2 · blob 往返', () => {
   test('大负载落盘、读回逐字节相等（字符串与字节两形态）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor('s-blob')
 
       const bigText = '第一行输出\n第二行输出\n'.repeat(20_000) // ≈ 400KB
@@ -55,7 +58,7 @@ describe('判据 2 · blob 往返', () => {
   test('条目存引用——内容与工具输出两处都是引用，读回一致', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor('s-blob')
 
       const contentRef = await records.blobs.put('很长很长的一段正文…'.repeat(5_000)) // ≈ 60KB
@@ -93,7 +96,7 @@ describe('判据 2 · blob 往返', () => {
   test('内容寻址——同内容只落一份（幂等）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor('s-blob')
 
       const first = await records.blobs.put('同一份负载')
@@ -113,7 +116,7 @@ describe('判据 2 · blob 往返', () => {
   test('引用入口把住——非法引用（含路径穿越）拒读', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor('s-blob')
       const ref = await records.blobs.put('正经负载')
 

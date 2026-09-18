@@ -138,7 +138,13 @@ export type RawEvent = {
 
 export type RawDatabase = {
   /** `title` 可空（U16：没改过就没有——默认标题由对话域按首条消息现算，不落库）。 */
-  readonly sessions: readonly { id: string; at: number; title: string | null }[]
+  readonly sessions: readonly {
+    readonly id: string
+    readonly at: number
+    readonly title: string | null
+    /** 工作区（U26）——落盘形态＝JSON 一列；列加上之前落账的会话为 `null`。 */
+    readonly workspace: string | null
+  }[]
   readonly entries: readonly RawEntry[]
   readonly events: readonly RawEvent[]
   close(): void
@@ -150,8 +156,8 @@ export function readDatabase(databasePath: string): RawDatabase {
 
   return {
     sessions: db
-      .query<{ id: string; at: number; title: string | null }, []>(
-        'SELECT id, at, title FROM sessions ORDER BY at',
+      .query<{ id: string; at: number; title: string | null; workspace: string | null }, []>(
+        'SELECT id, at, title, workspace FROM sessions ORDER BY at',
       )
       .all(),
     entries: db

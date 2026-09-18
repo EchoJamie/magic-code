@@ -28,6 +28,9 @@ import type {
 import { createRecordsStore, scanForRecovery } from '../src/index.ts'
 import { removeDataDir, tempDataDir } from './tmp.ts'
 
+/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件与归属无关，取一件固定的即可。 */
+const ROOTS = ['/work/alpha']
+
 const SESSION = 's-recovery'
 const T0 = 1_700_000_000_000
 
@@ -71,7 +74,7 @@ describe('判据 ① · 在途识别（真库）', () => {
   test('有 call 无 result＝在途：字段齐（链引用 / 条目配对 / 轮）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -103,7 +106,7 @@ describe('判据 ① · 在途识别（真库）', () => {
   test('了结之后不再是「在途」——恢复跑第二遍不会重复处置', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -136,7 +139,7 @@ describe('判据 ① · 在途识别（真库）', () => {
   test('已了结的调用**不报**——只报还在途的那笔（别把历史全倒出来）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -169,7 +172,7 @@ describe('判据 ① · 在途识别（真库）', () => {
   test('顺带在途的两笔各自成行（同轮多工具按序）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -193,7 +196,7 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
   test('问了已答（批准 / 拒绝）——结论与裁者都在', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -239,7 +242,7 @@ describe('判据 ② · 裁决轨迹（真库）', () => {
   test('问了**未答**——decision 留 null（④按「拒绝」落账的判据）', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -269,7 +272,7 @@ describe('判据 ② · 中断的轮与轮号水位（真库）', () => {
   test('有 turn.start 无 turn.end＝中断的轮；闭合的轮不算', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 
@@ -291,7 +294,7 @@ describe('判据 ② · 中断的轮与轮号水位（真库）', () => {
   test('全程闭合 ＋ 空会话——都没有中断的轮', async () => {
     const dir = tempDataDir()
     try {
-      const store = createRecordsStore({ dataDir: dir })
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
       const records = store.serviceFor(SESSION)
       const { stamp } = makeStamper(records)
 

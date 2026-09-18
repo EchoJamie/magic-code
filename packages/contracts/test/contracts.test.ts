@@ -634,8 +634,13 @@ describe('事件契约', () => {
     expect(TRANSIENT_EVENT_KINDS).not.toContain('model.switched')
   })
 
-  test('schema 版本自始写入（v0）', () => {
-    expect(RECORD_SCHEMA_VERSION).toBe(0)
+  test('schema 版本自始写入（当前＝1）', () => {
+    // **原锚**（U02）：「自始写入（v0）」——冻结那一刻的形状就是 0。
+    // **为何变**：U26 给 `sessions` 加了 `workspace` 列（会话归属工作区），而冻结点
+    //   已过 ⇒ 走**顺序迁移**（0 → 1）：版本号得往前推一位，迁移链才有得走
+    //   （迁移的落地与真跑见 `@magic/records` · `test/workspace.test.ts`）。
+    // **新锚**：同一条规格（版本号是**写进库的**、不是摆设），值随形状走——**字面一个没松**。
+    expect(RECORD_SCHEMA_VERSION).toBe(1)
   })
 })
 

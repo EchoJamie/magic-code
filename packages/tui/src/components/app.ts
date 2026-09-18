@@ -27,7 +27,7 @@ import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { hasRunningTool } from '../view.ts'
+import { groupHeads, hasRunningTool } from '../view.ts'
 import { Composer, draftHeight, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines } from './log.ts'
@@ -261,7 +261,9 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
 
   if (view.dock.kind === 'picker') {
     const hint = view.dock.picker.hint === undefined ? 0 : 1
-    return view.dock.picker.rows.length + hint + flash
+    // 分组头也算行（U26——`/session` 按工作区分组；一处判定两处用，见 `groupHeads`）
+    const heads = groupHeads(view.dock.picker.rows).filter(Boolean).length
+    return view.dock.picker.rows.length + heads + hint + flash
   }
 
   // 输入行那一片：草稿有几行就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）

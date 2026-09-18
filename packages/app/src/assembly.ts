@@ -278,8 +278,26 @@ export function assemble(options: AssembleOptions): Assembly {
   const now = options.now ?? Date.now
 
   // ── 2 构造各域实现 ────────────────────────────────────────────────
-  // 记录域：数据目录（`~` 已在加载时展开——记录域拒收 `~`）
-  const recordsStore = createRecordsStore({ dataDir: loaded.config.dataDir })
+  // 执行域先立：**工作区是记录域构造入参的一半**（U26——会话归属工作区，见下），
+  // 且装配根只做选择、不判断根合不合格（那归执行域，一个真源）。
+  // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
+  // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
+  // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
+  const workspace = openWorkspace(loaded, options.cwd)
+  const sandbox = createSandbox({ workspace })
+
+  // 记录域：数据目录（`~` 已在加载时展开——记录域拒收 `~`）＋ **本进程的工作区**。
+  //
+  // **工作区为何在构造时交出去**（U26）：会话**建立时锚定**它——建行的动作在记录域
+  // 的事务里（首写即建会话，`D5`：首条消息按下回车那一刻），故归属只能随库的构造进域。
+  // 交的是 `roots()`（`realpath` 后的规范形 · 声明序），**整组**——只记默认根的话，
+  // 多根工作区日后恢复就重建不回去（那一列正是为「回到原位」立的）。
+  // 工作区是**进程级**的（配置在则整组接管、缺省则启动目录），同进程开的会话同属一个
+  // ——这与「归属随记录持久」不冲突：库里那一列只在建行那一次写，此后谁开都改不动。
+  const recordsStore = createRecordsStore({
+    dataDir: loaded.config.dataDir,
+    workspace: workspace.roots(),
+  })
   /**
    * **启动＝新会话（不接续）**——第 19 轮按 D4 改回来：给的是「显式接续」的那条路
    * （启动参数 `--session` 的同义物），**不给就是「还没有会话」**。
@@ -293,12 +311,6 @@ export function assemble(options: AssembleOptions): Assembly {
    * 不把列表塞满空壳；首条消息按下回车才开张（`SessionHost.submit`）。
    */
   const startup = options.session
-  // 执行域：工作区根注册 ＋ 沙箱（cwd 约束经工作区）
-  // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
-  // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
-  // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
-  const workspace = openWorkspace(loaded, options.cwd)
-  const sandbox = createSandbox({ workspace })
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────
   // 扇出在代码里先立：它没有依赖，而各域都要它（编号是概念次序，见文件头注）
