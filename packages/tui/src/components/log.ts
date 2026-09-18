@@ -6,6 +6,8 @@
  *   命令回执（`·` 最弱）；
  * - **密度**：条目之间**不插空行**（分层靠标记 / 缩进 / 明暗）；**只有用户消息之前**留一行分段；
  *   **空内容不渲染**（缺陷 D6 的外壳侧双保险）；工具结果与工具行同组缩进；思考默认折一行；
+ * - **助手正文走 Markdown**（缺陷 D14）——五样（粗体 · 行内代码 · 代码块 · 列表 · 标题）在
+ *   `../markdown.ts` 里解析成显示行，本文件只负责折行与挂缩进（换皮不动解析）；
  * - **一行一个 `<Text>`、行内不写换行**——⚠️ 这正是 **D11 的根因**：
  *   早先每行 `<Text>` 里又写了一个 `'\n'`，而 Ink 的竖排 Box **本来就一个子节点一行**
  *   ⇒ 每行实际占两行 ⇒ Ink 以为的帧高只有实际的一半 ⇒ 重绘「上移 N 行」擦不干净
@@ -17,6 +19,7 @@
 import { Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
+import { markdown } from '../markdown.ts'
 import type { LogRow } from '../view.ts'
 import { textOfLines } from '../view.ts'
 import { PALETTE, displayWidth, durationLabel, wrap } from './lines.ts'
@@ -120,13 +123,22 @@ function rowBody(
         hang: INDENT,
       })
 
-    case 'assistant':
+    case 'assistant': {
       // **空内容不渲染**（D6 的外壳侧双保险）——模型只发工具调用、不吐正文的那一轮
-      if (row.text.trim() === '') return []
-      return wrapSegments([seg('⏺ ', PALETTE.ok, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
-        key: 'r:a',
-        hang: INDENT,
-      })
+      const body = trimBlank(row.text)
+      if (body.trim() === '') return []
+
+      // **正文是 Markdown**（缺陷 D14）——五样渲染 ＋ 流式容忍都在 `markdown.ts` 里，
+      // 这里只做「显示行 → 折好的行」：`⏺` 挂首行，续行按各行的悬挂缩进挂
+      // （列表挂到符号之后；其余按默认缩进）。
+      return markdown(body).flatMap((line, at) =>
+        wrapSegments(
+          at === 0 ? [seg('⏺ ', PALETTE.ok, true), ...line.segments] : line.segments,
+          columns,
+          { key: `r:a:${at}`, hang: line.hang ?? INDENT },
+        ),
+      )
+    }
 
     case 'thinking': {
       const lines = textOfLines(trimBlank(row.text)).filter((line) => line.trim() !== '')

@@ -18,6 +18,7 @@ import { createElement as h } from 'react'
 import type { Entry, KernelEvent } from '@magic/contracts'
 import { AppView } from '../src/components/app.ts'
 import { logLines } from '../src/components/log.ts'
+import type { LogLine } from '../src/components/log.ts'
 import { createShell } from '../src/shell.ts'
 import type { ShellKey } from '../src/shell.ts'
 import { event } from './events.ts'
@@ -554,6 +555,79 @@ describe('密度（原型 · 密度节）', () => {
 
     const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
     expect(lines.some((line) => line.segments.some((piece) => piece.text.includes('⏺')))).toBe(false)
+  })
+})
+
+// ══ D14 · 助手正文渲染 Markdown（缺陷轮 V）══════════════════════════════
+
+describe('D14 · 记录区渲染 Markdown', () => {
+  /** 助手正文喂进真链路 → 取**屏上会是什么**（显示行）。 */
+  const bodyOf = (text: string, columns = 96): readonly LogLine[] => {
+    const app = live()
+    app.feed([event('model.delta', { channel: 'text', text })])
+
+    return logLines(app.shell.getView().rows, { columns, expanded: false })
+  }
+
+  const textsOf = (lines: readonly LogLine[]): readonly string[] =>
+    lines.map((line) => line.segments.map((piece) => piece.text).join(''))
+
+  test('**粗体** 与 `行内代码`——标记不上屏；代码换色、**不换背景**', () => {
+    const lines = bodyOf('这是 **Magic Code** 的 `验收脚本`')
+    const texts = textsOf(lines)
+
+    expect(texts).toEqual(['⏺ 这是 Magic Code 的 验收脚本'])
+    expect(texts.join('')).not.toContain('**')
+    expect(texts.join('')).not.toContain('`')
+
+    const bold = lines[0]?.segments.find((piece) => piece.text === 'Magic Code')
+    const code = lines[0]?.segments.find((piece) => piece.text === '验收脚本')
+
+    expect(bold?.bold).toBe(true) // 加粗
+    expect(code?.color).toBeDefined() // 换色
+    expect(lines[0]?.background).toBeUndefined() // 不换背景（省行高）
+  })
+
+  test('代码块 / 列表 / 标题——**围栏与 `#` 不上屏**，符号留着', () => {
+    const texts = textsOf(bodyOf('## 这一段在说什么\n\n```ts\nconst a = 1\n```\n\n- 第一条\n1. 有序'))
+
+    expect(texts).toEqual(['⏺ 这一段在说什么', '', '  const a = 1', '', '- 第一条', '1. 有序'])
+    expect(texts.join('\n')).not.toContain('```')
+    expect(texts.join('\n')).not.toContain('#')
+  })
+
+  test('`⏺ ` **只挂首行**；续行按各行的悬挂缩进挂（列表挂到符号之后）', () => {
+    const texts = textsOf(bodyOf(`1. ${'甲'.repeat(20)}`, 30))
+
+    expect(texts.filter((line) => line.includes('⏺'))).toHaveLength(1) // 只有首行有标记
+    expect(texts).toHaveLength(2)
+    expect(texts[0]?.startsWith('⏺ 1. 甲')).toBe(true)
+    expect(texts[1]?.startsWith('   ')).toBe(true) // 挂在 `1. ` 之后（三列）
+    expect(texts[1]?.startsWith('    ')).toBe(false) // 不是默认那两列
+  })
+
+  test('**流式中间帧**——未闭合的 `**` / 反引号 / 围栏**先按字面**（不闪不跳）', () => {
+    expect(textsOf(bodyOf('这是 **Magic Co'))).toEqual(['⏺ 这是 **Magic Co'])
+    expect(textsOf(bodyOf('跑 `m02-real'))).toEqual(['⏺ 跑 `m02-real'])
+    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['⏺ ```ts', 'const a = 1'])
+  })
+
+  test('**整屏取景**——帧上见不到 `**` 与反引号（D14 的现象本身）', () => {
+    const app = live()
+    app.feed([state(SESSION, [{ id: SESSION, title: '验收' }])])
+    app.feed([
+      event('model.delta', {
+        channel: 'text',
+        text: '**重点**：跑 `bun test`\n\n```sh\nbun test\n```',
+      }),
+    ])
+
+    const frame = app.screen()
+
+    expect(frame).toContain('重点：跑 bun test')
+    expect(frame).not.toContain('**')
+    expect(frame).not.toContain('`')
+    expect(frame).not.toContain('#')
   })
 })
 
