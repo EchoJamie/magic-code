@@ -8,7 +8,13 @@
  * **根校验（加载时报错不降级——照 `dataDir` 的先例）**——四项，皆在**规范化之后**判：
  * - **不存在** / **不是目录** → 拒（工作区机器锚定在真路径上，根是沙箱唯一的承重假设）；
  * - **重复** → 拒：判在 `realpath` 之后，故 `/tmp/x` 与 `/private/tmp/x`（macOS 上实为
- *   同一目录）这类**写法不同而实为一条**的重复也拦得住——词法比较漏得掉；
+ *   同一目录）这类**写法不同而实为一条**的重复也拦得住——词法比较漏得掉。
+ *   ⚠️ **限度**：这只保证 `realpath` 自己抹平的那几样（符号链接 · `.` · `..` · 尾斜杠）。
+ *   **大小写不在其列**——「大小写不敏感卷上 `CaseDir` 与 `casedir` 是同一条」这件事，
+ *   得靠运行时的 `realpath` 顺手规范化大小写，而这**不是它的普遍性质**：
+ *   实测同一台机器上 bun 的 `realpathSync('/users')` 给 `/Users`、node 的给 `/users`。
+ *   本程序跑 bun，故今天不漏；换成不做这一步的运行时，这类重复会漏过去（不误伤，只是漏拦）。
+ *   故**别把它当 realpath 的普遍保证**——它是「本运行时替我们多做的这一点」。
  * - **相对路径** → 拒（根是绝对路径）。前导 `~` **不算绝对路径**，本域不展开它
  *   （`dataDir` 的 `~` 展开归配置加载器；根这一条未长该行为，写了即按相对路径拒）。
  * - 空列表 → 拒（工作区是「**≥ 1 条**」的联合作用域——零根无默认根可言）。
@@ -56,11 +62,16 @@ export type WorkspaceOptions = {
   readonly roots: readonly string[]
 }
 
-/** 落点是否在根内（含根自身）——按**段边界**判定，不认字符串前缀相邻。 */
-function isInside(root: string, target: string): boolean {
-  if (target === root) return true
+/**
+ * `absolute` 是否落在 `root` 内（含根自身）——按**段边界**判定，不认字符串前缀相邻。
+ *
+ * 签名与权限域的同名函数（`@magic/permission` · `paths.ts`）**同序同义**：两域各持一份
+ * 边界判定，参数序若一个相反一个不反，读代码的人接反了不会当场红（多数组合都返回 false）。
+ */
+function isInside(absolute: string, root: string): boolean {
+  if (absolute === root) return true
   const prefix = root.endsWith(sep) ? root : root + sep
-  return target.startsWith(prefix)
+  return absolute.startsWith(prefix)
 }
 
 /**
@@ -130,7 +141,7 @@ export function createWorkspaceService(options: WorkspaceOptions): WorkspaceServ
 
     resolve(path) {
       const absolute = resolvePath(defaultRoot, path) // 相对按默认根；绝对原样（其后归一化）
-      const root = roots.find((candidate) => isInside(candidate, absolute))
+      const root = roots.find((candidate) => isInside(absolute, candidate))
 
       if (root === undefined) {
         throw new Error(
