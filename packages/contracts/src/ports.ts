@@ -496,6 +496,17 @@ export type CommandRoutes = {
    * 答复走事件（`session.history`，**不落库**）：命令面只发不收，回话一律经事件流。
    */
   onHistoryRead(session?: SessionId): void
+  /**
+   * 模型条目表 → **装配**（它握着注册表——技术方案 · 装配视图 4）。
+   *
+   * 控制域**原样转手**（同 `onModelSwitch` 的姿势）——它不认识注册表，也不知道有哪些条目；
+   * 答复走事件（`model.catalog`，**不落库**）：命令面只发不收，与 `onHistoryRead` 同一条路。
+   *
+   * **为什么归装配而不是模型域**：注册表是**进程级**的（选中的供应商不随会话漂，见
+   * 装配的 `switchModel`），而模型域的网关是按会话实例造的那一束里的一件——
+   * 条目表的真源在装配这一步，`model.switched` 的产出也早已收拢在这儿（缺陷 D16）。
+   */
+  onModelList(): void
 }
 
 /**

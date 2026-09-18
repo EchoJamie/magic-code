@@ -121,6 +121,42 @@ describe('注册表 · 注册', () => {
     expect(registry.has('alpha-turbo')).toBe(true)
   })
 
+  /**
+   * D10 · 第 1 样（窗长）与第 3 样（条目表）的**域内**那半——外壳看到的表就是从这儿出的。
+   */
+  test('窗长随条目带出来——**声明了才有**（不声明就不给这一位，不编）', () => {
+    const registry = registryOf(
+      {
+        alpha: { ...ALPHA, contextWindow: 200_000 },
+        // 乙没声明——两形对照
+        beta: BETA,
+      },
+      { apiKeys: { alpha: 'ka', beta: 'kb' } },
+    )
+
+    const [first, second] = registry.list()
+    expect(first).toEqual({ id: 'alpha', model: 'alpha-1', contextWindow: 200_000 })
+    // 没声明＝**连键都没有**（不是 `undefined` 占位——外壳据「在不在」判「给不给分母」）
+    expect(second).toEqual({ id: 'beta', model: 'beta-1' })
+    expect('contextWindow' in (second ?? {})).toBe(false)
+  })
+
+  test('`current()`：未切换＝缺省条目 ＋ 它的默认模型；切换后跟着走', () => {
+    const registry = registryOf({ alpha: ALPHA, beta: BETA }, { apiKeys: { alpha: 'ka', beta: 'kb' } })
+
+    // 未切换——`selection()` 为空，但「此刻会走哪一条」是确定的（缺省那条）
+    expect(registry.selection()).toBeUndefined()
+    expect(registry.current()).toEqual({ provider: 'alpha', model: 'alpha-1' })
+
+    registry.use({ provider: 'beta' })
+    expect(registry.current()).toEqual({ provider: 'beta', model: 'beta-1' })
+
+    // 只换模型：条目不动，模型名换掉——`current` 未必是表里的某一行（见契约 `ModelSelectionRef`）
+    registry.use({ model: 'beta-x' })
+    expect(registry.current()).toEqual({ provider: 'beta', model: 'beta-x' })
+    expect(registry.list()).toContainEqual({ id: 'beta', model: 'beta-1' })
+  })
+
   test('缺省条目不在表里——当场报（配置加载器已拦一道，这里再拦一道）', () => {
     expect(() =>
       createModelRegistry({

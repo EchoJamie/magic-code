@@ -235,7 +235,9 @@ export function withTransientRetry(
         // 它骑马过流（一块本层自己的 `retry` 信号），由归一铸成 `model.retry` 事件：
         // 模型域的事件出口就是这条流，另开一条路会让它与前后的增量**丢掉先后的准头**
         // （而「等之前 / 等之后」正是这条事件唯一的用处）。
-        yield { type: 'retry', attempt: attempt + 1, delayMs }
+        // `maxAttempts` 一并带上——上限是**策略**的事，策略在**本层**手上（缺陷 D10 · 第 2 样）：
+        // 让信号只报「第几次」而把分母留给外壳去猜，等于把策略抄一份到外壳里（改了必分叉）。
+        yield { type: 'retry', attempt: attempt + 1, delayMs, maxAttempts: policy.maxAttempts }
         await sleep(delayMs, streamOptions?.signal)
       }
     }

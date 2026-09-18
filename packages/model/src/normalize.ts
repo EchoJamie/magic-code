@@ -51,6 +51,8 @@ export type RetryStreamPart = {
   readonly attempt: number
   /** 即将等的时长（毫秒）。 */
   readonly delayMs: number
+  /** 策略的上限（总尝试次数，含首次）——状态行 `2/3` 的分母（缺陷 D10 · 第 2 样）。 */
+  readonly maxAttempts: number
 }
 
 /**
@@ -75,6 +77,12 @@ export type NormalizeOptions = {
    */
   readonly traits?: ModelTraits | undefined
   /**
+   * **上下文窗口总量**（token）——`model.usage` 上那个分母（缺陷 D10 · 第 1 样）。
+   * 由网关从条目配置传入（`ProviderConfig.contextWindow`）。**缺省 ＝ 不给分母**——
+   * 归一不会为它编一个数（没声明就没有这一位）。
+   */
+  readonly contextWindow?: number | undefined
+  /**
    * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
    * `id` / `session` / `turn` / `at` 四件全由它盖；归一不自造计数、不取时钟。
    */
@@ -94,6 +102,8 @@ type NormalizeState = {
   readonly model: string
   readonly provider: string | undefined
   readonly secret: string | undefined
+  /** 上下文窗口总量（条目配置声明了才有）——随 `model.usage` 出去的那个分母。 */
+  readonly contextWindow: number | undefined
   readonly stamper: EventStamper
   /** 正文切分位——生效标记决定实现（见 `inline-thinking.ts`）。 */
   readonly splitter: TextSplitter
@@ -124,6 +134,7 @@ function createState(options: NormalizeOptions): NormalizeState {
     model: options.model,
     provider: options.provider,
     secret: options.secret,
+    contextWindow: options.contextWindow,
     stamper: options.stamper,
     splitter: createSplitter(options.traits),
     text: '',
@@ -199,7 +210,7 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
   switch (part.type) {
     // —— 退避重试中（本层自己的信号块，非取件来源）——
     case 'retry': {
-      return [modelRetry(state.stamper, part.attempt, part.delayMs)]
+      return [modelRetry(state.stamper, part.attempt, part.delayMs, part.maxAttempts)]
     }
 
     // —— 正文（过切分位：内嵌思考可能被切到 thinking 通道）——
@@ -262,7 +273,14 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
       // 收束前先吐残片——否则标签尾部的半截留在切分器里，正文截掉一截
       const events: KernelEvent[] = flushText(state)
       if (state.usage !== undefined) {
-        events.push(modelUsage(state.stamper, state.usage.inputTokens, state.usage.outputTokens))
+        events.push(
+          modelUsage(
+            state.stamper,
+            state.usage.inputTokens,
+            state.usage.outputTokens,
+            state.contextWindow,
+          ),
+        )
       }
       events.push(modelCallEnd(state.stamper))
       state.closed = true

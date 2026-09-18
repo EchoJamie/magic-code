@@ -129,7 +129,22 @@ export type HistoryRead = {
   readonly session?: SessionId
 }
 
-/** 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧一支）——外壳发往内核的全部消息。 */
+/**
+ * `model.list`——**模型条目表的读侧命令**（缺陷 D10 · 第 3 样）。
+ *
+ * **由头**：外壳的 `/model` 要列出**注册表全量**（含从未调用过的条目），而外壳够不着
+ * 注册表（那是装配的把手）——与 `history.read` 同一处境（外壳够不着记录域）：
+ * **控制面是唯一一直通的路**，故读也走命令面，答复走事件（`model.catalog`，**不落库**）。
+ *
+ * **无参**——问的就是「都有哪些」；「当前用的是哪条」由答复里的 `current` 一并给
+ * （同一次往返说清一整屏）。
+ *
+ * 与 `model.switch`（空参）的分工：那条**只发不收**、回话是一句「没说要换成什么」的
+ * 失败缘由——**那不是读面**（读面不该以「换失败了」作答，也不该因此落库一笔）。
+ */
+export type ModelList = { readonly type: 'model.list' }
+
+/** 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支）——外壳发往内核的全部消息。 */
 export type Command =
   | InputSubmit
   | DecisionAnswer
@@ -137,6 +152,7 @@ export type Command =
   | ModelSwitch
   | SessionCommand
   | HistoryRead
+  | ModelList
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

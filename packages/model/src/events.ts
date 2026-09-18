@@ -40,9 +40,18 @@ export function modelCallStart(stamper: EventStamper, model: string, provider?: 
  * `ModelCallResult.attempts`，故不落库不丢信息。
  *
  * `attempt` **从 2 起**：第 1 次是首发，谈不上「重试」。
+ *
+ * `maxAttempts` ＝**策略的上限**（总尝试次数，含首次）——状态行 `2/3` 的**分母**（缺陷 D10 ·
+ * 第 2 样）。**它必填**：这条事件的产出方是退避层自己，手上就有那个策略（`policy.maxAttempts`），
+ * 没有「不知道」的情形——给不出来才该另想办法，而不是让外壳去猜一个常量。
  */
-export function modelRetry(stamper: EventStamper, attempt: number, delayMs: number): KernelEvent {
-  return stamper.stamp('model.retry', { attempt, delayMs, tier: 'transient' })
+export function modelRetry(
+  stamper: EventStamper,
+  attempt: number,
+  delayMs: number,
+  maxAttempts: number,
+): KernelEvent {
+  return stamper.stamp('model.retry', { attempt, delayMs, maxAttempts, tier: 'transient' })
 }
 
 /** 调用止——收束。失败走 `modelErrorEvent`，**不另发** `model.call.end`。 */
@@ -53,13 +62,23 @@ export function modelCallEnd(stamper: EventStamper): KernelEvent {
 /**
  * 用量——随事件流入记录（技术方案 · 模型策略 · 用量：成本可见的数据基础）。
  * 供应商未回用量时**不发**此事件（不发比发 `{0, 0}` 诚实）。
+ *
+ * `contextWindow` ＝**上下文窗口总量**——状态行 `12.4k/200k` 的**分母**（缺陷 D10 · 第 1 样）。
+ * **分母跟着分子走**：两者同刻同源（都在收束那一刻落定），外壳不会拿滞后的分母配新分子。
+ * 来处＝条目配置的 `contextWindow`（`ProviderConfig` 那个键）——**没声明就不给这个位**：
+ * 拿不到就不显示，不拿假数占位。
  */
 export function modelUsage(
   stamper: EventStamper,
   inputTokens: number,
   outputTokens: number,
+  contextWindow?: number,
 ): KernelEvent {
-  return stamper.stamp('model.usage', { inputTokens, outputTokens })
+  return stamper.stamp('model.usage', {
+    inputTokens,
+    outputTokens,
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+  })
 }
 
 /**

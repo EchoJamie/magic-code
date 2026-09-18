@@ -2,7 +2,7 @@
  * 配置加载 —— 装配视图第 1 步（技术方案 · 配置与密钥）。
  *
  * 读 `~/.magic/config.json`（形制**字面冻结**：`{ defaultProvider, providers{<id>{baseURL,
- * apiKey, model, traits?}}, dataDir }`）→ 校验 → 落地成 `LoadedConfig`。
+ * apiKey, model, traits?, contextWindow?}}, dataDir }`）→ 校验 → 落地成 `LoadedConfig`。
  *
  * **两处规矩落在这里**：
  * - **`dataDir` 前导 `~` 在加载时展开**（契约 `expandDataDir`）——记录域**不展开**且对 `~`
@@ -82,7 +82,22 @@ function asTraits(value: unknown, path: string, field: string): ProviderConfig['
   return { inlineThinking: { tag } }
 }
 
-/** 一个供应商条目——`{ baseURL, apiKey?, model, traits? }`。 */
+/**
+ * `contextWindow` 覆盖位（D10 · 第 1 样）——**可选**；给了就须是正整数（token）。
+ *
+ * ⚠️ **漏带＝静默失效**（同下面权限段那条教训）：配置里写了窗长而这里不接，
+ * 状态行的分母**永远不出现**，且不报错——故这一行有测试钉着，别顺手删。
+ * 写坏了照旧**报错不降级**（窗长填错时宁可启动期一声响，也别拿一个假分母去画进度）。
+ */
+function asContextWindow(value: unknown, path: string, field: string): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new ConfigError(path, `${field} 须是正整数（token；缺省 / 不写＝不声明窗长）`)
+  }
+  return value
+}
+
+/** 一个供应商条目——`{ baseURL, apiKey?, model, traits?, contextWindow? }`。 */
 function asProvider(value: unknown, path: string, field: string): ProviderConfig {
   const raw = asObject(value, path, field)
   const apiKey = raw['apiKey']
@@ -91,11 +106,14 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
     throw new ConfigError(path, `${field}.apiKey 须是字符串（缺省 / 空串 → 回退环境变量）`)
   }
 
+  const contextWindow = asContextWindow(raw['contextWindow'], path, `${field}.contextWindow`)
+
   return {
     baseURL: asText(raw['baseURL'], path, `${field}.baseURL`),
     apiKey: apiKey as string | undefined,
     model: asText(raw['model'], path, `${field}.model`),
     ...(raw['traits'] === undefined ? {} : { traits: asTraits(raw['traits'], path, `${field}.traits`) }),
+    ...(contextWindow === undefined ? {} : { contextWindow }),
   }
 }
 

@@ -78,6 +78,26 @@ describe('形制照读（字面冻结）', () => {
     expect(none.provider.traits).toBeUndefined()
   })
 
+  /**
+   * D10 · 第 1 样的那一格——**漏带＝静默失效**（配置里写了窗长而加载器不接，
+   * 状态行的分母就永远不出现，还不报错）。故此处钉两形 ＋ 坏值报错。
+   */
+  test('`contextWindow` 覆盖位——声明了才带出（正整数；不写＝不声明窗长）', () => {
+    const declared = loadFrom(
+      validConfig({
+        providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: 200_000 } },
+      }),
+    )
+    expect(declared.provider.contextWindow).toBe(200_000)
+
+    const none = loadFrom(
+      validConfig({ providers: { minimax: { baseURL: 'https://x/v1', model: 'm' } } }),
+    )
+    // 不写就没有这一位——**不是 0、不是 NaN**（拿不到就说拿不到）
+    expect(none.provider.contextWindow).toBeUndefined()
+    expect('contextWindow' in none.provider).toBe(false)
+  })
+
   test('缺省配置文件落点＝契约的 CONFIG_FILE（不在 app 里重写一份字面量）', () => {
     expect(CONFIG_FILE).toBe('~/.magic/config.json')
     // 不传 path 时读 CONFIG_FILE——展开后即 `${HOME}/.magic/config.json`（此处置家目录探针）
@@ -190,6 +210,19 @@ describe('报错取「一声响」（不静默兜底）', () => {
           },
         }),
         /providers\.minimax\.traits\.inlineThinking\.tag 须是非空字符串/,
+      ],
+      // 窗长写坏了**报错不降级**——宁可启动期一声响，也别拿一个假分母去画进度（D10）
+      [
+        validConfig({
+          providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: '200k' } },
+        }),
+        /providers\.minimax\.contextWindow 须是正整数/,
+      ],
+      [
+        validConfig({
+          providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: 0 } },
+        }),
+        /providers\.minimax\.contextWindow 须是正整数/,
       ],
       [validConfig({ dataDir: 7 }), /dataDir 须是非空字符串/],
       [[1, 2, 3], /配置根 须是对象/],

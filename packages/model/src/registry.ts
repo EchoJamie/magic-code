@@ -32,11 +32,18 @@ import { MissingApiKeyError, createModelGateway } from './gateway.ts'
 
 // —— 形态 ——
 
-/** 注册表里的一格——**供应商细节不出域**：只给「叫什么、默认用哪个模型」。 */
+/** 注册表里的一格——**供应商细节不出域**：只给「叫什么、默认用哪个模型、窗多长」。 */
 export type ProviderEntry = {
   readonly id: string
   /** 该条目的默认模型（`providers.<id>.model`）。 */
   readonly model: string
+  /**
+   * 该条目的**上下文窗口总量**（`providers.<id>.contextWindow`）——**声明了才有**。
+   *
+   * 它是**元数据**（供应商 / 模型规格），不是供应商细节（端点 / key / 参数）：出得来。
+   * 没声明就不给这个位——外壳拿不到分母就不显示分母，不编（缺陷 D10 · 第 1 样）。
+   */
+  readonly contextWindow?: number
 }
 
 /** 当前选中——供应商 ＋ 模型（两个都得定下来：换条目而留旧模型名多半打不通）。 */
@@ -74,6 +81,15 @@ export interface ModelRegistry extends ModelGateway {
   defaultProviderId(): string
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
   selection(): ModelSelection | undefined
+  /**
+   * **此刻会走哪一条**——`selection()` 的「没有就补缺省」版：未切换过＝缺省条目 ＋
+   * 该条目的默认模型（`stream` 的实际去向）。
+   *
+   * 两个读法并存各有其用：`selection()` 回答「**换过没有**」（`undefined` 本身就是信息），
+   * 本方法回答「**现在是谁**」——外壳的模型选择器要标「当前」，问的是后者
+   * （缺陷 D10 · 第 3 样）。
+   */
+  current(): ModelSelection
   has(id: string): boolean
   /** 换模型——会话中途调用，下一轮起走新条目（见文件头注）。 */
   use(request: ModelSwitchRequest): ModelSwitchResult
@@ -117,7 +133,8 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
   const { providers, defaultProvider, stamper } = options
   const entries = Object.entries(providers)
 
-  if (providers[defaultProvider] === undefined) {
+  const defaultEntry = providers[defaultProvider]
+  if (defaultEntry === undefined) {
     const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
     throw new Error(`缺省供应商「${defaultProvider}」不在 providers 里——已配：${known}`)
   }
@@ -156,7 +173,12 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
   return {
     list(): readonly ProviderEntry[] {
-      return entries.map(([id, config]) => ({ id, model: config.model }))
+      return entries.map(([id, config]) => ({
+        id,
+        model: config.model,
+        // 没声明就不给这个位（不拿 0 / 占位符冒充「不知道」）
+        ...(config.contextWindow === undefined ? {} : { contextWindow: config.contextWindow }),
+      }))
     },
 
     defaultProviderId(): string {
@@ -165,6 +187,12 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
     selection(): ModelSelection | undefined {
       return selected
+    },
+
+    current(): ModelSelection {
+      // 未切换过——缺省条目 ＋ **它的**默认模型（`stream` 那时正是这么走的：请求给的模型名
+      // 由装配按缺省条目填，见 `Assembly` 里 `model: loaded.provider.model` 那一处）
+      return selected ?? { provider: defaultProvider, model: defaultEntry.model }
     },
 
     has(id: string): boolean {

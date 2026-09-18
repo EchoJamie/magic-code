@@ -1011,6 +1011,54 @@ function capture(reply: () => Response): { fetch: typeof globalThis.fetch; seen:
 }
 
 describe('假端点回环 · 流式事件序列', () => {
+  /**
+   * D10 · 第 1 样——状态行 `12.4k/200k` 的**分母**：条目配置声明了窗长，就**随用量一起到**
+   * （同一次调用、同一刻）；没声明，这一位**就不在**（拿不到就不显示，不编）。
+   */
+  test('窗长随用量一起出来——条目声明了才有（分母跟着分子走）', async () => {
+    const sseReply = (): Response =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        chunk({ choices: [], usage: { prompt_tokens: 12_400, completion_tokens: 40, total_tokens: 12_440 } }),
+      )
+
+    const declared = createModelGateway({
+      providerId: 'minimax',
+      stamper: testStamper(),
+      // 条目声明了窗长（配置加键——窗长的真来处，见 `ProviderConfig.contextWindow`）
+      config: { ...CONFIG, contextWindow: 200_000 },
+      apiKey: 'test-key',
+      fetch: capture(sseReply).fetch,
+      env: {},
+    })
+
+    const withWindow = await drain(
+      declared.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
+    expect(withWindow.events.filter((event) => event.kind === 'model.usage').map((event) => event.data)).toEqual([
+      { inputTokens: 12_400, outputTokens: 40, contextWindow: 200_000 },
+    ])
+    // 聚合结果**不动**——窗长是「这次调用之外」的东西，不是用量的一部分
+    expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40 })
+
+    const silent = createModelGateway({
+      providerId: 'minimax',
+      stamper: testStamper(),
+      config: CONFIG, // 没声明窗长
+      apiKey: 'test-key',
+      fetch: capture(sseReply).fetch,
+      env: {},
+    })
+
+    const withoutWindow = await drain(
+      silent.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+    )
+    const usage = withoutWindow.events.find((event) => event.kind === 'model.usage')
+    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40 })
+    expect('contextWindow' in (usage?.data ?? {})).toBe(false)
+  })
+
   test('SSE → 取件层 → 归一：序列与聚合结果都对', async () => {
     const { fetch, seen } = capture(() =>
       sse(

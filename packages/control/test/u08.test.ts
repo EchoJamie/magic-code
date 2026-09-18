@@ -75,6 +75,9 @@ export function commandSubjectOf(command: Command): string {
     case 'history.read':
       // 第 19 轮读侧一支——不给孩子条＝读当下这条
       return `读历史：${command.session ?? '（当下这条）'}`
+    case 'model.list':
+      // D10 读侧第二支——无参：问的就是「都有哪些」
+      return '列模型条目'
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -137,6 +140,7 @@ export function hubFaceRealizesPort(): void {
     onModelSwitch: () => undefined,
     onSession: () => undefined,
     onHistoryRead: () => undefined,
+    onModelList: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -152,7 +156,7 @@ export function kernelEndIsContractTransport(): void {
   void transport
 }
 
-/** 域侧路由即契约 `CommandRoutes`——五条命令各一路由，不多不少。 */
+/** 域侧路由即契约 `CommandRoutes`——六条命令各一路由，不多不少。 */
 export function routesAreContractShape(): void {
   const routes: CommandRoutes = {
     onInput: (input) => void input.text,
@@ -161,6 +165,7 @@ export function routesAreContractShape(): void {
     onModelSwitch: (request) => void [request.provider, request.model],
     onSession: (command) => void command.type,
     onHistoryRead: () => undefined,
+    onModelList: () => undefined,
   }
   void routes
 }
@@ -179,7 +184,7 @@ function envelope<K extends EventKind>(
   return { id, session: SESSION, turn: 1, at: AT, kind, data }
 }
 
-/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 五路由皆必填）。 */
+/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 六路由皆必填）。 */
 function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
   return {
     onInput: () => undefined,
@@ -188,6 +193,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onModelSwitch: () => undefined,
     onSession: () => undefined,
     onHistoryRead: () => undefined,
+    onModelList: () => undefined,
     ...overrides,
   }
 }
