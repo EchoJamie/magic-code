@@ -22,6 +22,8 @@ import { join } from 'node:path'
 import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
 import { createFauxGateway } from '@magic/faux'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
+// 接线取件（照 `model-switch.test.ts` 取 `scriptOptions` 的先例）——不是写着同样内容的字面量
+import { tuiOptions } from '../src/cli.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
@@ -383,6 +385,81 @@ describe('读数 3 · 模型条目表', () => {
       expect(catalog.data.current).toBeUndefined()
 
       handle.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 判据 1 的**开机那一跳**（U20 留的位 · U21 接上）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 上面那一组钉的是「分母**经事件**到外壳」；这一组钉的是**另一条来路**——
+// 用户还没跑过 `/model` 的时候，分母从**配置**直接进 `runTui`（`cli.ts` 的 `tuiOptions`）。
+//
+// **为什么必须有这一条**：`model.catalog` 只有 `/model` 会触发，故开机那一刻 ④ 是个光杆
+// 分子（`3.1k`）。用户要的是 `3.1k/200k` 一开局就在。
+//
+// ⚠️ **判据取件、不复述**（缺陷 D16 那笔账）：接线只有 `cli.ts` 里那一跳，
+// 用例要是自己「照同样方式接一遍」，倒回那一跳照样绿。故从 `tuiOptions` **取件**。
+//
+// ⚠️ **不能改成「开机发一次 `model.list`」**：装配的 `listModels` 在没会话时会
+// `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵——
+// 故分母只从配置读。
+
+describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
+  test('缺省条目声明了窗长 ⇒ 起外壳的入参里带着它（不必等 `/model`）', () => {
+    const land = stage()
+
+    try {
+      // 缺省＝alpha（夹具里它声明了 `contextWindow: 200_000`）
+      const assembly = land.assemble({ modelFetch: endpoint() })
+
+      expect(tuiOptions(assembly).contextWindow).toBe(200_000)
+
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /**
+   * 换到**没声明**的那一条（beta）⇒ `null`。
+   *
+   * 两件一起咬住了：① 「没声明就不编」；② 读数是**当下**那一条的窗，不是装配那一刻的快照
+   * （`--provider` / `--model` 就是开局先换再起外壳——快照会把缺省条目的数报成选中条目的）。
+   *
+   * ⚠️ 这一条钉的是**装配给的数**。屏幕那一侧另有一笔账（换过模型之后屏上还停在旧分母，
+   * 见本轮回报「如实记」）——**别拿这条当那个也修好了**。
+   */
+  test('换到没声明窗长的那条 ⇒ `null`（回退成只报已用量——不编一个总量出来）', () => {
+    const land = stage()
+
+    try {
+      const assembly = land.assemble({ modelFetch: endpoint() })
+      const switched = assembly.switchModel({ provider: 'beta' })
+      expect(switched.ok).toBe(true)
+
+      expect(tuiOptions(assembly).contextWindow).toBeNull()
+
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('注册表缺席（替身网关）⇒ `null`（同「拿不到就不编」）', () => {
+    const land = stage()
+
+    try {
+      const assembly = land.assemble({
+        modelGateway: (stamper) => createFauxGateway({ stamper, turns: [] }),
+      })
+
+      expect(tuiOptions(assembly).contextWindow).toBeNull()
+
       assembly.close()
     } finally {
       land.dispose()

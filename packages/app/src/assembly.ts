@@ -171,6 +171,17 @@ export type Assembly = {
    */
   readonly rejectedRules: readonly RuleProblem[]
   /**
+   * **当前条目**声明的上下文窗总量（`providers.<id>.contextWindow`）——状态行 ④ 的**分母**
+   * （缺陷 `D10` 第 1 样；U20 留的位，本轮接上）。
+   *
+   * **没声明就是 `null`**——不是 0、也不是某个惯例值：`null` 让外壳**只报已用量**
+   * （「拿不到的不编」是这条读数立起来时的判据）。注册表缺席（注入了替身网关）同此。
+   *
+   * 与 `/model` 那条来路（`model.catalog`）同源同判据——两处都由**条目自己声明的**那个数
+   * 说了算，不会分叉。
+   */
+  readonly contextWindow: number | null
+  /**
    * 工作区**注册根**（首站单根）——执行域构造时取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
    */
@@ -485,6 +496,20 @@ export function assemble(options: AssembleOptions): Assembly {
    * 叫「条目名」（`model.call.start` / `model.switched` 都是 `provider`，同一件事一个词）。
    * `contextWindow` **有没有就带不带**——没声明就不给这一位（外壳拿不到就不显示，不编）。
    */
+  /**
+   * 当前条目声明的上下文窗总量——④ 的开局分母（见 `Assembly.contextWindow`）。
+   *
+   * 取 `current()` 而不是 `defaultProviderId()`：`--provider` 是**开局就落地**的选中
+   * （见 `cli.ts` 那段注），故开屏那一刻要报的是**它**的窗，不是缺省条目的。
+   */
+  const contextWindowOf = (registry: ModelRegistry | undefined): number | null => {
+    if (registry === undefined) return null
+
+    const chosen = registry.current()
+
+    return registry.list().find((entry) => entry.id === chosen.provider)?.contextWindow ?? null
+  }
+
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
@@ -535,6 +560,12 @@ export function assemble(options: AssembleOptions): Assembly {
     paths: recordsStore.paths,
     permissionRules: parsedRules.rules,
     rejectedRules: parsedRules.rejected,
+    // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
+    // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
+    // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。
+    get contextWindow(): number | null {
+      return contextWindowOf(models)
+    },
     workspaceRoot: workspace.defaultRoot(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。

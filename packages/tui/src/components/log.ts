@@ -21,7 +21,8 @@ import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
 import { diffRowsOf, looksLikeDiff, replaceDiff } from '../diff.ts'
 import type { DiffKind, DiffRow } from '../diff.ts'
-import { markdown } from '../markdown.ts'
+import { markdownStream } from '../markdown.ts'
+import type { MdLine } from '../markdown.ts'
 import type { LogRow } from '../view.ts'
 import { textOfLines } from '../view.ts'
 import { PALETTE, displayWidth, durationLabel, wrap } from './lines.ts'
@@ -105,6 +106,15 @@ export function LogRowView({ row, columns, expanded, spaced, now = null }: LogRo
 /**
  * 记录行 → 显示行（纯函数）。
  * `spaced` ＝ 这条之前留一行分段（**只有用户消息之前**——原型 · 密度）。
+ *
+ * **带缓存**（U21 · 增量重绘）——一屏上一条行在一帧里会被问两遍（活动区的行数预算
+ * 与真渲染各一次），而流式时同一行还会被**逐帧**问下去。两处的答案只由
+ * **行的内容 ＋ 四个参数**决定，故记下来即可：
+ *
+ * - 行对象**身份**为键（`WeakMap`）——归约从不改入参（`view.ts` 的既有纪律），
+ *   故「同一个行对象」＝「同一份内容」；行一变就是新对象，自然落到新的一格。
+ * - **助手正文另算**：它在流式里**每帧都是新对象**，身份缓存对它等于没有。那一条走
+ *   `assistantLines`——按**正文前缀**增量（见其注）。
  */
 export function rowLines(
   row: LogRow,
@@ -115,9 +125,154 @@ export function rowLines(
     readonly now?: number | null
   },
 ): readonly LogLine[] {
-  const body = rowBody(row, options)
+  const key = cacheKeyOf(options)
+  const hit = rowCache.get(row)
+  if (hit !== undefined && hit.key === key) return hit.lines
 
-  return options.spaced === true ? [{ key: 'spacer', segments: [], spacer: true }, ...body] : body
+  const body = rowBody(row, options)
+  const lines = options.spaced === true ? [SPACER, ...body] : body
+
+  rowCache.set(row, { key, lines })
+
+  return lines
+}
+
+/** 分段行（用户消息之前那一行）——**同一个对象**，省得每帧新建一个。 */
+const SPACER: LogLine = { key: 'spacer', segments: [], spacer: true }
+
+/** 显示行的四个参数合成一个键（`now` 参与——跑动中的那行每滴答一次就该重算一次）。 */
+function cacheKeyOf(options: {
+  readonly columns: number
+  readonly expanded: boolean
+  readonly spaced?: boolean
+  readonly now?: number | null
+}): string {
+  return `${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}`
+}
+
+type RowCache = { readonly key: string; readonly lines: readonly LogLine[] }
+
+/** 行身份 → 显示行（见 `rowLines` 的注）。 */
+const rowCache = new WeakMap<LogRow, RowCache>()
+
+/**
+ * 助手正文的**增量折行**（U21 · 增量重绘）——挂在 `markdownStream` 的定稿前缀之上。
+ *
+ * ## 为什么还要一层
+ *
+ * `markdownStream` 省掉的是**解析**（正文 → `MdLine`）；而 `MdLine` → 显示行还要再走一遍
+ * `wrapSegments`（折行 ＋ 切色段），那也是 `O(正文)`。两条合起来才是「一帧重算了一整段正文」。
+ *
+ * 故这一层把**已折好的显示行**按同一个「定稿前缀」攒着：`markdownStream` 说前 `settled`
+ * 条不会再变 ⇒ 那几条的折行结果也不会再变，攒下来即可。每帧真正重算的只有
+ * **`settled` 之后那一段**（没有未闭围栏时＝最后那一行）。
+ *
+ * ## 由头（实测）
+ *
+ * `bench-cost.ts`：正文 800 显示行时 `AppView` 一帧 **30.4ms**，而 Ink 的写档是 33ms
+ * ——**一帧的活就吃满一帧的预算**，流式必然掉队（`bench-stream.ts`：2000 条要 29.5s）。
+ *
+ * ## 键与失守
+ *
+ * 键＝行的 `key`（`assistant:${id}`，一条消息一个、全程不变）。缓存**只对「往后长」成立**：
+ * 新正文不是旧正文的前缀（重放 / 换会话 / 重建）就整条丢掉重来——**那一条判据不能省**。
+ */
+type AssistantCache = {
+  /** 上次算过的正文（判「还是不是同一段在长」）。 */
+  source: string
+  readonly columns: number
+  readonly expanded: boolean
+  /** 已折好的显示行——对应 `markdownStream` 定稿的那一截。 */
+  readonly lines: LogLine[]
+  /** 上面那一截覆盖到第几条 `MdLine`。 */
+  settled: number
+}
+
+const assistantCaches = new Map<string, AssistantCache>()
+
+/** 缓存条数上限——同时只有一两条在长；给上限是防长会话里把每条消息都攒着。 */
+const ASSISTANT_LIMIT = 16
+
+function assistantLines(
+  key: string,
+  body: string,
+  columns: number,
+  expanded: boolean,
+): readonly LogLine[] {
+  const cached = assistantCaches.get(key)
+  const usable =
+    cached !== undefined &&
+    cached.columns === columns &&
+    cached.expanded === expanded &&
+    body.startsWith(cached.source)
+
+  const cache = usable ? cached : resetAssistant(key, columns, expanded)
+  const parsed = markdownStream(key, body)
+
+  // 新定稿的那几条折一次，攒进去（此后不再重算）
+  for (let at = cache.settled; at < parsed.settled; at += 1) {
+    appendLines(cache.lines, wrapAssistant(parsed.lines, at, at + 1, columns))
+  }
+  cache.settled = parsed.settled
+  cache.source = body
+
+  // 尾巴（还有未闭围栏时）每帧重算——没有围栏时它就是最后那一行，`O(1)`。
+  // ⚠️ 尾巴**不进缓存**：它还**不是**定稿的（围栏一闭合，这几行的形会变）。
+  const tail = wrapAssistant(parsed.lines, parsed.settled, parsed.lines.length, columns)
+
+  // 交副本——`cache.lines` 还会被下一次 `push` 长出来，同一个对象交出去会让上一帧的结果背地里变
+  return tail.length === 0 ? [...cache.lines] : [...cache.lines, ...tail]
+}
+
+/** 重置某条正文的增量状态（**丢掉旧的**——缓存只对前缀成立）。 */
+function resetAssistant(key: string, columns: number, expanded: boolean): AssistantCache {
+  assistantCaches.delete(key)
+
+  while (assistantCaches.size >= ASSISTANT_LIMIT) {
+    const oldest = assistantCaches.keys().next().value
+    if (oldest === undefined) break
+    assistantCaches.delete(oldest)
+  }
+
+  const cache: AssistantCache = { source: '', columns, expanded, lines: [], settled: 0 }
+  assistantCaches.set(key, cache)
+
+  return cache
+}
+
+/** `push(...)` 会在长数组上炸参数上限——一个一个来。 */
+function appendLines(into: LogLine[], lines: readonly LogLine[]): void {
+  for (const line of lines) into.push(line)
+}
+
+/**
+ * 助手正文的 `[from, to)` 那几条 `MdLine` → 显示行。
+ *
+ * ⚠️ **`at` 是 `MdLine` 里的绝对下标**（不是切片下标）——首行标记（`⏺ `）与
+ * 续行缩进（两格）按它分，显示行的 `key` 也按它编（`r:a:${at}`）。用相对下标会让
+ * 增量之后**同一个 `key` 指到不同的行**，React 那侧就要错位。
+ */
+function wrapAssistant(
+  lines: readonly MdLine[],
+  from: number,
+  to: number,
+  columns: number,
+): readonly LogLine[] {
+  const out: LogLine[] = []
+
+  for (let at = from; at < to; at += 1) {
+    const line = lines[at] as MdLine
+    appendLines(
+      out,
+      wrapSegments(
+        at === 0 ? [seg('⏺ ', PALETTE.ok, true), ...line.segments] : [seg(INDENT), ...line.segments],
+        columns,
+        { key: `r:a:${at}`, hang: `${INDENT}${line.hang ?? ''}`, bodyColor: PALETTE.fg },
+      ),
+    )
+  }
+
+  return out
 }
 
 /** 一屏上的**全部**显示行（含分段）——快照取景与行数预算用。 */
@@ -158,15 +313,9 @@ function rowBody(
       // 这里只做「显示行 → 折好的行」。
       // **统一悬挂缩进**（缺陷 D20）——首行的标记占 2 列 ⇒ **正文与所有折行都从第 3 列起**；
       // markdown 自己的悬挂（列表按标记宽度）再叠在这条基线上。
-      return markdown(body).flatMap((line, at) =>
-        wrapSegments(
-          at === 0
-            ? [seg('⏺ ', PALETTE.ok, true), ...line.segments]
-            : [seg(INDENT), ...line.segments],
-          columns,
-          { key: `r:a:${at}`, hang: `${INDENT}${line.hang ?? ''}`, bodyColor: PALETTE.fg },
-        ),
-      )
+      //
+      // 折行**按前缀增量**（U21 · 增量重绘）——见 `assistantLines` 的注。
+      return assistantLines(row.key, body, columns, expanded)
     }
 
     case 'thinking': {

@@ -74,7 +74,13 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // `key` 按会话——换会话时重挂，重建的那些行才会被写出来（Static 只追加新项）
     h(StaticList, {
       key: `static:${view.sessionId ?? 'none'}`,
-      items: [...view.settled],
+      // ⚠️ **原样交 `view.settled`，不 `[...]` 复制**（U21 · 历史区静态化）：
+      // Ink 的 `Static` 拿 `[items, index]` 做 `useMemo` 的依赖——每帧递一个新数组，
+      // 那个 memo 每帧都白算一遍（`items.slice(index)`）。`settled` 只在**真的加了行**
+      // 时才换对象（`settle` / `appendSettled` 都是这么写的），故这一交就是稳定的。
+      // 实测这笔账很小（5000 行 0.019ms · `bench-cost.ts`）——**如实记：它不是瓶颈**，
+      // 改它是顺手把这条纪律立住，不是优化的大头。
+      items: view.settled,
       // `children` 是**函数入参**（Static 的形态如此，不是 JSX 子节点）——故写在 props 里
       children: (row: LogRow, index: number) =>
         h(LogRowView, {

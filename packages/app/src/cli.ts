@@ -17,7 +17,7 @@
 import type { KernelEvent } from '@magic/contracts'
 import { TOOLSET_V1 } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
-import { runTui } from '@magic/tui'
+import type { RunTuiOptions } from '@magic/tui'
 import { assemble } from './assembly.ts'
 import type { Assembly } from './assembly.ts'
 import { ConfigError, describeConfig } from './config.ts'
@@ -217,6 +217,26 @@ function describeRules(assembly: Assembly): string {
 }
 
 /**
+ * **起外壳那一下的入参**——装配 → `runTui` 的全部接线就这一处。
+ *
+ * **导出是给用例锚的**（照 `scriptOptions` 的先例，缺陷 D16 那笔账）：状态行 ④ 的分母
+ * （U20 留的位 · 本轮接的那一跳）落在**本文件的这一行**上，判据要是自己「照同样方式接一遍」
+ * 就只咬住了装配那半边——**倒回这一行，用例照样绿**。故把这一处做成**可取件的接缝**：
+ * 用例拿 `tuiOptions(assembly).contextWindow` 验，倒回 `contextWindow` 那一句当场红。
+ *
+ * 分母**从配置里读，不发命令**。⚠️ 别改成「开机发一次 `model.list`」：装配的 `listModels`
+ * 会在没会话时 `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵。
+ * 条目没声明 `contextWindow` ⇒ `null` ⇒ 屏上只报已用量——**不编**。
+ */
+export function tuiOptions(assembly: Assembly): RunTuiOptions {
+  return {
+    transport: assembly.shell,
+    boot: () => assembly.boot(),
+    contextWindow: assembly.contextWindow,
+  }
+}
+
+/**
  * 脚本驱动接的那几件——**导出是给用例锚的**（缺陷 D16 的判据要咬住本文件这一行接线，
  * 而不是只咬住装配那半边）。
  *
@@ -314,7 +334,12 @@ async function main(): Promise<number> {
     // 默认：起真外壳——装配只做「接线 ＋ 起外壳」，交互逻辑全在 @magic/tui。
     // `boot` ＝启动流转（对开局会话跑一次恢复）：`runTui` 会在**订阅之后、渲染之前**跑它
     // （装配纪律：恢复要发事件，外壳得先订上；反了就是用户能在恢复跑完前打字）
-    const tui = await runTui({ transport: assembly.shell, boot: () => assembly.boot() })
+    // ⚠️ **`@magic/tui` 在这里才 import**（不放在文件顶上）——Ink ＋ React 那一整棵
+    // 依赖树实测 **120.4ms**（`bench-boot.ts`），而 `--check` / `--script` 这两条路
+    // **一帧都不画**，顶上那个静态 import 是让它们白付这笔账（`bun test` 同样白付）。
+    // 起外壳这条路的账不变——它本来就要付。
+    const { runTui } = await import('@magic/tui')
+    const tui = await runTui(tuiOptions(assembly))
     await tui.waitUntilExit()
     return 0
   } finally {
