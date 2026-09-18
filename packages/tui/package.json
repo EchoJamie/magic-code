@@ -17,7 +17,9 @@
   },
   "devDependencies": {
     "@magic/faux": "workspace:*",
-    "@types/react": "^19.3.0"
+    "@types/react": "^19.3.0",
+    "@xterm/headless": "^6.0.0",
+    "ink-testing-library": "^4.0.0"
   },
   "scripts": {
     "demo": "bun run scripts/demo.ts"
