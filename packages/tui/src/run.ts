@@ -22,6 +22,15 @@ export type RunTuiOptions = {
   readonly stdin?: NodeJS.ReadStream
   /** 输出流（缺省 `process.stdout`）。 */
   readonly stdout?: NodeJS.WriteStream
+  /**
+   * **启动流转**（U16）——在**订阅之后、渲染之前**跑一次（装配给的是「对开局会话跑一次
+   * 恢复」，但这一层不知道它是什么，只知道「放开输入之前有件事要做完」）。
+   *
+   * 次序的道理（技术方案 · 控制域）：恢复要发事件，而**无订阅方时命令 / 事件都丢**——
+   * 订阅已在 `createShell` 里接上，故此处跑得；反过来（先渲染再恢复）用户能在恢复跑完前
+   * 打字，与「回到等待输入」抢同一份记录。缺省不做（假装配 / 演示不必）。
+   */
+  readonly boot?: (() => Promise<void>) | undefined
 }
 
 export type TuiHandle = {
@@ -32,16 +41,26 @@ export type TuiHandle = {
   unmount(): void
 }
 
-export function runTui(options: RunTuiOptions): TuiHandle {
+export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const stdin = options.stdin ?? process.stdin
 
   // 不是终端就直说——Ink 会抛 raw mode 的栈（「Raw mode is not supported…」），用户看不懂。
-  // 交互与 Ctrl+C 都靠终端；管道输入不是本阶段的形态。
+  // 交互与 Ctrl+C 都靠终端；管道输入不是本阶段的形态。**停在任何 await 之前**——
+  // 它是同步的前置检查，异步化不该把「当场说清楚」变成「以后再说」。
   if (stdin.isTTY !== true) {
     throw new Error('外壳需要一个终端（stdin 不是 TTY）——请在终端里启动。')
   }
 
   const shell = createShell(options.transport)
+  // 安静问一次目录——状态行要显示当前会话（列不列是 `/session` 的事，见 `Shell.refreshSessions`）
+  shell.refreshSessions()
+
+  try {
+    await options.boot?.()
+  } catch (error) {
+    shell.dispose() // 起步就塌了：退订，别把终端吊在订阅态
+    throw error
+  }
 
   const instance = render(h(TuiApp, { shell }), {
     stdin,

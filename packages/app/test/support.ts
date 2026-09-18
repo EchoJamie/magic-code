@@ -137,7 +137,8 @@ export type RawEvent = {
 }
 
 export type RawDatabase = {
-  readonly sessions: readonly { id: string; at: number }[]
+  /** `title` 可空（U16：没改过就没有——默认标题由对话域按首条消息现算，不落库）。 */
+  readonly sessions: readonly { id: string; at: number; title: string | null }[]
   readonly entries: readonly RawEntry[]
   readonly events: readonly RawEvent[]
   close(): void
@@ -149,7 +150,9 @@ export function readDatabase(databasePath: string): RawDatabase {
 
   return {
     sessions: db
-      .query<{ id: string; at: number }, []>('SELECT id, at FROM sessions ORDER BY at')
+      .query<{ id: string; at: number; title: string | null }, []>(
+        'SELECT id, at, title FROM sessions ORDER BY at',
+      )
       .all(),
     entries: db
       .query<RawEntry, []>(

@@ -58,6 +58,9 @@ function Row({ item }: RowProps) {
         `！${item.text}`,
       )
 
+    case 'sessions':
+      return h(SessionList, { rows: item.rows, active: item.active })
+
     case 'tool':
       return h(
         Box,
@@ -80,6 +83,53 @@ function Row({ item }: RowProps) {
             ),
       )
   }
+}
+
+/**
+ * 会话目录（`/session` 问了才列）——**TUI 最小 UI**：序号可记（`/session <序号>` 用它），
+ * 当前那条带 `▸`，标题取改过的或首条消息摘要。
+ *
+ * 标题缺席时视图层已退回 id（`appendSessionList`），故此处不必再兜。
+ */
+function SessionList({
+  rows,
+  active,
+}: {
+  readonly rows: Extract<TranscriptItem, { kind: 'sessions' }>['rows']
+  readonly active: string | null
+}) {
+  if (rows.length === 0) return h(Text, { dimColor: true }, '　还没有别的会话。')
+
+  return h(
+    Box,
+    { flexDirection: 'column' },
+    h(Text, { dimColor: true }, `　会话（${rows.length} 条 · 当前第 ${activeIndex(rows, active)} 条）`),
+    ...rows.map((row) =>
+      h(
+        Text,
+        { key: `s:${row.id}` },
+        h(Text, { color: row.id === active ? 'green' : undefined }, `  ${row.id === active ? '▸' : ' '} ${row.index}. `),
+        row.title,
+        h(Text, { dimColor: true }, `　${stampLabel(row.at)}`),
+      ),
+    ),
+  )
+}
+
+/** 当前那条的序号——不在目录里（新会话还没落账）时报 0，屏上说得清「不在列」。 */
+function activeIndex(
+  rows: Extract<TranscriptItem, { kind: 'sessions' }>['rows'],
+  active: string | null,
+): number {
+  return rows.find((row) => row.id === active)?.index ?? 0
+}
+
+/** 时间戳按**月-日 时:分**报（人读的那一种；绝对格式＝快照可复现，不取「几分钟前」）。 */
+function stampLabel(at: number): string {
+  const date = new Date(at)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 /** 执行输出的两路流——`stdout` / `stderr` 各自累积，逐行呈现。 */

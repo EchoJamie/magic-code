@@ -42,6 +42,7 @@ import type {
   ModelResult,
   ModelStream,
   ModelTraits,
+  ConversationService,
   NewEntry,
   PermissionGate,
   ProviderConfig,
@@ -433,12 +434,14 @@ export function rememberTravelsThroughBothPorts(): void {
     onInterrupt: () => undefined,
     onDecision: (id, decision) => void [id, decision],
     onModelSwitch: () => undefined,
+    onSession: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: (id, decision, opts) => void [id, decision, opts?.remember],
     onModelSwitch: () => undefined,
+    onSession: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -501,6 +504,7 @@ export function routesCarryModelSwitch(): void {
     onInterrupt: () => undefined,
     onDecision: () => undefined,
     onModelSwitch: (request: ModelSwitchRequest) => void [request.provider, request.model],
+    onSession: () => undefined,
   }
   void routes
 }
@@ -511,13 +515,40 @@ export function modelRetryPayloadShape(): void {
   void retry
 }
 
+/**
+ * 会话面（阶段 2 · U16）——`ConversationService` 的会话扩展 ＋ 控制域的会话路由位。
+ *
+ * 设计原话（技术方案 · 领域划分 · 端口签名）：`interface ConversationService { … }
+ * // 多会话（阶段 2）的新建 / 切换 / 列表在此扩展`——故五件落在**同一个端口**上，
+ * 不另立一个「会话端口」（同一件事两处各立一份＝两处各有一套语义，迟早分叉）。
+ */
+export function sessionFaceShape(service: ConversationService, routes: CommandRoutes): void {
+  void service.listSessions()
+  void service.newSession()
+  void service.openSession('s1')
+  void service.renameSession('s1', '标题＝首条消息摘要')
+  void service.recover()
+
+  // 控制域**原样转手**——它不认识会话（同 `onDecision` / `onModelSwitch` 的姿势）
+  routes.onSession({ type: 'session.list' })
+  routes.onSession({ type: 'session.new' })
+  routes.onSession({ type: 'session.open', session: 's1' })
+  routes.onSession({ type: 'session.rename', session: 's1', title: '改过的标题' })
+}
+
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量（model.delta · model.retry · tool.output.delta）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
-    expect(TRANSIENT_EVENT_KINDS).toEqual(['model.delta', 'model.retry', 'tool.output.delta'])
+    // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
+    expect(TRANSIENT_EVENT_KINDS).toEqual([
+      'model.delta',
+      'model.retry',
+      'tool.output.delta',
+      'session.state',
+    ])
   })
 
   test('schema 版本自始写入（v0）', () => {
@@ -569,6 +600,44 @@ describe('配置契约', () => {
 describe('控制面契约（迁移忠实性）', () => {
   test('裁决配对的事件侧 kind 不变', () => {
     expect(DECISION_REQUEST_KIND).toBe('tool.decision.request')
+  })
+})
+
+describe('会话契约（阶段 2 · U16 · 只增不改）', () => {
+  test('命令面新增会话四支——判别式各就各位', () => {
+    const commands: readonly Command[] = [
+      { type: 'session.list' },
+      { type: 'session.new' },
+      { type: 'session.open', session: 's1' },
+      { type: 'session.rename', session: 's1', title: '看看工作区里有什么' },
+    ]
+
+    expect(commands.map((command) => command.type)).toEqual([
+      'session.list',
+      'session.new',
+      'session.open',
+      'session.rename',
+    ])
+  })
+
+  test('会话状态事件——**不落库**（查询答复，不是过程事实）', () => {
+    // 与 `model.delta` 同列的理由：它是「此刻有哪些会话、当前在哪条」的快照，
+    // 重放要的从来不是快照——是过程（谁切到了哪条）。故只走订阅、不进事件表。
+    expect(TRANSIENT_EVENT_KINDS).toContain('session.state')
+  })
+
+  test('会话状态载荷——当前会话 ＋ 列表（标题随行）', () => {
+    const state: EventDataOf['session.state'] = {
+      active: 's1',
+      sessions: [
+        { id: 's1', title: '看看工作区里有什么', at: 1 },
+        { id: 's2', at: 2 },
+      ],
+    }
+
+    expect(state.sessions[0]?.title).toBe('看看工作区里有什么')
+    // 标题是可选位——没改过、也派生不出时缺席（不是空串占位）
+    expect(state.sessions[1]?.title).toBeUndefined()
   })
 })
 

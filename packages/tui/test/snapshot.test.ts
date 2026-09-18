@@ -13,7 +13,7 @@ import { renderToString } from 'ink'
 import { createElement as h } from 'react'
 import type { KernelEvent } from '@magic/contracts'
 import { AppView } from '../src/components/app.ts'
-import { appendEcho, createView, reduce } from '../src/view.ts'
+import { appendEcho, appendSessionList, createView, reduce } from '../src/view.ts'
 import type { ShellView } from '../src/view.ts'
 import { event } from './events.ts'
 
@@ -173,6 +173,50 @@ describe('一屏 · 供应商与退避重试（第 17 轮补锚）', () => {
     const view = viewed([event('model.call.start', { model: 'glm-4.6', provider: 'zhipu' })])
 
     expect(screen(view)).toMatchSnapshot()
+  })
+})
+
+describe('一屏 · 会话面（U16）', () => {
+  /** 一份目录——三条，中间那条是当前；第三条没标题（退回 id）。 */
+  const CATALOG = [
+    { id: 's-a', title: '看看工作区里有什么', at: 1_700_000_003_000 },
+    { id: 's-b', title: '跑一下测试', at: 1_700_000_002_000 },
+    { id: 's-c', at: 1_700_000_001_000 },
+  ]
+
+  test('会话目录 —— 序号可记 · 当前那条有标记 · 标题缺席退回 id', () => {
+    const view = viewed([event('session.state', { active: 's-b', sessions: CATALOG })])
+
+    expect(screen(appendSessionList(view))).toMatchSnapshot()
+  })
+
+  test('切到另一条 —— **重开一屏** ＋ 一句「已切到」；状态行报当前会话', () => {
+    const before = viewed(
+      [event('session.state', { active: 's-b', sessions: CATALOG })],
+      appendEcho(createView(), '跑一下测试'),
+    )
+    const after = viewed([event('session.state', { active: 's-a', sessions: CATALOG })], before)
+
+    expect(screen(after)).toMatchSnapshot()
+  })
+
+  test('忙时切不动 —— 屏上出声，原来那一屏不动', () => {
+    const before = viewed(
+      [event('session.state', { active: 's-b', sessions: CATALOG })],
+      appendEcho(createView(), '跑一下测试'),
+    )
+    const after = viewed(
+      [
+        event('session.state', {
+          active: 's-b',
+          sessions: CATALOG,
+          note: '正在跑一轮——先 Ctrl+C 中断，再切会话（同一时刻只有一个活跃会话）',
+        }),
+      ],
+      before,
+    )
+
+    expect(screen(after)).toMatchSnapshot()
   })
 })
 

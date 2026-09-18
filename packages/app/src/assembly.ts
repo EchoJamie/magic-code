@@ -34,13 +34,14 @@ import type {
   KernelEvent,
   ModelGateway,
   ModelSwitchRequest,
+  RecordsService,
   SessionId,
   Timestamp,
   TurnId,
 } from '@magic/contracts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
-import { createConversationService } from '@magic/conversation'
-import type { PromptVars } from '@magic/conversation'
+import { createConversationService, createConversationSession } from '@magic/conversation'
+import type { ConversationSession, PromptVars, SessionInstance } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createSandbox, createWorkspaceService } from '@magic/execution'
 import type { FetchLike, ModelRegistry } from '@magic/model'
@@ -106,6 +107,11 @@ export type Assembly = {
    * 用法＝先 `subscribe(…)`、后 `send(…)`（顺序纪律见文件头注）。
    */
   readonly shell: ControlTransport
+  /**
+   * **当下活跃**的会话 id（U16 起——单活跃：切换之后跟着变）。
+   *
+   * 与 `boot()` 是同一条会话的两个视角：启动时它就是「接着最近一条」定下来的那条。
+   */
   readonly session: SessionId
   /** 本次装配用的配置（自检报告用；**不含 key**）。 */
   readonly config: LoadedConfig
@@ -137,6 +143,14 @@ export type Assembly = {
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
    */
   readonly workspaceRoot: string
+  /**
+   * **启动流转**（U16）——对当下会话跑一次恢复（处置在途操作；干净会话什么都不做）。
+   *
+   * 由**外壳**在**接好订阅之后、放开输入之前**调一次（技术方案 · 控制域：无订阅方时
+   * 命令 / 事件都丢——恢复要发事件，得先有人听着）。返回值不交出去：报告是对话域的
+   * 域内形态，要看细节请直接接对话域的面。
+   */
+  boot(): Promise<void>
   /** 关库（blob 无需收尾）。 */
   close(): void
 }
@@ -192,35 +206,20 @@ function localDate(at: Timestamp): string {
 export function assemble(options: AssembleOptions): Assembly {
   const loaded = options.config ?? loadConfig()
   const now = options.now ?? Date.now
-  const session = options.session ?? crypto.randomUUID()
 
   // ── 2 构造各域实现 ────────────────────────────────────────────────
   // 记录域：数据目录（`~` 已在加载时展开——记录域拒收 `~`）
   const recordsStore = createRecordsStore({ dataDir: loaded.config.dataDir })
-  const records = recordsStore.serviceFor(session)
+  /**
+   * **启动＝接着最近一条会话**（U16 · 规划侧锚定：产品方案 功能 8「崩溃 / **关闭**后…
+   * 续跑不重来」＋ 阶段 2 验证句「崩溃 / 关掉能接着来」——三份文档对上之后，
+   * 技术方案那句早期措辞「启动＝新会话」不取）；一条都没有＝新造。
+   * 「新建」是显式动作（外壳 `/session new`），不是启动的默认。
+   */
+  const startup = options.session ?? recordsStore.latestSession() ?? crypto.randomUUID()
   // 执行域：工作区根注册（首站单根＝启动目录）＋ 沙箱（cwd 约束经工作区）
   const workspace = createWorkspaceService({ root: options.cwd })
   const sandbox = createSandbox({ workspace })
-  // 信封铸造器：按**会话实例**构造（跨会话不共享）
-  const stamper = createStamper({ records, session, now })
-
-  // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
-  // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
-  let gateway: ModelGateway
-  let models: ModelRegistry | undefined
-
-  if (options.modelGateway !== undefined) {
-    // 替身（测试 / 别的实现）：单件，没有条目表——切换在那条路上不适用
-    gateway = options.modelGateway(stamper)
-  } else {
-    models = createModelRegistry({
-      providers: loaded.config.providers,
-      defaultProvider: loaded.providerId,
-      stamper,
-      fetch: options.modelFetch,
-    })
-    gateway = models
-  }
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────
   // 扇出在代码里先立：它没有依赖，而各域都要它（编号是概念次序，见文件头注）
@@ -234,7 +233,9 @@ export function assemble(options: AssembleOptions): Assembly {
       // ② 记录落**持久类**（瞬时类不落库——规则 ①）
       //    注：记录域**自己也拦一道**（`appendEvent` 按 `TRANSIENT_EVENT_KINDS` 就地丢），
       //    故此处的过滤是**第二道**——它决定「推给谁」，记录域那道是「落不落」的兜底。
-      if (!TRANSIENT.has(event.kind)) records.appendEvent(event)
+      //    **按信封分束**（U16）：多会话之后扇出是进程级的，落给哪条会话由信封说了算——
+      //    装配再维护一份「哪条会话用哪个实例」就是第二真源。
+      if (!TRANSIENT.has(event.kind)) recordsStore.appendEvent(event)
     },
   }
 
@@ -242,28 +243,118 @@ export function assemble(options: AssembleOptions): Assembly {
   // 权限规则（阶段 2）：配置里那段的**原值**交给权限域的 `parseRules`——条目形态归它裁
   // （解析从严：读不懂的条目逐个拒收、连同缘由交回，见 `Assembly.rejectedRules`）
   const parsedRules = parseRules(loaded.config.permissions?.rules ?? [])
-  const gate = createPermissionGate({ sink, stamper, now, rules: parsedRules.rules })
-  const tools = createToolRuntime({
-    sandbox,
-    workspace,
-    gate,
-    sink,
-    stamper,
-    // 大块转存经记录域公开面（blob 写权唯一归它）
-    blobs: records.blobs,
-  })
+
+  /**
+   * **当下的活跃铸造器**——按会话实例各一份（契约 · 信封的归属：上下文 `session` 由
+   * 铸造器持），换会话即换它。
+   *
+   * 注册表却是**进程级**的（选中的供应商 / 模型不该随会话漂——那是用户对「这台机器走谁」
+   * 的选择，不是某条会话的属性），故它拿下面这个**转发铸造器**：盖章时指向**当下**那条。
+   * 转发之所以成立，靠的是**单活跃 ＋ 忙时切不动**（对话域保证）：盖章的那一下，
+   * 当下的活跃会话恒是正在干活的那条。
+   */
+  let activeStamper: EventStamper | undefined
+  const forwardStamper: EventStamper = {
+    stamp: (kind, data) => requireActiveStamper().stamp(kind, data),
+    beginTurn: (turn) => requireActiveStamper().beginTurn(turn),
+  }
+
+  const requireActiveStamper = (): EventStamper => {
+    if (activeStamper === undefined) {
+      throw new Error('信封铸造器还没就位——装配次序错了（会话链要先开一条）')
+    }
+    return activeStamper
+  }
+
+  // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
+  // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
+  let models: ModelRegistry | undefined
+  if (options.modelGateway === undefined) {
+    models = createModelRegistry({
+      providers: loaded.config.providers,
+      defaultProvider: loaded.providerId,
+      stamper: forwardStamper,
+      fetch: options.modelFetch,
+    })
+  }
+
+  /** 一次「开一条会话」的产物——切换时整束换掉（单活跃：同时只留一束）。 */
+  type Chain = {
+    readonly session: SessionId
+    readonly records: RecordsService
+    readonly gate: ReturnType<typeof createPermissionGate>
+    readonly tools: ReturnType<typeof createToolRuntime>
+    readonly service: ConversationSession
+  }
+  let chain: Chain | undefined
+
+  /**
+   * **开一条会话的实例链**（U16）——装配的 `open` 工厂。
+   *
+   * 换会话＝换这一整束：记录实例 · 铸造器 · **闸门**（会话级「总是允许」记忆随会话各一份
+   * ——「新会话即清零」，故切走再切回也不复原，与设计同源）· 工具域 · 对话实例。
+   * **不缓存**旧束：「一个活跃对话实例」是结构，不是计数。
+   *
+   * ⚠️ 网关（注册表）**不在此列**——见 `forwardStamper` 的注。
+   */
+  const open = (session: SessionId): SessionInstance => {
+    const records = recordsStore.serviceFor(session)
+    const stamper = createStamper({ records, session, now })
+    const gate = createPermissionGate({ sink, stamper, now, rules: parsedRules.rules })
+    const tools = createToolRuntime({
+      sandbox,
+      workspace,
+      gate,
+      sink,
+      stamper,
+      // 大块转存经记录域公开面（blob 写权唯一归它）
+      blobs: records.blobs,
+    })
+    const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
+
+    const service = createConversationSession({
+      session,
+      // **开局的模型名**——缺省条目的 `model`，随每次调用送模型域（技术方案：模型名取自请求）。
+      // 会话中途换模型**不经过这里**：注册表的选中会在这个名字之上接管（换模型＝换接缝下游，
+      // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）
+      model: loaded.provider.model,
+      prompt: promptVarsOf(workspace.defaultRoot(), options, now),
+      gateway,
+      tools,
+      records,
+      sink,
+      stamper,
+      now,
+      // 恢复面（U15）：在途查询归记录域；**幂等声明缺位**（U15 待决 1：`ToolSpec` 该有位、
+      // 契约未载）故不传——缺省从严＝一律非幂等＝**什么都不静默重放**，安全但保守
+      recovery: { inFlight: (target) => recordsStore.recoveryScan(target) },
+    })
+
+    chain = { session, records, gate, tools, service }
+    activeStamper = stamper
+    return { session, service, stamper }
+  }
+
+  /** 装配期就该定好的事——走到这儿＝`modelGateway` 给了却是空的（类型上的不可能）。 */
+  function missingGateway(): never {
+    throw new Error('模型网关没造出来——`AssembleOptions.modelGateway` 给了空值')
+  }
+
+  /** 当下这束——路由转发用（`open` 至少跑过一次，见 `createConversationService` 的构造）。 */
+  const active = (): Chain => {
+    if (chain === undefined) throw new Error('会话链还没开——装配次序错了')
+    return chain
+  }
+
+  // **会话主面**——`ConversationService` 的落地（U16）：持活跃会话、转发控制面命令。
+  // 记录域端口：目录与首条消息都按会话 id 取（`readEntries(sessionId)`），
+  // 故这条实例绑哪条会话都一样——给开局那条即可。
   const conversation = createConversationService({
-    session,
-    // **开局的模型名**——缺省条目的 `model`，随每次调用送模型域（技术方案：模型名取自请求）。
-    // 会话中途换模型**不经过这里**：注册表的选中会在这个名字之上接管（换模型＝换接缝下游，
-    // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）
-    model: loaded.provider.model,
-    prompt: promptVarsOf(workspace.defaultRoot(), options, now),
-    gateway,
-    tools,
-    records,
+    session: startup,
+    open,
+    records: recordsStore.serviceFor(startup),
+    setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
-    stamper,
     now,
   })
 
@@ -284,24 +375,32 @@ export function assemble(options: AssembleOptions): Assembly {
   const switchModel = (request: ModelSwitchRequest): void => {
     if (models === undefined) {
       sink.emit(
-        stamper.stamp('error', { message: '换模型不适用：本次装配没有供应商注册表（注入了替身网关）' }),
+        forwardStamper.stamp('error', {
+          message: '换模型不适用：本次装配没有供应商注册表（注入了替身网关）',
+        }),
       )
       return
     }
 
     const result = models.use(request)
     // 切不动就不动——原选原样保留（注册表自己保证），此处只把缘由说出来
-    if (!result.ok) sink.emit(stamper.stamp('error', { message: `换模型未成：${result.reason}` }))
+    if (!result.ok) {
+      sink.emit(forwardStamper.stamp('error', { message: `换模型未成：${result.reason}` }))
+    }
   }
 
-  // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` → 对话域；`decision.answer` → 权限域）──
+  // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；
+  //                      `decision.answer` → 权限域；`model.switch` → 装配）──
   hub.bind({
     onInput: (input) => conversation.submit(input),
     onInterrupt: () => conversation.interrupt(),
-    // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域
-    onDecision: (id, decision, opts) => gate.resolve(id, decision, opts),
+    // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域。
+    // 闸门**按会话各一份**（会话级记忆），故取当下这束的
+    onDecision: (id, decision, opts) => active().gate.resolve(id, decision, opts),
     // 换模型（阶段 2）——**判别式处置**（技术方案 · 领域划分：「切不动就不动」）
     onModelSwitch: (request) => switchModel(request),
+    // 会话四支（U16）——**原样转手**给对话域（它才是会话的持有者）
+    onSession: (command) => void conversation.handle(command),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────
@@ -310,7 +409,10 @@ export function assemble(options: AssembleOptions): Assembly {
 
   return {
     shell,
-    session,
+    // **活跃**那条（切换之后跟着变）——不是开局那条（`Assembly.session` 的旧义）
+    get session(): SessionId {
+      return conversation.active()
+    },
     config: loaded,
     models,
     records: recordsStore,
@@ -318,6 +420,7 @@ export function assemble(options: AssembleOptions): Assembly {
     permissionRules: parsedRules.rules,
     rejectedRules: parsedRules.rejected,
     workspaceRoot: workspace.defaultRoot(),
+    boot: () => conversation.recover().then(() => undefined),
     close: () => recordsStore.close(),
   }
 }

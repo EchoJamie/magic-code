@@ -2,7 +2,7 @@
  * 库表与 schema 版本协议（判据 4）。
  *
  * 出处：技术方案 · 记录（存储 · schema 演进）。三表 ＋ 一表内务：
- * - `sessions`——会话（`at` ＝首次写入的时间，不另取时钟）；
+ * - `sessions`——会话（`at` ＝首次写入的时间，不另取时钟；`title` ＝**改过的标题**，U16 加）；
  * - `entries`——条目（内容两列 ＋ 判别列：内联正文 / blob 引用只居其一）；
  * - `events`——事件（信封逐字段落列，`data` 一列 JSON）；
  * - `records_meta`——库内务（当前只有 id 空间的预留水位）。
@@ -23,6 +23,9 @@ export const ENTRIES_TABLE = 'entries'
 export const EVENTS_TABLE = 'events'
 export const META_TABLE = 'records_meta'
 
+/** 会话标题列（U16）——**改过的标题**存这儿；没改过的缺席（默认标题由对话域现算）。 */
+export const SESSION_TITLE_COLUMN = 'title'
+
 /** id 空间在 `records_meta` 里的键（预留水位——见 `ids.ts`）。 */
 export const NEXT_ID_KEY = 'next_id'
 
@@ -31,8 +34,9 @@ export type NamedParams = Record<string, string | number | null>
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS ${SESSIONS_TABLE} (
-  id  TEXT    PRIMARY KEY,
-  at  INTEGER NOT NULL
+  id     TEXT    PRIMARY KEY,
+  at     INTEGER NOT NULL,
+  title  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ${ENTRIES_TABLE} (
@@ -89,5 +93,28 @@ export function initSchema(db: Database, databasePath: string): void {
   }
 
   db.exec(DDL)
+  // 加列之后的**结构增列补齐**（U16）——见 `ensureSessionTitleColumn` 头注。
+  ensureSessionTitleColumn(db)
   db.exec(`PRAGMA user_version = ${RECORD_SCHEMA_VERSION}`)
+}
+
+/**
+ * **结构增列的补齐**（U16）——给加列之前建的库补上 `title`，数据一件不丢。
+ *
+ * ⚠️ **这不是顺序迁移**（那个自冻结点起走 `user_version`）——判别有三：
+ * ① **版本号不动**：`user_version` 仍是 0（本程序写的形状就是 0 的形状，库里缺列是**旧样本**，
+ *    不是另一个版本）；② **幂等**：探到列在了就什么都不做，开几次都一样；
+ * ③ **只增不改**：只 `ADD COLUMN`，不重建表、不搬数据。
+ *
+ * 为什么不留「删库重建」那条路当唯一出口：`~/.magic/records.db` 是**用户的真记录**
+ * （阶段 1 的联合冒烟就跑在它上面）。为加一列让人删掉全部对话，不合算——
+ * 而这条补齐只有五行，代价远小于丢掉的东西。
+ *
+ * 由头（U02 备案）：「在 `sessions` 表加一列 ＋ 首写时填一次即可，一句话的活」。
+ */
+function ensureSessionTitleColumn(db: Database): void {
+  const columns = db.query<{ name: string }, []>(`PRAGMA table_info(${SESSIONS_TABLE})`).all()
+  if (columns.some((column) => column.name === SESSION_TITLE_COLUMN)) return
+
+  db.exec(`ALTER TABLE ${SESSIONS_TABLE} ADD COLUMN ${SESSION_TITLE_COLUMN} TEXT`)
 }

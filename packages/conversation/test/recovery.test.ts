@@ -20,7 +20,7 @@ import type { Entry, KernelEvent } from '@magic/contracts'
 import { DEFAULT_CONTEXT_POLICY } from '../src/policy.ts'
 import type { InFlightCall, RecoveryScan } from '../src/recovery.ts'
 import { recoverSession } from '../src/recovery.ts'
-import { createConversationService } from '../src/service.ts'
+import { createConversationSession } from '../src/service.ts'
 import { makeStage, waitFor, waitUntilIdle } from './support/harness.ts'
 import type { Stage } from './support/harness.ts'
 import { buildSystemPrompt } from '../src/prompt/index.ts'
@@ -372,7 +372,7 @@ describe('ConversationService · 恢复面（recover()）', () => {
     scan: RecoveryScan,
     idempotent?: (call: { readonly name: string }) => boolean,
   ) {
-    return createConversationService({
+    return createConversationSession({
       session: SESSION,
       model: 'faux-1',
       prompt: { cwd: '/w', platform: 'darwin', date: '2026-09-18' },
@@ -391,7 +391,7 @@ describe('ConversationService · 恢复面（recover()）', () => {
 
   test('未接线即报错——不静默返回「没事」（静默降级会让人以为恢复过了）', async () => {
     const stage = makeStage()
-    const service = createConversationService({
+    const service = createConversationSession({
       session: SESSION,
       model: 'faux-1',
       prompt: { cwd: '/w', platform: 'darwin', date: '2026-09-18' },

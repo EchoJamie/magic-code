@@ -14,7 +14,7 @@
  * ③ `DecisionId` ＝裁决配对的**请求事件** id。
  */
 
-import type { Command, ModelSwitchRequest, UserInput } from './control.ts'
+import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
 import type { Content, Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
 import type { Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
@@ -26,10 +26,44 @@ export type EventSink = {
   emit(event: KernelEvent): void
 }
 
-/** 控制域 → 对话域。多会话（阶段 2）的新建 / 切换 / 列表在此扩展。 */
+/**
+ * 控制域 → 对话域。
+ *
+ * **多会话（阶段 2 · U16）的「新建 / 切换 / 列表」在此扩展**（技术方案 · 领域划分 ·
+ * 端口签名原话）——五件落在**同一个端口**上，不另立一个「会话端口」（同一件事两处各立
+ * 一份＝两处各有一套语义，迟早分叉）。故本端口的实现是**会话主面**（单活跃：它持一个
+ * 活跃会话，`submit` / `interrupt` 转发给它），而不是某一条会话的实例。
+ */
 export interface ConversationService {
   submit(input: UserInput): void // input.submit
   interrupt(): void // turn.interrupt
+  /**
+   * 会话目录——**最近在前**。
+   *
+   * 标题走既有的 `SessionSummary.title`（可选位）：改过的取存值，没改过的由对话域
+   * **按首条消息现算**（技术方案 · 会话与多会话：标题＝首条消息摘要）。两处都没有
+   * （首条消息不是用户输入 / 读不出）就缺席——**不拿空串占位**（缺席可辨，空串不可辨）。
+   */
+  listSessions(): Promise<readonly SessionSummary[]>
+  /** 新建一条会话并切过去——返回新会话 id（外壳据以显示 / 记账）。 */
+  newSession(): Promise<SessionId>
+  /** 切换会话（**装载**该会话的上下文继续推进；在途处置是恢复的事，不在此捎带）。 */
+  openSession(session: SessionId): Promise<void>
+  /** 改标题（`title` 为原文——裁剪 / 归一归本域）。 */
+  renameSession(session: SessionId, title: string): Promise<void>
+  /**
+   * **恢复触发词**（阶段 2 · U15 待决 2 ③：「`ConversationService` 缺恢复触发词——
+   * 归阶段 2 的会话面（U16）一并定」）。
+   *
+   * 对**当前会话**跑一次恢复：处置在途操作、补中止、回到等待输入；干净会话**什么都不做**。
+   * 由外壳在**接好订阅之后、放开输入之前**调一次（装配纪律：恢复要发事件，外壳得先订上）。
+   *
+   * 返回 `Promise<unknown>`——报告（`RecoveryReport`）是**对话域的域内形态**，不进契约
+   * （同 U15 的分寸：没出，就没承诺）。`unknown` 是「有返回值、但契约不替它命名」的
+   * 准确写法：实现可以给**更具体**的（`Promise<RecoveryReport>` 可赋给 `Promise<unknown>`），
+   * 而契约上的消费者拿不到任何未承诺的形状。
+   */
+  recover(): Promise<unknown>
 }
 
 /** 对话域 → 模型域。 */
@@ -448,6 +482,13 @@ export type CommandRoutes = {
    * 「切不动就不动」的判别式处置归**装配**（技术方案 · 领域划分 · 端口内类型）。
    */
   onModelSwitch(request: ModelSwitchRequest): void
+  /**
+   * 会话命令 → 对话域。
+   *
+   * 控制域**原样转手**（同 `onDecision` / `onModelSwitch` 的姿势）——它不认识会话，
+   * 也不知道开得成开不成；「打不开就不打开」的处置归对话域。
+   */
+  onSession(command: SessionCommand): void
 }
 
 /**

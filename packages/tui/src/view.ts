@@ -26,6 +26,9 @@ import type {
   ModelErrorTier,
   OutputChannel,
   RecordId,
+  SessionId,
+  SessionSummary,
+  Timestamp,
   TurnEndReason,
 } from '@magic/contracts'
 
@@ -74,6 +77,23 @@ export type TranscriptItem =
       readonly text: string
       readonly tone: 'info' | 'error'
     }
+  /** 会话目录块（`/session` 问了才列——见 `appendSessionList`）。 */
+  | {
+      readonly kind: 'sessions'
+      readonly key: string
+      /** 当前活跃会话（那一条带标记）。 */
+      readonly active: SessionId | null
+      readonly rows: readonly SessionRow[]
+    }
+
+/** 目录里的一行——`title` 已归一（没改过、也派生不出时**退回 id**，屏上不空一格）。 */
+export type SessionRow = {
+  /** 屏上的序号（**从 1 起**——`/session <序号>` 按它解析）。 */
+  readonly index: number
+  readonly id: SessionId
+  readonly title: string
+  readonly at: Timestamp
+}
 
 /** 待答的裁决询问——审批提示就是它。 */
 export type PendingDecision = {
@@ -107,6 +127,13 @@ export type ShellStatus = {
   readonly retry: RetryStatus | null
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null
   readonly turnEnd: TurnEndReason | null
+  /**
+   * 当前活跃会话（**单活跃**）——`session.state` 报什么就是什么。
+   *
+   * 取的是**内核报的**，不是用户命令的自我报告（同 `provider` 的分寸：命令可能没生效）。
+   * `title` 缺席＝没有名字（屏上退回报 id）——**不编一个出来**。
+   */
+  readonly session: { readonly id: SessionId; readonly title: string | null } | null
 }
 
 /** 一屏的全部状态（对话流 ＋ 状态；审批提示在 `pending`）。 */
@@ -114,6 +141,13 @@ export type ShellView = {
   readonly items: readonly TranscriptItem[]
   readonly pending: PendingDecision | null
   readonly status: ShellStatus
+  /**
+   * 会话目录（最近在前）——`session.state` 带回来的那一份。
+   *
+   * 它**不是对话流的一部分**（不进 `items`）：目录是「此刻的事实」，不是「发生过的事」。
+   * `/session` 要列时由 `appendSessionList` 取它渲染成一块（那一块才进流）。
+   */
+  readonly sessions: readonly SessionSummary[]
 }
 
 /** 空视图。 */
@@ -121,6 +155,7 @@ export function createView(): ShellView {
   return {
     items: [],
     pending: null,
+    sessions: [],
     status: {
       phase: 'idle',
       agent: null,
@@ -129,6 +164,7 @@ export function createView(): ShellView {
       retry: null,
       usage: null,
       turnEnd: null,
+      session: null,
     },
   }
 }
@@ -136,6 +172,39 @@ export function createView(): ShellView {
 /** 本地回显一次用户输入（提交时立即显示——事件里没有正文，见文件头）。 */
 export function appendEcho(view: ShellView, text: string): ShellView {
   return append(view, { kind: 'user', key: echoKey(text, view.items.length), text, echoed: true })
+}
+
+/**
+ * 屏上怎么称呼一条会话——**标题优先，没有就报 id**（截到 8 位：屏上是人看的，
+ * 全 id 36 位会把一行撑爆；要认准一条会话请用列表里的**序号**）。
+ *
+ * 一个规则三处用（切换提示 · 状态行 · 目录块）——各写各的截法就是三处迟早不一样。
+ */
+export function sessionLabel(title: string | undefined | null, id: SessionId): string {
+  if (title !== undefined && title !== null && title !== '') return title
+
+  return id.length <= 8 ? id : `${id.slice(0, 8)}…`
+}
+
+/**
+ * 把会话目录渲染成对话流里的一块（`/session` 问了才调——**要看得见**才列）。
+ *
+ * 与 `appendEcho` 同法：**视图层的纯函数**，由外壳在合适的时机拼进来
+ * （归约只管「状态怎么变」，列不列是**呈现的选择**——两件事分开，`reduce` 才保持纯粹）。
+ */
+export function appendSessionList(view: ShellView): ShellView {
+  return append(view, {
+    kind: 'sessions',
+    key: `sessions:${view.items.length}`,
+    active: view.status.session?.id ?? null,
+    rows: view.sessions.map((row, index) => ({
+      index: index + 1,
+      id: row.id,
+      // 标题缺席退回 id——屏上留一格空白比报个 id 更让人犯嘀咕
+      title: sessionLabel(row.title, row.id),
+      at: row.at,
+    })),
+  })
 }
 
 // —— 归约 ——
@@ -214,6 +283,10 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       )
     case 'error':
       return appendNotice(view, event.id, `内核异常：${event.data.message}`, 'error')
+
+    // — 会话面（阶段 2 · U16）——目录 ＋ 当前在哪条 —
+    case 'session.state':
+      return reduceSessionState(view, event.data)
 
     // — 预留（阶段 3）—
     case 'context.compacted':
@@ -370,6 +443,37 @@ function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
   }
 }
 
+type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
+
+/**
+ * `session.state`——目录 ＋ 当前会话。
+ *
+ * **当前会话换了＝重开一屏**：上一屏说的是另一条会话的事，留着就是骗人（一次误读的
+ * 代价比清屏高）。三处分寸：
+ * - **首见不算切换**（`null → 某条`）——启动那一刻没有旧屏可清，也没什么可说的；
+ * - **没换不清**——同一会话再报一次（问目录 / 改名）不该把屏清了；
+ * - `note` 有话就单起一条（没开成 / 忙时切不动）——**失败不静默**。
+ */
+function reduceSessionState(view: ShellView, data: SessionStateData): ShellView {
+  const previous = view.status.session?.id ?? null
+  const switched = previous !== null && previous !== data.active
+  const title = data.sessions.find((row) => row.id === data.active)?.title ?? null
+
+  // 换会话＝换一屏：旧的对话流清掉（新旧混在一屏里分不清谁说的）
+  const base: ShellView = switched ? { ...view, items: [] } : view
+  const named: ShellView = {
+    ...base,
+    sessions: data.sessions,
+    status: { ...base.status, session: { id: data.active, title } },
+  }
+
+  const withSwitch = switched
+    ? appendLocalNotice(named, `已切到会话：${sessionLabel(title, data.active)}`, 'info')
+    : named
+
+  return data.note === undefined ? withSwitch : appendLocalNotice(withSwitch, data.note, 'error')
+}
+
 /** `message.user`——配平本地回显；配不上（恢复场景）则留一条引用痕。 */
 function reduceUserEntry(view: ShellView, entry: RecordId): ShellView {
   const target = itemIndex(view, (item) => item.kind === 'user' && item.echoed)
@@ -399,6 +503,31 @@ function appendNotice(
   tone: 'info' | 'error',
 ): ShellView {
   return append(view, { kind: 'notice', key: `notice:${id}`, text, tone })
+}
+
+/**
+ * 本地提示（外壳自己说的话——不是内核事件）。
+ *
+ * 键按位置取（同 `appendEcho` 的 `echoKey`）：本地提示没有事件 id 可借，
+ * 而位置在一条流里本就唯一。两处键**前缀不同**（`notice.local:` vs `notice:`），
+ * 免得同一位置的内核提示与本地提示撞键。
+ */
+function appendLocalNotice(view: ShellView, text: string, tone: 'info' | 'error'): ShellView {
+  return append(view, {
+    kind: 'notice',
+    key: `notice.local:${view.items.length}:${text}`,
+    text,
+    tone,
+  })
+}
+
+/** 外壳自己说一句——`shell.ts` 用它（本地就有答案的事不必过内核）。 */
+export function appendNoticeText(
+  view: ShellView,
+  text: string,
+  tone: 'info' | 'error' = 'info',
+): ShellView {
+  return appendLocalNotice(view, text, tone)
 }
 
 function patchStatus(view: ShellView, patch: Partial<ShellStatus>): ShellView {

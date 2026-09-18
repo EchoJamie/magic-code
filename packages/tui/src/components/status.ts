@@ -7,6 +7,7 @@
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ShellStatus } from '../view.ts'
+import { sessionLabel } from '../view.ts'
 
 export type StatusLineProps = {
   readonly status: ShellStatus
@@ -23,6 +24,7 @@ export function StatusLine({ status }: StatusLineProps) {
       { dimColor: true },
       h(Text, { color: busy ? 'yellow' : 'green' }, busy ? '● 工作中' : '○ 空闲'),
       agentPart(status),
+      sessionPart(status),
       modelPart(status),
       // 退避期间**必须出声**——不然界面一动不动，用户以为卡死了（技术方案 · 模型策略 · 错误分档）
       status.retry === null
@@ -45,6 +47,20 @@ function agentPart(status: ShellStatus): string {
   if (status.agent === 'resumed') return ' · 已恢复'
 
   return ''
+}
+
+/**
+ * 当前**会话**（U16）——标题可用就报标题，没有就报 id 前 8 位。
+ *
+ * 取的是**内核报的**（`session.state.active`），不是用户命令的自我报告：
+ * 忙时切不动，拿意图当状态会显示一条并没在用的会话。
+ * id 截断只为省屏幕——全 id 在 `/session` 的目录里看得到。
+ */
+function sessionPart(status: ShellStatus): string {
+  const session = status.session
+  if (session === null) return ''
+
+  return ` · 会话 ${sessionLabel(session.title, session.id)}`
 }
 
 /**

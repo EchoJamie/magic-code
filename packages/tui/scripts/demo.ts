@@ -28,7 +28,7 @@ if (process.stdin.isTTY !== true) {
 const scripted = process.argv.includes('--scripted')
 // 交互模式下步子慢些，看得出「流式」；无人值守模式快些
 const kernel = createScriptedKernel({ stepMs: scripted ? 120 : 60 })
-const handle = runTui({ transport: kernel.shell })
+const handle = await runTui({ transport: kernel.shell })
 
 if (!scripted) {
   console.log('假内核已就位——交代一件事试试（Ctrl+C 退出 / 工作中 Ctrl+C 中断）。')

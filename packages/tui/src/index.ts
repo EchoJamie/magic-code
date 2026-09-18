@@ -27,9 +27,10 @@ export type { Shell } from './shell.ts'
 
 // —— 视图与归约 ——
 
-export { appendEcho, createView, reduce } from './view.ts'
+export { appendEcho, appendSessionList, createView, reduce, sessionLabel } from './view.ts'
 export type {
   PendingDecision,
+  SessionRow,
   ShellStatus,
   ShellView,
   ToolOutcome,

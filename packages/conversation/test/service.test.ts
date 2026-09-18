@@ -11,11 +11,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { ConversationService, KernelEvent, RecordsService } from '@magic/contracts'
+import type { KernelEvent, RecordsService } from '@magic/contracts'
 import type { FauxRecords } from '@magic/faux'
 import { PromptVarsError } from '../src/prompt/index.ts'
-import { createConversationService } from '../src/service.ts'
-import type { ConversationDeps } from '../src/service.ts'
+import { createConversationSession } from '../src/service.ts'
+import type { ConversationDeps, ConversationSession } from '../src/service.ts'
 import { makeLoopRuntime, makeStage, waitFor, waitUntilIdle } from './support/harness.ts'
 import type { Stage } from './support/harness.ts'
 
@@ -50,7 +50,9 @@ function depsOf(stage: Stage, overrides: Partial<ConversationDeps> = {}): Conver
 describe('ConversationService · 公开面', () => {
   test('端口实现可按契约取用（结构兼容由编译期钉住）', () => {
     const stage = makeStage()
-    const service: ConversationService = createConversationService(depsOf(stage))
+    // U16 起端口 `ConversationService` 归**会话主面**（`sessions.ts`）；本文件测的是
+    // **一条会话的实例**（`ConversationSession`）——单会话那一半。
+    const service: ConversationSession = createConversationSession(depsOf(stage))
 
     expect(typeof service.submit).toBe('function')
     expect(typeof service.interrupt).toBe('function')
@@ -61,7 +63,7 @@ describe('ConversationService · 公开面', () => {
 
     let thrown: unknown
     try {
-      createConversationService(depsOf(stage, { prompt: { cwd: '  ', platform: 'darwin', date: '2026-09-18' } }))
+      createConversationSession(depsOf(stage, { prompt: { cwd: '  ', platform: 'darwin', date: '2026-09-18' } }))
     } catch (error) {
       thrown = error
     }
@@ -75,7 +77,7 @@ describe('ConversationService · 公开面', () => {
 describe('ConversationService · 状态转场', () => {
   test('交代一件事——起 · 干活 · 收束 · 回到等待输入', async () => {
     const stage = makeStage({ turns: [{ text: '好' }] })
-    const service = createConversationService(depsOf(stage))
+    const service = createConversationSession(depsOf(stage))
     service.submit({ text: '你好' })
 
     // 端口是 `void`——工作异步跑，但状态转场**当场**发生（外壳据此立刻改界面）
@@ -101,7 +103,7 @@ describe('ConversationService · 状态转场', () => {
 
   test('`agent.start` 只在首次开工前发一次（构造期不发——外壳那时还没订上）', async () => {
     const stage = makeStage({ turns: [{ text: '一' }, { text: '二' }] })
-    const service = createConversationService(depsOf(stage))
+    const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '第一件' })
     await waitUntilIdle(stage.sink)
@@ -119,7 +121,7 @@ describe('ConversationService · 排队', () => {
       turns: [{ text: '回第一件' }, { text: '回第二件' }],
       stepDelayMs: 1, // 留出「边跑边交代」的窗口
     })
-    const service = createConversationService(depsOf(stage))
+    const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '第一件' })
     service.submit({ text: '第二件' }) // 第一件还没跑完
@@ -143,7 +145,7 @@ describe('ConversationService · 排队', () => {
 describe('ConversationService · 中断', () => {
   test('在途打断——本轮以「中止」收束，随后回到等待输入', async () => {
     const stage = makeStage({ turns: [{ text: ['一', '二', '三', '四'] }], stepDelayMs: 2 })
-    const service = createConversationService(depsOf(stage))
+    const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '说点长的' })
     await waitFor(
@@ -160,7 +162,7 @@ describe('ConversationService · 中断', () => {
 
   test('打断一并清掉排队中的交代——「停下」就是停下', async () => {
     const stage = makeStage({ turns: [{ text: ['一', '二', '三', '四'] }], stepDelayMs: 2 })
-    const service = createConversationService(depsOf(stage))
+    const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '头一件' })
     service.submit({ text: '还没轮到的那件' })
@@ -179,7 +181,7 @@ describe('ConversationService · 中断', () => {
 
   test('空闲时打断——什么都不发生（空闲时的 Ctrl+C ＝ 退出，归外壳发起）', async () => {
     const stage = makeStage({ turns: [{ text: '好' }] })
-    const service = createConversationService(depsOf(stage))
+    const service = createConversationSession(depsOf(stage))
 
     service.interrupt()
 
@@ -194,7 +196,7 @@ describe('ConversationService · 中断', () => {
 describe('ConversationService · 兜底', () => {
   test('记录写炸——发 `error` 且回到等待输入（不静默、不挂死）', async () => {
     const stage = makeStage({ turns: [{ text: '好' }] })
-    const service = createConversationService(depsOf(stage, { records: brokenRecords(stage.records) }))
+    const service = createConversationSession(depsOf(stage, { records: brokenRecords(stage.records) }))
 
     service.submit({ text: '你好' })
     await waitUntilIdle(stage.sink)
