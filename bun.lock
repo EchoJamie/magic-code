@@ -76,6 +76,9 @@
         "@magic/contracts": "workspace:*",
         "ai": "7.0.102",
       },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
     },
     "packages/permission": {
       "name": "@magic/permission",

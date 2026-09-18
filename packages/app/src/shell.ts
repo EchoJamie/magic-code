@@ -20,9 +20,19 @@
  * **答复的加宽位**（第 16 轮补）——`ShellAnswer` 收两形：裸 `Decision`（一次性，旧写法一字不动）
  * 或 `{ decision, remember? }`。**「总是允许」由此脚本化**：没有这个位，那条链就只
  * 在真 TTY 里按得出来、无人值守验不了（本轮的端到端真跑正是靠它）。
+ *
+ * **换模型的加宽位**（U17 补）——脚本的交代位收两形：裸字符串（一字不改的老写法）或
+ * `{ switch: { provider?, model? } }`（**会话中途换模型**）。落点是 `onSwitch`：装配把
+ * 注册表的 `use()` 接在那儿，本文件只负责「按脚本的次序喊一声」，不认识注册表。
+ *
+ * ⚠️ **为什么「会话中途换模型」出现在这里**——控制面的命令词表（契约 `Command`）里
+ * **没有「换模型」这个词**（`input.submit` / `decision.answer` / `turn.interrupt` 三支），
+ * 而那是个冻结的契约。本驱动是装配侧唯一「在会话中途对内核做点什么」的地方，故这一轮的
+ * 入口落在这儿（真产品入口＝外壳的一条命令，待契约加词——见回报「待决」）。
  */
 
 import type { Command, ControlTransport, Decision, KernelEvent } from '@magic/contracts'
+import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 
 /** 一次裁决询问（`tool.decision.request` 的四件）。 */
 export type ShellDecisionRequest = {
@@ -52,12 +62,20 @@ export type ShellDecision = ShellDecisionRequest & {
   readonly remember?: boolean
 }
 
+/** 一次**会话中途**的换模型（请求 ＋ 落地后的选中）——`switches` 里的痕迹。 */
+export type ShellSwitch = {
+  readonly request: ModelSwitchRequest
+  readonly selection: ModelSelection
+}
+
 /** 接上外壳位之后拿到的把手——驱动全链用。 */
 export type ShellHandle = {
   /** 迄今收到的事件（按到达序，**含瞬时增量**）。活视图：拿在手里继续长。 */
   readonly events: readonly KernelEvent[]
   /** 迄今答复过的裁决。 */
   readonly decisions: readonly ShellDecision[]
+  /** 迄今换过的模型（按发生序）。 */
+  readonly switches: readonly ShellSwitch[]
   /**
    * 发一条交代并等它收束（回到「等待输入」）。
    *
@@ -66,6 +84,12 @@ export type ShellHandle = {
   submit(text: string, timeoutMs?: number): Promise<void>
   /** 发一条命令（不等待）——中断等非提交用途。 */
   send(command: Command): void
+  /**
+   * **会话中途换模型**——交给 `options.onSwitch`（装配接的注册表 `use()`），
+   * 成功即留痕、失败即**抛**（无人值守里切不动就该当场停，而不是接着跑一个
+   * 与脚本意图不符的会话）。没接 `onSwitch` 时同样是抛——不静默吞掉。
+   */
+  switchModel(request: ModelSwitchRequest): ModelSelection
   /** 等一个满足条件的**未来**事件（从调用时刻起；已过去的请扫 `events`）。 */
   until(test: (event: KernelEvent) => boolean, timeoutMs?: number): Promise<KernelEvent>
   /** 退订。 */
@@ -85,6 +109,11 @@ export type AttachShellOptions = {
    * `() => ({ decision: 'approve', remember: true })`（见 `ShellAnswer`）。
    */
   readonly decide?: (request: ShellDecisionRequest) => ShellAnswer
+  /**
+   * **换模型的落点**——装配把注册表的 `use()` 接在这儿（`(request) => registry.use(request)`）。
+   * 缺省不接：脚本里没写 `switch` 就永远用不到它。
+   */
+  readonly onSwitch?: (request: ModelSwitchRequest) => ModelSwitchResult
   /** 等待上限（毫秒）——缺省 120 秒（真端点 + 真命令的余量）。 */
   readonly timeoutMs?: number
 }
@@ -99,6 +128,14 @@ function normalizeAnswer(answer: ShellAnswer): {
 } {
   if (typeof answer === 'string') return { decision: answer, remember: undefined }
   return { decision: answer.decision, remember: answer.remember }
+}
+
+/** 换模型请求的一行话（报错里说清楚「想换成什么」）。 */
+function describeSwitchRequest(request: ModelSwitchRequest): string {
+  const parts: string[] = []
+  if (request.provider !== undefined) parts.push(`provider=${request.provider}`)
+  if (request.model !== undefined) parts.push(`model=${request.model}`)
+  return parts.length === 0 ? '什么都没给' : parts.join(' · ')
 }
 
 /** 一个「`timeoutMs` 后无论如何都拒绝」的 promise——挂死比慢更坏（无订阅方＝丢命令，不报错）。 */
@@ -132,6 +169,7 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
 
   const events: KernelEvent[] = []
   const decisions: ShellDecision[] = []
+  const switches: ShellSwitch[] = []
   /** `agent.state{waiting}` 的水位——`submit` 记下它、等它的下一次。 */
   let waiting = 0
   const idleWaiters: { readonly target: number; readonly settle: () => void }[] = []
@@ -194,6 +232,27 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
       return decisions
     },
 
+    get switches(): readonly ShellSwitch[] {
+      return switches
+    },
+
+    switchModel(request: ModelSwitchRequest): ModelSelection {
+      const onSwitch = options.onSwitch
+      if (onSwitch === undefined) {
+        throw new Error('这次装配没接「换模型」的落点（onSwitch）——脚本里的 switch 无处可落')
+      }
+
+      const result = onSwitch(request)
+      if (!result.ok) {
+        throw new Error(
+          `换模型不成功（${describeSwitchRequest(request)}）：${result.reason}`,
+        )
+      }
+
+      switches.push({ request, selection: result.selection })
+      return result.selection
+    },
+
     submit(text: string, overrideTimeoutMs?: number): Promise<void> {
       const target = waiting + 1
       const armed = deadline(
@@ -237,10 +296,18 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
   }
 }
 
-/** 一段无人值守的脚本——交代按序发，每条等上一轮收束。 */
+/**
+ * 脚本的一步——**交代**或**换模型**。
+ *
+ * 两形并存是**向后兼容**的形态：老脚本 `inputs: ["…"]` 一字不动照常工作
+ * （与 `ShellAnswer` 的加宽位同法）；`{ switch: … }` 是 U17 的加宽位。
+ */
+export type ShellStep = string | { readonly switch: ModelSwitchRequest }
+
+/** 一段无人值守的脚本——步骤按序走，每条交代等上一轮收束。 */
 export type ShellScript = {
-  /** 依次发出的交代。 */
-  readonly inputs: readonly string[]
+  /** 依次走的步骤：交代（裸字符串）或换模型（`{ switch: … }`）。 */
+  readonly inputs: readonly ShellStep[]
   /**
    * 裁决答复（按询问次序取，用尽后走 `options.decide`）。
    *
@@ -254,6 +321,9 @@ export type ShellScript = {
 /**
  * 按脚本跑一遍——**先订阅、后放开输入**（`attachShell` 与 `submit` 的相对位置就是这条纪律）。
  * 返回把手（轨迹在内）——**不打印任何东西**：呈现是调用方的事。
+ *
+ * 换模型那一步**不等轮次**（它不产事件：换的是接缝下游，下一次调用才见分晓）——
+ * 走完即走下一步，故「交代 → 换 → 交代」的次序由脚本自己写死。
  */
 export async function runShellScript(
   shell: ControlTransport,
@@ -268,8 +338,12 @@ export async function runShellScript(
     decide: (request) => queued.shift() ?? fallback(request),
   })
 
-  for (const text of script.inputs) {
-    await handle.submit(text, script.timeoutMs)
+  for (const step of script.inputs) {
+    if (typeof step === 'string') {
+      await handle.submit(step, script.timeoutMs)
+      continue
+    }
+    handle.switchModel(step.switch)
   }
 
   return handle

@@ -43,6 +43,14 @@ export type ModelCallResult = ModelResult & {
   readonly error: ModelError | undefined
   /** 被调用方中断（`signal` 触发）——**不是**模型错误，故不发 `model.error`。 */
   readonly aborted: boolean
+  /**
+   * **尝试次数（含首次）**——瞬时档退避重试的读数（见 `retry.ts`）。
+   *
+   * 事件流里看不见重试（`model.error` 是终局信号，不能兼作进度信号），故次数落在这儿：
+   * `2` ＝ 头一次失败、重来成了。缺省 / 未给 ＝ **1（未重试）**——Faux 与直接喂 chunk
+   * 的用例不记这个数；取件层真实现一律给（`attempts > 1` 即「这一轮真重试过」）。
+   */
+  readonly attempts?: number
 }
 
 // —— 流与端口 ——

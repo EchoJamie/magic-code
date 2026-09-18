@@ -1,0 +1,334 @@
+/**
+ * U17 · 运行时切换 —— **验收判据**：同一会话中途换到另一个供应商条目，
+ * 上下文不丢、后续轮次走新模型。
+ *
+ * 与模型域那些用例的分工：那边钉的是注册表本身（路由 / 选中 / 各家 key 各归其位）；
+ * 这边钉的是**装配之后**的那条真路——真配置（两个条目）· 真注册表 · 真取件层 ·
+ * 真归一 · 真对话域 · 真记录域，**只有端点换成假的**（`modelFetch` 回放 SSE）。
+ * 「上下文不丢」因此是**看得见**的：第二个端点收到的 messages 里带着第一轮的原话。
+ *
+ * 判据四条：
+ * 1. **换成了**——换之前的请求打到甲家，换之后打到乙家，且模型名随之取乙家的默认；
+ * 2. **上下文不丢**——乙家收到的那串 messages 里有第一轮的用户原话与甲的答复；
+ * 3. **域外不动**——同一个会话 id、同一张记录库，条目连着长；对话域不知道发生过切换；
+ * 4. **key 纪律**——两把 key 各归各家，且都不进事件与记录（直读库面证）。
+ */
+
+import { describe, expect, test } from 'bun:test'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
+import { assemble, attachShell, loadConfig, runShellScript } from '../src/index.ts'
+import type { Assembly } from '../src/index.ts'
+import { readDatabase } from './support.ts'
+import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
+
+// ═══════════════════════════════════════════════════════════════════════
+// 夹具 —— 两个条目，两个假端点
+// ═══════════════════════════════════════════════════════════════════════
+
+const ALPHA_KEY = 'sk-alpha-abcdefghijklmnop'
+const BETA_KEY = 'sk-beta-abcdefghijklmnop'
+
+const TWO_PROVIDERS = {
+  alpha: { baseURL: 'https://alpha.example/v1', apiKey: ALPHA_KEY, model: 'alpha-1' },
+  beta: { baseURL: 'https://beta.example/v1', apiKey: BETA_KEY, model: 'beta-1' },
+}
+
+type Seen = {
+  readonly url: string
+  readonly model: string
+  readonly authorization: string | null
+  readonly messages: readonly { readonly role: string; readonly content: unknown }[]
+}
+
+/**
+ * 假端点——按 URL 认家，各回各的正文；每次请求（含线上形制）都留痕。
+ * 「打对了家没有」由 URL ＋ 模型名 ＋ 正文三样一起证。
+ */
+function splitEndpoint(replies: { readonly alpha: string; readonly beta: string }): {
+  readonly fetch: typeof globalThis.fetch
+  readonly seen: Seen[]
+} {
+  const seen: Seen[] = []
+
+  const fake = (async (input: unknown, init?: { body?: unknown; headers?: unknown }) => {
+    const url = String(input)
+    const body = JSON.parse(String(init?.body)) as {
+      model?: string
+      messages?: readonly { role: string; content: unknown }[]
+    }
+    seen.push({
+      url,
+      model: String(body.model),
+      authorization: new Headers(init?.headers as Record<string, string>).get('authorization'),
+      messages: body.messages ?? [],
+    })
+
+    const text = url.includes('alpha.example') ? replies.alpha : replies.beta
+    const frame = (payload: Record<string, unknown>): string =>
+      `data: ${JSON.stringify({
+        id: 'chatcmpl-1',
+        object: 'chat.completion.chunk',
+        created: 1_700_000_000,
+        model: body.model,
+        ...payload,
+      })}\n\n`
+
+    return new Response(
+      frame({ choices: [{ index: 0, delta: { role: 'assistant', content: text } }] }) +
+        frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) +
+        'data: [DONE]\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    )
+  }) as unknown as typeof globalThis.fetch
+
+  return { fetch: fake, seen }
+}
+
+/** 一块沙地：真配置（两条目）＋ 真工作区根 ＋ 真数据目录，端点换假的。 */
+function stage(): {
+  readonly root: string
+  readonly workspace: string
+  readonly configPath: string
+  assemble(options?: {
+    readonly modelFetch?: typeof globalThis.fetch | undefined
+    readonly modelGateway?: ((stamper: EventStamper) => ModelGateway) | undefined
+  }): Assembly
+  dispose(): void
+} {
+  const root = tempDir('magic-switch-')
+  const workspace = join(root, 'ws')
+  mkdirSync(workspace, { recursive: true })
+
+  const configPath = writeConfig(
+    root,
+    validConfig({ dataDir: join(root, 'data'), defaultProvider: 'alpha', providers: TWO_PROVIDERS }),
+  )
+
+  return {
+    root,
+    workspace,
+    configPath,
+    assemble(options = {}): Assembly {
+      const { modelFetch, modelGateway } = options
+      return assemble({
+        cwd: workspace,
+        config: loadConfig({ path: configPath, home: root }),
+        prompt: { platform: 'darwin', date: '2026-09-18' },
+        ...(modelFetch === undefined ? {} : { modelFetch }),
+        ...(modelGateway === undefined ? {} : { modelGateway }),
+      })
+    },
+    dispose: () => removeDir(root),
+  }
+}
+
+function startModels(events: readonly KernelEvent[]): string[] {
+  return events
+    .filter((event) => event.kind === 'model.call.start')
+    .map((event) => (event.kind === 'model.call.start' ? event.data.model : ''))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 一 · 验收判据：同一会话中途换条目（上下文不丢 · 后续轮次走新模型）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('运行时切换 · 会话中途', () => {
+  test('换到另一个条目：上下文不丢、后续轮次走新模型（两个条目都真）', async () => {
+    const land = stage()
+    const { fetch, seen } = splitEndpoint({ alpha: '记下了：17', beta: '你让我记的是 17' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const models = assembly.models
+      expect(models).toBeDefined()
+      if (models === undefined) return
+
+      // 条目表读得出（加一条目即多一个）
+      expect(models.list()).toEqual([
+        { id: 'alpha', model: 'alpha-1' },
+        { id: 'beta', model: 'beta-1' },
+      ])
+
+      const handle = attachShell(assembly.shell)
+
+      await handle.submit('记住一个数：17')
+      // **会话中途**——什么都没重建：同一个 assembly、同一个会话、同一张库
+      expect(models.use({ provider: 'beta' })).toEqual({
+        ok: true,
+        selection: { provider: 'beta', model: 'beta-1' },
+      })
+      await handle.submit('我刚才让你记的数是多少')
+
+      // ① 换成了：甲家一次、乙家一次，模型名随条目走
+      expect(seen).toHaveLength(2)
+      expect(seen[0]?.url).toBe('https://alpha.example/v1/chat/completions')
+      expect(seen[0]?.model).toBe('alpha-1')
+      expect(seen[1]?.url).toBe('https://beta.example/v1/chat/completions')
+      expect(seen[1]?.model).toBe('beta-1')
+
+      // ② 上下文不丢：乙家收到的那串消息里有第一轮原话与甲的答复（内核构造的上下文原样过去）
+      const toBeta = seen[1]?.messages ?? []
+      const flatten = JSON.stringify(toBeta)
+      expect(flatten).toContain('记住一个数：17')
+      expect(flatten).toContain('记下了：17')
+      expect(flatten).toContain('我刚才让你记的数是多少')
+      // 系统提示词照旧在最前（段结构不因换模型而变）
+      expect(toBeta[0]?.role).toBe('system')
+
+      // ③ 域外不动：同一会话、事件连着来、模型名按出场序
+      expect(handle.events.every((event) => event.session === assembly.session)).toBe(true)
+      expect(startModels(handle.events)).toEqual(['alpha-1', 'beta-1'])
+
+      // ④ key 纪律：两把 key 各归各家，且一个字都不进事件与记录
+      expect(seen.map((request) => request.authorization)).toEqual([
+        `Bearer ${ALPHA_KEY}`,
+        `Bearer ${BETA_KEY}`,
+      ])
+      expect(JSON.stringify(handle.events)).not.toContain(ALPHA_KEY)
+      expect(JSON.stringify(handle.events)).not.toContain(BETA_KEY)
+
+      handle.dispose()
+
+      const db = readDatabase(assembly.paths.database)
+      const dump = JSON.stringify(db.entries) + JSON.stringify(db.events)
+      expect(dump).not.toContain(ALPHA_KEY)
+      expect(dump).not.toContain(BETA_KEY)
+      // 两轮都在同一张库、同一个会话里（条目连着长——记录域全程不知道换过模型）
+      expect(new Set(db.entries.map((entry) => entry.session))).toEqual(new Set([assembly.session]))
+      expect(db.entries.length).toBeGreaterThanOrEqual(4)
+
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('换模型不走对话域——换与不换，送出去的消息一字不差', async () => {
+    const land = stage()
+    const { fetch, seen } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const handle = attachShell(assembly.shell)
+
+      await handle.submit('第一轮')
+      const beforeSwitch = JSON.stringify(seen[0]?.messages)
+
+      assembly.models?.use({ provider: 'beta' })
+      await handle.submit('第一轮')
+
+      // 两轮的上下文同形（第二条请求＝同样的消息 ＋ 更长的历史）——切换动的是接缝下游
+      expect(JSON.stringify(seen[1]?.messages)).toContain(JSON.stringify(JSON.parse(beforeSwitch)[1]))
+      expect(seen[1]?.model).toBe('beta-1')
+      expect(seen[1]?.url.startsWith('https://beta.example')).toBe(true)
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 二 · 脚本步骤：换模型（`--script` 的入口）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('运行时切换 · 脚本步骤', () => {
+  test('`{ "switch": … }` 夹在交代之间——次序照写、换完即走下一步', async () => {
+    const land = stage()
+    const { fetch, seen } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+      const handle = await runShellScript(
+        assembly.shell,
+        { inputs: ['第一轮', { switch: { provider: 'beta' } }, '第二轮'] },
+        { onSwitch: (request) => assembly.models?.use(request) ?? { ok: false, reason: '无注册表' } },
+      )
+
+      expect(handle.switches).toEqual([
+        { request: { provider: 'beta' }, selection: { provider: 'beta', model: 'beta-1' } },
+      ])
+      expect(seen.map((request) => request.model)).toEqual(['alpha-1', 'beta-1'])
+      expect(startModels(handle.events)).toEqual(['alpha-1', 'beta-1'])
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('换不动即**抛**——脚本当场停，不接着跑一个与脚本意图不符的会话', async () => {
+    const land = stage()
+    const { fetch, seen } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+
+      await expect(
+        runShellScript(
+          assembly.shell,
+          { inputs: ['第一轮', { switch: { provider: 'nowhere' } }, '第二轮'] },
+          { onSwitch: (request) => assembly.models?.use(request) ?? { ok: false, reason: '无注册表' } },
+        ),
+      ).rejects.toThrow(/换模型不成功.*未知供应商「nowhere」/)
+
+      // 第二轮没跑——只打了一次模型调用
+      expect(seen).toHaveLength(1)
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('没接换模型的落点 → 同样抛（不静默吞掉脚本里那一步）', async () => {
+    const land = stage()
+    const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const assembly = land.assemble({ modelFetch: fetch })
+
+      await expect(
+        runShellScript(assembly.shell, { inputs: [{ switch: { provider: 'beta' } }] }),
+      ).rejects.toThrow(/没接「换模型」的落点/)
+
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 三 · 装配面：注册表在场与缺席
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('运行时切换 · 装配面', () => {
+  test('真路径有注册表；注入替身网关时**缺席**（看得见，不是静默失效）', () => {
+    const land = stage()
+    const { fetch } = splitEndpoint({ alpha: '甲答', beta: '乙答' })
+
+    try {
+      const real = land.assemble({ modelFetch: fetch })
+      expect(real.models?.defaultProviderId()).toBe('alpha')
+      expect(real.models?.has('beta')).toBe(true)
+      real.close()
+
+      // 替身那条路（Faux 一类）：单件网关，没有条目表可言
+      const stub: ModelGateway = {
+        stream: () => {
+          throw new Error('替身：本用例不看它')
+        },
+      }
+      const faked = land.assemble({ modelGateway: (_stamper: EventStamper) => stub })
+      expect(faked.models).toBeUndefined()
+      faked.close()
+    } finally {
+      land.dispose()
+    }
+  })
+})

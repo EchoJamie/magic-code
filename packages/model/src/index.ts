@@ -10,14 +10,15 @@
  * - **key 永不入事件与记录**——只在装配层解析（`resolveApiKey`），产出的一切文本先过 `redactSecrets`；
  * - 不碰文件系统、不读配置文件（配置加载是 U11 的活）。
  *
- * 出口四件：
- * ① **端口装配**——`createModelGateway`；
- * ② **形态**——`ModelGateway` / `ModelStream` / `ModelCallResult` / 中间件位；
+ * 出口五件：
+ * ① **端口装配**——`createModelGateway`（单条目）· **`createModelRegistry`**（多条目的注册表 ＋ 运行时切换）；
+ * ② **形态**——`ModelGateway` / `ModelStream` / `ModelCallResult` / 中间件位 / 注册表形态；
  * ③ **构造子**——事件构造子与信封来源（Faux Provider 与循环测试用）；
- * ④ **纯函数**——错误分档 / 脱敏 / 特征标记裁定。
+ * ④ **纯函数**——错误分档 / 脱敏 / 特征标记裁定；
+ * ⑤ **策略**——退避重试的策略形态与缺省（`RetryPolicy` / `DEFAULT_RETRY_POLICY`）。
  *
  * 不出去的：取件层 chunk 形态（`VendorStreamPart`）· SDK 类型 · 错误分档的正则表 ·
- * 归一过程 · 内嵌思考的切分器。
+ * 归一过程 · 内嵌思考的切分器 · 退避重试的循环（只出策略与计数，不出实现）。
  */
 
 // —— ② 形态 ——
@@ -38,6 +39,21 @@ export { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 export { createModelGateway, MissingApiKeyError, resolveApiKey } from './gateway.ts'
 export type { ModelGatewayOptions } from './gateway.ts'
 
+// 注入用 fetch（假端点回放 SSE）——`fetch` 是构造入参的一件，其形态随之出口
+export type { FetchLike } from './ai-sdk.ts'
+
+// —— ①之二 多条目的注册表 ＋ 运行时切换（技术方案 · 模型策略 · 切换）——
+
+export { createModelRegistry } from './registry.ts'
+export type {
+  ModelRegistry,
+  ModelRegistryOptions,
+  ModelSelection,
+  ModelSwitchRequest,
+  ModelSwitchResult,
+  ProviderEntry,
+} from './registry.ts'
+
 // —— ③ 构造子（Faux Provider 与循环测试用；信封由注入的 `EventStamper` 铸）——
 
 export {
@@ -53,6 +69,11 @@ export {
 export { classifyModelError, describeModelError, isAbortError, redactSecrets } from './errors.ts'
 
 export { MODEL_TRAITS_BUILTIN, resolveModelTraits } from './traits.ts'
+
+// —— ⑤ 策略（退避重试——见 `retry.ts`）——
+
+export { DEFAULT_RETRY_POLICY } from './retry.ts'
+export type { RetryPolicy, Sleeper } from './retry.ts'
 
 // —— 首接供应商常量（装配根取用；供应商细节本身仍是域内物，这里只出「默认值」）——
 

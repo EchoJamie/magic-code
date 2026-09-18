@@ -1,0 +1,218 @@
+/**
+ * 供应商注册表 —— 多供应商 ＋ **运行时切换**（技术方案 · 模型策略 · 切换）。
+ *
+ * 技术方案的原文：「registry 动态注册多供应商；运行时切换（会话中途换模型：上下文由内核
+ * 构造，**换模型＝换接缝下游**）；注册表存于配置文件」。
+ *
+ * **归属**——选实现仍归装配：本文件只把配置里那张 `providers` 表变成「**条目 → 网关**」的
+ * 查表（每条目一个 `createModelGateway`，key 各自解析一次），不读配置文件、不碰文件系统。
+ * 「加一条目即多一个可用」由此成立：`providers` 加键，注册表就多一格，形制不变。
+ *
+ * **换模型＝换接缝下游**——注册表**就是**那个接缝：对话域只拿到一个 `ModelGateway`，
+ * 全程不变；切换只改注册表内部的「当前选中」，于是下一次 `stream()` 走到另一个条目的
+ * 网关上。对话域 / 记录域**不知道发生过切换**（上下文照旧由条目重建，一条不丢）。
+ *
+ * **模型名怎么定**（锚定：技术方案 · 配置与密钥「模型名取自请求」）——
+ * - **未切换**：走缺省条目，模型名**取自请求**（`req.model`）——与接入时逐字同义；
+ * - **切换之后**：走选中的条目 ＋ 选中的模型——`use({ provider })` 不带模型时取
+ *   **该条目的默认**（`providers.<id>.model`）：换了条目还用上家的模型名，等于拿一个
+ *   对方多半不认的名字去问。
+ *
+ * **域内零散件**：`use()` 返回判别式（成功 / 不成功 ＋ 缘由），**不抛**——与权限域
+ * `parseRules` 同一姿态（读不懂的**不生效**，缘由交回调用方去说给人听）；且**切不动就不动**：
+ * 校验全过才落选中，失败时原选中原样保留（缺省＝安全姿态）。
+ */
+
+import type { EventStamper, ModelRequest, ProviderConfig } from '@magic/contracts'
+import type { FetchLike } from './ai-sdk.ts'
+import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
+import type { ModelMiddleware } from './middleware.ts'
+import type { RetryPolicy, Sleeper } from './retry.ts'
+import { MissingApiKeyError, createModelGateway } from './gateway.ts'
+
+// —— 形态 ——
+
+/** 注册表里的一格——**供应商细节不出域**：只给「叫什么、默认用哪个模型」。 */
+export type ProviderEntry = {
+  readonly id: string
+  /** 该条目的默认模型（`providers.<id>.model`）。 */
+  readonly model: string
+}
+
+/** 当前选中——供应商 ＋ 模型（两个都得定下来：换条目而留旧模型名多半打不通）。 */
+export type ModelSelection = {
+  readonly provider: string
+  readonly model: string
+}
+
+/**
+ * 切换请求——两件都可缺，看要换什么：
+ * - 只给 `provider`：换条目，模型取**该条目的默认**；
+ * - 只给 `model`：留在这家，换模型（同一端点上跑另一个模型）；
+ * - 都给：两件一起换。
+ * - 都不给：不晓得更成什么——如实报「不知道要换成什么」，不猜。
+ */
+export type ModelSwitchRequest = {
+  readonly provider?: string | undefined
+  readonly model?: string | undefined
+}
+
+/**
+ * 切换结果——判别式。
+ * 不成功时选中**原样不动**（切不动就不动），`reason` 是**说给人听**的一句话
+ * （含已注册的条目名——用户打错字时当场看得见有哪些可选）。
+ */
+export type ModelSwitchResult =
+  | { readonly ok: true; readonly selection: ModelSelection }
+  | { readonly ok: false; readonly reason: string }
+
+/** 模型域 → 装配的注册表面（`ModelGateway` 的扩展——消费者按契约端口取用即可）。 */
+export interface ModelRegistry extends ModelGateway {
+  /** 已注册的条目（配置顺序）——「加一条目即多一个」的读数面。 */
+  list(): readonly ProviderEntry[]
+  /** 配置里的缺省条目 id（`defaultProvider`）。 */
+  defaultProviderId(): string
+  /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
+  selection(): ModelSelection | undefined
+  has(id: string): boolean
+  /** 换模型——会话中途调用，下一轮起走新条目（见文件头注）。 */
+  use(request: ModelSwitchRequest): ModelSwitchResult
+}
+
+export type ModelRegistryOptions = {
+  /** 配置里的 `providers` 原样（形制见共享语言 · 配置形制）。 */
+  readonly providers: Readonly<Record<string, ProviderConfig>>
+  /** 配置里的 `defaultProvider`——开局走它。 */
+  readonly defaultProvider: string
+  /** 信封铸造器——**按会话实例构造**，各条目的网关共用同一个（见 `createModelGateway`）。 */
+  readonly stamper: EventStamper
+  /** 中间件链——逐条目的网关共用（横切逻辑与「走哪家」无关）。 */
+  readonly middleware?: readonly ModelMiddleware[] | undefined
+  /** 瞬时档退避重试的策略——缺省 `DEFAULT_RETRY_POLICY`（见 `retry.ts`）。 */
+  readonly retry?: RetryPolicy | undefined
+  /** 退避等待的实现——注入用（测试不真等）；缺省真等。 */
+  readonly sleep?: Sleeper | undefined
+  /** 显式 key（测试用）——按条目给；优先于配置与环境变量。 */
+  readonly apiKeys?: Readonly<Record<string, string | undefined>> | undefined
+  /** 注入用 fetch（测试：假端点回放 SSE，不经网络）。 */
+  readonly fetch?: FetchLike | undefined
+  /** 环境变量来源——缺省 `process.env`。 */
+  readonly env?: Readonly<Record<string, string | undefined>> | undefined
+  /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
+  readonly maxCompletionTokens?: number | undefined
+}
+
+// —— 装配 ——
+
+/**
+ * 造一个供应商注册表。
+ *
+ * **缺省条目在构造期就位**（＝造它的网关）——于是「开局要用的那条缺 key」照旧**启动期即报**
+ * （与单供应商时代逐字同义：`MissingApiKeyError` 一声响，不留到第一次调用）。
+ * **其余条目按需构造**（第一次切过去时才造）——理由：配置里可以有**当下还用不上**的条目
+ * （本地端点 / 备用供应商），为一个永远不用的条目把启动卡死，是拿别人的错惩罚用户；
+ * 而「切过去才发现没配好」也不难受：`use()` 当场把缘由说清楚（key 的来处在消息里）。
+ */
+export function createModelRegistry(options: ModelRegistryOptions): ModelRegistry {
+  const { providers, defaultProvider, stamper } = options
+  const entries = Object.entries(providers)
+
+  if (providers[defaultProvider] === undefined) {
+    const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
+    throw new Error(`缺省供应商「${defaultProvider}」不在 providers 里——已配：${known}`)
+  }
+
+  /** 条目 → 网关（按需构造、造完即留）——同一个条目只解析一次 key。 */
+  const built = new Map<string, ModelGateway>()
+
+  function gatewayFor(id: string): ModelGateway {
+    const cached = built.get(id)
+    if (cached !== undefined) return cached
+
+    const config = providers[id]
+    if (config === undefined) throw new Error(`未知供应商「${id}」`)
+
+    const gateway = createModelGateway({
+      providerId: id,
+      config,
+      stamper,
+      middleware: options.middleware,
+      retry: options.retry,
+      sleep: options.sleep,
+      apiKey: options.apiKeys?.[id],
+      fetch: options.fetch,
+      env: options.env,
+      maxCompletionTokens: options.maxCompletionTokens,
+    })
+    built.set(id, gateway)
+    return gateway
+  }
+
+  /** 开局那条——**构造期就造**（缺 key 当场报；见函数头注）。 */
+  gatewayFor(defaultProvider)
+
+  /** 当前选中；`undefined` ＝未切换（走缺省条目、模型名取自请求）。 */
+  let selected: ModelSelection | undefined
+
+  return {
+    list(): readonly ProviderEntry[] {
+      return entries.map(([id, config]) => ({ id, model: config.model }))
+    },
+
+    defaultProviderId(): string {
+      return defaultProvider
+    },
+
+    selection(): ModelSelection | undefined {
+      return selected
+    },
+
+    has(id: string): boolean {
+      return providers[id] !== undefined
+    },
+
+    use(request: ModelSwitchRequest): ModelSwitchResult {
+      const askedProvider = request.provider?.trim()
+      const askedModel = request.model?.trim()
+
+      if (askedProvider === undefined && (askedModel === undefined || askedModel.length === 0)) {
+        return { ok: false, reason: '既没给 provider 也没给 model——不知道要换成什么' }
+      }
+
+      const providerId = askedProvider ?? selected?.provider ?? defaultProvider
+      const entry = providers[providerId]
+      if (entry === undefined) {
+        const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
+        return { ok: false, reason: `未知供应商「${providerId}」——已注册：${known}` }
+      }
+
+      const model = askedModel !== undefined && askedModel.length > 0 ? askedModel : entry.model
+
+      // **网关在这一步就造**（不是等下一轮调用）——切不过去就该在「切」这一下说清楚：
+      // 缺 key 的缘由经 `use` 的返回值交回，而不是拖到下一轮炸在对话域里（那里只会报
+      // 「对话域异常」，把人指去错地方）
+      try {
+        gatewayFor(providerId)
+      } catch (error) {
+        if (error instanceof MissingApiKeyError) return { ok: false, reason: error.message }
+        throw error
+      }
+
+      selected = { provider: providerId, model }
+      return { ok: true, selection: selected }
+    },
+
+    stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
+      const chosen = selected
+      if (chosen === undefined) {
+        // 未切换——缺省条目 ＋ **请求给的模型名**（技术方案 · 配置与密钥：「模型名取自请求」）
+        return gatewayFor(defaultProvider).stream(request, streamOptions)
+      }
+
+      return gatewayFor(chosen.provider).stream(
+        { ...request, model: chosen.model },
+        streamOptions,
+      )
+    },
+  }
+}
