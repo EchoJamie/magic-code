@@ -26,9 +26,20 @@
 // —— 端口实现 ＋ 装配期构造入参形态 ——
 
 export { createConversationService } from './service.ts'
-export type { ConversationDeps } from './service.ts'
+export type { ConversationDeps, RecoverableConversationService } from './service.ts'
 
 // 构造入参里点名用到、装配根必须拿得到的两件形态：
 // 提示词运行时注入值（`cwd` / `platform` / `date`）与上下文策略（阈值 / 截断）
 export type { PromptVars } from './prompt/index.ts'
 export type { ContextPolicy } from './policy.ts'
+
+// 恢复（阶段 2 · U15）——注入面（`RecoveryDeps` 的两件）与**报告**（`recover()` 的返回）。
+// `RecoveryScan` / `InFlightCall` 是记录域查询面的镜像：消费侧经 `RecoveryDeps.inFlight`
+// **转手**即可，不必具名（域间不得互 import，故本域自持一份——没出，就没承诺）。
+export type {
+  CallDisposition,
+  IdempotencyJudge,
+  NotReplayedReason,
+  RecoveryDeps,
+  RecoveryReport,
+} from './recovery.ts'

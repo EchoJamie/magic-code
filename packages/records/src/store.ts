@@ -32,6 +32,7 @@ import type {
 import { BLOBS_DIR, createBlobStore } from './blobs.ts'
 import { assertEntryShape, entryOfRow, entryParamsOf, type EntryRow } from './entries.ts'
 import { eventOfRow, eventParamsOf, isTransientEvent, type EventRow } from './events.ts'
+import { scanForRecovery, type RecoveryScan } from './recovery.ts'
 import { createIdSpace } from './ids.ts'
 import {
   ENTRIES_TABLE,
@@ -68,6 +69,15 @@ export type RecordsStoreOptions = {
 export type RecordsStore = {
   serviceFor(session: SessionId): RecordsService
   listSessions(): Promise<readonly SessionSummary[]>
+  /**
+   * **恢复查询面**（技术方案 · 领域划分：在途识别由本域提供）——一次扫描说全
+   * 「要处置什么」：在途调用（有 `tool.call` 无 `tool.result`）· 中断的轮 · 轮号水位。
+   *
+   * 归本域的理由：两侧的来处都在库里（事件侧给裁决轨迹、条目侧给配对），
+   * 而**判据只有一份**——放这儿，别家（对话域的恢复流程）就不必各写一遍。
+   * 扫描**只读不判**：处置（重放 / 落账）归对话域。
+   */
+  recoveryScan(session: SessionId): Promise<RecoveryScan>
   /** 关连接（blob 无需收尾）。 */
   close(): void
   /** 落点（验收查询脚本 / 装配期日志用）。 */
@@ -196,6 +206,20 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     return selectSessions.all().map((row) => ({ id: row.id, at: row.at }))
   }
 
+  /**
+   * 恢复扫描——两侧各读一遍（分页读，见 `READ_CHUNK`），判定交给 `scanForRecovery`。
+   * 先事件后条目：判据在事件侧（链引用），条目侧只补配对。
+   */
+  async function runRecoveryScan(session: SessionId): Promise<RecoveryScan> {
+    const events: KernelEvent[] = []
+    for await (const event of readEvents(session)) events.push(event)
+
+    const entries: Entry[] = []
+    for await (const entry of readEntries(session)) entries.push(entry)
+
+    return scanForRecovery({ session, events, entries })
+  }
+
   return {
     paths: { database: databasePath, blobs: blobsDir },
 
@@ -213,6 +237,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     },
 
     listSessions,
+    recoveryScan: runRecoveryScan,
 
     close(): void {
       db.close()
