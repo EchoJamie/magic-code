@@ -37,6 +37,7 @@ import type {
 } from '@magic/contracts'
 import type { LoopRuntime } from './agent-loop.ts'
 import { agentLoop } from './agent-loop.ts'
+import { createCompactor } from './compact.ts'
 import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
@@ -66,7 +67,7 @@ export type ConversationDeps = {
    * 显式注入便于测试（域不各自读时钟，取用经此一处——与权限域的 `now` 同法）。
    */
   readonly now?: (() => Timestamp) | undefined
-  /** 上下文策略——缺省 `DEFAULT_CONTEXT_POLICY`；阶段 3 压缩在此长出真正的策略。 */
+  /** 上下文策略——缺省 `DEFAULT_CONTEXT_POLICY`（含压缩的触发阈值与近段边界）。 */
   readonly context?: Partial<ContextPolicy> | undefined
   /**
    * **恢复面**（阶段 2 · U15）——在途查询（记录域）＋ 幂等判定（工具定义）。
@@ -114,6 +115,29 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   let current: AbortController | undefined
   const pending: string[] = []
 
+  /**
+   * **压缩器**（阶段 3 · U19）——按会话实例各一份，故它记得的用量读数**随会话走**
+   * （切到别的会话，读数是那条会话自己的）。
+   *
+   * 记账的两处（`blobThreshold` / `blobTextLimit`）与循环同源：摘要条目也是条目，
+   * 该转 blob 就转 blob、该截断就截断（见 `./compact.ts`）。
+   */
+  const compactor = createCompactor({
+    records: deps.records,
+    session: deps.session,
+    gateway: deps.gateway,
+    model: deps.model,
+    sink,
+    stamper,
+    now: deps.now ?? Date.now,
+    blobThreshold: policy.blobThreshold,
+    blobTextLimit: policy.blobTextLimit,
+    nearEntries: policy.nearEntries,
+    compactAtFraction: policy.compactAtFraction,
+    compactAtTokens: policy.compactAtTokens,
+    compactFailureLimit: policy.compactFailureLimit,
+  })
+
   const runtime: LoopRuntime = {
     session: deps.session,
     model: deps.model,
@@ -129,6 +153,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     now: deps.now ?? Date.now,
     blobThreshold: policy.blobThreshold,
     blobTextLimit: policy.blobTextLimit,
+    compact: compactor,
   }
 
   async function drain(): Promise<void> {
