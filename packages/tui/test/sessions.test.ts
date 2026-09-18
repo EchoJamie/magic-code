@@ -17,6 +17,7 @@ import type { ShellStatus } from '../src/view.ts'
 import { HINT_IDLE } from '../src/view.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
+import { plain } from './screen.ts'
 
 const COLUMNS = 100
 const ROWS = 30
@@ -33,8 +34,10 @@ function live() {
     },
     key: (kind: 'enter' | 'down' | 'escape') => shell.key({ kind } as never),
     rows: () => [...shell.getView().settled, ...shell.getView().rows],
+    // ⚠️ 取景**先归一化**（`plain`——剥掉 ANSI）：这一层量的是文字与布局，
+    // 而色是环境给的（缺陷 D17）。理由与做法见 `screen.ts` 文件头。
     screen: (columns = COLUMNS, rows = ROWS) =>
-      renderToString(h(AppView, { view: shell.getView(), columns, rows }), { columns }),
+      plain(renderToString(h(AppView, { view: shell.getView(), columns, rows }), { columns })),
   }
 }
 
@@ -135,7 +138,7 @@ describe('状态行 · 四格与降级', () => {
   })
 
   const line = (patch: Partial<ShellStatus> = {}, columns = COLUMNS) =>
-    renderToString(h(StatusLine, { status: status(patch), columns }), { columns })
+    plain(renderToString(h(StatusLine, { status: status(patch), columns }), { columns }))
 
   test('左半四格次序恒定：状态 · 会话 · 模型 · 用量', () => {
     const text = line()
@@ -179,9 +182,10 @@ describe('状态行 · 四格与降级', () => {
 describe('空态判定（缺陷 D3）', () => {
   test('**按这条会话有没有内容判**——还没有会话＝空态；会话开了就不再是空态', () => {
     const fresh = createShell(createSpyTransport().transport)
-    const emptyScreen = renderToString(
-      h(AppView, { view: fresh.getView(), columns: COLUMNS, rows: ROWS }),
-      { columns: COLUMNS },
+    const emptyScreen = plain(
+      renderToString(h(AppView, { view: fresh.getView(), columns: COLUMNS, rows: ROWS }), {
+        columns: COLUMNS,
+      }),
     )
     expect(emptyScreen).toContain('交代一件事就开始')
 
@@ -189,9 +193,11 @@ describe('空态判定（缺陷 D3）', () => {
     const spy = createSpyTransport()
     const shell = createShell(spy.transport)
     spy.emit(state(SESSION, [{ id: SESSION, title: '甲的事' }]))
-    const opened = renderToString(h(AppView, { view: shell.getView(), columns: COLUMNS, rows: ROWS }), {
-      columns: COLUMNS,
-    })
+    const opened = plain(
+      renderToString(h(AppView, { view: shell.getView(), columns: COLUMNS, rows: ROWS }), {
+        columns: COLUMNS,
+      }),
+    )
     expect(opened).not.toContain('交代一件事就开始')
     void createView()
   })

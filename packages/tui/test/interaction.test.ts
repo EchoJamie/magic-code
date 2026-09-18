@@ -23,6 +23,7 @@ import { TuiApp } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
+import { plain } from './screen.ts'
 
 const POLL_MS = 5
 const TIMEOUT_MS = 2000
@@ -31,6 +32,18 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 /** 库转出来的那一坨（只要用到的那几样）。 */
 type Ui = ReturnType<typeof render>
+
+/**
+ * 帧 → **只剩文字与布局**（剥掉 ANSI）。
+ *
+ * ⚠️ **不剥就是缺陷 D17**：`ink-testing-library` 交的是**带色码的帧**（有 `FORCE_COLOR` 时），
+ * 而这一层的断言全是「屏上有没有这一段文字」——色码插在中间，子串**不再连续**，
+ * 于是三条用例**每次都要白等满 2 秒超时**才红（实测：`FORCE_COLOR=3` 下三条各耗 2050ms）。
+ * 色不在这一层量（要量色去 `screen.ts` 那条真终端的路）。
+ */
+function plainFrame(ui: Ui): string {
+  return plain(ui.lastFrame() ?? '')
+}
 
 /** 等一帧满足条件（超时抛——时间给了，还是没等到就是真没渲染出来）。 */
 async function waitForFrame(
@@ -41,12 +54,12 @@ async function waitForFrame(
   const deadline = Date.now() + TIMEOUT_MS
 
   while (Date.now() < deadline) {
-    const frame = ui.lastFrame() ?? ''
+    const frame = plainFrame(ui)
     if (predicate(frame)) return frame
     await sleep(POLL_MS)
   }
 
-  throw new Error(`等不到满足条件的帧${label === undefined ? '' : `（${label}）`}：\n${ui.lastFrame() ?? ''}`)
+  throw new Error(`等不到满足条件的帧${label === undefined ? '' : `（${label}）`}：\n${plainFrame(ui)}`)
 }
 
 /** 起一个活壳：外壳 ＋ 间谍传输（可按需投事件）。 */
@@ -69,8 +82,8 @@ function liveApp() {
   }
 
   const app = {
-    /** 最近一帧（还没渲染过则为空串）。 */
-    frame: (): string => ui.lastFrame() ?? '',
+    /** 最近一帧（还没渲染过则为空串）——同样**先归一化**（见 `plainFrame`）。 */
+    frame: (): string => plainFrame(ui),
 
     /** 敲键（`\r` 回车 · `\u0003` Ctrl+C · `\u000f` ctrl+o · `y` / `n` 答复）。 */
     type: async (data: string): Promise<void> => {

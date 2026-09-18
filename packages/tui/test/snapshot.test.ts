@@ -23,13 +23,21 @@ import { createShell } from '../src/shell.ts'
 import type { ShellKey } from '../src/shell.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
+import { plain } from './screen.ts'
 
 const COLUMNS = 100
 const ROWS = 30
 
-/** 取景——一屏渲染成字符串（同一条链，只有最后一跳是纯函数）。 */
+/**
+ * 取景——一屏渲染成字符串（同一条链，只有最后一跳是纯函数）。
+ *
+ * ⚠️ **先归一化**（`plain`——剥掉 ANSI）：这一层量的是**文字与布局**，而色是**环境**给的
+ * （Ink 经 `chalk`，档位看 `FORCE_COLOR` / TTY）。不剥就是**缺陷 D17**：同一个仓、同一份代码，
+ * 换个 shell（设了 `FORCE_COLOR` 的工具链 / CI / IDE 集成终端）**21 例当场全红**——
+ * 快照对不上色码、`toContain` 的子串被色码从中间断开。**红得没有信息量，只会训练人忽略红。**
+ */
 function screen(shell: ReturnType<typeof createShell>, columns = COLUMNS, rows = ROWS): string {
-  return renderToString(h(AppView, { view: shell.getView(), columns, rows }), { columns })
+  return plain(renderToString(h(AppView, { view: shell.getView(), columns, rows }), { columns }))
 }
 
 /** 起壳 ＋ 取景把手。 */
