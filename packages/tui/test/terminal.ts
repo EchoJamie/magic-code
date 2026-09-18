@@ -21,6 +21,11 @@
  * - `screenOf()`——**放**：把那串字节喂进 `@xterm/headless`（**真 VT 模型，取件不自造**），
  *   读回**屏幕矩阵**。
  *
+ * > U24 补了第三条：`screenCells()`——**读格**。`screenOf` 交的是**纯文本**（色码被
+ * > `translateToString` 吃掉了），而规格表里有一半的话是**关于色与重量的**
+ * > （「助手标记绿」·「工具只换色不加粗」·「必闸类 `a` 划掉」）——那些话文本上一个字都看不到。
+ * > 它与 `screenOf` 共用 `openTerminal()`，选项的理由仍在下面这一处。
+ *
  * ## ⚠️ 三条不能省的讲究（每一条都踩过）
  *
  * 1. **假 stdout 必须 `isTTY: true`**——Ink 只在「真终端」时才走擦行 / 上移那条路
@@ -34,6 +39,7 @@
  */
 
 import { Terminal } from '@xterm/headless'
+import type { IBufferCell } from '@xterm/headless'
 import { EventEmitter } from 'node:events'
 import { render } from 'ink'
 import type { Instance } from 'ink'
@@ -70,8 +76,8 @@ export type ScreenOptions = {
   readonly scrollback?: number
 }
 
-/** 把一段 stdout 原始字节喂进终端模型，读回屏幕矩阵。 */
-export async function screenOf(bytes: string, options: ScreenOptions): Promise<Screen> {
+/** 开一台 VT 模型、把字节喂进去——`screenOf` 与 `screenCells` 共用这一步。 */
+async function openTerminal(bytes: string, options: ScreenOptions): Promise<Terminal> {
   const terminal = new Terminal({
     cols: options.columns,
     rows: options.rows,
@@ -90,6 +96,11 @@ export async function screenOf(bytes: string, options: ScreenOptions): Promise<S
     terminal.write(bytes, () => resolve())
   })
 
+  return terminal
+}
+
+/** 读回屏幕矩阵（行 ＋ 折行标记 ＋ 光标）。 */
+function readScreen(terminal: Terminal, options: ScreenOptions): Screen {
   const buffer = terminal.buffer.active
   const lines: string[] = []
   const wrapped: boolean[] = []
@@ -107,6 +118,98 @@ export async function screenOf(bytes: string, options: ScreenOptions): Promise<S
     wrapped,
     cursor: { x: buffer.cursorX, y: buffer.cursorY },
   }
+}
+
+/** 把一段 stdout 原始字节喂进终端模型，读回屏幕矩阵。 */
+export async function screenOf(bytes: string, options: ScreenOptions): Promise<Screen> {
+  return readScreen(await openTerminal(bytes, options), options)
+}
+
+// —— 读格：一格的**样子**（规格表上的「色」「重量」只有格子上量得到）——
+
+/**
+ * 一格的样子。
+ *
+ * 为什么要有这一层：`Screen.lines` 是**纯文本**（`translateToString` 把色码吃掉了），
+ * 而 `界面原型.html` 的组件规格表有一半的话是**关于色与重量的**——
+ * 「助手标记绿」「工具与助手同族 · 只换色 · 不加粗」「必闸类 `a` 划掉」。
+ * 那些话在文本上**一个字都看不到**，只能读格子。
+ *
+ * ⚠️ **要色先开色**：Ink 的色经 `chalk`，而 chalk 的档位是**进程环境**给的
+ * （`FORCE_COLOR` / TTY）。测试进程里默认是 0 档 ⇒ **一个色码都不发**（实测：整屏全默认色）。
+ * 故量色的用例必须**显式拧档**（`chalk.level = 3`，见 `screen.ts`）——
+ * **别把「量到默认色」当成「代码没上色」**。
+ */
+export type Cell = {
+  /** 这一格的字符；宽字符占两格，右半格是空串。 */
+  readonly text: string
+  /** 这一格占几列（宽字符＝2，宽字符右边那格＝0）。 */
+  readonly width: number
+  /** 前景色：`#rrggbb`（真彩）· `ansi:N`（调色板）· `null`（**默认色**——没指定）。 */
+  readonly fg: string | null
+  readonly bg: string | null
+  readonly bold: boolean
+  readonly strikethrough: boolean
+}
+
+/** 屏幕 ＋ 它的格子读法。 */
+export type Cells = {
+  readonly screen: Screen
+  /** 第 `row` 行的格子（从左到右，**到最后一个非空格为止**）。 */
+  cellsOf(row: number): readonly Cell[]
+}
+
+/** 把一段字节喂进终端，读回屏幕矩阵**＋每格的样式**。 */
+export async function screenCells(bytes: string, options: ScreenOptions): Promise<Cells> {
+  const terminal = await openTerminal(bytes, options)
+  const buffer = terminal.buffer.active
+
+  return {
+    screen: readScreen(terminal, options),
+    cellsOf: (row) => {
+      const line = buffer.getLine(row)
+      if (line === undefined) return []
+
+      const cells: Cell[] = []
+      for (let x = 0; x < options.columns; x += 1) {
+        const cell = line.getCell(x)
+        if (cell === undefined) break
+        cells.push(readCell(cell))
+      }
+
+      // 右侧空白裁掉（与 `translateToString(true)` 同口径——断言不必数尾巴上有几个空格）
+      let end = cells.length
+      while (end > 0 && (cells[end - 1] as Cell).text.trim() === '') end -= 1
+
+      return cells.slice(0, end)
+    },
+  }
+}
+
+function readCell(cell: IBufferCell): Cell {
+  return {
+    text: cell.getChars(),
+    width: cell.getWidth(),
+    fg: colorOf(cell, 'fg'),
+    bg: colorOf(cell, 'bg'),
+    // ⚠️ 这两个**返回的是「掩过位的位段」，不是布尔**——xterm 里是
+    // `isBold() { return 0x08000000 & this.fg }`，加粗时得到的是 `134217728`、
+    // 删除线得到的是 `-2147483648`。**写成 `=== 1` 就永远为假**（判据当场空转，
+    // 「谁都没加粗」看着还挺像那么回事）。故一律按**非零**判。
+    bold: cell.isBold() !== 0,
+    strikethrough: cell.isStrikethrough() !== 0,
+  }
+}
+
+/** 格子的颜色——`#rrggbb` / `ansi:N` / `null`（默认色）。 */
+function colorOf(cell: IBufferCell, which: 'fg' | 'bg'): string | null {
+  const isDefault = which === 'fg' ? cell.isFgDefault() : cell.isBgDefault()
+  if (isDefault === true) return null
+
+  const isRgb = which === 'fg' ? cell.isFgRGB() : cell.isBgRGB()
+  const value = which === 'fg' ? cell.getFgColor() : cell.getBgColor()
+
+  return isRgb === true ? `#${value.toString(16).padStart(6, '0')}` : `ansi:${value}`
 }
 
 // —— 录：Ink → 字节 ——
