@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Command } from '@magic/contracts'
+import type { Command, KernelEvent } from '@magic/contracts'
 import { createShell } from '../src/shell.ts'
 import type { ShellKey } from '../src/shell.ts'
 import { event } from './events.ts'
@@ -322,6 +322,54 @@ describe('选择器（`/session` · `/model`）', () => {
       'minimax',
       'local',
     ])
+  })
+
+  /**
+   * 阶段 3 批 2 · **顺序判据**（接 D10 的读数时查出来的）。
+   *
+   * 钉的规格＝「先接订阅、后放开输入」那条**顺序纪律**在「命令 → 答复」这一跳上的另一面：
+   * 答复可能在 `send` **之内**就回来——进程内传输是**直连**的（`createInProcessTransportPair`
+   * 的 `send` 直接 publish）。故提交 slash 必须**先落地、后发命令**：反过来，外层那次
+   * **基于旧快照**的 `commit` 会把答复刚写进视图的东西**整个盖掉**。
+   *
+   * ⚠️ 判据必须**同步应答**才咬得住——在回车**之后**再投答复是模拟异步回话，那样旧实现也绿。
+   * （既有那几条正是那么写的，所以这个缺陷在真机上活了下来：`/model` 的选择器**一直开不出来**，
+   * `model.catalog` 到了、`view.models` 也写上了，随即被盖回输入区。）
+   */
+  test('答复**在 `send` 之内**同步回来时，`/model` 的选择器照样开（顺序）', () => {
+    const commands: Command[] = []
+    const listeners: ((event: KernelEvent) => void)[] = []
+    const transport = {
+      send: (command: Command) => {
+        commands.push(command)
+        // **同步应答**——进程内传输的真样子（直连，不经队列）
+        if (command.type === 'model.list') {
+          const reply = event('model.catalog', {
+            entries: [
+              { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 200_000 },
+              { provider: 'minimax-m2', model: 'MiniMax-M2' },
+            ],
+            current: { provider: 'minimax', model: 'MiniMax-M3' },
+          })
+          for (const listener of [...listeners]) listener(reply)
+        }
+      },
+      subscribe: (listener: (event: KernelEvent) => void) => {
+        listeners.push(listener)
+        return () => {}
+      },
+    }
+
+    const shell = createShell(transport as never)
+    for (const char of '/model') shell.key({ kind: 'char', char })
+    shell.key({ kind: 'enter' })
+
+    const view = shell.getView()
+
+    expect(commands.map((command) => command.type)).toEqual(['model.list'])
+    expect(view.dock.kind).toBe('picker') // **没被盖回输入区**
+    expect(view.models).toHaveLength(2) // 条目表留住了
+    expect(view.status.window).toBe(200_000) // ④ 的分母也留住了
   })
 })
 

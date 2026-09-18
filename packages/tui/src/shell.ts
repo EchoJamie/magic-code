@@ -435,7 +435,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 候选与右位提示得跟着重算。走 `commit()` 就**绕过了 `withCompletion` 那个统一口**，
     // 于是**空输入框下还挂着候选**（右位也停在「↑↓ 选 · Tab 补全」）。
     if (text.startsWith('/')) {
-      draft(runSlash(view, text))
+      // ⚠️ **先落地、后发命令**——次序要紧：`send` 在进程内传输上是**同步**的，
+      // 答复**当场**回来改视图；反过来（先发后 commit）这一次 `draft()` 拿的是
+      // **发命令之前**的快照，会把答复刚写进去的东西整个盖掉。
+      // 实测（真外壳 ＋ 真装配）：`/model` 的选择器就是这么开不出来的——
+      // `model.catalog` 到了、`view.models` 也写上了，随即被盖回输入区。
+      const { next, commands } = runSlash(view, text)
+      draft(next)
+      for (const command of commands) send(command)
       return NONE
     }
 
@@ -447,55 +454,66 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     return NONE
   }
 
-  /** slash 分发——**两种走法在这一处落定**。 */
-  const runSlash = (from: ShellView, text: string): ShellView => {
+  /**
+   * slash 分发——**两种走法在这一处落定**。
+   *
+   * ⚠️ **返回待发的命令、自己不 `send`**（顺序见 `submit` 里那段注）：进程内传输是
+   * **同步**直连的——命令一发出，答复**当场**回到 `onEvent` 改视图；命令若发在 `commit`
+   * **之前**，外层那次**基于旧快照**的 `commit` 会把答复的改动整个盖掉。
+   * （`/model` 的选择器就这么一直开不出来：`model.catalog` 明明到了，又被盖回输入区。）
+   */
+  const runSlash = (
+    from: ShellView,
+    text: string,
+  ): { readonly next: ShellView; readonly commands: readonly Command[] } => {
     const [word, ...rest] = text.split(/\s+/)
     const arg = rest.join(' ')
     const cleared: ShellView = { ...from, draft: '' }
+    /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
+    const only = (next: ShellView, ...commands: Command[]): { next: ShellView; commands: readonly Command[] } => ({
+      next,
+      commands,
+    })
 
     // —— 纯输出型：输出进记录区，**命令本身不回显** ——
-    if (word === '/help') return appendOutput(cleared, HELP_TITLE, HELP_LINES)
-    if (word === '/status') return appendOutput(cleared, STATUS_TITLE, statusLines(from))
+    if (word === '/help') return only(appendOutput(cleared, HELP_TITLE, HELP_LINES))
+    if (word === '/status') return only(appendOutput(cleared, STATUS_TITLE, statusLines(from)))
 
     // —— 交互配置型：记录区什么都不进 ——
     if (word === '/session') {
       if (arg === '' || arg === 'list') {
         waiting = 'session'
-        send({ type: 'session.list' })
-        return cleared
+        return only(cleared, { type: 'session.list' })
       }
       if (arg === 'new') {
-        send({ type: 'session.new' })
-        return appendReceipt(cleared, '已新建一条会话（首条消息按下回车才落库）')
+        return only(appendReceipt(cleared, '已新建一条会话（首条消息按下回车才落库）'), {
+          type: 'session.new',
+        })
       }
       if (arg === 'title' || arg.startsWith('title ')) {
         const title = arg.slice('title'.length).trim()
         if (title === '' || from.sessionId === null) {
-          return appendReceipt(cleared, '要改成什么？`/session title <文本>`')
+          return only(appendReceipt(cleared, '要改成什么？`/session title <文本>`'))
         }
-        send({ type: 'session.rename', session: from.sessionId, title })
-        return cleared
+        return only(cleared, { type: 'session.rename', session: from.sessionId, title })
       }
 
-      return appendReceipt(cleared, '认得的用法：/session · /session new · /session title <文本>')
+      return only(appendReceipt(cleared, '认得的用法：/session · /session new · /session title <文本>'))
     }
 
     if (word === '/model') {
-      if (arg !== '') {
-        send({ type: 'model.switch', provider: arg })
-        return cleared
-      }
+      if (arg !== '') return only(cleared, { type: 'model.switch', provider: arg })
+
       // 不带参数 ⇒ **问一次条目表**（D10 的读侧命令 `model.list`）：答复是 `model.catalog`，
       // 外壳据它铺选择器（**全量**，含从未调用过的条目）并把 ④ 的分母定下来。
       // ⚠️ 原先是发空参的 `model.switch`、拿**失败的缘由**当列表说明——那不是读面
       //（以「换失败了」作答，还白落一笔 `model.switched`）。
       waiting = 'model'
-      send({ type: 'model.list' })
-      return cleared
+      return only(cleared, { type: 'model.list' })
     }
 
     // 不认得的 slash——**如实说一句**（别静默丢，也别当交代发给模型）
-    return appendReceipt(cleared, `不认得的命令「${word}」——试试 /help`)
+    return only(appendReceipt(cleared, `不认得的命令「${word}」——试试 /help`))
   }
 
   /** 草稿是不是已经**打全**了选中的那条命令。 */
