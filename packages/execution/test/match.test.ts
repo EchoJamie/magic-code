@@ -30,7 +30,7 @@ function freshRoot(): string {
 }
 
 function sandboxOn(root: string): { box: Sandbox; root: string } {
-  const workspace = createWorkspaceService({ root })
+  const workspace = createWorkspaceService({ roots: [root] })
   return { box: createSandbox({ workspace }), root: workspace.defaultRoot() }
 }
 

@@ -118,10 +118,34 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
 }
 
 /**
+ * 工作区根列表（阶段 3 加键）——**只判形制**（须是非空字符串的数组）。
+ *
+ * **语义（绝对 / 存在 / 是目录 / 重复）不在这里判**：那要碰 fs，且**根的身份**
+ * （`realpath` 之后的规范形）只有执行域说了算——加载器再判一遍就是两处各说一套
+ * 「什么算合格的根」（见契约 `WorkspaceRoots`）。报错不降级这条两边都在守：
+ * 此处抛「形制不对」、执行域抛「第 N 条不合格」，都在启动期、都不静默放行。
+ *
+ * 根写了前导 `~` **在这里不展开**——`~` 不是绝对路径，执行域按相对路径拒
+ * （`dataDir` 的 `~` 展开是它那条的先例，未及于根：见 `expandDataDir` 的注）。
+ */
+function asWorkspaceRoots(value: unknown, path: string): readonly string[] {
+  if (!Array.isArray(value)) {
+    throw new ConfigError(
+      path,
+      'workspaceRoots 须是数组（工作区根列表：[<绝对路径>, …]；第一项＝默认根）',
+    )
+  }
+  return value.map((entry, index) => asText(entry, path, `workspaceRoots[${index}]`))
+}
+
+/**
  * 读并校验配置文件。
  *
  * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补 `DEFAULT_DATA_DIR`；
  * 其余键缺省即报错（首站形制里它们不是可选的）。
+ *
+ * **`workspaceRoots` 是唯一「缺省＝有效行为」的新键**——缺省 → 装配根回落启动目录
+ * （阶段 1 姿态）；**键在即接管**（见契约 `WorkspaceRoots`：不再并入启动目录）。
  */
 export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const home = options.home ?? homedir()
@@ -179,6 +203,13 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     ? undefined
     : asObject(raw['permissions'], path, 'permissions')
 
+  // 工作区根列表（阶段 3）——形制在此判、语义归执行域（见 `asWorkspaceRoots` 头注）。
+  // ⚠️ **漏带＝静默失效**（同上面权限段那条教训）：配置里写了多根而这里不接，
+  // 工作区就悄悄退回启动目录单根——**且不报错**，用户对着一个少了一半的作用域发呆。
+  const workspaceRoots = raw['workspaceRoots'] === undefined
+    ? undefined
+    : asWorkspaceRoots(raw['workspaceRoots'], path)
+
   return {
     path,
     config: {
@@ -186,6 +217,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
       providers,
       dataDir,
       ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
+      ...(workspaceRoots === undefined ? {} : { workspaceRoots }),
     },
     providerId,
     provider,

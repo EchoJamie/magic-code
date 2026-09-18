@@ -164,7 +164,7 @@ function report(assembly: Assembly): void {
   console.log('magic —— 装配自检')
   console.log(`  ${describeConfig(assembly.config)}`)
   console.log(`  供应商表　${describeProviders(assembly)}`)
-  console.log(`  工作区根　${assembly.workspaceRoot}（首站单根＝启动目录）`)
+  console.log(`  工作区根　${describeRoots(assembly)}`)
   console.log(`  会话　　　${assembly.session}`)
   console.log(`  数据落点　${assembly.paths.database}`)
   console.log(`             ${assembly.paths.blobs}/`)
@@ -197,6 +197,28 @@ function describeProviders(assembly: Assembly): string {
       : `${chosen.provider}（${chosen.model}）`
 
   return `${entries.length} 条——${table} · 当前走 ${current}`
+}
+
+/**
+ * 工作区根那一行（**多根** · 阶段 3）——**列表全列**，默认根标出来。
+ *
+ * 两条理由：**少列一条**用户就无从知道自己少注册了什么（自检的全部意义是「报在哪、是谁」）；
+ * 而默认根不标出来，多根下「相对路径往哪落」就得靠猜——「平等平铺 ＋ 一个默认」里
+ * 那个「默认」是**看得见**的一条，不是隐含约定。
+ */
+function describeRoots(assembly: Assembly): string {
+  const roots = assembly.workspaceRoots
+  const first = roots[0] as string // 注册面保证 ≥ 1 条
+  const rest = roots.slice(1)
+  // **来处**也要报——「为什么是这几条」正是用户要改配置时得先认得的那一格
+  // （⚙️ 键在即接管：配置里写了就不并入启动目录；缺省才回落）
+  const from = assembly.config.config.workspaceRoots === undefined
+    ? '配置无 workspaceRoots · 缺省＝启动目录'
+    : '来自配置 workspaceRoots'
+
+  return rest.length === 0
+    ? `${first}（默认根 · 单根 · ${from}）`
+    : `${first}（默认根——相对路径与新文件落它） · 另注册 ${rest.length} 条：${rest.join(' · ')} · ${from}`
 }
 
 /**
