@@ -331,7 +331,7 @@ describe('场景 9 · `/session`（交互配置型）', () => {
 })
 
 describe('场景 10 · `/model`（同一处、同一开合）', () => {
-  test('列表报条目与模型名；回执留一行', () => {
+  test('列表报条目与模型名（**全量**）；开选择器本身**不进记录区**', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '修复时区处理…' }]),
@@ -339,11 +339,31 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
     ])
     app.type('/model')
     app.key(ENTER)
-    app.feed([event('model.switched', { ok: false, reason: '不知道要换成什么——已注册：minimax' })])
+    // ⚠️ 本条 2026-09-19 改过（阶段 3 批 2 · 接 D10 的读数）——开选择器的那条答复换了：
+    //    原先是「空参 `model.switch` 的失败缘由」（列表就着那句缘由拼）、现在是 D10 的
+    //    **读侧答复 `model.catalog`**（注册表全量）。规格变的是**入口那条链**，
+    //    「列表报条目与模型名」这句本身没变。
+    app.feed([
+      event('model.catalog', {
+        entries: [
+          { provider: 'minimax', model: 'MiniMax-M3' },
+          { provider: 'minimax-m2', model: 'MiniMax-M2' },
+        ],
+        current: { provider: 'minimax', model: 'MiniMax-M3' },
+      }),
+    ])
+
+    const settled = [...app.shell.getView().settled, ...app.shell.getView().rows]
+
+    // **开的这一刻什么都不进记录区**（原型 · slash 两种走法：交互配置型「回车什么都不进」；
+    // 「留一行回执」是**选定之后**的事）——旧形状在这里留过一行「换模型未成：…」的假回执
+    expect(settled.some((row) => row.kind === 'receipt')).toBe(false)
+    expect(settled.some((row) => row.kind === 'output')).toBe(false)
 
     const frame = app.screen()
     expect(frame).toContain('minimax')
-    expect(frame).toContain('已注册：minimax')
+    // **全量**：注册表里另一条也在（这趟会话从没调用过它）
+    expect(frame).toContain('minimax-m2')
     expect(frame).toMatchSnapshot()
   })
 })

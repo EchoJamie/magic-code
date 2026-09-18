@@ -17,7 +17,9 @@
 import type {
   DecisionWeight,
   Entry,
+  EventDataOf,
   KernelEvent,
+  ModelCatalogRow,
   ModelErrorTier,
   RecordId,
   SessionId,
@@ -271,6 +273,13 @@ export type ShellView = {
   readonly sessionId: SessionId | null
   /** 会话目录（`session.list` 的答复）。 */
   readonly catalog: readonly SessionSummary[]
+  /**
+   * **模型条目表**（`model.list` 的答复 · 缺陷 D10 第 3 样）——`/model` 选择器的取材，
+   * 且是**全量**（含从未调用过的条目）。
+   *
+   * ⚠️ 与 `catalog` 分开：那个是**会话**目录（`SessionSummary`）——同名不同物，别合。
+   */
+  readonly models: readonly ModelCatalogRow[]
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
@@ -306,6 +315,7 @@ export function createView(): ShellView {
     expanded: false,
     sessionId: null,
     catalog: [],
+    models: [],
     turnTools: 0,
     echoes: 0,
   }
@@ -377,11 +387,15 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
           : `换模型未成：${event.data.reason ?? '未说缘由'}`,
       )
 
-    // 模型条目表（读侧答复）——**契约加 kind 的连带落点**：这一支现在只是「收到了、不动屏」。
-    // 消费它（`/model` 拿它铺选择器、状态行拿 `usage.contextWindow` 报 `12.4k/200k`）
-    // 归 U20 显示打磨——见 D10 回报的「消费面」。
+    // 模型条目表（读侧答复 · 缺陷 D10 第 3 样）——**出口在这条链上的落点**，两件：
+    // ① 收进视图 ⇒ `/model` 的选择器列**全量**（含从未调用过的条目）；
+    // ② 把 ④ 的**分母**定下来——**当前那条**声明的窗总量（没声明就是 `null`，不编）。
     case 'model.catalog':
-      return view
+      return {
+        ...view,
+        models: event.data.entries,
+        status: { ...view.status, window: windowOfCatalog(event.data) },
+      }
 
     case 'session.state':
       return reduceSessionState(view, event.data)
@@ -659,6 +673,20 @@ export function appendOutput(view: ShellView, title: string, lines: readonly str
  */
 export function withContextWindow(view: ShellView, window: number | null): ShellView {
   return patchStatus(view, { window })
+}
+
+/**
+ * `model.catalog` 里**当前那条**的上下文窗总量——④ 的分母（`12.4k/200k`）。
+ *
+ * `null` 的两种来处都**如实**：该条目没声明 `contextWindow`（配置里是可选的）、
+ * 或这次装配没有注册表。屏上回退成**只报已用量**——**不编一个总量**
+ * （「拿不到的不编」是项目反复立的规矩：`D10` 那三条读数、状态行的「工作中」耗时都栽在这上面）。
+ */
+function windowOfCatalog(data: EventDataOf['model.catalog']): number | null {
+  const current = data.current
+  if (current === undefined) return null
+
+  return data.entries.find((entry) => entry.provider === current.provider)?.contextWindow ?? null
 }
 
 /** 追加一行**已定局**的行（写一次即入 scrollback）。 */

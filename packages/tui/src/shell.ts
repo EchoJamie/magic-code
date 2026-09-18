@@ -127,9 +127,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let rebuildFor: SessionId | null = null
   let rebuildEntries: Entry[] = []
 
-  /** 等回话的选择器意图 ＋ 见过的模型条目（`/model` 的列表取材）。 */
+  /** 等回话的选择器意图（`/session` / `/model` 各问一次）。 */
   let waiting: PendingPicker | null = null
-  const providers = new Map<string, string | undefined>()
 
   const notify = (): void => {
     for (const watcher of [...watchers]) watcher()
@@ -198,14 +197,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return
     }
 
-    // 见过的条目（`/model` 的列表取材——条目表不在事件里，见回报「与原型不符」）
-    if (event.kind === 'model.call.start' && event.data.provider !== undefined) {
-      providers.set(event.data.provider, event.data.model)
-    }
-    if (event.kind === 'model.switched' && event.data.provider !== undefined) {
-      providers.set(event.data.provider, event.data.model)
-    }
-
     const before = view.sessionId
     commit(reduce(view, event))
 
@@ -218,9 +209,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       }
     }
 
-    if (event.kind === 'model.switched' && waiting === 'model') {
+    // 条目表回来了 ⇒ 开选择器（`/model` 不带参数的那条路）。说明取 `note`——
+    // 只在有事要说时给（如「本次装配没有供应商注册表」），不给＝表自明。
+    if (event.kind === 'model.catalog' && waiting === 'model') {
       waiting = null
-      openModelPicker(event.data.ok ? '' : (event.data.reason ?? ''))
+      openModelPicker(event.data.note ?? '')
     }
   }
 
@@ -267,13 +260,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * `/model`——**条目表不在事件里**（契约没有读侧），故列表只有「见过的 ＋ 当前那条」，
    * 而内核回话里的缘由（它本就列出已注册的名字）作列表下方的说明 ✓ 不解析、只照贴。
    */
-  const openModelPicker = (reason: string): void => {
+  const openModelPicker = (note: string): void => {
     const current = view.status.model
-    const rows = [...providers.entries()].map(([id, model]) => ({
-      label: id,
-      meta: model ?? '',
-      current: model !== undefined && model === current,
-      value: id,
+    // **取材＝`model.catalog` 的全量条目**（D10）——不是「边看边攒」的那些：
+    // 攒的那些只认得**这趟会话调过 / 换过**的条目，注册表里没碰过的一律列不出来。
+    const rows = view.models.map((entry) => ({
+      label: entry.provider,
+      meta: entry.model,
+      current: entry.model === current,
+      value: entry.provider,
     }))
 
     commit(
@@ -281,7 +276,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         source: 'model',
         selected: Math.max(0, rows.findIndex((row) => row.current)),
         rows,
-        hint: reason === '' ? '也可直接打 `/model <条目>`' : reason,
+        hint: note === '' ? '也可直接打 `/model <条目>`' : note,
       }),
     )
   }
@@ -490,9 +485,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         send({ type: 'model.switch', provider: arg })
         return cleared
       }
-      // 不带参数 ⇒ 问内核「有哪些条目」（它的缘由本就列出已注册的名字）
+      // 不带参数 ⇒ **问一次条目表**（D10 的读侧命令 `model.list`）：答复是 `model.catalog`，
+      // 外壳据它铺选择器（**全量**，含从未调用过的条目）并把 ④ 的分母定下来。
+      // ⚠️ 原先是发空参的 `model.switch`、拿**失败的缘由**当列表说明——那不是读面
+      //（以「换失败了」作答，还白落一笔 `model.switched`）。
       waiting = 'model'
-      send({ type: 'model.switch' })
+      send({ type: 'model.list' })
       return cleared
     }
 

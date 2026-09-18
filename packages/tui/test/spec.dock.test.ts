@@ -70,6 +70,44 @@ describe('状态行 · 栏位固定', () => {
     expect(line.indexOf('MiniMax-M3')).toBeLessThan(line.indexOf('3.1k'))
   })
 
+  /**
+   * 阶段 3 批 2 · **接 D10 的读数**——④ 那格的**分母**。
+   *
+   * 钉的规格＝原型状态行的 ④：`3.1k/200k`（`对表.md`·差距 5「用量显示成 `已用/总量`」）。
+   * 分母的来处是条目表的答复（`model.catalog`）——**当前那条**声明的 `contextWindow`。
+   */
+  test('④ 用量报 `已用/总量`——分母取自条目表里**当前那条**（D10）', async () => {
+    const stage = createStage()
+    stage.feed([event('model.usage', { inputTokens: 3100, outputTokens: 40 })])
+    stage.feed([
+      event('model.catalog', {
+        entries: [
+          { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 200_000 },
+          { provider: 'local', model: 'qwen3' }, // 没声明窗总量
+        ],
+        current: { provider: 'minimax', model: 'MiniMax-M3' },
+      }),
+    ])
+
+    expect((await stage.screen(WIDE)).statusLine).toContain('3.1k/200k')
+  })
+
+  test('**没声明就不编**——条目没给窗总量时，④ 只报已用量', async () => {
+    const stage = createStage()
+    stage.feed([event('model.usage', { inputTokens: 3100, outputTokens: 40 })])
+    stage.feed([
+      event('model.catalog', {
+        entries: [{ provider: 'local', model: 'qwen3' }],
+        current: { provider: 'local', model: 'qwen3' },
+      }),
+    ])
+
+    const line = (await stage.screen(WIDE)).statusLine
+
+    expect(line).toContain('3.1k')
+    expect(line).not.toContain('3.1k/') // 没有分母——**不编一个 200k 出来**
+  })
+
   test('五态固定词——**量挂在状态后面**（第几件 / 第几次）', async () => {
     const idle = createStage()
     expect((await idle.screen(WIDE)).statusLine).toContain('○ 空闲')

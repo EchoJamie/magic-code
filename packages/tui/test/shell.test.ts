@@ -285,17 +285,43 @@ describe('选择器（`/session` · `/model`）', () => {
     expect(app.rows()).toEqual([])
   })
 
-  test('`/model` 不带参数 —— 问一次内核；回话的缘由作列表说明（不解析）', () => {
+  /**
+   * ⚠️ **本条 2026-09-19 改过**（阶段 3 批 2 · 接 D10 的读数）——原锚钉的是**当时的形状**
+   * （发空参的 `model.switch`、拿**失败缘由**当列表说明）。
+   *
+   * - **原锚**：`command: model.switch`（空参）＋ `model.switched{ok:false}` 开选择器；
+   * - **规格为什么变**：D10 立了**读侧命令** `model.list`（答复 `model.catalog`，**不落库**），
+   *   并给了**注册表全量**——契约注里明写这条与 `model.switch` 的分工：「读面不该以
+   *   『换失败了』作答，也不该因此落库一笔」；
+   * - **新锚**：`/model` 不带参数 ⇒ 发 `model.list`；答复 `model.catalog` 开选择器，
+   *   列表＝**全量**（含这趟会话从未调用过的条目）。
+   */
+  test('`/model` 不带参数 —— **问一次条目表**（读侧命令），答复开选择器', () => {
     const app = live()
 
     app.type('/model')
     app.press(ENTER)
-    expect(app.commands()).toContainEqual({ type: 'model.switch' })
+    expect(app.commands()).toContainEqual({ type: 'model.list' })
+    // **不是**换模型：读面以「换失败了」作答是旧形状（见上）
+    expect(app.commands()).not.toContainEqual({ type: 'model.switch' })
 
-    app.spy.emit(event('model.switched', { ok: false, reason: '不知道要换成什么——已注册：minimax / local' }))
+    app.spy.emit(
+      event('model.catalog', {
+        entries: [
+          { provider: 'minimax', model: 'MiniMax-M3' },
+          { provider: 'local', model: 'qwen3' },
+        ],
+        current: { provider: 'minimax', model: 'MiniMax-M3' },
+      }),
+    )
+
     expect(app.view().dock.kind).toBe('picker')
     const dock = app.view().dock
-    expect(dock.kind === 'picker' ? dock.picker.hint : '').toContain('minimax / local')
+    // **全量**——两条都列出来，哪怕这趟会话一条都没调用过
+    expect(dock.kind === 'picker' ? dock.picker.rows.map((row) => row.label) : []).toEqual([
+      'minimax',
+      'local',
+    ])
   })
 })
 
@@ -425,7 +451,13 @@ describe('选择器选定模型', () => {
 
     app.type('/model')
     app.press(ENTER)
-    app.spy.emit(event('model.switched', { ok: false, reason: '不知道要换成什么——已注册：minimax' }))
+    // 条目表回来了才开选择器（D10 的读侧答复）——选定那一步与入口无关，故这条判据不变
+    app.spy.emit(
+      event('model.catalog', {
+        entries: [{ provider: 'minimax', model: 'MiniMax-M3' }],
+        current: { provider: 'minimax', model: 'MiniMax-M3' },
+      }),
+    )
     app.press(ENTER) // 选定当前那一条
 
     expect(app.commands()).toContainEqual({ type: 'model.switch', provider: 'minimax' })
