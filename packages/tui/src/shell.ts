@@ -456,12 +456,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     )
   }
 
-  /** 撤销之后**照着新名录重铺**——行数可能少了一条，选中项**夹回范围内**（不越界、不跳远）。 */
+  /**
+   * 撤销之后**照着新名录重铺**——行数可能少了一条，选中项**夹回范围内**（不越界、不跳远）。
+   *
+   * ⚠️ **撤空了 ⇒ 收起抽屉**（P0 的同一条规矩，见 `view.ts` 的 `openPicker`）：
+   * 0 行的抽屉**接管着输入却不给东西可点**——打不了字、没得选，而 `esc` 只在状态行右位提一句
+   * ⇒ 看着就是卡死。收起＝把输入还回去；内核那一句 `note` 照旧落成记录区一行回执
+   * （`onEvent` 那一段，不动）。
+   */
   const refreshGrantsPicker = (): void => {
     const catalog = view.grants
     if (catalog === null || view.dock.kind !== 'picker') return
 
     const rows = grantsRows(catalog)
+    if (rows.length === 0) {
+      commit(closePicker(view))
+      return
+    }
+
     commit({
       ...view,
       dock: {

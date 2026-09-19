@@ -1248,8 +1248,34 @@ export function groupHeads(rows: readonly PickerRow[]): readonly boolean[] {
   return rows.map((row, index) => row.group !== undefined && row.group !== rows[index - 1]?.group)
 }
 
-/** 开选择器——**记录区什么都不进**（原型：回车不进记录区）。 */
+/**
+ * 开选择器——**记录区什么都不进**（原型：回车不进记录区）。
+ *
+ * ## ⚠️ 0 行**不许接管输入**（P0 · 用户真跑报的「`/grants` 卡死」）
+ *
+ * 抽屉是**接管输入**的三种用法之一（`Dock` 同一位置）。接管的代价是**作曲家让位**——
+ * 屏幕上一个字都打不进去了（`dockOf` 收选择器时不给 `Composer`），而 `key()` 那边
+ * 选择器开着时**字符一律吞掉**（`case 'char': if picker → NONE`，这是接管该有的样子）。
+ *
+ * 那代价**只有在「有东西可点」时才付得起**。0 行时接管过来，用户：**打不了字**、
+ * **没得选**、屏上只剩一行暗提示 ⇒ **看着就是卡死**——而 `esc` 那句提示在状态行最右，
+ * 不特意看根本注意不到。
+ *
+ * 而 `/grants` **默认就是这个形态**：没按过 `a` 的工作区没有 `grants.json`，
+ * 名录**必空**（`dataDir` 缺省 `~/.magic`）⇒ 头一次打 `/grants` 必落这个坑。
+ * `/session` 一条会话都没有时、`/model` 一条条目都没有时，同理。
+ *
+ * 故 0 行时**不开抽屉**：把 `hint`（抽屉下方那句话）落成**记录区一行回执**——
+ * 话一句不少、还更显眼，而**输入照常**。`hint` 没给就什么都不说（「拿不到的不编」）。
+ *
+ * ⚠️ 这是**共用的一处**：三条抽屉（`/session` · `/model` · `/grants`）都经这里，
+ * 别在某个调用点另加判断（那样四条路就有四种口径）。
+ */
 export function openPicker(view: ShellView, picker: Picker): ShellView {
+  if (picker.rows.length === 0) {
+    return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
+  }
+
   return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: HINT_PICKER })
 }
 
