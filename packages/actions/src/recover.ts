@@ -139,7 +139,12 @@ export type RecoveryReport = {
   readonly announced: boolean
 }
 
-/** 一次恢复的现场——**各域端口 ＋ 这一条会话的实例件**（装配的 `open` 工厂产）。 */
+/**
+ * 一次恢复的现场——**各域端口 ＋ 这一条会话的实例件**（装配的 `open` 工厂产）。
+ *
+ * 域内形态：`createActions` 用它把进程级那几件（扇出 / 时钟 / 判定）与调用级那几件拼起来，
+ * **不上公开面**（没出，就没承诺——同 `recoverSession`）。
+ */
 export type RecoveryRuntime = {
   readonly session: SessionId
   readonly records: RecordsService

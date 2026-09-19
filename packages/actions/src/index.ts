@@ -132,13 +132,13 @@ export function createActions(deps: ActionsDeps): Actions {
 
 // —— 公开面（技术方案 · 代码治理 · 公开面：端口实现 ＋ 装配期构造入参形态）——
 //
-// 出的是**用例入口**（`createActions`）与**它要的那几个形态**；`recoverSession` 也出——
-// 它是用例本体，装配之外的消费者（验收脚本 / 别的入口）可能直接要那一步（不带⑤）。
-export { recoverSession } from './recover.ts'
+// 出的是**用例入口**（`createActions`）与**它签名里点到名的形态**（`ActionsDeps` 的
+// `IdempotencyJudge` · 返回的 `RecoveryReport` 及其组成部分）。**用例本体不出**——
+// `recoverSession`（①②③④ 那一段）只在包内被 `createActions` 用；要看它的用例
+// 深链 `../src/recover.ts`（与对话域的既有做法同法：**没出，就没承诺**）。
 export type {
   CallDisposition,
   IdempotencyJudge,
   NotReplayedReason,
   RecoveryReport,
-  RecoveryRuntime,
 } from './recover.ts'

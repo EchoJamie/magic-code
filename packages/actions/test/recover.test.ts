@@ -20,6 +20,7 @@ import { describe, expect, test } from 'bun:test'
 import type { Entry, KernelEvent } from '@magic/contracts'
 import { createActions } from '../src/index.ts'
 import type { SessionPorts } from '../src/index.ts'
+// 用例本体**不在公开面**（没出，就没承诺）——测试要看它，深链包内那一处
 import { recoverSession } from '../src/recover.ts'
 import { SESSION, T0, callOf, jsonOf, payloadTextOf, resultsOf, runtimeOf, scanOf } from './support/harness.ts'
 import { makeStage } from './support/harness.ts'
