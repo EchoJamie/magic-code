@@ -57,7 +57,11 @@ function live(receipts?: readonly string[]) {
       return shell.key(key)
     },
     view: (): ShellView => shell.getView(),
-    rows: () => [...shell.getView().settled, ...shell.getView().rows],
+    // ⚠️ **不含启动字标**（TUI Banner）——本文件问的是「抽屉开合**往记录区进了什么**」，
+    // 而字标恒在 `settled[0]`（启动印一次），是装帧不是「进的」。
+    // 原锚 / 为何变 / 新锚 三条同 `view.test.ts` 的 `onScreen`。
+    rows: () =>
+      [...shell.getView().settled, ...shell.getView().rows].filter((row) => row.kind !== 'banner'),
     picker: () => {
       const dock = shell.getView().dock
       return dock.kind === 'picker' ? dock.picker : undefined

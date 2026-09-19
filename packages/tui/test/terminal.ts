@@ -153,6 +153,13 @@ export type Cell = {
   readonly bg: string | null
   readonly bold: boolean
   readonly strikethrough: boolean
+  /**
+   * **反显**（`SGR 7`）——输入行那只「光标」就是这么画的（`composer.ts` 的 `inverse` 空格）。
+   *
+   * ⚠️ 与 `bold` / `strikethrough` 同一条坑：`isInverse()` 返回的也是**掩过位的位段**
+   * （不是布尔）——写成 `=== 1` 就永远为假。一律按**非零**判。
+   */
+  readonly inverse: boolean
 }
 
 /** 屏幕 ＋ 它的格子读法。 */
@@ -217,6 +224,7 @@ function readCell(cell: IBufferCell): Cell {
     // 「谁都没加粗」看着还挺像那么回事）。故一律按**非零**判。
     bold: cell.isBold() !== 0,
     strikethrough: cell.isStrikethrough() !== 0,
+    inverse: cell.isInverse() !== 0,
   }
 }
 

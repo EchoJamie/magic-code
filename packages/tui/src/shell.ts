@@ -37,6 +37,7 @@ import {
   picked,
   rebuild,
   reduce,
+  withBanner,
   withContextWindow,
 } from './view.ts'
 import { usageLabel } from './components/lines.ts'
@@ -193,7 +194,17 @@ const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'to
 export function createShell(transport: ControlTransport, options: ShellOptions = {}): Shell {
   const watchers = new Set<() => void>()
   const booting = options.inputReady === false
-  let view = withContextWindow(createView(), options.contextWindow ?? null)
+
+  // **印一次启动字标**（品牌视觉 · TUI Banner）——记录区最前面那一块。
+  //
+  // 种在这儿（而不是 `createView` 里）有两条由头：
+  // ① **「启动」这件事的入口就在本函数**——`createView` 是空视图的构造子，
+  //    `record.ts` 的标本与纯归约的用例都直接拿它当起点，那里没有「启动」；
+  // ② 与**启动那几句回执同源**（见 `ShellOptions.receipts`）：都是「开局往记录区
+  //    放一次的东西」，都得另保一手才活得过 `rebuild`（那半由 `bannerFirst` 管）。
+  //
+  // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
+  let view = withBanner(withContextWindow(createView(), options.contextWindow ?? null))
 
   /**
    * **启动那几句**（见 `ShellOptions.receipts`）——开局先贴一遍，**重建之后再补一遍**。

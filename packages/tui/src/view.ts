@@ -74,6 +74,20 @@ export type LogRow =
    */
   | { readonly kind: 'toolgroup'; readonly key: string; readonly names: readonly string[] }
   // —— 屏上痕迹（不落库 · 不重建）——
+  /**
+   * **启动字标**（品牌视觉 · TUI Banner）——记录区**最前面那一块**，启动印一次。
+   *
+   * 归**屏上痕迹**那一类（不落库、不进上下文）：它是装饰，不是「这一趟发生过什么」。
+   * 但它与其余痕迹有两点不同，两点都有由头：
+   *
+   * - **它比其余痕迹优先**——`rebuild` 把 `settled` 整个换掉时，它得**留在最前面**
+   *   （见 `bannerFirst`）。不保这一手，`--session` 接续那条路开局就把它换没了
+   *   （同一笔账，`ShellOptions.receipts` 已经吃过一次）。
+   * - **它不带宽度**——画哪一版由**渲染层按当时的列数**挑（`components/log.ts` 的
+   *   `case 'banner'` → `bannerOf`）。列数只有渲染层知道（`useWindowSize`），
+   *   视图这层没有它，也不该去猜一个（「拿不到的不编」）。
+   */
+  | { readonly kind: 'banner'; readonly key: string }
   | { readonly kind: 'output'; readonly key: string; readonly lines: readonly string[] }
   | { readonly kind: 'receipt'; readonly key: string; readonly text: string }
 
@@ -665,7 +679,10 @@ function reduceSessionState(view: ShellView, data: SessionStateData): ShellView 
     status: { ...view.status, session: title },
   }
 
-  return switched ? { ...base, rows: [], settled: [] } : base
+  // 换了会话 ⇒ 记录区清空重来。**字标照旧在最前面**（`bannerFirst`）：
+  // 它属于「记录区」而不是「哪一条会话」——切走一条就没有它，屏上会像是掉了块东西
+  // （何况 `AppView` 的 `Static` 按会话换 key，切过去本就等于重开一页）。
+  return switched ? { ...base, rows: [], settled: bannerFirst([]) } : base
 }
 
 /**
@@ -687,6 +704,37 @@ export function settle(view: ShellView): ShellView {
 }
 
 // ══ 写入口（外壳用）══════════════════════════════════════════════════
+
+/** 字标那一行的 key——**一屏只有一行**（记录区最前面那一块，不会来第二次）。 */
+const BANNER_KEY = 'banner'
+
+/** 字标那一行（渲染层按当时列数挑版，见 `LogRow` 里那一支的注）。 */
+function bannerRow(): LogRow {
+  return { kind: 'banner', key: BANNER_KEY }
+}
+
+/**
+ * 记录区 → **带上字标**的形态：字标**恒在最前、且恒只一行**。
+ *
+ * 为什么要有这一处收口：`settled` 只在**追加**的两处（`settle` / `appendSettled`）天然保得住
+ * 最前面那一行，而**整个换掉** `settled` 的地方有三处——外壳开局、重建（`rebuild`）、
+ * 换会话（`reduceSessionState`）。三处各经一次本函数，就不必靠「记得别把它弄丢」。
+ *
+ * 幂等：先把已有的字标滤掉再放一个，故重复调用不会攒出两行。
+ */
+function bannerFirst(rows: readonly LogRow[]): readonly LogRow[] {
+  return [bannerRow(), ...rows.filter((row) => row.kind !== 'banner')]
+}
+
+/**
+ * **印一次字标**（外壳开局调，见 `createShell`）——记录区最前面那一块。
+ *
+ * 只在外壳开局这一处种：`createView` 仍是「空视图」（`record.ts` 的标本、
+ * 纯归约的用例都直接拿它当起点，那里没有「启动」这回事）。
+ */
+export function withBanner(view: ShellView): ShellView {
+  return { ...view, settled: bannerFirst(view.settled) }
+}
 
 /** 本地回显一次用户输入（提交时立即显示——事件里没有正文）。 */
 export function appendEcho(view: ShellView, text: string): ShellView {
@@ -746,9 +794,14 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
 /**
  * 用**重建的会话内容**替换记录区（缺陷 D1）——只挑会话内容那一类，
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
+ *
+ * ⚠️ **字标是例外，它要回来**（`bannerFirst`）：这一跳把 `settled` 整个换掉，
+ * 而字标是「记录区最前面那一块」——不保它，`--session` 接续那条路（开局 `boot` 跑完
+ * 读一次历史 ⇒ 走到这儿）当场就没有字标了，而规格说的是**含接续那条路也印一次**。
+ * 与 `startup` 那几句回执补一手同源、同因。
  */
 export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
-  return { ...view, settled: rebuildRows(entries), rows: [] }
+  return { ...view, settled: bannerFirst(rebuildRows(entries)), rows: [] }
 }
 
 /**

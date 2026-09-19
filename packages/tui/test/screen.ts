@@ -25,6 +25,7 @@
 import chalk from 'chalk'
 import { createElement as h } from 'react'
 import type { Command, KernelEvent } from '@magic/contracts'
+import { bannerOf } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
 import type { Shell, ShellEffect, ShellKey } from '../src/shell.ts'
@@ -71,6 +72,22 @@ export type Frame = {
   readonly screen: Screen
   /** 记录区的行（分隔线**之上**）——`界面原型.html` 里那些 `› ⏺ ● ·` 都在这。 */
   readonly record: readonly Line[]
+  /**
+   * 记录区的**内容行**——`record` 去掉最前面那一块**启动字标**（TUI Banner）。
+   *
+   * 由头：字标恒在记录区最前面（启动印一次，见 `src/banner.ts`），而**绝大多数判据问的是
+   * 「记录区里有哪些内容」**——「条目之间不插空行」「命令输出与回执不回」「切了会话还剩什么」
+   * ……那些话里字标都**不算一个条目**：它是**装帧**，不是「这一趟发生过什么」。
+   * 这一层替它们把装帧去掉，省得每条判据都去数一遍字标占几行——而那几行**随宽度变**
+   * （块字版 5 行 · 一行版 1 行 · 极窄 0 行）。
+   *
+   * ⚠️ **字标自己的**判据用它哥 `record` / `cellsOf`：在不在、在第几行、什么色——
+   * 那些**要**看见它（见 `spec.banner.test.ts`）。别拿这一条去量字标，那儿量不到。
+   *
+   * ⚠️ 剥法是**逐行比对那几行的样子**，不是「掐掉前 N 行」：内容一多字标会滚出屏幕，
+   * 那时它在 `record` 里根本不存在，硬掐就会把**正文的头几行**当成字标切掉。
+   */
+  readonly content: readonly Line[]
   /** 交互区的行（分隔线**之下**）——输入行 / 裁决卡 / 选择器，以及最后那行状态行。 */
   readonly dock: readonly Line[]
   /** 状态行——屏上最后一条非空行（`AppView` 把它放在最末）。 */
@@ -110,7 +127,7 @@ export async function show(
 ): Promise<Frame> {
   const bytes = await rendered(views, options, now)
 
-  return frameOf(await screenCells(bytes, options))
+  return frameOf(await screenCells(bytes, options), options.columns)
 }
 
 /** 画成字节（**不读屏**）——给「量字节本身」的场合留的口子。 */
@@ -133,15 +150,31 @@ export async function rendered(
   }
 }
 
-function frameOf(cells: Awaited<ReturnType<typeof screenCells>>): Frame {
+/**
+ * 记录区 → 去掉最前面那一块**启动字标**（见 `Frame.content` 的注）。
+ *
+ * 逐行比对那几行的样子（**含宽度**——块字版与一行版长得完全不同），不是掐前 N 行。
+ */
+function contentOf(record: readonly Line[], columns: number): readonly Line[] {
+  const banner = bannerOf(columns).map((line) => line.text.replace(/\s+$/u, ''))
+  let at = 0
+  while (at < banner.length && record[at]?.text === banner[at]) at += 1
+
+  // 全对上了才剥——对上一半（正文自己开头就长得像字标那种）宁可不剥，也不误伤正文
+  return at === banner.length ? record.slice(at) : record
+}
+
+function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number): Frame {
   const { screen } = cells
   const rows = screen.lines.map((text, row) => ({ row, text }))
   const divider = dividerAt(screen)
   const lastNonBlank = rows.filter((entry) => entry.text.trim() !== '').at(-1)
+  const record = rows.slice(0, divider === -1 ? (lastNonBlank?.row ?? -1) + 1 : divider)
 
   const frame: Frame = {
     screen,
-    record: rows.slice(0, divider === -1 ? (lastNonBlank?.row ?? -1) + 1 : divider),
+    record,
+    content: contentOf(record, columns),
     dock: divider === -1 ? [] : rows.slice(divider + 1, (lastNonBlank?.row ?? divider) + 1),
     statusLine: lastNonBlank?.text ?? '',
     cellsOf: cells.cellsOf,

@@ -41,9 +41,38 @@ function asked(weight: 'light' | 'heavy' = 'light', draft = ''): Stage {
   return stage
 }
 
+/**
+ * **输入行那句话**在不在这几行里——问的是「占位换成了哪一句」。
+ *
+ * ⚠️ 为什么不直接 `includes('› 等你的答复')`：空草稿时光标那一格（`inverse` 空格）落在
+ * `› ` 与占位**之间**（用户 2026-09-20 定的落点，见 `composer.ts`），帧上因此是**两个空格**。
+ * 那一格是**取景用的可见落点**、不是这句话的一部分——判据锚的是「占位是哪一句」，
+ * 不该把那个格子钉进去（钉了的话，日后挪光标又要来改这几条）。
+ * 故这里**把连续空白归一**再比：与光标在哪一格无关。
+ *
+ * ⚠️ **原锚**：`line.text.includes('› 等你的答复')`（光标原先在占位**之后**，`› ` 与占位相邻）。
+ * **为何变**：光标挪到占位之前 ⇒ 中间多一格。
+ * **新锚**：归一空白之后再比——锚的仍是**那句话**。
+ */
+const saysInComposer = (frame: Frame, text: string): boolean =>
+  frame.dock.some((line) => line.text.replace(/\s+/gu, ' ').includes(`› ${text}`))
+
 /** 一行的第 `col` 格——行找不到会当场抛（带整屏）。 */
 function cellAt(frame: Frame, needle: string, col: number): Cell | undefined {
   return frame.cellsOf(frame.rowOf(needle))[col]
+}
+
+/**
+ * **光标那一格**在第几列（`-1` ＝ 这一行上没有光标）。
+ *
+ * 光标在屏上就是**一格反显空格**（`composer.ts` 的 `inverse`）——不是文本上的东西，
+ * 故只能读格（`Cell.inverse`）。「光标落在哪」这句话里没有一个字是文本能回答的。
+ *
+ * ⚠️ 用 `rawCellsOf` 而**不是** `cellsOf`：后者按文本裁掉行尾空白，而**有草稿**时光标
+ * 正落在行尾——就是那格空格，会被一起裁掉（量出来 `-1`，判据当场空转）。
+ */
+function cursorAt(frame: Frame, needle: string): number {
+  return frame.rawCellsOf(frame.rowOf(needle)).findIndex((cell) => cell.inverse)
 }
 
 /** 屏上 `needle` 出现几次（「只出现一次」那类判据用它）。 */
@@ -217,7 +246,7 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
     expect(count(frame, '本工作区总是允许')).toBe(1)
     expect(count(frame, '拒绝')).toBe(1)
     // 接管那行**不重列键位**
-    expect(frame.dock.some((line) => line.text.includes('› 等你的答复'))).toBe(true)
+    expect(saysInComposer(frame, '等你的答复')).toBe(true)
     expect(count(frame, '等你的答复')).toBe(1)
   })
 
@@ -251,7 +280,7 @@ describe('输入接管', () => {
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.dock.some((line) => line.text.includes('› 等你的答复'))).toBe(true)
+    expect(saysInComposer(frame, '等你的答复')).toBe(true)
     expect(frame.has('打了一半')).toBe(false) // 收起来了，不是丢了（下一条把它要回来）
   })
 
@@ -279,7 +308,7 @@ describe('输入接管', () => {
     const said = frame.dock.find((line) => line.text.startsWith('▲'))
     expect(said?.text).toContain('先答复')
     expect(said?.text).toContain('「x」') // 说的是**哪一个键**（不静默 ≠ 只说一句套路话）
-    expect(frame.has('› 等你的答复')).toBe(true) // 那一下没进草稿
+    expect(saysInComposer(frame, '等你的答复')).toBe(true) // 那一下没进草稿
   })
 
   test('`esc` **无动作**——屏上一格都不变', async () => {
@@ -352,7 +381,12 @@ describe('slash 的两种走法', () => {
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.record).toEqual([]) // 记录区**一行都不进**
+    // ⚠️ 取景换 `content`（记录区**去掉最前面那块启动字标**）——
+    //    **原锚** `frame.record`：那时记录区第一行就是内容。
+    //    **为何变**：启动字标（TUI Banner）现在恒在记录区最前面，`record` 的头几行是它。
+    //    **新锚** `frame.content`——本句问的是「开选择器**往记录区里进了什么**」，
+    //    而字标是**开局就在那儿**的装帧，不是「进了」；有没有它这话都成立。
+    expect(frame.content).toEqual([]) // 记录区**一行都不进**
     expect(frame.has('1 记录查询优化')).toBe(true) // 选择器开在左下
     expect(frame.has('正在用')).toBe(true) // 当前那条有标记
     expect(frame.statusLine).toContain('↑↓ 选 · 回车 定 · esc 收起')
@@ -378,7 +412,8 @@ describe('slash 的两种走法', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('看这一趟用了多少、模型是谁')).toBe(false) // 候选收起
-    expect(frame.record.some((line) => line.text !== '')).toBe(true) // 提交照旧生效（输出进了记录区）
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见上一处）
+    expect(frame.content.some((line) => line.text !== '')).toBe(true) // 提交照旧生效（输出进了记录区）
     expect(frame.statusLine).not.toContain('Tab 补全') // 右位不再报补全键位
     expect(frame.statusLine).toContain('/ 命令 · ctrl+c 退出') // 回常态
   })
@@ -403,8 +438,10 @@ describe('slash 的两种走法', () => {
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.record.map((line) => line.text)).toEqual(['· 已切到 修复时区处理']) // **一行**，不是一面
-    expect(frame.dock.some((line) => line.text.includes('› 交代一件事，回车发送'))).toBe(true) // 收起了
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）——
+    //    这一句问的是「选定之后**留了几行回执**」，字标不是回执
+    expect(frame.content.map((line) => line.text)).toEqual(['· 已切到 修复时区处理']) // **一行**，不是一面
+    expect(saysInComposer(frame, '交代一件事，回车发送')).toBe(true) // 收起了
   })
 
   test('`esc` 取消——**不留痕迹**（记录区与回执都没有）', async () => {
@@ -420,8 +457,67 @@ describe('slash 的两种走法', () => {
     stage.press({ kind: 'escape' })
     const frame = await stage.screen(WIDE)
 
-    expect(frame.record).toEqual([]) // 没有回执
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）
+    expect(frame.content).toEqual([]) // 没有回执
     expect(frame.has('1 记录查询优化')).toBe(false) // 选择器收起
-    expect(frame.dock.some((line) => line.text.includes('› 交代一件事，回车发送'))).toBe(true)
+    expect(saysInComposer(frame, '交代一件事，回车发送')).toBe(true)
+  })
+})
+
+// ══ 九 · 输入行的光标（用户 2026-09-20 定）═════════════════════════════
+
+/**
+ * 「**输入区域的光标位置 目前是在灰色的提示文本后面……这段提示文本允许保留
+ * 但光标不应该在提示文本后面**」（用户 2026-09-20）。
+ *
+ * 两条一起钉，因为这是一对：**空草稿**时落点＝「开始打字的地方」（`› ` 之后、占位之前）；
+ * **有草稿**时落点＝**末尾**（正在打的那一处）——后者本来就对，别被前一条顺手改掉。
+ *
+ * ⚠️ 量的是**那一格反显**（`Cell.inverse`），不是文本：光标在屏上是个**样式**，
+ * 纯文本里它与旁边的空格一个样。
+ */
+describe('输入行 · 光标落在哪', () => {
+  /** 光标**之前**那几格拼起来是什么（`› ` 的左边还有一格 `paddingX` 的白）。 */
+  const before = (frame: Frame, needle: string, at: number): string =>
+    frame
+      .rawCellsOf(frame.rowOf(needle))
+      .slice(0, at)
+      .map((cell) => cell.text)
+      .join('')
+
+  test('**空草稿**：光标在 `› ` 之后、**占位之前**——不在灰字后面', async () => {
+    const stage = createStage()
+    const frame = await stage.screen(WIDE)
+    const at = cursorAt(frame, '交代一件事，回车发送')
+    const cells = frame.rawCellsOf(frame.rowOf('交代一件事，回车发送'))
+
+    expect(at).toBeGreaterThan(0) // 有那一格
+    expect(cells[at]?.text).toBe(' ') // 它是个空格（反显才看得见）
+    expect(before(frame, '交代一件事，回车发送', at)).toBe(' › ') // 光标之前**只有**提示符
+    // 而占位那句灰字**整个在它后面**（这一条才是用户报的那个位置）
+    expect(cells.slice(at + 1).map((cell) => cell.text).join('')).toBe('交代一件事，回车发送')
+  })
+
+  test('**有草稿**：光标仍在**末尾**（正在打的那一处）——这一路不动', async () => {
+    const stage = createStage()
+    stage.type('打了一半')
+    const frame = await stage.screen(WIDE)
+    const row = frame.rowOf('打了一半')
+    const at = cursorAt(frame, '打了一半')
+
+    // 「在末尾」＝ 它之前正好是 `› ` ＋ 草稿，它之后**再没有别的内容**
+    expect(frame.rawCellsOf(row)[at]?.text).toBe(' ')
+    expect(before(frame, '打了一半', at)).toBe(' › 打了一半') // 行首那一格是 `paddingX`
+    expect(frame.rawCellsOf(row).slice(at + 1).every((cell) => cell.text.trim() === '')).toBe(true)
+  })
+
+  test('**接管中**（占位换成「等你的答复」）落点照旧在占位之前', async () => {
+    const frame = await asked('light', '草稿').screen(WIDE)
+    const at = cursorAt(frame, '等你的答复')
+    const cells = frame.rawCellsOf(frame.rowOf('等你的答复'))
+
+    expect(at).toBeGreaterThan(0)
+    expect(before(frame, '等你的答复', at)).toBe(' › ')
+    expect(cells.slice(at + 1).map((cell) => cell.text).join('')).toBe('等你的答复')
   })
 })

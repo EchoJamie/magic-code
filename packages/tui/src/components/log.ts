@@ -19,6 +19,7 @@
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
 import type { ReactElement } from 'react'
+import { bannerOf } from '../banner.ts'
 import { diffRowsOf, looksLikeDiff, replaceDiff } from '../diff.ts'
 import type { DiffKind, DiffRow } from '../diff.ts'
 import { markdownStream } from '../markdown.ts'
@@ -295,6 +296,39 @@ function rowBody(
   const { columns, expanded } = options
 
   switch (row.kind) {
+    /**
+     * **启动字标**（品牌视觉 · TUI Banner）——记录区最前面那一块，启动印一次。
+     *
+     * 三件都在这一处落定：
+     * - **画哪一版按列数挑**（`bannerOf`）——≥57 列块字版（左侧留 2 列白）· ≥10 列一行版
+     *   · 更窄**不印**（一行都不给，把位置让回正文与输入）；
+     * - **两段配色**——`MAGIC` 品牌青 · `CODE` 主文字色，切点由 `bannerOf` 连文字一起给
+     *   （两版的切点不同：27 / 5，渲染层自己数迟早数错一列）；
+     * - **没有第三样**——不动效、不 Icon、不带宣传图或工具信息（设计那一条「静态」）。
+     *
+     * ## 为什么就是 `PALETTE.user` 与 `PALETTE.fg`
+     *
+     * 不是「相近的颜色」——**是同一个色**：设计文档配色表里深底一档的
+     * `MAGIC #56B6C2` 正是色板里的 `user`，`CODE #D8DCE4` 正是 `fg`。复用而不是
+     * 另起两个常量，为的是**色只有一处出处**（色板那条自律：「颜色只表语义，不做装饰」）。
+     *
+     * 另外两档**此刻不做**，如实记：**浅底**那一档（`#167682` / `#18232D`）要终端主题信息，
+     * 而**这个壳没有主题检测**（整块色板都是照深底定的，别处也一样）；**未知主题用默认前景**
+     * 那一条则由 `chalk` 自己兑现——无色终端根本不发色码，字标整块落到默认前景上，
+     * 正是设计要的那一句。⇒ 两条都不是「漏了」，是**没有那个输入**。
+     *
+     * ⚠️ 画幅是纯 BMP（`█` ＋ 空格），故 `slice` 按码元切与按字切等价；
+     * 若日后换成含代理对的字形，这一处要跟着改 `Array.from`。
+     */
+    case 'banner':
+      return bannerOf(columns).map((line, at) => ({
+        key: `r:n:${at}`,
+        segments: [
+          seg(line.text.slice(0, line.magicWidth), PALETTE.user),
+          seg(line.text.slice(line.magicWidth), PALETTE.fg),
+        ],
+      }))
+
     case 'user':
       // **整行淡青背景**（一眼看出「这句是我说的」）——正文原色、标记青
       return wrapSegments([seg('› ', PALETTE.user, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
