@@ -19,7 +19,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { expandDataDir, TRANSIENT_EVENT_KINDS } from '@magic/contracts'
+import { expandHome, TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { homedir } from 'node:os'
 import { DATABASE_FILE } from '@magic/records'
 import { loadConfig } from '../src/index.ts'
@@ -75,7 +75,7 @@ function parseArgs(argv: readonly string[]): Args {
  * 文件名取自记录域公开的常量（`DATABASE_FILE`），不在 app 里重写一份字面量。
  */
 function resolveDatabasePath(explicit: string | undefined): string {
-  if (explicit !== undefined) return expandDataDir(explicit, homedir())
+  if (explicit !== undefined) return expandHome(explicit, homedir())
 
   const loaded = loadConfig()
   return join(loaded.config.dataDir, DATABASE_FILE)

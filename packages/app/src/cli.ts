@@ -36,8 +36,10 @@ const USAGE = `magic —— 软件工程智能体（首站）
   magic --help                   本说明
 
 接着来是**显式的**：不给 --session ＝ 新会话（空手打开不建会话——首条消息按下回车才开张）。
---session 收的是**会话 id**（/session 列表里那串），由**应用层**（@magic/actions）受理：
-装载它 → 跑一次恢复（处置崩溃留下的在途操作）→ 重建展示。**恢复跑完才受理输入**。
+--session 收的是**会话 id**（/session 列表里那串）**且须是库里已有的**——没有就报错退场
+（**不照 id 造一条新的**：那样用户会以为接上了，其实没有）。给了它由**应用层**
+（@magic/actions）受理：装载它 → 跑一次恢复（处置崩溃留下的在途操作）→ 重建展示。
+**恢复跑完才受理输入**。
 
 脚本文件（JSON）：
   { "inputs": ["在 playground 里跑 ls", { "switch": { "provider": "minimax-m2" } }, "刚才那个文件还在吗"],
@@ -59,6 +61,9 @@ type Args = {
    * 它是**恢复入口**（`U25`）：给了 id ⇒ 装配开局装载它、`boot` 跑一次恢复
    * （处置在途、重建现场）。**由应用层受理**（`@magic/actions`）——受理在这里，
    * 编排在那儿，本文件只把 id 递过去。
+   *
+   * ⚠️ **给了它就得在库里**（U28）：`main` 里那一道校验（`records.hasSession`）——
+   * 打错一个字母**报错退场**，不静默开一条空的（见 `main` 里那段注）。
    */
   readonly session?: string | undefined
   /** 开局的换模型请求（`--provider` / `--model` 的落地）——两件都没给即 `undefined`。 */
@@ -396,6 +401,22 @@ async function main(): Promise<number> {
   }
 
   try {
+    // **`--session` 的那道校验**（U28 · 台账随批小修 8）：库里没有这条会话就**报错退场**。
+    //
+    // 由头：`--session s-typo` 照 id 装载一条**空的**——用户以为接上了，其实没有。
+    // 判据＝**在不在库里**（会话是首写即建的，D5：库里没有＝**没有这条**，不是「它是空的」）。
+    // 报法照**根校验的先例**（`--check` 那条一行话的通道）：说清是哪一条、该去哪儿拿 id。
+    // 「报错不降级」指：**不许**照 id 造一条新的顶上去——那正是「以为接上了」的来处。
+    //
+    // ⚠️ 放在最前：开局选中（`--provider`）与自检都排它后面——**接不上就什么都不做**。
+    if (args.session !== undefined && !assembly.records.hasSession(args.session)) {
+      console.error(
+        `没有这条会话：${args.session}——` +
+          `--session 收的是会话 id（/session 列表里那串）；库里没有它，本次一步都没走`,
+      )
+      return 1
+    }
+
     // 开局选中（`--provider` / `--model`）——**在放开输入之前**落地：开局那几轮就该走它，
     // 而不是第一轮走缺省、第二轮才换（那是「会话中途切换」，不是「开局指定」）
     if (args.switch !== undefined) {

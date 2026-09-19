@@ -33,8 +33,10 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   BlobStore,
+  DecisionHistory,
   Entry,
   EntryRange,
+  EventDataOf,
   KernelEvent,
   NewEntry,
   RecordId,
@@ -103,7 +105,7 @@ function parseWorkspace(column: string): readonly string[] {
 export type RecordsStoreOptions = {
   /**
    * 数据落点。**须是字面路径**——前导 `~` 的展开归配置加载器
-   * （`@magic/contracts` · `expandDataDir`），本库不展开（见 `assertPlainDataDir`）。
+   * （`@magic/contracts` · `expandHome`），本库不展开（见 `assertPlainDataDir`）。
    */
   readonly dataDir: string
   /**
@@ -145,6 +147,35 @@ export type RecordsStore = {
    */
   readonly blobs: BlobStore
   listSessions(): Promise<readonly SessionSummary[]>
+  /**
+   * **裁决的历史累计**（U28 · `B10` 口径的跨会话面）——本工作区的会话们走过的全部裁决，
+   * 按 `decider` 分成两格（见 `DecisionHistory`）。
+   *
+   * 由头：权限域那个 `GateTally` 是**本会话**的数（闸门按会话实例构造），只够看
+   * 「这一趟顺不顺」；**「这个项目值不值得配规则」得跨会话**——故这条读面在库里数
+   * （`tool.decision` 事件本就在这儿，裁者在事件上）。
+   *
+   * **范围＝本工作区**：`dataDir` 是全局的（`~/.magic`），库里住着不止一个项目——
+   * 数进来的只有**归属对得上的那些会话**（`sessions.workspace` 那一列，U26）。
+   * ⚠️ **归属缺席的会话不计**（加列之前落账的那些：它们属于哪个工作区**无法知道**，
+   * 拿当下这个顶上去就是编——同 `schema.ts` 里那条注）。
+   *
+   * **同步**（同 `latestSession` / `nextId`）：本地 `bun:sqlite` 本就是同步的；
+   * 它不是端口面（不随会话实例、也不进 `RecordsService`），跨进程那道缝日后要接
+   * 另说——不先替它背一副异步壳。
+   */
+  decisionHistory(): DecisionHistory
+  /**
+   * **这条会话在不在库里**（U28）——入口 `--session <id>` 那道校验的取材。
+   *
+   * 判据就是**库里有没有这一行**：会话**首写即建**（`D5`：首条消息按下回车才落库），
+   * 故「不在库里」就是「**没有这条会话**」——打错的 id、从没落过账的 id 都在此列
+   * （`/session new` 之后没写过话的那条空壳也**不在**：它还没有可接的东西）。
+   *
+   * 由头：`--session s-typo` 原先照 id 装载一条**空的**——用户以为接上了，其实没有。
+   * 校验放在**入口**（报错不降级），此处只答「在不在」，**不判该不该**。
+   */
+  hasSession(session: SessionId): boolean
   /**
    * **最近一条会话**——启动流转「接着最近一条」的取材口（U16）；库里没有会话则 `undefined`。
    *
@@ -242,7 +273,18 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
       ORDER BY id
       LIMIT ?`,
   )
+  // 历史累计（U28）：两条判据都在这一句里——**是裁决**（`kind`）× **是本工作区的会话**
+  // （`sessions.workspace` 那一列，归属缺席的不进子查询）。全表扫一遍：`events` 上没有
+  // kind 索引，而 `kind` 又不是分页条件——本读面是「开抽屉时问一次」，不逐帧跑。
+  const selectDecisions = db.query<{ data: string }, [string]>(
+    `SELECT data FROM ${EVENTS_TABLE}
+      WHERE kind = 'tool.decision'
+        AND session IN (SELECT id FROM ${SESSIONS_TABLE} WHERE ${SESSION_WORKSPACE_COLUMN} = ?)`,
+  )
   const selectSessions = db.query<SessionRow, []>(sessionSelect())
+  const selectSessionExists = db.query<{ one: number }, [string]>(
+    `SELECT 1 AS one FROM ${SESSIONS_TABLE} WHERE id = ? LIMIT 1`,
+  )
   const selectLatest = db.query<{ id: string }, []>(`${sessionSelect()} LIMIT 1`)
   // 改名：有行即就地更新，没行即建行（`at` ＝改名那一刻——建行不另取时钟，用调用方给的）
   const upsertTitle = db.query<never, [string, number, string]>(
@@ -329,6 +371,29 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     return selectLatest.get()?.id
   }
 
+  /**
+   * 裁决的历史累计（见 `RecordsStore.decisionHistory` 那条注）——
+   * **数出来的只有两格**：走了几次裁决、其中几次没问就放行（`decider: 'auto'`）；
+   * 「还得你点」是差，不另存一位（三个数里两个数得出来，第三个就不该再存一遍）。
+   */
+  function decisionHistory(): DecisionHistory {
+    let total = 0
+    let auto = 0
+
+    for (const row of selectDecisions.all(workspaceColumn)) {
+      const data = JSON.parse(row.data) as EventDataOf['tool.decision']
+      total += 1
+      if (data.decider === 'auto') auto += 1
+    }
+
+    return { total, auto }
+  }
+
+  /** 在不在库里（见 `RecordsStore.hasSession`）——一行存在即「在」。 */
+  function hasSession(session: SessionId): boolean {
+    return selectSessionExists.get(session) !== null
+  }
+
   function setSessionTitle(session: SessionId, title: string, at: Timestamp): void {
     assertSessionId(session)
     upsertTitle.run(session, at, title)
@@ -372,6 +437,8 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
     listSessions,
     latestSession,
+    decisionHistory,
+    hasSession,
     setSessionTitle,
     appendEvent: (event) => appendEvent(event.session, event),
     recoveryScan: runRecoveryScan,
@@ -383,7 +450,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 }
 
 /**
- * `dataDir` 只收**字面路径**——前导 `~` 的展开归配置加载器（`expandDataDir`），本库不展开。
+ * `dataDir` 只收**字面路径**——前导 `~` 的展开归配置加载器（`expandHome`），本库不展开。
  *
  * ⚠️ 已踩过的坑：字面 `~` 直接交给运行时库会在 **cwd 下造一个名为 `~` 的目录**，
  * 不报错、且回环测试全绿（读写都在同一个错位置）。故此处**拒绝**而非放行——
@@ -396,7 +463,7 @@ function assertPlainDataDir(dataDir: string): string {
   if (dataDir === '~' || dataDir.startsWith('~/')) {
     throw new Error(
       `dataDir 含前导 \`~\`（${dataDir}）——记录库**不展开** \`~\`：展开归配置加载器` +
-        `（@magic/contracts · expandDataDir），库只写字面路径。直通运行时库会静默落到 ` +
+        `（@magic/contracts · expandHome），库只写字面路径。直通运行时库会静默落到 ` +
         `cwd 下的 \`~\` 目录（错误位置且不报错）——故此处拒绝。`,
     )
   }

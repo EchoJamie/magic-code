@@ -270,6 +270,48 @@ describe('U22 · `/grants` 的两条路（读侧 ＋ 撤销）', () => {
   })
 })
 
+/**
+ * U28 · **历史累计**（`B10` 口径的跨会话面）——本会话那个数只够看「这一趟顺不顺」；
+ * **「这个项目值不值得配规则」得跨会话**（`交接/进度台账.md` · 随批小修 12）。
+ *
+ * 判据锚的是「我要什么」：**重起之后，屏上那笔账仍然记得上一趟**——
+ * 而它**不是**把本会话那个数直接改成累计（那就把两件事混成一件了）：
+ * 两笔账各报各的（`decisions` / `history`），外壳那一侧两行分列。
+ */
+describe('U28 · 历史累计（跨会话那笔账）', () => {
+  test('重起之后：本会话的账从头起，**历史把上一趟算进去**', async () => {
+    const stage = makeStage()
+    try {
+      // 第一趟：一条调用 → 闸门问了 → 人答（`user`）
+      const first = await askOnce(stage)
+      first.shell.answer(first.shell.requests[0] as number)
+      await until(() => eventsOfKind(first.shell.events, 'tool.result').length >= 1, '第一趟跑完')
+
+      first.shell.send({ type: 'grants.list' })
+      await until(() => eventsOfKind(first.shell.events, 'grants.catalog').length >= 1, '名录回来了')
+
+      const before = eventsOfKind(first.shell.events, 'grants.catalog')[0]?.data
+      expect(before?.decisions).toEqual({ total: 1, uncovered: 1, vetoed: 0 })
+      // 历史＝库里那些（这一趟的裁决当场就落了库，故它已经在里头）
+      expect(before?.history).toEqual({ total: 1, auto: 0 })
+      finish(first.assembly, first.shell)
+
+      // 第二趟（＝关掉再开）：本会话一条都还没走过，历史接着上一趟数
+      const second = stage.assemble({ grantsFile: grantsPathOf(stage) })
+      const shell2 = bareShell(second)
+      second.shell.send({ type: 'grants.list' })
+      await until(() => eventsOfKind(shell2.events, 'grants.catalog').length >= 1, '名录回来了')
+
+      const after = eventsOfKind(shell2.events, 'grants.catalog')[0]?.data
+      expect(after?.decisions).toEqual({ total: 0, uncovered: 0, vetoed: 0 })
+      expect(after?.history).toEqual({ total: 1, auto: 0 })
+      finish(second, shell2)
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 describe('U22 · 启动那几句（审计第 13 条）', () => {
   test('被拒的权限规则**进记录区一行回执**——`Assembly.notices` 里备着那句话', () => {
     const stage = makeStage({

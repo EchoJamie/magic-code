@@ -13,6 +13,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { createRecordsStore } from '@magic/records'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
@@ -36,12 +37,24 @@ async function run(home: string, ...args: readonly string[]): Promise<Run> {
   return { stdout, stderr, exitCode }
 }
 
-/** 装一块带配置的沙地（家目录＝`home`，配置文件在 `<home>/.magic/config.json`）。 */
-function stageWithConfig(config: unknown): { home: string; dataDir: string } {
+/**
+ * 装一块带配置的沙地（家目录＝`home`，配置文件在 `<home>/.magic/config.json`）。
+ *
+ * **数据落点也在这块沙地里**（`D24`——它只能在这儿）：早先这个夹具给的是**固定路径**
+ * `/tmp/magic-cli-never`，**且不清理**——于是**新版本写过的库留在那儿，老版本的用例
+ * 当场红**（库比程序新即拒开，`U26` 实测到 5 条，`rm -rf` 后全绿）。
+ * 那 5 条红**是设计要的行为**，只是夹具踩在了它上面：**跑过什么版本，决定下一个人
+ * 看到什么颜色**——红得没有信息量，只会训练人忽略红（与 `D17` 同族）。
+ *
+ * ⇒ **每次唯一**（`tempDir` 走 `mkdtemp`）＋ 收尾 `removeDir(home)`（库就埋在 home 里）。
+ * 用例要另指落点就覆盖 `dataDir`——**但别指到固定路径去**。
+ */
+function stageWithConfig(overrides: Record<string, unknown> = {}): { home: string; dataDir: string } {
   const home = tempDir('magic-cli-')
   mkdirSync(join(home, '.magic'), { recursive: true })
-  writeConfig(join(home, '.magic'), config)
-  return { home, dataDir: join(home, 'data') }
+  const dataDir = join(home, 'data')
+  writeConfig(join(home, '.magic'), validConfig({ dataDir, ...overrides }))
+  return { home, dataDir }
 }
 
 describe('入口 magic', () => {
@@ -183,7 +196,7 @@ describe('入口 magic', () => {
   })
 
   test('`--script` 指向不存在的文件——退 1 并点名', async () => {
-    const { home } = stageWithConfig(validConfig({ dataDir: '/tmp/magic-cli-never' }))
+    const { home } = stageWithConfig()
 
     try {
       const result = await run(home, '--script', join(home, 'nope.json'))
@@ -196,25 +209,58 @@ describe('入口 magic', () => {
   })
 })
 
+/**
+ * **`D24` · 夹具用固定路径且不清理**（U28）——判据锚的是「我要什么」：**跑两遍不互相污染**。
+ *
+ * 早先这个夹具拿固定路径 `/tmp/magic-cli-never` 当数据目录、且**不清理**：新版本写过的库
+ * 留在那儿，老版本的用例当场红（**库比程序新即拒开**——那 5 条红本是设计要的行为，是夹具
+ * 踩在了它上面）。**红得没有信息量**，只会训练人忽略红（同 `D17` 一族）。
+ *
+ * 两条正向判据：**每次唯一**（两次装出来的沙地不是一块）· **收尾不留库**。
+ */
+describe('U28 · 夹具沙箱化（D24）', () => {
+  test('数据落点**每次唯一**，两遍各自跑通，收尾**不留库**', async () => {
+    const first = stageWithConfig()
+    const second = stageWithConfig()
+
+    try {
+      expect(first.dataDir).not.toBe(second.dataDir)
+      // 第几遍跑、之前跑过什么版本，都不该改这一遍的颜色
+      for (const sandbox of [first, second]) {
+        const result = await run(sandbox.home, '--check')
+
+        expect(result.exitCode).toBe(0)
+        expect(existsSync(join(sandbox.dataDir, 'records.db'))).toBe(true) // 库真落在这块沙地里
+      }
+    } finally {
+      removeDir(first.home)
+      removeDir(second.home)
+    }
+
+    // 收尾删干净——下一遍（乃至下一个版本）看到的是一块空地，不是上一遍留下的库
+    expect(existsSync(first.dataDir)).toBe(false)
+    expect(existsSync(second.dataDir)).toBe(false)
+  })
+})
+
 // ═══════════════════════════════════════════════════════════════════════
 // U17 · 运行时切换的**启动参数**入口（`--provider` / `--model`）
 // ═══════════════════════════════════════════════════════════════════════
 
-/** 一份两条目的配置——甲是缺省、乙是「另一种跑法」。 */
-function twoProviderConfig(dataDir: string): Record<string, unknown> {
-  return validConfig({
-    dataDir,
+/** 一份两条目的配置覆盖——甲是缺省、乙是「另一种跑法」（落点由沙地给，见 `stageWithConfig`）。 */
+function twoProviders(): Record<string, unknown> {
+  return {
     defaultProvider: 'alpha',
     providers: {
       alpha: { baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12', model: 'alpha-1' },
       beta: { baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12', model: 'beta-1' },
     },
-  })
+  }
 }
 
 describe('入口 magic · 换模型的启动参数', () => {
   test('自检报供应商表——几条、当前走哪条', async () => {
-    const { home, dataDir } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+    const { home, dataDir } = stageWithConfig(twoProviders())
 
     try {
       const result = await run(home, '--check')
@@ -230,7 +276,7 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 
   test('`--provider` 开局选中另一条——自检里如实说「本次走」', async () => {
-    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+    const { home } = stageWithConfig(twoProviders())
 
     try {
       const result = await run(home, '--check', '--provider', 'beta')
@@ -244,7 +290,7 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 
   test('`--provider` 单给时取该条目的默认模型；`--model` 可单独用（同条目换模型）', async () => {
-    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+    const { home } = stageWithConfig(twoProviders())
 
     try {
       const byModel = await run(home, '--check', '--model', 'alpha-experimental')
@@ -256,7 +302,7 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 
   test('不认识的条目——退 1，缘由点名已注册的（打错字当场看得见有哪些）', async () => {
-    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+    const { home } = stageWithConfig(twoProviders())
 
     try {
       const result = await run(home, '--provider', 'betta')
@@ -270,7 +316,7 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 
   test('选项缺值——退 1（`--provider --check` 这类笔误不被当成名字）', async () => {
-    const { home } = stageWithConfig(twoProviderConfig('/tmp/magic-cli-never'))
+    const { home } = stageWithConfig(twoProviders())
 
     try {
       const result = await run(home, '--provider', '--check')
@@ -316,8 +362,13 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     }
   })
 
-  test('`--check --session <id>`——装配**开局就装载它**（自检里报出那条 id）', async () => {
-    const { home } = stageWithConfig(validConfig({ dataDir: '/tmp/magic-cli-never' }))
+  test('`--check --session <库里真有的 id>`——装配**开局就装载它**（自检里报出那条 id）', async () => {
+    const { home, dataDir } = stageWithConfig()
+
+    // 库里先**真**有一条会话（会话是**首写即建**的，D5——不写库＝不在库里）
+    const store = createRecordsStore({ dataDir, workspace: [home] })
+    store.setSessionTitle('s-picked-by-user', '真有一条', Date.now())
+    store.close()
 
     try {
       const result = await run(home, '--check', '--session', 's-picked-by-user')
@@ -332,8 +383,32 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     }
   })
 
+  /**
+   * **打错 id 不静默降级**（U28 · 台账随批小修 8）——今天的行为是：`--session s-typo`
+   * 照 id 装载一条**空的**，用户以为接上了，其实没有。
+   *
+   * 判据锚的是「我要什么」：**库里没有这条会话就说没有**（报错退场），
+   * 绝不「照 id 造一条新的」——那正是「以为接上了」的来处。
+   *
+   * ⚠️ **这条是守护**：倒回「照 id 装载」，它当场红（退 0 且印出那条 id 的自检）。
+   */
+  test('`--session <库里没有的 id>`——退 1 并点名，**不降级成新会话**', async () => {
+    const { home } = stageWithConfig()
+
+    try {
+      const result = await run(home, '--check', '--session', 's-typo')
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('没有这条会话')
+      expect(result.stderr).toContain('s-typo')
+      expect(result.stdout).toBe('') // 一步都不走——别印半份自检
+    } finally {
+      removeDir(home)
+    }
+  })
+
   test('选项缺值——退 1（`--session --check` 这类笔误不被当成 id）', async () => {
-    const { home } = stageWithConfig(validConfig({ dataDir: '/tmp/magic-cli-never' }))
+    const { home } = stageWithConfig()
 
     try {
       const result = await run(home, '--session', '--check')

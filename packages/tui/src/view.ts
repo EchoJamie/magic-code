@@ -1089,22 +1089,25 @@ function grantMetaOf(grant: GrantsCatalog['grants'][number]): string {
   return grant.stale ? `${times}${when} · 久未命中` : `${times}${when}`
 }
 
-/** 抽屉下方那行说明——**怎么用** ＋ **放行区那一笔账**（`B10` 的口径，两个占比都给）。 */
+/**
+ * 抽屉下方那行说明——**怎么用** ＋ **两笔账**（`B10` 的口径）。
+ *
+ * 两笔账**各占一行**（U28）：`本会话` 与 `历史累计` 的分母不是一回事（前者是这一趟、
+ * 后者是这个项目的全部会话）——挤在一行里读不出哪半句说的是哪一边。
+ */
 export function grantsHint(catalog: GrantsCatalog): string {
-  const lines: string[] = []
+  const head =
+    catalog.grants.length === 0 && catalog.stale.length === 0
+      ? `本工作区（${catalog.workspace}）还没有授权——批准时按 a 就是记一条`
+      : '回车＝撤销选定那条'
 
-  if (catalog.grants.length === 0 && catalog.stale.length === 0) {
-    lines.push(`本工作区（${catalog.workspace}）还没有授权——批准时按 a 就是记一条`)
-  } else {
-    lines.push('回车＝撤销选定那条')
-  }
-
-  lines.push(frictionLabel(catalog.decisions))
-  return lines.join(' · ')
+  return [`${head} · ${frictionLabel(catalog.decisions)}`, historyLabel(catalog.history)]
+    .filter((line) => line !== undefined)
+    .join('\n')
 }
 
 /**
- * 放行区的账（`B10`）——**两个占比**，各自说各自的话（见契约 `grants.catalog` 那条注）：
+ * 放行区的账 · **本会话**（`B10`）——**两个占比**，各自说各自的话（见契约 `grants.catalog`）：
  *
  * - **未配规则**：一条规则都没命中的那些 / 全部裁决；
  * - **还得你点**：前者 ＋「规则命中了却被必闸禁区否决」的那些 / 全部裁决。
@@ -1119,6 +1122,26 @@ function frictionLabel(decisions: GrantsCatalog['decisions']): string {
   const asked = uncovered + vetoed
   return (
     `本会话 ${total} 次裁决：未配规则 ${uncovered} 次（${percentOf(uncovered, total)}）` +
+    ` · 还得你点 ${asked} 次（${percentOf(asked, total)}）`
+  )
+}
+
+/**
+ * 放行区的账 · **历史累计**（U28 · 跨会话）——**这个项目值不值得配规则**看的是它。
+ *
+ * ⚠️ **两格，不是本会话那三格**：库里那条事件只有 `decider`（`auto` / `user`），
+ * 记不下「命中规则却被必闸禁区否决」——故这里**不报「未配规则」**（那是本会话分得出的
+ * 细账，历史里分不开），只报历史真能分开的两类（见契约 `DecisionHistory` 那条注）。
+ *
+ * **没走过裁决就不报**（同 `frictionLabel`：0 次不是一个占比）——历史为空时这行整个不给。
+ */
+function historyLabel(history: GrantsCatalog['history']): string | undefined {
+  const { total, auto } = history
+  if (total === 0) return undefined
+
+  const asked = total - auto
+  return (
+    `历史累计 ${total} 次裁决：自动放行 ${auto} 次（${percentOf(auto, total)}）` +
     ` · 还得你点 ${asked} 次（${percentOf(asked, total)}）`
   )
 }

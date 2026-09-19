@@ -55,7 +55,7 @@ import type {
   TurnId,
   WorkspaceService,
 } from '@magic/contracts'
-import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, expandDataDir } from '@magic/contracts'
+import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, expandHome } from '@magic/contracts'
 import { createActions } from '@magic/actions'
 import type { SessionPorts } from '@magic/actions'
 import { createConversationService, createConversationSession } from '@magic/conversation'
@@ -187,7 +187,7 @@ export type Assembly = {
    * 「这次装配不谈切换」。
    */
   readonly models: ModelRegistry | undefined
-  /** 库把手——收尾（`close`）与验收脚本用。 */
+  /** 库把手——收尾（`close`）· 入口那道 `--session` 校验（U28）· 验收脚本用。 */
   readonly records: RecordsStore
   /** 数据落点（`records.db` 与 `blobs/` 的绝对路径）。 */
   readonly paths: { readonly database: string; readonly blobs: string }
@@ -350,7 +350,7 @@ export function assemble(options: AssembleOptions): Assembly {
   //
   // 三件都在这一步：**读文件**（启动期一次，同配置）→ **造账本**（纯内存，跨会话共用）
   // → **接落盘**（账本变了就写回）。权限域自己不碰文件系统，读写都在这一层。
-  const grantsPath = expandDataDir(options.grantsFile ?? GRANTS_FILE, options.home ?? homedir())
+  const grantsPath = expandHome(options.grantsFile ?? GRANTS_FILE, options.home ?? homedir())
   const loadedGrants = loadGrants(grantsPath)
   /** 有攒着没落的记账（命中统计）——收尾时补一次（见 `close`）。 */
   let grantsDirty = false
@@ -726,10 +726,14 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /**
-   * 名录 ＋ 陈旧的节 ＋ 本会话的裁决分布 —— `grants.catalog` 的载荷。
+   * 名录 ＋ 陈旧的节 ＋ 两笔账（本会话 / 历史累计）—— `grants.catalog` 的载荷。
    *
    * `decisions` 取**当下这一束**闸门的账（裁决按会话分列——切了会话就是另一本账，
    * 与「本会话」这个措辞一致）；那一屏要是空手打开的那张壳，账自然全是 0。
+   *
+   * `history`（U28）取**记录域的读面**——**跨会话**那笔账：闸门按会话实例构造，
+   * 故它只答得了「这一趟」；「这个项目值不值得配规则」得看库里那些（见 `DecisionHistory`）。
+   * **每次现读**（不在这儿攒）：裁决是随打随落的，攒一份就等于给「历史」另立一个真源。
    */
   const grantsCatalogOf = (note?: string): EventDataOf['grants.catalog'] => {
     const view = grantsView()
@@ -741,6 +745,7 @@ export function assemble(options: AssembleOptions): Assembly {
       grants: view.grants,
       stale: view.stale,
       decisions: active().gate.tally(),
+      history: recordsStore.decisionHistory(),
       ...(said.length === 0 ? {} : { note: said.join('；') }),
     }
   }

@@ -5,7 +5,7 @@
  * apiKey, model, traits?, contextWindow?}}, dataDir }`）→ 校验 → 落地成 `LoadedConfig`。
  *
  * **两处规矩落在这里**：
- * - **`dataDir` 前导 `~` 在加载时展开**（契约 `expandDataDir`）——记录域**不展开**且对 `~`
+ * - **`dataDir` 前导 `~` 在加载时展开**（契约 `expandHome`）——记录域**不展开**且对 `~`
  *   即拒（`assertPlainDataDir`）。字面 `~` 直通运行时库会在 cwd 下造一个名为 `~` 的目录，
  *   不报错；故展开**必须发生在交给记录域之前**，本文件是那一步。
  *   **工作区根同此**（U27）——同一个展开器、同一个落点（见 `asWorkspaceRoots` 头注）。
@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import type { MagicConfig, ProviderConfig } from '@magic/contracts'
-import { apiKeyEnvVarOf, CONFIG_FILE, DEFAULT_DATA_DIR, expandDataDir } from '@magic/contracts'
+import { apiKeyEnvVarOf, CONFIG_FILE, DEFAULT_DATA_DIR, expandHome } from '@magic/contracts'
 
 /** 配置加载失败——CLI 捕它、打印消息、退场（不带栈：这不是程序 bug，是配置的事）。 */
 export class ConfigError extends Error {
@@ -131,7 +131,8 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
  * 分工没变：此处只把用户写的那串**变成它指的那个路径**。
  *
  * **`~` 展开（U27 · `U18` 待决 3）**——**与 `dataDir` 同源：同一个展开器**
- * （契约 `expandDataDir`；名字带 `dataDir` 是它的出身，射程就是「前导 `~` 展开」这件事）。
+ * （契约 `expandHome`——它原先叫 `expandDataDir`，射程却一直是「前导 `~` 展开」
+ * 这件事本身：`dataDir` 与工作区根共用它，U28 按射程改了名）。
  * 由头：根是**用户手写在配置文件里**的路径——手写就会写 `~/work`，而当相对路径拒只会
  * 让人困惑。落点也照 `dataDir`：**加载器展开、加载后即为字面路径**（执行域不展开，
  * 「`~` 不是绝对路径」那条规矩没动）。
@@ -145,7 +146,7 @@ function asWorkspaceRoots(value: unknown, path: string, home: string): readonly 
   }
 
   return value.map((entry, index) =>
-    expandDataDir(asText(entry, path, `workspaceRoots[${index}]`), home),
+    expandHome(asText(entry, path, `workspaceRoots[${index}]`), home),
   )
 }
 
@@ -160,7 +161,7 @@ function asWorkspaceRoots(value: unknown, path: string, home: string): readonly 
  */
 export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const home = options.home ?? homedir()
-  const path = expandDataDir(options.path ?? CONFIG_FILE, home)
+  const path = expandHome(options.path ?? CONFIG_FILE, home)
 
   let text: string
   try {
@@ -201,7 +202,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   }
 
   // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）
-  const dataDir = expandDataDir(
+  const dataDir = expandHome(
     raw['dataDir'] === undefined ? DEFAULT_DATA_DIR : asText(raw['dataDir'], path, 'dataDir'),
     home,
   )
