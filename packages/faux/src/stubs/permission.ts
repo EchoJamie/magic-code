@@ -56,7 +56,8 @@ export type FauxPermissionAnswer = {
   readonly decision: Decision
   /**
    * 答复上的**「总是允许」位**——桩**只留痕、不据此记忆**：
-   * 会话级记忆是权限域真实现的事（桩替它记住＝两套语义，测试会照着桩的错样子写）。
+   * 那一笔账（U22 起是**工作区级授权**，落 `~/.magic/grants.json`）是权限域真实现的事
+   * （桩替它记住＝两套语义，测试会照着桩的错样子写）。
    */
   readonly remember?: boolean
 }

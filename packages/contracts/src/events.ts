@@ -81,6 +81,8 @@ export type EventKind =
   | 'session.state'
   // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
   | 'session.history'
+  // 控制 · 权限——**授权名录**（U22）：`grants.list` 的答复 ＋ 撤销之后的回话；**不落库**
+  | 'grants.catalog'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -113,6 +115,29 @@ export type ModelCatalogRow = {
   readonly model: string
   /** 上下文窗口总量——**配置声明了才有**（见 `ProviderConfig.contextWindow`）；没声明就不给。 */
   readonly contextWindow?: number
+}
+
+/**
+ * 授权名录的一行——`grants.catalog` 的载荷（U22 · 技术方案 · 权限「授权的落点」）。
+ *
+ * **措辞归内核**（`describe`）：条目长什么样只有权限域的 `describeRule` 说了算——
+ * 外壳再拼一遍「工具 × 路径 × 操作」就是两处各写一套措辞，改一处漏一处。
+ * 而**记账那几件是数据**（次数 / 时刻），外壳据以排「用过几回、多久没用了」。
+ */
+export type GrantRow = {
+  /** 这条授权长什么样（工具 × 路径模式 × 操作类型）——`describeRule` 一处产出。 */
+  readonly describe: string
+  /** 点下「总是允许」的时刻（毫秒）。 */
+  readonly grantedAt: number
+  /** 最近一次命中的时刻（毫秒）——**从未命中**时缺席（不给 0 冒充）。 */
+  readonly lastHitAt?: number
+  /** 命中次数——**从未命中**时缺席（同上，不编）。 */
+  readonly hits?: number
+  /**
+   * **久未命中**（`B11`）——判据由权限域按注入的时钟算好（阈值是实现级常量），
+   * 外壳只照着标。⚠️ 标出来**不删**：删用户数据不归内核。
+   */
+  readonly stale: boolean
 }
 
 /**
@@ -294,6 +319,44 @@ export type EventDataOf = {
      */
     readonly note?: string
   }
+  // 控制 · 权限——**授权名录**（U22 · 技术方案 · 权限「授权的落点」）。
+  // `grants.list` 的答复，与**撤销之后**的回话共用这一个 kind（三处各立一个只会让渲染侧
+  // 写三遍同一段）——撤销选定即撤，撤完再回一份名录，屏上顺手就是新的那一份。
+  // **不落库**：它是**读出来的**（`grants.json` 本来就在盘上），落库＝把同一张表存 N 遍。
+  'grants.catalog': {
+    /** **分节键**——本工作区（默认根的规范形）；授权按它分节存。 */
+    readonly workspace: string
+    /** 本工作区的授权（声明序）——撤销按这个序报 `index`。 */
+    readonly grants: readonly GrantRow[]
+    /**
+     * **陈旧的节**（`B11`）——**路径已不在**的那些工作区（整节的名录，供撤销）。
+     *
+     * 判据归**装配**（要不在了得问文件系统，而域不碰 fs）：加载 `grants.json` 时逐节探一次。
+     * **只列不删**——「你删或留」，内核不替用户拿主意。
+     */
+    readonly stale: readonly string[]
+    /**
+     * **本会话的裁决分布**——放行区那一笔账的**原料**（`B10` 口径：未配规则的调用占比）。
+     *
+     * 三格两句话（权限域 `GateTally` 那处的口径，此处只转述）：
+     * ```
+     *   未配规则的调用占比 ＝ uncovered / total
+     *   还得人点一下的占比 ＝ (uncovered + vetoed) / total
+     * ```
+     * 两个数只差 `vetoed` 那一格——规则命中了却被必闸禁区否决的调用，对**用户**是同一个
+     * 体验（还是弹了卡），对**规则作者**不是一件事（他得知道「我配的规则够不着这类」）。
+     *
+     * ⚠️ **是本会话的数，不是历史累计**：闸门按会话实例构造。累计要读记录库里的
+     * `tool.decision`（裁者在事件上、分得开「没问」与「秒批」）——那条路归记录域。
+     */
+    readonly decisions: {
+      readonly total: number
+      readonly uncovered: number
+      readonly vetoed: number
+    }
+    /** 一句话说明——只在有事要说时给（读不懂的条目 / 一条授权都没有 / 文件没读到）。 */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -358,6 +421,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 是**反复看**的动作（原型里就是拿它当选择器），每次按一下往库里留一笔「问过」
   // 只会污染观测。重放要的是「换过什么模型」（`model.switched` 落着），不是「看过几眼」。
   'model.catalog',
+  // 授权名录同列的理由（U22）：与 `model.catalog` 同一条——它是**读出来的**
+  // （`grants.json` 本来就在盘上），落库＝把同一张表存 N 遍；且 `/grants` 是**反复看**的动作
+  // （原型的抽屉），每次按一下留一笔「问过」只会污染观测。改动本身**有痕**：撤销是用户动作，
+  // 但它的**结果**是文件里少了一条——重放要的是「发生过什么」，不是「谁看过名录」。
+  'grants.catalog',
 ]
 
 /**

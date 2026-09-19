@@ -7,8 +7,8 @@
  *
  * 四条纪律（原型 · 交互逻辑）：
  * ① **先接订阅、后放开输入**（构造即订阅）；
- * ② **slash 两种走法**——纯输出型（`/help`）：输出进记录区、**命令本身不回显**；
- *    交互配置型（`/session` · `/model`）：**记录区什么都不进**，只在左下开选择器，
+ * ② **slash 两种走法**——纯输出型（`/help` · `/status`）：输出进记录区、**命令本身不回显**；
+ *    交互配置型（`/session` · `/model` · `/grants`）：**记录区什么都不进**，只在左下开选择器，
  *    选定后留**一行回执**，`esc` 取消＝**不留痕迹**；
  * ③ **接管**（裁决挂着）——看得见（占位换掉）· 草稿不丢（收起来、答完归还、**不自动发送**）·
  *    **不静默吞键**（只认 y/a/n ＋ 全局 ctrl+c，其余忽略但当场说一句；粘贴一律拒）；
@@ -31,6 +31,8 @@ import {
   movePicker,
   openPicker,
   sessionHint,
+  grantsHint,
+  grantsRows,
   sessionRows,
   picked,
   rebuild,
@@ -109,8 +111,8 @@ function statusLines(view: ShellView): readonly string[] {
 
 const STATUS_TITLE = '此刻'
 
-/** 一次「等内核回话再开选择器」的意图——`/session` 与 `/model` 各一种。 */
-type PendingPicker = 'session' | 'model'
+/** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` 各一种。 */
+type PendingPicker = 'session' | 'model' | 'grants'
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
 export type ShellOptions = {
@@ -140,6 +142,17 @@ export type ShellOptions = {
    * （不跑 `boot` 的测试 / 演示）照旧一挂载就能提交。
    */
   readonly inputReady?: boolean | undefined
+  /**
+   * **启动那几句要说的话**（U22 · 审计第 13 条）——开局进记录区，一行回执。
+   *
+   * 由头：解析从严（读不懂的规则 / 授权**不生效**）原先**只有 `--check` 会说**，
+   * 走 TUI 这条路时**一声不响**。装配把话备好（`Assembly.notices`），外壳只负责说。
+   *
+   * ⚠️ **等记录区重建完再贴**（见 `accumulate`）——开盘那一下 `readHistory` 会把
+   * 屏上痕迹连同这几行一起换掉（`rebuild` 只回会话内容）。不补这一手，回执在真外壳上
+   * **一句都留不下**（`run.ts` 的次序正是「boot → 放开输入 → 读历史」）。
+   */
+  readonly receipts?: readonly string[] | undefined
 }
 
 /**
@@ -181,6 +194,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const watchers = new Set<() => void>()
   const booting = options.inputReady === false
   let view = withContextWindow(createView(), options.contextWindow ?? null)
+
+  /**
+   * **启动那几句**（见 `ShellOptions.receipts`）——开局先贴一遍，**重建之后再补一遍**。
+   *
+   * 两份是必要的：不先贴，没跑 `readHistory` 的调用方（测试 / 演示）永远看不到；
+   * 不在重建后补，真外壳上那几行会被 `rebuild` 换掉（它只回会话内容）。
+   * 补一次就够（`startupSaid`）——此后再换会话就不重复念叨了。
+   */
+  const startup: readonly string[] = options.receipts ?? []
+  let startupSaid = false
+  if (startup.length > 0) view = startup.reduce((acc, text) => appendReceipt(acc, text), view)
+
   let disposed = false
   /** 「放开输入」了没有——`boot` 完成那一下翻真（见 `Shell.releaseInput`）。 */
   let ready = !booting
@@ -330,6 +355,22 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       waiting = null
       openModelPicker(event.data.note ?? '')
     }
+
+    // 授权名录回来了 ⇒ 开抽屉（`/grants` 那条路）／**撤销之后刷新它 ＋ 留一行回执**。
+    // 两处分得开：`waiting` 只在「刚问过」时为真；撤销那次是抽屉**已经开着**。
+    if (event.kind === 'grants.catalog') {
+      if (waiting === 'grants') {
+        waiting = null
+        openGrantsPicker(view.grants)
+      } else {
+        // 选定即撤的后半句：**照着新名录重铺**（撤掉那条就没了），
+        // 并把内核那一句留成**记录区的一行回执**。
+        refreshGrantsPicker() // 抽屉还开着才重铺（`esc` 收起了就只留回执）
+        // `note` 只在有事要说时给（撤成了 / 没撤成 / 写盘失败）——不给＝没什么可说的。
+        // ⚠️ **回执不跟着抽屉走**：撤了就得知会一声，哪怕抽屉已经收起
+        if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
+      }
+    }
   }
 
   const accumulate = (data: Extract<KernelEvent, { kind: 'session.history' }>['data']): void => {
@@ -343,7 +384,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     rebuildEntries = [...rebuildEntries, ...data.entries]
     if (!data.done) return
 
-    commit(rebuild(view, rebuildEntries))
+    let next = rebuild(view, rebuildEntries)
+
+    // 启动那几句**补一回**——`rebuild` 只回会话内容，屏上痕迹（含开局那几行回执）
+    // 会被它换掉；不补就真的一句都留不下（见 `ShellOptions.receipts`）
+    if (!startupSaid && startup.length > 0) {
+      startupSaid = true
+      next = startup.reduce((acc, text) => appendReceipt(acc, text), next)
+    }
+
+    commit(next)
     rebuildFor = null
     rebuildEntries = []
   }
@@ -371,6 +421,48 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         ...(hint === undefined ? {} : { hint }),
       }),
     )
+  }
+
+  /**
+   * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/session` · `/model` 同位置同开合**
+   * （左下，`esc` 收起**不留痕迹**）。
+   *
+   * 选中项从 0 起（每次开都从头）——授权是**要撤的东西**，不是「当前在哪条」，
+   * 没有一条该被预先选中。
+   */
+  const openGrantsPicker = (catalog: ShellView['grants']): void => {
+    // 名录没到手＝不该走到这儿（开抽屉那条路先问后开）；照防御性办：什么都不开
+    if (catalog === null) return
+
+    commit(
+      openPicker(view, {
+        source: 'grants',
+        selected: 0,
+        rows: grantsRows(catalog),
+        // 列表下方那行：内核有话说就说（读不懂的条目 / 写盘失败），否则「怎么用 ＋ 那笔账」
+        hint: catalog.note ?? grantsHint(catalog),
+      }),
+    )
+  }
+
+  /** 撤销之后**照着新名录重铺**——行数可能少了一条，选中项**夹回范围内**（不越界、不跳远）。 */
+  const refreshGrantsPicker = (): void => {
+    const catalog = view.grants
+    if (catalog === null || view.dock.kind !== 'picker') return
+
+    const rows = grantsRows(catalog)
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          ...view.dock.picker,
+          rows,
+          selected: Math.min(view.dock.picker.selected, Math.max(0, rows.length - 1)),
+          hint: catalog.note ?? grantsHint(catalog),
+        },
+      },
+    })
   }
 
   /**
@@ -534,6 +626,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
+      // 授权（U22 · B13）：选定＝**撤掉它**（不是切过去）。抽屉**不关**——撤完刷新，
+      // 接着还能撤下一条；回执行由内核那一句 `note` 给（它才知道撤成没撤成）。
+      if (view.dock.picker.source === 'grants') {
+        if (row.revoke === undefined) return NONE // 不该有这种行（行是 `grantsRows` 铺的）
+        send({
+          type: 'grants.revoke',
+          ...(row.revoke.workspace === undefined ? {} : { workspace: row.revoke.workspace }),
+          ...(row.revoke.index === undefined ? {} : { index: row.revoke.index }),
+        })
+        return NONE
+      }
+
       // 换模型：回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）
       send({ type: 'model.switch', provider: row.value })
       commit(closePicker(view))
@@ -629,6 +733,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //（以「换失败了」作答，还白落一笔 `model.switched`）。
       waiting = 'model'
       return only(cleared, { type: 'model.list' })
+    }
+
+    // `/grants`（U22 · B13）——**交互配置型**：记录区什么都不进，只在左下开抽屉。
+    // 与 `/model` 同一姿势：**先问一次名录**（答复是 `grants.catalog`），外壳据它铺行。
+    if (word === '/grants') {
+      waiting = 'grants'
+      return only(cleared, { type: 'grants.list' })
     }
 
     // 不认得的 slash——**如实说一句**（别静默丢，也别当交代发给模型）

@@ -260,9 +260,16 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
   }
 
   if (view.dock.kind === 'picker') {
-    const hint = view.dock.picker.hint === undefined ? 0 : 1
     // 分组头也算行（U26——`/session` 按工作区分组；一处判定两处用，见 `groupHeads`）
     const heads = groupHeads(view.dock.picker.rows).filter(Boolean).length
+    // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/session` 的长得多
+    // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
+    // （D11 那条「行高与实际不符」的老账，正是这么来的）
+    const hint =
+      view.dock.picker.hint === undefined
+        ? 0
+        : wrap(view.dock.picker.hint, Math.max(8, columns - 4)).length
+
     return view.dock.picker.rows.length + heads + hint + flash
   }
 

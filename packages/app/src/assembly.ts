@@ -37,12 +37,15 @@
  * （`./shell.ts`）把这条次序写在订阅与发命令的相对位置上，别处别自己拼。
  */
 
+import { statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import type {
   ControlTransport,
   EventDataOf,
   EventKind,
   EventSink,
   EventStamper,
+  GrantRow,
   KernelEvent,
   ModelGateway,
   ModelSwitchRequest,
@@ -52,7 +55,7 @@ import type {
   TurnId,
   WorkspaceService,
 } from '@magic/contracts'
-import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
+import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, expandDataDir } from '@magic/contracts'
 import { createActions } from '@magic/actions'
 import type { SessionPorts } from '@magic/actions'
 import { createConversationService, createConversationSession } from '@magic/conversation'
@@ -66,13 +69,14 @@ import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createSandbox, createWorkspaceService } from '@magic/execution'
 import type { FetchLike, ModelRegistry, ModelSwitchResult } from '@magic/model'
 import { createModelRegistry } from '@magic/model'
-import { createPermissionGate, parseRules } from '@magic/permission'
+import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createToolRuntime } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
+import { loadGrants, saveGrants } from './grants-file.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
 const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
@@ -130,11 +134,30 @@ export type AssembleOptions = {
   readonly context?: Partial<ContextPolicy> | undefined
   /** 提示词的环境注入项（见 `EnvironmentVars`）。 */
   readonly prompt?: EnvironmentVars | undefined
+  /**
+   * **授权文件的落点**——缺省 `GRANTS_FILE`（`~/.magic/grants.json`，`~` 在此展开）。
+   *
+   * ⚠️ **不跟 `dataDir` 走**：它是**授权**的落点，与 `config.json` 一样住 `~/.magic`
+   * （`dataDir` 是**记录**的落点，可被用户指到别处）。给这个覆盖位是为了测试能指到临时目录。
+   */
+  readonly grantsFile?: string | undefined
+  /** 家目录（展开 `GRANTS_FILE` 的 `~`；缺省 `os.homedir()`）——与配置加载器同一个来处。 */
+  readonly home?: string | undefined
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
 /** 注册表缺席时那条切换结果的缘由（注入了替身网关＝这批装配换不了模型）。 */
 const NO_REGISTRY = '本次装配没有供应商注册表（注入了替身网关）'
+
+/** 授权名录的一屏（`Assembly.grantsView`）——**一处取，两处用**（`/grants` 与 `--check`）。 */
+export type GrantsView = {
+  /** 本工作区（分节键＝默认根的规范形）。 */
+  readonly workspace: string
+  /** 本工作区的授权（声明序）。 */
+  readonly grants: readonly GrantRow[]
+  /** **陈旧的节**——路径已不在的那些（`B11`）。 */
+  readonly stale: readonly string[]
+}
 
 export type Assembly = {
   /**
@@ -178,6 +201,31 @@ export type Assembly = {
    * 缘由交回装配是**给用户看的**：静默丢弃会让人对着一条不生效的规则发呆。
    */
   readonly rejectedRules: readonly RuleProblem[]
+  /**
+   * **授权文件的落点**（`~/.magic/grants.json`，已展开）——自检那一行与报错都用它。
+   *
+   * 由头：这是**内核自持**的一个文件（技术方案 · 权限「授权的落点」），写回它的是内核自己；
+   * 用户要能一眼找到它、手改它、删它——故自检里报出来。
+   */
+  readonly grantsPath: string
+  /**
+   * **授权名录 ＋ 陈旧的节**（U22）——`/grants` 那一屏的取材，`--check` 那一行也读它
+   * （**一处判定，两处说同一句话**）。
+   *
+   * `stale` ＝**路径已不在**的那些节（`B11` 的「陈旧节」）——判它要问文件系统，故判在这里。
+   * **只列不删**：删用户数据不归内核，撤销入口在 `/grants`。
+   */
+  readonly grantsView: () => GrantsView
+  /**
+   * **启动那几句要说的话**（U22 · 审计第 13 条）——外壳开局进记录区**一行回执**。
+   *
+   * 由头：解析从严（读不懂的规则 / 授权**不生效**）这件事原先**只有 `--check` 会说**，
+   * 走 TUI 那条路时**一声不响**——用户对着一条不生效的规则发呆，不知道它压根没被读进来。
+   *
+   * 两条来路：**被拒的权限规则**（`rejectedRules`）与**授权文件读不懂**（`loadGrants` 的
+   * `note`）。都**没到非报不可的量**（正常时是空数组）——空数组＝启动一句多余的话都不说。
+   */
+  readonly notices: readonly string[]
   /**
    * **当前条目**声明的上下文窗总量（`providers.<id>.contextWindow`）——状态行 ④ 的**分母**
    * （缺陷 `D10` 第 1 样；U20 留的位，本轮接上）。
@@ -298,6 +346,66 @@ export function assemble(options: AssembleOptions): Assembly {
   const workspace = openWorkspace(loaded, options.cwd)
   const sandbox = createSandbox({ workspace })
 
+  // ── 授权（U22）：`a` 的落点是**工作区**，存 `~/.magic/grants.json` ──────────────
+  //
+  // 三件都在这一步：**读文件**（启动期一次，同配置）→ **造账本**（纯内存，跨会话共用）
+  // → **接落盘**（账本变了就写回）。权限域自己不碰文件系统，读写都在这一层。
+  const grantsPath = expandDataDir(options.grantsFile ?? GRANTS_FILE, options.home ?? homedir())
+  const loadedGrants = loadGrants(grantsPath)
+  /** 有攒着没落的记账（命中统计）——收尾时补一次（见 `close`）。 */
+  let grantsDirty = false
+  /**
+   * **上次没写进盘**的那一句（`/grants` 里说）——写盘会失败（权限 / 盘满），而失败**不该静默**：
+   * 授权还在内存里生效，用户却以为它已经记下了 ⇒ 下次启动它就不在了。
+   *
+   * 说在哪儿：**`/grants` 那一屏**（授权的门面）。那一刻要说的通道（`grants.catalog` 的 `note`）
+   * 正好在那儿，不必另长一条告警路径。
+   */
+  let grantsWriteError: string | undefined
+
+  /**
+   * **授权账本**（工作区级）——`a` 写进这里，进程内**跨会话共用**。
+   *
+   * 分节键＝**默认根的规范形**（`workspace.defaultRoot()`）：工作区是进程级的（配置在则整组
+   * 接管、缺省则启动目录），故账本也是进程级的一件——这正是「授权跨会话存活」在进程内的形态。
+   * 取舍见 `@magic/permission` · `grants.ts` 的「分节键」。
+   */
+  const grants = createGrantLedger({
+    workspace: workspace.defaultRoot(),
+    file: loadedGrants.file,
+    now,
+    onChange: (file, change) => {
+      // **授权的新增 / 撤销＝立刻落盘**：那份文件存在的理由就是它们，攒着＝掉电丢授权。
+      // **命中记账＝攒着**：每一次自动放行都写盘是白烧 io，而掉电丢的只是统计（不是授权）。
+      if (change === 'hit') {
+        grantsDirty = true
+        return
+      }
+      grantsDirty = false
+
+      // 写盘**不抛进裁决回路**：这一跳在 `resolve()` 的调用栈里（用户在按 `a`），
+      // 抛上去会炸掉外壳的按键处理——而「授权没记住」不是那一刻该打断用户的事。
+      // 失败方向安全：**最坏丢一次授权**（内存里仍生效），下一回 `/grants` 里说清楚。
+      try {
+        saveGrants(grantsPath, file)
+        grantsWriteError = undefined
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        grantsWriteError = `授权没能写进 ${grantsPath}（${reason}）——本次仍在生效，但重启动就没了`
+      }
+    },
+  })
+
+  /** 陈旧节——路径**已不在**的那些（`B11`；只列不删，撤销入口在 `/grants`）。 */
+  const staleSections = (): readonly string[] =>
+    grants.sections().filter((section) => !isDirectory(section))
+
+  const grantsView = (): GrantsView => ({
+    workspace: workspace.defaultRoot(),
+    grants: grants.view(),
+    stale: staleSections(),
+  })
+
   // 记录域：数据目录（`~` 已在加载时展开——记录域拒收 `~`）＋ **本进程的工作区**。
   //
   // **工作区为何在构造时交出去**（U26）：会话**建立时锚定**它——建行的动作在记录域
@@ -396,16 +504,20 @@ export function assemble(options: AssembleOptions): Assembly {
   /**
    * **开一条会话的实例链**（U16）——装配的 `open` 工厂。
    *
-   * 换会话＝换这一整束：记录实例 · 铸造器 · **闸门**（会话级「总是允许」记忆随会话各一份
-   * ——「新会话即清零」，故切走再切回也不复原，与设计同源）· 工具域 · 对话实例。
+   * 换会话＝换这一整束：记录实例 · 铸造器 · **闸门** · 工具域 · 对话实例。
    * **不缓存**旧束：「一个活跃对话实例」是结构，不是计数。
+   *
+   * ⚠️ **闸门换了，授权不换**（U22）：闸门按会话各一份（裁决的账、在途询问各归各的），
+   * 而**授权账本（`grants`）是工作区级的那一个**、跨会话共用——故「换会话」不再意味着
+   * 「把 `a` 记下的东西清零」（技术方案 · 权限「授权的落点」：会话不是信任的边界）。
    *
    * ⚠️ 网关（注册表）**不在此列**——见 `forwardStamper` 的注。
    */
   const open = (session: SessionId): SessionInstance => {
     const records = recordsStore.serviceFor(session)
     const stamper = createStamper({ records, session, now })
-    const gate = createPermissionGate({ sink, stamper, now, rules: parsedRules.rules })
+    // 闸门按会话各一份（裁决的账按会话分列），**账本却是工作区级的那一个**（跨会话共用）
+    const gate = createPermissionGate({ sink, stamper, now, rules: parsedRules.rules, grants })
     const tools = createToolRuntime({
       sandbox,
       workspace,
@@ -598,6 +710,70 @@ export function assemble(options: AssembleOptions): Assembly {
     return registry.list().find((entry) => entry.id === chosen.provider)?.contextWindow ?? null
   }
 
+  /**
+   * **授权名录**（U22）——`/grants` 的读侧答复。
+   *
+   * 走法照 `listModels`：**空手打开也照答**（那一下开一张空壳）——原因同它：
+   * 信封必带会话，而 `grants.list` 在「还没有会话」时就会被按到（`/grants` 是最先想看的东西
+   * 之一）。空壳不列进会话目录（目录只列落过账的），故不违 D5。
+   *
+   * ⚠️ `handle` 的开壳与铸造器就位是**同步**的（`fresh` → 装配的 `open` 一路没有 await），
+   * 故这里不必等它那条 `session.state` 答复就能盖章（同 `listModels` 那段注）。
+   */
+  const listGrants = (note?: string): void => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    sink.emit(requireActiveStamper().stamp('grants.catalog', grantsCatalogOf(note)))
+  }
+
+  /**
+   * 名录 ＋ 陈旧的节 ＋ 本会话的裁决分布 —— `grants.catalog` 的载荷。
+   *
+   * `decisions` 取**当下这一束**闸门的账（裁决按会话分列——切了会话就是另一本账，
+   * 与「本会话」这个措辞一致）；那一屏要是空手打开的那张壳，账自然全是 0。
+   */
+  const grantsCatalogOf = (note?: string): EventDataOf['grants.catalog'] => {
+    const view = grantsView()
+    // 三句话合成一句：调用方给的那句 · 落盘失败（见 `grantsWriteError`）——都没事时不给 `note`
+    const said = [note, grantsWriteError].filter((line): line is string => line !== undefined)
+
+    return {
+      workspace: view.workspace,
+      grants: view.grants,
+      stale: view.stale,
+      decisions: active().gate.tally(),
+      ...(said.length === 0 ? {} : { note: said.join('；') }),
+    }
+  }
+
+  /**
+   * **撤销**（U22）——`index` 给了撤一条（选定即撤）；不给＝**整节撤掉**（陈旧节那条路）。
+   *
+   * 撤完**再回一份名录**（同一个 kind）：外壳据以刷新抽屉，并把 `note` 那一句留成一行回执
+   * ——这正是「撤销＝选定即撤 ＋ 一行回执」那一句规格的落点。
+   */
+  const revokeGrants = (section?: string, index?: number): void => {
+    const target = section ?? workspace.defaultRoot()
+
+    if (index === undefined) {
+      const dropped = grants.dropSection(target)
+      listGrants(
+        dropped === 0
+          ? `没撤成：${target} 那一节不在名录里`
+          : `已撤销整节：${target}（${dropped} 条）`,
+      )
+      return
+    }
+
+    // 回执要报出**撤掉的是哪一条**——名录得在撤销**之前**取（撤完它就没了）。
+    // 只有撤**本工作区**时才取得到：`view()` 读的就是本工作区那一节，
+    // 撤别处（陈旧节那条路走的是 index 缺省，到不了这里）时如实说「那一条」而不编名字
+    const named =
+      target === workspace.defaultRoot() ? grants.view()[index]?.describe : undefined
+    const done = grants.revoke(target, index)
+
+    listGrants(done ? `已撤销：${named ?? '那一条'}` : '没撤成：那一条已经不在了')
+  }
+
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
@@ -617,7 +793,8 @@ export function assemble(options: AssembleOptions): Assembly {
     onInput: (input) => conversation.submit(input),
     onInterrupt: () => conversation.interrupt(),
     // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域。
-    // 闸门**按会话各一份**（会话级记忆），故取当下这束的
+    // 闸门**按会话各一份**（在途询问与裁决的账各归各的），故取当下这束的；
+    // 而它记下的授权进的是**工作区级**账本（跨会话那个），两者不是一回事
     onDecision: (id, decision, opts) => active().gate.resolve(id, decision, opts),
     // 换模型（阶段 2）——**判别式处置**（技术方案 · 领域划分：「切不动就不动」）
     onModelSwitch: (request) => switchModel(request),
@@ -628,6 +805,9 @@ export function assemble(options: AssembleOptions): Assembly {
     // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
     // 答复走事件（`model.catalog`，不落库）
     onModelList: () => listModels(),
+    // 授权名录 ＋ 撤销（U22）——**归装配**（`grants.json` 的读写都在它这一层，域不碰文件系统）
+    onGrantsList: () => listGrants(),
+    onGrantsRevoke: (workspace, index) => revokeGrants(workspace, index),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────
@@ -648,6 +828,9 @@ export function assemble(options: AssembleOptions): Assembly {
     paths: recordsStore.paths,
     permissionRules: parsedRules.rules,
     rejectedRules: parsedRules.rejected,
+    grantsPath,
+    grantsView,
+    notices: noticesOf(parsedRules.rejected, loadedGrants.note, loaded.path),
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。
@@ -663,7 +846,45 @@ export function assemble(options: AssembleOptions): Assembly {
     // 要看细节请直接调 `actions.recover`（本函数只担保「跑完了」）。
     boot: () =>
       startup === undefined ? Promise.resolve() : actions.recover(actionPorts()).then(() => undefined),
-    close: () => recordsStore.close(),
+    close: () => {
+      // 攒着的记账（命中统计）在这儿补落一次——**授权本身早写过了**（`onChange` 那条路），
+      // 故这里失败也只是统计没落上（`saveGrants` 抛就抛出去：收尾那条路上没人能应答它，
+      // 静默吞掉反而让人以为写成了）
+      if (grantsDirty) saveGrants(grantsPath, grants.snapshot())
+      recordsStore.close()
+    },
+  }
+}
+
+/**
+ * 启动那几句话（`Assembly.notices` · U22 · 审计第 13 条）——**空数组＝一句都不说**。
+ *
+ * 两件都只说「有几条没生效、去哪儿看」，**不在这里复述缘由**：缘由在 `--check` 里逐条列着
+ * （那才是对着改的地方），屏上那行回执只要把人指过去。
+ */
+function noticesOf(
+  rejectedRules: readonly RuleProblem[],
+  grantsNote: string | undefined,
+  configPath: string,
+): readonly string[] {
+  const said: string[] = []
+
+  if (rejectedRules.length > 0) {
+    said.push(
+      `配置里有 ${rejectedRules.length} 条权限规则读不懂（未生效）——${configPath}（\`--check\` 看缘由）`,
+    )
+  }
+  if (grantsNote !== undefined) said.push(grantsNote)
+
+  return said
+}
+
+/** 目录还在不在——陈旧节的判据（`B11`：「路径已不在 → 你删或留」）。 */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
   }
 }
 

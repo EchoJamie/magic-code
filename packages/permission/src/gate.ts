@@ -7,14 +7,26 @@
  *     ／否则发 `tool.decision.request`（带材料与呈现轻重）→ 等答复（`resolve`，配对＝请求事件 id）
  *     → 发 `tool.decision` → 返回裁决
  *
- * **优先级：必闸 ＞ 规则 ＞ 默认问**（技术方案 · 权限「规则化（阶段 2）」）——
- * 阶段 1 的**默认照旧是问**（一律人工门），规则是唯一的例外路径；而必闸类是**禁区**：
+ * **优先级链一次留全**（技术方案 · 权限「授权的落点」）：
+ *
+ * ```
+ *   必闸禁区 ＞ 项目规约（留缝·不实现） ＞ 用户手写规则 ＞ 点出来的授权 ＞ 默认问
+ * ```
+ *
+ * 本文件是这条链的**唯一落定处**；括号里标出每一格住在哪儿：
+ * - **必闸禁区**——`analyze` 每次当场重判（判据不押规则作者的自觉）；
+ * - **项目规约**——**留缝不实现**（设计明文：采纳它要配「首次确认 ＋ 只许收窄」）；
+ * - **用户手写规则**——`options.rules`（装配从配置读来、经 `parseRules` 校验）；
+ * - **点出来的授权**——`options.grants`（**工作区级**账本，见 `grants.ts`）；
+ * - **默认问**——链的底，其余全落空时就是它（阶段 1 姿态）。
+ *
  * 规则只在 `analyze` 判**轻**时才有资格放行，判重一律问（清单即禁区，任何规则不可放行）。
- * 判据不在规则作者那一侧——`analyze` 每次当场重判，配错规则也放不出必闸类。
  *
  * 纪律（技术方案 · 领域划分 · 权限域）：**裁决独立**（不自证、不押模型自述）·
  * **只走事件、不入条目**——故本域注入面只有 `EventSink`（`emit` 一件）与 `EventStamper`，
  * **结构上拿不到条目面**（`RecordsService` 才是条目面，本域不注入）。
+ * ⚠️ **不碰文件系统**——授权账本（`grants`）是**纯内存**的：读盘落盘都归装配，
+ * 本域只把「变了」报给账本的回调（见 `GrantLedgerOptions.onChange`）。
  *
  * **调用链引用（`callRef`）必填**（第 2 轮契约对齐 · `PermissionGate.decide` 三参）——
  * 它是「请求 → 询问 → 裁决 → 结果」四事件**串链**的依据（审计与阶段 2 恢复的在途识别
@@ -34,17 +46,22 @@ import type {
 } from '@magic/contracts'
 import { analyze } from './analyze.ts'
 import { decisionMade, decisionRequest } from './events.ts'
+import type { GrantLedger } from './grants.ts'
+import { grantOf } from './grants.ts'
 import type { PermissionRule } from './rules.ts'
 import { describeRule, matchRule, type CallFace } from './rules.ts'
 
 /**
- * 权限域公开面——**即契约端口**（`decide` 三参 · `resolve` 两件）。
+ * 权限域公开面——**即契约端口**（`decide` 三参 · `resolve` 两件）＋ 放行区那一笔账。
  *
  * 第 2 轮契约对齐：`callRef` 由可选注入位**升为必填参数**（见 `decide` 头注）。
  *
- * 两处**结构超集**（契约零改动 · 两参照常工作）：
+ * 三处**结构超集**（契约零改动 · 两参照常工作）：
  * - `decide` 的第三参 `callRef`——第四轮由契约补锚（已是端口形态本身）；
- * - `resolve` 的第三参 `options`——本单元的「总是允许」（契约答复词表尚未容下它，见 `ResolveOptions`）。
+ * - `resolve` 的第三参 `options`——「总是允许」的答复位（契约词表里已有，
+ *   见控制面 `DecisionAnswer.remember`）；
+ * - `tally()`——**度量读面**（U22），契约端口没有它：它说的是本域自己的账，
+ *   不是跨域语言（读它的是装配，用于 `/grants` 那一屏，见 `GateTally`）。
  */
 export interface PermissionGate extends PermissionGatePort {
   decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
@@ -52,25 +69,52 @@ export interface PermissionGate extends PermissionGatePort {
    * 控制域答复路由至此——配对键＝**请求事件** `id`。
    *
    * 第三参是**结构超集**（契约端口两参照常工作，同 U07 之例）：`options.remember` ＝
-   * 外壳的第三个按钮**「总是允许」**——本会话此后**同类**不再问（见 `ResolveOptions`）。
+   * 外壳的第三个按钮**「总是允许」**——**这个工作区**此后**同类**不再问（见 `ResolveOptions`）。
    */
   resolve(requestId: DecisionId, decision: Decision, options?: ResolveOptions): void
+  /** **放行区那一笔账**（`B10` 口径的原料）——本实例走过的裁决分布，见 `GateTally`。 */
+  tally(): GateTally
 }
 
 /**
  * `resolve` 的加宽位——「总是允许」（技术方案 · 权限：放行区——「总是允许」按
  * （工具 × 路径模式 × 操作类型）记录）。
  *
- * 落在本域是**会话级记忆**：凝成一条会话规则（工具 × 本次的操作类型；路径一格缺省＝根内），
- * 与配置规则同一套匹配、同一关禁区。**不落盘**——新会话＝新闸门实例＝记忆清零（阶段性）。
- *
- * ⚠️ 契约面的答复词表（`Decision` / `DecisionAnswer`）目前只有批准 / 拒绝两词，
- * 故本单元把这个能力落在**加宽位**上：控制域两参路由照旧（＝不记忆），
- * 端到端接上需要一个契约词（见回报「待决」）。
+ * 落在本域是凝成一条授权，与配置规则同一套匹配、同一关禁区。**落点＝工作区**——
+ * 记进注入的账本（`PermissionGateOptions.grants`），由装配落 `~/.magic/grants.json`，
+ * **跨会话存活**（技术方案 · 权限「授权的落点」：两层，不是三层）。
  */
 export type ResolveOptions = {
   /** 「总是允许」——**只在批准时生效**（规则的条目只有「允许」这一形，没有「总是拒绝」）。 */
   readonly remember?: boolean
+}
+
+/**
+ * **放行区那一笔账**（`B10` · 技术方案 · 权限「度量」）——「未配规则的调用占比」的原料。
+ *
+ * 口径（**两句话都要说清，否则这个数会被读成别的东西**）：
+ *
+ * ```
+ *   未配规则的调用占比 ＝ uncovered / total        ← B10 那句的字面义
+ *   还得人点一下的占比 ＝ (uncovered + vetoed) / total
+ * ```
+ *
+ * 两个数**只差 `vetoed` 那一格**：规则命中了却被必闸禁区否决的调用，对**用户**是同一个
+ * 体验（还是弹了卡），而对**规则作者**不是一件事（他得知道「我配的规则够不着这类」）。
+ * 故分两格记，不合并——合成的那个数两边都说不准。
+ *
+ * ⚠️ **是「本实例」的数，不是历史累计**：闸门按会话实例构造，故它是**本会话**的分布。
+ * 累计要读记录库里的 `tool.decision` 事件（裁者在事件上）——那条路归记录域，见回报「待决」。
+ * 这正是 B10 要的那件事：**可算**（就这三个数）· **可追**（每一条都对应库里一笔
+ * `tool.decision`，`decider` 分得开「没问」与「秒批」）。
+ */
+export type GateTally = {
+  /** 走过的裁决数（每次 `decide` 一件）。 */
+  readonly total: number
+  /** 其中**一条规则都没命中**的（手写规则与授权都没中）＝「未配规则」。 */
+  readonly uncovered: number
+  /** 命中了规则却被**必闸禁区**否决的（见上：对用户与 `uncovered` 同一体验）。 */
+  readonly vetoed: number
 }
 
 export type PermissionGateOptions = {
@@ -84,12 +128,22 @@ export type PermissionGateOptions = {
    */
   readonly stamper: EventStamper
   /**
-   * **持久规则**——（工具 × 路径模式 × 操作类型）→ 允许（技术方案 · 权限「规则化」）。
+   * **用户手写规则**——（工具 × 路径模式 × 操作类型）→ 允许（技术方案 · 权限「规则化」）。
    *
    * 由装配从配置文件读来、经 `parseRules` 校验后注入（本域不碰文件系统，也不写回）。
    * **缺省＝无规则**：那便是阶段 1 的姿态——每个调用都问。
    */
   readonly rules?: readonly PermissionRule[] | undefined
+  /**
+   * **授权账本**——「总是允许」点出来的那一类（**工作区级** · U22 迁移的落点）。
+   *
+   * ⚠️ **必填**（不是可选位）：本单元治的正是「授权记在哪儿」——漏接线＝`a` 写下的东西
+   * 无处可去（要么静默丢弃、要么退回会话级）。**缺参应当在编译期就报**（同 `callRef` 之例）。
+   *
+   * 账本由装配按**工作区**造一次、**跨会话共用**（同一束里的各会话读同一个账本——
+   * 这正是「授权跨会话存活」这句话在本进程内的形态）。
+   */
+  readonly grants: GrantLedger
   /**
    * 时钟（毫秒）——**度量**用：裁决耗时 ＝ 本域开始处理这次裁决 → 裁决落定
    * （`tool.decision.elapsedMs`；两种路径同一口径，见 `events.ts` · `decisionMade`）。
@@ -104,27 +158,22 @@ type Pending = {
   readonly call: RecordId
   /** 度量锚：本域开始处理这次裁决的时刻（`elapsedMs` ＝ 它 → 答复）。 */
   readonly at: number
-  /** 这次问的是「同类」里的哪一类——「总是允许」据此凝出会话规则（当场凝好，答复时不再重判）。 */
-  readonly sessionRule: PermissionRule
+  /** 这次问的是「同类」里的哪一类——「总是允许」据此凝出授权（当场凝好，答复时不再重判）。 */
+  readonly grant: PermissionRule
   readonly settle: (decision: Decision) => void
 }
 
 /** 造一个权限闸门——内核的裁决者（契约端口 `PermissionGate` 的落地）。 */
 export function createPermissionGate(options: PermissionGateOptions): PermissionGate {
-  const { sink, stamper } = options
+  const { sink, stamper, grants } = options
   const now = options.now ?? Date.now
   const rules = options.rules ?? []
 
   /** 在途询问——**请求事件 id** → 待答复（答复按此配对）。 */
   const pending = new Map<DecisionId, Pending>()
 
-  /**
-   * **会话级记忆**——「总是允许」凝出的规则，按答复次序排在配置规则之后。
-   *
-   * 落在闭包里＝**会话级**：新会话＝新闸门实例＝清空（技术方案 · 权限：「总是允许」＝会话级记忆）。
-   * 配置规则在前、记忆在后，只有材料里那句「是哪一条命中的」会因此不同。
-   */
-  const sessionRules: PermissionRule[] = []
+  /** 放行区那一笔账（B10）——本实例的裁决分布，见 `GateTally`。 */
+  const tally = { total: 0, uncovered: 0, vetoed: 0 }
 
   /** 自动放行——不发询问（没问），只落一条裁决事件：**裁者是 `auto`，耗时是真实测量**。 */
   function autoAllow(callRef: RecordId, started: number): Promise<Decision> {
@@ -146,25 +195,40 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       // 规则轴与判定轴读的是**同一份** `analyze` 结论——两条路径结构上无从分叉
       const face: CallFace = { tool: call.name, ops, landings }
-      // 配置规则在前、会话记忆在后——两条来路的规则同一套匹配、同一关禁区
-      const rule = matchRule(rules, face, ctx) ?? matchRule(sessionRules, face, ctx)
+      // **优先级链的次序就在这两行**：手写规则在前、点出来的授权在后
+      //（项目规约那一格**留缝不实现**——它要在两者之间，见文件头注那条链）
+      const configured = matchRule(rules, face, ctx)
+      const granted = configured === undefined ? matchRule(grants.rules(), face, ctx) : undefined
+      const hit = configured ?? granted
+
+      tally.total += 1
 
       // **必闸 ＞ 规则**：命中的规则只在判定为**轻**时才有资格放行；判重一律问——
       // 必闸类是禁区（清单即禁区），任何规则不可放行。判据不押规则作者的自觉。
-      if (rule !== undefined && weight === 'light') return autoAllow(callRef, started)
+      if (hit !== undefined && weight === 'light') {
+        // 授权**真省了一次点击**才记账（`hit` 的语义见 `grants.ts`）——
+        // 命中却被否决的不记：那条授权并没有替用户挡下什么
+        if (granted !== undefined) grants.hit(granted)
+        return autoAllow(callRef, started)
+      }
+
+      // 落到这儿＝要问。问之前先把这一笔记进**放行区那笔账**（B10 口径的两个分子）：
+      // 命中了却被禁区否决的是 `vetoed`，一条都没命中的是 `uncovered`（见 `GateTally`）
+      if (hit === undefined) tally.uncovered += 1
+      else tally.vetoed += 1
 
       const request = decisionRequest(stamper, {
         call: callRef,
         name: call.name,
         // 规则命中却被禁区否决时说清缘由——配了规则的人第一个会问的就是「为什么还问我」
-        material: rule === undefined ? material : vetoed(material, rule),
+        material: hit === undefined ? material : vetoed(material, hit),
         weight,
       })
 
       // **先登记、后扇出**——外壳可能在同一调用栈里答复（答复不必等一轮事件循环），
       // 顺序反了这条答复就落在空表上（丢答复＝永久挂起）。
       const answered = new Promise<Decision>((settle) => {
-        pending.set(request.id, { call: callRef, at: started, sessionRule: sessionRuleOf(face), settle })
+        pending.set(request.id, { call: callRef, at: started, grant: grantOf(face), settle })
       })
 
       sink.emit(request)
@@ -178,10 +242,9 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       if (question === undefined) return
       pending.delete(requestId)
 
-      // 「总是允许」——只认批准（规则只有「允许」这一形）；重复的同类条目不重复入册
-      if (options?.remember === true && decision === 'approve' && !sessionRules.some((seen) => sameRule(seen, question.sessionRule))) {
-        sessionRules.push(question.sessionRule)
-      }
+      // 「总是允许」——只认批准（规则只有「允许」这一形）；同形的已在册＝账本自己不去重，
+      // 不重复入册这件事归账本（`remember` 的注）。
+      if (options?.remember === true && decision === 'approve') grants.remember(question.grant)
 
       // 裁决只走事件、不入条目（技术方案 · 领域划分 · 权限域）；耗时＝本域开始处理 → 答复（度量埋点）
       sink.emit(
@@ -195,6 +258,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       question.settle(decision)
     },
+
+    tally: () => ({ ...tally }),
   }
 }
 
@@ -209,25 +274,4 @@ function vetoed(material: string, rule: PermissionRule): string {
     material,
     `规则：命中「${describeRule(rule)}」但被必闸禁区否决（必闸 ＞ 规则——必闸类任何规则不可放行）。`,
   ].join('\n')
-}
-
-/**
- * 「总是允许」凝出的**会话规则**——（工具 × 本次调用的操作类型）；路径一格缺省＝**根内**。
- *
- * 三格照技术方案「按（工具 × 路径模式 × 操作类型）记录」落：工具**收到具体名**
- * （不推广到别的工具）、操作类型收到**本次实际发生的那几类**（复合命令的每一段都算数）、
- * 路径不写＝根内（用户说的是「这类事别再问」，不是「机器上哪儿都行」）。
- */
-function sessionRuleOf(face: CallFace): PermissionRule {
-  return { tool: face.tool, op: [...face.ops] }
-}
-
-/** 两条规则同不同——只为「总是允许」不重复入册（顺序无关的集合比对）。 */
-function sameRule(a: PermissionRule, b: PermissionRule): boolean {
-  return a.tool === b.tool && a.path === b.path && opKey(a.op) === opKey(b.op)
-}
-
-function opKey(op: PermissionRule['op']): string {
-  if (op === undefined) return ''
-  return (Array.isArray(op) ? op : [op]).join(',')
 }

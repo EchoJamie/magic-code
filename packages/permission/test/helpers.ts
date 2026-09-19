@@ -17,6 +17,8 @@ import type {
   ToolCall,
   TurnId,
 } from '@magic/contracts'
+import type { GrantLedger } from '../src/grants.ts'
+import { createGrantLedger } from '../src/grants.ts'
 
 /** 按 `kind` 收窄的拾取结果——`eventsOf('tool.decision')` 的 `data` 自动定型。 */
 export type EventOf<K extends EventKind> = Extract<KernelEvent, { kind: K }>
@@ -70,12 +72,31 @@ export function harness(session = 's-1', turn: TurnId | null = null): Harness {
   }
 }
 
-/** 权限上下文——阶段 1 单根（启动目录＝默认根）。 */
-export function context(roots: readonly string[] = ['/work/proj']): PermissionContext {
-  return { roots, defaultRoot: roots[0] ?? '/work/proj' }
+/**
+ * 权限上下文——阶段 1 单根（启动目录＝默认根）。
+ *
+ * **两张表逐字相同**是**常态**（用户没写非规范形时，声明原形就是规范形）——
+ * 故这个底架的缺省如此；要验「声明原形」那一类，显式给 `declaredRoots`。
+ */
+export function context(
+  roots: readonly string[] = ['/work/proj'],
+  declaredRoots: readonly string[] = roots,
+  defaultRoot = roots[0] ?? '/work/proj',
+): PermissionContext {
+  return { roots, declaredRoots, defaultRoot }
 }
 
 /** 造一次工具调用——`id` 是**供应商侧**调用 id（只用于回填配对，见契约 `ids.ts` 头注）。 */
 export function call(name: string, args: Readonly<Record<string, unknown>> = {}): ToolCall {
   return { id: `call-${name}`, name, args }
+}
+
+/**
+ * 授权账本（U22）——闸门的**必填注入件**（`a` 的落点＝工作区）。
+ *
+ * 底架给一个空账本：多数用例走的是「手写规则 / 一律问」那两条路，账本在它们里是背景。
+ * 要验授权那一条（`a` 记下、跨会话还在、撤销）的用例自己造账本、自己拿住它比较。
+ */
+export function ledger(workspace = '/work/proj'): GrantLedger {
+  return createGrantLedger({ workspace })
 }

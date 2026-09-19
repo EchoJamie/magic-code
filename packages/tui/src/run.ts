@@ -45,6 +45,13 @@ export type RunTuiOptions = {
    * 见 `ShellOptions.workspaceRoots`。
    */
   readonly workspaceRoots?: readonly string[] | undefined
+  /**
+   * **启动那几句要说的话**（U22 · 审计第 13 条）——装配把话备好（`Assembly.notices`：
+   * 被拒的权限规则 / 授权文件读不懂），外壳开局落成记录区里的一行回执。
+   *
+   * 不给 / 空数组＝启动一句多余的话都不说（常态）。见 `ShellOptions.receipts`。
+   */
+  readonly receipts?: readonly string[] | undefined
 }
 
 /** 挂上终端之后的把手。 */
@@ -66,6 +73,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const shell = createShell(options.transport, {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
+    receipts: options.receipts,
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
     inputReady: options.boot === undefined,

@@ -43,7 +43,11 @@ export type DecisionAnswer = {
    * 这一个可选的位上。**向后兼容**——不给 ＝ 一次性批准，与阶段 1 逐字同义。
    *
    * 流转：控制域**原样转手**（`gate.resolve(id, decision, { remember })`），**不由它翻译**；
-   * 会话级记忆归**权限域**（按 工具 × 路径模式 × 操作类型 记，新会话即清零）。
+   * 授权的落点归**权限域**（按 工具 × 路径模式 × 操作类型 记）。
+   *
+   * **落点＝工作区**（U22 · 技术方案 · 权限「授权的落点」）——`a` 说的是「这类事在这个项目里
+   * 我信任」：**会话不是信任的边界**（会话必然结束是实现的副产品，不是设计的安全边界）。
+   * 故这一位写下的是**这个工作区**的授权，存 `~/.magic/grants.json`，跨会话存活。
    * **只在批准时生效**——规则的条目只有「允许」这一形，没有「总是拒绝」。
    */
   readonly remember?: boolean
@@ -144,7 +148,41 @@ export type HistoryRead = {
  */
 export type ModelList = { readonly type: 'model.list' }
 
-/** 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支）——外壳发往内核的全部消息。 */
+/**
+ * `grants.list`——**授权名录的读侧命令**（U22 · 技术方案 · 权限「授权的落点」：
+ * 「配两件：**查看 / 撤销**（`/grants`）与**陈旧节**的显式列出」）。
+ *
+ * **由头**：授权存 `~/.magic/grants.json`（内核自持的一个文件），而外壳够不着它——
+ * 与 `model.list` / `history.read` 同一处境：**控制面是唯一一直通的路**。
+ * 答复走事件（`grants.catalog`，**不落库**）——它是**读出来的**，落库＝把同一张表存 N 遍。
+ *
+ * **无参**——问的就是「本工作区记着哪些、别处还有哪些节」；分节键（本工作区）由答复里的
+ * `workspace` 一并给（同一次往返说清一整屏）。
+ */
+export type GrantsList = { readonly type: 'grants.list' }
+
+/**
+ * `grants.revoke`——**撤销**（授权落点那两件里的第二件）。
+ *
+ * 两形共一个命令（省得为「撤一条」与「撤一整节」长两条命令）：
+ * - `index` 给了 ＝ 撤**本工作区**那一节里的**第 index 条**（`/grants` 选定即撤）；
+ * - `index` 不给 ＋ `workspace` 给了 ＝ **整节撤掉**（陈旧节那条路：路径已不在 → 你删或留）。
+ *
+ * ⚠️ **不自动删**（`B11`）：内核**只在用户按下撤销时**才动这个文件——
+ * 删用户数据不归内核自己拿主意。
+ */
+export type GrantsRevoke = {
+  readonly type: 'grants.revoke'
+  /** 撤哪一节——**缺省＝本工作区那一节**。 */
+  readonly workspace?: string
+  /** 撤这一节里的哪一条——**缺省＝整节撤掉**。 */
+  readonly index?: number
+}
+
+/**
+ * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支）
+ * ——外壳发往内核的全部消息。
+ */
 export type Command =
   | InputSubmit
   | DecisionAnswer
@@ -153,6 +191,8 @@ export type Command =
   | SessionCommand
   | HistoryRead
   | ModelList
+  | GrantsList
+  | GrantsRevoke
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

@@ -119,8 +119,8 @@ export interface PermissionGate {
    * 控制域答复路由至此。
    *
    * 第三参 `opts.remember` ＝答复上的**「总是允许」位**（见 `control.ts` · `DecisionAnswer.remember`）
-   * ——控制域**原样转手**、不翻译；**会话级记忆归权限域**（凝成会话规则，按
-   * 工具 × 路径模式 × 操作类型 记）。**缺省＝不给＝一次性**（向后兼容）。
+   * ——控制域**原样转手**、不翻译；**授权的落点归权限域**（凝成一条授权，按
+   * 工具 × 路径模式 × 操作类型 记，**落点是工作区**）。**缺省＝不给＝一次性**（向后兼容）。
    */
   resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void
 }
@@ -228,7 +228,21 @@ export interface Sandbox {
 
 /** 工具域 / 装配 → 执行域。 */
 export interface WorkspaceService {
+  /**
+   * **规范形**（`realpath` 之后）——根的身份：越界报文 / 记录那一列 / 会话分组都用它。
+   * **`[0]` ＝默认根**（相对路径与新文件的落点）；单根＝一项的特例。
+   */
   roots(): readonly string[]
+  /**
+   * **声明原形**——用户手写在配置里的那一串（`resolvePath` 归一、**不** `realpath`），
+   * 与 `roots()` **同序等长**：`roots()[i]` 与 `declaredRoots()[i]` 是同一条根的两张表。
+   *
+   * 由头（U27）：`/tmp/proj` 在 macOS 上实为 `/private/tmp/proj`，注册成真路径，
+   * 而模型照**用户写的**那一串给 `/tmp/proj/src`——只比规范形的话它被判越界。
+   * **两张表都认**是执行域的落点判据（`workspace.ts`），权限域要与它**同源**
+   * （`PermissionContext` 一并带上这一张，见其注）。
+   */
+  declaredRoots(): readonly string[]
   defaultRoot(): string
   /**
    * 解析路径——**越界即拒：抛**（沙箱侧捕之、归 `reason: 'out-of-bounds'`）。
@@ -395,9 +409,27 @@ export type ToolResult = {
  *
  * 越界判定所需的根视图由**调用方（工具域）给出**：**不传端口进端口**。
  * 越界判据与执行域**同源**（相对按默认根 · 绝对须落根内）——两处须一致。
+ *
+ * **两张表**（U22 · 技术方案 · 权限「权限域的根表要与执行域同源」）——`roots` 是**规范形**
+ * （`realpath` 之后），`declaredRoots` 是**声明原形**（用户手写的那一串），**同序等长**。
+ *
+ * 由头：`U27` 把**执行域**的落点判定改成两张表之后，闸门这一侧还只有规范形
+ * ⇒ **声明原形下的读类每次都要人点一下**（沙箱认了、闸门不认 ✗）。
+ * 故这张表跟着一起过来：**落点判两张 · 规则也认两张**（见 `@magic/permission` · `paths.ts`）。
+ *
+ * **必填**（不是可选位）：漏接线＝退回「每次读都弹卡」那个坑，而它**不报错**——
+ * 那正是本轮要收掉的东西。缺参应当在编译期就报（照 `PermissionGate.decide` 的 `callRef` 之例）。
  */
 export type PermissionContext = {
+  /** **规范形**（根的身份）——`[0]` ＝默认根。 */
   readonly roots: readonly string[]
+  /**
+   * **声明原形**（用户认得的那个写法）——与 `roots` 同序等长。
+   *
+   * 单根且写法本来就规范时，它与 `roots` 逐字相同（那是多数情形：显式声明原形只是
+   * 多一张表，**不改行为**）。
+   */
+  readonly declaredRoots: readonly string[]
   readonly defaultRoot: string
 }
 
@@ -587,6 +619,24 @@ export type CommandRoutes = {
    * 条目表的真源在装配这一步，`model.switched` 的产出也早已收拢在这儿（缺陷 D16）。
    */
   onModelList(): void
+  /**
+   * **授权名录**（`/grants` 的读侧）→ **装配**（它握着 `~/.magic/grants.json` 的读写）。
+   *
+   * 控制域**原样转手**（同 `onModelList` 的姿势）——它不认识授权文件，也不知道里边有什么；
+   * 答复走事件（`grants.catalog`，**不落库**）：命令面只发不收。
+   *
+   * **为什么归装配**：授权文件是**内核自持**的一个文件（技术方案 · 权限「授权的落点」），
+   * 盘的读写归装配那一层（同配置文件之例——域不碰文件系统），权限域只持**账本**。
+   */
+  onGrantsList(): void
+  /**
+   * **撤销授权** → 装配（同 `onGrantsList` 的姿势：落盘归它）。
+   *
+   * `workspace` 缺省＝**本工作区那一节**；`index` 缺省＝**整节撤掉**（陈旧节那条路）。
+   * 撤销**不是裁决**——它不进 `tool.decision` 那条链，只改文件 ＋ 回一条 `grants.catalog`
+   * （外壳据以刷新抽屉并留一行回执）。
+   */
+  onGrantsRevoke(workspace?: string, index?: number): void
 }
 
 /**

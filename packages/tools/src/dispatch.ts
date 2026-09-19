@@ -89,9 +89,18 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
   /**
    * 闸门要的根视图——**纯数据**，由本域给出（契约：不传端口进端口）。
    * 每次调用现取：多根（U18）之后 `roots()` 会变，缓存下来就会悄悄落后。
+   *
+   * **两张表都给**（U22 · 技术方案 · 权限「权限域的根表要与执行域同源」）——只给规范形
+   * 那一张时，模型照用户手写的 `/tmp/proj/src` 给路径会被闸门判成根外 ⇒ **每次读都弹卡**，
+   * 而沙箱那一侧**认**（它自己判两张）。同源＝这一处照执行域的两张表一起递。
    */
-  const contextOf = (): { roots: readonly string[]; defaultRoot: string } => ({
+  const contextOf = (): {
+    roots: readonly string[]
+    declaredRoots: readonly string[]
+    defaultRoot: string
+  } => ({
     roots: options.workspace.roots(),
+    declaredRoots: options.workspace.declaredRoots(),
     defaultRoot: options.workspace.defaultRoot(),
   })
 

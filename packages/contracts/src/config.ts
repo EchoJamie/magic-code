@@ -20,6 +20,20 @@ export const CONFIG_FILE = '~/.magic/config.json'
 export const DEFAULT_DATA_DIR = '~/.magic'
 
 /**
+ * **授权文件落点**（U22 · 技术方案 · 权限「授权的落点」）——内核**自持**的那一个文件。
+ *
+ * **为什么不写 `config.json`**：那是**用户手写**的（写回它要操心原子写 · 保留用户编辑 ·
+ * 并发）；授权的写回只落在**一个内核全权持有的文件**上，那三件麻烦就都不成问题。
+ *
+ * **一个文件，不是一项目一文件**——安全相关的东西价值在**一眼看全**（能扫、能删）；
+ * 散进几十个小文件的那一刻它就不再被审。**按工作区绝对路径分节**（见 `grants.catalog`）。
+ *
+ * ⚠️ 用前须经 `expandDataDir`（同 `DEFAULT_DATA_DIR`）——字面 `~` 直接交给运行时库
+ * 会在 cwd 下造一个名为 `~` 的目录，且不报错。
+ */
+export const GRANTS_FILE = '~/.magic/grants.json'
+
+/**
  * 供应商条目（`providers.<id>`——`<id>` 任意命名）。
  * 加供应商 / 同家多模型＝`providers` 加条目，形制不变。
  */
