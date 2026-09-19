@@ -225,6 +225,13 @@ export const HINT_RETRYING_TAIL = '后重发 · 不用管'
 /** 裁决态右位提示（必闸类没有 `a`）。 */
 export const HINT_DECIDE_LIGHT = 'y / a / n'
 export const HINT_DECIDE_HEAVY = 'y / n'
+/**
+ * **启动中**右位提示（U25 · 技术方案 · 装配视图第 5 步：「以 `boot` 完成为界」）。
+ *
+ * 订阅接上 ≠ 可以干活：`boot`（装载 ＋ 恢复）要跑完才受理输入——反了就是
+ * 「用户能在恢复跑完前打字」。打字照旧进草稿（本地的事），**回车不受理**。
+ */
+export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
 /** 选择器右位提示。 */
 export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
 /** 自动补全右位提示（原型 · 场景 11）。 */

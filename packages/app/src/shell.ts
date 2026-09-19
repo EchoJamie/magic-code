@@ -99,6 +99,14 @@ export type ShellHandle = {
 
 export type AttachShellOptions = {
   /**
+   * **启动流转**（应用层的恢复用例）——**订阅之后、放开输入之前**那一条。
+   *
+   * 与真外壳（`@magic/tui` 的 `RunTuiOptions.boot`）**同一条纪律**：恢复要发事件，
+   * 反了就是「事件发了没人收」；而「放开输入」以它完成为界（技术方案 · 装配视图第 5 步）。
+   * `runShellScript` 在接上订阅之后、按脚本放开输入之前调它——本驱动不自己拼这条次序。
+   */
+  readonly boot?: (() => Promise<void>) | undefined
+  /**
    * 事件观察者——**在送达订阅者的同一步**被调（瞬时增量也走这里）。
    * 与 `handle.events` 的区别：本回调可以只在场不存，长流不占内存。
    */
@@ -339,6 +347,10 @@ export async function runShellScript(
     ...options,
     decide: (request) => queued.shift() ?? fallback(request),
   })
+
+  // **先接订阅（上一步）、再跑启动流转、最后放开输入（下面的循环）**
+  // ——无订阅方时命令与事件都丢（技术方案 · 控制域），恢复正好要发事件
+  await options.boot?.()
 
   for (const step of script.inputs) {
     if (typeof step === 'string') {

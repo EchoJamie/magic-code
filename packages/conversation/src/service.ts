@@ -7,9 +7,9 @@
  * 本文件产出的就是**被它持有的那一条**——名字取 `Session` 以免与端口撞脸
  * （U04 时两者是一件事，U16 起不是了）。
  *
- * **本类只做五件**（其余在 `./agent-loop.ts` / `./recovery.ts`）：排队 · 中断 · 状态转场 ·
- * **恢复**（`recover()`——阶段 2 · U15，在放开输入前调一次）· **忙碌位**（`busy()`——
- * 主面据以拒绝「忙时切会话」）。
+ * **本类只做五件**（其余在 `./agent-loop.ts`）：排队 · 中断 · 状态转场 ·
+ * **重建**（`rebuild()`——恢复的第 ⑤ 步：装载 ＋ 认下水位于开工位，编排归应用层）·
+ * **忙碌位**（`busy()`——主面据以拒绝「忙时切会话」）。
  *
  * - **排队**——一次只干一件；干活时又来交代，排着（收束后接着跑）。端口是 `void`：
  *   工作异步跑，调用方不等。
@@ -22,6 +22,11 @@
  *
  * 域内件（不上公开面）：提示词部件的读取面 · 装配（`assembleContext`）· 循环（`agentLoop`）·
  * 条目落账——域外本不该看见（深链由守护拦）。
+ *
+ * ⚠️ **恢复本域只做第 ⑤ 步**（U25 起）——① 在途识别（记录域的查询面）· ②③④ 处置
+ * （重放 / 落账 / 记中止）由**应用层**（`@magic/actions`）编排。此前那五步全在本域
+ * （U15 的 `recovery.ts`），于是「对话域既当核心域、又兼编排者」——「域之上」那一层
+ * 因此一直空着（审计第 1 条：恢复入口没有归处）。
  */
 
 import type {
@@ -29,6 +34,7 @@ import type {
   EventStamper,
   ModelGateway,
   RecordsService,
+  RebuildHandoff,
   SessionId,
   Timestamp,
   ToolRuntime,
@@ -42,8 +48,6 @@ import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
 import type { PromptVars } from './prompt/index.ts'
-import type { RecoveryDeps, RecoveryReport } from './recovery.ts'
-import { recoverSession } from './recovery.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -69,22 +73,14 @@ export type ConversationDeps = {
   readonly now?: (() => Timestamp) | undefined
   /** 上下文策略——缺省 `DEFAULT_CONTEXT_POLICY`（含压缩的触发阈值与近段边界）。 */
   readonly context?: Partial<ContextPolicy> | undefined
-  /**
-   * **恢复面**（阶段 2 · U15）——在途查询（记录域）＋ 幂等判定（工具定义）。
-   *
-   * 可选：**不接线＝没有恢复**（`recover()` 当场报错，**不静默降级**——静默降级会让人
-   * 以为「恢复过了」，而真相是「压根没扫」）。新会话不必接。
-   */
-  readonly recovery?: RecoveryDeps | undefined
 }
 
 /**
  * 一条会话的实例（域内形态）——主面持它、转发控制面的 `submit` / `interrupt`。
  *
- * **`recover()` 的触发点**（U15 的「结构超集」在 U16 转正）：恢复要发事件，故调用方
- * 须在**接好订阅之后、放开输入之前**调（装配纪律「先接订阅、后放开输入」）。
- * 契约上的词已由 U16 补进 `ConversationService.recover()`——此处这一段与它同名同义，
- * 只是返回值更具体（报告是域内形态，不进契约）。
+ * **`rebuild()` 的触发点**（恢复的第 ⑤ 步）：它**不发事件**（回来的那两句 `agent.start` /
+ * 补记的事件都是应用层发的），故不比谁先谁后；但**干活时不许调**——那会与循环抢
+ * 同一条记录流（契约 `ConversationService.rebuild` 的注里同样写着）。
  *
  * **`busy()`** 是主面的判据（U16）：忙时不许切会话——半途切＝一轮的事记到两条会话上。
  * 它只是**读**一个内部位，不改变任何行为（域内件，不外承诺）。
@@ -92,10 +88,17 @@ export type ConversationDeps = {
 export type ConversationSession = {
   submit(input: UserInput): void
   interrupt(): void
-  /** 恢复一次会话——干净会话「什么都不做」（报告里看得出来）。 */
-  recover(): Promise<RecoveryReport>
+  /** 重建这条会话的现场——装载 ＋ 认下水位于开工位（见 `RebuildHandoff`）。 */
+  rebuild(handoff: RebuildHandoff): RebuildReport
   /** 正在干活（一轮在跑 / 排队中的交代还在）——主面据以「忙时切不动」。 */
   busy(): boolean
+}
+
+/** 重建的回报（域内形态，不进契约）——认下了什么，如实说回来。 */
+export type RebuildReport = {
+  readonly session: SessionId
+  /** 认下的轮号水位（下一轮接着它走）。`null` ＝记录里还没有过轮。 */
+  readonly lastTurn: TurnId | null
 }
 
 /**
@@ -147,7 +150,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     records: deps.records,
     sink,
     stamper,
-    // 单调自增；**续跑接着记录里那串轮号**——`recover()` 按扫描到的水位抬到这里
+    // 单调自增；**续跑接着记录里那串轮号**——`rebuild()` 把记录里的水位抬到这里
     // （U04 留的那道缝，U15 填上：同一会话重启后不从 1 重来）
     nextTurnId: (): TurnId => (turnSeq += 1),
     now: deps.now ?? Date.now,
@@ -206,37 +209,29 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     busy: () => running,
 
-    async recover(): Promise<RecoveryReport> {
-      const recovery = deps.recovery
-      if (recovery === undefined) {
-        // 缺值报错不降级（与提示词注入项同法）——静默返回「没事」会让人以为恢复过了
+    /**
+     * 重建（恢复 ⑤）——**认下应用层算好的两件**，其余什么都不做。
+     *
+     * 上下文**不必搬**：它每轮由条目装配（`./context.ts`），本面只把「活的那部分」与记录
+     * 对齐。真正要认的只有两件，都在 `RebuildHandoff` 里：
+     *
+     * - **轮号水位**——记录里的最大轮号抬到这里（同一会话重启两回，不该把两轮都叫第 1 轮）。
+     * - **开工位**——恢复那趟有活可干时，应用层已经替本实例发过 `agent.start`；认下它，
+     *   首次 `submit` 就**不再发第二遍**（U04 口径：`agent.start` 每个实例一条）。
+     *
+     * **不发事件**：本面只是记账，过程流里那几笔归应用层（它编排了②③④）。
+     */
+    rebuild(handoff: RebuildHandoff): RebuildReport {
+      if (running) {
         throw new Error(
-          '对话域未接线恢复面——`ConversationDeps.recovery`（在途查询 ＋ 幂等判定）必填；' +
-            '恢复没有第二条识途，缺了就不扫（不是「扫了没事」）。',
+          '重建要在**放开输入之前**调（装配纪律：先接订阅、后放开输入）——在干活时重建会与循环抢同一条记录流',
         )
       }
-      if (running) {
-        throw new Error('恢复要在**放开输入之前**调（装配纪律：先接订阅、后放开输入）——在干活时恢复会与循环抢同一条记录流')
-      }
 
-      const report = await recoverSession({
-        session: deps.session,
-        records: deps.records,
-        tools: deps.tools,
-        sink,
-        stamper,
-        now: runtime.now,
-        blobThreshold: policy.blobThreshold,
-        inFlight: recovery.inFlight,
-        ...(recovery.idempotent === undefined ? {} : { idempotent: recovery.idempotent }),
-      })
+      if (handoff.lastTurn !== null) turnSeq = Math.max(turnSeq, handoff.lastTurn)
+      if (handoff.announced) started = true
 
-      // 轮号续跑——记录里的水位抬到这里（下一轮接着那串号走，不从 1 重来）
-      if (report.lastTurn !== null) turnSeq = Math.max(turnSeq, report.lastTurn)
-      // 恢复发过 `agent.start` ⇒ 本实例的「首次开工」已发生，首次 submit 别再发一次
-      if (report.turn !== null || report.dispositions.length > 0) started = true
-
-      return report
+      return { session: deps.session, lastTurn: handoff.lastTurn }
     },
   }
 }

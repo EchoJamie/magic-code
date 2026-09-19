@@ -1,14 +1,33 @@
 /**
- * 恢复 —— 以会话为入口**重建现场续跑**（技术方案 · 记录 ·「恢复（阶段 2 · 细部）」五条）。
+ * 用例 · **恢复** —— 以会话为入口**重建现场续跑**（技术方案 · 记录 ·「恢复（阶段 2 · 细部）」五条；
+ * 领域划分 ·「域之上：应用层」：首站唯一用例）。
  *
  * ```
- *   ① 在途识别        —— 有 tool.call 无 tool.result（**记录域的查询面**给，本文件只管处置）
- *   ② 处置依幂等       —— 幂等 → 静默重放；非幂等 → 拒绝自动恢复、提交用户裁决
- *                          ★ 绝不静默重试非幂等操作
- *   ③ 未完成流式消息   —— 丢弃（半截正文本就不落账——U04 既定行为）＋ 记中止
- *   ④ 未答复裁决       —— 按「拒绝」落账（保守）
- *   ⑤ 上下文由条目重建 —— 恢复补上的结果条目让助手消息的 `toolCalls` 重新条条有回填
+ *   ① 在途识别        —— 有 tool.call 无 tool.result（**记录域的查询面**给：`records.scanInFlight`）
+ *   ② 处置            —— ★ 首站**不自动重放**（见下）：一律交用户裁决（重跑 / 记失败）
+ *   ③ 未完成流式消息  —— 丢弃（半截正文本就不落账——U04 既定行为）＋ 记中止
+ *   ④ 未答复裁决      —— 按「拒绝」落账（保守）
+ *   ⑤ 上下文由条目重建 —— 不在本文件：归对话域的**重建面**（`ConversationService.rebuild`），
+ *                          由 `./index.ts` 的用例入口接着走（本文件只管①②③④）
  * ```
+ *
+ * ## 为什么这五步在这儿（应用层），不在对话域
+ *
+ * 恢复**不是任何一个域的能力**，是**跨域的一次协同**：记录域出「哪几笔在途」（查询），
+ * 对话域出「重建面」（⑤），处置那三步要落条目（记录域）、铸事件（`EventSink`）、
+ * 必要时经工具域重放。U15 时它整段长在对话域里——于是对话域既是核心域（ReAct 的
+ * 领域逻辑）又兼编排者，**「域之上」那一层一直空着**（审计第 1 条：恢复入口没有归处）。
+ * U25 把这一层立起来，恢复是它的第一个真用例。
+ *
+ * ## ② 首站为什么不自动重放（2026-09-19 裁 · 审计发现）
+ *
+ * 设计的原话是「幂等 > 补偿 > 拒绝自动恢复」：**幂等 → 静默重放**；非幂等 → 拒绝自动恢复、
+ * 提交用户裁决（重跑 / 记失败）。而 **`ToolSpec` 里没有幂等声明位**——「这一件幂不幂等」
+ * **无从判定** ⇒ 首站**一律走「提交用户裁决」那一路**。**设计不承诺做不到的事。**
+ *
+ * 缺省从严（`ALWAYS_EFFECTFUL`）：没接线、没声明、判不出——一律当**非幂等**（绝不静默重放）。
+ * 唯一的接线位是 `IdempotencyJudge`（见其注）；**生产装配不传它**，故重放那一支
+ * **首站在产品上不可达**——补声明位是补上以后的事。
  *
  * ## 处置只由记录里的事实决定
  *
@@ -18,7 +37,7 @@
  *   未答复（问了没答 / 压根没问）   ④      按「拒绝」落账——**不重放**
  *   已拒绝                                按拒绝落账——**不重放**（闸门没放行，压根没执行）
  *   已批准 × 非幂等（含未声明）   ②      拒绝自动恢复——**不重跑**，落失败交用户裁决
- *   已批准 × 幂等                 ②      静默重放（经工具域 `invoke`）
+ *   已批准 × 幂等                 ②      静默重放（经工具域 `invoke`）★ 首站不可达，见上
  * ```
  *
  * **未答复与已拒绝为什么可以「按拒绝落账」而不重放**——这不是判断，是结构：
@@ -34,9 +53,7 @@
  * ## 重放也走闸门（不可绕过）
  *
  * 重放经 `ToolRuntime.invoke`——与正常调用同一条路（**闸门在执行路径内**是结构性的，
- * 恢复不给自己开后门）。代价如实记：**闸门会再问一次**（原批准不复用），
- * 故「静默」指的是「不必用户做**恢复裁决**」，不是「一次询问都没有」——
- * 「复用原批准免二问」需要闸门侧一个词，已列回报「待决」。
+ * 恢复不给自己开后门）。代价如实记：**闸门会再问一次**（原批准不复用）。
  * 另一处如实记：重放自己会铸一对 `tool.call` / `tool.result`（工具域的产出），
  * 于是记录里那一笔会看到**两条**调用事件——原笔（恢复补记了结果，就此了结）
  * 与重放那一次（自带结果）。条目侧只有一条（模型看到的仍是「一次调用一个结果」）。
@@ -50,12 +67,13 @@
  */
 
 import type {
-  Decision,
-  Decider,
+  Content,
   EventSink,
   EventStamper,
+  InFlightCall,
   RecordId,
   RecordsService,
+  RecoveryScan,
   SessionId,
   Timestamp,
   ToolCall,
@@ -63,52 +81,17 @@ import type {
   TurnEndReason,
   TurnId,
 } from '@magic/contracts'
-import type { EntryLog, ToolOutcome } from './entries.ts'
-import { appendToolResultEntry, toolOutcomeOf } from './entries.ts'
 
 // ══ 形态 ══════════════════════════════════════════════════════════════
 
 /**
- * 一笔在途调用——**记录域查询面（`RecordsStore.recoveryScan`）的镜像**。
- *
- * 域间不得互 import（技术方案 · 代码治理），故本域**自持一份**（与 U04 对条目载荷
- * 的做法同）。两处形态一致由**接线处**保：装配把记录域那个返回值直接交进
- * `RecoveryDeps.inFlight`——形状一旦漂了，那一行就编译不过。
- */
-export type InFlightCall = {
-  /** 该次 `tool.call` 事件的 id——**链引用**。缺则 `null`。 */
-  readonly call: RecordId | null
-  /** 该次 `tool-call` 条目的 id——**条目侧配对键**。缺则 `null`。 */
-  readonly entry: RecordId | null
-  readonly name: string
-  readonly args: Readonly<Record<string, unknown>>
-  /** 信封的 `turn`（轮外为 `null`）。 */
-  readonly turn: TurnId | null
-  /** 问过闸门吗。 */
-  readonly requested: boolean
-  /** 裁决结论——**未答复 / 未问 ＝ `null`**（④的判据）。 */
-  readonly decision: Decision | null
-  readonly decider: Decider | null
-}
-
-/** 恢复扫描的产物——在途调用 ＋ 中断的轮 ＋ 轮号水位（见记录域 `recovery.ts`）。 */
-export type RecoveryScan = {
-  readonly session: SessionId
-  /** 中断的轮（有 `turn.start` 无 `turn.end`）；没有＝`null`。 */
-  readonly openTurn: TurnId | null
-  /** 记录里出现过的最大轮号——**轮号续跑**用。 */
-  readonly lastTurn: TurnId | null
-  readonly calls: readonly InFlightCall[]
-}
-
-/**
- * 幂等判定——「重放这次调用安全吗」。
+ * **幂等判定**——「重放这次调用安全吗」。
  *
  * **权威来源＝工具定义**（`ToolSpec` 的幂等声明位；与「危险归类」同层——都是工具的
- * 静态属性）。契约尚未载这一位，故本单元把它做成**注入的判定面**，并由**缺省从严**
- * 兜底：没接线、没声明、声明读不懂——一律**当非幂等**（绝不静默重放）。见回报「待决 1」。
+ * 静态属性）。契约尚未载这一位，故做成**注入的判定面**，并由**缺省从严**兜底：
+ * 没接线、没声明、声明读不懂——一律**当非幂等**（绝不静默重放）。
  *
- * ⚠️ **不押模型自述**（设计准则）——判据取自工具定义，不看模型在参数里说了什么。
+ * ⚠️ **不押模型自述**（设计准则 2）——判据取自工具定义，不看模型在参数里说了什么。
  */
 export type IdempotencyJudge = (call: {
   readonly name: string
@@ -118,17 +101,6 @@ export type IdempotencyJudge = (call: {
 // 缺省判定——**一律非幂等**（未声明即不重放；从严方向安全）。域内件，不出公开面：
 // 装配拿不到声明时**不传这个键**即可，没有「显式传一个一律 false」的用处。
 const ALWAYS_EFFECTFUL: IdempotencyJudge = () => false
-
-/** 恢复的注入面（装配给）。 */
-export type RecoveryDeps = {
-  /**
-   * **在途查询**——记录域的查询面（`(session) => store.recoveryScan(session)`）。
-   * 必填：恢复没有第二条识途（猜＝押判断，设计准则不许）。
-   */
-  readonly inFlight: (session: SessionId) => Promise<RecoveryScan>
-  /** 幂等判定——缺省 `ALWAYS_EFFECTFUL`（见其注）。 */
-  readonly idempotent?: IdempotencyJudge | undefined
-}
 
 /** 未重放的缘由——三选一，措辞与报告各按它分。 */
 export type NotReplayedReason =
@@ -150,17 +122,24 @@ export type CallDisposition = {
   readonly resultEntry: RecordId | null
 }
 
-/** 恢复的报告——调用方（外壳 / 装配）据以呈现，也据以**接着走轮号**。 */
+/** 恢复的报告——用例的返回（判别式：这一趟到底干了什么，逐笔列清）。 */
 export type RecoveryReport = {
   readonly session: SessionId
   /** 补记**中止**的那个轮（③）；没有＝`null`。 */
   readonly turn: TurnId | null
-  /** 记录里出现过的最大轮号——续跑接着它走（U04 留的那道缝）。 */
+  /** 记录里出现过的最大轮号——续跑接着它走（递手给对话域的重建面）。 */
   readonly lastTurn: TurnId | null
   readonly dispositions: readonly CallDisposition[]
+  /**
+   * 本趟**有没有开工**（在途 / 中断的轮）——即「`agent.start` 是否已经替本实例宣告过」。
+   *
+   * 它是⑤的递手件之一（`RebuildHandoff.announced`）：**干净会话一个事件都不发**，
+   * 故开工位得原样交回，对话域才不会漏发或重发那一条 `agent.start`。
+   */
+  readonly announced: boolean
 }
 
-/** 恢复的运行束（域内形态——端口实现按它装配）。 */
+/** 一次恢复的现场——**各域端口 ＋ 这一条会话的实例件**（装配的 `open` 工厂产）。 */
 export type RecoveryRuntime = {
   readonly session: SessionId
   readonly records: RecordsService
@@ -169,9 +148,7 @@ export type RecoveryRuntime = {
   readonly stamper: EventStamper
   /** 时钟——补记的条目（记录域不取时钟）。 */
   readonly now: () => Timestamp
-  readonly blobThreshold: number
-  readonly inFlight: (session: SessionId) => Promise<RecoveryScan>
-  /** 幂等判定——缺省 `ALWAYS_EFFECTFUL`。 */
+  /** 幂等判定——缺省 `ALWAYS_EFFECTFUL`（见其注；生产装配不传）。 */
   readonly idempotent?: IdempotencyJudge | undefined
 }
 
@@ -181,21 +158,30 @@ export type RecoveryRuntime = {
 const ABORTED: TurnEndReason = 'aborted'
 
 /**
- * 恢复一次会话——**有活才干，干完必回到「等待输入」**。
+ * 恢复一次会话的**①②③④**——**有活才干，干完必回到「等待输入」**。
  *
- * 顺序：`agent.start`（本进程第一次开工）→ 逐笔处置在途 → 补 `turn.end{aborted}`（③）
+ * 顺序：`agent.start`（本实例第一次开工）→ 逐笔处置在途 → 补 `turn.end{aborted}`（③）
  * → `agent.state{waiting}`。干净会话（无在途、无中断的轮）**一个事件都不发**
  * ——「没出事」不该在过程流里留下恢复的痕迹。
+ *
+ * ⑤（上下文由条目重建 / 界面重建展示）**不在本函数**：那是对话域的活，由用例入口
+ * 拿着本函数的 `lastTurn` 与 `announced` 接着走（见 `./index.ts` 的 `recover`）。
+ * 分界的判据是「**谁的事**」：本函数只碰记录、事件与工具；上下文与界面不归它。
  */
 export async function recoverSession(runtime: RecoveryRuntime): Promise<RecoveryReport> {
-  const scan = await runtime.inFlight(runtime.session)
-  const hasWork = scan.openTurn !== null || scan.calls.length > 0
+  const scan = await runtime.records.scanInFlight(runtime.session)
+  const announced = scan.openTurn !== null || scan.calls.length > 0
 
-  if (!hasWork) {
-    return { session: runtime.session, turn: null, lastTurn: scan.lastTurn, dispositions: [] }
+  if (!announced) {
+    return {
+      session: runtime.session,
+      turn: null,
+      lastTurn: scan.lastTurn,
+      dispositions: [],
+      announced: false,
+    }
   }
 
-  const log = entryLogOf(runtime)
   const idempotent = runtime.idempotent ?? ALWAYS_EFFECTFUL
 
   // 起——本实例的第一次开工（U04 口径：`agent.start` 在**首次干活前**发）
@@ -206,7 +192,7 @@ export async function recoverSession(runtime: RecoveryRuntime): Promise<Recovery
     for (const call of scan.calls) {
       // 补记算**原笔那一轮**的事（信封的 `turn` 由铸造器持；轮号不明时退回中断那一轮）
       runtime.stamper.beginTurn(turnOf(call, scan))
-      dispositions.push(await dispose(runtime, call, log, idempotent))
+      dispositions.push(await dispose(runtime, call, idempotent))
     }
 
     if (scan.openTurn !== null) {
@@ -226,6 +212,7 @@ export async function recoverSession(runtime: RecoveryRuntime): Promise<Recovery
     turn: scan.openTurn,
     lastTurn: scan.lastTurn,
     dispositions,
+    announced: true,
   }
 }
 
@@ -233,7 +220,6 @@ export async function recoverSession(runtime: RecoveryRuntime): Promise<Recovery
 async function dispose(
   runtime: RecoveryRuntime,
   call: InFlightCall,
-  log: EntryLog,
   idempotent: IdempotencyJudge,
 ): Promise<CallDisposition> {
   const base = { call: call.call, entry: call.entry, name: call.name }
@@ -243,7 +229,7 @@ async function dispose(
     return {
       ...base,
       action: { kind: 'not-replayed', why: 'unanswered' },
-      resultEntry: await closeOut(runtime, log, call, failure(unansweredText(call))),
+      resultEntry: closeOut(runtime, call, failure(unansweredText(call))),
     }
   }
 
@@ -252,16 +238,16 @@ async function dispose(
     return {
       ...base,
       action: { kind: 'not-replayed', why: 'rejected' },
-      resultEntry: await closeOut(runtime, log, call, failure(rejectedText(call))),
+      resultEntry: closeOut(runtime, call, failure(rejectedText(call))),
     }
   }
 
-  // ② 已批准——只有**声明过幂等**的才敢静默重放
+  // ② 已批准——只有**声明过幂等**的才敢静默重放（首站没有声明位 ⇒ 走不到这儿）
   if (!idempotent({ name: call.name, args: call.args })) {
     return {
       ...base,
       action: { kind: 'not-replayed', why: 'non-idempotent' },
-      resultEntry: await closeOut(runtime, log, call, failure(nonIdempotentText(call))),
+      resultEntry: closeOut(runtime, call, failure(nonIdempotentText(call))),
     }
   }
 
@@ -269,7 +255,7 @@ async function dispose(
   return {
     ...base,
     action: { kind: 'replayed', ok: outcome.ok },
-    resultEntry: await closeOut(runtime, log, call, outcome),
+    resultEntry: closeOut(runtime, call, outcome),
   }
 }
 
@@ -300,13 +286,15 @@ async function replay(runtime: RecoveryRuntime, call: InFlightCall): Promise<Too
  * 事件侧只在有链引用时铸（`call` 指回原笔的 `tool.call`）；没有就不编造（契约的价值取向：
  * 静默的哨兵比缺参更坏）——那半笔只补条目。
  */
-async function closeOut(
-  runtime: RecoveryRuntime,
-  log: EntryLog,
-  call: InFlightCall,
-  outcome: ToolOutcome,
-): Promise<RecordId> {
-  const entry = appendToolResultEntry(log, outcome)
+function closeOut(runtime: RecoveryRuntime, call: InFlightCall, outcome: ToolOutcome): RecordId {
+  const entry = runtime.records.appendEntry({
+    kind: 'tool-result',
+    // 正文＝**面向模型的那份**（重放时逐字复原模型当时看到的东西，与循环落账同源）
+    content: { text: outcome.text },
+    // 载荷＝**记录侧形态**（与该次 `tool.result` 事件的 `output` 同物）
+    payload: { ok: outcome.ok, output: outcome.content },
+    at: runtime.now(),
+  })
 
   if (call.call !== null) {
     runtime.sink.emit(
@@ -319,6 +307,28 @@ async function closeOut(
   }
 
   return entry
+}
+
+/**
+ * 一条工具结果的**落账形态**——两样输出各归其位：
+ * `text` → 条目正文（面向模型）· `content` → 条目载荷（记录侧形态）。
+ *
+ * 与对话域 `entries.ts` 的同名形态同源（两处都从 `ToolResult` 归一而来）——**不共享类型**
+ * 是因为域间不得互 import；**同形**是因为契约的 `ToolResult` 就那两样输出。
+ * 落账只用到这两样：中间的形态差由本类型吸收——**不编造链引用**（`callRef` 在违约路径上
+ * 无从取得；本用例的链引用另走 `InFlightCall.call`）。
+ */
+type ToolOutcome = {
+  readonly ok: boolean
+  /** 面向模型的文本——条目正文（重放时逐字复原模型看到的那份）。 */
+  readonly text: string
+  /** 记录侧形态——条目载荷（与该次 `tool.result` 事件的 `output` 同物）。 */
+  readonly content: Content
+}
+
+/** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
+function toolOutcomeOf(result: { ok: boolean; output: string; content: Content }): ToolOutcome {
+  return { ok: result.ok, text: result.output, content: result.content }
 }
 
 /** 失败形态——两样输出同源（拒绝 / 未重跑没有「给模型看 vs 记录侧」的分叉）。 */
@@ -354,11 +364,6 @@ function nonIdempotentText(call: InFlightCall): string {
 /** 该笔补记算哪一轮——原笔的轮号优先，退回中断那一轮，再退回轮外（`undefined`）。 */
 function turnOf(call: InFlightCall, scan: RecoveryScan): TurnId | undefined {
   return call.turn ?? scan.openTurn ?? undefined
-}
-
-/** 落账依赖束——与循环同法（时钟与阈值只此一处传给条目侧）。 */
-function entryLogOf(runtime: RecoveryRuntime): EntryLog {
-  return { records: runtime.records, now: runtime.now, blobThreshold: runtime.blobThreshold }
 }
 
 function messageOf(error: unknown): string {

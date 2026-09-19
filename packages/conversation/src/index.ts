@@ -38,20 +38,13 @@ export { createConversationService } from './sessions.ts'
 export type { SessionHost, SessionHostDeps, SessionInstance } from './sessions.ts'
 
 export { createConversationSession } from './service.ts'
-export type { ConversationDeps, ConversationSession } from './service.ts'
+export type { ConversationDeps, ConversationSession, RebuildReport } from './service.ts'
 
 // 构造入参里点名用到、装配根必须拿得到的两件形态：
 // 提示词运行时注入值（`cwd` / `platform` / `date`）与上下文策略（阈值 / 截断）
 export type { PromptVars } from './prompt/index.ts'
 export type { ContextPolicy } from './policy.ts'
 
-// 恢复（阶段 2 · U15）——注入面（`RecoveryDeps` 的两件）与**报告**（`recover()` 的返回）。
-// `RecoveryScan` / `InFlightCall` 是记录域查询面的镜像：消费侧经 `RecoveryDeps.inFlight`
-// **转手**即可，不必具名（域间不得互 import，故本域自持一份——没出，就没承诺）。
-export type {
-  CallDisposition,
-  IdempotencyJudge,
-  NotReplayedReason,
-  RecoveryDeps,
-  RecoveryReport,
-} from './recovery.ts'
+// ⚠️ **恢复的编排不在这里**（U25 起）——本域只出**重建面**（`ConversationService.rebuild`：
+// 装载 ＋ 认下水位与开工位）。在途识别（记录域端口）与②③④的处置（重放 / 落账 / 记中止）
+// 归应用层 `@magic/actions`；出在这儿的是它拿去用的那几个形态（`RebuildReport` 等）。

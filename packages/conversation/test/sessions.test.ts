@@ -25,8 +25,7 @@ import type {
 } from '@magic/contracts'
 import { DEFAULT_TEST_SESSION, makeFauxSink } from '@magic/faux'
 import type { FauxSink } from '@magic/faux'
-import type { ConversationSession } from '../src/service.ts'
-import type { RecoveryReport } from '../src/recovery.ts'
+import type { ConversationSession, RebuildReport } from '../src/service.ts'
 import type { SessionInstance } from '../src/sessions.ts'
 import { HISTORY_CHUNK, TITLE_LIMIT, createConversationService } from '../src/sessions.ts'
 
@@ -73,6 +72,8 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
         yield { id: 1, kind: 'user', content: { text: row.first }, at: row.at + 1 }
       })(),
     readEvents: (): AsyncIterable<KernelEvent> => (async function* (): AsyncIterable<KernelEvent> {})(),
+    // 在途识别（恢复 ① · U25）——本文件的用例不验扫描，一律「干净会话」
+    scanInFlight: async (session: SessionId) => ({ session, openTurn: null, lastTurn: null, calls: [] }),
     listSessions: async (): Promise<readonly SessionSummary[]> =>
       [...titles.keys(), ...times.keys()]
         .filter((id, index, all) => all.indexOf(id) === index)
@@ -129,9 +130,9 @@ function makeInstance(session: SessionId): FakeInstance {
       interrupt: () => {
         calls.push('interrupt')
       },
-      recover: async (): Promise<RecoveryReport> => {
-        calls.push('recover')
-        return { session, turn: null, lastTurn: null, dispositions: [] }
+      rebuild: (handoff): RebuildReport => {
+        calls.push(`rebuild:${String(handoff.lastTurn)}:${String(handoff.announced)}`)
+        return { session, lastTurn: handoff.lastTurn }
       },
       busy: () => instance.busy,
     } satisfies ConversationSession,
@@ -240,7 +241,7 @@ describe('列表（标题＝首条消息摘要 · 改过的取存值）', () => 
   })
 })
 
-describe('转发（单活跃——submit / interrupt / recover 都落在活跃实例上）', () => {
+describe('转发（单活跃——submit / interrupt / rebuild 都落在活跃实例上）', () => {
   test('开工前是开局会话；切过去之后跟着换', async () => {
     const bench = makeBench({
       session: A,
@@ -249,18 +250,19 @@ describe('转发（单活跃——submit / interrupt / recover 都落在活跃�
         { id: B, at: T0, first: '乙的事' },
       ],
     })
+    const handoff = { lastTurn: null, announced: false }
 
     bench.host.submit({ text: '问甲' })
-    await bench.host.recover()
+    await bench.host.rebuild(A, handoff)
     bench.host.interrupt()
-    expect(bench.instanceOf(A)?.calls).toEqual(['submit:问甲', 'recover', 'interrupt'])
+    expect(bench.instanceOf(A)?.calls).toEqual(['submit:问甲', 'rebuild:null:false', 'interrupt'])
     expect(bench.instanceOf(B)).toBeUndefined()
 
     await bench.host.openSession(B)
     bench.host.submit({ text: '问乙' })
     expect(bench.instanceOf(B)?.calls).toEqual(['submit:问乙'])
     // 甲那边不再收——同一时刻只有一个活跃会话
-    expect(bench.instanceOf(A)?.calls).toEqual(['submit:问甲', 'recover', 'interrupt'])
+    expect(bench.instanceOf(A)?.calls).toEqual(['submit:问甲', 'rebuild:null:false', 'interrupt'])
   })
 })
 
@@ -401,15 +403,54 @@ describe('改名（session.rename）', () => {
   })
 })
 
-describe('启动流转（recover——对当前会话跑一次）', () => {
-  test('落在当前会话上，报告交回调用方（装配的 boot 就这一跳）', async () => {
+describe('重建面（rebuild——恢复的第 ⑤ 步 · U25）', () => {
+  test('落在目标会话上，水位与开工位原样交给实例，报告交回调用方', async () => {
     const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
 
-    const report = await bench.host.recover()
+    const report = await bench.host.rebuild(A, { lastTurn: 7, announced: true })
 
-    expect(bench.instanceOf(A)?.calls).toEqual(['recover'])
-    expect(report.dispositions).toEqual([])
-    expect(report.session).toBe(A)
+    expect(bench.instanceOf(A)?.calls).toEqual(['rebuild:7:true'])
+    expect(report).toEqual({ session: A, lastTurn: 7 })
+  })
+
+  test('**外壳得知道自己落在哪条会话上**——重建报一条 `session.state`（界面重建展示的由头）', async () => {
+    const bench = makeBench({ session: A, rows: [{ id: A, at: T0, first: '甲的事' }] })
+
+    await bench.host.rebuild(A, { lastTurn: null, announced: false })
+
+    // 接续一条旧会话时，状态行不能还写着「新会话」——`active` 就是外壳据以重开一屏的那一位
+    expect(bench.lastState()?.active).toBe(A)
+  })
+
+  test('目标不是当下这条＝装载（换过去；单活跃）', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 1000, first: '甲的事' },
+        { id: B, at: T0, first: '乙的事' },
+      ],
+    })
+
+    await bench.host.rebuild(B, { lastTurn: 3, announced: true })
+
+    expect(bench.host.active()).toBe(B)
+    expect(bench.instanceOf(B)?.calls).toEqual(['rebuild:3:true'])
+  })
+
+  test('忙时切不动——与 `session.open` 同一道闸（半途切＝一轮的事记到两条会话上）', async () => {
+    const bench = makeBench({
+      session: A,
+      rows: [
+        { id: A, at: T0 + 1000, first: '甲的事' },
+        { id: B, at: T0, first: '乙的事' },
+      ],
+    })
+    bench.instanceOf(A)!.busy = true
+
+    await expect(bench.host.rebuild(B, { lastTurn: null, announced: false })).rejects.toThrow(
+      '正在跑一轮',
+    )
+    expect(bench.host.active()).toBe(A)
   })
 })
 
@@ -457,7 +498,7 @@ describe('懒建立（D5）——首条消息才开张', () => {
     expect(opened[0]).not.toBeUndefined()
   })
 
-  test('没有会话时中断 / 恢复＝无事（不开张、不发声）', async () => {
+  test('没有会话时中断＝无事（不开张、不发声）', () => {
     const sink = makeFauxSink()
     const host = createConversationService({
       open: (session) => makeInstance(session),
@@ -468,8 +509,27 @@ describe('懒建立（D5）——首条消息才开张', () => {
     })
 
     expect(() => host.interrupt()).not.toThrow()
-    await host.recover()
     expect(host.active()).toBeUndefined()
+    expect(sink.events).toEqual([]) // 一个事件都没发
+  })
+
+  test('重建面**照 id 装载**——空手也开得出来（「以会话为入口」的那条路）', async () => {
+    const sink = makeFauxSink()
+    const host = createConversationService({
+      open: (session) => makeInstance(session),
+      records: makeLedger([]).records,
+      setTitle: () => undefined,
+      sink,
+      now: () => T0,
+    })
+
+    // 与「首条消息才开张」不冲突：这条路是**用户点名**了要哪条会话（`--session` / 接续），
+    // 不是空手打开（D5 免的是后者：不开张、不占存储、不把列表塞满空壳）
+    const report = await host.rebuild('s-picked', { lastTurn: null, announced: false })
+
+    expect(report.session).toBe('s-picked')
+    expect(host.active()).toBe('s-picked')
+    expect(sink.byKind('session.state').at(-1)?.data.active).toBe('s-picked')
   })
 })
 

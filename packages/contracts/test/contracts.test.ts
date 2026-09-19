@@ -240,6 +240,8 @@ export function recordsServiceIsImplementable(): void {
     appendEvent: () => {},
     readEntries: () => (async function* (): AsyncIterable<Entry> {})(),
     readEvents: () => (async function* (): AsyncIterable<KernelEvent> {})(),
+    // 在途识别（恢复 ① · U25）——「干净会话」就是一条也说不出：空扫描
+    scanInFlight: async (session) => ({ session, openTurn: null, lastTurn: null, calls: [] }),
     listSessions: async () => [],
     blobs: {
       put: async () => 'blob_1',
@@ -596,7 +598,8 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
   void service.newSession()
   void service.openSession('s1')
   void service.renameSession('s1', '标题＝首条消息摘要')
-  void service.recover()
+  // 重建面（U25）——恢复的第 ⑤ 步：装载 ＋ 认下应用层算好的两件（水位 / 开工已宣告）
+  void service.rebuild('s1', { lastTurn: null, announced: false })
 
   // 控制域**原样转手**——它不认识会话（同 `onDecision` / `onModelSwitch` 的姿势）
   routes.onSession({ type: 'session.list' })

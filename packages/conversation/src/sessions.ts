@@ -15,7 +15,7 @@
  * - **切换**——**只是装载**：换一条实例链（记录实例 / 铸造器 / 闸门 / 工具域随会话各一份，
  *   由装配的 `open` 工厂给）。**上下文不用搬**——它每轮由条目重建（`./context.ts`），
  *   所以「装载」这件事在实现上就是「换一条实例」。**与恢复是两条路径**：处置在途操作
- *   是 `recover()` 的活（启动流转那一路），本命令不捎带。
+ *   是**应用层**（`@magic/actions`）的活（启动流转那一路），本命令不捎带。
  * - **改名**——写面归记录域（`setTitle`）；用户给的原文在此**裁剪 / 归一**（首行 · 折叠空白 ·
  *   超长截断），空标题不认。
  *
@@ -37,13 +37,13 @@ import type {
   EntryRange,
   EventSink,
   EventStamper,
+  RebuildHandoff,
   SessionCommand,
   SessionId,
   SessionSummary,
   Timestamp,
 } from '@magic/contracts'
-import type { ConversationSession } from './service.ts'
-import type { RecoveryReport } from './recovery.ts'
+import type { ConversationSession, RebuildReport } from './service.ts'
 
 /** 默认标题的字符上限——「首条消息摘要」的**实现级常量**（措辞可调，见回报备案）。 */
 export const TITLE_LIMIT = 20
@@ -111,11 +111,11 @@ export type SessionHostDeps = {
 /**
  * 会话主面 ＝ 端口 ＋ 三件域外看不见的（控制面的入口、启动流转、活跃位读数）。
  *
- * `recover()` 的返回是**具体的报告**（域内形态）而不是端口上的 `unknown`——
+ * `rebuild()` 的返回是**具体的报告**（域内形态）而不是端口上的 `unknown`——
  * 返回值协变，结构上仍满足 `ConversationService`。
  */
-export type SessionHost = Omit<ConversationService, 'recover'> & {
-  recover(): Promise<RecoveryReport>
+export type SessionHost = Omit<ConversationService, 'rebuild'> & {
+  rebuild(session: SessionId, handoff: RebuildHandoff): Promise<RebuildReport>
   /**
    * 控制面的会话命令入口（`CommandRoutes.onSession` 的落点）。
    *
@@ -305,15 +305,38 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     void seen
   }
 
+  /**
+   * 重建面（恢复 ⑤ · U25）——**装载 ＋ 认下水位与开工位 ＋ 让外壳知道自己在哪条会话上**。
+   *
+   * 三件事各有着落：
+   * - **装载**——`switchTo`：目标不是当下这条就换过去（已经是它＝无事）。单活跃，
+   *   所以「装载」在实现上就是「换一条实例」。
+   * - **认下水位于开工位**——`ConversationSession.rebuild`（记账，不发事件）。
+   * - **界面重建展示**——`announce` 发一条 `session.state`。**这一条不能省**：
+   *   接续一条旧会话时外壳得**知道**自己落在哪条上（否则状态行写着「新会话」，
+   *   而屏上正重建着别人家的记录）；外壳据 `active` 重开一屏（D1 那条路）。
+   *   它**不落库**（瞬时类快照），干净会话也照发——「你在这儿」不是「恢复的痕迹」。
+   *
+   * 忙时切不动：与 `session.open` 同一道闸（半途切＝一轮的事记到两条会话上），
+   * 端口面「失败＝抛」（同 `openSession`）。
+   */
+  async function rebuild(session: SessionId, handoff: RebuildHandoff): Promise<RebuildReport> {
+    const attempt = switchTo(session)
+    if (attempt?.note !== undefined) throw new Error(attempt.note)
+
+    const instance = active ?? current()
+    const report = instance.service.rebuild(handoff)
+
+    await announce({ session: instance.session })
+    return report
+  }
+
   return {
     // **首条消息在这里开张**（懒建立）：装配不在启动时铸 id
     submit: (input) => current().service.submit(input),
     // 没有会话＝没有在跑的一轮，没什么可中断
     interrupt: () => active?.service.interrupt(),
-    // 没有会话＝没得恢复（装配不在这个状态下调它）
-    recover: () =>
-      active?.service.recover() ??
-      Promise.resolve({ session: '', turn: null, lastTurn: null, dispositions: [] }),
+    rebuild,
     readHistory,
 
     listSessions: () => catalog(),

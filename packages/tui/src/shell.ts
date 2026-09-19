@@ -18,6 +18,7 @@
 import type { Command, ControlTransport, Entry, EventKind, KernelEvent, SessionId } from '@magic/contracts'
 import {
   COMMANDS,
+  HINT_BOOTING,
   HINT_COMPLETION,
   HINT_IDLE,
   HINT_WORKING,
@@ -68,6 +69,14 @@ export type Shell = {
   subscribe(listener: () => void): () => void
   /** 一个按键。 */
   key(key: ShellKey): ShellEffect
+  /**
+   * **放开输入**——`boot` 跑完那一下（技术方案 · 装配视图第 5 步：「以 `boot` 完成为界」）。
+   *
+   * 这一跳之前：打字照旧进草稿（本地的事），**回车不受理**（当场说一句，草稿留着），
+   * 发给内核的命令一律丢弃。之所以要有这道闸——`boot` 里的恢复**要发事件**，而
+   * 恢复没跑完就提交，等于让循环与恢复抢同一条记录流（对话域会当场抛）。
+   */
+  releaseInput(): void
   /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
   readHistory(session?: SessionId): void
   /** 收摊——退订传输、清订阅者。 */
@@ -123,6 +132,14 @@ export type ShellOptions = {
    * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗（「拿不到的不编」——同 `contextWindow`）。
    */
   readonly workspaceRoots?: readonly string[] | undefined
+  /**
+   * **受理输入了没有**——缺省 `true`（不设闸）。
+   *
+   * 「放开输入」以 `boot` **完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）：
+   * 起真外壳时先给 `false`，`boot` 跑完再 `releaseInput()`。不设闸的调用方
+   * （不跑 `boot` 的测试 / 演示）照旧一挂载就能提交。
+   */
+  readonly inputReady?: boolean | undefined
 }
 
 /**
@@ -162,8 +179,13 @@ const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'to
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
 export function createShell(transport: ControlTransport, options: ShellOptions = {}): Shell {
   const watchers = new Set<() => void>()
+  const booting = options.inputReady === false
   let view = withContextWindow(createView(), options.contextWindow ?? null)
   let disposed = false
+  /** 「放开输入」了没有——`boot` 完成那一下翻真（见 `Shell.releaseInput`）。 */
+  let ready = !booting
+  // 启动中：右位说清楚「为什么回车没反应」（不然就是「按了没反应」——最难查的那种）
+  if (booting) view = { ...view, status: { ...view.status, hint: HINT_BOOTING } }
 
   /** 输入历史（`↑` 取上一条）。 */
   const history: string[] = []
@@ -257,7 +279,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   const send = (command: Command): void => {
     if (disposed) return
+    // **放开输入之前一律不受理**（见 `Shell.releaseInput`）——命令进内核＝让内核干活，
+    // 而 `boot`（装载 ＋ 恢复）还没跑完。丢弃＋出声由调用方给（`submit` 那一处），
+    // 这儿是兜底：别的路径（选择器 / 裁决）此刻本就不该有，有也一并拦下。
+    if (!ready) return
     transport.send(command)
+  }
+
+  /**
+   * 启动中的那一句——**不静默吞**（原型 · 交互逻辑：按键要么管用、要么当场说一句）。
+   * 草稿**留着**：那是本地的事，`boot` 一完就能发。
+   */
+  const bootRefusal = (): ShellEffect => {
+    commit(said(view, '正在启动（装载 ＋ 恢复）——跑完就受理。草稿留着，回车再按一次即可。'))
+    return NONE
   }
 
   // —— 事件 ——
@@ -478,6 +513,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /** 回车——接管 / 选择器 / 输入三种归处。 */
   const submit = (): ShellEffect => {
+    // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
+    if (!ready) return bootRefusal()
     if (view.dock.kind === 'decision') return refuse('回车')
 
     if (view.dock.kind === 'picker') {
@@ -651,6 +688,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     key,
     readHistory,
+
+    /**
+     * 放开输入——`boot` 完成那一下（真外壳在 `run.ts` 里按这个次序调）。
+     *
+     * 幂等：重复调只是再翻一次真；右位提示**回落到本来的那一条**（空闲态），
+     * 不然「启动中」会一直挂在状态行上——那会变成一句假话。
+     */
+    releaseInput: (): void => {
+      if (ready) return
+      ready = true
+      commit({ ...view, status: { ...view.status, hint: idleHintOf(view) } })
+    },
 
     dispose: () => {
       disposed = true

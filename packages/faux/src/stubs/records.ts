@@ -22,6 +22,7 @@ import type {
   NewEntry,
   RecordId,
   RecordsService,
+  RecoveryScan,
   SessionId,
   SessionSummary,
 } from '@magic/contracts'
@@ -33,6 +34,14 @@ export type FauxRecordsOptions = {
   readonly blobs?: Readonly<Record<string, Uint8Array | string>>
   /** `nextId` 起始值——缺省 1。 */
   readonly from?: RecordId
+  /**
+   * **在途扫描的答案**（`scanInFlight`，恢复 ①）——缺省「干净会话」（无在途、无中断的轮）。
+   *
+   * 桩**不自己算**这个答案：判据（有 `tool.call` 无 `tool.result`）归记录域
+   * （`@magic/records` 的 `scanForRecovery`）。要验处置的用例把答案**给定**——
+   * 与「桩只满足签名、不发明行为」的底线一致（同 `sessions` 那一项）。
+   */
+  readonly scan?: RecoveryScan | ((session: SessionId) => RecoveryScan)
 }
 
 /** 记录域桩的观察面——测试靠它断言「记了什么」。 */
@@ -121,6 +130,16 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
           if (event.session === sessionId) yield event
         }
       })(),
+
+    // 在途识别（恢复 ①）——答案由用例给定（见 `FauxRecordsOptions.scan`）
+    scanInFlight: async (sessionId: SessionId): Promise<RecoveryScan> => {
+      const scripted = options.scan
+      if (scripted === undefined) {
+        return { session: sessionId, openTurn: null, lastTurn: null, calls: [] }
+      }
+
+      return typeof scripted === 'function' ? scripted(sessionId) : scripted
+    },
 
     listSessions: async (): Promise<readonly SessionSummary[]> => options.sessions ?? [],
 

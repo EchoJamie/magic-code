@@ -28,11 +28,16 @@ const USAGE = `magic —— 软件工程智能体（首站）
 
 用法：
   magic                          起外壳（TUI）——装配 → 接控制面 → 一屏
+  magic --session <id>           接着哪条会话来（显式接续：开局装载它并跑一次恢复）
   magic --check                  装配自检（读 ~/.magic/config.json，全链构造一遍后收尾）
   magic --script <文件>          无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
   magic --provider <id>          开局走哪个供应商条目（providers 的键）
   magic --model <名>             开局用哪个模型（同一条目上换模型，可单用）
   magic --help                   本说明
+
+接着来是**显式的**：不给 --session ＝ 新会话（空手打开不建会话——首条消息按下回车才开张）。
+--session 收的是**会话 id**（/session 列表里那串），由**应用层**（@magic/actions）受理：
+装载它 → 跑一次恢复（处置崩溃留下的在途操作）→ 重建展示。**恢复跑完才受理输入**。
 
 脚本文件（JSON）：
   { "inputs": ["在 playground 里跑 ls", { "switch": { "provider": "minimax-m2" } }, "刚才那个文件还在吗"],
@@ -48,6 +53,14 @@ type Args = {
   readonly help: boolean
   readonly check: boolean
   readonly script?: string | undefined
+  /**
+   * **显式接续**那条会话（`--session <id>`）——不给＝新会话（D4：启动不接续）。
+   *
+   * 它是**恢复入口**（`U25`）：给了 id ⇒ 装配开局装载它、`boot` 跑一次恢复
+   * （处置在途、重建现场）。**由应用层受理**（`@magic/actions`）——受理在这里，
+   * 编排在那儿，本文件只把 id 递过去。
+   */
+  readonly session?: string | undefined
   /** 开局的换模型请求（`--provider` / `--model` 的落地）——两件都没给即 `undefined`。 */
   readonly switch?: ModelSwitchRequest | undefined
 }
@@ -57,6 +70,7 @@ function parseArgs(argv: readonly string[]): Args {
   let check = false
   let provider: string | undefined
   let model: string | undefined
+  let session: string | undefined
 
   /** 取值——缺值 / 撞上另一个选项即报（`--provider --check` 这类笔误不该被当成名字）。 */
   const valueOf = (flag: string, index: number): string => {
@@ -89,6 +103,11 @@ function parseArgs(argv: readonly string[]): Args {
       i += 1
       continue
     }
+    if (arg === '--session') {
+      session = valueOf('--session', i)
+      i += 1
+      continue
+    }
     throw new Error(`不认得的参数「${arg}」（见 magic --help）`)
   }
 
@@ -96,6 +115,7 @@ function parseArgs(argv: readonly string[]): Args {
     help: false,
     check,
     script,
+    session,
     ...(provider === undefined && model === undefined ? {} : { switch: { provider, model } }),
   }
 }
@@ -277,9 +297,16 @@ export function scriptOptions(
   onEvent: (event: KernelEvent) => void,
   /** 换成功时那一行人读的痕迹（真跑给 `console.log`；用例给空实现，别往测试输出里漏）。 */
   note: (line: string) => void = () => {},
-): { readonly onEvent: (event: KernelEvent) => void; readonly onSwitch: (request: ModelSwitchRequest) => ModelSwitchResult } {
+): {
+  readonly onEvent: (event: KernelEvent) => void
+  readonly onSwitch: (request: ModelSwitchRequest) => ModelSwitchResult
+  readonly boot: () => Promise<void>
+} {
   return {
     onEvent,
+    // **启动流转也接上**（U25）：给了 `--session` 就走恢复那一趟。不接的话
+    // 「接续 + 恢复」这条链在无人值守里静默缺席——正是本单元要收掉的那种空白。
+    boot: () => assembly.boot(),
     onSwitch: (request) => {
       const result = assembly.switchModel(request)
       if (result.ok) {
@@ -332,7 +359,10 @@ async function main(): Promise<number> {
   let assembly: Assembly
   try {
     // 启动目录——**只在配置没写 `workspaceRoots` 时**才当工作区根（键在即接管，U18）
-    assembly = assemble({ cwd: process.cwd() })
+    //
+    // `--session` 从这儿进启动流转（U25 的恢复入口）：给了 id ⇒ 装配开局装载那条会话，
+    // 随后外壳在「接好订阅之后、放开输入之前」调 `boot()` 跑一次恢复。
+    assembly = assemble({ cwd: process.cwd(), session: args.session })
   } catch (error) {
     if (error instanceof ConfigError) {
       console.error(`配置有问题：${error.message}`)

@@ -18,6 +18,11 @@
  * 之后的切换同路——**装配只出工厂，不出判断**。
  * 网关（供应商注册表）**不在束里**：选中的模型不该随会话漂，故它拿转发铸造器（见其注）。
  *
+ * **应用层（U25）在哪儿**——第 3 / 4 步之间多绑一处：`createActions`（对话域端口 ＋
+ * 扇出 ＋ 时钟）；会话级的那几件按调用给（`actionPorts`，取的是 `open` 造出来的**同一束**）。
+ * 起步唯一那个用例是**恢复**，`boot()` 就是它的入口——启动参数 `--session` 从此进得来
+ * （审计第 1 条：恢复入口没有归处）。
+ *
  * **本文件只做「选择 ＋ 绑定」**——不承载逻辑：判断归各域，呈现归外壳，机制归域内件。
  * 唯一必须落在装配根的东西是**信封铸造器**（契约：产出方铸 · 按会话实例构造 ·
  * `id` 取自记录域）与路径 / 时钟 / 环境变量的取材——它们是「从外面拿值」，不是逻辑。
@@ -48,6 +53,8 @@ import type {
   WorkspaceService,
 } from '@magic/contracts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
+import { createActions } from '@magic/actions'
+import type { SessionPorts } from '@magic/actions'
 import { createConversationService, createConversationSession } from '@magic/conversation'
 import type {
   ContextPolicy,
@@ -192,11 +199,15 @@ export type Assembly = {
    */
   readonly workspaceRoots: readonly string[]
   /**
-   * **启动流转**（U16）——对当下会话跑一次恢复（处置在途操作；干净会话什么都不做）。
+   * **启动流转**——对开局那条会话跑一次恢复（应用层的用例：处置在途操作 ＋ 重建现场；
+   * 干净会话照样装载、照样告诉外壳「你在这儿」）。
    *
    * 由**外壳**在**接好订阅之后、放开输入之前**调一次（技术方案 · 控制域：无订阅方时
-   * 命令 / 事件都丢——恢复要发事件，得先有人听着）。返回值不交出去：报告是对话域的
-   * 域内形态，要看细节请直接接对话域的面。
+   * 命令 / 事件都丢——恢复要发事件，得先有人听着）。**这一跳完成才算「放开输入」**
+   * （技术方案 · 装配视图第 5 步：「以 `boot` 完成为界」，U25 收敛）——外壳侧那一半
+   * 在 `@magic/tui`（输入闸）。
+   *
+   * 返回值不交出去：报告是应用层的形态，要看细节请直接调 `actions.recover`。
    */
   boot(): Promise<void>
   /** 关库（blob 无需收尾）。 */
@@ -377,6 +388,8 @@ export function assemble(options: AssembleOptions): Assembly {
     readonly gate: ReturnType<typeof createPermissionGate>
     readonly tools: ReturnType<typeof createToolRuntime>
     readonly service: ConversationSession
+    /** 铸造器（按会话实例构造）——**也在这里**：应用层的现场束要用同一个（见 `actionPorts`）。 */
+    readonly stamper: EventStamper
   }
   let chain: Chain | undefined
 
@@ -419,14 +432,34 @@ export function assemble(options: AssembleOptions): Assembly {
       now,
       // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
       context: options.context,
-      // 恢复面（U15）：在途查询归记录域；**幂等声明缺位**（U15 待决 1：`ToolSpec` 该有位、
-      // 契约未载）故不传——缺省从严＝一律非幂等＝**什么都不静默重放**，安全但保守
-      recovery: { inFlight: (target) => recordsStore.recoveryScan(target) },
+      // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
+      // 对话域只出重建面（`ConversationService.rebuild`）。见下 `actions`。
     })
 
-    chain = { session, records, gate, tools, service }
+    const opened: Chain = { session, records, gate, tools, service, stamper }
+    chain = opened
     activeStamper = stamper
-    return { session, service, stamper }
+    return opened
+  }
+
+  /**
+   * **应用层的现场束**——**当下那一束**（单活跃：同时只留一束）。
+   *
+   * 取的是 `open` 造出来的**同一个实例**（记录实例 / 工具域 / 铸造器都在 `Chain` 里），
+   * 不是另开一套：铸造器按会话实例构造、`id` 取自记录域——两套就是两串 id 打架
+   * （同一张库里两串 1、2、3）。
+   *
+   * ⚠️ 这也是本文件里**唯一**一处为应用层写的代码：装配照旧只做「选择与绑定」
+   * （技术方案 · 领域划分：「装配根照旧只做选择与绑定」），编排在 `@magic/actions`。
+   */
+  const actionPorts = (): SessionPorts => {
+    const current = active()
+    return {
+      session: current.session,
+      records: current.records,
+      tools: current.tools,
+      stamper: current.stamper,
+    }
   }
 
   /** 装配期就该定好的事——走到这儿＝`modelGateway` 给了却是空的（类型上的不可能）。 */
@@ -452,6 +485,18 @@ export function assemble(options: AssembleOptions): Assembly {
     sink,
     now,
   })
+
+  /**
+   * **应用层**（U25）——编排那一层的落地：恢复是它的第一个真用例。
+   *
+   * 绑三件：**对话域端口**（⑤ 的重建面）· **扇出**（它不自己发事件）· **时钟**。
+   * 会话级的那几件（记录实例 / 工具域 / 铸造器）**不在这儿**——按调用给（`actionPorts`），
+   * 因为它们随会话实例各一份（「不持状态」正在于此）。
+   *
+   * ⚠️ `idempotent` **不传**：`ToolSpec` 没有幂等声明位，「幂等 → 静默重放」无从判定
+   * ⇒ 首站**一律交用户裁决**（技术方案 · 记录 · 恢复②的 2026-09-19 裁决）。缺省从严。
+   */
+  const actions = createActions({ conversation, sink, now })
 
   /**
    * 换模型 —— **判别式处置**（技术方案 · 领域划分：「切不动就不动」）。
@@ -612,8 +657,12 @@ export function assemble(options: AssembleOptions): Assembly {
     workspaceRoots: workspace.roots(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。
+    //
+    // **跑的是应用层的用例**（U25）：① 在途识别 ②③④ 处置 ⑤ 上下文由条目重建 ＋ 界面重建展示，
+    // 全在 `@magic/actions` 那一处编排。回到 `Promise<void>`：报告是应用层的形态，
+    // 要看细节请直接调 `actions.recover`（本函数只担保「跑完了」）。
     boot: () =>
-      startup === undefined ? Promise.resolve() : conversation.recover().then(() => undefined),
+      startup === undefined ? Promise.resolve() : actions.recover(actionPorts()).then(() => undefined),
     close: () => recordsStore.close(),
   }
 }
