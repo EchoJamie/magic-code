@@ -22,7 +22,7 @@
  * | 常量 | 资源 | 画幅 | 什么时候印 |
  * | --- | --- | --- | --- |
  * | `BANNER_WIDE` | `magic-code-wide.txt` | 53 列 × 5 行 | 窗口 **≥ 57 列**（**缺省就用它**） |
- * | `BANNER_COMPACT` | `magic-code-compact.txt` | 10 列 | 窄于 57 列、仍放得下 10 列 |
+ * | `BANNER_COMPACT` | `magic-code-compact.txt` | 10 列 | 窄于 57 列、仍放得下 **12 列**（10 ＋ 左留白 2） |
  * | `BANNER_ASCII` | `magic-code-ascii.txt` | 53 列 × 5 行 | **留着，先不自动切**（见下） |
  *
  * ⚠️ **块字符不自动检测**（规划侧已定）：**终端不告诉你字体信息**——装没装块字符的字体，
@@ -64,10 +64,25 @@ export const BANNER_ASCII: readonly string[] = [
 /** 用块字版的**下限列数**——53 列画幅 ＋ 设计建议的「左右各留 2 列空白」。 */
 export const BANNER_WIDE_MIN = 57
 
-/** 用一行版的**下限列数**——文档原话：「极窄到放不下 10 列时隐藏装饰性 Banner」。 */
-export const BANNER_COMPACT_MIN = 10
+/**
+ * 用一行版的**下限列数**——10 列画幅 ＋ **同样那 2 列左留白**＝ 12。
+ *
+ * ⚠️ **原锚**：文档原话「极窄到放不下 **10** 列时隐藏装饰性 Banner」——那个 10 是**画幅**宽。
+ * **为何变**：一行版与块字版是**同一块东西**，缩进一起缩（见 `BANNER_INDENT`）⇒ 它落进界面
+ * 之后占的是 **12** 列。判据用**整块宽**是宽档那条账的同一笔（`57 ＝ 53 ＋ 左右各 2`：
+ * **留白不算可用宽度**）——照画幅宽放行的话，10～11 列的终端上那行会被折成两行，
+ * 恰好违背这一档的由头（「优先保证正文与输入空间」：装饰性 Banner 反而多占一行）。
+ * **新锚**：放不下 10 ＋ 2 列 ⇒ 不印。**若规划侧要按字面的 10 放行**，改回这一处即可
+ * （判据在 `spec.banner.test.ts` ②）。
+ */
+export const BANNER_COMPACT_MIN = 12
 
-/** 块字版左侧的留白（设计：建议左右各留 2 列空白）。 */
+/**
+ * 字标左侧的留白（设计：建议左右各留 2 列空白）——**两版都有**。
+ *
+ * 「同一块东西，退让时别换性格」：窗口窄到只剩一行版时，它仍从第 3 列起，
+ * 而不是贴到最左边——否则同一个字标在两种宽度下是两个性格。
+ */
 export const BANNER_INDENT = '  '
 
 /**
@@ -87,22 +102,29 @@ export const BANNER_COMPACT_MAGIC_WIDTH = 5
  *
  * 三条规格（设计文档 · 宽度）：
  * - **≥ 57 列** ⇒ 块字版（左侧留 2 列白，故实际占 55 列）；
- * - **≥ 10 列** ⇒ 一行版（`Magic Code`，10 列）；
+ * - **≥ 12 列** ⇒ 一行版（`Magic Code` 10 列 ＋ 同样那 2 列左留白）；
  * - **更窄** ⇒ **不印**——「优先保证正文与输入空间」。装饰让位于内容。
  *
- * 返回值里带**分色点**（`magicWidth`），而不是让渲染层自己去数字符：
- * 两版的切点不同（27 / 5），切错一列就是 `M` 的半边上了另一种色。
+ * ⚠️ **两档的判据都是「整块宽」**（画幅 ＋ 缩进），不是画幅宽。那 2 列留白不占正文的格子，
+ * 但**也不许算成可用宽度**——照画幅宽放行，窄一列就顶边（57 那条的由头，2026-09-20
+ * 从宽档推广到窄档；两处锚的来龙去脉写在 `spec.banner.test.ts`）。
+ *
+ * 返回值里带**分色点**（`magicWidth`）——**含左侧那 2 列留白**（留白跟着首段着色：
+ * 两版的分段都是「首段 ＝ 留白 ＋ `MAGIC`」）。切错一列就是 `M` 的半边上了另一种色。
  *
  * ⚠️ **按列数选，不按高度选**：文档另有一句「或可用高度不足时」，而**可用高度**
  * 在这个壳里不是稳定输入——内联渲染下窗口高度不约束记录区（内容随滚动走，
  * 记录区该有几行就几行）。故高度那半条**不在此处的射程内**，取宽度这一条。
+ *
+ * ⚠️ **前后各一行留白不在这里**——那是**块与界面的间距**（它在屏上自成一块），
+ * 归渲染层（`components/log.ts` 的 `banner` 那一支）。本函数只管字标本身那几行。
  */
 export function bannerOf(
   columns: number,
 ): readonly { readonly text: string; readonly magicWidth: number }[] {
-  if (columns >= BANNER_WIDE_MIN) {
-    const pad = BANNER_INDENT.length
+  const pad = BANNER_INDENT.length
 
+  if (columns >= BANNER_WIDE_MIN) {
     return BANNER_WIDE.map((line) => ({
       text: `${BANNER_INDENT}${line}`,
       magicWidth: BANNER_MAGIC_WIDTH + pad,
@@ -110,7 +132,7 @@ export function bannerOf(
   }
 
   if (columns >= BANNER_COMPACT_MIN) {
-    return [{ text: BANNER_COMPACT, magicWidth: BANNER_COMPACT_MAGIC_WIDTH }]
+    return [{ text: `${BANNER_INDENT}${BANNER_COMPACT}`, magicWidth: BANNER_COMPACT_MAGIC_WIDTH + pad }]
   }
 
   return []

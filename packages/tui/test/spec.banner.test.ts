@@ -14,6 +14,13 @@
  * | ⑥ | `MAGIC` **品牌青** · `CODE` **主文字色** · **不强制铺底色**；**无色终端**整块用默认前景 | `describe('⑥')` |
  * | ⑦ | **静态**——不动效 · 不 Icon · 不宣传图或工具信息 | `describe('⑦')` |
  * | ⑧ | **块字符不自动检测**——默认就用块字版；ASCII 版**留着**但**没有路径切过去** | `describe('⑧')` |
+ * | ⑨ | **左缩进 2 列**——**两版同一个性格**（一行版也缩，退让时不换性格） | `describe('⑨')` |
+ * | ⑩ | **自成一块**：**前后各一行留白**——它与引导语是两种东西，贴着就成了「硬放」 | `describe('⑩')` |
+ * | ⑪ | 宽度判据是**整块宽**（画幅 ＋ 那 2 列留白）——**留白不算可用宽度**，窄一列就顶边 | `describe('⑪')` |
+ *
+ * ⑨⑩⑪ 是 **2026-09-20「首屏布局收口」**那一轮的三条（用户看了真机截图：「真就直接硬放一个
+ * banner 呗 一点布局设计都没有的那种」——顶格贴左上角、紧挨着引导语）。规格出处：
+ * vault `界面原型.html` 场景 1 新落的 `.banner{padding-left:2ch;margin:0 0 17px}` 与那段注。
  *
  * ## 三处「不是设计漏了，是这里没有那个输入」的如实记录
  *
@@ -34,6 +41,7 @@ import {
   BANNER_ASCII,
   BANNER_COMPACT,
   BANNER_COMPACT_MIN,
+  BANNER_INDENT,
   BANNER_WIDE,
   BANNER_WIDE_MIN,
   bannerOf,
@@ -42,14 +50,30 @@ import { AppView } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
 import type { ShellView } from '../src/view.ts'
 import { event } from './events.ts'
+import { blankRuns } from './invariants.ts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 import { createSpyTransport } from './fakes.ts'
 import { record } from './terminal.ts'
 
-/** 记录区的**前几行**（字标在这儿）——取景那两处都从这条进。 */
+/** 记录区的**前几行**（字标那一块在这儿）——取景那几处都从这条进。 */
 const headOf = (frame: Frame, count: number): readonly string[] =>
   frame.record.slice(0, count).map((line) => line.text)
+
+/**
+ * 字标**画幅**的首行在记录区的第几行——**块首那一行是留白**（⑩：字标自成一块）。
+ *
+ * 写成字面量而不是「找第一行含 `█` 的」：那一行**必须**是这个位置（前面正好一行留白），
+ * 找出来的话就把⑩那条判据绕过去了。
+ */
+const ART_FROM = 1
+
+/** 字标**画幅**那几行（块首那行留白跳过）。 */
+const artOf = (frame: Frame, count: number): readonly string[] =>
+  headOf(frame, ART_FROM + count).slice(ART_FROM)
+
+/** 字标**画幅**首行在屏上的行号（读格用）。 */
+const artRow = (frame: Frame): number => frame.record[ART_FROM]?.row ?? 0
 
 /** 抹行尾（帧上的行尾空白被归一化过，比形状时两边口径要一样）。 */
 const trimmed = (lines: readonly string[]): readonly string[] => lines.map((line) => line.replace(/\s+$/u, ''))
@@ -67,7 +91,7 @@ describe('① 窗口够宽 ⇒ 块字版', () => {
   test('**≥57 列**：记录区最前面就是那 5 行块字，一字不差（左留 2 列白）', async () => {
     const frame = await frameAt(100)
 
-    expect(headOf(frame, 5)).toEqual(WIDE_ON_SCREEN)
+    expect(artOf(frame, 5)).toEqual(WIDE_ON_SCREEN)
     // 一字不差那条之外，再钉「**是块字符**」——否则换成 ASCII 版这条照样绿
     expect(WIDE_ON_SCREEN.join('')).toContain('█')
   })
@@ -76,8 +100,8 @@ describe('① 窗口够宽 ⇒ 块字版', () => {
     expect(BANNER_WIDE_MIN).toBe(57)
     expect(BANNER_WIDE[0]?.length).toBe(53)
 
-    expect(headOf(await frameAt(57), 5)).toEqual(WIDE_ON_SCREEN)
-    expect(headOf(await frameAt(56), 1)).not.toEqual(WIDE_ON_SCREEN.slice(0, 1))
+    expect(artOf(await frameAt(57), 5)).toEqual(WIDE_ON_SCREEN)
+    expect(artOf(await frameAt(56), 1)).not.toEqual(WIDE_ON_SCREEN.slice(0, 1))
   })
 
   test('**不溢出**——终端不许替我们折行（折了就是「自算宽度 > 终端宽度」）', async () => {
@@ -93,34 +117,45 @@ describe('① 窗口够宽 ⇒ 块字版', () => {
 // ══ ② 窄 ⇒ 一行版 ═══════════════════════════════════════════════════
 
 describe('② 窄 ⇒ 一行版', () => {
-  test('**窄于 57 列**：换成一行完整产品名，占 10 列', async () => {
+  test('**窄于 57 列**：换成一行完整产品名（画幅 10 列）', async () => {
     const frame = await frameAt(45)
 
-    expect(headOf(frame, 1)).toEqual([BANNER_COMPACT])
+    // ⚠️ 左 2 列留白也在——**同一块东西，退让时别换性格**（⑨ 是它自己的判据）
+    expect(artOf(frame, 1)).toEqual([`${BANNER_INDENT}${BANNER_COMPACT}`])
     expect(BANNER_COMPACT).toBe('Magic Code')
     expect(BANNER_COMPACT.length).toBe(10)
   })
 
   test('**不缩写成 M、不附加 Icon**——整行就是那两个词', async () => {
-    const line = (await frameAt(45)).record[0]?.text ?? ''
+    const line = artOf(await frameAt(45), 1)[0] ?? ''
 
-    expect(line).toBe('Magic Code')
+    expect(line.trim()).toBe('Magic Code')
     expect(line).not.toContain('█')
   })
 
   test('一行版的分色点＝两个词之间（`Magic` ｜ ` Code`）', async () => {
     const frame = await frameAt(45)
-    const cells = frame.cellsOf(frame.record[0]?.row ?? 0)
+    const cells = frame.cellsOf(artRow(frame))
 
-    expect(cells[4]?.text).toBe('c') // `Magic` 末字
-    expect(cells[0]?.fg).toBe('#56b6c2') // Magic —— 品牌青
-    expect(cells[5]?.fg).toBe('#d8dce4') // Code —— 主文字色
+    // 左 2 列留白 ＋ `Magic` 5 字 ⇒ `Magic` 占 2..6、空档在 7、`Code` 从 8 起
+    expect(cells[6]?.text).toBe('c') // `Magic` 末字
+    expect(cells[2]?.fg).toBe('#56b6c2') // Magic —— 品牌青
+    expect(cells[8]?.fg).toBe('#d8dce4') // Code —— 主文字色
   })
 
-  test('阈值**正好是 10**（文档：「极窄到放不下 10 列时隐藏」）', async () => {
-    expect(BANNER_COMPACT_MIN).toBe(10)
+  test('阈值**正好是 12**（＝10 列画幅 ＋ 同样那 2 列左留白）', async () => {
+    // ⚠️ **原锚** `toBe(10)` ＋ `bannerOf(10)` 有 1 行——那时这个 10 是**画幅**宽，
+    //    而一行版**不带缩进**（贴在最左边），故「放得下 10 列」就等于「放得下整块」。
+    //    **为何变**：2026-09-20「首屏布局收口」给一行版补上了那 2 列左留白（⑨：同一块东西，
+    //    退让时别换性格）⇒ 它落进界面之后占的是 **12** 列，而判据的口径是**整块宽**
+    //    （⑪：留白不算可用宽度）。照字面的 10 放行的话，10～11 列的终端上这一行会被折成两行
+    //    ——恰好违背这一档的由头（「优先保证正文与输入空间」：装饰反而多占一行）。
+    //    **新锚** `toBe(12)`：放不下 10 ＋ 2 ⇒ 不印。**规划侧若判「按字面的 10 放行」**，
+    //    改回 `bannerOf` 那一支即可（这里会当场红，正是该红的地方）。
+    expect(BANNER_COMPACT_MIN).toBe(12)
 
-    expect(bannerOf(10)).toHaveLength(1)
+    expect(bannerOf(12)).toHaveLength(1)
+    expect(bannerOf(11)).toHaveLength(0)
     expect(bannerOf(9)).toHaveLength(0)
   })
 })
@@ -247,7 +282,7 @@ describe('⑤ 接续（重建）之后仍在最前面', () => {
 describe('⑥ 配色', () => {
   /** 一格里非空格子的颜色（去重）——`MAGIC` 与 `CODE` 各量一半。 */
   const colorsOf = (frame: Frame, from: number, to: number): readonly (string | null)[] => {
-    const row = frame.record[0]?.row ?? 0
+    const row = artRow(frame)
 
     return [
       ...new Set(
@@ -270,7 +305,7 @@ describe('⑥ 配色', () => {
 
   test('**不强制铺底色**——字标每一格的背景都是终端自己的', async () => {
     const frame = await frameAt(100)
-    const row = frame.record[0]?.row ?? 0
+    const row = artRow(frame)
 
     expect(frame.cellsOf(row).every((cell) => cell.bg === null)).toBe(true)
   })
@@ -300,7 +335,7 @@ describe('⑥ 配色', () => {
 describe('⑦ 静态', () => {
   test('**只有字标本身**——不夹 slogan、版本号、Icon 或工具信息', async () => {
     const frame = await frameAt(100)
-    const art = headOf(frame, 5).join('\n')
+    const art = artOf(frame, 5).join('\n')
 
     // 把画幅原样去掉之后，剩不下任何东西（多一行字都会露出来）
     expect(art.replace(/[█\s]/gu, '')).toBe('')
@@ -311,7 +346,7 @@ describe('⑦ 静态', () => {
 
   test('不加动效 · 不加重 ——字标每一格都不粗、不斜、不删线、不换色底', async () => {
     const frame = await frameAt(100)
-    const row = frame.record[0]?.row ?? 0
+    const row = artRow(frame)
     const cells = frame.cellsOf(row)
 
     expect(cells.every((cell) => cell.bold === false)).toBe(true)
@@ -324,7 +359,7 @@ describe('⑦ 静态', () => {
     const first = await stage.screen({ columns: 100, rows: 30 })
     const second = await stage.screen({ columns: 100, rows: 30 })
 
-    expect(headOf(first, 5)).toEqual(headOf(second, 5))
+    expect(artOf(first, 5)).toEqual(artOf(second, 5))
   })
 })
 
@@ -342,8 +377,8 @@ describe('⑧ 默认用块字版（不做字体检测）', () => {
   })
 
   test('够宽就是**块字符**（默认那一版），不是 ASCII', async () => {
-    expect((await frameAt(200)).record[0]?.text).toContain('█')
-    expect((await frameAt(200)).record[0]?.text).not.toContain('#')
+    expect(artOf(await frameAt(200), 1)[0]).toContain('█')
+    expect(artOf(await frameAt(200), 1)[0]).not.toContain('#')
   })
 
   test('ASCII 那份**留着，且是完好的资源**——53 列 × 5 行，全部可打印 ASCII', () => {
@@ -355,6 +390,156 @@ describe('⑧ 默认用块字版（不做字体检测）', () => {
   test('块字版也是**53 列 × 5 行**（与设计文档核对的画幅对得上）', () => {
     expect(BANNER_WIDE).toHaveLength(5)
     expect(BANNER_WIDE.every((line) => line.length === 53)).toBe(true)
+  })
+})
+
+// ══ ⑨ 左缩进 2 列（两版同一个性格）═══════════════════════════════════
+
+/**
+ * 规格出处：`界面原型.html` 场景 1 —— `.banner{padding-left:2ch}` 与那段注
+ * 「窄些＝一行 `Magic Code`（**同样缩 2 列，退让时别换性格**）」。
+ */
+describe('⑨ 左缩进 2 列——两版同一个性格', () => {
+  test('块字版：画幅每一行前面就是那 2 列留白', async () => {
+    const frame = await frameAt(100)
+    const art = artOf(frame, 5)
+
+    expect(art.every((line) => line.startsWith(BANNER_INDENT))).toBe(true)
+    // 防空转：留白确实是 2 格，且留白之后**真接着画幅**（不是整行恰好以空格开头）
+    expect(BANNER_INDENT).toBe('  ')
+    expect(art[0]?.slice(2, 3)).toBe('█')
+  })
+
+  test('一行版**同样缩 2 列**——退让时不换性格', async () => {
+    // ⚠️ **原锚** `['Magic Code']`——那时一行版**贴在最左边**（缩进只给了块字版）。
+    //    **为何变**：2026-09-20「首屏布局收口」——同一个字标在两种宽度下不许是两个性格
+    //    （规划侧原话：「同一块东西，退让时别换性格」）。缩进因此从块字版推广到一行版。
+    //    **新锚** `['  Magic Code']`——那 2 列是**留白**（跟着首段着色，肉眼仍是空白）。
+    const frame = await frameAt(45)
+
+    expect(artOf(frame, 1)).toEqual([`${BANNER_INDENT}${BANNER_COMPACT}`])
+  })
+
+  test('**两版的左边缘在同一列上**——96 列与 40 列画出来，字标都从第 3 列起', async () => {
+    // 这一条是「同一个性格」的**尺子**：不比字面量，比两帧上第一个非空格落在第几列
+    const firstInk = async (columns: number): Promise<number> => {
+      const frame = await frameAt(columns)
+
+      return frame.cellsOf(artRow(frame)).findIndex((cell) => cell.text.trim() !== '')
+    }
+
+    expect(await firstInk(96)).toBe(2) // 块字版：留白 2 ＋ 画幅
+    expect(await firstInk(40)).toBe(2) // 一行版：留白 2 ＋ `Magic Code`
+  })
+})
+
+// ══ ⑩ 自成一块（前后各一行留白）══════════════════════════════════════
+
+/**
+ * 规格出处：`界面原型.html` 场景 1 —— `.banner{margin:0 0 17px}` 与 `.log` 的上留白，
+ * 以及那段注：「启动时先印 Banner——它**自成一块**：左缩进 2 列 · **前后各一行留白**
+ * （它与引导语是两种东西——品牌 vs 空态提示，**贴着就成了「硬放」**）」。
+ *
+ * 用户当场的批评：「真就直接硬放一个 banner 呗 一点布局设计都没有的那种」。
+ */
+describe('⑩ 字标**自成一块**——前后各一行留白', () => {
+  test('块＝前留白 ＋ 画幅 ＋ 后留白；紧接着才是引导语——**不贴着**', async () => {
+    const frame = await frameAt(100)
+    const texts = headOf(frame, 8)
+
+    expect(texts[0]?.trim()).toBe('') // ① 前：一行留白
+    expect(texts.slice(1, 6).join('')).toContain('█') // ② 中：5 行画幅
+    expect(texts[6]?.trim()).toBe('') // ③ 后：一行留白
+    // ④ 下一行才是空态引导语（原型 · 场景 1 那句）——它与字标隔着那一行留白
+    expect(texts[7]).toContain('交代一件事就开始')
+    // 而它**不是**被顶到画幅底下的：画幅末行与它之间**恰好一行**（多一行就是成片空行）
+    expect(texts[6]).toBe('')
+  })
+
+  test('一行版**照旧自成一块**（缩进退了，形状不退）', async () => {
+    const texts = headOf(await frameAt(45), 4)
+
+    expect(texts[0]?.trim()).toBe('')
+    expect(texts[1]?.trim()).toBe('Magic Code')
+    expect(texts[2]?.trim()).toBe('')
+    expect(texts[3]).toContain('交代一件事就开始')
+  })
+
+  test('**极窄不印时一行都不占**——连那两行留白也不留', async () => {
+    // 「不印」是字面意思：顶上第一行就是内容，不是「先空两行再说」
+    const texts = headOf(await frameAt(9), 2)
+
+    expect(texts[0]?.trim()).not.toBe('')
+    expect(texts.join('')).toContain('交代一件')
+  })
+
+  test('留白**不叠**：字标之后紧接用户消息时，中间只有一行空', async () => {
+    // 字标自带后留白，而「用户消息之前留一行分段」也是同一件事——
+    // 不排掉的话会空两行（成片空行，`invariants.blankRuns` 当场红）
+    const stage = createStage()
+    stage.type('第一句')
+    stage.press({ kind: 'enter' })
+    stage.feed([
+      event('turn.start', {}),
+      event('model.delta', { channel: 'text', text: '答一' }),
+      event('turn.end', { reason: 'settled' }),
+    ])
+
+    const frame = await stage.screen({ columns: 100, rows: 30 })
+    const texts = headOf(frame, 8)
+
+    expect(texts.slice(1, 6).join('')).toContain('█') // 画幅还在最前
+    expect(texts[6]?.trim()).toBe('') // 后留白（一行）
+    expect(texts[7]).toContain('› 第一句') // 紧接着就是那条用户消息
+    expect(blankRuns(frame.screen)).toEqual([]) // 记录区里没有成片空行
+  })
+})
+
+// ══ ⑪ 判据是整块宽（留白不算可用宽度）════════════════════════════════
+
+/**
+ * 规格出处：`界面原型.html` 场景 1 那段注 ——
+ * 「**≥57 列**＝块字版（**57 ＝ 53 ＋ 左右各 2** —— 那 2 列是留白，**别算进可用宽度**）」。
+ *
+ * 一句话：**下限判的是「整块放不放得下」，不是「画幅放不放得下」**。
+ * 照画幅宽放行＝把那 2 列留白算成了可用宽度 ⇒ 窄一列就顶边。
+ */
+describe('⑪ 判据是**整块宽**——留白不算可用宽度', () => {
+  test('块字版：**53～56 列不给**（画幅放得下，加上那 2 列留白就顶边了）', async () => {
+    for (const columns of [53, 54, 55, 56]) {
+      const lines = bannerOf(columns)
+
+      expect(lines).toHaveLength(1) // 退到一行版——而不是硬塞块字
+      expect(lines[0]?.text).not.toContain('█')
+      // 退回去的那一档也**不折行**（两档都不许顶边）
+      expect((await frameAt(columns)).screen.wrapped.some(Boolean)).toBe(false)
+    }
+
+    expect(bannerOf(57)).toHaveLength(5)
+  })
+
+  test('块字版在 57 列上：**右边还剩 2 列**（57 ＝ 左 2 ＋ 53 ＋ 右 2）', async () => {
+    const frame = await frameAt(57)
+
+    expect(artOf(frame, 1)[0]?.length).toBe(55) // 左 2 ＋ 画幅 53
+    expect(frame.screen.wrapped[artRow(frame)]).toBe(false) // 终端没替我们折行
+    // 那 2 列右留白是**真的空着**——字标没顶到最后一列
+    const cells = frame.rawCellsOf(artRow(frame))
+
+    expect(cells.slice(55, 57).every((cell) => cell.text.trim() === '')).toBe(true)
+  })
+
+  test('一行版：**11 列不给、12 列才给**（10 列画幅 ＋ 同样那 2 列留白）', async () => {
+    // ⚠️ 判据不用「帧文本里有没有 `Magic Code`」——那条路是**折行**走过的
+    //    （11 列放一行版，终端会把它折成 `  Magic Cod` ＋ `e`，那串字在帧上不连续，
+    //    于是反向验证时把下限掐掉它照样绿）。改用 ③ 那把折不断的尺子：**比字节**。
+    const view = createStage().shell.getView()
+    const stripped: ShellView = { ...view, settled: view.settled.filter((row) => row.kind !== 'banner') }
+
+    expect(view.settled.some((row) => row.kind === 'banner')).toBe(true) // 防空转
+
+    expect(await bytesAt(view, 11, 0)).toBe(await bytesAt(stripped, 11, 0)) // 11 列：一个格子都没占
+    expect(await bytesAt(view, 12, 0)).not.toBe(await bytesAt(stripped, 12, 0)) // 12 列：占上了
   })
 })
 

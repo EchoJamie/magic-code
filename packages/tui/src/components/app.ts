@@ -31,7 +31,7 @@ import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { groupHeads, hasRunningTool } from '../view.ts'
 import { Composer, draftHeight, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
-import { LogRowView, needsSpacer, rowLines } from './log.ts'
+import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList } from './picker.ts'
 import { StatusLine } from './status.ts'
@@ -103,7 +103,10 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           row,
           columns,
           expanded: view.expanded,
-          spaced: needsSpacer(view.settled, index),
+          // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
+          // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
+          // （用户消息该有的分段时有时无）。`items === view.settled` 时不差分毫。
+          spaced: needsSpacer(items, index),
         }),
     }),
     // **空态**（原型 · 场景 1）——还没有会话、屏上也没有东西时给引导语
@@ -115,7 +118,12 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
         row,
         columns,
         expanded: view.expanded,
-        spaced: index === 0 ? view.settled.length > 0 && row.kind === 'user' : needsSpacer(live.rows, index),
+        // 交界那一条的「上一条」在 `settled` 里——同一条规矩（`needsSpacerAfter`），
+        // 免得「用户消息之前留一行」在交界处换一副面孔（字标自带的后留白也在这条规矩里）
+        spaced:
+          index === 0
+            ? needsSpacerAfter(view.settled.at(-1), row)
+            : needsSpacer(live.rows, index),
         now,
       }),
     ),
