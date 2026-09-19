@@ -35,13 +35,13 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 bun install                     # 装依赖（prepare 顺带配置 git 钩子）
 
 # 产品路径
-bun run magic                   # 起一屏，用自然语言交代活
-bun run magic --session <id>    # 接着一条已有的会话干（id 见外壳里的 /session 列表）
+bun run magic                   # 打开交互界面，用自然语言交代活
+bun run magic --session <id>    # 接着一条已有的会话干（id 见界面里的 /session 列表）
 bun run magic --provider <id>   # 开局用哪个供应商（配置里 providers 的条目名）
-bun run magic --model <名>      # 开局用哪个模型（可与 --provider 单用）
+bun run magic --model <名>      # 开局用哪个模型（也可以单独用，不带 --provider）
 
-# 验收用（不是日常用法）
-bun run magic --check           # 把配置、数据落点、工作区、会话挨个查一遍，报完自检就退出（不打印 key）
+# 下面两条不是日常用法
+bun run magic --check           # 把配置、数据存哪、工作区、会话挨个查一遍，查完就退出（不打印 key）
 bun run magic --script <文件>   # 无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
 
 # 开发
