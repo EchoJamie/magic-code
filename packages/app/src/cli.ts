@@ -27,25 +27,25 @@ import type { ShellScript } from './shell.ts'
 const USAGE = `magic —— 软件工程智能体
 
 用法：
-  magic                        起一屏，用自然语言交代活
+  magic                        打开交互界面，用自然语言交代活
   magic --session <id>         接着一条已有的会话干
   magic --provider <id>        开局用哪个供应商（配置里 providers 的条目名）
-  magic --model <名>           开局用哪个模型（可与 --provider 单用）
+  magic --model <名>           开局用哪个模型（也可以单独用，不带 --provider）
   magic -h, --help             显示这份帮助
 
-接着来是显式的：不给 --session 就是新会话（空手打开也不先建——首条消息按下回车才开张）。
---session 要的是 /session 列表里那串 id，且必须已经存在：打错一个字母会报错退场，
-不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。接上之后先跑一次恢复
-（处置上次崩溃留下的在途操作），恢复跑完才收你的输入。
-开局没给 --provider / --model 就走配置里的缺省条目；中途换模型在界面里打 /model。
+接着上次的活，得说一声：不给 --session 就是新会话（直接敲 magic 也不会先建一条——
+首条消息按下回车才开张）。--session 要的是 /session 列表里那串 id，且必须已经存在：
+打错一个字母会报错退场，不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。
+接上之后先跑一次恢复（处置上次崩溃时没做完的那件事），恢复跑完才收你的输入。
+开局没给 --provider / --model 就用配置里的缺省条目；中途换模型在界面里打 /model。
 
-验收用（不是日常用法）：
-  magic --check                把配置、数据落点、工作区、会话挨个查一遍，报完自检就退出
+下面两条不是日常用法：
+  magic --check                把配置、数据存哪、工作区、会话挨个查一遍，查完就退出
   magic --script <文件>        无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
 
 脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型），
-decisions 替你给的答复。写法与实例见 README 的「脚本（--script）」一节。
-替人答复是验收装置的方便，不是产品行为——平时该定夺的仍是你。
+decisions 是替你给的答复。写法与实例见 README 的「脚本（--script）」一节。
+脚本替你答复只是图个方便，不是产品行为——平时该定夺的仍是你。
 `
 
 type Args = {
