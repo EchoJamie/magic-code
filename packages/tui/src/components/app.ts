@@ -31,7 +31,7 @@ import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { groupHeads, hasRunningTool } from '../view.ts'
 import { Composer, draftHeight, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
-import { LogRowView, needsSpacer, rowLines } from './log.ts'
+import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList } from './picker.ts'
 import { StatusLine } from './status.ts'
@@ -103,7 +103,10 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           row,
           columns,
           expanded: view.expanded,
-          spaced: needsSpacer(view.settled, index),
+          // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
+          // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
+          // （用户消息该有的分段时有时无）。`items === view.settled` 时不差分毫。
+          spaced: needsSpacer(items, index),
         }),
     }),
     // **空态**（原型 · 场景 1）——还没有会话、屏上也没有东西时给引导语
@@ -115,7 +118,12 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
         row,
         columns,
         expanded: view.expanded,
-        spaced: index === 0 ? view.settled.length > 0 && row.kind === 'user' : needsSpacer(live.rows, index),
+        // 交界那一条的「上一条」在 `settled` 里——同一条规矩（`needsSpacerAfter`），
+        // 免得「用户消息之前留一行」在交界处换一副面孔（字标自带的后留白也在这条规矩里）
+        spaced:
+          index === 0
+            ? needsSpacerAfter(view.settled.at(-1), row)
+            : needsSpacer(live.rows, index),
         now,
       }),
     ),
@@ -132,7 +140,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
  *
  * ⚠️ **启动字标不算「有内容」**：它现在恒在 `settled[0]`（见 `view.ts` 的 `withBanner`），
  * 照「`settled` 空不空」判的话它会把空态**永远挡住**——而那正是原型场景 1 那一屏
- * （「交代一件事就开始」）。故这里问的是**除了字标还有没有东西**。
+ * （「会话在你按下第一次回车时才建立」）。故这里问的是**除了字标还有没有东西**。
  *
  * 用 `every` 而不是「长度减一」：字标**恒在最前且恒只一行**（`bannerFirst` 的收口），
  * 故 `every` 在真有事发生的那一屏上**第一个元素之后当场收手**，不是每帧数一遍。
@@ -161,6 +169,17 @@ export function isEmpty(view: ShellView): boolean {
  * 一直标着「原型 · 场景 1 的原文」——**删它们等于改规格**。此处**照用户的话改代码**，
  * 差异备案在回报里；原型若要跟上，是规划侧那次同步的事。
  *
+ * ⚠️ **再去掉开头那半句**（用户 2026-09-20 看真机帧时指出：「交代一件事 看了图没发现这句话是
+ * 重复叙述？」）——
+ * **原锚**：`交代一件事就开始。会话在你按下第一次回车时才建立。`
+ * **为何变**：**同一屏上、隔着一行**，输入框的占位正是「交代一件事，回车发送」——
+ *   引导语以同一个词起头，读者读到的是**把占位又说了一遍**。用户的原话：
+ *   那半句是废话（**占位已经说了**）；留下的是**用户不知道的信息**（会话**建立于何时**）。
+ * **新锚**：`会话在你按下第一次回车时才建立。`——只讲**会发生什么**，不再重述怎么开始。
+ *
+ * ⚠️ **这条的教训**（规划侧自陈、我照记）：上一轮**只看了布局没读话**，所以漏了——
+ * 「从上到下一行行通读」是这一屏的验收动作之一，光量缩进与留白量不出重复叙述。
+ *
  * 另：状态行右位那两处键位提示（`/ 命令 · ctrl+c 退出` · `ctrl+c 中断`）**不动**——
  * 那是**功能发现**（不显示就不知道能打 `/`），与「用法提示文字」不是一类（用户划定）。
  */
@@ -171,7 +190,7 @@ function EmptyState(): ReactElement {
     h(
       Text,
       { key: 'e:0' },
-      h(Text, { color: PALETTE.faint }, '交代一件事就开始。会话在'),
+      h(Text, { color: PALETTE.faint }, '会话在'),
       h(Text, { color: PALETTE.faint, bold: true }, '你按下第一次回车'),
       h(Text, { color: PALETTE.faint }, '时才建立。'),
     ),

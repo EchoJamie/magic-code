@@ -73,7 +73,8 @@ export type Frame = {
   /** 记录区的行（分隔线**之上**）——`界面原型.html` 里那些 `› ⏺ ● ·` 都在这。 */
   readonly record: readonly Line[]
   /**
-   * 记录区的**内容行**——`record` 去掉最前面那一块**启动字标**（TUI Banner）。
+   * 记录区的**内容行**——`record` 去掉最前面那一块**启动字标**（TUI Banner，
+   * **含它前后那两行留白**——整块都是装帧，见 `contentOf`）。
    *
    * 由头：字标恒在记录区最前面（启动印一次，见 `src/banner.ts`），而**绝大多数判据问的是
    * 「记录区里有哪些内容」**——「条目之间不插空行」「命令输出与回执不回」「切了会话还剩什么」
@@ -154,9 +155,16 @@ export async function rendered(
  * 记录区 → 去掉最前面那一块**启动字标**（见 `Frame.content` 的注）。
  *
  * 逐行比对那几行的样子（**含宽度**——块字版与一行版长得完全不同），不是掐前 N 行。
+ *
+ * ⚠️ 剥的是**整块**：`'' ＋ 画幅 ＋ ''`——**前留白与后留白也算装帧**。
+ * 那两行留白由字标那一支自己发（`components/log.ts` 的 `BANNER_GAP_TOP` / `_BOTTOM`），
+ * 与「记录区里的一个条目」不是一回事；留着它们会让「记录区里有哪些内容」这类判据
+ * 在**每一条**前面都多看见一个空串（2026-09-20 收口时一并剥掉）。
  */
 function contentOf(record: readonly Line[], columns: number): readonly Line[] {
-  const banner = bannerOf(columns).map((line) => line.text.replace(/\s+$/u, ''))
+  const art = bannerOf(columns).map((line) => line.text.replace(/\s+$/u, ''))
+  // 极窄那一档字标一行都不印 ⇒ 一行留白也没有（块整个不存在）
+  const banner = art.length === 0 ? [] : ['', ...art, '']
   let at = 0
   while (at < banner.length && record[at]?.text === banner[at]) at += 1
 

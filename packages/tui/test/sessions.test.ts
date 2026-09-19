@@ -188,7 +188,7 @@ describe('空态判定（缺陷 D3）', () => {
         columns: COLUMNS,
       }),
     )
-    expect(emptyScreen).toContain('交代一件事就开始')
+    expect(emptyScreen).toContain('你按下第一次回车时才建立')
 
     // 会话建立（哪怕还没有条目）之后就**不**再是空态——那由 `sessionId` 说了算，不是本进程的计数
     const spy = createSpyTransport()
@@ -199,7 +199,7 @@ describe('空态判定（缺陷 D3）', () => {
         columns: COLUMNS,
       }),
     )
-    expect(opened).not.toContain('交代一件事就开始')
+    expect(opened).not.toContain('你按下第一次回车时才建立')
     void createView()
   })
 })

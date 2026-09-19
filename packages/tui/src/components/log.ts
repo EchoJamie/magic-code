@@ -141,6 +141,12 @@ export function rowLines(
 /** 分段行（用户消息之前那一行）——**同一个对象**，省得每帧新建一个。 */
 const SPACER: LogLine = { key: 'spacer', segments: [], spacer: true }
 
+/** 字标块**上面**那一行留白（见 `case 'banner'`）——键与下面那条不同（同一行里的兄弟键要唯一）。 */
+const BANNER_GAP_TOP: LogLine = { key: 'r:n:pad:top', segments: [], spacer: true }
+
+/** 字标块**下面**那一行留白——「用户消息之前那一行分段」的活儿由它兼了（见 `needsSpacerAfter`）。 */
+const BANNER_GAP_BOTTOM: LogLine = { key: 'r:n:pad:bottom', segments: [], spacer: true }
+
 /** 显示行的四个参数合成一个键（`now` 参与——跑动中的那行每滴答一次就该重算一次）。 */
 function cacheKeyOf(options: {
   readonly columns: number
@@ -286,7 +292,22 @@ export function logLines(
 
 /** 用户消息之前留一行分段；首条不必（顶上没有东西要分隔）。 */
 export function needsSpacer(rows: readonly LogRow[], index: number): boolean {
-  return index > 0 && rows[index]?.kind === 'user'
+  return needsSpacerAfter(index > 0 ? rows[index - 1] : undefined, rows[index])
+}
+
+/**
+ * 紧邻的两条之间留不留一行分段——**「这条是不是用户消息」×「上一条是不是字标」**。
+ *
+ * 拆出这一支是为了**活动区那一段交界**（`app.ts`）：那儿没有 `rows` 数组可索引
+ * （上一条在 `settled` 里、这一条在 `rows` 里），只有「上一条是谁」。两处必须是**同一条规矩**，
+ * 否则同一屏上「用户消息之前」会有两种行为。
+ *
+ * ⚠️ **字标不加这一层**：它自己结尾就带一行留白（`BANNER_GAP_BOTTOM`）。
+ * 不排这一支的话，字标之后的第一条用户消息前面会**空两行**——那是「成片空行」，
+ * `invariants.ts` 的 `blankRuns` 当场红（≤1 行）。
+ */
+export function needsSpacerAfter(previous: LogRow | undefined, row: LogRow | undefined): boolean {
+  return previous !== undefined && row?.kind === 'user' && previous.kind !== 'banner'
 }
 
 function rowBody(
@@ -320,14 +341,28 @@ function rowBody(
      * ⚠️ 画幅是纯 BMP（`█` ＋ 空格），故 `slice` 按码元切与按字切等价；
      * 若日后换成含代理对的字形，这一处要跟着改 `Array.from`。
      */
-    case 'banner':
-      return bannerOf(columns).map((line, at) => ({
+    case 'banner': {
+      const art = bannerOf(columns).map((line, at) => ({
         key: `r:n:${at}`,
         segments: [
           seg(line.text.slice(0, line.magicWidth), PALETTE.user),
           seg(line.text.slice(line.magicWidth), PALETTE.fg),
         ],
       }))
+
+      // **极窄 ⇒ 一行都不给**——含那两行留白（「一个格子都不占」是字面意思：
+      // 9 列那一档的判据是「整屏字节与摘掉字标那份逐字节相同」，多一行空行就不成立了）。
+      if (art.length === 0) return []
+
+      /**
+       * **自成一块**（原型 · 界面原型.html 场景 1 的 `.banner{margin:0 0 17px}` 与 `.log` 的上留白）：
+       * 前后**各一行留白**——品牌与空态提示是两种东西，贴着就成了「硬放」。
+       *
+       * ⚠️ **后留白与「用户消息之前那一行分段」是同一件事**，故那儿不再叠一层
+       * （见 `needsSpacerAfter`）：字标总在最前，紧挨着它的那条已经被这一行留白隔开了。
+       */
+      return [BANNER_GAP_TOP, ...art, BANNER_GAP_BOTTOM]
+    }
 
     case 'user':
       // **整行淡青背景**（一眼看出「这句是我说的」）——正文原色、标记青
