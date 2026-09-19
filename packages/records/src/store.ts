@@ -178,8 +178,13 @@ export type RecordsStore = {
    * 「要处置什么」：在途调用（有 `tool.call` 无 `tool.result`）· 中断的轮 · 轮号水位。
    *
    * 归本域的理由：两侧的来处都在库里（事件侧给裁决轨迹、条目侧给配对），
-   * 而**判据只有一份**——放这儿，别家（对话域的恢复流程）就不必各写一遍。
-   * 扫描**只读不判**：处置（重放 / 落账）归对话域。
+   * 而**判据只有一份**——放这儿，别家（应用层的恢复用例）就不必各写一遍。
+   * 扫描**只读不判**：处置（重放 / 落账）归应用层（`@magic/actions`）。
+   *
+   * ⚠️ 与端口上的 `RecordsService.scanInFlight` 是**同一个函数的两张面孔**（U25）：
+   * 那是**生产路径**（恢复的编排搬去应用层之后，装配给它的就是这个端口面，见下 `serviceFor`）；
+   * 域侧这一张留着给本包的用例与验收脚本用（按 id 直取，不必先造一个会话实例）。
+   * 两处都指向 `runRecoveryScan` 一处实现——形态漂不了。
    */
   recoveryScan(session: SessionId): Promise<RecoveryScan>
   /** 关连接（blob 无需收尾）。 */
@@ -354,6 +359,9 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
         appendEvent: (event) => appendEvent(session, event),
         readEntries: (sessionId, range) => readEntries(sessionId, range),
         readEvents: (sessionId) => readEvents(sessionId),
+        // 在途识别（恢复 ①）——**端口面**（U25）：恢复的编排搬去应用层之后，消费方
+        // 够不着 `RecordsStore` 那把把手（域外只认端口）。与 `readEvents` 同例：方法收 id。
+        scanInFlight: (sessionId) => runRecoveryScan(sessionId),
         listSessions,
         blobs,
       }

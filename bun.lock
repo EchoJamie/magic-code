@@ -12,6 +12,16 @@
         "typescript": "^5.7.0",
       },
     },
+    "packages/actions": {
+      "name": "@magic/actions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@magic/contracts": "workspace:*",
+      },
+      "devDependencies": {
+        "@magic/faux": "workspace:*",
+      },
+    },
     "packages/app": {
       "name": "@magic/app",
       "version": "0.0.0",
@@ -19,6 +29,7 @@
         "magic": "./src/cli.ts",
       },
       "dependencies": {
+        "@magic/actions": "workspace:*",
         "@magic/contracts": "workspace:*",
         "@magic/control": "workspace:*",
         "@magic/conversation": "workspace:*",
@@ -133,6 +144,8 @@
     "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@5.0.41", "https://registry.npmmirror.com/@ai-sdk/provider-utils/-/provider-utils-5.0.41.tgz", { "dependencies": { "@ai-sdk/provider": "4.0.15", "@standard-schema/spec": "^1.1.0", "@workflow/serde": "4.1.0", "eventsource-parser": "^3.0.8", "undici": "^7.29.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-hSosMII5k33z0buaZ6dugH/g8yIJjPQBILuQvr4ThdiMJxrkiZxFWTgIkvKsT6Dk493JbsnGz5W/q88Y5bR7WA=="],
 
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.3.1", "https://registry.npmmirror.com/@alcalzone/ansi-tokenize/-/ansi-tokenize-0.3.1.tgz", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^5.0.0" } }, "sha512-cUD0PT0YX+rImRhfn7BfMRduP/tX/Zqt/N0dHlAyn2RlcJssCb5KsCJkhln61eh9vuJDkH8wKn3L8zJzzWXPFg=="],
+
+    "@magic/actions": ["@magic/actions@workspace:packages/actions"],
 
     "@magic/app": ["@magic/app@workspace:packages/app"],
 

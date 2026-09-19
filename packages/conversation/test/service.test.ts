@@ -221,6 +221,7 @@ function brokenRecords(base: FauxRecords): RecordsService {
     appendEvent: (event: KernelEvent): void => base.appendEvent(event),
     readEntries: (session, range) => base.readEntries(session, range),
     readEvents: (session) => base.readEvents(session),
+    scanInFlight: (session) => base.scanInFlight(session),
     listSessions: () => base.listSessions(),
   }
 }

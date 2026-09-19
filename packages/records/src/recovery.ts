@@ -3,7 +3,8 @@
  * 「恢复的查询面（在途识别）由它提供」）。
  *
  * 恢复要处置什么，**只能从记录里读出来**——本文件把那件事说全，且**只说不判**：
- * 判定「哪几笔在途、属于哪一轮、裁决走到了哪一步」，处置（重放 / 落账）归对话域。
+ * 判定「哪几笔在途、属于哪一轮、裁决走到了哪一步」，处置（重放 / 落账）归**应用层**
+ * （`@magic/actions`——U25 起；此前归对话域）。
  *
  * ```
  *   有 `tool.call` 无 `tool.result`   ← 在途（①的原话）
@@ -36,36 +37,22 @@
  * 长会话的流式扫描留后（真要时按 id 分页读，端口已支持）。
  */
 
-import type { Decision, Decider, Entry, KernelEvent, RecordId, SessionId, TurnId } from '@magic/contracts'
+import type {
+  Decision,
+  Decider,
+  Entry,
+  InFlightCall,
+  KernelEvent,
+  RecordId,
+  RecoveryScan,
+  SessionId,
+  TurnId,
+} from '@magic/contracts'
 
-/** 一笔在途调用——「有调用、无结果」的那一次（恢复要处置的对象）。 */
-export type InFlightCall = {
-  /** 该次 `tool.call` 事件的 id——**链引用**（请求 / 询问 / 裁决 / 结果四事件按它串）。缺则 `null`。 */
-  readonly call: RecordId | null
-  /** 该次 `tool-call` 条目的 id——**条目侧配对键**（结果条目紧随其后即成对）。缺则 `null`。 */
-  readonly entry: RecordId | null
-  readonly name: string
-  readonly args: Readonly<Record<string, unknown>>
-  /** 信封的 `turn`——该次调用属哪一轮（轮外为 `null`）。 */
-  readonly turn: TurnId | null
-  /** 问过闸门吗（`tool.decision.request` 在）——措辞用：问了没答与被拒不是同一件事。 */
-  readonly requested: boolean
-  /** 裁决结论（`tool.decision`）。**未答复 / 未问 ＝ `null`**——④按它落账。 */
-  readonly decision: Decision | null
-  /** 裁者（与 `decision` 同来处；无裁决则 `null`）。 */
-  readonly decider: Decider | null
-}
-
-/** 恢复查询的产物——一次扫描把「要处置什么」说全。 */
-export type RecoveryScan = {
-  readonly session: SessionId
-  /** **中断的轮**——有 `turn.start` 无 `turn.end` 的那个（多个取最大号）；没有＝`null`。 */
-  readonly openTurn: TurnId | null
-  /** 记录里出现过的**最大轮号**——轮号续跑用（同一会话重启后接着那串号走）。没有＝`null`。 */
-  readonly lastTurn: TurnId | null
-  /** 在途调用（按出现序）。 */
-  readonly calls: readonly InFlightCall[]
-}
+// `InFlightCall` / `RecoveryScan` 的**形态归契约**（U25）：恢复的消费方是应用层
+// （`@magic/actions`），而应用层只认 `@magic/contracts`——再让每个消费方各持一份镜像
+// （U15 时对话域就是这么干的）＝ N 处形态各写一遍、靠接线处对齐。形搬到契约，两处同源。
+export type { InFlightCall, RecoveryScan }
 
 /** 扫描入参——事件与条目由调用方读好后交进来（本函数**纯**：不碰库、不碰 fs）。 */
 export type ScanInput = {

@@ -66,6 +66,9 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const shell = createShell(options.transport, {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
+    // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
+    // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
+    inputReady: options.boot === undefined,
   })
 
   const app = render(h(TuiApp, { shell }), {
@@ -94,8 +97,13 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   })
 
   try {
-    // **先接订阅（构造即订阅）、后放开输入**——中间这一跳是启动流转
+    // **先接订阅（构造即订阅）→ 再跑启动流转 → 最后才放开输入**
+    //
+    // 中间这一跳（`boot` ＝应用层的恢复用例：装载 ＋ 在途处置 ＋ 重建）**要发事件**，
+    // 故必须在订阅之后；而**输入要到它跑完才受理**——反了就是「恢复还没完、用户先把
+    // 下一轮派出去了」，两条流当场抢同一条记录。`releaseInput` 就是那道闸。
     await options.boot?.()
+    shell.releaseInput()
     // 接续 / 恢复之后读一次历史：记录区按条目**重建**（缺陷 D1）
     shell.readHistory()
   } catch (error) {

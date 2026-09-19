@@ -2,6 +2,8 @@
  * `@magic/conversation` —— **对话域**（核心域）· 跨域可见面。
  *
  * 职责（技术方案 · 领域划分）：Agent 运行——主循环 · 上下文装配 · 系统提示词 · 中断 / 恢复。
+ * ⚠️ 其中的「恢复」自 U25 起只指**第 ⑤ 步**（重建面：装载 ＋ 上下文由条目重建）——
+ * ①②③④ 的编排归应用层（见文件末那一节）。设计表那一行尚未随之改写，以本注为准。
  * 对外端口 `ConversationService`（在 `@magic/contracts`）；本包＝它的实现域。
  * 域内规则：不认知任何域的内部、不认知外壳与供应商；会话推进（条目落账）归本域。
  *
@@ -38,20 +40,13 @@ export { createConversationService } from './sessions.ts'
 export type { SessionHost, SessionHostDeps, SessionInstance } from './sessions.ts'
 
 export { createConversationSession } from './service.ts'
-export type { ConversationDeps, ConversationSession } from './service.ts'
+export type { ConversationDeps, ConversationSession, RebuildReport } from './service.ts'
 
 // 构造入参里点名用到、装配根必须拿得到的两件形态：
 // 提示词运行时注入值（`cwd` / `platform` / `date`）与上下文策略（阈值 / 截断）
 export type { PromptVars } from './prompt/index.ts'
 export type { ContextPolicy } from './policy.ts'
 
-// 恢复（阶段 2 · U15）——注入面（`RecoveryDeps` 的两件）与**报告**（`recover()` 的返回）。
-// `RecoveryScan` / `InFlightCall` 是记录域查询面的镜像：消费侧经 `RecoveryDeps.inFlight`
-// **转手**即可，不必具名（域间不得互 import，故本域自持一份——没出，就没承诺）。
-export type {
-  CallDisposition,
-  IdempotencyJudge,
-  NotReplayedReason,
-  RecoveryDeps,
-  RecoveryReport,
-} from './recovery.ts'
+// ⚠️ **恢复的编排不在这里**（U25 起）——本域只出**重建面**（`ConversationService.rebuild`：
+// 装载 ＋ 认下水位与开工位）。在途识别（记录域端口）与②③④的处置（重放 / 落账 / 记中止）
+// 归应用层 `@magic/actions`；出在这儿的是它拿去用的那几个形态（`RebuildReport` 等）。

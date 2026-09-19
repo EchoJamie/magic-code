@@ -295,3 +295,53 @@ describe('入口 magic · 换模型的启动参数', () => {
     }
   })
 })
+
+/**
+ * **`--session`**（U25 · 恢复入口）——审计第 1 条那个悬案：恢复的入口没有归处。
+ *
+ * 判据锚的是「我要什么」：**给一个 id，装配就接上那条会话**（「接着来是显式的」那半句，
+ * 技术方案 · 会话与多会话）。它**由应用层受理**（`@magic/actions`）——本文件只验
+ * 「id 进得来、落到了会话位上」；装载 ＋ 恢复 ＋ 重建那三件在 `test/recovery.test.ts` 与真跑里验。
+ */
+describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
+  test('用法里写清了这条入口（新增入口选项须在设计里登记的那条规矩）', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      const result = await run(home, '--help')
+
+      expect(result.stdout).toContain('--session <id>')
+      expect(result.stdout).toContain('恢复')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('`--check --session <id>`——装配**开局就装载它**（自检里报出那条 id）', async () => {
+    const { home } = stageWithConfig(validConfig({ dataDir: '/tmp/magic-cli-never' }))
+
+    try {
+      const result = await run(home, '--check', '--session', 's-picked-by-user')
+
+      expect(result.stderr).toBe('')
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('s-picked-by-user')
+      // 空手那条话不出现——这次**有**会话（用户点了名）
+      expect(result.stdout).not.toContain('还没有会话')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('选项缺值——退 1（`--session --check` 这类笔误不被当成 id）', async () => {
+    const { home } = stageWithConfig(validConfig({ dataDir: '/tmp/magic-cli-never' }))
+
+    try {
+      const result = await run(home, '--session', '--check')
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('--session 缺值')
+    } finally {
+      removeDir(home)
+    }
+  })
+})

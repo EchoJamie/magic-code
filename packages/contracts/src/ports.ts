@@ -16,7 +16,7 @@
 
 import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
 import type { Content, Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
-import type { Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
+import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
 
 // ══ 端口 ══════════════════════════════════════════════════════════════
@@ -52,18 +52,42 @@ export interface ConversationService {
   /** 改标题（`title` 为原文——裁剪 / 归一归本域）。 */
   renameSession(session: SessionId, title: string): Promise<void>
   /**
-   * **恢复触发词**（阶段 2 · U15 待决 2 ③：「`ConversationService` 缺恢复触发词——
-   * 归阶段 2 的会话面（U16）一并定」）。
+   * **重建面** —— 恢复的**第 ⑤ 步**：「上下文由条目重建」（技术方案 · 领域划分 ·
+   * 应用层：「首站唯一用例：恢复——照「记录」节那五步……⑤ 上下文由条目重建
+   * （`ConversationService`）＋ 界面重建展示（外壳，经事件）」）。
    *
-   * 对**当前会话**跑一次恢复：处置在途操作、补中止、回到等待输入；干净会话**什么都不做**。
-   * 由外壳在**接好订阅之后、放开输入之前**调一次（装配纪律：恢复要发事件，外壳得先订上）。
+   * **它是什么**——把这条会话的**现场按记录重建**：装载该会话（单活跃，切过去即装载；
+   * 已经是它＝无事）· **认下别处已经算好的两件事**（见 `RebuildHandoff`）。
+   * 上下文本身**不必搬**——它每轮由条目装配（`context.ts`），本面只把「活的那部分」
+   * 与记录对齐。
    *
-   * 返回 `Promise<unknown>`——报告（`RecoveryReport`）是**对话域的域内形态**，不进契约
-   * （同 U15 的分寸：没出，就没承诺）。`unknown` 是「有返回值、但契约不替它命名」的
-   * 准确写法：实现可以给**更具体**的（`Promise<RecoveryReport>` 可赋给 `Promise<unknown>`），
+   * **它不是什么**——① 在途识别（记录域的查询面）· ②③④ 处置（重放 / 落账 / 记中止）
+   * 都由**应用层**（`@magic/actions`）编排，不在本面。恢复的**入口**（启动参数 `--session`）
+   * 也归应用层受理——那是这一层立起来的意义（审计第 1 条：恢复入口没有归处）。
+   *
+   * 返回 `Promise<unknown>`——报告是**对话域的域内形态**，不进契约（U15 的分寸：没出，
+   * 就没承诺）。`unknown` 是「有返回值、但契约不替它命名」的准确写法：实现可以给**更具体**的，
    * 而契约上的消费者拿不到任何未承诺的形状。
    */
-  recover(): Promise<unknown>
+  rebuild(session: SessionId, handoff: RebuildHandoff): Promise<unknown>
+}
+
+/**
+ * **重建的递手**（`ConversationService.rebuild` 的入参）——应用层算好、交给对话域认下的两件。
+ *
+ * 为什么由调用方给而不是对话域自己再读一遍：两件都是**跨域编排的产物**，而编排归应用层
+ * （它刚从记录域那趟扫描里拿到它们）。让对话域再扫一遍记录＝同一件事两个产地。
+ *
+ * - `lastTurn` —— 记录里出现过的**最大轮号**：本轮实例的轮号水位从这里接着走
+ *   （不从 1 重来——同一会话重启两回不该把两轮都叫「第 1 轮」）。没有＝这条会话
+ *   还没有过轮（新会话／空会话）。
+ * - `announced` —— **开工是否已经宣告过**：恢复那趟有活可干时，应用层已经替这个实例
+ *   发过 `agent.start`（U04 口径：首次干活前发一次）。对话域据此**别发第二遍**；
+ *   干净会话（没有活）为 `false`——首次 `submit` 照旧自己发。
+ */
+export type RebuildHandoff = {
+  readonly lastTurn: TurnId | null
+  readonly announced: boolean
 }
 
 /** 对话域 → 模型域。 */
@@ -113,9 +137,65 @@ export interface RecordsService {
   readEntries(sessionId: SessionId, range?: EntryRange): AsyncIterable<Entry>
   /** 恢复 / 审计。 */
   readEvents(sessionId: SessionId): AsyncIterable<KernelEvent>
+  /**
+   * **在途识别**（恢复 ①）——有 `tool.call` 无 `tool.result` 的那几笔，连同它们走过的
+   * 裁决轨迹与中断的轮（见 `RecoveryScan`）。
+   *
+   * **查询面归记录域**（技术方案 · 领域划分 · 各域结构规则：「恢复的查询面（在途识别）
+   * 由它提供」）：处置（重放 / 落账）不在这里——那是应用层的编排（`@magic/actions`）。
+   * 本条只**说不判**：把记录里读得出的事实说全，判定留给读的人。
+   *
+   * ⚠️ 与 `readEvents` 的分工：`readEvents` 是**逐条的流**（审计与重建展示要全量），
+   * 本方法是**一次扫描的结论**（恢复只要那几笔在途）。两者不同物，不是一个方法的别名。
+   */
+  scanInFlight(session: SessionId): Promise<RecoveryScan>
   listSessions(): Promise<readonly SessionSummary[]>
   /** put / get——**写权唯一**（各域大块转存皆经此）。 */
   blobs: BlobStore
+}
+
+/**
+ * **一笔在途调用**（恢复 ① 的产物）——「有调用、无结果」的那一次。
+ *
+ * 两侧各有一半，缺则如实为 `null`（**不猜**——恢复宁可见到「这笔说不全」，
+ * 也不要一个看着圆满的错配对）：
+ * - **事件侧**（链引用）说得出「问过闸门吗、裁决是什么」——处置要的就是这条轨迹；
+ * - **条目侧**（配对）管的是上下文合法性（⑤）：助手消息的 `toolCalls` 得条条有回填。
+ */
+export type InFlightCall = {
+  /** 该次 `tool.call` 事件的 id——**链引用**（请求 / 询问 / 裁决 / 结果四事件按它串）。缺则 `null`。 */
+  readonly call: RecordId | null
+  /** 该次 `tool-call` 条目的 id——**条目侧配对键**。缺则 `null`。 */
+  readonly entry: RecordId | null
+  readonly name: string
+  readonly args: Readonly<Record<string, unknown>>
+  /** 该次调用属哪一轮（轮外为 `null`）。 */
+  readonly turn: TurnId | null
+  /** 问过闸门吗（`tool.decision.request` 在）——措辞用：问了没答与被拒不是同一件事。 */
+  readonly requested: boolean
+  /** 裁决结论。**未答复 / 未问 ＝ `null`**——④按它落账（保守）。 */
+  readonly decision: Decision | null
+  /** 裁者（与 `decision` 同来处；无裁决则 `null`）。 */
+  readonly decider: Decider | null
+}
+
+/**
+ * **恢复扫描的产物**（`RecordsService.scanInFlight` 的返回）——一次把「要处置什么」说全。
+ *
+ * 判据（技术方案 · 记录 ·「恢复（阶段 2 · 细部）」① ③）：
+ * ```
+ *   有 `tool.call` 无 `tool.result`   ← 在途（①）
+ *   有 `turn.start` 无 `turn.end`     ← 中断的轮（③「记中止」的落点）
+ * ```
+ */
+export type RecoveryScan = {
+  readonly session: SessionId
+  /** **中断的轮**——有 `turn.start` 无 `turn.end` 的那个（多个取最大号）；没有＝`null`。 */
+  readonly openTurn: TurnId | null
+  /** 记录里出现过的**最大轮号**——轮号续跑用（见 `RebuildHandoff.lastTurn`）。没有＝`null`。 */
+  readonly lastTurn: TurnId | null
+  /** 在途调用（按出现序）。 */
+  readonly calls: readonly InFlightCall[]
 }
 
 /**
