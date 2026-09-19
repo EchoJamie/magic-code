@@ -165,7 +165,9 @@ function report(assembly: Assembly): void {
   console.log(`  ${describeConfig(assembly.config)}`)
   console.log(`  供应商表　${describeProviders(assembly)}`)
   console.log(`  工作区根　${describeRoots(assembly)}`)
-  console.log(`  会话　　　${assembly.session}`)
+  // 会话（U27 · 随批小修 6）：**没有会话是常态**（D5：启动＝新会话，空手打开）——
+  // 未处理的值不许直接印出来（此前这一行印的是字面 `undefined`，读的人只能猜是什么意思）
+  console.log(`  会话　　　${assembly.session ?? '（还没有会话——首条消息按下回车才开张）'}`)
   console.log(`  数据落点　${assembly.paths.database}`)
   console.log(`             ${assembly.paths.blobs}/`)
   // 工具集——**从契约的冻结行现取**（技术方案 · 工具「工具集 v1」）：手抄一份就有对不上的那天

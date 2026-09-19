@@ -968,6 +968,34 @@ export function sessionRows(
   )
 }
 
+/**
+ * `/session` 列表下方那句话 —— **本工作区一条会话都没有**时报出「**这儿是哪儿**」
+ * （U27 · `U26` 待决 2）。
+ *
+ * 由头：本工作区没有会话时，整张表都是暗的——用户看得出「这些不是这儿的」，但**看不出
+ * 「这儿」是哪儿**。故在这一行报出本工作区，写法**与分组头同形**（`headOf`：整组根、
+ * ` · ` 隔开）——不同形就对不上是哪一组。
+ *
+ * 三种情形**不报**（拿不到的不编 · 表自明的不占这行）：
+ * - 本工作区**有**会话（表自明；这行留给别的用处：空态那句 / `/model` 的说明）；
+ * - 目录**是空的**（留给空态那句——「还没有落过账的会话」）；
+ * - **不知道自己在哪儿**（装配没给工作区）或给的是空组。
+ */
+export function sessionHint(
+  catalog: readonly SessionSummary[],
+  here?: readonly string[],
+): string | undefined {
+  if (here === undefined || here.length === 0 || catalog.length === 0) return undefined
+
+  const mine = identityOf(here)
+  // 判据与分组同一把尺子（`identityOf`）：归属缺席的（列加上之前落账的）不算「这儿」的
+  const hasHere = catalog.some(
+    (session) => session.workspace !== undefined && identityOf(session.workspace) === mine,
+  )
+
+  return hasHere ? undefined : `本工作区：${headOf(here)}`
+}
+
 /** 一组（同一个工作区的那些行）——分组头 ＋ 是不是「这儿」/「别处」。 */
 type Group = {
   readonly head: string

@@ -29,6 +29,7 @@ import {
   matchCommands,
   movePicker,
   openPicker,
+  sessionHint,
   sessionRows,
   picked,
   rebuild,
@@ -313,6 +314,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /** `/session`——目录已到手，开它（行：按工作区分组，U26——见 `sessionRows`）。 */
   const openSessionPicker = (): void => {
     const rows = sessionRows(view.catalog, view.sessionId, options.workspaceRoots)
+    // 下方那行说明：**空态优先**（「还没有会话」比「这儿是哪儿」更该先知道）；
+    // 否则本工作区一条都没有时报一句「这儿是哪儿」——整表皆暗时那是唯一说得通的话（U27）
+    const hint =
+      rows.length === 0
+        ? '还没有落过账的会话——交代一句就开张'
+        : sessionHint(view.catalog, options.workspaceRoots)
 
     commit(
       openPicker(view, {
@@ -320,7 +327,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 选中项＝**当前那条**——分组之后行序变了，故在**分好组的行**里找它
         selected: Math.max(0, rows.findIndex((row) => row.value === view.sessionId)),
         rows,
-        ...(rows.length === 0 ? { hint: '还没有落过账的会话——交代一句就开张' } : {}),
+        ...(hint === undefined ? {} : { hint }),
       }),
     )
   }

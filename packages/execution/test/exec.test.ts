@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ExecResult, OutputDelta, Sandbox } from '@magic/contracts'
@@ -200,6 +200,24 @@ describe('多根——cwd 与 `resolve` 同源', () => {
 
     expect(failureOf(result).reason).toBe('out-of-bounds')
     expect(existsSync(marker)).toBe(false) // 命令有副作用也没发生＝确实没启动
+  })
+
+  test('cwd 给**声明原形**（非规范形）＝通过，且真在该根里跑（U27）', async () => {
+    // 由头（U27 · `U18` 待决 4）：根记**两张表**（`realpath` 与声明原形）。`exec` 的 cwd
+    // 与 `resolve` 同源 ⇒ 沙箱这一跳也得认声明原形，不然就是「解析器认、进程不认」那半边。
+    // ⚠️ 模型手上**没有** `cwd` 参数（参数键只锚了 `cmd`）——故这一跳走的是内部调用者，
+    // 而「同源」这条判据不因调用者是谁而放宽。
+    const target = freshRoot()
+    const alias = join(freshRoot(), 'proj')
+    symlinkSync(target, alias)
+    writeFileSync(join(target, 'in-alias.txt'), 'x')
+
+    const { box } = sandboxOn(alias)
+
+    // 声明原形当 cwd：只比规范形时这里是 `out-of-bounds`（进程不启动）
+    expect(streamsOf(await box.exec('ls', { cwd: alias })).stdout).toContain('in-alias.txt')
+    // 缺省 cwd（＝默认根，规范形）照旧是同一个目录——两张表说的是同一处
+    expect(streamsOf(await box.exec('ls', {})).stdout).toContain('in-alias.txt')
   })
 
   test('cwd 经 `..` **落进另一条根**＝通过，真在那条根里跑（同 `resolve`）', async () => {

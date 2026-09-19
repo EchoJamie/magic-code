@@ -358,6 +358,87 @@ describe('多根——绝对路径落于**任一根**内即通过', () => {
   })
 })
 
+/**
+ * U27 · **非规范形落点**（`U18` 待决 4）——判据：**声明原形也作数**。
+ *
+ * 由头（单根时代用户**写不出**非规范形，多根把这个坑激活了）：用户手写 `/tmp/proj` 注册成
+ * `/private/tmp/proj`（macOS 上 `/tmp` 是符号链接），而模型给 `/tmp/proj/src`——按**规范形**
+ * 词法比对够不着 ⇒ 被判越界 ✗。收法（设计裁）：注册时**同时记两张表**（`realpath` 与
+ * **声明原形**），按**声明原形**做纯词法前缀匹配；**真路径那一张照旧**（U18 的行为一条不丢）。
+ *
+ * ⚠️ 两张表都只做**词法**比对（一个 `realpath` 都不再取）——故**报出来的承载根恒是规范形**：
+ * 一条根一个身份（记录里那一列 / 列表分组认的都是它），不因写法不同裂成两条。
+ */
+describe('非规范形落点——声明原形也作数（U27）', () => {
+  /**
+   * 造一条「声明原形 ≠ 真路径」的根（照 macOS 的 `/tmp` → `/private/tmp`）：返回两张表。
+   *
+   * ⚠️ `real` 取的是 `realpathSync` 的**规范形**——`mkdtemp` 给的路径自己就可能非规范
+   * （macOS 上在 `/var` → `/private/var` 之下），拿它当「真路径那一张」会量错地方。
+   */
+  function aliasedRoot(): { readonly real: string; readonly alias: string } {
+    const target = freshRoot()
+    const alias = join(freshRoot(), 'proj')
+    symlinkSync(target, alias)
+    return { real: realpathSync(target), alias }
+  }
+
+  test('模型给**声明原形**下的绝对路径 ⇒ 通过（本轮收的就是这个）', () => {
+    const { real, alias } = aliasedRoot()
+    const ws = createWorkspaceService({ roots: [alias] })
+
+    expect(realpathSync(alias)).toBe(real) // 前提：这条根确实非规范——不成立就无从谈这条判据
+
+    const resolved = ws.resolve(join(alias, 'src'))
+    expect(resolved.absolute).toBe(join(alias, 'src'))
+    // 承载根报**规范形**——一条根一个身份，不因写法不同裂成两条
+    expect(resolved.root).toBe(real)
+    expect(ws.roots()).toEqual([real])
+  })
+
+  test('**真路径**下的绝对路径照旧通过（两张表都在用，不是换了一张）', () => {
+    const { real, alias } = aliasedRoot()
+    const ws = createWorkspaceService({ roots: [alias] })
+
+    const resolved = ws.resolve(join(real, 'src'))
+    expect(resolved.absolute).toBe(join(real, 'src'))
+    expect(resolved.root).toBe(real)
+  })
+
+  test('声明原形**先归一**再进表——`/proj/./` 一类写法同指一条', () => {
+    const { real, alias } = aliasedRoot()
+    const ws = createWorkspaceService({ roots: [alias + '/./'] })
+
+    // 用户手写的那串归一后＝alias；模型给的是简洁形——同一条根，照样接得住
+    expect(ws.resolve(join(alias, 'a.txt')).root).toBe(real)
+  })
+
+  test('声明原形也守**段边界**——前缀相邻（`<alias>-sibling`）不算在根内', () => {
+    const { alias } = aliasedRoot()
+    const ws = createWorkspaceService({ roots: [alias] })
+
+    expect(() => ws.resolve(`${alias}-sibling/f.txt`)).toThrow(/越界/)
+    expect(() => ws.resolve(`${alias}x/f.txt`)).toThrow(/越界/)
+  })
+
+  test('越界＝**两张表之外**——`..` 从声明原形拱出去照样拒', () => {
+    const { alias } = aliasedRoot()
+    const ws = createWorkspaceService({ roots: [alias] })
+
+    // 声明原形的父级是夹具自己的临时目录，两条表都不接它
+    expect(() => ws.resolve(join(alias, '..', 'x.txt'))).toThrow(/越界/)
+  })
+
+  test('多根下两表**按声明序**比——承载根报声明序在前的那条', () => {
+    const { real, alias } = aliasedRoot()
+    const other = freshRoot()
+    const ws = createWorkspaceService({ roots: [alias, other] })
+
+    expect(ws.resolve(join(real, 'x')).root).toBe(real) // 经真路径那一张匹配到第一根
+    expect(ws.resolve(join(other, 'x')).root).toBe(realpathSync(other))
+  })
+})
+
 describe('拒绝的可诊断性', () => {
   test('拒时点名越界路径与根（装配 / 工具层据此回填）', () => {
     const { ws, root } = workspaceOn(freshRoot())
