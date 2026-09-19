@@ -24,7 +24,7 @@ import { ConfigError, describeConfig } from './config.ts'
 import { runShellScript } from './shell.ts'
 import type { ShellScript } from './shell.ts'
 
-const USAGE = `magic —— 软件工程智能体（首站）
+const USAGE = `magic —— 软件工程智能体
 
 用法：
   magic                        起一屏，用自然语言交代活
