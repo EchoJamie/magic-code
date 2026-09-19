@@ -222,7 +222,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }, STREAM_WINDOW_MS)
   }
 
-  const commit = (next: ShellView, streaming = false): void => {
+  const commit = (input: ShellView, streaming = false): void => {
+    // **启动中，右位提示一律按「启动中」铺**——**这个口子是唯一的**（视图的每一处改动都经
+    // 这里），故不必逐条路径去堵：打字（`withCompletion` 会按状态重算提示）、退格、
+    // 恢复自己发的那几条事件（`reduce` 把 `agent.state{waiting}` 翻成 `HINT_IDLE`）——
+    // 任何一条都会把「启动中」抹掉，而**回车那时仍是不受理的** ⇒ 屏上就变成
+    // 「看着闲着、按了却没反应」（原型 · 交互逻辑最不想要的那种）。
+    const next = ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
     view = next
     if (streaming) notifyCoalesced()
     else {

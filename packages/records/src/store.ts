@@ -182,8 +182,9 @@ export type RecordsStore = {
    * 扫描**只读不判**：处置（重放 / 落账）归应用层（`@magic/actions`）。
    *
    * ⚠️ 与端口上的 `RecordsService.scanInFlight` 是**同一个函数的两张面孔**（U25）：
-   * 这是域侧的把手（装配接给应用层的那条路已改走端口，见下 `serviceFor`）；
-   * 留着它是给域内与验收脚本用的——两处都指向 `runRecoveryScan` 一处实现。
+   * 那是**生产路径**（恢复的编排搬去应用层之后，装配给它的就是这个端口面，见下 `serviceFor`）；
+   * 域侧这一张留着给本包的用例与验收脚本用（按 id 直取，不必先造一个会话实例）。
+   * 两处都指向 `runRecoveryScan` 一处实现——形态漂不了。
    */
   recoveryScan(session: SessionId): Promise<RecoveryScan>
   /** 关连接（blob 无需收尾）。 */

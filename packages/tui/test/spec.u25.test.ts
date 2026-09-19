@@ -24,6 +24,7 @@ import { describe, expect, test } from 'bun:test'
 import type { Command } from '@magic/contracts'
 import { HINT_BOOTING, HINT_IDLE } from '../src/view.ts'
 import { createShell } from '../src/shell.ts'
+import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 
 /** 起一个**按了闸**的壳（`boot` 还没跑完的那种）。 */
@@ -93,6 +94,23 @@ describe('② 放开之后：照常受理', () => {
 describe('③ 右位提示说「启动中」', () => {
   test('按了闸的壳一开局就报；放开之后回落', () => {
     const app = held()
+    expect(app.shell.getView().status.hint).toBe(HINT_BOOTING)
+
+    app.shell.releaseInput()
+    expect(app.shell.getView().status.hint).toBe(HINT_IDLE)
+  })
+
+  test('**别的路径也抹不掉它**——打字 / 内核事件都不许把它翻回常态', () => {
+    // 由头：这道提示要一直挂到「放开」那一下。可它待在**视图**里，而视图的每一处改动
+    // 都可能顺手重算右位提示（打字经 `withCompletion`、`agent.state{waiting}` 经 `reduce`
+    // ——恢复自己就会发后者）。抹掉了会怎样：屏上看着「空闲 · 可以打」，而回车照旧不受理
+    // ⇒「按了没反应」重现，正是这道闸要防的那种。
+    const app = held()
+
+    app.type('先打着草稿')
+    expect(app.shell.getView().status.hint).toBe(HINT_BOOTING)
+
+    app.spy.emit(event('agent.state', { state: 'waiting' }, { id: 99 }))
     expect(app.shell.getView().status.hint).toBe(HINT_BOOTING)
 
     app.shell.releaseInput()
