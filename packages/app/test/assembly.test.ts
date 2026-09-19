@@ -6,10 +6,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { realpathSync } from 'node:fs'
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { EventDataOf, EventKind, KernelEvent } from '@magic/contracts'
 import { ConfigError, attachShell, createStamper } from '../src/index.ts'
-import { eventsOfKind, kindTrail, makeStage, readDatabase } from './support.ts'
+import { eventsOfKind, kindTrail, lastModel, makeStage, readDatabase } from './support.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
 describe('顺序纪律——先接订阅、后放开输入', () => {
@@ -265,6 +266,63 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
     }
   })
 
+  /**
+   * U27 · **提示词报全根列表**（`U18` 待决 5）——多根下模型不知道另几条根存在时，
+   * 只有当它给出越界绝对路径才从报文里知道 ⇒ **一开始就报全**（一行提示词的成本，
+   * 换少撞几次越界）。默认根标出来（相对路径与新文件落它），其余根逐个列出。
+   */
+  test('提示词的 `cwd` 报**全根列表**（多根——默认根标出、其余根在列）', async () => {
+    const [first, second] = [tempDir('magic-u27-a-'), tempDir('magic-u27-b-')]
+
+    try {
+      const stage = makeStage({ config: { workspaceRoots: [first, second] } })
+      try {
+        const assembly = stage.assemble()
+        const shell = attachShell(assembly.shell)
+        await shell.submit('看看这儿有什么')
+
+        // 系统提示词是首条消息（`requests` 留痕——同 `smoke.test.ts` 那一跳）
+        const system = lastModel(stage).requests[0]?.messages[0]
+        expect(system?.role).toBe('system')
+        const prompt = (system as { content: string }).content
+
+        expect(prompt).toContain(
+          `工作目录：${realpathSync(first)}（默认根——相对路径与新文件落它）` +
+            ` · 另注册：${realpathSync(second)}`,
+        )
+
+        shell.dispose()
+        assembly.close()
+      } finally {
+        stage.dispose()
+      }
+    } finally {
+      removeDir(first)
+      removeDir(second)
+    }
+  })
+
+  test('单根——那一行**不加前后缀**（不为多根这条功能给单根长噪音）', async () => {
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble()
+      const shell = attachShell(assembly.shell)
+      await shell.submit('看看这儿有什么')
+
+      const system = lastModel(stage).requests[0]?.messages[0]
+      const prompt = (system as { content: string }).content
+
+      // 值就是那条根本身——行以换行收（环境块逐行一项）
+      expect(prompt).toContain(`- 工作目录：${realpathSync(stage.workspace)}\n`)
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
   test('`exec` 的缺省 cwd ＝ **默认根**（多根下＝第一项，不是启动目录也不是第二根）', async () => {
     const [first, second] = [tempDir('magic-a-'), tempDir('magic-b-')]
 
@@ -291,6 +349,52 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
     } finally {
       removeDir(first)
       removeDir(second)
+    }
+  })
+
+  /**
+   * U27 · **非规范形落点一路通到沙箱**（`U18` 待决 4）——模型给的声明原形不再被误判越界。
+   *
+   * 夹具照 macOS 的 `/tmp` → `/private/tmp`：**声明原形**经符号链接指向真目录。
+   * 这条链上（工作区注册 → 工具的参数 → 沙箱的 `resolve`）每一跳都得认它——只认规范形
+   * 正是本单元要收的那个坑（**模型照用户手写的路径给**，却被判越界）。
+   *
+   * 走 `read` 而不走 `exec`：**模型手上没有 `exec.cwd` 这个参数**（参数键只锚了 `cmd`——
+   * 技术方案 · 工具 · 参数键）；`exec.cwd` 那一跳（内部调用者才走）由 `exec.test.ts` 钉。
+   */
+  test('模型给的**声明原形绝对路径**通得到真文件（U27——多根激活的那个坑）', async () => {
+    const real = tempDir('magic-u27-real-')
+    const alias = join(tempDir('magic-u27-alias-'), 'proj')
+    symlinkSync(real, alias)
+    mkdirSync(join(real, 'sub'))
+    writeFileSync(join(real, 'sub', 'note.txt'), 'non-canonical-ok\n')
+
+    try {
+      const stage = makeStage({ config: { workspaceRoots: [alias] } })
+      try {
+        const assembly = stage.assemble({
+          turns: [
+            // 路径取**声明原形**（用户写在配置里的那个写法）——只比规范形时这里判越界
+            { toolCalls: [{ name: 'read', args: { path: join(alias, 'sub', 'note.txt') } }] },
+            { text: '读到了' },
+          ],
+        })
+        const shell = attachShell(assembly.shell)
+
+        await shell.submit('读一下那儿的东西')
+        shell.dispose()
+        assembly.close()
+
+        const result = eventsOfKind(shell.events, 'tool.result')[0]
+        // 判成越界时是 `ok: false` ＋ 报文（沙箱侧抛精确报文，工具边界收敛为判别式）
+        expect(result?.data.ok).toBe(true)
+        expect((result?.data.output as { text: string }).text).toContain('non-canonical-ok')
+      } finally {
+        stage.dispose()
+      }
+    } finally {
+      removeDir(real)
+      removeDir(alias)
     }
   })
 

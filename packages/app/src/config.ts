@@ -8,6 +8,7 @@
  * - **`dataDir` 前导 `~` 在加载时展开**（契约 `expandDataDir`）——记录域**不展开**且对 `~`
  *   即拒（`assertPlainDataDir`）。字面 `~` 直通运行时库会在 cwd 下造一个名为 `~` 的目录，
  *   不报错；故展开**必须发生在交给记录域之前**，本文件是那一步。
+ *   **工作区根同此**（U27）——同一个展开器、同一个落点（见 `asWorkspaceRoots` 头注）。
  * - **key 不在这里解析**——解析归模型域的装配面（`resolveApiKey` / `createModelGateway`
  *   构造期抛 `MissingApiKeyError` 即启动期报错），**装配根是它唯一的调用者**；
  *   次序＝显式 → 配置 `apiKey` → `MAGIC_<ID>_API_KEY`。本文件只把 `ProviderConfig`
@@ -118,24 +119,34 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
 }
 
 /**
- * 工作区根列表（阶段 3 加键）——**只判形制**（须是非空字符串的数组）。
+ * 工作区根列表（阶段 3 加键）——判形制（须是非空字符串的数组）＋ **展开前导 `~`**。
  *
  * **语义（绝对 / 存在 / 是目录 / 重复）不在这里判**：那要碰 fs，且**根的身份**
  * （`realpath` 之后的规范形）只有执行域说了算——加载器再判一遍就是两处各说一套
  * 「什么算合格的根」（见契约 `WorkspaceRoots`）。报错不降级这条两边都在守：
  * 此处抛「形制不对」、执行域抛「第 N 条不合格」，都在启动期、都不静默放行。
  *
- * 根写了前导 `~` **在这里不展开**——`~` 不是绝对路径，执行域按相对路径拒
- * （`dataDir` 的 `~` 展开是它那条的先例，未及于根：见 `expandDataDir` 的注）。
+ * ⚠️ **形制那半里，「是不是绝对路径」这一条也不在这里判**——`~/work` 展开之后是绝对的，
+ * 而展开后仍非绝对者（`relative/nope`）照旧交给执行域拒（`workspace.test.ts` 有相对的用例）。
+ * 分工没变：此处只把用户写的那串**变成它指的那个路径**。
+ *
+ * **`~` 展开（U27 · `U18` 待决 3）**——**与 `dataDir` 同源：同一个展开器**
+ * （契约 `expandDataDir`；名字带 `dataDir` 是它的出身，射程就是「前导 `~` 展开」这件事）。
+ * 由头：根是**用户手写在配置文件里**的路径——手写就会写 `~/work`，而当相对路径拒只会
+ * 让人困惑。落点也照 `dataDir`：**加载器展开、加载后即为字面路径**（执行域不展开，
+ * 「`~` 不是绝对路径」那条规矩没动）。
  */
-function asWorkspaceRoots(value: unknown, path: string): readonly string[] {
+function asWorkspaceRoots(value: unknown, path: string, home: string): readonly string[] {
   if (!Array.isArray(value)) {
     throw new ConfigError(
       path,
       'workspaceRoots 须是数组（工作区根列表：[<绝对路径>, …]；第一项＝默认根）',
     )
   }
-  return value.map((entry, index) => asText(entry, path, `workspaceRoots[${index}]`))
+
+  return value.map((entry, index) =>
+    expandDataDir(asText(entry, path, `workspaceRoots[${index}]`), home),
+  )
 }
 
 /**
@@ -203,12 +214,12 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     ? undefined
     : asObject(raw['permissions'], path, 'permissions')
 
-  // 工作区根列表（阶段 3）——形制在此判、语义归执行域（见 `asWorkspaceRoots` 头注）。
+  // 工作区根列表（阶段 3）——形制与 `~` 展开在此判、语义归执行域（见 `asWorkspaceRoots` 头注）。
   // ⚠️ **漏带＝静默失效**（同上面权限段那条教训）：配置里写了多根而这里不接，
   // 工作区就悄悄退回启动目录单根——**且不报错**，用户对着一个少了一半的作用域发呆。
   const workspaceRoots = raw['workspaceRoots'] === undefined
     ? undefined
-    : asWorkspaceRoots(raw['workspaceRoots'], path)
+    : asWorkspaceRoots(raw['workspaceRoots'], path, home)
 
   return {
     path,

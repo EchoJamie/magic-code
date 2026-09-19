@@ -115,6 +115,12 @@ describe('入口 magic', () => {
       // 工具集 v1 到站后它成了假话）；七件按表的次序
       expect(result.stdout).toContain('工具集　　exec / read / write / edit / grep / glob / ls（7 件')
 
+      // 会话（U27 · 随批小修 6）：无会话是**常态**（D5：启动＝新会话，空手打开）——
+      // 回执得说人话。**未处理的值不许印出来**：此前这里印的是字面 `undefined`（验收装置的瑕疵）。
+      // 「整份回执里没有 `undefined`」是**跨行**的判据——将来哪一行再漏一个未处理值，这条也拦得住。
+      expect(result.stdout).toContain('会话　　　（还没有会话——首条消息按下回车才开张）')
+      expect(result.stdout).not.toContain('undefined')
+
       // 全链真构造过：库与 blob 目录都在
       expect(existsSync(join(dataDir, 'records.db'))).toBe(true)
       expect(existsSync(join(dataDir, 'blobs'))).toBe(true)

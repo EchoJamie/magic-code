@@ -293,6 +293,30 @@ describe('工作区根列表（阶段 3 加键）', () => {
       .toEqual(['/work/only'])
   })
 
+  /**
+   * U27 · **根的 `~` 展开**（`U18` 待决 3）——判据：**照 `dataDir` 的先例在加载器展开**。
+   *
+   * 由头：根是**用户手写在配置文件里**的路径——手写就会写 `~/work`；而当相对路径拒
+   * 只会让人困惑（「我明明指了个地方」）。展开的**落点**照 `dataDir`：加载器。
+   * 执行域不展开这一条没变（`~` 不是绝对路径——`workspace.test.ts` 有相对的用例钉着）。
+   */
+  test('前导 `~` 在**加载时展开**——根不再被当成相对路径', () => {
+    const loaded = loadFrom(validConfig({ workspaceRoots: ['~/work', '~', '/abs/keep'] }))
+
+    expect(loaded.config.workspaceRoots).toEqual([
+      join(HOME, 'work'), // `~/…` → 家目录之下
+      HOME, // 裸 `~` ＝ 家目录自身
+      '/abs/keep', // 无 `~` 即字面路径——原样
+    ])
+  })
+
+  test('中段的 `~` 是**字面**——只有前导那一个展开（与 `dataDir` 同一把尺子）', () => {
+    // 展开器**与 `dataDir` 是同一个**（契约 `expandDataDir`）——不是这里另写一套更宽的规则；
+    // 这一条钉的就是「同源」：同一把尺子给同一个答案（`/a/~/b` 里的 `~` 是目录名，不是家目录）
+    expect(loadFrom(validConfig({ workspaceRoots: ['/a/~/b'] })).config.workspaceRoots)
+      .toEqual(['/a/~/b'])
+  })
+
   test('不是数组 → 拒（报错点名到字段）', () => {
     expect(() => loadFrom(validConfig({ workspaceRoots: '/work/a' }))).toThrow(ConfigError)
     expect(() => loadFrom(validConfig({ workspaceRoots: '/work/a' }))).toThrow(/workspaceRoots/)

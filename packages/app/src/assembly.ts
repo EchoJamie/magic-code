@@ -187,7 +187,8 @@ export type Assembly = {
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
    *
    * **序即语义**——`[0]` ＝**默认根**（相对路径与新文件的落点）；单根＝一项的特例。
-   * 提示词注入的 `cwd` 取的正是 `[0]`（见 `promptVarsOf`）。
+   * 提示词注入的 `cwd` 报的是**整组根**（`[0]` 标为默认根，其余在列——见
+   * `promptVarsOf` / `workspaceLineOf`：多根下模型得**一开始就知道**有哪几条根）。
    */
   readonly workspaceRoots: readonly string[]
   /**
@@ -409,7 +410,7 @@ export function assemble(options: AssembleOptions): Assembly {
       // 会话中途换模型**不经过这里**：注册表的选中会在这个名字之上接管（换模型＝换接缝下游，
       // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）
       model: loaded.provider.model,
-      prompt: promptVarsOf(workspace.defaultRoot(), options, now),
+      prompt: promptVarsOf(workspace, options, now),
       gateway,
       tools,
       records,
@@ -620,15 +621,39 @@ export function assemble(options: AssembleOptions): Assembly {
 /**
  * 提示词注入项 —— 三段齐（缺项由对话域构造期报错，此处只管取值）。
  *
- * `cwd` 取**工作区注册根**（`workspace.defaultRoot()`——执行域构造时 `realpath` 过的那个），
- * **不是**装配入参的原值：两处一旦分叉，提示词说的目录与沙箱认的目录就不是一回事了
- * （macOS 上 `/var/…` 与 `/private/var/…` 就是现成的反例——U11 自验时冒烟当场抓到）。
- * 故根的权威**只有一个**：执行域给的注册根；此处不设覆盖位，免得又长出一条分叉路。
+ * `cwd` 取**工作区注册根**（执行域构造时 `realpath` 过的那些），**不是**装配入参的原值：
+ * 两处一旦分叉，提示词说的目录与沙箱认的目录就不是一回事了（macOS 上 `/var/…` 与
+ * `/private/var/…` 就是现成的反例——U11 自验时冒烟当场抓到）。故根的权威**只有一个**：
+ * 执行域给的注册根；此处不设覆盖位，免得又长出一条分叉路。
  */
-function promptVarsOf(root: string, options: AssembleOptions, now: () => Timestamp): PromptVars {
+function promptVarsOf(
+  workspace: WorkspaceService,
+  options: AssembleOptions,
+  now: () => Timestamp,
+): PromptVars {
   return {
-    cwd: root,
+    cwd: workspaceLineOf(workspace),
     platform: options.prompt?.platform ?? process.platform,
     date: options.prompt?.date ?? localDate(now()),
   }
+}
+
+/**
+ * 「工作目录」那一行的值 —— **报全根列表**（U27 · `U18` 待决 5）。
+ *
+ * 由头：多根下模型**不知道另几条根存在**——只有当它给出越界绝对路径时才从报文里知道
+ * ⇒ **一开始就报全**：一行提示词的成本，换少撞几次越界。
+ *
+ * 单根＝光那条路径（**不为多根这条功能给单根长噪音**——单根是常态，提示词每一行都占注意力）；
+ * 多根＝把**默认根**标出来（相对路径与新文件落它）、其余根在列。措辞与入口自检那一行
+ * （`cli.ts` · `describeRoots`）同词——同一个事实在哪儿都说同一句话。
+ */
+function workspaceLineOf(workspace: WorkspaceService): string {
+  const roots = workspace.roots()
+  const first = roots[0] as string // 注册面保证 ≥ 1 条（空列表在执行域已被拒）
+  const rest = roots.slice(1)
+
+  return rest.length === 0
+    ? first
+    : `${first}（默认根——相对路径与新文件落它） · 另注册：${rest.join(' · ')}`
 }

@@ -44,9 +44,14 @@ const state = (active: string, rows: readonly Row[]) =>
     ),
   })
 
-/** 起一个「我在 `/work/alpha`」的壳——本进程的工作区就是它（`U26` 起由装配递进来）。 */
-function live(workspace: readonly string[] = [HERE]) {
-  const stage = createStage({ workspaceRoots: workspace })
+/**
+ * 起一个「我在 `/work/alpha`」的壳——本进程的工作区就是它（`U26` 起由装配递进来）。
+ *
+ * 给 `null` ＝ **装配没给工作区**（不知道自己在哪儿）——与「给了一组空的」是两件事，
+ * 与「省掉不写」更不是一件事（省掉＝缺省值，那是有工作区的）。
+ */
+function live(workspace: readonly string[] | null = [HERE]) {
+  const stage = createStage(workspace === null ? {} : { workspaceRoots: workspace })
 
   return {
     stage,
@@ -130,7 +135,15 @@ describe('分组头 ＋ 全部列出', () => {
 
     expect(frame.has('（工作区未记录）')).toBe(true)
     expect(frame.has('早先的事')).toBe(true)
-    expect(frame.has(HERE)).toBe(false) // 不拿「当下的启动目录」顶上
+    // **不拿「当下的启动目录」顶上**——判据落在**分组头**那一行上：
+    //   原锚：`expect(frame.has(HERE)).toBe(false)`（整屏不许出现 HERE）。
+    //   为何变：U27 起，本工作区没有会话时列表下方会报一句「本工作区：/work/alpha」
+    //     （`sessionHint`——那正是「这儿是哪儿」，也正是本用例的由头）；于是 HERE 合法地
+    //     上了屏，**整屏级的否定够不着**这条判据了（不是判据过期，是那把尺子太粗）。
+    //   新锚：钉未记录那组的**头**——它就是「早先的事」上面那一行，且里头没有 HERE。
+    const headRow = frame.rowOf('早先的事') - 1
+    expect(frame.textAt(headRow)).toContain('（工作区未记录）')
+    expect(frame.textAt(headRow)).not.toContain(HERE)
     // **也不压暗**：无从判断它是不是「别处」——不编（压暗留给判得实的那些）
     expect(labelCell(frame, '早先的事')?.fg).toBe(DIM)
   })
@@ -242,5 +255,63 @@ describe('别的项目压暗 · 仍可切', () => {
     // 分组之后的行序：甲（本工作区那组在前）· 乙 —— 当前那条是甲，故选中 0
     expect(dock.picker.rows.map((row) => row.value)).toEqual(['a1', 'b1'])
     expect(dock.picker.selected).toBe(0)
+  })
+})
+
+/**
+ * U27 · **列表下方那句说明**（`U26` 待决 2）——本工作区没有会话时，报一句「**这儿是哪儿**」。
+ *
+ * 由头：本工作区一条会话都没有时，整张表都是暗的——用户看得出「这些不是这儿的」，
+ * 但**看不出「这儿」是哪儿**。故在那行 `hint` 里报出本工作区，且**与分组头同形**
+ * （整组根、` · ` 隔开）——不同形就对不上是哪一组。
+ *
+ * ⚠️ **只在「本工作区没有会话」时报**：有会话时表自明，这行留给别的用处（空态那句、
+ * `/model` 的说明各占各的）；「不知道自己在哪儿」（装配没给工作区）时**不编**。
+ */
+describe('列表下方那句说明——报「这儿是哪儿」（U27）', () => {
+  test('本工作区一条都没有 ⇒ hint 报出本工作区（不然整张表都是暗的，无从知道「这儿」是哪）', async () => {
+    const app = live()
+    app.open([
+      state('shell', [
+        { id: 'b1', title: '乙项目的事', workspace: [ELSEWHERE] },
+        { id: 'b2', title: '乙项目的另一件', workspace: [ELSEWHERE] },
+      ]),
+    ])
+
+    const frame = await app.stage.screen()
+    expect(frame.has(`本工作区：${HERE}`)).toBe(true)
+  })
+
+  test('**多根** ⇒ 整组报出来（与分组头同形：` · ` 隔开、`[0]` 在前）', async () => {
+    const app = live([HERE, '/work/shared'])
+    app.open([state('shell', [{ id: 'b1', title: '乙项目的事', workspace: [ELSEWHERE] }])])
+
+    const frame = await app.stage.screen()
+    expect(frame.has(`本工作区：${HERE} · /work/shared`)).toBe(true)
+  })
+
+  test('本工作区**有**会话 ⇒ 不报那句（表自明，这行不占）', async () => {
+    const app = live()
+    app.open([state('a1', [{ id: 'a1', title: '甲项目的事', workspace: [HERE] }])])
+
+    const frame = await app.stage.screen()
+    expect(frame.has('本工作区：')).toBe(false)
+  })
+
+  test('列里**一条都没有** ⇒ 照旧是空态那句，不拿工作区顶上', async () => {
+    const app = live()
+    app.open([state('shell', [])])
+
+    const frame = await app.stage.screen()
+    expect(frame.has('还没有落过账的会话')).toBe(true)
+    expect(frame.has('本工作区：')).toBe(false)
+  })
+
+  test('装配**没给工作区**（不知道自己在哪儿）⇒ 不编一句', async () => {
+    const app = live(null) // ← 「没给」不是「给了一组空的」，更不是省掉不写（省掉＝缺省值）
+    app.open([state('shell', [{ id: 'b1', title: '乙项目的事', workspace: [ELSEWHERE] }])])
+
+    const frame = await app.stage.screen()
+    expect(frame.has('本工作区：')).toBe(false)
   })
 })
