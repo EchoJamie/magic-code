@@ -29,8 +29,14 @@ function live() {
       return shell.key(key)
     },
     view: () => shell.getView(),
-    /** **屏上的全部行**（定局那侧 ＋ 本轮）——「屏上有没有这一行」的断言用它。 */
-    rows: () => [...shell.getView().settled, ...shell.getView().rows],
+    /**
+     * **屏上的全部行**（定局那侧 ＋ 本轮）——「屏上有没有这一行」的断言用它。
+     *
+     * ⚠️ **不含启动字标**（TUI Banner）——见 `view.test.ts` 的 `onScreen` 里那三条注
+     * （原锚 / 为何变 / 新锚 同源：字标恒在 `settled[0]`，问「进了什么」时它不是「进的」）。
+     */
+    rows: () =>
+      [...shell.getView().settled, ...shell.getView().rows].filter((row) => row.kind !== 'banner'),
     /** 仅本轮（还在流式、还会变）那些行。 */
     live: () => shell.getView().rows,
     /** 收到的命令（不含订阅动作）。 */

@@ -288,21 +288,32 @@ describe('密度（记录区不靠空行分层）', () => {
     stage.feed([event('model.delta', { channel: 'text', text: '答二' }), event('turn.end', { reason: 'settled' })])
 
     const frame = await stage.screen()
-    const texts = frame.record.map((line) => line.text)
+    // ⚠️ 取景换 `content`（记录区**去掉最前面那块启动字标**）——
+    //    **原锚** `frame.record`：那时记录区第一行就是内容。
+    //    **为何变**：启动字标（TUI Banner）现在恒在记录区最前面，`record` 的头几行是它。
+    //    **新锚** `frame.content`——本句问的是「**条目**之间插不插空行」，字标不是条目。
+    const texts = frame.content.map((line) => line.text)
 
-    expect(texts).toEqual(['› 第一句', '⏺ 答一', '', '› 第二句', '⏺ 答二'])
+    // ⚠️ **头上多了一行分段**（`settled[1]` 那条用户消息之前）——
+    //    **原锚**：`['› 第一句', …]`——那时记录区顶上没有东西，首条用户消息不必分段
+    //    （`needsSpacer` 的老注：「顶上没有东西要分隔」）。
+    //    **为何变**：字标现在恒在 `settled[0]`，**顶上就有东西了**——密度那条规矩
+    //    「只有用户消息之前留一行分段」照旧成立，只是这一条现在也够格，不是放宽。
+    //    **新锚**：首行是那个分段（空串），其后与原先逐字相同。
+    expect(texts).toEqual(['', '› 第一句', '⏺ 答一', '', '› 第二句', '⏺ 答二'])
   })
 
   test('思考**默认折一行**（`ctrl+o` 才展开）——分层靠标记与明暗，不靠空行', async () => {
     const stage = live()
     stage.feed([event('model.delta', { channel: 'thinking', text: '第一行\n第二行\n第三行' })])
 
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见上）——这一句问的是「思考占几行」
     const folded = await stage.screen()
-    expect(folded.record.map((line) => line.text)).toEqual(['（思考）第一行'])
+    expect(folded.content.map((line) => line.text)).toEqual(['（思考）第一行'])
 
     stage.press({ kind: 'ctrl+o' })
     const opened = await stage.screen()
-    expect(opened.record.map((line) => line.text)).toEqual(['（思考）第一行', '第二行', '第三行'])
+    expect(opened.content.map((line) => line.text)).toEqual(['（思考）第一行', '第二行', '第三行'])
   })
 
   test('**空内容不渲染**——只发工具调用、不吐正文的那一轮不出一行', async () => {
@@ -316,10 +327,12 @@ describe('密度（记录区不靠空行分层）', () => {
     ])
 
     const frame = await stage.screen()
-    const texts = frame.record.map((line) => line.text)
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）
+    const texts = frame.content.map((line) => line.text)
 
     expect(texts.some((text) => text.includes('⏺'))).toBe(false) // 没有孤零零的助手行
-    expect(texts).toEqual(['› 跑一下', '⟳ ls {}', '  ⟳ 运行中'])
+    // 头上的空串＝字标之下那行分段（同上一处：原锚 / 为何变 / 新锚 见「密度」节第一处）
+    expect(texts).toEqual(['', '› 跑一下', '⟳ ls {}', '  ⟳ 运行中'])
   })
 })
 
@@ -348,7 +361,10 @@ describe('记录区的三类行（后两类不重建）', () => {
 
     const after = await stage.screen()
 
-    expect(after.record.map((line) => line.text)).toEqual(['› 看看有什么', '⏺ 好。']) // 会话内容回来了
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见「密度」节第一处）——
+    //    这一句问的是「重建之后**会话内容**还剩哪些」，字标是装帧、不在会话内容里
+    // 头上的空串＝字标之下那行分段（同上一处）
+    expect(after.content.map((line) => line.text)).toEqual(['', '› 看看有什么', '⏺ 好。']) // 会话内容回来了
     expect(after.has('可用命令')).toBe(false) // 命令输出：屏上痕迹，不重建
     expect(after.has('已换模型')).toBe(false) // 命令回执：屏上痕迹，不重建
   })

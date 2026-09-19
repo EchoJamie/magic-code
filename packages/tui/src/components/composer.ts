@@ -64,7 +64,19 @@ export function draftHeight(draft: string, maxLines: number): number {
 export function Composer({ draft, tone, maxLines = Number.POSITIVE_INFINITY }: ComposerProps) {
   const taken = tone === 'taken'
   const promptColor = taken ? PALETTE.warn : tone === 'idle' ? PALETTE.user : PALETTE.dim
-  // 光标（取景用：真终端里由 Ink 的 cursor 管，这里给个可见的落点）——永远在**末尾**
+  /**
+   * 光标落点——**画出来的那个**（`inverse` 空格）。位置＝**你开始打字的地方**：
+   *
+   * - **空草稿**：落在 `› ` 之后、**占位文字之前**（用户 2026-09-20 定）。
+   *   占位是灰的一句说明，光标压在它后面会读成「要从这句后面接着打」；
+   * - **有草稿**：落在**末尾**——正在打的那一处，**这一路不动**。
+   *
+   * ⚠️ **真终端的光标不归它管**（如实记，别把两套当成一套）：本仓**没用** Ink 的
+   * `useCursor()`，Ink 默认把真光标留在**整帧写完那一行之后**——实测（80×24 · 空草稿）：
+   * 真光标在 `(0, 8)`＝状态行**下面那一行**，既不在这个空格上，也不随占位文字走。
+   * 故这一处在屏上是**取景 / 可见的**落点；「真光标该停在输入处」是另一笔账
+   * （要接 `useCursor()`），**不在本单元射程内**——别以为挪了它真光标就跟过来了。
+   */
   const cursor = h(Text, { key: 'cursor', inverse: true }, ' ')
 
   if (draft === '') {
@@ -75,12 +87,16 @@ export function Composer({ draft, tone, maxLines = Number.POSITIVE_INFINITY }: C
         Text,
         { key: 'ph' },
         h(Text, { color: promptColor }, '› '),
+        // ⚠️ **光标在占位之前**（用户 2026-09-20：「这段提示文本允许保留 但光标不应该在
+        //    提示文本后面」）。**原锚**：`'› '` → 占位 → 光标（光标压在灰字之后）。
+        //    **为何变**：那样读起来像「从说明后面接着打」；占位留着，落点挪到开始打字的位置。
+        //    **新锚**：`'› '` → 光标 → 占位。
+        cursor,
         h(
           Text,
           { color: taken ? PALETTE.warn : PALETTE.faint, dimColor: tone !== 'idle' && !taken },
           placeholderOf(tone),
         ),
-        cursor,
       ),
     )
   }

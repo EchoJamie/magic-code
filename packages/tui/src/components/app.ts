@@ -25,6 +25,7 @@ import { createElement as h } from 'react'
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
+import { bannerOf } from '../banner.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { groupHeads, hasRunningTool } from '../view.ts'
@@ -67,6 +68,19 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
   const liveBudget = Math.max(1, rows - dock - 2)
   const live = tailWithin(view.rows, columns, view.expanded, liveBudget)
 
+  // **字标在放不下的宽度上要「一行都不占」**（设计 · 极窄：「不印，优先保证正文与输入空间」）。
+  //
+  // ⚠️ 光让它渲染出 0 行**还不够**——`<Static>` 里的**条目数**本身会进 Ink 的版面账：
+  // 实测（9 列 · 内容高过视口）留着那条空字标，Ink 就多走一次**整屏清**
+  // （`\e[2J\e[3J`，连 scrollback 一起擦）；把它从 `items` 里摘掉，两串字节逐字节相同。
+  // 空盒子不是「无害的零」，它是一行账——这一条是量出来的，别凭直觉把它删了。
+  //
+  // ⚠️ **照常时原样交 `view.settled`**（不新建数组）——U21 那条纪律：`Static` 拿 `items`
+  // 做 `useMemo` 的依赖，每帧递一个新数组会让它每帧白算一遍（见下面 `items:` 那一段注）。
+  // 新建数组只发生在**极窄**那一档（`bannerOf` 给 0 行），那时屏上本来也没几行。
+  const items =
+    bannerOf(columns).length > 0 ? view.settled : view.settled.filter((row) => row.kind !== 'banner')
+
   return h(
     Box,
     { flexDirection: 'column' },
@@ -74,13 +88,14 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // `key` 按会话——换会话时重挂，重建的那些行才会被写出来（Static 只追加新项）
     h(StaticList, {
       key: `static:${view.sessionId ?? 'none'}`,
-      // ⚠️ **原样交 `view.settled`，不 `[...]` 复制**（U21 · 历史区静态化）：
+      // ⚠️ **照常就是 `view.settled` 原样，不 `[...]` 复制**（U21 · 历史区静态化）：
       // Ink 的 `Static` 拿 `[items, index]` 做 `useMemo` 的依赖——每帧递一个新数组，
       // 那个 memo 每帧都白算一遍（`items.slice(index)`）。`settled` 只在**真的加了行**
       // 时才换对象（`settle` / `appendSettled` 都是这么写的），故这一交就是稳定的。
       // 实测这笔账很小（5000 行 0.019ms · `bench-cost.ts`）——**如实记：它不是瓶颈**，
       // 改它是顺手把这条纪律立住，不是优化的大头。
-      items: view.settled,
+      // （`items` 只在**极窄那一档**才是另建的数组——见上面那一段注。）
+      items,
       // `children` 是**函数入参**（Static 的形态如此，不是 JSX 子节点）——故写在 props 里
       children: (row: LogRow, index: number) =>
         h(LogRowView, {
@@ -114,16 +129,42 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
 /**
  * 空态（原型 · 场景 1）——**按「这条会话有没有内容」判**（缺陷 D3）：
  * 还没有会话（`sessionId === null`）且屏上什么都没有。**不是**按本进程的计数。
+ *
+ * ⚠️ **启动字标不算「有内容」**：它现在恒在 `settled[0]`（见 `view.ts` 的 `withBanner`），
+ * 照「`settled` 空不空」判的话它会把空态**永远挡住**——而那正是原型场景 1 那一屏
+ * （「交代一件事就开始」）。故这里问的是**除了字标还有没有东西**。
+ *
+ * 用 `every` 而不是「长度减一」：字标**恒在最前且恒只一行**（`bannerFirst` 的收口），
+ * 故 `every` 在真有事发生的那一屏上**第一个元素之后当场收手**，不是每帧数一遍。
  */
 export function isEmpty(view: ShellView): boolean {
-  return view.sessionId === null && view.settled.length === 0 && view.rows.length === 0
+  return (
+    view.sessionId === null &&
+    view.rows.length === 0 &&
+    view.settled.every((row) => row.kind === 'banner')
+  )
 }
 
-/** 空态的引导语（原型 · 场景 1 的原文）。 */
+/**
+ * 空态的引导语。
+ *
+ * ⚠️ **只留第一句**（用户 2026-09-20 定）——
+ * **原锚**：原型 · 场景 1 的原文，一句说明 ＋ 空行 ＋ `比如：` ＋ 三条示例（「看看这个
+ *   工作区里有什么」那几句）。
+ * **为何变**：用户看了启动呈现后说「**会有一些用法的提示文字 这个似乎不太需要 直接去掉吧**」。
+ *   去掉的是**用法提示**那一段（教人怎么用），留下的那句讲的是**产品行为**——会话**何时**
+ *   建立（首条消息按下回车才开张），那是「会发生什么」而不是「你该怎么操作」，
+ *   故照用户的分寸留着（他给的判据是「用法提示」，不是「一切文字」）。
+ * **新锚**：空态只有那一句。
+ *
+ * ⚠️ **与 `界面原型.html` 差这一处**（如实记，别让两边偷偷不一致）：被删的那几行在代码里
+ * 一直标着「原型 · 场景 1 的原文」——**删它们等于改规格**。此处**照用户的话改代码**，
+ * 差异备案在回报里；原型若要跟上，是规划侧那次同步的事。
+ *
+ * 另：状态行右位那两处键位提示（`/ 命令 · ctrl+c 退出` · `ctrl+c 中断`）**不动**——
+ * 那是**功能发现**（不显示就不知道能打 `/`），与「用法提示文字」不是一类（用户划定）。
+ */
 function EmptyState(): ReactElement {
-  const line = (key: string, text: string, color: string = PALETTE.dim) =>
-    h(Text, { key, color }, text)
-
   return h(
     Box,
     { flexDirection: 'column' },
@@ -133,16 +174,6 @@ function EmptyState(): ReactElement {
       h(Text, { color: PALETTE.faint }, '交代一件事就开始。会话在'),
       h(Text, { color: PALETTE.faint, bold: true }, '你按下第一次回车'),
       h(Text, { color: PALETTE.faint }, '时才建立。'),
-    ),
-    line('e:1', ''),
-    line('e:2', '比如：'),
-    line('e:3', '　· 看看这个工作区里有什么'),
-    line('e:4', '　· 把 src/utils/date.ts 的时区处理改成本地时区'),
-    h(
-      Text,
-      { key: 'e:5' },
-      h(Text, { color: PALETTE.dim }, '　· 上次那个 bug 修到哪了？'),
-      h(Text, { color: PALETTE.faint }, '　（/session 接着上次）'),
     ),
   )
 }

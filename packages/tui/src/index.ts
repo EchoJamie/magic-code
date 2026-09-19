@@ -35,6 +35,21 @@ export type { Shell, ShellEffect, ShellKey, ShellOptions } from './shell.ts'
 export { diffRowsOf, looksLikeDiff, replaceDiff } from './diff.ts'
 export type { DiffKind, DiffRow } from './diff.ts'
 
+// —— 启动字标（品牌视觉 · TUI Banner）——
+//
+// 三份文本资源 ＋ 按列数选版的规则。**默认用块字版**；ASCII 那份留着、**没有路径切过去**
+// （「块字符不自动检测」——终端不告诉你字体信息，见 `banner.ts` 头注）。
+
+export {
+  BANNER_ASCII,
+  BANNER_COMPACT,
+  BANNER_COMPACT_MIN,
+  BANNER_MAGIC_WIDTH,
+  BANNER_WIDE,
+  BANNER_WIDE_MIN,
+  bannerOf,
+} from './banner.ts'
+
 // —— 视图与归约 ——
 
 export {
@@ -58,6 +73,7 @@ export {
   takeOver,
   textOfLines,
   undock,
+  withBanner,
   withContextWindow,
   withDecisionStatus,
 } from './view.ts'
