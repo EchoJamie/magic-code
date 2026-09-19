@@ -273,7 +273,8 @@ describe('⑤ 接续（重建）之后仍在最前面', () => {
 
   test('**空态没有被字标挡住**（程序性判据：那正是原型场景 1 那一屏）', async () => {
     // 还没会话、屏上也还没有内容 ⇒ 空态那句话照旧在
-    expect((await frameAt(100)).record.some((line) => line.text.includes('交代一件事就开始'))).toBe(true)
+    // （钉的是**这句话在不在**，不钉它的措辞——措辞改动见 `EmptyState` 的注）
+    expect((await frameAt(100)).record.some((line) => line.text.includes('你按下第一次回车时才建立'))).toBe(true)
   })
 })
 
@@ -450,8 +451,8 @@ describe('⑩ 字标**自成一块**——前后各一行留白', () => {
     expect(texts[0]?.trim()).toBe('') // ① 前：一行留白
     expect(texts.slice(1, 6).join('')).toContain('█') // ② 中：5 行画幅
     expect(texts[6]?.trim()).toBe('') // ③ 后：一行留白
-    // ④ 下一行才是空态引导语（原型 · 场景 1 那句）——它与字标隔着那一行留白
-    expect(texts[7]).toContain('交代一件事就开始')
+    // ④ 下一行才是空态引导语（原型 · 场景 1 那一屏）——它与字标隔着那一行留白
+    expect(texts[7]).toContain('你按下第一次回车时才建立')
     // 而它**不是**被顶到画幅底下的：画幅末行与它之间**恰好一行**（多一行就是成片空行）
     expect(texts[6]).toBe('')
   })
@@ -462,15 +463,20 @@ describe('⑩ 字标**自成一块**——前后各一行留白', () => {
     expect(texts[0]?.trim()).toBe('')
     expect(texts[1]?.trim()).toBe('Magic Code')
     expect(texts[2]?.trim()).toBe('')
-    expect(texts[3]).toContain('交代一件事就开始')
+    expect(texts[3]).toContain('你按下第一次回车时才建立')
   })
 
   test('**极窄不印时一行都不占**——连那两行留白也不留', async () => {
     // 「不印」是字面意思：顶上第一行就是内容，不是「先空两行再说」
-    const texts = headOf(await frameAt(9), 2)
+    //
+    // ⚠️ 这两句**不钉引导语的措辞**——那句文案改过两回（见 `app.ts` 的 `EmptyState` 注），
+    // 而本条要钉的是**字标块占了几行**（0 行），与它怎么写无关。
+    //（「顶上那一行就是空态那句」由 ⑤「空态没有被字标挡住」那一条钉。）
+    const frame = await frameAt(9)
 
-    expect(texts[0]?.trim()).not.toBe('')
-    expect(texts.join('')).toContain('交代一件')
+    expect(frame.record[0]?.text.trim()).not.toBe('') // ① 顶上**不是空行**
+    expect(frame.record.every((line) => !line.text.includes('█'))).toBe(true) // ② 整屏没有字标
+    expect(bannerOf(9)).toEqual([]) // 防空转：这一档确实不印
   })
 
   test('留白**不叠**：字标之后紧接用户消息时，中间只有一行空', async () => {
