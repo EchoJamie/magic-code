@@ -27,28 +27,25 @@ import type { ShellScript } from './shell.ts'
 const USAGE = `magic —— 软件工程智能体（首站）
 
 用法：
-  magic                          起外壳（TUI）——装配 → 接控制面 → 一屏
-  magic --session <id>           接着哪条会话来（显式接续：开局装载它并跑一次恢复）
-  magic --check                  装配自检（读 ~/.magic/config.json，全链构造一遍后收尾）
-  magic --script <文件>          无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
-  magic --provider <id>          开局走哪个供应商条目（providers 的键）
-  magic --model <名>             开局用哪个模型（同一条目上换模型，可单用）
-  magic --help                   本说明
+  magic                        起一屏，用自然语言交代活
+  magic --session <id>         接着一条已有的会话干
+  magic --provider <id>        开局用哪个供应商（配置里 providers 的条目名）
+  magic --model <名>           开局用哪个模型（可与 --provider 单用）
+  magic -h, --help             显示这份帮助
 
-接着来是**显式的**：不给 --session ＝ 新会话（空手打开不建会话——首条消息按下回车才开张）。
---session 收的是**会话 id**（/session 列表里那串）**且须是库里已有的**——没有就报错退场
-（**不照 id 造一条新的**：那样用户会以为接上了，其实没有）。给了它由**应用层**
-（@magic/actions）受理：装载它 → 跑一次恢复（处置崩溃留下的在途操作）→ 重建展示。
-**恢复跑完才受理输入**。
+接着来是显式的：不给 --session 就是新会话（空手打开也不先建——首条消息按下回车才开张）。
+--session 要的是 /session 列表里那串 id，且必须已经存在：打错一个字母会报错退场，
+不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。接上之后先跑一次恢复
+（处置上次崩溃留下的在途操作），恢复跑完才收你的输入。
+开局没给 --provider / --model 就走配置里的缺省条目；中途换模型在界面里打 /model。
 
-脚本文件（JSON）：
-  { "inputs": ["在 playground 里跑 ls", { "switch": { "provider": "minimax-m2" } }, "刚才那个文件还在吗"],
-    "decisions": ["approve"] }
-  —— inputs：按序走的步骤——裸字符串＝一条交代（等它收束再走下一步）；
-     { "switch": { "provider"?, "model"? } } ＝**会话中途换模型**（换接缝下游：
-     上下文不丢、后续轮次走新条目）。两件都不给＝不知道要换什么，当场报错停下。
-     decisions：裁决答复（按询问次序取，用尽＝批准）。
-     ⚠️ 无人值守替人批准是**验收装置的方便**，不是产品行为（阶段 1 一律人工门）。
+验收用（不是日常用法）：
+  magic --check                把配置、数据落点、工作区、会话挨个查一遍，报完自检就退出
+  magic --script <文件>        无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
+
+脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型），
+decisions 替你给的答复。写法与实例见 README 的「脚本（--script）」一节。
+替人答复是验收装置的方便，不是产品行为——平时该定夺的仍是你。
 `
 
 type Args = {

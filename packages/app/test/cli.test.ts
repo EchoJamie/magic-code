@@ -58,7 +58,18 @@ function stageWithConfig(overrides: Record<string, unknown> = {}): { home: strin
 }
 
 describe('入口 magic', () => {
-  test('`--help`——说清用法与脚本形制', async () => {
+  /**
+   * ⚠️ **原锚**：`expect(stdout).toContain('人工门')`——它守的是「无人值守替人批准这件事
+   * 要在用法里说破」；`人工门` 是那时说破它用的**内部行话**（「阶段 1 一律人工门」）。
+   *
+   * **为何变**：`--help` 重写（2026-09-20 · 用户报「出现了奇奇怪怪的东西」）把它当
+   * **产品文案**来写（读者是用户，不是我们）——
+   * 行话与阶段号不许出现在输出里（同一条判据另见下一处守护）。说的那件事没变，
+   * 变的是话：**用用户的话说破**。
+   *
+   * **新锚**：`'不是产品行为'`——替人裁决这件事仍然说破，只是换了人话。
+   */
+  test('`--help`——说清用法（验收装置单列，且说破替人裁决不是产品行为）', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--help')
@@ -66,8 +77,31 @@ describe('入口 magic', () => {
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('magic —— 软件工程智能体')
       expect(result.stdout).toContain('--script')
-      // 无人值守替人批准这件事要在用法里说破——别让它看着像产品行为
-      expect(result.stdout).toContain('人工门')
+      // 无人值守替人裁决这件事要在用法里说破——别让它看着像产品行为
+      expect(result.stdout).toContain('不是产品行为')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  /**
+   * **守护 · 产品文案的机器判据**（`--help` 重写 · 2026-09-20）——输出里不许有：
+   * Markdown 标记（抄文案漏剥）、内部包名、架构词、我们自己的目录。
+   *
+   * 为什么值得钉：这份文本**唯一的读者是用户**，而它最容易的退化方式就是
+   * 「从设计文档里抄一段过来」——上面那几样正是抄漏的痕迹（`**` 整段带进终端、
+   * `@magic/actions` 直接印出来）。判据能机器判的那几条在此钉死；
+   * 「每句话用户需不需要知道」那部分机器判不了，归人读。
+   */
+  test('`--help`——不出现 Markdown 标记 · 内部包名 · 架构词（守护）', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      const result = await run(home, '--help')
+
+      expect(result.exitCode).toBe(0)
+      for (const banned of ['**', '@magic/', '应用层', '接缝', '控制面', '装配', 'playground']) {
+        expect(result.stdout).not.toContain(banned)
+      }
     } finally {
       removeDir(home)
     }
