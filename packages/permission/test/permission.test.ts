@@ -21,7 +21,7 @@ import type {
   ToolCall,
 } from '@magic/contracts'
 import { createPermissionGate } from '../src/index.ts'
-import { call, context, harness, type Harness } from './helpers.ts'
+import { call, context, harness, ledger, type Harness } from './helpers.ts'
 
 /**
  * 走一次闸门，只取**呈现轻重**与材料——本域的首要可观测面（询问事件的 `weight` / `material`）。
@@ -32,7 +32,7 @@ function weigh(
   roots: readonly string[] = ['/work/proj'],
 ): { readonly weight: DecisionWeight; readonly material: string; readonly seq: Harness } {
   const h = harness()
-  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
   void gate.decide(toolCall, context(roots), 1) // 链引用必填（本轮契约）
 
   const request = h.eventsOf('tool.decision.request')[0]
@@ -65,7 +65,7 @@ describe('参数键', () => {
 describe('判据 1 · 一律经人工门', () => {
   test('每个工具调用都产生一条 tool.decision.request——轻类亦然', async () => {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     void gate.decide(call('read', { path: 'a.txt' }), context(), 1)
 
@@ -76,7 +76,7 @@ describe('判据 1 · 一律经人工门', () => {
 
   test('未答复＝不落定（批准才执行）', async () => {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     let verdict: Decision | undefined
     void gate
@@ -90,7 +90,7 @@ describe('判据 1 · 一律经人工门', () => {
   test('契约端口面：三参调用（消费者只认已冻的 `PermissionGate`）', async () => {
     const h = harness()
     // 按**契约端口**取用（工具域的姿势）：`callRef` ＝ 该次 `tool.call` 事件的 id
-    const gate: PermissionGatePort = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate: PermissionGatePort = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 42)
     const request = h.eventsOf('tool.decision.request')[0]
@@ -345,7 +345,7 @@ describe('判据 3 · 答复流转', () => {
   /** 带假时钟的闸门——度量（`elapsedMs`）要可判，就得把时钟握在手里。 */
   function timed(clock: { value: number }) {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, now: () => clock.value })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, now: () => clock.value, grants: ledger() })
     return { gate, h }
   }
 
@@ -416,7 +416,7 @@ describe('判据 3 · 答复流转', () => {
       },
     }
 
-    gate = createPermissionGate({ sink: answering, stamper: h.stamper })
+    gate = createPermissionGate({ sink: answering, stamper: h.stamper, grants: ledger() })
 
     expect(await gate.decide(call('read', { path: 'a.txt' }), context(), 1)).toBe('approve')
     expect(h.countOf('tool.decision')).toBe(1)
@@ -439,7 +439,7 @@ describe('判据 3 · 答复流转', () => {
 describe('判据 4 · 拒绝回填', () => {
   test('被拒调用得 reject（工具域据以「拒绝」回填、不执行）', async () => {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
@@ -453,7 +453,7 @@ describe('判据 4 · 拒绝回填', () => {
 
   test('同轮多调用：各自过闸、各自答复——一个被拒不影响其余', async () => {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     // 同轮三个调用（首站按序逐个：各自过闸 → 执行 → 回填）
     const first = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
@@ -482,7 +482,7 @@ describe('判据 4 · 拒绝回填', () => {
 
   test('在途询问各挂各的——答复一个不影响另一个', async () => {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     let firstVerdict: Decision | undefined
     void gate
@@ -504,7 +504,7 @@ describe('判据 4 · 拒绝回填', () => {
 describe('判据 6 · 裁决不入记录', () => {
   test('一次完整裁决只产出两个 kind 的事件——过程流，无条目', async () => {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
@@ -547,7 +547,7 @@ export function gateHasNoEntryFace(): void {
   const h = harness()
 
   // @ts-expect-error 注入面只有事件扇出与铸造器——`RecordsService`（条目面）塞不进来
-  createPermissionGate({ sink: h.sink, stamper: h.stamper, records: {} })
+  createPermissionGate({ sink: h.sink, stamper: h.stamper, records: {}, grants: ledger() })
 
   // @ts-expect-error `EventSink` 只有 `emit`——没有条目写入的动词
   h.sink.appendEntry({ kind: 'user', content: 'x' })
@@ -562,7 +562,7 @@ export function gateHasNoEntryFace(): void {
  */
 export function chainRefIsRequired(): void {
   const h = harness()
-  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper })
+  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
   void gate.decide(call('read', { path: 'a.txt' }), context(), 42) // 三参＝唯一姿势
 

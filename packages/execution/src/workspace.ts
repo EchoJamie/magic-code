@@ -47,6 +47,9 @@
  * - **规范形**（`realpath`）＝根**身份**：`roots()` / `defaultRoot()` / `ResolvedPath.root`
  *   / 越界报文都用它——一条根一个身份，不因写法不同裂成两条（记录那一列 · 列表分组
  *   认的都是它）。
+ *   ⚠️ **一张表判不完整**（U22）：权限域原先只拿到这一张（`tools` 把 `roots()` 递给闸门）
+ *   ⇒ 声明原形下的读类每次弹卡（沙箱认了、闸门不认）——故 `declaredRoots()` 把它也**露出去**
+ *   （契约那一条），闸门那一侧照两张表判。
  * - **声明原形**（用户手写的那串，`resolvePath` 归一、**不** realpath）＝用户**认得的那个写法**。
  *   由头：单根时代根＝启动目录（`getcwd()` 给的是物理路径），**用户写不出非规范形**；
  *   **多根之后用户在配置里手写** `/tmp/proj`（macOS 上 `/tmp` 实为 `/private/tmp`），
@@ -168,10 +171,15 @@ export function createWorkspaceService(options: WorkspaceOptions): WorkspaceServ
   })
 
   const view: readonly string[] = roots.map((root) => root.real)
+  /** 声明原形那一张表——**同序等长**（契约 `WorkspaceService.declaredRoots`）。 */
+  const declared: readonly string[] = roots.map((root) => root.declared)
   const defaultRoot = view[0] as string // 非空已判，故必有——「默认根＝列表第一项」
 
   return {
     roots: () => view,
+    // 声明原形露出去（U22）——权限域要与执行域**同源**：模型照用户写的那串给路径时，
+    // 闸门那一侧也得认得出它在根内（原先只认规范形 ⇒ 声明原形下的读类每次弹卡 ✗）。
+    declaredRoots: () => declared,
     defaultRoot: () => defaultRoot,
 
     resolve(path) {

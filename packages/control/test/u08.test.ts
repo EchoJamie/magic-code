@@ -78,6 +78,14 @@ export function commandSubjectOf(command: Command): string {
     case 'model.list':
       // D10 读侧第二支——无参：问的就是「都有哪些」
       return '列模型条目'
+    case 'grants.list':
+      // U22 授权读侧——无参：问的就是「本工作区记着哪些、别处还有哪些节」
+      return '列授权名录'
+    case 'grants.revoke':
+      // U22 撤销——两形共一个命令：给了 index 撤一条，只给 workspace 撤一整节
+      return `撤销授权：${command.workspace ?? '（本工作区）'} / ${
+        command.index === undefined ? '（整节）' : `第 ${command.index} 条`
+      }`
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -141,6 +149,8 @@ export function hubFaceRealizesPort(): void {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onGrantsList: () => undefined,
+    onGrantsRevoke: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -166,6 +176,8 @@ export function routesAreContractShape(): void {
     onSession: (command) => void command.type,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onGrantsList: () => undefined,
+    onGrantsRevoke: () => undefined,
   }
   void routes
 }
@@ -184,7 +196,7 @@ function envelope<K extends EventKind>(
   return { id, session: SESSION, turn: 1, at: AT, kind, data }
 }
 
-/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 六路由皆必填）。 */
+/** 空路由——只关心某一支时补齐其余（`CommandRoutes` 九路由皆必填）。 */
 function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
   return {
     onInput: () => undefined,
@@ -194,6 +206,8 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onGrantsList: () => undefined,
+    onGrantsRevoke: () => undefined,
     ...overrides,
   }
 }

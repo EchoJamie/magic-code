@@ -2,8 +2,13 @@
  * 规则 —— 自动放行的**唯一**入口（技术方案 · 权限：规则化（阶段 2））。
  *
  * > 自动放行 ＝ 规则命中：条目 ＝（工具 × 路径模式 × 操作类型）→ 允许；
- * > **必闸类为禁区**——任何规则不可放行（清单即禁区）。「总是允许」＝会话级记忆；
- * > 持久规则存配置文件、用户维护（写回机制留后）。优先级：**必闸 ＞ 规则 ＞ 默认问**。
+ * > **必闸类为禁区**——任何规则不可放行（清单即禁区）。「总是允许」＝**工作区级授权**
+ * > （见 `grants.ts`）；持久规则存配置文件、用户维护（写回机制留后）。
+ *
+ * **优先级链一次留全**（技术方案 · 权限「授权的落点」）：
+ * **必闸禁区 ＞ 项目规约（留缝不实现） ＞ 用户手写规则 ＞ 点出来的授权 ＞ 默认问**
+ * ——本文件是「用户手写规则」那一格（`parseRules`），授权那一格在 `grants.ts`，
+ * 次序由 `gate.ts` 一处落定。
  *
  * 本文件只有**形态与解析**：持久规则从配置文件来（装配侧读文件、原样交给 `parseRules`）——
  * 本域**不碰文件系统**（域间只经契约），也不写回（「写回机制留后」）。
@@ -72,6 +77,23 @@ export function parseRules(raw: unknown): RuleParseResult {
   })
 
   return { rules, rejected }
+}
+
+/**
+ * **一条**规则条目的校验 ＋ 归一——`parseRules` 与授权文件（`grants.ts`）共用这一处。
+ *
+ * 两处各写一遍校验＝两套「什么算合格的规则」；授权是从**同一个三格**凝出来的
+ * （工具 × 路径 × 操作），形态上没有第二套可说。
+ *
+ * ⚠️ 授权条目还带记账的那几个键（`grantedAt` / `lastHitAt` / `hits`）——**取用方先摘掉它们**
+ * 再递进来（见 `grants.ts`）：本函数**不认识**它们，塞进来会被当成「不认识的键」拒掉
+ * （那正是从严该有的样子——写错键名不会被猜中）。
+ */
+export function readRuleEntry(entry: unknown): { readonly rule: PermissionRule } | { readonly reason: string } {
+  const reason = problemOf(entry)
+  return reason === undefined
+    ? { rule: toRule(entry as Record<string, unknown>) }
+    : { reason }
 }
 
 /** 逐条校验——`undefined` ＝收下；否则是拒绝缘由。 */
@@ -183,6 +205,11 @@ function coversOps(declared: RuleOp | readonly RuleOp[] | undefined, ops: readon
  *
  * 没有影响面词条的调用（只读命令——本域只收写 / 删 / 移的路径词条）**不受本格约束**：
  * 它压根没碰路径。这与必闸清单的越界条目限「工作区外的**写 / 删 / 移**」同一姿态。
+ *
+ * **落点认两种写法**（U22 · 声明原形）——模式只展开一种（默认根的规范形，见 `expandPattern`），
+ * 而落点带着它的两种写法（`Landing.forms`）：**任一种命中即算命中**。于是「用户写 `src/**`、
+ * 模型给 `/tmp/proj/src/x`」与「用户写 `/tmp/proj/**`、落点是规范形」两条路都通——
+ * 规则怎么写都行，认不认得出是**落点**那一侧的事。
  */
 function matchesPath(
   pattern: string | undefined,
@@ -193,8 +220,8 @@ function matchesPath(
   if (landings.length === 0) return false
 
   const regex = globToRegExp(expandPattern(pattern, ctx))
-  // 判不出落点的词条（`~` 前缀）不参与命中——判不出就不放行
-  return landings.some((landing) => landing.absolute !== undefined && regex.test(landing.absolute))
+  // 判不出落点的词条（`~` 前缀）不参与命中——判不出就不放行（`forms` 为空，自然不中）
+  return landings.some((landing) => landing.forms.some((form) => regex.test(form)))
 }
 
 /**

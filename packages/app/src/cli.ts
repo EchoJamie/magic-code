@@ -198,6 +198,8 @@ function report(assembly: Assembly): void {
   )
   // 权限规则（阶段 2）——**规则真的接进闸门了**吗、有没有被拒的条目，自检里说清楚
   console.log(`  权限规则　${describeRules(assembly)}`)
+  // 授权（U22）——`a` 点出来的那一类：**落在哪个文件、有几条、有没有陈旧的节**
+  console.log(`  授权　　　${describeGrants(assembly)}`)
   console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')
 }
 
@@ -261,6 +263,26 @@ function describeRules(assembly: Assembly): string {
 }
 
 /**
+ * 授权那一行（U22 · 技术方案 · 权限「授权的落点」）——**报三件**：本工作区有几条、
+ * 文件在哪儿、有没有陈旧的节。
+ *
+ * 为什么要报**落点**：这个文件是**内核自持**的，且用户应当能一眼找到它、手改它、删它
+ * （「安全相关的东西价值在一眼看全」）。故清单一列就是路径，不藏在别处。
+ *
+ * **陈旧的节**（路径已不在）单独说一句 —— 它们**不会被自动删**（`B11`：删用户数据不归内核），
+ * 用户得知道有这么几节等着处置（撤销入口在 `/grants`）。
+ */
+function describeGrants(assembly: Assembly): string {
+  const view = assembly.grantsView()
+  const count = view.grants.length
+  const head = count === 0 ? '无（批准时按 a 就是记一条）' : `${count} 条（本工作区）`
+
+  const stale = view.stale.length === 0 ? '' : ` · ⚠️ 陈旧的节 ${view.stale.length} 个（路径已不在——/grants 里撤）`
+
+  return `${head} · ${assembly.grantsPath}${stale}`
+}
+
+/**
  * **起外壳那一下的入参**——装配 → `runTui` 的全部接线就这一处。
  *
  * **导出是给用例锚的**（照 `scriptOptions` 的先例，缺陷 D16 那笔账）：状态行 ④ 的分母
@@ -280,8 +302,10 @@ export function tuiOptions(assembly: Assembly): RunTuiOptions {
     // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
     // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
     workspaceRoots: assembly.workspaceRoots,
-    // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
-    // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
+    // 启动那几句（U22 · 审计第 13 条）：解析从严（读不懂的规则 / 授权**不生效**）原先
+    // 只有 `--check` 会说，走 TUI 这条路**一声不响**。话由装配备好（`Assembly.notices`）、
+    // 外壳落成记录区的一行回执——**空数组＝启动一句多余的话都不说**。
+    receipts: assembly.notices,
   }
 }
 

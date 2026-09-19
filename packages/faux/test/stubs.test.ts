@@ -315,7 +315,7 @@ describe('makeFauxToolRuntime', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 /** 权限上下文——纯数据（根视图由调用方给，不传端口进端口）。 */
-const CTX = { roots: ['/w'], defaultRoot: '/w' }
+const CTX = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
 
 /** 链引用——该次 `tool.call` 事件的 id（真装配里由工具域发；测试里给个可读的常量）。 */
 const CALL_REF = 42

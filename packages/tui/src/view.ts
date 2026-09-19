@@ -128,11 +128,22 @@ export type PickerRow = {
    * 这是**视觉次序**，不是可用性：压暗的行**照样选得中、切得过去**。
    */
   readonly faint?: boolean
+  /**
+   * **选定即撤**（`/grants`）——这一行要发的撤销负载（`grants.revoke` 的两件）。
+   *
+   * 只有授权那个抽屉给：别的选择器「选定」是**切过去**，授权这里「选定」是**撤掉它**
+   * （B13 的一句规格）。故这一位存在＝回车之后要发一条撤销，而不是打开什么。
+   */
+  readonly revoke?: { readonly workspace?: string; readonly index?: number }
 }
 
-/** 选择器（`/session` · `/model`）——**只在左下开，记录区什么都不进**。 */
+/** 选择器（`/session` · `/model` · `/grants`）——**只在左下开，记录区什么都不进**。 */
 export type Picker = {
-  readonly source: 'session' | 'model'
+  /**
+   * 取材的来路。三处各一门：`/session` 读目录、`/model` 读条目表、`/grants` 读授权名录
+   * （U22 · B13：**与 `/session` · `/model` 同位置同开合**）。
+   */
+  readonly source: 'session' | 'model' | 'grants'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -155,16 +166,20 @@ export type CommandSpec = {
 
 /**
  * **命令登记表**——只列**真存在**的命令（原型 · 场景 11 的自律：
- * 列一个按下去会报错的，比不列更坏）。`/grants` 内核还没有，故**不列**。
+ * 列一个按下去会报错的，比不列更坏）。
  *
- * 四条各自的性质：
+ * 五条各自的性质：
  * - `/help` · `/status`——**纯输出型**（本地就能答，不进记录区的对话）；
- * - `/session` · `/model`——**交互配置型**（开选择器）。
+ * - `/session` · `/model` · `/grants`——**交互配置型**（开选择器）。
+ *
+ * ⚠️ `/grants` **原先不在这张表上**，理由正是上一条自律（「内核还没有，故不列」）——
+ * `U22` 到站后它有了：名录从 `grants.json` 来（走 `grants.list`），选定即撤。
  */
 export const COMMANDS: readonly CommandSpec[] = [
   { name: '/session', summary: '会话：列表 · 切换 · 新建 · 改名' },
   { name: '/status', summary: '看这一趟用了多少、模型是谁' },
   { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
+  { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
   { name: '/help', summary: '这张表' },
 ]
 
@@ -291,6 +306,13 @@ export type ShellView = {
   /** 会话目录（`session.list` 的答复）。 */
   readonly catalog: readonly SessionSummary[]
   /**
+   * **授权名录**（`grants.catalog` 的答复 · U22）——`/grants` 抽屉的取材。
+   *
+   * 与 `catalog` / `models` 并列的第三张表：**拿到过就有**，没问过是 `null`
+   * （「拿不到的不编」——空名录与「还没问过」不是一回事，抽屉等答复才开）。
+   */
+  readonly grants: GrantsCatalog | null
+  /**
    * **模型条目表**（`model.list` 的答复 · 缺陷 D10 第 3 样）——`/model` 选择器的取材，
    * 且是**全量**（含从未调用过的条目）。
    *
@@ -333,10 +355,14 @@ export function createView(): ShellView {
     sessionId: null,
     catalog: [],
     models: [],
+    grants: null,
     turnTools: 0,
     echoes: 0,
   }
 }
+
+/** 授权名录（`grants.catalog` 的载荷 · U22）——抽屉与那一行度量都读它。 */
+export type GrantsCatalog = EventDataOf['grants.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
@@ -413,6 +439,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
         models: event.data.entries,
         status: { ...view.status, window: windowOfCatalog(event.data) },
       }
+
+    // 授权名录（读侧答复 · U22）——**收进视图**：抽屉据它铺行，那一行度量据它算；
+    // 开抽屉 / 刷新 / 留回执是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
+    // （照 `model.catalog` 的姿势：归约落数据，处置归外壳）
+    case 'grants.catalog':
+      return { ...view, grants: event.data }
 
     case 'session.state':
       return reduceSessionState(view, event.data)
@@ -1001,6 +1033,106 @@ export function sessionHint(
   )
 
   return hasHere ? undefined : `本工作区：${headOf(here)}`
+}
+
+// ══ 授权抽屉（`/grants` · U22）═══════════════════════════════════════
+
+/**
+ * **`/grants` 的行** —— 名录 ＋ 陈旧的节（`B13` 的呈现形态：**与 `/session` · `/model`
+ * 同位置同开合**的左下抽屉）。
+ *
+ * 两组：
+ * - **本工作区的授权**——一行一条，`describe` 是内核给的措辞（工具 × 路径 × 操作，
+ *   一处产出，外壳不重拼）；`meta` 是**用过的证据**（用了几次、最近什么时候）
+ *   与**久未命中**那个标记；
+ * - **陈旧的节**（`B11`）——**路径已不在**的那些工作区，一行一节，选定＝**整节撤掉**。
+ *   ⚠️ **只是列出来**：内核**不自动删**（删用户数据不归内核），撤销的扳机在人手上。
+ *
+ * 行序即撤销要报的 `index`（本工作区那组在前，序号从 0 起）——故这里**不许重排**。
+ */
+export function grantsRows(catalog: GrantsCatalog): readonly PickerRow[] {
+  const rows: PickerRow[] = catalog.grants.map((grant, index) => ({
+    label: grant.describe,
+    meta: grantMetaOf(grant),
+    current: false,
+    value: String(index),
+    group: catalog.workspace,
+    revoke: { index },
+  }))
+
+  for (const section of catalog.stale) {
+    rows.push({
+      label: section,
+      meta: '路径已不在——整节撤销',
+      current: false,
+      value: section,
+      group: STALE_HEAD,
+      faint: true, // 压暗＝「这个多半是过去的事了」，但**照样选得中**（同 `/session` 的姿势）
+      revoke: { workspace: section },
+    })
+  }
+
+  return rows
+}
+
+/** 陈旧节那一组的头（本工作区那组用路径本身作头——两组的头分得开）。 */
+const STALE_HEAD = '（已不在了的工作区）'
+
+/** 一条授权的 meta 栏——**用过的证据**，不是评价（没记过账就说没记过）。 */
+function grantMetaOf(grant: GrantsCatalog['grants'][number]): string {
+  if (grant.lastHitAt === undefined) return grant.stale ? '还没用过 · 久未命中' : '还没用过'
+
+  const when = `最近 ${dayLabel(grant.lastHitAt)}`
+  // `hits` 与 `lastHitAt` 同来处（`grants.ts` 的记账）——有其一即有其二，此处仍是各判各的
+  const times = grant.hits === undefined ? '' : `${grant.hits} 次 · `
+
+  return grant.stale ? `${times}${when} · 久未命中` : `${times}${when}`
+}
+
+/** 抽屉下方那行说明——**怎么用** ＋ **放行区那一笔账**（`B10` 的口径，两个占比都给）。 */
+export function grantsHint(catalog: GrantsCatalog): string {
+  const lines: string[] = []
+
+  if (catalog.grants.length === 0 && catalog.stale.length === 0) {
+    lines.push(`本工作区（${catalog.workspace}）还没有授权——批准时按 a 就是记一条`)
+  } else {
+    lines.push('回车＝撤销选定那条')
+  }
+
+  lines.push(frictionLabel(catalog.decisions))
+  return lines.join(' · ')
+}
+
+/**
+ * 放行区的账（`B10`）——**两个占比**，各自说各自的话（见契约 `grants.catalog` 那条注）：
+ *
+ * - **未配规则**：一条规则都没命中的那些 / 全部裁决；
+ * - **还得你点**：前者 ＋「规则命中了却被必闸禁区否决」的那些 / 全部裁决。
+ *
+ * 两个数只差否决那一格——对用户是同一个体验，对规则作者不是一件事。**分母是 0 就不报**
+ * （「0 次裁决」不是一个占比，报它等于编一个 0%）。
+ */
+function frictionLabel(decisions: GrantsCatalog['decisions']): string {
+  const { total, uncovered, vetoed } = decisions
+  if (total === 0) return '本会话还没走过裁决'
+
+  const asked = uncovered + vetoed
+  return (
+    `本会话 ${total} 次裁决：未配规则 ${uncovered} 次（${percentOf(uncovered, total)}）` +
+    ` · 还得你点 ${asked} 次（${percentOf(asked, total)}）`
+  )
+}
+
+function percentOf(part: number, whole: number): string {
+  return `${Math.round((part / whole) * 100)}%`
+}
+
+/** 时刻 → `MM-DD`（本地时区）——抽屉里只报「最近什么时候」，精确到分没必要。 */
+function dayLabel(at: number): string {
+  const d = new Date(at)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
 /** 一组（同一个工作区的那些行）——分组头 ＋ 是不是「这儿」/「别处」。 */

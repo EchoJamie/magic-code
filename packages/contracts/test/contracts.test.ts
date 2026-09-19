@@ -439,6 +439,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onGrantsList: () => undefined,
+    onGrantsRevoke: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -448,6 +450,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onGrantsList: () => undefined,
+    onGrantsRevoke: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -513,6 +517,8 @@ export function routesCarryModelSwitch(): void {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onGrantsList: () => undefined,
+    onGrantsRevoke: () => undefined,
   }
   void routes
 }
@@ -628,6 +634,9 @@ describe('事件契约', () => {
       // 表在内存里而不是库里；新锚多一格，判据一个字没松）。`/model` 是反复看的动作，
       // 每次往库里留一笔「问过」只会污染观测；「换过什么模型」另有 `model.switched` 落着。
       'model.catalog',
+      // U22：授权名录同列——**又是同一条判据**（表在盘上的 `grants.json` 里，不在库里），
+      // 且 `/grants` 也是反复看的抽屉。改动的痕不在「谁看过名录」上，而在文件本身少了一条。
+      'grants.catalog',
     ])
   })
 

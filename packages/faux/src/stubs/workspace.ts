@@ -40,6 +40,12 @@ export function makeFauxWorkspace(options: FauxWorkspaceOptions): FauxWorkspace 
       return [root]
     },
 
+    // 桩只有一张表（**规范形**——根在这里就是 `resolvePath` 归一的那一串：
+    // 测试里没有真符号链接要抹，两张表逐字相同）。真实现的差别见契约那一条。
+    declaredRoots(): readonly string[] {
+      return [root]
+    },
+
     defaultRoot(): string {
       return root
     },

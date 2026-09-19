@@ -77,6 +77,14 @@ export function makeStage(options: StageOptions = {}): Stage {
       const { turns = SMOKE_TURNS, stepDelayMs, ...rest } = options
       return assemble({
         cwd: workspace,
+        // **授权文件也落沙地**（U22）：缺省 `GRANTS_FILE` 是 `~/.magic/grants.json`——
+        // 那是**用户真的那份**。装配级用例默认全在沙地里跑（同 dataDir / 配置的姿势），
+        // 要另指别处就在 `options` 里覆盖（`...rest` 在后，覆盖得起）。
+        //
+        // ⚠️ 这一条是**踩出来的**：`U22` 头一轮漏了它，`permission.test.ts` 那条
+        // 「按 `a`」的用例直接把测试的临时工作区**写进了用户的真文件**（6 节全是
+        // `/private/var/folders/…/magic-app-*/ws`）——测试污染真实数据，是这一层总该防住的。
+        grantsFile: join(root, 'magic', 'grants.json'),
         config: loadConfig({ path: configPath, home: root }),
         modelGateway: (stamper) => {
           const gateway = createFauxGateway({ stamper, turns, stepDelayMs })

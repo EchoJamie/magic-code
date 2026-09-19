@@ -580,13 +580,19 @@ describe('场景 11 · slash 自动补全', () => {
     expect(frame).toMatchSnapshot()
   })
 
-  test('只列**真存在**的命令——`/grants` 内核还没有，不列', () => {
+  /**
+   * 只列**真存在**的命令（原型 · 场景 11 的自律）。
+   *
+   * ⚠️ **原锚是 `/grants`「内核还没有，故不列」**——`U22` 到站后它有了（授权名录
+   * 走 `grants.list`），于是这一条**翻面**：候选里**应当**有它。
+   * 「表里列的都得真认得」那半条改由 `shell.test.ts` 的遍历用例钉（更强，且不用手改）。
+   */
+  test('真存在的命令照列——`/g` 出 `/grants`（U22 到站后它真有了）', () => {
     const app = live()
 
     app.type('/g')
 
-    const frame = app.screen()
-    expect(frame).not.toContain('/grants')
+    expect(app.screen()).toContain('/grants')
   })
 
   test('`Tab` 补全 —— 选中那条落进草稿（留一个空格等参数）；`esc` 收起候选', () => {
@@ -854,12 +860,18 @@ describe('D11 护栏（内联渲染的重复）', () => {
 })
 
 describe('slash 候选（D12 · 纯函数级）', () => {
-  test('`/g` —— 一条候选都不出（`/grants` 内核还没有）', async () => {
+  /**
+   * ⚠️ **原锚**：`/g` 一条候选都不出（那会儿 `/grants` 内核还没有）。
+   * **为何变**：`U22` 到站——`/grants` 进了命令表，`/g` 前缀命中它（打分 3）。
+   * **新锚**：`/g` → `/grants`；全表由四条变五条。`/s` 一栏照旧考**匹配度**（前缀在前），
+   * 只是 `/grants` 作为**子序列**（`/`…`s`）也进了这一列——排在那两条前缀命中的后面。
+   */
+  test('`/g` —— 出 `/grants`（它现在真存在）', async () => {
     const { matchCommands } = await import('../src/view.ts')
 
-    expect(matchCommands('/g')).toEqual([])
-    expect(matchCommands('/s').map((row) => row.name)).toEqual(['/session', '/status'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(4) // 全列（真存在的四条）
+    expect(matchCommands('/g').map((row) => row.name)).toEqual(['/grants'])
+    expect(matchCommands('/s').map((row) => row.name)).toEqual(['/session', '/status', '/grants'])
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(5) // 全列（真存在的五条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 })

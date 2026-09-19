@@ -87,9 +87,19 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
 
     await deps.runtime.invoke(execCall('ls'), {})
 
-    expect(deps.gate.requests[0]?.ctx).toEqual({ roots: [ROOT], defaultRoot: ROOT })
+    // **两张表都给**（U22）：执行域的落点判据是「规范形 ＋ 声明原形」，闸门那一侧要与它同源
+    // ——桩里两张表逐字相同（测试根没有软链），真装配里 macOS 的 `/tmp` 与 `/private/tmp` 才分得开
+    expect(deps.gate.requests[0]?.ctx).toEqual({
+      roots: [ROOT],
+      declaredRoots: [ROOT],
+      defaultRoot: ROOT,
+    })
     // 纯数据——不许夹带端口（工作区 / 沙箱的成员一个都不能有）
-    expect(Object.keys(deps.gate.requests[0]?.ctx ?? {})).toEqual(['roots', 'defaultRoot'])
+    expect(Object.keys(deps.gate.requests[0]?.ctx ?? {}).sort()).toEqual([
+      'declaredRoots',
+      'defaultRoot',
+      'roots',
+    ])
   })
 
   test('本域不替权限域判：危险结论不进闸门调用', async () => {

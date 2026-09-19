@@ -54,7 +54,7 @@ import { buildSystemPrompt } from '../../src/prompt/index.ts'
 import type { PromptVars } from '../../src/prompt/index.ts'
 
 /** 工作区根——权限与沙箱共用同一份（契约：越界判据两处同源）。 */
-export const ROOTS: PermissionContext = { roots: ['/w'], defaultRoot: '/w' }
+export const ROOTS: PermissionContext = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
 
 /** 缺省提示词注入值——三项齐（`cwd` / `platform` / `date`）。 */
 export const PROMPT_VARS: PromptVars = {

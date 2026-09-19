@@ -1,11 +1,12 @@
 /**
- * U14 · 权限规则化测试 —— 验收：**规则用例（命中 / 未命中 / 禁区不可放行）** ＋
- * **「总是允许」会话级** ＋ **必闸禁区回归** ＋ **度量仍准**。
+ * U14 · 权限规则化测试（U22 扩「授权的落点」）—— 验收：**规则用例（命中 / 未命中 /
+ * 禁区不可放行）** ＋ **「总是允许」落点＝工作区** ＋ **必闸禁区回归** ＋ **度量仍准**。
  *
  * 出处：技术方案 · 权限「规则化（阶段 2）」——自动放行＝规则命中：条目＝
  * （工具 × 路径模式 × 操作类型）→ 允许；**必闸类为禁区**——任何规则不可放行（清单即禁区）。
- * 「总是允许」＝会话级记忆；持久规则存配置文件、用户维护（写回机制留后）。
- * **优先级：必闸 ＞ 规则 ＞ 默认问。**
+ * 持久规则存配置文件、用户维护；「总是允许」＝**工作区级授权**（U22 · 技术方案 ·
+ * 权限「授权的落点」：`a` 记的是「这个项目我信任」，**会话级那一层取消**）。
+ * **优先级链：必闸 ＞ 项目规约（留缝）＞ 手写规则 ＞ 授权 ＞ 默认问。**
  *
  * 一切经**契约面**：注入 `EventSink` / `EventStamper`，读回事件与返回值——
  * 除 `parseRules`（公开面本件）外，测试不碰域内部件。
@@ -14,7 +15,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { Decision, PermissionContext, ToolCall } from '@magic/contracts'
 import { createPermissionGate, parseRules, type PermissionRule } from '../src/index.ts'
-import { call, context, harness, type EventOf, type Harness } from './helpers.ts'
+import type { GrantLedger } from '../src/grants.ts'
+import { call, context, harness, ledger, type EventOf, type Harness } from './helpers.ts'
 
 // ══ 规则形态 · 解析（配置文件 · 只读）═══════════════════════════════
 
@@ -111,6 +113,7 @@ async function pass(
   const gate = createPermissionGate({
     sink: h.sink,
     stamper: h.stamper,
+    grants: ledger(),
     ...(rules === undefined ? {} : { rules }),
   })
 
@@ -248,13 +251,103 @@ describe('必闸禁区——任何规则不可放行', () => {
   })
 })
 
-// ══ 判据 · 会话级「总是允许」═════════════════════════════════════════
+// ══ 判据 · 声明原形（U22 · 权限域的根表与执行域同源）════════════════════
 
-describe('「总是允许」——会话级记忆', () => {
-  /** 一个**会话**＝一个闸门实例：记忆活在实例里，新实例＝新会话。 */
-  function session(rules: readonly PermissionRule[] = []) {
+/**
+ * **两张表**（技术方案 · 权限「权限域的根表要与执行域同源」）——`U27` 把执行域的落点判定
+ * 改成「`realpath` 规范形 ＋ **声明原形**」之后，闸门这一侧还只有规范形 ⇒ **声明原形下的
+ * 读类每次弹卡**（沙箱认了、闸门不认 ✗）。
+ *
+ * 这组用例钉的就是那件事，用的是 macOS 上最经典的一对：`/tmp` 实为 `/private/tmp`。
+ * 用户手写 `/tmp/proj` 注册（**声明原形**），执行域把它 `realpath` 成 `/private/tmp/proj`
+ * （**规范形 · 身份**），而模型照用户写的那一串给路径。
+ */
+describe('声明原形（U22）——落点认两张表', () => {
+  /** 一条根，两种写法——照 macOS 的 `/tmp` ⇄ `/private/tmp`。 */
+  const MAC = (): PermissionContext => context(['/private/tmp/proj'], ['/tmp/proj'])
+
+  test('**声明原形下的读类不再弹卡**——规则（路径缺省＝根内）照样命中', async () => {
+    const result = await pass(call('read', { path: '/tmp/proj/src/a.ts' }), [{ tool: 'read' }], MAC())
+
+    expect(result.asked).toBe(false) // ← 修之前这里是 true（判成根外，规则够不着）
+    expect(result.request).toBeUndefined()
+    expect(autoVerdicts(result.h)).toHaveLength(1)
+  })
+
+  test('两张表都认——规范形那一张照旧（U18 的行为一条不丢）', async () => {
+    const rules: readonly PermissionRule[] = [{ tool: 'read' }]
+
+    expect((await pass(call('read', { path: '/private/tmp/proj/src/a.ts' }), rules, MAC())).asked).toBe(false)
+    expect((await pass(call('read', { path: '/tmp/proj/src/b.ts' }), rules, MAC())).asked).toBe(false)
+  })
+
+  test('相对模式**一种写法就够**——落点自带两种写法，哪边命中都算', async () => {
+    const rules: readonly PermissionRule[] = [{ tool: 'read', path: 'src/**' }]
+
+    // 相对模式按**规范形的默认根**展开；落点是声明原形——靠 `Landing.forms` 的另一半接住
+    expect((await pass(call('read', { path: '/tmp/proj/src/a.ts' }), rules, MAC())).asked).toBe(false)
+    expect((await pass(call('read', { path: '/tmp/proj/docs/b.ts' }), rules, MAC())).asked).toBe(true)
+  })
+
+  test('反过来也通——规则写**声明原形**的绝对模式，落点是规范形', async () => {
+    const rules: readonly PermissionRule[] = [{ tool: 'read', path: '/tmp/proj/src/**' }]
+
+    expect((await pass(call('read', { path: '/private/tmp/proj/src/a.ts' }), rules, MAC())).asked).toBe(false)
+    expect((await pass(call('read', { path: '/private/tmp/proj/docs/b.ts' }), rules, MAC())).asked).toBe(true)
+  })
+
+  test('**越界照旧**——两张表都够不着的就是根外（不是「认了声明原形就什么都放」）', async () => {
+    const result = await pass(call('read', { path: '/tmp/elsewhere/a.ts' }), [{ tool: 'read' }], MAC())
+
+    expect(result.asked).toBe(true)
+  })
+
+  test('材料说得出「是按声明原形认的」——身份报规范形，写法报用户认得的那个', async () => {
+    const result = await pass(call('read', { path: '/tmp/proj/a.ts' }), undefined, MAC())
+
+    const material = result.request?.data.material ?? ''
+    expect(material).toContain('/private/tmp/proj') // 身份＝规范形
+    expect(material).toContain('按声明原形认的') // 而认它的是哪一张表，说清楚
+  })
+
+  test('改走 `edit` 的同一件事——工作区外的写才是必闸，声明原形**在根内**', async () => {
+    const rules: readonly PermissionRule[] = [{ tool: 'edit', path: 'src/**' }]
+
+    expect((await pass(call('edit', { path: '/tmp/proj/src/a.ts' }), rules, MAC())).asked).toBe(false)
+    // 根外照旧必闸（哪怕规则写的是任意路径——必闸禁区凌驾其上）
+    const outside = await pass(call('edit', { path: '/tmp/elsewhere/a.ts' }), ANYTHING, MAC())
+    expect(outside.asked).toBe(true)
+    expect(outside.request?.data.weight).toBe('heavy')
+  })
+})
+
+// ══ 判据 · 「总是允许」的落点＝**工作区**（U22 迁移）════════════════════
+
+/**
+ * 「总是允许」的落点（技术方案 · 权限「授权的落点」）——**两层，不是三层**：
+ *
+ * - `y` 批准＝**这一次**（不记）；`a` 总是允许＝**这个工作区**（记）。
+ * - **「会话级记忆」那一层取消**——会话不是信任的边界（它会失效不是因为「该失效」，
+ *   而是因为会话必然结束，那是实现的副产品）。
+ *
+ * 故这一组用例的判据变了：原先钉的是「**新会话不继承**」，现在钉的是
+ * 「**新会话照样继承**（同一个工作区）、换个工作区才不继承」。
+ */
+describe('「总是允许」——落点是工作区', () => {
+  /**
+   * 一个**会话**＝一个闸门实例；**工作区**＝一份账本（跨会话共用）。
+   *
+   * 故这里的参数是**账本**而不是「无」：两次 `session(sameLedger)` ＝ 同一工作区的两条会话
+   * （U16 里切走再切回、或关掉重开都在此列），`session(ledger('别处'))` ＝ 换个项目。
+   */
+  function session(ledgerOf: GrantLedger, rules: readonly PermissionRule[] = []) {
     const h = harness()
-    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, rules })
+    const gate = createPermissionGate({
+      sink: h.sink,
+      stamper: h.stamper,
+      rules,
+      grants: ledgerOf,
+    })
 
     return {
       gate,
@@ -271,8 +364,11 @@ describe('「总是允许」——会话级记忆', () => {
     }
   }
 
-  test('答复「总是允许」后，本会话同类不再问', async () => {
-    const s = session()
+  /** 一个工作区（默认根 `/work/proj`）——本组的主角。 */
+  const here = (): GrantLedger => ledger()
+
+  test('答复「总是允许」后，同类不再问', async () => {
+    const s = session(here())
 
     expect((await s.through(call('read', { path: 'a.txt' }), 'approve', true)).asked).toBe(true)
     expect((await s.through(call('read', { path: 'b.txt' }))).asked).toBe(false)
@@ -280,7 +376,7 @@ describe('「总是允许」——会话级记忆', () => {
   })
 
   test('同类＝同工具 × 同操作类型——别的工具 / 别的操作照问', async () => {
-    const s = session()
+    const s = session(here())
     await s.through(call('exec', { cmd: 'ls -la' }), 'approve', true)
 
     expect((await s.through(call('exec', { cmd: 'cat a.txt' }))).asked).toBe(false) // 同为只读
@@ -288,25 +384,36 @@ describe('「总是允许」——会话级记忆', () => {
     expect((await s.through(call('read', { path: 'a.txt' }))).asked).toBe(true) // 别的工具
   })
 
-  test('记忆圈在**根内**——同类在根外照问（记忆不把闸门搬到工作区外）', async () => {
-    const s = session()
+  test('授权圈在**根内**——同类在根外照问（授权不把闸门搬到工作区外）', async () => {
+    const s = session(here())
     await s.through(call('read', { path: 'src/a.ts' }), 'approve', true)
 
     expect((await s.through(call('read', { path: 'src/b.ts' }))).asked).toBe(false)
     expect((await s.through(call('read', { path: '/etc/hosts' }))).asked).toBe(true)
   })
 
-  test('**新会话不继承**——记忆在闸门实例里，本域不落盘', async () => {
-    const first = session()
+  test('**新会话照样继承**——授权活在账本里（工作区级），不在闸门实例里', async () => {
+    const book = here() // 一个工作区＝一份账本（跨会话共用）
+
+    const first = session(book)
     await first.through(call('read', { path: 'a.txt' }), 'approve', true)
     expect((await first.through(call('read', { path: 'b.txt' }))).asked).toBe(false)
 
-    const second = session() // 新会话＝新闸门实例
-    expect((await second.through(call('read', { path: 'b.txt' }))).asked).toBe(true)
+    const second = session(book) // 新会话＝新闸门实例；**同一个工作区**＝同一份账本
+    expect((await second.through(call('read', { path: 'b.txt' }))).asked).toBe(false)
+    expect(second.h.countOf('tool.decision.request')).toBe(0) // 一次都没问
   })
 
-  test('记忆**也是一种规则**——必闸禁区照样否决（在必闸类上选「总是允许」不生效）', async () => {
-    const s = session()
+  test('**换个工作区不继承**——账本是分节的，别处的授权不是这儿的', async () => {
+    const first = session(here())
+    await first.through(call('read', { path: 'a.txt' }), 'approve', true)
+
+    const elsewhere = session(ledger('/work/other')) // 另一个默认根
+    expect((await elsewhere.through(call('read', { path: 'b.txt' }))).asked).toBe(true)
+  })
+
+  test('授权**也是一种规则**——必闸禁区照样否决（在必闸类上选「总是允许」不生效）', async () => {
+    const s = session(here())
     expect((await s.through(call('exec', { cmd: 'rm -rf build' }), 'approve', true)).asked).toBe(true)
 
     const again = await s.through(call('exec', { cmd: 'rm -rf dist' }))
@@ -314,19 +421,40 @@ describe('「总是允许」——会话级记忆', () => {
     expect(again.material).toContain('禁区') // 而且说得出为什么还问
   })
 
-  test('拒绝带 remember 位＝不记——规则只有「允许」这一形', async () => {
-    const s = session()
+  test('拒绝带 remember 位＝不记——规则的条目只有「允许」这一形', async () => {
+    const s = session(here())
     expect((await s.through(call('read', { path: 'a.txt' }), 'reject', true)).verdict).toBe('reject')
     expect((await s.through(call('read', { path: 'b.txt' }))).asked).toBe(true)
   })
 
-  test('记忆与配置规则并存——配置在前、记忆在后，两条都过禁区', async () => {
-    const s = session([{ tool: 'grep' }])
+  test('授权与配置规则并存——配置在前、授权在后，两条都过禁区', async () => {
+    const s = session(here(), [{ tool: 'grep' }])
     await s.through(call('read', { path: 'a.txt' }), 'approve', true)
 
     expect((await s.through(call('grep', { path: 'x' }))).asked).toBe(false) // 配置规则
-    expect((await s.through(call('read', { path: 'b.txt' }))).asked).toBe(false) // 会话记忆
+    expect((await s.through(call('read', { path: 'b.txt' }))).asked).toBe(false) // 点出来的授权
     expect((await s.through(call('edit', { path: 'b.ts' }))).asked).toBe(true) // 两个都没覆盖
+  })
+
+  test('命中记账——真省了一次点击才记（进了名录就是证据）', async () => {
+    const book = here()
+    const s = session(book)
+    await s.through(call('read', { path: 'a.txt' }), 'approve', true)
+    await s.through(call('read', { path: 'b.txt' })) // 这一次是授权放行的
+
+    const row = book.view()[0]
+    expect(row?.hits).toBe(1)
+    expect(row?.lastHitAt).toBeNumber()
+  })
+
+  test('**撤销之后照问**——名录里没了，闸门就不再认它', async () => {
+    const book = here()
+    const s = session(book)
+    await s.through(call('read', { path: 'a.txt' }), 'approve', true)
+    expect((await s.through(call('read', { path: 'b.txt' }))).asked).toBe(false)
+
+    expect(book.revoke(book.workspace, 0)).toBe(true)
+    expect((await s.through(call('read', { path: 'c.txt' }))).asked).toBe(true)
   })
 })
 
@@ -343,6 +471,7 @@ describe('度量仍准——`elapsedMs` 的口径', () => {
     const gate = createPermissionGate({
       sink: h.sink,
       stamper: h.stamper,
+      grants: ledger(),
       ...(rules === undefined ? {} : { rules }),
       now: () => (value += step),
     })

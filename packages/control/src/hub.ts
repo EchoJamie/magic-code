@@ -16,7 +16,7 @@
  * - **无订阅方时命令丢弃**（Emitter 语义，不抛、不排队）——装配须**先接订阅、后放开输入**；
  * - **裁决配对＝请求事件 id**——答复按 `decision.answer.id` 原样路由给权限域，域内不解释
  *   （`call` 是另一 id 空间，见契约 `ids.ts` 头注）；答复的**加宽位**（`remember`）同样原样
- *   转手——本域**不做翻译**，「总是允许」的落地（会话级记忆）归权限域；
+ *   转手——本域**不做翻译**，「总是允许」的落地（**工作区级授权** · U22）归权限域；
  * - 消息经传输投递，**可序列化校验在传输那侧**（投递前逐条，违者拒投并点名路径）。
  */
 
@@ -94,6 +94,17 @@ export function createControlHub(): ControlHubFace {
         // 模型条目表（读侧）——**原样转手**给**装配**（注册表在它手上）。本域不认识注册表、
         // 也不知道有哪些条目；答复走事件（`model.catalog`，不落库）——命令面只发不收。
         target.onModelList()
+        return
+      case 'grants.list':
+        // 授权名录（读侧）——**原样转手**给**装配**（`grants.json` 的读写都在它那一层，
+      // 域不碰文件系统）。本域不认识授权，答复走事件（`grants.catalog`，不落库）。
+        target.onGrantsList()
+        return
+      case 'grants.revoke':
+        // 撤销——同一条路（落盘归装配）。**不在这里解释 `workspace` / `index` 的缺省**：
+        // 「缺省＝本工作区」「缺省＝整节」是**授权落点**的语义，归装配那一侧（同 `decision.answer`
+        // 的 `remember` 之例：控制域只带话，不翻译）。
+        target.onGrantsRevoke(command.workspace, command.index)
         return
     }
   }

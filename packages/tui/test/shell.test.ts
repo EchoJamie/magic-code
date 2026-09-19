@@ -135,14 +135,43 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     expect(app.rows()).toEqual([])
   })
 
+  /**
+   * 不认得的 slash——**如实说一句**（不发命令、也不当交代发出去）。
+   *
+   * ⚠️ **原锚是 `/grants`**（那时内核还没有它，它正是「不认得」的那个例子）。
+   * `U22` 到站后 `/grants` **真存在了**，故换一个**真的不认得**的（`/nope`）——
+   * 判据本身（说一句、不发命令）一字不改，换的只是那件道具。
+   */
   test('不认得的 slash——**如实说一句**（不发命令、也不当交代发出去）', () => {
     const app = live()
 
-    app.type('/grants')
+    app.type('/nope')
     app.press(ENTER)
 
     expect(app.commands()).toEqual([])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
+  })
+
+  /**
+   * **命令表里的每一条按下去都有归处**（原型 · 场景 11 的自律：列一个按下去会报错的，
+   * 比不列更坏）。
+   *
+   * 原锚是一条**逐命令点名**的快照式断言（「`/grants` 内核还没有，不列」）——那种写法
+   * 每加一条命令都要人去改测试，而**自律本身**（表里列的＝真认得的）反倒没人钉。
+   * 这里改成**遍历命令表**：新加一条命令而 `runSlash` 没接，这条用例当场红。
+   */
+  test('命令表里的每一条**都认得**——按下去不会得到「不认得的命令」', async () => {
+    const { COMMANDS } = await import('../src/view.ts')
+
+    for (const command of COMMANDS) {
+      const app = live()
+      app.type(command.name)
+      app.press(ENTER)
+
+      const last = app.rows().at(-1)
+      const said = last?.kind === 'receipt' ? last.text : ''
+      expect(said, command.name).not.toContain('不认得的命令')
+    }
   })
 })
 

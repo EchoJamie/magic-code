@@ -28,7 +28,7 @@ import {
 } from '../src/index.ts'
 
 /** 工作区根——权限与沙箱共用同一份（契约：越界判据两处同源）。 */
-const ROOTS = { roots: ['/w'], defaultRoot: '/w' }
+const ROOTS = { roots: ['/w'], declaredRoots: ['/w'], defaultRoot: '/w' }
 
 // ═══════════════════════════════════════════════════════════════════════
 // 骨架 · 记录（U02 的底座）
