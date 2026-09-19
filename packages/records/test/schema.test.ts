@@ -15,7 +15,7 @@ import { join } from 'node:path'
 import {
   RECORD_SCHEMA_VERSION,
   TRANSIENT_EVENT_KINDS,
-  expandDataDir,
+  expandHome,
 } from '@magic/contracts'
 import type {
   Entry,
@@ -245,7 +245,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
 describe('判据 6 · 数据落点（`~` 展开归配置加载器）', () => {
   test('配置加载器展开在前·库照字面用——落在展开后的目录里', () => {
     const home = tempDataDir()
-    const dir = expandDataDir('~/magic-probe', home)
+    const dir = expandHome('~/magic-probe', home)
 
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -259,9 +259,9 @@ describe('判据 6 · 数据落点（`~` 展开归配置加载器）', () => {
       expect(hasTildeDir(home)).toBe(false)
 
       // 加载器的展开口径（纯函数，拿真家目录对一次）——库这边只是照字面用
-      expect(expandDataDir('~/.magic', homedir())).toBe(join(homedir(), '.magic'))
-      expect(expandDataDir('~', homedir())).toBe(homedir())
-      expect(expandDataDir('/tmp/字面', homedir())).toBe('/tmp/字面')
+      expect(expandHome('~/.magic', homedir())).toBe(join(homedir(), '.magic'))
+      expect(expandHome('~', homedir())).toBe(homedir())
+      expect(expandHome('/tmp/字面', homedir())).toBe('/tmp/字面')
     } finally {
       removeDataDir(home)
     }

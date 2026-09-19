@@ -40,6 +40,29 @@ export type DecisionWeight = 'light' | 'heavy'
 /** 裁者——首站恒 `user`；`auto` 为阶段 2 规则化的留位。 */
 export type Decider = 'user' | 'auto'
 
+/**
+ * **裁决的历史累计**（U28 · `B10` 口径的**跨会话**面）——按 `decider` 分出来的两格。
+ *
+ * 由头（`交接/进度台账.md` · 随批小修 12 · `U22` 待决 1 规划侧裁「要」）：
+ * 本会话那个数（`grants.catalog` 的 `decisions`）只够看「**这一趟**顺不顺」；
+ * **看「这个项目值不值得配规则」得跨会话**。
+ *
+ * **读数只有两格**（`decider` 在事件上，它只分得开这两类）：
+ * - `total` ＝走过的裁决数（库里的 `tool.decision` 事件数——`decide` 每次都落一条）；
+ * - `auto` ＝其中**没问就放行**的（`decider: 'auto'`：规则或授权命中、判定为轻）。
+ *
+ * ⇒ **还得你点 ＝ `total - auto`**（不另存一位：三个数里两个是数出来的，第三个是差）。
+ *
+ * ⚠️ **历史分不开 `vetoed`**：库里那条事件没有「命中规则却被必闸禁区否决」这一位
+ * （那要读 `tool.decision.request` 的呈现材料——**文本不是判据**）。
+ * 故历史的「还得你点」是本会话 `uncovered + vetoed` 的**并**：
+ * 对本会话那两个数，这里是**上界**。**拿不准的那一格不报，不拿它对标本会话的细账。**
+ */
+export type DecisionHistory = {
+  readonly total: number
+  readonly auto: number
+}
+
 // —— kind 族 ——
 
 /**
@@ -347,13 +370,27 @@ export type EventDataOf = {
      * 体验（还是弹了卡），对**规则作者**不是一件事（他得知道「我配的规则够不着这类」）。
      *
      * ⚠️ **是本会话的数，不是历史累计**：闸门按会话实例构造。累计要读记录库里的
-     * `tool.decision`（裁者在事件上、分得开「没问」与「秒批」）——那条路归记录域。
+     * `tool.decision`（裁者在事件上、分得开「没问」与「秒批」）——那条路归记录域，
+     * **U28 起接上了**（见下 `history`）。
      */
     readonly decisions: {
       readonly total: number
       readonly uncovered: number
       readonly vetoed: number
     }
+    /**
+     * **同一个库里的历史累计**（U28 · 台账随批小修 12）——**跨会话**的那一笔账，
+     * 读自记录域的读面（`RecordsStore.decisionHistory`）：本工作区的会话们走过的
+     * 全部裁决，按 `decider` 分成两格（见 `DecisionHistory`）。
+     *
+     * 由头：`decisions` 只够看「这一趟顺不顺」（闸门按会话实例构造）；
+     * **「这个项目值不值得配规则」得跨会话**——故这一格与它并列，不合并
+     * （两边的分母不是一回事，合成一个数两边都说不准）。
+     *
+     * **两格都可为 0**（还没走过裁决 / 库里那几条会话没记归属）——外壳**据此不报**，
+     * 不拿 0% 占位。
+     */
+    readonly history: DecisionHistory
     /** 一句话说明——只在有事要说时给（读不懂的条目 / 一条授权都没有 / 文件没读到）。 */
     readonly note?: string
   }

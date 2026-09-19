@@ -311,7 +311,7 @@ describe('工作区根列表（阶段 3 加键）', () => {
   })
 
   test('中段的 `~` 是**字面**——只有前导那一个展开（与 `dataDir` 同一把尺子）', () => {
-    // 展开器**与 `dataDir` 是同一个**（契约 `expandDataDir`）——不是这里另写一套更宽的规则；
+    // 展开器**与 `dataDir` 是同一个**（契约 `expandHome`）——不是这里另写一套更宽的规则；
     // 这一条钉的就是「同源」：同一把尺子给同一个答案（`/a/~/b` 里的 `~` 是目录名，不是家目录）
     expect(loadFrom(validConfig({ workspaceRoots: ['/a/~/b'] })).config.workspaceRoots)
       .toEqual(['/a/~/b'])

@@ -26,7 +26,7 @@ const HERE = '/work/proj'
 const ENTER: ShellKey = { kind: 'enter' }
 const ESC: ShellKey = { kind: 'escape' }
 
-/** 一份名录——一条授权 ＋ 一个陈旧的节（两条路都有行可点）。 */
+/** 一份名录——一条授权 ＋ 一个陈旧的节（两条路都有行可点）＋ 两笔账。 */
 function catalog(over: Partial<EventDataOf['grants.catalog']> = {}): EventDataOf['grants.catalog'] {
   return {
     workspace: HERE,
@@ -36,6 +36,8 @@ function catalog(over: Partial<EventDataOf['grants.catalog']> = {}): EventDataOf
     ],
     stale: ['/work/gone'],
     decisions: { total: 8, uncovered: 4, vetoed: 1 },
+    // 历史累计（U28）——**跨会话**那笔账（库里那些会话一起数）
+    history: { total: 20, auto: 15 },
     ...over,
   }
 }
@@ -202,6 +204,49 @@ describe('放行区那笔账 —— 未配规则的调用占比', () => {
     expect(app.picker()?.rows).toEqual([])
     expect(app.picker()?.hint ?? '').toContain(HERE)
     expect(app.picker()?.hint ?? '').toContain('按 a')
+  })
+})
+
+// ══ 历史累计（U28 · 跨会话的那笔账）═══════════════════════════════════
+
+/**
+ * 判据锚的是「我要什么」：**这个项目值不值得配规则**——本会话那个数只够看「这一趟
+ * 顺不顺」，跨会话才答得了这一问（`交接/进度台账.md` · 随批小修 12）。
+ *
+ * ⚠️ **历史只有两类**（`decider` 在库里那条事件上）：自动放行 / 还得你点——
+ * 「未配规则」是本会话分得出的细账，历史里**分不开**（见契约 `DecisionHistory`）。
+ */
+describe('历史累计 —— 跨会话那笔账', () => {
+  test('报**两格**：自动放行 ＋ 还得你点（后一个是差，不是另存的一位）', () => {
+    const app = live()
+    openDrawer(app, { history: { total: 20, auto: 15 } })
+
+    const hint = app.picker()?.hint ?? ''
+    expect(hint).toContain('历史累计 20 次裁决')
+    expect(hint).toContain('自动放行 15 次（75%）')
+    expect(hint).toContain('还得你点 5 次（25%）')
+  })
+
+  test('两笔账**各占一行**——分母不是一回事（这一趟 / 这个项目的全部会话）', () => {
+    const app = live()
+    openDrawer(app, {
+      decisions: { total: 8, uncovered: 4, vetoed: 1 },
+      history: { total: 20, auto: 15 },
+    })
+
+    const lines = (app.picker()?.hint ?? '').split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toContain('本会话')
+    expect(lines[1]).toContain('历史累计')
+  })
+
+  test('历史**一条裁决都没有**时——不报那一行（0 次不是一个占比）', () => {
+    const app = live()
+    openDrawer(app, { history: { total: 0, auto: 0 } })
+
+    const hint = app.picker()?.hint ?? ''
+    expect(hint).toContain('本会话') // 本会话那笔账照报（两笔账各判各的）
+    expect(hint).not.toContain('历史累计')
   })
 })
 

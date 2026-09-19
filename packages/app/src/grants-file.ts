@@ -47,7 +47,7 @@ export type LoadedGrants = {
  *
  * **加载时只读不清理**（`B11`）——本函数**一个字节都不写**，陈旧节也不动：删用户数据不归内核。
  *
- * @param path 已展开的绝对路径（`GRANTS_FILE` 经 `expandDataDir`）。
+ * @param path 已展开的绝对路径（`GRANTS_FILE` 经 `expandHome`）。
  */
 export function loadGrants(path: string): LoadedGrants {
   let text: string

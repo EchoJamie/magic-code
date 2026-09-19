@@ -15,7 +15,7 @@ export const CONFIG_FILE = '~/.magic/config.json'
 
 /**
  * 数据目录默认值（`dataDir` 键缺省时由加载器补）——`records.db` + `blobs/` 落于此。
- * ⚠️ 用前须经 `expandDataDir`（下文）——字面 `~` 直接交给运行时库会静默落于 cwd。
+ * ⚠️ 用前须经 `expandHome`（下文）——字面 `~` 直接交给运行时库会静默落于 cwd。
  */
 export const DEFAULT_DATA_DIR = '~/.magic'
 
@@ -28,7 +28,7 @@ export const DEFAULT_DATA_DIR = '~/.magic'
  * **一个文件，不是一项目一文件**——安全相关的东西价值在**一眼看全**（能扫、能删）；
  * 散进几十个小文件的那一刻它就不再被审。**按工作区绝对路径分节**（见 `grants.catalog`）。
  *
- * ⚠️ 用前须经 `expandDataDir`（同 `DEFAULT_DATA_DIR`）——字面 `~` 直接交给运行时库
+ * ⚠️ 用前须经 `expandHome`（同 `DEFAULT_DATA_DIR`）——字面 `~` 直接交给运行时库
  * 会在 cwd 下造一个名为 `~` 的目录，且不报错。
  */
 export const GRANTS_FILE = '~/.magic/grants.json'
@@ -127,12 +127,18 @@ export function apiKeyEnvVarOf(providerId: string): string {
 }
 
 /**
- * 展开 `dataDir`——前导 `~` 在**加载时**展开为家目录；无 `~` 即字面路径。
+ * **前导 `~` 展开**（家目录）——在**加载时**展开；无 `~` 即字面路径。
  * 运行时库（`Bun.file` / `node:fs` / `bun:sqlite`）**不展开 `~`**（且写侧静默），故这一步须显式做。
  *
  * 家目录由调用方注入（配置加载器取 `node:os` 的 `homedir()`）——契约层保持无依赖。
+ *
+ * **名字是 `expandHome`，不是 `expandDataDir`**（U28 改名）：射程从一开始就是「前导 `~`
+ * 展开」这件事本身，而用它的**不止 `dataDir`**——工作区根（U27）与授权文件落点
+ * （`GRANTS_FILE`，U22）走的是**同一个**展开器（「一处展开，四处同理」）。
+ * 旧名是它的出身（最早只为 `dataDir` 写），留着会让读的人以为「这函数只管数据目录」，
+ * 于是别处再写一套更宽的规则——**名字与射程错位**，迟早分叉（`U27` 备案 1）。
  */
-export function expandDataDir(raw: string, home: string): string {
+export function expandHome(raw: string, home: string): string {
   if (raw === '~') return home
   if (raw.startsWith('~/')) return home + raw.slice(1)
   return raw
