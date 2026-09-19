@@ -32,13 +32,20 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 ## 常用命令
 
 ```sh
-bun install            # 装配依赖（prepare 顺带配置 git 钩子）
-bun run magic          # 起外壳（TUI）——装配 → 接控制面 → 一屏
-bun run magic --check  # 装配自检（配置来处 · 供应商表 · 数据落点 · 工作区根 · 会话；不打印 key）
-bun run magic --script <文件>   # 无人值守跑一段脚本，打印事件轨迹
-bun run magic --provider <id>   # 开局走哪个供应商条目（providers 的键）
-bun run magic --model <名>      # 开局用哪个模型（同一条目上换模型，可单用）
-bun run check          # 质量闸：typecheck + test
+bun install                     # 装依赖（prepare 顺带配置 git 钩子）
+
+# 产品路径
+bun run magic                   # 起一屏，用自然语言交代活
+bun run magic --session <id>    # 接着一条已有的会话干（id 见外壳里的 /session 列表）
+bun run magic --provider <id>   # 开局用哪个供应商（配置里 providers 的条目名）
+bun run magic --model <名>      # 开局用哪个模型（可与 --provider 单用）
+
+# 验收用（不是日常用法）
+bun run magic --check           # 把配置、数据落点、工作区、会话挨个查一遍，报完自检就退出（不打印 key）
+bun run magic --script <文件>   # 无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
+
+# 开发
+bun run check                   # 质量闸：typecheck + test
 bun run typecheck
 bun test
 ```
