@@ -310,6 +310,13 @@ export type WindowTable = {
   readonly declared: Readonly<Record<string, { readonly model: string; readonly window: number }>>
 }
 
+/** 接管期间收着的东西——**草稿 ＋ 它的插入点**（两件一起收、一起还，见 `ShellView.stashed`）。 */
+export type Stashed = {
+  readonly draft: string
+  /** 收起来那一刻的插入点（`draft` 的下标）——归还时**原样**放回去，不摆到末尾。 */
+  readonly caret: number
+}
+
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
   /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
@@ -325,8 +332,23 @@ export type ShellView = {
   readonly dock: Dock
   /** 输入草稿——**归模型**（接管时收进 `stashed`，答完原样归还）。 */
   readonly draft: string
-  /** 接管期间**收起来的草稿**（`null` ＝ 没收着）。 */
-  readonly stashed: string | null
+  /**
+   * **插入点**（U31）——`draft` 里的下标（UTF-16 码元，与 `slice` 同尺；**落在字素边界上**）。
+   *
+   * 唯一的「光标在哪」：真终端光标由它算出来（`composer.ts`），**不再另存一套坐标**。
+   * 改动草稿的每一条路都要同步它（打字 / 退格 / 删除 / 粘贴 / 换行 / 清空 / 提交 /
+   * 历史召回 / 补全 / 接管收起与归还）——`shell.ts` 里走 `edit` 那一处收口。
+   */
+  readonly caret: number
+  /**
+   * 接管期间**收起来的草稿**（`null` ＝ 没收着）。
+   *
+   * ⚠️ **连插入点一起收**（返工轮 · 2026-09-20 首轮验收退回②）：接管不经过用户，
+   * 而草稿与它的插入点是**同一件事**（「我刚才在哪儿打」）——只收文字、归还时一律摆到末尾，
+   * 等于把用户打到一半的位置改掉。故两件装在一个值里：**收一起收、还一起还**。
+   * 装一个字段还有一层：`stashed !== null` 就是「已经收着了」那个判据（多件裁决只收一次）。
+   */
+  readonly stashed: Stashed | null
   /** 接管期间「不静默吞键」的提示（一次性，按下一个键即清）。 */
   readonly flash: string | null
   /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
@@ -390,6 +412,7 @@ export function createView(): ShellView {
     },
     dock: { kind: 'input' },
     draft: '',
+    caret: 0,
     stashed: null,
     flash: null,
     expanded: false,
@@ -1067,24 +1090,44 @@ function contentTextOf(entry: Entry): string {
 // ══ 接管（裁决挂着时占住输入框）══════════════════════════════════════
 
 /**
- * 接管——把草稿收起来（原型：**草稿不丢**，答完原样归还）。
+ * 接管——把草稿**连同插入点**收起来（原型：**草稿不丢**，答完原样归还）。
  *
  * 多件裁决时草稿**只收一次**：第一件接管时收起，其后各件沿用同一份（`stashed` 非空即已收）。
+ *
+ * ⚠️ 收的是 `view.caret`（不是「末尾」）——接管期间打不进草稿（`shell.ts` 的键映射把字
+ * 喂给裁决作答），故此刻的插入点**就是**用户离开时那一个，答完照原样放回去。
  */
 export function takeOver(view: ShellView): ShellView {
   if (view.dock.kind !== 'decision' || view.stashed !== null) return view
 
-  return { ...view, stashed: view.draft, draft: '', flash: null }
+  return {
+    ...view,
+    stashed: { draft: view.draft, caret: Math.max(0, Math.min(view.caret, view.draft.length)) },
+    draft: '',
+    caret: 0,
+    flash: null,
+  }
 }
 
-/** 解除接管——**归还草稿**（光标回末尾＝草稿原样，不自动发送）。 */
+/**
+ * 解除接管——**归还原草稿与它的插入点**（不自动发送）。
+ *
+ * 没有收起来的草稿时（接管前就没草稿）`stashed` 为 `null`：草稿与插入点**原样不动**
+ * （接管那一刻草稿已被清空，这里不必替它摆一个位置）。
+ */
 export function undock(view: ShellView): ShellView {
   if (view.dock.kind !== 'decision') return view // 没在接管＝没得解除
+
+  const stashed = view.stashed
+  const draft = stashed?.draft ?? view.draft
+  const caret = stashed?.caret ?? view.caret
 
   return {
     ...view,
     dock: { kind: 'input' },
-    draft: view.stashed ?? view.draft,
+    draft,
+    // 夹一道：手搭的视图可能给过越界的插入点（同 `shell.ts` 的 `caretAt`）
+    caret: Math.max(0, Math.min(caret, draft.length)),
     stashed: null,
     flash: null,
   }

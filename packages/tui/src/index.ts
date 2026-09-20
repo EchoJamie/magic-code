@@ -87,13 +87,14 @@ export type {
   PickerRow,
   ShellStatus,
   ShellView,
+  Stashed,
   StatusState,
   ToolRunState,
 } from './view.ts'
 
 // —— 一屏（`AppView` 纯呈现 · `TuiApp` 活壳）——
 
-export { AppView, TuiApp, dockHeightOf, isEmpty, toShellKeys } from './components/app.ts'
+export { AppView, TuiApp, dockHeightOf, toShellKeys } from './components/app.ts'
 export type { AppViewProps, TuiAppProps } from './components/app.ts'
 
 // —— 显示部件（快照与自持组件用）——

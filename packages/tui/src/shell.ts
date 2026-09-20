@@ -41,6 +41,7 @@ import {
   withContextWindow,
   withWindowTable,
 } from './view.ts'
+import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { usageLabel } from './components/lines.ts'
 import type { ShellView, WindowTable } from './view.ts'
 
@@ -56,6 +57,11 @@ export type ShellKey =
   | { readonly kind: 'newline' }
   | { readonly kind: 'tab' }
   | { readonly kind: 'backspace' }
+  /** 光标键（U31）——插入点左右挪一个**字素**（中文 / emoji 不切坏）。 */
+  | { readonly kind: 'left' }
+  | { readonly kind: 'right' }
+  /** `delete`（前向删除）——删插入点**右边**那一个字素。 */
+  | { readonly kind: 'delete' }
   | { readonly kind: 'escape' }
   | { readonly kind: 'up' }
   | { readonly kind: 'down' }
@@ -341,6 +347,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     draft(next)
   }
 
+  /**
+   * 插入点（U31）——**唯一的「光标在哪」**：草稿里的一个下标。
+   *
+   * 读的时候一律夹回 `[0, 草稿长]`：手搭出来的视图（用例 / 标本）可能只给了草稿、
+   * 没给插入点（那是 0），夹一道就总有个定义。
+   */
+  const caretAt = (): number => Math.max(0, Math.min(view.caret, view.draft.length))
+
+  /** 在插入点处改草稿的**唯一口子**——改完插入点跟着落（越界夹回）。 */
+  const editAt = (next: string, caret: number): void => {
+    edit({ ...view, draft: next, caret: Math.max(0, Math.min(caret, next.length)) })
+  }
+
+  /** 插入点处插一段（打字 / 粘贴 / 换行共用）——插入点落在插进去的那一段**之后**。 */
+  const insertAt = (text: string): void => {
+    const at = caretAt()
+
+    editAt(view.draft.slice(0, at) + text + view.draft.slice(at), at + text.length)
+  }
+
+  /** 抹掉 `[from, to)` 那一段（退格 / 删除共用）——插入点落到 `from`。 */
+  const eraseAt = (from: number, to: number): void => {
+    editAt(view.draft.slice(0, from) + view.draft.slice(to), from)
+  }
+
   const send = (command: Command): void => {
     if (disposed) return
     // **放开输入之前一律不受理**（见 `Shell.releaseInput`）——命令进内核＝让内核干活，
@@ -564,7 +595,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           commit(said(view, '先答复——此刻粘不了（这一轮在等你）。草稿在，答完接着打。'))
           return NONE
         }
-        edit({ ...view, draft: view.draft + input.text })
+        insertAt(input.text)
         return NONE
 
       case 'escape':
@@ -572,7 +603,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
         // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
         if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
-        edit(view.draft === '' ? { ...view, expanded: false } : { ...view, draft: '' })
+        if (view.draft === '') {
+          edit({ ...view, expanded: false })
+          return NONE
+        }
+        editAt('', 0)
         return NONE
 
       case 'up':
@@ -599,22 +634,43 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       case 'enter':
         return submit()
 
+      case 'left':
+        if (view.dock.kind === 'decision') return refuse('左移')
+        if (view.dock.kind === 'picker') return NONE
+        // **草稿一个字都不动**（只挪插入点）⇒ 不走 `edit()`：翻出来的历史还认得上一条
+        commit({ ...view, caret: stepLeft(view.draft, caretAt()) })
+        return NONE
+
+      case 'right':
+        if (view.dock.kind === 'decision') return refuse('右移')
+        if (view.dock.kind === 'picker') return NONE
+        commit({ ...view, caret: stepRight(view.draft, caretAt()) })
+        return NONE
+
       case 'backspace':
         if (view.dock.kind === 'decision') return refuse('退格')
-        edit({ ...view, draft: view.draft.slice(0, -1) })
+        if (view.dock.kind === 'picker') return NONE
+        eraseAt(...leftSpan(view.draft, caretAt()))
+        return NONE
+
+      // 前向删除（`delete` 键）——删插入点右边那一个字素（不同键、同一套插入点）
+      case 'delete':
+        if (view.dock.kind === 'decision') return refuse('删除')
+        if (view.dock.kind === 'picker') return NONE
+        eraseAt(...rightSpan(view.draft, caretAt()))
         return NONE
 
       case 'char':
         if (view.dock.kind === 'decision') return answer(input.char)
         if (view.dock.kind === 'picker') return NONE
-        edit({ ...view, draft: view.draft + input.char })
+        insertAt(input.char)
         return NONE
 
       // `shift+回车`——**换行**（原型 · 键盘）。接管期间同其余键：不静默吞，说一句。
       case 'newline':
         if (view.dock.kind === 'decision') return refuse('换行')
         if (view.dock.kind === 'picker') return NONE
-        edit({ ...view, draft: `${view.draft}\n` })
+        insertAt('\n')
         return NONE
 
       case 'other':
@@ -716,7 +772,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     if (history[history.length - 1] !== text) history.push(text)
     historyAt = -1
-    draft(appendEcho({ ...view, draft: '' }, text))
+    draft(appendEcho({ ...view, draft: '', caret: 0 }, text))
     send({ type: 'input.submit', text })
 
     return NONE
@@ -736,7 +792,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   ): { readonly next: ShellView; readonly commands: readonly Command[] } => {
     const [word, ...rest] = text.split(/\s+/)
     const arg = rest.join(' ')
-    const cleared: ShellView = { ...from, draft: '' }
+    const cleared: ShellView = { ...from, draft: '', caret: 0 }
     /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
     const only = (next: ShellView, ...commands: Command[]): { next: ShellView; commands: readonly Command[] } => ({
       next,
@@ -818,7 +874,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const row = from.completion?.candidates[from.completion.selected]
     if (row === undefined) return from
 
-    return withCompletion({ ...from, draft: `${row.name} `, completion: null })
+    return withCompletion({
+      ...from,
+      draft: `${row.name} `,
+      caret: row.name.length + 1, // 补完落在末尾（一条命令多半还要接着打参数）
+      completion: null,
+    })
   }
 
   const recallHistory = (delta: number): void => {
@@ -827,8 +888,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const next = historyAt === -1 ? history.length - 1 : historyAt + delta
     if (next < 0 || next >= history.length) return
 
+    const text = history[next] ?? ''
     historyAt = next
-    draft({ ...view, draft: history[next] ?? '' })
+    draft({ ...view, draft: text, caret: text.length })
   }
 
   const said = (from: ShellView, message: string): ShellView => ({ ...from, flash: message })

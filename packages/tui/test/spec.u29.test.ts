@@ -4,6 +4,9 @@
  * 出处：vault `缺陷/D25 抽屉一开记录区少一行`。三句话都是**屏上的话**，视图字段答不了：
  * **字标印两遍** · **记录区少一行** · **空态那句消失（`esc` 后也不回来）**。
  *
+ * ⚠️ **第三句的载体已不在**：那句空态引导语 2026-09-20 由用户定删（没有动作价值，原型早已删掉，
+ *    见 `app.ts` 顶部那一段注）——本文件里量它的那几处随之去掉，「字标只一份」这条主句没动。
+ *
  * ⚠️ **必须逐帧录**（`show(views…)` 而不是一帧一屏）：这条缺陷只在**帧序**里现形——
  * 把抽屉开着那一屏**一次性画**出来完全正常。那也正是它躲过仓里一千多条用例的原因
  * （既有用例绝大多数是 `stage.screen()`＝单帧）。
@@ -15,11 +18,12 @@
  * React 重挂 `Static` ⇒ 游标归零 ⇒ 已印进 scrollback 的字标**又印一遍**；
  * 那一帧还走 Ink 的「有静态输出」那条路（`log.clear()` ＋ 重写静态输出），
  * 擦头正落在上一帧的**顶行**（空态那句）⇒ 记录区少一行。
- * 空态那条判据同时被这次 id 到位带翻（原锚 `sessionId === null`）⇒ 引导语消失。
+ * 空态那条判据同时被这次 id 到位带翻（原锚 `sessionId === null`）⇒ 引导语消失
+ * （那句后来整句删了，见上）。
  *
  * ## 三条判据
  *
- * **字标只一份** · **引导语在**（还没落过账就丢不得） · **抽屉的行只一份**。
+ * **字标只一份** · **抽屉的行只一份**。「引导语在」那条随那句一起删（见上）。
  * 每条都在帧序上量——「只一份」这类话，单帧取景问不出来。
  */
 
@@ -86,9 +90,6 @@ const countOf = (frame: Frame, needle: string): number =>
 /** 还有没有字可打——作曲家那一行在不在（`› ` 起头那行就是输入行）。 */
 const canType = (frame: Frame): boolean => frame.dock.some((line) => line.text.includes('›'))
 
-/** 引导语那句（措辞改动见 `app.ts` 的 `EmptyState` 注；这里钉的是**它在不在**）。 */
-const GUIDANCE = '你按下第一次回车时才建立'
-
 /** 抽屉开着时的现场：草稿 ＋ 名录到手（**还没**收到那张空壳的 `session.state`）。 */
 function drawerOpen(over: Partial<EventDataOf['grants.catalog']> = {}): {
   readonly stage: Stage
@@ -109,16 +110,15 @@ function drawerOpen(over: Partial<EventDataOf['grants.catalog']> = {}): {
 // ══ ① 有项抽屉：开合都不重复、不丢行 ══════════════════════════════════
 
 describe('① 抽屉开合（有项）', () => {
-  test('**抽屉开着**：字标一份 · 引导语在 · 名录的行在', async () => {
+  test('**抽屉开着**：字标一份 · 名录的行在', async () => {
     const { views } = drawerOpen()
     const frame = await show(views, WIDE)
 
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(frame.has(GUIDANCE)).toBe(true)
     expect(countOf(frame, '工具 exec × 路径 根内 × 操作 read')).toBe(1)
   })
 
-  test('**空壳的 `session.state` 随后到**（抽屉还开着）：字标仍一份 · 引导语仍在', async () => {
+  test('**空壳的 `session.state` 随后到**（抽屉还开着）：字标仍一份', async () => {
     // 这一拍正是 D25 的现场：读侧命令先开一张空壳，答复异步随后到——
     // 会话 id 到位（`null` → 真 id）**不是**「记录区换了一页」，也不是「会话有内容了」
     const { stage, views } = drawerOpen()
@@ -133,11 +133,10 @@ describe('① 抽屉开合（有项）', () => {
     const frame = await show(withShell, WIDE)
 
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(frame.has(GUIDANCE)).toBe(true)
     expect(withShell.length).toBe(views.length + 1) // 那一拍真的录进去了
   })
 
-  test('**收起之后**：字标仍一份 · 引导语仍在 · 抽屉的行不留痕', async () => {
+  test('**收起之后**：字标仍一份 · 抽屉的行不留痕', async () => {
     const { stage, views } = drawerOpen()
     stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })])
     const opened = [...views, stage.shell.getView()]
@@ -147,7 +146,6 @@ describe('① 抽屉开合（有项）', () => {
     const frame = await show(closed, WIDE)
 
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(frame.has(GUIDANCE)).toBe(true)
     expect(frame.has('工具 exec × 路径 根内 × 操作 read')).toBe(false) // 收起＝不留痕
     expect(canType(frame)).toBe(true)
     expect(opened.length).toBe(views.length + 1)
@@ -157,14 +155,13 @@ describe('① 抽屉开合（有项）', () => {
 // ══ ② 窄窗同一句话 ═══════════════════════════════════════════════════
 
 describe('② 窄窗（字标换成一行版那一侧）', () => {
-  test('**40 列**：同一个帧序，字标一份 · 引导语在 · 抽屉的行一份', async () => {
+  test('**40 列**：同一个帧序，字标一份 · 抽屉的行一份', async () => {
     const { stage, views } = drawerOpen()
     stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })])
     const frame = await show([...views, stage.shell.getView()], NARROW)
 
     // 一行版也要「只一份」——量的是**这个宽度下**字标首行出现几次（不是钉版本）
     expect(bannerCopies(frame, NARROW.columns)).toBe(1)
-    expect(frame.has(GUIDANCE)).toBe(true)
     // ⚠️ 窄窗量的是**只一份**（`工具 exec` 那一处），不是「一行写完」——40 列放不下整条，
     //    行会折成两行贴上去（那是列表自己的折行，不归这条判据管）
     expect(countOf(frame, '工具 exec')).toBe(1)
@@ -281,8 +278,6 @@ describe('③ 空抽屉（名录一条都没有）', () => {
 
     expect(countOf(frame, '还没有授权')).toBe(1) // 「记录保留」：回执仍在，且没被重印
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    // 空态那句**该退场**了——记录区里有那条回执（「屏上什么都没有」这一条不再成立）
-    expect(frame.has(GUIDANCE)).toBe(false)
     expect(frame.has('工具 exec × 路径 根内 × 操作 read')).toBe(false) // 收起不留痕
   })
 })

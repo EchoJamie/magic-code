@@ -12,7 +12,6 @@ import type { Entry, KernelEvent } from '@magic/contracts'
 import { AppView } from '../src/components/app.ts'
 import { StatusLine } from '../src/components/status.ts'
 import { createShell } from '../src/shell.ts'
-import { createView } from '../src/view.ts'
 import type { ShellStatus } from '../src/view.ts'
 import { HINT_IDLE } from '../src/view.ts'
 import { event } from './events.ts'
@@ -180,26 +179,8 @@ describe('状态行 · 四格与降级', () => {
   })
 })
 
-describe('空态判定（缺陷 D3）', () => {
-  test('**按这条会话有没有内容判**——还没有会话＝空态；会话开了就不再是空态', () => {
-    const fresh = createShell(createSpyTransport().transport)
-    const emptyScreen = plain(
-      renderToString(h(AppView, { view: fresh.getView(), columns: COLUMNS, rows: ROWS }), {
-        columns: COLUMNS,
-      }),
-    )
-    expect(emptyScreen).toContain('你按下第一次回车时才建立')
+// ⚠️ **删掉过一节**（U31 三轮）：『空态判定（缺陷 D3）』——它量的是开机那句引导语
+//    （`你按下第一次回车时才建立`）在不在。那句 2026-09-20 由用户定删（没有动作价值，
+//    原型早已删掉，见 `app.ts` 的注）⇒ 判据没了载体，那一节随之去掉；
+//    `createView` 那个 import 只被它用着，一并不再引入。
 
-    // 会话建立（哪怕还没有条目）之后就**不**再是空态——那由 `sessionId` 说了算，不是本进程的计数
-    const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
-    spy.emit(state(SESSION, [{ id: SESSION, title: '甲的事' }]))
-    const opened = plain(
-      renderToString(h(AppView, { view: shell.getView(), columns: COLUMNS, rows: ROWS }), {
-        columns: COLUMNS,
-      }),
-    )
-    expect(opened).not.toContain('你按下第一次回车时才建立')
-    void createView()
-  })
-})
