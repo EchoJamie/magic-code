@@ -85,9 +85,18 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     Box,
     { flexDirection: 'column' },
     // **已定局的行走 Static**——写一次即入 scrollback，此后不重绘（D11 的结构性护栏）。
-    // `key` 按会话——换会话时重挂，重建的那些行才会被写出来（Static 只追加新项）
+    //
+    // `key` 按**页**——记录区整块换掉时（开局 / 重建 / 换会话）重挂，那些行才会被写出来
+    // （Static 只追加新项：`items` 一变短，它的游标就落在数组外，一行都不印）。
+    //
+    // ⚠️ **别拿会话 id 当页号**（原写法，缺陷 D25）：会话 id 与「记录区换了一页」是两回事——
+    // `/grants` 这类读侧命令会先在装配那边开一张**空壳**会话（信封必带会话），
+    // 于是「打开抽屉」就撞上一次 id 到位（`null` → 真 id）：`<Static>` 当场重挂，
+    // 已经印进 scrollback 的字标**又印一遍**；那一帧还走 Ink 的「有静态输出」那条路
+    // （`log.clear()` ＋ 重写静态输出），擦头正落在上一帧的顶行 ⇒ 记录区少一行。
+    // 页的身份见 `pageOf`。
     h(StaticList, {
-      key: `static:${view.sessionId ?? 'none'}`,
+      key: `static:${pageOf(view)}`,
       // ⚠️ **照常就是 `view.settled` 原样，不 `[...]` 复制**（U21 · 历史区静态化）：
       // Ink 的 `Static` 拿 `[items, index]` 做 `useMemo` 的依赖——每帧递一个新数组，
       // 那个 memo 每帧都白算一遍（`items.slice(index)`）。`settled` 只在**真的加了行**
@@ -109,7 +118,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           spaced: needsSpacer(items, index),
         }),
     }),
-    // **空态**（原型 · 场景 1）——还没有会话、屏上也没有东西时给引导语
+    // **空态**（原型 · 场景 1）——屏上还没有东西、手上这条会话也还没落过账时给引导语
     ...(isEmpty(view) ? [h(EmptyState, { key: 'empty' })] : []),
     // 本轮的行（还在变）——就地重绘
     ...live.rows.map((row, index) =>
@@ -135,8 +144,41 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
 }
 
 /**
- * 空态（原型 · 场景 1）——**按「这条会话有没有内容」判**（缺陷 D3）：
- * 还没有会话（`sessionId === null`）且屏上什么都没有。**不是**按本进程的计数。
+ * 一页的编号（U29）——`<Static>` 只在**记录区真的换了一页**时重挂（见 `key:` 那一段注）。
+ *
+ * 页的身份＝**记录区开头那一行**（字标那一行）。这一条立得住，是因为**整块换掉**
+ * `settled` 的三处（开局 `withBanner` · 重建 `rebuild` · 换会话 `reduceSessionState`）
+ * **都经 `bannerFirst`**，而 `bannerFirst` 每次都种一个**新的字标对象**；
+ * 追加（`settle` / `appendSettled`）只往后接，开头那一行的对象不动。
+ * ⇒ 开头那一行的**对象身份**＝页的身份（记在 WeakMap 里：那个对象活着，页号就还在）。
+ *
+ * 空 `settled` 给 `none`——`createView` 的起点（标本与纯归约的用例）没有「页」这回事，
+ * 那时 `Static` 本来也没东西可印。**这一档与原写法（`static:none`）逐字节相同**，
+ * 故既有标本与快照不受影响。
+ *
+ * 领号这一步在渲染里做（首次见到某页时领）——**同一份视图重画拿到的号一样**，
+ * 故取景 / 快照仍是确定的（`AppView` 那条「给视图与尺寸就画一屏」照旧成立）。
+ */
+const pageIds = new WeakMap<LogRow, number>()
+let pageCount = 0
+
+function pageOf(view: ShellView): string {
+  const first: LogRow | undefined = view.settled[0]
+  if (first === undefined) return 'none'
+
+  let id = pageIds.get(first)
+  if (id === undefined) {
+    pageCount += 1
+    id = pageCount
+    pageIds.set(first, id)
+  }
+
+  return String(id)
+}
+
+/**
+ * 空态（原型 · 场景 1）——**按「这条会话有没有内容」判**（缺陷 D3）。
+ * 三件都要：屏上什么都没有 · 手上这条会话**还没落过账**。
  *
  * ⚠️ **启动字标不算「有内容」**：它现在恒在 `settled[0]`（见 `view.ts` 的 `withBanner`），
  * 照「`settled` 空不空」判的话它会把空态**永远挡住**——而那正是原型场景 1 那一屏
@@ -144,12 +186,22 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
  *
  * 用 `every` 而不是「长度减一」：字标**恒在最前且恒只一行**（`bannerFirst` 的收口），
  * 故 `every` 在真有事发生的那一屏上**第一个元素之后当场收手**，不是每帧数一遍。
+ *
+ * ⚠️ **「会话 id 到位」不是「会话有内容」**（U29 改，原锚＝`sessionId === null`）——
+ * **为何变**：读侧命令（`/grants` · `/model`）会先在装配那边开一张**空壳**会话
+ * （信封必带会话，「空手也照答」），于是「抽屉一开」就撞上一次 id 到位：空态**当场消失**
+ * 且**再也不回来**（`esc` 也不行）——而那一刻记录区一个字都没有，引导语说的
+ * 「会话在你按下第一次回车时才建立」**仍然成立**。**新锚**＝问这份**目录**
+ * （`session.list` 的答复，只列**落过账**的会话）：手上这条不在目录里，就是还没内容。
+ *
+ * 目录这一问与既有规格同源——`sessions.test.ts`「会话开了（**在目录里**）就不再是空态」。
+ * 会话真开了之后（首条消息落账）不靠这一问收口：那时屏上已有内容，前两件就管住了。
  */
 export function isEmpty(view: ShellView): boolean {
   return (
-    view.sessionId === null &&
     view.rows.length === 0 &&
-    view.settled.every((row) => row.kind === 'banner')
+    view.settled.every((row) => row.kind === 'banner') &&
+    (view.sessionId === null || !view.catalog.some((row) => row.id === view.sessionId))
   )
 }
 
