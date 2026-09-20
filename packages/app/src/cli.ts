@@ -200,6 +200,8 @@ function report(assembly: Assembly): void {
   )
   // 权限规则（阶段 2）——**规则真的接进闸门了**吗、有没有被拒的条目，自检里说清楚
   console.log(`  权限规则　${describeRules(assembly)}`)
+  // 项目规约（U32）——**哪儿有、有几份、有没有没进来的**（来源 / 范围 / 内容版本的按需诊断）
+  console.log(`  项目规约　${describeProjectRules(assembly)}`)
   // 授权（U22）——`a` 点出来的那一类：**落在哪个文件、有几条、有没有陈旧的节**
   console.log(`  授权　　　${describeGrants(assembly)}`)
   console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')
@@ -263,6 +265,61 @@ function describeRules(assembly: Assembly): string {
 
   return `${head} · ⚠️ 被拒 ${assembly.rejectedRules.length} 条——${reasons}`
 }
+
+/**
+ * 项目规约那一行（U32）——**报「哪儿有、有几份、有没有没进来的」**（来源 / 范围 / 内容版本的按需诊断）。
+ *
+ * 为什么口径是**各根一级**：自检是**开屏那一眼**，手上没有「这一轮在动哪儿」——目标是随
+ * 使用长出来的（见契约 `ProjectRules.load`）。根一级（目录规约 ＋ 无条件规则）正是会话开局
+ * 会送进上下文的那一批，报它才对得上「现在这样跑一跑，模型看得见什么」。
+ *
+ * **没进来的那几条一律列出来**（读不懂 / 被略过都要说）：规约是**一堆人各自在加**的散文件，
+ * 「我写的那份到底生效没有」是这一行最该答的问题——静默吞掉它就等于让人对着空气使劲。
+ *
+ * **两类分开摆**（2026-09-20 裁）：`error`（坏了，要改）挂 ⚠️ 与条数；`choice`（原生顶掉同名的
+ * 兼容规则、AGENTS 顶掉 CLAUDE）**不挂警报**——那是产品按设计做的选择，用户查得着就够了。
+ * 混在一起数，会让每条兼容规则都变成一次假警报（启动那句回执也读的是同一份数据）。
+ */
+function describeProjectRules(assembly: Assembly): string {
+  const load = assembly.readRules()
+  const count = (kind: string): number => load.documents.filter((rule) => rule.kind === kind).length
+
+  const roots = count('agents') + count('claude-md')
+  const native = count('magic-rules')
+  const compat = count('claude-rules')
+  const extra = count('source')
+
+  const head =
+    load.documents.length === 0
+      ? '无（放 AGENTS.md 或 .magic/rules/*.md 就来——根一级的这几份开局就会送到模型）'
+      : `${load.documents.length} 份（目录规约 ${roots} · 原生规则 ${native} · 兼容规则 ${compat} · 补充来源 ${extra}）`
+
+  const broken = load.problems.filter((problem) => problem.kind === 'error')
+  const chosen = load.problems.filter((problem) => problem.kind === 'choice')
+  const lines = [head]
+
+  // **一条占两行**（路径一行、缘由一行），且**一条都不摞在一行里**：
+  // 缘由里带着绝对路径与整句说明，摞起来一条就有一百四十来列——八十列的终端会从中间
+  // 折断，而这一屏正是用户拿来对着改的地方，读不成行就等于没写。
+  // 缩进照「数据落点」那一处的先例；缘由再往里让两格，让「说的是哪个文件」一眼分得开。
+  const stated = (problems: typeof load.problems): string =>
+    problems
+      .map((problem) => `${CONTINUATION}· ${problem.path}\n${CONTINUATION}  ${problem.message}`)
+      .join('\n')
+
+  if (broken.length > 0) {
+    lines.push(`${CONTINUATION}⚠️ 有 ${broken.length} 条没进来：`, stated(broken))
+  }
+  // 取舍那几条**照说、不报警**：想查「我写的那份为什么没在管」的人，看的就是这几行
+  if (chosen.length > 0) {
+    lines.push(`${CONTINUATION}另有 ${chosen.length} 条按规矩让位（原生优先 / 同目录两份取一）：`, stated(chosen))
+  }
+
+  return lines.join('\n')
+}
+
+/** 续行的缩进——与标签列对齐（照「数据落点」那一处的先例）。 */
+const CONTINUATION = '             '
 
 /**
  * 授权那一行（U22 · 技术方案 · 权限「授权的落点」）——**报三件**：本工作区有几条、

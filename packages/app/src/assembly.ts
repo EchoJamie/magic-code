@@ -50,6 +50,8 @@ import type {
   ModelGateway,
   ModelSwitchRequest,
   RecordsService,
+  RulesLoad,
+  RulesProblem,
   SessionId,
   Timestamp,
   TurnId,
@@ -66,7 +68,7 @@ import type {
   SessionInstance,
 } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
-import { createSandbox, createWorkspaceService } from '@magic/execution'
+import { createProjectRules, createSandbox, createWorkspaceService } from '@magic/execution'
 import type { FetchLike, ModelRegistry, ModelSwitchResult, WindowTable } from '@magic/model'
 import { createModelRegistry, windowOfSelection } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
@@ -242,6 +244,14 @@ export type Assembly = {
    */
   readonly contextWindow: number | null
   /**
+   * **项目规约的按需读数**（U32）——现读一次「各根一级 ＋ 显式来源」，连**没加载进来的那些**
+   * 一起交回（`--check` 那一行与启动回执的话都从这儿来）。
+   *
+   * **现读而不是取装配那一刻的快照**：规约是随用户编辑变的文件，「自检」这件事的意义正在于
+   * 「现在这会儿是什么样」。参数与 `ProjectRules.load` 同形——给目标就按目标算。
+   */
+  readonly readRules: (targets?: readonly string[]) => RulesLoad
+  /**
    * **窗长表**（U30）——内置容量表 ＋ 各条目**自己声明**的覆盖位，**分开装**：
    * 内置表按**准确模型 id** 算（与条目无关），声明**只属于配置它的条目及对应模型**
    * （消费按 `provider ＋ model` 一起看——见 `windowOfSelection`）。
@@ -363,6 +373,21 @@ export function assemble(options: AssembleOptions): Assembly {
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
   const workspace = openWorkspace(loaded, options.cwd)
   const sandbox = createSandbox({ workspace })
+
+  /**
+   * **项目规约的来源面**（U32）——归执行域落地（**文件读取在执行 / 基础设施边界**），
+   * 装配这一步只做**选择**：哪几条根 ＋ 用户显式点名的两处（**读进来**的补充规约
+   * 与**只放行链接**的那份名册）。
+   *
+   * 它在装配期就造好（无状态、构造不碰 I/O），随后**注入每一条会话实例**——
+   * 「什么时候送、送哪些」归对话域（它才知道这一轮在动哪儿）。
+   */
+  const projectRules = createProjectRules({
+    workspace,
+    sources: loaded.config.rules?.sources ?? [],
+    // 两张名册两件事（契约 `RulesConfig`）：`sources` 读进来，`linkSources` 只放行链接
+    linkSources: loaded.config.rules?.linkSources ?? [],
+  })
 
   // ── 授权（U22）：`a` 的落点是**工作区**，存 `~/.magic/grants.json` ──────────────
   //
@@ -569,6 +594,8 @@ export function assemble(options: AssembleOptions): Assembly {
       sink,
       stamper,
       now,
+      // 项目规约（U32）——域内那一半（送哪些、什么时候送）自己会造，此处只把来源递进去
+      rules: projectRules,
       // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
       context: options.context,
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
@@ -810,6 +837,9 @@ export function assemble(options: AssembleOptions): Assembly {
     listGrants(done ? `已撤销：${named ?? '那一条'}` : '没撤成：那一条已经不在了')
   }
 
+  /** 项目规约的按需读数——见 `Assembly.readRules`。 */
+  const readRules = (targets: readonly string[] = []): RulesLoad => projectRules.load(targets)
+
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
@@ -866,7 +896,8 @@ export function assemble(options: AssembleOptions): Assembly {
     rejectedRules: parsedRules.rejected,
     grantsPath,
     grantsView,
-    notices: noticesOf(parsedRules.rejected, loadedGrants.note, loaded.path),
+    readRules,
+    notices: noticesOf(parsedRules.rejected, loadedGrants.note, loaded.path, readRules().problems),
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。
@@ -897,13 +928,19 @@ export function assemble(options: AssembleOptions): Assembly {
 /**
  * 启动那几句话（`Assembly.notices` · U22 · 审计第 13 条）——**空数组＝一句都不说**。
  *
- * 两件都只说「有几条没生效、去哪儿看」，**不在这里复述缘由**：缘由在 `--check` 里逐条列着
+ * 三条都只说「有几条没生效、去哪儿看」，**不在这里复述缘由**：缘由在 `--check` 里逐条列着
  * （那才是对着改的地方），屏上那行回执只要把人指过去。
+ *
+ * **项目规约（U32）为什么也在这儿**——它同属「解析从严、不生效」那一类（读不懂的
+ * front-matter、没配来源的外部符号链接、超限、目录读不动、同目录 AGENTS 与 CLAUDE 的取舍）：
+ * 用户写了一份规约**却一条都没生效**，走界面这条路时原先会**一声不响**——那正是这条通道
+ * 立起来的理由（审计第 13 条）。规约出问题的概率比权限规则还高：它是一堆人各自在加的散文件。
  */
 function noticesOf(
   rejectedRules: readonly RuleProblem[],
   grantsNote: string | undefined,
   configPath: string,
+  rulesProblems: readonly RulesProblem[],
 ): readonly string[] {
   const said: string[] = []
 
@@ -911,6 +948,13 @@ function noticesOf(
     said.push(
       `配置里有 ${rejectedRules.length} 条权限规则读不懂（未生效）——${configPath}（\`--check\` 看缘由）`,
     )
+  }
+  // **只数「坏了」那一类**（2026-09-20 裁）：取舍那类（原生顶掉同名的兼容规则、AGENTS
+  // 顶掉 CLAUDE）是**产品按设计做的选择**——为它每次开屏报一句就是噪音，而它**不是故障**。
+  // 用户要查「我写的那份为什么没在管」，`--check` 里逐条列着（口径同权限规则那句）。
+  const broken = rulesProblems.filter((problem) => problem.kind === 'error')
+  if (broken.length > 0) {
+    said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
   }
   if (grantsNote !== undefined) said.push(grantsNote)
 

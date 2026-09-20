@@ -29,6 +29,8 @@ export {
   BLOCK_SEPARATOR,
   ENVIRONMENT_BLOCK_ID,
   ENVIRONMENT_HEADING,
+  PROJECT_RULES_BLOCK_ID,
+  PROJECT_RULES_HEADING,
   PROMPT_RUNTIME_VARS,
   PromptVarsError,
   buildPromptBlocks,
@@ -37,3 +39,5 @@ export {
   splitSystemPrompt,
 } from './assembly.ts'
 export type { PromptBlock, PromptBlockId, PromptVars } from './assembly.ts'
+
+export { renderProjectRulesBlock, withProjectRules } from './rules.ts'

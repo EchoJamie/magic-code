@@ -36,6 +36,13 @@ export type ToolResultPayload = {
   readonly ok: boolean
   /** 内联或 blob 引用。 */
   readonly output: Content
+  /**
+   * **这一笔压根没跑**（与事件侧 `EventDataOf['tool.result']` 同一位，理由见那边）。
+   *
+   * 记在位是必须的：重放 / 切会话回来看的是**这一份**（条目载荷），不重新收事件——
+   * 状态若只活在事件里，重建那一路只能再猜一遍（屏上的样子就取决于从哪条路进来）。
+   */
+  readonly notExecuted?: true
 }
 
 /** 工具条目的载荷（技术方案 · 记录：条目字段「载荷」——工具条目有，其余 kind 无）。 */

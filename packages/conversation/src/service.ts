@@ -33,6 +33,7 @@ import type {
   EventSink,
   EventStamper,
   ModelGateway,
+  ProjectRules,
   RecordsService,
   RebuildHandoff,
   SessionId,
@@ -48,6 +49,7 @@ import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
 import type { PromptVars } from './prompt/index.ts'
+import { createRulesDelivery } from './rules.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -73,6 +75,14 @@ export type ConversationDeps = {
   readonly now?: (() => Timestamp) | undefined
   /** 上下文策略——缺省 `DEFAULT_CONTEXT_POLICY`（含压缩的触发阈值与近段边界）。 */
   readonly context?: Partial<ContextPolicy> | undefined
+  /**
+   * **项目规约的来源面**（U32 · 执行域实现）——缺省＝这个工作区不加载规约
+   * （**行为与加这一条之前一字不动**：没有系统提示词追加块、没有工具预查拦截）。
+   *
+   * 只出「读」的那一半：**什么时候送、送哪些**归本域（见 `./rules.ts`），
+   * **允许读哪些**归装配（它拿用户配置的 `rules.sources` 去造这个实现）。
+   */
+  readonly rules?: ProjectRules | undefined
 }
 
 /**
@@ -142,6 +152,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     compactFailureLimit: policy.compactFailureLimit,
   })
 
+  /**
+   * **规约的送达账**（U32）——按会话实例各一份（作用域与已送达版本都随会话走：
+   * 切到别的会话，那一头碰过哪些目录、送过哪几版，与这一头无关）。
+   * 不给规约来源＝不造这份账（见 `ConversationDeps.rules`）。
+   */
+  const rules = deps.rules === undefined ? undefined : createRulesDelivery(deps.rules)
+
   const runtime: LoopRuntime = {
     session: deps.session,
     model: deps.model,
@@ -158,6 +175,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     blobThreshold: policy.blobThreshold,
     blobTextLimit: policy.blobTextLimit,
     compact: compactor,
+    rules,
   }
 
   async function drain(): Promise<void> {

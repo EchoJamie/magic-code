@@ -520,6 +520,13 @@ function verdictOf(row: Extract<LogRow, { kind: 'tool' }>): {
   if (row.state === 'rejected') {
     return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '未执行' }
   }
+  // **规约扣下 / 材料超限停批**：也是「压根没跑」，故与失败分开画——不上失败那个叉
+  // （`!` ＋ warn 要说的是「这一笔要你再看一眼」），也没有耗时（归约那一步就落了 `null`，
+  // 依据是结果上的 `notExecuted`，见 `view.ts`·`reduceToolResult`）。那句 `未执行 · …`
+  // 是结果正文的首行，本行照抄——正文后头还有一条「为什么、怎么办」，`ctrl+o` 展开可见。
+  if (row.state === 'unexecuted') {
+    return { marker: '!', color: PALETTE.warn, text: firstLineOf(row.output) ?? '未执行' }
+  }
   if (row.state === 'failed') {
     return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '失败' }
   }

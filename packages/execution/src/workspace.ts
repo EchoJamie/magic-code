@@ -91,8 +91,11 @@ export type WorkspaceOptions = {
  *
  * 签名与权限域的同名函数（`@magic/permission` · `paths.ts`）**同序同义**：两域各持一份
  * 边界判定，参数序若一个相反一个不反，读代码的人接反了不会当场红（多数组合都返回 false）。
+ *
+ * **导出给域内件用**（U32 起 `rules.ts` 也按同一把尺子判「这份规约落在哪条根里」）——
+ * 域内复用，不上包的公开面（`index.ts` 不出它）。
  */
-function isInside(absolute: string, root: string): boolean {
+export function isInside(absolute: string, root: string): boolean {
   if (absolute === root) return true
   const prefix = root.endsWith(sep) ? root : root + sep
   return absolute.startsWith(prefix)

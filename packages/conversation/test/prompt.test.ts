@@ -17,6 +17,8 @@ import { join } from 'node:path'
 import {
   ENVIRONMENT_BLOCK_ID,
   ENVIRONMENT_HEADING,
+  PROJECT_RULES_BLOCK_ID,
+  PROJECT_RULES_HEADING,
   PROMPT_RUNTIME_VARS,
   PROMPT_SECTIONS,
   PromptVarsError,
@@ -31,6 +33,17 @@ const VARS: PromptVars = { cwd: '/ws/magic-code', platform: 'darwin', date: '202
 
 /** 装配产物的块标识序——段结构四段（顺序即结构）+ 环境注入块（殿后）。 */
 const BLOCK_IDS: PromptBlockId[] = [...PROMPT_SECTIONS, ENVIRONMENT_BLOCK_ID]
+
+/**
+ * 块标识 → 边界锚——两个追加块（环境 / 项目规约）各有自己的标题，四段按 `sectionHeading` 算。
+ * 后续块（项目规约 U32）由 `withProjectRules` 追加，**不在** `buildPromptBlocks` 的产物里，
+ * 故它不进 `BLOCK_IDS`；这里的表先认全，免得日后加块时又漏一处。
+ */
+function headingOf(id: PromptBlockId): string {
+  if (id === ENVIRONMENT_BLOCK_ID) return ENVIRONMENT_HEADING
+  if (id === PROJECT_RULES_BLOCK_ID) return PROJECT_RULES_HEADING
+  return sectionHeading(id)
+}
 
 // —— ① 段齐 ——
 
@@ -63,9 +76,7 @@ describe('M04 · 段齐', () => {
 
   test('字符串产物：段标题按段结构序依次出现（唯一、严格递增）', () => {
     const prompt = buildSystemPrompt(VARS)
-    const indexes = BLOCK_IDS.map((id) =>
-      prompt.indexOf(id === ENVIRONMENT_BLOCK_ID ? ENVIRONMENT_HEADING : sectionHeading(id)),
-    )
+    const indexes = BLOCK_IDS.map((id) => prompt.indexOf(headingOf(id)))
 
     expect(indexes.every((index) => index >= 0)).toBe(true)
     expect(new Set(indexes).size).toBe(indexes.length)

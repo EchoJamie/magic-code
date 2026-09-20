@@ -28,8 +28,15 @@ import type {
 
 // ══ 记录区（三类行）══════════════════════════════════════════════════
 
-/** 工具行的跑动状态——「在跑」（`⟳` ＋ 耗时）与「跑完」（`▶` ＋ 结果）一眼可分。 */
-export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected'
+/**
+ * 工具行的跑动状态——「在跑」（`⟳` ＋ 耗时）与「跑完」（`▶` ＋ 结果）一眼可分。
+ *
+ * 收尾那四件里有**两件是「压根没跑」**：`rejected`（裁决拒了）与 `unexecuted`（规约重审扣下 /
+ * 材料超限停批）。它们与 `failed`（跑了没成）**含义不同**，屏上因此不报耗时、不打失败那个叉。
+ * 后者的判据是**结果自己带的那一位**（`notExecuted`）——谁拦下的谁写，外壳不猜（见
+ * `reduceToolResult`）。
+ */
+export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecuted'
 
 /** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
 export type LogRow =
@@ -658,16 +665,24 @@ function reduceToolResult(view: ShellView, data: ToolResultData, at: number): Sh
   if (target === -1) return view
 
   const text = 'text' in data.output ? data.output.text : `（大块转存 ${data.output.blob}）`
+  // **「这一笔没跑」是结果自己带的一位**（`notExecuted`，产生处写：`@magic/conversation`
+  // 的 `withholds`）——不从正文里认字眼（2026-09-20 三轮裁，改的正是二轮那条正文协议：
+  // 真跑失败、输出首行恰是「未执行后续步骤」时它会认错，把一次真写盘的调用画成没跑）。
+  const unexecuted = data.notExecuted === true
 
   return patchTool(view, target, (row) => ({
     ...row,
     // **被拒是终态**：那件工具压根没跑，结果只是把话说全（「未获批准，未执行」）——
-    // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）
-    state: row.state === 'rejected' ? 'rejected' : data.ok ? 'ok' : 'failed',
+    // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）。
+    // **扣下那一路同上**：也没跑，故单列一态——省得那行画成一次失败的耗时。
+    state: row.state === 'rejected' ? 'rejected' : unexecuted ? 'unexecuted' : data.ok ? 'ok' : 'failed',
     output: textOfLines(text),
     // 墙钟＝发起 → 落地（`tool.call` 的 `at` → 这条 `tool.result` 的 `at`）。
     // **倒退的钟当没量到**（`null`）：负数上屏就是报了个假的耗时——如实记＝没有就是没有。
-    elapsedMs: row.startedAt === null || at < row.startedAt ? null : at - row.startedAt,
+    // **没跑的那一笔根本没有「耗了多久」这回事**（拦截发生在动手之前，两个事件背靠背发出）：
+    // 那个差是实现的偶然，不是这次调用的账，故一律 `null`。
+    elapsedMs:
+      unexecuted || row.startedAt === null || at < row.startedAt ? null : at - row.startedAt,
   }))
 }
 
@@ -991,11 +1006,16 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
     if (entry.kind === 'tool-result') {
       const row = pendingAt === -1 ? undefined : rows[pendingAt]
       if (row !== undefined && row.kind === 'tool') {
-        const payload = entry.payload as { readonly ok?: boolean } | undefined
+        const payload = entry.payload as { readonly ok?: boolean; readonly notExecuted?: true } | undefined
+        const ok = payload?.ok !== false
+        const text = contentTextOf(entry)
         rows[pendingAt] = {
           ...row,
-          state: payload?.ok === false ? 'failed' : 'ok',
-          output: textOfLines(contentTextOf(entry)),
+          // **与事件那一路同判**：读的是**同一位**（条目载荷与事件数据同源，见
+          // `ToolResultPayload`）——屏上的样子只该有一种：切了会话 / 重开一页回来，
+          // 扣下的那行不能变回「失败」。
+          state: payload?.notExecuted === true ? 'unexecuted' : ok ? 'ok' : 'failed',
+          output: textOfLines(text),
         }
       }
       pendingAt = -1
