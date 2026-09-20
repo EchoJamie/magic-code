@@ -308,6 +308,16 @@ describe('差距 4 · 输入框——`shift+回车` 换行 · 多行草稿 · `�
     expect(stage.commands().some((command) => command.type === 'input.submit')).toBe(true)
   })
 
+  /**
+   * ⚠️ **二轮返工改过这条断言里的数**（U31 二轮验收退回：折叠提示与正文共用高度预算）——
+   *
+   * - **原锚**：`… 上面还有 2 行`（7 个视觉行 − 5 行正文；那行提示**不**占预算，
+   *   屏上交互区因此是 6 行而 `maxDraftLines` 的账写着 5 行）。
+   * - **为何变**：半屏预算改成**整片输入区**的上限——提示行占它自己那一格之后，
+   *   「5 行」里只放得下 4 行正文 ⇒ 收起来的是 3 行。旧数正是「账比屏少两行」的残影，
+   *   矮窗（10 行）上会把动态帧顶到终端高度、真光标高一行（U31 二轮退回那一条）。
+   * - **新锚**：`… 上面还有 3 行`；「正在打的那行必须看得见」**没变**（规格的主句）。
+   */
   test('多行草稿**上限半屏**——超了收起头部，并**如实报**上面还有几行', async () => {
     const stage = live()
     for (let at = 0; at < 7; at += 1) {
@@ -315,10 +325,10 @@ describe('差距 4 · 输入框——`shift+回车` 换行 · 多行草稿 · `�
       stage.type(`第 ${at + 1} 行`)
     }
 
-    // 屏 10 行 ⇒ 半屏 5 行：前 2 行收起
+    // 屏 10 行 ⇒ 半屏 5 行（含「… 上面还有 N 行」那一行）：前 3 行收起
     const frame = await stage.screen({ columns: 80, rows: 10 })
 
-    expect(frame.has('… 上面还有 2 行')).toBe(true)
+    expect(frame.has('… 上面还有 3 行')).toBe(true)
     expect(frame.has('第 1 行')).toBe(false)
     expect(frame.has('第 7 行')).toBe(true) // 光标在末尾，正在打的那行必须看得见
   })

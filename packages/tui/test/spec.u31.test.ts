@@ -23,7 +23,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createView } from '../src/view.ts'
 import { dockHeightOf } from '../src/components/app.ts'
-import { stepLeft, stepRight } from '../src/components/composer.ts'
+import { composerLayout, stepLeft, stepRight } from '../src/components/composer.ts'
 import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 import { event } from './events.ts'
@@ -171,14 +171,23 @@ describe('真光标 · 折行与折叠', () => {
     expect(moved.screen.cursor.y).toBe(wide.screen.cursor.y) // 还在同一行
   })
 
+  /**
+   * ⚠️ **二轮返工改过这条断言里的数**（U31 二轮验收退回）——
+   *
+   * - **原锚**：`… 上面还有 1 行`（6 个视觉行 − 5 行正文；那两行提示**不**占预算）。
+   * - **为何变**：预算改成**整片输入区**的上限（正文 ＋ 提示一起算）——提示行占它自己那一格
+   *   之后，「5 行」里只放得下 4 行正文 ⇒ 收起来的是 2 行。旧数正是「账与屏分家」那笔账的
+   *   残影：屏上交互区 6 行而账上写 5 行，矮窗上动态帧顶到终端高度，真光标就高一行。
+   * - **新锚**：`… 上面还有 2 行`；插入点仍必须看得见（**这一条没变**，它是这条规格的主句）。
+   */
   test('多行草稿超半屏——折叠**如实报行数**，插入点那一行仍看得见', async () => {
     const stage = createStage()
     // 40 列 ⇒ 内容宽 38 ⇒ 折 6 个视觉行（38×5 ＋ 12）——**不是**按 `\n` 数的 1 行
     stage.type('a'.repeat(200))
 
-    const frame = await stage.screen({ columns: 40, rows: 10 }) // 半屏 ＝ 5 行
+    const frame = await stage.screen({ columns: 40, rows: 10 }) // 半屏 ＝ 5 行（含提示行）
 
-    expect(frame.has('… 上面还有 1 行')).toBe(true) // 6 − 5：**视觉行**的账
+    expect(frame.has('… 上面还有 2 行')).toBe(true) // 6 − 4：**视觉行**的账；那 4 行 ＋ 这条提示 ＝ 5
     // 插入点在末尾 ⇒ 它那一行（最后一条视觉行，12 宽）必须在屏上，落点在该行末尾
     expect(frame.screen.cursor).toEqual({ x: 1 + 12, y: viewportOf(frame, frame.rowOf('○ 空闲')) - 1 })
   })
@@ -385,5 +394,77 @@ describe('返工 · 宽度口径（分解字符 / ZWJ emoji / 折行边界）', 
     expect(frame.textAt(row)).toBe(`  ${E}`)
     // 第二行没有 `› `，整行从内容原点起：左留白 1 ＋ 行首那个空格 1 ＋ `é` 1 ＝ 3
     expect(frame.screen.cursor).toEqual({ x: 3, y: row })
+  })
+})
+
+/**
+ * **二轮返工**（2026-09-20 · 二轮验收退回）——折叠提示与正文**共用**那一份高度预算。
+ *
+ * **根因**：`maxLines`（半屏）早先只管正文，`… 上面 / 下面还有 N 行` 那两行是**另加**上去的
+ * ⇒ **账**（`app.ts` 的 `dock`，按 `maxDraftLines` 封顶）写着 5 行、**屏**上却是 7 行。
+ * 40×10 的矮窗上动态帧因此正好顶到终端高度（10 行），而 Ink 在这时**省掉末尾那个换行**
+ * （`outputHeight >= viewportRows` 那一支，见 `ink.js` 的 `renderInteractiveFrame`），
+ * 它的光标后缀却仍按「正文之下还有一行」回退 ⇒ **真光标高一行**：插入点 200 实测
+ * `(13, 6)`、应为 `(13, 7)`；160 / 280 那两档交互区只有 6 行、够不着终端高度，
+ * 看着是好的——**同一根因，只是矮了一行没触发**（故修的是「账与屏分家」，不是那两档）。
+ *
+ * **修法**：让提示行占它自己那一格——那一扇窗口的**正文 ＋ 它实际要画的提示行 ≤ 预算**；
+ * 窗口贴住某一头时那一头没有提示，省下的格子还给正文。**不**在别处加一行补偿、
+ * 也**不**给窄终端开特例分支。
+ */
+describe('返工二 · 折叠提示与正文共用高度预算', () => {
+  /** 40 列 ⇒ 内容宽 38 ⇒ 300 个 a 折成 8 个视觉行（38×7 ＋ 34）。 */
+  const LONG = 'a'.repeat(300)
+
+  test('半屏预算是**硬上限**——正文与提示行一起算（含极小预算的护栏）', () => {
+    // 插入点摆在中间 ⇒ 两头都折、两行提示各占一格
+    // （原锚：5 行正文 ＋ 2 行提示 ＝ 屏上 7 行，账上却写 5）
+    expect(composerLayout(LONG, 200, 40, 5).rows.length).toBe(5)
+    // 插入点在末尾 ⇒ 贴住下头，「下面」那头没有提示，省下的格子还给正文
+    expect(composerLayout(LONG, 300, 40, 5).rows.length).toBe(5)
+    // 插入点在最前 ⇒ 对称的另一头
+    expect(composerLayout(LONG, 0, 40, 5).rows.length).toBe(5)
+    // 预算窄到「一行正文 ＋ 两条提示」都放不下 ⇒ 插入点那一行优先，提示**让位**
+    // （真光标得有个地方摆；`maxDraftLines` 给的是半屏，这一档是护栏）
+    expect(composerLayout(LONG, 200, 40, 2).rows.length).toBe(1)
+    expect(composerLayout(LONG, 200, 40, 1).rows.length).toBe(1)
+    // 账与屏取同一处：这一份视图在 10 行窗里的交互区高度 ≤ 半屏
+    const view = { ...createView(), draft: LONG, caret: 200 }
+    expect(dockHeightOf(view, 40, 10)).toBeLessThanOrEqual(5)
+  })
+
+  test('矮窗**两头**折叠——真光标落在插入点那一行（不再高一行）', async () => {
+    const stage = createStage()
+    stage.press({ kind: 'paste', text: LONG })
+    while (at(stage) > 200) stage.press({ kind: 'left' })
+
+    const frame = await stage.screen({ columns: 40, rows: 10 })
+
+    // 两头都折（插入点在中间）——两条提示都在屏上，且都「如实报」收起几行
+    expect(frame.has('… 上面还有 3 行')).toBe(true)
+    expect(frame.has('… 下面还有 2 行')).toBe(true)
+    // 插入点是展示区最后一条正文行 ⇒ 真光标在「… 下面还有 2 行」那条的**上一行**。
+    // 原锚 (13, 6)：那会儿交互区 7 行、动态帧正好 10 行顶满终端，Ink 省掉末尾换行
+    // ⇒ 光标后缀多回退一行。这条量的就是这个「账与屏分家」。
+    expect(frame.screen.cursor).toEqual({
+      x: 1 + 12,
+      y: viewportOf(frame, frame.rowOf('… 下面还有 2 行')) - 1,
+    })
+  })
+
+  test('矮窗**单头**折叠——同一把尺（贴住下头，省下的格子还给正文）', async () => {
+    const stage = createStage()
+    stage.press({ kind: 'paste', text: LONG }) // 插入点在末尾
+
+    const frame = await stage.screen({ columns: 40, rows: 10 })
+
+    expect(frame.has('… 下面还有')).toBe(false) // 插入点在末尾 ⇒ 没有「下面」
+    expect(frame.has('… 上面还有 4 行')).toBe(true) // 8 − 4：4 行正文 ＋ 1 行提示 ＝ 5
+    // 最后一条视觉行是 36 个 a（首行 `› ` ＋ 36 个铺满，其后每行 38 个）
+    // ⇒ 落点在左留白 1 ＋ 36 列之后
+    expect(frame.screen.cursor).toEqual({
+      x: 1 + 36,
+      y: viewportOf(frame, frame.rowOf('○ 空闲')) - 1,
+    })
   })
 })

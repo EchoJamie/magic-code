@@ -64,6 +64,11 @@ export type AppViewProps = {
 
 export function AppView({ view, columns, rows, now = null }: AppViewProps) {
   // 活动区的预算：减去交互区与状态行（**不填满窗口**——内联模式下内容跟内容走）
+  //
+  // ⚠️ 这里的 `dock` 是**账**，`dockOf` 画出来的是**屏**——两者必须相等（U31 二轮退回）：
+  //    账按 `maxDraftLines`（半屏）封顶、而输入行多画了两行提示时，屏上的动态帧正好顶到
+  //    终端高度 ⇒ Ink 省掉末尾换行 ⇒ 真光标高一行。故「上面/下面还有 N 行」那两行
+  //    **也算在 `maxDraftLines` 里**（`composerLayout` 那一处收口），这里不必再补。
   const dock = Math.min(dockHeightOf(view, columns, rows), Math.max(4, Math.floor(rows / 2)))
   const liveBudget = Math.max(1, rows - dock - 2)
   const live = tailWithin(view.rows, columns, view.expanded, liveBudget)
@@ -349,7 +354,13 @@ function toneOf(view: ShellView): ComposerTone {
   return 'idle'
 }
 
-/** 草稿最多占几行——**半屏**（原型 · 键盘：多行草稿的高度随内容长，上限半屏）。 */
+/**
+ * 草稿那一片最多占几行——**半屏**（原型 · 键盘：多行草稿的高度随内容长，上限半屏）。
+ *
+ * ⚠️ 这一份预算**含**「… 上面/下面还有 N 行」那两行提示（U31 二轮退回）——
+ * 它同时是 `dockOf` 渲染用的 `maxLines` 与 `dockHeightOf` 算账用的那一个，
+ * 两处同源，账与屏才不差分毫（由头见 `dock` 那一段注）。
+ */
 function maxDraftLines(rows: number): number {
   return Math.max(1, Math.floor(rows / 2))
 }

@@ -46,7 +46,8 @@
  * 三条形态上的定夺：
  * - **续行缩进 2 列**（与 `› ` 同宽）：悬挂缩进那条规格的老姿势（正文从标记之后起）；
  * - **越上限就收起**（不是尾部）：**插入点那一行必须看得见**；收起来的**如实报行数**
- *   （`… 上面还有 N 行` / `… 下面还有 M 行`）——不装作画全了；
+ *   （`… 上面还有 N 行` / `… 下面还有 M 行`）——不装作画全了。**上限是整片输入区的**
+ *   （正文 ＋ 那两行提示一起算，U31 二轮退回）——由头见下面「折叠」那一节；
  * - **一行一个 `<Text>`**（不在一段文本里写 `\n`）：Ink 的竖排 Box 本来就一个子节点一行，
  *   在 `Text` 里塞换行会让**行数账目**对不上（D11 的根因，见 `log.ts` 文件头注）。
  *   折行因此**在这里做**（折完每行都短于内容宽，Ink 不会再折）——渲染与算账同取一处。
@@ -71,8 +72,11 @@ export type ComposerProps = {
   readonly caret: number | null
   readonly tone: ComposerTone
   /**
-   * 草稿最多占几行（**半屏**）——超了就收起并如实报行数。
-   * 缺省不限（只给「草稿 → 一屏里的几行」的用例与快照留的口子）。
+   * 输入区最多占几行（**半屏**）——超了就收起并如实报行数。
+   *
+   * ⚠️ 量的是**整片输入区**：正文**与**「… 上面/下面还有 N 行」那两行提示一起算
+   * （U31 二轮退回；早先提示是另加的，屏上比预算多出两行）。缺省不限
+   * （只给「草稿 → 一屏里的几行」的用例与快照留的口子）。
    */
   readonly maxLines?: number
   /**
@@ -221,27 +225,65 @@ export function composerLayout(
   }
 
   // —— 折叠：插入点必须看得见（它在哪，窗口就跟着移到哪）——
+  //
+  // ⚠️ **正文与两行提示共用这一份预算**（U31 二轮验收退回）——`maxLines` 是**整个输入区**
+  // 的行数上限，不是「正文的上限、提示另算」。早先先取满预算的正文、再把「… 上面/下面还有
+  // N 行」两条接在两头，输入区就比账上多出两行；**账**（`app.ts` 的 `dock`）按 `maxLines`
+  // 算、**屏**多两行 ⇒ 矮窗上动态帧正好顶到终端高度 ⇒ **Ink 省掉末尾那个换行**
+  // （`outputHeight >= viewportRows` 时它只写正文，见 `ink.js` 的 `renderInteractiveFrame`），
+  // 而它的光标后缀仍按「正文之下还有一行」回退 ⇒ **真光标高一行**（40×10 · 插入点 200
+  // 实测 (13,6)、应为 (13,7)；160/280 那两档交互区 6 行、够不着终端高度，故看着是好的）。
+  // 根因是**账与屏分家**，不是「少减了一行」——故修法是让提示行占它自己那一格，
+  // **不**在别处加一行补偿、也不给窄终端开特例分支。
   const total = rows.length
   const budget = Math.max(1, Math.floor(maxLines))
-  const start = total <= budget
-    ? 0
-    : Math.min(Math.max((caretRow ?? total - 1) - budget + 1, 0), total - budget)
-  const shown = rows.slice(start, start + budget)
+  let start = 0
+  let count = total
+  /** 两头那两条提示画不画——极小预算的兜底那一档要让位（见下）。 */
+  let notices = true
+
+  if (total > budget) {
+    // 窗口**从宽到窄**试：第一个「正文 ＋ 它实际要画的提示行 ≤ 预算」的就是要的那一扇。
+    // ⚠️ 提示行只在**真折了**的那一头才画——窗口贴住某一头时那一头不占格子
+    //    （故现算，不一律按「两头各留一行」扣：那样会白扔一格正文）。
+    count = 0
+    for (let size = Math.min(total, budget); size >= 1; size -= 1) {
+      const from = Math.min(Math.max((caretRow ?? total - 1) - size + 1, 0), total - size)
+      const used = size + (from > 0 ? 1 : 0) + (from + size < total ? 1 : 0)
+
+      if (used <= budget) {
+        start = from
+        count = size
+        break
+      }
+    }
+
+    // 兜底（护栏——`maxDraftLines` 给的是半屏，实际到不了这一档）：预算窄到
+    // 「一行正文 ＋ 两条提示」都放不下时，**插入点那一行优先**（真光标要摆在那儿，
+    // 它不在窗口里就没地方放），两头提示如实让位——宁可少报，也不把帧撑过账。
+    if (count === 0) {
+      start = Math.min(Math.max(caretRow ?? total - 1, 0), total - 1)
+      count = 1
+      notices = false
+    }
+  }
+
+  const shown = rows.slice(start, start + count)
   const foldedAbove = start
-  const foldedBelow = total - (start + shown.length)
+  const foldedBelow = total - (start + count)
 
   return {
     rows: [
-      ...(foldedAbove === 0
-        ? []
-        : [{ prefix: '', text: `… 上面还有 ${foldedAbove} 行`, notice: true }]),
+      ...(notices && foldedAbove > 0
+        ? [{ prefix: '', text: `… 上面还有 ${foldedAbove} 行`, notice: true }]
+        : []),
       ...shown,
-      ...(foldedBelow === 0
-        ? []
-        : [{ prefix: '', text: `… 下面还有 ${foldedBelow} 行`, notice: true }]),
+      ...(notices && foldedBelow > 0
+        ? [{ prefix: '', text: `… 下面还有 ${foldedBelow} 行`, notice: true }]
+        : []),
     ],
-    // 上手那两行提示各占一行——插入点的行号跟着下移
-    caretRow: caretRow === null ? null : caretRow - start + (foldedAbove === 0 ? 0 : 1),
+    // 上头那条提示占一行——插入点的行号跟着下移
+    caretRow: caretRow === null ? null : caretRow - start + (notices && foldedAbove > 0 ? 1 : 0),
     caretCol,
   }
 }
