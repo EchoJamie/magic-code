@@ -55,6 +55,24 @@ export function mcpToolName(server: string, tool: string): string {
 }
 
 /**
+ * 外部工具**给人看**的那一行——`服务器 / 工具`。
+ *
+ * 两处同形（审批卡的标题 · 记录里那一行的名字），故只此一处产出：名字里的前缀是**注册用的
+ * 编码**（为的是跨服务器唯一），不是给人读的——屏上照抄注册名就是把内部编码摊给用户看。
+ */
+export function mcpToolLabel(ref: ExternalToolRef): string {
+  return `${ref.server} / ${ref.tool}`
+}
+
+/**
+ * 外部操作在审批卡上的口径——**交互约束给的那一句原话**（「文案用 `外部操作 · 效果由服务器决定`」）。
+ *
+ * 一处产出：卡的副题（外壳）与判据（权限域的材料）读的是同一串字——
+ * 「外部工具**不假定效果可逆**」那句裁决，落到用户眼前就是这几个字。
+ */
+export const MCP_EXTERNAL_CAVEAT = '外部操作 · 效果由服务器决定'
+
+/**
  * 认出一个外部工具名——不是这个形态就返回 `undefined`（内置工具名照旧是它们自己）。
  *
  * **第一刀切在服务器名之后**（服务器名不含分隔符，见 `MCP_NAME_SEPARATOR`），

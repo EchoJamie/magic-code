@@ -167,6 +167,25 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     expect(rowAt(plain, 0)).toMatchObject({ state: 'failed', elapsedMs: 4 })
   })
 
+  test('外部工具（U38）——注册名不照抄到记录行上，写成 `服务器 / 工具`', () => {
+    // 注册名（`mcp__fake__echo`）是**编码**（跨服务器唯一）；给人看的是 `服务器 / 工具`。
+    // 流式那一路（模型还没报完名字）与 `tool.call` 那一路都要同一个写法。
+    const streamed = viewed([
+      event('model.delta', { channel: 'toolcall', name: 'mcp__fake__echo', id: 'tc1', text: '{"text"' }),
+    ])
+    expect(rowAt(streamed, 0)).toMatchObject({ name: 'fake / echo' })
+
+    const called = viewed([
+      event('model.delta', { channel: 'toolcall', name: 'mcp__fake__echo', id: 'tc1', text: '{"text"' }),
+      event('tool.call', { name: 'mcp__fake__echo', args: { text: 'x' } }, { id: 71 }),
+    ])
+    expect(rowAt(called, 0)).toMatchObject({ name: 'fake / echo', call: 71 })
+
+    // 内置工具名照旧（`exec` 就写 `exec`）
+    const builtin = viewed([event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 72 })])
+    expect(rowAt(builtin, 0)).toMatchObject({ name: 'exec' })
+  })
+
   test('大块转存——结果只留 blob 引用（外壳不解析）', () => {
     const view = viewed([
       event('tool.call', { name: 'ls', args: {} }, { id: 71 }),

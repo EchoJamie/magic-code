@@ -11,6 +11,7 @@
 
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
+import { MCP_EXTERNAL_CAVEAT } from '@magic/contracts'
 import type { ReactElement } from 'react'
 import type { PendingDecision } from '../view.ts'
 import { PALETTE } from './lines.ts'
@@ -37,7 +38,11 @@ export function DecisionCard({ pending }: DecisionCardProps) {
       null,
       h(Text, { color: accent }, '│ '),
       h(Text, { color: accent, bold: true }, pending.name),
-      h(Text, { color: PALETTE.dim }, ` · ${external ? EXTERNAL_FACE : heavy ? '不可逆' : '可逆'}`),
+      h(
+        Text,
+        { color: PALETTE.dim },
+        ` · ${external ? MCP_EXTERNAL_CAVEAT : heavy ? '不可逆' : '可逆'}`,
+      ),
       pending.position === null
         ? null
         : h(Text, { color: PALETTE.dim }, ` · ${pending.position.index} / ${pending.position.total}`),
@@ -56,14 +61,6 @@ export function DecisionCard({ pending }: DecisionCardProps) {
     ),
   )
 }
-
-/**
- * 外部操作的口径（U38）——**交互约束给的那一句原话**。
- *
- * 与权限域材料里那一句同词（`EXTERNAL_CAVEAT`）：审批卡上「为什么不说可逆」的答案就在这几个字里
- * ——本机判不出效果，判断交给服务器那一侧，人据此决定批不批。
- */
-const EXTERNAL_FACE = '外部操作 · 效果由服务器决定'
 
 function keyHint(key: string, label: string, struck = false): ReactElement {
   return h(

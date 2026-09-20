@@ -25,6 +25,19 @@ import type {
   SessionId,
   SessionSummary,
 } from '@magic/contracts'
+import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
+
+/**
+ * 工具行上那个名字（U38）——**外部工具的注册名不照抄**。
+ *
+ * 注册名（`mcp__<服务器>__<工具>`）是**编码**（为的是跨服务器唯一），给人看的写法是
+ * `服务器 / 工具`——与审批卡同一个形态（契约 `mcpToolLabel` 一处产出，两处同形）。
+ * 内置工具名照旧（`exec` 就写 `exec`）。
+ */
+function toolNameOf(name: string): string {
+  const external = parseMcpToolName(name)
+  return external === undefined ? name : mcpToolLabel(external)
+}
 
 // ══ 记录区（三类行）══════════════════════════════════════════════════
 
@@ -604,7 +617,7 @@ function appendToolFragment(
         kind: 'tool',
         key: `tool:${providerId === undefined ? `d${id}` : `tc:${providerId}`}`,
         call: null,
-        name: name ?? '工具',
+        name: name === undefined ? '工具' : toolNameOf(name),
         argsText: text,
         args: null, // 流式片段不全——结构化那份要等 `tool.call`
         state: 'running',
@@ -615,7 +628,11 @@ function appendToolFragment(
     )
   }
 
-  return patchTool(view, target, (row) => ({ ...row, name: name ?? row.name, argsText: row.argsText + text }))
+  return patchTool(view, target, (row) => ({
+    ...row,
+    name: name === undefined ? row.name : toolNameOf(name),
+    argsText: row.argsText + text,
+  }))
 }
 
 type ToolCallData = Extract<KernelEvent, { kind: 'tool.call' }>['data']
@@ -630,7 +647,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
         kind: 'tool',
         key: `tool:call:${id}`,
         call: id,
-        name: data.name,
+        name: toolNameOf(data.name),
         argsText: argsJson(data.args),
         args: data.args,
         state: 'running',
@@ -646,7 +663,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
 
   return patchTool(view, target, (row) => ({
     ...row,
-    name: data.name,
+    name: toolNameOf(data.name),
     call: id,
     argsText: argsJson(data.args),
     args: data.args,

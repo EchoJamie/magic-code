@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import type { KernelEvent } from '@magic/contracts'
 import type { FauxTurn } from '@magic/faux'
 import type { Assembly } from '../src/index.ts'
+import { attachShell } from '../src/shell.ts'
 import { eventsOfKind, lastModel, makeStage, readDatabase } from './support.ts'
 import type { Stage } from './support.ts'
 
@@ -433,6 +434,76 @@ describe('失败路径', () => {
       shell.dispose()
       await assembly.shutdown()
       assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+describe('恢复', () => {
+  test('崩溃留下的那次外部调用**不自动重放**——交人裁决（服务器计数零）', async () => {
+    const dir = scrapDir()
+    const log = join(dir, 'fake.jsonl')
+    const stage = stageWith({ fake: serverEntry(dir, 'fake') })
+
+    try {
+      // ① 起一条会话（第一条消息按下回车才开张——D5）——`attachShell` 的 `submit`
+      //    **等这一轮收束**再交回，故摆现场时那一轮已经写完（不然关库会撞上在途的写）
+      const first = stage.assemble({ turns: [{ text: '起个头' }] })
+      await first.ready()
+      const seeded = attachShell(first.shell)
+      await seeded.submit('起个头')
+      const session = first.session as string
+      seeded.dispose()
+
+      // ② 照崩溃的**原始数据**摆现场：有 `tool.call` 无 `tool.result` 的一次**外部调用**
+      //    （已批准、未回填——用户按了 y，然后进程没了）。摆法与 `recovery.test.ts` 同款。
+      const records = first.records.serviceFor(session)
+      const stamp = (kind: string, data: unknown): number => {
+        const id = records.nextId()
+        records.appendEvent({ id, session, turn: 2, at: Date.now(), kind, data } as KernelEvent)
+        return id
+      }
+      records.appendEntry({
+        kind: 'tool-call',
+        content: { text: '' },
+        payload: { name: 'mcp__fake__echo', args: { text: '没跑完的那次' } },
+        at: Date.now(),
+      })
+      stamp('turn.start', {})
+      const callRef = stamp('tool.call', { name: 'mcp__fake__echo', args: { text: '没跑完的那次' } })
+      stamp('tool.decision.request', {
+        call: callRef,
+        name: 'fake / echo',
+        material: '参数：\n{\n  "text": "没跑完的那次"\n}',
+        weight: 'heavy',
+        external: true,
+      })
+      stamp('tool.decision', { call: callRef, decision: 'approve', decider: 'user', elapsedMs: 90 })
+      first.close()
+
+      // ③ 重起接续：`boot` 跑恢复那一趟（装载 ＋ 在途处置 ＋ 重建）
+      const resumed = stage.assemble({ turns: [{ text: '接着干' }], session })
+      await resumed.ready()
+      const shell = bareShell(resumed)
+      await resumed.boot()
+
+      // **一次都没打到服务器**——「已批准」只说明有资格跑，不说明跑没跑到哪一步
+      expect(callsOf(log)).toEqual([])
+
+      await resumed.shell.send({ type: 'input.submit', text: '接着干' })
+      await until(() => lastModel(stage).requests.length >= 1, '续跑那一句的模型请求')
+      const messages = lastModel(stage).requests.at(-1)?.messages ?? []
+      const backfill = messages.find((message) => message.role === 'tool')
+
+      expect(backfill).toMatchObject({ name: 'mcp__fake__echo', ok: false })
+      expect(
+        messages.map((m) => (m.role === 'tool' ? m.output : 'content' in m ? m.content : '')).join('\n'),
+      ).toContain('未自动重跑')
+
+      shell.dispose()
+      await resumed.shutdown()
+      resumed.close()
     } finally {
       stage.dispose()
     }

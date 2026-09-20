@@ -23,10 +23,11 @@
  * （「批量场景失败先留档再关闭」）。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HINT_IDLE, placeholderOf } from '@magic/tui'
-import { UiWaitTimeout, createUiSession } from './driver.ts'
+import { REPO_ROOT, UiWaitTimeout, createUiSession } from './driver.ts'
 import type { Capture, UiSession, UiSessionOptions } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
 import { readDatabase } from '../support.ts'
@@ -83,6 +84,7 @@ export type ScenarioName =
   | 'missing-text-failure'
   | 'assistant-across-calls'
   | 'isolation-repeat-parallel'
+  | 'mcp-approval'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -371,6 +373,185 @@ const modelStreamApproval: Scenario = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 七 · 外部工具（MCP）：发现 → 审批 → 批准真调用 / 拒绝零调用 → 释放
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 外部服务器那一件——**真进程**（用官方 SDK 的服务器面写的那支假服务器）。
+ *
+ * 它也是**判据的出处**：每收到一次调用就往 `FAKE_MCP_LOG` 追一行。故「拒绝时零调用」
+ * 与「批准真调用」这两条读的是**服务器自己数的数**，不是客户端说了什么。
+ */
+const FAKE_MCP_SERVER = join(REPO_ROOT, 'packages', 'mcp', 'test', 'support', 'fake-server.ts')
+
+const mcpApproval: Scenario = {
+  name: 'mcp-approval',
+  title: '外部工具：连上本地服务器 → 审批卡点名服务器/工具 → 批准真调用 · 拒绝零调用 → 退出释放子进程',
+  anchors: 'U38 完成出口：真应用连本地假 stdio 服务器，发现 / 审批 / 调用 / 拒绝 / 释放都有可观察结果',
+  story: async (ui, options) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magic-u38-mcp-'))
+    const log = join(dir, 'fake.jsonl')
+
+    const turns: readonly FixtureTurn[] = [
+      { kind: 'tool', name: 'mcp__fake__echo', args: { text: '第一次外部调用' } },
+      { kind: 'tool', name: 'mcp__fake__echo', args: { text: '第二次外部调用' } },
+      { kind: 'text', text: '外部那两件处理完了' },
+    ]
+
+    const session = await ui.open({
+      label: '场景7-外部工具',
+      columns: 100,
+      rows: 30,
+      turns,
+      config: {
+        // **显式配置**才连（这一条正是「只有配置里写了才拉起进程」的可观察形态）
+        mcp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: 'fake' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    // —— 交代 → 第一张审批卡 ——
+    await session.send('用外部工具回显一句')
+    await session.wait({ text: '› 用外部工具回显一句' })
+    await session.key('enter', { until: { text: 'y 批准这一次' } })
+    const card = await session.capture({ label: '外部审批卡' })
+
+    ui.check(card.text.includes('fake / echo'), '审批卡点名「服务器 / 工具」', '原锚＝注册表的身份（名字含服务器）')
+    ui.check(
+      card.text.includes('外部操作 · 效果由服务器决定'),
+      '审批卡说的是外部口径（不说可逆 / 不可逆）',
+      '锚＝交互约束给的那一句原话',
+    )
+    ui.check(card.text.includes('第一次外部调用'), '审批卡给了实际业务参数', '')
+    ui.check(card.text.includes('y 批准这一次'), '只给「批准这一次」', '')
+    ui.check(card.text.includes('n 拒绝'), '给了「拒绝」', '')
+    ui.check(
+      !/(^|\s)y 批准(\s|　|$)/u.test(card.text.replace('y 批准这一次', '')),
+      '没有「总是允许」以外的宽放行（外部件只有这一次）',
+      '锚＝卡片正文里不再出现另一处「批准」',
+    )
+    // **还没答**：服务器一次都没被调（拒绝零调用那条的**前置**——卡还挂着时它已经成立）
+    ui.check(mcpCalls(log).length === 0, '卡还挂着时服务器零调用', `日志 ${mcpCalls(log).length} 行`)
+
+    // —— 批准第一件 ——
+    // 敲的是 `y` 这个**字符**（PTY 上按键本来就是它）；⚠️ 绝不能重发：批准不幂等。
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    const approved = await session.capture({ label: '第一次批准后' })
+    ui.check(
+      approved.lines.some((line) => line.includes(TOOL_DONE) && line.includes('第一次外部调用')),
+      '结果行＝完成标记 ＋ 服务器回的那串字',
+      `锚＝结果行「${TOOL_DONE} … · 第一次外部调用」（审批卡里那串参数不算）`,
+    )
+    ui.check(mcpCalls(log).length === 1, '服务器自己数到了那一次调用', `日志 ${mcpCalls(log).length} 行`)
+
+    // —— 第二件：**拒绝** ——
+    await session.wait({ text: 'y 批准这一次' })
+    const second = await session.capture({ label: '第二张审批卡' })
+    ui.check(second.text.includes('第二次外部调用'), '第二张卡给的是第二次的参数', '')
+
+    // 等的是**末尾那句答复**，不是 `HINT_IDLE`——拒绝之后那一小段里，状态行会先回一次
+    // 「空闲」（卡收了、下一趟模型还没回来），拿它当条件会**抓到半路**（实测栽过一次：
+    // 取到的帧里没有最后那句答复）。等答复本身，条件与判据才是同一件事。
+    await session.send('n', { until: { text: '外部那两件处理完了' }, timeoutMs: 15_000 })
+    const rejected = await session.capture({ label: '拒绝之后' })
+    ui.check(
+      mcpCalls(log).length === 1,
+      '拒绝＝服务器零调用（计数仍是一次，没有第二次）',
+      `日志 ${mcpCalls(log).length} 行（服务器自己数的）`,
+    )
+
+    // —— 独立核：不看屏，直读记录库 ——
+    const results = await awaitToolResult(session, '第一次外部调用')
+    ui.check(
+      results.some((result) => result.ok && result.text.includes('第一次外部调用')),
+      '记录库里真有一条成功的工具结果',
+      results.length === 0 ? '一条 tool-result 都没有' : `${results.length} 条 tool-result`,
+    )
+    ui.check(rejected.text.includes('外部那两件处理完了'), '拒绝之后这一轮照常走完', '')
+
+    // —— 退出：**自有子进程要收干净**（用户自己的进程不归我们管，那是适配器用例的账）——
+    const child = mcpCalls(log)[0]?.pid
+    ui.check(typeof child === 'number' && isAlive(child as number), '退出之前：子进程还活着', `pid ${child}`)
+
+    await session.close()
+    await waitGone(child as number)
+    ui.check(!isAlive(child as number), '退出之后：本进程拉起的服务器子进程没了', `pid ${child}`)
+
+    // —— 第二幕：**配了一台连不上的服务器**（这是最常见的配置失败）——
+    //
+    // 要看的就一件：用户盼着它的工具出现，结果一件都没有时，**屏上说不说得出是哪一台**。
+    // 同时顺带验「单连接失败不拖垮内置工具」——内置那件照跑（`exec`）。
+    const broken = await ui.open({
+      label: '场景7-连不上',
+      columns: 100,
+      rows: 24,
+      turns: [
+        { kind: 'tool', name: 'exec', args: { cmd: 'echo 内置照常' } },
+        { kind: 'text', text: '好' },
+      ],
+      config: {
+        mcp: { servers: { broken: { command: '/nonexistent/mcp-server-for-u38' } } },
+      },
+      ...where(options),
+    })
+
+    const boot = await broken.capture({ label: '连不上：起手那一句' })
+    ui.check(boot.text.includes('broken'), '连不上的那台服务器被点了名', '锚＝配置里的条目名')
+    ui.check(boot.text.includes('连不上'), '起手那一行说了「连不上」', '锚＝装配的 notice 措辞')
+    ui.check(
+      boot.text.includes('外部工具服务器'),
+      '那句话指着外部工具说的（不是别的告警）',
+      '',
+    )
+
+    await broken.send('跑个内置的')
+    // 内置那件是**轻**的（`exec` 只读命令）⇒ 三键位（`y / a / n`，见 `COPY.decideHint`）
+    await broken.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 10_000 })
+    await broken.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
+    const ran = await broken.capture({ label: '内置工具照常' })
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('内置照常')),
+      '单连接失败不拖垮内置工具（内置那件照跑）',
+      `锚＝结果行「${TOOL_DONE} … · 内置照常」`,
+    )
+    await broken.close()
+
+    rmSync(dir, { recursive: true, force: true })
+  },
+}
+
+/** 服务器那边的调用流水（判据取它）。 */
+function mcpCalls(log: string): readonly { readonly tool: string; readonly pid: number }[] {
+  if (!existsSync(log)) return []
+  return readFileSync(log, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line) as { tool: string; pid: number })
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitGone(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (isAlive(pid) && Date.now() < deadline) await Bun.sleep(50)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // 四 · 故意等不到：结构化失败 ＋ 现场完整 ＋ 清场
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -624,6 +805,7 @@ export const SCENARIOS: readonly Scenario[] = [
   bootInputResizeExit,
   drawerOpenClose,
   modelStreamApproval,
+  mcpApproval,
   missingTextFailure,
   assistantAcrossCalls,
   isolationRepeatParallel,

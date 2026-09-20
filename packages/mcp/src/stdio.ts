@@ -114,7 +114,7 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
       discovered = toolsOf(listed.tools)
       state = { status: 'available' }
     } catch (error) {
-      state = { status: 'unavailable', reason: reasonOf(error) }
+      state = { status: 'unavailable', reason: startupReason(error, options.config) }
       // 半途死掉的进程要收干净（连到一半也算「本进程拉起过它」）
       await release()
     }
@@ -312,4 +312,23 @@ function base64Bytes(data: string): number {
 /** 出一句人话——`Error` 取 message，其余照字面（与工具域同一口径）。 */
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * **起不来**那句缘由——**说人话**（这一句会上屏：开屏回执与 `--check` 都读它）。
+ *
+ * 由头：拉不起一个进程时，Node 抛的是 `ENOENT: no such file or directory, posix_spawn '…'`
+ * ——那是**给写代码的人看的**（`posix_spawn` 对用户是噪音）。而这一类失败恰恰是 MCP 最常见的
+ * 一种配置事故：命令写错、包里没装。故按 errno 译一句「哪条命令、怎么不对」——
+ * **用户要改的就是那一条命令**，把它的名字摆出来。
+ *
+ * 认不出的错误照原样带出（不编）：那种情形下原委就是唯一的线索。
+ */
+function startupReason(error: unknown, config: McpServerConfig): string {
+  const code = (error as { readonly code?: unknown } | null)?.code
+
+  if (code === 'ENOENT') return `找不到可执行文件「${config.command}」（命令写错了，还是没装？）`
+  if (code === 'EACCES') return `没有执行权限「${config.command}」`
+
+  return reasonOf(error)
 }

@@ -20,7 +20,7 @@ import type {
   PermissionContext,
   ToolCall,
 } from '@magic/contracts'
-import { parseMcpToolName } from '@magic/contracts'
+import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
 import type { SegmentAnalysis } from './commands.ts'
 import { OP_LABEL, OP_REASON, WRITE_OPS, decompose } from './commands.ts'
 import type { RuleOp } from './ops.ts'
@@ -76,15 +76,6 @@ const REASON_ORDER: readonly DangerReason[] = [
   'unknown',
 ]
 
-/**
- * 「外部操作 · 效果由服务器决定」——**交互约束给的那一句原话**（U38）。
- *
- * 落在材料与卡上的口径都取这一处：外部工具的审批**不假定效果可逆**（规划侧已裁），
- * 而它到底做了什么**本机判不出来**——服务器那一侧自己说了算。故不说「可逆 / 不可逆」，
- * 只说这一句，把判断交回人。
- */
-export const EXTERNAL_CAVEAT = '外部操作 · 效果由服务器决定'
-
 /** 取代表判据（多中时按 `REASON_ORDER`）。 */
 function representative(reasons: readonly DangerReason[]): DangerReason | undefined {
   return REASON_ORDER.find((reason) => reasons.includes(reason))
@@ -114,7 +105,8 @@ function externalOf(call: ToolCall): ExternalToolRef | undefined {
  *   自觉，故命中了任何规则也照问（`gate.ts` 的「必闸 ＞ 规则」那一格）；
  * - **不因自报放权**——服务器自报的只读 / 幂等（MCP 的 `annotations`）**不进这里**，
  *   也不影响 `weight`（`defineMcpTools` 那侧就不读它）。重试同理：不是「它说幂等」就能重放；
- * - **不说可逆 / 不可逆**——本机判不出效果，只说 `EXTERNAL_CAVEAT` 那一句。
+ * - **不说可逆 / 不可逆**——本机判不出效果，口径由契约那句 `MCP_EXTERNAL_CAVEAT` 说了算
+ *   （卡上的副题由外壳渲染，本域只给身份与 `external` 那一位）。
  *
  * 材料只给**参数**（卡上的标题已经是 `服务器 / 工具 · 外部操作 · 效果由服务器决定`）——
  * 一屏上的每一条各说一件别处没说的，别把身份再说一遍。
@@ -144,7 +136,7 @@ function analyzeExternal(
     // （规则是「工具 × 路径模式 × 操作类型」，而必闸类本来就够不着规则那条路）
     ops: ['unknown'],
     landings: [],
-    title: `${ref.server} / ${ref.tool}`,
+    title: mcpToolLabel(ref),
     external: true,
   }
 }
@@ -156,8 +148,6 @@ function parameterLines(args: Readonly<Record<string, unknown>>): readonly strin
   if (json === undefined) return ['（参数无法序列化——原样如下）', String(args)]
   return json.split('\n')
 }
-
-/** 参数模式的空对象——`{}` 也算「有参数」那一类（打印它，比留白强）。 */
 
 // —— 参数取值 ——
 

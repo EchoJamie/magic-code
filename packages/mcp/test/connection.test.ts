@@ -187,7 +187,10 @@ describe('起手与释放', () => {
     await connection.start() // 不抛
 
     expect(connection.state.status).toBe('unavailable')
-    expect(connection.state.status === 'unavailable' ? connection.state.reason : '').not.toBe('')
+    // 缘由**说人话**（这一句会上屏）：哪条命令、怎么不对——不是 `posix_spawn` 那一串
+    const reason = connection.state.status === 'unavailable' ? connection.state.reason : ''
+    expect(reason).toContain('找不到可执行文件')
+    expect(reason).not.toContain('posix_spawn')
     expect(connection.tools()).toEqual([])
 
     // 没连上时的调用也是确定结果（「没发出去」——不复述「远端可能已执行」）
