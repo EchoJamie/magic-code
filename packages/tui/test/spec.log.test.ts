@@ -148,6 +148,43 @@ describe('组件规格 · 行的标记与颜色', () => {
     expect(cells.slice(4).every((cell) => cell.fg === '#8b93a1')).toBe(true)
   })
 
+  test('扣下的调用——**没跑**那行不打失败的叉、也不报耗时（2026-09-20 二轮裁）', async () => {
+    const stage = live()
+    // 两个事件**错开几个 id**（`at` 跟着 id 走）：旧画法在这儿算得出一个 `4ms`——
+    // 那条耗时只是「两个事件背靠背发出」的实现偶然，不是这次调用的账（当时画成 `✗ 4ms · 未执行`）
+    stage.feed([
+      event('tool.call', { name: 'write', args: { path: 'src/a.ts' } }, { id: 71 }),
+      event(
+        'tool.result',
+        {
+          call: 71,
+          ok: false,
+          output: {
+            text:
+              '未执行 · 规约已更新，重新审视后再操作\n' +
+              '这个目标上刚发现新的项目规约（src/AGENTS.md），已送入上下文——请照新规约复核这次调用，' +
+              '然后重新提出；这一次没有任何副作用发生。',
+          },
+        },
+        { id: 75 },
+      ),
+    ])
+
+    const frame = await stage.screen()
+    const said = frame.textAt(frame.rowOf('! 未执行 · 规约已更新，重新审视后再操作'))
+
+    // ① **没有耗时**（`0ms · `/`4ms · ` 那一段是旧画法）——没跑的调用没有「耗了多久」这回事
+    expect(said).not.toContain('ms')
+    // ② 也**没有失败那个叉**：它是「没跑」，不是「跑了没成」
+    expect(said).not.toContain('✗')
+    // ③ 标记用 warn（要说的是「这一笔要你再看一眼」）——`  ! ` 的 `!` 在第 3 列
+    expect(cellAt(frame, '! 未执行', 2)).toMatchObject({ text: '!', fg: '#e5c07b', bold: true })
+    // ④ 展开（`ctrl+o`）之后，正文那句「为什么、怎么办」还在——屏上只是**首行**那一句
+    stage.press({ kind: 'ctrl+o' })
+    const opened = await stage.screen()
+    expect(opened.has('已送入上下文')).toBe(true)
+  })
+
   test('记录 / 回执行——`·` 起头 · **最弱**一档', async () => {
     const stage = live()
     stage.feed([event('model.switched', { ok: true, model: 'MiniMax-M2', provider: 'minimax' })])

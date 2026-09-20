@@ -24,6 +24,8 @@
  *    就拦下整批**（回填「需重审」，见 `needsReviewText`），并把这批的目标**钉住**
  *    （`pinned`），保证下一次重审请求**一定带上它们**。
  *    **第一次副作用因此没有发生**——拦在 `invoke` 之前，沙箱与闸门都还没被碰到。
+ *    **材料超限则独立停批**（`overflow`，2026-09-20 二轮裁）：那与「有没有新内容」是两件事——
+ *    被上限挡在外面的那几份**不在 `documents` 里**，所以「没新内容」推不出「送齐了」。
  *
  * 拦截**只在新内容上发生**：同一版还在最近那次请求里就照常执行，模型重提的那一次因此
  * 只会执行一次（「重审后仅执行一次」）。
@@ -151,6 +153,22 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
       // 第一个目标有规约，全部写成功、任何请求都没收到那份规约）。
       const load = rules.load([...requestedTargets(), ...batch])
 
+      // **超限先判，且单独判**（2026-09-20 二轮裁）——`truncated` 说的是「**回来那份不是全的**」，
+      // 而被上限挡在外面的那几份**压根不在 `documents` 里**，故「blocking 为空」**推不出**
+      // 「目标上的规约都送到了」：挡住的恰恰可能是新目标上的新规约。
+      //
+      // 首轮把它套在 `blocking.length > 0` 里，于是**越接近上限越漏**：64 份小规则都在首个请求
+      // 送达、第 65 份 `guard/AGENTS.md` 被截掉 ⇒ blocking 空 ⇒ 直接放行，实测
+      // `written=true / guardInAnySystem=false`——那份约束**一次都没送到，写却发生了**。
+      // 判据因此**不依赖「已返回的文档里有新内容」**：完整性是这一趟自己的事。
+      if (load.truncated) {
+        // 照样钉住：这一批的目标材料（能装下的那些）下一趟仍要在，用户裁小规约后重提才有得看
+        pin(batch)
+        // 「回填说『已送入上下文』」在这种情形是假话（那份可能压根没进来）⇒ **停在这一批**，
+        // 不再靠重提（再提多少次都还是超限）。
+        return { kind: 'overflow' }
+      }
+
       // 没新目标也照查一遍：**规约可能刚被改过**（改版＝新版本＝该重送一次）。
       // 这一趟是幂等的——还在最近那次请求里就什么都不返回，故不产生多余的拦截。
       const blocking = load.documents.filter((document) => !deliveredNow.has(document.version))
@@ -158,9 +176,7 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
       if (blocking.length > 0) {
         // 拦下了：**把这批的目标钉住**——下一次请求一定带上它们的规约，循环由此闭合
         pin(batch)
-        // 材料超限 ⇒ 「回填说『已送入上下文』」就是一句假话：那份可能压根没进来。
-        // 这种情形**停在这一批**，不再靠重提（再提多少次都还是超限）。
-        return load.truncated ? { kind: 'overflow' } : { kind: 'review', blocking }
+        return { kind: 'review', blocking }
       }
 
       // 放行——这一批的历史使命到此为止：钉住的目标并进历史作用域，钉子的活干完了
@@ -205,6 +221,26 @@ function targetsOf(call: ToolCall): readonly string[] {
 }
 
 /**
+ * 「没跑」那两句话的**首行**——屏上那一格照抄它（2026-09-20 二轮裁）。
+ *
+ * 为什么单把首行拎出来说：外壳那一侧认「这笔没跑」靠的正是**结果正文的首行**
+ * （`tool.result` 上没有这一位；见 `@magic/tui` · `view.ts` 的 `unexecutedOf`），
+ * 而首行也是那行工具在屏上的**整句话**（`verdictOf` 只取首行）。故这一行得**先自报没执行**
+ * ——`未执行 · …` 这个写法因此是**两域共用**的：动它要两边一起动。
+ *
+ * 后头的正文照旧给模型说全三件（没执行 · 为什么 · 接下来怎么办），不是给人看的摘要。
+ */
+const UNEXECUTED_REVIEW = '未执行 · 规约已更新，重新审视后再操作'
+/**
+ * 超限那一句（**措辞由本单定**，规划侧只点了重审那一句）——**说的是事实，不是对谁的命令**。
+ *
+ * 为什么不用「先别重提」：那句话是**对模型说的**（回填正文里就有），而这一格**用户也在读**，
+ * 「重提」是谁的动作在那行字里看不出来。事实句两种读者都读得通；「该谁动」由正文那句
+ * 「请把这件事告诉用户，让他把规约裁小或分成几处」交代。
+ */
+const UNEXECUTED_OVERFLOW = '未执行 · 规约太多，一次装不下'
+
+/**
  * 被拦下那一次调用的回填文本——**说清三件**：没执行 · 为什么 · 接下来怎么办。
  *
  * 不这么写，模型会以为工具坏了（或者以为写完了）；而这一批**确实一次都没执行**，
@@ -214,7 +250,8 @@ export function needsReviewText(blocking: readonly ProjectRule[]): string {
   const names = blocking.map((rule) => rule.name).join(' · ')
 
   return (
-    `未执行——这个目标上刚发现新的项目规约（${names}），已送入上下文。` +
+    `${UNEXECUTED_REVIEW}\n` +
+    `这个目标上刚发现新的项目规约（${names}），已送入上下文——` +
     `请照新规约复核这次调用，然后重新提出；这一次没有任何副作用发生。`
   )
 }
@@ -229,8 +266,9 @@ export function needsReviewText(blocking: readonly ProjectRule[]): string {
  */
 export function overflowText(): string {
   return (
-    `未执行——这个项目里的规约多到一次装不下（已经到加载上限），没法保证目标上的规约都送到。` +
-    `这次没有任何副作用发生；不要重提这一批（再提一次也还是装不下）——请把这件事告诉用户，` +
-    `让他把规约裁小或分成几处，然后再说。`
+    `${UNEXECUTED_OVERFLOW}\n` +
+    `这个项目里的规约多到一次装不下（已经到加载上限），没法保证目标上的规约都送到——` +
+    `这次没有任何副作用发生；不要重提这一批（再提一次也还是装不下）。` +
+    `请把这件事告诉用户，让他把规约裁小或分成几处，然后再说。`
   )
 }

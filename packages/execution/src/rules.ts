@@ -448,8 +448,27 @@ function walk(
     try {
       const info = statSync(child)
       kind = info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other'
-    } catch {
-      continue // 断链——跳过（不是「没规则」，是那一份取不到）
+    } catch (error) {
+      // **文件项在、目标取不到**（断链 / 目标没了 / 没权限）——`*.md` 照样收成候选，
+      // 并**明确报出来**（2026-09-20 二轮裁，改了旧口径）。
+      //
+      // 旧口径是「跳过，不是『没规则』，是那一份取不到」——**半对**：它确实不是「没规则」，
+      // 可它**也没进候选**，而候选在不在正是**原生占位**（`select` 的 `nativeKeys`）的依据。
+      // 于是 `.magic/rules/same.md` 断链时，这个名字就不再归原生，`.claude/rules/same.md`
+      // **悄悄顶上来**且 `problems` 为空——兼容方改了 Magic 的优先级与生效范围，静默地。
+      // 收成候选之后：占位立得住（兼容那份被挡下、有交代），而它自己**照样不加载**
+      // （`select` 那一步取不到真身）——「取不到」这件事**在这儿就报出来了**，
+      // 用户因此看得见「我写的那份没在管、因为它是断的」。**正文一个字节都不读**：
+      // 真身取不到，下面那两道闸（白名单 / 环）其实也走不到。
+      if (entry.name.endsWith('.md')) {
+        problems.push({
+          path: child,
+          kind: 'error',
+          message: `这一份取不到（断链或目标不可读）——${reasonOf(error)}`,
+        })
+        found.push(child)
+      }
+      continue
     }
 
     if (kind === 'directory') walk(child, found, visited, problems, allowed, depth + 1)
@@ -556,7 +575,9 @@ function select(input: {
    * 不是「原生不在」：用户按「原生优先」的规则写的 `.magic/rules/x.md`，写坏了一个字，
    * 结果**另一套规则悄悄接管**——这正是「兼容方不得改变 Magic 的生效范围与优先级」要拦的。
    *
-   * 占位的**依据是文件在不在**（`scanRulesDir` 只收 walk 出来的真文件，故候选在＝文件在）。
+   * 占位的**依据是文件项在不在**——`scanRulesDir` 只收 walk 走到的文件项，而 walk 把
+   * **`*.md` 的断链也收成候选**（`walk` 里那一支：项在、目标取不到 ⇒ 候选在 ＋ 报一句错）。
+   * 若按「真读到了才算在」，断链那份就会从候选里消失，占位跟着落空——那正是上面那个口子。
    */
   const nativeKeys = new Set<string>()
   for (const candidate of candidates) {
@@ -576,7 +597,9 @@ function select(input: {
     }
 
     const real = tryRealpath(candidate.file)
-    if (real === undefined) continue // 不存在 / 断链——多数目录没有 AGENTS.md，不是错
+    // 取不到真身——**不在这儿报**：目录规约「多半目录都没有」不是错；规则文档那种断链，
+    // 发现面（`walk`）那一步已经报过一句了（那儿才知道它是 `*.md` 的一个文件项）
+    if (real === undefined) continue
 
     const key = candidate.ruleKey === null ? undefined : `${candidate.root ?? ''} ${candidate.ruleKey}`
 

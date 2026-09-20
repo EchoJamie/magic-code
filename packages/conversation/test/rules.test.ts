@@ -32,7 +32,7 @@ import {
   withProjectRules,
 } from '../src/prompt/index.ts'
 import type { PromptVars } from '../src/prompt/index.ts'
-import { MAX_SCOPE_TARGETS, createRulesDelivery, needsReviewText } from '../src/rules.ts'
+import { MAX_SCOPE_TARGETS, createRulesDelivery, needsReviewText, overflowText } from '../src/rules.ts'
 import { makeLoopRuntime, makeStage } from './support/harness.ts'
 import type { Stage } from './support/harness.ts'
 
@@ -142,6 +142,13 @@ function isHeld(entry: Entry): boolean {
 /** 被拦下的那几笔——「拦了几次」的断言读起来最省事。 */
 function heldCount(stage: Stage): number {
   return stage.records.entries.filter(isHeld).length
+}
+
+/** 被拦下那一笔**回填给模型的原话**（回填说了什么、没说什么，读它）。 */
+function heldText(stage: Stage): string {
+  const content = stage.records.entries.find(isHeld)?.content
+
+  return content !== undefined && 'text' in content ? content.text : ''
 }
 
 // —— ① 材料 ——
@@ -340,6 +347,27 @@ describe('目标预查 —— 拦在副作用之前', () => {
     const held = stage.records.entries[3]
     expect(held?.content).toMatchObject({ text: needsReviewText([constrained]) })
     expect(held?.payload).toMatchObject({ ok: false })
+  })
+
+  test('回填**首行**就是屏上那一句（外壳认「没跑」靠它）——正文照旧说全三件', () => {
+    const review = needsReviewText([doc('src/AGENTS.md', 'src 的约定', 'v1')])
+    const [reviewFirst, ...reviewRest] = review.split('\n')
+
+    // 首行是**两域共用**的那一句（见 `rules.ts` 的 `UNEXECUTED_*`）：外壳只取首行上屏，
+    // 而首行以 `未执行` 起头正是它认「这一笔压根没跑」的判据（`@magic/tui`·`view.ts`）
+    expect(reviewFirst).toBe('未执行 · 规约已更新，重新审视后再操作')
+    expect(reviewFirst?.startsWith('未执行')).toBe(true)
+    // 后头那几行照旧说全：为什么（哪几条）· 没执行过 · 接下来怎么办
+    const said = reviewRest.join('\n')
+    expect(said).toContain('src/AGENTS.md')
+    expect(said).toContain('没有任何副作用发生')
+    expect(said).toContain('重新提出')
+
+    // 超限那一份同形——首行也自报「没执行」（**不说「规约已更新」**：那儿的下一步是找用户，
+    // 不是重提）；它同样以 `未执行` 起头，故在屏上照样不报耗时、不打失败那个叉
+    const [overflowFirst] = overflowText().split('\n')
+    expect(overflowFirst?.startsWith('未执行')).toBe(true)
+    expect(overflowFirst).not.toContain('规约已更新')
   })
 
   test('拦下的那一次**也发一对 `tool.call` ＋ `tool.result`**——一对齐来齐走，不留幽灵工具', async () => {
@@ -642,6 +670,28 @@ describe('预查不妨碍既有的控制流', () => {
     expect(held).toHaveLength(1)
     const content = held[0]?.content
     const said = content !== undefined && 'text' in content ? content.text : ''
+    expect(said).toContain('装不下')
+    expect(said).toContain('不要重提')
+    expect(said).not.toContain('已送入上下文')
+  })
+
+  test('**超限独立于「回来的是不是新内容」**：那份不全 ⇒ 停批，哪怕一条文档都没返回', async () => {
+    // 这一趟 `load` 给的是**空 `documents` ＋ `truncated`**——这正是真实现里 65 份的样子：
+    // 第 65 份（`guard/AGENTS.md`）被份数上限**挡在门外**，压根进不了 `documents`。
+    // 首轮把 `truncated` 套在「blocking 非空」里 ⇒ 这条 ⇒ 直接放行：实测 `written=true`、
+    // 那份约束**一次都没送到**，而写已经发生了（二轮退回的端到端阻塞）。
+    const answer = (): RulesLoad => load([], [], true)
+
+    const write = { name: 'write', args: { path: 'guard/result.txt', content: 'SIDE_EFFECT' } }
+    const { stage, runtime, written } = stageWith(answer, [{ toolCalls: [write] }, { text: '好' }])
+
+    await run(runtime, '写一个')
+
+    // **副作用一次都没发生**——完整性不成立就不动手，而不是「没看见新内容就动手」
+    expect(written).toEqual([])
+
+    // 回填照旧说「超限」那一套（不是「需重审」——重提一百次也还是装不下）
+    const said = heldText(stage)
     expect(said).toContain('装不下')
     expect(said).toContain('不要重提')
     expect(said).not.toContain('已送入上下文')

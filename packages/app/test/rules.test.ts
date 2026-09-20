@@ -272,6 +272,51 @@ describe('真装配 · 整批预查与送达判据（2026-09-20 验收退回的�
   })
 })
 
+describe('真装配 · 材料超限把整批停住（2026-09-20 二轮退回）', () => {
+  test('根 64 份小规则占满上限：第 65 份被截掉 ⇒ **一次副作用都没有**，屏上那行也不是失败', async () => {
+    const stage = makeStage()
+
+    try {
+      // 64 份小规则**刚好占满** `DEFAULT_RULES_LIMITS.maxDocuments`（＝64 份）；`guard/AGENTS.md`
+      // 是第 65 份——预查那一趟被份数上限**挡在门外**，压根进不了 `documents`。
+      // 故「没看见新内容」**推不出**「目标上的规约都送到了」：首轮正是在这儿直接放行，
+      // 实测 `written=true / guardInAnySystem=false`——那份约束一次都没送到，写却发生了。
+      for (let index = 0; index < 64; index += 1) {
+        put(stage.workspace, `.magic/rules/r${String(index).padStart(2, '0')}.md`, `RULE_${index}`)
+      }
+      put(stage.workspace, 'guard/AGENTS.md', 'GUARD_BEFORE_WRITE')
+
+      const write = { name: 'write', args: { path: 'guard/result.txt', content: 'SIDE_EFFECT' } }
+      const assembly = stage.assemble({ turns: [{ toolCalls: [write] }, { text: '先不写' }] })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('写一个')
+
+      // —— ① **副作用一次都没发生**（判据是盘上那份文件，不是某个内部账本）——
+      expect(existsSync(join(stage.workspace, 'guard/result.txt'))).toBe(false)
+      expect(resultsOf(shell)).toEqual([false])
+
+      // —— ② 回填说「装不下 · 别重提」，**不谎称「已送入上下文」**（本来就是假话）——
+      expect(replySaid(stage, 1, '装不下')).toBe(true)
+      expect(replySaid(stage, 1, '不要重提')).toBe(true)
+      expect(replySaid(stage, 1, '已送入上下文')).toBe(false)
+
+      // —— ③ 屏上那一行是**没跑**，不是失败：无耗时、也无失败那个标记 ——
+      const view: ShellView = shell.events.reduce((acc, event) => reduce(acc, event), createView())
+      const tools = view.settled.filter((row) => row.kind === 'tool')
+
+      expect(tools[0]?.state).toBe('unexecuted')
+      expect(tools[0]?.elapsedMs).toBe(null)
+      expect(tools[0]?.output[0]?.startsWith('未执行')).toBe(true)
+      expect(hasRunningTool(view)).toBe(false) // 也不留转圈的幽灵
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 describe('真装配 · 材料带着范围送到模型（2026-09-20 验收退回第 4 条）', () => {
   test('每条都带根 / 范围 / 条件——模型不必靠文件名猜它管到哪儿', async () => {
     const stage = makeStage()
@@ -330,7 +375,15 @@ describe('真装配 → 真外壳视图：扣下的那一次在屏上闭合（20
       // **第一笔**：扣下的那次。首轮实测它停在 `running · call: null`——
       // 真流式增量先按 toolcall 通道建了行，而扣下不发 `tool.call`，那一行没人来认领，
       // 外头早已空闲、屏上还在转圈（`hasRunningTool` 恒真）
-      expect(tools[0]?.state).toBe('failed')
+      //
+      // ⚠️ **锚点变更**（2026-09-20 二轮裁，三件写全）：
+      // 原锚 `state === 'failed'`；为何变——「压根没跑」与「跑了没成」是两回事，混成失败
+      // 就会在屏上报出一次**失败的耗时**（`✗ 0ms · 未执行——…`，那个 0ms 只是两个事件
+      // 背靠背发出的间隔）；新锚 `'unexecuted'` ＋ **耗时为 `null`** ＋ 首行就是那句
+      // 给人看的「未执行 · …」。
+      expect(tools[0]?.state).toBe('unexecuted')
+      expect(tools[0]?.elapsedMs).toBe(null)
+      expect(tools[0]?.output[0]).toBe('未执行 · 规约已更新，重新审视后再操作')
       expect(tools[0]?.call).not.toBe(null)
       expect(tools[0]?.output.join('\n')).toContain('未执行')
       expect(tools[0]?.output.join('\n')).toContain('重新提出')

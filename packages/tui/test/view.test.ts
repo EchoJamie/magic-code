@@ -119,6 +119,30 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     expect(rowAt(view, 0)).toMatchObject({ state: 'rejected' })
   })
 
+  test('规约扣下的调用记成「未执行」——**不报耗时**（没跑就没有「耗了多久」这回事）', () => {
+    // 两个事件错开四个 id（`at` 跟着 id 走）：旧画法在这儿算得出一个 `4ms`——
+    // 那只是「两个事件背靠背发出」的间隔，不是这次调用的账（当时画成 `✗ 4ms · 未执行`）
+    const view = viewed([
+      event('tool.call', { name: 'write', args: { path: 'src/a' } }, { id: 71 }),
+      event(
+        'tool.result',
+        { call: 71, ok: false, output: { text: '未执行 · 规约已更新，重新审视后再操作\n（为什么、怎么办）' } },
+        { id: 75 },
+      ),
+    ])
+
+    expect(rowAt(view, 0)).toMatchObject({ state: 'unexecuted', elapsedMs: null })
+    // 正文照收——屏上只取**首行**那一句，后头那段展开（`ctrl+o`）看得到
+    expect(rowAt(view, 0)).toMatchObject({ output: ['未执行 · 规约已更新，重新审视后再操作', '（为什么、怎么办）'] })
+
+    // 对照组：**跑了没成**照旧是 `failed`，照旧报耗时——两者不是一回事
+    const failed = viewed([
+      event('tool.call', { name: 'write', args: { path: 'src/a' } }, { id: 81 }),
+      event('tool.result', { call: 81, ok: false, output: { text: '写入失败：磁盘满' } }, { id: 85 }),
+    ])
+    expect(rowAt(failed, 0)).toMatchObject({ state: 'failed', elapsedMs: 4 })
+  })
+
   test('大块转存——结果只留 blob 引用（外壳不解析）', () => {
     const view = viewed([
       event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
@@ -299,6 +323,26 @@ describe('会话与重建', () => {
     expect(kindsOf(view)).toEqual(['user', 'assistant', 'tool', 'assistant'])
     expect(rowAt(view, 2)).toMatchObject({ kind: 'tool', name: 'ls', output: ['a.txt', 'b.txt'], state: 'ok' })
     expect(view.rows.every(isSessionRow)).toBe(true)
+  })
+
+  test('重建也认「未执行」——同一条结果，切了会话回来长一个样（不退回「失败」）', () => {
+    const entries: readonly Entry[] = [
+      { id: 1, kind: 'assistant', content: { text: '我先写。' }, at: 0 },
+      { id: 2, kind: 'tool-call', content: { text: '' }, payload: { name: 'write', args: { path: 'src/a' } }, at: 1 },
+      {
+        id: 3,
+        kind: 'tool-result',
+        content: { text: '未执行 · 规约已更新，重新审视后再操作\n（为什么、怎么办）' },
+        payload: { ok: false, output: { text: '未执行 · 规约已更新，重新审视后再操作\n（为什么、怎么办）' } },
+        at: 2,
+      },
+    ]
+
+    const view = rebuild(createView(), entries)
+
+    // 事件那一路与重建这一路**同判**（`unexecutedOf`）——否则切回一条旧会话，
+    // 同一行会从「没跑」变回「失败」，屏上的样子取决于从哪条路进来，那不成话
+    expect(rowAt(view, 1)).toMatchObject({ kind: 'tool', state: 'unexecuted', elapsedMs: null })
   })
 
   test('重建不吃屏上痕迹——回执与命令输出不进', () => {

@@ -28,8 +28,14 @@ import type {
 
 // ══ 记录区（三类行）══════════════════════════════════════════════════
 
-/** 工具行的跑动状态——「在跑」（`⟳` ＋ 耗时）与「跑完」（`▶` ＋ 结果）一眼可分。 */
-export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected'
+/**
+ * 工具行的跑动状态——「在跑」（`⟳` ＋ 耗时）与「跑完」（`▶` ＋ 结果）一眼可分。
+ *
+ * 收尾那四件里有**两件是「压根没跑」**：`rejected`（裁决拒了）与 `unexecuted`（规约重审扣下 /
+ * 材料超限停批）。它们与 `failed`（跑了没成）**含义不同**，屏上因此不报耗时、不打失败那个叉
+ * ——判据见 `unexecutedOf`。
+ */
+export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecuted'
 
 /** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
 export type LogRow =
@@ -630,21 +636,47 @@ function reduceToolOutput(view: ShellView, data: ToolOutputData): ShellView {
 
 type ToolResultData = Extract<KernelEvent, { kind: 'tool.result' }>['data']
 
+/**
+ * 这一笔**压根没跑**吗——按**结果自己那句话**认（2026-09-20 二轮裁）。
+ *
+ * 由头：扣下的那两路（规约重审 / 材料超限停批）走的是**普通** `tool.result`（`ok: false`），
+ * 事件上没有「没跑」这一位——工具域那几件（`已拒绝——未执行` / `已取消——未执行`）也一样，
+ * 都只在**正文**里说。而「没跑」与「跑了没成」在屏上是两回事：前者**没有耗时可报**
+ * （旧画法是 `✗ 0ms · 未执行——…`——一个背靠背发出去的事件间隔，被当成了这次调用的耗时），
+ * 也不该打失败那个叉。
+ *
+ * 判据是**结果正文首行以 `未执行` 起头**：`@magic/conversation` 那两句话就这么写，
+ * 且**开口就是这一句**（`rules.ts` 的 `UNEXECUTED_*`——那两行是给人看的屏上那一格，
+ * 见那边的注）。**不新加事件位**：那是契约改形，不在本单的连线里。
+ * 认错的代价有限——真要认错，得有一笔**失败**的结果其首行正好以「未执行」开头，
+ * 而那行话本身也已经在说「没跑」了。
+ */
+function unexecutedOf(ok: boolean, text: string): boolean {
+  const first = textOfLines(text)[0] ?? ''
+
+  return !ok && first.trimStart().startsWith('未执行')
+}
+
 function reduceToolResult(view: ShellView, data: ToolResultData, at: number): ShellView {
   const target = indexOfCall(view, data.call)
   if (target === -1) return view
 
   const text = 'text' in data.output ? data.output.text : `（大块转存 ${data.output.blob}）`
+  const unexecuted = unexecutedOf(data.ok, text)
 
   return patchTool(view, target, (row) => ({
     ...row,
     // **被拒是终态**：那件工具压根没跑，结果只是把话说全（「未获批准，未执行」）——
-    // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）
-    state: row.state === 'rejected' ? 'rejected' : data.ok ? 'ok' : 'failed',
+    // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）。
+    // **扣下那一路同上**（二轮裁）：也没跑，故单列一态——省得那行画成一次失败的耗时。
+    state: row.state === 'rejected' ? 'rejected' : unexecuted ? 'unexecuted' : data.ok ? 'ok' : 'failed',
     output: textOfLines(text),
     // 墙钟＝发起 → 落地（`tool.call` 的 `at` → 这条 `tool.result` 的 `at`）。
     // **倒退的钟当没量到**（`null`）：负数上屏就是报了个假的耗时——如实记＝没有就是没有。
-    elapsedMs: row.startedAt === null || at < row.startedAt ? null : at - row.startedAt,
+    // **没跑的那一笔根本没有「耗了多久」这回事**（拦截发生在动手之前，两个事件背靠背发出）：
+    // 那个差是实现的偶然，不是这次调用的账，故一律 `null`。
+    elapsedMs:
+      unexecuted || row.startedAt === null || at < row.startedAt ? null : at - row.startedAt,
   }))
 }
 
@@ -969,10 +1001,14 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
       const row = pendingAt === -1 ? undefined : rows[pendingAt]
       if (row !== undefined && row.kind === 'tool') {
         const payload = entry.payload as { readonly ok?: boolean } | undefined
+        const ok = payload?.ok !== false
+        const text = contentTextOf(entry)
         rows[pendingAt] = {
           ...row,
-          state: payload?.ok === false ? 'failed' : 'ok',
-          output: textOfLines(contentTextOf(entry)),
+          // **与事件那一路同判**（`unexecutedOf`）——重建走的是同一条结果，屏上的样子
+          // 只该有一种：切了会话 / 重开一页回来，扣下的那行不能变回「失败」。
+          state: unexecutedOf(ok, text) ? 'unexecuted' : ok ? 'ok' : 'failed',
+          output: textOfLines(text),
         }
       }
       pendingAt = -1

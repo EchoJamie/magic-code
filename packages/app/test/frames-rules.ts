@@ -25,8 +25,9 @@
  * bun packages/app/test/frames-rules.ts --out <目录>
  * ```
  *
- * 出三份：`check.txt`（`--check` 那一屏的字）· `hold.txt`（外壳屏上的字）·
- * `hold.ansi`（外壳写出的原始字节，带色——颜色与字重只能从字节上看）。
+ * 出五份：`check.txt`（`--check` 那一屏的字）· `hold.txt` ＋ `hold.ansi`（扣下那一次的外壳屏）·
+ * `overflow.txt` ＋ `overflow.ansi`（材料超限停批那一屏）——`.ansi` 是外壳写出的**原始字节**
+ * （带色：颜色与字重只能从字节上看）。
  */
 
 import { EventEmitter } from 'node:events'
@@ -158,8 +159,8 @@ export function checkFrame(out: string): void {
  * 剧本（Faux，三回合）：① 直接写 `src/a.ts`（那底下有 `src/AGENTS.md`）⇒ **该被扣下**；
  * ② 照新规约重提 ⇒ 真写；③ 收束。
  *
- * 屏上该看到两行工具：第一行 `✗ 未执行——…`（首轮是**一个永远转圈的幽灵**），
- * 第二行 `✓ 已写入 …`。
+ * 屏上该看到两行工具：第一行 `! 未执行 · 规约已更新，重新审视后再操作`（首轮是**一个永远
+ * 转圈的幽灵**，二轮是 `✗ 0ms · 未执行——…`——把没跑画成了一次失败的耗时），第二行 `✓ 已写入 …`。
  */
 export async function holdFrame(out: string): Promise<void> {
   const stage = makeStage()
@@ -208,6 +209,62 @@ export async function holdFrame(out: string): Promise<void> {
   }
 }
 
+// ══ ③ 超限那一屏（第 65 份被截掉 ⇒ 整批停住）═════════════════════════
+
+/**
+ * 剧本（Faux，两回合）：① 直接写 `guard/result.txt`；② 收束（模型去告诉用户）。
+ *
+ * 沙地摆的是**份数刚好到顶**的样子：根 `.magic/rules` 里 64 份小规则（＝
+ * `DEFAULT_RULES_LIMITS.maxDocuments`），`guard/AGENTS.md` 是**第 65 份**——它在预查那一趟
+ * 被上限挡在门外，故「目标上的规约都送到了」这句话不成立，整批停住。
+ *
+ * 屏上该看到的那行是 `! 未执行 · 规约一次装不下，先别重提`——**没有耗时、没有失败那个叉**，
+ * 也没有任何文件被写下去（这一屏的判据在 `rules.test.ts`，这里只留外观）。
+ */
+export async function overflowFrame(out: string): Promise<void> {
+  const stage = makeStage()
+
+  try {
+    for (let index = 0; index < 64; index += 1) {
+      put(stage.workspace, `.magic/rules/r${String(index).padStart(2, '0')}.md`, `RULE_${index}`)
+    }
+    put(stage.workspace, 'guard/AGENTS.md', 'GUARD_REQUIRED_BEFORE_WRITE')
+
+    const call = { name: 'write', args: { path: 'guard/result.txt', content: 'SIDE_EFFECT' } }
+    const assembly = stage.assemble({
+      turns: [{ toolCalls: [call] }, { text: '那我先不动它' }],
+    } satisfies StageAssembleOptions)
+
+    const tty = new CaptureTty()
+    const stdin = new FakeStdin()
+    const { runTui } = await import('@magic/tui')
+
+    const handle = await runTui({
+      ...tuiOptions(assembly),
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: tty as unknown as NodeJS.WriteStream,
+    })
+
+    const driver = attachShell(assembly.shell)
+    await driver.submit('往 guard 里写一个文件')
+    driver.dispose()
+
+    await until(tty, '装不下')
+    await Bun.sleep(200)
+
+    const bytes = tty.bytes()
+    writeFileSync(join(out, 'overflow.ansi'), bytes, 'utf8')
+    writeFileSync(join(out, 'overflow.txt'), visible(bytes), 'utf8')
+    console.log(visible(bytes).slice(-900))
+
+    stdin.push('\u0003')
+    await handle.waitUntilExit()
+    assembly.close()
+  } finally {
+    stage.dispose()
+  }
+}
+
 // ══ 入口 ═════════════════════════════════════════════════════════════
 
 if (import.meta.main) {
@@ -217,5 +274,6 @@ if (import.meta.main) {
 
   checkFrame(out)
   await holdFrame(out)
+  await overflowFrame(out)
   console.log(`\n帧落在 ${out}`)
 }

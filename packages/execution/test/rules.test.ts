@@ -592,6 +592,26 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
+  test('原生那份**是断链**时，兼容那份也不许接管；断链本身明确报问题（二轮退回第二条）', () => {
+    const box = sandbox()
+    try {
+      // 软链指着**不存在**的目标：文件项在、目标取不到（与上一条不同——那条目标是真的）
+      mkdirSync(join(box.at, '.magic/rules'), { recursive: true })
+      symlinkSync(join(box.at, 'missing.md'), join(box.at, '.magic/rules/same.md'))
+      put(box.at, '.claude/rules/same.md', '兼容那份不该赢')
+
+      const load = rulesOf([box.at]).load([])
+
+      // 二轮实测的洞：walk 在 `statSync` 失败那一支直接 `continue` ⇒ 它**连候选都不是**
+      // ⇒ 这个名字不归原生 ⇒ 兼容那份**实际接管**且 `problems` 为空（静默回退）
+      expect(load.documents).toEqual([]) // 断链那份读不到，兼容那份也不许顶上来
+      expect(saidSomething(load, '取不到')).toBe(true) // 断链本身：坏原生不许静默
+      expect(saidSomething(load, '原生优先')).toBe(true) // 兼容那条：说得清为什么不加载
+    } finally {
+      box.dispose()
+    }
+  })
+
   test('原生与兼容**是同一个实体**时，兼容那份也不许接管', () => {
     const box = sandbox()
     try {
