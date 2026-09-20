@@ -10,16 +10,15 @@
  *
  * 真外壳（`createShell`）→ 真终端回放（U23 立的取景层：录真字节 → `@xterm/headless` 读屏）。
  * **事件按真内核的形状喂**（`model.call.start` / `model.usage` / `model.switched`——与真跑
- * 落库的那几条同形）；表按装配给的那张给（`Assembly.contextWindows` 的形状与数，
- * 由 `packages/app/test/window.test.ts` 在**真装配**那一头钉住）。
+ * 落库的那几条同形）；表按装配给的那张给（`Assembly.windowTable` 的形状与数，
+ * 由 `packages/app/test/window.test.ts` 在**真装配**那一头钉住，`run.ts` 那一跳也是那里验的）。
  *
  * ⚠️ **为什么不在 app 侧留这份帧**：本仓有一条结构守护（`test/scaffold.test.ts`：
  * 「各包源码的引用不越出包边界」）——app 的测试文件**不得**相对引用 `@magic/tui` 的取景层
  * （实测被拦）。故：**数**在 app 侧钉（真装配那条链），**屏**在这儿出（真外壳这条链）。
  *
- * ⚠️ **外壳那一位走的是 `runTui` 补丁落地后的样子**——`packages/tui/src/run.ts` 那一行
- * 不在本单元所有权内，故这里替它把表递上（见回报里的精确补丁）。`--unwired` 出的就是
- * **没有那一行**时的样子（对照用：③ 换了、④ 还停在旧分母）。
+ * `--unwired` 出的是**没给这张表**时的样子（对照用：③ 换了、④ 还停在旧分母——本单元
+ * 收掉的那条缺陷的形状）。
  *
  * ## 跑法
  *
@@ -35,6 +34,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createShell } from '../src/shell.ts'
 import type { Shell } from '../src/shell.ts'
+import type { WindowTable } from '../src/view.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { rendered, show } from './screen.ts'
@@ -42,14 +42,21 @@ import { rendered, show } from './screen.ts'
 const SCREEN = { columns: 100, rows: 30 } as const
 
 /**
- * 装配给的那张表（形状与数照 `Assembly.contextWindows`）——内置容量表（官方出处见
- * `@magic/model` 的 `capacity.ts`）＋ 一条**用户声明**（`mm2` 那一格声明了 32768，
- * 故这个模型名在表里就是 32768）。
+ * 装配给的那张表（形状与数照 `Assembly.windowTable`）——内置容量表（官方出处见
+ * `@magic/model` 的 `capacity.ts`）＋ 两条**用户声明**（各挂在配置它的那个条目上；
+ * 声明**不按模型名全局生效**——见 `capacity.ts` 的 `WindowTable`）。
  */
-const TABLE: Readonly<Record<string, number>> = {
-  'MiniMax-M3': 1_000_000,
-  'MiniMax-M2': 204_800,
-  'mini-declared': 32_768,
+const TABLE: WindowTable = {
+  builtin: {
+    'MiniMax-M3': 1_000_000,
+    'MiniMax-M2': 204_800,
+    'mini-declared': 262_144,
+  },
+  declared: {
+    // 两条声明**各挂各的条目**——`mm2` 那个 `MiniMax-M2` 是它自己的 32768
+    mm2: { model: 'MiniMax-M2', window: 32_768 },
+    mm3: { model: 'mini-declared', window: 131_072 },
+  },
 }
 
 /** 一句已用量（原型状态行 ④ 的样例数）。 */
@@ -80,7 +87,7 @@ async function main(): Promise<void> {
     // 「没接线」那一形：只递开机那一格（`run.ts` 那一跳没落下时的样子）
     unwired
       ? { contextWindow: 1_000_000 }
-      : { contextWindow: 1_000_000, contextWindows: TABLE },
+      : { contextWindow: 1_000_000, windowTable: TABLE },
   )
   const feed = (...events: Parameters<typeof spy.emit>[0][]): void => {
     for (const item of events) spy.emit(item)
@@ -98,13 +105,18 @@ async function main(): Promise<void> {
     feed(event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2' }))
     await save(out, `03-switched-known-M2${suffix}`, shell)
 
-    // 换到**用户声明过**的那一档
+    // 换到**用户声明过**的那一档（声明挂在它自己条目上）
     feed(event('model.switched', { ok: true, provider: 'mm3', model: 'mini-declared' }))
     await save(out, `04-switched-declared${suffix}`, shell)
 
+    // **同名模型的另一条目**（`mm2` 声明的是 32768；轮到 `mm` 挂的同一个模型时按内置表
+    // 报 204800——声明不串味，这是规划侧点名的那一形）
+    feed(event('model.switched', { ok: true, provider: 'mm', model: 'MiniMax-M2' }))
+    await save(out, `05-same-model-other-entry${suffix}`, shell)
+
     // 换到**未知**（自建 llama：分母没有——不沿用上一个）
     feed(event('model.switched', { ok: true, provider: 'local', model: 'my-local-llama' }))
-    await save(out, `05-switched-unknown${suffix}`, shell)
+    await save(out, `06-switched-unknown${suffix}`, shell)
 
     await Bun.write(Bun.stdout, `帧落在：${out}\n`)
   } finally {

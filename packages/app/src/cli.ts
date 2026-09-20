@@ -295,23 +295,16 @@ function describeGrants(assembly: Assembly): string {
  * 分母**从配置里读，不发命令**。⚠️ 别改成「开机发一次 `model.list`」：装配的 `listModels`
  * 会在没会话时 `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵。
  * 条目没声明、内置表也不认得 ⇒ `null` ⇒ 屏上只报已用量——**不编**。
- *
- * ⚠️ **返回类型多带一位 `contextWindows`**（U30 · 临时）：窗长**表**要经 `run.ts` 进外壳，
- * 而那一行不在本单元所有权内（跨会话改动，见 `交接/回报/U30.md` 的精确补丁）。
- * 带在返回值上，是让用例能取件验接线（照 `contextWindow` 那一跳的先例），
- * **不是**第二条通路——补丁一落，`runTui` 那一行把它传下去即成。
  */
-export function tuiOptions(
-  assembly: Assembly,
-): RunTuiOptions & { readonly contextWindows: Readonly<Record<string, number>> } {
+export function tuiOptions(assembly: Assembly): RunTuiOptions {
   return {
     transport: assembly.shell,
     boot: () => assembly.boot(),
     contextWindow: assembly.contextWindow,
-    // 窗长表（U30）：换模型之后外壳据它**当场**查新模型多长（内置表 ∪ 配置声明）。
+    // 窗长表（U30）：换模型之后外壳据它**当场**查新模型多长（内置表 ＋ 各条目自己的声明）。
     // 与上面那一格分工：那一格是**开机那一刻**的读数（外壳那时还不知道模型名，
     // 查不了表）；本表供**之后每一次切换**取材。
-    contextWindows: assembly.contextWindows,
+    windowTable: assembly.windowTable,
     // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
     // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
     workspaceRoots: assembly.workspaceRoots,

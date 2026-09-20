@@ -15,19 +15,22 @@
  * 5. **开机空态不变**——还没有用量就不报用量（**不写一个伪造的 `0/…`**）。
  *
  * 这一层钉的是**全链**：真配置 · 真注册表 · 真对话域 · 真记录域 · 真控制面 ＋
- * **真外壳**（`createShell`，经 `tuiOptions` 那一条接线取件）——只有端点换成假的。
- * 域内那半（怎么查表、怎么合并）钉在 `@magic/model` 的用例里。
+ * **真外壳**——只有端点换成假的。域内那半（怎么判定、怎么装表）钉在 `@magic/model` 的用例里。
  *
- * ⚠️ **一条已知的接线缺口**（如实记 · 见回报）：这一跳 `tuiOptions → runTui → createShell`
- * 的最后一行在 `packages/tui/src/run.ts`（本轮所有权外）。用例在这里把 `tuiOptions` 的两件
- * **原样**递进 `createShell`——补丁落地后，`runTui` 那一行做的正是同一件事。
+ * **两条接线**，别混：
+ * - 前两组从 `tuiOptions` **取件**递进 `createShell`（照 `readouts.test.ts` 的先例：
+ *   自己照接一遍就只咬住半边）；
+ * - 末一组走**真 `runTui`**（产品那条路本身）——屏上的字从 `runTui` 写出的**字节**里读，
+ *   不是「同表达式手工接一遍」。
  */
 
 import { describe, expect, test } from 'bun:test'
+import { EventEmitter } from 'node:events'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
 import { createFauxGateway } from '@magic/faux'
+import { windowOfSelection } from '@magic/model'
 import { createShell, usageLabel } from '@magic/tui'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
@@ -53,6 +56,11 @@ const PROVIDERS = {
   mm: { baseURL: 'https://mm.example/v1', apiKey: KEY, model: 'MiniMax-M3' },
   mm2: { baseURL: 'https://mm2.example/v1', apiKey: KEY, model: 'MiniMax-M2', contextWindow: 32_768 },
   local: { baseURL: 'https://local.example/v1', apiKey: KEY, model: 'my-local-llama' },
+  /**
+   * **同名模型的另一条**（`mm2` 挂的也是 `MiniMax-M2`）——规划侧点名的那一形：
+   * 合法的两个端点可以给同名模型不同的窗长，声明**不许串到这一条头上**。
+   */
+  'mm-same': { baseURL: 'https://mm-same.example/v1', apiKey: KEY, model: 'MiniMax-M2' },
 }
 
 /** 假端点：一路顺风（内容固定、每次回用量）——只为让「真调用 → 有会话」这条链走通。 */
@@ -116,8 +124,25 @@ function shellOf(assembly: Assembly) {
   const options = tuiOptions(assembly)
   return createShell(assembly.shell, {
     contextWindow: options.contextWindow,
-    contextWindows: options.contextWindows,
+    windowTable: options.windowTable,
   })
+}
+
+/**
+ * 窗长表的形态——**从 `tuiOptions` 的返回值上取**（`@magic/tui` 没把这个类型出到包外；
+ * 结构类型认形状，不必 import）。
+ */
+type WindowTable = NonNullable<ReturnType<typeof tuiOptions>['windowTable']>
+
+/**
+ * `tuiOptions` 给的那张窗长表——`RunTuiOptions` 里这一位是可选位（真装配一定给），
+ * 拆包时把「没给」当场当失败：**接线断了要红在接线那一句上**，不是红在后面对比的数上。
+ */
+function tableOf(assembly: Assembly): WindowTable {
+  const table = tuiOptions(assembly).windowTable
+  if (table === undefined) throw new Error('tuiOptions 没给窗长表——接线断了')
+
+  return table
 }
 
 /** 一次真调用（让链上有会话——`model.switched` 要落在会话上）。 */
@@ -176,20 +201,22 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('**窗长表**经装配给到外壳：内置 ∪ 声明都在，未知的**连键都不在**', () => {
+  test('**窗长表**经装配给到外壳：内置表原样 ＋ 声明**按条目装**，未知的**连键都不在**', () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
-      const table = tuiOptions(assembly).contextWindows
+      const table = tableOf(assembly)
 
-      // 内置打底（换到哪一格都查得到）
-      expect(table['MiniMax-M3']).toBe(1_000_000)
-      expect(table['MiniMax-M2.5']).toBe(204_800)
-      // 声明**按模型名**进表（`mm2` 那一格声明了 32768 ⇒ 这个模型名报 32768）
-      expect(table[PROVIDERS.mm2.model]).toBe(32_768)
-      // 不知道的：**不存在**（不是 0）——外壳 `?? null` 即「不知道」
-      expect('my-local-llama' in table).toBe(false)
+      // 内置表：按准确模型 id（与条目无关）——换到哪一格都查得到
+      expect(table.builtin['MiniMax-M3']).toBe(1_000_000)
+      expect(table.builtin['MiniMax-M2.5']).toBe(204_800)
+      // 声明：挂在它那条目上（`mm2` 声明了「我这个 MiniMax-M2 是 32768」）
+      expect(table.declared['mm2']).toEqual({ model: 'MiniMax-M2', window: 32_768 })
+      // 没声明的条目**连键都不在**（不是 `{}` 占位）
+      expect('mm' in table.declared).toBe(false)
+      // 不知道的模型在内置表里也没有（≠ 0）——消费时 `?? null` 即「不知道」
+      expect('my-local-llama' in table.builtin).toBe(false)
 
       assembly.close()
     } finally {
@@ -198,26 +225,26 @@ describe('U30 · 开机那一格的分母', () => {
   })
 
   /**
-   * 表的口径**钉住**（免得日后成了「碰巧」）：一条目声明的窗长**按模型名**合一而查——
-   * 同名的内置数被它盖掉，**在任何条目下都算数**。
+   * **同名模型跨条目**（规划侧打回重做的那一条）——口径**钉住**：
+   * 声明只属于配置它的条目及对应模型，**不按模型名全局生效**。
    *
-   * 这么定的由头：外壳手上只有「此刻走谁」（`model.switched` 的 provider ＋ model 两件，
-   * 而 `model.call.start` 的 provider 还可以缺），拿「条目」当键就有一半问不出来；
-   * 而用户写下的那个数本就是**他对自己那个模型 id 的声明**。代价如实记：
-   * 两条目挂**同名模型**、其中一条声明了另一种窗长时，另一条也会用这个数
-   * （配置事故级的情形，见回报「备案」）。
+   * 由头：合法的两个端点可以给同名模型不同的窗长（本地部署量化过 / 网关另有一层裁法），
+   * 一条声明盖到另一条头上＝**报错一个数**（比不报更坏）。
    */
-  test('声明按**模型名**盖内置——同名的内置数让位（口径钉住，不是碰巧）', () => {
+  test('同名模型两条目：声明**不串味**——各是各的', () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
-      const table = tuiOptions(assembly).contextWindows
+      const table = tableOf(assembly)
+      const lookup = (provider: string) =>
+        windowOfSelection(table, { provider, model: 'MiniMax-M2' })
 
-      // `MiniMax-M2` 官方 204800、声明 32768 ⇒ 表里是**声明的那个**
-      expect(table['MiniMax-M2']).toBe(32_768)
-      // 没声明过的同名族模型不受影响
-      expect(table['MiniMax-M2.1']).toBe(204_800)
+      // 声明的那条：用它声明的数；同名模型的另一条：内置表那个数
+      expect(lookup('mm2')).toBe(32_768)
+      expect(lookup('mm-same')).toBe(204_800)
+      // 内置表**没被声明改写**（它是模型的客观属性）
+      expect(table.builtin['MiniMax-M2']).toBe(204_800)
 
       assembly.close()
     } finally {
@@ -235,7 +262,7 @@ describe('U30 · 开机那一格的分母', () => {
       const options = tuiOptions(assembly)
 
       expect(options.contextWindow).toBeNull()
-      expect(options.contextWindows).toEqual({})
+      expect(options.windowTable).toEqual({ builtin: {}, declared: {} })
 
       assembly.close()
     } finally {
@@ -265,6 +292,35 @@ describe('U30 · 换过模型之后的分母', () => {
       expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('MiniMax-M2')
       expect(shell.getView().status.window).toBe(32_768)
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /**
+   * **同名模型跨条目**（规划侧打回重做的那一条）——在**真链路**上验：
+   * 声明过 `MiniMax-M2` 的那条目用 32768，挂**同一个模型**的另一条目用内置表的 204800。
+   */
+  test('同名模型两条目：换到哪条就报哪条的——声明不串味', async () => {
+    const land = stage()
+
+    try {
+      const assembly = land.assemble()
+      const shell = shellOf(assembly)
+      await warm(assembly)
+
+      // 声明的那条（32768）
+      expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
+      expect(shell.getView().status.model).toBe('MiniMax-M2')
+      expect(shell.getView().status.window).toBe(32_768)
+
+      // **同名模型**的另一条：内置表那个数（不是上一步的 32768）
+      expect(assembly.switchModel({ provider: 'mm-same' }).ok).toBe(true)
+      expect(shell.getView().status.model).toBe('MiniMax-M2')
+      expect(shell.getView().status.window).toBe(204_800)
 
       shell.dispose()
       assembly.close()
@@ -385,26 +441,147 @@ describe('U30 · 换过模型之后的分母', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 三 · 旧路径原样（这一位没接线时）——接线落齐之前的行为，别当规格
+// 三 · 老路径（调用方没给这张表时）——别当规格
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U30 · 没给窗长表时（未接线）', () => {
-  test('切换**不动分母**——只认开机那一格（旧行为一字不改）', async () => {
+describe('U30 · 没给窗长表时', () => {
+  test('切换**不动分母**——只认开机那一格（老路径一字不改）', async () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
       const options = tuiOptions(assembly)
-      // 表没传（＝`run.ts` 那一跳还没接上）：旧路径
+      // 表没传：老路径
       const shell = createShell(assembly.shell, { contextWindow: options.contextWindow })
       await warm(assembly)
 
       expect(shell.getView().status.window).toBe(1_000_000)
       expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
-      // 分母没跟着换（表不在手上，查不了）——如实记：这是接线缺口的样子，不是规格
+      // 表不在手上 ⇒ 查不了 ⇒ 分母原样（不是「查到了旧模型那个数」）
       expect(shell.getView().status.window).toBe(1_000_000)
 
       shell.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 四 · **真 `runTui` 那条路**——接线本身在不在（屏上的字从字节里读）
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 前三组是「取件 + 递进 `createShell`」：能钉住**给的值对不对**，钉不住
+// **`runTui` 那一跳把值传下去了没有**（那是产品真走的一行）。这一组走真 `runTui`：
+// 真装配 → `tuiOptions` → `runTui` → 外壳 → Ink 写出字节 → 从字节里剥出屏上的字。
+//
+// ⚠️ 剥 ANSI 是本文件里的**最小**一份（取景层那一套在 tui 侧；跨包相对引用会被
+// 结构守护拦下——`test/scaffold.test.ts`「各包源码的引用不越出包边界」）。
+// 这里只量「那一格的字在不在」，不量布局与色——那些归 tui 侧的取景层。
+
+/** 剥掉 CSI / OSC 转义序列——只为在字节里认那几段字。 */
+function visible(text: string): string {
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9:;<=>?]*[@-~]/g, '')
+}
+
+/** 假终端——记下写出的每一个字节（`runTui` 只查 `isTTY`；Ink 要窗口尺寸）。 */
+class CaptureTty extends EventEmitter {
+  readonly isTTY = true
+  readonly destroyed = false
+  readonly writableEnded = false
+  readonly columns = 100
+  readonly rows = 30
+  private readonly chunks: string[] = []
+
+  write = (chunk: string): boolean => {
+    this.chunks.push(String(chunk))
+    return true
+  }
+
+  /** 此刻写出去的全部字节。 */
+  bytes(): string {
+    return this.chunks.join('')
+  }
+}
+
+/**
+ * 假 stdin——`runTui` 只查 `isTTY`；Ink 要一个流才肯挂。
+ *
+ * ⚠️ **喂键的姿势**（本仓第一次在用例里真喂键，记一笔）：Ink **不**监听 `'data'`，
+ * 它挂 `'readable'` 然后 `while ((chunk = stdin.read()) !== null)` 取件
+ * （`ink/build/components/App.js`）——故假流得**攒队列 ＋ 报 `readable`**，
+ * 直接 `emit('data', …)` 一个字节都到不了 `useInput`（实测：ctrl+c 发不出去，
+ * `waitUntilExit()` 永远不返回，用例卡到超时）。
+ */
+class FakeStdin extends EventEmitter {
+  readonly isTTY = true
+  private queue: string[] = []
+  setEncoding(): void {}
+  setRawMode(): void {}
+  resume(): void {}
+  pause(): void {}
+  ref(): void {}
+  unref(): void {}
+  read = (): string | null => this.queue.shift() ?? null
+
+  /** 敲一个键（Ink 那一侧当它是终端上来的字节）。 */
+  push(text: string): void {
+    this.queue.push(text)
+    this.emit('readable')
+  }
+}
+
+/** 等屏上出现这段话（Ink 按 30fps 写档，给它几帧的余地）；等不到就如实报出此刻的屏。 */
+async function until(tty: CaptureTty, needle: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (visible(tty.bytes()).includes(needle)) return
+    await Bun.sleep(10)
+  }
+
+  throw new Error(`等不到「${needle}」——此刻屏上是：\n${visible(tty.bytes())}`)
+}
+
+describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
+  test('换模型之后 **屏上那个分母**当场跟着换——经产品那一路走出来的', async () => {
+    const land = stage()
+
+    try {
+      const assembly = land.assemble()
+      const tty = new CaptureTty()
+      const stdin = new FakeStdin()
+      // 动态 import：与 `cli.ts` 同一条（启动路径不把 Ink 那棵树拖进模块图）
+      const { runTui } = await import('@magic/tui')
+
+      const handle = await runTui({
+        ...tuiOptions(assembly),
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stdout: tty as unknown as NodeJS.WriteStream,
+      })
+
+      // 真跑一句：命令经控制面直发（与手打一条同一路径）——④ 有分子、③ 有模型名
+      const driver = attachShell(assembly.shell)
+      await driver.submit('看下这个项目')
+      driver.dispose()
+
+      await until(tty, '3.1k/1000k') // M3 ⇒ 内置表 1M
+
+      // 真换（经装配那条产出路径）⇒ 屏上换成新模型那个数
+      expect(assembly.switchModel({ provider: 'mm-same' }).ok).toBe(true)
+      await until(tty, '3.1k/205k')
+
+      // 再换到未知模型 ⇒ 分母从屏上下去（只剩分子，没有那个斜杠）
+      expect(assembly.switchModel({ provider: 'local' }).ok).toBe(true)
+      await until(tty, 'my-local-llama · 3.1k')
+
+      // 收摊：空闲时 ctrl+c ＝ 退出（与手打一致——键经 Ink 那条路真走一遍）
+      stdin.push('\u0003')
+      await handle.waitUntilExit()
+
       assembly.close()
     } finally {
       land.dispose()

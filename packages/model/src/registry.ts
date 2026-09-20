@@ -30,6 +30,7 @@ import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { MissingApiKeyError, createModelGateway } from './gateway.ts'
 import { MODEL_CONTEXT_BUILTIN, resolveContextWindow } from './capacity.ts'
+import type { WindowTable } from './capacity.ts'
 
 // —— 形态 ——
 
@@ -83,20 +84,17 @@ export interface ModelRegistry extends ModelGateway {
   /** 已注册的条目（配置顺序）——「加一条目即多一个」的读数面。 */
   list(): readonly ProviderEntry[]
   /**
-   * **窗长表**（模型名 → 上下文窗总量 · U30）——内置表 ＋ 各条目声明的覆盖位，**合一而查**。
+   * **窗长表**（U30 · 形态与消费见 `WindowTable` / `windowOfSelection`）——
+   * 内置表 ＋ 各条目**自己声明**的覆盖位，**分开装**、按 `provider ＋ model` 消费。
    *
    * 为什么给外壳的是**表**而不是「此刻那一条的数」：换模型是**运行时**的事
    * （`/model` 一按就换），而外壳够不着注册表——它得**当场**知道新模型多长。
    * 表在手上，`model.switched` / `model.call.start` 一来就能查；查不到＝不知道（不编）。
    *
-   * **只有已知的那些在表里**（内置表按精确模型名命中 · 配置声明过的逐个进）——
-   * 表里没有的键与「值为 0」是两件事：前者是不知道，后者是没听说过的那种数。
-   *
-   * 声明**按模型名**进表：它把同名的内置数盖掉（用户写下的那个数就是他对自己这个
-   * 模型 id 的声明——覆盖位只有一个来处：他写的那一行）；代价如实记——两条目挂
-   * **同名模型**、其中一条声明了另一种窗长时，另一条也会查到这个数（口径见回报「备案」）。
+   * **声明只跟着它那一条目**（不按模型名合并）：合法的两个端点可能给同名模型声明
+   * 不同的窗长，平表会让甲的声明盖到乙头上。
    */
-  contextWindows(): Readonly<Record<string, number>>
+  windowTable(): WindowTable
   /** 配置里的缺省条目 id（`defaultProvider`）。 */
   defaultProviderId(): string
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
@@ -204,15 +202,17 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       })
     },
 
-    contextWindows(): Readonly<Record<string, number>> {
-      // 内置表打底，配置**声明过的**逐个按模型名盖上（覆盖位优先）。
-      // 同一模型名两处声明（配置事故）时以**靠后的条目**为准——本表只做「模型名 → 窗长」，
-      // 不为一条谁也不该撞上的边立第二套结构（口径见 `capacity.ts`）。
-      const table: Record<string, number> = { ...MODEL_CONTEXT_BUILTIN }
-      for (const [, config] of entries) {
-        if (config.contextWindow !== undefined) table[config.model] = config.contextWindow
+    windowTable(): WindowTable {
+      // 声明**按条目装**（不并进内置表）：条目 id → 它声明的那个模型 ＋ 那个数。
+      // 内置表原样转出去（只读）——它按准确模型 id 算，与条目无关。
+      const declared: Record<string, { model: string; window: number }> = {}
+      for (const [id, config] of entries) {
+        if (config.contextWindow !== undefined) {
+          declared[id] = { model: config.model, window: config.contextWindow }
+        }
       }
-      return table
+
+      return { builtin: MODEL_CONTEXT_BUILTIN, declared }
     },
 
     defaultProviderId(): string {

@@ -39,10 +39,14 @@ import {
   reduce,
   withBanner,
   withContextWindow,
-  withContextWindows,
+  withWindowTable,
 } from './view.ts'
 import { usageLabel } from './components/lines.ts'
-import type { ShellView } from './view.ts'
+import type { ShellView, WindowTable } from './view.ts'
+
+// 建壳入参里用到的形态在视图那层（`view.ts`）——转出去，好让拿 `ShellOptions` 的人
+// 一处就取全（`run.ts` 的 `RunTuiOptions` 正是这么取的）
+export type { WindowTable }
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
@@ -126,20 +130,19 @@ export type ShellOptions = {
    * ——不编、不猜、不改事件契约（见 `withContextWindow`）。
    *
    * ⚠️ 只管**开机那一刻**：外壳那时还不知道模型名，查不了表。此后的分母归
-   * `contextWindows`（下面那一格）。
+   * `windowTable`（下面那一格）。
    */
   readonly contextWindow?: number | null | undefined
   /**
-   * **窗长表**（模型名 → 上下文窗总量 · U30）——**换模型之后** ④ 的分母的取材。
+   * **窗长表**（U30 · 形态见 `WindowTable`）——**换模型之后** ④ 的分母的取材。
    *
-   * 装配把注册表那张表递进来（`Assembly.contextWindows`：内置容量表 ∪ 配置声明）。
-   * `model.switched` / `model.call.start` 一到，外壳按**那一刻的模型名**查：
-   * 查得到就换分母，查不到＝`null`（**不沿用前一个模型的容量**）。
+   * 装配把注册表那张表递进来（`Assembly.windowTable`：内置表按准确模型 id ＋ 各条目
+   * **自己声明**的覆盖位）。`model.switched` / `model.call.start` 一到，外壳按**那一刻的
+   * 选中**（条目 ＋ 模型两件）查：查得到就换分母，查不到＝`null`（**不沿用别的容量**）。
    *
-   * **不给** ⇒ `null` ＝没这张表：切换**不动分母**（旧路径原样——接线落齐之前的行为，
-   * 见 `ShellView.contextWindows`）。空表 `{}` 是另一回事：表在、什么都不知道。
+   * **不给** ⇒ `null` ＝没有这张表：切换**不动分母**（旧路径原样，见 `ShellView.windowTable`）。
    */
-  readonly contextWindows?: Readonly<Record<string, number>> | undefined
+  readonly windowTable?: WindowTable | undefined
   /**
    * **本进程的工作区**（U26）——`/session` 列表据它认「哪个是别的项目」
    * （分组头永远都有；**压暗**只落在判得实的那些：工作区记着、且与这一组不同）。
@@ -220,9 +223,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   //
   // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
   // ④ 的两件一起种：**开机那一格**的数（`contextWindow`）＋ **此后切换**查的那张表
-  // （`contextWindows` · U30）——两者分工见 `ShellOptions`。
+  // （`windowTable` · U30）——两者分工见 `ShellOptions`。
   let view = withBanner(
-    withContextWindows(withContextWindow(createView(), options.contextWindow ?? null), options.contextWindows ?? null),
+    withWindowTable(withContextWindow(createView(), options.contextWindow ?? null), options.windowTable ?? null),
   )
 
   /**

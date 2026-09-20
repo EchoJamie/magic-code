@@ -70,9 +70,15 @@ export { classifyModelError, describeModelError, isAbortError, redactSecrets } f
 
 export { MODEL_TRAITS_BUILTIN, resolveModelTraits } from './traits.ts'
 
-// 容量（上下文窗总量 · U30）——与 `traits` 同族的内置表 ＋ 覆盖判定；
-// 装配取 `ModelRegistry.contextWindows()`（合一而查），此处出给它的是判定与表本身
-export { MODEL_CONTEXT_BUILTIN, resolveContextWindow } from './capacity.ts'
+// 容量（上下文窗总量 · U30）——与 `traits` 同族的内置表 ＋ 覆盖判定 ＋ 窗长表；
+// 装配取 `ModelRegistry.windowTable()`，消费走 `windowOfSelection`（**一份判定**：
+// 条目对上就用它的声明，否则查内置表——见 `capacity.ts`）
+export {
+  MODEL_CONTEXT_BUILTIN,
+  resolveContextWindow,
+  windowOfSelection,
+} from './capacity.ts'
+export type { WindowTable } from './capacity.ts'
 
 // —— ⑤ 策略（退避重试——见 `retry.ts`）——
 
