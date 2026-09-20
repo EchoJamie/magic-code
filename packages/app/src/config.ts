@@ -172,18 +172,14 @@ function asRuleSources(
   value: unknown,
   path: string,
   home: string,
-  book: 'sources' | 'linkSources',
+  /** 报错话里点名的那一串——`rules.sources` / `rules.linkSources` / `skills.sources`。 */
+  label: string,
 ): readonly string[] {
   if (!Array.isArray(value)) {
-    throw new ConfigError(
-      path,
-      `rules.${book} 须是数组（[<绝对路径>, …]；文件或目录都行）`,
-    )
+    throw new ConfigError(path, `${label} 须是数组（[<绝对路径>, …]；文件或目录都行）`)
   }
 
-  return value.map((entry, index) =>
-    expandHome(asText(entry, path, `rules.${book}[${index}]`), home),
-  )
+  return value.map((entry, index) => expandHome(asText(entry, path, `${label}[${index}]`), home))
 }
 
 /**
@@ -338,9 +334,20 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const rulesBook = (
     book: 'sources' | 'linkSources',
   ): readonly string[] | undefined =>
-    rulesSegment?.[book] === undefined ? undefined : asRuleSources(rulesSegment[book], path, home, book)
+    rulesSegment?.[book] === undefined
+      ? undefined
+      : asRuleSources(rulesSegment[book], path, home, `rules.${book}`)
   const ruleSources = rulesBook('sources')
   const ruleLinkSources = rulesBook('linkSources')
+
+  // 技能段（阶段 3 · U33）——**补充的技能目录**。形制与 `~` 展开同 `rules.sources`
+  // （`asRuleSources` 那个函数只管「数组 ＋ 展开」，两处共用；键名只管报错话）。
+  // ⚠️ **漏带＝静默失效**（上面三条教训同款）：配置里点了名而这里不接，
+  // 那份技能就悄悄发现不了——且不报错。
+  const skillsSegment = raw['skills'] === undefined ? undefined : asObject(raw['skills'], path, 'skills')
+  const skillSources = skillsSegment?.['sources'] === undefined
+    ? undefined
+    : asRuleSources(skillsSegment['sources'], path, home, 'skills.sources')
 
   // 外部工具服务器（U38）——**只有配置里写了才连**（这是「用户显式配置」的唯一落点）。
   // ⚠️ **漏带＝静默失效**（同上面三条的教训）：配置里写了服务器而这里不接，
@@ -363,6 +370,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
               ...(ruleLinkSources === undefined ? {} : { linkSources: ruleLinkSources }),
             },
           }),
+      ...(skillSources === undefined ? {} : { skills: { sources: skillSources } }),
       ...(mcp === undefined ? {} : { mcp }),
     },
     providerId,

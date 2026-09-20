@@ -55,6 +55,7 @@ import type {
   RulesLoad,
   RulesProblem,
   SessionId,
+  SkillCatalog,
   Timestamp,
   TurnId,
   WorkspaceService,
@@ -70,7 +71,7 @@ import type {
   SessionInstance,
 } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
-import { createProjectRules, createSandbox, createWorkspaceService } from '@magic/execution'
+import { createProjectRules, createSandbox, createSkills, createWorkspaceService } from '@magic/execution'
 import type { FetchLike, ModelRegistry, ModelSwitchResult, WindowTable } from '@magic/model'
 import { createModelRegistry, windowOfSelection } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
@@ -79,7 +80,7 @@ import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createMcpServers } from '@magic/mcp'
 import type { McpServers } from '@magic/mcp'
-import { createToolRuntime, defineMcpTools } from '@magic/tools'
+import { createToolRuntime, defineMcpTools, defineSkillTool } from '@magic/tools'
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
@@ -311,6 +312,15 @@ export type Assembly = {
    */
   readonly readRules: (targets?: readonly string[]) => RulesLoad
   /**
+   * **技能目录的按需读数**（U33）——现读一次「都发现了哪些、有哪些没读进来」，
+   * 连**没进来的那些**一起交回（`--check` 那一行从这儿来）。
+   *
+   * 与 `readRules` 同一条姿势：现读而不是取装配那一刻的快照（技能是随用户编辑变的目录）。
+   * **没有「只报一部分」那种形态**：发现面是**一层子目录**，读得到的就是全的
+   * （与规约的按目标筛选不同——技能不按目标适用，它是一份清单）。
+   */
+  readonly readSkills: () => SkillCatalog
+  /**
    * **窗长表**（U30）——内置容量表 ＋ 各条目**自己声明**的覆盖位，**分开装**：
    * 内置表按**准确模型 id** 算（与条目无关），声明**只属于配置它的条目及对应模型**
    * （消费按 `provider ＋ model` 一起看——见 `windowOfSelection`）。
@@ -481,6 +491,32 @@ export function assemble(options: AssembleOptions): Assembly {
     // 两张名册两件事（契约 `RulesConfig`）：`sources` 读进来，`linkSources` 只放行链接
     linkSources: loaded.config.rules?.linkSources ?? [],
   })
+
+  /**
+   * **技能来源面**（U33）——同样归执行域落地（文件读取在执行 / 基础设施边界），
+   * 装配这一步只做**选择**：哪几条根（默认那两处由实现自己按工作区与用户目录拼）＋
+   * 用户点名的补充目录 ＋ 用户目录本身。
+   *
+   * ⚠️ **它要交给两处**（见下）：对话域（目录块 ＋ 显式选定取主文）与**工具域**
+   * （模型自主选用走 `skill` 工具）——工单明写「同一个来源口」，故**同一个实例**递两处。
+   * 各造一份的话，两条路对「有什么、在哪儿」会各说一套。
+   *
+   * `home` 从与配置、授权文件**同一个**来处取（`options.home ?? homedir()`）——
+   * 三处指同一个家目录，测试沙箱化时才不会漏掉一处（真家目录被写脏是本项目栽过的坑）。
+   */
+  const skills = createSkills({
+    workspace,
+    home: options.home ?? homedir(),
+    sources: loaded.config.skills?.sources ?? [],
+  })
+
+  /**
+   * **技能读取入口那一件工具**（U33）——`options.tools` 追加集里的一件。
+   *
+   * 只造**一次**（与 `skills` 同源），随后每开一条会话链都递同一个（见 `open`）：
+   * 它读的是只读材料、走 `Skills` 端口而不走沙箱，故不落在默认七件里。
+   */
+  const skillTool = defineSkillTool(skills)
 
   // ── 授权（U22）：`a` 的落点是**工作区**，存 `~/.magic/grants.json` ──────────────
   //
@@ -671,14 +707,15 @@ export function assemble(options: AssembleOptions): Assembly {
       stamper,
       // 大块转存经记录域公开面（blob 写权唯一归它）
       blobs: records.blobs,
-      // **外部工具**（U38）——走的是同一个注册表、同一个闸门、同一条回填路
-      // （`options.tools` 那个追加出口：机制在内、工具集在外）。没连上＝空表，
-      // 内置七件照常（设计明文：单个连接失败不拖垮内置工具）。
+      // **追加集**（`options.tools` 出口：机制在内、工具集在外）——两件来路：
+      // ① **技能读取入口**（U33）：读的是只读材料，走 `Skills` 端口而不走沙箱，
+      //    故不落在默认七件里；递进去的是**上面那一个** `skills` 实例（与对话域同源）。
+      // ② **外部工具**（U38）：连上就有、断开就没有，跟着连接的实况走。
       //
-      // ⚠️ **给函数、不给数组**（返工 A）：连接是**进程级**的一束，会话链却**按条建**
-      // ——`--session` 那条路上链在装配期就建好了，而发现要等 `ready()`。快照会让那
-      // 一条链的工具表永远停在「还没连上」的那一刻。给函数＝**每次现取当下的实况**。
-      tools: mcpTools,
+      // ⚠️ **给函数、不给数组**（U38 返工 A）：外部连接是**进程级**的一束，会话链却
+      // **按条建**——`--session` 那条路上链在装配期就建好了，而发现要等 `ready()`。
+      // 快照会让那一条链的工具表永远停在「还没连上」的那一刻。给函数＝**每次现取**。
+      tools: () => [skillTool, ...mcpTools()],
     })
     const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
 
@@ -697,6 +734,8 @@ export function assemble(options: AssembleOptions): Assembly {
       now,
       // 项目规约（U32）——域内那一半（送哪些、什么时候送）自己会造，此处只把来源递进去
       rules: projectRules,
+      // 技能（U33）——同上，且**与工具域那一个入口共用同一个实例**（见 `skills` 的注）
+      skills,
       // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
       context: options.context,
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
@@ -941,6 +980,9 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
   const readRules = (targets: readonly string[] = []): RulesLoad => projectRules.load(targets)
 
+  /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
+  const readSkills = (): SkillCatalog => skills.discover()
+
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
@@ -998,6 +1040,7 @@ export function assemble(options: AssembleOptions): Assembly {
     grantsPath,
     grantsView,
     readRules,
+    readSkills,
     // **现读**（见 `Assembly.notices` 的注）：外部服务器连不上那一条要等 `ready()` 才落定，
     // 而这一位在放开输入之前（`boot`）与自检（`--check`）两处都会被读——快照会在前一处漏话。
     get notices(): readonly string[] {

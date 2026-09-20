@@ -1,5 +1,5 @@
 /**
- * U32 · 规约的送达 —— 判据：**副作用之前送到 · 相同版本不循环拦 · 重审后只执行一次**。
+ * U32 · 规约的送达 —— 判据：**副作用之前送到 · 同一份材料不循环拦 · 重审后只执行一次**。
  *
  * 本文件咬**对话域这一半**：什么时候送、拦在哪儿、拦完怎么接上。上游（从盘上读得到什么）
  * 归执行域，判据在 `packages/execution/test/rules.test.ts`；真装配那一跳在
@@ -48,11 +48,16 @@ const WRITE_SPEC: ToolSpec = {
   danger: { level: 'by-call', note: '新建＝轻；覆盖＝必闸' },
 }
 
-/** 一条规约文档——只填断言要看的字段。 */
+/**
+ * 一条规约文档——只填断言要看的字段。
+ *
+ * ⚠️ **没有版本号这一格**（2026-09-21 裁）：材料就是「来源 ＋ 范围 ＋ 条件 ＋ 正文」这几样，
+ * 判「送过没有」靠下游逐字比这一份。故**同一份材料＝同一个入参**；要造「改过的规约」，
+ * 改的就是它的正文（那才是真实现里发生的事：文件改了一个字）。
+ */
 function doc(
   name: string,
   text: string,
-  version = `v-${name}`,
   root: string | null = '/w',
   paths: readonly string[] = [],
 ): ProjectRule {
@@ -64,7 +69,6 @@ function doc(
     paths,
     name,
     text,
-    version,
   }
 }
 
@@ -187,7 +191,7 @@ describe('项目规约块 —— 摆在系统提示词末尾，没有可说的�
 
   test('每条都带**所属根**（2026-09-20 裁：单根也报——材料要自足，范围不能靠猜）', () => {
     const two = renderProjectRulesBlock({
-      documents: [doc('AGENTS.md', '甲', 'v1', '/w/a'), doc('AGENTS.md', '乙', 'v2', '/w/b')],
+      documents: [doc('AGENTS.md', '甲', '/w/a'), doc('AGENTS.md', '乙', '/w/b')],
       problems: [],
     })
     expect(two?.body).toContain('〔AGENTS.md（根 /w/a）〕')
@@ -195,7 +199,7 @@ describe('项目规约块 —— 摆在系统提示词末尾，没有可说的�
 
     // 单根也报：模型据此把这条规约与它手上的工作目录对上，不必靠猜
     const single = renderProjectRulesBlock({
-      documents: [doc('AGENTS.md', '甲', 'v1', '/w/a')],
+      documents: [doc('AGENTS.md', '甲', '/w/a')],
       problems: [],
     })
     expect(single?.body).toContain('〔AGENTS.md（根 /w/a）〕')
@@ -206,7 +210,7 @@ describe('项目规约块 —— 摆在系统提示词末尾，没有可说的�
     const scoped = renderProjectRulesBlock({
       documents: [
         {
-          ...doc('src/AGENTS.md', 'src 里先跑 check', 'v1', '/w'),
+          ...doc('src/AGENTS.md', 'src 里先跑 check', '/w'),
           scope: '/w/src',
         },
       ],
@@ -216,14 +220,14 @@ describe('项目规约块 —— 摆在系统提示词末尾，没有可说的�
 
     // 条件规则：`paths` 必须露出来——否则它看上去与一条全局规则一模一样
     const conditional = renderProjectRulesBlock({
-      documents: [doc('.magic/rules/frontend.md', '只用函数组件', 'v2', '/w', ['src/**'])],
+      documents: [doc('.magic/rules/frontend.md', '只用函数组件', '/w', ['src/**'])],
       problems: [],
     })
     expect(conditional?.body).toContain('只在 src/** 上适用')
 
     // 无条件的那条**不写那句**（没条件的规则不编一个条件出来）
     const unconditional = renderProjectRulesBlock({
-      documents: [doc('.magic/rules/style.md', '一律中文', 'v3', '/w')],
+      documents: [doc('.magic/rules/style.md', '一律中文', '/w')],
       problems: [],
     })
     expect(unconditional?.body).not.toContain('适用')
@@ -231,7 +235,7 @@ describe('项目规约块 —— 摆在系统提示词末尾，没有可说的�
 
   test('取舍那类（choice）**不进模型材料**——它说给用户听，不是说给模型听', () => {
     const block = renderProjectRulesBlock({
-      documents: [doc('AGENTS.md', '甲的约定', 'v1', '/w')],
+      documents: [doc('AGENTS.md', '甲的约定', '/w')],
       problems: [
         { path: '/w/.claude/rules/style.md', message: '同根同名：原生优先', kind: 'choice' },
       ],
@@ -300,7 +304,7 @@ describe('无路径规则 —— 首次模型调用前载入', () => {
 
   test('改过的规约**下一趟就是新的**（每趟现读，不缓存）', async () => {
     let text = '第一版'
-    const answer = (): RulesLoad => load([doc('AGENTS.md', text, `v-${text}`)])
+    const answer = (): RulesLoad => load([doc('AGENTS.md', text)])
     const { stage, runtime } = stageWith(answer, [{ text: '一' }, { text: '二' }])
 
     await run(runtime, '第一次')
@@ -357,7 +361,7 @@ describe('目标预查 —— 拦在副作用之前', () => {
   })
 
   test('回填**首行**是给人看的那一句——说它「没跑」的是另一位，不是这行字', () => {
-    const review = needsReviewText([doc('src/AGENTS.md', 'src 的约定', 'v1')])
+    const review = needsReviewText([doc('src/AGENTS.md', 'src 的约定')])
     const [reviewFirst, ...reviewRest] = review.split('\n')
 
     // 首行是屏上那一格照抄的**文案**（见 `rules.ts` 的 `UNEXECUTED_*`）：它得自己读出
@@ -410,7 +414,7 @@ describe('目标预查 —— 拦在副作用之前', () => {
     expect(notExecuted).toEqual([true, undefined])
   })
 
-  test('**相同版本不循环拦截**：送过之后再碰同一个目录，直接执行', async () => {
+  test('**同一份材料不循环拦截**：送过之后再碰同一个目录，直接执行', async () => {
     const answer = (targets: readonly string[]): RulesLoad =>
       targets.length === 0 ? load([]) : load([doc('src/AGENTS.md', 'src 的约定')])
 
@@ -424,10 +428,58 @@ describe('目标预查 —— 拦在副作用之前', () => {
     await run(runtime, '写两个文件')
 
     expect(written).toEqual(['src/a.ts', 'src/b.ts'])
-    // 只拦过一次——拦第二次就是「相同版本循环拦截」
+    // 只拦过一次——拦第二次就是「同一份材料循环拦截」
     expect(systemOf(stage, 0)).not.toContain('src 的约定')
     expect(systemOf(stage, 1)).toContain('src 的约定')
     expect(systemOf(stage, 2)).toContain('src 的约定')
+  })
+
+  test('**正文一样、范围不同的两份是两份材料**：送过一份不等于另一份也送过', () => {
+    // 同一套约定按目录铺开（复制粘贴起手最常见的写法）：正文两字不差，管的地方不同。
+    // 判「送过没有」若只看正文，送过根那份就等于说子目录那份也送过了——那份约束
+    // **一次都不会送到**，而用户以为 `src` 有一份（这正是删掉版本号后最容易漏的一处）。
+    const same = '本目录的约定：先跑 bun run check'
+    const rootDoc = doc('AGENTS.md', same)
+    const srcDoc = { ...doc('src/AGENTS.md', same), scope: '/w/src' }
+    const delivery = createRulesDelivery(
+      stubRules((targets) =>
+        targets.includes('src/a.ts') ? load([rootDoc, srcDoc]) : load([rootDoc]),
+      ),
+    )
+
+    // 会话开局只送根一级：进请求的是**根那份**
+    delivery.promptFor('')
+
+    // 碰 `src` 的目标：子目录那份还没送过 ⇒ 拦（blocking 只报它——根那份刚送过）
+    const batch = [{ id: 'a', name: 'write', args: { path: 'src/a.ts' } }]
+    expect(delivery.preflight(batch)).toEqual({
+      kind: 'review',
+      blocking: [expect.objectContaining({ name: 'src/AGENTS.md' })],
+    })
+
+    // 重审那一趟请求带着 `src` 的目标（钉住的），两份都送到 ⇒ 重提照常执行
+    delivery.promptFor('')
+    expect(delivery.preflight(batch)).toEqual({ kind: 'pass' })
+  })
+
+  test('**条件变了、正文一字未动**：送到模型的适用面不一样 ⇒ 也是另一份材料', () => {
+    // 「只在 src/** 上适用」与「只在 src/**、lib/** 上适用」是两句不同的话——后者适用范围
+    // 更宽，而它**不在 `text` 里**（正文摘掉了 front-matter）。只比正文就会漏掉这一次重审。
+    const narrow = doc('.magic/rules/style.md', '一律中文', '/w', ['src/**'])
+    const wide = doc('.magic/rules/style.md', '一律中文', '/w', ['src/**', 'lib/**'])
+    let current = narrow
+    const delivery = createRulesDelivery(stubRules(() => load([current])))
+
+    expect(narrow.text).toBe(wide.text) // 正文确实一字未动，变的只有条件
+    delivery.promptFor('')
+    const batch = [{ id: 'a', name: 'write', args: { path: 'src/a.ts' } }]
+    expect(delivery.preflight(batch)).toEqual({ kind: 'pass' }) // 同一份材料：不拦
+
+    current = wide // 用户给这条规则多加了一段适用路径
+    expect(delivery.preflight(batch)).toEqual({
+      kind: 'review',
+      blocking: [expect.objectContaining({ name: '.magic/rules/style.md' })],
+    })
   })
 
   test('一批里前几条没碰到规约也要**整批**扣下（重提这句话得对整批成立）', async () => {
@@ -471,18 +523,18 @@ describe('目标预查 —— 拦在副作用之前', () => {
     expect(systemOf(stage, 0)).not.toContain('src 的约定')
   })
 
-  test('**规约在「请求装配完、工具还没跑」之间被改** ⇒ 另算一版 ⇒ 重拦一次（不是无脑循环）', async () => {
-    let version = 'v1'
+  test('**规约在「请求装配完、工具还没跑」之间被改** ⇒ 另是一份材料 ⇒ 重拦一次（不是无脑循环）', async () => {
+    let content = 'v1'
     let loads = 0
     const answer = (targets: readonly string[]): RulesLoad => {
       loads += 1
-      const current = version
-      // ⚠️ 这里按**取用次数**卡：第 5 次＝第三轮「请求装配」那一下。它照旧报 v1，
+      const current = content
+      // ⚠️ 这里按**取用次数**卡：第 5 次＝第三轮「请求装配」那一下。它照旧给 v1 的正文，
       // 而同一轮紧接着的**预查**（第 6 次）读到的是 v2——这正是「用户在模型跑动的那一下
       // 改了规约」在循环里的样子。次数是本实现的取用节律，改坏了这条用例会当场红。
-      if (loads === 5) version = 'v2'
+      if (loads === 5) content = 'v2'
 
-      return targets.length === 0 ? load([]) : load([doc('AGENTS.md', `约定-${current}`, current)])
+      return targets.length === 0 ? load([]) : load([doc('AGENTS.md', `约定-${current}`)])
     }
 
     const { stage, runtime, written } = stageWith(answer, [
@@ -505,9 +557,9 @@ describe('目标预查 —— 拦在副作用之前', () => {
   })
 
   test('**规约在两轮之间被改**：下一趟请求直接带新版，**不多拦一次**（送达在拦之前）', async () => {
-    let version = 'v1'
+    let content = 'v1'
     const answer = (targets: readonly string[]): RulesLoad =>
-      targets.length === 0 ? load([]) : load([doc('AGENTS.md', `约定-${version}`, version)])
+      targets.length === 0 ? load([]) : load([doc('AGENTS.md', `约定-${content}`)])
 
     const { stage, runtime, written } = stageWith(
       answer,
@@ -519,7 +571,7 @@ describe('目标预查 —— 拦在副作用之前', () => {
       ],
       // 写第一个文件的当口，用户把规约改了——下一趟**请求装配**就会读到新版
       (_path, index) => {
-        if (index === 0) version = 'v2'
+        if (index === 0) content = 'v2'
       },
     )
 
@@ -587,7 +639,7 @@ describe('预查不妨碍既有的控制流', () => {
     const delivery = createRulesDelivery(
       stubRules((targets) =>
         targets.includes('src/a.ts')
-          ? load([doc('src/AGENTS.md', 'src 的约定', `v-src-${targets.length}`)])
+          ? load([doc('src/AGENTS.md', 'src 的约定')])
           : load([]),
       ),
     )

@@ -14,7 +14,7 @@
  * 闸门与事件面：审议与留痕是分发的活，执行体只管「怎么把这件事做出来」。
  */
 
-import type { ExternalToolRef, OutputDelta, Sandbox, ToolSpec } from '@magic/contracts'
+import type { ExternalToolRef, OutputDelta, Sandbox, ToolSpec, UsedSkill } from '@magic/contracts'
 
 /** 执行体拿到的现场——沙箱（场所）＋ 本次调用的流式 / 取消面。 */
 export type ToolRunContext = {
@@ -32,6 +32,13 @@ export type ToolRunContext = {
 export type ToolRunResult = {
   readonly ok: boolean
   readonly output: string
+  /**
+   * **这一次调用交付了一份技能主文**（U33）——只有读技能的那件工具会填（见契约 `ToolResult.skill`）。
+   *
+   * 「机制在内、工具集在外」的落点：分发**不认识技能**，它只是把执行体给的这一位原样带上去
+   * ——说话的是工具（它读的），回执由对话域发（只有它知道材料什么时候真进了模型请求）。
+   */
+  readonly skill?: UsedSkill
 }
 
 /** 一条工具定义——规格（送模型）＋ 执行体（经沙箱）。 */

@@ -37,6 +37,7 @@ import type {
   RecordsService,
   RebuildHandoff,
   SessionId,
+  Skills,
   Timestamp,
   ToolRuntime,
   TurnId,
@@ -50,6 +51,7 @@ import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
 import type { PromptVars } from './prompt/index.ts'
 import { createRulesDelivery } from './rules.ts'
+import { createSkillsDelivery } from './skills.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -83,6 +85,18 @@ export type ConversationDeps = {
    * **允许读哪些**归装配（它拿用户配置的 `rules.sources` 去造这个实现）。
    */
   readonly rules?: ProjectRules | undefined
+  /**
+   * **技能来源面**（U33 · 执行域实现）——缺省＝这个工作区不发现也不加载技能
+   * （**行为与加这一条之前一字不动**：没有目录块、显式选定的技能也不取）。
+   *
+   * 与 `rules` 同一分工：**什么时候送、送哪一份**归本域（见 `./skills.ts`），
+   * **允许读哪些**归装配（它拿 `skills.sources` 与用户目录去造这个实现）。
+   *
+   * ⚠️ **同一份实现还要交给工具域**（模型自主选用走 `skill` 工具）——「同一个来源口」
+   * 是工单明写的：两条选用路径读的是**同一个 `Skills` 实例**，故「有什么、在哪儿」
+   * 两边不会各说一套。
+   */
+  readonly skills?: Skills | undefined
 }
 
 /**
@@ -127,7 +141,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   let running = false
   /** 在途工作的中止手柄——`interrupt` 的唯一着力点（空闲时为 `undefined`）。 */
   let current: AbortController | undefined
-  const pending: string[] = []
+  /**
+   * 排队中的交代——**整份 `UserInput`**（U33 起；此前是 `string[]`）。
+   *
+   * 每一份都**固定着它自己绑的技能**：排着的时候不与别条共享任何可变状态
+   * （没有「当前技能」那种东西可读），故忙时两条不同技能的交代出队后**各自身份不串**。
+   */
+  const pending: UserInput[] = []
 
   /**
    * **压缩器**（阶段 3 · U19）——按会话实例各一份，故它记得的用量读数**随会话走**
@@ -153,11 +173,17 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   })
 
   /**
-   * **规约的送达账**（U32）——按会话实例各一份（作用域与已送达版本都随会话走：
-   * 切到别的会话，那一头碰过哪些目录、送过哪几版，与这一头无关）。
+   * **规约的送达账**（U32）——按会话实例各一份（作用域与最近一次请求送达的材料都随会话走：
+   * 切到别的会话，那一头碰过哪些目录、手里握着哪份材料，与这一头无关）。
    * 不给规约来源＝不造这份账（见 `ConversationDeps.rules`）。
    */
   const rules = deps.rules === undefined ? undefined : createRulesDelivery(deps.rules)
+
+  /**
+   * **技能送达**（U33）——按会话实例各造一份（它不存状态，「各一份」只是跟着运行时走）。
+   * 不给技能来源＝不造（见 `ConversationDeps.skills`）。
+   */
+  const skills = deps.skills === undefined ? undefined : createSkillsDelivery(deps.skills)
 
   const runtime: LoopRuntime = {
     session: deps.session,
@@ -176,6 +202,31 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     blobTextLimit: policy.blobTextLimit,
     compact: compactor,
     rules,
+    skills,
+  }
+
+  /**
+   * **清掉排队中的交代**——它们**没进会话**（一条条目都没落），故每一份都配对一次
+   * `input.settled{ok:false}`（给了 `ref` 的才发）。
+   *
+   * 由头（2026-09-21 规划裁）：`input.settled` 的契约是「给了 `ref` 必有终态」——
+   * 白名单式的「成了才回」会让外壳永等一份草稿。停下的那一刻，这些交代的去处是
+   * **明确失败**，不是「也许以后会跑」。
+   *
+   * ⚠️ 发的事件用的是**当下活跃那条会话**的信封（它们本来就没能进任何会话——
+   * 说得出「这一条没成」就够，不编一条会话出来）。
+   */
+  function dropQueued(): void {
+    for (const input of pending.splice(0)) {
+      if (input.ref === undefined) continue
+      sink.emit(
+        stamper.stamp('input.settled', {
+          ref: input.ref,
+          ok: false,
+          reason: '停下了——这一条还没轮到，没进会话，请重新发送',
+        }),
+      )
+    }
   }
 
   async function drain(): Promise<void> {
@@ -192,13 +243,17 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     try {
       for (;;) {
-        const text = pending.shift()
-        if (text === undefined) break
+        const input = pending.shift()
+        if (input === undefined) break
 
-        const outcome = await agentLoop(runtime, { text }, controller.signal)
-        // 中止 / 出错＝停下：排队中的交代**不再续跑**（「回到等待输入」是当场的）
+        const outcome = await agentLoop(runtime, input, controller.signal)
+        // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
+        // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
+        if (outcome === 'rejected') continue
+        // 中止 / 出错＝停下：排队中的交代**不再续跑**（「回到等待输入」是当场的），
+        // 并**逐条配对**（没进会话＝明确失败，见 `dropQueued`）
         if (outcome !== 'settled') {
-          pending.length = 0
+          dropQueued()
           break
         }
       }
@@ -216,14 +271,17 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
   return {
     submit(input: UserInput): void {
-      pending.push(input.text)
+      // **整份入队**（正文 ＋ 它绑的技能 ＋ 配对键）——不是只留正文：
+      // 忙时两条交代各绑各的技能，出队后不能被串成同一条（U33 工单明写）
+      pending.push(input)
       if (!running) void drain()
     },
 
     interrupt(): void {
       current?.abort()
-      // 「停下」就是停下——排队的交代一并清掉（见文件头注）
-      pending.length = 0
+      // 「停下」就是停下——排队的交代一并清掉（见文件头注），并**逐条配对**：
+      // 它们没进会话，那就是「没成」（见 `dropQueued`）
+      dropQueued()
     },
 
     busy: () => running,

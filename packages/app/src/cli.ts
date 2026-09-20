@@ -14,7 +14,7 @@
  *   启动参数那一入口）；会话中途换模型走 `--script` 的 `{ "switch": … }` 步骤。
  */
 
-import type { KernelEvent } from '@magic/contracts'
+import type { KernelEvent, SkillCatalog } from '@magic/contracts'
 import { TOOLSET_V1 } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
@@ -43,7 +43,8 @@ const USAGE = `magic —— 软件工程智能体
   magic --check                把配置、数据存哪、工作区、会话挨个查一遍，查完就退出
   magic --script <文件>        无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
 
-脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型），
+脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型，
+写成 {"input": {…}} 就是带结构化信息的交代——如随这次交代绑定一个技能），
 decisions 是替你给的答复。写法与实例见 README 的「脚本（--script）」一节。
 脚本替你答复只是图个方便，不是产品行为——平时该定夺的仍是你。
 `
@@ -133,19 +134,25 @@ async function readScript(path: string): Promise<ShellScript> {
   const inputs = (parsed as { inputs?: unknown }).inputs
   if (!Array.isArray(inputs) || !inputs.every(isStep)) {
     throw new Error(
-      `脚本的 inputs 须是数组，元素为字符串（交代）或 {"switch":{…}}（换模型）：${path}`,
+      `脚本的 inputs 须是数组，元素为字符串（交代）、{"switch":{…}}（换模型）` +
+        `或 {"input":{…}}（带结构化信息的交代）：${path}`,
     )
   }
 
   return parsed as ShellScript
 }
 
-/** 一步的形态判据——交代（字符串）或换模型（`{ switch: … }`）。 */
+/** 一步的形态判据——交代（字符串）· 换模型（`{ switch: … }`）· 一整份结构化交代（`{ input: … }`）。 */
 function isStep(value: unknown): boolean {
   if (typeof value === 'string') return true
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
-  const step = (value as { switch?: unknown }).switch
-  return typeof step === 'object' && step !== null && !Array.isArray(step)
+
+  const step = value as { readonly switch?: unknown; readonly input?: unknown }
+  const shape = (one: unknown): boolean => typeof one === 'object' && one !== null && !Array.isArray(one)
+  // 两形取其一——`{switch}` 与 `{input}` 各判各的（写混了不该被猜中）
+  if (step.switch !== undefined) return shape(step.switch)
+  if (step.input !== undefined) return shape(step.input)
+  return false
 }
 
 async function countEntries(assembly: Assembly): Promise<number> {
@@ -200,8 +207,11 @@ function report(assembly: Assembly): void {
   )
   // 权限规则（阶段 2）——**规则真的接进闸门了**吗、有没有被拒的条目，自检里说清楚
   console.log(`  权限规则　${describeRules(assembly)}`)
-  // 项目规约（U32）——**哪儿有、有几份、有没有没进来的**（来源 / 范围 / 内容版本的按需诊断）
+  // 项目规约（U32）——**哪儿有、有几份、有没有没进来的**（来源 / 范围的按需诊断；读的就是当前那份文件）
   console.log(`  项目规约　${describeProjectRules(assembly)}`)
+  // 技能（U33）——**发现了哪些、有哪些没读进来**（`SKILL.md` 读不懂的那些只在 `--check` 露头：
+  // 模型那一侧另有一份「没能读进来的技能」，但用户看不见模型手上的提示词）
+  console.log(`  技能　　　${describeSkills(assembly)}`)
   // 授权（U22）——`a` 点出来的那一类：**落在哪个文件、有几条、有没有陈旧的节**
   console.log(`  授权　　　${describeGrants(assembly)}`)
   // 外部工具（U38）——**配了哪几台、连上没有、各有几件工具**（这一行是 `/mcp` 之前的眼睛）
@@ -269,7 +279,8 @@ function describeRules(assembly: Assembly): string {
 }
 
 /**
- * 项目规约那一行（U32）——**报「哪儿有、有几份、有没有没进来的」**（来源 / 范围 / 内容版本的按需诊断）。
+ * 项目规约那一行（U32）——**报「哪儿有、有几份、有没有没进来的」**（来源 / 范围的按需诊断；
+ * 读的就是当前那份文件——**没有内容版本这一说**，见契约 `ProjectRule`）。
  *
  * 为什么口径是**各根一级**：自检是**开屏那一眼**，手上没有「这一轮在动哪儿」——目标是随
  * 使用长出来的（见契约 `ProjectRules.load`）。根一级（目录规约 ＋ 无条件规则）正是会话开局
@@ -315,6 +326,47 @@ function describeProjectRules(assembly: Assembly): string {
   // 取舍那几条**照说、不报警**：想查「我写的那份为什么没在管」的人，看的就是这几行
   if (chosen.length > 0) {
     lines.push(`${CONTINUATION}另有 ${chosen.length} 条按规矩让位（原生优先 / 同目录两份取一）：`, stated(chosen))
+  }
+
+  return lines.join('\n')
+}
+
+/**
+ * 技能那一行（U33）——**报「发现了哪些、有哪些没读进来」**。
+ *
+ * 为什么这一行非有不可：技能的坏法**只有这一处露头**。模型那一侧确实会拿到
+ * 「〔没能读进来的技能〕」（系统提示词里），但**用户看不见模型手上的提示词**——
+ * 「我写的那个技能为什么没生效」若无人可问，用户就只能对着目录发呆。
+ * 与项目规约那一行同一条由头（审计第 13 条：解析从严要让用户看得见）。
+ *
+ * 报的是**这次装配会用的那几处**（项目 / 用户 / 配置点名的），不列路径——
+ * 名字与来源标签已经够对上号，而这一屏还有别的事要说。
+ */
+function describeSkills(assembly: Assembly): string {
+  const catalog = assembly.readSkills()
+
+  const head =
+    catalog.skills.length === 0
+      ? '无（放 .magic/skills/<名称>/SKILL.md 就来；模型只看到名称与描述，正文按需再取）'
+      : `${catalog.skills.length} 个：` +
+        catalog.skills.map((skill) => `${skill.name}（${skill.label}）`).join(' · ')
+
+  const broken = catalog.problems.filter((problem) => problem.kind === 'error')
+  const chosen = catalog.problems.filter((problem) => problem.kind === 'choice')
+  const lines = [head]
+
+  // 一条占两行（路径一行、缘由一行）——同项目规约那一处的理由：缘由里带绝对路径与整句说明，
+  // 摞一行在八十列终端上会从中间折断，而这一屏正是拿来对着改的地方。
+  const stated = (problems: SkillCatalog['problems']): string =>
+    problems
+      .map((problem) => `${CONTINUATION}· ${problem.path}\n${CONTINUATION}  ${problem.message}`)
+      .join('\n')
+
+  if (broken.length > 0) {
+    lines.push(`${CONTINUATION}⚠️ 有 ${broken.length} 个没读进来：`, stated(broken))
+  }
+  if (chosen.length > 0) {
+    lines.push(`${CONTINUATION}另有 ${chosen.length} 条按规矩让位：`, stated(chosen))
   }
 
   return lines.join('\n')

@@ -8,6 +8,8 @@
  * - `ProjectRules`（**U32 加**）—— 项目规约的**只读**来源面：发现 · 读取 · 解析 ·
  *   去重 · 诊断。落在这里的理由与沙箱同源：**文件读取归执行 / 基础设施边界**，
  *   选哪些、什么时候送归对话侧。
+ * - `Skills`（**U33 加**）—— 技能的**只读**来源面（同一个理由、同一份分工）：
+ *   入口是 `SKILL.md`（Agent Skills 规范），发现只取名称与描述，正文按需再读。
  *
  * 内核仅有的两处 fs 直触之一（另一处＝记录域）——沙箱 · 工作区 · 规约来源是它存在的理由
  * （技术方案 · 代码治理 · 边界纪律）。
@@ -23,3 +25,6 @@ export type { WorkspaceOptions } from './workspace.ts'
 
 export { createProjectRules } from './rules.ts'
 export type { RulesOptions } from './rules.ts'
+
+export { createSkills } from './skills.ts'
+export type { SkillsOptions } from './skills.ts'

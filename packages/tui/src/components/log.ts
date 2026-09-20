@@ -553,7 +553,9 @@ function summaryOf(row: Extract<LogRow, { kind: 'tool' }>): string {
     return note ?? `${lines.length} 项`
   }
 
-  if (row.name === 'read') return `${lines.length} 行`
+  // `read` 与 `skill` 回的都是**一整份文档**——报**行数**才有信息（末行是文档的最后一句话，
+  // 与「读到了什么」没关系）。`skill` 是 U33 加的读取入口，与 `read` 同一处境，故同一处置。
+  if (row.name === 'read' || row.name === 'skill') return `${lines.length} 行`
 
   return truncateLine(lines[lines.length - 1] as string, 48)
 }

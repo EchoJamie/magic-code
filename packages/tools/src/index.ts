@@ -49,3 +49,11 @@ export type { ToolRuntimeOptions } from './runtime.ts'
 // —— ③ 工具定义的形态（`options.tools` 的类型——U13 的入口）——
 
 export type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.ts'
+
+/**
+ * **技能读取入口**（U33）——`options.tools` 的第一位真消费者。
+ *
+ * 它是**追加**出口上的一件，不替换默认集：「机制在内、工具集在外」说的是可插拔，
+ * 而这一件要的依赖（`Skills` 端口）不在本域默认那七件的射程里——由装配把它造好递进来。
+ */
+export { defineSkillTool } from './skill-tool.ts'
