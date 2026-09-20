@@ -63,15 +63,33 @@ export type AppViewProps = {
 }
 
 export function AppView({ view, columns, rows, now = null }: AppViewProps) {
-  // 活动区的预算：减去交互区与状态行（**不填满窗口**——内联模式下内容跟内容走）
+  // 活动区的预算：减去交互区与状态行，**再留一格**（**不填满窗口**——内联模式下内容跟内容走）。
   //
   // ⚠️ 这里的 `dock` 是**账**，`dockOf` 画出来的是**屏**——两者必须相等（U31 二轮退回）：
   //    账按 `maxDraftLines`（半屏）封顶、而输入行多画了两行提示时，屏上的动态帧正好顶到
   //    终端高度 ⇒ Ink 省掉末尾换行 ⇒ 真光标高一行。故「上面/下面还有 N 行」那两行
   //    **也算在 `maxDraftLines` 里**（`composerLayout` 那一处收口），这里不必再补。
-  const dock = Math.min(dockHeightOf(view, columns, rows), Math.max(4, Math.floor(rows / 2)))
-  const liveBudget = Math.max(1, rows - dock - 2)
-  const live = tailWithin(view.rows, columns, view.expanded, liveBudget)
+  //
+  // ⚠️ **留的那一格不是余量，是 Ink 末尾那个换行要落的一行**（U31 三轮退回把账补齐）：
+  //    动态帧 ＝ 空态 ＋ 活动区 ＋ `CHROME_LINES`（分隔线 ＋ 状态行）＋ 交互区；
+  //    「帧高 ≥ 视口行数」时 Ink 走**整屏那一支**——只写正文、**不写末尾那个换行**
+  //    （`ink.js` 的 `renderInteractiveFrame`：`isFullscreen ? output : output + '\n'`），
+  //    而它摆光标的后缀仍按「正文之下还有一行」回退
+  //    （`cursor-helpers.js` 的 `buildCursorSuffix`：`moveUp = visibleLineCount - cursor.y`）
+  //    ⇒ **真光标高一行**。故账要写**短于这一屏**——`rows - 1` 才是动态帧能占的上限。
+  //    早先 `max(1, rows - dock - 2)` 在活动区吃满时正好等于 `rows`：注释写着「不填满窗口」，
+  //    算式却正好填满（40×10 · 草稿 300 个 a · 3 行流式 ⇒ 帧 10 行、真光标 (13,6) 而非 (13,7)）。
+  // ⚠️ **交互区的高度就是它画出来的那些行**——不许再按「最多半屏」封顶（U31 三轮退回）：
+  //    那个封顶只封**账**、不封**屏**（草稿那一片本来就由 `maxDraftLines` 封在半屏，
+  //    而裁决卡 / 选择器 / 补全候选是各自算的行数，封顶够不着它们）——于是「账 4 行、
+  //    屏 5 行」这号分家又回来了：矮窗上活动区多算了一行 ⇒ 帧正好顶满 ⇒ 真光标高一行
+  //    （40×8 的接管屏就是那一格）。账与屏**同取 `dockHeightOf` 一处**，剩下的格子归活动区。
+  const dock = dockHeightOf(view, columns, rows)
+  // 空态那一行**在窄窗上自己会折**（那份引导语是一整句）——故这里问的是**它画出来几行**，
+  // 不是「有没有」：账里恒写 1 行的话，30 列那一档屏上就比账多一行，帧照样顶满（同一族）。
+  const empty = isEmpty(view) ? wrap(EMPTY_TEXT, Math.max(8, columns)).length : 0
+  const liveBudget = Math.max(0, rows - 1 - CHROME_LINES - empty - dock)
+  const live = liveAreaOf(view, columns, liveBudget)
 
   // **字标在放不下的宽度上要「一行都不占」**（设计 · 极窄：「不印，优先保证正文与输入空间」）。
   //
@@ -126,18 +144,22 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // **空态**（原型 · 场景 1）——屏上还没有东西、手上这条会话也还没落过账时给引导语
     ...(isEmpty(view) ? [h(EmptyState, { key: 'empty' })] : []),
     // 本轮的行（还在变）——就地重绘
-    ...live.rows.map((row, index) =>
+    //
+    // ⚠️ **画哪几条、留不留分段、切哪几行，全由 `liveAreaOf` 一处给**（`live`）——账与屏
+    //    同取一处才谈得上「不差分毫」。早先这两件事分在两处：算账那支用 `needsSpacer(rows, i)`
+    //    （下标 0 恒为「不留」），渲染那支用 `needsSpacerAfter(settled.at(-1), row)`
+    //    （上一条是用户消息就留）——**同一条交界行，两处各判各的**。
+    ...live.map((entry) =>
       h(LogRowView, {
-        key: row.key,
-        row,
+        key: entry.row.key,
+        row: entry.row,
         columns,
         expanded: view.expanded,
         // 交界那一条的「上一条」在 `settled` 里——同一条规矩（`needsSpacerAfter`），
         // 免得「用户消息之前留一行」在交界处换一副面孔（字标自带的后留白也在这条规矩里）
-        spaced:
-          index === 0
-            ? needsSpacerAfter(view.settled.at(-1), row)
-            : needsSpacer(live.rows, index),
+        spaced: entry.spaced,
+        // 头一条自己就超预算时它要跳过的那几行（记录里一行不少，屏上只画放得下的）
+        skip: entry.skip,
         now,
       }),
     ),
@@ -247,37 +269,86 @@ function EmptyState(): ReactElement {
     h(
       Text,
       { key: 'e:0' },
-      h(Text, { color: PALETTE.faint }, '会话在'),
-      h(Text, { color: PALETTE.faint, bold: true }, '你按下第一次回车'),
-      h(Text, { color: PALETTE.faint }, '时才建立。'),
+      h(Text, { color: PALETTE.faint }, EMPTY_HEAD),
+      h(Text, { color: PALETTE.faint, bold: true }, EMPTY_MIDDLE),
+      h(Text, { color: PALETTE.faint }, EMPTY_TAIL),
     ),
   )
 }
 
-/** 取尾部若干行——活动区只画放得下的那些（铺满不了窗口，故只受「一屏」约束）。 */
-function tailWithin(
-  rows: readonly LogRow[],
-  columns: number,
-  expanded: boolean,
-  budget: number,
-): { readonly rows: readonly LogRow[] } {
-  const total = rows.reduce(
-    (sum, row, index) => sum + heightOf(row, columns, expanded, needsSpacer(rows, index)),
-    0,
-  )
-  if (total <= budget) return { rows }
+/**
+ * 空态那句话——**三段分头**（只有中间那半加粗），拼起来是整句。
+ *
+ * 拆成三段是为了上色；`EMPTY_TEXT` 是**拼回去的整句**，给**算账那一处**用
+ * （`AppView` 里数它折几行——账与屏必须是同一句话，改一个字两处一起改）。
+ */
+const EMPTY_HEAD = '会话在'
+const EMPTY_MIDDLE = '你按下第一次回车'
+const EMPTY_TAIL = '时才建立。'
+const EMPTY_TEXT = `${EMPTY_HEAD}${EMPTY_MIDDLE}${EMPTY_TAIL}`
 
-  // 从尾往前数满预算——返回**整行**（不切行）
-  const kept: number[] = []
+/**
+ * 动态帧里**除活动区之外**的固定行数——分隔线与状态行（各一行）。
+ *
+ * 它是活动区预算那个减法里的一项：动态帧 ＝ 空态 ＋ 活动区 ＋ `CHROME_LINES` ＋ 交互区。
+ * 交互区那一项不在这里（它按内容算，见 `dock` 那一段注）。
+ */
+const CHROME_LINES = 2
+
+/** 活动区要画的那一条——**画哪几条、留不留分段、跳几行**都在这一处定（账与屏同源）。 */
+type LiveEntry = {
+  readonly row: LogRow
+  /** 这一条之前留不留一行分段（用户消息之前＝留）——**按它在本轮里的真上一条**算。 */
+  readonly spaced: boolean
+  /**
+   * 这一条**开头几行不画**——只有头一条会非零：它自己就比预算高（单条长记录 / 一段长 diff）
+   * 时，只画它**末尾**那几行。**记录里一行不少，屏上画不下的就不画**。
+   */
+  readonly skip: number
+}
+
+/**
+ * 活动区的那几条——**从尾往前数满预算**（取尾部：屏上留下最近发生的）。
+ *
+ * ⚠️ **两条都归这里管**（U31 三轮退回）：
+ *
+ * ① **单条自己就超预算要真切**——早先那一支是「至少留住一条整行」（`kept.length > 0`
+ *    才 `break`），于是一条 4 行的流式记录在 3 行的预算里**整条留了下来** ⇒ 动态帧 11 行、
+ *    终端 10 行 ⇒ 照样顶满 ⇒ 真光标高一行。预算常量减一减不掉这一条，故**切它的末尾**：
+ *    留的那几条加起来**恰好等于预算**（不多一行）。
+ * ② **「上一条是谁」按本轮的次序算**——交界那一行（下标 0）的上一条是 `settled` 的末条
+ *    **只在它真是头一条时**才成立；窗口从中间截断时，它的上一条是**被截掉的那条本轮行**。
+ *    早先账里恒按「无上一条」算（`needsSpacer(rows, 0)` 恒为假）、渲染那处恒按 `settled.at(-1)`
+ *    算——同一条交界行两本账，差的正是一行分段。
+ */
+function liveAreaOf(view: ShellView, columns: number, budget: number): readonly LiveEntry[] {
+  const rows = view.rows
+  const spacedAt = (index: number): boolean =>
+    needsSpacerAfter(index === 0 ? view.settled.at(-1) : rows[index - 1], rows[index])
+
+  if (budget <= 0) return []
+
+  const entries: LiveEntry[] = []
   let used = 0
+
   for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const size = heightOf(rows[index] as LogRow, columns, expanded, needsSpacer(rows, index))
-    if (used + size > budget && kept.length > 0) break
+    const row = rows[index] as LogRow
+    const spaced = spacedAt(index)
+    const size = heightOf(row, columns, view.expanded, spaced)
+    const room = budget - used
+
+    if (size > room) {
+      // 装不下：**只有头一条**（下面那几条都已经装下了）切末尾——更老的整条不画，
+      // 「整行保留」那条不变（切一半的老条目比不画更容易读串行）
+      if (used === 0) entries.unshift({ row, spaced, skip: size - room })
+      break
+    }
+
+    entries.unshift({ row, spaced, skip: 0 })
     used += size
-    kept.unshift(index)
   }
 
-  return { rows: kept.map((index) => rows[index] as LogRow) }
+  return entries
 }
 
 /** 一行的显示行数（只数，不渲染——借记录区的纯函数）。 */

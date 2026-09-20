@@ -25,7 +25,8 @@ import { createView } from '../src/view.ts'
 import { dockHeightOf } from '../src/components/app.ts'
 import { composerLayout, stepLeft, stepRight } from '../src/components/composer.ts'
 import { createStage } from './screen.ts'
-import type { Frame } from './screen.ts'
+import type { Frame, Stage } from './screen.ts'
+import { rendered } from './screen.ts'
 import { event } from './events.ts'
 
 /** 屏上最窄的那一档还得看得见——40 列（内容宽 38）。 */
@@ -466,5 +467,226 @@ describe('返工二 · 折叠提示与正文共用高度预算', () => {
       x: 1 + 36,
       y: viewportOf(frame, frame.rowOf('○ 空闲')) - 1,
     })
+  })
+})
+
+/**
+ * **三轮返工**（2026-09-20 · 三轮验收退回）——**活动帧不得撑满终端**。
+ *
+ * 与前两轮**同一条机制**，这回出在**活动区**那笔账上：动态帧的行数到了终端高度，Ink 就走
+ * **整屏那一支**（`ink.js` 的 `renderInteractiveFrame`：`isFullscreen ? output : output + '\n'`）
+ * ——只写正文、**不写末尾那个换行**，而它摆光标的后缀仍按「正文之下还有一行」回退
+ * （`cursor-helpers.js` 的 `buildCursorSuffix`：`moveUp = visibleLineCount - cursor.y`）
+ * ⇒ **真光标高一行**。够得着它的有两条路，本轮各修一条、各钉一组：
+ *
+ * ① **账本身正好填满**——`liveBudget = max(1, rows - dock - 2)` 在活动区吃满时 ＝ `rows`
+ *    （注释写着「不填满窗口」，算式却正好填满）。40×10 · 草稿 300 个 a · 3 行流式：
+ *    帧正好 10 行，真光标 `(13,6)`、应为 `(13,7)`；
+ * ② **单条记录自己就超预算**——早先那支「至少留住一条整行」（`kept.length > 0` 才 `break`）
+ *    让一条 4 行的流式记录在 3 行的预算里**整条留了下来** ⇒ 帧 11 行，照样顶满。
+ *    **只减预算常量减不掉这一条**（条目仍溢出），故改成**真切它的末尾那几行**。
+ *
+ * 判据两件，缺一不可：
+ * - **字节**：帧尾那个换行还在不在——「顶满没顶满」的**直接**判据（比数屏上行数稳：
+ *   滚动与整屏清都会影响屏的读数，上一轮就是靠这条认出来的）；
+ * - **真光标**：它得落在插入点那一行（用户看得见的那一条）。
+ */
+describe('返工三 · 活动帧不撑满终端（流式增长 · 单条超预算）', () => {
+  /** 40 列 ⇒ 内容宽 38 ⇒ 300 个 a 折成 8 个视觉行；矮窗（10 行）⇒ 交互区吃满半屏 5 行。 */
+  const LONG = 'a'.repeat(300)
+  /** 矮窗——这条缺陷只在「动态帧够得着终端高度」时露头（24 行的窗里一个场景都拦不住）。 */
+  const SHORT = { columns: 40, rows: 10 } as const
+  /** 插入点：退回点名的那个位置（两头折叠）。 */
+  const AT = 200
+
+  /**
+   * 帧尾那个换行在不在——**「动态帧顶满终端了吗」的字节判据**。
+   *
+   * 判法：只取**末尾那一小段**字节，把控制序列统统剥掉，看剩下的是不是以 `\n` 收尾
+   * ——正文之后**没有**换行＝Ink 走了整屏那一支（顶满），有＝没顶满。取末尾一小段是
+   * **故意的**：帧体里本来就有换行（行与行之间），取整串会数到上一行去；而光标后缀
+   * （上移 / 定位 / 显光标 / 同步更新收尾，还带色码复位）最长也就几十个字节。
+   * ⚠️ **剥色码这一道不能省**：`FORCE_COLOR=3` 那道门下色码是开着的，不剥就会把
+   * `\e[39m` 当成帧尾（这一条正是我第一版踩的坑——同一份字节在两个色档下答案不同）。
+   */
+  function trailingBreak(bytes: string): boolean {
+    const esc = String.fromCharCode(27)
+
+    return (
+      bytes
+        .slice(-120)
+        // OSC（超链接那类）与 CSI（色 · 光标 · 擦行 · 同步更新）——两类控制序列都剥掉
+        .replace(new RegExp(`${esc}\\][^${esc}]*(?:\\u0007|${esc}\\\\)`, 'g'), '')
+        .replace(new RegExp(`${esc}\\[[0-9;?]*[A-Za-z]`, 'g'), '')
+        .endsWith('\n')
+    )
+  }
+
+  /** 矮窗 ＋ 长草稿（插入点 200）＋ 若干行流式正文——探针 `stream-frame.ts 40 10` 那一形。 */
+  function streaming(lines: number): Stage {
+    const stage = createStage()
+    stage.feed([
+      event('model.delta', {
+        channel: 'text',
+        text: Array.from({ length: lines }, (_, index) => `流式 ${String(index + 1).padStart(2, '0')}`).join('\n'),
+      }),
+    ])
+    stage.press({ kind: 'paste', text: LONG })
+    while (at(stage) > AT) stage.press({ kind: 'left' })
+
+    return stage
+  }
+
+  /** 长草稿 ＋ 矮窗（没有流式）——对照组：这一档本来就够不着终端高度。 */
+  function drafted(): Stage {
+    const stage = createStage()
+    stage.press({ kind: 'paste', text: LONG })
+    while (at(stage) > AT) stage.press({ kind: 'left' })
+
+    return stage
+  }
+
+  /** 三条工具记录（各两行：标题 ＋ 结果）——六行挤在两行的活动区预算里。 */
+  function toolRows(): Stage {
+    const stage = drafted()
+    stage.feed(
+      ['a.txt', 'b.txt', 'c.txt'].flatMap((path, at) => [
+        event('tool.call', { name: 'ls', args: { path } }, { id: at + 1 }),
+        event('tool.result', { call: at + 1, ok: true, output: { text: path } }, { id: at + 11 }),
+      ]),
+    )
+
+    return stage
+  }
+
+  /** 裁决接管（材料一行）——接管期间没有插入点，真光标藏起来。 */
+  const TAKEOVER = [
+    event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
+    event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
+  ]
+
+  function taken(): Stage {
+    const stage = createStage()
+    stage.type('abcd')
+    stage.press({ kind: 'left' })
+    stage.press({ kind: 'left' }) // ab|cd
+    stage.feed(TAKEOVER)
+
+    return stage
+  }
+
+  /** 接管 → 批准 → **归还**（草稿与插入点一起回来）。 */
+  function returned(): Stage {
+    const stage = taken()
+    stage.press({ kind: 'char', char: 'y' }) // 答「批准」
+    stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 }, { id: 88 })])
+
+    return stage
+  }
+
+  test('流式 1/2/3/4/6 行——帧**短于**这一屏，真光标落在插入点那一行', async () => {
+    for (const lines of [1, 2, 3, 4, 6]) {
+      const stage = streaming(lines)
+      const bytes = await rendered([stage.shell.getView()], SHORT, null)
+      const frame = await stage.screen(SHORT)
+
+      // 原锚：3/4/6 那三档**没有**这个换行（帧 10/11/13 行，正好顶满 ⇒ Ink 走了整屏那一支）
+      expect([lines, trailingBreak(bytes)]).toEqual([lines, true])
+      // 插入点是展示区最后一条正文行 ⇒ 它该在「… 下面还有 2 行」那条的**上一行**
+      // （`x` 与二轮那条同形：左留白 1 ＋ 第 6 个视觉行上 12 个 a）
+      expect([lines, frame.screen.cursor]).toEqual([
+        lines,
+        { x: 1 + 12, y: viewportOf(frame, frame.rowOf('… 下面还有 2 行')) - 1 },
+      ])
+    }
+  })
+
+  test('单条流式记录**自己就超预算**——屏上画**末尾**那几行，记录里一行不少', async () => {
+    const stage = streaming(12) // 一条记录、十二个视觉行；活动区的预算只有 2 行
+    const bytes = await rendered([stage.shell.getView()], SHORT, null)
+    const frame = await stage.screen(SHORT)
+
+    // 原锚：整条留下来（12 ＋ 1 ＋ 5 ＋ 1 ＝ 19 行的帧）⇒ 顶满 ⇒ 没有这个换行
+    expect(trailingBreak(bytes)).toBe(true)
+    expect(frame.has('流式 12')).toBe(true) // 最新那几行看得见（活动区是**尾**窗口）
+    expect(frame.has('流式 01')).toBe(false) // 开头画不下——**屏**放不下，不是记录里丢
+
+    // **记录里一行不少**：切的是画，不是记录（输出照旧整条进记录，塞在 `row.text` 里）
+    const row = stage.shell.getView().rows[0]
+    const text = row?.kind === 'assistant' ? row.text : ''
+
+    expect(text.split('\n')).toHaveLength(12)
+    expect(text).toContain('流式 01')
+  })
+
+  test('多条工具记录——只画得下**最近**的那几条，帧仍短于这一屏', async () => {
+    const stage = toolRows()
+    const bytes = await rendered([stage.shell.getView()], SHORT, null)
+    const frame = await stage.screen(SHORT)
+
+    expect(trailingBreak(bytes)).toBe(true) // 原锚：六行整条留下 ⇒ 帧 11 行 ⇒ 顶满
+    expect(frame.has('ls {"path":"c.txt"}')).toBe(true) // 最近那条在屏上
+    expect(frame.has('ls {"path":"a.txt"}')).toBe(false) // 早的那几条让位（**整条**让——不切一半）
+    expect(stage.shell.getView().rows).toHaveLength(3) // 三条都在记录里
+  })
+
+  test('矮窗里接管 → 归还——真光标回到**原插入点**，帧仍不顶满', async () => {
+    // 接管那一屏也得短于终端（卡片自成一块：材料一行 ＋ 四行）
+    expect(trailingBreak(await rendered([taken().shell.getView()], SHORT, null))).toBe(true)
+
+    const stage = returned()
+    stage.type('X') // 接着打——字进在**原来那个位置**
+    const frame = await stage.screen(SHORT)
+
+    expect(draftOf(stage)).toBe('abXcd')
+    // 1（左留白）＋ 2（`› `）＋ `abX` 3 列 ＝ 6（与 80×24 那条同形，这里换矮窗）
+    expect(frame.screen.cursor).toEqual({ x: 6, y: frame.rowOf('› abXcd') })
+  })
+
+  test('装得下就照画——**不裁**（裁剪只发生在装不下时）', async () => {
+    const stage = streaming(3)
+    const frame = await stage.screen({ columns: 80, rows: 24 })
+
+    expect(frame.has('流式 01')).toBe(true)
+    expect(frame.has('流式 03')).toBe(true)
+  })
+
+  test('不变量：各档窗 × 各形屏——动态帧**一律**短于终端', async () => {
+    // 列数**不低于 40**——那是本仓自己声明的「最窄还得看得见」那一档
+    // （`spec.u31` 的 `NARROW`、banner 的块字档都按它划）。
+    //
+    // ⚠️ **如实记一条限度**（本轮不claim、也没改）：40 列以下另有两处**账比屏少一行**——
+    // 空态那句引导语（32 列以下会折成两行）与裁决卡的键位行（38 列以下会折成两行）。
+    // 前者已按「整句折几行」算进账里（见 `AppView` 的 `empty`），但 30×8 这类**极窄又极矮**
+    // 的窗上，光是「空态 ＋ 分隔线 ＋ 交互区 ＋ 状态行」就已经等于终端高度，活动区让到 0
+    // 也收不下；后者那两行在 `decision.ts` 里成形、账在 `app.ts` 里算，要收得动那个文件
+    // （本单所有权之外）。⇒ **本矩阵不覆盖 40 列以下**，限度写进回报。
+    const sizes = [
+      { columns: 40, rows: 10 },
+      { columns: 40, rows: 8 }, // 更矮：交互区 4 行 ＋ 分隔线 ＋ 状态行 ＝ 只余得下一行活动区
+      { columns: 60, rows: 12 }, // 中号
+      { columns: 80, rows: 24 }, // 正常尺寸（这一档本来就不顶满——防的是「修过头」）
+    ] as const
+
+    const cases: readonly (readonly [string, () => Stage])[] = [
+      ['空态', () => createStage()],
+      ['流式 3 行', () => streaming(3)],
+      ['流式 40 行（单条超预算）', () => streaming(40)],
+      ['长草稿（无流式）', () => drafted()],
+      ['三条工具记录', () => toolRows()],
+      ['接管中', () => taken()],
+      ['接管归还后', () => returned()],
+    ]
+
+    // 一格格问过去，**全跑完再断言**——第一格就停会把后面的格子藏起来（矩阵要的是一张全景图）
+    const topped: string[] = []
+    for (const size of sizes) {
+      for (const [name, make] of cases) {
+        const bytes = await rendered([make().shell.getView()], size, null)
+        if (!trailingBreak(bytes)) topped.push(`${size.columns}×${size.rows} 的「${name}」`)
+      }
+    }
+
+    expect(topped).toEqual([]) // 空数组＝每一格都短于终端；红的时候列着是哪几格顶满了
   })
 })

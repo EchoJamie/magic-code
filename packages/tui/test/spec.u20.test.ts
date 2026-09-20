@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { logLines } from '../src/components/log.ts'
 import { TEST_AT, event } from './events.ts'
 import { createStage } from './screen.ts'
 import type { Frame, Stage } from './screen.ts'
@@ -132,8 +133,23 @@ describe('差距 1 · diff 审阅——改了文件，看得见改了什么', ()
 
     stage.press({ kind: 'ctrl+o' })
     const opened = await stage.screen(WIDE)
-    expect(opened.has('old 19')).toBe(true)
-    expect(opened.has('… 还有')).toBe(false)
+
+    // ⚠️ **三条断言的锚**（U31 三轮返工改过一头，另两条没变）：
+    //
+    // - **原锚**（那条改了的）：`expect(opened.has('old 19')).toBe(true)`——「展开之后
+    //   这一条的开头也在屏上」。**为何变**：活动区**真裁剪**了（U31 三轮退回：单条自己
+    //   超预算时只画它末尾那几行——整条留着，动态帧就顶满终端，真光标高一行）。这一条
+    //   42 行 ≥ 24 行窗的活动区预算（20 行），故屏上只剩末尾那 20 行；旧断言是**擦着边**
+    //   过的（旧的账 21 行，第 22 行 `old 19` 正好是头一行），它量的其实是那笔坏账。
+    // - **新锚**：**全量在记录里**（`logLines` 42 行、`old 19` 在其中）——「展开给全量」
+    //   这条**规格的主句没变**，它在记录那一侧量；屏上放不下的是**窗口**的限度，不是折的限度。
+    // - **没变**的两条：折住那支「如实报还有几行」在屏上（上面那一段），展开之后它消失。
+    const lines = logLines(stage.shell.getView().rows, { columns: WIDE.columns, expanded: true })
+
+    expect(opened.has('… 还有')).toBe(false) // 展开 ⇒ 折的提示**不再出现**（原来那条，没变）
+    expect(lines.length).toBe(42) // 40 行 diff ＋ 标题行 ＋ 结果行
+    expect(lines.some((line) => line.segments.some((piece) => piece.text.includes('old 19')))).toBe(true)
+    expect(opened.has('new 19')).toBe(true) // 屏上是这一条的**末尾**那几行（活动区是尾窗口）
   })
 })
 
