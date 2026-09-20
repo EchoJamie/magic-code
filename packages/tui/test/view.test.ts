@@ -119,6 +119,50 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     expect(rowAt(view, 0)).toMatchObject({ state: 'rejected' })
   })
 
+  test('规约扣下的调用记成「未执行」——**认结果带来的那一位，不认文案**（不报耗时）', () => {
+    // 两个事件错开四个 id（`at` 跟着 id 走）：旧画法在这儿算得出一个 `4ms`——
+    // 那只是「两个事件背靠背发出」的间隔，不是这次调用的账（当时画成 `✗ 4ms · 未执行`）
+    //
+    // 文案**故意换一句**（2026-09-20 三轮裁）：判据若还压在正文首行上，这条用例当场红——
+    // 「未执行」四个字只是给人看的，说这一笔是什么状态的是 `notExecuted` 那一位
+    // （产生处写：`@magic/conversation` 的 `withholds`）。
+    const view = viewed([
+      event('tool.call', { name: 'write', args: { path: 'src/a' } }, { id: 71 }),
+      event(
+        'tool.result',
+        { call: 71, ok: false, notExecuted: true, output: { text: '扣住了 · 换个说法也行\n（为什么、怎么办）' } },
+        { id: 75 },
+      ),
+    ])
+
+    expect(rowAt(view, 0)).toMatchObject({ state: 'unexecuted', elapsedMs: null })
+    // 正文照收——屏上只取**首行**那一句，后头那段展开（`ctrl+o`）看得到
+    expect(rowAt(view, 0)).toMatchObject({ output: ['扣住了 · 换个说法也行', '（为什么、怎么办）'] })
+  })
+
+  test('**正文里写着「未执行」不算数**：真跑过、失败了的照旧画失败并保留耗时', () => {
+    // 本轮的真反例（真 app/Faux 在 `app/test/rules.test.ts` 里咬住它）：`exec` 真跑了一次、
+    // 真写下了文件、真 `exit 1`，只是它的输出第一行恰好是「未执行后续步骤：…」。
+    // 旧判据（首行以「未执行」起头）把这一笔画成了「没跑」——耗时被抹掉、叉也换了。
+    const view = viewed([
+      event('tool.call', { name: 'exec', args: { cmd: 'run.sh' } }, { id: 81 }),
+      event(
+        'tool.result',
+        { call: 81, ok: false, output: { text: '未执行后续步骤：前一步已经写入，但校验失败\n\n[exit 1]' } },
+        { id: 85 },
+      ),
+    ])
+
+    expect(rowAt(view, 0)).toMatchObject({ state: 'failed', elapsedMs: 4 })
+
+    // 对照：真失败换成一句不相干的话，结论一字不变（耗时与叉都只看 `ok`）
+    const plain = viewed([
+      event('tool.call', { name: 'write', args: { path: 'src/a' } }, { id: 91 }),
+      event('tool.result', { call: 91, ok: false, output: { text: '写入失败：磁盘满' } }, { id: 95 }),
+    ])
+    expect(rowAt(plain, 0)).toMatchObject({ state: 'failed', elapsedMs: 4 })
+  })
+
   test('大块转存——结果只留 blob 引用（外壳不解析）', () => {
     const view = viewed([
       event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
@@ -159,14 +203,16 @@ describe('接管（裁决挂着时占住输入框）', () => {
   })
 
   test('接管时**草稿收起来**——答完原样归还（不自动发送）', () => {
-    const typed = { ...appendEcho(createView(), '打了一半'), draft: '打了一半' }
+    // 插入点停在中间（`打了一|半`）——归还要**原样**放回这里，不是末尾（返工轮）
+    const typed = { ...appendEcho(createView(), '打了一半'), draft: '打了一半', caret: 3 }
     const taken = reduce(typed, ask('light'))
 
     expect(taken.draft).toBe('')
-    expect(taken.stashed).toBe('打了一半')
+    expect(taken.stashed).toEqual({ draft: '打了一半', caret: 3 })
 
     const answered = reduce(taken, event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 }))
     expect(answered.draft).toBe('打了一半')
+    expect(answered.caret).toBe(3)
     expect(answered.stashed).toBeNull()
     expect(answered.dock.kind).toBe('input')
   })
@@ -299,6 +345,38 @@ describe('会话与重建', () => {
     expect(kindsOf(view)).toEqual(['user', 'assistant', 'tool', 'assistant'])
     expect(rowAt(view, 2)).toMatchObject({ kind: 'tool', name: 'ls', output: ['a.txt', 'b.txt'], state: 'ok' })
     expect(view.rows.every(isSessionRow)).toBe(true)
+  })
+
+  test('重建也认「未执行」——同一条结果，切了会话回来长一个样（不退回「失败」）', () => {
+    // 条目载荷与事件数据**是同一份东西**（`ToolResultPayload` 对齐 `EventDataOf['tool.result']`），
+    // 故重建这一路读的就是产生处写下的那一位——两路同判不靠再对一遍文案
+    const entries: readonly Entry[] = [
+      { id: 1, kind: 'assistant', content: { text: '我先写。' }, at: 0 },
+      { id: 2, kind: 'tool-call', content: { text: '' }, payload: { name: 'write', args: { path: 'src/a' } }, at: 1 },
+      {
+        id: 3,
+        kind: 'tool-result',
+        content: { text: '扣住了 · 换个说法也行' },
+        payload: { ok: false, notExecuted: true, output: { text: '扣住了 · 换个说法也行' } },
+        at: 2,
+      },
+      { id: 4, kind: 'tool-call', content: { text: '' }, payload: { name: 'exec', args: { cmd: 'run.sh' } }, at: 3 },
+      {
+        id: 5,
+        kind: 'tool-result',
+        content: { text: '未执行后续步骤：前一步已经写入，但校验失败' },
+        payload: { ok: false, output: { text: '未执行后续步骤：前一步已经写入，但校验失败' } },
+        at: 4,
+      },
+    ]
+
+    const view = rebuild(createView(), entries)
+
+    // 事件那一路与重建这一路**同判**——否则切回一条旧会话，同一行会从「没跑」变回「失败」，
+    // 屏上的样子取决于从哪条路进来，那不成话
+    expect(rowAt(view, 1)).toMatchObject({ kind: 'tool', state: 'unexecuted', elapsedMs: null })
+    // 对照：正文同样以「未执行」起头、**没带那一位**的那笔，重建回来照旧是失败
+    expect(rowAt(view, 2)).toMatchObject({ kind: 'tool', state: 'failed' })
   })
 
   test('重建不吃屏上痕迹——回执与命令输出不进', () => {

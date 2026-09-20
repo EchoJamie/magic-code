@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@magic/contracts": "workspace:*",
-    "ink": "^7.1.1"
+    "ink": "^7.1.1",
+    "string-width": "^8.2.0",
+    "wrap-ansi": "^10.0.0"
   },
   "peerDependencies": {
     "react": "^19.0.0"

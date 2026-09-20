@@ -25,8 +25,20 @@ export const ENVIRONMENT_BLOCK_ID = 'environment'
 /** 环境注入块的标题行（**边界锚**）。 */
 export const ENVIRONMENT_HEADING = '## 环境'
 
-/** 块的标识——段结构四段之一，或环境注入块。 */
-export type PromptBlockId = PromptSectionId | typeof ENVIRONMENT_BLOCK_ID
+/**
+ * 项目规约块标识（U32）。
+ *
+ * 与环境块同一条先例——**只增不改**：段结构 `PROMPT_SECTIONS` 仍是四段，规约以**追加块**
+ * 落于其后（见 `./rules.ts`，那份材料的正文与边界都在那儿）。块的**词汇**（标识 / 标题）
+ * 归本文件统一持有：`splitSystemPrompt` 的标题表就在下面，两处若各写一份，改标题时会漏掉一头。
+ */
+export const PROJECT_RULES_BLOCK_ID = 'project-rules'
+
+/** 项目规约块的标题行（**边界锚**）。 */
+export const PROJECT_RULES_HEADING = '## 项目规约'
+
+/** 块的标识——段结构四段之一，或两个追加块（环境注入 · 项目规约）。 */
+export type PromptBlockId = PromptSectionId | typeof ENVIRONMENT_BLOCK_ID | typeof PROJECT_RULES_BLOCK_ID
 
 /** 装配产物的一块。 */
 export type PromptBlock = {
@@ -125,10 +137,16 @@ export function buildSystemPrompt(vars: PromptVars): string {
     .join(BLOCK_SEPARATOR)
 }
 
-/** 已知标题 → 块标识（四段 + 环境块）。 */
+/**
+ * 已知标题 → 块标识（四段 + 环境块 + 项目规约块）。
+ *
+ * 规约块那一行**即便多数产物里没有这一块也要在**：缺席与「读不出来」是两回事——
+ * 少了它，一份带规约的提示词会被切错（规约的标题与正文被算进环境块里）。
+ */
 const BLOCK_ID_BY_HEADING: ReadonlyMap<string, PromptBlockId> = new Map<string, PromptBlockId>([
   ...PROMPT_SECTIONS.map((id): readonly [string, PromptBlockId] => [sectionHeading(id), id]),
   [ENVIRONMENT_HEADING, ENVIRONMENT_BLOCK_ID],
+  [PROJECT_RULES_HEADING, PROJECT_RULES_BLOCK_ID],
 ])
 
 /**

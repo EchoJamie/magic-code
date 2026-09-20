@@ -108,8 +108,55 @@ export type PermissionsConfig = {
 export type WorkspaceRoots = readonly string[]
 
 /**
+ * 项目规约段（**阶段 3 加键** · U32）——两个键，管**两件不同的事**。
+ *
+ * ## `sources` —— **主动加载**的补充规约
+ *
+ * 默认的规约来源只有两处，都在工作区根内：目录里的 `AGENTS.md` / `CLAUDE.md` 与根下的
+ * `.magic/rules` / `.claude/rules`。两件默认接不住的事归这里：
+ *
+ * 1. **同目录两份不同实体**——`AGENTS.md` 与 `CLAUDE.md` 都在、且指向不同文件时，
+ *    默认**采 AGENTS、并把 CLAUDE 那份记进诊断**（「明确告知采用 AGENTS」，不静默混成一份）。
+ *    想把落选的那份也读进来，就在这儿点名它；
+ * 2. **根外的一份规约**——不在任何工作区根内、但用户就是想让模型读的规约文档。
+ *
+ * 点名的东西**正文会被读进来、送进上下文**——这是它与下面那个键的分水岭。
+ *
+ * ## `linkSources` —— **允许跟着符号链接去读**的那些地方（**不加载正文**）
+ *
+ * 由头（2026-09-20 裁）：根内的一份规约**软链接到根外**（`src/AGENTS.md -> ~/shared/team.md`）
+ * 时，加载器默认**不跟出去**——那等于开一条读任意文件的路。但用户的本意常常只是
+ * 「这一份共享文件就是我的 src 规约」，而不是「把这份文件当成一份全局规约」。
+ *
+ * 故单立这个键：写进来**只放行来源**——链接读得到、**作用范围照旧是链接所在的那一处**
+ * （`src/AGENTS.md` 仍只管 `src`），**不自动把正文当规约加载、也不扩任何可写根**。
+ *
+ * **两键的分水岭**：`sources` ＝「**这份文件是规约，读进来**」；
+ * `linkSources` ＝「**这个链接可以跟出去**，读到的是什么就还是什么」。
+ *
+ * ## 两键共同处
+ *
+ * **键缺省 ＝ 一个都没有**——行为与不写这两格之前一字不变。
+ *
+ * **形制**：字符串数组，每项是**绝对路径**（文件或目录；前导 `~` 由加载器展开，
+ * 同 `dataDir` / `workspaceRoots`）。`sources` 点名的目录按规则目录扫（其下 `*.md` 递归）、
+ * 点名的文件就是一份规则文档；`linkSources` 点名的目录＝它**底下**的链接都放行、
+ * 点名的文件＝就那一个。
+ *
+ * ⚠️ **两个都是只读来源的配置，不是执行授权**：写进来只说明「这些文件可以读来当规约」，
+ * **不改变**任何工具能不能碰它（那是工作区与权限闸门的事，两码事）。
+ */
+export type RulesConfig = {
+  /** 主动加载的补充规约（**正文进上下文**）——文件或目录。 */
+  readonly sources?: readonly string[]
+  /** 允许规约符号链接跟出去读的落点（**只放行来源，不加载正文**）——文件或目录。 */
+  readonly linkSources?: readonly string[]
+}
+
+/**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
- * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots`**；**首批功能加键 `mcp`**。
+ * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots` / `rules`**；
+ * **首批功能加键 `mcp`**（U38）。
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
@@ -120,6 +167,8 @@ export type MagicConfig = {
   readonly permissions?: PermissionsConfig
   /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */
   readonly workspaceRoots?: WorkspaceRoots
+  /** 项目规约段（阶段 3 · U32）——见 `RulesConfig`；**键缺省＝只有两处默认来源**。 */
+  readonly rules?: RulesConfig
   /**
    * **外部工具服务器**（U38）——见 `McpConfig`（形制在 `mcp.ts`）。
    *

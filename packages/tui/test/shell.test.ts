@@ -217,7 +217,8 @@ describe('接管（裁决挂着时占住输入框）', () => {
     app.type('打了一半')
     ask(app)
     expect(app.view().draft).toBe('')
-    expect(app.view().stashed).toBe('打了一半')
+    // 草稿**连同插入点**一起收着（返工轮：插入点不再一律摆到末尾，见 `Stashed`）
+    expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4 })
 
     app.press({ kind: 'char', char: 'y' })
     // 答复发出去；**裁决落定那一刻**（内核回 `tool.decision`）才归还草稿
@@ -266,7 +267,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
       event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
     )
     expect(app.view().dock.kind).toBe('decision')
-    expect(app.view().stashed).toBe('草稿') // 只收一次
+    expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2 }) // 只收一次
 
     app.press({ kind: 'char', char: 'n' })
     app.spy.emit(event('tool.decision', { call: 72, decision: 'reject', decider: 'user', elapsedMs: 100 }))

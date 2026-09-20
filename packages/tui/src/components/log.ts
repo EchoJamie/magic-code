@@ -60,6 +60,15 @@ export type LogRowProps = {
   /** 这条行之前留不留一行分段（用户消息之前＝留）。 */
   readonly spaced: boolean
   /**
+   * **开头跳过几个显示行**（U31 三轮退回）——缺省 0（整条照画）。
+   *
+   * 只有活动区的头一条会用上：**它自己就比预算高**时（单条长记录 / 一段长 diff），
+   * 屏上只画它**末尾**那几行——留一条溢出预算的整行，整个动态帧就顶满终端，
+   * Ink 那支「顶满就省末尾换行」立刻把真光标顶高一行（见 `app.ts` 的 `liveAreaOf`）。
+   * ⚠️ **这是画的事，不是记录的事**：`row` 一个字不动，跳过的行照样在记录里。
+   */
+  readonly skip?: number
+  /**
    * **此刻**（毫秒）——跑动中的工具行拿它算「跑到第几秒了」（`⟳ 0.6s`）。
    *
    * 缺省 `null` ＝**没有钟**：那就照旧报「运行中」，**不编一个秒数**（拿不到的不编）。
@@ -73,8 +82,17 @@ export type LogRowProps = {
  *
  * ⚠️ **每条显示行各是一个 `<Text>`、行内不写 `'\n'`**——见文件头注（D11 的根因与修法）。
  */
-export function LogRowView({ row, columns, expanded, spaced, now = null }: LogRowProps): ReactElement {
-  const lines = rowLines(row, { columns, expanded, spaced, now })
+export function LogRowView({
+  row,
+  columns,
+  expanded,
+  spaced,
+  skip = 0,
+  now = null,
+}: LogRowProps): ReactElement {
+  const all = rowLines(row, { columns, expanded, spaced, now })
+  // 头一条超预算时只画末尾那几行（`skip` 见 props；0 时**原样交那一份**——它是缓存里的数组）
+  const lines = skip > 0 ? all.slice(skip) : all
 
   return h(
     'ink-box',
@@ -501,6 +519,13 @@ function verdictOf(row: Extract<LogRow, { kind: 'tool' }>): {
   // 没跑成：报**为什么**（首行缘由就是那句「为什么」；输出为空才回退到一句话）
   if (row.state === 'rejected') {
     return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '未执行' }
+  }
+  // **规约扣下 / 材料超限停批**：也是「压根没跑」，故与失败分开画——不上失败那个叉
+  // （`!` ＋ warn 要说的是「这一笔要你再看一眼」），也没有耗时（归约那一步就落了 `null`，
+  // 依据是结果上的 `notExecuted`，见 `view.ts`·`reduceToolResult`）。那句 `未执行 · …`
+  // 是结果正文的首行，本行照抄——正文后头还有一条「为什么、怎么办」，`ctrl+o` 展开可见。
+  if (row.state === 'unexecuted') {
+    return { marker: '!', color: PALETTE.warn, text: firstLineOf(row.output) ?? '未执行' }
   }
   if (row.state === 'failed') {
     return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '失败' }

@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { logLines } from '../src/components/log.ts'
 import { TEST_AT, event } from './events.ts'
 import { createStage } from './screen.ts'
 import type { Frame, Stage } from './screen.ts'
@@ -132,8 +133,23 @@ describe('差距 1 · diff 审阅——改了文件，看得见改了什么', ()
 
     stage.press({ kind: 'ctrl+o' })
     const opened = await stage.screen(WIDE)
-    expect(opened.has('old 19')).toBe(true)
-    expect(opened.has('… 还有')).toBe(false)
+
+    // ⚠️ **三条断言的锚**（U31 三轮返工改过一头，另两条没变）：
+    //
+    // - **原锚**（那条改了的）：`expect(opened.has('old 19')).toBe(true)`——「展开之后
+    //   这一条的开头也在屏上」。**为何变**：活动区**真裁剪**了（U31 三轮退回：单条自己
+    //   超预算时只画它末尾那几行——整条留着，动态帧就顶满终端，真光标高一行）。这一条
+    //   42 行 ≥ 24 行窗的活动区预算（20 行），故屏上只剩末尾那 20 行；旧断言是**擦着边**
+    //   过的（旧的账 21 行，第 22 行 `old 19` 正好是头一行），它量的其实是那笔坏账。
+    // - **新锚**：**全量在记录里**（`logLines` 42 行、`old 19` 在其中）——「展开给全量」
+    //   这条**规格的主句没变**，它在记录那一侧量；屏上放不下的是**窗口**的限度，不是折的限度。
+    // - **没变**的两条：折住那支「如实报还有几行」在屏上（上面那一段），展开之后它消失。
+    const lines = logLines(stage.shell.getView().rows, { columns: WIDE.columns, expanded: true })
+
+    expect(opened.has('… 还有')).toBe(false) // 展开 ⇒ 折的提示**不再出现**（原来那条，没变）
+    expect(lines.length).toBe(42) // 40 行 diff ＋ 标题行 ＋ 结果行
+    expect(lines.some((line) => line.segments.some((piece) => piece.text.includes('old 19')))).toBe(true)
+    expect(opened.has('new 19')).toBe(true) // 屏上是这一条的**末尾**那几行（活动区是尾窗口）
   })
 })
 
@@ -308,6 +324,16 @@ describe('差距 4 · 输入框——`shift+回车` 换行 · 多行草稿 · `�
     expect(stage.commands().some((command) => command.type === 'input.submit')).toBe(true)
   })
 
+  /**
+   * ⚠️ **二轮返工改过这条断言里的数**（U31 二轮验收退回：折叠提示与正文共用高度预算）——
+   *
+   * - **原锚**：`… 上面还有 2 行`（7 个视觉行 − 5 行正文；那行提示**不**占预算，
+   *   屏上交互区因此是 6 行而 `maxDraftLines` 的账写着 5 行）。
+   * - **为何变**：半屏预算改成**整片输入区**的上限——提示行占它自己那一格之后，
+   *   「5 行」里只放得下 4 行正文 ⇒ 收起来的是 3 行。旧数正是「账比屏少两行」的残影，
+   *   矮窗（10 行）上会把动态帧顶到终端高度、真光标高一行（U31 二轮退回那一条）。
+   * - **新锚**：`… 上面还有 3 行`；「正在打的那行必须看得见」**没变**（规格的主句）。
+   */
   test('多行草稿**上限半屏**——超了收起头部，并**如实报**上面还有几行', async () => {
     const stage = live()
     for (let at = 0; at < 7; at += 1) {
@@ -315,10 +341,10 @@ describe('差距 4 · 输入框——`shift+回车` 换行 · 多行草稿 · `�
       stage.type(`第 ${at + 1} 行`)
     }
 
-    // 屏 10 行 ⇒ 半屏 5 行：前 2 行收起
+    // 屏 10 行 ⇒ 半屏 5 行（含「… 上面还有 N 行」那一行）：前 3 行收起
     const frame = await stage.screen({ columns: 80, rows: 10 })
 
-    expect(frame.has('… 上面还有 2 行')).toBe(true)
+    expect(frame.has('… 上面还有 3 行')).toBe(true)
     expect(frame.has('第 1 行')).toBe(false)
     expect(frame.has('第 7 行')).toBe(true) // 光标在末尾，正在打的那行必须看得见
   })
