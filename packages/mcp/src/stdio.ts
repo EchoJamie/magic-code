@@ -25,15 +25,15 @@
  * 6. **读数跟着连接走**（`markUnavailable`）——服务器退了 / 我们放了，状态当场作废
  *    （`available` 挂在一条没有对端的连接上是假账）；**本次没发出**与**发出去后没了**
  *    也分成两种结果（契约 `McpFailure`）。
- * 7. **自有子树一起收**（`process-tree.ts`）——SDK 只关它直接拉起的那个进程；服务器再拉的
- *    那一层（`npx` → `node`、用户脚本起的后台件）得我们按**自有归属**收干净。
+ * 7. **自有进程组一起收**（`stdio-transport.ts`）——归属在**启动那一刻**定死（自己 spawn、
+ *    `detached` 自成一组）；收尾按**组**发信号，服务器再拉的那一层（`npx` → `node`、
+ *    用户脚本起的后台件、**调用中途刚起就随父崩掉的那些**）一并收走。
  *
  * 调用这一层**不抛**——「没收到结果」是结果的一种，模型要据此决定下一步（同沙箱原语
  * 那条「失败形态分两路」的姿势）。
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import type {
   McpCallOutcome,
@@ -43,7 +43,8 @@ import type {
   McpServerConfig,
   McpToolInfo,
 } from '@magic/contracts'
-import { descendantsOf, reap } from './process-tree.ts'
+import { createOwnedStdioTransport } from './stdio-transport.ts'
+import type { OwnedStdioTransport } from './stdio-transport.ts'
 
 /** 客户端自报的名字（服务器侧日志里看到的就是这个）。 */
 const CLIENT_INFO = { name: 'magic-code', version: '0.0.0' } as const
@@ -91,10 +92,15 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
   let state: McpConnectionState = { status: 'connecting' }
   let discovered: readonly McpToolInfo[] = []
   let client: Client | undefined
-  let transport: StdioClientTransport | undefined
+  let transport: OwnedStdioTransport | undefined
   let started = false
   /** 这一次关闭是不是**我们自己发起的**（决定那句缘由怎么说）。 */
   let releasing = false
+  /**
+   * **自有进程组**那一支（见 `stdio-transport.ts`）——归属只有这一个判据：
+   * 组是我们 spawn 出来的那个（`detached`），组里有什么就收什么。
+   */
+  let owned: OwnedStdioTransport | undefined
 
   /**
    * 这条连接不再是「可用」——客户端一定作废；**工具表分两种情况**（返工 A）：
@@ -113,6 +119,18 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
     state = { status: 'unavailable', reason }
   }
 
+  /** 收尾那句话——**没收干净就说没收干净**（不拿空表冒充「已收干净」）。 */
+  function cleanupNote(survivors: readonly number[]): string | undefined {
+    if (survivors.length === 0) return undefined
+    return `有进程没能收掉（进程组 ${survivors.join(' ')}）`
+  }
+
+  /** 把收尾那句话接到当下读数上（崩了那一路是异步收的，收完再补这句话）。 */
+  function noteCleanup(line: string | undefined): void {
+    if (line === undefined || state.status !== 'unavailable') return
+    state = { status: 'unavailable', reason: `${state.reason}；${line}` }
+  }
+
   /**
    * 起手的那一趟——**失败一律落成「不可用 ＋ 缘由」**，绝不抛给调用方。
    *
@@ -124,20 +142,28 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
     started = true
 
     try {
-      const spawned = new StdioClientTransport({
+      // **自有 stdio 传输**（见 `stdio-transport.ts`）：自己 spawn、自成进程组——
+      // 归属在启动那一刻定死，收尾按组收（不靠事后数进程树那样的时点与复用赌博）。
+      // 环境（默认那几个 ＋ 配置里的）、stderr 不外泄（头注 1 / 2）都在那一层里。
+      const spawned = createOwnedStdioTransport({
         command: options.config.command,
         ...(options.config.args === undefined ? {} : { args: [...options.config.args] }),
-        // 默认环境（PATH / HOME 一类）＋ 配置里那几个——**用户凭据不外溢**（头注 2）
         ...(options.config.env === undefined ? {} : { env: { ...options.config.env } }),
-        // TUI 在跑：子进程的 stderr 一行都不能漏到这块屏上（头注 1）
-        stderr: 'ignore',
       })
+      owned = spawned
       transport = spawned
 
       const connecting = new Client(CLIENT_INFO, { capabilities: {} })
       // **连接的生死投影到读数上**（头注 6）：服务器自己退了 / 传输断了，这儿当场改状态。
       // 起手那一趟的失败不归它说（那条路由 `catch` 给更准的缘由——ENOENT 一类）。
       connecting.onclose = (): void => {
+        // **它自己崩了**：传输那一层**当场按组收**（组员还在组里，谁都跑不掉——
+        // 「服务器先崩，之后再 close」再不是漏洞：收的是组，不靠崩前数过什么）。
+        // 收得怎么样**如实记在读数上**：还有没退的就说出来（不许拿空表冒充已收干净）。
+        if (!releasing && owned !== undefined) {
+          void owned.shutdown().then((survivors) => noteCleanup(cleanupNote(survivors)))
+        }
+
         if (state.status !== 'available') return
         // **我们放的**（`release()` 那条路）与**它自己走的**是两件事：缘由不同，
         // 工具表也两样（放了＝清空，断了＝留着——见 `markUnavailable`）
@@ -178,24 +204,24 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
     const spawned = transport
     transport = undefined
     client = undefined
+    let note: string | undefined
 
     if (spawned !== undefined) {
       releasing = true
-      const root = typeof spawned.pid === 'number' ? spawned.pid : undefined
-      const doomed = root === undefined ? [] : descendantsOf(root)
-
-      try {
-        await spawned.close()
-      } catch {
-        // 关不掉就算了（多半是已经死了）——收尾这一步没有可回的答，静默吞掉比抛出去干净
-      }
-
-      await reap(doomed)
+      // 传输那一层自己就走完整段（关 stdin → 等 → 组 TERM → 等 → 组 KILL），
+      // 并把它**没收掉的**交回来——收尾结果据此如实写进读数
+      const survivors = await spawned.shutdown()
       releasing = false
+      note = cleanupNote(survivors)
     }
 
-    // 读数归位——**已经不可用的那一份缘由更好**（起手失败 / 服务器退出），别覆盖掉
-    if (state.status !== 'unavailable') markUnavailable(RELEASED)
+    // **放了手：工具表一定清空**（复验退回的第二条：断了之后再 close，表也得清——
+    // 「断了留着」只在**还活着的那条连接**上成立，一放就不是那个处境了）。
+    // 缘由则保留更好的那一份（起手失败 / 服务器退出都比「连接已释放」说得更多）；
+    // **收尾结果接在后面**：没收干净就说没收干净。
+    discovered = []
+    const reason = state.status === 'unavailable' ? state.reason : RELEASED
+    state = { status: 'unavailable', reason: note === undefined ? reason : `${reason}；${note}` }
   }
 
   return {

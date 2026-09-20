@@ -82,6 +82,13 @@ const TOOLS = [
     description: '调用中途让服务器自己死掉（断连的靶子）',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
+  {
+    // **收组的靶子**：后代是**调用中途**才起的，起完父立刻崩——「崩前数一次」那条路
+    // 根本来不及看见它（返工 A 补正要的就是这一格）
+    name: 'spawnboom',
+    description: '调用中途起一个普通后代，随即自尽',
+    inputSchema: { type: 'object', properties: {}, required: [] },
+  },
 ]
 
 /**
@@ -158,6 +165,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (tool === 'slow') return forever()
   // 断连的靶子：调用进来了、活还没干完，进程自己没了（客户端那一侧就是「未收到结果」）
   if (tool === 'boom') process.exit(9)
+  // **调用中途**起一个后代，**随即**自尽——归属只能靠进程组认（见 `spawnDescendant` 的注）
+  if (tool === 'spawnboom') {
+    spawnDescendant()
+    process.exit(9)
+  }
 
   return content(tool, args) as never
 })

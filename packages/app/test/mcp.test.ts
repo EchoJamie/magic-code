@@ -65,6 +65,27 @@ function callsOf(path: string): readonly { tool: string; args: Record<string, un
     .map((line) => JSON.parse(line) as { tool: string; args: Record<string, unknown>; pid: number })
 }
 
+/** 等一个异步条件成立（有界）。 */
+async function untilAsync(test: () => Promise<boolean>, what: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await test()) return
+    await Bun.sleep(50)
+  }
+  throw new Error(`等不到：${what}`)
+}
+
+/** 服务器记下的「它自己拉起的那个后代」（`descendants` / `spawnboom` 两幕）。 */
+function descendantPidOf(log: string): number | undefined {
+  if (!existsSync(log)) return undefined
+  for (const line of readFileSync(log, 'utf8').split('\n')) {
+    if (line.trim() === '') continue
+    const entry = JSON.parse(line) as { kind?: string; pid?: number }
+    if (entry.kind === 'child') return entry.pid
+  }
+  return undefined
+}
+
 /** 等条件成立（轮询——这一条链是异步的，测试别假设时序）。 */
 async function until(test: () => boolean, what: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -106,7 +127,7 @@ describe('发现 → 审批 → 调用 → 落账 → 回填', () => {
 
       // 装配侧先自证：这一台连上了、工具表是服务器报的那几件
       expect(assembly.mcpServers()).toEqual([
-        { server: 'fake', state: { status: 'available' }, tools: ['echo', 'snapshot', 'shot', 'annotated', 'fail', 'slow', 'boom'] },
+        { server: 'fake', state: { status: 'available' }, tools: ['echo', 'snapshot', 'shot', 'annotated', 'fail', 'slow', 'boom', 'spawnboom'] },
       ])
 
       const shell = bareShell(assembly)
@@ -193,6 +214,40 @@ describe('拒绝', () => {
     }
   })
 })
+
+test('**调用中途**才起的后代、父随即崩——从真应用这一侧也收得到', async () => {
+    const dir = scrapDir()
+    const log = join(dir, 'fake.jsonl')
+    const stage = stageWith({ fake: serverEntry(dir, 'fake') })
+
+    try {
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'mcp__fake__spawnboom', args: {} }] }, { text: '好' }],
+      })
+      await assembly.ready()
+
+      const shell = bareShell(assembly)
+      assembly.shell.send({ type: 'input.submit', text: '让它起一层再崩' })
+      await until(() => shell.requests().length >= 1, '审批询问')
+      shell.answer(shell.requests()[0]?.id as number, 'approve')
+      await until(() => shell.result() !== undefined, '结果落定')
+
+      // 那一笔的效果未知（调用发出去了、服务器在途没了）
+      expect(outputTextOf(shell.result())).toContain('未收到结果，远端可能已执行')
+
+      // **它带起的那一层也要没**（归属靠进程组——崩前没数过它也认得出）
+      const child = descendantPidOf(log)
+      expect(typeof child).toBe('number')
+      await untilAsync(async () => !alive(child as number), '那一层退出')
+      expect(alive(child as number)).toBe(false)
+
+      shell.dispose()
+      await assembly.shutdown()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
 
 describe('真实来源与不可放权', () => {
   test('跨服务器同名工具各走各的；伪造来源参数不改变真实身份', async () => {

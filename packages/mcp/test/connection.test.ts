@@ -331,6 +331,54 @@ describe('读数跟着连接走（返工 A · 独立验收问题 4）', () => {
   })
 })
 
+describe('服务器先崩再 close（返工 A 补正 · 独立复验退回的那一条）', () => {
+  test('崩之前数到的后代照收——不靠「close 那一刻还数得到」', async () => {
+    const dir = tempDir()
+    const log = join(dir, 'calls.jsonl')
+    const { connection } = await connect({}, { dir, mode: 'descendants' })
+
+    const child = descendantPidOf(log)
+    expect(typeof child).toBe('number')
+    expect(isAlive(child as number)).toBe(true)
+
+    // 服务器**自己崩**：调用进去了、活没干完，进程没了。
+    // ⚠️ 此刻 SDK 那一侧的 `pid` 已经收走——「等到 close 再数」是数不到的（复验就是栽在这）
+    expect(await connection.call('boom', {})).toMatchObject({ kind: 'failed', failure: 'unreachable' })
+    await waitState(connection, 'unavailable')
+
+    // **close 还没叫**，那一层就该被收掉（它是孤儿了）
+    await waitGone(child as number)
+    expect(isAlive(child as number)).toBe(false)
+
+    // 之后 close 照常（幂等、不炸），且**工具表清空**——「断了留着」只属于还活着的那条连接
+    await connection.close()
+    expect(connection.state.status).toBe('unavailable')
+    expect(connection.tools()).toEqual([])
+  })
+})
+
+test('**调用中途**才起的后代、父随即崩——照样收得到（组归属，不靠崩前数过什么）', async () => {
+    const dir = tempDir()
+    const log = join(dir, 'calls.jsonl')
+    const { connection } = await connect({}, { dir })
+
+    // 这一件工具是「起一层后代 ＋ 当场自尽」：观察时点**来不及**看见那个后代
+    // （它出生在调用中途），只有「组里有什么就收什么」这条路认得出它
+    expect(await connection.call('spawnboom', {})).toMatchObject({
+      kind: 'failed',
+      failure: 'unreachable',
+    })
+
+    const child = descendantPidOf(log)
+    expect(typeof child).toBe('number')
+
+    await waitGone(child as number)
+    expect(isAlive(child as number)).toBe(false)
+
+    await connection.close()
+    expect(connection.state.status).toBe('unavailable')
+  })
+
 /** 等状态落定（有界——探针别无限等）。 */
 async function waitState(connection: McpConnection, status: 'available' | 'unavailable'): Promise<void> {
   for (let i = 0; i < 100 && connection.state.status !== status; i += 1) await Bun.sleep(20)

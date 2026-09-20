@@ -534,6 +534,7 @@ const mcpApproval: Scenario = {
       label: '场景7-带后代',
       columns: 100,
       rows: 24,
+      turns: [{ kind: 'tool', name: 'mcp__nested__boom', args: {} }],
       config: {
         mcp: {
           servers: {
@@ -555,10 +556,24 @@ const mcpApproval: Scenario = {
       `pid ${grand}`,
     )
 
+    // —— **服务器自己崩**（调用中途没了）——那一层**当场**就该被收 ——
+    //
+    // 这是独立复验退回的那一条的组合：崩过之后再 close，SDK 那侧已经没有 pid 可数了，
+    // 故「数后代」必须发生在**它还活着的时候**（起手与每次调用之前），不能等收尾那一刻。
+    await descended.send('把服务器弄崩')
+    await descended.key('enter', { until: { text: 'y 批准这一次' } })
+    await descended.send('y', { until: { text: '未收到结果' }, timeoutMs: 15_000 })
+
+    await waitGone(grand as number)
+    ui.check(
+      !isAlive(grand as number),
+      '服务器崩了之后：连它带起的那一层也没了（不等谁去 close）',
+      `pid ${grand}`,
+    )
+
     await descended.key('ctrl+c') // 应用自己退场（收尾那一跳在 cli 的 finally 里）
     await descended.close({ graceMs: 3_000 })
-    await waitGone(grand as number)
-    ui.check(!isAlive(grand as number), '应用退出后：连它带起的那一层也没了', `pid ${grand}`)
+    ui.check(!isAlive(grand as number), '应用退出后：那一层仍然不在', `pid ${grand}`)
 
     rmSync(dir, { recursive: true, force: true })
   },
