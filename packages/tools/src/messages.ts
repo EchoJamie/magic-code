@@ -97,6 +97,46 @@ export const editFailedOutput = (reason: string): string => `编辑失败：${re
 export const searchFailedOutput = (reason: string): string => `搜索失败：${reason}`
 export const listFailedOutput = (reason: string): string => `列目录失败：${reason}`
 
+// —— 外部工具（MCP · U38）——
+//
+// 措辞的两条口径（交互约束 ·「MCP 查询、审批与失败恢复」）：
+// - **不称远端撤销**——取消只报「已停止等待 / 已发取消请求」这个实际结果；
+// - **不判效果**——超时与断连都**可能已经执行**，故一律写「未收到结果，远端可能已执行」，
+//   把「要不要重试」交回用户（恢复也不自动重放效果不明的调用）。
+
+/**
+ * 超时 / 断连——**效果未知**是这两条共同的那件事。
+ *
+ * `reason` 是适配器给的原委（哪条服务器、什么错），本域只加这一句名分、不改它的措辞
+ * （同沙箱报文那一条：`ExecResult` 的原委原样带出）。
+ */
+export const externalFailedOutput = (reason: string): string =>
+  `未收到结果，远端可能已执行；核对后再决定是否重试（${reason}）`
+
+/** 取消（`Ctrl+C` 打断在途）——已停止等待 ＋ 已发取消请求，仅此两件事实。 */
+export const externalCanceledOutput = (reason: string): string =>
+  `已取消——已停止等待并发出取消请求（取消不等于远端撤销，未收到结果${reason === '' ? '' : `；${reason}`}）`
+
+/** 服务器自己说这次错了（MCP 的 `isError`）——**调用是成了的**，是「结果如此」。 */
+export const externalRefusedOutput = (text: string): string =>
+  text === '' ? '外部工具报错（服务器没给说明）' : `外部工具报错：${text}`
+
+/** 回来了但没有内容——说清这一趟是成功的，免得空输出被读成失败。 */
+export const externalEmptyOutput = (): string => '[服务器回了空结果——这次调用是成功的]'
+
+/**
+ * 非文本部件（图片 / 音频 / 资源）——**明确标示暂不支持**，不静默丢。
+ *
+ * 报类型与字节数两件：读的人据此知道「有这么个东西、多大」，而**内容本版不解析**
+ * （终端显示与模型图像部件各有各的单元，不在这条链上顺手做）。
+ */
+export const externalPartNote = (
+  type: string,
+  mimeType: string | undefined,
+  bytes: number,
+): string =>
+  `[${type} 部件${mimeType === undefined ? '' : `（${mimeType}）`}：${bytes} 字节——本版不解析这类内容，未保留]`
+
 /** 工具名不在注册表内——不抛，照实回填（炸掉循环不是工具域该干的事）。 */
 export const unknownToolOutput = (name: string): string => `未注册的工具：${name}`
 

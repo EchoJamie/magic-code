@@ -23,6 +23,10 @@
  * - **入口即中止则连问都不问**——用户刚按了 Ctrl-C，再弹一个「要不要跑 rm -rf」是骚扰，
  *   答复也只会落到一个已经结束的轮上。与沙箱「已中止的信号不启动进程」同一姿势。
  * - **闸门在途被中止则不再等**（U07 备案把这一环交给本域：`invoke` 的 `signal` 竞速）。
+ *
+ * **外部工具的身份在这儿附上**（U38）：注册表查到定义之后，定义里写着的 `external`
+ * （服务器 ＋ 工具名）随调用交给闸门——**权限域只认这一份来源**，模型参数里的自报不作数。
+ * 这也是「请求 → 闸门」之间唯一被加过料的一件，且加的是**注册表的事实**，不是猜测。
  */
 
 import type { OutputDelta, RecordId, ToolCall, ToolResult, ToolRuntime } from '@magic/contracts'
@@ -104,15 +108,14 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     defaultRoot: options.workspace.defaultRoot(),
   })
 
-  /** ③ 执行——注册表查定义、交执行体；执行体抛了也归失败（不炸调用方）。 */
+  /** ③ 执行——交执行体；执行体抛了也归失败（不炸调用方）。 */
   const execute = async (
     call: ToolCall,
+    definition: ToolDefinition | undefined,
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
   ): Promise<ToolRunResult> => {
     if (call.invalid === true) return refused(OUTPUT_INVALID_ARGS)
-
-    const definition: ToolDefinition | undefined = registry.get(call.name)
     if (definition === undefined) return refused(unknownToolOutput(call.name))
 
     try {
@@ -129,6 +132,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
   /** ② 闸门 ＋ ③ 执行——批准之前，执行这一步根本不存在。 */
   const settle = async (
     call: ToolCall,
+    definition: ToolDefinition | undefined,
     callRef: RecordId,
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
@@ -136,11 +140,17 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     // 入口即中止——不问、不跑（理由见文件头注）
     if (opts.signal?.aborted === true) return refused(OUTPUT_CANCELED_BEFORE_RUN)
 
-    const decision = await raceAbort(options.gate.decide(call, contextOf(), callRef), opts.signal)
+    // **问之前先附上注册表给的身份**（U38）——外部工具的真实来源只认这一处：
+    // 定义里写着它属于哪条服务器，模型参数里的自报一概不作数（见契约 `ToolCall.external`）。
+    // 查表在询问之前做，是这一步唯一挪动过的东西：查表**没有副作用**，而闸门要的正是它。
+    const asked: ToolCall =
+      definition?.external === undefined ? call : { ...call, external: definition.external }
+
+    const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef), opts.signal)
     if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)
     if (decision === 'reject') return refused(OUTPUT_REJECTED)
 
-    return execute(call, opts, onOutput)
+    return execute(call, definition, opts, onOutput)
   }
 
   return {
@@ -158,7 +168,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         opts.onOutput?.(delta)
       }
 
-      const outcome = await settle(call, callRef, opts, onOutput)
+      const outcome = await settle(call, registry.get(call.name), callRef, opts, onOutput)
 
       // ④ 回填——终值定形（大块转存经记录域），先落事件、再交调用方
       const content = await toContent(outcome.output, options.blobs)

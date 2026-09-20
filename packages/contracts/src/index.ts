@@ -11,7 +11,7 @@
  * 两件：
  * 1. **共享语言**——`ids`（标识与时间口径）· `entries`（条目与 blob 引用）·
  *    `events`（kind 族与载荷 · 信封 · 不落库清单）· `control`（命令面与配对）·
- *    `config`（配置形制）；
+ *    `config`（配置形制）· `mcp`（外部工具的命名与身份 · 连接端口）；
  * 2. **跨域端口**——`ports`（九签名 ＋ 沙箱原语 / 工具规格）。
  *
  * 未定处标 `TODO(规划侧)`；**占位内部结构不属契约**——不得依赖（技术方案 · 代码治理 ·
@@ -23,4 +23,5 @@ export * from './entries.ts'
 export * from './events.ts'
 export * from './control.ts'
 export * from './config.ts'
+export * from './mcp.ts'
 export * from './ports.ts'

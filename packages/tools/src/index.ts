@@ -33,6 +33,15 @@
 
 export { createToolRuntime } from './dispatch.ts'
 
+/**
+ * **一个 MCP 连接 → 它的工具定义**（U38）——`options.tools` 那个追加出口的**现成一件**。
+ *
+ * 装配拿它把外部工具接进同一张注册表（**没有第二个工具来源**：审批、取消、记录、回填
+ * 走的都是 `createToolRuntime` 那一条链）。传进来的连接是 `@magic/contracts` 的端口——
+ * 客户端封在适配器（`@magic/mcp`）后面，本域不认识 MCP。
+ */
+export { defineMcpTools } from './mcp-tools.ts'
+
 // —— ② 构造入参形态 ——
 
 export type { ToolRuntimeOptions } from './runtime.ts'

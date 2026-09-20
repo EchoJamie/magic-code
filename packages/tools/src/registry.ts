@@ -14,7 +14,7 @@
  * 闸门与事件面：审议与留痕是分发的活，执行体只管「怎么把这件事做出来」。
  */
 
-import type { OutputDelta, Sandbox, ToolSpec } from '@magic/contracts'
+import type { ExternalToolRef, OutputDelta, Sandbox, ToolSpec } from '@magic/contracts'
 
 /** 执行体拿到的现场——沙箱（场所）＋ 本次调用的流式 / 取消面。 */
 export type ToolRunContext = {
@@ -41,6 +41,14 @@ export type ToolDefinition = {
     args: Readonly<Record<string, unknown>>,
     ctx: ToolRunContext,
   ) => ToolRunResult | Promise<ToolRunResult>
+  /**
+   * **外部工具的身份**（U38）——这一位在＝这条定义来自一个 MCP 服务器，不是内置的。
+   *
+   * 由**造这条定义的那一处**写死（`defineMcpTools`：从服务器名与工具名合成），分发据它
+   * 在询问闸门**之前**附到调用上（`ToolCall.external`）——权限域因此取得到**注册表给的**
+   * 来源，而不是模型参数里的自报。执行体那一侧看不见它（`run` 只收 `args`）。
+   */
+  readonly external?: ExternalToolRef
 }
 
 /** 注册表——定义随每次调用送模型的来处（`definitions()`）。 */

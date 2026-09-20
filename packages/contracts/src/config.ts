@@ -8,6 +8,7 @@
  * 本文件是共享语言中**唯一带物的地方**——两个无依赖纯函数（规则载体）；其余皆类型。
  */
 
+import type { McpConfig } from './mcp.ts'
 import type { ModelTraits } from './ports.ts'
 
 /** 配置文件落点。 */
@@ -108,7 +109,7 @@ export type WorkspaceRoots = readonly string[]
 
 /**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
- * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots`**。
+ * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots`**；**首批功能加键 `mcp`**。
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
@@ -119,6 +120,17 @@ export type MagicConfig = {
   readonly permissions?: PermissionsConfig
   /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */
   readonly workspaceRoots?: WorkspaceRoots
+  /**
+   * **外部工具服务器**（U38）——见 `McpConfig`（形制在 `mcp.ts`）。
+   *
+   * **键在即连那几条**：这是「用户显式配置」的唯一落点——**只有配置里写了才去拉起进程**。
+   * 工作区里出现 `.mcp.json` 一类文件**不算授权**（设计明文：仓库出现配置文件不等于获准
+   * 运行其中的启动命令）；本键缺省＝一个外部服务器都不连（内置工具照常）。
+   *
+   * ⚠️ **漏带＝静默失效**（同权限段 / 工作区根两条的教训）：配置里写了服务器而加载器不接，
+   * 外部工具就一件都出不来，且不报错。
+   */
+  readonly mcp?: McpConfig
 }
 
 /**
