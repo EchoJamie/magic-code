@@ -29,6 +29,8 @@ import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { MissingApiKeyError, createModelGateway } from './gateway.ts'
+import { MODEL_CONTEXT_BUILTIN, ownOf, resolveContextWindow } from './capacity.ts'
+import type { WindowTable } from './capacity.ts'
 
 // —— 形态 ——
 
@@ -38,10 +40,14 @@ export type ProviderEntry = {
   /** 该条目的默认模型（`providers.<id>.model`）。 */
   readonly model: string
   /**
-   * 该条目的**上下文窗口总量**（`providers.<id>.contextWindow`）——**声明了才有**。
+   * 该条目的**上下文窗口总量**（token）——**声明了就用它，否则查内置表**（U30）。
    *
    * 它是**元数据**（供应商 / 模型规格），不是供应商细节（端点 / key / 参数）：出得来。
-   * 没声明就不给这个位——外壳拿不到分母就不显示分母，不编（缺陷 D10 · 第 1 样）。
+   * 两处**都没有**才不给这个位——外壳拿不到分母就不显示分母，不编（缺陷 D10 · 第 1 样）。
+   *
+   * 判据在 `resolveContextWindow`（`capacity.ts`）：配置声明（`providers.<id>.contextWindow`）
+   * 是**覆盖位**（本地端点 / 私有部署只有用户知道），内置表是**已知模型的客观属性**
+   * ——用户不该为它去翻官方文档。
    */
   readonly contextWindow?: number
 }
@@ -77,6 +83,18 @@ export type ModelSwitchResult =
 export interface ModelRegistry extends ModelGateway {
   /** 已注册的条目（配置顺序）——「加一条目即多一个」的读数面。 */
   list(): readonly ProviderEntry[]
+  /**
+   * **窗长表**（U30 · 形态与消费见 `WindowTable` / `windowOfSelection`）——
+   * 内置表 ＋ 各条目**自己声明**的覆盖位，**分开装**、按 `provider ＋ model` 消费。
+   *
+   * 为什么给外壳的是**表**而不是「此刻那一条的数」：换模型是**运行时**的事
+   * （`/model` 一按就换），而外壳够不着注册表——它得**当场**知道新模型多长。
+   * 表在手上，`model.switched` / `model.call.start` 一来就能查；查不到＝不知道（不编）。
+   *
+   * **声明只跟着它那一条目**（不按模型名合并）：合法的两个端点可能给同名模型声明
+   * 不同的窗长，平表会让甲的声明盖到乙头上。
+   */
+  windowTable(): WindowTable
   /** 配置里的缺省条目 id（`defaultProvider`）。 */
   defaultProviderId(): string
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
@@ -133,7 +151,9 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
   const { providers, defaultProvider, stamper } = options
   const entries = Object.entries(providers)
 
-  const defaultEntry = providers[defaultProvider]
+  // ⚠️ 查表一律走 `ownOf`（只认自有键）——条目名是用户给的字符串，普通索引会从
+  // `Object.prototype` 上摸到东西（见 `capacity.ts` 的 `ownOf` 注）
+  const defaultEntry = ownOf(providers, defaultProvider)
   if (defaultEntry === undefined) {
     const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
     throw new Error(`缺省供应商「${defaultProvider}」不在 providers 里——已配：${known}`)
@@ -146,7 +166,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     const cached = built.get(id)
     if (cached !== undefined) return cached
 
-    const config = providers[id]
+    const config = ownOf(providers, id)
     if (config === undefined) throw new Error(`未知供应商「${id}」`)
 
     const gateway = createModelGateway({
@@ -173,12 +193,28 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
   return {
     list(): readonly ProviderEntry[] {
-      return entries.map(([id, config]) => ({
-        id,
-        model: config.model,
-        // 没声明就不给这个位（不拿 0 / 占位符冒充「不知道」）
-        ...(config.contextWindow === undefined ? {} : { contextWindow: config.contextWindow }),
-      }))
+      return entries.map(([id, config]) => {
+        const window = resolveContextWindow(config.model, config.contextWindow)
+        return {
+          id,
+          model: config.model,
+          // 两处皆无就不给这个位（不拿 0 / 占位符冒充「不知道」）
+          ...(window === undefined ? {} : { contextWindow: window }),
+        }
+      })
+    },
+
+    windowTable(): WindowTable {
+      // 声明**按条目装**（不并进内置表）：条目 id → 它声明的那个模型 ＋ 那个数。
+      // 内置表原样转出去（只读）——它按准确模型 id 算，与条目无关。
+      const declared: Record<string, { model: string; window: number }> = {}
+      for (const [id, config] of entries) {
+        if (config.contextWindow !== undefined) {
+          declared[id] = { model: config.model, window: config.contextWindow }
+        }
+      }
+
+      return { builtin: MODEL_CONTEXT_BUILTIN, declared }
     },
 
     defaultProviderId(): string {
@@ -196,7 +232,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     },
 
     has(id: string): boolean {
-      return providers[id] !== undefined
+      return ownOf(providers, id) !== undefined
     },
 
     use(request: ModelSwitchRequest): ModelSwitchResult {
@@ -208,7 +244,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       }
 
       const providerId = askedProvider ?? selected?.provider ?? defaultProvider
-      const entry = providers[providerId]
+      const entry = ownOf(providers, providerId)
       if (entry === undefined) {
         const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
         return { ok: false, reason: `未知供应商「${providerId}」——已注册：${known}` }
