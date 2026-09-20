@@ -208,7 +208,8 @@ describe('接管（裁决挂着时占住输入框）', () => {
     const taken = reduce(typed, ask('light'))
 
     expect(taken.draft).toBe('')
-    expect(taken.stashed).toEqual({ draft: '打了一半', caret: 3 })
+    // `bound` 也收（U33）——技能与正文同生共死，归还时一起还（见 `Stashed`）
+    expect(taken.stashed).toEqual({ draft: '打了一半', caret: 3, bound: null })
 
     const answered = reduce(taken, event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 }))
     expect(answered.draft).toBe('打了一半')

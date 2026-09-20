@@ -186,6 +186,147 @@ describe('U33 · 开局只发现元数据', () => {
   })
 })
 
+/**
+ * 问一次「都发现了哪些技能」，拿答复。
+ *
+ * **先架等、后发命令**——控制面是同步的：命令一进去，答复当步就回来了，
+ * 事后再 `until` 只会等一个不会重来的事件（同 `readouts.test.ts` 的 `askCatalog`）。
+ */
+async function askSkills(handle: ShellHandle): Promise<Extract<KernelEvent, { kind: 'skills.catalog' }>> {
+  const armed = handle.until((event) => event.kind === 'skills.catalog')
+  handle.send({ type: 'skills.list' })
+
+  const event = await armed
+  if (event.kind !== 'skills.catalog') throw new Error(`等来的不是技能目录：${event.kind}`)
+
+  return event
+}
+
+describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () => {
+  test('`skills.list` → 名称 · 简述 · 身份 · 来源标签；**正文一个字都不带**', async () => {
+    const stage = makeStage()
+
+    try {
+      put(
+        stage.workspace,
+        '.magic/skills/pdf/SKILL.md',
+        skillText('pdf', '处理 PDF：抽文本、填表、合并。', '正文：第一步先看一眼页数。'),
+      )
+
+      const assembly = stage.assemble({ turns: [{ text: '你好' }] })
+      const handle = attachShell(assembly.shell)
+
+      const catalog = await askSkills(handle)
+
+      expect(catalog.data.skills).toEqual([
+        {
+          name: 'pdf',
+          description: '处理 PDF：抽文本、填表、合并。',
+          // 身份＝**技能目录的真路径**（同名两份靠它分开、失效与否也按它判）
+          path: realpathSync(join(stage.workspace, '.magic/skills/pdf')),
+          label: '项目 .magic/skills',
+          source: 'project',
+          origin: 'magic',
+        },
+      ])
+      expect(catalog.data.problems).toEqual([])
+      // **不搬正文**——外壳列个候选不该把仓库里所有技能的主文读一遍
+      expect(JSON.stringify(catalog.data)).not.toContain('第一步先看一眼页数')
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**每次现扫**：摆一份新的再问一次，答复跟着变（不是开屏那份快照）', async () => {
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble({ turns: [{ text: '你好' }] })
+      const handle = attachShell(assembly.shell)
+
+      expect((await askSkills(handle)).data.skills).toEqual([])
+
+      // 会话起来**之后**才摆——发现面现扫，故下一问就认
+      put(stage.workspace, '.magic/skills/late/SKILL.md', skillText('late', '后来才有的', '正文。'))
+
+      expect((await askSkills(handle)).data.skills.map((row) => row.name)).toEqual(['late'])
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**没读进来的那些**连缘由一起交回（静默丢弃会让人对着一个不生效的技能发呆）', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, '.magic/skills/broken/SKILL.md', '---\nname: broken\n---\n\n没有 description\n')
+
+      const assembly = stage.assemble({ turns: [{ text: '你好' }] })
+      const handle = attachShell(assembly.shell)
+      const catalog = await askSkills(handle)
+
+      expect(catalog.data.skills).toEqual([])
+      expect(catalog.data.problems).toHaveLength(1)
+      expect(catalog.data.problems[0]?.kind).toBe('error')
+      expect(catalog.data.problems[0]?.message).toContain('description')
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**空手打开也照答**（还没有会话时，外壳照样问得出来）', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, '.magic/skills/pdf/SKILL.md', skillText('pdf', '处理 PDF', '正文。'))
+
+      const assembly = stage.assemble({ turns: [{ text: '你好' }] })
+      const handle = attachShell(assembly.shell)
+
+      // 一条交代都还没发过——信封必带会话，故这一问顺带开一张空壳（同 `model.list`）
+      expect((await askSkills(handle)).data.skills.map((row) => row.name)).toEqual(['pdf'])
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**同名的两份都在**，且**次序即优先级**（项目在前、用户在后）', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, '.magic/skills/pdf/SKILL.md', skillText('pdf', '项目那一份', '正文。'))
+      // `makeStage` 把家目录也落在沙地里（见 `support.ts` 那条注）——用户那一类来源就在它下面
+      put(stage.root, '.magic/skills/pdf/SKILL.md', skillText('pdf', '用户那一份', '正文。'))
+
+      const assembly = stage.assemble({ turns: [{ text: '你好' }] })
+      const handle = attachShell(assembly.shell)
+      const catalog = await askSkills(handle)
+
+      expect(catalog.data.skills.map((row) => `${row.name}@${row.label}`)).toEqual([
+        'pdf@项目 .magic/skills',
+        'pdf@用户 .magic/skills',
+      ])
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 describe('U33 · 显式选定：随交代一并送达', () => {
   test('绑定的技能主文进**这条**用户消息；落账带来源与正文；回执在主文进了上下文之后', async () => {
     const stage = makeStage()

@@ -15,13 +15,23 @@
  * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
  */
 
-import type { Command, ControlTransport, Entry, EventKind, KernelEvent, SessionId } from '@magic/contracts'
+import type {
+  Command,
+  ControlTransport,
+  Entry,
+  EventKind,
+  KernelEvent,
+  SessionId,
+  SkillCatalogRow,
+} from '@magic/contracts'
 import {
   COMMANDS,
   HINT_BOOTING,
   HINT_COMPLETION,
   HINT_IDLE,
   HINT_WORKING,
+  MAX_CANDIDATES,
+  REMOVE_SKILL,
   appendEcho,
   appendOutput,
   appendReceipt,
@@ -30,10 +40,13 @@ import {
   matchCommands,
   movePicker,
   openPicker,
+  resolveSkill,
   sessionHint,
   grantsHint,
   grantsRows,
   sessionRows,
+  skillHint,
+  skillRows,
   picked,
   rebuild,
   reduce,
@@ -43,7 +56,7 @@ import {
 } from './view.ts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { usageLabel } from './components/lines.ts'
-import type { ShellView, WindowTable } from './view.ts'
+import type { BoundSkill, ShellView, WindowTable } from './view.ts'
 
 // 建壳入参里用到的形态在视图那层（`view.ts`）——转出去，好让拿 `ShellOptions` 的人
 // 一处就取全（`run.ts` 的 `RunTuiOptions` 正是这么取的）
@@ -123,8 +136,8 @@ function statusLines(view: ShellView): readonly string[] {
 
 const STATUS_TITLE = '此刻'
 
-/** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` 各一种。 */
-type PendingPicker = 'session' | 'model' | 'grants'
+/** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` · `/skills` 各一种。 */
+type PendingPicker = 'session' | 'model' | 'grants' | 'skills'
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
 export type ShellOptions = {
@@ -214,6 +227,25 @@ const STREAM_WINDOW_MS = 16
  */
 const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'tool.output.delta'])
 
+/**
+ * 把草稿开头那个 `/名字` 剥掉，留下**正文**（不是那个形态就原样交回）。
+ *
+ * 三件是工单写死的（「直接命令后面的正文（含换行、绝对路径、`/session` 字样）不重复
+ * 解析成控制命令」）：
+ * - **只认第一个词**——剥掉它之后**全算正文**，故正文里的 `/session`、绝对路径、
+ *   换行都原样留着（不再递归解析斜杠）；
+ * - **内部换行保留**：只削掉「斜杠词与其后正文之间」那一段分隔空白，不 `join(' ')`
+ *   （那会把用户按下 `shift+回车` 打的换行抹平——多行交代当场变成一行）；
+ * - **名字对不上就不剥**（原样交回）：剥了名不副实的一截，等于替用户改了他写的话。
+ */
+function stripSkillWord(draft: string, name: string): string {
+  const head = draft.replace(/^\s+/, '')
+  const word = /^\/\S+/.exec(head)
+  if (word === null || word[0] !== `/${name}`) return draft
+
+  return head.slice(word[0].length).replace(/^\s+/, '')
+}
+
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
 export function createShell(transport: ControlTransport, options: ShellOptions = {}): Shell {
   const watchers = new Set<() => void>()
@@ -259,8 +291,51 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let rebuildFor: SessionId | null = null
   let rebuildEntries: Entry[] = []
 
-  /** 等回话的选择器意图（`/session` / `/model` 各问一次）。 */
+  /** 等回话的选择器意图（`/session` / `/model` / `/grants` / `/skills` 各问一次）。 */
   let waiting: PendingPicker | null = null
+
+  /**
+   * `/skills <词>` 的**预置筛词**——只在「等技能目录」那一趟有效（答复到了交给抽屉）。
+   *
+   * 同时也是**同名直达分不出唯一时的入口**：那时拿技能名当筛词开同一扇抽屉
+   * （见 `submit` 里 `hit.kind === 'many'` 那一支）——一套机制两处用，
+   * 不另造一个「同名候选」界面。
+   */
+  let skillSeed = ''
+
+  /**
+   * 同名那一路的**取材范围**（`/<名字>` 在同一档里分不出唯一时给）——`null` ＝ 全目录。
+   *
+   * 为什么不拿「筛词＝名字」当同一件事：筛词是**子串**匹配，`pdf` 会把 `pdftools` 和
+   * 「简述里提到 pdf」的都筛进来——那样子挑出来的那份名字与草稿里那个斜杠词**对不上**，
+   * 剥正文会落空、再按回车又回到同一个岔口。同名就是同名：范围在这里**钉死**。
+   */
+  let skillScope: readonly SkillCatalogRow[] | null = null
+
+  /**
+   * **技能名问过没有**（每个壳一次）——打 `/` 那一下问一遍（见 `askSkills`）。
+   *
+   * 为什么要这一位：输入行的候选要按技能名筛，而那需要一份目录；可发现面是**真的扫目录树**，
+   * 逐键问一次就是逐键扫一遍盘。问一次够用：`/skills` 每次再问一次（那才是浏览面，
+   * 要的是现况），而两次之间目录变了的话——直达那条路本来就会**当场失败并说清缘由**
+   * （内核按身份取主文，取不到这一条不跑）。
+   */
+  let skillsAsked = false
+
+  /** 提交的**配对键**计数——每次提交一枚（`draft-1` · `draft-2`…），`input.settled` 按它认回草稿。 */
+  let submits = 0
+
+  /**
+   * **刚交出去的那一份草稿**——配对键 ＋ 正文 ＋ 绑的技能。`null` ＝ 没有等着认领的。
+   *
+   * 两个时机把它清掉：用户**动过草稿**（`edit` 里清——「失败不覆盖后来编辑的新稿」
+   * 正落在这条）· 已经认领过一次（同一份不会被两条失败各还一遍）。
+   */
+  let lastSubmit: {
+    readonly ref: string
+    readonly text: string
+    readonly bound: BoundSkill | null
+  } | null = null
 
   /** 攒着的那一次补发（`undefined` ＝ 窗口里没排着）。 */
   let pending: ReturnType<typeof setTimeout> | undefined
@@ -307,20 +382,34 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /**
    * 草稿变了 ⇒ **重算候选**（D12：打 `/` 即出、边打边筛）。
    * 一个口子管全部改草稿的地方——省得每处各刷一次（迟早漏一处）。
+   *
+   * **技能名也在候选里**（U33）：目录取自视图里那一份最近问回来的
+   * （`skills.catalog` 的答复——问的时机见 `askSkills` 与 `/skills`）。没问过就是空数组：
+   * 候选里少几条技能名而已，内置那五条照旧 ✓（拿不到的不编，也不因此挡路）。
    */
   const withCompletion = (next: ShellView): ShellView => {
     if (next.dock.kind !== 'input') return { ...next, completion: null }
 
-    const candidates = matchCommands(next.draft)
+    const found = matchCommands(next.draft, next.skills?.skills ?? [])
+    // **封顶在列、报数在右位**（见 `MAX_CANDIDATES`）：截掉几条不静默——状态行说得出
+    // 「还有 N 条」，而想浏览全量走 `/skills`（那才是浏览面，这一栏只是边打边认的辅助）。
+    const candidates = found.slice(0, MAX_CANDIDATES)
     const open = candidates.length > 0
 
     return {
       ...next,
       completion: open ? { candidates, selected: 0 } : null,
       // 右位提示跟着候选走（原型 · 场景 11）；候选举起就报键位，收起就回常态
-      status: { ...next.status, hint: open ? HINT_COMPLETION : idleHintOf(next) },
+      status: {
+        ...next.status,
+        hint: open ? completionHint(found.length - candidates.length) : idleHintOf(next),
+      },
     }
   }
+
+  /** 右位那句——候选被截时如实补一句（截了几条说几条）。 */
+  const completionHint = (more: number): string =>
+    more > 0 ? `${HINT_COMPLETION}（还有 ${more} 条）` : HINT_COMPLETION
 
   /** 没在补全、没在裁决 / 选择器时的右位提示——按状态给。 */
   const idleHintOf = (from: ShellView): string => {
@@ -344,7 +433,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   const edit = (next: ShellView): void => {
     historyAt = -1
+    // **动过草稿就不再认领那一份**（U33）——「失败不覆盖用户后来编辑的新稿」全在这一行：
+    // 认领（`restoreDraft`）只在「交出去之后一个字都没动」时才发生。提交那一跳不走这里
+    // （它清草稿走的是 `draft`），故刚交出去的那一份还认领得回来。
+    lastSubmit = null
     draft(next)
+    askSkills(next)
+  }
+
+  /**
+   * **技能名问一次**（每个壳一次）——草稿一成了 `/` 开头的，就问一遍目录（U33）。
+   *
+   * 问来的那一份就是输入行候选的取材（见 `withCompletion`）：`/ui` 能筛出 `/ui-review`
+   * 全靠它。时机取「打 `/` 那一下」而不是「外壳一造好就问」——这样问的时机与用它的时机
+   * 是同一件事（也就没有「开屏白扫一遍目录树，整场没人打斜杠」）。
+   *
+   * ⚠️ **放开输入之前不问**（`ready`）：那会儿命令进不去内核（`send` 直接丢），
+   * 而标记一置上就再没有第二次——候选里会一直少着技能名那几条。故等 `ready` 再说，
+   * 那一刻草稿还在（打字本来就不受闸），下一次按字补问。
+   */
+  const askSkills = (from: ShellView): void => {
+    if (skillsAsked || !ready) return
+    if (!from.draft.startsWith('/')) return
+
+    skillsAsked = true
+    send({ type: 'skills.list' })
   }
 
   /**
@@ -419,6 +532,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       waiting = null
       openModelPicker(event.data.note ?? '')
     }
+
+    // 技能目录回来了 ⇒ 两件。
+    // ① **候选跟着这一份重算**：此刻草稿多半正是一条 `/…`（问就是打斜杠那一下问的），
+    //    技能名要能**立刻**上候选——不然得等下一个按键才认得出来（`reduce` 只落数据，
+    //    重算候选是外壳这一层的口径，见 `withCompletion`）；
+    // ② 若正等着开抽屉（`/skills`），铺行归 `openSkillsPicker`（它读视图里那一份）。
+    if (event.kind === 'skills.catalog') {
+      commit(withCompletion(view))
+      if (waiting === 'skills') {
+        waiting = null
+        openSkillsPicker(skillSeed)
+      }
+    }
+
+    // 提交**没收下** ⇒ 按原 pairing 键认回那份草稿（U33）。回执那半行由 `reduce` 落
+    // （「没送出：…」），这里只管草稿那三件——正文 · 插入点 · 绑着的技能。
+    if (event.kind === 'input.settled' && !event.data.ok) restoreDraft(event.data.ref)
 
     // 授权名录回来了 ⇒ 开抽屉（`/grants` 那条路）／**撤销之后刷新它 ＋ 留一行回执**。
     // 两处分得开：`waiting` 只在「刚问过」时为真；撤销那次是抽屉**已经开着**。
@@ -566,6 +696,121 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     )
   }
 
+  // —— 技能（U33 · 终端入口）——
+
+  /**
+   * **`/skills` 的抽屉**——行：名称 ＋ 来源 ＋ 简述（见 `skillRows`）。
+   *
+   * `filter` 一变就整个重铺（打字筛、退格放宽、同名直达那一路拿名字当筛词）——
+   * 一处铺行，三种来路共用，不各写一遍。
+   *
+   * 取材是**视图里那一份目录**（`view.skills`）：`/skills` 每次都发一次 `skills.list`
+   * 现问，故这一屏说的就是那一下的现况（技能是随用户编辑变的目录）。
+   *
+   * 0 行时（没筛词的）`openPicker` 会把它落成一行回执、不开抽屉——空名录不开空抽屉（P0）。
+   */
+  const openSkillsPicker = (filter: string): void => {
+    const catalog = view.skills
+    const rows = skillRows(skillScope ?? catalog?.skills ?? [], view.bound, filter)
+
+    commit(
+      openPicker(view, {
+        source: 'skills',
+        selected: 0,
+        rows,
+        filter,
+        hint: skillHint({ catalog, filter, shown: rows.length, hasBound: view.bound !== null }),
+      }),
+    )
+  }
+
+  /**
+   * **选定一份技能 ⇒ 只绑草稿**（工单：「选择只绑定草稿，保留正文/光标」）。
+   *
+   * 三件同时成立才是对的：
+   * - **不加载主文、不发模型请求**（绑的是 `SkillRef`——两件身份，见契约），
+   *   真实提交那一刻内核才按身份取；
+   * - **不发送**（按回车确认一个选择，不该顺手把草稿发出去——工单：「按确认选择不同时误发草稿」）；
+   * - **正文与插入点照旧**，只把斜杠那一行的正文剥出来（从 `/<名字> <交代>` 走进来时，
+   *   那一截已经成了提交内容，留在草稿里就成了「重复解析」）。
+   */
+  const bindSkill = (skill: SkillCatalogRow): void => {
+    const body = stripSkillWord(view.draft, skill.name)
+
+    commit(
+      withCompletion({
+        ...closePicker(view),
+        bound: { ref: { name: skill.name, path: skill.path }, label: skill.label },
+        draft: body,
+        caret: body.length,
+      }),
+    )
+  }
+
+  /**
+   * **一次提交**（U33）——正文 ＋ 绑着的技能 ＋ 配对键，三件一起交给内核。
+   *
+   * 三条写在一处：
+   * - **正文原样**（`/<名字>` 那一截已剥掉、**内部换行留着**）——其后全部是正文，
+   *   不再当斜杠命令解析（正文里写 `/session`、绝对路径都只是正文）；
+   * - **技能随这一份**（`skills`）：内核按身份取主文，取不到就**这一条不跑**
+   *   （不换同名项、不忽略它继续）；
+   * - **配对键**（`ref`）：`input.settled` 按它认回这份草稿（失败时原样还回来，
+   *   见 `restoreDraft`）。
+   */
+  const sendInput = (text: string, bound: BoundSkill | null): ShellEffect => {
+    submits += 1
+    const ref = `draft-${submits}`
+    lastSubmit = { ref, text, bound }
+
+    const cleared: ShellView = { ...view, draft: '', caret: 0, bound: null }
+    // 历史记的是**输入行里那一串**（不是剥过之后的正文）：`↑` 翻回来再按一次回车，
+    // 技能照旧认得到——「我刚才打的那一句」原样回来才是历史该有的样子。
+    const typed = view.draft.trim()
+    if (history[history.length - 1] !== typed) history.push(typed)
+    historyAt = -1
+
+    // ⚠️ **先落地、后发命令**（D23 那条次序）——进程内传输是同步直连的，
+    // 反过来的话这次 `draft()` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
+    draft(appendEcho(cleared, text))
+    send({
+      type: 'input.submit',
+      text,
+      ref,
+      ...(bound === null ? {} : { skills: [bound.ref] }),
+    })
+
+    return NONE
+  }
+
+  /**
+   * **按原 ref 认回原稿**——失败那一条交出去的正文与技能，回到草稿上（原型：草稿不丢）。
+   *
+   * 三条分寸：
+   * - **只认自己交出去的那一份**（`ref` 对不上、或没有等着认领的＝不是这一次，不动）；
+   * - **用户动过草稿就不认**（`edit` 已经把 `lastSubmit` 清了）——那正是「不覆盖后来编辑的新稿」；
+   * - **认领一次就清掉**：同一份不会被两条失败各还一遍。
+   *
+   * 回执（「没送出：…」那一行）由 `reduce` 落——它说的是**这一次交代没出去**，
+   * 本函数只管把草稿那三件还回来（正文 · 插入点 · 技能）。
+   */
+  const restoreDraft = (ref: string | undefined): void => {
+    // 名字避开外面那个 `waiting`（等选择器的意图）——两件不相干的事，别撞名
+    const held = lastSubmit
+    if (held === null || ref === undefined || held.ref !== ref) return
+
+    lastSubmit = null
+    // 插入点摆到末尾（那一份交出去时多半已经打完了）；技能原样挂回去
+    commit(
+      withCompletion({
+        ...view,
+        draft: held.text,
+        caret: held.text.length,
+        bound: held.bound,
+      }),
+    )
+  }
+
   // —— 键 ——
 
   const exitOrInterrupt = (): ShellEffect => {
@@ -603,6 +848,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
         // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
         if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
+        // **绑着技能 ⇒ 先摘技能**（U33）——`esc` 本来就是「一层一层往回退」：收起候选 →
+        // 摘掉材料 → 清掉正文。技能是这条草稿上**最后挂上去的材料**，故排在正文之前。
+        //
+        // 为什么需要这一层：`/skills` 那条路要求草稿**以 `/skills` 开头**（斜杠命令的老姿势），
+        // 而「正文已经打了、这时想摘掉技能」正是要保住正文的那个场景——没有这一层，
+        // 那条需求（工单：「移除技能保留正文」）在终端上根本走不到。
+        // ⚠️ **只摘材料，一个字都不动正文**；再按一次 `esc` 才是清正文。
+        if (view.bound !== null) return (commit(withCompletion({ ...view, bound: null })), NONE)
         if (view.draft === '') {
           edit({ ...view, expanded: false })
           return NONE
@@ -649,7 +902,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       case 'backspace':
         if (view.dock.kind === 'decision') return refuse('退格')
-        if (view.dock.kind === 'picker') return NONE
+        // 技能抽屉里退格＝**放宽筛选**（打字那一支的对面；按字素删，中文也删得对）
+        if (view.dock.kind === 'picker') {
+          if (view.dock.picker.source !== 'skills') return NONE
+          const filter = view.dock.picker.filter ?? ''
+          openSkillsPicker(filter.slice(0, leftSpan(filter, filter.length)[0]))
+          return NONE
+        }
         eraseAt(...leftSpan(view.draft, caretAt()))
         return NONE
 
@@ -662,7 +921,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       case 'char':
         if (view.dock.kind === 'decision') return answer(input.char)
-        if (view.dock.kind === 'picker') return NONE
+        // 技能抽屉里打字＝**筛**（U33：`/skills` 的搜索）——其余选择器照旧：接管期间字符吞掉
+        if (view.dock.kind === 'picker') {
+          if (view.dock.picker.source !== 'skills') return NONE
+          openSkillsPicker((view.dock.picker.filter ?? '') + input.char)
+          return NONE
+        }
         insertAt(input.char)
         return NONE
 
@@ -739,6 +1003,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
+      // 技能抽屉（U33）：选定＝**绑草稿**（不发送、不加载主文）；「移除当前技能」那一行
+      // 选定＝**摘掉绑定**（正文一个字不动）——两件都不发命令，故没有回执，
+      // 屏上的凭据是草稿那一行（出现 / 消失）。
+      if (view.dock.picker.source === 'skills') {
+        if (row.value === REMOVE_SKILL) {
+          commit(withCompletion({ ...closePicker(view), bound: null }))
+          return NONE
+        }
+
+        const chosen = view.skills?.skills.find((one) => one.path === row.value)
+        // 找不到＝目录在这一屏开着的时候被换掉了（理论上不会：抽屉开着不发查询）。
+        // 照实收起抽屉、什么都不绑，不拿一个编出来的身份凑数。
+        if (chosen === undefined) return (commit(closePicker(view)), NONE)
+
+        bindSkill(chosen)
+        return NONE
+      }
+
       // 换模型：回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）
       send({ type: 'model.switch', provider: row.value })
       commit(closePicker(view))
@@ -755,10 +1037,42 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const text = view.draft.trim()
     if (text === '') return NONE
 
-    // ⚠️ 两条提交路**都走 `draft()`**（缺陷 D23）——提交也改变了草稿（都清成空串），
-    // 候选与右位提示得跟着重算。走 `commit()` 就**绕过了 `withCompletion` 那个统一口**，
-    // 于是**空输入框下还挂着候选**（右位也停在「↑↓ 选 · Tab 补全」）。
     if (text.startsWith('/')) {
+      const word = text.split(/\s+/)[0] ?? ''
+
+      // **技能直达 ＞ 不认得的命令**（U33）：内置那五条**先让给 slash**（工单：内置命令
+      // 保留含义，同名技能仍能从 `/skills` 选），其余 `/名字` 才按技能名解析。
+      // `/名字` 与 `/名字 交代` 都是这一条路：后者把其后那一段当正文（`sendInput` 剥）。
+      if (!COMMANDS.some((command) => command.name === word)) {
+        const hit = resolveSkill(word.slice(1), view.skills?.skills ?? [])
+
+        // 同一档里分不出唯一 ⇒ **展开同名候选让用户点**（不静默随目录顺序挑一个）——
+        // 草稿**原样留着**：选定之后由 `bindSkill` 把其后那一段剥成正文。
+        if (hit.kind === 'many') {
+          skillScope = hit.skills
+          openSkillsPicker(word.slice(1))
+          return NONE
+        }
+
+        if (hit.kind === 'one') {
+          const body = stripSkillWord(view.draft, hit.skill.name)
+
+          // **只输入了名称**（`/pdf` 后面没有正文）＝**只绑定草稿**（设计：「选定或仅输入名称
+          // 时只绑定草稿，后面的正文仍可编辑」）——此刻一个模型请求都不发，用户接着补交代。
+          // 空正文**不提交**还有一条由头：一次交代里一个字都没有，内核那边落下的会是一条
+          // 「用户什么都没说、但带了份技能」的条目（`user` 条目 ＋ 载荷），那不是交代。
+          if (body === '') {
+            bindSkill(hit.skill)
+            return NONE
+          }
+
+          return sendInput(body, {
+            ref: { name: hit.skill.name, path: hit.skill.path },
+            label: hit.skill.label,
+          })
+        }
+      }
+
       // ⚠️ **先落地、后发命令**——次序要紧：`send` 在进程内传输上是**同步**的，
       // 答复**当场**回来改视图；反过来（先发后 commit）这一次 `draft()` 拿的是
       // **发命令之前**的快照，会把答复刚写进去的东西整个盖掉。
@@ -770,12 +1084,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
 
-    if (history[history.length - 1] !== text) history.push(text)
-    historyAt = -1
-    draft(appendEcho({ ...view, draft: '', caret: 0 }, text))
-    send({ type: 'input.submit', text })
-
-    return NONE
+    return sendInput(text, view.bound)
   }
 
   /**
@@ -825,6 +1134,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return only(appendReceipt(cleared, '认得的用法：/session · /session new · /session title <文本>'))
     }
 
+    // `/skills`（U33）——**交互配置型**：记录区什么都不进，只在左下开抽屉。
+    // 与 `/model` 同一姿势：**先问一次目录**（答复是 `skills.catalog`），外壳据它铺行。
+    // `/skills <词>` 拿那一段当预置筛词（敲完就直接筛到你说的那个词上）。
+    if (word === '/skills') {
+      waiting = 'skills'
+      skillSeed = arg
+      // 这是**浏览面**：从头看全目录，不是「同名挑一份」那一摊
+      skillScope = null
+      return only(cleared, { type: 'skills.list' })
+    }
+
     if (word === '/model') {
       if (arg !== '') return only(cleared, { type: 'model.switch', provider: arg })
 
@@ -843,8 +1163,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return only(cleared, { type: 'grants.list' })
     }
 
-    // 不认得的 slash——**如实说一句**（别静默丢，也别当交代发给模型）
-    return only(appendReceipt(cleared, `不认得的命令「${word}」——试试 /help`))
+    // 不认得的 slash——**如实说一句**（别静默丢，也别当交代发给模型）。
+    // 顺口带上 `/skills`：它正是「我明明有个技能叫这个名」时该去的地方（U33）。
+    return only(appendReceipt(cleared, `不认得的命令「${word}」——试试 /help，或到 /skills 里找`))
   }
 
   /** 草稿是不是已经**打全**了选中的那条命令。 */

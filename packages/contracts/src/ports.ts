@@ -979,6 +979,17 @@ export type CommandRoutes = {
    * （外壳据以刷新抽屉并留一行回执）。
    */
   onGrantsRevoke(workspace?: string, index?: number): void
+  /**
+   * **技能目录**（`/skills` 的读侧 · U33）→ **装配**（它握着执行域的发现面）。
+   *
+   * 控制域**原样转手**（同 `onModelList` / `onGrantsList` 的姿势）——它不认识技能目录，
+   * 也不知道发现了哪些；答复走事件（`skills.catalog`，**不落库**）：命令面只发不收。
+   *
+   * **为什么归装配而不是对话域**：技能来源面是**执行域的实现**，而把「用什么工作区 /
+   * 什么用户目录 / 用户点名了哪些」组装成它的是装配（同 `ProjectRules` 那一处）——
+   * 对话域只认得 `Skills` 这个端口（它据以取主文），不持有「有哪些」这个读面。
+   */
+  onSkillList(): void
 }
 
 /**

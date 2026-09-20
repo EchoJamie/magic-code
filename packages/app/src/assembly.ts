@@ -778,6 +778,49 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /**
+   * **技能目录** —— 读面的**产出路径**（U33 · 终端入口）。
+   *
+   * 与 `listModels` 逐条同法（空手打开也照答——那一下开一张空壳；原因与姿势见它那段注），
+   * 只有一处不同：**每次现扫**。注册表在内存里，读它不花什么；技能是一棵**随用户编辑变的
+   * 目录树**，缓存一份就等于给「有哪些技能」另立一个会过期的真源。发现面本来就是现扫的
+   * （`Skills.discover`），这里只是**每次按都问它一次**。
+   *
+   * ⚠️ **只搬元数据**（名称 / 简述 / 身份 / 来源标签）——**不搬正文**：外壳列个候选不该把
+   * 仓库里所有技能的主文读一遍，主文到真实提交那一刻才取（见契约 `SkillCatalogRow`）。
+   */
+  const listSkills = (): void => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    sink.emit(requireActiveStamper().stamp('skills.catalog', skillCatalogOf()))
+  }
+
+  /**
+   * 技能目录 → 契约载荷——**照列一排**（不把端口形态直接推上事件面）。
+   *
+   * 由头同 `catalogOf` 的改名那一层：端口形态是**发现面**的形态，事件面是**读出来的那几格**
+   * ——两处同形是此刻的实情，不是承诺。照列一排，将来端口那边多出一格（如某个新的诊断位）
+   * 时，它不会**悄悄**跟着上线路。
+   */
+  const skillCatalogOf = (): EventDataOf['skills.catalog'] => {
+    const found = skills.discover()
+
+    return {
+      skills: found.skills.map((one) => ({
+        name: one.name,
+        description: one.description,
+        path: one.path,
+        label: one.label,
+        source: one.source,
+        origin: one.origin,
+      })),
+      problems: found.problems.map((one) => ({
+        path: one.path,
+        message: one.message,
+        kind: one.kind,
+      })),
+    }
+  }
+
+  /**
    * 模型条目表 —— 注册表 → 契约载荷。
    *
    * 这一层只做**改名**（`id` → `provider`）与**缺席位的转发**：域内叫「条目 id」，事件面上
@@ -911,6 +954,9 @@ export function assemble(options: AssembleOptions): Assembly {
     // 授权名录 ＋ 撤销（U22）——**归装配**（`grants.json` 的读写都在它这一层，域不碰文件系统）
     onGrantsList: () => listGrants(),
     onGrantsRevoke: (workspace, index) => revokeGrants(workspace, index),
+    // 技能目录（读侧 · U33）——**归装配**（执行域的发现面是它组起来的，同 `model.list`
+    // 之于注册表、`grants.list` 之于授权文件）；答复走事件（`skills.catalog`，不落库）
+    onSkillList: () => listSkills(),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────

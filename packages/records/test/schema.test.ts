@@ -103,7 +103,7 @@ describe('判据 3 · 不落库清单', () => {
     }
   })
 
-  test('不落库清单＝契约常量（九个 kind，一字不差）', () => {
+  test('不落库清单＝契约常量（十个 kind，一字不差）', () => {
     // 第 17 轮补锚：`model.retry` 与两个实时增量同列——退避期间那个「正在等」是实时信号、
     // 不是重放事实；重试次数另落 `ModelCallResult.attempts`，故不落库不丢信息。
     // U16 补锚：`session.state` 同列；第 19 轮：`session.history` 同列（读出来的，不是过程事实）——它是**快照**（此刻有哪些会话、当前在哪条），
@@ -115,6 +115,9 @@ describe('判据 3 · 不落库清单', () => {
     // 不在库里）；`/grants` 也是反复看的抽屉，落库＝把同一张表存 N 遍。
     // U33 补锚：`skill.used`（依据在**条目载荷**里，同「读出来的不落库」）＋
     // `input.settled`（一次答复，同 `session.state`；配对键是外壳给的，落库就没人认领了）。
+    // U33 · 终端入口补锚：`skills.catalog`——**原锚**是「读出来的不落库」那一条；
+    // **为何变**：技能也开了一条读面（`/skills` 要看目录，同 `/model` 之于注册表）；
+    // **新锚**：同一判据多一格（十条），字面规则一个没动——记录域拦它的那一道照样生效。
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'grants.catalog',
       'input.settled',
@@ -124,6 +127,7 @@ describe('判据 3 · 不落库清单', () => {
       'session.history',
       'session.state',
       'skill.used',
+      'skills.catalog',
       'tool.output.delta',
     ])
   })

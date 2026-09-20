@@ -215,6 +215,8 @@ export type StageOptions = {
   readonly contextWindow?: number | null
   /** 本进程的工作区（U26 · `/session` 分组的取材）——不给＝不知道自己在哪儿。 */
   readonly workspaceRoots?: readonly string[]
+  /** 受理输入了没有（U25 那道闸）——`false` ＝ 启动中（回车不受理、命令一律丢弃）。 */
+  readonly inputReady?: boolean
 }
 
 export type Stage = {
@@ -241,6 +243,7 @@ export function createStage(options: StageOptions = {}): Stage {
   const shell = createShell(spy.transport, {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
+    ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),
   })
   let now: number | null = null
 
