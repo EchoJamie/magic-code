@@ -39,6 +39,7 @@ import {
   reduce,
   withBanner,
   withContextWindow,
+  withContextWindows,
 } from './view.ts'
 import { usageLabel } from './components/lines.ts'
 import type { ShellView } from './view.ts'
@@ -118,13 +119,27 @@ type PendingPicker = 'session' | 'model' | 'grants'
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
 export type ShellOptions = {
   /**
-   * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的分母（`12.4k/200k`）。
+   * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的**开机那一格**分母（`12.4k/200k`）。
    *
-   * ⚠️ **这是给 `D10` 留的位**：内核侧那条出口还没合入，故此刻**没人传**，
-   * 屏上只报已用量。出口合入后由装配把数递进来（见 `withContextWindow`）——
-   * 不编、不猜、不改事件契约。
+   * 装配把**当下那一条的**数递进来（`Assembly.contextWindow`：配置声明或内置表，
+   * 见 `resolveContextWindow`）；拿不到／没声明就不给 ⇒ `null` ⇒ 屏上只报已用量
+   * ——不编、不猜、不改事件契约（见 `withContextWindow`）。
+   *
+   * ⚠️ 只管**开机那一刻**：外壳那时还不知道模型名，查不了表。此后的分母归
+   * `contextWindows`（下面那一格）。
    */
   readonly contextWindow?: number | null | undefined
+  /**
+   * **窗长表**（模型名 → 上下文窗总量 · U30）——**换模型之后** ④ 的分母的取材。
+   *
+   * 装配把注册表那张表递进来（`Assembly.contextWindows`：内置容量表 ∪ 配置声明）。
+   * `model.switched` / `model.call.start` 一到，外壳按**那一刻的模型名**查：
+   * 查得到就换分母，查不到＝`null`（**不沿用前一个模型的容量**）。
+   *
+   * **不给** ⇒ `null` ＝没这张表：切换**不动分母**（旧路径原样——接线落齐之前的行为，
+   * 见 `ShellView.contextWindows`）。空表 `{}` 是另一回事：表在、什么都不知道。
+   */
+  readonly contextWindows?: Readonly<Record<string, number>> | undefined
   /**
    * **本进程的工作区**（U26）——`/session` 列表据它认「哪个是别的项目」
    * （分组头永远都有；**压暗**只落在判得实的那些：工作区记着、且与这一组不同）。
@@ -204,7 +219,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   //    放一次的东西」，都得另保一手才活得过 `rebuild`（那半由 `bannerFirst` 管）。
   //
   // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
-  let view = withBanner(withContextWindow(createView(), options.contextWindow ?? null))
+  // ④ 的两件一起种：**开机那一格**的数（`contextWindow`）＋ **此后切换**查的那张表
+  // （`contextWindows` · U30）——两者分工见 `ShellOptions`。
+  let view = withBanner(
+    withContextWindows(withContextWindow(createView(), options.contextWindow ?? null), options.contextWindows ?? null),
+  )
 
   /**
    * **启动那几句**（见 `ShellOptions.receipts`）——开局先贴一遍，**重建之后再补一遍**。

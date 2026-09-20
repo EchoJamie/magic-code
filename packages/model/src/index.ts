@@ -14,7 +14,7 @@
  * ① **端口装配**——`createModelGateway`（单条目）· **`createModelRegistry`**（多条目的注册表 ＋ 运行时切换）；
  * ② **形态**——`ModelGateway` / `ModelStream` / `ModelCallResult` / 中间件位 / 注册表形态；
  * ③ **构造子**——事件构造子与信封来源（Faux Provider 与循环测试用）；
- * ④ **纯函数**——错误分档 / 脱敏 / 特征标记裁定；
+ * ④ **纯函数**——错误分档 / 脱敏 / 特征标记与容量（窗长）裁定；
  * ⑤ **策略**——退避重试的策略形态与缺省（`RetryPolicy` / `DEFAULT_RETRY_POLICY`）。
  *
  * 不出去的：取件层 chunk 形态（`VendorStreamPart`）· SDK 类型 · 错误分档的正则表 ·
@@ -69,6 +69,10 @@ export {
 export { classifyModelError, describeModelError, isAbortError, redactSecrets } from './errors.ts'
 
 export { MODEL_TRAITS_BUILTIN, resolveModelTraits } from './traits.ts'
+
+// 容量（上下文窗总量 · U30）——与 `traits` 同族的内置表 ＋ 覆盖判定；
+// 装配取 `ModelRegistry.contextWindows()`（合一而查），此处出给它的是判定与表本身
+export { MODEL_CONTEXT_BUILTIN, resolveContextWindow } from './capacity.ts'
 
 // —— ⑤ 策略（退避重试——见 `retry.ts`）——
 

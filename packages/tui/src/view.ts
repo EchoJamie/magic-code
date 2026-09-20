@@ -333,6 +333,18 @@ export type ShellView = {
    * ⚠️ 与 `catalog` 分开：那个是**会话**目录（`SessionSummary`）——同名不同物，别合。
    */
   readonly models: readonly ModelCatalogRow[]
+  /**
+   * **窗长表**（模型名 → 上下文窗总量 · U30）——换模型之后 ④ 的分母的取材。
+   *
+   * 由装配给（`Assembly.contextWindows`：内置容量表 ∪ 配置声明），**在壳外不动**：
+   * `model.switched` / `model.call.start` 一到就按**那一刻的模型名**查——
+   * 查得到就换分母，查不到＝`null`（**不沿用前一个模型的容量**）。
+   *
+   * `null` ＝**没有这张表**（这一位没接线 / 调用方没给）：那时**一个数都不改**
+   * ——分母照旧只认开机那一格与 `model.catalog` 的答复（接线落齐之前的老路，
+   * 见 `withModelWindow`）。
+   */
+  readonly contextWindows: Readonly<Record<string, number>> | null
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
@@ -369,6 +381,7 @@ export function createView(): ShellView {
     sessionId: null,
     catalog: [],
     models: [],
+    contextWindows: null,
     grants: null,
     turnTools: 0,
     echoes: 0,
@@ -423,7 +436,9 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return view
 
     case 'model.call.start':
-      return patchStatus(view, { model: event.data.model })
+      // 「这次**真用了**谁」——分母与它同刻对齐（U30：查表；真跑用的那个模型名才是准的，
+      // 空手打开时就 `/model` 换过的那种也由此走上正轨——那时内核不发 `model.switched`）
+      return withModelWindow(view, event.data.model)
     case 'model.usage':
       return patchStatus(view, { usage: event.data.inputTokens })
     case 'model.call.end':
@@ -436,9 +451,14 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       })
 
     case 'model.switched':
-      // 一次性的事**进记录区当回执**（状态行只放「此刻」）；成了顺手更新 ③
+      // 一次性的事**进记录区当回执**（状态行只放「此刻」）；成了顺手更新 ③ **和 ④ 的分母**
+      // （U30：换过去那一刻分母就得跟着走——新模型多长查表；查不到＝`null`，
+      // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动，
+      // 读数与选中一样保持现状——那正是「切不动」该有的样子）。
       return appendReceipt(
-        patchStatus(view, event.data.ok && event.data.model !== undefined ? { model: event.data.model } : {}),
+        event.data.ok && event.data.model !== undefined
+          ? withModelWindow(view, event.data.model)
+          : view,
         event.data.ok
           ? `已换模型 → ${event.data.model ?? '？'}`
           : `换模型未成：${event.data.reason ?? '未说缘由'}`,
@@ -762,22 +782,59 @@ export function appendOutput(view: ShellView, title: string, lines: readonly str
 }
 
 /**
- * ④ 的分母上屏的**唯一入口**（U20 · 差距 5 的位）——见 `ShellStatus.window`。
+ * ④ 的分母**开机那一格**的入口（U20 · 差距 5 的位）——见 `ShellStatus.window`。
  *
- * `D10` 的出口（内核侧给上下文窗总量）**合入后从这里接**：把数字递给它即可，
+ * `D10` 的出口（内核侧给上下文窗总量）一处是它：装配把**当下那一条的**数递给它即可，
  * 渲染那一半（`12.4k/200k` 的排版与窄窗降级）已经写好并有用例。
  * 拿不到就传 `null` ⇒ 屏上只报已用量——**不编一个总量**。
+ *
+ * ⚠️ **开机之后**的分母不走这儿（U30）：那时是**换模型**在改它，取材是模型名
+ * ——见 `withContextWindows` 与 `withModelWindow`。
  */
 export function withContextWindow(view: ShellView, window: number | null): ShellView {
   return patchStatus(view, { window })
 }
 
 /**
+ * **窗长表**上屏的入口（U30）——模型名 → 上下文窗总量，装配给（`Assembly.contextWindows`）。
+ *
+ * 表与那一格（`withContextWindow`）分工写清在 `ShellView.contextWindows`：那一格是
+ * **开机那一刻**的读数，本表供**此后每一次切换**取材。传 `null` ＝这一位没接线
+ * （旧路径原样：切换不动分母）。
+ */
+export function withContextWindows(
+  view: ShellView,
+  contextWindows: Readonly<Record<string, number>> | null,
+): ShellView {
+  return { ...view, contextWindows }
+}
+
+/**
+ * 把 ③ 换成 `model`，**并让 ④ 的分母跟着它走**（U30）——换模型 / 真跑用谁，两处同一条规则。
+ *
+ * - **表在**：按**模型名**查（内置容量表 ∪ 配置声明都能查到）；查不到＝`null`
+ *   ——**不知道就是不知道**，不沿用前一个模型的容量、不模糊匹配家族。
+ * - **表不在**（`null`，这一位没接线）：**一个数都不改**——分母照旧只认开机那一格与
+ *   `model.catalog` 的答复。⚠️ 这一支是**接线落齐之前的旧行为**，不是第二条规格：
+ *   表一到，凡走本函数的时刻都按上面那条走。
+ */
+function withModelWindow(view: ShellView, model: string): ShellView {
+  const table = view.contextWindows
+  if (table === null) return patchStatus(view, { model })
+
+  return patchStatus(view, { model, window: table[model] ?? null })
+}
+
+/**
  * `model.catalog` 里**当前那条**的上下文窗总量——④ 的分母（`12.4k/200k`）。
  *
- * `null` 的两种来处都**如实**：该条目没声明 `contextWindow`（配置里是可选的）、
+ * `null` 的两种来处都**如实**：该条目没声明 `contextWindow`、且内置表也不认得它的模型，
  * 或这次装配没有注册表。屏上回退成**只报已用量**——**不编一个总量**
  * （「拿不到的不编」是项目反复立的规矩：`D10` 那三条读数、状态行的「工作中」耗时都栽在这上面）。
+ *
+ * ⚠️ 走**条目**那一格（条目对条目），与 `withModelWindow` 的**按模型名**查表不是同一条口径：
+ * 条目表说的是「每条目声明/内置的那个窗」，这里问的正是「表里当前那条的窗」——两者同源
+ * （同一个 `resolveContextWindow` 出的数），不会分叉。
  */
 function windowOfCatalog(data: EventDataOf['model.catalog']): number | null {
   const current = data.current

@@ -29,6 +29,7 @@ import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { MissingApiKeyError, createModelGateway } from './gateway.ts'
+import { MODEL_CONTEXT_BUILTIN, resolveContextWindow } from './capacity.ts'
 
 // —— 形态 ——
 
@@ -38,10 +39,14 @@ export type ProviderEntry = {
   /** 该条目的默认模型（`providers.<id>.model`）。 */
   readonly model: string
   /**
-   * 该条目的**上下文窗口总量**（`providers.<id>.contextWindow`）——**声明了才有**。
+   * 该条目的**上下文窗口总量**（token）——**声明了就用它，否则查内置表**（U30）。
    *
    * 它是**元数据**（供应商 / 模型规格），不是供应商细节（端点 / key / 参数）：出得来。
-   * 没声明就不给这个位——外壳拿不到分母就不显示分母，不编（缺陷 D10 · 第 1 样）。
+   * 两处**都没有**才不给这个位——外壳拿不到分母就不显示分母，不编（缺陷 D10 · 第 1 样）。
+   *
+   * 判据在 `resolveContextWindow`（`capacity.ts`）：配置声明（`providers.<id>.contextWindow`）
+   * 是**覆盖位**（本地端点 / 私有部署只有用户知道），内置表是**已知模型的客观属性**
+   * ——用户不该为它去翻官方文档。
    */
   readonly contextWindow?: number
 }
@@ -77,6 +82,21 @@ export type ModelSwitchResult =
 export interface ModelRegistry extends ModelGateway {
   /** 已注册的条目（配置顺序）——「加一条目即多一个」的读数面。 */
   list(): readonly ProviderEntry[]
+  /**
+   * **窗长表**（模型名 → 上下文窗总量 · U30）——内置表 ＋ 各条目声明的覆盖位，**合一而查**。
+   *
+   * 为什么给外壳的是**表**而不是「此刻那一条的数」：换模型是**运行时**的事
+   * （`/model` 一按就换），而外壳够不着注册表——它得**当场**知道新模型多长。
+   * 表在手上，`model.switched` / `model.call.start` 一来就能查；查不到＝不知道（不编）。
+   *
+   * **只有已知的那些在表里**（内置表按精确模型名命中 · 配置声明过的逐个进）——
+   * 表里没有的键与「值为 0」是两件事：前者是不知道，后者是没听说过的那种数。
+   *
+   * 声明**按模型名**进表：它把同名的内置数盖掉（用户写下的那个数就是他对自己这个
+   * 模型 id 的声明——覆盖位只有一个来处：他写的那一行）；代价如实记——两条目挂
+   * **同名模型**、其中一条声明了另一种窗长时，另一条也会查到这个数（口径见回报「备案」）。
+   */
+  contextWindows(): Readonly<Record<string, number>>
   /** 配置里的缺省条目 id（`defaultProvider`）。 */
   defaultProviderId(): string
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
@@ -173,12 +193,26 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
   return {
     list(): readonly ProviderEntry[] {
-      return entries.map(([id, config]) => ({
-        id,
-        model: config.model,
-        // 没声明就不给这个位（不拿 0 / 占位符冒充「不知道」）
-        ...(config.contextWindow === undefined ? {} : { contextWindow: config.contextWindow }),
-      }))
+      return entries.map(([id, config]) => {
+        const window = resolveContextWindow(config.model, config.contextWindow)
+        return {
+          id,
+          model: config.model,
+          // 两处皆无就不给这个位（不拿 0 / 占位符冒充「不知道」）
+          ...(window === undefined ? {} : { contextWindow: window }),
+        }
+      })
+    },
+
+    contextWindows(): Readonly<Record<string, number>> {
+      // 内置表打底，配置**声明过的**逐个按模型名盖上（覆盖位优先）。
+      // 同一模型名两处声明（配置事故）时以**靠后的条目**为准——本表只做「模型名 → 窗长」，
+      // 不为一条谁也不该撞上的边立第二套结构（口径见 `capacity.ts`）。
+      const table: Record<string, number> = { ...MODEL_CONTEXT_BUILTIN }
+      for (const [, config] of entries) {
+        if (config.contextWindow !== undefined) table[config.model] = config.contextWindow
+      }
+      return table
     },
 
     defaultProviderId(): string {

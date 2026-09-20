@@ -227,16 +227,33 @@ export type Assembly = {
    */
   readonly notices: readonly string[]
   /**
-   * **当前条目**声明的上下文窗总量（`providers.<id>.contextWindow`）——状态行 ④ 的**分母**
-   * （缺陷 `D10` 第 1 样；U20 留的位，本轮接上）。
+   * **当前条目**的上下文窗总量——状态行 ④ 的**分母**（缺陷 `D10` 第 1 样；U20 留的位，
+   * U21 接上、U30 补来处）。
    *
-   * **没声明就是 `null`**——不是 0、也不是某个惯例值：`null` 让外壳**只报已用量**
+   * **来处两条**（判定在模型域 `resolveContextWindow`）：用户声明的
+   * `providers.<id>.contextWindow` 优先；没声明就查**内置容量表**（按条目的模型名，
+   * 官方出处见 `capacity.ts`）——已知模型不要求用户自己补客观容量（U30）。
+   *
+   * **两处都没有就是 `null`**——不是 0、也不是某个惯例值：`null` 让外壳**只报已用量**
    * （「拿不到的不编」是这条读数立起来时的判据）。注册表缺席（注入了替身网关）同此。
    *
-   * 与 `/model` 那条来路（`model.catalog`）同源同判据——两处都由**条目自己声明的**那个数
-   * 说了算，不会分叉。
+   * 与 `/model` 那条来路（`model.catalog`）同源同判据——两处都出自**注册表条目**那一个数，
+   * 不会分叉。
    */
   readonly contextWindow: number | null
+  /**
+   * **窗长表**（模型名 → 上下文窗总量 · U30）——内置容量表 ＋ 各条目声明的覆盖位，
+   * 合一而查（`ModelRegistry.contextWindows()`）。
+   *
+   * 为什么要整张表进外壳：换模型是**运行时**的事（`/model` 一按就换），那一刻外壳得
+   * **当场**知道新模型多长——而它够不着注册表。表递过去，`model.switched` 一到就查得出；
+   * 查不到＝不知道（分母 `null`），**不沿用前一个模型的容量**。
+   *
+   * 注册表缺席 ⇒ **空表**（＝什么都不知道）：与上面 `contextWindow` 的 `null` 同一条口径
+   * ——不编。（两者不并成一个位：`contextWindow` 是**开机那一刻**的读数，本表是**之后**
+   * 每一次切换的取材——外壳开机时手里还没有模型名，查不了表。）
+   */
+  readonly contextWindows: Readonly<Record<string, number>>
   /**
    * 工作区**注册根列表**（阶段 3 多根）——执行域构造时逐条取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
@@ -697,7 +714,10 @@ export function assemble(options: AssembleOptions): Assembly {
    * `contextWindow` **有没有就带不带**——没声明就不给这一位（外壳拿不到就不显示，不编）。
    */
   /**
-   * 当前条目声明的上下文窗总量——④ 的开局分母（见 `Assembly.contextWindow`）。
+   * 当前条目的上下文窗总量——④ 的开局分母（见 `Assembly.contextWindow`）。
+   *
+   * 「条目那一个数」由注册表给（它那儿才认得声明与内置表，判据见 `resolveContextWindow`）；
+   * 本函数只做**取当下那一条**这件事。
    *
    * 取 `current()` 而不是 `defaultProviderId()`：`--provider` 是**开局就落地**的选中
    * （见 `cli.ts` 那段注），故开屏那一刻要报的是**它**的窗，不是缺省条目的。
@@ -842,6 +862,8 @@ export function assemble(options: AssembleOptions): Assembly {
     get contextWindow(): number | null {
       return contextWindowOf(models)
     },
+    // 窗长表（U30）——注册表缺席＝空表（不知道有哪些模型的窗长，同 `contextWindow` 的 `null`）
+    contextWindows: models?.contextWindows() ?? {},
     workspaceRoots: workspace.roots(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。
