@@ -43,8 +43,14 @@ export type Stage = {
   dispose(): void
 }
 
-/** 装配入参——沙地已经定下的三件（工作区根 · 配置 · 模型替身）不外露，其余照给。 */
-export type StageAssembleOptions = Omit<AssembleOptions, 'cwd' | 'config' | 'modelGateway'> & {
+/**
+ * 装配入参——沙地已经定下的两件（工作区根 · 配置）不外露，其余照给。
+ *
+ * `modelGateway` **可以覆盖**（U33 返工补）：缺省仍是 Faux，但**真实网关**那几例
+ * （真 SDK ＋ 注入 fetch，无网络）要拿它换掉——真实模型域与 Faux 的首事件时序不同，
+ * 而那正是要咬的地方。沙地、家目录、授权文件照旧全在临时目录里。
+ */
+export type StageAssembleOptions = Omit<AssembleOptions, 'cwd' | 'config'> & {
   readonly turns?: readonly FauxTurn[]
   /** 每步之间的等待（毫秒）——测中断时给消费方留窗口。 */
   readonly stepDelayMs?: number

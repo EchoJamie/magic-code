@@ -15,7 +15,8 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { KernelEvent, SkillRef } from '@magic/contracts'
+import type { EventStamper, KernelEvent, ModelGateway, SkillRef } from '@magic/contracts'
+import { createModelGateway } from '@magic/model'
 import { attachShell, runShellScript } from '../src/index.ts'
 import type { ShellHandle } from '@magic/app'
 import { eventsOfKind, lastModel, makeStage, readDatabase, type Stage } from './support.ts'
@@ -559,6 +560,47 @@ describe('U33 · 失效与排队', () => {
   })
 })
 
+describe('U33 · 停下时清掉的排队输入', () => {
+  test('**逐条配对 `ok:false`**（没进会话＝明确失败），且那一条不留条目', async () => {
+    // 由头（2026-09-21 规划裁）：`input.settled` 的契约是「给了 `ref` 必有终态」——
+    // 停下的那一刻，排着的那些的去处是**明确失败**，不是「也许以后会跑」。
+    const stage = makeStage()
+    try {
+      const path = projectSkill(stage, 'test')
+      put(stage.workspace, '.magic/skills/test/SKILL.md', skillText('test', '说明', '正文'))
+
+      const assembly = stage.assemble({ turns: [{ text: '第一件' }], stepDelayMs: 25 })
+      const shell = attachShell(assembly.shell, { timeoutMs: 8000 })
+
+      const begun = shell.until((event) => event.kind === 'model.call.start', 8000)
+      const done = shell.submit('先跑这件', 8000)
+      await begun
+
+      // 忙时再递一条（带技能与配对键）——它排着，随即被停下清掉
+      shell.send({
+        type: 'input.submit',
+        text: '排队那句',
+        skills: [{ name: 'test', path }],
+        ref: 'queued-ref',
+      })
+      shell.send({ type: 'turn.interrupt' })
+      await done
+      shell.dispose()
+
+      // **没进会话的排队项：一条 `ok:false`**（不是「没有终态」）
+      expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
+        { ref: 'queued-ref', ok: false, reason: '停下了——这一条还没轮到，没进会话，请重新发送' },
+      ])
+      // 它确实没进会话：库里没有它那条用户条目
+      expect(userRows(assembly).map((row) => row.content_text)).toEqual(['先跑这件'])
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 describe('U33 · 历史不被材料刷新重写', () => {
   test('改过源文件再重开会话：**当时那份正文仍可追溯**，新调用取到的是新的一版', async () => {
     const stage = makeStage()
@@ -875,6 +917,208 @@ describe('U33 · 纯文本不退化', () => {
       expect(readFileSync(assembly.paths.database).length).toBeGreaterThan(0)
 
       assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+// ══ 回执的兑现判据 · **真实网关**反例（U33 · 复验补正）════════════════
+//
+// 由头（独立复验）：返工曾把「事件流的第一条」当成「请求已发」，而真实模型域的
+// 第一条**恒为本地产的 `model.call.start`**（`normalize.ts` 先 yield 它、之后才迭代
+// 供应商流；`retry.ts` 迭代才调 SDK 的 streamer——参数校验与 fetch 都在其后）。
+// 于是三种情形会假报：SDK 参数校验失败（`fetchCalls=0`，请求压根没发）、
+// `call.start` 之后被中止、本地抛错。
+//
+// 这一组**走真实 `createModelGateway` ＋ 真 SDK ＋ 注入 fetch**（无网络、无真密钥，
+// 假 key 只用于构造）。判据是**每次事件发生时 `fetchCalls` 是几**——回执必须落在
+// fetch 之后；而反例那三种，`skill.used` / `input.settled` 一条都不许有。
+
+/** 一段真实的 SSE 响应体——`chunks` 逐块给 `choices`。 */
+function sse(...chunks: readonly unknown[]): Response {
+  const body = chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n'
+  return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })
+}
+
+/** 一块 chunk——`delta` ＋ `finish_reason`。 */
+function chunk(delta: Readonly<Record<string, unknown>>, finish: string | null = null): unknown {
+  return {
+    id: 'chat-1',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: 'test',
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  }
+}
+
+/**
+ * 一支**真实网关**（真 SDK）＋ 注入 fetch 的装配——`fetchCalls` 与请求体留在闭包里。
+ *
+ * `respond` 决定这一次 fetch 回什么；`localError` 给一个 SDK 本地就拒的参数
+ * （`maxCompletionTokens: -1`）。
+ */
+function realGateway(options: {
+  /** 这一次 fetch 回什么——**按调用序**（第 n 次调用给第 n 段；工具往返要换段，否则转圈）。 */
+  readonly respond?: (callIndex: number) => Response | Promise<Response>
+  readonly localError?: boolean
+}) {
+  const state = { fetchCalls: 0, bodies: [] as string[] }
+
+  const make = (stamper: EventStamper): ModelGateway =>
+    createModelGateway({
+      providerId: 'test',
+      config: { baseURL: 'http://test.invalid/v1', model: 'test', apiKey: 'fake-test-key' },
+      env: {},
+      stamper,
+      maxCompletionTokens: options.localError === true ? -1 : 8192,
+      retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
+      fetch: async (_input, init) => {
+        state.fetchCalls += 1
+        state.bodies.push(String(init?.body))
+        // 真实 fetch 的 AbortSignal 语义：**派发前**已中止＝拒绝，一个字节都不出去
+        if (init?.signal?.aborted === true) throw new DOMException('aborted before dispatch', 'AbortError')
+        return options.respond === undefined
+          ? sse(chunk({ content: '好' }), chunk({}, 'stop'))
+          : options.respond(state.fetchCalls)
+      },
+    })
+
+  return { make, state }
+}
+
+describe('U33 · 回执只在**真回来**之后（真实网关）', () => {
+  test('健康路径：回执落在 fetch **之后**，且真发出去的那份请求体里有材料', async () => {
+    const stage = makeStage()
+    try {
+      const path = projectSkill(stage, 'test')
+      put(stage.workspace, '.magic/skills/test/SKILL.md', skillText('test', '说明', 'ACTUAL_MATERIAL_MARKER'))
+
+      const gateway = realGateway({})
+      const assembly = stage.assemble({ modelGateway: gateway.make })
+      const seen: { kind: string; fetchCalls: number }[] = []
+      const shell = attachShell(assembly.shell, {
+        onEvent: (event) => {
+          if (['model.call.start', 'skill.used', 'input.settled', 'model.call.end'].includes(event.kind)) {
+            seen.push({ kind: event.kind, fetchCalls: gateway.state.fetchCalls })
+          }
+        },
+      })
+
+      await sendAndWait(shell, { text: '照它做', skills: [{ name: 'test', path }], ref: 'real-ref' })
+      shell.dispose()
+
+      // 那一刻「有没有事件」不是凭据：`call.start` 发生在 fetch **之前**
+      expect(seen.find((one) => one.kind === 'model.call.start')?.fetchCalls).toBe(0)
+      // **「已使用」落在 fetch 之后**——它是「材料真送进了模型」那句判据
+      expect(seen.find((one) => one.kind === 'skill.used')?.fetchCalls).toBeGreaterThanOrEqual(1)
+      // 而「收下了」是**会话这一侧**的事实：落账那一刻就成立，与发没发出去无关
+      expect(seen.find((one) => one.kind === 'input.settled')?.fetchCalls).toBe(0)
+      // **材料确实在那份发出去的请求体里**
+      expect(gateway.state.bodies.some((body) => body.includes('ACTUAL_MATERIAL_MARKER'))).toBe(true)
+      expect(eventsOfKind(shell.events, 'skill.used')).toHaveLength(1)
+      expect(eventsOfKind(shell.events, 'input.settled')).toHaveLength(1)
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**SDK 本地参数错**（`fetchCalls=0`）：请求压根没发——一条成功回执都不许有', async () => {
+    const stage = makeStage()
+    try {
+      const path = projectSkill(stage, 'test')
+      put(stage.workspace, '.magic/skills/test/SKILL.md', skillText('test', '说明', 'ACTUAL_MATERIAL_MARKER'))
+
+      const gateway = realGateway({ localError: true })
+      const assembly = stage.assemble({ modelGateway: gateway.make })
+      const shell = attachShell(assembly.shell)
+      await sendAndWait(shell, { text: '照它做', skills: [{ name: 'test', path }], ref: 'local-ref' })
+      shell.dispose()
+
+      expect(gateway.state.fetchCalls).toBe(0)
+      // 失败**照旧看得见**（模型域报错 ＋ 本轮以错误收束）——只是不冒称「已使用」
+      expect(eventsOfKind(shell.events, 'model.error').length).toBeGreaterThanOrEqual(1)
+      expect(eventsOfKind(shell.events, 'skill.used')).toEqual([])
+      // **收下归收下**（输入确实进了会话）——模型那边的失败不撤销它，也不诱导用户重发
+      expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
+        { ref: 'local-ref', ok: true },
+      ])
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**收到 `call.start` 之后被停止**：材料没交给传输——同样不报成功', async () => {
+    const stage = makeStage()
+    try {
+      const path = projectSkill(stage, 'test')
+      put(stage.workspace, '.magic/skills/test/SKILL.md', skillText('test', '说明', 'ACTUAL_MATERIAL_MARKER'))
+
+      // 材料交给 SDK **之前**停——注入 fetch 按真实 AbortSignal 语义在派发前拒绝
+      const gateway = realGateway({ respond: () => sse(chunk({ content: '好' }), chunk({}, 'stop')) })
+      const assembly = stage.assemble({ modelGateway: gateway.make })
+      const shell = attachShell(assembly.shell, {
+        onEvent: (event) => {
+          if (event.kind === 'model.call.start') shell.send({ type: 'turn.interrupt' })
+        },
+      })
+      await sendAndWait(shell, { text: '照它做', skills: [{ name: 'test', path }], ref: 'stop-ref' })
+      shell.dispose()
+
+      // 停在发出去之前：**没有「已使用」**（材料没到模型手上）
+      expect(eventsOfKind(shell.events, 'skill.used')).toEqual([])
+      // 但输入已被会话收下（落账过了）——这一条不该被模型那边的中止抹掉
+      expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
+        { ref: 'stop-ref', ok: true },
+      ])
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**空成功响应**（没有正文）与**纯工具响应**：都要闭合', async () => {
+    const stage = makeStage()
+    try {
+      const path = projectSkill(stage, 'test')
+      put(stage.workspace, '.magic/skills/test/SKILL.md', skillText('test', '说明', 'M'))
+
+      // ① 空成功：一个字都没有，只有收束那一段
+      const empty = realGateway({ respond: () => sse(chunk({}, 'stop')) })
+      const first = stage.assemble({ modelGateway: empty.make })
+      const shell = attachShell(first.shell)
+      await sendAndWait(shell, { text: '一句', skills: [{ name: 'test', path }], ref: 'empty-ref' })
+      shell.dispose()
+      expect(eventsOfKind(shell.events, 'skill.used')).toHaveLength(1)
+      first.close()
+
+      // ② 纯工具响应：正文一个字没有，只有一条工具调用（**只第一趟**——第二趟收束，
+      //    否则模型一直要工具，往返没有尽头）
+      const toolOnly = realGateway({
+        respond: (nth) =>
+          nth === 1
+            ? sse(
+                chunk({
+                  tool_calls: [
+                    { index: 0, id: 'call_1', type: 'function', function: { name: 'ls', arguments: '{}' } },
+                  ],
+                }),
+                chunk({}, 'tool_calls'),
+              )
+            : sse(chunk({ content: '看见了' }), chunk({}, 'stop')),
+      })
+      const second = stage.assemble({ modelGateway: toolOnly.make })
+      const shell2 = attachShell(second.shell)
+      await sendAndWait(shell2, { text: '两句', skills: [{ name: 'test', path }], ref: 'tool-ref' })
+      shell2.dispose()
+      expect(eventsOfKind(shell2.events, 'skill.used')).toHaveLength(1)
+      expect(eventsOfKind(shell2.events, 'tool.result').length).toBeGreaterThanOrEqual(1)
+      second.close()
     } finally {
       stage.dispose()
     }

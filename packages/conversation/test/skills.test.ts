@@ -208,10 +208,15 @@ describe('U33 · 回执只在请求真发出去之后', () => {
       new AbortController().signal,
     ).then((outcome) => {
       expect(outcome).toBe('error')
-      // 材料确实备齐了（条目落了账），但请求没发出去——**回执一条都不许有**
+      // 材料备齐了、条目也落了账——但**请求没发出去**：
+      // 「已使用」一条都不许有；「收下了」照发（那说的是会话这一侧的事实）
       expect(stage.records.entries.some((entry) => entry.kind === 'user')).toBe(true)
       expect(stage.sink.events.filter((event) => event.kind === 'skill.used')).toEqual([])
-      expect(stage.sink.events.filter((event) => event.kind === 'input.settled')).toEqual([])
+      expect(
+        stage.sink.events
+          .filter((event) => event.kind === 'input.settled')
+          .map((event) => event.data),
+      ).toEqual([{ ref: 'r-boom', ok: true }])
     })
   })
 
@@ -237,7 +242,9 @@ describe('U33 · 回执只在请求真发出去之后', () => {
     )
 
     expect(stage.sink.events.filter((event) => event.kind === 'skill.used')).toEqual([])
-    expect(stage.sink.events.filter((event) => event.kind === 'input.settled')).toEqual([])
+    expect(
+      stage.sink.events.filter((event) => event.kind === 'input.settled').map((event) => event.data),
+    ).toEqual([{ ref: 'r-silent', ok: true }])
   })
 
   test('正常发出去的（第一条事件到手）——照报，且**只报一次**', async () => {

@@ -317,8 +317,10 @@ describe('U33 · 按需读取', () => {
       const read = skills.readMain('one', join(land.at, '.magic/skills/two'))
       expect(read.ok).toBe(false)
       if (read.ok) return
-      expect(read.reason).toContain('不再成立')
-      expect(read.reason).toContain('two')
+      // 给用户的话只有三件：**哪个技能 · 哪份来源 · 下一步**（不讲发现面怎么认）
+      expect(read.reason).toContain('「one」')
+      expect(read.reason).toContain(join(land.at, '.magic/skills/two'))
+      expect(read.reason).toContain('请重新选择技能')
     } finally {
       land.dispose()
     }
@@ -336,8 +338,9 @@ describe('U33 · 按需读取', () => {
       const read = skills.readMain('one', path)
       expect(read.ok).toBe(false)
       if (read.ok) return
-      expect(read.reason).toContain('one')
+      expect(read.reason).toContain('「one」')
       expect(read.reason).toContain(path)
+      expect(read.reason).toContain('请重新选择技能')
     } finally {
       land.dispose()
     }
@@ -387,7 +390,7 @@ describe('U33 · 按需读取', () => {
       const read = skills.readMain('elsewhere', outside)
       expect(read.ok).toBe(false)
       if (read.ok) return
-      expect(read.reason).toContain('不认识')
+      expect(read.reason).toContain('来源没了')
     } finally {
       land.dispose()
     }

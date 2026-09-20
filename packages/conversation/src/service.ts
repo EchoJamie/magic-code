@@ -205,6 +205,30 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     skills,
   }
 
+  /**
+   * **清掉排队中的交代**——它们**没进会话**（一条条目都没落），故每一份都配对一次
+   * `input.settled{ok:false}`（给了 `ref` 的才发）。
+   *
+   * 由头（2026-09-21 规划裁）：`input.settled` 的契约是「给了 `ref` 必有终态」——
+   * 白名单式的「成了才回」会让外壳永等一份草稿。停下的那一刻，这些交代的去处是
+   * **明确失败**，不是「也许以后会跑」。
+   *
+   * ⚠️ 发的事件用的是**当下活跃那条会话**的信封（它们本来就没能进任何会话——
+   * 说得出「这一条没成」就够，不编一条会话出来）。
+   */
+  function dropQueued(): void {
+    for (const input of pending.splice(0)) {
+      if (input.ref === undefined) continue
+      sink.emit(
+        stamper.stamp('input.settled', {
+          ref: input.ref,
+          ok: false,
+          reason: '停下了——这一条还没轮到，没进会话，请重新发送',
+        }),
+      )
+    }
+  }
+
   async function drain(): Promise<void> {
     const controller = new AbortController()
     current = controller
@@ -226,9 +250,10 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
         // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
         if (outcome === 'rejected') continue
-        // 中止 / 出错＝停下：排队中的交代**不再续跑**（「回到等待输入」是当场的）
+        // 中止 / 出错＝停下：排队中的交代**不再续跑**（「回到等待输入」是当场的），
+        // 并**逐条配对**（没进会话＝明确失败，见 `dropQueued`）
         if (outcome !== 'settled') {
-          pending.length = 0
+          dropQueued()
           break
         }
       }
@@ -254,8 +279,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     interrupt(): void {
       current?.abort()
-      // 「停下」就是停下——排队的交代一并清掉（见文件头注）
-      pending.length = 0
+      // 「停下」就是停下——排队的交代一并清掉（见文件头注），并**逐条配对**：
+      // 它们没进会话，那就是「没成」（见 `dropQueued`）
+      dropQueued()
     },
 
     busy: () => running,

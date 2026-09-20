@@ -468,19 +468,12 @@ function readAt(
   // 不会返回它**，故照样进不来。
   const skill = locate(options, limits, path)
   if (skill === undefined) {
-    return {
-      ok: false,
-      reason:
-        `技能来源不认识「${path}」——它不在这一趟的发现结果里（发现面只有项目 / 用户的 ` +
-        `.magic/skills 与 .agents/skills，以及配置里点名的那些；改名、删除、换来源都会落到这儿）`,
-    }
+    return { ok: false, reason: `技能「${name}」的来源没了（${path}）——请重新选择技能` }
   }
   if (skill.name !== name) {
     return {
       ok: false,
-      reason:
-        `技能「${name}」在 ${skill.path} 上不再成立——那一处现在叫「${skill.name}」。` +
-        `来源变了就是变了，不拿同名项顶替。`,
+      reason: `技能「${name}」的来源换了（${skill.path} 现在放的是别的技能）——请重新选择技能`,
     }
   }
 
