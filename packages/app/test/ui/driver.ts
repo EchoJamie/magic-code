@@ -207,6 +207,12 @@ export type UiSession = {
   resize(columns: number, rows: number): Promise<void>
   wait(condition: WaitCondition, options?: WaitOptions): Promise<WaitResult>
   capture(options?: { readonly label?: string }): Promise<Capture>
+  /**
+   * **把终端抽掉**（D26）——关掉 PTY master，**一个信号都不发**：终端窗口关了 /
+   * 管道断了就是这一下。随后用 `close()` 看它是**自己走的**（`exit.by === 'app'`）
+   * 还是被我们杀的——那正是「应用认不认得出终端没了」的判据。
+   */
+  dropTerminal(): void
   /** 此刻的屏（不落帧、不记步）——驱动内部的等与判据用它。 */
   screen(): Promise<VtScreen>
   /**
@@ -583,6 +589,13 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       return vt.screen()
     },
 
+    dropTerminal: () => {
+      artifacts.step('drop-terminal', { bytes: artifacts.bytes() })
+      // 关掉 master ⇒ slave 那一头的 `stdin` 抬 end/close（这正是「窗口没了」的形状）。
+      // 只做这一件：不发信号、不杀进程——退不退是**应用自己**的事。
+      pty.close()
+    },
+
     close: async (closeOptions = {}) => {
       // 夹具收到的请求一并留档（截断 lastUser，别把长正文灌进步骤时间线）
       artifacts.step('fixture-requests', {
@@ -712,7 +725,11 @@ async function releaseTerminal(
 ): Promise<void> {
   await fixture?.stop()
   vt?.dispose()
-  pty?.close()
+  try {
+    pty?.close()
+  } catch {
+    // 已经关过了（`dropTerminal` 那条路先关的）——正常收场，不是错
+  }
 }
 
 /** 把此刻的屏落成一帧（起手失败那条路要它：「卡在什么画面上」得有物证）。 */

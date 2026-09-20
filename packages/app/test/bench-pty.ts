@@ -106,11 +106,120 @@ export async function ptyOnce(command: readonly string[]): Promise<PtyMeasure> {
       }
     }
   } finally {
-    child.kill()
-    await child.exited.catch(() => {})
+    await reap(child)
   }
 
   return { firstByteMs, firstFrameMs }
+}
+
+/**
+ * 收场：**连 `script` 下面那个被测进程一起**（D26 · 工单第 4 条）。
+ *
+ * 由头：`child.kill()` 杀的是 `script` 这一个进程——**被测的 CLI 是它的孩子**，
+ * 只杀外壳就把它留在了机器上（旧那批残留里正有这种形状：父进程没了、自己 `PPID=1`、
+ * 抱着一个 PTY slave 空转）。这里按「先记名下、再有界升级」办：
+ *
+ * 1. 杀之前先记下 `script` 名下的**整棵树**（`pgrep -P` 逐层）——这一轮起的命令就在里头；
+ * 2. 杀 `script`（pty master 随之关闭 ⇒ 被测进程收到断流 ⇒ 产品那条路让它自己走）；
+ * 3. 到点还没走的，**只对记下来的 PID** TERM → 等 → KILL → 等，**不扫全机**。
+ */
+async function reap(child: Bun.Subprocess): Promise<void> {
+  // 先记名下——**读不到就抛**（见 `childrenOf` 的注：那种情况下「没有孩子」不成立）；
+  // 但外壳无论如何都要杀，不然连它都没了结，所以错误先收着，杀完再抛
+  let under: readonly number[] = []
+  let readError: unknown
+  try {
+    under = await descendantsOf(child.pid)
+  } catch (error) {
+    readError = error
+  }
+
+  child.kill()
+  await child.exited.catch(() => {})
+
+  for (const pid of under) {
+    if (await gone(pid, 1_000)) continue
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      continue // 这一跳里走了
+    }
+    if (await gone(pid, 1_000)) continue
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      continue
+    }
+    await gone(pid, 1_000)
+  }
+
+  if (readError !== undefined) throw readError
+}
+
+/**
+ * 这个进程名下的**整棵树**（自己 → 孩子 → 孙……）——`script` 分完 pty 之后，
+ * 被测命令就在这棵树里（中间隔一层 shell 也跑不掉）。
+ *
+ * ⚠️ **别用 `ps -P`**：本机（macOS 26.6.2）的 `ps` 不认 `-P`
+ * （`ps: illegal option -- P`，退出码 1）。本文件第一版正是那么写的，
+ * 又把退出码扔了——名册恒为空，收场退化成「只杀 script 就算完」，
+ * 正是 D26 要修的那种假回收。`pgrep -P` 在本机可用（实测）。
+ */
+async function descendantsOf(parent: number): Promise<readonly number[]> {
+  const found: number[] = []
+  const frontier: number[] = [parent]
+
+  while (frontier.length > 0) {
+    const current = frontier.pop() as number
+    for (const pid of await childrenOf(current)) {
+      found.push(pid)
+      frontier.push(pid)
+    }
+  }
+
+  return found
+}
+
+/**
+ * 一个进程当下的孩子（`pgrep -P`）。
+ *
+ * `pgrep` 的退出码分三档：**0 ＝ 有匹配 · 1 ＝ 没有匹配（正常）· 其余 ＝ 真出错**。
+ * 出错**必须抛**——读不出进程表时，「没有孩子」这个结论不成立，
+ * 静默返回空数组就等于把「没回收」记成「已回收」。
+ */
+async function childrenOf(parent: number): Promise<readonly number[]> {
+  const pgrep = Bun.spawn(['pgrep', '-P', String(parent)], { stdout: 'pipe', stderr: 'pipe' })
+  const text = await new Response(pgrep.stdout).text()
+  const complaint = await new Response(pgrep.stderr).text()
+  const code = await pgrep.exited
+
+  if (code === 1) return [] // 一个孩子都没有——正常
+  if (code !== 0) {
+    throw new Error(`读不出进程的孩子（pgrep -P ${parent} 退出 ${code}）：${complaint.trim()}`)
+  }
+
+  return text
+    .split('\n')
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0)
+}
+
+/** 还在不在——`kill(pid, 0)` 只做存在性检查，不发信号。 */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 等它走（有界）——返回「走了没有」。 */
+async function gone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (alive(pid) && Date.now() < deadline) await Bun.sleep(20)
+
+  return !alive(pid)
 }
 
 function median(values: readonly number[]): number {
