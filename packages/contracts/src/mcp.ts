@@ -143,12 +143,12 @@ export type McpPart =
   | { readonly kind: 'text'; readonly text: string }
   /** 结构化结果（`structuredContent`）——序列化成 JSON 文本交出（消费侧不引第二套形态）。 */
   | { readonly kind: 'structured'; readonly text: string }
-  /** 非文本部件：类型 ＋ 媒体类型 ＋ 字节数。 */
+  /** 非文本部件：类型 ＋ 媒体类型 ＋ 字节数（**算不出字节数就不给这一位**——不编 0）。 */
   | {
       readonly kind: 'other'
       readonly type: string
       readonly mimeType?: string
-      readonly bytes: number
+      readonly bytes?: number
     }
 
 /**

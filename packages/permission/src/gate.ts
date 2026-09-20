@@ -160,6 +160,14 @@ type Pending = {
   readonly at: number
   /** 这次问的是「同类」里的哪一类——「总是允许」据此凝出授权（当场凝好，答复时不再重判）。 */
   readonly grant: PermissionRule
+  /**
+   * **这一次答「总是允许」算不算数**（U38）——外部操作**不记账**。
+   *
+   * 口径在权限域这一层，不押外壳的自觉：`y / n` 之外，答复面上还有一个 `remember` 位
+   * （脚本驱动 `--script` 就按得到），故「外部调用不产生『总是允许』」得由**记账那一处**
+   * 说了算——不然一条点不出来的授权会从另一条路进名录。
+   */
+  readonly rememberable: boolean
   readonly settle: (decision: Decision) => void
 }
 
@@ -191,7 +199,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   return {
     decide(call, ctx, callRef) {
       const started = now() // 度量起点：本域开始处理这次裁决（人工 / 自动同一把尺子）
-      const { weight, material, ops, landings } = analyze(call, ctx)
+      const { weight, material, ops, landings, title, external } = analyze(call, ctx)
 
       // 规则轴与判定轴读的是**同一份** `analyze` 结论——两条路径结构上无从分叉
       const face: CallFace = { tool: call.name, ops, landings }
@@ -219,16 +227,25 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       const request = decisionRequest(stamper, {
         call: callRef,
-        name: call.name,
+        // 卡上那个名字：外部工具＝`服务器 / 工具`（身份由注册表来），内置工具＝工具名
+        name: title ?? call.name,
         // 规则命中却被禁区否决时说清缘由——配了规则的人第一个会问的就是「为什么还问我」
         material: hit === undefined ? material : vetoed(material, hit),
         weight,
+        ...(external === true ? { external: true } : {}),
       })
 
       // **先登记、后扇出**——外壳可能在同一调用栈里答复（答复不必等一轮事件循环），
       // 顺序反了这条答复就落在空表上（丢答复＝永久挂起）。
       const answered = new Promise<Decision>((settle) => {
-        pending.set(request.id, { call: callRef, at: started, grant: grantOf(face), settle })
+        pending.set(request.id, {
+          call: callRef,
+          at: started,
+          grant: grantOf(face),
+          // 外部操作不给「总是允许」——连记都不记（见 `Pending.rememberable`）
+          rememberable: external !== true,
+          settle,
+        })
       })
 
       sink.emit(request)
@@ -244,7 +261,11 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       // 「总是允许」——只认批准（规则只有「允许」这一形）；同形的已在册＝账本自己不去重，
       // 不重复入册这件事归账本（`remember` 的注）。
-      if (options?.remember === true && decision === 'approve') grants.remember(question.grant)
+      // **外部操作不记**（`rememberable`）——它的效果不由本机裁定，一条「同类自动放行」
+      // 记不下那个判断；这一步与外壳给不给 `a` 无关，是记账那一处自己的口径。
+      if (question.rememberable && options?.remember === true && decision === 'approve') {
+        grants.remember(question.grant)
+      }
 
       // 裁决只走事件、不入条目（技术方案 · 领域划分 · 权限域）；耗时＝本域开始处理 → 答复（度量埋点）
       sink.emit(

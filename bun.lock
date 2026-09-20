@@ -34,6 +34,7 @@
         "@magic/control": "workspace:*",
         "@magic/conversation": "workspace:*",
         "@magic/execution": "workspace:*",
+        "@magic/mcp": "workspace:*",
         "@magic/model": "workspace:*",
         "@magic/permission": "workspace:*",
         "@magic/records": "workspace:*",

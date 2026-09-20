@@ -21,6 +21,9 @@ export type DecisionCardProps = {
 
 export function DecisionCard({ pending }: DecisionCardProps) {
   const heavy = pending.weight === 'heavy'
+  // **外部操作**（U38）：副题不说可逆 / 不可逆（本机判不出效果，只报「效果由服务器决定」），
+  // 且**不给「总是允许」**——它是必闸类（那条授权记不下「外部效果」这个判断）
+  const external = pending.external === true
   const accent = heavy ? PALETTE.danger : PALETTE.warn
   const bar = (line: string, color: string = PALETTE.fg, bold = false): ReactElement =>
     h(Text, { key: `l:${line}` }, h(Text, { color: accent }, '│ '), h(Text, { color, bold }, line))
@@ -28,13 +31,13 @@ export function DecisionCard({ pending }: DecisionCardProps) {
   return h(
     Box,
     { flexDirection: 'column', paddingX: 1, marginTop: 1 },
-    // 标题：工具 · 危险词（· 第几件）
+    // 标题：`名字 · 口径`（· 第几件）——外部操作的名字由权限域给成 `服务器 / 工具`
     h(
       Text,
       null,
       h(Text, { color: accent }, '│ '),
       h(Text, { color: accent, bold: true }, pending.name),
-      h(Text, { color: PALETTE.dim }, ` · ${heavy ? '不可逆' : '可逆'}`),
+      h(Text, { color: PALETTE.dim }, ` · ${external ? EXTERNAL_FACE : heavy ? '不可逆' : '可逆'}`),
       pending.position === null
         ? null
         : h(Text, { color: PALETTE.dim }, ` · ${pending.position.index} / ${pending.position.total}`),
@@ -46,12 +49,21 @@ export function DecisionCard({ pending }: DecisionCardProps) {
       Text,
       { key: 'keys' },
       h(Text, { color: accent }, '│ '),
-      keyHint('y', '批准'),
+      // 「这一次」在外部件上**写出来**：它答的正是「批不批这一回」，而不是本机的一条长期授权
+      keyHint('y', external ? '批准这一次' : '批准'),
       keyHint('a', '本工作区总是允许', heavy),
       keyHint('n', '拒绝'),
     ),
   )
 }
+
+/**
+ * 外部操作的口径（U38）——**交互约束给的那一句原话**。
+ *
+ * 与权限域材料里那一句同词（`EXTERNAL_CAVEAT`）：审批卡上「为什么不说可逆」的答案就在这几个字里
+ * ——本机判不出效果，判断交给服务器那一侧，人据此决定批不批。
+ */
+const EXTERNAL_FACE = '外部操作 · 效果由服务器决定'
 
 function keyHint(key: string, label: string, struck = false): ReactElement {
   return h(

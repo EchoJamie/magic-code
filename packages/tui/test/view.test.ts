@@ -6,7 +6,10 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { renderToString } from 'ink'
+import { createElement as h } from 'react'
 import type { Entry } from '@magic/contracts'
+import { DecisionCard } from '../src/components/decision.ts'
 import {
   HINT_IDLE,
   HINT_WORKING,
@@ -18,8 +21,9 @@ import {
   rebuild,
   reduce,
 } from '../src/view.ts'
-import type { LogRow, ShellView } from '../src/view.ts'
+import type { LogRow, PendingDecision, ShellView } from '../src/view.ts'
 import { event } from './events.ts'
+import { plain } from './screen.ts'
 
 const viewed = (events: readonly Parameters<typeof reduce>[1][], from: ShellView = createView()): ShellView =>
   events.reduce(reduce, from)
@@ -189,6 +193,16 @@ describe('接管（裁决挂着时占住输入框）', () => {
   const ask = (weight: 'light' | 'heavy', id = 88) =>
     event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight }, { id })
 
+  /** 一次**外部操作**的询问（U38）——名字是权限域给成的 `服务器 / 工具`。 */
+  const askExternal = (name: string, material: string, id = 88): ReturnType<typeof ask> =>
+    event('tool.decision.request', { call: 71, name, material, weight: 'heavy', external: true }, { id })
+
+  /** 卡那一件（取不到即抛——免得断言断在 `undefined` 上）。 */
+  const pendingOf = (view: ShellView): PendingDecision => {
+    if (view.dock.kind !== 'decision') throw new Error('此刻没有挂着裁决')
+    return view.dock.pending
+  }
+
   test('裁决到了就接管——dock 换成裁决，状态行转「等你定夺」＋键位', () => {
     const view = viewed([ask('light')])
 
@@ -223,6 +237,27 @@ describe('接管（裁决挂着时占住输入框）', () => {
 
     expect(ended.dock.kind).toBe('input')
     expect(ended.draft).toBe('草稿')
+  })
+
+  test('外部操作（U38）——副题说「效果由服务器决定」、只给 `y 批准这一次`，`a` 划掉', () => {
+    // 卡上的名字由权限域给成 `服务器 / 工具`（外壳不自己拼）；`external` 一位决定口径
+    const view = viewed([askExternal('fake / echo', '参数：\n{\n  "text": "你好"\n}')])
+
+    expect(view.dock.kind === 'decision' ? view.dock.pending.external : undefined).toBe(true)
+    expect(view.status.hint).toBe('y / n')
+
+    const frame = plain(renderToString(h(DecisionCard, { pending: pendingOf(view) }), { columns: 100 }))
+
+    // ① 标题：名字 · 外部口径（**不说可逆 / 不可逆**——本机判不出）
+    expect(frame).toContain('fake / echo · 外部操作 · 效果由服务器决定')
+    expect(frame).not.toContain('不可逆')
+    // ② 材料是实际业务参数（原样贴着，不另起容器）
+    expect(frame).toContain('"text": "你好"')
+    // ③ 键位：批准这一次 / 拒绝（`a` 那一格照必闸类**划掉**——划不划由 `weight` 管，
+    //    本用例量的是措辞；「按 `a` 真发不出命令」在 `shell.test.ts` 里咬住）
+    expect(frame).toContain('y 批准这一次')
+    expect(frame).toContain('n 拒绝')
+    expect(frame).toContain('a 本工作区总是允许')
   })
 
   test('件数报两处——本轮有几件工具就报几件（单件不报）', () => {

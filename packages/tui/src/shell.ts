@@ -693,7 +693,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
     if (char === 'a') {
       if (pending.weight === 'heavy') {
-        commit(said(view, '必闸类不可「总是允许」——按 y 批准这一次，或 n 拒绝。'))
+        // 外部操作说不出「可逆 / 不可逆」那套词——按它自己的缘由说（U38）
+        commit(
+          said(
+            view,
+            pending.external === true
+              ? '外部操作不可「总是允许」——效果由服务器决定，按 y 批准这一次，或 n 拒绝。'
+              : '必闸类不可「总是允许」——按 y 批准这一次，或 n 拒绝。',
+          ),
+        )
         return NONE
       }
       send({ type: 'decision.answer', id: pending.id, decision: 'approve', remember: true })

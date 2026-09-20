@@ -125,6 +125,13 @@ export type PendingDecision = {
   readonly material: string
   readonly weight: DecisionWeight
   /**
+   * **这是一次外部操作**（U38 · 来自 `tool.decision.request.data.external`）。
+   *
+   * 两处据它换口径：副题改说 `外部操作 · 效果由服务器决定`（**不说可逆 / 不可逆**——
+   * 本机判不出），以及**不给「总是允许」**（划掉，同必闸类那条姿态）。缺席＝内置工具。
+   */
+  readonly external?: boolean
+  /**
    * 多件裁决的**第几件 / 共几件**（原型 · 场景 7：件数报两处——卡上 ＋ 状态行）。
    * 单件时 `null`（不报数）。
    */
@@ -730,6 +737,8 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
         name: data.name,
         material: data.material,
         weight: data.weight,
+        // 外部操作（U38）——只在真为外部时带键（缺席可辨：内置工具一字不动）
+        ...(data.external === true ? { external: true } : {}),
         position,
       },
     },

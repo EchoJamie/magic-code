@@ -47,6 +47,8 @@ import type {
   EventStamper,
   GrantRow,
   KernelEvent,
+  McpConnection,
+  McpConnectionState,
   ModelGateway,
   ModelSwitchRequest,
   RecordsService,
@@ -75,7 +77,10 @@ import { createGrantLedger, createPermissionGate, parseRules } from '@magic/perm
 import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
-import { createToolRuntime } from '@magic/tools'
+import { createMcpServers } from '@magic/mcp'
+import type { McpServers } from '@magic/mcp'
+import { createToolRuntime, defineMcpTools } from '@magic/tools'
+import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
 import { loadGrants, saveGrants } from './grants-file.ts'
@@ -145,6 +150,16 @@ export type AssembleOptions = {
   readonly grantsFile?: string | undefined
   /** 家目录（展开 `GRANTS_FILE` 的 `~`；缺省 `os.homedir()`）——与配置加载器同一个来处。 */
   readonly home?: string | undefined
+  /**
+   * **外部工具（MCP）两条上限的覆盖位**（U38）——连接 / 发现与一次调用各一道（毫秒）。
+   *
+   * 缺省＝适配器里那两个实现级常量（10s / 120s）。给这个口的理由同 `context`：
+   * 它是**装配期入参、不是用户配置**（用户没有调它的需求），而用例**必须**能把它调小
+   * ——不然「超时」那条路要真等两分钟。
+   */
+  readonly mcpTimeouts?:
+    | { readonly connectTimeoutMs?: number; readonly callTimeoutMs?: number }
+    | undefined
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
@@ -159,6 +174,18 @@ export type GrantsView = {
   readonly grants: readonly GrantRow[]
   /** **陈旧的节**——路径已不在的那些（`B11`）。 */
   readonly stale: readonly string[]
+}
+
+/**
+ * 一条外部服务器的读数（`Assembly.mcpServers` · U38）——**状态 ＋ 它报的工具名**。
+ *
+ * 工具名是**服务器那边报的**（`echo`），不是注册名（`mcp__<服务器>__echo`）：
+ * 这一屏答的是「我配的那台服务器上有什么」，对得上服务器自己的文档。
+ */
+export type McpServerView = {
+  readonly server: string
+  readonly state: McpConnectionState
+  readonly tools: readonly string[]
 }
 
 export type Assembly = {
@@ -224,10 +251,42 @@ export type Assembly = {
    * 由头：解析从严（读不懂的规则 / 授权**不生效**）这件事原先**只有 `--check` 会说**，
    * 走 TUI 那条路时**一声不响**——用户对着一条不生效的规则发呆，不知道它压根没被读进来。
    *
-   * 两条来路：**被拒的权限规则**（`rejectedRules`）与**授权文件读不懂**（`loadGrants` 的
-   * `note`）。都**没到非报不可的量**（正常时是空数组）——空数组＝启动一句多余的话都不说。
+   * 三条来路：**被拒的权限规则**（`rejectedRules`）· **授权文件读不懂**（`loadGrants` 的
+   * `note`）· **外部服务器连不上**（U38，见下）。都**没到非报不可的量**（正常时是空数组）
+   * ——空数组＝启动一句多余的话都不说。
+   *
+   * ⚠️ **取值器而不是快照**（U38）：外部服务器连上连不上是**发现那一趟**（`ready()`）才
+   * 落定的事，而 `assemble()` 是同步的。故这一位现读（调用方在 `ready()` 之后取，拿到的是
+   * 落定后的说法）；「首轮模型请求前完成发现」那条纪律由 `ready()` 保证，不靠这一位。
    */
   readonly notices: readonly string[]
+  /**
+   * **外部服务器的一屏**（U38）——每条连接的当下状态与工具表（`--check` 那一行读它；
+   * **U39 的 `/mcp` 也接在这一处**：查询面一处产出，两处说同一句话）。
+   *
+   * 工具名是**服务器那边报的**（未加前缀）——注册名（`mcp__<服务器>__<工具>`）由工具域合成，
+   * 这一屏报的是「服务器自己有哪些东西」（对得上服务器文档）。
+   */
+  readonly mcpServers: () => readonly McpServerView[]
+  /**
+   * **发现那一跳**（U38）——等所有已配置的外部服务器「起手 → 发现」落定（各自有界）。
+   *
+   * **起手在 `assemble()` 里就发车了**（同步那一步不等），这里是**收口**：等过它，
+   * 工具表才是最终那一份；失败的那几条落成「不可用 ＋ 缘由」（**不拖垮内置工具**）。
+   *
+   * **入口在放开输入之前调它**（`cli.ts`）：设计明文「首轮模型请求前完成发现」——
+   * 不早不晚就是这一跳。没有配置任何服务器时它是**空转**（一步就完）。
+   */
+  ready(): Promise<void>
+  /**
+   * **释放本进程拉起的外部服务器**（U38）——关 stdin → 等 → 杀（传输规范 · Shutdown），
+   * **只碰自己拉起的那些**（用户自己的服务不归我们动）。
+   *
+   * 与 `close()` 分家的理由：关库是同步的（一条语句），而子进程的收尾**天然是异步的**
+   * （要等它自己退，等不到才杀）。收尾路径要真等到它落定，就得有个能 await 的口。
+   * `close()` 也会**发起**这件事（`void`，不等）——忘了 await 也不至于把子进程留下。
+   */
+  shutdown(): Promise<void>
   /**
    * **当前条目**的上下文窗总量——状态行 ④ 的**分母**（缺陷 `D10` 第 1 样；U20 留的位，
    * U21 接上、U30 补来处）。
@@ -286,7 +345,9 @@ export type Assembly = {
    * 返回值不交出去：报告是应用层的形态，要看细节请直接调 `actions.recover`。
    */
   boot(): Promise<void>
-  /** 关库（blob 无需收尾）。 */
+  /**
+   * 关库（blob 无需收尾）＋ **发起**外部服务器的释放（不等它——要等请 `await shutdown()`）。
+   */
   close(): void
 }
 
@@ -373,6 +434,38 @@ export function assemble(options: AssembleOptions): Assembly {
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
   const workspace = openWorkspace(loaded, options.cwd)
   const sandbox = createSandbox({ workspace })
+
+  /**
+   * **外部工具服务器**（U38）——配置里显式写了的那几条，一条一个进程。
+   *
+   * 两件事在这一步定：
+   * - **只按配置连**（`loaded.config.mcp?.servers`）——不扫文件、不猜：工作区里出现
+   *   `.mcp.json` 一类文件**不等于获准运行启动命令**（设计明文）。没配＝一条都不连。
+   * - **起手在这儿发车、落定在 `ready()`**：装配是同步的（第 2 / 3 步都在造实例），
+   *   而拉起进程是异步的——故「先发车、到该落定的那一处等」（`Assembly.ready`）。
+   *
+   * 调用上限随 `options.mcpTimeouts` 走（用例要把它调小；用户配置里没有这一项——
+   * 它是实现级常量的装配期覆盖，同 `context` 那个先例）。
+   */
+  const mcp: McpServers = createMcpServers({
+    servers: loaded.config.mcp?.servers ?? {},
+    ...(options.mcpTimeouts?.connectTimeoutMs === undefined
+      ? {}
+      : { connectTimeoutMs: options.mcpTimeouts.connectTimeoutMs }),
+    ...(options.mcpTimeouts?.callTimeoutMs === undefined
+      ? {}
+      : { callTimeoutMs: options.mcpTimeouts.callTimeoutMs }),
+  })
+
+  /**
+   * **外部工具的定义**（U38）——发现的结果 → 注册表要的那一件（工具域合成，此处只取）。
+   *
+   * **每次开一条会话现取**（不在装配那一刻定死）：连接是**进程级**的一束，会话是**按条**
+   * 开的，而工具表属于前者——现取才与「发现之后又变过」对得上；发现没落定时它就是空表
+   * （或只有已连上的那几条），内置工具照常。
+   */
+  const mcpTools = (): readonly ToolDefinition[] =>
+    mcp.connections.flatMap((connection) => [...defineMcpTools(connection)])
 
   /**
    * **项目规约的来源面**（U32）——归执行域落地（**文件读取在执行 / 基础设施边界**），
@@ -578,6 +671,10 @@ export function assemble(options: AssembleOptions): Assembly {
       stamper,
       // 大块转存经记录域公开面（blob 写权唯一归它）
       blobs: records.blobs,
+      // **外部工具**（U38）——走的是同一个注册表、同一个闸门、同一条回填路
+      // （`options.tools` 那个追加出口：机制在内、工具集在外）。没连上＝空表，
+      // 内置七件照常（设计明文：单个连接失败不拖垮内置工具）。
+      tools: mcpTools(),
     })
     const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
 
@@ -897,7 +994,27 @@ export function assemble(options: AssembleOptions): Assembly {
     grantsPath,
     grantsView,
     readRules,
-    notices: noticesOf(parsedRules.rejected, loadedGrants.note, loaded.path, readRules().problems),
+    // **现读**（见 `Assembly.notices` 的注）：外部服务器连不上那一条要等 `ready()` 才落定，
+    // 而这一位在放开输入之前（`boot`）与自检（`--check`）两处都会被读——快照会在前一处漏话。
+    get notices(): readonly string[] {
+      return noticesOf(
+        parsedRules.rejected,
+        loadedGrants.note,
+        loaded.path,
+        readRules().problems,
+        mcp.connections,
+      )
+    },
+    mcpServers: () =>
+      mcp.connections.map((connection) => ({
+        server: connection.server,
+        state: connection.state,
+        tools: connection.tools().map((tool) => tool.name),
+      })),
+    // 发现那一跳（见 `Assembly.ready`）：空转（没配服务器）时一步就完
+    ready: () => mcp.ready(),
+    // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍
+    shutdown: () => mcp.shutdown(),
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。
@@ -921,6 +1038,10 @@ export function assemble(options: AssembleOptions): Assembly {
       // 静默吞掉反而让人以为写成了）
       if (grantsDirty) saveGrants(grantsPath, grants.snapshot())
       recordsStore.close()
+      // **发起**外部服务器的释放（不等：收尾这一跳是同步的，等它要 `await shutdown()`）。
+      // 放在最后：先落自己的账，再去收子进程。忘了 await 也不至于把它们留下——
+      // 这一下已经把「关 stdin」按下去了（服务器收到 EOF 就自己退，那是规范里的头号信号）。
+      void mcp.shutdown()
     },
   }
 }
@@ -935,12 +1056,18 @@ export function assemble(options: AssembleOptions): Assembly {
  * front-matter、没配来源的外部符号链接、超限、目录读不动、同目录 AGENTS 与 CLAUDE 的取舍）：
  * 用户写了一份规约**却一条都没生效**，走界面这条路时原先会**一声不响**——那正是这条通道
  * 立起来的理由（审计第 13 条）。规约出问题的概率比权限规则还高：它是一堆人各自在加的散文件。
+ *
+ * **外部服务器连不上（U38）为什么也在这儿**——设计明文：「单个连接失败**显示**该连接不可用，
+ * 不拖垮内置工具」。显示在哪儿？`/mcp` 那一屏归 U39，而 U38 需要的正是**开屏那一句**：
+ * 用户配了一台服务器、盼着它的工具出现，结果一件都没有、还一声不响——那是最让人对着
+ * 空气发呆的一种失败。故这里**点名到服务器**（`--check` 那一行给全貌）。
  */
 function noticesOf(
   rejectedRules: readonly RuleProblem[],
   grantsNote: string | undefined,
   configPath: string,
   rulesProblems: readonly RulesProblem[],
+  connections: readonly McpConnection[],
 ): readonly string[] {
   const said: string[] = []
 
@@ -955,6 +1082,14 @@ function noticesOf(
   const broken = rulesProblems.filter((problem) => problem.kind === 'error')
   if (broken.length > 0) {
     said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
+  }
+  // 连不上的那几条**各说一句**（不与别的并成一句：这一条要能一眼看出是哪台服务器）
+  for (const connection of connections) {
+    if (connection.state.status !== 'unavailable') continue
+    said.push(
+      `外部工具服务器「${connection.server}」连不上：${connection.state.reason}` +
+        '——本次它的工具不可用（内置工具不受影响）',
+    )
   }
   if (grantsNote !== undefined) said.push(grantsNote)
 

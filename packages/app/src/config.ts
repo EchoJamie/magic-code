@@ -20,8 +20,14 @@
 
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import type { MagicConfig, ProviderConfig } from '@magic/contracts'
-import { apiKeyEnvVarOf, CONFIG_FILE, DEFAULT_DATA_DIR, expandHome } from '@magic/contracts'
+import type { MagicConfig, McpConfig, McpServerConfig, ProviderConfig } from '@magic/contracts'
+import {
+  apiKeyEnvVarOf,
+  CONFIG_FILE,
+  DEFAULT_DATA_DIR,
+  expandHome,
+  MCP_NAME_SEPARATOR,
+} from '@magic/contracts'
 
 /** 配置加载失败——CLI 捕它、打印消息、退场（不带栈：这不是程序 bug，是配置的事）。 */
 export class ConfigError extends Error {
@@ -181,6 +187,79 @@ function asRuleSources(
 }
 
 /**
+ * 外部工具服务器名的一条硬规矩——**不许含 `__`、且要是能当工具名使的一串**。
+ *
+ * 两件都由头：
+ * - `__` 是**工具名的分隔符**（`mcp__<服务器>__<工具>`，契约 `MCP_NAME_SEPARATOR`）：
+ *   服务器名里再出现它，工具名就切不回唯一的一种解释；
+ * - 名字要拼进**送给模型的工具名**——各家供应商对函数名的字符集都有限制，
+ *   在这儿挡住比让第一条请求在供应商那儿失败强（那时的错在对面，用户读不懂）。
+ *
+ * 口径：**字母数字开头，其后只许字母数字与 `._-`**。写错照旧报错不降级——
+ * 名字是身份，改了名字就会换一批工具名（记录里的旧名从此对不上），不能悄悄替用户改。
+ */
+const MCP_SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/** 一个外部服务器条目——`{ command, args?, env? }`（形制见契约 `McpServerConfig`）。 */
+function asMcpServer(value: unknown, path: string, name: string): McpServerConfig {
+  const field = `mcp.servers.${name}`
+  const raw = asObject(value, path, field)
+
+  const args = raw['args']
+  if (args !== undefined && (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string'))) {
+    throw new ConfigError(path, `${field}.args 须是字符串数组（命令行参数）`)
+  }
+
+  const env = raw['env']
+  if (env !== undefined) {
+    const entries = asObject(env, path, `${field}.env`)
+    for (const [key, entry] of Object.entries(entries)) {
+      if (typeof entry !== 'string') {
+        throw new ConfigError(path, `${field}.env.${key} 须是字符串（环境变量值）`)
+      }
+    }
+  }
+
+  return {
+    command: asText(raw['command'], path, `${field}.command`),
+    ...(args === undefined ? {} : { args: args as readonly string[] }),
+    ...(env === undefined ? {} : { env: env as Readonly<Record<string, string>> }),
+  }
+}
+
+/**
+ * `mcp` 段 —— **用户显式配置的外部工具服务器**（U38）。
+ *
+ * ⚠️ **形制在这儿判、语义（连得上连不上）在适配置那一趟**：这一层只答「写对了没有」——
+ * 命令非空 · 名字合规矩 · 参数与环境是字符串。**不做任何事**：不探测可执行文件、不试连、
+ * 更不跑它（配置里写着 ≠ 获准运行，那条边界的落点就在这一层与装配之间）。
+ *
+ * 段缺省 / `servers` 缺省 ＝ **一个外部服务器都没有**（内置工具照常）——不是错。
+ */
+function asMcpConfig(value: unknown, path: string): McpConfig {
+  const raw = asObject(value, path, 'mcp')
+
+  if (raw['servers'] === undefined) return { servers: {} }
+
+  const serversRaw = asObject(raw['servers'], path, 'mcp.servers')
+  const servers: Record<string, McpServerConfig> = {}
+
+  for (const [name, entry] of Object.entries(serversRaw)) {
+    if (!MCP_SERVER_NAME.test(name) || name.includes(MCP_NAME_SEPARATOR)) {
+      throw new ConfigError(
+        path,
+        `mcp.servers 的条目名「${name}」不合规矩——须是字母数字开头、只含字母数字与 . _ - 的` +
+          `一串（它会拼进工具名 ${'mcp__<名字>__<工具>'}，故不许含 ${MCP_NAME_SEPARATOR}、` +
+          '也不许有空格与别的符号）',
+      )
+    }
+    servers[name] = asMcpServer(entry, path, name)
+  }
+
+  return { servers }
+}
+
+/**
  * 读并校验配置文件。
  *
  * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补 `DEFAULT_DATA_DIR`；
@@ -263,6 +342,11 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const ruleSources = rulesBook('sources')
   const ruleLinkSources = rulesBook('linkSources')
 
+  // 外部工具服务器（U38）——**只有配置里写了才连**（这是「用户显式配置」的唯一落点）。
+  // ⚠️ **漏带＝静默失效**（同上面三条的教训）：配置里写了服务器而这里不接，
+  // 外部工具一件都出不来、也不报错——用户对着「明明配了却没有」发呆。
+  const mcp = raw['mcp'] === undefined ? undefined : asMcpConfig(raw['mcp'], path)
+
   return {
     path,
     config: {
@@ -279,6 +363,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
               ...(ruleLinkSources === undefined ? {} : { linkSources: ruleLinkSources }),
             },
           }),
+      ...(mcp === undefined ? {} : { mcp }),
     },
     providerId,
     provider,

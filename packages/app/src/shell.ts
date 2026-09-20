@@ -35,7 +35,7 @@
 import type { Command, ControlTransport, Decision, KernelEvent } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 
-/** 一次裁决询问（`tool.decision.request` 的四件）。 */
+/** 一次裁决询问（`tool.decision.request` 的几件）。 */
 export type ShellDecisionRequest = {
   /** 配对键＝**请求事件** id（不是载荷里的 `call`——两个 id 空间）。 */
   readonly id: number
@@ -43,6 +43,13 @@ export type ShellDecisionRequest = {
   /** 判断材料——命令分解 / diff / 影响面。 */
   readonly material: string
   readonly weight: 'light' | 'heavy'
+  /**
+   * **这是一次外部操作**（U38）——`name` 是 `服务器 / 工具`，材料里只有业务参数。
+   *
+   * 脚本据它可以只对内部件答「总是允许」（外部件记也记不上——权限域那一侧不收，
+   * 见其 `Pending.rememberable`）：**给不给是脚本的自由，收不收是内核的口径**。
+   */
+  readonly external?: boolean
 }
 
 /**
@@ -214,6 +221,8 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
         name: event.data.name,
         material: event.data.material,
         weight: event.data.weight,
+        // 外部操作（U38）——只在真为外部时带键（缺席＝内置件，同线上消息的形状）
+        ...(event.data.external === true ? { external: true } : {}),
       }
       const answer = normalizeAnswer(decide(request))
       decisions.push({

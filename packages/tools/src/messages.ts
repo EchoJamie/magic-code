@@ -133,9 +133,10 @@ export const externalEmptyOutput = (): string => '[服务器回了空结果—�
 export const externalPartNote = (
   type: string,
   mimeType: string | undefined,
-  bytes: number,
+  bytes: number | undefined,
 ): string =>
-  `[${type} 部件${mimeType === undefined ? '' : `（${mimeType}）`}：${bytes} 字节——本版不解析这类内容，未保留]`
+  `[${type} 部件${mimeType === undefined ? '' : `（${mimeType}）`}` +
+  `${bytes === undefined ? '' : `：${bytes} 字节`}——本版不解析这类内容，未保留]`
 
 /** 工具名不在注册表内——不抛，照实回填（炸掉循环不是工具域该干的事）。 */
 export const unknownToolOutput = (name: string): string => `未注册的工具：${name}`

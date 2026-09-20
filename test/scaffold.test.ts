@@ -55,6 +55,8 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
     '@magic/records',
     '@magic/model',
     '@magic/tools',
+    // MCP 适配器（U38）——装配据配置造连接、把工具交给工具域（客户端封在它后面）
+    '@magic/mcp',
     '@magic/permission',
     '@magic/execution',
     '@magic/control',
