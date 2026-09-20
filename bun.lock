@@ -42,6 +42,7 @@
       },
       "devDependencies": {
         "@magic/faux": "workspace:*",
+        "@xterm/headless": "^6.0.0",
       },
     },
     "packages/contracts": {
