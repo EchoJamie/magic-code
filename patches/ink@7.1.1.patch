@@ -1,0 +1,144 @@
+diff --git a/build/log-update.js b/build/log-update.js
+index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938d6b70957 100644
+--- a/build/log-update.js
++++ b/build/log-update.js
+@@ -1,9 +1,80 @@
+ import ansiEscapes from 'ansi-escapes';
+ import cliCursor from 'cli-cursor';
++import stringWidth from 'string-width';
+ import { cursorPositionChanged, buildCursorSuffix, buildCursorOnlySequence, buildReturnToBottomPrefix, hideCursorEscape, } from './cursor-helpers.js';
+ // Count visible lines in a string, ignoring the trailing empty element
+ // that `split('\n')` produces when the string ends with '\n'.
+ const visibleLineCount = (lines, str) => str.endsWith('\n') ? lines.length - 1 : lines.length;
++// [bun patch · D27] The erase of the previous frame must use the geometry the
++// terminal *actually* has, not the one the frame was written with.
++//
++// When the terminal gets narrower it re-wraps what is already on screen, so the
++// string we last wrote can now occupy more rows than the line count it was
++// written with — and the cursor we parked inside it has moved. Erasing by the
++// stored count (upwards, from a cursor whose row no longer means what the model
++// says) then leaves part of the old frame behind: a stale separator, or rows
++// drawn twice. Measured on a real PTY + VT: only the terminal's own re-wrap
++// produced them; the application's next write only ever cleared the bottom.
++//
++// The repair, when a re-wrap happened:
++//
++// 1. Take the geometry from `previousOutput` — the bytes that really went out,
++//    measured at the terminal's *current* width (`stream.columns`). Not from
++//    `lastOutput`: it updates after the throttled write, so it can describe a
++//    frame that has not been written yet.
++// 2. Erase from the *bottom of the screen* upwards, by the rows the frame
++//    re-wraps to. The frame is the last thing on screen, so everything below it
++//    is blank; the screen's bottom is reachable exactly (`cursorDown` clamps),
++//    while the cursor drifts with the re-wrap. The row count is
++//    `ceil(width / columns)` per line — the rule xterm re-wraps with
++//    (`ceil(getTrimmedLength() / cols)`), and Ink already trims plain trailing
++//    blanks before writing.
++//
++// Returns `null` when nothing re-wrapped (every line still one row, cursor still
++// on its stored line): then the caller keeps the stored line count, and the
++// emitted bytes are exactly the ones from before this patch.
++const rowCountOf = (line, columns) => Math.max(1, Math.ceil(stringWidth(line) / columns));
++const reflowPlan = (str, cursorPosition, columns, writtenColumns) => {
++    if (str === '' || typeof columns !== 'number' || columns <= 0) {
++        return null;
++    }
++    const lines = str.split('\n');
++    const visible = str.endsWith('\n') ? lines.length - 1 : lines.length;
++    let rows = 0;
++    for (let index = 0; index < visible; index += 1) {
++        rows += rowCountOf(lines[index], columns);
++    }
++    let cursorRow = rows;
++    if (cursorPosition !== undefined) {
++        cursorRow = 0;
++        const upTo = Math.max(0, Math.min(cursorPosition.y, visible));
++        for (let index = 0; index < upTo; index += 1) {
++            cursorRow += rowCountOf(lines[index], columns);
++        }
++        cursorRow += Math.floor(cursorPosition.x / columns);
++    }
++    if (rows === visible && (cursorPosition === undefined || cursorRow === cursorPosition.y)) {
++        return null;
++    }
++    // 锚点取**屏幕底**，不取光标：屏幕底是唯一一个能可靠到达、且与光标漂到哪儿无关的行
++    // （`cursorDown` 夹住）。旧帧是屏上最后一块内容，它的末行要么就是屏幕底（重排之后内容
++    // 撑满——改窄那一下几乎总是这样），要么在屏幕底之上、下面只剩空白。
++    //
++    // 擦几行：上一帧**就是按现在这个宽度写的**时一行不差，照行数擦；否则是终端替我们重排过
++    // （旧帧比现在宽），那一下终端可能少留一行（见 `buildEraseReflowed`），留一行的余量。
++    const rewrapped = writtenColumns !== columns;
++    return { rows: Math.max(1, rows - (rewrapped ? 1 : 0)) };
++};
++/**
++ * 从屏幕底往上擦旧帧那一块，擦完光标正停在擦除区的顶（＝旧帧顶）——接着写的新帧落在原处。
++ *
++ * `plan.rows` 里已经含了「终端重排可能少留一行」那份余量（见 `reflowPlan`）：少擦一行最多在
++ * 旧帧顶上留一行痕，**多擦一行会吃掉已定局的记录**（`<Static>` 那几行写出去就不再重画）
++ * ——两害相权取轻。
++ */
++const buildEraseReflowed = (plan, screenRows) => hideCursorEscape +
++    ansiEscapes.cursorDown(typeof screenRows === 'number' && screenRows > 0 ? screenRows : 1_000) +
++    ansiEscapes.eraseLines(plan.rows);
+ const createStandard = (stream, { showCursor = false } = {}) => {
+     let previousLineCount = 0;
+     let previousOutput = '';
+@@ -12,6 +83,9 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+     let cursorDirty = false;
+     let previousCursorPosition;
+     let cursorWasShown = false;
++    // [bun patch · D27] 写上一帧时的终端宽度——它现在不等于 `stream.columns` 就说明那一帧
++    // 已经被终端按新宽度重排过（见 `reflowPlan`）。
++    let previousColumns = 0;
+     const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
+     const hasChanges = (str, activeCursor) => {
+         const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+@@ -43,21 +117,36 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+             }));
+         }
+         else {
++            // [bun patch · D27] 重排过了就按**终端此刻**的几何擦（见 `reflowPlan`）；
++            // 没重排就照旧用存下来的行数——两条路在「没重排」时写出的字节完全相同。
++            const plan = reflowPlan(previousOutput, previousCursorPosition, stream.columns, previousColumns);
++            const returnPrefix = plan !== null
++                ? buildEraseReflowed(plan, stream.rows)
++                : cursorWasShown
++                    ? buildReturnToBottomPrefix(cursorWasShown, previousLineCount, previousCursorPosition)
++                    : '';
+             previousOutput = str;
+-            const returnPrefix = buildReturnToBottomPrefix(cursorWasShown, previousLineCount, previousCursorPosition);
+             stream.write(returnPrefix +
+-                ansiEscapes.eraseLines(previousLineCount) +
++                (plan === null ? ansiEscapes.eraseLines(previousLineCount) : '') +
+                 str +
+                 cursorSuffix);
+             previousLineCount = lines.length;
++            previousColumns = stream.columns;
+         }
+         previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+         cursorWasShown = activeCursor !== undefined;
+         return true;
+     };
+     render.clear = () => {
+-        const prefix = buildReturnToBottomPrefix(cursorWasShown, previousLineCount, previousCursorPosition);
+-        stream.write(prefix + ansiEscapes.eraseLines(previousLineCount));
++        // [bun patch · D27] 改窄时 Ink 走的正是这一支（`resized` → `log.clear`）：按**终端重排
++        // 之后**的几何擦，否则顶部多出来的那几行留在屏上（旧分隔线／重复记录）。
++        const plan = reflowPlan(previousOutput, previousCursorPosition, stream.columns, previousColumns);
++        const prefix = plan !== null
++            ? buildEraseReflowed(plan, stream.rows)
++            : cursorWasShown
++                ? buildReturnToBottomPrefix(cursorWasShown, previousLineCount, previousCursorPosition)
++                : '';
++        stream.write(prefix + (plan === null ? ansiEscapes.eraseLines(previousLineCount) : ''));
+         previousOutput = '';
+         previousLineCount = 0;
+         previousCursorPosition = undefined;
+@@ -85,6 +174,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+         const lines = str.split('\n');
+         previousOutput = str;
+         previousLineCount = lines.length;
++        previousColumns = stream.columns;
+         if (!activeCursor && cursorWasShown) {
+             stream.write(hideCursorEscape);
+         }

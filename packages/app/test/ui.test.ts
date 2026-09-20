@@ -151,6 +151,30 @@ describe('U40 · 工具自证', () => {
     }
   }, 40_000)
 
+  test('改窗判据：旧「屏上出现 N 个横线」会被终端折行骗过，新判据只认应用写出的那串（D27）', async () => {
+    // —— 反例（假阳性那一路）——
+    // 100 列的窗口里画一条 100 列的分隔线，然后改窄，应用**一个字节都没再写**：
+    // 终端会把那条线按新宽度折成 44 + 44 + 12 ⇒ 屏上「出现 44 个横线」⇐ 旧判据当场通过，
+    // 而那条线根本不是按新宽度画的（实测那一趟 resize / wait 通过 / 取帧三步累计字节相同）。
+    const ruler = createVt({ columns: 100, rows: 30 })
+    ruler.write(`${'─'.repeat(100)}\n`)
+    await ruler.settled()
+    ruler.resize(44, 16)
+    await ruler.settled()
+    expect(ruler.screen().lines.some((line) => line.text.includes('─'.repeat(44)))).toBe(true)
+    ruler.dispose()
+
+    // —— 正例 —— 真应用改窗之后，**它自己写出的字节**里确实有一串按新宽度画的分隔线
+    const session = await createUiSession({ label: '自证-改窗判据', columns: 100, rows: 24, turns: HELLO })
+    try {
+      await session.resize(60, 18)
+      await session.wait({ written: '─'.repeat(60) }, { timeoutMs: 8_000 })
+      expect(rawBytesOf(session.runDir).includes('─'.repeat(60))).toBe(true)
+    } finally {
+      await session.close()
+    }
+  }, 40_000)
+
   test('`capture` 只观察：不重启（同一 PID）、不改内容、之后还能接着敲', async () => {
     const session = await createUiSession({ label: '自证-取帧不扰', turns: HELLO })
 

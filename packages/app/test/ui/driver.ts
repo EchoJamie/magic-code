@@ -85,6 +85,19 @@ export type WaitCondition =
   | { readonly text: string }
   | { readonly absent: string }
   | { readonly at: { readonly row: number; readonly text: string } }
+  /**
+   * **应用自己写出的字节**里出现这一串——只看**最后一次改窗之后**新写出的那一段（D27）。
+   *
+   * 为什么要有这一条：改窗之后「屏上出现 44 个横线」**不足以**说明应用采用了新尺寸——
+   * 终端会把旧 100 列的分隔线按新宽度重新折行，44 + 44 + 12 里头一个 44 就满足那条判据，
+   * 而那一刻应用可能一个字节都还没按新宽度画（实测：resize、wait 通过、取帧三步的累计
+   * 字节数完全相同）。屏幕是终端算出来的账，**应用写出的字节**才是它自己的账。
+   *
+   * ⚠️ **认的是「正好这一串」，不是「包含这一串」**：100 个横线里切得出 44 个来——
+   * 改窗后应用先按**旧宽度**画的那一帧（Ink 那一跳比 React 早）恰好会长这样，
+   * 用它当「已经采用新尺寸」就是同一个假阳性换个地方犯。故子串前后不能紧挨着同一个字符。
+   */
+  | { readonly written: string }
 
 export type WaitOptions = {
   /** 超时（毫秒）——**必须有界**；缺省 8 秒（真模型那条路要等流式收尾）。 */
@@ -361,6 +374,13 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
   const decoder = new TextDecoder()
   let rawTail: string[] = []
   let rawTailBytes = 0
+  /**
+   * **最后一次改窗之后**应用新写出的字节（`written` 判据看它——见 `WaitCondition`）。
+   *
+   * 为什么单记一份而不是从 `rawTail` 里切：`rawTail` 是**有界**的（超了从头上丢），
+   * 按长度切会切错位置。这一份同样有界，只留改窗之后那一段，故不会无限长。
+   */
+  let sinceResize = ''
   let waiter: (() => void) | null = null
 
   /** 新字节到了——唤醒正等着的那个 `wait`（不攒、不合并，只叫一声）。 */
@@ -380,6 +400,8 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       artifacts.raw(text)
       rawTail.push(text)
       rawTailBytes += text.length
+      // 改窗之后那一段单独留一份（`written` 判据）——同样有界，只留尾部
+      sinceResize = (sinceResize + text).slice(-64 * 1024)
       // 尾部留一份给 `rawText()`（诊断用）——**有界**，超了就从头上丢
       while (rawTailBytes > 256 * 1024 && rawTail.length > 1) {
         rawTailBytes -= (rawTail[0] as string).length
@@ -453,6 +475,8 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
 
     resize: async (nextColumns, nextRows) => {
       artifacts.step('resize', { columns: nextColumns, rows: nextRows, bytes: artifacts.bytes() })
+      // 从这里开始记「应用改窗之后写出的字节」——`written` 判据的起点
+      sinceResize = ''
       // 三件同序：PTY 尺寸 → VT 尺寸 → 通知子进程（缺了第三件子进程一个字节都不吐——注 1）
       pty.resize(nextColumns, nextRows)
       vt.resize(nextColumns, nextRows)
@@ -472,7 +496,7 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       for (;;) {
         await vt.settled()
         const screen = vt.screen()
-        if (matches(condition, screen)) {
+        if (matches(condition, screen, sinceResize)) {
           const elapsedMs = (Bun.nanoseconds() - started) / 1e6
           artifacts.step('wait-ok', { step, matched: describeCondition(condition), elapsedMs: Math.round(elapsedMs) })
           return { ok: true, matched: describeCondition(condition), elapsedMs, step }
@@ -805,18 +829,37 @@ async function waitForFrame(
 }
 
 /** 条件命中了吗（**只看可见屏**——`screen()` 交出来的就是可见区）。 */
-function matches(condition: WaitCondition, screen: VtScreen): boolean {
+function matches(condition: WaitCondition, screen: VtScreen, writtenSinceResize: string): boolean {
   if ('text' in condition) return screen.lines.some((line) => line.text.includes(condition.text))
   if ('absent' in condition) return !screen.lines.some((line) => line.text.includes(condition.absent))
+  if ('written' in condition) return hasExactRun(writtenSinceResize, condition.written)
   const target = screen.lines[condition.at.row]
 
   return target !== undefined && target.text.includes(condition.at.text)
+}
+
+/**
+ * 「**正好**有这一串」——子串前后不能紧挨着同一个字符（见 `WaitCondition.written` 的注）。
+ *
+ * 一帧里那串横线只出现一次，所以逐处找、跳过被拉长的那些就够了；`from = at + 1` 保证不会卡住。
+ */
+function hasExactRun(haystack: string, needle: string): boolean {
+  if (needle === '') return true
+  const marker = needle[0] as string
+
+  for (let from = 0; ; ) {
+    const at = haystack.indexOf(needle, from)
+    if (at === -1) return false
+    if (haystack[at - 1] !== marker && haystack[at + needle.length] !== marker) return true
+    from = at + 1
+  }
 }
 
 /** 条件的一句话（错误消息、步骤时间线、帧标签都用它）。 */
 export function describeCondition(condition: WaitCondition): string {
   if ('text' in condition) return `出现「${condition.text}」`
   if ('absent' in condition) return `不再出现「${condition.absent}」`
+  if ('written' in condition) return `改窗之后应用写出的字节里出现「${condition.written}」`
 
   return `第 ${condition.at.row} 行出现「${condition.at.text}」`
 }
