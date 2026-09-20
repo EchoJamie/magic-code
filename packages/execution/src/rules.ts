@@ -51,7 +51,7 @@ import type {
   WorkspaceService,
 } from '@magic/contracts'
 import type { Dirent } from 'node:fs'
-import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, sep } from 'node:path'
 import { expandPatterns, matchesPattern } from './patterns.ts'
 import { isInside } from './workspace.ts'
@@ -171,6 +171,15 @@ type Source = { readonly real: string; readonly isDir: boolean }
 /** 两份名册在诊断里的自称——配置键名照抄，用户对得上自己写的那一行。 */
 type SourceBook = 'sources' | 'linkSources'
 
+/**
+ * 这一趟**完整性**的就地标记——**发现面**走不下去时就地置位（见 `walk` 的层级那一闸），
+ * 与 `select` 那两处上限**同一个出口**（`RulesLoad.truncated`）。
+ *
+ * 为什么要它：报一句错与「回来的是不是全的」是**两件事**——层级到顶时底下那一摊
+ * 一份都没看过，而 `documents` 里压根看不出少了什么。消费方（对话域）据这一位停批。
+ */
+type Marks = { truncated: boolean }
+
 /** 一个目标路径归位后的三件——它归哪条根、真身该怎么写、相对根是什么。 */
 type Place = {
   readonly root: string
@@ -210,6 +219,8 @@ function load(
   /** 白名单本体——**递归下探前先问它**：一份都不读的地方，连目录都不进（见 `walk`）。 */
   const allowed = (real: string): boolean =>
     isAllowed(real, roots, declared, [...sources, ...linkSources])
+  /** 发现面的完整性标记——由 `walk` 就地置位，`select` 出口时并进 `RulesLoad.truncated`。 */
+  const marks: Marks = { truncated: false }
   const candidates: Candidate[] = []
   const directoryDocs = memoDirectoryDocs(problems)
 
@@ -217,7 +228,9 @@ function load(
   roots.forEach((root, index) => {
     candidates.push(...directoryDocs(root, root, index))
     for (const { segment, kind } of RULES_DIRS) {
-      candidates.push(...scanRulesDir(join(root, segment, 'rules'), root, kind, index, problems, allowed))
+      candidates.push(
+        ...scanRulesDir(join(root, segment, 'rules'), root, kind, index, problems, allowed, marks),
+      )
     }
   })
 
@@ -235,10 +248,10 @@ function load(
 
   // ③ 补充来源——用户点名的才读（根外那些也由此有了一条名正言顺的路）
   for (const source of sources) {
-    candidates.push(...scanSource(source, roots, roots.length, problems))
+    candidates.push(...scanSource(source, roots, roots.length, problems, marks))
   }
 
-  return select({ candidates, places, limits, problems, allowed })
+  return select({ candidates, places, limits, problems, allowed, marks })
 }
 
 // ══ ① 目录规约 ════════════════════════════════════════════════════════
@@ -269,12 +282,18 @@ function directoryDocsOf(
   rootIndex: number,
   problems: RulesProblem[],
 ): readonly Candidate[] {
-  const present: { readonly name: string; readonly file: string; readonly kind: ProjectRule['kind'] }[] = []
+  const present: {
+    readonly name: string
+    readonly file: string
+    readonly kind: ProjectRule['kind']
+    readonly presence: Presence
+  }[] = []
 
   for (const name of DIRECTORY_DOCS) {
     const file = join(dir, name)
-    if (!isFile(file)) continue
-    present.push({ name, file, kind: name === 'AGENTS.md' ? 'agents' : 'claude-md' })
+    const presence = presenceOf(file)
+    if (presence.kind === 'absent') continue
+    present.push({ name, file, kind: name === 'AGENTS.md' ? 'agents' : 'claude-md', presence })
   }
 
   const first = present[0]
@@ -284,6 +303,21 @@ function directoryDocsOf(
   const said = (name: string): string => {
     const relativeDir = relativeTo(root, dir)
     return relativeDir === '' ? name : `${relativeDir}${sep}${name}`
+  }
+
+  // **项在、取不到**（断链 / 目标没了）：这个名字归它，错报出来，**同目录那份不接管**。
+  // 「原生存在优先」判的是**项在不在**，不是「读不读得到」——见 `presenceOf` 那条注。
+  if (first.presence.kind === 'unreadable') {
+    const others = present.slice(1).map((entry) => entry.name)
+    problems.push({
+      path: first.file,
+      kind: 'error',
+      message:
+        `这一份取不到（断链或目标不可读）——${first.presence.reason}` +
+        (others.length === 0 ? '' : `。按「${first.name} 优先」，同目录的 ${others.join(' / ')} 不接管`),
+    })
+
+    return [candidateOf(first.kind, first.file, root, dir, rootIndex, said(first.name))]
   }
 
   // 只有一份——照它走（没有第二个入口要比较，也就没有取舍可说）
@@ -310,6 +344,39 @@ function directoryDocsOf(
   })
 
   return [candidateOf(first.kind, first.file, root, dir, rootIndex, said(first.name))]
+}
+
+/**
+ * 一个目录里某个名字的**在场**——三种，判据都是**文件项本身**。
+ *
+ * `absent` ＝ 目录里没有这个名字（也该盖住「文件项在、但那不是一份文档」：指向目录的链接 /
+ * FIFO 之类——与旧口径一致，本单不扩这一条）。
+ * `file` ＝ 项在、目标是个文件（普通文件，或指向文件的链接）。
+ * `unreadable` ＝ **项在、目标取不到**（断链 / 目标没了 / 读不动）。
+ *
+ * 为什么后两种要分开（2026-09-20 三轮裁）：旧写法只看「取不取得到」，于是**断链的
+ * `AGENTS.md` 被当成「没写这一份」**——名字凭空消失，同目录的 `CLAUDE.md` 悄悄顶上来
+ * （实测：`problems` 为空、兼容正文接管，兼容方改了 Magic 的生效范围与优先级）。
+ * 断链是「这一份出了错」，不是「没写这一份」：名字照旧归它、错照旧报出来
+ * ——与 `.magic/rules` 里那份断链同一条规矩（`walk` 那一支）。
+ */
+type Presence =
+  | { readonly kind: 'file' | 'absent' }
+  | { readonly kind: 'unreadable'; readonly reason: string }
+
+function presenceOf(path: string): Presence {
+  try {
+    // `lstat`（**不跟链接**）：断链在这儿照样是个「项在」，那正是要害
+    if (lstatSync(path).isDirectory()) return { kind: 'absent' }
+  } catch {
+    return { kind: 'absent' } // 项都不在
+  }
+
+  try {
+    return statSync(path).isFile() ? { kind: 'file' } : { kind: 'absent' }
+  } catch (error) {
+    return { kind: 'unreadable', reason: reasonOf(error) }
+  }
 }
 
 function candidateOf(
@@ -348,12 +415,13 @@ function scanRulesDir(
   rootIndex: number,
   problems: RulesProblem[],
   allowed: (real: string) => boolean,
+  marks: Marks,
 ): readonly Candidate[] {
   if (!isDirectory(dir)) return []
 
   const label = relativeTo(root, dir)
 
-  return walkMarkdown(dir, allowed, problems).map((file) =>
+  return walkMarkdown(dir, allowed, problems, marks).map((file) =>
     candidateOf(
       kind,
       file,
@@ -386,9 +454,10 @@ function walkMarkdown(
   dir: string,
   allowed: (real: string) => boolean,
   problems: RulesProblem[],
+  marks: Marks,
 ): readonly string[] {
   const found: string[] = []
-  walk(dir, found, new Set<string>(), problems, allowed)
+  walk(dir, found, new Set<string>(), problems, allowed, marks)
 
   return found.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
 }
@@ -399,11 +468,16 @@ function walk(
   visited: Set<string>,
   problems: RulesProblem[],
   allowed: (real: string) => boolean,
+  marks: Marks,
   depth = 0,
 ): void {
   // 环之外还有一层兜底：链接可以让目录无限深，别把调用栈吃掉
   if (depth > 32) {
     problems.push({ path: dir, kind: 'error', message: '目录层级过深（超过 32 层）——已停在这一层，不再往下' })
+    // **停下来就得认「不全」**（2026-09-20 三轮裁）：这一层底下那份 `*.md` 一份都没看过，
+    // 而它**可能正是**某个目标上的规约——只报一句错、照旧放行，等于「没读到也没关系」。
+    // 故与份数 / 总量到顶同一个出口：由 `select` 并进 `RulesLoad.truncated`，消费方据此停批。
+    marks.truncated = true
     return
   }
 
@@ -471,7 +545,7 @@ function walk(
       continue
     }
 
-    if (kind === 'directory') walk(child, found, visited, problems, allowed, depth + 1)
+    if (kind === 'directory') walk(child, found, visited, problems, allowed, marks, depth + 1)
     else if (kind === 'file' && entry.name.endsWith('.md')) found.push(child)
   }
 }
@@ -535,11 +609,12 @@ function scanSource(
   roots: readonly string[],
   rootIndex: number,
   problems: RulesProblem[],
+  marks: Marks,
 ): readonly Candidate[] {
   const home = roots.find((root) => isInside(source.real, root)) ?? null
   // 用户点名的这一处**连同它底下**都算允许读——这正是不落根内的补充来源存在的理由
   const inside = (real: string): boolean => isInside(real, source.real)
-  const files = source.isDir ? walkMarkdown(source.real, inside, problems) : [source.real]
+  const files = source.isDir ? walkMarkdown(source.real, inside, problems, marks) : [source.real]
 
   return files.map((file) => {
     const name = home === null ? file : relativeTo(home, file)
@@ -555,15 +630,21 @@ function select(input: {
   readonly limits: RulesLimits
   readonly problems: RulesProblem[]
   readonly allowed: (real: string) => boolean
+  readonly marks: Marks
 }): RulesLoad {
-  const { candidates, places, limits, problems, allowed } = input
+  const { candidates, places, limits, problems, allowed, marks } = input
   const loaded: Loaded[] = []
   /** 物理同源去重——**真路径 ＋ 实际范围**（见 `identityOf`：范围不同＝两条）。 */
   const seen = new Set<string>()
   /** 同根同名去重——`<root> <ruleKey>` → 已经收下的那一条。 */
   const seenRule = new Map<string, Candidate>()
-  /** 这一趟因为上限丢过材料（`RulesLoad.truncated`——消费方据它判「回来的是不是全的」）。 */
-  let truncated = false
+  /**
+   * 这一趟丢过材料（`RulesLoad.truncated`——消费方据它判「回来的是不是全的」）。
+   *
+   * **两处来源，一个出口**：发现面走不下去（`marks`——层级到顶，见 `walk`）与下面那两处
+   * 上限（份数 / 总量）。判据都不是「读到了什么」，而是「**有没有该看而没看到的地方**」。
+   */
+  let truncated = marks.truncated
   let bytes = 0
 
   /**
@@ -597,8 +678,9 @@ function select(input: {
     }
 
     const real = tryRealpath(candidate.file)
-    // 取不到真身——**不在这儿报**：目录规约「多半目录都没有」不是错；规则文档那种断链，
-    // 发现面（`walk`）那一步已经报过一句了（那儿才知道它是 `*.md` 的一个文件项）
+    // 取不到真身——**不在这儿报**：目录规约「多半目录都没有」不是错；断链那两种都由
+    // **发现面**报过了（规则文档在 `walk` 那一支、目录规约在 `directoryDocsOf` 那一支——
+    // 两处都比这儿更知道它是「一个文件项」还是「本来就没有」）
     if (real === undefined) continue
 
     const key = candidate.ruleKey === null ? undefined : `${candidate.root ?? ''} ${candidate.ruleKey}`
@@ -1024,14 +1106,6 @@ function sizeOf(path: string): number | undefined {
     return statSync(path).size
   } catch {
     return undefined
-  }
-}
-
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile()
-  } catch {
-    return false
   }
 }
 

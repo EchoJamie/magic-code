@@ -25,15 +25,18 @@
  * bun packages/app/test/frames-rules.ts --out <目录>
  * ```
  *
- * 出五份：`check.txt`（`--check` 那一屏的字）· `hold.txt` ＋ `hold.ansi`（扣下那一次的外壳屏）·
- * `overflow.txt` ＋ `overflow.ansi`（材料超限停批那一屏）——`.ansi` 是外壳写出的**原始字节**
- * （带色：颜色与字重只能从字节上看）。
+ * 出八份：`check.txt` ＋ `check-broken-agents.txt`（`--check` 那两屏的字——后者拍的是
+ * **根 `AGENTS.md` 断链**时那两条诊断）· `hold.txt` ＋ `hold.ansi`（扣下那一次的外壳屏）·
+ * `overflow.txt` ＋ `overflow.ansi`（材料超限停批那一屏）· `executed-failure.txt` ＋
+ * `.ansi`（**真跑失败、首行恰是「未执行…」**那一屏——「没跑」与「跑了没成」分不分得开看它）。
+ * `.ansi` 是外壳写出的**原始字节**（带色：颜色与字重只能从字节上看）。
  */
 
 import { EventEmitter } from 'node:events'
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { attachShell } from '../src/index.ts'
+import type { Assembly } from '../src/index.ts'
 import { tuiOptions } from '../src/cli.ts'
 import { makeStage } from './support.ts'
 import type { StageAssembleOptions } from './support.ts'
@@ -104,6 +107,60 @@ function put(where: string, relative: string, text: string): string {
   return path
 }
 
+/**
+ * 留一屏——真装配 → 真外壳 → 交一句给驱动 → 等屏上出现某句话 → 收字节。
+ *
+ * 三屏共用这一手（下面那些函数只管**摆沙地与等哪句话**）：收取那一段一模一样——写字节、
+ * 落一份剥过 ANSI 的字、等着收尾。多抄两遍就是三处一起改的账。
+ */
+async function shoot(
+  assembly: Assembly,
+  prompt: string,
+  waitFor: string,
+  out: string,
+  name: string,
+): Promise<void> {
+  const tty = new CaptureTty()
+  const stdin = new FakeStdin()
+  const { runTui } = await import('@magic/tui')
+
+  const handle = await runTui({
+    ...tuiOptions(assembly),
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: tty as unknown as NodeJS.WriteStream,
+  })
+
+  const driver = attachShell(assembly.shell)
+  await driver.submit(prompt)
+  driver.dispose()
+
+  await until(tty, waitFor)
+  // 让它把最后一帧画完（Ink 按 30fps 写档）
+  await Bun.sleep(200)
+
+  const bytes = tty.bytes()
+  writeFileSync(join(out, `${name}.ansi`), bytes, 'utf8')
+  writeFileSync(join(out, `${name}.txt`), visible(bytes), 'utf8')
+  console.log(visible(bytes).slice(-1200))
+
+  stdin.push('\u0003')
+  await handle.waitUntilExit()
+  assembly.close()
+}
+
+/** 跑一次 `--check`（沙地由调用方摆好），把那一屏落成文本。 */
+function checkShot(out: string, name: string, workspace: string, home: string): void {
+  const run = Bun.spawnSync({
+    cmd: [process.execPath, join(import.meta.dir, '..', 'src', 'cli.ts'), '--check'],
+    cwd: workspace,
+    env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
+  })
+
+  const text = run.stdout.toString() + run.stderr.toString()
+  writeFileSync(join(out, `${name}.txt`), text, 'utf8')
+  console.log(text)
+}
+
 // ══ ① `--check` 那一屏 ═══════════════════════════════════════════════
 
 /**
@@ -139,15 +196,33 @@ export function checkFrame(out: string): void {
     // `HOME` 一改，配置 / 数据 / 授权三样**全在沙地里**，真 `~/.magic` 一个字节都不碰
     put(home, '.magic/config.json', JSON.stringify(validConfig({ dataDir: join(home, 'data') }), null, 2))
 
-    const run = Bun.spawnSync({
-      cmd: [process.execPath, join(import.meta.dir, '..', 'src', 'cli.ts'), '--check'],
-      cwd: workspace,
-      env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
-    })
+    checkShot(out, 'check', workspace, home)
+  } finally {
+    removeDir(land)
+  }
+}
 
-    const text = run.stdout.toString() + run.stderr.toString()
-    writeFileSync(join(out, 'check.txt'), text, 'utf8')
-    console.log(text)
+/**
+ * 根 `AGENTS.md` **断链**、同目录 `CLAUDE.md` 有效——`--check` 那一屏。
+ *
+ * 判据（占位归谁、有没有报出来）在 `execution/test/rules.test.ts`；这一屏留的是**外观**：
+ * 那两行诊断读起来是什么样、有没有把话说完（「按 AGENTS.md 优先，同目录的 CLAUDE.md
+ * 不接管」——用户得知道为什么自己那份兼容规约**没在管**）。
+ */
+export function brokenAgentsCheckFrame(out: string): void {
+  const land = tempDir('magic-frames-broken-')
+
+  try {
+    const home = join(land, 'home')
+    const workspace = join(land, 'workspace')
+    mkdirSync(home, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+
+    symlinkSync(join(land, 'missing-agents.md'), join(workspace, 'AGENTS.md'))
+    put(workspace, 'CLAUDE.md', '兼容那份不该顶上来')
+    put(home, '.magic/config.json', JSON.stringify(validConfig({ dataDir: join(home, 'data') }), null, 2))
+
+    checkShot(out, 'check-broken-agents', workspace, home)
   } finally {
     removeDir(land)
   }
@@ -178,32 +253,7 @@ export async function holdFrame(out: string): Promise<void> {
       ],
     } satisfies StageAssembleOptions)
 
-    const tty = new CaptureTty()
-    const stdin = new FakeStdin()
-    const { runTui } = await import('@magic/tui')
-
-    const handle = await runTui({
-      ...tuiOptions(assembly),
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      stdout: tty as unknown as NodeJS.WriteStream,
-    })
-
-    const driver = attachShell(assembly.shell)
-    await driver.submit('新建 src/a.ts')
-    driver.dispose()
-
-    await until(tty, '已写入')
-    // 让它把最后一帧画完（Ink 按 30fps 写档）
-    await Bun.sleep(200)
-
-    const bytes = tty.bytes()
-    writeFileSync(join(out, 'hold.ansi'), bytes, 'utf8')
-    writeFileSync(join(out, 'hold.txt'), visible(bytes), 'utf8')
-    console.log(visible(bytes).slice(-1200))
-
-    stdin.push('\u0003')
-    await handle.waitUntilExit()
-    assembly.close()
+    await shoot(assembly, '新建 src/a.ts', '已写入', out, 'hold')
   } finally {
     stage.dispose()
   }
@@ -218,8 +268,9 @@ export async function holdFrame(out: string): Promise<void> {
  * `DEFAULT_RULES_LIMITS.maxDocuments`），`guard/AGENTS.md` 是**第 65 份**——它在预查那一趟
  * 被上限挡在门外，故「目标上的规约都送到了」这句话不成立，整批停住。
  *
- * 屏上该看到的那行是 `! 未执行 · 规约一次装不下，先别重提`——**没有耗时、没有失败那个叉**，
- * 也没有任何文件被写下去（这一屏的判据在 `rules.test.ts`，这里只留外观）。
+ * 屏上该看到的那行是 `! 未执行 · 规约太多，一次装不下`（首行就是回填正文那一句，见
+ * `rules.ts` 的 `UNEXECUTED_OVERFLOW`；此前这里抄的是一句旧文案）——**没有耗时、没有失败
+ * 那个叉**，也没有任何文件被写下去（这一屏的判据在 `rules.test.ts`，这里只留外观）。
  */
 export async function overflowFrame(out: string): Promise<void> {
   const stage = makeStage()
@@ -235,31 +286,37 @@ export async function overflowFrame(out: string): Promise<void> {
       turns: [{ toolCalls: [call] }, { text: '那我先不动它' }],
     } satisfies StageAssembleOptions)
 
-    const tty = new CaptureTty()
-    const stdin = new FakeStdin()
-    const { runTui } = await import('@magic/tui')
+    await shoot(assembly, '往 guard 里写一个文件', '装不下', out, 'overflow')
+  } finally {
+    stage.dispose()
+  }
+}
 
-    const handle = await runTui({
-      ...tuiOptions(assembly),
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      stdout: tty as unknown as NodeJS.WriteStream,
-    })
+// ══ ④ 真跑失败那一屏（首行恰是「未执行…」）════════════════════════════
 
-    const driver = attachShell(assembly.shell)
-    await driver.submit('往 guard 里写一个文件')
-    driver.dispose()
+/**
+ * 剧本（Faux，两回合）：① 跑一条**真会失败**的命令——它先写下一个文件（副作用真的发生了）、
+ * 再打一行以「未执行」起头的输出、然后非 0 退出；② 收束。
+ *
+ * 屏上该看到的那行是 `✗ …ms · 未执行后续步骤：前一步已经写入，但校验失败`——**失败那个叉
+ * 与耗时都在**：「跑了没成」与「压根没跑」是两回事。三轮裁之前认的是正文首行，这一行会被
+ * 认成「没跑」（耗时被抹掉、叉也换了）——那一版就是这儿当场认错的。
+ */
+export async function executedFailureFrame(out: string): Promise<void> {
+  const stage = makeStage()
 
-    await until(tty, '装不下')
-    await Bun.sleep(200)
+  try {
+    const call = {
+      name: 'exec',
+      args: {
+        cmd: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
+      },
+    }
+    const assembly = stage.assemble({
+      turns: [{ toolCalls: [call] }, { text: '那先不跑了' }],
+    } satisfies StageAssembleOptions)
 
-    const bytes = tty.bytes()
-    writeFileSync(join(out, 'overflow.ansi'), bytes, 'utf8')
-    writeFileSync(join(out, 'overflow.txt'), visible(bytes), 'utf8')
-    console.log(visible(bytes).slice(-900))
-
-    stdin.push('\u0003')
-    await handle.waitUntilExit()
-    assembly.close()
+    await shoot(assembly, '跑一下那个脚本', '未执行后续步骤', out, 'executed-failure')
   } finally {
     stage.dispose()
   }
@@ -273,7 +330,9 @@ if (import.meta.main) {
   mkdirSync(out, { recursive: true })
 
   checkFrame(out)
+  brokenAgentsCheckFrame(out)
   await holdFrame(out)
   await overflowFrame(out)
+  await executedFailureFrame(out)
   console.log(`\n帧落在 ${out}`)
 }

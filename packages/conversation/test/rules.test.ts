@@ -128,14 +128,19 @@ function run(runtime: LoopRuntime, text: string): Promise<string> {
   return agentLoop(runtime, { text }, new AbortController().signal)
 }
 
-/** 这一条是不是**被拦下**的那一笔（「需重审」的回填）——`ok: false` 是它的判别式。 */
+/**
+ * 这一条是不是**被拦下**的那一笔（「需重审」/「超限」的回填）。
+ *
+ * 判别式是**产生处写下的那一位** `notExecuted`（2026-09-20 三轮裁）——不再看 `ok: false`：
+ * 「没跑」与「跑了没成」是两回事，拿 `ok` 当判别式会把一笔真失败也算进来。
+ */
 function isHeld(entry: Entry): boolean {
   const payload: unknown = entry.payload
   return (
     entry.kind === 'tool-result' &&
     typeof payload === 'object' &&
     payload !== null &&
-    (payload as { ok?: unknown }).ok === false
+    (payload as { notExecuted?: unknown }).notExecuted === true
   )
 }
 
@@ -346,27 +351,27 @@ describe('目标预查 —— 拦在副作用之前', () => {
     ])
     const held = stage.records.entries[3]
     expect(held?.content).toMatchObject({ text: needsReviewText([constrained]) })
-    expect(held?.payload).toMatchObject({ ok: false })
+    // **「没跑」这一位由产生处写在结果上**（落账与事件同源）——下游（外壳 / 重建）读它，
+    // 不从正文里猜字眼（2026-09-20 三轮裁，改的是二轮的正文协议）
+    expect(held?.payload).toMatchObject({ ok: false, notExecuted: true })
   })
 
-  test('回填**首行**就是屏上那一句（外壳认「没跑」靠它）——正文照旧说全三件', () => {
+  test('回填**首行**是给人看的那一句——说它「没跑」的是另一位，不是这行字', () => {
     const review = needsReviewText([doc('src/AGENTS.md', 'src 的约定', 'v1')])
     const [reviewFirst, ...reviewRest] = review.split('\n')
 
-    // 首行是**两域共用**的那一句（见 `rules.ts` 的 `UNEXECUTED_*`）：外壳只取首行上屏，
-    // 而首行以 `未执行` 起头正是它认「这一笔压根没跑」的判据（`@magic/tui`·`view.ts`）
+    // 首行是屏上那一格照抄的**文案**（见 `rules.ts` 的 `UNEXECUTED_*`）：它得自己读出
+    // 「没跑」来——这是**给人看的**要求，不是给某个判据看的
     expect(reviewFirst).toBe('未执行 · 规约已更新，重新审视后再操作')
-    expect(reviewFirst?.startsWith('未执行')).toBe(true)
     // 后头那几行照旧说全：为什么（哪几条）· 没执行过 · 接下来怎么办
     const said = reviewRest.join('\n')
     expect(said).toContain('src/AGENTS.md')
     expect(said).toContain('没有任何副作用发生')
     expect(said).toContain('重新提出')
 
-    // 超限那一份同形——首行也自报「没执行」（**不说「规约已更新」**：那儿的下一步是找用户，
-    // 不是重提）；它同样以 `未执行` 起头，故在屏上照样不报耗时、不打失败那个叉
+    // 超限那一份同形（**不说「规约已更新」**：那儿的下一步是找用户，不是重提）
     const [overflowFirst] = overflowText().split('\n')
-    expect(overflowFirst?.startsWith('未执行')).toBe(true)
+    expect(overflowFirst).toContain('未执行')
     expect(overflowFirst).not.toContain('规约已更新')
   })
 
@@ -398,6 +403,11 @@ describe('目标预查 —— 拦在副作用之前', () => {
     // **不宣称副作用已执行**：扣下那笔的结果是 `ok: false`
     const okFlags = results.map((event) => (event.data as { ok: boolean }).ok)
     expect(okFlags).toEqual([false, true])
+
+    // **「没跑」由产生处标出**（`notExecuted`）——事件这一路与条目那一路同源：
+    // 扣下那笔带着它，真跑那笔没有（不是靠正文首行认出来的）
+    const notExecuted = results.map((event) => (event.data as { notExecuted?: true }).notExecuted)
+    expect(notExecuted).toEqual([true, undefined])
   })
 
   test('**相同版本不循环拦截**：送过之后再碰同一个目录，直接执行', async () => {
@@ -668,6 +678,8 @@ describe('预查不妨碍既有的控制流', () => {
     // ……且回填说的是「超限」，**不说**「已送入上下文」
     const held = stage.records.entries.filter(isHeld)
     expect(held).toHaveLength(1)
+    // 超限这一路与重审那一路**同一件事**：压根没跑 ⇒ 产生处标 `notExecuted`
+    expect(held[0]?.payload).toMatchObject({ ok: false, notExecuted: true })
     const content = held[0]?.content
     const said = content !== undefined && 'text' in content ? content.text : ''
     expect(said).toContain('装不下')

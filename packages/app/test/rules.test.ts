@@ -14,10 +14,11 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createView, hasRunningTool, reduce } from '@magic/tui'
+import { createView, hasRunningTool, rebuild, reduce } from '@magic/tui'
 import type { ShellView } from '@magic/tui'
+import type { Entry } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
-import { lastModel, makeStage, type Stage } from './support.ts'
+import { lastModel, makeStage, readDatabase, type Stage } from './support.ts'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
@@ -309,6 +310,31 @@ describe('真装配 · 材料超限把整批停住（2026-09-20 二轮退回）'
       expect(tools[0]?.output[0]?.startsWith('未执行')).toBe(true)
       expect(hasRunningTool(view)).toBe(false) // 也不留转圈的幽灵
 
+      // —— ④ **「没跑」是产生处写下的那一笔**（2026-09-20 三轮裁）——
+      // 事件与条目（与它同源的持久结果）**都带 `notExecuted`**；屏上的样子是读来的，
+      // 不是从正文里猜出来了。所以换文案不改状态，真失败也不会被这句文案牵连。
+      const results = shell.events.filter((event) => event.kind === 'tool.result')
+      expect(results[0]?.data).toMatchObject({ ok: false, notExecuted: true })
+
+      const raw = readDatabase(assembly.paths.database)
+      const stored = raw.entries.filter((row) => row.kind === 'tool-result')
+      expect(stored).toHaveLength(1)
+      expect(JSON.parse(stored[0]?.payload ?? '{}')).toMatchObject({ ok: false, notExecuted: true })
+      raw.close()
+
+      // —— ⑤ **重放这一路同判**：从读面真把条目取回来（`history.read`），喂真重建 ——
+      // 切了会话回来 / 重开一页，屏上那行不能变回「失败」——两路读的必须是同一份事实
+      shell.send({ type: 'history.read' })
+      const replayed: Entry[] = []
+      await shell.until((event) => {
+        if (event.kind !== 'session.history') return false
+        replayed.push(...event.data.entries)
+        return event.data.done
+      })
+
+      const rebuilt = rebuild(createView(), replayed).settled.filter((row) => row.kind === 'tool')
+      expect(rebuilt[0]).toMatchObject({ state: 'unexecuted', elapsedMs: null })
+
       shell.dispose()
       assembly.close()
     } finally {
@@ -393,6 +419,48 @@ describe('真装配 → 真外壳视图：扣下的那一次在屏上闭合（20
 
       // 整体空闲：没有「还在跑」的行（幽灵工具会让这条假）
       expect(hasRunningTool(view)).toBe(false)
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+describe('真装配 · 「没跑」与「跑了没成」分得开（2026-09-20 三轮裁）', () => {
+  test('**真执行并失败**、输出首行写着「未执行后续步骤」——照旧失败，耗时保留', async () => {
+    const stage = makeStage()
+
+    try {
+      // 真跑一次：写下一个文件（副作用真的发生了）＋ 打一行以「未执行」起头的输出 ＋ 非 0 退出
+      const call = {
+        name: 'exec',
+        args: {
+          cmd: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
+        },
+      }
+      const assembly = stage.assemble({ turns: [{ toolCalls: [call] }, { text: '没成' }] })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('跑一下')
+
+      // —— ① 它**真的跑了**：盘上那份文件就是证据 ——
+      expect(existsSync(join(stage.workspace, 'side-effect.txt'))).toBe(true)
+
+      // —— ② 产生处**没**说它「没跑」：事件上一位都不带 ——
+      const results = shell.events.filter((event) => event.kind === 'tool.result')
+      expect(results[0]?.data).toMatchObject({ ok: false })
+      expect((results[0]?.data as { notExecuted?: true }).notExecuted).toBeUndefined()
+
+      // —— ③ 屏上：**失败**（那个叉）＋ **耗时保留** ——
+      // 旧判据按正文首行认「没跑」——这一笔的首行正好以「未执行」起头，于是真跑过的一次
+      // 调用被画成「压根没动手」、耗时被抹掉。状态从此只看产生处那一位，不看这行字
+      const view: ShellView = shell.events.reduce((acc, event) => reduce(acc, event), createView())
+      const tools = view.settled.filter((row) => row.kind === 'tool')
+
+      expect(tools[0]?.state).toBe('failed')
+      expect(tools[0]?.elapsedMs).not.toBe(null)
+      expect(tools[0]?.output[0]).toBe('未执行后续步骤：前一步已经写入，但校验失败')
 
       shell.dispose()
       assembly.close()

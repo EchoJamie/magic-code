@@ -55,6 +55,12 @@ export type ToolOutcome = {
   readonly text: string
   /** 记录侧形态——条目载荷（与该次 `tool.result` 事件的 `output` 同物）。 */
   readonly content: Content
+  /**
+   * **压根没跑**（规约重审扣下 / 材料超限停批——本域唯一的两种产生处，见 `agent-loop.ts`
+   * 的 `withholds`）。`ok` 分不开「没有开始」与「跑了没成」，故另记一位，与事件同源。
+   * 缺省 ＝ 未标（工具域回来的结果都不是它）。
+   */
+  readonly notExecuted?: true
 }
 
 /** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
@@ -84,12 +90,21 @@ export function appendToolCallEntry(log: EntryLog, call: ToolCall): RecordId {
   })
 }
 
-/** 工具结果条目——正文取面向模型的文本、载荷取记录侧形态（见 `ToolOutcome`）。 */
+/**
+ * 工具结果条目——正文取面向模型的文本、载荷取记录侧形态（见 `ToolOutcome`）。
+ *
+ * `notExecuted` **只在这一处往载荷里写**，且只在给出来时写（缺省不留位——与事件侧同口径：
+ * 「没这一位」本身就是一条信息，别拿 `false` 占位）。
+ */
 export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): RecordId {
   return log.records.appendEntry({
     kind: 'tool-result',
     content: { text: outcome.text },
-    payload: { ok: outcome.ok, output: outcome.content },
+    payload: {
+      ok: outcome.ok,
+      output: outcome.content,
+      ...(outcome.notExecuted === undefined ? {} : { notExecuted: outcome.notExecuted }),
+    },
     at: log.now(),
   })
 }

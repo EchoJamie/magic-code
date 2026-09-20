@@ -147,6 +147,25 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
+  test('**同目录 AGENTS.md 断链**：原生照样占住这个名字，不静默回退 CLAUDE.md', () => {
+    const box = sandbox()
+    try {
+      put(box.at, 'src/CLAUDE.md', '兼容那份不该顶上来')
+      symlinkSync(join(box.at, 'missing.md'), join(box.at, 'src/AGENTS.md'))
+
+      const load = rulesOf([box.at]).load(['src/a.ts'])
+
+      // 这个名字归 AGENTS.md——**按文件项在不在判**，不按能不能读判：断链是「这一份出了错」，
+      // 不是「没写这一份」。兼容那份因此进不来（与 `.magic/rules` 原生断链同一条规矩）
+      expect(namesOf(load)).toEqual([])
+      // 断的那一份**明确报出来**（不静默）：报不了错，用户就只会看见「兼容那份没生效」
+      expect(load.problems.some((problem) => problem.kind === 'error')).toBe(true)
+      expect(saidSomething(load, '断链')).toBe(true)
+    } finally {
+      box.dispose()
+    }
+  })
+
   test('**软链接指同实体**：两个入口一份文件，只入一次', () => {
     const box = sandbox()
     try {
@@ -969,6 +988,24 @@ describe('上限 —— 超了报出来，不静默截', () => {
       expect(saidSomething(load, '上限 2')).toBe(true)
       // **回来的是不是全的**——光看 `documents` 看不出来（被挡在外面的压根不在列表里），
       // 故这一位单报。对话域据它把「材料没齐」当成未送达处理（2026-09-20 裁）。
+      expect(load.truncated).toBe(true)
+    } finally {
+      box.dispose()
+    }
+  })
+
+  test('**扫描层级被截断**：没检查到的那一摊也进 `truncated`（只报错不足以证明覆盖）', () => {
+    const box = sandbox()
+    try {
+      const deep = Array.from({ length: 40 }, (_, index) => `d${index}`).join(sep)
+      put(box.at, `.magic/rules/${deep}/deep.md`, '深处那份')
+
+      const load = rulesOf([box.at]).load([])
+
+      expect(namesOf(load)).toEqual([])
+      expect(saidSomething(load, '目录层级过深')).toBe(true)
+      // **报错与「够不够全」是两件事**（同份数 / 总量那两处）：停了下来就有一摊没人看过，
+      // 于是「目标上的规约都送到了」不能成立——消费方据这一位停批，不静默往下走
       expect(load.truncated).toBe(true)
     } finally {
       box.dispose()

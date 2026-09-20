@@ -342,8 +342,8 @@ async function runToolCall(
  *   一对**齐来齐走**。恢复的「在途识别」找的是「有 `tool.call` 无 `tool.result`」那几笔
  *   （`scanForRecovery`），**成对发**进去的是一笔**已了结**的调用，不是假在途。
  *   也不新立「未执行」这种第二套在途状态——外壳照既有那一套画，只是结果写着没执行。
- * - **不宣称副作用已执行**：结果 `ok: false`，正文照 `needsReviewText`（或超限那份
- *   `overflowText`）说清**没执行 · 为什么 · 下一步怎么办**。
+ * - **不宣称副作用已执行**：结果 `ok: false` ＋ `notExecuted`（见函数体），正文照
+ *   `needsReviewText`（或超限那份 `overflowText`）说清**没执行 · 为什么 · 下一步怎么办**。
  */
 function withholds(runtime: LoopRuntime, call: ToolCall, text: string): void {
   const log = entryLogOf(runtime)
@@ -352,9 +352,17 @@ function withholds(runtime: LoopRuntime, call: ToolCall, text: string): void {
   const opened = runtime.stamper.stamp('tool.call', { name: call.name, args: call.args })
   runtime.sink.emit(opened)
 
-  appendToolResultEntry(log, { ok: false, text, content: { text } })
+  // **「没跑」由产生处写死**（`notExecuted`）：条目与事件**同源同带**——外壳实时看事件、
+  // 切会话回来看条目，两路读的是这一位。此前谁都没记，下游只好拿结果正文首行去猜
+  // （2026-09-20 三轮裁，改的正是那条正文协议）。
+  appendToolResultEntry(log, { ok: false, text, content: { text }, notExecuted: true })
   runtime.sink.emit(
-    runtime.stamper.stamp('tool.result', { call: opened.id, ok: false, output: { text } }),
+    runtime.stamper.stamp('tool.result', {
+      call: opened.id,
+      ok: false,
+      output: { text },
+      notExecuted: true,
+    }),
   )
 }
 
