@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "check": "bun run typecheck && bun run test",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "prepare": "git config core.hooksPath .githooks || true",
+    "ui": "bun packages/app/scripts/ui.ts"
   },
   "dependencies": {
     "@magic/app": "workspace:*"

@@ -7,6 +7,9 @@ dist/
 .DS_Store
 *.log
 
+# 界面验收工具的现场产物（U40）——给人看的，不进库
+.ui-runs/
+
 # 试跑区（内容不入库，保留 README）
 playground/*
 !playground/README.md

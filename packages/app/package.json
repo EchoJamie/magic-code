@@ -27,6 +27,7 @@
     "@magic/tui": "workspace:*"
   },
   "devDependencies": {
-    "@magic/faux": "workspace:*"
+    "@magic/faux": "workspace:*",
+    "@xterm/headless": "^6.0.0"
   }
 }
