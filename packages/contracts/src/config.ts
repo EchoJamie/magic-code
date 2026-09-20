@@ -104,8 +104,34 @@ export type PermissionsConfig = {
 export type WorkspaceRoots = readonly string[]
 
 /**
+ * 项目规约段（**阶段 3 加键** · U32）——`rules.sources`：**用户显式点名的补充来源**。
+ *
+ * **为什么要有这一格**——默认的规约来源只有两处，都在工作区根内：目录里的
+ * `AGENTS.md` / `CLAUDE.md` 与根下的 `.magic/rules` / `.claude/rules`。两件默认接不住的
+ * 事都归这里：
+ *
+ * 1. **同目录两份不同实体**——`AGENTS.md` 与 `CLAUDE.md` 都在、且指向不同文件时，
+ *    默认**采 AGENTS、并把 CLAUDE 那份记进诊断**（「明确告知采用 AGENTS」，不静默混成一份）。
+ *    想把落选的那份也读进来，就在这儿点名它；
+ * 2. **符号链接指向工作区之外**——外部文件**不因一个链接就自动进来**（那等于给加载器
+ *    开一条读任意文件的路）。要点名「这一份就是要读」，也在这儿写。
+ *
+ * **键缺省 ＝ 一个补充来源都没有**——只剩两处默认来源，行为与不写这个键之前一字不变。
+ *
+ * **形制**：字符串数组，每项是**绝对路径**（文件或目录；前导 `~` 由加载器展开，
+ * 同 `dataDir` / `workspaceRoots`）。点名的目录按规则目录扫（其下 `*.md` 递归），
+ * 点名的文件就是一份规则文档。
+ *
+ * ⚠️ **这是只读来源的配置，不是执行授权**：写进来只说明「这些文件可以读来当规约」，
+ * **不改变**任何工具能不能碰它（那是工作区与权限闸门的事，两码事）。
+ */
+export type RulesConfig = {
+  readonly sources?: readonly string[]
+}
+
+/**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
- * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots`**。
+ * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots` / `rules`**。
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
@@ -116,6 +142,8 @@ export type MagicConfig = {
   readonly permissions?: PermissionsConfig
   /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */
   readonly workspaceRoots?: WorkspaceRoots
+  /** 项目规约段（阶段 3 · U32）——见 `RulesConfig`；**键缺省＝只有两处默认来源**。 */
+  readonly rules?: RulesConfig
 }
 
 /**

@@ -151,6 +151,28 @@ function asWorkspaceRoots(value: unknown, path: string, home: string): readonly 
 }
 
 /**
+ * 项目规约的补充来源（阶段 3 · U32）——判形制（须是非空字符串的数组）＋ **展开前导 `~`**。
+ *
+ * 与 `workspaceRoots` 同一个姿势、同一个展开器：**只把用户写的那串变成它指的那个路径**。
+ * 「存不存在 / 是文件还是目录」不在这里判——那要碰 fs，而归执行域（规约来源面）；
+ * 加载器再判一遍就是两处各说一套「什么算合格的来源」。
+ *
+ * 不给（键缺省 / `rules` 整段缺省）＝一个补充来源都没有——行为与不写这个键之前一字不变。
+ */
+function asRuleSources(value: unknown, path: string, home: string): readonly string[] {
+  if (!Array.isArray(value)) {
+    throw new ConfigError(
+      path,
+      'rules.sources 须是数组（补充来源：[<绝对路径>, …]；文件或目录都行）',
+    )
+  }
+
+  return value.map((entry, index) =>
+    expandHome(asText(entry, path, `rules.sources[${index}]`), home),
+  )
+}
+
+/**
  * 读并校验配置文件。
  *
  * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补 `DEFAULT_DATA_DIR`；
@@ -222,6 +244,15 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     ? undefined
     : asWorkspaceRoots(raw['workspaceRoots'], path, home)
 
+  // 项目规约段（阶段 3 · U32）——**用户显式点名的补充来源**。
+  // ⚠️ **漏带＝静默失效**（同上面权限段与多根那两条教训）：配置里点了名而这里不接，
+  // 那几份规约就悄悄读不进来——**且不报错**，用户对着一个「明明写了却没生效」的来源发呆。
+  const rulesSegment = raw['rules'] === undefined ? undefined : asObject(raw['rules'], path, 'rules')
+  const ruleSources =
+    rulesSegment?.['sources'] === undefined
+      ? undefined
+      : asRuleSources(rulesSegment['sources'], path, home)
+
   return {
     path,
     config: {
@@ -230,6 +261,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
       dataDir,
       ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
       ...(workspaceRoots === undefined ? {} : { workspaceRoots }),
+      ...(ruleSources === undefined ? {} : { rules: { sources: ruleSources } }),
     },
     providerId,
     provider,

@@ -1,0 +1,895 @@
+/**
+ * 项目规约 —— **来源面**（U32）：发现 · 读取 · 解析 · 去重 · 诊断。
+ *
+ * 契约那头是 `ProjectRules`（`@magic/contracts`）。本文件只答「**有什么、在哪儿、是哪一版**」；
+ * 「选哪些、什么时候送进上下文」归对话域——它才是唯一知道「这一轮在动哪儿」的一层。
+ * 分工的理由在设计里写着：**文件读取在执行 / 基础设施边界，内容选择与系统提示词装配在对话侧**。
+ *
+ * ## 四类入口（原生在前，兼容顺带）
+ *
+ * 1. **目录规约**——工作区根与操作目标**祖先目录**里的 `AGENTS.md`；同目录没有它时回退
+ *    `CLAUDE.md`（`agents` / `claude-md`）。同一份文件经两条路进来（软链接指同实体）只读一次。
+ * 2. **原生规则**——`<root>/.magic/rules` 下的 `*.md`（`magic-rules`）：纯 Markdown 无条件
+ *    规则，可选 front-matter 的 YAML `paths` 列表把它限到某些路径。
+ * 3. **兼容规则**——`<root>/.claude/rules` 下的 `*.md`（`claude-rules`）：同一套机制、同一份
+ *    解析器，只多一个入口。**同根同相对规则名以 `.magic/rules` 为准**。
+ * 4. **补充来源**——用户显式配置的 `rules.sources`（`source`）。
+ *
+ * **产品原则**（工单明文）：**Magic 自身规则第一**。兼容方只提供**输入格式**，不改 Magic 的
+ * 生效范围、权限或优先级——所以 `.claude/rules` 走的是**同一条**发现与解析路径，不是另一套机制。
+ *
+ * ## 三条边界（都不是靠自觉，是代码里唯一的入口）
+ *
+ * - **只读**——本文件只有 `readdir` / `readFile` / `realpath` / `stat`，一个写操作都没有；
+ *   规约**不**改 `permissions.rules`、**不**运行其中脚本、**不**接 hooks（那是另一件事）。
+ * - **不能借加载器读任意文件**——发现面只有两处：**注册的根之内**与**用户点名的补充来源**。
+ *   一个指向工作区之外的符号链接**不因它是个链接就自动可读**：指到文件的那种报出来并略过，
+ *   指到目录的那种**连进都不进**（见 `walk` 的白名单那一闸——广度没有别的兜底），
+ *   要读就把它写进 `rules.sources`——**用户点名才算数**。
+ * - **不设全仓 watcher**——每次调用现扫（调用时机由对话域定：用户输入与工具目标预查两处），
+ *   不缓存、不订阅；改过的规约因此**下一趟就是新的**。
+ *
+ * ## 限度（如实记，不假装没有）
+ *
+ * - **`paths` 只匹配「目标路径本身」**：目录目标（`ls src`）不会因为 `paths: ["src/**"]`
+ *   而命中——那条规则等真正碰到 `src/` 里的某个文件时再送到。这版不猜「目录底下会有什么」。
+ * - **`exec` 的范围按执行 cwd**（＝工作区默认根）：任意 shell 字符串实际会碰哪些文件
+ *   **静态推不出来**（`cd src && ./build.sh` 就是反例），故本版**不假装推得出来**，
+ *   只保证 cwd 那一层的规约在会话开局就送到了。
+ * - **`version` 用 FNV-1a 32 位**：判「是不是同一版」够用（同一份内容恒同一串），
+ *   但**不是密码学摘要**——它防的是循环拦截，不是防篡改。
+ */
+
+import type {
+  ProjectRule,
+  ProjectRules,
+  RulesLoad,
+  RulesProblem,
+  WorkspaceService,
+} from '@magic/contracts'
+import type { Dirent } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { dirname, join, sep } from 'node:path'
+import { expandPatterns, matchesPattern } from './patterns.ts'
+import { isInside } from './workspace.ts'
+
+/**
+ * 一次读取的**上限**——超了报 `problems` 并停下，**不静默截**。
+ *
+ * 为什么必须有：本面在**每次模型调用**与**每次工具预查**各跑一遍，而规约树是用户的、
+ * 大小没谱——没有上限就是一条被人无意中拖住整轮的路。三个数各管一件事：
+ * 单份多大 · 一共几份 · 一共多大。数值本身是**实现级常量**（方向已有，量级归实现）。
+ */
+export type RulesLimits = {
+  readonly maxDocuments: number
+  readonly maxDocumentBytes: number
+  readonly maxTotalBytes: number
+}
+
+/** 缺省上限——够任何讲道理的规约树，又能在一瞬间扫完。 */
+export const DEFAULT_RULES_LIMITS: RulesLimits = {
+  maxDocuments: 64,
+  maxDocumentBytes: 128 * 1024,
+  maxTotalBytes: 512 * 1024,
+}
+
+/** 装配期构造入参——根视图 ＋ 用户显式点名的补充来源 ＋ 上限覆盖位（测试用）。 */
+export type RulesOptions = {
+  /** 工作区（根的**两张表**都在它手上——落点判定与执行域同源）。 */
+  readonly workspace: WorkspaceService
+  /**
+   * **用户显式配置**的补充来源（`rules.sources`，`~` 已由配置加载器展开）——
+   * 绝对路径，文件或目录。缺省＝一个都没有。
+   */
+  readonly sources?: readonly string[]
+  /** 上限覆盖位——缺省 `DEFAULT_RULES_LIMITS`（测试要把超限路径跑出来时用）。 */
+  readonly limits?: Partial<RulesLimits> | undefined
+}
+
+/** 目录规约的两个文件名——**Magic 的第一入口**在前，兼容回退在后（次序即优先级）。 */
+const DIRECTORY_DOCS = ['AGENTS.md', 'CLAUDE.md'] as const
+
+/** 规则文档目录的两个入口——**原生在前**（同上，次序即优先级）。 */
+const RULES_DIRS = [
+  { segment: '.magic', kind: 'magic-rules' },
+  { segment: '.claude', kind: 'claude-rules' },
+] as const
+
+/** 候选——还没读、还没去重的一条「可能是一份规约」。 */
+type Candidate = {
+  readonly kind: ProjectRule['kind']
+  /** 发现路径（可能是个软链接——真身份由 realpath 那一步定）。 */
+  readonly file: string
+  readonly root: string | null
+  /** 作用目录——目录规约是它所在的目录；规则文档是所属根。 */
+  readonly scope: string | null
+  /** 相对所属根的写法（诊断与抬头用）。 */
+  readonly name: string
+  /**
+   * **同根同名**的判据（只有规则文档有）——相对**规则目录**的写法。
+   * 由头：`.magic/rules/frontend/react.md` 与 `.claude/rules/frontend/react.md`
+   * 说的是「同一条规则的两个入口」，用户按相对规则名对照，不按完整路径。
+   */
+  readonly ruleKey: string | null
+  /** 排序键——[根序, 作用深度, 来源序, 名字]。 */
+  readonly order: readonly [number, number, number, string]
+}
+
+/**
+ * 呈现在材料里的**次序**——一个根一个根地摆（各根的规约连在一起，抬头已标明根），
+ * 根内**由外向内**（根一级在前、越深的子目录越靠后），同深度按来源序（原生在前）、再按名字。
+ *
+ * 为什么按根分块而不是把同名的一律排一起：材料是给人（与模型）读的，
+ * 「甲根那一摊」连着摆才看得出是一摊；交错排列会让每一条都得靠抬头重新认一遍根。
+ */
+const KIND_RANK: Readonly<Record<ProjectRule['kind'], number>> = {
+  agents: 0,
+  'claude-md': 1,
+  'magic-rules': 2,
+  'claude-rules': 3,
+  source: 4,
+}
+
+/** 读过的一条——规则 ＋ 适用条件（条件是本面内部的：消费者只会拿到「适用」的那些）。 */
+type Loaded = {
+  readonly rule: ProjectRule
+  /** 生效模式（根相对）；**空数组＝无条件**（会话开局就送）。 */
+  readonly conditions: readonly string[]
+  readonly order: Candidate['order']
+}
+
+/** 用户点名的补充来源（已 realpath）——目录按其下 `*.md` 递归，文件就是一份。 */
+type Source = { readonly real: string; readonly isDir: boolean }
+
+/** 一个目标路径归位后的三件——它归哪条根、真身该怎么写、相对根是什么。 */
+type Place = {
+  readonly root: string
+  /** 归到根的**规范形**底下的写法（两张表见 `workspace.ts`）。 */
+  readonly absolute: string
+  /** 相对所属根（`paths` 模式比的就是它）。 */
+  readonly relative: string
+}
+
+/**
+ * 造项目规约的来源面。
+ *
+ * 构造不做 I/O——扫不扫、什么时候扫由调用方定（装配期报读数、每轮送材料各一次）。
+ */
+export function createProjectRules(options: RulesOptions): ProjectRules {
+  const limits: RulesLimits = { ...DEFAULT_RULES_LIMITS, ...options.limits }
+
+  return {
+    load: (targets: readonly string[]): RulesLoad => load(options, limits, targets),
+  }
+}
+
+function load(
+  options: RulesOptions,
+  limits: RulesLimits,
+  targets: readonly string[],
+): RulesLoad {
+  const workspace = options.workspace
+  const roots = workspace.roots()
+  const declared = workspace.declaredRoots()
+  const problems: RulesProblem[] = []
+
+  /** 补充来源（**允许读**的第二份白名单——第一份是根列表）。 */
+  const sources = resolveSources(options.sources ?? [], problems)
+  /** 白名单本体——**递归下探前先问它**：一份都不读的地方，连目录都不进（见 `walk`）。 */
+  const allowed = (real: string): boolean => isAllowed(real, roots, declared, sources)
+  const candidates: Candidate[] = []
+  const directoryDocs = memoDirectoryDocs(problems)
+
+  // ① 各根一级——目录规约 ＋ 两个规则目录（无条件的那几条在会话开局就进上下文）
+  roots.forEach((root, index) => {
+    candidates.push(...directoryDocs(root, root, index))
+    for (const { segment, kind } of RULES_DIRS) {
+      candidates.push(...scanRulesDir(join(root, segment, 'rules'), root, kind, index, problems, allowed))
+    }
+  })
+
+  // ② 操作目标的**祖先目录**——「近目录约定仅细化其子树」，故只沿目标往上走，不横着扫
+  const places: Place[] = []
+  for (const raw of targets) {
+    const place = placeTarget(raw, workspace, roots, declared)
+    if (place === undefined) continue
+    places.push(place)
+
+    for (const dir of ancestorDirs(place.absolute, place.root)) {
+      candidates.push(...directoryDocs(dir, place.root, roots.indexOf(place.root)))
+    }
+  }
+
+  // ③ 补充来源——用户点名的才读（根外那些也由此有了一条名正言顺的路）
+  for (const source of sources) {
+    candidates.push(...scanSource(source, roots, roots.length, problems))
+  }
+
+  return select({ candidates, places, limits, problems, allowed })
+}
+
+// ══ ① 目录规约 ════════════════════════════════════════════════════════
+
+type DirectoryDocs = (dir: string, root: string, rootIndex: number) => readonly Candidate[]
+
+/** 同一个目录只判一次——根一级与某个目标的祖先目录常常撞上同一处。 */
+function memoDirectoryDocs(problems: RulesProblem[]): DirectoryDocs {
+  const memo = new Map<string, readonly Candidate[]>()
+
+  return (dir, root, rootIndex) => {
+    const cached = memo.get(dir)
+    if (cached !== undefined) return cached
+
+    const found = directoryDocsOf(dir, root, rootIndex, problems)
+    memo.set(dir, found)
+    return found
+  }
+}
+
+/**
+ * 某个目录的目录规约——`AGENTS.md` 优先；两条入口指同一份实体时只读一次；
+ * 两份**不同实体**时采 AGENTS，并把落选的那份**说出来**（不静默混成一份）。
+ */
+function directoryDocsOf(
+  dir: string,
+  root: string,
+  rootIndex: number,
+  problems: RulesProblem[],
+): readonly Candidate[] {
+  const present: { readonly name: string; readonly file: string; readonly kind: ProjectRule['kind'] }[] = []
+
+  for (const name of DIRECTORY_DOCS) {
+    const file = join(dir, name)
+    if (!isFile(file)) continue
+    present.push({ name, file, kind: name === 'AGENTS.md' ? 'agents' : 'claude-md' })
+  }
+
+  const first = present[0]
+  if (first === undefined) return []
+
+  /** 抬头名——根一级只有文件名（`AGENTS.md`），子目录带相对目录（`src/AGENTS.md`）。 */
+  const said = (name: string): string => {
+    const relativeDir = relativeTo(root, dir)
+    return relativeDir === '' ? name : `${relativeDir}${sep}${name}`
+  }
+
+  // 只有一份——照它走（没有第二个入口要比较，也就没有取舍可说）
+  if (present.length === 1) {
+    return [candidateOf(first.kind, first.file, root, dir, rootIndex, said(first.name))]
+  }
+
+  const second = present[1] as (typeof present)[number]
+
+  // **软链接指同实体**——两个入口指着一份文件，只读一次（`first` 是 AGENTS 那一头）
+  if (sameFile(first.file, second.file)) {
+    return [candidateOf(first.kind, first.file, root, dir, rootIndex, said(first.name))]
+  }
+
+  // **同目录两份不同实体**——采 AGENTS，并把落选的那份与「怎么能一并读」说清楚。
+  // ⚠️ 这条会印在 `--check` 的一行里（前头已经有目录路径了），故此处**不再复述目录**：
+  // 两个文件名 ＋ 一个可照抄的出口，够了。
+  problems.push({
+    path: dir,
+    message:
+      `同目录两份不同实体：采用 ${first.name}，未采用 ${second.name}——` +
+      `要一并加载，请把 ${second.file} 写进配置的 rules.sources`,
+  })
+
+  return [candidateOf(first.kind, first.file, root, dir, rootIndex, said(first.name))]
+}
+
+function candidateOf(
+  kind: ProjectRule['kind'],
+  file: string,
+  root: string | null,
+  scope: string | null,
+  rootIndex: number,
+  name: string,
+  ruleKey: string | null = null,
+): Candidate {
+  return {
+    kind,
+    file,
+    root,
+    scope,
+    name,
+    ruleKey,
+    order: [rootIndex, name.split(sep).length, KIND_RANK[kind], name],
+  }
+}
+
+// ══ ② 规则目录 ════════════════════════════════════════════════════════
+
+/**
+ * 递归收一个规则目录下的 `*.md`——**规则子目录只是组织方式**，故 `name` 报的是
+ * 相对**所属根**的写法（`.magic/rules/frontend/react.md`），`ruleKey` 报相对**规则目录**
+ * 的写法（`frontend/react.md`，「同根同名」那条判据用它）。
+ *
+ * 目录不存在＝正常（多数项目只有一个入口，甚至一个都没有），不出声。
+ */
+function scanRulesDir(
+  dir: string,
+  root: string,
+  kind: ProjectRule['kind'],
+  rootIndex: number,
+  problems: RulesProblem[],
+  allowed: (real: string) => boolean,
+): readonly Candidate[] {
+  if (!isDirectory(dir)) return []
+
+  const label = relativeTo(root, dir)
+
+  return walkMarkdown(dir, allowed, problems).map((file) =>
+    candidateOf(
+      kind,
+      file,
+      root,
+      root,
+      rootIndex,
+      `${label}${sep}${relativeTo(dir, file)}`,
+      relativeTo(dir, file),
+    ),
+  )
+}
+
+/**
+ * 递归走一个目录，收 `*.md`——**跟符号链接**，但有**两道闸**：
+ *
+ * - **白名单**（`allowed`）——**下探之前先问**：这个地方本来就不允许读，那连目录都不进。
+ *   由头不是洁癖：`.magic/rules` 里搁一个 `-> /` 的软链接，就足以让**每一次模型调用**
+ *   把整块盘走一遍（深度有兜底，广度没有）。「一份都不读的地方，连目录都不进」把这个
+ *   口子从两头一起堵上——顺带，被跳过的那个目录**报得出来**（比逐文件报「略过」更清楚）。
+ * - **记账**（`visited`）——跟进去的真目录记上一笔：第二次踏进同一个真目录就是环
+ *   （`a -> b -> a`），那一条**报出来并停住**，不转圈。
+ *
+ * 为什么要跟链接：规则目录常见「软链接到别处的一份共享规则」这种组织方式。跟，就意味着
+ * 「能不能读」这件事不能靠「它是个链接」来判断——那由白名单统一裁。
+ *
+ * 排序（名字序）在这里就定下：文件系统返回的次序不作保证，两趟读出两种次序会让
+ * 「相同的规则」看起来像变过（`version` 比的是内容，次序另算）。
+ */
+function walkMarkdown(
+  dir: string,
+  allowed: (real: string) => boolean,
+  problems: RulesProblem[],
+): readonly string[] {
+  const found: string[] = []
+  walk(dir, found, new Set<string>(), problems, allowed)
+
+  return found.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+}
+
+function walk(
+  dir: string,
+  found: string[],
+  visited: Set<string>,
+  problems: RulesProblem[],
+  allowed: (real: string) => boolean,
+  depth = 0,
+): void {
+  // 环之外还有一层兜底：链接可以让目录无限深，别把调用栈吃掉
+  if (depth > 32) {
+    problems.push({ path: dir, message: '目录层级过深（超过 32 层）——已停在这一层，不再往下' })
+    return
+  }
+
+  const real = tryRealpath(dir)
+  if (real === undefined) return
+
+  if (!allowed(real)) {
+    // 头一行已经报着是哪个目录了，此处只说「真身在哪、怎么才读得到」
+    problems.push({
+      path: dir,
+      message: `指向工作区之外的目录（真身 ${real}）——没进去。要读它，请把真身写进配置的 rules.sources`,
+    })
+    return
+  }
+
+  if (visited.has(real)) {
+    problems.push({ path: dir, message: `目录循环——又绕回 ${real}，只读一次、不再往下` })
+    return
+  }
+  visited.add(real)
+
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch (error) {
+    problems.push({ path: dir, message: `目录读不动：${reasonOf(error)}` })
+    return
+  }
+
+  for (const entry of entries) {
+    const child = join(dir, entry.name)
+
+    // 类型按 `stat` 判（**跟链接**）——Dirent 的类型位对符号链接既非目录也非文件
+    let kind: 'file' | 'directory' | 'other' = 'other'
+    try {
+      const info = statSync(child)
+      kind = info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other'
+    } catch {
+      continue // 断链——跳过（不是「没规则」，是那一份取不到）
+    }
+
+    if (kind === 'directory') walk(child, found, visited, problems, allowed, depth + 1)
+    else if (kind === 'file' && entry.name.endsWith('.md')) found.push(child)
+  }
+}
+
+// ══ ③ 补充来源 ════════════════════════════════════════════════════════
+
+/** 来源归位——`stat` 一遍判它是什么；不存在 / 取不到状态即**报出来**（不静默跳过）。 */
+function resolveSources(raw: readonly string[], problems: RulesProblem[]): readonly Source[] {
+  const resolved: Source[] = []
+
+  raw.forEach((entry, index) => {
+    const at = `第 ${index + 1} 条`
+    let real: string
+
+    try {
+      real = realpathSync(entry)
+    } catch (error) {
+      problems.push({ path: entry, message: `补充来源不存在或不可达（${at}）——${reasonOf(error)}` })
+      return
+    }
+
+    try {
+      resolved.push({ real, isDir: statSync(real).isDirectory() })
+    } catch (error) {
+      problems.push({ path: entry, message: `补充来源取不到状态（${at}）——${reasonOf(error)}` })
+    }
+  })
+
+  return resolved
+}
+
+/**
+ * 用户点名的补充来源——目录按其下 `*.md` 递归，文件就是一份规则文档。
+ *
+ * **落点照旧要报**：落在某条根内就归那条根（作用域说得清）；根外的是**用户点名的全局来源**
+ * （`root` / `scope` 为 `null`）——那是「用户说了要读」，不是「Magic 替它猜了个作用域」。
+ */
+function scanSource(
+  source: Source,
+  roots: readonly string[],
+  rootIndex: number,
+  problems: RulesProblem[],
+): readonly Candidate[] {
+  const home = roots.find((root) => isInside(source.real, root)) ?? null
+  // 用户点名的这一处**连同它底下**都算允许读——这正是不落根内的补充来源存在的理由
+  const inside = (real: string): boolean => isInside(real, source.real)
+  const files = source.isDir ? walkMarkdown(source.real, inside, problems) : [source.real]
+
+  return files.map((file) => {
+    const name = home === null ? file : relativeTo(home, file)
+    return candidateOf('source', file, home, home, rootIndex, name)
+  })
+}
+
+// ══ ④ 去重 → 读 → 解析 → 条件过滤 ════════════════════════════════════
+
+function select(input: {
+  readonly candidates: readonly Candidate[]
+  readonly places: readonly Place[]
+  readonly limits: RulesLimits
+  readonly problems: RulesProblem[]
+  readonly allowed: (real: string) => boolean
+}): RulesLoad {
+  const { candidates, places, limits, problems, allowed } = input
+  const loaded: Loaded[] = []
+  /** 物理同源去重——真路径只看一次。 */
+  const seen = new Set<string>()
+  /** 同根同名去重——`<root> <ruleKey>` → 已经收下的那一条。 */
+  const seenRule = new Map<string, Candidate>()
+  let bytes = 0
+
+  for (const candidate of candidates) {
+    if (loaded.length >= limits.maxDocuments) {
+      problems.push({
+        path: candidate.file,
+        message: `规约份数已达上限 ${limits.maxDocuments}——从这一份起不再加载（这里报的正是没读进来的那些）`,
+      })
+      break
+    }
+
+    const real = tryRealpath(candidate.file)
+    if (real === undefined) continue // 不存在 / 断链——多数目录没有 AGENTS.md，不是错
+    if (seen.has(real)) continue // 物理同源（软链接指同实体）：只看一次
+    seen.add(real)
+
+    const key = candidate.ruleKey === null ? undefined : `${candidate.root ?? ''} ${candidate.ruleKey}`
+    const winner = key === undefined ? undefined : seenRule.get(key)
+
+    if (key !== undefined && winner !== undefined) {
+      // **同根同相对规则名，Magic 优先**——排在后面的（`.claude/rules`）落选，
+      // 但**不静默**：用户得知道自己写的那一份没生效。
+      // 只报**胜出那一份的短名**（本条自己的路径在诊断行头上已经有了——重复三遍读不成行）
+      problems.push({
+        path: candidate.file,
+        message: `同根同名：已有 Magic 的那一份（${winner.name}）；本条按「原生优先」未加载，要它生效请改用别的相对名`,
+      })
+      continue
+    }
+
+    if (!allowed(real)) {
+      // 外部符号链接——**不因它是个链接就自动可读**
+      problems.push({
+        path: candidate.file,
+        message: `指向工作区之外的符号链接（真身 ${real}）——未加载。要读它，请把真身写进配置的 rules.sources`,
+      })
+      continue
+    }
+
+    const size = sizeOf(real)
+    if (size === undefined) continue
+    if (size > limits.maxDocumentBytes) {
+      problems.push({
+        path: candidate.file,
+        message: `超过单份上限 ${limits.maxDocumentBytes} 字节（实际 ${size}）——未加载`,
+      })
+      continue
+    }
+    if (bytes + size > limits.maxTotalBytes) {
+      problems.push({
+        path: candidate.file,
+        message: `规约总量已达上限 ${limits.maxTotalBytes} 字节——从这一份起不再加载`,
+      })
+      break
+    }
+
+    let text: string
+    try {
+      text = readFileSync(real, 'utf8')
+    } catch (error) {
+      problems.push({ path: candidate.file, message: `读不到：${reasonOf(error)}` })
+      continue
+    }
+
+    const parsed = parseDocument(text, candidate.kind)
+    if (parsed.problem !== undefined) {
+      // **读不懂的不生效，且说得出为什么**——不降级成「无条件」把范围悄悄放大
+      problems.push({ path: candidate.file, message: parsed.problem })
+      continue
+    }
+
+    bytes += size
+    if (key !== undefined) seenRule.set(key, candidate)
+    loaded.push({
+      rule: {
+        kind: candidate.kind,
+        path: real,
+        root: candidate.root,
+        scope: candidate.scope,
+        name: candidate.name,
+        text: parsed.body,
+        version: versionOf(parsed.body, parsed.patterns),
+      },
+      conditions: parsed.patterns ?? [],
+      order: candidate.order,
+    })
+  }
+
+  // **条件规则在目标相关时送达**——无路径的照进（会话开局那几条），带 `paths` 的只在
+  // 命中某个目标时进；没目标＝不送（那一趟只取「根一级」）
+  const applicable = loaded.filter(
+    (entry) => entry.conditions.length === 0 || places.some((place) => applies(entry, place)),
+  )
+
+  return { documents: applicable.sort(compareLoaded).map((entry) => entry.rule), problems }
+}
+
+/**
+ * 这条规则管不管这个目标——**先看根，再看模式**。
+ *
+ * 根那一关是「**不将甲根规范作为乙根全局规范**」的落点：甲根的 `paths: ["src/**"]`
+ * 说的是**甲根的 src**，乙根里恰好也有个 `src/x.ts` 不该被它管住。两处各写一条 `src/**`
+ * 的两条规则本来就该各管各的（有用例钉着）。
+ *
+ * **基准随来源**：有根的规则按**根相对**比（规则子目录只是组织方式，基准仍是项目根）；
+ * 用户点名的补充来源（`root` 为 `null`）没有根可比，故**绝对路径与根相对两种写法都比**
+ * ——于是「任意层目录再加一个 src」与直接写 `src` 两种写法都命中。两种写法都是用户显式
+ * 点名之后的事，不构成「替谁猜了个作用域」。
+ */
+function applies(entry: Loaded, place: Place): boolean {
+  const bases =
+    entry.rule.root === null
+      ? [place.absolute, place.relative]
+      : place.root === entry.rule.root
+        ? [place.relative]
+        : []
+
+  return bases.some((base) => entry.conditions.some((pattern) => matchesPattern(pattern, base)))
+}
+
+function compareLoaded(left: Loaded, right: Loaded): number {
+  const [leftRoot = 0, leftDepth = 0, leftKind = 0, leftName = ''] = left.order
+  const [rightRoot = 0, rightDepth = 0, rightKind = 0, rightName = ''] = right.order
+
+  return (
+    leftRoot - rightRoot ||
+    leftDepth - rightDepth ||
+    leftKind - rightKind ||
+    (leftName < rightName ? -1 : leftName > rightName ? 1 : 0)
+  )
+}
+
+// ══ 文档解析（front-matter ＋ 正文）═══════════════════════════════════
+
+type ParsedDocument = {
+  readonly body: string
+  /** `undefined` ＝ 无条件。 */
+  readonly patterns: readonly string[] | undefined
+  /** 给出来了＝这一份**不加载**（读不懂的不生效，绝不降级成更宽的那一种）。 */
+  readonly problem: string | undefined
+}
+
+/**
+ * 判一份文档的形态。
+ *
+ * **只管规则文档**（`magic-rules` / `claude-rules` / `source`）：那三类的 `paths` 是
+ * **格式的一部分**。目录规约（`AGENTS.md` / `CLAUDE.md`）**整篇照收**——那是人写的约定
+ * 文档，不是配置文件；顺手解析它的头部只会把「顶上一段 YAML 风格的说明」吃掉。
+ *
+ * **不认识的键一律拒**（同权限域 `parseRules` 的姿态）：`path:` 少写一个 `s` 就静默变成
+ * 「无条件」——那正是「无效模式不得扩大为全匹配」要拦的那一类。
+ */
+function parseDocument(text: string, kind: ProjectRule['kind']): ParsedDocument {
+  if (kind === 'agents' || kind === 'claude-md') return { body: text, patterns: undefined, problem: undefined }
+
+  const front = splitFrontMatter(text)
+  if (front === undefined) return { body: text, patterns: undefined, problem: undefined }
+
+  const items: Record<string, string[]> = {}
+  let current: string | null = null
+
+  for (const raw of front.lines) {
+    const line = stripComment(raw).trimEnd()
+    if (line.trim() === '') continue
+
+    const indented = line !== line.trimStart()
+    const trimmed = line.trim()
+
+    if (indented) {
+      if (current === null) {
+        return fail(`front-matter 里有不属于任何键的缩进行：${trimmed}`)
+      }
+      const item = /^-\s*(.*)$/.exec(trimmed)
+      if (item === null) {
+        return fail(`front-matter 里不认得的写法：${trimmed}（列表项写成 \`- 模式\`）`)
+      }
+      ;(items[current] ??= []).push(unquote(item[1] ?? ''))
+      continue
+    }
+
+    const pair = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(trimmed)
+    if (pair === null) return fail(`front-matter 里不认得的写法：${trimmed}`)
+
+    const key = pair[1] as string
+    const rest = stripComment(pair[2] ?? '').trim()
+    if (rest !== '') {
+      return fail(`front-matter 的 \`${key}\` 只认列表写法（下面一行一条 \`- 模式\`）——收到的是「${rest}」`)
+    }
+    if (items[key] !== undefined) return fail(`front-matter 里 \`${key}\` 写了不止一次`)
+
+    items[key] = []
+    current = key
+  }
+
+  const strange = Object.keys(items).filter((key) => key !== 'paths')
+  if (strange.length > 0) {
+    // 说清「为什么拒」而不是「为什么宽」：放它过去，这条规则会悄悄变成「到处都生效」
+    return fail(`front-matter 里有不认识的键「${strange.join(' / ')}」——只认 \`paths\`（写错的键名不会被猜中）`)
+  }
+
+  const declared = items['paths']
+  if (declared === undefined) return { body: front.body, patterns: undefined, problem: undefined }
+  if (declared.length === 0) {
+    return fail('`paths:` 给了空列表——要么整条不写（＝无条件生效），要么给至少一条模式')
+  }
+
+  const patterns: string[] = []
+  for (const entry of declared) {
+    const expanded = expandPatterns(entry)
+    if (!expanded.ok) return fail(`paths 里的模式不成立：${expanded.reason}`)
+    patterns.push(...expanded.patterns)
+  }
+
+  return { body: front.body, patterns, problem: undefined }
+}
+
+function fail(problem: string): ParsedDocument {
+  return { body: '', patterns: undefined, problem }
+}
+
+/**
+ * 取出 front-matter —— **只在第一行正好是 `---` 时**认。
+ *
+ * 没有闭合的 `---` **不算** front-matter（那是正文里的一条分隔线）：宁可按正文整篇收下，
+ * 也不要因为一份文档的排版习惯把它切成两半。
+ */
+function splitFrontMatter(
+  text: string,
+): { readonly lines: readonly string[]; readonly body: string } | undefined {
+  const lines = text.split('\n')
+  if ((lines[0] ?? '').trim() !== '---') return undefined
+
+  for (let index = 1; index < lines.length; index += 1) {
+    if ((lines[index] ?? '').trim() !== '---') continue
+    return { lines: lines.slice(1, index), body: lines.slice(index + 1).join('\n').replace(/^\n+/, '') }
+  }
+
+  return undefined
+}
+
+/** 行内注释：`#` 且前面是空白（在引号里的 `#` 是内容）。 */
+function stripComment(line: string): string {
+  let quote: string | null = null
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index] as string
+    if (quote !== null) {
+      if (char === quote) quote = null
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (char === '#' && (index === 0 || /\s/.test(line[index - 1] as string))) {
+      return line.slice(0, index)
+    }
+  }
+
+  return line
+}
+
+/** 去掉两侧成对的引号——YAML 里给字符串加引号是为了保住首尾空白或 `#`，这里只还原它。 */
+function unquote(value: string): string {
+  const trimmed = value.trim()
+  const first = trimmed[0]
+
+  return (first === '"' || first === "'") && trimmed.length >= 2 && trimmed.endsWith(first)
+    ? trimmed.slice(1, -1)
+    : trimmed
+}
+
+// ══ 落点与白名单 ══════════════════════════════════════════════════════
+
+/**
+ * 目标路径归位——**与沙箱同一条解析规则**（相对按默认根 · 绝对须落根内）。
+ *
+ * 两张表这里也要认（同权限域的理由）：用户手写的 `/tmp/proj` 在 macOS 上实为
+ * `/private/tmp/proj`，模型会照**用户写的**那一串给路径——只认规范形的话，
+ * 「`/tmp/proj/src` 该受 `src/**` 管」这条就判不出来了。
+ *
+ * 越界＝`undefined`（不报）：那一路本来就轮不到规约说话——越界的调用会先被闸门拦下。
+ */
+function placeTarget(
+  raw: string,
+  workspace: WorkspaceService,
+  roots: readonly string[],
+  declared: readonly string[],
+): Place | undefined {
+  let absolute: string
+  let root: string
+
+  try {
+    const resolved = workspace.resolve(raw)
+    absolute = resolved.absolute
+    root = resolved.root
+  } catch {
+    return undefined
+  }
+
+  const declaredRoot = declared[roots.indexOf(root)] ?? root
+  const real =
+    declaredRoot === root || isInside(absolute, root)
+      ? absolute
+      : isInside(absolute, declaredRoot)
+        ? root + absolute.slice(declaredRoot.length)
+        : absolute
+
+  return { root, absolute: real, relative: relativeTo(root, real) }
+}
+
+/**
+ * 祖先目录——从目标**所在目录**往上走到根（含根），由外向内。
+ *
+ * 目标本身是目录时从它自己起算（`ls src` 要拿到 `src/AGENTS.md`）。
+ * **只走到根为止**：根之外的家目录 / 上级仓库不是这个工作区的规约面——那是「读任意文件」
+ * 那条路的入口，不是「按目录就近取约定」。
+ */
+function ancestorDirs(absolute: string, root: string): readonly string[] {
+  const chain: string[] = []
+  let current = isDirectory(absolute) ? absolute : dirname(absolute)
+
+  for (let guard = 0; guard < 256; guard += 1) {
+    if (!isInside(current, root)) break
+    chain.push(current)
+    if (current === root) break
+
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+
+  return chain.reverse()
+}
+
+/** 白名单——**注册的根之内**或**用户点名的补充来源**。两者之外一律不读（且报出来）。 */
+function isAllowed(
+  real: string,
+  roots: readonly string[],
+  declared: readonly string[],
+  sources: readonly Source[],
+): boolean {
+  if (roots.some((root) => isInside(real, root))) return true
+  if (declared.some((root) => isInside(real, root))) return true
+
+  return sources.some((source) => (source.isDir ? isInside(real, source.real) : real === source.real))
+}
+
+// ══ 小件 ══════════════════════════════════════════════════════════════
+
+/** 相对写法——分隔符按平台（报给人的抬头）。 */
+function relativeTo(base: string, file: string): string {
+  if (file === base) return ''
+  return isInside(file, base) ? file.slice(base.length + sep.length) : file
+}
+
+/** 内容版本——正文 ＋ 生效模式（模式变了，适用面就变了，故也算一版）。 */
+function versionOf(body: string, patterns: readonly string[] | undefined): string {
+  const material = `${(patterns ?? []).join(' ')}${body}`
+  let hash = 0x811c9dc5
+
+  for (let index = 0; index < material.length; index += 1) {
+    hash ^= material.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+
+  return `v${hash.toString(16).padStart(8, '0')}-${material.length.toString(16)}`
+}
+
+function tryRealpath(path: string): string | undefined {
+  try {
+    return realpathSync(path)
+  } catch {
+    return undefined
+  }
+}
+
+function sizeOf(path: string): number | undefined {
+  try {
+    return statSync(path).size
+  } catch {
+    return undefined
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** 两条路径是不是同一份文件（软链接指同实体）。 */
+function sameFile(left: string, right: string): boolean {
+  const leftReal = tryRealpath(left)
+  const rightReal = tryRealpath(right)
+
+  return leftReal !== undefined && leftReal === rightReal
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

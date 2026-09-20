@@ -54,6 +54,7 @@ import type {
   ModelErrorTier,
   ModelGateway,
   ModelResult,
+  ProjectRule,
   RecordsService,
   SessionId,
   Timestamp,
@@ -72,6 +73,8 @@ import {
   appendToolResultEntry,
   toolOutcomeOf,
 } from './entries.ts'
+import type { RulesDelivery } from './rules.ts'
+import { needsReviewText } from './rules.ts'
 
 /**
  * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
@@ -105,6 +108,13 @@ export type LoopRuntime = {
    * 「近段」条数**不从别处另给**——装配照它的 `nearEntries` 认（见 `Compactor` 的注）。
    */
   readonly compact?: Compactor | undefined
+  /**
+   * 项目规约的送达账（U32）——**不接线＝不加载规约**（没有规约的那些工作区行为一字不动；
+   * 用例只想验循环时也不必拖一份规约进来）。真装配一律给（见 `./service.ts`）。
+   *
+   * 它是**有状态**的（作用域 ＋ 已送达版本），故按会话实例各造一份——见其注。
+   */
+  readonly rules?: RulesDelivery | undefined
 }
 
 /**
@@ -177,7 +187,9 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
       const messages = await assembleContext({
         records: runtime.records,
         session: runtime.session,
-        systemPrompt: runtime.systemPrompt,
+        // **项目规约**在装配这一步接上（U32）——每次都现取现接：改过的规约下一趟就是新的，
+        // 而「这一趟送出去哪几版」也在此记账（预查据它判「拦不拦」）
+        systemPrompt: runtime.rules?.promptFor(runtime.systemPrompt) ?? runtime.systemPrompt,
         blobTextLimit: runtime.blobTextLimit,
         // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
@@ -246,10 +258,17 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
 
     if (calls.length === 0) return close(runtime, 'settled', false) // 收束——回到等待输入
 
+    // **目标预查（U32）**——动手**之前**看这一批的目标上有没有**还没送达**的规约。
+    // 有：这一批**一份都不执行**（全都还没执行，故全都回填「需重审」），让模型照新规约
+    // 复核后重提。整批一起拦而不是逐条拦：同一批里前几条已经动过、后几条才拦住的话，
+    // 「照新规约重新提」这句话就只对一半的调用成立——那比整批重提更费解。
+    const blocking = runtime.rules?.preflight(calls) ?? []
+
     // 同轮多工具——**按序逐个**（并行执行留后评估）；一个被拒只影响该调用
     for (const call of calls) {
       if (signal.aborted) return close(runtime, 'aborted', false)
-      await runToolCall(runtime, call, signal)
+      if (blocking.length > 0) withholds(runtime, call, blocking)
+      else await runToolCall(runtime, call, signal)
     }
 
     return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted)
@@ -295,6 +314,26 @@ async function runToolCall(
   }
 
   appendToolResultEntry(log, outcome)
+}
+
+/**
+ * **扣下**一次调用（U32 · 目标预查拦下的那一批）——落账一对条目，**不碰工具域**。
+ *
+ * 三件事各按各的规矩：
+ * - **配对要闭合**（设计 · 项目规约第 4 条明写）——所以照样落 `tool-call` ＋ `tool-result`
+ *   一对。少落一个，上下文装配那边会把它当成**在途调用**（`context.ts` 的文件头注 2），
+ *   这一批就从模型眼前整段消失，连「为什么没执行」都看不见了。
+ * - **不铸 `tool.call` / `tool.result` 事件**——那两个是**工具域**的产出，而这一次**压根
+ *   没到工具域**（连闸门都没问）。铸了反而有害：恢复的「在途识别」正是找「有 `tool.call`
+ *   无 `tool.result`」的那几笔（`scanInFlight`），凭空铸一个就等于给恢复塞了一笔假的在途。
+ * - **一句话说全**：没执行 · 为什么 · 下一步怎么办（见 `needsReviewText`）。
+ */
+function withholds(runtime: LoopRuntime, call: ToolCall, blocking: readonly ProjectRule[]): void {
+  const log = entryLogOf(runtime)
+  const text = needsReviewText(blocking)
+
+  appendToolCallEntry(log, call)
+  appendToolResultEntry(log, { ok: false, text, content: { text } })
 }
 
 // ══ 收场 ══════════════════════════════════════════════════════════════

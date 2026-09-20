@@ -342,3 +342,51 @@ describe('工作区根列表（阶段 3 加键）', () => {
     expect(loadFrom(validConfig({ workspaceRoots: [] })).config.workspaceRoots).toEqual([])
   })
 })
+
+/**
+ * 项目规约的补充来源（阶段 3 · U32 加键）——判据：**形制从严 · `~` 展开 · 键真被带出来**。
+ *
+ * ⚠️ **漏带＝静默失效**：配置里点了名而加载器不接，那几份规约就悄悄读不进来**且不报错**
+ * （同权限段 / 多根那两条教训）。故「加载器真把它带出来了」这一条必须有用例钉着，别顺手删。
+ * 语义那一半（存不存在 / 是文件还是目录）归执行域的规约来源面——它才知道怎么读。
+ */
+describe('项目规约的补充来源（阶段 3 加键 · U32）', () => {
+  test('键缺省 —— **不给这一位**（不是空数组）', () => {
+    expect(loadFrom(validConfig()).config.rules).toBeUndefined()
+    expect(loadFrom(validConfig({ rules: {} })).config.rules).toBeUndefined()
+  })
+
+  test('给了就原样带出来——**漏带＝静默失效**（这一条咬住加载器那一行）', () => {
+    const loaded = loadFrom(validConfig({ rules: { sources: ['/shared/rules', '/other.md'] } }))
+
+    expect(loaded.config.rules?.sources).toEqual(['/shared/rules', '/other.md'])
+  })
+
+  test('前导 `~` 与其余落点同一个展开器——`~` 不算绝对路径，得在加载时变成字面路径', () => {
+    const loaded = loadFrom(validConfig({ rules: { sources: ['~/shared', '~', '/abs/keep'] } }))
+
+    expect(loaded.config.rules?.sources).toEqual([join(HOME, 'shared'), HOME, '/abs/keep'])
+    // 中间的 `~` 不是前导——字面保留（同 workspaceRoots 的口径）
+    expect(
+      loadFrom(validConfig({ rules: { sources: ['/a/~/b'] } })).config.rules?.sources,
+    ).toEqual(['/a/~/b'])
+  })
+
+  test('形制不对**报错不降级**——对得上名字的是哪一处', () => {
+    expect(() => loadFrom(validConfig({ rules: { sources: '/shared' } }))).toThrow(ConfigError)
+    expect(() => loadFrom(validConfig({ rules: { sources: '/shared' } }))).toThrow(/rules\.sources/)
+    expect(() => loadFrom(validConfig({ rules: { sources: [123] } }))).toThrow(/rules\.sources\[0\]/)
+    expect(() => loadFrom(validConfig({ rules: { sources: ['/a', ''] } })))
+      .toThrow(/rules\.sources\[1\]/)
+  })
+
+  test('空数组**放行**——「一个补充来源都不点名」是合法的（默认那两处来源照旧）', () => {
+    expect(loadFrom(validConfig({ rules: { sources: [] } })).config.rules?.sources).toEqual([])
+  })
+
+  test('存不存在不在这里判——那是执行域的事（加载器只把用户写的那串变成它指的那个路径）', () => {
+    expect(
+      loadFrom(validConfig({ rules: { sources: ['/definitely/not/here'] } })).config.rules?.sources,
+    ).toEqual(['/definitely/not/here'])
+  })
+})
