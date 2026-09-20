@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import type { ProjectRule, RulesLoad } from '@magic/contracts'
@@ -1023,6 +1023,143 @@ describe('上限 —— 超了报出来，不静默截', () => {
       expect(load.documents).toHaveLength(2)
       expect(load.truncated).toBe(false)
     } finally {
+      box.dispose()
+    }
+  })
+})
+
+describe('扫描入口「没看成」——不静默、且不许声称完整（2026-09-20 四轮退回）', () => {
+  /**
+   * 本轮复现的那一处：`.magic/rules/locked` 建好之后把**目录**设成 000，`load()` 回来
+   * `documents=[] / problems=[] / truncated=false`——**一句话没有**，而底下的 `required.md`
+   * 一次都没看过；消费方据此照常放行、真写成功（真装配那半见 `packages/app/test/rules.test.ts`）。
+   *
+   * 根子在 `walk` 的 `tryRealpath(dir)`：Bun 的 `realpath` 对读不进去的目录直接 `EACCES`
+   * （Node 不——本机实测 Node 给得出真路径），旧写法在那儿静默 `return`。同形的还有三处：
+   * `<root>/.magic` 的存在判断 · `readdir` 只报错不置位 · 非 `*.md` 项取不到状态时不出声。
+   */
+  test('规则目录**读不动**：报具体诊断 ＋ 置 `truncated`（同树读得动的照常进来）', () => {
+    const box = sandbox()
+    const locked = join(box.at, '.magic/rules/locked')
+    try {
+      put(box.at, '.magic/rules/ok.md', '这份读得动')
+      put(box.at, '.magic/rules/locked/required.md', '底下这份——一次都没看过')
+      chmodSync(locked, 0)
+
+      const load = rulesOf([box.at]).load([])
+
+      expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ok.md`])
+      expect(saidSomething(load, '目录读不动')).toBe(true)
+      // **要害在这一位**：底下那份 `*.md` 一次都没看过，而 `documents` 里压根看不出少了它
+      expect(load.truncated).toBe(true)
+    } finally {
+      chmodSync(locked, 0o700)
+      box.dispose()
+    }
+  })
+
+  test('`.magic` 那一层读不动（**目录存在判断**那个入口）：同样报 ＋ 置位', () => {
+    const box = sandbox()
+    const magic = join(box.at, '.magic')
+    try {
+      put(box.at, '.magic/rules/a.md', '甲')
+      chmodSync(magic, 0)
+
+      const load = rulesOf([box.at]).load([])
+
+      expect(namesOf(load)).toEqual([])
+      expect(saidSomething(load, '目录读不动')).toBe(true)
+      // 旧写法在这儿拿到的是 `isDirectory() === false`——「看不成的目录」被答成「没有这个目录」，
+      // 与「这个项目压根没有 `.magic`」长得**一模一样**，写在那儿的规约于是静默地不生效
+      expect(load.truncated).toBe(true)
+    } finally {
+      chmodSync(magic, 0o700)
+      box.dispose()
+    }
+  })
+
+  test('单份 `*.md` 读不动（文件 000）：报出来 ＋ 置位——**「读不出来」不停在静默里**', () => {
+    const box = sandbox()
+    const secret = join(box.at, '.magic/rules/secret.md')
+    try {
+      put(box.at, '.magic/rules/secret.md', '这位可能正是管着这次动作的那一条')
+      put(box.at, '.magic/rules/ok.md', '这份读得动')
+      chmodSync(secret, 0)
+
+      const load = rulesOf([box.at]).load([])
+
+      // 读得动的照常进来（只报读不动的那一份）
+      expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ok.md`])
+      expect(saidSomething(load, '这一份读不动')).toBe(true)
+      // 它没能送达——而它可能正是管着这个动作的那一条 ⇒ 与上面两处**同一条线**：认「读不完整」。
+      // 旧写法里这一支压根没出声：Bun 的 `realpath` 比 `stat` 要得多，连一份 mode 000 的文件
+      // 都取不到真身，那一份就**一声不响地消失**。
+      expect(load.truncated).toBe(true)
+    } finally {
+      chmodSync(secret, 0o600)
+      box.dispose()
+    }
+  })
+
+  test('名字不带 `.md` 的项取不到状态（可能是个目录）：报 ＋ 置位，不「跳过就算」', () => {
+    const box = sandbox()
+    const inner = mkdtempSync(join(tmpdir(), 'magic-rules-inner-'))
+    const wall = join(inner, 'wall')
+    try {
+      put(inner, 'wall/sub/hidden.md', '藏在这一层底下的')
+      mkdirSync(join(box.at, '.magic/rules'), { recursive: true })
+      symlinkSync(join(wall, 'sub'), join(box.at, '.magic/rules/shared'))
+      chmodSync(wall, 0)
+
+      const load = rulesOf([box.at]).load([])
+
+      // **不是 `*.md` 不等于不是个目录**：这一项要是指向目录的链接，底下照样可能有一摊规则
+      expect(saidSomething(load, '这一项读不动')).toBe(true)
+      expect(load.truncated).toBe(true)
+    } finally {
+      chmodSync(wall, 0o700)
+      rmSync(inner, { recursive: true, force: true })
+      box.dispose()
+    }
+  })
+
+  test('两边对照：可选目录**压根没有** ＝ 不出声；断链的 `*.md` ＝ 报出来但**不停批**（二轮口径）', () => {
+    const box = sandbox()
+    try {
+      put(box.at, 'src/a.ts', 'x')
+
+      const plain = rulesOf([box.at]).load([])
+      expect(plain.problems).toEqual([])
+      expect(plain.truncated).toBe(false)
+
+      mkdirSync(join(box.at, '.magic/rules'), { recursive: true })
+      symlinkSync(join(box.at, 'nowhere.md'), join(box.at, '.magic/rules/gone.md'))
+
+      const broken = rulesOf([box.at]).load([])
+      expect(saidSomething(broken, '这一份取不到')).toBe(true)
+      // **断链是「那儿没有东西」**——底下没有可以没看过的东西，故照旧不停批（二轮裁）
+      expect(broken.truncated).toBe(false)
+    } finally {
+      box.dispose()
+    }
+  })
+
+  test('**读回来就照常**：权限恢复 ⇒ 那份规约进 `documents`、`truncated` 落回假', () => {
+    const box = sandbox()
+    const locked = join(box.at, '.magic/rules/locked')
+    try {
+      put(box.at, '.magic/rules/locked/required.md', 'REQUIRED')
+      chmodSync(locked, 0)
+      expect(rulesOf([box.at]).load([]).truncated).toBe(true)
+
+      chmodSync(locked, 0o700)
+      const back = rulesOf([box.at]).load([])
+
+      expect(namesOf(back)).toEqual([`magic-rules:.magic${'/'}rules${'/'}locked${'/'}required.md`])
+      expect(back.truncated).toBe(false)
+      expect(back.problems).toEqual([])
+    } finally {
+      chmodSync(locked, 0o700)
       box.dispose()
     }
   })

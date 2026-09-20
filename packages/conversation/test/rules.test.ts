@@ -658,7 +658,7 @@ describe('预查不妨碍既有的控制流', () => {
     expect(delivery.preflight([{ id: 'b', name: 'write', args: { path: 'guard/f.ts' } }]).kind).toBe('review')
   })
 
-  test('**材料超限**：这一批停住，回填**不谎称「已送入上下文」**且不让模型重提', async () => {
+  test('**材料没读完整**：这一批停住，回填**不谎称「已送入上下文」**且不让模型重提', async () => {
     const answer = (targets: readonly string[]): RulesLoad =>
       targets.includes('src/a.ts')
         ? load([doc('src/AGENTS.md', 'src 的约定')], [], true) // truncated：回来那份不是全的
@@ -675,14 +675,18 @@ describe('预查不妨碍既有的控制流', () => {
     // **没执行**（不静默动手）……
     expect(written).toEqual([])
 
-    // ……且回填说的是「超限」，**不说**「已送入上下文」
+    // ……且回填说的是「没读完整 ＋ 去看诊断」，**不说**「已送入上下文」
     const held = stage.records.entries.filter(isHeld)
     expect(held).toHaveLength(1)
-    // 超限这一路与重审那一路**同一件事**：压根没跑 ⇒ 产生处标 `notExecuted`
+    // 没读完整这一路与重审那一路**同一件事**：压根没跑 ⇒ 产生处标 `notExecuted`
     expect(held[0]?.payload).toMatchObject({ ok: false, notExecuted: true })
     const content = held[0]?.content
     const said = content !== undefined && 'text' in content ? content.text : ''
-    expect(said).toContain('装不下')
+    // 判据是**规格那几件**（2026-09-20 四轮裁改了文案：不再说「装不下」——不可读 / 层级
+    // 太深都不是「多」，那种失准的说法由三种触发共用一句）。**逐字那一行**锚在真装配
+    // 那两条上（屏上那一格照抄首行）：`packages/app/test/rules.test.ts`。
+    expect(said).toContain('未完整读取') // ① 没读完整这个事实
+    expect(said).toContain('magic --check') // ② 原因在哪儿看（这句只把人指过去，不自己编）
     expect(said).toContain('不要重提')
     expect(said).not.toContain('已送入上下文')
   })
@@ -702,9 +706,9 @@ describe('预查不妨碍既有的控制流', () => {
     // **副作用一次都没发生**——完整性不成立就不动手，而不是「没看见新内容就动手」
     expect(written).toEqual([])
 
-    // 回填照旧说「超限」那一套（不是「需重审」——重提一百次也还是装不下）
+    // 回填照旧说「没读完整」那一套（不是「需重审」——没照诊断处置之前，重提也还是读不全）
     const said = heldText(stage)
-    expect(said).toContain('装不下')
+    expect(said).toContain('未完整读取')
     expect(said).toContain('不要重提')
     expect(said).not.toContain('已送入上下文')
   })

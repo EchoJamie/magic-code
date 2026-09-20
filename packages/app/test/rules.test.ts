@@ -12,7 +12,15 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { createView, hasRunningTool, rebuild, reduce } from '@magic/tui'
 import type { ShellView } from '@magic/tui'
@@ -296,8 +304,12 @@ describe('真装配 · 材料超限把整批停住（2026-09-20 二轮退回）'
       expect(existsSync(join(stage.workspace, 'guard/result.txt'))).toBe(false)
       expect(resultsOf(shell)).toEqual([false])
 
-      // —— ② 回填说「装不下 · 别重提」，**不谎称「已送入上下文」**（本来就是假话）——
-      expect(replySaid(stage, 1, '装不下')).toBe(true)
+      // —— ② 回填说「没读完整 · 去看诊断 · 别重提」，**不谎称「已送入上下文」**（本来就是假话）——
+      // 文案 2026-09-20 四轮改：三种触发（份数 / 总量到顶 · 目录读不动 · 层级太深）**共用一句**，
+      // 那句只说「没读完整」，具体是哪一种**由来源诊断说**——旧句「规约太多，一次装不下」
+      // 在不可读 / 层级那两屏上是失准的。
+      expect(replySaid(stage, 1, '未完整读取')).toBe(true)
+      expect(replySaid(stage, 1, 'magic --check')).toBe(true)
       expect(replySaid(stage, 1, '不要重提')).toBe(true)
       expect(replySaid(stage, 1, '已送入上下文')).toBe(false)
 
@@ -307,7 +319,8 @@ describe('真装配 · 材料超限把整批停住（2026-09-20 二轮退回）'
 
       expect(tools[0]?.state).toBe('unexecuted')
       expect(tools[0]?.elapsedMs).toBe(null)
-      expect(tools[0]?.output[0]?.startsWith('未执行')).toBe(true)
+      // **逐字**：屏上那一格照抄回填首行（`verdictOf` 只取首行）——它是这一屏的整句话
+      expect(tools[0]?.output[0]).toBe('未执行 · 项目规约未完整读取')
       expect(hasRunningTool(view)).toBe(false) // 也不留转圈的幽灵
 
       // —— ④ **「没跑」是产生处写下的那一笔**（2026-09-20 三轮裁）——
@@ -338,6 +351,74 @@ describe('真装配 · 材料超限把整批停住（2026-09-20 二轮退回）'
       shell.dispose()
       assembly.close()
     } finally {
+      stage.dispose()
+    }
+  })
+})
+
+describe('真装配 · 目录读不动 ⇒ 零副作用；读回来照常推进（2026-09-20 四轮退回）', () => {
+  /**
+   * 本轮复现的那条链（规划侧装置 `/tmp/mc-u32-review2-UUmrXQ/fourth-round.ts` 的 `unreadable`）：
+   * `.magic/rules/locked/required.md` 建好、把 `locked` 设成**目录 000**，`load()` 回来
+   * `documents=[] / problems=[] / truncated=false`——**一句话没有**，而那份规约一次都没看过，
+   * 随后真写成功了（实测 `written=true`）。根子在 `walk` 的 `tryRealpath(dir)` 静默 `return`
+   * （Bun 的 `realpath` 对读不进去的目录直接 `EACCES`）。
+   *
+   * 这一条咬**整链**：真装配 → 真预查 → 真沙箱落盘 → 真屏。判据是盘上那份文件，
+   * 不是某个内部账本。
+   */
+  test('`.magic/rules/locked` 目录 000：**一次副作用都没有**，屏上是「没跑」＋「没读完整」', async () => {
+    const stage = makeStage()
+    const locked = join(stage.workspace, '.magic/rules/locked')
+
+    try {
+      put(stage.workspace, '.magic/rules/locked/required.md', 'LOCKED_REQUIRED_BEFORE_WRITE')
+      chmodSync(locked, 0)
+
+      const write = { name: 'write', args: { path: 'result.txt', content: 'SIDE_EFFECT' } }
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [write] },
+          { text: '好' },
+          { toolCalls: [write] },
+          { text: '写好了' },
+        ],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await shell.submit('写一个')
+
+      // —— ① **副作用一次都没发生** ——
+      expect(existsSync(join(stage.workspace, 'result.txt'))).toBe(false)
+      expect(resultsOf(shell)).toEqual([false])
+
+      // —— ② 回填说「没读完整 · 去看诊断 · 别重提」，**不谎称「已送入上下文」** ——
+      expect(replySaid(stage, 1, '未完整读取')).toBe(true)
+      expect(replySaid(stage, 1, 'magic --check')).toBe(true)
+      expect(replySaid(stage, 1, '已送入上下文')).toBe(false)
+
+      // —— ③ 那一趟的**系统提示词里真没有它**（读不动 ⇒ 压根送不出），而屏上那一格是「没跑」——
+      expect(systemOf(stage, 0)).not.toContain('LOCKED_REQUIRED_BEFORE_WRITE')
+      const view: ShellView = shell.events.reduce((acc, event) => reduce(acc, event), createView())
+      const tools = view.settled.filter((row) => row.kind === 'tool')
+
+      expect(tools[0]?.state).toBe('unexecuted')
+      expect(tools[0]?.elapsedMs).toBe(null)
+      expect(tools[0]?.output[0]).toBe('未执行 · 项目规约未完整读取') // 逐字：首行就是屏上那一格
+      expect(hasRunningTool(view)).toBe(false)
+
+      // —— ④ **读回来就照常推进**：权限一还，同一份规约真送到、重提那一趟真写下去 ——
+      chmodSync(locked, 0o700)
+      await shell.submit('再写一次')
+
+      expect(systemOf(stage, 2)).toContain('LOCKED_REQUIRED_BEFORE_WRITE')
+      expect(readFileSync(join(stage.workspace, 'result.txt'), 'utf8')).toBe('SIDE_EFFECT')
+      expect(resultsOf(shell)).toEqual([false, true]) // 扣下一次、放行一次（各一次，不重复执行）
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      chmodSync(locked, 0o700)
       stage.dispose()
     }
   })
@@ -635,6 +716,37 @@ describe('真 CLI 帧 · `--check` 那一行', () => {
       expect(stdout).toContain('有 1 条没进来')
       expect(stdout).toContain('大括号里有一项是空的')
     } finally {
+      removeDir(home)
+    }
+  })
+
+  test('目录读不动：**具体是哪一处、为什么**照说（不是「规约太多」那种含糊话）', async () => {
+    // 四轮退回：停批的触发有三种（份数 / 总量到顶 · 目录读不动 · 层级太深），三类共用
+    // 回执那一句「没读完整」——**是哪一种由这一屏说**，用户照着它去改。
+    const home = tempDir('magic-cli-rules-')
+    mkdirSync(join(home, '.magic'), { recursive: true })
+    writeConfig(join(home, '.magic'), validConfig({ dataDir: join(home, 'data') }))
+    const locked = join(home, '.magic/rules/locked')
+
+    try {
+      put(home, '.magic/rules/locked/required.md', '读不动的那一份')
+      chmodSync(locked, 0)
+
+      const proc = Bun.spawn([process.execPath, CLI, '--check'], {
+        cwd: home,
+        env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
+
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('项目规约　无（') // 一份都没能进来
+      expect(stdout).toContain('有 1 条没进来')
+      expect(stdout).toContain('目录读不动') // **具体缘由**：哪一处、为什么（不是「多到装不下」）
+      expect(stdout).toContain('locked')
+    } finally {
+      chmodSync(locked, 0o700)
       removeDir(home)
     }
   })

@@ -172,11 +172,16 @@ type Source = { readonly real: string; readonly isDir: boolean }
 type SourceBook = 'sources' | 'linkSources'
 
 /**
- * 这一趟**完整性**的就地标记——**发现面**走不下去时就地置位（见 `walk` 的层级那一闸），
- * 与 `select` 那两处上限**同一个出口**（`RulesLoad.truncated`）。
+ * 这一趟**完整性**的就地标记——**发现面**没看成时就地置位，与 `select` 那两处上限
+ * **同一个出口**（`RulesLoad.truncated`）。
  *
- * 为什么要它：报一句错与「回来的是不是全的」是**两件事**——层级到顶时底下那一摊
- * 一份都没看过，而 `documents` 里压根看不出少了什么。消费方（对话域）据这一位停批。
+ * 为什么要它：报一句错与「回来的是不是全的」是**两件事**——层级到顶、目录读不动时，
+ * 底下那一摊一份都没看过，而 `documents` 里压根看不出少了什么。消费方（对话域）据这一位停批。
+ *
+ * 置位的两处（2026-09-20 四轮裁前只有一处）：
+ * - `walk` 的**层级那一闸**（超过 32 层，底下再也不看）；
+ * - 扫描入口的**「没看成」**（`unscanned`——目录存在判断 / 真身解析 / 读条目 / 非 `*.md`
+ *   项取不到状态，见 `tryLook`）。
  */
 type Marks = { truncated: boolean }
 
@@ -417,7 +422,12 @@ function scanRulesDir(
   allowed: (real: string) => boolean,
   marks: Marks,
 ): readonly Candidate[] {
-  if (!isDirectory(dir)) return []
+  // **目录存在判断也是扫描入口**（2026-09-20 四轮裁）：`.magic` 那一层不可读时，旧写法
+  // `isDirectory` 把「看不成的目录」答成「没有这个目录」——整棵原生规则树一份都没看过，
+  // 而它与「这个项目压根没有 `.magic/rules`」长得一模一样。**不存在的照旧正常**
+  // （多数项目就没有这一处），看不成的报出来并置完整性位。
+  const isDir = tryLook(dir, '目录读不动', () => statSync(dir).isDirectory(), problems, marks)
+  if (isDir.kind !== 'ok' || !isDir.value) return []
 
   const label = relativeTo(root, dir)
 
@@ -481,8 +491,12 @@ function walk(
     return
   }
 
-  const real = tryRealpath(dir)
-  if (real === undefined) return
+  // **真实路径解析同样是扫描入口**，且正是本轮的复现点（2026-09-20 四轮裁）：Bun 的
+  // `realpath` 对**读不进去的目录**直接 `EACCES`（Node 不——本机实测 Node 给得出真路径），
+  // 旧写法在这儿静默 `return`，于是 `locked` 那一摊**整个消失得无声无息**。
+  const resolved = tryLook(dir, '目录读不动', () => realpathSync(dir), problems, marks)
+  if (resolved.kind !== 'ok') return
+  const real = resolved.value
 
   if (!allowed(real)) {
     // 头一行已经报着是哪个目录了，此处只说「真身在哪、怎么才读得到」
@@ -506,13 +520,12 @@ function walk(
   }
   visited.add(real)
 
-  let entries: Dirent[]
-  try {
-    entries = readdirSync(dir, { withFileTypes: true })
-  } catch (error) {
-    problems.push({ path: dir, kind: 'error', message: `目录读不动：${reasonOf(error)}` })
-    return
-  }
+  // **读条目也是扫描入口**（2026-09-20 四轮裁）：旧写法只报一句错就 `return`——底下那一摊
+  // 一份都没看过，而 `documents` 里压根看不出少了什么。「报得出错」与「回来的是不是全的」
+  // 是两件事，故这一支与层级到顶**同一个出口**（`marks`）。
+  const read = tryLook(dir, '目录读不动', () => readdirSync(dir, { withFileTypes: true }), problems, marks)
+  if (read.kind !== 'ok') return
+  const entries: Dirent[] = read.value
 
   for (const entry of entries) {
     const child = join(dir, entry.name)
@@ -541,6 +554,12 @@ function walk(
           message: `这一份取不到（断链或目标不可读）——${reasonOf(error)}`,
         })
         found.push(child)
+      } else if (!gone(error)) {
+        // **名字不带 `.md` 不等于它不是个目录**（2026-09-20 四轮裁）：这一项照样可能是指向
+        // 目录的链接——目标在权限 / 路径这一层够不着时，**底下那一摊规则我们就没看过**，
+        // 而旧写法在这儿一声不响地跳过。与目录那几处同一个出口；**「那儿没有东西」不在此列**
+        // （断链断了的那种底下没有可以没看过的东西，照旧不出声——它是死链，不是没看成）。
+        unscanned(problems, marks, child, '这一项读不动', error)
       }
       continue
     }
@@ -641,7 +660,8 @@ function select(input: {
   /**
    * 这一趟丢过材料（`RulesLoad.truncated`——消费方据它判「回来的是不是全的」）。
    *
-   * **两处来源，一个出口**：发现面走不下去（`marks`——层级到顶，见 `walk`）与下面那两处
+   * **两处来源，一个出口**（2026-09-20 四轮裁扩充了前者的判据）：发现面没看成
+   * （`marks`——层级到顶 · 目录存在判断 / 真身解析 / 读条目，见 `tryLook`）与下面那两处
    * 上限（份数 / 总量）。判据都不是「读到了什么」，而是「**有没有该看而没看到的地方**」。
    */
   let truncated = marks.truncated
@@ -677,11 +697,32 @@ function select(input: {
       break
     }
 
-    const real = tryRealpath(candidate.file)
-    // 取不到真身——**不在这儿报**：目录规约「多半目录都没有」不是错；断链那两种都由
-    // **发现面**报过了（规则文档在 `walk` 那一支、目录规约在 `directoryDocsOf` 那一支——
-    // 两处都比这儿更知道它是「一个文件项」还是「本来就没有」）
-    if (real === undefined) continue
+    let real: string
+    try {
+      real = realpathSync(candidate.file)
+    } catch (error) {
+      // **取不到真身**——目录规约「多半目录都没有」不是错：那种情形压根成不了候选；断链那两种
+      // （规则文档在 `walk` 那一支、目录规约在 `directoryDocsOf` 那一支）由**发现面各自报过了**，
+      // 故这儿不补第二句（同一个缘由说两遍，读起来像有两处坏了）。
+      // ⚠️ **但只有「那儿没有东西」才轮得到这句解释**（2026-09-20 四轮裁）：权限 / 路径这类
+      // 失败**谁都没报过**——Bun 的 `realpath` 连一份目录 000 底下的 `*.md` 都取不到真身
+      // （它比 `stat` 要得多），旧写法在这儿静默 `continue`，那一份就**一声不响地消失**
+      // （`documents` 里压根看不出少了它）。
+      // 这一支的政策与扫描入口**同一条**（见 `tryLook` 那条注）：**读不出来就认「读不完整」**
+      // ——这一份没能送达，而它可能正是管着这个动作的那一条，故照样停批；只在**重复诊断**
+      // 这一件事上让步（同一个缘由说两遍，读起来像有两处坏了）。
+      if (!gone(error)) {
+        if (!problems.some((problem) => problem.path === candidate.file)) {
+          problems.push({
+            path: candidate.file,
+            kind: 'error',
+            message: `这一份读不动（取不到真身）——${reasonOf(error)}`,
+          })
+        }
+        truncated = true
+      }
+      continue
+    }
 
     const key = candidate.ruleKey === null ? undefined : `${candidate.root ?? ''} ${candidate.ruleKey}`
 
@@ -736,8 +777,15 @@ function select(input: {
       continue
     }
 
-    const size = sizeOf(real)
-    if (size === undefined) continue
+    let size: number
+    try {
+      size = statSync(real).size
+    } catch (error) {
+      // 真身取到了、状态却读不出来——同一条政策：报出来 ＋ 认「读不完整」（上面那一支的注）
+      problems.push({ path: candidate.file, kind: 'error', message: `这一份读不动（取不到状态）——${reasonOf(error)}` })
+      truncated = true
+      continue
+    }
     if (size > limits.maxDocumentBytes) {
       problems.push({
         path: candidate.file,
@@ -760,7 +808,9 @@ function select(input: {
     try {
       text = readFileSync(real, 'utf8')
     } catch (error) {
+      // **读不出来**（权限 / 设备 / 半途被删）——同一条政策：报具体诊断 ＋ 认「读不完整」
       problems.push({ path: candidate.file, kind: 'error', message: `读不到：${reasonOf(error)}` })
+      truncated = true
       continue
     }
 
@@ -1093,17 +1143,72 @@ function versionOf(rule: ProjectRule): string {
   return `v${hash.toString(16).padStart(8, '0')}-${material.length.toString(16)}`
 }
 
-function tryRealpath(path: string): string | undefined {
+/** `tryLook` 的三种回答（见那条注）。 */
+type Looked<T> =
+  | { readonly kind: 'ok'; readonly value: T }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'failed' }
+
+/**
+ * **扫描入口的统一判断**——「这一处**看成了没有**」（2026-09-20 四轮裁）。
+ *
+ * 三种回答，判据是**看成没看成**，不是「读到了什么」：
+ *
+ * - `ok`——看成了（值在 `value` 里）；
+ * - `absent`——**那儿本来就没有东西**（`ENOENT` / `ENOTDIR`）。多数项目压根没有
+ *   `.magic/rules`，那是常态 ⇒ 一声不响；
+ * - `failed`——**该看的地方没看成**（权限 / 路径过长 / 环…）。底下**可能真有一摊**我们
+ *   一份都没看过，而 `documents` 里压根看不出少了什么 ⇒ **报具体诊断 ＋ 置完整性位**
+ *   （`RulesLoad.truncated`，消费方据它停批）。
+ *
+ * 为什么非得把两件事分开（本轮的复现）：`.magic/rules/locked` 设成目录 000 之后，`load()`
+ * 回来 `documents=[] / problems=[] / truncated=false`——**一句话没有，而底下的
+ * `required.md` 一次都没看过**，消费方据此照常放行、真写成功。根子是每个入口各自
+ * `catch` 一下就 `return`：`isDirectory` 给 `false`、`tryRealpath` 给 `undefined`、
+ * readdir 只报一句错——「没看成」与「没有它」在各处被写成了同一个回答。**两者不是一回事。**
+ *
+ * ⚠️ 这一条线**不止管目录**（配套改在 `select` 里那几处）：**读不出来**（权限 / 路径 / 环 /
+ * 半途没了）一律**报具体诊断 ＋ 认「读不完整」**——`documents` 里压根看不出少了哪一份，
+ * 而少了的那份可能正是管着这个动作的那一条。**读出来了但不认 / 不要**的除外：front-matter
+ * 读不懂 · 单份超限 · 白名单外的链接 · 同一处进来两遍——那些是「这一份这么办」，
+ * 报出来、照旧往下走（白名单那条是产品策略，出口是配 `linkSources`，三轮已裁不停批）。
+ */
+function tryLook<T>(
+  at: string,
+  what: string,
+  attempt: () => T,
+  problems: RulesProblem[],
+  marks: Marks,
+): Looked<T> {
   try {
-    return realpathSync(path)
-  } catch {
-    return undefined
+    return { kind: 'ok', value: attempt() }
+  } catch (error) {
+    if (gone(error)) return { kind: 'absent' }
+    unscanned(problems, marks, at, what, error)
+    return { kind: 'failed' }
   }
 }
 
-function sizeOf(path: string): number | undefined {
+/**
+ * 这个错误说的是「**那儿没有东西**」还是「**没看成**」——扫描入口**只认这两种**。
+ *
+ * `ENOENT` / `ENOTDIR`（路径上有一段不存在）＝东西不在；其余（权限 / 路径过长 / 环…）
+ * 一律算没看成：**只有不看了才知道**底下有没有东西，而这一趟已经看不成了。
+ */
+function gone(error: unknown): boolean {
+  const code = (error as { readonly code?: unknown }).code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** 扫描入口「没看成」时**唯一的一处落笔**：具体诊断（系统缘由照抄）＋ 完整性位（见 `tryLook`）。 */
+function unscanned(problems: RulesProblem[], marks: Marks, at: string, what: string, error: unknown): void {
+  problems.push({ path: at, kind: 'error', message: `${what}：${reasonOf(error)}` })
+  marks.truncated = true
+}
+
+function tryRealpath(path: string): string | undefined {
   try {
-    return statSync(path).size
+    return realpathSync(path)
   } catch {
     return undefined
   }

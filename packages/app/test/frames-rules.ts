@@ -25,15 +25,18 @@
  * bun packages/app/test/frames-rules.ts --out <目录>
  * ```
  *
- * 出八份：`check.txt` ＋ `check-broken-agents.txt`（`--check` 那两屏的字——后者拍的是
- * **根 `AGENTS.md` 断链**时那两条诊断）· `hold.txt` ＋ `hold.ansi`（扣下那一次的外壳屏）·
- * `overflow.txt` ＋ `overflow.ansi`（材料超限停批那一屏）· `executed-failure.txt` ＋
- * `.ansi`（**真跑失败、首行恰是「未执行…」**那一屏——「没跑」与「跑了没成」分不分得开看它）。
- * `.ansi` 是外壳写出的**原始字节**（带色：颜色与字重只能从字节上看）。
+ * 出十一份：`check.txt` ＋ `check-broken-agents.txt` ＋ `check-unreadable.txt`（`--check` 那三屏
+ * 的字——分别是首轮那份读数 · **根 `AGENTS.md` 断链**那两条诊断 · **规则目录读不动**那一条）·
+ * `hold.txt` ＋ `hold.ansi`（扣下那一次的外壳屏）· `overflow.txt` ＋ `overflow.ansi`
+ * （材料没读完整而停批那一屏）· `unreadable.txt` ＋ `.ansi`（**目录 000 那一次的外壳屏**，
+ * 同一会话里权限还回来之后接着写成了——**读不动的零副作用与读回来照常推进**在一条时间线上）·
+ * `executed-failure.txt` ＋ `.ansi`（**真跑失败、首行恰是「未执行…」**那一屏——「没跑」与
+ * 「跑了没成」分不分得开看它）。`.ansi` 是外壳写出的**原始字节**（带色：颜色与字重只能从
+ * 字节上看）。
  */
 
 import { EventEmitter } from 'node:events'
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { attachShell } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
@@ -110,8 +113,8 @@ function put(where: string, relative: string, text: string): string {
 /**
  * 留一屏——真装配 → 真外壳 → 交一句给驱动 → 等屏上出现某句话 → 收字节。
  *
- * 三屏共用这一手（下面那些函数只管**摆沙地与等哪句话**）：收取那一段一模一样——写字节、
- * 落一份剥过 ANSI 的字、等着收尾。多抄两遍就是三处一起改的账。
+ * 外壳那几屏共用这一手（下面那些函数只管**摆沙地与等哪句话**）：收取那一段一模一样——
+ * 写字节、落一份剥过 ANSI 的字、等着收尾。多抄两遍就是几处一起改的账。
  */
 async function shoot(
   assembly: Assembly,
@@ -119,6 +122,15 @@ async function shoot(
   waitFor: string,
   out: string,
   name: string,
+  /**
+   * 第二趟（可选）——拍「同一会话里条件变了之后」的下一屏（如权限还回来、规约读得动了）。
+   * `before` 是**改盘上条件**那一下（两趟之间只此一处会动文件系统）。
+   */
+  then?: {
+    readonly prompt: string
+    readonly waitFor: string
+    readonly before?: () => void
+  },
 ): Promise<void> {
   const tty = new CaptureTty()
   const stdin = new FakeStdin()
@@ -132,9 +144,14 @@ async function shoot(
 
   const driver = attachShell(assembly.shell)
   await driver.submit(prompt)
-  driver.dispose()
-
   await until(tty, waitFor)
+
+  if (then !== undefined) {
+    then.before?.()
+    await driver.submit(then.prompt)
+    await until(tty, then.waitFor)
+  }
+  driver.dispose()
   // 让它把最后一帧画完（Ink 按 30fps 写档）
   await Bun.sleep(200)
 
@@ -228,6 +245,36 @@ export function brokenAgentsCheckFrame(out: string): void {
   }
 }
 
+/**
+ * `.magic/rules/locked` **目录 000**——`--check` 那一屏（2026-09-20 四轮）。
+ *
+ * 这一屏的作用是**把原因说清**：回执那一句只说「没读完整」（三种触发共用），
+ * **是哪一处、为什么**在这儿——用户照着它去改（恢复权限 / 少几层 / 把规约裁小）。
+ */
+export function unreadableCheckFrame(out: string): void {
+  const land = tempDir('magic-frames-unreadable-')
+
+  try {
+    const home = join(land, 'home')
+    const workspace = join(land, 'workspace')
+    const locked = join(workspace, '.magic/rules/locked')
+    mkdirSync(home, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+
+    put(workspace, '.magic/rules/locked/required.md', '写受约束文件之前必读的那一份')
+    put(home, '.magic/config.json', JSON.stringify(validConfig({ dataDir: join(home, 'data') }), null, 2))
+    chmodSync(locked, 0)
+
+    try {
+      checkShot(out, 'check-unreadable', workspace, home)
+    } finally {
+      chmodSync(locked, 0o700)
+    }
+  } finally {
+    removeDir(land)
+  }
+}
+
 // ══ ② 外壳那一屏（扣下的那一次）══════════════════════════════════════
 
 /**
@@ -268,9 +315,10 @@ export async function holdFrame(out: string): Promise<void> {
  * `DEFAULT_RULES_LIMITS.maxDocuments`），`guard/AGENTS.md` 是**第 65 份**——它在预查那一趟
  * 被上限挡在门外，故「目标上的规约都送到了」这句话不成立，整批停住。
  *
- * 屏上该看到的那行是 `! 未执行 · 规约太多，一次装不下`（首行就是回填正文那一句，见
- * `rules.ts` 的 `UNEXECUTED_OVERFLOW`；此前这里抄的是一句旧文案）——**没有耗时、没有失败
- * 那个叉**，也没有任何文件被写下去（这一屏的判据在 `rules.test.ts`，这里只留外观）。
+ * 屏上该看到的那行是 `! 未执行 · 项目规约未完整读取`（首行就是回填正文那一句，见
+ * `rules.ts` 的 `UNEXECUTED_OVERFLOW`；四轮改口径时从「规约太多，一次装不下」改成这一句
+ * ——三种触发共用，**是哪一种由 `--check` 说**）——**没有耗时、没有失败那个叉**，
+ * 也没有任何文件被写下去（这一屏的判据在 `rules.test.ts`，这里只留外观）。
  */
 export async function overflowFrame(out: string): Promise<void> {
   const stage = makeStage()
@@ -286,13 +334,53 @@ export async function overflowFrame(out: string): Promise<void> {
       turns: [{ toolCalls: [call] }, { text: '那我先不动它' }],
     } satisfies StageAssembleOptions)
 
-    await shoot(assembly, '往 guard 里写一个文件', '装不下', out, 'overflow')
+    await shoot(assembly, '往 guard 里写一个文件', '未完整读取', out, 'overflow')
   } finally {
     stage.dispose()
   }
 }
 
-// ══ ④ 真跑失败那一屏（首行恰是「未执行…」）════════════════════════════
+// ══ ④ 目录读不动那一屏（四轮）＋ 权限还回来之后 ═══════════════════════
+
+/**
+ * 剧本（Faux，四回合）：① 直接写 `result.txt`（`.magic/rules/locked` 里那份规约**一次都没
+ * 看过**）⇒ 整批扣下；② 收束；③ **权限还回来之后**同一会话再提一次 ⇒ 真写；④ 收束。
+ *
+ * 这一屏拍的是本轮那条链**两头的副作用的对照**：上半屏 `! 未执行 · 项目规约未完整读取`
+ * （盘上一个字节都没落下），下半屏 `✓ 已写入 result.txt`——**读回来就照常推进**。
+ * 判据（`written === false` 之后 `=== true`）在 `rules.test.ts`，这里只留外观。
+ */
+export async function unreadableFrame(out: string): Promise<void> {
+  const stage = makeStage()
+  const locked = join(stage.workspace, '.magic/rules/locked')
+
+  try {
+    put(stage.workspace, '.magic/rules/locked/required.md', 'LOCKED_REQUIRED_BEFORE_WRITE')
+    chmodSync(locked, 0)
+
+    const call = { name: 'write', args: { path: 'result.txt', content: 'SIDE_EFFECT' } }
+    const assembly = stage.assemble({
+      turns: [
+        { toolCalls: [call] },
+        { text: '好' },
+        { toolCalls: [call] },
+        { text: '写好了' },
+      ],
+    })
+
+    await shoot(assembly, '写一个', '未完整读取', out, 'unreadable', {
+      prompt: '再写一次',
+      waitFor: '已写入',
+      // **读回来**——两趟之间只改这一处：把目录权限还回去
+      before: () => chmodSync(locked, 0o700),
+    })
+  } finally {
+    chmodSync(locked, 0o700)
+    stage.dispose()
+  }
+}
+
+// ══ ⑤ 真跑失败那一屏（首行恰是「未执行…」）════════════════════════════
 
 /**
  * 剧本（Faux，两回合）：① 跑一条**真会失败**的命令——它先写下一个文件（副作用真的发生了）、
@@ -331,8 +419,10 @@ if (import.meta.main) {
 
   checkFrame(out)
   brokenAgentsCheckFrame(out)
+  unreadableCheckFrame(out)
   await holdFrame(out)
   await overflowFrame(out)
+  await unreadableFrame(out)
   await executedFailureFrame(out)
   console.log(`\n帧落在 ${out}`)
 }
