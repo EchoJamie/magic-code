@@ -96,6 +96,8 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
   let started = false
   /** 这一次关闭是不是**我们自己发起的**（决定那句缘由怎么说）。 */
   let releasing = false
+  /** **收尾那一个 promise**（复入 close 共享它——见 `release`）。 */
+  let closing: Promise<void> | undefined
   /**
    * **自有进程组**那一支（见 `stdio-transport.ts`）——归属只有这一个判据：
    * 组是我们 spawn 出来的那个（`detached`），组里有什么就收什么。
@@ -191,16 +193,21 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
   }
 
   /**
-   * 释放（幂等）——**关直接子进程（SDK 的次序）＋ 收自有子树**（头注 7）。
+   * 释放（幂等）——**自有进程组**那一支走完整段（关 stdin → 等 → 组 TERM → 等 → 组 KILL）。
    *
-   * 次序是有讲究的，两步都不能省：
-   * ① **趁父还在**快照它的后代（父一退，PPID 链就断了——孤儿认不回来）；
-   * ② 走 SDK 的优雅关闭（关 stdin → 等 → SIGTERM → SIGKILL）；
-   * ③ **再收漏下的**：那些没跟着父走的普通后代，按 ① 的快照点名收。
+   * ⚠️ **复入共享同一个 promise**（复验点过的那一条）：收尾要真等（本机实测一次正常收尾
+   * 约 2 秒），第二次 `close()` 5 毫秒后再来是常事。若它另起一趟、或看见 `transport` 已经
+   * 置空就**直接返回**，那就成了「没等却宣称已释放」——服务器还活着，读数已经写「连接已释放」。
+   * 故这一支整体只跑一次，谁调都拿同一个 `closing`：**要等就一起等**。
    *
-   * 只碰**本进程拉起的这一棵子树**——用户自己的服务不在里面（快照的根是我们拉起的 pid）。
+   * 读数也**只在收尾落定之后**才改（写在同一段里）——顺序是「先收干净，再说已释放」。
    */
-  async function release(): Promise<void> {
+  function release(): Promise<void> {
+    closing ??= releaseOnce()
+    return closing
+  }
+
+  async function releaseOnce(): Promise<void> {
     const spawned = transport
     transport = undefined
     client = undefined

@@ -379,6 +379,39 @@ test('**调用中途**才起的后代、父随即崩——照样收得到（组�
     expect(connection.state.status).toBe('unavailable')
   })
 
+describe('复入 close（返工 A 补正 · 复验退回的最后一处）', () => {
+  test('第二次 close 共享同一次收尾——不绕过等待、也不提前宣称已释放', async () => {
+    const dir = tempDir()
+    const log = join(dir, 'calls.jsonl')
+    // 带后代那一幕：收尾真要花时间（关 stdin 之后等它退，到点才按组收）——
+    // 「第二次立即返回」那种漏洞只有在这种「收尾确实要等」的场景里才露得出来
+    const { connection } = await connect({}, { dir, mode: 'descendants' })
+
+    const server = callsOf(log)[0]?.pid as number
+    const child = descendantPidOf(log) as number
+    expect(isAlive(server)).toBe(true)
+    expect(isAlive(child)).toBe(true)
+
+    const first = connection.close()
+    const second = connection.close() // **复入**：同一趟收尾，不是另起一趟
+
+    // ① 同一个 promise：谁调都一起等（「另起一趟」或「看见 transport 已置空就返回」都过不了这一条）
+    expect(second).toBe(first)
+
+    // ② **此刻**还没收完——读数不许已经写「连接已释放」（服务器还活着呢）
+    expect(connection.state).not.toEqual({ status: 'unavailable', reason: '连接已释放' })
+
+    await second
+
+    // ③ 两次都落定之后：服务器与它那一层都真没了，读数才说已释放
+    expect(isAlive(server)).toBe(false)
+    await waitGone(child)
+    expect(isAlive(child)).toBe(false)
+    expect(connection.state).toEqual({ status: 'unavailable', reason: '连接已释放' })
+    expect(connection.tools()).toEqual([])
+  })
+})
+
 /** 等状态落定（有界——探针别无限等）。 */
 async function waitState(connection: McpConnection, status: 'available' | 'unavailable'): Promise<void> {
   for (let i = 0; i < 100 && connection.state.status !== status; i += 1) await Bun.sleep(20)
