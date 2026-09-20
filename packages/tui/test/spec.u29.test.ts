@@ -174,40 +174,76 @@ describe('② 窄窗（字标换成一行版那一侧）', () => {
 // ══ ④ 换页仍要「印得出来」（换页判据动了，这条钉住它的另一半）════════
 
 /**
- * **换到另一条会话**——新一页要**成页**：页头（字标）与新内容都印出来。
+ * **一页一个页头**——换会话那条路（记录区被换掉两次：换会话那一下、历史回来那一下）。
  *
- * 为什么这条要紧：`<Static>` 只**追加**新项，它的游标停在上一页的条数上；
- * 「记录区整块换掉」若不重挂，新页的**页头（`settled[0]`）就印不出来**——
- * 屏上会变成「上一页的内容后面直接接一串没有开始的行」。
- * 本单元改的正是**什么时候重挂**，这条守它的另一半（别把重挂改没了）。
+ * 判据是**精确份数**（不是「至少」）：`bannerCopies` 每多一份＝终端上多一块字标。
  *
- * ⚠️ 样本要**先长后短**：甲那条先长出内容把游标顶上去，再切到只有一条的乙。
- * （实测：Ink 的 `useLayoutEffect` 会把游标压回数组长度，故**行**多半能自愈地接上，
- * 咬得住的是**页头那一下**——所以这里量的是「屏上出现了**新一页的字标**」。）
+ * ⚠️ **帧序要照真路径来**：`session.state`（换会话）与 `session.history`（历史回来）
+ * **必须分在两帧**——现实里它们隔着一趟控制面往返（外壳收到 `session.state` 才发 `history.read`，
+ * 内核分块答）。挤在一帧里的话，「换掉两次」这个形态根本显不出来（实测踩过）。
+ *
+ * 三形各钉一句：
+ * - **接续**（开局就有历史）：字标**只一份**——历史是往开局那一页里填，不是另开一页；
+ * - **切换**：切之前 1 份、切之后 2 份——**切一次只新增一份**；
+ * - **来回切**：每切一次多一份（不是「切一次之后就不再增」）。
  *
  * 旧页留在 scrollback 里（内联渲染的既定行为：切走＝另起一页，旧的滚在上面）——
- * 这里不问它，问的是新页齐不齐。
+ * 这里不问它，问的是**新增了几份页头**。
  */
-describe('④ 换会话（新一页要成页）', () => {
-  test('**新页的页头（字标）与新行都在**', async () => {
-    const stage = createStage()
-    const first: Entry[] = [
-      { id: 1, kind: 'user', content: { text: '甲：看看有什么' }, at: 0 },
-      { id: 2, kind: 'assistant', content: { text: '甲：列一下。' }, at: 1 },
-    ]
-    const second: Entry[] = [{ id: 3, kind: 'user', content: { text: '乙：就一句' }, at: 2 }]
+describe('④ 一页一个页头（换会话那条路）', () => {
+  const 甲: Entry[] = [
+    { id: 1, kind: 'user', content: { text: '甲：看看有什么' }, at: 0 },
+    { id: 2, kind: 'assistant', content: { text: '甲：列一下。' }, at: 1 },
+  ]
+  const 乙: Entry[] = [{ id: 3, kind: 'user', content: { text: '乙：就一句' }, at: 2 }]
 
+  test('**接续**（开局就有历史）：字标只一份——历史填的是开局那一页', async () => {
+    const stage = createStage()
     const views = takes(stage, [
       () => stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })]),
-      () => stage.feed([event('session.history', { session: 's1', entries: first, done: true })]),
-      () => stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] })]),
-      () => stage.feed([event('session.history', { session: 's2', entries: second, done: true })]),
+      () => stage.feed([event('session.history', { session: 's1', entries: 甲, done: true })]),
     ])
     const frame = await show(views, WIDE)
 
-    expect(frame.has('› 乙：就一句')).toBe(true) // 新会话的行
-    // 启动那一页 ＋ 乙这一页 ⇒ 两份（不重挂就只有启动那一份：新页没有开头）
-    expect(bannerCopies(frame, WIDE.columns)).toBeGreaterThanOrEqual(2)
+    expect(frame.has('› 甲：看看有什么')).toBe(true)
+    expect(bannerCopies(frame, WIDE.columns)).toBe(1)
+  })
+
+  test('**切一次只新增一份**：切之前 1 份、切之后 2 份（新页有页头也有新行）', async () => {
+    const stage = createStage()
+    const views = takes(stage, [
+      () => stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })]),
+      () => stage.feed([event('session.history', { session: 's1', entries: 甲, done: true })]),
+      () => stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] })]),
+      () => stage.feed([event('session.history', { session: 's2', entries: 乙, done: true })]),
+    ])
+
+    const before = await show(views.slice(0, 3), WIDE) // 甲那一页铺完
+    expect(bannerCopies(before, WIDE.columns)).toBe(1)
+    expect(before.has('› 甲：看看有什么')).toBe(true)
+
+    const after = await show(views, WIDE) // 乙那一页铺完
+    expect(bannerCopies(after, WIDE.columns)).toBe(2) // ← 只多那一份
+    expect(after.has('› 乙：就一句')).toBe(true)
+  })
+
+  test('**来回切**：每切一次多一份（不是「切一次之后就不再增」）', async () => {
+    const stage = createStage()
+    const step = (id: string, title: string): (() => void) => () => {
+      stage.feed([event('session.state', { active: id, sessions: [{ id, at: 0, title }] })])
+    }
+    const views = takes(stage, [
+      step('s1', '甲的事'),
+      () => stage.feed([event('session.history', { session: 's1', entries: 甲, done: true })]),
+      step('s2', '乙的事'),
+      () => stage.feed([event('session.history', { session: 's2', entries: 乙, done: true })]),
+      step('s1', '甲的事'),
+      () => stage.feed([event('session.history', { session: 's1', entries: 甲, done: true })]),
+    ])
+    const frame = await show(views, WIDE)
+
+    expect(bannerCopies(frame, WIDE.columns)).toBe(3)
+    expect(frame.has('› 甲：看看有什么')).toBe(true) // 切回来那页也有内容
   })
 })
 

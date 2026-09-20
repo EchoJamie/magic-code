@@ -717,13 +717,30 @@ function bannerRow(): LogRow {
  * 记录区 → **带上字标**的形态：字标**恒在最前、且恒只一行**。
  *
  * 为什么要有这一处收口：`settled` 只在**追加**的两处（`settle` / `appendSettled`）天然保得住
- * 最前面那一行，而**整个换掉** `settled` 的地方有三处——外壳开局、重建（`rebuild`）、
- * 换会话（`reduceSessionState`）。三处各经一次本函数，就不必靠「记得别把它弄丢」。
+ * 最前面那一行，而**整块换掉** `settled` 的两处——外壳开局（`withBanner`）、
+ * 换会话（`reduceSessionState`）——各经一次本函数，就不必靠「记得别把它弄丢」。
+ *
+ * ⚠️ **本函数＝「开一页」**：它**种一条新的字标**，而字标那一行的**对象身份就是页的身份**
+ * （渲染层据此认换页，见 `components/app.ts` 的 `pageOf`）。故**「填一页」的地方不归它管**——
+ * 历史回来铺内容走 `pageHeaderOf`（`rebuild` 用），拿的是**这一页已有的那一条**，
+ * 对象不变＝不换页。两处都开新页，屏上就多出字标（U29 验收：甲→乙一次切换印 4 份）。
  *
  * 幂等：先把已有的字标滤掉再放一个，故重复调用不会攒出两行。
  */
 function bannerFirst(rows: readonly LogRow[]): readonly LogRow[] {
   return [bannerRow(), ...rows.filter((row) => row.kind !== 'banner')]
+}
+
+/**
+ * 这一页的**页头**（字标那一行）——`settled[0]` 是它就**照用本尊**（**对象不变＝不换页**），
+ * 没有才种一条新的。
+ *
+ * 与 `bannerFirst` 的分工就是「填」与「开」：`rebuild`（历史回来铺内容）走这一条。
+ */
+function pageHeaderOf(view: ShellView): LogRow {
+  const first = view.settled[0]
+
+  return first !== undefined && first.kind === 'banner' ? first : bannerRow()
 }
 
 /**
@@ -795,13 +812,17 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 用**重建的会话内容**替换记录区（缺陷 D1）——只挑会话内容那一类，
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
  *
- * ⚠️ **字标是例外，它要回来**（`bannerFirst`）：这一跳把 `settled` 整个换掉，
- * 而字标是「记录区最前面那一块」——不保它，`--session` 接续那条路（开局 `boot` 跑完
- * 读一次历史 ⇒ 走到这儿）当场就没有字标了，而规格说的是**含接续那条路也印一次**。
- * 与 `startup` 那几句回执补一手同源、同因。
+ * ⚠️ **字标仍在最前面**，但**用的是这一页已有的那一条**（`pageHeaderOf`：对象不变）——
+ * 这一跳把 `settled` 整个换掉，字标是「记录区最前面那一块」，不保它 `--session` 接续那条路
+ * （开局 `boot` 跑完读一次历史 ⇒ 走到这儿）当场就没有字标了。
+ *
+ * ⚠️ **本函数不「开页」**（U29 验收改）：开页＝种新字标＝换页（见 `bannerFirst` 那段注），
+ * 而这一跳是「往**已经开着的那一页**里填历史」——换会话那一下 `reduceSessionState`
+ * 已经开过页了，这里再开一次，屏上就多一份字标（甲→乙一次切换实测 4 份：开局 1 ＋
+ * `rebuild` 两处各 1 ＋ 换会话 1）。**别把这一处改回 `bannerFirst`。**
  */
 export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
-  return { ...view, settled: bannerFirst(rebuildRows(entries)), rows: [] }
+  return { ...view, settled: [pageHeaderOf(view), ...rebuildRows(entries)], rows: [] }
 }
 
 /**
