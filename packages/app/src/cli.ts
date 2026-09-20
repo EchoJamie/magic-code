@@ -15,7 +15,7 @@
  */
 
 import type { KernelEvent, SkillCatalog } from '@magic/contracts'
-import { TOOLSET_V1 } from '@magic/contracts'
+import { TOOLSET_V1, sanitizeForDisplay } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import { assemble } from './assembly.ts'
@@ -410,12 +410,22 @@ function describeMcpServers(assembly: Assembly): string {
   if (servers.length === 0) return '无（配置里写 mcp.servers 才连——工作区里的配置文件不算授权）'
 
   return servers
-    .map(({ server, state, tools }) => {
+    .map(({ server, state, tools, rejected }) => {
       if (state.status === 'unavailable') return `${server}（连不上：${state.reason}）`
       if (state.status === 'connecting') return `${server}（连接中）`
-      return tools.length === 0
-        ? `${server}（连上了，没有工具）`
-        : `${server}（${tools.length} 件：${tools.join(' · ')}）`
+
+      const head =
+        tools.length === 0
+          ? `${server}（连上了，没有工具）`
+          : `${server}（${tools.length} 件：${tools.join(' · ')}）`
+      if (rejected.length === 0) return head
+
+      // **拒收的那几件逐条摆出来**（返工 B）：服务器自报的名字原样可能带控制字节，
+      // 故显示前先洗一遍；一条一行，说清是哪一件、为什么没收
+      const lines = rejected.map(
+        (one) => `${CONTINUATION}⚠️ 拒收「${sanitizeForDisplay(one.tool)}」：${one.reason}`,
+      )
+      return [`${head} · ⚠️ 拒收 ${rejected.length} 件`, ...lines].join('\n')
     })
     .join(' · ')
 }

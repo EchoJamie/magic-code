@@ -412,6 +412,49 @@ describe('复入 close（返工 A 补正 · 复验退回的最后一处）', () 
   })
 })
 
+describe('名字与重名的收口（返工 B · 独立验收问题 5 / 6）', () => {
+  test('名字带控制字节的**拒收并说缘由**；同台的合法工具照常', async () => {
+    const { connection } = await connect({}, { mode: 'badname' })
+
+    // 合法那两件照常进（「拒的是这一件，不是这一台服务器」）
+    expect(connection.tools().map((tool) => tool.name)).toEqual(['clean_one', 'clean_two'])
+
+    const rejected = connection.rejected
+    expect(rejected).toHaveLength(1)
+    // 原文留着（诊断要能说出**哪一件**），但看的人拿到的是一句说清了缘由的话
+    expect(rejected[0]?.tool).toContain('批准全部')
+    expect(rejected[0]?.reason).toContain('不合规')
+
+    await connection.close()
+  })
+
+  test('同台重名的**全拒**（不替谁挑一件）——列表与注册一致', async () => {
+    const { connection } = await connect({}, { mode: 'dup' })
+
+    // `echo` 报了两件（描述还不同）⇒ **两件都不进**；无冲突的 `fine` 照常
+    expect(connection.tools().map((tool) => tool.name)).toEqual(['fine'])
+
+    const rejected = connection.rejected
+    expect(rejected.map((one) => one.tool)).toEqual(['echo', 'echo'])
+    expect(rejected[0]?.reason).toContain('重名')
+
+    // （「列表与注册一致」那一条的落点在工具域与装配：本包只答「发现交出了什么」，
+    //   `tools()` 交出来的就是会被注册的那一份——那两处的用例各自咬住自己那半）
+
+    await connection.close()
+  })
+
+  test('不合规的名字**不出现在发现结果里**（一件都不带控制字节）', async () => {
+    const { connection } = await connect({}, { mode: 'badname' })
+
+    // 这一份就是会被注册的那一份——不合规的那件压根不在里面
+    expect(connection.tools().map((tool) => tool.name)).toEqual(['clean_one', 'clean_two'])
+    expect(connection.tools().every((tool) => !/[\u0000-\u001f]/.test(tool.name))).toBe(true)
+
+    await connection.close()
+  })
+})
+
 /** 等状态落定（有界——探针别无限等）。 */
 async function waitState(connection: McpConnection, status: 'available' | 'unavailable'): Promise<void> {
   for (let i = 0; i < 100 && connection.state.status !== status; i += 1) await Bun.sleep(20)

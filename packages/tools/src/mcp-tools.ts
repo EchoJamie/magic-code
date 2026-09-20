@@ -16,10 +16,10 @@
  * 1. **危险归类一律 `gated` · `reason: 'external'`**——**服务器自报的只读 / 幂等不算数**
  *    （MCP 的 `annotations` 是**服务器自己说的**，与「提示信息不可信」是同一条边界），
  *    故这一支不读它、也不因它放行；「不因自报就绕过审批或自动重试」在代码里就是这一行。
- * 2. **同名只取先到的那一件**——服务器报重名工具是**它自己的表有问题**；而内核注册表
- *    「重名即拒」是**自己表的规矩**（防的是静默打到另一份执行体上）。一个坏服务器不该
- *    把内置工具一起带走（设计明文：单个连接失败不拖垮内置工具），故这里**就地收掉**，
- *    不让它长到注册表那一关去抛。
+ * 2. **一件对一件，不筛不挑**——名字合不合规、重不重名，**在发现那一趟就判完了**
+ *    （适配器的 `screen`，见契约 `McpToolRejection`）：`connection.tools()` 交出来的
+ *    就是「会被注册的那一份」。故这里照单全收——**列表与注册从构造上一致**，
+ *    不会出现「查得到两件、只注册了一件」那种账（独立验收的问题 6）。
  */
 
 import type { McpConnection, McpPart, ToolSpec } from '@magic/contracts'
@@ -43,13 +43,9 @@ import { refused } from './toolkit.ts'
  * 服务器身份从此**写在名字里**，记录、审批、模型看到的是同一个。
  */
 export function defineMcpTools(connection: McpConnection): readonly ToolDefinition[] {
-  const seen = new Set<string>()
   const definitions: ToolDefinition[] = []
 
   for (const tool of connection.tools()) {
-    if (seen.has(tool.name)) continue // 服务器报重名——取先到的那一件（见文件头注 2）
-    seen.add(tool.name)
-
     const external = { server: connection.server, tool: tool.name }
 
     definitions.push({
@@ -104,7 +100,7 @@ async function call(
   if (outcome.kind === 'failed') {
     // 三种失败各说各的（返工 A）：**取消**＝我们主动停的；**没发出去**＝什么都没发生；
     // 其余（超时 / 发出去之后断了）＝**效果未知**，要人核对
-    if (outcome.failure === 'canceled') return refused(externalCanceledOutput(outcome.reason))
+    if (outcome.failure === 'canceled') return refused(externalCanceledOutput())
     if (outcome.failure === 'not-sent') return refused(externalNotSentOutput(outcome.reason))
     return refused(externalFailedOutput(outcome.reason))
   }

@@ -85,6 +85,7 @@ export type ScenarioName =
   | 'assistant-across-calls'
   | 'isolation-repeat-parallel'
   | 'mcp-approval'
+  | 'mcp-approval-edge'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -420,7 +421,7 @@ const mcpApproval: Scenario = {
 
     // —— 交代 → 第一张审批卡 ——
     await session.send('用外部工具回显一句')
-    await session.wait({ text: '› 用外部工具回显一句' })
+    await session.wait({ text: '› 用外部工具回显一句' }, { timeoutMs: 10_000 })
     await session.key('enter', { until: { text: 'y 批准这一次' } })
     const card = await session.capture({ label: '外部审批卡' })
 
@@ -453,7 +454,7 @@ const mcpApproval: Scenario = {
     ui.check(mcpCalls(log).length === 1, '服务器自己数到了那一次调用', `日志 ${mcpCalls(log).length} 行`)
 
     // —— 第二件：**拒绝** ——
-    await session.wait({ text: 'y 批准这一次' })
+    await session.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
     const second = await session.capture({ label: '第二张审批卡' })
     ui.check(second.text.includes('第二次外部调用'), '第二张卡给的是第二次的参数', '')
 
@@ -616,6 +617,126 @@ function isAlive(pid: number): boolean {
 async function waitGone(pid: number, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (isAlive(pid) && Date.now() < deadline) await Bun.sleep(50)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 八 · 外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 长参数那一幕用的正文——够长到必须折行，且**每一段都可辨认**（看帧时对得上）。 */
+const LONG_ARG = `第${'一'.repeat(1)}段：${'甲乙丙丁戊己庚辛壬癸'.repeat(6)}／第二段：${'①②③④⑤⑥⑦⑧⑨⑩'.repeat(3)}`
+
+const mcpApprovalEdge: Scenario = {
+  name: 'mcp-approval-edge',
+  title: '外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连（各留真帧）',
+  anchors: 'U38 返工 B 的四项看帧：窄窗折行、长参数完整、取消只说已停止等待、断连说效果未知',
+  story: async (ui, options) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magic-u38-edge-'))
+    const log = join(dir, 'fake.jsonl')
+
+    // 剧本按次序喂：长参数卡 → 答复 → 拖住（取消）→ 崩掉（断连）→ 收尾
+    const turns: readonly FixtureTurn[] = [
+      { kind: 'tool', name: 'mcp__fake__echo', args: { text: LONG_ARG } },
+      { kind: 'text', text: '第一件完了' },
+      { kind: 'tool', name: 'mcp__fake__slow', args: {} },
+      { kind: 'tool', name: 'mcp__fake__boom', args: {} },
+      { kind: 'text', text: '收工' },
+    ]
+
+    const session = await ui.open({
+      label: '场景8-审批边角',
+      columns: 100,
+      rows: 30,
+      turns,
+      config: {
+        mcp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: 'fake', FAKE_MCP_MODE: 'fast' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    // —— 一 · 长参数：卡上给的是**完整**参数（不外省略号），折行之后仍读得下来 ——
+    await session.send('来件参数长的')
+    // ⚠️ **等草稿上屏再回车**（驱动的坑：`send` 只打字，回车抢在前面就会提交一个空草稿，
+    // 后面的字全留在输入框里，卡永远不来）
+    await session.wait({ text: '› 来件参数长的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 15_000 })
+    const longCard = await session.capture({ label: '长参数卡' })
+    ui.check(longCard.text.includes('甲乙丙丁戊己庚辛壬癸'), '长参数在卡上（头一段在）', '')
+    ui.check(longCard.text.includes('①②③④⑤⑥⑦⑧⑨⑩'), '长参数在卡上（末一段也在，没被截掉）', '')
+
+    // —— 二 · 窄窗：同一张卡，窗宽收到 44 列 ——
+    await session.resize(44, 24)
+    await session.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
+    const narrow = await session.capture({ label: '窄窗里的卡' })
+    ui.check(narrow.columns === 44, 'VT 认了 44 列', `实际 ${narrow.columns}`)
+
+    // 批准掉这一件（免得它一直挂着）——窄窗下的键位照旧可用
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    const ran = await session.capture({ label: '长参数跑完' })
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('第')),
+      '长参数那件真跑完了（结果行）',
+      `锚＝结果行「${TOOL_DONE} …」`,
+    )
+
+    // —— 三 · 取消：拖住的那件，批准之后按中断 ——
+    // ⚠️ 每一步都**等回空闲**再走下一步：并排跑满测试时，抢在上一轮收尾之前敲回车
+    // 会被当成「工作中插话」排队（实测：回车落在收尾那一下，卡姗姗来迟、判据超时）
+    await session.wait({ text: HINT_IDLE })
+    await session.send('再来件拖住的')
+    await session.wait({ text: '› 再来件拖住的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.send('y')
+    // 等「在跑」那一行出现（调用真的发出去了），再中断
+    await session.wait({ text: '运行中' }, { timeoutMs: 10_000 })
+
+    await session.send('\u0003') // ctrl+c：工作中＝中断
+    await session.wait({ text: '已取消' }, { timeoutMs: 10_000 })
+    const canceled = await session.capture({ label: '取消之后' })
+    ui.check(canceled.text.includes('已取消'), '取消那一笔说「已取消」', '')
+    ui.check(
+      canceled.text.includes('取消不等于远端撤销'),
+      '取消不声称远端撤销（只报已停止等待/已发取消请求）',
+      '',
+    )
+
+    // —— 四 · 断连：服务器在途没了 ——
+    await session.wait({ text: HINT_IDLE })
+    await session.send('来件会崩的')
+    await session.wait({ text: '› 来件会崩的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.send('y')
+    // 等**只此一处有**的那一整句：取消那一行的正文里也含「未收到结果」三个字
+    // （「取消不等于远端撤销，未收到结果」），拿它当条件会**抓到前一张卡**
+    await session.wait({ text: '未收到结果，远端可能已执行' }, { timeoutMs: 10_000 })
+    const lost = await session.capture({ label: '断连之后' })
+    // ⚠️ 逐**行**判（不判整段文本）：40 来列的窄窗里这句话会折行，`includes` 一折就断
+    ui.check(
+      lost.lines.some((line) => line.includes('未收到结果')) &&
+        lost.lines.some((line) => line.includes('远端可能已执行')),
+      '断连说「未收到结果，远端可能已执行」（效果未知）',
+      '',
+    )
+    ui.check(
+      lost.lines.some((line) => line.includes('请求发出之后连接断了')),
+      '缘由说人话（不是 SDK 那串 `MCP error -32000`）',
+      '',
+    )
+
+    // —— 收尾：空闲再取一帧（键位与状态行都回到常态）——
+    await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
+    await session.capture({ label: '收尾' })
+
+    rmSync(dir, { recursive: true, force: true })
+  },
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -873,6 +994,7 @@ export const SCENARIOS: readonly Scenario[] = [
   drawerOpenClose,
   modelStreamApproval,
   mcpApproval,
+  mcpApprovalEdge,
   missingTextFailure,
   assistantAcrossCalls,
   isolationRepeatParallel,

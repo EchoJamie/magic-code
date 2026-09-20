@@ -59,9 +59,42 @@ export function mcpToolName(server: string, tool: string): string {
  *
  * 两处同形（审批卡的标题 · 记录里那一行的名字），故只此一处产出：名字里的前缀是**注册用的
  * 编码**（为的是跨服务器唯一），不是给人读的——屏上照抄注册名就是把内部编码摊给用户看。
+ *
+ * ⚠️ **洗一遍控制字节**（U38 返工 B）：工具名与服务器名都可能带着**别人写的东西**
+ * （服务器自报 / 模型自报），而这一行会被画进审批卡——一个换行就能伪造出一行「批准全部」。
+ * 发现那一侧已经把不合规的名字**拒收**了（见 `isValidMcpToolName`），这儿再洗一道是
+ * **兜底**：模型自己拼一个带换行的名字（注册表里没有它）时，画出来的仍是干干净净一行。
  */
 export function mcpToolLabel(ref: ExternalToolRef): string {
-  return `${ref.server} / ${ref.tool}`
+  return `${sanitizeForDisplay(ref.server)} / ${sanitizeForDisplay(ref.tool)}`
+}
+
+/**
+ * 送进屏面之前把**控制字节**换掉——换行 / 制表 / ESC / 行分隔符都不许原样过。
+ *
+ * 换成一个可见的点（`·`）而不是删掉：删掉会让 `echo\nn` 变成 `echon`（看着像个正常名字），
+ * 换成点则**看得出这里原本有东西**（「拿不准的不编」那条的同一条分寸）。
+ */
+export function sanitizeForDisplay(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '·')
+}
+
+/**
+ * 工具名那一把尺子——**服务器自报的名字也要能当工具名使**（U38 返工 B）。
+ *
+ * 它与服务器名同一把尺子（配置加载器那一处同一张正则）：字母数字开头，其后只许
+ * 字母数字与 `._-`。两件都由头：
+ *
+ * - **控制字节能让服务端的话伪装成界面的话**（独立验收的固定反例：名字里带换行 +
+ *   `│ n 批准全部`，渲染出来就是一行像是卡上印的选项）；
+ * - **这个名字会被拼进送给模型的工具名**——各家供应商对函数名的字符集都有限制。
+ *
+ * **拒收的是这一件，不是这一台服务器**：其余合法工具照常注册（设计明文：单个连接失败
+ * 不拖垮内置工具，同一条分寸也适用于单件工具）。
+ */
+export function isValidMcpToolName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)
 }
 
 /**
@@ -151,6 +184,18 @@ export type McpToolInfo = {
 }
 
 /**
+ * **一件被拒收的外部工具**（U38 返工 B）——服务器报了它，我们没用。
+ *
+ * `tool` 是服务器自报的**原文**（可能带控制字节 —— 要显示请先过 `sanitizeForDisplay`：
+ * 这条读数本身是给诊断用的，不直接进屏面）。
+ */
+export type McpToolRejection = {
+  readonly tool: string
+  /** 缘由（说给人听的一句话：哪儿不合规 / 与谁重名）。 */
+  readonly reason: string
+}
+
+/**
  * 一次调用回来的**一个部件**（记录侧形态）。
  *
  * 非文本部件（图片 / 音频 / 资源）**不解析内容**，但**必须说出它来过**——
@@ -211,8 +256,19 @@ export interface McpConnection {
   /** 配置里的条目名（身份）。 */
   readonly server: string
   readonly state: McpConnectionState
-  /** 发现到的工具（未连上＝空表）。 */
+  /**
+   * 发现到的工具（未连上＝空表）——**这一份就是会被注册的那一份**。
+   *
+   * 名字不合规的、同一台服务器重名的，在发现那一趟就**拒收**了（见 `rejected`）——
+   * 故「列表」与「注册」从构造上一致：不会出现「查得到两件、只注册了一件」那种账
+   * （独立验收的问题 6 要的正是这一条）。
+   */
   tools(): readonly McpToolInfo[]
+  /**
+   * **发现时拒收的那些**（连同缘由）——**一处产出，两处要读**：`--check` 逐条报出来，
+   * 开屏回执说一句「有几件没进来」。空表＝一件都没拒。
+   */
+  readonly rejected: readonly McpToolRejection[]
   /**
    * 调一次外部工具。
    *

@@ -56,7 +56,10 @@ export function DecisionCard({ pending }: DecisionCardProps) {
       h(Text, { color: accent }, '│ '),
       // 「这一次」在外部件上**写出来**：它答的正是「批不批这一回」，而不是本机的一条长期授权
       keyHint('y', external ? '批准这一次' : '批准'),
-      keyHint('a', '本工作区总是允许', heavy),
+      // **外部件不给「总是允许」那一格**（返工 B）：不是划掉，是**不画**——
+      // 划掉在外部件上仍然占着一句话（「本工作区总是允许」），而它对这台服务器根本不适用
+      // （外部效果不由本机裁定）。必闸类照旧划掉（那是「本该有、这件不给」）。
+      ...(external ? [] : [keyHint('a', '本工作区总是允许', heavy)]),
       keyHint('n', '拒绝'),
     ),
   )

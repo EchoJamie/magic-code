@@ -49,6 +49,7 @@ import type {
   KernelEvent,
   McpConnection,
   McpConnectionState,
+  McpToolRejection,
   ModelGateway,
   ModelSwitchRequest,
   RecordsService,
@@ -187,6 +188,13 @@ export type McpServerView = {
   readonly server: string
   readonly state: McpConnectionState
   readonly tools: readonly string[]
+  /**
+   * **发现时拒收的那些**（名字不合规 / 同一台服务器重名）——`--check` 逐条报出来。
+   *
+   * 与 `tools` 一起看才完整：这一台**报了什么、我们用了什么、没用什么**（返工 B 的两条
+   * 判据都建在这份读数上：不合规的拒收要说得清、重名的全拒且列表与注册一致）。
+   */
+  readonly rejected: readonly McpToolRejection[]
 }
 
 export type Assembly = {
@@ -1057,6 +1065,7 @@ export function assemble(options: AssembleOptions): Assembly {
         server: connection.server,
         state: connection.state,
         tools: connection.tools().map((tool) => tool.name),
+        rejected: connection.rejected,
       })),
     // 发现那一跳（见 `Assembly.ready`）：空转（没配服务器）时一步就完
     ready: () => mcp.ready(),
@@ -1136,6 +1145,15 @@ function noticesOf(
     said.push(
       `外部工具服务器「${connection.server}」连不上：${connection.state.reason}` +
         '——本次它的工具不可用（内置工具不受影响）',
+    )
+  }
+  // 有工具被拒收也说一句（返工 B）——**说清「没进来几件」并把人指去 `--check`**：
+  // 拒收是**服务器那边**的毛病（名字不合规 / 重名），不说的话用户只会觉得「少了几件工具」
+  for (const connection of connections) {
+    if (connection.rejected.length === 0) continue
+    said.push(
+      `外部工具服务器「${connection.server}」有 ${connection.rejected.length} 件工具没能收下` +
+        '——名字不合规或与同台重名（`--check` 看缘由）',
     )
   }
   if (grantsNote !== undefined) said.push(grantsNote)

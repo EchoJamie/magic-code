@@ -120,11 +120,17 @@ export const externalFailedOutput = (reason: string): string =>
  * 不许把「没发出去」也说成「远端可能已执行」（吓人，且教模型做无谓的核对）。
  */
 export const externalNotSentOutput = (reason: string): string =>
-  `未发出——服务器未连接（${reason}）；本次调用没有送出去，远端不会执行`
+  `未发出——本次调用没有送出去（${reason}）；远端不会执行`
 
-/** 取消（`Ctrl+C` 打断在途）——已停止等待 ＋ 已发取消请求，仅此两件事实。 */
-export const externalCanceledOutput = (reason: string): string =>
-  `已取消——已停止等待并发出取消请求（取消不等于远端撤销，未收到结果${reason === '' ? '' : `；${reason}`}）`
+/**
+ * 取消（`Ctrl+C` 打断在途）——已停止等待 ＋ 已发取消请求，仅此两件事实。
+ *
+ * 不带适配器给的缘由：那一位在**在途取消**这一路上恒是「已发出取消请求」（前半句刚说过），
+ * 缀上就是同一句话说两遍。**发出去之前**就被取消的那一路不走这儿（那是「没发出去」，
+ * 见 `externalNotSentOutput`）——两者的事实不同，措辞也就该不同。
+ */
+export const externalCanceledOutput = (): string =>
+  '已取消——已停止等待并发出取消请求（取消不等于远端撤销，未收到结果）'
 
 /** 服务器自己说这次错了（MCP 的 `isError`）——**调用是成了的**，是「结果如此」。 */
 export const externalRefusedOutput = (text: string): string =>

@@ -1208,12 +1208,14 @@ function clearFlash(view: ShellView): ShellView {
 export function withDecisionStatus(view: ShellView): ShellView {
   if (view.dock.kind !== 'decision') return view
 
-  const { position, weight } = view.dock.pending
+  const { position, weight, external } = view.dock.pending
 
   return patchStatus(view, {
     state: 'waiting',
     amount: position === null ? null : `${position.index}/${position.total}`,
-    hint: weight === 'heavy' ? HINT_DECIDE_HEAVY : HINT_DECIDE_LIGHT,
+    // **外部件右位留空**（返工 B）：卡上已经写了 `y 批准这一次 / n 拒绝`，
+    // 一屏上的键位**只说一次**（交互约束那条）——状态行再列一遍就是同一件事说两遍。
+    hint: external === true ? '' : weight === 'heavy' ? HINT_DECIDE_HEAVY : HINT_DECIDE_LIGHT,
   })
 }
 

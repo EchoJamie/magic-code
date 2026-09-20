@@ -127,7 +127,12 @@ describe('发现 → 审批 → 调用 → 落账 → 回填', () => {
 
       // 装配侧先自证：这一台连上了、工具表是服务器报的那几件
       expect(assembly.mcpServers()).toEqual([
-        { server: 'fake', state: { status: 'available' }, tools: ['echo', 'snapshot', 'shot', 'annotated', 'fail', 'slow', 'boom', 'spawnboom'] },
+        {
+          server: 'fake',
+          state: { status: 'available' },
+          tools: ['echo', 'snapshot', 'shot', 'annotated', 'fail', 'slow', 'boom', 'spawnboom'],
+          rejected: [],
+        },
       ])
 
       const shell = bareShell(assembly)
@@ -248,6 +253,58 @@ test('**调用中途**才起的后代、父随即崩——从真应用这一侧�
       stage.dispose()
     }
   })
+
+describe('名字与重名的收口（返工 B · 独立验收问题 5 / 6）', () => {
+  test('不合规的没收下、同台重名的都拒——诊断说得出来，合法项与内置工具照常', async () => {
+    const dir = scrapDir()
+    const stage = stageWith({
+      bad: serverEntry(dir, 'bad', { FAKE_MCP_MODE: 'badname' }),
+      dup: serverEntry(dir, 'dup', { FAKE_MCP_MODE: 'dup' }),
+    })
+
+    try {
+      const assembly = stage.assemble({ turns: [{ text: '好' }] })
+      await assembly.ready()
+
+      // ① 读数：这一台报了什么、我们用了什么、没用什么
+      const views = assembly.mcpServers()
+      const bad = views.find((view) => view.server === 'bad')
+      const dup = views.find((view) => view.server === 'dup')
+
+      expect(bad?.tools).toEqual(['clean_one', 'clean_two'])
+      expect(bad?.rejected).toHaveLength(1)
+      expect(bad?.rejected[0]?.reason).toContain('不合规')
+
+      expect(dup?.tools).toEqual(['fine'])
+      expect(dup?.rejected.map((one) => one.tool)).toEqual(['echo', 'echo'])
+
+      // ② 开屏那一句：点名到服务器与件数（用户不会只看到「少了几件」）
+      const said = assembly.notices.join('\n')
+      expect(said).toContain('「bad」有 1 件工具没能收下')
+      expect(said).toContain('「dup」有 2 件工具没能收下')
+
+      // ③ 模型那一侧的工具表：合法的外部工具 ＋ 内置照常；不合规的一件都没有
+      const shell = bareShell(assembly)
+      assembly.shell.send({ type: 'input.submit', text: '随便说一句' })
+      await until(() => lastModel(stage).requests.length >= 1, '首轮模型请求')
+
+      const names = toolNamesOf(lastModel(stage).requests[0])
+      expect(names.filter(isExternal)).toEqual([
+        'mcp__bad__clean_one',
+        'mcp__bad__clean_two',
+        'mcp__dup__fine',
+      ])
+      expect(names.some((name) => name.includes('批准全部'))).toBe(false)
+      expect(names).toContain('exec') // 内置七件不受影响
+
+      shell.dispose()
+      await assembly.shutdown()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
 
 describe('真实来源与不可放权', () => {
   test('跨服务器同名工具各走各的；伪造来源参数不改变真实身份', async () => {
@@ -496,7 +553,10 @@ describe('失败路径', () => {
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '第二笔落定')
 
       const second = outputTextOf(eventsOfKind(shell.events, 'tool.result')[1])
-      expect(second).toContain('未发出——服务器未连接')
+      // **原锚**「未发出——服务器未连接（…）」；**为何变**（返工 B 看帧）：这一句原来把
+      // 缘由写死成「服务器未连接」，而「没发出去」还有别的来路（取消发生在发出去之前）；
+      // **新锚**：说「没送出去」＋ 事实上的缘由（这里是「服务器退出了」）。
+      expect(second).toContain('未发出——本次调用没有送出去（服务器退出了）')
       expect(second).not.toContain('远端可能已执行')
 
       // 服务器那边只数到 `boom` 那一次（第二次压根没上路）

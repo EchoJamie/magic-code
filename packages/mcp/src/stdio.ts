@@ -42,7 +42,9 @@ import type {
   McpPart,
   McpServerConfig,
   McpToolInfo,
+  McpToolRejection,
 } from '@magic/contracts'
+import { isValidMcpToolName, sanitizeForDisplay } from '@magic/contracts'
 import { createOwnedStdioTransport } from './stdio-transport.ts'
 import type { OwnedStdioTransport } from './stdio-transport.ts'
 
@@ -91,6 +93,11 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
 
   let state: McpConnectionState = { status: 'connecting' }
   let discovered: readonly McpToolInfo[] = []
+  /**
+   * 发现时**拒收**的那些（名字不合规 / 同一台服务器重名）——连缘由一起交回装配，
+   * 由它报在 `--check` 与开屏那一句上（见契约 `McpToolRejection`）。
+   */
+  let rejected: readonly McpToolRejection[] = []
   let client: Client | undefined
   let transport: OwnedStdioTransport | undefined
   let started = false
@@ -117,7 +124,10 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
    */
   function markUnavailable(reason: string, options: { readonly keepTools?: boolean } = {}): void {
     client = undefined
-    if (options.keepTools !== true) discovered = []
+    if (options.keepTools !== true) {
+      discovered = []
+      rejected = []
+    }
     state = { status: 'unavailable', reason }
   }
 
@@ -181,9 +191,13 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
 
       // **翻完分页才算发现完**（头注 5）——没取全就放行，等于给模型一份假表
       const found = await discover(connecting, connectTimeoutMs)
+      // **收进注册表之前先过筛**（返工 B）：不合规的、重名的，一件都不进——
+      // 于是 `tools()` 与实际注册的那一份**从构造上一致**
+      const screened = screen(found)
 
       client = connecting
-      discovered = found
+      discovered = screened.tools
+      rejected = screened.rejected
       state = { status: 'available' }
     } catch (error) {
       state = { status: 'unavailable', reason: startupReason(error, options.config) }
@@ -241,6 +255,10 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
 
     tools: () => discovered,
 
+    get rejected() {
+      return rejected
+    },
+
     async call(tool, args, opts): Promise<McpCallOutcome> {
       const connecting = client
       if (connecting === undefined) {
@@ -252,9 +270,10 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
         }
       }
 
-      // 取消在入口就已经落定的，问都不问（同沙箱那条「已中止的信号不启动进程」）
+      // 取消在入口就已经落定的，问都不问（同沙箱那条「已中止的信号不启动进程」）。
+      // ⚠️ 这一路**没有发出去**——故归 `not-sent`（「已发出取消请求」那句话在这儿不成立）
       if (opts?.signal?.aborted === true) {
-        return { kind: 'failed', failure: 'canceled', reason: '调用前已取消' }
+        return { kind: 'failed', failure: 'not-sent', reason: '取消发生在发出去之前' }
       }
 
       try {
@@ -358,11 +377,14 @@ function failureOf(error: unknown, signal: AbortSignal | undefined): McpCallOutc
   }
 
   if (error instanceof McpError) {
+    // **这两句说人话**（返工 B 看帧时改的）：SDK 给的是 `MCP error -32000: Connection closed`
+    // 那一串——那是给写代码的人看的，而这条**会上屏、也会进模型**（超时 / 断连那两句的括号里）。
+    // 服务器自己报的错不在此列（见下）：那时「服务器说了什么」才是要原样带出的东西。
     if (error.code === ErrorCode.RequestTimeout) {
-      return { kind: 'failed', failure: 'timeout', reason: reasonOf(error) }
+      return { kind: 'failed', failure: 'timeout', reason: '等超时了——一直没等到回应' }
     }
     if (error.code === ErrorCode.ConnectionClosed) {
-      return { kind: 'failed', failure: 'unreachable', reason: reasonOf(error) }
+      return { kind: 'failed', failure: 'unreachable', reason: '请求发出之后连接断了' }
     }
     // 服务器答了，只是答的是「这次调用不成」——**调用是到了的**，按「结果如此」记
     return {
@@ -393,6 +415,60 @@ function toolsOf(listed: readonly { name: string; description?: string; inputSch
   }
 
   return tools
+}
+
+/**
+ * **过筛**（U38 返工 B）——把服务器报来的那一份筛成「可以进注册表的那一份」。
+ *
+ * 两条规矩，各自都有独立验收的固定反例：
+ *
+ * 1. **名字不合规的不进**（`isValidMcpToolName`）：控制字节（换行 / ESC）能让服务端返回的
+ *    文字在审批卡上**伪装成界面自己的话**（反例：名字里带换行 ＋ `│ n 批准全部`）；
+ *    这个名字还会被拼进送给模型的工具名，各家供应商对函数名字符集也有限制。
+ * 2. **同一台服务器重名的，冲突的那几件全拒**（不是「取先到的一件」）：重名意味着
+ *    「哪一件在跑」说不清——留一件就是让展示给模型的那份契约与服务端实际执行的含义
+ *    对不上（反例：两件 `echo` 描述不同，旧的实现静默取了第一件，而 `tools()` 报两件）。
+ *
+ * **拒的是这一件，不是这一台服务器**：其余合法工具照常，内置工具更不受影响。
+ * 缘由都记进 `rejected`——诊断要有，且要能说清「哪一件、为什么」。
+ */
+function screen(found: readonly McpToolInfo[]): {
+  readonly tools: readonly McpToolInfo[]
+  readonly rejected: readonly McpToolRejection[]
+} {
+  const rejected: McpToolRejection[] = []
+  const kept: McpToolInfo[] = []
+  /** 名字 → 出现几次（先数一遍：重名要**全拒**，不能边看边留）。 */
+  const counts = new Map<string, number>()
+  for (const tool of found) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1)
+
+  for (const tool of found) {
+    if (!isValidMcpToolName(tool.name)) {
+      rejected.push({
+        tool: tool.name,
+        reason: `工具名不合规（${describeName(tool.name)}）——须是字母数字开头、只含字母数字与 . _ -`,
+      })
+      continue
+    }
+
+    if ((counts.get(tool.name) ?? 0) > 1) {
+      rejected.push({
+        tool: tool.name,
+        reason: `与同一台服务器上的另一件重名（共 ${counts.get(tool.name)} 件）——重名的都拒收，不替谁挑一件`,
+      })
+      continue
+    }
+
+    kept.push(tool)
+  }
+
+  return { tools: kept, rejected }
+}
+
+/** 把不合规的名字说清楚——带控制字节时**只说「哪里有控制字节」**，不把原样贴出来。 */
+function describeName(name: string): string {
+  const printable = sanitizeForDisplay(name)
+  return printable === name ? `「${name}」` : `「${printable}」里有控制字节`
 }
 
 /** 模式那一件——**不校验、不翻译**（原样送模型；服务器自己的 schema 由它自己负责）。 */
