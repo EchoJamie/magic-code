@@ -35,7 +35,7 @@ function isSeparator(line: string, columns: number): boolean {
 
 /**
  * 分隔线的行号——**记录区与交互区之间那一条**（最后一条满宽 `─`）。
- * 还没画出来（空态 / 只录了半屏）＝ `-1`。
+ * 还没画出来（只录了半屏 / 空档）＝ `-1`。
  */
 export function dividerAt(screen: Screen): number {
   return screen.lines.findLastIndex((line) => isSeparator(line, screen.columns))
@@ -48,7 +48,7 @@ export function recordArea(screen: Screen): readonly { readonly row: number; rea
 
   if (divider !== -1) return rows.slice(0, divider)
 
-  // 还没画出分隔线（空态 / 只录了半屏）——到最后一个非空行为止，屏下的空白不算记录区
+  // 还没画出分隔线（只录了半屏）——到最后一个非空行为止，屏下的空白不算记录区
   const last = rows.filter((entry) => entry.text.trim() !== '').at(-1)
 
   return rows.slice(0, last === undefined ? 0 : last.row + 1)

@@ -88,8 +88,11 @@ describe('U40 · 工具自证', () => {
         await session.key('enter', { until: { text: answer }, timeoutMs: 4_000 })
       }
 
-      // 目标字：起手时的空态引导语。它此刻只可能在**历史**里，可见屏上早已没有
-      const needle = '会话在你按下第一次回车时才建立'
+      // 目标字：开机那块**字标**（100 列 ＝ 块字版，起手就印在屏上）。
+      // ⚠️ **换过一次取材**（U31 三轮）：原锚用的是起手那句空态引导语——那句已由用户定删
+      //    （没有动作价值，原型早已删掉）。字标是这一屏上现在**唯一**起手就有、又一定会被
+      //    两轮真回话顶进存档区的东西 ⇒ 判据（「`wait` 只查可见屏」）一个字没变。
+      const needle = '█   █  ███'
       expect(plain(rawBytesOf(session.runDir))).toContain(needle)
 
       const screen = await session.screen()
@@ -372,22 +375,35 @@ describe('U40-2 · 光标显隐与翻帧', () => {
     }
   })
 
-  test('真应用那一趟：跑的时候光标是藏着的，退出时终端把它还回来', async () => {
+  test('真应用那一趟：跑的时候光标**显示在编辑位置上**（不是藏着）', async () => {
     const session = await createUiSession({ label: '回归-真应用光标', turns: HELLO })
 
     try {
-      // 产品（Ink）起手就把终端光标藏了、自己另画一个——查看页不该在它的回退位上再画一个
+      // ⚠️ **换过锚的断言**（U31 三轮 · 规划侧把这一处划给真光标那一单）。
+      //
+      // - **原锚**：`expect(live.cursor.hidden).toBe(true)`——「跑着的时候光标是藏着的」。
+      //   那会儿产品起手就把终端光标藏了、另画一个**反色空格**冒充分身，这一条量的是
+      //   **那个冒充**：跑起来之后终端光标**永远**不出现在任何位置上。
+      // - **为何变**：U31 起**真光标就是插入点的提示**（`useCursor` ＋ `measureElement`，
+      //   反色那一格已删）——「产品在跑」与「光标藏着」不再是一回事：**编辑位置上是显示着的**，
+      //   只有**裁决 / 选择接管**那几屏才藏（接管期间打不进草稿，没有插入点可指；见
+      //   `spec.u31.test.ts` 的「裁决接管中」，以及归还之后**回到原插入点**那一条）。
+      //   旧的隐藏形态本身就是那一单要收掉的缺陷，故**不保留**（留它就是把缺陷冻成判据）。
+      // - **新锚**：跑着的时候光标**显示着**，而且**就在输入行上**——它指向的位置就是插入点
+      //   （左留白 1 ＋ `› ` 2 ＝ 第 3 列）。
       const live = await session.capture({ label: '应用中' })
-      expect(live.cursor.hidden).toBe(true)
+      const inputRow = live.lines.findIndex((line) => line.includes('› 交代一件事，回车发送'))
 
-      // 退出时终端光标还回来（cli-cursor 收尾）——这一格真会变，不是恒真
+      expect(inputRow).toBeGreaterThanOrEqual(0) // 输入行在屏上（这一帧才有得量）
+      expect(live.cursor.hidden).toBe(false) // 显示着——不是藏着的
+      expect(live.cursor.y).toBe(inputRow) // **编辑位置**那一行（不是帧末的回退位）
+      expect(live.cursor.x).toBe(3) // 左留白 1 ＋ `› ` 2
+
+      // ⚠️ **「退出时终端把它还回来」那半截随旧锚一起去掉**：光标跑的时候就一直显示着，
+      //    那里已经没有「藏 → 显」这一翻（留着是恒真的空转）。应用的起手与收尾另有
+      //    「`失败/EOF` 后自有应用与 HTTP 服务都已退出而产物仍在」那几条看着；接管中退出
+      //    该不该还回来归产品，不靠这一条钉。
       await session.key('ctrl+c')
-      let restored = false
-      for (let at = 0; at < 80 && !restored; at += 1) {
-        await Bun.sleep(50)
-        restored = !(await session.screen()).cursor.hidden
-      }
-      expect(restored).toBe(true)
     } finally {
       await session.close({ graceMs: 2_000 })
     }
