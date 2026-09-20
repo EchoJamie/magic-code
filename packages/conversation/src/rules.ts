@@ -8,7 +8,9 @@
  *   会话开局是空的（只取各根一级），每碰一处就长一点。用途是决定**送哪些**（近目录约定
  *   只细化其子树）。**它有界只影响「历史」那一截**——本批的正确性不靠它（见下 `pinned`）。
  * - **最近一次请求送达了什么**（`deliveredNow`）——**判据是「最近那次真实模型请求里有没有
- *   它」，不是「历史上送过没有」**（2026-09-20 裁，改了首轮的口径）。
+ *   它」，不是「历史上送过没有」**（2026-09-20 裁，改了首轮的口径）。账上记的是**那一趟
+ *   实际送出去的材料本身**（来源 · 范围 · 正文），比对就是逐字比——**没有版本号、没有摘要**
+ *   （2026-09-21 裁：材料不做版本管理，见契约 `ProjectRule`）。
  *
  * ## 为什么由对话域持有这两样
  *
@@ -18,7 +20,7 @@
  * ## 送达发生在两处（顺序即语义）
  *
  * 1. **每次模型调用之前**（`promptFor`）——把**当前作用域 ＋ 被拦批钉住的目标**适用的规约
- *    接进系统提示词，并把这一趟真正送出去的版本**整个替换**进 `deliveredNow`。
+ *    接进系统提示词，并把这一趟真正送出去的材料**整个替换**进 `deliveredNow`。
  *    这是「无路径规则首次模型调用前载入」与「条件规则在目标相关时送达」共同的落点。
  * 2. **一批工具执行之前**（`preflight`）——拿**这一批全部**的目标查一遍：**有没送达过的新内容
  *    就拦下整批**（回填「需重审」，见 `needsReviewText`），并把这批的目标**钉住**
@@ -28,14 +30,14 @@
  *    没看成」）：那与「有没有新内容」是两件事——没进来的那几份**不在 `documents` 里**，
  *    所以「没新内容」推不出「送齐了」。
  *
- * 拦截**只在新内容上发生**：同一版还在最近那次请求里就照常执行，模型重提的那一次因此
+ * 拦截**只在新材料上发生**：同一份材料还在最近那次请求里就照常执行，模型重提的那一次因此
  * 只会执行一次（「重审后仅执行一次」）。
  *
  * ## 判据为什么是「最近一次请求」（2026-09-20 裁）
  *
- * 首轮用的是「进过至少一次请求的版本，永久记账」。它错在一个**静默**上：规约正文**只在
+ * 首轮用的是「进过至少一次请求的材料，永久记账」。它错在一个**静默**上：规约正文**只在
  * 系统提示词里**（进不了条目流、历史里没有它），而作用域有界——同一个目标被后来的目标挤出去
- * 之后，那一版就**不在当前请求里了**，可账上还记着「已送达」，于是**写下去了**。
+ * 之后，那份材料就**不在当前请求里了**，可账上还记着「已送达」，于是**写下去了**。
  * 「送达」是一件**当下**的事（这次请求里有没有），不是一件**曾经**的事。
  *
  * 代价如实记：规则正文在 system、不在历史 ⇒ **恢复 / 切回一条会话时会被再送一次**
@@ -116,12 +118,17 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
    */
   let pinned: string[] = []
   /**
-   * **最近一次真实模型请求里送达的版本**——`preflight` 的判据。
+   * **最近一次真实模型请求里送达的材料本身**——`preflight` 的判据。
+   *
+   * 记的就是那一趟递上去的那几条（`ProjectRule` 的字段原样），比的时候逐字比
+   * （见 `sameMaterial`）——**不另造材料身份**：不算摘要、不编号、不存历史版本
+   * （2026-09-21 裁，见契约 `ProjectRule`）。多占的内存就是那几份正文，而它们本来就在
+   * 这一趟的请求里，条数与总量同受加载器那几道上限约束。
    *
    * `promptFor` 每趟**整个替换**它（先清后填）：这样「挤出去过又回来的」那份会被如实
    * 判成「没送到」，而不是被一个永久的账本蒙混过去（见文件头注「判据为什么是最近一次请求」）。
    */
-  let deliveredNow = new Set<string>()
+  let deliveredNow: readonly ProjectRule[] = []
 
   const absorb = (fresh: readonly string[]): void => {
     for (const target of fresh) {
@@ -145,8 +152,9 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
   return {
     promptFor: (base: string): string => {
       const load = rules.load(requestedTargets())
-      // **先清后填**——这本账说的是「最近这一次请求里有什么」，不是「历来送过什么」
-      deliveredNow = new Set(load.documents.map((document) => document.version))
+      // **先清后填**——这本账说的是「最近这一次请求里有什么」，不是「历来送过什么」。
+      // 填进去的就是**马上要递上去的那一份材料**（同一个 `load` 的产物，不是另算的一串号）。
+      deliveredNow = load.documents
 
       return withProjectRules(base, load)
     },
@@ -175,9 +183,11 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
         return { kind: 'overflow' }
       }
 
-      // 没新目标也照查一遍：**规约可能刚被改过**（改版＝新版本＝该重送一次）。
-      // 这一趟是幂等的——还在最近那次请求里就什么都不返回，故不产生多余的拦截。
-      const blocking = load.documents.filter((document) => !deliveredNow.has(document.version))
+      // 没新目标也照查一遍：**规约可能刚被改过**（改过的正文＝另一份材料＝该重送一次）。
+      // 这一趟是幂等的——同一份材料还在最近那次请求里就什么都不返回，故不产生多余的拦截。
+      const blocking = load.documents.filter(
+        (document) => !deliveredNow.some((delivered) => sameMaterial(delivered, document)),
+      )
 
       if (blocking.length > 0) {
         // 拦下了：**把这批的目标钉住**——下一次请求一定带上它们的规约，循环由此闭合
@@ -224,6 +234,35 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
 function targetsOf(call: ToolCall): readonly string[] {
   const path = call.args['path']
   return typeof path === 'string' && path.trim() !== '' ? [path] : []
+}
+
+/**
+ * 两条规约是不是**同一份材料**——逐字比**实际送出去的那几样**：
+ * 来源（`kind` / `path` / `name`）· 作用域（`root` / `scope`）· 生效条件（`paths`）· 正文（`text`）。
+ * 这是 `preflight` 「新不新」的**唯一判据**，与 `deliveredNow` 里存的那份材料对着比。
+ *
+ * **不能只比正文**（2026-09-21 裁，也是这条判据唯一一件不能省的事）：材料里**范围是它的一部分**
+ * ——同一套约定按目录铺开（根 `AGENTS.md` 与 `src/AGENTS.md` 写着同一段话，复制粘贴起手、
+ * 脚本生成、模板铺开都很常见）是**两份材料**，各管一摊。只比正文的话，送过根那份就等于说
+ * 子目录那份也送过了 ⇒ 它**永远不送、也不拦**——「副作用之前送到」在最需要它的场景里静默失效。
+ * 条件同理：同一份正文把 `src/**` 改成 `lib/**`，送出去的适用面就变了，那是另一份材料
+ * （`text` 里**没有**这一段——正文是摘掉 front-matter 的那一段）。
+ *
+ * 为什么是**逐字比**而不是算个号（2026-09-21 用户明裁）：材料不做版本管理——没有内容 hash、
+ * 没有版本号，也不许换个名字（`materialKey` / `signature` 之类）把同一套机制藏起来。
+ * 手上本来就有最近那趟**真实送出去的材料**，直接比它最准，也少一处能悄悄失准的合成。
+ */
+function sameMaterial(left: ProjectRule, right: ProjectRule): boolean {
+  return (
+    left.kind === right.kind &&
+    left.path === right.path &&
+    left.name === right.name &&
+    left.root === right.root &&
+    left.scope === right.scope &&
+    left.text === right.text &&
+    left.paths.length === right.paths.length &&
+    left.paths.every((pattern, index) => pattern === right.paths[index])
+  )
 }
 
 /**

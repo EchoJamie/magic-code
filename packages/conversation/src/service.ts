@@ -153,8 +153,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   })
 
   /**
-   * **规约的送达账**（U32）——按会话实例各一份（作用域与已送达版本都随会话走：
-   * 切到别的会话，那一头碰过哪些目录、送过哪几版，与这一头无关）。
+   * **规约的送达账**（U32）——按会话实例各一份（作用域与最近一次请求送达的材料都随会话走：
+   * 切到别的会话，那一头碰过哪些目录、手里握着哪份材料，与这一头无关）。
    * 不给规约来源＝不造这份账（见 `ConversationDeps.rules`）。
    */
   const rules = deps.rules === undefined ? undefined : createRulesDelivery(deps.rules)

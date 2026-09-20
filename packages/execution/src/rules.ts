@@ -31,6 +31,8 @@
  *   不会因为真身在根外就变成一条全局规约）。
  * - **不设全仓 watcher**——每次调用现扫（调用时机由对话域定：用户输入与工具目标预查两处），
  *   不缓存、不订阅；改过的规约因此**下一趟就是新的**。
+ *   **材料也不做版本管理**（2026-09-21 裁）：不算内容 hash、不存版本号、不维护历史版本——
+ *   每一趟读到的就是当前那份文件，判「送过没有」由消费方拿**实际送出去的材料**逐字比。
  *
  * ## 限度（如实记，不假装没有）
  *
@@ -39,8 +41,6 @@
  * - **`exec` 的范围按执行 cwd**（＝工作区默认根）：任意 shell 字符串实际会碰哪些文件
  *   **静态推不出来**（`cd src && ./build.sh` 就是反例），故本版**不假装推得出来**，
  *   只保证 cwd 那一层的规约在会话开局就送到了。
- * - **`version` 用 FNV-1a 32 位**：判「是不是同一版」够用（同一份内容恒同一串），
- *   但**不是密码学摘要**——它防的是循环拦截，不是防篡改。
  */
 
 import type {
@@ -158,7 +158,8 @@ type Loaded = {
  */
 function identityOf(real: string, root: string | null, scope: string | null): string {
   // 分段符**写成转义**（NUL）而不是空格：路径与根里都可能带空格，拼起来会撞
-  // （`/a b` ＋ 根 `c` 与 `/a` ＋ 根 `b c`）。同 `versionOf` 那条注。
+  // （`/a b` ＋ 根 `c` 与 `/a` ＋ 根 `b c`）。而且**写成转义**、不往源码里塞裸的控制字节：
+  // 裸的读不出、diff 不了，还会让 grep 把整份文件当二进制而**一声不响地什么都不输出**（本单元真栽过）。
   return [real, root ?? '', scope ?? ''].join('\u0000')
 }
 
@@ -465,8 +466,8 @@ function scanRulesDir(
  * 为什么要跟链接：规则目录常见「软链接到别处的一份共享规则」这种组织方式。跟，就意味着
  * 「能不能读」这件事不能靠「它是个链接」来判断——那由白名单统一裁。
  *
- * 排序（名字序）在这里就定下：文件系统返回的次序不作保证，两趟读出两种次序会让
- * 「相同的规则」看起来像变过（`version` 比的是内容，次序另算）。
+ * 排序（名字序）在这里就定下：文件系统返回的次序不作保证，两趟读出两种次序会让同一批
+ * 材料在系统提示词里换个排法——**判「送过没有」比的是材料本身、不比次序**，但摆出来得是稳的。
  */
 function walkMarkdown(
   dir: string,
@@ -858,7 +859,8 @@ function select(input: {
     if (key !== undefined) seenRule.set(key, candidate)
 
     const patterns = parsed.patterns ?? []
-    // 版本最后算：它要把**已经摆好的这一条**（连范围一起）摘要进去——见 `versionOf`
+    // 摆出来的这一条**就是这一趟读到的那份文件**：正文原样（已摘 front-matter）、
+    // 范围与条件随它一起走。**不算摘要、不编号**——「送过没有」由消费方拿这一份逐字比。
     const rule: ProjectRule = {
       kind: candidate.kind,
       path: real,
@@ -867,10 +869,9 @@ function select(input: {
       paths: patterns,
       name: candidate.name,
       text: parsed.body,
-      version: '',
     }
 
-    loaded.push({ rule: { ...rule, version: versionOf(rule) }, conditions: patterns, order: candidate.order })
+    loaded.push({ rule, conditions: patterns, order: candidate.order })
   }
 
   // **条件规则在目标相关时送达**——无路径的照进（会话开局那几条），带 `paths` 的只在
@@ -1139,41 +1140,6 @@ function relativeTo(base: string, file: string): string {
 
   const prefix = base.endsWith(sep) ? base : base + sep
   return file.slice(prefix.length)
-}
-
-/**
- * 内容版本——**真路径 ＋ 生效模式 ＋ 正文**。
- *
- * 三者缺一不可，各有一个由头：
- * - **真路径**是**文档身份**——不含它，两份**正文一模一样**的规约（根 `AGENTS.md` 与
- *   `src/AGENTS.md` 内容相同：复制粘贴起手、脚本生成、模板铺开，都很常见）会算出同一个
- *   版本号，而下游的 `delivered` 是**按版本**判「送过没有」的 ⇒ 送过根那一份之后，
- *   `src` 那一份会被当成「已送达」，**永远不送、也不拦**——「副作用之前送到」这条承诺
- *   就在最需要它的场景里（同一套约定按目录铺开）静默失效。**判「改没改」要的是内容，
- *   判「送没送」要的是身份，两者都得进这个号。**
- * - **生效模式**——模式变了，适用面就变了，故也算一版；
- * - **正文**——改一个字就是新的一版。
- */
-function versionOf(rule: ProjectRule): string {
-  // 四段之间的分隔符是 **NUL**，且**写成转义**而不是往源码里塞裸的控制字节：
-  // 裸的读不出、diff 不了，还会让 grep 把整份文件当二进制而**一声不响地什么都不输出**
-  // （本单元真栽过：两个 0x00 就藏在这一行里，`tsc` 照收、用例照绿）。
-  // 用 NUL 而不是空格，是防「不同的段拼出同一个串」——`path` 与模式里都可能有空格。
-  const material = [
-    rule.path,
-    rule.root ?? '',
-    rule.scope ?? '',
-    rule.paths.join(' '),
-    rule.text,
-  ].join('\u0000')
-  let hash = 0x811c9dc5
-
-  for (let index = 0; index < material.length; index += 1) {
-    hash ^= material.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-
-  return `v${hash.toString(16).padStart(8, '0')}-${material.length.toString(16)}`
 }
 
 /** `tryLook` 的三种回答（见那条注）。 */
