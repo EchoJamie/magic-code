@@ -80,7 +80,12 @@ const ASSEMBLY_PACKAGE = '@magic/app'
 const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   '@magic/model': ['ai', '@ai-sdk/openai-compatible'],
   // `@magic/tui`——Ink 上游本身把 react 声明为 peer：外壳自持显示组件，react 是**正当依赖**。
-  '@magic/tui': ['ink', 'react'],
+  //
+  // `wrap-ansi`（U31）——**Ink 自己折行用的就是它**：输入行的插入点要算出「折到第几行、
+  // 第几列」才摆得准真终端光标，而**自己按宽度硬切会错**（Ink 是词界折行——实测反例：
+  // `z`×30 ＋ ` abcdefghij` 在 40 列下的断点两套算法不一样）。故取**同一支**折行器、
+  // 同一组参数（`trim:false` / `hard:true`），像素与几何才对得上。见 `composer.ts` 头注。
+  '@magic/tui': ['ink', 'react', 'wrap-ansi'],
 }
 
 /**

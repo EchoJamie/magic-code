@@ -138,7 +138,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     ),
     // **全屏只有这一条分隔线**（记录区与交互区之间）
     h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns))),
-    h(Box, { flexDirection: 'column' }, ...dockOf(view, rows)),
+    h(Box, { flexDirection: 'column' }, ...dockOf(view, columns, rows)),
     h(StatusLine, { status: view.status, columns }),
   )
 }
@@ -281,14 +281,15 @@ function heightOf(row: LogRow, columns: number, expanded: boolean, spaced: boole
 }
 
 /** 左下交互区的内容（四种用法）。 */
-function dockOf(view: ShellView, rows: number): readonly ReactElement[] {
+function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
   const flash =
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
 
   if (view.dock.kind === 'decision') {
     return [
       h(DecisionCard, { key: 'card', pending: view.dock.pending }),
-      h(Composer, { key: 'composer', draft: '', tone: 'taken' }),
+      // 接管期间**没有插入点**（打不进草稿）——`caret: null` ⇒ 真光标藏回去
+      h(Composer, { key: 'composer', draft: '', caret: null, tone: 'taken', columns }),
       ...flash,
     ]
   }
@@ -301,7 +302,14 @@ function dockOf(view: ShellView, rows: number): readonly ReactElement[] {
     ...(view.completion === null
       ? []
       : [h(Completion, { key: 'completion', completion: view.completion })]),
-    h(Composer, { key: 'composer', draft: view.draft, tone: toneOf(view), maxLines: maxDraftLines(rows) }),
+    h(Composer, {
+      key: 'composer',
+      draft: view.draft,
+      caret: view.caret,
+      tone: toneOf(view),
+      maxLines: maxDraftLines(rows),
+      columns,
+    }),
     ...flash,
   ]
 }
@@ -375,8 +383,10 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
     return view.dock.picker.rows.length + heads + hint + flash
   }
 
-  // 输入行那一片：草稿有几行就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）
-  return draftHeight(view.draft, maxDraftLines(rows)) + completing + flash
+  // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。
+  // ⚠️ 与渲染**同一处**算（`composerLayout`）——折行、折叠、「上面/下面还有 N 行」
+  //    那两行都算在内；各算一套迟早对不上（D11 那条「行高与实际不符」就是这么来的）。
+  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */
@@ -456,6 +466,8 @@ export function toShellKeys(
     readonly escape?: boolean
     readonly upArrow?: boolean
     readonly downArrow?: boolean
+    readonly leftArrow?: boolean
+    readonly rightArrow?: boolean
     readonly tab?: boolean
   },
 ): readonly ShellKey[] {
@@ -472,10 +484,16 @@ export function toShellKeys(
   if (input === '\n') return [{ kind: 'newline' }]
 
   if (key.return === true) return [{ kind: 'enter' }]
-  if (key.backspace === true || key.delete === true) return [{ kind: 'backspace' }]
+  // ⚠️ **退格与前向删除是两个键**（U31）——早先并成「退格」，插入点一动就露馅：
+  //    两个键删的是**两边**（`⌫` 删插入点左边、`delete` 删右边）
+  if (key.backspace === true) return [{ kind: 'backspace' }]
+  if (key.delete === true) return [{ kind: 'delete' }]
   if (key.escape === true) return [{ kind: 'escape' }]
   if (key.upArrow === true) return [{ kind: 'up' }]
   if (key.downArrow === true) return [{ kind: 'down' }]
+  // 左右键（U31）——Ink 给的形态：`input === ''` ＋ `key.leftArrow / rightArrow`
+  if (key.leftArrow === true) return [{ kind: 'left' }]
+  if (key.rightArrow === true) return [{ kind: 'right' }]
 
   // 带 ctrl / meta 的其余键不是正文（Ink 把控制字符解成「字母 ＋ ctrl」）
   if (key.ctrl === true || key.meta === true) {

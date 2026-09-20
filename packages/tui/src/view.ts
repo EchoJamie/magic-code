@@ -325,6 +325,14 @@ export type ShellView = {
   readonly dock: Dock
   /** 输入草稿——**归模型**（接管时收进 `stashed`，答完原样归还）。 */
   readonly draft: string
+  /**
+   * **插入点**（U31）——`draft` 里的下标（UTF-16 码元，与 `slice` 同尺；**落在字素边界上**）。
+   *
+   * 唯一的「光标在哪」：真终端光标由它算出来（`composer.ts`），**不再另存一套坐标**。
+   * 改动草稿的每一条路都要同步它（打字 / 退格 / 删除 / 粘贴 / 换行 / 清空 / 提交 /
+   * 历史召回 / 补全 / 接管收起与归还）——`shell.ts` 里走 `edit` 那一处收口。
+   */
+  readonly caret: number
   /** 接管期间**收起来的草稿**（`null` ＝ 没收着）。 */
   readonly stashed: string | null
   /** 接管期间「不静默吞键」的提示（一次性，按下一个键即清）。 */
@@ -390,6 +398,7 @@ export function createView(): ShellView {
     },
     dock: { kind: 'input' },
     draft: '',
+    caret: 0,
     stashed: null,
     flash: null,
     expanded: false,
@@ -1074,17 +1083,20 @@ function contentTextOf(entry: Entry): string {
 export function takeOver(view: ShellView): ShellView {
   if (view.dock.kind !== 'decision' || view.stashed !== null) return view
 
-  return { ...view, stashed: view.draft, draft: '', flash: null }
+  return { ...view, stashed: view.draft, draft: '', caret: 0, flash: null }
 }
 
-/** 解除接管——**归还草稿**（光标回末尾＝草稿原样，不自动发送）。 */
+/** 解除接管——**归还草稿**（插入点回末尾＝草稿原样，不自动发送）。 */
 export function undock(view: ShellView): ShellView {
   if (view.dock.kind !== 'decision') return view // 没在接管＝没得解除
+
+  const draft = view.stashed ?? view.draft
 
   return {
     ...view,
     dock: { kind: 'input' },
-    draft: view.stashed ?? view.draft,
+    draft,
+    caret: draft.length,
     stashed: null,
     flash: null,
   }
