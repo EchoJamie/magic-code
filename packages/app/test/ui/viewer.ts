@@ -24,6 +24,53 @@ import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readRun } from './artifacts.ts'
 
+/**
+ * 查看页里那几段**纯判断**——**一处写、两处用**：内联进页面（浏览器里跑的就是它），
+ * 用例里用 `new Function` 起**同一份**来验（查看页是自包含的单文件，没有 import 可言，
+ * 只能靠同一份源码保证「验的」与「跑的」是同一件事）。
+ *
+ * 两条规矩：**坐标只有一套**（`frame.cursor.x/y`，这里判的只是「画不画、往哪翻」）；
+ * **翻帧沿全局检查点序列**，不困在当前那一步里。
+ */
+export const VIEW_LOGIC = `
+  // 第 step 步（或它之前）最近的一帧在全局帧序列里的位置；没有＝-1。
+  // 「这一步没取帧」时借它之前最近那一帧看——「哪一步开始不对」要的就是这个。
+  function nearestFrameAtOrBefore(frames, step) {
+    let found = -1
+    for (let at = 0; at < frames.length; at += 1) {
+      if (frames[at].step <= step) found = at
+    }
+    return found
+  }
+
+  // 沿**全局**帧序列挪一格——翻帧跨 capture，不困在当前那一步里（到头就停住）。
+  function shiftFrame(frames, at, delta) {
+    if (frames.length === 0) return -1
+    if (at < 0) return delta > 0 ? 0 : frames.length - 1
+    return Math.min(Math.max(at + delta, 0), frames.length - 1)
+  }
+
+  // 那个方向还挪得动吗（挪不动＝按钮禁用）。
+  function canShift(frames, at, delta) {
+    if (frames.length === 0) return false
+    return shiftFrame(frames, at, delta) !== at
+  }
+
+  // 这一行该不该画光标——该画就给出它的列，不画＝-1。
+  // ⚠️ 终端把光标**藏起来**时（DECTCEM）不画：那个位置是隐藏光标停的回退位，
+  // 屏上并没有它；老帧没这一格（这一栏是后加的）照旧画，不把旧现场弄成没光标。
+  function caretColumnAt(frame, y) {
+    if (y !== frame.cursor.y) return -1
+    return frame.cursor.hidden === true ? -1 : frame.cursor.x
+  }
+
+  // 元信息里那一截（页面与帧文本同一句话）：隐藏时写明。
+  function cursorNote(frame) {
+    return '光标 (' + frame.cursor.x + ', ' + frame.cursor.y + ')' +
+      (frame.cursor.hidden === true ? ' · 隐藏' : '')
+  }
+`
+
 /** 生成（或重新生成）一次运行的查看页——**只读现场文件**。 */
 export function writeViewer(runDir: string): string {
   const { info, steps, frames } = readRun(runDir)
@@ -81,6 +128,7 @@ function page(data: string, run: string): string {
   button { background: #232830; color: #d8dee9; border: 1px solid #333a45; border-radius: 4px;
            padding: 3px 10px; cursor: pointer; font: inherit; }
   button:hover { background: #2b313b; }
+  button:disabled { opacity: .4; cursor: default; }
   .stage { flex: 1; overflow: auto; padding: 12px; }
   .screen { background: #0f1115; border: 1px solid #2b2f38; border-radius: 6px; padding: 10px 12px;
             font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.35;
@@ -119,6 +167,8 @@ function page(data: string, run: string): string {
   const data = JSON.parse(document.getElementById('payload').textContent)
   const { info, steps, frames } = data
   const $ = (id) => document.getElementById(id)
+
+${VIEW_LOGIC}
 
   // —— 色板（ansi:N 的近似；真彩走原值）——
   const ANSI = ['#000000','#cc0000','#4e9a06','#c4a000','#3465a4','#75507b','#06989a','#d3d7cf',
@@ -181,28 +231,36 @@ function page(data: string, run: string): string {
     }
     return parts.join(' ')
   }
-  const pick = (n, at) => { selected = { step: n, index: Math.max(0, at) }; render() }
+  // 选中：**步**（左侧列表高亮）＋ **全局帧序列上的第几帧**（翻帧走的是它）。
+  //
+  // ⚠️ 首轮验收实测的毛病：翻帧只在「当前这一步自己的帧」里挪——而一步通常就一帧、
+  // 末尾几步压根没帧，于是「上一帧」点了没反应。现在翻帧沿**全局检查点序列**走：
+  // 从末尾那个没帧的步，照样能一帧一帧往回翻。
+  let selectedStep = steps.length ? steps[steps.length - 1].n : 0
+  let chosen = nearestFrameAtOrBefore(frames, selectedStep)
 
-  let selected = { step: steps.length ? steps[steps.length - 1].n : 0, index: 0 }
+  /** 选步：借它之前最近的一帧（没有就显示「这一步没有取帧」）。 */
+  const pickStep = (n) => { selectedStep = n; chosen = nearestFrameAtOrBefore(frames, n); render() }
+  /** 选帧：步跟着跳到那一帧所属的步（左侧列表高亮跟着走）。 */
+  const pickFrame = (at) => { chosen = at; selectedStep = frames[at].step; render() }
 
   const stepList = $('steps')
   for (const step of steps) {
-    const row = el('div', 'step' + (step.n === selected.step ? ' on' : ''))
+    const row = el('div', 'step')
     const act = el('span', 'act'); act.textContent = String(step.n) + ' ' + step.action
     const arg = el('span', 'arg'); arg.textContent = ' ' + describe(step)
     const mark = el('span', 'mark'); mark.textContent = framesOfStep(step.n).length ? '  ▣' : ''
     row.append(act, arg, mark)
-    row.onclick = () => pick(step.n, 0)
+    row.onclick = () => pickStep(step.n)
     stepList.appendChild(row)
   }
 
   // —— 帧：翻页 ＋ 字格重绘 ——
+  /** 此刻显示哪一帧：选中的那一帧；borrowed ＝ 它是**借**来的（本步没取帧）。 */
   function frameAt() {
-    const own = framesOfStep(selected.step)
-    if (own.length) return { frame: own[Math.min(selected.index, own.length - 1)], borrowed: false }
-    // 这一步没取帧：借**它之前**最近的一帧（「哪一步开始不对」要能看见当时的屏）
-    const before = frames.filter((frame) => frame.step <= selected.step)
-    return before.length ? { frame: before[before.length - 1], borrowed: true } : { frame: null, borrowed: false }
+    if (chosen < 0) return { frame: null, borrowed: false }
+    const frame = frames[chosen]
+    return { frame, borrowed: frame.step !== selectedStep }
   }
 
   function drawFrame(frame) {
@@ -220,9 +278,11 @@ function page(data: string, run: string): string {
         span.textContent = text
         row.appendChild(span)
       }
-      if (y === frame.cursor.y) {
+      // 光标只在**看得见**时画（终端把它藏起来时，那里是隐藏光标的回退位）
+      const caretCol = caretColumnAt(frame, y)
+      if (caretCol >= 0) {
         const caret = el('span', 'cursor')
-        caret.style.gridColumn = (frame.cursor.x + 1) + ' / span 1'
+        caret.style.gridColumn = (caretCol + 1) + ' / span 1'
         row.appendChild(caret)
       }
       wrap.append(gut, row)
@@ -232,39 +292,43 @@ function page(data: string, run: string): string {
   }
 
   function render() {
-    for (const node of stepList.children) node.classList.toggle('on', node.firstChild.textContent.startsWith(String(selected.step) + ' '))
+    for (const node of stepList.children) node.classList.toggle('on', node.firstChild.textContent.startsWith(String(selectedStep) + ' '))
     const { frame, borrowed } = frameAt()
     const stage = $('stage')
     stage.textContent = ''
+    // 翻不动的那一头，按钮就禁用（不是点了没反应）
+    $('prev-frame').disabled = !canShift(frames, chosen, -1)
+    $('next-frame').disabled = !canShift(frames, chosen, 1)
     if (!frame) { stage.textContent = '这一步没有取帧，之前也没有。'; $('pos').textContent = ''; $('framesize').textContent = ''; return }
     if (borrowed) {
       const note = el('p', 'note')
-      note.textContent = '第 ' + selected.step + ' 步没有取帧——显示它之前最近的一帧（第 ' + frame.step + ' 步 · ' + frame.label + '）。'
+      note.textContent = '第 ' + selectedStep + ' 步没有取帧——显示它之前最近的一帧（第 ' + frame.step + ' 步 · ' + frame.label + '）。'
       stage.appendChild(note)
     }
     stage.appendChild(drawFrame(frame))
     $('pos').textContent = '第 ' + frame.step + ' 步 · 帧 ' + frame.n + ' / ' + frames.length + ' · ' + frame.label
-    $('framesize').textContent = frame.columns + '×' + frame.rows + ' · 光标 (' + frame.cursor.x + ', ' + frame.cursor.y + ') · 存档 ' + frame.scrollback + ' 行'
+    $('framesize').textContent = frame.columns + '×' + frame.rows + ' · ' + cursorNote(frame) + ' · 存档 ' + frame.scrollback + ' 行'
   }
 
-  const move = (deltaFrame, deltaStep) => {
-    if (deltaStep) {
-      const at = steps.findIndex((step) => step.n === selected.step)
-      const next = steps[Math.min(Math.max(at + deltaStep, 0), steps.length - 1)]
-      if (next) pick(next.n, 0)
-      return
-    }
-    const own = framesOfStep(selected.step)
-    if (!own.length) return
-    selected.index = Math.min(Math.max(selected.index + deltaFrame, 0), own.length - 1)
-    render()
+  /** 沿全局帧序列翻一格（跨 capture——不是在当前那一步自己的帧里打转）。 */
+  const moveFrame = (delta) => {
+    if (!canShift(frames, chosen, delta)) return
+    pickFrame(shiftFrame(frames, chosen, delta))
   }
 
-  $('prev-frame').onclick = () => move(-1, 0)
-  $('next-frame').onclick = () => move(1, 0)
+  /** 沿步序列挪动（Shift ＋ ← →）：落到哪一步，就看它之前最近那一帧。 */
+  const moveStep = (delta) => {
+    if (steps.length === 0) return
+    const at = steps.findIndex((step) => step.n === selectedStep)
+    const next = steps[Math.min(Math.max(at + delta, 0), steps.length - 1)]
+    if (next) pickStep(next.n)
+  }
+
+  $('prev-frame').onclick = () => moveFrame(-1)
+  $('next-frame').onclick = () => moveFrame(1)
   addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowLeft') move(-1, event.shiftKey ? -1 : 0)
-    if (event.key === 'ArrowRight') move(1, event.shiftKey ? 1 : 0)
+    if (event.key === 'ArrowLeft') event.shiftKey ? moveStep(-1) : moveFrame(-1)
+    if (event.key === 'ArrowRight') event.shiftKey ? moveStep(1) : moveFrame(1)
   })
 
   render()

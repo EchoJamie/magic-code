@@ -44,7 +44,7 @@ import type { Fixture, FixtureRequest, FixtureTurn } from './fixture.ts'
 import { createSandbox } from './sandbox.ts'
 import type { Sandbox } from './sandbox.ts'
 import { createVt } from './vt.ts'
-import type { Vt, VtCell, VtScreen } from './vt.ts'
+import type { Vt, VtCell, VtCursor, VtScreen } from './vt.ts'
 import { writeViewer } from './viewer.ts'
 
 /** 本仓根——被测 checkout 的缺省值（从本文件往上四层：ui → test → app → packages → 根）。 */
@@ -92,19 +92,19 @@ export type WaitOptions = {
 }
 
 /**
- * 「敲下去，**直到屏上出现这个条件**」——pty 这一层**偶尔会吞掉一次按键**（早先几轮与
- * 本工具都实测过，症状是「屏上什么都没动」）。既然判据本来就是「屏上出现了什么」，
- * 那就以它为准：没出现就再敲一次（上限 `tries`），出现了就停（**不重复敲**）。
+ * 写一次之后**只等条件**：`until` ＝「写完之后等这个」，**不是**「没出现就再写一遍」。
  *
- * ⚠️ 只用在**幂等**的键上（回车 / 批准 / 退格这类）：重发的依据是「效果没出现」，
- * 不等于「这一下没送到」——第一次其实送到了、只是慢（模型慢、屏还没刷），
- * 重发的那一下必须**无害**（草稿已空时再敲回车本来就是空操作）。
+ * ⚠️ **动作只做一遍，重放一律不做**。首轮验收实测：`tries: 3` 把一次 `send('X')` 变成了
+ * `XXX`（步骤时间线上也是三次 send）。「屏上没出现」≠「这一下没送到」——第一次可能只是
+ * **慢**（模型慢、Ink 还没刷），重发恰好把「慢渲染」这种问题掩盖掉；碰上**不幂等**的动作
+ * （批准 `y`、回车把下一条也送出去），重放下去就是**误批**。
+ *
+ * 没等到就**超时留档**：抛 `UiWaitTimeout`（条件 · 等了多久 · 此刻的屏 · 现场目录），
+ * 由调用方看着办——要再试一次的，自己决定是接着敲、还是换个判据。
  */
 export type WriteUntil = {
   readonly until: WaitCondition
-  /** 重发上限（含第一次；缺省 3）。 */
-  readonly tries?: number
-  /** 每一次等多久（缺省 2500ms；真模型那条路给大一点）。 */
+  /** 等多久（缺省 2500ms；真模型那条路给大一点）。 */
   readonly timeoutMs?: number
 }
 
@@ -160,7 +160,8 @@ export type Capture = {
   readonly text: string
   /** **整个缓冲**（含滚进 scrollback 的）——判「记录不丢不重」用它，别用可见那一截。 */
   readonly history: readonly string[]
-  readonly cursor: { readonly x: number; readonly y: number }
+  /** 光标：坐标 ＋ **显隐**（藏起来时查看页不画它——见 `VtCursor`）。 */
+  readonly cursor: VtCursor
   /** 可见区之上压着多少行（滚进 scrollback 的）。 */
   readonly scrollback: number
   /** 第 `row` 行的格子（到最后一个非空格为止）——量色与重量走它。 */
@@ -259,60 +260,82 @@ export type UiSessionOptions = {
   readonly forceColor?: string
   /** 起手就等到的「应用已经挂上」判据——缺省等**首帧出现**（见 `waitForFrame`）。 */
   readonly skipReady?: boolean
+  /**
+   * 等第一帧的上限（缺省 20 秒）。
+   *
+   * 给**自证**用：起手失败那条路（超时 → 清场 → 留档）要能在几秒内跑完，
+   * 不必真等满 20 秒。
+   */
+  readonly readyTimeoutMs?: number
 }
 
 /** 等条件时重查的间隔——**不是**同步手段，只是「没新字节时也看一眼」的心跳。 */
 const POLL_MS = 20
 
 /**
- * 写一次（`send` 或 `key`），**要看效果就看效果**——给了 `until` 就等它，没等到再写一次。
+ * 写一次（`send` 或 `key`）：**写就是一遍**；给了 `until` 就**只等它**（见 `WriteUntil`）。
  *
- * 一处写、两个入口共用（`send` / `key` 的选项走的是同一段），免得两边各写一套重发规则。
+ * 一处写、两个入口共用（`send` / `key` 的选项走的是同一段），免得两边各有一套规则。
  */
-async function writeUntil(
+async function writeOnce(
   options: WriteUntil | undefined,
   write: () => Promise<void>,
   session: UiSession,
 ): Promise<void> {
-  if (options === undefined) {
-    await write()
-    return
-  }
+  await write()
+  if (options === undefined) return
+  await session.wait(options.until, { timeoutMs: options.timeoutMs ?? 2_500 })
+}
 
-  const tries = options.tries ?? 3
-  const timeoutMs = options.timeoutMs ?? 2_500
-
-  for (let attempt = 1; attempt <= tries; attempt += 1) {
-    await write()
-    try {
-      await session.wait(options.until, { timeoutMs })
-      return
-    } catch (error) {
-      if (!(error instanceof UiWaitTimeout)) throw error
-      if (attempt === tries) throw error
-    }
-  }
+/**
+ * 起手一路上**拿到手**的资源——失败时照这份清单**倒着还**（谁拿的谁负责）。
+ *
+ * ⚠️ 起手不是一步，是五步（夹具 → 沙地 → 现场 → VT → PTY → 子进程）。中间任何一步炸掉、
+ * 或者「起来了但画不出第一帧」超时，前面几步拿到的东西都还在——首轮验收实测：
+ * BOOT_STALL 探针超时之后，子进程、端点、HOME 三样一个没少（会话压根没进
+ * `control.sessions`，`closeAll` 自然也够不着它）。
+ */
+type Owned = {
+  fixture: Fixture | null
+  sandbox: Sandbox | null
+  artifacts: Artifacts | null
+  vt: Vt | null
+  pty: Bun.Terminal | null
+  child: Bun.Subprocess | null
 }
 
 export async function createUiSession(options: UiSessionOptions = {}): Promise<UiSession> {
+  const owned: Owned = { fixture: null, sandbox: null, artifacts: null, vt: null, pty: null, child: null }
+
+  try {
+    return await bootSession(options, owned)
+  } catch (error) {
+    // 起手失败＝**由创建者就地收摊**（不是扔给调用方、更不是扔给 closeAll——它还没被登记过）
+    await salvage(owned, error)
+    throw error
+  }
+}
+
+/** 起手正戏——**拿到一件记一件**（`owned` 就是失败时要清的那份清单，见 `Owned`）。 */
+async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiSession> {
   const checkout = options.checkout ?? REPO_ROOT
   const cli = join(checkout, 'packages/app/src/cli.ts')
   const columns = options.columns ?? 100
   const rows = options.rows ?? 30
   const scrollback = options.scrollback ?? 2_000
 
-  const fixture: Fixture | null =
-    options.turns === undefined ? null : startFixture({ turns: options.turns, model: options.model })
-  const sandbox: Sandbox = createSandbox({
+  const fixture = (owned.fixture =
+    options.turns === undefined ? null : startFixture({ turns: options.turns, model: options.model }))
+  const sandbox = (owned.sandbox = createSandbox({
     baseURL: fixture?.baseURL,
     model: options.model,
     forceColor: options.forceColor,
     config: options.config,
-  })
+  }))
 
   // 摊平成可变数组——`Bun.spawn` 收的是 `string[]`，而选项里给的是只读的
   const argv: string[] = [...(options.command ?? [process.execPath, cli, ...(options.argv ?? [])])]
-  const artifacts: Artifacts = createArtifacts({
+  const artifacts = (owned.artifacts = createArtifacts({
     root: options.artifacts ?? DEFAULT_ARTIFACTS_ROOT,
     label: options.label ?? 'ui',
     checkout,
@@ -326,9 +349,9 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
     },
     terminal: { columns, rows, scrollback, term: sandbox.env['TERM'] as string },
     fixture: fixture === null ? null : { baseURL: fixture.baseURL, port: fixture.port },
-  })
+  }))
 
-  const vt: Vt = createVt({ columns, rows, scrollback })
+  const vt = (owned.vt = createVt({ columns, rows, scrollback }))
   const decoder = new TextDecoder()
   let rawTail: string[] = []
   let rawTailBytes = 0
@@ -341,7 +364,7 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
     pending?.()
   }
 
-  const pty = new Bun.Terminal({
+  const pty = (owned.pty = new Bun.Terminal({
     cols: columns,
     rows,
     data: (_terminal: Bun.Terminal, chunk: Uint8Array) => {
@@ -359,9 +382,9 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
       vt.write(text)
       wake()
     },
-  })
+  }))
 
-  const child = Bun.spawn(argv, { terminal: pty, cwd: sandbox.workspace, env: sandbox.env })
+  const child = (owned.child = Bun.spawn(argv, { terminal: pty, cwd: sandbox.workspace, env: sandbox.env }))
   const startedAt = Bun.nanoseconds()
   artifacts.step('start', { argv, cwd: sandbox.workspace, home: sandbox.home, columns, rows })
 
@@ -394,7 +417,7 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
     }),
 
     send: async (text, writeOptions) => {
-      await writeUntil(
+      await writeOnce(
         writeOptions,
         () => {
           artifacts.step('send', { text, bytes: artifacts.bytes() })
@@ -411,7 +434,7 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
       if (bytes === undefined) {
         throw new Error(`不认得的键「${String(name)}」——认得的：${UI_KEYS.join(' / ')}（不替你猜）`)
       }
-      await writeUntil(
+      await writeOnce(
         writeOptions,
         () => {
           artifacts.step('key', { key: name, bytes: artifacts.bytes() })
@@ -561,11 +584,6 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
     },
 
     close: async (closeOptions = {}) => {
-      // ⚠️ 「还在不在」**不能只看 `exitCode`**：被信号带走的进程 `exitCode` 恒为 `null`
-      // （信号在 `signalCode` 里），只看前者会把「早就退了的」当成「还活着」，
-      // 于是一路 SIGTERM→SIGKILL 下去，结局记成「我们杀的」（实测）
-      const gone = (): boolean => child.exitCode !== null || child.signalCode !== null
-
       // 夹具收到的请求一并留档（截断 lastUser，别把长正文灌进步骤时间线）
       artifacts.step('fixture-requests', {
         count: fixture?.requests().length ?? 0,
@@ -578,28 +596,8 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
 
       // 先给它一点**自己走**的余地：刚敲过 ctrl+c 时那一跳还在路上，
       // 一上来就 SIGTERM 会把「用户让它退的」记成「我们杀的」（判据当场分不出来）
-      const graceMs = closeOptions.graceMs ?? 600
-      const deadline = Date.now() + graceMs
-      while (!gone() && Date.now() < deadline) await Bun.sleep(20)
-
-      // 谁让它退的场——应用自己走的（如空闲 ctrl+c）与「我们杀的」是两件事，
-      // 判据要分得出来（「退出」那一组等的就是前者）
-      let by: 'app' | 'sigterm' | 'sigkill' = gone() ? 'app' : 'sigterm'
-      if (!gone()) {
-        child.kill('SIGTERM')
-        // SIGTERM 之后给 1 秒：外壳收摊（卸挂载、关库）本就要一会儿，
-        // 太急就落到 SIGKILL——那不是「收摊」，是「拔电」（现场还在，但不好看）
-        await Promise.race([child.exited, Bun.sleep(1_000)])
-      }
-      if (!gone()) {
-        by = 'sigkill'
-        child.kill('SIGKILL')
-        await Promise.race([child.exited, Bun.sleep(1_000)])
-      }
-
-      await fixture?.stop()
-      vt.dispose()
-      pty.close()
+      const by = await shutDown(child, closeOptions.graceMs ?? 600)
+      await releaseTerminal(fixture, vt, pty)
 
       // 记录库与授权是**现场的一部分**（「记录不丢不重」这类判据要直读它）——
       // 在删沙地之前抄进产物目录（子进程已退，文件不再被占）
@@ -625,10 +623,116 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
   // 换了被测命令（自证探针）时**不等那道输入闸**——那是产品外壳的起手姿态，
   // 探针子进程根本没有它；等它只会白等到超时
   if (options.skipReady !== true) {
-    await waitForFrame(session, artifacts, child, options.command === undefined)
+    await waitForFrame(session, artifacts, child, {
+      waitInputGate: options.command === undefined,
+      timeoutMs: options.readyTimeoutMs ?? 20_000,
+    })
   }
 
   return session
+}
+
+/**
+ * 起手失败的收摊：**先留档，再清场**（倒序——后拿的先还）。
+ *
+ * 为什么留档要在清场之前：失败也是现场。`run.json` 记下失败缘由、屏上那一刻落一帧
+ * （它卡在什么画面上）、查看页照样生成——清完场，这些文件还在原处等人看。
+ *
+ * ⚠️ 倒序不是洁癖：子进程还占着沙地里的库文件，得先让它退场（且真退了），
+ * 抄库、删沙地才有意义。
+ */
+async function salvage(owned: Owned, error: unknown): Promise<void> {
+  const { artifacts, vt, pty, fixture, sandbox, child } = owned
+
+  if (artifacts !== null) {
+    try {
+      artifacts.step('boot-failed', { bytes: artifacts.bytes() })
+      if (vt !== null) {
+        await vt.settled()
+        recordFrame(artifacts, vt.screen(), '起手失败-最后一眼')
+      }
+      artifacts.finish('failed', {
+        failure: {
+          step: '起手',
+          kind: 'boot',
+          detail: error instanceof Error ? error.message : String(error),
+        },
+        exit: { code: child?.exitCode ?? null, signal: child?.signalCode ?? null },
+      })
+      writeViewer(artifacts.runDir)
+    } catch {
+      // 留档自己炸了不该盖掉起手那个错——把原来的错抛回去就是了
+    }
+  }
+
+  if (child !== null) await shutDown(child, 300)
+  await releaseTerminal(fixture, vt, pty)
+  if (sandbox !== null) {
+    if (artifacts !== null) snapshotSandbox(sandbox, artifacts)
+    sandbox.dispose()
+  }
+}
+
+/**
+ * 让子进程退场：先给一点**自己走**的余地，再 SIGTERM，再 SIGKILL——返回**谁让它退的场**。
+ *
+ * ⚠️ 「还在不在」**不能只看 `exitCode`**：被信号带走的进程 `exitCode` 恒为 `null`
+ * （信号在 `signalCode` 里），只看前者会把「早就退了的」当成「还活着」，
+ * 于是一路 SIGTERM→SIGKILL 下去，结局记成「我们杀的」（实测）。
+ */
+async function shutDown(child: Bun.Subprocess, graceMs: number): Promise<'app' | 'sigterm' | 'sigkill'> {
+  const gone = (): boolean => child.exitCode !== null || child.signalCode !== null
+
+  const deadline = Date.now() + graceMs
+  while (!gone() && Date.now() < deadline) await Bun.sleep(20)
+
+  // 谁让它退的场——应用自己走的（如空闲 ctrl+c）与「我们杀的」是两件事，
+  // 判据要分得出来（「退出」那一组等的就是前者）
+  let by: 'app' | 'sigterm' | 'sigkill' = gone() ? 'app' : 'sigterm'
+  if (!gone()) {
+    child.kill('SIGTERM')
+    // SIGTERM 之后给 1 秒：外壳收摊（卸挂载、关库）本就要一会儿，
+    // 太急就落到 SIGKILL——那不是「收摊」，是「拔电」（现场还在，但不好看）
+    await Promise.race([child.exited, Bun.sleep(1_000)])
+  }
+  if (!gone()) {
+    by = 'sigkill'
+    child.kill('SIGKILL')
+    await Promise.race([child.exited, Bun.sleep(1_000)])
+  }
+
+  return by
+}
+
+/** 收尾三件：停夹具（端口跟着释放）· 放 VT · 关 PTY——`close` 与起手失败两条路共用。 */
+async function releaseTerminal(
+  fixture: Fixture | null,
+  vt: Vt | null,
+  pty: Bun.Terminal | null,
+): Promise<void> {
+  await fixture?.stop()
+  vt?.dispose()
+  pty?.close()
+}
+
+/** 把此刻的屏落成一帧（起手失败那条路要它：「卡在什么画面上」得有物证）。 */
+function recordFrame(artifacts: Artifacts, screen: VtScreen, label: string): void {
+  const painted = frameOf(paint(screen))
+  artifacts.frame(
+    {
+      step: artifacts.info.steps,
+      label,
+      at: round(Date.now() - Date.parse(artifacts.info.startedAt)),
+      columns: screen.columns,
+      rows: screen.rows,
+      cursor: screen.cursor,
+      scrollback: screen.scrollback,
+      total: screen.total,
+      styles: painted.styles,
+      lines: painted.lines,
+    },
+    screen.lines.map((line) => line.text).join('\n'),
+  )
 }
 
 /**
@@ -648,10 +752,14 @@ async function waitForFrame(
   session: UiSession,
   artifacts: Artifacts,
   child: Bun.Subprocess,
-  /** 等不等「放开输入」那一跳——被测命令是**产品外壳**时才等（见函数头注第 2 条）。 */
-  waitInputGate: boolean,
+  options: {
+    /** 等不等「放开输入」那一跳——被测命令是**产品外壳**时才等（见函数头注第 2 条）。 */
+    readonly waitInputGate: boolean
+    /** 等第一帧的上限（缺省 20 秒；自证把它压小，好把起手失败那条路跑得完）。 */
+    readonly timeoutMs: number
+  },
 ): Promise<void> {
-  const deadline = Bun.nanoseconds() + 20_000 * 1e6
+  const deadline = Bun.nanoseconds() + options.timeoutMs * 1e6
 
   for (;;) {
     const screen = await session.screen()
@@ -659,7 +767,7 @@ async function waitForFrame(
       // 首帧落了以后给 Ink 一点余量（它那一下 `tcsetattr` 落定之前来的按键会被丢掉——
       // 早先 pty 那几轮实测的坑 1）。这是**起手一次的余量**，不是场景同步手段。
       await Bun.sleep(120)
-      if (waitInputGate) await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
+      if (options.waitInputGate) await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
       artifacts.step('ready', { columns: screen.columns, rows: screen.rows })
       return
     }
@@ -672,7 +780,7 @@ async function waitForFrame(
     }
 
     if (Bun.nanoseconds() > deadline) {
-      throw new Error(`等了 20 秒还没等到第一帧——现场：${artifacts.runDir}`)
+      throw new Error(`等了 ${options.timeoutMs}ms 还没等到第一帧——现场：${artifacts.runDir}`)
     }
 
     await Bun.sleep(10)

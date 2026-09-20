@@ -113,7 +113,11 @@ export function startFixture(options: FixtureOptions): Fixture {
 
   // 端口是**内核分配的**（`port: 0`）——起不来就说清楚，不给一个 `undefined` 糊过去
   const port = server.port
-  if (port === undefined) throw new Error('夹具起在了 unix socket 上——本夹具只认 TCP 端口')
+  if (port === undefined) {
+    // 半成品由**创建者**收掉：抛出去之后调用方手上没有 Fixture，那个服务就没人停得掉了
+    void server.stop(true)
+    throw new Error('夹具起在了 unix socket 上——本夹具只认 TCP 端口')
+  }
 
   return {
     baseURL: `http://127.0.0.1:${port}/v1`,

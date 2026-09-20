@@ -29,6 +29,7 @@ import { HINT_IDLE, placeholderOf } from '@magic/tui'
 import { UiWaitTimeout, createUiSession } from './driver.ts'
 import type { Capture, UiSession, UiSessionOptions } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
+import { readDatabase } from '../support.ts'
 
 /** 没出包的文案锚（见文件头注 3）——判据用到它们时，`detail` 里写上这一份。 */
 const COPY = {
@@ -36,6 +37,16 @@ const COPY = {
   decideHint: 'y / a / n',
   approval: '批准',
 } as const
+
+/**
+ * 工具**跑完**那行的完成标记（`tui` 的 `verdictOf`：成功走 `✓`）。
+ *
+ * ⚠️ 为什么单拎出来当锚：审批卡上就写着要执行的命令（`1. echo hello-magic —— 只读`），
+ * 拿**参数里的那串字**当「跑完了」的条件＝**空转**——首轮验收就是这么栽的
+ * （`frames/0002-工具跑完.txt` 抓到的其实还是审批卡）。`✓` 只在**结果行**上，
+ * 而结果行只在工具真跑完之后才有。
+ */
+const TOOL_DONE = '✓'
 
 /** 一条判据的结论——过了的也一并交回（给人看这一组到底判了些什么）。 */
 export type CheckOutcome = {
@@ -134,7 +145,8 @@ const bootInputResizeExit: Scenario = {
     const draft = await session.capture({ label: '草稿' })
     ui.check(draft.text.includes('你好'), '敲进去的字进了草稿', '按键确实经 PTY 到了 CLI')
 
-    // 回车走「敲到出现为止」——pty 偶尔吞键，判据本来就该以屏上的效果为准
+    // 回车**只敲一遍**，`until` 只是等屏上出现那句话（等不到＝超时留档，不重敲——
+    // 重敲会把「慢渲染」掩盖成「过了」，见 `driver.ts`·`WriteUntil`）
     await session.key('enter', { until: { text: '收到，我在。' }, timeoutMs: 4_000 })
     const answered = await session.capture({ label: '回话之后' })
     ui.check(answered.text.includes('› 你好'), '记录区留下了这次交代', '')
@@ -310,11 +322,25 @@ const modelStreamApproval: Scenario = {
     ui.check(deciding.text.includes(COPY.approval), '裁决卡给了键位与后果', `锚＝「${COPY.approval}」`)
 
     // —— 批准 → 真执行 → 再回模型 ——
-    // 敲的是 `y` 这个**字符**——PTY 上一次按键本来就是它，故走 `send`（`key` 只收功能键）；
-    // `until` 与回车同一条：等效果，没出现就重发
-    await session.send('y', { until: { text: 'hello-magic' } })
+    // 敲的是 `y` 这个**字符**——PTY 上一次按键本来就是它，故走 `send`（`key` 只收功能键）。
+    // ⚠️ 这一下**绝不能重发**：批准不幂等，重放下去就是**误批下一条**（首轮验收点名的坑）。
+    // ⚠️ 等的**不是** `hello-magic` 那串字（审批卡上就有它，见 `TOOL_DONE` 的注）——
+    // 等的是**结果行**：`✓ <耗时> · <输出末行>`，它只在工具跑完之后才上屏。
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await session.capture({ label: '工具跑完' })
-    ui.check(ran.text.includes('hello-magic'), '工具真跑了（输出回到记录区）', '')
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('hello-magic')),
+      '工具真跑了：结果行＝完成标记 ＋ 那条输出',
+      `锚＝结果行「${TOOL_DONE} … · hello-magic」（审批卡里那串参数不算）`,
+    )
+
+    // —— 独立核：**不看屏**，直读应用自己写的记录库 ——
+    const results = await awaitToolResult(session, 'hello-magic')
+    ui.check(
+      results.some((result) => result.ok && result.text.includes('hello-magic')),
+      '记录库里真有一条成功的工具结果（输出就在里面）',
+      results.length === 0 ? '一条 tool-result 都没有' : `${results.length} 条 tool-result`,
+    )
 
     // —— 中间屏：等头一块正文，紧接着取帧 ——
     await session.wait({ text: head })
@@ -322,12 +348,16 @@ const modelStreamApproval: Scenario = {
     ui.check(midway.text.includes(head), '中间屏抓到了头一块正文', `头一块＝${head}`)
     ui.check(!midway.text.includes(tail), '取帧时它确实还没吐完（中间态）', `末字「${tail}」还没落屏`)
 
-    // —— 收尾 ——
+    // —— 收尾：**等空闲再取帧**（流式末字到了 ≠ 结束：那一刻状态行还写着「工作中」）——
     await session.wait({ text: streamed })
+    await session.wait({ text: HINT_IDLE })
     const done = await session.capture({ label: '答复结束' })
     ui.check(done.text.includes(streamed), '正文流完（末字也到了）', '')
-    await session.wait({ text: HINT_IDLE })
-    ui.check(true, '答复之后回到空闲（可以接着交代）', `锚＝HINT_IDLE`)
+    ui.check(
+      done.lines.some((line) => line.includes(HINT_IDLE)),
+      '取「答复结束」那一帧时它已经空闲（末字到了不等于结束）',
+      `锚＝@magic/tui 的 HINT_IDLE：${HINT_IDLE}`,
+    )
 
     // —— 请求侧：两趟、都带着工具表 ——
     const requests = session.requests()
@@ -541,6 +571,52 @@ const isolationRepeatParallel: Scenario = {
     ui.check(rightShot.text.includes('答并行乙'), 'B 拿到自己的答复', '')
     ui.check(!rightShot.text.includes('答并行甲'), 'B 的屏上没有 A 的答复', '')
   },
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 零件
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 直读记录库里的**工具结果**——「结果真到了」不靠屏上的字、也不靠模型之后复述。
+ *
+ * 库里那一条的载荷是 `{ok, output:{text}}`（记录域写的，见 `smoke.test.ts` 同款读法）。
+ * 应用还在跑，故以**只读**打开（WAL 下并发读是安全的）。
+ */
+function toolResultsOf(session: UiSession): readonly { readonly ok: boolean; readonly text: string }[] {
+  const db = readDatabase(join(session.facts().dataDir, 'records.db'))
+
+  try {
+    return db.entries
+      .filter((entry) => entry.kind === 'tool-result')
+      .map((entry) => {
+        const payload = JSON.parse(entry.payload ?? '{}') as { ok?: boolean; output?: { text?: string } }
+
+        return { ok: payload.ok === true, text: payload.output?.text ?? '' }
+      })
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * 等那条结果**落进库**（顺带把它交回去）——屏上出现与落库是两条路，中间有个小缝。
+ *
+ * 有界：`timeoutMs` 到了就把当下这一份交回去（判据自己去红，不在这儿空等）。
+ */
+async function awaitToolResult(
+  session: UiSession,
+  needle: string,
+  timeoutMs = 3_000,
+): Promise<readonly { readonly ok: boolean; readonly text: string }[]> {
+  const deadline = Date.now() + timeoutMs
+
+  for (;;) {
+    const results = toolResultsOf(session)
+    if (results.some((result) => result.ok && result.text.includes(needle))) return results
+    if (Date.now() > deadline) return results
+    await Bun.sleep(50)
+  }
 }
 
 /** 六组场景的表——用例与命令行都从这儿取。 */

@@ -3,12 +3,14 @@
  *
  * ## 是什么、不是什么
  *
- * 是：一个**保持运行的命令行进程**，从标准输入（或它自己的那个 FIFO）读一行 JSON 命令，
- * 往标准输出（以及 `<控制目录>/out.ndjson`）写一行 JSON 答复。命令带 `id`，答复带着**同一个**
- * `id` 回来——助手同时开几个实例比对时，靠它认哪句答的是哪句。
+ * 是：一个**保持运行的命令行进程**（`scripts/ui.ts serve`），从**它自己的标准输入**读一行
+ * JSON 命令，往标准输出写一行 JSON 答复。命令带 `id`，答复带着**同一个** `id` 回来——
+ * 助手同时开几个实例比对时，靠它认哪句答的是哪句。
  *
- * 不是：系统 daemon、socket 服务、跨设备控制。会话活在这个进程活着的时候；进程一走，
- * 现场（产物目录）还在，接着用新的进程看。
+ * 不是：系统 daemon、socket 服务、跨设备控制，**也不是别的水道**。首轮验收退回之后实测：
+ * 助手那条 `exec_command`（`tty:true`）起一个会话、往里 `write_stdin` 逐行写 JSON，
+ * 跨多次调用保持同一个 PID——**stdin 本身就是那根常开的水道**，FIFO、序号文件、答复轮询
+ * 那一套全是多余的机制，已删。
  *
  * ## 五条线画清楚
  *
@@ -20,16 +22,18 @@
  *    助手检查完可以接着下一条命令（会话不退场）；
  * 5. **EOF / `close` / 进程退出都要清场**——自己起的应用与端点一个不留。
  *
- * ## 为什么 FIFO 也是「标准输入」
+ * ## stdin 的条件（**实测**，别想当然）
  *
- * 助手的工具调用之间**没有一根常开的 stdin**（每次调用都是一条新命令）。故常驻进程用
- * `<控制目录>/in.fifo` **当自己的 stdin**：它把 FIFO 以读写打开（写端全关也不 EOF），
- * 于是「另一个进程往里写一行」与「往 stdin 写一行」是一回事。`request` 子命令是那条
- * 薄客户端——写一行，等回音，打印，退出。
+ * - **`tty:false` 起的进程，stdin 当场就是关的**（接到 `/dev/null`）——「EOF 即收摊」立刻
+ *    成立，这个入口当不了持续入口。要么 `tty:true` 直接用 TTY 行输入（实测可用：终端按
+ *    行交给进程，它自己那份回显也在输出里——解析时只认 JSON 行），要么拿 `cat |` 包一层：
+ *
+ *    `cat | bun packages/app/scripts/ui.ts serve --out <产物根>`
+ *
+ *    `cat` 活着，管道那头就不 EOF，写进去的每一行照常到达。
+ * - 会话活在这个进程活着的时候；进程一走，现场（产物目录）还在，接着用新的进程看。
  */
 
-import { appendFileSync, closeSync, constants, createReadStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync, writeSync } from 'node:fs'
-import { join } from 'node:path'
 import { createUiSession, UiWaitTimeout, UI_KEYS } from './driver.ts'
 import type { CloseReport, UiKey, UiSession, UiSessionOptions, WaitCondition } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
@@ -73,8 +77,6 @@ export type ControlOptions = {
   readonly checkout?: string
   /** 诊断（不上控制通道，走 stderr）。 */
   readonly log?: (line: string) => void
-  /** 记录一条**控制侧**的动静（起没起、关没关）——给外面写进 `serve.ndjson`。 */
-  readonly onEvent?: (event: { readonly at: string; readonly event: string; readonly detail?: unknown }) => void
 }
 
 export type Control = {
@@ -90,7 +92,8 @@ export type Control = {
  * 起一个控制面——会话按 `s1` / `s2` 编号，`session` 不写就用**当前那一个**。
  *
  * 「当前那一个」＝最后 `start` 的、还没 `close` 的那个：助手开两个实例比对时**显式写号**，
- * 平常只开一个时省掉这行字。
+ * 平常只开一个时省掉这行字。⚠️ 写了号，答复里回的就是**那一个号**（连同它的 pid）——
+ * 「这回的是谁」只能有一个答案，首轮验收实测它曾经回成当前那个。
  */
 export function createControl(options: ControlOptions = {}): Control {
   const log = options.log ?? (() => {})
@@ -98,10 +101,13 @@ export function createControl(options: ControlOptions = {}): Control {
   let counter = 0
   let current: string | undefined
 
-  const resolve = (request: ControlRequest): UiSession | undefined => {
+  /** 这条请求冲谁去——**解析出来的那一个**（号与实例一起交回，免得两处各解析一次）。 */
+  const resolve = (request: ControlRequest): { name: string; session: UiSession } | undefined => {
     const name = request.session ?? current
+    if (name === undefined) return undefined
+    const session = sessions.get(name)
 
-    return name === undefined ? undefined : sessions.get(name)
+    return session === undefined ? undefined : { name, session }
   }
 
   const fail = (
@@ -173,63 +179,63 @@ export function createControl(options: ControlOptions = {}): Control {
                 ? {}
                 : { checkout: request.checkout ?? options.checkout }),
             }
+            // 起不来就**在这一跳里收拾干净**（`createUiSession` 自己清）——不登记一个半成品
             const session = await createUiSession(startOptions)
             sessions.set(sessionId, session)
             current = sessionId
-            options.onEvent?.({ at: new Date().toISOString(), event: 'start', detail: { session: sessionId, pid: session.pid } })
             log(`起会话 ${sessionId}（pid ${session.pid}）· ${session.runDir}`)
 
             return done(id, { session: sessionId, ...session.facts(), ...(await stateOf(session)) })
           }
 
           case 'send': {
-            const session = resolve(request)
-            if (session === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
             if (typeof request.text !== 'string') return fail(id, 'bad-request', 'send 要给 text')
-            await session.send(request.text)
+            await target.session.send(request.text)
 
-            return done(id, { session: current, sent: request.text, ...(await stateOf(session)) })
+            return done(id, { session: target.name, sent: request.text, ...(await stateOf(target.session)) })
           }
 
           case 'key': {
-            const session = resolve(request)
-            if (session === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
             if (typeof request.key !== 'string') return fail(id, 'bad-request', 'key 要给键名')
             if (!(UI_KEYS as readonly string[]).includes(request.key)) {
               // 未支持的键**明确报错**，不悄悄换成另一种按键（工单的话）
               return fail(id, 'bad-request', `不认得的键「${request.key}」——有的是：${UI_KEYS.join(' / ')}`)
             }
-            await session.key(request.key as UiKey)
+            await target.session.key(request.key as UiKey)
 
-            return done(id, { session: current, key: request.key, ...(await stateOf(session)) })
+            return done(id, { session: target.name, key: request.key, ...(await stateOf(target.session)) })
           }
 
           case 'resize': {
-            const session = resolve(request)
-            if (session === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
             if (typeof request.columns !== 'number' || typeof request.rows !== 'number') {
               return fail(id, 'bad-request', 'resize 要给 columns 与 rows（数字）')
             }
-            await session.resize(request.columns, request.rows)
+            await target.session.resize(request.columns, request.rows)
 
-            return done(id, { session: current, ...(await stateOf(session)) })
+            return done(id, { session: target.name, ...(await stateOf(target.session)) })
           }
 
           case 'wait': {
-            const session = resolve(request)
-            if (session === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
             if (request.condition === undefined) return fail(id, 'bad-request', 'wait 要给 condition')
 
             try {
-              const result = await session.wait(request.condition, {
+              const result = await target.session.wait(request.condition, {
                 ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
               })
 
               return done(id, {
-                session: current,
+                session: target.name,
                 matched: result.matched,
                 elapsedMs: Math.round(result.elapsedMs),
-                ...(await stateOf(session)),
+                ...(await stateOf(target.session)),
               })
             } catch (error) {
               if (error instanceof UiWaitTimeout) {
@@ -249,13 +255,15 @@ export function createControl(options: ControlOptions = {}): Control {
           }
 
           case 'capture': {
-            const session = resolve(request)
-            if (session === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
-            const shot = await session.capture({ ...(request.label === undefined ? {} : { label: request.label }) })
-            const facts = session.facts()
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            const shot = await target.session.capture({
+              ...(request.label === undefined ? {} : { label: request.label }),
+            })
+            const facts = target.session.facts()
 
             return done(id, {
-              session: current,
+              session: target.name,
               pid: facts.pid,
               frame: {
                 n: shot.n,
@@ -273,16 +281,14 @@ export function createControl(options: ControlOptions = {}): Control {
           }
 
           case 'close': {
-            const name = request.session ?? current
-            const session = name === undefined ? undefined : sessions.get(name)
-            if (session === undefined) return fail(id, 'no-session', '没有可关的实例')
-            const report = await session.close()
-            sessions.delete(name as string)
-            if (current === name) current = [...sessions.keys()].at(-1)
-            options.onEvent?.({ at: new Date().toISOString(), event: 'close', detail: { session: name, by: report.exit.by } })
-            log(`关会话 ${name as string}（退出缘由 ${report.exit.by}）· 现场 ${report.runDir}`)
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '没有可关的实例')
+            const report = await target.session.close()
+            sessions.delete(target.name)
+            if (current === target.name) current = [...sessions.keys()].at(-1)
+            log(`关会话 ${target.name}（退出缘由 ${report.exit.by}）· 现场 ${report.runDir}`)
 
-            return done(id, { session: name, ...summarize(report) })
+            return done(id, { session: target.name, ...summarize(report) })
           }
 
           case 'sessions': {
@@ -316,7 +322,6 @@ export function createControl(options: ControlOptions = {}): Control {
       for (const [name, session] of [...sessions.entries()].reverse()) {
         try {
           await session.close()
-          options.onEvent?.({ at: new Date().toISOString(), event: 'close', detail: { session: name, by: 'eof' } })
           log(`收摊 ${name}（控制通道收尾）`)
         } catch (error) {
           log(`收摊 ${name} 出错：${String(error)}`)
@@ -338,151 +343,4 @@ function summarize(report: CloseReport): Record<string, unknown> {
     truncated: report.truncated,
     frames: report.frames,
   }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// 控制目录：FIFO ＋ 答复文件（助手那条路）
-// ═══════════════════════════════════════════════════════════════════════
-
-export type ControlDir = {
-  readonly dir: string
-  readonly fifo: string
-  readonly out: string
-  readonly seq: string
-}
-
-/**
- * 备好一个控制目录——`in.fifo` 就是常驻进程的 stdin（见文件头注）。
- *
- * `mkfifo` 用系统那份（`Bun.spawnSync`）：Bun 没有现成的建 FIFO API，
- * 而这是一条 POSIX 早就定死的东西，不值得为它引依赖。
- */
-export function prepareControlDir(dir: string): ControlDir {
-  mkdirSync(dir, { recursive: true })
-  const fifo = join(dir, 'in.fifo')
-  const out = join(dir, 'out.ndjson')
-  const seq = join(dir, 'seq')
-
-  if (!existsSync(fifo)) {
-    const made = Bun.spawnSync(['mkfifo', fifo])
-    if (made.exitCode !== 0) throw new Error(`建 FIFO 失败：${made.stderr.toString()}`)
-  }
-  writeFileSync(out, '', { flag: 'a' })
-  if (!existsSync(seq)) writeFileSync(seq, '0', 'utf8')
-
-  return { dir, fifo, out, seq }
-}
-
-/**
- * 以**读写**打开 FIFO 当命令流——写端全关也不 EOF（这是整条路成立的那一笔）。
- *
- * ⚠️ **必须是读写**：只读打开的话，每次 `request` 写完一关，那头就收到一次 EOF，
- * 于是「一条命令一收摊」。读写打开则断开与 EOF 无关，读的是**同一根水道**。
- * 字节按行切（一次 `request` 写一行，但读侧不假定它一次到齐）。
- */
-export function openFifoStream(
-  controlDir: ControlDir,
-  onLine: (line: string) => void,
-): { readonly fd: number; dispose: () => void } {
-  const fd = openSync(controlDir.fifo, constants.O_RDWR)
-  const stream = createReadStream('', { fd, encoding: 'utf8' })
-  let buffered = ''
-
-  stream.on('data', (chunk: string) => {
-    buffered += chunk
-    let at = buffered.indexOf('\n')
-    while (at !== -1) {
-      const line = buffered.slice(0, at)
-      buffered = buffered.slice(at + 1)
-      if (line.trim() !== '') onLine(line)
-      at = buffered.indexOf('\n')
-    }
-  })
-  stream.on('error', () => {
-    // FIFO 那头没了（控制目录被删）——静默退场，收摊归调用方
-  })
-
-  return {
-    fd,
-    dispose: () => {
-      stream.destroy()
-      closeSync(fd)
-    },
-  }
-}
-
-/** 追加一条答复到 `out.ndjson`（助手那条路靠它认领自己的答复）。 */
-export function appendReply(controlDir: ControlDir, reply: string): void {
-  appendFileSync(controlDir.out, `${reply}\n`, 'utf8')
-}
-
-/** 发一条命令（薄客户端 `request` 用）——分配 id、写进 FIFO、等答复。 */
-export async function sendRequest(
-  controlDir: ControlDir,
-  command: Record<string, unknown>,
-  timeoutMs = 30_000,
-): Promise<{ readonly reply: ControlReply; readonly id: number }> {
-  const id = nextId(controlDir)
-  const line = `${JSON.stringify({ id, ...command })}\n`
-  writeLine(controlDir.fifo, line)
-
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    const reply = findReply(controlDir.out, id)
-    if (reply !== undefined) return { reply, id }
-    if (Date.now() > deadline) throw new Error(`等答复超时（${timeoutMs}ms）——id ${id} 没有回音：${controlDir.out}`)
-    await Bun.sleep(20)
-  }
-}
-
-/**
- * 往 FIFO 写一行。
- *
- * `O_NONBLOCK` ＋ `O_WRONLY`：**那头没人读时当场报错**（ENXIO），而不是**阻塞到天荒地老**
- * ——助手最怕的失败形态是「卡住」，不是「报错」。行很短，写不会撞上管道缓冲上限。
- */
-function writeLine(fifo: string, line: string): void {
-  let fd: number
-  try {
-    fd = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)
-  } catch (error) {
-    throw new Error(`控制通道那头没人读（${fifo}）——先起 \`ui.ts serve --control <目录>\`：${String(error)}`)
-  }
-
-  try {
-    writeSync(fd, line)
-  } finally {
-    closeSync(fd)
-  }
-}
-
-/** 在下一条序号上取号（`seq` 文件——一条一条来，撞不了）。 */
-function nextId(controlDir: ControlDir): number {
-  const raw = Number.parseInt(readFileSync(controlDir.seq, 'utf8').trim(), 10)
-  const next = Number.isNaN(raw) ? 1 : raw + 1
-  writeFileSync(controlDir.seq, String(next), 'utf8')
-
-  return next
-}
-
-/** 在答复文件里认领 `id` 那条（没有＝还没回来）。 */
-function findReply(outPath: string, id: number): ControlReply | undefined {
-  if (!existsSync(outPath)) return undefined
-
-  for (const line of readFileSync(outPath, 'utf8').split('\n')) {
-    if (line.trim() === '') continue
-    try {
-      const parsed = JSON.parse(line) as ControlReply
-      if (parsed.id === id) return parsed
-    } catch {
-      // 半行（正在写）——下一轮再看
-    }
-  }
-
-  return undefined
-}
-
-/** 控制目录里都有什么（`request`/排错时看一眼）。 */
-export function listControlDir(dir: string): readonly string[] {
-  return existsSync(dir) ? readdirSync(dir).sort() : []
 }

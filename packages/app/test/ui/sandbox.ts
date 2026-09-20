@@ -69,25 +69,32 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
   const workspace = join(root, 'ws')
   const dataDir = join(root, 'data')
 
-  for (const dir of [join(home, '.magic'), workspace, dataDir]) mkdirSync(dir, { recursive: true })
+  let configPath: string
+  try {
+    for (const dir of [join(home, '.magic'), workspace, dataDir]) mkdirSync(dir, { recursive: true })
 
-  // `writeConfig(dir, …)` 把 `config.json` 写进那个目录——故给它 `$HOME/.magic/`
-  const configPath = writeConfig(
-    join(home, '.magic'),
-    validConfig({
-      defaultProvider: 'local',
-      providers: {
-        local: {
-          baseURL: options.baseURL ?? DEAD_BASE_URL,
-          apiKey: FAKE_API_KEY,
-          model: options.model ?? 'MiniMax-M3',
+    // `writeConfig(dir, …)` 把 `config.json` 写进那个目录——故给它 `$HOME/.magic/`
+    configPath = writeConfig(
+      join(home, '.magic'),
+      validConfig({
+        defaultProvider: 'local',
+        providers: {
+          local: {
+            baseURL: options.baseURL ?? DEAD_BASE_URL,
+            apiKey: FAKE_API_KEY,
+            model: options.model ?? 'MiniMax-M3',
+          },
         },
-      },
-      // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿
-      dataDir,
-      ...options.config,
-    }),
-  )
+        // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿
+        dataDir,
+        ...options.config,
+      }),
+    )
+  } catch (error) {
+    // 半成品沙地由**创建者**自己删——抛出去之后没人知道这块目录落在哪儿
+    removeDir(root)
+    throw error
+  }
 
   return {
     root,

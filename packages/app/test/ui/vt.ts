@@ -59,13 +59,27 @@ export type VtLine = {
   readonly wrapped: boolean
 }
 
+/**
+ * 光标这一刻的样子——**坐标只有这一套**（`x` 是列、`y` 是**屏内**行号，与 `viewportY` 无关），
+ * 另带一格**终端自己说的显隐**。
+ *
+ * 为什么要显隐：U31 那支真光标落地之后，应用（Ink）**起手就把终端光标藏了**，自己另画
+ * 一个——而「藏起来的那个光标」停在下方回退位上，只按坐标画出来就是**把没显示的光标画给人看**
+ * （规划侧看帧时点出来的）。故显隐必须跟坐标一起记，查看页才画得对。
+ */
+export type VtCursor = {
+  readonly x: number
+  readonly y: number
+  /** 藏没藏（DECTCEM）——`CSI ?25l` 藏 / `CSI ?25h` 显 / 软复位 `CSI !p` 回到显。 */
+  readonly hidden: boolean
+}
+
 /** 此刻的一屏——**只含可见区**；存档另有其数。 */
 export type VtScreen = {
   readonly columns: number
   readonly rows: number
   readonly lines: readonly VtLine[]
-  /** 光标落在这一屏的哪儿（`x` 是列、`y` 是**屏内**行号——与 `viewportY` 无关）。 */
-  readonly cursor: { readonly x: number; readonly y: number }
+  readonly cursor: VtCursor
   /** 可见区之上压着多少行（滚进 scrollback 的）——「屏上还有没有它」看这个数。 */
   readonly scrollback: number
   /** 缓冲总行数（含 scrollback）。 */
@@ -189,7 +203,7 @@ export function createVt(options: VtOptions): Vt {
         columns,
         rows,
         lines,
-        cursor: { x: active.cursorX, y: active.cursorY },
+        cursor: { x: active.cursorX, y: active.cursorY, hidden: cursorHiddenIn(terminal) },
         scrollback: top,
         total: active.length,
         history,
@@ -216,6 +230,20 @@ export function createVt(options: VtOptions): Vt {
 
     dispose: () => terminal.dispose(),
   }
+}
+
+/**
+ * 终端此刻**藏没藏光标**。
+ *
+ * ⚠️ 这一格只能从 xterm 的**内部面**读（`coreService.isCursorHidden`）：它没进公开的
+ * `IModes`（那张表是 SM/DECSET 那批，没有 DECTCEM）。读的是**它自己的解析状态**——
+ * 不自己扫字节找 `?25l`（那＝另造一套 VT，见文件头注）。内部面哪天不在了就退回 `false`
+ * （＝照旧画），那是**看得见**的退化，不会悄悄少画一个光标。
+ */
+function cursorHiddenIn(terminal: Terminal): boolean {
+  const core = (terminal as unknown as { _core?: { coreService?: { isCursorHidden?: boolean } } })._core
+
+  return core?.coreService?.isCursorHidden ?? false
 }
 
 /**

@@ -25,6 +25,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { VtCursor } from './vt.ts'
 
 /** 原始字节的缺省上限（8 MiB）——够一次界面验收跑完，又不至于把仓库撑爆。 */
 export const RAW_LIMIT_BYTES = 8 * 1024 * 1024
@@ -38,7 +39,13 @@ export type FrameRecord = {
   readonly at: number
   readonly columns: number
   readonly rows: number
-  readonly cursor: { readonly x: number; readonly y: number }
+  /**
+   * 光标：坐标 ＋ **显隐**（同一支 VT 取样，见 `vt.ts`·`VtCursor`）。
+   *
+   * 之所以要显隐：应用会把终端光标藏起来（自己另画一个），藏起来的那个停在下方回退位
+   * ——只按坐标画出来就是「把没显示的光标画给人看」。
+   */
+  readonly cursor: VtCursor
   /** 可见区之上压着的行数（滚进 scrollback 的）。 */
   readonly scrollback: number
   readonly total: number
@@ -221,7 +228,8 @@ export function createArtifacts(options: ArtifactsOptions): Artifacts {
       writeFileSync(
         join(runDir, 'frames', `${name}.txt`),
         `${plain}\n\n—— 第 ${frame.step} 步 · ${frame.label} · ${frame.columns}×${frame.rows} · ` +
-          `光标 (${frame.cursor.x}, ${frame.cursor.y}) · 存档 ${frame.scrollback} 行 ——\n`,
+          `光标 (${frame.cursor.x}, ${frame.cursor.y})${frame.cursor.hidden === true ? ' **隐藏**' : ''} · ` +
+          `存档 ${frame.scrollback} 行 ——\n`,
         'utf8',
       )
       info.frames = frameCount

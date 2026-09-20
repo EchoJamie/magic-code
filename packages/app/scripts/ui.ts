@@ -3,31 +3,19 @@
  * 界面验收工具 · 命令行入口（U40）——**薄的一层**：解析参数、调用共用驱动。
  *
  * 本文件**不复制任何驱动逻辑**（驱动在 `test/ui/`）：这里只有「读哪几个参数、
- * 打哪几行字、退什么码」。四条子命令：
+ * 打哪几行字、退什么码」。三条子命令：
  *
  * ```
- * bun packages/app/scripts/ui.ts list                                    # 场景一览
- * bun packages/app/scripts/ui.ts run <场景> [--out <目录>] [--quiet]      # 跑一组场景
- * bun packages/app/scripts/ui.ts serve [--control <目录>] [--out <目录>]   # 常驻：逐行 JSON
- * bun packages/app/scripts/ui.ts request --control <目录> '<JSON>'        # 向常驻进程发一条
+ * bun packages/app/scripts/ui.ts list                          # 场景一览
+ * bun packages/app/scripts/ui.ts run <场景> [--out <目录>]      # 跑一组场景
+ * bun packages/app/scripts/ui.ts serve [--out <目录>]           # 常驻：stdin 逐行 JSON ←→ stdout 逐行 JSON
  * ```
  *
  * ⚠️ 这是**研发设施**，不是产品命令：`magic --help` 里没有它，产品命令也不认它。
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
-import {
-  appendReply,
-  createControl,
-  listControlDir,
-  openFifoStream,
-  prepareControlDir,
-  runScenario,
-  scenarioNames,
-  sendRequest,
-} from '../test/ui/index.ts'
-import type { ControlDir, ScenarioName } from '../test/ui/index.ts'
+import { createControl, runScenario, scenarioNames } from '../test/ui/index.ts'
+import type { ScenarioName } from '../test/ui/index.ts'
 
 const USAGE = `界面验收工具（开发命令，不是产品命令）
 
@@ -39,18 +27,19 @@ const USAGE = `界面验收工具（开发命令，不是产品命令）
       跑一组场景：起真应用、敲键、等屏上的条件、留现场，最后打印现场目录与查看页路径。
       退出码 0 ＝ 全部判据通过；1 ＝ 有判据没过（失败现场照样留在 --out 下）。
 
-  bun packages/app/scripts/ui.ts serve [--control <目录>] [--out <目录>]
-      常驻控制进程：逐行读 JSON 命令、逐行写 JSON 答复。
-      给了 --control <目录> ⇒ 命令源是那根 in.fifo（助手那条路：另起进程往里写）；
-      没给 ⇒ 命令源是 stdin（管道），stdin 到头就收摊。
+  bun packages/app/scripts/ui.ts serve [--out <目录>]
+      常驻控制进程（助手那条入口）：**标准输入逐行读 JSON 命令、标准输出逐行写 JSON 答复**。
+      命令带 id，答复带同一个 id；命令一条一条来（前一条没答复，后面的排队）。
+      **stdin 到头（EOF）就收摊**：自己起的应用与端点一个不留，现场留在 --out 下。
 
-  bun packages/app/scripts/ui.ts request --control <目录> '<一行 JSON>' [--timeout <毫秒>]
-      薄客户端：把这一行写进控制通道，等同一个 id 的答复，打印它，按 ok 退 0 / 1。
+      ⚠️ stdin 的条件（实测，别想当然）——**tty:false 起的进程 stdin 当场就是关的**
+      （接到 /dev/null），serve 会立刻收到 EOF 收摊，当不了持续入口。两条可用姿势：
+        ① tty:true 的 exec 会话，直接把 JSON 行写进这个进程的 stdin（TTY 行输入实测可用）；
+        ② 拿 cat 包一层：cat | bun packages/app/scripts/ui.ts serve --out <目录>
+           （想让它一直活着就别给 Ctrl-D）。
 
 参数：
   --out <目录>      产物根（缺省 <仓库>/.ui-runs；每次运行一个子目录，不覆盖旧的）
-  --control <目录>  控制目录（in.fifo · out.ndjson · seq · events.ndjson）
-  --timeout <毫秒>  request 等答复的上限（缺省 30000）
   --quiet           run 时不逐条打判据（只打结论）
 `
 
@@ -150,22 +139,10 @@ async function main(): Promise<number> {
     }
 
     case 'serve': {
-      const control = args.flags['control']
-      const events: string[] = []
-      const controlDir: ControlDir | null =
-        typeof control === 'string' ? prepareControlDir(control) : null
-      const eventsPath = controlDir === null ? null : join(controlDir.dir, 'events.ndjson')
-      if (eventsPath !== null) mkdirSync(controlDir?.dir as string, { recursive: true })
-
       const face = createControl({
         ...(artifactsOf(args.flags) === undefined ? {} : { artifacts: artifactsOf(args.flags) as string }),
         // 诊断走 stderr，**绝不混进控制协议**（stdout 上只有 JSON 行）
         log: (line) => console.error(`[ui] ${line}`),
-        onEvent: (event) => {
-          const line = JSON.stringify(event)
-          events.push(line)
-          if (eventsPath !== null) appendFileSync(eventsPath, `${line}\n`, 'utf8')
-        },
       })
 
       let chain: Promise<void> = Promise.resolve()
@@ -174,107 +151,44 @@ async function main(): Promise<number> {
         chain = chain.then(async () => {
           const reply = await face.handle(line)
           await Bun.write(Bun.stdout, `${reply}\n`)
-          if (controlDir !== null) appendReply(controlDir, reply)
         })
       }
 
-      let stop: (() => void) | null = null
-      const ended = new Promise<void>((resolve) => {
-        stop = resolve
-      })
       const shutdown = async (reason: string): Promise<void> => {
         console.error(`[ui] 收摊（${reason}）`)
+        // 先把在途那条答完，再收摊——答复次序即请求次序，收摊不该把最后一句吞掉
         await chain
         await face.closeAll()
-        stop?.()
-      }
-
-      if (controlDir !== null) {
-        // FIFO 当 stdin：写端关了也不 EOF（读写打开），故**它不触发收摊**——
-        // 收摊靠 `close` / SIGTERM / SIGINT（见文件头注与 README）
-        openFifoStream(controlDir, submit)
-        console.error(`[ui] 控制通道就绪：${controlDir.fifo}（答复写 ${controlDir.out}）`)
-      }
-
-      // ⚠️ 给了 `--control` 就**不接 stdin**：命令源已经定了是那根 FIFO——
-      // 再挂一根 stdin 的话，后台起它时（stdin 是 /dev/null）当场就是一次 EOF，
-      // 「收摊（stdin 到头了）」比第一条命令还早（实测踩过）
-      if (controlDir === null && process.stdin.isTTY !== true) {
-        // 管道那条 stdin：**EOF 就是收摊信号**（工单点名要的一条）
-        void (async () => {
-          const decoder = new TextDecoder()
-          let buffered = ''
-          for await (const chunk of process.stdin) {
-            buffered += decoder.decode(chunk as Uint8Array, { stream: true })
-            let at = buffered.indexOf('\n')
-            while (at !== -1) {
-              const line = buffered.slice(0, at)
-              buffered = buffered.slice(at + 1)
-              if (line.trim() !== '') submit(line)
-              at = buffered.indexOf('\n')
-            }
-          }
-          await shutdown('stdin 到头了')
-        })()
-      } else if (controlDir === null) {
-        await printErr('serve 要一根 stdin（管道）或一个 --control <目录>——两样都没有就无事可做')
-        return 1
-      }
-
-      if (controlDir !== null) {
-        console.error('[ui] 命令源＝控制目录那根 FIFO（stdin 不接）')
       }
 
       for (const signal of ['SIGINT', 'SIGTERM'] as const) {
         process.on(signal, () => {
-          void shutdown(signal)
+          // ⚠️ 信号来了得**自己退场**：主流程正堵在那根 stdin 的读上（它只认 EOF），
+          // 而挂了处理器之后信号本身不再杀进程——不 exit 就永远停在那儿
+          // （实测：自动用例 finally 里 `serve.kill()` 之后进程不死，`await exited` 没回音）
+          void shutdown(signal).then(() => process.exit(0))
         })
       }
 
-      await ended
+      console.error('[ui] 控制通道就绪：stdin 逐行 JSON 命令 ←→ stdout 逐行 JSON 答复')
+
+      // 命令源**只有 stdin 一根**（TTY 与管道同一支读法：TTY 那条由终端按行交上来）。
+      // 管道那头关了 / TTY 上敲了 Ctrl-D ⇒ 循环自然退出 ⇒ 收摊
+      const decoder = new TextDecoder()
+      let buffered = ''
+      for await (const chunk of process.stdin) {
+        buffered += decoder.decode(chunk as Uint8Array, { stream: true })
+        let at = buffered.indexOf('\n')
+        while (at !== -1) {
+          const line = buffered.slice(0, at)
+          buffered = buffered.slice(at + 1)
+          if (line.trim() !== '') submit(line)
+          at = buffered.indexOf('\n')
+        }
+      }
+
+      await shutdown('stdin 到头了')
       return 0
-    }
-
-    case 'request': {
-      const control = args.flags['control']
-      const line = args.rest[0]
-      if (typeof control !== 'string') {
-        await printErr('request 要给 --control <目录>（serve 起的那个控制目录）')
-        return 1
-      }
-      if (line === undefined) {
-        await printErr('request 要给一行 JSON，如 \'{"cmd":"capture","label":"看一眼"}\'')
-        return 1
-      }
-
-      // 那一头不在了就**早点说**（别让人对着一行 JSON 发呆）
-      if (!listControlDir(control).includes('in.fifo')) {
-        await printErr(`控制目录里没有 in.fifo：${control}——先起 serve --control ${control}`)
-        return 1
-      }
-
-      let command: Record<string, unknown>
-      try {
-        command = JSON.parse(line) as Record<string, unknown>
-      } catch (error) {
-        await printErr(`这不是合法 JSON：${String(error)}`)
-        return 1
-      }
-
-      const timeoutMs = typeof args.flags['timeout'] === 'string' ? Number(args.flags['timeout']) : 30_000
-      try {
-        const { reply } = await sendRequest(
-          { dir: control, fifo: join(control, 'in.fifo'), out: join(control, 'out.ndjson'), seq: join(control, 'seq') },
-          command,
-          timeoutMs,
-        )
-        await print(JSON.stringify(reply))
-
-        return reply.ok ? 0 : 1
-      } catch (error) {
-        await printErr(error instanceof Error ? error.message : String(error))
-        return 1
-      }
     }
 
     default: {

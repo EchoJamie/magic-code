@@ -4,7 +4,7 @@
  * | 谁 | 拿什么 | 干什么 |
  * | --- | --- | --- |
  * | 自动测试 | `createUiSession`／`runScenario`／`SCENARIOS` | 起隔离实例、敲键、等条件、判、收摊 |
- * | 助手 | `createControl`／`prepareControlDir`／`sendRequest` | 常驻进程里逐行 JSON 使唤同一个实例 |
+ * | 助手 | `createControl`（`scripts/ui.ts serve` 里逐行 JSON 使它） | 一个常驻进程里反复使唤同一个实例 |
  *
  * 薄命令行入口在 `packages/app/scripts/ui.ts`（只解析参数、调这里的件，不复制逻辑）。
  * 现场产物与查看页见 `artifacts.ts` / `viewer.ts`。
@@ -33,8 +33,8 @@ export type {
   ScenarioResult,
 } from './scenarios.ts'
 
-export { createControl, prepareControlDir, openFifoStream, appendReply, sendRequest, listControlDir } from './control.ts'
-export type { Control, ControlDir, ControlOptions, ControlReply, ControlRequest } from './control.ts'
+export { createControl } from './control.ts'
+export type { Control, ControlOptions, ControlReply, ControlRequest } from './control.ts'
 
 export { startFixture } from './fixture.ts'
 export type { Fixture, FixtureRequest, FixtureTurn } from './fixture.ts'

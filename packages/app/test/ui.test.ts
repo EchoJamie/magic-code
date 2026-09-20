@@ -14,10 +14,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { UiWaitTimeout, createUiSession, rawBytesOf } from './ui/driver.ts'
+import { createControl } from './ui/control.ts'
+import { createVt } from './ui/vt.ts'
+import { VIEW_LOGIC, writeViewer } from './ui/viewer.ts'
 import { SCENARIOS, runScenario } from './ui/scenarios.ts'
 import type { ScenarioResult } from './ui/scenarios.ts'
 import { removeDir, tempDir } from './tmp.ts'
@@ -200,6 +203,362 @@ describe('U40 · 工具自证', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
+// 退回四条（U40-2）—— 每条都是首轮验收**实测踩出来的**真故障，各留一个回归
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('U40-2 · 退回的四处回归', () => {
+  test('写一次就是一次：`until` 只等待，不重放（超时留档，不重发动作）', async () => {
+    const session = await createUiSession({ label: '回归-只写一次', turns: HELLO })
+
+    try {
+      let failure: unknown
+      try {
+        // 等一句**永远不来**的话：驱动只该写一遍「甲」，然后**超时留档**
+        await session.send('甲', { until: { text: '这句话永远不会有' }, timeoutMs: 500 })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(UiWaitTimeout)
+      // ⚠️ 三个「甲」＝ 重发的物证（首轮验收就是这么看见 `XXX` 的）
+      const draft = await session.capture({ label: '超时之后' })
+      expect(draft.text).toContain('甲')
+      expect(draft.text).not.toContain('甲甲')
+
+      // 时间线上也只该有**一次** send——重发会连着留下好几次
+      const sends = stepsOf(session.runDir).filter(
+        (step) => step['action'] === 'send' && step['text'] === '甲',
+      )
+      expect(sends.length).toBe(1)
+    } finally {
+      await session.close()
+    }
+  }, 40_000)
+
+  test('起手失败也清干净：子进程、端点、沙地一个不留，失败留档还在', async () => {
+    const runs = tempDir('magic-u40-boot-runs-')
+    const stash = tempDir('magic-u40-boot-pid-')
+    const pidFile = join(stash, 'stall.pid')
+    // 探针：**一个字节都不吐**——外壳永远画不出第一帧，起手那一跳必然超时
+    const stall = [
+      process.execPath,
+      '-e',
+      `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));setInterval(() => {}, 1000)`,
+    ]
+
+    let failure: unknown
+    try {
+      await createUiSession({
+        label: '回归-起手失败',
+        artifacts: runs,
+        command: stall,
+        readyTimeoutMs: 1_200,
+        turns: [{ kind: 'text', text: '没人会看到这句' }],
+      })
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeInstanceOf(Error)
+    // 子进程**确实起来过**（不是「压根没起」冒充通过），且真没了
+    await untilExists(pidFile, 5_000)
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    expect(Number.isInteger(pid)).toBe(true)
+    expect(() => process.kill(pid, 0)).toThrow()
+
+    const runDir = join(runs, readdirSync(runs)[0] as string)
+    const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as {
+      outcome: string
+      failure?: { kind: string }
+      fixture: { port: number } | null
+      app: { home: string }
+    }
+
+    // 端点：端口真释放了
+    expect(info.fixture).not.toBeNull()
+    await expect(
+      fetch(`http://127.0.0.1:${(info.fixture as { port: number }).port}/v1/models`),
+    ).rejects.toBeDefined()
+
+    // 沙地：整块没了（HOME 是它的招牌）
+    expect(existsSync(info.app.home)).toBe(false)
+
+    // 留档：说得出这趟是失败的，有查看页、有时间线、也留了「卡在什么画面上」那一帧
+    expect(info.outcome).toBe('failed')
+    expect(info.failure).toBeDefined()
+    expect(existsSync(join(runDir, 'viewer.html'))).toBe(true)
+    expect(readFileSync(join(runDir, 'steps.ndjson'), 'utf8')).toContain('boot-failed')
+    expect(existsSync(join(runDir, 'frames'))).toBe(true)
+    // （探针一个字节都不吐，故这一趟没有 raw.bin——没字节就没得留，不是丢了证据）
+
+    removeDir(stash)
+    removeDir(runs)
+  }, 60_000)
+
+  test('回包写的是解析出来的那个会话（双实例里显式写号不许串）', async () => {
+    const control = createControl({ log: () => {} })
+
+    try {
+      const first = await control.handle(JSON.stringify({ id: 1, cmd: 'start', label: '回归-实例甲' }))
+      const second = await control.handle(JSON.stringify({ id: 2, cmd: 'start', label: '回归-实例乙' }))
+      expect(reply(first)['session']).toBe('s1')
+      expect(reply(second)['session']).toBe('s2')
+      const pidOfFirst = reply(first)['pid'] as number
+      const pidOfSecond = reply(second)['pid'] as number
+      expect(pidOfFirst).not.toBe(pidOfSecond)
+
+      // 显式写号：答复的 session 与 pid 都得是**那一个**（首轮实测写成当前那个，pid 却是它）
+      const shot = await control.handle(JSON.stringify({ id: 3, cmd: 'capture', session: 's1', label: '问甲' }))
+      expect(reply(shot)['session']).toBe('s1')
+      expect(reply(shot)['pid']).toBe(pidOfFirst)
+
+      const sent = await control.handle(JSON.stringify({ id: 4, cmd: 'send', session: 's1', text: '甲' }))
+      expect(reply(sent)['session']).toBe('s1')
+      expect(reply(sent)['pid']).toBe(pidOfFirst)
+
+      const sized = await control.handle(JSON.stringify({ id: 5, cmd: 'resize', session: 's1', columns: 72, rows: 18 }))
+      expect(reply(sized)['session']).toBe('s1')
+
+      // 没写号＝当前那个（最后起的那个），不是随机的另一个
+      const current = await control.handle(JSON.stringify({ id: 6, cmd: 'capture', label: '不问号' }))
+      expect(reply(current)['session']).toBe('s2')
+      expect(reply(current)['pid']).toBe(pidOfSecond)
+    } finally {
+      await control.closeAll()
+    }
+  }, 60_000)
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 看帧补正（U40-2）—— 光标显隐取样 ＋ 查看页翻帧
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('U40-2 · 光标显隐与翻帧', () => {
+  test('VT 取样带上光标真实显隐：显示 → 藏起 → 再显示 → 软复位回到显示', async () => {
+    const vt = createVt({ columns: 20, rows: 4 })
+
+    try {
+      const hidden = async (): Promise<boolean> => {
+        await vt.settled()
+
+        return vt.screen().cursor.hidden
+      }
+
+      // 起手：终端光标本来是显示着的
+      vt.write('x')
+      expect(await hidden()).toBe(false)
+
+      // 藏（DECTCEM：`CSI ?25l`）——产品起手就是这么干的
+      vt.write('\u001b[?25l')
+      expect(await hidden()).toBe(true)
+
+      // 显（`CSI ?25h`）
+      vt.write('\u001b[?25h')
+      expect(await hidden()).toBe(false)
+
+      // 再藏，然后**软复位**（DECSTR `CSI !p`）——重置之后回到「显示」
+      vt.write('\u001b[?25l\u001b[!p')
+      expect(await hidden()).toBe(false)
+
+      // 坐标还是**同一套**（显隐不另造一份坐标）：显隐那几发转义不动位置，
+      // 再打两个字符，光标就落在原处往后两格（实测）
+      vt.write('ab')
+      await vt.settled()
+      const screen = vt.screen()
+      expect(screen.cursor.x).toBe(3)
+      expect(screen.cursor.y).toBe(0)
+    } finally {
+      vt.dispose()
+    }
+  })
+
+  test('真应用那一趟：跑的时候光标是藏着的，退出时终端把它还回来', async () => {
+    const session = await createUiSession({ label: '回归-真应用光标', turns: HELLO })
+
+    try {
+      // 产品（Ink）起手就把终端光标藏了、自己另画一个——查看页不该在它的回退位上再画一个
+      const live = await session.capture({ label: '应用中' })
+      expect(live.cursor.hidden).toBe(true)
+
+      // 退出时终端光标还回来（cli-cursor 收尾）——这一格真会变，不是恒真
+      await session.key('ctrl+c')
+      let restored = false
+      for (let at = 0; at < 80 && !restored; at += 1) {
+        await Bun.sleep(50)
+        restored = !(await session.screen()).cursor.hidden
+      }
+      expect(restored).toBe(true)
+    } finally {
+      await session.close({ graceMs: 2_000 })
+    }
+  }, 40_000)
+
+  test('查看页：帧里说「藏着」就不画那个黄框，元信息写明「隐藏」', () => {
+    const dir = tempDir('magic-u40-view-')
+    const html = viewerOf(dir, [
+      { step: 1, label: '藏着', hidden: true },
+      { step: 2, label: '显示着', hidden: false },
+    ])
+
+    const logic = viewLogic()
+    const frameHidden = { cursor: { x: 3, y: 0, hidden: true } }
+    const frameShown = { cursor: { x: 3, y: 0, hidden: false } }
+    const frameOld = { cursor: { x: 3, y: 0 } } // 旧帧没这一格
+
+    // 画不画：隐藏 → 不画（-1）；显示 → 画在原处
+    expect(logic.caretColumnAt(frameHidden, 0)).toBe(-1)
+    expect(logic.caretColumnAt(frameShown, 0)).toBe(3)
+    // 不是光标那一行本来就不画
+    expect(logic.caretColumnAt(frameShown, 1)).toBe(-1)
+    // 旧帧（这一格是后加的）照旧画——不把老现场弄成没光标
+    expect(logic.caretColumnAt(frameOld, 0)).toBe(3)
+
+    // 元信息：隐藏时写明
+    expect(logic.cursorNote(frameHidden)).toContain('隐藏')
+    expect(logic.cursorNote(frameShown)).not.toContain('隐藏')
+
+    // 数据得进页面（帧文件里那一格，查看页认的就是它）
+    const payload = payloadOf(html)
+    expect((payload['frames'] as { cursor: { hidden: boolean } }[])[0]?.cursor.hidden).toBe(true)
+    expect((payload['frames'] as { cursor: { hidden: boolean } }[])[1]?.cursor.hidden).toBe(false)
+    // 页面里跑的就是上面那几段源码（一处写两处用，见 `VIEW_LOGIC` 的注）
+    expect(html).toContain('function caretColumnAt')
+    expect(html).toContain('function cursorNote')
+
+    removeDir(dir)
+  })
+
+  test('查看页翻帧沿全局检查点：末尾无帧那一步也能往回翻，前后往返一致', () => {
+    const dir = tempDir('magic-u40-nav-')
+    // 三步取过帧（1 / 3 / 5），末尾第 7 步（close 之后）**没有**帧——首轮实测卡在这儿
+    const html = viewerOf(dir, [
+      { step: 1, label: '第一帧', hidden: false },
+      { step: 3, label: '第二帧', hidden: false },
+      { step: 5, label: '第三帧', hidden: false },
+    ], [1, 3, 5, 7])
+    const logic = viewLogic()
+    const frames = [0, 1, 2].map((at) => ({ step: [1, 3, 5][at] as number }))
+
+    // 借帧：第 7 步（没有自己的帧）看到的是**它之前最近**那一帧
+    expect(logic.nearestFrameAtOrBefore(frames, 7)).toBe(2)
+    expect(logic.nearestFrameAtOrBefore(frames, 4)).toBe(1)
+    expect(logic.nearestFrameAtOrBefore(frames, 0)).toBe(-1)
+
+    // 翻帧：从末尾那一帧**往回**能走（首轮的毛病正是「这一步没帧就直接 return」）
+    const at = logic.nearestFrameAtOrBefore(frames, 7)
+    expect(logic.shiftFrame(frames, at, -1)).toBe(1)
+    expect(logic.shiftFrame(frames, 1, -1)).toBe(0)
+    // 前后往返一致
+    expect(logic.shiftFrame(frames, logic.shiftFrame(frames, 0, 1), -1)).toBe(0)
+    expect(logic.shiftFrame(frames, logic.shiftFrame(frames, 2, -1), 1)).toBe(2)
+
+    // 边界：到头就不再挪（按钮那边据此禁用）
+    expect(logic.canShift(frames, 0, -1)).toBe(false)
+    expect(logic.canShift(frames, 0, 1)).toBe(true)
+    expect(logic.canShift(frames, 2, 1)).toBe(false)
+    expect(logic.canShift(frames, 2, -1)).toBe(true)
+    expect(logic.canShift([], -1, 1)).toBe(false)
+    expect(logic.canShift([], -1, -1)).toBe(false)
+
+    expect(html).toContain('function shiftFrame')
+    expect(html).toContain('function canShift')
+    removeDir(dir)
+  })
+})
+
+/**
+ * 起一份**页面里那段判断逻辑**——与内联进查看页的是**同一段源码**（`VIEW_LOGIC`）。
+ *
+ * 查看页是自包含的单文件（没有 import 可言），故「跑在浏览器里的」与「用例验的」
+ * 只能靠同一份源码保证是同一件事：这里 `new Function` 起的，就是内联进去的那段。
+ */
+function viewLogic(): {
+  nearestFrameAtOrBefore(frames: readonly { step: number }[], step: number): number
+  shiftFrame(frames: readonly unknown[], at: number, delta: number): number
+  canShift(frames: readonly unknown[], at: number, delta: number): boolean
+  caretColumnAt(frame: { cursor: { x: number; y: number; hidden?: boolean } }, y: number): number
+  cursorNote(frame: { cursor: { x: number; y: number; hidden?: boolean } }): string
+} {
+  return new Function(
+    `${VIEW_LOGIC}\nreturn { nearestFrameAtOrBefore, shiftFrame, canShift, caretColumnAt, cursorNote }`,
+  )() as never
+}
+
+/** 造一份最小现场（只有查看页要读的那几格）＋生成查看页，返回 HTML。 */
+function viewerOf(
+  dir: string,
+  frames: readonly { step: number; label: string; hidden: boolean }[],
+  steps: readonly number[] = [1, 2],
+): string {
+  const runDir = join(dir, 'run')
+  mkdirSync(join(runDir, 'frames'), { recursive: true })
+  writeFileSync(
+    join(runDir, 'run.json'),
+    JSON.stringify({
+      run: 'run',
+      label: '用例-查看页',
+      startedAt: '2026-09-20T00:00:00.000Z',
+      checkout: dir,
+      commit: '0000000',
+      dirty: false,
+      bun: Bun.version,
+      app: { argv: [], cwd: dir, home: dir, dataDir: dir, configPath: '', forceColor: '0' },
+      terminal: { columns: 20, rows: 4, scrollback: 100, term: 'xterm-256color' },
+      fixture: null,
+      rawLimitBytes: 1,
+      steps: steps.length,
+      frames: frames.length,
+      truncated: false,
+      outcome: 'closed',
+    }),
+  )
+  writeFileSync(
+    join(runDir, 'steps.ndjson'),
+    steps.map((n) => `${JSON.stringify({ n, at: n, action: 'capture', bytes: 0 })}\n`).join(''),
+  )
+  frames.forEach((frame, at) => {
+    const n = at + 1
+    writeFileSync(
+      join(runDir, 'frames', `${String(n).padStart(4, '0')}-${frame.label}.json`),
+      JSON.stringify({
+        n,
+        step: frame.step,
+        label: frame.label,
+        at: 0,
+        columns: 20,
+        rows: 4,
+        cursor: { x: 3, y: 0, hidden: frame.hidden },
+        scrollback: 0,
+        total: 4,
+        styles: [''],
+        lines: [{ wrapped: false, runs: [[0, 'x', 1, 0]] }],
+      }),
+    )
+  })
+
+  return readFileSync(writeViewer(runDir), 'utf8')
+}
+
+/** 查看页里那份内联数据（`<script id="payload">`）。 */
+function payloadOf(html: string): Record<string, unknown> {
+  const raw = /<script id="payload" type="application\/json">([\s\S]*?)<\/script>/.exec(html)?.[1] ?? ''
+  return JSON.parse(raw.replaceAll('\\u003c', '<')) as Record<string, unknown>
+}
+
+/** 一行答复 → 对象（这三种用例只读几个字段）。 */
+function reply(line: string): Record<string, unknown> {
+  return JSON.parse(line) as Record<string, unknown>
+}
+
+/** 一趟运行的时间线（`steps.ndjson` 逐行）。 */
+function stepsOf(runDir: string): Record<string, unknown>[] {
+  return readFileSync(join(runDir, 'steps.ndjson'), 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // 六组代表场景 —— 判据写在 `ui/scenarios.ts`，这里只负责「跑 + 记账」
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -229,71 +588,95 @@ function failureLine(result: ScenarioResult): string | null {
 // 助手那条入口 —— **跨多次独立进程调用**（不是同一个进程里连点六下）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U40 · 助手入口（常驻控制进程 ＋ 薄客户端）', () => {
-  test('跨多次独立调用操作同一实例；close 与 EOF 两条都清场', async () => {
+describe('U40 · 助手入口（常驻控制进程 · stdin ←→ stdout 逐行 JSON）', () => {
+  test('跨多次写操作同一实例（同一 PID、现场保持）；close 清场', async () => {
     const dir = tempDir('magic-u40-ctl-')
     const serve = Bun.spawn(
-      [process.execPath, 'packages/app/scripts/ui.ts', 'serve', '--control', dir, '--out', join(dir, 'runs')],
-      { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+      [process.execPath, 'packages/app/scripts/ui.ts', 'serve', '--out', join(dir, 'runs')],
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
     )
+    const lines = readerOf(serve.stdout)
 
     try {
-      await untilExists(join(dir, 'in.fifo'), 15_000)
-
-      // —— 每一步都是一次**独立的进程调用**（助手就是这么用的） ——
-      const started = await request(dir, {
+      // —— 每一次 write 就是助手的一次工具调用：**stdin 一直开着**，进程自始至终是那个 ——
+      const started = await call(serve, lines, {
+        id: 1,
         cmd: 'start',
         label: '助手-一现场',
         cols: 100,
         rows: 24,
         turns: [{ kind: 'text', text: '助手答' }],
       })
-      expect(started.ok).toBe(true)
+      expect(started['ok']).toBe(true)
       const pid = started['pid'] as number
 
-      const sent = await request(dir, { cmd: 'send', text: '第一件' })
-      expect(sent.ok).toBe(true)
-      await request(dir, { cmd: 'wait', condition: { text: '› 第一件' }, timeoutMs: 5_000 })
-      await request(dir, { cmd: 'key', key: 'enter' })
-      const waited = await request(dir, { cmd: 'wait', condition: { text: '助手答' }, timeoutMs: 8_000 })
-      expect(waited.ok).toBe(true)
+      expect((await call(serve, lines, { id: 2, cmd: 'send', text: '第一件' }))['ok']).toBe(true)
+      await call(serve, lines, { id: 3, cmd: 'wait', condition: { text: '› 第一件' }, timeoutMs: 5_000 })
+      await call(serve, lines, { id: 4, cmd: 'key', key: 'enter' })
+      const waited = await call(serve, lines, { id: 5, cmd: 'wait', condition: { text: '助手答' }, timeoutMs: 8_000 })
+      expect(waited['ok']).toBe(true)
 
-      const shot = await request(dir, { cmd: 'capture', label: '第一次取帧' })
-      expect(shot.ok).toBe(true)
+      const shot = await call(serve, lines, { id: 6, cmd: 'capture', label: '第一次取帧' })
+      expect(shot['ok']).toBe(true)
       expect(shot['pid']).toBe(pid) // 同一个进程——跨调用现场保持
       const frame = shot['frame'] as { lines: readonly string[] }
       expect(frame.lines.join('\n')).toContain('助手答')
 
-      const resized = await request(dir, { cmd: 'resize', columns: 70, rows: 18 })
-      expect(resized.ok).toBe(true)
+      const resized = await call(serve, lines, { id: 7, cmd: 'resize', columns: 70, rows: 18 })
+      expect(resized['ok']).toBe(true)
       expect(resized['columns']).toBe(70)
 
-      const second = await request(dir, { cmd: 'send', text: '第二件' })
-      expect(second.ok).toBe(true)
-      await request(dir, { cmd: 'wait', condition: { text: '› 第二件' }, timeoutMs: 5_000 })
+      expect((await call(serve, lines, { id: 8, cmd: 'send', text: '第二件' }))['ok']).toBe(true)
+      await call(serve, lines, { id: 9, cmd: 'wait', condition: { text: '› 第二件' }, timeoutMs: 5_000 })
 
       // 未支持的键**明确报错**，不悄悄换一种按键（工单的话）
-      const bogus = await request(dir, { cmd: 'key', key: 'f13' })
-      expect(bogus.ok).toBe(false)
-      expect((bogus.error as { kind: string }).kind).toBe('bad-request')
+      const bogus = await call(serve, lines, { id: 10, cmd: 'key', key: 'f13' })
+      expect(bogus['ok']).toBe(false)
+      expect((bogus['error'] as { kind: string }).kind).toBe('bad-request')
 
       // 等一件永远不来的东西：**结构化失败**，且**现场还在**（会话不退场）
-      const timeout = await request(dir, { cmd: 'wait', condition: { text: '永远不来' }, timeoutMs: 700 })
-      expect(timeout.ok).toBe(false)
-      expect((timeout.error as { kind: string }).kind).toBe('timeout')
-      expect((timeout.error as { screen: readonly string[] }).screen.length).toBeGreaterThan(0)
+      const timeout = await call(serve, lines, { id: 11, cmd: 'wait', condition: { text: '永远不来' }, timeoutMs: 700 })
+      expect(timeout['ok']).toBe(false)
+      expect((timeout['error'] as { kind: string }).kind).toBe('timeout')
+      expect((timeout['error'] as { screen: readonly string[] }).screen.length).toBeGreaterThan(0)
 
-      // 超时之后照样能接着使唤（单条失败不掀桌子）
-      const after = await request(dir, { cmd: 'capture', label: '超时之后' })
-      expect(after.ok).toBe(true)
+      // 超时之后照样能接着使唤（单条失败不掀桌子），而且还是**同一只**
+      const after = await call(serve, lines, { id: 12, cmd: 'capture', label: '超时之后' })
+      expect(after['ok']).toBe(true)
       expect(after['pid']).toBe(pid)
 
       // —— close 清场 ——
-      const closed = await request(dir, { cmd: 'close' })
-      expect(closed.ok).toBe(true)
+      const closed = await call(serve, lines, { id: 13, cmd: 'close' })
+      expect(closed['ok']).toBe(true)
       expect(closed['exit']).toBeDefined()
       expect(() => process.kill(pid, 0)).toThrow()
       expect(existsSync(closed['viewer'] as string)).toBe(true)
+    } finally {
+      serve.kill()
+      await serve.exited.catch(() => {})
+      removeDir(dir)
+    }
+  }, 90_000)
+
+  test('SIGTERM：收摊走人，常驻进程自己退场（不留孤儿、不吊在那儿）', async () => {
+    const dir = tempDir('magic-u40-term-')
+    const serve = Bun.spawn(
+      [process.execPath, 'packages/app/scripts/ui.ts', 'serve', '--out', join(dir, 'runs')],
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    try {
+      const lines = readerOf(serve.stdout)
+      const started = await call(serve, lines, { id: 1, cmd: 'start', label: '助手-SIGTERM', turns: [] })
+      expect(started['ok']).toBe(true)
+      const pid = started['pid'] as number
+
+      // ⚠️ 这一条守的是「挂了信号处理器之后信号不再自己杀进程」那个坑：主流程堵在 stdin 的读上，
+      // 信号那条路必须**自己 exit**——不然进程不死，助手那边 `kill` 完就干等着
+      serve.kill('SIGTERM')
+      const code = await Promise.race([serve.exited, Bun.sleep(15_000).then(() => 'stuck')])
+      expect(code).toBe(0)
+      expect(() => process.kill(pid, 0)).toThrow()
     } finally {
       serve.kill()
       await serve.exited.catch(() => {})
@@ -310,12 +693,11 @@ describe('U40 · 助手入口（常驻控制进程 ＋ 薄客户端）', () => {
 
     try {
       const lines = readerOf(serve.stdout)
-      serve.stdin.write(`${JSON.stringify({ id: 1, cmd: 'start', label: '助手-EOF', turns: [] })}\n`)
-      const started = await lines.next(20_000)
-      expect((started as { ok: boolean }).ok).toBe(true)
-      const pid = (started as { pid: number }).pid
+      const started = await call(serve, lines, { id: 1, cmd: 'start', label: '助手-EOF', turns: [] })
+      expect(started['ok']).toBe(true)
+      const pid = started['pid'] as number
 
-      // 管道这一头一关：**EOF 就是收摊信号**
+      // 管道这一头一关：**EOF 就是收摊信号**（TTY 那条路上的 Ctrl-D 同理）
       serve.stdin.end()
       const code = await Promise.race([serve.exited, Bun.sleep(15_000).then(() => 'stuck')])
       expect(code).toBe(0)
@@ -328,17 +710,21 @@ describe('U40 · 助手入口（常驻控制进程 ＋ 薄客户端）', () => {
   }, 90_000)
 })
 
-/** 薄客户端：像助手那样——**另起一个进程**发一条命令，等答复。 */
-async function request(dir: string, command: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const proc = Bun.spawn(
-    [process.execPath, 'packages/app/scripts/ui.ts', 'request', '--control', dir, JSON.stringify(command)],
-    { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
-  )
-  const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
-  const line = out.trim().split('\n').at(-1) ?? ''
-  expect(line, `薄客户端没有输出答复（退出码 ${code}）`).not.toBe('')
+/**
+ * 助手的一次「工具调用」——往**同一个进程**的 stdin 写一行 JSON，等它那一行答复。
+ *
+ * ⚠️ 两次之间**不关 stdin**：常开的那根水道正是这个入口能「多次操作同一现场」的原因
+ * （`tty:false` 起的话 stdin 当场就关，这条道走不成——见 `control.ts` 头注）。
+ */
+async function call(
+  proc: { readonly stdin: { write(chunk: string): unknown; flush(): void } },
+  lines: { next(timeoutMs: number): Promise<unknown> },
+  command: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  proc.stdin.write(`${JSON.stringify(command)}\n`)
+  proc.stdin.flush()
 
-  return JSON.parse(line) as Record<string, unknown>
+  return (await lines.next(30_000)) as Record<string, unknown>
 }
 
 /** 一行一行读（控制通道是逐行 JSON）。 */
