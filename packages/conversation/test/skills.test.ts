@@ -11,11 +11,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Skill, SkillCatalog, SkillRead, Skills, UsedSkillEntry } from '@magic/contracts'
+import type { ModelGateway, Skill, SkillCatalog, SkillRead, Skills, UsedSkillEntry } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
+import { agentLoop } from '../src/agent-loop.ts'
 import { assembleContext, userPayloadOf } from '../src/context.ts'
 import { createSkillsDelivery } from '../src/skills.ts'
-import { renderSkillsBlock, sourceLabelOf, withSkillsCatalog } from '../src/prompt/skills.ts'
+import { renderSkillsBlock, withSkillsCatalog } from '../src/prompt/skills.ts'
+import { makeLoopRuntime, makeStage } from './support/harness.ts'
 
 const SESSION = 's1'
 const AT = 1_700_000_000_000
@@ -27,18 +29,19 @@ const PDF: Skill = {
   path: '/ws/.magic/skills/pdf',
   source: 'project',
   origin: 'magic',
+  label: '项目 .magic/skills',
 }
 
 /** 一条技能材料（落账形态）——四条身份 ＋ 正文。 */
 function used(text = '正文：先数页数。'): UsedSkillEntry {
-  return { name: 'pdf', source: PDF.path, label: '项目 .magic/skills', version: 'v1-8', text }
+  return { name: 'pdf', source: PDF.path, label: PDF.label, text }
 }
 
 /** 桩来源口——`discover` 给一份固定目录，`readMain` 按给的答复回。 */
 function stubSkills(
   read: (name: string, path: string) => SkillRead = () => ({
     ok: true,
-    material: { skill: PDF, version: 'v1-8', text: '正文：先数页数。' },
+    material: { skill: PDF, text: '正文：先数页数。' },
   }),
   catalog: SkillCatalog = { skills: [PDF], problems: [] },
 ): Skills {
@@ -82,9 +85,9 @@ describe('U33 · 装配：材料随它那一条交代进上下文', () => {
     expect(userPayloadOf(broken as never)).toEqual([])
 
     // 标签缺了照收（它只影响「来源怎么念」，不影响材料本身）——缺席时补空串，不编
-    const noLabel: unknown = { skills: [{ name: 'pdf', source: '/p', version: 'v1', text: '正文' }] }
+    const noLabel: unknown = { skills: [{ name: 'pdf', source: '/p', text: '正文' }] }
     expect(userPayloadOf(noLabel as never)).toEqual([
-      { name: 'pdf', source: '/p', label: '', version: 'v1', text: '正文' },
+      { name: 'pdf', source: '/p', label: '', text: '正文' },
     ])
     // 不是 `user` 那一份形状的载荷——一律当没有（工具条目的载荷支也走这条）
     expect(userPayloadOf({ name: 'exec', args: {} })).toEqual([])
@@ -100,7 +103,7 @@ describe('U33 · 送达：取主文', () => {
     const delivery = createSkillsDelivery(
       stubSkills((name, path) => {
         asked.push(`${name}@${path}`)
-        return { ok: true, material: { skill: PDF, version: 'v1-8', text: '正文' } }
+        return { ok: true, material: { skill: PDF, text: '正文' } }
       }),
     )
 
@@ -108,7 +111,7 @@ describe('U33 · 送达：取主文', () => {
 
     expect(load).toEqual({
       ok: true,
-      used: [{ name: 'pdf', source: PDF.path, label: '项目 .magic/skills', version: 'v1-8', text: '正文' }],
+      used: [{ name: 'pdf', source: PDF.path, label: PDF.label, text: '正文' }],
     })
     expect(asked).toEqual([`pdf@${PDF.path}`])
   })
@@ -170,14 +173,85 @@ describe('U33 · 目录块', () => {
     expect(block?.body).not.toContain('顶掉了它')
   })
 
-  test('来源标签：作用域 ＋ 入口两段（同名时人才分得清）', () => {
-    expect(sourceLabelOf(PDF)).toBe('项目 .magic/skills')
-    expect(sourceLabelOf({ ...PDF, source: 'user', origin: 'agents' })).toBe('用户 .agents/skills')
-    expect(sourceLabelOf({ ...PDF, source: 'configured' })).toBe('配置来源 .magic/skills')
-  })
+  // 来源标签的**产出**在执行域（发现那一刻的归类，见 `Skill.label`）——本文件只用不产，
+  // 故它那一组判据在 `packages/execution/test/skills.test.ts`。
 
   test('没有可说的就不接块（一个都没发现、也没出过问题）', () => {
     expect(renderSkillsBlock({ skills: [], problems: [] })).toBeUndefined()
     expect(withSkillsCatalog(SYSTEM, { skills: [], problems: [] })).toBe(SYSTEM)
+  })
+})
+
+// ══ 回执的兑现点：请求真发出去了才算 ═══════════════════════════════════
+
+describe('U33 · 回执只在请求真发出去之后', () => {
+  /** 一份显式选定的技能——下面几条都拿它当「材料确实备齐了」。 */
+  const selected = [{ name: 'pdf', path: PDF.path }]
+
+  test('`gateway.stream` **同步抛**（材料备齐了，请求没发出去）——一条回执都不报', () => {
+    // 这是「不能仅 assembleContext 完成就兑现」那条边界的正面例子：消息装好了、
+    // 取件层起手就炸——**一条模型事件都不会来**，故「已使用」不许报。
+    const stage = makeStage({ turns: [{ text: '不该发生' }] })
+    const boom: ModelGateway = {
+      stream(): never {
+        throw new Error('取件层起手就炸（这一趟请求根本没发出去）')
+      },
+    }
+    const runtime = makeLoopRuntime(stage, {
+      gateway: boom,
+      skills: createSkillsDelivery(stubSkills()),
+    })
+
+    return agentLoop(
+      runtime,
+      { text: '照它做', skills: selected, ref: 'r-boom' },
+      new AbortController().signal,
+    ).then((outcome) => {
+      expect(outcome).toBe('error')
+      // 材料确实备齐了（条目落了账），但请求没发出去——**回执一条都不许有**
+      expect(stage.records.entries.some((entry) => entry.kind === 'user')).toBe(true)
+      expect(stage.sink.events.filter((event) => event.kind === 'skill.used')).toEqual([])
+      expect(stage.sink.events.filter((event) => event.kind === 'input.settled')).toEqual([])
+    })
+  })
+
+  test('事件流**一条都没有**（调用没产出一件事）——同样不报', async () => {
+    const stage = makeStage({ turns: [{ text: '不该发生' }] })
+    const silent: ModelGateway = {
+      stream: () => ({
+        events: (async function* empty(): AsyncGenerator<never> {
+          // 什么都不产出——「没发出去」的另一种样子
+        })(),
+        result: Promise.resolve({ complete: false }),
+      }),
+    }
+    const runtime = makeLoopRuntime(stage, {
+      gateway: silent,
+      skills: createSkillsDelivery(stubSkills()),
+    })
+
+    await agentLoop(
+      runtime,
+      { text: '照它做', skills: selected, ref: 'r-silent' },
+      new AbortController().signal,
+    )
+
+    expect(stage.sink.events.filter((event) => event.kind === 'skill.used')).toEqual([])
+    expect(stage.sink.events.filter((event) => event.kind === 'input.settled')).toEqual([])
+  })
+
+  test('正常发出去的（第一条事件到手）——照报，且**只报一次**', async () => {
+    const stage = makeStage({ turns: [{ text: '做完了' }] })
+    const runtime = makeLoopRuntime(stage, { skills: createSkillsDelivery(stubSkills()) })
+
+    await agentLoop(
+      runtime,
+      { text: '照它做', skills: selected, ref: 'r-ok' },
+      new AbortController().signal,
+    )
+
+    const used = stage.sink.events.filter((event) => event.kind === 'skill.used')
+    expect(used).toHaveLength(1)
+    expect(stage.sink.events.filter((event) => event.kind === 'input.settled')).toHaveLength(1)
   })
 })

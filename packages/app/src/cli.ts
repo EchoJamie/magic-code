@@ -14,7 +14,7 @@
  *   启动参数那一入口）；会话中途换模型走 `--script` 的 `{ "switch": … }` 步骤。
  */
 
-import type { KernelEvent, Skill, SkillCatalog } from '@magic/contracts'
+import type { KernelEvent, SkillCatalog } from '@magic/contracts'
 import { TOOLSET_V1 } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
@@ -341,14 +341,12 @@ function describeProjectRules(assembly: Assembly): string {
  */
 function describeSkills(assembly: Assembly): string {
   const catalog = assembly.readSkills()
-  const where = (skill: Skill): string =>
-    `${skill.source === 'project' ? '项目' : skill.source === 'user' ? '用户' : '配置来源'} · ${skill.origin}`
 
   const head =
     catalog.skills.length === 0
       ? '无（放 .magic/skills/<名称>/SKILL.md 就来；模型只看到名称与描述，正文按需再取）'
       : `${catalog.skills.length} 个：` +
-        catalog.skills.map((skill) => `${skill.name}（${where(skill)}）`).join(' · ')
+        catalog.skills.map((skill) => `${skill.name}（${skill.label}）`).join(' · ')
 
   const broken = catalog.problems.filter((problem) => problem.kind === 'error')
   const chosen = catalog.problems.filter((problem) => problem.kind === 'choice')

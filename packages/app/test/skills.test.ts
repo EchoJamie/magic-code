@@ -223,9 +223,10 @@ describe('U33 · 显式选定：随交代一并送达', () => {
       expect(settled).toHaveLength(1)
       expect(settled[0]?.data).toMatchObject({ ref: 'draft-1', ok: true })
 
-      // 回执在**轮起之后**（主文确实进了这一次上下文才发）
+      // 回执在**这一次请求真发出去之后**（第一条模型事件到手）：判据不是「装好了」，
+      // 是「发出去了」——同步抛错 / 未发就中止的那些一条事件都不会来，回执因此不假报
       const kinds = shell.events.map((event) => event.kind)
-      expect(kinds.indexOf('skill.used')).toBeLessThan(kinds.indexOf('model.call.start'))
+      expect(kinds.indexOf('model.call.start')).toBeLessThan(kinds.indexOf('skill.used'))
 
       // —— 真记录：正文与身份都在条目载荷里（重放依据） ——
       const rows = userRows(assembly)
@@ -325,6 +326,113 @@ describe('U33 · 模型自主选用：走真工具通路', () => {
       expect(said).toContain(userPath)
       // 指明了来源之后取到的是**用户那一份**
       expect(requestText(stage, 2)).toContain('用户正文')
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+describe('U33 · 回执只报一次（返工）', () => {
+  test('显式技能走**多个工具轮**：仍只有一条 `skill.used` 与一条同 `ref` 的收下', async () => {
+    // 返工一条：首轮把 `once(owed)` 造在**每一轮的循环里**，于是每开一轮就多一个
+    // 「尚未兑现」的新包装——一条普通的多轮工作会反复报「本次使用技能」。
+    const stage = makeStage()
+    try {
+      const path = projectSkill(stage, 'test')
+      put(stage.workspace, '.magic/skills/test/SKILL.md', skillText('test', '说明', '正文'))
+
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [{ name: 'ls', args: {} }] },
+          { toolCalls: [{ name: 'ls', args: {} }] },
+          { text: '做完了' },
+        ],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await sendAndWait(shell, { text: '照它做', skills: [{ name: 'test', path }], ref: 'one-ref' })
+      shell.dispose()
+
+      // 三轮工具往返（请求数不止一次）——回执仍各只有一条
+      expect(lastModel(stage).requests.length).toBeGreaterThanOrEqual(3)
+      expect(eventsOfKind(shell.events, 'skill.used')).toHaveLength(1)
+      expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
+        { ref: 'one-ref', ok: true },
+      ])
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('模型自主取主文：**进下一趟请求之后**报一次；再取引用不再报整项技能', async () => {
+    // 返工一条：首轮自主路径**零回执**——两个工具结果都成功、材料都进了请求，
+    // 用户却收不到「本次使用技能」那一条。
+    const stage = makeStage()
+    try {
+      put(stage.workspace, '.magic/skills/pdf/SKILL.md', skillText('pdf', '处理 PDF', '正文：先数页数。'))
+      put(stage.workspace, '.magic/skills/pdf/references/x.md', '引用正文。')
+
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [{ name: 'skill', args: { name: 'pdf' } }] },
+          { toolCalls: [{ name: 'skill', args: { name: 'pdf', relative: 'references/x.md' } }] },
+          // 再取一次主文——同一项技能，依旧不报第二遍
+          { toolCalls: [{ name: 'skill', args: { name: 'pdf' } }] },
+          { text: '做完了' },
+        ],
+      })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('处理这个 PDF')
+      shell.dispose()
+
+      const used = eventsOfKind(shell.events, 'skill.used')
+      expect(used).toHaveLength(1)
+      expect(used[0]?.data.skills).toEqual([
+        { name: 'pdf', source: realSkill(stage, 'pdf'), label: '项目 .magic/skills' },
+      ])
+
+      // **在带着这份材料的那次请求真发出去之后**才报：材料是第 2 次请求才摆进去的
+      // （工具结果第 1 轮才落账），故回执落在**第 2 次模型调用开始之后**
+      const kinds = shell.events.map((event) => event.kind)
+      const firstCallStart = kinds.indexOf('model.call.start')
+      const secondCallStart = kinds.indexOf('model.call.start', firstCallStart + 1)
+      expect(kinds.indexOf('skill.used')).toBeGreaterThan(secondCallStart)
+
+      // 身份**随工具结果落账**（不是从回填正文里抠的）——重放读得到
+      const raw = readDatabase(assembly.paths.database)
+      const results = raw.entries.filter((row) => row.kind === 'tool-result')
+      const payloads = results.map((row) => JSON.parse(row.payload ?? '{}'))
+      expect(payloads[0]?.skill).toEqual({
+        name: 'pdf',
+        source: realSkill(stage, 'pdf'),
+        label: '项目 .magic/skills',
+      })
+      // 取引用那一趟**不带**交付身份（「后续引用不重复报整项技能」是结构上成立的）
+      expect(payloads[1]?.skill).toBeUndefined()
+      raw.close()
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('自主取不到（工具回填失败）：**不报成功**', async () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'skill', args: { name: 'nope' } }] }, { text: '算了' }],
+      })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('用那个技能')
+      shell.dispose()
+
+      expect(eventsOfKind(shell.events, 'tool.result')[0]?.data.ok).toBe(false)
+      expect(eventsOfKind(shell.events, 'skill.used')).toEqual([])
 
       assembly.close()
     } finally {
@@ -464,7 +572,6 @@ describe('U33 · 历史不被材料刷新重写', () => {
       shell.dispose()
 
       const firstPayload = JSON.parse(userRows(assembly)[0]?.payload ?? '{}')
-      const firstVersion = firstPayload.skills[0].version
       expect(firstPayload.skills[0].text).toContain('第一版：先写提纲')
 
       assembly.close()
@@ -481,13 +588,15 @@ describe('U33 · 历史不被材料刷新重写', () => {
       expect(requestText(stage, 0)).toContain('第二版：先写结论')
 
       // 历史那一份**没被改写**：旧条目里的正文还是第一版（记录是 append-only）
+      // ——不记版本串（2026-09-21 用户已定），「当时用的是哪一份」由**正文本身**答
       const rows = userRows(reopened)
       const old = JSON.parse(rows[0]?.payload ?? '{}')
       expect(old.skills[0].text).toContain('第一版：先写提纲')
       expect(old.skills[0].text).not.toContain('第二版')
-      expect(old.skills[0].version).toBe(firstVersion)
       const fresh = JSON.parse(rows[1]?.payload ?? '{}')
-      expect(fresh.skills[0].version).not.toBe(firstVersion)
+      expect(fresh.skills[0].text).toContain('第二版：先写结论')
+      // 身份没变（同一项技能、同一份来源）——变的是内容，材料动态读取本就是如此
+      expect(fresh.skills[0]).toMatchObject({ name: old.skills[0].name, source: old.skills[0].source })
 
       reopened.close()
     } finally {
@@ -659,7 +768,7 @@ describe('U33 · 真 CLI 帧 · `--check` 那一行', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('技能　　　')
       // 发现到的照报（名字 ＋ 来源）
-      expect(stdout).toContain('pdf（项目 · magic）')
+      expect(stdout).toContain('pdf（项目 .magic/skills）')
       // 坏的那一条**一条两行**（路径一行、缘由一行）——用户照着去改
       expect(stdout).toContain('有 1 个没读进来')
       expect(stdout).toContain('broken')

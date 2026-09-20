@@ -95,23 +95,7 @@ function entryOf(skill: Skill, all: readonly Skill[]): string {
   const same = all.filter((other) => other.name === skill.name).length > 1
   const where = same ? ` · 目录 ${skill.path}` : ''
 
-  return `- \`${skill.name}\`：${skill.description}（来源 ${sourceLabelOf(skill)}${where}）`
-}
-
-/**
- * 来源的**人读标签**——「哪一类来源 · 哪个入口」。
- *
- * 两段各有各的用处：**作用域**（项目 / 用户 / 配置）说「这是谁的技能」，
- * **入口**（`.magic` / `.agents`）说「它从哪个目录长出来的」。同名时两句都要有，
- * 人才分得清「项目里那个」与「我自己那个」。
- *
- * 回执（屏幕与记录）用的是同一个标签——一处措辞、两处用（见 `describeUsed`）。
- */
-export function sourceLabelOf(skill: Skill): string {
-  const scope = skill.source === 'project' ? '项目' : skill.source === 'user' ? '用户' : '配置来源'
-  const entry = skill.origin === 'magic' ? '.magic/skills' : '.agents/skills'
-
-  return `${scope} ${entry}`
+  return `- \`${skill.name}\`：${skill.description}（来源 ${skill.label}${where}）`
 }
 
 /**

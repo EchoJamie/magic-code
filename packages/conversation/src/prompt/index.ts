@@ -44,4 +44,4 @@ export type { PromptBlock, PromptBlockId, PromptVars } from './assembly.ts'
 
 export { renderProjectRulesBlock, withProjectRules } from './rules.ts'
 
-export { renderSkillsBlock, sourceLabelOf, withSkillsCatalog } from './skills.ts'
+export { renderSkillsBlock, withSkillsCatalog } from './skills.ts'

@@ -19,6 +19,7 @@ const PDF: Skill = {
   path: '/sk/pdf',
   source: 'project',
   origin: 'magic',
+  label: '项目 .magic/skills',
 }
 const OTHER: Skill = { ...PDF, name: 'other', path: '/sk/other' }
 
@@ -30,11 +31,11 @@ function stubSkills(skills: readonly Skill[], read?: (name: string, path: string
     discover: (): SkillCatalog => ({ skills: [...skills], problems: [] }),
     readMain: (name, path) => {
       asked.push(`main:${name}@${path}`)
-      return read?.(name, path) ?? { ok: true, material: { skill: PDF, version: 'v1-8', text: '主文正文' } }
+      return read?.(name, path) ?? { ok: true, material: { skill: PDF, text: '主文正文' } }
     },
     readReference: (name, path, relative) => {
       asked.push(`ref:${name}@${path}/${relative}`)
-      return read?.(name, path, relative) ?? { ok: true, material: { skill: PDF, version: 'v1-9', text: '引用正文' } }
+      return read?.(name, path, relative) ?? { ok: true, material: { skill: PDF, text: '引用正文' } }
     },
   }
 
@@ -55,12 +56,12 @@ describe('U33 · skill 工具', () => {
     expect(main.ok).toBe(true)
     expect(main.output).toContain('主文正文')
     // 抬头：是哪一份、从哪儿来、哪一版——技能说明与读出来的数据从这一行起分得开
-    expect(main.output).toContain('〔技能主文：pdf（来源 /sk/pdf · v1-8）〕')
+    expect(main.output).toContain('〔技能主文：pdf（来源 /sk/pdf）〕')
 
     const reference = await run(port, { name: 'pdf', relative: 'references/x.md' })
     expect(reference.ok).toBe(true)
     expect(reference.output).toContain('引用正文')
-    expect(reference.output).toContain('〔技能引用 references/x.md：pdf 的（来源 /sk/pdf · v1-9）〕')
+    expect(reference.output).toContain('〔技能引用 references/x.md：pdf 的（来源 /sk/pdf）〕')
 
     expect(asked).toEqual(['main:pdf@/sk/pdf', 'ref:pdf@/sk/pdf/references/x.md'])
   })

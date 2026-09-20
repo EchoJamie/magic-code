@@ -30,7 +30,7 @@ describe('U33 · 技能使用回执', () => {
     stage.feed([
       event('skill.used', {
         skills: [
-          { name: 'pdf', source: '/ws/.magic/skills/pdf', label: '项目 .magic/skills', version: 'v1-8' },
+          { name: 'pdf', source: '/ws/.magic/skills/pdf', label: '项目 .magic/skills' },
         ],
       }),
     ])
@@ -44,8 +44,8 @@ describe('U33 · 技能使用回执', () => {
     stage.feed([
       event('skill.used', {
         skills: [
-          { name: 'alpha', source: '/ws/.magic/skills/alpha', label: '项目 .magic/skills', version: 'v1' },
-          { name: 'beta', source: '/home/me/.magic/skills/beta', label: '用户 .magic/skills', version: 'v2' },
+          { name: 'alpha', source: '/ws/.magic/skills/alpha', label: '项目 .magic/skills' },
+          { name: 'beta', source: '/home/me/.magic/skills/beta', label: '用户 .magic/skills' },
         ],
       }),
     ])

@@ -1,7 +1,7 @@
 /**
  * 技能 —— **来源面**（U33）：发现 · 读取 · 去重 · 诊断。
  *
- * 契约那头是 `Skills`（`@magic/contracts`）。本文件只答「**有什么、在哪儿、是哪一版**」；
+ * 契约那头是 `Skills`（`@magic/contracts`）。本文件只答「**有什么、在哪儿、读到的是什么**」；
  * 「选哪些、什么时候送进上下文」归对话侧（显式选定随提交、模型自主选用经受限读取入口）。
  * 分工的理由与项目规约同源：**文件读取在执行 / 基础设施边界，内容选择与提示词装配在对话侧**。
  *
@@ -64,7 +64,7 @@ import type {
 } from '@magic/contracts'
 import type { Dirent } from 'node:fs'
 import { closeSync, openSync, readSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { dirname, isAbsolute, join, normalize } from 'node:path'
+import { isAbsolute, join, normalize } from 'node:path'
 import { isInside } from './workspace.ts'
 
 /**
@@ -379,7 +379,31 @@ function readOne(
     return undefined
   }
 
-  return { name, description, path: dir, source: at.source, origin: at.origin }
+  return {
+    name,
+    description,
+    path: dir,
+    source: at.source,
+    origin: at.origin,
+    label: sourceLabelOf(at.source, at.origin),
+  }
+}
+
+/**
+ * 来源的人读标签（契约 `Skill.label`）——「哪一类来源 · 哪个入口」。
+ *
+ * 两段各有各的用处：**作用域**（项目 / 用户 / 配置）说「这是谁的技能」，
+ * **入口**（`.magic` / `.agents`）说「它从哪个目录长出来的」。同名时两句都要有，
+ * 人才分得清「项目里那个」与「我自己那个」。
+ *
+ * **写在这儿**（而不是消费侧各拼一遍）：这一处是唯一知道「哪个 segment 归哪个来源」的地方
+ * ——别处拼的话，改一个目录名就要满仓找。
+ */
+function sourceLabelOf(source: Skill['source'], origin: Skill['origin']): string {
+  const scope = source === 'project' ? '项目' : source === 'user' ? '用户' : '配置来源'
+  const entry = origin === 'magic' ? '.magic/skills' : '.agents/skills'
+
+  return `${scope} ${entry}`
 }
 
 /**
@@ -438,37 +462,29 @@ function readAt(
   path: string,
   relative: string | undefined,
 ): SkillRead {
-  const at = placeOf(options, path)
-  if (at === undefined) {
+  // **归位＝这一趟的发现结果里有一条身份就是它**（见 `locate`）。判据不是「路径长什么样」，
+  // 而是「发现面认不认这一处」——目录软链接（发现返回的是真身）、直接点名的单技能目录
+  // （发现返回的就是它自己）因此在两条路上身份一致；而来源之外的任意路径，**发现面压根
+  // 不会返回它**，故照样进不来。
+  const skill = locate(options, limits, path)
+  if (skill === undefined) {
     return {
       ok: false,
       reason:
-        `技能来源不认识「${path}」——它不在任何已知的技能来源目录底下（项目 / 用户的 ` +
-        `.magic/skills 与 .agents/skills，以及配置里点名的那些）`,
+        `技能来源不认识「${path}」——它不在这一趟的发现结果里（发现面只有项目 / 用户的 ` +
+        `.magic/skills 与 .agents/skills，以及配置里点名的那些；改名、删除、换来源都会落到这儿）`,
     }
-  }
-
-  // 归位之后一律按**真身**走（身份、读取、边界三处同一串）——调用方给的是别名时
-  // （`/tmp` 与 `/private/tmp` 那种），拿别名去判来源内的引用会当场误判成「越界」。
-  const dir = realpathOf(path)
-  if (!isDir(dir)) {
-    return { ok: false, reason: `技能「${name}」那一处现在不是一个目录了（${path}）——来源没了就是没了` }
-  }
-
-  const problems: SkillProblem[] = []
-  const skill = readOne(dir, at, problems, limits)
-  if (skill === undefined) {
-    const why = problems.map((problem) => problem.message).join('；')
-    return { ok: false, reason: `技能「${name}」这一趟读不出来（${path}）：${why}` }
   }
   if (skill.name !== name) {
     return {
       ok: false,
       reason:
-        `技能「${name}」在 ${dir} 上不再成立——那一处现在叫「${skill.name}」。` +
+        `技能「${name}」在 ${skill.path} 上不再成立——那一处现在叫「${skill.name}」。` +
         `来源变了就是变了，不拿同名项顶替。`,
     }
   }
+
+  const dir = skill.path
 
   const file = relative === undefined ? join(dir, SKILL_FILE) : within(dir, relative)
   if (file === undefined) {
@@ -502,31 +518,37 @@ function readAt(
     }
   }
 
-  return { ok: true, material: materialOf(skill, file, text) }
+  return { ok: true, material: materialOf(skill, text) }
 }
 
 /**
- * `path` 归位到**某一个来源目录**——返回那一处的来历（作用域 / 入口）。
+ * `path` 归位——**在发现结果里按身份找**（找不到＝这一点不在发现面里）。
  *
- * 判据是**直接子目录**：`dirname(realpath(path))` 必须就是某个来源目录的真路径。
- * 深一层的不认（技能目录里再套一个技能目录不是规范里的形态），
- * 也不认来源目录本身（「一整个 .magic/skills 目录是一个技能」说不通）。
+ * ## 为什么判据是「发现结果」而不是「路径的形状」
  *
- * **每次现扫**（不缓存来源目录表）：配置与工作区根都不是活的，重扫一遍是几十次
- * `realpath` 的量级，换来的是「这一趟的判据就是这一趟的文件系统」。
+ * 首轮用的是**父目录比对**（`dirname(真身)` 必须正是某个来源目录），它错在两处
+ * ——两处都是**发现与读取各用一把尺子**，于是「列表里看得见、按返回的身份却读不出」：
+ *
+ * - **目录软链接**：`.magic/skills/linked -> <别处>/linked`。发现**跟出去**并把**真身**
+ *   作为身份返回（契约 `Skill.path` 明写），可真身的父目录已经不在来源底下了 ⇒ 自己返回
+ *   的身份自己不认识。
+ * - **`skills.sources` 直接指一份技能目录**：发现返回的就是那个目录本身，
+ *   它的父目录当然不是「来源目录」⇒ 同上。
+ *
+ * 改成「按发现结果认」之后，**发现认下的就是读取认的**（软链接、点名的单技能目录一并闭合），
+ * 而边界一格没松：来源之外的任意路径**发现面根本不返回它**。
+ *
+ * ## 归位取**真身**
+ *
+ * `path` 的写法有来处——发现给的是真路径，外壳 / 用户 / 排队项手上却可能是别名
+ * （macOS 上 `/tmp/x` 与 `/private/tmp/x` 是常客）。故先把给定路径取真身再比，
+ * 别名因此照旧走得通；取不到真身（目录没了）时退回原串比，**自然就找不到**
+ * ——那正是「来源没了」该有的结果。
  */
-function placeOf(options: SkillsOptions, path: string): SourceDir | undefined {
-  // **两边都取真身再比**。为什么不是「直接比 `dirname(path)`」：`path` 的写法有来处——
-  // 发现那一趟给的是真路径，而用户 / 外壳 / 测试手写的却可能是别名（macOS 上 `/tmp/x`
-  // 与 `/private/tmp/x` 是常客）。两边不同一把尺子，比出来是**假的「不认识」**：
-  // 一处真在眼前的技能被报成「不在任何来源底下」。
-  const parent = realpathOf(dirname(path))
+function locate(options: SkillsOptions, limits: SkillLimits, path: string): Skill | undefined {
+  const real = realpathOf(path)
 
-  for (const at of sourceDirs(options)) {
-    if (realpathOf(at.dir) === parent) return at
-  }
-
-  return undefined
+  return discover(options, limits).skills.find((skill) => skill.path === real)
 }
 
 /** `realpath`，取不到就给回原串（比较用——取不到本身就是「不匹配」）。 */
@@ -585,25 +607,15 @@ function readMaterial(file: string, limits: SkillLimits): { readonly ok: true; r
 }
 
 /**
- * 材料 ＋ 它的版本。
+ * 材料 —— 身份 ＋ 正文，**就这两件**。
  *
- * 版本 = 真路径 ＋ 正文的 **FNV-1a 32 位**（与 `ProjectRule.version` 同一把尺子）。
- * 判「是不是同一份」够用（同一份内容恒同一串），**不是密码学摘要**——
- * 它防的是「改了没改说不清」，不是防篡改。
- *
- * 分隔符是 **NUL**，且**写成转义**而不是往源码里塞裸的控制字节：裸的读不出、diff 不了，
- * 还会让 grep 把整份文件当二进制而**一声不响地什么都不输出**（`rules.ts` 那处栽过）。
+ * 首轮在这里算过一个内容版本（FNV-1a 的短串），用来锚「是哪一版」。2026-09-21 用户裁：
+ * **材料动态读取，不做 hash 锚定**——用的时候读当前内容，排队期间文件变了不是缺陷。
+ * 故这一串连同它的生成、传递、渲染与校验一处不留；「当时用了什么」由记录里的
+ * **来源身份 ＋ 正文**答。
  */
-function materialOf(skill: Skill, file: string, text: string): SkillMaterial {
-  const source = [skill.path, file, text].join('\u0000')
-  let hash = 0x811c9dc5
-
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-
-  return { skill, version: `v${hash.toString(16).padStart(8, '0')}-${source.length.toString(16)}`, text }
+function materialOf(skill: Skill, text: string): SkillMaterial {
+  return { skill, text }
 }
 
 // ══ front-matter ══════════════════════════════════════════════════════

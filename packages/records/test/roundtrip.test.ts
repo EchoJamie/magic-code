@@ -293,7 +293,6 @@ describe('判据 1 · 落取回环', () => {
             name: 'pdf',
             source: '/ws/.magic/skills/pdf',
             label: '项目 .magic/skills',
-            version: 'v1-8',
             text: '正文',
           },
         ],

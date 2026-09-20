@@ -34,7 +34,7 @@
  * （绑定草稿时带的就是身份），故这一条只影响模型自主选用。
  */
 
-import type { SkillRead, Skills } from '@magic/contracts'
+import type { Skill, SkillMaterial, SkillRead, Skills, UsedSkill } from '@magic/contracts'
 import { isText } from './args.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused } from './toolkit.ts'
@@ -113,7 +113,13 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
 
       if (!read.ok) return refused(read.reason)
 
-      return { ok: true, output: compose(read, relative) }
+      return {
+        ok: true,
+        output: compose(read.material, relative),
+        // **交付身份**（U33）——**只有主文那一趟带**：引用是「同一项技能里的另一份文件」，
+        // 再报一次整项技能就是重复（契约 `ToolResult.skill`）
+        ...(relative === undefined ? { skill: usedOf(read.material.skill) } : {}),
+      }
     },
   }
 }
@@ -152,11 +158,19 @@ function resolve(
  * 手上是什么，来源让同名分得开。**技能说明与读出来的数据是两种东西**（工单明写）：
  * 这两个抬头就是那条分界线——工具读回来的这一份**也算「技能里写的」**，
  * 不是模型自己查出来的事实（工作区里的 `read` 才是）。
+ *
+ * ⚠️ 抬头是**给人（与模型）读的**，不是协议：交付身份走 `ToolResult.skill` 那一位。
+ * 谁要认「这一趟读的是哪个技能」，读那一位，**不要来抠这一行字**。
  */
-function compose(read: Extract<SkillRead, { ok: true }>, relative: string | undefined): string {
-  const { skill, version, text } = read.material
+function compose(material: SkillMaterial, relative: string | undefined): string {
+  const { skill, text } = material
   const what = relative === undefined ? MAIN_HEADING : `${REFERENCE_HEADING} ${relative}`
   const which = relative === undefined ? skill.name : `${skill.name} 的`
 
-  return `〔${what}：${which}（来源 ${skill.path} · ${version}）〕\n${text}`
+  return `〔${what}：${which}（来源 ${skill.path}）〕\n${text}`
+}
+
+/** 材料 → 交付身份（契约 `UsedSkill` 的三件）——标签取发现结果上那一个（见其注）。 */
+function usedOf(skill: Skill): UsedSkill {
+  return { name: skill.name, source: skill.path, label: skill.label }
 }

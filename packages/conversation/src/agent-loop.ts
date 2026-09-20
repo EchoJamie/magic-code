@@ -62,6 +62,8 @@ import type {
   TurnEndReason,
   TurnId,
   UserInput,
+  UsedSkill,
+  UsedSkillEntry,
 } from '@magic/contracts'
 import type { Compactor } from './compact.ts'
 import { DEFAULT_NEAR_ENTRIES, assembleContext } from './context.ts'
@@ -199,32 +201,15 @@ export async function agentLoop(
     return reportError(runtime, error)
   }
 
-  // **回执欠账**（收下 ＋ 用到的技能）——记下来，由**第一轮真装配出上下文之后**去还
-  // （见 `runTurn` 的 `owed`：回执只能在同一份材料确实进了上下文之后发，
-  // 提前到这一步发＝「已使用」可能是一句没兑现的话）
-  const owed = (): void => {
-    if (input.ref !== undefined) {
-      runtime.sink.emit(runtime.stamper.stamp('input.settled', { ref: input.ref, ok: true }))
-    }
-    if (delivery.used.length > 0) {
-      runtime.sink.emit(
-        runtime.stamper.stamp('skill.used', {
-          skills: delivery.used.map(({ name, source, label, version }) => ({
-            name,
-            source,
-            label,
-            version,
-          })),
-        }),
-      )
-    }
-  }
+  // **回执的兑现点**（收下 ＋ 用到的技能）——**按「这一次交代」记一份账，跨轮不重来**
+  // （见 `createAnnouncer`：首轮报过一次就不再报，工具轮再多也只有那一次）
+  const announce = createAnnouncer(runtime, input, delivery.used)
 
   for (;;) {
     // 轮间中止——不再开新轮（「回到等待输入」）
     if (signal.aborted) return 'aborted'
 
-    const turn = await runTurn(runtime, signal, once(owed))
+    const turn = await runTurn(runtime, signal, announce)
     if (turn.reason !== 'settled' || !turn.continues) return turn.reason
   }
 }
@@ -242,14 +227,90 @@ function withSkills(runtime: LoopRuntime, base: string): string {
   return runtime.skills?.promptFor(base) ?? base
 }
 
-/** 只许兑现一次——超限重发会让装配再跑一遍，回执**不许**跟着再发一遍。 */
-function once(action: () => void): () => void {
-  let spent = false
-  return () => {
-    if (spent) return
-    spent = true
-    action()
+/**
+ * **一次交代的回执账**（U33）——两件事，各有各的节奏，但都**只报一次**：
+ *
+ * | 报什么 | 什么时候 | 报几次 |
+ * | --- | --- | --- |
+ * | `input.settled{ok:true}` ＋ 显式选定的 `skill.used` | 第一次请求**真发出去**时 | **一次** |
+ * | 模型自主取到的 `skill.used` | 带着那份材料的请求**真发出去**时 | 每个身份一次 |
+ *
+ * ## 为什么账要按「交代」记（首轮在这里栽过）
+ *
+ * 首轮把「只报一次」写成了 `once(owed)`，而那个包装**造在每一轮的循环里**——
+ * 于是每开一轮就多一个「尚未兑现」的新包装，**一条普通的多轮工作会报好几次**
+ * 「本次使用技能」，同一个 `ref` 也反复收到成功。兑现状态因此必须挂在**这一次交代**上：
+ * 记账的 scope 是 `agentLoop` 的一次调用，不是一轮。
+ *
+ * ## 为什么都在「请求真发出去」之后报
+ *
+ * 「已使用」是一句**当时为真**的话——材料得真的在**这一次发出去的请求**里。两件证据缺一不可：
+ * **消息里得有它**（`assembleContext` 那一趟装进去的）＋ **这一趟真发出去了**。
+ * 故兑现点是**这一趟请求的第一条模型事件到手**那一刻（由 `runTurn` 在事件循环里调）：
+ * 事件流由模型域在调用发起之后产出，「有事件」本身就是发出去的证据；
+ * `gateway.stream(...)` 同步抛、或信号在发之前就中止的那些，一条事件都不会来——
+ * 回执因此不会把「装好了」当成「送出去了」。
+ *
+ * 自主取到的那些走同一条路：工具结果这一轮才落账，**下一轮**请求才把它装进去，
+ * 故它们的兑现点是**下一趟请求发出去**那一刻。
+ *
+ * ## 自主那条不靠正文推断身份
+ *
+ * 身份从**工具结果的结构化那一位**来（`ToolResult.skill`，由读技能的那件工具填），
+ * 不是从回填正文的抬头里抠出来的——那是拿一句给人看的文案当跨域协议，改个措辞就断。
+ * 取**引用**那一趟不带这一位，故「后续引用不重复报整项技能」是结构上就成立的。
+ */
+function createAnnouncer(
+  runtime: LoopRuntime,
+  input: UserInput,
+  selected: readonly UsedSkillEntry[],
+): Announcer {
+  /** 已报过的身份——**同一份材料不报第二遍**（同一次交代里取两次也只报一次）。 */
+  const announced = new Set<string>()
+  /** 刚取到、还没进过任何请求的那些——攒到下一趟装配完再报。 */
+  let pending: UsedSkill[] = []
+  /** 这一条交代的「收下 ＋ 显式技能」那一次是否已经兑现。 */
+  let opened = false
+
+  const tell = (skills: readonly UsedSkill[]): void => {
+    if (skills.length === 0) return
+    runtime.sink.emit(runtime.stamper.stamp('skill.used', { skills: [...skills] }))
   }
+
+  return {
+    deliver(skill: UsedSkill): void {
+      pending.push(skill)
+    },
+
+    flush(): void {
+      if (!opened) {
+        opened = true
+        if (input.ref !== undefined) {
+          runtime.sink.emit(runtime.stamper.stamp('input.settled', { ref: input.ref, ok: true }))
+        }
+        tell(selected)
+        for (const one of selected) announced.add(identityOf(one))
+      }
+
+      const fresh = pending.filter((one) => !announced.has(identityOf(one)))
+      pending = []
+      for (const one of fresh) announced.add(identityOf(one))
+      tell(fresh)
+    },
+  }
+}
+
+/** 一次交代的回执账——见 `createAnnouncer`。 */
+export type Announcer = {
+  /** 工具取到一份技能主文——记着，等它进了下一趟请求再报。 */
+  deliver(skill: UsedSkill): void
+  /** 一趟装配完了（消息成形、就要发出去）——把该报的报掉。 */
+  flush(): void
+}
+
+/** 技能的身份（报重了没有按它判）：名字 ＋ 来源路径，两件缺一都不是同一份。 */
+function identityOf(skill: UsedSkill): string {
+  return [skill.name, skill.source].join('\u0000')
 }
 
 // ══ 一轮 ══════════════════════════════════════════════════════════════
@@ -257,8 +318,11 @@ function once(action: () => void): () => void {
 async function runTurn(
   runtime: LoopRuntime,
   signal: AbortSignal,
-  /** 这一轮装配出上下文之后要还的**回执欠账**（只有第一轮有——见 `agentLoop`）。 */
-  owed?: () => void,
+  /**
+   * 这次交代的回执账——**每趟请求的第一条事件到手时** `flush()` 一次（见 `createAnnouncer`）。
+   * 报什么、报几次由账自己判，故逐条调也无妨。
+   */
+  announce: Announcer,
 ): Promise<TurnOutcome> {
   const { gateway, tools, sink, stamper } = runtime
 
@@ -297,11 +361,6 @@ async function runTurn(
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
       })
 
-      // **回执在这儿发**（U33）——上下文已经装出来了，材料**确实在这一次请求里**，
-      // 「本次使用技能：…」于是是一句当时为真的话。再往前提（取到材料那一刻 / 落账那一刻）
-      // 都可能赶在「这一轮会不会真发出去」之前：中止、出错都还在后头。
-      owed?.()
-
       const stream = gateway.stream(
         { model: runtime.model, messages, tools: tools.definitions() },
         { signal },
@@ -311,11 +370,32 @@ async function runTurn(
       thinking = ''
       let errored = false
       let tier: ModelErrorTier | undefined
+      /**
+       * 这一趟请求的**回执欠账还没还**——还的时机是**它的第一条事件到手**（见下）。
+       */
+      let owed = true
 
       for await (const event of stream.events) {
+        // **回执在这儿发**（U33）——**第一条模型事件到手之后**，不是装完上下文就发。
+        //
+        // 判据是「这一次调用真发出去了」：事件流由模型域在**调用发起之后**产出，
+        // 故「有事件」这件事本身**就是**请求已发出的证据；而 `assembleContext` 装完
+        // 只说明「材料备齐了」——备齐不等于发出去。两处之间会出岔子的路真实存在：
+        // `gateway.stream(...)` **同步抛**（装配 / 取件层起手就炸）、信号在发之前
+        // 就已中止——那两种情形**一条事件都不会来**，回执因此不会假报「已使用」。
+        //
+        // 报什么由账自己判（报过的身份不再报、`input.settled` 只报一次）——
+        // 故逐条调都行，重发那一趟（超限重试）也照旧只报一次。
         // 模型域的事件**原样转发**（`model.call.start` / `model.delta` / `model.usage` /
-        // `model.call.end` / `model.error`）——过程流的消费方（渲染 / 记录）按 kind 收窄
+        // `model.call.end` / `model.error`）——过程流的消费者（渲染 / 记录）按 kind 收窄
         sink.emit(event)
+
+        // 转发完**这一条**再还账：于是回执落在「这一次调用开头那一条事件」之后
+        // （事件序上读得出来「先有了这次调用，然后才说用上了什么」）
+        if (owed) {
+          owed = false
+          announce.flush()
+        }
 
         if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
         if (event.kind === 'model.delta' && event.data.channel === 'thinking') thinking += event.data.text
@@ -384,7 +464,7 @@ async function runTurn(
     for (const call of calls) {
       if (signal.aborted) return close(runtime, 'aborted', false)
       if (heldText !== undefined) withholds(runtime, call, heldText)
-      else await runToolCall(runtime, call, signal)
+      else await runToolCall(runtime, call, signal, announce)
     }
 
     return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted)
@@ -410,6 +490,7 @@ async function runToolCall(
   runtime: LoopRuntime,
   call: ToolCall,
   signal: AbortSignal,
+  announce: Announcer,
 ): Promise<void> {
   const log = entryLogOf(runtime)
 
@@ -421,6 +502,9 @@ async function runToolCall(
     // `opts.onOutput` 留空：`tool.output.delta` 是**工具域**的产出（事件产出表）——
     // 本域不越俎；该位留给将来的消费方（如外壳侧的实时视图）。
     outcome = toolOutcomeOf(await runtime.tools.invoke(call, { signal }))
+    // **模型自主取到一份技能主文**（U33）——记进回执账，等它进了下一趟请求再报
+    // （身份由工具结构化给出，不从回填正文里认；取引用那一趟不带这一位）
+    if (outcome.skill !== undefined) announce.deliver(outcome.skill)
   } catch (error) {
     // 端口承诺「结果，不是异常」（与沙箱同法）；抛了＝工具域违约。
     // 不炸掉整轮：以失败回填——模型与用户都看得到「这次没成」。

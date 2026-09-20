@@ -1,7 +1,7 @@
 /**
  * 技能送达 —— **什么时候把哪一份送进上下文**（U33 · 对话域这一半）。
  *
- * 上游是执行域的 `Skills`（有什么、在哪儿、是哪一版）；本文件持有的是**两处**：
+ * 上游是执行域的 `Skills`（有什么、在哪儿、读到的是什么）；本文件持有的是**两处**：
  *
  * 1. **目录（只有名称与描述）**——每次模型调用之前接进系统提示词。与项目规约的送达同法：
  *    **现取现接**（改过的技能下一趟就是新的），且**只有元数据**——「未选中的正文不进上下文」
@@ -15,7 +15,7 @@
  * | 用户（显式绑定草稿） | 提交出队那一刻 | **随这条交代**：作为 `user` 条目的载荷落账 |
  * | 模型（按描述自主选用） | 它调 `skill` 工具那一刻 | **一次工具往返**：工具结果落账 |
  *
- * 两路的**来源身份是同一种**（名称 ＋ 真路径 ＋ 版本），故「已使用的材料」在两处说得一样。
+ * 两路的**来源身份是同一种**（名称 ＋ 真路径 ＋ 人读标签），故「已使用的材料」在两处说得一样。
  * 而**技能说明与工具读回来的数据保持不同来源身份**（工单明写）：前者是这次交代的一部分
  * （`user` 条目载荷），后者是**工具域的结果**（`tool-result` 条目）——重放时两条路各自复原，
  * 不会把「技能里写的」当成「读出来的事实」。
@@ -28,7 +28,7 @@
  */
 
 import type { SkillRead, SkillRef, Skills, UsedSkillEntry } from '@magic/contracts'
-import { sourceLabelOf, withSkillsCatalog } from './prompt/skills.ts'
+import { withSkillsCatalog } from './prompt/skills.ts'
 
 /** 一次技能送达——本对象**不存状态**（目录每次现扫、主文每次现读，同执行域那一条）。 */
 export type SkillsDelivery = {
@@ -62,8 +62,7 @@ export function createSkillsDelivery(skills: Skills): SkillsDelivery {
         used.push({
           name: read.material.skill.name,
           source: read.material.skill.path,
-          label: sourceLabelOf(read.material.skill),
-          version: read.material.version,
+          label: read.material.skill.label,
           // 正文**随条目落账**（不是引用）——见契约 `UsedSkillEntry`：只记身份的话，
           // 源文件一改，当时送出去的那一份就再也取不回来了
           text: read.material.text,

@@ -343,11 +343,11 @@ export function userPayloadOf(payload: EntryPayload | undefined): readonly UsedS
   for (const item of declared) {
     if (!isRecord(item)) continue
 
-    const { name, source: from, version, text } = item as Record<string, unknown>
+    const { name, source: from, text } = item as Record<string, unknown>
     if (typeof name !== 'string' || typeof from !== 'string') continue
-    if (typeof version !== 'string' || typeof text !== 'string') continue
+    if (typeof text !== 'string') continue
 
-    skills.push({ name, source: from, label: String(item['label'] ?? ''), version, text })
+    skills.push({ name, source: from, label: String(item['label'] ?? ''), text })
   }
 
   return skills

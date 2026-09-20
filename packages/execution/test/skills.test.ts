@@ -197,7 +197,38 @@ describe('U33 · 发现', () => {
   })
 })
 
-// —— ② 读不懂的不认（有诊断） ——
+// —— ② 来源标签（一处产出，多处照印） ——
+
+describe('U33 · 来源标签', () => {
+  test('作用域 ＋ 入口两段（同名时人才分得清）；由**发现**产出', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      const extra = join(land.at, 'shared-skills')
+      put(land.at, '.magic/skills/proj-magic/SKILL.md', skillText('proj-magic'))
+      put(land.at, '.agents/skills/proj-agents/SKILL.md', skillText('proj-agents'))
+      put(home, '.magic/skills/user-magic/SKILL.md', skillText('user-magic'))
+      put(home, '.agents/skills/user-agents/SKILL.md', skillText('user-agents'))
+      put(extra, 'extra/SKILL.md', skillText('extra'))
+
+      const labels = skillsOf([land.at], home, [extra])
+        .discover()
+        .skills.map((skill) => `${skill.name}=${skill.label}`)
+
+      expect(labels).toEqual([
+        'proj-magic=项目 .magic/skills',
+        'proj-agents=项目 .agents/skills',
+        'user-magic=用户 .magic/skills',
+        'user-agents=用户 .agents/skills',
+        'extra=配置来源 .magic/skills',
+      ])
+    } finally {
+      land.dispose()
+    }
+  })
+})
+
+// —— ③ 读不懂的不认（有诊断） ——
 
 describe('U33 · 诊断', () => {
   test('缺 SKILL.md / front-matter 缺失 / name 不成立 / description 缺失——逐条报，且都不加载', () => {
@@ -238,8 +269,8 @@ describe('U33 · 诊断', () => {
       const shape = Object.keys(skill ?? {}).sort()
 
       expect(catalog.problems).toEqual([])
-      // 只有四件：名字 · 描述 · 身份（真路径）· 来历
-      expect(shape).toEqual(['description', 'name', 'origin', 'path', 'source'])
+      // 只有六件：名字 · 描述 · 身份（真路径）· 来历（作用域 / 入口 / 人读标签）
+      expect(shape).toEqual(['description', 'label', 'name', 'origin', 'path', 'source'])
     } finally {
       land.dispose()
     }
@@ -261,14 +292,15 @@ describe('U33 · 按需读取', () => {
       if (!first.ok) return
       expect(first.material.text).toBe('正文第一版\n')
       expect(first.material.skill.name).toBe('one')
+      // 材料上**没有**「哪一版」这一位（2026-09-21 用户已定：材料动态读取，不算 hash）
+      expect(Object.keys(first.material).sort()).toEqual(['skill', 'text'])
 
       put(land.at, '.magic/skills/one/SKILL.md', skillText('one', '说明', '正文第二版'))
       const second = skills.readMain('one', path)
       expect(second.ok).toBe(true)
       if (!second.ok) return
+      // 现扫现读：改了就是新的（不缓存、不订阅）
       expect(second.material.text).toBe('正文第二版\n')
-      // 现扫现读：改了就是新的一版（不缓存、不订阅）
-      expect(second.material.version).not.toBe(first.material.version)
     } finally {
       land.dispose()
     }
@@ -306,6 +338,40 @@ describe('U33 · 按需读取', () => {
       if (read.ok) return
       expect(read.reason).toContain('one')
       expect(read.reason).toContain(path)
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('**发现给了什么身份，就按那个身份读得回来**（目录软链接 / 直接点名的单技能目录）', () => {
+    // 返工一条：首轮发现跟出去返回**真身**，读取却按「父目录是不是来源容器」认——
+    // 两把尺子不同，于是自己返回的身份自己不认识（验收 `discovered_sources_readback`）。
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      // ① 项目里一个目录软链接，指到沙地别处的一份技能
+      const external = join(land.at, 'external', 'linked')
+      put(land.at, 'external/linked/SKILL.md', skillText('linked', '链过来的那份', '链过来的正文'))
+      mkdirSync(join(land.at, '.magic/skills'), { recursive: true })
+      symlinkSync(external, join(land.at, '.magic/skills/linked'))
+      // ② 点名的补充目录，它自己就是一份技能
+      const solo = join(land.at, 'standalone')
+      put(solo, 'SKILL.md', skillText('solo', '单独一份', '单独的正文'))
+
+      const skills = skillsOf([land.at], home, [solo])
+      const catalog = skills.discover()
+
+      expect(catalog.skills.map((skill) => skill.name)).toEqual(['linked', 'solo'])
+      // 发现返回的身份 → 原样交回读取：两条都得成
+      for (const skill of catalog.skills) {
+        const read = skills.readMain(skill.name, skill.path)
+        expect({ name: skill.name, ok: read.ok }).toEqual({ name: skill.name, ok: true })
+      }
+      // 身份是**真身**（软链接那条跟出去之后那一处）——发现与读取同一串
+      expect(catalog.skills[0]?.path).toBe(realpathSync(external))
+      // 引用同样走得通（同一份身份底下）
+      put(land.at, 'external/linked/references/x.md', '引用正文')
+      expect(skills.readReference('linked', catalog.skills[0]?.path ?? '', 'references/x.md').ok).toBe(true)
     } finally {
       land.dispose()
     }

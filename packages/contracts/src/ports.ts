@@ -19,7 +19,7 @@
  */
 
 import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
-import type { Content, Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
+import type { Content, Entry, EntryRange, NewEntry, SessionSummary, UsedSkill } from './entries.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
 
@@ -465,6 +465,15 @@ export type Skill = {
   readonly path: string
   readonly source: SkillSource
   readonly origin: SkillOrigin
+  /**
+   * **来源的人读标签**（如「项目 .magic/skills」）——由**发现处**产出（它才知道这一份
+   * 是从哪一类来源的哪个入口长出来的），此后一路照印：系统提示词的目录块、`--check`
+   * 那一行、回执、记录里的 `UsedSkill.label` 用的是**同一串**。
+   *
+   * 一处产出、多处照印的理由同 `GrantRow.describe`：措辞若在两处各写一遍，
+   * 改一处就会漏另一处（而它恰好是用户用来分辨同名技能的那一眼）。
+   */
+  readonly label: string
 }
 
 /**
@@ -501,21 +510,16 @@ export type SkillCatalog = {
 }
 
 /**
- * **按需读到的一份技能材料**——读到的是哪一份，连同「是哪一版」。
+ * **按需读到的一份技能材料**——读到的是哪一份，正文是什么。
  *
- * `version` 的用途与 `ProjectRule.version` 不同：规约那儿的版本喂「拦不拦」的循环判据，
- * 这儿的版本是**记录依据**——「当时用的是哪一版」（正文改了、来源删了，这条仍在）。
+ * **不算内容版本**（2026-09-21 用户已定）：技能材料**动态读取**——用的时候读当前内容，
+ * 排队期间文件变了不是缺陷，故不需要 hash / 版本串来锚定「是哪一版」。
+ * 记录侧留下的仍是**来源身份 ＋ 当时实际送出去的正文**（见 `UsedSkillEntry`），
+ * 两者足够说明「当时用了什么」；材料本身不背「版本」这个概念。
  */
 export type SkillMaterial = {
   /** 读的是哪一个技能（身份随材料一起走——材料自己说得出自己从哪来）。 */
   readonly skill: Skill
-  /**
-   * **内容版本**——真路径 ＋ 正文的摘要。
-   *
-   * 判「是不是同一份」够用（同一份内容恒同一串），**不是密码学摘要**：
-   * 它防的是「改了没改说不清」，不是防篡改。
-   */
-  readonly version: string
   /**
    * 正文——主文＝去掉 front-matter 的 `SKILL.md` 正文；引用＝那份文件的原文。
    *
@@ -539,9 +543,12 @@ export type SkillRead =
 /**
  * **技能来源面**（执行域实现）——与 `ProjectRules` 同一处境、同一分工：
  *
- * - **本端口**只做「**有什么、在哪儿、是哪一版**」——发现 · 读取 · 解析 · 去重 · 诊断；
+ * - **本端口**只做「**有什么、在哪儿、读到的是什么**」——发现 · 读取 · 解析 · 去重 · 诊断；
  * - **选哪些、什么时候送**归对话侧：显式选定随提交、模型自主选用经受限读取入口；
  * - **谁来源、允许读哪些**归装配：用户配置的补充目录随构造入参进实现。
+ *
+ * **不记内容版本**（2026-09-21 用户已定）：材料**动态读取**——用的时候读当前内容，
+ * 排队期间文件变了不是缺陷，故不必也不许拿 hash 锚「是哪一版」。
  *
  * ## 一次只读一棵小树，但**每次现扫**
  *
@@ -735,6 +742,15 @@ export type ToolResult = {
   readonly content: Content
   /** 该次 `tool.call` 事件的 id（链引用）。 */
   readonly callRef: RecordId
+  /**
+   * **这一次调用交付了一份技能主文**（U33）——只有读技能的那件工具会带，其余一律不带。
+   *
+   * 由头：模型**自主**取技能时，「实际使用」的回执得由**知道那是哪一份材料**的人交出身份。
+   * 说话的是工具（它读的），发回执的是对话域（只有它知道材料什么时候真进了模型请求）。
+   * 中间这条结构化通道是必须的——**不能靠匹配结果正文的抬头去猜**（那是拿一句给人看的
+   * 文案当跨域协议，改个措辞就断）。取**引用**那一趟不带它：「后续引用不重复报整项技能」。
+   */
+  readonly skill?: UsedSkill
 }
 
 // —— 权限域 ——

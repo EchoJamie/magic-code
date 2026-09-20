@@ -85,7 +85,7 @@ export function assertEntryShape(entry: NewEntry): void {
   if (entry.kind === 'user') {
     if (entry.payload !== undefined && !isUserPayload(entry.payload)) {
       throw new Error(
-        'user 条目的载荷只装这次交代带出去的技能材料（{ skills: [{ name, source, label, version, text }] }）' +
+        'user 条目的载荷只装这次交代带出去的技能材料（{ skills: [{ name, source, label, text }] }）' +
           '——别的东西没有位置（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
       )
     }
@@ -162,8 +162,9 @@ export function isContent(value: unknown): value is Content {
  * - **`skills` 必须在**且是数组——载荷凭空多出别的键（比如把工具条目的
  *   `{ name, args }` 错位到 `user` 头上）当场拒。这正是「kind 与载荷强对应」
  *   这道硬闸在 `user` 这一格的形态：**放行一种形状，不是放行一切形状**。
- * - **每一项四件齐全**（名字 / 来源 / 版本 / 正文）——缺了正文那一份材料就复原不出来了，
+ * - **每一项三件齐全**（名字 / 来源 / 正文）——缺了正文那一份材料就复原不出来了，
  *   而它正是这条载荷存在的理由（重放依据）。故写死在这儿，与 `tool-result` 那条同一姿势。
+ *   标签（`label`）不查：它只影响「来源怎么念」，缺了照收。
  */
 export function isUserPayload(payload: unknown): payload is UserPayload {
   if (!isRecord(payload)) return false
@@ -177,7 +178,6 @@ export function isUserPayload(payload: unknown): payload is UserPayload {
     return (
       typeof item['name'] === 'string' &&
       typeof item['source'] === 'string' &&
-      typeof item['version'] === 'string' &&
       typeof item['text'] === 'string'
     )
   })
