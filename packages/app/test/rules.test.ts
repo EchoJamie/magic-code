@@ -424,6 +424,76 @@ describe('真装配 · 目录读不动 ⇒ 零副作用；读回来照常推进�
   })
 })
 
+describe('真装配 · 点名的来源读不动 ⇒ 零副作用；读回来照常推进（2026-09-20 五轮退回）', () => {
+  /**
+   * 同一条根因的**另一个入口**（规划侧装置 `/tmp/mc-u32-review2-UUmrXQ/fifth-round.ts` 的
+   * `source` 场景）：`rules.sources` 点名的**外部目录**设成 000 时，`resolveSources` 报得出
+   * `EACCES`，却把它从 `resolved` 里丢掉、照旧交回 `truncated=false`——底下那份 `required.md`
+   * 一次都没看过，工具于是照常写下去了（实测 `before=true`）。
+   *
+   * 与四轮那条（`.magic/rules/locked`）**同一条链、同一个出口**，只是入口从「扫目录」换成了
+   * 「归位用户点名的来源」。判据同样是**整链**：真装配 → 真预查 → 真沙箱落盘 → 真屏。
+   */
+  test('`rules.sources` 点名的工作区外目录 000：**一次副作用都没有**；权限还回来 ⇒ 送达且只执行一次', async () => {
+    // 点名的来源在**工作区根之外**（`sources` 存在的理由就是它）——沙地照旧是唯一临时目录
+    const outside = tempDir('magic-source-')
+    const stage = makeStage({ config: { rules: { sources: [outside] } } })
+    const rule = join(outside, 'required.md')
+
+    try {
+      writeFileSync(rule, 'SOURCE_REQUIRED_BEFORE_WRITE', 'utf8')
+      chmodSync(outside, 0)
+
+      const write = { name: 'write', args: { path: 'result.txt', content: 'SIDE_EFFECT' } }
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [write] },
+          { text: '好' },
+          { toolCalls: [write] },
+          { text: '写好了' },
+        ],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await shell.submit('写一个')
+
+      // —— ① **副作用一次都没发生**（判据是盘上那份文件，不是某个内部账本）——
+      expect(existsSync(join(stage.workspace, 'result.txt'))).toBe(false)
+      expect(resultsOf(shell)).toEqual([false])
+
+      // —— ② 回填说「没读完整 · 去看诊断 · 别重提」，**不谎称「已送入上下文」** ——
+      expect(replySaid(stage, 1, '未完整读取')).toBe(true)
+      expect(replySaid(stage, 1, 'magic --check')).toBe(true)
+      expect(replySaid(stage, 1, '已送入上下文')).toBe(false)
+
+      // —— ③ 那一趟的系统提示词里真没有它（没归位 ⇒ 压根读不出来、送不出），屏上那格是「没跑」——
+      expect(systemOf(stage, 0)).not.toContain('SOURCE_REQUIRED_BEFORE_WRITE')
+      const view: ShellView = shell.events.reduce((acc, event) => reduce(acc, event), createView())
+      const tools = view.settled.filter((row) => row.kind === 'tool')
+
+      expect(tools[0]?.state).toBe('unexecuted')
+      expect(tools[0]?.elapsedMs).toBe(null)
+      expect(tools[0]?.output[0]).toBe('未执行 · 项目规约未完整读取') // 逐字：屏上那一格
+      expect(hasRunningTool(view)).toBe(false)
+
+      // —— ④ **读回来就照常推进**：权限一还，同一会话再提一次 ⇒ 真送到、真写下去（各一次）——
+      chmodSync(outside, 0o700)
+      await shell.submit('再写一次')
+
+      expect(systemOf(stage, 2)).toContain('SOURCE_REQUIRED_BEFORE_WRITE')
+      expect(readFileSync(join(stage.workspace, 'result.txt'), 'utf8')).toBe('SIDE_EFFECT')
+      expect(resultsOf(shell)).toEqual([false, true]) // 扣下一次、放行一次（不重复执行）
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      chmodSync(outside, 0o700)
+      stage.dispose()
+      removeDir(outside)
+    }
+  })
+})
+
 describe('真装配 · 材料带着范围送到模型（2026-09-20 验收退回第 4 条）', () => {
   test('每条都带根 / 范围 / 条件——模型不必靠文件名猜它管到哪儿', async () => {
     const stage = makeStage()

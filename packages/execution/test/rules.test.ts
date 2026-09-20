@@ -814,7 +814,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('补充来源不存在——报出来（不静默当作「没有」）', () => {
+  test('补充来源不存在——报出来（不静默当作「没有」），**且认「读不完整」**', () => {
     const box = sandbox()
     try {
       const load = rulesOf([box.at], [join(box.at, 'nowhere')]).load([])
@@ -822,6 +822,12 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
       expect(load.documents).toEqual([])
       expect(saidSomething(load, 'rules.sources')).toBe(true)
       expect(saidSomething(load, '不存在或不可达')).toBe(true)
+      // **原锚**：只断言「报出来了」（`problems` 里那一句）。
+      // **为何变**（2026-09-20 五轮裁）：用户点名的材料**没到手**与「那儿本来没有东西」是两回事
+      // ——「可选目录压根没有」照旧不算不全，而这一处是**用户明确要求加载**的（见
+      // `resolveSources` 那条注）。与 `.magic/rules` 那种「多数项目压根没有」的常态不同。
+      // **新锚**：`truncated` 也置位（消费方据此停批），诊断那一句一字未动。
+      expect(load.truncated).toBe(true)
     } finally {
       box.dispose()
     }
@@ -1160,6 +1166,106 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
       expect(back.problems).toEqual([])
     } finally {
       chmodSync(locked, 0o700)
+      box.dispose()
+    }
+  })
+})
+
+describe('用户点名要加载的来源没归位成功 —— 同一个根因，另一个入口（2026-09-20 五轮退回）', () => {
+  /**
+   * 本轮复现的那一处（规划侧装置 `/tmp/mc-u32-review2-UUmrXQ/fifth-round.ts` 的 `source` 场景）：
+   * `rules.sources` 点名的外部目录设成 000 之后，`resolveSources` 报得出 `EACCES`，却把它从
+   * `resolved` 里**丢掉**——`scanSource` 压根不跑，而 `load()` 照旧交回 `truncated=false`。
+   * 真装配那一头据此放行、真写成功（实测 `before=true`）：底下那份规约**一次都没看过**。
+   *
+   * 判据与四轮那条**同一条线**：「报一句错」与「回来的是不是全的」是两件事。
+   * ⚠️ 只有 `sources`（用户要求**加载**的材料）在这一条线上；`linkSources` 是**许可**，
+   * 见本块最后那条对照。
+   */
+  test('`rules.sources` 点名的目录**读不动**：报具体诊断 ＋ 置位——不是「先把它丢掉再说齐全」', () => {
+    const box = sandbox()
+    const shared = join(box.at, 'shared')
+    const root = join(box.at, 'proj')
+    try {
+      put(shared, 'required.md', '用户点名要读的那一份')
+      mkdirSync(root, { recursive: true })
+      chmodSync(shared, 0)
+
+      const load = rulesOf([root], [shared]).load([])
+
+      expect(load.documents).toEqual([])
+      expect(saidSomething(load, 'rules.sources')).toBe(true)
+      expect(saidSomething(load, 'EACCES')).toBe(true) // 系统缘由照抄，用户对得上
+      // **要害在这一位**：底下那一摊一份都没看过，而 `documents` 里压根看不出少了它
+      expect(load.truncated).toBe(true)
+    } finally {
+      chmodSync(shared, 0o700)
+      box.dispose()
+    }
+  })
+
+  test('**读回来就照常**：来源权限恢复 ⇒ 那份规约进 `documents`、`truncated` 落回假（不缓存失败）', () => {
+    const box = sandbox()
+    const shared = join(box.at, 'shared')
+    const root = join(box.at, 'proj')
+    try {
+      put(shared, 'required.md', 'REQUIRED_AFTER_RESTORE')
+      mkdirSync(root, { recursive: true })
+      chmodSync(shared, 0)
+
+      // 归位是**每一次 `load()` 现做**的：上一趟读不成不落下任何「永久缺失」的账
+      expect(rulesOf([root], [shared]).load([]).truncated).toBe(true)
+
+      chmodSync(shared, 0o700)
+      const back = rulesOf([root], [shared]).load([])
+
+      // 点子**根外**（本轮的复现点）：抬头报的是真路径——它不属于任何一条根，也就不该被
+      // 说成某条根底下的相对写法（`scanSource` 那支：落不到根内就报真身）
+      const said = join(realpathSync(shared), 'required.md')
+      expect(namesOf(back)).toEqual([`source:${said}`])
+      expect(ruleNamed(back, said).text).toBe('REQUIRED_AFTER_RESTORE')
+      expect(back.truncated).toBe(false)
+      expect(back.problems).toEqual([])
+    } finally {
+      chmodSync(shared, 0o700)
+      box.dispose()
+    }
+  })
+
+  test('**归位不成的两种写法都在这一条线上**：指不出真身（不存在）· 写法被拒（相对路径）', () => {
+    const box = sandbox()
+    try {
+      const missing = rulesOf([box.at], [join(box.at, 'nowhere')]).load([])
+      expect(missing.truncated).toBe(true)
+
+      // 「可选目录压根没有」照旧正常（见本文件那条两边对照），**用户点名的这一种不算**：
+      // 它点的是「这份材料要读进来」，而我们连它指哪儿都定不下来（相对串的基准是进程当前目录）
+      const relative = rulesOf([box.at], ['shared/rules']).load([])
+      expect(saidSomething(relative, '绝对路径')).toBe(true)
+      expect(relative.truncated).toBe(true)
+    } finally {
+      box.dispose()
+    }
+  })
+
+  test('对照：`linkSources` 里一条**没用上的许可**归位不成 ⇒ 报出来，但**不停批**（五轮明裁）', () => {
+    const box = sandbox()
+    const permit = join(box.at, 'permit')
+    try {
+      mkdirSync(permit, { recursive: true })
+      chmodSync(permit, 0)
+
+      const load = rulesOf([box.at], undefined, [permit]).load([])
+
+      // 报是照报（用户看得见自己写的那一行没生效）
+      expect(saidSomething(load, 'rules.linkSources')).toBe(true)
+      expect(saidSomething(load, 'EACCES')).toBe(true)
+      // ...但它**不是**「该加载的材料没到手」：它是「这条路可以走」——跟不跟得出去由链接那一头
+      // 说话（`isAllowed` / `walk` 的白名单）。许可成不成立**不改变这一趟的材料全不全**，
+      // 故不照搬成停批（工单第五轮：不能「一失败也停批」）
+      expect(load.truncated).toBe(false)
+    } finally {
+      chmodSync(permit, 0o700)
       box.dispose()
     }
   })

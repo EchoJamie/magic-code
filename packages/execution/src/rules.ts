@@ -178,10 +178,13 @@ type SourceBook = 'sources' | 'linkSources'
  * 为什么要它：报一句错与「回来的是不是全的」是**两件事**——层级到顶、目录读不动时，
  * 底下那一摊一份都没看过，而 `documents` 里压根看不出少了什么。消费方（对话域）据这一位停批。
  *
- * 置位的两处（2026-09-20 四轮裁前只有一处）：
+ * 置位的三处（2026-09-20 四轮裁前只有一处）：
  * - `walk` 的**层级那一闸**（超过 32 层，底下再也不看）；
  * - 扫描入口的**「没看成」**（`unscanned`——目录存在判断 / 真身解析 / 读条目 / 非 `*.md`
- *   项取不到状态，见 `tryLook`）。
+ *   项取不到状态，见 `tryLook`）；
+ * - **用户点名的补充来源没归位成功**（`resolveSources`——那是「该读的材料没到手」，
+ *   底下那一摊一份都没看过；⚠️ 只认 `rules.sources` 那一本，`linkSources` 是许可、
+ *   不算材料，见那条注）。
  */
 type Marks = { truncated: boolean }
 
@@ -217,15 +220,20 @@ function load(
   const declared = workspace.declaredRoots()
   const problems: RulesProblem[] = []
 
+  /**
+   * 发现面的完整性标记——`select` 出口时并进 `RulesLoad.truncated`。
+   *
+   * ⚠️ **它得先于下面两处归位**（2026-09-20 五轮裁）：`resolveSources` 也是扫描入口之一
+   * （用户点名的来源没归位成功＝那一摊从没看过），故那两处要能在它归位时就地置位。
+   */
+  const marks: Marks = { truncated: false }
   /** 补充来源（**读进来**的那一份名册）——它们同时也是「允许读」的一处。 */
-  const sources = resolveSources(options.sources ?? [], 'sources', problems)
+  const sources = resolveSources(options.sources ?? [], 'sources', problems, marks)
   /** 放行名册（**只放行、不加载正文**）——跟出去之后读到的是什么就还是什么。 */
-  const linkSources = resolveSources(options.linkSources ?? [], 'linkSources', problems)
+  const linkSources = resolveSources(options.linkSources ?? [], 'linkSources', problems, marks)
   /** 白名单本体——**递归下探前先问它**：一份都不读的地方，连目录都不进（见 `walk`）。 */
   const allowed = (real: string): boolean =>
     isAllowed(real, roots, declared, [...sources, ...linkSources])
-  /** 发现面的完整性标记——由 `walk` 就地置位，`select` 出口时并进 `RulesLoad.truncated`。 */
-  const marks: Marks = { truncated: false }
   const candidates: Candidate[] = []
   const directoryDocs = memoDirectoryDocs(problems)
 
@@ -579,13 +587,31 @@ function walk(
  * 当前目录**——换个地方启动 `magic`，同一个配置就指到别处去了，而用户写的时候心里想的
  * 多半不是那个。工作区根那一份由执行域的根注册拒（`workspace.ts` `normalizeRoot`），
  * 补充来源走不到那儿，故在此补齐同一道。
+ *
+ * ## 没归位成功的条目**也是扫描入口**（2026-09-20 五轮裁）
+ *
+ * 旧写法在这儿只 `problems.push` 一句就把来源**丢掉**——`resolved` 里没有它，
+ * `scanSource` 压根不会跑，而 `load()` 照旧交回 `truncated=false`。实测（规划侧装置
+ * `/tmp/mc-u32-review2-UUmrXQ/fifth-round.ts` 的 `source` 场景）：`rules.sources` 点名的
+ * 外部目录设成 000 之后，`load()` 报得出 `EACCES`，却**照样声称这份材料是全的**，
+ * 消费方据此放行、真写成功——底下那份规约**一次都没看过**。
+ * 「报一句错」与「回来的是不是全的」是两件事，与 `tryLook` 那条线**同一个出口**：
+ * 没归位成功 ⇒ 认「读不完整」（消费方据此停批）。
+ *
+ * ⚠️ **两本名册的分量不一样，不能照搬**（工单第五轮明裁）：`sources` 是用户明确要求
+ * **加载进上下文**的材料——它没到位，这一趟的规约就不全；`linkSources` 只是**读取许可**
+ * （这条路可以跟出去），许可成不成立由链接那一头说话（`isAllowed` / `walk` 的白名单），
+ * **一条没用上的许可归位不成，不改变这一趟的材料全不全**，故只报、不置位。
  */
 function resolveSources(
   raw: readonly string[],
   book: SourceBook,
   problems: RulesProblem[],
+  marks: Marks,
 ): readonly Source[] {
   const resolved: Source[] = []
+  /** 这一本名册的条目**没归位成功**时算不算「材料不全」——由头见上面那段注。 */
+  const material = book === 'sources'
 
   raw.forEach((entry, index) => {
     const at = `rules.${book} 第 ${index + 1} 条`
@@ -596,6 +622,10 @@ function resolveSources(
         kind: 'error',
         message: `${at}须是绝对路径——相对串的基准是进程当前目录，换个地方启动就指到别处去了`,
       })
+      // 写法被拒**照旧算没归位成功**：用户点名的这份材料同样没到手，而**它底下有什么我们
+      // 连猜都猜不了**（相对串指哪儿取决于进程在哪儿启动）。报的是「怎么写才合格」，
+      // 不是「那儿没有东西」——故与下面两支同一个出口。
+      if (material) marks.truncated = true
       return
     }
 
@@ -604,6 +634,7 @@ function resolveSources(
       real = realpathSync(entry)
     } catch (error) {
       problems.push({ path: entry, kind: 'error', message: `${at}不存在或不可达——${reasonOf(error)}` })
+      if (material) marks.truncated = true
       return
     }
 
@@ -611,6 +642,7 @@ function resolveSources(
       resolved.push({ real, isDir: statSync(real).isDirectory() })
     } catch (error) {
       problems.push({ path: entry, kind: 'error', message: `${at}取不到状态——${reasonOf(error)}` })
+      if (material) marks.truncated = true
     }
   })
 
@@ -661,7 +693,8 @@ function select(input: {
    * 这一趟丢过材料（`RulesLoad.truncated`——消费方据它判「回来的是不是全的」）。
    *
    * **两处来源，一个出口**（2026-09-20 四轮裁扩充了前者的判据）：发现面没看成
-   * （`marks`——层级到顶 · 目录存在判断 / 真身解析 / 读条目，见 `tryLook`）与下面那两处
+   * （`marks`——层级到顶 · 目录存在判断 / 真身解析 / 读条目，见 `tryLook`；
+   * 五轮又收进**点名的补充来源没归位成功**，见 `resolveSources`）与下面那两处
    * 上限（份数 / 总量）。判据都不是「读到了什么」，而是「**有没有该看而没看到的地方**」。
    */
   let truncated = marks.truncated

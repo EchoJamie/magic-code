@@ -25,11 +25,14 @@
  * bun packages/app/test/frames-rules.ts --out <目录>
  * ```
  *
- * 出十一份：`check.txt` ＋ `check-broken-agents.txt` ＋ `check-unreadable.txt`（`--check` 那三屏
- * 的字——分别是首轮那份读数 · **根 `AGENTS.md` 断链**那两条诊断 · **规则目录读不动**那一条）·
+ * 出十四份：`check.txt` ＋ `check-broken-agents.txt` ＋ `check-unreadable.txt` ＋
+ * `check-source-unreadable.txt`（`--check` 那四屏的字——分别是首轮那份读数 · **根 `AGENTS.md`
+ * 断链**那两条诊断 · **规则目录读不动**那一条 · **五轮：点名的补充来源读不动**那一条）·
  * `hold.txt` ＋ `hold.ansi`（扣下那一次的外壳屏）· `overflow.txt` ＋ `overflow.ansi`
  * （材料没读完整而停批那一屏）· `unreadable.txt` ＋ `.ansi`（**目录 000 那一次的外壳屏**，
  * 同一会话里权限还回来之后接着写成了——**读不动的零副作用与读回来照常推进**在一条时间线上）·
+ * `source-unreadable.txt` ＋ `.ansi`（**五轮：点名来源 000 那一次的外壳屏**，同一条时间线上
+ * 的零副作用与恢复后写成——与 `unreadable` 是同一条链的另一个入口）·
  * `executed-failure.txt` ＋ `.ansi`（**真跑失败、首行恰是「未执行…」**那一屏——「没跑」与
  * 「跑了没成」分不分得开看它）。`.ansi` 是外壳写出的**原始字节**（带色：颜色与字重只能从
  * 字节上看）。
@@ -275,6 +278,46 @@ export function unreadableCheckFrame(out: string): void {
   }
 }
 
+/**
+ * `rules.sources` 点名的**外部目录 000**——`--check` 那一屏（2026-09-20 五轮）。
+ *
+ * 作用同 `unreadableCheckFrame`：回执那一句只说「没读完整」（几种触发共用），
+ * **是哪一处、为什么**在这儿，用户照着它去改。差别只在**入口**——那边是扫 `.magic/rules`
+ * 时看不成的目录，这边是**用户点名的补充来源**在**归位那一步**就取不到真身：
+ * 诊断报的是配置里的那**一行**（`rules.sources 第 1 条`），与用户自己写的那串对得上。
+ */
+export function sourceUnreadableCheckFrame(out: string): void {
+  const land = tempDir('magic-frames-source-')
+
+  try {
+    const home = join(land, 'home')
+    const workspace = join(land, 'workspace')
+    const shared = join(land, 'shared')
+    mkdirSync(home, { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+
+    put(shared, 'required.md', '写受约束文件之前必读的那一份')
+    put(
+      home,
+      '.magic/config.json',
+      JSON.stringify(
+        validConfig({ dataDir: join(home, 'data'), rules: { sources: [shared] } }),
+        null,
+        2,
+      ),
+    )
+    chmodSync(shared, 0)
+
+    try {
+      checkShot(out, 'check-source-unreadable', workspace, home)
+    } finally {
+      chmodSync(shared, 0o700)
+    }
+  } finally {
+    removeDir(land)
+  }
+}
+
 // ══ ② 外壳那一屏（扣下的那一次）══════════════════════════════════════
 
 /**
@@ -380,7 +423,50 @@ export async function unreadableFrame(out: string): Promise<void> {
   }
 }
 
-// ══ ⑤ 真跑失败那一屏（首行恰是「未执行…」）════════════════════════════
+// ══ ⑤ 点名的来源读不动那一屏（五轮）＋ 权限还回来之后 ═════════════════
+
+/**
+ * 剧本（Faux，四回合）：同 `unreadableFrame`，只是把「看不成的目录」换成**用户点名的来源**
+ * ——`rules.sources` 指的工作区**外**目录设成 000：① 直接写 `result.txt` ⇒ 整批扣下；
+ * ② 收束；③ **权限还回来之后**同一会话再提一次 ⇒ 真写；④ 收束。
+ *
+ * 这一屏与 `unreadable.txt` 是**同一条链的两个入口**：那边栽在扫目录，这边栽在归位来源。
+ * 上半屏 `! 未执行 · 项目规约未完整读取`（盘上一个字节都没落下），
+ * 下半屏 `✓ 已写入 result.txt`——**读回来就照常推进**。
+ * 判据（`before === false` 之后 `=== true`、且各只一次）在 `rules.test.ts`，这里只留外观。
+ */
+export async function sourceUnreadableFrame(out: string): Promise<void> {
+  const shared = tempDir('magic-frames-source-')
+  const stage = makeStage({ config: { rules: { sources: [shared] } } })
+
+  try {
+    put(shared, 'required.md', 'SOURCE_REQUIRED_BEFORE_WRITE')
+    chmodSync(shared, 0)
+
+    const call = { name: 'write', args: { path: 'result.txt', content: 'SIDE_EFFECT' } }
+    const assembly = stage.assemble({
+      turns: [
+        { toolCalls: [call] },
+        { text: '好' },
+        { toolCalls: [call] },
+        { text: '写好了' },
+      ],
+    })
+
+    await shoot(assembly, '写一个', '未完整读取', out, 'source-unreadable', {
+      prompt: '再写一次',
+      waitFor: '已写入',
+      // **读回来**——两趟之间只改这一处：把点名的那份来源的权限还回去
+      before: () => chmodSync(shared, 0o700),
+    })
+  } finally {
+    chmodSync(shared, 0o700)
+    stage.dispose()
+    removeDir(shared)
+  }
+}
+
+// ══ ⑥ 真跑失败那一屏（首行恰是「未执行…」）════════════════════════════
 
 /**
  * 剧本（Faux，两回合）：① 跑一条**真会失败**的命令——它先写下一个文件（副作用真的发生了）、
@@ -420,9 +506,11 @@ if (import.meta.main) {
   checkFrame(out)
   brokenAgentsCheckFrame(out)
   unreadableCheckFrame(out)
+  sourceUnreadableCheckFrame(out)
   await holdFrame(out)
   await overflowFrame(out)
   await unreadableFrame(out)
+  await sourceUnreadableFrame(out)
   await executedFailureFrame(out)
   console.log(`\n帧落在 ${out}`)
 }
