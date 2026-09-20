@@ -12,9 +12,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { TurnEndReason } from '@magic/contracts'
 import { agentLoop } from '../src/agent-loop.ts'
-import type { LoopRuntime } from '../src/agent-loop.ts'
+import type { InputOutcome, LoopRuntime } from '../src/agent-loop.ts'
 import { buildSystemPrompt } from '../src/prompt/index.ts'
 import { PROMPT_VARS, makeLoopRuntime, makeStage, waitFor } from './support/harness.ts'
 import type { Stage } from './support/harness.ts'
@@ -24,8 +23,14 @@ function idleSignal(): AbortSignal {
   return new AbortController().signal
 }
 
-/** 跑一串轮并等它收场——用例的开场白。 */
-function run(runtime: LoopRuntime, text: string, signal = idleSignal()): Promise<TurnEndReason> {
+/**
+ * 跑一串轮并等它收场——用例的开场白。
+ *
+ * ⚠️ 收场类型自 U33 起是 `InputOutcome`（`TurnEndReason` ＋ 一种**没开轮的** `rejected`：
+ * 显式选定的技能取不到时这一条压根不跑）。纯文本交代**永远取不到** `rejected`——
+ * 这个函数只喂 `{ text }`，故它那三种轮次收场的断言语义一字未变。
+ */
+function run(runtime: LoopRuntime, text: string, signal = idleSignal()): Promise<InputOutcome> {
   return agentLoop(runtime, { text }, signal)
 }
 

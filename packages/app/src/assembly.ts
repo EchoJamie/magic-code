@@ -53,6 +53,7 @@ import type {
   RulesLoad,
   RulesProblem,
   SessionId,
+  SkillCatalog,
   Timestamp,
   TurnId,
   WorkspaceService,
@@ -68,14 +69,14 @@ import type {
   SessionInstance,
 } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
-import { createProjectRules, createSandbox, createWorkspaceService } from '@magic/execution'
+import { createProjectRules, createSandbox, createSkills, createWorkspaceService } from '@magic/execution'
 import type { FetchLike, ModelRegistry, ModelSwitchResult, WindowTable } from '@magic/model'
 import { createModelRegistry, windowOfSelection } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
-import { createToolRuntime } from '@magic/tools'
+import { createToolRuntime, defineSkillTool } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
 import { loadGrants, saveGrants } from './grants-file.ts'
@@ -252,6 +253,15 @@ export type Assembly = {
    */
   readonly readRules: (targets?: readonly string[]) => RulesLoad
   /**
+   * **技能目录的按需读数**（U33）——现读一次「都发现了哪些、有哪些没读进来」，
+   * 连**没进来的那些**一起交回（`--check` 那一行从这儿来）。
+   *
+   * 与 `readRules` 同一条姿势：现读而不是取装配那一刻的快照（技能是随用户编辑变的目录）。
+   * **没有「只报一部分」那种形态**：发现面是**一层子目录**，读得到的就是全的
+   * （与规约的按目标筛选不同——技能不按目标适用，它是一份清单）。
+   */
+  readonly readSkills: () => SkillCatalog
+  /**
    * **窗长表**（U30）——内置容量表 ＋ 各条目**自己声明**的覆盖位，**分开装**：
    * 内置表按**准确模型 id** 算（与条目无关），声明**只属于配置它的条目及对应模型**
    * （消费按 `provider ＋ model` 一起看——见 `windowOfSelection`）。
@@ -387,6 +397,24 @@ export function assemble(options: AssembleOptions): Assembly {
     sources: loaded.config.rules?.sources ?? [],
     // 两张名册两件事（契约 `RulesConfig`）：`sources` 读进来，`linkSources` 只放行链接
     linkSources: loaded.config.rules?.linkSources ?? [],
+  })
+
+  /**
+   * **技能来源面**（U33）——同样归执行域落地（文件读取在执行 / 基础设施边界），
+   * 装配这一步只做**选择**：哪几条根（默认那两处由实现自己按工作区与用户目录拼）＋
+   * 用户点名的补充目录 ＋ 用户目录本身。
+   *
+   * ⚠️ **它要交给两处**（见下）：对话域（目录块 ＋ 显式选定取主文）与**工具域**
+   * （模型自主选用走 `skill` 工具）——工单明写「同一个来源口」，故**同一个实例**递两处。
+   * 各造一份的话，两条路对「有什么、在哪儿」会各说一套。
+   *
+   * `home` 从与配置、授权文件**同一个**来处取（`options.home ?? homedir()`）——
+   * 三处指同一个家目录，测试沙箱化时才不会漏掉一处（真家目录被写脏是本项目栽过的坑）。
+   */
+  const skills = createSkills({
+    workspace,
+    home: options.home ?? homedir(),
+    sources: loaded.config.skills?.sources ?? [],
   })
 
   // ── 授权（U22）：`a` 的落点是**工作区**，存 `~/.magic/grants.json` ──────────────
@@ -578,6 +606,10 @@ export function assemble(options: AssembleOptions): Assembly {
       stamper,
       // 大块转存经记录域公开面（blob 写权唯一归它）
       blobs: records.blobs,
+      // **技能读取入口**（U33）——`options.tools` 是**追加**出口（默认集七件照旧）：
+      // 这一件读的是只读材料，走 `Skills` 端口而不走沙箱，故不落在七件里。
+      // 递进去的是**上面那一个** `skills` 实例（与对话域同源，见它的注）。
+      tools: [defineSkillTool(skills)],
     })
     const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
 
@@ -596,6 +628,8 @@ export function assemble(options: AssembleOptions): Assembly {
       now,
       // 项目规约（U32）——域内那一半（送哪些、什么时候送）自己会造，此处只把来源递进去
       rules: projectRules,
+      // 技能（U33）——同上，且**与工具域那一个入口共用同一个实例**（见 `skills` 的注）
+      skills,
       // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
       context: options.context,
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
@@ -840,6 +874,9 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
   const readRules = (targets: readonly string[] = []): RulesLoad => projectRules.load(targets)
 
+  /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
+  const readSkills = (): SkillCatalog => skills.discover()
+
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
@@ -897,6 +934,7 @@ export function assemble(options: AssembleOptions): Assembly {
     grantsPath,
     grantsView,
     readRules,
+    readSkills,
     notices: noticesOf(parsedRules.rejected, loadedGrants.note, loaded.path, readRules().problems),
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），

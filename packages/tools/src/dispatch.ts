@@ -164,7 +164,14 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       const content = await toContent(outcome.output, options.blobs)
       options.sink.emit(toolResultEvent(options.stamper, callRef, outcome.ok, content))
 
-      return { ok: outcome.ok, output: outcome.output, callRef, content }
+      return {
+        ok: outcome.ok,
+        output: outcome.output,
+        callRef,
+        content,
+        // **交付身份原样过手**（U33）——有就带、没有就不带（不补 `undefined` 占位）
+        ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
+      }
     },
   }
 }

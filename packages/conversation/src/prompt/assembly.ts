@@ -37,8 +37,23 @@ export const PROJECT_RULES_BLOCK_ID = 'project-rules'
 /** 项目规约块的标题行（**边界锚**）。 */
 export const PROJECT_RULES_HEADING = '## 项目规约'
 
-/** 块的标识——段结构四段之一，或两个追加块（环境注入 · 项目规约）。 */
-export type PromptBlockId = PromptSectionId | typeof ENVIRONMENT_BLOCK_ID | typeof PROJECT_RULES_BLOCK_ID
+/**
+ * 技能目录块标识（U33）。
+ *
+ * 同一条先例——**只增不改**：段结构 `PROMPT_SECTIONS` 仍是四段，技能目录以**追加块**
+ * 落于规约块之后（见 `./skills.ts`，那份材料的正文与边界都在那儿）。
+ */
+export const SKILLS_BLOCK_ID = 'skills'
+
+/** 技能目录块的标题行（**边界锚**）。 */
+export const SKILLS_HEADING = '## 可用技能'
+
+/** 块的标识——段结构四段之一，或三个追加块（环境注入 · 项目规约 · 技能目录）。 */
+export type PromptBlockId =
+  | PromptSectionId
+  | typeof ENVIRONMENT_BLOCK_ID
+  | typeof PROJECT_RULES_BLOCK_ID
+  | typeof SKILLS_BLOCK_ID
 
 /** 装配产物的一块。 */
 export type PromptBlock = {
@@ -147,6 +162,7 @@ const BLOCK_ID_BY_HEADING: ReadonlyMap<string, PromptBlockId> = new Map<string, 
   ...PROMPT_SECTIONS.map((id): readonly [string, PromptBlockId] => [sectionHeading(id), id]),
   [ENVIRONMENT_HEADING, ENVIRONMENT_BLOCK_ID],
   [PROJECT_RULES_HEADING, PROJECT_RULES_BLOCK_ID],
+  [SKILLS_HEADING, SKILLS_BLOCK_ID],
 ])
 
 /**
