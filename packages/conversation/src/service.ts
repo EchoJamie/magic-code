@@ -37,6 +37,7 @@ import type {
   RecordsService,
   RebuildHandoff,
   SessionId,
+  Skills,
   Timestamp,
   ToolRuntime,
   TurnId,
@@ -50,6 +51,7 @@ import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
 import type { PromptVars } from './prompt/index.ts'
 import { createRulesDelivery } from './rules.ts'
+import { createSkillsDelivery } from './skills.ts'
 
 /**
  * 装配期构造入参——一切「谁来实现」的选择由装配根给出（本域不知道背后是谁：
@@ -83,6 +85,18 @@ export type ConversationDeps = {
    * **允许读哪些**归装配（它拿用户配置的 `rules.sources` 去造这个实现）。
    */
   readonly rules?: ProjectRules | undefined
+  /**
+   * **技能来源面**（U33 · 执行域实现）——缺省＝这个工作区不发现也不加载技能
+   * （**行为与加这一条之前一字不动**：没有目录块、显式选定的技能也不取）。
+   *
+   * 与 `rules` 同一分工：**什么时候送、送哪一份**归本域（见 `./skills.ts`），
+   * **允许读哪些**归装配（它拿 `skills.sources` 与用户目录去造这个实现）。
+   *
+   * ⚠️ **同一份实现还要交给工具域**（模型自主选用走 `skill` 工具）——「同一个来源口」
+   * 是工单明写的：两条选用路径读的是**同一个 `Skills` 实例**，故「有什么、在哪儿」
+   * 两边不会各说一套。
+   */
+  readonly skills?: Skills | undefined
 }
 
 /**
@@ -127,7 +141,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   let running = false
   /** 在途工作的中止手柄——`interrupt` 的唯一着力点（空闲时为 `undefined`）。 */
   let current: AbortController | undefined
-  const pending: string[] = []
+  /**
+   * 排队中的交代——**整份 `UserInput`**（U33 起；此前是 `string[]`）。
+   *
+   * 每一份都**固定着它自己绑的技能**：排着的时候不与别条共享任何可变状态
+   * （没有「当前技能」那种东西可读），故忙时两条不同技能的交代出队后**各自身份不串**。
+   */
+  const pending: UserInput[] = []
 
   /**
    * **压缩器**（阶段 3 · U19）——按会话实例各一份，故它记得的用量读数**随会话走**
@@ -159,6 +179,12 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    */
   const rules = deps.rules === undefined ? undefined : createRulesDelivery(deps.rules)
 
+  /**
+   * **技能送达**（U33）——按会话实例各造一份（它不存状态，「各一份」只是跟着运行时走）。
+   * 不给技能来源＝不造（见 `ConversationDeps.skills`）。
+   */
+  const skills = deps.skills === undefined ? undefined : createSkillsDelivery(deps.skills)
+
   const runtime: LoopRuntime = {
     session: deps.session,
     model: deps.model,
@@ -176,6 +202,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     blobTextLimit: policy.blobTextLimit,
     compact: compactor,
     rules,
+    skills,
   }
 
   async function drain(): Promise<void> {
@@ -192,10 +219,13 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     try {
       for (;;) {
-        const text = pending.shift()
-        if (text === undefined) break
+        const input = pending.shift()
+        if (input === undefined) break
 
-        const outcome = await agentLoop(runtime, { text }, controller.signal)
+        const outcome = await agentLoop(runtime, input, controller.signal)
+        // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
+        // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
+        if (outcome === 'rejected') continue
         // 中止 / 出错＝停下：排队中的交代**不再续跑**（「回到等待输入」是当场的）
         if (outcome !== 'settled') {
           pending.length = 0
@@ -216,7 +246,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
   return {
     submit(input: UserInput): void {
-      pending.push(input.text)
+      // **整份入队**（正文 ＋ 它绑的技能 ＋ 配对键）——不是只留正文：
+      // 忙时两条交代各绑各的技能，出队后不能被串成同一条（U33 工单明写）
+      pending.push(input)
       if (!running) void drain()
     },
 

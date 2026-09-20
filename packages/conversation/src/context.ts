@@ -65,6 +65,7 @@ import type {
   ToolCall,
   ToolResultPayload,
   ToolCallPayload,
+  UsedSkillEntry,
 } from '@magic/contracts'
 
 /**
@@ -173,7 +174,17 @@ export async function assembleContext(
     if (entry === undefined) break
 
     if (entry.kind === 'user') {
-      messages.push({ role: 'user', content: await contentTextOf(entry.content, input.records, limit) })
+      // **技能材料随用户消息一起摆**（U33）：正文在前、用户的话在后——
+      // 「先把这份技能摆上，再是这个任务」。两半都取自**这一条条目**（话在正文、
+      // 材料在载荷），故重放时逐字复原模型当时看到的那一份，**不重新去读文件**
+      // （源改了之后新调用才取新的，历史不被改写）。
+      const text = await contentTextOf(entry.content, input.records, limit)
+      const skills = userPayloadOf(entry.payload)
+
+      messages.push({
+        role: 'user',
+        content: skills.length === 0 ? text : `${skillsBlockOf(skills)}\n\n${text}`,
+      })
       index += 1
       continue
     }
@@ -312,4 +323,45 @@ export function toolResultPayloadOf(payload: EntryPayload | undefined): ToolResu
   if (typeof ok !== 'boolean' || !isContent(output)) return undefined
 
   return { ok, output }
+}
+
+/**
+ * 用户条目的载荷 → 技能材料（U33）——**只认三件齐全的**（名字 / 来源 / 正文）。
+ *
+ * 缺一件的那条**不当作材料**（当作没有）：它进不了模型眼前这件事，比多送半条要好——
+ * 半条材料会让模型按一份内核都没看全的东西干活（同发现那一步「读不懂的不生效」）。
+ * 与别处同一姿势：判据收在 `unknown` 入口，靠收窄不靠 `as`。
+ */
+export function userPayloadOf(payload: EntryPayload | undefined): readonly UsedSkillEntry[] {
+  const source: unknown = payload
+  if (!isRecord(source)) return []
+
+  const declared = source['skills']
+  if (!Array.isArray(declared)) return []
+
+  const skills: UsedSkillEntry[] = []
+  for (const item of declared) {
+    if (!isRecord(item)) continue
+
+    const { name, source: from, version, text } = item as Record<string, unknown>
+    if (typeof name !== 'string' || typeof from !== 'string') continue
+    if (typeof version !== 'string' || typeof text !== 'string') continue
+
+    skills.push({ name, source: from, label: String(item['label'] ?? ''), version, text })
+  }
+
+  return skills
+}
+
+/**
+ * 技能材料摆成块——**一行抬头 ＋ 正文原样**。
+ *
+ * 抬头给三件：名字（模型要用它取引用）、来源（同名时靠它分得开）、以及一句
+ * 「以下是一份技能说明」——**技能说明与读出来的数据是两种东西**（工单明写），
+ * 抬头就是那条分界线：模型据此知道这是**别人写好的做法**，不是它自己查出来的事实。
+ */
+function skillsBlockOf(skills: readonly UsedSkillEntry[]): string {
+  return skills
+    .map((skill) => `〔本次使用技能：${skill.name}（来源 ${skill.label}）〕\n${skill.text}`)
+    .join('\n\n')
 }

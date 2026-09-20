@@ -85,6 +85,11 @@ export function makeStage(options: StageOptions = {}): Stage {
         // 「按 `a`」的用例直接把测试的临时工作区**写进了用户的真文件**（6 节全是
         // `/private/var/folders/…/magic-app-*/ws`）——测试污染真实数据，是这一层总该防住的。
         grantsFile: join(root, 'magic', 'grants.json'),
+        // **家目录也落沙地**（U33）：用户那一类技能来源是 `<home>/.magic/skills` 与
+        // `<home>/.agents/skills`——不给这一条，每个 app 用例都会去扫**用户真的**
+        // 那两个目录（读到了什么全看这台机器上装了什么，用例当场不可复现）。
+        // 与 `grantsFile` 同一条纪律：装配级用例一律沙地化，不碰真东西。
+        home: root,
         config: loadConfig({ path: configPath, home: root }),
         modelGateway: (stamper) => {
           const gateway = createFauxGateway({ stamper, turns, stepDelayMs })

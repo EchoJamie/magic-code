@@ -70,10 +70,21 @@ import {
   appendTextEntry,
   appendToolCallEntry,
   appendToolResultEntry,
+  appendUserEntry,
   toolOutcomeOf,
 } from './entries.ts'
 import type { RulesDelivery } from './rules.ts'
 import { needsReviewText, overflowText } from './rules.ts'
+import type { SkillsDelivery } from './skills.ts'
+
+/**
+ * 一次交代的收场——三种**轮次收场**（`TurnEndReason`，会写进 `turn.end`）
+ * ＋ 一种**没开轮的**：`rejected` ＝这一条压根没跑（显式选定的技能取不到）。
+ *
+ * 它**不产 `turn.end`**（那一轮压根没起），故不能塞进 `TurnEndReason` 那个契约词表里
+ * ——那是「轮怎么结束的」，而这里说的是「轮没开始」。
+ */
+export type InputOutcome = TurnEndReason | 'rejected'
 
 /**
  * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
@@ -114,6 +125,14 @@ export type LoopRuntime = {
    * 它是**有状态**的（作用域 ＋ 已送达版本），故按会话实例各造一份——见其注。
    */
   readonly rules?: RulesDelivery | undefined
+  /**
+   * 技能送达（U33）——**不接线＝既发现也不加载技能**（没有技能的那些工作区行为一字不动）。
+   * 真装配一律给（见 `./service.ts`）。
+   *
+   * 与 `rules` 不同，它**不存状态**：目录每趟现扫、主文取一次用一次（执行域那一条
+   * 「不设全仓 watcher」在这儿的形态）。故按会话实例造一份只是因为它跟着运行时走。
+   */
+  readonly skills?: SkillsDelivery | undefined
 }
 
 /**
@@ -128,36 +147,119 @@ export type TurnOutcome = {
 /**
  * 跑一个用户输入——从落账到收束（可含多轮）。
  *
- * 返回**最后一轮的结束方式**：`settled`（收束 · 回到等待输入）· `aborted`（被中止）·
- * `error`（出错 / 内核自身异常）。
+ * 返回**这次交代的收场**：`settled`（收束 · 回到等待输入）· `aborted`（被中止）·
+ * `error`（出错 / 内核自身异常）· **`rejected`**（这一条**压根没跑**，见下）。
+ *
+ * ## `rejected`——显式选定的技能取不到时，这一条不跑（U33）
+ *
+ * 「不跑」是三层意思，三层都要做到：
+ * - **不落 `user` 条目**（没有「用户说了什么」这回事——那句话内核没接住）；
+ * - **不发 `message.user`**、**不进模型请求**（正文一个字都不送）；
+ * - **不换同名项、不忽略技能继续**（工单明写）。
+ *
+ * **排队里别的交代照跑**：错的是一条（它选的技能失效了），不是这一队。
+ * 把整队清掉＝用户后面那几条**没做错任何事的话**被静默吞了——比多跑一条坏得多。
+ * （与「中断清队」的分野也在这儿：那是用户在说「都停下」，这是内核在说「这条不成」。）
  */
 export async function agentLoop(
   runtime: LoopRuntime,
   input: UserInput,
   signal: AbortSignal,
-): Promise<TurnEndReason> {
+): Promise<InputOutcome> {
   const log = entryLogOf(runtime)
+
+  // **按选定的身份取主文**（显式选定那一半）——取不到就停在这一条上（见函数头注）
+  const selected = input.skills ?? []
+  const delivery =
+    selected.length === 0
+      ? { ok: true as const, used: [] }
+      : runtime.skills === undefined
+        ? // **没接技能来源**（这次装配压根没装）不是「当作没有技能照跑」——
+          // 那正是「丢掉技能后继续这条显式调用」，故与取不到同一条出口
+          { ok: false as const, reason: '这次装配没有接技能来源——选定的技能取不了，所以这一条没跑' }
+        : runtime.skills.load(selected)
+
+  if (!delivery.ok) {
+    // 失败**不静默**：`input.settled` 指得出是谁、为什么（给了配对键的照带回去）
+    runtime.sink.emit(
+      runtime.stamper.stamp('input.settled', {
+        ...(input.ref === undefined ? {} : { ref: input.ref }),
+        ok: false,
+        reason: delivery.reason,
+      }),
+    )
+    return 'rejected'
+  }
 
   try {
     // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
-    const entryId = await appendTextEntry(log, 'user', input.text)
+    const entryId = await appendUserEntry(log, input.text, delivery.used)
     runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
   } catch (error) {
     return reportError(runtime, error)
+  }
+
+  // **回执欠账**（收下 ＋ 用到的技能）——记下来，由**第一轮真装配出上下文之后**去还
+  // （见 `runTurn` 的 `owed`：回执只能在同一份材料确实进了上下文之后发，
+  // 提前到这一步发＝「已使用」可能是一句没兑现的话）
+  const owed = (): void => {
+    if (input.ref !== undefined) {
+      runtime.sink.emit(runtime.stamper.stamp('input.settled', { ref: input.ref, ok: true }))
+    }
+    if (delivery.used.length > 0) {
+      runtime.sink.emit(
+        runtime.stamper.stamp('skill.used', {
+          skills: delivery.used.map(({ name, source, label, version }) => ({
+            name,
+            source,
+            label,
+            version,
+          })),
+        }),
+      )
+    }
   }
 
   for (;;) {
     // 轮间中止——不再开新轮（「回到等待输入」）
     if (signal.aborted) return 'aborted'
 
-    const turn = await runTurn(runtime, signal)
+    const turn = await runTurn(runtime, signal, once(owed))
     if (turn.reason !== 'settled' || !turn.continues) return turn.reason
+  }
+}
+
+/**
+ * 系统提示词的两处追加——规约在前、技能目录在后（次序的由头见 `prompt/skills.ts`）。
+ *
+ * 拆成两个小函数只是为了让上面那行读得出来「谁先谁后」；两处都**不接线就原样交回**。
+ */
+function withRules(runtime: LoopRuntime): string {
+  return runtime.rules?.promptFor(runtime.systemPrompt) ?? runtime.systemPrompt
+}
+
+function withSkills(runtime: LoopRuntime, base: string): string {
+  return runtime.skills?.promptFor(base) ?? base
+}
+
+/** 只许兑现一次——超限重发会让装配再跑一遍，回执**不许**跟着再发一遍。 */
+function once(action: () => void): () => void {
+  let spent = false
+  return () => {
+    if (spent) return
+    spent = true
+    action()
   }
 }
 
 // ══ 一轮 ══════════════════════════════════════════════════════════════
 
-async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnOutcome> {
+async function runTurn(
+  runtime: LoopRuntime,
+  signal: AbortSignal,
+  /** 这一轮装配出上下文之后要还的**回执欠账**（只有第一轮有——见 `agentLoop`）。 */
+  owed?: () => void,
+): Promise<TurnOutcome> {
   const { gateway, tools, sink, stamper } = runtime
 
   // 轮起——铸造器的 `turn` 自此生效（轮内所有事件共用它）
@@ -186,13 +288,19 @@ async function runTurn(runtime: LoopRuntime, signal: AbortSignal): Promise<TurnO
       const messages = await assembleContext({
         records: runtime.records,
         session: runtime.session,
-        // **项目规约**在装配这一步接上（U32）——每次都现取现接：改过的规约下一趟就是新的，
-        // 而「这一趟送出去哪几版」也在此记账（预查据它判「拦不拦」）
-        systemPrompt: runtime.rules?.promptFor(runtime.systemPrompt) ?? runtime.systemPrompt,
+        // **项目规约 ＋ 技能目录**在装配这一步接上（U32 · U33）——都现取现接：
+        // 改过的下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块（见 `prompt/skills.ts`）；
+        // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
+        systemPrompt: withSkills(runtime, withRules(runtime)),
         blobTextLimit: runtime.blobTextLimit,
         // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
       })
+
+      // **回执在这儿发**（U33）——上下文已经装出来了，材料**确实在这一次请求里**，
+      // 「本次使用技能：…」于是是一句当时为真的话。再往前提（取到材料那一刻 / 落账那一刻）
+      // 都可能赶在「这一轮会不会真发出去」之前：中止、出错都还在后头。
+      owed?.()
 
       const stream = gateway.stream(
         { model: runtime.model, messages, tools: tools.definitions() },

@@ -23,6 +23,7 @@ import type {
   SessionId,
   ToolCallPayload,
   ToolResultPayload,
+  UserPayload,
 } from '@magic/contracts'
 import type { NamedParams } from './schema.ts'
 
@@ -49,21 +50,53 @@ export type ToolResultEntry = Entry & {
 
 // —— 写入侧 ——
 
-/** 强对应的硬闸——不合即拒（`tool-call` / `tool-result` 必须带对应载荷，其余必须不带）。 */
+/**
+ * 强对应的硬闸——不合即拒。
+ *
+ * | kind | 载荷 |
+ * | --- | --- |
+ * | `tool-call` | **必须有** `{ name, args }` |
+ * | `tool-result` | **必须有** `{ ok, output }` |
+ * | `user` | **可有**（自 U33 起：随这次交代送出去的技能材料）；不带＝纯文本交代 |
+ * | 其余 | **必须没有** |
+ *
+ * **`user` 那一格是「只增不改」的落点**：加它之前落在库里的条目一条都不动
+ * （没有载荷的 `user` 条目照读照认），而**没有技能的交代照样不带载荷**——
+ * 旧写入路径产出的行与新路径产出的**逐字同形**（验收第一条：现有纯文本输入兼容）。
+ *
+ * **为什么不给 `user` 也定成「必须有」**：那会把「这一次交代有没有带技能」这件事，
+ * 变成每一行都要写一个空对象——空载荷与无载荷是两回事，落盘上多出一种毫无信息的形态。
+ */
 export function assertEntryShape(entry: NewEntry): void {
-  const toolEntry = entry.kind === 'tool-call' || entry.kind === 'tool-result'
+  if (entry.kind === 'tool-call') {
+    if (!isToolCallPayload(entry.payload)) {
+      throw new Error('tool-call 条目的载荷须为 { name, args }——它是重放真源，不可省')
+    }
+    return
+  }
 
-  if (!toolEntry && entry.payload !== undefined) {
+  if (entry.kind === 'tool-result') {
+    if (!isToolResultPayload(entry.payload)) {
+      throw new Error('tool-result 条目的载荷须为 { ok, output }——它是重放真源，不可省')
+    }
+    return
+  }
+
+  if (entry.kind === 'user') {
+    if (entry.payload !== undefined && !isUserPayload(entry.payload)) {
+      throw new Error(
+        'user 条目的载荷只装这次交代带出去的技能材料（{ skills: [{ name, source, label, version, text }] }）' +
+          '——别的东西没有位置（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
+      )
+    }
+    return
+  }
+
+  if (entry.payload !== undefined) {
     throw new Error(
-      `条目 kind=${entry.kind} 不带载荷——载荷只有工具条目有（技术方案 · 记录 · 条目：` +
-        `tool-call＝名 + 参数 · tool-result＝ok / error + 输出）`,
+      `条目 kind=${entry.kind} 不带载荷——载荷只有工具条目与 user 条目有（技术方案 · 记录 · 条目：` +
+        `tool-call＝名 + 参数 · tool-result＝ok / error + 输出 · user＝随它送出去的技能材料）`,
     )
-  }
-  if (entry.kind === 'tool-call' && !isToolCallPayload(entry.payload)) {
-    throw new Error('tool-call 条目的载荷须为 { name, args }——它是重放真源，不可省')
-  }
-  if (entry.kind === 'tool-result' && !isToolResultPayload(entry.payload)) {
-    throw new Error('tool-result 条目的载荷须为 { ok, output }——它是重放真源，不可省')
   }
 }
 
@@ -120,6 +153,34 @@ export function isToolResultPayload(payload: unknown): payload is ToolResultPayl
 
 export function isContent(value: unknown): value is Content {
   return isRecord(value) && (typeof value['text'] === 'string' || typeof value['blob'] === 'string')
+}
+
+/**
+ * `user` 条目的载荷（U33）——**只认这一种形状**：`{ skills: [...] }`。
+ *
+ * 两条判据，缺一不可：
+ * - **`skills` 必须在**且是数组——载荷凭空多出别的键（比如把工具条目的
+ *   `{ name, args }` 错位到 `user` 头上）当场拒。这正是「kind 与载荷强对应」
+ *   这道硬闸在 `user` 这一格的形态：**放行一种形状，不是放行一切形状**。
+ * - **每一项四件齐全**（名字 / 来源 / 版本 / 正文）——缺了正文那一份材料就复原不出来了，
+ *   而它正是这条载荷存在的理由（重放依据）。故写死在这儿，与 `tool-result` 那条同一姿势。
+ */
+export function isUserPayload(payload: unknown): payload is UserPayload {
+  if (!isRecord(payload)) return false
+  if (Object.keys(payload).some((key) => key !== 'skills')) return false
+
+  const skills = payload['skills']
+  if (!Array.isArray(skills)) return false
+
+  return skills.every((item) => {
+    if (!isRecord(item)) return false
+    return (
+      typeof item['name'] === 'string' &&
+      typeof item['source'] === 'string' &&
+      typeof item['version'] === 'string' &&
+      typeof item['text'] === 'string'
+    )
+  })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

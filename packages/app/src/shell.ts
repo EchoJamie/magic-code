@@ -32,7 +32,7 @@
  * 入口落在这儿（真产品入口＝外壳的一条命令，待契约加词——见回报「待决」）。
  */
 
-import type { Command, ControlTransport, Decision, KernelEvent } from '@magic/contracts'
+import type { Command, ControlTransport, Decision, InputSubmit, KernelEvent, UserInput } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 
 /** 一次裁决询问（`tool.decision.request` 的四件）。 */
@@ -81,8 +81,12 @@ export type ShellHandle = {
    * 发一条交代并等它收束（回到「等待输入」）。
    *
    * 水位**先记后发**——反过来的话，收束快时这里会等一个永远不来的「下一次」，当场挂死。
+   *
+   * **两形**（U33 加宽）：裸字符串（一字不改的老写法）或**整份 `UserInput`**
+   * （`{ text, skills?, ref? }`）——技能随交代绑定、以及提交的配对键，都要能**经入口**
+   * 递进去，而不是只存在于内核的契约里。与 `ShellAnswer` / `ShellStep` 同一条加宽姿势。
    */
-  submit(text: string, timeoutMs?: number): Promise<void>
+  submit(input: string | UserInput, timeoutMs?: number): Promise<void>
   /** 发一条命令（不等待）——中断等非提交用途。 */
   send(command: Command): void
   /**
@@ -263,18 +267,22 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
       return result.selection
     },
 
-    submit(text: string, overrideTimeoutMs?: number): Promise<void> {
+    submit(input: string | UserInput, overrideTimeoutMs?: number): Promise<void> {
+      const command: InputSubmit = typeof input === 'string'
+        ? { type: 'input.submit', text: input }
+        : { type: 'input.submit', ...input }
+
       const target = waiting + 1
       const armed = deadline(
         overrideTimeoutMs ?? timeoutMs,
-        `等「回到等待输入」（交代：${text}）`,
+        `等「回到等待输入」（交代：${command.text}）`,
       )
 
       const settled = new Promise<void>((settle) => {
         idleWaiters.push({ target, settle })
       })
 
-      shell.send({ type: 'input.submit', text })
+      shell.send(command)
 
       return Promise.race([settled, armed.promise]).finally(armed.cancel)
     },
@@ -307,12 +315,20 @@ export function attachShell(shell: ControlTransport, options: AttachShellOptions
 }
 
 /**
- * 脚本的一步——**交代**或**换模型**。
+ * 脚本的一步——**交代**·**换模型**·或**一整份结构化交代**。
  *
- * 两形并存是**向后兼容**的形态：老脚本 `inputs: ["…"]` 一字不动照常工作
- * （与 `ShellAnswer` 的加宽位同法）；`{ switch: … }` 是 U17 的加宽位。
+ * 三形并存是**向后兼容**的形态：老脚本 `inputs: ["…"]` 一字不动照常工作
+ * （与 `ShellAnswer` 的加宽位同法）；`{ switch: … }` 是 U17 的加宽位；
+ * `{ input: … }` 是 **U33 的加宽位**——技能随交代绑定、以及提交的配对键，
+ * 都要能从**现有入口**递进去（`{"input": {"text": "照它做", "skills": [{"name": "pdf", "path": "…"}]}}`）。
+ *
+ * 为什么走 `--script` 这条：它是装配侧唯一「无人值守地把一件交代交给内核」的入口
+ * （真外壳的按键归第二轮）——结构化输入要能被**真进程**跑出来，就得从这儿进。
  */
-export type ShellStep = string | { readonly switch: ModelSwitchRequest }
+export type ShellStep =
+  | string
+  | { readonly switch: ModelSwitchRequest }
+  | { readonly input: UserInput }
 
 /** 一段无人值守的脚本——步骤按序走，每条交代等上一轮收束。 */
 export type ShellScript = {
@@ -355,6 +371,10 @@ export async function runShellScript(
   for (const step of script.inputs) {
     if (typeof step === 'string') {
       await handle.submit(step, script.timeoutMs)
+      continue
+    }
+    if ('input' in step) {
+      await handle.submit(step.input, script.timeoutMs)
       continue
     }
     handle.switchModel(step.switch)

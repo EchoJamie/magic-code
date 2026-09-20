@@ -274,14 +274,35 @@ describe('判据 1 · 落取回环', () => {
           // 缺载荷——`tool-call` 的名与参数是重放真源，不能省
         }),
       ).toThrow(/tool-call/)
+      // ⚠️ **原锚**：`user` 条目带**任何**载荷都拒（那时非工具条目一律不带载荷）。
+      // **为何变**：U33 起 `user` 条目可以带它自己的载荷——随这次交代送出去的技能材料。
+      // **新锚**：装的**不是那一份**就拒（工具条目的载荷支照旧不许错位到 `user` 头上）。
       expect(() =>
         records.appendEntry({
           kind: 'user',
           content: { text: '你好' },
           at,
-          payload: { name: 'exec', args: {} }, // 非工具条目不该带载荷
+          payload: { name: 'exec', args: {} }, // 工具条目的载荷支，不是技能材料
         }),
       ).toThrow(/user/)
+
+      // 技能材料那一份**收下**，且**落取回环**对得上（正身：名字 / 来源 / 正文三件齐全）
+      const material = {
+        skills: [
+          {
+            name: 'pdf',
+            source: '/ws/.magic/skills/pdf',
+            label: '项目 .magic/skills',
+            version: 'v1-8',
+            text: '正文',
+          },
+        ],
+      }
+      records.appendEntry({ kind: 'user', content: { text: '照这份技能做' }, at, payload: material })
+
+      const back: Entry[] = []
+      for await (const entry of records.readEntries(SESSION)) back.push(entry)
+      expect(back.map((entry) => entry.payload)).toEqual([material])
       expect(() =>
         records.appendEntry({
           kind: 'tool-result',

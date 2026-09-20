@@ -533,6 +533,22 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'session.history':
       return view
 
+    // 技能使用回执（U33）——**主文确实进了本次上下文**之后内核才发这一条
+    // （见契约 `skill.used`）：故它到了＝这件事成了，回执照说。
+    // 一行一项，措辞与内核给的来源标签一致（`label` 由内核产出，外壳照印——
+    // 恢复时也一样，见条目载荷里那一栏）。
+    case 'skill.used':
+      return appendReceipt(
+        view,
+        `本次使用技能：${event.data.skills.map((one) => `${one.name}（来源 ${one.label}）`).join(' · ')}`,
+      )
+
+    // 提交的收场（U33）——**只有「没跑」那一格进记录区**：收下了的那一条不必报
+    // （同一件事 `turn.start` 的「正在干活」已经在说，再补一句就是每提交一次添一行噪声）。
+    // 没跑的那一条**必须出声**：这一条交代一个字都没发出去，用户得知道为什么。
+    case 'input.settled':
+      return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
+
     case 'model.error':
       return patchStatus(
         appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`),

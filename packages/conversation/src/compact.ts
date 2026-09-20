@@ -45,7 +45,7 @@ import type {
   SessionId,
   Timestamp,
 } from '@magic/contracts'
-import { contentTextOf, toolCallPayloadOf, toolResultPayloadOf } from './context.ts'
+import { contentTextOf, toolCallPayloadOf, toolResultPayloadOf, userPayloadOf } from './context.ts'
 import type { EntryLog } from './entries.ts'
 import { appendSummaryEntry } from './entries.ts'
 
@@ -320,7 +320,16 @@ async function renderSegment(entries: readonly Entry[], deps: CompactorDeps): Pr
 async function renderEntry(entry: Entry, deps: CompactorDeps): Promise<string> {
   const text = await contentTextOf(entry.content, deps.records, deps.blobTextLimit)
 
-  if (entry.kind === 'user') return `【用户】\n${text}`
+  if (entry.kind === 'user') {
+    // **技能材料只报名字**（U33）——正文不展开：摘要要的是「发生过什么」，
+    // 而那份材料本来就是长文，铺进来会把真正该压的旧段挤出去（`SUMMARY_INPUT_LIMIT`）。
+    // 报名字仍有用：摘要里因此留得下「这一轮是照哪份技能做的」这条线索，
+    // 而**正文一个字不少**——它在条目载荷里，压缩只动送模型的那一份（append-only 不破）。
+    const skills = userPayloadOf(entry.payload)
+    const head = skills.length === 0 ? '' : `〔本次使用技能：${skills.map((one) => one.name).join(' · ')}〕\n`
+
+    return `【用户】\n${head}${text}`
+  }
   if (entry.kind === 'assistant') return `【助手】\n${text}`
   // 反复压缩（B6）：这份旧摘要落在待压的旧段里，照旧当一段正文喂进去——摘要的摘要
   if (entry.kind === 'summary') return `【此前的摘要】\n${text}`

@@ -151,8 +151,50 @@ export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
       return analyzeEdit(call, ctx)
     case 'write':
       return analyzeWrite(call, ctx)
+    case 'skill':
+      return analyzeSkill(call, ctx)
     default:
       return unclassifiable(call.name, `工具「${call.name}」不在机械分析表内`)
+  }
+}
+
+/**
+ * **技能读取**（`skill` · U33）——**只读材料，一律轻**。
+ *
+ * ⚠️ 这一格**必须显式写**（不能只靠 `ToolSpec.danger: 'light'` 声明）：
+ * 分析表覆盖不到的形态一律兜底 `heavy`（「漏判即按看不懂入单」），
+ * 而 `ToolSpec.danger` **不参与**这条判定——不写这一格，`skill` 每次调用都会弹卡。
+ *
+ * **为什么是轻**：它读的是**技能目录**（只读来源），不是工作区里的动作，
+ * 与「放行区：读与搜索」同类。而**边界不由这一格担保**——能读哪些由工具入口
+ * （`Skills` 端口）按已发现身份与来源内相对引用卡死：`..` 越出、绝对路径、
+ * 软链接绕出去，在那边就拒了。闸门这一层只需要知道「这不是一次写动作」。
+ *
+ * **不收回执的落点**：不因为 `skill` 是「本单新加的」，就顺带放宽别的未知工具——
+ * 兜底那一支一个字没动（`default` 仍是 `unclassifiable`）。
+ *
+ * **影响面词条**（`landings`）取 `source`（技能目录路径，模型给了才认）——
+ * 它的用途是规则轴比对（工具 × 路径模式 × 操作类型），故照实给；给不出来就不给
+ * （缺省＝只按名字取，那条路在工具入口里归位，不涉及「模型指了哪儿」）。
+ * ⚠️ 技能目录**可能在**工作区之外（用户目录下的 `~/.magic/skills`）：`landPath`
+ * 照旧算出 `inside: false`，但那**不构成越界必闸**——必闸清单的越界条目管的是
+ * 「工作区外的**写 / 删 / 移**」，读材料不在此列（同 `analyzeSearch` 那条口径）。
+ */
+function analyzeSkill(call: ToolCall, ctx: PermissionContext): Analysis {
+  const source = firstString(call.args, (key) => key === 'source')
+  const path = firstString(call.args, (key) => key === 'name')
+
+  const where =
+    source === undefined
+      ? '技能目录（按名字取，落点由工具入口按已发现的身份归位）'
+      : `技能目录 ${source.value}`
+  const what = path === undefined ? '技能材料' : `技能「${path.value}」的正文或引用`
+
+  return {
+    weight: 'light',
+    material: [`读的是一份只读材料：${what}`, `来源：${where}`].join('\n'),
+    ops: ['read'],
+    landings: source === undefined ? [] : [landPath(source.value, ctx)],
   }
 }
 
