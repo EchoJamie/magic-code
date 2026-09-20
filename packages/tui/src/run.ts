@@ -61,6 +61,18 @@ export type RunTuiOptions = {
   readonly receipts?: readonly string[] | undefined
 }
 
+/**
+ * 终端断了之后，**最多**再等这段工作多久（毫秒）——到点就收摊。
+ *
+ * ⚠️ 到期**不等于**工作已经收束：那只是「外壳不再等了」。真实在途（取消跑到哪一步、
+ * 有没有东西没落盘）由记录与恢复那条路去核对，外壳这一层不替它下结论。
+ *
+ * 为什么要有界：终端那一头已经没人看了，收尾不能无限期地拖着——取消一个不听话的工具
+ * 本来就可能有界升级（TERM → KILL → 等退出），但那是执行域的事；外壳这一层只保证
+ * 「最多等这么久，然后照样收摊」。取 5 秒：长命令的取消（含子进程回收）实测在秒级。
+ */
+const INTERRUPT_GRACE_MS = 5_000
+
 /** 挂上终端之后的把手。 */
 export type TuiHandle = {
   /** 等外壳收摊（用户退出 / Ctrl+C）。 */
@@ -112,6 +124,98 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     kittyKeyboard: { mode: 'enabled', flags: ['disambiguateEscapeCodes'] },
   })
 
+  // ——**终端断流**（D26 · P0）——
+  //
+  // 窗口关了 / 管道断了：`stdin` 抬 `end` ＋ `close`（真跑实测：关掉 PTY master 后 1ms 内到）。
+  // 产品原先**不消费**它，于是卡在一条**走不到的等待**上：`Ink` 在没有退出信号时的兜底是
+  // `process.once('beforeExit')`，而 `beforeExit` **只在事件循环空了才触发**——fd 停在
+  // 「可读（EOF）」的就绪态时，Bun 的事件循环每次都立刻转回来，那个回调**永远不会来**。
+  // 实测（独立监督）：断开 3 秒 CPU 时间涨 5.0 秒、再 4 秒又涨 6.6 秒，状态 `R`，不退出。
+  //
+  // 修法**不是**再发明一条退出：断流就是**「终端这一头没人了」**，走的正是既有的
+  // Ctrl+C 语义（空闲＝退出 · 工作中／有待答＝中断）——取消、停点、留记录都还是那条路，
+  // 本处只把「谁来触发它」补上。**删除的是那次错误等待**，不是绕过收尾。
+  //
+  // ⚠️ **监听装在整个挂载周期上**（就在 `render` 之后、`boot` 之前那一行）：
+  //    `end` / `close` 只在发生那一刻派发**一次**，恢复（`boot`）那一段里终端断了的话，
+  //    装晚一步就永远收不到——那种「晚了」由下面那道状态补判据兜住。
+  // **两件事，分开记**（混成一个就会漏掉一头）：
+  // - `ending`——结束流程**已经开始了**：首个事件置上，挡住随后跟来的 `close` / 信号重入。
+  //   工作中那条路要等中断收束，这期间进程还活着——`close`（与 `end` 前后脚，实测 1ms 内）
+  //   再来一次的话，会**再发一次中断、再订一份订阅、再压一个计时器**（前一个还没清）。
+  // - `unmounted`——终端那一下**真收过摊了**：`app.unmount()` 只该走一次，
+  //   且**不受 `ending` 阻挡**（否则「已开始」就把「最终卸载」挡在门外，那才是真漏）。
+  let ending = false
+  let unmounted = false
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
+  let unwatch = (): void => {}
+
+  /** 手上的句柄**一次放干净**（订阅、兜底计时器）——收摊那一步只管收，不管还挂着谁。 */
+  const releaseHandles = (): void => {
+    unwatch()
+    unwatch = (): void => {}
+    if (settleTimer !== undefined) {
+      clearTimeout(settleTimer)
+      settleTimer = undefined
+    }
+  }
+
+  /** 真收摊——**只走一遍**（`unmounted` 守门），且不看 `ending`：那是「已开始」，不是「已收完」。 */
+  const closeOut = (): void => {
+    if (unmounted) return
+    unmounted = true
+    releaseHandles()
+    app.unmount()
+  }
+
+  /** 这一屏还在干活吗（或在等你答复）——与 `ctrl+c` 那道判据同一套口径。 */
+  const busy = (): boolean => {
+    const { status, dock } = shell.getView()
+    return status.state === 'working' || status.state === 'retrying' || dock.kind === 'decision'
+  }
+
+  /** 终端没了（或外面让我们收摊）——**这一整套只走一遍**（`ending` 守门）。 */
+  const onTerminalGone = (): void => {
+    if (ending) return
+    ending = true
+
+    // ① **先订上，再看状态**——中断有可能**当场**收束（进程内传输是同步跑完一整趟的），
+    //    订阅晚一步就没人接那一跳，白等一场兜底
+    unwatch = shell.subscribe(() => {
+      if (busy()) return
+      closeOut()
+    })
+
+    // ② 走既有的 Ctrl+C 语义：空闲＝退出（当场收摊）· 工作中／有待答＝它替我们发中断
+    if (shell.key({ kind: 'ctrl+c' }).exit) {
+      closeOut()
+      return
+    }
+    // ③ 中断**当场**收束了的话，①那份订阅已经收过摊了
+    if (unmounted) return
+
+    // ④ 还没收束：**等它**，但有界。⚠️ 到期只是「不再等」，**不等于工作已经收束**——
+    //    真实在途留给恢复那条路去核对，本处只保证进程不再空转占着机器
+    settleTimer = setTimeout(closeOut, INTERRUPT_GRACE_MS)
+  }
+
+  /** 把这一组监听摘掉——**两条出口共用这一份清单**（正常收尾 / `boot` 抛错）。 */
+  const unhook = (): void => {
+    for (const event of ['end', 'close', 'error'] as const) stdin.off(event, onTerminalGone)
+    for (const signal of ['SIGHUP', 'SIGTERM'] as const) process.off(signal, onTerminalGone)
+  }
+
+  for (const event of ['end', 'close', 'error'] as const) stdin.on(event, onTerminalGone)
+  // 退出信号同一条收尾（`SIGHUP`：真终端关窗那一路；`SIGTERM`：外部收摊那一路）。
+  // ⚠️ 挂了处理器之后信号本身**不再杀进程**——所以必须真走到 `unmount`，
+  //    否则就成了「按下不动」（`ui.ts serve` 那处踩过同一个坑）。
+  for (const signal of ['SIGHUP', 'SIGTERM'] as const) process.on(signal, onTerminalGone)
+
+  // **已经结束了的，也算数**：`end` / `close` 派发过了就不再重来——终端在监听装上之前
+  // 就断了（起手那一段，或恢复跑到一半）的话，上面那些监听一个都不会响。故补一道
+  // **状态**判据：流已经读到过头 / 已经销毁，就等于刚收到那一下。
+  if (stdin.readableEnded === true || stdin.destroyed === true) onTerminalGone()
+
   try {
     // **先接订阅（构造即订阅）→ 再跑启动流转 → 最后才放开输入**
     //
@@ -123,6 +227,10 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     // 接续 / 恢复之后读一次历史：记录区按条目**重建**（缺陷 D1）
     shell.readHistory()
   } catch (error) {
+    // 监听现在装在整个挂载周期上（见上），这条出口**也得把它们摘掉**——
+    // 否则 `boot` 抛错之后，那些监听还挂在一根已经没人管的流上
+    unhook()
+    releaseHandles()
     app.unmount()
     shell.dispose()
     throw error
@@ -130,8 +238,13 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
 
   return {
     waitUntilExit: async () => {
-      await app.waitUntilExit()
-      shell.dispose()
+      try {
+        await app.waitUntilExit()
+      } finally {
+        unhook()
+        releaseHandles()
+        shell.dispose()
+      }
     },
   }
 }

@@ -726,6 +726,113 @@ describe('U40 · 助手入口（常驻控制进程 · stdin ←→ stdout 逐行
   }, 90_000)
 })
 
+// ═══════════════════════════════════════════════════════════════════════
+// D26 · 断流退出与清场（P0）—— 「终端没了」与「控制端没了」各留一个回归
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('D26 · 断流退出与清场', () => {
+  test('终端被抽掉（关窗口）——应用**自己**退出，不是我们杀的', async () => {
+    const session = await createUiSession({ label: 'D26-抽掉终端', turns: [] })
+    let report: Awaited<ReturnType<typeof session.close>> | undefined
+
+    try {
+      // 等「放开输入」那一句（起手那道闸放开了＝这是**真实空闲态**，
+      // 不是「启动中」那一段——两条路的收场理由不同，别测错对象）
+      await session.wait({ text: 'ctrl+c 退出' })
+
+      // **只关 PTY master**：不发任何信号。终端窗口关了就是这个形状。
+      session.dropTerminal()
+
+      // 宽限期内它自己走 ⇒ `by === 'app'`；到点还没走就成 'sigterm'（那条断言当场红）
+      report = await session.close({ graceMs: 5_000 })
+      expect(report.exit.by).toBe('app')
+      // 干净退出（不是被信号带走、也不是非零码）
+      expect(report.exit.code).toBe(0)
+    } finally {
+      report ??= await session.close().catch(() => undefined)
+    }
+  }, 60_000)
+
+  test('收摊重入：第二路进来也要**等收完**，不许把「已开始」当「已完成」', async () => {
+    const dir = tempDir('magic-d26-reentry-')
+    const serve = Bun.spawn(
+      [process.execPath, 'packages/app/scripts/ui.ts', 'serve', '--out', join(dir, 'runs')],
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    try {
+      const lines = readerOf(serve.stdout)
+      const started = await call(serve, lines, { id: 1, cmd: 'start', label: 'D26-重入', turns: [] })
+      expect(started['ok']).toBe(true)
+      const runDir = started['runDir'] as string
+
+      // 第一路：EOF —— 收摊**开始**了，但 `closeAll` 还在跑（关一个会话要发信号、等它退）
+      serve.stdin.end()
+      await Bun.sleep(50)
+      // 第二路：信号。旧写法里那个 `closed` 布尔只记「开始了」，这一路会**当场 resolve**，
+      // 调用方的 `then(() => process.exit(0))` 就抢在 `closeAll` 前头退场——
+      // 应用半途没人管，产物也停在半截
+      serve.kill('SIGTERM')
+
+      const code = await Promise.race([serve.exited, Bun.sleep(15_000).then(() => 'stuck')])
+      expect(code).not.toBe('stuck')
+
+      // 判据取**产物**而不是进程在不在：serve 一退，应用的 PTY master 也跟着没了，
+      // 应用会被断流带走——「它没了」分不清是「收摊收的」还是「断流带的」。
+      // `outcome` 只由 `close()` 走到最后那一步写（`artifacts.finish('closed')`），
+      // 半途退场就停在 `running`。
+      const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as {
+        outcome: string
+        exit?: { by: string }
+      }
+      expect(info.outcome).toBe('closed')
+    } finally {
+      serve.kill()
+      await serve.exited.catch(() => {})
+      removeDir(dir)
+    }
+  }, 90_000)
+
+  test('控制端 stdout 断了——serve 收摊退场，自起的应用一个不留', async () => {
+    const dir = tempDir('magic-d26-pipe-')
+    const serve = Bun.spawn(
+      [process.execPath, 'packages/app/scripts/ui.ts', 'serve', '--out', join(dir, 'runs')],
+      { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+    )
+
+    try {
+      const lines = readerOf(serve.stdout)
+      const started = await call(serve, lines, { id: 1, cmd: 'start', label: 'D26-断管', turns: [] })
+      expect(started['ok']).toBe(true)
+      const pid = started['pid'] as number
+
+      // 控制端把**读答复的那一头**关掉（助手进程没了就是这个形状）：
+      // 再写一句答复当场 EPIPE —— 那条路原先会把整条链带进 rejected，
+      // 收摊那一步 `closeAll` 被跳过，应用就留在了机器上
+      lines.stop()
+      await Bun.sleep(100)
+      serve.stdin.write(`${JSON.stringify({ id: 2, cmd: 'sessions' })}\n`)
+      serve.stdin.flush()
+      await Bun.sleep(100)
+      // 收尾**已经开始**了：这一条不该再被受理——受理了就会晚于 `closeAll` 落地，
+      // 而 `start` 会在那之后建起一个**没人再收**的会话（这条链已经不在收尾的视野里）
+      serve.stdin.write(`${JSON.stringify({ id: 3, cmd: 'start', label: 'D26-晚到' })}\n`)
+      serve.stdin.flush()
+
+      const code = await Promise.race([serve.exited, Bun.sleep(15_000).then(() => 'stuck')])
+      expect(code).not.toBe('stuck')
+      expect(code).toBe(0)
+      expect(() => process.kill(pid, 0)).toThrow()
+      // 产物根下只有最初那一个现场——「晚到」那条一个目录都没留下
+      expect(readdirSync(join(dir, 'runs')).filter((name) => name.includes('D26-晚到'))).toEqual([])
+    } finally {
+      serve.kill()
+      await serve.exited.catch(() => {})
+      removeDir(dir)
+    }
+  }, 90_000)
+})
+
 /**
  * 助手的一次「工具调用」——往**同一个进程**的 stdin 写一行 JSON，等它那一行答复。
  *
@@ -743,26 +850,39 @@ async function call(
   return (await lines.next(30_000)) as Record<string, unknown>
 }
 
-/** 一行一行读（控制通道是逐行 JSON）。 */
-function readerOf(stream: ReadableStream<Uint8Array>): { next: (timeoutMs: number) => Promise<unknown> } {
+/** 一行一行读（控制通道是逐行 JSON）。`stop()` ＝ 把**读端**关掉（写的那一头随即 EPIPE）。 */
+function readerOf(stream: ReadableStream<Uint8Array>): {
+  next: (timeoutMs: number) => Promise<unknown>
+  stop: () => void
+} {
   const decoder = new TextDecoder()
   let buffered = ''
   const queue: unknown[] = []
   // 等着的那几个（通常就一个）——用一组 resolver，不用一个可变槽：
   // 变量槽会在闭包里被 TS 收窄成 `never`（实测），而这一层本来就只是「叫醒等着的人」
   const waiters: (() => void)[] = []
+  // 自己拿 reader（不用 `for await`）——只为**能从外面取消**：「控制端断了」
+  // 那条路要的正是「读端没了」（`for await` 里 break 不出去）
+  const reader = stream.getReader()
 
   void (async () => {
-    for await (const chunk of stream) {
-      buffered += decoder.decode(chunk as Uint8Array, { stream: true })
-      let at = buffered.indexOf('\n')
-      while (at !== -1) {
-        const line = buffered.slice(0, at).trim()
-        buffered = buffered.slice(at + 1)
-        if (line !== '') queue.push(JSON.parse(line))
-        at = buffered.indexOf('\n')
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value === undefined || value.length === 0) continue
+        buffered += decoder.decode(value, { stream: true })
+        let at = buffered.indexOf('\n')
+        while (at !== -1) {
+          const line = buffered.slice(0, at).trim()
+          buffered = buffered.slice(at + 1)
+          if (line !== '') queue.push(JSON.parse(line))
+          at = buffered.indexOf('\n')
+        }
+        for (const waiter of waiters.splice(0)) waiter()
       }
-      for (const waiter of waiters.splice(0)) waiter()
+    } catch {
+      // 读端被自己关掉（`stop`）——收场，不是错
     }
   })()
 
@@ -775,6 +895,9 @@ function readerOf(stream: ReadableStream<Uint8Array>): { next: (timeoutMs: numbe
       }
 
       return queue.shift()
+    },
+    stop: () => {
+      void reader.cancel().catch(() => {})
     },
   }
 }
