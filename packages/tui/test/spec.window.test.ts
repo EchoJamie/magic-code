@@ -149,6 +149,38 @@ describe('U30 · 换过模型之后的分母', () => {
     land.shell.dispose()
   })
 
+  /**
+   * **原型上有名字的模型名 / 条目名**（验收边界）：查表只认自有键——
+   * 否则 `'toString'` 会读成 `Object.prototype.toString`（函数），分母当场变成一个函数 ✗。
+   */
+  test('`toString` 这类模型名 ⇒ 当未知（分母没有，不留原型上那个东西）', async () => {
+    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
+    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
+
+    for (const name of ['toString', 'constructor', '__proto__']) {
+      land.feed([event('model.switched', { ok: true, provider: 'mm', model: name })])
+      expect(land.shell.getView().status.window).toBeNull()
+    }
+
+    const after = await land.screen()
+    expect(after.statusLine).toContain('3.1k')
+    expect(after.statusLine).not.toContain('3.1k/') // 没有分母就不写那个斜杠
+
+    land.shell.dispose()
+  })
+
+  test('`toString` 这类**条目名** ⇒ 不摸原型，照查内置表（模型名对得上就给数）', async () => {
+    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
+    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
+
+    land.feed([event('model.switched', { ok: true, provider: 'toString', model: 'MiniMax-M2' })])
+
+    expect(land.shell.getView().status.window).toBe(204_800)
+    expect((await land.screen()).statusLine).toContain('3.1k/205k')
+
+    land.shell.dispose()
+  })
+
   test('**没换成**：读数原样不动（切不动就不动）＋ 一行缘由', async () => {
     const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
     land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])

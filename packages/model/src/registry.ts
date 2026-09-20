@@ -29,7 +29,7 @@ import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { MissingApiKeyError, createModelGateway } from './gateway.ts'
-import { MODEL_CONTEXT_BUILTIN, resolveContextWindow } from './capacity.ts'
+import { MODEL_CONTEXT_BUILTIN, ownOf, resolveContextWindow } from './capacity.ts'
 import type { WindowTable } from './capacity.ts'
 
 // —— 形态 ——
@@ -151,7 +151,9 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
   const { providers, defaultProvider, stamper } = options
   const entries = Object.entries(providers)
 
-  const defaultEntry = providers[defaultProvider]
+  // ⚠️ 查表一律走 `ownOf`（只认自有键）——条目名是用户给的字符串，普通索引会从
+  // `Object.prototype` 上摸到东西（见 `capacity.ts` 的 `ownOf` 注）
+  const defaultEntry = ownOf(providers, defaultProvider)
   if (defaultEntry === undefined) {
     const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
     throw new Error(`缺省供应商「${defaultProvider}」不在 providers 里——已配：${known}`)
@@ -164,7 +166,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     const cached = built.get(id)
     if (cached !== undefined) return cached
 
-    const config = providers[id]
+    const config = ownOf(providers, id)
     if (config === undefined) throw new Error(`未知供应商「${id}」`)
 
     const gateway = createModelGateway({
@@ -230,7 +232,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     },
 
     has(id: string): boolean {
-      return providers[id] !== undefined
+      return ownOf(providers, id) !== undefined
     },
 
     use(request: ModelSwitchRequest): ModelSwitchResult {
@@ -242,7 +244,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       }
 
       const providerId = askedProvider ?? selected?.provider ?? defaultProvider
-      const entry = providers[providerId]
+      const entry = ownOf(providers, providerId)
       if (entry === undefined) {
         const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
         return { ok: false, reason: `未知供应商「${providerId}」——已注册：${known}` }

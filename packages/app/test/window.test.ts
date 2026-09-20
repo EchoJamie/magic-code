@@ -419,6 +419,39 @@ describe('U30 · 换过模型之后的分母', () => {
     }
   })
 
+  /**
+   * **原型上有名字的模型名 / 条目名**（U30 验收抓到的边界）——在**真链路**上验：
+   * - 条目名 `'toString'` ⇒ **未知供应商**（不是把原型上那个东西当配置去解 key）、切不动就不动；
+   * - 模型名 `'toString'`（同条目只换模型）⇒ 分母**干净地没有**（不是原型上那个函数）。
+   */
+  test('`toString` 这类条目名 ⇒ 未知供应商；这类模型名 ⇒ 分母干净地没有', async () => {
+    const land = stage()
+
+    try {
+      const assembly = land.assemble()
+      const shell = shellOf(assembly)
+      await warm(assembly)
+
+      // 条目名落在原型上：如实报未知，读数原样
+      const bogus = assembly.switchModel({ provider: 'toString' })
+      expect(bogus.ok).toBe(false)
+      expect(bogus.ok === false ? bogus.reason : '').toContain('未知供应商')
+      expect(shell.getView().status.window).toBe(1_000_000)
+      expect(shell.getView().status.model).toBe('MiniMax-M3')
+
+      // 模型名落在原型上：换是换了（同条目换模型），分母**没有**——不留原型上那个东西
+      expect(assembly.switchModel({ model: 'toString' }).ok).toBe(true)
+      expect(shell.getView().status.model).toBe('toString')
+      expect(shell.getView().status.window).toBeNull()
+      expect(usageLabel(shell.getView().status.usage, shell.getView().status.window)).toBe('3.1k')
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
   test('**开机空态**：还没有用量就不报用量——不写一个伪造的 `0/…`', () => {
     const land = stage()
 

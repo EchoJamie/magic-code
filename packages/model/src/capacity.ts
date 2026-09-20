@@ -64,7 +64,22 @@ export function resolveContextWindow(
   override?: number | undefined,
 ): number | undefined {
   if (override !== undefined) return override
-  return MODEL_CONTEXT_BUILTIN[model]
+  return ownOf(MODEL_CONTEXT_BUILTIN, model)
+}
+
+/**
+ * **只认自有键**的查表——本域的查表一律走它（内置表 · 声明表 · 注册表的 `providers`）。
+ *
+ * 由头（U30 验收抓到的边界）：模型名 / 条目名是**用户给的字符串**，而普通对象索引会一路
+ * 摸到 `Object.prototype` 上——`'toString'` 摸到一个函数、`'constructor'` 摸到一个函数、
+ * `'__proto__'` 摸到一个对象（`typeof` 都不是 `undefined`）✗。于是「未知模型」被当成
+ * 「查到了一个数」，分母上屏一个函数，`has('toString')` 报 `true`、`use` 拿着原型上的东西
+ * 当配置去解 key（实测：`TypeError: input.explicit?.trim is not a function`）。
+ *
+ * 键在就是那个值，不在就是**不在**——「不知道」必须是干净的不知道。
+ */
+export function ownOf<T>(map: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined
 }
 
 /**
@@ -104,13 +119,17 @@ export type WindowTable = {
  *
  * `provider` 可缺（`model.call.start` 的供应商是可选位）：缺了就**只认内置表**
  * ——声明认不了主，不猜是哪一条目的。
+ *
+ * ⚠️ 两处查表都走 `ownOf`（只认自有键）——模型名 / 条目名都是用户给的字符串，
+ * `'toString'` 这类名字走普通索引会从原型上摸到东西（见 `ownOf` 的注）。
  */
 export function windowOfSelection(
   table: WindowTable,
   selection: { readonly provider?: string | undefined; readonly model: string },
 ): number | null {
-  const declared = selection.provider === undefined ? undefined : table.declared[selection.provider]
+  const declared =
+    selection.provider === undefined ? undefined : ownOf(table.declared, selection.provider)
   if (declared !== undefined && declared.model === selection.model) return declared.window
 
-  return table.builtin[selection.model] ?? null
+  return ownOf(table.builtin, selection.model) ?? null
 }

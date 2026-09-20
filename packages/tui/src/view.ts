@@ -851,15 +851,25 @@ function withModelWindow(
  *
  * ⚠️ 声明**不按模型名全局生效**：别的条目给同名模型声明过什么，与本次选中无关
  * （合法的两个端点可以各有各的窗长）。
+ *
+ * ⚠️ 查表走 `ownOf`（只认自有键）——模型名 / 条目名都是用户给的字符串，
+ * `'toString'` 这类名字走普通索引会从 `Object.prototype` 上摸到东西（那边 `capacity.ts`
+ * 的 `ownOf` 注写了来龙去脉，本处是同一把尺子）。
  */
 function windowOfSelection(
   table: WindowTable,
   selection: { readonly provider?: string | undefined; readonly model: string },
 ): number | null {
-  const declared = selection.provider === undefined ? undefined : table.declared[selection.provider]
+  const declared =
+    selection.provider === undefined ? undefined : ownOf(table.declared, selection.provider)
   if (declared !== undefined && declared.model === selection.model) return declared.window
 
-  return table.builtin[selection.model] ?? null
+  return ownOf(table.builtin, selection.model) ?? null
+}
+
+/** 只认**自有键**的查表——见上面那段注（与 `@magic/model` 的 `ownOf` 同一条）。 */
+function ownOf<T>(map: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined
 }
 
 /**

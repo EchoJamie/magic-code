@@ -74,6 +74,18 @@ describe('容量裁定 · 声明 → 内置表 → 未知', () => {
     expect(resolveContextWindow('')).toBeUndefined()
   })
 
+  /**
+   * **原型上有名字的模型名**（U30 验收抓到的边界）：查询走的是**自有键**——
+   * 普通对象索引会一路摸到 `Object.prototype`，把 `toString` / `constructor` 这些名字
+   * 读成**函数**、`__proto__` 读成**对象**（`typeof` 都不是 `undefined`）✗。
+   * 「未知」必须是干净的未知：**不是数就不是数**。
+   */
+  test('`toString` / `constructor` / `__proto__` 这类名字 ⇒ 未知（不是原型上那个东西）', () => {
+    for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      expect(resolveContextWindow(name)).toBeUndefined()
+    }
+  })
+
   test('内置表**只有**那几个键——加行是有意的（表本身即规格，别在别处偷偷拼）', () => {
     expect(Object.keys(MODEL_CONTEXT_BUILTIN).sort()).toEqual(
       [
@@ -122,6 +134,19 @@ describe('窗长表 · 消费（`windowOfSelection`）', () => {
 
   test('两处皆无 ⇒ `null`（不知道就是不知道——不拿 0 或者别人的数顶上）', () => {
     expect(windowOfSelection({ builtin: {}, declared: {} }, { provider: 'x', model: 'y' })).toBeNull()
+  })
+
+  /**
+   * **原型上有名字的模型名 / 条目名**（验收边界）：两处查表都只认自有键——
+   * 否则 `{ model: 'toString' }` 会拿到 `Object.prototype.toString`（函数），
+   * 外壳拿去当分母上屏 ✗。
+   */
+  test('`toString` 这类模型名 ⇒ `null`（不摸原型）；`toString` 这类条目名 ⇒ 照查内置表', () => {
+    for (const name of ['toString', 'constructor', '__proto__']) {
+      // 模型名落在原型上：干净地「不知道」
+      expect(windowOfSelection(TABLE, { model: name })).toBeNull()
+      expect(windowOfSelection(TABLE, { provider: name, model: 'MiniMax-M2' })).toBe(204_800)
+    }
   })
 })
 
@@ -217,6 +242,26 @@ describe('条目出口 · `list()` 与 `windowTable()`', () => {
       expect(entry.contextWindow ?? null).toBe(
         windowOfSelection(table, { provider: entry.id, model: entry.model }),
       )
+    }
+  })
+
+  /**
+   * **原型上有名字的条目名**（验收边界）：`providers` 的查表也只认自有键——
+   * 否则 `has('toString')` 报 `true`，`use({ provider: 'toString' })` 会把
+   * `Object.prototype.toString` 当配置去解 key（实测 `TypeError: …trim is not a function`）。
+   * 切不动就不动：**如实报「未知供应商」**，选中原样保留。
+   */
+  test('`toString` / `constructor` 这类条目名 ⇒ 未知供应商（不是原型上那个东西）', () => {
+    const registry = registryOf({ alpha: CONFIG('MiniMax-M2') })
+
+    for (const id of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      expect(registry.has(id)).toBe(false)
+
+      const switched = registry.use({ provider: id })
+      expect(switched.ok).toBe(false)
+      expect(switched.ok === false ? switched.reason : '').toContain('未知供应商')
+      // 切不动就不动——选中没被这一下带偏
+      expect(registry.current()).toEqual({ provider: 'alpha', model: 'MiniMax-M2' })
     }
   })
 })
