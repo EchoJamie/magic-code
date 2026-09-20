@@ -1,7 +1,7 @@
 /**
  * U32 · 项目规约的来源面 —— 判据：**发现对不对 · 取舍说得清 · 读不懂的不扩大**。
  *
- * 本文件只咬**执行域这一半**（有什么、在哪儿、是哪一版）：发现四类入口 · 去重与优先 ·
+ * 本文件只咬**执行域这一半**（有什么、在哪儿、内容是什么）：发现四类入口 · 去重与优先 ·
  * 条件模式 · 诊断。「什么时候送进模型」归对话域与装配，判据在 `@magic/conversation` 与
  * `packages/app/test/rules.test.ts`。
  *
@@ -530,8 +530,12 @@ describe('物理去重 —— 范围不同就是两条', () => {
       const load = rulesOf([box.at], undefined, [shared]).load(['src/a.ts'])
 
       expect(load.documents.map((rule) => rule.name)).toEqual(['AGENTS.md', `src${sep}AGENTS.md`])
-      // **两份是不同的规则**：管的地方不同 ⇒ 版本也不同（不然送过一条就等于两条都送过）
-      expect(load.documents[0]?.version).not.toBe(load.documents[1]?.version)
+      // **两份是不同的材料**：正文一模一样，但管的地方不同 ⇒ 名与作用范围各是一样
+      //（不含这两样的话，送过一条就等于说两条都送过了——判「送过没有」的是对话域逐字比
+      // 这几样字段，见其 `sameMaterial`；用例在那边钉着）
+      expect(load.documents[0]?.text).toBe(load.documents[1]?.text)
+      expect(load.documents[0]?.name).not.toBe(load.documents[1]?.name)
+      expect(load.documents[0]?.scope).not.toBe(load.documents[1]?.scope)
       expect(load.documents[1]?.scope).toBe(join(realpathSync(box.at), 'src'))
     } finally {
       box.dispose()
@@ -1271,19 +1275,21 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
   })
 })
 
-describe('内容版本 —— 判「是不是同一版」的锚', () => {
-  test('同内容同版本 · 改一个字换版本 · 改模式也换版本', () => {
+describe('材料 —— 读的是当前那份文件，身份就是来源与范围', () => {
+  test('没改就一样 · 改一个字就是新的 · `paths` 改了也另是一份', () => {
     const box = sandbox()
     try {
       const file = join(box.at, 'AGENTS.md')
       put(box.at, 'AGENTS.md', '甲')
-      const first = rulesOf([box.at]).load([]).documents[0]?.version
+      const first = rulesOf([box.at]).load([]).documents[0]
 
-      expect(rulesOf([box.at]).load([]).documents[0]?.version).toBe(first)
+      // 同一份没改 ⇒ 两次读到的材料逐字一样（下游「送过就不重拦」全靠这个相等）
+      expect(rulesOf([box.at]).load([]).documents[0]?.text).toBe(first?.text)
+      // 而它是**文件里那一段**本身——不是摘要、不是编号（材料按实际文本走）
+      expect(first?.text).toBe('甲')
 
       writeFileSync(file, '乙', 'utf8')
-      const changed = rulesOf([box.at]).load([]).documents[0]?.version
-      expect(changed).not.toBe(first)
+      expect(rulesOf([box.at]).load([]).documents[0]?.text).toBe('乙')
 
       put(box.at, '.magic/rules/ts.md', '---\npaths:\n  - "src/**"\n---\n正文')
       const narrow = rulesOf([box.at]).load(['src/a.ts']).documents.find(
@@ -1295,13 +1301,15 @@ describe('内容版本 —— 判「是不是同一版」的锚', () => {
       )
 
       expect(other?.text).toBe(narrow?.text) // 正文一字未动
-      expect(other?.version).not.toBe(narrow?.version) // 但适用面变了 ⇒ 另算一版
+      // 但适用面变了 ⇒ 另是一份材料（正文里**没有**这一段——它是摘掉 front-matter 的那一节）
+      expect(narrow?.paths).toEqual(['src/**'])
+      expect(other?.paths).toEqual(['lib/**'])
     } finally {
       box.dispose()
     }
   })
 
-  test('**正文一模一样的两个文件是两个版本**（身份也进版本号）', () => {
+  test('**正文一模一样的两个文件是两份材料**（范围也是这一份的一部分）', () => {
     const box = sandbox()
     try {
       // 同一套约定按目录铺开——复制粘贴起手最常见的写法
@@ -1310,12 +1318,16 @@ describe('内容版本 —— 判「是不是同一版」的锚', () => {
       put(box.at, 'src/AGENTS.md', same)
 
       const load = rulesOf([box.at]).load(['src/a.ts'])
-      const versions = load.documents.map((rule) => rule.version)
+      const [root, sub] = load.documents
 
       expect(load.documents).toHaveLength(2)
-      // 版本不含路径的话两条会撞成一个号——下游「按版本判送过没有」就会把
-      // 子目录那份当成「已送达」，它**永远不送也不拦**（有用例在对话域钉着）
-      expect(new Set(versions).size).toBe(2)
+      // 正文两字不差……
+      expect(root?.text).toBe(same)
+      expect(sub?.text).toBe(same)
+      // ……但**不是同一份材料**：名与作用范围各是一样。不含这两样的话，送过根那份就等于说
+      // 子目录那份也送过了，它**永远不送也不拦**（下游逐字比的就是这几样字段，有用例在对话域钉着）
+      expect(root?.name).not.toBe(sub?.name)
+      expect(root?.scope).not.toBe(sub?.scope)
     } finally {
       box.dispose()
     }
