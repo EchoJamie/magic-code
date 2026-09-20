@@ -4,11 +4,11 @@
  * 上游是执行域的 `ProjectRules`（有什么、在哪儿、是哪一版）；本文件持有的是**会话内**的
  * 两样记账，加上「工具产生副作用之前」这道闸：
  *
- * - **作用域**（`targets`）——本会话**接触过的**目标路径，累积、去重。会话开局是空的
- *   （只取各根一级），每碰一处就长一点。用途有二：决定**送哪些**（近目录约定只细化其子树），
- *   以及决定**改过之后算不算新**（一次请求里带的内容，下一趟重读时不因「它变了」而反复拦截）。
- * - **已送达**（`delivered`）——进过至少一次请求的那些**内容版本**。判据是版本不是路径：
- *   用户改了规约 ⇒ 另算一版 ⇒ 该重送一次；同一版送过就不再拦。这正是「相同版本不循环拦截」。
+ * - **作用域**（`scope`）——本会话**接触过的**目标路径，累积、去重、**有界**（先进先出）。
+ *   会话开局是空的（只取各根一级），每碰一处就长一点。用途是决定**送哪些**（近目录约定
+ *   只细化其子树）。**它有界只影响「历史」那一截**——本批的正确性不靠它（见下 `pinned`）。
+ * - **最近一次请求送达了什么**（`deliveredNow`）——**判据是「最近那次真实模型请求里有没有
+ *   它」，不是「历史上送过没有」**（2026-09-20 裁，改了首轮的口径）。
  *
  * ## 为什么由对话域持有这两样
  *
@@ -17,85 +17,173 @@
  *
  * ## 送达发生在两处（顺序即语义）
  *
- * 1. **每次模型调用之前**（`promptFor`）——把**当前作用域**里适用的规约接进系统提示词，
- *    并记下这一趟送出去的版本。这是「无路径规则首次模型调用前载入」与「条件规则在目标
- *    相关时送达」共同的落点：作用域里没有的目标，压根不在这一趟的名单上。
- * 2. **一批工具执行之前**（`preflight`）——拿这批调用的目标再查一遍：**有没送达过的新内容
- *    就拦下整批**（回填「需重审」，见 `needsReviewText`），让它下一趟随请求送进去。
+ * 1. **每次模型调用之前**（`promptFor`）——把**当前作用域 ＋ 被拦批钉住的目标**适用的规约
+ *    接进系统提示词，并把这一趟真正送出去的版本**整个替换**进 `deliveredNow`。
+ *    这是「无路径规则首次模型调用前载入」与「条件规则在目标相关时送达」共同的落点。
+ * 2. **一批工具执行之前**（`preflight`）——拿**这一批全部**的目标查一遍：**有没送达过的新内容
+ *    就拦下整批**（回填「需重审」，见 `needsReviewText`），并把这批的目标**钉住**
+ *    （`pinned`），保证下一次重审请求**一定带上它们**。
  *    **第一次副作用因此没有发生**——拦在 `invoke` 之前，沙箱与闸门都还没被碰到。
  *
- * 拦截**只在新内容上发生**：送达过同一版就照常执行，模型重提的那一次因此只会执行一次
- * （「重审后仅执行一次」）。
+ * 拦截**只在新内容上发生**：同一版还在最近那次请求里就照常执行，模型重提的那一次因此
+ * 只会执行一次（「重审后仅执行一次」）。
+ *
+ * ## 判据为什么是「最近一次请求」（2026-09-20 裁）
+ *
+ * 首轮用的是「进过至少一次请求的版本，永久记账」。它错在一个**静默**上：规约正文**只在
+ * 系统提示词里**（进不了条目流、历史里没有它），而作用域有界——同一个目标被后来的目标挤出去
+ * 之后，那一版就**不在当前请求里了**，可账上还记着「已送达」，于是**写下去了**。
+ * 「送达」是一件**当下**的事（这次请求里有没有），不是一件**曾经**的事。
+ *
+ * 代价如实记：规则正文在 system、不在历史 ⇒ **恢复 / 切回一条会话时会被再送一次**
+ * （新实例的账是空的）。那是**必要行为**，不是白付——不重送，模型手上就真没有那份规约。
+ * **不为省下这一趟而把域内账公开给装配**（那要把 `RulesDelivery` 提到公开面，是契约改形）。
  */
 
 import type { ProjectRule, ProjectRules, ToolCall } from '@magic/contracts'
 import { withProjectRules } from './prompt/rules.ts'
 
 /**
+ * 被拦下来那一批的**去处**——拦了就得有个交代，三种情形各自说清（见 `needsReviewText`）。
+ *
+ * 三选一而不是一个布尔：三件事对模型的要求**完全不同**——
+ * 前两种是「等下一趟、照新规约重提」，第三种是「**别再提了**，去告诉用户」。
+ */
+export type PreflightResult =
+  | { readonly kind: 'pass' }
+  /** 有没送达过的新规约——这批一份都不执行，材料已钉住、下一次请求必带。 */
+  | { readonly kind: 'review'; readonly blocking: readonly ProjectRule[] }
+  /**
+   * **材料超限，这一批停在这儿**（2026-09-20 裁）——加载器到上限了，回来的那份**不是全的**，
+   * 故「目标上的规约都送到了」这句话**不能成立**。既不静默执行（可能带着没读到的规约就动手），
+   * 也不无限重试（再提多少次都还是超限）——明说，并把人指到该动的地方。
+   */
+  | { readonly kind: 'overflow' }
+
+/**
  * 一次会话的规约送达。
  *
  * 有状态、**按会话各一份**（装配在 `createConversationSession` 里造）——切了会话就是另
- * 一本账：那一头碰过哪些目录、送过哪几版，与这一头无关。
+ * 一本账：那一头碰过哪些目录、最近送过哪几版，与这一头无关。
  */
 export type RulesDelivery = {
-  /** 一次模型调用前：把当前作用域的规约接上，并记下送出去的版本。 */
+  /** 一次模型调用前：把当前作用域（＋被钉住的目标）的规约接上，并替换「最近送达」那一本账。 */
   readonly promptFor: (base: string) => string
   /**
-   * 一批工具执行前：**有没送达过的新规约就返回它们**（非空＝这一批一份都不许执行）。
-   * 顺带把这批的目标**并入作用域**——无论拦不拦，下一趟请求都要带上它们。
+   * 一批工具执行前：这一批能不能动手。
+   *
+   * **查的是这一批的全部目标**（不是被历史缓存裁过的那些——见 `pinned` 与 `MAX_SCOPE_TARGETS`）。
    */
-  readonly preflight: (calls: readonly ToolCall[]) => readonly ProjectRule[]
+  readonly preflight: (calls: readonly ToolCall[]) => PreflightResult
 }
 
 /**
- * 作用域的**条数上限**——**先进先出**。
+ * **历史**作用域的条数上限——**先进先出**。
  *
  * 「不要递归把整仓规约都塞进每次调用」这条纪律，靠两道拦：一道是**只送碰过的**
  * （此处的累积），另一道是**送过的不能无限攒**（这个数）。一个长会话在仓库里挪上几百个
  * 文件之后，早年的目标既不再相关、又每趟都要重新走一遍祖先目录——留着就是纯成本。
  *
- * **落在上限之外不是「丢了」**：会话回头再碰那个目录，它照旧被收回来、那几份规约照旧在
- * 下一趟请求里（`delivered` 记着版本，故**不会**为此再拦一次）——只是中间那几趟不在上下文里。
+ * ⚠️ **它只管历史那一截**（2026-09-20 裁）：上限之外的东西**不是「丢了」**，而是
+ * 「不再自动跟着走」——回头再碰那个目录，它照旧被收回来、那几份规约照旧在下一趟请求里。
+ * **本批的正确性不靠它**：本批的目标**先查、后收**（`preflight` 查的就是本批的全部目标），
+ * 且被拦批的目标会被**钉住**（`pinned`），不受这个上限裁剪。
  */
 export const MAX_SCOPE_TARGETS = 64
 
 /** 造一份送达账（一条会话一份）。 */
 export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
-  /** 本会话接触过的目标（累积、去重、按接触序）。 */
-  const targets: string[] = []
-  /** 去重面——与 `targets` 同生共死（出队时一并删）。 */
+  /** 本会话接触过的目标（累积、去重、按接触序）——**历史**，有界。 */
+  const scope: string[] = []
+  /** 去重面——与 `scope` 同生共死（出队时一并删）。 */
   const known = new Set<string>()
-  /** 进过至少一次请求的内容版本。 */
-  const delivered = new Set<string>()
+  /**
+   * **被拦批钉住的目标**——下一次请求**必须**带上它们（2026-09-20 裁）。
+   *
+   * 由头：被拦的那一批要能在下一次请求里看到新规约，才谈得上「照新规约复核后重提」。
+   * 而下一个目标集是从历史作用域算出来的——**同一个上限会把它再裁一遍**：拦了、送了
+   * 一趟、又裁掉、再拦……那是一个**死循环**，而模型永远看不到那份规约。
+   * 钉住的就是这条循环的出口：**拦下的那一批自己带的材料，下一个请求一份不少**。
+   *
+   * 它由下一次「放行」清掉（那时这批已经执行过，历史那条路自会照 `scope` 走）。
+   */
+  let pinned: string[] = []
+  /**
+   * **最近一次真实模型请求里送达的版本**——`preflight` 的判据。
+   *
+   * `promptFor` 每趟**整个替换**它（先清后填）：这样「挤出去过又回来的」那份会被如实
+   * 判成「没送到」，而不是被一个永久的账本蒙混过去（见文件头注「判据为什么是最近一次请求」）。
+   */
+  let deliveredNow = new Set<string>()
 
   const absorb = (fresh: readonly string[]): void => {
     for (const target of fresh) {
       if (known.has(target)) continue
       known.add(target)
-      targets.push(target)
+      scope.push(target)
     }
 
-    while (targets.length > MAX_SCOPE_TARGETS) {
-      const dropped = targets.shift()
+    while (scope.length > MAX_SCOPE_TARGETS) {
+      const dropped = scope.shift()
       if (dropped !== undefined) known.delete(dropped)
     }
   }
 
+  /** 这一趟请求要带上的目标——**钉住的在前**（它们不受历史上限裁剪）。 */
+  const requestedTargets = (): readonly string[] => [
+    ...pinned,
+    ...scope.filter((target) => !pinned.includes(target)),
+  ]
+
   return {
     promptFor: (base: string): string => {
-      const load = rules.load(targets)
-      for (const document of load.documents) delivered.add(document.version)
+      const load = rules.load(requestedTargets())
+      // **先清后填**——这本账说的是「最近这一次请求里有什么」，不是「历来送过什么」
+      deliveredNow = new Set(load.documents.map((document) => document.version))
 
       return withProjectRules(base, load)
     },
 
-    preflight: (calls: readonly ToolCall[]): readonly ProjectRule[] => {
-      // 没有新目标也照查一遍：**规约可能刚被改过**（改版＝新版本＝该重送一次）。
-      // 这一趟是幂等的——送达过就什么都不返回，故不产生多余的拦截。
-      absorb(calls.flatMap(targetsOf))
+    preflight: (calls: readonly ToolCall[]): PreflightResult => {
+      const batch = calls.flatMap(targetsOf)
+      // **查这一批的全部目标**（＋这一趟请求带的那一拨），不先裁再查：
+      // 先裁再查＝「这一批里被裁掉的那几个目标」的规约压根没人看（首轮实测：同批 65 次写、
+      // 第一个目标有规约，全部写成功、任何请求都没收到那份规约）。
+      const load = rules.load([...requestedTargets(), ...batch])
 
-      return rules.load(targets).documents.filter((document) => !delivered.has(document.version))
+      // 没新目标也照查一遍：**规约可能刚被改过**（改版＝新版本＝该重送一次）。
+      // 这一趟是幂等的——还在最近那次请求里就什么都不返回，故不产生多余的拦截。
+      const blocking = load.documents.filter((document) => !deliveredNow.has(document.version))
+
+      if (blocking.length > 0) {
+        // 拦下了：**把这批的目标钉住**——下一次请求一定带上它们的规约，循环由此闭合
+        pin(batch)
+        // 材料超限 ⇒ 「回填说『已送入上下文』」就是一句假话：那份可能压根没进来。
+        // 这种情形**停在这一批**，不再靠重提（再提多少次都还是超限）。
+        return load.truncated ? { kind: 'overflow' } : { kind: 'review', blocking }
+      }
+
+      // 放行——这一批的历史使命到此为止：钉住的目标并进历史作用域，钉子的活干完了
+      unpin()
+      absorb(batch)
+      return { kind: 'pass' }
     },
+  }
+
+  /**
+   * 钉住这一批的目标——**只增不减**（同一批里多个目标指向同一处时去重）。
+   *
+   * 并进 `pinned` 而不是替换：上一个钉子还没解（模型没照那份规约重提就换了别的目标）
+   * 时，那份材料**照旧得在**——它是模型手上唯一见过的那一版。
+   */
+  function pin(batch: readonly string[]): void {
+    pinned = [...new Set([...pinned, ...batch])]
+  }
+
+  /** 解钉——并进历史作用域（**由有界的那一半接管**，此后按常规的进出走）。 */
+  function unpin(): void {
+    absorb(pinned)
+    pinned = []
   }
 }
 
@@ -128,5 +216,21 @@ export function needsReviewText(blocking: readonly ProjectRule[]): string {
   return (
     `未执行——这个目标上刚发现新的项目规约（${names}），已送入上下文。` +
     `请照新规约复核这次调用，然后重新提出；这一次没有任何副作用发生。`
+  )
+}
+
+/**
+ * 超限那一次的回填文本（`PreflightResult.overflow`）——**说清三件**，但**下一步不一样**。
+ *
+ * 「已送入上下文」在这儿是**假话**（材料压根没全进来），所以换一套：说清**没执行**、
+ * **为什么**（规约多到装不下）、以及**该谁动**（用户，不是模型自己重提）。
+ * **明写「不要重提」**：重提一百次也还是超限，那只会白烧往返——这正是工单说的
+ * 「不静默执行或无限重试」。
+ */
+export function overflowText(): string {
+  return (
+    `未执行——这个项目里的规约多到一次装不下（已经到加载上限），没法保证目标上的规约都送到。` +
+    `这次没有任何副作用发生；不要重提这一批（再提一次也还是装不下）——请把这件事告诉用户，` +
+    `让他把规约裁小或分成几处，然后再说。`
   )
 }

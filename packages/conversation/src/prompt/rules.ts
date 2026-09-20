@@ -16,6 +16,13 @@
  *    不运行其中脚本、不接 hooks。写进材料，模型才不会把「规约里写着可以删 build/」当成许可。
  * 3. **没进来的那些照报**——「读失败或超限须明确说哪份未加载，不能静默截掉关键约定后
  *    宣称已生效」（设计 · 项目规约第 6 条）。这是这份材料的**诚实条款**。
+ *
+ * ## 每一条都带**范围**（2026-09-20 裁）
+ *
+ * 首轮的材料只有「抬头名 ＋ 正文」——`paths:` 被摘掉之后，一条 `src/**` 的规则看上去
+ * 与一条全局规则**一模一样**。模型据此拿它去管别处的文件，而它本该只管 `src`。
+ * 故每一条都写上**所属根 · 管到哪儿 · 什么条件下适用**（见 `entryOf`）：
+ * 材料要自足，不能让模型靠文件名猜范围。
  */
 
 import type { ProjectRule, RulesLoad, RulesProblem } from '@magic/contracts'
@@ -52,18 +59,21 @@ export function renderProjectRulesBlock(input: {
   const { documents, problems } = input
   if (documents.length === 0 && problems.length === 0) return undefined
 
-  const manyRoots = new Set(documents.map((rule) => rule.root).filter((root) => root !== null)).size > 1
   const parts: string[] = []
 
   if (documents.length > 0) {
     parts.push(PREAMBLE)
-    for (const rule of documents) parts.push(entryOf(rule, manyRoots))
+    for (const rule of documents) parts.push(entryOf(rule))
   }
 
-  if (problems.length > 0) {
+  // **只说「坏了」的那一类**（`error`）——取舍那类（原生顶掉兼容、AGENTS 顶掉 CLAUDE）
+  // 是**产品按设计做的选择**，对模型没有信息：它不需要知道「另有一份没生效的规则」。
+  // 说给模型听，只会让它去猜那份没生效的写了什么。那类归 `--check` 与启动回执说给用户。
+  const broken = problems.filter((problem) => problem.kind === 'error')
+  if (broken.length > 0) {
     parts.push(
       '〔没能加载的规约〕\n' +
-        problems.map((problem) => `- ${problem.path}：${problem.message}`).join('\n'),
+        broken.map((problem) => `- ${problem.path}：${problem.message}`).join('\n'),
     )
   }
 
@@ -81,16 +91,30 @@ export function renderProjectRulesBlock(input: {
 export { PROJECT_RULES_BLOCK_ID, PROJECT_RULES_HEADING } from './assembly.ts'
 
 /**
- * 一条规约的摆法——**来源摆在前头，正文原样跟在后面**。
+ * 一条规约的摆法——**抬头说清「这条管到哪儿」，正文原样跟在后面**。
  *
- * 多根才报根：单根时每条都缀一串绝对路径纯是噪声（模型不需要据此分辨甲根乙根），
- * 而多根时不报根，模型就无从知道这条管的是哪一摊——「不将甲根规范作为乙根全局规范」
- * 得有材料上的落点，不能只靠实现里的作用域判定。
+ * **抬头三样，各答一个问题**（2026-09-20 裁；首轮只报了名字，范围全丢）：
+ *
+ * - **哪一个项目**（`根 <绝对路径>`）——多根下这句话就是「甲根的规范不作乙根的全局规范」
+ *   在材料上的落点。**单根也照报**：模型据此把「这条规约」与它手上的那个工作目录对上，
+ *   不必靠猜；不报的话，多根与单根的材料形态还会不一样，模型两边都得适应。
+ * - **管到哪儿**（`范围`）——目录规约管它那棵子树（`src` 那份只管 `src/**`）；
+ *   规则文档按根算（`paths` 管的就是这个）。
+ * - **什么条件下适用**（`paths`）——**有 `paths` 才写这一句**：它是「当前请求里为什么会有
+ *   这一条」的答案。没写的＝无条件（会话开局就该在的）。
+ *
+ * 取舍：`scope` 与 `root` 相同时（规则文档、根一级的目录规约）**不重复报范围**——
+ * 「根就是它管的地方」这一句在抬头里已经说完了，再写一遍是同义反复。
  */
-function entryOf(rule: ProjectRule, manyRoots: boolean): string {
-  const where = manyRoots && rule.root !== null ? `${rule.name} · 根 ${rule.root}` : rule.name
+function entryOf(rule: ProjectRule): string {
+  const where: string[] = []
+  if (rule.root !== null) where.push(`根 ${rule.root}`)
+  if (rule.scope !== null && rule.scope !== rule.root) where.push(`管 ${rule.scope}`)
+  if (rule.paths.length > 0) where.push(`只在 ${rule.paths.join('、')} 上适用`)
 
-  return `〔${where}〕\n${rule.text}`
+  const head = where.length === 0 ? '' : `（${where.join(' · ')}）`
+
+  return `〔${rule.name}${head}〕\n${rule.text}`
 }
 
 /**

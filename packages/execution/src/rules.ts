@@ -22,10 +22,13 @@
  *
  * - **只读**——本文件只有 `readdir` / `readFile` / `realpath` / `stat`，一个写操作都没有；
  *   规约**不**改 `permissions.rules`、**不**运行其中脚本、**不**接 hooks（那是另一件事）。
- * - **不能借加载器读任意文件**——发现面只有两处：**注册的根之内**与**用户点名的补充来源**。
+ * - **不能借加载器读任意文件**——发现面只有两处：**注册的根之内**与**用户点名的来源**。
  *   一个指向工作区之外的符号链接**不因它是个链接就自动可读**：指到文件的那种报出来并略过，
- *   指到目录的那种**连进都不进**（见 `walk` 的白名单那一闸——广度没有别的兜底），
- *   要读就把它写进 `rules.sources`——**用户点名才算数**。
+ *   指到目录的那种**连进都不进**（见 `walk` 的白名单那一闸——广度没有别的兜底）。
+ *   **两张名册是两件事**（2026-09-20 裁）：`rules.sources` ＝「这份文件是规约，**读进来**」；
+ *   `rules.linkSources` ＝「这个链接**可以跟出去**」——只放行来源，**不把正文当规约加载**，
+ *   链接读到的是什么就还是什么（`src/AGENTS.md` 跟出去之后**照旧只管 `src`**，
+ *   不会因为真身在根外就变成一条全局规约）。
  * - **不设全仓 watcher**——每次调用现扫（调用时机由对话域定：用户输入与工具目标预查两处），
  *   不缓存、不订阅；改过的规约因此**下一趟就是新的**。
  *
@@ -79,9 +82,15 @@ export type RulesOptions = {
   readonly workspace: WorkspaceService
   /**
    * **用户显式配置**的补充来源（`rules.sources`，`~` 已由配置加载器展开）——
-   * 绝对路径，文件或目录。缺省＝一个都没有。
+   * 绝对路径，文件或目录。缺省＝一个都没有。**这些的正文会被读进来送进上下文**。
    */
   readonly sources?: readonly string[]
+  /**
+   * **允许规约符号链接跟出去读**的落点（`rules.linkSources`）——绝对路径，文件或目录。
+   * 缺省＝一个都没有。**只放行来源**：写进来的是「这条路可以走」，不是「这份是规约」——
+   * 正文不会因此被加载，作用范围也照旧是链接所在的那一处（见文件头注）。
+   */
+  readonly linkSources?: readonly string[]
   /** 上限覆盖位——缺省 `DEFAULT_RULES_LIMITS`（测试要把超限路径跑出来时用）。 */
   readonly limits?: Partial<RulesLimits> | undefined
 }
@@ -138,8 +147,29 @@ type Loaded = {
   readonly order: Candidate['order']
 }
 
-/** 用户点名的补充来源（已 realpath）——目录按其下 `*.md` 递归，文件就是一份。 */
+/**
+ * 物理同源去重的**身份**——真路径 ＋ **实际范围**（根 ＋ 作用目录）。
+ *
+ * 为什么不按真路径去重（2026-09-20 裁）：同一份物理文件**可以管两摊**——
+ * 根 `AGENTS.md` 与 `src/AGENTS.md` 都软链到同一份团队规约，是常见的组织方式。
+ * 按真路径一刀切，后一条（`src` 那条）会被当成「同一份、读过一遍了」而**整个消失**：
+ * 它那段约定从此不进上下文，而用户以为 `src` 有一份。
+ * **范围不同就是两条规则**——去重该去的是「同一处进来两遍」，不是「同一个文件」。
+ */
+function identityOf(real: string, root: string | null, scope: string | null): string {
+  // 分段符**写成转义**（NUL）而不是空格：路径与根里都可能带空格，拼起来会撞
+  // （`/a b` ＋ 根 `c` 与 `/a` ＋ 根 `b c`）。同 `versionOf` 那条注。
+  return [real, root ?? '', scope ?? ''].join('\u0000')
+}
+
+/**
+ * 用户点名的一处（已 realpath）——两处名册共用同一个形态：
+ * `sources` 是「按其下 `*.md` 递归 / 就是一份」，`linkSources` 是「这里可以跟出去」。
+ */
 type Source = { readonly real: string; readonly isDir: boolean }
+
+/** 两份名册在诊断里的自称——配置键名照抄，用户对得上自己写的那一行。 */
+type SourceBook = 'sources' | 'linkSources'
 
 /** 一个目标路径归位后的三件——它归哪条根、真身该怎么写、相对根是什么。 */
 type Place = {
@@ -173,10 +203,13 @@ function load(
   const declared = workspace.declaredRoots()
   const problems: RulesProblem[] = []
 
-  /** 补充来源（**允许读**的第二份白名单——第一份是根列表）。 */
-  const sources = resolveSources(options.sources ?? [], problems)
+  /** 补充来源（**读进来**的那一份名册）——它们同时也是「允许读」的一处。 */
+  const sources = resolveSources(options.sources ?? [], 'sources', problems)
+  /** 放行名册（**只放行、不加载正文**）——跟出去之后读到的是什么就还是什么。 */
+  const linkSources = resolveSources(options.linkSources ?? [], 'linkSources', problems)
   /** 白名单本体——**递归下探前先问它**：一份都不读的地方，连目录都不进（见 `walk`）。 */
-  const allowed = (real: string): boolean => isAllowed(real, roots, declared, sources)
+  const allowed = (real: string): boolean =>
+    isAllowed(real, roots, declared, [...sources, ...linkSources])
   const candidates: Candidate[] = []
   const directoryDocs = memoDirectoryDocs(problems)
 
@@ -270,6 +303,7 @@ function directoryDocsOf(
   // 两个文件名 ＋ 一个可照抄的出口，够了。
   problems.push({
     path: dir,
+    kind: 'choice',
     message:
       `同目录两份不同实体：采用 ${first.name}，未采用 ${second.name}——` +
       `要一并加载，请把 ${second.file} 写进配置的 rules.sources`,
@@ -369,7 +403,7 @@ function walk(
 ): void {
   // 环之外还有一层兜底：链接可以让目录无限深，别把调用栈吃掉
   if (depth > 32) {
-    problems.push({ path: dir, message: '目录层级过深（超过 32 层）——已停在这一层，不再往下' })
+    problems.push({ path: dir, kind: 'error', message: '目录层级过深（超过 32 层）——已停在这一层，不再往下' })
     return
   }
 
@@ -379,16 +413,21 @@ function walk(
   if (!allowed(real)) {
     // 头一行已经报着是哪个目录了，此处只说「真身在哪、怎么才读得到」
     // 「也写进」不是啰嗦：用户可能正处在「已经点了名、只是点的是它的上一层」这个场景里，
-    // 少了这个「也」，「请把真身写进 rules.sources」读起来像在让他做他已经做过的事
+    // 少了这个「也」，「请把真身写进 rules.linkSources」读起来像在让他做他已经做过的事
+    // ⚠️ 报的是 `linkSources` 而不是 `sources`（2026-09-20 裁）：这里要的是「**放行这条路**」，
+    // 不是「把这一摊都当规约读进来」——两个键的分水岭见 `contracts/config.ts` 那段注。
     problems.push({
       path: dir,
-      message: `指向工作区之外的目录（真身 ${real}）——没进去。要读它，请把这个真身也写进配置的 rules.sources`,
+      kind: 'error',
+      message:
+        `指向工作区之外的目录（真身 ${real}）——没进去。要读它，` +
+        `请把这个真身也写进配置的 rules.linkSources`,
     })
     return
   }
 
   if (visited.has(real)) {
-    problems.push({ path: dir, message: `目录循环——又绕回 ${real}，只读一次、不再往下` })
+    problems.push({ path: dir, kind: 'error', message: `目录循环——又绕回 ${real}，只读一次、不再往下` })
     return
   }
   visited.add(real)
@@ -397,7 +436,7 @@ function walk(
   try {
     entries = readdirSync(dir, { withFileTypes: true })
   } catch (error) {
-    problems.push({ path: dir, message: `目录读不动：${reasonOf(error)}` })
+    problems.push({ path: dir, kind: 'error', message: `目录读不动：${reasonOf(error)}` })
     return
   }
 
@@ -429,16 +468,21 @@ function walk(
  * 多半不是那个。工作区根那一份由执行域的根注册拒（`workspace.ts` `normalizeRoot`），
  * 补充来源走不到那儿，故在此补齐同一道。
  */
-function resolveSources(raw: readonly string[], problems: RulesProblem[]): readonly Source[] {
+function resolveSources(
+  raw: readonly string[],
+  book: SourceBook,
+  problems: RulesProblem[],
+): readonly Source[] {
   const resolved: Source[] = []
 
   raw.forEach((entry, index) => {
-    const at = `第 ${index + 1} 条`
+    const at = `rules.${book} 第 ${index + 1} 条`
 
     if (!isAbsolute(entry)) {
       problems.push({
         path: entry,
-        message: `补充来源须是绝对路径（${at}）——相对串的基准是进程当前目录，换个地方启动就指到别处去了`,
+        kind: 'error',
+        message: `${at}须是绝对路径——相对串的基准是进程当前目录，换个地方启动就指到别处去了`,
       })
       return
     }
@@ -447,14 +491,14 @@ function resolveSources(raw: readonly string[], problems: RulesProblem[]): reado
     try {
       real = realpathSync(entry)
     } catch (error) {
-      problems.push({ path: entry, message: `补充来源不存在或不可达（${at}）——${reasonOf(error)}` })
+      problems.push({ path: entry, kind: 'error', message: `${at}不存在或不可达——${reasonOf(error)}` })
       return
     }
 
     try {
       resolved.push({ real, isDir: statSync(real).isDirectory() })
     } catch (error) {
-      problems.push({ path: entry, message: `补充来源取不到状态（${at}）——${reasonOf(error)}` })
+      problems.push({ path: entry, kind: 'error', message: `${at}取不到状态——${reasonOf(error)}` })
     }
   })
 
@@ -495,36 +539,82 @@ function select(input: {
 }): RulesLoad {
   const { candidates, places, limits, problems, allowed } = input
   const loaded: Loaded[] = []
-  /** 物理同源去重——真路径只看一次。 */
+  /** 物理同源去重——**真路径 ＋ 实际范围**（见 `identityOf`：范围不同＝两条）。 */
   const seen = new Set<string>()
   /** 同根同名去重——`<root> <ruleKey>` → 已经收下的那一条。 */
   const seenRule = new Map<string, Candidate>()
+  /** 这一趟因为上限丢过材料（`RulesLoad.truncated`——消费方据它判「回来的是不是全的」）。 */
+  let truncated = false
   let bytes = 0
+
+  /**
+   * **原生占位**——同根同相对规则名的 `.magic/rules` 只要**在**，这个名字就归它。
+   *
+   * 由头（2026-09-20 裁）：占位必须在**解析与物理去重之前**定下。放在「读懂了才算数」的
+   * 位置会有两个口子——原生那份**读不懂**、**读不到**、或**与兼容那份是同一个实体**时，
+   * 占位落空 ⇒ `.claude/rules` 里那条同名的**顶了上来**。而那三件事**都是原生的错**，
+   * 不是「原生不在」：用户按「原生优先」的规则写的 `.magic/rules/x.md`，写坏了一个字，
+   * 结果**另一套规则悄悄接管**——这正是「兼容方不得改变 Magic 的生效范围与优先级」要拦的。
+   *
+   * 占位的**依据是文件在不在**（`scanRulesDir` 只收 walk 出来的真文件，故候选在＝文件在）。
+   */
+  const nativeKeys = new Set<string>()
+  for (const candidate of candidates) {
+    if (candidate.kind !== 'magic-rules' || candidate.ruleKey === null) continue
+    nativeKeys.add(`${candidate.root ?? ''} ${candidate.ruleKey}`)
+  }
 
   for (const candidate of candidates) {
     if (loaded.length >= limits.maxDocuments) {
       problems.push({
         path: candidate.file,
+        kind: 'error',
         message: `规约份数已达上限 ${limits.maxDocuments}——从这一份起不再加载（这里报的正是没读进来的那些）`,
       })
+      truncated = true
       break
     }
 
     const real = tryRealpath(candidate.file)
     if (real === undefined) continue // 不存在 / 断链——多数目录没有 AGENTS.md，不是错
-    if (seen.has(real)) continue // 物理同源（软链接指同实体）：只看一次
-    seen.add(real)
 
     const key = candidate.ruleKey === null ? undefined : `${candidate.root ?? ''} ${candidate.ruleKey}`
+
+    // **兼容那份撞上原生占位**——不管原生那份最后读没读懂、能不能读、是不是同一个实体，
+    // 这个名字都不给兼容的。
+    // ⚠️ **这一关必须跑在物理去重之前**（2026-09-20 自验当场抓到）：兼容那份是**同一个实体**
+    // 的软链接时，按真路径去重会把它**悄悄吞掉**——一条话说没有，用户只看见「兼容那份没生效」
+    // 而不见理由。占位在前，那一条就有交代。
+    // 原生自己（`magic-rules`）走正常流程：读不懂就报它自己的错（对得住「原生错误明确诊断」）。
+    if (key !== undefined && candidate.kind === 'claude-rules' && nativeKeys.has(key)) {
+      const native = candidates.find(
+        (other) => other.kind === 'magic-rules' && `${other.root ?? ''} ${other.ruleKey ?? ''}` === key,
+      )
+      // **不静默**：用户得知道自己写的那一份没在管。但它**不是错误**（`choice`）——
+      // 「原生优先」是产品按设计做的取舍，为它每次开屏报一句就是噪音（见契约 `RulesProblem`）。
+      problems.push({
+        path: candidate.file,
+        kind: 'choice',
+        message:
+          `同根同名：这个名字已经归 Magic 的那一份（${native?.name ?? key}）——` +
+          `本条按「原生优先」不加载`,
+      })
+      continue
+    }
+
+    const identity = identityOf(real, candidate.root, candidate.scope)
+    if (seen.has(identity)) continue // 同一处进来两遍（软链接指同实体）：只看一次
+    seen.add(identity)
+
     const winner = key === undefined ? undefined : seenRule.get(key)
 
     if (key !== undefined && winner !== undefined) {
-      // **同根同相对规则名，Magic 优先**——排在后面的（`.claude/rules`）落选，
-      // 但**不静默**：用户得知道自己写的那一份没生效。
-      // 只报**胜出那一份的短名**（本条自己的路径在诊断行头上已经有了——重复三遍读不成行）
+      // 走到这儿的只可能是**同一本名册里**撞了名字（兼容那份刚被占位挡掉）
       problems.push({
         path: candidate.file,
-        message: `同根同名：已有 Magic 的那一份（${winner.name}）；本条按「原生优先」未加载，要它生效请改用别的相对名`,
+        kind: 'choice',
+        message:
+          `同根同名：这一份与 ${winner.name} 重复——按「原生优先」，本条不加载`,
       })
       continue
     }
@@ -533,7 +623,10 @@ function select(input: {
       // 外部符号链接——**不因它是个链接就自动可读**
       problems.push({
         path: candidate.file,
-        message: `指向工作区之外的符号链接（真身 ${real}）——未加载。要读它，请把真身写进配置的 rules.sources`,
+        kind: 'error',
+        message:
+          `指向工作区之外的符号链接（真身 ${real}）——未加载。要读它，` +
+          `请把这个真身写进配置的 rules.linkSources`,
       })
       continue
     }
@@ -543,6 +636,7 @@ function select(input: {
     if (size > limits.maxDocumentBytes) {
       problems.push({
         path: candidate.file,
+        kind: 'error',
         message: `超过单份上限 ${limits.maxDocumentBytes} 字节（实际 ${size}）——未加载`,
       })
       continue
@@ -550,8 +644,10 @@ function select(input: {
     if (bytes + size > limits.maxTotalBytes) {
       problems.push({
         path: candidate.file,
+        kind: 'error',
         message: `规约总量已达上限 ${limits.maxTotalBytes} 字节——从这一份起不再加载`,
       })
+      truncated = true
       break
     }
 
@@ -559,32 +655,34 @@ function select(input: {
     try {
       text = readFileSync(real, 'utf8')
     } catch (error) {
-      problems.push({ path: candidate.file, message: `读不到：${reasonOf(error)}` })
+      problems.push({ path: candidate.file, kind: 'error', message: `读不到：${reasonOf(error)}` })
       continue
     }
 
     const parsed = parseDocument(text, candidate.kind)
     if (parsed.problem !== undefined) {
       // **读不懂的不生效，且说得出为什么**——不降级成「无条件」把范围悄悄放大
-      problems.push({ path: candidate.file, message: parsed.problem })
+      problems.push({ path: candidate.file, kind: 'error', message: parsed.problem })
       continue
     }
 
     bytes += size
     if (key !== undefined) seenRule.set(key, candidate)
-    loaded.push({
-      rule: {
-        kind: candidate.kind,
-        path: real,
-        root: candidate.root,
-        scope: candidate.scope,
-        name: candidate.name,
-        text: parsed.body,
-        version: versionOf(real, parsed.body, parsed.patterns),
-      },
-      conditions: parsed.patterns ?? [],
-      order: candidate.order,
-    })
+
+    const patterns = parsed.patterns ?? []
+    // 版本最后算：它要把**已经摆好的这一条**（连范围一起）摘要进去——见 `versionOf`
+    const rule: ProjectRule = {
+      kind: candidate.kind,
+      path: real,
+      root: candidate.root,
+      scope: candidate.scope,
+      paths: patterns,
+      name: candidate.name,
+      text: parsed.body,
+      version: '',
+    }
+
+    loaded.push({ rule: { ...rule, version: versionOf(rule) }, conditions: patterns, order: candidate.order })
   }
 
   // **条件规则在目标相关时送达**——无路径的照进（会话开局那几条），带 `paths` 的只在
@@ -593,7 +691,11 @@ function select(input: {
     (entry) => entry.conditions.length === 0 || places.some((place) => applies(entry, place)),
   )
 
-  return { documents: applicable.sort(compareLoaded).map((entry) => entry.rule), problems }
+  return {
+    documents: applicable.sort(compareLoaded).map((entry) => entry.rule),
+    problems,
+    truncated,
+  }
 }
 
 /**
@@ -648,65 +750,68 @@ type ParsedDocument = {
  * **格式的一部分**。目录规约（`AGENTS.md` / `CLAUDE.md`）**整篇照收**——那是人写的约定
  * 文档，不是配置文件；顺手解析它的头部只会把「顶上一段 YAML 风格的说明」吃掉。
  *
- * **不认识的键一律拒**（同权限域 `parseRules` 的姿态）：`path:` 少写一个 `s` 就静默变成
- * 「无条件」——那正是「无效模式不得扩大为全匹配」要拦的那一类。
+ * **YAML 交给 `Bun.YAML.parse`**（2026-09-20 裁）：本文件原先自带一套手写的词法
+ * （逐行剥注释、认列表项、去掉成对引号）。它错在两个方向——**该松的地方太紧**
+ * （`paths: ["src/**", "lib/**"]` 这种合法的 inline 列表被拒），**该紧的地方太松**
+ * （`- "src/**` 少一个引号照样收下，模式于是带着半截引号去匹配，一声不响地什么都不命中）。
+ * 自己写词法就要自己写对 YAML 的全部边角，那不是这个单元该背的活；Bun 自带解析器，
+ * 实测可用（Bun 1.4.2），故**删掉手写那份，用它**。留在这里的是**产品自己的规矩**。
+ *
+ * **本文件仍然只认一个键 `paths`，仍然拒一切不认识的键**（同权限域 `parseRules` 的姿态）：
+ * `path:` 少写一个 `s` 就静默变成「无条件」——那正是「无效模式不得扩大为全匹配」要拦的。
+ * 模式本身照旧走 `expandPatterns`（**窄 glob 语义与有界展开都是产品定的**，不交给 YAML）。
  */
 function parseDocument(text: string, kind: ProjectRule['kind']): ParsedDocument {
   if (kind === 'agents' || kind === 'claude-md') return { body: text, patterns: undefined, problem: undefined }
 
   const front = splitFrontMatter(text)
-  if (front === undefined) return { body: text, patterns: undefined, problem: undefined }
+  if (front.problem !== undefined) return fail(front.problem)
+  if (front.value === undefined) return { body: text, patterns: undefined, problem: undefined }
 
-  const items: Record<string, string[]> = {}
-  let current: string | null = null
-
-  for (const raw of front.lines) {
-    const line = stripComment(raw).trimEnd()
-    if (line.trim() === '') continue
-
-    const indented = line !== line.trimStart()
-    const trimmed = line.trim()
-
-    if (indented) {
-      if (current === null) {
-        return fail(`front-matter 里有不属于任何键的缩进行：${trimmed}`)
-      }
-      const item = /^-\s*(.*)$/.exec(trimmed)
-      if (item === null) {
-        return fail(`front-matter 里不认得的写法：${trimmed}（列表项写成 \`- 模式\`）`)
-      }
-      ;(items[current] ??= []).push(unquote(item[1] ?? ''))
-      continue
-    }
-
-    const pair = /^([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(trimmed)
-    if (pair === null) return fail(`front-matter 里不认得的写法：${trimmed}`)
-
-    const key = pair[1] as string
-    const rest = stripComment(pair[2] ?? '').trim()
-    if (rest !== '') {
-      return fail(`front-matter 的 \`${key}\` 只认列表写法（下面一行一条 \`- 模式\`）——收到的是「${rest}」`)
-    }
-    if (items[key] !== undefined) return fail(`front-matter 里 \`${key}\` 写了不止一次`)
-
-    items[key] = []
-    current = key
+  let value: unknown
+  try {
+    value = Bun.YAML.parse(front.value)
+  } catch (error) {
+    // 未闭合的引号 / 括号都走这一支（实测 `Bun.YAML.parse` 当场抛）——「明确报错」的落点
+    return fail(`front-matter 读不懂（YAML）：${reasonOf(error)}`)
   }
 
-  const strange = Object.keys(items).filter((key) => key !== 'paths')
+  // 空 front-matter（只有两条 `---`）＝什么都没声明＝无条件
+  if (value === null || value === undefined) return { body: front.body, patterns: undefined, problem: undefined }
+
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return fail(
+      `front-matter 得是一组「键: 值」，读到的是${Array.isArray(value) ? '一个列表' : `「${String(value)}」`}` +
+        `——本文件只认 \`paths\``,
+    )
+  }
+
+  const fields = value as Record<string, unknown>
+  const strange = Object.keys(fields).filter((key) => key !== 'paths')
   if (strange.length > 0) {
     // 说清「为什么拒」而不是「为什么宽」：放它过去，这条规则会悄悄变成「到处都生效」
     return fail(`front-matter 里有不认识的键「${strange.join(' / ')}」——只认 \`paths\`（写错的键名不会被猜中）`)
   }
 
-  const declared = items['paths']
+  const declared = fields['paths']
   if (declared === undefined) return { body: front.body, patterns: undefined, problem: undefined }
-  if (declared.length === 0) {
+  // `paths:` 后面什么都没写时 YAML 给的是 `null`——它与 `paths: []` 是同一件事（空列表），
+  // 不是「写了个别的东西」。两者都照「要么整条不写、要么给至少一条」那条说。
+  if (declared === null || (Array.isArray(declared) && declared.length === 0)) {
     return fail('`paths:` 给了空列表——要么整条不写（＝无条件生效），要么给至少一条模式')
   }
-
+  if (!Array.isArray(declared)) {
+    return fail(
+      '`paths:` 只认列表写法——上面一行 `paths:`，下面一行一条 `- 模式`；' +
+        '一行写完用 `["模式", "模式"]` 也行。收到的是一个单独的值',
+    )
+  }
   const patterns: string[] = []
   for (const entry of declared) {
+    if (typeof entry !== 'string') {
+      // YAML 把 `- 12` 读成数字、`- true` 读成布尔——那些不是路径，逐项说出来
+      return fail(`paths 里的这一项不是路径（${JSON.stringify(entry)}）——每一项都得是字符串`)
+    }
     const expanded = expandPatterns(entry)
     if (!expanded.ok) return fail(`paths 里的模式不成立：${expanded.reason}`)
     patterns.push(...expanded.patterns)
@@ -722,54 +827,38 @@ function fail(problem: string): ParsedDocument {
 /**
  * 取出 front-matter —— **只在第一行正好是 `---` 时**认。
  *
- * 没有闭合的 `---` **不算** front-matter（那是正文里的一条分隔线）：宁可按正文整篇收下，
- * 也不要因为一份文档的排版习惯把它切成两半。
+ * **没闭合的那一条报错**（2026-09-20 裁，改了旧口径）：头一行写了 `---`、往下再也找不到
+ * 收尾那条 `---` 时，旧做法是「当它不存在、整篇按正文收下」——那是一次**静默降级**：
+ * 用户以为写了个 front-matter，实际那份文档的 `paths` 一个字都没生效（而正文里那段
+ * `paths:` 会作为正文被送去模型）。现在**明说**：要么补上收尾那条，要么把开头那条删掉。
+ *
+ * ⚠️ 目录规约（`AGENTS.md` / `CLAUDE.md`）走不到这儿——它们**整篇照收**（见 `parseDocument`），
+ * 所以「文档顶上一条横线」那种排版习惯不受这条影响。
  */
-function splitFrontMatter(
-  text: string,
-): { readonly lines: readonly string[]; readonly body: string } | undefined {
+function splitFrontMatter(text: string): {
+  readonly value: string | undefined
+  readonly body: string
+  readonly problem: string | undefined
+} {
   const lines = text.split('\n')
-  if ((lines[0] ?? '').trim() !== '---') return undefined
+  if ((lines[0] ?? '').trim() !== '---') return { value: undefined, body: text, problem: undefined }
 
   for (let index = 1; index < lines.length; index += 1) {
     if ((lines[index] ?? '').trim() !== '---') continue
-    return { lines: lines.slice(1, index), body: lines.slice(index + 1).join('\n').replace(/^\n+/, '') }
-  }
-
-  return undefined
-}
-
-/** 行内注释：`#` 且前面是空白（在引号里的 `#` 是内容）。 */
-function stripComment(line: string): string {
-  let quote: string | null = null
-
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index] as string
-    if (quote !== null) {
-      if (char === quote) quote = null
-      continue
-    }
-    if (char === '"' || char === "'") {
-      quote = char
-      continue
-    }
-    if (char === '#' && (index === 0 || /\s/.test(line[index - 1] as string))) {
-      return line.slice(0, index)
+    return {
+      value: lines.slice(1, index).join('\n'),
+      body: lines.slice(index + 1).join('\n').replace(/^\n+/, ''),
+      problem: undefined,
     }
   }
 
-  return line
+  return {
+    value: undefined,
+    body: '',
+    problem: 'front-matter 没闭合——头一行是 `---`，往下再没有第二条 `---`（补上收尾那条，或把开头这条删掉）',
+  }
 }
 
-/** 去掉两侧成对的引号——YAML 里给字符串加引号是为了保住首尾空白或 `#`，这里只还原它。 */
-function unquote(value: string): string {
-  const trimmed = value.trim()
-  const first = trimmed[0]
-
-  return (first === '"' || first === "'") && trimmed.length >= 2 && trimmed.endsWith(first)
-    ? trimmed.slice(1, -1)
-    : trimmed
-}
 
 // ══ 落点与白名单 ══════════════════════════════════════════════════════
 
@@ -877,12 +966,18 @@ function relativeTo(base: string, file: string): string {
  * - **生效模式**——模式变了，适用面就变了，故也算一版；
  * - **正文**——改一个字就是新的一版。
  */
-function versionOf(path: string, body: string, patterns: readonly string[] | undefined): string {
-  // 三段之间的分隔符是 **NUL**，且**写成转义**而不是往源码里塞裸的控制字节：
+function versionOf(rule: ProjectRule): string {
+  // 四段之间的分隔符是 **NUL**，且**写成转义**而不是往源码里塞裸的控制字节：
   // 裸的读不出、diff 不了，还会让 grep 把整份文件当二进制而**一声不响地什么都不输出**
   // （本单元真栽过：两个 0x00 就藏在这一行里，`tsc` 照收、用例照绿）。
-  // 用 NUL 而不是空格，是防「不同的三段拼出同一个串」——`path` 与模式里都可能有空格。
-  const material = `${path}\u0000${(patterns ?? []).join(' ')}\u0000${body}`
+  // 用 NUL 而不是空格，是防「不同的段拼出同一个串」——`path` 与模式里都可能有空格。
+  const material = [
+    rule.path,
+    rule.root ?? '',
+    rule.scope ?? '',
+    rule.paths.join(' '),
+    rule.text,
+  ].join('\u0000')
   let hash = 0x811c9dc5
 
   for (let index = 0; index < material.length; index += 1) {

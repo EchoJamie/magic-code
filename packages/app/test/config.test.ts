@@ -389,4 +389,19 @@ describe('项目规约的补充来源（阶段 3 加键 · U32）', () => {
       loadFrom(validConfig({ rules: { sources: ['/definitely/not/here'] } })).config.rules?.sources,
     ).toEqual(['/definitely/not/here'])
   })
+
+  test('**linkSources 同一个形制、同一个展开器**——两处名册各带各的（2026-09-20 裁）', () => {
+    const loaded = loadFrom(
+      validConfig({ rules: { sources: ['/load-me'], linkSources: ['~/shared-link'] } }),
+    )
+
+    expect(loaded.config.rules?.sources).toEqual(['/load-me'])
+    expect(loaded.config.rules?.linkSources).toEqual([join(HOME, 'shared-link')])
+
+    // 只给一处时另一处**不给这一位**（不是空数组——同上面「键缺省」那条口径）
+    expect(loadFrom(validConfig({ rules: { linkSources: ['/x'] } })).config.rules?.sources)
+      .toBeUndefined()
+    expect(() => loadFrom(validConfig({ rules: { linkSources: '/x' } })))
+      .toThrow(/rules\.linkSources/)
+  })
 })

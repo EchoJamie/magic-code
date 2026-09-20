@@ -294,6 +294,22 @@ export type ShellStatus = {
 
 // ══ 一屏 ═════════════════════════════════════════════════════════════
 
+/**
+ * **窗长表**（U30）——给外壳的那张，装配递进来（`Assembly.windowTable`）。
+ *
+ * ⚠️ **形态与 `@magic/model` 的 `WindowTable` 逐字相同**（两份声明）：外壳只依赖
+ * `@magic/contracts`（域不认知外壳、外壳也不认知域），认不得模型域那个类型——故形态在
+ * 这儿照写一份，靠**结构类型**在两处赋值点（`tuiOptions` 返回、`runTui` 转发）卡住：
+ * 形状一散，那两处当场编译不过。
+ *
+ * - `builtin`——**准确的模型 id** → 窗长（模型的客观属性，与条目无关）；
+ * - `declared`——条目 id → `{ 它声明的模型, 那个数 }`：**只属于配置它的条目及对应模型**。
+ */
+export type WindowTable = {
+  readonly builtin: Readonly<Record<string, number>>
+  readonly declared: Readonly<Record<string, { readonly model: string; readonly window: number }>>
+}
+
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
   /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
@@ -333,6 +349,17 @@ export type ShellView = {
    * ⚠️ 与 `catalog` 分开：那个是**会话**目录（`SessionSummary`）——同名不同物，别合。
    */
   readonly models: readonly ModelCatalogRow[]
+  /**
+   * **窗长表**（U30）——换模型之后 ④ 的分母的取材（形态见 `WindowTable`）。
+   *
+   * 由装配给（`Assembly.windowTable`），**在壳外不动**：`model.switched` /
+   * `model.call.start` 一到，就按**那一刻的选中**（条目 ＋ 模型两件）查——
+   * 查得到就换分母，查不到＝`null`（**不沿用前一个模型的容量**）。
+   *
+   * `null` ＝**没有这张表**（调用方没给）：那时**一个数都不改**——分母照旧只认
+   * 开机那一格与 `model.catalog` 的答复（见 `withModelWindow`）。
+   */
+  readonly windowTable: WindowTable | null
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
@@ -369,6 +396,7 @@ export function createView(): ShellView {
     sessionId: null,
     catalog: [],
     models: [],
+    windowTable: null,
     grants: null,
     turnTools: 0,
     echoes: 0,
@@ -423,7 +451,9 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return view
 
     case 'model.call.start':
-      return patchStatus(view, { model: event.data.model })
+      // 「这次**真用了**谁」——分母与它同刻对齐（U30：查表；真跑用的那个模型名才是准的，
+      // 空手打开时就 `/model` 换过的那种也由此走上正轨——那时内核不发 `model.switched`）
+      return withModelWindow(view, { provider: event.data.provider, model: event.data.model })
     case 'model.usage':
       return patchStatus(view, { usage: event.data.inputTokens })
     case 'model.call.end':
@@ -436,9 +466,14 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       })
 
     case 'model.switched':
-      // 一次性的事**进记录区当回执**（状态行只放「此刻」）；成了顺手更新 ③
+      // 一次性的事**进记录区当回执**（状态行只放「此刻」）；成了顺手更新 ③ **和 ④ 的分母**
+      // （U30：换过去那一刻分母就得跟着走——新模型多长查表；查不到＝`null`，
+      // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动，
+      // 读数与选中一样保持现状——那正是「切不动」该有的样子）。
       return appendReceipt(
-        patchStatus(view, event.data.ok && event.data.model !== undefined ? { model: event.data.model } : {}),
+        event.data.ok && event.data.model !== undefined
+          ? withModelWindow(view, { provider: event.data.provider, model: event.data.model })
+          : view,
         event.data.ok
           ? `已换模型 → ${event.data.model ?? '？'}`
           : `换模型未成：${event.data.reason ?? '未说缘由'}`,
@@ -451,7 +486,7 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return {
         ...view,
         models: event.data.entries,
-        status: { ...view.status, window: windowOfCatalog(event.data) },
+        status: { ...view.status, window: windowOfCatalog(view, event.data) },
       }
 
     // 授权名录（读侧答复 · U22）——**收进视图**：抽屉据它铺行，那一行度量据它算；
@@ -717,13 +752,30 @@ function bannerRow(): LogRow {
  * 记录区 → **带上字标**的形态：字标**恒在最前、且恒只一行**。
  *
  * 为什么要有这一处收口：`settled` 只在**追加**的两处（`settle` / `appendSettled`）天然保得住
- * 最前面那一行，而**整个换掉** `settled` 的地方有三处——外壳开局、重建（`rebuild`）、
- * 换会话（`reduceSessionState`）。三处各经一次本函数，就不必靠「记得别把它弄丢」。
+ * 最前面那一行，而**整块换掉** `settled` 的两处——外壳开局（`withBanner`）、
+ * 换会话（`reduceSessionState`）——各经一次本函数，就不必靠「记得别把它弄丢」。
+ *
+ * ⚠️ **本函数＝「开一页」**：它**种一条新的字标**，而字标那一行的**对象身份就是页的身份**
+ * （渲染层据此认换页，见 `components/app.ts` 的 `pageOf`）。故**「填一页」的地方不归它管**——
+ * 历史回来铺内容走 `pageHeaderOf`（`rebuild` 用），拿的是**这一页已有的那一条**，
+ * 对象不变＝不换页。两处都开新页，屏上就多出字标（U29 验收：甲→乙一次切换印 4 份）。
  *
  * 幂等：先把已有的字标滤掉再放一个，故重复调用不会攒出两行。
  */
 function bannerFirst(rows: readonly LogRow[]): readonly LogRow[] {
   return [bannerRow(), ...rows.filter((row) => row.kind !== 'banner')]
+}
+
+/**
+ * 这一页的**页头**（字标那一行）——`settled[0]` 是它就**照用本尊**（**对象不变＝不换页**），
+ * 没有才种一条新的。
+ *
+ * 与 `bannerFirst` 的分工就是「填」与「开」：`rebuild`（历史回来铺内容）走这一条。
+ */
+function pageHeaderOf(view: ShellView): LogRow {
+  const first = view.settled[0]
+
+  return first !== undefined && first.kind === 'banner' ? first : bannerRow()
 }
 
 /**
@@ -762,26 +814,98 @@ export function appendOutput(view: ShellView, title: string, lines: readonly str
 }
 
 /**
- * ④ 的分母上屏的**唯一入口**（U20 · 差距 5 的位）——见 `ShellStatus.window`。
+ * ④ 的分母**开机那一格**的入口（U20 · 差距 5 的位）——见 `ShellStatus.window`。
  *
- * `D10` 的出口（内核侧给上下文窗总量）**合入后从这里接**：把数字递给它即可，
+ * `D10` 的出口（内核侧给上下文窗总量）一处是它：装配把**当下那一条的**数递给它即可，
  * 渲染那一半（`12.4k/200k` 的排版与窄窗降级）已经写好并有用例。
  * 拿不到就传 `null` ⇒ 屏上只报已用量——**不编一个总量**。
+ *
+ * ⚠️ **开机之后**的分母不走这儿（U30）：那时是**换模型**在改它，取材是那次选中
+ * ——见 `withWindowTable` 与 `withModelWindow`。
  */
 export function withContextWindow(view: ShellView, window: number | null): ShellView {
   return patchStatus(view, { window })
 }
 
 /**
+ * **窗长表**上屏的入口（U30）——装配给（`Assembly.windowTable`）。
+ *
+ * 表与那一格（`withContextWindow`）分工写清在 `ShellView.windowTable`：那一格是
+ * **开机那一刻**的读数，本表供**此后每一次切换**取材。传 `null` ＝没有这张表
+ * （旧路径原样：切换不动分母）。
+ */
+export function withWindowTable(view: ShellView, windowTable: WindowTable | null): ShellView {
+  return { ...view, windowTable }
+}
+
+/**
+ * 把 ③ 换成那次选中的模型，**并让 ④ 的分母跟着它走**（U30）——换模型 / 真跑用谁，
+ * 两处同一条规则。
+ *
+ * - **表在**：按**那次选中**（条目 ＋ 模型两件）查——见 `windowOfSelection`。
+ *   查不到＝`null`：**不知道就是不知道**，不沿用前一个模型的容量、不模糊匹配家族。
+ * - **表不在**（`null`，调用方没给）：**一个数都不改**——分母照旧只认开机那一格与
+ *   `model.catalog` 的答复（老路径）。
+ */
+function withModelWindow(
+  view: ShellView,
+  selection: { readonly provider?: string | undefined; readonly model: string },
+): ShellView {
+  const table = view.windowTable
+  if (table === null) return patchStatus(view, { model: selection.model })
+
+  return patchStatus(view, {
+    model: selection.model,
+    window: windowOfSelection(table, selection),
+  })
+}
+
+/**
+ * 一次选中的窗长——**与 `@magic/model` 的 `windowOfSelection` 同一条判定**
+ * （那边是正身，这边是包边界逼出来的镜像；形状与规则都由两侧用例钉着）：
+ *
+ * **声明（对得上条目与模型）→ 内置表（按准确模型 id）→ `null`**。
+ *
+ * ⚠️ 声明**不按模型名全局生效**：别的条目给同名模型声明过什么，与本次选中无关
+ * （合法的两个端点可以各有各的窗长）。
+ *
+ * ⚠️ 查表走 `ownOf`（只认自有键）——模型名 / 条目名都是用户给的字符串，
+ * `'toString'` 这类名字走普通索引会从 `Object.prototype` 上摸到东西（那边 `capacity.ts`
+ * 的 `ownOf` 注写了来龙去脉，本处是同一把尺子）。
+ */
+function windowOfSelection(
+  table: WindowTable,
+  selection: { readonly provider?: string | undefined; readonly model: string },
+): number | null {
+  const declared =
+    selection.provider === undefined ? undefined : ownOf(table.declared, selection.provider)
+  if (declared !== undefined && declared.model === selection.model) return declared.window
+
+  return ownOf(table.builtin, selection.model) ?? null
+}
+
+/** 只认**自有键**的查表——见上面那段注（与 `@magic/model` 的 `ownOf` 同一条）。 */
+function ownOf<T>(map: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined
+}
+
+/**
  * `model.catalog` 里**当前那条**的上下文窗总量——④ 的分母（`12.4k/200k`）。
  *
- * `null` 的两种来处都**如实**：该条目没声明 `contextWindow`（配置里是可选的）、
- * 或这次装配没有注册表。屏上回退成**只报已用量**——**不编一个总量**
+ * 表在手上就走 `withModelWindow` 那一条（按**那次选中**查）：条目表答复里的窗长是按
+ * **条目**给的（该条目的模型那一格），而选中未必就是它——同条目换到别的模型时，
+ * 那份声明不该跟过去（U30 的裁决）。**表不在**（调用方没给）才退回条目那一格，
+ * 与老路径逐字同义。
+ *
+ * `null` 的两种来处都**如实**：查不到（没声明、内置表也不认得）或这次装配没有注册表。
+ * 屏上回退成**只报已用量**——**不编一个总量**
  * （「拿不到的不编」是项目反复立的规矩：`D10` 那三条读数、状态行的「工作中」耗时都栽在这上面）。
  */
-function windowOfCatalog(data: EventDataOf['model.catalog']): number | null {
+function windowOfCatalog(view: ShellView, data: EventDataOf['model.catalog']): number | null {
   const current = data.current
   if (current === undefined) return null
+
+  if (view.windowTable !== null) return windowOfSelection(view.windowTable, current)
 
   return data.entries.find((entry) => entry.provider === current.provider)?.contextWindow ?? null
 }
@@ -795,13 +919,17 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 用**重建的会话内容**替换记录区（缺陷 D1）——只挑会话内容那一类，
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
  *
- * ⚠️ **字标是例外，它要回来**（`bannerFirst`）：这一跳把 `settled` 整个换掉，
- * 而字标是「记录区最前面那一块」——不保它，`--session` 接续那条路（开局 `boot` 跑完
- * 读一次历史 ⇒ 走到这儿）当场就没有字标了，而规格说的是**含接续那条路也印一次**。
- * 与 `startup` 那几句回执补一手同源、同因。
+ * ⚠️ **字标仍在最前面**，但**用的是这一页已有的那一条**（`pageHeaderOf`：对象不变）——
+ * 这一跳把 `settled` 整个换掉，字标是「记录区最前面那一块」，不保它 `--session` 接续那条路
+ * （开局 `boot` 跑完读一次历史 ⇒ 走到这儿）当场就没有字标了。
+ *
+ * ⚠️ **本函数不「开页」**（U29 验收改）：开页＝种新字标＝换页（见 `bannerFirst` 那段注），
+ * 而这一跳是「往**已经开着的那一页**里填历史」——换会话那一下 `reduceSessionState`
+ * 已经开过页了，这里再开一次，屏上就多一份字标（甲→乙一次切换实测 4 份：开局 1 ＋
+ * `rebuild` 两处各 1 ＋ 换会话 1）。**别把这一处改回 `bannerFirst`。**
  */
 export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
-  return { ...view, settled: bannerFirst(rebuildRows(entries)), rows: [] }
+  return { ...view, settled: [pageHeaderOf(view), ...rebuildRows(entries)], rows: [] }
 }
 
 /**

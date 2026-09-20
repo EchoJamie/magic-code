@@ -17,6 +17,7 @@
 import { render } from 'ink'
 import { createElement as h } from 'react'
 import { createShell } from './shell.ts'
+import type { WindowTable } from './shell.ts'
 import { TuiApp } from './components/app.ts'
 import type { ControlTransport } from '@magic/contracts'
 
@@ -39,6 +40,12 @@ export type RunTuiOptions = {
    * 另有一条来路：`/model` 跑过一次之后由 `model.catalog` 定（那一路要**换过模型**才对得上）。
    */
   readonly contextWindow?: number | null | undefined
+  /**
+   * **窗长表**（U30）——**换模型之后** ④ 的分母的取材（模型名 → 窗长；声明按条目装）。
+   * 装配把 `Assembly.windowTable` 递进来；不给 ＝ 没这张表（切换只换 ③、不动分母）。
+   * 见 `ShellOptions.windowTable`。
+   */
+  readonly windowTable?: WindowTable | undefined
   /**
    * **本进程的工作区**（U26）——`/session` 列表据它认「别的项目」（分组头 ＋ 压暗）。
    * 装配把执行域的 `roots()` 递进来；**不给＝不知道自己在哪儿**（一组都不压暗）。
@@ -72,6 +79,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   // ④ 的分母（装配给）——没给就是「拿不到」，屏上回退成只报已用量（见 `RunTuiOptions`）
   const shell = createShell(options.transport, {
     contextWindow: options.contextWindow ?? null,
+    windowTable: options.windowTable,
     workspaceRoots: options.workspaceRoots,
     receipts: options.receipts,
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——

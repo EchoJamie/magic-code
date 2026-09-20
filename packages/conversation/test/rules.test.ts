@@ -49,20 +49,31 @@ const WRITE_SPEC: ToolSpec = {
 }
 
 /** 一条规约文档——只填断言要看的字段。 */
-function doc(name: string, text: string, version = `v-${name}`, root: string | null = '/w'): ProjectRule {
+function doc(
+  name: string,
+  text: string,
+  version = `v-${name}`,
+  root: string | null = '/w',
+  paths: readonly string[] = [],
+): ProjectRule {
   return {
     kind: 'magic-rules',
     path: root === null ? name : `${root}/${name}`,
     root,
     scope: root,
+    paths,
     name,
     text,
     version,
   }
 }
 
-function load(documents: readonly ProjectRule[], problems: readonly RulesProblem[] = []): RulesLoad {
-  return { documents, problems }
+function load(
+  documents: readonly ProjectRule[],
+  problems: readonly RulesProblem[] = [],
+  truncated = false,
+): RulesLoad {
+  return { documents, problems, truncated }
 }
 
 /** 规约来源桩——本域只认端口；「从哪儿读出来这些」不是它的事。 */
@@ -149,32 +160,77 @@ describe('项目规约块 —— 摆在系统提示词末尾，没有可说的�
 
     expect(prompt.startsWith(base)).toBe(true)
     expect(prompt).toContain(PROJECT_RULES_HEADING)
-    expect(prompt).toContain('〔src/AGENTS.md〕')
+    expect(prompt).toContain('〔src/AGENTS.md')
     expect(prompt).toContain('先跑 bun run check')
     // 三句边界是材料的一部分（不是装饰）：用户此刻说的话优先、规约不授权
     expect(prompt).toContain('用户本次的明确交代优先于它们')
 
     const onlyProblems = renderProjectRulesBlock({
       documents: [],
-      problems: [{ path: '/w/.magic/rules/bad.md', message: '读不懂' }],
+      problems: [{ path: '/w/.magic/rules/bad.md', message: '读不懂', kind: 'error' }],
     })
     expect(onlyProblems?.body).toContain('没能加载的规约')
     expect(onlyProblems?.body).toContain('/w/.magic/rules/bad.md')
   })
 
-  test('**单根不报根**（每条都缀一串绝对路径是噪声）；多根才报', () => {
-    const one = renderProjectRulesBlock({
+  test('每条都带**所属根**（2026-09-20 裁：单根也报——材料要自足，范围不能靠猜）', () => {
+    const two = renderProjectRulesBlock({
       documents: [doc('AGENTS.md', '甲', 'v1', '/w/a'), doc('AGENTS.md', '乙', 'v2', '/w/b')],
       problems: [],
     })
-    expect(one?.body).toContain('〔AGENTS.md · 根 /w/a〕')
+    expect(two?.body).toContain('〔AGENTS.md（根 /w/a）〕')
+    expect(two?.body).toContain('〔AGENTS.md（根 /w/b）〕')
 
+    // 单根也报：模型据此把这条规约与它手上的工作目录对上，不必靠猜
     const single = renderProjectRulesBlock({
       documents: [doc('AGENTS.md', '甲', 'v1', '/w/a')],
       problems: [],
     })
-    expect(single?.body).toContain('〔AGENTS.md〕')
-    expect(single?.body).not.toContain('根 /w/a')
+    expect(single?.body).toContain('〔AGENTS.md（根 /w/a）〕')
+  })
+
+  test('**范围与条件随材料一起走**——不能剥完 YAML 只剩正文（2026-09-20 裁）', () => {
+    // 子目录那份：根之外还要报「管到哪儿」
+    const scoped = renderProjectRulesBlock({
+      documents: [
+        {
+          ...doc('src/AGENTS.md', 'src 里先跑 check', 'v1', '/w'),
+          scope: '/w/src',
+        },
+      ],
+      problems: [],
+    })
+    expect(scoped?.body).toContain('〔src/AGENTS.md（根 /w · 管 /w/src）〕')
+
+    // 条件规则：`paths` 必须露出来——否则它看上去与一条全局规则一模一样
+    const conditional = renderProjectRulesBlock({
+      documents: [doc('.magic/rules/frontend.md', '只用函数组件', 'v2', '/w', ['src/**'])],
+      problems: [],
+    })
+    expect(conditional?.body).toContain('只在 src/** 上适用')
+
+    // 无条件的那条**不写那句**（没条件的规则不编一个条件出来）
+    const unconditional = renderProjectRulesBlock({
+      documents: [doc('.magic/rules/style.md', '一律中文', 'v3', '/w')],
+      problems: [],
+    })
+    expect(unconditional?.body).not.toContain('适用')
+  })
+
+  test('取舍那类（choice）**不进模型材料**——它说给用户听，不是说给模型听', () => {
+    const block = renderProjectRulesBlock({
+      documents: [doc('AGENTS.md', '甲的约定', 'v1', '/w')],
+      problems: [
+        { path: '/w/.claude/rules/style.md', message: '同根同名：原生优先', kind: 'choice' },
+      ],
+    })
+    expect(block?.body).not.toContain('同根同名')
+
+    const withError = renderProjectRulesBlock({
+      documents: [],
+      problems: [{ path: '/w/.magic/rules/bad.md', message: '读不懂', kind: 'error' }],
+    })
+    expect(withError?.body).toContain('读不懂')
   })
 
   test('`splitSystemPrompt` 认得出这一块（少了它，规约会被算进环境块里）', () => {
@@ -286,7 +342,7 @@ describe('目标预查 —— 拦在副作用之前', () => {
     expect(held?.payload).toMatchObject({ ok: false })
   })
 
-  test('拦下的那一次**不铸 `tool.call` 事件**（凭空铸一个＝给恢复塞一笔假在途）', async () => {
+  test('拦下的那一次**也发一对 `tool.call` ＋ `tool.result`**——一对齐来齐走，不留幽灵工具', async () => {
     const answer = (targets: readonly string[]): RulesLoad =>
       targets.length === 0 ? load([]) : load([doc('src/AGENTS.md', 'src 的约定')])
 
@@ -299,9 +355,21 @@ describe('目标预查 —— 拦在副作用之前', () => {
 
     await run(runtime, '加一个文件')
 
-    // 事件流里**只有真执行过的那一次**——两次工具调用，一条 `tool.call`
-    expect(stage.sink.events.filter((event) => event.kind === 'tool.call')).toHaveLength(1)
-    expect(stage.sink.events.filter((event) => event.kind === 'tool.result')).toHaveLength(1)
+    // 两次工具调用 ⇒ **两对**事件（扣下那笔也发）。首轮的口径是「扣下的一个事件都不发」，
+    // 那在记录面站得住、**在界面面站不住**：真流式增量已经按 toolcall 通道建出一行工具，
+    // 它等的是 `tool.call` 来认领——不发就是屏上一个永远转圈的幽灵（工单 6）。
+    const calls = stage.sink.events.filter((event) => event.kind === 'tool.call')
+    const results = stage.sink.events.filter((event) => event.kind === 'tool.result')
+    expect(calls).toHaveLength(2)
+    expect(results).toHaveLength(2)
+
+    // **成对**——恢复的「在途识别」找的就是「有 call 无 result」那几笔，此处一笔都不该有
+    const paired = new Set(results.map((event) => (event.data as { call: number }).call))
+    expect(calls.every((event) => paired.has(event.id))).toBe(true)
+
+    // **不宣称副作用已执行**：扣下那笔的结果是 `ok: false`
+    const okFlags = results.map((event) => (event.data as { ok: boolean }).ok)
+    expect(okFlags).toEqual([false, true])
   })
 
   test('**相同版本不循环拦截**：送过之后再碰同一个目录，直接执行', async () => {
@@ -445,12 +513,12 @@ describe('预查不妨碍既有的控制流', () => {
     expect(kindsOf(stage)).toEqual(['user'])
   })
 
-  test('作用域**有上界**（先进先出）——长会话不会把碰过的每一个目录都攒着', () => {
-    /** 碰过 74 个不同的目标，然后问一次「现在的作用域里有哪些」。 */
-    const seen = new Set<string>()
+  test('**历史**作用域有上界（先进先出）——长会话不会把碰过的每一个目录都攒着', () => {
+    /** 每次 `load` 被问了哪些目标——分两拨记：预查那一趟与**下一次请求**那一趟。 */
+    let asked: readonly string[] = []
     const delivery = createRulesDelivery(
       stubRules((targets) => {
-        for (const target of targets) seen.add(target)
+        asked = targets
         return load([])
       }),
     )
@@ -463,12 +531,120 @@ describe('预查不妨碍既有的控制流', () => {
         args: { path: `d${index}/x.ts` },
       }),
     )
-    delivery.preflight(calls)
-    delivery.promptFor('')
 
-    expect(seen.size).toBe(MAX_SCOPE_TARGETS)
-    expect(seen.has('d0/x.ts')).toBe(false) // 最早那个已出队
-    expect(seen.has(`d${MAX_SCOPE_TARGETS + 9}/x.ts`)).toBe(true) // 最近这个在
+    // **预查查的是这一批的全部目标**（2026-09-20 裁：先查完整当前批，不先裁再查）——
+    // 首轮实测：同批 65 次写、第一个目标有规约，全部写成功且任何请求都没收到那份规约
+    delivery.preflight(calls)
+    expect(asked).toHaveLength(MAX_SCOPE_TARGETS + 10)
+
+    // 而**下一次请求**（历史那一截）照旧有界：最早的 10 个目标已经出队
+    delivery.promptFor('')
+    expect(asked).toHaveLength(MAX_SCOPE_TARGETS)
+    expect(asked).not.toContain('d0/x.ts') // 最早那个已出队
+    expect(asked).toContain(`d${MAX_SCOPE_TARGETS + 9}/x.ts`) // 最近这个在
+  })
+
+  test('**被拦批的目标被钉住**：下一次请求一定带上它们的规约（不先裁再送＝不转圈）', () => {
+    /** 只有 `src` 有规约——其余目标什么都读不出来。 */
+    const delivery = createRulesDelivery(
+      stubRules((targets) =>
+        targets.includes('src/a.ts')
+          ? load([doc('src/AGENTS.md', 'src 的约定', `v-src-${targets.length}`)])
+          : load([]),
+      ),
+    )
+
+    // 先让历史作用域被 64 个别的目标填满（`src` 不在其中）
+    delivery.promptFor('')
+    delivery.preflight(
+      Array.from({ length: MAX_SCOPE_TARGETS }, (_unused, index) => ({
+        id: `c${index}`,
+        name: 'write',
+        args: { path: `plain/f${index}.ts` },
+      })),
+    )
+
+    // 现在提一个 src 的目标：这一批必须被拦（它的规约还没送达）
+    const batch = [{ id: 'x', name: 'write', args: { path: 'src/a.ts' } }]
+    expect(delivery.preflight(batch)).toEqual({
+      kind: 'review',
+      blocking: [expect.objectContaining({ name: 'src/AGENTS.md' })],
+    })
+
+    // **下一次请求必须带上 src**——否则「拦了又裁、裁了又拦」是一个死循环，
+    // 而模型永远看不到那份规约（首轮实测：账上记着「送过」，于是直接放行）
+    const asked: string[][] = []
+    const probing = createRulesDelivery(
+      stubRules((targets) => {
+        asked.push([...targets])
+        return load([])
+      }),
+    )
+    probing.preflight(batch)
+    probing.promptFor('')
+    expect(asked.at(-1)).toContain('src/a.ts')
+
+    // 送达之后重提 ⇒ 放行（重审后只执行一次）
+    const after = createRulesDelivery(
+      stubRules((targets) =>
+        targets.includes('src/a.ts') ? load([doc('src/AGENTS.md', 'src 的约定')]) : load([]),
+      ),
+    )
+    after.promptFor('')
+    expect(after.preflight(batch).kind).toBe('review')
+    after.promptFor('') // 重审那一趟请求——规约真送出去了
+    expect(after.preflight(batch)).toEqual({ kind: 'pass' })
+  })
+
+  test('**送达＝最近一次请求里有它**：被挤出之后重访，照样拦（首轮是永久账，直接放行）', () => {
+    const withGuard = (targets: readonly string[]): RulesLoad =>
+      targets.includes('guard/f.ts') ? load([doc('guard/AGENTS.md', 'guard 的约定')]) : load([])
+    const delivery = createRulesDelivery(stubRules(withGuard))
+
+    delivery.promptFor('')
+    expect(delivery.preflight([{ id: 'a', name: 'write', args: { path: 'guard/f.ts' } }]).kind).toBe('review')
+    delivery.promptFor('') // 规约送达
+    expect(delivery.preflight([{ id: 'a', name: 'write', args: { path: 'guard/f.ts' } }])).toEqual({ kind: 'pass' })
+
+    // 64 个新目标把它挤出**历史**作用域 ⇒ 下一次请求里**没有它了**
+    delivery.preflight(
+      Array.from({ length: MAX_SCOPE_TARGETS }, (_unused, index) => ({
+        id: `p${index}`,
+        name: 'write',
+        args: { path: `plain/f${index}.ts` },
+      })),
+    )
+    expect(delivery.promptFor('')).not.toContain('guard 的约定')
+
+    // 于是回头再碰 guard：**必须再拦一次**——因为当下这次请求里确实没有那份规约
+    expect(delivery.preflight([{ id: 'b', name: 'write', args: { path: 'guard/f.ts' } }]).kind).toBe('review')
+  })
+
+  test('**材料超限**：这一批停住，回填**不谎称「已送入上下文」**且不让模型重提', async () => {
+    const answer = (targets: readonly string[]): RulesLoad =>
+      targets.includes('src/a.ts')
+        ? load([doc('src/AGENTS.md', 'src 的约定')], [], true) // truncated：回来那份不是全的
+        : load([])
+
+    const write = { name: 'write', args: { path: 'src/a.ts', content: 'x' } }
+    const { stage, runtime, written } = stageWith(answer, [
+      { toolCalls: [write] },
+      { text: '那算了' },
+    ])
+
+    await run(runtime, '写一个')
+
+    // **没执行**（不静默动手）……
+    expect(written).toEqual([])
+
+    // ……且回填说的是「超限」，**不说**「已送入上下文」
+    const held = stage.records.entries.filter(isHeld)
+    expect(held).toHaveLength(1)
+    const content = held[0]?.content
+    const said = content !== undefined && 'text' in content ? content.text : ''
+    expect(said).toContain('装不下')
+    expect(said).toContain('不要重提')
+    expect(said).not.toContain('已送入上下文')
   })
 
   test('**没有新规约时，行为与不接线一字不差**（无规约工作区的原行为）', async () => {

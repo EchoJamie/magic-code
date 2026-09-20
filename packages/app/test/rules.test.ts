@@ -12,8 +12,10 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createView, hasRunningTool, reduce } from '@magic/tui'
+import type { ShellView } from '@magic/tui'
 import { attachShell } from '../src/index.ts'
 import { lastModel, makeStage, type Stage } from './support.ts'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
@@ -38,6 +40,19 @@ function systemOf(stage: Stage, index: number): string {
 function replySaid(stage: Stage, index: number, fragment: string): boolean {
   const messages = lastModel(stage).requests[index]?.messages ?? []
   return messages.some((message) => message.role === 'tool' && message.output.includes(fragment))
+}
+
+/**
+ * **真执行了几次**——按 `tool.result` 的 `ok` 数（`tool.call` 已不是好判据了）。
+ *
+ * 由头（2026-09-20 裁）：被扣下的那一批**也发一对 `tool.call` ＋ `tool.result`**——
+ * 不发的话，真流式增量建出来的那行工具在屏上**永远转圈**（工单 6）。故「只执行一次」
+ * 这件事要看**结果**说了什么：真跑的 `ok: true`，扣下的 `ok: false`。
+ */
+function resultsOf(shell: { events: readonly { kind: string; data: unknown }[] }): readonly boolean[] {
+  return shell.events
+    .filter((event) => event.kind === 'tool.result')
+    .map((event) => (event.data as { ok: boolean }).ok)
 }
 
 /** 一次写文件的调用（同一个目标，两次提——中间被拦一次）。 */
@@ -76,9 +91,8 @@ describe('真装配 · 副作用之前送到', () => {
       expect(existsSync(target)).toBe(true)
       expect(readFileSync(target, 'utf8')).toBe('hello')
 
-      // —— 真「只执行一次」：整趟只有一条 tool.call 事件（写了两回就成了两条）——
-      const calls = shell.events.filter((event) => event.kind === 'tool.call')
-      expect(calls).toHaveLength(1)
+      // —— 真「只执行一次」：整趟只有**一次真的跑了**（扣下那次也在，但它是 ok:false）——
+      expect(resultsOf(shell)).toEqual([false, true])
 
       assembly.close()
     } finally {
@@ -110,7 +124,7 @@ describe('真装配 · 副作用之前送到', () => {
       const target = join(stage.workspace, 'src/a.ts')
       expect(existsSync(target)).toBe(true)
       expect(readFileSync(target, 'utf8')).toBe('hello')
-      expect(shell.events.filter((event) => event.kind === 'tool.call')).toHaveLength(1)
+      expect(resultsOf(shell)).toEqual([false, true])
 
       assembly.close()
     } finally {
@@ -165,6 +179,176 @@ describe('真装配 · 副作用之前送到', () => {
   })
 })
 
+describe('真装配 · 整批预查与送达判据（2026-09-20 验收退回的两条）', () => {
+  test('**同批 65 个目标**：第一个目标有规约 ⇒ 一次都没写、规则进了下一次请求、重审后整批才执行', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, 'guard/AGENTS.md', 'GUARD_BEFORE_WRITE')
+      mkdirSync(join(stage.workspace, 'plain'), { recursive: true })
+
+      // 65 个目标：第一个落在 guard 里（有规约），其余 64 个在别处。
+      // 首轮实测：预查先按 64 条 FIFO **裁掉目标再查** ⇒ guard 被裁出视野、65 次写全部成功，
+      // 而任何模型请求都没收到那份规约。
+      const calls = Array.from({ length: 65 }, (_unused, index) => ({
+        name: 'write',
+        args: {
+          path: index === 0 ? 'guard/first.txt' : `plain/f${index}.txt`,
+          content: 'WRITTEN',
+        },
+      }))
+
+      // —— ① 只提一趟：**一次都不执行**（判据是盘上的文件，不是内部账本）——
+      const only = stage.assemble({ turns: [{ toolCalls: calls }, { text: '好了' }] })
+      const first = attachShell(only.shell)
+      await first.submit('跑一下')
+
+      expect(existsSync(join(stage.workspace, 'guard/first.txt'))).toBe(false)
+      expect(existsSync(join(stage.workspace, 'plain/f64.txt'))).toBe(false)
+      expect(resultsOf(first)).toEqual(Array.from({ length: 65 }, () => false))
+      // 规约**真进了模型请求**（判据是请求里那一份，不是某个内部账本）
+      expect(systemOf(stage, 1)).toContain('GUARD_BEFORE_WRITE')
+      first.dispose()
+      only.close()
+
+      // —— ② 照新规约重提：**整批都执行，各一次** ——
+      const again = stage.assemble({ turns: [{ toolCalls: calls }, { toolCalls: calls }, { text: '好了' }] })
+      const second = attachShell(again.shell)
+      await second.submit('跑一下')
+
+      const results = resultsOf(second)
+      expect(results.filter((ok) => !ok)).toHaveLength(65) // 第一趟那 65 条全被扣下
+      expect(results.filter((ok) => ok)).toHaveLength(65) // 重提后那 65 条真跑（不再拦）
+      expect(existsSync(join(stage.workspace, 'guard/first.txt'))).toBe(true)
+      expect(readFileSync(join(stage.workspace, 'guard/first.txt'), 'utf8')).toBe('WRITTEN')
+
+      second.dispose()
+      again.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('**挤出之后重访**：当下请求里没有那份规约 ⇒ 照样拦，不许直接写（首轮永久账会放行）', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, 'guard/AGENTS.md', 'GUARD_BEFORE_WRITE')
+      mkdirSync(join(stage.workspace, 'plain'), { recursive: true })
+
+      const write = (path: string) => ({ name: 'write', args: { path, content: 'WRITTEN' } })
+      const many = Array.from({ length: 64 }, (_unused, index) => write(`plain/f${index}.txt`))
+
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [write('guard/first.txt')] }, // ① 拦下 → 送达
+          { toolCalls: [write('guard/first.txt')] }, // ② 重提 → 真写
+          { toolCalls: many }, // ③ 64 个新目标：把 guard 挤出历史作用域
+          { toolCalls: [write('guard/second.txt')] }, // ④ 重访 → 当下请求里没有 guard ⇒ 该再拦
+          { toolCalls: [write('guard/second.txt')] }, // ⑤ 重提 → 真写
+          { text: '好了' },
+        ],
+      })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('跑一下')
+
+      const systems = lastModel(stage).requests.map((_unused, index) => systemOf(stage, index))
+      expect(systems[0]).not.toContain('GUARD_BEFORE_WRITE') // 开局还没有
+      expect(systems[1]).toContain('GUARD_BEFORE_WRITE') // 拦下之后送到了
+      expect(systems[3]).not.toContain('GUARD_BEFORE_WRITE') // 那一趟里确实**没有**它
+      expect(systems[4]).toContain('GUARD_BEFORE_WRITE') // 重访拦下之后又送到了
+
+      // 那一趟没写（判据是**当时**的请求里没有它，而不是「历史上送过」）
+      const results = resultsOf(shell)
+      expect(results.filter((ok) => !ok)).toHaveLength(2) // ① 与 ④ 各扣下一次
+      expect(existsSync(join(stage.workspace, 'guard/second.txt'))).toBe(true)
+      expect(readFileSync(join(stage.workspace, 'guard/second.txt'), 'utf8')).toBe('WRITTEN')
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+describe('真装配 · 材料带着范围送到模型（2026-09-20 验收退回第 4 条）', () => {
+  test('每条都带根 / 范围 / 条件——模型不必靠文件名猜它管到哪儿', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, 'AGENTS.md', '根约定：一律中文')
+      put(stage.workspace, 'src/AGENTS.md', 'src 里先跑 bun run check')
+      put(stage.workspace, '.magic/rules/frontend.md', '---\npaths:\n  - "src/**"\n---\n前端只用函数组件')
+
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [{ name: 'write', args: { path: 'src/a.ts', content: 'x' } }] },
+          { toolCalls: [{ name: 'write', args: { path: 'src/a.ts', content: 'x' } }] },
+          { text: '好了' },
+        ],
+      })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('写一个')
+      shell.dispose()
+
+      const system = systemOf(stage, 1)
+
+      // 根一级那份：根报得出来
+      expect(system).toContain(`AGENTS.md（根 ${realpathSync(stage.workspace)}）`)
+      // 子目录那份：**管到哪儿**也报得出来（首轮只有抬头名，范围全丢）
+      expect(system).toContain(`src/AGENTS.md（根 ${realpathSync(stage.workspace)}`)
+      expect(system).toContain(join(realpathSync(stage.workspace), 'src'))
+      // 条件规则：`paths` 露在材料里——不然它看上去与一条全局规则一模一样
+      expect(system).toContain('只在 src/** 上适用')
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+describe('真装配 → 真外壳视图：扣下的那一次在屏上闭合（2026-09-20 验收退回第 6 条）', () => {
+  test('被扣的调用**不留幽灵工具**，那行写着「未执行」；真跑的那次照旧 ok', async () => {
+    const stage = makeStage()
+
+    try {
+      mkdirSync(join(stage.workspace, 'src'), { recursive: true })
+      put(stage.workspace, 'src/AGENTS.md', 'RULE_BEFORE_WRITE')
+
+      const call = { name: 'write', args: { path: 'src/a', content: 'ok' } }
+      const assembly = stage.assemble({ turns: [{ toolCalls: [call] }, { toolCalls: [call] }, { text: '好了' }] })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('写一个')
+
+      // 事件流**原样喂真归约器**（外壳那一套）——「屏上是什么样」看它
+      const view: ShellView = shell.events.reduce((acc, event) => reduce(acc, event), createView())
+      const tools = view.settled.filter((row) => row.kind === 'tool')
+
+      expect(tools).toHaveLength(2)
+      // **第一笔**：扣下的那次。首轮实测它停在 `running · call: null`——
+      // 真流式增量先按 toolcall 通道建了行，而扣下不发 `tool.call`，那一行没人来认领，
+      // 外头早已空闲、屏上还在转圈（`hasRunningTool` 恒真）
+      expect(tools[0]?.state).toBe('failed')
+      expect(tools[0]?.call).not.toBe(null)
+      expect(tools[0]?.output.join('\n')).toContain('未执行')
+      expect(tools[0]?.output.join('\n')).toContain('重新提出')
+
+      // **第二笔**：真跑了的那次
+      expect(tools[1]?.state).toBe('ok')
+
+      // 整体空闲：没有「还在跑」的行（幽灵工具会让这条假）
+      expect(hasRunningTool(view)).toBe(false)
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 describe('真装配 · 原生与兼容', () => {
   test('原生规则与 Claude 规则都进来；**同根同名原生优先**且落选的那份有交代', async () => {
     const stage = makeStage()
@@ -184,10 +368,12 @@ describe('真装配 · 原生与兼容', () => {
       expect(system).toContain('兼容的：另起一份，照收')
       expect(system).not.toContain('这句不该出现')
 
-      // 落选那份**不是静默**的：诊断里说得出为什么、出口在哪
-      expect(assembly.notices.join(' ')).toContain('项目规约里有 1 条没能加载')
+      // 落选那份**查得着**，但**不是错误、不在启动报警**（2026-09-20 裁）：
+      // 「原生优先」是产品按设计做的取舍，为它每次开屏报一句就是噪音
+      expect(assembly.notices.join(' ')).toBe('')
       const problems = assembly.readRules().problems
       expect(problems.map((problem) => problem.message).join(' ')).toContain('原生优先')
+      expect(problems.map((problem) => problem.kind)).toEqual(['choice'])
 
       assembly.close()
     } finally {

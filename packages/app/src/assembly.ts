@@ -69,8 +69,8 @@ import type {
 } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import { createProjectRules, createSandbox, createWorkspaceService } from '@magic/execution'
-import type { FetchLike, ModelRegistry, ModelSwitchResult } from '@magic/model'
-import { createModelRegistry } from '@magic/model'
+import type { FetchLike, ModelRegistry, ModelSwitchResult, WindowTable } from '@magic/model'
+import { createModelRegistry, windowOfSelection } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
@@ -229,14 +229,18 @@ export type Assembly = {
    */
   readonly notices: readonly string[]
   /**
-   * **当前条目**声明的上下文窗总量（`providers.<id>.contextWindow`）——状态行 ④ 的**分母**
-   * （缺陷 `D10` 第 1 样；U20 留的位，本轮接上）。
+   * **当前条目**的上下文窗总量——状态行 ④ 的**分母**（缺陷 `D10` 第 1 样；U20 留的位，
+   * U21 接上、U30 补来处）。
    *
-   * **没声明就是 `null`**——不是 0、也不是某个惯例值：`null` 让外壳**只报已用量**
+   * **来处两条**（判定在模型域 `resolveContextWindow`）：用户声明的
+   * `providers.<id>.contextWindow` 优先；没声明就查**内置容量表**（按条目的模型名，
+   * 官方出处见 `capacity.ts`）——已知模型不要求用户自己补客观容量（U30）。
+   *
+   * **两处都没有就是 `null`**——不是 0、也不是某个惯例值：`null` 让外壳**只报已用量**
    * （「拿不到的不编」是这条读数立起来时的判据）。注册表缺席（注入了替身网关）同此。
    *
-   * 与 `/model` 那条来路（`model.catalog`）同源同判据——两处都由**条目自己声明的**那个数
-   * 说了算，不会分叉。
+   * 与 `/model` 那条来路（`model.catalog`）同源同判据——两处都出自**注册表条目**那一个数，
+   * 不会分叉。
    */
   readonly contextWindow: number | null
   /**
@@ -247,6 +251,20 @@ export type Assembly = {
    * 「现在这会儿是什么样」。参数与 `ProjectRules.load` 同形——给目标就按目标算。
    */
   readonly readRules: (targets?: readonly string[]) => RulesLoad
+  /**
+   * **窗长表**（U30）——内置容量表 ＋ 各条目**自己声明**的覆盖位，**分开装**：
+   * 内置表按**准确模型 id** 算（与条目无关），声明**只属于配置它的条目及对应模型**
+   * （消费按 `provider ＋ model` 一起看——见 `windowOfSelection`）。
+   *
+   * 为什么要整张表进外壳：换模型是**运行时**的事（`/model` 一按就换），那一刻外壳得
+   * **当场**知道新模型多长——而它够不着注册表。表递过去，`model.switched` 一到就查得出；
+   * 查不到＝不知道（分母 `null`），**不沿用前一个模型的容量**。
+   *
+   * 注册表缺席 ⇒ **空表**（＝什么都不知道）：与上面 `contextWindow` 的 `null` 同一条口径
+   * ——不编。（两者不并成一个位：`contextWindow` 是**开机那一刻**的读数，本表是**之后**
+   * 每一次切换的取材——外壳开机时手里还没有模型名，查不了表。）
+   */
+  readonly windowTable: WindowTable
   /**
    * 工作区**注册根列表**（阶段 3 多根）——执行域构造时逐条取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
@@ -358,7 +376,8 @@ export function assemble(options: AssembleOptions): Assembly {
 
   /**
    * **项目规约的来源面**（U32）——归执行域落地（**文件读取在执行 / 基础设施边界**），
-   * 装配这一步只做**选择**：哪几条根 ＋ 用户显式点名的那几个补充来源。
+   * 装配这一步只做**选择**：哪几条根 ＋ 用户显式点名的两处（**读进来**的补充规约
+   * 与**只放行链接**的那份名册）。
    *
    * 它在装配期就造好（无状态、构造不碰 I/O），随后**注入每一条会话实例**——
    * 「什么时候送、送哪些」归对话域（它才知道这一轮在动哪儿）。
@@ -366,6 +385,8 @@ export function assemble(options: AssembleOptions): Assembly {
   const projectRules = createProjectRules({
     workspace,
     sources: loaded.config.rules?.sources ?? [],
+    // 两张名册两件事（契约 `RulesConfig`）：`sources` 读进来，`linkSources` 只放行链接
+    linkSources: loaded.config.rules?.linkSources ?? [],
   })
 
   // ── 授权（U22）：`a` 的落点是**工作区**，存 `~/.magic/grants.json` ──────────────
@@ -510,6 +531,15 @@ export function assemble(options: AssembleOptions): Assembly {
       fetch: options.modelFetch,
     })
   }
+
+  /**
+   * **窗长表**（U30）——内置表 ＋ 各条目自己声明的覆盖位；**注册表缺席＝空表**
+   * （＝什么都不知道，与 `Assembly.contextWindow` 的 `null` 同一条口径）。
+   *
+   * 这是一份**值**（配置定的，不随切换漂）——开机那一格与外壳此后每次切换的取材
+   * 都读它，判定统一走 `windowOfSelection`（一处口径，不会分叉）。
+   */
+  const windowTable: WindowTable = models?.windowTable() ?? { builtin: {}, declared: {} }
 
   /** 一次「开一条会话」的产物——切换时整束换掉（单活跃：同时只留一束）。 */
   type Chain = {
@@ -721,17 +751,21 @@ export function assemble(options: AssembleOptions): Assembly {
    * `contextWindow` **有没有就带不带**——没声明就不给这一位（外壳拿不到就不显示，不编）。
    */
   /**
-   * 当前条目声明的上下文窗总量——④ 的开局分母（见 `Assembly.contextWindow`）。
+   * ④ 的开局分母——**一次选中**的窗长（见 `Assembly.contextWindow`）。
    *
-   * 取 `current()` 而不是 `defaultProviderId()`：`--provider` 是**开局就落地**的选中
-   * （见 `cli.ts` 那段注），故开屏那一刻要报的是**它**的窗，不是缺省条目的。
+   * 判定与取表全在模型域（`windowOfSelection`）：条目对上就用它声明的数，否则查内置表，
+   * 两处皆无＝`null`。本函数只做**取当下那一次选中**这件事。
+   *
+   * 取 `current()` 而不是 `defaultProviderId()`：`--provider` / `--model` 是**开局就落地**
+   * 的选中（见 `cli.ts` 那段注），故开屏那一刻要报的是**它**的窗，不是缺省条目的。
+   *
+   * ⚠️ 选中是**两件**（条目 ＋ 模型）——`--model` 换到同条目的另一个模型时，
+   * 那份**属于该条目自己模型的**声明不跟过去（查内置表；查不到就是 `null`）。
    */
   const contextWindowOf = (registry: ModelRegistry | undefined): number | null => {
     if (registry === undefined) return null
 
-    const chosen = registry.current()
-
-    return registry.list().find((entry) => entry.id === chosen.provider)?.contextWindow ?? null
+    return windowOfSelection(windowTable, registry.current())
   }
 
   /**
@@ -870,6 +904,8 @@ export function assemble(options: AssembleOptions): Assembly {
     get contextWindow(): number | null {
       return contextWindowOf(models)
     },
+    // 窗长表（U30）——注册表缺席＝空表（不知道有哪些模型的窗长，同 `contextWindow` 的 `null`）
+    windowTable,
     workspaceRoots: workspace.roots(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。
@@ -913,8 +949,12 @@ function noticesOf(
       `配置里有 ${rejectedRules.length} 条权限规则读不懂（未生效）——${configPath}（\`--check\` 看缘由）`,
     )
   }
-  if (rulesProblems.length > 0) {
-    said.push(`项目规约里有 ${rulesProblems.length} 条没能加载（\`--check\` 看缘由）`)
+  // **只数「坏了」那一类**（2026-09-20 裁）：取舍那类（原生顶掉同名的兼容规则、AGENTS
+  // 顶掉 CLAUDE）是**产品按设计做的选择**——为它每次开屏报一句就是噪音，而它**不是故障**。
+  // 用户要查「我写的那份为什么没在管」，`--check` 里逐条列着（口径同权限规则那句）。
+  const broken = rulesProblems.filter((problem) => problem.kind === 'error')
+  if (broken.length > 0) {
+    said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
   }
   if (grantsNote !== undefined) said.push(grantsNote)
 

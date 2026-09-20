@@ -275,6 +275,10 @@ function describeRules(assembly: Assembly): string {
  *
  * **没进来的那几条一律列出来**（读不懂 / 被略过都要说）：规约是**一堆人各自在加**的散文件，
  * 「我写的那份到底生效没有」是这一行最该答的问题——静默吞掉它就等于让人对着空气使劲。
+ *
+ * **两类分开摆**（2026-09-20 裁）：`error`（坏了，要改）挂 ⚠️ 与条数；`choice`（原生顶掉同名的
+ * 兼容规则、AGENTS 顶掉 CLAUDE）**不挂警报**——那是产品按设计做的选择，用户查得着就够了。
+ * 混在一起数，会让每条兼容规则都变成一次假警报（启动那句回执也读的是同一份数据）。
  */
 function describeProjectRules(assembly: Assembly): string {
   const load = assembly.readRules()
@@ -290,17 +294,28 @@ function describeProjectRules(assembly: Assembly): string {
       ? '无（放 AGENTS.md 或 .magic/rules/*.md 就来——根一级的这几份开局就会送到模型）'
       : `${load.documents.length} 份（目录规约 ${roots} · 原生规则 ${native} · 兼容规则 ${compat} · 补充来源 ${extra}）`
 
-  if (load.problems.length === 0) return head
+  const broken = load.problems.filter((problem) => problem.kind === 'error')
+  const chosen = load.problems.filter((problem) => problem.kind === 'choice')
+  const lines = [head]
 
   // **一条占两行**（路径一行、缘由一行），且**一条都不摞在一行里**：
   // 缘由里带着绝对路径与整句说明，摞起来一条就有一百四十来列——八十列的终端会从中间
   // 折断，而这一屏正是用户拿来对着改的地方，读不成行就等于没写。
   // 缩进照「数据落点」那一处的先例；缘由再往里让两格，让「说的是哪个文件」一眼分得开。
-  const reasons = load.problems
-    .map((problem) => `${CONTINUATION}· ${problem.path}\n${CONTINUATION}  ${problem.message}`)
-    .join('\n')
+  const stated = (problems: typeof load.problems): string =>
+    problems
+      .map((problem) => `${CONTINUATION}· ${problem.path}\n${CONTINUATION}  ${problem.message}`)
+      .join('\n')
 
-  return `${head}\n${CONTINUATION}⚠️ 有 ${load.problems.length} 条没进来：\n${reasons}`
+  if (broken.length > 0) {
+    lines.push(`${CONTINUATION}⚠️ 有 ${broken.length} 条没进来：`, stated(broken))
+  }
+  // 取舍那几条**照说、不报警**：想查「我写的那份为什么没在管」的人，看的就是这几行
+  if (chosen.length > 0) {
+    lines.push(`${CONTINUATION}另有 ${chosen.length} 条按规矩让位（原生优先 / 同目录两份取一）：`, stated(chosen))
+  }
+
+  return lines.join('\n')
 }
 
 /** 续行的缩进——与标签列对齐（照「数据落点」那一处的先例）。 */
@@ -336,13 +351,17 @@ function describeGrants(assembly: Assembly): string {
  *
  * 分母**从配置里读，不发命令**。⚠️ 别改成「开机发一次 `model.list`」：装配的 `listModels`
  * 会在没会话时 `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵。
- * 条目没声明 `contextWindow` ⇒ `null` ⇒ 屏上只报已用量——**不编**。
+ * 条目没声明、内置表也不认得 ⇒ `null` ⇒ 屏上只报已用量——**不编**。
  */
 export function tuiOptions(assembly: Assembly): RunTuiOptions {
   return {
     transport: assembly.shell,
     boot: () => assembly.boot(),
     contextWindow: assembly.contextWindow,
+    // 窗长表（U30）：换模型之后外壳据它**当场**查新模型多长（内置表 ＋ 各条目自己的声明）。
+    // 与上面那一格分工：那一格是**开机那一刻**的读数（外壳那时还不知道模型名，
+    // 查不了表）；本表供**之后每一次切换**取材。
+    windowTable: assembly.windowTable,
     // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
     // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
     workspaceRoots: assembly.workspaceRoots,
