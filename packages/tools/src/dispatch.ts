@@ -88,7 +88,19 @@ async function raceAbort<T>(
  * 集从这里进来，不替换默认集）。阶段 1 的默认集只有 `exec`；其余六件随工具集 v1（U13）到站。
  */
 export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
-  const registry: ToolRegistry = createRegistry([...defineToolsetV1(), ...(options.tools ?? [])])
+  /**
+   * 追加集的那一份——**数组＝构造期定死，函数＝每次现取**（见 `ToolRuntimeOptions.tools`）。
+   *
+   * 注册表因此**按次现造**：件数是个位到几十，造一张 Map 的代价远低于「工具表悄悄停在
+   * 装配那一刻」的代价。**注册即校验**照旧在（每一次造表都过那两道：无名即拒、重名即拒）。
+   */
+  const sourceOf = (): readonly ToolDefinition[] =>
+    typeof options.tools === 'function' ? options.tools() : options.tools ?? []
+  const registryOf = (): ToolRegistry => createRegistry([...defineToolsetV1(), ...sourceOf()])
+
+  // 构造期先校一遍：**坏表不该活到调用期**（内置集与构造那一刻的
+  // 追加集有问题，就在这里当场响，而不是等第一轮模型请求）
+  registryOf()
 
   /**
    * 闸门要的根视图——**纯数据**，由本域给出（契约：不传端口进端口）。
@@ -154,7 +166,8 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
   }
 
   return {
-    definitions: () => registry.definitions,
+    // **现取**（见 `registryOf`）——工具表随连接实况走，不停在装配那一刻
+    definitions: () => registryOf().definitions,
 
     async invoke(call: ToolCall, opts: ToolInvokeOptions): Promise<ToolResult> {
       // ① 请求——链引用的来处（信封归产出方铸：派生的 id 当场就要用）
@@ -168,6 +181,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         opts.onOutput?.(delta)
       }
 
+      const registry = registryOf()
       const outcome = await settle(call, registry.get(call.name), callRef, opts, onOutput)
 
       // ④ 回填——终值定形（大块转存经记录域），先落事件、再交调用方

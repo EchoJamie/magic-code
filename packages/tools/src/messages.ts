@@ -113,6 +113,15 @@ export const listFailedOutput = (reason: string): string => `列目录失败：$
 export const externalFailedOutput = (reason: string): string =>
   `未收到结果，远端可能已执行；核对后再决定是否重试（${reason}）`
 
+/**
+ * **这一次压根没发出去**（连接未建立 / 已释放 / 已断开）。
+ *
+ * 与上面那条分得很开：那条是**效果未知**（要人核对），这条**什么都没发生**——
+ * 不许把「没发出去」也说成「远端可能已执行」（吓人，且教模型做无谓的核对）。
+ */
+export const externalNotSentOutput = (reason: string): string =>
+  `未发出——服务器未连接（${reason}）；本次调用没有送出去，远端不会执行`
+
 /** 取消（`Ctrl+C` 打断在途）——已停止等待 ＋ 已发取消请求，仅此两件事实。 */
 export const externalCanceledOutput = (reason: string): string =>
   `已取消——已停止等待并发出取消请求（取消不等于远端撤销，未收到结果${reason === '' ? '' : `；${reason}`}）`

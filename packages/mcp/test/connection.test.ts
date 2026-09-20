@@ -33,7 +33,14 @@ afterEach(() => {
 /** 拉一条连接（起手那一趟跑完再交出来）——夹具的缺省形。 */
 async function connect(
   overrides: Partial<McpServerConfig> = {},
-  options: { readonly server?: string; readonly dir?: string; readonly callTimeoutMs?: number; readonly connectTimeoutMs?: number } = {},
+  options: {
+    readonly server?: string
+    readonly dir?: string
+    readonly callTimeoutMs?: number
+    readonly connectTimeoutMs?: number
+    /** 夹具的哪一幕（见 `support/fake-server.ts` 头注）。 */
+    readonly mode?: string
+  } = {},
 ): Promise<{ readonly connection: McpConnection; readonly log: string }> {
   const dir = options.dir ?? tempDir()
   const log = join(dir, 'calls.jsonl')
@@ -43,7 +50,11 @@ async function connect(
     config: {
       command: process.execPath, // 就是 bun 自己——夹具不必依赖 PATH 上有什么
       args: [SERVER],
-      env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: options.server ?? 'fake' },
+      env: {
+        FAKE_MCP_LOG: log,
+        FAKE_MCP_NAME: options.server ?? 'fake',
+        ...(options.mode === undefined ? {} : { FAKE_MCP_MODE: options.mode }),
+      },
       ...overrides,
     },
     ...(options.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
@@ -61,6 +72,17 @@ function callsOf(log: string): readonly { tool: string; pid: number }[] {
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line) as { tool: string; pid: number })
+}
+
+/** 服务器记下的**它自己拉起的那个后代**（`descendants` 那一幕的 pid）。 */
+function descendantPidOf(log: string): number | undefined {
+  if (!existsSync(log)) return undefined
+  for (const line of readFileSync(log, 'utf8').split('\n')) {
+    if (line.trim() === '') continue
+    const entry = JSON.parse(line) as { kind?: string; pid?: number }
+    if (entry.kind === 'child') return entry.pid
+  }
+  return undefined
 }
 
 describe('发现', () => {
@@ -193,9 +215,11 @@ describe('起手与释放', () => {
     expect(reason).not.toContain('posix_spawn')
     expect(connection.tools()).toEqual([])
 
-    // 没连上时的调用也是确定结果（「没发出去」——不复述「远端可能已执行」）
+    // 没连上时的调用也是确定结果。
+    // **原锚** `'unreachable'`；**为何变**：返工 A 把「本次没发出去」与「发出去之后断了
+    // （效果未知）」分成两种结果（独立验收问题 4）；**新锚** `'not-sent'`。
     const outcome = await connection.call('echo', { text: 'x' })
-    expect(outcome.kind === 'failed' ? outcome.failure : undefined).toBe('unreachable')
+    expect(outcome.kind === 'failed' ? outcome.failure : undefined).toBe('not-sent')
 
     await connection.close()
   })
@@ -215,11 +239,102 @@ describe('起手与释放', () => {
     expect(isAlive(pid as number)).toBe(false)
     await connection.close() // 幂等：再关一次不炸（收尾路径可能走两遍）
 
-    // 释放之后的调用仍是确定结果
+    // 释放之后的调用仍是确定结果——且**读数当场归位**（原锚：仍是 `available` ＋ 旧工具表；
+    // 为何变：返工 A 的问题 4「断连或主动关闭后，连接读数仍报可用」；新锚：不可用 ＋ 空表）
+    expect(connection.state.status).toBe('unavailable')
+    expect(connection.tools()).toEqual([])
+
     const outcome = await connection.call('echo', { text: 'x' })
-    expect(outcome.kind === 'failed' ? outcome.failure : undefined).toBe('unreachable')
+    expect(outcome.kind === 'failed' ? outcome.failure : undefined).toBe('not-sent')
   })
 })
+
+describe('发现要翻完分页（返工 A · 独立验收问题 3）', () => {
+  test('两页工具表都进发现结果——不只看第一页', async () => {
+    const { connection } = await connect({}, { mode: 'paged' })
+    const names = connection.tools().map((tool) => tool.name)
+
+    // 第一页 `echo` ＋ 第二页 `snapshot`（游标那一页）——两件都要在
+    expect(names).toEqual(['echo', 'snapshot'])
+    expect(connection.state.status).toBe('available')
+
+    await connection.close()
+  })
+
+  test('坏游标（每页都指回同一个）——停，且不当成可用', async () => {
+    const startedAt = Date.now()
+    const { connection } = await connect({}, { mode: 'stuck' })
+
+    // 停得下来（不是无限翻页）：整体预算之内落定
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    expect(connection.state.status).toBe('unavailable')
+    expect(connection.state.status === 'unavailable' ? connection.state.reason : '').toContain('游标')
+    // 发现不完整 ⇒ 一件工具都不放行（半份表比没有更坏：模型以为「服务器就这些」）
+    expect(connection.tools()).toEqual([])
+
+    await connection.close()
+  })
+})
+
+describe('自有子树要收干净（返工 A · 独立验收问题 2）', () => {
+  test('关闭时服务器再拉的那一层也收掉；**无关进程不受影响**', async () => {
+    const dir = tempDir()
+    const log = join(dir, 'calls.jsonl')
+    const { connection } = await connect({}, { dir, mode: 'descendants' })
+
+    const child = descendantPidOf(log)
+    expect(typeof child).toBe('number')
+    expect(isAlive(child as number)).toBe(true)
+
+    // **与本进程无关**的一个进程（没有归属关系）——收尾不许碰它
+    const unrelated = Bun.spawn(['/bin/sleep', '60'], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+
+    try {
+      await connection.close()
+      await waitGone(child as number)
+
+      expect(isAlive(child as number)).toBe(false)
+      expect(isAlive(unrelated.pid)).toBe(true)
+    } finally {
+      unrelated.kill()
+    }
+  })
+})
+
+describe('读数跟着连接走（返工 A · 独立验收问题 4）', () => {
+  test('服务器在途退出：结果照实（效果未知），读数当场不可用', async () => {
+    const { connection } = await connect()
+
+    expect(await connection.call('boom', {})).toMatchObject({ kind: 'failed', failure: 'unreachable' })
+    await waitState(connection, 'unavailable')
+
+    expect(connection.state.status).toBe('unavailable')
+    // **断了**（不是我们放的）：工具表留着——模型下一轮照旧调得到，拿到的是一句
+    // 说清楚了的话（下面的 `not-sent`），而不是「未注册的工具」那种像写错名字的答复
+    expect(connection.tools().map((tool) => tool.name)).toContain('echo')
+
+    // 之后的调用是**没发出去**（不是「效果未知」）——两者分开报
+    const after = await connection.call('echo', { text: 'x' })
+    expect(after.kind === 'failed' ? after.failure : undefined).toBe('not-sent')
+
+    await connection.close()
+  })
+
+  test('主动关闭后：不可用 ＋ 空表（读数不留假账）', async () => {
+    const { connection } = await connect()
+    expect(connection.state.status).toBe('available')
+
+    await connection.close()
+
+    expect(connection.state.status).toBe('unavailable')
+    expect(connection.tools()).toEqual([])
+  })
+})
+
+/** 等状态落定（有界——探针别无限等）。 */
+async function waitState(connection: McpConnection, status: 'available' | 'unavailable'): Promise<void> {
+  for (let i = 0; i < 100 && connection.state.status !== status; i += 1) await Bun.sleep(20)
+}
 
 /** 进程还在不在（`kill 0` 只探活，不发信号）。 */
 function isAlive(pid: number): boolean {

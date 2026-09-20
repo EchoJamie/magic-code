@@ -28,6 +28,7 @@ import {
   externalCanceledOutput,
   externalEmptyOutput,
   externalFailedOutput,
+  externalNotSentOutput,
   externalPartNote,
   externalRefusedOutput,
 } from './messages.ts'
@@ -101,10 +102,11 @@ async function call(
   const outcome = await connection.call(tool, args, signal === undefined ? {} : { signal })
 
   if (outcome.kind === 'failed') {
-    // 「取消」与「没收到结果」是两件事：前者是我们主动停的，后者是**效果未知**（可能已执行）
-    return outcome.failure === 'canceled'
-      ? refused(externalCanceledOutput(outcome.reason))
-      : refused(externalFailedOutput(outcome.reason))
+    // 三种失败各说各的（返工 A）：**取消**＝我们主动停的；**没发出去**＝什么都没发生；
+    // 其余（超时 / 发出去之后断了）＝**效果未知**，要人核对
+    if (outcome.failure === 'canceled') return refused(externalCanceledOutput(outcome.reason))
+    if (outcome.failure === 'not-sent') return refused(externalNotSentOutput(outcome.reason))
+    return refused(externalFailedOutput(outcome.reason))
   }
 
   const text = outcome.parts.map(renderPart).filter((line) => line !== '').join('\n')

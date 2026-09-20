@@ -410,6 +410,51 @@ describe('失败路径', () => {
     }
   })
 
+  test('服务器中途没了：那一笔说「效果未知」，之后那一笔说「没发出去」', async () => {
+    const dir = scrapDir()
+    const stage = stageWith({ fake: serverEntry(dir, 'fake') })
+
+    try {
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [{ name: 'mcp__fake__boom', args: {} }] },
+          { toolCalls: [{ name: 'mcp__fake__echo', args: { text: '还调一次' } }] },
+          { text: '好' },
+        ],
+      })
+      await assembly.ready()
+
+      const shell = bareShell(assembly)
+      assembly.shell.send({ type: 'input.submit', text: '先把服务器弄没，再调一次' })
+      await until(() => shell.requests().length >= 1, '第一次询问')
+      shell.answer(shell.requests()[0]?.id as number, 'approve')
+      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '第一笔落定')
+
+      // 第一笔：调用**发出去过**，服务器在途没了 ⇒ 效果未知（要人核对）
+      expect(outputTextOf(eventsOfKind(shell.events, 'tool.result')[0])).toContain(
+        '未收到结果，远端可能已执行',
+      )
+
+      // 第二笔：连接已断 ⇒ **没发出去**（什么都不用核对）——两者分开报
+      await until(() => shell.requests().length >= 2, '第二次询问')
+      shell.answer(shell.requests()[1]?.id as number, 'approve')
+      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '第二笔落定')
+
+      const second = outputTextOf(eventsOfKind(shell.events, 'tool.result')[1])
+      expect(second).toContain('未发出——服务器未连接')
+      expect(second).not.toContain('远端可能已执行')
+
+      // 服务器那边只数到 `boom` 那一次（第二次压根没上路）
+      expect(callsOf(join(dir, 'fake.jsonl')).map((call) => call.tool)).toEqual(['boom'])
+
+      shell.dispose()
+      await assembly.shutdown()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
   test('非文本部件明确标示（不静默丢）', async () => {
     const dir = scrapDir()
     const stage = stageWith({ fake: serverEntry(dir, 'fake') })
@@ -439,6 +484,69 @@ describe('失败路径', () => {
     }
   })
 })
+
+describe('接续与切换（返工 A · 独立验收问题 1）', () => {
+  test('显式接续（`--session`）：恢复后**第一轮**就带着完整外部工具', async () => {
+    const dir = scrapDir()
+    const stage = stageWith({ fake: serverEntry(dir, 'fake') })
+
+    try {
+      // ① 先起一条会话（新会话那一路——对照组）
+      const fresh = stage.assemble({ turns: [{ text: '起个头' }] })
+      await fresh.ready()
+      const seeded = attachShell(fresh.shell)
+      await seeded.submit('起个头')
+      const session = fresh.session as string
+      seeded.dispose()
+
+      const freshTools = toolNamesOf(lastModel(stage).requests[0])
+      expect(freshTools).toContain('mcp__fake__echo')
+
+      await fresh.shutdown()
+      fresh.close()
+
+      // ② **显式接续**：`assemble({session})` 这一步就会把会话链建好（早于 `ready()`），
+      //    而发现要等 `ready()` —— 工具表要是「建链那一刻的快照」，这一条就是空的
+      const resumed = stage.assemble({ turns: [{ text: '接着干' }], session })
+      await resumed.ready()
+      await resumed.boot()
+
+      const shell = attachShell(resumed.shell)
+      await shell.submit('接着干')
+      shell.dispose()
+
+      const resumedTools = toolNamesOf(lastModel(stage).requests[0])
+
+      // 接续的首轮与新建的首轮**能力一致**（外部那几件一件不少）
+      expect(resumedTools.filter(isExternal)).toEqual(freshTools.filter(isExternal))
+      expect(resumedTools.filter(isExternal).length).toBeGreaterThan(0)
+
+      // ② 再来一次**切换会话**（单活跃那一路）：切过去的首轮同样带着
+      const switched = stage.assemble({ turns: [{ text: '切过去了' }], session })
+      await switched.ready()
+      await switched.boot()
+      const other = attachShell(switched.shell)
+      await other.submit('切过去了')
+      other.dispose()
+
+      expect(toolNamesOf(lastModel(stage).requests[0]).filter(isExternal)).toEqual(
+        freshTools.filter(isExternal),
+      )
+
+      await switched.shutdown()
+      switched.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+/** 一趟模型请求带出去的**工具名**（没有工具表＝空表）。 */
+function toolNamesOf(request: { readonly tools?: readonly { readonly name: string }[] } | undefined): readonly string[] {
+  return (request?.tools ?? []).map((tool) => tool.name)
+}
+
+const isExternal = (name: string): boolean => name.startsWith('mcp__')
 
 describe('恢复', () => {
   test('崩溃留下的那次外部调用**不自动重放**——交人裁决（服务器计数零）', async () => {

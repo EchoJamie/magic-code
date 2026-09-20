@@ -524,8 +524,60 @@ const mcpApproval: Scenario = {
     )
     await broken.close()
 
+    // —— 第三幕：**服务器自己还带了一层**（普通后代）——
+    //
+    // 独立验收的固定反例：假服务器 `spawn('/bin/sleep')` 之后再正常退出，那一层会不会
+    // 成为孤儿。这里看的是**入口退出**那条路：应用自己退场（走 `finally` 里的收尾），
+    // 整棵自有子树都得跟着走。
+    const grandLog = join(dir, 'nested.jsonl')
+    const descended = await ui.open({
+      label: '场景7-带后代',
+      columns: 100,
+      rows: 24,
+      config: {
+        mcp: {
+          servers: {
+            nested: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_MODE: 'descendants', FAKE_MCP_LOG: grandLog, FAKE_MCP_NAME: 'nested' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    const grand = await waitForDescendant(grandLog)
+    ui.check(
+      typeof grand === 'number' && isAlive(grand),
+      '服务器自己拉起的那一层在跑（先确认它真起来了）',
+      `pid ${grand}`,
+    )
+
+    await descended.key('ctrl+c') // 应用自己退场（收尾那一跳在 cli 的 finally 里）
+    await descended.close({ graceMs: 3_000 })
+    await waitGone(grand as number)
+    ui.check(!isAlive(grand as number), '应用退出后：连它带起的那一层也没了', `pid ${grand}`)
+
     rmSync(dir, { recursive: true, force: true })
   },
+}
+
+/** 等服务器把它拉起的那个后代记进流水（有界——夹具自己写，别无限等）。 */
+async function waitForDescendant(log: string, timeoutMs = 5_000): Promise<number | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (existsSync(log)) {
+      for (const line of readFileSync(log, 'utf8').split('\n')) {
+        if (line.trim() === '') continue
+        const entry = JSON.parse(line) as { kind?: string; pid?: number }
+        if (entry.kind === 'child') return entry.pid
+      }
+    }
+    await Bun.sleep(50)
+  }
+  return undefined
 }
 
 /** 服务器那边的调用流水（判据取它）。 */

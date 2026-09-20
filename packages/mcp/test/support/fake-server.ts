@@ -15,7 +15,13 @@
  * 行为由环境变量给（夹具可配、不写死）：
  * - `FAKE_MCP_NAME` —— serverInfo 的名字（默认 `fake-mcp`）
  * - `FAKE_MCP_LOG` —— 调用流水文件（不给＝不留痕）
- * - `FAKE_MCP_MODE` —— `ok`（默认）｜`die`（起手即退，测「连不上」）
+ * - `FAKE_MCP_MODE` —— 这几幕（返工 A 的固定反例各占一幕）：
+ *   - `ok`（默认）——单一页、无后代
+ *   - `die` —— 起手即退（测「连不上」）
+ *   - `paged` —— 工具表分两页（第二页要带游标才给）
+ *   - `stuck` —— 每页都回同一个游标（坏游标：不前进）
+ *   - `descendants` —— **再拉一层**（`/bin/sleep`），父收 stdin EOF 正常退出——
+ *     独立验收的固定反例：那一层会不会被收干净
  */
 
 import { appendFileSync } from 'node:fs'
@@ -78,6 +84,17 @@ const TOOLS = [
   },
 ]
 
+/**
+ * **再拉一层**（`descendants` 那一幕）——独立验收的固定反例。
+ *
+ * 不设 detached、不脱离进程组：父一退，它就被过继给 1 号，从此只认 pid 不认爹。
+ * pid 记进流水文件——判据要的是**它自己的 pid**（收没收得到，按它说）。
+ */
+function spawnDescendant(): void {
+  const child = Bun.spawn(['/bin/sleep', '120'], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+  if (LOG !== undefined) appendFileSync(LOG, `${JSON.stringify({ kind: 'child', pid: child.pid })}\n`)
+}
+
 /** 一次调用留痕——服务器自己数自己（判据由此而来）。 */
 function record(tool: string, args: unknown): void {
   if (LOG === undefined) return
@@ -118,7 +135,20 @@ function content(tool: string, args: Record<string, unknown>): unknown {
 
 const server = new Server({ name: NAME, version: '0.0.1' }, { capabilities: { tools: {} } })
 
-server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: TOOLS }))
+server.setRequestHandler(ListToolsRequestSchema, (request) => {
+  const cursor = (request.params as { cursor?: string } | undefined)?.cursor
+
+  if (MODE === 'paged') {
+    // 两页：第一页带游标，第二页到头
+    return cursor === 'page2' ? { tools: [TOOLS[1] as (typeof TOOLS)[number]] } : { tools: [TOOLS[0] as (typeof TOOLS)[number]], nextCursor: 'page2' }
+  }
+  if (MODE === 'stuck') {
+    // 坏游标：**每一页都指回同一个**——不前进（发现必须停，不能无限等）
+    return { tools: [TOOLS[0] as (typeof TOOLS)[number]], nextCursor: 'forever' }
+  }
+
+  return { tools: TOOLS }
+})
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const tool = request.params.name
@@ -134,6 +164,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 if (MODE === 'die') {
   process.exit(3)
+}
+
+if (MODE === 'descendants') {
+  spawnDescendant()
+  // 收 stdin EOF 就正常退（父的优雅信号）；**不带那一层一起走**——那正是要验的
+  process.stdin.on('end', () => process.exit(0))
 }
 
 await server.connect(new StdioServerTransport())

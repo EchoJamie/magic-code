@@ -674,7 +674,11 @@ export function assemble(options: AssembleOptions): Assembly {
       // **外部工具**（U38）——走的是同一个注册表、同一个闸门、同一条回填路
       // （`options.tools` 那个追加出口：机制在内、工具集在外）。没连上＝空表，
       // 内置七件照常（设计明文：单个连接失败不拖垮内置工具）。
-      tools: mcpTools(),
+      //
+      // ⚠️ **给函数、不给数组**（返工 A）：连接是**进程级**的一束，会话链却**按条建**
+      // ——`--session` 那条路上链在装配期就建好了，而发现要等 `ready()`。快照会让那
+      // 一条链的工具表永远停在「还没连上」的那一刻。给函数＝**每次现取当下的实况**。
+      tools: mcpTools,
     })
     const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
 
