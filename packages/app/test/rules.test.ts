@@ -86,6 +86,38 @@ describe('真装配 · 副作用之前送到', () => {
     }
   })
 
+  test('**两份正文一模一样**（同一套约定按目录铺开）：子目录那份照样拦、照样送达', async () => {
+    const stage = makeStage()
+
+    try {
+      // 复制粘贴起手最常见的写法——两份内容一字不差
+      const same = '本目录的约定：先跑 bun run check'
+      put(stage.workspace, 'AGENTS.md', same)
+      put(stage.workspace, 'src/AGENTS.md', same)
+
+      const assembly = stage.assemble({ turns: writeTurns('src/a.ts', 'hello') })
+      const shell = attachShell(assembly.shell)
+      await shell.submit('新建 src/a.ts')
+      shell.dispose()
+
+      // 送过一次「内容相同的那一份」**不等于**另一份也送过——判据是文档身份，不是正文。
+      // 两份正文一字不差，故只有**抬头**分得开：开局只有根那份，拦下之后 src 那份才到
+      expect(systemOf(stage, 0)).not.toContain('src/AGENTS.md')
+      expect(systemOf(stage, 1)).toContain('src/AGENTS.md')
+      expect(replySaid(stage, 1, '未执行')).toBe(true)
+      expect(replySaid(stage, 1, 'src/AGENTS.md')).toBe(true)
+
+      const target = join(stage.workspace, 'src/a.ts')
+      expect(existsSync(target)).toBe(true)
+      expect(readFileSync(target, 'utf8')).toBe('hello')
+      expect(shell.events.filter((event) => event.kind === 'tool.call')).toHaveLength(1)
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
   test('**无规约**：系统提示词里没有那一块，第一次动手就执行（原行为一字不动）', async () => {
     const stage = makeStage()
 

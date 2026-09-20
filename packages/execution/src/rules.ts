@@ -49,7 +49,7 @@ import type {
 } from '@magic/contracts'
 import type { Dirent } from 'node:fs'
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { dirname, join, sep } from 'node:path'
+import { dirname, isAbsolute, join, sep } from 'node:path'
 import { expandPatterns, matchesPattern } from './patterns.ts'
 import { isInside } from './workspace.ts'
 
@@ -378,9 +378,11 @@ function walk(
 
   if (!allowed(real)) {
     // 头一行已经报着是哪个目录了，此处只说「真身在哪、怎么才读得到」
+    // 「也写进」不是啰嗦：用户可能正处在「已经点了名、只是点的是它的上一层」这个场景里，
+    // 少了这个「也」，「请把真身写进 rules.sources」读起来像在让他做他已经做过的事
     problems.push({
       path: dir,
-      message: `指向工作区之外的目录（真身 ${real}）——没进去。要读它，请把真身写进配置的 rules.sources`,
+      message: `指向工作区之外的目录（真身 ${real}）——没进去。要读它，请把这个真身也写进配置的 rules.sources`,
     })
     return
   }
@@ -418,14 +420,30 @@ function walk(
 
 // ══ ③ 补充来源 ════════════════════════════════════════════════════════
 
-/** 来源归位——`stat` 一遍判它是什么；不存在 / 取不到状态即**报出来**（不静默跳过）。 */
+/**
+ * 来源归位——`stat` 一遍判它是什么；不合格 / 不存在 / 取不到状态，一律**报出来**
+ * （不静默跳过）。
+ *
+ * **相对路径在这儿拒**（与工作区根同一条规矩，只是判的层不同）：相对串的基准是**进程的
+ * 当前目录**——换个地方启动 `magic`，同一个配置就指到别处去了，而用户写的时候心里想的
+ * 多半不是那个。工作区根那一份由执行域的根注册拒（`workspace.ts` `normalizeRoot`），
+ * 补充来源走不到那儿，故在此补齐同一道。
+ */
 function resolveSources(raw: readonly string[], problems: RulesProblem[]): readonly Source[] {
   const resolved: Source[] = []
 
   raw.forEach((entry, index) => {
     const at = `第 ${index + 1} 条`
-    let real: string
 
+    if (!isAbsolute(entry)) {
+      problems.push({
+        path: entry,
+        message: `补充来源须是绝对路径（${at}）——相对串的基准是进程当前目录，换个地方启动就指到别处去了`,
+      })
+      return
+    }
+
+    let real: string
     try {
       real = realpathSync(entry)
     } catch (error) {
@@ -562,7 +580,7 @@ function select(input: {
         scope: candidate.scope,
         name: candidate.name,
         text: parsed.body,
-        version: versionOf(parsed.body, parsed.patterns),
+        version: versionOf(real, parsed.body, parsed.patterns),
       },
       conditions: parsed.patterns ?? [],
       order: candidate.order,
@@ -831,15 +849,40 @@ function isAllowed(
 
 // ══ 小件 ══════════════════════════════════════════════════════════════
 
-/** 相对写法——分隔符按平台（报给人的抬头）。 */
+/**
+ * 相对写法——分隔符按平台（报给人的抬头，也是 `paths` 的比对基准）。
+ *
+ * ⚠️ **不能直接切 `base.length + 1`**：根是文件系统顶（`/`）时它**自带**分隔符，
+ * `isInside` 认它、这里不认就会多吃一个字符——`/var/x` 会变成 `ar/x`，于是照「根相对」
+ * 写对的 `paths` 一条都命不中，**且不报错**（`workspaceRoots: ["/"]` 或 `cd / && magic`）。
+ */
 function relativeTo(base: string, file: string): string {
   if (file === base) return ''
-  return isInside(file, base) ? file.slice(base.length + sep.length) : file
+  if (!isInside(file, base)) return file
+
+  const prefix = base.endsWith(sep) ? base : base + sep
+  return file.slice(prefix.length)
 }
 
-/** 内容版本——正文 ＋ 生效模式（模式变了，适用面就变了，故也算一版）。 */
-function versionOf(body: string, patterns: readonly string[] | undefined): string {
-  const material = `${(patterns ?? []).join(' ')}${body}`
+/**
+ * 内容版本——**真路径 ＋ 生效模式 ＋ 正文**。
+ *
+ * 三者缺一不可，各有一个由头：
+ * - **真路径**是**文档身份**——不含它，两份**正文一模一样**的规约（根 `AGENTS.md` 与
+ *   `src/AGENTS.md` 内容相同：复制粘贴起手、脚本生成、模板铺开，都很常见）会算出同一个
+ *   版本号，而下游的 `delivered` 是**按版本**判「送过没有」的 ⇒ 送过根那一份之后，
+ *   `src` 那一份会被当成「已送达」，**永远不送、也不拦**——「副作用之前送到」这条承诺
+ *   就在最需要它的场景里（同一套约定按目录铺开）静默失效。**判「改没改」要的是内容，
+ *   判「送没送」要的是身份，两者都得进这个号。**
+ * - **生效模式**——模式变了，适用面就变了，故也算一版；
+ * - **正文**——改一个字就是新的一版。
+ */
+function versionOf(path: string, body: string, patterns: readonly string[] | undefined): string {
+  // 三段之间的分隔符是 **NUL**，且**写成转义**而不是往源码里塞裸的控制字节：
+  // 裸的读不出、diff 不了，还会让 grep 把整份文件当二进制而**一声不响地什么都不输出**
+  // （本单元真栽过：两个 0x00 就藏在这一行里，`tsc` 照收、用例照绿）。
+  // 用 NUL 而不是空格，是防「不同的三段拼出同一个串」——`path` 与模式里都可能有空格。
+  const material = `${path}\u0000${(patterns ?? []).join(' ')}\u0000${body}`
   let hash = 0x811c9dc5
 
   for (let index = 0; index < material.length; index += 1) {

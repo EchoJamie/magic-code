@@ -27,6 +27,19 @@
  */
 export const MAX_PATTERN_EXPANSIONS = 64
 
+/**
+ * **同层大括号组数的上限**——递归深度就是它。
+ *
+ * 为什么宽度上限（64 条）拦不住这一条：展开是**深度优先**的，攒够 64 条之前得先一路下探到底
+ * ——`"{a,b}"` 写两万四千遍（约 120KB，还在单份文档 128KB 的上限之内）就是两万四千层递归，
+ * **栈当场爆掉**：不是「一条读不懂的规则不生效」，是 `magic --check` 与整个会话崩在栈上。
+ * 而规约文件是**仓库里的东西**——克隆一个带这种文件的仓库就能让程序起不来。
+ *
+ * 故组数**在展开之前**先数一遍。16 组已是任何讲道理写法的十倍有余（宽度上限 64 早就在
+ * 第 7 组前后先撞上），且它与调用栈深浅无关——同一个输入恒同一个结论。
+ */
+export const MAX_BRACE_GROUPS = 16
+
 /** 模式解析的判别式——`ok: false` 带**缘由**（静默丢弃会让人对着一条不生效的规则发呆）。 */
 export type PatternExpansion =
   | { readonly ok: true; readonly patterns: readonly string[] }
@@ -35,18 +48,25 @@ export type PatternExpansion =
 /**
  * 展开一条模式——大括号分组在此拆开，其余原样。
  *
- * 失败三类（都**退回**，不降级）：括号不成对 / 嵌套 · 展开超上限 · 单条模式本身不成立
- * （见 `problemOfPattern`）。
+ * 失败四类（都**退回**，不降级）：括号不成对 / 嵌套 · 组数超上限 · 展开超上限 ·
+ * 单条模式本身不成立（见 `problemOfPattern`）。
  */
 export function expandPatterns(raw: string): PatternExpansion {
-  const expanded = expandBraces(raw.trim())
+  const source = raw.trim()
+  const groups = (source.match(/\{/g) ?? []).length
+  if (groups > MAX_BRACE_GROUPS) {
+    return {
+      ok: false,
+      reason: `大括号有 ${groups} 组（上限 ${MAX_BRACE_GROUPS}）——请拆成几条 paths 分别写`,
+    }
+  }
+
+  const expanded = expandBraces(source)
   if (!expanded.ok) return expanded
   if (expanded.patterns.length > MAX_PATTERN_EXPANSIONS) {
     return {
       ok: false,
-      reason:
-        `大括号展开出 ${expanded.patterns.length} 条模式（上限 ${MAX_PATTERN_EXPANSIONS}）` +
-        `——请拆成几条 paths 分别写`,
+      reason: `大括号展开出 ${expanded.patterns.length} 条以上模式（上限 ${MAX_PATTERN_EXPANSIONS}）——请拆成几条 paths 分别写`,
     }
   }
 

@@ -13,7 +13,7 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import type { ProjectRule, RulesLoad } from '@magic/contracts'
 import { createProjectRules } from '../src/rules.ts'
 import { createWorkspaceService } from '../src/workspace.ts'
@@ -341,6 +341,22 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
+  test('**组数过多**：在展开**之前**就退回——深度优先的展开会先把栈坐穿', () => {
+    const box = sandbox()
+    try {
+      // 24000 组 × 5 字符 ≈ 120KB，**还在单份 128KB 上限之内**——故这不是「文档太大」，
+      // 是「递归太深」。组数上限若在展开之后才判，这一条会崩在栈上（不是红，是崩）
+      put(box.at, '.magic/rules/deep.md', `---\npaths:\n  - "${'{a,b}'.repeat(24000)}"\n---\n深`)
+
+      const load = rulesOf([box.at]).load([])
+
+      expect(load.documents).toEqual([])
+      expect(saidSomething(load, '组')).toBe(true)
+    } finally {
+      box.dispose()
+    }
+  })
+
   test('**同层的多组大括号**照常展开（`src/{a,b}/*.{ts,tsx}` 是两组，不是嵌套）', () => {
     const box = sandbox()
     try {
@@ -548,6 +564,18 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
+  test('补充来源写**相对路径**＝拒（与工作区根同一条规矩：基准是进程当前目录）', () => {
+    const box = sandbox()
+    try {
+      const load = rulesOf([box.at], ['shared/rules']).load([])
+
+      expect(load.documents).toEqual([])
+      expect(saidSomething(load, '绝对路径')).toBe(true)
+    } finally {
+      box.dispose()
+    }
+  })
+
   test('补充来源不存在——报出来（不静默当作「没有」）', () => {
     const box = sandbox()
     try {
@@ -594,6 +622,26 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}a.md`])
       expect(saidSomething(load, '目录循环')).toBe(true)
+    } finally {
+      box.dispose()
+    }
+  })
+})
+
+describe('根是文件系统顶（`/`）——相对写法不吃字符', () => {
+  test('`paths` 按「根相对」写对的照旧命中（吃了首字符就会**静默**一条都不中）', () => {
+    const box = sandbox()
+    try {
+      const real = realpathSync(box.at)
+      // 从 `/` 数起的前两段——正是调试时最容易写出的那种相对模式。
+      // ⚠️ 目标与模式都取**规范形**：根是 `/` 时它自己身兼两张表，`/var` → `/private/var`
+      // 这条桥搭不起来（两张表只桥声明的那几条根，不是任意软链接）——那不是本用例要测的
+      const head = real.split(sep).filter((part) => part !== '').slice(0, 2).join('/')
+      const shared = put(box.at, 'shared/deep.md', `---\npaths:\n  - "${head}/**"\n---\n顶层根`)
+
+      const load = rulesOf(['/'], [shared]).load([join(real, 'a.ts')])
+
+      expect(namesOf(load)).toEqual([`source:${real.slice(1)}${sep}shared${sep}deep.md`])
     } finally {
       box.dispose()
     }
@@ -730,6 +778,26 @@ describe('内容版本 —— 判「是不是同一版」的锚', () => {
 
       expect(other?.text).toBe(narrow?.text) // 正文一字未动
       expect(other?.version).not.toBe(narrow?.version) // 但适用面变了 ⇒ 另算一版
+    } finally {
+      box.dispose()
+    }
+  })
+
+  test('**正文一模一样的两个文件是两个版本**（身份也进版本号）', () => {
+    const box = sandbox()
+    try {
+      // 同一套约定按目录铺开——复制粘贴起手最常见的写法
+      const same = '本目录的约定：先跑 bun run check'
+      put(box.at, 'AGENTS.md', same)
+      put(box.at, 'src/AGENTS.md', same)
+
+      const load = rulesOf([box.at]).load(['src/a.ts'])
+      const versions = load.documents.map((rule) => rule.version)
+
+      expect(load.documents).toHaveLength(2)
+      // 版本不含路径的话两条会撞成一个号——下游「按版本判送过没有」就会把
+      // 子目录那份当成「已送达」，它**永远不送也不拦**（有用例在对话域钉着）
+      expect(new Set(versions).size).toBe(2)
     } finally {
       box.dispose()
     }
