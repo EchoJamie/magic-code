@@ -87,6 +87,7 @@ export type {
   PickerRow,
   ShellStatus,
   ShellView,
+  Stashed,
   StatusState,
   ToolRunState,
 } from './view.ts'

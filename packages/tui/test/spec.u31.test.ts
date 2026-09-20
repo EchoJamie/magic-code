@@ -247,9 +247,23 @@ describe('真光标 · 抽屉接管与关闭', () => {
     expect(frame.screen.cursor.y).not.toBe(frame.rowOf('等你的答复'))
   })
 
-  test('答完裁决（接管解除）——草稿归还，真光标回到它的**末尾**', async () => {
+  /**
+   * ⚠️ **返工轮改过这条断言的锚**（首轮验收退回 ②）——
+   *
+   * - **原锚**：`stage.type('半句话')`（插入点本来就在末尾）＋「草稿归还，真光标回到它的
+   *   **末尾**」——那会儿 `undock` 一律把插入点摆到 `draft.length`，这条断言量的其实是
+   *   **那条实现**，不是规格。
+   * - **为何变**：交接面（裁决）的接管**不经过用户**，草稿连同它的插入点都得原样还回来——
+   *   一律摆到末尾＝**把用户打到一半的位置改掉**（`abcd` ←← 接管批准 打 `X` ⇒ `abcdX`，
+   *   应为 `abXcd`）。用户真跑报的就是这一条。
+   * - **新锚**：中间编辑过（`←←`）再被接管，答完**回到原来那个插入点**：草稿不变、
+   *   插入点也不变，接着打的字进在原来的位置，真光标跟着落在那一列。
+   */
+  test('答完裁决（接管解除）——草稿连同**原插入点**一起归还', async () => {
     const stage = createStage()
-    stage.type('半句话') // 接管**之前**打的草稿（接管期间打不进去）
+    stage.type('abcd') // 接管**之前**打的草稿（接管期间打不进去）
+    stage.press({ kind: 'left' })
+    stage.press({ kind: 'left' }) // ab|cd
     stage.feed([
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
@@ -257,12 +271,17 @@ describe('真光标 · 抽屉接管与关闭', () => {
     stage.press({ kind: 'char', char: 'y' }) // 答「批准」
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 }, { id: 88 })])
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
-    const row = frame.rowOf('半句话')
+    expect(draftOf(stage)).toBe('abcd') // 草稿原样归还
+    expect(at(stage)).toBe(2) // **插入点也原样**（原锚：一律摆到末尾）
 
-    expect(draftOf(stage)).toBe('半句话') // 草稿原样归还
-    // 1（左留白）＋ 2（`› `）＋ 三个汉字各 2 列 ＝ 9
-    expect(frame.screen.cursor).toEqual({ x: 9, y: row })
+    stage.type('X') // 接着打——字进在原来的位置
+    expect(draftOf(stage)).toBe('abXcd')
+
+    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const row = frame.rowOf('abXcd')
+
+    // 1（左留白）＋ 2（`› `）＋ `abX` 3 列 ＝ 6（打在 `b` 与 `c` 之间那个位置）
+    expect(frame.screen.cursor).toEqual({ x: 6, y: row })
   })
 })
 
@@ -303,5 +322,68 @@ describe('插入点 · 复位（清空 / 提交 / 历史 / 补全）', () => {
 
     expect(draftOf(stage)).toBe('/grants ')
     expect(at(stage)).toBe('/grants '.length)
+  })
+})
+
+/**
+ * **返工轮**（2026-09-20 · 首轮验收退回）——两条各钉一组。
+ *
+ * ① **宽度口径**：折行交给 Ink 那一支（`wrap-ansi`），而它量宽用的是 `string-width`，
+ *    顺带把正文**规范化**成 NFC（`e` ＋ 组合重音在屏上是 `é`）。落点若还按仓里那个
+ *    逐码点的 `displayWidth` 量，「量出来的插入点」与「画出来的行」就不是同一把尺 ⇒
+ *    `caretRow` 找不到 ⇒ 真光标掉到状态行底下（用户报的就是这一条）。
+ * ② **接管归还插入点**：`takeOver` 只收了草稿文字、`undock` 一律把插入点摆到末尾——
+ *    中间编辑过再被接管，回来就落到末尾（`abcd` ←← 接管批准 打 `X` ⇒ `abcdX`，应为 `abXcd`）。
+ *
+ * ⚠️ 两条都在**真帧**上量（`Frame.screen.cursor`）：屏上那格是真终端画的，
+ * 量视图字段只证明得了「我们以为它在哪」。
+ */
+describe('返工 · 宽度口径（分解字符 / ZWJ emoji / 折行边界）', () => {
+  /** 分解形式的 `é`：`e` ＋ 组合重音（U+0301）——**转义写**，源文件里不放不可见字符。 */
+  const COMBINING = 'e\u0301'
+  /** 屏上那一份（折行正文已规范化）。 */
+  const E = COMBINING.normalize()
+  /** ZWJ 家庭 emoji——**一个字素**（`string-width` 量 2 列；按码点量会量成 7）。 */
+  const FAMILY = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}'
+
+  test('分解形式的 `é`（粘贴）——真光标落在它**之后**，不掉到状态行下', async () => {
+    const stage = createStage()
+    stage.press({ kind: 'paste', text: COMBINING })
+
+    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const row = frame.rowOf(`› ${E}`)
+
+    // 左留白 1 ＋ `› ` 2 ＋ `é` 1 列 ＝ 4（掉出输入区时这里是 (0, 帧下)）
+    expect(frame.screen.cursor).toEqual({ x: 4, y: row })
+  })
+
+  test('ZWJ 家庭 emoji——按**一个字素**量，落点在它之后', async () => {
+    const stage = createStage()
+    stage.press({ kind: 'paste', text: FAMILY })
+
+    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const row = frame.rowOf(`› ${FAMILY}`)
+
+    // 左留白 1 ＋ `› ` 2 ＋ 家庭 emoji 2 列（ZWJ 串是一个字素，不是四个字符）
+    //
+    // ⚠️ 这台 VT 模型（`@xterm/headless`）用的是 Unicode 6 的宽度表：**每个 emoji 码点各占一格**
+    // （ZWJ 占 0）⇒ 它把这一行排成 7 格，上面那个 5 **不等于**「它以为的行尾」。落点不按它算：
+    // 真终端按字素渲染（ZWJ 串是一个 2 列的 emoji），Ink 与 `string-width` 也是这个口径——
+    // 而折行正是后两者折的，**同一把尺**才谈得上「跟着插入点走」。
+    expect(frame.screen.cursor).toEqual({ x: 5, y: row })
+  })
+
+  test('窄窗折行边界——插入点在**第二视觉行**上，列号按同一把尺', async () => {
+    const stage = createStage()
+    // 40 列 ⇒ 内容宽 38：`› ` ＋ 36 个 a 正好铺满一行，`é` 整词落到第二行（词界折行）
+    stage.press({ kind: 'paste', text: `${'a'.repeat(36)} ${COMBINING}` })
+
+    const frame = await stage.screen({ columns: 40, rows: 24 })
+    const row = frame.rowOf(E)
+
+    // 折出来的第二行：左留白 1 ＋ 行首那个**词界空格** 1 ＋ `é`（整词落到下一行）
+    expect(frame.textAt(row)).toBe(`  ${E}`)
+    // 第二行没有 `› `，整行从内容原点起：左留白 1 ＋ 行首那个空格 1 ＋ `é` 1 ＝ 3
+    expect(frame.screen.cursor).toEqual({ x: 3, y: row })
   })
 })

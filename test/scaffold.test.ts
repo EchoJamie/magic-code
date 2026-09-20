@@ -85,7 +85,11 @@ const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
   // 第几列」才摆得准真终端光标，而**自己按宽度硬切会错**（Ink 是词界折行——实测反例：
   // `z`×30 ＋ ` abcdefghij` 在 40 列下的断点两套算法不一样）。故取**同一支**折行器、
   // 同一组参数（`trim:false` / `hard:true`），像素与几何才对得上。见 `composer.ts` 头注。
-  '@magic/tui': ['ink', 'react', 'wrap-ansi'],
+  //
+  // `string-width`（U31 返工轮）——**折行器量宽用的就是它**：折出来的行有多宽、
+  // 插入点落在行里第几列，必须是同一把尺（返工①：按码点量组合字符 / emoji，两个数对不上
+  // ⇒ 插入点找不到那一行 ⇒ 真光标掉到状态行下）。与 `wrap-ansi` 同一版本支（`^8`）。
+  '@magic/tui': ['ink', 'react', 'wrap-ansi', 'string-width'],
 }
 
 /**

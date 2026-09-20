@@ -159,14 +159,16 @@ describe('接管（裁决挂着时占住输入框）', () => {
   })
 
   test('接管时**草稿收起来**——答完原样归还（不自动发送）', () => {
-    const typed = { ...appendEcho(createView(), '打了一半'), draft: '打了一半' }
+    // 插入点停在中间（`打了一|半`）——归还要**原样**放回这里，不是末尾（返工轮）
+    const typed = { ...appendEcho(createView(), '打了一半'), draft: '打了一半', caret: 3 }
     const taken = reduce(typed, ask('light'))
 
     expect(taken.draft).toBe('')
-    expect(taken.stashed).toBe('打了一半')
+    expect(taken.stashed).toEqual({ draft: '打了一半', caret: 3 })
 
     const answered = reduce(taken, event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 }))
     expect(answered.draft).toBe('打了一半')
+    expect(answered.caret).toBe(3)
     expect(answered.stashed).toBeNull()
     expect(answered.dock.kind).toBe('input')
   })

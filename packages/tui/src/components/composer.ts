@@ -24,6 +24,21 @@
  * 结果存进 state——**值没变就还回原对象**，否则「量 → setState → 再渲染」会自激。
  * 输入行不在屏上时（选择器接管 / 接管态）传 `undefined` ＝ 把真光标藏回去。
  *
+ * ## ⚠️ 量宽只有**一把尺**（返工轮 · 2026-09-20 首轮验收退回①）
+ *
+ * **折出来的行与插入点的列必须是同一把尺量的**——折行那一支（`wrap-ansi`）内部用
+ * `string-width`，而且它**先把正文规范化成 NFC**（`e` ＋ 组合重音到屏上是一个 `é`）。
+ * 早先落点按仓里那个**逐码点**的 `displayWidth`（`lines.ts`：组合符算 1 列、每个 emoji
+ * 码点各算 1 列）量，于是两个后果：
+ *
+ * - `e` ＋ 重音：折行正文 2 个码点缩成 1 个 ⇒「插入点的偏移」比「那一行的宽度」还大 ⇒
+ *   `caretRow` **找不到** ⇒ 真光标掉到状态行底下（用户报的那一条）；
+ * - `👨👩👧👦`：按码点量成 7 列、按**字素**量成 2 列 ⇒ 列号偏出去。
+ *
+ * 故这里一律 `string-width`（**与 Ink 同源**：Ink 排版与 `wrap-ansi` 量宽都是它），
+ * 插入点那一段**先按折行的同一条规则规范化再量**。**不叠字符特例**——「组合符算 0 列」
+ * 那种补丁一处也补不全（emoji / 区域指示符 / 变体选择符各是一个坑），还会与折行那支再分家。
+ *
  * ## 多行草稿（U20 · 差距 4）
  *
  * `shift+回车` 换行，草稿因此可以多行——**高度与折叠都按「视觉行」算**（U31 改，
@@ -40,8 +55,9 @@
 import { Box, Text, measureElement, useCursor } from 'ink'
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
+import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
-import { PALETTE, displayWidth } from './lines.ts'
+import { PALETTE } from './lines.ts'
 
 /** 输入行的面孔——由外壳按状态算好（显示层不判断）。 */
 export type ComposerTone = 'idle' | 'working' | 'waiting' | 'retrying' | 'taken'
@@ -102,6 +118,18 @@ function wrapVisual(text: string, width: number): readonly string[] {
   return wrapAnsi(text, width, { trim: false, hard: true }).split('\n')
 }
 
+/**
+ * 一段文字占几列——**与折行那一支同一把尺**（`string-width`：`wrap-ansi` 内部量的就是它，
+ * Ink 排版也用它）。按**字素**算：组合符跟它的字基算一个、ZWJ 串算一个 emoji。
+ *
+ * ⚠️ 别拿 `lines.ts` 的 `displayWidth`（那是**逐码点**的，记录区自己折行时用）：两者对
+ * 组合字符 / emoji 给出的数不一样——输入行这里的行是 `wrap-ansi` 折的，量法必须跟它一致，
+ * 否则「行有多宽」与「插入点在行里第几列」会是两本账（理由见文件头那一节）。
+ */
+function widthOf(text: string): number {
+  return stringWidth(text)
+}
+
 /** 画出来的**一行**：行首那一段（上色）＋ 正文（已折；续行没有行首那一段）。 */
 export type ComposerRow = {
   /** 行首那一段（`› ` 或悬挂缩进的 `  `）——**上色**的那一段；续行是空串。 */
@@ -144,7 +172,7 @@ export function composerLayout(
     rows.push({ prefix: PROMPT, text: '', notice: false })
     if (caret !== null) {
       caretRow = 0
-      caretCol = displayWidth(PROMPT)
+      caretCol = widthOf(PROMPT)
     }
   } else {
     // 插入点在哪一条逻辑行、行内第几列
@@ -158,11 +186,13 @@ export function composerLayout(
       const wrapped = wrapVisual(prefix + line, width)
 
       if (index === caretLine) {
-        // 插入点在这一条逻辑行的第几列（显示宽度——中文 / emoji 占几列就几列）
-        const offset = displayWidth(prefix) + displayWidth(line.slice(0, caretInLine))
+        // 插入点落在第几行第几列——**与折行同一把尺**（`widthOf`）、**同一条口径**
+        // （先规范化：折行进门就 `normalize()`，见文件头那一节）。量的是**屏上**那一行里
+        // 插入点之前那一段占的列数；与折出来的各行宽度是同一本账，故下面那趟累加必能落到一行上。
+        const offset = widthOf((prefix + line.slice(0, caretInLine)).normalize())
         let used = 0
         wrapped.forEach((row, at) => {
-          const size = displayWidth(row)
+          const size = widthOf(row)
           // 落在这一行即定（`<=`：正好在行尾时**留在本行末尾**，跟手不跳下一行）
           if (caretRow === null && offset <= used + size) {
             caretRow = rows.length + at
@@ -170,6 +200,14 @@ export function composerLayout(
           }
           used += size
         })
+
+        // 兜底（不该走到）：两把尺若哪天又分了家，插入点宁可落在**这一条逻辑行的最后一行行尾**，
+        // 也不掉出输入区——`caretRow === null` 的后果是真光标跑到状态行底下，用户看着就是
+        // 「光标没了」（首轮验收退回①报的正是这个症状）。落点成一格半格的偏差，比整个丢掉轻。
+        if (caretRow === null && wrapped.length > 0) {
+          caretRow = rows.length + wrapped.length - 1
+          caretCol = widthOf(wrapped[wrapped.length - 1] ?? '')
+        }
       }
 
       wrapped.forEach((row, at) => {
