@@ -841,10 +841,13 @@ function matches(condition: WaitCondition, screen: VtScreen, writtenSinceResize:
 /**
  * 有没有**按 `columns` 列画出来的那一帧**（见 `WaitCondition.writtenFrame` 的注）。
  *
- * 两步：① 找到「正好 `columns` 个横线」的那一处（前后不能紧挨横线——100 个横线里切得出 44 个）；
- * ② 它**下一行**里不能还有横线。折出来的一串（`44/44/12`、`70/30`）第 ② 步必然不过。
+ * 找到「正好 `columns` 个横线」的那一处（前后不能紧挨横线——100 个横线里切得出 44 个）之后，
+ * 要求**这一行的下一行不含横线**：折出来的一串（`44/44/12`、`70/30`）下一行必然还是横线。
  *
- * 逐处找、每次前进一个字符，故不会卡住；`\n` 用字节里的原样（帧本来就是一帧一次写出去的）。
+ * ⚠️ **「还没看到下一行」不等于「下一行没有横线」**（规划侧实测打出来的洞）：字节正好停在
+ * 分隔线那一行的换行之后时，拿剩下的空串去 `includes('─')` 会得到 false ⇒ 一个只写了一半的
+ * 旧宽重画就被认成新帧。故**两行的换行都在**才算数——缺一个就说明这一帧还没写完，继续等。
+ * （不能改成「下一行必须非空」：审批卡那种帧里分隔线下面就跟着空行。）
  */
 export function hasFreshFrame(bytes: string, columns: number): boolean {
   if (!Number.isInteger(columns) || columns <= 0) return false
@@ -856,11 +859,12 @@ export function hasFreshFrame(bytes: string, columns: number): boolean {
     const before = bytes[at - 1]
     const after = bytes[at + needle.length]
     if (before !== '─' && after !== '─') {
-      // 下一行：这一行结束的换行之后、再下一个换行之前
       const lineEnd = bytes.indexOf('\n', at)
       const nextEnd = lineEnd === -1 ? -1 : bytes.indexOf('\n', lineEnd + 1)
-      const next = nextEnd === -1 ? bytes.slice(lineEnd + 1) : bytes.slice(lineEnd + 1, nextEnd)
-      if (!next.includes('─')) return true
+      // ① 这一行写完没有 ② 下一行写完没有——都在才看内容
+      if (lineEnd !== -1 && nextEnd !== -1 && !bytes.slice(lineEnd + 1, nextEnd).includes('─')) {
+        return true
+      }
     }
     from = at + 1
   }

@@ -180,11 +180,23 @@ describe('U40 · 工具自证', () => {
       expect(hasFreshFrame(wrappedOldFrame(columns), columns)).toBe(false)
     }
 
+    // —— 反例三：**字节停在半截**（规划侧实测打出来的洞）——
+    //    分隔线那一行写完了、下一行还没到：「看不到下一行」被当成「下一行没有横线」就会假阳。
+    //    旧宽重画被折成多段时，观测正好停在第一段之后，就是这一形。
+    const rulerLine = `${ESC}[38;5;66m${DASH.repeat(44)}${ESC}[39m`
+    expect(hasFreshFrame(`${rulerLine}\n`, 44)).toBe(false)
+    //    再往半截里补半个转义序列开头，同样不算数
+    expect(hasFreshFrame(`${rulerLine}\n${ESC}[38;5`, 44)).toBe(false)
+    //    只有一行、连结尾换行都还没有，也不算
+    expect(hasFreshFrame(rulerLine, 44)).toBe(false)
+
     // —— 正例：同一串字节，分隔线按**新宽度**只画一行（下一行是输入行）——
     for (const columns of [44, 70]) {
       const fresh = `${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
       expect(hasFreshFrame(fresh, columns)).toBe(true)
     }
+    //    下一行是**空行**（审批卡那种帧：分隔线下面直接跟空行）也算写完——不能把真帧等成超时
+    expect(hasFreshFrame(`${rulerLine}\n\n › 等你的答复\n`, 44)).toBe(true)
 
     // —— 正例（真会话）：改窗之后应用确实按新宽度画出了整帧 ——
     const session = await createUiSession({ label: '自证-改窗判据', columns: 100, rows: 24, turns: HELLO })
