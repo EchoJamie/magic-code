@@ -602,6 +602,35 @@ describe('退回① · 候选的来源必须辨得出来（两行不能逐字相
   })
 
   /**
+   * **负例回归**（独立验收二轮退回的那条「过正」）：**宽窗下名称放得下就不许截它**。
+   *
+   * 旧行为：名称**无条件**限在一半列宽（100 列下 47 列），于是 60 字符的名字被截，
+   * 而 meta 那边还空着二十来列没用上——把设计「名称/来源在前，简述在后」的优先级
+   * 倒过来了（截断该落在简述身上）。
+   */
+  test('**宽窗（100 列）**：名称整串都在，被截的是简述', async () => {
+    const stage = createStage()
+    const long = 'a'.repeat(60) // front-matter 的名字上限 64——放得下就不该截
+    const note = '这份简述写得很长，长到整行装不下，宽窗下该被截断的是它'
+
+    openSkills(stage, '/skills', [skill(long, { description: note })])
+
+    const lines = (await stage.screen({ columns: 100, rows: 30 })).dock.map((line) => line.text)
+    const row = lines.find((line) => line.includes(long.slice(0, 8)))
+    expect(row).toBeDefined()
+    if (row === undefined) return
+
+    // 名称**整串**都在（旧行为下这里只剩 `a…`）
+    expect(row).toContain(long)
+    // 名称之后紧跟的是那个全角分隔——不是省略号
+    expect(row[row.indexOf(long) + long.length]).toBe('　')
+    // 来源照旧在（它也是「必留」的那一段）
+    expect(row).toContain('项目 .magic/skills')
+    // **截断落在简述身上**
+    expect(row).not.toContain(note)
+  })
+
+  /**
    * **负例回归**：起手即窄（60 列）＋ 56 字符的技能名，来源被名字挤没了。
    *
    * 旧行为：名称优先裁至全宽 ⇒ 两行都只剩同一串截断的名字，连「项目 / 用户」都没了。

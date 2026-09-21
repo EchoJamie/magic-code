@@ -43,11 +43,22 @@ function partsOf(row: PickerRow, columns: number): { label: string; meta: string
   if (row.oneLine !== true) return { label: row.label, meta: row.meta }
 
   const room = Math.max(0, columns - 2 - NUMBER_WIDTH - GAP_WIDTH)
-  // **名称至多占一半**（U33 独立验收退回①）：名字取自 front-matter，可以长到 64 字符；
-  // 让它按需吃满，窄窗下 meta（来源 ＋ 简述）就会被**整段挤掉**——两行同名同档的候选
-  // 于是只剩同一串截断的名字，用户一个依据都没有（真 PTY 反例：60 列 · 56 字符名 ·
-  // 项目/用户两份，连「项目 / 用户」都不见了）。留一半给 meta，来源就总在。
-  const label = clip(row.label, Math.max(1, Math.floor(room / 2)))
+  const nameWidth = inkWidth(row.label)
+  const metaWidth = inkWidth(row.meta)
+
+  // **放得下就一个字都不截**（宽窗的常态）——名称按需拿到它要的，简述也在
+  if (nameWidth + metaWidth <= room) return { label: row.label, meta: row.meta }
+
+  // 放不下时要截谁：设计 · 终端交互「**窄窗先保住名称/来源、再截断简述**」——
+  // 名称与来源在前、简述在后，故**截断落在简述身上**。
+  //
+  // 于是**先给「必留的那一段」（来源）扣出额度**（连它被截时要用的那个省略号），
+  // 剩下的才是名称能拿的：够就一点不截，不够才截它。两头的线各是各的——
+  // - 名称按需吃满而不管来源：60 列 · 56 字符名时连「项目 / 用户」都不见了（真 PTY 反例①）；
+  // - 名称**无条件**限一半：宽窗下先把名称截了、还给简述留着余量，把优先级倒过来（二轮退回）。
+  // - 来源自己太长时（目录名可以很长）保底让它占一半——总不能把名称饿死。
+  const keep = Math.min(inkWidth(row.keep ?? '') + 1, Math.max(2, Math.floor(room / 2)))
+  const label = clip(row.label, Math.max(1, room - keep))
 
   return { label, meta: clip(row.meta, Math.max(0, room - inkWidth(label))) }
 }

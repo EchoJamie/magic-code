@@ -210,6 +210,19 @@ export type PickerRow = {
    * 本单不改）。
    */
   readonly oneLine?: boolean
+  /**
+   * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（技能行里＝来源那半截）。
+   *
+   * 由头（独立验收二轮）：一行的额度是「名称 ＋ meta」两段分，而**截断该落在简述身上**
+   * （设计 · 终端交互：「窄窗先保住名称/来源、再截断简述」）。渲染层光看 `meta` 不知道
+   * 哪一截是来源、哪一截是简述——量错地方就会在宽窗下也去截名称（那正是二轮退回的那条
+   * 「过正」）。故由**造行的人**（它知道哪一段是来源）把这一格交出来，渲染层据它留额度：
+   * 名称按需取，但**先扣掉这一段**。
+   *
+   * ⚠️ 与 `meta` 同源、是它的前缀——两格给同一串不重复：`meta` 是整行要写的字，
+   * 这一格只说「其中哪一部分不许被挤掉」。
+   */
+  readonly keep?: string
 }
 
 /** 选择器（`/session` · `/model` · `/grants` · `/skills`）——**只在左下开，记录区什么都不进**。 */
@@ -1708,6 +1721,8 @@ export function skillRows(
     rows.push({
       label: skill.name,
       meta: `${skill.label} · ${skill.description}`,
+      // **来源那半截必留**（简述在后，先被截）——同名两份分不分得开全看它
+      keep: skill.label,
       current: bound !== null && bound.ref.path === skill.path,
       value: skill.path,
       oneLine: true,
