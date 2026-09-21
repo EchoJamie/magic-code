@@ -371,10 +371,17 @@ describe('U33 · 技能读取的归类', () => {
   })
 
   test('**别的未知工具照旧从严**（兜底那一支没被这一格带松）', () => {
-    const { weight, material } = weigh(call('mcp__x__y', { anything: 1 }))
+    // **原锚**：`mcp__x__y` 走通用兜底、材料含「不在机械分析表内」。
+    // **为何变**（U38）：MCP 命名空间单立了「外部操作」那一支——同样判 heavy，
+    //   但材料按外部件的口径说（身份与参数），那个名字从此不再落进「表外的陌生工具」。
+    // **新锚**：兜底本身换一个表外的名字量；原例子的那层意思（MCP 形状的照旧从严）
+    //   另起一句接住——两条都是 heavy，宽的那条路一条都没开。
+    const fallback = weigh(call('weird_tool', { anything: 1 }))
+    expect(fallback.weight).toBe('heavy')
+    expect(fallback.material).toContain('不在机械分析表内')
 
-    expect(weight).toBe('heavy')
-    expect(material).toContain('不在机械分析表内')
+    const namespaced = weigh(call('mcp__x__y', { anything: 1 }))
+    expect(namespaced.weight).toBe('heavy')
   })
 })
 

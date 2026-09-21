@@ -20,6 +20,8 @@
 
 import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
 import type { Content, Entry, EntryRange, NewEntry, SessionSummary, UsedSkill } from './entries.ts'
+// MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
+import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
 
@@ -712,6 +714,16 @@ export type ToolCall = {
    * 不靠各消费者重新解析参数串（重复劳动，且丢掉「哪一次调用坏了」的定位）。
    */
   readonly invalid?: boolean
+  /**
+   * **外部工具的注册表身份**（U38）——这一位在＝这是一次**外部调用**。
+   *
+   * **来处唯一**：分发查到工具定义之后附上（`ToolDefinition.external` → 此位），
+   * 权限域据它取真实来源与「外部操作」那条呈现口径。**模型侧给不出这一位**——
+   * 模型给的是名字与参数，名字对不对由注册表说了算（参数里写个 `server` 字段冒充来源
+   * 在这儿一文不值）。名字像外部工具而注册表里没有 ⇒ 这一位缺席，权限域仍按外部从严
+   * （见 `analyze`），但材料会说明它**不在已配置的工具表里**。
+   */
+  readonly external?: ExternalToolRef
 }
 
 /**
@@ -1025,6 +1037,7 @@ export type EventStamper = {
 
 /** 必闸判据（危险分级 v0）——命中其一即须闸。 */
 export type DangerReason =
+  | 'external' // 外部操作（效果由服务器决定——U38）
   | 'irreversible' // 不可逆（收不回）
   | 'out-of-bounds' // 越界（工作区之外）
   | 'system' // 系统级（机器全局 / 已装环境）

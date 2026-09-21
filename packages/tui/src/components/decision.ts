@@ -11,6 +11,7 @@
 
 import { Box, Text } from 'ink'
 import { createElement as h } from 'react'
+import { MCP_EXTERNAL_CAVEAT } from '@magic/contracts'
 import type { ReactElement } from 'react'
 import type { PendingDecision } from '../view.ts'
 import { PALETTE } from './lines.ts'
@@ -21,6 +22,9 @@ export type DecisionCardProps = {
 
 export function DecisionCard({ pending }: DecisionCardProps) {
   const heavy = pending.weight === 'heavy'
+  // **外部操作**（U38）：副题不说可逆 / 不可逆（本机判不出效果，只报「效果由服务器决定」），
+  // 且**不给「总是允许」**——它是必闸类（那条授权记不下「外部效果」这个判断）
+  const external = pending.external === true
   const accent = heavy ? PALETTE.danger : PALETTE.warn
   const bar = (line: string, color: string = PALETTE.fg, bold = false): ReactElement =>
     h(Text, { key: `l:${line}` }, h(Text, { color: accent }, '│ '), h(Text, { color, bold }, line))
@@ -28,13 +32,17 @@ export function DecisionCard({ pending }: DecisionCardProps) {
   return h(
     Box,
     { flexDirection: 'column', paddingX: 1, marginTop: 1 },
-    // 标题：工具 · 危险词（· 第几件）
+    // 标题：`名字 · 口径`（· 第几件）——外部操作的名字由权限域给成 `服务器 / 工具`
     h(
       Text,
       null,
       h(Text, { color: accent }, '│ '),
       h(Text, { color: accent, bold: true }, pending.name),
-      h(Text, { color: PALETTE.dim }, ` · ${heavy ? '不可逆' : '可逆'}`),
+      h(
+        Text,
+        { color: PALETTE.dim },
+        ` · ${external ? MCP_EXTERNAL_CAVEAT : heavy ? '不可逆' : '可逆'}`,
+      ),
       pending.position === null
         ? null
         : h(Text, { color: PALETTE.dim }, ` · ${pending.position.index} / ${pending.position.total}`),
@@ -46,8 +54,12 @@ export function DecisionCard({ pending }: DecisionCardProps) {
       Text,
       { key: 'keys' },
       h(Text, { color: accent }, '│ '),
-      keyHint('y', '批准'),
-      keyHint('a', '本工作区总是允许', heavy),
+      // 「这一次」在外部件上**写出来**：它答的正是「批不批这一回」，而不是本机的一条长期授权
+      keyHint('y', external ? '批准这一次' : '批准'),
+      // **外部件不给「总是允许」那一格**（返工 B）：不是划掉，是**不画**——
+      // 划掉在外部件上仍然占着一句话（「本工作区总是允许」），而它对这台服务器根本不适用
+      // （外部效果不由本机裁定）。必闸类照旧划掉（那是「本该有、这件不给」）。
+      ...(external ? [] : [keyHint('a', '本工作区总是允许', heavy)]),
       keyHint('n', '拒绝'),
     ),
   )

@@ -211,6 +211,25 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(app.view().flash).toContain('必闸类不可')
   })
 
+  test('外部操作按 `a`（U38）——**不发命令**，缘由按它自己的说法（效果由服务器决定）', () => {
+    const app = live()
+    app.spy.emit(
+      event(
+        'tool.decision.request',
+        { call: 71, name: 'fake / echo', material: '参数：{}', weight: 'heavy', external: true },
+        { id: 88 },
+      ),
+    )
+
+    app.press({ kind: 'char', char: 'a' })
+    expect(app.commands()).toEqual([])
+    expect(app.view().flash).toContain('外部操作不可「总是允许」')
+    // 说清「这次批的是哪一件」：`y` 在外部件上答的是**这一次**，不是本机的一条长期授权。
+    // **原锚**「按 y 批准这一次」（带键位写法）；**为何变**（返工 B）：一屏键位只说一次，
+    // 卡上已经写着键位，回执里就不再列一遍；**新锚**只说「只能批准这一次」这件事本身。
+    expect(app.view().flash).toContain('只能批准这一次')
+  })
+
   test('**草稿不丢**——接管时收起来、答完原样归还、不自动发送', () => {
     const app = live()
 
