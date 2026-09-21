@@ -1580,11 +1580,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
       }
-      if (arg === 'new') {
-        return only(appendReceipt(cleared, '已新建一条会话（首条消息按下回车才落库）'), {
-          type: 'session.new',
-        })
-      }
+      // **没有回执**（D28甲）：新建说的是「存储什么时候发生」，答不出「影响用户的哪个动作」；
+      // 而它在首条消息之前既不上屏也不落库（D5）。换会话那一路的重建归 `session.state`。
+      if (arg === 'new') return only(cleared, { type: 'session.new' })
       if (arg === 'title' || arg.startsWith('title ')) {
         const title = arg.slice('title'.length).trim()
         if (title === '' || from.sessionId === null) {

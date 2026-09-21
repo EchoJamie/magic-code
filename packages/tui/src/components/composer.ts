@@ -4,7 +4,9 @@
  * 面孔（原型 · 场景 1/3/4/14）：
  * - **常态**：`› ` 青 ＋ 占位或草稿；
  * - **工作中 / 退避中**：提示词转暗 ＋ 占位换成一句「现在打也发不出去」的实话；
- * - **接管中**（`taken`）：提示词转黄 ＋ 占位「等你的答复」——**看得见**（接管三兜底之一）。
+ * ⚠️ **接管态（待裁决）不画这一行**（D29）：那一刻打不进字，整行收走（见 `components/app.ts`
+ * 的 `dockOf`）——草稿与插入点照旧收在 `view.stashed` 里，答完原样归还（`view.ts` 的
+ * `takeOver` / `undock`）。
  *
  * ## 光标（U31）
  *
@@ -22,7 +24,8 @@
  * `setCursorPosition` **在渲染里调**（Ink 文档的用法）：它的传播走 `useInsertionEffect`，
  * 摆在被动 effect 里要等下一帧才生效。量的那一下在 effect 里（量要等布局算完），
  * 结果存进 state——**值没变就还回原对象**，否则「量 → setState → 再渲染」会自激。
- * 输入行不在屏上时（选择器接管 / 接管态）传 `undefined` ＝ 把真光标藏回去。
+ * 输入行不在屏上时（选择器接管）传 `undefined` ＝ 把真光标藏回去；**组件卸载**时 Ink 自己
+ * 也会收（`useCursor` 的 `useInsertionEffect` 清理），故不画它的那些档不会留下光标。
  *
  * ## ⚠️ 量宽只有**一把尺**（返工轮 · 2026-09-20 首轮验收退回①）
  *
@@ -61,7 +64,7 @@ import wrapAnsi from 'wrap-ansi'
 import { PALETTE } from './lines.ts'
 
 /** 输入行的面孔——由外壳按状态算好（显示层不判断）。 */
-export type ComposerTone = 'idle' | 'working' | 'waiting' | 'retrying' | 'taken'
+export type ComposerTone = 'idle' | 'working' | 'waiting' | 'retrying'
 
 export type ComposerProps = {
   readonly draft: string
@@ -106,8 +109,6 @@ export function placeholderOf(tone: ComposerTone): string {
       return '（等模型回来——想插话可以打，发不出去就排队）'
     case 'retrying':
       return '（等模型回来——不用管，退避重试会自动重发）'
-    case 'taken':
-      return '等你的答复'
   }
 }
 
@@ -540,8 +541,7 @@ export function Composer({
   maxLines = Number.POSITIVE_INFINITY,
   columns,
 }: ComposerProps): ReactElement {
-  const taken = tone === 'taken'
-  const promptColor = taken ? PALETTE.warn : tone === 'idle' ? PALETTE.user : PALETTE.dim
+  const promptColor = tone === 'idle' ? PALETTE.user : PALETTE.dim
   const box = useRef(null)
   const { setCursorPosition } = useCursor()
   const [anchor, setAnchor] = useState<Anchor | null>(null)

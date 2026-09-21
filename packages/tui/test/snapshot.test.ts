@@ -104,6 +104,10 @@ const ROWS = 30
  *   **新锚**：开机那一屏＝字标块 ＋ 分隔线 ＋ 输入行 ＋ 状态行。**只有场景 1 那张动**
  *   （其余屏本来就不显示它），且**只少这一行**。
  *
+ * **⑧ 接管态那行输入提示删了（D29）** —— **原锚**＝裁决卡底下那行 `› 等你的答复`；
+ *   **新锚**＝接管态一行输入行都不画（卡与状态行把该说的说完），**动的是场景 4–8 这五张**。
+ *   **反例**：普通工作 / 等模型 / 退避三档的输入行**原样保留**——那三句各说一件别处没有的事。
+ *
  * ⚠️ **先归一化**（`plain`——剥掉 ANSI）：这一层量的是**文字与布局**，而色是**环境**给的
  * （Ink 经 `chalk`，档位看 `FORCE_COLOR` / TTY）。不剥就是**缺陷 D17**：同一个仓、同一份代码，
  * 换个 shell（设了 `FORCE_COLOR` 的工具链 / CI / IDE 集成终端）**21 例当场全红**——
@@ -257,7 +261,7 @@ describe('场景 3 · 工作中（流式）', () => {
 // ══ 场景 4–8（裁决与接管）════════════════════════════════════════════
 
 describe('场景 4 · 待裁决（轻）', () => {
-  test('黄线 ＋ 材料内联 ＋ 三键（含 `a`）；输入行只报「等你的答复」', () => {
+  test('黄线 ＋ 材料内联 ＋ 三键（含 `a`）；接管态**不画输入行**（D29）', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '记录查询优化' }]),
@@ -278,7 +282,12 @@ describe('场景 4 · 待裁决（轻）', () => {
     expect(frame).toContain('│ exec')
     expect(frame).toContain('可逆')
     expect(frame).toContain('本工作区总是允许')
-    expect(frame).toContain('等你的答复')
+    // 原锚＝`toContain('等你的答复')`（D29 那句占位整个没了，规格改由**卡 ＋ 状态行**背书）。
+    // ⚠️ 只数**分隔线之下**那几行——`› ` 在**记录区**是用户消息的标记，整帧里它本来就有。
+    const rows = frame.split('\n')
+    const dock = rows.slice(rows.findLastIndex((line) => /^─{8,}$/u.test(line.trim())) + 1)
+    expect(frame).not.toContain('等你的答复')
+    expect(dock.some((line) => line.trimStart().startsWith('›'))).toBe(false)
     expect(frame).toContain('● 等你定夺')
     expect(frame).toContain('y / a / n')
     expect(frame).toMatchSnapshot()

@@ -152,7 +152,7 @@ describe('输入行', () => {
 })
 
 describe('审批答复（接管）', () => {
-  test('提示出现 → 输入行换成「等你的答复」；按 `y` 作答', async () => {
+  test('提示出现 → **接管**（卡与底行在、输入行收走）；按 `y` 作答', async () => {
     const { app, commands, push } = liveApp()
 
     // 先等首帧落上再投事件（Ink 接管 stdin 之前投的事件不会丢——视图是外壳的；
@@ -169,7 +169,8 @@ describe('审批答复（接管）', () => {
           { id: 88 },
         ),
       ],
-      (frame) => frame.includes('等你的答复'),
+      // 等的锚是**接管到了**（状态行那三个字），不是输入行那句占位——接管态不再画输入行（D29）
+      (frame) => frame.includes('● 等你定夺'),
     )
 
     await app.type('y')
@@ -183,11 +184,15 @@ describe('审批答复（接管）', () => {
     //      之外的档，于是顺手翻成了「常态」。两处互相打架。
     //    - **规格为什么变**：状态行「只放此刻」——答完球就回到内核那边（这一轮还在跑），
     //      底行该说「● 工作中」（U20 真跑留帧时当场看出来的）。
-    //    - **新锚**：同一条规格（接管解除 ⇒ 输入行不再说「等你的答复」）＋ **输入行与底行同口径**
+    //    - **新锚**：同一条规格（接管解除 ⇒ 输入行回来）＋ **输入行与底行同口径**
     //      ——这一轮还在跑 ⇒ 「（工作中——想插话可以打，发不出去就排队）」。
+    //    - **2026-09-22 再收一次锚**（D29）：接管态不画输入行了 ⇒「不再说『等你的答复』」已**恒真**，
+    //      换成它的正题：**输入行回来了**，且卡不在。
     await push([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })],
       (frame) => frame.includes('想插话可以打'))
+    expect(app.frame()).toContain('› ')
     expect(app.frame()).not.toContain('等你的答复')
+    expect(app.frame()).not.toContain('y 批准')
     expect(app.frame()).toContain('● 工作中')
 
     app.unmount()
@@ -206,7 +211,8 @@ describe('审批答复（接管）', () => {
           { id: 88 },
         ),
       ],
-      (frame) => frame.includes('等你的答复'),
+      // 等的锚是**接管到了**（状态行那三个字），不是输入行那句占位——接管态不再画输入行（D29）
+      (frame) => frame.includes('● 等你定夺'),
     )
 
     await app.type('a')
@@ -226,7 +232,8 @@ describe('审批答复（接管）', () => {
         event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
         event('tool.decision.request', { call: 71, name: 'exec', material: 'ls', weight: 'light' }, { id: 88 }),
       ],
-      (frame) => frame.includes('等你的答复'),
+      // 等的锚是**接管到了**（状态行那三个字），不是输入行那句占位——接管态不再画输入行（D29）
+      (frame) => frame.includes('● 等你定夺'),
     )
 
     await app.type('x')

@@ -279,12 +279,11 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
 
   if (view.dock.kind === 'decision') {
-    return [
-      h(DecisionCard, { key: 'card', pending: view.dock.pending }),
-      // 接管期间**没有插入点**（打不进草稿）——`caret: null` ⇒ 真光标藏回去
-      h(Composer, { key: 'composer', draft: '', caret: null, tone: 'taken', columns }),
-      ...flash,
-    ]
+    // **不画输入行**（D29）：接管期间打不进字，那句「等你的答复」与状态行的「● 等你定夺」
+    // 说的是同一件事。材料与键位在卡上、状态与件数在状态行，该说的都在。
+    // ⚠️ 真光标不会因此留在屏上：`Composer` 卸载时 Ink 的 `useCursor` 清理把它藏回去；
+    //    草稿与插入点归 `view.stashed`（`takeOver` / `undock`），与画不画这一行无关。
+    return [h(DecisionCard, { key: 'card', pending: view.dock.pending }), ...flash]
   }
 
   if (view.dock.kind === 'picker') {
@@ -406,7 +405,10 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
       .split('\n')
       .reduce((sum, line) => sum + Math.max(1, wrap(line, Math.max(8, columns - 4)).length), 0)
 
-    return material + 4 + flash
+    // `+ 3` ＝ 卡自己那三行：标题前那一行 `marginTop` · 标题 · 键位行。
+    // ⚠️ 账与屏同源：这里比屏上多算一行，活动区就少一行，矮窗上**真光标高一行**
+    //    （见本文件 `dock` 那一段注）。
+    return material + 3 + flash
   }
 
   if (view.dock.kind === 'picker') {
