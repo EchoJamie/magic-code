@@ -165,37 +165,47 @@ describe('U40 · 工具自证', () => {
     expect(ruler.screen().lines.some((line) => line.text.includes(DASH.repeat(44)))).toBe(true)
     ruler.dispose()
 
-    // —— 反例二：**输出阶段**折行（验收报告点名的那一档）。改窗后应用先按旧宽度画一帧，
-    //    Ink 把旧 100 列分隔线折成 `44/44/12`（70 列下 `70/30`）——都写在字节里。
-    //    只认「正好 N 个横线」会被它骗过：折出来的第一段就是正好 N 个。
-    const wrappedOldFrame = (columns: number): string => {
+    // —— 反例二：**输出阶段**折行（这一族被实测连打出来四次，故**按网格生成**，不举单例）——
+    //    改窗后应用先按旧宽度画一帧，Ink 把旧 W 列分隔线折成 ⌈W/N⌉ 段写在字节里。
+    //    ⚠️ W 是 N 的**整数倍**时，末段就是一段干净的 N 横线、后面还跟着干净行——与真帧一模一样；
+    //    拦它得看**上游**（首段靠下游、末段靠上游、中间两头顶住）。
+    const OLD_WIDTHS = [80, 100, 120, 132, 160] as const
+    const NEW_WIDTHS = [40, 44, 50, 60, 70] as const
+    const foldedOldFrame = (oldWidth: number, columns: number): string => {
       const parts: string[] = []
-      for (let at = 0; at < 100; at += columns) {
-        parts.push(`${ESC}[38;5;66m${DASH.repeat(Math.min(columns, 100 - at))}${ESC}[39m`)
+      for (let at = 0; at < oldWidth; at += columns) {
+        parts.push(`${ESC}[38;5;66m${DASH.repeat(Math.min(columns, oldWidth - at))}${ESC}[39m`)
       }
 
       return `${parts.join('\n')}\n › 交代一件事，回车发送\n`
     }
-    for (const columns of [44, 70]) {
-      expect(hasFreshFrame(wrappedOldFrame(columns), columns)).toBe(false)
+    for (const oldWidth of OLD_WIDTHS) {
+      for (const columns of NEW_WIDTHS) {
+        expect(hasFreshFrame(foldedOldFrame(oldWidth, columns), columns)).toBe(false)
+      }
     }
+    // 整数倍那几格单独点名——四次退回里两次出在这里（半屏分栏：120→60、80→40）
+    expect(hasFreshFrame(foldedOldFrame(120, 60), 60)).toBe(false)
+    expect(hasFreshFrame(foldedOldFrame(80, 40), 40)).toBe(false)
+    expect(hasFreshFrame(foldedOldFrame(120, 40), 40)).toBe(false)
 
-    // —— 反例三：**字节停在半截**（规划侧实测打出来的洞）——
+    // —— 反例三：**字节停在半截**（第二轮实测打出来的洞）——
     //    分隔线那一行写完了、下一行还没到：「看不到下一行」被当成「下一行没有横线」就会假阳。
     //    旧宽重画被折成多段时，观测正好停在第一段之后，就是这一形。
     const rulerLine = `${ESC}[38;5;66m${DASH.repeat(44)}${ESC}[39m`
     expect(hasFreshFrame(`${rulerLine}\n`, 44)).toBe(false)
-    //    再往半截里补半个转义序列开头，同样不算数
     expect(hasFreshFrame(`${rulerLine}\n${ESC}[38;5`, 44)).toBe(false)
-    //    只有一行、连结尾换行都还没有，也不算
     expect(hasFreshFrame(rulerLine, 44)).toBe(false)
 
-    // —— 正例：同一串字节，分隔线按**新宽度**只画一行（下一行是输入行）——
-    for (const columns of [44, 70]) {
-      const fresh = `${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+    // —— 正例（成组）：分隔线按**新宽度**只画一行，两侧都是干净的记录行／输入行 ——
+    for (const columns of NEW_WIDTHS) {
+      const fresh = `› 上一件\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
       expect(hasFreshFrame(fresh, columns)).toBe(true)
+      // 记录行里**偶尔带一个横线**不该把真帧判掉（判的是横线「段」，不是「有没有」）
+      const dashed = `› 用 ─ 分隔的那条记录\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+      expect(hasFreshFrame(dashed, columns)).toBe(true)
     }
-    //    下一行是**空行**（审批卡那种帧：分隔线下面直接跟空行）也算写完——不能把真帧等成超时
+    // 下一行是**空行**（审批卡那种帧：分隔线下面直接跟空行）也算写完——不能把真帧等成超时
     expect(hasFreshFrame(`${rulerLine}\n\n › 等你的答复\n`, 44)).toBe(true)
 
     // —— 正例（真会话）：改窗之后应用确实按新宽度画出了整帧 ——

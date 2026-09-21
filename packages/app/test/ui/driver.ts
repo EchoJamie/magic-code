@@ -838,32 +838,56 @@ function matches(condition: WaitCondition, screen: VtScreen, writtenSinceResize:
   return target !== undefined && target.text.includes(condition.at.text)
 }
 
+/** 一行里最长的一段连续横线——折行段长这样；记录行/输入行不会。 */
+function longestDashRun(line: string): number {
+  let best = 0
+  let run = 0
+  for (const char of line) {
+    run = char === '─' ? run + 1 : 0
+    if (run > best) best = run
+  }
+
+  return best
+}
+
 /**
  * 有没有**按 `columns` 列画出来的那一帧**（见 `WaitCondition.writtenFrame` 的注）。
  *
- * 找到「正好 `columns` 个横线」的那一处（前后不能紧挨横线——100 个横线里切得出 44 个）之后，
- * 要求**这一行的下一行不含横线**：折出来的一串（`44/44/12`、`70/30`）下一行必然还是横线。
+ * 判据是**一整块的结构**：找到「正好 `columns` 个横线」的那一行（前后不紧挨横线——100 个横线里
+ * 切得出 44 个），要求它**上一行与下一行都不是横线段**，且这两行**都写完了**。
  *
- * ⚠️ **「还没看到下一行」不等于「下一行没有横线」**（规划侧实测打出来的洞）：字节正好停在
- * 分隔线那一行的换行之后时，拿剩下的空串去 `includes('─')` 会得到 false ⇒ 一个只写了一半的
- * 旧宽重画就被认成新帧。故**两行的换行都在**才算数——缺一个就说明这一帧还没写完，继续等。
- * （不能改成「下一行必须非空」：审批卡那种帧里分隔线下面就跟着空行。）
+ * 为什么两侧都要看（这一族被实测连打出来四次，每次补一个实例都会再漏一个，故这里按结构收口）：
+ *
+ * - 旧宽重画在输出阶段被 Ink 折成多段。**首段**后面还跟着横线 ⇒ 下游拦；**末段**后面是干净行，
+ *   但**前面**还跟着横线 ⇒ 上游拦；中间两头顶住。W > N 的折行必出 ≥2 段，故两侧一起看就覆盖
+ *   整个折行族。只盯下游时，「旧宽度正好是新宽度的整数倍」（120→60、80→40 这种半屏分栏）
+ *   会漏——末段长得和真帧一模一样。
+ * - 「上一行不存在」（这一行是本段字节的第一行）**不算**上游有横线：改窗后的擦除序列不带换行，
+ *   真帧的分隔线可能正是新写出的第一行。
+ * - 「还没看到的下一行」不等于「下一行没有横线」：字节停在半截时继续等，既不判通过也不判拒绝
+ *   （不能改成「下一行必须非空」：审批卡那种帧里分隔线下面就跟着空行）。
+ *
+ * 比的是**横线段**而不是「这一行里有没有横线」：记录行里偶尔带一个 `─` 不该把真帧判掉。
+ * 真帧两侧是记录行／输入行，不会连着 8 个横线。
  */
 export function hasFreshFrame(bytes: string, columns: number): boolean {
   if (!Number.isInteger(columns) || columns <= 0) return false
   const needle = '─'.repeat(columns)
+  const foldedRun = Math.min(8, columns)
 
   for (let from = 0; ; ) {
     const at = bytes.indexOf(needle, from)
     if (at === -1) return false
-    const before = bytes[at - 1]
-    const after = bytes[at + needle.length]
-    if (before !== '─' && after !== '─') {
+    if (bytes[at - 1] !== '─' && bytes[at + needle.length] !== '─') {
       const lineEnd = bytes.indexOf('\n', at)
       const nextEnd = lineEnd === -1 ? -1 : bytes.indexOf('\n', lineEnd + 1)
-      // ① 这一行写完没有 ② 下一行写完没有——都在才看内容
-      if (lineEnd !== -1 && nextEnd !== -1 && !bytes.slice(lineEnd + 1, nextEnd).includes('─')) {
-        return true
+      // 下一行得写完、且不是折行段
+      if (lineEnd !== -1 && nextEnd !== -1 && longestDashRun(bytes.slice(lineEnd + 1, nextEnd)) < foldedRun) {
+        const lineStart = bytes.lastIndexOf('\n', at - 1)
+        // 上游：只在确有一整行时才判（这一行是本段第一行 ⇒ 上游为空 ⇒ 算干净）
+        if (lineStart === -1) return true
+        const aboveStart = bytes.lastIndexOf('\n', lineStart - 1) + 1
+        if (longestDashRun(bytes.slice(aboveStart, lineStart)) < foldedRun) return true
       }
     }
     from = at + 1
