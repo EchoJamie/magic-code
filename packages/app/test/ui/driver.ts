@@ -494,37 +494,45 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       const step = artifacts.step('wait', { condition, timeoutMs, bytes: artifacts.bytes() })
 
       for (;;) {
+        // 与 `capture` 同一条规矩：**水位先抓、队列紧跟着抓**，两条语句之间没有 `await`
+        // （理由见 `capture` 里那段注）——「等了多久」那一栏的屏与 `bytes` 也据此同刻。
+        const bytes = vt.screenBytes()
         await vt.settled()
         const screen = vt.screen()
         if (matches(condition, screen, sinceResize)) {
           const elapsedMs = (Bun.nanoseconds() - started) / 1e6
-          artifacts.step('wait-ok', { step, matched: describeCondition(condition), elapsedMs: Math.round(elapsedMs) })
+          artifacts.step('wait-ok', {
+            step,
+            matched: describeCondition(condition),
+            elapsedMs: Math.round(elapsedMs),
+            bytes,
+            written: artifacts.bytes(),
+          })
           return { ok: true, matched: describeCondition(condition), elapsedMs, step }
         }
 
         const elapsedMs = (Bun.nanoseconds() - started) / 1e6
         if (elapsedMs >= timeoutMs) {
-          await vt.settled()
-          const last = vt.screen()
-          const plain = last.lines.map((line) => line.text).join('\n')
+          const plain = screen.lines.map((line) => line.text).join('\n')
           const frameStep = artifacts.step('wait-timeout', {
             step,
             condition,
             elapsedMs: Math.round(elapsedMs),
             timeoutMs,
-            bytes: artifacts.bytes(),
+            bytes,
+            written: artifacts.bytes(),
           })
-          const painted = frameOf(paint(last))
+          const painted = frameOf(paint(screen))
           artifacts.frame(
             {
               step: frameStep,
               label: `超时-${describeCondition(condition)}`,
               at: round(elapsedMs),
-              columns: last.columns,
-              rows: last.rows,
-              cursor: last.cursor,
-              scrollback: last.scrollback,
-              total: last.total,
+              columns: screen.columns,
+              rows: screen.rows,
+              cursor: screen.cursor,
+              scrollback: screen.scrollback,
+              total: screen.total,
               styles: painted.styles,
               lines: painted.lines,
             },
@@ -544,7 +552,7 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
             condition,
             timeoutMs,
             elapsedMs,
-            screen: last.lines.map((line) => line.text),
+            screen: screen.lines.map((line) => line.text),
             runDir: artifacts.runDir,
             frameStep,
           })
@@ -562,6 +570,15 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
 
     capture: async (captureOptions = {}) => {
       const label = captureOptions.label ?? '帧'
+      // ⚠️ **水位与屏必须同刻取**（D30）：先抓水位、**紧接着**抓 VT 那条队列——两条语句挨着，
+      //    中间没有 `await`，故随后读到的屏反映的正是这个水位之前的字节。
+      //
+      //    反过来（先 `await settled()` 再读水位）就是 D30：`settled()` 等的是**它被调用那一刻**
+      //    已入队的那些；等它落地的这段时间里应用又写出来的字节会**算进水位、却还没进屏**
+      //    （实测那一趟：帧的屏停在 34488，而帧上标注的是 35721）。实测也确认了「把水位改成
+      //    在 `settled()` 之后、`screen()` 之前读」**不管用**——两条语句同处一个同步块，
+      //    先后无所谓，要挪的是**那个 `await`**。
+      const bytes = vt.screenBytes()
       await vt.settled()
       const screen = vt.screen()
       const plain = screen.lines.map((line) => line.text).join('\n')
@@ -571,7 +588,10 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
         rows: screen.rows,
         cursor: screen.cursor,
         scrollback: screen.scrollback,
-        bytes: artifacts.bytes(),
+        // `bytes` ＝**屏对应的**水位（帧与它同刻）；`written` ＝应用这一刻一共写出了多少
+        // （含正写在半截、还没上屏的那一帧）——两个数不是一回事，别混（见 `Vt.screenBytes`）。
+        bytes,
+        written: artifacts.bytes(),
       })
       const painted = frameOf(paint(screen))
       const n = artifacts.frame(

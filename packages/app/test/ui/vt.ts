@@ -32,6 +32,8 @@
  *    「当前屏」＝ `[viewportY, viewportY + rows)`，其余归存档。
  * 3. **读格前要等写完**——`write()` 是异步解析的，不等回调就读会读到半截屏，故本层
  *    把每次写接成一条**队列**（`settled()` 等它落地）。
+ * 4. **按「同步更新」切帧**（D30）——见 `splitFrames` 的注：应用画一帧是**事务性**的，
+ *    屏上该落的是画完的整帧。
  */
 
 import { Terminal } from '@xterm/headless'
@@ -103,6 +105,17 @@ export type Vt = {
   write(chunk: string): void
   /** 等已喂的字节全部解析完——读屏之前必等（坑 3）。 */
   settled(): Promise<void>
+  /**
+   * **屏对应的字节水位**——已经交给 VT、屏上算数的那一段有多长（见 `splitFrames`）。
+   *
+   * 为什么要有这一格：取了帧就要说得出「这一屏是应用写到哪儿的样子」。它必须与屏
+   * **同刻**取（两条语句挨着、中间不许有 `await`）——不然记下的数落在后面，帧就
+   * 「落后于自己标注的字节数」（D30）。
+   *
+   * ⚠️ 它与「应用一共写出了多少字节」**不是一回事**：应用正写在半截的那一帧还没交出去，
+   * 那一截不算。不认同步更新的应用（如探针）两者恒等。
+   */
+  screenBytes(): number
   /** 改窗口尺寸：**就地**生效（此后的字节按新宽度解）。 */
   resize(columns: number, rows: number): void
   /** 此刻的一屏。 */
@@ -138,6 +151,10 @@ export function createVt(options: VtOptions): Vt {
   let queue: Promise<void> = Promise.resolve()
   let columns = options.columns
   let rows = options.rows
+  /** 收到、但还没交给 VT 的那一截——**应用正写在半截的那一帧**（见 `splitFrames`）。 */
+  let pending = ''
+  /** 已交给 VT 的字节数＝屏对应的水位（`screenBytes`）。 */
+  let consumed = 0
 
   const buffer = (): Terminal['buffer']['active'] => terminal.buffer.active
 
@@ -155,18 +172,29 @@ export function createVt(options: VtOptions): Vt {
     return cells
   }
 
+  /** 交给 VT 解析（接在同一条队列上——次序即语义）。 */
+  const feed = (chunk: string): void => {
+    const next = queue.then(
+      () =>
+        new Promise<void>((resolve) => {
+          terminal.write(chunk, () => resolve())
+        }),
+    )
+    queue = next
+  }
+
   return {
     write: (chunk) => {
-      const next = queue.then(
-        () =>
-          new Promise<void>((resolve) => {
-            terminal.write(chunk, () => resolve())
-          }),
-      )
-      queue = next
+      const { ready, rest } = splitFrames(pending + chunk)
+      pending = rest
+      if (ready === '') return
+      consumed += Buffer.byteLength(ready, 'utf8')
+      feed(ready)
     },
 
     settled: () => queue,
+
+    screenBytes: () => consumed,
 
     resize: (nextColumns, nextRows) => {
       columns = nextColumns
@@ -230,6 +258,85 @@ export function createVt(options: VtOptions): Vt {
 
     dispose: () => terminal.dispose(),
   }
+}
+
+/**
+ * 应用画一帧，两头各发一次「同步更新」——`CSI ?2026h` 起、`CSI ?2026l` 止。
+ *
+ * 这就是 Ink 的帧协议（`ink/build/write-synchronized.js` 的 `bsu` / `esu`，`ink.js` 每次渲染
+ * 两头各写一次；实测本仓外壳的字节流里严格交替出现）。
+ */
+const SYNC_ON = '\u001b[?2026h'
+const SYNC_OFF = '\u001b[?2026l'
+const SYNC_LEN = SYNC_ON.length
+
+/**
+ * 把收到的字节切成「**已经画完的整帧**」与「还在写的那一截」。
+ *
+ * ## 为什么要切
+ *
+ * 认得同步更新的终端，在 `l` 那一下**整帧一次落地**：起手擦掉旧帧、中间那一段（**擦完了
+ * 还没画**）谁也看不见（2026 就是为这个发明的）。不切会出什么，D30 有实测：取帧正好落在
+ * 那个空档里，存下来的帧就是「半截帧」——屏上是空的，而它自己标注的字节数里那一段明明
+ * 已经写出来了。
+ *
+ * ⚠️ **本层的 VT 不认这个开关**：xterm 只**记**这个模式（`modes.synchronizedOutputMode`
+ * 有这一格），缓冲区照样来一块写一块（读它源码见 resetMode/setMode 里那个 `case 2026`——
+ * 只置一位、不推迟任何写入）。所以我们**自己切**：只把画完的整帧交出去。
+ *
+ * ## 怎么切
+ *
+ * `pending` 一定从「块外」开始（上一轮把块外那一段都切走了），故扫一遍就够：
+ *
+ * - 遇 `h` 找配对的 `l`：找着 ⇒ 整帧画完了，切点推过去；找不着 ⇒ **正写在半截**，切点停在 `h` 之前；
+ * - 再没有 `h` ⇒ 后面不会有块了，剩下的全能交（**不认这套协议的应用恒等＝照旧立刻落屏**）；
+ * - `pending` 末尾若是**半个标记**（标记被切在两块之间），这一段也不切——切过去就把
+ *   「还没画完」误判成「画完了」。
+ *
+ * ## 已知限度
+ *
+ * 半截那一帧的**解析**也一并推迟了。真终端推迟的只是**显示**、字节照样即到即解，故
+ * 「一帧写到一半时改窗」这种情形本层与真终端会有出入。应用收到 `SIGWINCH` 之后整帧重画，
+ * 下一帧按新宽度落地，稳态一致；D27 那几条判据看的是**改窗之后的字节**（`writtenFrame`），
+ * 不经这一层，不受影响。
+ */
+function splitFrames(pending: string): { ready: string; rest: string } {
+  let cut = 0
+  let scan = 0
+
+  for (;;) {
+    const open = pending.indexOf(SYNC_ON, scan)
+    if (open === -1) {
+      cut = pending.length
+      break
+    }
+    const close = pending.indexOf(SYNC_OFF, open + SYNC_LEN)
+    if (close === -1) {
+      cut = open
+      break
+    }
+    cut = close + SYNC_LEN
+    scan = cut
+  }
+
+  const at = Math.min(cut, Math.max(0, pending.length - partialMarkerTail(pending)))
+
+  return { ready: pending.slice(0, at), rest: pending.slice(at) }
+}
+
+/**
+ * `pending` 末尾那**半个标记**有多长（不是半个就是 0）——取最长的那一截。
+ *
+ * 标记是逐块到的，`\u001b[?2` 这种半截完全正常；照它算进「画完了」就会漏掉后面那个 `l`，
+ * 于是**永远**停在「块里」、之后一个字节都不落屏。
+ */
+function partialMarkerTail(pending: string): number {
+  for (let len = Math.min(SYNC_LEN - 1, pending.length); len >= 1; len -= 1) {
+    const tail = pending.slice(pending.length - len)
+    if (SYNC_ON.startsWith(tail) || SYNC_OFF.startsWith(tail)) return len
+  }
+
+  return 0
 }
 
 /**
