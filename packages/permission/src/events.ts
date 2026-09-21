@@ -23,6 +23,14 @@ export function decisionRequest(
     readonly name: string
     readonly material: string
     readonly weight: DecisionWeight
+    /**
+     * **外部操作**（U38）——一次外部工具调用（MCP）。**缺省＝不给**（内置工具照旧）。
+     *
+     * 外壳据它换口径（`外部操作 · 效果由服务器决定`）并**不给「总是允许」**——
+     * 那条授权记的是「本机同类操作」，而外部效果**不由本机裁定**（设计：不因服务器自报
+     * 只读 / 幂等就放权）。写成可选位而非布尔必填：既有产出方（内置工具）一字不动。
+     */
+    readonly external?: boolean
   },
 ): KernelEvent {
   return stamper.stamp('tool.decision.request', {
@@ -30,6 +38,8 @@ export function decisionRequest(
     name: input.name,
     material: input.material,
     weight: input.weight,
+    // 只在真为外部时带键（与「缺席可辨、不给假值」同一条口径）
+    ...(input.external === true ? { external: true } : {}),
   })
 }
 

@@ -23,10 +23,11 @@
  * （「批量场景失败先留档再关闭」）。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HINT_IDLE, placeholderOf } from '@magic/tui'
-import { UiWaitTimeout, createUiSession } from './driver.ts'
+import { REPO_ROOT, UiWaitTimeout, createUiSession } from './driver.ts'
 import type { Capture, UiSession, UiSessionOptions } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
 import { readDatabase } from '../support.ts'
@@ -83,6 +84,9 @@ export type ScenarioName =
   | 'missing-text-failure'
   | 'assistant-across-calls'
   | 'isolation-repeat-parallel'
+  | 'mcp-approval'
+  | 'mcp-approval-edge'
+  | 'mcp-underscore-name'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -393,6 +397,431 @@ const modelStreamApproval: Scenario = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 七 · 外部工具（MCP）：发现 → 审批 → 批准真调用 / 拒绝零调用 → 释放
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 外部服务器那一件——**真进程**（用官方 SDK 的服务器面写的那支假服务器）。
+ *
+ * 它也是**判据的出处**：每收到一次调用就往 `FAKE_MCP_LOG` 追一行。故「拒绝时零调用」
+ * 与「批准真调用」这两条读的是**服务器自己数的数**，不是客户端说了什么。
+ */
+const FAKE_MCP_SERVER = join(REPO_ROOT, 'packages', 'mcp', 'test', 'support', 'fake-server.ts')
+
+const mcpApproval: Scenario = {
+  name: 'mcp-approval',
+  title: '外部工具：连上本地服务器 → 审批卡点名服务器/工具 → 批准真调用 · 拒绝零调用 → 退出释放子进程',
+  anchors: 'U38 完成出口：真应用连本地假 stdio 服务器，发现 / 审批 / 调用 / 拒绝 / 释放都有可观察结果',
+  story: async (ui, options) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magic-u38-mcp-'))
+    const log = join(dir, 'fake.jsonl')
+
+    const turns: readonly FixtureTurn[] = [
+      { kind: 'tool', name: 'mcp__fake__echo', args: { text: '第一次外部调用' } },
+      { kind: 'tool', name: 'mcp__fake__echo', args: { text: '第二次外部调用' } },
+      { kind: 'text', text: '外部那两件处理完了' },
+    ]
+
+    const session = await ui.open({
+      label: '场景7-外部工具',
+      columns: 100,
+      rows: 30,
+      turns,
+      config: {
+        // **显式配置**才连（这一条正是「只有配置里写了才拉起进程」的可观察形态）
+        mcp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: 'fake' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    // —— 交代 → 第一张审批卡 ——
+    await session.send('用外部工具回显一句')
+    await session.wait({ text: '› 用外部工具回显一句' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' } })
+    const card = await session.capture({ label: '外部审批卡' })
+
+    ui.check(card.text.includes('fake / echo'), '审批卡点名「服务器 / 工具」', '原锚＝注册表的身份（名字含服务器）')
+    ui.check(
+      card.text.includes('外部操作 · 效果由服务器决定'),
+      '审批卡说的是外部口径（不说可逆 / 不可逆）',
+      '锚＝交互约束给的那一句原话',
+    )
+    ui.check(card.text.includes('第一次外部调用'), '审批卡给了实际业务参数', '')
+    ui.check(card.text.includes('y 批准这一次'), '只给「批准这一次」', '')
+    ui.check(card.text.includes('n 拒绝'), '给了「拒绝」', '')
+    ui.check(
+      !/(^|\s)y 批准(\s|　|$)/u.test(card.text.replace('y 批准这一次', '')),
+      '没有「总是允许」以外的宽放行（外部件只有这一次）',
+      '锚＝卡片正文里不再出现另一处「批准」',
+    )
+    // **还没答**：服务器一次都没被调（拒绝零调用那条的**前置**——卡还挂着时它已经成立）
+    ui.check(mcpCalls(log).length === 0, '卡还挂着时服务器零调用', `日志 ${mcpCalls(log).length} 行`)
+
+    // —— 批准第一件 ——
+    // 敲的是 `y` 这个**字符**（PTY 上按键本来就是它）；⚠️ 绝不能重发：批准不幂等。
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    const approved = await session.capture({ label: '第一次批准后' })
+    ui.check(
+      approved.lines.some((line) => line.includes(TOOL_DONE) && line.includes('第一次外部调用')),
+      '结果行＝完成标记 ＋ 服务器回的那串字',
+      `锚＝结果行「${TOOL_DONE} … · 第一次外部调用」（审批卡里那串参数不算）`,
+    )
+    ui.check(mcpCalls(log).length === 1, '服务器自己数到了那一次调用', `日志 ${mcpCalls(log).length} 行`)
+
+    // —— 第二件：**拒绝** ——
+    await session.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
+    const second = await session.capture({ label: '第二张审批卡' })
+    ui.check(second.text.includes('第二次外部调用'), '第二张卡给的是第二次的参数', '')
+
+    // 等的是**末尾那句答复**，不是 `HINT_IDLE`——拒绝之后那一小段里，状态行会先回一次
+    // 「空闲」（卡收了、下一趟模型还没回来），拿它当条件会**抓到半路**（实测栽过一次：
+    // 取到的帧里没有最后那句答复）。等答复本身，条件与判据才是同一件事。
+    await session.send('n', { until: { text: '外部那两件处理完了' }, timeoutMs: 15_000 })
+    const rejected = await session.capture({ label: '拒绝之后' })
+    ui.check(
+      mcpCalls(log).length === 1,
+      '拒绝＝服务器零调用（计数仍是一次，没有第二次）',
+      `日志 ${mcpCalls(log).length} 行（服务器自己数的）`,
+    )
+
+    // —— 独立核：不看屏，直读记录库 ——
+    const results = await awaitToolResult(session, '第一次外部调用')
+    ui.check(
+      results.some((result) => result.ok && result.text.includes('第一次外部调用')),
+      '记录库里真有一条成功的工具结果',
+      results.length === 0 ? '一条 tool-result 都没有' : `${results.length} 条 tool-result`,
+    )
+    ui.check(rejected.text.includes('外部那两件处理完了'), '拒绝之后这一轮照常走完', '')
+
+    // —— 退出：**自有子进程要收干净**（用户自己的进程不归我们管，那是适配器用例的账）——
+    const child = mcpCalls(log)[0]?.pid
+    ui.check(typeof child === 'number' && isAlive(child as number), '退出之前：子进程还活着', `pid ${child}`)
+
+    await session.close()
+    await waitGone(child as number)
+    ui.check(!isAlive(child as number), '退出之后：本进程拉起的服务器子进程没了', `pid ${child}`)
+
+    // —— 第二幕：**配了一台连不上的服务器**（这是最常见的配置失败）——
+    //
+    // 要看的就一件：用户盼着它的工具出现，结果一件都没有时，**屏上说不说得出是哪一台**。
+    // 同时顺带验「单连接失败不拖垮内置工具」——内置那件照跑（`exec`）。
+    const broken = await ui.open({
+      label: '场景7-连不上',
+      columns: 100,
+      rows: 24,
+      turns: [
+        { kind: 'tool', name: 'exec', args: { cmd: 'echo 内置照常' } },
+        { kind: 'text', text: '好' },
+      ],
+      config: {
+        mcp: { servers: { broken: { command: '/nonexistent/mcp-server-for-u38' } } },
+      },
+      ...where(options),
+    })
+
+    const boot = await broken.capture({ label: '连不上：起手那一句' })
+    ui.check(boot.text.includes('broken'), '连不上的那台服务器被点了名', '锚＝配置里的条目名')
+    ui.check(boot.text.includes('连不上'), '起手那一行说了「连不上」', '锚＝装配的 notice 措辞')
+    ui.check(
+      boot.text.includes('外部工具服务器'),
+      '那句话指着外部工具说的（不是别的告警）',
+      '',
+    )
+
+    await broken.send('跑个内置的')
+    // 内置那件是**轻**的（`exec` 只读命令）⇒ 三键位（`y / a / n`，见 `COPY.decideHint`）
+    await broken.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 10_000 })
+    await broken.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
+    const ran = await broken.capture({ label: '内置工具照常' })
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('内置照常')),
+      '单连接失败不拖垮内置工具（内置那件照跑）',
+      `锚＝结果行「${TOOL_DONE} … · 内置照常」`,
+    )
+    await broken.close()
+
+    // —— 第三幕：**服务器自己还带了一层**（普通后代）——
+    //
+    // 独立验收的固定反例：假服务器 `spawn('/bin/sleep')` 之后再正常退出，那一层会不会
+    // 成为孤儿。这里看的是**入口退出**那条路：应用自己退场（走 `finally` 里的收尾），
+    // 整棵自有子树都得跟着走。
+    const grandLog = join(dir, 'nested.jsonl')
+    const descended = await ui.open({
+      label: '场景7-带后代',
+      columns: 100,
+      rows: 24,
+      turns: [{ kind: 'tool', name: 'mcp__nested__boom', args: {} }],
+      config: {
+        mcp: {
+          servers: {
+            nested: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_MODE: 'descendants', FAKE_MCP_LOG: grandLog, FAKE_MCP_NAME: 'nested' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    const grand = await waitForDescendant(grandLog)
+    ui.check(
+      typeof grand === 'number' && isAlive(grand),
+      '服务器自己拉起的那一层在跑（先确认它真起来了）',
+      `pid ${grand}`,
+    )
+
+    // —— **服务器自己崩**（调用中途没了）——那一层**当场**就该被收 ——
+    //
+    // 这是独立复验退回的那一条的组合：崩过之后再 close，SDK 那侧已经没有 pid 可数了，
+    // 故「数后代」必须发生在**它还活着的时候**（起手与每次调用之前），不能等收尾那一刻。
+    await descended.send('把服务器弄崩')
+    await descended.key('enter', { until: { text: 'y 批准这一次' } })
+    await descended.send('y', { until: { text: '未收到结果' }, timeoutMs: 15_000 })
+
+    await waitGone(grand as number)
+    ui.check(
+      !isAlive(grand as number),
+      '服务器崩了之后：连它带起的那一层也没了（不等谁去 close）',
+      `pid ${grand}`,
+    )
+
+    await descended.key('ctrl+c') // 应用自己退场（收尾那一跳在 cli 的 finally 里）
+    await descended.close({ graceMs: 3_000 })
+    ui.check(!isAlive(grand as number), '应用退出后：那一层仍然不在', `pid ${grand}`)
+
+    rmSync(dir, { recursive: true, force: true })
+  },
+}
+
+/** 等服务器把它拉起的那个后代记进流水（有界——夹具自己写，别无限等）。 */
+async function waitForDescendant(log: string, timeoutMs = 5_000): Promise<number | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (existsSync(log)) {
+      for (const line of readFileSync(log, 'utf8').split('\n')) {
+        if (line.trim() === '') continue
+        const entry = JSON.parse(line) as { kind?: string; pid?: number }
+        if (entry.kind === 'child') return entry.pid
+      }
+    }
+    await Bun.sleep(50)
+  }
+  return undefined
+}
+
+/** 服务器那边的调用流水（判据取它）。 */
+function mcpCalls(log: string): readonly { readonly tool: string; readonly pid: number }[] {
+  if (!existsSync(log)) return []
+  return readFileSync(log, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line) as { tool: string; pid: number })
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitGone(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (isAlive(pid) && Date.now() < deadline) await Bun.sleep(50)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 八 · 外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连
+// ═══════════════════════════════════════════════════════════════════════
+
+/** 长参数那一幕用的正文——够长到必须折行，且**每一段都可辨认**（看帧时对得上）。 */
+const LONG_ARG = `第${'一'.repeat(1)}段：${'甲乙丙丁戊己庚辛壬癸'.repeat(6)}／第二段：${'①②③④⑤⑥⑦⑧⑨⑩'.repeat(3)}`
+
+const mcpApprovalEdge: Scenario = {
+  name: 'mcp-approval-edge',
+  title: '外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连（各留真帧）',
+  anchors: 'U38 返工 B 的四项看帧：窄窗折行、长参数完整、取消只说已停止等待、断连说效果未知',
+  story: async (ui, options) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magic-u38-edge-'))
+    const log = join(dir, 'fake.jsonl')
+
+    // 剧本按次序喂：长参数卡 → 答复 → 拖住（取消）→ 崩掉（断连）→ 收尾
+    const turns: readonly FixtureTurn[] = [
+      { kind: 'tool', name: 'mcp__fake__echo', args: { text: LONG_ARG } },
+      { kind: 'text', text: '第一件完了' },
+      { kind: 'tool', name: 'mcp__fake__slow', args: {} },
+      { kind: 'tool', name: 'mcp__fake__boom', args: {} },
+      { kind: 'text', text: '收工' },
+    ]
+
+    const session = await ui.open({
+      label: '场景8-审批边角',
+      columns: 100,
+      rows: 30,
+      turns,
+      config: {
+        mcp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: 'fake', FAKE_MCP_MODE: 'fast' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    // —— 一 · 长参数：卡上给的是**完整**参数（不外省略号），折行之后仍读得下来 ——
+    await session.send('来件参数长的')
+    // ⚠️ **等草稿上屏再回车**（驱动的坑：`send` 只打字，回车抢在前面就会提交一个空草稿，
+    // 后面的字全留在输入框里，卡永远不来）
+    await session.wait({ text: '› 来件参数长的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 15_000 })
+    const longCard = await session.capture({ label: '长参数卡' })
+    ui.check(longCard.text.includes('甲乙丙丁戊己庚辛壬癸'), '长参数在卡上（头一段在）', '')
+    ui.check(longCard.text.includes('①②③④⑤⑥⑦⑧⑨⑩'), '长参数在卡上（末一段也在，没被截掉）', '')
+
+    // —— 二 · 窄窗：同一张卡，窗宽收到 44 列 ——
+    await session.resize(44, 24)
+    await session.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
+    const narrow = await session.capture({ label: '窄窗里的卡' })
+    ui.check(narrow.columns === 44, 'VT 认了 44 列', `实际 ${narrow.columns}`)
+
+    // 批准掉这一件（免得它一直挂着）——窄窗下的键位照旧可用
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    const ran = await session.capture({ label: '长参数跑完' })
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('第')),
+      '长参数那件真跑完了（结果行）',
+      `锚＝结果行「${TOOL_DONE} …」`,
+    )
+
+    // —— 三 · 取消：拖住的那件，批准之后按中断 ——
+    // ⚠️ 每一步都**等回空闲**再走下一步：并排跑满测试时，抢在上一轮收尾之前敲回车
+    // 会被当成「工作中插话」排队（实测：回车落在收尾那一下，卡姗姗来迟、判据超时）
+    await session.wait({ text: HINT_IDLE })
+    await session.send('再来件拖住的')
+    await session.wait({ text: '› 再来件拖住的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.send('y')
+    // 等「在跑」那一行出现（调用真的发出去了），再中断
+    await session.wait({ text: '运行中' }, { timeoutMs: 10_000 })
+
+    await session.send('\u0003') // ctrl+c：工作中＝中断
+    await session.wait({ text: '已取消' }, { timeoutMs: 10_000 })
+    const canceled = await session.capture({ label: '取消之后' })
+    ui.check(canceled.text.includes('已取消'), '取消那一笔说「已取消」', '')
+    ui.check(
+      canceled.text.includes('取消不等于远端撤销'),
+      '取消不声称远端撤销（只报已停止等待/已发取消请求）',
+      '',
+    )
+
+    // —— 四 · 断连：服务器在途没了 ——
+    await session.wait({ text: HINT_IDLE })
+    await session.send('来件会崩的')
+    await session.wait({ text: '› 来件会崩的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.send('y')
+    // 等**只此一处有**的那一整句：取消那一行的正文里也含「未收到结果」三个字
+    // （「取消不等于远端撤销，未收到结果」），拿它当条件会**抓到前一张卡**
+    await session.wait({ text: '未收到结果，远端可能已执行' }, { timeoutMs: 10_000 })
+    const lost = await session.capture({ label: '断连之后' })
+    // ⚠️ 逐**行**判（不判整段文本）：40 来列的窄窗里这句话会折行，`includes` 一折就断
+    ui.check(
+      lost.lines.some((line) => line.includes('未收到结果')) &&
+        lost.lines.some((line) => line.includes('远端可能已执行')),
+      '断连说「未收到结果，远端可能已执行」（效果未知）',
+      '',
+    )
+    ui.check(
+      lost.lines.some((line) => line.includes('请求发出之后连接断了')),
+      '缘由说人话（不是 SDK 那串 `MCP error -32000`）',
+      '',
+    )
+
+    // —— 收尾：空闲再取一帧（键位与状态行都回到常态）——
+    await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
+    await session.capture({ label: '收尾' })
+
+    rmSync(dir, { recursive: true, force: true })
+  },
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 九 · 下划线开头的合法工具名（返工 C）
+// ═══════════════════════════════════════════════════════════════════════
+
+const mcpUnderscoreName: Scenario = {
+  name: 'mcp-underscore-name',
+  title: '下划线开头的合法工具名：进得了模型工具表，也真调得动',
+  anchors: 'U38 返工 C 的固定反例：官方口径只要求字符集（字母/数字/下划线/连字符/点），不要求首字符',
+  story: async (ui, options) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magic-u38-under-'))
+    const log = join(dir, 'fake.jsonl')
+
+    const session = await ui.open({
+      label: '场景9-下划线工具名',
+      columns: 100,
+      rows: 30,
+      // 模型**自己**点了那个下划线开头的工具——它没进工具表的话，这一件根本调不动
+      turns: [
+        { kind: 'tool', name: 'mcp__fake___echo', args: { text: '下划线也调得到' } },
+        { kind: 'text', text: '好' },
+      ],
+      config: {
+        mcp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: 'fake', FAKE_MCP_MODE: 'under' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    await session.send('调那个下划线开头的')
+    await session.wait({ text: '› 调那个下划线开头的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    const card = await session.capture({ label: '下划线工具的审批卡' })
+
+    ui.check(card.text.includes('fake / _echo'), '卡上点名 `服务器 / 工具`（名字带下划线）', '')
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 20_000 })
+
+    const ran = await session.capture({ label: '下划线工具跑完' })
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('下划线也调得到')),
+      '结果行＝完成标记 ＋ 服务器回的那串字（真调到了）',
+      `锚＝结果行「${TOOL_DONE} … · 下划线也调得到」`,
+    )
+    // 服务器自己数的数：这一件真的被调了一次（不是「未注册的工具」那种答复）
+    ui.check(mcpCalls(log).length === 1, '服务器自己数到了这一件', `日志 ${mcpCalls(log).length} 行`)
+
+    await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
+    await session.capture({ label: '收尾' })
+
+    rmSync(dir, { recursive: true, force: true })
+  },
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // 四 · 故意等不到：结构化失败 ＋ 现场完整 ＋ 清场
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -648,6 +1077,9 @@ export const SCENARIOS: readonly Scenario[] = [
   bootInputResizeExit,
   drawerOpenClose,
   modelStreamApproval,
+  mcpApproval,
+  mcpApprovalEdge,
+  mcpUnderscoreName,
   missingTextFailure,
   assistantAcrossCalls,
   isolationRepeatParallel,

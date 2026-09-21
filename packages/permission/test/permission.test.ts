@@ -339,6 +339,52 @@ describe('判据 5 · 看不懂从严（按不可逆假定问）', () => {
   })
 })
 
+// ══ 技能读取（U33）════════════════════════════════════════════════════
+//
+// 由头：`skill` 是本单新加的一件，而分析表**兜底即从严**（覆盖不到的一律 `heavy · unknown`）。
+// 不给它写一格的话，它每次调用都落进「看不懂」——不只是卡片重了一档：`unknown` 那一档
+// **任何规则都放行不了**（必闸清单即禁区），用户配了规则也永远得手点。
+//
+// ⚠️ 这一格**不是放宽闸门**：它说的是「这是一次只读材料读取」，别的一概没动
+// （兜底那一支一个字未改，别的未知工具照旧 `heavy`）。
+
+describe('U33 · 技能读取的归类', () => {
+  test('`skill` 归**轻**——读的是只读来源，材料里说清是哪一份', () => {
+    const { weight, material } = weigh(call('skill', { name: 'pdf', source: '/home/me/.magic/skills/pdf' }))
+
+    expect(weight).toBe('light')
+    expect(material).toContain('只读材料')
+    expect(material).toContain('pdf')
+    expect(material).toContain('/home/me/.magic/skills/pdf')
+  })
+
+  test('只给名字（没给来源）：仍**轻**——落点由工具入口按已发现身份归位', () => {
+    const { weight, material } = weigh(call('skill', { name: 'pdf' }))
+
+    expect(weight).toBe('light')
+    expect(material).toContain('按名字取')
+  })
+
+  test('技能目录在工作区之外——**照样轻**（读材料不是越界；越界必闸管的是写 / 删 / 移）', () => {
+    const { weight } = weigh(call('skill', { name: 'pdf', source: '/elsewhere/skills/pdf' }))
+    expect(weight).toBe('light')
+  })
+
+  test('**别的未知工具照旧从严**（兜底那一支没被这一格带松）', () => {
+    // **原锚**：`mcp__x__y` 走通用兜底、材料含「不在机械分析表内」。
+    // **为何变**（U38）：MCP 命名空间单立了「外部操作」那一支——同样判 heavy，
+    //   但材料按外部件的口径说（身份与参数），那个名字从此不再落进「表外的陌生工具」。
+    // **新锚**：兜底本身换一个表外的名字量；原例子的那层意思（MCP 形状的照旧从严）
+    //   另起一句接住——两条都是 heavy，宽的那条路一条都没开。
+    const fallback = weigh(call('weird_tool', { anything: 1 }))
+    expect(fallback.weight).toBe('heavy')
+    expect(fallback.material).toContain('不在机械分析表内')
+
+    const namespaced = weigh(call('mcp__x__y', { anything: 1 }))
+    expect(namespaced.weight).toBe('heavy')
+  })
+})
+
 // ══ 判据 3 · 答复流转 ════════════════════════════════════════════════
 
 describe('判据 3 · 答复流转', () => {

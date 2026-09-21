@@ -2,6 +2,8 @@
  * 跨域端口（九签名 ＋ 端口内类型）——已冻结 v0。
  * **阶段 3 加第十条**：`ProjectRules`（项目规约的来源面，U32）——源头是只读文件树，
  * 与既有九条同一条纪律（域间只经契约、域不碰别人的内部）。
+ * **加第十一条**：`Skills`（技能来源面，U33）——同一处境（只读文件树）、同一分工
+ * （读在边界、选与送在对话侧）。
  *
  * 出处：技术方案 · 领域划分（「契约（耦合契约）」· 端口签名 v0 · 依赖规则）。
  * **依赖倒置的落点**——域包只 import `@magic/contracts`（＋许可外部库）；域之间互不 import、
@@ -17,7 +19,9 @@
  */
 
 import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
-import type { Content, Entry, EntryRange, NewEntry, SessionSummary } from './entries.ts'
+import type { Content, Entry, EntryRange, NewEntry, SessionSummary, UsedSkill } from './entries.ts'
+// MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
+import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
 
@@ -397,6 +401,191 @@ export interface ProjectRules {
   load(targets: readonly string[]): RulesLoad
 }
 
+// —— 技能（U33）——
+
+/**
+ * 技能目录的**入口**——同作用域内的两个来源，次序即优先级（原生在前、兼容在后）。
+ *
+ * 与项目规约的两个入口（`AGENTS.md` / `CLAUDE.md`、`.magic/rules` / `.claude/rules`）
+ * **同一条产品原则**：Magic 自身的入口第一，兼容入口只提供**输入格式**（`SKILL.md`）。
+ */
+export type SkillOrigin = 'magic' | 'agents'
+
+/**
+ * 技能的作用域——**在哪儿被发现的**（同名项靠它区分，不靠目录顺序）。
+ *
+ * - `project` —— 工作区根下的 `<root>/.magic/skills` / `<root>/.agents/skills`；
+ * - `user` —— 用户目录下的 `~/.magic/skills` / `~/.agents/skills`；
+ * - `configured` —— 用户**显式配置**的补充目录（`skills.sources` 点名的那些）。
+ *
+ * **项目优先于用户**：同名时项目那份是「这个项目的做法」，用户那份是「我这台机器的习惯」。
+ * `configured` 排在最后——**「Magic 自身第一」**用在这儿＝默认两处（项目、用户）才是主，
+ * 用户点名的补充目录是外来的（与 `ProjectRule.kind` 把 `source` 排最后同一条理由）。
+ */
+export type SkillSource = 'project' | 'user' | 'configured'
+
+/**
+ * **一个被发现的技能**——只有元数据（名称 / 描述），**不含正文**。
+ *
+ * 这是「启动只取得名称与描述」那句话在契约上的落点：列表可以便宜地取（一个目录一项、
+ * 读一份 `SKILL.md` 的 front-matter），正文另有一趟（`Skills.readMain`）。
+ * 正文若跟着列表一起走，那么每次装配提示词都要把仓库里所有技能的全文读一遍——
+ * 「未选中不加载」是设计要的行为，不是优化。
+ *
+ * **格式依据**＝Agent Skills 规范（`SKILL.md`：YAML front-matter 的 `name` / `description`
+ * ＋ Markdown 正文）。**Magic 定义选择、权限与生命周期，外部格式只作适配**——
+ * 故上游的 `allowed-tools` 等扩展**一个都不进这里**：它们不授予 Magic 的任何权限。
+ */
+export type Skill = {
+  /**
+   * 名称——取自 front-matter 的 `name`；它与目录名一致（规范要求，不一致按无效报出）。
+   *
+   * ⚠️ **它不是身份**：同名技能可以来自不同来源，二者都在列、都能被明确选中。
+   */
+  readonly name: string
+  /** 描述——取自 front-matter 的 `description`（模型据它选用，人据它浏览）。 */
+  readonly description: string
+  /**
+   * **技能目录的真路径**（软链接解析之后）——**身份**就在这儿。
+   *
+   * 选定的引用带的是它（`SkillRef.path`），读取按它归位：同名两个来源因此分得开，
+   * 而「失效不换同名项」也才有判据——按同一个真路径找不回来，就是真失效了。
+   *
+   * 它同时是**读取的边界**：技能内的引用（`references/x.md`）只能落在这棵子树里，
+   * 越不出去；但这**不是执行授权**——符号链接解析后的目录是只读来源，
+   * 不扩大执行范围（能从这儿读到，不等于能对它执行工具）。
+   */
+  readonly path: string
+  readonly source: SkillSource
+  readonly origin: SkillOrigin
+  /**
+   * **来源的人读标签**（如「项目 .magic/skills」）——由**发现处**产出（它才知道这一份
+   * 是从哪一类来源的哪个入口长出来的），此后一路照印：系统提示词的目录块、`--check`
+   * 那一行、回执、记录里的 `UsedSkill.label` 用的是**同一串**。
+   *
+   * 一处产出、多处照印的理由同 `GrantRow.describe`：措辞若在两处各写一遍，
+   * 改一处就会漏另一处（而它恰好是用户用来分辨同名技能的那一眼）。
+   */
+  readonly label: string
+}
+
+/**
+ * **一处技能没能照常进来**（读不懂 / 读不到 / 被顶掉）——形态与由头同 `RulesProblem`：
+ * 静默丢弃会让人对着一个不生效的技能发呆。
+ *
+ * - `error` —— **坏了**（`SKILL.md` 缺失 / front-matter 读不懂 / 名称不符规范 / 超限）；
+ * - `choice` —— **有意的取舍**（同名：原生顶掉兼容、项目顶掉用户）——产品按设计做的选择，
+ *   不是故障；用户要能查「我写的那份为什么没生效」，但不该每次开屏被报一句。
+ */
+export type SkillProblem = {
+  /** 出问题的来源（技能目录或文件真路径；连路径都取不到时给用户写的那一串）。 */
+  readonly path: string
+  /** 一句人读得懂的话——说清**是什么、为什么、怎么办**。 */
+  readonly message: string
+  readonly kind: 'error' | 'choice'
+}
+
+/**
+ * **一次技能发现的产物**——都发现了哪些（按优先级排序）＋ 没进来的那些（连同缘由）。
+ *
+ * 与 `RulesLoad` 同一条姿势：**两件一起走**，不分开取——说「有哪几个没进来」与
+ * 「进来了哪几个」是同一件事的两面。
+ *
+ * **没有 `truncated` 这一位**：技能树的形状是死的（一层目录、每目录一份 `SKILL.md`），
+ * 发现面没有「扫不进去的深处」可言；份数上限仍然有（超限的报成 `problems`，
+ * 但它读得到的有哪些是确定的，不像规约那样「没读到的可能正是关键那一份」）。
+ */
+export type SkillCatalog = {
+  /** 发现到的技能——**次序即优先级**（项目 → 用户 → 配置；同作用域内原生 → 兼容）。 */
+  readonly skills: readonly Skill[]
+  /** 没进来的那些——空数组＝全都照常进来了。 */
+  readonly problems: readonly SkillProblem[]
+}
+
+/**
+ * **按需读到的一份技能材料**——读到的是哪一份，正文是什么。
+ *
+ * **不算内容版本**（2026-09-21 用户已定）：技能材料**动态读取**——用的时候读当前内容，
+ * 排队期间文件变了不是缺陷，故不需要 hash / 版本串来锚定「是哪一版」。
+ * 记录侧留下的仍是**来源身份 ＋ 当时实际送出去的正文**（见 `UsedSkillEntry`），
+ * 两者足够说明「当时用了什么」；材料本身不背「版本」这个概念。
+ */
+export type SkillMaterial = {
+  /** 读的是哪一个技能（身份随材料一起走——材料自己说得出自己从哪来）。 */
+  readonly skill: Skill
+  /**
+   * 正文——主文＝去掉 front-matter 的 `SKILL.md` 正文；引用＝那份文件的原文。
+   *
+   * **限长、超限即失败**（不给半截正文）：模型按这份材料干活，掐头去尾的指令比没有更坏。
+   */
+  readonly text: string
+}
+
+/**
+ * 一次技能读取的结果——**判别式，不抛**（与 `ToolResult` 同法）。
+ *
+ * 失败是**正常结果的一种**：技能目录被删了、`SKILL.md` 读不懂、引用的文件不在、
+ * 越出了来源边界——这些都要**定位到来源、如实说清**，而不是一句异常。
+ * 显式选定的技能读不到时，这一次交代**不跑**（不换同名项、不忽略技能继续）——
+ * 那条判断在对话域，「读不到」这个事实在这儿。
+ */
+export type SkillRead =
+  | { readonly ok: true; readonly material: SkillMaterial }
+  | { readonly ok: false; readonly reason: string }
+
+/**
+ * **技能来源面**（执行域实现）——与 `ProjectRules` 同一处境、同一分工：
+ *
+ * - **本端口**只做「**有什么、在哪儿、读到的是什么**」——发现 · 读取 · 解析 · 去重 · 诊断；
+ * - **选哪些、什么时候送**归对话侧：显式选定随提交、模型自主选用经受限读取入口；
+ * - **谁来源、允许读哪些**归装配：用户配置的补充目录随构造入参进实现。
+ *
+ * **不记内容版本**（2026-09-21 用户已定）：材料**动态读取**——用的时候读当前内容，
+ * 排队期间文件变了不是缺陷，故不必也不许拿 hash 锚「是哪一版」。
+ *
+ * ## 一次只读一棵小树，但**每次现扫**
+ *
+ * 与规约同法：不设全仓 watcher、不缓存——改过的技能下一趟就是新的（验收明写：
+ * 「使用技能后修改源文件，再开会话：新调用按刷新后的来源取得内容」）。
+ *
+ * ## 两条边界（都是代码里唯一的入口，不靠自觉）
+ *
+ * - **只读**——只有 `readdir` / `readFile` / `realpath` / `stat`，一个写操作都没有；
+ * - **不能借加载器读任意文件**——发现面只有三处（项目两处、用户两处、用户点名的补充目录），
+ *   读取面只有两处（**已发现身份的**技能目录，与它**来源内**的相对引用）。
+ *   一个越出技能目录的引用（`../..`、绝对路径）不是「读不到」，是**不许读**。
+ *
+ * ## 同步
+ *
+ * 理由同 `ProjectRules`：读的是小文件树，且发现面在**装配系统提示词的同一处**要结果
+ * （那条链是同步的），同步换来的是不必把提示词装配整条改成异步。
+ */
+export interface Skills {
+  /**
+   * 发现——名称 / 描述 / 身份（**不读正文**）。
+   *
+   * 每次调用现扫：目录名与 `SKILL.md` 的 front-matter 就是全部代价，量级同配置加载。
+   */
+  discover(): SkillCatalog
+
+  /**
+   * 取**主文**（`SKILL.md` 正文）——按身份（名称 ＋ 真路径）归位。
+   *
+   * 两个参数**缺一不可**：只给名称的话，同名两条会静默取到先发现的那一条，
+   * 而「不能静默选错技能」要求给的是**明确的身份**。找不到那一对（改名 / 删除 /
+   * 来源变了）＝ `ok: false`，**不退回同名项**。
+   */
+  readMain(name: string, path: string): SkillRead
+
+  /**
+   * 取**来源内的引用**（`references/x.md`、`REFERENCE.md`…）——相对技能目录。
+   *
+   * `relative` 必须是**相对路径且落在技能目录内**：绝对路径、`..` 越出、经软链接绕出去，
+   * 一律拒绝（那是「越出技能来源」，仍经各自边界——不因为它在技能里就放行）。
+   */
+  readReference(name: string, path: string, relative: string): SkillRead
+}
+
 /** 装配 → 控制域（外壳经传输接入）。 */
 export interface ControlHub {
   /** 命令 → 各域。 */
@@ -525,6 +714,16 @@ export type ToolCall = {
    * 不靠各消费者重新解析参数串（重复劳动，且丢掉「哪一次调用坏了」的定位）。
    */
   readonly invalid?: boolean
+  /**
+   * **外部工具的注册表身份**（U38）——这一位在＝这是一次**外部调用**。
+   *
+   * **来处唯一**：分发查到工具定义之后附上（`ToolDefinition.external` → 此位），
+   * 权限域据它取真实来源与「外部操作」那条呈现口径。**模型侧给不出这一位**——
+   * 模型给的是名字与参数，名字对不对由注册表说了算（参数里写个 `server` 字段冒充来源
+   * 在这儿一文不值）。名字像外部工具而注册表里没有 ⇒ 这一位缺席，权限域仍按外部从严
+   * （见 `analyze`），但材料会说明它**不在已配置的工具表里**。
+   */
+  readonly external?: ExternalToolRef
 }
 
 /**
@@ -546,6 +745,15 @@ export type ToolResult = {
   readonly content: Content
   /** 该次 `tool.call` 事件的 id（链引用）。 */
   readonly callRef: RecordId
+  /**
+   * **这一次调用交付了一份技能主文**（U33）——只有读技能的那件工具会带，其余一律不带。
+   *
+   * 由头：模型**自主**取技能时，「实际使用」的回执得由**知道那是哪一份材料**的人交出身份。
+   * 说话的是工具（它读的），发回执的是对话域（只有它知道材料什么时候真进了模型请求）。
+   * 中间这条结构化通道是必须的——**不能靠匹配结果正文的抬头去猜**（那是拿一句给人看的
+   * 文案当跨域协议，改个措辞就断）。取**引用**那一趟不带它：「后续引用不重复报整项技能」。
+   */
+  readonly skill?: UsedSkill
 }
 
 // —— 权限域 ——
@@ -829,6 +1037,7 @@ export type EventStamper = {
 
 /** 必闸判据（危险分级 v0）——命中其一即须闸。 */
 export type DangerReason =
+  | 'external' // 外部操作（效果由服务器决定——U38）
   | 'irreversible' // 不可逆（收不回）
   | 'out-of-bounds' // 越界（工作区之外）
   | 'system' // 系统级（机器全局 / 已装环境）

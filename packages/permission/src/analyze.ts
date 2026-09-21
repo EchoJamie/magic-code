@@ -13,7 +13,14 @@
  * 必闸清单才是自动放行禁区（U14）。
  */
 
-import type { DangerReason, DecisionWeight, PermissionContext, ToolCall } from '@magic/contracts'
+import type {
+  DangerReason,
+  DecisionWeight,
+  ExternalToolRef,
+  PermissionContext,
+  ToolCall,
+} from '@magic/contracts'
+import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
 import type { SegmentAnalysis } from './commands.ts'
 import { OP_LABEL, OP_REASON, WRITE_OPS, decompose } from './commands.ts'
 import type { RuleOp } from './ops.ts'
@@ -38,10 +45,20 @@ export type Analysis = {
   readonly ops: readonly RuleOp[]
   /** **影响面词条**——路径模式的对照面（与越界判据同一处产出）。 */
   readonly landings: readonly Landing[]
+  /**
+   * **卡上那个名字**（U38）——缺省（不给这一位）＝ `ToolCall.name`（内置工具照旧）。
+   *
+   * 外部工具给的是 **`服务器 / 工具`**：身份由注册表来，措辞由本域一处产出
+   * （外壳不自己拼字符串——两处各拼一份，改一处漏一处）。
+   */
+  readonly title?: string
+  /** **这一次是外部操作**（U38）——外壳据以换口径（效果由服务器决定）、不给「总是允许」。 */
+  readonly external?: boolean
 }
 
 /** 必闸判据的中文（材料用——呈现是给人的）。 */
 const REASON_LABEL: Readonly<Record<DangerReason, string>> = {
+  external: '外部操作（效果由服务器决定）',
   irreversible: '不可逆（收不回）',
   'out-of-bounds': '越界（工作区之外）',
   system: '系统级（机器全局 / 已装环境）',
@@ -49,8 +66,9 @@ const REASON_LABEL: Readonly<Record<DangerReason, string>> = {
   unknown: '看不懂（无法归类——按不可逆假定问）',
 }
 
-/** 判据的代表序——具体优先（越界 / 系统 / 外发 ＞ 不可逆 ＞ 看不懂）。 */
+/** 判据的代表序——具体优先（外部 / 越界 / 系统 / 外发 ＞ 不可逆 ＞ 看不懂）。 */
 const REASON_ORDER: readonly DangerReason[] = [
+  'external',
   'out-of-bounds',
   'system',
   'outbound',
@@ -61,6 +79,74 @@ const REASON_ORDER: readonly DangerReason[] = [
 /** 取代表判据（多中时按 `REASON_ORDER`）。 */
 function representative(reasons: readonly DangerReason[]): DangerReason | undefined {
   return REASON_ORDER.find((reason) => reasons.includes(reason))
+}
+
+// —— 外部工具（MCP · U38）——
+
+/**
+ * 取这次调用的**外部身份**——两处来路，**都不是模型能自报的**：
+ *
+ * 1. `call.external` ＝**注册表给的**（分发查表之后附上）——**权威**，它在就用它；
+ * 2. 名字的形态（`mcp__<服务器>__<工具>`）——注册名由内核合成，名字对不对**由注册表说了算**
+ *    （执行那一步会查表；表里没有就是「未注册的工具」，跑不起来）。用它是为了**从严**：
+ *    一个抄了外部名字、却没在表里的调用**照样按外部问**，不会掉进更宽的那条路。
+ *
+ * 参数里写个 `server` 字段冒充来源在这两处都一文不值——本域从头到尾不读它。
+ */
+function externalOf(call: ToolCall): ExternalToolRef | undefined {
+  return call.external ?? parseMcpToolName(call.name)
+}
+
+/**
+ * 外部操作——**一律必闸**（`weight: 'heavy'`），且**不给规则放行的口子**。
+ *
+ * 三条判据各有出处：
+ * - **必闸**——「第一版沿用未知外部操作的人工闸门」（设计明文）；禁区的判据不押规则作者的
+ *   自觉，故命中了任何规则也照问（`gate.ts` 的「必闸 ＞ 规则」那一格）；
+ * - **不因自报放权**——服务器自报的只读 / 幂等（MCP 的 `annotations`）**不进这里**，
+ *   也不影响 `weight`（`defineMcpTools` 那侧就不读它）。重试同理：不是「它说幂等」就能重放；
+ * - **不说可逆 / 不可逆**——本机判不出效果，口径由契约那句 `MCP_EXTERNAL_CAVEAT` 说了算
+ *   （卡上的副题由外壳渲染，本域只给身份与 `external` 那一位）。
+ *
+ * 材料只给**参数**（卡上的标题已经是 `服务器 / 工具 · 外部操作 · 效果由服务器决定`）——
+ * 一屏上的每一条各说一件别处没说的，别把身份再说一遍。
+ */
+function analyzeExternal(
+  call: ToolCall,
+  ref: ExternalToolRef,
+  registered: boolean,
+): Analysis {
+  const lines: string[] = []
+
+  // 名字像外部工具、可注册表里没有它——说清这一件（它仍按外部问，不会掉到宽的那条路上）
+  if (!registered) {
+    lines.push('这一件不在已配置的服务器工具表里（名字像外部工具，但注册表里没有它）。')
+  }
+  if (call.invalid === true) {
+    lines.push('参数解析不出（模式不符 / JSON 残缺）——调用形态不可信。')
+  }
+
+  lines.push('参数：', ...parameterLines(call.args))
+
+  return {
+    weight: 'heavy',
+    reason: 'external',
+    material: lines.join('\n'),
+    // 操作类型记 `unknown`（判不出它做了什么）——它同时保证没有规则命中这一格
+    // （规则是「工具 × 路径模式 × 操作类型」，而必闸类本来就够不着规则那条路）
+    ops: ['unknown'],
+    landings: [],
+    title: mcpToolLabel(ref),
+    external: true,
+  }
+}
+
+/** 业务参数的呈现——**折叠但完整**（不给省略 JSON：审批看的就是这一份实际参数）。 */
+function parameterLines(args: Readonly<Record<string, unknown>>): readonly string[] {
+  const json = JSON.stringify(args, null, 2)
+  // 参数不是可序列化的值（循环引用一类）——照实说，不编一个空对象糊过去
+  if (json === undefined) return ['（参数无法序列化——原样如下）', String(args)]
+  return json.split('\n')
 }
 
 // —— 参数取值 ——
@@ -134,6 +220,11 @@ export function unclassifiable(tool: string, why: string): Analysis {
  * （`exec` · `write`）在此**按调用落定**——这正是「按调用判定」的落点。
  */
 export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
+  // **外部调用先认身份**（U38）——参数解析得出与否都不改变「这是一次外部操作」：
+  // 身份有两处来路，都**不是模型说的**（见 `externalOf`）。
+  const external = externalOf(call)
+  if (external !== undefined) return analyzeExternal(call, external, call.external !== undefined)
+
   // 参数都没解析出来，工具名与参数都不可信——最先归「看不懂」
   if (call.invalid === true) {
     return unclassifiable(call.name, '参数解析不出（模式不符 / JSON 残缺）——调用形态不可信')
@@ -151,8 +242,50 @@ export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
       return analyzeEdit(call, ctx)
     case 'write':
       return analyzeWrite(call, ctx)
+    case 'skill':
+      return analyzeSkill(call, ctx)
     default:
       return unclassifiable(call.name, `工具「${call.name}」不在机械分析表内`)
+  }
+}
+
+/**
+ * **技能读取**（`skill` · U33）——**只读材料，一律轻**。
+ *
+ * ⚠️ 这一格**必须显式写**（不能只靠 `ToolSpec.danger: 'light'` 声明）：
+ * 分析表覆盖不到的形态一律兜底 `heavy`（「漏判即按看不懂入单」），
+ * 而 `ToolSpec.danger` **不参与**这条判定——不写这一格，`skill` 每次调用都会弹卡。
+ *
+ * **为什么是轻**：它读的是**技能目录**（只读来源），不是工作区里的动作，
+ * 与「放行区：读与搜索」同类。而**边界不由这一格担保**——能读哪些由工具入口
+ * （`Skills` 端口）按已发现身份与来源内相对引用卡死：`..` 越出、绝对路径、
+ * 软链接绕出去，在那边就拒了。闸门这一层只需要知道「这不是一次写动作」。
+ *
+ * **不收回执的落点**：不因为 `skill` 是「本单新加的」，就顺带放宽别的未知工具——
+ * 兜底那一支一个字没动（`default` 仍是 `unclassifiable`）。
+ *
+ * **影响面词条**（`landings`）取 `source`（技能目录路径，模型给了才认）——
+ * 它的用途是规则轴比对（工具 × 路径模式 × 操作类型），故照实给；给不出来就不给
+ * （缺省＝只按名字取，那条路在工具入口里归位，不涉及「模型指了哪儿」）。
+ * ⚠️ 技能目录**可能在**工作区之外（用户目录下的 `~/.magic/skills`）：`landPath`
+ * 照旧算出 `inside: false`，但那**不构成越界必闸**——必闸清单的越界条目管的是
+ * 「工作区外的**写 / 删 / 移**」，读材料不在此列（同 `analyzeSearch` 那条口径）。
+ */
+function analyzeSkill(call: ToolCall, ctx: PermissionContext): Analysis {
+  const source = firstString(call.args, (key) => key === 'source')
+  const path = firstString(call.args, (key) => key === 'name')
+
+  const where =
+    source === undefined
+      ? '技能目录（按名字取，落点由工具入口按已发现的身份归位）'
+      : `技能目录 ${source.value}`
+  const what = path === undefined ? '技能材料' : `技能「${path.value}」的正文或引用`
+
+  return {
+    weight: 'light',
+    material: [`读的是一份只读材料：${what}`, `来源：${where}`].join('\n'),
+    ops: ['read'],
+    landings: source === undefined ? [] : [landPath(source.value, ctx)],
   }
 }
 

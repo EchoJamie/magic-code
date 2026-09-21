@@ -97,6 +97,62 @@ export const editFailedOutput = (reason: string): string => `编辑失败：${re
 export const searchFailedOutput = (reason: string): string => `搜索失败：${reason}`
 export const listFailedOutput = (reason: string): string => `列目录失败：${reason}`
 
+// —— 外部工具（MCP · U38）——
+//
+// 措辞的两条口径（交互约束 ·「MCP 查询、审批与失败恢复」）：
+// - **不称远端撤销**——取消只报「已停止等待 / 已发取消请求」这个实际结果；
+// - **不判效果**——超时与断连都**可能已经执行**，故一律写「未收到结果，远端可能已执行」，
+//   把「要不要重试」交回用户（恢复也不自动重放效果不明的调用）。
+
+/**
+ * 超时 / 断连——**效果未知**是这两条共同的那件事。
+ *
+ * `reason` 是适配器给的原委（哪条服务器、什么错），本域只加这一句名分、不改它的措辞
+ * （同沙箱报文那一条：`ExecResult` 的原委原样带出）。
+ */
+export const externalFailedOutput = (reason: string): string =>
+  `未收到结果，远端可能已执行；核对后再决定是否重试（${reason}）`
+
+/**
+ * **这一次压根没发出去**（连接未建立 / 已释放 / 已断开）。
+ *
+ * 与上面那条分得很开：那条是**效果未知**（要人核对），这条**什么都没发生**——
+ * 不许把「没发出去」也说成「远端可能已执行」（吓人，且教模型做无谓的核对）。
+ */
+export const externalNotSentOutput = (reason: string): string =>
+  `未发出——本次调用没有送出去（${reason}）；远端不会执行`
+
+/**
+ * 取消（`Ctrl+C` 打断在途）——已停止等待 ＋ 已发取消请求，仅此两件事实。
+ *
+ * 不带适配器给的缘由：那一位在**在途取消**这一路上恒是「已发出取消请求」（前半句刚说过），
+ * 缀上就是同一句话说两遍。**发出去之前**就被取消的那一路不走这儿（那是「没发出去」，
+ * 见 `externalNotSentOutput`）——两者的事实不同，措辞也就该不同。
+ */
+export const externalCanceledOutput = (): string =>
+  '已取消——已停止等待并发出取消请求（取消不等于远端撤销，未收到结果）'
+
+/** 服务器自己说这次错了（MCP 的 `isError`）——**调用是成了的**，是「结果如此」。 */
+export const externalRefusedOutput = (text: string): string =>
+  text === '' ? '外部工具报错（服务器没给说明）' : `外部工具报错：${text}`
+
+/** 回来了但没有内容——说清这一趟是成功的，免得空输出被读成失败。 */
+export const externalEmptyOutput = (): string => '[服务器回了空结果——这次调用是成功的]'
+
+/**
+ * 非文本部件（图片 / 音频 / 资源）——**明确标示暂不支持**，不静默丢。
+ *
+ * 报类型与字节数两件：读的人据此知道「有这么个东西、多大」，而**内容本版不解析**
+ * （终端显示与模型图像部件各有各的单元，不在这条链上顺手做）。
+ */
+export const externalPartNote = (
+  type: string,
+  mimeType: string | undefined,
+  bytes: number | undefined,
+): string =>
+  `[${type} 部件${mimeType === undefined ? '' : `（${mimeType}）`}` +
+  `${bytes === undefined ? '' : `：${bytes} 字节`}——本版不解析这类内容，未保留]`
+
 /** 工具名不在注册表内——不抛，照实回填（炸掉循环不是工具域该干的事）。 */
 export const unknownToolOutput = (name: string): string => `未注册的工具：${name}`
 

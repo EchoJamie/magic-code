@@ -33,6 +33,15 @@
 
 export { createToolRuntime } from './dispatch.ts'
 
+/**
+ * **一个 MCP 连接 → 它的工具定义**（U38）——`options.tools` 那个追加出口的**现成一件**。
+ *
+ * 装配拿它把外部工具接进同一张注册表（**没有第二个工具来源**：审批、取消、记录、回填
+ * 走的都是 `createToolRuntime` 那一条链）。传进来的连接是 `@magic/contracts` 的端口——
+ * 客户端封在适配器（`@magic/mcp`）后面，本域不认识 MCP。
+ */
+export { defineMcpTools } from './mcp-tools.ts'
+
 // —— ② 构造入参形态 ——
 
 export type { ToolRuntimeOptions } from './runtime.ts'
@@ -40,3 +49,11 @@ export type { ToolRuntimeOptions } from './runtime.ts'
 // —— ③ 工具定义的形态（`options.tools` 的类型——U13 的入口）——
 
 export type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.ts'
+
+/**
+ * **技能读取入口**（U33）——`options.tools` 的第一位真消费者。
+ *
+ * 它是**追加**出口上的一件，不替换默认集：「机制在内、工具集在外」说的是可插拔，
+ * 而这一件要的依赖（`Skills` 端口）不在本域默认那七件的射程里——由装配把它造好递进来。
+ */
+export { defineSkillTool } from './skill-tool.ts'

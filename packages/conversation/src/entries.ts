@@ -6,9 +6,10 @@
  *
  * | kind | 正文（`content`） | 载荷（`payload`） |
  * | --- | --- | --- |
- * | `user` / `assistant` | 正文（超阈值转 blob） | ——（非工具条目不带载荷） |
+ * | `user` | **用户的话**（超阈值转 blob） | ——，或随这次交代送出去的技能材料（U33） |
+ * | `assistant` | 正文（超阈值转 blob） | —— |
  * | `tool-call` | 空 | `{ name, args }`——**重放真源** |
- * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物 |
+ * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物；读技能的那件另带交付身份（U33） |
  * | `summary` | 摘要全文（超阈值同样转 blob） | ——（阶段 3 压缩的产物，见 `./compact.ts`） |
  *
  * **工具结果为什么两个字段各载一样**（第 2 轮 · 契约补锚）——契约 `ToolResult` 载**两样输出**：
@@ -30,6 +31,8 @@ import type {
   Timestamp,
   ToolCall,
   ToolResult,
+  UsedSkill,
+  UsedSkillEntry,
 } from '@magic/contracts'
 
 /** 落账的依赖束——记录面 ＋ 时钟 ＋ 阈值（由循环的构造入参给出）。 */
@@ -56,6 +59,14 @@ export type ToolOutcome = {
   /** 记录侧形态——条目载荷（与该次 `tool.result` 事件的 `output` 同物）。 */
   readonly content: Content
   /**
+   * **这次调用交付了一份技能主文**（U33）——只有读技能的那件工具会带（从 `ToolResult` 原样过来）。
+   *
+   * 落进条目载荷，为的是**自主选用那一路也留下来源身份**：没有它的话，
+   * 日后要认「这一轮读的是哪个技能」就只能去抠回填正文的抬头（那是拿一句给人看的文案
+   * 当跨域协议）。显式那一路的身份在 `UserPayload`，这一路在这条载荷上，两处各记各的账。
+   */
+  readonly skill?: UsedSkill
+  /**
    * **压根没跑**（规约重审扣下 / 材料超限停批——本域唯一的两种产生处，见 `agent-loop.ts`
    * 的 `withholds`）。`ok` 分不开「没有开始」与「跑了没成」，故另记一位，与事件同源。
    * 缺省 ＝ 未标（工具域回来的结果都不是它）。
@@ -65,7 +76,13 @@ export type ToolOutcome = {
 
 /** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
 export function toolOutcomeOf(result: ToolResult): ToolOutcome {
-  return { ok: result.ok, text: result.output, content: result.content }
+  return {
+    ok: result.ok,
+    text: result.output,
+    content: result.content,
+    // 交付身份**原样过手**（有就带、没有就不带——不补 `undefined` 占位）
+    ...(result.skill === undefined ? {} : { skill: result.skill }),
+  }
 }
 
 /** 正文条目（`user` / `assistant`）——落账并回 id（事件按它引用这条内容）。 */
@@ -75,6 +92,30 @@ export async function appendTextEntry(
   text: string,
 ): Promise<RecordId> {
   return log.records.appendEntry({ kind, content: await contentOf(text, log), at: log.now() })
+}
+
+/**
+ * **用户交代**条目（U33）——正文是用户的话，载荷是随它一起送出去的材料。
+ *
+ * 两处各归其位（与工具条目**反着来**，理由见契约 `UsedSkillEntry`）：用户条目的正文
+ * 用户自己也要读（屏上那一行就是他说的话），几 KB 的技能正文拼进去，恢复会话时那面墙
+ * 就顶在眼前；而载荷不进屏、进上下文。
+ *
+ * **没有技能时一字不多**（`skills.length === 0` 就不写这个键）：纯文本交代的条目
+ * 与加这一条之前逐字同形——旧库照读，旧用例照绿（验收第一条：
+ * 「现有纯文本输入兼容」）。
+ */
+export async function appendUserEntry(
+  log: EntryLog,
+  text: string,
+  skills: readonly UsedSkillEntry[],
+): Promise<RecordId> {
+  return log.records.appendEntry({
+    kind: 'user',
+    content: await contentOf(text, log),
+    ...(skills.length === 0 ? {} : { payload: { skills } }),
+    at: log.now(),
+  })
 }
 
 /**
@@ -103,6 +144,7 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): Reco
     payload: {
       ok: outcome.ok,
       output: outcome.content,
+      ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
       ...(outcome.notExecuted === undefined ? {} : { notExecuted: outcome.notExecuted }),
     },
     at: log.now(),

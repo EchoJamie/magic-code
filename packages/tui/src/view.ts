@@ -25,6 +25,19 @@ import type {
   SessionId,
   SessionSummary,
 } from '@magic/contracts'
+import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
+
+/**
+ * 工具行上那个名字（U38）——**外部工具的注册名不照抄**。
+ *
+ * 注册名（`mcp__<服务器>__<工具>`）是**编码**（为的是跨服务器唯一），给人看的写法是
+ * `服务器 / 工具`——与审批卡同一个形态（契约 `mcpToolLabel` 一处产出，两处同形）。
+ * 内置工具名照旧（`exec` 就写 `exec`）。
+ */
+function toolNameOf(name: string): string {
+  const external = parseMcpToolName(name)
+  return external === undefined ? name : mcpToolLabel(external)
+}
 
 // ══ 记录区（三类行）══════════════════════════════════════════════════
 
@@ -124,6 +137,13 @@ export type PendingDecision = {
   /** 判断材料——diff / 命令分解 / 影响面（**内联**，不另套容器）。 */
   readonly material: string
   readonly weight: DecisionWeight
+  /**
+   * **这是一次外部操作**（U38 · 来自 `tool.decision.request.data.external`）。
+   *
+   * 两处据它换口径：副题改说 `外部操作 · 效果由服务器决定`（**不说可逆 / 不可逆**——
+   * 本机判不出），以及**不给「总是允许」**（划掉，同必闸类那条姿态）。缺席＝内置工具。
+   */
+  readonly external?: boolean
   /**
    * 多件裁决的**第几件 / 共几件**（原型 · 场景 7：件数报两处——卡上 ＋ 状态行）。
    * 单件时 `null`（不报数）。
@@ -533,6 +553,22 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'session.history':
       return view
 
+    // 技能使用回执（U33）——**主文确实进了本次上下文**之后内核才发这一条
+    // （见契约 `skill.used`）：故它到了＝这件事成了，回执照说。
+    // 一行一项，措辞与内核给的来源标签一致（`label` 由内核产出，外壳照印——
+    // 恢复时也一样，见条目载荷里那一栏）。
+    case 'skill.used':
+      return appendReceipt(
+        view,
+        `本次使用技能：${event.data.skills.map((one) => `${one.name}（来源 ${one.label}）`).join(' · ')}`,
+      )
+
+    // 提交的收场（U33）——**只有「没跑」那一格进记录区**：收下了的那一条不必报
+    // （同一件事 `turn.start` 的「正在干活」已经在说，再补一句就是每提交一次添一行噪声）。
+    // 没跑的那一条**必须出声**：这一条交代一个字都没发出去，用户得知道为什么。
+    case 'input.settled':
+      return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
+
     case 'model.error':
       return patchStatus(
         appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`),
@@ -597,7 +633,7 @@ function appendToolFragment(
         kind: 'tool',
         key: `tool:${providerId === undefined ? `d${id}` : `tc:${providerId}`}`,
         call: null,
-        name: name ?? '工具',
+        name: name === undefined ? '工具' : toolNameOf(name),
         argsText: text,
         args: null, // 流式片段不全——结构化那份要等 `tool.call`
         state: 'running',
@@ -608,7 +644,11 @@ function appendToolFragment(
     )
   }
 
-  return patchTool(view, target, (row) => ({ ...row, name: name ?? row.name, argsText: row.argsText + text }))
+  return patchTool(view, target, (row) => ({
+    ...row,
+    name: name === undefined ? row.name : toolNameOf(name),
+    argsText: row.argsText + text,
+  }))
 }
 
 type ToolCallData = Extract<KernelEvent, { kind: 'tool.call' }>['data']
@@ -623,7 +663,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
         kind: 'tool',
         key: `tool:call:${id}`,
         call: id,
-        name: data.name,
+        name: toolNameOf(data.name),
         argsText: argsJson(data.args),
         args: data.args,
         state: 'running',
@@ -639,7 +679,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
 
   return patchTool(view, target, (row) => ({
     ...row,
-    name: data.name,
+    name: toolNameOf(data.name),
     call: id,
     argsText: argsJson(data.args),
     args: data.args,
@@ -730,6 +770,8 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
         name: data.name,
         material: data.material,
         weight: data.weight,
+        // 外部操作（U38）——只在真为外部时带键（缺席可辨：内置工具一字不动）
+        ...(data.external === true ? { external: true } : {}),
         position,
       },
     },
@@ -1166,12 +1208,14 @@ function clearFlash(view: ShellView): ShellView {
 export function withDecisionStatus(view: ShellView): ShellView {
   if (view.dock.kind !== 'decision') return view
 
-  const { position, weight } = view.dock.pending
+  const { position, weight, external } = view.dock.pending
 
   return patchStatus(view, {
     state: 'waiting',
     amount: position === null ? null : `${position.index}/${position.total}`,
-    hint: weight === 'heavy' ? HINT_DECIDE_HEAVY : HINT_DECIDE_LIGHT,
+    // **外部件右位留空**（返工 B）：卡上已经写了 `y 批准这一次 / n 拒绝`，
+    // 一屏上的键位**只说一次**（交互约束那条）——状态行再列一遍就是同一件事说两遍。
+    hint: external === true ? '' : weight === 'heavy' ? HINT_DECIDE_HEAVY : HINT_DECIDE_LIGHT,
   })
 }
 

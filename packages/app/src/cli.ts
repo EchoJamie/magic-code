@@ -14,8 +14,8 @@
  *   启动参数那一入口）；会话中途换模型走 `--script` 的 `{ "switch": … }` 步骤。
  */
 
-import type { KernelEvent } from '@magic/contracts'
-import { TOOLSET_V1 } from '@magic/contracts'
+import type { KernelEvent, SkillCatalog } from '@magic/contracts'
+import { TOOLSET_V1, sanitizeForDisplay } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import { assemble } from './assembly.ts'
@@ -43,7 +43,8 @@ const USAGE = `magic —— 软件工程智能体
   magic --check                把配置、数据存哪、工作区、会话挨个查一遍，查完就退出
   magic --script <文件>        无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
 
-脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型），
+脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型，
+写成 {"input": {…}} 就是带结构化信息的交代——如随这次交代绑定一个技能），
 decisions 是替你给的答复。写法与实例见 README 的「脚本（--script）」一节。
 脚本替你答复只是图个方便，不是产品行为——平时该定夺的仍是你。
 `
@@ -133,19 +134,25 @@ async function readScript(path: string): Promise<ShellScript> {
   const inputs = (parsed as { inputs?: unknown }).inputs
   if (!Array.isArray(inputs) || !inputs.every(isStep)) {
     throw new Error(
-      `脚本的 inputs 须是数组，元素为字符串（交代）或 {"switch":{…}}（换模型）：${path}`,
+      `脚本的 inputs 须是数组，元素为字符串（交代）、{"switch":{…}}（换模型）` +
+        `或 {"input":{…}}（带结构化信息的交代）：${path}`,
     )
   }
 
   return parsed as ShellScript
 }
 
-/** 一步的形态判据——交代（字符串）或换模型（`{ switch: … }`）。 */
+/** 一步的形态判据——交代（字符串）· 换模型（`{ switch: … }`）· 一整份结构化交代（`{ input: … }`）。 */
 function isStep(value: unknown): boolean {
   if (typeof value === 'string') return true
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
-  const step = (value as { switch?: unknown }).switch
-  return typeof step === 'object' && step !== null && !Array.isArray(step)
+
+  const step = value as { readonly switch?: unknown; readonly input?: unknown }
+  const shape = (one: unknown): boolean => typeof one === 'object' && one !== null && !Array.isArray(one)
+  // 两形取其一——`{switch}` 与 `{input}` 各判各的（写混了不该被猜中）
+  if (step.switch !== undefined) return shape(step.switch)
+  if (step.input !== undefined) return shape(step.input)
+  return false
 }
 
 async function countEntries(assembly: Assembly): Promise<number> {
@@ -202,8 +209,13 @@ function report(assembly: Assembly): void {
   console.log(`  权限规则　${describeRules(assembly)}`)
   // 项目规约（U32）——**哪儿有、有几份、有没有没进来的**（来源 / 范围的按需诊断；读的就是当前那份文件）
   console.log(`  项目规约　${describeProjectRules(assembly)}`)
+  // 技能（U33）——**发现了哪些、有哪些没读进来**（`SKILL.md` 读不懂的那些只在 `--check` 露头：
+  // 模型那一侧另有一份「没能读进来的技能」，但用户看不见模型手上的提示词）
+  console.log(`  技能　　　${describeSkills(assembly)}`)
   // 授权（U22）——`a` 点出来的那一类：**落在哪个文件、有几条、有没有陈旧的节**
   console.log(`  授权　　　${describeGrants(assembly)}`)
+  // 外部工具（U38）——**配了哪几台、连上没有、各有几件工具**（这一行是 `/mcp` 之前的眼睛）
+  console.log(`  外部工具　${describeMcpServers(assembly)}`)
   console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')
 }
 
@@ -319,6 +331,47 @@ function describeProjectRules(assembly: Assembly): string {
   return lines.join('\n')
 }
 
+/**
+ * 技能那一行（U33）——**报「发现了哪些、有哪些没读进来」**。
+ *
+ * 为什么这一行非有不可：技能的坏法**只有这一处露头**。模型那一侧确实会拿到
+ * 「〔没能读进来的技能〕」（系统提示词里），但**用户看不见模型手上的提示词**——
+ * 「我写的那个技能为什么没生效」若无人可问，用户就只能对着目录发呆。
+ * 与项目规约那一行同一条由头（审计第 13 条：解析从严要让用户看得见）。
+ *
+ * 报的是**这次装配会用的那几处**（项目 / 用户 / 配置点名的），不列路径——
+ * 名字与来源标签已经够对上号，而这一屏还有别的事要说。
+ */
+function describeSkills(assembly: Assembly): string {
+  const catalog = assembly.readSkills()
+
+  const head =
+    catalog.skills.length === 0
+      ? '无（放 .magic/skills/<名称>/SKILL.md 就来；模型只看到名称与描述，正文按需再取）'
+      : `${catalog.skills.length} 个：` +
+        catalog.skills.map((skill) => `${skill.name}（${skill.label}）`).join(' · ')
+
+  const broken = catalog.problems.filter((problem) => problem.kind === 'error')
+  const chosen = catalog.problems.filter((problem) => problem.kind === 'choice')
+  const lines = [head]
+
+  // 一条占两行（路径一行、缘由一行）——同项目规约那一处的理由：缘由里带绝对路径与整句说明，
+  // 摞一行在八十列终端上会从中间折断，而这一屏正是拿来对着改的地方。
+  const stated = (problems: SkillCatalog['problems']): string =>
+    problems
+      .map((problem) => `${CONTINUATION}· ${problem.path}\n${CONTINUATION}  ${problem.message}`)
+      .join('\n')
+
+  if (broken.length > 0) {
+    lines.push(`${CONTINUATION}⚠️ 有 ${broken.length} 个没读进来：`, stated(broken))
+  }
+  if (chosen.length > 0) {
+    lines.push(`${CONTINUATION}另有 ${chosen.length} 条按规矩让位：`, stated(chosen))
+  }
+
+  return lines.join('\n')
+}
+
 /** 续行的缩进——与标签列对齐（照「数据落点」那一处的先例）。 */
 const CONTINUATION = '             '
 
@@ -340,6 +393,41 @@ function describeGrants(assembly: Assembly): string {
   const stale = view.stale.length === 0 ? '' : ` · ⚠️ 陈旧的节 ${view.stale.length} 个（路径已不在——/grants 里撤）`
 
   return `${head} · ${assembly.grantsPath}${stale}`
+}
+
+/**
+ * 外部工具那一行（U38）——**配了哪几台 · 连上没有 · 各有几件工具**。
+ *
+ * 三件都要报，因为它们是三件事：**没配**（`mcp.servers` 空——不是错，是常态）与
+ * **配了却连不上**（用户盼着它的工具出现，结果一件都没有）完全是两种处境，
+ * 报成一样的话，后一种人就只能对着空气发呆。
+ *
+ * 连不上时**报缘由**（不省略成「不可用」）：缘由就是用户要改的那一处（命令写错、
+ * 包没装、没权限），`--check` 这一屏正是对着改的地方（同规约那一条的先例）。
+ */
+function describeMcpServers(assembly: Assembly): string {
+  const servers = assembly.mcpServers()
+  if (servers.length === 0) return '无（配置里写 mcp.servers 才连——工作区里的配置文件不算授权）'
+
+  return servers
+    .map(({ server, state, tools, rejected }) => {
+      if (state.status === 'unavailable') return `${server}（连不上：${state.reason}）`
+      if (state.status === 'connecting') return `${server}（连接中）`
+
+      const head =
+        tools.length === 0
+          ? `${server}（连上了，没有工具）`
+          : `${server}（${tools.length} 件：${tools.join(' · ')}）`
+      if (rejected.length === 0) return head
+
+      // **拒收的那几件逐条摆出来**（返工 B）：服务器自报的名字原样可能带控制字节，
+      // 故显示前先洗一遍；一条一行，说清是哪一件、为什么没收
+      const lines = rejected.map(
+        (one) => `${CONTINUATION}⚠️ 拒收「${sanitizeForDisplay(one.tool)}」：${one.reason}`,
+      )
+      return [`${head} · ⚠️ 拒收 ${rejected.length} 件`, ...lines].join('\n')
+    })
+    .join(' · ')
 }
 
 /**
@@ -460,6 +548,16 @@ async function main(): Promise<number> {
   }
 
   try {
+    // **外部工具的发现**（U38）——等已配置的 MCP 服务器「起手 → 发现」落定（各自有界）。
+    //
+    // 放在**放开输入之前、起外壳之前**：设计明文「首轮模型请求前完成发现」。起手其实在
+    // `assemble()` 里就发车了，这里只是收口——故它不是「多等一趟」，是「等到该等的那一趟」。
+    // 连不上的那几条不会拖垮谁：它们落成「不可用 ＋ 缘由」，自检与开屏回执里各说一句。
+    //
+    // 三条入口都收在这一处（界面 / 脚本 / 自检）——**不各接一遍**：三处都要求「发现已完成」，
+    // 各写一遍就有漏一处的那天。
+    await assembly.ready()
+
     // **`--session` 的那道校验**（U28 · 台账随批小修 8）：库里没有这条会话就**报错退场**。
     //
     // 由头：`--session s-typo` 照 id 装载一条**空的**——用户以为接上了，其实没有。
@@ -508,6 +606,9 @@ async function main(): Promise<number> {
     await tui.waitUntilExit()
     return 0
   } finally {
+    // **收尾两跳**（U38）：先等外部服务器释放（关 stdin → 等 → 杀，规范里的次序），
+    // 再关库。反过来的话，还活着的工具调用会写进一个已经关掉的事务。
+    await assembly.shutdown()
     assembly.close()
   }
 }

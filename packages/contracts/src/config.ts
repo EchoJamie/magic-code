@@ -8,6 +8,7 @@
  * 本文件是共享语言中**唯一带物的地方**——两个无依赖纯函数（规则载体）；其余皆类型。
  */
 
+import type { McpConfig } from './mcp.ts'
 import type { ModelTraits } from './ports.ts'
 
 /** 配置文件落点。 */
@@ -153,8 +154,30 @@ export type RulesConfig = {
 }
 
 /**
+ * 技能段（**阶段 3 加键** · U33）——**补充的技能目录**。
+ *
+ * 默认的技能来源已经有两处，都不必配置：工作区根下的 `.magic/skills` / `.agents/skills`，
+ * 与用户目录下的同两个（见 `SkillSource`）。这一键接住的是第三种情形：
+ * **别处的技能目录**——团队共享盘上的一份、另一套工具装的那一摞。
+ *
+ * **点名的目录正文会按需读进来**（与 `rules.sources` 同法）：它是**技能目录**
+ * （其下每个子目录是一个技能），也可以直接指向某一个技能目录本身。
+ *
+ * **优先级最低**（`SkillSource` 的 `configured`）：Magic 自身的两处入口才是主，
+ * 点名的目录是补充——同名时后两者赢。
+ *
+ * ⚠️ **只读来源的配置，不是执行授权**：写进来只说明「这些技能可以读」，
+ * **不改变**任何工具能不能碰它（两个技能目录里的脚本照旧走各自的权限边界）。
+ */
+export type SkillsConfig = {
+  /** 补充的技能目录（绝对路径；前导 `~` 由加载器展开，同 `dataDir` / `workspaceRoots`）。 */
+  readonly sources?: readonly string[]
+}
+
+/**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
- * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots` / `rules`**。
+ * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots` / `rules` / `skills`**；
+ * **首批功能加键 `mcp`**（U38）。
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
@@ -167,6 +190,19 @@ export type MagicConfig = {
   readonly workspaceRoots?: WorkspaceRoots
   /** 项目规约段（阶段 3 · U32）——见 `RulesConfig`；**键缺省＝只有两处默认来源**。 */
   readonly rules?: RulesConfig
+  /** 技能段（阶段 3 · U33）——见 `SkillsConfig`；**键缺省＝只有默认两处来源**。 */
+  readonly skills?: SkillsConfig
+  /**
+   * **外部工具服务器**（U38）——见 `McpConfig`（形制在 `mcp.ts`）。
+   *
+   * **键在即连那几条**：这是「用户显式配置」的唯一落点——**只有配置里写了才去拉起进程**。
+   * 工作区里出现 `.mcp.json` 一类文件**不算授权**（设计明文：仓库出现配置文件不等于获准
+   * 运行其中的启动命令）；本键缺省＝一个外部服务器都不连（内置工具照常）。
+   *
+   * ⚠️ **漏带＝静默失效**（同权限段 / 工作区根两条的教训）：配置里写了服务器而加载器不接，
+   * 外部工具就一件都出不来，且不报错。
+   */
+  readonly mcp?: McpConfig
 }
 
 /**
