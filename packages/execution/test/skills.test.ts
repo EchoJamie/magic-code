@@ -226,6 +226,60 @@ describe('U33 · 来源标签', () => {
       land.dispose()
     }
   })
+
+  /**
+   * **负例回归**（U33 独立验收退回①）：同档同名的两份，标签必须分得开。
+   *
+   * 旧行为：两份都报 `项目 .magic/skills` —— 候选列表里两行**逐字相同**，
+   * 用户没有任何依据挑一份（真 PTY 反例）。
+   */
+  test('**同一处两份同名的**——标签带上位置，两行不再逐字相同', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      // 名字取 front-matter 那一个、**不取目录名**（见文件头注）——故「同一处两份同名」
+      // 是真能出现的：`first/` 与 `second/` 都自称 `twins`
+      put(land.at, '.magic/skills/first/SKILL.md', skillText('twins'))
+      put(land.at, '.magic/skills/second/SKILL.md', skillText('twins'))
+
+      const labels = skillsOf([land.at], home)
+        .discover()
+        .skills.map((skill) => `${skill.name}=${skill.label}`)
+
+      expect(labels).toEqual([
+        'twins=项目 .magic/skills/first',
+        'twins=项目 .magic/skills/second',
+      ])
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /**
+   * 位置**只在名字没说的时候补**：目录名与技能名相同（绝大多数技能）就不补——
+   * 补上只会让 `技能：pdf · 项目 .magic/skills/pdf（待发送）` 里白白重复一个 `pdf`。
+   */
+  test('目录名与技能名相同 ⇒ 标签照旧两段（不带位置）；不同则带上（软链接那一路同理）', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      put(land.at, '.magic/skills/pdf/SKILL.md', skillText('pdf'))
+      // 软链接：用户目录里那个名字叫 `linked`，链子那头那份自称 `audit`
+      put(land.at, 'elsewhere/audit/SKILL.md', skillText('audit'))
+      symlinkSync(join(land.at, 'elsewhere/audit'), join(land.at, '.magic/skills/linked'))
+
+      const labels = skillsOf([land.at], home)
+        .discover()
+        .skills.map((skill) => `${skill.name}=${skill.label}`)
+
+      expect(labels).toEqual([
+        'audit=项目 .magic/skills/linked',
+        'pdf=项目 .magic/skills',
+      ])
+    } finally {
+      land.dispose()
+    }
+  })
 })
 
 // —— ③ 读不懂的不认（有诊断） ——

@@ -27,9 +27,9 @@ import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import { bannerOf } from '../banner.ts'
 import type { Shell, ShellKey } from '../shell.ts'
-import type { CompletionState, LogRow, ShellView } from '../view.ts'
+import type { BoundSkill, CompletionState, LogRow, ShellView } from '../view.ts'
 import { groupHeads, hasRunningTool } from '../view.ts'
-import { Composer, draftHeight, type ComposerTone } from './composer.ts'
+import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
@@ -288,13 +288,15 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   }
 
   if (view.dock.kind === 'picker') {
-    return [h(PickerList, { key: 'picker', picker: view.dock.picker }), ...flash]
+    return [h(PickerList, { key: 'picker', picker: view.dock.picker, columns }), ...flash]
   }
 
   return [
     ...(view.completion === null
       ? []
-      : [h(Completion, { key: 'completion', completion: view.completion })]),
+      : [h(Completion, { key: 'completion', completion: view.completion, columns })]),
+    // 草稿材料（U33）——**紧挨输入行之上**（原型：选择器 → 草稿材料 → 输入行那个次序）
+    ...(view.bound === null ? [] : [h(SkillLine, { key: 'materials', bound: view.bound, columns })]),
     h(Composer, {
       key: 'composer',
       draft: view.draft,
@@ -307,23 +309,76 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   ]
 }
 
-/** 自动补全的候选（D12）——列在输入行**上方**：名字 ＋ 一句话说明，选中那条高亮。 */
-function Completion({ completion }: { readonly completion: CompletionState }): ReactElement {
+/**
+ * **草稿材料那一行**（U33）——`技能：名称 · 来源（待发送）`。
+ *
+ * 它凭什么常驻（规约：常驻的每一格都得答得出「影响用户的哪个动作」）：它说的是一件
+ * **正在成立的事**——这条草稿一按回车，这份技能的主文就会跟着一起送出去。用户据此
+ * 决定「要不要先换一份 / 先摘掉」（`/skills` 里那一行），而不是等模型回来才知道发错了。
+ *
+ * 三件都在字面上：**名称**（选的是谁）· **来源**（同名两份靠它分）· **（待发送）**
+ * （此刻还没出去——主文没加载、模型没请求）。三段一句不多：这块屏上再没有第二个地方
+ * 说这件事（`本次使用技能：…` 那条回执说的是**已经用了**，是另一件事、另一个时点）。
+ *
+ * 宽度按 `clip` 截（一段一段截：名称那段先保住，它才是「选的是哪一份」的落点）。
+ */
+function SkillLine({
+  bound,
+  columns,
+}: {
+  readonly bound: BoundSkill
+  readonly columns: number
+}): ReactElement {
+  const room = Math.max(1, columns - 2) // 盒子 `paddingX: 1`
+  const head = clip(`技能：${bound.ref.name}`, room)
+  const tail = clip(` · ${bound.label}（待发送）`, Math.max(0, room - inkWidth(head)))
+
+  return h(
+    Box,
+    { flexDirection: 'column', paddingX: 1 },
+    h(
+      Text,
+      null,
+      h(Text, { color: PALETTE.user }, head),
+      h(Text, { color: PALETTE.dim }, tail),
+    ),
+  )
+}
+
+/**
+ * 自动补全的候选（D12）——列在输入行**上方**：名字 ＋ 一句话说明，选中那条高亮。
+ *
+ * 说明那半截**截到一行装得下**（`clip`）：技能名进了候选之后（U33），说明取自用户写的
+ * `description`，可以很长——折一行，交互区的高度账就少算一行（`dockHeightOf` 一行一条数），
+ * 矮终端上动态帧正好顶满 ⇒ 真光标高一行（U31 三轮那条老病）。故这一栏**每条都担保一行**。
+ */
+function Completion({
+  completion,
+  columns,
+}: {
+  readonly completion: CompletionState
+  readonly columns: number
+}): ReactElement {
   return h(
     Box,
     { flexDirection: 'column' },
-    ...completion.candidates.map((candidate, index) =>
-      h(
+    ...completion.candidates.map((candidate, index) => {
+      const marker = index === completion.selected ? '› ' : '  '
+      // 这一栏没有内边距：整行就是屏宽 —— 扣掉标记（2 列）与名字、以及中间那个全角空格（2 列）
+      const room = Math.max(0, columns - 4 - inkWidth(candidate.name))
+      const summary = clip(candidate.summary, room)
+
+      return h(
         Text,
         { key: `c:${candidate.name}` },
         h(
           Text,
           { color: index === completion.selected ? PALETTE.user : PALETTE.faint, bold: index === completion.selected },
-          `${index === completion.selected ? '› ' : '  '}${candidate.name}`,
+          `${marker}${candidate.name}`,
         ),
-        h(Text, { color: index === completion.selected ? PALETTE.dim : PALETTE.faint }, `　${candidate.summary}`),
-      ),
-    ),
+        h(Text, { color: index === completion.selected ? PALETTE.dim : PALETTE.faint }, `　${summary}`),
+      )
+    }),
   )
 }
 
@@ -385,7 +440,11 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
   // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。
   // ⚠️ 与渲染**同一处**算（`composerLayout`）——折行、折叠、「上面/下面还有 N 行」
   //    那两行都算在内；各算一套迟早对不上（D11 那条「行高与实际不符」就是这么来的）。
-  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash
+  // 草稿材料那一行（U33）也在这笔账里：它**担保一行**（`SkillLine` 按宽度截），
+  // 故正好 +1——`dockOf` 画一行，这里数一行。
+  const materials = view.bound === null ? 0 : 1
+
+  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + materials + flash
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */

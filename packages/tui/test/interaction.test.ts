@@ -129,7 +129,8 @@ describe('输入行', () => {
     await app.type('\r')
     await app.waitForFrame((frame) => frame.includes('交代一件事'))
 
-    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区' }])
+    // `ref` ＝ 提交的配对键（U33）——`input.settled` 按它认回这份草稿
+    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区', ref: 'draft-1' }])
 
     app.unmount()
   })

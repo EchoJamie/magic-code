@@ -110,6 +110,8 @@ export type EventKind =
   | 'session.history'
   // 控制 · 权限——**授权名录**（U22）：`grants.list` 的答复 ＋ 撤销之后的回话；**不落库**
   | 'grants.catalog'
+  // 控制 · 技能——**技能目录**（U33）：`skills.list` 的答复；**不落库**
+  | 'skills.catalog'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -165,6 +167,68 @@ export type GrantRow = {
    * 外壳只照着标。⚠️ 标出来**不删**：删用户数据不归内核。
    */
   readonly stale: boolean
+}
+
+/**
+ * 技能目录的一行——`skills.catalog` 的载荷（U33 · 终端入口）。
+ *
+ * **只有元数据**（名称 / 简述 / 来源身份），**不含正文**——与端口侧的「启动只发现名称与
+ * 描述」是同一条规矩：外壳列个候选不该把仓库里所有技能的主文读一遍，主文到真实提交那一刻
+ * 才取（`Skills.readMain`）。
+ *
+ * 形态为什么不直接借端口侧的 `SkillCatalog`：`events` 是共享语言的地基，而那个类型在
+ * `ports.ts`（它反过来 import 本文件）——`events → ports → events` 会绕成一个环。故此处
+ * 照列一排（同 `ModelCatalogRow` 之于注册表条目、`GrantRow` 之于权限域的授权）：
+ * **事件面上只出现读得出来的那几格**。
+ */
+export type SkillCatalogRow = {
+  /** 名称——敲 `/<名称>` 时敲的就是它（`Skills.readMain` 的身份两件之一）。 */
+  readonly name: string
+  /** 简述——取自 `SKILL.md` 的 front-matter（人据它浏览，模型据它选用）。 */
+  readonly description: string
+  /**
+   * 技能目录的**真路径**——**身份**就在这儿（`Skill.path`）。
+   *
+   * 选定带的是它（`SkillRef.path`）：同名两份来源因此分得开，而「失效不换同名项」
+   * 也才有判据——按同一个真路径找不回来，就是真失效了。
+   */
+  readonly path: string
+  /**
+   * 来源的**人读标签**（如「项目 .magic/skills」）——发现处产出、外壳照印
+   * （候选那一行要让人一眼分得出同名的是哪一份）。
+   */
+  readonly label: string
+  /**
+   * **同名直达时的先后**（端口侧 `Skill.source` / `Skill.origin` 的原样搬运）。
+   *
+   * 为什么这两格要随目录一起下来：`/<名称>` 直达是**用户敲的名字**，得当场分出「取哪一份」
+   * ——次序是发现面给的（`source` 项目 → 用户 → 配置；同作用域 `origin` 原生 → 兼容），
+   * 而外壳只看得到一个数组，**分不出「排在前头」与「同一档里并列」**。并列时不能静默挑一个
+   * （那等于随目录顺序蒙），故把这两格带上：外壳据它们判「唯一确定没有」。
+   *
+   * ⚠️ **两个联合在此**照写**，不 import 端口侧那两个名字**（`SkillSource` / `SkillOrigin`）：
+   * 本文件被 `ports.ts` import，反向再引会绕成一个环；而共享语言里 `export *` 出去的同名
+   * 两份会**静默消失**（含糊导出），谁也用不成。两处同形是**一件事的两个入口**
+   * （端口侧是「发现面怎么说的」、事件面是「读出来的是哪几格」），不是两个概念
+   * ——同 `SessionSummary.workspace` 之于配置的 `WorkspaceRoots`。
+   */
+  readonly source: 'project' | 'user' | 'configured'
+  readonly origin: 'magic' | 'agents'
+}
+
+/**
+ * **一处技能没能照常进来**——形态同端口侧 `SkillProblem`（同一条环的由头，见 `SkillCatalogRow`）。
+ *
+ * 两类的分量不同（端口侧那条注写全了）：`error` 是**坏了**（用户必须知道，
+ * 因为他写的那份压根没生效），`choice` 是**有意的取舍**（同名被顶掉——产品按设计做的选择，
+ * 不是故障，不该每次开屏被报一句）。
+ */
+export type SkillProblemRow = {
+  /** 出问题的来源（技能目录或文件真路径；连路径都取不到时给用户写的那一串）。 */
+  readonly path: string
+  /** 一句人读得懂的话——说清**是什么、为什么、怎么办**。 */
+  readonly message: string
+  readonly kind: 'error' | 'choice'
 }
 
 /**
@@ -475,6 +539,26 @@ export type EventDataOf = {
     /** 一句话说明——只在有事要说时给（读不懂的条目 / 一条授权都没有 / 文件没读到）。 */
     readonly note?: string
   }
+  // 控制 · 技能——**技能目录**（U33 · 终端入口）。`skills.list` 的答复。
+  // **不落库**：与 `model.catalog` / `grants.catalog` 同一条——它是**读出来的**
+  // （技能目录本来就在盘上），落库＝把同一张表存 N 遍；且 `/skills` 是**反复看**的动作
+  // （选择器），每按一下留一笔「问过」只会污染观测。重放要的是「当时用了哪一份材料」
+  // （那在 `user` 条目的载荷里），不是「谁拉过一次目录」。
+  'skills.catalog': {
+    /**
+     * 这一趟发现的技能——**次序即优先级**（项目 → 用户 → 配置；同作用域原生 → 兼容），
+     * 与发现面 `discover()` 的产物同序（外壳的「同名直达取哪一份」就按它判）。
+     */
+    readonly skills: readonly SkillCatalogRow[]
+    /**
+     * **没进来的那些**（读不懂 / 读不到 / 被顶掉）——与端口侧同一条：静默丢弃会让人
+     * 对着一个不生效的技能发呆。外壳据此在列表下方说一句（`choice` 是设计里的取舍，
+     * 不必每次都念叨；`error` 必须说）。
+     */
+    readonly problems: readonly SkillProblemRow[]
+    /** 一句话说明——只在有事要说时给。不给＝表自明。 */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -544,6 +628,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // （原型的抽屉），每次按一下留一笔「问过」只会污染观测。改动本身**有痕**：撤销是用户动作，
   // 但它的**结果**是文件里少了一条——重放要的是「发生过什么」，不是「谁看过名录」。
   'grants.catalog',
+  // 技能目录同列的理由（U33 · 终端入口）：与 `model.catalog` 同一条——它是**读出来的**
+  // （技能目录本来就在盘上），落库＝把同一张表存 N 遍；且 `/skills` 是**反复看**的动作
+  // （选择器），每按一下留一笔「问过」只会污染观测。当时到底用了哪一份材料**另有痕**
+  // （`user` 条目的载荷：名字 · 来源 · 正文），重放读的是那份。
+  'skills.catalog',
   // 技能使用回执同列的理由（U33）：它是**读出来的**——依据本来就在条目载荷里
   // （`UserPayload.skills`：名字 · 来源 · 正文），落库＝把同一件事存第二遍。
   // 重放要的是「当时用了哪一份材料」（读条目就有），不是「当时屏上闪了一句什么」。

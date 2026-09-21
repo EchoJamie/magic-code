@@ -100,6 +100,12 @@ export function createControlHub(): ControlHubFace {
       // 域不碰文件系统）。本域不认识授权，答复走事件（`grants.catalog`，不落库）。
         target.onGrantsList()
         return
+      case 'skills.list':
+        // 技能目录（读侧 · U33）——**原样转手**给**装配**（执行域的发现面在它手里，
+        // 同 `model.list` 之于注册表）。本域不认识技能，答复走事件
+        // （`skills.catalog`，不落库）——命令面只发不收。
+        target.onSkillList()
+        return
       case 'grants.revoke':
         // 撤销——同一条路（落盘归装配）。**不在这里解释 `workspace` / `index` 的缺省**：
         // 「缺省＝本工作区」「缺省＝整节」是**授权落点**的语义，归装配那一侧（同 `decision.answer`

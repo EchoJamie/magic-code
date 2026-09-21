@@ -89,7 +89,8 @@ describe('`/grants` —— 左下抽屉', () => {
     app.type('/grants')
     app.press(ENTER)
 
-    expect(app.spy.commands).toEqual([{ type: 'grants.list' }])
+    // 头一条是打 `/` 时那次技能目录查询（U33：每屏只发一次）——被测的是后面那条 `grants.list`
+    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, { type: 'grants.list' }])
     expect(app.rows()).toEqual([])
     expect(app.picker()).toBeUndefined() // 名录没回来之前不开（「拿不到的不编」）
   })
@@ -143,6 +144,7 @@ describe('撤销 —— 选定即撤 ＋ 一行回执', () => {
     app.press(ENTER) // 选中项＝第一条
 
     expect(app.spy.commands).toEqual([
+      { type: 'skills.list' }, // 打 `/` 那一下顺带问的（见上）
       { type: 'grants.list' },
       { type: 'grants.revoke', index: 0 },
     ])
@@ -251,7 +253,11 @@ describe('P0 —— `/grants` 不许把输入吃掉', () => {
     expect(app.shell.getView().draft).toBe('还能打字吗')
 
     app.press(ENTER)
-    expect(app.spy.commands.at(-1)).toEqual({ type: 'input.submit', text: '还能打字吗' })
+    expect(app.spy.commands.at(-1)).toEqual({
+      type: 'input.submit',
+      text: '还能打字吗',
+      ref: 'draft-1', // 提交的配对键（U33）
+    })
   })
 
   test('**屏上**：那条路走完，输入行还在（不是「只剩一行暗提示、像卡死」）', async () => {

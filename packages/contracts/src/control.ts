@@ -215,8 +215,23 @@ export type GrantsRevoke = {
 }
 
 /**
- * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支）
- * ——外壳发往内核的全部消息。
+ * `skills.list`——**技能目录的读侧命令**（U33 · 终端入口）。
+ *
+ * **由头**：`/skills` 要列**当下发现的**技能（名称 / 简述 / 来源），而外壳够不着执行域的
+ * 发现面（那是装配的把手）——与 `model.list` / `grants.list` 同一处境：
+ * **控制面是唯一一直通的路**，故读也走命令面，答复走事件（`skills.catalog`，**不落库**）。
+ *
+ * **无参**——问的就是「都发现了哪些」。技能是**随用户编辑变的目录**，故这条命令
+ * **每按一次问一次**（发现面自己每次现扫）：读到的就是那一下的当前内容。
+ *
+ * ⚠️ **不是「选定技能」**——选定只绑定草稿（`UserInput.skills` 带的是身份），
+ * 主文到真实提交那一刻才取。读侧命令只管「有什么、在哪儿」。
+ */
+export type SkillList = { readonly type: 'skills.list' }
+
+/**
+ * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
+ * ＋ U33 的技能目录一支）——外壳发往内核的全部消息。
  */
 export type Command =
   | InputSubmit
@@ -228,6 +243,7 @@ export type Command =
   | ModelList
   | GrantsList
   | GrantsRevoke
+  | SkillList
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

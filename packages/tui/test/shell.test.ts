@@ -46,6 +46,17 @@ function live() {
 
 const ENTER: ShellKey = { kind: 'enter' }
 
+/**
+ * **打 `/` 那一下，外壳先问一次技能目录**（U33）——`skills.list`。
+ *
+ * 为什么要问：输入行的候选要按技能名筛（`/ui` 能认出 `/ui-review`），而技能目录在外壳
+ * 够不着的那一头，只能问（见 `shell.ts` 的 `askSkills`）。**每屏只问一次**，故它出现在
+ * 「这一下发了什么命令」那些判据的**最前面**——它不是被测那一跳发的，别把它记在那一跳账上。
+ *
+ * 下面凡是有 `ASK_SKILLS` 的地方，判据说的都是「除这次目录查询之外」的命令序列。
+ */
+const ASK_SKILLS: Command = { type: 'skills.list' }
+
 /** 挂一条裁决（接管）。 */
 function ask(shell: ReturnType<typeof live>, weight: 'light' | 'heavy' = 'light'): void {
   shell.spy.emit(
@@ -63,7 +74,8 @@ describe('交代（输入 → input.submit）', () => {
     expect(app.view().draft).toBe('看下目录')
 
     app.press(ENTER)
-    expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录' }])
+    // `ref` ＝ 提交的配对键（U33）：`input.settled` 按它认回这份草稿（失败时原样还回来）
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录', ref: 'draft-1' }])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '看下目录' })
     expect(app.view().draft).toBe('')
   })
@@ -114,7 +126,8 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/help')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([])
+    // **`/help` 本身一条都不发**——列里那一条是打 `/` 时那次目录查询（见 `ASK_SKILLS`）
+    expect(app.commands()).toEqual([ASK_SKILLS])
     expect(app.rows()).toHaveLength(1)
     expect(app.rows()[0]).toMatchObject({ kind: 'output' })
     // 记录区里**没有** `› /help` 那一行（操作不混进对话）
@@ -127,7 +140,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/session')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([{ type: 'session.list' }])
+    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.list' }])
     expect(app.rows()).toEqual([])
   })
 
@@ -137,7 +150,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/model minimax-m2')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([{ type: 'model.switch', provider: 'minimax-m2' }])
+    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'model.switch', provider: 'minimax-m2' }])
     expect(app.rows()).toEqual([])
   })
 
@@ -154,7 +167,8 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/nope')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([])
+    // 目录查询那一条不算它发的（见 `ASK_SKILLS`）；`/nope` 自身一条都不发
+    expect(app.commands()).toEqual([ASK_SKILLS])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
@@ -236,8 +250,9 @@ describe('接管（裁决挂着时占住输入框）', () => {
     app.type('打了一半')
     ask(app)
     expect(app.view().draft).toBe('')
-    // 草稿**连同插入点**一起收着（返工轮：插入点不再一律摆到末尾，见 `Stashed`）
-    expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4 })
+    // 草稿**连同插入点与绑着的技能**一起收着（返工轮：插入点不再一律摆到末尾；
+    // U33：技能也是那份草稿的一部分——归还时少一件就是把用户的草稿改掉了一半，见 `Stashed`）
+    expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4, bound: null })
 
     app.press({ kind: 'char', char: 'y' })
     // 答复发出去；**裁决落定那一刻**（内核回 `tool.decision`）才归还草稿
@@ -286,7 +301,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
       event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
     )
     expect(app.view().dock.kind).toBe('decision')
-    expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2 }) // 只收一次
+    expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2, bound: null }) // 只收一次
 
     app.press({ kind: 'char', char: 'n' })
     app.spy.emit(event('tool.decision', { call: 72, decision: 'reject', decider: 'user', elapsedMs: 100 }))
@@ -421,7 +436,9 @@ describe('选择器（`/session` · `/model`）', () => {
 
     const view = shell.getView()
 
-    expect(commands.map((command) => command.type)).toEqual(['model.list'])
+    // 头一条是打 `/` 时那次目录查询（见 `ASK_SKILLS`）；被测的是**它的答复与 `model.list`
+    // 的答复都在 `send` 之内同步回来**时，视图有没有被盖回去
+    expect(commands.map((command) => command.type)).toEqual(['skills.list', 'model.list'])
     expect(view.dock.kind).toBe('picker') // **没被盖回输入区**
     expect(view.models).toHaveLength(2) // 条目表留住了
     expect(view.status.window).toBe(200_000) // ④ 的分母也留住了
@@ -498,7 +515,7 @@ describe('会话命令的其余分支', () => {
     app.type('/session new')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([{ type: 'session.new' }])
+    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.new' }])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
@@ -511,7 +528,10 @@ describe('会话命令的其余分支', () => {
     app.type('/session title 换个名字')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([{ type: 'session.rename', session: 's1', title: '换个名字' }])
+    expect(app.commands()).toEqual([
+      ASK_SKILLS,
+      { type: 'session.rename', session: 's1', title: '换个名字' },
+    ])
   })
 
   test('`/session title` 不带文本——只提示用法，不发命令', () => {
@@ -520,7 +540,7 @@ describe('会话命令的其余分支', () => {
     app.type('/session title')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([])
+    expect(app.commands()).toEqual([ASK_SKILLS])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
@@ -530,7 +550,7 @@ describe('会话命令的其余分支', () => {
     app.type('/session 乱写的')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([])
+    expect(app.commands()).toEqual([ASK_SKILLS])
     expect(app.rows().at(-1)?.kind === 'receipt').toBe(true)
   })
 })
@@ -543,7 +563,7 @@ describe('粘贴（非接管）', () => {
     expect(app.view().draft).toBe('粘一段')
 
     app.press(ENTER)
-    expect(app.commands()).toEqual([{ type: 'input.submit', text: '粘一段' }])
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '粘一段', ref: 'draft-1' }])
   })
 })
 

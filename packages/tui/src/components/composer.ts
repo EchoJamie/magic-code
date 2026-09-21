@@ -134,6 +134,47 @@ function widthOf(text: string): number {
   return stringWidth(text)
 }
 
+/** 一段文字按 Ink 的尺子占几列——给**输入区之外**那些也归 Ink 排版的行量宽用（见 `clip`）。 */
+export function inkWidth(text: string): number {
+  return widthOf(text)
+}
+
+/**
+ * 一段文字**按 Ink 的尺子裁成一行**——超宽加 `…`，行内的空白一并抹平。
+ *
+ * ⚠️ **两把尺子别混**（见文件头那一节）：这里量的必须与 Ink 排版那一支同源
+ * （`string-width`），不然「裁到刚好」与「Ink 又折了一行」会各说各的——而交互区的
+ * 高度账是**一行一条**数的（`app.ts` 的 `dockHeightOf`），多折一行就是账与屏分家
+ * （U31 三轮那条「真光标高一行」走的正是这条缝）。记录区那一支是
+ * `lines.ts` 的 `truncate`（**逐码点**的 `displayWidth`）——那是给记录区自己折行用的，
+ * 别拿到这半边来。
+ *
+ * **换行与连续空白抹成一个空格**的理由同上：一行就是一行——候选的简述取自 YAML，
+ * 可以是个多行块；留着换行，Ink 就照它多画几行。
+ *
+ * ⚠️ **只抹平、不裁两头**：首尾那个空格**可能是排版**（草稿材料那一行分成两段画，
+ * 中间那个 ` · ` 的分隔就落在第二段的头上）。裁掉它，屏上就成了 `技能：pdf· 项目…`
+ * ——两段贴在一起，读起来像另一个词。
+ *
+ * 按**字素**走（`GRAPHEMES`）：emoji 的 ZWJ 串是一个整体，逐码点累加会把它算胖。
+ */
+export function clip(text: string, width: number): string {
+  if (width <= 0) return ''
+  const flat = text.replace(/\s+/g, ' ')
+  if (widthOf(flat) <= width) return flat
+
+  let kept = ''
+  let used = 0
+  for (const piece of GRAPHEMES.segment(flat)) {
+    const size = widthOf(piece.segment)
+    if (used + size > width - 1) break
+    kept += piece.segment
+    used += size
+  }
+
+  return `${kept}…`
+}
+
 /** 画出来的**一行**：行首那一段（上色）＋ 正文（已折；续行没有行首那一段）。 */
 export type ComposerRow = {
   /** 行首那一段（`› ` 或悬挂缩进的 `  `）——**上色**的那一段；续行是空串。 */

@@ -24,6 +24,10 @@ import type {
   RecordId,
   SessionId,
   SessionSummary,
+  SkillCatalogRow,
+  SkillRef,
+  UsedSkill,
+  UsedSkillEntry,
 } from '@magic/contracts'
 import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
 
@@ -54,7 +58,25 @@ export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecute
 /** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
 export type LogRow =
   // —— 会话内容（落库 · 可重建）——
-  | { readonly kind: 'user'; readonly key: string; readonly text: string; readonly echoed: boolean }
+  | {
+      readonly kind: 'user'
+      readonly key: string
+      readonly text: string
+      readonly echoed: boolean
+      /**
+       * **随这条交代送出去的技能**（U33）——**只有重建那一趟才有**（`rebuildRows` 从条目
+       * 载荷里取），当场发的那一次不给：现场有草稿材料行与 `本次使用技能` 回执两处说着
+       * 这件事，再挂一条就是同一句话第三遍。
+       *
+       * 为什么重建要补：切走一条会话再切回来 / `--session` 接续之后，屏上只剩用户那句
+       * 话——「这条交代当时带了哪份技能」在屏上**一处都没有了**（依据在条目载荷里、
+       * 没丢，缺的是显示）。设计：「恢复后来源可辨」。
+       *
+       * ⚠️ **不是使用回执**：那一条说的是「模型真用上了」（当时发生的事），此处说的是
+       * 「这条记录里存着这份材料」。恢复时**不重放、不伪造**回执。
+       */
+      readonly skills?: readonly UsedSkill[]
+    }
   | { readonly kind: 'assistant'; readonly key: string; readonly text: string }
   | { readonly kind: 'thinking'; readonly key: string; readonly text: string }
   | {
@@ -151,13 +173,32 @@ export type PendingDecision = {
   readonly position: { readonly index: number; readonly total: number } | null
 }
 
+/** 草稿上绑着的技能（U33 · 终端入口）——**只绑身份，不绑正文**。 */
+export type BoundSkill = {
+  /**
+   * 身份两件（名称 ＋ 技能目录真路径）——**它就是随交代提交的那一份**（契约 `SkillRef`）。
+   *
+   * `path` 是真路径（发现处 `realpath` 之后）：同名两份来源靠它分开，而「失效不换同名项」
+   * 也才有判据——按同一个真路径找不回来，就是真失效了。
+   */
+  readonly ref: SkillRef
+  /**
+   * 来源的**人读标签**（如「项目 .magic/skills」）——发现处产出、外壳照印。
+   *
+   * 它随绑定一起留在这里（而不是用时拿路径现推）：草稿那一行要让人一眼看出
+   * **选的是哪一份**（同名两份来源的差别只在这儿）。时过境迁之后，光看一条路径推不出
+   * 它当时属于哪一类（同 `UsedSkill.label` 那条注的理由）。
+   */
+  readonly label: string
+}
+
 /** 选择器的一行。 */
 export type PickerRow = {
   readonly label: string
   readonly meta: string
   /** 当前那一条（原型 · 场景 9：`正在用`）。 */
   readonly current: boolean
-  /** 选定后要用的值（会话 id / 条目名）。 */
+  /** 选定后要用的值（会话 id / 条目名 / **技能目录真路径**）。 */
   readonly value: string
   /**
    * 这一行属于哪一组——**分组头**（`/session` 按工作区分组，U26）。
@@ -176,19 +217,52 @@ export type PickerRow = {
    * （B13 的一句规格）。故这一位存在＝回车之后要发一条撤销，而不是打开什么。
    */
   readonly revoke?: { readonly workspace?: string; readonly index?: number }
+  /**
+   * **这一行保证只占一行**（超宽由渲染层截断加 `…`）——技能那两处给（`/skills` 的候选行、
+   * 输入行的候选）。
+   *
+   * 由头：交互区的高度账（`dockHeightOf`）**一行一行数**（候选 N 条＝N 行），而简述是
+   * 用户自己写的、可以很长——折行了就是「账 N 行、屏 N+1 行」，矮终端上帧正好顶满，
+   * 真光标当场高一行（U31 三轮那条账的分家）。故**行自己担保一行**：截断在渲染层做
+   * （列数只有那一层知道），账照旧一行一条。
+   *
+   * 其余选择器不给这一位——它们沿用老面孔（长标题照旧折行，那是**既有行为**，
+   * 本单不改）。
+   */
+  readonly oneLine?: boolean
+  /**
+   * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（技能行里＝来源那半截）。
+   *
+   * 由头（独立验收二轮）：一行的额度是「名称 ＋ meta」两段分，而**截断该落在简述身上**
+   * （设计 · 终端交互：「窄窗先保住名称/来源、再截断简述」）。渲染层光看 `meta` 不知道
+   * 哪一截是来源、哪一截是简述——量错地方就会在宽窗下也去截名称（那正是二轮退回的那条
+   * 「过正」）。故由**造行的人**（它知道哪一段是来源）把这一格交出来，渲染层据它留额度：
+   * 名称按需取，但**先扣掉这一段**。
+   *
+   * ⚠️ 与 `meta` 同源、是它的前缀——两格给同一串不重复：`meta` 是整行要写的字，
+   * 这一格只说「其中哪一部分不许被挤掉」。
+   */
+  readonly keep?: string
 }
 
-/** 选择器（`/session` · `/model` · `/grants`）——**只在左下开，记录区什么都不进**。 */
+/** 选择器（`/session` · `/model` · `/grants` · `/skills`）——**只在左下开，记录区什么都不进**。 */
 export type Picker = {
   /**
-   * 取材的来路。三处各一门：`/session` 读目录、`/model` 读条目表、`/grants` 读授权名录
-   * （U22 · B13：**与 `/session` · `/model` 同位置同开合**）。
+   * 取材的来路。四处各一门：`/session` 读目录、`/model` 读条目表、`/grants` 读授权名录
+   * （U22 · B13）、`/skills` 读技能目录（U33）——**同位置同开合**。
    */
-  readonly source: 'session' | 'model' | 'grants'
+  readonly source: 'session' | 'model' | 'grants' | 'skills'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
   readonly hint?: string
+  /**
+   * **正在筛的词**（只有 `/skills` 给）——列表下方报出它，并说明「接着打能收窄」。
+   *
+   * 为什么要有这一格而不是只留在外壳里：用户**看得见自己在筛什么**，才知道那些键去哪了
+   * （选择器接管输入，打进去的字不上屏，不报一句就成了「按了没反应」）。
+   */
+  readonly filter?: string
 }
 
 /** 左下交互区——**四种用法同一位置、同一开合**。 */
@@ -209,18 +283,25 @@ export type CommandSpec = {
  * **命令登记表**——只列**真存在**的命令（原型 · 场景 11 的自律：
  * 列一个按下去会报错的，比不列更坏）。
  *
- * 五条各自的性质：
+ * 六条各自的性质：
  * - `/help` · `/status`——**纯输出型**（本地就能答，不进记录区的对话）；
- * - `/session` · `/model` · `/grants`——**交互配置型**（开选择器）。
+ * - `/session` · `/model` · `/grants` · `/skills`——**交互配置型**（开选择器）。
  *
  * ⚠️ `/grants` **原先不在这张表上**，理由正是上一条自律（「内核还没有，故不列」）——
  * `U22` 到站后它有了：名录从 `grants.json` 来（走 `grants.list`），选定即撤。
+ * `/skills` 同理（`U33` 到站后它有了：目录走 `skills.list`，选定只绑草稿）。
+ *
+ * ⚠️ **这张表也是「同名技能让位」的判据**（`matchCommands` / `shell.ts` 的 `submit`）：
+ * 表上的名字归内置命令，同名技能不抢它的含义（仍能从 `/skills` 里明确选出来）。
  */
 export const COMMANDS: readonly CommandSpec[] = [
   { name: '/session', summary: '会话：列表 · 切换 · 新建 · 改名' },
   { name: '/status', summary: '看这一趟用了多少、模型是谁' },
   { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
   { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
+  // U33——**它是内置命令**（不是技能）：故在表上、名字不许被技能顶掉。
+  // 选定只说「挂到这条草稿上」，不说「发送」——那是两件事（选定不发送，那里另有提示）。
+  { name: '/skills', summary: '技能：浏览 · 搜索 · 选定' },
   { name: '/help', summary: '这张表' },
 ]
 
@@ -234,19 +315,55 @@ export type CompletionState = {
  * 一条输入该出哪些候选（**边打边筛 · 按匹配度**）。
  *
  * 打分：**前缀** ＞ **子串** ＞ **子序列**（`/md` 也认 `/model`）；都不中＝不列。
- * 输入不是以 `/` 开头、或已经打了空格（进了参数）＝**不出候选**。
+ * 输入不是以 `/` 开头、或已经打了空白（进了参数）＝**不出候选**。
+ *
+ * ## 技能名也在候选里（U33 · 终端入口）
+ *
+ * 「`/<skill-name>` 直接引用已知技能」要能**边打边认**，故技能名与内置命令同列一张候选
+ * ——候选里认出来就能按 Tab / 回车填进草稿，随后是直达那条路（见 `shell.ts` 的 `submit`）。
+ *
+ * 三条分寸：
+ * - **打了名字才列**（`/` 之后一个字都没打时不列技能）：`/` 那一下问的是「有哪些命令」，
+ *   把仓库里几十个技能一并倒出来会把那一屏淹掉，也让 `/skills` 这个入口看不见了；
+ * - **同名只列一条**（按发现次序取头一份）：直达本来就是按来源优先级取唯一一份
+ *   （`resolveSkill`），列两条同名的行只会让人以为要挑；要挑去 `/skills`
+ *   ——那里**同名各占一行**，来源可辨；
+ * - **与内置命令同名的技能不列**：内置命令保留含义（工单明写），该技能仍能从 `/skills`
+ *   选出来——故此处是「不列」，不是「不认」。
  */
-export function matchCommands(text: string): readonly CommandSpec[] {
+export function matchCommands(
+  text: string,
+  skills: readonly SkillCatalogRow[] = [],
+): readonly CommandSpec[] {
   if (!text.startsWith('/')) return []
 
   const word = text.split(/\s+/)[0] ?? ''
-  if (text.includes(' ')) return [] // 进了参数——不再筛
+  if (/\s/.test(text)) return [] // 进了参数——不再筛（空格与换行都算「进了参数」）
 
-  const scored = COMMANDS.map((command) => ({ command, score: scoreOf(command.name, word) }))
+  const scored = [...COMMANDS, ...skillCommands(word, skills)]
+    .map((command) => ({ command, score: scoreOf(command.name, word) }))
     .filter((row) => row.score > 0)
     .sort((left, right) => right.score - left.score || left.command.name.localeCompare(right.command.name))
 
   return scored.map((row) => row.command)
+}
+
+/** 技能名那一批候选（见 `matchCommands` 那三条分寸）——`summary` 用技能的简述。 */
+function skillCommands(word: string, skills: readonly SkillCatalogRow[]): readonly CommandSpec[] {
+  if (word.replace(/^\//, '') === '') return []
+
+  const taken = new Set(COMMANDS.map((command) => command.name))
+  const commands: CommandSpec[] = []
+
+  for (const skill of skills) {
+    const name = `/${skill.name}`
+    if (taken.has(name)) continue
+    taken.add(name) // 同名多份只留头一份（次序即优先级，同 `resolveSkill` 的取法）
+
+    commands.push({ name, summary: skill.description })
+  }
+
+  return commands
 }
 
 /** 匹配度：前缀 3 · 子串 2 · 子序列 1 · 不中 0。 */
@@ -337,11 +454,20 @@ export type WindowTable = {
   readonly declared: Readonly<Record<string, { readonly model: string; readonly window: number }>>
 }
 
-/** 接管期间收着的东西——**草稿 ＋ 它的插入点**（两件一起收、一起还，见 `ShellView.stashed`）。 */
+/**
+ * 接管期间收着的东西——**草稿 ＋ 它的插入点 ＋ 它绑着的技能**（一起收、一起还，见
+ * `ShellView.stashed`）。
+ *
+ * 三件同为「那份草稿的一部分」：正文是打的字、插入点是打到哪儿、技能是随它一起发出去的
+ * 材料。接管（裁决）是**不经过用户**的一段，归还时少一件就是把用户的草稿改掉了一半
+ * （终端交互：「选择、查询与审批保护整份草稿（正文、技能、附件、光标/选区）」）。
+ */
 export type Stashed = {
   readonly draft: string
   /** 收起来那一刻的插入点（`draft` 的下标）——归还时**原样**放回去，不摆到末尾。 */
   readonly caret: number
+  /** 收起来那一刻绑着的技能（与正文同生共死）。 */
+  readonly bound: BoundSkill | null
 }
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
@@ -376,6 +502,18 @@ export type ShellView = {
    * 装一个字段还有一层：`stashed !== null` 就是「已经收着了」那个判据（多件裁决只收一次）。
    */
   readonly stashed: Stashed | null
+  /**
+   * **草稿上绑着的技能**（U33 · 终端入口）——`null` ＝ 没绑。
+   *
+   * 它属于**草稿**（与正文同生共死）：选定只把它挂上，`draft` / `caret` 一个字都不动；
+   * 提交时随正文一起走（`input.submit` 的 `skills`），提交之后随之清掉。
+   * 移除它（`/skills` 里那一行）**不碰正文**。
+   *
+   * ⚠️ **它是「这一份草稿」的状态，不是「当前技能」**：内核那边等价的说法是「整份
+   * `UserInput` 入队」（忙时两条交代各绑各的技能）——外壳这边只有一份草稿，故一个位就够，
+   * 不存在「排队中的多条共用一个可变当前技能」那件事（那种东西压根不存在）。
+   */
+  readonly bound: BoundSkill | null
   /** 接管期间「不静默吞键」的提示（一次性，按下一个键即清）。 */
   readonly flash: string | null
   /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
@@ -391,6 +529,15 @@ export type ShellView = {
    * （「拿不到的不编」——空名录与「还没问过」不是一回事，抽屉等答复才开）。
    */
   readonly grants: GrantsCatalog | null
+  /**
+   * **技能目录**（`skills.catalog` 的答复 · U33）——两处取材：
+   * `/skills` 的选择器铺行；**输入行的候选**（打 `/` 之后按名筛）。
+   *
+   * 与 `grants` 同一条：**拿到过就有**，没问过是 `null`（「拿不到的不编」——空目录与
+   * 「还没问过」不是一回事）。技能是随用户编辑变的目录，故它**只当一帧的快照用**：
+   * 每按一次 `/skills` 现问一次（见 `shell.ts`），不拿它当「有哪些技能」的长期真源。
+   */
+  readonly skills: SkillsCatalog | null
   /**
    * **模型条目表**（`model.list` 的答复 · 缺陷 D10 第 3 样）——`/model` 选择器的取材，
    * 且是**全量**（含从未调用过的条目）。
@@ -440,11 +587,13 @@ export function createView(): ShellView {
     dock: { kind: 'input' },
     draft: '',
     caret: 0,
+    bound: null,
     stashed: null,
     flash: null,
     expanded: false,
     sessionId: null,
     catalog: [],
+    skills: null,
     models: [],
     windowTable: null,
     grants: null,
@@ -455,6 +604,9 @@ export function createView(): ShellView {
 
 /** 授权名录（`grants.catalog` 的载荷 · U22）——抽屉与那一行度量都读它。 */
 export type GrantsCatalog = EventDataOf['grants.catalog']
+
+/** 技能目录（`skills.catalog` 的载荷 · U33）——选择器与输入行的候选都读它。 */
+export type SkillsCatalog = EventDataOf['skills.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
@@ -544,6 +696,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     // （照 `model.catalog` 的姿势：归约落数据，处置归外壳）
     case 'grants.catalog':
       return { ...view, grants: event.data }
+
+    // 技能目录（读侧答复 · U33）——**收进视图**（输入行的候选与 `/skills` 的选择器都读它）；
+    // 开选择器 / 铺行是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
+    // （照 `model.catalog` / `grants.catalog` 的姿势：归约落数据，处置归外壳）
+    case 'skills.catalog':
+      return { ...view, skills: event.data }
 
     case 'session.state':
       return reduceSessionState(view, event.data)
@@ -1067,8 +1225,19 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
     pendingAt = -1
     const text = contentTextOf(entry)
 
-    if (entry.kind === 'user') rows.push({ kind: 'user', key: `rb:u:${entry.id}`, text, echoed: false })
-    else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text })
+    if (entry.kind === 'user') {
+      const skills = usedSkillsOf(entry.payload)
+      rows.push({
+        kind: 'user',
+        key: `rb:u:${entry.id}`,
+        text,
+        echoed: false,
+        // **随这条交代送出去的技能**（U33 · 独立验收退回③）——恢复时它是这条消息唯一的
+        // 材料依据。**读的是记录里存的那一份**（当时送出去的名字与来源标签），
+        // 不重新读盘：材料是动态的，重读会拿到今天的、冒充当时那一份。
+        ...(skills.length === 0 ? {} : { skills }),
+      })
+    } else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text })
     else rows.push({ kind: 'receipt', key: `rb:s:${entry.id}`, text: `（摘要）${text}` })
   }
 
@@ -1144,6 +1313,23 @@ function toolSegments(rows: readonly LogRow[]): readonly { readonly start: numbe
   return segments
 }
 
+/**
+ * `user` 条目载荷里的技能——**只取显示要用的那三格**（名字 · 来源身份 · 来源标签）。
+ *
+ * 正文（载荷里那一份 `text`）**不带进行里**：显示只用名字与来源，而把几 KB 的材料再挂
+ * 一份到屏上毫无用处（它本来就在记录里，要用的时候从那儿读）。
+ *
+ * 载荷形状按记录域的 `UserPayload`：`skills` 可以缺席（纯文本交代）——缺席＝空数组，
+ * 不编也不报（「这条交代没带技能」是常态，不是问题）。
+ */
+function usedSkillsOf(payload: Entry['payload']): readonly UsedSkill[] {
+  const source = payload as { readonly skills?: readonly UsedSkillEntry[] } | undefined
+  const skills = source?.['skills']
+  if (!Array.isArray(skills)) return []
+
+  return skills.map((one) => ({ name: one.name, source: one.source, label: one.label }))
+}
+
 /** 条目的正文——内联取文本，blob 引用不解析（外壳的既有姿势）。 */
 function contentTextOf(entry: Entry): string {
   return 'text' in entry.content ? entry.content.text : `（大块转存 ${entry.content.blob}）`
@@ -1164,9 +1350,14 @@ export function takeOver(view: ShellView): ShellView {
 
   return {
     ...view,
-    stashed: { draft: view.draft, caret: Math.max(0, Math.min(view.caret, view.draft.length)) },
+    stashed: {
+      draft: view.draft,
+      caret: Math.max(0, Math.min(view.caret, view.draft.length)),
+      bound: view.bound,
+    },
     draft: '',
     caret: 0,
+    bound: null,
     flash: null,
   }
 }
@@ -1190,6 +1381,7 @@ export function undock(view: ShellView): ShellView {
     draft,
     // 夹一道：手搭的视图可能给过越界的插入点（同 `shell.ts` 的 `caretAt`）
     caret: Math.max(0, Math.min(caret, draft.length)),
+    bound: stashed?.bound ?? view.bound,
     stashed: null,
     flash: null,
   }
@@ -1473,6 +1665,176 @@ function headOf(workspace?: readonly string[]): string {
 const UNRECORDED = 'unrecorded'
 const UNRECORDED_HEAD = '（工作区未记录）'
 
+// ══ 技能（U33 · 终端入口）═══════════════════════════════════════════
+
+/**
+ * 「移除当前技能」那一行的值——**不是路径**（技能的 `value` 一律是目录真路径，绝对形）。
+ *
+ * 拿一个路径形不可能出现的串当哨兵：选定那一步据此分派（见 `shell.ts` 的 `submit`），
+ * 不靠「行里有没有某个词」认（那是拿给人看的文案当协议，改个措辞就断）。
+ */
+export const REMOVE_SKILL = '@remove'
+
+/**
+ * 同名直达的判据——**唯一确定没有**。
+ *
+ * 「取哪一份」由发现面的次序说了算（项目 → 用户 → 配置；同作用域原生 → 兼容），
+ * 而次序之外还有一件：**同一档里并列时不许挑**（那等于随目录顺序蒙）。两档合在一处判，
+ * 结果三态——取到了 / 要展开 / 没有这个名。
+ */
+export type SkillHit =
+  | { readonly kind: 'one'; readonly skill: SkillCatalogRow }
+  /**
+   * 同名多份、且**最高那一档里也分不出唯一**——展开同名候选让用户点，不静默挑一个。
+   * 携带的是**全部同名项**（含低一档的）：列表里本来就允许明确选其他来源。
+   */
+  | { readonly kind: 'many'; readonly skills: readonly SkillCatalogRow[] }
+  | { readonly kind: 'none' }
+
+/**
+ * **同名直达**（`/<名称>` 敲回车那条路）——解析出唯一那一份（见 `SkillHit`）。
+ *
+ * 档的算法：`source` 三档（项目 0 · 用户 1 · 配置 2）× 10 ＋ `origin` 两档（原生 0 · 兼容 1）
+ * ——两件都取自发现面的产物（`SkillCatalogRow` 那两格的注写了为什么必须随目录下来）。
+ *
+ * ⚠️ **不靠数组顺序取头一份**：目录确实是按优先级排的，但「排在前头」与「并列」在数组里
+ * 长得一样——判据得来自那两格，不是下标。
+ */
+export function resolveSkill(name: string, catalog: readonly SkillCatalogRow[]): SkillHit {
+  const same = catalog.filter((one) => one.name === name)
+  const first = same[0]
+  if (first === undefined) return { kind: 'none' }
+
+  let best = first
+  for (const one of same) if (rankOfSkill(one) < rankOfSkill(best)) best = one
+
+  const top = same.filter((one) => rankOfSkill(one) === rankOfSkill(best))
+
+  return top.length === 1 ? { kind: 'one', skill: best } : { kind: 'many', skills: same }
+}
+
+/** 一份技能在「同名取谁」上的档位（见 `resolveSkill`——两件都来自发现面）。 */
+function rankOfSkill(skill: SkillCatalogRow): number {
+  const source = skill.source === 'project' ? 0 : skill.source === 'user' ? 1 : 2
+  const origin = skill.origin === 'magic' ? 0 : 1
+
+  return source * 10 + origin
+}
+
+/**
+ * **`/skills` 的行**——候选每项一行：名称 ＋ 来源 ＋ 简述。
+ *
+ * 三件写死在行里：
+ * - **每项一行**（`oneLine`）——简述是用户自己写的，可以很长；折行了高度账当场分家
+ *   （见 `PickerRow.oneLine` 的注）；
+ * - **来源在前、简述在后**——窄窗截断时**先丢简述**：名称与来源才是分辨同名的那两眼
+ *   （终端交互：「窄窗先保住名称/来源、再截断简述」）；
+ * - **绑着的那一份标 `current`**（屏上说「待发送」，这儿说「就是你手上那份」）。
+ *
+ * 「移除当前技能」占**最后一行**（原型如此）：默认选中项是第一条技能——把移除摆在头里，
+ * 一按回车就误删（而它**保留正文**，删了不容易察觉）。筛「移除」能一步跳到它。
+ */
+export function skillRows(
+  catalog: readonly SkillCatalogRow[],
+  bound: BoundSkill | null,
+  filter = '',
+): readonly PickerRow[] {
+  const needle = filter.trim().toLowerCase()
+  const rows: PickerRow[] = []
+
+  for (const skill of catalog) {
+    const haystack = `${skill.name} ${skill.label} ${skill.description}`.toLowerCase()
+    if (needle !== '' && !haystack.includes(needle)) continue
+
+    rows.push({
+      label: skill.name,
+      meta: `${skill.label} · ${skill.description}`,
+      // **来源那半截必留**（简述在后，先被截）——同名两份分不分得开全看它
+      keep: skill.label,
+      current: bound !== null && bound.ref.path === skill.path,
+      value: skill.path,
+      oneLine: true,
+    })
+  }
+
+  if (bound !== null && (needle === '' || REMOVE_SKILL_TEXT.includes(needle))) {
+    rows.push({
+      label: '移除当前技能',
+      meta: `保留正文（${bound.ref.name}）`,
+      current: false,
+      value: REMOVE_SKILL,
+      oneLine: true,
+    })
+  }
+
+  return rows
+}
+
+/** 「移除当前技能」那一行参与筛选的可搜文本（`remove` 也认——敲半边英文不至于找不到）。 */
+const REMOVE_SKILL_TEXT = '移除当前技能 remove'
+
+/**
+ * 列表下方那行说明——**筛选状态 · 空名录的出口 · 没读进来的那些**（各自说不同的东西）。
+ *
+ * 空名录指向的是**放哪儿**（设计：「空列表指向 `.magic/skills/<名称>/SKILL.md`」）——
+ * 不解一句「没有技能」，那等于说了等于没说。
+ *
+ * 没读进来的只报**份数**：那些话（「front-matter 缺 `description`」一类）本来就是
+ * `--check` 那一屏的正文，一条条搬进抽屉会把列表挤没；而**一个字不说**更坏——
+ * 用户写了一份技能却发现它不在列表里，只能对着它发呆（静默丢弃是这一族最坏的形态）。
+ * 故报数 ＋ 指路：`magic --check` 里逐条说得清。
+ */
+export function skillHint(input: {
+  readonly catalog: SkillsCatalog | null
+  readonly filter: string
+  /** 筛过之后还剩几行——0 行时这句会落成记录区的一行回执（抽屉不开，见 `openPicker`）。 */
+  readonly shown: number
+  readonly hasBound: boolean
+}): string {
+  const { catalog, filter, shown, hasBound } = input
+  const lines: string[] = []
+
+  // **同名的那一摊**（`/<名字>` 分不出唯一时正是这么开的：拿名字当筛词，见 `shell.ts`）——
+  // 与「随手打的筛词」不同，这一屏要的是「按来源挑一份」，说清楚才不至于让人以为筛错了
+  const sameName = filter === '' ? 0 : (catalog?.skills ?? []).filter((one) => one.name === filter).length
+
+  if (sameName > 1) {
+    // 「回车」那半句归状态行（`↑↓ 选 · 回车 定 · esc 收起`）——这里只说**那一下意味着什么**
+    // （选定不是发送），一句一事，不跟右位重述键位（独立验收 · 看帧「文案」那一条）
+    lines.push(`「${filter}」有 ${sameName} 份同名的——按来源挑一份（选中不等于发送）`)
+  } else if (shown === 0 && filter !== '') {
+    // 筛空了 ⇒ 抽屉收起、这句话落成回执——得说清「怎么办」，不然就是「打了几个字，抽屉没了」
+    lines.push(`没有匹配「${filter}」的技能——退格删一个字，或换个词再打 /skills`)
+  } else if (filter !== '') {
+    lines.push(`筛选「${filter}」——接着打收窄，退格删一个字`)
+  } else if ((catalog?.skills.length ?? 0) === 0) {
+    lines.push('还没有技能——放一份 .magic/skills/<名称>/SKILL.md 就来')
+  } else {
+    lines.push('直接打字可筛选')
+  }
+
+  if (shown > 0 && !hasBound && filter === '') {
+    lines.push('选一份就挂在这条草稿上——选中不等于发送')
+  }
+
+  const broken = catalog?.problems.filter((one) => one.kind === 'error').length ?? 0
+  if (broken > 0) lines.push(`有 ${broken} 份没能读进来——magic --check 里逐条说得清`)
+
+  return lines.join('\n')
+}
+
+/**
+ * 候选最多列几条——**实现级常量**（D12 的候选是「边打边筛」的辅助，不是浏览面）。
+ *
+ * 取 9 的由头：一屏（常见 24 行）里除却记录区与交互区，候选占十行上下是上限；
+ * 而技能目录可以很大（份数上限是几十），不封顶的话打一个 `/` 之后打个字母就把整屏占了
+ * ——记录区被挤到一两行（活动区的预算正是这么扣的，`dockHeightOf` 一条一条数）。
+ *
+ * **不是静默截断**：截掉几条由状态行明说（`HINT_COMPLETION` 后面那半句），
+ * 而想浏览全量走 `/skills`（那才是浏览面）。
+ */
+export const MAX_CANDIDATES = 9
+
 /**
  * 哪几行**之前**要画一条分组头。
  *
@@ -1498,16 +1860,28 @@ export function groupHeads(rows: readonly PickerRow[]): readonly boolean[] {
  *
  * 而 `/grants` **默认就是这个形态**：没按过 `a` 的工作区没有 `grants.json`，
  * 名录**必空**（`dataDir` 缺省 `~/.magic`）⇒ 头一次打 `/grants` 必落这个坑。
- * `/session` 一条会话都没有时、`/model` 一条条目都没有时，同理。
+ * `/session` 一条会话都没有时、`/model` 一条条目都没有时、`/skills` 一个技能都没有
+ * （或筛词一个都不中）时，同理。
  *
  * 故 0 行时**不开抽屉**：把 `hint`（抽屉下方那句话）落成**记录区一行回执**——
  * 话一句不少、还更显眼，而**输入照常**。`hint` 没给就什么都不说（「拿不到的不编」）。
  *
- * ⚠️ 这是**共用的一处**：三条抽屉（`/session` · `/model` · `/grants`）都经这里，
- * 别在某个调用点另加判断（那样四条路就有四种口径）。
+ * ⚠️ 这是**共用的一处**：四条抽屉（`/session` · `/model` · `/grants` · `/skills`）都经这里，
+ * 别在某个调用点另加判断（那样五条路就有五种口径）。
+ *
+ * ## 一条例外：**正在筛的时候**（U33 · `/skills`）
+ *
+ * 「0 行不开抽屉」要防的是**没得选的死胡同**。而筛选是另一回事：0 行时用户手上仍有动作
+ * ——接着打字、退格删一个字、`esc` 收起——那正是搜索该有的样子（何况筛词本身还写在
+ * 列表下方，屏上不是一片空白）。故**有筛词就照开**（行数为 0 也开）：此时零行是
+ * **一个回答**（「没有这条」），不是一个空归档。
+ *
+ * 判据挂在 `picker.filter` 上（「这一屏在筛」是它自己的一位），不是某个调用点另加判断。
  */
 export function openPicker(view: ShellView, picker: Picker): ShellView {
-  if (picker.rows.length === 0) {
+  const filtering = picker.filter !== undefined && picker.filter !== ''
+
+  if (picker.rows.length === 0 && !filtering) {
     return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
   }
 

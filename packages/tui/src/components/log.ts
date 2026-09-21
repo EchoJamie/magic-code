@@ -382,14 +382,36 @@ function rowBody(
       return [BANNER_GAP_TOP, ...art, BANNER_GAP_BOTTOM]
     }
 
-    case 'user':
+    case 'user': {
       // **整行淡青背景**（一眼看出「这句是我说的」）——正文原色、标记青
-      return wrapSegments([seg('› ', PALETTE.user, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
+      const body = wrapSegments([seg('› ', PALETTE.user, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
         key: 'r:u',
         background: USER_BG,
         hang: INDENT,
         bodyColor: PALETTE.fg, // 续行＝正文原色（缺陷 D22）——别让折下去那截比首行暗
       })
+
+      // **随这条交代送出去的技能**（U33）——**只有重建那一趟才有**（见 `LogRow` 那两格注：
+      // 恢复后屏上没别的地方说这件事，而当场发的那一次另有草稿材料行与使用回执）。
+      //
+      // 形态取**草稿上那一行**的写法（`技能：名称 · 来源`），只是不带「（待发送）」
+      // ——它早就发出去了。**不带 `· ` 那个回执标记**：回执说的是「当时发生了什么」，
+      // 恢复时不该重放，两副面孔长得不一样才对。
+      const skills = row.skills
+      if (skills === undefined || skills.length === 0) return body
+
+      return [
+        ...body,
+        ...wrapSegments(
+          [
+            seg(`${INDENT}技能：`, PALETTE.faint),
+            seg(skills.map((one) => `${one.name} · ${one.label}`).join('、'), PALETTE.faint),
+          ],
+          columns,
+          { key: 'r:u:sk', hang: INDENT },
+        ),
+      ]
+    }
 
     case 'assistant': {
       // **空内容不渲染**（D6 的外壳侧双保险）——模型只发工具调用、不吐正文的那一轮

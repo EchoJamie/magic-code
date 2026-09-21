@@ -956,14 +956,51 @@ describe('slash 候选（D12 · 纯函数级）', () => {
    * **为何变**：`U22` 到站——`/grants` 进了命令表，`/g` 前缀命中它（打分 3）。
    * **新锚**：`/g` → `/grants`；全表由四条变五条。`/s` 一栏照旧考**匹配度**（前缀在前），
    * 只是 `/grants` 作为**子序列**（`/`…`s`）也进了这一列——排在那两条前缀命中的后面。
+   *
+   * ⚠️ **再变一次**（`U33` · 终端入口）：`/skills` 进了命令表——全表由五条变六条，
+   * `/s` 那一列多了它（与 `/session`、`/status` 同为前缀命中，按名字序排在中间）。
+   * **判据本身一字未改**（前缀在前 · 子序列在后 · 全表列全）。技能名那一批不在这条里
+   * ——它们要**给了目录**才列（见下面那条用例）。
    */
   test('`/g` —— 出 `/grants`（它现在真存在）', async () => {
     const { matchCommands } = await import('../src/view.ts')
 
     expect(matchCommands('/g').map((row) => row.name)).toEqual(['/grants'])
-    expect(matchCommands('/s').map((row) => row.name)).toEqual(['/session', '/status', '/grants'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(5) // 全列（真存在的五条）
+    expect(matchCommands('/s').map((row) => row.name)).toEqual([
+      '/session',
+      '/skills',
+      '/status',
+      '/grants',
+    ])
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(6) // 全列（真存在的六条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
+  })
+
+  /**
+   * **技能名也在候选里**（U33）——三条分寸各考一条：
+   * **打了名字才列**（光一个 `/` 不列，那一屏问的是「有哪些命令」）· **同名只列一条**
+   * （要挑去 `/skills`，那里同名各占一行）· **与内置命令同名的不列**（内置命令保留含义）。
+   */
+  test('技能名进候选：按名筛 · 同名一条 · 内置命令不让位', async () => {
+    const { matchCommands } = await import('../src/view.ts')
+    const skill = (name: string, description = '') => ({
+      name,
+      description,
+      path: `/ws/.magic/skills/${name}`,
+      label: '项目 .magic/skills',
+      source: 'project' as const,
+      origin: 'magic' as const,
+    })
+    const catalog = [skill('ui-review', '检查布局'), skill('debug'), skill('ui-review', '另一份'), skill('model')]
+
+    expect(matchCommands('/ui', catalog).map((row) => row.name)).toEqual(['/ui-review'])
+    // 光一个 `/`：六条命令，一条技能都不列（`/skills` 就在那六条里）
+    expect(matchCommands('/', catalog).map((row) => row.name)).toEqual(
+      expect.not.arrayContaining(['/ui-review']),
+    )
+    // 同名只列一条；`/model` 是内置命令，同名技能不在这一列（它仍能从 `/skills` 选）
+    expect(matchCommands('/model', catalog).map((row) => row.name)).toEqual(['/model'])
+    expect(matchCommands('/deb', catalog).map((row) => row.name)).toEqual(['/debug'])
   })
 })
 
