@@ -14,6 +14,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { event } from './events.ts'
+import { dockHeightOf } from '../src/components/app.ts'
 import { createStage } from './screen.ts'
 import type { Cell, Frame, Stage } from './screen.ts'
 
@@ -226,15 +227,38 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
     expect(cellAt(heavy, '│ 覆盖写 · 不可逆', 3)).toMatchObject({ text: '覆', fg: '#e06c75' })
   })
 
-  test('**键位只出现一次**（在卡上）——输入框被占只报「等你的答复」', async () => {
+  test('**键位只出现一次**（在卡上）——接管态**不画输入提示行**（D29）', async () => {
     const frame = await asked('light').screen(WIDE)
 
     expect(count(frame, '批准')).toBe(1)
     expect(count(frame, '本工作区总是允许')).toBe(1)
     expect(count(frame, '拒绝')).toBe(1)
-    // 接管那行**不重列键位**
-    expect(saysInComposer(frame, '等你的答复')).toBe(true)
-    expect(count(frame, '等你的答复')).toBe(1)
+    // 原锚＝`saysInComposer(frame, '等你的答复')`（接管那行占位，D29 整行收走）。
+    // 新锚：交互区里**没有输入行**，键位只在卡上那一处。
+    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
+    expect(count(frame, '等你的答复')).toBe(0)
+  })
+
+  /**
+   * **账与屏同源**——`dockHeightOf` 给活动区算预算、`dockOf` 照着画，两处差一行，
+   * 矮窗上动态帧就顶满终端 ⇒ Ink 省掉末尾换行 ⇒ **真光标高一行**（U31 三轮那条老病）。
+   * 材料宽过窗时，两处都得按**实际折了几行**记。
+   */
+  test('**账与屏一致**——接管态画出来的行数 ＝ `dockHeightOf` 数的那几行', async () => {
+    const material = `影响面：${'很长的一段说明'.repeat(12)}`
+    const stage = createStage()
+    stage.feed([
+      event('tool.call', { name: 'write', args: {} }, { id: 71 }),
+      event('tool.decision.request', { call: 71, name: 'write', material, weight: 'heavy' }, { id: 88 }),
+    ])
+    const view = stage.shell.getView()
+
+    for (const columns of [100, 44]) {
+      const frame = await stage.screen({ columns, rows: 30 })
+
+      // `frame.dock` 含**状态行**那一行；`dockHeightOf` 数的是交互区（卡 ＋ 闪一句），不含它
+      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 30) + 1)
+    }
   })
 
   test('必闸类 **`a` 划掉**（不是藏起来）——轻的那件不划', async () => {
@@ -262,12 +286,17 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
 // ══ 七 · 输入接管（三条兜底 ＋ 多件逐件问）═══════════════════════════
 
 describe('输入接管', () => {
-  test('**看得见**——占位换成「等你的答复」（草稿此刻不在屏上）', async () => {
+  test('**看得见**——卡就在那儿、输入行被收走（草稿此刻不在屏上）', async () => {
     const stage = asked('light', '打了一半')
 
     const frame = await stage.screen(WIDE)
 
-    expect(saysInComposer(frame, '等你的答复')).toBe(true)
+    // 原锚＝那句占位（接管**看得见**这条兜底靠它，D29 整行收走）；**看得见**这条规格不变，
+    // 改由**卡本身**背书：材料 ＋ 键位 ＋ 状态行都在屏上。
+    expect(frame.has('│ 跑测试 · 可逆')).toBe(true)
+    expect(frame.has('y 批准')).toBe(true)
+    expect(frame.statusLine).toContain('● 等你定夺')
+    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
     expect(frame.has('打了一半')).toBe(false) // 收起来了，不是丢了（下一条把它要回来）
   })
 
@@ -295,7 +324,7 @@ describe('输入接管', () => {
     const said = frame.dock.find((line) => line.text.startsWith('▲'))
     expect(said?.text).toContain('先答复')
     expect(said?.text).toContain('「x」') // 说的是**哪一个键**（不静默 ≠ 只说一句套路话）
-    expect(saysInComposer(frame, '等你的答复')).toBe(true) // 那一下没进草稿
+    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false) // 那一下没进草稿
   })
 
   test('`esc` **无动作**——屏上一格都不变', async () => {
@@ -499,11 +528,12 @@ describe('输入行 · 光标落在哪', () => {
     expect(frame.rawCellsOf(row).some((cell) => cell.inverse)).toBe(false)
   })
 
-  test('**接管中**（占位换成「等你的答复」）真光标不在输入行上', async () => {
+  test('**接管中**——输入行让位，真光标不留在屏上冒充落点', async () => {
     const frame = await asked('light', '草稿').screen(WIDE)
-    const row = frame.rowOf('等你的答复')
 
-    expect(frame.screen.cursor.y).not.toBe(row)
-    expect(frame.rawCellsOf(row).some((cell) => cell.inverse)).toBe(false)
+    // 原锚＝`rowOf('等你的答复')` 那一行不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
+    // 新锚与**抽屉接管**同一姿势（见下一节「抽屉开着」那条）：输入行不在 ⇒ 真光标送回帧下。
+    expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
+    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('● 等你定夺'))
   })
 })
