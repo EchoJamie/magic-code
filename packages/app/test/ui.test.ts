@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf } from './ui/driver.ts'
@@ -1009,3 +1009,204 @@ async function untilExists(path: string, timeoutMs: number): Promise<void> {
     await Bun.sleep(50)
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// D30 · 取帧与字节数同刻 —— 帧必须是应用**画完的整帧**，且与它自己记的字节数同刻
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 探针：照 Ink 的帧协议吐两帧，**第二帧写到一半停住**。
+ *
+ * 为什么要照抄这个协议：Ink 每渲染一帧，两头各发一次同步更新（`CSI ?2026h` … `CSI ?2026l`，
+ * 见 `ink/build/write-synchronized.js` 的 `bsu` / `esu`），**认得这个开关的终端在 `esu` 那一下
+ * 整帧一次落地**——中间那半截谁也看不见。驱动那台 VT 若不认它，就会把「擦完还没画」的空档
+ * 也当成屏上的样子，取帧正好落在里面就成了「半截帧」。
+ *
+ * 探针把**自己写出的字节数**（不写 `\n`，故与驱动记的字节数同口径）落进状态文件：
+ * 帧一画完记一个、第二帧写到一半记一个、全画完再记一个。用例据此断言。
+ */
+function framingProbe(statePath: string): string[] {
+  return [
+    process.execPath,
+    '-e',
+    [
+      "const fs = require('node:fs')",
+      "const BSU = '\\u001b[?2026h'",
+      "const ESU = '\\u001b[?2026l'",
+      `const state = ${JSON.stringify(statePath)}`,
+      'let bytes = 0',
+      'const write = (s) => { bytes += Buffer.byteLength(s, "utf8"); process.stdout.write(s) }',
+      'const save = (phase, extra) => fs.writeFileSync(state, JSON.stringify({ phase, bytes, ...extra }))',
+      // 帧一：完整的一帧（起手这一帧也把「第一帧落屏」那一跳给满足掉）
+      "write(BSU); write('\\u001b[1;1HMARK-1'); write(ESU)",
+      'const frame1End = bytes',
+      "save('frame1', { frame1End })",
+      'process.stdin.setRawMode(true)',
+      'process.stdin.resume()',
+      "process.stdin.on('data', () => {",
+      // 帧二：先写半截就**停住**（半截上了屏，就是「撕裂」；整帧没落地，就不该算数）
+      "  write(BSU); write('\\u001b[2;1HTEAR-2-HALF')",
+      "  save('half2', { frame1End })",
+      '  setTimeout(() => {',
+      "    write('\\u001b[3;1HMARK-2-FULL'); write(ESU)",
+      "    save('done', { frame1End, frame2End: bytes })",
+      '  }, 400)',
+      '})',
+    ].join(';'),
+  ]
+}
+
+type ProbeState = { phase: string; bytes: number; frame1End: number; frame2End?: number }
+
+describe('D30 · 取帧与字节数同刻', () => {
+  test('取帧只认**画完的整帧**：应用正写在半截时取的帧，不许是那半截', async () => {
+    const dir = tempDir('magic-d30-framing-')
+    const statePath = join(dir, 'probe.json')
+    const session = await createUiSession({
+      label: 'D30-整帧',
+      command: framingProbe(statePath),
+      columns: 100,
+      rows: 30,
+    })
+
+    try {
+      await session.wait({ text: 'MARK-1' })
+      await untilExists(statePath, 5_000)
+
+      // 触发第二帧：探针写完半截就停 400ms
+      await session.send('go')
+      const half2 = await untilPhase(statePath, 'half2', 5_000)
+
+      const torn = await session.capture({ label: '半截时取的帧' })
+      const tornStep = captureStepsOf(session.runDir).at(-1)
+
+      // ① 帧必须是**画完的整帧**——半截那行在字节里、但没画完，不该出现在帧上
+      expect(torn.text).toContain('MARK-1')
+      expect(torn.text).not.toContain('TEAR-2-HALF')
+
+      // ② 帧的「屏」与它自己记的「字节数」**同刻**：字节数就是第一帧画完那一点
+      expect(tornStep?.['bytes']).toBe(half2.frame1End)
+
+      // —— 对照（正例）：等第二帧**真画完**，同一条观测方法必须能看见那半截 ——
+      //    没有这一条，「① 里没看见」就分不清是「不该看见」还是「方法根本看不见」
+      const done = await untilPhase(statePath, 'done', 5_000)
+      await session.wait({ text: 'MARK-2-FULL' })
+      const whole = await session.capture({ label: '第二帧画完' })
+      const wholeStep = captureStepsOf(session.runDir).at(-1)
+
+      expect(whole.text).toContain('MARK-2-FULL')
+      expect(whole.text).toContain('TEAR-2-HALF') // 方法看得见那半截——第一帧那一条才算数
+      expect(wholeStep?.['bytes']).toBe(done.frame2End)
+    } finally {
+      // 探针那几个字节数留在现场里（它是这份帧「该对应哪一段字节」的独立凭据）
+      copyFileSync(statePath, join(session.runDir, 'probe.json'))
+      await session.close()
+      removeDir(dir)
+    }
+  }, 90_000)
+})
+
+/** 等的那个「相位」——探针把进度落进状态文件，用例盯着文件（不是 sleep 猜时机）。 */
+async function untilPhase(path: string, phase: string, timeoutMs: number): Promise<ProbeState> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (existsSync(path)) {
+      const state = JSON.parse(readFileSync(path, 'utf8')) as ProbeState
+      if (state.phase === phase) return state
+    }
+    if (Date.now() > deadline) throw new Error(`等不到探针走到「${phase}」：${path}`)
+    await Bun.sleep(10)
+  }
+}
+
+/** 这趟里所有 `capture` 步（按次序）。 */
+function captureStepsOf(runDir: string): Record<string, unknown>[] {
+  return stepsOf(runDir).filter((step) => step['action'] === 'capture')
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// D30 · 切帧那一层自己的边界 —— **修法在相反情形下也得成立**
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 同步更新的两个标记。用 `String.fromCharCode` 拼，不在源码里写控制字节
+ * （仓里别处也这么写——真字符在源码里看不见，改了也不知道）。
+ */
+const BSU = `${String.fromCharCode(27)}[?2026h`
+const ESU = `${String.fromCharCode(27)}[?2026l`
+
+describe('D30 · 同步更新切帧的相反情形', () => {
+  test('不认这套协议的应用：没有标记就立刻落屏；像标记开头的半截先攒着，判明后照旧交', async () => {
+    const vt = createVt({ columns: 20, rows: 4 })
+    try {
+      vt.write('甲')
+      await vt.settled()
+      expect(vt.screen().lines[0]?.text).toBe('甲')
+      expect(vt.screenBytes()).toBe(Buffer.byteLength('甲'))
+
+      // 末尾是**半个标记**（两个标记开头一样）：先攒着、不交
+      vt.write(BSU.slice(0, 5))
+      await vt.settled()
+      expect(vt.screenBytes()).toBe(Buffer.byteLength('甲'))
+      expect(vt.screen().lines[0]?.text).toBe('甲')
+
+      // 拼下去发现**不是**标记（`?200` 不是 `?2026`）⇒ 攒着的那截照常交出去，屏不冻
+      vt.write('0h')
+      await vt.settled()
+      expect(vt.screenBytes()).toBe(Buffer.byteLength('甲') + BSU.slice(0, 5).length + 2)
+      expect(vt.screen().lines[0]?.text).toBe('甲')
+    } finally {
+      vt.dispose()
+    }
+  })
+
+  test('标记被切在两块之间：那半截不算数，拼全了照常算——不丢、也不误判', async () => {
+    const vt = createVt({ columns: 20, rows: 4 })
+    try {
+      // `h` 的前 5 个字符先到：这一段**不能**当成普通字节交出去（交了后面就再也认不出这个标记）
+      vt.write(BSU.slice(0, 5))
+      await vt.settled()
+      expect(vt.screenBytes()).toBe(0)
+      vt.write(BSU.slice(5))
+      await vt.settled()
+      // 拼全了，但这一帧**还没画完** ⇒ 水位仍停在上一帧的边界
+      // （标记本身不画东西，屏不变；整帧落地时它连同内容一起交出去）
+      expect(vt.screenBytes()).toBe(0)
+      expect(vt.screen().lines[0]?.text).toBe('')
+
+      // 块里的内容：这一帧还没画完 ⇒ 不落屏
+      vt.write('甲')
+      await vt.settled()
+      expect(vt.screen().lines[0]?.text).toBe('')
+      // `l` 一到，整帧一次落地
+      vt.write(ESU)
+      await vt.settled()
+      expect(vt.screen().lines[0]?.text).toBe('甲')
+      expect(vt.screenBytes()).toBe(BSU.length + Buffer.byteLength('甲') + ESU.length)
+    } finally {
+      vt.dispose()
+    }
+  })
+
+  test('半截帧不落屏、且**不覆盖**上一帧：`l` 到了才整帧换过去', async () => {
+    const vt = createVt({ columns: 20, rows: 4 })
+    try {
+      vt.write(`${BSU}第一帧${ESU}`)
+      await vt.settled()
+      expect(vt.screen().lines[0]?.text).toBe('第一帧')
+
+      // 第二帧：起手先擦、再写半截就停住——真终端这一下**还没换屏**（2026 就是为这个发明的），
+      // 屏上该是**上一帧原样**，不是擦完还没画的空档
+      vt.write(`${BSU}${String.fromCharCode(27)}[2K${String.fromCharCode(27)}[1G`)
+      await vt.settled()
+      expect(vt.screen().lines[0]?.text).toBe('第一帧')
+      expect(vt.screenBytes()).toBe(BSU.length + Buffer.byteLength('第一帧') + ESU.length)
+
+      vt.write(`第二帧${ESU}`)
+      await vt.settled()
+      expect(vt.screen().lines[0]?.text).toBe('第二帧')
+    } finally {
+      vt.dispose()
+    }
+  })
+})
