@@ -509,14 +509,18 @@ function state1(active: string) {
 // ══ 补：会话命令与粘贴的其余分支 ═════════════════════════════════════
 
 describe('会话命令的其余分支', () => {
-  test('`/session new`——发 `session.new` ＋ 留一行回执', () => {
+  test('`/session new`——发 `session.new`；记录区**一行都不添**（D28甲：回执已删）', () => {
     const app = live()
 
     app.type('/session new')
+    const before = app.rows().length
     app.press(ENTER)
 
     expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.new' }])
-    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
+    // 原锚＝`rows().at(-1)` 是 `kind: 'receipt'`（那时 `/session new` 留一行存储回执，D28甲 删）。
+    // 反例面：`/session` 选定切换照旧留「已切到 …」（那是用户按下去的结果，见下面几条用例）。
+    expect(app.rows().length).toBe(before)
+    expect(app.rows().some((row) => row.kind === 'receipt')).toBe(false)
   })
 
   test('`/session title <文本>`——发 `session.rename`（带上当下那条的 id）', () => {
