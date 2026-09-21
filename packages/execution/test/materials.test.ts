@@ -11,7 +11,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Materials } from '@magic/contracts'
@@ -259,6 +260,162 @@ describe('U36 · 工作区外：不因输入获准，只收用户明确选定的
     } finally {
       sand.dispose()
       outside.dispose()
+    }
+  })
+})
+
+// —— 符号链接：真身在根外就是根外（词法兜底不许把它拉回来）——
+
+describe('U36 · 链接绕出去：候选不列、load 不给当「里头的」读', () => {
+  /** 沙地 ＋ 一条**指向沙地外**的链接（`link` → 外面那个目录）。 */
+  function linked(): {
+    readonly inside: string
+    readonly outside: string
+    readonly dispose: () => void
+  } {
+    const inside = mkdtempSync(join(tmpdir(), 'magic-link-in-'))
+    const outside = mkdtempSync(join(tmpdir(), 'magic-link-out-'))
+    mkdirSync(join(outside, 'sub'), { recursive: true })
+    writeFileSync(join(outside, 'secret.txt'), '外面的东西', 'utf8')
+    symlinkSync(outside, join(inside, 'link'))
+
+    return {
+      inside,
+      outside,
+      dispose: () => {
+        rmSync(inside, { recursive: true, force: true })
+        rmSync(outside, { recursive: true, force: true })
+      },
+    }
+  }
+
+  test('`@link/`：**不列**（借链接往外浏览被挡下），说明指得出缘由', async () => {
+    const sand = linked()
+    try {
+      const materials = materialsAt(sand.inside)
+
+      // 打全成目录的：落在**外面**那一支 ⇒ 不列，说明说得出「外面只收单个文件」
+      const dir = await materials.candidates('link/', 30)
+      expect(dir.rows).toEqual([])
+      expect(dir.note).toContain('工作区外')
+
+      // 往里打一层：真身在外面 ⇒ 同样不列
+      const deeper = await materials.candidates('link/sub/', 30)
+      expect(deeper.rows).toEqual([])
+      expect(deeper.note).toContain('工作区外')
+
+      // **写起来在根里、真身在外面的目录**（`link/nothing-here` 这种还没打全的写法）：
+      // 也不许列——那一支专门挡「借工作区里的链接往外浏览」
+      const borrowed = await materials.candidates('link/nothing-here', 30)
+      expect(borrowed.rows).toEqual([])
+      expect(borrowed.note).toContain('符号链接')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('`load`（没带 external）⇒ **拒**：真身在外面，写起来在根里也不算里头', async () => {
+    const sand = linked()
+    try {
+      const materials = materialsAt(sand.inside)
+      const path = join(sand.inside, 'link', 'secret.txt')
+
+      const read = await materials.load([{ kind: 'file', source: path }])
+      expect(read.ok).toBe(false)
+      if (read.ok) return
+      expect(read.reason).toContain('工作区外')
+
+      // 目录那一路同样拒（外部目录本来就不收）
+      const dir = await materials.load([{ kind: 'dir', source: join(sand.inside, 'link') }])
+      expect(dir.ok).toBe(false)
+      if (!dir.ok) expect(dir.reason).toContain('工作区外')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('打全那一条＋明确选定（`external`）⇒ 只读读得到（真身认得出是外面那一个）', async () => {
+    const sand = linked()
+    try {
+      const materials = materialsAt(sand.inside)
+      const path = join(sand.inside, 'link', 'secret.txt')
+
+      const candidates = await materials.candidates(path, 30)
+      expect(candidates.rows).toHaveLength(1)
+      expect(candidates.rows[0]?.external).toBe(true)
+      expect(candidates.rows[0]?.display).toBe(realpathSync(join(sand.outside, 'secret.txt')))
+
+      const read = await materials.load([{ kind: 'file', source: path, external: true }])
+      expect(read.ok && read.materials[0]?.text).toBe('外面的东西')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('**在根内的链接**照旧当里头的用（链接本身不吓人，绕出去才挡）', async () => {
+    const sand = linked()
+    try {
+      const materials = materialsAt(sand.inside)
+      writeFileSync(join(sand.inside, 'real.txt'), '里头的', 'utf8')
+      symlinkSync(join(sand.inside, 'real.txt'), join(sand.inside, 'alias.txt'))
+
+      const read = await materials.load([{ kind: 'file', source: join(sand.inside, 'alias.txt') }])
+      expect(read.ok && read.materials[0]?.text).toBe('里头的')
+
+      const rows = await materials.candidates('alias', 30)
+      expect(rows.rows.map((row) => row.external)).toEqual([false])
+    } finally {
+      sand.dispose()
+    }
+  })
+})
+
+// —— 非普通文件 ——
+
+describe('U36 · 非普通文件：不当文本读（否则会挂在 open 上）', () => {
+  test('FIFO：**即拒**（`open` 会一直等写端——那一档根本不该去读）', async () => {
+    const sand = sandbox()
+    try {
+      const path = join(sand.at, 'pipe')
+      execFileSync('mkfifo', [path])
+
+      const materials = materialsAt(sand.at)
+      // ⚠️ 这一条要是没挡住，本用例会**挂到超时**（FIFO 上 `open(path,'r')` 等写端）
+      const read = await materials.load([{ kind: 'file', source: path }])
+      expect(read.ok).toBe(false)
+      if (read.ok) return
+      expect(read.reason).toContain('不是普通文件')
+
+      // 候选里也不列（列出来也读不了）
+      expect((await materials.candidates('pipe', 30)).rows).toEqual([])
+    } finally {
+      sand.dispose()
+    }
+  })
+})
+
+// —— 声明的别名（macOS：`/tmp/...` 与 `/private/tmp/...`）——
+
+describe('U36 · 声明原形：文件不在了按「不在了」说，不误报成「工作区外」', () => {
+  test('根用**用户写的那个写法**注册：在的读得到、不在的说「不在了」', async () => {
+    // `mkdtempSync` 给的是 `/var/folders/…`，它的真身是 `/private/var/folders/…`——
+    // 两者是同一个目录的两条写法（macOS 上 `path.resolve` 抹不平这一层）
+    const sand = sandbox()
+    try {
+      put(sand.at, 'a.txt', '甲')
+      const materials = materialsAt(sand.at)
+
+      const found = await materials.load([{ kind: 'file', source: join(sand.at, 'a.txt') }])
+      expect(found.ok && found.materials[0]?.text).toBe('甲')
+
+      const missing = await materials.load([{ kind: 'file', source: join(sand.at, 'gone.txt') }])
+      expect(missing.ok).toBe(false)
+      if (!missing.ok) {
+        expect(missing.reason).toContain('不在了')
+        expect(missing.reason).not.toContain('工作区外')
+      }
+    } finally {
+      sand.dispose()
     }
   })
 })

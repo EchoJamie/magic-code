@@ -228,6 +228,22 @@ export function deleteRange(
   return widen(refs, at, stepRight(text, at))
 }
 
+/**
+ * 整份引用**平移** `delta` 格——提交那一刻按「掐掉的头几格」与正文对齐用。
+ *
+ * 由头：交出去的文字是**掐过头尾空白**的（`trim()`），而引用的位置记的是原草稿里的坐标
+ * ——不搬的话，头上有空格时那一处材料会展开在错一格的地方。
+ *
+ * ⚠️ **掐掉的那一段里不可能有引用**（引用的 `marker` 不以空白开头），故平移之后不会出现
+ * 负下标；真出现（手搭的视图）也不是这里该悄悄丢掉的理由——那种数据到内核那头会以
+ * 「位置对不上」被夹回（见 `context.ts` 的 `inlineOf`），比在这儿静默少送一份材料好。
+ */
+export function shiftedRefs(refs: readonly DraftRef[], delta: number): readonly DraftRef[] {
+  if (delta === 0 || refs.length === 0) return refs
+
+  return refs.map((ref) => ({ ...ref, start: ref.start + delta, end: ref.end + delta }))
+}
+
 /** 一处引用 → 命令面上的那一份（`at` ＝ 起点；`marker` 随正文一起走）。 */
 export function wireOf(ref: DraftRef): InputRef {
   if (ref.kind === 'skill') {

@@ -64,6 +64,7 @@ import {
   putRef,
   refStartingAt,
   removeRange,
+  shiftedRefs,
   replaceWith,
   stepLeftOver,
   stepRightOver,
@@ -329,9 +330,46 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   // 启动中：右位说清楚「为什么回车没反应」（不然就是「按了没反应」——最难查的那种）
   if (booting) view = { ...view, status: { ...view.status, hint: HINT_BOOTING } }
 
-  /** 输入历史（`↑` 取上一条）。 */
-  const history: string[] = []
+  /**
+   * **输入历史**（`↑` 取上一条）——**整份草稿**：正文 ＋ 它里面的引用（位置与身份）。
+   *
+   * 设计（终端交互：「输入编辑与历史」＋「引用留在交代的位置」）：**输入历史保留文字与引用
+   * 的相对位置**——翻回来的是**当时那一句**，那几处引用连同身份一起回来，**不必重新选一遍**。
+   *
+   * 两条分寸：
+   * - **翻历史不读材料、也不发送**（这里只是把一段本地的草稿放回输入行）；
+   * - **重新提交时才读当前材料**（走的是与头一次完全同一条通路——出队那一刻现读，见
+   *   `agent-loop.ts`）。故历史里存的是**身份**，不是当初那份内容。
+   */
+  type HistoryEntry = { readonly text: string; readonly refs: readonly DraftRef[] }
+  const history: HistoryEntry[] = []
+  /** 翻到第几条（`-1` ＝**没在翻**，输入行里是用户自己那份草稿）。 */
   let historyAt = -1
+
+  /**
+   * **开始浏览前收着的那份原稿**（正文 ＋ 引用 ＋ 插入点）——设计：「开始浏览前保存完整草稿
+   * （正文、技能、附件、光标/选区），**从最新历史按下返回原稿**」。
+   *
+   * `null` ＝ 没在翻（或翻的时候草稿本来就空着）。往回翻到最新那一条再按一下 `↓` 就还给它；
+   * 用户一动草稿（打字 / 退格 / 粘贴 / `esc`）就不要了——那时**屏上这一份**才是他的原稿。
+   */
+  let browsing: { readonly text: string; readonly refs: readonly DraftRef[]; readonly caret: number } | null =
+    null
+
+  /** 两条历史是不是同一份（连着提交两次一模一样的不重复记）。 */
+  const sameEntry = (left: HistoryEntry, right: HistoryEntry): boolean =>
+    left.text === right.text &&
+    left.refs.length === right.refs.length &&
+    left.refs.every((ref, index) => {
+      const other = right.refs[index]
+      return (
+        other !== undefined &&
+        ref.start === other.start &&
+        ref.end === other.end &&
+        ref.source === other.source &&
+        ref.kind === other.kind
+      )
+    })
 
   /** 重建的攒块——按 `session.history` 的 `data.session` 分（不是当下那条的直接丢）。 */
   let rebuildFor: SessionId | null = null
@@ -444,7 +482,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // **封顶在列、报数在右位**（见 `MAX_CANDIDATES`）：截掉几条不静默——状态行说得出
     // 「还有 N 条」，而想浏览全量走 `/skills`（那才是浏览面，这一栏只是边打边认的辅助）。
     const candidates = found.slice(0, MAX_CANDIDATES)
-    const open = candidates.length > 0
+
+    // **刚选定过的那一处不再自荐**：插入点正停在一处**已成引用**的名字尾巴上时不再列候选
+    // ——那一栏接着列同一条，就是「刚选完又问你一遍」；更要紧的是它会**吞掉下一次回车**
+    // （回车先给候选选中，发不出去。真 PTY 上栽过：选完技能紧接回车，交代发不出去）。
+    // 想换一份：把那一段删了重打（那时它不再是引用，候选照常列）。
+    const standing = at === undefined ? undefined : refStartingAt(next.refs, at.start)
+    const already = standing !== undefined && standing.end === at?.end
+    const open = candidates.length > 0 && !already
 
     return {
       ...next,
@@ -483,6 +528,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   const edit = (next: ShellView): void => {
     historyAt = -1
+    // 人一动草稿，**屏上这一份**就是他的原稿了——先前收着的那份不要了（再翻 `↑` 时重收）
+    browsing = null
     // **动过草稿就不再认领那一份**（U33）——「失败不覆盖用户后来编辑的新稿」全在这一行：
     // 认领（`restoreDraft`）只在「交出去之后一个字都没动」时才发生。提交那一跳不走这里
     // （它清草稿走的是 `draft`），故刚交出去的那一份还认领得回来。
@@ -1047,12 +1094,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     lastSubmit = { ref, text, refs }
 
     const cleared: ShellView = { ...view, draft: '', caret: 0, refs: [] }
-    // 历史记的是**输入行里那一串**（引用那几段也在里面）：`↑` 翻回来接着改、再发一次。
-    // ⚠️ 翻回来的**只有文字**（历史里存的是字符串）——那几处引用的**身份**不在里面，
-    // 那正是设计写的那一条：旧文字里没有位置与身份，就不替它编一份出来。
-    const typed = view.draft.trim()
-    if (history[history.length - 1] !== typed) history.push(typed)
+    // 历史记的是**整份草稿**：正文 ＋ 它里面的引用（位置与身份都在，见 `HistoryEntry`）——
+    // `↑` 翻回来的是**当时那一句**，接着改、再发一次都不必重选。
+    // 连着提交两份一模一样的不重复记（与从前那条「同上一条相同就不记」同一分寸）。
+    const entry: HistoryEntry = { text, refs }
+    const last = history[history.length - 1]
+    if (last === undefined || !sameEntry(last, entry)) history.push(entry)
     historyAt = -1
+    browsing = null // 交出去之后输入行是空的：没有「原稿」可返回了
 
     // ⚠️ **先落地、后发命令**（D23 那条次序）——进程内传输是同步直连的，
     // 反过来的话这次 `draft()` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
@@ -1364,6 +1413,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const text = view.draft.trim()
     if (text === '') return NONE
 
+    // 交出去的那一份是**掐过头尾空白**的文字，而引用的位置记的是**原草稿**里的坐标——
+    // 故按掐掉的头几格把引用整体左移（尾部的空白不影响位置）。不搬的话，头上有空格时
+    // 那一处材料会展开在**错一格**的地方（位置是自证的，`at` 与 `marker` 得对得上）。
+    const head = view.draft.length - view.draft.trimStart().length
+    const placed = shiftedRefs(view.refs, -head)
+
     // **只有技能引用、一个字都没有** ⇒ 这一条按不下去（见 `submittable`）。
     // 出声说一句，不静默吞——「按了没反应」是最难查的那种。
     if (!submittable(view.draft, view.refs)) {
@@ -1417,9 +1472,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
           // 名称已在正文里（原位），只补一处身份上去——引用就排在它原来的位置。
           // 已经绑过的（先前从候选里选过一次）不重复绑。
-          const bound = refStartingAt(view.refs, 0) !== undefined
-            ? view.refs
-            : putRef(view.refs, {
+          const bound = refStartingAt(placed, 0) !== undefined
+            ? placed
+            : putRef(placed, {
                 kind: 'skill',
                 marker: `/${hit.skill.name}`,
                 name: hit.skill.name,
@@ -1443,7 +1498,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
 
-    return sendInput(text, view.refs)
+    return sendInput(text, placed)
   }
 
   /**
@@ -1610,15 +1665,49 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     })
   }
 
+  /**
+   * **上下切换输入历史**（设计「输入编辑与历史」那一段的四条，都落在这里）：
+   *
+   * - **开始浏览前保存完整草稿**（正文 · 引用 · 插入点）——`browsing`；
+   * - **从最新历史按下返回原稿**：往回翻过最新那一条（`↓`）＝ 把那份原稿**整份**还回来；
+   * - **已在草稿位置继续按下保持原稿**：原稿那一格再按 `↓`**什么都不做**（不清空、不环绕）；
+   * - **翻的是整份草稿**：正文 **＋ 它里面的引用**（位置与身份），故召回之后不必重选一遍。
+   *
+   * ⚠️ **这一跳不读材料、也不发命令**——它只是把一段**本地**的草稿放回输入行；
+   * 材料到「这一次重新提交、内核轮到它」时才现读（与头一次完全同一条通路）。
+   */
   const recallHistory = (delta: number): void => {
     if (history.length === 0) return
 
-    const next = historyAt === -1 ? history.length - 1 : historyAt + delta
-    if (next < 0 || next >= history.length) return
+    /** 当下停在哪一格：`history.length` ＝ 原稿那一格（历史之后）。 */
+    const at = historyAt === -1 ? history.length : historyAt
+    const next = at + delta
+    if (next < 0) return // 到头（最旧那条再往上）——保持不动，不环绕
 
-    const text = history[next] ?? ''
+    // 往回翻过最新那一条 ⇒ **原稿整份还回来**（正文 · 引用 · 插入点）
+    if (next >= history.length) {
+      const back = browsing
+      browsing = null
+      historyAt = -1
+      // 没在翻的时候按 `↓`（`browsing === null`）＝ 已在草稿位置：**保持原稿**，什么都不做
+      if (back === null) return
+      draft({
+        ...view,
+        draft: back.text,
+        caret: Math.max(0, Math.min(back.caret, back.text.length)),
+        refs: back.refs,
+      })
+      return
+    }
+
+    // 头一次离开原稿那一格：把它整份收起来（正文 · 引用 · 插入点）
+    if (historyAt === -1) browsing = { text: view.draft, refs: view.refs, caret: caretAt() }
+
+    const entry = history[next]
+    if (entry === undefined) return
+
     historyAt = next
-    draft({ ...view, draft: text, caret: text.length })
+    draft({ ...view, draft: entry.text, caret: entry.text.length, refs: entry.refs })
   }
 
   const said = (from: ShellView, message: string): ShellView => ({ ...from, flash: message })

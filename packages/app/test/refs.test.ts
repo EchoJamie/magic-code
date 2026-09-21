@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InputRef, KernelEvent } from '@magic/contracts'
+import { createShell } from '@magic/tui'
 import { attachShell } from '../src/index.ts'
 import type { ShellHandle } from '@magic/app'
 import { lastModel, makeStage, readDatabase, type Stage } from './support.ts'
@@ -55,6 +56,19 @@ function sendAndWait(shell: ShellHandle, input: { readonly text: string; readonl
 function userText(stage: Stage, index: number): string {
   const messages = lastModel(stage).requests[index]?.messages ?? []
   return messages.filter((message) => message.role === 'user').map((message) => message.content).join('\n')
+}
+
+/**
+ * 第 n 次请求里**最后那条** user 消息——**这一次交代本身**。
+ *
+ * 与 `userText` 的分工：那个把整场对话的 user 消息拼起来（上下文里当然有早先几条），
+ * 判「这一次读到的材料是哪一版」只看最后这一条。
+ */
+function lastUserText(stage: Stage, index: number): string {
+  const messages = lastModel(stage).requests[index]?.messages ?? []
+  const found = [...messages].reverse().find((message) => message.role === 'user')
+
+  return found?.content ?? ''
 }
 
 /** 库里的 `user` 条目（直读——不经读 API）。 */
@@ -338,6 +352,152 @@ describe('U36 · 边界：目录 / 超限 / 二进制 / 工作区外', () => {
     } finally {
       stage.dispose()
       rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
+// ══ 输入历史（U36 · 验收退回那一项）══════════════════════════════════
+
+describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前材料', () => {
+  /** 轮询到条件成立（真装配的答复是异步的）。 */
+  async function until(check: () => boolean, what: string, timeoutMs = 8_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (check()) return
+      await Bun.sleep(10)
+    }
+    throw new Error(`等「${what}」超时`)
+  }
+
+  test('`↑` 召回带引用的那一句 → 编辑 → 再提交：请求里是**当时**的文件内容，记录两笔都在', async () => {
+    const stage = makeStage()
+    try {
+      const file = put(stage.workspace, 'a.txt', '第一版')
+      put(
+        stage.workspace,
+        '.magic/skills/review/SKILL.md',
+        '---\nname: review\ndescription: 检查改动\n---\n\n逐条核对清单。',
+      )
+
+      const assembly = stage.assemble({ turns: [{ text: '好。' }, { text: '好。' }] })
+      // **真外壳**（TUI 的 `createShell`）＋ 真装配：键进外壳，命令经控制面进内核
+      const shell = createShell(assembly.shell)
+      const view = (): ReturnType<typeof shell.getView> => shell.getView()
+      /** 候选行数（抽屉开着才有）。 */
+      const candidateRows = (): number => {
+        const dock = view().dock
+        return dock.kind === 'picker' ? dock.picker.rows.length : 0
+      }
+      const type = async (text: string): Promise<void> => {
+        for (const char of text) {
+          shell.key({ kind: 'char', char })
+          await Bun.sleep(5)
+        }
+      }
+
+      // —— 第一条：@ 选入一个文件引用（真去看工作区），再选一处技能，回车提交 ——
+      await type('先读 ')
+      shell.key({ kind: 'char', char: '@' })
+      await until(() => view().paths !== null, '路径候选答复')
+      await until(() => candidateRows() > 0, '候选铺上')
+      await type('a.txt')
+      await until(() => candidateRows() === 1, '筛到那一条')
+      shell.key({ kind: 'enter' })
+      await until(() => view().dock.kind === 'input', '抽屉收起')
+
+      await type('，再按 ')
+      // `/` 之后**打了名字才列技能**（U33 那条分寸）——故先打 `rev` 再等候选
+      await type('/rev')
+      await until(() => (view().completion?.candidates.length ?? 0) > 0, '技能名进候选')
+      shell.key({ kind: 'tab' }) // 句中那处技能：**显式选定**才绑上身份
+      await type(' 检查')
+      shell.key({ kind: 'enter' })
+      await until(() => lastModel(stage).requests.length >= 1, '第一次模型请求')
+
+      const first = userText(stage, 0)
+      expect(first).toContain('第一版')
+      expect(first).toContain('逐条核对清单。')
+      expect(first).toContain('先读 @a.txt')
+
+      // —— 改源文件：**已发送的那一份**不该被改写 ——
+      put(stage.workspace, 'a.txt', '第二版')
+
+      // —— 用户已经在打新的一条（原稿），这时按 `↑` 召回 ——
+      await until(() => view().draft === '', '草稿已清')
+      await type('原稿半句')
+      shell.key({ kind: 'up' })
+
+      const recalled = view()
+      expect(recalled.draft).toBe('先读 @a.txt，再按 /review 检查')
+      expect(recalled.refs.map((ref) => ref.kind)).toEqual(['file', 'skill'])
+      expect(recalled.refs[0]?.source).toBe(realpathSync(file))
+      expect(recalled.refs[1]?.source).toBe(realpathSync(join(stage.workspace, '.magic/skills/review')))
+      // **翻历史不发命令**（一条模型请求都没多）
+      expect(lastModel(stage).requests).toHaveLength(1)
+
+      // 往回按一下 `↓` ⇒ 原稿整份回来（正文 ＋ 引用 ＋ 插入点）
+      shell.key({ kind: 'down' })
+      expect(view().draft).toBe('原稿半句')
+      expect(view().refs).toEqual([])
+
+      // —— 再召回来、接着编辑、提交 ——
+      shell.key({ kind: 'up' })
+      await until(() => view().draft.startsWith('先读 @a.txt'), '召回')
+      await type(' 再看一遍')
+      shell.key({ kind: 'enter' })
+      await until(() => lastModel(stage).requests.length >= 2, '第二次模型请求')
+      await until(() => userRows(assembly).length === 2, '第二条条目落账')
+
+      // ① 实际模型输入：**重新提交时才读** ⇒ 读到的是第二版（不是召回那一刻、更不是当初那一份）
+      const second = lastUserText(stage, 1)
+      expect(second).toContain('第二版')
+      expect(second).not.toContain('第一版') // 这一次读到的是当时那一份，不是召回那一刻、更不是当初那一份
+      expect(second).toContain('再看一遍')
+      expect(second).toContain('逐条核对清单。') // 技能那处身份也随召回一起回来了
+
+      // ② 记录：两笔各自留着当时那一份（历史不被改写），位置自证
+      const rows = userRows(assembly)
+      const [one, two] = rows.map((row) => payloadOf(row as { payload: string | null }))
+      expect(one?.refs?.map((ref) => [ref.kind, ref.at, ref.marker, ref.text])).toEqual([
+        ['file', 3, '@a.txt', '第一版'],
+        ['skill', 13, '/review', '逐条核对清单。'],
+      ])
+      expect(two?.refs?.map((ref) => [ref.kind, ref.at, ref.marker, ref.text])).toEqual([
+        ['file', 3, '@a.txt', '第二版'],
+        ['skill', 13, '/review', '逐条核对清单。'],
+      ])
+      for (const [index, payload] of [one, two].entries()) {
+        const text = rows[index]?.content_text ?? ''
+        for (const ref of payload?.refs ?? []) {
+          expect(text.slice(ref.at, ref.at + ref.marker.length)).toBe(ref.marker)
+        }
+      }
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  }, 30_000)
+
+  test('半条纯文本也照旧：召回纯文本的那一条，不带任何引用', async () => {
+    const stage = makeStage()
+    try {
+      const assembly = stage.assemble({ turns: [{ text: '好。' }] })
+      const shell = createShell(assembly.shell)
+
+      for (const char of '就是一句话') shell.key({ kind: 'char', char })
+      shell.key({ kind: 'enter' })
+      await until(() => lastModel(stage).requests.length >= 1, '模型请求')
+
+      shell.key({ kind: 'up' })
+      expect(shell.getView().draft).toBe('就是一句话')
+      expect(shell.getView().refs).toEqual([])
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
     }
   })
 })

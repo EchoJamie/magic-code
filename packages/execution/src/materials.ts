@@ -136,12 +136,41 @@ export function createMaterials(options: MaterialsOptions): Materials {
   }
 
   /** 真路径（身份）——文件不在（竞态）时退回词法路径：给得出一个可报的落点。 */
-  const realOf = (absolute: string): string => {
+  const realOf = (absolute: string): string => resolvedOf(absolute).real
+
+  /**
+   * **真身 ＋ 它在不在**——「按哪条路径判里外」这件事的取材。
+   *
+   * `exists: true` ⇒ `real` 是 `realpath` 之后的真身；`false` ⇒ 取不到真身，
+   * `real` 原样退回词法路径。
+   *
+   * ⚠️ **这一位是判据的一半**（见 `insideOf`）：真身取到了，里外就按真身说了算——
+   * 工作区里一条指向外面的链接（`link/ → /etc`），真身在根外就是**在根外**，
+   * 词法那张表不许把它拉回来（那就是符号链接绕过边界）。
+   */
+  const resolvedOf = (absolute: string): { readonly real: string; readonly exists: boolean } => {
     try {
-      return realpathSync(absolute)
+      return { real: realpathSync(absolute), exists: true }
     } catch {
-      return absolute
+      return { real: absolute, exists: false }
     }
+  }
+
+  /**
+   * **这一条落在工作区里吗**——判据分两档，由「真身取到没有」决定：
+   *
+   * - **取得了真身**（这一条存在）⇒ **只看真身**。符号链接绕出去的、软链到别处的，
+   *   一律按真身算作**外面**——工作区边界不吃词法兜底（`link/secret.txt` 不许因为
+   *   写起来在根里就当里头的读）。
+   * - **取不到真身**（这一条不在）⇒ 回落**词法两张表**（`WorkspaceService.resolve` 那一把
+   *   尺子：声明原形 ＋ 规范形）。这一档只为把「不在」与「越界」这两种话说准：
+   *   macOS 上用户写的 `/tmp/proj/x` 与注册的 `/private/tmp/proj` 是两条写法，
+   *   文件真被删掉时取不到真身，光比规范形会把「不在了」误报成「工作区外」。
+   */
+  const insideOf = (absolute: string): boolean => {
+    const at = resolvedOf(absolute)
+
+    return at.exists ? rootOf(at.real) !== undefined : declaredRootOf(absolute) !== undefined
   }
 
   // —— 候选：只回答「有这么一条吗、它是文件还是目录」——
@@ -168,10 +197,19 @@ export function createMaterials(options: MaterialsOptions): Materials {
     return candidateOf(path, kind)
   }
 
-  const candidateOf = (path: string, kind: 'file' | 'directory'): PathCandidate => {
+  /**
+   * 一条目录项 → 候选行；**工作区外的目录不入候选**（`undefined`）。
+   *
+   * 为什么连行都不给：外面那个只收**单个文件**（选定即只读附件），给一条「外部目录」的行
+   * 只会让用户选到一个到提交那一刻必然失败的引用。行里的 `external` 也在这儿定
+   * ——**按真身判**：工作区里的链接指向外面时，这一条仍是「外面那一条」。
+   */
+  const candidateOf = (path: string, kind: 'file' | 'directory'): PathCandidate | undefined => {
     const real = realOf(path)
+    const external = rootOf(real) === undefined
+    if (external && kind === 'directory') return undefined
 
-    return { path: real, display: displayOf(real), kind, external: rootOf(real) === undefined }
+    return { path: real, display: displayOf(real), kind, external }
   }
 
   /** 列一层目录（只这一层）——名字筛前缀，按名排序（不靠文件系统序）。 */
@@ -208,15 +246,28 @@ export function createMaterials(options: MaterialsOptions): Materials {
       const target = isAbsolute(raw) ? resolvePath(raw) : resolvePath(workspace.defaultRoot(), raw)
       const { dir, prefix, isDir } = splitQuery(raw, target)
 
+      // 打全的那一条在不在、是文件还是目录（跟随链接）
+      const complete = await statOrUndefined(target)
+      // **里外按真身判**（`insideOf`）：`link/` 指向外面时，写起来的路径虽在根里，也算外面
+      const inside = insideOf(target)
+
       // 打全的那一条**先认**：`@src/login.ts` 这种（还有工作区外那一条）不必列目录。
       // ⚠️ **写成目录的（`src/`）不走这一支**：那种写法要的是「列它下面那一层」。
-      const complete = await statOrUndefined(target)
-      if (!isDir && complete !== undefined && prefix !== '' && rootOf(realOf(target)) !== undefined) {
-        return { rows: [candidateOf(target, complete.isDirectory() ? 'directory' : 'file')] }
+      if (
+        !isDir &&
+        inside &&
+        complete !== undefined &&
+        prefix !== '' &&
+        // **非普通文件不进候选**（管道 / 设备 / 套接字）：给一条读不了的行没有意义
+        (complete.isFile() || complete.isDirectory())
+      ) {
+        const row = candidateOf(target, complete.isDirectory() ? 'directory' : 'file')
+        // 真身在根内（`inside` 判过）时不会是「外部目录」，故这一支必有行
+        if (row !== undefined) return { rows: [row] }
       }
 
       // —— 工作区外：**只认打全的那一条**，且只收文件 ——
-      if (rootOf(target) === undefined) {
+      if (!inside) {
         if (complete === undefined) {
           return { rows: [], note: `工作区外，而且这个路径不存在：${raw}` }
         }
@@ -228,10 +279,24 @@ export function createMaterials(options: MaterialsOptions): Materials {
               '要带某个文件就把它打全，选定即只读附件）。',
           }
         }
-        return { rows: [candidateOf(target, 'file')] }
+        const row = candidateOf(target, 'file')
+        return row === undefined ? { rows: [] } : { rows: [row] }
       }
 
       // —— 工作区里：列一层 ——
+      //
+      // ⚠️ **要列的那个目录自己也得是真身在根内**：`@link/`（`link` → 外面）写起来在根里，
+      // 真身却在外面——那一支要按「外面」办（目录不列、不读），否则就是**借链接往外浏览**。
+      const dirAt = resolvedOf(isDir ? target : dir)
+      if (dirAt.exists && rootOf(dirAt.real) === undefined) {
+        return {
+          rows: [],
+          note:
+            '这一处指向工作区外（符号链接）——那边只收单个文件：把要带的那个文件打全，' +
+            '选定即只读附件（目录不列、不读）。',
+        }
+      }
+
       try {
         const { rows, more } = await listCandidates(dir, prefix, limit)
 
@@ -275,13 +340,14 @@ export function createMaterials(options: MaterialsOptions): Materials {
     request: MaterialRequest,
   ): Promise<{ readonly ok: true; readonly material: Material } | { readonly ok: false; readonly reason: string }> {
     const source = request.source
-    const real = realOf(source)
-    // 落在哪条根里——**两张表都认**（同 `resolve`）：真路径那一张管在的（身份），
-    // 声明原形那一张管**不在的**（文件已被删时取不到 `realpath`，光比真路径会把它
-    // 误报成「工作区外」——那是一条与事实不符的拒绝理由，必须按「不在了」说）。
-    const inside = rootOf(real) ?? declaredRootOf(source)
+    const at = resolvedOf(source)
+    // 落在哪条根里——**真身取到了就按真身**（`insideOf` 的两档见其注）：
+    // 工作区里一条指向外面的链接（`link/secret.txt`），真身在根外就是**在根外**，
+    // 词法那张表不许把它拉回来；只有「这一条不在（取不到真身）」时才回落词法两张表，
+    // 为的是把「不在了」与「工作区外」这两种话说准（macOS 的 `/tmp` 别名那一档）。
+    const inside = insideOf(source)
 
-    if (inside === undefined && request.external !== true) {
+    if (!inside && request.external !== true) {
       return {
         ok: false,
         reason:
@@ -292,10 +358,21 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
     const info = await statOrUndefined(source)
     if (info === undefined) {
-      return { ok: false, reason: `「${displayOf(real)}」现在不在了（可能已改名或删掉）——拿掉这一处引用，或换一份。` }
+      return { ok: false, reason: `「${displayOf(at.real)}」现在不在了（可能已改名或删掉）——拿掉这一处引用，或换一份。` }
     }
 
-    if (inside === undefined) {
+    // **非普通文件不当文本读**（§ 见 `readBounded`）：FIFO 上 `open(path, 'r')` 会**一直挂着**
+    // 等一个写端（设备 / 套接字同理）——那不是「读不到」，是**根本不该去读**。
+    if (!info.isFile() && !info.isDirectory()) {
+      return {
+        ok: false,
+        reason:
+          `「${displayOf(at.real)}」不是普通文件（管道 / 设备 / 套接字那类）——按路径引用只收` +
+          `文本文件。要用它就让工具去处理（例如 exec）。`,
+      }
+    }
+
+    if (!inside) {
       // 工作区外：只收单个文件（目录不在此列——见端口注）
       if (info.isDirectory()) {
         return {
@@ -304,15 +381,15 @@ export function createMaterials(options: MaterialsOptions): Materials {
         }
       }
 
-      const bytes = await readBounded(real)
+      const bytes = await readBounded(at.real)
       if (!bytes.ok) return { ok: false, reason: bytes.reason }
 
       return {
         ok: true,
         material: {
           kind: 'file',
-          path: real,
-          label: real,
+          path: at.real,
+          label: at.real,
           text: bytes.text,
           ...(bytes.truncated ? { truncated: true as const } : {}),
         },
@@ -321,10 +398,13 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
     if (request.kind === 'dir') {
       if (!info.isDirectory()) {
-        return { ok: false, reason: `「${displayOf(real)}」现在是文件，不是目录——换一处引用，或改成引用这个文件。` }
+        return {
+          ok: false,
+          reason: `「${displayOf(at.real)}」现在是文件，不是目录——换一处引用，或改成引用这个文件。`,
+        }
       }
 
-      const entries = await listOne(real)
+      const entries = await listOne(at.real)
       if (!entries.ok) return { ok: false, reason: entries.reason }
 
       const shown = entries.entries.slice(0, DEFAULT_DIR_ENTRIES)
@@ -334,8 +414,8 @@ export function createMaterials(options: MaterialsOptions): Materials {
         ok: true,
         material: {
           kind: 'dir',
-          path: real,
-          label: displayOf(real),
+          path: at.real,
+          label: displayOf(at.real),
           text: listedOf(shown),
           ...(omitted === 0 ? {} : { omitted }),
         },
@@ -343,7 +423,7 @@ export function createMaterials(options: MaterialsOptions): Materials {
     }
 
     if (info.isDirectory()) {
-      const shown = displayOf(real)
+      const shown = displayOf(at.real)
       return {
         ok: false,
         reason:
@@ -352,15 +432,15 @@ export function createMaterials(options: MaterialsOptions): Materials {
       }
     }
 
-    const bytes = await readBounded(real)
+    const bytes = await readBounded(at.real)
     if (!bytes.ok) return { ok: false, reason: bytes.reason }
 
     return {
       ok: true,
       material: {
         kind: 'file',
-        path: real,
-        label: displayOf(real),
+        path: at.real,
+        label: displayOf(at.real),
         text: bytes.text,
         ...(bytes.truncated ? { truncated: true as const } : {}),
       },

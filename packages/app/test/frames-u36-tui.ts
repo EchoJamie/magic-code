@@ -78,7 +78,11 @@ async function typeAt(session: UiSession): Promise<void> {
  * 读进来，Ink 那边于是收到一个「输入 = `\r\x7f`」的怪键（`key.return` 为假）——
  * 回车会变成一个**正文里的控制字符**。等一等，让上一次写先被读走，再写下一次。
  */
-async function pressKey(session: UiSession, name: 'enter' | 'backspace' | 'tab', until?: Parameters<UiSession['key']>[1]): Promise<void> {
+async function pressKey(
+  session: UiSession,
+  name: 'enter' | 'backspace' | 'tab' | 'up' | 'down',
+  until?: Parameters<UiSession['key']>[1],
+): Promise<void> {
   await Bun.sleep(150)
   await session.key(name, until)
 }
@@ -407,6 +411,122 @@ async function directory(out: string): Promise<void> {
   }
 }
 
+// ══ ⑧ 输入历史：召回整份草稿，编辑之后再提交 ═══════════════════════════
+
+async function recall(out: string): Promise<void> {
+  const session = await createUiSession({
+    label: 'u36-召回再提交',
+    artifacts: join(out, 'runs'),
+    // 两轮的答复**写得不一样**：等条件要等「只有这一次才会出现的东西」
+    // （两轮同文的话，第二次的等待会被第一轮那行字提前满足——真跑栽过）
+    turns: [{ kind: 'text', text: '好。' }, { kind: 'text', text: '再看了一遍。' }],
+  })
+
+  try {
+    const { workspace } = session.facts()
+    const file = put(workspace, 'a.txt', '第一版')
+    put(workspace, '.magic/skills/review/SKILL.md', '---\nname: review\ndescription: 检查改动\n---\n\n逐条核对清单。')
+
+    // —— 头一条：文件 ＋ 技能，两句都选出来，再提交 ——
+    await typeLine(session, '先读 ')
+    await typeAt(session)
+    // 打进筛选（不筛的话选中的是列表第一行 `.magic`——那是挑走了另一条）
+    await session.send('a.txt', { until: { text: '@a.txt' }, timeoutMs: 10_000 })
+    await session.wait({ text: 'a.txt　文件' }, { timeoutMs: 10_000 })
+    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await typeLine(session, '，再按 ')
+    await session.send('/rev', { until: { text: '/rev' }, timeoutMs: 10_000 })
+    // 等**候选行**上屏（目录答复是异步的）：`Tab` 才有东西可选定
+    await session.wait({ text: '检查改动' }, { timeoutMs: 10_000 })
+    await pressKey(session, 'tab')
+    await Bun.sleep(200)
+    await pressKey(session, 'enter', { until: { text: '好。' }, timeoutMs: 15_000 })
+
+    const sentOne = await session.capture({ label: '08a-第一条送出去' })
+    keep(out, sentOne, '08a-第一条送出去')
+
+    const requests = (): readonly { readonly lastUser?: string }[] => session.requests()
+    check(requests().length === 1, `第一次提交后正好一次请求（实测 ${requests().length}）`)
+    check((requests()[0]?.lastUser ?? '').includes('第一版'), '请求里带的是**当时**那份内容')
+
+    // —— 改源文件：已发送的那一份不该被改写 ——
+    writeFileSync(file, '第二版', 'utf8')
+
+    // —— 用户已经在打新的一条（原稿），这时上下翻历史 ——
+    // ⚠️ 文本与按键**分次写**且等一会儿（挤在一次读里 `\r` 会变成正文字符，见文件头注）
+    await typeLine(session, '原稿半句')
+    // ⚠️ 等的是**输入行那一份**（行首那个空格是盒子的内边距）——记录区里也有一行同样的字
+    //    （第一条的回显），拿它当判据会在召回**还没发生**时就放行（真跑栽过：08b 拍早了）
+    await pressKey(session, 'up', { until: { text: ' › 先读 @a.txt，再按 /review' }, timeoutMs: 10_000 })
+    const recalled = await session.capture({ label: '08b-召回（引用也在）' })
+    keep(out, recalled, '08b-召回（引用也在）')
+
+    check(has(recalled, ' › 先读 @a.txt，再按 /review'), '召回的是**整份草稿**（正文与两处引用都在原位）')
+    check(requests().length === 1, '**翻历史不发请求**（夹具仍只有那一条）')
+
+    // 往回一下：原稿整份回来
+    await pressKey(session, 'down', { until: { text: ' › 原稿半句' }, timeoutMs: 10_000 })
+    const back = await session.capture({ label: '08c-返回原稿' })
+    keep(out, back, '08c-返回原稿')
+    check(has(back, ' › 原稿半句'), '从最新历史按下 `↓` ⇒ 原稿整份回来')
+
+    // —— 再召回来、接着编辑、提交 ——
+    await pressKey(session, 'up', { until: { text: ' › 先读 @a.txt，再按 /review' }, timeoutMs: 10_000 })
+    await typeLine(session, ' 再看一遍')
+    await pressKey(session, 'enter', { until: { text: '再看了一遍。' }, timeoutMs: 15_000 })
+
+    const again = await session.capture({ label: '08-召回后编辑再提交' })
+    keep(out, again, '08-召回后编辑再提交')
+
+    check(requests().length === 2, `第二次提交后正好两次请求（实测 ${requests().length}）`)
+    const second = requests()[1]?.lastUser ?? ''
+    check(second.includes('第二版'), '**重新提交时才读**：请求里是改动之后的当前内容', second.slice(0, 300))
+    check(!second.includes('第一版'), '这一条里不是当初那一份')
+    check(second.includes('逐条核对清单。'), '技能那处身份随召回一起回来了')
+    check(second.includes('再看一遍'), '召回之后编辑的那几个字在')
+
+    // —— 记录：两笔各自留着当时那一份，位置自证 ——
+    const raw = readDatabase(join(session.facts().dataDir, 'records.db'))
+    const user = raw.entries.filter((row) => row.kind === 'user')
+    raw.close()
+
+    check(user.length === 2, `库里两条用户条目（实测 ${user.length}）`)
+    const payloads = user.map((row) => JSON.parse(row.payload ?? '{}') as {
+      readonly refs?: readonly { readonly at: number; readonly marker: string; readonly text: string }[]
+    })
+
+    check(payloads[0]?.refs?.length === 2, '第一条记着两处引用（文件 ＋ 技能）')
+    check(payloads[0]?.refs?.[0]?.text === '第一版', '第一条留的是当时那一份')
+    check(payloads[1]?.refs?.[0]?.text === '第二版', '第二条留的是当时那一份（新的）')
+    for (const [index, payload] of payloads.entries()) {
+      const text = user[index]?.content_text ?? ''
+      for (const ref of payload.refs ?? []) {
+        check(text.slice(ref.at, ref.at + ref.marker.length) === ref.marker, `第 ${index + 1} 条的引用位置对得上（${ref.marker}）`)
+      }
+    }
+
+    // 物证留一份（人能直接读的那两段）：**召回后那一次请求的 user 消息** ＋ **库里两条载荷**
+    writeFileSync(
+      join(out, '08d-召回后的记录与请求.txt'),
+      [
+        '【召回 → 编辑 → 再提交：这一次请求里的 user 消息】',
+        second,
+        '',
+        '【库里两条 user 条目（直读）】',
+        ...user.flatMap((row, index) => [
+          `—— 第 ${index + 1} 条 ——`,
+          `content_text: ${row.content_text ?? ''}`,
+          `payload: ${JSON.stringify(payloads[index], null, 2)}`,
+          '',
+        ]),
+      ].join('\n'),
+      'utf8',
+    )
+  } finally {
+    await close(session)
+  }
+}
+
 // ══ 入口 ═════════════════════════════════════════════════════════════
 
 if (import.meta.main) {
@@ -419,5 +539,6 @@ if (import.meta.main) {
   await narrow(out)
   await keepDraft(out)
   await directory(out)
+  await recall(out)
   console.log(`\n全部判据通过。帧落在 ${out}`)
 }

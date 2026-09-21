@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Command, KernelEvent, PathCatalogRow } from '@magic/contracts'
+import type { Command, KernelEvent, PathCatalogRow, SkillCatalogRow } from '@magic/contracts'
 import type { DraftRef } from '../src/components/inline.ts'
 import { composerLayout } from '../src/components/composer.ts'
 import { createStage } from './screen.ts'
@@ -53,6 +53,150 @@ function pickFile(stage: Stage, display: string, kind: 'file' | 'directory' = 'f
   feedPaths(stage, '', [row(display, kind)])
   stage.press(ENTER)
 }
+
+describe('U36 · 输入历史：整份草稿回来（正文 ＋ 引用）', () => {
+  const review: SkillCatalogRow = {
+    name: 'review',
+    description: '检查改动',
+    path: '/ws/.magic/skills/review',
+    label: '项目 .magic/skills',
+    source: 'project',
+    origin: 'magic',
+  }
+
+  const catalog = (): KernelEvent =>
+    event('skills.catalog', { skills: [review], problems: [] })
+
+  /** 提交一条**文件 ＋ 技能 ＋ 重复引用**的交代（三个引用区间，两个身份）。 */
+  function submitMixed(stage: Stage): void {
+    stage.type('先读 ')
+    pickFile(stage, 'a.txt')
+    stage.type('，再按 ')
+    stage.feed([catalog()])
+    stage.type('/rev')
+    stage.press(TAB)
+    stage.type(' 检查 ')
+    pickFile(stage, 'a.txt')
+    stage.press(ENTER)
+  }
+
+  test('`↑` 召回的是**整份草稿**：正文与三处引用（位置 ＋ 身份）一起回来', () => {
+    const stage = createStage()
+    submitMixed(stage)
+    expect(stage.shell.getView().draft).toBe('') // 交出去了
+
+    stage.press({ kind: 'up' })
+
+    const view = stage.shell.getView()
+    expect(view.draft).toBe('先读 @a.txt，再按 /review 检查 @a.txt')
+    // 三处引用都在原来的位置、带着原来那份身份（重复的那一处**不去重、不丢位置**）
+    expect(refs(stage)).toEqual([
+      { start: 3, end: 9, kind: 'file', marker: '@a.txt', source: '/ws/a.txt' },
+      {
+        start: 13,
+        end: 20,
+        kind: 'skill',
+        marker: '/review',
+        name: 'review',
+        source: '/ws/.magic/skills/review',
+      },
+      { start: 24, end: 30, kind: 'file', marker: '@a.txt', source: '/ws/a.txt' },
+    ])
+    // 位置自证：每一处的 `marker` 与草稿上那一段逐字对得上
+    for (const ref of refs(stage)) {
+      expect(view.draft.slice(ref.start, ref.end)).toBe(ref.marker)
+    }
+  })
+
+  test('**翻历史不发命令、不读材料**（本地的一跳）', () => {
+    const stage = createStage()
+    submitMixed(stage)
+    const before = stage.commands().length
+
+    stage.press({ kind: 'up' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'up' })
+
+    expect(stage.commands()).toHaveLength(before) // 一条命令都没多
+    expect(submitted(stage)).toHaveLength(1) // 也没有第二次提交
+  })
+
+  test('召回之后接着改、再提交：那几处引用照旧随它走（不必重选）', () => {
+    const stage = createStage()
+    submitMixed(stage)
+
+    stage.press({ kind: 'up' })
+    stage.type(' 再看一遍') // 在末尾接着打
+    stage.press(ENTER)
+
+    const sent = submitted(stage).at(-1)
+    expect(sent).toBeDefined()
+    expect(sent !== undefined && 'refs' in sent ? sent.refs : undefined).toEqual([
+      { kind: 'file', at: 3, marker: '@a.txt', source: '/ws/a.txt' },
+      {
+        kind: 'skill',
+        at: 13,
+        marker: '/review',
+        name: 'review',
+        source: '/ws/.magic/skills/review',
+      },
+      { kind: 'file', at: 24, marker: '@a.txt', source: '/ws/a.txt' },
+    ])
+  })
+
+  test('**开始浏览前存的那份原稿**：从最新那条按下 `↓` 整份还回来（正文 ＋ 引用 ＋ 插入点）', () => {
+    const stage = createStage()
+    submitMixed(stage)
+
+    // 用户已经在打新的一条了（正文 ＋ 一处引用），插入点停在句中
+    stage.type('先看 ')
+    pickFile(stage, 'a.txt')
+    stage.type(' 再定')
+    for (let at = 0; at < 2; at += 1) stage.press(LEFT)
+    const caret = stage.shell.getView().caret
+
+    stage.press({ kind: 'up' }) // 翻到最新那条历史（原稿被收起来）
+    expect(stage.shell.getView().draft).toBe('先读 @a.txt，再按 /review 检查 @a.txt')
+
+    stage.press({ kind: 'down' }) // 再往回＝**还回原稿**
+
+    const view = stage.shell.getView()
+    expect(view.draft).toBe('先看 @a.txt 再定')
+    expect(view.caret).toBe(caret) // 插入点也回到原来那一格
+    expect(refs(stage)).toEqual([
+      { start: 3, end: 9, kind: 'file', marker: '@a.txt', source: '/ws/a.txt' },
+    ])
+  })
+
+  test('**已在草稿位置继续按下保持原稿**：不清空、不环绕', () => {
+    const stage = createStage()
+    stage.type('第一句')
+    stage.press(ENTER)
+    stage.type('原稿这句话')
+
+    stage.press({ kind: 'up' })
+    stage.press({ kind: 'down' }) // 回到原稿
+    stage.press({ kind: 'down' }) // 已是草稿位置——**什么都不做**
+
+    expect(stage.shell.getView().draft).toBe('原稿这句话')
+
+    // 往回翻到头也不环绕
+    stage.press({ kind: 'up' })
+    stage.press({ kind: 'up' })
+    expect(stage.shell.getView().draft).toBe('第一句')
+  })
+
+  test('**旧纯文本那条仍是纯文本**：召回不带任何引用（不猜引用）', () => {
+    const stage = createStage()
+    stage.type('就是一句话')
+    stage.press(ENTER)
+
+    stage.press({ kind: 'up' })
+
+    expect(stage.shell.getView().draft).toBe('就是一句话')
+    expect(refs(stage)).toEqual([])
+  })
+})
 
 describe('U36 · 几何：引用折到两行上也要上对色', () => {
   /**
@@ -244,6 +388,35 @@ describe('U36 · 句中那个 `/名称`：也在词边界唤起候选', () => {
       },
     ])
     expect(submitted(stage)).toEqual([]) // 选定不发送
+  })
+
+  test('**选定之后候选收起**：紧接着按回车＝发送（不再被候选吞掉）', () => {
+    const stage = createStage()
+    stage.type('再按 ')
+    stage.feed([
+      event('skills.catalog', {
+        skills: [
+          {
+            name: 'review',
+            description: '检查改动',
+            path: '/ws/.magic/skills/review',
+            label: '项目 .magic/skills',
+            source: 'project',
+            origin: 'magic',
+          },
+        ],
+        problems: [],
+      }),
+    ])
+    stage.type('/rev')
+    stage.press(TAB)
+    expect(stage.shell.getView().completion).toBeNull() // 选定即收起（那一条已不再自荐）
+
+    stage.type(' 看看')
+    stage.press(ENTER)
+
+    // 真 PTY 上栽过：候选没收起时，这一次回车被它吃了（`pickCompletion` 不发东西）
+    expect(submitted(stage)).toHaveLength(1)
   })
 
   test('不选就不算引用：句中的 `/名称` 原样是文字（不扫描正文去猜）', () => {
