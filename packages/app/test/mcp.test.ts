@@ -306,6 +306,49 @@ describe('名字与重名的收口（返工 B · 独立验收问题 5 / 6）', (
   })
 })
 
+test('下划线开头的合法工具：进模型工具表**并被真实调用**（返工 C）', async () => {
+    const dir = scrapDir()
+    const stage = stageWith({ fake: serverEntry(dir, 'fake', { FAKE_MCP_MODE: 'under' }) })
+    const log = join(dir, 'fake.jsonl')
+
+    try {
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [{ name: 'mcp__fake___echo', args: { text: '下划线也调得到' } }] },
+          { text: '好' },
+        ],
+      })
+      await assembly.ready()
+
+      // ① 读数：两件都收下了（`_echo` 不再被连带拒收），一件都没拒
+      expect(assembly.mcpServers()[0]?.tools).toEqual(['safe', '_echo'])
+      expect(assembly.mcpServers()[0]?.rejected).toEqual([])
+
+      const shell = bareShell(assembly)
+      assembly.shell.send({ type: 'input.submit', text: '调那个下划线开头的' })
+      await until(() => shell.requests().length >= 1, '审批询问')
+
+      // ② **进模型那一侧的工具表**（注册名带三横：前缀 ＋ 服务器 ＋ `_echo`）
+      expect(toolNamesOf(lastModel(stage).requests[0])).toContain('mcp__fake___echo')
+
+      // ③ **真调用**：批准之后服务器自己数得到这一件，结果原样回来
+      const request = shell.requests()[0]
+      expect(request?.data.name).toBe('fake / _echo')
+      shell.answer(request?.id as number, 'approve')
+      await until(() => shell.result() !== undefined, '结果落定')
+
+      expect(callsOf(log).map((call) => call.tool)).toEqual(['_echo'])
+      expect(shell.result()?.data.ok).toBe(true)
+      expect(outputTextOf(shell.result())).toContain('下划线也调得到')
+
+      shell.dispose()
+      await assembly.shutdown()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
 describe('真实来源与不可放权', () => {
   test('跨服务器同名工具各走各的；伪造来源参数不改变真实身份', async () => {
     const dir = scrapDir()

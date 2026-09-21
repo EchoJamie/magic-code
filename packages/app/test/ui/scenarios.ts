@@ -86,6 +86,7 @@ export type ScenarioName =
   | 'isolation-repeat-parallel'
   | 'mcp-approval'
   | 'mcp-approval-edge'
+  | 'mcp-underscore-name'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -740,6 +741,65 @@ const mcpApprovalEdge: Scenario = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 九 · 下划线开头的合法工具名（返工 C）
+// ═══════════════════════════════════════════════════════════════════════
+
+const mcpUnderscoreName: Scenario = {
+  name: 'mcp-underscore-name',
+  title: '下划线开头的合法工具名：进得了模型工具表，也真调得动',
+  anchors: 'U38 返工 C 的固定反例：官方口径只要求字符集（字母/数字/下划线/连字符/点），不要求首字符',
+  story: async (ui, options) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magic-u38-under-'))
+    const log = join(dir, 'fake.jsonl')
+
+    const session = await ui.open({
+      label: '场景9-下划线工具名',
+      columns: 100,
+      rows: 30,
+      // 模型**自己**点了那个下划线开头的工具——它没进工具表的话，这一件根本调不动
+      turns: [
+        { kind: 'tool', name: 'mcp__fake___echo', args: { text: '下划线也调得到' } },
+        { kind: 'text', text: '好' },
+      ],
+      config: {
+        mcp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [FAKE_MCP_SERVER],
+              env: { FAKE_MCP_LOG: log, FAKE_MCP_NAME: 'fake', FAKE_MCP_MODE: 'under' },
+            },
+          },
+        },
+      },
+      ...where(options),
+    })
+
+    await session.send('调那个下划线开头的')
+    await session.wait({ text: '› 调那个下划线开头的' }, { timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    const card = await session.capture({ label: '下划线工具的审批卡' })
+
+    ui.check(card.text.includes('fake / _echo'), '卡上点名 `服务器 / 工具`（名字带下划线）', '')
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 20_000 })
+
+    const ran = await session.capture({ label: '下划线工具跑完' })
+    ui.check(
+      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('下划线也调得到')),
+      '结果行＝完成标记 ＋ 服务器回的那串字（真调到了）',
+      `锚＝结果行「${TOOL_DONE} … · 下划线也调得到」`,
+    )
+    // 服务器自己数的数：这一件真的被调了一次（不是「未注册的工具」那种答复）
+    ui.check(mcpCalls(log).length === 1, '服务器自己数到了这一件', `日志 ${mcpCalls(log).length} 行`)
+
+    await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
+    await session.capture({ label: '收尾' })
+
+    rmSync(dir, { recursive: true, force: true })
+  },
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // 四 · 故意等不到：结构化失败 ＋ 现场完整 ＋ 清场
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -995,6 +1055,7 @@ export const SCENARIOS: readonly Scenario[] = [
   modelStreamApproval,
   mcpApproval,
   mcpApprovalEdge,
+  mcpUnderscoreName,
   missingTextFailure,
   assistantAcrossCalls,
   isolationRepeatParallel,

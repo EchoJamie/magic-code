@@ -444,6 +444,15 @@ describe('名字与重名的收口（返工 B · 独立验收问题 5 / 6）', (
     await connection.close()
   })
 
+test('下划线开头的名字**照单收下**（返工 C）——尺子是字符集，不是首字符', async () => {
+    const { connection } = await connect({}, { mode: 'under' })
+
+    expect(connection.tools().map((tool) => tool.name)).toEqual(['safe', '_echo'])
+    expect(connection.rejected).toEqual([])
+
+    await connection.close()
+  })
+
   test('不合规的名字**不出现在发现结果里**（一件都不带控制字节）', async () => {
     const { connection } = await connect({}, { mode: 'badname' })
 

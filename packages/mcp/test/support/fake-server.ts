@@ -26,6 +26,7 @@
  *   - `badname` / `dup` —— 返工 B 的两条固定反例：名字带控制字节（伪造审批文字）、
  *     同一台服务器重名（列表与注册对不上）；两幕都**同时提供合法工具**，
  *     用来验「拒的是那一件，不是这一台服务器」
+ *   - `under` —— 返工 C：**下划线开头**的合法名字（`_echo`）与普通合法名（`safe`）共存
  */
 
 import { appendFileSync } from 'node:fs'
@@ -142,6 +143,10 @@ function content(tool: string, args: Record<string, unknown>): unknown {
       }
     case 'annotated':
       return { content: [{ type: 'text', text: '只读动作做完了' }] }
+    case 'safe':
+    case '_echo':
+      // 探针那两件（`under` 幕）——原样回显，证明「这一件真的被调到了」
+      return { content: [{ type: 'text', text: String(args['text'] ?? `${tool} 被调到了`) }] }
     case 'fail':
       return { content: [{ type: 'text', text: '这件事做不成' }], isError: true }
     default:
@@ -164,6 +169,11 @@ server.setRequestHandler(ListToolsRequestSchema, (request) => {
         probe('clean_two'),
       ],
     }
+  }
+  if (MODE === 'under') {
+    // **下划线开头的合法名字**（返工 C 的固定反例）：官方口径只要求字符集，不要求首字符。
+    // `safe` 是同一台服务器上的普通合法工具（一起进，证明「拒的是那一件」）
+    return { tools: [probe('safe'), probe('_echo')] }
   }
   if (MODE === 'dup') {
     // **同一台服务器重名**（描述还不同）——哪一件在跑说不清，故冲突的那几件都拒

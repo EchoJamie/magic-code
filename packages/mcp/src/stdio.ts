@@ -423,8 +423,9 @@ function toolsOf(listed: readonly { name: string; description?: string; inputSch
  * 两条规矩，各自都有独立验收的固定反例：
  *
  * 1. **名字不合规的不进**（`isValidMcpToolName`）：控制字节（换行 / ESC）能让服务端返回的
- *    文字在审批卡上**伪装成界面自己的话**（反例：名字里带换行 ＋ `│ n 批准全部`）；
- *    这个名字还会被拼进送给模型的工具名，各家供应商对函数名字符集也有限制。
+ *    文字在审批卡上**伪装成界面自己的话**（反例：名字里带换行 ＋ `│ n 批准全部`）。
+ *    ⚠️ **只按字符集判，不另加「首字符」那一条**（返工 C）：`_echo` 这类名字本来就合法
+ *    ——官方口径只要求字母、数字、下划线、连字符、点，注册名又一律以 `mcp__` 开头。
  * 2. **同一台服务器重名的，冲突的那几件全拒**（不是「取先到的一件」）：重名意味着
  *    「哪一件在跑」说不清——留一件就是让展示给模型的那份契约与服务端实际执行的含义
  *    对不上（反例：两件 `echo` 描述不同，旧的实现静默取了第一件，而 `tools()` 报两件）。
@@ -446,7 +447,7 @@ function screen(found: readonly McpToolInfo[]): {
     if (!isValidMcpToolName(tool.name)) {
       rejected.push({
         tool: tool.name,
-        reason: `工具名不合规（${describeName(tool.name)}）——须是字母数字开头、只含字母数字与 . _ -`,
+        reason: `工具名不合规（${describeName(tool.name)}）——只许字母、数字、下划线、连字符与点`,
       })
       continue
     }
