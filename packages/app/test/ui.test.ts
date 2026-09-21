@@ -676,7 +676,17 @@ describe('U40 · 六组代表场景（`界面验收工具`·首批验收场景�
       // 挂了就把**判据名 + 最后那一眼**打出来——比一句「ok 是 false」有用得多
       expect(failureLine(result)).toBeNull()
       expect(result.checks.length).toBeGreaterThan(0)
-      expect(result.checks.every((check) => check.ok)).toBe(true)
+      // 判据全过——**登记为「已知未修」的那几条除外**（登记见 `ui/scenarios.ts` 的 `KNOWN_OPEN`）。
+      // 列出来而不是 `.every(...)`：挂了要看得见**是哪几条**、欠的是谁。
+      const failed = result.checks
+        .filter((check) => !check.ok && check.knownOpen === undefined)
+        .map((check) => `${check.what}：${check.detail}`)
+      expect(failed).toEqual([])
+      // **登记过期要叫**：某条「已知未修」已经不红了 ⇒ 账还上了，别让免死金牌留着
+      const repaid = result.checks
+        .filter((check) => check.ok && check.knownOpen !== undefined)
+        .map((check) => `${check.what}（欠 ${check.knownOpen?.defect}）`)
+      expect(repaid).toEqual([])
       expect(result.runDirs.length).toBeGreaterThan(0)
     }, 300_000)
   }

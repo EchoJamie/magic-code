@@ -19,8 +19,5 @@
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "typescript": "^5.7.0"
-  },
-  "patchedDependencies": {
-    "ink@7.1.1": "patches/ink@7.1.1.patch"
   }
 }

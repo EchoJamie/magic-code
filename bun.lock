@@ -146,9 +146,6 @@
       },
     },
   },
-  "patchedDependencies": {
-    "ink@7.1.1": "patches/ink@7.1.1.patch",
-  },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.82", "https://registry.npmmirror.com/@ai-sdk/gateway/-/gateway-4.0.82.tgz", { "dependencies": { "@ai-sdk/provider": "4.0.15", "@ai-sdk/provider-utils": "5.0.41", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-WbRChvbJY2zf0qBxFu6UENi0p69fPzP7lKViNTIp3gr76w9bLUFvV5fTXS5uGPqDOkzlTIuAkqWxYNayEBSn6Q=="],
 

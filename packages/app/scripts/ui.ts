@@ -116,7 +116,11 @@ async function main(): Promise<number> {
           ? {}
           : {
               onCheck: (outcome) => {
-                void print(`  ${outcome.ok ? '✓' : '✗'} ${outcome.what}${outcome.detail === '' ? '' : `（${outcome.detail}）`}`)
+                // 「已知未修」的照样打 ✗、照样显示实际读数——**不粉饰**，只在后面挂一句欠谁的
+                const owed = outcome.knownOpen === undefined ? '' : `　← 已知未修 · 欠 ${outcome.knownOpen.defect}`
+                void print(
+                  `  ${outcome.ok ? '✓' : '✗'} ${outcome.what}${outcome.detail === '' ? '' : `（${outcome.detail}）`}${owed}`,
+                )
               },
             }),
       })

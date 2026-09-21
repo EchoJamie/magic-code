@@ -49,11 +49,25 @@ const COPY = {
  */
 const TOOL_DONE = '✓'
 
+/** 一条「已知未修」的登记：**谁欠着、为什么不修**。 */
+export type KnownOpen = {
+  /** 欠账的缺陷档（库内 `缺陷/Dxx …`）。 */
+  readonly defect: string
+  /** 为什么不修——一句话，别写「以后再说」。 */
+  readonly why: string
+}
+
 /** 一条判据的结论——过了的也一并交回（给人看这一组到底判了些什么）。 */
 export type CheckOutcome = {
   readonly what: string
   readonly ok: boolean
   readonly detail: string
+  /**
+   * 有它 ⇒ 这条判据**现在会红，而红的是已经知道的那件事**（登记见 `KNOWN_OPEN`）：
+   * 照样跑、照样记、照样打印，但**不中断场景**，也不让门变红。
+   * 没有它 ⇒ 不过就抛 `ScenarioFailure`，与往常一样。
+   */
+  readonly knownOpen?: KnownOpen
 }
 
 /** 判据没过——**带上判据名**（场景交付里最要紧的一句话）。 */
@@ -1090,6 +1104,38 @@ export function scenarioNames(): readonly ScenarioName[] {
 }
 
 /**
+ * **已知未修**的判据登记——欠着没还的那几条，指名道姓。
+ *
+ * 为什么要有这张表：把「我们知道它坏、暂时不修」写成**机器可读**的一条，而不是靠人的记忆。
+ * **它不掩盖**——判据照样跑、照样打印、照样进账，只是不拦门（原来一条判据不过就抛
+ * `ScenarioFailure` 把整个场景掐断，连带后面的步骤一条都跑不到）。
+ *
+ * ⚠️ **它会自清理**：登记着的判据**一旦通过**，`ui.test.ts` 会当场把门判红，提醒摘掉登记。
+ * 所以它是**待还的债，不是免死金牌**——别往里加「反正也不会好」的条目。
+ *
+ * 现只一条：改窗重排后旧帧擦不干净（库内 `缺陷/D27`）。
+ */
+const KNOWN_OPEN = new Map<string, KnownOpen>([
+  [
+    '窄窗稳定后一共只画了一条分隔线',
+    {
+      defect: 'D27',
+      why:
+        '改窗重排后旧帧擦不干净，是 Ink 擦除路径的缺陷（上游 issue 907 关了、不修）。' +
+        '修它得给 Ink 打依赖补丁，而「不背自己改依赖的债」是明确裁决——挂起，等不碰依赖的修法。',
+    },
+  ],
+  [
+    '改窗之后用户消息只有一条（旧帧没留在屏上）',
+    { defect: 'D27', why: '同上：旧帧擦不干净 ⇒ 屏上留下两份，本条与上面那条是同一个现象的两个侧面。' },
+  ],
+  [
+    '改窗之后答复只有一条',
+    { defect: 'D27', why: '同上：答复那一半的同一现象。' },
+  ],
+])
+
+/**
  * 跑一组场景——**成功失败都交回一份结构化的账**。
  *
  * 会话由运行器统一收摊（`finally` 里倒序 close，失败也收）——故事只管演，
@@ -1108,10 +1154,13 @@ export async function runScenario(
   const sessions: UiSession[] = []
   const ui: ScenarioContext = {
     check: (ok, what, detail = '') => {
-      const outcome: CheckOutcome = { what, ok, detail }
+      // 登记过的判据：红了也**不掐断场景**——后面那些步骤（清草稿、正常退出）与本条无关，
+      // 掐断只是让这一整趟跑不到底；而登记本身在账上写得明明白白，不构成掩盖。
+      const known = KNOWN_OPEN.get(what)
+      const outcome: CheckOutcome = known === undefined ? { what, ok, detail } : { what, ok, detail, knownOpen: known }
       checks.push(outcome)
       options.onCheck?.(outcome)
-      if (!ok) throw new ScenarioFailure(what, detail)
+      if (!ok && known === undefined) throw new ScenarioFailure(what, detail)
     },
     note: (line) => options.onNote?.(line),
     open: async (sessionOptions) => {
