@@ -227,8 +227,21 @@ const STREAM_WINDOW_MS = 16
  */
 const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'tool.output.delta'])
 
+/** 剥过之后的那份草稿——**正文** ＋ 它在原草稿里的起点（见 `stripSkillWord`）。 */
+type StrippedBody = {
+  readonly body: string
+  /**
+   * 正文在原草稿里的**起点**——原草稿里下标 `n` 那个位置，在正文里是 `n - at`。
+   *
+   * 为什么要把这个数交出来：**插入点要跟着左移**。不搬的话，用户刚在正文中间打的字，
+   * 选完技能接着打就落到尾巴上去了（真 PTY 反例：`/twins abc|d` 选完再打 `Z` 得到
+   * `abcdZ`，而不是原位的 `abcZd`）。
+   */
+  readonly at: number
+}
+
 /**
- * 把草稿开头那个 `/名字` 剥掉，留下**正文**（不是那个形态就原样交回）。
+ * 把草稿开头那个 `/名字` 剥掉，留下**正文**（不是那个形态就原样交回，`at: 0`）。
  *
  * 三件是工单写死的（「直接命令后面的正文（含换行、绝对路径、`/session` 字样）不重复
  * 解析成控制命令」）：
@@ -237,13 +250,18 @@ const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'to
  * - **内部换行保留**：只削掉「斜杠词与其后正文之间」那一段分隔空白，不 `join(' ')`
  *   （那会把用户按下 `shift+回车` 打的换行抹平——多行交代当场变成一行）；
  * - **名字对不上就不剥**（原样交回）：剥了名不副实的一截，等于替用户改了他写的话。
+ *
+ * 正文是原草稿的**一段后缀**，故起点直接用长度差算得——不必再记一遍剥离过程的账
+ * （两处各记一遍，迟早分家）。
  */
-function stripSkillWord(draft: string, name: string): string {
+function stripSkillWord(draft: string, name: string): StrippedBody {
   const head = draft.replace(/^\s+/, '')
   const word = /^\/\S+/.exec(head)
-  if (word === null || word[0] !== `/${name}`) return draft
+  if (word === null || word[0] !== `/${name}`) return { body: draft, at: 0 }
 
-  return head.slice(word[0].length).replace(/^\s+/, '')
+  const body = head.slice(word[0].length).replace(/^\s+/, '')
+
+  return { body, at: draft.length - body.length }
 }
 
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
@@ -735,14 +753,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *   那一截已经成了提交内容，留在草稿里就成了「重复解析」）。
    */
   const bindSkill = (skill: SkillCatalogRow): void => {
-    const body = stripSkillWord(view.draft, skill.name)
+    const cut = stripSkillWord(view.draft, skill.name)
+    // **插入点跟着剥离左移**（见 `StrippedBody.at`）——它在正文里的位置是「原来那个减掉
+    // 被剥掉的那一截」，夹回 `[0, 正文长]`：插入点若正落在被剥掉的那一段里
+    // （`/tw|ins`），落到正文开头（那一格已经不在屏上了，就近落脚最不意外）。
+    // ⚠️ **不摆到末尾**——「选定只绑草稿，保留正文/光标」里的那个「光标」就是这一行。
+    const caret = Math.max(0, Math.min(view.caret - cut.at, cut.body.length))
 
     commit(
       withCompletion({
         ...closePicker(view),
         bound: { ref: { name: skill.name, path: skill.path }, label: skill.label },
-        draft: body,
-        caret: body.length,
+        draft: cut.body,
+        caret,
       }),
     )
   }
@@ -1055,7 +1078,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         }
 
         if (hit.kind === 'one') {
-          const body = stripSkillWord(view.draft, hit.skill.name)
+          const body = stripSkillWord(view.draft, hit.skill.name).body
 
           // **只输入了名称**（`/pdf` 后面没有正文）＝**只绑定草稿**（设计：「选定或仅输入名称
           // 时只绑定草稿，后面的正文仍可编辑」）——此刻一个模型请求都不发，用户接着补交代。

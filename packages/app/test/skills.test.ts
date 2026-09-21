@@ -283,6 +283,43 @@ describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () 
     }
   })
 
+  /**
+   * **负例回归**（U33 独立验收退回①）：同一处两份同名——读侧交回来的**来源必须分得开**。
+   *
+   * 旧行为：两行都报 `项目 .magic/skills`（作用域 ＋ 入口两段），候选列表里两行**逐字相同**，
+   * 用户没有任何依据挑一份（真 PTY 反例）。名字取自 front-matter、不取目录名，
+   * 故「同一处两份同名」是真能出现的。
+   */
+  test('**同档同名的两份**：两行的来源不同（这正是候选列表要拿来做判据的那一串）', async () => {
+    const stage = makeStage()
+
+    try {
+      put(stage.workspace, '.magic/skills/first/SKILL.md', skillText('twins', '独立验证技能', '第一份正文。'))
+      put(stage.workspace, '.magic/skills/second/SKILL.md', skillText('twins', '独立验证技能', '第二份正文。'))
+
+      const assembly = stage.assemble({ turns: [{ text: '你好' }] })
+      const handle = attachShell(assembly.shell)
+      const catalog = await askSkills(handle)
+
+      expect(catalog.data.skills.map((row) => `${row.name}（${row.label}）`)).toEqual([
+        'twins（项目 .magic/skills/first）',
+        'twins（项目 .magic/skills/second）',
+      ])
+      // 身份也各是各的——选哪份、读哪份，靠的是它
+      expect(catalog.data.skills.map((row) => row.path)).toEqual([
+        realpathSync(join(stage.workspace, '.magic/skills/first')),
+        realpathSync(join(stage.workspace, '.magic/skills/second')),
+      ])
+      // 正文仍不带（目录只搬元数据）
+      expect(JSON.stringify(catalog.data)).not.toContain('第一份正文')
+
+      handle.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
   test('**空手打开也照答**（还没有会话时，外壳照样问得出来）', async () => {
     const stage = makeStage()
 

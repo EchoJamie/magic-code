@@ -43,7 +43,11 @@ function partsOf(row: PickerRow, columns: number): { label: string; meta: string
   if (row.oneLine !== true) return { label: row.label, meta: row.meta }
 
   const room = Math.max(0, columns - 2 - NUMBER_WIDTH - GAP_WIDTH)
-  const label = clip(row.label, room)
+  // **名称至多占一半**（U33 独立验收退回①）：名字取自 front-matter，可以长到 64 字符；
+  // 让它按需吃满，窄窗下 meta（来源 ＋ 简述）就会被**整段挤掉**——两行同名同档的候选
+  // 于是只剩同一串截断的名字，用户一个依据都没有（真 PTY 反例：60 列 · 56 字符名 ·
+  // 项目/用户两份，连「项目 / 用户」都不见了）。留一半给 meta，来源就总在。
+  const label = clip(row.label, Math.max(1, Math.floor(room / 2)))
 
   return { label, meta: clip(row.meta, Math.max(0, room - inkWidth(label))) }
 }

@@ -22,9 +22,10 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Command, KernelEvent, SkillCatalogRow } from '@magic/contracts'
+import type { Command, Entry, KernelEvent, SkillCatalogRow } from '@magic/contracts'
 import { createShell } from '../src/shell.ts'
-import { MAX_CANDIDATES } from '../src/view.ts'
+import { logLines } from '../src/components/log.ts'
+import { MAX_CANDIDATES, createView, rebuild } from '../src/view.ts'
 import { createStage } from './screen.ts'
 import type { Stage } from './screen.ts'
 import { event } from './events.ts'
@@ -571,6 +572,159 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
 
     expect(stage.shell.getView().draft).toBe('')
     expect(stage.shell.getView().flash).toContain('先答复')
+  })
+})
+
+// ══ 独立验收退回的三处（真 PTY 反例 —— 逐条固化成负例回归）══════════════
+
+describe('退回① · 候选的来源必须辨得出来（两行不能逐字相同）', () => {
+  /**
+   * **负例回归**：同一处两份同名（`first/` 与 `second/` 都自称 `twins`）。
+   *
+   * 旧行为：两行都是 `twins　项目 .magic/skills · …`——**逐字相同**，用户没有依据挑一份。
+   * 来源的细分由**发现处**产出（`Skill.label`，见 `execution/src/skills.ts` 的
+   * `sourceLabelOf`）；这一条钉的是「那一串到屏上真的分成两行」。
+   */
+  test('同档同名两份：两行的来源不同', () => {
+    const stage = createStage()
+    const twins = [
+      skill('twins', { label: '项目 .magic/skills/first', description: '同一句简述' }),
+      skill('twins', { label: '项目 .magic/skills/second', description: '同一句简述' }),
+    ]
+
+    directHit(stage, '/twins body', twins)
+
+    const rows = pickerOf(stage).rows
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.meta).not.toBe(rows[1]?.meta) // 旧行为下这两串一模一样
+    expect(rows[0]?.meta).toContain('first')
+    expect(rows[1]?.meta).toContain('second')
+  })
+
+  /**
+   * **负例回归**：起手即窄（60 列）＋ 56 字符的技能名，来源被名字挤没了。
+   *
+   * 旧行为：名称优先裁至全宽 ⇒ 两行都只剩同一串截断的名字，连「项目 / 用户」都没了。
+   * 新判据：**名称至多占一半**，来源永远留得下——两行的来源仍要分得开。
+   */
+  test('窄窗（60 列）＋ 长名字：来源仍分得开（项目 / 用户）', async () => {
+    const stage = createStage()
+    const long = 'a'.repeat(56)
+
+    openSkills(stage, '/skills', [
+      skill(long, { label: '项目 .magic/skills', description: `${long} 的简述` }),
+      skill(long, { label: '用户 .magic/skills', description: `${long} 的简述` }),
+    ])
+
+    const lines = (await stage.screen({ columns: 60, rows: 24 })).dock.map((line) => line.text)
+    const rows = lines.filter((line) => line.includes(long.slice(0, 8)))
+
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toContain('项目 .magic/skills')
+    expect(rows[1]).toContain('用户 .magic/skills')
+    // 仍是**每项一行**（挤掉的是简述，不是折行）
+    expect(rows[0]?.length).toBeLessThanOrEqual(60)
+    expect(rows[1]?.length).toBeLessThanOrEqual(60)
+  })
+})
+
+describe('退回② · 选定技能不搬正文里的插入点', () => {
+  /**
+   * **负例回归**：`/twins abc|d` 选定之后插入点被摆到末尾。
+   *
+   * 旧行为：`caret: body.length` ⇒ 接着打 `Z` 得到 `abcdZ`；新判据：原位插入
+   * ⇒ `abcZd`。剥掉的只是开头那一截 `/twins `，插入点跟着左移那么多。
+   */
+  test('剥前缀时插入点左移：`/twins abc|d` 选完接着打 ⇒ `abcZd`', () => {
+    const stage = createStage()
+    const twins = [
+      { ...skill('twins'), path: '/ws/a/twins' },
+      { ...skill('twins'), path: '/ws/b/twins' },
+    ]
+
+    stage.type('/twins abcd')
+    feedCatalog(stage, twins)
+    stage.press({ kind: 'left' }) // 光标到 `abc|d`
+    expect(stage.shell.getView().caret).toBe(10)
+
+    stage.press(ENTER) // 姓名分不出唯一 ⇒ 展开同名候选
+    expect(pickerOf(stage).rows).toHaveLength(2)
+    stage.press(ENTER) // 选定头一份
+
+    const view = stage.shell.getView()
+    expect(view.draft).toBe('abcd')
+    expect(view.caret).toBe(3) // 旧行为下是 4（＝正文末尾）
+
+    stage.type('Z')
+    expect(stage.shell.getView().draft).toBe('abcZd')
+  })
+
+  test('插入点落在被剥掉的那一截里 ⇒ 落到正文开头（就近落脚）', () => {
+    const stage = createStage()
+
+    // 只打名字（其后没有正文）——那样才是「只绑定」，插入点也才停在斜杠词里面
+    stage.type('/twins')
+    feedCatalog(stage, [skill('twins')])
+    for (let at = 0; at < 3; at += 1) stage.press({ kind: 'left' }) // `/tw|ins`
+    stage.press(ENTER) // 直达：唯一 ⇒ 只绑定
+
+    const view = stage.shell.getView()
+    expect(view.draft).toBe('')
+    expect(view.caret).toBe(0)
+  })
+})
+
+describe('退回③ · 恢复之后那条消息仍认得出它的技能来源', () => {
+  /** 一条真记录里的 `user` 条目（载荷里带着当时送出去的技能）。 */
+  const sent: Entry = {
+    id: 7,
+    kind: 'user',
+    content: { text: '把这份 PDF 处理一下' },
+    payload: {
+      skills: [
+        {
+          name: 'pdf',
+          source: '/ws/.magic/skills/pdf',
+          label: '项目 .magic/skills',
+          text: '第一步：先数页数。',
+        },
+      ],
+    },
+    at: 0,
+  }
+
+  /**
+   * **负例回归**：`rebuild` 只读条目正文，技能依据不见了。
+   *
+   * 旧行为：重建出来的 user 行只有那句话——设计与验收都要「恢复后来源可辨」。
+   */
+  test('重建的 user 行带着 `技能：名称 · 来源`（读记录里那一份）', () => {
+    const view = rebuild(createView(), [sent])
+    const said = logLines(view.settled, { columns: 100, expanded: false })
+      .map((line) => line.segments.map((piece) => piece.text).join(''))
+      .join('\n')
+
+    expect(said).toContain('把这份 PDF 处理一下')
+    expect(said).toContain('技能：pdf · 项目 .magic/skills')
+    // **不冒充使用回执**：那一条说的是「模型真用上了」（当时的事），恢复时不重放
+    expect(said).not.toContain('本次使用技能')
+  })
+
+  test('纯文本交代**一行都不多**（载荷缺席＝什么都不加）', () => {
+    const view = rebuild(createView(), [{ id: 8, kind: 'user', content: { text: '随便聊一句' }, at: 0 }])
+    const said = logLines(view.settled, { columns: 100, expanded: false })
+      .map((line) => line.segments.map((piece) => piece.text).join(''))
+      .join('\n')
+
+    expect(said).not.toContain('技能：')
+  })
+
+  test('当场发的那一次**不挂**这一行（现场有草稿材料行与使用回执两处说着它）', () => {
+    const stage = createStage()
+    directHit(stage, '/pdf 帮我看看', [skill('pdf')])
+
+    const echo = stage.shell.getView().rows.find((row) => row.kind === 'user')
+    expect(echo?.kind === 'user' ? echo.skills : undefined).toBeUndefined()
   })
 })
 

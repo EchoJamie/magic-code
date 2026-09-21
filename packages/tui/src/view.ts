@@ -26,6 +26,8 @@ import type {
   SessionSummary,
   SkillCatalogRow,
   SkillRef,
+  UsedSkill,
+  UsedSkillEntry,
 } from '@magic/contracts'
 
 // ══ 记录区（三类行）══════════════════════════════════════════════════
@@ -43,7 +45,25 @@ export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecute
 /** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
 export type LogRow =
   // —— 会话内容（落库 · 可重建）——
-  | { readonly kind: 'user'; readonly key: string; readonly text: string; readonly echoed: boolean }
+  | {
+      readonly kind: 'user'
+      readonly key: string
+      readonly text: string
+      readonly echoed: boolean
+      /**
+       * **随这条交代送出去的技能**（U33）——**只有重建那一趟才有**（`rebuildRows` 从条目
+       * 载荷里取），当场发的那一次不给：现场有草稿材料行与 `本次使用技能` 回执两处说着
+       * 这件事，再挂一条就是同一句话第三遍。
+       *
+       * 为什么重建要补：切走一条会话再切回来 / `--session` 接续之后，屏上只剩用户那句
+       * 话——「这条交代当时带了哪份技能」在屏上**一处都没有了**（依据在条目载荷里、
+       * 没丢，缺的是显示）。设计：「恢复后来源可辨」。
+       *
+       * ⚠️ **不是使用回执**：那一条说的是「模型真用上了」（当时发生的事），此处说的是
+       * 「这条记录里存着这份材料」。恢复时**不重放、不伪造**回执。
+       */
+      readonly skills?: readonly UsedSkill[]
+    }
   | { readonly kind: 'assistant'; readonly key: string; readonly text: string }
   | { readonly kind: 'thinking'; readonly key: string; readonly text: string }
   | {
@@ -1166,8 +1186,19 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
     pendingAt = -1
     const text = contentTextOf(entry)
 
-    if (entry.kind === 'user') rows.push({ kind: 'user', key: `rb:u:${entry.id}`, text, echoed: false })
-    else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text })
+    if (entry.kind === 'user') {
+      const skills = usedSkillsOf(entry.payload)
+      rows.push({
+        kind: 'user',
+        key: `rb:u:${entry.id}`,
+        text,
+        echoed: false,
+        // **随这条交代送出去的技能**（U33 · 独立验收退回③）——恢复时它是这条消息唯一的
+        // 材料依据。**读的是记录里存的那一份**（当时送出去的名字与来源标签），
+        // 不重新读盘：材料是动态的，重读会拿到今天的、冒充当时那一份。
+        ...(skills.length === 0 ? {} : { skills }),
+      })
+    } else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text })
     else rows.push({ kind: 'receipt', key: `rb:s:${entry.id}`, text: `（摘要）${text}` })
   }
 
@@ -1241,6 +1272,23 @@ function toolSegments(rows: readonly LogRow[]): readonly { readonly start: numbe
   }
 
   return segments
+}
+
+/**
+ * `user` 条目载荷里的技能——**只取显示要用的那三格**（名字 · 来源身份 · 来源标签）。
+ *
+ * 正文（载荷里那一份 `text`）**不带进行里**：显示只用名字与来源，而把几 KB 的材料再挂
+ * 一份到屏上毫无用处（它本来就在记录里，要用的时候从那儿读）。
+ *
+ * 载荷形状按记录域的 `UserPayload`：`skills` 可以缺席（纯文本交代）——缺席＝空数组，
+ * 不编也不报（「这条交代没带技能」是常态，不是问题）。
+ */
+function usedSkillsOf(payload: Entry['payload']): readonly UsedSkill[] {
+  const source = payload as { readonly skills?: readonly UsedSkillEntry[] } | undefined
+  const skills = source?.['skills']
+  if (!Array.isArray(skills)) return []
+
+  return skills.map((one) => ({ name: one.name, source: one.source, label: one.label }))
 }
 
 /** 条目的正文——内联取文本，blob 引用不解析（外壳的既有姿势）。 */
@@ -1708,7 +1756,9 @@ export function skillHint(input: {
   const sameName = filter === '' ? 0 : (catalog?.skills ?? []).filter((one) => one.name === filter).length
 
   if (sameName > 1) {
-    lines.push(`「${filter}」有 ${sameName} 份同名的——按来源选一份，回车＝选定（不是发送）`)
+    // 「回车」那半句归状态行（`↑↓ 选 · 回车 定 · esc 收起`）——这里只说**那一下意味着什么**
+    // （选定不是发送），一句一事，不跟右位重述键位（独立验收 · 看帧「文案」那一条）
+    lines.push(`「${filter}」有 ${sameName} 份同名的——按来源挑一份（选中不等于发送）`)
   } else if (shown === 0 && filter !== '') {
     // 筛空了 ⇒ 抽屉收起、这句话落成回执——得说清「怎么办」，不然就是「打了几个字，抽屉没了」
     lines.push(`没有匹配「${filter}」的技能——退格删一个字，或换个词再打 /skills`)
@@ -1721,7 +1771,7 @@ export function skillHint(input: {
   }
 
   if (shown > 0 && !hasBound && filter === '') {
-    lines.push('选一份就挂在这条草稿上——回车＝选定，不是发送')
+    lines.push('选一份就挂在这条草稿上——选中不等于发送')
   }
 
   const broken = catalog?.problems.filter((one) => one.kind === 'error').length ?? 0

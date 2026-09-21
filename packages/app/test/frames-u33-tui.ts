@@ -30,10 +30,11 @@
  * `05-移除技能`（保留正文）· `06-来源失效`（保稿）· `07-窄窗`·`08-内置同名`·`09-切会话`。
  */
 
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createUiSession } from './ui/index.ts'
 import type { Capture, UiSession } from './ui/index.ts'
+import { readDatabase } from './support.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
 /** 一条判据的结论——**不过就当场抛**（留帧装置不是「看看而已」，判据得咬人）。 */
@@ -46,19 +47,26 @@ function check(ok: boolean, what: string, detail = ''): void {
   throw new Error(`判据「${what}」没过${detail === '' ? '' : `：${detail}`}`)
 }
 
-/** 摆一份技能文件（中间目录自动建）——返回**技能目录**（发现面认的是它，不是那份文件）。 */
+/**
+ * 摆一份技能文件（中间目录自动建）——返回**技能目录**（发现面认的是它，不是那份文件）。
+ *
+ * `as` ＝ front-matter 里那个名字（缺省＝目录名）。**名字不取目录名**（规范允许两者不一致，
+ * 见 `execution/skills.ts` 文件头注）——独立验收退回① 那两份同名技能就是这么摆的：
+ * `first/` 与 `second/` 都自称 `twins`。
+ */
 function putSkill(
   root: string,
   segment: '.magic' | '.agents',
   name: string,
   description: string,
   body: string,
+  as = name,
 ): string {
   const dir = join(root, segment, 'skills', name)
   mkdirSync(dir, { recursive: true })
   writeFileSync(
     join(dir, 'SKILL.md'),
-    `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`,
+    `---\nname: ${as}\ndescription: ${description}\n---\n\n${body}\n`,
     'utf8',
   )
 
@@ -416,14 +424,213 @@ async function switching(out: string, configured: string): Promise<void> {
     const shot = await session.capture({ label: '09-切会话之后' })
     keep(out, shot, '09-切会话之后')
 
-    // 绑的那一份（头一行 `audit`）**换了会话还在**——材料属于草稿，不属于会话
+    // 绑的那一份（头一行 `audit`）**换了会话还在**——材料属于草稿，不属于会话。
+    // 标签末尾那个 `/linked` 是**位置**：那份技能目录叫 `linked`、里头的 `SKILL.md` 自称
+    // `audit`（软链接那一路，目录名与名字不一致）——位置说了名字没说的信息，故带上
+    // （见 `execution/src/skills.ts` 的 `sourceLabelOf`）。
     check(
-      has(shot, '技能：audit · 项目 .magic/skills（待发送）'),
+      has(shot, '技能：audit · 项目 .magic/skills/linked（待发送）'),
       '换了会话，草稿上那份技能还在（材料属于草稿，不属于会话）',
     )
     check(session.requests().length === 0, '切会话本身不发模型请求')
   } finally {
     await close(session)
+  }
+}
+
+// ══ ⑩～⑬ 独立验收退回的三处（真 PTY 复现）════════════════════════════
+
+/** 同名的两份技能：`first/` 与 `second/` 都自称 `twins`、同一句简述、**正文不同**。 */
+const TWINS_DESC = '独立验证技能'
+
+/** 摆「同档同名」那一对（退回① 的原样复现）。 */
+function putTwins(session: UiSession): void {
+  const { workspace } = session.facts()
+  putSkill(workspace, '.magic', 'first', TWINS_DESC, '第一份的正文 FIRST_BODY。', 'twins')
+  putSkill(workspace, '.magic', 'second', TWINS_DESC, '第二份的正文 SECOND_BODY。', 'twins')
+}
+
+/** ⑩ 同档同名：两行必须分得开；选定第二份 ⇒ 送出去的也是第二份。 */
+async function sameScope(out: string, configured: string): Promise<void> {
+  const session = await createUiSession({
+    label: 'u33-同档同名',
+    artifacts: join(out, 'runs'),
+    config: { skills: { sources: [configured] } },
+    turns: [{ kind: 'text', text: '照它做。' }],
+  })
+
+  try {
+    putTwins(session)
+
+    await typeLine(session, '/twins body')
+    await session.key('enter', { until: { text: '同名的' }, timeoutMs: 10_000 })
+    const list = await session.capture({ label: '10a-同名列表' })
+    keep(out, list, '10a-同名列表')
+
+    // 只数**候选行**（` 1 twins…`）——下面那句提示里也有 `twins`（「有 2 份同名的…」）
+    const rows = list.lines.filter((line) => /^\s*\d+\s/.test(line))
+    check(rows.length === 2, `两份同名各占一行（实测 ${rows.length} 行）`)
+    check(rows[0] !== rows[1], '两行**不是逐字相同**', `${rows[0]} / ${rows[1]}`)
+    check(rows[0]?.includes('first') === true, '第一行指得出是第一份')
+    check(rows[1]?.includes('second') === true, '第二行指得出是第二份')
+
+    // 选定**第二份**（↓ 一格 ⇒ 回车）——送出去的正文该是第二份的
+    await session.key('down')
+    await session.key('enter', { until: { text: '（待发送）' }, timeoutMs: 5_000 })
+    const bound = await session.capture({ label: '10b-选定第二份' })
+    keep(out, bound, '10b-选定第二份')
+    check(has(bound, 'second'), '草稿材料行认得出选的是第二份')
+
+    await session.key('enter', { until: { text: '照它做。' }, timeoutMs: 15_000 })
+    const sent = await session.capture({ label: '10c-提交之后' })
+    keep(out, sent, '10c-提交之后')
+
+    const carried = session.requests().at(-1)?.lastUser ?? ''
+    check(carried.includes('SECOND_BODY'), '真实请求里是**第二份**的正文', carried)
+    check(!carried.includes('FIRST_BODY'), '没有夹带第一份的正文')
+  } finally {
+    await close(session)
+  }
+}
+
+/** ⑪ 窄窗（**起手即 60 列**，不 resize）＋ 56 字符的名字：来源不能被名字挤没。 */
+async function narrowLongName(out: string, configured: string): Promise<void> {
+  const long = 'a'.repeat(56)
+  const session = await createUiSession({
+    label: 'u33-窄窗长名',
+    artifacts: join(out, 'runs'),
+    config: { skills: { sources: [configured] } },
+    columns: 60,
+    rows: 24,
+    turns: [{ kind: 'text', text: '（这一轮不该发生）' }],
+  })
+
+  try {
+    const { workspace, home } = session.facts()
+    putSkill(workspace, '.magic', long, '项目那一份', '项目正文。')
+    putSkill(home, '.magic', long, '用户那一份', '用户正文。')
+
+    await openDrawer(session, long.slice(0, 8))
+    const shot = await session.capture({ label: '11-窄窗长名' })
+    keep(out, shot, '11-窄窗长名')
+
+    const rows = shot.lines.filter((line) => line.includes(long.slice(0, 8)))
+    check(rows.length === 2, `两份各占一行（实测 ${rows.length} 行）`)
+    check(rows[0]?.includes('项目 .magic/skills') === true, '第一行保住了「项目」来源', rows[0] ?? '')
+    check(rows[1]?.includes('用户 .magic/skills') === true, '第二行保住了「用户」来源', rows[1] ?? '')
+    check(
+      rows.every((line) => line.length <= shot.columns),
+      '每项仍是一行（没折行）',
+    )
+  } finally {
+    await close(session)
+  }
+}
+
+/** ⑫ 选定技能**不搬正文里的插入点**。 */
+async function keepCaret(out: string, configured: string): Promise<void> {
+  const session = await createUiSession({
+    label: 'u33-插入点',
+    artifacts: join(out, 'runs'),
+    config: { skills: { sources: [configured] } },
+    turns: [{ kind: 'text', text: '（这一轮不该发生）' }],
+  })
+
+  try {
+    putTwins(session)
+
+    await typeLine(session, '/twins abcd')
+    // **光标真在**（`abc|d`）：先量末尾那一格，再左移一格看它跟不跟着退
+    const atEnd = await session.capture({ label: '12a-光标在末尾' })
+    await session.key('left')
+    // 纯光标移动**屏上没有一个字会变**（这一屏是「等条件」等不到的）——照 Ink 的写档
+    // （30fps）给一帧的余量，再读那一格
+    await Bun.sleep(250)
+    const before = await session.capture({ label: '12b-选定之前（光标在 abc|d）' })
+    keep(out, before, '12-选定之前')
+    check(
+      before.cursor.x === atEnd.cursor.x - 1,
+      `左移一格，真光标跟着退一列（${atEnd.cursor.x} → ${before.cursor.x}）`,
+    )
+
+    await session.key('enter', { until: { text: '同名的' }, timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: '（待发送）' }, timeoutMs: 5_000 })
+    await typeLine(session, 'Z')
+    const after = await session.capture({ label: '13-选定之后接着打' })
+    keep(out, after, '13-选定之后接着打')
+
+    // 接着打 `Z` ⇒ `abcZd`（旧行为是 `abcdZ`）
+    check(has(after, 'abcZd'), '**字插在原位**（`abcZd`），不是落到末尾（`abcdZ`）')
+  } finally {
+    await close(session)
+  }
+}
+
+/**
+ * ⑬ **真 `--session <id>` 恢复**——两个真 CLI 进程、同一块数据目录。
+ *
+ * 第一程发一条带技能的交代、落账、退出；第二程拿第一程的会话 id 接续，
+ * 屏上该认得出那条消息的技能来源。**第二程没有技能目录**（沙地是新的）——
+ * 这正是「读已存记录、不重新加载磁盘材料」的物证。
+ */
+async function restored(out: string, configured: string): Promise<void> {
+  const dataDir = join(out, 'restore-data')
+  mkdirSync(dataDir, { recursive: true })
+
+  const first = await createUiSession({
+    label: 'u33-恢复-第一程',
+    artifacts: join(out, 'runs'),
+    config: { dataDir, skills: { sources: [configured] } },
+    turns: [{ kind: 'text', text: '照它做，先数页数。' }],
+  })
+
+  let id: string
+  try {
+    putCatalog(first, configured)
+    await openDrawer(first)
+    await first.key('down') // 头一行是 `audit`；选「项目那一份 pdf」（与正文对得上）
+    await first.key('enter', { until: { text: '（待发送）' }, timeoutMs: 5_000 })
+    await typeLine(first, '把这份 PDF 处理一下')
+    await first.key('enter', { until: { text: '照它做，先数页数。' }, timeoutMs: 15_000 })
+    // **等它闲下来再收**——忙的时候 `ctrl+c` 是中断不是退出，助手那条条目就落不了账
+    // （实测：收早了，恢复出来只剩用户那句、答复没了）
+    await close(first)
+
+    const db = readDatabase(join(dataDir, 'records.db'))
+    try {
+      id = db.sessions[0]?.id ?? ''
+      check(id !== '', '第一程落下了一条会话（记录库直读）')
+      check((db.entries ?? []).length >= 2, '第一程的条目落了账（用户 ＋ 助手）')
+    } finally {
+      db.close()
+    }
+  } finally {
+    await close(first).catch(() => undefined)
+  }
+
+  const second = await createUiSession({
+    label: 'u33-恢复-第二程',
+    artifacts: join(out, 'runs'),
+    config: { dataDir },
+    argv: ['--session', id],
+    turns: [{ kind: 'text', text: '（这一轮不该发生）' }],
+  })
+
+  try {
+    await second.wait({ text: '把这份 PDF 处理一下' }, { timeoutMs: 15_000 })
+    // 历史**分块推**——用户那句在第一块就可能到了，助手那句在后头；等齐了再取帧
+    await second.wait({ text: '照它做，先数页数。' }, { timeoutMs: 15_000 })
+    const shot = await second.capture({ label: '14-恢复之后' })
+    keep(out, shot, '14-恢复之后')
+
+    check(has(shot, '把这份 PDF 处理一下'), '恢复出了那条交代的正文')
+    check(has(shot, '技能：pdf · 项目 .magic/skills'), '**技能来源也在**（读的是记录里那一份）')
+    check(has(shot, '照它做，先数页数。'), '助手那句也重建回来了（历史是整段铺的）')
+    check(!has(shot, '本次使用技能'), '**不伪造使用回执**（那是当时的事，恢复不重放）')
+    // 第二程的沙地里一份技能都没有——屏上那行来源只可能来自记录
+    check(!existsSync(join(second.facts().workspace, '.magic', 'skills')), '第二程的沙地里没有技能目录')
+  } finally {
+    await close(second)
   }
 }
 
@@ -433,7 +640,13 @@ async function switching(out: string, configured: string): Promise<void> {
  * 判据：应用与夹具都得真退场（「所有应用 / 工具 / 本地端点由独立监督确认退出」）——
  * 这条不作「必过」，**如实报出来**：`sigkill` 才要当场喊。
  */
+/** 收过摊的（同一会话只收一次——驱动的 `close` 没有二次调用守卫，收两遍会把沙地删两回）。 */
+const closed = new WeakSet<UiSession>()
+
 async function close(session: UiSession): Promise<void> {
+  if (closed.has(session)) return
+  closed.add(session)
+
   // 先等它**闲下来**——忙的时候 `ctrl+c` 是**中断**不是退出（外壳的既有语义：空闲＝退出 ·
   // 工作中＝中断），不等这一跳就按下去，量到的会是「中断生效了、进程还活着」。
   // 等不到也不硬等：下面照样收摊（SIGTERM 那条路仍在），只是 `by` 会如实记成我们杀的。
@@ -468,6 +681,11 @@ if (import.meta.main) {
     await narrow(out, configured)
     await builtinClash(out, configured)
     await switching(out, configured)
+    // 独立验收退回的三处（真 PTY 复现）
+    await sameScope(out, configured)
+    await narrowLongName(out, configured)
+    await keepCaret(out, configured)
+    await restored(out, configured)
     console.log(`\n全部判据通过。帧落在 ${out}`)
   } finally {
     removeDir(configured)
