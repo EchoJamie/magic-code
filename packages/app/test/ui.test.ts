@@ -189,6 +189,28 @@ describe('U40 · 工具自证', () => {
     expect(hasFreshFrame(foldedOldFrame(80, 40), 40)).toBe(false)
     expect(hasFreshFrame(foldedOldFrame(120, 40), 40)).toBe(false)
 
+    // —— 反例二·补 A 族：旧宽只比新宽大 **1..7** 列（把窗口拖窄一点点，最常见的操作）——
+    //    折行的**余数段**只有 1–7 个横线 ⇒ 下游一旦用「少于 N 个」的阈值就会被它骗过，
+    //    故下游必须是**严格零横线**。
+    for (const columns of [40, 80, 100, 120]) {
+      for (let over = 1; over <= 7; over += 1) {
+        expect(hasFreshFrame(foldedOldFrame(columns + over, columns), columns)).toBe(false)
+      }
+    }
+
+    // —— 正例（成组，先摆正例好读）：**上一行是记录行**，里面**可以带横线** ——
+    //    真帧分隔线上面紧挨的是记录行的末行；模型答一张表或一条 markdown 分隔线时那一行就带横线，
+    //    上游若写成「上一行有没有横线」就会把真帧判成不过（套件在合法内容上超时）。
+    for (const columns of [40, 44, 100]) {
+      const freshWith = (above: string): string =>
+        `${above}\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+      expect(hasFreshFrame(freshWith('│ ──────────────── │'), columns)).toBe(true) // 模型答的表
+      expect(hasFreshFrame(freshWith(DASH.repeat(14)), columns)).toBe(true) // markdown 分隔线
+      expect(hasFreshFrame(freshWith(DASH.repeat(8)), columns)).toBe(true)
+      expect(hasFreshFrame(freshWith('› 上一件记录'), columns)).toBe(true)
+      expect(hasFreshFrame(freshWith(''), columns)).toBe(true) // 空行
+    }
+
     // —— 反例三：**字节停在半截**（第二轮实测打出来的洞）——
     //    分隔线那一行写完了、下一行还没到：「看不到下一行」被当成「下一行没有横线」就会假阳。
     //    旧宽重画被折成多段时，观测正好停在第一段之后，就是这一形。

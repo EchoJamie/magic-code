@@ -838,7 +838,7 @@ function matches(condition: WaitCondition, screen: VtScreen, writtenSinceResize:
   return target !== undefined && target.text.includes(condition.at.text)
 }
 
-/** 一行里最长的一段连续横线——折行段长这样；记录行/输入行不会。 */
+/** 一行里最长的一段连续横线。 */
 function longestDashRun(line: string): number {
   let best = 0
   let run = 0
@@ -854,26 +854,27 @@ function longestDashRun(line: string): number {
  * 有没有**按 `columns` 列画出来的那一帧**（见 `WaitCondition.writtenFrame` 的注）。
  *
  * 判据是**一整块的结构**：找到「正好 `columns` 个横线」的那一行（前后不紧挨横线——100 个横线里
- * 切得出 44 个），要求它**上一行与下一行都不是横线段**，且这两行**都写完了**。
+ * 切得出 44 个），再看它两侧，且**两侧的行都得写完**：
  *
- * 为什么两侧都要看（这一族被实测连打出来四次，每次补一个实例都会再漏一个，故这里按结构收口）：
- *
- * - 旧宽重画在输出阶段被 Ink 折成多段。**首段**后面还跟着横线 ⇒ 下游拦；**末段**后面是干净行，
- *   但**前面**还跟着横线 ⇒ 上游拦；中间两头顶住。W > N 的折行必出 ≥2 段，故两侧一起看就覆盖
- *   整个折行族。只盯下游时，「旧宽度正好是新宽度的整数倍」（120→60、80→40 这种半屏分栏）
- *   会漏——末段长得和真帧一模一样。
- * - 「上一行不存在」（这一行是本段字节的第一行）**不算**上游有横线：改窗后的擦除序列不带换行，
- *   真帧的分隔线可能正是新写出的第一行。
+ * - **下游：下一行一个横线都不许有**。旧宽重画在输出阶段被 Ink 折成多段时，首段后面必然还跟着
+ *   折行段；余数段只有 1–7 个横线（旧宽比新宽只大一点点的时候），所以这里是**严格零横线**，
+ *   不是「少于几个」——阈值一放，余数段就被当成干净行了。
+ * - **上游：上一行不能是「一整行横线且长度 ≥ 列数」**。折行的**末段**后面是干净行、长得和真帧
+ *   一样，只能靠上游拦：它上一行正是上一折行段（正好 `columns` 个横线）。这里**不能**写成
+ *   「上一行有没有横线」——真帧分隔线上面紧挨的是**记录行的末行**，模型答一张表或一条 markdown
+ *   分隔线时那一行就带横线，那样会把真帧判成不过（套件在合法内容上超时，比假阳性更难查）。
+ * - 「这一行是本段字节的第一行 ⇒ 上游不存在」**算干净**：改窗后的擦除序列不带换行，真帧的分隔线
+ *   可能正是新写出的第一行。
  * - 「还没看到的下一行」不等于「下一行没有横线」：字节停在半截时继续等，既不判通过也不判拒绝
  *   （不能改成「下一行必须非空」：审批卡那种帧里分隔线下面就跟着空行）。
  *
- * 比的是**横线段**而不是「这一行里有没有横线」：记录行里偶尔带一个 `─` 不该把真帧判掉。
- * 真帧两侧是记录行／输入行，不会连着 8 个横线。
+ * 已知限度：记录行里若出现**整行、且长到列数**的横线（例如模型给的、宽度正好铺满的一条 markdown
+ * 分隔线），它与折行段在字节上无从区分，会被当成上游而拒——这是这一层判据的固有边界，
+ * 写进 `研发/界面验收工具` 的限度里。
  */
 export function hasFreshFrame(bytes: string, columns: number): boolean {
   if (!Number.isInteger(columns) || columns <= 0) return false
   const needle = '─'.repeat(columns)
-  const foldedRun = Math.min(8, columns)
 
   for (let from = 0; ; ) {
     const at = bytes.indexOf(needle, from)
@@ -881,13 +882,13 @@ export function hasFreshFrame(bytes: string, columns: number): boolean {
     if (bytes[at - 1] !== '─' && bytes[at + needle.length] !== '─') {
       const lineEnd = bytes.indexOf('\n', at)
       const nextEnd = lineEnd === -1 ? -1 : bytes.indexOf('\n', lineEnd + 1)
-      // 下一行得写完、且不是折行段
-      if (lineEnd !== -1 && nextEnd !== -1 && longestDashRun(bytes.slice(lineEnd + 1, nextEnd)) < foldedRun) {
+      // 下一行得**写完**、且一个横线都没有
+      if (lineEnd !== -1 && nextEnd !== -1 && !bytes.slice(lineEnd + 1, nextEnd).includes('─')) {
         const lineStart = bytes.lastIndexOf('\n', at - 1)
-        // 上游：只在确有一整行时才判（这一行是本段第一行 ⇒ 上游为空 ⇒ 算干净）
+        // 上游：只在确有一整行时才判；「一整行横线且够长」才是折行的上一段
         if (lineStart === -1) return true
         const aboveStart = bytes.lastIndexOf('\n', lineStart - 1) + 1
-        if (longestDashRun(bytes.slice(aboveStart, lineStart)) < foldedRun) return true
+        if (longestDashRun(bytes.slice(aboveStart, lineStart)) < columns) return true
       }
     }
     from = at + 1
