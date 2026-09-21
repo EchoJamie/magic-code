@@ -177,9 +177,10 @@ describe('重连在途时退出（U39 补验）', () => {
     expect(connection.state).toEqual({ status: 'unavailable', reason: '连接已释放' })
     expect(connection.tools()).toEqual([])
 
-    // ⚠️ 这一幕**会话账对不平**，且**做不到平**：收尾发生在握手落定之前，会话号还没到手
-    // （`Mcp-Session-Id` 在那条被中止的响应里），故 DELETEs 不了——对端自己会回收它。
-    // 这里钉的是**我们这一侧**的两件：读数不许被写回、也不许再多起一条（多起来的才是账）。
+    // ⚠️ 这一幕**会话账对不平**：收尾发生在握手落定之前，会话号还没到手（`Mcp-Session-Id`
+    // 在那条被中止的响应里），故我们**发不出**那一次终止——远端**可能**留着这一条会话，
+    // 收不收由它的策略定（本版不替它承诺）。这里钉的是**我们这一侧**的两件：
+    // 读数不许被写回、也不许再多起一条（多起来的才是账）。
     const log = join(stages.at(-1) as string, 'server.jsonl')
     const tally = sessionTally(log)
     expect(tally.opened).toBe(1)
