@@ -70,6 +70,12 @@ export type ComposerProps = {
    * `null` ＝ 这一屏没有插入点（接管态）：不摆真光标，也不画落点。
    */
   readonly caret: number | null
+  /**
+   * 草稿里那几处**引用**的区间（U36）——**画的时候上另一种颜色**（见 `ComposerRow.spans`）。
+   *
+   * 缺省不给＝照旧画（标本 / 几何用例一字不动）：那时引用与普通文字同色。
+   */
+  readonly refs?: readonly { readonly start: number; readonly end: number }[] | undefined
   readonly tone: ComposerTone
   /**
    * 输入区最多占几行（**半屏**）——超了就收起并如实报行数。
@@ -183,6 +189,17 @@ export type ComposerRow = {
   readonly text: string
   /** 这一行是不是「上面 / 下面还有 N 行」那种**如实报行数**的提示行。 */
   readonly notice: boolean
+  /**
+   * 这一行里属于**引用**的那几段（`text` 里的下标，UTF-16 码元）——画的时候上另一种颜色。
+   *
+   * 由头（U36）：引用那几个字与普通正文**长得一样**（都是用户那句话里的一段），
+   * 而它们是**带着材料的**——屏上得看得出「这一段是有身份的」。不上色的话，
+   * 用户没法一眼分辨「我选进来的 `@src/login.ts`」与「我手打的 `@src/login.ts`」。
+   *
+   * 折行会把一处引用**劈到两行**上，故区间是**逐行算**的（`refSpansOf`）；
+   * 算不出来（对不上位置）就空着——**宁可不上色，也不上错位置**。
+   */
+  readonly spans?: readonly { readonly start: number; readonly end: number }[]
 }
 
 export type ComposerLayout = {
@@ -204,6 +221,13 @@ export function composerLayout(
   caret: number | null,
   columns: number,
   maxLines: number = Number.POSITIVE_INFINITY,
+  /**
+   * 草稿里那几处**引用**的区间（U36）——**只用来上色**（见 `ComposerRow.spans`）。
+   *
+   * 它**不参与**几何：折哪一行、插入点在第几列，与引用无关（引用只是正文里的一段字符）。
+   * 参数放在最后、可以不给：不给＝照旧画（标本与纯几何用例一字不动）。
+   */
+  refs: readonly { readonly start: number; readonly end: number }[] = [],
 ): ComposerLayout {
   const width = contentWidthOf(columns)
 
@@ -226,9 +250,13 @@ export function composerLayout(
     const caretLine = before === '' ? 0 : before.split('\n').length - 1
     const caretInLine = caretLine === 0 ? before.length : before.length - (before.lastIndexOf('\n') + 1)
 
+    let lineStart = 0
+
     draft.split('\n').forEach((line, index) => {
       const prefix = index === 0 ? PROMPT : INDENT
-      const wrapped = wrapVisual(prefix + line, width)
+      const source = prefix + line
+      const wrapped = wrapVisual(source, width)
+      const spans = refSpansOf(source, wrapped, refs, lineStart, prefix.length)
 
       if (index === caretLine) {
         // 插入点落在第几行第几列——**与折行同一把尺**（`widthOf`）、**同一条口径**
@@ -256,12 +284,26 @@ export function composerLayout(
       }
 
       wrapped.forEach((row, at) => {
+        // 首行那一段行首（`› `）不在 `row.text` 里，故它的区间要**减掉行首那几格**
+        // （区间是 `text` 的下标——两处各按各的坐标，混了就会上错色）
+        const onRow = spans[at]
         rows.push(
           at === 0
-            ? { prefix, text: row.slice(prefix.length), notice: false }
-            : { prefix: '', text: row, notice: false },
+            ? {
+                prefix,
+                text: row.slice(prefix.length),
+                notice: false,
+                spans: onRow?.map((span) => ({
+                  start: span.start - prefix.length,
+                  end: span.end - prefix.length,
+                })),
+              }
+            : { prefix: '', text: row, notice: false, spans: onRow },
         )
       })
+
+      // 下一条逻辑行的起点（引用区间是**草稿坐标**，逐行换算、见 `refSpansOf`）
+      lineStart += line.length + 1
     })
   }
 
@@ -336,7 +378,71 @@ export function draftHeight(
   columns: number,
   maxLines: number = Number.POSITIVE_INFINITY,
 ): number {
+  // 高度与引用无关（引用只是正文里的一段字符，不占额外的行）——故不传那一位
   return composerLayout(draft, caret, columns, maxLines).rows.length
+}
+
+/**
+ * **一处引用折到几行上**——把草稿坐标的区间切给这一条逻辑行折出来的每一个视觉行。
+ *
+ * 三件要制服：
+ * - **折行会把引用劈成两半**（`@src/very/long/path.ts` 落在行尾），故区间是**逐行算**的；
+ * - **折出来的行与原文是同一串字符**（`wrapAnsi` 那条约束），故用**顺序查找**把每一行
+ *   对回它在原文里的起点——`trim: false` 之下行首行尾的空白都留着，查找是确定的；
+ * - **归一化**（NFC）：`wrapAnsi` 进门就把正文规范化（`e` ＋ 组合重音合成一个 `é`），
+ *   长度会变。故区间与原文**都按同一个规范化**换算（`normalize()` 只在字素边界上分段做
+ *   ——引用起止都落在字素边界上，故分段归一化与整体归一化在这里等价）。
+ *
+ * **对不上就不上色**（返回空）：宁可引用看起来与普通文字一样，也不能把颜色刷到别的字上。
+ */
+function refSpansOf(
+  source: string,
+  wrapped: readonly string[],
+  refs: readonly { readonly start: number; readonly end: number }[],
+  lineStart: number,
+  headLength: number,
+): readonly (readonly { readonly start: number; readonly end: number }[] | undefined)[] {
+  const none = (): readonly undefined[] => wrapped.map(() => undefined)
+  if (refs.length === 0) return none()
+
+  // 折行那一支（`wrapAnsi`）进门就把正文规范化成 NFC，故行的下标都在**规范化之后**那一串上
+  const body = source.normalize()
+  /** 原文坐标 → 规范化坐标——**按边界分段归一**（引用起止都在字素边界上，故与整体归一等价）。 */
+  const normalizedAt = (at: number): number => source.slice(0, at).normalize().length
+
+  const spans: { readonly start: number; readonly end: number }[] = []
+  for (const ref of refs) {
+    // 草稿坐标 → 这一条逻辑行的原文坐标（减本行起点、加行首那一段）
+    const start = headLength + ref.start - lineStart
+    const end = headLength + ref.end - lineStart
+    if (end <= headLength || start >= source.length) continue // 这一处在别的逻辑行上
+
+    const from = normalizedAt(Math.max(headLength, Math.min(start, source.length)))
+    const to = normalizedAt(Math.max(headLength, Math.min(end, source.length)))
+    if (to > from) spans.push({ start: from, end: to })
+  }
+
+  if (spans.length === 0) return none()
+
+  const rows: (readonly { readonly start: number; readonly end: number }[] | undefined)[] = []
+  let cursor = 0
+
+  for (const row of wrapped) {
+    const at = body.indexOf(row, cursor)
+    if (at < 0) return none() // 对不上（理论不可达）——**宁可不上色**
+
+    const hits = spans
+      .map((span) => ({
+        start: Math.max(span.start, at) - at,
+        end: Math.min(span.end, at + row.length) - at,
+      }))
+      .filter((span) => span.end > span.start && span.start >= 0 && span.end <= row.length)
+
+    rows.push(hits.length === 0 ? undefined : hits)
+    cursor = at + row.length
+  }
+
+  return rows
 }
 
 // —— 插入点的挪动：按**字素**走，中文 / emoji 不切坏 ——
@@ -390,6 +496,36 @@ export function rightSpan(text: string, at: number): readonly [number, number] {
 
 // —— 画 ——
 
+/**
+ * 一行正文 → 要画的几段（引用上色，其余原色）。
+ *
+ * 形态上**不动一行一行那个账**：出来的还是同一个 `<Text>`，只是里面分段——行数不变
+ * （高度账那一处数的仍是 `rows.length`）。
+ *
+ * 引用那一色取 `PALETTE.user`（青，与用户标记同族）：**这几个字是「你选进来的」**，
+ * 与 `›` 那个标记说的是同一件事的两半。
+ */
+function refPieces(
+  text: string,
+  spans: readonly { readonly start: number; readonly end: number }[] | undefined,
+): readonly (string | ReactElement)[] | string {
+  if (spans === undefined || spans.length === 0) return text
+
+  const pieces: (string | ReactElement)[] = []
+  let cursor = 0
+
+  spans.forEach((span, index) => {
+    // 引用之外那几段**不另给色**——外层 `<Text>` 给什么就什么（两处各写一遍迟早分家）
+    if (span.start > cursor) pieces.push(text.slice(cursor, span.start))
+    pieces.push(h(Text, { key: `r:${index}`, color: PALETTE.user }, text.slice(span.start, span.end)))
+    cursor = span.end
+  })
+
+  if (cursor < text.length) pieces.push(text.slice(cursor))
+
+  return pieces
+}
+
 /** 量到的锚——活动帧内的坐标（`measureElement` 那一支），与尺寸一起存。 */
 type Anchor = {
   readonly x: number
@@ -399,6 +535,7 @@ type Anchor = {
 export function Composer({
   draft,
   caret,
+  refs = [],
   tone,
   maxLines = Number.POSITIVE_INFINITY,
   columns,
@@ -421,7 +558,7 @@ export function Composer({
     )
   })
 
-  const layout = composerLayout(draft, caret, columns, maxLines)
+  const layout = composerLayout(draft, caret, columns, maxLines, refs)
 
   // 摆真光标——**在渲染里调**（理由见文件头注）。没有插入点（接管态）就藏回去。
   const spot =
@@ -448,7 +585,11 @@ export function Composer({
             h(
               Text,
               { color: row.notice ? PALETTE.faint : PALETTE.fg },
-              row.text === '' ? (draft === '' && at === 0 ? placeholderOf(tone) : ' ') : row.text,
+              row.text === ''
+                ? draft === '' && at === 0
+                  ? placeholderOf(tone)
+                  : ' '
+                : refPieces(row.text, row.spans),
             ),
           ),
     ),

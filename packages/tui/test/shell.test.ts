@@ -250,9 +250,9 @@ describe('接管（裁决挂着时占住输入框）', () => {
     app.type('打了一半')
     ask(app)
     expect(app.view().draft).toBe('')
-    // 草稿**连同插入点与绑着的技能**一起收着（返工轮：插入点不再一律摆到末尾；
-    // U33：技能也是那份草稿的一部分——归还时少一件就是把用户的草稿改掉了一半，见 `Stashed`）
-    expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4, bound: null })
+    // 草稿**连同插入点与它里面的引用**一起收着（返工轮：插入点不再一律摆到末尾；
+    // U36：引用也是那份草稿的一部分——归还时少一件就是把用户的草稿改掉了一半，见 `Stashed`）
+    expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4, refs: [] })
 
     app.press({ kind: 'char', char: 'y' })
     // 答复发出去；**裁决落定那一刻**（内核回 `tool.decision`）才归还草稿
@@ -301,7 +301,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
       event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
     )
     expect(app.view().dock.kind).toBe('decision')
-    expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2, bound: null }) // 只收一次
+    expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2, refs: [] }) // 只收一次
 
     app.press({ kind: 'char', char: 'n' })
     app.spy.emit(event('tool.decision', { call: 72, decision: 'reject', decider: 'user', elapsedMs: 100 }))

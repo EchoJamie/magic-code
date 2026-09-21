@@ -1,6 +1,11 @@
 /**
  * U33 · **终端入口**（第二轮）——`/<技能名>` 直达、`/skills` 浏览与选择、
- * 草稿绑定与移除、随交代一次提交、失败按原 ref 保稿。
+ * 随交代一次提交、失败按原 ref 保稿。
+ *
+ * ⚠️ **2026-09-22（U36）改过形，几处断言随设计改了锚**（见各条的「原锚 / 为何变 / 新锚」）：
+ * 引用**留在正文原位**（`/pdf` 不再被剥掉、也不再挂一条独立的「当前技能」），
+ * 故凡「选定之后草稿里剩什么」「提交出去的那一份长什么样」的断言都换了新锚。
+ * 位置编辑本身的判据（左右越过、退格整处、原位替换）在 `spec.u36.test.ts`。
  *
  * 内核那一半（发现 / 按需读取 / 完整输入 / 两条回执）在第一轮已验并合主干；
  * 这里钉的是**外壳那一半**：按键 → 视图 ＋ 命令。
@@ -157,7 +162,7 @@ describe('U33 · `/skills` 的抽屉', () => {
     expect(picker.rows.every((row) => row.oneLine === true)).toBe(true)
   })
 
-  test('同名两份各占一行、来源可辨；绑着的那份标「当前」', () => {
+  test('同名两份各占一行、来源可辨；选定＝在原处留下那一份的身份', () => {
     const stage = createStage()
     const two = [
       skill('pdf', { label: '项目 .magic/skills' }),
@@ -169,19 +174,23 @@ describe('U33 · `/skills` 的抽屉', () => {
       '项目 .magic/skills',
       '用户 .magic/skills',
     ])
+    expect(pickerOf(stage).rows.map((row) => row.current)).toEqual([false, false])
 
+    // **原锚**：选定后 `view.bound.ref.path === '/ws/project/pdf'`，再开抽屉时那份标「当前」；
+    // **为何变**（U36）：草稿上不再挂一条独立的「当前技能」——引用就写在正文里，
+    // 「当前」这件事由草稿那一行自己说；**新锚**：草稿里出现 `/pdf` 那一段引用，
+    // 身份取的是选定的那一份（同名两份靠它分开）。
     stage.press(ENTER) // 选定头一份
-    expect(stage.shell.getView().bound?.ref.path).toBe('/ws/project/pdf')
-
-    openSkills(stage, '/skills', two)
-    // 两份技能 ＋ 末尾那条「移除当前技能」——只有绑着的那份标「当前」
-    expect(pickerOf(stage).rows.map((row) => row.current)).toEqual([true, false, false])
+    expect(stage.shell.getView().refs).toEqual([
+      { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' },
+    ])
+    // 选定之后抽屉收起（选定即离开列表，回去看草稿）
+    expect(stage.shell.getView().draft).toBe('/pdf')
+    expect(stage.shell.getView().dock.kind).toBe('input')
   })
 
-  test('选定＝**只绑草稿**：正文留着、一条命令都不发（不发送、不加载主文）', () => {
+  test('选定＝**在词的原处放一句引用**：正文留着、一条命令都不发（不发送、不加载主文）', () => {
     const stage = createStage()
-    // 走**同名展开**那一路：它是唯一「抽屉开着而草稿里有正文」的形态
-    // （`/skills` 自己是个斜杠命令，打它之前草稿先被清掉了）
     const tied = [
       { ...skill('pdf'), path: '/ws/a/pdf' },
       { ...skill('pdf'), path: '/ws/b/pdf' },
@@ -192,9 +201,14 @@ describe('U33 · `/skills` 的抽屉', () => {
     stage.press(ENTER) // 选定
 
     const view = stage.shell.getView()
-    expect(view.bound).toEqual({ ref: { name: 'pdf', path: '/ws/a/pdf' }, label: '项目 .magic/skills' })
-    expect(view.draft).toBe('先打半句') // 正文留着（斜杠那一截是入口语法，不是正文）
-    expect(view.caret).toBe(4)
+    // **原锚**：选定后正文是「剥掉斜杠词」的 `先打半句`、插入点 4、绑定挂在 `view.bound` 上；
+    // **为何变**（U36）：`/pdf` 不再被抽走——它就留在句首那一格，身份随它一起记；
+    // **新锚**：正文一字不动、引用区间覆盖 `/pdf` 那四个字，插入点落在它之后。
+    expect(view.refs).toEqual([
+      { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/a/pdf' },
+    ])
+    expect(view.draft).toBe('/pdf 先打半句')
+    expect(view.caret).toBe(9) // 用户原来那一格（末尾）——不搬去别处
     expect(view.dock.kind).toBe('input') // 抽屉收起
     expect(stage.commands()).toHaveLength(before) // 一条命令都不发（「零模型请求」的根就在这儿）
   })
@@ -214,40 +228,43 @@ describe('U33 · `/skills` 的抽屉', () => {
 
     expect(stage.shell.getView().dock.kind).toBe('input')
     expect(stage.shell.getView().draft).toBe('/pdf 半句话') // 一个字都没动
-    expect(stage.shell.getView().bound).toBeNull()
+    expect(stage.shell.getView().refs).toEqual([]) // 也没留下半处引用
   })
 
-  test('**移除当前技能**那一行在最后（默认选中项是第一条技能——摆头里一按回车就误删）', () => {
+  test('**不再有「移除当前技能」那一行**：摘它就退格（在引用那一处）', () => {
     const stage = createStage()
-    directHit(stage, '/pdf', [skill('pdf')]) // 直达：只打名字＝只绑定
-
-    openSkills(stage, '/skills', [skill('pdf')])
+    openSkills(stage, '/skills', [skill('pdf')]) // 草稿是空的（命令吃掉那一行）——抽屉开得起来
     const rows = pickerOf(stage).rows
 
-    expect(rows.at(-1)?.label).toBe('移除当前技能')
-    expect(rows.at(-1)?.value).toBe('@remove')
-    expect(rows.at(-1)?.meta).toBe('保留正文（pdf）')
-    expect(rows[0]?.current).toBe(true) // 绑着的那份在前面、标着「当前」
+    // **原锚**：抽屉最后一行是「移除当前技能」（`@remove`），选定即摘掉全局绑定；
+    // **为何变**（U36）：引用长在正文里，摘掉它就是在那一处按退格——抽屉里再放一行全局的，
+    // 既说不出「摘的是哪一处」，又与正文那一处形成两个入口；**新锚**：抽屉只剩技能本身。
+    expect(rows.map((row) => row.label)).toEqual(['pdf'])
 
-    stage.press({ kind: 'up' }) // 环形：从 0 往上＝绕到末尾那一条
+    // 选定（放进草稿）——摘掉它用的就是**那一处**的退格，不是抽屉里的某一行
     stage.press(ENTER)
+    expect(stage.shell.getView().draft).toBe('/pdf')
 
-    expect(stage.shell.getView().bound).toBeNull()
+    stage.press({ kind: 'backspace' }) // 插入点正停在 `/pdf` 的尾巴上
+
+    expect(stage.shell.getView().draft).toBe('')
+    expect(stage.shell.getView().refs).toEqual([])
   })
 
-  test('**移除保留正文**：`esc` 摘材料，草稿里的话一个字不动', () => {
+  test('**移除只动那一处**：退格摘掉引用，草稿里别的话一个字不动', () => {
     const stage = createStage()
-    directHit(stage, '/pdf', [skill('pdf')])
-    stage.type('帮我看看')
-
-    stage.press(ESC)
-
-    // 材料摘掉了，正文与插入点一个字不动
-    expect(stage.shell.getView().bound).toBeNull()
-    expect(stage.shell.getView().draft).toBe('帮我看看')
+    directHit(stage, '/pdf', [skill('pdf')]) // 只打名字 ⇒ 只放进草稿
+    stage.type(' 帮我看看')
+    // 插入点挪到引用尾巴上（`←` 越过引用时是整段跨的，故从末尾按到那一格）
+    for (let at = 0; at < 5; at += 1) stage.press({ kind: 'left' })
     expect(stage.shell.getView().caret).toBe(4)
+    stage.press({ kind: 'backspace' }) // 插入点停在引用之后 ⇒ 整处摘掉
 
-    stage.press(ESC) // 第二下才是「清草稿」那条老规矩
+    // 材料摘掉了；后面那句交代一个字不动（插入点仍在原位）
+    expect(stage.shell.getView().refs).toEqual([])
+    expect(stage.shell.getView().draft.trim()).toBe('帮我看看')
+
+    stage.press(ESC) // 再按一下才是「清草稿」那条老规矩
     expect(stage.shell.getView().draft).toBe('')
   })
 })
@@ -320,25 +337,32 @@ describe('U33 · `/<技能名>` 直达', () => {
     const stage = createStage()
     directHit(stage, '/pdf', [skill('pdf')])
 
-    expect(stage.shell.getView().bound?.ref.name).toBe('pdf')
-    expect(stage.shell.getView().draft).toBe('')
+    // **新锚**（原锚：`view.bound` 有值、草稿被剥成空串）：引用留在句首那一格，
+    // 草稿还是那四个字——「只打名字＝只把它放进草稿」这条语义没变，变的是它落在哪儿。
+    expect(stage.shell.getView().refs).toEqual([
+      { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' },
+    ])
+    expect(stage.shell.getView().draft).toBe('/pdf')
     expect(submitted(stage)).toEqual([]) // 一个 `input.submit` 都没发
   })
 
-  test('`/名字 交代` 一次提交：正文只带交代，技能随它走', () => {
+  test('`/名字 交代` 一次提交：名称留在原位，技能随它走', () => {
     const stage = createStage()
     directHit(stage, '/pdf 帮我看看', [skill('pdf')])
 
+    // **原锚**（`text: '帮我看看'` ＋ `skills: […]`）：名称被剥成独立参数；
+    // **为何变**（U36）：引用**留在交代的位置**——`/pdf` 是用户那句话的一部分（前面的话
+    // 可能正指着它），故随正文一起走，身份与位置在 `refs` 里；**新锚**见下。
     expect(stage.commands().at(-1)).toEqual({
       type: 'input.submit',
-      text: '帮我看看',
-      skills: [{ name: 'pdf', path: '/ws/project/pdf' }],
+      text: '/pdf 帮我看看',
+      refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
       ref: 'draft-1',
     })
-    // 空草稿、无绑定、本地回显的是**交代本身**（`/pdf` 是入口语法，不是用户说的话）
+    // 草稿清空、无残留引用、本地回显的是**交代本身**（原样，一字不剥）
     expect(stage.shell.getView().draft).toBe('')
-    expect(stage.shell.getView().bound).toBeNull()
-    expect(stage.shell.getView().rows.at(-1)).toMatchObject({ kind: 'user', text: '帮我看看' })
+    expect(stage.shell.getView().refs).toEqual([])
+    expect(stage.shell.getView().rows.at(-1)).toMatchObject({ kind: 'user', text: '/pdf 帮我看看' })
   })
 
   test('**斜杠之后那一整段不再解析成控制命令**（`/session` 字样与换行都在正文里）', () => {
@@ -352,9 +376,9 @@ describe('U33 · `/<技能名>` 直达', () => {
 
     expect(stage.commands().at(-1)).toMatchObject({
       type: 'input.submit',
-      // 内部换行原样留着（多行交代不当场压成一行）
-      text: '看 /session 那段\n还有第二行',
-      skills: [{ name: 'pdf', path: '/ws/project/pdf' }],
+      // 内部换行原样留着（多行交代不当场压成一行）；`/pdf` 也在（U36：名称不再剥掉）
+      text: '/pdf 看 /session 那段\n还有第二行',
+      refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
     })
     // 没有多出一条 `session.list`（正文里的 `/session` 只是正文）
     expect(stage.commands().some((one) => one.type === 'session.list')).toBe(false)
@@ -371,7 +395,7 @@ describe('U33 · `/<技能名>` 直达', () => {
     directHit(stage, '/pdf 帮我看看', tied)
 
     expect(submitted(stage)).toEqual([]) // 没提交
-    expect(stage.shell.getView().bound).toBeNull() // 也没静默挑一个
+    expect(stage.shell.getView().refs).toEqual([]) // 也没静默挑一个
 
     const picker = pickerOf(stage)
     expect(picker.rows.map((row) => row.value)).toEqual([
@@ -381,8 +405,9 @@ describe('U33 · `/<技能名>` 直达', () => {
     expect(picker.hint).toContain('同名的')
 
     stage.press(ENTER) // 选定头一份
-    expect(stage.shell.getView().bound?.ref.path).toBe('/ws/a/.magic/skills/pdf')
-    expect(stage.shell.getView().draft).toBe('帮我看看') // 斜杠那一截剥掉，正文留着
+    // 选定的是哪一份，写在引用的身份上（同名两份靠它分）；正文一字不动
+    expect(stage.shell.getView().refs[0]?.source).toBe('/ws/a/.magic/skills/pdf')
+    expect(stage.shell.getView().draft).toBe('/pdf 帮我看看')
   })
 
   test('**内置命令保留**：`/model` 仍是换模型；同名技能从 `/skills` 里选', () => {
@@ -422,9 +447,9 @@ describe('U33 · 提交与失败保稿', () => {
     ])
 
     const view = stage.shell.getView()
-    expect(view.draft).toBe('帮我看看') // 交代保住了
-    expect(view.caret).toBe(4)
-    expect(view.bound?.ref.name).toBe('pdf') // 技能也一起回来
+    expect(view.draft).toBe('/pdf 帮我看看') // 交代保住了（原样，含那一处引用）
+    expect(view.caret).toBe(9)
+    expect(view.refs[0]?.name).toBe('pdf') // 引用与它的身份也一起回来
     // 缘由**出声**（哪一份来源出的问题）
     expect(said(stage)).toContain('没送出')
     expect(said(stage)).toContain('不再成立')
@@ -493,14 +518,14 @@ describe('U33 · 提交与失败保稿', () => {
     expect(submitted(stage)).toEqual([
       {
         type: 'input.submit',
-        text: '第一件',
-        skills: [{ name: 'pdf', path: '/ws/project/pdf' }],
+        text: '/pdf 第一件',
+        refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
         ref: 'draft-1',
       },
       {
         type: 'input.submit',
-        text: '第二件',
-        skills: [{ name: 'debug', path: '/ws/project/debug' }],
+        text: '/debug 第二件',
+        refs: [{ kind: 'skill', at: 0, marker: '/debug', name: 'debug', source: '/ws/project/debug' }],
         ref: 'draft-2',
       },
     ])
@@ -530,8 +555,8 @@ describe('U33 · 提交与失败保稿', () => {
       event('input.settled', { ref: 'draft-1', ok: false, reason: '停下了——这一条还没轮到' }),
     ])
 
-    expect(stage.shell.getView().draft).toBe('排着的那条')
-    expect(stage.shell.getView().bound?.ref.name).toBe('pdf')
+    expect(stage.shell.getView().draft).toBe('/pdf 排着的那条')
+    expect(stage.shell.getView().refs[0]?.name).toBe('pdf')
   })
 })
 
@@ -539,7 +564,7 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
   test('绑着技能的草稿：接管时三件一起收，答完一起还', () => {
     const stage = createStage()
     directHit(stage, '/pdf', [skill('pdf')])
-    stage.type('打了一半')
+    stage.type(' 打了一半')
 
     stage.feed([
       event(
@@ -549,16 +574,19 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
       ),
     ])
 
+    // 三件一起收：正文 · 插入点 · 它里面的引用（U36——引用是那份草稿的一部分）
     expect(stage.shell.getView().stashed).toEqual({
-      draft: '打了一半',
-      caret: 4,
-      bound: { ref: { name: 'pdf', path: '/ws/project/pdf' }, label: '项目 .magic/skills' },
+      draft: '/pdf 打了一半',
+      caret: 9,
+      refs: [
+        { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' },
+      ],
     })
 
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 })])
 
-    expect(stage.shell.getView().draft).toBe('打了一半')
-    expect(stage.shell.getView().bound?.ref.name).toBe('pdf')
+    expect(stage.shell.getView().draft).toBe('/pdf 打了一半')
+    expect(stage.shell.getView().refs[0]?.name).toBe('pdf')
   })
 
   test('接管期间打字不进草稿（喂给裁决作答）——不认的键当场说一句', () => {
@@ -657,14 +685,16 @@ describe('退回① · 候选的来源必须辨得出来（两行不能逐字相
   })
 })
 
-describe('退回② · 选定技能不搬正文里的插入点', () => {
+describe('退回② · 选定不搬正文里的插入点（U36 改形：不再剥前缀）', () => {
   /**
-   * **负例回归**：`/twins abc|d` 选定之后插入点被摆到末尾。
+   * **负例回归**：把插入点摆到末尾（或摆到别处）——「选定之后接着打，字得跟在我原来那一格」。
    *
-   * 旧行为：`caret: body.length` ⇒ 接着打 `Z` 得到 `abcdZ`；新判据：原位插入
-   * ⇒ `abcZd`。剥掉的只是开头那一截 `/twins `，插入点跟着左移那么多。
+   * **原锚**：`/twins abc|d` 选定之后正文变成 `abcd`、插入点 3（因为开头那截被剥掉了）；
+   * **为何变**（U36）：不再剥——`/twins` 留在原位，故插入点是**用户原来那一格**（10，
+   * 在 `c` 与 `d` 之间）跟着长度差平移之后的那个位置；**新锚**：接着打 `Z` 得到 `abcZd`
+   * （而不是被摆到末尾的 `abcdZ`）。
    */
-  test('剥前缀时插入点左移：`/twins abc|d` 选完接着打 ⇒ `abcZd`', () => {
+  test('插入点仍是用户原来那一格：`/twins abc|d` 选完接着打 ⇒ `abcZd`', () => {
     const stage = createStage()
     const twins = [
       { ...skill('twins'), path: '/ws/a/twins' },
@@ -676,30 +706,31 @@ describe('退回② · 选定技能不搬正文里的插入点', () => {
     stage.press({ kind: 'left' }) // 光标到 `abc|d`
     expect(stage.shell.getView().caret).toBe(10)
 
-    stage.press(ENTER) // 姓名分不出唯一 ⇒ 展开同名候选
+    stage.press(ENTER) // 名字分不出唯一 ⇒ 展开同名候选
     expect(pickerOf(stage).rows).toHaveLength(2)
     stage.press(ENTER) // 选定头一份
 
     const view = stage.shell.getView()
-    expect(view.draft).toBe('abcd')
-    expect(view.caret).toBe(3) // 旧行为下是 4（＝正文末尾）
+    expect(view.draft).toBe('/twins abcd') // 一字不剥
+    expect(view.caret).toBe(10) // 仍是 `abc|d`（被替换的那一段长度没变）
 
     stage.type('Z')
-    expect(stage.shell.getView().draft).toBe('abcZd')
+    expect(stage.shell.getView().draft).toBe('/twins abcZd')
   })
 
-  test('插入点落在被剥掉的那一截里 ⇒ 落到正文开头（就近落脚）', () => {
+  test('插入点落在被替换的那一段里 ⇒ 落在引用之后（就近落脚，不搬去别处）', () => {
     const stage = createStage()
 
-    // 只打名字（其后没有正文）——那样才是「只绑定」，插入点也才停在斜杠词里面
+    // 只打名字（其后没有正文）——插入点停在斜杠词里面
     stage.type('/twins')
     feedCatalog(stage, [skill('twins')])
     for (let at = 0; at < 3; at += 1) stage.press({ kind: 'left' }) // `/tw|ins`
-    stage.press(ENTER) // 直达：唯一 ⇒ 只绑定
+    stage.press(ENTER) // 直达：唯一 ⇒ 只把它放进草稿
 
     const view = stage.shell.getView()
-    expect(view.draft).toBe('')
-    expect(view.caret).toBe(0)
+    expect(view.draft).toBe('/twins')
+    expect(view.caret).toBe(6) // 引用之后（那一格已经不在原位了，就近落脚）
+    expect(view.refs[0]?.start).toBe(0)
   })
 })
 
@@ -748,7 +779,7 @@ describe('退回③ · 恢复之后那条消息仍认得出它的技能来源', 
     expect(said).not.toContain('技能：')
   })
 
-  test('当场发的那一次**不挂**这一行（现场有草稿材料行与使用回执两处说着它）', () => {
+  test('当场发的那一次**不挂**这一行（引用就写在回显的那句话里，恢复那一行是给旧记录的）', () => {
     const stage = createStage()
     directHit(stage, '/pdf 帮我看看', [skill('pdf')])
 
@@ -758,18 +789,20 @@ describe('退回③ · 恢复之后那条消息仍认得出它的技能来源', 
 })
 
 describe('U33 · 屏上（交互区那一块）', () => {
-  test('绑着的那一行：`技能：名称 · 来源（待发送）`——紧挨输入行上方', async () => {
+  test('引用就写在输入行里：`› /pdf`（不再另起一行「待发送」）', async () => {
     const stage = createStage()
     directHit(stage, '/pdf', [skill('pdf')])
 
+    // **原锚**：输入行上方另起一行 `技能：pdf · 项目 .magic/skills（待发送）`；
+    // **为何变**（U36）：同一件事只在一处说——引用就在那句交代里（`› /pdf`），
+    // 旁边再列一行既是重复，删了正文那处材料还留着（暗带）；**新锚**：那一行不存在，
+    // 材料在输入行里看得见。
     const lines = (await dockText(stage)).split('\n')
-    const boundAt = lines.findIndex((line) => line.includes('技能：pdf · 项目 .magic/skills（待发送）'))
-    expect(boundAt).toBeGreaterThanOrEqual(0)
-    // 输入行紧跟在它下面（原型：选择器 → 草稿材料 → 输入行）
-    expect(lines[boundAt + 1]).toContain('›')
+    expect(lines.some((line) => line.includes('（待发送）'))).toBe(false)
+    expect(lines.some((line) => line.includes('›') && line.includes('/pdf'))).toBe(true)
   })
 
-  test('没绑就一行都不多（普通交代的屏与从前一样）', async () => {
+  test('没有引用就一行都不多（普通交代的屏与从前一样）', async () => {
     const stage = createStage()
 
     expect(await dockText(stage)).not.toContain('技能：')
@@ -792,5 +825,9 @@ describe('U33 · 屏上（交互区那一块）', () => {
 
 /** 命令面穷尽——新加一支时这里编译不过（`Command` 是判别联合）。 */
 const _probe: (command: Command) => string = (command) =>
-  command.type === 'skills.list' ? '列技能目录' : command.type
+  command.type === 'skills.list'
+    ? '列技能目录'
+    : command.type === 'paths.list'
+      ? `列路径候选：${command.query}`
+      : command.type
 void _probe

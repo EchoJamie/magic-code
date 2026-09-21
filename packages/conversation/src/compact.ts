@@ -37,6 +37,7 @@ import type {
   Entry,
   EventSink,
   EventStamper,
+  InputRefEntry,
   ModelErrorTier,
   ModelGateway,
   ModelMessage,
@@ -45,7 +46,13 @@ import type {
   SessionId,
   Timestamp,
 } from '@magic/contracts'
-import { contentTextOf, toolCallPayloadOf, toolResultPayloadOf, userPayloadOf } from './context.ts'
+import {
+  contentTextOf,
+  refsPayloadOf,
+  toolCallPayloadOf,
+  toolResultPayloadOf,
+  userPayloadOf,
+} from './context.ts'
 import type { EntryLog } from './entries.ts'
 import { appendSummaryEntry } from './entries.ts'
 
@@ -316,6 +323,16 @@ async function renderSegment(entries: readonly Entry[], deps: CompactorDeps): Pr
   return head + picked.join('\n\n')
 }
 
+/**
+ * 一处引用 → 报名字的那一格（U36）。
+ *
+ * 技能报技能名；文件 / 目录报**用户写的那一处**（`marker`，`@` 已在里面）——
+ * 那是材料在正文里的样子，也是「这一处指的是哪一份」的唯一说法（同名的两份文件靠路径分）。
+ */
+function refNameOf(ref: InputRefEntry): string {
+  return ref.kind === 'skill' ? ref.name : ref.marker
+}
+
 /** 一条条目 → 一段文本。 */
 async function renderEntry(entry: Entry, deps: CompactorDeps): Promise<string> {
   const text = await contentTextOf(entry.content, deps.records, deps.blobTextLimit)
@@ -325,8 +342,21 @@ async function renderEntry(entry: Entry, deps: CompactorDeps): Promise<string> {
     // 而那份材料本来就是长文，铺进来会把真正该压的旧段挤出去（`SUMMARY_INPUT_LIMIT`）。
     // 报名字仍有用：摘要里因此留得下「这一轮是照哪份技能做的」这条线索，
     // 而**正文一个字不少**——它在条目载荷里，压缩只动送模型的那一份（append-only 不破）。
+    //
+    // **两形都只报名字**（U36 把带位置的那一份接上同一条口径）：`refs` 里的技能报名字，
+    // 文件 / 目录报「带的是哪几条路径」——摘要里因此留得下「这一轮是拿哪几份材料做的」
+    // 这条线索，而正文与材料一个字不少（它们在条目与载荷里，压缩只动送模型的那一份）。
+    const refs = refsPayloadOf(entry.payload)
+    const refHead =
+      refs.length === 0
+        ? ''
+        : `〔本次引用：${refs.map((one) => refNameOf(one)).join(' · ')}〕\n`
+
     const skills = userPayloadOf(entry.payload)
-    const head = skills.length === 0 ? '' : `〔本次使用技能：${skills.map((one) => one.name).join(' · ')}〕\n`
+    const head =
+      refHead === '' && skills.length === 0
+        ? ''
+        : refHead + (skills.length === 0 ? '' : `〔本次使用技能：${skills.map((one) => one.name).join(' · ')}〕\n`)
 
     return `【用户】\n${head}${text}`
   }

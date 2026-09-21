@@ -27,7 +27,7 @@ import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import { bannerOf } from '../banner.ts'
 import type { Shell, ShellKey } from '../shell.ts'
-import type { BoundSkill, CompletionState, LogRow, ShellView } from '../view.ts'
+import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { groupHeads, hasRunningTool } from '../view.ts'
 import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
@@ -288,61 +288,47 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   }
 
   if (view.dock.kind === 'picker') {
-    return [h(PickerList, { key: 'picker', picker: view.dock.picker, columns }), ...flash]
+    // 候选列在**输入行之上**（与自动补全那一栏同一位置：先看候选，再看自己在打的那句话）。
+    return [
+      h(PickerList, { key: 'picker', picker: view.dock.picker, columns }),
+      // ⚠️ **`@` 那一栏把输入行留着**（U36）——设计「引用留在交代的位置」：用户打的路径
+      // 正长在那句话里，把输入行藏掉，他就看不见它落在哪儿了（别的那几栏不必显示输入行：
+      // 它们的查询是抽屉自己的，不写进草稿）。插入点也照旧摆着（真光标就在那句子里）。
+      ...(view.dock.picker.source === 'paths'
+        ? [
+            h(Composer, {
+              key: 'composer',
+              draft: view.draft,
+              caret: view.caret,
+              refs: view.refs,
+              tone: toneOf(view),
+              maxLines: maxDraftLines(rows),
+              columns,
+            }),
+          ]
+        : []),
+      ...flash,
+    ]
   }
 
   return [
     ...(view.completion === null
       ? []
       : [h(Completion, { key: 'completion', completion: view.completion, columns })]),
-    // 草稿材料（U33）——**紧挨输入行之上**（原型：选择器 → 草稿材料 → 输入行那个次序）
-    ...(view.bound === null ? [] : [h(SkillLine, { key: 'materials', bound: view.bound, columns })]),
+    // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删）：材料就写在正文里
+    // （`@src/login.ts` / `/review`），**原位**那一段自己就是凭据——旁边再列一行「待发送」，
+    // 等于同一件事说两遍，而删了正文那处材料还在（暗带）。见 `ShellView.refs` 那条注。
     h(Composer, {
       key: 'composer',
       draft: view.draft,
       caret: view.caret,
+      refs: view.refs,
       tone: toneOf(view),
       maxLines: maxDraftLines(rows),
       columns,
     }),
     ...flash,
   ]
-}
-
-/**
- * **草稿材料那一行**（U33）——`技能：名称 · 来源（待发送）`。
- *
- * 它凭什么常驻（规约：常驻的每一格都得答得出「影响用户的哪个动作」）：它说的是一件
- * **正在成立的事**——这条草稿一按回车，这份技能的主文就会跟着一起送出去。用户据此
- * 决定「要不要先换一份 / 先摘掉」（`/skills` 里那一行），而不是等模型回来才知道发错了。
- *
- * 三件都在字面上：**名称**（选的是谁）· **来源**（同名两份靠它分）· **（待发送）**
- * （此刻还没出去——主文没加载、模型没请求）。三段一句不多：这块屏上再没有第二个地方
- * 说这件事（`本次使用技能：…` 那条回执说的是**已经用了**，是另一件事、另一个时点）。
- *
- * 宽度按 `clip` 截（一段一段截：名称那段先保住，它才是「选的是哪一份」的落点）。
- */
-function SkillLine({
-  bound,
-  columns,
-}: {
-  readonly bound: BoundSkill
-  readonly columns: number
-}): ReactElement {
-  const room = Math.max(1, columns - 2) // 盒子 `paddingX: 1`
-  const head = clip(`技能：${bound.ref.name}`, room)
-  const tail = clip(` · ${bound.label}（待发送）`, Math.max(0, room - inkWidth(head)))
-
-  return h(
-    Box,
-    { flexDirection: 'column', paddingX: 1 },
-    h(
-      Text,
-      null,
-      h(Text, { color: PALETTE.user }, head),
-      h(Text, { color: PALETTE.dim }, tail),
-    ),
-  )
 }
 
 /**
@@ -434,17 +420,22 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         ? 0
         : wrap(view.dock.picker.hint, Math.max(8, columns - 4)).length
 
-    return view.dock.picker.rows.length + heads + hint + flash
+    // `@` 那一栏**多一行输入行**（U36：草稿照旧露着，见 `dockOf`）——与渲染**同取一处**
+    // （`draftHeight`）。这一格漏了，账与屏当场分家（矮终端上真光标高一行，U31 那条老病）。
+    const composer =
+      view.dock.picker.source === 'paths'
+        ? draftHeight(view.draft, view.caret, columns, maxDraftLines(rows))
+        : 0
+
+    return view.dock.picker.rows.length + heads + hint + composer + flash
   }
 
   // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。
   // ⚠️ 与渲染**同一处**算（`composerLayout`）——折行、折叠、「上面/下面还有 N 行」
   //    那两行都算在内；各算一套迟早对不上（D11 那条「行高与实际不符」就是这么来的）。
-  // 草稿材料那一行（U33）也在这笔账里：它**担保一行**（`SkillLine` 按宽度截），
-  // 故正好 +1——`dockOf` 画一行，这里数一行。
-  const materials = view.bound === null ? 0 : 1
-
-  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + materials + flash
+  // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删，账里那一格随之去掉）：
+  //    引用就长在草稿那几行里，不另占一行。
+  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */

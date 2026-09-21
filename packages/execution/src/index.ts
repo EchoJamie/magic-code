@@ -10,6 +10,9 @@
  *   选哪些、什么时候送归对话侧。
  * - `Skills`（**U33 加**）—— 技能的**只读**来源面（同一个理由、同一份分工）：
  *   入口是 `SKILL.md`（Agent Skills 规范），发现只取名称与描述，正文按需再读。
+ * - `Materials`（**U36 加**）—— 文件 / 目录材料的**只读**来源面（同一条分工的第三次）：
+ *   正文里的 `@` 引用取它。多一条边界——工作区外**只收单个文件**（用户明确选定的
+ *   只读附件），且只收文本。
  *
  * 内核仅有的两处 fs 直触之一（另一处＝记录域）——沙箱 · 工作区 · 规约来源是它存在的理由
  * （技术方案 · 代码治理 · 边界纪律）。
@@ -28,3 +31,6 @@ export type { RulesOptions } from './rules.ts'
 
 export { createSkills } from './skills.ts'
 export type { SkillsOptions } from './skills.ts'
+
+export { createMaterials, DEFAULT_CANDIDATES } from './materials.ts'
+export type { MaterialsOptions } from './materials.ts'

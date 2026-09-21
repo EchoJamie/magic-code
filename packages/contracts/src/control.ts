@@ -9,6 +9,7 @@
  * `events.ts` 的判别联合视图 `KernelEvent`。
  */
 
+import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { DecisionId, SessionId } from './ids.ts'
 
@@ -28,20 +29,53 @@ export type SkillRef = {
 }
 
 /**
+ * **正文里的引用**（U36）——文件 / 目录 / 技能，**留在用户说的那个位置**。
+ *
+ * 与 `InputRefEntry`（记录侧）的分工：这里只有**位置 ＋ 身份**——正文是那一句原话
+ * （引用文字就在里面），材料本身**到真实提交那一刻才取**（文件读当前内容、技能取主文）。
+ * 取回来之后与位置、来源一起落进 `InputRefEntry`（那是记录侧，多一份「实际交付内容」）。
+ *
+ * - `at` —— 引用文字在 `text` 里的起点（UTF-16 下标）；
+ * - `marker` —— 那一段文字是什么（`@src/login.ts` / `/review`），随正文一起走；
+ * - `source` —— **身份**（真路径）：技能＝技能目录真路径，文件 / 目录＝那条路径的真身。
+ *   同名两份技能靠它分开；「失效不换同名项」也才有判据。
+ */
+export type InputRef = InputRefPlace &
+  (
+    | { readonly kind: 'skill'; readonly name: string; readonly source: string }
+    | { readonly kind: 'file'; readonly source: string; readonly external?: true }
+    | { readonly kind: 'dir'; readonly source: string; readonly external?: true }
+  )
+
+/**
  * 用户输入。
  * 命令负载与 `ConversationService.submit` 入参**同一形态**——两处不各立一份。
  *
- * **一次交代＝正文 ＋ 它绑着的技能**（U33 起）——整份随 FIFO 排队、整份落账，
- * 不在「取出时才拼一个当下的技能」：忙时两条交代各绑各的技能，出队后不能被串成同一条。
+ * **一次交代＝正文 ＋ 它里面的引用**（U36 起）——整份随 FIFO 排队、整份落账，
+ * 不在「取出时才拼一个当下的材料」：忙时两条交代各带各的材料，出队后不能被串成同一条。
+ *
+ * **引用在正文里的位置是用户表达的一部分**——「先读 @需求.md，再按 /review 检查
+ * @src/login.ts」里的前后文字指向哪件事，靠的就是那个次序。故 `refs` 是一份**有序**表，
+ * 而正文一个字都不剥（`/review` 留在原处，不再被抽成一个独立参数）。
  */
 export type UserInput = {
   readonly text: string
   /**
-   * 本次交代绑定的技能（显式选定的）——**按绑定时序**，可为空。
+   * 本次交代带上的材料——**有序**（按各自在正文里的位置），可为空。
    *
    * 缺省 ＝ 纯文本输入（`pending:string[]` 时代的行为一字不动）。给了就**必须送到**：
-   * 其中一个取不到主文，这一次交代**不跑**（不换同名项、不忽略它继续）——
-   * 「我让你用这份技能做这件事」是用户的明确交代，内核不能替他把这句话删掉一半。
+   * 其中任何一份取不到（文件读不了 / 技能主文取不到），这一次交代**不跑**
+   * （不换同名项、不忽略它继续）——「我让你拿这份材料做这件事」是用户的明确交代，
+   * 内核不能替他把这句话删掉一半，也不能拿另一份顶上去冒充。
+   */
+  readonly refs?: readonly InputRef[]
+  /**
+   * **旧写法**（U33）：只带技能、**没有位置**。
+   *
+   * 留它只为一件事——**旧脚本与旧调用方照跑**（`--script` 的 `{ input: { skills } }`）。
+   * 那一份照旧按「材料在正文之前」展开、照旧落进 `UserPayload.skills`（旧形）：
+   * **不替它编一个位置**（设计 · 终端交互：旧记录没有位置信息就按原记录呈现，
+   * 不编造原插入点）。新写入一律走 `refs`。
    */
   readonly skills?: readonly SkillRef[]
   /**
@@ -230,8 +264,25 @@ export type GrantsRevoke = {
 export type SkillList = { readonly type: 'skills.list' }
 
 /**
+ * `paths.list`——**路径候选的读侧命令**（U36 · 正文里的 `@`）。
+ *
+ * **由头**：`@` 要边打边列候选（「`src/lo` 有哪几条」），而那要**看文件系统**——
+ * 外壳不碰盘（域与外壳都只经控制面说话），故与 `model.list` / `grants.list` /
+ * `skills.list` 同一处境：读也走命令面，答复走事件（`paths.catalog`，**不落库**）。
+ *
+ * `query` ＝ `@` 之后用户正在打的那一段（可以是空串＝列出默认根那一层）。它是**用户打的
+ * 写法**，不是路径：解析（相对默认根 / 绝对）与「它在哪个根里」的判定**全在实现那一侧**
+ * （执行域的路径面），外壳只把那一串原样递过来。
+ *
+ * ⚠️ **这一条只回答「有这么一条吗、它是文件还是目录」**——**不读内容、不授权任何东西**：
+ * 选定（按下回车把引用放进正文）才是用户明确的动作，材料到提交那一刻才读
+ * （见 `InputRef`）。
+ */
+export type PathList = { readonly type: 'paths.list'; readonly query: string }
+
+/**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支）——外壳发往内核的全部消息。
+ * ＋ U33 的技能目录一支 ＋ U36 的路径候选一支）——外壳发往内核的全部消息。
  */
 export type Command =
   | InputSubmit
@@ -244,6 +295,7 @@ export type Command =
   | GrantsList
   | GrantsRevoke
   | SkillList
+  | PathList
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

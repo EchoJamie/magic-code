@@ -32,6 +32,7 @@
 import type {
   EventSink,
   EventStamper,
+  Materials,
   ModelGateway,
   ProjectRules,
   RecordsService,
@@ -50,6 +51,7 @@ import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
 import { buildSystemPrompt } from './prompt/index.ts'
 import type { PromptVars } from './prompt/index.ts'
+import { createRefDelivery } from './refs.ts'
 import { createRulesDelivery } from './rules.ts'
 import { createSkillsDelivery } from './skills.ts'
 
@@ -97,6 +99,17 @@ export type ConversationDeps = {
    * 两边不会各说一套。
    */
   readonly skills?: Skills | undefined
+  /**
+   * **材料来源面**（U36 · 执行域实现）——正文里的 `@文件` / `@目录` 由它取。
+   *
+   * 与 `skills` 同一分工（**什么时候送**归本域，**允许读哪些**归装配），
+   * 且**只出读的那一半**：工作区外的路径不因输入 `@` 而获准，唯一进口是用户明确选定的
+   * 那一个只读附件（见契约 `Materials` 的三条边界）。
+   *
+   * 缺省＝这个工作区不取文件 / 目录材料：带引用的那一条交代**不跑**（`rejected`），
+   * 不当作没有引用照跑。
+   */
+  readonly materials?: Materials | undefined
 }
 
 /**
@@ -185,6 +198,15 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    */
   const skills = deps.skills === undefined ? undefined : createSkillsDelivery(deps.skills)
 
+  /**
+   * **引用送达**（U36）——正文里带位置的那一份（技能 / 文件 / 目录一并）。
+   *
+   * 与 `skills` 各管一形：旧形（`UserInput.skills`，无位置）走上面那一份、照旧统一前置；
+   * 新形（`UserInput.refs`）走这一份、**按位置展开**。两份都由同一对来源面喂
+   * （`deps.skills` 与 `deps.materials`）——两形读的是同一棵树，不会各说一套。
+   */
+  const refs = createRefDelivery({ skills: deps.skills, materials: deps.materials })
+
   const runtime: LoopRuntime = {
     session: deps.session,
     model: deps.model,
@@ -203,6 +225,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     compact: compactor,
     rules,
     skills,
+    refs,
   }
 
   /**

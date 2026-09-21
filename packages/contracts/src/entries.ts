@@ -99,14 +99,94 @@ export type UsedSkillEntry = UsedSkill & {
 }
 
 /**
- * `user` 条目的载荷——**有技能材料时才有**（纯文本交代不带载荷，一行都不多）。
+ * **一次交代里落在原位的引用**（U36）——**位置 ＋ 来源身份 ＋ 本次实际交付的内容**。
  *
- * ⚠️ **`source` 与 `Entry.source` 是两件事**：后者是 `SessionId`（条目归属的会话，
- * 协作立条前的占位），此处是**技能来源**。两个「来源」在同一张表上撞了名，
- * 但空格分明——故此处用 `source` 一词而不另造译名（`UsedSkill` 与 `Skill.path` 同字，
- * 材料与记录两边指同一件事：那份技能目录在哪）。
+ * ## 它是「有序文字与引用」在记录侧的落点
+ *
+ * 用户的一句交代里，引用**留在它被说出来的位置**：「先读 @需求.md，再按 /review 检查
+ * @src/login.ts」里的三处各有各的位置——前后文字指向哪件事，靠的就是这个次序，
+ * 而不是一组材料平铺在正文之前（`UsedSkillEntry` 那条老路把技能统一前置，U36 撤销）。
+ *
+ * `at` ＋ `marker` 是**位置的自证**：`content.text.slice(at, at + marker.length)`
+ * 就是那一段引用文字。消费方据此把材料**展开在原文那个位置**，不必重新解析整段文字去猜
+ * （设计 · 终端交互：「不靠名称或对整段文字重新猜位置」）。
+ *
+ * ## 为什么内容也在这里（而不只留个身份）
+ *
+ * 与 `UsedSkillEntry` 同一条理由：材料**动态读取**（不冻结、不算 hash、不做版本），
+ * 但**实际交付出去的那一份**必须留下来——源文件后来改了或删了，历史输入不被改写，
+ * 「当时到底送了什么」也还答得出（`text` 就是那一份）。目录另记**未展开**的部分
+ * （`omitted`），不假装列全了。
+ *
+ * ## 三支共有的四格
+ *
+ * - `at` —— 在**正文**里的位置（UTF-16 下标，`content.text` 的坐标）；
+ * - `marker` —— 正文里那一段是什么（`@src/login.ts` / `/review`）；
+ * - `source` —— **身份**：技能＝技能目录真路径（`Skill.path`）· 文件 / 目录＝真路径；
+ * - `label` —— 来源的**人读标签**（技能＝发现处产出的「项目 .magic/skills」一类；
+ *   文件 / 目录＝写入那一刻相对所属根的写法 / 工作区外的绝对写法）。
+ *
+ * ⚠️ **`source` 与 `Entry.source` 是两件事**：后者是 `SessionId`（条目归属的会话），
+ * 此处是**材料来源**。两个「来源」在同一张表上撞了名，但空格分明（同 `UserPayload.skills`
+ * 那条注的老话）。
+ */
+export type InputRefEntry = InputRefPlace &
+  (
+    | {
+        readonly kind: 'skill'
+        /** 技能名——`skill.used` 回执与模型取引用都用它（`UsedSkill.name`）。 */
+        readonly name: string
+        readonly source: string
+        readonly label: string
+        /** 当时送进上下文的那一份主文——**是它本体，不是引用**。 */
+        readonly text: string
+      }
+    | {
+        readonly kind: 'file'
+        readonly source: string
+        readonly label: string
+        /** 实际交付的文件内容（可能截断——`truncated` 一并记着）。 */
+        readonly text: string
+        readonly truncated?: true
+        /**
+         * **取自工作区之外**（U36）——用户明确选定的那一个只读附件。
+         *
+         * 记它有两个用处：① 审计上说得清「这份材料不在工作区里」（它的来源路径也不在工作区
+         * 内，光看 `source` 要另判一次才认得出）；② 重放时模型面前那一行据它标「只读附件」。
+         * **它不是授权**——沙箱的根一条都没动（见契约 `Materials`）。
+         */
+        readonly external?: true
+      }
+    | {
+        readonly kind: 'dir'
+        readonly source: string
+        readonly label: string
+        /** 有界清单——**只有这一层**，未列出的项如实报数（`omitted`）。 */
+        readonly text: string
+        readonly omitted?: number
+      }
+  )
+
+/** 引用的**位置那两格**（三支共有——见 `InputRefEntry`）。 */
+export type InputRefPlace = {
+  /** 在正文里的位置（UTF-16 下标；`content.text` 的坐标）。 */
+  readonly at: number
+  /** 正文里那一段的文字（`@src/login.ts` / `/review`）——位置的自证。 */
+  readonly marker: string
+}
+
+/**
+ * `user` 条目的载荷——**带了材料时才有**（纯文本交代不带载荷，一行都不多）。
+ *
+ * ## 两份并存：`refs` 是入口，`skills` 只读兼容
+ *
+ * - `refs`（**U36 起**）——有序、带位置，一条交代里的全部材料都在这里；
+ * - `skills`（U33 的旧形）——**按绑定时序、没有位置**。留它只为一件事：**旧记录照读**。
+ *   旧调用方（无人值守脚本的 `{ skills }` 写法）递进来的那一份也照旧落在这里——
+ *   **不编一个 `at: 0` 出来**（那是替旧输入伪造原插入点，设计明写不许）。
  */
 export type UserPayload = {
+  readonly refs?: readonly InputRefEntry[]
   readonly skills?: readonly UsedSkillEntry[]
 }
 

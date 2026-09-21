@@ -58,6 +58,7 @@ import type {
   Content,
   Entry,
   EntryPayload,
+  InputRefEntry,
   ModelMessage,
   RecordId,
   RecordsService,
@@ -174,17 +175,29 @@ export async function assembleContext(
     if (entry === undefined) break
 
     if (entry.kind === 'user') {
-      // **技能材料随用户消息一起摆**（U33）：正文在前、用户的话在后——
-      // 「先把这份技能摆上，再是这个任务」。两半都取自**这一条条目**（话在正文、
-      // 材料在载荷），故重放时逐字复原模型当时看到的那一份，**不重新去读文件**
-      // （源改了之后新调用才取新的，历史不被改写）。
+      // **材料随用户消息一起摆，且**在原位**（U36）——每一处引用在它被说出来的那个位置
+      // 展开（正文一个字不剥、前后文字照旧指向各自的对象）。
+      //
+      // 两种载荷两形（见 `UserPayload`）：
+      // - `refs`（U36）——带位置，按位置展开（`inlineOf`）；
+      // - `skills`（U33 旧形）——没有位置，照旧统一摆在正文之前（旧记录按原样重放，
+      //   不替它编一个插入点）。
+      //
+      // 两半都取自**这一条条目**（话在正文、材料在载荷），故重放时逐字复原模型当时看到
+      // 的那一份，**不重新去读文件**（源改了之后新调用才取新的，历史不被改写）。
       const text = await contentTextOf(entry.content, input.records, limit)
-      const skills = userPayloadOf(entry.payload)
+      const payload = entry.payload
+      const refs = refsPayloadOf(payload)
+      const skills = userPayloadOf(payload)
 
-      messages.push({
-        role: 'user',
-        content: skills.length === 0 ? text : `${skillsBlockOf(skills)}\n\n${text}`,
-      })
+      const body =
+        refs.length > 0
+          ? inlineOf(text, refs)
+          : skills.length === 0
+            ? text
+            : `${skillsBlockOf(skills)}\n\n${text}`
+
+      messages.push({ role: 'user', content: body })
       index += 1
       continue
     }
@@ -354,11 +367,136 @@ export function userPayloadOf(payload: EntryPayload | undefined): readonly UsedS
 }
 
 /**
- * 技能材料摆成块——**一行抬头 ＋ 正文原样**。
+ * 用户条目的载荷 → 引用表（U36）——**只认三件齐全的**（位置 / 标记 / 来源），
+ * 内容那一格按 kind 各取各的（技能与文件都要 `text`，目录也一样）。
+ *
+ * 缺件的条目**不当作材料**（当作没有）：与 `userPayloadOf` 同一条姿势——半条材料会让模型
+ * 按一份内核都没看全的东西干活。旧库（只有 `skills` 键）在这里读出空数组，走另一支。
+ */
+export function refsPayloadOf(payload: EntryPayload | undefined): readonly InputRefEntry[] {
+  const source: unknown = payload
+  if (!isRecord(source)) return []
+
+  const declared = source['refs']
+  if (!Array.isArray(declared)) return []
+
+  const refs: InputRefEntry[] = []
+  for (const item of declared) {
+    if (!isRecord(item)) continue
+
+    const at = item['at']
+    const marker = item['marker']
+    const from = item['source']
+    const text = item['text']
+    if (typeof at !== 'number' || typeof marker !== 'string') continue
+    if (typeof from !== 'string' || typeof text !== 'string') continue
+
+    const label = typeof item['label'] === 'string' ? item['label'] : ''
+
+    if (item['kind'] === 'skill') {
+      const name = item['name']
+      if (typeof name !== 'string') continue
+      refs.push({ kind: 'skill', at, marker, name, source: from, label, text })
+      continue
+    }
+
+    if (item['kind'] === 'dir') {
+      const omitted = item['omitted']
+      refs.push({
+        kind: 'dir',
+        at,
+        marker,
+        source: from,
+        label,
+        text,
+        ...(typeof omitted === 'number' ? { omitted } : {}),
+      })
+      continue
+    }
+
+    if (item['kind'] === 'file') {
+      refs.push({
+        kind: 'file',
+        at,
+        marker,
+        source: from,
+        label,
+        text,
+        ...(item['truncated'] === true ? { truncated: true as const } : {}),
+        ...(item['external'] === true ? { external: true as const } : {}),
+      })
+    }
+  }
+
+  return refs
+}
+
+/**
+ * **正文 ＋ 引用处的材料**——材料**展开在它被说出来的那个位置**（U36）。
+ *
+ * 三条分寸：
+ * - **正文一个字不剥**：`/review`、`@src/login.ts` 照旧留在句子里——前后文字指向哪件事
+ *   靠的就是这个次序（设计 · 终端交互：「模型收到的也须保留这个对应关系」）；
+ * - **材料插在那一处引用之后**：读者读到 `先读 @需求.md`，紧跟着就是那份需求——而不是
+ *   一整摞材料摆在最前面、再由用户自己认哪份管哪处；
+ * - **位置越界一律夹回**（手改过的旧记录 / 越界数据）：宁可把材料摆在末尾，也不把它丢掉
+ *   或插到一段文字中间。
+ */
+export function inlineOf(text: string, refs: readonly InputRefEntry[]): string {
+  const ordered = [...refs].sort((left, right) => left.at - right.at)
+  let out = ''
+  let cursor = 0
+
+  for (const ref of ordered) {
+    // 材料接在**引用文字之后**（`at` ＋ 标记长度），且不许越过上一份材料
+    const end = Math.max(cursor, Math.min(ref.at + ref.marker.length, text.length))
+    out += `${text.slice(cursor, end)}\n${materialBlockOf(ref)}\n`
+    cursor = end
+  }
+
+  return out + text.slice(cursor)
+}
+
+/**
+ * 一处引用的材料块——**抬头说清是什么、从哪来；结尾划出边界**。
+ *
+ * 抬头三件（缺一件，模型就会把材料当成别的东西）：
+ * - **类别**（技能 / 文件 / 目录）——技能是「别人写好的做法」，文件是「读出来的事实」；
+ * - **用户说的那一处**（`marker` 去掉 `@`／`/`）——对上正文里那一段；
+ * - **来源**（`label`）——同名两份靠它分得开；工作区外那份另外标一句「只读附件」。
+ *
+ * 结尾那一行是**边界**：材料是**被引用的东西**，不是用户在说话（也不是助手的产出）。
+ * 长材料一旦没有结尾，后面接着的文字就会被读成材料的一部分——那正是「拿材料里的字当
+ * 用户的话」这条错法的入口。
+ *
+ * 截断 / 未展开**在抬头就说明白**（`truncated` / `omitted`）：宁可先说「只送到这里」，
+ * 也不能让模型以为手里是全份（设计：不能静默缺材料）。
+ */
+function materialBlockOf(ref: InputRefEntry): string {
+  const kind = ref.kind === 'skill' ? '技能' : ref.kind === 'dir' ? '目录' : '文件'
+  const external = ref.kind === 'file' && ref.external === true ? '（工作区外 · 只读附件）' : ''
+  const cut = ref.kind === 'file' && ref.truncated === true ? '（原文更长，这里是前一段）' : ''
+  const more = ref.kind === 'dir' && ref.omitted !== undefined ? `（只列了这一层，另有 ${ref.omitted} 项未列）` : ''
+
+  const head =
+    ref.kind === 'skill'
+      ? `〔本次技能 · ${ref.name}（来源 ${ref.label}）〕`
+      : `〔本次材料 · ${kind} ${ref.label}${external}${cut}${more}〕`
+
+  return `${head}\n${ref.text}\n〔${ref.kind === 'skill' ? '技能' : '材料'}完 · ${ref.kind === 'skill' ? ref.name : ref.label}〕`
+}
+
+/**
+/**
+ * 技能材料摆成块（**U33 旧形**——`UserPayload.skills`，无位置的那一份）。
  *
  * 抬头给三件：名字（模型要用它取引用）、来源（同名时靠它分得开）、以及一句
  * 「以下是一份技能说明」——**技能说明与读出来的数据是两种东西**（工单明写），
  * 抬头就是那条分界线：模型据此知道这是**别人写好的做法**，不是它自己查出来的事实。
+ *
+ * ⚠️ **U36 起新写入不走这里**：正文里带位置的引用走 `inlineOf`（材料展开在那一处，
+ * 抬头另有一形）。本函数留着只为**旧记录照原样重放**——旧条目的载荷里没有位置，
+ * 材料本来就是统一前置的，硬套新形式等于替它编一个插入点。
  */
 function skillsBlockOf(skills: readonly UsedSkillEntry[]): string {
   return skills

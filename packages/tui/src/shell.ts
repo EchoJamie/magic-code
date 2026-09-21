@@ -31,7 +31,7 @@ import {
   HINT_IDLE,
   HINT_WORKING,
   MAX_CANDIDATES,
-  REMOVE_SKILL,
+  activeWordOf,
   appendEcho,
   appendOutput,
   appendReceipt,
@@ -40,6 +40,8 @@ import {
   matchCommands,
   movePicker,
   openPicker,
+  pathHint,
+  pathRows,
   resolveSkill,
   sessionHint,
   grantsHint,
@@ -54,9 +56,23 @@ import {
   withContextWindow,
   withWindowTable,
 } from './view.ts'
-import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
+import {
+  backspaceRange,
+  deleteRange,
+  insertText,
+  markerOf,
+  putRef,
+  refStartingAt,
+  removeRange,
+  replaceWith,
+  stepLeftOver,
+  stepRightOver,
+  wire,
+} from './components/inline.ts'
+import type { DraftRef } from './components/inline.ts'
+import type { ShellView, WindowTable } from './view.ts'
+import { leftSpan } from './components/composer.ts'
 import { usageLabel } from './components/lines.ts'
-import type { BoundSkill, ShellView, WindowTable } from './view.ts'
 
 // 建壳入参里用到的形态在视图那层（`view.ts`）——转出去，好让拿 `ShellOptions` 的人
 // 一处就取全（`run.ts` 的 `RunTuiOptions` 正是这么取的）
@@ -227,41 +243,53 @@ const STREAM_WINDOW_MS = 16
  */
 const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'tool.output.delta'])
 
-/** 剥过之后的那份草稿——**正文** ＋ 它在原草稿里的起点（见 `stripSkillWord`）。 */
-type StrippedBody = {
-  readonly body: string
-  /**
-   * 正文在原草稿里的**起点**——原草稿里下标 `n` 那个位置，在正文里是 `n - at`。
-   *
-   * 为什么要把这个数交出来：**插入点要跟着左移**。不搬的话，用户刚在正文中间打的字，
-   * 选完技能接着打就落到尾巴上去了（真 PTY 反例：`/twins abc|d` 选完再打 `Z` 得到
-   * `abcdZ`，而不是原位的 `abcZd`）。
-   */
-  readonly at: number
+/**
+ * 草稿上还剩下多少**不是引用**的文字（去掉引用那几段之后）。
+ *
+ * 它答一个问题：这一条按得下去吗。设计：「正文或附件任一非空即可提交」——
+ * 而**只有引用、一个字都没有**的那一份不算交代（「/review」自己不是一个任务）。
+ * U33 时这条判据写作 `body === ''`（剥掉斜杠词之后）；U36 起引用留在正文里，
+ * 故按**引用的位置**把那几段挖掉，剩下的才是「用户要说的话」。
+ */
+/**
+ * 一句交代里**用户说的话**——去掉已有的引用区间，再去掉句首那个还没绑上的技能名。
+ *
+ * 与 `bodyOf` 分开的理由：句首那个斜杠词**此刻还不是引用**（用户正按回车让它变成引用），
+ * 故它自己那一截要从「有没有别的话」这笔账里去掉——不去掉的话，`/pdf` 单独一条会被
+ * 当成「说了点什么」而直接发出去（一次一个字都没有的交代）。
+ */
+export function spokenOf(draft: string, refs: readonly DraftRef[], word: string): string {
+  const spoken = bodyOf(draft, refs)
+
+  return spoken.startsWith(word) ? spoken.slice(word.length) : spoken
 }
 
 /**
- * 把草稿开头那个 `/名字` 剥掉，留下**正文**（不是那个形态就原样交回，`at: 0`）。
+ * **这一条按得下去吗**——设计：「正文或附件任一非空即可提交」。
  *
- * 三件是工单写死的（「直接命令后面的正文（含换行、绝对路径、`/session` 字样）不重复
- * 解析成控制命令」）：
- * - **只认第一个词**——剥掉它之后**全算正文**，故正文里的 `/session`、绝对路径、
- *   换行都原样留着（不再递归解析斜杠）；
- * - **内部换行保留**：只削掉「斜杠词与其后正文之间」那一段分隔空白，不 `join(' ')`
- *   （那会把用户按下 `shift+回车` 打的换行抹平——多行交代当场变成一行）；
- * - **名字对不上就不剥**（原样交回）：剥了名不副实的一截，等于替用户改了他写的话。
- *
- * 正文是原草稿的**一段后缀**，故起点直接用长度差算得——不必再记一遍剥离过程的账
- * （两处各记一遍，迟早分家）。
+ * 三条：
+ * - **有正文**（去掉引用之后还有别的话）⇒ 发；
+ * - **只有文件 / 目录引用** ⇒ 也发——那正是「读这份材料」这件事本身（设计明写：纯附件也能提交）；
+ * - **只有技能引用**（或句首一个还没成引用的 `/名称`）⇒ **不发**：技能说的是「怎么做」，
+ *   它不指一个对象。一条只有「按这个做法」而没有「做什么」的交代，内核那边落下的会是一条
+ *   「用户什么都没说、但带了份材料」的条目——那不是交代（U33 那条判据的延续）。
  */
-function stripSkillWord(draft: string, name: string): StrippedBody {
-  const head = draft.replace(/^\s+/, '')
-  const word = /^\/\S+/.exec(head)
-  if (word === null || word[0] !== `/${name}`) return { body: draft, at: 0 }
+export function submittable(draft: string, refs: readonly DraftRef[]): boolean {
+  if (bodyOf(draft, refs).trim() !== '') return true
 
-  const body = head.slice(word[0].length).replace(/^\s+/, '')
+  return refs.some((ref) => ref.kind !== 'skill')
+}
 
-  return { body, at: draft.length - body.length }
+export function bodyOf(draft: string, refs: readonly DraftRef[]): string {
+  let out = ''
+  let cursor = 0
+
+  for (const ref of [...refs].sort((left, right) => left.start - right.start)) {
+    out += draft.slice(cursor, Math.max(cursor, Math.min(ref.start, draft.length)))
+    cursor = Math.max(cursor, Math.min(ref.end, draft.length))
+  }
+
+  return out + draft.slice(cursor)
 }
 
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
@@ -344,7 +372,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let submits = 0
 
   /**
-   * **刚交出去的那一份草稿**——配对键 ＋ 正文 ＋ 绑的技能。`null` ＝ 没有等着认领的。
+   * **刚交出去的那一份草稿**——配对键 ＋ 正文 ＋ 它里面的引用。`null` ＝ 没有等着认领的。
    *
    * 两个时机把它清掉：用户**动过草稿**（`edit` 里清——「失败不覆盖后来编辑的新稿」
    * 正落在这条）· 已经认领过一次（同一份不会被两条失败各还一遍）。
@@ -352,7 +380,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let lastSubmit: {
     readonly ref: string
     readonly text: string
-    readonly bound: BoundSkill | null
+    readonly refs: readonly DraftRef[]
   } | null = null
 
   /** 攒着的那一次补发（`undefined` ＝ 窗口里没排着）。 */
@@ -408,7 +436,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const withCompletion = (next: ShellView): ShellView => {
     if (next.dock.kind !== 'input') return { ...next, completion: null }
 
-    const found = matchCommands(next.draft, next.skills?.skills ?? [])
+    // 候选按**插入点正打着的那个斜杠词**筛（U36：`/<名称>` 在任何词边界都唤起候选——
+    // 「先读 @需求.md，再按 /review」里的 `/review` 正是在句中被选进来的）。
+    // 内置命令只在这一词位于草稿最前时才列（它们是整行的操作入口，不写在句子中间）。
+    const at = activeWordOf(next.draft, next.caret)
+    const found = matchCommands(at?.word ?? '', next.skills?.skills ?? [], at?.atStart ?? true)
     // **封顶在列、报数在右位**（见 `MAX_CANDIDATES`）：截掉几条不静默——状态行说得出
     // 「还有 N 条」，而想浏览全量走 `/skills`（那才是浏览面，这一栏只是边打边认的辅助）。
     const candidates = found.slice(0, MAX_CANDIDATES)
@@ -472,7 +504,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   const askSkills = (from: ShellView): void => {
     if (skillsAsked || !ready) return
-    if (!from.draft.startsWith('/')) return
+    // 插入点正打着一个**斜杠词**就问——不限于句首（U36：`/<名称>` 在任何词边界都唤起候选，
+    // 句中那个 `/review` 正是要从候选里选进来的那一个）。
+    const word = activeWordOf(from.draft, from.caret)?.word
+    if (word === undefined || !word.startsWith('/')) return
 
     skillsAsked = true
     send({ type: 'skills.list' })
@@ -486,21 +521,47 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   const caretAt = (): number => Math.max(0, Math.min(view.caret, view.draft.length))
 
-  /** 在插入点处改草稿的**唯一口子**——改完插入点跟着落（越界夹回）。 */
-  const editAt = (next: string, caret: number): void => {
-    edit({ ...view, draft: next, caret: Math.max(0, Math.min(caret, next.length)) })
+  /**
+   * 在插入点处改草稿的**唯一口子**——改完插入点跟着落（越界夹回），**引用也跟着走**。
+   *
+   * 引用那一趟由调用方按编辑的类型算好（插一段／抹一段，两张情形位移规则不同——
+   * 见 `inline.ts`），故此处收的是算好的那一份：**编辑规则只有 `inline.ts` 一处**，
+   * 这里不另判一次。
+   */
+  const editAt = (next: string, caret: number, refs: readonly DraftRef[] = view.refs): void => {
+    edit({ ...view, draft: next, caret: Math.max(0, Math.min(caret, next.length)), refs })
   }
 
   /** 插入点处插一段（打字 / 粘贴 / 换行共用）——插入点落在插进去的那一段**之后**。 */
   const insertAt = (text: string): void => {
     const at = caretAt()
+    const refs = insertText(view.refs, at, text.length)
 
-    editAt(view.draft.slice(0, at) + text + view.draft.slice(at), at + text.length)
+    editAt(view.draft.slice(0, at) + text + view.draft.slice(at), at + text.length, refs)
   }
 
-  /** 抹掉 `[from, to)` 那一段（退格 / 删除共用）——插入点落到 `from`。 */
+  /**
+   * 抹掉 `[from, to)` 那一段（退格 / 删除共用）——插入点落到 `from`。
+   *
+   * 被压到的引用**整个跟着走**（`removeRange`）——「删了可见引用，不能还暗带着那份材料」。
+   */
   const eraseAt = (from: number, to: number): void => {
-    editAt(view.draft.slice(0, from) + view.draft.slice(to), from)
+    editAt(view.draft.slice(0, from) + view.draft.slice(to), from, removeRange(view.refs, from, to))
+  }
+
+  /**
+   * **`@` 是不是在词边界上**（该开路径候选）。
+   *
+   * 设计 · 文件与图片：「正文边界的 `@` 开路径候选，输入筛选；**邮箱或转义 `@` 不触发**」。
+   * 那一格的插入点由调用方给（`@` 已经插进去了，故它在 `at - 1`）。
+   */
+  const opensPath = (draft: string, at: number): boolean => {
+    if (at < 1 || draft[at - 1] !== '@') return false
+
+    const before = at >= 2 ? (draft[at - 2] ?? '') : ''
+    if (before === '\\') return false // 转义：只想打一个 `@`
+
+    return before === '' || /\s/.test(before) // 词边界（行首，或空白之后）
   }
 
   const send = (command: Command): void => {
@@ -560,12 +621,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       commit(withCompletion(view))
       if (waiting === 'skills') {
         waiting = null
-        openSkillsPicker(skillSeed)
+        // `/skills` 那条路：草稿已被命令清空，故锚点就是 `[0, 0)`——
+        // 「选定后在打开选择器前的输入位置插入技能引用」在这一档即句首那个位置。
+        openSkillsPicker(skillSeed, { start: 0, end: 0 })
       }
     }
 
+    // 路径候选回来了 ⇒ **只认正开着 `@` 那一栏、且 query 对得上的那一次**（边打边问，
+    // 答复可能后到——先到的那一份不该盖掉用户已经改过的查询）。
+    if (event.kind === 'paths.catalog') refreshPaths()
+
     // 提交**没收下** ⇒ 按原 pairing 键认回那份草稿（U33）。回执那半行由 `reduce` 落
-    // （「没送出：…」），这里只管草稿那三件——正文 · 插入点 · 绑着的技能。
+    // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
     if (event.kind === 'input.settled' && !event.data.ok) restoreDraft(event.data.ref)
 
     // 授权名录回来了 ⇒ 开抽屉（`/grants` 那条路）／**撤销之后刷新它 ＋ 留一行回执**。
@@ -727,9 +794,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *
    * 0 行时（没筛词的）`openPicker` 会把它落成一行回执、不开抽屉——空名录不开空抽屉（P0）。
    */
-  const openSkillsPicker = (filter: string): void => {
+  const openSkillsPicker = (filter: string, anchor: { readonly start: number; readonly end: number }): void => {
     const catalog = view.skills
-    const rows = skillRows(skillScope ?? catalog?.skills ?? [], view.bound, filter)
+    const rows = skillRows(skillScope ?? catalog?.skills ?? [], filter)
 
     commit(
       openPicker(view, {
@@ -737,58 +804,252 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         selected: 0,
         rows,
         filter,
-        hint: skillHint({ catalog, filter, shown: rows.length, hasBound: view.bound !== null }),
+        anchor,
+        hint: skillHint({ catalog, filter, shown: rows.length }),
       }),
     )
   }
 
   /**
-   * **选定一份技能 ⇒ 只绑草稿**（工单：「选择只绑定草稿，保留正文/光标」）。
+   * **选定一份技能 ⇒ 在它该在的位置放进一句引用**（U36）。
    *
    * 三件同时成立才是对的：
-   * - **不加载主文、不发模型请求**（绑的是 `SkillRef`——两件身份，见契约），
-   *   真实提交那一刻内核才按身份取；
-   * - **不发送**（按回车确认一个选择，不该顺手把草稿发出去——工单：「按确认选择不同时误发草稿」）；
-   * - **正文与插入点照旧**，只把斜杠那一行的正文剥出来（从 `/<名字> <交代>` 走进来时，
-   *   那一截已经成了提交内容，留在草稿里就成了「重复解析」）。
+   * - **不加载主文、不发模型请求**（带的是身份：名字 ＋ 真路径），真实提交那一刻内核才按身份取；
+   * - **不发送**（按回车确认一个选择，不该顺手把草稿发出去）；
+   * - **插在打开列表前那个位置**（`anchor`）——不移到开头、也不一律追加到末尾
+   *   （设计 · 技能调用：「选定后在打开选择器前的输入位置插入技能引用」）。
    */
-  const bindSkill = (skill: SkillCatalogRow): void => {
-    const cut = stripSkillWord(view.draft, skill.name)
-    // **插入点跟着剥离左移**（见 `StrippedBody.at`）——它在正文里的位置是「原来那个减掉
-    // 被剥掉的那一截」，夹回 `[0, 正文长]`：插入点若正落在被剥掉的那一段里
-    // （`/tw|ins`），落到正文开头（那一格已经不在屏上了，就近落脚最不意外）。
-    // ⚠️ **不摆到末尾**——「选定只绑草稿，保留正文/光标」里的那个「光标」就是这一行。
-    const caret = Math.max(0, Math.min(view.caret - cut.at, cut.body.length))
+  const bindSkill = (skill: SkillCatalogRow, anchor: { readonly start: number; readonly end: number }): void => {
+    const marker = `/${skill.name}`
 
     commit(
       withCompletion({
         ...closePicker(view),
-        bound: { ref: { name: skill.name, path: skill.path }, label: skill.label },
-        draft: cut.body,
-        caret,
+        ...replaceWith(
+          view.draft,
+          view.refs,
+          { from: anchor.start, to: anchor.end },
+          { kind: 'skill', marker, name: skill.name, source: skill.path },
+          view.caret,
+        ),
+      }),
+    )
+  }
+
+  // —— 路径（U36 · 正文里的 `@`）——
+
+  /**
+   * **开 `@` 那一栏**——`anchor` 是「那一段查询」在草稿里的范围（选定即替换它）。
+   *
+   * 与 `/skills` 同一处开合（左下抽屉）：**只是列一列**（一次列一层），选定才把引用放进正文。
+   * 行由 `paths.catalog` 铺（`refreshPaths`），铺之前先把已在手上的那一份摆上（`view.paths`）。
+   */
+  const openPaths = (anchor: { readonly start: number; readonly end: number }, query: string): void => {
+    // 行取**手上那一份**（`view.paths`）：新的一问还在路上——此刻清空列表只会闪一下
+    // （答复几毫秒就到，`refreshPaths` 会把新的一批铺上；旧的那一份比空白有用）。
+    const catalog = view.paths
+    // 手上这一份**是不是这一问的**——不是就还在路上（那行说明据此换一句，见 `pathHint`）
+    const pending = catalog === null || catalog.query !== query
+
+    commit(
+      openPicker(view, {
+        source: 'paths',
+        selected: view.dock.kind === 'picker' && view.dock.picker.source === 'paths' ? view.dock.picker.selected : 0,
+        rows: pathRows(catalog?.rows ?? []),
+        filter: query,
+        anchor,
+        hint: pathHint({
+          filter: query,
+          shown: pending ? 0 : (catalog?.rows.length ?? 0),
+          pending,
+          ...(pending || catalog?.note === undefined ? {} : { note: catalog.note }),
+        }),
       }),
     )
   }
 
   /**
-   * **一次提交**（U33）——正文 ＋ 绑着的技能 ＋ 配对键，三件一起交给内核。
+   * **`@` 那一下**——开候选，并把锚点定在刚打的那个 `@` 上。
+   *
+   * 锚点是「选定之后要替换掉的那一段」：从 `@` 起，到用户打到哪儿为止。查询文字**同时写进
+   * 草稿**（见 `typePath`）——它长在用户那句话里，不是抽屉里的一个临时输入框。
+   */
+  const openPathsAt = (): void => {
+    const at = caretAt()
+    const anchor = { start: Math.max(0, at - 1), end: at }
+
+    openPaths(anchor, '')
+    askPaths('')
+  }
+
+  /** 抽屉换成新的锚点与筛词——**不动行**（行由答复铺）。 */
+  const reopenPaths = (anchor: { readonly start: number; readonly end: number }, query: string): void => {
+    const picker = view.dock.kind === 'picker' && view.dock.picker.source === 'paths' ? view.dock.picker : undefined
+    if (picker === undefined) return
+
+    const catalog = view.paths
+    const pending = catalog === null || catalog.query !== query
+
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          ...picker,
+          filter: query,
+          anchor,
+          hint: pathHint({
+            filter: query,
+            shown: picker.rows.length,
+            ...(pending ? { pending: true } : {}),
+            ...(pending || catalog?.note === undefined ? {} : { note: catalog.note }),
+          }),
+        },
+      },
+    })
+  }
+
+  /**
+   * **在查询尾巴上打一个字**（`@` 那一栏里打字）——两处一起长：
+   * - **草稿**（那一段查询就写在 `@` 后面，位置在锚点的尾巴上）；
+   * - **锚点**（尾巴跟着长一格，选定那一刻才替换得准）。
+   */
+  const typePath = (char: string): void => {
+    const picker = view.dock.kind === 'picker' ? view.dock.picker : undefined
+    const anchor = picker?.anchor
+    if (anchor === undefined || picker === undefined) return
+
+    const query = (picker.filter ?? '') + char
+    const at = anchor.end
+
+    editAt(
+      view.draft.slice(0, at) + char + view.draft.slice(at),
+      at + char.length,
+      insertText(view.refs, at, char.length),
+    )
+    reopenPaths({ start: anchor.start, end: at + char.length }, query)
+    askPaths(query)
+  }
+
+  /** 退格删一格查询（`@` 那一栏里退格）——草稿与锚点一起缩。 */
+  const backspacePath = (short: string, anchor: { readonly start: number; readonly end: number }): void => {
+    const filter = view.dock.kind === 'picker' ? view.dock.picker.filter ?? '' : ''
+    const removed = filter.length - short.length
+    if (removed <= 0) return
+
+    eraseAt(anchor.end - removed, anchor.end)
+    reopenPaths({ start: anchor.start, end: anchor.end - removed }, short)
+    askPaths(short)
+  }
+
+  /**
+   * `Tab` 补全（`@` 那一栏）——把选中的那一条**补进查询**；目录再补一个尾斜杠，
+   * 于是下一趟列的就是它里面那一层（设计：「目录加 `/` 后向内浏览」）。
+   *
+   * `Enter`（选定）与 `Tab`（补全）分开是设计明写的：候选开着时回车只选入，
+   * 而补全之后多半还想接着打（`src/com` → `src/components/`）。
+   */
+  const tabPath = (): void => {
+    const anchor = view.dock.kind === 'picker' ? view.dock.picker.anchor : undefined
+    const row = picked(view)
+    const found = view.paths?.rows.find((one) => one.path === row?.value)
+    if (anchor === undefined || found === undefined) return
+
+    const text = found.kind === 'directory' ? `${found.display}/` : found.display
+    const from = anchor.start + 1 // `@` 自己留着——查询那一段是它后面这一截
+    // 把 `[from, anchor.end)` 换成补全后的那一段：先按删的算位移，再按插的算
+    const refs = insertText(removeRange(view.refs, from, anchor.end), from, text.length)
+
+    editAt(view.draft.slice(0, from) + text + view.draft.slice(anchor.end), from + text.length, refs)
+    reopenPaths({ start: anchor.start, end: from + text.length }, text)
+    askPaths(text)
+  }
+
+  /**
+   * `Enter`（`@` 那一栏）——**选定即把引用放进正文原处**。
+   *
+   * 替换掉的是**整段查询**（从 `@` 到用户打到的位置）：设计 · 文件与图片
+   * 「选定后收起候选，在查询原处留下文件/目录引用，其余正文不动；不追加独立附件行」。
+   */
+  const pickPath = (): void => {
+    const anchor = view.dock.kind === 'picker' ? view.dock.picker.anchor : undefined
+    const row = picked(view)
+    const found = view.paths?.rows.find((one) => one.path === row?.value)
+    if (anchor === undefined || found === undefined) return
+
+    const kind = found.kind === 'directory' ? 'dir' : 'file'
+
+    commit(
+      withCompletion({
+        ...closePicker(view),
+        ...replaceWith(
+          view.draft,
+          view.refs,
+          { from: anchor.start, to: anchor.end },
+          {
+            kind,
+            marker: markerOf({ kind, name: found.display }),
+            source: found.path,
+            ...(found.external ? { external: true as const } : {}),
+          },
+          view.caret,
+        ),
+      }),
+    )
+  }
+
+  /**
+   * **答复回来了，铺行**——只认「正开着 `@` 那一栏」且 query 对得上的那一次。
+   *
+   * 两条都由 `query` 判：**边打边问，答复可能后到**（问一次看一眼目录，是异步的）——
+   * 用户已经又打了一个字时，先到的那一份就不该再铺上去（否则列表会跳回上一个词的结果）。
+   */
+  const refreshPaths = (): void => {
+    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'paths') return
+
+    const query = view.dock.picker.filter ?? ''
+    const catalog = view.paths
+    if (catalog === null || catalog.query !== query) return
+
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          ...view.dock.picker,
+          rows: pathRows(catalog.rows),
+          // 选中项夹回范围内（新一批可能短了）——不越界、也不跳远
+          selected: Math.min(view.dock.picker.selected, Math.max(0, catalog.rows.length - 1)),
+          hint: pathHint({ filter: query, shown: catalog.rows.length, note: catalog.note }),
+        },
+      },
+    })
+  }
+
+  /** 问一次路径候选——`query` 是 `@` 之后那一段（可以是空串）。 */
+  const askPaths = (query: string): void => {
+    send({ type: 'paths.list', query })
+  }
+
+  /**
+   * **一次提交**（U33 起，U36 改形）——正文 ＋ 它里面的引用 ＋ 配对键，三件一起交给内核。
    *
    * 三条写在一处：
-   * - **正文原样**（`/<名字>` 那一截已剥掉、**内部换行留着**）——其后全部是正文，
-   *   不再当斜杠命令解析（正文里写 `/session`、绝对路径都只是正文）；
-   * - **技能随这一份**（`skills`）：内核按身份取主文，取不到就**这一条不跑**
-   *   （不换同名项、不忽略它继续）；
-   * - **配对键**（`ref`）：`input.settled` 按它认回这份草稿（失败时原样还回来，
-   *   见 `restoreDraft`）。
+   * - **正文原样**（引用那几个字**留在原处**、**内部换行留着**）——前后文字指向哪件事，
+   *   靠的就是这个次序；`/session`、绝对路径写在正文里仍只是正文（不递归解析斜杠）；
+   * - **引用随这一份**（`refs`）：每处带**位置 ＋ 身份**，内核按身份取材料，取不到就
+   *   **这一条不跑**（不换同名项、不忽略它继续）——文件读不了与技能取不到同一条出口；
+   * - **配对键**（`ref`）：`input.settled` 按它认回这份草稿（失败时原样还回来，见 `restoreDraft`）。
    */
-  const sendInput = (text: string, bound: BoundSkill | null): ShellEffect => {
+  const sendInput = (text: string, refs: readonly DraftRef[]): ShellEffect => {
     submits += 1
     const ref = `draft-${submits}`
-    lastSubmit = { ref, text, bound }
+    lastSubmit = { ref, text, refs }
 
-    const cleared: ShellView = { ...view, draft: '', caret: 0, bound: null }
-    // 历史记的是**输入行里那一串**（不是剥过之后的正文）：`↑` 翻回来再按一次回车，
-    // 技能照旧认得到——「我刚才打的那一句」原样回来才是历史该有的样子。
+    const cleared: ShellView = { ...view, draft: '', caret: 0, refs: [] }
+    // 历史记的是**输入行里那一串**（引用那几段也在里面）：`↑` 翻回来接着改、再发一次。
+    // ⚠️ 翻回来的**只有文字**（历史里存的是字符串）——那几处引用的**身份**不在里面，
+    // 那正是设计写的那一条：旧文字里没有位置与身份，就不替它编一份出来。
     const typed = view.draft.trim()
     if (history[history.length - 1] !== typed) history.push(typed)
     historyAt = -1
@@ -800,14 +1061,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       type: 'input.submit',
       text,
       ref,
-      ...(bound === null ? {} : { skills: [bound.ref] }),
+      ...(refs.length === 0 ? {} : { refs: wire(refs) }),
     })
 
     return NONE
   }
 
   /**
-   * **按原 ref 认回原稿**——失败那一条交出去的正文与技能，回到草稿上（原型：草稿不丢）。
+   * **按原 ref 认回原稿**——失败那一条交出去的正文与引用，回到草稿上（原型：草稿不丢）。
    *
    * 三条分寸：
    * - **只认自己交出去的那一份**（`ref` 对不上、或没有等着认领的＝不是这一次，不动）；
@@ -815,7 +1076,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * - **认领一次就清掉**：同一份不会被两条失败各还一遍。
    *
    * 回执（「没送出：…」那一行）由 `reduce` 落——它说的是**这一次交代没出去**，
-   * 本函数只管把草稿那三件还回来（正文 · 插入点 · 技能）。
+   * 本函数只管把草稿那几件还回来（正文 · 插入点 · 引用）。
    */
   const restoreDraft = (ref: string | undefined): void => {
     // 名字避开外面那个 `waiting`（等选择器的意图）——两件不相干的事，别撞名
@@ -823,13 +1084,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (held === null || ref === undefined || held.ref !== ref) return
 
     lastSubmit = null
-    // 插入点摆到末尾（那一份交出去时多半已经打完了）；技能原样挂回去
+    // 插入点摆到末尾（那一份交出去时多半已经打完了）；引用原样回到原位
     commit(
       withCompletion({
         ...view,
         draft: held.text,
         caret: held.text.length,
-        bound: held.bound,
+        refs: held.refs,
       }),
     )
   }
@@ -850,6 +1111,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE
 
+
     switch (input.kind) {
       case 'ctrl+c':
         return exitOrInterrupt()
@@ -863,27 +1125,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           commit(said(view, '先答复——此刻粘不了（这一轮在等你）。草稿在，答完接着打。'))
           return NONE
         }
+        // 抽屉开着时粘贴一律不收：`@` 那一栏的查询与草稿是**同一段文字**（见 `typePath`），
+        // 从旁路插一刀会让锚点与正文对不上；其余抽屉更是接管着输入（打进去的字一律吞掉）。
+        if (view.dock.kind === 'picker') return NONE
         insertAt(input.text)
         return NONE
 
       case 'escape':
-        if (view.dock.kind === 'picker') return (commit(closePicker(view)), NONE)
+        // 选择器开着 ⇒ 收起（**不留痕迹**）；`@` 那一栏另把「还只是查询、没成引用」的那一段
+        // 从草稿里撤回（设计：「取消归还原稿及选区」——那一段本来就不算用户说的话）。
+        if (view.dock.kind === 'picker') {
+          const anchor = view.dock.picker.source === 'paths' ? view.dock.picker.anchor : undefined
+          commit(closePicker(view))
+          if (anchor !== undefined) eraseAt(anchor.start, anchor.end)
+          return NONE
+        }
         if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
         // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
         if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
-        // **绑着技能 ⇒ 先摘技能**（U33）——`esc` 本来就是「一层一层往回退」：收起候选 →
-        // 摘掉材料 → 清掉正文。技能是这条草稿上**最后挂上去的材料**，故排在正文之前。
-        //
-        // 为什么需要这一层：`/skills` 那条路要求草稿**以 `/skills` 开头**（斜杠命令的老姿势），
-        // 而「正文已经打了、这时想摘掉技能」正是要保住正文的那个场景——没有这一层，
-        // 那条需求（工单：「移除技能保留正文」）在终端上根本走不到。
-        // ⚠️ **只摘材料，一个字都不动正文**；再按一次 `esc` 才是清正文。
-        if (view.bound !== null) return (commit(withCompletion({ ...view, bound: null })), NONE)
+        // ⚠️ **U36 撤销了 U33 那一层「先摘技能」**（`esc` 一层层往回退里的那一档）：
+        // 技能现在**长在正文里**，摘它就在那一处按退格——再挂一个全局「摘当前技能」，
+        // 等于同一件事两个入口，而全局那个说不出「摘的是哪一处」。故 `esc` 只剩两层：
+        // 收起候选 → 清正文（清正文自然把引用一起带走，那是同一份草稿）。
         if (view.draft === '') {
           edit({ ...view, expanded: false })
           return NONE
         }
-        editAt('', 0)
+        edit({ ...view, draft: '', caret: 0, refs: [] })
         return NONE
 
       case 'up':
@@ -904,7 +1172,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       case 'tab':
         // `Tab` 补全（原型 · 场景 11）；没有候选时什么也不做（Tab 不当正文）
-        if (view.dock.kind === 'input' && view.completion !== null) commit(applyCompletion(view))
+        if (view.dock.kind === 'picker') {
+          // 路径那一栏里 `Tab` ＝ **把选中的那一条补进查询**（目录则再往里看一层）
+          if (view.dock.picker.source === 'paths') tabPath()
+          return NONE
+        }
+        if (view.completion !== null) pickCompletion()
         return NONE
 
       case 'enter':
@@ -913,44 +1186,66 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       case 'left':
         if (view.dock.kind === 'decision') return refuse('左移')
         if (view.dock.kind === 'picker') return NONE
-        // **草稿一个字都不动**（只挪插入点）⇒ 不走 `edit()`：翻出来的历史还认得上一条
-        commit({ ...view, caret: stepLeft(view.draft, caretAt()) })
+        // **草稿一个字都不动**（只挪插入点）⇒ 不走 `edit()`：翻出来的历史还认得上一条。
+        // 插入点挨着一处引用时**整处跨过去**（引用是一个编辑单位，见 `inline.ts`）。
+        commit({ ...view, caret: stepLeftOver(view.refs, view.draft, caretAt()) })
         return NONE
 
       case 'right':
         if (view.dock.kind === 'decision') return refuse('右移')
         if (view.dock.kind === 'picker') return NONE
-        commit({ ...view, caret: stepRight(view.draft, caretAt()) })
+        commit({ ...view, caret: stepRightOver(view.refs, view.draft, caretAt()) })
         return NONE
 
       case 'backspace':
         if (view.dock.kind === 'decision') return refuse('退格')
-        // 技能抽屉里退格＝**放宽筛选**（打字那一支的对面；按字素删，中文也删得对）
+        // 抽屉里退格＝**放宽筛选**（打字那一支的对面；按字素删，中文也删得对）
         if (view.dock.kind === 'picker') {
-          if (view.dock.picker.source !== 'skills') return NONE
-          const filter = view.dock.picker.filter ?? ''
-          openSkillsPicker(filter.slice(0, leftSpan(filter, filter.length)[0]))
+          const picker = view.dock.picker
+          if (picker.source !== 'skills' && picker.source !== 'paths') return NONE
+
+          const filter = picker.filter ?? ''
+          const short = filter.slice(0, leftSpan(filter, filter.length)[0])
+          // 筛完了再退格 ＝ **把这一处查询整个撤回**（`@` 那一段本来就不是用户说的话）
+          if (short === filter) {
+            const anchor = picker.anchor
+            commit(closePicker(view))
+            if (anchor !== undefined) eraseAt(anchor.start, anchor.end)
+            return NONE
+          }
+
+          if (picker.source === 'skills') openSkillsPicker(short, picker.anchor ?? { start: 0, end: 0 })
+          else backspacePath(short, picker.anchor ?? { start: 0, end: 0 })
           return NONE
         }
-        eraseAt(...leftSpan(view.draft, caretAt()))
+        const erase = backspaceRange(view.refs, view.draft, caretAt())
+        eraseAt(erase.from, erase.to)
         return NONE
 
-      // 前向删除（`delete` 键）——删插入点右边那一个字素（不同键、同一套插入点）
+      // 前向删除（`delete` 键）——删插入点右边那一个单位（引用整个走）
       case 'delete':
         if (view.dock.kind === 'decision') return refuse('删除')
         if (view.dock.kind === 'picker') return NONE
-        eraseAt(...rightSpan(view.draft, caretAt()))
+        const gone = deleteRange(view.refs, view.draft, caretAt())
+        eraseAt(gone.from, gone.to)
         return NONE
 
       case 'char':
         if (view.dock.kind === 'decision') return answer(input.char)
-        // 技能抽屉里打字＝**筛**（U33：`/skills` 的搜索）——其余选择器照旧：接管期间字符吞掉
+        // 抽屉里打字＝**筛**（U33 `/skills` 的搜索 · U36 `@` 的路径）——其余选择器照旧吞掉
         if (view.dock.kind === 'picker') {
-          if (view.dock.picker.source !== 'skills') return NONE
-          openSkillsPicker((view.dock.picker.filter ?? '') + input.char)
+          const picker = view.dock.picker
+          if (picker.source !== 'skills' && picker.source !== 'paths') return NONE
+
+          const filter = (picker.filter ?? '') + input.char
+          if (picker.source === 'skills') openSkillsPicker(filter, picker.anchor ?? { start: 0, end: 0 })
+          else typePath(input.char)
           return NONE
         }
         insertAt(input.char)
+        // `@` 在**词边界**上 ⇒ 开路径候选（邮箱那种紧挨着字的 `@` 不触发；
+        // 前面带反斜杠的转义 `@` 也不触发——它只想打一个 `@`）
+        if (input.char === '@' && opensPath(view.draft, caretAt())) openPathsAt()
         return NONE
 
       // `shift+回车`——**换行**（原型 · 键盘）。接管期间同其余键：不静默吞，说一句。
@@ -1035,21 +1330,21 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
-      // 技能抽屉（U33）：选定＝**绑草稿**（不发送、不加载主文）；「移除当前技能」那一行
-      // 选定＝**摘掉绑定**（正文一个字不动）——两件都不发命令，故没有回执，
-      // 屏上的凭据是草稿那一行（出现 / 消失）。
-      if (view.dock.picker.source === 'skills') {
-        if (row.value === REMOVE_SKILL) {
-          commit(withCompletion({ ...closePicker(view), bound: null }))
-          return NONE
-        }
+      // `@` 那一栏（U36）：选定＝**把引用放进正文原处**（不发送、不读材料——
+      // 材料到提交那一刻才读，见 `pickPath`）。
+      if (view.dock.picker.source === 'paths') {
+        pickPath()
+        return NONE
+      }
 
+      // 技能抽屉（U33/U36）：选定＝**在打开列表前那个位置放一句技能引用**
+      // （不发送、不加载主文）。找不着那一份＝目录在抽屉开着的时候被换掉了，照实收起、
+      // 什么都不放（不拿一个编出来的身份凑数）。
+      if (view.dock.picker.source === 'skills') {
         const chosen = view.skills?.skills.find((one) => one.path === row.value)
-        // 找不到＝目录在这一屏开着的时候被换掉了（理论上不会：抽屉开着不发查询）。
-        // 照实收起抽屉、什么都不绑，不拿一个编出来的身份凑数。
         if (chosen === undefined) return (commit(closePicker(view)), NONE)
 
-        bindSkill(chosen)
+        bindSkill(chosen, view.dock.picker.anchor ?? { start: 0, end: 0 })
         return NONE
       }
 
@@ -1059,49 +1354,81 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
 
-    // 候选开着 ⇒ 回车**先补全**（原型 · 场景 11）；**已经打全了就直接发**
+    // 候选开着 ⇒ 回车**先选定**（原型 · 场景 11）；**已经打全了就直接发**
     // （全名再补一次＝只多一个空格，却要人多按一次回车——参照物不这么做）
     if (view.completion !== null && !isComplete(view)) {
-      commit(applyCompletion(view))
+      pickCompletion()
       return NONE
     }
 
     const text = view.draft.trim()
     if (text === '') return NONE
 
+    // **只有技能引用、一个字都没有** ⇒ 这一条按不下去（见 `submittable`）。
+    // 出声说一句，不静默吞——「按了没反应」是最难查的那种。
+    if (!submittable(view.draft, view.refs)) {
+      commit(said(view, '这一句只有一处技能引用——补上要它做什么，再回车发送。'))
+      return NONE
+    }
+
     if (text.startsWith('/')) {
       const word = text.split(/\s+/)[0] ?? ''
 
-      // **技能直达 ＞ 不认得的命令**（U33）：内置那五条**先让给 slash**（工单：内置命令
+      // **技能直达 ＞ 不认得的命令**（U33）：内置那几条**先让给 slash**（工单：内置命令
       // 保留含义，同名技能仍能从 `/skills` 选），其余 `/名字` 才按技能名解析。
-      // `/名字` 与 `/名字 交代` 都是这一条路：后者把其后那一段当正文（`sendInput` 剥）。
+      //
+      // ⚠️ **U36：名称不再被剥掉**——`/review 检查 @src/login.ts` 原样是提交内容，
+      // 那一处引用**就排在句首**（`marker` ＝ `/review`），随正文一起进模型请求。
       if (!COMMANDS.some((command) => command.name === word)) {
         const hit = resolveSkill(word.slice(1), view.skills?.skills ?? [])
 
         // 同一档里分不出唯一 ⇒ **展开同名候选让用户点**（不静默随目录顺序挑一个）——
-        // 草稿**原样留着**：选定之后由 `bindSkill` 把其后那一段剥成正文。
+        // 草稿**原样留着**，锚点就定在那个词上（选定即把它换成 `/名称` 并绑上身份）。
         if (hit.kind === 'many') {
           skillScope = hit.skills
-          openSkillsPicker(word.slice(1))
+          openSkillsPicker(word.slice(1), { start: 0, end: word.length })
           return NONE
         }
 
         if (hit.kind === 'one') {
-          const body = stripSkillWord(view.draft, hit.skill.name).body
-
-          // **只输入了名称**（`/pdf` 后面没有正文）＝**只绑定草稿**（设计：「选定或仅输入名称
-          // 时只绑定草稿，后面的正文仍可编辑」）——此刻一个模型请求都不发，用户接着补交代。
-          // 空正文**不提交**还有一条由头：一次交代里一个字都没有，内核那边落下的会是一条
-          // 「用户什么都没说、但带了份技能」的条目（`user` 条目 ＋ 载荷），那不是交代。
-          if (body === '') {
-            bindSkill(hit.skill)
+          // **只输入了名称**（`/pdf` 后面没有别的话）＝**只把它放进草稿**
+          // （设计：「选定或仅输入名称时只绑定草稿，后面的正文仍可编辑」）——
+          // 此刻一个模型请求都不发，用户接着补交代。
+          // 一条只有引用、一个字都没有的交代**不提交**：内核那边落下的会是一条
+          // 「用户什么都没说、但带了份材料」的条目，那不是交代。
+          //
+          // ⚠️ 判「还有没有别的话」时，句首这个词**不算话**（它正是要放进草稿的那一处引用）
+          // ——故先把它去掉再问（`bodyOf` 只挖已知的引用区间，此刻它还没绑上）。
+          if (spokenOf(view.draft, view.refs, word).trim() === '') {
+            commit(
+              withCompletion({
+                ...view,
+                ...replaceWith(
+                  view.draft,
+                  view.refs,
+                  { from: 0, to: word.length },
+                  { kind: 'skill', marker: `/${hit.skill.name}`, name: hit.skill.name, source: hit.skill.path },
+                  view.caret,
+                ),
+              }),
+            )
             return NONE
           }
 
-          return sendInput(body, {
-            ref: { name: hit.skill.name, path: hit.skill.path },
-            label: hit.skill.label,
-          })
+          // 名称已在正文里（原位），只补一处身份上去——引用就排在它原来的位置。
+          // 已经绑过的（先前从候选里选过一次）不重复绑。
+          const bound = refStartingAt(view.refs, 0) !== undefined
+            ? view.refs
+            : putRef(view.refs, {
+                kind: 'skill',
+                marker: `/${hit.skill.name}`,
+                name: hit.skill.name,
+                source: hit.skill.path,
+                start: 0,
+                end: word.length,
+              })
+
+          return sendInput(text, bound)
         }
       }
 
@@ -1116,7 +1443,53 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
 
-    return sendInput(text, view.bound)
+    return sendInput(text, view.refs)
+  }
+
+  /**
+   * **候选里选定一条**（`Tab` 与「回车先选定」共用）。
+   *
+   * 两种归宿，按那一行是什么分：
+   * - **内置命令** ⇒ 照旧补全文字（它是整行的操作入口，补完接着打参数）；
+   * - **技能名** ⇒ **在词的原处放一句技能引用**（U36：带身份，不再只是几个字）——
+   *   同名两份分不出唯一时展开抽屉让用户按来源挑（草稿原样留着，锚点定在那个词上）。
+   */
+  const pickCompletion = (): void => {
+    const row = view.completion?.candidates[view.completion.selected]
+    const word = activeWordOf(view.draft, view.caret)
+    if (row === undefined || word === undefined) return
+
+    if (COMMANDS.some((command) => command.name === row.name)) {
+      commit(applyCompletion(view))
+      return
+    }
+
+    const hit = resolveSkill(row.name.slice(1), view.skills?.skills ?? [])
+
+    if (hit.kind === 'many') {
+      skillScope = hit.skills
+      openSkillsPicker(row.name.slice(1), { start: word.start, end: word.end })
+      return
+    }
+
+    if (hit.kind === 'one') {
+      commit(
+        withCompletion({
+          ...view,
+          ...replaceWith(
+            view.draft,
+            view.refs,
+            { from: word.start, to: word.end },
+            { kind: 'skill', marker: `/${hit.skill.name}`, name: hit.skill.name, source: hit.skill.path },
+            view.caret,
+          ),
+        }),
+      )
+      return
+    }
+
+    // 认不出这个名字（目录里没有）——**什么都别放**：那是几个普通字，
+    // 补全成别的名字反而改掉了用户写的话。
   }
 
   /**
@@ -1133,7 +1506,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   ): { readonly next: ShellView; readonly commands: readonly Command[] } => {
     const [word, ...rest] = text.split(/\s+/)
     const arg = rest.join(' ')
-    const cleared: ShellView = { ...from, draft: '', caret: 0 }
+    // 命令把这一行整个吃掉了（交互配置型不带正文）——**引用也跟着走**：
+    // 它们指向的那段文字已经不在草稿里了（留着就是「正文没了、材料还在」的暗带）。
+    const cleared: ShellView = { ...from, draft: '', caret: 0, refs: [] }
     /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
     const only = (next: ShellView, ...commands: Command[]): { next: ShellView; commands: readonly Command[] } => ({
       next,

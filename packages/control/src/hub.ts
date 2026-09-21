@@ -106,6 +106,11 @@ export function createControlHub(): ControlHubFace {
         // （`skills.catalog`，不落库）——命令面只发不收。
         target.onSkillList()
         return
+      case 'paths.list':
+        // 路径候选（读侧 · U36）——**原样转手**给**装配**（执行域的路径面在它手里，
+        // 同 `skills.list`）。本域不认识文件系统，答复走事件（`paths.catalog`，不落库）。
+        target.onPathList(command.query)
+        return
       case 'grants.revoke':
         // 撤销——同一条路（落盘归装配）。**不在这里解释 `workspace` / `index` 的缺省**：
         // 「缺省＝本工作区」「缺省＝整节」是**授权落点**的语义，归装配那一侧（同 `decision.answer`

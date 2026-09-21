@@ -89,6 +89,9 @@ export function commandSubjectOf(command: Command): string {
     case 'skills.list':
       // U33 技能读侧——无参：问的就是「都发现了哪些」
       return '列技能目录'
+    case 'paths.list':
+      // U36 路径候选——`@` 之后打的那一段原样递过来（解析归实现那一侧）
+      return `列路径候选：${command.query}`
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -155,6 +158,7 @@ export function hubFaceRealizesPort(): void {
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
+    onPathList: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -183,6 +187,7 @@ export function routesAreContractShape(): void {
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
+    onPathList: () => undefined,
   }
   void routes
 }
@@ -214,6 +219,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
+    onPathList: () => undefined,
     ...overrides,
   }
 }
@@ -377,6 +383,28 @@ describe('命令进——外壳 → 内核', () => {
       { type: 'session.open', session: 's-beta' },
       { type: 'session.rename', session: 's-beta', title: '换了个名字' },
     ])
+  })
+
+  test('读侧两支（技能目录 / 路径候选）**原样转手**——控制域不认识它们背后的东西', () => {
+    const hub = createControlHub()
+    const { kernel, shell } = createInProcessTransportPair()
+    const seen: string[] = []
+
+    hub.bind(
+      routesWith({
+        onSkillList: () => seen.push('skills'),
+        // ⚠️ **这一条钉的是「路由真接上了」**：`paths.list` 是 U36 新加的一支，
+        // 漏接的话命令到此为止（外壳那边看着就是「`@` 按了没反应」——真 PTY 上就是这么抓到的：
+        // 单元用例走的是间谍传输，压根不经过控制域，接没接上它看不见）。
+        onPathList: (query) => seen.push(`paths:${query}`),
+      }),
+    )
+    hub.attach(kernel)
+
+    shell.send({ type: 'skills.list' })
+    shell.send({ type: 'paths.list', query: 'src/lo' })
+
+    expect(seen).toEqual(['skills', 'paths:src/lo'])
   })
 
   test('裁决答复按**请求事件 id** 配对——与 `call` 字段两 id 不混', () => {

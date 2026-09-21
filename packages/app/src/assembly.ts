@@ -72,7 +72,14 @@ import type {
   SessionInstance,
 } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
-import { createProjectRules, createSandbox, createSkills, createWorkspaceService } from '@magic/execution'
+import {
+  DEFAULT_CANDIDATES,
+  createMaterials,
+  createProjectRules,
+  createSandbox,
+  createSkills,
+  createWorkspaceService,
+} from '@magic/execution'
 import type { FetchLike, ModelRegistry, ModelSwitchResult, WindowTable } from '@magic/model'
 import { createModelRegistry, windowOfSelection } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
@@ -519,6 +526,18 @@ export function assemble(options: AssembleOptions): Assembly {
   })
 
   /**
+   * **材料来源面**（U36 · 正文里的 `@`）——同一条分工的第三次：路径解析、有界读取、
+   * 二进制判定、有界目录清单都在执行域，装配这一步只把**工作区**递过去。
+   *
+   * **只出读的那一半**：它与沙箱共用同一个 `workspace`（边界同源），但**不碰沙箱**——
+   * 工作区外那一个文件走的是「用户明确选定的只读附件」，**沙箱的根一条都不动**
+   * （后续工具的可写范围不因此扩大）。
+   *
+   * 两处用同一个实例：对话域（按引用取材料）与**路径候选**（`paths.list` 的答复）。
+   */
+  const materials = createMaterials({ workspace })
+
+  /**
    * **技能读取入口那一件工具**（U33）——`options.tools` 追加集里的一件。
    *
    * 只造**一次**（与 `skills` 同源），随后每开一条会话链都递同一个（见 `open`）：
@@ -744,6 +763,8 @@ export function assemble(options: AssembleOptions): Assembly {
       rules: projectRules,
       // 技能（U33）——同上，且**与工具域那一个入口共用同一个实例**（见 `skills` 的注）
       skills,
+      // 材料（U36）——正文里的 `@文件` / `@目录` 由它按引用取（同一个实例也供 `paths.list`）
+      materials,
       // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
       context: options.context,
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
@@ -914,6 +935,37 @@ export function assemble(options: AssembleOptions): Assembly {
    * ——两处同形是此刻的实情，不是承诺。照列一排，将来端口那边多出一格（如某个新的诊断位）
    * 时，它不会**悄悄**跟着上线路。
    */
+  /**
+   * **路径候选** —— 读面的**产出路径**（U36 · 正文里的 `@`）。
+   *
+   * 与 `listSkills` 同法（空手打开也照答——那一下开一张空壳；原因与姿势见它那段注），
+   * 两处不同：
+   * - **异步**——它真要看一眼目录（`Materials.candidates`）；答复到达时外壳自己认领
+   *   （`paths.catalog` 带回 `query`）；
+   * - **一次问一次**——`@` 之后每改一个字问一次，这一条就是那一下的现况。
+   *
+   * ⚠️ **只列候选，不读内容、不授权**：选定（回车把引用放进正文）才是用户的动作，
+   * 材料到提交那一刻才读（见契约 `PathList`）。
+   */
+  const listPaths = async (query: string): Promise<void> => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+
+    const found = await materials.candidates(query, DEFAULT_CANDIDATES)
+
+    sink.emit(
+      requireActiveStamper().stamp('paths.catalog', {
+        query,
+        rows: found.rows.map((row) => ({
+          path: row.path,
+          display: row.display,
+          kind: row.kind,
+          external: row.external,
+        })),
+        ...(found.note === undefined ? {} : { note: found.note }),
+      }),
+    )
+  }
+
   const skillCatalogOf = (): EventDataOf['skills.catalog'] => {
     const found = skills.discover()
 
@@ -1071,6 +1123,9 @@ export function assemble(options: AssembleOptions): Assembly {
     // 技能目录（读侧 · U33）——**归装配**（执行域的发现面是它组起来的，同 `model.list`
     // 之于注册表、`grants.list` 之于授权文件）；答复走事件（`skills.catalog`，不落库）
     onSkillList: () => listSkills(),
+    // 路径候选（读侧 · U36）——**归装配**（它握着执行域的路径面，同技能目录那一处）；
+    // 答复走事件（`paths.catalog`，不落库）。**异步**：它要真去看一眼目录。
+    onPathList: (query) => void listPaths(query),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────

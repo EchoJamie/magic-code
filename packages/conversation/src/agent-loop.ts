@@ -52,6 +52,8 @@ import type {
   EventKind,
   EventSink,
   EventStamper,
+  InputRef,
+  InputRefEntry,
   ModelErrorTier,
   ModelGateway,
   ModelResult,
@@ -64,7 +66,6 @@ import type {
   TurnId,
   UserInput,
   UsedSkill,
-  UsedSkillEntry,
 } from '@magic/contracts'
 import type { Compactor } from './compact.ts'
 import { DEFAULT_NEAR_ENTRIES, assembleContext } from './context.ts'
@@ -76,6 +77,7 @@ import {
   appendUserEntry,
   toolOutcomeOf,
 } from './entries.ts'
+import type { RefDelivery } from './refs.ts'
 import type { RulesDelivery } from './rules.ts'
 import { needsReviewText, overflowText } from './rules.ts'
 import type { SkillsDelivery } from './skills.ts'
@@ -136,6 +138,14 @@ export type LoopRuntime = {
    * 「不设全仓 watcher」在这儿的形态）。故按会话实例造一份只是因为它跟着运行时走。
    */
   readonly skills?: SkillsDelivery | undefined
+  /**
+   * **引用送达**（U36）——正文里的 `@文件` / `@目录` / `/技能` 各取各的那一份。
+   *
+   * **不接线＝带引用的一律不跑**（`rejected`）：那种装配压根取不到材料，静默丢掉引用继续
+   * 就是「把用户那句话删掉一半」。它与 `skills` 那一支不重叠——旧形（无位置）走 `skills`，
+   * 新形（带位置）走这里（见 `refs.ts` 的文件头注）。
+   */
+  readonly refs?: RefDelivery | undefined
 }
 
 /**
@@ -153,12 +163,13 @@ export type TurnOutcome = {
  * 返回**这次交代的收场**：`settled`（收束 · 回到等待输入）· `aborted`（被中止）·
  * `error`（出错 / 内核自身异常）· **`rejected`**（这一条**压根没跑**，见下）。
  *
- * ## `rejected`——显式选定的技能取不到时，这一条不跑（U33）
+ * ## `rejected`——选定的材料取不到时，这一条不跑（U33 技能 / U36 文件目录同理）
  *
  * 「不跑」是三层意思，三层都要做到：
  * - **不落 `user` 条目**（没有「用户说了什么」这回事——那句话内核没接住）；
  * - **不发 `message.user`**、**不进模型请求**（正文一个字都不送）；
- * - **不换同名项、不忽略技能继续**（工单明写）。
+ * - **不换同名项、不忽略那一处继续**（工单明写）——文件读不了、是二进制、超了上限，
+ *   与技能主文取不到走**同一条出口**：整条不跑、原稿还回输入区（`input.settled{ok:false}`）。
  *
  * **排队里别的交代照跑**：错的是一条（它选的技能失效了），不是这一队。
  * 把整队清掉＝用户后面那几条**没做错任何事的话**被静默吞了——比多跑一条坏得多。
@@ -171,9 +182,18 @@ export async function agentLoop(
 ): Promise<InputOutcome> {
   const log = entryLogOf(runtime)
 
-  // **按选定的身份取主文**（显式选定那一半）——取不到就停在这一条上（见函数头注）
+  // **按引用取材料**（U36）——正文里的每一处引用各取各的那一份，取不到就停在这一条上
+  // （见函数头注）。旧形（`skills`，无位置）走另一条老路：材料统一前置、照旧落旧键。
+  const refs = input.refs ?? []
   const selected = input.skills ?? []
-  const delivery =
+  const delivery = await loadRefs(runtime, refs)
+  if (!delivery.ok) {
+    // 材料取不到＝这一份输入**没进会话**：配对一次 false（说得出是哪一份、为什么）
+    refuse(runtime, input, delivery.reason)
+    return 'rejected'
+  }
+
+  const legacy =
     selected.length === 0
       ? { ok: true as const, used: [] }
       : runtime.skills === undefined
@@ -182,15 +202,17 @@ export async function agentLoop(
           { ok: false as const, reason: '这次装配没有接技能来源——选定的技能取不了，所以这一条没跑' }
         : runtime.skills.load(selected)
 
-  if (!delivery.ok) {
-    // 材料取不到＝这一份输入**没进会话**：配对一次 false（说得出是谁、为什么）
-    refuse(runtime, input, delivery.reason)
+  if (!legacy.ok) {
+    refuse(runtime, input, legacy.reason)
     return 'rejected'
   }
 
   try {
     // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
-    const entryId = await appendUserEntry(log, input.text, delivery.used)
+    const entryId = await appendUserEntry(log, input.text, {
+      refs: delivery.refs,
+      skills: legacy.used,
+    })
     runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
   } catch (error) {
     // 落账失败＝同样**没进会话**——配对一次 false（不给的话，给了 ref 的那一份草稿
@@ -210,8 +232,15 @@ export async function agentLoop(
   }
 
   // **回执的兑现点**（收下 ＋ 用到的技能）——**按「这一次交代」记一份账，跨轮不重来**
-  // （见 `createAnnouncer`：首轮报过一次就不再报，工具轮再多也只有那一次）
-  const announce = createAnnouncer(runtime, delivery.used)
+  // （见 `createAnnouncer`：首轮报过一次就不再报，工具轮再多也只有那一次）。
+  // 两形合在一处报：正文里的技能引用（U36）与旧形的 `skills`（U33）——**身份那一栏**
+  // （名字 ＋ 来源 ＋ 来源标签）两形都给得出，回执因此不分成两句。
+  const announce = createAnnouncer(runtime, [
+    ...legacy.used,
+    ...delivery.refs
+      .filter((ref): ref is Extract<InputRefEntry, { kind: 'skill' }> => ref.kind === 'skill')
+      .map((ref) => ({ name: ref.name, source: ref.source, label: ref.label })),
+  ])
 
   for (;;) {
     // 轮间中止——不再开新轮（「回到等待输入」）
@@ -301,7 +330,7 @@ export type Announcer = {
   flush(): void
 }
 
-function createAnnouncer(runtime: LoopRuntime, selected: readonly UsedSkillEntry[]): Announcer {
+function createAnnouncer(runtime: LoopRuntime, selected: readonly UsedSkill[]): Announcer {
   /** 已报过的身份——**同一份材料不报第二遍**（同一次交代里取两次也只报一次）。 */
   const announced = new Set<string>()
   /** 刚取到、还没进过任何请求的那些——攒到下一趟请求真回来再报。 */
@@ -336,6 +365,24 @@ function createAnnouncer(runtime: LoopRuntime, selected: readonly UsedSkillEntry
       }
     },
   }
+}
+
+/**
+ * 取齐这一条交代里的引用（U36）——**没接引用送达＝没有引用可取**。
+ *
+ * 三态收在一处：给了引用但这次装配没接送达（`rejected`，与「取不到」同一条出口——
+ * 那正是「丢掉材料继续跑」）· 取不到（`rejected`）· 取齐了。
+ */
+async function loadRefs(
+  runtime: LoopRuntime,
+  refs: readonly InputRef[],
+): Promise<{ readonly ok: true; readonly refs: readonly InputRefEntry[] } | { readonly ok: false; readonly reason: string }> {
+  if (refs.length === 0) return { ok: true, refs: [] }
+  if (runtime.refs === undefined) {
+    return { ok: false, reason: '这次装配没有接材料来源——交代里的引用取不了，所以这一条没跑' }
+  }
+
+  return runtime.refs.load(refs)
 }
 
 /** 一份输入**没进会话**——配对一次 `ok:false`（给了 `ref` 才发；失败不静默）。 */

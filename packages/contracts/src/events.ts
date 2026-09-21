@@ -112,6 +112,8 @@ export type EventKind =
   | 'grants.catalog'
   // 控制 · 技能——**技能目录**（U33）：`skills.list` 的答复；**不落库**
   | 'skills.catalog'
+  // 控制 · 路径——**路径候选**（U36）：`paths.list` 的答复；**不落库**
+  | 'paths.catalog'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -229,6 +231,31 @@ export type SkillProblemRow = {
   /** 一句人读得懂的话——说清**是什么、为什么、怎么办**。 */
   readonly message: string
   readonly kind: 'error' | 'choice'
+}
+
+/**
+ * 路径候选的一行——`paths.catalog` 的载荷（U36 · 正文里的 `@`）。
+ *
+ * **只有「有这么一条吗、它是文件还是目录」**——不读内容、不带大小：正常输入只显示
+ * 足以辨认的路径，大小与读取细节只在影响发送或排错时出现（设计 · 文件与图片）。
+ *
+ * 两格路径分工**不重**：
+ * - `path` ＝**真路径**（选定即身份：`InputRef.source`）——同名不同处的两条靠它分开；
+ * - `display` ＝**写进正文的写法**（相对默认根的写法；不在默认根里或工作区外＝绝对路径）。
+ *   它就是用户在草稿里看到、模型在请求里看到的那一段——多根与外部来源因此也分得开。
+ */
+export type PathCatalogRow = {
+  readonly path: string
+  readonly display: string
+  readonly kind: 'file' | 'directory'
+  /**
+   * **工作区之外**（U36）——这一条不在任何根里。
+   *
+   * 选定它＝用户明确选的那一个**只读附件**（取文件内容读一次，**不扩大工具的可写根**）。
+   * 目录不进候选（外部目录的递归列出不属于「单个外部材料」），故这里只有文件会是 `true`
+   * ——本格照旧由实现判，外壳只标出来。
+   */
+  readonly external: boolean
 }
 
 /**
@@ -559,6 +586,19 @@ export type EventDataOf = {
     /** 一句话说明——只在有事要说时给。不给＝表自明。 */
     readonly note?: string
   }
+  // 控制 · 路径——**路径候选**（U36）。`paths.list` 的答复。
+  // **不落库**：与 `model.catalog` / `skills.catalog` 同一条——它是**读出来的**
+  // （目录本来就在盘上），落库＝把同一张表存 N 遍；且它是**边打边问**的动作
+  // （每改一个字问一次），留痕只会把观测淹掉。当时到底带了哪份材料**另有痕**
+  // （`user` 条目的载荷 `refs`：位置 · 来源 · 实际交付内容），重放读的是那份。
+  'paths.catalog': {
+    /** 问的是哪个写法——外壳据它认领自己的那一份（边打边问，答复可能后到）。 */
+    readonly query: string
+    /** 候选（有界——实现侧封顶；确实还有更多时由 `note` 说一句，不静默截）。 */
+    readonly rows: readonly PathCatalogRow[]
+    /** 一句话说明——只在有事要说时给（超限未列全 / 这个写法读不了）。不给＝自明。 */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -633,8 +673,12 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // （选择器），每按一下留一笔「问过」只会污染观测。当时到底用了哪一份材料**另有痕**
   // （`user` 条目的载荷：名字 · 来源 · 正文），重放读的是那份。
   'skills.catalog',
+  // 路径候选同列的理由（U36 · 正文里的 `@`）：与 `skills.catalog` 同一条——它是**读出来的**
+  // （目录本来就在盘上），且是**边打边问**的动作（每改一个字问一次），留痕只会把观测淹掉。
+  // 当时带了哪份材料**另有痕**：`user` 条目的载荷 `refs`（位置 · 来源 · 实际交付内容）。
+  'paths.catalog',
   // 技能使用回执同列的理由（U33）：它是**读出来的**——依据本来就在条目载荷里
-  // （`UserPayload.skills`：名字 · 来源 · 正文），落库＝把同一件事存第二遍。
+  // （`UserPayload.refs` / 旧形的 `skills`：名字 · 来源 · 正文），落库＝把同一件事存第二遍。
   // 重放要的是「当时用了哪一份材料」（读条目就有），不是「当时屏上闪了一句什么」。
   'skill.used',
   // 提交收场同列的理由（U33）：它是**一次收下 / 没跑的答复**，与 `session.state` 同类

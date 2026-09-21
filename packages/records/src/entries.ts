@@ -57,12 +57,13 @@ export type ToolResultEntry = Entry & {
  * | --- | --- |
  * | `tool-call` | **必须有** `{ name, args }` |
  * | `tool-result` | **必须有** `{ ok, output }` |
- * | `user` | **可有**（自 U33 起：随这次交代送出去的技能材料）；不带＝纯文本交代 |
+ * | `user` | **可有**（U33 起：随这次交代送出去的技能材料；U36 起：带位置的引用）；不带＝纯文本交代 |
  * | 其余 | **必须没有** |
  *
  * **`user` 那一格是「只增不改」的落点**：加它之前落在库里的条目一条都不动
- * （没有载荷的 `user` 条目照读照认），而**没有技能的交代照样不带载荷**——
+ * （没有载荷的 `user` 条目照读照认），而**没有材料的交代照样不带载荷**——
  * 旧写入路径产出的行与新路径产出的**逐字同形**（验收第一条：现有纯文本输入兼容）。
+ * U36 加 `refs` 那一形时同理：**旧形（`skills`）一字未动**，旧记录照读。
  *
  * **为什么不给 `user` 也定成「必须有」**：那会把「这一次交代有没有带技能」这件事，
  * 变成每一行都要写一个空对象——空载荷与无载荷是两回事，落盘上多出一种毫无信息的形态。
@@ -85,8 +86,9 @@ export function assertEntryShape(entry: NewEntry): void {
   if (entry.kind === 'user') {
     if (entry.payload !== undefined && !isUserPayload(entry.payload)) {
       throw new Error(
-        'user 条目的载荷只装这次交代带出去的技能材料（{ skills: [{ name, source, label, text }] }）' +
-          '——别的东西没有位置（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
+        'user 条目的载荷只装这次交代带出去的材料——两形：`{ refs: [{ kind, at, marker, source, ' +
+          'label, text }] }`（U36：带位置的那一份）或 `{ skills: [{ name, source, label, text }] }`' +
+          '（U33 旧形：无位置）。别的东西没有位置（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
       )
     }
     return
@@ -156,21 +158,39 @@ export function isContent(value: unknown): value is Content {
 }
 
 /**
- * `user` 条目的载荷（U33）——**只认这一种形状**：`{ skills: [...] }`。
+ * `user` 条目的载荷（U33 · U36）——**只认那两形**：`{ refs: [...] }` 与 `{ skills: [...] }`。
  *
  * 两条判据，缺一不可：
- * - **`skills` 必须在**且是数组——载荷凭空多出别的键（比如把工具条目的
- *   `{ name, args }` 错位到 `user` 头上）当场拒。这正是「kind 与载荷强对应」
- *   这道硬闸在 `user` 这一格的形态：**放行一种形状，不是放行一切形状**。
- * - **每一项三件齐全**（名字 / 来源 / 正文）——缺了正文那一份材料就复原不出来了，
- *   而它正是这条载荷存在的理由（重放依据）。故写死在这儿，与 `tool-result` 那条同一姿势。
- *   标签（`label`）不查：它只影响「来源怎么念」，缺了照收。
+ * - **只许这两个键**（可以只来一个，也可以两个都在）——载荷凭空多出别的键（比如把工具条目的
+ *   `{ name, args }` 错位到 `user` 头上）当场拒。这正是「kind 与载荷强对应」这道硬闸在
+ *   `user` 这一格的形态：**放行两种形状，不是放行一切形状**。
+ * - **每一项该有的都在**——缺了位置 / 标记 / 身份 / 正文，那份材料就复原不出来（或复原得
+ *   不是地方），而它正是这条载荷存在的理由（重放依据）。故写死在这儿，与 `tool-result`
+ *   那条同一姿势。标签（`label`）不查：它只影响「来源怎么念」，缺了照收。
+ *
+ * ## 两形的分工（为什么不是一种）
+ *
+ * - `refs`（**U36 起**）：带位置（`at` ＋ `marker`）、有序——正文里那一处处引用，
+ *   每一处连同**它的身份与实际交付内容**；
+ * - `skills`（U33 旧形）：**按绑定时序、没有位置**。旧记录照读；旧调用方
+ *   （无人值守脚本的 `{ skills }`）递进来的那一份也照旧落在这儿——**不替它编一个 `at`**。
  */
 export function isUserPayload(payload: unknown): payload is UserPayload {
   if (!isRecord(payload)) return false
-  if (Object.keys(payload).some((key) => key !== 'skills')) return false
+  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs')) return false
 
   const skills = payload['skills']
+  if (skills !== undefined && !isUsedSkills(skills)) return false
+
+  const refs = payload['refs']
+  if (refs !== undefined && !isInputRefs(refs)) return false
+
+  // 空载荷（一个键都没有）不算「带了材料」——它是「没有载荷」写错了地方
+  return skills !== undefined || refs !== undefined
+}
+
+/** 旧形（U33）：技能材料三件齐全（名字 / 来源 / 正文）。 */
+function isUsedSkills(skills: unknown): boolean {
   if (!Array.isArray(skills)) return false
 
   return skills.every((item) => {
@@ -180,6 +200,25 @@ export function isUserPayload(payload: unknown): payload is UserPayload {
       typeof item['source'] === 'string' &&
       typeof item['text'] === 'string'
     )
+  })
+}
+
+/**
+ * 新形（U36）：每一处**位置（`at` 数字 ＋ `marker` 字符串）＋ 身份（`source`）＋ 正文**，
+ * `kind` 三支之一。技能那支另要有 `name`（回执与模型取引用都读它）。
+ */
+function isInputRefs(refs: unknown): boolean {
+  if (!Array.isArray(refs)) return false
+
+  return refs.every((item) => {
+    if (!isRecord(item)) return false
+
+    const kind = item['kind']
+    if (kind !== 'skill' && kind !== 'file' && kind !== 'dir') return false
+    if (typeof item['at'] !== 'number' || typeof item['marker'] !== 'string') return false
+    if (typeof item['source'] !== 'string' || typeof item['text'] !== 'string') return false
+
+    return kind !== 'skill' || typeof item['name'] === 'string'
   })
 }
 

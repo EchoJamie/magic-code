@@ -26,6 +26,7 @@
 
 import type {
   Content,
+  InputRefEntry,
   RecordId,
   RecordsService,
   Timestamp,
@@ -95,25 +96,40 @@ export async function appendTextEntry(
 }
 
 /**
- * **用户交代**条目（U33）——正文是用户的话，载荷是随它一起送出去的材料。
+ * **用户交代**条目（U33 起，U36 加成）——正文是用户的话，载荷是随它一起送出去的材料。
  *
  * 两处各归其位（与工具条目**反着来**，理由见契约 `UsedSkillEntry`）：用户条目的正文
  * 用户自己也要读（屏上那一行就是他说的话），几 KB 的技能正文拼进去，恢复会话时那面墙
  * 就顶在眼前；而载荷不进屏、进上下文。
  *
- * **没有技能时一字不多**（`skills.length === 0` 就不写这个键）：纯文本交代的条目
- * 与加这一条之前逐字同形——旧库照读，旧用例照绿（验收第一条：
- * 「现有纯文本输入兼容」）。
+ * ## 两个键：`refs`（新形）与 `skills`（旧形）
+ *
+ * - `refs`（U36）——**带位置**、有序，正文里那一句原话照着次序展开（见 `InputRefEntry`）；
+ * - `skills`（U33 旧形）——**只有旧调用方**（无人值守脚本的 `{ skills }`）还走它，
+ *   照旧不带位置。两形**不互相转换**：给旧输入编一个 `at: 0` 就是伪造原插入点。
+ *
+ * **一份材料都没有时一字不多**（两个数组都空就不写 `payload` 这个键）：纯文本交代的条目
+ * 与加这一条之前逐字同形——旧库照读，旧用例照绿（验收第一条：「现有纯文本输入兼容」）。
  */
 export async function appendUserEntry(
   log: EntryLog,
   text: string,
-  skills: readonly UsedSkillEntry[],
+  input: { readonly refs?: readonly InputRefEntry[]; readonly skills?: readonly UsedSkillEntry[] },
 ): Promise<RecordId> {
+  const refs = input.refs ?? []
+  const skills = input.skills ?? []
+  const payload =
+    refs.length === 0 && skills.length === 0
+      ? undefined
+      : {
+          ...(refs.length === 0 ? {} : { refs }),
+          ...(skills.length === 0 ? {} : { skills }),
+        }
+
   return log.records.appendEntry({
     kind: 'user',
     content: await contentOf(text, log),
-    ...(skills.length === 0 ? {} : { payload: { skills } }),
+    ...(payload === undefined ? {} : { payload }),
     at: log.now(),
   })
 }

@@ -4,6 +4,9 @@
  * 与既有九条同一条纪律（域间只经契约、域不碰别人的内部）。
  * **加第十一条**：`Skills`（技能来源面，U33）——同一处境（只读文件树）、同一分工
  * （读在边界、选与送在对话侧）。
+ * **加第十二条**：`Materials`（文件 / 目录材料来源面，U36）——同一条分工的第三次；
+ * 多一条**只读边界**：工作区外的那一个只收**单个文件**（用户明确选定的只读附件），
+ * 目录不在此列。
  *
  * 出处：技术方案 · 领域划分（「契约（耦合契约）」· 端口签名 v0 · 依赖规则）。
  * **依赖倒置的落点**——域包只 import `@magic/contracts`（＋许可外部库）；域之间互不 import、
@@ -593,6 +596,136 @@ export interface Skills {
   readReference(name: string, path: string, relative: string): SkillRead
 }
 
+// —— 材料（文件 / 目录引用 · U36）——
+
+/**
+ * **一条要带的材料**（用户用 `@` 明确选定的那一份）——按身份归位。
+ *
+ * - `kind` —— 文件还是目录（目录**只取有界清单**，内容后续按需读）；
+ * - `source` —— **身份**：那条路径的真身（选定那一刻解析出来的绝对路径）；
+ * - `external` —— **工作区之外的那一个**：用户明确选定之后才带这一位。它取的是一份
+ *   **只读附件**——读一次内容，**不扩大任何工具的可写范围**（沙箱的根一条都不动）。
+ *   目录不给这一位：外部目录的递归列出不属于「单个外部材料」。
+ */
+export type MaterialRequest = {
+  readonly kind: 'file' | 'dir'
+  readonly source: string
+  readonly external?: true
+}
+
+/**
+ * **取到的一份材料**——来源身份 ＋ 本次实际交付的内容。
+ *
+ * - `path` —— 真路径（身份；记录侧 `InputRefEntry.source` 用它）；
+ * - `label` —— 人读的来源写法（写进正文的那一段 / 工作区外的绝对写法）：模型面前
+ *   材料的抬头要用它对上「用户说的是哪一份」；
+ * - `text` —— **本次实际交付的内容**（文件的当前内容 / 目录的有界清单）；
+ * - `truncated` —— 文件内容到上限为止（**如实标**，不假装读全了）；
+ * - `omitted` —— 目录清单没列出来的项数（**不静默少列**：模型要知道还有没看见的）。
+ */
+export type Material =
+  | {
+      readonly kind: 'file'
+      readonly path: string
+      readonly label: string
+      readonly text: string
+      readonly truncated?: true
+    }
+  | {
+      readonly kind: 'dir'
+      readonly path: string
+      readonly label: string
+      readonly text: string
+      readonly omitted?: number
+    }
+
+/**
+ * 一次材料读取的结果——**判别式，不抛**（与 `ToolResult` / `SkillRead` 同法）。
+ *
+ * 失败是**正常结果的一种**：文件不见了、是二进制、超了上限、工作区外没被选定——
+ * 这些都要**指着那一份如实说清**（哪一份、为什么、怎么办）。显式选定的材料取不到时，
+ * 这一次交代**不跑**（不发残缺输入——那条判断在对话域，事实在这儿）。
+ */
+export type MaterialRead =
+  | { readonly ok: true; readonly material: Material }
+  | { readonly ok: false; readonly reason: string }
+
+/**
+ * **成套取**的结果——一次交代里的材料是**一并送到**的：一个取不到，整条不跑。
+ *
+ * 为什么不成套不行：用户那句交代里几份材料指向几件事（「按 @需求.md 改 @src/login.ts」），
+ * 少一份就不是他要的那件事了。半套送出去，模型会按一份残缺的现场动手。
+ */
+export type MaterialLoad =
+  | { readonly ok: true; readonly materials: readonly Material[] }
+  | { readonly ok: false; readonly reason: string }
+
+/**
+ * **材料来源面**（执行域实现）——与 `ProjectRules` / `Skills` 同一处境、同一分工：
+ *
+ * - **本端口**只做「**这条路是什么、读到的是什么**」——解析 · 判定 · 有界读取 · 诊断；
+ * - **选哪些、什么时候送**归对话侧（它按用户交代里的引用取）；
+ * - **谁是工作区、允许读哪些**归装配（工作区根与用户配置随构造入参进实现）。
+ *
+ * ## 三条边界（都是代码里唯一的入口，不靠自觉）
+ *
+ * - **只读**——没有写面。能从这儿读到，不等于能对它执行工具；
+ * - **越界即拒**——工作区外的路径**不因输入 `@` 或粘贴而获准**；唯一进口是
+ *   `MaterialRequest.external`（用户明确选定那一个），且只收**单个文件**；
+ * - **二进制不当文本**——按路径引用只收文本材料；二进制给出确定的拒绝与出口
+ *   （让模型用工具去处理），不糊一串乱码进上下文。
+ *
+ * ## 路径候选是同一个面
+ *
+ * `candidates` 只回答「有这么一条吗、它是文件还是目录」——**不读内容**。放在同一端口上
+ * 是因为它与读取走的是**同一棵只读树、同一条解析规则**；两条入口各写一遍解析，迟早分叉。
+ */
+export interface Materials {
+  /**
+   * 按身份取材料——**成套**（见 `MaterialLoad`）。
+   *
+   * ⚠️ **现读**（2026-09-21 用户已定）：不冻结排队期间的文件、不算 hash、不做版本；
+   * 排队期间源文件变了不是缺陷。记录侧留下来的是**这一次实际交付的那一份**
+   * （`InputRefEntry.text`），历史因此不被后来的修改重写。
+   */
+  load(requests: readonly MaterialRequest[]): Promise<MaterialLoad>
+
+  /**
+   * 路径候选——`@` 之后边打边列（`query` ＝ 用户打的那一段，可以是空串）。
+   *
+   * 三条分寸：
+   * - **只列一层**：`query` 落在一个目录上就列它下面那一层，不递归；
+   * - **有界**：超过上限由调用方（装配的答复）说一句「还有更多」，不静默截；
+   * - **工作区外只认打全的那一条**：外部路径**不做目录浏览**（那是「`@` 即获准浏览」），
+   *   但用户**打全的那一条**照实回一行——选定它才是那个明确的动作。
+   */
+  candidates(query: string, limit: number): Promise<PathCandidates>
+}
+
+/**
+ * 一次候选查询的产物——**行 ＋（有则）一句说明**。
+ *
+ * `note` 说的事：列到头了（「还有 N 条——接着打几个字收窄」）· 这一条为什么一条都不给
+ * （工作区外只收单个文件 / 这个写法读不了）。**不静默**：一条都不给与「这里就是空的」
+ * 是两件事，用户得知道是哪一种。
+ */
+export type PathCandidates = {
+  readonly rows: readonly PathCandidate[]
+  readonly note?: string
+}
+
+/**
+ * 一条路径候选——`Materials.candidates` 的产物（事件面照它列一排，见 `PathCatalogRow`）。
+ *
+ * `path` 是真路径（选定即身份）；`display` 是**写进正文的写法**（相对默认根，或绝对）。
+ */
+export type PathCandidate = {
+  readonly path: string
+  readonly display: string
+  readonly kind: 'file' | 'directory'
+  readonly external: boolean
+}
+
 /** 装配 → 控制域（外壳经传输接入）。 */
 export interface ControlHub {
   /** 命令 → 各域。 */
@@ -1009,6 +1142,16 @@ export type CommandRoutes = {
    * 对话域只认得 `Skills` 这个端口（它据以取主文），不持有「有哪些」这个读面。
    */
   onSkillList(): void
+  /**
+   * **路径候选**（`@` 的读侧 · U36）→ **装配**（它握着执行域的路径面）。
+   *
+   * 控制域**原样转手**（同 `onSkillList` 的姿势）——它不认识文件系统，也不知道有哪些路径；
+   * 答复走事件（`paths.catalog`，**不落库**）：命令面只发不收。
+   *
+   * **为什么归装配而不是对话域**：与技能目录同一条——文件系统那面是**执行域的实现**，
+   * 把它组起来（工作区根 / 用户目录 / 用户点名的来源）是装配的活。
+   */
+  onPathList(query: string): void
 }
 
 /**
