@@ -527,6 +527,36 @@ async function narrowLongName(out: string, configured: string): Promise<void> {
   }
 }
 
+/** ⑮ 宽窗（100 列）＋ 60 字符的名字：**名称放得下就不许截它**（截的是简述）。 */
+async function wideLongName(out: string, configured: string): Promise<void> {
+  const long = 'a'.repeat(60)
+  const note = '这份简述写得很长，长到整行装不下——宽窗下该被截断的是它，不是名称'
+  const session = await createUiSession({
+    label: 'u33-宽窗长名',
+    artifacts: join(out, 'runs'),
+    config: { skills: { sources: [configured] } },
+    columns: 100,
+    rows: 30,
+    turns: [{ kind: 'text', text: '（这一轮不该发生）' }],
+  })
+
+  try {
+    putSkill(session.facts().workspace, '.magic', long, note, '照它做。')
+
+    await openDrawer(session, long.slice(0, 8))
+    const shot = await session.capture({ label: '15-宽窗长名' })
+    keep(out, shot, '15-宽窗长名')
+
+    const row = shot.lines.find((line) => line.includes(long.slice(0, 8))) ?? ''
+    check(row.includes(long), '**名称整串都在**（宽窗下放得下就不截）', row)
+    check(row[row.indexOf(long) + long.length] === '　', '名称之后不是省略号')
+    check(row.includes('项目 .magic/skills'), '来源也在')
+    check(!row.includes(note), '**截断落在简述身上**')
+  } finally {
+    await close(session)
+  }
+}
+
 /** ⑫ 选定技能**不搬正文里的插入点**。 */
 async function keepCaret(out: string, configured: string): Promise<void> {
   const session = await createUiSession({
@@ -684,6 +714,7 @@ if (import.meta.main) {
     // 独立验收退回的三处（真 PTY 复现）
     await sameScope(out, configured)
     await narrowLongName(out, configured)
+    await wideLongName(out, configured)
     await keepCaret(out, configured)
     await restored(out, configured)
     console.log(`\n全部判据通过。帧落在 ${out}`)
