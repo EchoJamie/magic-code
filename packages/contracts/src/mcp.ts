@@ -133,16 +133,16 @@ export function parseMcpToolName(name: string): ExternalToolRef | undefined {
 // ══ 配置形制 ═════════════════════════════════════════════════════════
 
 /**
- * 一个 stdio 服务器条目——**用户显式配置**的那一份。
+ * 一个 **stdio** 服务器条目——**用户显式配置**的那一份（U38）。
  *
  * 只从配置建立连接（不扫文件、不猜）：**仓库里出现 `.mcp.json` 一类文件不等于获准运行
- * 启动命令**（设计明文）。U38 只收 stdio 这一种传输；HTTP 那一支归 U39（届时形制在此生长）。
+ * 启动命令**（设计明文）。
  *
  * `env` 里的密钥**只往子进程传**：不进日志、不进事件、不进记录、不进提示词。
  * 未列出的环境变量不外传——适配器走 SDK 的默认环境（PATH / HOME 一类），
  * **用户自己的凭据不因「起了一个 MCP 服务器」而跟着过去**。
  */
-export type McpServerConfig = {
+export type McpStdioConfig = {
   /** 要拉起的可执行文件（`bun` / `npx` / 某个绝对路径）。 */
   readonly command: string
   /** 命令行参数。 */
@@ -152,7 +152,47 @@ export type McpServerConfig = {
 }
 
 /**
- * 配置里的 `mcp` 段——`{ servers: { <条目名>: { command, args?, env? } } }`。
+ * 一个 **Streamable HTTP** 服务器条目——**用户显式配置**的那一份（U39）。
+ *
+ * 与 stdio 同一条边界：**地址写在这儿才算获准连**（用户显式配置；不扫文件、不猜、不探）。
+ * 不给 `authProvider`、也不走 OAuth 登录流程（首版明文不做）——**需要登录的服务明确报
+ * 尚未支持**，不拿任意外部访问补足（设计明文）。要密钥就写进 `headers`。
+ *
+ * `headers` 里的值**是凭据**：与 stdio 的 `env` 同一条纪律——只往请求上带，
+ * 不进日志、不进事件、不进记录、不进提示词（查询那一屏报的是**名字**，不是地址与头）。
+ */
+export type McpHttpConfig = {
+  /** MCP 端点地址（`https://…/mcp` 一类，Streamable HTTP 的那一个端点）。 */
+  readonly url: string
+  /** 请求头（凭据从这儿进：`Authorization: Bearer …` 一类）。 */
+  readonly headers?: Readonly<Record<string, string>>
+}
+
+/**
+ * 一个外部服务器条目——**两种接入共用一张配置表**（U39）。
+ *
+ * **形制由「写了哪一位」分**：有 `url` ＝ Streamable HTTP，有 `command` ＝ stdio；
+ * 两位都给 / 都不给由配置加载器当场报错（不降级、不猜——名字与接入方式都是身份，
+ * 猜错一次就是接到另一台上去）。
+ *
+ * 为什么不做成一个带 `transport` 判别位的形状：既有配置（U38 已合主干）里没有那一位，
+ * 加一个「必须写」的新位会把用户已经写好的配置**判成错的**；而 `url` / `command` 本就在
+ * 那一张表里，各自只可能属于一种接入。
+ */
+export type McpServerConfig = McpStdioConfig | McpHttpConfig
+
+/**
+ * 这一条配置是不是 Streamable HTTP——**配置形制分家的唯一一处**（适配器按它分派）。
+ *
+ * 判据就是「写了 `url` 没有」，故它同时是一把**类型窄化**的尺子：分出哪一支之后，
+ * 各自那几位（`url` / `command`）在类型上也跟着到位。
+ */
+export function isHttpConfig(config: McpServerConfig): config is McpHttpConfig {
+  return 'url' in config
+}
+
+/**
+ * 配置里的 `mcp` 段——`{ servers: { <条目名>: <两种接入之一的条目> } }`。
  *
  * **条目名就是身份**（工具名里带的那一段），故不许含 `__`、不许为空——形制那半归配置加载器
  * 判（报错不降级，照既有两条键的先例）。
@@ -255,11 +295,16 @@ export type McpCallOutcome =
  *
  * 三件事各有归属：`tools()` 是发现的结果（连接可用时才有内容）· `call` 是调用
  * （超时 / 取消 / 断连都收敛成确定的结果，**不抛**）· `close` 是释放
- * （关 stdin → 等 → SIGTERM → SIGKILL，见传输规范 · Shutdown）。
+ * （stdio 是关 stdin → 等 → SIGTERM → SIGKILL；HTTP 是断流 ＋ 终止会话，见传输规范 · Shutdown）。
+ *
+ * 两种接入（stdio · Streamable HTTP）实现的是**同一个端口**：外面那条链（发现 → 审批 →
+ * 调用 → 回填）一字不分叉——换的只是适配器里那一跳。
  */
 export interface McpConnection {
   /** 配置里的条目名（身份）。 */
   readonly server: string
+  /** 哪一种接入——两种连线在同一张表里，这一格说明它是怎么连上的。 */
+  readonly transport: 'stdio' | 'http'
   readonly state: McpConnectionState
   /**
    * 发现到的工具（未连上＝空表）——**这一份就是会被注册的那一份**。
@@ -287,4 +332,14 @@ export interface McpConnection {
   ): Promise<McpCallOutcome>
   /** 释放**本进程创建**的子进程与资源（不碰用户自己的服务）。 */
   close(): Promise<void>
+  /**
+   * 显式重连（`/mcp reconnect <服务器>`）——**放掉旧的、再走一趟起手与发现**。
+   *
+   * 重做的是**连接与发现**，不是任何一次业务调用：断连 / 超时之后那次效果未知的调用
+   * **不在这里重放**（设计明文）。工具表在重连完成前作废（发现没回来就不知道它有什么），
+   * 回来后按新的那一份算。失败落成 `unavailable`（与起手同一条：不抛）。
+   *
+   * 不连上 / 已经断了 / 从没起过的连接都调得：那一趟就是一次起手。
+   */
+  reconnect(): Promise<void>
 }

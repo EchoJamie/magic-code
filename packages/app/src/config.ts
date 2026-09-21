@@ -196,11 +196,30 @@ function asRuleSources(
  */
 const MCP_SERVER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-/** 一个外部服务器条目——`{ command, args?, env? }`（形制见契约 `McpServerConfig`）。 */
+/**
+ * 一个外部服务器条目——**两种接入共用一张表**（形制见契约 `McpServerConfig`）。
+ *
+ * 形制由**写了哪一位**分（`url` ／ `command`）：两位都给、都不给都当场报错——接入方式
+ * 与条目名一样是**身份**，猜错一次就是接到另一台上去（不降级、不替用户挑一种）。
+ *
+ * ⚠️ **形制在这儿判、语义（连得上连不上）在适配置那一趟**：这一层只答「写对了没有」，
+ * 不探测地址、不试连（配置里写着 ≠ 获准连：那条边界的落点在这一层与装配之间）。
+ */
 function asMcpServer(value: unknown, path: string, name: string): McpServerConfig {
   const field = `mcp.servers.${name}`
   const raw = asObject(value, path, field)
 
+  if (raw['url'] !== undefined) return asMcpHttpServer(raw, path, field)
+
+  if (raw['command'] === undefined) {
+    throw new ConfigError(path, `${field} 里两样都没有——给 command（本地命令）或 url（HTTP 地址）`)
+  }
+
+  return asMcpStdioServer(raw, path, field)
+}
+
+/** stdio 那一支——`{ command, args?, env? }`。 */
+function asMcpStdioServer(raw: Record<string, unknown>, path: string, field: string): McpServerConfig {
   const args = raw['args']
   if (args !== undefined && (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string'))) {
     throw new ConfigError(path, `${field}.args 须是字符串数组（命令行参数）`)
@@ -221,6 +240,48 @@ function asMcpServer(value: unknown, path: string, name: string): McpServerConfi
     ...(args === undefined ? {} : { args: args as readonly string[] }),
     ...(env === undefined ? {} : { env: env as Readonly<Record<string, string>> }),
   }
+}
+
+/**
+ * HTTP 那一支——`{ url, headers? }`（Streamable HTTP · U39）。
+ *
+ * `headers` 的值**是凭据**（`Authorization` 一类）：这一层只判它是字符串表，
+ * 不读、不打印、不进任何读数（查询那一屏报的是名字，不是地址与头）。
+ */
+function asMcpHttpServer(raw: Record<string, unknown>, path: string, field: string): McpServerConfig {
+  if (raw['command'] !== undefined) {
+    throw new ConfigError(
+      path,
+      `${field} 里 command 与 url 都写了——一个条目只能是一种接入（url 走 HTTP，command 走本地运行）`,
+    )
+  }
+
+  const url = asText(raw['url'], path, `${field}.url`)
+  if (!URL.canParse(url)) {
+    throw new ConfigError(path, `${field}.url 不是一条能用的地址（须是 http:// 或 https:// 开头的一串）`)
+  }
+
+  const headers = raw['headers']
+  if (headers !== undefined) {
+    const entries = asObject(headers, path, `${field}.headers`)
+    for (const [key, entry] of Object.entries(entries)) {
+      if (typeof entry !== 'string') {
+        throw new ConfigError(path, `${field}.headers.${key} 须是字符串（请求头的值）`)
+      }
+      // HTTP 头里放不下可见 ASCII 之外的字符（Bun 的 fetch 当场拒）。
+      // ⚠️ **报错话里不许回显那个值**——`headers` 里的值是凭据；而运行时那条报错是带的
+      // （实测：`Header 'Authorization' has invalid value: 'Bearer …'` 会原样进读数），
+      // 故在这儿挡住，不去读它。「哨兵不出现在输出 / 事件 / 记录」这条防线有一半在这一行。
+      if (!/^[ -~]*$/.test(entry)) {
+        throw new ConfigError(
+          path,
+          `${field}.headers.${key} 里有 HTTP 头放不下的字符（须是可见 ASCII——中文一类要先编码）`,
+        )
+      }
+    }
+  }
+
+  return { url, ...(headers === undefined ? {} : { headers: headers as Readonly<Record<string, string>> }) }
 }
 
 /**

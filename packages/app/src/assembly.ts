@@ -186,13 +186,15 @@ export type GrantsView = {
 }
 
 /**
- * 一条外部服务器的读数（`Assembly.mcpServers` · U38）——**状态 ＋ 它报的工具名**。
+ * 一条外部服务器的读数（`Assembly.mcpServers` · U38/U39）——**状态 ＋ 它报的工具名**。
  *
  * 工具名是**服务器那边报的**（`echo`），不是注册名（`mcp__<服务器>__echo`）：
  * 这一屏答的是「我配的那台服务器上有什么」，对得上服务器自己的文档。
  */
 export type McpServerView = {
   readonly server: string
+  /** 哪一种接入（`stdio` / `http`）——这一屏有两条来路，读数上分得开。 */
+  readonly transport: 'stdio' | 'http'
   readonly state: McpConnectionState
   readonly tools: readonly string[]
   /**
@@ -1080,6 +1082,68 @@ export function assemble(options: AssembleOptions): Assembly {
     listGrants(done ? `已撤销：${named ?? '那一条'}` : '没撤成：那一条已经不在了')
   }
 
+  /**
+   * **外部服务器的一屏**（U39）——`/mcp` 的读侧答复。
+   *
+   * 走法照 `listGrants`：**空手打开也照答**（信封必带会话，而 `/mcp` 在还没有会话时就会被
+   * 按到——那一下开一张空壳，不列进会话目录）。
+   *
+   * 读的是连接自己的当下值（`state` / `tools()` / `rejected`）——**不另立一本账、不后台轮询**。
+   * 地址与 `headers` 不上这一屏（见契约 `McpCatalogRow`）。
+   */
+  const listMcp = (note?: string): void => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    sink.emit(requireActiveStamper().stamp('mcp.catalog', mcpCatalogOf(note)))
+  }
+
+  /**
+   * 那一屏的读数 —— `Assembly.mcpServers` 与 `/mcp` 的答复**同一处产出**
+   * （查询面一处：`--check` 那一行与那一屏说的是一句话）。
+   *
+   * 工具名取**服务器那边报的**（未加前缀）：注册名由工具域合成，这一屏报的是
+   * 「服务器自己有哪些东西」（对得上服务器自己的文档）。
+   */
+  const mcpServers = (): readonly McpServerView[] =>
+    mcp.connections.map((connection) => ({
+      server: connection.server,
+      transport: connection.transport,
+      state: connection.state,
+      tools: connection.tools().map((tool) => tool.name),
+      rejected: connection.rejected,
+    }))
+
+  /** 那一屏 → 契约载荷（照列一排：端口形态到此为止，事件面只出现读得出来的那几格）。 */
+  const mcpCatalogOf = (note?: string): EventDataOf['mcp.catalog'] => ({
+    servers: mcpServers(),
+    ...(note === undefined ? {} : { note }),
+  })
+
+  /**
+   * **显式重连一台**（U39）——重走一趟起手与发现，**不重放任何业务调用**。
+   *
+   * 认不出的名字不当作错误：名录照给，缘由写在答复的 `note` 上（那一屏照旧说得出全部内容）。
+   */
+  const reconnectMcp = (server: string): void => {
+    // 重连本身是异步的（起手有界），故**先开壳、后重连**：那一份名录由重连落定之后再发
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+
+    void mcp.reconnect(server).then((connection) => {
+      if (connection === undefined) {
+        listMcp(`没有配这一台：「${server}」——配置里 mcp.servers 的条目名才是身份`)
+        return
+      }
+
+      // ⚠️ **回执按最终状态说**，不按「找到了这一台」：重连真的走了一趟，而它落到
+      // 「可用」还是「不可用」是两件事——要认证的对端连完照样不可用，那却说「已重连」
+      // 就是这一屏自己跟自己打架（那一句缘由就在同一屏的明细里）。
+      // 只报**这一趟的结果**，不复述状态：那一台可不可用就在同一屏的读数里
+      // （窄窗下再写一遍「仍不可用」是多占两行、说同一件事）
+      listMcp(
+        connection.state.status === 'available' ? `已重连「${server}」` : `重连没成：「${server}」`,
+      )
+    })
+  }
+
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
   const readRules = (targets: readonly string[] = []): RulesLoad => projectRules.load(targets)
 
@@ -1126,6 +1190,10 @@ export function assemble(options: AssembleOptions): Assembly {
     // 路径候选（读侧 · U36）——**归装配**（它握着执行域的路径面，同技能目录那一处）；
     // 答复走事件（`paths.catalog`，不落库）。**异步**：它要真去看一眼目录。
     onPathList: (query) => void listPaths(query),
+    // 外部服务器（读侧 ＋ 显式重连 · U39）——**归装配**（那一束连接是它编排的，同
+    // `model.list` 之于注册表）；答复走事件（`mcp.catalog`，不落库）
+    onMcpList: () => listMcp(),
+    onMcpReconnect: (server) => reconnectMcp(server),
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────
@@ -1161,13 +1229,7 @@ export function assemble(options: AssembleOptions): Assembly {
         mcp.connections,
       )
     },
-    mcpServers: () =>
-      mcp.connections.map((connection) => ({
-        server: connection.server,
-        state: connection.state,
-        tools: connection.tools().map((tool) => tool.name),
-        rejected: connection.rejected,
-      })),
+    mcpServers,
     // 发现那一跳（见 `Assembly.ready`）：空转（没配服务器）时一步就完
     ready: () => mcp.ready(),
     // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍

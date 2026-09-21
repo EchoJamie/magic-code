@@ -30,7 +30,7 @@ import type {
   UsedSkill,
   UsedSkillEntry,
 } from '@magic/contracts'
-import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
+import { mcpToolLabel, parseMcpToolName, sanitizeForDisplay } from '@magic/contracts'
 // 草稿里那几处引用的形态（外壳侧）——纯编辑规则在 `./components/inline.ts`
 import type { DraftRef } from './components/inline.ts'
 
@@ -243,7 +243,7 @@ export type Picker = {
    * 取材的来路。五处各一门：`/session` 读目录、`/model` 读条目表、`/grants` 读授权名录
    * （U22 · B13）、`/skills` 读技能目录（U33）、**`@` 读路径候选**（U36）——**同位置同开合**。
    */
-  readonly source: 'session' | 'model' | 'grants' | 'skills' | 'paths'
+  readonly source: 'session' | 'model' | 'grants' | 'skills' | 'paths' | 'mcp'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -308,6 +308,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   // U33——**它是内置命令**（不是技能）：故在表上、名字不许被技能顶掉。
   // 选定只说「挂到这条草稿上」，不说「发送」——那是两件事（选定不发送，那里另有提示）。
   { name: '/skills', summary: '技能：浏览 · 搜索 · 选定' },
+  // U39——**纯查询型**（选项＝读一眼，回车不改变任何东西）；`/mcp <名字>` 看那一台的明细。
+  { name: '/mcp', summary: '外部工具服务器：状态 · 工具 · 重连' },
   { name: '/help', summary: '这张表' },
 ]
 
@@ -449,6 +451,13 @@ export const HINT_DECIDE_HEAVY = 'y / n'
 export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
 /** 选择器右位提示。 */
 export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
+/**
+ * **纯读那一屏**的右位提示（`/mcp`）——没有「选定」这回事，故不报「回车 定」。
+ *
+ * 由头：键位提示得**对得上键位**。`/mcp` 的抽屉里回车什么都不做（重连是另一条命令，
+ * 明写 `/mcp reconnect <名字>`），照抄 `HINT_PICKER` 就是教用户按一个没有用的键。
+ */
+export const HINT_PICKER_READ = '↑↓ 选 · esc 收起'
 /** 自动补全右位提示（原型 · 场景 11）。 */
 export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
 
@@ -593,6 +602,14 @@ export type ShellView = {
    */
   readonly paths: PathsCatalog | null
   /**
+   * **外部服务器的一屏**（`mcp.catalog` 的答复 · U39）——`/mcp` 选择器的取材。
+   *
+   * 与 `grants` / `skills` 同一条：**拿到过就有**，没问过是 `null`（「拿不到的不编」——
+   * 「一台都没配」与「还没问过」不是一回事，抽屉等答复才开）。读数随连接变，
+   * 故它只当**一帧的快照**用：每按一次 `/mcp` 现问一次。
+   */
+  readonly mcp: McpCatalog | null
+  /**
    * **模型条目表**（`model.list` 的答复 · 缺陷 D10 第 3 样）——`/model` 选择器的取材，
    * 且是**全量**（含从未调用过的条目）。
    *
@@ -649,6 +666,7 @@ export function createView(): ShellView {
     catalog: [],
     skills: null,
     paths: null,
+    mcp: null,
     models: [],
     windowTable: null,
     grants: null,
@@ -665,6 +683,9 @@ export type SkillsCatalog = EventDataOf['skills.catalog']
 
 /** 路径候选（`paths.catalog` 的载荷 · U36）——`@` 那一栏的取材（只回答「有哪几条」）。 */
 export type PathsCatalog = EventDataOf['paths.catalog']
+
+/** 外部服务器的一屏（`mcp.catalog` 的载荷 · U39）——`/mcp` 选择器的取材。 */
+export type McpCatalog = EventDataOf['mcp.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
@@ -766,6 +787,11 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     // （照 `model.catalog` / `grants.catalog` 的姿势：归约落数据，处置归外壳）
     case 'skills.catalog':
       return { ...view, skills: event.data }
+
+    // 外部服务器一屏（读侧答复 · U39）——**收进视图**（`/mcp` 的选择器据它铺行）；
+    // 开抽屉 / 重连之后刷新是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
+    case 'mcp.catalog':
+      return { ...view, mcp: event.data }
 
     case 'session.state':
       return reduceSessionState(view, event.data)
@@ -1668,6 +1694,109 @@ export function grantsHint(catalog: GrantsCatalog): string {
     .join('\n')
 }
 
+// ══ 外部服务器抽屉（`/mcp` · U39）═══════════════════════════════════
+
+/**
+ * **`/mcp` 的行** —— 一台服务器一行（**与 `/grants` · `/skills` 同位置同开合**）。
+ *
+ * 一件要紧的事：行**保证只占一行**（`oneLine`）——`meta` 里是状态与件数，由渲染层按列宽
+ * 截断；高度账按一行一条数（见 `PickerRow.oneLine`）。**不可用的缘由不放这儿**：
+ * 它可能很长，放 `meta` 就折行、账就少了（那正是矮终端上真光标错位的老账）——放 `hint`。
+ */
+export function mcpRows(catalog: McpCatalog): readonly PickerRow[] {
+  return catalog.servers.map((server) => ({
+    label: server.server,
+    // **状态打头**：窄窗 + 长名字时，行会被截（`oneLine`），先丢的必须是接入方式与件数
+    // ——「这条可用不可用」是这一屏的全部意义，不能被一个长名字挤没（`keep` 再保一道）
+    meta: `${mcpStateLabel(server)} · ${server.transport}` + mcpToolCount(server),
+    current: false,
+    value: server.server,
+    oneLine: true,
+    keep: mcpStateLabel(server),
+  }))
+}
+
+/**
+ * **一台服务器的明细行** —— 工具名各占一行（`/mcp <名字>` 看的那一屏）。
+ *
+ * 只报得出名字：读数里就这几格（契约 `McpCatalogRow`），说明与参数不在这一屏的取材里。
+ */
+export function mcpToolRows(catalog: McpCatalog, who: string): readonly PickerRow[] {
+  const found = catalog.servers.find((server) => server.server === who)
+  if (found === undefined) return []
+
+  return found.tools.map((tool) => ({
+    label: tool,
+    meta: '',
+    current: false,
+    value: tool,
+    oneLine: true,
+  }))
+}
+
+/**
+ * 抽屉下方那行说明——**总览**（不给 `who`）与**一台的明细**（给了 `who`）两用。
+ *
+ * 两条共用的分寸：
+ * - **不可用就说缘由**（「某个服务失联时能看出哪条连接不可用」）：总览里逐台一行，
+ *   明细则并进那一行状态；
+ * - **拒收的那些要说出来**（名字不合规 / 重名）——它们是「服务器报了，我们没用」，
+ *   不说就等于让用户对着一个不生效的工具发呆。名字是服务器自报的原文，
+ *   **上屏前先洗控制字节**（`sanitizeForDisplay`）。
+ */
+export function mcpHint(catalog: McpCatalog, who?: string): string {
+  if (who !== undefined) return mcpServerHint(catalog, who)
+
+  if (catalog.servers.length === 0) {
+    return '还没有配外部工具服务器——配置里写 mcp.servers 才连（工作区里的 .mcp.json 不算授权）'
+  }
+
+  const lines = catalog.servers
+    .filter((server) => server.state.status === 'unavailable')
+    .map((server) => `${server.server}：${server.state.status === 'unavailable' ? server.state.reason : ''}`)
+
+  lines.push('/mcp <名字> 看那一台的工具与错误')
+  return lines.join('\n')
+}
+
+/** 一台的明细那行说明——身份 ＋ 状态/缘由 ＋ 拒收的那些。 */
+function mcpServerHint(catalog: McpCatalog, who: string): string {
+  const found = catalog.servers.find((server) => server.server === who)
+
+  if (found === undefined) {
+    return `没有配这一台：「${sanitizeForDisplay(who)}」——配置里 mcp.servers 的条目名才是身份`
+  }
+
+  const lines = [`${found.server}（${found.transport}）· ${mcpStateLabel(found)}${mcpToolCount(found)}`]
+
+  // **不可用时把那一句缘由摆出来**：`/mcp <服务器>` 正是设计给的「看工具/**错误**」入口
+  // （总览那一屏也报，但点进这一台时不该反而看不到）
+  if (found.state.status === 'unavailable') lines.push(found.state.reason)
+
+  for (const one of found.rejected) {
+    lines.push(`没收下「${sanitizeForDisplay(one.tool)}」——${one.reason}`)
+  }
+
+  return lines.join('\n')
+}
+
+/** 状态那一格——**连接中 / 可用 / 不可用**（不可用时缘由交给 `hint`）。 */
+function mcpStateLabel(server: McpCatalog['servers'][number]): string {
+  switch (server.state.status) {
+    case 'connecting':
+      return '还在连'
+    case 'available':
+      return '可用'
+    default:
+      return '不可用'
+  }
+}
+
+/** 件数那一截——**只有连上了才报**（没连上时报 0 件是假账）。 */
+function mcpToolCount(server: McpCatalog['servers'][number]): string {
+  return server.state.status === 'available' ? ` · ${server.tools.length} 件工具` : ''
+}
+
 /**
  * 放行区的账 · **本会话**（`B10`）——**两个占比**，各自说各自的话（见契约 `grants.catalog`）：
  *
@@ -2007,7 +2136,10 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
     return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
   }
 
-  return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: HINT_PICKER })
+  // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）
+  const keys = picker.source === 'mcp' ? HINT_PICKER_READ : HINT_PICKER
+
+  return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: keys })
 }
 
 /** 上下移动选择。 */

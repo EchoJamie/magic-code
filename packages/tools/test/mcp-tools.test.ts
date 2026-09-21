@@ -17,11 +17,13 @@ import { defineMcpTools } from '../src/mcp-tools.ts'
 function stub(tools: readonly McpToolInfo[]): McpConnection {
   return {
     server: 'fake',
+    transport: 'stdio',
     state: { status: 'available' },
     tools: () => tools,
     rejected: [],
     call: async (): Promise<McpCallOutcome> => ({ kind: 'failed', failure: 'not-sent', reason: '桩' }),
     close: async () => {},
+    reconnect: async () => {},
   }
 }
 

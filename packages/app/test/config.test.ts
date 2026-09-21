@@ -440,11 +440,50 @@ describe('外部工具服务器（U38 · `mcp` 段）', () => {
   test('形制不对**报错不降级**——逐条点名到字段', () => {
     expect(() => loadFrom(validConfig({ mcp: 'nope' }))).toThrow(/mcp 须是对象/)
     expect(() => loadFrom(validConfig({ mcp: { servers: [] } }))).toThrow(/mcp\.servers/)
-    expect(() => loadFrom(validConfig({ mcp: { servers: { a: {} } } }))).toThrow(/mcp\.servers\.a\.command/)
+    // **原锚**：`/mcp\.servers\.a\.command/`（那时只有 stdio 一种接入，缺的那位就是它）；
+    // **为何变**：U39 加了 HTTP，一个条目「两样都没有」是另一种错（不是只缺 command）；
+    // **新锚**：那句错要说清**两样各是什么**。
+    expect(() => loadFrom(validConfig({ mcp: { servers: { a: {} } } }))).toThrow(/两样都没有/)
     expect(() => loadFrom(validConfig({ mcp: { servers: { a: { command: 'x', args: 'oops' } } } })))
       .toThrow(/mcp\.servers\.a\.args/)
     expect(() => loadFrom(validConfig({ mcp: { servers: { a: { command: 'x', env: { K: 1 } } } } })))
       .toThrow(/mcp\.servers\.a\.env\.K/)
+  })
+
+  test('HTTP 条目——地址 ＋ 请求头（两种接入共用一张表 · U39）', () => {
+    const loaded = loadFrom(
+      validConfig({
+        mcp: {
+          servers: {
+            remote: { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer x' } },
+            plain: { url: 'https://example.com/mcp' },
+          },
+        },
+      }),
+    )
+
+    expect(loaded.config.mcp?.servers['remote']).toEqual({
+      url: 'https://example.com/mcp',
+      headers: { Authorization: 'Bearer x' },
+    })
+    // 只给地址的条目：`headers` **不给键**（不是空对象）
+    expect(loaded.config.mcp?.servers['plain']).toEqual({ url: 'https://example.com/mcp' })
+  })
+
+  test('两种接入**不许都给**；地址与请求头的形制照样逐条点名', () => {
+    expect(() =>
+      loadFrom(validConfig({ mcp: { servers: { a: { command: 'x', url: 'https://e/mcp' } } } })),
+    ).toThrow(/只能是一种接入/)
+    expect(() => loadFrom(validConfig({ mcp: { servers: { a: { url: '不是地址' } } } }))).toThrow(
+      /mcp\.servers\.a\.url 不是一条能用的地址/,
+    )
+    expect(() =>
+      loadFrom(validConfig({ mcp: { servers: { a: { url: 'https://e/mcp', headers: { K: 1 } } } } })),
+    ).toThrow(/mcp\.servers\.a\.headers\.K/)
+    // 头里放不下非 ASCII（Bun 的 fetch 当场拒，且报错会**回显那个值**——凭据不许走那条路）
+    expect(() =>
+      loadFrom(validConfig({ mcp: { servers: { a: { url: 'https://e/mcp', headers: { K: '中文' } } } } })),
+    ).toThrow(/可见 ASCII/)
   })
 
   test('条目名不合规矩即拒——它要拼进工具名（`__` 是分隔符，别的符号供应商那边也不收）', () => {

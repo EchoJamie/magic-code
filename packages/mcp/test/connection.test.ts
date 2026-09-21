@@ -16,6 +16,8 @@ import type { McpConnection, McpServerConfig } from '@magic/contracts'
 import { createStdioConnection } from '../src/stdio.ts'
 
 const SERVER = join(import.meta.dir, 'support', 'fake-server.ts')
+/** 手搓的那一台——只用来摆「对端答的内容不合规」这个场面（见该文件头注）。 */
+const RAW_SERVER = join(import.meta.dir, 'support', 'raw-stdio-server.ts')
 
 /** 一块沙地：临时目录（调用流水落在里面）＋ 用完了删干净。 */
 const stages: string[] = []
@@ -409,6 +411,91 @@ describe('复入 close（返工 A 补正 · 复验退回的最后一处）', () 
     expect(isAlive(child)).toBe(false)
     expect(connection.state).toEqual({ status: 'unavailable', reason: '连接已释放' })
     expect(connection.tools()).toEqual([])
+  })
+})
+
+describe('失败路径的哨兵（U39 补验）', () => {
+  test('对端答的内容不合规——读数与缘由**不带对端原文**，只留一句人话', async () => {
+    const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
+    const connection = createStdioConnection({
+      server: 'raw',
+      config: {
+        command: process.execPath,
+        args: [RAW_SERVER],
+        env: { RAW_STDIO_SECRET: sentinel },
+      },
+      connectTimeoutMs: 4_000,
+    })
+
+    await connection.start()
+
+    expect(connection.state.status).toBe('unavailable')
+    const reason = connection.state.status === 'unavailable' ? connection.state.reason : ''
+    expect(reason).not.toContain(sentinel)
+    expect(reason).not.toContain('not-an-array') // 连对端原文的碎片都不许带
+    expect(reason).not.toContain('invalid_type') // 也不许是 SDK 那份校验转储
+    expect(reason).toBe('没连上——服务器答的内容本版不认')
+
+    // 这一句会经「没发出去」进模型——同一句，一个字符都不多
+    const outcome = await connection.call('echo', { text: 'x' })
+    expect(outcome.kind === 'failed' ? outcome.reason : '').toBe('没连上——服务器答的内容本版不认')
+    expect(connection.tools()).toEqual([])
+
+    await connection.close()
+  })
+})
+
+describe('显式重连（U39）', () => {
+  test('重连重走一趟起手与发现——**新进程**、工具表照旧、读数回到可用', async () => {
+    const dir = tempDir()
+    const { connection, log } = await connect({}, { dir })
+
+    await connection.call('echo', { text: '第一趟' })
+    const first = callsOf(log)[0]?.pid as number
+    expect(typeof first).toBe('number')
+
+    await connection.reconnect()
+
+    expect(connection.state.status).toBe('available')
+    expect(connection.tools().map((tool) => tool.name)).toContain('echo')
+
+    await connection.call('echo', { text: '第二趟' })
+    const pids = callsOf(log).map((call) => call.pid)
+    expect(pids).toHaveLength(2)
+    expect(pids[1]).not.toBe(first) // 换了一个进程（真的重走了一趟起手）
+
+    await connection.close()
+  })
+
+  test('服务器崩了之后重连——把这条连接接回来（**不重放**那笔效果未知的调用）', async () => {
+    const dir = tempDir()
+    const { connection, log } = await connect({}, { dir })
+
+    expect(await connection.call('boom', {})).toMatchObject({ kind: 'failed', failure: 'unreachable' })
+    await waitState(connection, 'unavailable')
+
+    await connection.reconnect()
+
+    expect(connection.state.status).toBe('available')
+    // 重连只重做连接与发现：服务器那边数到的还是那一笔 `boom`
+    expect(callsOf(log).map((call) => call.tool)).toEqual(['boom'])
+
+    await connection.close()
+  })
+
+  test('没连上过的那条也能重连（那一趟就是一次起手）', async () => {
+    const connection = createStdioConnection({
+      server: 'missing',
+      config: { command: join(tempDir(), '没有这个可执行文件') },
+      connectTimeoutMs: 3_000,
+    })
+    await connection.start()
+    expect(connection.state.status).toBe('unavailable')
+
+    await connection.reconnect()
+    expect(connection.state.status).toBe('unavailable')
+
+    await connection.close()
   })
 })
 

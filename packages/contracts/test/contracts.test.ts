@@ -447,6 +447,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -460,6 +462,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -529,6 +533,8 @@ export function routesCarryModelSwitch(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   }
   void routes
 }
@@ -627,7 +633,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 四条读面答复（D10 · U33 · U36）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 五条读面答复（D10 · U33 · U36 · U39）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -662,6 +668,10 @@ describe('事件契约', () => {
       // 且它的配对键是**外壳给的**（`UserInput.ref`）：跨进程重开就没人认领了，
       // 落库只会让恢复时读到一堆对不上任何草稿的旧回执。
       'input.settled',
+      // U39：外部服务器一屏同列——**同一条判据的第五处**（状态挂在连接上、工具表是
+      // 发现的结果，都不在库里），且 `/mcp` 也是反复看的动作。重连也不落库：
+      // 它不产生外部效果（重放要的是「发生过什么」）。
+      'mcp.catalog',
     ])
   })
 

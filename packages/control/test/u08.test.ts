@@ -92,6 +92,12 @@ export function commandSubjectOf(command: Command): string {
     case 'paths.list':
       // U36 路径候选——`@` 之后打的那一段原样递过来（解析归实现那一侧）
       return `列路径候选：${command.query}`
+    case 'mcp.list':
+      // U39 外部服务器读侧——无参：问的就是「配了哪些、各是什么状态」
+      return '列外部服务器'
+    case 'mcp.reconnect':
+      // U39 显式重连——真的重走一趟起手与发现（不重放业务调用）
+      return `重连外部服务器：${command.server}`
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -159,6 +165,8 @@ export function hubFaceRealizesPort(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -188,6 +196,8 @@ export function routesAreContractShape(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   }
   void routes
 }
@@ -220,6 +230,8 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
     ...overrides,
   }
 }

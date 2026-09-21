@@ -40,6 +40,8 @@ import {
 const NAME = process.env['FAKE_MCP_NAME'] ?? 'fake-mcp'
 const LOG = process.env['FAKE_MCP_LOG']
 const MODE = process.env['FAKE_MCP_MODE'] ?? 'ok'
+/** 列工具之前先拖这么久（毫秒）——给「重连在途」的竞态用例一个可控窗口。不给＝不拖。 */
+const DELAY_MS = Number(process.env['FAKE_MCP_DELAY_MS'] ?? '0')
 
 /**
  * 工具表——验收要的那几种形态各占一件：
@@ -156,7 +158,8 @@ function content(tool: string, args: Record<string, unknown>): unknown {
 
 const server = new Server({ name: NAME, version: '0.0.1' }, { capabilities: { tools: {} } })
 
-server.setRequestHandler(ListToolsRequestSchema, (request) => {
+server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+  if (DELAY_MS > 0) await Bun.sleep(DELAY_MS)
   const cursor = (request.params as { cursor?: string } | undefined)?.cursor
 
   if (MODE === 'badname') {

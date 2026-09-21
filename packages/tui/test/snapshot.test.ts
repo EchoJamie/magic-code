@@ -968,6 +968,8 @@ describe('slash 候选（D12 · 纯函数级）', () => {
    *
    * ⚠️ **再变一次**（`U33` · 终端入口）：`/skills` 进了命令表——全表由五条变六条，
    * `/s` 那一列多了它（与 `/session`、`/status` 同为前缀命中，按名字序排在中间）。
+   * ⚠️ **三变**（`U39`）：`/mcp` 进了命令表——全表由六条变七条（`/s` 那一列不动：
+   * `s` 不是 `/mcp` 的子序列）。
    * **判据本身一字未改**（前缀在前 · 子序列在后 · 全表列全）。技能名那一批不在这条里
    * ——它们要**给了目录**才列（见下面那条用例）。
    */
@@ -981,7 +983,7 @@ describe('slash 候选（D12 · 纯函数级）', () => {
       '/status',
       '/grants',
     ])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(6) // 全列（真存在的六条）
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(7) // 全列（真存在的七条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 
