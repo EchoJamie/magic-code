@@ -85,6 +85,19 @@ export type WaitCondition =
   | { readonly text: string }
   | { readonly absent: string }
   | { readonly at: { readonly row: number; readonly text: string } }
+  /**
+   * **应用按这个宽度画出了完整一帧**——只看**最后一次改窗之后**新写出的那一段（D27）。
+   *
+   * 为什么不能简单看「屏上/字节里有没有 N 个横线」：改窗之后应用**第一帧往往还是按旧宽度画的**
+   * （Ink 的 `resized` 比 React 早），100 列的分隔线在输出阶段就被折成
+   * `44 横线 / 44 横线 / 12 横线`（70 列下是 `70 / 30`）——只认长度会被它骗过（实测：那一刻
+   * 「屏上的 44 个横线」为真、「字节里正好 44 个横线」也为真，而应用一个字节都还没按新宽度画）。
+   *
+   * 故判据落在**分隔线的整行结构**上：找到正好 `columns` 个横线的那一行，再要求它**下一行
+   * 不是横线行**。按新宽度画出来的帧只有一条分隔线，后面紧跟的是输入行；折出来的那一串
+   * 后面**必然**还跟着横线。两种假阳性（VT 折行、输出阶段折行）都挡得住。
+   */
+  | { readonly writtenFrame: number }
 
 export type WaitOptions = {
   /** 超时（毫秒）——**必须有界**；缺省 8 秒（真模型那条路要等流式收尾）。 */
@@ -361,6 +374,13 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
   const decoder = new TextDecoder()
   let rawTail: string[] = []
   let rawTailBytes = 0
+  /**
+   * **最后一次改窗之后**应用新写出的字节（`written` 判据看它——见 `WaitCondition`）。
+   *
+   * 为什么单记一份而不是从 `rawTail` 里切：`rawTail` 是**有界**的（超了从头上丢），
+   * 按长度切会切错位置。这一份同样有界，只留改窗之后那一段，故不会无限长。
+   */
+  let sinceResize = ''
   let waiter: (() => void) | null = null
 
   /** 新字节到了——唤醒正等着的那个 `wait`（不攒、不合并，只叫一声）。 */
@@ -380,6 +400,8 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       artifacts.raw(text)
       rawTail.push(text)
       rawTailBytes += text.length
+      // 改窗之后那一段单独留一份（`written` 判据）——同样有界，只留尾部
+      sinceResize = (sinceResize + text).slice(-64 * 1024)
       // 尾部留一份给 `rawText()`（诊断用）——**有界**，超了就从头上丢
       while (rawTailBytes > 256 * 1024 && rawTail.length > 1) {
         rawTailBytes -= (rawTail[0] as string).length
@@ -453,6 +475,8 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
 
     resize: async (nextColumns, nextRows) => {
       artifacts.step('resize', { columns: nextColumns, rows: nextRows, bytes: artifacts.bytes() })
+      // 从这里开始记「应用改窗之后写出的字节」——`written` 判据的起点
+      sinceResize = ''
       // 三件同序：PTY 尺寸 → VT 尺寸 → 通知子进程（缺了第三件子进程一个字节都不吐——注 1）
       pty.resize(nextColumns, nextRows)
       vt.resize(nextColumns, nextRows)
@@ -472,7 +496,7 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       for (;;) {
         await vt.settled()
         const screen = vt.screen()
-        if (matches(condition, screen)) {
+        if (matches(condition, screen, sinceResize)) {
           const elapsedMs = (Bun.nanoseconds() - started) / 1e6
           artifacts.step('wait-ok', { step, matched: describeCondition(condition), elapsedMs: Math.round(elapsedMs) })
           return { ok: true, matched: describeCondition(condition), elapsedMs, step }
@@ -805,18 +829,77 @@ async function waitForFrame(
 }
 
 /** 条件命中了吗（**只看可见屏**——`screen()` 交出来的就是可见区）。 */
-function matches(condition: WaitCondition, screen: VtScreen): boolean {
+function matches(condition: WaitCondition, screen: VtScreen, writtenSinceResize: string): boolean {
   if ('text' in condition) return screen.lines.some((line) => line.text.includes(condition.text))
   if ('absent' in condition) return !screen.lines.some((line) => line.text.includes(condition.absent))
+  if ('writtenFrame' in condition) return hasFreshFrame(writtenSinceResize, condition.writtenFrame)
   const target = screen.lines[condition.at.row]
 
   return target !== undefined && target.text.includes(condition.at.text)
+}
+
+/** 一行里最长的一段连续横线。 */
+function longestDashRun(line: string): number {
+  let best = 0
+  let run = 0
+  for (const char of line) {
+    run = char === '─' ? run + 1 : 0
+    if (run > best) best = run
+  }
+
+  return best
+}
+
+/**
+ * 有没有**按 `columns` 列画出来的那一帧**（见 `WaitCondition.writtenFrame` 的注）。
+ *
+ * 判据是**一整块的结构**：找到「正好 `columns` 个横线」的那一行（前后不紧挨横线——100 个横线里
+ * 切得出 44 个），再看它两侧，且**两侧的行都得写完**：
+ *
+ * - **下游：下一行一个横线都不许有**。旧宽重画在输出阶段被 Ink 折成多段时，首段后面必然还跟着
+ *   折行段；余数段只有 1–7 个横线（旧宽比新宽只大一点点的时候），所以这里是**严格零横线**，
+ *   不是「少于几个」——阈值一放，余数段就被当成干净行了。
+ * - **上游：上一行不能是「一整行横线且长度 ≥ 列数」**。折行的**末段**后面是干净行、长得和真帧
+ *   一样，只能靠上游拦：它上一行正是上一折行段（正好 `columns` 个横线）。这里**不能**写成
+ *   「上一行有没有横线」——真帧分隔线上面紧挨的是**记录行的末行**，模型答一张表或一条 markdown
+ *   分隔线时那一行就带横线，那样会把真帧判成不过（套件在合法内容上超时，比假阳性更难查）。
+ * - 「这一行是本段字节的第一行 ⇒ 上游不存在」**算干净**：改窗后的擦除序列不带换行，真帧的分隔线
+ *   可能正是新写出的第一行。
+ * - 「还没看到的下一行」不等于「下一行没有横线」：字节停在半截时继续等，既不判通过也不判拒绝
+ *   （不能改成「下一行必须非空」：审批卡那种帧里分隔线下面就跟着空行）。
+ *
+ * 已知限度：记录行里若出现**整行、且长到列数**的横线（例如模型给的、宽度正好铺满的一条 markdown
+ * 分隔线），它与折行段在字节上无从区分，会被当成上游而拒——这是这一层判据的固有边界，
+ * 写进 `研发/界面验收工具` 的限度里。
+ */
+export function hasFreshFrame(bytes: string, columns: number): boolean {
+  if (!Number.isInteger(columns) || columns <= 0) return false
+  const needle = '─'.repeat(columns)
+
+  for (let from = 0; ; ) {
+    const at = bytes.indexOf(needle, from)
+    if (at === -1) return false
+    if (bytes[at - 1] !== '─' && bytes[at + needle.length] !== '─') {
+      const lineEnd = bytes.indexOf('\n', at)
+      const nextEnd = lineEnd === -1 ? -1 : bytes.indexOf('\n', lineEnd + 1)
+      // 下一行得**写完**、且一个横线都没有
+      if (lineEnd !== -1 && nextEnd !== -1 && !bytes.slice(lineEnd + 1, nextEnd).includes('─')) {
+        const lineStart = bytes.lastIndexOf('\n', at - 1)
+        // 上游：只在确有一整行时才判；「一整行横线且够长」才是折行的上一段
+        if (lineStart === -1) return true
+        const aboveStart = bytes.lastIndexOf('\n', lineStart - 1) + 1
+        if (longestDashRun(bytes.slice(aboveStart, lineStart)) < columns) return true
+      }
+    }
+    from = at + 1
+  }
 }
 
 /** 条件的一句话（错误消息、步骤时间线、帧标签都用它）。 */
 export function describeCondition(condition: WaitCondition): string {
   if ('text' in condition) return `出现「${condition.text}」`
   if ('absent' in condition) return `不再出现「${condition.absent}」`
+  if ('writtenFrame' in condition) return `改窗之后应用按 ${condition.writtenFrame} 列画出完整一帧`
 
   return `第 ${condition.at.row} 行出现「${condition.at.text}」`
 }

@@ -17,7 +17,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { UiWaitTimeout, createUiSession, rawBytesOf } from './ui/driver.ts'
+import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf } from './ui/driver.ts'
 import { createControl } from './ui/control.ts'
 import { createVt } from './ui/vt.ts'
 import { VIEW_LOGIC, writeViewer } from './ui/viewer.ts'
@@ -146,6 +146,96 @@ describe('U40 · 工具自证', () => {
       expect(screen.columns).toBe(72)
       expect(screen.rows).toBe(20)
       expect((await session.capture({ label: '改窗之后' })).lines.join('\n')).toContain('SIZE 72x20')
+    } finally {
+      await session.close()
+    }
+  }, 40_000)
+
+  test('改窗判据：旧宽折行输出必须判**不通过**（44 与 70 两档），真帧才通过（D27）', async () => {
+    const ESC = String.fromCharCode(27)
+    const DASH = '─'
+
+    // —— 反例一：**VT** 折行。100 列的分隔线画在 100 列窗口里，然后改窄——
+    //    屏上「出现 44 个横线」＝旧判据（`text`）当场通过，而应用一个字节都没写。
+    const ruler = createVt({ columns: 100, rows: 30 })
+    ruler.write(`${DASH.repeat(100)}\n`)
+    await ruler.settled()
+    ruler.resize(44, 16)
+    await ruler.settled()
+    expect(ruler.screen().lines.some((line) => line.text.includes(DASH.repeat(44)))).toBe(true)
+    ruler.dispose()
+
+    // —— 反例二：**输出阶段**折行（这一族被实测连打出来四次，故**按网格生成**，不举单例）——
+    //    改窗后应用先按旧宽度画一帧，Ink 把旧 W 列分隔线折成 ⌈W/N⌉ 段写在字节里。
+    //    ⚠️ W 是 N 的**整数倍**时，末段就是一段干净的 N 横线、后面还跟着干净行——与真帧一模一样；
+    //    拦它得看**上游**（首段靠下游、末段靠上游、中间两头顶住）。
+    const OLD_WIDTHS = [80, 100, 120, 132, 160] as const
+    const NEW_WIDTHS = [40, 44, 50, 60, 70] as const
+    const foldedOldFrame = (oldWidth: number, columns: number): string => {
+      const parts: string[] = []
+      for (let at = 0; at < oldWidth; at += columns) {
+        parts.push(`${ESC}[38;5;66m${DASH.repeat(Math.min(columns, oldWidth - at))}${ESC}[39m`)
+      }
+
+      return `${parts.join('\n')}\n › 交代一件事，回车发送\n`
+    }
+    for (const oldWidth of OLD_WIDTHS) {
+      for (const columns of NEW_WIDTHS) {
+        expect(hasFreshFrame(foldedOldFrame(oldWidth, columns), columns)).toBe(false)
+      }
+    }
+    // 整数倍那几格单独点名——四次退回里两次出在这里（半屏分栏：120→60、80→40）
+    expect(hasFreshFrame(foldedOldFrame(120, 60), 60)).toBe(false)
+    expect(hasFreshFrame(foldedOldFrame(80, 40), 40)).toBe(false)
+    expect(hasFreshFrame(foldedOldFrame(120, 40), 40)).toBe(false)
+
+    // —— 反例二·补 A 族：旧宽只比新宽大 **1..7** 列（把窗口拖窄一点点，最常见的操作）——
+    //    折行的**余数段**只有 1–7 个横线 ⇒ 下游一旦用「少于 N 个」的阈值就会被它骗过，
+    //    故下游必须是**严格零横线**。
+    for (const columns of [40, 80, 100, 120]) {
+      for (let over = 1; over <= 7; over += 1) {
+        expect(hasFreshFrame(foldedOldFrame(columns + over, columns), columns)).toBe(false)
+      }
+    }
+
+    // —— 正例（成组，先摆正例好读）：**上一行是记录行**，里面**可以带横线** ——
+    //    真帧分隔线上面紧挨的是记录行的末行；模型答一张表或一条 markdown 分隔线时那一行就带横线，
+    //    上游若写成「上一行有没有横线」就会把真帧判成不过（套件在合法内容上超时）。
+    for (const columns of [40, 44, 100]) {
+      const freshWith = (above: string): string =>
+        `${above}\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+      expect(hasFreshFrame(freshWith('│ ──────────────── │'), columns)).toBe(true) // 模型答的表
+      expect(hasFreshFrame(freshWith(DASH.repeat(14)), columns)).toBe(true) // markdown 分隔线
+      expect(hasFreshFrame(freshWith(DASH.repeat(8)), columns)).toBe(true)
+      expect(hasFreshFrame(freshWith('› 上一件记录'), columns)).toBe(true)
+      expect(hasFreshFrame(freshWith(''), columns)).toBe(true) // 空行
+    }
+
+    // —— 反例三：**字节停在半截**（第二轮实测打出来的洞）——
+    //    分隔线那一行写完了、下一行还没到：「看不到下一行」被当成「下一行没有横线」就会假阳。
+    //    旧宽重画被折成多段时，观测正好停在第一段之后，就是这一形。
+    const rulerLine = `${ESC}[38;5;66m${DASH.repeat(44)}${ESC}[39m`
+    expect(hasFreshFrame(`${rulerLine}\n`, 44)).toBe(false)
+    expect(hasFreshFrame(`${rulerLine}\n${ESC}[38;5`, 44)).toBe(false)
+    expect(hasFreshFrame(rulerLine, 44)).toBe(false)
+
+    // —— 正例（成组）：分隔线按**新宽度**只画一行，两侧都是干净的记录行／输入行 ——
+    for (const columns of NEW_WIDTHS) {
+      const fresh = `› 上一件\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+      expect(hasFreshFrame(fresh, columns)).toBe(true)
+      // 记录行里**偶尔带一个横线**不该把真帧判掉（判的是横线「段」，不是「有没有」）
+      const dashed = `› 用 ─ 分隔的那条记录\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+      expect(hasFreshFrame(dashed, columns)).toBe(true)
+    }
+    // 下一行是**空行**（审批卡那种帧：分隔线下面直接跟空行）也算写完——不能把真帧等成超时
+    expect(hasFreshFrame(`${rulerLine}\n\n › 等你的答复\n`, 44)).toBe(true)
+
+    // —— 正例（真会话）：改窗之后应用确实按新宽度画出了整帧 ——
+    const session = await createUiSession({ label: '自证-改窗判据', columns: 100, rows: 24, turns: HELLO })
+    try {
+      await session.resize(60, 18)
+      await session.wait({ writtenFrame: 60 }, { timeoutMs: 8_000 })
+      expect(rawBytesOf(session.runDir).includes(DASH.repeat(60))).toBe(true)
     } finally {
       await session.close()
     }

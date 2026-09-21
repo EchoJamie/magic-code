@@ -156,10 +156,17 @@ const bootInputResizeExit: Scenario = {
     ui.check(answered.text.includes('› 你好'), '记录区留下了这次交代', '')
     ui.check(answered.text.includes('⏺ 收到，我在。'), '记录区留下了模型的答复', '锚＝助手标记 `⏺`')
 
-    // —— 窄窗 resize：判据是**屏上按新宽度重画了一条分隔线**——
-    // 「我们调用过 resize」不算数，外壳认没认新宽度才算数
+    // —— 窄窗 resize：判据是**应用自己按新宽度画出过一帧**（D27）——
+    //
+    // ⚠️ 屏上「出现 44 个横线」**不是**充分判据（这一条是被实际假阳性打回来的）：
+    // 终端会把旧 100 列的分隔线按新宽度重新折行，44 + 44 + 12 的头一个 44 就满足它——
+    // 实测那一趟 resize、wait 通过、取帧三步的累计字节数完全相同，而应用当时一个字节
+    // 都还没按新宽度画。「VT 尺寸正确」「每行不超宽度」「有新字节」「答复正文出现」同理：
+    // 都是**那一刻**为真、却不代表应用采用了新尺寸。故等的是它**写出去的一整帧**
+    // （见 `driver.ts` 里 `WaitCondition.writtenFrame` 的注）。
     await session.resize(44, 16)
-    await session.wait({ text: '─'.repeat(44) })
+    await session.wait({ writtenFrame: 44 })
+    // ⚠️ 这一条等到的就是**整帧**（一帧一次写出去），故后面取的帧不用再补等待
     const narrow = await session.capture({ label: '窄窗' })
     ui.check(narrow.columns === 44 && narrow.rows === 16, 'VT 认了新尺寸', '44×16')
     ui.check(
@@ -167,7 +174,6 @@ const bootInputResizeExit: Scenario = {
       '窄窗上没有一行超出新宽度',
       `最长一行 ${Math.max(...narrow.lines.map((line) => [...line].length))} 列`,
     )
-
     // —— 清空草稿（退格删光，回到占位语）——
     await session.send('待删')
     await session.wait({ text: '待删' })
@@ -175,6 +181,22 @@ const bootInputResizeExit: Scenario = {
     await session.wait({ text: placeholderOf('idle') })
     const cleared = await session.capture({ label: '清空之后' })
     ui.check(!cleared.text.includes('待删'), '退格把草稿删干净了', '')
+
+    // —— 改窗之后**画面本身**也得对（D27 的另一半）——
+    // ⚠️ 判的是**稳定画面**：「回话之后」那一帧改窗时应用还在流式，下一帧就会把中间态盖掉
+    //    （那是正常的重绘，不是残留）。等它回到空闲（上面那句占位语就是空闲）再数。
+    const dividers = cleared.lines.filter((line) => /^─+$/u.test(line.trim())).length
+    ui.check(dividers === 1, '窄窗稳定后一共只画了一条分隔线', `可见区实际 ${dividers} 条`)
+    ui.check(
+      countExact(cleared.history, '› 你好') === 1,
+      '改窗之后用户消息只有一条（旧帧没留在屏上）',
+      `整份缓冲实际 ${countExact(cleared.history, '› 你好')} 条`,
+    )
+    ui.check(
+      countExact(cleared.history, '⏺ 收到，我在。') === 1,
+      '改窗之后答复只有一条',
+      `整份缓冲实际 ${countExact(cleared.history, '⏺ 收到，我在。')} 条`,
+    )
 
     // —— 退出：空闲时 ctrl+c ＝ 走人 ——
     await session.key('ctrl+c')
@@ -905,7 +927,9 @@ const assistantAcrossCalls: Scenario = {
     const one = await session.capture({ label: '第一帧' })
     ui.check(session.pid === facts.pid, '取帧之后还是同一个进程', `pid ${facts.pid}`)
 
+    // 判据同场景 1：等**应用自己**按新宽度画出过一帧，不是屏上凑巧有个 70 个横线
     await session.resize(70, 18)
+    await session.wait({ writtenFrame: 70 })
     const two = await session.capture({ label: '调窗之后' })
     ui.check(two.columns === 70 && two.rows === 18, '窗口真变了', `${two.columns}×${two.rows}`)
     ui.check(one.step < two.step, '两帧落在不同的步上（时间线读得出来）', `第 ${one.step} → 第 ${two.step} 步`)
@@ -1159,7 +1183,15 @@ function where(options: ScenarioOptions): { artifacts?: string; checkout?: strin
  * 「记录不丢不重」这类判据量的是它：分隔线是活动区的顶边，它上面才是「发生过什么」。
  */
 export function recordOf(capture: Capture): readonly string[] {
-  const at = capture.lines.findIndex((line) => /^─+$/u.test(line.trim()))
+  // ⚠️ 取**最后一条**分隔线：活动帧那条才是记录区的顶边。取第一条的话，改窗残影（旧分隔线
+  //    还留在屏上）会把记录区截在半路（与 `recordHistoryOf` 同一口径）。
+  let at = -1
+  for (let row = capture.lines.length - 1; row >= 0; row -= 1) {
+    if (/^─+$/u.test((capture.lines[row] as string).trim())) {
+      at = row
+      break
+    }
+  }
 
   return at === -1 ? capture.lines : capture.lines.slice(0, at)
 }
@@ -1186,6 +1218,11 @@ function recordHistoryOf(capture: Capture): readonly string[] {
 /** 某一行在缓冲里出现几次（「重影」判据要它）。 */
 function countOf(needle: string, lines: readonly string[]): number {
   return lines.filter((line) => line === needle).length
+}
+
+/** 逐行**整行相等**地数（右侧空白不参战）——「这条记录出现几次」用它，别用子串（会数进别的行）。 */
+function countExact(lines: readonly string[], needle: string): number {
+  return lines.filter((line) => line.trimEnd() === needle).length
 }
 
 function readJson(path: string): unknown {
