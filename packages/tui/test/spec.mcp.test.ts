@@ -101,9 +101,9 @@ describe('`/mcp` · 查询那一屏', () => {
     const picker = app.picker()
     expect(picker?.source).toBe('mcp')
     expect(picker?.rows.map((row) => row.label)).toEqual(['local', 'remote'])
-    expect(picker?.rows[0]?.meta).toBe('stdio · 可用 · 1 件工具')
+    expect(picker?.rows[0]?.meta).toBe('可用 · stdio · 1 件工具')
     // 不可用那台**不报件数**（没连上时报 0 件是假账）
-    expect(picker?.rows[1]?.meta).toBe('http · 不可用')
+    expect(picker?.rows[1]?.meta).toBe('不可用 · http')
     expect(picker?.hint).toContain('remote：连不上了')
     expect(picker?.hint).toContain('/mcp <名字> 看那一台的工具与错误')
   })
@@ -112,7 +112,7 @@ describe('`/mcp` · 查询那一屏', () => {
     const app = live()
     open(app, { servers: [server({ state: { status: 'connecting' } })] })
 
-    expect(app.picker()?.rows[0]?.meta).toBe('http · 还在连')
+    expect(app.picker()?.rows[0]?.meta).toBe('还在连 · http')
   })
 
   test('**回车不改变任何东西**（纯查询——别落到换模型那一支上去）', () => {
@@ -124,6 +124,14 @@ describe('`/mcp` · 查询那一屏', () => {
 
     expect(app.spy.commands).toHaveLength(before)
     expect(app.picker()?.source).toBe('mcp') // 抽屉照旧开着
+  })
+
+  test('右位键位提示**只说这一屏能做的**（纯读：没有「回车 定」）', () => {
+    const app = live()
+    open(app)
+
+    expect(app.view().status.hint).toBe('↑↓ 选 · esc 收起')
+    expect(app.view().status.hint).not.toContain('回车')
   })
 
   test('`esc` 收起，不留痕迹', () => {
@@ -162,6 +170,27 @@ describe('`/mcp <服务器>` · 那一台的明细', () => {
     // **控制字节洗过了**：说明里不许出现真换行（那会让服务端的话伪装成界面的话）
     expect(picker?.hint).not.toContain('\n │ n 批准全部')
     expect(picker?.hint).toContain('·')
+  })
+
+  test('**不可用的那一台要看得到错误**（`/mcp <服务器>` 正是看工具/错误的入口）', () => {
+    const app = live()
+    open(
+      app,
+      {
+        servers: [
+          server({
+            server: 'locked',
+            state: { status: 'unavailable', reason: '服务器要认证（HTTP 401）——本版不支持登录授权' },
+            tools: [],
+          }),
+        ],
+      },
+      '/mcp locked',
+    )
+
+    // 0 行（这一台没工具）时那行说明落成记录区一行——**缘由在里面**
+    expect(app.said()).toContain('locked（http）· 不可用')
+    expect(app.said()).toContain('服务器要认证（HTTP 401）')
   })
 
   test('点了名却没有这一台：不开抽屉，内核那一句缘由落成记录区一行', () => {
@@ -211,6 +240,17 @@ describe('`/mcp reconnect <服务器>` · 显式重连', () => {
     expect(app.said()).toContain('已重连「remote」')
   })
 
+  test('`reconnect-db` 这种**合法服务器名**不当成重连指令（按完整命令词认）', () => {
+    const app = live()
+    open(app, { servers: [server({ server: 'reconnect-db', tools: ['echo'] })] }, '/mcp reconnect-db')
+
+    expect(app.spy.commands).toEqual([
+      { type: 'skills.list' },
+      { type: 'mcp.list' }, // **不是** `mcp.reconnect`
+    ])
+    expect(app.picker()?.rows.map((row) => row.label)).toEqual(['echo']) // 开的是它的明细
+  })
+
   test('没说要重连哪一台：回一句用法，不发命令', () => {
     const app = live()
     app.type('/mcp reconnect')
@@ -238,7 +278,7 @@ describe('屏上（真外壳 ＋ 真帧）', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('local')).toBe(true)
-    expect(frame.has('stdio · 可用 · 1 件工具')).toBe(true)
+    expect(frame.has('可用 · stdio · 1 件工具')).toBe(true)
     expect(frame.has('不可用')).toBe(true)
     // 失联那一台的缘由**说得出是为什么**（不必去猜）
     expect(frame.has('本版不支持登录授权')).toBe(true)

@@ -46,6 +46,15 @@ export const MCP_MAX_TOOL_PAGES = 50
 const RELEASED = '连接已释放'
 
 /**
+ * **守门那句话**（分页 / 超时 / 坏游标）——我们自己抛的。
+ *
+ * 为什么要与别的错分开：起手失败那句缘由会上屏、还会经「没发出去」进模型，而我们这句话
+ * 是安全的（自己写的中文）；SDK 那几类错的消息里可能缀着**对端回来的原文或一整份校验转储**
+ * （实测：`tools/list` 不合规时那一句是十行 JSON），故只有这一类能原样带出去。
+ */
+export class GuardError extends Error {}
+
+/**
  * 一条**自己造、自己收**的传输：官方的 `Transport` 三件 ＋ `shutdown()`。
  *
  * `shutdown()` 交回**没收干净**那一句（`undefined`＝收干净了）——收尾结果如实写进读数。
@@ -101,11 +110,17 @@ export function createConnection(options: ConnectionOptions): Connection {
   let releasing = false
   /** **收尾那一个 promise**（复入 close 共享它——见 `release`）。 */
   let closing: Promise<void> | undefined
+  /** **在途那一趟重连**（并发合一：谁调都拿同一趟，见 `reconnect`）。 */
+  let reconnecting: Promise<void> | undefined
+  /** 有人要关了几次——重连收尾期间又被关过，就不再连回去（见 `reconnectOnce`）。 */
+  let closeCalls = 0
+
   /**
    * 起手的**第几趟**——重连会让它 +1。
    *
-   * 旧趟的一切回落（起手失败 / 传输的 `onclose`）都拿这个数与自己那一趟对：对不上就只收
-   * 自己的摊，**不写读数**（否则一次重连就能被上一趟的迟到回落盖掉）。
+   * 旧趟的一切回落（起手失败 / 落定 / 传输的 `onclose`）都拿这个数与自己那一趟对：
+   * 对不上就只收自己的摊、**不写读数**。三种情形都靠它：一次重连盖掉上一趟的迟到回落、
+   * 收尾之后一次晚到的落定把「可用」写回来、以及重连与在途那一趟撞上。
    */
   let generation = 0
 
@@ -170,6 +185,14 @@ export function createConnection(options: ConnectionOptions): Connection {
       const found = await discover(connecting, connectTimeoutMs)
       const screened = screen(found)
 
+      // **落后了就只收自己的摊、不写读数**：这一趟的等待期间可能有人收过尾
+      // （`release` 会把这个数 +1），或者又起了一趟。少了这一查，收尾之后一次晚到的
+      // 落定会把「可用」写回来（实测复现过）。
+      if (mine !== generation) {
+        await drop(owned)
+        return
+      }
+
       client = connecting
       discovered = screened.tools
       rejected = screened.rejected
@@ -198,9 +221,24 @@ export function createConnection(options: ConnectionOptions): Connection {
    * 显式重连——**放掉旧的、再走一趟起手与发现**（不重放任何一次业务调用）。
    *
    * 工具表在重连期间作废：发现没回来就不知道这条连接上有什么，留一份旧名录是假账。
+   *
+   * **并发合一**：同一刻来两次（连按两下回车那种）只走一趟——各走各的会起两条传输，
+   * 而「当下这一条」只有一个位子，另一条从此没人收（实测：会话建了 3 条只删了 2 条）。
    */
-  async function reconnect(): Promise<void> {
+  function reconnect(): Promise<void> {
+    reconnecting ??= reconnectOnce().finally(() => {
+      reconnecting = undefined
+    })
+    return reconnecting
+  }
+
+  async function reconnectOnce(): Promise<void> {
+    const asked = closeCalls
     await release()
+
+    // 这一趟收尾期间**又有人要关**（比如程序正在退出）：不再连回去
+    if (closeCalls !== asked + 1) return
+
     closing = undefined
     releasing = false
     discovered = []
@@ -218,11 +256,15 @@ export function createConnection(options: ConnectionOptions): Connection {
    * 读数也只在**收尾落定之后**才改：顺序是「先收干净，再说已释放」。
    */
   function release(): Promise<void> {
+    closeCalls += 1
     closing ??= releaseOnce()
     return closing
   }
 
   async function releaseOnce(): Promise<void> {
+    // **在途那一趟当场作废**：它此后既不写读数、也不认自己那条传输是「当下这一条」
+    generation += 1
+
     const owned = transport
     transport = undefined
     client = undefined
@@ -237,6 +279,9 @@ export function createConnection(options: ConnectionOptions): Connection {
 
     // 放了手：工具表与拒收表都清空。缘由保留说得更多的那一份（起手失败 / 服务器自己没了
     // 都比「连接已释放」说得更多），**收尾结果接在后面**：没收干净就说没收干净。
+    // 再清一次：上面那两段 await 期间，一条在途的起手可能把 `client` / 工具表写过
+    // ——它的产物一律作废（放了手就是放了手）
+    client = undefined
     discovered = []
     rejected = []
     const reason = state.status === 'unavailable' ? state.reason : RELEASED
@@ -316,11 +361,11 @@ async function discover(connecting: Client, budgetMs: number): Promise<readonly 
 
   for (let page = 0; ; page += 1) {
     if (page >= MCP_MAX_TOOL_PAGES) {
-      throw new Error(`工具分页超过 ${MCP_MAX_TOOL_PAGES} 页——停止发现（服务器给的游标可疑）`)
+      throw new GuardError(`工具分页超过 ${MCP_MAX_TOOL_PAGES} 页——停止发现（服务器给的游标可疑）`)
     }
 
     const left = deadlineAt - Date.now()
-    if (left <= 0) throw new Error(`列工具超时（整体 ${budgetMs}ms 内只取到 ${found.length} 件）——发现不完整`)
+    if (left <= 0) throw new GuardError(`列工具超时（整体 ${budgetMs}ms 内只取到 ${found.length} 件）——发现不完整`)
 
     const listed = await deadline(
       connecting.listTools(cursor === undefined ? undefined : { cursor }, { timeout: left }),
@@ -334,7 +379,7 @@ async function discover(connecting: Client, budgetMs: number): Promise<readonly 
     // 末页：`nextCursor` 缺席 / 空串 / `null` 三种写法都算到头（规范说它是可选位）
     if (next === undefined || next === null || next === '') return found
     if (visited.has(next)) {
-      throw new Error(`服务器把游标指回了取过的那一页（${next}）——分页不前进，停止发现`)
+      throw new GuardError(`服务器把游标指回了取过的那一页（${next}）——分页不前进，停止发现`)
     }
 
     visited.add(next)
@@ -355,7 +400,7 @@ export async function deadline<T>(promise: Promise<T>, ms: number, reason: strin
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(reason)), ms)
+        timer = setTimeout(() => reject(new GuardError(reason)), ms)
       }),
     ])
   } finally {

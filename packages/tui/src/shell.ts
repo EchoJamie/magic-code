@@ -1281,7 +1281,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // `/mcp <名字>` 看那一台的明细；`/mcp reconnect <名字>` 显式重连（仍走启动授权，
     // 不重放业务调用）——重连之后答复照走 `mcp.catalog`，那一屏当场说清新状态。
     if (word === '/mcp') {
-      if (arg.startsWith('reconnect')) {
+      // ⚠️ 按**完整命令词**认（`reconnect` / `reconnect <名字>`）：服务器名可以长成
+      // `reconnect-db` 那样，`startsWith('reconnect')` 会把 `/mcp reconnect-db` 误当重连指令
+      if (arg === 'reconnect' || arg.startsWith('reconnect ')) {
         const who = arg.slice('reconnect'.length).trim()
         if (who === '') return only(appendReceipt(cleared, '要重连哪一台？`/mcp reconnect <名字>`'))
 

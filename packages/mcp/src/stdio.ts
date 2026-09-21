@@ -16,8 +16,9 @@
  * 4. **起手有界**——连不上 / 不应答的服务器不能把启动拖住（`MCP_CONNECT_TIMEOUT_MS`）。
  */
 
+import { McpError } from '@modelcontextprotocol/sdk/types.js'
 import type { McpConnection, McpStdioConfig } from '@magic/contracts'
-import { createConnection } from './connection.ts'
+import { createConnection, GuardError } from './connection.ts'
 import type { OwnedTransport } from './connection.ts'
 import { createOwnedStdioTransport } from './stdio-transport.ts'
 
@@ -65,7 +66,12 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
  * 拉不起一个进程时，Node 抛的是 `ENOENT: no such file or directory, posix_spawn '…'`
  * ——那是给写代码的人看的。而这一类失败恰恰是 MCP 最常见的配置事故：命令写错、包里没装。
  * 故按 errno 译一句「哪条命令、怎么不对」——用户要改的就是那一条命令。
- * 认不出的错误照原样带出（不编）：那种情形下原委就是唯一的线索。
+ *
+ * 其余按**谁说的**分两类（这一句会上屏，还会经「没发出去」进模型）：
+ * - **服务器答了**（`McpError`＝它的 JSON-RPC 报错）与**我们自己守门的那句**（`GuardError`）
+ *   ——照原样带出（前者与工具结果是同一条信任边界，后者本来就是中文）；
+ * - **其余**（解析 / 校验 / SDK 内部错）：**不带对端原话**——那些消息里可能缀着收到的原文
+ *   或一整份校验转储（实测：`tools/list` 不合规时那是一坨十行 JSON）。
  */
 function startupReason(error: unknown, command: string): string {
   const code = (error as { readonly code?: unknown } | null)?.code
@@ -73,5 +79,9 @@ function startupReason(error: unknown, command: string): string {
   if (code === 'ENOENT') return `找不到可执行文件「${command}」（命令写错了，还是没装？）`
   if (code === 'EACCES') return `没有执行权限「${command}」`
 
-  return error instanceof Error ? error.message : String(error)
+  if (error instanceof McpError || error instanceof GuardError) {
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  return '没连上——服务器答的内容本版不认'
 }

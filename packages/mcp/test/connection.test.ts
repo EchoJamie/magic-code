@@ -16,6 +16,8 @@ import type { McpConnection, McpServerConfig } from '@magic/contracts'
 import { createStdioConnection } from '../src/stdio.ts'
 
 const SERVER = join(import.meta.dir, 'support', 'fake-server.ts')
+/** 手搓的那一台——只用来摆「对端答的内容不合规」这个场面（见该文件头注）。 */
+const RAW_SERVER = join(import.meta.dir, 'support', 'raw-stdio-server.ts')
 
 /** 一块沙地：临时目录（调用流水落在里面）＋ 用完了删干净。 */
 const stages: string[] = []
@@ -409,6 +411,37 @@ describe('复入 close（返工 A 补正 · 复验退回的最后一处）', () 
     expect(isAlive(child)).toBe(false)
     expect(connection.state).toEqual({ status: 'unavailable', reason: '连接已释放' })
     expect(connection.tools()).toEqual([])
+  })
+})
+
+describe('失败路径的哨兵（U39 补验）', () => {
+  test('对端答的内容不合规——读数与缘由**不带对端原文**，只留一句人话', async () => {
+    const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
+    const connection = createStdioConnection({
+      server: 'raw',
+      config: {
+        command: process.execPath,
+        args: [RAW_SERVER],
+        env: { RAW_STDIO_SECRET: sentinel },
+      },
+      connectTimeoutMs: 4_000,
+    })
+
+    await connection.start()
+
+    expect(connection.state.status).toBe('unavailable')
+    const reason = connection.state.status === 'unavailable' ? connection.state.reason : ''
+    expect(reason).not.toContain(sentinel)
+    expect(reason).not.toContain('not-an-array') // 连对端原文的碎片都不许带
+    expect(reason).not.toContain('invalid_type') // 也不许是 SDK 那份校验转储
+    expect(reason).toBe('没连上——服务器答的内容本版不认')
+
+    // 这一句会经「没发出去」进模型——同一句，一个字符都不多
+    const outcome = await connection.call('echo', { text: 'x' })
+    expect(outcome.kind === 'failed' ? outcome.reason : '').toBe('没连上——服务器答的内容本版不认')
+    expect(connection.tools()).toEqual([])
+
+    await connection.close()
   })
 })
 

@@ -37,11 +37,23 @@ afterEach(() => {
 })
 
 /** 一台假 HTTP 服务器（真进程）——端口由系统分，从它那一行自报里读。 */
-async function serve(mode = 'ok'): Promise<{ url: string; log: string }> {
+async function serve(
+  mode = 'ok',
+  body?: string,
+  /** 每一趟请求先拖这么久——给竞态用例摆场面（见夹具那一格）。 */
+  options: { readonly delayMs?: number } = {},
+): Promise<{ url: string; log: string }> {
   const dir = tempDir()
   const log = join(dir, 'server.jsonl')
   const child = Bun.spawn([process.execPath, SERVER], {
-    env: { ...process.env, FAKE_MCP_HTTP_PORT: '0', FAKE_MCP_HTTP_LOG: log, FAKE_MCP_HTTP_MODE: mode },
+    env: {
+      ...process.env,
+      FAKE_MCP_HTTP_PORT: '0',
+      FAKE_MCP_HTTP_LOG: log,
+      FAKE_MCP_HTTP_MODE: mode,
+      ...(body === undefined ? {} : { FAKE_MCP_HTTP_BODY: body }),
+      ...(options.delayMs === undefined ? {} : { FAKE_MCP_HTTP_DELAY_MS: String(options.delayMs) }),
+    },
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'ignore',
@@ -351,6 +363,58 @@ describe('收尾', () => {
     expect(second.state.status).toBe('available')
     expect(await second.call('echo', { text: '还在' })).toMatchObject({ kind: 'result', ok: true })
     await second.close()
+  })
+})
+
+describe('密钥不外泄 · **失败路径也守**（U39 补验）', () => {
+  test('对端把哨兵回显在 500 的正文里——**不许跟着失败缘由出去**', async () => {
+    const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
+    // 合成值：对端在**失败响应体**里回显它（真事故里这就是上游把凭据抄回正文的样子）
+    const { url } = await serve('call500', `diagnostic upstream: ${sentinel}`)
+    const connection = await connect({ url })
+    expect(connection.state.status).toBe('available') // 握手与发现照常
+
+    const outcome = await connection.call('echo', { text: 'x' })
+
+    expect(outcome.kind).toBe('failed')
+    const reason = outcome.kind === 'failed' ? outcome.reason : ''
+    expect(reason).not.toContain(sentinel)
+    expect(reason).not.toContain('diagnostic upstream')
+    // 说人话：这一趟是「对端回了 500」，不是把对端的正文抄一遍
+    expect(reason).toContain('HTTP 500')
+
+    // 读数那一侧同样一个字符都不许带
+    expect(JSON.stringify(connection.state)).not.toContain(sentinel)
+
+    await connection.close()
+  })
+
+  test('**起手**那一趟失败也收敛（500 正文里有哨兵）', async () => {
+    const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
+    const { url } = await serve('upstream500', `diagnostic upstream: ${sentinel}`)
+    const connection = await connect({ url })
+
+    expect(connection.state.status).toBe('unavailable')
+    const reason = connection.state.status === 'unavailable' ? connection.state.reason : ''
+    expect(reason).not.toContain(sentinel)
+    expect(reason).toContain('HTTP 500')
+
+    await connection.close()
+  })
+
+  test('**带凭据的地址**不进缘由（地址里塞了 token 那一幕）', async () => {
+    const sentinel = 'U39_DIAGNOSTIC_FAKE_SECRET'
+    const connection = await connect(
+      // 地址里带 userinfo（凭据的一种写法）——缘由只许报主机
+      { url: `http://u:${sentinel}@127.0.0.1:9/mcp` },
+      { connectTimeoutMs: 3_000 },
+    )
+
+    const said = JSON.stringify(connection.state)
+    expect(said).not.toContain(sentinel)
+    expect(said).toContain('127.0.0.1:9')
+
+    await connection.close()
   })
 })
 

@@ -396,6 +396,36 @@ describe('显式重连（`/mcp reconnect <服务器>`）', () => {
     }
   })
 
+  test('重连到一台**仍不可用**的：回执说「没成」，不说「已重连」（U39 补验）', async () => {
+    const http = await serveHttp('auth') // 要认证的对端：怎么重连都连不上
+    const stage = makeStage({ config: { mcp: { servers: { locked: { url: http.url } } } } })
+
+    try {
+      const assembly = stage.assemble({ turns: [{ text: '好' }] })
+      await assembly.ready()
+
+      const events: KernelEvent[] = []
+      const off = assembly.shell.subscribe((event) => events.push(event))
+      assembly.shell.send({ type: 'mcp.reconnect', server: 'locked' })
+      await until(() => eventsOfKind(events, 'mcp.catalog').length >= 1, '重连的答复')
+      off()
+
+      const catalog = eventsOfKind(events, 'mcp.catalog')[0]
+      // **原锚**：`note` 说的是「找到了这一台」（`已重连「locked」`）——那与同一屏上的
+      // `不可用` 自相矛盾（回报帧 03 就是这么露的）；**为何变**：回执要按**最终状态**给；
+      // **新锚**：连不上就说「没成」，且那一句缘由仍在读数里。
+      expect(catalog?.data.note).toContain('重连没成')
+      expect(catalog?.data.note).not.toContain('已重连')
+      // 也不复述状态：那一台可不可用在同一屏的读数里（窄窗下省两行）
+      expect(catalog?.data.note).not.toContain('不可用')
+      expect(catalog?.data.servers[0]?.state.status).toBe('unavailable')
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
   test('认不出的服务器名：名录照给，缘由写在那一句上（不是错误）', async () => {
     const http = await serveHttp()
     const stage = makeStage({ config: { mcp: { servers: { remote: { url: http.url } } } } })

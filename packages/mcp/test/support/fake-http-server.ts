@@ -22,6 +22,9 @@
  *   - `badversion` —— 认一个**本版不支持的协议版本**（`1999-01-01`）
  *   - `nodelete` —— DELETE 回 405（对端不支持显式终止会话，规范允许）
  *   - `flakyget` —— 那条 GET 流开了就断（验 SDK 会不会自己去续）
+ *   - `upstream500` —— 一律 HTTP 500，正文是 `FAKE_MCP_HTTP_BODY`（缺省一句诊断话）
+ *   - `call500` —— 只有 `tools/call` 那一趟 500（握手与发现照常），正文同上。
+ *     两幕都用来验**失败路径的哨兵**：对端把凭据回显在正文里时，客户端那一路不许带出去
  * - `FAKE_MCP_HTTP_JSON=1` 与 `mode=json` 同义（两处写法都认，便于探针直用）
  */
 
@@ -35,6 +38,12 @@ const LOG = process.env['FAKE_MCP_HTTP_LOG']
 const MODE = process.env['FAKE_MCP_HTTP_MODE'] ?? 'ok'
 const PORT = Number(process.env['FAKE_MCP_HTTP_PORT'] ?? '0')
 const JSON_RESPONSE = MODE === 'json' || process.env['FAKE_MCP_HTTP_JSON'] === '1'
+/**
+ * 每一趟请求之前先拖这么久（毫秒）——**给竞态用例一个可控的窗口**
+ * （握手/发现慢下来，才有「重连在途时再点一次」「重连在途时退出」这些场面可摆）。
+ * 不给＝不拖（既有用例一字不受影响）。
+ */
+const DELAY_MS = Number(process.env['FAKE_MCP_HTTP_DELAY_MS'] ?? '0')
 
 /** 工具表——与 stdio 那个夹具同形（文本 · 结构化 · 非文本 · 自报只读 · 报错 · 拖住 · 自尽）。 */
 const TOOLS = [
@@ -129,6 +138,15 @@ async function handRolled(request: Request): Promise<Response | undefined> {
   // 地址写错那一幕：这个路径上没有端点
   if (MODE === 'notfound') return new Response('not found', { status: 404 })
 
+  // 上游 500 —— **正文可注入**（探的是「失败路径会不会把对端正文原样带出去」）
+  if (MODE === 'upstream500') return upstream500()
+
+  // 只有 `tools/call` 那一趟 500：**握手与发现照常**，故能走到「调用失败」那一步
+  if (MODE === 'call500' && request.method === 'POST') {
+    const body = await request.clone().text()
+    if (body.includes('"method":"tools/call"')) return upstream500()
+  }
+
   // 对端不支持显式终止会话（规范允许回 405）——收尾那一趟不该因此报「没收干净」
   if (MODE === 'nodelete' && request.method === 'DELETE') {
     return new Response('no delete here', { status: 405 })
@@ -170,10 +188,20 @@ async function handRolled(request: Request): Promise<Response | undefined> {
   return undefined
 }
 
+/** 一句可注入的 500 正文（缺省就是一句诊断话）。 */
+function upstream500(): Response {
+  return new Response(process.env['FAKE_MCP_HTTP_BODY'] ?? 'diagnostic upstream: 500', {
+    status: 500,
+    headers: { 'content-type': 'text/plain' },
+  })
+}
+
 /** **有状态**：一台会话一套传输（规范里的 `Mcp-Session-Id` 就是干这个的）。 */
 const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>()
 
 async function mcpFetch(request: Request): Promise<Response> {
+  if (DELAY_MS > 0) await Bun.sleep(DELAY_MS)
+
   const hand = await handRolled(request)
   if (hand !== undefined) return hand
 
@@ -195,9 +223,11 @@ async function mcpFetch(request: Request): Promise<Response> {
       enableJsonResponse: JSON_RESPONSE,
       onsessioninitialized: (id) => {
         sessions.set(id, transport)
+        record({ kind: 'session', op: 'open', id })
       },
       onsessionclosed: (id) => {
         sessions.delete(id)
+        record({ kind: 'session', op: 'close', id })
       },
     })
 
@@ -224,7 +254,13 @@ const server = Bun.serve({
   port: PORT,
   hostname: '127.0.0.1',
   fetch(request) {
-    record({ kind: 'http', method: request.method, path: new URL(request.url).pathname })
+    record({
+      kind: 'http',
+      method: request.method,
+      path: new URL(request.url).pathname,
+      // 会话号: `null` ＝ 这一趟没带（新建会话那一趟就是它）——数「建几条 / 删几条」靠这一格
+      session: request.headers.get('mcp-session-id') ?? null,
+    })
     return mcpFetch(request)
   },
 })

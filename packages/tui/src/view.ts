@@ -409,6 +409,13 @@ export const HINT_DECIDE_HEAVY = 'y / n'
 export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
 /** 选择器右位提示。 */
 export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
+/**
+ * **纯读那一屏**的右位提示（`/mcp`）——没有「选定」这回事，故不报「回车 定」。
+ *
+ * 由头：键位提示得**对得上键位**。`/mcp` 的抽屉里回车什么都不做（重连是另一条命令，
+ * 明写 `/mcp reconnect <名字>`），照抄 `HINT_PICKER` 就是教用户按一个没有用的键。
+ */
+export const HINT_PICKER_READ = '↑↓ 选 · esc 收起'
 /** 自动补全右位提示（原型 · 场景 11）。 */
 export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
 
@@ -1617,10 +1624,13 @@ export function grantsHint(catalog: GrantsCatalog): string {
 export function mcpRows(catalog: McpCatalog): readonly PickerRow[] {
   return catalog.servers.map((server) => ({
     label: server.server,
-    meta: `${server.transport} · ${mcpStateLabel(server)}` + mcpToolCount(server),
+    // **状态打头**：窄窗 + 长名字时，行会被截（`oneLine`），先丢的必须是接入方式与件数
+    // ——「这条可用不可用」是这一屏的全部意义，不能被一个长名字挤没（`keep` 再保一道）
+    meta: `${mcpStateLabel(server)} · ${server.transport}` + mcpToolCount(server),
     current: false,
     value: server.server,
     oneLine: true,
+    keep: mcpStateLabel(server),
   }))
 }
 
@@ -1676,6 +1686,10 @@ function mcpServerHint(catalog: McpCatalog, who: string): string {
   }
 
   const lines = [`${found.server}（${found.transport}）· ${mcpStateLabel(found)}${mcpToolCount(found)}`]
+
+  // **不可用时把那一句缘由摆出来**：`/mcp <服务器>` 正是设计给的「看工具/**错误**」入口
+  // （总览那一屏也报，但点进这一台时不该反而看不到）
+  if (found.state.status === 'unavailable') lines.push(found.state.reason)
 
   for (const one of found.rejected) {
     lines.push(`没收下「${sanitizeForDisplay(one.tool)}」——${one.reason}`)
@@ -2000,7 +2014,10 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
     return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
   }
 
-  return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: HINT_PICKER })
+  // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）
+  const keys = picker.source === 'mcp' ? HINT_PICKER_READ : HINT_PICKER
+
+  return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: keys })
 }
 
 /** 上下移动选择。 */

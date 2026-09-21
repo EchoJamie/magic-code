@@ -111,10 +111,13 @@ function openTransport(config: McpHttpConfig, onLost: (error: unknown) => void):
       try {
         await inner.send(message)
       } catch (error) {
+        // 原委留一份给起手那一步（它按状态码/网络层分类说人话，见 `startupReason`）
+        onLost(error)
         // 这一趟失败**证明了这条路走不通**（对端不在 / 不认会话 / 不认凭据）——
-        // 当场作废这条连接（见文件头注 1）。「这一趟本身失败」由调用方照实报。
-        if (connectionLost(error)) lostThenGone(error)
-        throw error
+        // 当场作废这条连接（见文件头注 1）。判定用**原始错**：那个分类认的是状态码。
+        if (connectionLost(error)) markGone()
+        // 往外走的用收敛过的那句（见 `transportFailure`：对端的响应正文一个字符都不许跟着走）
+        throw transportFailure(error, config.url)
       }
     },
 
@@ -132,7 +135,7 @@ function openTransport(config: McpHttpConfig, onLost: (error: unknown) => void):
   inner.onerror = (error): void => transport.onerror?.(error)
   inner.onclose = (): void => markGone()
 
-  /** 记下原委 ＋ 作废这条连接（两个触发点：请求当场失败 · POST 的响应流断了）。 */
+  /** POST 的响应流断了：记下原委 ＋ 作废这条连接（与 `send()` 抛错同一个处置）。 */
   function lostThenGone(error: unknown): void {
     onLost(error)
     markGone()
@@ -180,7 +183,7 @@ async function terminate(inner: StreamableHTTPClientTransport): Promise<string |
     await deadline(inner.terminateSession(), HTTP_TERMINATE_TIMEOUT_MS, '终止会话超时')
     return undefined
   } catch (error) {
-    return `会话没能正常终止（${reasonOf(error)}）——远端可能还留着这一条`
+    return `会话没能正常终止（${transportFailure(error, '').message}）——远端可能还留着这一条`
   }
 }
 
@@ -286,17 +289,44 @@ function startupReason(error: unknown, url: string): string {
     return `服务器回了 HTTP ${error.code}`
   }
 
-  const text = reasonOf(error)
-  const version = /protocol version is not supported: (.+)$/.exec(text)?.[1]
+  // fetch 那一层抛出来的（连不上 / DNS / TLS）：报**连的谁**，不带原话（原话可能含地址）
+  if (networkFailure(error)) return `连不上 ${hostOf(url)}（这一趟没走通）`
 
+  // 版本号是**对端说的**：只取一个受控记号（别把整句对端文本抄出去）
+  const version = /protocol version is not supported: ([\w.\-]{1,32})/.exec(reasonOf(error))?.[1]
   if (version !== undefined) {
     return `服务器要的协议版本「${version}」本版不支持（按官方 SDK 支持的那几版协商）`
   }
 
-  // fetch 那一层抛出来的（连不上 / DNS / TLS）：报**连的谁**，原话缀在后面
-  if (networkFailure(error)) return `连不上 ${hostOf(url)}（${text}）`
+  // 兜底：**不带对端文本**（响应正文可能带凭据——见 `transportFailure`）
+  return '握手没走通——对端答的内容本版不认，或这条连接中途断了'
+}
 
-  return text
+/**
+ * 传输这一跳的失败 → **收敛过的缘由**。
+ *
+ * 为什么必须收敛：SDK 把失败响应的**正文**原样缀进错误里
+ * （`Error POSTing to endpoint: <响应体>`），而这一句会一路走到工具结果、事件与记录，
+ * 最后进模型请求——对端回什么就带什么。上游把凭据（`Authorization` 一类）抄回正文
+ * 是真事，那就跟着泄出去了（本轮实测复现过）。故这一层只说**这一趟是什么性质**：
+ * 状态码 / 网络层；正文与地址一个字不带。
+ *
+ * ⚠️ **只碰「这一趟没走通」的**：服务器**答了**的那些（JSON-RPC 报错、`isError` 结果、
+ * 工具返回的正文）是它自己说的话，照旧原样交回——那是工具结果那一路，不是这一路。
+ */
+function transportFailure(error: unknown, url: string): Error {
+  if (error instanceof StreamableHTTPError) {
+    if (error.code === 401 || error.code === 403) {
+      return new Error(`服务器要认证（HTTP ${error.code}）——本版不支持登录授权，要把凭据写进配置的 headers`)
+    }
+    if (error.code === 404) return new Error('服务器不认这条连接了（HTTP 404）——会话没了或被终止了')
+    return new Error(`服务器回了 HTTP ${error.code}`)
+  }
+
+  if (networkFailure(error)) return new Error(`连不上${url === '' ? '' : ` ${hostOf(url)}`}（这一趟没走通）`)
+
+  // 认不出来的：**只说它是哪一类**，不带它自己那句话（那句话里可能就是对端的正文）
+  return new Error(`HTTP 传输这一跳没走通（${error instanceof Error ? error.name : typeof error}）`)
 }
 
 /** fetch 自己抛的那些——`TypeError` 一类，不是服务端答的（本进程与对端之间没走通）。 */

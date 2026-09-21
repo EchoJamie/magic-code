@@ -57,9 +57,10 @@ export type McpServers = {
   /**
    * 显式重连一台（`/mcp reconnect <服务器>`）——**放掉旧的、重走一趟起手与发现**。
    *
-   * 认不出的名字不当作错误：`false` ＝ 没有这一台（缘由由调用方说）。
+   * 交回**那一条连接**（`undefined` ＝ 没有这一台）——调用方读它的 `state` 给回执：
+   * 「找到了这一台」不等于「连上了」（要认证的对端照样落成不可用）。
    */
-  reconnect(server: string): Promise<boolean>
+  reconnect(server: string): Promise<McpConnection | undefined>
   /** 释放**本进程创建**的每个子进程与资源（幂等；不碰用户自己的服务）。 */
   shutdown(): Promise<void>
 }
@@ -105,10 +106,10 @@ export function createMcpServers(options: McpServersOptions): McpServers {
     },
     reconnect: async (server) => {
       const found = connections.find((connection) => connection.server === server)
-      if (found === undefined) return false
+      if (found === undefined) return undefined
 
       await found.reconnect()
-      return true
+      return found
     },
     shutdown: async () => {
       await Promise.all(connections.map((connection) => connection.close()))

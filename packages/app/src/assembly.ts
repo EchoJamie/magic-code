@@ -1075,13 +1075,21 @@ export function assemble(options: AssembleOptions): Assembly {
     // 重连本身是异步的（起手有界），故**先开壳、后重连**：那一份名录由重连落定之后再发
     if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
 
-    void mcp.reconnect(server).then((found) =>
+    void mcp.reconnect(server).then((connection) => {
+      if (connection === undefined) {
+        listMcp(`没有配这一台：「${server}」——配置里 mcp.servers 的条目名才是身份`)
+        return
+      }
+
+      // ⚠️ **回执按最终状态说**，不按「找到了这一台」：重连真的走了一趟，而它落到
+      // 「可用」还是「不可用」是两件事——要认证的对端连完照样不可用，那却说「已重连」
+      // 就是这一屏自己跟自己打架（那一句缘由就在同一屏的明细里）。
+      // 只报**这一趟的结果**，不复述状态：那一台可不可用就在同一屏的读数里
+      // （窄窗下再写一遍「仍不可用」是多占两行、说同一件事）
       listMcp(
-        found
-          ? `已重连「${server}」`
-          : `没有配这一台：「${server}」——配置里 mcp.servers 的条目名才是身份`,
-      ),
-    )
+        connection.state.status === 'available' ? `已重连「${server}」` : `重连没成：「${server}」`,
+      )
+    })
   }
 
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
