@@ -15,6 +15,7 @@
     "records": "bun run scripts/inspect-records.ts"
   },
   "dependencies": {
+    "@magic/mcp": "workspace:*",
     "@magic/actions": "workspace:*",
     "@magic/contracts": "workspace:*",
     "@magic/control": "workspace:*",

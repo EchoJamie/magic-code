@@ -15,7 +15,7 @@
  */
 
 import type { KernelEvent, SkillCatalog } from '@magic/contracts'
-import { TOOLSET_V1 } from '@magic/contracts'
+import { TOOLSET_V1, sanitizeForDisplay } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import { assemble } from './assembly.ts'
@@ -214,6 +214,8 @@ function report(assembly: Assembly): void {
   console.log(`  技能　　　${describeSkills(assembly)}`)
   // 授权（U22）——`a` 点出来的那一类：**落在哪个文件、有几条、有没有陈旧的节**
   console.log(`  授权　　　${describeGrants(assembly)}`)
+  // 外部工具（U38）——**配了哪几台、连上没有、各有几件工具**（这一行是 `/mcp` 之前的眼睛）
+  console.log(`  外部工具　${describeMcpServers(assembly)}`)
   console.log('  外壳　　　@magic/tui（U09 已到站）——无参启动即起它；本自检由 --check 触发')
 }
 
@@ -394,6 +396,41 @@ function describeGrants(assembly: Assembly): string {
 }
 
 /**
+ * 外部工具那一行（U38）——**配了哪几台 · 连上没有 · 各有几件工具**。
+ *
+ * 三件都要报，因为它们是三件事：**没配**（`mcp.servers` 空——不是错，是常态）与
+ * **配了却连不上**（用户盼着它的工具出现，结果一件都没有）完全是两种处境，
+ * 报成一样的话，后一种人就只能对着空气发呆。
+ *
+ * 连不上时**报缘由**（不省略成「不可用」）：缘由就是用户要改的那一处（命令写错、
+ * 包没装、没权限），`--check` 这一屏正是对着改的地方（同规约那一条的先例）。
+ */
+function describeMcpServers(assembly: Assembly): string {
+  const servers = assembly.mcpServers()
+  if (servers.length === 0) return '无（配置里写 mcp.servers 才连——工作区里的配置文件不算授权）'
+
+  return servers
+    .map(({ server, state, tools, rejected }) => {
+      if (state.status === 'unavailable') return `${server}（连不上：${state.reason}）`
+      if (state.status === 'connecting') return `${server}（连接中）`
+
+      const head =
+        tools.length === 0
+          ? `${server}（连上了，没有工具）`
+          : `${server}（${tools.length} 件：${tools.join(' · ')}）`
+      if (rejected.length === 0) return head
+
+      // **拒收的那几件逐条摆出来**（返工 B）：服务器自报的名字原样可能带控制字节，
+      // 故显示前先洗一遍；一条一行，说清是哪一件、为什么没收
+      const lines = rejected.map(
+        (one) => `${CONTINUATION}⚠️ 拒收「${sanitizeForDisplay(one.tool)}」：${one.reason}`,
+      )
+      return [`${head} · ⚠️ 拒收 ${rejected.length} 件`, ...lines].join('\n')
+    })
+    .join(' · ')
+}
+
+/**
  * **起外壳那一下的入参**——装配 → `runTui` 的全部接线就这一处。
  *
  * **导出是给用例锚的**（照 `scriptOptions` 的先例，缺陷 D16 那笔账）：状态行 ④ 的分母
@@ -511,6 +548,16 @@ async function main(): Promise<number> {
   }
 
   try {
+    // **外部工具的发现**（U38）——等已配置的 MCP 服务器「起手 → 发现」落定（各自有界）。
+    //
+    // 放在**放开输入之前、起外壳之前**：设计明文「首轮模型请求前完成发现」。起手其实在
+    // `assemble()` 里就发车了，这里只是收口——故它不是「多等一趟」，是「等到该等的那一趟」。
+    // 连不上的那几条不会拖垮谁：它们落成「不可用 ＋ 缘由」，自检与开屏回执里各说一句。
+    //
+    // 三条入口都收在这一处（界面 / 脚本 / 自检）——**不各接一遍**：三处都要求「发现已完成」，
+    // 各写一遍就有漏一处的那天。
+    await assembly.ready()
+
     // **`--session` 的那道校验**（U28 · 台账随批小修 8）：库里没有这条会话就**报错退场**。
     //
     // 由头：`--session s-typo` 照 id 装载一条**空的**——用户以为接上了，其实没有。
@@ -559,6 +606,9 @@ async function main(): Promise<number> {
     await tui.waitUntilExit()
     return 0
   } finally {
+    // **收尾两跳**（U38）：先等外部服务器释放（关 stdin → 等 → 杀，规范里的次序），
+    // 再关库。反过来的话，还活着的工具调用会写进一个已经关掉的事务。
+    await assembly.shutdown()
     assembly.close()
   }
 }

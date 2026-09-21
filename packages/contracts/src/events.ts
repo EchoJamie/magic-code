@@ -315,10 +315,22 @@ export type EventDataOf = {
   }
   'tool.decision.request': {
     readonly call: RecordId
+    /**
+     * **卡上的名字**——内置工具＝工具名（`exec`）；外部工具＝**`服务器 / 工具`**
+     * （U38：标题取注册表的身份，措辞归内核一处产出，外壳不自己拼）。
+     */
     readonly name: string
     /** 判断材料——diff / 命令分解 / 影响面。 */
     readonly material: string
     readonly weight: DecisionWeight
+    /**
+     * **这是一次外部操作**（U38）——外壳据它换措辞（`外部操作 · 效果由服务器决定`），
+     * **不给「总是允许」**（外部效果不由本机裁定，一条「总是允许」记不下那个判断）。
+     *
+     * 缺席＝内置工具（既有两处措辞一字不动）。**不落库的瞬时位以外的语义**：它是呈现口径，
+     * 不是判定——判定（必闸 / 从宽）在 `weight` 与材料里。
+     */
+    readonly external?: boolean
   }
   'tool.decision': {
     readonly call: RecordId

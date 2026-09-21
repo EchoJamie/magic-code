@@ -980,7 +980,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
     if (char === 'a') {
       if (pending.weight === 'heavy') {
-        commit(said(view, '必闸类不可「总是允许」——按 y 批准这一次，或 n 拒绝。'))
+        // 外部操作说不出「可逆 / 不可逆」那套词——按它自己的缘由说（U38）；
+        // 键位也不在这儿再列一遍（卡上就写着，返工 B：一屏只说一次）
+        commit(
+          said(
+            view,
+            pending.external === true
+              ? '外部操作不可「总是允许」——效果由服务器决定，只能批准这一次。'
+              : '必闸类不可「总是允许」——按 y 批准这一次，或 n 拒绝。',
+          ),
+        )
         return NONE
       }
       send({ type: 'decision.answer', id: pending.id, decision: 'approve', remember: true })

@@ -45,6 +45,13 @@ export type ToolInvokeOptions = {
  *
  * `tools` ＝ 追加注册的工具定义（机制在内、工具集在外，可插拔）——阶段 1 默认集**只有
  * `exec`**；`read` / `write` / … 归工具集 v1（U13）。
+ *
+ * **两种给法**（U38 返工 A）：
+ * - **数组**——构造期定死的那一份（静态工具集照旧这么给）；
+ * - **函数**——**每次现取**（`definitions()` 与查定义各取一次）。由头：**进程级**的工具来源
+ *   （外部连接）与**按条建**的会话链不同寿命——快照会让「链先建、连接后连上」的那些
+ *   工具永远进不了模型请求（接续会话首轮漏外部工具，正是这么栽的）。工具表因此
+ *   **随连接实况走**：连上就有、断开就没有——这是如实，不是抖动。
  */
 export type ToolRuntimeOptions = {
   readonly sandbox: Sandbox
@@ -53,5 +60,5 @@ export type ToolRuntimeOptions = {
   readonly sink: EventSink
   readonly stamper: EventStamper
   readonly blobs: BlobStore
-  readonly tools?: readonly ToolDefinition[]
+  readonly tools?: readonly ToolDefinition[] | (() => readonly ToolDefinition[]) | undefined
 }

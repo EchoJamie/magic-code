@@ -405,3 +405,64 @@ describe('项目规约的补充来源（阶段 3 加键 · U32）', () => {
       .toThrow(/rules\.linkSources/)
   })
 })
+
+describe('外部工具服务器（U38 · `mcp` 段）', () => {
+  test('键缺省 —— **不给这一位**（不是空对象：没配就是没配）', () => {
+    expect(loadFrom(validConfig()).config.mcp).toBeUndefined()
+  })
+
+  test('照读——条目名是身份，命令 / 参数 / 环境原样带出', () => {
+    const loaded = loadFrom(
+      validConfig({
+        mcp: {
+          servers: {
+            files: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'], env: { TOKEN: 'x' } },
+            plain: { command: '/opt/tool' },
+          },
+        },
+      }),
+    )
+
+    expect(Object.keys(loaded.config.mcp?.servers ?? {})).toEqual(['files', 'plain'])
+    expect(loaded.config.mcp?.servers['files']).toEqual({
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem'],
+      env: { TOKEN: 'x' },
+    })
+    // 只给命令的条目：另两位**不给键**（不是空数组 / 空对象）
+    expect(loaded.config.mcp?.servers['plain']).toEqual({ command: '/opt/tool' })
+  })
+
+  test('`servers` 缺省 ＝ 一条都不连（合法的「不配」）', () => {
+    expect(loadFrom(validConfig({ mcp: {} })).config.mcp).toEqual({ servers: {} })
+  })
+
+  test('形制不对**报错不降级**——逐条点名到字段', () => {
+    expect(() => loadFrom(validConfig({ mcp: 'nope' }))).toThrow(/mcp 须是对象/)
+    expect(() => loadFrom(validConfig({ mcp: { servers: [] } }))).toThrow(/mcp\.servers/)
+    expect(() => loadFrom(validConfig({ mcp: { servers: { a: {} } } }))).toThrow(/mcp\.servers\.a\.command/)
+    expect(() => loadFrom(validConfig({ mcp: { servers: { a: { command: 'x', args: 'oops' } } } })))
+      .toThrow(/mcp\.servers\.a\.args/)
+    expect(() => loadFrom(validConfig({ mcp: { servers: { a: { command: 'x', env: { K: 1 } } } } })))
+      .toThrow(/mcp\.servers\.a\.env\.K/)
+  })
+
+  test('条目名不合规矩即拒——它要拼进工具名（`__` 是分隔符，别的符号供应商那边也不收）', () => {
+    const bad = (name: string): boolean => {
+      try {
+        loadFrom(validConfig({ mcp: { servers: { [name]: { command: 'x' } } } }))
+        return false
+      } catch (error) {
+        return error instanceof ConfigError
+      }
+    }
+
+    expect(bad('a__b')).toBe(true) // 分隔符本身
+    expect(bad('my server')).toBe(true) // 空格
+    expect(bad('服务器')).toBe(true) // 非 ASCII（拼进工具名会散给供应商）
+    expect(bad('-lead')).toBe(true) // 不是字母数字开头
+    // 合规矩的几种：字母数字开头 ＋ `.` `_` `-`
+    expect(loadFrom(validConfig({ mcp: { servers: { 'my-files.v2_x': { command: 'x' } } } })).config.mcp)
+      .toBeDefined()
+  })
+})
