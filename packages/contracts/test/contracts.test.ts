@@ -445,6 +445,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onModelList: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
+    onSkillList: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -456,6 +457,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onModelList: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
+    onSkillList: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -523,6 +525,7 @@ export function routesCarryModelSwitch(): void {
     onModelList: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
+    onSkillList: () => undefined,
   }
   void routes
 }
@@ -621,7 +624,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 两条读面答复（D10）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 三条读面答复（D10 · U33）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -641,8 +644,12 @@ describe('事件契约', () => {
       // U22：授权名录同列——**又是同一条判据**（表在盘上的 `grants.json` 里，不在库里），
       // 且 `/grants` 也是反复看的抽屉。改动的痕不在「谁看过名录」上，而在文件本身少了一条。
       'grants.catalog',
+      // U33 · 终端入口：技能目录同列——**同一条判据的第四处**（目录在盘上，不在库里），
+      // 且 `/skills` 也是反复看的动作（选择器）。当时用了哪一份材料另有痕：
+      // `user` 条目的载荷（名字 / 来源 / 正文），重放读的是那份。
+      'skills.catalog',
       // U33：技能使用回执同列——**同一条判据的第三个来源**（依据在**条目载荷**里：
-      // `UserPayload.skills` 的名字 / 来源 / 版本 / 正文），落库＝把同一件事存第二遍。
+      // `UserPayload.skills` 的名字 / 来源 / 正文），落库＝把同一件事存第二遍。
       'skill.used',
       // U33：提交收场同列——它是**一次答复**（与 `session.state` 同类：快照，不是过程事实），
       // 且它的配对键是**外壳给的**（`UserInput.ref`）：跨进程重开就没人认领了，

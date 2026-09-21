@@ -158,6 +158,20 @@ type SourceDir = {
 }
 
 /**
+ * 发现面上的**一处技能**——真路径 ＋ 它在来源里的**位置**（那个子目录的名字）。
+ *
+ * 位置单列一位（而不是从 `path` 反解）：容器那一路知道的就是用户目录里的那一个名字
+ * （软链接指到别处时，用户认的是他写下的那一个），而「点名一份技能目录」那一路**没有**位置
+ * ——两件事在发现的那一瞬分得开，事后从路径上猜就得靠比对目录名，猜法各写一遍迟早分家。
+ */
+type FoundSkill = {
+  /** 技能目录的真路径（身份）。 */
+  readonly dir: string
+  /** 它在来源目录里的那一个目录名；**点名单技能**那一处为空串。 */
+  readonly place: string
+}
+
+/**
  * 造技能来源面。
  *
  * 构造不做 I/O——扫不扫、什么时候扫由调用方定（装配提示词那一趟、以及每一次按需读取）。
@@ -184,16 +198,16 @@ function discover(options: SkillsOptions, limits: SkillLimits): SkillCatalog {
 
   for (const at of sourceDirs(options)) {
     for (const candidate of childrenOf(at, problems)) {
-      if (seen.has(candidate)) continue
+      if (seen.has(candidate.dir)) continue
       // **先去重再判上限**：同一个实体经两处进来只算一个，不该占两个名额
-      seen.add(candidate)
+      seen.add(candidate.dir)
 
       if (skills.length >= limits.maxSkills) {
         skipped += 1
         continue
       }
 
-      const one = readOne(candidate, at, problems, limits)
+      const one = readOne(candidate.dir, candidate.place, at, problems, limits)
       if (one !== undefined) skills.push(one)
     }
   }
@@ -256,11 +270,13 @@ function sourceDirs(options: SkillsOptions): readonly SourceDir[] {
  * 「来源目录不在」**默认那几处不报**（多数项目没有 `.magic/skills`，每次开屏报一句是噪音）；
  * **用户点名的那几处要报**——他写了那一行，就该知道自己写的指到哪儿了。
  */
-function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly string[] {
+function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly FoundSkill[] {
   // **点名的目录自己也可能是那份技能**（用户写的是 `…/my-skill`，不是「一摞」）——
   // 只对 `configured` 那一类成立：默认那几处（`.magic/skills` 等）是**容器**，
   // 它们自己不是技能（在那儿躺一份 `SKILL.md` 只是摆错了地方，不该被当成一个技能认下）。
-  if (at.named && isFile(join(at.dir, SKILL_FILE))) return [realpathOf(at.dir)]
+  // 位置留空：这一处**就是**那份技能，说「它在 xx 目录下」是句废话（`sourceLabelOf` 那一头
+  // 据此不补后缀）。
+  if (at.named && isFile(join(at.dir, SKILL_FILE))) return [{ dir: realpathOf(at.dir), place: '' }]
 
   let entries: Dirent[]
   try {
@@ -285,7 +301,7 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly string[] 
     return []
   }
 
-  const found: string[] = []
+  const found: FoundSkill[] = []
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.name.startsWith('.')) continue
 
@@ -309,7 +325,9 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly string[] 
       continue
     }
 
-    found.push(real)
+    // **位置**取用户自己那个目录名**（`entry.name`，不是真身的名字）：软链接指到别处时，
+    // 用户认得出的是他写下的那一个（`linked/`），不是链子那头的名字。
+    found.push({ dir: real, place: entry.name })
   }
 
   return found
@@ -326,6 +344,7 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly string[] 
  */
 function readOne(
   dir: string,
+  place: string,
   at: SourceDir,
   problems: SkillProblem[],
   limits: SkillLimits,
@@ -385,25 +404,48 @@ function readOne(
     path: dir,
     source: at.source,
     origin: at.origin,
-    label: sourceLabelOf(at.source, at.origin),
+    label: sourceLabelOf(at.source, at.origin, name, place),
   }
 }
 
 /**
- * 来源的人读标签（契约 `Skill.label`）——「哪一类来源 · 哪个入口」。
+ * 来源的人读标签（契约 `Skill.label`）——「哪一类来源 · 哪个入口 ·（名字没说的那一段）位置」。
  *
- * 两段各有各的用处：**作用域**（项目 / 用户 / 配置）说「这是谁的技能」，
+ * 前两段各有各的用处：**作用域**（项目 / 用户 / 配置）说「这是谁的技能」，
  * **入口**（`.magic` / `.agents`）说「它从哪个目录长出来的」。同名时两句都要有，
  * 人才分得清「项目里那个」与「我自己那个」。
+ *
+ * ## 第三段：**只在名字没说的时候补**（U33 独立验收退回①）
+ *
+ * `name` 取 front-matter 那一个、**不取目录名**（见文件头注）——于是「同一个作用域、
+ * 同一个入口下两份同名的技能」是真能出现的：`.magic/skills/first` 与 `.magic/skills/second`
+ * 都自称 `twins`。那时前两段**一模一样**，用户在候选列表里根本认不出哪份是哪份
+ * （真 PTY 反例：两行逐字相同）。位置（目录名）就是为这一格补的。
+ *
+ * ⚠️ **目录名说了名字已经说过的事就不补**：绝大多数技能目录与名字同名
+ * （`skills/pdf/` 里那份 `pdf`），补上就是 `项目 .magic/skills/pdf` 里白白重复一个 `pdf`
+ * ——草稿行与使用回执都是「名字 · 来源」并排，重复一眼看得见。故判据是**信息量**
+ * 而不是「有没有目录」：位置**不**等于名字，才说明它带来了一条名字没说的信息。
+ *
+ * **限度如实记**：多根工作区下「两个根里同一个相对位置、同一个名字」的两份，这一格
+ * 仍然分不开（两边的位置都等于名字）——那种情形要分辨得靠完整路径（`Skill.path` 里
+ * 有，交给模型的那份目录块也照印），交互面上不再拖一串 `/Users/…`（路径是机器上的坐标，
+ * 不是技能的一部分——同 `conversation/prompt/skills.ts` 那条注）。
  *
  * **写在这儿**（而不是消费侧各拼一遍）：这一处是唯一知道「哪个 segment 归哪个来源」的地方
  * ——别处拼的话，改一个目录名就要满仓找。
  */
-function sourceLabelOf(source: Skill['source'], origin: Skill['origin']): string {
+function sourceLabelOf(
+  source: Skill['source'],
+  origin: Skill['origin'],
+  name: string,
+  place: string,
+): string {
   const scope = source === 'project' ? '项目' : source === 'user' ? '用户' : '配置来源'
   const entry = origin === 'magic' ? '.magic/skills' : '.agents/skills'
+  const where = place === '' || place === name ? '' : `/${place}`
 
-  return `${scope} ${entry}`
+  return `${scope} ${entry}${where}`
 }
 
 /**

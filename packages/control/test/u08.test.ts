@@ -86,6 +86,9 @@ export function commandSubjectOf(command: Command): string {
       return `撤销授权：${command.workspace ?? '（本工作区）'} / ${
         command.index === undefined ? '（整节）' : `第 ${command.index} 条`
       }`
+    case 'skills.list':
+      // U33 技能读侧——无参：问的就是「都发现了哪些」
+      return '列技能目录'
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -151,6 +154,7 @@ export function hubFaceRealizesPort(): void {
     onModelList: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
+    onSkillList: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -178,6 +182,7 @@ export function routesAreContractShape(): void {
     onModelList: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
+    onSkillList: () => undefined,
   }
   void routes
 }
@@ -208,6 +213,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onModelList: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
+    onSkillList: () => undefined,
     ...overrides,
   }
 }

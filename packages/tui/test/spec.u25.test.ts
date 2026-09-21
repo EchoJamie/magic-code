@@ -77,7 +77,8 @@ describe('② 放开之后：照常受理', () => {
     app.shell.releaseInput()
     app.enter()
 
-    expect(app.commands()).toEqual([{ type: 'input.submit', text: '问一句' }])
+    // `ref` ＝ 提交的配对键（U33）
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '问一句', ref: 'draft-1' }])
     expect(app.shell.getView().draft).toBe('') // 提交了＝草稿清空（与常态逐字一致）
   })
 
