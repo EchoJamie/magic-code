@@ -118,25 +118,6 @@ async function close(session: UiSession): Promise<void> {
   console.log(`  · 收摊：${how} · 帧 ${report.frames} 张 · 现场 ${report.runDir}`)
 }
 
-/**
- * **在候选里选定一条**（回车）——带一次**有界重试**。
- *
- * 由头（2026-09-22 实测）：PTY 上两次写可能被**并成一次读**，那次回车于是不成立
- * （产品侧已把这条路上的控制字符清干净——但「这一次回车丢了」由终端说了算，脚本只能按
- * **效果**判）。判据取「抽屉收起」（候选行消失）：没收起再按一次，至多两次；
- * 按过一次就收起的场合**不会**走到重试，故不会误选第二下。
- */
-async function pickRow(session: UiSession, gone: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await pressKey(session, 'enter', { until: { absent: gone }, timeoutMs: 5_000 })
-      return
-    } catch (error) {
-      if (attempt >= 1) throw error
-    }
-  }
-}
-
 // ══ ①～③ 工单的示例场景 ═══════════════════════════════════════════════
 
 async function example(out: string): Promise<void> {
@@ -176,13 +157,18 @@ async function example(out: string): Promise<void> {
     //    同一瞬间就有了，而 Enter 与文本**同一次读**进去时，终端会把 `\r` 当成正文字符
     //    （真跑栽过：`src/login.ts\r\r` 成了筛选词）。等答复铺上行，Enter 才是单独一次。
     await session.wait({ text: '需求.md　文件' }, { timeoutMs: 10_000 })
-    await pickRow(session, '　文件')
+    const requestsBeforePick = session.requests().length
+    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
     const picked = await session.capture({ label: '02-选入之后' })
     keep(out, picked, '02-选入之后')
 
     check(has(picked, '先读 @需求.md'), '引用留在它被说出来的位置（前面那句正文还在）')
     check(!has(picked, '（待发送）'), '不另列「待发送材料」那一行（引用就在正文里）')
     check(session.requests().length === 0, '**选入不发模型请求**（夹具收到 0 条）')
+    check(session.requests().length === requestsBeforePick, '**一次选定零模型请求**（选定前后条数不变）')
+
+    // 记下提交前的请求数（选定三处都不该动它；提交那一下要恰好 +1）
+    const wantRequests = session.requests().length + 1
 
     // —— ③ 句中再放两处（技能 ＋ 文件）：**选定都不发送** ——
     await typeLine(session, '，再按 ')
@@ -196,13 +182,14 @@ async function example(out: string): Promise<void> {
     await session.wait({ text: 'src/login.ts　文件' }, { timeoutMs: 10_000 })
     const beforePick = await session.capture({ label: '03b-候选就位' })
     keep(out, beforePick, '03b-候选就位')
-    await pickRow(session, '　文件')
+    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
 
     const composed = await session.capture({ label: '03a-一句话三处引用' })
     keep(out, composed, '03a-一句话三处引用')
 
     check(has(composed, '先读 @需求.md，再按 /review 检查 @src/login.ts'), '三处引用都在它们被说出来的位置')
     check(session.requests().length === 0, '**三处都选好了，一个模型请求都还没发**')
+    check(session.requests().length === wantRequests - 1, '**每一次选定都零请求**（三处选完仍是 0）')
 
     // —— ④ 提交：正文原样 ＋ 三份材料随它走 ——
     await pressKey(session, 'enter', { until: { text: '好，先看登录。' }, timeoutMs: 15_000 })
@@ -211,6 +198,7 @@ async function example(out: string): Promise<void> {
 
     const requests = session.requests()
     check(requests.length === 1, `提交之后**正好一次**模型请求（实测 ${requests.length} 条）`)
+    check(requests.length === wantRequests, `**随后一次提交恰好一个请求**（选定三处零请求，提交 +1 ⇒ ${wantRequests}）`)
     const carried = requests[0]?.lastUser ?? ''
     check(carried.includes('要求：先看登录逻辑。'), '**需求.md 当前内容进了这次请求**', carried.slice(0, 400))
     check(carried.includes('export const login = () => 1'), '**login.ts 当前内容也进了**')
@@ -274,7 +262,7 @@ async function removing(out: string): Promise<void> {
     await typeLine(session, '看 ')
     await typeAt(session)
     await session.wait({ text: 'a.txt　文件' }, { timeoutMs: 10_000 })
-    await pickRow(session, '　文件')
+    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
     const picked = await session.capture({ label: '04a-选入' })
     keep(out, picked, '04a-选入')
 
@@ -395,7 +383,7 @@ async function keepDraft(out: string): Promise<void> {
     await typeAt(session)
     await session.send('gone', { until: { text: '@gone' }, timeoutMs: 10_000 })
     await session.wait({ text: 'gone.txt　文件' }, { timeoutMs: 10_000 })
-    await pickRow(session, '　文件')
+    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
 
     // 提交之前把它删掉——取不到就整条不跑，原稿还回输入区
     const { rmSync } = await import('node:fs')
@@ -437,7 +425,7 @@ async function directory(out: string): Promise<void> {
     // 直接把查询打全（`@src/sub` 之类）——这里选的是**整条 src 目录**
     await pressKey(session, 'backspace') // 去掉尾斜杠，让候选收成「src 这一条目录」
     await session.wait({ text: 'src　目录' }, { timeoutMs: 10_000 })
-    await pickRow(session, '　目录')
+    await pressKey(session, 'enter', { until: { absent: '　目录' }, timeoutMs: 10_000 })
     await typeLine(session, ' 里有什么')
     await pressKey(session, 'enter', { until: { text: '好。' }, timeoutMs: 15_000 })
     const sent = await session.capture({ label: '07-目录引用' })
@@ -474,7 +462,7 @@ async function recall(out: string): Promise<void> {
     // 打进筛选（不筛的话选中的是列表第一行 `.magic`——那是挑走了另一条）
     await session.send('a.txt', { until: { text: '@a.txt' }, timeoutMs: 10_000 })
     await session.wait({ text: 'a.txt　文件' }, { timeoutMs: 10_000 })
-    await pickRow(session, '　文件')
+    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
     await typeLine(session, '，再按 ')
     await session.send('/rev', { until: { text: '/rev' }, timeoutMs: 10_000 })
     // 等**候选行**上屏（目录答复是异步的）：`Tab` 才有东西可选定
@@ -568,6 +556,44 @@ async function recall(out: string): Promise<void> {
   }
 }
 
+// ══ ⑨ 粘贴：原文照收（Tab 与多行）——独立复核给的那一段 ═══════════════
+
+async function pasting(out: string): Promise<void> {
+  const session = await createUiSession({
+    label: 'u36-粘贴原文',
+    artifacts: join(out, 'runs'),
+    turns: [{ kind: 'text', text: '收到。' }],
+  })
+
+  try {
+    // 复核给的那一段：**行首 Tab 缩进 ＋ 行内 Tab 分隔 ＋ 多行**，一个都不许动
+    const pasted = 'if ready:\n\tprint(1)\nleft\tright'
+
+    // bracketed paste（真终端那一条信道）：外面那两串是 Ink `usePaste` 认的包裹标记
+    await session.send(`\u001b[200~${pasted}\u001b[201~`, { until: { text: 'print(1)' }, timeoutMs: 10_000 })
+    const held = await session.capture({ label: '09a-粘贴之后（还没发）' })
+    keep(out, held, '09a-粘贴之后（还没发）')
+
+    check(session.requests().length === 0, '**粘贴不发送**（夹具仍 0 条）')
+
+    await pressKey(session, 'enter', { until: { text: '收到。' }, timeoutMs: 15_000 })
+    const sent = await session.capture({ label: '09-粘贴原文照收' })
+    keep(out, sent, '09-粘贴原文照收')
+
+    const carried = session.requests()[0]?.lastUser ?? ''
+    check(carried.includes(pasted), '模型请求里那一段**逐字**在（Tab 与换行都在）', JSON.stringify(carried))
+    check(carried.includes('\tprint(1)'), '行首那个 Tab 没被删（缩进还在）')
+    check(carried.includes('left\tright'), '行内那个 Tab 没被删（分隔还在）')
+
+    const raw = readDatabase(join(session.facts().dataDir, 'records.db'))
+    const user = raw.entries.filter((row) => row.kind === 'user')
+    raw.close()
+    check(user[0]?.content_text === pasted, '记录里也逐字相同', JSON.stringify(user[0]?.content_text))
+  } finally {
+    await close(session)
+  }
+}
+
 // ══ 入口 ═════════════════════════════════════════════════════════════
 
 if (import.meta.main) {
@@ -581,5 +607,6 @@ if (import.meta.main) {
   await keepDraft(out)
   await directory(out)
   await recall(out)
+  await pasting(out)
   console.log(`\n全部判据通过。帧落在 ${out}`)
 }

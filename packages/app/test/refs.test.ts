@@ -502,6 +502,42 @@ describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前
   })
 })
 
+// ══ 粘贴：原文照收（U36 · 独立复核）═══════════════════════════════════
+
+describe('U36 · 粘进来的一段原文照收（Tab 与多行都留着）', () => {
+  test('bracketed paste 带 Tab 与多行 ⇒ 模型请求与记录**逐字相同**', async () => {
+    const stage = makeStage()
+    try {
+      const pasted = 'if ready:\n\tprint(1)\nleft\tright'
+
+      const assembly = stage.assemble({ turns: [{ text: '好。' }] })
+      const shell = createShell(assembly.shell)
+
+      // 真外壳里的粘贴那一跳（`TuiApp` 把 bracketed paste 收成 `{kind:'paste'}`）
+      shell.key({ kind: 'paste', text: pasted })
+      expect(shell.getView().draft).toBe(pasted) // 草稿里逐字在（Tab 没被删）
+
+      shell.key({ kind: 'enter' })
+      await new Promise((resolve) => setTimeout(resolve, 400))
+
+      // ① 真模型请求：那一段**逐字**在（缩进与分隔都在）
+      const sent = lastUserText(stage, 0)
+      expect(sent).toContain(pasted)
+      expect(sent).toContain('\tprint(1)') // 行内那个 Tab 还在
+      expect(sent).toContain('left\tright') // 行里那一处 Tab 也在
+
+      // ② 真记录：条目正文逐字相同
+      const rows = userRows(assembly)
+      expect(rows[0]?.content_text).toBe(pasted)
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 // ══ 忙时 ══════════════════════════════════════════════════════════════
 
 describe('U36 · 忙时：整份输入入队，出队不串', () => {

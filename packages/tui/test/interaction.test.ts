@@ -285,36 +285,23 @@ describe('展开 / 折叠', () => {
   })
 })
 
-// ══ 一次读块里的控制字符（U36 修正轮）═════════════════════════════════
+// ══ 攒块里的正文（U36 · 独立复核）═════════════════════════════════════
 
-describe('攒块里的控制字符', () => {
+describe('攒块里的正文', () => {
   /**
-   * 真跑栽过的一档：终端把「回车」和它前面的文本**并成一次读**时，Ink 交上来的是
-   * `input = '正文\r'`（`key.return` 为假）——逐字符摊开就会把那个 `\r` 当成正文字符
-   * 塞进草稿（看不见，还会一路发给模型），而**紧接着那次回车也就没发生**。
+   * ⚠️ **原文照收**（2026-09-22 独立复核）：早先这里把攒块里的控制字符清掉，结果
+   * **粘贴里的 Tab 被静默删了**——`if ready:\n\tprint(1)` 到模型手上成了不带缩进的两行。
+   * Tab 是**合法的粘贴内容**（Python 缩进就靠它），不是「用户打不出来」的东西。
+   * 故攒块逐字符摊成正文，一个都不改；换行另有两处管（裸 `\n` 与 `key.return`）。
    */
-  test('裸 `\r` 不落草稿（回车与文本并成一块读时）', () => {
-    const keys = toShellKeys('看下目录\r', {})
-    expect(keys).toEqual([
-      { kind: 'char', char: '看' },
-      { kind: 'char', char: '下' },
-      { kind: 'char', char: '目' },
-      { kind: 'char', char: '录' },
-    ])
-  })
-
-  test('`\r\n` ⇒ 一个换行（Windows 行尾粘进来）', () => {
-    expect(toShellKeys('甲\r\n乙', {})).toEqual([
-      { kind: 'char', char: '甲' },
-      { kind: 'newline' },
-      { kind: 'char', char: '乙' },
-    ])
-  })
-
-  test('其余控制字符也丢掉（`\t` / `\u0000`）', () => {
-    expect(toShellKeys('甲\t\u0000乙', {})).toEqual([
-      { kind: 'char', char: '甲' },
-      { kind: 'char', char: '乙' },
+  test('攒块逐字符摊开——`\t` 照收（Python 缩进那类粘贴）', () => {
+    expect(toShellKeys('\tprint', {})).toEqual([
+      { kind: 'char', char: '\t' },
+      { kind: 'char', char: 'p' },
+      { kind: 'char', char: 'r' },
+      { kind: 'char', char: 'i' },
+      { kind: 'char', char: 'n' },
+      { kind: 'char', char: 't' },
     ])
   })
 
