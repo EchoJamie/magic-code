@@ -17,7 +17,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { UiWaitTimeout, createUiSession, rawBytesOf } from './ui/driver.ts'
+import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf } from './ui/driver.ts'
 import { createControl } from './ui/control.ts'
 import { createVt } from './ui/vt.ts'
 import { VIEW_LOGIC, writeViewer } from './ui/viewer.ts'
@@ -151,25 +151,47 @@ describe('U40 · 工具自证', () => {
     }
   }, 40_000)
 
-  test('改窗判据：旧「屏上出现 N 个横线」会被终端折行骗过，新判据只认应用写出的那串（D27）', async () => {
-    // —— 反例（假阳性那一路）——
-    // 100 列的窗口里画一条 100 列的分隔线，然后改窄，应用**一个字节都没再写**：
-    // 终端会把那条线按新宽度折成 44 + 44 + 12 ⇒ 屏上「出现 44 个横线」⇐ 旧判据当场通过，
-    // 而那条线根本不是按新宽度画的（实测那一趟 resize / wait 通过 / 取帧三步累计字节相同）。
+  test('改窗判据：旧宽折行输出必须判**不通过**（44 与 70 两档），真帧才通过（D27）', async () => {
+    const ESC = String.fromCharCode(27)
+    const DASH = '─'
+
+    // —— 反例一：**VT** 折行。100 列的分隔线画在 100 列窗口里，然后改窄——
+    //    屏上「出现 44 个横线」＝旧判据（`text`）当场通过，而应用一个字节都没写。
     const ruler = createVt({ columns: 100, rows: 30 })
-    ruler.write(`${'─'.repeat(100)}\n`)
+    ruler.write(`${DASH.repeat(100)}\n`)
     await ruler.settled()
     ruler.resize(44, 16)
     await ruler.settled()
-    expect(ruler.screen().lines.some((line) => line.text.includes('─'.repeat(44)))).toBe(true)
+    expect(ruler.screen().lines.some((line) => line.text.includes(DASH.repeat(44)))).toBe(true)
     ruler.dispose()
 
-    // —— 正例 —— 真应用改窗之后，**它自己写出的字节**里确实有一串按新宽度画的分隔线
+    // —— 反例二：**输出阶段**折行（验收报告点名的那一档）。改窗后应用先按旧宽度画一帧，
+    //    Ink 把旧 100 列分隔线折成 `44/44/12`（70 列下 `70/30`）——都写在字节里。
+    //    只认「正好 N 个横线」会被它骗过：折出来的第一段就是正好 N 个。
+    const wrappedOldFrame = (columns: number): string => {
+      const parts: string[] = []
+      for (let at = 0; at < 100; at += columns) {
+        parts.push(`${ESC}[38;5;66m${DASH.repeat(Math.min(columns, 100 - at))}${ESC}[39m`)
+      }
+
+      return `${parts.join('\n')}\n › 交代一件事，回车发送\n`
+    }
+    for (const columns of [44, 70]) {
+      expect(hasFreshFrame(wrappedOldFrame(columns), columns)).toBe(false)
+    }
+
+    // —— 正例：同一串字节，分隔线按**新宽度**只画一行（下一行是输入行）——
+    for (const columns of [44, 70]) {
+      const fresh = `${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
+      expect(hasFreshFrame(fresh, columns)).toBe(true)
+    }
+
+    // —— 正例（真会话）：改窗之后应用确实按新宽度画出了整帧 ——
     const session = await createUiSession({ label: '自证-改窗判据', columns: 100, rows: 24, turns: HELLO })
     try {
       await session.resize(60, 18)
-      await session.wait({ written: '─'.repeat(60) }, { timeoutMs: 8_000 })
-      expect(rawBytesOf(session.runDir).includes('─'.repeat(60))).toBe(true)
+      await session.wait({ writtenFrame: 60 }, { timeoutMs: 8_000 })
+      expect(rawBytesOf(session.runDir).includes(DASH.repeat(60))).toBe(true)
     } finally {
       await session.close()
     }

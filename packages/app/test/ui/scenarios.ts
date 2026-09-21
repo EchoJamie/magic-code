@@ -158,10 +158,10 @@ const bootInputResizeExit: Scenario = {
     // 终端会把旧 100 列的分隔线按新宽度重新折行，44 + 44 + 12 的头一个 44 就满足它——
     // 实测那一趟 resize、wait 通过、取帧三步的累计字节数完全相同，而应用当时一个字节
     // 都还没按新宽度画。「VT 尺寸正确」「每行不超宽度」「有新字节」「答复正文出现」同理：
-    // 都是**那一刻**为真、却不代表应用采用了新尺寸。故等的是它**写出去的那串**
-    // （见 `driver.ts` 里 `WaitCondition.written` 的注）。
+    // 都是**那一刻**为真、却不代表应用采用了新尺寸。故等的是它**写出去的一整帧**
+    // （见 `driver.ts` 里 `WaitCondition.writtenFrame` 的注）。
     await session.resize(44, 16)
-    await session.wait({ written: '─'.repeat(44) })
+    await session.wait({ writtenFrame: 44 })
     // ⚠️ 这一条等到的就是**整帧**（一帧一次写出去），故后面取的帧不用再补等待
     const narrow = await session.capture({ label: '窄窗' })
     ui.check(narrow.columns === 44 && narrow.rows === 16, 'VT 认了新尺寸', '44×16')
@@ -500,7 +500,7 @@ const assistantAcrossCalls: Scenario = {
 
     // 判据同场景 1：等**应用自己**按新宽度画出过一帧，不是屏上凑巧有个 70 个横线
     await session.resize(70, 18)
-    await session.wait({ written: '─'.repeat(70) })
+    await session.wait({ writtenFrame: 70 })
     const two = await session.capture({ label: '调窗之后' })
     ui.check(two.columns === 70 && two.rows === 18, '窗口真变了', `${two.columns}×${two.rows}`)
     ui.check(one.step < two.step, '两帧落在不同的步上（时间线读得出来）', `第 ${one.step} → 第 ${two.step} 步`)
@@ -751,7 +751,15 @@ function where(options: ScenarioOptions): { artifacts?: string; checkout?: strin
  * 「记录不丢不重」这类判据量的是它：分隔线是活动区的顶边，它上面才是「发生过什么」。
  */
 export function recordOf(capture: Capture): readonly string[] {
-  const at = capture.lines.findIndex((line) => /^─+$/u.test(line.trim()))
+  // ⚠️ 取**最后一条**分隔线：活动帧那条才是记录区的顶边。取第一条的话，改窗残影（旧分隔线
+  //    还留在屏上）会把记录区截在半路（与 `recordHistoryOf` 同一口径）。
+  let at = -1
+  for (let row = capture.lines.length - 1; row >= 0; row -= 1) {
+    if (/^─+$/u.test((capture.lines[row] as string).trim())) {
+      at = row
+      break
+    }
+  }
 
   return at === -1 ? capture.lines : capture.lines.slice(0, at)
 }

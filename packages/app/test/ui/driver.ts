@@ -86,18 +86,18 @@ export type WaitCondition =
   | { readonly absent: string }
   | { readonly at: { readonly row: number; readonly text: string } }
   /**
-   * **应用自己写出的字节**里出现这一串——只看**最后一次改窗之后**新写出的那一段（D27）。
+   * **应用按这个宽度画出了完整一帧**——只看**最后一次改窗之后**新写出的那一段（D27）。
    *
-   * 为什么要有这一条：改窗之后「屏上出现 44 个横线」**不足以**说明应用采用了新尺寸——
-   * 终端会把旧 100 列的分隔线按新宽度重新折行，44 + 44 + 12 里头一个 44 就满足那条判据，
-   * 而那一刻应用可能一个字节都还没按新宽度画（实测：resize、wait 通过、取帧三步的累计
-   * 字节数完全相同）。屏幕是终端算出来的账，**应用写出的字节**才是它自己的账。
+   * 为什么不能简单看「屏上/字节里有没有 N 个横线」：改窗之后应用**第一帧往往还是按旧宽度画的**
+   * （Ink 的 `resized` 比 React 早），100 列的分隔线在输出阶段就被折成
+   * `44 横线 / 44 横线 / 12 横线`（70 列下是 `70 / 30`）——只认长度会被它骗过（实测：那一刻
+   * 「屏上的 44 个横线」为真、「字节里正好 44 个横线」也为真，而应用一个字节都还没按新宽度画）。
    *
-   * ⚠️ **认的是「正好这一串」，不是「包含这一串」**：100 个横线里切得出 44 个来——
-   * 改窗后应用先按**旧宽度**画的那一帧（Ink 那一跳比 React 早）恰好会长这样，
-   * 用它当「已经采用新尺寸」就是同一个假阳性换个地方犯。故子串前后不能紧挨着同一个字符。
+   * 故判据落在**分隔线的整行结构**上：找到正好 `columns` 个横线的那一行，再要求它**下一行
+   * 不是横线行**。按新宽度画出来的帧只有一条分隔线，后面紧跟的是输入行；折出来的那一串
+   * 后面**必然**还跟着横线。两种假阳性（VT 折行、输出阶段折行）都挡得住。
    */
-  | { readonly written: string }
+  | { readonly writtenFrame: number }
 
 export type WaitOptions = {
   /** 超时（毫秒）——**必须有界**；缺省 8 秒（真模型那条路要等流式收尾）。 */
@@ -832,25 +832,36 @@ async function waitForFrame(
 function matches(condition: WaitCondition, screen: VtScreen, writtenSinceResize: string): boolean {
   if ('text' in condition) return screen.lines.some((line) => line.text.includes(condition.text))
   if ('absent' in condition) return !screen.lines.some((line) => line.text.includes(condition.absent))
-  if ('written' in condition) return hasExactRun(writtenSinceResize, condition.written)
+  if ('writtenFrame' in condition) return hasFreshFrame(writtenSinceResize, condition.writtenFrame)
   const target = screen.lines[condition.at.row]
 
   return target !== undefined && target.text.includes(condition.at.text)
 }
 
 /**
- * 「**正好**有这一串」——子串前后不能紧挨着同一个字符（见 `WaitCondition.written` 的注）。
+ * 有没有**按 `columns` 列画出来的那一帧**（见 `WaitCondition.writtenFrame` 的注）。
  *
- * 一帧里那串横线只出现一次，所以逐处找、跳过被拉长的那些就够了；`from = at + 1` 保证不会卡住。
+ * 两步：① 找到「正好 `columns` 个横线」的那一处（前后不能紧挨横线——100 个横线里切得出 44 个）；
+ * ② 它**下一行**里不能还有横线。折出来的一串（`44/44/12`、`70/30`）第 ② 步必然不过。
+ *
+ * 逐处找、每次前进一个字符，故不会卡住；`\n` 用字节里的原样（帧本来就是一帧一次写出去的）。
  */
-function hasExactRun(haystack: string, needle: string): boolean {
-  if (needle === '') return true
-  const marker = needle[0] as string
+export function hasFreshFrame(bytes: string, columns: number): boolean {
+  if (!Number.isInteger(columns) || columns <= 0) return false
+  const needle = '─'.repeat(columns)
 
   for (let from = 0; ; ) {
-    const at = haystack.indexOf(needle, from)
+    const at = bytes.indexOf(needle, from)
     if (at === -1) return false
-    if (haystack[at - 1] !== marker && haystack[at + needle.length] !== marker) return true
+    const before = bytes[at - 1]
+    const after = bytes[at + needle.length]
+    if (before !== '─' && after !== '─') {
+      // 下一行：这一行结束的换行之后、再下一个换行之前
+      const lineEnd = bytes.indexOf('\n', at)
+      const nextEnd = lineEnd === -1 ? -1 : bytes.indexOf('\n', lineEnd + 1)
+      const next = nextEnd === -1 ? bytes.slice(lineEnd + 1) : bytes.slice(lineEnd + 1, nextEnd)
+      if (!next.includes('─')) return true
+    }
     from = at + 1
   }
 }
@@ -859,7 +870,7 @@ function hasExactRun(haystack: string, needle: string): boolean {
 export function describeCondition(condition: WaitCondition): string {
   if ('text' in condition) return `出现「${condition.text}」`
   if ('absent' in condition) return `不再出现「${condition.absent}」`
-  if ('written' in condition) return `改窗之后应用写出的字节里出现「${condition.written}」`
+  if ('writtenFrame' in condition) return `改窗之后应用按 ${condition.writtenFrame} 列画出完整一帧`
 
   return `第 ${condition.at.row} 行出现「${condition.at.text}」`
 }

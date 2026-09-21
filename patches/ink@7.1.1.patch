@@ -1,8 +1,22 @@
+diff --git a/build/ink.js b/build/ink.js
+index 0082666b281ec2db77b875d6b8460bcc19a59ce7..85742007c424b2b21008fb17363fbd5e11a2e5f2 100644
+--- a/build/ink.js
++++ b/build/ink.js
+@@ -415,6 +415,9 @@ export default class Ink {
+         if (hasStaticOutput) {
+             this.fullStaticOutput += staticOutput;
+         }
++        // [bun patch · D27] 把静态输出交给擦除那一层：它同样在屏上、且在帧**上方**，
++        // 擦旧帧时要用它的重排行数把帧顶算出来（见 `log-update.js` 的 `reflowPlan`）。
++        this.log.setStaticOutput(this.fullStaticOutput);
+         this.renderInteractiveFrame(output, outputHeight, hasStaticOutput ? staticOutput : '');
+     };
+     render(node) {
 diff --git a/build/log-update.js b/build/log-update.js
-index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938d6b70957 100644
+index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..c5302bb5cbd2a3a48a986fc09d2f542284f59f8e 100644
 --- a/build/log-update.js
 +++ b/build/log-update.js
-@@ -1,9 +1,80 @@
+@@ -1,9 +1,123 @@
  import ansiEscapes from 'ansi-escapes';
  import cliCursor from 'cli-cursor';
 +import stringWidth from 'string-width';
@@ -39,7 +53,30 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938
 +// on its stored line): then the caller keeps the stored line count, and the
 +// emitted bytes are exactly the ones from before this patch.
 +const rowCountOf = (line, columns) => Math.max(1, Math.ceil(stringWidth(line) / columns));
-+const reflowPlan = (str, cursorPosition, columns, writtenColumns) => {
++/** [bun patch · D27] Ink 交过来的静态输出（记录区）——它也在屏上，而且在帧**上方**。 */
++let staticOutput = '';
++let staticColumns;
++let staticRows;
++const setStaticOutput = (str) => {
++    if (str === staticOutput) return;
++    staticOutput = str;
++    staticColumns = undefined;
++};
++/**
++ * 静态区在 `columns` 列下占几行——装得下那一支要拿它算帧顶（量一次、按宽度缓存）。
++ * 空串 ⇒ 0：没有静态内容时帧顶就是屏顶。
++ */
++const staticRowsAt = (columns) => {
++    if (staticColumns === columns && staticRows !== undefined) return staticRows;
++    const lines = staticOutput.split('\n');
++    const visible = staticOutput.endsWith('\n') ? lines.length - 1 : lines.length;
++    let rows = 0;
++    for (let index = 0; index < visible; index += 1) rows += rowCountOf(lines[index], columns);
++    staticColumns = columns;
++    staticRows = rows;
++    return rows;
++};
++const reflowPlan = (str, cursorPosition, columns, writtenColumns, screenRows) => {
 +    if (str === '' || typeof columns !== 'number' || columns <= 0) {
 +        return null;
 +    }
@@ -61,29 +98,49 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938
 +    if (rows === visible && (cursorPosition === undefined || cursorRow === cursorPosition.y)) {
 +        return null;
 +    }
-+    // 锚点取**屏幕底**，不取光标：屏幕底是唯一一个能可靠到达、且与光标漂到哪儿无关的行
-+    // （`cursorDown` 夹住）。旧帧是屏上最后一块内容，它的末行要么就是屏幕底（重排之后内容
-+    // 撑满——改窄那一下几乎总是这样），要么在屏幕底之上、下面只剩空白。
++    // 锚点怎么选？**两种几何都要对**，而它们的锚不同：
 +    //
-+    // 擦几行：上一帧**就是按现在这个宽度写的**时一行不差，照行数擦；否则是终端替我们重排过
-+    // （旧帧比现在宽），那一下终端可能少留一行（见 `buildEraseReflowed`），留一行的余量。
++    // - 内容重排之后**装得下**屏幕：什么也没滚过 ⇒ 静态区顶＝屏顶，旧帧顶 ＝ 屏顶 + 静态区行数
++    //   （**算得出来**）。从那儿往下擦到屏底，恰好是旧帧那一块——不多擦一行，也不管光标被
++    //   终端带到哪儿去了（量过：重排会把光标往下带，带多远与整个缓冲的增长有关，帧自己算不出来）。
++    // - 内容重排之后**装不下**：旧帧压在屏幕底 ⇒ 屏幕底是它的末行，从屏幕底往上擦它的行数。
++    //
++    // 两件事都不靠「加减一个固定行数」校准。
++    const above = staticRowsAt(columns);
++    const fits = typeof screenRows === 'number' && screenRows > 0 && above + rows + 1 <= screenRows;
++    if (fits) {
++        return { fromTop: above };
++    }
++    // 装不下这一支：上一帧**就是按现在这个宽度写的**时一行不差；否则是终端替我们重排过，
++    // 那一下终端可能少留一行（见 `buildEraseReflowed`），留一行余量。
 +    const rewrapped = writtenColumns !== columns;
-+    return { rows: Math.max(1, rows - (rewrapped ? 1 : 0)) };
++    return { fromBottom: Math.max(1, rows - (rewrapped ? 1 : 0)) };
 +};
 +/**
-+ * 从屏幕底往上擦旧帧那一块，擦完光标正停在擦除区的顶（＝旧帧顶）——接着写的新帧落在原处。
++ * 擦掉旧帧那一块，**擦完光标正停在旧帧顶**——接着写的新帧落在原处。
 + *
-+ * `plan.rows` 里已经含了「终端重排可能少留一行」那份余量（见 `reflowPlan`）：少擦一行最多在
-+ * 旧帧顶上留一行痕，**多擦一行会吃掉已定局的记录**（`<Static>` 那几行写出去就不再重画）
-+ * ——两害相权取轻。
++ * - `fromTop`：先到屏顶（`cursorUp` 夹住，所以是「正好到顶」而不是「大概」），下移到旧帧顶，
++ *   再 `eraseDown` 到屏底。屏上帧以下只有空白，故这一擦不多不少。
++ * - `fromBottom`：走到屏底再往上擦 `fromBottom` 行。少了那一行余量最多在旧帧顶上留一行痕，
++ *   **多擦一行会吃掉已定局的记录**（`<Static>` 那几行写出去就不再重画）——两害相权取轻。
 + */
-+const buildEraseReflowed = (plan, screenRows) => hideCursorEscape +
-+    ansiEscapes.cursorDown(typeof screenRows === 'number' && screenRows > 0 ? screenRows : 1_000) +
-+    ansiEscapes.eraseLines(plan.rows);
++const buildEraseReflowed = (plan, screenRows) => {
++    const hide = hideCursorEscape;
++    if (plan.fromTop !== undefined) {
++        return hide +
++            ansiEscapes.cursorUp(9_999) +
++            ansiEscapes.cursorTo(0) +
++            (plan.fromTop > 0 ? ansiEscapes.cursorDown(plan.fromTop) : '') +
++            ansiEscapes.eraseDown;
++    }
++    return hide +
++        ansiEscapes.cursorDown(typeof screenRows === 'number' && screenRows > 0 ? screenRows : 1_000) +
++        ansiEscapes.eraseLines(plan.fromBottom);
++};
  const createStandard = (stream, { showCursor = false } = {}) => {
      let previousLineCount = 0;
      let previousOutput = '';
-@@ -12,6 +83,9 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -12,6 +126,9 @@ const createStandard = (stream, { showCursor = false } = {}) => {
      let cursorDirty = false;
      let previousCursorPosition;
      let cursorWasShown = false;
@@ -93,13 +150,13 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938
      const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
      const hasChanges = (str, activeCursor) => {
          const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
-@@ -43,21 +117,36 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -43,21 +160,36 @@ const createStandard = (stream, { showCursor = false } = {}) => {
              }));
          }
          else {
 +            // [bun patch · D27] 重排过了就按**终端此刻**的几何擦（见 `reflowPlan`）；
 +            // 没重排就照旧用存下来的行数——两条路在「没重排」时写出的字节完全相同。
-+            const plan = reflowPlan(previousOutput, previousCursorPosition, stream.columns, previousColumns);
++            const plan = reflowPlan(previousOutput, previousCursorPosition, stream.columns, previousColumns, stream.rows);
 +            const returnPrefix = plan !== null
 +                ? buildEraseReflowed(plan, stream.rows)
 +                : cursorWasShown
@@ -124,7 +181,7 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938
 -        stream.write(prefix + ansiEscapes.eraseLines(previousLineCount));
 +        // [bun patch · D27] 改窄时 Ink 走的正是这一支（`resized` → `log.clear`）：按**终端重排
 +        // 之后**的几何擦，否则顶部多出来的那几行留在屏上（旧分隔线／重复记录）。
-+        const plan = reflowPlan(previousOutput, previousCursorPosition, stream.columns, previousColumns);
++        const plan = reflowPlan(previousOutput, previousCursorPosition, stream.columns, previousColumns, stream.rows);
 +        const prefix = plan !== null
 +            ? buildEraseReflowed(plan, stream.rows)
 +            : cursorWasShown
@@ -134,7 +191,7 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938
          previousOutput = '';
          previousLineCount = 0;
          previousCursorPosition = undefined;
-@@ -85,6 +174,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -85,6 +217,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
          const lines = str.split('\n');
          previousOutput = str;
          previousLineCount = lines.length;
@@ -142,3 +199,11 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..30aae37b85bdf3adf228847f02089938
          if (!activeCursor && cursorWasShown) {
              stream.write(hideCursorEscape);
          }
+@@ -94,6 +227,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+         previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+         cursorWasShown = activeCursor !== undefined;
+     };
++    render.setStaticOutput = setStaticOutput;
+     render.setCursorPosition = (position) => {
+         cursorPosition = position;
+         cursorDirty = true;
