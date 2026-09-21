@@ -175,6 +175,17 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
   // —— 候选：只回答「有这么一条吗、它是文件还是目录」——
 
+  /**
+   * 一条路径的类型——**里外、候选与 load 都经这一个入口判**（三处各判一次就是三处口径，
+   * 迟早分叉：真出现过分叉——工作区里的「非普通文件」挡住了，外部那一支却漏了，
+   * 于是 `/dev/null` 会被当成一条可选的外部文件给出去）。
+   *
+   * `other` ＝ **非普通文件**（管道 / 设备 / 套接字）：文本读不了（FIFO 上 `open` 会等写端），
+   * 一律不入候选、不取材料。
+   */
+  const kindOf = (info: { isFile(): boolean; isDirectory(): boolean }): 'file' | 'directory' | 'other' =>
+    info.isFile() ? 'file' : info.isDirectory() ? 'directory' : 'other'
+
   /** 一条目录项 → 候选（链接等归 'other' 的不列——列出来也引用不了）。 */
   const rowOf = async (
     absolute: string,
@@ -187,8 +198,9 @@ export function createMaterials(options: MaterialsOptions): Materials {
       // 符号链接 / 设备：看**指向的东西**是什么（读的时候是跟链接的，候选也得跟）
       try {
         const info = await stat(path)
-        if (!info.isFile() && !info.isDirectory()) return undefined
-        return candidateOf(path, info.isDirectory() ? 'directory' : 'file')
+        const pointed = kindOf(info)
+        if (pointed === 'other') return undefined
+        return candidateOf(path, pointed)
       } catch {
         return undefined
       }
@@ -246,37 +258,40 @@ export function createMaterials(options: MaterialsOptions): Materials {
       const target = isAbsolute(raw) ? resolvePath(raw) : resolvePath(workspace.defaultRoot(), raw)
       const { dir, prefix, isDir } = splitQuery(raw, target)
 
-      // 打全的那一条在不在、是文件还是目录（跟随链接）
+      // 打全的那一条在不在、是什么类型（跟随链接）
       const complete = await statOrUndefined(target)
+      const kind = complete === undefined ? undefined : kindOf(complete)
       // **里外按真身判**（`insideOf`）：`link/` 指向外面时，写起来的路径虽在根里，也算外面
       const inside = insideOf(target)
 
       // 打全的那一条**先认**：`@src/login.ts` 这种（还有工作区外那一条）不必列目录。
       // ⚠️ **写成目录的（`src/`）不走这一支**：那种写法要的是「列它下面那一层」。
-      if (
-        !isDir &&
-        inside &&
-        complete !== undefined &&
-        prefix !== '' &&
-        // **非普通文件不进候选**（管道 / 设备 / 套接字）：给一条读不了的行没有意义
-        (complete.isFile() || complete.isDirectory())
-      ) {
-        const row = candidateOf(target, complete.isDirectory() ? 'directory' : 'file')
+      // ⚠️ **非普通文件也不走**（管道 / 设备 / 套接字）：给一条读不了的行没有意义。
+      if (!isDir && inside && kind !== undefined && kind !== 'other' && prefix !== '') {
+        const row = candidateOf(target, kind)
         // 真身在根内（`inside` 判过）时不会是「外部目录」，故这一支必有行
         if (row !== undefined) return { rows: [row] }
       }
 
-      // —— 工作区外：**只认打全的那一条**，且只收文件 ——
+      // —— 工作区外：**只认打全的那一条**，且只收普通文件（判据与里头同一处：`kindOf`）——
       if (!inside) {
-        if (complete === undefined) {
+        if (kind === undefined) {
           return { rows: [], note: `工作区外，而且这个路径不存在：${raw}` }
         }
-        if (complete.isDirectory()) {
+        if (kind === 'directory') {
           return {
             rows: [],
             note:
               '工作区外只收单个文件——目录不列、不读（输入 @ 不获准浏览工作区外的地方；' +
               '要带某个文件就把它打全，选定即只读附件）。',
+          }
+        }
+        if (kind === 'other') {
+          return {
+            rows: [],
+            note:
+              '工作区外也只收普通文本文件——这一条是管道 / 设备 / 套接字那类，' +
+              '读不得（读了会挂在那儿等）。要用它就让工具去处理。',
           }
         }
         const row = candidateOf(target, 'file')
@@ -351,7 +366,7 @@ export function createMaterials(options: MaterialsOptions): Materials {
       return {
         ok: false,
         reason:
-          `「${source}」不在工作区里——工作区外只收**用户明确选定**的那一个文件` +
+          `「${source}」不在工作区里——工作区外只收「用户明确选定」的那一个文件` +
           `（输入 @ 或粘贴都不获准）。重新选一次，或把它放进工作区。`,
       }
     }
@@ -363,7 +378,7 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
     // **非普通文件不当文本读**（§ 见 `readBounded`）：FIFO 上 `open(path, 'r')` 会**一直挂着**
     // 等一个写端（设备 / 套接字同理）——那不是「读不到」，是**根本不该去读**。
-    if (!info.isFile() && !info.isDirectory()) {
+    if (kindOf(info) === 'other') {
       return {
         ok: false,
         reason:

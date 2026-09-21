@@ -118,6 +118,25 @@ async function close(session: UiSession): Promise<void> {
   console.log(`  · 收摊：${how} · 帧 ${report.frames} 张 · 现场 ${report.runDir}`)
 }
 
+/**
+ * **在候选里选定一条**（回车）——带一次**有界重试**。
+ *
+ * 由头（2026-09-22 实测）：PTY 上两次写可能被**并成一次读**，那次回车于是不成立
+ * （产品侧已把这条路上的控制字符清干净——但「这一次回车丢了」由终端说了算，脚本只能按
+ * **效果**判）。判据取「抽屉收起」（候选行消失）：没收起再按一次，至多两次；
+ * 按过一次就收起的场合**不会**走到重试，故不会误选第二下。
+ */
+async function pickRow(session: UiSession, gone: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await pressKey(session, 'enter', { until: { absent: gone }, timeoutMs: 5_000 })
+      return
+    } catch (error) {
+      if (attempt >= 1) throw error
+    }
+  }
+}
+
 // ══ ①～③ 工单的示例场景 ═══════════════════════════════════════════════
 
 async function example(out: string): Promise<void> {
@@ -157,11 +176,7 @@ async function example(out: string): Promise<void> {
     //    同一瞬间就有了，而 Enter 与文本**同一次读**进去时，终端会把 `\r` 当成正文字符
     //    （真跑栽过：`src/login.ts\r\r` 成了筛选词）。等答复铺上行，Enter 才是单独一次。
     await session.wait({ text: '需求.md　文件' }, { timeoutMs: 10_000 })
-    // ⚠️ 等的是**候选行消失**（抽屉收起）——等草稿里那截文字是不够的：它是按键落下的
-    //    同一瞬间就有的，等它等于没等；两次写挨得太近时，PTY 会把两个 `\r` 并成一个
-    //    块读进来，Ink 那边就成了一个「输入 = `\r\r`」的按键（真跑栽过：回车变成了
-    //    筛选词里的两个控制字符）。
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await pickRow(session, '　文件')
     const picked = await session.capture({ label: '02-选入之后' })
     keep(out, picked, '02-选入之后')
 
@@ -181,7 +196,7 @@ async function example(out: string): Promise<void> {
     await session.wait({ text: 'src/login.ts　文件' }, { timeoutMs: 10_000 })
     const beforePick = await session.capture({ label: '03b-候选就位' })
     keep(out, beforePick, '03b-候选就位')
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await pickRow(session, '　文件')
 
     const composed = await session.capture({ label: '03a-一句话三处引用' })
     keep(out, composed, '03a-一句话三处引用')
@@ -259,7 +274,7 @@ async function removing(out: string): Promise<void> {
     await typeLine(session, '看 ')
     await typeAt(session)
     await session.wait({ text: 'a.txt　文件' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await pickRow(session, '　文件')
     const picked = await session.capture({ label: '04a-选入' })
     keep(out, picked, '04a-选入')
 
@@ -321,13 +336,39 @@ async function narrow(out: string): Promise<void> {
     keep(out, wrapped, '05b-引用折行')
 
     const screen = await session.screen()
-    const cyan = (row: number): number =>
-      screen.cellsOf(row).filter((cell) => cell.fg === '#56b6c2').length
     const lines = screen.lines.map((line) => line.text)
     const first = lines.findIndex((line) => line.includes('看 @src/sprawling'))
     check(first !== -1, '引用那一段在屏上')
-    check(cyan(first) > 0, '第一行上引用是青色（`PALETTE.user`）')
-    check(cyan(first + 1) > 0, '折下去那半截也是青色（区间逐行算，没漏）')
+
+    /**
+     * 引用那几格的色 —— **与同一屏上的「用户色」比，不硬比 RGB 常量**。
+     *
+     * 由头（2026-09-22 · 独立复核）：色**档**是终端能力说了算的——同一份代码在真彩终端上吐
+     * `#56b6c2`，在 256 色终端上吐最近的 `ansi:116`（chalk 的降档，**色还是那个色**）。
+     * 硬比 `#56b6c2` 于是量的是「这一趟的终端有多能显色」，不是「引用有没有上用户色」。
+     * 判据改成分母在**同一帧**里取：`› ` 提示符用的就是 `PALETTE.user`（`composer.ts`）——
+     * 引用那几格必须与它**同色**，且与正文那句**不同色**。
+     */
+    const on = (row: number): readonly { readonly text: string; readonly fg: string | null }[] =>
+      screen.cellsOf(row).filter((cell) => cell.text.trim() !== '')
+    const at = (row: number, text: string): number => on(row).findIndex((cell) => cell.text === text)
+
+    const userColor = on(first).find((cell) => cell.text === '›')?.fg
+    check(userColor !== undefined && userColor !== null, '这一屏有「用户色」（`› ` 提示符上量得到）')
+
+    // 这一行：`› 看 @src/sprawling…`——引用从那个 `@` 一直排到行尾
+    const refAt = at(first, '@')
+    const bodyAt = at(first, '看')
+    check(refAt !== -1 && bodyAt !== -1, '引用与正文都在同一行上')
+
+    const quote = on(first).slice(refAt).map((cell) => cell.fg ?? '（无色）')
+    const body = on(first)[bodyAt]?.fg ?? '（无色）'
+    check(quote.length > 0 && quote.every((color) => color === userColor), '引用与 `› ` 同色（同一档里就是同一个色）', quote.join(','))
+    check(body !== userColor, '正文那句不是用户色（两样分得开）', body)
+
+    // 折下去的那半截：**区间逐行算**，第二行上照样是用户色
+    const tail = on(first + 1).map((cell) => cell.fg ?? '（无色）')
+    check(tail.length > 0 && tail.every((color) => color === userColor), '折下去那半截也是用户色', tail.join(','))
     check(
       lines.every((line) => line.length <= 46),
       '整屏一行都不超宽（没折行账与屏分家）',
@@ -354,7 +395,7 @@ async function keepDraft(out: string): Promise<void> {
     await typeAt(session)
     await session.send('gone', { until: { text: '@gone' }, timeoutMs: 10_000 })
     await session.wait({ text: 'gone.txt　文件' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await pickRow(session, '　文件')
 
     // 提交之前把它删掉——取不到就整条不跑，原稿还回输入区
     const { rmSync } = await import('node:fs')
@@ -396,7 +437,7 @@ async function directory(out: string): Promise<void> {
     // 直接把查询打全（`@src/sub` 之类）——这里选的是**整条 src 目录**
     await pressKey(session, 'backspace') // 去掉尾斜杠，让候选收成「src 这一条目录」
     await session.wait({ text: 'src　目录' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { absent: '　目录' }, timeoutMs: 10_000 })
+    await pickRow(session, '　目录')
     await typeLine(session, ' 里有什么')
     await pressKey(session, 'enter', { until: { text: '好。' }, timeoutMs: 15_000 })
     const sent = await session.capture({ label: '07-目录引用' })
@@ -433,7 +474,7 @@ async function recall(out: string): Promise<void> {
     // 打进筛选（不筛的话选中的是列表第一行 `.magic`——那是挑走了另一条）
     await session.send('a.txt', { until: { text: '@a.txt' }, timeoutMs: 10_000 })
     await session.wait({ text: 'a.txt　文件' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await pickRow(session, '　文件')
     await typeLine(session, '，再按 ')
     await session.send('/rev', { until: { text: '/rev' }, timeoutMs: 10_000 })
     // 等**候选行**上屏（目录答复是异步的）：`Tab` 才有东西可选定

@@ -498,11 +498,16 @@ describe('U36 · 选定：引用留在原位', () => {
     const colors = (text: string): readonly (string | null)[] =>
       cells.filter((cell) => text.includes(cell.text)).map((cell) => cell.fg)
 
-    // 引用那六个字一色；左近那句正文（`先看`）是另一个色——**原位看得出来了**
+    // 引用那六个字一色；左近那句正文（`先看`）是另一个色——**原位看得出来了**。
+    // ⚠️ **与同一帧上的「用户色」比，不硬比 RGB 常量**：色档由终端能力定，同一份代码在真彩上
+    // 给 `#56b6c2`、在 256 色上给最近的 `ansi:116`（chalk 降档，色还是那个色）。
+    const userColor = cells.find((cell) => cell.text === '›')?.fg
     const quote = colors('@a.txt')
     const body = colors('先看')
+    expect(userColor).toBeDefined()
+    expect(userColor).not.toBeNull()
     expect(new Set(quote).size).toBe(1)
-    expect(quote[0]).toBe('#56b6c2') // `PALETTE.user`
+    expect(quote[0]).toBe(userColor)
     expect(body.length).toBeGreaterThan(0)
     expect(body.every((color) => color !== quote[0])).toBe(true)
   })

@@ -109,13 +109,21 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
 }
 
 /**
- * 子进程环境——**父环境照抄，然后摘掉三处不该传下去的**。
+ * 子进程环境——**父环境照抄，然后摘掉三处不该传下去的、钉死两处色彩口径**。
  *
  * - `MAGIC_*_API_KEY`——真凭据。剔了它，`resolveApiKey` 就只剩配置里那把假 key 可用；
  * - `NO_COLOR`——它会让 chalk 落到 0 档，而帧要留色（`FORCE_COLOR` 已显式拧到 3 档）；
  * - `HOME`——换成沙地（本文件存在的理由）。
  *
  * 其余照抄（`PATH` 等）——子进程仍要是**真的那个 `bun`**。
+ *
+ * ⚠️ **色彩两件都要钉**（2026-09-22 · U36 独立复核实测）：`FORCE_COLOR=3` **单独拧不动真彩**
+ * ——`TERM=xterm-256color` 之下 chalk 把 3 档**降到 2 档**（`chalk.hex('#56b6c2')` 出来的是
+ * `38;5;116`，最近的 256 色），只有 `COLORTERM=truecolor` 在才给真彩
+ * （实测三组：`FORCE_COLOR=3` 无 COLORTERM ⇒ level 2；加 `COLORTERM=truecolor` ⇒ level 3；
+ * 都不给 ⇒ level 0）。而 COLORTERM 原先**靠父环境继承**——于是「同一份代码，从我这台终端跑
+ * 出真彩、从另一台跑出 256 色」，帧里的色**不可复现**（独立复核那一趟正是这样红的）。
+ * 故本文件把它钉死：沙地要的是**另一个终端**，不是一个**看父环境脸色的**终端。
  */
 function childEnv(options: { home: string; forceColor: string }): Record<string, string> {
   const env: Record<string, string> = {}
@@ -131,6 +139,8 @@ function childEnv(options: { home: string; forceColor: string }): Record<string,
   env['FORCE_COLOR'] = options.forceColor
   // 终端名照真终端的来（Ink / chalk 按它判色档）——沙地不是「没有终端」，是「另一个终端」
   env['TERM'] = 'xterm-256color'
+  // 真彩那一档要看它（见上注：光有 FORCE_COLOR 会被 TERM 降到 256 色）
+  env['COLORTERM'] = 'truecolor'
 
   return env
 }

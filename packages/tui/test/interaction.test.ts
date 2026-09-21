@@ -19,7 +19,7 @@ import { EventEmitter } from 'node:events'
 import { render } from 'ink-testing-library'
 import { createElement as h } from 'react'
 import type { Command, KernelEvent } from '@magic/contracts'
-import { TuiApp } from '../src/components/app.ts'
+import { TuiApp, toShellKeys } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
@@ -282,5 +282,44 @@ describe('展开 / 折叠', () => {
     await app.waitForFrame((frame) => frame.includes('第二行想法'))
 
     app.unmount()
+  })
+})
+
+// ══ 一次读块里的控制字符（U36 修正轮）═════════════════════════════════
+
+describe('攒块里的控制字符', () => {
+  /**
+   * 真跑栽过的一档：终端把「回车」和它前面的文本**并成一次读**时，Ink 交上来的是
+   * `input = '正文\r'`（`key.return` 为假）——逐字符摊开就会把那个 `\r` 当成正文字符
+   * 塞进草稿（看不见，还会一路发给模型），而**紧接着那次回车也就没发生**。
+   */
+  test('裸 `\r` 不落草稿（回车与文本并成一块读时）', () => {
+    const keys = toShellKeys('看下目录\r', {})
+    expect(keys).toEqual([
+      { kind: 'char', char: '看' },
+      { kind: 'char', char: '下' },
+      { kind: 'char', char: '目' },
+      { kind: 'char', char: '录' },
+    ])
+  })
+
+  test('`\r\n` ⇒ 一个换行（Windows 行尾粘进来）', () => {
+    expect(toShellKeys('甲\r\n乙', {})).toEqual([
+      { kind: 'char', char: '甲' },
+      { kind: 'newline' },
+      { kind: 'char', char: '乙' },
+    ])
+  })
+
+  test('其余控制字符也丢掉（`\t` / `\u0000`）', () => {
+    expect(toShellKeys('甲\t\u0000乙', {})).toEqual([
+      { kind: 'char', char: '甲' },
+      { kind: 'char', char: '乙' },
+    ])
+  })
+
+  test('单个 `\r` / `\n` 的老两条来路照旧（回车 / 换行）', () => {
+    expect(toShellKeys('\r', { return: true })).toEqual([{ kind: 'enter' }])
+    expect(toShellKeys('\n', {})).toEqual([{ kind: 'newline' }])
   })
 })

@@ -392,6 +392,34 @@ describe('U36 · 非普通文件：不当文本读（否则会挂在 open 上）
       sand.dispose()
     }
   })
+
+  test('**工作区外**的非普通文件同样不列（内外同一个类型判据）', async () => {
+    const sand = sandbox()
+    const outside = mkdtempSync(join(tmpdir(), 'magic-out-dev-'))
+    try {
+      const materials = materialsAt(sand.at)
+      const pipe = join(outside, 'pipe')
+      execFileSync('mkfifo', [pipe])
+
+      // 反例（独立复核报的那一条）：`/dev/null` 曾被当成一条**可选的外部文件**给出去
+      const device = await materials.candidates('/dev/null', 30)
+      expect(device.rows).toEqual([])
+      expect(device.note).toContain('普通文本文件')
+
+      const fifo = await materials.candidates(pipe, 30)
+      expect(fifo.rows).toEqual([])
+      expect(fifo.note).toContain('普通文本文件')
+
+      // load 两处都照旧安全拒绝（外部那一条同样走类型判据）
+      expect((await materials.load([{ kind: 'file', source: '/dev/null', external: true }])).ok).toBe(false)
+      const read = await materials.load([{ kind: 'file', source: pipe, external: true }])
+      expect(read.ok).toBe(false)
+      if (!read.ok) expect(read.reason).toContain('不是普通文件')
+    } finally {
+      sand.dispose()
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
 })
 
 // —— 声明的别名（macOS：`/tmp/...` 与 `/private/tmp/...`）——

@@ -553,6 +553,26 @@ export function toShellKeys(
 
   if (input === '') return []
 
-  // 一次来一串＝粘贴（没走 bracketed paste 的终端）
-  return [...input].map((char) => ({ kind: 'char', char }) as const)
+  // 一次来一串＝**一个读块里攒了好几个字符**（没走 bracketed paste 的终端，或终端的写
+  // 被凑成了一块读进来）。逐字符摊开，但**控制字符一个都不许落进草稿**：
+  //
+  // - `\n` ⇒ 换行（与上面 `input === '\n'` 那一条同义）；
+  // - `\r` ⇒ **丢掉**。它不是正文（用户打不出一个裸 CR）——两种来路都是：
+  //   ① 粘贴一段 Windows 行尾（`\r\n`）时，`\r` 是行尾的一半，换行由 `\n` 出；
+  //   ② 终端把「回车」与它前面的文本**并成一次读**（`Bun.spawn` 的 PTY 上实测过：
+  //      回车成了正文字符，筛选框里多出一个看不见的 `\r`，紧接着那次回车**发不出去**）。
+  //   漏掉它就是把一个看不见的字节塞进用户的交代里，还会一路发给模型。
+  // - 其余 C0（`\t` 等）同样丢掉：键位归 `key.*` 那几条管，攒块里剩下的不是正文。
+  const keys: ShellKey[] = []
+  for (const char of input) {
+    if (char === '\n') {
+      keys.push({ kind: 'newline' })
+      continue
+    }
+    // 其余控制字符**一个都不落草稿**（见上）
+    if (/\p{Cc}/u.test(char)) continue
+    keys.push({ kind: 'char', char })
+  }
+
+  return keys
 }

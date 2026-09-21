@@ -58,6 +58,7 @@ import {
 } from './view.ts'
 import {
   backspaceRange,
+  cleanPaste,
   deleteRange,
   insertText,
   markerOf,
@@ -1177,7 +1178,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 抽屉开着时粘贴一律不收：`@` 那一栏的查询与草稿是**同一段文字**（见 `typePath`），
         // 从旁路插一刀会让锚点与正文对不上；其余抽屉更是接管着输入（打进去的字一律吞掉）。
         if (view.dock.kind === 'picker') return NONE
-        insertAt(input.text)
+        // **粘进来的是干净的一段**（行尾归一、控制字符不留）——见 `cleanPaste`
+        const pasted = cleanPaste(input.text)
+        if (pasted !== '') insertAt(pasted)
         return NONE
 
       case 'escape':
