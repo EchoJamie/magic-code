@@ -61,7 +61,7 @@ import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
-import { PALETTE } from './lines.ts'
+import { PALETTE, expandTabs } from './lines.ts'
 
 /** 输入行的面孔——由外壳按状态算好（显示层不判断）。 */
 export type ComposerTone = 'idle' | 'working' | 'waiting' | 'retrying'
@@ -263,7 +263,14 @@ export function composerLayout(
         // 插入点落在第几行第几列——**与折行同一把尺**（`widthOf`）、**同一条口径**
         // （先规范化：折行进门就 `normalize()`，见文件头那一节）。量的是**屏上**那一行里
         // 插入点之前那一段占的列数；与折出来的各行宽度是同一本账，故下面那趟累加必能落到一行上。
-        const offset = widthOf((prefix + line.slice(0, caretInLine)).normalize())
+        //
+        // ⚠️ **Tab 也要按折行那一支的规矩展开**（2026-09-22 · Tab 多行重印那一轮）：
+        // `wrap-ansi` 把 `\t` 展成「到下一张 8 列制表位」的空格，而 `string-width` 把 `\t`
+        // 量成 **0 列**——直接量的话，插入点会落在**文本里面**（实测：`left⇥right` 尾巴上
+        // 差 2 列；行首 Tab 那一档差 8 列）。
+        const offset = widthOf(
+          expandTabs((prefix + line.slice(0, caretInLine)).normalize(), 0, (char) => widthOf(char)),
+        )
         let used = 0
         wrapped.forEach((row, at) => {
           const size = widthOf(row)

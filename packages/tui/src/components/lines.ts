@@ -51,7 +51,56 @@ export function displayWidth(text: string): number {
   return width
 }
 
-/** 折行——按显示宽度切（不切在字符中间；超长单词硬切）。 */
+/**
+ * **一张制表位几列**——终端把 `\t` 渲染成「走到下一个 8 列的整数倍」的那一段空白
+ * （`wrap-ansi` 里也是这个数：`TAB_SIZE = 8`）。
+ */
+export const TAB_SIZE = 8
+
+/** 从第 `column` 列打一个 `\t`，它会推进几列。 */
+export function tabWidth(column: number): number {
+  return TAB_SIZE - (column % TAB_SIZE)
+}
+
+/**
+ * **按终端的规矩展开 Tab**：`\t` ⇒ 到下一张制表位的空格（`column` ＝ 这段文字从第几列起）。
+ *
+ * 为什么非展不可（2026-09-22 · Tab 多行重印那一条）：**同一个 `\t` 在三处量出了三个宽度**
+ * ——我们这支 `charWidth` 算 1 列 · Ink 那一支的 `string-width` 算 **0 列** · 而终端（与
+ * `wrap-ansi`）按制表位**展成空格**。记录区那些按宽度**补齐到屏宽**的行，于是比终端以为的
+ * 短一截：终端多出来的那几列**自己折了一行**，应用的行数账目就少一行 ⇒ 上一帧擦不干净、
+ * 正文重印（贴含 Tab 的多行代码提交后就是这一条）。
+ *
+ * 展开只发生在**显示层**：草稿、模型请求与持久记录里的原文一字不动（Tab 仍是 Tab），
+ * 屏上按「终端实际会画成什么样」来量、来折。
+ *
+ * `measure` 是「一个字符占几列」那把尺子——本文件的 `wrap` 用 `charWidth`；输入行那一支
+ * 与 `wrap-ansi` 同源（`string-width`），故它传自己的那把（**一把尺子量到底**，别混）。
+ */
+export function expandTabs(
+  text: string,
+  column = 0,
+  measure: (char: string) => number = charWidth,
+): string {
+  let out = ''
+  let at = column
+
+  for (const char of text) {
+    if (char === '\t') {
+      const size = tabWidth(at)
+      out += ' '.repeat(size)
+      at += size
+      continue
+    }
+
+    out += char
+    at += measure(char)
+  }
+
+  return out
+}
+
+/** 折行——按显示宽度切（不切在字符中间；超长单词硬切）。Tab 按终端规矩展开后再折。 */
 export function wrap(text: string, width: number): readonly string[] {
   if (width <= 0) return [text]
 
@@ -61,15 +110,26 @@ export function wrap(text: string, width: number): readonly string[] {
     let line = ''
     let used = 0
 
-    for (const char of raw) {
-      const size = charWidth(char)
-      if (used + size > width && line !== '') {
-        lines.push(line)
-        line = ''
-        used = 0
+    /**
+     * 往当前行放一段——**折行的唯一去处**：Tab 展开出来的空格也走这里，故它们与别的字符
+     * 一样参与折行（不这样，展开出来的空白会一列不数地冲过行宽）。
+     */
+    const put = (piece: string): void => {
+      for (const char of piece) {
+        const size = charWidth(char)
+        if (used + size > width && line !== '') {
+          lines.push(line)
+          line = ''
+          used = 0
+        }
+        line += char
+        used += size
       }
-      line += char
-      used += size
+    }
+
+    for (const char of raw) {
+      // ⚠️ **量的列是「放之前」的列**（制表位按当前光标位置算）——`put` 的实参先算好
+      put(char === '\t' ? ' '.repeat(tabWidth(used)) : char)
     }
 
     lines.push(line)
