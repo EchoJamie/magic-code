@@ -633,6 +633,26 @@ async function waitForDescendant(log: string, timeoutMs = 5_000): Promise<number
   return undefined
 }
 
+/**
+ * 等**服务器自己收到**某件工具再往下走——流水那一行是 `record()` 在 `CallTool` **入口**写的。
+ *
+ * ⚠️ **别拿屏上那句「运行中」当「已经在跑」**：工具行在**待裁决**那一刻就画出来了，
+ * 那句话**卡还挂着时就在屏上**——实测它在 **0ms** 命中、字节水位与批准前**同一个数**
+ * （通过趟与失败趟的步骤形状**完全一样**，对照见
+ * `验证/D28甲-D29-20260922/开发/取消就绪条件-对照/`）。失败那趟的 `ctrl+c` 因此打在
+ * 「还没开始跑」上：**服务端收到 `slow` 比它晚 3.3ms** ⇒ 取消落空，后一步等「已取消」超时。
+ */
+async function waitToolCalled(log: string, tool: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (mcpCalls(log).some((call) => call.tool === tool)) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error(`等服务器收到「${tool}」超时（${timeoutMs}ms）——流水 ${mcpCalls(log).length} 行`)
+}
+
 /** 服务器那边的调用流水（判据取它）。 */
 function mcpCalls(log: string): readonly { readonly tool: string; readonly pid: number }[] {
   if (!existsSync(log)) return []
@@ -732,8 +752,11 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ text: '› 再来件拖住的' }, { timeoutMs: 10_000 })
     await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
     await session.send('y')
-    // 等「在跑」那一行出现（调用真的发出去了），再中断
-    await session.wait({ text: '运行中' }, { timeoutMs: 10_000 })
+    // 中断之前等两件**真发生过**的事：
+    // ① **卡收了**（键位那一行不在）——那一下 `ctrl+c` 才是「中断」，不是「在卡上按了个键」；
+    // ② **服务器自己收到了这一笔**（`waitToolCalled`；屏上那句「运行中」证明不了，注见它）。
+    await session.wait({ absent: 'y 批准这一次' }, { timeoutMs: 10_000 })
+    await waitToolCalled(log, 'slow')
 
     await session.send('\u0003') // ctrl+c：工作中＝中断
     await session.wait({ text: '已取消' }, { timeoutMs: 10_000 })
