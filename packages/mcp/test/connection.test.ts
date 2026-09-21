@@ -412,6 +412,60 @@ describe('复入 close（返工 A 补正 · 复验退回的最后一处）', () 
   })
 })
 
+describe('显式重连（U39）', () => {
+  test('重连重走一趟起手与发现——**新进程**、工具表照旧、读数回到可用', async () => {
+    const dir = tempDir()
+    const { connection, log } = await connect({}, { dir })
+
+    await connection.call('echo', { text: '第一趟' })
+    const first = callsOf(log)[0]?.pid as number
+    expect(typeof first).toBe('number')
+
+    await connection.reconnect()
+
+    expect(connection.state.status).toBe('available')
+    expect(connection.tools().map((tool) => tool.name)).toContain('echo')
+
+    await connection.call('echo', { text: '第二趟' })
+    const pids = callsOf(log).map((call) => call.pid)
+    expect(pids).toHaveLength(2)
+    expect(pids[1]).not.toBe(first) // 换了一个进程（真的重走了一趟起手）
+
+    await connection.close()
+  })
+
+  test('服务器崩了之后重连——把这条连接接回来（**不重放**那笔效果未知的调用）', async () => {
+    const dir = tempDir()
+    const { connection, log } = await connect({}, { dir })
+
+    expect(await connection.call('boom', {})).toMatchObject({ kind: 'failed', failure: 'unreachable' })
+    await waitState(connection, 'unavailable')
+
+    await connection.reconnect()
+
+    expect(connection.state.status).toBe('available')
+    // 重连只重做连接与发现：服务器那边数到的还是那一笔 `boom`
+    expect(callsOf(log).map((call) => call.tool)).toEqual(['boom'])
+
+    await connection.close()
+  })
+
+  test('没连上过的那条也能重连（那一趟就是一次起手）', async () => {
+    const connection = createStdioConnection({
+      server: 'missing',
+      config: { command: join(tempDir(), '没有这个可执行文件') },
+      connectTimeoutMs: 3_000,
+    })
+    await connection.start()
+    expect(connection.state.status).toBe('unavailable')
+
+    await connection.reconnect()
+    expect(connection.state.status).toBe('unavailable')
+
+    await connection.close()
+  })
+})
+
 describe('名字与重名的收口（返工 B · 独立验收问题 5 / 6）', () => {
   test('名字带控制字节的**拒收并说缘由**；同台的合法工具照常', async () => {
     const { connection } = await connect({}, { mode: 'badname' })

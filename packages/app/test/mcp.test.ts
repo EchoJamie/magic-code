@@ -125,10 +125,13 @@ describe('发现 → 审批 → 调用 → 落账 → 回填', () => {
       const assembly = stage.assemble({ turns })
       await assembly.ready()
 
-      // 装配侧先自证：这一台连上了、工具表是服务器报的那几件
+      // 装配侧先自证：这一台连上了、工具表是服务器报的那几件。
+      // **原锚**：四格（server / state / tools / rejected）；**为何变**：U39 加了两种接入，
+      // 读数要说得清这一条是怎么连的（`transport`）；**新锚**：五格，多出来的那一格是 'stdio'。
       expect(assembly.mcpServers()).toEqual([
         {
           server: 'fake',
+          transport: 'stdio',
           state: { status: 'available' },
           tools: ['echo', 'snapshot', 'shot', 'annotated', 'fail', 'slow', 'boom', 'spawnboom'],
           rejected: [],

@@ -106,6 +106,16 @@ export function createControlHub(): ControlHubFace {
         // （`skills.catalog`，不落库）——命令面只发不收。
         target.onSkillList()
         return
+      case 'mcp.list':
+        // 外部服务器的一屏（读侧 · U39）——**原样转手**给**装配**（那一束连接是它编排的，
+        // 同 `model.list` 之于注册表）。本域不认识 MCP，答复走事件（`mcp.catalog`，不落库）。
+        target.onMcpList()
+        return
+      case 'mcp.reconnect':
+        // 显式重连——同一条路（连接归装配）。**不在这里判服务器名认不认得**：
+        // 名字是配置里的身份，只有装配那份配置说了算（同 `grants.revoke` 的缺省之例）。
+        target.onMcpReconnect(command.server)
+        return
       case 'grants.revoke':
         // 撤销——同一条路（落盘归装配）。**不在这里解释 `workspace` / `index` 的缺省**：
         // 「缺省＝本工作区」「缺省＝整节」是**授权落点**的语义，归装配那一侧（同 `decision.answer`

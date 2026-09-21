@@ -44,6 +44,9 @@ import {
   sessionHint,
   grantsHint,
   grantsRows,
+  mcpHint,
+  mcpRows,
+  mcpToolRows,
   sessionRows,
   skillHint,
   skillRows,
@@ -137,7 +140,7 @@ function statusLines(view: ShellView): readonly string[] {
 const STATUS_TITLE = '此刻'
 
 /** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` · `/skills` 各一种。 */
-type PendingPicker = 'session' | 'model' | 'grants' | 'skills'
+type PendingPicker = 'session' | 'model' | 'grants' | 'skills' | 'mcp'
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
 export type ShellOptions = {
@@ -311,6 +314,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /** 等回话的选择器意图（`/session` / `/model` / `/grants` / `/skills` 各问一次）。 */
   let waiting: PendingPicker | null = null
+
+  /**
+   * `/mcp <名字>` 的**预置那一台**——只在「等外部服务器一屏」那一趟有效（答复到了交给抽屉）。
+   * 空串＝总览那一屏（`/mcp` 无参）。
+   */
+  let mcpServer = ''
 
   /**
    * `/skills <词>` 的**预置筛词**——只在「等技能目录」那一趟有效（答复到了交给抽屉）。
@@ -583,6 +592,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
       }
     }
+
+    // 外部服务器一屏回来了 ⇒ 开抽屉（`/mcp` 那条路）／**重连之后刷新它 ＋ 留一行回执**。
+    // 与 `grants.catalog` 同一条分寸：`waiting` 只在「刚问过」时为真；重连那次是抽屉已开着。
+    if (event.kind === 'mcp.catalog') {
+      if (waiting === 'mcp') {
+        waiting = null
+        // 点了名的（`/mcp <名字>` · `/mcp reconnect <名字>`）要那一台**在读数里**才开抽屉：
+        // 认不出的名字没有明细可看，那一行回执（`note`）就是它的答复。
+        if (mcpServer === '' || event.data.servers.some((one) => one.server === mcpServer)) {
+          openMcpPicker(mcpServer)
+        }
+      } else {
+        refreshMcpPicker() // 抽屉还开着才重铺（`esc` 收起了就只留回执）
+      }
+
+      // 重连的**结果**只有答复说得清（成没成 · 有没有这一台）——抽屉开不开都留这一行
+      if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
+    }
   }
 
   const accumulate = (data: Extract<KernelEvent, { kind: 'session.history' }>['data']): void => {
@@ -684,6 +711,63 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           rows,
           selected: Math.min(view.dock.picker.selected, Math.max(0, rows.length - 1)),
           hint: catalog.note ?? grantsHint(catalog),
+        },
+      },
+    })
+  }
+
+  /**
+   * `/mcp`（U39）——一屏已到手，开抽屉：**与 `/grants` 同位置同开合**（左下，`esc` 收起
+   * 不留痕迹）。
+   *
+   * `who` 空串＝**总览**（一台一台列，状态 ＋ 件数）；给了名字＝**那一台的明细**
+   * （工具名 ＋ 状态，不可用的缘由与拒收的那些在下方那行说明里）。
+   *
+   * 0 行那两路（一台都没配 / 点了名却不在读数里）由 `openPicker` 按既有规矩办：
+   * 那行说明落成记录区的一行回执，**不接管输入**。
+   */
+  const openMcpPicker = (who: string): void => {
+    const catalog = view.mcp
+    if (catalog === null) return // 一屏没到手＝不该走到这儿（开抽屉那条路先问后开）
+
+    commit(
+      openPicker(view, {
+        source: 'mcp',
+        selected: 0,
+        rows: who === '' ? mcpRows(catalog) : mcpToolRows(catalog, who),
+        hint: mcpHint(catalog, who === '' ? undefined : who),
+      }),
+    )
+  }
+
+  /**
+   * 重连之后照着新读数重铺（抽屉还开着才动它——收起时就只留那一行回执）。
+   *
+   * 铺哪一屏由 `mcpServer` 说了算（它就是「这一扇开的是哪一屏」）——转了一圈回来
+   * 状态还是同一个，不必从行内容反推（那要靠字面比较，改一句话就静默失配）。
+   */
+  const refreshMcpPicker = (): void => {
+    const catalog = view.mcp
+    if (catalog === null || view.dock.kind !== 'picker' || view.dock.picker.source !== 'mcp') return
+
+    const picker = view.dock.picker
+    const who = mcpServer
+    const rows = who === '' ? mcpRows(catalog) : mcpToolRows(catalog, who)
+
+    if (rows.length === 0) {
+      commit(closePicker(view))
+      return
+    }
+
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          ...picker,
+          rows,
+          selected: Math.min(picker.selected, Math.max(0, rows.length - 1)),
+          hint: mcpHint(catalog, who === '' ? undefined : who),
         },
       },
     })
@@ -1053,6 +1137,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
+      // 外部服务器那一屏（U39）：**纯读**——回车不改变任何东西（重连是另一条命令，
+      // 明写 `/mcp reconnect <名字>`）。留着这一支是**必须**的：不然它会落到下面的换模型上。
+      if (view.dock.picker.source === 'mcp') return NONE
+
       // 换模型：回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）
       send({ type: 'model.switch', provider: row.value })
       commit(closePicker(view))
@@ -1186,6 +1274,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //（以「换失败了」作答，还白落一笔 `model.switched`）。
       waiting = 'model'
       return only(cleared, { type: 'model.list' })
+    }
+
+    // `/mcp`（U39）——**纯查询型**：记录区什么都不进，只在左下开抽屉。
+    // 与 `/grants` 同一姿势：**先问一次**（答复是 `mcp.catalog`），外壳据它铺行。
+    // `/mcp <名字>` 看那一台的明细；`/mcp reconnect <名字>` 显式重连（仍走启动授权，
+    // 不重放业务调用）——重连之后答复照走 `mcp.catalog`，那一屏当场说清新状态。
+    if (word === '/mcp') {
+      if (arg.startsWith('reconnect')) {
+        const who = arg.slice('reconnect'.length).trim()
+        if (who === '') return only(appendReceipt(cleared, '要重连哪一台？`/mcp reconnect <名字>`'))
+
+        waiting = 'mcp'
+        mcpServer = who
+        return only(cleared, { type: 'mcp.reconnect', server: who })
+      }
+
+      waiting = 'mcp'
+      mcpServer = arg
+      return only(cleared, { type: 'mcp.list' })
     }
 
     // `/grants`（U22 · B13）——**交互配置型**：记录区什么都不进，只在左下开抽屉。

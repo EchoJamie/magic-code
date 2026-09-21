@@ -112,6 +112,8 @@ export type EventKind =
   | 'grants.catalog'
   // 控制 · 技能——**技能目录**（U33）：`skills.list` 的答复；**不落库**
   | 'skills.catalog'
+  // 控制 · 外部工具——**外部服务器的一屏**（U39）：`mcp.list` / `mcp.reconnect` 的答复；**不落库**
+  | 'mcp.catalog'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -229,6 +231,39 @@ export type SkillProblemRow = {
   /** 一句人读得懂的话——说清**是什么、为什么、怎么办**。 */
   readonly message: string
   readonly kind: 'error' | 'choice'
+}
+
+/**
+ * 一台外部服务器的**当下读数**——`mcp.catalog` 的载荷一行（U39）。
+ *
+ * 三件都是**读出来的**：身份与工具表取自连接自己（发现的结果），状态同理
+ * （`McpConnection.state`）——不另立一本账，也不后台轮询。
+ *
+ * ⚠️ **地址与请求头不在此列**：`url` / `headers` 里的东西可能是凭据（`Authorization` 一类），
+ * 而这一行会经控制面、落进外壳的视图；查询屏报**名字**就够了（名字就是身份）。
+ *
+ * ⚠️ **状态与拒收两处是照写的联合 / 对象**，不 import `mcp.ts` 的 `McpConnectionState` /
+ * `McpToolRejection`——由头与 `SkillCatalogRow` 那段同一条：本文件被 `ports.ts`（它反过来
+ * import `mcp.ts`）import，反向再引会绕成一个环。
+ */
+export type McpCatalogRow = {
+  /** 配置里的条目名（`mcp.servers` 的键）——**身份**。 */
+  readonly server: string
+  /** 哪一种接入——两种传输的读数在同一张表里，这一格说明它是怎么连的。 */
+  readonly transport: 'stdio' | 'http'
+  readonly state:
+    | { readonly status: 'connecting' }
+    | { readonly status: 'available' }
+    /** 不可用**带缘由**（一句人读得懂的话：起不来 / 连不上 / 不支持的版本或认证）。 */
+    | { readonly status: 'unavailable'; readonly reason: string }
+  /** 发现到的工具名——**服务器那边报的**（未加前缀），次序即服务器给的序。 */
+  readonly tools: readonly string[]
+  /**
+   * 发现时**拒收的那些**（名字不合规 / 同一台服务器重名）——连同缘由。
+   *
+   * `tool` 是服务器自报的**原文**（可能带控制字节），显示前得过 `sanitizeForDisplay`。
+   */
+  readonly rejected: readonly { readonly tool: string; readonly reason: string }[]
 }
 
 /**
@@ -559,6 +594,22 @@ export type EventDataOf = {
     /** 一句话说明——只在有事要说时给。不给＝表自明。 */
     readonly note?: string
   }
+  // 控制 · 外部工具——**外部服务器的一屏**（U39）。`mcp.list` / `mcp.reconnect` 的答复。
+  // **不落库**：同 `model.catalog` / `grants.catalog` / `skills.catalog`——它是**读出来的**
+  // （状态挂在连接上、工具表是发现的结果），落库＝把同一份读数存 N 遍；且 `/mcp` 是
+  // **反复看**的动作（连接断了就再看一次），每按一下留一笔「问过」只会污染观测。
+  // 重连这个**动作**本身也不落库：它不产生任何外部效果，是「再看一眼」而不是「做过什么」。
+  'mcp.catalog': {
+    /**
+     * 配了哪几台、各是什么状态——**次序即配置里的键序**（身份就是顺序与名字）。
+     *
+     * 空表＝**一台都没配**（不是错：不写 `mcp.servers` 就是没有外部工具），
+     * 外壳据此说一句「去哪儿配」而不是报错。
+     */
+    readonly servers: readonly McpCatalogRow[]
+    /** 一句话说明——只在有事要说时给（重连的结果 / 认不出的服务器名）。 */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -642,6 +693,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 落库之后，恢复时读到的旧回执会与当下的草稿状态对不上（它的配对键是外壳给的，
   // 跨进程重开就没人认领了）。
   'input.settled',
+  // 外部服务器一屏同列的理由（U39）：与 `model.catalog` 同一条——它是**读出来的**
+  // （状态挂在连接上、工具表是发现的结果），落库＝把同一份读数存 N 遍；
+  // 且 `/mcp` 是**反复看**的动作，每按一下留一笔「问过」只会污染观测。
+  // 重连这个动作也不落库：它不产生外部效果（重放要的是「发生过什么」）。
+  'mcp.catalog',
 ]
 
 /**

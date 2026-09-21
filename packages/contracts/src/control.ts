@@ -230,8 +230,35 @@ export type GrantsRevoke = {
 export type SkillList = { readonly type: 'skills.list' }
 
 /**
+ * `mcp.list`——**外部服务器的一屏**（U39）。
+ *
+ * **由头**：`/mcp` 要列已配置的身份、连接状态与工具数，而外壳够不着那一束连接
+ * （生命周期是装配编排的）——与 `model.list` / `grants.list` / `skills.list` 同一处境：
+ * **控制面是唯一一直通的路**，故读也走命令面，答复走事件（`mcp.catalog`，**不落库**）。
+ *
+ * **无参**——问的就是「配了哪些、各是什么状态」。状态是**读出来的当下值**：每条连接自己的
+ * `state`，不另立一本账，也不后台轮询（见 `McpCatalogRow`）。
+ */
+export type McpList = { readonly type: 'mcp.list' }
+
+/**
+ * `mcp.reconnect`——**显式重连一台外部服务器**（U39）。
+ *
+ * 与 `grants.revoke` 同一个姿势：**不是读面**，而是一次用户动作（`/mcp reconnect <服务器>`）；
+ * 答复照走 `mcp.catalog`——重连之后那一屏要能立刻说清新的状态与工具表。
+ *
+ * **不重放业务调用**：重做的只有连接与发现。认不出的服务器名不当作错误（清单照给，
+ * 缘由写在答复的 `note` 上）。
+ */
+export type McpReconnect = {
+  readonly type: 'mcp.reconnect'
+  /** 重连哪一台——配置里的条目名（**身份**）。 */
+  readonly server: string
+}
+
+/**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支）——外壳发往内核的全部消息。
+ * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支）——外壳发往内核的全部消息。
  */
 export type Command =
   | InputSubmit
@@ -244,6 +271,8 @@ export type Command =
   | GrantsList
   | GrantsRevoke
   | SkillList
+  | McpList
+  | McpReconnect
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

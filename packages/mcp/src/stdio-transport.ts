@@ -37,8 +37,8 @@
 
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import type { OwnedTransport } from './connection.ts'
 
 /** 关 stdin 之后等它自己退多久（毫秒）——到点即按组收。 */
 export const STDIO_EXIT_GRACE_MS = 2_000
@@ -58,23 +58,23 @@ export type OwnedStdioOptions = {
 }
 
 /** 端口 —— 官方 `Transport` 三件（`start` / `send` / `close`）＋ 归属与收尾。 */
-export interface OwnedStdioTransport extends Transport {
+export interface OwnedStdioTransport extends OwnedTransport {
   /** **自有进程组 id**（＝子进程 pid）——「哪些算它的」只有这一个判据。未起／已收＝`undefined`。 */
   readonly pgid: number | undefined
   /**
    * 收尾：关 stdin → 等 → **按组** TERM → 等 → **按组** KILL。
    *
-   * 返回**没收掉的组**（空表＝收干净了）——调用方据此如实写在读数上，
-   * 不许拿一个空表冒充「已收干净」。幂等（第二次直接给上一次的结果）。
+   * 交回**没收干净**那一句（`undefined`＝收干净了）——调用方据此如实写在读数上，
+   * 不许拿一句空话冒充「已收干净」。幂等（第二次直接给上一次的结果）。
    */
-  shutdown(): Promise<readonly number[]>
+  shutdown(): Promise<string | undefined>
 }
 
 /** 造一条自有 stdio 传输——**造了不等于起了**（`start()` 才拉进程）。 */
 export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdioTransport {
   let child: Bun.Subprocess<'pipe', 'pipe', 'ignore'> | undefined
   let pgid: number | undefined
-  let closing: Promise<readonly number[]> | undefined
+  let closing: Promise<string | undefined> | undefined
   let closed = false
   const buffer = new ReadBuffer()
 
@@ -169,16 +169,16 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
   }
 
   /** 收尾（幂等）——见 `OwnedStdioTransport.shutdown`。 */
-  function shutdown(): Promise<readonly number[]> {
+  function shutdown(): Promise<string | undefined> {
     closing ??= closeOnce()
     return closing
   }
 
-  async function closeOnce(): Promise<readonly number[]> {
+  async function closeOnce(): Promise<string | undefined> {
     const spawned = child
     if (spawned === undefined) {
       // 没起过 / 已经收过：**组还在就再确认一次**（组长崩了但组员还在的那种局面）
-      return pgid === undefined ? [] : reapGroup(pgid)
+      return pgid === undefined ? undefined : cleanupNote(await reapGroup(pgid))
     }
 
     // ① 优雅：关 stdin（规范里的头号信号——服务器收到 EOF 自己退）
@@ -192,10 +192,16 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
     await Promise.race([spawned.exited, sleep(STDIO_EXIT_GRACE_MS)])
 
     // ③ **按组收**：等不到就 TERM，再不退就 KILL（组内普通后代一并收走）
-    return reapGroup(spawned.pid)
+    return cleanupNote(await reapGroup(spawned.pid))
   }
 
   return transport
+}
+
+/** 没能收掉的那一组 → 一句人话（收干净＝`undefined`，不许拿空话冒充已收干净）。 */
+function cleanupNote(survivors: readonly number[]): string | undefined {
+  if (survivors.length === 0) return undefined
+  return `有进程没能收掉（进程组 ${survivors.join(' ')}）`
 }
 
 /** 组还在不在——`kill(-pgid, 0)` 只探活：组里**还有成员**就成（组长没了也一样）。 */

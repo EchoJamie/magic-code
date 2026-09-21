@@ -89,6 +89,12 @@ export function commandSubjectOf(command: Command): string {
     case 'skills.list':
       // U33 技能读侧——无参：问的就是「都发现了哪些」
       return '列技能目录'
+    case 'mcp.list':
+      // U39 外部服务器读侧——无参：问的就是「配了哪些、各是什么状态」
+      return '列外部服务器'
+    case 'mcp.reconnect':
+      // U39 显式重连——真的重走一趟起手与发现（不重放业务调用）
+      return `重连外部服务器：${command.server}`
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -155,6 +161,8 @@ export function hubFaceRealizesPort(): void {
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -183,6 +191,8 @@ export function routesAreContractShape(): void {
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
   }
   void routes
 }
@@ -214,6 +224,8 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
+    onMcpList: () => undefined,
+    onMcpReconnect: () => undefined,
     ...overrides,
   }
 }
