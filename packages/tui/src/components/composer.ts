@@ -268,9 +268,9 @@ export function composerLayout(
         // `wrap-ansi` 把 `\t` 展成「到下一张 8 列制表位」的空格，而 `string-width` 把 `\t`
         // 量成 **0 列**——直接量的话，插入点会落在**文本里面**（实测：`left⇥right` 尾巴上
         // 差 2 列；行首 Tab 那一档差 8 列）。
-        const offset = widthOf(
-          expandTabs((prefix + line.slice(0, caretInLine)).normalize(), 0, (char) => widthOf(char)),
-        )
+        // 尺子按**字素**喂（`expandTabs` 一次给一段）——`string-width` 认 ZWJ 串，
+        // 逐码点拆开量会把 `👩‍💻` 算成 4 列（实际 2 列）
+        const offset = widthOf(expandTabs((prefix + line.slice(0, caretInLine)).normalize(), 0, widthOf))
         let used = 0
         wrapped.forEach((row, at) => {
           const size = widthOf(row)

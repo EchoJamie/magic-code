@@ -26,7 +26,7 @@ import { markdownStream } from '../markdown.ts'
 import type { MdLine } from '../markdown.ts'
 import type { LogRow } from '../view.ts'
 import { textOfLines } from '../view.ts'
-import { PALETTE, displayWidth, durationLabel, wrap } from './lines.ts'
+import { PALETTE, displayWidth, durationLabel, expandTabs, wrap } from './lines.ts'
 
 /** 一行里的一段（同段一个颜色）。 */
 export type Segment = {
@@ -742,7 +742,12 @@ function wrapSegments(
     readonly bodyColor?: string
   },
 ): readonly LogLine[] {
-  const text = segments.map((piece) => piece.text).join('')
+  // ⚠️ **先展开 Tab，折行与色段都按展开后的那一份**（2026-09-22 · 独立复核退回①）：
+  //    展开只发生在显示层（原文不动），但**首行与续行必须取自同一份显示文本**——
+  //    早先折的是展开后的行、首行色段却拿**展开前**的原段按「展开后有几个字符」去截
+  //    ⇒ 首行把裸 `\t`（甚至下一行的换行）吞了进来，屏上那一行又自己折一次 ⇒ 重印。
+  const display = displaySegments(segments)
+  const text = display.map((piece) => piece.text).join('')
   // 折行宽度按**悬得最远的那一条**算（首行前缀 2 列 / 续行的 `hang`）——否则续行会
   // 比首行宽出 `hang - 2` 列，终端再折一次 ⇒ Ink 的行数账目就错了（D11/D13 那族的老病）。
   const width = Math.max(8, columns - Math.max(2, displayWidth(options.hang)))
@@ -752,7 +757,7 @@ function wrapSegments(
     at === 0
       ? {
           key: `${options.key}:0`,
-          segments: firstLine(segments, line),
+          segments: firstLine(display, line),
           background: options.background,
         }
       : {
@@ -765,8 +770,31 @@ function wrapSegments(
 }
 
 /**
- * 首行的色段——把原段切到**折好的首行**那么多字符为止（**含换行在内逐字对**，
- * 故换行不会被吞进首行）。
+ * 段表 → **显示段表**：Tab 在显示层展开成空格（`expandTabs`，与终端同一条规矩）。
+ *
+ * 逐段展开、列数一路累加——**与整段一次性展开等价**（同一把尺子、同一条规矩），
+ * 而好处是**每一段的色/粗与它那段文字仍然成对**：首行按显示坐标切片时，样式跟着走。
+ */
+function displaySegments(segments: readonly Segment[]): readonly Segment[] {
+  let column = 0
+  const out: Segment[] = []
+
+  for (const piece of segments) {
+    const text = expandTabs(piece.text, column)
+    out.push({ ...piece, text })
+    // 接着量：**最后那一行**到第几列（换行之后归零——制表位按物理行算）
+    const lines = text.split('\n')
+    column = displayWidth(lines[lines.length - 1] ?? '')
+  }
+
+  return out
+}
+
+/**
+ * 首行的色段——把**显示段**切到**折好的首行**那么多字符为止。
+ *
+ * 两边都是**显示坐标**（都展开过 Tab，见 `displaySegments`），故「首行画多长就切多长」
+ * 是同一本账：裸 `\t` 与下一行的换行都不会被吞进来（切法的由头见 `wrapSegments` 的注）。
  */
 function firstLine(segments: readonly Segment[], head: string): readonly Segment[] {
   const out: Segment[] = []

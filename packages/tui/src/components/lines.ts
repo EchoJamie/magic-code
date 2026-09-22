@@ -63,6 +63,16 @@ export function tabWidth(column: number): number {
 }
 
 /**
+ * 字素分段器（`Intl.Segmenter`）——展开 Tab 时**按字素一步一步量**。
+ *
+ * ⚠️ **不能逐码点量**（2026-09-22 · 独立复核退回②）：`👩‍💻` 是**一个字素、三个码点**，
+ * 拆开量（2 ＋ 0 ＋ 2）会把它算成 4 列，而排版那一支（`string-width` / Ink / 终端）算 2 列
+ * ⇒ 制表位跟着算错、插入点偏出去。本仓已有的做法就是这个分段器（`composer.ts` 的 `clip`
+ * 同款）——**复用既有量法，不另建 Unicode 宽度框架**。
+ */
+const GRAPHEMES = new Intl.Segmenter('zh', { granularity: 'grapheme' })
+
+/**
  * **按终端的规矩展开 Tab**：`\t` ⇒ 到下一张制表位的空格（`column` ＝ 这段文字从第几列起）。
  *
  * 为什么非展不可（2026-09-22 · Tab 多行重印那一条）：**同一个 `\t` 在三处量出了三个宽度**
@@ -74,27 +84,36 @@ export function tabWidth(column: number): number {
  * 展开只发生在**显示层**：草稿、模型请求与持久记录里的原文一字不动（Tab 仍是 Tab），
  * 屏上按「终端实际会画成什么样」来量、来折。
  *
- * `measure` 是「一个字符占几列」那把尺子——本文件的 `wrap` 用 `charWidth`；输入行那一支
- * 与 `wrap-ansi` 同源（`string-width`），故它传自己的那把（**一把尺子量到底**，别混）。
+ * `measure` 是「**一段文字**占几列」那把尺子，**按字素喂**（见上）——本文件的 `wrap` 用
+ * `displayWidth`（记录区那一支）；输入行那一支与 `wrap-ansi` 同源（`string-width`），
+ * 故它传自己那把（**一把尺子量到底**，别混）。
  */
 export function expandTabs(
   text: string,
   column = 0,
-  measure: (char: string) => number = charWidth,
+  measure: (piece: string) => number = displayWidth,
 ): string {
   let out = ''
   let at = column
 
-  for (const char of text) {
-    if (char === '\t') {
+  for (const piece of GRAPHEMES.segment(text)) {
+    const segment = piece.segment
+    if (segment === '\t') {
       const size = tabWidth(at)
       out += ' '.repeat(size)
       at += size
       continue
     }
 
-    out += char
-    at += measure(char)
+    // **换行把制表位归零**（终端如此：制表位是按**物理行**的列算的）
+    if (segment === '\n') {
+      out += segment
+      at = 0
+      continue
+    }
+
+    out += segment
+    at += measure(segment)
   }
 
   return out

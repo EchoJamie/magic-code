@@ -12,9 +12,11 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import stringWidth from 'string-width'
+import wrapAnsi from 'wrap-ansi'
 import type { LogRow } from '../src/view.ts'
 import { rowLines } from '../src/components/log.ts'
-import { expandTabs, tabWidth, wrap } from '../src/components/lines.ts'
+import { PALETTE, expandTabs, tabWidth, wrap } from '../src/components/lines.ts'
 import { composerLayout } from '../src/components/composer.ts'
 
 /** 一行（含色段）的纯文本。 */
@@ -88,6 +90,84 @@ describe('记录区那一行：屏上不留 Tab（修前会重印的那一条）
   })
 })
 
+describe('首行带 Tab（独立复核退回①：首行与续行必须取自同一份显示文本）', () => {
+  /** 一条用户消息 → 显示行的纯文本。 */
+  const rowsOf = (text: string, columns = 100): readonly string[] => {
+    const row: LogRow = { kind: 'user', key: 'u1', text, echoed: true }
+    return rowLines(row, { columns, expanded: false, spaced: false }).map((line) =>
+      line.segments.map((piece) => piece.text).join(''),
+    )
+  }
+
+  /**
+   * **制表位从哪一列起算**——这一行**含 `› ` 那两格**：`› left` 走到第 6 列，Tab 于是到第 8 列
+   * （2 格空白）。
+   *
+   * 由头（对照实测，不是口味）：`› ` 是**同一行里画在正文之前**的那两格，终端的制表位
+   * 按**物理列**算、`wrap-ansi` 折草稿那一支也算进它 ⇒ 两边一致才是「提交前后同一个样子」。
+   * 独立复核那一趟的稳定帧里，屏上画的正是 `› left  right`（两格）；本仓 `wrap-ansi`
+   * 折 `› left\tright` 也只得这一份（下面「单行」那一条直接对过）。
+   */
+  const FIRST_LINE_TAB = `› left${' '.repeat(tabWidth(6))}right` // `› left` 6 列 → 第 8 列
+
+  test('单行：首行**不留裸 Tab**，也不把换行吞进来', () => {
+    const rows = rowsOf('left\tright')
+
+    expect(rows).toEqual([FIRST_LINE_TAB])
+    expect(rows.some((line) => line.includes('\t') || line.includes('\n'))).toBe(false)
+  })
+
+  test('单行：首行与**草稿折出来的那一行**逐字相同（提交前后不跳格）', () => {
+    // 草稿那一支是 Ink 的 `wrap-ansi`（`composer.ts` 的 `wrapVisual`）——记录区首行要是
+    // 与它差一格，按下回车的那一刻文字就会横跳。这一条把「同一份显示文本」钉在字面上。
+    const draft = wrapAnsi(`› ${'left\tright'}`, 98, { trim: false, hard: true })
+
+    expect(rowsOf('left\tright')).toEqual([draft])
+  })
+
+  test('首行的**分段与样式**原样保留（`› ` 淡青粗体、正文原色——展开不吞色）', () => {
+    const row: LogRow = { kind: 'user', key: 'u1', text: 'left\tright', echoed: true }
+    const first = rowLines(row, { columns: 100, expanded: false, spaced: false })[0]
+
+    expect(first?.segments.map((piece) => [piece.text, piece.color, piece.bold ?? false])).toEqual([
+      ['› ', PALETTE.user, true],
+      [`left${' '.repeat(2)}right`, PALETTE.fg, false],
+    ])
+  })
+
+  test('多行：首行只画第一行，第二行是它自己那一行', () => {
+    const rows = rowsOf('left\tright\nnext')
+
+    // ⚠️ 修前（924e116）：首行是 `› left\tright\n`——裸 Tab 与换行都被吞了进来，
+    //    屏上那一行于是自己折一次 ⇒ 重印
+    expect(rows).toEqual([FIRST_LINE_TAB, '  next'])
+    expect(rows.some((line) => line.includes('\t') || line.includes('\n'))).toBe(false)
+  })
+
+  test('折行：每一行都不含 Tab/换行，且拼起来**不丢不重**', () => {
+    const rows = rowsOf('left\tright\n' + 'x'.repeat(120))
+
+    expect(rows).toEqual([FIRST_LINE_TAB, `  ${'x'.repeat(98)}`, `  ${'x'.repeat(22)}`])
+    expect(rows.some((line) => line.includes('\t') || line.includes('\n'))).toBe(false)
+    // 首行那一份 ＋ 续行（去掉悬挂缩进那两格）拼回来 ＝ 展开后的第一行
+    const head = rows[0] ?? ''
+    const tail = rows.slice(1).map((line) => line.replace(/^ {2}/, '')).join('')
+    expect(head.slice(2) + tail).toBe(`${FIRST_LINE_TAB.slice(2)}${'x'.repeat(120)}`)
+  })
+
+  test('折行**正好切在 Tab 展开出来的空白里**：线不丢不重，首行也不多一截', () => {
+    // `› ` ＋ 95 个 `x` ＝ 97 列 → Tab 到第 104 列（7 格）——折线落在第 98 列，
+    // 正是那 7 格空白的头一格上（切在**一段显示文字里**，不是切在段与段之间）
+    const rows = rowsOf(`${'x'.repeat(95)}\tY`)
+
+    expect(rows).toEqual([`› ${'x'.repeat(95)} `, `  ${' '.repeat(6)}Y`])
+    expect(rows.some((line) => line.includes('\t') || line.includes('\n'))).toBe(false)
+    const head2 = (rows[0] ?? '').slice(2)
+    const tail2 = (rows[1] ?? '').replace(/^ {2}/, '')
+    expect(head2 + tail2).toBe(`${'x'.repeat(95)}${' '.repeat(7)}Y`)
+  })
+})
+
 describe('输入行：插入点落在终端画它的那一格（Tab 也要展开着量）', () => {
   test('行内 Tab：插入点在末尾时，列号按展开后的宽度算', () => {
     const draft = 'left\tright'
@@ -102,5 +182,39 @@ describe('输入行：插入点落在终端画它的那一格（Tab 也要展开
     const layout = composerLayout(draft, draft.length, 100)
 
     expect(layout.caretCol).toBe(8 + 8) // 8 列空白 ＋ `print(1)`
+  })
+
+  /**
+   * **组合字素（独立复核退回②）**：`👩‍💻` 是**一个字素、三个码点**，Ink 那一支（`string-width`）
+   * 整段量成 **2 列**——逐码点量（2 ＋ 0 ＋ 2）会算成 4 列，制表位跟着错、插入点偏出去
+   * （独立复核实测 7，行尾应为 9）。
+   *
+   * 行尾这一条同时对一次**屏上那一行**：插入点在行尾 ⇒ 列号必须等于 `wrap-ansi` 折出来
+   * 那一行自己的宽度（同一把尺，不另算一个数）。
+   */
+  const EMOJI_TAB = '👩‍💻\tX'
+
+  test('组合 emoji ＋ Tab：行尾插入点按整段字素量', () => {
+    const layout = composerLayout(EMOJI_TAB, EMOJI_TAB.length, 100)
+    const shown = wrapAnsi(`› ${EMOJI_TAB}`, 98, { trim: false, hard: true })
+
+    // `› ` 2 ＋ emoji 2 ⇒ 第 4 列打 Tab ⇒ 到第 8 列（4 格空白）⇒ `X` ⇒ 9
+    expect(layout.caretCol).toBe(9)
+    expect(layout.caretRow).toBe(0)
+    expect(layout.caretCol).toBe(stringWidth(shown))
+  })
+
+  test('组合 emoji ＋ Tab：中间插入点（emoji 之后）也按整段字素量', () => {
+    const layout = composerLayout(EMOJI_TAB, 3, 100) // 插入点在 emoji 之后（3 个码点）
+
+    expect(layout.caretCol).toBe(2 + 2)
+  })
+
+  test('区域指示符（两个字素码点拼一面旗）＋ Tab：同一条口径（对照）', () => {
+    const draft = '🇨🇳\tX'
+    const layout = composerLayout(draft, draft.length, 100)
+
+    expect(layout.caretCol).toBe(9)
+    expect(layout.caretCol).toBe(stringWidth(wrapAnsi(`› ${draft}`, 98, { trim: false, hard: true })))
   })
 })
