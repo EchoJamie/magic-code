@@ -15,7 +15,8 @@ import { describe, expect, test } from 'bun:test'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
 import type { LogRow } from '../src/view.ts'
-import { rowLines } from '../src/components/log.ts'
+import { displaySegments, rowLines } from '../src/components/log.ts'
+import type { Segment } from '../src/components/log.ts'
 import { PALETTE, expandTabs, tabWidth, wrap } from '../src/components/lines.ts'
 import { composerLayout } from '../src/components/composer.ts'
 
@@ -165,6 +166,63 @@ describe('首行带 Tab（独立复核退回①：首行与续行必须取自同
     const head2 = (rows[0] ?? '').slice(2)
     const tail2 = (rows[1] ?? '').replace(/^ {2}/, '')
     expect(head2 + tail2).toBe(`${'x'.repeat(95)}${' '.repeat(7)}Y`)
+  })
+})
+
+describe('分段不改变显示（列宽接着上一段累加——独立复核 `b25b9ff`）', () => {
+  const rowsOf = (row: LogRow, columns = 100): readonly string[] =>
+    rowLines(row, { columns, expanded: false, spaced: false }).map((line) =>
+      line.segments.map((piece) => piece.text).join(''),
+    )
+
+  /** 助手行（正文走 Markdown ⇒ 一行会切成好几段）。 */
+  const assistantOf = (text: string): LogRow => ({ kind: 'assistant', key: `a:${text}`, text })
+
+  /**
+   * **同一段可见文字，分段与不分段必须显示成同一个样子**。
+   *
+   * ⚠️ 修前（`b25b9ff`）：`displaySegments` 每段结束都把列数**重置**成「本段自己最后一行」的
+   * 宽度——段只是**色界**、不是行界，没换行的段于是把前面几段一笔勾销。同一句
+   * `left⇥right`，加粗那一份的 Tab 从第 1 列起算 ⇒ 多出两格空白（真 PTY 同屏实测：
+   * 普通行 `right` 在 x=8、加粗行在 x=10）。分段是**样式**的事，不该动制表位。
+   */
+  test('助手行：加粗 / 行内代码 / 链接都不改 Tab 间距（三段以上也照旧）', () => {
+    const pairs: readonly (readonly [string, string])[] = [
+      ['left\tright', '**left**\tright'],
+      ['a b\tc', 'a **b**\tc'],
+      ['a\tb\tc', '**a**\t**b**\t**c**'],
+      ['a\tb', '`a`\tb'],
+      ['a（b）\tc', '[a](b)\tc'],
+      // 多行：换行之后接着来的那一段也要从**新行**的列起算，不是从上一段末尾
+      ['left\tright\nnext\tX', '**left**\tright\n**next**\tX'],
+    ]
+
+    for (const [plain, styled] of pairs) {
+      expect(rowsOf(assistantOf(styled))).toEqual(rowsOf(assistantOf(plain)))
+    }
+  })
+
+  test('段表：三段以上 / 空段 / 含换行，拼起来与**整段一次展开**逐字相同', () => {
+    const face = { color: PALETTE.fg, bold: true }
+    const cases: readonly (readonly Segment[])[] = [
+      [{ text: '⏺ ' }, { text: 'a' }, { text: '\tb' }], // 三段：Tab 单独占一段
+      [{ text: '⏺ ' }, { text: '' }, { text: 'a\tb' }], // **空段**夹在中间（修前会把列数清零）
+      [{ text: '⏺ ' }, { text: '' }, { text: '' }], // 全是空段
+      [{ text: 'a' }, { text: '\n\tb' }], // 段里带换行
+      [{ text: 'a\n' }, { text: '\tb' }], // 段尾就是换行
+      [{ text: '⏺ ' }, { text: 'a', ...face }, { text: 'b' }, { text: '\tc' }], // 四段，中间那段还带样式
+    ]
+
+    for (const list of cases) {
+      const shown = displaySegments(list)
+      const whole = displaySegments([{ text: list.map((piece) => piece.text).join('') }])
+
+      expect(shown.map((piece) => piece.text).join('')).toBe(whole.map((piece) => piece.text).join(''))
+      // **段数不变、样式跟着段走**（展开只换文字，不并段、不吞色/粗）
+      expect(shown.map((piece) => [piece.color, piece.bold ?? false])).toEqual(
+        list.map((piece) => [piece.color, piece.bold ?? false]),
+      )
+    }
   })
 })
 

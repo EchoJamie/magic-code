@@ -14,6 +14,9 @@
  * 放在**第一条逻辑行**上（原四档都只在续行），后者按整段字素量宽（`👩‍💻` 是**一个字素、三个
  * 码点**）。折行那一档的逻辑行跨物理行 ⇒ 判据换成「首段只占一条物理行 ＋ 尾段只此一份」。
  *
+ * **样式分段不改变 Tab 间距**（独立复核 `b25b9ff`）：答复里同一段可见文字写成两行（一行普通、
+ * 一行加粗），屏上这两行去掉行首标记后必须**逐字相同**——段是色界、不是行界，列要接着上一段累加。
+ *
  * 另有插入点一档：草稿里带 Tab 时，真光标必须落在**终端把它画出来的那一格**
  * （展开后的列号），不是按「Tab 算 0／1 列」算出来的那一格。
  *
@@ -59,12 +62,12 @@ function flatten(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-async function open(label: string, out: string, columns?: number): Promise<UiSession> {
+async function open(label: string, out: string, columns?: number, reply = '收到。'): Promise<UiSession> {
   return createUiSession({
     label,
     artifacts: join(out, 'runs'),
     ...(columns === undefined ? {} : { columns }),
-    turns: [{ kind: 'text', text: '收到。' }],
+    turns: [{ kind: 'text', text: reply }],
   })
 }
 
@@ -152,9 +155,24 @@ async function scenario(options: {
    * 停在上一下的位置上。
    */
   readonly caretSteps?: { readonly steps: number; readonly x: number }
+  /** 夹具这一轮的答复（缺省「收到。」）——「样式不动制表位」那一档要一段带标记的正文。 */
+  readonly reply?: string
+  /**
+   * **同一段可见文字、只换了样式**的那几行（独立复核 `b25b9ff`）：答复里含 `needle` 的显示行
+   * 应当有 `count` 条，且**去掉行首那两格标记后逐字相同**——加粗/行内代码只该换粗细，不该动
+   * 制表位（修前：加粗那一行的 Tab 从第 1 列起算，屏上比普通行多两格）。
+   */
+  readonly alike?: {
+    readonly needle: string
+    readonly count: number
+    /** 去掉行首标记后那几行**该长什么样**（由调用处按终端列算给死；缺省只比彼此相同）。 */
+    readonly shown?: string
+  }
 }): Promise<void> {
-  const session = await open(options.label, options.out, options.columns)
+  const session = await open(options.label, options.out, options.columns, options.reply)
   const size = options.columns === undefined ? '100×30' : `${options.columns}×30`
+  /** 答复到了没有——取它的**头一段**当针（渲染会把 Tab 展开、样式标记也会去掉，原句对不上屏）。 */
+  const landed = (options.reply ?? '收到。').split(/\s+/)[0] ?? '收到。'
 
   try {
     console.log(`\n══ ${options.label}（${size}）══`)
@@ -199,7 +217,7 @@ async function scenario(options: {
     // ⚠️ **先等这一轮的答复**（`收到。`）再等空闲——只等 `○ 空闲` 会在「按下回车、工作帧还没画」
     //    那一瞬**匹配上上一帧的空闲行**（真跑栽过：紧接着发的 ctrl+c 于是成了「中断」而不是
     //    「退出」，收摊那条判据当场判不出来）
-    await session.wait({ text: '收到。' }, { timeoutMs: 15_000 })
+    await session.wait({ text: landed }, { timeoutMs: 15_000 })
     await session.wait({ text: '○ 空闲' }, { timeoutMs: 15_000 })
     const idle = await session.capture({ label: `${options.label}-03-空闲` })
     keep(options.out, idle, `${options.label}-03-空闲`)
@@ -225,6 +243,24 @@ async function scenario(options: {
         lines.slice(0, 4).join(' / '),
       )
       checkOnce(lines, options.text.split('\n').slice(1).join('\n'))
+    }
+
+    // —— **样式不动制表位**（独立复核 `b25b9ff`）：同一段可见文字，加粗/行内代码那几行要一样 ——
+    if (options.alike !== undefined) {
+      // 去掉行首那两格标记（`⏺ ` / 悬挂缩进 `  `）再比：那两格是**行首标记**，不是正文
+      const hit = idle.lines.filter((line) => line.includes(options.alike?.needle ?? '')).map((line) => line.slice(2))
+      check(hit.length === options.alike.count, `答复里含「${options.alike.needle}」的显示行有 ${options.alike.count} 条（实测 ${hit.length}）`, JSON.stringify(idle.lines))
+      check(
+        hit.every((line) => line === hit[0]),
+        '那几行**去掉行首标记后逐字相同**（加粗不改变 Tab 间距）',
+        JSON.stringify(hit),
+      )
+      check(
+        options.alike.shown === undefined || hit.every((line) => line === options.alike?.shown),
+        `那几行画出来是 ${JSON.stringify(options.alike.shown)}（实测 ${JSON.stringify(hit)}）`,
+        JSON.stringify(hit),
+      )
+      check(hit.every((line) => !line.includes('\t')), '显示行里没有裸 Tab', JSON.stringify(hit))
     }
 
     // —— 请求与记录：恰好一条、逐字 ——
@@ -303,6 +339,17 @@ if (import.meta.main) {
     // 中间：左移两格（越过 `Y` 与 `X`）⇒ 落在**那 4 格空白之后**（内容第 8 列）⇒ 第 9 列
     //       ——正是逐码点量（emoji 算 4 列 ⇒ Tab 只剩 2 格）时插入点会偏出去的那一格
     { label: 'combined-emoji-tab', text: `${COMBINED}\tXY`, tabs: true, caretSteps: { steps: 2, x: 9 } },
+
+    // —— 样式分段不改变 Tab 间距（独立复核 `b25b9ff`）——
+    // 答复两行是**同一段可见文字**（第二行只是加粗）：屏上两行去掉行首标记后必须**逐字相同**，
+    // 且都等于 `alpha omega`（`⏺ `/悬挂缩进 2 格 ＋ `alpha` 5 列 ＝ 7 列 ⇒ Tab 到第 8 列 ⇒ 1 格）
+    {
+      label: 'styled-segments',
+      text: 'left\tright',
+      tabs: true,
+      reply: 'alpha\tomega\n**alpha**\tomega',
+      alike: { needle: 'alpha', count: 2, shown: 'alpha omega' },
+    },
   ]
 
   // `--only <档名>`：单跑一档（留帧装置出问题时定位用；也用来在**修前**的源码上单取某一档的

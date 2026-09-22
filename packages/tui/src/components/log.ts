@@ -774,17 +774,27 @@ function wrapSegments(
  *
  * 逐段展开、列数一路累加——**与整段一次性展开等价**（同一把尺子、同一条规矩），
  * 而好处是**每一段的色/粗与它那段文字仍然成对**：首行按显示坐标切片时，样式跟着走。
+ *
+ * ⚠️ **「接着累加」是按整段文字说的，不是按段自己的宽度**（2026-09-22 · 独立复核 b25b9ff）：
+ * 段只是**色界**，不是行界——这一段**没有换行**时，列数要**在上一段的列上继续加**
+ * （早先写成「取本段最后一行」，没换行就是**把前面几段一笔勾销**：`**left**\tright` 与
+ * `left\tright` 同一段可见文字，加粗那一份的 Tab 从第 1 列起算 ⇒ 多出两格空白，
+ * 屏上 `right` 落在第 10 列而不是第 8 列）。有换行才归到最后一行（终端把制表位按物理行算）。
+ *
+ * **导出给用例**：段表是本函数的入参，判据（分段与不分段等价）要能自己造段。
  */
-function displaySegments(segments: readonly Segment[]): readonly Segment[] {
+export function displaySegments(segments: readonly Segment[]): readonly Segment[] {
   let column = 0
   const out: Segment[] = []
 
   for (const piece of segments) {
     const text = expandTabs(piece.text, column)
     out.push({ ...piece, text })
-    // 接着量：**最后那一行**到第几列（换行之后归零——制表位按物理行算）
+
     const lines = text.split('\n')
-    column = displayWidth(lines[lines.length - 1] ?? '')
+    // 没有换行 ⇒ 接着上一段往下加；有换行 ⇒ 归到**最后那一行**的宽度
+    column =
+      lines.length === 1 ? column + displayWidth(text) : displayWidth(lines[lines.length - 1] ?? '')
   }
 
   return out
