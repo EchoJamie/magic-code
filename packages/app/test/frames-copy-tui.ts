@@ -249,7 +249,8 @@ async function sessionNew(): Promise<void> {
       '原锚＝被切那条的标签',
     )
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {
@@ -299,7 +300,8 @@ async function quitFromCard(session: UiSession, said: string): Promise<void> {
   await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
   await Bun.sleep(300)
   await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
-  await session.key('ctrl+c')
+  // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+  await session.quit()
   const report = await session.close({ graceMs: 3_000 })
 
   check(report.exit.by === 'app', '应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
@@ -382,7 +384,8 @@ async function approvals(): Promise<void> {
     )
 
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {

@@ -660,6 +660,18 @@ export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
  */
 export const HINT_PROMPT = '回车 确定 · esc 取消'
 
+/**
+ * **待确认的那一行**（U46）——空闲按 Ctrl+C 的**第一下**印的那一句。
+ *
+ * ⚠️ **它不是上面那几条右位提示**：那些是**状态行**（常驻，随状态换面孔）；这一行是
+ * 落在**输入行上方**的一格临时提示——跟「等模型回来…」那类同一格，**不落记录、不进
+ * scrollback、能被清掉**（回执 `·` 那条路印一次就进 scrollback，走不了这一条）。
+ *
+ * 有成员在跑时这一行还要多说半句（「这件事还有 N 个成员在跑——退出会把它们一并停掉」）
+ * ——协作能力未交付，今天必然没有成员，故**先只留这一句**（工单 U46 明写：留位、暂不实现）。
+ */
+export const HINT_EXIT_ARMED = '再按一次 ctrl+c 退出'
+
 export type ShellStatus = {
   readonly state: StatusState
   /** 挂状态后面的量：耗时 / 第几件 / 第几次（`● 工作中 0.6s` · `● 等你定夺 2/3`）。 */
@@ -770,6 +782,21 @@ export type ShellView = {
   readonly refs: readonly DraftRef[]
   /** 接管期间「不静默吞键」的提示（一次性，按下一个键即清）。 */
   readonly flash: string | null
+  /**
+   * **退出已按过一次**（U46）——空闲按 Ctrl+C 的第一下**不退出**，只把那一行挂上
+   * （`HINT_EXIT_ARMED`）；**再按一下**才走。
+   *
+   * 由头（设计 · 会话与运行管理「离开、停止与异常退出」）：一个键在同一个状态下有时一次
+   * 有时两次，用户没法预期——他得先判断「现在有没有成员在跑」才知道该按几下。统一成
+   * 「按两次」之后只有一种退出，**那一行内容随情况变**。
+   *
+   * 三条分寸：
+   * - **不加时限**（不设「2 秒内有效」——加了就是「按了没反应」的变体）：它就停在那儿；
+   * - **任何别的输入都清掉它**（用户又不想走了）——收口在 `shell.ts` 的 `key` 那一处；
+   * - **「按两次」只管键盘那条路**：终端断了 / 收到了收摊信号不是用户按的键，走
+   *   `Shell.hangUp`，不设这道门（见那一处的注）。
+   */
+  readonly exitArmed: boolean
   /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
   readonly expanded: boolean
   /** 当前会话 id（还没有会话＝`null`）。 */
@@ -897,6 +924,8 @@ export function createView(): ShellView {
     refs: [],
     stashed: null,
     flash: null,
+    // 还没按过 Ctrl+C（U46）
+    exitArmed: false,
     expanded: false,
     sessionId: null,
     catalog: [],

@@ -281,7 +281,8 @@ async function wide(): Promise<void> {
     check(countOn(back.lines, 乙说) === 0, '③ `/resume`：切走那条一行都不在可见屏上')
     checkFrame(back, '04 切回甲')
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '常宽那一趟应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {
@@ -363,7 +364,8 @@ async function firstMessage(): Promise<void> {
     )
     checkFrame(cleared, '07 开局 clear 之后')
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '开局那一趟应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {
@@ -434,7 +436,8 @@ async function narrow(): Promise<void> {
     check((back.lines.find((line) => line.trim() !== '') ?? '').includes('· 已切到'), '窄窗 `/resume`：界由回执承担')
     checkFrame(back, '09 窄窗切回甲')
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '窄窗那一趟应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {

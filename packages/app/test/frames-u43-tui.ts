@@ -349,7 +349,8 @@ async function switching(): Promise<void> {
       `实际 ${countOn(again.history, '· 已切到')} 条`,
     )
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {
@@ -432,7 +433,8 @@ async function narrow(): Promise<void> {
       `最长一行 ${Math.max(...back.lines.map((line) => [...line].length))} 列`,
     )
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '窄窗那一趟应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {

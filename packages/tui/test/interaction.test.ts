@@ -21,6 +21,7 @@ import { createElement as h } from 'react'
 import type { Command, KernelEvent } from '@magic/contracts'
 import { TuiApp, toShellKeys } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
+import { HINT_EXIT_ARMED } from '../src/view.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { plain } from './screen.ts'
@@ -244,12 +245,17 @@ describe('审批答复（接管）', () => {
 })
 
 describe('Ctrl+C 语义', () => {
-  test('空闲 —— 退出', async () => {
+  test('空闲 —— **按两次**才退出（第一下只印那一行；改前是一次就走）', async () => {
     const { app } = liveApp()
 
     await app.waitForFrame((frame) => frame.includes('交代一件事'))
-    await app.type('\u0003')
 
+    // 第一下：**不退出**，只在输入行上方多出那一行（U46）
+    await app.type('\u0003')
+    await app.waitForFrame((frame) => frame.includes(HINT_EXIT_ARMED))
+
+    // 第二下：走
+    await app.type('\u0003')
     await app.waitForExit()
     app.unmount()
   })

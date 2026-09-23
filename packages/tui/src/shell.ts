@@ -156,6 +156,13 @@ export type Shell = {
   /** 一个按键。 */
   key(key: ShellKey): ShellEffect
   /**
+   * **终端那头没人了**（断流 / 关窗信号）——同一条收尾语义，但**不设「按两次」那道门**
+   * （那是键盘那条路上的确认；此刻对面已经没人在按了）。
+   *
+   * 空闲＝当场放行 · 工作中／有待答＝替我们发中断。由头见 `shell.ts` 里那一处的注。
+   */
+  hangUp(): ShellEffect
+  /**
    * **放开输入**——`boot` 跑完那一下（技术方案 · 装配视图第 5 步：「以 `boot` 完成为界」）。
    *
    * 这一跳之前：打字照旧进草稿（本地的事），**回车不受理**（当场说一句，草稿留着），
@@ -2082,19 +2089,59 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   // —— 键 ——
 
-  const exitOrInterrupt = (): ShellEffect => {
+  /** 工作中／有待答 ⇒ **替我们发中断**并返回 `true`（「这一下不是退出」）；否则 `false`。 */
+  const interruptPending = (): boolean => {
     const busy = view.status.state === 'working' || view.status.state === 'retrying'
 
-    if (busy || view.dock.kind === 'decision') {
-      send({ type: 'turn.interrupt' })
+    if (!busy && view.dock.kind !== 'decision') return false
+
+    send({ type: 'turn.interrupt' })
+    return true
+  }
+
+  /**
+   * 空闲按 Ctrl+C——**按两次才走**（U46 · 设计「离开、停止与异常退出」）。
+   *
+   * 第一下**不退出**，只把那一行挂上（`HINT_EXIT_ARMED`）；第二下才放行。
+   * 中间那一条线的清理由 `key` 兜（任何别的输入都把它收了——用户又不想走了）。
+   */
+  const exitOrInterrupt = (): ShellEffect => {
+    if (interruptPending()) {
+      // ⚠️ **中断不是「第二次按」**：它是另一件事（这一轮在跑），故那一道门当场撤掉——
+      //    不然「按一次挂上 → 干了点别的（比如提交了一句话）→ 再来一下」会直接退出。
+      if (view.exitArmed) commit({ ...view, exitArmed: false })
+      return NONE
+    }
+
+    if (!view.exitArmed) {
+      commit({ ...view, exitArmed: true })
       return NONE
     }
 
     return EXIT
   }
 
+  /**
+   * **终端那头没人了**（断流 / 关窗信号 · `run.ts` 的 `onTerminalGone`）——同一条收尾语义，
+   * 但**不设「按两次」那道门**：那是**键盘**那条路上的确认（设计：「按两次」只管键盘那条路），
+   * 而此刻对面已经没人在按了——让他再按一次，就是谁都不动。
+   *
+   * 空闲＝当场放行收摊 · 工作中／有待答＝替我们发中断（沿既有）。
+   */
+  const hangUp = (): ShellEffect => (interruptPending() ? NONE : EXIT)
+
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE
+
+    // **别的输入把那一行收掉**（U46）——用户又不想走了。
+    //
+    // 收口就这一处：`HINT_EXIT_ARMED` 那一行说的是「再按一次」，而**任何别的输入**都
+    // 说明他不是要退出（敲字 / 翻历史 / 开选择器 / 移动插入点…）——留着它就是一句
+    // 不再为真的话，再按一下还会走。`ctrl+c` 那一支不走这里：它自己管（第一下挂上、
+    // 第二下走），故那一下不会被自己的清理抹掉。
+    //
+    // ⚠️ 先 `commit` 再往下走：`view` 是本闭包里的 `let`，下面各支读到的就是清过的那一份。
+    if (view.exitArmed && input.kind !== 'ctrl+c') commit({ ...view, exitArmed: false })
 
     // **本地小输入开着的时候，键归它**（U41）——但 `ctrl+c` 是全局的（空闲＝退出、
     // 工作中＝中断），故它照旧落下去走 `exitOrInterrupt`：一条本地小输入不该把退出挡住。
@@ -2918,6 +2965,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     },
 
     key,
+    hangUp,
     readHistory,
 
     /**

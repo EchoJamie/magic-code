@@ -31,7 +31,7 @@ import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
 import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { hasRunningTool } from '../view.ts'
+import { HINT_EXIT_ARMED, hasRunningTool } from '../view.ts'
 import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
@@ -403,10 +403,46 @@ export function breathingOf(view: ShellView, block: PlanBlock): boolean {
   return view.status.state === 'working' && block.hasRunning
 }
 
+/**
+ * **待确认的那一行**（U46）——空闲按 Ctrl+C 的第一下印的那一句，落在**输入行上方**
+ * （与「等模型回来…」那类临时提示同一格）。
+ *
+ * 三处分寸都落在这一格上，别改坏：
+ * - **不落记录、不进 scrollback**——它必须**能被清掉**（回执 `·` 那条路印一次就进
+ *   scrollback，走不了这一条）；清的理由只有一个（用户又不想走了），收口在 `shell.ts`
+ *   的 `key`，此处只管画。
+ * - **判决只有一条**（`showsExitArmed`）：`dockOf` 照它画、`dockHeightOf` 照它记 1 行——
+ *   两处各判各的，矮窗上就是「账少一行、屏多一行」⇒ 真光标高一行（U31 那一族的老账）。
+ * - **位置取「交互区最上面那一格」**（不是「紧贴输入行」）：选择器 / 本地小输入开着时
+ *   照样得说得出这句话——「空闲按一次不退出」是一条**不随左下开着什么而变**的规矩
+ *   （一个键在一个状态下只有一种走法，那正是本单的由头）。贴着那一片的顶边，三种用法
+ *   下都在同一处；常态下它就是输入行正上方那一行。
+ *
+ * 行首那两个全角空格与本地小输入的标签（`prompt.ts`）同形制——「输入行上方那一行」
+ * 就这一副面孔，不另造一种缩进。
+ */
+function exitArmedLine(view: ShellView): readonly ReactElement[] {
+  return showsExitArmed(view)
+    ? [h(Text, { key: 'exitArmed', color: PALETTE.dim }, `　${HINT_EXIT_ARMED}`)]
+    : []
+}
+
+/**
+ * **那一行在不在**——渲染与高度账**同取这一处**（见 `exitArmedLine` 那一段注）。
+ *
+ * ⚠️ **裁决接管那一片不算**：那一屏的键是「答复」的键，`ctrl+c` 在那里是**中断**、
+ * 从来不挂这一行（`shell.ts` 的 `exitOrInterrupt`）——排除它，两处才对得上。
+ */
+function showsExitArmed(view: ShellView): boolean {
+  return view.exitArmed && view.dock.kind !== 'decision'
+}
+
 /** 左下交互区的内容（四种用法）。 */
 function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
   const flash =
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
+  // 待确认的那一行（U46）——**交互区最上面那一格**（三种用法下都在同一处，见 `exitArmedLine`）
+  const exitArmed = exitArmedLine(view)
 
   if (view.dock.kind === 'decision') {
     // **不画输入行**（D29）：接管期间打不进字，那句「等你的答复」与状态行的「● 等你定夺」
@@ -418,6 +454,7 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
 
   if (view.dock.kind === 'prompt') {
     return [
+      ...exitArmed,
       h(PromptLine, {
         key: 'prompt',
         prompt: view.dock.prompt,
@@ -431,6 +468,7 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   if (view.dock.kind === 'picker') {
     // 候选列在**输入行之上**（与自动补全那一栏同一位置：先看候选，再看自己在打的那句话）。
     return [
+      ...exitArmed,
       // `rows` 一路给到候选那一头：**半屏封顶**按它算（`maxPickerLines`），
       // 与高度账同取 `pickerLayout` 一处（见 `dockHeightOf` 里那一段注）
       h(PickerList, { key: 'picker', picker: view.dock.picker, columns, rows }),
@@ -455,6 +493,8 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   }
 
   return [
+    // **待确认的那一行**（U46）——交互区最上面那一格（常态下就是输入行上方那一行）
+    ...exitArmed,
     ...(view.completion === null
       ? []
       : [h(Completion, { key: 'completion', completion: view.completion, columns })]),
@@ -542,6 +582,8 @@ function maxDraftLines(rows: number): number {
  */
 export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
   const flash = view.flash === null ? 0 : 1
+  // 待确认的那一行（U46）——**与 `dockOf` 同取 `showsExitArmed` 一处**（那一处画、这里记 1 行）
+  const exitArmed = showsExitArmed(view) ? 1 : 0
   const completing = completionLines(view)
 
   if (view.dock.kind === 'decision') {
@@ -563,6 +605,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         : wrap(view.dock.prompt.note, Math.max(8, columns - 4)).length
 
     return (
+      exitArmed +
       1 +
       draftHeight(view.dock.prompt.display, view.dock.prompt.caret, columns, maxDraftLines(rows)) +
       note +
@@ -594,7 +637,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         ? draftHeight(view.draft, view.caret, columns, maxDraftLines(rows))
         : 0
 
-    return candidates + hint + composer + flash
+    return exitArmed + candidates + hint + composer + flash
   }
 
   // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。
@@ -602,7 +645,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
   //    那两行都算在内；各算一套迟早对不上（D11 那条「行高与实际不符」就是这么来的）。
   // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删，账里那一格随之去掉）：
   //    引用就长在草稿那几行里，不另占一行。
-  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash
+  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + exitArmed + flash
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */

@@ -564,7 +564,10 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       expect(assembly.switchModel({ provider: 'local' }).ok).toBe(true)
       await until(tty, 'my-local-llama · 3.1k')
 
-      // 收摊：空闲时 ctrl+c ＝ 退出（与手打一致——键经 Ink 那条路真走一遍）
+      // 收摊：**空闲要按两次**才走（U46 —— 与手打一致，键经 Ink 那条路真走一遍）。
+      // 第一下只挂上那一行：先等它在屏上，第二下才是**真的第二次**。
+      stdin.push('\u0003')
+      await until(tty, '再按一次 ctrl+c 退出')
       stdin.push('\u0003')
       await handle.waitUntilExit()
 

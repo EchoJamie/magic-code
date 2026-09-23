@@ -133,7 +133,8 @@ async function close(session: UiSession, keepSandbox = false): Promise<void> {
   closed.add(session)
 
   await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
-  await session.key('ctrl+c')
+  // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+  await session.quit()
   // `keepSandbox`：重开那一段要用**同一块沙地**（HOME / 配置 / 缓存都在里面）
   const report = await session.close({ graceMs: 3_000, keepSandbox })
   const how = `${report.exit.by}（code ${report.exit.code ?? '-'} / signal ${report.exit.signal ?? '-'}）`

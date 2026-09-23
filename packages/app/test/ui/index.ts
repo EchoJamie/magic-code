@@ -3,7 +3,7 @@
  *
  * | 谁 | 拿什么 | 干什么 |
  * | --- | --- | --- |
- * | 自动测试 | `createUiSession`／`runScenario`／`SCENARIOS` | 起隔离实例、敲键、等条件、判、收摊 |
+ * | 自动测试 | `createUiSession`／`runScenario`／`SCENARIOS` | 起隔离实例、敲键、等条件、判、收摊（退出走 `session.quit()`——U46 起要按两次） |
  * | 助手 | `createControl`（`scripts/ui.ts serve` 里逐行 JSON 使它） | 一个常驻进程里反复使唤同一个实例 |
  *
  * 薄命令行入口在 `packages/app/scripts/ui.ts`（只解析参数、调这里的件，不复制逻辑）。

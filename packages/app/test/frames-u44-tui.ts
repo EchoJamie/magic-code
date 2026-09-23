@@ -425,10 +425,10 @@ async function wide(): Promise<void> {
       '挡回那一跳**也没清屏**（什么都没发生，屏就不该动）',
     )
 
-    // —— 收尾：先把这一轮断了，再走 ——
+    // —— 收尾：先把这一轮断了（工作中那一下是**中断**），等闲下来再走「按两次」那条路 ——
     await session.key('ctrl+c')
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
-    await session.key('ctrl+c')
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
 
@@ -511,7 +511,8 @@ async function bootClear(): Promise<void> {
       `实际 ${countOn(cleared.history, '█')} 行`,
     )
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '开局那一趟应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
   } catch (error) {
@@ -587,7 +588,8 @@ async function narrow(): Promise<void> {
       `最长一行 ${Math.max(...back.lines.map((line) => [...line].length))} 列`,
     )
 
-    await session.key('ctrl+c')
+    // 空闲**按两次**才走（U46）
+    await session.quit()
     const report = await session.close({ graceMs: 3_000 })
     check(report.exit.by === 'app', '窄窗那一趟应用自己走的（收摊确认）', `exit.by=${report.exit.by}`)
 
