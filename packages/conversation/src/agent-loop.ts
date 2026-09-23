@@ -57,6 +57,7 @@ import type {
   ModelErrorTier,
   ModelGateway,
   ModelResult,
+  RecordId,
   RecordsService,
   SessionId,
   Timestamp,
@@ -609,7 +610,26 @@ async function runToolCall(
     outcome = { ok: false, text, content: { text } }
   }
 
-  appendToolResultEntry(log, outcome)
+  const resultId = appendToolResultEntry(log, outcome)
+  announcePlan(runtime, outcome, resultId)
+}
+
+/**
+ * **计划变更的通报**（U34）——**条目成功追加之后**才发（`appendToolResultEntry` 已经返回
+ * 才走到这里；它抛了就轮不到这一行）。
+ *
+ * 为什么是这个时机（设计 · 技术实现方案 3 的那一条）：
+ * - 工具域早先发的 `tool.result` **不能**当「计划已保存」的证明——那只说明调用跑完了，
+ *   条目还没影；
+ * - 追加失败**不能**对模型或界面报更新成功——落账前失败＝保持旧计划（旧内容还在记录里），
+ *   而界面照旧看着上一份清单，两边说的是同一件事。
+ *
+ * 判据是 `undefined`（不在场）而非真假：`plan: null` 是**清空**，也要报（界面据它移除清单）。
+ */
+function announcePlan(runtime: LoopRuntime, outcome: ToolOutcome, entry: RecordId): void {
+  if (outcome.plan === undefined) return
+
+  runtime.sink.emit(runtime.stamper.stamp('plan.changed', { entry, plan: outcome.plan }))
 }
 
 /**

@@ -68,6 +68,7 @@ import type {
   ToolCallPayload,
   UsedSkillEntry,
 } from '@magic/contracts'
+import { planMaterialOf } from './plan.ts'
 
 /**
  * blob 解析回文本的缺省上限（**字符**）——「按策略截断」（技术方案 · 领域划分 · 端口内类型）。
@@ -162,6 +163,14 @@ export async function assembleContext(
   const all: Entry[] = []
   for await (const entry of input.records.readEntries(input.session)) all.push(entry)
 
+  /**
+   * **完整展开成工具消息**的那些工具结果条目（U34）——计划材料据此判「已经送达了吗」。
+   *
+   * 只记**完整**的：正文被截断的不进（设计明写「正文被截断不算已经送达」），
+   * 配对被丢弃的也不进（落单的 `tool-call` 那一路根本不展开，见文件头注 2）。
+   */
+  const delivered = new Set<RecordId>()
+
   // 压缩过就先摆摘要头，再展开「近段 ＋ 摘要之后的条目」（见文件头注 · 边界由摘要位置定）
   const plan = planContext({ entries: all, nearEntries: input.nearEntries ?? DEFAULT_NEAR_ENTRIES })
   if (plan.summary !== undefined) {
@@ -222,16 +231,22 @@ export async function assembleContext(
 
         const pairKey = pairingKeyOf(callEntry.id)
         toolCalls.push({ id: pairKey, name: call.name, args: call.args })
+
+        // 正文取**条目正文**（面向模型的文本，工具域按上限截断的那份）——
+        // **不是**载荷里的记录形态：那是全量（可能是 blob），送模型的是这份截断文本。
+        // 重放时因此逐字复原模型当时看到的那一份。
+        //
+        // 另记「这一份是不是完整的」（U34）——计划材料只认完整的那些（见 `delivered`）
+        const content = await deliveredTextOf(resultEntry.content, input.records, limit)
+        if (content.complete) delivered.add(resultEntry.id)
+
         toolMessages.push({
           role: 'tool',
           callId: pairKey,
           // 工具名**取自发起它的调用条目**，不从助手消息反查——压缩（阶段 3）来时反查会静默退化
           name: call.name,
           ok: result.ok,
-          // 正文取**条目正文**（面向模型的文本，工具域按上限截断的那份）——
-          // **不是**载荷里的记录形态：那是全量（可能是 blob），送模型的是这份截断文本。
-          // 重放时因此逐字复原模型当时看到的那一份。
-          output: await contentTextOf(resultEntry.content, input.records, limit),
+          output: content.text,
         })
         cursor += 2
       }
@@ -257,6 +272,18 @@ export async function assembleContext(
     // `tool-call` / `tool-result` 已在上面按对消费；走到这里＝落单者（在途 / 无来处），不进上下文。
     index += 1
   }
+
+  // **计划笔记的**再交付（U34）——压出窗口之后，最新笔记要重新回到模型眼前
+  // （设计 · 上下文接入：最新内容已被压出窗口时，追加一份带记录位置的 assistant 会话材料）。
+  // 判据与限度都在 `./plan.ts`：只有「当前计划条目没被完整送达」时才加，加的是**既有笔记**
+  // 而不是新交代（故不用 system 角色、不伪造用户消息）。
+  const material = await planMaterialOf({
+    records: input.records,
+    session: input.session,
+    delivered,
+    entries,
+  })
+  if (material !== undefined) messages.push(material)
 
   return messages
 }
@@ -284,6 +311,22 @@ export function pairingKeyOf(entryId: RecordId): string {
 // —— 内容 → 文本（blob 解析 ＋ 截断）——
 
 /**
+ * 条目内容 → **原始文本**（不做任何截断）：内联者原样，blob 引用者取回。
+ *
+ * 一处解码、两处按各自的口径切：装配那一侧按 `blobTextLimit` 截（送模型的那一份要细），
+ * 回查那一侧按记录位置切片（U34 的历史回查——`./plan.ts`）。
+ * 两个解码器＝两处可能不同的编码假设，故只此一处。
+ */
+export async function rawTextOf(
+  content: Content,
+  records: { readonly blobs: BlobStore },
+): Promise<string> {
+  if ('text' in content) return content.text
+
+  return new TextDecoder().decode(await records.blobs.get(content.blob))
+}
+
+/**
  * 条目内容 → 文本：内联者原样，blob 引用者取回按策略截断。
  *
  * **导出给压缩用**（`./compact.ts` 把旧段渲染成摘要请求时要取同一份正文）——
@@ -294,13 +337,27 @@ export async function contentTextOf(
   records: { readonly blobs: BlobStore },
   limit: number,
 ): Promise<string> {
-  if ('text' in content) return content.text
+  return (await deliveredTextOf(content, records, limit)).text
+}
 
-  const text = new TextDecoder().decode(await records.blobs.get(content.blob))
-  if (text.length <= limit) return text
+/**
+ * 与 `contentTextOf` 同一份文本，另带**「完整送达了吗」**——U34 的计划材料据它判
+ * 「最新笔记是不是已经完整落在这一次的消息里」（设计：正文被截断的不算已经送达）。
+ *
+ * 截断留痕照旧（模型看得到「这里被截了」与原文规模，才不会把半截结果当完整事实下结论）。
+ */
+export async function deliveredTextOf(
+  content: Content,
+  records: { readonly blobs: BlobStore },
+  limit: number,
+): Promise<{ readonly text: string; readonly complete: boolean }> {
+  const text = await rawTextOf(content, records)
+  if (text.length <= limit) return { text, complete: true }
 
-  // 截断留痕：模型看得到「这里被截了」与原文规模，才不会把半截结果当完整事实下结论
-  return `${text.slice(0, limit)}\n…（截断：原文 ${text.length} 字符，以上为前 ${limit} 字符）`
+  return {
+    text: `${text.slice(0, limit)}\n…（截断：原文 ${text.length} 字符，以上为前 ${limit} 字符）`,
+    complete: false,
+  }
 }
 
 // —— 载荷收窄（契约的 `Entry.payload` 是松散联合；域间不得互 import，故自持一份）——

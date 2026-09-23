@@ -64,7 +64,11 @@ import type {
 import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, expandHome } from '@magic/contracts'
 import { createActions } from '@magic/actions'
 import type { SessionPorts } from '@magic/actions'
-import { createConversationService, createConversationSession } from '@magic/conversation'
+import {
+  createConversationService,
+  createConversationSession,
+  createPlanReader,
+} from '@magic/conversation'
 import type {
   ContextPolicy,
   ConversationSession,
@@ -88,7 +92,7 @@ import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createMcpServers } from '@magic/mcp'
 import type { McpServers } from '@magic/mcp'
-import { createToolRuntime, defineMcpTools, defineSkillTool } from '@magic/tools'
+import { PLAN_TOOL_NAMES, createToolRuntime, defineMcpTools, definePlanTools, defineSkillTool } from '@magic/tools'
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
@@ -547,6 +551,22 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const skillTool = defineSkillTool(skills)
 
+  /**
+   * **三个会话内置辅助工具的放行规则**（U34）——**内存规则，不写用户授权文件**。
+   *
+   * 与技能工具同一条处境：它们读写的都是**会话自己的笔记与记录**，工作区里一个文件都不碰，
+   * 没有「要不要放行」这件事可言（权限域那三格也判轻，见 `@magic/permission` · `analyze.ts`）；
+   * 让用户为每次写笔记点一次卡，就是把注意力花在不存在的选择上。
+   *
+   * ⚠️ **只匹配这三个名字**（不是 `'*'`、不带路径模式）：规则轴按名字命中，
+   * 任何别的工具——包括名字长得像的、外部服务器上同名的（那一路在 `analyze` 里
+   * 先按外部从严）——都够不着这条规则。
+   *
+   * 名字取自工具定义那一处（`PLAN_TOOL_NAMES`）：改名时改一处就够，
+   * 不会出现「规则写的是老名字、于是每次都弹卡」那种静默失效。
+   */
+  const planRules: readonly PermissionRule[] = PLAN_TOOL_NAMES.map((tool) => ({ tool }))
+
   // ── 授权（U22）：`a` 的落点是**工作区**，存 `~/.magic/grants.json` ──────────────
   //
   // 三件都在这一步：**读文件**（启动期一次，同配置）→ **造账本**（纯内存，跨会话共用）
@@ -726,8 +746,31 @@ export function assemble(options: AssembleOptions): Assembly {
   const open = (session: SessionId): SessionInstance => {
     const records = recordsStore.serviceFor(session)
     const stamper = createStamper({ records, session, now })
-    // 闸门按会话各一份（裁决的账按会话分列），**账本却是工作区级的那一个**（跨会话共用）
-    const gate = createPermissionGate({ sink, stamper, now, rules: parsedRules.rules, grants })
+    // 闸门按会话各一份（裁决的账按会话分列），**账本却是工作区级的那一个**（跨会话共用）。
+    // **放行规则＝配置里那几条 ＋ 三个内置辅助工具那三条**（U34）——后三条是内存规则
+    // （写协作笔记不是需要用户逐次裁决的事），排在手写规则之后（用户的规则先说话）。
+    const gate = createPermissionGate({
+      sink,
+      stamper,
+      now,
+      rules: [...parsedRules.rules, ...planRules],
+      grants,
+    })
+
+    /**
+     * **计划与历史的只读面**（U34）——按**这一条会话**造一份，交给工具域那三件。
+     *
+     * 它与对话域的上下文装配**同源**（同一份记录、同一条窗口算术）：
+     * 「当前计划是哪一条」「活动窗口从哪儿划」只有一处判法，工具与上下文因此不会各说一套。
+     * `nearEntries` 与下面 `context` 的覆盖位同一个数——两处各认一段就出岔子（见 `./plan.ts`）。
+     */
+    const planReader = createPlanReader({
+      records,
+      session,
+      nearEntries: options.context?.nearEntries,
+    })
+    const planTools = definePlanTools(planReader)
+
     const tools = createToolRuntime({
       sandbox,
       workspace,
@@ -736,15 +779,19 @@ export function assemble(options: AssembleOptions): Assembly {
       stamper,
       // 大块转存经记录域公开面（blob 写权唯一归它）
       blobs: records.blobs,
-      // **追加集**（`options.tools` 出口：机制在内、工具集在外）——两件来路：
+      // **追加集**（`options.tools` 出口：机制在内、工具集在外）——三件来路：
       // ① **技能读取入口**（U33）：读的是只读材料，走 `Skills` 端口而不走沙箱，
       //    故不落在默认七件里；递进去的是**上面那一个** `skills` 实例（与对话域同源）。
-      // ② **外部工具**（U38）：连上就有、断开就没有，跟着连接的实况走。
+      // ② **计划与历史三件**（U34，见上 `planTools`）。
+      // ③ **外部工具**（U38）：连上就有、断开就没有，跟着连接的实况走。
       //
       // ⚠️ **给函数、不给数组**（U38 返工 A）：外部连接是**进程级**的一束，会话链却
       // **按条建**——`--session` 那条路上链在装配期就建好了，而发现要等 `ready()`。
       // 快照会让那一条链的工具表永远停在「还没连上」的那一刻。给函数＝**每次现取**。
-      tools: () => [skillTool, ...mcpTools()],
+      //
+      // ③ **三个内置辅助工具**（U34）：计划笔记与历史回查。它们按会话造（上面那一份读面
+      //    绑的就是本条会话），与「现取」不冲突——这一束本来就是本条链自己的。
+      tools: () => [skillTool, ...planTools, ...mcpTools()],
     })
     const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
 

@@ -57,3 +57,15 @@ export type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.t
  * 而这一件要的依赖（`Skills` 端口）不在本域默认那七件的射程里——由装配把它造好递进来。
  */
 export { defineSkillTool } from './skill-tool.ts'
+
+/**
+ * **计划与历史三件**（U34）——`options.tools` 追加出口上的又一束。
+ *
+ * 与 `skill` 同一处境（它要的依赖不在本域默认七件的射程里）：三件读写的是**同会话的
+ * 协作笔记与会话记录**，而「当前计划是哪一条、活动窗口从哪儿划」是对话域的判断——
+ * 故由装配把那一对只读回调（`PlanReader`，按会话绑定）造好递进来。
+ *
+ * ⚠️ **三个名字与放行规则同源**（`PLAN_TOOL_NAMES`）：权限域的分析表要显式认这三格、
+ * 装配另按名字追加放行规则——名字散在各处时，改名会静默只改一半。
+ */
+export { definePlanTools, PLAN_TOOL_NAMES } from './plan-tools.ts'

@@ -42,6 +42,15 @@ export type { SessionHost, SessionHostDeps, SessionInstance } from './sessions.t
 export { createConversationSession } from './service.ts'
 export type { ConversationDeps, ConversationSession, RebuildReport } from './service.ts'
 
+/**
+ * **计划与历史的只读面**（U34）——契约端口 `PlanReader` 的落地（按会话绑定）。
+ *
+ * 为什么由本域出而不是工具域自己读：两件都有「当前上下文到哪儿了」这一层判断
+ * （当前计划是哪一条 · 活动窗口从哪儿划），而那是本域的专利（见 `./plan.ts` 头注）。
+ * 装配把它造好递给工具域——**一个只读回调，没有第二条写路径**。
+ */
+export { createPlanReader } from './plan.ts'
+
 // 构造入参里点名用到、装配根必须拿得到的两件形态：
 // 提示词运行时注入值（`cwd` / `platform` / `date`）与上下文策略（阈值 / 截断）
 export type { PromptVars } from './prompt/index.ts'
