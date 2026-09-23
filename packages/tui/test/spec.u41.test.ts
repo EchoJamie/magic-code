@@ -24,7 +24,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Command, ModelCatalogRow, ModelRef, ModelInfoRead } from '@magic/contracts'
 import { HINT_PICKER } from '../src/view.ts'
-import type { Dock } from '../src/view.ts'
+import type { Dock, PickerRow } from '../src/view.ts'
 import { dockHeightOf } from '../src/components/app.ts'
 import { createStage } from './screen.ts'
 import type { Stage } from './screen.ts'
@@ -117,6 +117,17 @@ function open(stage: Stage, entries: readonly ModelCatalogRow[], current?: Model
 const sent = (stage: Stage): readonly Command[] =>
   stage.commands().filter((one) => one.type.startsWith('model.') || one.type.startsWith('provider.'))
 
+/**
+ * 此刻那一屏里的**模型行**（`pick` 有值的那几行）。
+ *
+ * 由头（U41 返修）：列表末尾常驻着几条**入口行**（连接供应商 / 管理连接 / 刷新模型），
+ * 它们与模型行同列，但不是「有哪些模型可挑」的一部分——凡「列表里列了哪些模型」的判据
+ * 都从这儿取，免得每加一条入口就要改一遍断言。
+ */
+function modelOnly(stage: Stage): readonly PickerRow[] {
+  return (pickerOf(stage)?.rows ?? []).filter((row) => row.pick !== undefined)
+}
+
 /** 此刻那一屏开着的是哪个抽屉（没开＝`undefined`）——**取一次**再收窄（分两次取不算收窄）。 */
 function pickerOf(stage: Stage): Extract<Dock, { kind: 'picker' }>['picker'] | undefined {
   const dock = stage.shell.getView().dock
@@ -136,7 +147,9 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
       conn('personal', { name: '个人号', model: 'MiniMax-M3', cache: cacheOf({ models: ['MiniMax-M3', 'MiniMax-Text-01'] }) }),
     ])
 
-    const rows = pickerOf(stage)?.rows ?? []
+    // **只看模型行**（`pick` 有值的那几行）——列表末尾还有几行**入口**（U41 返修加的），
+    // 它们不是「模型」，判据不该被它们带着走（`filter` 一处收口，下面几条同理）
+    const rows = modelOnly(stage)
     expect(rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'MiniMax-Text-01'])
     expect(rows.every((row) => row.meta.includes('个人号'))).toBe(true)
   })
@@ -165,7 +178,7 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
       }),
     ])
 
-    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'maybe-1'])
+    expect(modelOnly(stage).map((row) => row.label)).toEqual(['MiniMax-M3', 'maybe-1'])
   })
 
   test('**已有选择照留**：不在最近一次列表里的那条仍列着，并标明这一事实', () => {
@@ -175,7 +188,7 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
       conn('personal', { model: 'retired-model', cache: cacheOf({ models: ['MiniMax-M3'] }) }),
     ])
 
-    const rows = pickerOf(stage)?.rows ?? []
+    const rows = modelOnly(stage)
     expect(rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'retired-model'])
     expect(rows[1]?.meta).toContain('不在最近一次列表里')
   })
@@ -189,14 +202,49 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
     expect(row?.meta).toContain('MiniMax-M3')
   })
 
-  test('一条模型都没有（还没取过）⇒ **不开抽屉**，说明落成记录区一行回执', () => {
-    // 0 行的抽屉接管着输入却不给东西可点——打不了字、没得选，看着就是卡死（P0 那条）。
+  test('一条模型都没有时**照开抽屉**，并给一条能按下去的接入入口', () => {
+    // **原锚**：0 行 ⇒ 不开抽屉，说明落成记录区一行回执（那时列表只有「模型行」，
+    //   一条模型都没有＝没有任何可点的东西）。
+    // **为何变**（U41 返修 · 首验退回那一处）：一条连接都没有时，那一屏**收回普通输入区**，
+    //   用户手上没有任何可操作的东西——「从头接一条」这条路就断了（「空态也可用」）。
+    // **新锚**：末尾常驻的**入口行**让空态也有东西可点，故照开；说明照旧给（指到那一行）。
     const stage = createStage()
-    open(stage, [conn('personal', { vendor: 'minimax' })])
+    open(stage, [])
 
-    expect(stage.shell.getView().dock.kind).toBe('input')
-    const receipt = stage.shell.getView().settled.filter((row) => row.kind === 'receipt')
-    expect(receipt.map((row) => (row.kind === 'receipt' ? row.text : '')).join('\n')).toContain('还没取过模型')
+    expect(stage.shell.getView().dock.kind).toBe('picker')
+    const rows = pickerOf(stage)?.rows ?? []
+    expect(rows.some((row) => /连接|接入/.test(row.label))).toBe(true)
+    expect(pickerOf(stage)?.hint).toContain('还没有接上任何供应商')
+  })
+
+  test('一条连接、但**还没取过模型**：模型行照列（连接默认），入口行也在', () => {
+    const stage = createStage()
+    open(stage, [conn('personal', { vendor: 'minimax', model: 'MiniMax-M3' })])
+
+    expect(modelOnly(stage).map((row) => row.label)).toEqual(['MiniMax-M3'])
+    expect(pickerOf(stage)?.rows.some((row) => row.label === '连接供应商')).toBe(true)
+  })
+
+  test('一条连接都没有时，**管理与刷新不出**（无事可做的那两行不占地方）', () => {
+    const stage = createStage()
+    open(stage, [])
+
+    const labels = (pickerOf(stage)?.rows ?? []).map((row) => row.label)
+    expect(labels).toEqual(['连接供应商'])
+  })
+
+  test('三个入口行**常驻**：几十条模型折起来也在（不会被折到看不见）', async () => {
+    const stage = createStage()
+    open(stage, [
+      conn('personal', { cache: cacheOf({ models: Array.from({ length: 30 }, (_u, at) => `m-${at}`) }) }),
+    ])
+
+    const frame = await stage.screen({ columns: 60, rows: 24 })
+
+    expect(frame.has('连接供应商')).toBe(true)
+    expect(frame.has('管理连接')).toBe(true)
+    expect(frame.has('刷新模型')).toBe(true)
+    expect(frame.has('… 下面还有')).toBe(true) // 候选那一头确实折了
   })
 })
 
@@ -319,7 +367,9 @@ describe('⑤ 刷新：只更新信息，**不动你的焦点与草稿**', () =>
     stage.feed([event('model.catalog', { entries: listed(['MiniMax-M4', 'MiniMax-Text-01']) })])
 
     const after = pickerOf(stage)
-    expect(after?.rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'MiniMax-M4', 'MiniMax-Text-01'])
+    expect(
+      (after?.rows ?? []).filter((row) => row.pick !== undefined).map((row) => row.label),
+    ).toEqual(['MiniMax-M3', 'MiniMax-M4', 'MiniMax-Text-01'])
     expect(after?.rows[after.selected]?.pick).toEqual(before) // 还是用户手上那一条
   })
 
@@ -568,7 +618,75 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
   })
 })
 
-// ══ 四 · 详情 / 思考设置 / 设为默认 ═══════════════════════════════════
+// ══ 四 · `/model` 内那三条入口行（U41 返修）═════════════════════════════
+
+describe('⑬ 入口行：在这一屏里就能连 / 管 / 刷（不必另打命令）', () => {
+  /** 把选中挪到某一条入口行上（按标签找——不按下标写死，免得行序一变就错位）。 */
+  function toAction(stage: Stage, label: string): void {
+    const rows = pickerOf(stage)?.rows ?? []
+    const at = rows.findIndex((row) => row.label === label)
+    if (at === -1) throw new Error(`列表里没有「${label}」这一行`)
+
+    for (let step = 0; step < at; step += 1) stage.press({ kind: 'down' })
+  }
+
+  const listed = [
+    conn('personal', {
+      name: '个人号',
+      model: 'MiniMax-M3',
+      cache: cacheOf({ models: ['MiniMax-M3'] }),
+    }),
+  ]
+
+  test('「连接供应商」⇒ 走接入第一步（问一次连接一览）', () => {
+    const stage = createStage()
+    open(stage, listed)
+    toAction(stage, '连接供应商')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage)).toEqual([
+      { type: 'model.list' },
+      { type: 'provider.list' },
+    ])
+  })
+
+  test('「管理连接」⇒ 走管理第一步（同一份读面）', () => {
+    const stage = createStage()
+    open(stage, listed)
+    toAction(stage, '管理连接')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'provider.list' })
+  })
+
+  test('「刷新模型」⇒ 发刷新意图（缺省＝刷当前那条连接）', () => {
+    const stage = createStage()
+    open(stage, listed, { provider: 'personal', model: 'MiniMax-M3' })
+    toAction(stage, '刷新模型')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'model.refresh' })
+  })
+
+  test('**空态**下那一条入口照样按得下去（接入第一步）', () => {
+    const stage = createStage()
+    open(stage, [])
+    stage.press({ kind: 'enter' }) // 空态只有这一行，且它就在选中位上
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'provider.list' })
+  })
+
+  test('按入口行**不是**换模型（不发 `model.switch`）', () => {
+    const stage = createStage()
+    open(stage, listed)
+    toAction(stage, '刷新模型')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).some((one) => one.type === 'model.switch')).toBe(false)
+  })
+})
+
+// ══ 五 · 详情 / 思考设置 / 设为默认 ═══════════════════════════════════
 
 describe('⑫ 详情：`→` 进这一条，看规格、改思考、设为默认', () => {
   const rich = [
@@ -795,7 +913,9 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     // 满窗 12 格 − 2 行说明 ⇒ 预算 10 格；画 9 条 ＋ 1 行折叠提示 ⇒ 余 21。
     // ⚠️ 这个数**含说明行**：说明与候选同一片交互区，共用半屏那一份预算
     //    （与草稿那一片同一条规矩；不这么算，说明一长就把记录区挤没——真跑量到过）
-    expect(frame.has('… 下面还有 21 条')).toBe(true)
+    // 额度 ＝ 半屏 12 − 说明 1 行 ＝ 11；**常驻行先占 3**（入口那三条）⇒ 折得动的那一段 8 格：
+    // 画 7 条 ＋ 1 行折叠提示 ⇒ 余 23
+    expect(frame.has('… 下面还有 23 条')).toBe(true)
   })
 
   test('**焦点可见**：`↓` 挪出这一窗之后窗口跟着平移，选中那条仍在屏上', async () => {
@@ -806,7 +926,7 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     const frame = await stage.screen({ columns: 60, rows: 24 })
 
     expect(frame.has('model-15')).toBe(true) // 选中那条（第 16 行）
-    expect(frame.has('… 上面还有 8 条')).toBe(true) // 上头折起来的如实报
+    expect(frame.has('… 上面还有 10 条')).toBe(true) // 上头折起来的如实报
     expect(frame.has('model-0　')).toBe(false) // 折起来的那几条确实没画
   })
 

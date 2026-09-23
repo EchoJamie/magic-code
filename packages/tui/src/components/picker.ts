@@ -154,8 +154,14 @@ function rowsIn(items: readonly PickerItem[]): number {
 export function pickerLayout(picker: Picker, budget: number = Number.POSITIVE_INFINITY): PickerLayout {
   const heads = groupHeads(picker.rows)
   const full: PickerItem[] = []
+  /** **常驻行**（`PickerRow.pinned`）——不折叠、画在末尾，额度单算（见 `pinned` 那条注）。 */
+  const pinned: PickerItem[] = []
 
   picker.rows.forEach((row, index) => {
+    if (row.pinned === true) {
+      pinned.push({ kind: 'row', key: `r:${index}`, row, index })
+      return
+    }
     if (heads[index] === true) {
       full.push({ kind: 'head', key: `h:${index}`, head: row.group ?? '', faint: row.faint === true })
     }
@@ -163,13 +169,17 @@ export function pickerLayout(picker: Picker, budget: number = Number.POSITIVE_IN
   })
 
   const cap = Math.max(1, Math.floor(budget))
-  if (full.length <= cap) return { items: full, above: 0, below: 0 }
+  // 折得动的那一段拿到的额度 ＝ 总额度 − 常驻行（常驻的**先占**，它们本来就该一直看得见）。
+  // 兜底至少 1 格：额度窄到装不下常驻行时，宁可让折得动的那一段只留一行（下面还有护栏）。
+  const room = Math.max(1, cap - pinned.length)
+
+  if (full.length <= room) return { items: [...full, ...pinned], above: 0, below: 0 }
 
   // 焦点那一项在**整张表**里的位置——窗口必须含住它（`↑↓` 挪到哪儿，窗口跟到哪儿）
   const at = full.findIndex((item) => item.kind === 'row' && item.index === picker.selected)
   const anchor = at === -1 ? 0 : at
 
-  for (let size = Math.min(full.length, cap); size >= 1; size -= 1) {
+  for (let size = Math.min(full.length, room); size >= 1; size -= 1) {
     // 窗口贴住下沿（焦点在末尾那一格上）——与草稿那一片同一取法：挪到哪儿跟到哪儿，
     // 只在够不着的时候才整窗平移（最小滚动）。
     const from = Math.min(Math.max(anchor - size + 1, 0), full.length - size)
@@ -178,12 +188,13 @@ export function pickerLayout(picker: Picker, budget: number = Number.POSITIVE_IN
     const below = rowsIn(full.slice(from + size))
     const used = window.length + (above > 0 ? 1 : 0) + (below > 0 ? 1 : 0)
 
-    if (used <= cap) {
+    if (used <= room) {
       return {
         items: [
           ...(above > 0 ? [{ kind: 'notice', key: 'n:above', text: noticeOf(above, 'above') } as const] : []),
           ...window,
           ...(below > 0 ? [{ kind: 'notice', key: 'n:below', text: noticeOf(below, 'below') } as const] : []),
+          ...pinned,
         ],
         above,
         below,
@@ -193,7 +204,8 @@ export function pickerLayout(picker: Picker, budget: number = Number.POSITIVE_IN
 
   // 兜底（护栏——半屏预算实际到不了这一档）：预算窄到「一项 ＋ 一条提示」都放不下时，
   // **焦点那一项优先**（它得让人看得见），两头提示如实让位——宁可少报，也不把帧撑过账。
-  return { items: [full[anchor] as PickerItem], above: 0, below: 0 }
+  // 常驻行**照旧给**（它们正是入口，折没了就等于没有）。
+  return { items: [full[anchor] as PickerItem, ...pinned], above: 0, below: 0 }
 }
 
 export function PickerList({ picker, columns, rows = Number.POSITIVE_INFINITY }: PickerProps) {

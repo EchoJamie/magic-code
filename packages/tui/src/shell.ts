@@ -1157,7 +1157,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
   }
 
-  // —— 本地小输入（U41）：改名 / 密钥那一类 ——
+  /**
+   * **`/model` 末尾那几条入口行**（U41 返修）——与 slash 子命令**共用同一段动作**。
+   *
+   * 由头：`/model connect` 那几条子命令留着**兼容**（首验要求「已有子命令的兼容性不借此
+   * 任意破坏」），而入口行才是正身；两处各写一套「点了之后干什么」，改一处漏一处。
+   * 故入口行把词喂给**同一个 `runSlash`**——动作只有一处。
+   */
+  const modelAction = (value: string): ShellEffect => {
+    const word =
+      value === 'connect' ? '/model connect' : value === 'manage' ? '/model manage' : '/model refresh'
+    const { next, commands } = runSlash(view, word)
+
+    commit(closePicker(next))
+    for (const command of commands) send(command)
+
+    return NONE
+  }
+
+  // —— 管理连接（U41 · `/model manage`）——
 
   /** `/model manage` 的第一步：**连接一览**（同一份行，取材就是 `view.models`）。 */
   const openManagePicker = (note: string): void => {
@@ -2175,13 +2193,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
-      // 模型那一屏（U41）：选定＝**切到这条连接的这个精确模型**（两件一起给——
-      // 合法的两条连接可以有同名模型，只报模型名认不出是谁）。
-      // 回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）。
+      // 模型那一屏（U41）：两类行。
+      // ① **入口行**（列表末尾那几条，`modelRows` 铺的）——动作就在这一屏里做，不必另打命令；
+      // ② **模型行**——选定＝切到这条连接的这个精确模型（两件一起给——合法的两条连接
+      //    可以有同名模型，只报模型名认不出是谁）。回执由内核的 `model.switched` 给。
       if (view.dock.picker.source === 'model') {
-        const pick = row.pick
-        if (pick === undefined) return NONE // 不该有这种行（行是 `modelRows` 铺的）
-        send({ type: 'model.switch', provider: pick.provider, model: pick.model })
+        if (row.pick === undefined) return modelAction(row.value)
+
+        send({ type: 'model.switch', provider: row.pick.provider, model: row.pick.model })
         commit(closePicker(view))
         return NONE
       }

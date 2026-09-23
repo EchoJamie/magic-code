@@ -218,6 +218,15 @@ export type PickerRow = {
    */
   readonly reasoning?: ReasoningSetting
   /**
+   * **这一行不参与折叠**（U41 返修）——候选窗口折起来时它照旧画在列表末尾。
+   *
+   * 由头：`/model` 末尾那三条**入口行**（连接供应商 / 管理连接 / 刷新模型）是「这一刻能做
+   * 什么」，而不是「有哪些可挑的」——它们被几十条模型折到看不见，等于没有入口
+   * （首验的判据就是这个：**空态也要有可操作的入口**，而空态之外更不该把它藏起来）。
+   * 故它们**常驻**：窗口只折候选那一头，常驻行照旧在末尾（额度各占各的）。
+   */
+  readonly pinned?: boolean
+  /**
    * **压暗**——「别的项目」的行（工作区≠你此刻所在的那个）。
    * 这是**视觉次序**，不是可用性：压暗的行**照样选得中、切得过去**。
    */
@@ -1732,7 +1741,7 @@ export function modelRows(
   for (const entry of entries) {
     const connection = entry.name ?? entry.provider
 
-    for (const one of modelsOf(entry)) {
+    for (const one of modelsOf(entry, current)) {
       rows.push({
         label: one.info.name ?? one.info.id,
         // 连接名打头（窄窗先保住它——同名模型靠它分辨），其后才是补充的那几格
@@ -1748,20 +1757,77 @@ export function modelRows(
     }
   }
 
+  return [...rows, ...modelActionRows(entries)]
+}
+
+/**
+ * **`/model` 末尾那几条入口行**（U41 返修）——「这一刻能做什么」，与「有哪些可挑的」分开。
+ *
+ * 三条由头（首验退回那一处）：
+ * - **空态也要有入口**：一条连接都没有时，这一屏原先**收回普通输入区**（0 行不接管输入），
+ *   用户手上没有任何可操作的东西——「从头接一条」这条路就这么断了；
+ * - **入口要在 `/model` 内直接可操作**：不能靠一串子命令说明去教用户另打一条命令；
+ * - **常驻**（`pinned`）：几十条模型折起来时，这三行照旧在末尾（见 `PickerRow.pinned`）。
+ *
+ * ⚠️ **只在有用时才给**：「管理连接」「刷新模型」在一条连接都没有时无事可做——摆着就是
+ * 占地方的实现细节（`AGENTS.md`：屏幕上常驻的每一格，问它「影响用户的哪个动作」）。
+ */
+export function modelActionRows(entries: readonly ModelCatalogRow[]): readonly PickerRow[] {
+  const rows: PickerRow[] = [
+    { label: '连接供应商', meta: '', current: false, value: 'connect', oneLine: true, pinned: true },
+  ]
+
+  if (entries.length > 0) {
+    rows.push({
+      label: '管理连接',
+      meta: `${entries.length} 条连接`,
+      current: false,
+      value: 'manage',
+      oneLine: true,
+      pinned: true,
+    })
+    rows.push({
+      label: '刷新模型',
+      meta: '现在就去供应商那儿取一遍',
+      current: false,
+      value: 'refresh',
+      oneLine: true,
+      pinned: true,
+    })
+  }
+
   return rows
 }
 
-/** 一个连接该列出哪些模型——缓存里的 ＋（不在缓存里的）**已有选择**。 */
-function modelsOf(entry: ModelCatalogRow): readonly { readonly info: ModelInfo; readonly cached: boolean }[] {
+/**
+ * 一个连接该列出哪些模型——缓存里的 ＋（不在缓存里的）**已有选择**。
+ *
+ * ⚠️ **两类「已有选择」都要留**（U41 返修 · 首验退回那一处）：
+ * ① 这个连接的**配置默认**（`entry.model`）；
+ * ② **此刻实际在用的那一条**（`current`）——它未必是默认：用户换过、或者它从最近一次
+ *    列表里被移除了。**只补①就等于把用户手上那条偷偷换掉**（列表里显示的是默认，
+ *    而实际发出去的还是原来那条——用户看着屏做判断，屏却在说另一件事）。
+ */
+function modelsOf(
+  entry: ModelCatalogRow,
+  current: ModelRef | null,
+): readonly { readonly info: ModelInfo; readonly cached: boolean }[] {
   const cached = (entry.cache?.snapshot?.models ?? []).filter(
     // **列表取舍**：明确说了「不适用于对话」的不混入（`false` 才排除；**未知照列**）
     (one) => one.capabilities?.chat !== false,
   )
   const out = cached.map((info) => ({ info, cached: true }))
+  const has = (id: string): boolean => out.some((one) => one.info.id === id)
 
-  // 这个连接的默认 / 已有选择——缓存里没有也**留着**（且标明它不在最近一次列表里）
-  if (entry.model !== undefined && !out.some((one) => one.info.id === entry.model)) {
+  // ① 配置默认——缓存里没有也**留着**（且标明它不在最近一次列表里）
+  if (entry.model !== undefined && !has(entry.model)) {
     out.push({ info: { id: entry.model }, cached: false })
+  }
+
+  // ② **实际当前那条**——同上，一条都不能丢（设计：「模型不在最新列表时，已有选择仍明确
+  //    保留并提示此事实」；这里连「它是不是默认」都不假设）
+  if (current !== null && current.provider === entry.provider && !has(current.model)) {
+    out.push({ info: { id: current.model }, cached: false })
   }
 
   return out
@@ -1945,13 +2011,13 @@ export function modelHint(entries: readonly ModelCatalogRow[], note?: string): s
       lines.push(
         cache?.refreshing === true
           ? `${connection}：正在取模型列表……`
-          : `${connection}：还没取过模型——/model refresh 刷新`,
+          : `${connection}：还没取过模型`,
       )
     } else if (cache.stale === true) {
       lines.push(
         cache.refreshing === true
           ? `${connection}：列表是 ${dayLabel(cache.snapshot.fetchedAt)} 取的，正在重新去取`
-          : `${connection}：列表是 ${dayLabel(cache.snapshot.fetchedAt)} 取的（过期了——/model refresh 刷新）`,
+          : `${connection}：列表是 ${dayLabel(cache.snapshot.fetchedAt)} 取的（过期了）`,
       )
     }
 
@@ -1968,7 +2034,16 @@ export function modelHint(entries: readonly ModelCatalogRow[], note?: string): s
   const rest = lines.length - heads.length
   if (rest > 0) heads.push(`… 另有 ${rest} 条连接也有状况——/model manage 里逐条看`)
 
-  heads.push('→ 看这条的详情 · /model refresh 刷新 · /model connect 连接供应商 · /model manage 管理连接')
+  // **不在这儿列子命令**（U41 返修）：三个动作已经是列表末尾那几条**可操作的入口行**，
+  // 再拿一行字教用户另打命令，就是把入口写成了说明（上面那几条逐连接的说明里也不指子命令
+  // ——「刷新模型」那一行就常驻在下面）。这一行只剩「详情」那个键
+  //（它是对**当前选中那一行**的动作，做不成一行——「这条」指谁得看焦点）。
+  heads.push(
+    entries.length === 0
+      ? '还没有接上任何供应商——选「连接供应商」接一条'
+      : '→ 看这条的详情',
+  )
+
   if (note !== undefined && note !== '') heads.push(note)
 
   return heads.join('\n')
