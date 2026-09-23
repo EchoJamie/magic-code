@@ -25,7 +25,7 @@ import type { DiffKind, DiffRow } from '../diff.ts'
 import { markdownStream } from '../markdown.ts'
 import type { MdLine } from '../markdown.ts'
 import type { LogRow } from '../view.ts'
-import { textOfLines } from '../view.ts'
+import { quietRowHidden, textOfLines } from '../view.ts'
 import { PALETTE, displayWidth, durationLabel, expandTabs, wrap } from './lines.ts'
 
 /** 一行里的一段（同段一个颜色）。 */
@@ -450,17 +450,15 @@ function rowBody(
       // **安静的工具行**（U34 · 计划读写与历史回查那三个）：**默认不占地方，展开就照常画**。
       //
       // 「默认不另刷一串工具卡或重复计划全文」（设计）——它们的成功结果与计划本身说的是同一
-      // 件事，再铺一张卡就是同一件事说两遍；而**「默认不画」不等于「永久不可查」**：
-      // `ctrl+o`（既有那一个展开键）一到，它们与别的工具行**长得一模一样**（名字 · 参数 ·
-      // 结果正文全在）——不新造查看面。
+      // 件事，再铺一张卡就是同一件事说两遍。
       //
-      // 判据三件（`quiet` 只在 `view.ts` 的产生处写）：
-      // - 成功（含跑动中）⇒ 收起时不画；
-      // - **没跑成（失败 / 被拒 / 被扣下）⇒ 照旧可见**（设计：「失败正常可见」）；
-      // - 展开 ⇒ 画。
-      if (row.quiet === true && !expanded && row.state !== 'failed' && row.state !== 'rejected' && row.state !== 'unexecuted') {
-        return []
-      }
+      // ⚠️ **「默认不画」的边界（设计 · 终端投影那一节，2026-09-23 收紧）**：
+      // **活动输出**沿 `ctrl+o` 展开详情（这一行还在活动区时，展开就与别的工具行长得
+      // 一模一样：名字 · 参数 · 结果正文全在）；**已结束的过程沿持久会话 / 工具记录供排障**
+      // ——已写进原生 scrollback 的条目**不承诺重绘**，也不为它新开历史查看面。
+      // 判据（`quietRowHidden`，与历史收拢共用一把尺子）：没跑成（失败 / 被拒 / 被扣下）
+      // 照旧可见；成功（含跑动中）收起时不画。
+      if (quietRowHidden(row) && !expanded) return []
 
       return toolLines(row, columns, expanded, options.now ?? null)
 

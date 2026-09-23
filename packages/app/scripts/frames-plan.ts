@@ -209,9 +209,33 @@ function runTurn() {
   // 收束由 ctrl+c 那一跳给（外壳发 turn.interrupt，这儿如实回一条 turn.end）。
 }
 
+/**
+ * 重建那一趟的读面（复验退回那一处的最小反例）：六段，每段一条 assistant ＋ **两个成功的
+ * 辅助调用**——最老那一段不在「末尾几组不收」里，故它会走上收拢那条路。
+ */
+const REBUILT = []
+{
+  let id = 1
+  for (let round = 0; round < 6; round += 1) {
+    REBUILT.push({ id: id++, kind: 'assistant', content: { text: 'round' + round }, at: 1_700_000_000_000 + id })
+    for (const name of ['plan_update', 'plan_read']) {
+      REBUILT.push({ id: id++, kind: 'tool-call', payload: { name, args: {} }, content: { text: '' }, at: 1_700_000_000_000 + id })
+      REBUILT.push({
+        id: id++,
+        kind: 'tool-result',
+        payload: { ok: true, output: { text: name + ' 回执' } },
+        content: { text: '' },
+        at: 1_700_000_000_000 + id,
+      })
+    }
+  }
+}
+
 /** 重开那一趟的读面：末条是**清空**那一条 ⇒ 清单不该复活。 */
 const HISTORY =
-  variant === 'reopened'
+  variant === 'rebuilt'
+    ? REBUILT
+    : variant === 'reopened'
     ? [
         { id: 201, kind: 'assistant', content: { text: '这件事做完了。' }, at: 1_700_000_000_100 },
         {
@@ -520,6 +544,22 @@ async function main(): Promise<void> {
       keep(out, shown, '15-工具详情-展开')
       check(shown.text.includes('plan_update'), '`ctrl+o` 之后工具名在（既有那一个展开键）')
       check(shown.text.includes('计划已更新'), '结果也在（详情可查）')
+    } finally {
+      await session.close().catch(() => {})
+    }
+  }
+
+  // —— 九 · 历史重建（六段 · 复验退回那一处）：分组里不许冒出辅助调用 ——
+  {
+    const { session } = await start({ label: '09-rebuilt', variant: 'rebuilt', columns: 100, rows: 30, forceColor: '3' }, out)
+
+    try {
+      await Bun.sleep(600) // 等重建那一趟（`history.read` 的答复）走完
+      const shot = await session.capture({ label: '16-历史重建' })
+      keep(out, shot, '16-历史重建')
+      check(!shot.text.includes('次工具调用'), '重建出来的分组里没有辅助调用的名字与计数')
+      check(!shot.text.includes('plan_update'), '辅助调用一个都没被重新印出来')
+      check(shot.text.includes('round0') && shot.text.includes('round5'), '正文照旧（记录完整）')
     } finally {
       await session.close().catch(() => {})
     }

@@ -191,6 +191,24 @@ export function quietTool(name: string): boolean {
   return PLAN_TOOLS.has(name)
 }
 
+/**
+ * 这一行**默认画不画**——**一处判定、两处用**：
+ * ① 渲染那一处（`components/log.ts` 的 `rowBody`）收起时不出行；② **历史重建的收拢**
+ * （`collapseToolGroups`）不把它算进分组的名称与计数。
+ *
+ * 写在一处是有由头的（2026-09-23 复验退回）：两处各判一套的话，收拢只认「是不是 tool 行」，
+ * 于是**成功辅助调用在历史里又被重新印出来**——`● 2 次工具调用（plan_update · plan_read）`，
+ * 而单看某一行它明明是「默认不画」的。
+ *
+ * 判据三件：成功（含跑动中）⇒ 默认不画；**没跑成（失败 / 被拒 / 被扣下）⇒ 照旧可见**；
+ * 展开由调用方另判（`expanded` 只影响画不画，不影响「算不算进分组」）。
+ */
+export function quietRowHidden(row: LogRow): boolean {
+  if (row.kind !== 'tool' || row.quiet !== true) return false
+
+  return row.state !== 'failed' && row.state !== 'rejected' && row.state !== 'unexecuted'
+}
+
 /** 手上有没有一份**画得出来**的清单（没有步骤＝没有清单——辅助笔记不铺在清单里）。 */
 export function hasPlan(view: ShellView): boolean {
   return (view.plan.plan?.steps.length ?? 0) > 0
@@ -1510,6 +1528,11 @@ const RECENT_GROUPS = 5
  * - **≥2 次才收**——收拢是为了**省行**：`● 1 次工具调用（ls）` 与 `● ls .` 同样占一行，
  *   却把参数丢了 ⇒ 1 次收是**净损失**；
  * - **末尾 `RECENT_GROUPS` 组不收**——展开策略按**条数**，不是「只有最后一组」。
+ *
+ * ⚠️ **数的是「看得见的」那几条**（2026-09-23 复验退回）：默认不画的行（成功辅助调用，
+ * 见 `quietRowHidden`）既不进名称也不进计数——不这样的话，**单看某一行它明明不画**，
+ * 恢复历史时却从分组摘要里又冒出来（`● 2 次工具调用（plan_update · plan_read）`）。
+ * 一段里看得见的不足两条就不收：**收了反而是净损失**（同上面「≥2 次才收」那条账）。
  */
 function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
   const segments = toolSegments(rows)
@@ -1517,6 +1540,13 @@ function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
 
   /** 末尾这几段保持逐条展开。 */
   const recent = new Set(segments.slice(-RECENT_GROUPS).map((segment) => segment.start))
+
+  /** 一段里**看得见**的那几个名字（默认不画的不算）。 */
+  const visibleNames = (segment: { readonly start: number; readonly end: number }): readonly string[] =>
+    rows
+      .slice(segment.start, segment.end + 1)
+      .filter((row): row is Extract<LogRow, { kind: 'tool' }> => row.kind === 'tool' && !quietRowHidden(row))
+      .map((row) => row.name)
 
   /** 摘要行插在每段的**首行**位置；段内其余行丢掉。 */
   const summaryAt = new Map<number, readonly string[]>()
@@ -1526,10 +1556,10 @@ function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
     if (recent.has(segment.start)) continue
     if (segment.end === segment.start) continue // 单次调用不收
 
-    summaryAt.set(
-      segment.start,
-      rows.slice(segment.start, segment.end + 1).map((row) => (row.kind === 'tool' ? row.name : '')),
-    )
+    const names = visibleNames(segment)
+    if (names.length <= 1) continue // 看得见的不足两条：不收（收了只有净损失）
+
+    summaryAt.set(segment.start, names)
     for (let index = segment.start + 1; index <= segment.end; index += 1) dropped.add(index)
   }
 

@@ -22,7 +22,7 @@ import type { Entry, EntryPayload, PlanNote, PlanStep } from '@magic/contracts'
 import { AppView, TuiApp, breathingOf, liveLayoutOf } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
 import { PALETTE, displayWidth } from '../src/components/lines.ts'
-import { rowLines } from '../src/components/log.ts'
+import { logLines, rowLines } from '../src/components/log.ts'
 import { planBlockOf, planStyleOf } from '../src/plan.ts'
 import { hasPlan, planFromEntries, withPlan } from '../src/view.ts'
 import { createStage } from './screen.ts'
@@ -36,12 +36,12 @@ import { plain, rendered } from './screen.ts'
 const step = (text: string, status: PlanStep['status'] = 'pending'): PlanStep => ({ text, status })
 const note = (...steps: readonly PlanStep[]): PlanNote => ({ steps, notes: '' })
 
-/** 一条条目（重建那一趟要读的形态）。 */
-function entry(id: number, kind: Entry['kind'], payload?: EntryPayload): Entry {
+/** 一条条目（重建那一趟要读的形态）。`text` 是正文（助手 / 用户行按它断言）。 */
+function entry(id: number, kind: Entry['kind'], payload?: EntryPayload, text = ''): Entry {
   return {
     id,
     kind,
-    content: { text: '' },
+    content: { text },
     ...(payload === undefined ? {} : { payload }),
     at: 1_700_000_000_000 + id,
   }
@@ -59,6 +59,7 @@ function rowsOf(stage: ReturnType<typeof createStage>): readonly string[] {
     .filter((row) => row.kind !== 'banner')
     .map((row) => {
       if (row.kind === 'tool') return `[tool] ${row.name}`
+      if (row.kind === 'toolgroup') return `[toolgroup] ${row.names.join(' · ')}`
       return 'text' in row ? row.text : `[${row.kind}]`
     })
 }
@@ -718,20 +719,18 @@ describe('返修① · 辅助工具详情可查', () => {
     expect(shown.has('UPDATE_DETAIL_ABC')).toBe(true)
   })
 
-  test('`turn.end` 之后那一行**还在记录区里**（定局不丢行 · 展开仍可读）', () => {
+  test('`turn.end` 之后那一行**留在记录里**（定局不丢行）', () => {
     const stage = createStage()
 
     stage.feed([event('turn.start', {}), call(20), result(20), event('turn.end', { reason: 'settled' })])
 
-    const settled = stage.shell.getView().settled
-    const tools = settled.filter((row) => row.kind === 'tool')
+    const tools = stage.shell.getView().settled.filter((row) => row.kind === 'tool')
 
+    // ⚠️ **这一条只证「行还在」**，不证「定局后按 `ctrl+o` 翻得出来」：`Static` 印出去的
+    // 条目不重绘（设计 · 终端投影已收口：**活动输出**沿 `ctrl+o` 展开详情，**已结束的过程
+    // 沿持久会话 / 工具记录**排障，不为它重挂历史区或新开查看面）。
     expect(tools.length).toBe(1)
-    // 收起时它一行都不占，展开时详情照出（记录区里的形态由 `rowLines` 一处给）
-    const row = tools[0]
-    if (row === undefined) throw new Error('这一行该在')
-    expect(rowLines(row, { columns: 100, expanded: false })).toEqual([])
-    expect(rowLines(row, { columns: 100, expanded: true }).length).toBeGreaterThan(0)
+    expect(rowLines(tools[0] as never, { columns: 100, expanded: false })).toEqual([])
   })
 
   test('重建（切会话回来）也留着那一行——不是只在当场看得见', () => {
@@ -900,5 +899,133 @@ describe('返修⑤ · 看不见的进行中项不动（共享时钟也在）', 
     stage.feed([event('model.error', { tier: 'terminal', message: '断了' })])
     const failed = liveLayoutOf(stage.shell.getView(), 60, 16).plan
     expect(breathingOf(stage.shell.getView(), failed)).toBe(false)
+  })
+})
+
+// ══ 九 · 历史收拢不许把「默认不画」的调用重新印出来（复验退回那一处）═══
+//
+// 落地处只有一处：`collapseToolGroups` 数名字与计数时用 `quietRowHidden`（与渲染同一把尺子）。
+// 最小反例照复验给的那份：`session.history` 六段，每段一条 assistant ＋ 成功 `plan_update`
+// ＋ 成功 `plan_read`——最老那一**不在「末尾 RECENT_GROUPS 组」里**，故它会走上收拢那条路。
+
+describe('复验 · 历史分组不重新印出辅助调用', () => {
+  /** 一次成功的工具往返（`tool-call` ＋ 配对的 `tool-result`）。 */
+  const pair = (id: number, name: string, ok = true): readonly Entry[] => [
+    entry(id, 'tool-call', { name, args: {} }),
+    entry(id + 1, 'tool-result', { ok, output: { text: `${name} 回执` } }),
+  ]
+
+  /** 六段：每段 assistant ＋ 两个成功的辅助调用。 */
+  const sixRounds = (): readonly Entry[] => {
+    const entries: Entry[] = []
+    let id = 1
+
+    for (let at = 0; at < 6; at += 1) {
+      entries.push(entry(id, 'assistant', undefined, `round${at}`))
+      id += 1
+      entries.push(...pair(id, 'plan_update'))
+      id += 2
+      entries.push(...pair(id, 'plan_read'))
+      id += 2
+    }
+
+    return entries
+  }
+
+  const rebuild = (entries: readonly Entry[]): ReturnType<typeof createStage> => {
+    const stage = createStage()
+    stage.feed([event('session.history', { session: 'session-test', entries, done: true })])
+
+    return stage
+  }
+
+  /**
+   * 记录区**铺出来的那些行**（默认展开）——「屏上会不会冒出来」按它咬。
+   *
+   * 为什么不看 `stage.screen()` 的那一屏：内联渲染下记录区会长过视口、早期内容滚进
+   * scrollback（可见屏只剩尾巴），而这条判据问的是「**这一段会不会被画出来**」，
+   * 与滚动无关。`logLines` 就是铺屏那一处用的同一个函数（含分段规则）。
+   */
+  const drawn = (stage: ReturnType<typeof createStage>): string =>
+    logLines(stage.shell.getView().settled, { columns: 100, expanded: false })
+      .flatMap((line) => line.segments.map((piece) => piece.text))
+      .join('') // 不分行地连起来：判「冒没冒出来」比按行比更咬（跨行拼出来也算冒出来）
+
+  test('纯辅助的段：**不成组**，名字与计数一个都不冒出来（六段那份反例）', async () => {
+    const stage = rebuild(sixRounds())
+    const rows = stage.shell.getView().settled
+
+    expect(rows.some((row) => row.kind === 'toolgroup')).toBe(false)
+    expect(drawn(stage)).not.toContain('plan_update')
+    expect(drawn(stage)).not.toContain('plan_read')
+    expect(drawn(stage)).not.toContain('次工具调用')
+
+    // **记录本身完整**：行都在（只是默认不画），正文一字不少
+    expect(rows.filter((row) => row.kind === 'tool').length).toBe(12)
+    expect(drawn(stage)).toContain('round0')
+    expect(drawn(stage)).toContain('round5')
+
+    // 真 Ink 取景再过一道（那段历史短到放得下——可见屏与铺出来的行这时应当一致）
+    const small = rebuild(sixRounds().slice(0, 8)) // 两段：够短
+    const frame = await small.screen({ columns: 100, rows: 30 })
+
+    expect(frame.has('次工具调用')).toBe(false)
+    expect(frame.has('plan_update')).toBe(false)
+    expect(frame.has('round0')).toBe(true)
+  })
+
+  /**
+   * 后面几段**各自成段**（段与段之间要拿一条 assistant 隔开——相邻的工具行会并成一段）。
+   * 留着它们的用处：**让第一段不在「末尾 `RECENT_GROUPS` 组」里**，否则那一段根本不收，
+   * 判据就空转了。
+   */
+  const fillers = (from: number, name = 'grep'): readonly Entry[] =>
+    [0, 1, 2, 3, 4].flatMap((at) => [entry(from + at * 3, 'assistant', undefined, `filler${at}`), ...pair(from + at * 3 + 1, name)])
+
+  test('混合段：普通工具**不被误藏**；看得见的只有一条就不收（收了是净损失）', () => {
+    const entries: readonly Entry[] = [
+      entry(1, 'assistant', undefined, 'round0'),
+      ...pair(2, 'exec'),
+      ...pair(4, 'plan_update'),
+      ...pair(6, 'plan_read'),
+      ...fillers(100),
+    ]
+    const stage = rebuild(entries)
+
+    expect(stage.shell.getView().settled.some((row) => row.kind === 'toolgroup')).toBe(false)
+    expect(drawn(stage)).toContain('exec')
+    expect(drawn(stage)).not.toContain('plan_update')
+    expect(drawn(stage)).not.toContain('plan_read')
+  })
+
+  test('混合段（两条普通 ＋ 一条辅助）⇒ 收成一条，**只算那两条普通的**', () => {
+    const entries: readonly Entry[] = [
+      entry(1, 'assistant', undefined, 'round0'),
+      ...pair(2, 'exec'),
+      ...pair(4, 'ls'),
+      ...pair(6, 'plan_read'),
+      ...fillers(100),
+    ]
+    const stage = rebuild(entries)
+    const groups = stage.shell.getView().settled.filter((row) => row.kind === 'toolgroup')
+
+    expect(groups.map((row) => row.names)).toEqual([['exec', 'ls']])
+    expect(drawn(stage)).toContain('2 次工具调用（exec · ls）')
+    expect(drawn(stage)).not.toContain('plan_read')
+  })
+
+  test('**失败**的辅助调用照旧可见，也不被从分组里抹掉', () => {
+    const entries: readonly Entry[] = [
+      entry(1, 'assistant', undefined, 'round0'),
+      ...pair(2, 'grep'),
+      ...pair(4, 'plan_update', false),
+      ...fillers(100),
+    ]
+    const stage = rebuild(entries)
+    const groups = stage.shell.getView().settled.filter((row) => row.kind === 'toolgroup')
+
+    expect(drawn(stage)).toContain('plan_update')
+    // 看得见的两条都算进去：失败的不被抹掉（`quietRowHidden` 只遮跑成了的）
+    expect(groups.map((row) => row.names)).toEqual([['grep', 'plan_update']])
   })
 })
