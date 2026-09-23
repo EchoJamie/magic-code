@@ -16,6 +16,7 @@ import type {
   EventStamper,
   KernelEvent,
   ModelErrorTier,
+  ModelUsage,
 } from '@magic/contracts'
 
 /**
@@ -70,13 +71,13 @@ export function modelCallEnd(stamper: EventStamper): KernelEvent {
  */
 export function modelUsage(
   stamper: EventStamper,
-  inputTokens: number,
-  outputTokens: number,
+  usage: ModelUsage,
   contextWindow?: number,
 ): KernelEvent {
+  // ⚠️ **不在这里补零**（U41）：用量各字段分别允许未知——没回来就不带那一位，
+  // 与「服务端明说 0」是两件事。细分位原样带走（消费者**不得**把它们与总数相加）。
   return stamper.stamp('model.usage', {
-    inputTokens,
-    outputTokens,
+    ...usage,
     ...(contextWindow === undefined ? {} : { contextWindow }),
   })
 }

@@ -91,6 +91,7 @@ export function resolveMagicHome(
 }
 
 /**
+
  * 供应商条目（`providers.<id>`——`<id>` 是**用户连接**的 id，任意命名）。
  *
  * **一个连接 ≠ 一个型号**（U41 改形）：`model` 是**用户默认选择**，不是它支持的模型全集

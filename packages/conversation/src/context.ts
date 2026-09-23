@@ -212,6 +212,7 @@ export async function assembleContext(
     }
 
     if (entry.kind === 'assistant') {
+      // 载荷里那份思考（U41 · `AssistantPayload`）——没有就没有
       const toolCalls: ToolCall[] = []
       const toolMessages: ModelMessage[] = []
 
@@ -255,6 +256,9 @@ export async function assembleContext(
         role: 'assistant',
         content: await contentTextOf(entry.content, input.records, limit),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        // **该次答复的思考**（U41）——载荷里留着就带回去（供应商要求回传时用得上，
+        // 送不送由模型域的适配决定）。不在条目里就一个字不加（旧记录照读）
+        ...(reasoningOf(entry) === undefined ? {} : { reasoning: reasoningOf(entry) }),
       })
       messages.push(...toolMessages)
       index = cursor
@@ -567,4 +571,14 @@ function skillsBlockOf(skills: readonly UsedSkillEntry[]): string {
   return skills
     .map((skill) => `〔本次使用技能：${skill.name}（来源 ${skill.label}）〕\n${skill.text}`)
     .join('\n\n')
+}
+
+/**
+ * `assistant` 条目载荷里那份思考（U41）——**只有字符串非空时才认**。
+ */
+function reasoningOf(entry: Entry): string | undefined {
+  const payload = entry.payload
+  if (payload === undefined || !('reasoning' in payload)) return undefined
+  const reasoning = (payload as { reasoning?: unknown }).reasoning
+  return typeof reasoning === 'string' && reasoning.length > 0 ? reasoning : undefined
 }

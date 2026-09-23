@@ -14,7 +14,7 @@
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
 import type { RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
-import type { ModelInfoRead, ReasoningSetting } from './model.ts'
+import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
 
 // —— 标量与枚举 ——
 
@@ -632,6 +632,14 @@ export type EventDataOf = {
   'provider.catalog': {
     /** 连接一览（配置顺序）——与 `model.catalog` 的 `entries` **同一行形态**。 */
     readonly entries: readonly ModelCatalogRow[]
+    /**
+     * **内置供应商与官方区域**（U41 返修）——界面「接入」时列的就是它。
+     *
+     * 放进这一屏而不是另立一条命令／kind：它是**接入那一屏**的一半（另一半是「你已经接了
+     * 哪些」），分开问两次只会让界面在两次答复之间出现半张表。**不带状态**（内置资料，
+     * 与配了什么无关），故它随每次 `provider.catalog` 原样带出。
+     */
+    readonly vendors: readonly VendorInfo[]
     /**
      * 一句话说明——保存 / 移除之后的回话、或有事要说的地方。
      *

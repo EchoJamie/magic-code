@@ -21,11 +21,12 @@
  * 与记录域拒收 `~` 同一条口径（能靠设计兜底的，别靠自觉）。
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import type {
   MagicConfig,
   MagicHome,
+
   McpConfig,
   McpServerConfig,
   ModelLimits,
@@ -70,6 +71,14 @@ export type LoadedConfig = {
   readonly providerId?: string
   /** `providers[providerId]` 原样——含 `traits` 覆盖位（模型域按「键在即接管」裁定）。 */
   readonly provider?: ProviderConfig
+  /**
+   * 加载那一刻配置文件的 `mtimeMs`（文件不在时＝`undefined`）。
+   *
+   * 它只有一个用处：**保存前比对**——中途被外面改过就提示重新载入，
+   * 不拿加载时那份陈旧内容整份覆盖（设计 · 命令行与配置「旧配置兼容与保存」）。
+   */
+  readonly mtimeMs?: number | undefined
+
 }
 
 /** 加载入参——各件皆可注入（测试与入口复用同一函数，规则只写一遍）。 */
@@ -528,12 +537,21 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     if ((error as { code?: string }).code === 'ENOENT') {
       // 数据目录按**基础目录**给（U42：不再是那个字面量常量——空配置也落得了账）
       return { path, config: { providers: {}, dataDir: magic.base } }
+
     }
     const reason = error instanceof Error ? error.message : String(error)
     throw new ConfigError(
       path,
       `读不到配置文件——首站形制见 技术方案 · 配置与密钥（${reason}）`,
     )
+  }
+
+  // 记下这一刻的 mtime——保存前比对用（见 `LoadedConfig.mtimeMs`）
+  let mtimeMs: number | undefined
+  try {
+    mtimeMs = statSync(path).mtimeMs
+  } catch {
+    mtimeMs = undefined
   }
 
   let parsed: unknown
@@ -636,6 +654,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     },
     providerId,
     provider,
+    ...(mtimeMs === undefined ? {} : { mtimeMs }),
   }
 }
 

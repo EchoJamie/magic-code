@@ -16,6 +16,7 @@ import type {
   ModelGateway as ModelGatewayPort,
   ModelRequest,
   ModelResult,
+  ReasoningSetting,
 } from '@magic/contracts'
 
 // —— 聚合结果 ——
@@ -69,6 +70,14 @@ export type ModelStream = {
 /** 流选项——中断信号（首站 Ctrl+C，经控制面 `turn.interrupt` 落到循环，再落到此）。 */
 export type ModelStreamOptions = {
   readonly signal?: AbortSignal
+  /**
+   * **这一次采用的思考设置**（U41）——由注册表按选中态给（换了模型而没显式指定时，
+   * 取的是**目标模型**的默认，见 `registry.ts` 的 `use`）。
+   *
+   * 缺省 ＝ 模型默认（**不发送任何思考参数**）。映射成该供应商的原生参数在取件层
+   * （`ai-sdk.ts` × `vendors.ts` 的 `reasoningOf`）；本域之外谁也不解释它。
+   */
+  readonly reasoning?: ReasoningSetting
 }
 
 /**

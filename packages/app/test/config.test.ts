@@ -120,6 +120,7 @@ describe('形制照读（字面冻结）', () => {
     expect(CONFIG_FILE_NAME).toBe('config.json')
 
     // 不传 path 时读它——展开后即 `<基础目录>/config.json`
+
     const dir = tempDir('magic-config-')
     try {
       mkdirSync(join(dir, '.magic'), { recursive: true })
@@ -128,11 +129,13 @@ describe('形制照读（字面冻结）', () => {
       expect(() => loadConfig({ magic: magicAt(dir) })).toThrow(ConfigError)
       try {
         loadConfig({ magic: magicAt(dir) })
+
       } catch (error) {
         expect((error as ConfigError).path).toBe(join(dir, '.magic', 'config.json'))
       }
     } finally {
       removeDir(dir)
+
 
     }
   })
@@ -290,11 +293,13 @@ describe('报错取「一声响」（不静默兜底）', () => {
     try {
       const loaded = loadConfig({ path: join(dir, 'nope.json'), magic: magicAt(HOME) })
 
+
       expect(loaded.config.providers).toEqual({})
       expect(loaded.providerId).toBeUndefined()
       expect(loaded.provider).toBeUndefined()
       // 数据目录仍按契约的缺省给（空配置也落得了账）——U42 起是**基础目录本身**
       expect(loaded.config.dataDir).toBe(join(HOME, '.magic'))
+
 
     } finally {
       removeDir(dir)

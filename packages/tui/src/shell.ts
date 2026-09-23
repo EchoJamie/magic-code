@@ -24,6 +24,8 @@ import type {
   KernelEvent,
   ModelInfo,
   ModelRef,
+  VendorInfo,
+  VendorRegion,
   ReasoningSetting,
   SessionId,
   SkillCatalogRow,
@@ -92,13 +94,7 @@ import {
   wire,
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
-import type {
-  PromptState,
-  ShellView,
-  VendorOption,
-  VendorRegionOption,
-  WindowTable,
-} from './view.ts'
+import type { PromptState, ShellView, WindowTable } from './view.ts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
@@ -1190,6 +1186,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       label: entry.name ?? entry.provider,
       meta: manageMetaOf(entry),
       current: false,
+
       value: entry.provider,
       oneLine: true,
     }))
@@ -1459,7 +1456,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 一家只有一个区域时不问——那一步没有选择可言（「一屏上的每一格，问它影响用户的
    * 哪个动作」）。区域与地址都来自适配（`VendorRegion`），界面只显示、不拼。
    */
-  const openRegionPicker = (vendor: VendorOption): void => {
+  const openRegionPicker = (vendor: VendorInfo): void => {
     commit(
       openPicker(view, {
         source: 'region',
@@ -1480,7 +1477,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *   写凭据，走 `MAGIC_<连接 id>_API_KEY` 回退（那一行的说明把这句写出来，指到具体那个名字）；
    * - **保存之后顺手取一次列表**（设计：「确认后保存连接并获取列表」）——见 `awaiting`。
    */
-  const askKeyFor = (vendor: VendorOption, region: VendorRegionOption | undefined): void => {
+  const askKeyFor = (vendor: VendorInfo, region: VendorRegion | undefined): void => {
     const id = freeIdOf(vendor.vendor)
 
     openAsk({

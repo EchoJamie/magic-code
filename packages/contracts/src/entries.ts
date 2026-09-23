@@ -258,8 +258,27 @@ export type UserPayload = {
   readonly skills?: readonly UsedSkillEntry[]
 }
 
+/**
+ * `assistant` 条目的载荷（U41）——**供应商要求回传的那一份思考**。
+ *
+ * 由头：DeepSeek 的思考模式在**带 tools** 时要求把历史轮的 `reasoning_content` 原样
+ * 回传（官方文档：不回传则 400）。那一份**不进屏**（屏上是 `thinking` 通道的展示：
+ * 它已经作为正文旁边的思考流过一遍了），但**要进下一次请求**——正是载荷这一格的定位
+ * （同 `UserPayload` 的「不进屏、进上下文」）。正文不重复：屏上那份走 `content`。
+ *
+ * ⚠️ 它是**这一家这一个模型**的私有协议内容：换供应商时由适配决定带不带
+ * （设计：「不转发给其它供应商」）。
+ */
+export type AssistantPayload = {
+  readonly reasoning?: string
+}
+
 /** 条目的载荷（技术方案 · 记录：条目字段「载荷」——工具条目有，`user` 条目自 U33 起有）。 */
-export type EntryPayload = ToolCallPayload | ToolResultPayload | UserPayload
+export type EntryPayload =
+  | ToolCallPayload
+  | ToolResultPayload
+  | UserPayload
+  | AssistantPayload
 
 /** 会话条目——对话、工具调用与结果的持久形态（append-only）。 */
 export type Entry = {

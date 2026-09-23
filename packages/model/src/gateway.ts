@@ -17,17 +17,27 @@
  * （它按条目调用这里，故 key 解析、特征标记、退避重试的裁定各只有一份）。
  */
 
-import type { EventStamper, ModelRequest, ProviderConfig } from '@magic/contracts'
+import type {
+  EventStamper,
+  ModelLimits,
+  ModelRequest,
+  ModelTraits,
+  ProviderConfig,
+  ProviderModelOverride,
+} from '@magic/contracts'
 import { apiKeyEnvVarOf } from '@magic/contracts'
 import type { ModelCallContext, ModelMiddleware } from './middleware.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
-import { createVendorStreamer } from './ai-sdk.ts'
+import { MAX_COMPLETION_TOKENS, createVendorStreamer } from './ai-sdk.ts'
 import type { FetchLike } from './ai-sdk.ts'
 import { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 import { toKernelEvents } from './normalize.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { withTransientRetry } from './retry.ts'
 import { resolveModelTraits } from './traits.ts'
+import { ownOf, resolveContextWindow } from './capacity.ts'
+import { vendorIds, vendorOf } from './vendors.ts'
+import type { VendorAdapter } from './vendors.ts'
 
 // —— 缺 key ——
 
@@ -86,6 +96,111 @@ export function resolveApiKey(input: {
   throw new MissingApiKeyError(input.providerId, envVar, input.configPath)
 }
 
+// —— 生效的规格与特征（用户覆盖 → 该家适配的缺项补充 → 未知）——
+
+/**
+ * 该模型的**用户明确覆盖**——两处合成一处：
+ *
+ * - **新形态** `modelOverrides[<精确模型 id>]`（按精确 id 查，最高优先级）；
+ * - **旧形态** `traits` / `contextWindow` 两个平铺键——**只在它就是这条连接
+ *   `model` 那一个时**算数（设计：旧的声明属于「这一条 ＋ 它的模型」两件；
+ *   同条目换到别的模型时不跟过去）；
+ * - 其余一切 → `undefined`（**不知道就是不知道**，不按型号名猜）。
+ */
+function overrideOf(config: ProviderConfig, model: string): ProviderModelOverride | undefined {
+  const explicit =
+    config.modelOverrides === undefined ? undefined : ownOf(config.modelOverrides, model)
+  if (explicit !== undefined) return explicit
+
+  if (config.model !== model) return undefined
+
+  const legacy: ProviderModelOverride = {
+    ...(config.traits === undefined ? {} : { traits: config.traits }),
+    ...(config.contextWindow === undefined
+      ? {}
+      : { limits: { maxContextTokens: config.contextWindow } }),
+  }
+  return Object.keys(legacy).length === 0 ? undefined : legacy
+}
+
+/** **生效的通道特征**——用户覆盖 → 该家适配的缺项补充 → 无（正文原样走，不猜不切）。 */
+function traitsOf(
+  model: string,
+  config: ProviderConfig,
+  adapter: VendorAdapter | undefined,
+): ModelTraits | undefined {
+  const override = overrideOf(config, model)?.traits
+  if (override !== undefined) return override
+
+  // **官方适配**按该家的补充来；**兼容接入**（无适配）走域内的已知差异表——
+  // 那条路的能力一个字不删（设计 · 命令行与配置：「不借此删除旧能力」）
+  return adapter === undefined
+    ? resolveModelTraits(model, undefined)
+    : adapter.supplement({ id: model }).traits
+}
+
+/**
+ * **生效的令牌规格**——用户覆盖 → 该家适配的缺项补充（逐位合并，覆盖优先）。
+ *
+ * 两处都缺的位就是**未知**（不给这一位）：设计明文「零 / 非法规格不当作无限大」，
+ * 「读不懂就不给这一位」。兼容接入走域内的内置容量表（旧能力不删，见 `traitsOf` 同一条）。
+ */
+function effectiveLimits(
+  model: string,
+  config: ProviderConfig,
+  adapter: VendorAdapter | undefined,
+): ModelLimits | undefined {
+  const override = overrideOf(config, model)?.limits
+  const supplemented =
+    adapter === undefined
+      ? ((): ModelLimits | undefined => {
+          const window = resolveContextWindow(model)
+          return window === undefined ? undefined : { maxContextTokens: window }
+        })()
+      : adapter.supplement({ id: model }).limits
+
+  const merged: ModelLimits = { ...supplemented, ...override }
+  return Object.keys(merged).length === 0 ? undefined : merged
+}
+
+/**
+ * **这一次的有效输入预算**（token）——`model.usage.contextWindow` 报的就是它。
+ *
+ * 判据（设计 · 模型与上下文「规格与参数」）：
+ * - **合用窗口要预留输出**——「联合窗口须为本次输出（含其规则要求计入的思考预算）
+ *   预留空间」。故 `maxContextTokens` 减去**已知的输出上限**（用户覆盖或适配补充的那一个；
+ *   两处都没有就不减——取件层常量是**我们请求时带的数**，不是模型规格，混进容量就成了编）；
+ * - **独立输入上限不机械减去输出上限**——它本来就是「输入那一边」的上限，直接用。
+ *
+ * 两处皆无 ⇒ **不给这一位**（外壳显示不出分母就不显示）。
+ */
+function contextWindowOf(
+  model: string,
+  config: ProviderConfig,
+  adapter: VendorAdapter | undefined,
+): number | undefined {
+  const limits = effectiveLimits(model, config, adapter)
+
+  if (limits?.maxContextTokens !== undefined) {
+    return Math.max(0, limits.maxContextTokens - (limits.maxOutputTokens ?? 0))
+  }
+  return limits?.maxInputTokens
+}
+
+/**
+ * **这一次的输出上限**——用户对该精确模型的覆盖 → 取件层常量（见 `ai-sdk.ts`）。
+ *
+ * 它同时是**出站请求带的那一个**与**上面输入预算里预留的那一个**：两处同源
+ * （设计：「输入上限、预留输出与所显示分母须同口径」）。
+ */
+function maxOutputTokensOf(
+  model: string,
+  config: ProviderConfig,
+  fallback: number | undefined,
+): number {
+  return overrideOf(config, model)?.limits?.maxOutputTokens ?? fallback ?? MAX_COMPLETION_TOKENS
+}
+
 // —— 装配 ——
 
 export type ModelGatewayOptions = {
@@ -141,12 +256,35 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     configPath: options.configPath,
   })
 
+  // **供应商适配**（U41）——有 `vendor` 却认不出＝**报错**：不悄悄当成兼容接入
+  // （那会拿官方域名去走旧协议），也不换一个「看上去像」的适配
+  const adapter = config.vendor === undefined ? undefined : vendorOf(config.vendor)
+  if (config.vendor !== undefined && adapter === undefined) {
+    const known = vendorIds().join(' / ')
+    throw new Error(
+      `连接「${providerId}」写的是不认识的供应商「${config.vendor}」——已内置：${known}`,
+    )
+  }
+
+  // **地址**：官方适配按区域给（`baseURL` 明确写了就用它）；兼容接入用配置里那个。
+  // 两个都没有＝这条连接不知道该往哪儿发——启动期就报（不留到第一次调用）
+  const baseURL = adapter === undefined ? config.baseURL : adapter.baseURLOf(config)
+  if (baseURL === undefined) {
+    throw new Error(
+      adapter === undefined
+        ? `连接「${providerId}」没有服务地址——请写 baseURL（或改用内置供应商）`
+        : `连接「${providerId}」的供应商「${adapter.id}」没有区域「${config.region ?? ''}」的地址`,
+    )
+  }
+
   const streamVendor = createVendorStreamer({
     providerId,
-    config,
+    baseURL,
     apiKey,
+    adapter,
     fetch: options.fetch,
-    maxCompletionTokens: options.maxCompletionTokens,
+    // 输出上限**按请求的那个模型算**（用户覆盖 → 常量）——不是构造期钉死一个数
+    maxOutputTokensOf: (model) => maxOutputTokensOf(model, config, options.maxCompletionTokens),
   })
   const middleware = options.middleware ?? []
 
@@ -174,12 +312,11 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         model: effective.model,
         // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
         provider: providerId,
-        // 窗长随**用量**上报（分母跟着分子走）——条目配置声明了才有；没声明就不给那一格
-        // （缺陷 D10 · 第 1 样：状态行 `12.4k/200k` 的分母出自这里）
-        contextWindow: config.contextWindow,
+        // 窗长随**用量**上报（分母跟着分子走）——见 `contextWindowOf`
+        contextWindow: contextWindowOf(effective.model, config, adapter),
         secret: apiKey,
-        // 生效标记（查内置表 → 配置接管位）——标记驱动的切分只在此处裁定
-        traits: resolveModelTraits(effective.model, config.traits),
+        // 生效标记——见 `traitsOf`（用户覆盖 → 该家适配的缺项补充）
+        traits: traitsOf(effective.model, config, adapter),
         stamper: options.stamper,
       })
 

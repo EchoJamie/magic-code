@@ -182,7 +182,9 @@ describe('读数 1 · 上下文窗口总量', () => {
         'alpha',
       ])
       expect(eventsOfKind(handle.events, 'model.usage').map((e) => e.data)).toEqual([
-        { inputTokens: 11, outputTokens: 5, contextWindow: 200_000 },
+        // U41 补位：SDK 归一出的细分与总额一并带出（假端点回 `cached_tokens: 0` /
+        // `reasoning_tokens: 0`——**服务端明确返回 0 才是 0**，故这两格在）
+        { inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 },
       ])
 
       handle.dispose()
@@ -215,8 +217,8 @@ describe('读数 1 · 上下文窗口总量', () => {
       const usages = eventsOfKind(handle.events, 'model.usage').map((e) => e.data)
       expect(usages).toHaveLength(2)
       // 甲那份带着分母、乙那份**连键都没有**（不是 `undefined` 占位，是缺席）
-      expect(usages[0]).toEqual({ inputTokens: 11, outputTokens: 5, contextWindow: 200_000 })
-      expect(usages[1]).toEqual({ inputTokens: 22, outputTokens: 5 })
+      expect(usages[0]).toEqual({ inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 })
+      expect(usages[1]).toEqual({ inputTokens: 22, outputTokens: 5, totalTokens: 27, cacheReadTokens: 0, reasoningTokens: 0 })
       expect('contextWindow' in (usages[1] ?? {})).toBe(false)
 
       handle.dispose()
@@ -279,8 +281,11 @@ describe('读数 3 · 模型条目表', () => {
       // 扩成「连接一览」（选择器与管理页共用一行）；**新锚**：多一位用户自己写的地址，
       // 判据没松（凭据仍不进这一行）。
       expect(catalog.data.entries).toEqual([
-        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', contextWindow: 200_000 },
-        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1' },
+        // `keySource`（U41 补）：认证的**来处**——两条都在配置里写了 `apiKey`。
+        // ⚠️ 给的是来处不是凭据：值一个字符都不出这一层
+        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', keySource: 'config', contextWindow: 200_000 },
+        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1', keySource: 'config' },
+
       ])
       expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'alpha-1' })
       expect(catalog.data.note).toBeUndefined()
@@ -312,8 +317,11 @@ describe('读数 3 · 模型条目表', () => {
       expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'beta-x' })
       // （U41 起行里多一位 `baseURL`——见上一条用例的补锚说明）
       expect(catalog.data.entries).toEqual([
-        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', contextWindow: 200_000 },
-        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1' },
+        // `keySource`（U41 补）：认证的**来处**——两条都在配置里写了 `apiKey`。
+        // ⚠️ 给的是来处不是凭据：值一个字符都不出这一层
+        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', keySource: 'config', contextWindow: 200_000 },
+        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1', keySource: 'config' },
+
       ])
 
       handle.dispose()

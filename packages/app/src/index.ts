@@ -29,6 +29,12 @@ export type { AssembleOptions, Assembly, EnvironmentVars } from './assembly.ts'
 export { ConfigError, describeConfig, loadConfig } from './config.ts'
 export type { LoadConfigOptions, LoadedConfig } from './config.ts'
 
+// —— 模型信息缓存与配置保存（U41）——
+
+export { MODEL_CACHE_DIR, createFileModelInfoCache } from './model-cache.ts'
+export { editConfigFile, removeProvider, saveProvider, setModelDefault } from './config-save.ts'
+export type { EditConfigInput, SaveOutcome } from './config-save.ts'
+
 // —— 外壳位（真外壳归 U09）——
 
 export { attachShell, runShellScript } from './shell.ts'

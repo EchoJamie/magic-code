@@ -129,6 +129,7 @@ describe('判据 3 · 不落库清单', () => {
     // 管理页看的就是它）；保存 / 移除这个动作也不落库（痕在配置文件里）。
     // **新锚**：十四条（两单各加一条，各自那条判据都没松）。
 
+
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'grants.catalog',
       'input.settled',
@@ -139,6 +140,7 @@ describe('判据 3 · 不落库清单', () => {
       'paths.catalog',
       'plan.changed',
       'provider.catalog',
+
 
       'session.history',
       'session.state',

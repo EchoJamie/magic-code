@@ -40,6 +40,7 @@ import type {
   SessionSummary,
   UsedSkill,
 } from './entries.ts'
+
 // MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
 import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
@@ -879,6 +880,13 @@ export type ModelMessage =
       readonly role: 'assistant'
       readonly content: string
       readonly toolCalls?: readonly ToolCall[]
+      /**
+       * **该次答复的思考**（U41）——供应商要求回传时带上（DeepSeek 的工具往返即此例）。
+       *
+       * 它是**这一家这一个模型**的协议内容，由适配决定送不送（不转发给其它供应商）；
+       * 缺省＝不带（不带思考的答复、或这家不需要）。
+       */
+      readonly reasoning?: string
     }
   | {
       readonly role: 'tool'

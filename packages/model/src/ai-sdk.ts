@@ -11,12 +11,12 @@
  */
 
 import { jsonSchema, streamText, tool } from 'ai'
-import type { JSONSchema7, ModelMessage as AiSdkMessage, ToolSet } from 'ai'
+import type { JSONSchema7, JSONValue, ModelMessage as AiSdkMessage, ToolSet } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { ModelMessage, ModelRequest, ToolSpec } from '@magic/contracts'
-import type { ProviderConfig } from '@magic/contracts'
 import type { ModelStreamOptions } from './call.ts'
 import type { VendorStreamPart } from './normalize.ts'
+import type { VendorAdapter } from './vendors.ts'
 
 // —— 首接供应商：MiniMax（配置模板定稿 2026-09-16；`~/.magic/config.json` 已有条目）——
 
@@ -65,7 +65,11 @@ function toInstructions(messages: readonly ModelMessage[]): string | undefined {
   return systems.map((message) => message.content).join('\n\n')
 }
 
-function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
+function toAiSdkMessages(
+  messages: readonly ModelMessage[],
+  /** 该供应商要不要那份思考（U41）——见 `VendorAdapter.echoesReasoning`。 */
+  echoReasoning: boolean,
+): AiSdkMessage[] {
   return messages
     .filter((message) => message.role !== 'system')
     .map((message): AiSdkMessage => {
@@ -74,21 +78,33 @@ function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
           return { role: 'user', content: message.content }
         case 'assistant': {
           const calls = message.toolCalls ?? []
-          if (calls.length === 0) return { role: 'assistant', content: message.content }
-          return {
-            role: 'assistant',
-            content: [
-              ...(message.content.length > 0
-                ? [{ type: 'text' as const, text: message.content }]
-                : []),
-              ...calls.map((call) => ({
-                type: 'tool-call' as const,
-                toolCallId: call.id,
-                toolName: call.name,
-                input: call.args,
-              })),
-            ],
+          // **只回传给要求它的那一家**：思考是那一个模型的私有协议内容，
+          // 换个供应商照发等于把上家的东西递到别人那儿（设计：「不转发给其它供应商」）
+          const reasoning = echoReasoning ? message.reasoning : undefined
+
+          // **思考块排在正文之前**（供应商按序读它）。`@ai-sdk/openai-compatible` 会把
+          // assistant 的 reasoning part 转回 `reasoning_content` —— DeepSeek 的工具往返
+          // 要的就是这个（U41）。没有那一位（绝大多数情形）时与加它之前逐字同形
+          const content = [
+            ...(reasoning === undefined || reasoning.length === 0
+              ? []
+              : [{ type: 'reasoning' as const, text: reasoning }]),
+            ...(message.content.length > 0
+              ? [{ type: 'text' as const, text: message.content }]
+              : []),
+            ...calls.map((call) => ({
+              type: 'tool-call' as const,
+              toolCallId: call.id,
+              toolName: call.name,
+              input: call.args,
+            })),
+          ]
+
+          if (content.length === 0) return { role: 'assistant', content: message.content }
+          if (content.length === 1 && content[0]?.type === 'text') {
+            return { role: 'assistant', content: message.content }
           }
+          return { role: 'assistant', content }
         }
         case 'tool':
           return {
@@ -137,10 +153,25 @@ export type FetchLike = (
 
 export type VendorStreamerOptions = {
   readonly providerId: string
-  readonly config: ProviderConfig
+  /** **已解析**的基址——官方适配按区域给、兼容接入用配置里那个（解析归 `gateway.ts`）。 */
+  readonly baseURL: string
   readonly apiKey: string
   readonly fetch?: FetchLike | undefined
-  readonly maxCompletionTokens?: number
+  /**
+   * **这一次的输出上限**（按模型算）——缺省 `MAX_COMPLETION_TOKENS`。
+   *
+   * 给函数而不是给数：模型是**请求**带的（运行时切换的落点），构造期钉一个数会让
+   * 「按精确模型的覆盖」在第二次换模型之后失效。
+   */
+  readonly maxOutputTokensOf?: ((model: string) => number) | undefined
+  /**
+   * 该连接的供应商适配——**没有 ＝兼容接入**（原地址、原协议、原参数改写，一字不动）。
+   *
+   * 有它才谈得上「按供应商差异发参数」：思考设置经 `reasoningOf` 映射成原生参数
+   * （`providerOptions` 里不在 SDK options 表内的键会被平铺进请求体），
+   * 请求体改写也按适配给（如 MiniMax 的 `max_tokens` → `max_completion_tokens`）。
+   */
+  readonly adapter?: VendorAdapter | undefined
 }
 
 /**
@@ -155,35 +186,68 @@ export type VendorStreamer = (
   options?: ModelStreamOptions,
 ) => AsyncIterable<VendorStreamPart>
 
+/**
+ * 思考设置 → `providerOptions` 那一格。
+ *
+ * `@ai-sdk/openai-compatible` 的请求体拼装里，**不在其 options 表内的键会被平铺进去**
+ * （`reasoningEffort` 则映射成 `reasoning_effort`）——故适配给什么就发什么，
+ * 不在这里再翻译一遍（一处映射，见 `vendors.ts` 的 `reasoningOf`）。
+ *
+ * 没有适配（兼容接入）或设置是「模型默认」⇒ **一位都不发**（不猜）。
+ * 适配报了缺口（`{ gap }`）也**不发**——那意味着这条设置在这家没有对应参数，
+ * 缺口的说明由更早的一步（`registry.use`）交还给用户。
+ */
+function reasoningOption(
+  adapter: VendorAdapter | undefined,
+  setting: ModelStreamOptions['reasoning'],
+  providerId: string,
+): Record<string, Record<string, JSONValue>> | undefined {
+  if (adapter === undefined || setting === undefined) return undefined
+
+  const mapped = adapter.reasoningOf(setting)
+  if (mapped === undefined || 'gap' in mapped) return undefined
+
+  return { [providerId]: mapped.params }
+}
+
 export function createVendorStreamer(options: VendorStreamerOptions): VendorStreamer {
   const provider = createOpenAICompatible({
     name: options.providerId,
-    // 兼容接入（旧形制）必须有地址；官方适配（有 `vendor`）的地址由适配提供——
-    // 本条路径在没有显式地址时退回首接端点常量（U41 适配接入后由适配解析，见回报）
-    baseURL: options.config.baseURL ?? MINIMAX_BASE_URL,
+    baseURL: options.baseURL,
+
     apiKey: options.apiKey,
     // 流式用量——不置此则供应商不回 usage，`model.usage` 事件无从产生
     includeUsage: true,
-    // 供应商差异（取件层常量）
-    transformRequestBody: requestBody,
+    // **请求体改写按适配分**：官方适配用它自己的（没定义＝**不改写**）；
+    // **只有兼容接入**（没有适配）才走原来那条 MiniMax 改写。
+    // ⚠️ 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody`——DeepSeek 没定义
+    // 就**回退**到了 MiniMax 的改写，`max_tokens` 被改成了 `max_completion_tokens`（首验反例）。
+    transformRequestBody:
+      options.adapter === undefined ? requestBody : options.adapter.transformRequestBody,
     ...(options.fetch === undefined
       ? {}
       : { fetch: options.fetch as unknown as typeof globalThis.fetch }),
   })
 
-  const maxOutputTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS
+  const maxOutputTokensOf = options.maxOutputTokensOf ?? ((): number => MAX_COMPLETION_TOKENS)
 
   return (request, streamOptions) => {
     const model = provider.chatModel(request.model)
     const instructions = toInstructions(request.messages)
+    const providerOptions = reasoningOption(
+      options.adapter,
+      streamOptions?.reasoning,
+      options.providerId,
+    )
     const result = streamText({
       model,
       ...(instructions === undefined ? {} : { instructions }),
-      messages: toAiSdkMessages(request.messages),
+      messages: toAiSdkMessages(request.messages, options.adapter?.echoesReasoning === true),
       ...(request.tools === undefined || request.tools.length === 0
         ? {}
         : { tools: toAiSdkTools(request.tools) }),
-      maxOutputTokens,
+      maxOutputTokens: maxOutputTokensOf(request.model),
+      ...(providerOptions === undefined ? {} : { providerOptions }),
       // 回退逻辑放内核——不依赖 SDK 自动机制（技术方案 · 模型策略）
       maxRetries: 0,
       // 错误经事件流上报（`model.error`），不另走控制台
