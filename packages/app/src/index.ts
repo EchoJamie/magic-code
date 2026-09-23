@@ -29,6 +29,13 @@ export type { AssembleOptions, Assembly, EnvironmentVars } from './assembly.ts'
 export { ConfigError, describeConfig, loadConfig } from './config.ts'
 export type { LoadConfigOptions, LoadedConfig } from './config.ts'
 
+// —— 接入身份（U41 返修 · 缓存接口裁决）——
+//
+// 身份的**算**在装配根（它才看得见配置文件的可观察事实）；形状在 `@magic/contracts`。
+// 缓存实现的 scoped 读写与发布前核对归缓存线。
+export { configFingerprintOf, modelCacheAccessOf } from './cache-access.ts'
+export type { ConfigFingerprint } from './cache-access.ts'
+
 // —— 模型信息缓存与配置保存（U41）——
 
 export { MODEL_CACHE_DIR, createFileModelInfoCache } from './model-cache.ts'

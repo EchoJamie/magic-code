@@ -1,20 +1,24 @@
 /**
- * U30 · **换过模型之后 ④ 的分母跟不跟得上** —— 规格即测试（外壳那半）。
+ * **④ 的分母跟不跟得上** —— 规格即测试（外壳那半）。
  *
- * 出处：`交接/工单/U30.md`（依据 `进度台账` 的「换模型分母滞后」）。
- * 缺陷原样（本单元开跑时实测）：`model.switched` 只换 ③，④ 还是**前一个模型**的分母——
- * 于是屏上出现「新分子配旧分母」。
+ * 出处：`交接/工单/U30.md`（依据 `进度台账` 的「换模型分母滞后」）；缺陷原样：
+ * `model.switched` 只换 ③，④ 还是**前一个模型**的分母 ⇒ 屏上「新分子配旧分母」。
  *
- * 规格三条（逐条有用例）：
+ * ## 2026-09-23（U41 返修）**换了机制，判据一条没松**
  *
- * 1. **换过去那一刻分母就换**——新模型多长**查表**；两条来路都算数
- *    （换供应商 / 只换模型），`model.call.start`（真跑用谁）同此；
- * 2. **查不到＝`null`**——不知道就说不知道，**不沿用**换之前那个模型的容量，
- *    屏上回退成只报已用量（`3.1k`，没有那个斜杠）；
- * 3. **没换成则原样不动**——切不动就不动（读数与选中一样保持现状）。
+ * - **原锚**：外壳拿装配递进来的**窗长表**（`registry.windowTable → assembly → tui`）
+ *   按「条目 ＋ 模型」自己查；表外＝未知。
+ * - **为何变**：那条链是**第二份容量算法**（内核 `capacityOf` 那次解析才是正身），
+ *   而它算出来的数**与出站 / 用量 / 压缩不同源**——复核点名「必须用同一有效读数服务请求、
+ *   显示和压缩」。故旧链**整个撤掉**，分母改由**产生处**给：
+ *   `model.switched.inputBudget` / `model.call.start.inputBudget` /
+ *   `model.catalog.currentInputBudget`（三处都与 `Assembly.contextWindow` 同源）。
+ * - **新锚**：同一条规格——**换过去那一刻分母就换**、**未知＝清空**、**没换成＝原样不动**、
+ *   真跑用谁（`model.call.start`）也定分母——只是数由**事件带着来**，不再由外壳查表。
  *
- * 另有一条**老路径**的用例：没给窗长表时**一个数都不改**（分母只认开机那一格与条目表答复）——
- * 那是给「调用方没提供这张表」的场合留的退路，不是第二条规格。
+ * ⚠️ 顺带撤掉的两条（它们钉的是**旧链**，不是规格）：老路径「调用方没给表时一个数都不改」、
+ * 以及「查表只认自有键，`toString` 不当模型名」——后者是**外壳查表**才有的风险；
+ * 现在数值来自内核，外壳一个键都不查（用例改钉「内核没给 ⇒ 清空」）。
  *
  * 取景沿用 U24/U20 那一套（真外壳 → 真终端 → 读屏）：`show()` 画一屏回来读状态行。
  */
@@ -22,29 +26,13 @@
 import { describe, expect, test } from 'bun:test'
 import { createShell } from '../src/shell.ts'
 import type { ShellOptions } from '../src/shell.ts'
-import type { WindowTable } from '../src/view.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { show } from './screen.ts'
 
 const WIDE = { columns: 80, rows: 24 } as const
 
-/**
- * 一份**真表**（内置容量表 ＋ 两条**按条目装**的声明）——数取自官方模型表，
- * 与装配递给外壳的那张同形（见 `@magic/model` 的 `WindowTable`）。
- *
- * `mm2` 声明了 `MiniMax-M2` 的另一种窗长（32,768），而 `mm` 挂的是**同一个模型**
- * ——两个条目的答案必须**各是各的**（跨条目不许串味）。
- */
-const TABLE: WindowTable = {
-  builtin: { 'MiniMax-M3': 1_000_000, 'MiniMax-M2': 204_800 },
-  declared: {
-    mm2: { model: 'MiniMax-M2', window: 32_768 },
-    'mm-declared': { model: 'declared-model', window: 131_072 },
-  },
-}
-
-/** 起一个真壳（表按用例给），并把「投事件 → 读屏」两件包好。 */
+/** 起一个真壳（开机那一格按用例给），并把「投事件 → 读屏」两件包好。 */
 function stage(seeded: ShellOptions = {}) {
   const spy = createSpyTransport()
   const shell = createShell(spy.transport, seeded)
@@ -62,23 +50,31 @@ function stage(seeded: ShellOptions = {}) {
 /** 一句已用量的底子（`3.1k`——原型状态行 ④ 的样例数）。 */
 const used = (inputTokens = 3_100) => event('model.usage', { inputTokens, outputTokens: 40 })
 
+/** 一次**真跑**（分母随之落定）——`inputBudget` 就是那一刻的有效输入预算。 */
+const ran = (model: string, provider: string, inputBudget?: number) =>
+  event('model.call.start', {
+    model,
+    provider,
+    ...(inputBudget === undefined ? {} : { inputBudget }),
+  })
+
 // ═══════════════════════════════════════════════════════════════════════
 // 一 · 换过去那一刻：分母跟着新模型走
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U30 · 换过模型之后的分母', () => {
+describe('换过模型之后的分母', () => {
   test('已知 ⇒ 另一已知：③ 换成新模型，④ 的分母当场换成**新模型**那个数', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
+    const land = stage({ contextWindow: 1_000_000 })
+    land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
     // 换之前：M3 的 1M（`windowLabel` 把 1,000,000 写成 `1000k`）
     expect((await land.screen()).statusLine).toContain('3.1k/1000k')
 
-    land.feed([event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2' })])
+    // 切到另一个模型——**切换事件自己带着那个模型的预算**（32_768 ⇒ `33k`）
+    land.feed([event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 32_768 })])
 
     const after = await land.screen()
     expect(after.statusLine).toContain('MiniMax-M2')
-    // `mm2` 给这个模型声明过 32768 ⇒ 报它声明的那个数（内置表的 204800 让位）
     expect(after.statusLine).toContain('3.1k/33k')
     expect(after.statusLine).not.toContain('1000k')
     // 回执照旧（「刚发生的事」进记录区）
@@ -88,9 +84,10 @@ describe('U30 · 换过模型之后的分母', () => {
   })
 
   test('已知 ⇒ 未知：分母变**没有**（只剩分子）——不沿用前一个模型的容量', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
+    const land = stage({ contextWindow: 1_000_000 })
+    land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
+    // **内核没给这一位**＝那条模型没有窗长依据（不是「和上一个一样」）
     land.feed([event('model.switched', { ok: true, provider: 'local', model: 'my-local-llama' })])
 
     const after = await land.screen()
@@ -102,88 +99,27 @@ describe('U30 · 换过模型之后的分母', () => {
     land.shell.dispose()
   })
 
-  test('**只换模型**（同一条目）：查内置表——该条目原先那个数不跟过去', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
+  test('**没给**这一位当未知——不管那个模型名长什么样（`toString` 也一样）', async () => {
+    // 旧链要防「查表摸到 `Object.prototype`」；现在数值来自内核，外壳一个键都不查——
+    // 这条改钉「内核没给就清空」，与上一条同一条规格，只换几个名字。
+    const land = stage({ contextWindow: 1_000_000 })
+    land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
-    land.feed([event('model.switched', { ok: true, provider: 'mm', model: 'MiniMax-M2' })])
-    expect((await land.screen()).statusLine).toContain('3.1k/205k')
-
-    // 换到表外的模型名 ⇒ 不知道（同条目那个数也不顶上去）
-    land.feed([event('model.switched', { ok: true, provider: 'mm', model: 'MiniMax-M9' })])
-    expect((await land.screen()).statusLine).not.toContain('205k')
-
-    land.shell.dispose()
-  })
-
-  test('**用户名下的声明**在它自己条目上算数（表里没有的模型也照报）', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
-
-    // `mm-declared` 这个条目声明了「我这个模型是 131072」——内置表根本不认得这个模型名
-    land.feed([event('model.switched', { ok: true, provider: 'mm-declared', model: 'declared-model' })])
-
-    expect((await land.screen()).statusLine).toContain('3.1k/131k')
-
-    land.shell.dispose()
-  })
-
-  /**
-   * **同名模型跨条目**（规划侧打回重做的那一条）：`mm2` 给 `MiniMax-M2` 声明了 32768，
-   * 而 `mm` 挂的是**同一个模型**——轮到 `mm` 时**不许认那份声明**，按内置表报 204800。
-   */
-  test('**同名模型在别的条目**：声明不串味——各查各的', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
-
-    // 声明的那一条目：报它声明的数
-    land.feed([event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2' })])
-    expect((await land.screen()).statusLine).toContain('3.1k/33k')
-
-    // 换到**同名模型**的另一条目：内置表那个数（不是上一步那个 33k）
-    land.feed([event('model.switched', { ok: true, provider: 'mm', model: 'MiniMax-M2' })])
-    const after = await land.screen()
-    expect(after.statusLine).toContain('3.1k/205k')
-    expect(after.statusLine).not.toContain('33k')
-
-    land.shell.dispose()
-  })
-
-  /**
-   * **原型上有名字的模型名 / 条目名**（验收边界）：查表只认自有键——
-   * 否则 `'toString'` 会读成 `Object.prototype.toString`（函数），分母当场变成一个函数 ✗。
-   */
-  test('`toString` 这类模型名 ⇒ 当未知（分母没有，不留原型上那个东西）', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
-
-    for (const name of ['toString', 'constructor', '__proto__']) {
+    for (const name of ['toString', 'constructor', '__proto__', 'MiniMax-M9']) {
       land.feed([event('model.switched', { ok: true, provider: 'mm', model: name })])
       expect(land.shell.getView().status.window).toBeNull()
     }
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k')
-    expect(after.statusLine).not.toContain('3.1k/') // 没有分母就不写那个斜杠
-
-    land.shell.dispose()
-  })
-
-  test('`toString` 这类**条目名** ⇒ 不摸原型，照查内置表（模型名对得上就给数）', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
-
-    land.feed([event('model.switched', { ok: true, provider: 'toString', model: 'MiniMax-M2' })])
-
-    expect(land.shell.getView().status.window).toBe(204_800)
-    expect((await land.screen()).statusLine).toContain('3.1k/205k')
+    expect(after.statusLine).not.toContain('3.1k/')
 
     land.shell.dispose()
   })
 
   test('**没换成**：读数原样不动（切不动就不动）＋ 一行缘由', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
+    const land = stage({ contextWindow: 1_000_000 })
+    land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
     land.feed([event('model.switched', { ok: false, reason: '未知供应商「ghost」' })])
 
@@ -196,12 +132,23 @@ describe('U30 · 换过模型之后的分母', () => {
   })
 
   test('**真跑用谁**（`model.call.start`）也定分母——空手先换过的那种由此走上正轨', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
-    // 开机那一格是 M3 的 1M（外壳那时还不知道模型名），真跑用的是另一条目的 M2
-    land.feed([event('model.call.start', { model: 'MiniMax-M2', provider: 'mm' }), used()])
+    const land = stage({ contextWindow: 1_000_000 })
+    // 开机那一格是 M3 的 1M（外壳那时还不知道模型名），真跑用的是另一个模型（204_800）
+    land.feed([ran('MiniMax-M2', 'mm', 204_800), used()])
 
-    // 真跑那条是 `mm`（没声明过）⇒ 内置表那个数
-    expect((await land.screen()).statusLine).toContain('3.1k/205k')
+    const after = await land.screen()
+    expect(after.statusLine).toContain('3.1k/205k')
+    expect(land.shell.getView().status.model).toBe('MiniMax-M2')
+
+    land.shell.dispose()
+  })
+
+  test('真跑那一次**没给**预算 ⇒ 清空（不拿开机那一格顶着）', async () => {
+    const land = stage({ contextWindow: 1_000_000 })
+    land.feed([ran('my-local-llama', 'local'), used()])
+
+    expect(land.shell.getView().status.window).toBeNull()
+    expect((await land.screen()).statusLine).not.toContain('1000k')
 
     land.shell.dispose()
   })
@@ -211,9 +158,9 @@ describe('U30 · 换过模型之后的分母', () => {
 // 二 · 开机空态：一个字都不多
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U30 · 开机空态（不趁机扩张）', () => {
+describe('开机空态（不趁机扩张）', () => {
   test('还没有用量：④ 整格不出现——**不写一个伪造的 `0/…`**', async () => {
-    const land = stage({ contextWindow: 1_000_000, windowTable: TABLE })
+    const land = stage({ contextWindow: 1_000_000 })
 
     const frame = await land.screen()
 
@@ -228,19 +175,44 @@ describe('U30 · 开机空态（不趁机扩张）', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
-// 三 · 老路径——调用方没给这张表时，一个数都不改
+// 三 · 读面那一屏：分母按 `current` 给（**不拿某一行推算**）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('U30 · 没给窗长表时', () => {
-  test('切换**不动分母**——老路径一字不改（不是第二条规格）', async () => {
+describe('`model.catalog` 那一格', () => {
+  /** 一屏目录：一行是**连接默认**的读数，另一格是**当前选择**的读数。 */
+  const catalog = (currentInputBudget?: number) =>
+    event('model.catalog', {
+      entries: [
+        {
+          provider: 'ds',
+          vendor: 'deepseek',
+          model: 'deepseek-chat',
+          // ⚠️ 这一格是**该连接默认模型**的数——当前选中是另一个模型时**不许**拿它顶上
+          contextWindow: 999_000,
+        },
+      ],
+      current: { provider: 'ds', model: 'deepseek-reasoner' },
+      ...(currentInputBudget === undefined ? {} : { currentInputBudget }),
+    })
+
+  test('答复给了 `currentInputBudget` ⇒ 用它（**不是** entries 那一行的数）', async () => {
+    const land = stage()
+    land.feed([used(), catalog(29_000)])
+
+    expect((await land.screen()).statusLine).toContain('3.1k/29k')
+    expect((await land.screen()).statusLine).not.toContain('999k')
+
+    land.shell.dispose()
+  })
+
+  test('答复**没给** ⇒ 清空——绝不从默认那一行推算（拿错型号就是一个假数）', async () => {
     const land = stage({ contextWindow: 1_000_000 })
-    land.feed([event('model.call.start', { model: 'MiniMax-M3', provider: 'mm' }), used()])
-    land.feed([event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2' })])
+    land.feed([used(), catalog()])
 
     const after = await land.screen()
-    // ③ 换了、④ 还停在旧分母——这正是本单元要收掉的那条缺陷的形状
-    expect(after.statusLine).toContain('MiniMax-M2')
-    expect(after.statusLine).toContain('3.1k/1000k')
+    expect(land.shell.getView().status.window).toBeNull()
+    expect(after.statusLine).not.toContain('999k') // 默认行那个数与当前选择无关
+    expect(after.statusLine).not.toContain('1000k') // 也不留着开机那个
 
     land.shell.dispose()
   })

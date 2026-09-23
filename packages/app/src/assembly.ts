@@ -51,7 +51,9 @@ import type {
   McpConnection,
   McpConnectionState,
   McpToolRejection,
+  ModelCacheAccess,
   ModelCatalogRow,
+  ModelInfo,
   ModelDefaultRequest,
   ModelGateway,
   ModelSwitchRequest,
@@ -100,14 +102,12 @@ import type {
   ModelInfoService,
   ModelRegistry,
   ModelSwitchResult,
-  WindowTable,
 } from '@magic/model'
 import {
   createModelInfoService,
   createModelRegistry,
   resolveConnection,
   vendorCatalog,
-  windowOfSelection,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
@@ -121,6 +121,7 @@ import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
 import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
 import { loadGrants, saveGrants } from './grants-file.ts'
+import { configFingerprintOf, modelCacheAccessOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
@@ -369,8 +370,7 @@ export type Assembly = {
    * 与 `/model` 那条来路（`model.catalog`）同源同判据——两处都出自**注册表条目**那一个数，
    * 不会分叉。
    */
-  readonly contextWindow: number | null
-  /**
+  readonly contextWindow: number | null  /**
    * **项目规约的按需读数**（U32）——现读一次「各根一级 ＋ 显式来源」，连**没加载进来的那些**
    * 一起交回（`--check` 那一行与启动回执的话都从这儿来）。
    *
@@ -387,20 +387,6 @@ export type Assembly = {
    * （与规约的按目标筛选不同——技能不按目标适用，它是一份清单）。
    */
   readonly readSkills: () => SkillCatalog
-  /**
-   * **窗长表**（U30）——内置容量表 ＋ 各条目**自己声明**的覆盖位，**分开装**：
-   * 内置表按**准确模型 id** 算（与条目无关），声明**只属于配置它的条目及对应模型**
-   * （消费按 `provider ＋ model` 一起看——见 `windowOfSelection`）。
-   *
-   * 为什么要整张表进外壳：换模型是**运行时**的事（`/model` 一按就换），那一刻外壳得
-   * **当场**知道新模型多长——而它够不着注册表。表递过去，`model.switched` 一到就查得出；
-   * 查不到＝不知道（分母 `null`），**不沿用前一个模型的容量**。
-   *
-   * 注册表缺席 ⇒ **空表**（＝什么都不知道）：与上面 `contextWindow` 的 `null` 同一条口径
-   * ——不编。（两者不并成一个位：`contextWindow` 是**开机那一刻**的读数，本表是**之后**
-   * 每一次切换的取材——外壳开机时手里还没有模型名，查不了表。）
-   */
-  readonly windowTable: WindowTable
   /**
    * 工作区**注册根列表**（阶段 3 多根）——执行域构造时逐条取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
@@ -766,6 +752,146 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
   let configMtime: number | undefined = loaded.mtimeMs
 
+  /**
+   * **模型信息面**（U41）——连接资料现取（改完配置立刻对得上）、缓存落盘走 app 的实现。
+   *
+   * `onChange`：取到新列表 / 这次没取成 ⇒ **再发一屏 `model.catalog`**。
+   * 还没有会话时没有信封可铸，那次不发——`/model` 按下去会现问一次，不会丢。
+   */
+  const modelCache = createFileModelInfoCache(loaded.config.dataDir)
+
+  /**
+   * 本进程的唯一值——**环境变量来源**那支身份用（`persistent: false`，不落盘）。
+   * 它只作「这不是别的进程」的标记，进不了磁盘文件名以外的任何地方。
+   */
+  const processToken = crypto.randomUUID()
+
+  /**
+   * 配置指纹的**水位**（同一个文件**本身**的六件里挑出的比对串）——`syncProviderBook`
+   * 据它判「外部改过没有」。开局那一刻先取一次（此后只有变才动）。
+   */
+  let configStamp: string | undefined = ((): string | undefined => {
+    const f = configFingerprintOf(loaded.path)
+    return f === undefined ? undefined : `${f.dev}:${f.ino}:${f.mtimeNs}:${f.ctimeNs}:${f.size}`
+  })()
+
+  /**
+   * 某条连接**此刻**的接入身份（U41 返修 · 缓存接口裁决）——缓存按它隔离存储。
+   *
+   * 认证**取自配置文件**（那条连接写了 `apiKey`）时，身份是「配置文件的指纹」——
+   * 同一个文件在另一个进程里算得出同一个串，故那份缓存跨进程可复用；
+   * **走环境变量回退**时没有可验证的共同身份 ⇒ `persistent: false`（不落盘）。
+   *
+   * ⚠️ 指纹取的是**此刻**的（含 inode 与 ctime）——保存配置之后它自己就会变，
+   * 于是旧范围的缓存**再也读不到**，不需要黑名单也不需要时间戳比对。
+   */
+  const cacheAccessOf = (provider: string, config: ProviderConfig | undefined): ModelCacheAccess => {
+    const fromFile =
+      config?.apiKey !== undefined && config.apiKey.trim().length > 0
+        ? configFingerprintOf(loaded.path)
+        : undefined
+
+    return modelCacheAccessOf({
+      provider,
+      ...(fromFile === undefined ? {} : { config: fromFile }),
+      processToken,
+    })
+  }
+
+  /**
+   * 清一份**旧范围**的缓存——**失败要可见**（裁决：清除失败不吞，写进答复）。
+   *
+   * 返回一句给人看的话（没成时）或 `undefined`（成了 / 本来就没有）。
+   * ⚠️ 它清的是**旧身份**那一份：范围隔离之下，新范围那份本来就与它互不相干。
+   */
+  /** 两句回话合成一句（都没有 ⇒ `undefined`，答复里就不带 `note`）。 */
+  const twoNotes = (first: string | undefined, second: string | undefined): string | undefined => {
+    const parts = [first, second].filter((one): one is string => one !== undefined)
+    return parts.length === 0 ? undefined : parts.join('；')
+  }
+
+  const dropCacheQuietly = async (
+    target: { readonly provider: string; readonly access: ModelCacheAccess } | undefined,
+  ): Promise<string | undefined> => {
+    if (target === undefined) return undefined
+
+    try {
+      await modelCache.drop(target.provider, target.access)
+      return undefined
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return `旧缓存没能清掉（${reason}）——它不会串进当前范围，但会占着磁盘`
+    }
+  }
+
+  /**
+   * **配置变动就重读连接资料**（裁决：「配置变更时重取实际连接资料，清除失败可见」）。
+   *
+   * 由头：`providerBook` 此前**只在本进程保存之后**更新——**另一个进程改的 / 手工改的**
+   * 配置根本看不见。那样会出现最坏的一种错：连接资料还是**旧 key**，而缓存范围已经按
+   * **新文件**算了 ⇒ 拿旧凭据的请求贴上新范围。
+   *
+   * 判据用**同一份配置指纹**（与接入身份同源）：变了才重读，没变就一次 `statSync` 走人。
+   * 读不回来（坏内容 / 半截写）⇒ **保留手上这份**——不因一次坏读把正在飞的请求带崩。
+   */
+  const syncProviderBook = (): void => {
+    const fingerprint = configFingerprintOf(loaded.path)
+    const stamp =
+      fingerprint === undefined
+        ? undefined
+        : `${fingerprint.dev}:${fingerprint.ino}:${fingerprint.mtimeNs}:${fingerprint.ctimeNs}:${fingerprint.size}`
+    if (stamp === configStamp) return
+    configStamp = stamp
+
+    try {
+      // 重读用的还是**同一个基础路径**（U42：`magic` 在这一处已解析好，不另拼家目录）
+      const reloaded = loadConfig({ path: loaded.path, magic })
+      providerBook = reloaded.config.providers
+      defaultProviderId = reloaded.providerId
+      configMtime = reloaded.mtimeMs
+      // 注册表跟着换（它保留当前选择——见 `rebuildRegistry` 的注）
+      rebuildRegistry()
+    } catch {
+      // 读不回来：**保留手上这份**（下一次读面再试）
+    }
+  }
+
+  const modelInfo: ModelInfoService = createModelInfoService({
+    connections: () => {
+      // 每次现取连接资料之前，先看**外部**有没有改过配置（见 `syncProviderBook`）
+      syncProviderBook()
+
+      return Object.entries(providerBook).map(([id, config]) => {
+        const resolved = resolveConnection({ providerId: id, config })
+        // **合成接入身份**（U41 返修）：契约资料（`ModelCacheAccess`）由本线算、
+        // 连接资料由 `resolveConnection` 给——两件一起交给域（新缓存实现直接消费它）。
+        // 先落到变量再返回：这是**结构兼容**的合成，不是另立一份影子类型。
+        // 字段名是裁决定的 **`access`**（缓存线按它消费）。
+        return { ...resolved, access: cacheAccessOf(id, config) }
+      })
+    },
+    cache: modelCache,
+    fetch: options.modelFetch ?? (globalThis.fetch as FetchLike),
+    now,
+    onChange: () => {
+      if (chain === undefined) return
+      sink.emit(requireActiveStamper().stamp('model.catalog', catalogOf(models)))
+    },
+  })
+
+  /**
+   * 该模型**已知的资料**（来自模型信息缓存）——**有效规格的一处来路**（U41 返修）。
+   *
+   * 复核点名「模型信息缓存未进入 gateway 的有效规格」：供应商在列表/详情里给了
+   * `limits` / `reasoning` / `traits` 时，它们要参与**这一次调用**的规格解析，
+   * 而不是只躺在读面上。
+   *
+   * **纯查的口径**：走 `read()` 的现成三道闸（在途共享 · 失败冷却 · 新鲜度），
+   * 故它不会因为「被多查几次」而多打接口。
+   */
+  const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
+    modelInfo.read(provider).snapshot?.models.find((one) => one.id === model)
+
   // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
   // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
   const registryOf = (): ModelRegistry =>
@@ -777,10 +903,14 @@ export function assemble(options: AssembleOptions): Assembly {
       // 缺 key 那句提示要**指对地方**（U42）：配置文件的落点随 `MAGIC_HOME` 走，
       // 模型域自己拼不出来——实际读的那一份只有这里知道（`loaded.path`）。
       configPath: loaded.path,
+      // 有效规格要看得见缓存里那份资料（见 `knownModelOf`）
+      modelInfoOf: knownModelOf,
+
     })
 
   let models: ModelRegistry | undefined
   if (options.modelGateway === undefined) models = registryOf()
+
 
   /**
    * **按当下的连接资料重建注册表**（保存之后）。
@@ -791,11 +921,14 @@ export function assemble(options: AssembleOptions): Assembly {
   const rebuildRegistry = (): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
     if (options.modelGateway !== undefined) return { ok: true }
 
-    // **先记下当前选择**（返修 · 首验反例「改连接显示名不得丢失当前模型选择」「设为默认
-    // 不得偷偷切换当前模型」）：重建是为了让**配置改动**生效（改名 / 接入新连接 / 存默认），
-    // 它**不是「换模型」的动作**——新注册表的选中是空的，不搬过去就等于顺手把用户的当前
-    // 选择切回了缺省。选择只由 `model.switch`（改当下）与用户显式动作改变。
-    const kept = models?.selection()
+    // **先记下「此刻真会走的那个」**（返修 · 首验与复核的同根反例：「改连接显示名不得丢失
+    // 当前模型选择」「设为默认不得偷偷切换当前模型」）。
+    //
+    // ⚠️ 记的是 `current()` 而**不是** `selection()`：后者只在用户**显式切换过**时才有值。
+    // 没切过时（走配置里那条缺省）记 `selection()` 会漏掉一整路——保存另一个默认之后，
+    // 重建出来的缺省换了人，当前选择就**跟着漂**了，而那同样不是用户的动作。
+    // 认「此刻走谁」这一件事，本来就该问 `current()`。
+    const kept = models?.current()
 
     try {
       models = registryOf()
@@ -805,6 +938,10 @@ export function assemble(options: AssembleOptions): Assembly {
     }
 
     if (kept !== undefined) {
+      // 把它**固化成显式选中**——重建完之后「此刻走谁」与重建之前是同一个。
+      // （没切过时这一步让 `selection()` 由空变有值，那是实情：从这一刻起，这个选择是
+      // 用户当时正在用的那一个，不该再被后来的「默认」改动带走。）
+      //
       // 搬不回（那条连接被移除 / 新配置里缺 key）= **留新注册表的缺省**，不在这里报错：
       // 用户那一次动作（保存 / 移除）的答复已经在说它自己的事，再叠一句只会让人分不清
       models.use({
@@ -816,34 +953,6 @@ export function assemble(options: AssembleOptions): Assembly {
 
     return { ok: true }
   }
-
-  /**
-   * **模型信息面**（U41）——连接资料现取（改完配置立刻对得上）、缓存落盘走 app 的实现。
-   *
-   * `onChange`：取到新列表 / 这次没取成 ⇒ **再发一屏 `model.catalog`**。
-   * 还没有会话时没有信封可铸，那次不发——`/model` 按下去会现问一次，不会丢。
-   */
-  const modelCache = createFileModelInfoCache(loaded.config.dataDir)
-  const modelInfo: ModelInfoService = createModelInfoService({
-    connections: () =>
-      Object.entries(providerBook).map(([id, config]) => resolveConnection({ providerId: id, config })),
-    cache: modelCache,
-    fetch: options.modelFetch ?? (globalThis.fetch as FetchLike),
-    now,
-    onChange: () => {
-      if (chain === undefined) return
-      sink.emit(requireActiveStamper().stamp('model.catalog', catalogOf(models)))
-    },
-  })
-
-  /**
-   * **窗长表**（U30）——内置表 ＋ 各条目自己声明的覆盖位；**注册表缺席＝空表**
-   * （＝什么都不知道，与 `Assembly.contextWindow` 的 `null` 同一条口径）。
-   *
-   * 这是一份**值**（配置定的，不随切换漂）——开机那一格与外壳此后每次切换的取材
-   * 都读它，判定统一走 `windowOfSelection`（一处口径，不会分叉）。
-   */
-  const windowTable: WindowTable = models?.windowTable() ?? { builtin: {}, declared: {} }
 
   /** 一次「开一条会话」的产物——切换时整束换掉（单活跃：同时只留一束）。 */
   type Chain = {
@@ -1069,12 +1178,20 @@ export function assemble(options: AssembleOptions): Assembly {
     // `model.call.start` 只说「这次用了谁」，说不出「何时改的、为什么没改成」。
     // 成了＝带上落地后的选中；没成＝原选原样保留（切不动就不动），只说缘由。
     // 盖章走**转发铸造器**（U16）：注册表是进程级的，事件要落在**当下那条会话**上。
+    // **落地后的有效输入预算**（U41 返修）——换模型**当下**就要换的那个分母。
+    // 未知（那个模型没有窗长依据）时就**不给这一位**：外壳据「在不在」**清空**，
+    // 沿用旧模型的容量就是报错一个数。
+    const budget = result.ok
+      ? models.capacityOf(result.selection.provider, result.selection.model)?.inputBudget
+      : undefined
+
     sink.emit(
       result.ok
         ? forwardStamper.stamp('model.switched', {
             ok: true,
             provider: result.selection.provider,
             model: result.selection.model,
+            ...(budget === undefined ? {} : { inputBudget: budget }),
           })
         : forwardStamper.stamp('model.switched', { ok: false, reason: result.reason }),
     )
@@ -1188,8 +1305,8 @@ export function assemble(options: AssembleOptions): Assembly {
   /**
    * ④ 的开局分母——**一次选中**的窗长（见 `Assembly.contextWindow`）。
    *
-   * 判定与取表全在模型域（`windowOfSelection`）：条目对上就用它声明的数，否则查内置表，
-   * 两处皆无＝`null`。本函数只做**取当下那一次选中**这件事。
+   * 判定全在模型域（`ModelRegistry.capacityOf`：一次解析出有效规格）；本函数只做
+   * **取当下那一次选中**这件事。
    *
    * 取 `current()` 而不是 `defaultProviderId()`：`--provider` / `--model` 是**开局就落地**
    * 的选中（见 `cli.ts` 那段注），故开屏那一刻要报的是**它**的窗，不是缺省条目的。
@@ -1205,7 +1322,9 @@ export function assemble(options: AssembleOptions): Assembly {
     const current = registry.current()
     if (current === undefined) return null
 
-    return windowOfSelection(windowTable, current)
+    // **有效输入预算**（U41 返修）——与出站请求、`model.usage.contextWindow` 同一份解析。
+    // 此前这里查的是 `windowTable`（另一条链），gateway 又另有一套算法：两处各说一套。
+    return registry.capacityOf(current.provider, current.model)?.inputBudget ?? null
   }
 
   /**
@@ -1369,8 +1488,19 @@ export function assemble(options: AssembleOptions): Assembly {
     return fromEnv !== undefined && fromEnv.trim().length > 0 ? 'env' : undefined
   }
 
+  /** 某条连接某个模型的**有效输入预算**——读面那一格（与出站/用量/压缩同源）。 */
+  const inputBudgetOf = (provider: string, model: string | undefined): number | undefined => {
+    if (model === undefined || models === undefined) return undefined
+    return models.capacityOf(provider, model)?.inputBudget
+  }
+
 
   const catalogRows = (registry: ModelRegistry | undefined): readonly ModelCatalogRow[] => {
+    // **读面之前先同步一次**（U41 返修）——`connections()` 里那一次太晚：这一屏的
+    // `keySource` 等几格在本函数里**先于** `modelInfo.read()` 求值，外部刚改过配置时
+    // 会拿旧资料拼出这一屏。
+    syncProviderBook()
+
     if (registry === undefined) return []
 
     return registry.list().map((entry) => {
@@ -1387,7 +1517,12 @@ export function assemble(options: AssembleOptions): Assembly {
         ...(keySourceOf(entry.id, config) === undefined
           ? {}
           : { keySource: keySourceOf(entry.id, config) }),
-        ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
+        // **该连接默认模型**的有效输入预算（U41 返修）——没有依据就不给这一位。
+        // ⚠️ 它**不是**「当前选择」的分母：当前选中可以是同连接下的另一个模型——
+        // 外壳要那个数请看 `model.catalog.currentInputBudget`（同一份解析）。
+        ...(inputBudgetOf(entry.id, entry.model) === undefined
+          ? {}
+          : { contextWindow: inputBudgetOf(entry.id, entry.model) }),
         // 缓存读数（U41）——**有才给**：空对象（还没取过、兼容接入）就不给这一位
         ...(Object.keys(modelInfo.read(entry.id)).length === 0 ? {} : { cache: modelInfo.read(entry.id) }),
 
@@ -1399,11 +1534,18 @@ export function assemble(options: AssembleOptions): Assembly {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
     const current = registry.current()
+    // **当前选择**的有效输入预算（U41 返修）——别拿某一行的 `contextWindow` 顶替：
+    // 那一行说的是**该连接的默认模型**多长，而当前选中完全可以是同一条连接下的**另一个**
+    // 模型（`model.switch { model }`）。按 `current` 算，与出站、用量同源。
+    const currentBudget =
+      current === undefined ? undefined : registry.capacityOf(current.provider, current.model)?.inputBudget
+
     return {
       entries: catalogRows(registry),
       // 还没有去向（没配缺省连接 / 还没选过模型）⇒ **不给这一位**——外壳报「先选模型」，
       // 不拿列表第一项当成「当前」（设计明文）
       ...(current === undefined ? {} : { current }),
+      ...(currentBudget === undefined ? {} : { currentInputBudget: currentBudget }),
     }
   }
 
@@ -1520,8 +1662,16 @@ export function assemble(options: AssembleOptions): Assembly {
    * 「读回来」这一步不是多余：它用的是**加载器同一把尺子**（形制 · `~` 展开 · 必填项），
    * 写进去的东西必须读得回来才算成了。
    */
-  const saveProviderCommand = (request: ProviderSaveRequest): void => {
+  const saveProviderCommand = async (request: ProviderSaveRequest): Promise<void> => {
     const before = providerBook[request.provider]
+    // **旧范围**的身份——在保存**之前**算：保存之后配置文件的指纹自己就变了，
+    // 那时再算出来的是新范围（拿它去清旧那份就清错了）
+    const beforeTarget =
+      before === undefined
+        ? undefined
+        : { provider: request.provider, access: cacheAccessOf(request.provider, before) }
+    /** 清除旧缓存的回话（没成才有）——与重建的回话合成一句交给答复。 */
+    let cleared: string | undefined
 
     const outcome = saveProvider({
       path: loaded.path,
@@ -1551,11 +1701,13 @@ export function assemble(options: AssembleOptions): Assembly {
     // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
     if (scopeChanged(before, providerBook[request.provider])) {
       modelInfo.drop(request.provider)
-      void modelCache.drop(request.provider)
+      // **清除旧范围那一份**（裁决：`drop` 明确指定身份，碰不到别的范围）。
+      // ⚠️ **失败要可见**：不 `void` 掉——接住它，写进这次答复（清除失败不吞）
+      cleared = await dropCacheQuietly(beforeTarget)
     }
 
     const rebuilt = rebuildRegistry()
-    listProviders(rebuilt.ok ? undefined : rebuilt.reason)
+    listProviders(twoNotes(rebuilt.ok ? undefined : rebuilt.reason, cleared))
   }
 
   /**
@@ -1565,11 +1717,16 @@ export function assemble(options: AssembleOptions): Assembly {
    * 配置层拦的是「它是默认」（那在文件里）。两处各拦一半，合起来才是「有引用先处理」。
    * 已发生的记录不随移除而删除（那是记录域的事，本命令碰都不碰）。
    */
-  const removeProviderCommand = (provider: string): void => {
+  const removeProviderCommand = async (provider: string): Promise<void> => {
     if (models?.current()?.provider === provider) {
       listProviders(`「${provider}」正在用——先换到别的连接再移除它`)
       return
     }
+
+    // **被移除那条的**身份——同样要**在改动之前**算
+    const removed = providerBook[provider]
+    const removedTarget =
+      removed === undefined ? undefined : { provider, access: cacheAccessOf(provider, removed) }
 
     const outcome = removeProvider({
       path: loaded.path,
@@ -1589,17 +1746,22 @@ export function assemble(options: AssembleOptions): Assembly {
     if (defaultProviderId === provider) defaultProviderId = undefined
 
     modelInfo.drop(provider)
-    void modelCache.drop(provider)
+    const cleared = await dropCacheQuietly(removedTarget)
 
     const rebuilt = rebuildRegistry()
-    listProviders(rebuilt.ok ? undefined : rebuilt.reason)
+    listProviders(twoNotes(rebuilt.ok ? undefined : rebuilt.reason, cleared))
   }
 
 
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；
   //                      `decision.answer` → 权限域；`model.switch` → 装配）──
   hub.bind({
-    onInput: (input) => conversation.submit(input),
+    // 提交输入前也同步一次（裁决：「配置变更时**重取实际连接资料**」——用户改完配置
+    // 直接发消息、不看 `/model` 的那条路也要用上新资料）
+    onInput: (input) => {
+      syncProviderBook()
+      conversation.submit(input)
+    },
     onInterrupt: () => conversation.interrupt(),
     // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域。
     // 闸门**按会话各一份**（在途询问与裁决的账各归各的），故取当下这束的；
@@ -1691,7 +1853,6 @@ export function assemble(options: AssembleOptions): Assembly {
       return contextWindowOf(models)
     },
     // 窗长表（U30）——注册表缺席＝空表（不知道有哪些模型的窗长，同 `contextWindow` 的 `null`）
-    windowTable,
     workspaceRoots: workspace.roots(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。

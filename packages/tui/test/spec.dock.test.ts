@@ -93,20 +93,29 @@ describe('状态行 · 栏位固定', () => {
    * 钉的规格＝原型状态行的 ④：`3.1k/200k`（`对表.md`·差距 5「用量显示成 `已用/总量`」）。
    * 分母的来处是条目表的答复（`model.catalog`）——**当前那条**声明的 `contextWindow`。
    */
-  test('④ 用量报 `已用/总量`——分母取自条目表里**当前那条**（D10）', async () => {
+  test('④ 用量报 `已用/总量`——分母取自答复里**当前选择**的有效输入预算（D10）', async () => {
+    // **原锚**（U30/D10）：分母取 `entries` 里**当前那条**的 `contextWindow`。
+    // **为何变**（U41 返修）：那一格是**该连接默认模型**的数，而当前选中可以是同一条连接下
+    //   的**另一个模型**——照它取就是拿错型号（复核点名）；答复另带**按 `current` 算**的
+    //   `currentInputBudget`（与出站 / 用量 / 压缩同源，模型域一次解析）。
+    // **新锚**：`currentInputBudget`。下面那行的 `contextWindow` 故意留着——
+    //   它**不该**被用上（用例里那个 999k 从不露面）。
     const stage = createStage()
     stage.feed([event('model.usage', { inputTokens: 3100, outputTokens: 40 })])
     stage.feed([
       event('model.catalog', {
         entries: [
-          { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 200_000 },
-          { provider: 'local', model: 'qwen3' }, // 没声明窗总量
+          { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 999_000 },
+          { provider: 'local', model: 'qwen3' },
         ],
-        current: { provider: 'minimax', model: 'MiniMax-M3' },
+        current: { provider: 'minimax', model: 'deepseek-reasoner' },
+        currentInputBudget: 200_000,
       }),
     ])
 
-    expect((await stage.screen(WIDE)).statusLine).toContain('3.1k/200k')
+    const frame = await stage.screen(WIDE)
+    expect(frame.statusLine).toContain('3.1k/200k')
+    expect(frame.statusLine).not.toContain('999k') // 默认行那一格与当前选择无关
   })
 
   test('**没声明就不编**——条目没给窗总量时，④ 只报已用量', async () => {

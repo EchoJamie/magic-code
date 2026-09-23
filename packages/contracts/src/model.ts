@@ -224,6 +224,27 @@ export type ModelInfoRead = {
 }
 
 /**
+ * **接入身份**（U41 返修 · 缓存接口裁决）——缓存**按它隔离存储**。
+ *
+ * 由头：原先靠「挡住迟到的旧写入」保一致性——那要靠时间戳/黑名单，且**两个调用方
+ * 传两个相同字符串**冒充不了原子条件。改成**按范围隔离**之后，旧请求只碰旧范围、
+ * 读取只认当前范围，两边根本不相遇。
+ *
+ * 两件：
+ * - `id`——**接入身份**（**不含密钥或其摘要**）。配置来源要能**跨进程由同一个文件推出
+ *   同一个值**；环境变量来源没有可验证的共同身份，故进程内唯一；
+ * - `persistent`——要不要**落盘**。`false` ＝这份身份的缓存**不跨进程复用**
+ *   （环境变量来源即此例）；**缺可信身份时读面不读共享盘**。
+ *
+ * 身份的**算**由装配负责（`@magic/app` 的 `modelCacheAccessOf`）——它才看得见配置文件的
+ * 那份可观察事实；这里只定**形状**。
+ */
+export type ModelCacheAccess = {
+  readonly id: string
+  readonly persistent: boolean
+}
+
+/**
  * 模型信息缓存端口——**模型域只经它读取/替换**。
  *
  * 实现归装配：`<dataDir>/cache/models/` 下按连接一份文件（安全编码文件名 · 仅本用户读写 ·
@@ -231,18 +252,27 @@ export type ModelInfoRead = {
  * 故这里没有版本号、迁移账或对照表。
  */
 export interface ModelInfoCache {
-  /** 读某连接的最后成功快照——没有 / 读不出（损坏）＝`undefined`（丢弃重取即可）。 */
-  read(provider: string): Promise<ModelInfoSnapshot | undefined>
   /**
-   * 整份替换。
+   * 读**该范围**的一份——`persistent: false` 或身份不可信 ⇒ **不读共享盘**（`undefined`）。
    *
-   * ⚠️ **旧范围的晚到写入必须被拒绝**（设计明文）——同一进程里两次在途获取交错时，
-   * 先发起、后到达的那一份不得盖掉范围已变之后的新结果。判定归实现：
-   * 已存快照的 `scope` 与本次不同且更新时，丢弃本次写入。
+   * ⚠️ `access` 目前是**可选**的（**过渡**）：只为两线各自能编译，**不等于隔离已完成**——
+   * 缺它时实现**不读共享盘**（不是「按老样子读」）。装配真注入之后转必填。
    */
-  replace(snapshot: ModelInfoSnapshot): Promise<void>
-  /** 废弃某连接的快照——连接移除 / 接入范围变更时（文件不存在不是错）。 */
-  drop(provider: string): Promise<void>
+  read(provider: string, access?: ModelCacheAccess): Promise<ModelInfoSnapshot | undefined>
+  /**
+   * 写入**该范围**：**只动 `snapshot` 所属 `access`** 那一份，碰不到别的范围。
+   *
+   * 同一范围内「比新旧 ＋ 替换」须有**并发保护**（实现负责）；失败**抛出**（不吞）。
+   *
+   * ⚠️ `access` 同上：过渡期可选，最终由装配真注入。
+   */
+  replace(snapshot: ModelInfoSnapshot, access?: ModelCacheAccess): Promise<void>
+  /**
+   * 清除**该范围**——不碰别的范围；文件不存在不是错；失败**抛出**（清除失败要可见）。
+   *
+   * ⚠️ `access` 同上：过渡期可选，最终由装配真注入。
+   */
+  drop(provider: string, access?: ModelCacheAccess): Promise<void>
 }
 
 // —— 设置面（配置里的覆盖位）——

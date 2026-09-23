@@ -446,11 +446,10 @@ export function tuiOptions(assembly: Assembly): RunTuiOptions {
   return {
     transport: assembly.shell,
     boot: () => assembly.boot(),
+    // 开机那一刻的读数（外壳那时还不知道模型名）。**此后**每一次切换 / 调用的分母不走这儿
+    // ——由事件自带（`model.switched` / `model.call.start` 的 `inputBudget`，U41 返修：
+    // 产生处写位），外壳不再拿一张窗长表自己查（旧链已删）。
     contextWindow: assembly.contextWindow,
-    // 窗长表（U30）：换模型之后外壳据它**当场**查新模型多长（内置表 ＋ 各条目自己的声明）。
-    // 与上面那一格分工：那一格是**开机那一刻**的读数（外壳那时还不知道模型名，
-    // 查不了表）；本表供**之后每一次切换**取材。
-    windowTable: assembly.windowTable,
     // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
     // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
     workspaceRoots: assembly.workspaceRoots,

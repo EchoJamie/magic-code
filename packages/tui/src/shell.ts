@@ -77,7 +77,6 @@ import {
   reduce,
   withBanner,
   withContextWindow,
-  withWindowTable,
 } from './view.ts'
 import {
   backspaceRange,
@@ -94,13 +93,9 @@ import {
   wire,
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
-import type { PromptState, ShellView, WindowTable } from './view.ts'
+import type { PromptState, ShellView } from './view.ts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
-
-// 建壳入参里用到的形态在视图那层（`view.ts`）——转出去，好让拿 `ShellOptions` 的人
-// 一处就取全（`run.ts` 的 `RunTuiOptions` 正是这么取的）
-export type { WindowTable }
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
@@ -227,20 +222,10 @@ export type ShellOptions = {
    * 见 `resolveContextWindow`）；拿不到／没声明就不给 ⇒ `null` ⇒ 屏上只报已用量
    * ——不编、不猜、不改事件契约（见 `withContextWindow`）。
    *
-   * ⚠️ 只管**开机那一刻**：外壳那时还不知道模型名，查不了表。此后的分母归
-   * `windowTable`（下面那一格）。
+   * ⚠️ 只管**开机那一刻**：外壳那时还不知道模型名。此后的分母归**事件**
+   * （`model.switched` / `model.call.start` 各自带着那一刻的有效输入预算，U41 返修）。
    */
   readonly contextWindow?: number | null | undefined
-  /**
-   * **窗长表**（U30 · 形态见 `WindowTable`）——**换模型之后** ④ 的分母的取材。
-   *
-   * 装配把注册表那张表递进来（`Assembly.windowTable`：内置表按准确模型 id ＋ 各条目
-   * **自己声明**的覆盖位）。`model.switched` / `model.call.start` 一到，外壳按**那一刻的
-   * 选中**（条目 ＋ 模型两件）查：查得到就换分母，查不到＝`null`（**不沿用别的容量**）。
-   *
-   * **不给** ⇒ `null` ＝没有这张表：切换**不动分母**（旧路径原样，见 `ShellView.windowTable`）。
-   */
-  readonly windowTable?: WindowTable | undefined
   /**
    * **本进程的工作区**（U26）——`/session` 列表据它认「哪个是别的项目」
    * （分组头永远都有；**压暗**只落在判得实的那些：工作区记着、且与这一组不同）。
@@ -369,11 +354,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   //    放一次的东西」，都得另保一手才活得过 `rebuild`（那半由 `bannerFirst` 管）。
   //
   // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
-  // ④ 的两件一起种：**开机那一格**的数（`contextWindow`）＋ **此后切换**查的那张表
-  // （`windowTable` · U30）——两者分工见 `ShellOptions`。
-  let view = withBanner(
-    withWindowTable(withContextWindow(createView(), options.contextWindow ?? null), options.windowTable ?? null),
-  )
+  // 这里种的只有 ④ 的**开机那一格**（`contextWindow`）——此后的分母随事件来（见 `ShellOptions`）。
+  let view = withBanner(withContextWindow(createView(), options.contextWindow ?? null))
 
   /**
    * **启动那几句**（见 `ShellOptions.receipts`）——开局先贴一遍，**重建之后再补一遍**。

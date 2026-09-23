@@ -439,10 +439,12 @@ describe('选择器（`/session` · `/model`）', () => {
         if (command.type === 'model.list') {
           const reply = event('model.catalog', {
             entries: [
-              { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 200_000 },
+              { provider: 'minimax', model: 'MiniMax-M3' },
               { provider: 'minimax-m2', model: 'MiniMax-M2' },
             ],
             current: { provider: 'minimax', model: 'MiniMax-M3' },
+            // 分母随答复来（U41 返修：按 `current` 算的那一格，不从默认行推算）
+            currentInputBudget: 200_000,
           })
           for (const listener of [...listeners]) listener(reply)
         }
@@ -464,7 +466,8 @@ describe('选择器（`/session` · `/model`）', () => {
     expect(commands.map((command) => command.type)).toEqual(['skills.list', 'model.list'])
     expect(view.dock.kind).toBe('picker') // **没被盖回输入区**
     expect(view.models).toHaveLength(2) // 条目表留住了
-    expect(view.status.window).toBe(200_000) // ④ 的分母也留住了
+    // ④ 的分母也留住了——**数值来自答复那一格**（U41 返修：按 `current` 算，不从默认行推算）
+    expect(view.status.window).toBe(200_000)
   })
 })
 

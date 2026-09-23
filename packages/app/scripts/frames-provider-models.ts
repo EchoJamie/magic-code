@@ -675,6 +675,37 @@ async function connectingLive(out: string): Promise<void> {
     const afterDefault = await session.capture({ label: '18-设为默认' })
     keep(out, afterDefault, '18-设为默认')
 
+    // —— ⑤b 分母：切到**有窗长依据**的那一条，屏上当场出现分母 ——
+    //
+    // ⚠️ 先 `esc` 收起详情那一屏：抽屉开着时打的字一律被吞（选择器接管输入）——
+    // 直接打 `/model` 会等不到它上屏（本装置第一版就是这么断的）。
+    await pressKey(session, 'esc', { until: { absent: '设为默认' }, timeoutMs: 10_000 })
+    await Bun.sleep(200)
+    //
+    // M3 在内置容量表里（1,000,000）而 Text-01 没有 ⇒ 切过去那一刻分母就该出来
+    // （`model.switched` 自己带着 `inputBudget`＝1,000,000 − 本次预留输出）；
+    // 再切回 Text-01 ⇒ **清空**（不知道就是不知道，不沿用上一个的数）。
+    // 列表开在**当前那条**（Text-01，第 2 行）上——按一下 `↑` 就是 M3（第 1 行）。
+    // ⚠️ 别多按：再往下是末尾那三条**入口行**，回车会跑去「连接供应商」（本装置栽过）。
+    await typeLine(session, '/model')
+    await pressKey(session, 'enter', { until: { text: 'MiniMax-M3' }, timeoutMs: 10_000 })
+    await pressKey(session, 'up')
+    await pressKey(session, 'enter', { until: { text: '已换模型' }, timeoutMs: 10_000 })
+    await Bun.sleep(300)
+    const withBudget = await session.capture({ label: '18b-分母（有窗长依据的那条）' })
+    keep(out, withBudget, '18b-分母（有窗长依据的那条）')
+    check(has(withBudget, '996k'), '**分母跟着切换出现**（1,000,000 − 本次预留输出）', withBudget.statusLine)
+
+    // 这回当前那条是 M3（第 1 行）——按一下 `↓` 到 Text-01（第 2 行）
+    await typeLine(session, '/model')
+    await pressKey(session, 'enter', { until: { text: 'MiniMax-Text-01' }, timeoutMs: 10_000 })
+    await pressKey(session, 'down')
+    await pressKey(session, 'enter', { until: { text: '已换模型' }, timeoutMs: 10_000 })
+    await Bun.sleep(300)
+    const noBudget = await session.capture({ label: '18c-没有窗长依据就不给分母' })
+    keep(out, noBudget, '18c-没有窗长依据就不给分母')
+    check(!has(noBudget, '996k'), '**换到没有依据的那条 ⇒ 分母清空**（不沿用上一个的数）', noBudget.statusLine)
+
     // —— ⑥ 读盘：连接与默认都在 ——
     const configPath = join(session.facts().home, '.magic', 'config.json')
     const saved = JSON.parse(readFileSync(configPath, 'utf8')) as {

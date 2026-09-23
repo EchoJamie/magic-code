@@ -158,13 +158,6 @@ export type VendorStreamerOptions = {
   readonly apiKey: string
   readonly fetch?: FetchLike | undefined
   /**
-   * **这一次的输出上限**（按模型算）——缺省 `MAX_COMPLETION_TOKENS`。
-   *
-   * 给函数而不是给数：模型是**请求**带的（运行时切换的落点），构造期钉一个数会让
-   * 「按精确模型的覆盖」在第二次换模型之后失效。
-   */
-  readonly maxOutputTokensOf?: ((model: string) => number) | undefined
-  /**
    * 该连接的供应商适配——**没有 ＝兼容接入**（原地址、原协议、原参数改写，一字不动）。
    *
    * 有它才谈得上「按供应商差异发参数」：思考设置经 `reasoningOf` 映射成原生参数
@@ -184,6 +177,15 @@ export type VendorStreamerOptions = {
 export type VendorStreamer = (
   request: ModelRequest,
   options?: ModelStreamOptions,
+  /**
+   * **这一次要送的输出上限**——由**网关一次解析后捕获着传**（U41 返修）。
+   *
+   * ⚠️ 它**不能**在取件层「按模型现算」：那样同一趟调用的输出上限与
+   * `model.call.start` / `model.usage` 报的输入预算会**各解析一次**——中途缓存或配置一变，
+   * 出站 4000、分母却按旧的 2000 算，两者相加就**超过窗口**（独立复核的真反例）。
+   * 缺省 `MAX_COMPLETION_TOKENS`（直接调本层的测试用）。
+   */
+  maxOutputTokens?: number,
 ) => AsyncIterable<VendorStreamPart>
 
 /**
@@ -229,9 +231,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       : { fetch: options.fetch as unknown as typeof globalThis.fetch }),
   })
 
-  const maxOutputTokensOf = options.maxOutputTokensOf ?? ((): number => MAX_COMPLETION_TOKENS)
-
-  return (request, streamOptions) => {
+  return (request, streamOptions, maxOutputTokens) => {
     const model = provider.chatModel(request.model)
     const instructions = toInstructions(request.messages)
     const providerOptions = reasoningOption(
@@ -246,7 +246,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       ...(request.tools === undefined || request.tools.length === 0
         ? {}
         : { tools: toAiSdkTools(request.tools) }),
-      maxOutputTokens: maxOutputTokensOf(request.model),
+      maxOutputTokens: maxOutputTokens ?? MAX_COMPLETION_TOKENS,
       ...(providerOptions === undefined ? {} : { providerOptions }),
       // 回退逻辑放内核——不依赖 SDK 自动机制（技术方案 · 模型策略）
       maxRetries: 0,

@@ -9,9 +9,13 @@
  *    真实窗长只有用户知道）；
  * 3. **未知 / 别名不能证实 ⇒ 不知道**——`undefined`（分母 `null`），**不模糊匹配一整个
  *    家族、不拿别名顶上、不编数**；
- * 4. **同一条判定经条目出口出去**（`list()` 与 `windowTable()` ＋ `windowOfSelection`）——
+ * 4. **同一条判定经出口出去**（`list()` 的行与 `capacityOf` 的有效规格）——
  *    外壳与 `model.catalog` 两处取材同源，不会分叉；**声明只属于配置它的条目及对应模型**
  *    （同名模型在别的条目上不许串味）。
+ *
+ * ⚠️ **2026-09-23（U41 返修）**：旧的「窗长表」（`windowTable()` ＋ `windowOfSelection`）
+ * 随整条旧链删掉——分母改由 `capacityOf` 一次解析、经事件给外壳。这一组里钉旧表那几条
+ * 一并撤（判据本身没丢：`capacityOf` 那几条与 `list()` 那几条各自钉着同一批规则）。
  *
  * 数值的**出处**（2026-09-20 核 · 单位 token）：MiniMax 开放平台模型表
  * https://platform.minimax.io/docs/guides/text-generation 。
@@ -24,9 +28,7 @@ import {
   MODEL_CONTEXT_BUILTIN,
   createModelRegistry,
   resolveContextWindow,
-  windowOfSelection,
 } from '../src/index.ts'
-import type { WindowTable } from '../src/index.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
 // 一 · 裁定：声明 → 内置表 → 未知
@@ -106,50 +108,6 @@ describe('容量裁定 · 声明 → 内置表 → 未知', () => {
 // 二 · 出口：同一条判定，两处取材（条目表 · 窗长表）
 // ═══════════════════════════════════════════════════════════════════════
 
-describe('窗长表 · 消费（`windowOfSelection`）', () => {
-  /** 一张表：内置两行 ＋ 甲条目声明了 `MiniMax-M2` 的另一种窗长。 */
-  const TABLE: WindowTable = {
-    builtin: { 'MiniMax-M3': 1_000_000, 'MiniMax-M2': 204_800 },
-    declared: { 'alpha-private': { model: 'MiniMax-M2', window: 32_768 } },
-  }
-
-  test('条目与模型**两件都对上** ⇒ 用它的声明', () => {
-    expect(windowOfSelection(TABLE, { provider: 'alpha-private', model: 'MiniMax-M2' })).toBe(32_768)
-  })
-
-  test('**同名模型在别的条目** ⇒ 查内置表，**不认那份声明**（跨条目不许串味）', () => {
-    expect(windowOfSelection(TABLE, { provider: 'alpha', model: 'MiniMax-M2' })).toBe(204_800)
-    expect(windowOfSelection(TABLE, { provider: 'beta', model: 'MiniMax-M2' })).toBe(204_800)
-  })
-
-  test('**同条目换到别的模型** ⇒ 声明不跟过去（那条声明是给它自己模型的）', () => {
-    expect(windowOfSelection(TABLE, { provider: 'alpha-private', model: 'MiniMax-M3' })).toBe(1_000_000)
-    expect(windowOfSelection(TABLE, { provider: 'alpha-private', model: 'my-local-llama' })).toBeNull()
-  })
-
-  test('`provider` 缺席（`model.call.start` 的可选位）⇒ 只认内置表——声明认不了主，不猜', () => {
-    expect(windowOfSelection(TABLE, { model: 'MiniMax-M2' })).toBe(204_800)
-    expect(windowOfSelection(TABLE, { model: 'my-local-llama' })).toBeNull()
-  })
-
-  test('两处皆无 ⇒ `null`（不知道就是不知道——不拿 0 或者别人的数顶上）', () => {
-    expect(windowOfSelection({ builtin: {}, declared: {} }, { provider: 'x', model: 'y' })).toBeNull()
-  })
-
-  /**
-   * **原型上有名字的模型名 / 条目名**（验收边界）：两处查表都只认自有键——
-   * 否则 `{ model: 'toString' }` 会拿到 `Object.prototype.toString`（函数），
-   * 外壳拿去当分母上屏 ✗。
-   */
-  test('`toString` 这类模型名 ⇒ `null`（不摸原型）；`toString` 这类条目名 ⇒ 照查内置表', () => {
-    for (const name of ['toString', 'constructor', '__proto__']) {
-      // 模型名落在原型上：干净地「不知道」
-      expect(windowOfSelection(TABLE, { model: name })).toBeNull()
-      expect(windowOfSelection(TABLE, { provider: name, model: 'MiniMax-M2' })).toBe(204_800)
-    }
-  })
-})
-
 const CONFIG = (model: string): ProviderConfig => ({ baseURL: 'https://alpha.example/v1', model })
 
 /** 造一张注册表：缺省条目＝**第一格**，各行按 id 给一把假 key（构造期要解析缺省那条的 key）。 */
@@ -163,7 +121,7 @@ function registryOf(providers: Record<string, ProviderConfig>) {
   })
 }
 
-describe('条目出口 · `list()` 与 `windowTable()`', () => {
+describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）', () => {
   test('条目没声明、模型在内置表里 ⇒ 条目**带出内置那个数**（不必让用户自己补）', () => {
     const registry = registryOf({ alpha: CONFIG('MiniMax-M2') })
 
@@ -186,64 +144,49 @@ describe('条目出口 · `list()` 与 `windowTable()`', () => {
     expect('contextWindow' in (first ?? {})).toBe(false)
   })
 
-  test('窗长表：内置表原样 ＋ 各条目声明**按条目装**——只有已知的键在', () => {
-    const registry = registryOf({
-      known: CONFIG('MiniMax-M2'),
-      declared: { ...CONFIG('my-local-llama'), contextWindow: 8_192 },
-      unknown: CONFIG('MiniMax-No-Such-Model'),
-    })
+  test('新出口：合用窗口**为本次输出预留**（缺省输出 4096 也算已发出去的数）', () => {
+    const registry = registryOf({ alpha: CONFIG('my-local-llama') })
 
-    const table = registry.windowTable()
+    const spec = registry.capacityOf('alpha', 'my-local-llama')
+    // 没有输出覆盖 ⇒ 真会送的是缺省那一个 —— 复核：「当前请求参数并非未知」
+    expect(spec?.maxOutputTokens).toBe(4_096)
+    expect(spec?.inputBudget).toBeUndefined() // 这份配置里没有窗长依据
 
-    // 内置那几行都在（按准确模型 id，与条目无关）
-    expect(table.builtin['MiniMax-M3']).toBe(1_000_000)
-    expect(table.builtin['MiniMax-M2']).toBe(204_800)
-    // 声明**挂在它那条目上**（不并进内置表）：条目 id → 它声明的模型 ＋ 那个数
-    expect(table.declared['declared']).toEqual({ model: 'my-local-llama', window: 8_192 })
-    // 没声明的条目**连键都不在**（不是 `{}` 占位）
-    expect('known' in table.declared).toBe(false)
-    expect('unknown' in table.declared).toBe(false)
-    // 不知道的模型在内置表里也没有（≠ 0）——消费时 `?? null` 即「不知道」
-    expect('MiniMax-No-Such-Model' in table.builtin).toBe(false)
+    const declared = registryOf({ alpha: { ...CONFIG('MiniMax-M2'), contextWindow: 10_000 } })
+    expect(declared.capacityOf('alpha', 'MiniMax-M2')?.inputBudget).toBe(10_000 - 4_096)
   })
 
-  /**
-   * **同名模型跨条目**（本单元被规划侧打回重做的那一条）：合法的两个端点可以给同名模型
-   * 声明不同的窗长——甲声明的那个数**绝不能**盖到乙头上。
-   */
-  test('同名模型两条目、其中一条声明过 ⇒ 各查各的（甲用声明、乙用内置）', () => {
+  test('新出口：**两道约束取共同允许的范围**——独立输入上限不被合用窗口放大', () => {
+    const registry = registryOf({
+      alpha: {
+        ...CONFIG('my-local-llama'),
+        modelOverrides: {
+          'my-local-llama': {
+            limits: { maxContextTokens: 10_000, maxInputTokens: 3_000, maxOutputTokens: 2_000 },
+          },
+        },
+      },
+    })
+
+    const spec = registry.capacityOf('alpha', 'my-local-llama')
+    // 合用窗口预留后是 8000，但独立输入上限说 3000 —— **取较小的那一个**
+    expect(spec?.maxOutputTokens).toBe(2_000)
+    expect(spec?.inputBudget).toBe(3_000)
+  })
+
+  test('新出口：同名模型两条目**各查各的**（旧表那条口径的延续）', () => {
     const registry = registryOf({
       'alpha-gw': { ...CONFIG('MiniMax-M2'), contextWindow: 32_768 },
       'beta-direct': CONFIG('MiniMax-M2'),
     })
 
-    const table = registry.windowTable()
-
-    // 条目表：各报各的
-    expect(registry.list()).toEqual([
-      { id: 'alpha-gw', model: 'MiniMax-M2', contextWindow: 32_768 },
-      { id: 'beta-direct', model: 'MiniMax-M2', contextWindow: 204_800 },
-    ])
-    // 消费：声明只跟着甲；乙（同名模型）走内置表
-    expect(windowOfSelection(table, { provider: 'alpha-gw', model: 'MiniMax-M2' })).toBe(32_768)
-    expect(windowOfSelection(table, { provider: 'beta-direct', model: 'MiniMax-M2' })).toBe(204_800)
-    // 内置表**没被声明改写**（它按准确模型 id，是模型的客观属性）
-    expect(table.builtin['MiniMax-M2']).toBe(204_800)
+    expect(registry.capacityOf('alpha-gw', 'MiniMax-M2')?.contextWindow).toBe(32_768)
+    expect(registry.capacityOf('beta-direct', 'MiniMax-M2')?.contextWindow).toBe(204_800)
   })
 
-  test('窗长表与条目表**同源**——同一条目两处报的数一致（不会分叉）', () => {
-    const registry = registryOf({
-      alpha: CONFIG('MiniMax-M3'),
-      beta: { ...CONFIG('MiniMax-M2'), contextWindow: 100_000 },
-    })
-
-    const table = registry.windowTable()
-    for (const entry of registry.list()) {
-      // 本用例的配置里每条都写了默认模型——`!` 是断言的一部分（U41 起这一位可缺）
-      expect(entry.contextWindow ?? null).toBe(
-        windowOfSelection(table, { provider: entry.id, model: entry.model! }),
-      )
-    }
+  test('新出口：未知连接 / 未知模型 ⇒ `undefined`（不知道就是不知道）', () => {
+    const registry = registryOf({ alpha: CONFIG('MiniMax-M2') })
+    expect(registry.capacityOf('nope', 'MiniMax-M2')).toBeUndefined()
   })
 
   /**

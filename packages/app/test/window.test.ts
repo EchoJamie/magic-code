@@ -30,7 +30,6 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventStamper, KernelEvent, ModelGateway } from '@magic/contracts'
 import { createFauxGateway } from '@magic/faux'
-import { windowOfSelection } from '@magic/model'
 import { createShell, usageLabel } from '@magic/tui'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import type { Assembly } from '../src/index.ts'
@@ -120,30 +119,17 @@ function stage(): {
 /**
  * 起一个**真外壳**（`createShell`）——入参**从 `tuiOptions` 取件**（照 `readouts.test.ts`
  * 那条判据的姿势：别自己照接一遍，那样倒回接线照样绿）。
+ *
+ * ⚠️ **U41 返修起不再传窗长表**：旧 `registry.windowTable → 装配 → 外壳` 那条链已撤，
+ * 分母改由**有效输入预算**一处给（`Assembly.contextWindow` 与 `model.catalog` 的
+ * `contextWindow` 同一份解析，见 `ModelRegistry.capacityOf`）。
  */
 function shellOf(assembly: Assembly) {
   const options = tuiOptions(assembly)
-  return createShell(assembly.shell, {
-    contextWindow: options.contextWindow,
-    windowTable: options.windowTable,
-  })
-}
-
-/**
- * 窗长表的形态——**从 `tuiOptions` 的返回值上取**（`@magic/tui` 没把这个类型出到包外；
- * 结构类型认形状，不必 import）。
- */
-type WindowTable = NonNullable<ReturnType<typeof tuiOptions>['windowTable']>
-
-/**
- * `tuiOptions` 给的那张窗长表——`RunTuiOptions` 里这一位是可选位（真装配一定给），
- * 拆包时把「没给」当场当失败：**接线断了要红在接线那一句上**，不是红在后面对比的数上。
- */
-function tableOf(assembly: Assembly): WindowTable {
-  const table = tuiOptions(assembly).windowTable
-  if (table === undefined) throw new Error('tuiOptions 没给窗长表——接线断了')
-
-  return table
+  // ⚠️ **旧链已撤**（U41 返修 · 本轮）：外壳不再拿窗长表自己查「换过模型之后」的分母
+  // ——那是事件自带的 `inputBudget`（`model.switched` / `model.call.start`，
+  // 与 `Assembly.contextWindow` / `model.catalog.currentInputBudget` 同源）。
+  return createShell(assembly.shell, { contextWindow: options.contextWindow })
 }
 
 /** 一次真调用（让链上有会话——`model.switched` 要落在会话上）。 */
@@ -153,18 +139,27 @@ async function warm(assembly: Assembly): Promise<void> {
   handle.dispose()
 }
 
+/** 本次调用**真会送出去**的输出上限（缺省那一个）——分母就是联合窗口减掉它。 */
+const RESERVED_OUTPUT = 4_096
+
 // ═══════════════════════════════════════════════════════════════════════
 // 一 · 开机那一格：容量从哪来
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('U30 · 开机那一格的分母', () => {
-  test('**已知模型**：配置里没声明，也有分母（内置表命中 ⇒ M3 报 1M）', () => {
+  /**
+   * **U41 返修改锚**：这一格从「窗长表里的一个数」改成**有效输入预算**——
+   * 联合窗口为本次输出预留之后剩下的那一份（复核：「预留依据是本次实际请求，
+   * 不是供应商最大输出规格是否已知」）。**原锚**是「内置表命中 ⇒ 报 1M」；
+   * **为何变**：分母要与出站请求、用量事件、压缩同一份解析；**新锚**：联合窗口 − 本次输出。
+   */
+  test('**已知模型**：配置里没声明，也有分母（内置表命中 ⇒ M3 的联合窗口）', () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
       // 这份配置只写了 endpoint / key / 模型名——窗长是我们已知的客观属性
-      expect(tuiOptions(assembly).contextWindow).toBe(1_000_000)
+      expect(tuiOptions(assembly).contextWindow).toBe(1_000_000 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -172,14 +167,14 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('**用户声明的压过内置**：声明了 32768 就报 32768（不是内置的 204800）', () => {
+  test('**用户声明的压过内置**：声明了 32768 ⇒ 分母是它预留后的数（不是内置的 204800）', () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
       expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
 
-      expect(tuiOptions(assembly).contextWindow).toBe(32_768)
+      expect(tuiOptions(assembly).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -202,50 +197,28 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('**窗长表**经装配给到外壳：内置表原样 ＋ 声明**按条目装**，未知的**连键都不在**', () => {
-    const land = stage()
-
-    try {
-      const assembly = land.assemble()
-      const table = tableOf(assembly)
-
-      // 内置表：按准确模型 id（与条目无关）——换到哪一格都查得到
-      expect(table.builtin['MiniMax-M3']).toBe(1_000_000)
-      expect(table.builtin['MiniMax-M2.5']).toBe(204_800)
-      // 声明：挂在它那条目上（`mm2` 声明了「我这个 MiniMax-M2 是 32768」）
-      expect(table.declared['mm2']).toEqual({ model: 'MiniMax-M2', window: 32_768 })
-      // 没声明的条目**连键都不在**（不是 `{}` 占位）
-      expect('mm' in table.declared).toBe(false)
-      // 不知道的模型在内置表里也没有（≠ 0）——消费时 `?? null` 即「不知道」
-      expect('my-local-llama' in table.builtin).toBe(false)
-
-      assembly.close()
-    } finally {
-      land.dispose()
-    }
-  })
-
   /**
    * **同名模型跨条目**（规划侧打回重做的那一条）——口径**钉住**：
    * 声明只属于配置它的条目及对应模型，**不按模型名全局生效**。
    *
    * 由头：合法的两个端点可以给同名模型不同的窗长（本地部署量化过 / 网关另有一层裁法），
    * 一条声明盖到另一条头上＝**报错一个数**（比不报更坏）。
+   *
+   * **U41 返修改锚**：从「查表」改成「问外壳那一格」——同一个判据（各是各的），
+   * 换到现在唯一的那个读面上订（撤链之后表没了，口径没变）。
    */
   test('同名模型两条目：声明**不串味**——各是各的', () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
-      const table = tableOf(assembly)
-      const lookup = (provider: string) =>
-        windowOfSelection(table, { provider, model: 'MiniMax-M2' })
 
       // 声明的那条：用它声明的数；同名模型的另一条：内置表那个数
-      expect(lookup('mm2')).toBe(32_768)
-      expect(lookup('mm-same')).toBe(204_800)
-      // 内置表**没被声明改写**（它是模型的客观属性）
-      expect(table.builtin['MiniMax-M2']).toBe(204_800)
+      expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
+      expect(tuiOptions(assembly).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
+
+      expect(assembly.switchModel({ provider: 'mm-same' }).ok).toBe(true)
+      expect(tuiOptions(assembly).contextWindow).toBe(204_800 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -253,17 +226,15 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('注册表缺席（替身网关）⇒ 空表 ＋ `null`——与「不知道」同一条口径', () => {
+  test('注册表缺席（替身网关）⇒ `null`——与「不知道」同一条口径', () => {
     const land = stage()
 
     try {
       const assembly = land.assemble({
         modelGateway: (stamper) => createFauxGateway({ stamper, turns: [] }),
       })
-      const options = tuiOptions(assembly)
 
-      expect(options.contextWindow).toBeNull()
-      expect(options.windowTable).toEqual({ builtin: {}, declared: {} })
+      expect(tuiOptions(assembly).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -287,12 +258,13 @@ describe('U30 · 换过模型之后的分母', () => {
 
       // 跑过一句之后 ③④ 都有数（M3 ⇒ 1M）
       expect(shell.getView().status.model).toBe('MiniMax-M3')
-      expect(shell.getView().status.window).toBe(1_000_000)
+      // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
+      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
 
       // 真换：经装配那一条产出路径（命令面同一条），事件当场到壳（进程内直连）
       expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('MiniMax-M2')
-      expect(shell.getView().status.window).toBe(32_768)
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       shell.dispose()
       assembly.close()
@@ -316,12 +288,12 @@ describe('U30 · 换过模型之后的分母', () => {
       // 声明的那条（32768）
       expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('MiniMax-M2')
-      expect(shell.getView().status.window).toBe(32_768)
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       // **同名模型**的另一条：内置表那个数（不是上一步的 32768）
       expect(assembly.switchModel({ provider: 'mm-same' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('MiniMax-M2')
-      expect(shell.getView().status.window).toBe(204_800)
+      expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
       shell.dispose()
       assembly.close()
@@ -341,7 +313,8 @@ describe('U30 · 换过模型之后的分母', () => {
       expect(assembly.switchModel({ provider: 'ghost' }).ok).toBe(false)
 
       expect(shell.getView().status.model).toBe('MiniMax-M3')
-      expect(shell.getView().status.window).toBe(1_000_000)
+      // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
+      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
 
       shell.dispose()
       assembly.close()
@@ -382,7 +355,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
       // 同一条目换到另一个模型——它自己的窗长（内置 204800），不是 M3 的 1M
       expect(assembly.switchModel({ model: 'MiniMax-M2.5' }).ok).toBe(true)
-      expect(shell.getView().status.window).toBe(204_800)
+      expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
       // 换到表里没有的模型名 ⇒ 不知道（同条目那个数也不顶上去）
       expect(assembly.switchModel({ model: 'MiniMax-M9' }).ok).toBe(true)
@@ -405,13 +378,13 @@ describe('U30 · 换过模型之后的分母', () => {
       // 还没有会话就换——注册表照换，但**没有可落账之处 ⇒ 不发事件**（内核的明写规矩）
       expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
       // 壳上还是开机那一格（M3 的 1M）——没人告诉过它换了
-      expect(shell.getView().status.window).toBe(1_000_000)
+      expect(shell.getView().status.window).toBe(995_904)
 
       await warm(assembly)
 
       // 真跑用谁，分母就跟着谁：「这次真用了谁」那条事件把读数带上正轨
       expect(shell.getView().status.model).toBe('MiniMax-M2')
-      expect(shell.getView().status.window).toBe(32_768)
+      expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       shell.dispose()
       assembly.close()
@@ -437,7 +410,8 @@ describe('U30 · 换过模型之后的分母', () => {
       const bogus = assembly.switchModel({ provider: 'toString' })
       expect(bogus.ok).toBe(false)
       expect(bogus.ok === false ? bogus.reason : '').toContain('未知供应商')
-      expect(shell.getView().status.window).toBe(1_000_000)
+      // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
+      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
       expect(shell.getView().status.model).toBe('MiniMax-M3')
 
       // 模型名落在原型上：换是换了（同条目换模型），分母**没有**——不留原型上那个东西
@@ -462,7 +436,7 @@ describe('U30 · 换过模型之后的分母', () => {
       const status = shell.getView().status
 
       // 分母在（1M），但分子还没有 ⇒ ④ 整格不出现（`usageLabel` 直接返回 null）
-      expect(status.window).toBe(1_000_000)
+      expect(status.window).toBe(995_904)
       expect(status.usage).toBeNull()
       expect(usageLabel(status.usage, status.window)).toBeNull()
 
@@ -477,30 +451,6 @@ describe('U30 · 换过模型之后的分母', () => {
 // ═══════════════════════════════════════════════════════════════════════
 // 三 · 老路径（调用方没给这张表时）——别当规格
 // ═══════════════════════════════════════════════════════════════════════
-
-describe('U30 · 没给窗长表时', () => {
-  test('切换**不动分母**——只认开机那一格（老路径一字不改）', async () => {
-    const land = stage()
-
-    try {
-      const assembly = land.assemble()
-      const options = tuiOptions(assembly)
-      // 表没传：老路径
-      const shell = createShell(assembly.shell, { contextWindow: options.contextWindow })
-      await warm(assembly)
-
-      expect(shell.getView().status.window).toBe(1_000_000)
-      expect(assembly.switchModel({ provider: 'mm2' }).ok).toBe(true)
-      // 表不在手上 ⇒ 查不了 ⇒ 分母原样（不是「查到了旧模型那个数」）
-      expect(shell.getView().status.window).toBe(1_000_000)
-
-      shell.dispose()
-      assembly.close()
-    } finally {
-      land.dispose()
-    }
-  })
-})
 
 // ═══════════════════════════════════════════════════════════════════════
 // 四 · **真 `runTui` 那条路**——接线本身在不在（屏上的字从字节里读）
@@ -602,11 +552,13 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       await driver.submit('看下这个项目')
       driver.dispose()
 
-      await until(tty, '3.1k/1000k') // M3 ⇒ 内置表 1M
+      // 分母＝**有效输入预算**（1M 的窗长 − 本次预留输出 4_096 ⇒ `996k`）
+      await until(tty, '3.1k/996k')
 
       // 真换（经装配那条产出路径）⇒ 屏上换成新模型那个数
       expect(assembly.switchModel({ provider: 'mm-same' }).ok).toBe(true)
-      await until(tty, '3.1k/205k')
+      // `mm-same` 那条是内置表的 M2（204_800 − 4_096 ⇒ `201k`）
+      await until(tty, '3.1k/201k')
 
       // 再换到未知模型 ⇒ 分母从屏上下去（只剩分子，没有那个斜杠）
       expect(assembly.switchModel({ provider: 'local' }).ok).toBe(true)

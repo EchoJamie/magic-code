@@ -26,6 +26,7 @@
 import type {
   EventStamper,
   KernelEvent,
+  ModelInfo,
   ModelRequest,
   ProviderConfig,
   ReasoningSetting,
@@ -34,12 +35,12 @@ import type { FetchLike } from './ai-sdk.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
-import { MissingApiKeyError, createModelGateway } from './gateway.ts'
+import { MissingApiKeyError, createModelGateway, effectiveSpecOf } from './gateway.ts'
+import type { EffectiveSpec } from './gateway.ts'
 import { modelCallStart, modelErrorEvent } from './events.ts'
 import { vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
-import { MODEL_CONTEXT_BUILTIN, ownOf, resolveContextWindow } from './capacity.ts'
-import type { WindowTable } from './capacity.ts'
+import { ownOf, resolveContextWindow } from './capacity.ts'
 
 // —— 形态 ——
 
@@ -152,17 +153,17 @@ export interface ModelRegistry extends ModelGateway {
   /** 已注册的条目（配置顺序）——「加一条目即多一个」的读数面。 */
   list(): readonly ProviderEntry[]
   /**
-   * **窗长表**（U30 · 形态与消费见 `WindowTable` / `windowOfSelection`）——
-   * 内置表 ＋ 各条目**自己声明**的覆盖位，**分开装**、按 `provider ＋ model` 消费。
+  /**
+   * **某个模型的有效规格**（U41 返修 · 新出口）——显示、出站、压缩**同一份解析**。
    *
-   * 为什么给外壳的是**表**而不是「此刻那一条的数」：换模型是**运行时**的事
-   * （`/model` 一按就换），而外壳够不着注册表——它得**当场**知道新模型多长。
-   * 表在手上，`model.switched` / `model.call.start` 一来就能查；查不到＝不知道（不编）。
+   * 由头（设计 · 模型与上下文「统一消费」）：「模型域解析一次有效选择与令牌规格，
+   * 为当前请求形成不可变读数，贯穿调用、事件和容量消费」。
    *
-   * **声明只跟着它那一条目**（不按模型名合并）：合法的两个端点可能给同名模型声明
-   * 不同的窗长，平表会让甲的声明盖到乙头上。
+   * ✅ **旧链已删**（U41 返修）：`registry.windowTable → 装配 → 外壳` 那条链连同
+   * `windowTable()` / `windowOfSelection` 一并撤了——外壳不再自己拿表算分母，
+   * 改由**事件**带这一位数（`model.switched` / `model.call.start` 的 `inputBudget`）。
    */
-  windowTable(): WindowTable
+  capacityOf(provider: string, model: string): EffectiveSpec | undefined
   /** 配置里的缺省连接 id（`defaultProvider`）——**没配过就不给**（U41 起可缺）。 */
   defaultProviderId(): string | undefined
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
@@ -252,6 +253,15 @@ export type ModelRegistryOptions = {
   readonly configPath?: string | undefined
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
+  /**
+   * **某连接某模型已知的资料**（来自模型信息缓存）——装配给（它才够得着那份缓存）。
+   *
+   * 有效规格的一处来路（优先级：用户覆盖 → **供应商 API 当前有效信息** → 缺项补充 → 未知）。
+   * 缺省＝没有缓存可看，规格只由配置与适配补齐（与加它之前一字不差）。
+   */
+  readonly modelInfoOf?:
+    | ((provider: string, model: string) => ModelInfo | undefined)
+    | undefined
 }
 
 // —— 装配 ——
@@ -306,6 +316,13 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       env: options.env,
       configPath: options.configPath,
       maxCompletionTokens: options.maxCompletionTokens,
+      // ⚠️ **按 provider 绑定再传**（U41 返修 · 补漏传）：注册表那一格是
+      // `(provider, model) => ModelInfo | undefined`，而网关只认**自己那一家**的模型。
+      // 不绑就直接递下去的话，网关会拿**别的条目**的 id 去查自己这一家的模型
+      //（`capacityOf` 走的是对的、实际网关却拿不到规格 ⇒ 出站上限与分母各说一套）。
+      ...(options.modelInfoOf === undefined
+        ? {}
+        : { modelInfoOf: (model: string) => options.modelInfoOf?.(id, model) }),
     })
     built.set(id, gateway)
     return gateway
@@ -351,18 +368,17 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       })
     },
 
-    windowTable(): WindowTable {
-      // 声明**按条目装**（不并进内置表）：条目 id → 它声明的那个模型 ＋ 那个数。
-      // 内置表原样转出去（只读）——它按准确模型 id 算，与条目无关。
-      const declared: Record<string, { model: string; window: number }> = {}
-      for (const [id, config] of entries) {
-        // 两件都要有：声明属于「这一条 ＋ 它的模型」——没选过模型就没有「它那个模型」
-        if (config.contextWindow !== undefined && config.model !== undefined) {
-          declared[id] = { model: config.model, window: config.contextWindow }
-        }
-      }
+    capacityOf(provider: string, model: string): EffectiveSpec | undefined {
+      const config = ownOf(providers, provider)
+      if (config === undefined) return undefined
 
-      return { builtin: MODEL_CONTEXT_BUILTIN, declared }
+      return effectiveSpecOf({
+        model,
+        config,
+        adapter: adapterFor(provider),
+        known: options.modelInfoOf?.(provider, model),
+        fallbackOutputTokens: options.maxCompletionTokens,
+      })
     },
 
     defaultProviderId(): string | undefined {

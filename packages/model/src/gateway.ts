@@ -19,6 +19,7 @@
 
 import type {
   EventStamper,
+  ModelInfo,
   ModelLimits,
   ModelRequest,
   ModelTraits,
@@ -128,77 +129,112 @@ function traitsOf(
   model: string,
   config: ProviderConfig,
   adapter: VendorAdapter | undefined,
+  known: ModelInfo | undefined,
 ): ModelTraits | undefined {
   const override = overrideOf(config, model)?.traits
   if (override !== undefined) return override
 
-  // **官方适配**按该家的补充来；**兼容接入**（无适配）走域内的已知差异表——
-  // 那条路的能力一个字不删（设计 · 命令行与配置：「不借此删除旧能力」）
+  // **官方适配**按该家的补充来（把缓存里那份喂进去：**API 给了的不覆盖**）；
+  // **兼容接入**（无适配）走域内的已知差异表——那条路的能力一个字不删
   return adapter === undefined
     ? resolveModelTraits(model, undefined)
-    : adapter.supplement({ id: model }).traits
+    : adapter.supplement(known ?? { id: model }).traits
 }
 
 /**
- * **生效的令牌规格**——用户覆盖 → 该家适配的缺项补充（逐位合并，覆盖优先）。
+ * **生效的令牌规格**——用户覆盖 → 供应商 API 当前有效信息（缓存里那份）→
+ * 该家适配的缺项补充 → 未知（逐位合并，前者盖后者）。
  *
  * 两处都缺的位就是**未知**（不给这一位）：设计明文「零 / 非法规格不当作无限大」，
- * 「读不懂就不给这一位」。兼容接入走域内的内置容量表（旧能力不删，见 `traitsOf` 同一条）。
+ * 「读不懂就不给这一位」。兼容接入（没有适配）走域内的内置容量表——旧能力不删。
  */
 function effectiveLimits(
   model: string,
   config: ProviderConfig,
   adapter: VendorAdapter | undefined,
+  known: ModelInfo | undefined,
 ): ModelLimits | undefined {
   const override = overrideOf(config, model)?.limits
+  // `supplement` 的契约是「**API 给了的不覆盖**」，故把缓存里那份喂进去即已含它
   const supplemented =
     adapter === undefined
       ? ((): ModelLimits | undefined => {
           const window = resolveContextWindow(model)
           return window === undefined ? undefined : { maxContextTokens: window }
         })()
-      : adapter.supplement({ id: model }).limits
+      : adapter.supplement(known ?? { id: model }).limits
 
-  const merged: ModelLimits = { ...supplemented, ...override }
+  const merged: ModelLimits = { ...supplemented, ...known?.limits, ...override }
   return Object.keys(merged).length === 0 ? undefined : merged
 }
 
 /**
- * **这一次的有效输入预算**（token）——`model.usage.contextWindow` 报的就是它。
+ * **一次解析出来的有效规格**（U41 返修）——**请求、显示、压缩共用这一份**。
  *
- * 判据（设计 · 模型与上下文「规格与参数」）：
- * - **合用窗口要预留输出**——「联合窗口须为本次输出（含其规则要求计入的思考预算）
- *   预留空间」。故 `maxContextTokens` 减去**已知的输出上限**（用户覆盖或适配补充的那一个；
- *   两处都没有就不减——取件层常量是**我们请求时带的数**，不是模型规格，混进容量就成了编）；
- * - **独立输入上限不机械减去输出上限**——它本来就是「输入那一边」的上限，直接用。
- *
- * 两处皆无 ⇒ **不给这一位**（外壳显示不出分母就不显示）。
+ * 由头（设计 · 模型与上下文「统一消费」）：「模型域解析一次有效选择与令牌规格，
+ * 为当前请求形成**不可变读数**，贯穿调用、事件和容量消费」；复核也点名此前
+ * 「gateway 另算容量」与「旧 `windowTable` 查询链」两处各说一套。
  */
-function contextWindowOf(
-  model: string,
-  config: ProviderConfig,
-  adapter: VendorAdapter | undefined,
-): number | undefined {
-  const limits = effectiveLimits(model, config, adapter)
-
-  if (limits?.maxContextTokens !== undefined) {
-    return Math.max(0, limits.maxContextTokens - (limits.maxOutputTokens ?? 0))
-  }
-  return limits?.maxInputTokens
+export type EffectiveSpec = {
+  /** 本次**真会送进请求**的输出上限（＝预留的那一份）。 */
+  readonly maxOutputTokens: number
+  /**
+   * 有效**输入预算**（token）——`model.usage.contextWindow`、外壳分母、压缩阈值
+   * 报的都是它。两处规格都没有 ⇒ **不给这一位**（不知道就是不知道）。
+   */
+  readonly inputBudget?: number
+  /** 供应商给的**联合窗口原值**（未预留输出前）——显示「总量」时用得上；没有就不给。 */
+  readonly contextWindow?: number
+  /** 生效的通道特征（用户覆盖 → 适配补充 → 无）。 */
+  readonly traits?: ModelTraits
 }
 
 /**
- * **这一次的输出上限**——用户对该精确模型的覆盖 → 取件层常量（见 `ai-sdk.ts`）。
+ * 解析**当前这次请求**的有效规格——**唯一的那一次解析**。
  *
- * 它同时是**出站请求带的那一个**与**上面输入预算里预留的那一个**：两处同源
- * （设计：「输入上限、预留输出与所显示分母须同口径」）。
+ * 输入预算的两条判据（返修后）：
+ * ① **合用窗口预留的是「本次实际留出的输出额度」**——不是「供应商的最大输出规格若已知」：
+ *    默认输出 4096 也是**已经发出去的数**，联合窗口 10000 就得剩 5904
+ *    （复核：「当前请求参数并非未知」）；
+ * ② **两道约束取共同允许的范围**——同时有独立输入上限与合用窗口时，取**较小**那一个，
+ *    不放大任何一道（设计：「有多道已知约束时取共同允许的范围」）。
  */
-function maxOutputTokensOf(
-  model: string,
-  config: ProviderConfig,
-  fallback: number | undefined,
-): number {
-  return overrideOf(config, model)?.limits?.maxOutputTokens ?? fallback ?? MAX_COMPLETION_TOKENS
+export function effectiveSpecOf(input: {
+  readonly model: string
+  readonly config: ProviderConfig
+  readonly adapter?: VendorAdapter | undefined
+  /** 该模型**已知的资料**（来自模型信息缓存）——有效规格的又一处来路。 */
+  readonly known?: ModelInfo | undefined
+  /** 输出上限的兜底（取件层常量，见 `ai-sdk.ts`）。 */
+  readonly fallbackOutputTokens?: number | undefined
+}): EffectiveSpec {
+  const limits = effectiveLimits(input.model, input.config, input.adapter, input.known)
+  const maxOutputTokens =
+    limits?.maxOutputTokens ?? input.fallbackOutputTokens ?? MAX_COMPLETION_TOKENS
+
+  // ① 合用窗口减去**本次真的会留出**的输出额度
+  const byContext =
+    limits?.maxContextTokens === undefined
+      ? undefined
+      : Math.max(0, limits.maxContextTokens - maxOutputTokens)
+  // ② 独立输入上限**不机械扣输出**，但也不能被合用窗口放大——两道取共同允许的
+  const byInput = limits?.maxInputTokens
+
+  const inputBudget =
+    byContext === undefined
+      ? byInput
+      : byInput === undefined
+        ? byContext
+        : Math.min(byContext, byInput)
+
+  const traits = traitsOf(input.model, input.config, input.adapter, input.known)
+
+  return {
+    maxOutputTokens,
+    ...(inputBudget === undefined ? {} : { inputBudget }),
+    ...(limits?.maxContextTokens === undefined ? {} : { contextWindow: limits.maxContextTokens }),
+    ...(traits === undefined ? {} : { traits }),
+  }
 }
 
 // —— 装配 ——
@@ -220,6 +256,13 @@ export type ModelGatewayOptions = {
   readonly maxCompletionTokens?: number | undefined
   /** 实际读的那一份配置文件——只用于缺 key 那句提示（见 `MissingApiKeyError`）。 */
   readonly configPath?: string | undefined
+  /**
+   * **该模型已知的资料**（来自模型信息缓存）——装配给（它才够得着那份缓存）。
+   *
+   * 有效规格的又一处来路（设计：优先级是「用户覆盖 → 供应商 API 当前有效信息 →
+   * 缺项补充 → 未知」）——**此前 gateway 只看配置与适配补充，缓存里那份没进来**（复核点名）。
+   */
+  readonly modelInfoOf?: ((model: string) => ModelInfo | undefined) | undefined
   /**
    * **瞬时档退避重试**的策略（技术方案 · 模型策略 · 错误分档——「回退逻辑放内核」）。
    * 缺省 `DEFAULT_RETRY_POLICY`；`maxAttempts: 1` ＝ 不重试。策略与判据见 `retry.ts`。
@@ -277,14 +320,28 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     )
   }
 
+  /**
+   * **解析一次有效规格**（见 `effectiveSpecOf`）——**调用方必须捕获它**：
+   * 出站输出、`model.call.start`、`model.usage`、重试**共用同一份**。
+   *
+   * ⚠️ 反复调用它会各解析一次（中途缓存/配置一变就不一致）——独立复核的真反例：
+   * 出站按新的 4000、分母按旧的 2000 算，两者相加超过窗口。故 `stream` 里只调一次。
+   */
+  const specOf = (model: string): EffectiveSpec =>
+    effectiveSpecOf({
+      model,
+      config,
+      adapter,
+      known: options.modelInfoOf?.(model),
+      fallbackOutputTokens: options.maxCompletionTokens,
+    })
+
   const streamVendor = createVendorStreamer({
     providerId,
     baseURL,
     apiKey,
     adapter,
     fetch: options.fetch,
-    // 输出上限**按请求的那个模型算**（用户覆盖 → 常量）——不是构造期钉死一个数
-    maxOutputTokensOf: (model) => maxOutputTokensOf(model, config, options.maxCompletionTokens),
   })
   const middleware = options.middleware ?? []
 
@@ -308,17 +365,27 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       const context: ModelCallContext = { provider: providerId, model: request.model, request }
       const effective = applyRequestMiddleware(middleware, request, context)
 
-      const { events, result } = toKernelEvents(streamRetrying(effective, streamOptions), {
-        model: effective.model,
-        // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
-        provider: providerId,
-        // 窗长随**用量**上报（分母跟着分子走）——见 `contextWindowOf`
-        contextWindow: contextWindowOf(effective.model, config, adapter),
-        secret: apiKey,
-        // 生效标记——见 `traitsOf`（用户覆盖 → 该家适配的缺项补充）
-        traits: traitsOf(effective.model, config, adapter),
-        stamper: options.stamper,
-      })
+      // **本次请求的规格：解析一次、就地捕获**（U41 返修 · 独立复核的真反例）——
+      // 出站输出、`model.call.start`、`model.usage`、重试**全用这一份**；解析之后
+      // 缓存 / 配置再怎么变，也影响不到已经在飞的那一趟。
+      const spec = specOf(effective.model)
+
+      const { events, result } = toKernelEvents(
+        streamRetrying(effective, streamOptions, spec.maxOutputTokens),
+        {
+          model: effective.model,
+          // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
+          provider: providerId,
+          // 窗长随**用量**上报（分母跟着分子走）——**有效输入预算**，与出站同一份解析
+          contextWindow: spec.inputBudget,
+          // 同一个数再早报一次（`model.call.start`）——外壳在请求开始那一刻就有分母
+          inputBudget: spec.inputBudget,
+          secret: apiKey,
+          // 生效标记——同一份解析里出（用户覆盖 → 适配补充）
+          traits: spec.traits,
+          stamper: options.stamper,
+        },
+      )
 
       return {
         events: applyEventMiddleware(middleware, events, context),

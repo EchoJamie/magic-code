@@ -26,10 +26,18 @@ import type {
  * 外壳状态行要显示当前供应商（技术方案 · 领域划分：「运行时切换」锚定），而外壳够不着注册表。
  * 取「真跑过的这一次」而不是用户命令的自我报告——切不动就不动，拿意图当状态会显示假条目。
  */
-export function modelCallStart(stamper: EventStamper, model: string, provider?: string): KernelEvent {
+export function modelCallStart(
+  stamper: EventStamper,
+  model: string,
+  provider?: string,
+  /** **这次调用的有效输入预算**（U41 返修）——与 `model.usage.contextWindow` 同一个数，
+   *  只是更早给（见契约 `model.call.start` 的那一位）。缺省＝不知道，不给这一位。 */
+  inputBudget?: number,
+): KernelEvent {
   return stamper.stamp('model.call.start', {
     model,
     ...(provider === undefined ? {} : { provider }),
+    ...(inputBudget === undefined ? {} : { inputBudget }),
   })
 }
 

@@ -174,7 +174,7 @@ export function withTransientRetry(
   const policy = normalizePolicy(options.policy)
   const sleep = options.sleep ?? realSleep
 
-  return function retrying(request, streamOptions) {
+  return function retrying(request, streamOptions, maxOutputTokens) {
     return retryLoop()
 
     async function* retryLoop(): AsyncGenerator<VendorStreamPart> {
@@ -188,7 +188,8 @@ export function withTransientRetry(
         let failure: { readonly error: unknown; readonly part?: VendorStreamPart } | undefined
 
         try {
-          for await (const part of streamer(request, streamOptions)) {
+          // 每一次尝试都用**同一个**输出上限（本次请求解析一次的那个，见 `VendorStreamer`）
+          for await (const part of streamer(request, streamOptions, maxOutputTokens)) {
             if (part.type === 'error') {
               if (committed) {
                 // 已定局——照原样上报（半截正文 ＋ model.error），不重试（文件头注②）

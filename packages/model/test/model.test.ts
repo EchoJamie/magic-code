@@ -44,6 +44,7 @@ import {
   MissingApiKeyError,
   classifyModelError,
   createModelGateway,
+  createModelRegistry,
   describeModelError,
   isAbortError,
   modelCallEnd,
@@ -929,7 +930,8 @@ describe('中间件位', () => {
     const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamper, MINIMAX_MODEL, 'minimax'), // 条目名随事件上报（第 17 轮）
+        // 预算**同一份解析**给两处：请求开始这一刻就带上（与下面的 usage 同一个数）
+        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', 1_000_000 - MAX_COMPLETION_TOKENS),
         modelDelta(stamper, 'text', 'ok'),
         modelCallEnd(stamper),
       ]),
@@ -1056,7 +1058,7 @@ describe('调用设置与容量（U41 返修）', () => {
     expect(window).toBe(8_000)
   })
 
-  test('**反例**：没有输出上限时，联合窗口**不**凭空减一个数（不编）', async () => {
+  test('没有输出上限时，联合窗口为**本次实际请求的那个数**预留', async () => {
     const { body, window } = await callOnce(
       {
         vendor: 'deepseek',
@@ -1066,10 +1068,12 @@ describe('调用设置与容量（U41 返修）', () => {
       'known',
     )
 
-    // 请求仍带缺省那一个（那是**我们请求时带的数**，不是模型规格）
+    // 请求仍带缺省那一个
     expect(body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
-    // 而分母就是窗总量——**不拿我们自己的常量去减模型规格**（那是编）
-    expect(window).toBe(10_000)
+    // **分母也要减它**——独立复核否掉了上一轮「常量不算规格、所以不减」那条口径：
+    // 「预留依据是**本次实际请求**，不是供应商最大输出规格是否已知；当前请求参数并非未知」。
+    // 故 10000 的联合窗口剩 10000 − 4096。
+    expect(window).toBe(10_000 - MAX_COMPLETION_TOKENS)
   })
 
   test('独立输入上限**不机械减去**输出上限（两者不是一回事）', async () => {
@@ -1083,6 +1087,91 @@ describe('调用设置与容量（U41 返修）', () => {
     )
 
     expect(window).toBe(5_000)
+  })
+
+  test('**本次请求只解析一次规格**——出站上限与分母出自同一份（中途再变也不影响）', async () => {
+    // 独立复核的真反例：出站按新的数、分母按旧的算，两者相加**超过窗口**。
+    // 这里用「每次被查都返回不同规格」的 `modelInfoOf` 把病根逼出来：
+    // 若实现**重复解析**，就会拿到不同的数（第二次 2000、第三次 3000……）。
+    let looked = 0
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        chunk({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } }),
+      ),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'ds',
+      stamper: testStamper(),
+      config: { vendor: 'deepseek', apiKey: 'test-key' },
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+      modelInfoOf: (model) => {
+        looked += 1
+        return { id: model, limits: { maxContextTokens: 10_000, maxOutputTokens: 1_000 * looked } }
+      },
+    })
+
+    const { events } = await drain(
+      gateway.stream({ model: 'known', messages: [{ role: 'user', content: '嗨' }] }),
+    )
+
+    // **只解析一次**（那一趟里出站 / start / usage / 重试共用它）
+    expect(looked).toBe(1)
+
+    const body = seen[0]?.body as Record<string, unknown>
+    const start = events.find((event) => event.kind === 'model.call.start')
+    const usage = events.find((event) => event.kind === 'model.usage')
+
+    // 三处是**同一个数**（第一份：联合 10000 − 输出 1000）
+    expect(body['max_tokens']).toBe(1_000)
+    expect(start?.kind === 'model.call.start' ? start.data.inputBudget : undefined).toBe(9_000)
+    expect(usage?.kind === 'model.usage' ? usage.data.contextWindow : undefined).toBe(9_000)
+  })
+
+  test('**注册表建的网关也消费缓存给出的规格**——漏传那一处（按 provider 绑定）', async () => {
+    // 独立复核的反例：`capacityOf` 拿得到缓存里的规格（8000），而 `gatewayFor` 建网关时
+    // **没把它传下去** ⇒ 实际请求仍按取件层常量 4096 发、用量事件也没有分母。
+    // 这一条走**注册表**那条路（不是直接 `createModelGateway`）：漏传正是漏在这一跳上。
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        chunk({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } }),
+      ),
+    )
+
+    // 缓存里那份资料：联合窗口 10_000、本模型输出 2_000 ⇒ 有效输入预算 8_000
+    const spec = { id: 'known', limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } }
+    const registry = createModelRegistry({
+      providers: { ds: { vendor: 'deepseek', apiKey: 'test-key' } },
+      defaultProvider: 'ds',
+      stamper: testStamper(),
+      env: {},
+      apiKeys: { ds: 'test-key' },
+      fetch,
+      modelInfoOf: (provider, model) => (provider === 'ds' && model === 'known' ? spec : undefined),
+    })
+
+    // 注册表那一格：**它本来就对**（漏的是往网关那一跳）
+    expect(registry.capacityOf('ds', 'known')?.inputBudget).toBe(8_000)
+
+    const { events } = await drain(
+      registry.stream({ model: 'known', messages: [{ role: 'user', content: '嗨' }] }),
+    )
+
+    const body = seen[0]?.body as Record<string, unknown>
+    const start = events.find((event) => event.kind === 'model.call.start')
+    const usage = events.find((event) => event.kind === 'model.usage')
+
+    // **实际出站**按缓存那份规格走（不是取件层那个常量）
+    expect(body['max_tokens']).toBe(2_000)
+    // 分母也同源（联合 10000 − 本次预留 2000）
+    expect(start?.kind === 'model.call.start' ? start.data.inputBudget : undefined).toBe(8_000)
+    expect(usage?.kind === 'model.usage' ? usage.data.contextWindow : undefined).toBe(8_000)
   })
 
   test('请求体改写**按适配分**：DeepSeek 用标准 `max_tokens`，兼容接入才走旧改写', async () => {
@@ -1214,7 +1303,7 @@ describe('假端点回环 · 流式事件序列', () => {
       declared.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
     expect(withWindow.events.filter((event) => event.kind === 'model.usage').map((event) => event.data)).toEqual([
-      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 },
+      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 195_904 },
     ])
     // 聚合结果**不动**——窗长是「这次调用之外」的东西，不是用量的一部分
     expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0 })
@@ -1236,7 +1325,7 @@ describe('假端点回环 · 流式事件序列', () => {
     // 用户声明 → 该家适配的缺项补充 → 未知（设计：「替换当前『内置表只供界面、事件容量
     // 只认配置』的分叉」「输入上限、预留输出与所显示分母须同口径」）。
     // MiniMax-M3 有官方窗长（该家适配的补充表），故**没声明也带着它**。
-    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 1_000_000 })
+    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 995_904 })
 
     // **反例**（改了这处行为的对照）：**不在补充表里**的模型照旧**没有这一位**——
     // 「不知道就是不知道」那一半没松（app 的读数用例里那条「乙」是同一个反例）。
@@ -1288,14 +1377,16 @@ describe('假端点回环 · 流式事件序列', () => {
     const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamper, MINIMAX_MODEL, 'minimax'), // 条目名随事件上报（第 17 轮）
+        // 预算**同一份解析**给两处：请求开始这一刻就带上（与下面的 usage 同一个数）
+        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', 1_000_000 - MAX_COMPLETION_TOKENS),
         modelDelta(stamper, 'text', '你'),
         modelDelta(stamper, 'text', '好'),
         modelDelta(stamper, 'thinking', '简短想'),
         modelUsage(
           stamper,
           { inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0 },
-          1_000_000,
+          // **有效输入预算**（U41 返修）：M3 的联合窗口 1M 为本次输出（缺省 4096）预留后
+          1_000_000 - MAX_COMPLETION_TOKENS,
         ),
         modelCallEnd(stamper),
       ]),
