@@ -157,7 +157,13 @@ export type VendorStreamerOptions = {
   readonly baseURL: string
   readonly apiKey: string
   readonly fetch?: FetchLike | undefined
-  readonly maxCompletionTokens?: number
+  /**
+   * **这一次的输出上限**（按模型算）——缺省 `MAX_COMPLETION_TOKENS`。
+   *
+   * 给函数而不是给数：模型是**请求**带的（运行时切换的落点），构造期钉一个数会让
+   * 「按精确模型的覆盖」在第二次换模型之后失效。
+   */
+  readonly maxOutputTokensOf?: ((model: string) => number) | undefined
   /**
    * 该连接的供应商适配——**没有 ＝兼容接入**（原地址、原协议、原参数改写，一字不动）。
    *
@@ -211,14 +217,18 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
     apiKey: options.apiKey,
     // 流式用量——不置此则供应商不回 usage，`model.usage` 事件无从产生
     includeUsage: true,
-    // 供应商差异（取件层常量）：官方适配按它自己的改写来；兼容接入走原来那条
-    transformRequestBody: options.adapter?.transformRequestBody ?? requestBody,
+    // **请求体改写按适配分**：官方适配用它自己的（没定义＝**不改写**）；
+    // **只有兼容接入**（没有适配）才走原来那条 MiniMax 改写。
+    // ⚠️ 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody`——DeepSeek 没定义
+    // 就**回退**到了 MiniMax 的改写，`max_tokens` 被改成了 `max_completion_tokens`（首验反例）。
+    transformRequestBody:
+      options.adapter === undefined ? requestBody : options.adapter.transformRequestBody,
     ...(options.fetch === undefined
       ? {}
       : { fetch: options.fetch as unknown as typeof globalThis.fetch }),
   })
 
-  const maxOutputTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS
+  const maxOutputTokensOf = options.maxOutputTokensOf ?? ((): number => MAX_COMPLETION_TOKENS)
 
   return (request, streamOptions) => {
     const model = provider.chatModel(request.model)
@@ -235,7 +245,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       ...(request.tools === undefined || request.tools.length === 0
         ? {}
         : { tools: toAiSdkTools(request.tools) }),
-      maxOutputTokens,
+      maxOutputTokens: maxOutputTokensOf(request.model),
       ...(providerOptions === undefined ? {} : { providerOptions }),
       // 回退逻辑放内核——不依赖 SDK 自动机制（技术方案 · 模型策略）
       maxRetries: 0,

@@ -19,6 +19,7 @@
 
 import type {
   EventStamper,
+  ModelLimits,
   ModelRequest,
   ModelTraits,
   ProviderConfig,
@@ -27,7 +28,7 @@ import type {
 import { apiKeyEnvVarOf } from '@magic/contracts'
 import type { ModelCallContext, ModelMiddleware } from './middleware.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
-import { createVendorStreamer } from './ai-sdk.ts'
+import { MAX_COMPLETION_TOKENS, createVendorStreamer } from './ai-sdk.ts'
 import type { FetchLike } from './ai-sdk.ts'
 import { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 import { toKernelEvents } from './normalize.ts'
@@ -126,26 +127,65 @@ function traitsOf(
 }
 
 /**
- * **生效的上下文窗总量**——用户覆盖 → 适配补充 → 未知（不给分母）。
+ * **生效的令牌规格**——用户覆盖 → 该家适配的缺项补充（逐位合并，覆盖优先）。
  *
- * 取**联合窗口**优先（`maxContextTokens`），没有才取独立的输入上限——两者不是一回事，
- * 但都是「这次能装多少」的依据；两个都没有就**不给这一位**（外壳显示不出 `12.4k/200k`
- * 就不显示，不拿假数占位）。
+ * 两处都缺的位就是**未知**（不给这一位）：设计明文「零 / 非法规格不当作无限大」，
+ * 「读不懂就不给这一位」。兼容接入走域内的内置容量表（旧能力不删，见 `traitsOf` 同一条）。
+ */
+function effectiveLimits(
+  model: string,
+  config: ProviderConfig,
+  adapter: VendorAdapter | undefined,
+): ModelLimits | undefined {
+  const override = overrideOf(config, model)?.limits
+  const supplemented =
+    adapter === undefined
+      ? ((): ModelLimits | undefined => {
+          const window = resolveContextWindow(model)
+          return window === undefined ? undefined : { maxContextTokens: window }
+        })()
+      : adapter.supplement({ id: model }).limits
+
+  const merged: ModelLimits = { ...supplemented, ...override }
+  return Object.keys(merged).length === 0 ? undefined : merged
+}
+
+/**
+ * **这一次的有效输入预算**（token）——`model.usage.contextWindow` 报的就是它。
+ *
+ * 判据（设计 · 模型与上下文「规格与参数」）：
+ * - **合用窗口要预留输出**——「联合窗口须为本次输出（含其规则要求计入的思考预算）
+ *   预留空间」。故 `maxContextTokens` 减去**已知的输出上限**（用户覆盖或适配补充的那一个；
+ *   两处都没有就不减——取件层常量是**我们请求时带的数**，不是模型规格，混进容量就成了编）；
+ * - **独立输入上限不机械减去输出上限**——它本来就是「输入那一边」的上限，直接用。
+ *
+ * 两处皆无 ⇒ **不给这一位**（外壳显示不出分母就不显示）。
  */
 function contextWindowOf(
   model: string,
   config: ProviderConfig,
   adapter: VendorAdapter | undefined,
 ): number | undefined {
-  const limits = overrideOf(config, model)?.limits
-  if (limits?.maxContextTokens !== undefined) return limits.maxContextTokens
-  if (limits?.maxInputTokens !== undefined) return limits.maxInputTokens
+  const limits = effectiveLimits(model, config, adapter)
 
-  // 兼容接入走域内的内置容量表（旧能力不删，见 `traitsOf` 同一条）
-  if (adapter === undefined) return resolveContextWindow(model)
+  if (limits?.maxContextTokens !== undefined) {
+    return Math.max(0, limits.maxContextTokens - (limits.maxOutputTokens ?? 0))
+  }
+  return limits?.maxInputTokens
+}
 
-  const supplemented = adapter.supplement({ id: model }).limits
-  return supplemented?.maxContextTokens ?? supplemented?.maxInputTokens
+/**
+ * **这一次的输出上限**——用户对该精确模型的覆盖 → 取件层常量（见 `ai-sdk.ts`）。
+ *
+ * 它同时是**出站请求带的那一个**与**上面输入预算里预留的那一个**：两处同源
+ * （设计：「输入上限、预留输出与所显示分母须同口径」）。
+ */
+function maxOutputTokensOf(
+  model: string,
+  config: ProviderConfig,
+  fallback: number | undefined,
+): number {
+  return overrideOf(config, model)?.limits?.maxOutputTokens ?? fallback ?? MAX_COMPLETION_TOKENS
 }
 
 // —— 装配 ——
@@ -227,7 +267,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     apiKey,
     adapter,
     fetch: options.fetch,
-    maxCompletionTokens: options.maxCompletionTokens,
+    // 输出上限**按请求的那个模型算**（用户覆盖 → 常量）——不是构造期钉死一个数
+    maxOutputTokensOf: (model) => maxOutputTokensOf(model, config, options.maxCompletionTokens),
   })
   const middleware = options.middleware ?? []
 

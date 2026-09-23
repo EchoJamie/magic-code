@@ -90,6 +90,13 @@ export type ProviderEntry = {
    */
   readonly model?: string
   /**
+   * 该连接**默认选择的思考设置**（`providers.<id>.reasoning`）——没设过就不给这一位。
+   *
+   * 它随默认选中一起出去（返修：此前只读了 `model`，于是「保存了默认思考设置」在
+   * **开局那条路径**上根本不生效——设置存进了配置，请求里却一个参数都没有）。
+   */
+  readonly reasoning?: ReasoningSetting
+  /**
    * 该条目的**上下文窗口总量**（token）——**声明了就用它，否则查内置表**（U30）。
    *
    * 它是**元数据**（供应商 / 模型规格），不是供应商细节（端点 / key / 参数）：出得来。
@@ -173,6 +180,20 @@ export interface ModelRegistry extends ModelGateway {
   has(id: string): boolean
   /** 换模型——会话中途调用，下一轮起走新条目（见文件头注）。 */
   use(request: ModelSwitchRequest): ModelSwitchResult
+}
+
+/**
+ * 把**这次要用的思考设置**并进流选项——缺省＝不动（模型默认）。
+ *
+ * 已切换走选中态那份、未切换走配置里缺省连接那份；两处同一条拼装，
+ * 免得再出现「一处带了、一处没带」（返修的根因）。
+ */
+function withReasoning(
+  streamOptions: ModelStreamOptions | undefined,
+  reasoning: ReasoningSetting | undefined,
+): ModelStreamOptions | undefined {
+  if (reasoning === undefined) return streamOptions
+  return { ...streamOptions, reasoning }
 }
 
 /**
@@ -288,6 +309,21 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
   /** 当前选中；`undefined` ＝未切换（走缺省条目、模型名取自请求）。 */
   let selected: ModelSelection | undefined
 
+  /**
+   * **缺省那一条的选中**（未切换时走它）——**带上配置里的思考设置**（返修）。
+   *
+   * 两处共用一份（`current()` 的读数与 `stream()` 的实际去向）：读面说「现在是谁」、
+   * 调用真走谁，两者必须是同一份，否则又会出现「设置存了、请求里没有」。
+   */
+  const defaultSelection = (): ModelSelection | undefined => {
+    if (defaultProvider === undefined || defaultEntry?.model === undefined) return undefined
+    return {
+      provider: defaultProvider,
+      model: defaultEntry.model,
+      ...(defaultEntry.reasoning === undefined ? {} : { reasoning: defaultEntry.reasoning }),
+    }
+  }
+
   return {
     list(): readonly ProviderEntry[] {
       return entries.map(([id, config]) => {
@@ -299,6 +335,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
         return {
           id,
           ...(config.model === undefined ? {} : { model: config.model }),
+          ...(config.reasoning === undefined ? {} : { reasoning: config.reasoning }),
           // 两处皆无就不给这个位（不拿 0 / 占位符冒充「不知道」）
           ...(window === undefined ? {} : { contextWindow: window }),
         }
@@ -332,9 +369,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       // 由装配按缺省连接填）。
       // ⚠️ 缺省连接没配、或它还没选过模型 ⇒ **没有去向**（`undefined`）——那时如实报
       // 「先选模型」，**不取列表第一项顶上**。
-      if (selected !== undefined) return selected
-      if (defaultProvider === undefined || defaultEntry?.model === undefined) return undefined
-      return { provider: defaultProvider, model: defaultEntry.model }
+      return selected ?? defaultSelection()
     },
 
     has(id: string): boolean {
@@ -392,22 +427,24 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       const chosen = selected
       if (chosen !== undefined) {
-        // 思考设置随选中态向下走（取件层按适配映射成该家的原生参数）
-        const options: ModelStreamOptions = {
-          ...streamOptions,
-          ...(chosen.reasoning === undefined ? {} : { reasoning: chosen.reasoning }),
-        }
-        return gatewayFor(chosen.provider).stream({ ...request, model: chosen.model }, options)
+        return gatewayFor(chosen.provider).stream(
+          { ...request, model: chosen.model },
+          withReasoning(streamOptions, chosen.reasoning),
+        )
       }
 
-      // 未切换——缺省连接 ＋ **请求给的模型名**（技术方案 · 配置与密钥：「模型名取自请求」）。
+      // 未切换——缺省连接 ＋ **请求给的模型名**（技术方案 · 配置与密钥：「模型名取自请求」）
+      // ＋ **配置里那条默认的思考设置**（返修：此前这一路完全没带设置）。
       // ⚠️ 没配缺省 ⇒ **无处可去**：如实回一轮「这次调用不成立」的流（见 `errorStream`），
       // **不退回某一条看上去顺眼的连接**——那会把「我没选」变成「它替我选了」；
       // 也不抛异常穿层：对话域只该看见模型域的事件。
       if (defaultProvider === undefined) {
         return errorStream(options.stamper, request.model, NO_SELECTION)
       }
-      return gatewayFor(defaultProvider).stream(request, streamOptions)
+      return gatewayFor(defaultProvider).stream(
+        request,
+        withReasoning(streamOptions, defaultEntry?.reasoning),
+      )
     },
   }
 }

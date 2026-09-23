@@ -737,13 +737,31 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const rebuildRegistry = (): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
     if (options.modelGateway !== undefined) return { ok: true }
+
+    // **先记下当前选择**（返修 · 首验反例「改连接显示名不得丢失当前模型选择」「设为默认
+    // 不得偷偷切换当前模型」）：重建是为了让**配置改动**生效（改名 / 接入新连接 / 存默认），
+    // 它**不是「换模型」的动作**——新注册表的选中是空的，不搬过去就等于顺手把用户的当前
+    // 选择切回了缺省。选择只由 `model.switch`（改当下）与用户显式动作改变。
+    const kept = models?.selection()
+
     try {
       models = registryOf()
-      return { ok: true }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
     }
+
+    if (kept !== undefined) {
+      // 搬不回（那条连接被移除 / 新配置里缺 key）= **留新注册表的缺省**，不在这里报错：
+      // 用户那一次动作（保存 / 移除）的答复已经在说它自己的事，再叠一句只会让人分不清
+      models.use({
+        provider: kept.provider,
+        model: kept.model,
+        ...(kept.reasoning === undefined ? {} : { reasoning: kept.reasoning }),
+      })
+    }
+
+    return { ok: true }
   }
 
   /**

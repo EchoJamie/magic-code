@@ -1010,6 +1010,98 @@ function capture(reply: () => Response): { fetch: typeof globalThis.fetch; seen:
   return { fetch: fake, seen }
 }
 
+describe('调用设置与容量（U41 返修）', () => {
+  /** 一次 SSE 回环，把出站请求体与用量事件交回来。 */
+  async function callOnce(
+    config: Parameters<typeof createModelGateway>[0]['config'],
+    model: string,
+  ): Promise<{ body: Record<string, unknown>; window: number | undefined }> {
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        chunk({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } }),
+      ),
+    )
+    const gateway = createModelGateway({
+      providerId: 'ds',
+      stamper: testStamper(),
+      config,
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+    const { events } = await drain(
+      gateway.stream({ model, messages: [{ role: 'user', content: '嗨' }] }),
+    )
+    return {
+      body: seen[0]?.body as Record<string, unknown>,
+      window: events.find((event) => event.kind === 'model.usage')?.data.contextWindow,
+    }
+  }
+
+  test('用户对该精确模型的覆盖：输出上限进请求、并进**输入预算**（同口径）', async () => {
+    // 首验反例的形状：联合窗口 10000 / 输出上限 2000 ⇒ 输入预算 8000
+    const { body, window } = await callOnce(
+      {
+        vendor: 'deepseek',
+        apiKey: 'test-key',
+        modelOverrides: { known: { limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } } },
+      },
+      'known',
+    )
+
+    expect(body['max_tokens']).toBe(2_000)
+    // 「预留输出」真的减掉了：分母是**这次能装多少输入**，不是窗总量
+    expect(window).toBe(8_000)
+  })
+
+  test('**反例**：没有输出上限时，联合窗口**不**凭空减一个数（不编）', async () => {
+    const { body, window } = await callOnce(
+      {
+        vendor: 'deepseek',
+        apiKey: 'test-key',
+        modelOverrides: { known: { limits: { maxContextTokens: 10_000 } } },
+      },
+      'known',
+    )
+
+    // 请求仍带缺省那一个（那是**我们请求时带的数**，不是模型规格）
+    expect(body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
+    // 而分母就是窗总量——**不拿我们自己的常量去减模型规格**（那是编）
+    expect(window).toBe(10_000)
+  })
+
+  test('独立输入上限**不机械减去**输出上限（两者不是一回事）', async () => {
+    const { window } = await callOnce(
+      {
+        vendor: 'deepseek',
+        apiKey: 'test-key',
+        modelOverrides: { known: { limits: { maxInputTokens: 5_000, maxOutputTokens: 2_000 } } },
+      },
+      'known',
+    )
+
+    expect(window).toBe(5_000)
+  })
+
+  test('请求体改写**按适配分**：DeepSeek 用标准 `max_tokens`，兼容接入才走旧改写', async () => {
+    // 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody` —— DeepSeek 没定义
+    // 就回退到了 MiniMax 的改写，`max_tokens` 被顶成 `max_completion_tokens`。
+    const official = await callOnce({ vendor: 'deepseek', apiKey: 'test-key' }, 'deepseek-flash')
+    expect(official.body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
+    expect(official.body['max_completion_tokens']).toBeUndefined()
+
+    // **反例**：兼容接入（没有适配）仍走原来那条 MiniMax 改写——旧能力不删
+    const compatible = await callOnce(
+      { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M3' },
+      'MiniMax-M3',
+    )
+    expect(compatible.body['max_completion_tokens']).toBe(MAX_COMPLETION_TOKENS)
+    expect(compatible.body['max_tokens']).toBeUndefined()
+  })
+})
+
 describe('思考的工具往返（U41）', () => {
   /**
    * **DeepSeek 的思考模式要求回传**：带 tools 时，历史轮的 `reasoning_content`

@@ -255,6 +255,105 @@ describe('一条连接的闭环', () => {
     }
   })
 
+  test('改连接显示名 / 设为默认都**不得偷切当前选择**（U41 返修）', async () => {
+    const land = stage()
+    const vendor = fakeVendor()
+
+    try {
+      const assembly = assemble({
+        cwd: land.workspace,
+        config: loadConfig({ path: land.configPath, home: land.root }),
+        modelFetch: vendor.fetch,
+        grantsFile: join(land.root, 'magic', 'grants.json'),
+        home: land.root,
+        prompt: { platform: 'darwin', date: '2026-09-23' },
+      })
+      const shell = attachShell(assembly.shell)
+      await assembly.ready()
+
+      // 当前选 pro（配置里的默认是 flash）
+      expect(assembly.switchModel({ provider: 'ds', model: 'deepseek-v4-pro' }).ok).toBe(true)
+
+      // ① 只改显示名——那是**管理**动作，不是换模型
+      const afterRename = waitFor(shell, 'provider.catalog')
+      shell.send({ type: 'provider.save', provider: 'ds', name: '我的 DeepSeek' })
+      await afterRename
+
+      const renamed = await (async () => {
+        const armed = waitFor(shell, 'model.catalog')
+        shell.send({ type: 'model.list' })
+        return armed
+      })()
+      expect(renamed.data.entries[0]?.name).toBe('我的 DeepSeek')
+      // **当前仍是 pro**——重建注册表不该把用户的当前选择切回默认
+      expect(renamed.data.current).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+
+      // ② 把 flash 保存为**默认**——那是「以后用哪个」，不是「现在换到哪个」
+      const saved = waitFor(shell, 'model.catalog')
+      shell.send({ type: 'model.default.set', provider: 'ds', model: 'deepseek-flash' })
+      const afterDefault = await saved
+
+      expect(afterDefault.data.current).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      // 而配置里确实换成了 flash（两件事分开，各自都做对了）
+      const onDisk = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
+        providers: Record<string, { model?: string }>
+      }
+      expect(onDisk.providers['ds']?.model).toBe('deepseek-flash')
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
+  test('**已保存的默认思考设置**在开局请求里生效（U41 返修）', async () => {
+    const land = stage()
+    const vendor = fakeVendor()
+
+    try {
+      // 配置里存着「明确关闭」——返修前这一位只读了 `model`，请求里一个参数都没有
+      const configPath = writeConfig(land.root, {
+        defaultProvider: 'ds',
+        providers: {
+          ds: {
+            vendor: 'deepseek',
+            apiKey: 'sk-not-a-real-key',
+            model: 'deepseek-flash',
+            reasoning: { mode: 'off' },
+          },
+        },
+        dataDir: land.dataDir,
+      })
+
+      const assembly = assemble({
+        cwd: land.workspace,
+        config: loadConfig({ path: configPath, home: land.root }),
+        modelFetch: vendor.fetch,
+        grantsFile: join(land.root, 'magic', 'grants.json'),
+        home: land.root,
+        prompt: { platform: 'darwin', date: '2026-09-23' },
+      })
+      const shell = attachShell(assembly.shell)
+      await assembly.ready()
+
+      await shell.submit('嗨')
+
+      const chat = vendor.calls.find((call) => call.url.endsWith('/chat/completions'))
+      // 官方文档的关闭形态：`thinking.type = disabled`
+      expect(chat?.body?.['thinking']).toEqual({ type: 'disabled' })
+      // 读面也照给（界面据它标「当前设置」）
+      const armed = waitFor(shell, 'model.catalog')
+      shell.send({ type: 'model.list' })
+      expect((await armed).data.entries[0]?.reasoning).toEqual({ mode: 'off' })
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
   test('认证来处照给：环境变量那一支说「来自环境变量」；两处都没有就不给这一位', async () => {
     const land = stage()
     const vendor = fakeVendor()
