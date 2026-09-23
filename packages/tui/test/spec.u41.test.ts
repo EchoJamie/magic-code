@@ -393,12 +393,49 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
   // 设计 · 模型与上下文「首次接入」：「选择供应商及官方区域，认证使用**独立的隐藏输入**
   // 或既有环境变量引用，**不经对话输入、工具参数或历史**」；「确认后保存连接并获取列表」。
 
-  /** 走到「密钥那一屏」为止（挑一家那一步走完）。 */
+  /**
+   * 内置供应商与官方区域——**测试里喂的那一份**（生产路径上这一格来自调用线的查询出口）。
+   *
+   * ⚠️ 那一笔（`3cce99c`）**落不到本分支**（依赖它更早的 `vendors.ts` 与装配接线），
+   * 故本分支的契约类型里还没有 `provider.catalog.vendors` 这一格——测试里按已定的字段
+   * 喂进去（下面那个 `as` 是**临时**的：接口那笔一落就撤）。见返修回报。
+   */
+  const VENDORS = [
+    {
+      vendor: 'minimax',
+      label: 'MiniMax',
+      regions: [
+        { id: 'cn', label: '中国大陆', baseURL: 'https://api.minimaxi.com/v1' },
+        { id: 'global', label: '国际', baseURL: 'https://api.minimax.chat/v1' },
+      ],
+    },
+    {
+      vendor: 'deepseek',
+      label: 'DeepSeek',
+      regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
+    },
+  ]
+
+  /** 喂一条 `provider.catalog`（连接一览 ＋ 内置供应商名单）。 */
+  function feedProviders(
+    stage: Stage,
+    entries: readonly ModelCatalogRow[] = [],
+    vendors: readonly unknown[] = VENDORS,
+  ): void {
+    // ⚠️ 「没有那一格」要传**空数组**，别传 `undefined`：JS 的默认参数会被 `undefined` 触发，
+    //    那样又喂回 `VENDORS` 了（本条改之前正是这么栽的——`dock.kind` 忽然变成 `picker`）
+    const data = { entries, vendors } as unknown as Parameters<typeof event<'provider.catalog'>>[1]
+
+    stage.feed([event('provider.catalog', data)])
+  }
+
+  /** 走到「密钥那一屏」为止（挑一家 ＋（有得选时）挑区域都走完）。 */
   function atKeyPrompt(stage: Stage, existing: readonly ModelCatalogRow[] = []): void {
     stage.type('/model connect')
     stage.press({ kind: 'enter' })
-    stage.feed([event('provider.catalog', { entries: existing })])
+    feedProviders(stage, existing)
     stage.press({ kind: 'enter' }) // 选定第一家（MiniMax）
+    stage.press({ kind: 'enter' }) // 它有区域可选 ⇒ 再选定缺省那个（中国大陆）
   }
 
   const promptOf = (stage: Stage): { readonly label: string; readonly display: string } | undefined => {
@@ -415,14 +452,78 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
     expect(sent(stage)).toEqual([{ type: 'provider.list' }])
   })
 
-  test('一览回来才开「挑一家」那一屏（首批注册的那两家）', () => {
+  test('一览回来才开「挑一家」那一屏——**名单来自答复那一格**（壳里不留一份）', () => {
     const stage = createStage()
     stage.type('/model connect')
     stage.press({ kind: 'enter' })
-    stage.feed([event('provider.catalog', { entries: [] })])
+    feedProviders(stage, [])
 
     expect(pickerOf(stage)?.source).toBe('vendor')
     expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['minimax', 'deepseek'])
+    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['MiniMax', 'DeepSeek'])
+  })
+
+  test('答复里**没有那一格**时如实说一句，不拿壳里的常量顶上', () => {
+    // 0 行的抽屉接管着输入却不给东西可点（死胡同）——`openPicker` 把说明落成一行回执。
+    const stage = createStage()
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+    feedProviders(stage, [], [])
+
+    expect(stage.shell.getView().dock.kind).toBe('input')
+    expect(stage.shell.getView().settled.some((row) => row.kind === 'receipt')).toBe(true)
+  })
+
+  test('一家**有多个区域**⇒ 中间多一屏「挑区域」（区域名 ＋ 官方地址）', () => {
+    const stage = createStage()
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+    feedProviders(stage, [])
+    stage.press({ kind: 'enter' }) // MiniMax（两个区域）
+
+    expect(pickerOf(stage)?.source).toBe('region')
+    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['中国大陆', '国际'])
+    expect(pickerOf(stage)?.rows[0]?.meta).toBe('https://api.minimaxi.com/v1')
+  })
+
+  test('**一家只有一个区域**就不问那一步**也不写 region**（约定：不写＝用缺省那项）', () => {
+    const stage = createStage()
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+    feedProviders(stage, [])
+    stage.press({ kind: 'down' }) // 第二家：DeepSeek（只有一个区域）
+    stage.press({ kind: 'enter' })
+
+    expect(stage.shell.getView().dock.kind).toBe('prompt') // 直接到密钥那一屏
+    stage.type('sk-x')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'provider.save',
+      provider: 'deepseek',
+      vendor: 'deepseek',
+      apiKey: 'sk-x',
+    })
+  })
+
+  test('选了区域 ⇒ 保存时连着区域一起写（`providers.<id>.region`）', () => {
+    const stage = createStage()
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+    feedProviders(stage, [])
+    stage.press({ kind: 'enter' }) // MiniMax
+    stage.press({ kind: 'down' }) // 国际
+    stage.press({ kind: 'enter' })
+    stage.type('sk-x')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'provider.save',
+      provider: 'minimax',
+      vendor: 'minimax',
+      region: 'global',
+      apiKey: 'sk-x',
+    })
   })
 
   test('选定一家 ⇒ 开**密钥那一屏**：标签说明不回显，屏上只有圆点', () => {
@@ -446,7 +547,8 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
 
     expect(sent(stage)).toEqual([
       { type: 'provider.list' },
-      { type: 'provider.save', provider: 'minimax', vendor: 'minimax', apiKey: 'sk-abc' },
+      // MiniMax 有区域可选 ⇒ 缺省那个（中国大陆）随这条连接一起写下来
+      { type: 'provider.save', provider: 'minimax', vendor: 'minimax', region: 'cn', apiKey: 'sk-abc' },
     ])
     expect(stage.shell.getView().dock.kind).toBe('input')
   })
@@ -457,7 +559,12 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
     atKeyPrompt(stage)
     stage.press({ kind: 'enter' })
 
-    expect(sent(stage).at(-1)).toEqual({ type: 'provider.save', provider: 'minimax', vendor: 'minimax' })
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'provider.save',
+      provider: 'minimax',
+      vendor: 'minimax',
+      region: 'cn',
+    })
   })
 
   test('**id 撞了就加序号**——同一个 id 再存一次是「改那一条」，不是新建', () => {
@@ -470,6 +577,7 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
       type: 'provider.save',
       provider: 'minimax-2',
       vendor: 'minimax',
+      region: 'cn',
       apiKey: 'sk-abc',
     })
   })
@@ -494,7 +602,7 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
     stage.press({ kind: 'enter' })
     const before = sent(stage).length
 
-    stage.feed([event('provider.catalog', { entries: [], note: '接上了' })])
+    stage.feed([event('provider.catalog', { entries: [], note: '接上了' } as never)])
 
     expect(sent(stage).slice(before)).toEqual([{ type: 'model.list' }])
     const receipts = stage.shell.getView().settled.filter((row) => row.kind === 'receipt')

@@ -275,6 +275,7 @@ export type Picker = {
   readonly source:
     | 'session'
     | 'model'
+    | 'region'
     | 'grants'
     | 'skills'
     | 'paths'
@@ -692,6 +693,13 @@ export type ShellView = {
    */
   readonly models: readonly ModelCatalogRow[]
   /**
+   * **内置供应商与官方区域**（U41 返修）——`provider.catalog` 答复里那一格。
+   *
+   * 没问过 / 那一格没来 ⇒ 空数组（「拿不到的不编」）：接入那一步那时就没得挑，
+   * 界面**如实说一句**，不拿壳里的常量顶上。
+   */
+  readonly vendors: readonly VendorOption[]
+  /**
    * **此刻会走哪一条**（`model.catalog` 的 `current`）——「正在用」那一格标在谁头上。
    *
    * ⚠️ **可以没有**（`null`）：还没选过模型的新连接、或一条连接都没有时**没有去向**——
@@ -752,6 +760,7 @@ export function createView(): ShellView {
     paths: null,
     mcp: null,
     models: [],
+    vendors: [],
     modelCurrent: null,
     windowTable: null,
     grants: null,
@@ -868,7 +877,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     //（同一批连接的两个读面，内核那边就是一处产出，见 `catalogRows`），故落在同一格：
     // 开 / 关与回执是外壳的事（`shell.ts`），此处只落数据。
     case 'provider.catalog':
-      return { ...view, models: event.data.entries }
+      return {
+        ...view,
+        models: event.data.entries,
+        // 内置供应商与官方区域（有则）——名单随答复来、**不落壳里**（见 `VendorOption`）
+        vendors: vendorsOf(event.data),
+      }
 
     // 授权名录（读侧答复 · U22）——**收进视图**：抽屉据它铺行，那一行度量据它算；
     // 开抽屉 / 刷新 / 留回执是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
@@ -1715,6 +1729,73 @@ export function sessionHint(
   )
 
   return hasHere ? undefined : `本工作区：${headOf(here)}`
+}
+
+/**
+ * **内置供应商与官方区域**（U41 返修）——壳这一侧的形态。
+ *
+ * ⚠️ **这不是第二份表**：这里一个供应商、一个区域都没有——**数据全部来自适配**，随
+ * `provider.catalog` 的答复下来（调用线的查询出口），壳里不留名单。这一处只是**形态**。
+ *
+ * 为什么照写一份：外壳只依赖 `@magic/contracts`，而 `VendorInfo` / `VendorRegion` 是调用线
+ * 查询出口那一笔里加的——那一笔**落不到本分支**（它依赖更早的 `vendors.ts` 与装配接线；
+ * 冲突面见返修回报）。故先按**已定的字段**立形态；集成时把 `VendorOption` 那一处换成
+ * `import type { VendorInfo }`（一处），结构对得上，编译会替我们把关。
+ * 同 `WindowTable`（那份镜像的由头写在它自己的注里）。
+ */
+export type VendorRegionOption = {
+  /** 写进 `providers.<id>.region` 的就是它。 */
+  readonly id: string
+  /** 可读名。 */
+  readonly label: string
+  /** 该区域的官方基址（适配已解析好的）。 */
+  readonly baseURL: string
+}
+
+export type VendorOption = {
+  /** 写进 `providers.<id>.vendor` 的就是它。 */
+  readonly vendor: string
+  readonly label: string
+  /** 官方区域——**第一项是缺省**（不选区域时用它）。 */
+  readonly regions: readonly VendorRegionOption[]
+}
+
+/**
+ * 从 `provider.catalog` 的载荷里取**内置供应商与官方区域**。
+ *
+ * ⚠️ **一处收口**：字段名与形状按调用线已定的那笔写（`vendors`）；**没有这一格就取不到**
+ * （本分支现在正是这样）——那时接入少一步可选，界面如实说一句，**不拿壳里的常量顶上**
+ * （工单：「官方信息由适配统一提供，不能让界面维护第二份表」）。
+ * 集成时这一处换成契约类型即可，别处不动。
+ */
+export function vendorsOf(data: unknown): readonly VendorOption[] {
+  const found = (data as { readonly vendors?: readonly VendorOption[] } | undefined)?.vendors
+
+  return Array.isArray(found) ? found : []
+}
+
+/** **挑一家**那一屏的行（接入第一步）——取材就是答复里的那份名单。 */
+export function vendorRows(vendors: readonly VendorOption[]): readonly PickerRow[] {
+  return vendors.map((one) => ({
+    label: one.label,
+    // 副文案**留空**：连接 id 就是它的名字（`MiniMax` / `minimax` 只差大小写）——
+    // 再报一遍是同一条信息说两遍。有区域可选时，选择在下一步（见 `regionRows`）。
+    meta: '',
+    current: false,
+    value: one.vendor,
+    oneLine: true,
+  }))
+}
+
+/** **挑区域**那一屏的行（接入第二步，只在真有得选时开）——区域名 ＋ 它指向的官方地址。 */
+export function regionRows(vendor: VendorOption): readonly PickerRow[] {
+  return vendor.regions.map((region) => ({
+    label: region.label,
+    meta: region.baseURL,
+    current: false,
+    value: region.id,
+    oneLine: true,
+  }))
 }
 
 // ══ 模型选择（U41 · 供应商与模型）═════════════════════════════════════

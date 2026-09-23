@@ -63,6 +63,8 @@ import {
   authLabelOf,
   cacheLabelOf,
   modelDetailRows,
+  regionRows,
+  vendorRows,
   closePrompt,
   dayLabel,
   manageMetaOf,
@@ -89,7 +91,13 @@ import {
   wire,
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
-import type { PromptState, ShellView, WindowTable } from './view.ts'
+import type {
+  PromptState,
+  ShellView,
+  VendorOption,
+  VendorRegionOption,
+  WindowTable,
+} from './view.ts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
@@ -174,24 +182,6 @@ const STATUS_TITLE = '此刻'
 /** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` · `/skills` 各一种。 */
 type PendingPicker = 'session' | 'model' | 'grants' | 'skills' | 'mcp' | 'connect' | 'manage'
 
-/**
- * **内置的供应商适配**（首批那两家）——接入流程里供人挑的那两个。
- *
- * ⚠️ **这一格是临时的，理由要看清**：契约里目前**没有**「内置了哪些适配、各自支持哪些
- * 官方区域」的读面（`provider.list` 只列**已经接上的**连接）。而设计 · 命令行与配置把首批
- * 写死成「注册 `minimax`、`deepseek`」，接入流程又必须让人在这两家之间挑一个。
- *
- * 三条兜底，使这一格**不会静默出错**：
- * ① `provider.save` 收到认不出的 `vendor` **会拒绝并说明**（契约：「认不出就不猜」）
- *    ——摆在这儿而内核不认的选项，落不进配置；
- * ② **区域那一步没做**：`region` 的合法值同样没有读面，而「取值别猜」是项目规矩
- *    （第一批两家的区域/地址归适配），故接的是**适配自带的官方默认地址**，这一条写进回报；
- * ③ 内核补上那个读面之后，这一格**整个删掉**——改读答复，不在这边留第二份。
- */
-const VENDORS: readonly { readonly id: string; readonly label: string }[] = [
-  { id: 'minimax', label: 'MiniMax' },
-  { id: 'deepseek', label: 'DeepSeek' },
-]
 
 /**
  * 一次**本地小输入**（U41）——问一件小事、收一行字（改名 / 密钥那一类）。
@@ -1427,22 +1417,39 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
   }
 
-  /** 接入第一步：**挑一家**（内置适配那两家）。 */
+  /**
+   * 接入第一步：**挑一家**——名单来自调用线的查询出口（`provider.catalog` 答复里那一格），
+   * **壳里不留一份**（工单：「官方信息由适配统一提供，不能让界面维护第二份表」）。
+   *
+   * 取不到那一格时（本分支现在正是这样：那一笔依赖调用线的 `vendors.ts` 与装配接线，
+   * 落不到这里）**如实说一句**——0 行的抽屉接管着输入却不给东西可点，那是死胡同
+   * （`openPicker` 那条 P0）。
+   */
   const openVendorPicker = (): void => {
     commit(
       openPicker(view, {
         source: 'vendor',
         selected: 0,
-        // 副文案**留空**：连接 id 就是它的名字（`MiniMax` / `minimax` 只差大小写），
-        // 再报一遍是同一条信息说两遍（一屏上的每一格都得说别处没说的）
-        rows: VENDORS.map((one) => ({
-          label: one.label,
-          meta: '',
-          current: false,
-          value: one.id,
-          oneLine: true,
-        })),
+        rows: vendorRows(view.vendors),
         hint: '接上之后就能从它的接口取模型列表——不用逐个型号登记',
+      }),
+    )
+  }
+
+  /**
+   * 接入第二步（**只在真有得选时才开**）：**挑官方区域**。
+   *
+   * 一家只有一个区域时不问——那一步没有选择可言（「一屏上的每一格，问它影响用户的
+   * 哪个动作」）。区域与地址都来自适配（`VendorRegion`），界面只显示、不拼。
+   */
+  const openRegionPicker = (vendor: VendorOption): void => {
+    commit(
+      openPicker(view, {
+        source: 'region',
+        // 落在**缺省**那一项上（约定：`regions[0]` 是缺省）
+        selected: 0,
+        rows: regionRows(vendor),
+        hint: `${vendor.label}：选一个官方区域（地址由适配给出，通常不必自己填）`,
       }),
     )
   }
@@ -1456,8 +1463,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *   写凭据，走 `MAGIC_<连接 id>_API_KEY` 回退（那一行的说明把这句写出来，指到具体那个名字）；
    * - **保存之后顺手取一次列表**（设计：「确认后保存连接并获取列表」）——见 `awaiting`。
    */
-  const askKeyFor = (vendor: string): void => {
-    const id = freeIdOf(vendor)
+  const askKeyFor = (vendor: VendorOption, region: VendorRegionOption | undefined): void => {
+    const id = freeIdOf(vendor.vendor)
 
     openAsk({
       label: '密钥',
@@ -1465,13 +1472,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       value: '',
       caret: 0,
       placeholder: '粘贴或输入密钥',
-      note: `回车＝保存这条连接 · 留空＝改用环境变量 ${apiKeyEnvVarOf(id)}`,
+      // 交代清楚「这一下存的是什么」：哪一家、哪个区域、凭据从哪儿来。
+      // ⚠️ 说明里报的区域**用「这一次会用的那一个」**（没得选时就是缺省那一项），
+      //    而写进配置的只在**真选过**时给（`region` 缺省＝用缺省那项，见下面的展开）
+      note: [
+        `回车＝保存 ${vendor.label} · ${(region ?? vendor.regions[0])?.label ?? '默认区域'}`,
+        `留空＝改用环境变量 ${apiKeyEnvVarOf(id)}`,
+      ].join(' · '),
       submit: (value) => {
         awaiting = 'connect'
 
-        return value === ''
-          ? { type: 'provider.save', provider: id, vendor }
-          : { type: 'provider.save', provider: id, vendor, apiKey: value }
+        return {
+          type: 'provider.save',
+          provider: id,
+          vendor: vendor.vendor,
+          // **选了才写**（约定：不写 region＝用缺省那一项）——只有一个区域时没得选，故不写
+          ...(region === undefined ? {} : { region: region.id }),
+          ...(value === '' ? {} : { apiKey: value }),
+        }
       },
     })
   }
@@ -2186,10 +2204,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
-      // 供应商那一屏（U41 · `/model connect` 的第一步）：选定＝**接着问密钥**
-      // （隐藏输入那一屏由 `askKeyFor` 开——同位置同开合，接管输入行）
+      // 供应商那一屏（U41 · 接入第一步）：选定＝**接着问区域**（有得选时）或**直接问密钥**
       if (view.dock.picker.source === 'vendor') {
-        askKeyFor(row.value)
+        const pickedVendor = view.vendors.find((one) => one.vendor === row.value)
+        if (pickedVendor === undefined) return NONE // 名单里没有这一家（不该有这种行）
+
+        if (pickedVendor.regions.length > 1) openRegionPicker(pickedVendor)
+        else askKeyFor(pickedVendor, undefined) // 没得选 ⇒ 不写 `region`（约定：缺省那项）
+
+        return NONE
+      }
+
+      // 区域那一屏（接入第二步）：选定＝接着问密钥，区域随这一条连接一起存
+      if (view.dock.picker.source === 'region') {
+        const pickedVendor = view.vendors.find((one) =>
+          one.regions.some((region) => region.id === row.value),
+        )
+        const region = pickedVendor?.regions.find((one) => one.id === row.value)
+        if (pickedVendor === undefined || region === undefined) return NONE
+
+        askKeyFor(pickedVendor, region)
         return NONE
       }
 
