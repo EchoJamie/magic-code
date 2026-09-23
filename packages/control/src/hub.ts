@@ -127,6 +127,37 @@ export function createControlHub(): ControlHubFace {
         // 的 `remember` 之例：控制域只带话，不翻译）。
         target.onGrantsRevoke(command.workspace, command.index)
         return
+      case 'model.refresh':
+        // 显式刷新模型信息（U41）——**原样转手**给**装配**（模型信息缓存与在途获取在它那一层，
+        // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
+        target.onModelRefresh(command.provider)
+        return
+      case 'model.default.set':
+        // 设为默认（U41）——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）。
+        // 控制域只带话：校验与落盘都在装配（同 `decision.answer` 的站位）。
+        target.onModelDefaultSet(command)
+        return
+      case 'provider.list':
+        // 管理面的连接一览（U41 读侧）——**归装配**（配置与凭据的读取都在它那一层，
+        // 同 `grants.list` 之于授权文件）。答复走事件（`provider.catalog`，不落库）。
+        target.onProviderList()
+        return
+      case 'provider.save':
+        // 接入 / 改名 / 更新认证 / 改地址共一个动作（U41）——落盘归装配。
+        // **凭据不在这里留痕**：只带话（同 `input.submit` 的姿势）。
+        target.onProviderSave(command)
+        return
+      case 'provider.remove':
+        target.onProviderRemove(command.provider)
+        return
+      default: {
+        // **穷尽性**（U41 补）——契约加了命令而这里忘了接，过去是**静默丢弃**：
+        // 实测 `model.default.set` 发出去一点回声都没有，用例干等三秒才超时。
+        // 这一行让它变成**编译期**的事（加命令时 tsc 当场报）。
+        const unhandled: never = command
+        void unhandled
+        return
+      }
     }
   }
 
