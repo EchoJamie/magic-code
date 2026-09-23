@@ -2267,11 +2267,9 @@ export function modelHint(entries: readonly ModelCatalogRow[], note?: string): s
   // 再拿一行字教用户另打命令，就是把入口写成了说明（上面那几条逐连接的说明里也不指子命令
   // ——「刷新模型」那一行就常驻在下面）。这一行只剩「详情」那个键
   //（它是对**当前选中那一行**的动作，做不成一行——「这条」指谁得看焦点）。
-  heads.push(
-    entries.length === 0
-      ? '还没有接上任何供应商——选「连接供应商」接一条'
-      : '→ 看这条的详情',
-  )
+  // 空态那一句**不再指路**：那一行入口就在它上面（且正被选中）——「选「连接供应商」接一条」
+  // 是把行上的字再说一遍（一屏上的每一格都得说别处没说的）
+  heads.push(entries.length === 0 ? '还没有接上任何供应商' : '→ 看这条的详情')
 
   if (note !== undefined && note !== '') heads.push(note)
 

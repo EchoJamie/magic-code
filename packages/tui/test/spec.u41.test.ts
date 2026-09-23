@@ -622,6 +622,18 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
     conn('personal', { name: '个人号', vendor: 'minimax', model: 'MiniMax-M3', cache: cacheOf({ models: ['MiniMax-M3'] }) }),
   ]
 
+  /**
+   * 在**当前那一屏**上挪到某个 `value` 的行（按 value 找，不按下标写死）——
+   * 行序一变（如明细里多了一条动作），按数字写的用例会静默错位。
+   */
+  function toRow(stage: Stage, value: string): void {
+    const rows = pickerOf(stage)?.rows ?? []
+    const at = rows.findIndex((row) => row.value === value)
+    if (at === -1) throw new Error(`这一屏没有 value=${value} 的行`)
+
+    for (let step = 0; step < at; step += 1) stage.press({ kind: 'down' })
+  }
+
   /** 走到某一条连接的**管理明细**那一屏。 */
   function atDetail(stage: Stage): void {
     stage.type('/model manage')
@@ -650,7 +662,13 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
     atDetail(stage)
 
     expect(pickerOf(stage)?.source).toBe('provider-detail')
-    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['rename', 'key', 'refresh', 'remove'])
+    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual([
+      'rename',
+      'key',
+      'address',
+      'refresh',
+      'remove',
+    ])
     expect(pickerOf(stage)?.hint).toContain('连接 personal')
   })
 
@@ -674,8 +692,8 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
   test('更新认证 ⇒ 密钥屏（隐藏），回车把新密钥发出去', () => {
     const stage = createStage()
     atDetail(stage)
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'enter' }) // 第二行＝更新认证
+    toRow(stage, 'key')
+    stage.press({ kind: 'enter' }) // 更新认证
 
     const dock = stage.shell.getView().dock
     expect(dock.kind === 'prompt' ? dock.prompt.label : '').toContain('不回显')
@@ -686,11 +704,32 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
     expect(sent(stage).at(-1)).toEqual({ type: 'provider.save', provider: 'personal', apiKey: 'sk-new' })
   })
 
+  test('高级地址 ⇒ 开输入屏（预填现有地址），回车发 `provider.save { baseURL }`', () => {
+    // 设计 · 命令行与配置：「通常不填 URL……**高级地址只在明确需要时编辑**」——
+    // 接一条自己那台兼容端点 / 受控端点正走这里；留空＝**回到官方地址**（清掉这一位）。
+    const stage = createStage()
+    atDetail(stage)
+    toRow(stage, 'address')
+    stage.press({ kind: 'enter' })
+
+    const dock = stage.shell.getView().dock
+    expect(dock.kind).toBe('prompt')
+    expect(dock.kind === 'prompt' ? dock.prompt.display : '').toBe('') // 没写过＝空着
+
+    stage.type('https://127.0.0.1:9/v1')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'provider.save',
+      provider: 'personal',
+      baseURL: 'https://127.0.0.1:9/v1',
+    })
+  })
+
   test('刷新这一条 ⇒ 点名刷那条连接', () => {
     const stage = createStage()
     atDetail(stage)
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'down' })
+    toRow(stage, 'refresh')
     stage.press({ kind: 'enter' })
 
     expect(sent(stage).at(-1)).toEqual({ type: 'model.refresh', provider: 'personal' })
@@ -699,7 +738,7 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
   test('移除 ⇒ 发移除命令（引用检查归内核，拒绝时由回话说明）', () => {
     const stage = createStage()
     atDetail(stage)
-    for (let at = 0; at < 3; at += 1) stage.press({ kind: 'down' })
+    toRow(stage, 'remove')
     stage.press({ kind: 'enter' })
 
     expect(sent(stage).at(-1)).toEqual({ type: 'provider.remove', provider: 'personal' })
@@ -708,7 +747,7 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
   test('移除之后的回话到了：留一行回执，而**那一屏退回一览**（明细说的那条没了）', () => {
     const stage = createStage()
     atDetail(stage)
-    for (let at = 0; at < 3; at += 1) stage.press({ kind: 'down' })
+    toRow(stage, 'remove')
     stage.press({ kind: 'enter' })
 
     stage.feed([event('provider.catalog', { entries: [], vendors: [], note: '已移除 personal' })])

@@ -1150,6 +1150,27 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return
     }
 
+    if (value === 'address') {
+      // **高级地址**（设计 · 命令行与配置：「通常不填 URL……**高级地址只在明确需要时编辑**」）
+      // ——它此前没有落点，而「接一条自己那台兼容端点 / 受控端点」正需要它。
+      // ⚠️ 地址是**接入范围**的一部分：改它＝这条连接换了地方（内核据此废弃旧缓存，
+      //    「改变服务地址/认证范围须明确影响该连接」），故留空＝**回到官方地址**，不是「不改」。
+      openAsk({
+        label: '高级地址',
+        secret: false,
+        value: entry.baseURL ?? '',
+        caret: (entry.baseURL ?? '').length,
+        placeholder: 'https://…（留空＝按官方地址）',
+        note: '留空＝回到适配给的官方地址 · 改地址会作废这条连接的模型缓存',
+        submit: (address) => {
+          awaiting = 'edit'
+
+          return { type: 'provider.save', provider: entry.provider, baseURL: address.trim() }
+        },
+      })
+      return
+    }
+
     if (value === 'refresh') {
       send({ type: 'model.refresh', provider: entry.provider })
       return
@@ -1211,12 +1232,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     manageAt = who
 
-    const lines = [
-      `连接 ${entry.provider}`,
-      `默认模型 ${entry.model ?? '还没选过'}`,
-      `缓存 ${cacheLabelOf(entry)}`,
-      ...(entry.baseURL === undefined ? [] : [`地址 ${entry.baseURL}`]),
-    ]
+    // 说明只放**行上没说过的**：连接 id（行上给的是**名字**，id 才是身份）与默认模型。
+    // ⚠️ 缓存状态与地址**不在这儿重复**——「刷新这一条」「高级地址」那两行的副文案就是它们
+    //（一屏上的每一格都得说别处没说的；这条第一版两处各报了一遍）。
+    const lines = [`连接 ${entry.provider}`, `默认模型 ${entry.model ?? '还没选过'}`]
 
     commit(
       openPicker(view, {
@@ -1231,6 +1250,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
             oneLine: true,
           },
           { label: '更新认证', meta: authLabelOf(entry), current: false, value: 'key', oneLine: true },
+          {
+            label: '高级地址',
+            // 写明了就报它；没写＝**按官方地址**（适配给的，不在这儿拼一份）
+            meta: entry.baseURL ?? '按官方地址（适配给的）',
+            current: false,
+            value: 'address',
+            oneLine: true,
+          },
           {
             label: '刷新这一条',
             meta: cacheLabelOf(entry),

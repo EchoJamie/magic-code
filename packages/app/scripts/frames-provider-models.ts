@@ -29,13 +29,16 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { tempDir } from '../test/tmp.ts'
 import { readDatabase } from '../test/support.ts'
 import { createUiSession } from '../test/ui/index.ts'
 import type { Capture, UiSession } from '../test/ui/index.ts'
 import { startProviderFixture } from './frames-provider-models.fixture.ts'
 import type { ProviderFixture } from './frames-provider-models.fixture.ts'
+
+/** 本仓根——重开那一段要拿被测 `cli.ts` 的路径（同一个 checkout）。 */
+const REPO = resolve(import.meta.dir, '../../..')
 
 /** 合成假 key——**一眼看得出是假的**（真要有人抄去用，抄不坏任何东西）。 */
 const FAKE_KEY = 'sk-fake-u41-not-a-real-key'
@@ -87,31 +90,6 @@ function keep(out: string, shot: Capture, label: string): void {
   console.log(`\n── ${label} ──\n${shot.text}`)
 }
 
-/**
- * **待集成**的一条——据实打印读数，**不判红**，也**不算成功**。
- *
- * 由头（2026-09-23 实测两次、原因不同，都要写清）：
- * ① 内核 `9a9eaf1` 之前，五条新命令在**控制域没有分支**（`control/src/hub.ts` 的 `route()`
- *    switch 缺这五支、又没有 `default`），命令被静默丢弃——**那一笔已由内核修好**；
- * ② 本分支（界面返修这一条）**没有内核那几笔**（hub 路由在后端那一串提交里，工单要求
- *    「不自行全量合内核分支」），故 `/model connect`、`/model manage`、`/model refresh`
- *    在这儿仍是「草稿被清、屏上再无动静」；接入那一步另要 `provider.catalog` 的
- *    **供应商名单**那一格，也随那一笔。
- *
- * 故这一格：
- * - **不判红**（判红了整趟跑不完，后面的判据一条都到不了）；
- * - **照实打印**（哪一步没到、屏上是什么）——**它不算成功**，集成那一趟要重跑并转成硬判据；
- * - 接线到了就出声（打 ✓ 并提示「把这一条转成硬判据」）。
- */
-function blocked(what: string, reached: boolean, reading: string): void {
-  if (reached) {
-    console.log(`  ✓ ${what}（接线已到——把这一条转成硬判据）`)
-    return
-  }
-
-  console.log(`  · 未验证（待集成）：${what} —— ${reading}`)
-}
-
 /** 屏上有没有这一行。 */
 function has(shot: Capture, needle: string): boolean {
   return shot.lines.some((line) => line.includes(needle))
@@ -150,13 +128,14 @@ const closed = new WeakSet<UiSession>()
  * 收摊——**先等它闲下来**再 `ctrl+c`（忙时那一下是**中断**不是退出，外壳的既有语义）。
  * 只有 `exit.by === 'app'`（它自己走的）才算这一趟干净收场。
  */
-async function close(session: UiSession): Promise<void> {
+async function close(session: UiSession, keepSandbox = false): Promise<void> {
   if (closed.has(session)) return
   closed.add(session)
 
   await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
   await session.key('ctrl+c')
-  const report = await session.close({ graceMs: 3_000 })
+  // `keepSandbox`：重开那一段要用**同一块沙地**（HOME / 配置 / 缓存都在里面）
+  const report = await session.close({ graceMs: 3_000, keepSandbox })
   const how = `${report.exit.by}（code ${report.exit.code ?? '-'} / signal ${report.exit.signal ?? '-'}）`
 
   if (report.exit.by !== 'app') throw new Error(`应用不是自己走的（${how}）——收摊那条路没走完`)
@@ -207,10 +186,18 @@ function compatBench(
 
 /** 起一趟真应用（真 PTY ＋ 真 cli.ts）——配置指向上面的夹具。 */
 async function start(
-  options: { readonly label: string; readonly columns?: number; readonly rows?: number },
+  options: {
+    readonly label: string
+    readonly columns?: number
+    readonly rows?: number
+    /** 预载脚本（`.ts`）——见 `rewritePreload`：把「官方地址」落到本地夹具上。 */
+    readonly preload?: string
+  },
   bench: Bench,
   out: string,
 ): Promise<UiSession> {
+  const cli = join(REPO, 'packages/app/src/cli.ts')
+
   return createUiSession({
     label: options.label,
     artifacts: join(out, 'runs'),
@@ -219,7 +206,49 @@ async function start(
     // **不给 `turns`** ⇒ 共用驱动不起它自己那台聊天夹具：端点归本单的夹具管
     // （配置里 `providers.personal.baseURL` 指向它）
     config: bench.config,
+    // 有预载就走「bun --preload <脚本> <cli>」（见 `rewritePreload`）
+    ...(options.preload === undefined
+      ? {}
+      : { command: [process.execPath, '--preload', options.preload, cli] }),
   })
+}
+
+/**
+ * **把「官方地址」落到本地夹具上**——给「接一条**新连接**」那一趟用的预载脚本。
+ *
+ * 由头：新接的连接在配置里**只有 `vendor`**（地址由适配给官方地址），而沙地**不许碰真端点**
+ * （验收准则：端点用本地假服务）。于是这一手在**测试侧**把对官方主机的那几次 `fetch`
+ * 改写到本地夹具——产品代码一个字不知道，路径 / 认证头 / 方法原样过去
+ * （夹具照旧按 `Authorization` 判凭据，故「凭据从哪儿来」这一条仍是真的）。
+ *
+ * ⚠️ **限度写清楚**：这证明的是**链路与形状**（适配拼出的 URL、认证位置、请求方法、
+ * 响应归一），**不证明**官方端点真的接受这把 key。真账号验证另需真实凭据。
+ */
+function rewritePreload(out: string, hosts: readonly string[], baseURL: string): string {
+  const path = join(out, '重定向预载.ts')
+  const lines = hosts.map((host) => `  { host: ${JSON.stringify(host)}, to: ${JSON.stringify(baseURL)} },`)
+
+  writeFileSync(
+    path,
+    [
+      '/** 测试侧预载：把对官方主机的 fetch 改写到本地夹具（由留帧装置生成，见 `rewritePreload`）。 */',
+      'const targets = [',
+      ...lines,
+      ']',
+      'const real = globalThis.fetch',
+      'globalThis.fetch = ((input: any, init: any) => {',
+      '  const url = typeof input === "string" ? input : input instanceof URL ? input.href : String(input?.url ?? "")',
+      '  const hit = targets.find((one) => url.startsWith(`https://${one.host}`))',
+      '  if (hit === undefined) return real(input, init)',
+      '  const rewritten = hit.to + url.slice(`https://${hit.host}`.length)',
+      '  return real(rewritten, init)',
+      '}) as typeof fetch',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+
+  return path
 }
 
 /** 夹具收到的请求轨迹落盘——**「实际出站的是哪一条」的物证**。 */
@@ -502,20 +531,15 @@ async function connecting(out: string): Promise<void> {
     const picking = await session.capture({ label: '08-挑一家供应商' })
     keep(out, picking, '08-挑一家供应商')
 
-    const opened = has(picking, 'MiniMax')
-    blocked(
-      '`/model connect` 开到「挑一家」那一屏（要 `provider.list` 的答复 ＋ 名单那一格）',
-      opened,
-      '屏上仍是空闲输入行——本分支没有内核的 hub 路由与后端那几笔（见 `blocked` 的注）',
-    )
-    // 接线还没到 ⇒ 这一屏走不下去了：后面的判据等它（**不判红**，如实收摊）
-    if (!opened) return
-
+    check(has(picking, 'MiniMax'), '`/model connect` 开到「挑一家」那一屏——名单来自读面')
     check(has(picking, 'DeepSeek'), '另一家也在')
 
     // —— 密钥那一屏 ——
-    await pressKey(session, 'enter', { until: { text: '不回显' }, timeoutMs: 10_000 })
-    await typeLine(session, TYPED_SECRET)
+    await pressKey(session, 'enter', { until: { text: '回显' }, timeoutMs: 10_000 })
+    // ⚠️ **等的是圆点，不是那串密钥**（它压根不上屏——这一条判据要的正是这个）：
+    // 原先写的是 `typeLine(session, TYPED_SECRET)`（等它出现），真接上之后当场超时
+    // ——那正是「不回显」成立的样子。故等一个**只可能来自「打进字了」**的条件。
+    await session.send(TYPED_SECRET, { until: { text: '••••' }, timeoutMs: 10_000 })
     const typed = await session.capture({ label: '09-密钥屏（输入不回显）' })
     keep(out, typed, '09-密钥屏（输入不回显）')
 
@@ -546,6 +570,179 @@ async function connecting(out: string): Promise<void> {
   }
 }
 
+// ══ ⑥ 真实闭环：接入 → 列表 → 选择 → 调用 → 保存 → **重开** ═══════════
+
+/**
+ * 一条**从零接通**的路走到底（U41 界面返修 · 集成那一趟的正题）。
+ *
+ * 走的是**真链路**：空配置起步 → `/model` 空态里选「连接供应商」→ 挑 MiniMax → 挑区域
+ * → 密钥屏（假 key）→ 保存（内核写盘 ＋ 就去取列表）→ 列表里出现**夹具经 HTTP 给的**型号
+ * → 选一个 → 真发一句话（夹具那儿的出站 model 是物证）→ 设为默认。
+ *
+ * 收尾做**重开**：同一块沙地、**另起一个进程**跑 `--script`（无人值守那一入口），
+ * 证明「保存下来的连接与默认」在**新进程**里读得回来、且真能拿它发出去。
+ *
+ * 隔离：合成假 key、环回夹具、`HOME` 指沙地（`MAGIC_HOME` 不设 ⇒ 基础目录仍是
+ * `<HOME>/.magic`——U42 的缺省那条路），真 `~/.magic` 零触碰、一个付费请求都不发。
+ */
+async function connectingLive(out: string): Promise<void> {
+  const fixture = startProviderFixture({
+    vendor: 'minimax',
+    key: FAKE_KEY,
+    models: [{ id: 'MiniMax-M3' }, { id: 'MiniMax-Text-01' }],
+    chat: [{ kind: 'text', text: '好，先看登录那一段。', chunks: 3, chunkDelayMs: 30 }],
+  })
+  // **空配置起步**（首次运行就是这样：一条连接都没有）——`defaultProvider` 一并撤掉
+  // （留着一个指向不存在连接的默认，加载器会当场点名报错）；官方主机重定向到夹具（见 `rewritePreload`）
+  const preload = rewritePreload(out, ['api.minimax.cn', 'api.minimax.chat', 'api.deepseek.com'], fixture.baseURL)
+  const session = await start(
+    { label: 'u41-接通并重开', preload },
+    { fixture, config: { defaultProvider: undefined, providers: {} } },
+    out,
+  )
+
+  let kept = false
+  try {
+    // —— ① 空态：列表给可点的入口 ——
+    await typeLine(session, '/model')
+    await pressKey(session, 'enter', { until: { text: '连接供应商' }, timeoutMs: 10_000 })
+    const empty = await session.capture({ label: '13-空配置的模型屏' })
+    keep(out, empty, '13-空配置的模型屏')
+    check(has(empty, '连接供应商'), '空配置也能进选择器，且入口就在屏上')
+
+    // —— ② 接一条：挑供应商 → 挑区域 → 密钥 → 保存 ——
+    await pressKey(session, 'enter', { until: { text: 'MiniMax' }, timeoutMs: 10_000 })
+    const vendors = await session.capture({ label: '14-挑一家（读面给的）' })
+    keep(out, vendors, '14-挑一家（读面给的）')
+    check(has(vendors, 'DeepSeek'), '名单来自调用线的查询出口（两家都在）')
+
+    await pressKey(session, 'enter') // 选定 MiniMax
+    // MiniMax ⇒ 下一步**直接是密钥屏**：首批两家在适配里**各只有一个区域**
+    // （`packages/model/src/vendors.ts`：minimax 只有 `cn`、deepseek 只有 `official`），
+    // 而「只有一个区域」没有选择可言——外壳不问那一步，也**不写** `region`（约定：不写＝缺省那项）。
+    // 说明里仍把这一次会用哪个区域报出来（见下面那条判据）；**多区域那一支**由
+    // `spec.u41.test.ts` ⑩ 的用例钉着（喂一家两个区域 ⇒ 中间多一屏、选定才写）。
+    await session.wait({ text: '不回显' }, { timeoutMs: 10_000 })
+    const keys = await session.capture({ label: '15-密钥屏（含区域交代）' })
+    keep(out, keys, '15-密钥屏（含区域交代）')
+    check(has(keys, '中国大陆'), '说明里报出**这一次会用哪个区域**（适配给的可读名）')
+    check(has(keys, 'api.minimax') === false, '地址不往屏上堆（适配解析好，用户通常不必看）')
+    // 打的就是夹具认的那把（合成假 key）——输错的话取列表会 401，那是夹具在正确工作
+    await session.send(FAKE_KEY, { until: { text: '••••' }, timeoutMs: 10_000 })
+    const before = fixture.requests().length
+    await pressKey(session, 'enter') // 保存（**不是** esc——那是取消）
+    // 保存成不成、列表取没取到，**屏上说得清**：等到型号出现在列表里，才说明整条链走通了
+    // （保存 → 回话 → 外壳接着问一次列表 → 内核真去 HTTP 取）
+    await session.wait({ text: 'MiniMax-M3' }, { timeoutMs: 25_000 })
+    check(fixture.requests().length > before, '**保存之后真去供应商那儿取了列表**（夹具收到了 GET）')
+
+    // —— ③ 列表里出现 HTTP 给的型号 ——
+    await session.wait({ text: 'MiniMax-M3' }, { timeoutMs: 15_000 })
+    const listed = await session.capture({ label: '16-列表（来自 HTTP）' })
+    keep(out, listed, '16-列表（来自 HTTP）')
+    check(has(listed, 'MiniMax-Text-01'), '**一个连接下的多个型号来自真实列表**')
+    keepTrace(out, fixture, '16-请求轨迹')
+
+    // —— ④ 选一个 → 真发一句 ——
+    await pressKey(session, 'down') // 挪到第二个型号
+    await pressKey(session, 'enter', { until: { text: '已换模型' }, timeoutMs: 10_000 })
+    await typeLine(session, '看一眼登录')
+    const chatsBefore = fixture.requests().filter((one) => one.endpoint === '/chat/completions').length
+    await pressKey(session, 'enter', { until: { text: '先看登录那一段' }, timeoutMs: 20_000 })
+    await session.wait({ text: '○ 空闲' }, { timeoutMs: 15_000 })
+
+    const calls = fixture.requests().filter((one) => one.endpoint === '/chat/completions')
+    check(calls.length === chatsBefore + 1, '一次交代 ＝ 一次调用')
+    check(calls.at(-1)?.model === 'MiniMax-Text-01', '**出站的就是列表里选中的那一条**', String(calls.at(-1)?.model))
+    check(calls.at(-1)?.auth === 'ok', '凭据用的是刚接上时输入的那把（夹具认了）')
+    const answered = await session.capture({ label: '17-调用之后' })
+    keep(out, answered, '17-调用之后')
+    keepTrace(out, fixture, '17-请求轨迹')
+
+    // —— ⑤ 设为默认（详情屏 → 设为默认） ——
+    // 列表开在**当前那条**上（刚换过去的 MiniMax-Text-01），故不必挪——直接按 `→` 进详情。
+    // （挪一下反而会落到末尾那几条**入口行**上，而入口行没有「详情」这回事）
+    await typeLine(session, '/model')
+    await pressKey(session, 'enter', { until: { text: 'MiniMax-Text-01' }, timeoutMs: 10_000 })
+    await pressKey(session, 'right') // → 详情
+    await session.wait({ text: '设为默认' }, { timeoutMs: 10_000 })
+    const detail = await session.capture({ label: '18a-详情（选中的那条）' })
+    keep(out, detail, '18a-详情（选中的那条）')
+    check(has(detail, 'MiniMax-Text-01'), '详情开着的是**选中的那一条**')
+    await pressKey(session, 'down')
+    await pressKey(session, 'enter', { until: { text: '默认' }, timeoutMs: 10_000 })
+    await Bun.sleep(400)
+    const afterDefault = await session.capture({ label: '18-设为默认' })
+    keep(out, afterDefault, '18-设为默认')
+
+    // —— ⑥ 读盘：连接与默认都在 ——
+    const configPath = join(session.facts().home, '.magic', 'config.json')
+    const saved = JSON.parse(readFileSync(configPath, 'utf8')) as {
+      readonly providers?: Record<string, Record<string, unknown>>
+      readonly defaultProvider?: string
+    }
+    writeFileSync(join(out, '18-保存下来的配置.json'), `${JSON.stringify(saved, null, 2)}\n`, 'utf8')
+
+    check(saved.defaultProvider === 'minimax', '保存默认写进了配置', JSON.stringify(saved.defaultProvider))
+    check(saved.providers?.['minimax']?.vendor === 'minimax', '连接的 `vendor` 也写下来了')
+    check(saved.providers?.['minimax']?.region === undefined, '只有一个区域 ⇒ **不写** `region`（用缺省那项）')
+    // 三格：`vendor`（哪一家）· `apiKey`（凭据）· `model`（**用户设的默认那一条**）。
+    // 型号清单**不进配置**——列表是缓存（在 dataDir 下），这正是「不因发现模型而膨胀」。
+    check(
+      Object.keys(saved.providers?.['minimax'] ?? {}).sort().join(',') === 'apiKey,model,vendor',
+      '配置里就这几格（**列表里的型号没被塞进来**）',
+      JSON.stringify(Object.keys(saved.providers?.['minimax'] ?? {})),
+    )
+    check(saved.providers?.['minimax']?.model === 'MiniMax-Text-01', '`model` 是刚设为默认的那一条')
+
+    kept = true
+  } finally {
+    // **留住沙地**：下一段「重开」要用同一块（HOME / 配置 / 缓存都在里面）
+    await close(session, true)
+    // ⚠️ **夹具先别停**：下一段「重开」还要用它（同一个端点，另起一个进程再打一次）
+    keepTrace(out, fixture, kept ? '20-请求轨迹（到收摊为止）' : '20-请求轨迹（失败现场）')
+  }
+
+  // —— ⑦ 重开：同一块沙地、**另起一个进程** ——
+  //
+  // 用 `--script`（无人值守那一入口，不是 TUI）：它把「一次交代」跑到底，
+  // 而**出站用的是配置里保存的默认**——这正是「重开之后还认得那条连接」的物证。
+  const home = session.facts().home
+  const workspace = session.facts().workspace
+  const script = { inputs: ['再看一眼登录'] }
+  const scriptPath = join(out, '重开-脚本.json')
+  writeFileSync(scriptPath, JSON.stringify(script), 'utf8')
+
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (/^MAGIC_.*_API_KEY$/.test(key)) continue
+    if (key === 'MAGIC_HOME') continue // 沙地不设它 ⇒ 基础目录仍是 `<HOME>/.magic`（U42 的缺省那条）
+    env[key] = value
+  }
+  env['HOME'] = home
+
+  const before = fixture.requests().filter((one) => one.endpoint === '/chat/completions').length
+  const proc = Bun.spawn([process.execPath, '--preload', preload, join(REPO, 'packages/app/src/cli.ts'), '--script', scriptPath], {
+    cwd: workspace,
+    env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const stdout = await new Response(proc.stdout).text()
+  const stderr = await new Response(proc.stderr).text()
+  await proc.exited
+  writeFileSync(join(out, '19-重开那一趟.txt'), `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`, 'utf8')
+
+  const calls = fixture.requests().filter((one) => one.endpoint === '/chat/completions')
+  check(proc.exitCode === 0, '**重开那一趟正常跑完**（exit 0）', stderr.slice(0, 300))
+  check(calls.length === before + 1, `重开之后又发了一次调用（实测 ${calls.length - before}）`, stderr.slice(0, 300))
+  check(calls.at(-1)?.model === 'MiniMax-Text-01', '**出站的是保存下来的默认型号**', String(calls.at(-1)?.model))
+  keepTrace(out, fixture, '21-请求轨迹（全程）')
+
+  await fixture.stop()
+}
+
 // ══ ⑥ 管理：连接一览 → 某一条的明细 ═══════════════════════════════════
 
 /**
@@ -565,14 +762,7 @@ async function managing(out: string): Promise<void> {
     const list = await session.capture({ label: '11-连接一览' })
     keep(out, list, '11-连接一览')
 
-    const opened = has(list, '认证：配置文件')
-    blocked(
-      '`/model manage` 开到「连接一览」那一屏（要 `provider.list` 的答复）',
-      opened,
-      '屏上仍是空闲输入行——本分支没有内核的 hub 路由与后端那几笔（见 `blocked` 的注）',
-    )
-    if (!opened) return
-
+    check(has(list, '认证：配置文件'), '`/model manage` 开到「连接一览」那一屏（含认证来处）')
     check(has(list, 'personal'), '一览里有那条连接')
     check(has(list, '认证：配置文件'), '**认证来处说得清**（配置文件 / 环境变量，不含糊说「已设置」）')
 
@@ -657,6 +847,7 @@ const SCENES: readonly { readonly name: string; readonly run: (out: string) => P
   { name: '窄窗列表', run: narrow },
   { name: '长列表', run: longList },
   { name: '接入', run: connecting },
+  { name: '接通并重开', run: connectingLive },
   { name: '管理', run: managing },
   { name: '配置与凭据', run: configAndSecrets },
 ]
