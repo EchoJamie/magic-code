@@ -21,9 +21,30 @@ const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
 type Run = { readonly stdout: string; readonly stderr: string; readonly exitCode: number }
 
 async function run(home: string, ...args: readonly string[]): Promise<Run> {
+  return runWith(home, {}, args)
+}
+
+/**
+ * 起一次真入口——`extra` 用来**显式**给环境（U42 起用它指 `MAGIC_HOME`）。
+ *
+ * ⚠️ **`MAGIC_HOME` 从继承来的环境里剔掉**（同 `MAGIC_*_API_KEY` 的处置）：它一旦在
+ * 跑测试那个 shell 里，子进程会绕过这块沙地去读开发者真那份——用例的落点就随环境漂
+ * （U42 实测过：不剔的话 `--check` 报的是真配置的路径）。
+ */
+async function runWith(
+  home: string,
+  extra: Record<string, string>,
+  args: readonly string[],
+): Promise<Run> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || key === 'MAGIC_HOME') continue
+    env[key] = value
+  }
+
   const proc = Bun.spawn([process.execPath, CLI, ...args], {
     cwd: home,
-    env: { ...process.env, HOME: home },
+    env: { ...env, HOME: home, ...extra },
     stdout: 'pipe',
     stderr: 'pipe',
   })

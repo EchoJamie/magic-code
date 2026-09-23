@@ -100,6 +100,11 @@ export async function bootOnce(): Promise<BootStages> {
     }),
   )
 
+  // **统一基础路径**（U42）——这一处手写两件（`MAGIC_HOME` 不设时就是家目录下的 `.magic`）。
+  // 为什么不 import 解析器：本文件量的是**加载耗时**，顶上多拉一个包会把这笔账记歪
+  // （`T0` 之前的那一段不计量，而 `@magic/contracts` 本来是在下面那次动态 import 里才进来的）。
+  const magic = { home: root, base: join(root, '.magic') } as const
+
   const beforeImport = Bun.nanoseconds()
   // 动态 import——静态 import 会被提升到模块顶部，那一段就量不到了
   const { assemble, loadConfig } = await import('../src/index.ts')
@@ -109,7 +114,8 @@ export async function bootOnce(): Promise<BootStages> {
   try {
     const assembly = assemble({
       cwd: join(root, 'ws'),
-      config: loadConfig({ path: configPath, home: root }),
+      config: loadConfig({ path: configPath, magic }),
+      magic,
       prompt: { platform: 'darwin', date: '2026-09-19' },
     })
     const assembled = Bun.nanoseconds()

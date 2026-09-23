@@ -26,6 +26,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { KernelEvent } from '@magic/contracts'
+import { resolveMagicHome } from '@magic/contracts'
 import { assemble, loadConfig, runShellScript } from '../src/index.ts'
 
 // —— 入参 ——
@@ -57,18 +58,26 @@ const INPUTS = [
 // —— 另起沙地（真配置 · 临时落点）——
 
 const home = process.env['HOME'] ?? homedir()
+// **统一基础路径**（U42）——真配置从它底下读（`MAGIC_HOME` 指了别处就读那一处），
+// 不再写死 `~/.magic`；下面那趟装配也照同一个基址解析（本探针自己造的那一块沙地另算）。
+const magic = resolveMagicHome(process.env, home)
 const sandbox = mkdtempSync(join(process.env['TMPDIR'] ?? '/tmp', 'magic-compact-'))
 const configPath = join(sandbox, 'config.json')
-const raw = JSON.parse(readFileSync(join(home, '.magic', 'config.json'), 'utf8')) as Record<string, unknown>
+const raw = JSON.parse(readFileSync(join(magic.base, 'config.json'), 'utf8')) as Record<string, unknown>
 writeFileSync(configPath, JSON.stringify({ ...raw, dataDir: join(sandbox, 'data') }, null, 2))
 
 console.log('magic —— 上下文压缩探针')
 console.log(`  阈值 ${AT} token · 近段 ${NEAR} 条（生产缺省：12 万 / 20 条）`)
 console.log(`  数据落点 ${join(sandbox, 'data')}（临时，不碰 ~/.magic）`)
 
+// 这一趟装配的基址＝**沙地**（`~` 一律展开到它、授权与技能也落在它底下）——
+// 探针反复跑，不往用户真那份里掺沙子（同上面临时 `dataDir` 的那条理由）。
+const at = resolveMagicHome({}, sandbox)
+
 const assembly = assemble({
   cwd: process.cwd(),
-  config: loadConfig({ path: configPath, home: sandbox }),
+  magic: at,
+  config: loadConfig({ path: configPath, magic: at }),
   context: { compactAtTokens: AT, nearEntries: NEAR },
 })
 

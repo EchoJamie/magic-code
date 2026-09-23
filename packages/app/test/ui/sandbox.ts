@@ -3,11 +3,14 @@
  *
  * ## 为什么要整块换，而不是只换几个路径
  *
- * 这一层起的是**真 `cli.ts`**（不是进程内装配），它自己会去读 `~/.magic/config.json`、
- * 在 `~/.magic/grants.json` 记授权、按配置里的 `dataDir` 落库。三处**都由 `HOME` 推出来**
- * （`os.homedir()` → `loadConfig()` 的缺省家目录 → `GRANTS_FILE` 的 `~` 展开），
- * 故这一层其实只做一件事：**给子进程一个换过的 `HOME` ＋ 一个换过的 cwd**，
- * 配置 / 数据 / 授权 / 工作区就都落在 `mkdtemp` 出来的那一块里了。
+ * 这一层起的是**真 `cli.ts`**（不是进程内装配），它自己会去读**基础目录**下的
+ * `config.json`（不设 `MAGIC_HOME` 时即 `~/.magic/config.json`）、在同一处记授权、
+ * 按配置里的 `dataDir` 落库。三处**都由家目录推出来**（`os.homedir()` →
+ * `resolveMagicHome()` 的缺省那一支），故这一层其实只做一件事：**给子进程一个换过的
+ * `HOME` ＋ 一个换过的 cwd**，配置 / 数据 / 授权 / 工作区就都落在 `mkdtemp` 出来的那一块里了。
+ *
+ * ⚠️ **换 `HOME` 挡不住 `MAGIC_HOME`**（U42）：那一位一旦在环境里，Magic 整棵树就绕过
+ * 这块沙地。故子进程的环境里**把它剔掉**（同 `MAGIC_*_API_KEY` 的处置）。
  *
  * ⚠️ **不复制用户真实配置**（那是把真 key 抄进临时目录——还得记得删）。这里写的是
  * **合成配置**：假 key ＋ `baseURL` 指向 loopback 夹具（不起夹具时指向 `127.0.0.1:9`，
@@ -112,6 +115,9 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
  * 子进程环境——**父环境照抄，然后摘掉三处不该传下去的、钉死两处色彩口径**。
  *
  * - `MAGIC_*_API_KEY`——真凭据。剔了它，`resolveApiKey` 就只剩配置里那把假 key 可用；
+ * - `MAGIC_HOME`（U42）——**换 `HOME` 换不掉它**：那一位指哪儿，Magic 那一整棵树
+ *   （配置 / 数据 / 授权 / 用户技能）就跟到哪儿，于是子进程会**绕过这块沙地**去读开发者
+ *   真那份。沙地要的是「另一个终端」，不是「另一位开发者的机器」；
  * - `NO_COLOR`——它会让 chalk 落到 0 档，而帧要留色（`FORCE_COLOR` 已显式拧到 3 档）；
  * - `HOME`——换成沙地（本文件存在的理由）。
  *
@@ -131,6 +137,7 @@ function childEnv(options: { home: string; forceColor: string }): Record<string,
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue
     if (/^MAGIC_.*_API_KEY$/.test(key)) continue
+    if (key === 'MAGIC_HOME') continue
     if (key === 'NO_COLOR') continue
     env[key] = value
   }

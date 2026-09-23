@@ -37,7 +37,7 @@ import type { Assembly } from '../src/index.ts'
 // 接线取件（照 `readouts.test.ts` 的先例）——不是写着同样内容的字面量
 import { tuiOptions } from '../src/cli.ts'
 import { readDatabase } from './support.ts'
-import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
+import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
 // 夹具 —— 三条目 × 三种容量来处（内置命中 / 声明覆盖 / 未知）
@@ -104,7 +104,8 @@ function stage(): {
     assemble: (options = {}) =>
       assemble({
         cwd: workspace,
-        config: loadConfig({ path: configPath, home: root }),
+        config: loadConfig({ path: configPath, magic: magicAt(root) }),
+        magic: magicAt(root),
         // **授权文件也落沙地**（照 `support.ts` 的 `makeStage`）：缺省 `GRANTS_FILE` 是
         // `~/.magic/grants.json`——那是**用户真的那份**，装配级用例一律不许碰它
         grantsFile: join(root, 'magic', 'grants.json'),

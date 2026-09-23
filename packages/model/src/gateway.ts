@@ -39,10 +39,21 @@ export class MissingApiKeyError extends Error {
   readonly providerId: string
   readonly envVar: string
 
-  constructor(providerId: string, envVar: string) {
+  /**
+   * `configPath`——**实际读的那一份配置文件**（U42）。给得出就说它，给不出只报「配置文件」。
+   *
+   * 由头：配置文件的落点随 `MAGIC_HOME` 走（`<基础目录>/config.json`），写死一句
+   * 「`~/.magic/config.json`」在 `MAGIC_HOME` 指到别处时是**指错地方**——用户照着那串
+   * 去找，找到的是另一份（或什么都没有）。谁读的配置谁知道路径，故由调用方递进来。
+   */
+  constructor(providerId: string, envVar: string, configPath?: string | undefined) {
+    // `where` 的分支里带着前置空格：中文里「请在 A 的 x 里填」要那一格，
+    // 而没有路径时「请在配置文件的 x 里填」不兴中间加空格
+    const where = configPath === undefined ? '配置文件的' : ` ${configPath} 的`
+
     super(
-      `供应商「${providerId}」缺 apiKey——请写入 ~/.magic/config.json 的 ` +
-        `providers.${providerId}.apiKey，或设环境变量 ${envVar}`,
+      `供应商「${providerId}」缺 apiKey——请在${where} ` +
+        `providers.${providerId}.apiKey 里填，或设环境变量 ${envVar}`,
     )
     this.name = 'MissingApiKeyError'
     this.providerId = providerId
@@ -59,6 +70,8 @@ export function resolveApiKey(input: {
   readonly config: ProviderConfig
   readonly explicit?: string | undefined
   readonly env?: Readonly<Record<string, string | undefined>> | undefined
+  /** 实际读的那一份配置文件——只用于**缺 key 那句提示**（见 `MissingApiKeyError`）。 */
+  readonly configPath?: string | undefined
 }): string {
   const explicit = input.explicit?.trim()
   if (explicit !== undefined && explicit.length > 0) return explicit
@@ -70,7 +83,7 @@ export function resolveApiKey(input: {
   const fromEnv = input.env?.[envVar]?.trim()
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv
 
-  throw new MissingApiKeyError(input.providerId, envVar)
+  throw new MissingApiKeyError(input.providerId, envVar, input.configPath)
 }
 
 // —— 装配 ——
@@ -90,6 +103,8 @@ export type ModelGatewayOptions = {
   readonly env?: Readonly<Record<string, string | undefined>> | undefined
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
+  /** 实际读的那一份配置文件——只用于缺 key 那句提示（见 `MissingApiKeyError`）。 */
+  readonly configPath?: string | undefined
   /**
    * **瞬时档退避重试**的策略（技术方案 · 模型策略 · 错误分档——「回退逻辑放内核」）。
    * 缺省 `DEFAULT_RETRY_POLICY`；`maxAttempts: 1` ＝ 不重试。策略与判据见 `retry.ts`。
@@ -123,6 +138,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     config,
     explicit: options.apiKey,
     env: options.env ?? process.env,
+    configPath: options.configPath,
   })
 
   const streamVendor = createVendorStreamer({
