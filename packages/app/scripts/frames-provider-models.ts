@@ -92,19 +92,6 @@ function has(shot: Capture, needle: string): boolean {
   return shot.lines.some((line) => line.includes(needle))
 }
 
-/**
- * **一处基线观察**——据实打印读数，**不判红**。
- *
- * 用它只有一种情形：这一条**今天还不成立，而它正是本单元要改出来的样子**。
- * 写成 `check` 就成了「装置一起手就是红的」（没人能跑通它）；写成不写又等于
- * **把问题从档案里抹掉**。故据实打印一行，等改出来之后**转成判据**（那一步写进回报）。
- *
- * ⚠️ 这不是「免死金牌」——它是**待办**，不是放行（与 `scenarios.ts` 的 `KNOWN_OPEN`
- * 同一分寸：那里也要求「欠的账还上了就去摘登记」，而这里的账是**本单元自己的活**）。
- */
-function observe(what: string, reading: string): void {
-  console.log(`  · 基线观察（待本单元改出判据）：${what} —— ${reading}`)
-}
 
 /**
  * 打一行字并**等它真出现在屏上**（按键丢了就等不到——不重发，如实失败）。
@@ -359,24 +346,39 @@ async function narrow(out: string): Promise<void> {
     check(has(shot, 'personal'), '窄窗下连接名照旧看得见')
     check(has(shot, PICKER_HINT), '键位提示还在（窄窗不该把它挤没）')
 
-    // —— 基线观察：**一条候选占成了两行** ——
+    // —— 一条候选只占一行 ——
     //
-    // 今日的模型列表**没挂 `oneLine`**（`view.ts` 的 `openModelPicker` 不给这一位），
-    // 于是长模型名在窄窗里由 Ink 折行 ⇒ 交互区高度账少算一行 ⇒ 矮终端上真光标会错位
-    // （U31 那一族的老病）。设计写死了「候选每项一行……窄窗先保住名称/来源、再截断简述」。
-    // 本单元要把它改出来（挂 `oneLine` ＋ `keep`），改出来之后这一行**转成判据**。
+    // 由头：模型列表**没挂 `oneLine`** 时，长模型名在窄窗里由 Ink 折行 ⇒ 交互区高度账
+    // 少算一行 ⇒ 矮终端上真光标错位（U31 那一族的老病）。设计写死「候选每项一行……
+    // 窄窗先保住名称/来源、再截断简述」。**折行的判据＝下一行还接着名字的后半截**
+    // （那一截只在名字里出现，不会自己跑到别处去）。
     const at = shot.lines.findIndex((line) => line.includes('personal'))
-    // 折行的判据：**下一行还接着模型名**（那一截只在名字里出现，不会自己跑到别处去）
     const tail = at === -1 ? '' : (shot.lines[at + 1] ?? '')
-    observe(
-      '一条模型候选只占一行（窄窗按 `oneLine` 截断，而不是折行）',
-      tail.includes('ld-not-fit')
-        ? `今天折成了两行：${shot.lines[at] ?? ''} ⏎ ${tail}`
-        : `今天是一行：${shot.lines[at] ?? ''}`,
-    )
+
+    check(at !== -1, '窄窗下列表那一行在屏上', shot.text)
+    check(!tail.includes('ld-not-fit'), '一条候选只占一行（折行的那半截没有掉到下一行）', tail)
   } finally {
     await close(session)
     await bench.fixture.stop()
+  }
+
+  // —— 反例：宽窗下**一个字都不截** ——
+  //
+  // `对表.md`：修 A 要交 B 的反例——「窄窗先截断」这条修法最容易的过头是**宽窗也去截**
+  // （U33 的技能行二轮退回的正是这一形）。故同一份行，宽窗下必须原样全出。
+  const wide = compatBench({ model: 'a-very-long-model-name-that-would-not-fit-in-46-columns' })
+  const roomy = await start({ label: 'u41-宽窗', columns: 100, rows: 30 }, wide, out)
+
+  try {
+    await typeLine(roomy, '/model')
+    await pressKey(roomy, 'enter', { until: { text: PICKER_HINT }, timeoutMs: 10_000 })
+    const shot = await roomy.capture({ label: '05b-宽窗不截' })
+    keep(out, shot, '05b-宽窗不截')
+
+    check(has(shot, 'would-not-fit-in-46-columns'), '宽窗下模型名一个字不截（上面那条修法的反例）', shot.text)
+  } finally {
+    await close(roomy)
+    await wide.fixture.stop()
   }
 }
 

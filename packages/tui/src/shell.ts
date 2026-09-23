@@ -895,11 +895,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const current = view.status.model
     // **取材＝`model.catalog` 的全量条目**（D10）——不是「边看边攒」的那些：
     // 攒的那些只认得**这趟会话调过 / 换过**的条目，注册表里没碰过的一律列不出来。
+    //
+    // ⚠️ **一行一条**（`oneLine`）——模型名可以很长（`MiniMax-Text-01` 只是短的），
+    // 折行就是交互区高度账与屏分家（U31 那一族的账：矮终端上真光标当场高一行）。
+    // 设计 · 终端交互写死了「候选每项一行，名称/简述同排」，故截断交给渲染层按列宽做，
+    // 账照旧一条一行。窄窗下先留住的是 `label`（连接名／模型名），先被截的是 `meta`。
     const rows = view.models.map((entry) => ({
       label: entry.provider,
       meta: entry.model,
       current: entry.model === current,
       value: entry.provider,
+      oneLine: true,
     }))
 
     commit(
