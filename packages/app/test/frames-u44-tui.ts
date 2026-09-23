@@ -43,9 +43,10 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { HINT_IDLE } from '@magic/tui'
+import { HINT_IDLE, bannerOf } from '@magic/tui'
 import { createUiSession } from './ui/index.ts'
 import type { Capture, UiSession } from './ui/index.ts'
+import type { VtScreen } from './ui/vt.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
 /** 这一趟的产物根——入口解析 `--out` 之后填。 */
@@ -96,6 +97,26 @@ function countOn(lines: readonly string[], needle: string): number {
 }
 
 /**
+ * **这一屏的页首该是什么**（U45）——`/clear` 开的那一页**从字标起**（设计 · 终端呈现：
+ * 字标是「开一条新的」的记号），`/resume` 翻回的那一页从回执起。
+ *
+ * ⚠️ **本脚本此处换过锚**（U45；不是放宽）：原锚一律是 `'─'`——那时 `/clear` 那一页是
+ * **全空**的，逐行往下第一个非空格就是分隔线。裁定之后它头上多了那一块字标，
+ * 「从空白页起铺」这半条判据仍在，只是**顶行由字标充当**（原锚问的也正是「顶上没有旧内容」）。
+ */
+const bannerTop = (columns: number): string => (bannerOf(columns)[0]?.text ?? '').replace(/\s+$/u, '')
+
+/**
+ * **整份缓冲里字标画幅首行出现几次**（U45）——「开一条新的」印一次，
+ * 故开机 ＋ 每一次 `/clear` 各留一块；`/resume` 一块都不添。
+ */
+function bannerCopies(shot: Capture): number {
+  const art = bannerTop(shot.columns)
+
+  return shot.history.filter((line) => line.replace(/\s+$/u, '') === art).length
+}
+
+/**
  * 等屏上的某个**条件**成立（`wait` 的闭集装不下「数一数」这类判据，故自己轮询 `screen()`）。
  *
  * ⚠️ 超时**如实失败**（带上此刻的整屏）——不重发、不重试、不拿固定 sleep 当同步。
@@ -114,6 +135,32 @@ async function waitUntil(
 
     if (ok(text)) return text
     if (Bun.nanoseconds() > until) throw new Error(`等「${what}」超时（${timeoutMs}ms）。屏：\n${text.join('\n')}`)
+
+    await Bun.sleep(40)
+  }
+}
+
+/**
+ * 等**整屏**上的某个条件成立——`waitUntil` 那一副的兄弟：它把**可见那一截**交给判据，
+ * 而「整份缓冲里第几块字标」「scrollback 读数」这类条件在 `lines` 里装不下（得看 `history`）。
+ *
+ * ⚠️ 超时**如实失败**（带上此刻的可见屏），不重发、不重试。
+ */
+async function waitScreen(
+  session: UiSession,
+  what: string,
+  ok: (screen: VtScreen) => boolean,
+  timeoutMs = 10_000,
+): Promise<VtScreen> {
+  const until = Bun.nanoseconds() + timeoutMs * 1e6
+
+  for (;;) {
+    const screen = await session.screen()
+
+    if (ok(screen)) return screen
+    if (Bun.nanoseconds() > until) {
+      throw new Error(`等「${what}」超时（${timeoutMs}ms）。屏：\n${screen.lines.map((line) => line.text).join('\n')}`)
+    }
 
     await Bun.sleep(40)
   }
@@ -282,12 +329,15 @@ async function wide(): Promise<void> {
     keep(cleared)
 
     checkPage(cleared, '02', {
-      // 新开的那条是空的 ⇒ 空白页上只剩帧，顶行就是分隔线
-      top: '─',
+      // 新开的那条是空的 ⇒ 空白页上只剩帧；**顶行是字标**（U45：`/clear` 是「开一条新的」，
+      // 那一页从字标起——原锚 `'─'` 是「那一页全空」时代的，见 `bannerTop` 的注）
+      top: bannerTop(cleared.columns),
       gone: [甲说, 甲答],
       kept: [甲说, 甲答],
       before: full,
     })
+    // 整份缓冲里**两块**字标：开机印的那块（在 scrollback 里）＋ `/clear` 这一页新印的
+    check(bannerCopies(cleared) === 2, '`/clear` 那一页**印字标**（缓冲里开机那块 ＋ 这一块，共两块）', `实际 ${bannerCopies(cleared)} 块`)
     check(
       !cleared.lines.some((line) => line.includes('/clear')),
       '`/clear` **不印文案**（回执就是清屏本身；命令词本身也不留）',
@@ -403,7 +453,14 @@ async function wide(): Promise<void> {
  * 归约那侧为此多了一条「换页那一跳把 `null → 头一条` 也算上」（见 `reduceSessionState`），
  * 这一趟就是钉它：**空手开机按下 `/clear`，屏照样清**。
  *
- * 两帧：`12` 开机屏（字标在屏上）· `13` `/clear` 之后（屏空了，字标进了 scrollback）。
+ * 两帧：`12` 开机屏（字标在屏上）· `13` `/clear` 之后（**新那一页也是从字标起**）。
+ *
+ * ## ⚠️ U45 之后这一趟怎么判（换过三处锚，逐条说清）
+ *
+ * 这一格上「清」与「印」两件事**看得见的都是同一块字标**——开机那块被推进 scrollback，
+ * 新那一页又印一块。故 U45 之前那句「屏上不再有 `█`」**不再是判据**（它是旧规则才成立的
+ * 现象），换成**正面**两条：**整份缓冲里两块**（开机那块没丢 ＋ 新那块真印出来了）
+ * 与**scrollback 读数涨上去了**（判「是推走、不是抹掉」的那把尺子，与别处同一个读法）。
  */
 async function bootClear(): Promise<void> {
   const session = await createUiSession({
@@ -418,23 +475,39 @@ async function bootClear(): Promise<void> {
     const boot = await session.capture({ label: '12-开机屏' })
     keep(boot)
     check(boot.lines.some((line) => line.includes('█')), '12：开机屏上字标真在（不然「清掉了没有」无从判）')
+    check(bannerCopies(boot) === 1, '12：开机那一块字标只印一份', `实际 ${bannerCopies(boot)} 块`)
 
     await typeLine(session, '/clear')
     await session.key('enter')
-    await waitUntil(session, '开机 /clear 之后屏上不再有字标', (lines) => !lines.some((line) => line.includes('█')))
+    // **等的是「新那一页也印出来了」**（整份缓冲里第二块字标）——不是「屏上没字标了」：
+    // 这一格上屏上**一直**有字标（开机那块被推走、新那块又印），等不到「没有」。
+    await waitScreen(
+      session,
+      '开机 /clear 之后整份缓冲里出现第二块字标',
+      (screen) => countOn(screen.history, '█') >= 10,
+      10_000,
+    )
 
     const cleared = await session.capture({ label: '13-开局 clear 之后' })
     keep(cleared)
 
     checkPage(cleared, '13', {
-      top: '─', // 新开的那条是空的 ⇒ 空白页上只剩帧
-      gone: ['█'],
-      kept: [],
+      // 这一页也从字标起（U45）；「从空白页起铺」＝顶行是它、旧内容一行不压在上面
+      top: bannerTop(cleared.columns),
+      // ⚠️ 这一格**没有「切走那条的残留」可判**（空手开机、一个字都没落过账）——
+      //    原来那句 `gone: ['█']` 是旧规则的现象，见本函数头注
+      gone: [],
+      kept: ['█'],
       before: boot,
     })
     check(
-      countOn(cleared.history, '█') >= 5,
-      '字标那块**没被抹掉**（整份缓冲里那五行还在——只是推到可见区上面去了）',
+      bannerCopies(cleared) === 2,
+      '两块字标：开机那块（进了 scrollback）＋ `/clear` 这一页新印的那块（U45）',
+      `实际 ${bannerCopies(cleared)} 块`,
+    )
+    check(
+      countOn(cleared.history, '█') >= 10,
+      '开机那块字标**没被抹掉**（整份缓冲里它那五行还在——只是推到可见区上面去了）',
       `实际 ${countOn(cleared.history, '█')} 行`,
     )
 
@@ -475,11 +548,13 @@ async function narrow(): Promise<void> {
     keep(cleared)
 
     checkPage(cleared, '09', {
-      top: '─',
+      // 窄窗下同一副面孔：这一页也从字标起（46 列 ⇒ **一行版** `Magic Code`，见 `bannerTop`）
+      top: bannerTop(cleared.columns),
       gone: [甲说],
       kept: [甲说],
       before: full,
     })
+    check(bannerCopies(cleared) === 2, '窄窗下 `/clear` 那一页也印字标（共两块）', `实际 ${bannerCopies(cleared)} 块`)
 
     await typeLine(session, 乙说)
     await session.key('enter', { until: { text: '也列好了' }, timeoutMs: 20_000 })

@@ -620,13 +620,21 @@ describe('返工三 · 活动帧不撑满终端（流式增长 · 单条超预�
     expect(text).toContain('流式 01')
   })
 
-  test('多条工具记录——只画得下**最近**的那几条，帧仍短于这一屏', async () => {
+  test('多条工具记录——只画得下**最近**的那一条，帧仍短于这一屏', async () => {
     const stage = toolRows()
     const bytes = await rendered([stage.shell.getView()], SHORT, null)
     const frame = await stage.screen(SHORT)
 
     expect(trailingBreak(bytes)).toBe(true) // 原锚：六行整条留下 ⇒ 帧 11 行 ⇒ 顶满
-    expect(frame.has('ls {"path":"c.txt"}')).toBe(true) // 最近那条在屏上
+    // ⚠️ **此处两条锚随 U45 换过**（不是放宽，是这一档的预算少了一行）：交互区下沿多了
+    //    一条分隔线（`CHROME_LINES` 2 → 3）⇒ 40×10 这一档的活动区预算 2 行 → **1 行**：
+    //    最近那条（自己占两行：标题 ＋ 结果）装不下，按既有规则**切末尾** ⇒ 屏上只剩它的末行。
+    //    原锚问的是「最近那条在不在」——如今它只剩末行，故锚换到**末行**上；
+    //    并补一条「早的那几条一行都不在」的**计数**（三组渲染出的末行是同一句话，
+    //    数出来是 1 ⇒ 另外两组确实没画，不是「碰巧写着同一串字」）。
+    expect(frame.has('✓ 10ms · 1 项')).toBe(true) // 最近那条的末行（`c.txt` 那一组的收尾）
+    expect(frame.screen.lines.filter((line) => line.includes('✓ 10ms · 1 项'))).toHaveLength(1)
+    expect(frame.has('ls {"path":"c.txt"}')).toBe(false) // 它自己那两行里，头一行让给了下沿那条线
     expect(frame.has('ls {"path":"a.txt"}')).toBe(false) // 早的那几条让位（**整条**让——不切一半）
     expect(stage.shell.getView().rows).toHaveLength(3) // 三条都在记录里
   })

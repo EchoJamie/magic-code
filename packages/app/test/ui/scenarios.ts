@@ -199,8 +199,10 @@ const bootInputResizeExit: Scenario = {
     // —— 改窗之后**画面本身**也得对（D27 的另一半）——
     // ⚠️ 判的是**稳定画面**：「回话之后」那一帧改窗时应用还在流式，下一帧就会把中间态盖掉
     //    （那是正常的重绘，不是残留）。等它回到空闲（上面那句占位语就是空闲）再数。
-    const dividers = cleared.lines.filter((line) => /^─+$/u.test(line.trim())).length
-    ui.check(dividers === 1, '窄窗稳定后一共只画了一条分隔线', `可见区实际 ${dividers} 条`)
+    // ⚠️ **两条**（U45）：记录区／交互区之间那条 ＋ 交互区下沿那条。改窗残影（D27）会在
+    //    上面留下旧的分隔线 ⇒ 读数**多于**两条，那一半仍是欠着的账（登记见 `KNOWN_OPEN`）。
+    const dividers = cleared.lines.filter((line) => isRule(line)).length
+    ui.check(dividers === 2, '窄窗稳定后一共只画了两条分隔线', `可见区实际 ${dividers} 条`)
     ui.check(
       countExact(cleared.history, '› 你好') === 1,
       '改窗之后用户消息只有一条（旧帧没留在屏上）',
@@ -1140,7 +1142,9 @@ export function scenarioNames(): readonly ScenarioName[] {
  */
 const KNOWN_OPEN = new Map<string, KnownOpen>([
   [
-    '窄窗稳定后一共只画了一条分隔线',
+    // ⚠️ 判据名 2026-09-24 随 U45 改（那时是「只画了一条分隔线」）：交互区下沿多了第二条线，
+    //    数**它自己这一帧**该是两条——**欠的仍是同一笔账**（残影把读数顶得更多）。
+    '窄窗稳定后一共只画了两条分隔线',
     {
       defect: 'D27',
       why:
@@ -1249,42 +1253,53 @@ function where(options: ScenarioOptions): { artifacts?: string; checkout?: strin
   }
 }
 
+/** 满宽分隔线（`AppView` 画的那种：整行都是 `─`）。 */
+const isRule = (line: string): boolean => /^─+$/u.test(line.trim())
+
 /**
- * 一帧里的**记录区**——分隔线**之上**那些行。
+ * 一帧里那**两条**分隔线各自的行号（U45 起是两条，见 `separatorOf`）。
  *
- * 「记录不丢不重」这类判据量的是它：分隔线是活动区的顶边，它上面才是「发生过什么」。
+ * - `top`——**记录区与交互区之间**那一条（记录区的顶边）；
+ * - `bottom`——**交互区下沿**那一条（`AppView` 收尾画的那一行，其后只剩屏幕空白）。
+ *
+ * ⚠️ **U45 之前「最后一条分隔线」就是顶边**（那时只有一条）。多了下沿那条之后，再取最后一条
+ * 就会把**整个交互区与状态行**算进记录区——抽屉一开，「记录区」当场多出七八行
+ *（首轮就是这么现形的：空名录后 10 行 · 开抽屉后 17 行）。
+ *
+ * 认下沿那一格的依据是**它下面是空白**（它是这一帧的最后一行内容）——不是「倒数第二条」：
+ * 只录了半屏、还没画到下沿时，`bottom` 给 `-1`，那一条只能算顶边（与 U45 之前同一副面孔）。
+ * 改窗残影（旧分隔线还留在屏上，D27）落在**上面**，不影响这两格。
+ */
+function dividersOf(lines: readonly string[]): { readonly top: number; readonly bottom: number } {
+  const last = lines.findLastIndex(isRule)
+  const atEnd = last !== -1 && lines.slice(last + 1).every((line) => line.trim() === '')
+
+  return atEnd
+    ? { top: lines.findLastIndex((line, at) => at < last && isRule(line)), bottom: last }
+    : { top: last, bottom: -1 }
+}
+
+/**
+ * 一帧里的**记录区**——**上沿**分隔线之上那些行。
+ *
+ * 「记录不丢不重」这类判据量的是它：上沿那条是活动区的顶边，它上面才是「发生过什么」。
  */
 export function recordOf(capture: Capture): readonly string[] {
-  // ⚠️ 取**最后一条**分隔线：活动帧那条才是记录区的顶边。取第一条的话，改窗残影（旧分隔线
-  //    还留在屏上）会把记录区截在半路（与 `recordHistoryOf` 同一口径）。
-  let at = -1
-  for (let row = capture.lines.length - 1; row >= 0; row -= 1) {
-    if (/^─+$/u.test((capture.lines[row] as string).trim())) {
-      at = row
-      break
-    }
-  }
+  const { top } = dividersOf(capture.lines)
 
-  return at === -1 ? capture.lines : capture.lines.slice(0, at)
+  return top === -1 ? capture.lines : capture.lines.slice(0, top)
 }
 
 /**
  * 缓冲里的**记录区**（非空行）——「记录不丢不重」这类判据的取材。
  *
- * 取法是「最后一条分隔线**之上**」：分隔线以下就是**活动区**（输入行 / 抽屉 / 状态行），
- * 那里本来就该随操作变（抽屉开合动的正是它）。
+ * 取法是「**上沿**那条分隔线**之上**」：上沿以下就是**活动区**（输入行 / 抽屉 / 状态行），
+ * 那里本来就该随操作变（抽屉开合动的正是它）；下沿那条（U45）属**收尾**，更不在记录区里。
  */
 function recordHistoryOf(capture: Capture): readonly string[] {
-  const lines = capture.history
-  let divider = -1
-  for (let at = lines.length - 1; at >= 0; at -= 1) {
-    if (/^─{4,}$/u.test((lines[at] as string).trim())) {
-      divider = at
-      break
-    }
-  }
+  const { top } = dividersOf(capture.history)
 
-  return (divider === -1 ? lines : lines.slice(0, divider)).filter((line) => line.trim() !== '')
+  return (top === -1 ? capture.history : capture.history.slice(0, top)).filter((line) => line.trim() !== '')
 }
 
 /** 某一行在缓冲里出现几次（「重影」判据要它）。 */

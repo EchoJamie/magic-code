@@ -32,7 +32,7 @@ import type { Shell, ShellEffect, ShellKey } from '../src/shell.ts'
 import type { ShellView } from '../src/view.ts'
 import { createSpyTransport } from './fakes.ts'
 import type { SpyTransport } from './fakes.ts'
-import { dividerAt } from './invariants.ts'
+import { dividerAt, footerAt } from './invariants.ts'
 import { record, screenCells } from './terminal.ts'
 import type { Cell, ScreenOptions } from './terminal.ts'
 import type { Screen } from './terminal.ts'
@@ -70,7 +70,7 @@ export function plain(frame: string): string {
 /** 一屏 ＋ 它的读法。`row` 都是**屏幕矩阵里的行号**（含滚进 scrollback 的，顶→底）。 */
 export type Frame = {
   readonly screen: Screen
-  /** 记录区的行（分隔线**之上**）——`界面原型.html` 里那些 `› ⏺ ● ·` 都在这。 */
+  /** 记录区的行（**上面那条**分隔线之上）——`界面原型.html` 里那些 `› ⏺ ● ·` 都在这。 */
   readonly record: readonly Line[]
   /**
    * 记录区的**内容行**——`record` 去掉最前面那一块**启动字标**（TUI Banner，
@@ -89,9 +89,14 @@ export type Frame = {
    * 那时它在 `record` 里根本不存在，硬掐就会把**正文的头几行**当成字标切掉。
    */
   readonly content: readonly Line[]
-  /** 交互区的行（分隔线**之下**）——输入行 / 裁决卡 / 选择器，以及最后那行状态行。 */
+  /**
+   * 交互区的行（**两条**分隔线**之间**）——输入行 / 裁决卡 / 选择器，以及最后那行状态行。
+   *
+   * ⚠️ **下沿那条线不算在里面**（U45）：它是 `AppView` 的收尾（交互区下沿的界），
+   * 不是「交互区里的一行」。故切法是「上沿 ＋1 → 下沿」，没有下沿那条线时到最后一个非空行。
+   */
   readonly dock: readonly Line[]
-  /** 状态行——屏上最后一条非空行（`AppView` 把它放在最末）。 */
+  /** 状态行——**下沿那条线之上**最后一条非空行（`AppView` 把它摆在交互区末位）。 */
   readonly statusLine: string
   /** 第 `row` 行的格子（到最后一个非空格为止）。 */
   cellsOf(row: number): readonly Cell[]
@@ -176,14 +181,18 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number
   const { screen } = cells
   const rows = screen.lines.map((text, row) => ({ row, text }))
   const divider = dividerAt(screen)
-  const lastNonBlank = rows.filter((entry) => entry.text.trim() !== '').at(-1)
+  // **下沿那条线**（U45）——它把「输入行 ＋ 状态行」从底下封住，**不算交互区的一行**。
+  // 只有一条分隔线时它俩是同一条（＝当前没有下沿线那一档），故 `bottom` 取「下沿的上一行」。
+  const footer = footerAt(screen)
+  const bottom = footer === -1 ? rows.filter((entry) => entry.text.trim() !== '').at(-1)?.row ?? -1 : footer - 1
+  const lastNonBlank = rows.slice(0, bottom + 1).filter((entry) => entry.text.trim() !== '').at(-1)
   const record = rows.slice(0, divider === -1 ? (lastNonBlank?.row ?? -1) + 1 : divider)
 
   const frame: Frame = {
     screen,
     record,
     content: contentOf(record, columns),
-    dock: divider === -1 ? [] : rows.slice(divider + 1, (lastNonBlank?.row ?? divider) + 1),
+    dock: divider === -1 ? [] : rows.slice(divider + 1, bottom + 1),
     statusLine: lastNonBlank?.text ?? '',
     cellsOf: cells.cellsOf,
     rawCellsOf: cells.rawCellsOf,

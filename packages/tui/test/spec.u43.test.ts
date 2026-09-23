@@ -220,16 +220,19 @@ describe('② 切到一条还没有记录的会话', () => {
 // ══ ④ `/clear` 那两跳：不回文案 · 切不动时把内核那句话接上（U44）════════
 
 /**
- * 两句（**U44 起了新裁定，本节两形随之改写**）：
+ * 两句（**U44 起了新裁定，本节两形随之改写；U45 又把「成了」那一形补了一半**）：
  *
- * - **开成了**（活跃位换了）⇒ 记录区**一个字都不添**——`/clear` 的**回执就是清屏本身**
+ * - **开成了**（活跃位换了）⇒ 记录区**不添文案**——`/clear` 的**回执就是清屏本身**
  *   （设计 · 命令行与配置）。U43 补条那句 `· 已开一条新会话` **随之作废**：换个会话要翻页，
  *   屏上那一下已经说明了一切，再补一句就是把同一件事说两遍。
+ *   ⚠️ **U45 补的那一半**：这一页**从字标起**——`/clear` 是「开一条新的」，
+ *   字标正是那个记号（不印则一屏只剩分隔线贴顶，看着像故障）。**字标不是文案**
+ *   （回执那一格仍一个字都不添），故这一形判的是「**添的只有那一块字标**」。
  *   ⚠️ **这一层看不见清屏**（见上面 `switchThroughPicker` 那段注：翻页是终端上的动作，
- *   本装置逐帧过的是 `AppView`）——故这一形在本层判的是「**没往记录区添字**」，
- *   而「清没清干净、旧内容还在不在 scrollback」归真 PTY 取帧。
+ *   本装置逐帧过的是 `AppView`）——「清没清干净、旧内容还在不在 scrollback」归真 PTY 取帧。
  * - **没开成**（内核挡回）⇒ 照内核那句 `note` 说一句（U44 把 `session.state` 的 `note`
- *   接上了：原先这一格**没有出口**，忙时按下去屏上零反应）。判据落在**答复那一侧**。
+ *   接上了：原先这一格**没有出口**，忙时按下去屏上零反应）。判据落在**答复那一侧**——
+ *   且**页也不翻、字标也不种**（U45：这一跳什么都没发生，`reduceSessionState` 据 `note` 让位）。
  */
 describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
   /** 敲一句 `/clear`——命令出去之后，记录区添不添字由**答复**定。 */
@@ -238,7 +241,15 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
     () => stage.press(ENTER),
   ]
 
-  test('**开成了**（活跃位换了）⇒ 记录区**一个字都不添**（回执就是清屏）', async () => {
+  /**
+   * ⚠️ **本条 2026-09-24 按新行为改写**（U45 · 设计 · 终端呈现「字标是开一条新的的记号」）：
+   * 原句是『记录区**一个字都不添**』——那时字标只在开机印一次，`/clear` 开的那一页是**全空**的。
+   * 裁定之后那一页**从字标起**（`/clear` 正是「开一条新的」，字标补的就是「新的来了」那一半）
+   * ——故「添的东西**正好是那一块字标**，一条文案都没有」才是新行为那一面：
+   * 判据没删（「回执就是清屏本身」照旧要钉），只是把「一个字都不添」那一半换成
+   * 「**添的只有字标**」——两者合起来仍是「**不另发文案**」。
+   */
+  test('**开成了**（活跃位换了）⇒ 添的**只有那一块字标**，一条文案都不添（U45）', async () => {
     const stage = createStage()
     const views = takes(stage, [
       () => stage.feed([catalog('s1')]),
@@ -251,10 +262,14 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
     const before = await show(views.slice(0, 3), WIDE) // 敲之前那一屏
     const after = await show(views, WIDE) // 开成之后那一屏
 
-    expect(after.content.map((line) => line.text)).toEqual(before.content.map((line) => line.text))
-    expect(after.has('· 已开一条新会话')).toBe(false) // U43 补条那句作废了
-    // 视图那一侧：这一页确实是空的（不是「铺了个字标顶着」）
-    expect(stage.shell.getView().settled).toHaveLength(0)
+    // 多出来的**正好**是这一页的启动区：留白 ＋ 画幅 ＋ 留白（与 `contentOf` 剥的是同一块）
+    const art = bannerOf(WIDE.columns).map((line) => line.text.replace(/\s+$/u, ''))
+    expect(after.content.map((line) => line.text).slice(before.content.length)).toEqual(['', ...art, ''])
+    // 而**文案一条都没有**：U43 补条那句作废之后，`/clear` 的收场就是「清屏 ＋ 字标」两样
+    expect(after.has('· 已开一条新会话')).toBe(false)
+    expect(after.content.filter((line) => line.text.trim().startsWith('·'))).toHaveLength(0)
+    // 视图那一侧：这一页**只有字标那一行**（不是「铺了条回执顶着」）
+    expect(stage.shell.getView().settled.map((row) => row.kind)).toEqual(['banner'])
   })
 
   test('**没开成**（活跃位没换——内核挡回）⇒ 照内核那句 `note` 说一句', async () => {

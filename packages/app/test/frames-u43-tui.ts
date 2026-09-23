@@ -16,12 +16,12 @@
  * 甲落账 → `/clear` → 乙落账 → `/resume` 选回甲。三屏各留一帧：
  * **① 开机屏 · ② 换回甲那一屏 · ③ 再切到乙那一屏**（常宽 100×30 一趟，窄窗 46×30 一趟）。
  *
- * 每屏上判四件：**字标只有一份**（且在最前） · **回执在**（这一屏的界） ·
+ * 每屏上判四件：**字标份数对得上**（且在最前） · **回执在**（这一屏的界） ·
  * **目标会话的记录铺出来了** · **没有残块**。
  *
- * ## ⚠️ U44 之后本脚本改了什么（读它之前先读这段）
+ * ## ⚠️ U44 / U45 之后本脚本改了什么（读它之前先读这段）
  *
- * 两处**行为变了**，判据跟着变（不是放宽，是跟着新行为走）：
+ * 三处**行为变了**，判据跟着变（不是放宽，是跟着新行为走）：
  *
  * 1. **`/clear` 不再留字**——U44 起「换会话＝翻页」，`/clear` 的回执**就是清屏本身**；
  *    U43 补条那句 `· 已开一条新会话` 随之作废（工单明文）。故那一跳改判
@@ -30,6 +30,11 @@
  *    （翻过页之后可见那一截的顶行是记录，那是翻页**该做**的事）。
  *    「记录又铺了一遍」那几处等待也换成了「**新页铺好了**」（回执 ＋ 目标记录同时在可见屏上）
  *    ——翻页之后旧内容不在可见区，这一条才真的在等重建。
+ * 3. **字标按「开一条新的」印**（U45 · 设计 · 终端呈现）——本文件原句是『一屏只有一份字标』
+ *    （U43 的裁定：只在开机印一次）。改判之后 **`/clear` 各印一块、`/resume` 一块都不印**：
+ *    故份数**不再是一个常数**——开机之后那一屏 `1`，`/clear` 之后各屏 `2`（开机那块 ＋ 那一跳那块），
+ *    `/resume` 那几跳**维持 `2` 不动**（这正是本文件最该咬住的一格）。
+ *    份数照钉**精确值**（`checkScreen` 的 `want` 由各屏自己给，不许退成「至少出现过」）。
  *
  * 翻页本身（清成什么样 / scrollback 读数 / 半截屏）的正面证据在 `frames-u44-tui.ts`。
  *
@@ -143,6 +148,26 @@ async function waitUntil(
 }
 
 /**
+ * 等**整份缓冲**里那块字标攒够 `copies` 块（U45）——每次「开一条新的」各印一块。
+ *
+ * 由头：`/clear` 那一跳的回执是**清屏 ＋ 字标**，而字标是**新那一页**画出来的（Ink 的重绘
+ * 排在微任务里）——「旧内容不在可见屏上了」那一下**早于**新页铺出来（实测：紧接着取帧会少一块）。
+ * 等它数够了再取帧，量的才是「这一跳真印出来了」。
+ */
+async function waitBanner(session: UiSession, copies: number): Promise<void> {
+  const art = (bannerOf(session.columns)[0]?.text ?? '').replace(/\s+$/u, '')
+
+  for (let at = 0; at < 250; at += 1) {
+    const { history } = await session.screen()
+    if (history.filter((line) => line.replace(/\s+$/u, '') === art).length >= copies) return
+
+    await Bun.sleep(40)
+  }
+
+  throw new Error(`等了 10 秒，整份缓冲里仍不足 ${copies} 块字标`)
+}
+
+/**
  * 四件「这一屏长什么样」的判据——每留一帧都过一遍（少判一屏就是空转）。
  *
  * ⚠️ **「字标在最前」改为量整份缓冲**（U44）：翻页把可见屏推进 scrollback，于是翻过页之后
@@ -150,11 +175,13 @@ async function waitUntil(
  * （它在缓冲的最顶上，往上翻就看到）。拿可见那一截判，量到的会是「翻页把它推走了」，
  * 那正是翻页**该做**的事，不是缺陷。
  */
-function checkScreen(shot: Capture, where: string, laidOut: string): void {
+function checkScreen(shot: Capture, where: string, laidOut: string, want: number): void {
   const first = shot.history.find((line) => line.trim() !== '') ?? ''
   const art = (bannerOf(shot.columns)[0]?.text ?? '').replace(/\s+$/u, '')
 
-  check(bannerCopies(shot) === 1, `${where}：**字标只有一份**`, `实际 ${bannerCopies(shot)} 份`)
+  // ⚠️ **份数按屏上真有的那块数**（U45 起：`/clear` 各印一块）——`want` 由调用方给，
+  //    不由这一处猜：这一条问的是「**这一跳多印了没有**」，而各屏的正确答案不同。
+  check(bannerCopies(shot) === want, `${where}：字标份数对得上（${want} 份）`, `实际 ${bannerCopies(shot)} 份`)
   check(first.replace(/\s+$/u, '') === art, `${where}：它就在最前面（整份缓冲的顶行）`, `顶行＝「${first}」`)
   check(countOn(shot.history, '· 已切到') >= 1, `${where}：回执在——这一屏的界由它承担`)
   check(countOn(shot.history, laidOut) >= 1, `${where}：目标会话的记录铺出来了（${laidOut}）`)
@@ -260,9 +287,14 @@ async function switching(): Promise<void> {
       (lines) => countOn(lines, '› 第一条会话的交代') === 0,
       10_000,
     )
+    await waitBanner(session, 2) // 开机那块 ＋ 这一跳那块（U45）
     const fresh = await session.capture({ label: '03-clear 之后' })
     keep(fresh)
-    check(bannerCopies(fresh) === 1, '`/clear`：**不重印字标**（仍只有开机那一份，只是被推去 scrollback）')
+    // ⚠️ **本条 2026-09-24 按新行为改写**（U45 · 设计 · 终端呈现「字标是开一条新的的记号」）：
+    //    原句是『`/clear`：**不重印字标**』（U43：只在开机印一次），锚 `=== 1`。
+    //    改判之后 `/clear` 正是「开一条新的」⇒ **印**：缓冲里**两块**（开机那块 ＋ 这一块）。
+    //    判据没删——问的还是「这一跳印了几块」，只是答案从「一块都不多」变成「**正好多一块**」。
+    check(bannerCopies(fresh) === 2, '`/clear`：**印**（开机那块 ＋ 这一块，共两块）', `实际 ${bannerCopies(fresh)} 份`)
     check(
       countOn(fresh.history, '› 第一条会话的交代') >= 1,
       '切走那条的记录**没被抹掉**（还在缓冲里——往上翻看得到）',
@@ -279,7 +311,7 @@ async function switching(): Promise<void> {
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
     const yi = await session.capture({ label: '04-乙落账' })
     keep(yi)
-    check(bannerCopies(yi) === 1, '乙落账之后：仍只有那一份')
+    check(bannerCopies(yi) === 2, '乙落账之后：仍是那两块（落账不再添）')
 
     // —— `/resume` 选回甲：**这一屏就是本单要的那一屏** ——
     //
@@ -294,7 +326,7 @@ async function switching(): Promise<void> {
     await waitLaidOut(session, '第一条会话的交代', '› 第一条会话的交代')
     const back = await session.capture({ label: '05-换回甲那一屏' })
     keep(back)
-    checkScreen(back, '换回甲那一屏', '› 第一条会话的交代')
+    checkScreen(back, '换回甲那一屏', '› 第一条会话的交代', 2)
     check(
       countOn(back.history, '› 第一条会话的交代') >= 2,
       '换回甲那一屏：那条会话的记录**照常重铺**（不是被「不重印」连带吞掉）',
@@ -309,7 +341,7 @@ async function switching(): Promise<void> {
     await waitLaidOut(session, '第二条会话的交代', '› 第二条会话的交代')
     const again = await session.capture({ label: '06-再切到乙那一屏' })
     keep(again)
-    checkScreen(again, '再切到乙那一屏', '› 第二条会话的交代')
+    checkScreen(again, '再切到乙那一屏', '› 第二条会话的交代', 2)
 
     check(
       countOn(again.history, '· 已切到') >= 2,
@@ -357,9 +389,11 @@ async function narrow(): Promise<void> {
       (lines) => countOn(lines, '第一条会话的交代') === 0,
       10_000,
     )
+    await waitBanner(session, 2) // 开机那块 ＋ 这一跳那块（U45）
     const fresh = await session.capture({ label: '07a-窄窗 clear 之后' })
     keep(fresh)
-    check(bannerCopies(fresh) === 1, '窄窗下 `/clear`：**不重印字标**（仍只有一份）')
+    // 同常宽那一条：U45 起 `/clear` **印**（窄窗这一档是一行版 `Magic Code`，一块也是一行）
+    check(bannerCopies(fresh) === 2, '窄窗下 `/clear`：**印**（开机那块 ＋ 这一块，共两块）', `实际 ${bannerCopies(fresh)} 份`)
     check(
       countOn(fresh.history, '第一条会话的交代') >= 1,
       '窄窗下切走那条的记录也**没被抹掉**（还在缓冲里）',
@@ -381,7 +415,7 @@ async function narrow(): Promise<void> {
     const back = await session.capture({ label: '08-窄窗换会话那一屏' })
     keep(back)
 
-    check(bannerCopies(back) === 1, '窄窗换会话那一屏：字标只有一份', `实际 ${bannerCopies(back)} 份`)
+    check(bannerCopies(back) === 2, '窄窗换会话那一屏：仍是那两块（`/resume` 不印）', `实际 ${bannerCopies(back)} 份`)
     check(
       back.history.every((line) => line.includes('█') === false),
       '窄窗下不印块字版——换会话那一屏（含 scrollback）也**没有残块**',

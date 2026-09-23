@@ -84,6 +84,7 @@ import {
   withBanner,
   withContextWindow,
 } from './view.ts'
+import type { PageTurn } from './view.ts'
 import {
   backspaceRange,
   deleteRange,
@@ -438,11 +439,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let waiting: PendingPicker | null = null
 
   /**
-   * **一次换页动作发出去了、还在等答复**（U44）——`/clear`（`label` 为 `null`）或
-   * `/resume` 选定某条（`label` ＝ 那条的**名字**，回执要带名字）。`null` ＝ 没在等。
+   * **一次换页动作发出去了、还在等答复**（U44）——`/clear` 或 `/resume` 选定某条。`null` ＝ 没在等。
+   *
+   * `kind` 说的是**这一跳是哪一种**（U45 · `PageTurn`）——它决定**这一页带不带字标**：
+   * `'new'`（`/clear`＝开一条新的）**印**、`'open'`（`/resume`＝翻回已有的一页）**不印**。
+   * `label` 是回执要带的名字：`/resume` 那条是**那一条的名字**，`/clear` 一个字都不说，
+   * 故为 `null`。
    *
    * 它管两件（都按**真实结果**办，见 `onEvent` 里那一支）：
-   * - **这一页要不要翻**——归约据它把 `null → 头一条` 也算成换页（由头见 `reduceSessionState`）；
+   * - **这一页要不要翻、翻成哪一副面孔**——归约据它把 `null → 头一条` 也算成换页，
+   *   并按 `kind` 决定种不种字标（由头见 `reduceSessionState`）；
    * - **要不要说一句**——`/resume` 说 `· 已切到 <名字>`；`/clear` **一个字都不说**
    *   （回执就是清屏本身，设计 · 命令行与配置）。
    *
@@ -453,7 +459,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 之前**留的那行字会被一并推进 scrollback，新那一页的界上就**没有它**了。挪到答复这一侧，
    * 它才是**新页自己的**头一行；顺带也就按真实结果说话（内核忙时切不动，那时不该说「已切到」）。
    */
-  let turn: { readonly label: string | null } | null = null
+  let turn: { readonly kind: PageTurn; readonly label: string | null } | null = null
 
   /**
    * **一次等着答复的动作意图**（U41）——`provider.save` 之后的回话到了要接着做的那件事
@@ -784,10 +790,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const before = view.sessionId
     // 流式增量按帧合批；其余一律当场（判据见 `STREAMING` 的注）
     //
-    // ⚠️ `pageTurn` **只在这一声答复是换页那一跳时**给（`turn` 是刚发出去、还没收场的那一次）：
-    //    它管的是「`null → 头一条` 也算换页」那一格（由头见 `reduceSessionState`）。
+    // ⚠️ `turn` **只在这一声答复是换页那一跳时**给（`turn` 是刚发出去、还没收场的那一次）：
+    //    它管两格——「`null → 头一条` 也算换页」（由头见 `reduceSessionState`）与
+    //    **这一页带不带字标**（U45：`'new'` 印 / `'open'` 不印）。
     //    给宽了，「问一次目录」开出来的空壳会话也会把屏翻掉。
-    commit(reduce(view, event, { pageTurn: turn !== null }), STREAMING.has(event.kind))
+    commit(reduce(view, event, { turn: turn?.kind ?? null }), STREAMING.has(event.kind))
 
     if (event.kind === 'session.state') {
       // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
@@ -813,9 +820,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 同一把尺子。
       //
       // ⚠️ **走 `appendPageNote` 而不是 `appendReceipt`**（U44）：这一行是**新那一页的界**
-      // ——字标不在换会话时重印，顶上那行就是它。故它得与字标同一格：`rebuild` 随后铺历史时
-      // 要把它**留在最前面**（`pageHeaderOf` 按 key 认它），不然头一行记录会被 `<Static>`
-      // 的游标跳过（那一页凭空少一行）。
+      // ——`/resume` 翻回的那一页不印字标（U45），顶上那行就是它。故它得与字标同一格：
+      // `rebuild` 随后铺历史时**要把它留在最前面**（`pageHeaderOf` 按 key 认它），
+      // 不然头一行记录会被 `<Static>` 的游标跳过（那一页凭空少一行）。
+      //（`/clear` 那一路 `kind` 是 `'new'`、`label` 是 `null` ⇒ 走不进来：那一页的界是字标。）
       if (turn !== null) {
         const label = turn.label
         turn = null
@@ -2341,7 +2349,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
         // **换一条**：回执与翻页都在**答复**那一侧落（见 `turn` 那段注）——
         // 这一侧只管把意图记下、把抽屉收起。
-        turn = { label: row.label }
+        // **翻回已有的一页**（`'open'`）⇒ 那一页**不印字标**（U45）：它马上有记录铺出来，
+        // 顶上那行 `· 已切到 <名字>` 就是它的界。
+        turn = { kind: 'open', label: row.label }
         send({ type: 'session.open', session: row.value })
         commit(closePicker(view))
         return NONE
@@ -2683,7 +2693,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 如实回一句，不当交代发出去。
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/clear（不带参数）'))
       // **一个字都不发**（回执就是清屏本身）——故 `label` 为 `null`：那一跳只翻页、不落字。
-      turn = { label: null }
+      //
+      // ⚠️ **不是「一个字都不印」**（U45）：字标照种——`'new'` 那一格说的正是
+      // 「这一页是**开一条新的**」。清屏说的是「旧的走了」，字标补的是另一半「新的来了」；
+      // 少了它，这一屏只剩分隔线、输入行、状态行贴在屏顶，**看着像故障，不像开张**。
+      // 两者都不算「文案」（`label` 仍旧是 `null`，回执那一格一个字都不添）。
+      turn = { kind: 'new', label: null }
       return only(cleared, { type: 'session.new' })
     }
 

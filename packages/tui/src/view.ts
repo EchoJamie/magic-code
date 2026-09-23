@@ -723,12 +723,14 @@ export type ShellView = {
    * 渲染层拿它当 `<Static>` 的 key（见 `components/app.ts` 的 `pageOf`）。
    *
    * 由头：记录区换掉之后，屏上那批行要**重新写一遍**（`Static` 只追加新项，认旧游标）
-   * ——那是重挂的理由。而**「换会话」不是「又启动一次」**：字标只在开机印一次
-   * （设计 · 终端呈现），故页的身份**不能**再挂在记录区开头那一行（字标）的**对象身份**上
-   * ——那条耦合逼出来的正是「换会话必须重印字标」（缺陷 D28 乙）。
+   * ——那是重挂的理由。而**「换会话」不是「又启动一次」**，故页的身份**不能**挂在记录区
+   * 开头那一行（字标）的**对象身份**上——那条耦合逼出来的正是「换会话必须重印字标」
+   * （缺陷 D28 乙）。摘下来之后，**开页**（页号）与**这一页带不带字标**（U45：`/clear` 带、
+   * `/resume` 不带）才是两件能各判各的事。
    *
    * **只管「开没开新页」，不管页里有什么**：`rebuild` 往**已经开着的**那一页里填历史，
-   * 编号不动（见 `rebuild`）；`createView` 给 `0`（开机那一页），此后每换一次会话 `＋1`。
+   * 编号不动（见 `rebuild`）；`createView` 给 `0`（开机那一页），此后每换一次会话 `＋1`
+   * （`/clear` 与 `/resume` 各算一次，页里带不带字标见 `PageTurn`）。
    */
   readonly page: number
   /** 输入行的**候选**（D12）——不在补全里就是 `null`。 */
@@ -933,15 +935,31 @@ export type AttachmentsCatalog = EventDataOf['attachments.catalog']
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
 /**
+ * **换页那一跳是「哪一种」**（U45）——它决定这一页**带不带字标**：
+ *
+ * - `'new'` ＝ **开一条新的**（`/clear`）⇒ **印**字标（设计 · 终端呈现：「字标是开一条新的
+ *   的记号」）；
+ * - `'open'` ＝ **翻回已有的一页**（`/resume`）⇒ **不印**——那一页马上有记录铺出来，
+ *   页头另有 `· 已切到 <名字>` 划界，再叠字标就是同一件事说两遍。
+ *
+ * ⚠️ 与「会话身份换没换」是两件事（U44 的那条判据不变）：这一个说的是**这一跳是哪一种动作**
+ * ——`/clear` 之后 `view.sessionId` 可能还是 `null`（外壳不会在首条消息开张时收到
+ * `session.state`），那一跳照样是「开一条新的」。
+ */
+export type PageTurn = 'new' | 'open'
+
+/**
  * 归约一步：`event → 新视图`（纯函数——不改动入参）。
  *
- * `pageTurn` 只对 `session.state` 有意义（U44 · 见 `reduceSessionState`）：外壳发过
+ * `turn` 只对 `session.state` 有意义（U44 起 · 见 `reduceSessionState`）：外壳发过
  * `/clear` 或 `/resume` 的选定之后，那一声答复要按「换页那一跳」判。别的事件不看它。
+ * 不给（`undefined`）＝ **这一声答复不是换页那一跳**——「问一次目录」开出来的空壳会话、
+ * 别处报来的会话状态都走这一格，屏上一动不动。
  */
 export function reduce(
   view: ShellView,
   event: KernelEvent,
-  options: { readonly pageTurn?: boolean } = {},
+  options: { readonly turn?: PageTurn | null } = {},
 ): ShellView {
   switch (event.kind) {
     case 'model.delta':
@@ -1084,7 +1102,7 @@ export function reduce(
       return withPlan(view, event.data.entry, event.data.plan)
 
     case 'session.state':
-      return reduceSessionState(view, event.data, options.pageTurn === true)
+      return reduceSessionState(view, event.data, options.turn ?? null)
 
     // 读面答复——**攒与重建归外壳**（`shell.ts` 里按块收，收齐了调 `rebuild`）；
     // 归约这层收到它就丢（它不逐条进记录区）
@@ -1328,9 +1346,10 @@ type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
 /**
  * `session.state`——目录 ＋ 当前会话。**换了会话＝记录区交给重建**（缺陷 D1）。
  *
- * `pageTurn`（U44）＝**这一声答复是「换页那一跳」的**（外壳发过 `/clear` 或 `/resume`
- * 的选定，见 `shell.ts` 的 `turn`）。默认那一格（`false`）只管「会话身份真的换了没换」——
- * 而换页那一跳多一条：**从「还没有会话」换到「头一条」也算换了一页**。
+ * `turn`（U44 起）＝**这一声答复是「换页那一跳」的**（外壳发过 `/clear` 或 `/resume`
+ * 的选定，见 `shell.ts` 的 `turn`），且**是哪一种**（U45 起带上了种类，见 `PageTurn`）。
+ * 给 `null`（默认）只管「会话身份真的换了没换」——而换页那一跳多一条：
+ * **从「还没有会话」换到「头一条」也算换了一页**。
  *
  * ⚠️ **为什么要多这一条**：外壳**不会**在首条消息开张时收到 `session.state`（那时没有
  * 会话命令要回答），故 `view.sessionId` 一直是 `null`——用户开局敲一句、再敲 `/clear`
@@ -1340,10 +1359,17 @@ type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
  * ⚠️ **不能把 `null → 头一条` 一律当成换页**：`/resume` 问一次目录、`/model` 这类读侧动作
  * 都会在装配那边开一张**空壳**会话（信封必带会话），那一下 id 也是从无到有——屏上却什么都
  * 不该动。故只有当**外壳真发过换页那一跳**时才算（由头同 D25：别拿会话 id 当页号）。
+ *
+ * ⚠️ **`note` 在＝这一跳没成**（U45 补）：内核忙的时候 `fresh()` / `switchTo()` 会把它挡回，
+ * 活跃位**不动**（`session.state` 的 `note` 那一格，形制见 `shell.ts` 的 `onEvent`）。
+ * 那一跳什么都没发生——**不许翻页、不许种字标、不许清屏**（真 PTY 上现形过：空手开机、
+ * 首条消息正跑着时按 `/clear`，`view.sessionId` 还是 `null` ⇒ `null → 活跃位` 落在「换页」
+ * 那一格里，屏被清掉、字标凭空多印一块，而内核其实一个字都没答应）。
+ * 判据与那一行回执同一把尺子：**这一跳真成了才说话／才翻页**。
  */
-function reduceSessionState(view: ShellView, data: SessionStateData, pageTurn: boolean): ShellView {
+function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageTurn | null): ShellView {
   const switched = view.sessionId !== null && view.sessionId !== data.active
-  const turned = pageTurn ? view.sessionId !== data.active : switched
+  const turned = turn !== null && data.note === undefined ? view.sessionId !== data.active : switched
   const title = data.sessions.find((row) => row.id === data.active)?.title ?? null
 
   const base: ShellView = {
@@ -1356,12 +1382,18 @@ function reduceSessionState(view: ShellView, data: SessionStateData, pageTurn: b
   // 换了会话 ⇒ **另开一页**（`page ＋1`）＋ 记录区清空重来，内容由随后读回来的历史
   // （`rebuild`）铺。
   //
-  // ⚠️ **不种新字标**（U43 · 缺陷 D28 乙的裁定）：字标属**启动**那一刻，只在开机印一次
-  // （设计 · 终端呈现）。这一屏的界由既有回执 `· 已切到 <名字>` 承担。
+  // **这一页带不带字标，按「这一跳是哪一种」分**（U45 · 设计 · 终端呈现）：
+  // **字标是「开一条新的」的记号**——`/clear` 印（那一页是一张白纸，只有分隔线、输入行、
+  // 状态行贴在屏顶，**看起来像出了故障，不像「开张了」**；字标补的就是「新的来了」那一半），
+  // `/resume` 不印（那一页马上有记录铺出来，页头另有 `· 已切到 <名字>` 划界）。
+  //
+  // ⚠️ **两处别混**（U43 那一半仍成立）：字标**只由「开一条新的」种**——`/resume` 开的那一页
+  // 上一条都没有，且 **`rebuild` 绝不补种**（`pageHeaderOf` 照用本尊、没有就一行都不补）。
   // 页号加一不是「换页的装饰」——它是**重挂 `Static` 的理由**：记录区整块换掉之后，
-  // 屏上那批行要重新写一遍（`Static` 只认它自己的游标），而那正是**旧的、按字标对象认页**
-  // 那一套顺带做的事（也顺带把字标又印了一遍）。页身份摘到 `page` 上，两件事就分开了：
-  // **重挂照做，字标不再跟着走**（见 `ShellView.page`）。
+  // 屏上那批行要重新写一遍（`Static` 只认它自己的游标）。
+  //
+  // ⚠️ **页身份仍归 `page`**（U43 定的那一条不变）：它让「有的页印、有的页不印」成为可能——
+  // 若还把页身份挂在字标那一行的对象上，「有的页不印字标」就退化成「那一页不是一页」。
   //
   // **计划那一块同一条**（U34）：换会话**先移除旧清单**（设计：不能短暂串到新会话）——
   // 新会话的那一份由随后读回来的历史（`rebuild`）重铺。收起的位与视口也归零：
@@ -1370,7 +1402,9 @@ function reduceSessionState(view: ShellView, data: SessionStateData, pageTurn: b
     ? {
         ...base,
         rows: [],
-        settled: [],
+        // **开一条新的 ⇒ 这一页从字标起**（幂等：`bannerFirst` 先把已有的滤掉再放一个）。
+        // 别的路（`/resume`）给的是空的一页——**别在这儿替它补一个**。
+        settled: turn === 'new' ? bannerFirst([]) : [],
         page: view.page + 1,
         plan: { entry: null, plan: null },
         planCollapsed: false,
@@ -1413,9 +1447,10 @@ function bannerRow(): LogRow {
 /**
  * 记录区 → **带上字标**的形态：字标**恒在最前、且恒只一行**（幂等：先滤掉已有的再放一个）。
  *
- * ⚠️ **只归开机那一处**（`withBanner`）——「开机印一次」是字标在本仓唯一的用法
- * （设计 · 终端呈现）。**换会话不走这儿**（U43）：那一下记录区照旧整块换掉、
- * 页号照旧加一，但**不种新字标**（见 `reduceSessionState` 那一段注）。
+ * ⚠️ **只归「开一条新的」那两处**（U45 · 设计 · 终端呈现「字标是开一条新的的记号」）：
+ * **开机**（`withBanner`）与 **`/clear`**（`reduceSessionState` 的 `turn === 'new'` 那一支）。
+ * **`/resume` 不走这儿**（U43 起）：那一下记录区照旧整块换掉、页号照旧加一，
+ * 但**不种字标**——那一页马上有记录铺出来，`· 已切到 <名字>` 就是它的界。
  *
  * ⚠️ **它不「开页」**：页的身份是 `ShellView.page`（一个数），与「谁在最前面」无关——
  * 种不种这一行，都不影响 `<Static>` 重挂与否（见 `components/app.ts` 的 `pageOf`）。
@@ -1448,10 +1483,10 @@ export function appendPageNote(view: ShellView, text: string): ShellView {
  * 用历史铺一页时的**页头**——**这一页有页头就照用本尊（对象不变），没有就一行都不补**。
  *
  * 「有没有」看的是 `settled[0]`，两格都算页头：
- * - **字标**——开机那一页（`withBanner` 种的，`rebuild` 得把它留在最前面，不然 `--session`
- *   接续那条路开局就把它换没了）；
- * - **开页回执**（`PAGE_NOTE_KEY`）——换会话开的那一页（U44）。
- * 两者都没有（`/clear` 开的那一页）＝历史直接从头铺。
+ * - **字标**——**开机**那一页（`withBanner` 种的）与 **`/clear` 开的那一页**
+ *   （U45；两处**都**得把它留在最前面，不然 `--session` 接续那条路开局就把它换没了）；
+ * - **开页回执**（`PAGE_NOTE_KEY`）——**`/resume` 开的那一页**（U44）。
+ * 两者都没有（真的一条都没有那一页）＝历史直接从头铺。
  *
  * ⚠️ **认 key 不认位置**（U44 起的第二格）：回执落在最前面**不等于**它是页头，
  * 见 `PAGE_NOTE_KEY` 那段注。
@@ -1470,11 +1505,13 @@ function pageHeaderOf(view: ShellView): readonly LogRow[] {
 }
 
 /**
- * **印一次字标**（外壳开局调，见 `createShell`）——记录区最前面那一块。
+ * **开机印那一块字标**（外壳开局调，见 `createShell`）——记录区最前面那一块。
  *
- * ⚠️ **本仓唯一印字标的地方**（U43）：换会话只清空记录区、不种新字标
- * （见 `reduceSessionState` 那一段注）。开机那一页＝`createView` 给的页号 `0`，
- * 故这一处也不动页号。
+ * ⚠️ **印字标的地方一共两处**（U45）：本处（**开机**）与 `reduceSessionState` 里
+ * `turn === 'new'`（**`/clear`＝开一条新的**）——两处都是「开一条新的」那一跳。
+ * **`/resume` 不印**（见 `bannerFirst` 与 `reduceSessionState` 的注）。
+ *
+ * 开机那一页＝`createView` 给的页号 `0`，故这一处不动页号（开页归纯归约那一侧）。
  *
  * 只在外壳开局这一处种：`createView` 仍是「空视图」（`record.ts` 的标本、
  * 纯归约的用例都直接拿它当起点，那里没有「启动」这回事）。
@@ -1547,9 +1584,10 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 用**重建的会话内容**替换记录区（缺陷 D1）——只挑会话内容那一类，
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
  *
- * ⚠️ **字标在这一页上有就留在最前面**（`pageHeaderOf`：**照用本尊、不补种**）——
+ * ⚠️ **页头在这一页上有就留在最前面**（`pageHeaderOf`：**照用本尊、不补种**）——
  * 这一跳把 `settled` 整个换掉，不保它 `--session` 接续那条路（开局 `boot` 跑完读一次历史
- * ⇒ 走到这儿）当场就没有字标了；而**换会话开的那一页本来就没有字标**，故历史直接从头铺。
+ * ⇒ 走到这儿）当场就没有字标了。两格都走这条规矩：**开机与 `/clear` 开的那一页**留的是
+ * 字标（U45）、**`/resume` 开的那一页**留的是 `· 已切到 <名字>`（U44）。
  *
  * ⚠️ **本函数不「开页」**（U29 验收改 · U43 后仍是这条）：页开不开由 `ShellView.page` 管，
  * 而这一跳是「往**已经开着的那一页**里填历史」——页号一动，`Static` 就重挂、这一页整批行

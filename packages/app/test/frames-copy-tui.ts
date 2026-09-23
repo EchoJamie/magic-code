@@ -115,6 +115,24 @@ function bannerRows(lines: readonly string[]): number {
 }
 
 /**
+ * 等**整份缓冲**里那块字标攒够 `rows` 行——U45 起每次「开一条新的」各印一块（块字版 5 行）。
+ *
+ * 由头（U45）：`/clear` 那一跳的回执是**清屏 ＋ 字标**，而字标是**新那一页**画出来的
+ * （Ink 的重绘排在微任务里）。`wait({ absent: '/clear' })` 只等到「草稿被清掉」那一下
+ * ——紧接着取帧抓到的还是**新页还没铺出来**的中间态（实测：数出来正好少一块）。
+ * 等它数够了再取帧，量的才是「这一跳真印出来了」。
+ */
+async function waitBannerRows(session: UiSession, rows: number): Promise<void> {
+  for (let at = 0; at < 250; at += 1) {
+    if (bannerRows((await session.screen()).history) >= rows) return
+
+    await Bun.sleep(40)
+  }
+
+  throw new Error(`等了 10 秒，整份缓冲里的块字仍不足 ${rows} 行`)
+}
+
+/**
  * 记录库里的会话条数——**不看屏**，直读应用自己落的库。
  *
  * 判「首条消息前不建空会话」只能用这个：屏上说没说不等于库里建没建。
@@ -165,17 +183,18 @@ async function sessionNew(): Promise<void> {
 
     // —— `/clear`：**不再印那行存储回执**（U44 起连「已开一条新会话」也不发了） ——
     //
-    // ⚠️ 为什么敲**两次**：第一次开张时外壳还没收到过 `session.state`（`view.sessionId` 仍是
-    // `null`），`reduceSessionState` 认不出「换了会话」⇒ 记录区**照旧不重建**（这是既有实现，
-    // 本单不动）。**第二次**才走「切走一条 ⇒ 记录区重建」那一支。
+    // ⚠️ 为什么敲**两次**：两次**都**翻页（U44 起「`null → 头一条`也算换页」——第一次那一下
+    // 外壳的 `view.sessionId` 还是 `null`，正是那一格）；两次也**都印字标**（U45）。
+    // 两下连着敲，量的是「每开一条新的正好印一块」这条规矩**重复触发**时也站得住。
     //
-    // ⚠️ **这一跳在屏上没有任何可等的字**（U44）：`/clear` 的回执**就是清屏本身**——它是个
-    // 终端动作，不在记录区里留痕。故这里等「这一下被吃下」（草稿清空），紧接着**就这么判**：
-    // 记录区里没有那两句话、整份缓冲里字标仍只有一份。
-    // 严判（清成了什么样、scrollback 还在不在）归 `frames-u44-tui.ts`。
+    // ⚠️ **这一跳在屏上没有可等的「字」**（U44）：`/clear` 的回执**就是清屏本身**——它是终端
+    // 动作，不在记录区里留痕。故这两处**等字标那一块数够了**（U45 起那一页真有东西可等，
+    // 见 `waitBannerRows`），再取帧判「那两句话一个字都没有」。
+    // 严判（清成了什么样、scrollback 还在不在）归 `frames-u44-tui.ts` / `frames-u45-tui.ts`。
     await typeLine(session, '/clear')
     await session.key('enter')
     await session.wait({ absent: '/clear' }, { timeoutMs: 10_000 })
+    await waitBannerRows(session, 10) // 开机那块 ＋ 这一跳那块
     const once = await session.capture({ label: '03-clear 之后' })
     keep(once)
 
@@ -186,12 +205,19 @@ async function sessionNew(): Promise<void> {
     await typeLine(session, '/clear')
     await session.key('enter')
     await session.wait({ absent: '/clear' }, { timeoutMs: 10_000 })
+    await waitBannerRows(session, 15) // 再一块
     const twice = await session.capture({ label: '04-再 clear 一次（换了会话）' })
     keep(twice)
 
+    // ⚠️ **本条 2026-09-24 按新行为改写**（U45 · 设计 · 终端呈现「字标是开一条新的的记号」）：
+    //    原句是『换会话之后**仍只有一份字标**』（U43：只在开机印一次），锚 `=== 5`。
+    //    改判之后**每一次「开一条新的」各印一块**——这趟一共三块：开机那块 ＋ 两次 `/clear`
+    //    各一块（第一次也翻页：「`null → 头一条`也算换页」是 U44 定的那条，见 `reduceSessionState`）。
+    //    判据没删、也没放宽（份数照钉**精确值**）：问的还是「这一跳多印了什么」，
+    //    只是答案从「一块都不多」变成「**每开一条新的正好一块**」。
     check(
-      bannerRows(twice.history) === 5,
-      '换会话之后**仍只有一份字标**（不再重印——U43；这一份现在压在 scrollback 里）',
+      bannerRows(twice.history) === 15,
+      '两次 `/clear` ⇒ **三块字标**（开机 ＋ 每开一条新的各一块），一块不多、一块不少',
       `整份缓冲实际 ${bannerRows(twice.history)} 行块字`,
     )
     check(

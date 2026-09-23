@@ -10,7 +10,8 @@
  * - **已定局的行**（上一轮及更早）→ `<Static>`：**写一次就不再重绘**——它们落进终端
  *   scrollback，滚动与复制都归终端 ✓。⚠️ **这也是 D11 的结构性护栏**：写出去的永不重擦。
  * - **本轮的行**（在流式、还会变）→ 活动区：就地重绘（高度按内容，**不填满窗口**）。
- * - **分隔线 ＋ 交互区 ＋ 状态行** → 活动区尾部。
+ * - **分隔线 ＋ 交互区 ＋ 状态行 ＋ 分隔线** → 活动区尾部（U45 起是**两条**线，
+ *   把「输入行 ＋ 状态行」上下各封一道，三块一眼分得开，见 `separatorOf`）。
  *
  * ⚠️ **要防的那个 bug**（原型 · 交互逻辑）：内联下重绘擦不干净＝同一段重复堆进 scrollback。
  * 两条护栏：① 已定局的行走 `Static`（不重绘）；② **一行一个 `<Text>`、行内不写换行**
@@ -152,7 +153,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     }),
     // ⚠️ **空态那一块已删**（用户 2026-09-20 定：启动屏上「会话在你按下第一次回车时才建立」
     //    这句没有动作价值，原型早已删掉）。删掉之后这一屏就只是：记录区（`Static`）→ 活动区
-    //    → 分隔线 → 交互区 → 状态行——开机屏上不再有那句话，也没有为它单算的高度项
+    //    → 分隔线 → 交互区 → 状态行 → 分隔线——开机屏上不再有那句话，也没有为它单算的高度项
     //    （见上面 `liveBudget` 那一段注）。
     // 本轮的行（还在变）——就地重绘
     //
@@ -183,11 +184,30 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     ...(plan.height === 0
       ? []
       : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? now : null })]),
-    // **全屏只有这一条分隔线**（记录区与交互区之间）
-    h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns))),
+    // **上面这一条**——记录区与交互区之间的界。
+    separatorOf(columns),
     h(Box, { flexDirection: 'column' }, ...dockOf(view, columns, rows)),
     h(StatusLine, { status: view.status, columns }),
+    // **下面这一条**（U45）——把「输入行 ＋ 状态行」从底下也封住，三块一眼分得开
+    //（记录区 / 输入区 / 状态区）。**两条同形制**（同宽、同色、同一条 `separatorOf`）——
+    // 线是**划界**用的，不是装帧：别在记录区里、也别在输入行与状态行之间再补第三条
+    //（那两块仍属同一块）。高度的账见 `CHROME_LINES`。
+    separatorOf(columns),
   )
+}
+
+/**
+ * **一条满宽分隔线**——`AppView` 里一共两条（记录区／交互区之间那条，与交互区下沿那条，U45），
+ * **同一形制**：整宽 ＋ `PALETTE.ghost`，不加第三种颜色或粗细。
+ *
+ * 收在一处是为了「两条长得一样」这件事**只有一处可改**——各写一行的话，改了一条忘了另一条
+ * 就是两条线看着不像一套（而它们本来就是一条界的两头）。
+ *
+ * ⚠️ 宽度取 `max(1, columns)`——极窄档也照整宽画（既有那一手，不新造分支）：
+ * 那是**划界**，窄屏上更需要它。
+ */
+function separatorOf(columns: number): ReactElement {
+  return h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns)))
 }
 
 /**
@@ -261,12 +281,15 @@ export function flipBytes(rows: number): string {
 }
 
 /**
- * 动态帧里**除活动区之外**的固定行数——分隔线与状态行（各一行）。
+ * 动态帧里**除活动区之外**的固定行数——**两条分隔线 ＋ 状态行**（各一行，U45 起是三条）。
  *
  * 它是活动区预算那个减法里的一项：动态帧 ＝ 活动区 ＋ `CHROME_LINES` ＋ 交互区。
  * 交互区那一项不在这里（它按内容算，见 `dock` 那一段注）。
+ *
+ * ⚠️ **下沿那条线也是固定行**（U45）：加了它却不加这里的账，活动区就多算一行 ⇒ 帧正好顶满
+ * ⇒ 真光标高一行（U31 那一族的老病：账与屏必须同取一处，见上面 `liveBudget` 那一段注）。
  */
-const CHROME_LINES = 2
+const CHROME_LINES = 3
 
 /** 活动区要画的那一条——**画哪几条、留不留分段、跳几行**都在这一处定（账与屏同源）。 */
 type LiveEntry = {
