@@ -1085,11 +1085,11 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     expect(frame.has('m-2')).toBe(true)
   })
 
-  test('分组头也占窗口的格子（`/session` 那一档：账与屏照旧一致）', async () => {
+  test('分组头也占窗口的格子（`/resume` 那一档：账与屏照旧一致）', async () => {
     // 分组头是**多出来的一行**——窗口按「项」算（行 ＋ 头 ＋ 提示），故它一并计入预算；
     // 不这么算的话，带分组的列表会正好多画一行（账少、屏多）。
     const stage = createStage()
-    stage.type('/session')
+    stage.type('/resume')
     stage.press({ kind: 'enter' })
     stage.feed([
       event('session.state', {

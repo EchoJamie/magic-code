@@ -21,7 +21,7 @@
  *
  * ## 走的是真路径
  *
- * 换会话经**真选择器**（`/session` → 回车开 → ↑↓ 选 → 回车定），不是直接喂一个 `session.state`
+ * 换会话经**真选择器**（`/resume` → 回车开 → ↑↓ 选 → 回车定），不是直接喂一个 `session.state`
  * ——回执 `· 已切到 <名字>` 只在那条路上发（`shell.ts` 的 `submit`），少了它就等于
  * 把「回执每次都在」这条判据空转掉。`session.state` / `session.history` **分两帧**喂
  * （现实里它们隔着一趟控制面往返：外壳收到 `session.state` 才发 `history.read`）。
@@ -42,6 +42,21 @@ const NARROW: ScreenOptions = { columns: 40, rows: 30 }
 const ENTER = { kind: 'enter' } as const
 const DOWN = { kind: 'down' } as const
 const UP = { kind: 'up' } as const
+
+/**
+ * 内核挡回时那句 `note` —— **照抄一句真话的形状**（不是抄某个常量：这句话归内核，
+ * 外壳只负责**把它接上**，措辞是它的事、不是这一层的事）。这一格原先没有出口（U44 接上）。
+ */
+const BUSY_NOTE = '正在跑一轮——先 Ctrl+C 中断，再切会话（同一时刻只有一个活跃会话）'
+
+/** 一条带着 `note` 的答复（忙时切不动那一支）。 */
+function busy(active: string): KernelEvent {
+  return event('session.state', {
+    active,
+    sessions: [{ id: 's1', at: 0, title: '甲的事' }],
+    note: BUSY_NOTE,
+  })
+}
 
 /** 目录里那两条——**两趟切换都用同一份**（`active` 说此刻在哪一条）。 */
 function catalog(active: string): KernelEvent {
@@ -88,15 +103,24 @@ function takes(stage: Stage, steps: readonly (() => void)[]): readonly ShellView
 }
 
 /**
- * 经**真选择器**切一条：`/session` → 回车开 → 按 `keys` 选行 → 回车定 → 答复到 → 换会话。
+ * 经**真选择器**切一条：`/resume` → 回车开 → 按 `keys` 选行 → 回车定 → 答复到 → 换会话。
  *
  * ⚠️ **目录那两次答复要分开喂**（照真路径的次序）：
- * ① `/session` 问出来的那一趟，`active` 还是**切之前**那条（问的是「有哪几条」，
+ * ① `/resume` 问出来的那一趟，`active` 还是**切之前**那条（问的是「有哪几条」，
  *    不是「换过去」）——照目标会话喂就成了「抽屉一开就换过去了」，后面的 ↑↓ 全落在别处；
- * ② 选定之后内核才报新会话（`session.open` 的答复）——**换会话那一帧是它**。
+ * ② 选定之后内核才报新会话（`session.open` 的答复）——**换会话那一帧是它**，
+ *    回执 `· 已切到 <名字>` 也在这一帧上（U44 起：不再在选定那一刻发）。
  *
  * 每一拍**各记一帧**（命令那一屏、抽屉那一屏、选定那一帧都在帧序里）——
  * 「回执在不在」要在同一帧上判，跳帧就判空了。
+ *
+ * ## ⚠️ 本装置量不到「翻页」那一手（U44）
+ *
+ * 这里画的是**一串视图**（`show(views…)` 逐帧过 `AppView`），而翻页是**终端上的动作**
+ * ——它由活壳那一层（`TuiApp` 的 `useFlipOnNewPage`，见 `components/app.ts`）在页号一变时
+ * 经 Ink 的 `writeToStdout` 做，**这一层没有它**。故本文件的判据一律只问
+ * 「**缓冲里累计**出现了什么」（`screen.lines` 读的是整份缓冲，含滚进 scrollback 的）——
+ * 那几问翻不翻页答案都一样；**屏上那一下清没清干净，归真 PTY 取帧**（工单的验收口径）。
  */
 function switchThroughPicker(
   stage: Stage,
@@ -105,15 +129,15 @@ function switchThroughPicker(
   to: string,
 ): readonly (() => void)[] {
   const steps: (() => void)[] = [
-    () => stage.type('/session'),
+    () => stage.type('/resume'),
     () => stage.press(ENTER),
     // 目录答复回来了 ⇒ 抽屉真开（`openSessionPicker` 认的是「刚问过」那一趟）
     () => stage.feed([catalog(from)]),
   ]
 
   for (const key of keys) steps.push(() => stage.press(key === 'down' ? DOWN : UP))
-  steps.push(() => stage.press(ENTER)) // 选定：发 `session.open` ＋ 留一行回执（回执就在这一帧上）
-  steps.push(() => stage.feed([catalog(to)])) // 换会话那一帧：记录区清空、另开一页
+  steps.push(() => stage.press(ENTER)) // 选定：发 `session.open`（回执**不**在这一帧上——见上面那段注）
+  steps.push(() => stage.feed([catalog(to)])) // 换会话那一帧：发回执 ＋ 记录区清空、另开一页
 
   return steps
 }
@@ -182,8 +206,10 @@ describe('② 切到一条还没有记录的会话', () => {
     const view = stage.shell.getView()
     const frame = await show(views, WIDE)
 
-    // 视图那一侧：这一页确实是空的（不是「铺了个字标顶着」）
-    expect(view.settled).toHaveLength(0)
+    // 视图那一侧：这一页里**只有界那一行**（回去读一条空的会话，一行记录都没铺回来）
+    expect(view.settled.map((row) => row.kind)).toEqual(['receipt'])
+    // 视图里存的是正文（`· ` 那个记号是渲染层加的，见 `components/log.ts`）
+    expect(view.settled[0]?.kind === 'receipt' ? view.settled[0].text : '').toBe('已切到 乙的事')
     // 屏那一侧：字标仍只一份；回执在；**它下面一条记录行都没有**
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
     expect(countOf(frame, '· 已切到 乙的事')).toBe(1)
@@ -191,58 +217,66 @@ describe('② 切到一条还没有记录的会话', () => {
   })
 })
 
-// ══ ④ `/session new` 那一跳不能静着（2026-09-24 工单补条）═══════════════
+// ══ ④ `/clear` 那两跳：不回文案 · 切不动时把内核那句话接上（U44）════════
 
 /**
- * 两句：**开了就说一句**（`· 已开一条新会话`，形制同既有回执、不加行高）·
- * **没开就一个字都不说**——内核忙的时候 `fresh()` 会把它挡回（活跃位不动），
- * 那时说「已开一条」就是假话（「按真实结果回执」）。
+ * 两句（**U44 起了新裁定，本节两形随之改写**）：
  *
- * ⚠️ 判据落在**答复那一侧**：回执不是敲命令时就发的，故帧序里 `session.state` 那一拍
- * 才是它该出现的地方（见下方两形）。
+ * - **开成了**（活跃位换了）⇒ 记录区**一个字都不添**——`/clear` 的**回执就是清屏本身**
+ *   （设计 · 命令行与配置）。U43 补条那句 `· 已开一条新会话` **随之作废**：换个会话要翻页，
+ *   屏上那一下已经说明了一切，再补一句就是把同一件事说两遍。
+ *   ⚠️ **这一层看不见清屏**（见上面 `switchThroughPicker` 那段注：翻页是终端上的动作，
+ *   本装置逐帧过的是 `AppView`）——故这一形在本层判的是「**没往记录区添字**」，
+ *   而「清没清干净、旧内容还在不在 scrollback」归真 PTY 取帧。
+ * - **没开成**（内核挡回）⇒ 照内核那句 `note` 说一句（U44 把 `session.state` 的 `note`
+ *   接上了：原先这一格**没有出口**，忙时按下去屏上零反应）。判据落在**答复那一侧**。
  */
-describe('④ `/session new`：按真实结果留一行回执', () => {
-  /** 敲一句 `/session new`——命令出去之后，回执该不该发由**答复**定。 */
-  const openNew = (stage: Stage): readonly (() => void)[] => [
-    () => stage.type('/session new'),
+describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
+  /** 敲一句 `/clear`——命令出去之后，记录区添不添字由**答复**定。 */
+  const clear = (stage: Stage): readonly (() => void)[] => [
+    () => stage.type('/clear'),
     () => stage.press(ENTER),
   ]
 
-  test('**开了**（活跃位换了）⇒ 那一屏＝切之前那一屏 ＋ **正好一行**回执', async () => {
+  test('**开成了**（活跃位换了）⇒ 记录区**一个字都不添**（回执就是清屏）', async () => {
     const stage = createStage()
     const views = takes(stage, [
       () => stage.feed([catalog('s1')]),
       () => stage.feed([history('s1', 甲)]),
-      ...openNew(stage),
+      ...clear(stage),
       () => stage.feed([catalog('s2')]), // 内核答复：新会话到位（这就是「真实结果」）
       () => stage.feed([history('s2', [])]), // 空会话：读回来一条都没有（没有东西可铺）
     ])
 
     const before = await show(views.slice(0, 3), WIDE) // 敲之前那一屏
-    const after = await show(views, WIDE) // 切到空会话那一屏
+    const after = await show(views, WIDE) // 开成之后那一屏
 
-    // **不再逐行相同**：切之前那一屏 ＋ 正好一行——多一行是回执，不多不少（不加行高）
-    expect(after.content.map((line) => line.text)).toEqual([
-      ...before.content.map((line) => line.text),
-      '· 已开一条新会话',
-    ])
-    expect(countOf(after, '· 已开一条新会话')).toBe(1) // 每件事只报一次
+    expect(after.content.map((line) => line.text)).toEqual(before.content.map((line) => line.text))
+    expect(after.has('· 已开一条新会话')).toBe(false) // U43 补条那句作废了
+    // 视图那一侧：这一页确实是空的（不是「铺了个字标顶着」）
+    expect(stage.shell.getView().settled).toHaveLength(0)
   })
 
-  test('**没开**（活跃位没换——内核挡回）⇒ 一个字都不说，屏上原样', async () => {
+  test('**没开成**（活跃位没换——内核挡回）⇒ 照内核那句 `note` 说一句', async () => {
     const stage = createStage()
     const views = takes(stage, [
       () => stage.feed([catalog('s1')]),
       () => stage.feed([history('s1', 甲)]),
-      ...openNew(stage),
-      () => stage.feed([catalog('s1')]), // 忙：活跃位**不动**（`fresh()` 的 BUSY 那一支）
+      ...clear(stage),
+      // 忙：活跃位**不动**，内核在那一声答复里带上 `note`（`fresh()` 的 BUSY 那一支）
+      () => stage.feed([busy('s1')]),
     ])
 
     const before = await show(views.slice(0, 3), WIDE)
     const after = await show(views, WIDE)
 
-    expect(after.screen.lines).toEqual(before.screen.lines)
     expect(after.has('· 已开一条新会话')).toBe(false)
+    // 「按了没反应」那一格被接上了：多出来的**正好**是内核那句
+    expect(after.content.map((line) => line.text)).toEqual([
+      ...before.content.map((line) => line.text),
+      `· ${BUSY_NOTE}`,
+    ])
+    expect(countOf(after, BUSY_NOTE)).toBe(1) // 每件事只报一次
   })
 })
 

@@ -213,7 +213,7 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number
 export type StageOptions = {
   /** 上下文窗总量（状态行 ④ 的分母）——`D10` 的出口合入前没人传，故缺省 `null`。 */
   readonly contextWindow?: number | null
-  /** 本进程的工作区（U26 · `/session` 分组的取材）——不给＝不知道自己在哪儿。 */
+  /** 本进程的工作区（U26 · `/resume` 那一屏分组的取材）——不给＝不知道自己在哪儿。 */
   readonly workspaceRoots?: readonly string[]
   /** 受理输入了没有（U25 那道闸）——`false` ＝ 启动中（回车不受理、命令一律丢弃）。 */
   readonly inputReady?: boolean

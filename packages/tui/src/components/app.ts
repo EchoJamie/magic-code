@@ -20,9 +20,9 @@
  * `TuiApp` 是**活**的（订阅外壳、把 Ink 的键喂进外壳、按 `ShellEffect` 退场）。
  */
 
-import { Box, Static, Text, useApp, useInput, usePaste, useWindowSize } from 'ink'
+import { Box, Static, Text, useApp, useInput, usePaste, useStdout, useWindowSize } from 'ink'
 import { createElement as h } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import { bannerOf } from '../banner.ts'
@@ -209,6 +209,55 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
  */
 function pageOf(view: ShellView): string {
   return String(view.page)
+}
+
+/**
+ * **翻页**（U44）——换会话（`/clear` 开一条新的 · `/resume` 回到某一条）把**可见屏清掉**，
+ * 目标会话的记录从空白页起铺。设计 · 终端呈现「终端呈现 · 翻页」。
+ *
+ * ## 这一串字节在做什么（三条都要，少一条就不成）
+ *
+ * `换行 × 屏高` ＋ `光标归位`。逐条说：
+ *
+ * ① **换行把**屏上还看得见的那几行**推出去**——推进终端**自己的 scrollback**。
+ *    切走那条往上翻仍看得到（硬约束：只清可见屏、绝不清 scrollback）。
+ *    ⚠️ **不能拿 `CSI 2 J` 代替**：那一下擦的是**显示区**，而此刻显示区里还有
+ *    切走那条的**尾几行**——它们没进过 scrollback，擦了就是真丢（试跑实测：
+ *    40×10 的一屏 `2J` 之后，缓冲里那 7 行记录只剩 1 行）。`CSI 3 J` 更不行
+ *    （连 scrollback 一起擦，Ink 的 `clearTerminal` 就是它）。
+ * ② **条数取「屏高」**：从光标那一行往下写，前 `屏高 − 光标行` 个换行只是把光标挪到底，
+ *    之后每一个**滚一格** ⇒ 一共滚 `光标行 + 1` 格，正好是「屏上内容到光标为止」那些行。
+ *    **不多滚**：多滚的格子会把空行也推进 scrollback（屏没填满时尤其看得出来）。
+ *    也不必先把光标挪到底——那样反而会多滚。
+ * ③ **归位（`CSI H`）是**「空白页**从顶上**起铺」那一半：不归位的话，新一页会从**屏底**
+ *    往下长，等于没清干净。
+ *
+ * ⚠️ **这不是 D27 那条「不以清历史掩盖残影」禁止的事**（设计明文）：那条禁的是**拿清屏去
+ * 掩盖渲染 bug**；翻页是**故意的**产品动作，不是掩盖。别把两者混成一条。
+ * ⚠️ **一屏都不重画**：仍是主缓冲与终端原生 scrollback，不接管整屏、不捕获鼠标、不承诺钉底。
+ *
+ * ## 为什么经 `useStdout().write` 交给 Ink 写，而不是自己往 stdout 灌
+ *
+ * Ink 对「它写出去的那一帧」有一本账（`LogUpdate` 的 `previousLineCount` / `previousOutput`）。
+ * 绕开它直接写字节，屏上就与它记的不是一回事了——**最坏的一种**是：清完之后紧接着那一帧
+ * 与上一帧**逐字符相同**，于是它认为「什么都没变」，一个字节都不写 ⇒ 屏上剩下**一张空屏、
+ * 连输入行都没有**（不是想出来的：`renderInteractiveFrame` 那一支的判据就是
+ * `output !== this.lastOutput`）。
+ *
+ * `writeToStdout` 是 Ink 给「在帧之上写点东西」的那道门（`useStdout().write` 就是它）：
+ * 它先**擦掉自己那一帧**、再写这一串、再**把那一帧按原位重画**（`restoreLastOutput`），
+ * 账与屏始终是一回事。故这一串之后屏上是：**空白页 ＋ 紧跟着一帧**（分隔线 / 输入行 /
+ * 状态行照旧在），随后新一页的记录一行行铺出来。
+ *
+ * ## 时机
+ *
+ * 由 `TuiApp` **订在外壳上**、页号一变就写（见那一处）：外壳 `commit` 里落的视图是**同步**的，
+ * 而 React 那一趟重绘在**微任务**里——故这一串必定**写在新一页的头一行之前**。
+ * 晚一步（比如放进 `useEffect` 等重绘之后）就是另一种结果：新一页的头几行先写出去，
+ * 再被这一串一并推进 scrollback，屏上剩下空页。
+ */
+export function flipBytes(rows: number): string {
+  return '\n'.repeat(Math.max(1, Math.floor(rows))) + '\u001b[H'  // CSI H ＝ 光标归位
 }
 
 /**
@@ -507,7 +556,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
       view.dock.picker,
       pickerBudget(view.dock.picker, columns, rows),
     ).items.length
-    // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/session` 的长得多
+    // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/resume` 的长得多
     // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
     // （D11 那条「行高与实际不符」的老账，正是这么来的）
     const hint =
@@ -577,14 +626,60 @@ function useLiveClock(active: boolean): number | null {
   return now
 }
 
+/**
+ * **页号一变就清屏**（U44 · 翻页）——订在外壳上，**不在重绘之后补**。
+ *
+ * 时机是这一手唯一容易做错的地方，两条路只差一步，结果完全不同：
+ *
+ * - **订在外壳上（这里）**：外壳改视图是同步的（`commit` 里先落 `view` 再叫醒订阅者），
+ *   而 React 那一趟重绘排在**微任务**里（`useSyncExternalStore` 的 `forceStoreRerender`）。
+ *   故这一串必定落在**新一页的头一行写出去之前** ✓
+ * - **放进 `useEffect` 等重绘之后**：那一下新一页的头几行**已经写出去**了（`<Static>` 重挂
+ *   会把它们整批写一遍），随后清屏把它们一并推进 scrollback——屏上剩一张**空页**，
+ *   那一页的记录反而看不见了 ✗
+ *
+ * ⚠️ **只认页号**（`ShellView.page`）：页号只在「记录区整块换掉」时加一——而「加不加」由
+ * 归约那一侧判（`reduceSessionState`：会话身份真换了，**或**外壳发过 `/clear` 那一跳）。
+ * 这里**不必**再判「是 `/clear` 还是 `/resume`」：**页动了就是换页**。
+ * 反例那一格归它管：首条消息开张（`null → 头一条会话`）**不加页**——那时记录区没换，
+ * 屏上正是用户刚敲的那句话，清了才是错的。
+ *
+ * ⚠️ 屏高**从 ref 里取**：订阅那一趟跑在重绘之外，闭包里直接抓 `rows` 会一直用挂载时那个数
+ * （窗口改过大小之后，清屏就会少推几行）。ref 每次重绘跟着更新，读到的就是当下这一屏。
+ */
+function useFlipOnNewPage(shell: Shell, rows: number): void {
+  const { write } = useStdout()
+  const flipped = useRef<number | null>(null)
+  const height = useRef(rows)
+
+  useEffect(() => {
+    height.current = rows
+  }, [rows])
+
+  useEffect(() => {
+    // 挂载时先记下当下这一页——**不许**把开机那一屏当成「刚换了一页」清掉
+    flipped.current = shell.getView().page
+
+    return shell.subscribe(() => {
+      const next = shell.getView()
+      if (next.page === flipped.current) return
+
+      flipped.current = next.page
+      write(flipBytes(height.current))
+    })
+  }, [shell, write])
+}
+
 export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
   const { exit } = useApp()
   // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
-  // 翻页据它算「一页到哪」（见下）
+  // 清单翻页据它算「一页到哪」（见下）
   const { plan } = liveLayoutOf(view, columns, rows)
   const now = useLiveClock(hasRunningTool(view) || breathingOf(view, plan))
+
+  useFlipOnNewPage(shell, rows)
 
   const feed = (key: ShellKey): void => {
     if (shell.key(key).exit) exit()

@@ -8,7 +8,7 @@
  * 四条纪律（原型 · 交互逻辑）：
  * ① **先接订阅、后放开输入**（构造即订阅）；
  * ② **slash 两种走法**——纯输出型（`/help` · `/status`）：输出进记录区、**命令本身不回显**；
- *    交互配置型（`/session` · `/model` · `/grants`）：**记录区什么都不进**，只在左下开选择器，
+ *    交互配置型（`/resume` · `/model` · `/grants`）：**记录区什么都不进**，只在左下开选择器，
  *    选定后留**一行回执**，`esc` 取消＝**不留痕迹**；
  * ③ **接管**（裁决挂着）——看得见（占位换掉）· 草稿不丢（收起来、答完归还、**不自动发送**）·
  *    **不静默吞键**（只认 y/a/n ＋ 全局 ctrl+c，其余忽略但当场说一句；粘贴一律拒）；
@@ -40,6 +40,7 @@ import {
   activeWordOf,
   appendEcho,
   appendOutput,
+  appendPageNote,
   appendReceipt,
   closePicker,
   createView,
@@ -193,7 +194,7 @@ function statusLines(view: ShellView): readonly string[] {
 
 const STATUS_TITLE = '此刻'
 
-/** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` · `/skills` 各一种。 */
+/** 一次「等内核回话再开选择器」的意图——`/resume` · `/model` · `/grants` · `/skills` 各一种。 */
 type PendingPicker =
   | 'session'
   | 'model'
@@ -241,7 +242,7 @@ export type ShellOptions = {
    */
   readonly contextWindow?: number | null | undefined
   /**
-   * **本进程的工作区**（U26）——`/session` 列表据它认「哪个是别的项目」
+   * **本进程的工作区**（U26）——`/resume` 那一屏据它认「哪个是别的项目」
    * （分组头永远都有；**压暗**只落在判得实的那些：工作区记着、且与这一组不同）。
    *
    * 装配把执行域的 `roots()` 递进来（`realpath` 后的规范形 · 声明序）——与记录域
@@ -433,17 +434,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let rebuildFor: SessionId | null = null
   let rebuildEntries: Entry[] = []
 
-  /** 等回话的选择器意图（`/session` / `/model` / `/grants` / `/skills` 各问一次）。 */
+  /** 等回话的选择器意图（`/resume` / `/model` / `/grants` / `/skills` 各问一次）。 */
   let waiting: PendingPicker | null = null
 
   /**
-   * **`/session new` 发出去了、还在等答复**（U43 补条）——答复到了按**真实结果**回一行回执
-   * （见 `onEvent` 里那一支：切成了才说，被内核挡回就什么都不说）。
+   * **一次换页动作发出去了、还在等答复**（U44）——`/clear`（`label` 为 `null`）或
+   * `/resume` 选定某条（`label` ＝ 那条的**名字**，回执要带名字）。`null` ＝ 没在等。
    *
-   * 与 `waiting` 分开：那个管的是「答复到了开哪一扇抽屉」，这个管的是「这一句要不要说」。
-   * 也**只认自己发出去的那一条**——外来的 `session.state`（别的面开了会话）不该冒这句话。
+   * 它管两件（都按**真实结果**办，见 `onEvent` 里那一支）：
+   * - **这一页要不要翻**——归约据它把 `null → 头一条` 也算成换页（由头见 `reduceSessionState`）；
+   * - **要不要说一句**——`/resume` 说 `· 已切到 <名字>`；`/clear` **一个字都不说**
+   *   （回执就是清屏本身，设计 · 命令行与配置）。
+   *
+   * 与 `waiting` 分开：那个管的是「答复到了开哪一扇抽屉」，这个管的是这一跳的收场。
+   * 也**只认自己发出去的那一条**——外来的 `session.state`（别的面开了会话）不该跟着翻页。
+   *
+   * ⚠️ **回执从「选定那一刻」挪到「答复到了」**（U44）：翻页把可见屏清掉——**在这一跳
+   * 之前**留的那行字会被一并推进 scrollback，新那一页的界上就**没有它**了。挪到答复这一侧，
+   * 它才是**新页自己的**头一行；顺带也就按真实结果说话（内核忙时切不动，那时不该说「已切到」）。
    */
-  let openingNew = false
+  let turn: { readonly label: string | null } | null = null
 
   /**
    * **一次等着答复的动作意图**（U41）——`provider.save` 之后的回话到了要接着做的那件事
@@ -773,7 +783,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     const before = view.sessionId
     // 流式增量按帧合批；其余一律当场（判据见 `STREAMING` 的注）
-    commit(reduce(view, event), STREAMING.has(event.kind))
+    //
+    // ⚠️ `pageTurn` **只在这一声答复是换页那一跳时**给（`turn` 是刚发出去、还没收场的那一次）：
+    //    它管的是「`null → 头一条` 也算换页」那一格（由头见 `reduceSessionState`）。
+    //    给宽了，「问一次目录」开出来的空壳会话也会把屏翻掉。
+    commit(reduce(view, event, { pageTurn: turn !== null }), STREAMING.has(event.kind))
 
     if (event.kind === 'session.state') {
       // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
@@ -783,20 +797,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         openSessionPicker()
       }
 
-      // `/session new` 的答复（U43 补条）⇒ **按真实结果**留一行回执。
+      // **内核有话要说**（U44）——`note` 这一格原先**没有出口**：忙时挡回的那条路
+      //（`BUSY_NOTE`：正在跑一轮，切不动）屏上零输出，用户按下去像按在空气上。
+      // 照既有回执的形制落一行（不新造块）。
       //
-      // 这一跳原先屏上零输出：目标是一条空会话 ⇒ 没有历史可铺，字标又不在换会话时重印
-      //（本单裁掉的那件），于是「按了没反应」（真帧上「切到空会话那一屏」与「切之前那一屏」
-      // 逐行相同）。补的这句**只说动作**（开了 / 没开），不说存储什么时候发生
-      //（D28 甲 否掉的是「首条消息按下回车才落库」那半句，不是回执本身）。
+      // ⚠️ **有话说就不再说「已切到」**：`note` 到了＝这一跳**没成**（活跃位没动），
+      // 那时再补一句「已切到」就是自己打自己（下面那一支据此让位）。
+      if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
+
+      // 换页那一跳的收场 ⇒ **按真实结果**留一行回执（`/clear` 一个字都不留）。
       //
-      // ⚠️ **在答复这一侧发、不在敲命令那一侧发**：「按真实结果回执」——
-      // 内核忙的时候 `fresh()` 会挡回（`BUSY_NOTE`，活跃位**不动**），那时什么都没开，
-      // 敲命令就发回执会说一句假话。判据就是「活跃位换没换」这一格
-      //（与上面 `readHistory` 同一把尺子；`null → 新 id` 也算换——那一下真的开了新会话）。
-      if (openingNew) {
-        openingNew = false
-        if (before !== event.data.active) commit(appendReceipt(view, '已开一条新会话'))
+      // ⚠️ **在答复这一侧发、不在选定那一侧发**（U44 改；由头见 `turn` 那段注）：
+      // 翻页在**页号一变**的那一瞬就把可见屏清了（渲染层干的，见 `components/app.ts`），
+      // 选定那一刻留的字会被推走。判据是「活跃位换没换」这一格——与上面 `readHistory`
+      // 同一把尺子。
+      //
+      // ⚠️ **走 `appendPageNote` 而不是 `appendReceipt`**（U44）：这一行是**新那一页的界**
+      // ——字标不在换会话时重印，顶上那行就是它。故它得与字标同一格：`rebuild` 随后铺历史时
+      // 要把它**留在最前面**（`pageHeaderOf` 按 key 认它），不然头一行记录会被 `<Static>`
+      // 的游标跳过（那一页凭空少一行）。
+      if (turn !== null) {
+        const label = turn.label
+        turn = null
+        if (label !== null && event.data.note === undefined && before !== event.data.active) {
+          commit(appendPageNote(view, `已切到 ${label}`))
+        }
       }
     }
 
@@ -941,7 +966,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   // —— 选择器 ——
 
-  /** `/session`——目录已到手，开它（行：按工作区分组，U26——见 `sessionRows`）。 */
+  /** `/resume`——目录已到手，开它（行：按工作区分组，U26——见 `sessionRows`）。 */
   const openSessionPicker = (): void => {
     const rows = sessionRows(view.catalog, view.sessionId, options.workspaceRoots)
     // 下方那行说明：**空态优先**（「还没有会话」比「这儿是哪儿」更该先知道）；
@@ -963,7 +988,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
-   * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/session` · `/model` 同位置同开合**
+   * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/resume` · `/model` 同位置同开合**
    * （左下，`esc` 收起**不留痕迹**）。
    *
    * 选中项从 0 起（每次开都从头）——授权是**要撤的东西**，不是「当前在哪条」，
@@ -1986,7 +2011,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *
    * 三条写在一处：
    * - **正文原样**（引用那几个字**留在原处**、**内部换行留着**）——前后文字指向哪件事，
-   *   靠的就是这个次序；`/session`、绝对路径写在正文里仍只是正文（不递归解析斜杠）；
+   *   靠的就是这个次序；`/clear`、绝对路径写在正文里仍只是正文（不递归解析斜杠）；
    * - **引用随这一份**（`refs`）：每处带**位置 ＋ 身份**，内核按身份取材料，取不到就
    *   **这一条不跑**（不换同名项、不忽略它继续）——文件读不了与技能取不到同一条出口；
    * - **配对键**（`ref`）：`input.settled` 按它认回这份草稿（失败时原样还回来，见 `restoreDraft`）。
@@ -2304,13 +2329,21 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       const row = picked(view)
       if (row === undefined) return NONE
 
+      // `/resume` 那一屏：选定＝切过去。
       if (view.dock.picker.source === 'session') {
-        // 抽屉这一条路**不是** `/session new`——把上一句可能留下的旗子放掉，
-        // 免得那一边的答复还没到、这一边的回执被顶上（两句回执各归各的）
-        openingNew = false
+        // **选的是当下这条**：什么都没发生——内核那一边 `switchTo` 也知道是同一条、
+        // 一个事件都不发（见 `conversation` 的 `run`）。故回执**这一侧当场给**
+        // （等答复就是白等），页也不翻（没换记录区，翻了反而是「凭空清一屏」）。
+        if (row.value === view.sessionId) {
+          commit(appendReceipt(closePicker(view), `已切到 ${row.label}`))
+          return NONE
+        }
+
+        // **换一条**：回执与翻页都在**答复**那一侧落（见 `turn` 那段注）——
+        // 这一侧只管把意图记下、把抽屉收起。
+        turn = { label: row.label }
         send({ type: 'session.open', session: row.value })
-        // **选定后留一行回执**（原型 · 场景 10）；切过去之后重建由 `session.state` 触发
-        commit(appendReceipt(closePicker(view), `已切到 ${row.label}`))
+        commit(closePicker(view))
         return NONE
       }
 
@@ -2630,28 +2663,52 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (word === '/status') return only(appendOutput(cleared, STATUS_TITLE, statusLines(from)))
 
     // —— 交互配置型：记录区什么都不进 ——
-    if (word === '/session') {
-      // 这一族的意图**每一条都重判一遍**：上一句留下的旗子不许落到下一句头上
-      //（`/session new` 之后紧跟 `/session` 列表：答复不会来两次）
-      openingNew = arg === 'new'
+    //
+    // **会话那三条按动作命名**（U44 · 设计 · 命令行与配置）：`/session` 整条撤掉、不留别名
+    // ——留了，那条实体入口就还在（这一改就成了改名字，不是改入口）。三条各自的性质：
+    // `/clear` 清屏 ＋ 开一条新的（**回执就是清屏本身**，不另发文案）· `/resume` 回到之前
+    // 某一条（空着回车＝列出可选）· `/rename <文本>` 改当下这条的名字。
+    //
+    // ⚠️ **这一族的意图每一条都重判一遍**：上一句留下的旗子不许落到下一句头上——
+    // 故 `turn` 只在**真发得出那一跳**时置上（`/clear` 不带参数、`/resume` 真选定了一条），
+    // 认不出的写法这一侧就回绝了，一个旗子都不留。
+    if (word === '/clear') {
+      // 开一条新的——**清屏由内核那一声答复触发**（页号一变，渲染层就翻页，见
+      // `components/app.ts`）：这一侧只发命令。内核忙时会把它挡回（`BUSY_NOTE`），
+      // 那时活跃位不动、页也不翻，屏幕上落的是那行 note（见 `onEvent`）——
+      // 说出来的话就都是真发生过的。
+      //
+      // ⚠️ **不带参数**：`/clear` 是个动作，不是一族动作的入口（`/session new` 那套
+      // 「同一入口下挂动作」的姿势留给 `/model`）。多写的词照 `submit` 那一侧的老规矩
+      // 如实回一句，不当交代发出去。
+      if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/clear（不带参数）'))
+      // **一个字都不发**（回执就是清屏本身）——故 `label` 为 `null`：那一跳只翻页、不落字。
+      turn = { label: null }
+      return only(cleared, { type: 'session.new' })
+    }
 
-      if (arg === '' || arg === 'list') {
+    if (word === '/resume') {
+      if (arg === '') {
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
       }
-      // **回执在答复那一侧发**（U43 补条）：敲命令时不发——「已开一条新会话」说出口就得
-      // 是真开了，而内核忙的时候 `fresh()` 会把它挡回（见 `onEvent` 里那一支的注）。
-      // 原先这一句一个字都不回，由头见 D28 甲（否掉的是「存储什么时候发生」那半句）。
-      if (arg === 'new') return only(cleared, { type: 'session.new' })
-      if (arg === 'title' || arg.startsWith('title ')) {
-        const title = arg.slice('title'.length).trim()
-        if (title === '' || from.sessionId === null) {
-          return only(appendReceipt(cleared, '要改成什么？`/session title <文本>`'))
-        }
-        return only(cleared, { type: 'session.rename', session: from.sessionId, title })
-      }
+      // **`/resume <参数>` 先不做**（设计明文）：标题就是第一句交代，又长又会重名——
+      // 「有参数」得先定一个不含糊的认法（序号？名字前缀？）。故如实说一句，
+      // **不按字面猜一条切过去**（猜错就是「切到了另一条上」而用户以为敲的是名字）。
+      return only(appendReceipt(cleared, '认得的用法：/resume——空着回车＝列出可选（带名字找那一路还没定）'))
+    }
 
-      return only(appendReceipt(cleared, '认得的用法：/session · /session new · /session title <文本>'))
+    if (word === '/rename') {
+      // 名字取**这一行剩下的全部**（名字里可以有空格）；两头空白不算——空到没有
+      // （`/rename` 或 `/rename   `）就照「没给」办，**不静默**（设计明文）。
+      const title = arg.trim()
+      if (title === '') return only(appendReceipt(cleared, '要改成什么？`/rename <文本>`'))
+      // 还没有会话＝没有「当下这条」可改（空手开机就是这个状态）——如实说一句，不静默，
+      // 也不替他把会话开出来（改名不是开张的动作）。
+      if (from.sessionId === null) {
+        return only(appendReceipt(cleared, '还没有会话可改名——先交代一句开张'))
+      }
+      return only(cleared, { type: 'session.rename', session: from.sessionId, title })
     }
 
     // `/skills`（U33）——**交互配置型**：记录区什么都不进，只在左下开抽屉。
@@ -2667,7 +2724,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     // `/model`（U41 改形）——**交互配置型**：主体是模型选择，另三个动作沿它展开
     // （设计：「不再新增一组按内部能力命名的 slash 命令」——动作挂在同一个入口下，
-    // 写法照 `/session new` · `/mcp reconnect` 的既有姿势）。
+    // 写法照 `/mcp reconnect` 的既有姿势）。
     if (word === '/model') {
       // **刷新**：显式意图可绕过时效（设计 · 刷新）。`provider` 缺省＝当前选中那条连接。
       // ⚠️ 按**完整命令词**认（同 `/mcp reconnect` 那条注：连接 id 可以长成 `refresh-2`）

@@ -213,7 +213,7 @@ describe('组件规格 · 行的标记与颜色', () => {
     // 无标记：第一格就是正文本身，不是什么 `›` / `⏺` / `●` / `·`
     expect(cells[0]).toMatchObject({ text: '可', fg: '#8b93a1' })
     expect(cells.every((cell) => cell.fg === '#8b93a1')).toBe(true) // 整块同色（dim）
-    expect(frame.textAt(frame.rowOf('/session　会话：列表 · 切换 · 新建 · 改名'))).toMatch(/^\/session/)
+    expect(frame.textAt(frame.rowOf('/resume　回到之前某一条'))).toMatch(/^\/resume/)
     // 那一整块都在**记录区**（不是交互区）
     expect(frame.record.some((line) => line.text.includes('可用命令'))).toBe(true)
   })

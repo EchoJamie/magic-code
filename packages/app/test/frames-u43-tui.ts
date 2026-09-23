@@ -13,18 +13,25 @@
  *
  * ## 场景（工单里那条）
  *
- * 甲落账 → `/session new` → 乙落账 → `/session` 选回甲。三屏各留一帧：
+ * 甲落账 → `/clear` → 乙落账 → `/resume` 选回甲。三屏各留一帧：
  * **① 开机屏 · ② 换回甲那一屏 · ③ 再切到乙那一屏**（常宽 100×30 一趟，窄窗 46×30 一趟）。
  *
  * 每屏上判四件：**字标只有一份**（且在最前） · **回执在**（这一屏的界） ·
  * **目标会话的记录铺出来了** · **没有残块**。
  *
- * ## `/session new` 那一跳（U43 补条）
+ * ## ⚠️ U44 之后本脚本改了什么（读它之前先读这段）
  *
- * 切到的是**空**会话 ⇒ 没有历史可铺，而字标又不在换会话时重印——不补一手的话这一跳
- * 屏上零输出（「按了没反应」）。补的是 `· 已开一条新会话`（只说动作、不说存储时机）。
- * 这里判两句：**它在**（刻在应答那一侧：内核忙时会挡回，那时一个字都不该说）·
- * **那一屏＝切之前那一屏 ＋ 正好一行**（不加行高、不新造块）。
+ * 两处**行为变了**，判据跟着变（不是放宽，是跟着新行为走）：
+ *
+ * 1. **`/clear` 不再留字**——U44 起「换会话＝翻页」，`/clear` 的回执**就是清屏本身**；
+ *    U43 补条那句 `· 已开一条新会话` 随之作废（工单明文）。故那一跳改判
+ *    「屏真被清了」＋「切走那条的记录**还在缓冲里**」。
+ * 2. **翻页把可见屏推进 scrollback**——于是「字标在最前」改为量**整份缓冲**的顶行
+ *    （翻过页之后可见那一截的顶行是记录，那是翻页**该做**的事）。
+ *    「记录又铺了一遍」那几处等待也换成了「**新页铺好了**」（回执 ＋ 目标记录同时在可见屏上）
+ *    ——翻页之后旧内容不在可见区，这一条才真的在等重建。
+ *
+ * 翻页本身（清成什么样 / scrollback 读数 / 半截屏）的正面证据在 `frames-u44-tui.ts`。
  *
  * ## 跑法
  *
@@ -135,15 +142,41 @@ async function waitUntil(
   }
 }
 
-/** 四件「这一屏长什么样」的判据——每留一帧都过一遍（少判一屏就是空转）。 */
+/**
+ * 四件「这一屏长什么样」的判据——每留一帧都过一遍（少判一屏就是空转）。
+ *
+ * ⚠️ **「字标在最前」改为量整份缓冲**（U44）：翻页把可见屏推进 scrollback，于是翻过页之后
+ * **可见那一截**的顶行是记录 / 帧，不再是字标——而「字标仍在一份的前面」这个事实没变
+ * （它在缓冲的最顶上，往上翻就看到）。拿可见那一截判，量到的会是「翻页把它推走了」，
+ * 那正是翻页**该做**的事，不是缺陷。
+ */
 function checkScreen(shot: Capture, where: string, laidOut: string): void {
-  const first = shot.lines.find((line) => line.trim() !== '') ?? ''
+  const first = shot.history.find((line) => line.trim() !== '') ?? ''
   const art = (bannerOf(shot.columns)[0]?.text ?? '').replace(/\s+$/u, '')
 
   check(bannerCopies(shot) === 1, `${where}：**字标只有一份**`, `实际 ${bannerCopies(shot)} 份`)
-  check(first.replace(/\s+$/u, '') === art, `${where}：它就在最前面（记录区顶行）`, `顶行＝「${first}」`)
+  check(first.replace(/\s+$/u, '') === art, `${where}：它就在最前面（整份缓冲的顶行）`, `顶行＝「${first}」`)
   check(countOn(shot.history, '· 已切到') >= 1, `${where}：回执在——这一屏的界由它承担`)
   check(countOn(shot.history, laidOut) >= 1, `${where}：目标会话的记录铺出来了（${laidOut}）`)
+}
+
+/**
+ * 等**新那一页真铺好了**：回执（新页的头一行）与目标会话的记录**同时在可见屏上**。
+ *
+ * ⚠️ **不能只等记录行**（U43 的老坑，U44 起更甚）：那段字在**切走的那一条**上本来就有
+ * （同名记录两边都有），「屏上有它」可能当场为真 ⇒ 等待空转、取到的是还没翻页的那一帧。
+ * 回执**只在新页上出现**（U44 起它是页头那一行），两个一起要求才说得上是「铺好了」。
+ *
+ * ⚠️ **必须看可见屏**（`session.screen()` 给的正是它）：翻页之后旧内容进了 scrollback，
+ * 它还在 `history` 里——拿整份缓冲数就是恒真。**这里要的恰恰是「它已经离开可见区」。**
+ */
+async function waitLaidOut(session: UiSession, label: string, row: string, timeoutMs = 10_000): Promise<void> {
+  await waitUntil(
+    session,
+    `新页铺好（回执 ＋「${row}」同时在屏上）`,
+    (lines) => countOn(lines, `· 已切到 ${label}`) >= 1 && countOn(lines, row) >= 1,
+    timeoutMs,
+  )
 }
 
 /**
@@ -183,7 +216,7 @@ async function moveTo(session: UiSession, label: string): Promise<void> {
 }
 
 /**
- * 常宽那一趟：甲落账 → `/session new` → 乙落账 → `/session` 选回甲 → 再切到乙。
+ * 常宽那一趟：甲落账 → `/clear` → 乙落账 → `/resume` 选回甲 → 再切到乙。
  *
  * 六屏都留：`01` 开机 · `02` 甲落账 · `03` 切到空会话 · `04` 乙落账 ·
  * `05` **换回甲那一屏**（工单要的那一屏）· `06` 再切到乙那一屏（来回各一次）。
@@ -214,25 +247,30 @@ async function switching(): Promise<void> {
     keep(jia)
     check(bannerCopies(jia) === 1, '甲落账之后：仍只有开机那一份字标')
 
-    // —— `/session new`：切到一条**空会话**（此后不再种字标；而这一跳要看得出「生效了」） ——
-    await typeLine(session, '/session new')
+    // —— `/clear`：清屏 ＋ 开一条新的（**回执就是清屏本身**，一个字都不印） ——
+    //
+    // ⚠️ **U44 起了新裁定**：旧那一跳（`/session new`）留的 `· 已开一条新会话` 作废了——
+    // 翻页把可见屏清掉，屏上那一下已经说明了一切。故这一帧要等的是**屏真被清了**：
+    // 切之前那一屏上的记录（`› 第一条会话的交代`）**不在可见区了**。
+    await typeLine(session, '/clear')
     await session.key('enter')
-    // 等的就是**那一行回执**（U43 补条）：它由内核答复到了才发——等到它＝这一跳真落地了。
-    // 不拿「草稿被清空」当条件：那只是命令被吃下，此刻屏上什么都还没变。
-    await session.wait({ text: '· 已开一条新会话' }, { timeoutMs: 10_000 })
-    const fresh = await session.capture({ label: '03-切到空会话' })
-    keep(fresh)
-    check(bannerCopies(fresh) === 1, '切到空会话：**不重印字标**（仍只有开机那一份）')
-    check(
-      countOn(fresh.history, '· 已开一条新会话') === 1,
-      '`/session new` 那一跳**看得见**：回执照旧回执的形制、只此一行',
-      `实际 ${countOn(fresh.history, '· 已开一条新会话')} 行`,
+    await waitUntil(
+      session,
+      '`/clear` 之后屏上不再有切走那条的记录',
+      (lines) => countOn(lines, '› 第一条会话的交代') === 0,
+      10_000,
     )
-    // 「切到空会话那一屏」与「切之前那一屏」**不能再逐行相同**——多出来的必须**正好**是那一行
+    const fresh = await session.capture({ label: '03-clear 之后' })
+    keep(fresh)
+    check(bannerCopies(fresh) === 1, '`/clear`：**不重印字标**（仍只有开机那一份，只是被推去 scrollback）')
     check(
-      recordOf(fresh).join('\n') === [...recordOf(jia), '· 已开一条新会话'].join('\n'),
-      '那一屏＝切之前那一屏 ＋ **正好一行**回执（不加行高、不新造块）',
-      `切之前 ${recordOf(jia).length} 行 → 切之后 ${recordOf(fresh).length} 行`,
+      countOn(fresh.history, '› 第一条会话的交代') >= 1,
+      '切走那条的记录**没被抹掉**（还在缓冲里——往上翻看得到）',
+      `整份缓冲实际 ${countOn(fresh.history, '› 第一条会话的交代')} 行`,
+    )
+    check(
+      recordOf(fresh).join('\n') !== recordOf(jia).join('\n'),
+      '那一屏**不是**切之前那一屏（记录区不再跨会话累积）',
     )
 
     // —— 乙落账 ——
@@ -243,21 +281,17 @@ async function switching(): Promise<void> {
     keep(yi)
     check(bannerCopies(yi) === 1, '乙落账之后：仍只有那一份')
 
-    // —— `/session` 选回甲：**这一屏就是本单要的那一屏** ——
+    // —— `/resume` 选回甲：**这一屏就是本单要的那一屏** ——
     //
-    // ⚠️ 等「甲那两行**又铺了一遍**」而不是等它的文字出现——那段字早在 `02` 就印过了，
-    //    拿「屏上有它」当条件**恒真**，会在重建落地之前就取帧（实测踩过同形的空转）。
-    await typeLine(session, '/session')
-    await session.key('enter') // 回车＝**开抽屉**（`/session` 这一条命令的答复随后到）
+    // ⚠️ 等的是「**新页铺好了**」（回执 ＋ 目标的记录同时在可见屏上），不是「那段字出现过」——
+    //    那段字在 `02` 就印过了，拿「屏上有它」当条件就是空转（实测踩过同形的坑）。
+    //    翻页之后旧内容进了 scrollback，可见屏上看不见它，故这一条等待**才**真的在等重建。
+    await typeLine(session, '/resume')
+    await session.key('enter') // 回车＝**开抽屉**（`/resume` 这一条命令的答复随后到）
     // 抽屉刚开时选中的是**当前那条**（乙）——挪到甲那一行（按屏上印的行号算）
     await moveTo(session, '第一条会话的交代')
-    await session.key('enter', { until: { text: '已切到 第一条会话的交代' }, timeoutMs: 10_000 })
-    await waitUntil(
-      session,
-      '换回甲之后那段记录又铺一遍',
-      (lines) => countOn(lines, '› 第一条会话的交代') >= 2,
-      10_000,
-    )
+    await session.key('enter')
+    await waitLaidOut(session, '第一条会话的交代', '› 第一条会话的交代')
     const back = await session.capture({ label: '05-换回甲那一屏' })
     keep(back)
     checkScreen(back, '换回甲那一屏', '› 第一条会话的交代')
@@ -268,16 +302,11 @@ async function switching(): Promise<void> {
     )
 
     // —— 再切到乙：来回各一次，回执每次都在 ——
-    await typeLine(session, '/session')
+    await typeLine(session, '/resume')
     await session.key('enter')
     await moveTo(session, '第二条会话的交代')
-    await session.key('enter', { until: { text: '已切到 第二条会话的交代' }, timeoutMs: 10_000 })
-    await waitUntil(
-      session,
-      '切到乙之后那段记录又铺一遍',
-      (lines) => countOn(lines, '› 第二条会话的交代') >= 2,
-      10_000,
-    )
+    await session.key('enter')
+    await waitLaidOut(session, '第二条会话的交代', '› 第二条会话的交代')
     const again = await session.capture({ label: '06-再切到乙那一屏' })
     keep(again)
     checkScreen(again, '再切到乙那一屏', '› 第二条会话的交代')
@@ -319,32 +348,36 @@ async function narrow(): Promise<void> {
     await session.key('enter', { until: { text: '收到甲的交代。' }, timeoutMs: 20_000 })
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
 
-    await typeLine(session, '/session new')
+    // `/clear`——窄窗下这一跳不留字（回执就是清屏），等的是**屏真被清了**
+    await typeLine(session, '/clear')
     await session.key('enter')
-    // 窄窗下这一跳也得看得见（回执是一行短句，46 列放得下）
-    await session.wait({ text: '· 已开一条新会话' }, { timeoutMs: 10_000 })
-    const fresh = await session.capture({ label: '07a-窄窗切到空会话' })
+    await waitUntil(
+      session,
+      '窄窗下 `/clear` 之后屏上不再有切走那条的记录',
+      (lines) => countOn(lines, '第一条会话的交代') === 0,
+      10_000,
+    )
+    const fresh = await session.capture({ label: '07a-窄窗 clear 之后' })
     keep(fresh)
-    check(bannerCopies(fresh) === 1, '窄窗下切到空会话：**不重印字标**（仍只有一份）')
+    check(bannerCopies(fresh) === 1, '窄窗下 `/clear`：**不重印字标**（仍只有一份）')
+    check(
+      countOn(fresh.history, '第一条会话的交代') >= 1,
+      '窄窗下切走那条的记录也**没被抹掉**（还在缓冲里）',
+    )
     check(
       fresh.history.every((line) => line.includes('█') === false),
-      '窄窗下切到空会话也**没有块字残块**',
+      '窄窗下 `/clear` 也**没有块字残块**',
     )
 
     await typeLine(session, '第二条会话的交代')
     await session.key('enter', { until: { text: '收到乙的交代。' }, timeoutMs: 20_000 })
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
 
-    await typeLine(session, '/session')
+    await typeLine(session, '/resume')
     await session.key('enter')
     await moveTo(session, '第一条会话的交代')
-    await session.key('enter', { until: { text: '已切到 第一条会话的交代' }, timeoutMs: 10_000 })
-    await waitUntil(
-      session,
-      '窄窗下换回甲之后那段记录又铺一遍',
-      (lines) => countOn(lines, '第一条会话的交代') >= 2,
-      10_000,
-    )
+    await session.key('enter')
+    await waitLaidOut(session, '第一条会话的交代', '第一条会话的交代')
     const back = await session.capture({ label: '08-窄窗换会话那一屏' })
     keep(back)
 

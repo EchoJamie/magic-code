@@ -1,5 +1,5 @@
 /**
- * U26 · 会话面 —— `/session` 列表**按工作区分组**（规格即测试）。
+ * U26 · 会话面 —— `/resume` 列表**按工作区分组**（规格即测试）。
  *
  * 出处：`项目字典.md` · Workspace / Session（2026-09-19）——一个会话属于一个工作区；
  * `工作分解.md` · `U26` 的实现落点（规划侧 2026-09-19 裁）：
@@ -56,13 +56,13 @@ function live(workspace: readonly string[] | null = [HERE]) {
   return {
     stage,
     /**
-     * 开 `/session` 的选择器：投目录 → 敲命令 → **内核回话**（目录再来一次）。
+     * 开 `/resume` 的选择器：投目录 → 敲命令 → **内核回话**（目录再来一次）。
      * 真链路上 `session.list` 是**当场**答的（进程内传输直连），故这一步在用例里
      * 就是「再喂一遍同一条 `session.state`」。
      */
     open: (catalog: readonly KernelEvent[]) => {
       stage.feed(catalog)
-      stage.type('/session')
+      stage.type('/resume')
       stage.press({ kind: 'enter' })
       stage.feed(catalog)
     },

@@ -88,33 +88,6 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
 }
 
 /**
- * 等屏上的某个**条件**成立（`wait` 的闭集装不下「数一数」这类判据，故自己轮询 `screen()`）。
- *
- * 超时**如实失败**（带上此刻的整屏）——不重发、不重试、不拿固定 sleep 当同步。
- *
- * （U43 期间删过一次又回来：原先它守的是「换会话后又多出一份字标」那条等待——那句随裁定
- * 作废；现在守的是「两次 `/session new` 各留过一行回执」，同样是**数一数**才判得出的。）
- */
-async function waitUntil(
-  session: UiSession,
-  what: string,
-  ok: (lines: readonly string[]) => boolean,
-  timeoutMs = 10_000,
-): Promise<readonly string[]> {
-  const until = Bun.nanoseconds() + timeoutMs * 1e6
-
-  for (;;) {
-    const { lines } = await session.screen()
-    const text = lines.map((line) => line.text)
-
-    if (ok(text)) return text
-    if (Bun.nanoseconds() > until) throw new Error(`等「${what}」超时（${timeoutMs}ms）。屏：\n${text.join('\n')}`)
-
-    await Bun.sleep(40)
-  }
-}
-
-/**
  * 等**真光标挪到别处**（`from` 是挪之前那一列）——返回新列。
  *
  * 由头：按键是异步被吃下的，`key()` 返回时**渲染未必已经跟上**（实测：连敲两下左移，
@@ -186,52 +159,40 @@ async function sessionNew(): Promise<void> {
       `实际 ${sessionCount(session)} 条`,
     )
 
-    // ⚠️ **等这一轮真跑完**（`○ 空闲`）再切：会话忙的时候 `/session new` 会被内核挡回
+    // ⚠️ **等这一轮真跑完**（`○ 空闲`）再切：会话忙的时候 `/clear` 会被内核挡回
     // （`fresh()` 的 BUSY 那一支），那一下**不换会话**——拿它当「切过了」就是空转。
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
 
-    // —— `/session new`：**不再印那行存储回执** ——
+    // —— `/clear`：**不再印那行存储回执**（U44 起连「已开一条新会话」也不发了） ——
     //
-    // ⚠️ 为什么敲**两次**：第一次新建时外壳还没收到过 `session.state`（`view.sessionId` 仍是
+    // ⚠️ 为什么敲**两次**：第一次开张时外壳还没收到过 `session.state`（`view.sessionId` 仍是
     // `null`），`reduceSessionState` 认不出「换了会话」⇒ 记录区**照旧不重建**（这是既有实现，
     // 本单不动）。**第二次**才走「切走一条 ⇒ 记录区重建」那一支。
     //
-    // ⚠️ **那一下原先靠「屏上多出第二份字标」当可等的观察**——2026-09-24 U43 裁定「换会话不重印
-    // 字标」之后，那个观察**没有了**：换会话只清空记录区、不种新字标，而这一条会话又是空的，
-    // 于是这一跳**在屏上什么都不印**（回执那半早已由 D28 甲删掉）。故这里改成等「这一下被吃下」
-    // （草稿清空）——与上一处同一个信号；紧接着**就这么判**：屏上仍只有一份字标。
-    // 严判（整份缓冲、来回切、窄窗）归 `frames-u43-tui.ts`。
-    await typeLine(session, '/session new')
+    // ⚠️ **这一跳在屏上没有任何可等的字**（U44）：`/clear` 的回执**就是清屏本身**——它是个
+    // 终端动作，不在记录区里留痕。故这里等「这一下被吃下」（草稿清空），紧接着**就这么判**：
+    // 记录区里没有那两句话、整份缓冲里字标仍只有一份。
+    // 严判（清成了什么样、scrollback 还在不在）归 `frames-u44-tui.ts`。
+    await typeLine(session, '/clear')
     await session.key('enter')
-    // 等**这一下被吃下**（草稿被清空）再取帧——「屏上有没有那行回执」要在同一帧上判
-    await session.wait({ absent: '/session new' }, { timeoutMs: 10_000 })
-    const once = await session.capture({ label: '03-新建会话之后' })
+    await session.wait({ absent: '/clear' }, { timeoutMs: 10_000 })
+    const once = await session.capture({ label: '03-clear 之后' })
     keep(once)
 
     check(!once.text.includes('已新建一条会话'), '屏上没有那行会话创建 / 落库回执')
     check(!once.text.includes('落库'), '回执那句存储细节一个字都不在屏上')
+    check(!once.history.some((line) => line.includes('已开一条新会话')), 'U43 补条那句也一并作废了')
 
-    await typeLine(session, '/session new')
+    await typeLine(session, '/clear')
     await session.key('enter')
-    // 这一跳现在**看得见**了（U43 补条：`· 已开一条新会话`）——等**第二行**到（第一行在 `03` 那一步）
-    await waitUntil(
-      session,
-      '第二次 `/session new` 的回执',
-      (lines) => countOn(lines, '· 已开一条新会话') >= 2,
-      10_000,
-    )
-    const twice = await session.capture({ label: '04-再新建一次（换了会话）' })
+    await session.wait({ absent: '/clear' }, { timeoutMs: 10_000 })
+    const twice = await session.capture({ label: '04-再 clear 一次（换了会话）' })
     keep(twice)
 
     check(
       bannerRows(twice.history) === 5,
-      '换会话之后**仍只有一份字标**（不再重印——U43）',
+      '换会话之后**仍只有一份字标**（不再重印——U43；这一份现在压在 scrollback 里）',
       `整份缓冲实际 ${bannerRows(twice.history)} 行块字`,
-    )
-    check(
-      countOn(twice.history, '· 已开一条新会话') === 2,
-      '两次 `/session new` 各留**一行**回执（只说动作，不说落库时机）',
-      `整份缓冲实际 ${countOn(twice.history, '· 已开一条新会话')} 行`,
     )
     check(
       !twice.history.some((line) => line.includes('已新建一条会话')),
@@ -245,8 +206,8 @@ async function sessionNew(): Promise<void> {
       `实际 ${sessionCount(session)} 条`,
     )
 
-    // —— 既有会话的切换回执**不动**：从 `/session` 里切回旧那条 ——
-    await typeLine(session, '/session')
+    // —— 既有会话的切换回执**不动**：从 `/resume` 里切回旧那条 ——
+    await typeLine(session, '/resume')
     // ⚠️ 等的必须是**抽屉真开了**（那句右位提示），不能等「第一件事」——记录区里本来就有
     //    那四个字（首条消息的回显），拿它当条件**恒真**，第二下回车就会在抽屉开出之前打出去
     //    （实测栽过一次：两下回车挤在一起，哪一下都没选中）。

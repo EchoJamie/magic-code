@@ -6,7 +6,7 @@
  *
  * 与原型逐屏对照（场景号即 `describe` 里的编号）：
  * 1 启动空态 · 2 空闲有历史 · 3 工作中流式 · 4 待裁决（轻）· 5 待裁决（重）·
- * 6 接管按了非答复键 · 7 多件裁决 · 8 答完之后 · 9 `/session` · 10 `/model` ·
+ * 6 接管按了非答复键 · 7 多件裁决 · 8 答完之后 · 9 `/resume` · 10 `/model` ·
  * 11 `/help` · 12 重建（收拢）· 13 退避重试 · 14 窄窗口降级。
  *
  * 快照文件：`test/__snapshots__/snapshot.test.ts.snap`（入库——改动即进 diff 可评审）。
@@ -391,11 +391,11 @@ describe('场景 8 · 答完之后', () => {
 
 // ══ 场景 9–11（slash 两种走法）═══════════════════════════════════════
 
-describe('场景 9 · `/session`（交互配置型）', () => {
+describe('场景 9 · `/resume`（交互配置型）', () => {
   test('回车**不进记录区**，只在左下开选择器；列表带当前位与说明', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
-    app.type('/session')
+    app.type('/resume')
     app.key(ENTER)
     app.feed([
       state(SESSION, [
@@ -409,7 +409,7 @@ describe('场景 9 · `/session`（交互配置型）', () => {
     expect(frame).toContain('记录查询优化')
     expect(frame).toContain('正在用')
     expect(frame).toContain('↑↓ 选')
-    expect(frame).not.toContain('› /session') // 命令本身不进记录区
+    expect(frame).not.toContain('› /resume') // 命令本身不进记录区
     // **U26 起多一行分组头**：目录按工作区分组（本夹具的会话**没有归属**——列加上之前
     // 落账的那种——故头如实说「未记录」）。分组那一族的判据在 `session-workspace.test.ts`。
     expect(frame).toContain('（工作区未记录）')
@@ -472,7 +472,11 @@ describe('场景 11 · `/help`（纯输出型）', () => {
 
     const frame = app.screen()
     expect(frame).toContain('可用命令')
-    expect(frame).toContain('/session')
+    // 会话那三条**按动作命名**（U44）——`/session` 那条实体入口整条撤掉了
+    expect(frame).toContain('/clear')
+    expect(frame).toContain('/resume')
+    expect(frame).toContain('/rename')
+    expect(frame).not.toContain('/session')
     // **命令本身不回显**——记录区里没有 `› /help` 那一行（候选里的那条不算：
     // 它在左下交互区、不在记录区）
     const view = app.shell.getView()
@@ -659,18 +663,18 @@ describe('规格细节（渲染层）', () => {
 // ══ 场景 11 · slash 自动补全（D12）═══════════════════════════════════
 
 describe('场景 11 · slash 自动补全', () => {
-  test('打 `/s` —— 候选列在输入行**上方**，`/session` 与 `/status` 在前（按匹配度）', () => {
+  test('打 `/s` —— 候选列在输入行**上方**，前缀命中（`/skills` · `/status`）在前', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
 
     app.type('/s')
 
     const frame = app.screen()
-    expect(frame).toContain('/session')
+    expect(frame).toContain('/skills')
     expect(frame).toContain('/status')
     expect(frame).toContain('↑↓ 选 · Tab 补全 · esc 收起')
     // 候选在输入行**上方**——输入行是**最后**那条 `› …`（候选行也以 `› ` 起头并且含 `/s`）
-    expect(frame.indexOf('/session')).toBeLessThan(frame.lastIndexOf('› /s'))
+    expect(frame.indexOf('/skills')).toBeLessThan(frame.lastIndexOf('› /s'))
     expect(frame).toMatchSnapshot()
   })
 
@@ -692,17 +696,17 @@ describe('场景 11 · slash 自动补全', () => {
   test('`Tab` 补全 —— 选中那条落进草稿（留一个空格等参数）；`esc` 收起候选', () => {
     const app = live()
 
-    app.type('/sess')
+    app.type('/res')
     app.key({ kind: 'tab' })
-    expect(app.shell.getView().draft).toBe('/session ')
+    expect(app.shell.getView().draft).toBe('/resume ')
 
     app.key({ kind: 'ctrl+c' }) // 收摊前把草稿清了（下面另起一段输入）
     app.shell.key({ kind: 'escape' })
-    app.type('/se')
+    app.type('/re')
     expect(app.shell.getView().completion).not.toBeNull()
     app.key({ kind: 'escape' })
     expect(app.shell.getView().completion).toBeNull()
-    expect(app.shell.getView().draft).toBe('/se') // 草稿留着
+    expect(app.shell.getView().draft).toBe('/re') // 草稿留着
   })
 })
 
@@ -986,14 +990,17 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     const { matchCommands } = await import('../src/view.ts')
 
     expect(matchCommands('/g').map((row) => row.name)).toEqual(['/grants'])
+    // ⚠️ **五变**（`U44`）：`/session` 撤掉、换 `/clear` · `/resume` · `/rename` 三条——
+    // 全表还是十条（撤一条换三条）。`/s` 那一列里 `/session` 没了，`/resume` 进来
+    // （`s` 是它的**子序列**，与 `/attachments` / `/grants` 同档，按名字序排在最后）。
     expect(matchCommands('/s').map((row) => row.name)).toEqual([
-      '/session',
       '/skills',
       '/status',
       '/attachments',
       '/grants',
+      '/resume',
     ])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(8) // 全列（真存在的八条）
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(10) // 全列（真存在的十条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

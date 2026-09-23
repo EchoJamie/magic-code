@@ -4,7 +4,7 @@
  * 出处：
  * - `技术方案 · 权限「授权的落点」`——「配两件：**查看 / 撤销**（`/grants`）与**陈旧节**的
  *   显式列出」；
- * - `交接/对表.md` · `B13`——呈现形态＝**左下抽屉**（与 `/session` · `/model` 同位置同开合）；
+ * - `交接/对表.md` · `B13`——呈现形态＝**左下抽屉**（与 `/resume` · `/model` 同位置同开合）；
  *   **撤销＝选定即撤 ＋ 一行回执**；
  * - `B11`——陈旧节**只列不删**（删用户数据不归内核）；
  * - `B10`——放行区那笔账的口径（未配规则的调用占比），在那个抽屉的下方报出来；
@@ -80,7 +80,7 @@ function openDrawer(app: ReturnType<typeof live>, over: Partial<EventDataOf['gra
   app.spy.emit(event('grants.catalog', catalog(over)))
 }
 
-// ══ 开抽屉（B13：与 `/session` · `/model` 同位置同开合）═════════════════
+// ══ 开抽屉（B13：与 `/resume` · `/model` 同位置同开合）═════════════════
 
 describe('`/grants` —— 左下抽屉', () => {
   test('发一次 `grants.list`，**记录区什么都不进**（交互配置型）', () => {

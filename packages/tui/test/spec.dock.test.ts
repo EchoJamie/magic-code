@@ -380,7 +380,7 @@ describe('slash 的两种走法', () => {
     expect(frame.record.some((line) => line.text.includes('/help'))).toBe(true) // 只有输出块里那一条目录
   })
 
-  test('交互配置型（`/session`）——回车**什么都不进记录区**，只在左下开选择器', async () => {
+  test('交互配置型（`/resume`）——回车**什么都不进记录区**，只在左下开选择器', async () => {
     const stage = createStage()
     stage.feed([
       event('session.state', {
@@ -392,7 +392,7 @@ describe('slash 的两种走法', () => {
       }),
     ])
 
-    stage.type('/session')
+    stage.type('/resume')
     stage.press({ kind: 'enter' })
     stage.feed([
       event('session.state', {
@@ -426,7 +426,7 @@ describe('slash 的两种走法', () => {
    */
   test('提交之后**候选收起**（D23）——打字的伴生不该跟着提交留下', async () => {
     const stage = createStage()
-    // ⚠️ 用**纯输出型**（`/status`）而不是 `/session`——选择器一开就把左下整片换掉了，
+    // ⚠️ 用**纯输出型**（`/status`）而不是 `/resume`——选择器一开就把左下整片换掉了，
     //    候选**看不看得见**在那一支里分不出来（判据会假绿）。这一支 dock 仍是输入区。
     stage.type('/status')
     // 先确认候选**真的开着**——不然「提交后没有」可能是假绿（它本来就没开过）
@@ -443,7 +443,14 @@ describe('slash 的两种走法', () => {
     expect(frame.statusLine).toContain('/ 命令 · ctrl+c 退出') // 回常态
   })
 
-  test('选定了——留**一行**回执', async () => {
+  /**
+   * 选定之后**留一行回执**——⚠️ 这一行**等答复到了才留**（U44）。
+   *
+   * 由头：换会话要翻页（清可见屏），那一下发生在「页号一变」那一瞬——**选定那一刻**写下的
+   * 字会被一并推进 scrollback，新那一页的界上就没有它了。故本用例连着判两跳：
+   * 选定之后**记录区仍是空的**（一个字都没说），答复到了才是那**一行**。
+   */
+  test('选定了——**答复到了才**留**一行**回执', async () => {
     const stage = createStage()
     const catalog = [
       event('session.state', {
@@ -455,18 +462,34 @@ describe('slash 的两种走法', () => {
       }),
     ]
     stage.feed(catalog)
-    stage.type('/session')
+    stage.type('/resume')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
     stage.press({ kind: 'down' })
     stage.press({ kind: 'enter' })
+
+    // 还没答复：这一跳只发了命令、收起了抽屉——记录区**一个字都没有**
+    const before = await stage.screen(WIDE)
+    // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）
+    expect(before.content).toEqual([])
+    expect(saysInComposer(before, '交代一件事，回车发送')).toBe(true) // 收起了
+
+    // 答复（活跃位真换了）⇒ 那**一行**回执落进记录区
+    stage.feed([
+      event('session.state', {
+        active: 's2',
+        sessions: [
+          { id: 's1', at: 0, title: '记录查询优化' },
+          { id: 's2', at: 0, title: '修复时区处理' },
+        ],
+      }),
+    ])
 
     const frame = await stage.screen(WIDE)
 
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）——
     //    这一句问的是「选定之后**留了几行回执**」，字标不是回执
     expect(frame.content.map((line) => line.text)).toEqual(['· 已切到 修复时区处理']) // **一行**，不是一面
-    expect(saysInComposer(frame, '交代一件事，回车发送')).toBe(true) // 收起了
   })
 
   test('`esc` 取消——**不留痕迹**（记录区与回执都没有）', async () => {
@@ -475,7 +498,7 @@ describe('slash 的两种走法', () => {
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
     ]
     stage.feed(catalog)
-    stage.type('/session')
+    stage.type('/resume')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
 

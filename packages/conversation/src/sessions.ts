@@ -204,7 +204,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
   /**
    * 会话目录——最近在前，**只列落过账的**。
    *
-   * 第 19 轮改：先前把「还没落账的当前会话」前置进目录（那时为了让 `/session` 刚建完
+   * 第 19 轮改：先前把「还没落账的当前会话」前置进目录（那时为了让 `/resume` 那张列表刚建完
    * 看得见自己）；D5 裁决「空壳不该把列表塞满」，故撤掉——**没写过条目的会话不在列**，
    * 它只在状态行的「当前」位上示人（`session.state.active`）。
    */
@@ -291,7 +291,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
   async function run(command: SessionCommand): Promise<void> {
     if (command.type === 'session.list') {
-      // 目录要盖章（事件必带会话）——空手就 `/session` 也照答：那一下开一张空壳，
+      // 目录要盖章（事件必带会话）——空手敲 `/resume` 也照答：那一下开一张空壳，
       // 于是「有哪些会话可选」问得出来（列表本身只列落过账的，见 `catalog`）
       await announce({ session: current().session })
       return

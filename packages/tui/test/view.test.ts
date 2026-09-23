@@ -26,7 +26,9 @@ import { event } from './events.ts'
 import { plain } from './screen.ts'
 
 const viewed = (events: readonly Parameters<typeof reduce>[1][], from: ShellView = createView()): ShellView =>
-  events.reduce(reduce, from)
+  // 逐条归约（写成箭头而不是直接传 `reduce`：那支现在还有一个可省的第三参，
+  //  `Array.reduce` 会把**下标**塞进去）
+  events.reduce((view, event) => reduce(view, event), from)
 
 /**
  * 屏上的全部行（**定局那侧 ＋ 本轮**）。

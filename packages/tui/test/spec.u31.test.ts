@@ -217,7 +217,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
   test('抽屉开着——输入行不在屏上，真光标**不留在输入处**', async () => {
     const stage = createStage()
     stage.feed(catalog)
-    stage.type('/session')
+    stage.type('/resume')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
 
@@ -232,7 +232,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
   test('抽屉 `esc` 收起——输入行回来，真光标**回到插入点**', async () => {
     const stage = createStage()
     stage.feed(catalog)
-    stage.type('/session')
+    stage.type('/resume')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
     stage.press({ kind: 'escape' })

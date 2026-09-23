@@ -34,7 +34,7 @@ const USAGE = `magic —— 软件工程智能体
   magic -h, --help             显示这份帮助
 
 接着上次的活，得说一声：不给 --session 就是新会话（直接敲 magic 也不会先建一条——
-首条消息按下回车才开张）。--session 要的是 /session 列表里那串 id，且必须已经存在：
+首条消息按下回车才开张）。--session 要的是 /resume 那张列表里那串 id，且必须已经存在：
 打错一个字母会报错退场，不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。
 接上之后先跑一次恢复（处置上次崩溃时没做完的那件事），恢复跑完才收你的输入。
 开局没给 --provider / --model 就用配置里的缺省条目；中途换模型在界面里打 /model。
@@ -568,7 +568,7 @@ async function main(): Promise<number> {
     if (args.session !== undefined && !assembly.records.hasSession(args.session)) {
       console.error(
         `没有这条会话：${args.session}——` +
-          `--session 收的是会话 id（/session 列表里那串）；库里没有它，本次一步都没走`,
+          `--session 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
       )
       return 1
     }

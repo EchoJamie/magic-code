@@ -419,8 +419,13 @@ async function switching(out: string, configured: string): Promise<void> {
     await openDrawer(session)
     await session.key('enter', { until: { text: '（待发送）' }, timeoutMs: 5_000 })
 
-    await typeLine(session, '/session new')
-    await session.key('enter', { until: { text: '已新建一条会话' }, timeoutMs: 10_000 })
+    // ⚠️ **本节已过期**（不是 U44 弄坏的，也不是 U44 能修的）：它等的两样东西都不在了——
+    // ① `已新建一条会话`（D28 甲 删掉的那句存储回执）· ② 下一处那句 `技能：…（待发送）`
+    // 所属的**草稿材料行**（U33 的 `SkillLine`，U36 起删掉了：引用就写在正文里）。
+    // 命令名随 U44 换成 `/clear`（`/session` 整条撤掉了），等的那一格换成「这一下被吃下」。
+    // 本节的判据要重新立一个观察点才算数——留给它自己那一轮，不在 U44 的范围里。
+    await typeLine(session, '/clear')
+    await session.key('enter', { until: { absent: '/clear' }, timeoutMs: 10_000 })
     const shot = await session.capture({ label: '09-切会话之后' })
     keep(out, shot, '09-切会话之后')
 

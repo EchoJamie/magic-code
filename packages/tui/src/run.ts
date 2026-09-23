@@ -40,7 +40,7 @@ export type RunTuiOptions = {
    */
   readonly contextWindow?: number | null | undefined
   /**
-   * **本进程的工作区**（U26）——`/session` 列表据它认「别的项目」（分组头 ＋ 压暗）。
+   * **本进程的工作区**（U26）——`/resume` 那一屏据它认「别的项目」（分组头 ＋ 压暗）。
    * 装配把执行域的 `roots()` 递进来；**不给＝不知道自己在哪儿**（一组都不压暗）。
    * 见 `ShellOptions.workspaceRoots`。
    */

@@ -134,10 +134,10 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     expect(app.rows().some((row) => row.kind === 'user')).toBe(false)
   })
 
-  test('`/session`——记录区什么都不进，只发 `session.list`', () => {
+  test('`/resume`——记录区什么都不进，只发 `session.list`', () => {
     const app = live()
 
-    app.type('/session')
+    app.type('/resume')
     app.press(ENTER)
 
     expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.list' }])
@@ -327,17 +327,17 @@ describe('接管（裁决挂着时占住输入框）', () => {
 
 // ══ 选择器 ═══════════════════════════════════════════════════════════
 
-describe('选择器（`/session` · `/model`）', () => {
+describe('选择器（`/resume` · `/model`）', () => {
   const state = (active: string, rows: readonly { id: string; title?: string }[]) =>
     event('session.state', {
       active,
       sessions: rows.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
     })
 
-  test('`/session` 回车后：目录到手才开选择器，记录区仍不进东西', () => {
+  test('`/resume` 回车后：目录到手才开选择器，记录区仍不进东西', () => {
     const app = live()
 
-    app.type('/session')
+    app.type('/resume')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
 
@@ -345,24 +345,72 @@ describe('选择器（`/session` · `/model`）', () => {
     expect(app.rows()).toEqual([])
   })
 
-  test('上下选 ＋ 回车选定 —— 发 `session.open`，**留一行回执**', () => {
+  /**
+   * 选定之后**不再当场发回执**（U44）——回执挪到**答复**那一侧。
+   *
+   * 由头：换会话要**翻页**（清可见屏），而清屏发生在「页号一变」那一瞬——选定那一刻写下的
+   * 字会被一并推进 scrollback，新那一页的界上就没有它了。故这里连着判两跳：
+   * **选定＝发命令 ＋ 收起抽屉**（还没回执）→ **答复到了＝留回执**。
+   */
+  test('上下选 ＋ 回车选定 —— 发 `session.open`；**回执等答复到了才留**', () => {
     const app = live()
 
-    app.type('/session')
+    app.type('/resume')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
     app.press({ kind: 'down' })
     app.press(ENTER)
 
     expect(app.commands()).toContainEqual({ type: 'session.open', session: 's2' })
-    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
     expect(app.view().dock.kind).toBe('input')
+    // 还没答复：一个字都不许说（说了就是「切过去」这句谎话先落地）
+    expect(app.rows().some((row) => row.kind === 'receipt')).toBe(false)
+
+    // 答复到了（活跃位真换了）⇒ 留一行，且**带上那条的名字**（不是拿 id 顶上）
+    app.spy.emit(state('s2', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt', text: '已切到 乙的事' })
+  })
+
+  test('选的是**当下这条**——当场回执，不发命令（内核那一侧本就不发事件）', () => {
+    const app = live()
+
+    app.type('/resume')
+    app.press(ENTER)
+    app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
+    app.press(ENTER) // 光标起点就是当下这条
+
+    expect(app.commands()).not.toContainEqual(expect.objectContaining({ type: 'session.open' }))
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt', text: '已切到 甲的事' })
+  })
+
+  /** 内核忙时切不动（`BUSY_NOTE`）——**不说「已切到」**，照内核那句说（U44 接上 `note`）。 */
+  test('答复带 `note`（切不动）——留的是那句 note，不冒「已切到」', () => {
+    const app = live()
+
+    app.type('/resume')
+    app.press(ENTER)
+    app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
+    app.press({ kind: 'down' })
+    app.press(ENTER)
+
+    app.spy.emit(
+      event('session.state', {
+        active: 's1',
+        sessions: [{ id: 's1', at: 0, title: '甲的事' }],
+        note: '正在跑一轮——先 Ctrl+C 中断，再切会话（同一时刻只有一个活跃会话）',
+      }),
+    )
+
+    const last = app.rows().at(-1)
+    expect(last).toMatchObject({ kind: 'receipt' })
+    expect(last?.kind === 'receipt' ? last.text : '').toContain('正在跑一轮')
+    expect(app.rows().some((row) => row.kind === 'receipt' && row.text.startsWith('已切到'))).toBe(false)
   })
 
   test('`esc` 取消 —— **不留痕迹**（记录区与回执都没有）', () => {
     const app = live()
 
-    app.type('/session')
+    app.type('/resume')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1' }]))
     app.press({ kind: 'escape' })
@@ -535,27 +583,42 @@ function state1(active: string) {
 // ══ 补：会话命令与粘贴的其余分支 ═════════════════════════════════════
 
 describe('会话命令的其余分支', () => {
-  test('`/session new`——发 `session.new`；记录区**一行都不添**（D28甲：回执已删）', () => {
+  /**
+   * `/clear`——**回执就是清屏本身**，不另发文案（设计 · 命令行与配置）。
+   *
+   * ⚠️ **U43 补条那句 `· 已开一条新会话` 随之作废**（工单明文）：换个会话要翻页，
+   * 屏上那一下**已经说明了一切**，再补一句「开了」就是把同一件事说两遍。
+   */
+  test('`/clear`——发 `session.new`；记录区**一行都不添**', () => {
     const app = live()
 
-    app.type('/session new')
+    app.type('/clear')
     const before = app.rows().length
     app.press(ENTER)
 
     expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.new' }])
-    // 原锚＝`rows().at(-1)` 是 `kind: 'receipt'`（那时 `/session new` 留一行存储回执，D28甲 删）。
-    // 反例面：`/session` 选定切换照旧留「已切到 …」（那是用户按下去的结果，见下面几条用例）。
     expect(app.rows().length).toBe(before)
     expect(app.rows().some((row) => row.kind === 'receipt')).toBe(false)
   })
 
-  test('`/session title <文本>`——发 `session.rename`（带上当下那条的 id）', () => {
+  /** `/clear` 是**一个动作**，不是一族动作的入口——多写的词照实说一句，不当交代发出去。 */
+  test('`/clear <多余>`——只说用法，不发命令', () => {
+    const app = live()
+
+    app.type('/clear 别的')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
+  })
+
+  test('`/rename <文本>`——发 `session.rename`（带上当下那条的 id）', () => {
     const app = live()
     app.spy.emit(
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
     )
 
-    app.type('/session title 换个名字')
+    app.type('/rename 换个名字')
     app.press(ENTER)
 
     expect(app.commands()).toEqual([
@@ -564,20 +627,30 @@ describe('会话命令的其余分支', () => {
     ])
   })
 
-  test('`/session title` 不带文本——只提示用法，不发命令', () => {
+  test('`/rename` 不带文本——只提示用法，不发命令', () => {
     const app = live()
 
-    app.type('/session title')
+    app.type('/rename')
     app.press(ENTER)
 
     expect(app.commands()).toEqual([ASK_SKILLS])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
-  test('`/session <不认得>`——如实说一句，不发命令', () => {
+  test('`/rename` 还没有会话——如实说一句，不发命令（改名不是开张的动作）', () => {
     const app = live()
 
-    app.type('/session 乱写的')
+    app.type('/rename 叫个名字')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
+  })
+
+  test('`/resume <不认得>`——如实说一句，不发命令', () => {
+    const app = live()
+
+    app.type('/resume 乱写的')
     app.press(ENTER)
 
     expect(app.commands()).toEqual([ASK_SKILLS])

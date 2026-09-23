@@ -305,7 +305,7 @@ export type PickerRow = {
   /** 选定后要用的值（会话 id / 条目名 / **技能目录真路径**）。 */
   readonly value: string
   /**
-   * 这一行属于哪一组——**分组头**（`/session` 按工作区分组，U26）。
+   * 这一行属于哪一组——**分组头**（`/resume` 那一屏按工作区分组，U26）。
    * 分组头画在**这一组第一行之前**（见 `groupHeads`）；`/model` 不给（不分组的列表）。
    */
   readonly group?: string
@@ -374,10 +374,10 @@ export type PickerRow = {
   readonly keep?: string
 }
 
-/** 选择器（`/session` · `/model` · `/grants` · `/skills` · `@` 路径）——**只在左下开**。 */
+/** 选择器（`/resume` · `/model` · `/grants` · `/skills` · `@` 路径）——**只在左下开**。 */
 export type Picker = {
   /**
-   * 取材的来路。五处各一门：`/session` 读目录、`/model` 读条目表、`/grants` 读授权名录
+   * 取材的来路。五处各一门：`/resume` 读目录、`/model` 读条目表、`/grants` 读授权名录
    * （U22 · B13）、`/skills` 读技能目录（U33）、**`@` 读路径候选**（U36）——**同位置同开合**。
    */
   readonly source:
@@ -468,9 +468,16 @@ export type CommandSpec = {
  * **命令登记表**——只列**真存在**的命令（原型 · 场景 11 的自律：
  * 列一个按下去会报错的，比不列更坏）。
  *
- * 六条各自的性质：
+ * 各条的性质：
  * - `/help` · `/status`——**纯输出型**（本地就能答，不进记录区的对话）；
- * - `/session` · `/model` · `/grants` · `/skills`——**交互配置型**（开选择器）。
+ * - `/clear` · `/resume` · `/rename` · `/model` · `/grants` · `/skills`——**交互配置型**
+ *   （开选择器 / 当场换一页）。
+ *
+ * ⚠️ **会话那三条按「动作」命名，不按「实体」**（U44 · 设计 · 命令行与配置）——
+ * 用户认的是动作，而字典里 Session 属**内核层**（「一次交互的完整记录」）：把它做成用户
+ * 入口，等于让用户从内核实体进。故 `/session` **整条撤掉、不留别名**，换成
+ * `/clear`（清屏 ＋ 开一条新的）· `/resume`（回到之前某一条）· `/rename <文本>`。
+ * 「会话」这个词不废（它是内核层的记录，运行管理里站得住），要改的是**别从这个词进**。
  *
  * ⚠️ `/grants` **原先不在这张表上**，理由正是上一条自律（「内核还没有，故不列」）——
  * `U22` 到站后它有了：名录从 `grants.json` 来（走 `grants.list`），选定即撤。
@@ -480,7 +487,9 @@ export type CommandSpec = {
  * 表上的名字归内置命令，同名技能不抢它的含义（仍能从 `/skills` 里明确选出来）。
  */
 export const COMMANDS: readonly CommandSpec[] = [
-  { name: '/session', summary: '会话：列表 · 切换 · 新建 · 改名' },
+  { name: '/clear', summary: '清屏，另起一条' },
+  { name: '/resume', summary: '回到之前某一条' },
+  { name: '/rename', summary: '改当前这条的名字' },
   { name: '/status', summary: '看这一趟用了多少、模型是谁' },
   { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
   { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
@@ -923,8 +932,17 @@ export type AttachmentsCatalog = EventDataOf['attachments.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
-/** 归约一步：`event → 新视图`（纯函数——不改动入参）。 */
-export function reduce(view: ShellView, event: KernelEvent): ShellView {
+/**
+ * 归约一步：`event → 新视图`（纯函数——不改动入参）。
+ *
+ * `pageTurn` 只对 `session.state` 有意义（U44 · 见 `reduceSessionState`）：外壳发过
+ * `/clear` 或 `/resume` 的选定之后，那一声答复要按「换页那一跳」判。别的事件不看它。
+ */
+export function reduce(
+  view: ShellView,
+  event: KernelEvent,
+  options: { readonly pageTurn?: boolean } = {},
+): ShellView {
   switch (event.kind) {
     case 'model.delta':
       return reduceDelta(view, event.id, event.data)
@@ -1066,7 +1084,7 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return withPlan(view, event.data.entry, event.data.plan)
 
     case 'session.state':
-      return reduceSessionState(view, event.data)
+      return reduceSessionState(view, event.data, options.pageTurn === true)
 
     // 读面答复——**攒与重建归外壳**（`shell.ts` 里按块收，收齐了调 `rebuild`）；
     // 归约这层收到它就丢（它不逐条进记录区）
@@ -1307,9 +1325,25 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
 
 type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
 
-/** `session.state`——目录 ＋ 当前会话。**换了会话＝记录区交给重建**（缺陷 D1）。 */
-function reduceSessionState(view: ShellView, data: SessionStateData): ShellView {
+/**
+ * `session.state`——目录 ＋ 当前会话。**换了会话＝记录区交给重建**（缺陷 D1）。
+ *
+ * `pageTurn`（U44）＝**这一声答复是「换页那一跳」的**（外壳发过 `/clear` 或 `/resume`
+ * 的选定，见 `shell.ts` 的 `turn`）。默认那一格（`false`）只管「会话身份真的换了没换」——
+ * 而换页那一跳多一条：**从「还没有会话」换到「头一条」也算换了一页**。
+ *
+ * ⚠️ **为什么要多这一条**：外壳**不会**在首条消息开张时收到 `session.state`（那时没有
+ * 会话命令要回答），故 `view.sessionId` 一直是 `null`——用户开局敲一句、再敲 `/clear`
+ * 时，那一跳在默认判据下「没换会话」⇒ 屏不翻、`/clear` 看着像没按（真 PTY 上就是这么现形的）。
+ * 而那一跳**确实是**「清屏 ＋ 另起一条」：记录区该整块换掉。
+ *
+ * ⚠️ **不能把 `null → 头一条` 一律当成换页**：`/resume` 问一次目录、`/model` 这类读侧动作
+ * 都会在装配那边开一张**空壳**会话（信封必带会话），那一下 id 也是从无到有——屏上却什么都
+ * 不该动。故只有当**外壳真发过换页那一跳**时才算（由头同 D25：别拿会话 id 当页号）。
+ */
+function reduceSessionState(view: ShellView, data: SessionStateData, pageTurn: boolean): ShellView {
   const switched = view.sessionId !== null && view.sessionId !== data.active
+  const turned = pageTurn ? view.sessionId !== data.active : switched
   const title = data.sessions.find((row) => row.id === data.active)?.title ?? null
 
   const base: ShellView = {
@@ -1332,7 +1366,7 @@ function reduceSessionState(view: ShellView, data: SessionStateData): ShellView 
   // **计划那一块同一条**（U34）：换会话**先移除旧清单**（设计：不能短暂串到新会话）——
   // 新会话的那一份由随后读回来的历史（`rebuild`）重铺。收起的位与视口也归零：
   // 每一条会话都从「默认展开、从头看」开始。
-  return switched
+  return turned
     ? {
         ...base,
         rows: [],
@@ -1391,11 +1425,40 @@ function bannerFirst(rows: readonly LogRow[]): readonly LogRow[] {
 }
 
 /**
- * 用历史铺一页时的**页头**——**这一页有字标就照用本尊（对象不变），没有就一行都不补**。
+ * **开页那一行**（U44）——换会话那一跳的 `· 已切到 <名字>`（`kind: 'receipt'`），
+ * 但它与**普通回执不是一回事**：它是**这一页的界**（设计：换会话不重印字标，
+ * 那一屏的界由回执承担），故与字标同一格——`rebuild` 铺历史时**不许把它抹掉**。
  *
- * 「有没有」看的是 `settled[0]`：开机那一页**有**（`withBanner` 种的，`rebuild` 得把它
- * 留在最前面，不然 `--session` 接续那条路开局就把它换没了）；换会话开的那一页**没有**
- * （`reduceSessionState` 只清空、不种），故历史直接从头铺。
+ * ⚠️ 用**显式的 key** 认它，不靠「谁在最前面」猜：`settled[0]` 是回执**不等于**它是页头
+ * （换会话之后、历史还没读回来那一小段里，用户敲的别的命令也会往那儿落一行回执），
+ * 拿位置猜就会把一张 `/rename` 的回执当成页头钉在顶上。
+ */
+const PAGE_NOTE_KEY = 'page:note'
+
+/**
+ * 一行**开页回执**——只归换会话那一跳（`shell.ts` 的 `turn` 收了场、且带名字的那一支）。
+ *
+ * 与 `appendReceipt` 只差 key：这样 `pageHeaderOf` 认得出它是页头（见 `PAGE_NOTE_KEY` 的注）。
+ */
+export function appendPageNote(view: ShellView, text: string): ShellView {
+  return appendSettled(view, { kind: 'receipt', key: PAGE_NOTE_KEY, text })
+}
+
+/**
+ * 用历史铺一页时的**页头**——**这一页有页头就照用本尊（对象不变），没有就一行都不补**。
+ *
+ * 「有没有」看的是 `settled[0]`，两格都算页头：
+ * - **字标**——开机那一页（`withBanner` 种的，`rebuild` 得把它留在最前面，不然 `--session`
+ *   接续那条路开局就把它换没了）；
+ * - **开页回执**（`PAGE_NOTE_KEY`）——换会话开的那一页（U44）。
+ * 两者都没有（`/clear` 开的那一页）＝历史直接从头铺。
+ *
+ * ⚠️ **认 key 不认位置**（U44 起的第二格）：回执落在最前面**不等于**它是页头，
+ * 见 `PAGE_NOTE_KEY` 那段注。
+ * ⚠️ **页头与 `<Static>` 的游标是同一笔账**：页头那一行在「历史还没读回来」那一帧就已经
+ * 写出去了（`Static` 的游标跟着往前走一格），`rebuild` 若不把它放回最前面，
+ * 这一页的**第一行记录**就会被游标跳过——屏上凭空少一行（试跑当场现形：
+ * 「甲：看看有什么」那一行没印出来）。
  *
  * ⚠️ **绝不在这儿补种一个**（U43 改）：这条路上补种＝又在**填**的时候**开**了一页——
  * 屏上多一份字标（D28 乙）。页开不开由 `page` 管，不归本函数。
@@ -1403,7 +1466,7 @@ function bannerFirst(rows: readonly LogRow[]): readonly LogRow[] {
 function pageHeaderOf(view: ShellView): readonly LogRow[] {
   const first = view.settled[0]
 
-  return first !== undefined && first.kind === 'banner' ? [first] : []
+  return first !== undefined && (first.kind === 'banner' || first.key === PAGE_NOTE_KEY) ? [first] : []
 }
 
 /**
@@ -1801,10 +1864,10 @@ export function stateLabel(state: StatusState): string {
   }
 }
 
-// ══ 选择器（`/session` · `/model`）═══════════════════════════════════
+// ══ 选择器（`/resume` · `/model`）════════════════════════════════════
 
 /**
- * **`/session` 的行** —— 目录按**工作区分组**（U26；词典 · Workspace / Session：
+ * **`/resume` 那一屏的行** —— 目录按**工作区分组**（U26；词典 · Workspace / Session：
  * 一个会话属于一个工作区）。
  *
  * 三条规格：
@@ -1862,7 +1925,7 @@ export function sessionRows(
 }
 
 /**
- * `/session` 列表下方那句话 —— **本工作区一条会话都没有**时报出「**这儿是哪儿**」
+ * `/resume` 那一屏下方那句话 —— **本工作区一条会话都没有**时报出「**这儿是哪儿**」
  * （U27 · `U26` 待决 2）。
  *
  * 由头：本工作区没有会话时，整张表都是暗的——用户看得出「这些不是这儿的」，但**看不出
@@ -2246,7 +2309,7 @@ export function modelHint(entries: readonly ModelCatalogRow[], note?: string): s
 // ══ 授权抽屉（`/grants` · U22）═══════════════════════════════════════
 
 /**
- * **`/grants` 的行** —— 名录 ＋ 陈旧的节（`B13` 的呈现形态：**与 `/session` · `/model`
+ * **`/grants` 的行** —— 名录 ＋ 陈旧的节（`B13` 的呈现形态：**与 `/resume` · `/model`
  * 同位置同开合**的左下抽屉）。
  *
  * 两组：
@@ -2275,7 +2338,7 @@ export function grantsRows(catalog: GrantsCatalog): readonly PickerRow[] {
       current: false,
       value: section,
       group: STALE_HEAD,
-      faint: true, // 压暗＝「这个多半是过去的事了」，但**照样选得中**（同 `/session` 的姿势）
+      faint: true, // 压暗＝「这个多半是过去的事了」，但**照样选得中**（同 `/resume` 那一屏的姿势）
       revoke: { workspace: section },
     })
   }
@@ -2808,13 +2871,13 @@ export function groupHeads(rows: readonly PickerRow[]): readonly boolean[] {
  *
  * 而 `/grants` **默认就是这个形态**：没按过 `a` 的工作区没有 `grants.json`，
  * 名录**必空**（`dataDir` 缺省 `~/.magic`）⇒ 头一次打 `/grants` 必落这个坑。
- * `/session` 一条会话都没有时、`/model` 一条条目都没有时、`/skills` 一个技能都没有
+ * `/resume` 那一屏一条会话都没有时、`/model` 一条条目都没有时、`/skills` 一个技能都没有
  * （或筛词一个都不中）时，同理。
  *
  * 故 0 行时**不开抽屉**：把 `hint`（抽屉下方那句话）落成**记录区一行回执**——
  * 话一句不少、还更显眼，而**输入照常**。`hint` 没给就什么都不说（「拿不到的不编」）。
  *
- * ⚠️ 这是**共用的一处**：四条抽屉（`/session` · `/model` · `/grants` · `/skills`）都经这里，
+ * ⚠️ 这是**共用的一处**：四条抽屉（`/resume` · `/model` · `/grants` · `/skills`）都经这里，
  * 别在某个调用点另加判断（那样五条路就有五种口径）。
  *
  * ## 一条例外：**正在筛的时候**（U33 · `/skills`）

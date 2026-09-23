@@ -374,11 +374,15 @@ describe('U33 · `/<技能名>` 直达', () => {
     expect(stage.shell.getView().rows.at(-1)).toMatchObject({ kind: 'user', text: '/pdf 帮我看看' })
   })
 
-  test('**斜杠之后那一整段不再解析成控制命令**（`/session` 字样与换行都在正文里）', () => {
+  /**
+   * ⚠️ 样词随 U44 换成 `/clear`：拿一条**已撤掉**的命令当样词，下面那句「没有多出命令」
+   * 会**恒真**（认不得的词本来就不会变成命令）——判据当场空转。换成真切存在的那一条才咬得人。
+   */
+  test('**斜杠之后那一整段不再解析成控制命令**（`/clear` 字样与换行都在正文里）', () => {
     const stage = createStage()
     stage.type('/pdf')
     feedCatalog(stage, [skill('pdf')])
-    stage.type(' 看 /session 那段')
+    stage.type(' 看 /clear 那段')
     stage.press({ kind: 'newline' })
     stage.type('还有第二行')
     stage.press(ENTER)
@@ -386,11 +390,11 @@ describe('U33 · `/<技能名>` 直达', () => {
     expect(stage.commands().at(-1)).toMatchObject({
       type: 'input.submit',
       // 内部换行原样留着（多行交代不当场压成一行）；`/pdf` 也在（U36：名称不再剥掉）
-      text: '/pdf 看 /session 那段\n还有第二行',
+      text: '/pdf 看 /clear 那段\n还有第二行',
       refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
     })
-    // 没有多出一条 `session.list`（正文里的 `/session` 只是正文）
-    expect(stage.commands().some((one) => one.type === 'session.list')).toBe(false)
+    // 没有多出一条 `session.new`（正文里的 `/clear` 只是正文——它不在句首那个词的位置上）
+    expect(stage.commands().some((one) => one.type === 'session.new')).toBe(false)
   })
 
   test('**同名同档分不出唯一** ⇒ 展开同名候选，不静默挑一个', () => {

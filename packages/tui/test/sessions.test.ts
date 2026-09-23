@@ -60,10 +60,10 @@ describe('会话目录（选择器）', () => {
     opened.key({ kind: 'char', char: '/' })
     void opened
 
-    // 用真链路：/session
+    // 用真链路：/resume
     const app2 = live()
     app2.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
-    for (const char of '/session') app2.shell.key({ kind: 'char', char })
+    for (const char of '/resume')app2.shell.key({ kind: 'char', char })
     app2.key('enter')
     app2.feed([
       state(SESSION, [
@@ -81,7 +81,7 @@ describe('会话目录（选择器）', () => {
 
   test('目录为空时给一句话（不空一块）', () => {
     const app = live()
-    for (const char of '/session') app.shell.key({ kind: 'char', char })
+    for (const char of '/resume')app.shell.key({ kind: 'char', char })
     app.key('enter')
     app.feed([state('s-new', [])])
 
