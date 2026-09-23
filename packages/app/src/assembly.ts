@@ -110,7 +110,7 @@ import {
   vendorCatalog,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
-import type { PermissionRule, RuleProblem } from '@magic/permission'
+import type { GrantEdit, GrantHit, PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createMcpServers } from '@magic/mcp'
@@ -121,7 +121,7 @@ import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
 import { saveAttachmentFile } from './attachment-file.ts'
 import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
-import { loadGrants, saveGrants } from './grants-file.ts'
+import { commitGrants, loadGrants } from './grants-file.ts'
 import { configFingerprintOf, modelCacheAccessOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 
@@ -615,16 +615,68 @@ export function assemble(options: AssembleOptions): Assembly {
       ? `${magic.base}/${GRANTS_FILE_NAME}`
       : expandHome(options.grantsFile, magic.home)
   const loadedGrants = loadGrants(grantsPath)
-  /** 有攒着没落的记账（命中统计）——收尾时补一次（见 `close`）。 */
-  let grantsDirty = false
   /**
-   * **上次没写进盘**的那一句（`/grants` 里说）——写盘会失败（权限 / 盘满），而失败**不该静默**：
-   * 授权还在内存里生效，用户却以为它已经记下了 ⇒ 下次启动它就不在了。
+   * 攒着没落的**命中记账**（U47）——收尾时补一次（见 `close`）。
+   *
+   * 按（工作区 × 三格身份）合成一笔笔**最后一次**的读数：同一类调用命中一百次，
+   * 要落的是「一共几次、最后一次什么时候」这一个终值，不是一百条流水。故它是个 `Map`
+   * ——数组会随会话长度长，而集起来的那一份只跟**不同规则的条数**有关。
+   */
+  const pendingHits = new Map<string, GrantHit>()
+  /** 把攒下的记账收成**一项**改动。空表不该产出一项改动（那会白写一次盘）。 */
+  const drainHits = (): readonly GrantEdit[] => {
+    if (pendingHits.size === 0) return []
+    const updates = [...pendingHits.values()]
+    pendingHits.clear()
+    return [{ kind: 'hit', updates }]
+  }
+
+  /**
+   * **上次没写进盘**的那一句（`/grants` 里说）——写盘会失败（权限 / 盘满 / 拿不到锁），
+   * 而失败**不该静默**：授权还在内存里生效，用户却以为它已经记下了 ⇒ 下次启动它就不在了。
    *
    * 说在哪儿：**`/grants` 那一屏**（授权的门面）。那一刻要说的通道（`grants.catalog` 的 `note`）
    * 正好在那儿，不必另长一条告警路径。
    */
   let grantsWriteError: string | undefined
+
+  /**
+   * **上次没写进盘**的那些改动（按序）——下一次落盘（含收尾那一跳）一并重试。
+   *
+   * 改动是**幂等**的（加一条会去重、撤一条找不到就跳过），故重来一次不会把什么写坏；
+   * 而「不攒」的话，一次没写成就真没了（`/grants` 里那句告警是实话，但本可以不成真）。
+   */
+  let unsettled: GrantEdit[] = []
+
+  /**
+   * **落盘那一跳**（U47）——把这次攒下的改动交出去，由 `commitGrants` 做
+   * 「拿短独占锁 → 读**当前**内容 → 应用这一项 → 原子保存」。
+   *
+   * 为什么不是「把账本那份快照写出去」：两个执行者各持旧账本，整份覆写会抹掉对方刚落的
+   * 改动、并让**已经撤销的**授权复活（撤销是安全动作，失灵比丢一条授权重）。详见
+   * `./grants-file.ts` 的「并发」那一段。
+   *
+   * 写盘**不抛进裁决回路**：这一跳在 `resolve()` 的调用栈里（用户在按 `a`），抛上去会炸掉
+   * 外壳的按键处理——而「授权没记住」不是那一刻该打断用户的事。失败方向安全：**最坏丢一次
+   * 授权**（内存里仍生效），下一回 `/grants` 里说清楚。
+   *
+   * **没写成的攒到下一次**（见 `unsettled`）——改动是**幂等**的（加一条会去重、撤一条找
+   * 不到就跳过），故重来一次不会写坏什么，而这一跳原先那份整份快照**本来**也是这个效果
+   * （它一写就把账本整个写出去，上次没落成的自然跟着落地）。
+   */
+  const persistGrants = (edits: readonly GrantEdit[]): void => {
+    const all = [...unsettled, ...edits]
+
+    try {
+      commitGrants(grantsPath, all)
+      unsettled = []
+      grantsWriteError = undefined
+    } catch (error) {
+      unsettled = all
+      const reason = error instanceof Error ? error.message : String(error)
+      grantsWriteError = `授权没能写进 ${grantsPath}（${reason}）——本次仍在生效，但重启动就没了`
+    }
+  }
 
   /**
    * **授权账本**（工作区级）——`a` 写进这里，进程内**跨会话共用**。
@@ -637,25 +689,18 @@ export function assemble(options: AssembleOptions): Assembly {
     workspace: workspace.defaultRoot(),
     file: loadedGrants.file,
     now,
-    onChange: (file, change) => {
+    onChange: (edit: GrantEdit) => {
       // **授权的新增 / 撤销＝立刻落盘**：那份文件存在的理由就是它们，攒着＝掉电丢授权。
       // **命中记账＝攒着**：每一次自动放行都写盘是白烧 io，而掉电丢的只是统计（不是授权）。
-      if (change === 'hit') {
-        grantsDirty = true
+      //
+      // 攒着的记账跟着**下一次真正的改动**一起落（原先整份覆写时也是这个效果：那一跳
+      // 把账本整个写出去，命中统计自然跟着走）——故这里先把攒下的并进去，再一起提交。
+      if (edit.kind === 'hit') {
+        for (const update of edit.updates) pendingHits.set(hitKey(update), update)
         return
       }
-      grantsDirty = false
 
-      // 写盘**不抛进裁决回路**：这一跳在 `resolve()` 的调用栈里（用户在按 `a`），
-      // 抛上去会炸掉外壳的按键处理——而「授权没记住」不是那一刻该打断用户的事。
-      // 失败方向安全：**最坏丢一次授权**（内存里仍生效），下一回 `/grants` 里说清楚。
-      try {
-        saveGrants(grantsPath, file)
-        grantsWriteError = undefined
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        grantsWriteError = `授权没能写进 ${grantsPath}（${reason}）——本次仍在生效，但重启动就没了`
-      }
+      persistGrants([...drainHits(), edit])
     },
   })
 
@@ -1895,9 +1940,12 @@ export function assemble(options: AssembleOptions): Assembly {
       startup === undefined ? Promise.resolve() : actions.recover(actionPorts()).then(() => undefined),
     close: () => {
       // 攒着的记账（命中统计）在这儿补落一次——**授权本身早写过了**（`onChange` 那条路），
-      // 故这里失败也只是统计没落上（`saveGrants` 抛就抛出去：收尾那条路上没人能应答它，
-      // 静默吞掉反而让人以为写成了）
-      if (grantsDirty) saveGrants(grantsPath, grants.snapshot())
+      // 故这里失败也只是统计没落上（抛就抛出去：收尾那条路上没人能应答它，静默吞掉反而
+      // 让人以为写成了）。
+      //
+      // ⚠️ 补落的仍是**改动**（一项记账），不是账本快照（U47）：这一趟里别的执行者若撤销过
+      // 某条授权，这一跳只找得到在册的那些、找不到就跳过——不会把它写回来。
+      persistGrants(drainHits())
       recordsStore.close()
       // **发起**外部服务器的释放（不等：收尾这一跳是同步的，等它要 `await shutdown()`）。
       // 放在最后：先落自己的账，再去收子进程。忘了 await 也不至于把它们留下——
@@ -1964,6 +2012,22 @@ function noticesOf(
   if (grantsNote !== undefined) said.push(grantsNote)
 
   return said
+}
+
+/**
+ * 一笔命中记账的**身份键**（U47）——「哪一条授权的账」＝工作区 × 规则三格。
+ *
+ * 攒下的记账按它合成（同一类调用命中一百次，要落的是终值不是一百条流水）；
+ * 用 `JSON.stringify` 数组而不是拼字符串：路径里就是可以有分隔符（`a/b` 与 `a:b`）。
+ */
+function hitKey(hit: GrantHit): string {
+  const { workspace, rule } = hit
+  return JSON.stringify([workspace, rule.tool, rule.path ?? null, opKeyOf(rule)])
+}
+
+/** 规则第三格（操作类型）的键——单值 / 数组 / 缺席三形归一（顺序无关的集合）。 */
+function opKeyOf(rule: PermissionRule): string {
+  return rule.op === undefined ? '' : (Array.isArray(rule.op) ? rule.op : [rule.op]).join(',')
 }
 
 /** 目录还在不在——陈旧节的判据（`B11`：「路径已不在 → 你删或留」）。 */
