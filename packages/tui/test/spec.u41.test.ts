@@ -26,6 +26,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ModelCatalogRow } from '@magic/contracts'
 import type { Command } from '@magic/contracts'
 import { HINT_PICKER } from '../src/view.ts'
+import { dockHeightOf } from '../src/components/app.ts'
 import { createStage } from './screen.ts'
 import type { Stage } from './screen.ts'
 import type { Dock } from '../src/view.ts'
@@ -202,6 +203,98 @@ describe('④ 取消**不留痕迹**、不动任何东西', () => {
     stage.press({ kind: 'escape' })
 
     expect(stage.shell.getView().status.model).toBeNull() // 没调用过＝没有选中的事实
+  })
+})
+
+describe('⑥ 选择器**高度有界**（设计 · 终端交互：高度有界 · 焦点可见）', () => {
+  // 这一组是**共用交互**（五扇抽屉都走这一处），由本单元「一个连接下可能列出几十个模型」
+  // 逼出来的：原先候选是**照单全画**的——实测 30 条候选在 24 行终端上把记录区整个顶出去
+  // （帧 40 行，记录区一行不剩）。补法与草稿那一片同一条路子（半屏 ＋ 焦点可见 ＋ 如实报数）。
+
+  const many = Array.from({ length: 30 }, (_unused, at) => entry(`conn-${at}`, `model-${at}`))
+
+  test('账与屏**同源**：候选超过半屏时，画出来的交互区行数 ＝ `dockHeightOf` 数的那几行', async () => {
+    // 账与屏分家＝矮终端上真光标高一行（U31 那一族的老病）。这一条在**几档高度**上各量一遍
+    // ——半屏预算随窗口变，两处必须一起变。
+    const stage = createStage()
+    open(stage, many)
+    const view = stage.shell.getView()
+
+    for (const rows of [24, 18, 10]) {
+      const frame = await stage.screen({ columns: 60, rows })
+
+      // `frame.dock` 含**状态行**那一行；`dockHeightOf` 数的是交互区，不含它
+      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows) + 1)
+    }
+  })
+
+  test('**记录区还在**——候选不许把这一趟的上下文顶出屏幕', async () => {
+    const stage = createStage()
+    open(stage, many)
+
+    const frame = await stage.screen({ columns: 60, rows: 24 })
+
+    expect(frame.record.length).toBeGreaterThan(0)
+  })
+
+  test('折起来的那一头**如实报条数**（不装作画全了）', async () => {
+    const stage = createStage()
+    open(stage, many)
+
+    const frame = await stage.screen({ columns: 60, rows: 24 })
+
+    expect(frame.has('… 下面还有 19 条')).toBe(true) // 满窗 12 格 − 1 条提示 ⇒ 画 11 条、余 19
+  })
+
+  test('**焦点可见**：`↓` 挪出这一窗之后窗口跟着平移，选中那条仍在屏上', async () => {
+    const stage = createStage()
+    open(stage, many)
+    for (let at = 0; at < 15; at += 1) stage.press({ kind: 'down' })
+
+    const frame = await stage.screen({ columns: 60, rows: 24 })
+
+    expect(frame.has('conn-15')).toBe(true) // 选中那条（第 16 行）
+    expect(frame.has('… 上面还有 6 条')).toBe(true) // 上头折起来的如实报
+    expect(frame.has('conn-0')).toBe(false) // 折起来的那几条确实没画
+  })
+
+  test('**反例**：放得下就一条都不折——上面那条不许把提示变成无条件的', async () => {
+    // 对表 · 修 A 要交 B 的反例：给长列表加折叠时，最容易的过头是**短列表也去折**
+    // （白扔一格、还多一句「还有 0 条」那种废话）。
+    const stage = createStage()
+    open(stage, [entry('personal', 'MiniMax-M3'), entry('backup', 'deepseek-chat')])
+
+    const frame = await stage.screen({ columns: 60, rows: 24 })
+
+    expect(frame.has('还有')).toBe(false)
+    expect(frame.has('personal')).toBe(true)
+    expect(frame.has('backup')).toBe(true)
+  })
+
+  test('分组头也占窗口的格子（`/session` 那一档：账与屏照旧一致）', async () => {
+    // 分组头是**多出来的一行**——窗口按「项」算（行 ＋ 头 ＋ 提示），故它一并计入预算；
+    // 不这么算的话，带分组的列表会正好多画一行（账少、屏多）。
+    const stage = createStage()
+    stage.type('/session')
+    stage.press({ kind: 'enter' })
+    stage.feed([
+      event('session.state', {
+        active: 's-0',
+        sessions: Array.from({ length: 20 }, (_unused, at) => ({
+          id: `s-${at}`,
+          title: `会话 ${at}`,
+          at: 1_700_000_000_000 + at,
+          workspace: at % 2 === 0 ? ['/w/a'] : ['/w/b'],
+        })),
+      }),
+    ])
+    const view = stage.shell.getView()
+
+    for (const rows of [24, 14]) {
+      const frame = await stage.screen({ columns: 60, rows })
+
+      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows) + 1)
+    }
   })
 })
 

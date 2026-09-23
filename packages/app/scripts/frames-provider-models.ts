@@ -382,7 +382,74 @@ async function narrow(out: string): Promise<void> {
   }
 }
 
-// ══ ④ 配置不被发现模型撑大（**读盘**，不是读屏）════════════════════════
+// ══ ④ 长列表：高度有界、焦点可见（真终端上看）══════════════════════════
+
+/**
+ * 一条连接下几十个型号是常态（供应商接口说了算，不由我们挑）——故列表必须**高度有界**，
+ * 且**焦点跟着 `↑↓` 走**（设计 · 终端交互：「高度有界、焦点可见」）。
+ *
+ * 这一屏量的三件：① 记录区**还在**（候选不许把这一趟的上下文顶出屏幕）；② 折起来的那一头
+ * **如实报条数**；③ 挪到窗口之外以后，选中那条仍在屏上。
+ *
+ * ⚠️ 旧形下「一个条目 ＝ 一个连接 ＋ 一个模型」，故这里摆 30 条连接来凑出长列表；
+ * 新形制（型号来自接口）落地之后，同一屏由**一条连接的 30 个型号**给——判据一行不用改。
+ */
+async function longList(out: string): Promise<void> {
+  const providers: Record<string, unknown> = {}
+  for (let at = 0; at < 30; at += 1) providers[`conn-${at}`] = { model: `model-${at}` }
+
+  const fixture = startProviderFixture({ vendor: 'minimax', key: FAKE_KEY })
+  const bench: Bench = {
+    fixture,
+    config: {
+      defaultProvider: 'conn-0',
+      providers: Object.fromEntries(
+        Object.entries(providers).map(([id, one]) => [
+          id,
+          { baseURL: fixture.baseURL, apiKey: FAKE_KEY, ...(one as Record<string, unknown>) },
+        ]),
+      ),
+    },
+  }
+  const session = await start({ label: 'u41-长列表', columns: 60, rows: 24 }, bench, out)
+
+  try {
+    await typeLine(session, '/model')
+    await pressKey(session, 'enter', { until: { text: PICKER_HINT }, timeoutMs: 10_000 })
+    const shot = await session.capture({ label: '07-长列表' })
+    keep(out, shot, '07-长列表')
+
+    // ⚠️ 「不超过 24 行」这条量不出名堂——VT 的屏就是 24 行，怎么画都 ≤ 24。
+    //    要量的是**分区**：记录区还在不在（分隔线之上有没有内容）、交互区占了几行。
+    const at = shot.lines.findIndex((line) => line.startsWith('──'))
+    const dockLines = shot.lines.slice(at + 1).filter((line) => line.trim() !== '')
+
+    check(at > 0, '记录区还在（分隔线之上仍有内容——候选没有把它顶出屏幕）', shot.text)
+    check(dockLines.length <= 14, `交互区不超过半屏＋提示＋状态行（实测 ${dockLines.length} 行）`)
+    check(has(shot, '还有'), '折起来的那一头如实报了条数')
+    check(!has(shot, 'conn-29'), '折起来的那些确实没画')
+
+    // —— 焦点可见：挪到窗口之外 ——
+    // ⚠️ 方向键**一下一下来**（连着按会被并入同一次读，Ink 只解头一个序列——U40 那条实测）
+    for (let at = 0; at < 14; at += 1) await pressKey(session, 'down')
+    const moved = await session.capture({ label: '07b-挪到窗口外' })
+    keep(out, moved, '07b-挪到窗口外')
+
+    const movedAt = moved.lines.findIndex((line) => line.startsWith('──'))
+
+    check(has(moved, '上面还有'), '窗口跟着平移了（上头开始折起来）')
+    check(movedAt > 0, '平移之后记录区照旧在')
+    check(
+      moved.lines.slice(movedAt + 1).filter((line) => line.trim() !== '').length <= 14,
+      '平移之后交互区照旧有界',
+    )
+  } finally {
+    await close(session)
+    await bench.fixture.stop()
+  }
+}
+
+// ══ ⑤ 配置不被发现模型撑大（**读盘**，不是读屏）════════════════════════
 
 /**
  * 「用户配置不因发现模型而膨胀」＋「保存不泄露凭据」——**两件都读盘**，不读屏。
@@ -447,6 +514,7 @@ const SCENES: readonly { readonly name: string; readonly run: (out: string) => P
   { name: '选择与出站', run: picking },
   { name: '取消不留痕', run: cancelling },
   { name: '窄窗列表', run: narrow },
+  { name: '长列表', run: longList },
   { name: '配置与凭据', run: configAndSecrets },
 ]
 

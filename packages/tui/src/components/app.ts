@@ -28,12 +28,12 @@ import { useSyncExternalStore } from 'react'
 import { bannerOf } from '../banner.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { groupHeads, hasRunningTool } from '../view.ts'
+import { hasRunningTool } from '../view.ts'
 import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
-import { PickerList } from './picker.ts'
+import { PickerList, maxPickerLines, pickerLayout } from './picker.ts'
 import { StatusLine } from './status.ts'
 
 /**
@@ -289,7 +289,9 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   if (view.dock.kind === 'picker') {
     // 候选列在**输入行之上**（与自动补全那一栏同一位置：先看候选，再看自己在打的那句话）。
     return [
-      h(PickerList, { key: 'picker', picker: view.dock.picker, columns }),
+      // `rows` 一路给到候选那一头：**半屏封顶**按它算（`maxPickerLines`），
+      // 与高度账同取 `pickerLayout` 一处（见 `dockHeightOf` 里那一段注）
+      h(PickerList, { key: 'picker', picker: view.dock.picker, columns, rows }),
       // ⚠️ **`@` 那一栏把输入行留着**（U36）——设计「引用留在交代的位置」：用户打的路径
       // 正长在那句话里，把输入行藏掉，他就看不见它落在哪儿了（别的那几栏不必显示输入行：
       // 它们的查询是抽屉自己的，不写进草稿）。插入点也照旧摆着（真光标就在那句子里）。
@@ -412,8 +414,11 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
   }
 
   if (view.dock.kind === 'picker') {
-    // 分组头也算行（U26——`/session` 按工作区分组；一处判定两处用，见 `groupHeads`）
-    const heads = groupHeads(view.dock.picker.rows).filter(Boolean).length
+    // 候选那一头**数的是窗口**（不是全量行数）——候选超过半屏时，`pickerLayout` 会折起来
+    // 并画一条「… 上面/下面还有 N 条」，三者（行 ＋ 分组头 ＋ 提示）都在它交出来的 `items` 里。
+    // ⚠️ **账与屏同取这一处**（`pickerLayout`）：分头算一次就会重演「账 N 行、屏 N+1 行」
+    // ⇒ 矮终端上真光标高一行（U31 那一族的老账，本文件上面那一段注写的就是它）。
+    const candidates = pickerLayout(view.dock.picker, maxPickerLines(rows)).items.length
     // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/session` 的长得多
     // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
     // （D11 那条「行高与实际不符」的老账，正是这么来的）
@@ -429,7 +434,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         ? draftHeight(view.draft, view.caret, columns, maxDraftLines(rows))
         : 0
 
-    return view.dock.picker.rows.length + heads + hint + composer + flash
+    return candidates + hint + composer + flash
   }
 
   // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。

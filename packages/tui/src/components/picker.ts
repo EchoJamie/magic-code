@@ -5,6 +5,21 @@
  * 选定后**留一行回执**；`esc` 取消＝**不留痕迹**。
  *
  * 与输入区**同一位置、同一开合**——故它只是 `Dock` 的另一种形态，不另起一块。
+ *
+ * ## 高度有界（U41 · 2026-09-23）
+ *
+ * 设计 · 终端交互：「选择器 `↑↓` 选择、`Enter` 确定、`Esc` 收起；**高度有界**、焦点可见」。
+ * 这一条原先只有**草稿**那一片落了（`maxDraftLines` 半屏），候选这一头是**照单全画**的——
+ * 实测：30 条候选在 24 行终端上把记录区整个顶出去（帧 40 行，记录区一行不剩）。
+ * `/skills` 那种目录本来就长，供应商的模型列表更是几十条都可能，故补上：
+ *
+ * - 窗口取**半屏**（与草稿同一条规矩，一个常量）；
+ * - **焦点必须在窗口里**（`↑↓` 挪到哪儿，窗口跟到哪儿——同草稿那一片「插入点必须看得见」）；
+ * - 折起来的那一头**如实报条数**（`… 上面还有 N 条`），不装作画全了。
+ *
+ * ⚠️ **账与屏同取 `pickerLayout` 一处**（`app.ts` 的 `dockHeightOf` 数的是它交出来的
+ * `items.length`）——分头算一次就会重演「账 N 行、屏 N+1 行 ⇒ 矮终端上真光标高一行」
+ * （U31 那一族的老账）。
  */
 
 import { Box, Text } from 'ink'
@@ -14,6 +29,24 @@ import { groupHeads } from '../view.ts'
 import { clip, inkWidth } from './composer.ts'
 import { PALETTE } from './lines.ts'
 
+/**
+ * 一屏要画的一项——**候选行 · 分组头 · 折起来那条提示**（三者同列，故同一个类型）。
+ *
+ * 高度账与渲染都数它：这样「折起来几条」这件事**只在一处决定**，两处不会各说一套。
+ */
+export type PickerItem =
+  | { readonly kind: 'head'; readonly key: string; readonly head: string; readonly faint: boolean }
+  | { readonly kind: 'row'; readonly key: string; readonly row: PickerRow; readonly index: number }
+  | { readonly kind: 'notice'; readonly key: string; readonly text: string }
+
+export type PickerLayout = {
+  /** 这一屏从头到尾要画的项（顺序即屏上的顺序）。 */
+  readonly items: readonly PickerItem[]
+  /** 折起来了几条候选（上 / 下两头；`0` ＝ 这一头没折）。 */
+  readonly above: number
+  readonly below: number
+}
+
 export type PickerProps = {
   readonly picker: Picker
   /**
@@ -21,12 +54,31 @@ export type PickerProps = {
    * 截到哪儿得知道屏有多宽）。别的行不看它（照旧由 Ink 折行，那是既有行为）。
    */
   readonly columns: number
+  /**
+   * 这一屏多少行——**候选那一头的半屏预算**按它算（见 `maxPickerLines`）。
+   *
+   * 不给 ＝ 不封顶（纯看一屏长什么样的用例与快照留的口子——与 `maxLines` 对
+   * `composerLayout` 是同一个姿势）。
+   */
+  readonly rows?: number
 }
 
 /** 序号那一格的宽（`01 `）——截断要把这几位扣掉，不然算出来的宽度多三列。 */
 const NUMBER_WIDTH = 3
 /** 标签与 meta 之间那个**全角**空格（`　`）占两列。 */
 const GAP_WIDTH = 2
+
+/**
+ * 候选那一头最多占几行——**半屏**（与草稿那一片同一条规矩：原型 · 键盘「高度随内容长，
+ * 上限半屏」）。
+ *
+ * 取半屏的由头与草稿一致：内联渲染下屏是共享的——候选吃满了，记录区就没了。
+ * 半屏保证「下面那半屏仍是这一趟的上下文」，那正是选模型时要看的东西（刚问了什么、
+ * 上一条答复是什么）。
+ */
+export function maxPickerLines(rows: number): number {
+  return Math.max(1, Math.floor(rows / 2))
+}
 
 /**
  * 一行要画的字——**担保一行的行**在这儿截（`oneLine`），其余原样。
@@ -63,41 +115,110 @@ function partsOf(row: PickerRow, columns: number): { label: string; meta: string
   return { label, meta: clip(row.meta, Math.max(0, room - inkWidth(label))) }
 }
 
-export function PickerList({ picker, columns }: PickerProps) {
+/** 折起来那一头那条提示（与草稿那两行同形：**如实报条数**）。 */
+function noticeOf(count: number, where: 'above' | 'below'): string {
+  return `… ${where === 'above' ? '上面' : '下面'}还有 ${count} 条`
+}
+
+/** 一堆项里**候选**有几条（分组头与提示不算——报给用户的是「还有多少条可挑」）。 */
+function rowsIn(items: readonly PickerItem[]): number {
+  return items.reduce((sum, item) => sum + (item.kind === 'row' ? 1 : 0), 0)
+}
+
+/**
+ * 候选 → 这一屏要画的那几项（**纯函数**：渲染、高度预算、用例都拿它）。
+ *
+ * 窗口**从宽到窄试**（照 `composerLayout` 折叠那一段的同一条路子）：第一个
+ * 「窗口 ＋ 它实际要画的提示行 ≤ 预算」的就是要的那一扇。⚠️ 提示行只在**真折了**
+ * 的那一头才占格子——窗口贴住某一头时那一头不画提示，故现算，不一律按「两头各留一行」扣。
+ */
+export function pickerLayout(picker: Picker, budget: number = Number.POSITIVE_INFINITY): PickerLayout {
   const heads = groupHeads(picker.rows)
-  const lines = picker.rows.map((row, index) => {
+  const full: PickerItem[] = []
+
+  picker.rows.forEach((row, index) => {
+    if (heads[index] === true) {
+      full.push({ kind: 'head', key: `h:${index}`, head: row.group ?? '', faint: row.faint === true })
+    }
+    full.push({ kind: 'row', key: `r:${index}`, row, index })
+  })
+
+  const cap = Math.max(1, Math.floor(budget))
+  if (full.length <= cap) return { items: full, above: 0, below: 0 }
+
+  // 焦点那一项在**整张表**里的位置——窗口必须含住它（`↑↓` 挪到哪儿，窗口跟到哪儿）
+  const at = full.findIndex((item) => item.kind === 'row' && item.index === picker.selected)
+  const anchor = at === -1 ? 0 : at
+
+  for (let size = Math.min(full.length, cap); size >= 1; size -= 1) {
+    // 窗口贴住下沿（焦点在末尾那一格上）——与草稿那一片同一取法：挪到哪儿跟到哪儿，
+    // 只在够不着的时候才整窗平移（最小滚动）。
+    const from = Math.min(Math.max(anchor - size + 1, 0), full.length - size)
+    const window = full.slice(from, from + size)
+    const above = rowsIn(full.slice(0, from))
+    const below = rowsIn(full.slice(from + size))
+    const used = window.length + (above > 0 ? 1 : 0) + (below > 0 ? 1 : 0)
+
+    if (used <= cap) {
+      return {
+        items: [
+          ...(above > 0 ? [{ kind: 'notice', key: 'n:above', text: noticeOf(above, 'above') } as const] : []),
+          ...window,
+          ...(below > 0 ? [{ kind: 'notice', key: 'n:below', text: noticeOf(below, 'below') } as const] : []),
+        ],
+        above,
+        below,
+      }
+    }
+  }
+
+  // 兜底（护栏——半屏预算实际到不了这一档）：预算窄到「一项 ＋ 一条提示」都放不下时，
+  // **焦点那一项优先**（它得让人看得见），两头提示如实让位——宁可少报，也不把帧撑过账。
+  return { items: [full[anchor] as PickerItem], above: 0, below: 0 }
+}
+
+export function PickerList({ picker, columns, rows = Number.POSITIVE_INFINITY }: PickerProps) {
+  const { items } = pickerLayout(picker, maxPickerLines(rows))
+
+  const lines = items.map((item) => {
+    if (item.kind === 'head') {
+      return h(
+        Text,
+        { key: item.key, color: item.faint ? PALETTE.faint : PALETTE.dim },
+        `　${item.head}`,
+      )
+    }
+
+    if (item.kind === 'notice') {
+      // **折起来几条第说几条**——与草稿那两行同一个面孔（暗色、缩进一格）
+      return h(Text, { key: item.key, color: PALETTE.faint }, `　${item.text}`)
+    }
+
+    const { row, index } = item
     const { label, meta } = partsOf(row, columns)
 
     return h(
-      Box,
-      { key: `p:${index}`, flexDirection: 'column' },
-      // 分组头（`/session` 按工作区分组，U26）——画在本组第一行之前；别的项目那一组连头一起压暗
-      heads[index] === true
-        ? h(Text, { key: 'head', color: row.faint === true ? PALETTE.faint : PALETTE.dim }, `　${row.group ?? ''}`)
-        : null,
+      Text,
+      { key: item.key },
+      h(Text, { color: row.current ? PALETTE.user : PALETTE.faint }, `${String(index + 1).padStart(2)} `),
       h(
         Text,
-        { key: 'row' },
-        h(Text, { color: row.current ? PALETTE.user : PALETTE.faint }, `${String(index + 1).padStart(2)} `),
-        h(
-          Text,
-          {
-            // 压暗最弱，但**当前那条与选中项照旧亮**——「正在用」比「属于哪组」更该被看见，
-            // 而压暗只是视觉次序，不是可用性（压暗的行照样选得中、切得过去）
-            color:
-              index === picker.selected
-                ? PALETTE.fg
-                : row.current
-                  ? PALETTE.user
-                  : row.faint === true
-                    ? PALETTE.faint
-                    : PALETTE.dim,
-            bold: index === picker.selected || row.current,
-          },
-          label,
-        ),
-        h(Text, { color: PALETTE.faint }, `　${meta}`),
+        {
+          // 压暗最弱，但**当前那条与选中项照旧亮**——「正在用」比「属于哪组」更该被看见，
+          // 而压暗只是视觉次序，不是可用性（压暗的行照样选得中、切得过去）
+          color:
+            index === picker.selected
+              ? PALETTE.fg
+              : row.current
+                ? PALETTE.user
+                : row.faint === true
+                  ? PALETTE.faint
+                  : PALETTE.dim,
+          bold: index === picker.selected || row.current,
+        },
+        label,
       ),
+      h(Text, { color: PALETTE.faint }, `　${meta}`),
     )
   })
 
