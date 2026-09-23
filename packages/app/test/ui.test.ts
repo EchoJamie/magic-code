@@ -18,6 +18,8 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFi
 import { join } from 'node:path'
 
 import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf } from './ui/driver.ts'
+import { createSandbox } from './ui/sandbox.ts'
+import { startFixture } from './ui/fixture.ts'
 import { createControl } from './ui/control.ts'
 import { createVt } from './ui/vt.ts'
 import { VIEW_LOGIC, writeViewer } from './ui/viewer.ts'
@@ -1209,4 +1211,110 @@ describe('D30 · 同步更新切帧的相反情形', () => {
       vt.dispose()
     }
   })
+})
+
+/**
+ * U34 联调收口 · **沙地外借**（共用驱动加的那一个最小口子）。
+ *
+ * 联调要「关掉应用、再开一个接着看」——那要的是**同一个家目录**（同一份配置 / 数据库 /
+ * 工作区），而缺省那一条每趟 `mkdtemp` 一块新的。这一组守两件：
+ *
+ * ① **外借的**（`sandbox` / `fixture`）收摊时**不删不停**，且第二趟起得在同一条上
+ *    ——联调那条「关闭重开」就靠它；
+ * ② **本趟自己的**东西照旧归本驱动（子进程退出确认 · PTY 释放）——外借不等于撒手。
+ */
+describe('U34 · 沙地外借：收摊不动别人的东西', () => {
+  /** 探针：报一句话就赖着不走（退出由 `close()` 那三跳来）。 */
+  const PROBE = [
+    process.execPath,
+    '-e',
+    'console.log("BORROW-OK"); setInterval(() => {}, 1000)',
+  ]
+
+  test('外借的沙地与夹具：收摊不删不停，第二趟还能起在同一条上', async () => {
+    const runs = tempDir('magic-u40-borrow-runs-')
+    const fixture = startFixture({ turns: [{ kind: 'text', text: '收到' }] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+
+    try {
+      const first = await createUiSession({ label: '外借-一', artifacts: runs, command: PROBE, sandbox, fixture })
+      await first.wait({ text: 'BORROW-OK' })
+      const closed = await first.close()
+
+      // 本趟自己的东西照旧收了（子进程真退了、终端也放了）
+      expect(closed.exit.by).toBe('sigterm')
+      // 外借的两件原封不动
+      expect(existsSync(sandbox.root)).toBe(true)
+      expect(existsSync(sandbox.configPath)).toBe(true)
+
+      // 第二趟起在**同一块**上——「关闭重开」正是这么走的
+      const second = await createUiSession({ label: '外借-二', artifacts: runs, command: PROBE, sandbox, fixture })
+      await second.wait({ text: 'BORROW-OK' })
+      await second.close()
+
+      expect(existsSync(sandbox.root)).toBe(true)
+      expect(readdirSync(runs).length).toBe(2) // 两趟各自的产物都在
+    } finally {
+      // 外借的**由借出方**收：夹具先停，再删沙地，最后清产物
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  })
+
+  test('起手失败那条路：本趟的进程清干净、**外借的沙地与夹具原封不动**', async () => {
+    const runs = tempDir('magic-u40-borrow-boot-')
+    const stash = tempDir('magic-u40-borrow-pid-')
+    const pidFile = join(stash, 'stall.pid')
+    // 探针：**一个字节都不吐**——起手那一跳必然超时（同上面那条「起手失败也清干净」）
+    const stall = [
+      process.execPath,
+      '-e',
+      `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));setInterval(() => {}, 1000)`,
+    ]
+
+    const fixture = startFixture({ turns: [{ kind: 'text', text: '没人会看到这句' }] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+
+    try {
+      let failure: unknown
+      try {
+        await createUiSession({
+          label: '外借-起手失败',
+          artifacts: runs,
+          command: stall,
+          sandbox,
+          fixture,
+          readyTimeoutMs: 1_200,
+        })
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(Error)
+      // **本趟自己的**照旧收干净：子进程确实起来过，且真没了
+      await untilExists(pidFile, 5_000)
+      const pid = Number(readFileSync(pidFile, 'utf8'))
+      expect(Number.isInteger(pid)).toBe(true)
+      expect(() => process.kill(pid, 0)).toThrow()
+
+      // 失败也留档（起手那条路自己那一帧「卡在什么画面上」）
+      const runDir = join(runs, readdirSync(runs)[0] as string)
+      const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { outcome: string }
+      expect(info.outcome).toBe('failed')
+
+      // **外借的两件原封不动**：沙地还在，夹具还在听着（借出方没收摊之前不动它们）
+      expect(existsSync(sandbox.root)).toBe(true)
+      expect(existsSync(sandbox.configPath)).toBe(true)
+      const alive = await fetch(`${fixture.baseURL}/models`)
+        .then(() => true)
+        .catch(() => false)
+      expect(alive).toBe(true)
+    } finally {
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+      removeDir(stash)
+    }
+  }, 60_000)
 })

@@ -36,8 +36,7 @@ import { join, resolve } from 'node:path'
 import type { PlanNote } from '@magic/contracts'
 import { PALETTE } from '@magic/tui'
 import { createSandbox, createUiSession, startFixture } from '../test/ui/index.ts'
-import type { Capture, FixtureRequest, FixtureTurn, Sandbox, UiSession } from '../test/ui/index.ts'
-import { createVt } from '../test/ui/vt.ts'
+import type { Capture, FixtureRequest, FixtureTurn, Sandbox, UiSession, WaitCondition } from '../test/ui/index.ts'
 import { readDatabase } from '../test/support.ts'
 
 const REPO = resolve(import.meta.dir, '../../..')
@@ -45,8 +44,6 @@ const TUI_RUN = join(REPO, 'packages/tui/src/run.ts')
 
 /** `Ctrl T` 那一个字节（`0x14`）——写的是**真字节**：与手按同一个键、进同一个 stdin。 */
 const CTRL_T = String.fromCharCode(0x14)
-/** `Ctrl C` 那一个字节（`0x03`）——空闲＝退出 · 工作中＝中断（归外壳判）。 */
-const CTRL_C = String.fromCharCode(0x03)
 /** `Ctrl O` 那一个字节（`0x0f`，既有那一个展开键）——同上。 */
 const CTRL_O = String.fromCharCode(0x0f)
 /** `PgDn`（`CSI 6 ~`）——同上。 */
@@ -81,21 +78,6 @@ function amberShades(raw: string): number {
   }
 
   return warm.size
-}
-
-/**
- * 留一屏（**联调那一半**）——文本 ＋ 外壳写出的原始字节（色与重量在里面），并印一份给人读。
- *
- * 与上面那个 `keep()` 分开：那一半用的是共用驱动的 `Capture`（含字格与光标），
- * 这一半是真应用**自己起的一趟**，读数按同一套口径取（可见区行 ＋ 原始字节）。
- */
-function keepLive(out: string, app: { text(): string; raw(): string }, label: string): string {
-  const text = app.text()
-  writeFileSync(join(out, `${label}.txt`), `${text}\n`, 'utf8')
-  writeFileSync(join(out, `${label}.ansi`), app.raw(), 'utf8')
-  console.log(`\n── ${label} ──\n${text}`)
-
-  return text
 }
 
 /**
@@ -625,8 +607,16 @@ async function main(): Promise<void> {
 //   真 `~/.magic` 零触碰）：模型**真的调** `plan_update`，工具**真的落账**，屏上的清单
 //   **真的从记录里长出来**——不是预排内核事件。
 //
-// 三趟跑在**同一块沙地**上（同一份配置 / 数据库 / 工作区），故「关闭重开」是真的关掉
-// 那个进程、再拿 `--session <id>` 另起一个：清单该保留的保留、该不复活的就不复活。
+// ⚠️ **这一半走共用驱动**（`test/ui/driver.ts` 的 `createUiSession`），不另造终端驱动
+// （2026-09-23 联调收口：自造那份绕过了同步帧、有界采样与运行档案，且失败分支只关 PTY、
+// 不保证子进程退出）。白捡四件：按键经真 PTY · 屏从字节里读（按同步帧切）· 每趟一套
+// 产物档案（`runs/`，含 `raw.bin` / 逐帧 / `steps.ndjson` / `viewer.html`）· 收摊时
+// 子进程**退出确认**（`exit.by`）与终端释放。
+//
+// **「关闭重开」是真关掉那个进程、再拿 `--session <id>` 另起一个**——两趟要落在**同一个家**
+// （同一份配置 / 数据库 / 工作区），故用共用驱动新加的那个最小口子：`sandbox` ＋ `fixture`
+// **外借**（借出方＝本函数：收尾由它停夹具、删沙地）。外借的两件不进驱动的清理清单，
+// 本趟自己的进程与终端照旧归驱动。
 
 /** 联调那一半的剧本——模型**真的调**辅助工具（不是预排内核事件）。 */
 const LIVE_TURNS: readonly FixtureTurn[] = [
@@ -638,111 +628,21 @@ const LIVE_TURNS: readonly FixtureTurn[] = [
   { kind: 'text', text: '这件事到这儿。' },
 ]
 
-type LiveOptions = {
-  readonly label: string
-  readonly argv: readonly string[]
-  readonly columns: number
-  readonly rows: number
+/** 打一行字并**等它真出现在屏上**（按键丢了就等不到——不重发，如实失败）。 */
+async function typeLine(session: UiSession, text: string, shown = text): Promise<void> {
+  await session.send(text, { until: { text: shown }, timeoutMs: 10_000 })
 }
 
-/** 一趟真应用（真 PTY）——用共用的那几件拼：`Bun.Terminal` ＋ VT 读屏。 */
-type LiveApp = {
-  readonly pty: Bun.Terminal
-  readonly child: Bun.Subprocess
-  /** 往 PTY 写（＝手打）。 */
-  write(text: string): Promise<void>
-  /** 敲一个字节串（回车 / 退格 / `Ctrl T` …）。 */
-  key(bytes: string): Promise<void>
-  /** 等屏上出现某一串（只查**可见区**——超了就是没等到，如实失败）。 */
-  waitFor(needle: string, timeoutMs?: number): Promise<void>
-  /** 此刻可见区的那几行。 */
-  lines(): readonly string[]
-  text(): string
-  /** 原始字节（色与重量在里面）。 */
-  raw(): string
-  /** 收摊：先给 `Ctrl C` 自己走的余地，再 SIGTERM、再 SIGKILL，如实报怎么走的。 */
-  close(): Promise<string>
-}
-
-async function liveApp(sandbox: Sandbox, options: LiveOptions): Promise<LiveApp> {
-  const vt = createVt({ columns: options.columns, rows: options.rows, scrollback: 2_000 })
-  const decoder = new TextDecoder()
-  let raw = ''
-
-  const pty = new Bun.Terminal({
-    cols: options.columns,
-    rows: options.rows,
-    data: (_terminal: Bun.Terminal, chunk: Uint8Array) => {
-      const text = decoder.decode(chunk, { stream: true })
-      if (text === '') return
-      raw += text
-      vt.write(text)
-    },
-  })
-
-  const child = Bun.spawn([process.execPath, ...options.argv], {
-    terminal: pty,
-    cwd: sandbox.workspace,
-    env: sandbox.env,
-  })
-
-  const lines = (): readonly string[] => vt.screen().lines.map((line) => line.text)
-
-  // **起手那一下的余量**（共用驱动文件头注 1 那条坑，实测会丢键）：首帧落了之后还得等
-  // 一小会儿——Ink 那一下 `tcsetattr`（开 raw 模式）落定**之前**写进去的字节会被丢掉。
-  // ⚠️ 这是**一次**的余量，不是场景同步的手段（后面每一步仍靠 `waitFor` 等屏上的条件）。
-  for (let at = 0; at < 250; at += 1) {
-    await vt.settled()
-    if (lines().some((line) => line.trim() !== '')) break
-    await Bun.sleep(40)
-  }
-  if (child.exitCode !== null || child.signalCode !== null) {
-    throw new Error(`「${options.label}」还没画出第一帧就退了（code=${child.exitCode} signal=${child.signalCode}）`)
-  }
-  await Bun.sleep(150)
-
-  const app: LiveApp = {
-    pty,
-    child,
-    write: async (text) => {
-      pty.write(text)
-      await Bun.sleep(60) // 与手打同形：先让它读走
-    },
-    key: async (bytes) => {
-      pty.write(bytes)
-      await Bun.sleep(80)
-    },
-    waitFor: async (needle, timeoutMs = 12_000) => {
-      const deadline = Date.now() + timeoutMs
-      while (Date.now() < deadline) {
-        await vt.settled()
-        if (lines().some((line) => line.includes(needle))) return
-        await Bun.sleep(40)
-      }
-
-      throw new Error(`等「${needle}」超时。此刻屏上：\n${lines().join('\n')}`)
-    },
-    lines,
-    text: () => lines().join('\n'),
-    raw: () => raw,
-    close: async () => {
-      pty.write(CTRL_C)
-      await Bun.sleep(200)
-      pty.write(CTRL_C)
-      await Bun.sleep(400)
-
-      if (child.exitCode === null) {
-        child.kill('SIGTERM')
-        await Bun.sleep(600)
-      }
-      if (child.exitCode === null) child.kill('SIGKILL')
-      await child.exited
-
-      return child.exitCode === 0 && child.signalCode === null ? 'app' : `code=${child.exitCode} signal=${child.signalCode}`
-    },
-  }
-
-  return app
+/**
+ * 敲一个**闭集之外**的键（`ctrl+t` / `PgDn`）——经 `send` 写那一个字节。
+ *
+ * 由头：共用驱动的键位是**闭集**（`UI_KEYS`，不认识的名字当场报错），而本轮对它的改动
+ * 只允许「沙地复用」那一处（工单）。故这几个字节走 `send` 写进**同一个 stdin**——
+ * 与手按发的是同一个字节，既没绕开驱动、也没给驱动加键。清单那几个键的**语义**
+ * 另有 `packages/tui/test/spec.u34-tui.test.ts` 在真按键路径上钉着。
+ */
+async function pressBytes(session: UiSession, bytes: string, until: WaitCondition): Promise<void> {
+  await session.send(bytes, { until, timeoutMs: 10_000 })
 }
 
 /** 记录里**带计划**的那些条目（按记录序）——「工具真的落账了吗」看它。 */
@@ -765,92 +665,110 @@ function planEntriesOf(sandbox: Sandbox): readonly (PlanNote | null)[] {
 /** 一条计划的步骤文字（比对「屏上那一份」与「记录里那一份」用）。 */
 const stepTextsOf = (plan: PlanNote | null): readonly string[] => plan?.steps.map((one) => one.text) ?? []
 
+/** 会话 id（`--session` 接着开要它）——从记录里的目录读，不从屏上猜。 */
+function lastSessionId(sandbox: Sandbox): string {
+  const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+  try {
+    return db.sessions.at(-1)?.id ?? ''
+  } finally {
+    db.close()
+  }
+}
+
+/** 一条计划在屏上长什么样（三态各自的字形）。 */
+function marksOf(plan: PlanNote): readonly string[] {
+  return plan.steps.map((step) =>
+    step.status === 'completed' ? `■ ${step.text}` : step.status === 'in_progress' ? `▪ ${step.text}` : `□ ${step.text}`,
+  )
+}
+
+/**
+ * **收摊并把「它是怎么走的」报出来**——正常与断言失败两条路都走它（失败也留档、也清场）。
+ *
+ * 收场那一套照 `frames-u36-tui.ts` 的既有写法：**先等它闲下来**（忙的时候 `ctrl+c`
+ * 是中断不是退出）→ 敲 ctrl+c 让它**自己走** → 宽限给够（外壳收摊要卸挂载、关库）。
+ */
+async function shutDownApp(session: UiSession, label: string): Promise<void> {
+  await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
+  await session.key('ctrl+c')
+  const closed = await session.close({ graceMs: 3_000 })
+
+  check(closed.exit.by === 'app', `${label}：外壳自己收的场（exit.by=${closed.exit.by}）`)
+  check(closed.frames > 0, `${label}：留了档（${closed.frames} 帧 · ${closed.runDir}）`)
+}
+
 async function live(out: string): Promise<void> {
-  // 夹具（受控模型网关）＋ 一块**三趟共用**的沙地
+  const artifacts = join(out, 'runs')
+
+  // 夹具（受控模型网关）＋ 一块**三趟共用**的沙地——借出方是本函数（见上面那段注）
   const fixture = startFixture({ turns: LIVE_TURNS })
   const sandbox = createSandbox({ baseURL: fixture.baseURL, forceColor: '3' })
-  const cli = join(REPO, 'packages/app/src/cli.ts')
-  const argv = [cli]
-
-  let sessionId = ''
+  const shared = { artifacts, sandbox, fixture, columns: 100, rows: 30, forceColor: '3' } as const
 
   try {
     // —— 一 · 新会话：交代一句，模型真的调 plan_update ——
-    const first = await liveApp(sandbox, { label: 'L1', argv, columns: 100, rows: 30 })
+    const first = await createUiSession({ ...shared, label: '联调-1-建立' })
     try {
-      await first.waitFor('○ 空闲')
-      await first.write('登录失败那条提示太笼统了，改一下')
-      await first.waitFor('登录失败那条提示太笼统了，改一下')
-      await first.key('\r')
-      await first.waitFor('▪ 改提示文案')
-      await first.waitFor('○ 空闲')
+      await typeLine(first, '登录失败那条提示太笼统了，改一下')
+      await first.key('enter', { until: { text: '▪ 改提示文案' }, timeoutMs: 15_000 })
+      // 等这一轮收束：**模型那句回话落到屏上**（不是「旧空闲态 ＋ 固定睡眠」）
+      await first.wait({ text: '先理了一遍，这就动手。' }, { timeoutMs: 15_000 })
 
-      const shot = keepLive(out, first, 'L1-建立（真装配）')
-      for (const [at, step] of PLAN_FIRST.steps.entries()) {
-        const mark = step.status === 'completed' ? '■' : step.status === 'in_progress' ? '▪' : '□'
-        check(shot.includes(`${mark} ${step.text}`), `清单第 ${at + 1} 步在屏上（${mark}）`)
-      }
-      check(!shot.includes('plan_update'), '辅助工具的成功调用不刷工具卡（真装配这一趟也是）')
+      const built = await first.capture({ label: 'L1-建立' })
+      keep(out, built, 'L1-建立（真装配）')
+      for (const mark of marksOf(PLAN_FIRST)) check(built.text.includes(mark), `清单那一行在屏上：${mark}`)
+      check(!built.text.includes('plan_update'), '辅助工具的成功调用不刷工具卡（真装配这一趟也是）')
 
       // **工具真的落账**：记录里有那一条带 `plan` 的结果；它与屏上那一份**一致**
       const stored = planEntriesOf(sandbox)
       check(stored.length === 1, '记录里有一条带计划的工具结果', `实得 ${stored.length} 条`)
       check(
         stepTextsOf(stored[0] ?? null).join('｜') === stepTextsOf(PLAN_FIRST).join('｜'),
-        '清单与持久记录一致（两步文字逐条相同）',
+        '清单与持久记录一致（步骤文字逐条相同）',
       )
 
       // 收起 / 展开：**零模型请求**，草稿仍在
       const before = fixture.requests().length
-      await first.write('半句草稿')
-      await first.waitFor('半句草稿')
-      await first.key(CTRL_T)
-      await first.waitFor('计划已收起')
-      check(first.text().includes('半句草稿'), '收起之后草稿仍在')
-      await first.key(CTRL_T)
-      await first.waitFor('▪ 改提示文案')
+      await typeLine(first, '半句草稿')
+      await pressBytes(first, CTRL_T, { text: '计划已收起' })
+      check((await first.capture({ label: 'L1-收起' })).text.includes('半句草稿'), '收起之后草稿仍在')
+      await pressBytes(first, CTRL_T, { text: '▪ 改提示文案' })
       check(fixture.requests().length === before, '收起 / 展开一个模型请求都没追加', `${before} → ${fixture.requests().length}`)
-      keepLive(out, first, 'L1-收起展开后')
+      keep(out, await first.capture({ label: 'L1-收起展开后' }), 'L1-收起展开后')
 
       // **真实请求轨迹**：一条交代换来两次往返（调工具 ＋ 回话），工具说明真的送进去了
       const trace = keepTrace(out, fixture, 'L1-请求轨迹')
       check(trace.length === 2, '一条交代 ＝ 两次模型往返（先调工具、再回话）', `实得 ${trace.length}`)
       check((trace[0]?.tools ?? 0) >= 3, '工具说明真的随请求送进去了（至少那三件）', `实得 ${trace[0]?.tools ?? 0}`)
-      check(trace[0]?.lastUser.includes('登录失败那条提示太笼统了'), '第一次请求里就是那句交代')
-      check(trace[1]?.messages > trace[0]?.messages, '第二次往返带着工具结果（上下文长了）')
+      check(trace[0]?.lastUser.includes('登录失败那条提示太笼统了') === true, '第一次请求里就是那句交代')
+      check((trace[1]?.messages ?? 0) > (trace[0]?.messages ?? 0), '第二次往返带着工具结果（上下文长了）')
 
-      const how = await first.close()
-      check(how === 'app', `第一趟自己收的场（${how}）`)
+      await shutDownApp(first, '第一趟')
     } finally {
-      first.pty.close()
+      // 断言失败那条路也要留档 ＋ 清场（驱动自己会杀掉子进程并确认退出）
+      await first.close({ graceMs: 1_500 }).catch(() => {})
     }
 
     // —— 二 · 关闭重开（`--session`）：清单该**保留**，改路线、再清空 ——
-    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
-    sessionId = db.sessions.at(-1)?.id ?? ''
-    db.close()
+    const sessionId = lastSessionId(sandbox)
     check(sessionId !== '', '拿到那条会话的 id（重开要它）')
 
-    const second = await liveApp(sandbox, { label: 'L2', argv: [...argv, '--session', sessionId], columns: 100, rows: 30 })
+    const second = await createUiSession({ ...shared, label: '联调-2-重开', argv: ['--session', sessionId] })
     try {
-      await second.waitFor('○ 空闲')
-      await second.waitFor('▪ 改提示文案') // 清单从**记录**里回来
-      const reopened = keepLive(out, second, 'L2-重开保留')
-
-      check(
-        PLAN_FIRST.steps.every((step) => reopened.includes(step.text)),
-        '重开之后清单整份回来了（取自记录，不是重发事件）',
-      )
+      // **等的是「清单从记录里回来了」那一跳**——不是「开起来了」那一下
+      await second.wait({ text: '▪ 改提示文案' }, { timeoutMs: 15_000 })
+      const reopened = await second.capture({ label: 'L2-重开保留' })
+      keep(out, reopened, 'L2-重开保留')
+      for (const mark of marksOf(PLAN_FIRST)) check(reopened.text.includes(mark), `重开之后那一行回来了：${mark}`)
       check(fixture.requests().length === 2, '重开那一跳**零模型请求**', `实得 ${fixture.requests().length}`)
 
       // 改路线：模型真的再调一次 plan_update
-      await second.write('网络失败那条也补上')
-      await second.waitFor('网络失败那条也补上')
-      await second.key('\r')
-      await second.waitFor('补一条网络失败的提示')
-      await second.waitFor('○ 空闲')
-      const edited = keepLive(out, second, 'L3-改路线（真装配）')
-      check(edited.includes('■ 读登录提示那三处分支'), '改路线之后已完成项还在')
+      await typeLine(second, '网络失败那条也补上')
+      await second.key('enter', { until: { text: '▪ 认证失败按原文案改' }, timeoutMs: 15_000 })
+      await second.wait({ text: '路线改了，已完成那两步留着。' }, { timeoutMs: 15_000 })
+      const edited = await second.capture({ label: 'L3-改路线' })
+      keep(out, edited, 'L3-改路线（真装配）')
+      check(edited.text.includes('■ 读登录提示那三处分支'), '改路线之后已完成项还在')
 
       const afterEdit = planEntriesOf(sandbox)
       check(afterEdit.length === 2, '第二次更新也落了账', `实得 ${afterEdit.length} 条`)
@@ -859,14 +777,13 @@ async function live(out: string): Promise<void> {
         '记录里那一份就是屏上这一份（改路线之后）',
       )
 
-      // 清空：模型真的调 `plan_update {plan: null}`
-      await second.write('就这样，收工')
-      await second.waitFor('就这样，收工')
-      await second.key('\r')
-      await second.waitFor('○ 空闲')
-      await Bun.sleep(300)
-      const cleared = keepLive(out, second, 'L4-清空（真装配）')
-      check(!cleared.includes('□ 跑一遍失败的几条路'), '清空之后清单退出界面')
+      // 清空：模型真的调 `plan_update {plan: null}`——**等清单从屏上消失**（那才是这一跳的落点）
+      await typeLine(second, '就这样，收工')
+      await second.key('enter', { until: { absent: '□ 跑一遍失败的几条路' }, timeoutMs: 15_000 })
+      await second.wait({ text: '这件事到这儿。' }, { timeoutMs: 15_000 })
+      const cleared = await second.capture({ label: 'L4-清空' })
+      keep(out, cleared, 'L4-清空（真装配）')
+      check(!cleared.text.includes('□ ') && !cleared.text.includes('▪ '), '清空之后清单退出界面')
 
       const afterClear = planEntriesOf(sandbox)
       check(afterClear.length === 3 && afterClear[2] === null, '清空也落了账（那一条的 `plan` 是 null）')
@@ -879,27 +796,28 @@ async function live(out: string): Promise<void> {
       const trace2 = keepTrace(out, fixture, 'L2-请求轨迹')
       check(trace2.length === 6, '整趟（建立 · 改路线 · 清空）＝ 六次往返', `实得 ${trace2.length}`)
 
-      const how = await second.close()
-      check(how === 'app', `第二趟自己收的场（${how}）`)
+      await shutDownApp(second, '第二趟')
     } finally {
-      second.pty.close()
+      await second.close({ graceMs: 1_500 }).catch(() => {})
     }
 
     // —— 三 · 再关闭重开：清空过了 ⇒ 清单**不复活**，记录仍在 ——
-    const third = await liveApp(sandbox, { label: 'L3', argv: [...argv, '--session', sessionId], columns: 100, rows: 30 })
+    const third = await createUiSession({ ...shared, label: '联调-3-再重开', argv: ['--session', sessionId] })
     try {
-      await third.waitFor('○ 空闲')
-      await Bun.sleep(500)
-      const again = keepLive(out, third, 'L5-重开不复活（真装配）')
-      check(!again.includes('□ ') && !again.includes('▪ '), '清空之后重开：旧清单一个方块都不剩')
-      check(again.includes('这件事到这儿。'), '记录还在（过程沿既有记录留作排障）')
+      // 等**重建落地**那一跳（上一趟最后那句回话与那条交代从记录里回来），再判「有没有清单」
+      await third.wait({ text: '这件事到这儿。' }, { timeoutMs: 15_000 })
+      await third.wait({ text: '› 登录失败那条提示太笼统了，改一下' }, { timeoutMs: 15_000 })
+      const again = await third.capture({ label: 'L5-重开不复活' })
+      keep(out, again, 'L5-重开不复活（真装配）')
+      check(!again.text.includes('□ ') && !again.text.includes('▪ '), '清空之后重开：旧清单一个方块都不剩')
+      check(again.text.includes('这件事到这儿。'), '记录还在（过程沿既有记录留作排障）')
 
-      const how = await third.close()
-      check(how === 'app', `第三趟自己收的场（${how}）`)
+      await shutDownApp(third, '第三趟')
     } finally {
-      third.pty.close()
+      await third.close({ graceMs: 1_500 }).catch(() => {})
     }
   } finally {
+    // 外借的两件**由本函数收**（借出方）：先停夹具，再删沙地
     await fixture.stop()
     sandbox.dispose()
   }
