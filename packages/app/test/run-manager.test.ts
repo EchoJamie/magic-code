@@ -23,9 +23,9 @@ import type { ExecutorLauncher, Manager } from '../src/run/manager.ts'
 import { normalizeDataDir, runPathsOf } from '../src/run/paths.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
-/** 这一段用不到执行者——真起执行者的是第二段那条用例。 */
+/** 这一段用不到执行者——真起执行者的是第二段那几条用例。 */
 const UNUSED_LAUNCHER: ExecutorLauncher = {
-  launch() {
+  spawn() {
     throw new Error('这一段不该有人要执行者')
   },
 }
@@ -59,11 +59,12 @@ function ground(name: string): Ground {
 }
 
 /** 在一块沙地上立一个管理者——顺手把「收摊」挂上，免得用例忘一处就留一个占着路径的进程。 */
-async function standUp(g: Ground): Promise<Manager> {
+async function standUp(g: Ground, launch: ExecutorLauncher = UNUSED_LAUNCHER): Promise<Manager> {
   const started = await startManager({
     paths: runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp),
     dataDir: g.dataDir,
-    launch: UNUSED_LAUNCHER,
+    magic: { home: g.home, base: g.base },
+    launch,
   })
   if (started.role !== 'manager') throw new Error(`没立起来：${started.role}`)
 
@@ -135,7 +136,12 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
       const first = await standUp(g)
       const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
 
-      const again = await startManager({ paths, dataDir: g.dataDir, launch: UNUSED_LAUNCHER })
+      const again = await startManager({
+        paths,
+        dataDir: g.dataDir,
+        magic: { home: g.home, base: g.base },
+        launch: UNUSED_LAUNCHER,
+      })
 
       expect(again.role).toBe('existing')
       if (again.role !== 'existing') return
@@ -159,6 +165,7 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
       const b = await startManager({
         paths: runPathsOf({ home: g.home, base: g.base }, other, g.tmp),
         dataDir: other,
+        magic: { home: g.home, base: g.base },
         launch: UNUSED_LAUNCHER,
       })
 
@@ -243,7 +250,12 @@ describe('U48-S1 · 收摊与尸首', () => {
       // 上一次被 SIGKILL 之后的样子：路径上留着个连不上的东西
       writeFileSync(paths.socket, '尸首')
 
-      const started = await startManager({ paths, dataDir: g.dataDir, launch: UNUSED_LAUNCHER })
+      const started = await startManager({
+        paths,
+        dataDir: g.dataDir,
+        magic: { home: g.home, base: g.base },
+        launch: UNUSED_LAUNCHER,
+      })
 
       expect(started.role).toBe('manager')
       if (started.role !== 'manager') return

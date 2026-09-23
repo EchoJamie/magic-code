@@ -27,26 +27,31 @@
  * ## 它保存什么、不保存什么
  *
  * 保存：**执行身份、绑定关系、连接与子进程句柄**——也就是「谁在跑、跑到第几代、
- * 哪条连接还挂着」这一层事实。
+ * 哪条连接还挂着」这一层事实。下面那张**登记表**（`Executor`）就是它。
  *
- * **不复制**对话、计划笔记与审批事实：那些归记录域（`records.db`），管理者只**读**
- * 它答「有哪几条会话」这类问题，不另存一份。这一条是设计的明文，也是「管理者不是
- * 第二个数据库」那条边界的落点。
+ * **不复制**对话、计划笔记与审批事实：那些归记录域（`records.db`）。管理者**自己不开库**：
+ * 库迁移由第一个起来的执行者经记录域那条既有路完成（`createRecordsStore` 开库即迁移），
+ * 而管理者一个字都不往库里写——「管理者不是第二个数据库」在这里是结构上的事实，
+ * 不是纪律。
+ *
+ * ## 路由：它凭什么把话带到正确的执行者那里
+ *
+ * 一条规矩：**每个窗口有一个「目标执行者」**（`ClientConn.target`），命令照它转发、
+ * 事件按它广播。目标什么时候换？只有两条命令会换：`session.open`（切到某条会话）
+ * 与 `session.new`（开一条新的）——它们正是「用户在换我在看什么」的两个动作。
+ *
+ * 别的命令一律**原样转手**给当下那个目标（包括 `session.list`：目录是记录域的事实，
+ * 而记录域的那一头是执行者手里的内核，管理者不替它抄一份）。没有目标时**先起一个**——
+ * 一个还没开张的执行者（D5：首条消息按下回车才建会话，在那之前它一个会话都不占）。
  */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Socket } from 'bun'
+import type { Command, KernelEvent, MagicHome } from '@magic/contracts'
 import { ensureRunDir, tightenSocket } from './paths.ts'
 import type { RunPaths } from './paths.ts'
 import { linkOf, socketHandlers } from './wire.ts'
-import type { ClientToManager, ExecutorToManager, Link, ManagerToClient } from './wire.ts'
-
-/**
- * 管理者这一端**可能收到的那一族**——一条连接上说的是客户端的话还是执行者的话，
- * 由它那条 `hello` 说定（见 `attachClient`）。两族的并在这里收成一个类型：
- * `t: 'cmd'` 只有客户端会发、`t: 'bound'` 只有执行者会发，判别收窄照旧成立。
- */
-type Inbound = ClientToManager | ExecutorToManager
+import type { ClientToManager, ExecutorToManager, Link } from './wire.ts'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {
@@ -64,89 +69,113 @@ const RECORD_VERSION = 1
 /** 一条挂着的客户端连接。 */
 type ClientConn = {
   readonly id: number
-  readonly link: Link<Inbound>
-  /** 它认的执行者代次（`null` ＝ 还没认过任何一代）。 */
-  gen: number | null
+  readonly link: Link<ClientToManager>
+  /** 它认的执行者代次（`0` ＝ 还没认过任何一代）。 */
+  gen: number
+  /** 启动目录——按它起执行者（工作区默认根的缺省，见 `wire.ts` 的 `hello.cwd`）。 */
+  readonly cwd: string
+  /** 它此刻在跟哪个执行者说话（`undefined` ＝ 还没有目标）。 */
+  target: Executor | undefined
   readonly label: string | undefined
+}
+
+/**
+ * **一个执行者的登记**——管理者侧的全部所知。
+ *
+ * 「同一个执行现场独占推进权」在这一层是**结构上的**：一条会话至多挂一个 `Executor`
+ * （`liveOf(session)` 是按会话找的，而起新的之前先问它），故不可能有两个同时推同一条。
+ */
+type Executor = {
+  /** **代次**——管理者发的号，一条会话换一个执行者就换一代（U48 第三段按它判过期）。 */
+  readonly gen: number
+  /** 发车时给的令牌——认「这条连上来的是我叫起来的那一个」。 */
+  readonly token: string
+  /** **显式接续**起的那一代（发车时就带着会话号）；`false` ＝ 还没开张（D5）。 */
+  readonly explicit: boolean
+  /** 当下认的会话（`null` ＝ 还没开张）。 */
+  session: string | null
+  workspace: readonly string[]
+  readonly pid: number | undefined
+  readonly spawned: SpawnedExecutor
+  /** 连上之后才有；在那之前它还没开口。 */
+  link: Link<ExecutorToManager> | undefined
+  /** 出过 `ready` 没有——`hello` → `ready` 之间攒下的命令见 `pending`。 */
+  ready: boolean
+  /** 还没送出去的命令（**先攒后送**：没人接的话发出去就是「敲了没反应」）。 */
+  pending: Command[]
+  /** 盯着它的窗口连接号——事件按这一份广播。 */
+  readonly watchers: Set<number>
+  /** 上一次听见它（`pong` / 任何一条消息）——诊断与生命探测用。 */
+  lastSeen: number
+  pingSeq: number
+  /** 已经核销（自己退了 / 被杀 / 管理者叫停）——不再收命令、不再广播。 */
+  dead: boolean
 }
 
 export type ManagerOptions = {
   /** 这一摊运行的三条路径（`runPathsOf` 算出来的）。 */
   readonly paths: RunPaths
-  /** 数据目录的规范形——写进自报的那一份里。 */
+  /** 数据目录的规范形——写进自报的那一份里，也是发给执行者的那一份的来处。 */
   readonly dataDir: string
   /** 起执行者的方式——见 `ExecutorLauncher`。 */
   readonly launch: ExecutorLauncher
+  /**
+   * **统一基础路径**——执行者按它读配置（配置 / 授权 / 技能都从它派生，U42）。
+   *
+   * ⚠️ **必须显式传**，不靠环境变量：`MAGIC_HOME` 只说得清「Magic 落在哪」，而
+   * `magic.home`（`~/…` 展开到哪）与 `magic.base` 是**两件**——测试沙地把它们指到
+   * 临时目录时，子进程若照环境自己解析一遍，读到的是**开发者真那份**配置。
+   */
+  readonly magic: MagicHome
   /** 时钟——缺省 `Date.now`。 */
   readonly now?: (() => number) | undefined
-  /** 诊断 —— 缺省不打印（**这条线上不写业务日志**，日志归宿主进程的收尾那一跳）。 */
+  /** 生命探测的间隔（毫秒）——缺省 5 秒；见 `PROBE_INTERVAL_MS`。 */
+  readonly probeIntervalMs?: number | undefined
+  /** 诊断——缺省不打印（**这条线上不写业务日志**）。 */
   readonly log?: ((line: string) => void) | undefined
 }
 
 /**
  * 起一个执行者。
  *
- * 收成端口是为了**用例能把真进程换成进程内的假执行者**：多进程的用例贵在「真的分了
- * 进程」（那是要证的东西），而路由、代次、收缩这些**不该每条用例都拖一个真进程**。
- * 两者都实现同一个 `ExecutorLauncher`，管理者这一层看不见差别。
+ * 收成端口是为了**用例能把真进程换成别的**：多进程的用例贵在「真的分了进程」（那是要证
+ * 的东西），而管理者这一层看不见差别——它只要求「有人按 `ExecutorRequest` 起得来、
+ * 起得来之后会连上来」。
  */
 export type ExecutorLauncher = {
-  /**
-   * 开一个执行者。
-   *
-   * @param request 发给执行者的第一条**命令**（`input.submit` / `session.open` 那条路）
-   * 与它的开工参数。
-   */
-  launch(request: ExecutorRequest): ExecutorHandle
+  spawn(request: ExecutorRequest): SpawnedExecutor
 }
 
-/** 开一个执行者时给它的那几件——「哪一代、哪条会话、在哪个工作区」。 */
+/** 开一个执行者时给它的那几件——「哪一代、哪条会话、在哪个工作区、用哪份配置」。 */
 export type ExecutorRequest = {
-  /** 代次——管理者发的号（同一条会话换一个执行者就换一代）。 */
+  /** **代次**——管理者发的号。 */
   readonly gen: number
+  /** 发车令牌——它连上来时按这个认。 */
+  readonly token: string
   /** 开工那条会话（显式接续时就有）；`null` ＝ 让它自己开张（D5）。 */
   readonly session: string | null
-  /**
-   * **工作区整组根**——缺省由执行者按配置现算（与今天的 `assemble` 同一条路）。
-   * 显式接续时管理者不预先读记录域里的归属：那条会话的执行根由**执行者**装载之后
-   * 才认得出（记录域里那一列），在这一层猜一个只会多一处真源。
-   */
-  readonly workspace?: readonly string[] | undefined
+  /** **启动目录**——工作区默认根（配置没写 `workspaceRoots` 时就是它）。 */
+  readonly cwd: string
+  /** 统一基础路径——执行者按它读配置。 */
+  readonly magic: MagicHome
+  /** 管理者监听的那条 socket——执行者要连它。 */
+  readonly socket: string
 }
 
-/** 一个跑着的执行者的把手——管理者侧那一半。 */
-export type ExecutorHandle = {
-  /** 收管理者来的话（命令 / ping / bye）。 */
-  onMessage(listener: (message: ExecutorToManagerView) => void): void
-  /** 断开时告知（**只报一次**）——「自有子进程退出与 IPC 断开」两路都汇到这儿。 */
-  onExit(listener: (error?: Error) => void): void
-  /** 送一句话给执行者；它没了返回 `false`。 */
-  send(message: ManagerToExecutorView): boolean
-  /** 让它收摊（先礼后兵由实现决定——管理者只说「退」）。 */
-  stop(): void
+/** 一个真起了的进程——管理者只管「它还活着没有、叫它退它退不退」。 */
+export type SpawnedExecutor = {
   /** 进程号——**仅作诊断**（用户按会话 / 工作操作，不按 PID）。 */
   readonly pid: number | undefined
+  /** 子进程退出了（正常 / 被杀 / 起不来）——**「自有子进程退出」那一路**。 */
+  onExit(listener: (reason: string) => void): void
+  /** 叫它退——先礼（`bye` 走连接）后兵（这里是兵）。 */
+  kill(): void
 }
-
-/** 执行者能发上来的那几件（`wire.ts` 的那一族，这里只取管理者关心的几支）。 */
-export type ExecutorToManagerView =
-  | { readonly t: 'hello'; readonly role: 'executor'; readonly session: string | null; readonly workspace: readonly string[] }
-  | { readonly t: 'bound'; readonly session: string }
-  | { readonly t: 'ev'; readonly event: import('@magic/contracts').KernelEvent }
-  | { readonly t: 'pong'; readonly seq: number }
-  | { readonly t: 'done'; readonly why: string }
-
-/** 管理者能发给执行者的那几件。 */
-export type ManagerToExecutorView =
-  | { readonly t: 'cmd'; readonly cmd: import('@magic/contracts').Command }
-  | { readonly t: 'ping'; readonly seq: number }
-  | { readonly t: 'bye'; readonly why: string }
 
 /**
  * 一个立起来的管理者。
  *
- * 三个读数给**诊断与验收装置**（客户端自己看不到这些——它只需要 `ControlTransport`）：
- * 有几条连接挂着、起了几个执行者、各是哪一代。
+ * 三个读数给**诊断与验收装置**（客户端自己看不到这些——它只需要一条连接）。
  */
 export type Manager = {
   readonly record: ManagerRecord
@@ -154,10 +183,10 @@ export type Manager = {
   /** 挂着的客户端连接数。 */
   clients(): number
   /** 这一摊里活着的执行者（按会话归）。 */
-  executors(): readonly { readonly session: string | null; readonly gen: number }[]
+  executors(): readonly { readonly session: string | null; readonly gen: number; readonly pid: number | undefined }[]
   /** 显式收摊（收缩那条路与用例的收尾都走它）。 */
   stop(why: string): void
-  /** 等它真退干净（socket 摘掉、连接关光）。 */
+  /** 等它真退干净（socket 摘掉、执行者收光、连接关光）。 */
   waitUntilExit(): Promise<void>
 }
 
@@ -169,6 +198,29 @@ export type StartResult =
 
 /** 重试次数——「尸首清掉再 bind」那一步；给三次是因为它只该有一次成功或彻底失败。 */
 const BIND_ATTEMPTS = 3
+
+/**
+ * 生命探测的间隔（毫秒）——**有限频率、只为识别失联**。
+ *
+ * 设计明文：「监听自有子进程退出和 IPC 断开；生命探测与业务进展分开。**有限频率**的
+ * 连接健康探测**仅用于识别失联**，不扫描全机 PID、不以 CPU 阈值自动杀进程」。
+ * 五秒是「人察觉不到、机器也不忙」的那个量级；判据是**连的断没断**，不是「它在不在干活」
+ * ——长测试静默十分钟也照样是活的。
+ */
+const PROBE_INTERVAL_MS = 5_000
+
+/**
+ * 收摊时给执行者的**宽限期**（毫秒）——`bye` 之后等它自己走完收尾那两跳。
+ *
+ * 两秒是「它手上那两跳要多久」的量级：关外部服务器（关 stdin → 等 → 杀）本来就有界，
+ * 关库是一条语句。到点还没退的按「不听话」处理（`kill`）。
+ */
+const SHUTDOWN_GRACE_MS = 2_000
+
+/** 「两手都空」要空够多久才退（毫秒）——见 `bindManager` 里 `idle` 那一段的注。 */
+const IDLE_MS = 2_000
+/** 那件事多久看一次（毫秒）——它只是个判据，不需要比这更勤。 */
+const IDLE_CHECK_MS = 250
 
 /**
  * **立一个管理者，或者认出已经有的那一个**。
@@ -192,9 +244,7 @@ export async function startManager(options: ManagerOptions): Promise<StartResult
     }
 
     // 连也连不上 ⇒ 路径上是上一次的尸首。**清掉它**，下一轮重新 bind。
-    // 清之前再确认一次「真的没人 listen」——这一步与上面那次探测之间有一瞬，
-    // 而那一瞬里另一个进程可能刚好 bind 上（探测与清理不能合成一次原子动作，
-    // 故宁可多探一次；探测失败的方向是**保守**的：连不上才清）。
+    // 清之前再确认一次（探测与清理合成不了一次原子动作）——探测失败的方向是**保守**的。
     if (!(await someoneListens(paths.socket))) clearStale(paths.socket)
   }
 
@@ -204,8 +254,15 @@ export async function startManager(options: ManagerOptions): Promise<StartResult
 /** bind 成了就返回一个立好的管理者；没成返回 `undefined`（判归属的那三步在调用方）。 */
 function bindManager(options: ManagerOptions, now: () => number): Manager | undefined {
   const { paths } = options
+  const probeIntervalMs = options.probeIntervalMs ?? PROBE_INTERVAL_MS
+
   const clients = new Map<number, ClientConn>()
+  const executors = new Set<Executor>()
+  /** 待认领的执行者——按令牌找（它连上来时给的正是那个令牌）。 */
+  const awaiting = new Map<string, Executor>()
+
   let nextConn = 1
+  let nextGen = 1
   let stopped = false
   let settle: () => void = () => {}
   const exited = new Promise<void>((resolve) => {
@@ -216,19 +273,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   try {
     server = Bun.listen({
       unix: paths.socket,
-      socket: socketHandlers((socket) => {
-        // 接进来的一条连接：先包成 `Link`，**回话是等它的 `hello` 之后**——
-        // 「谁在说话」由 `hello` 说，管理者不按「谁先连上」猜。
-        const conn: ClientConn = {
-          id: nextConn,
-          link: linkOf<Inbound>(socket as Socket<unknown>),
-          gen: null,
-          label: undefined,
-        }
-        nextConn += 1
-        clients.set(conn.id, conn)
-        attachClient(options, clients, conn)
-      }),
+      socket: socketHandlers((socket) => accept(socket as Socket<unknown>)),
     })
   } catch {
     return undefined
@@ -245,82 +290,497 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
   writeRecord(paths, record)
 
+  /** 一摊运行的那几件工具——`stop` 与各自的收尾都要它们，故在闭包里立。 */
   const manager: Manager = {
     record,
     socketPath: paths.socket,
     clients: () => clients.size,
-    // 执行者表在下一段接上（U48 第二段「执行者拆出去并登记」）——这一处先如实报空
-    executors: () => [],
-    stop(why) {
-      if (stopped) return
-      stopped = true
-
-      for (const conn of [...clients.values()]) {
-        conn.link.send({ t: 'line', text: `管理者收摊：${why}` })
-        conn.link.close()
-      }
-      clients.clear()
-
-      try {
-        server.stop(true)
-      } catch {
-        // 已经停了
-      }
-      clearRecord(paths)
-      options.log?.(`管理者收摊（${why}）`)
-      settle()
-    },
+    executors: () =>
+      [...executors]
+        .filter((one) => !one.dead)
+        .map((one) => ({ session: one.session, gen: one.gen, pid: one.pid })),
+    stop,
     waitUntilExit: () => exited,
   }
 
-  options.log?.(`管理者就位 pid=${record.pid} socket=${paths.socket}`)
-  return manager
-}
+  /**
+   * 接进来一条连接——**先当它是客户端，等它那句 `hello` 再定**。
+   *
+   * 执行者与窗口连的是**同一条 socket**：三者之间只有一条本机路径，谁是谁由 `hello`
+   * 说（而不是「谁先连上」「连的是哪条端口」那种要看别处才知道的判据）。
+   */
+  function accept(socket: Socket<unknown>): void {
+    const link = linkOf<ClientToManager | ExecutorToManager>(socket)
+    /** 这条连接立起来的时候是谁的——`hello` 那一刻定下，之后不再变。 */
+    let client: ClientConn | undefined
+    let executor: Executor | undefined
 
-/** 处理一条客户端连接上的消息——`hello` 之后它才进 `clients`（见 `bindManager`）。 */
-function attachClient(options: ManagerOptions, clients: Map<number, ClientConn>, conn: ClientConn): void {
-  /** 这条连接说定自己是执行者了吗——执行者那几支只在这条路上受理（见 `wire.ts` 的方向表）。 */
-  let executor = false
-
-  conn.link.onMessage((message) => {
-    switch (message.t) {
-      case 'hello': {
+    link.onMessage((message) => {
+      if (message.t === 'hello') {
         if (message.role === 'executor') {
-          executor = true
+          executor = adopt(message)
           return
         }
 
-        const greeted: ManagerToClient = {
-          t: 'welcome',
-          conn: conn.id,
-          dataDir: options.dataDir,
+        const conn: ClientConn = {
+          id: nextConn,
+          link: link as unknown as Link<ClientToManager>,
+          gen: 0,
+          cwd: message.cwd,
+          target: undefined,
+          label: message.label,
         }
-        conn.link.send(greeted)
+        nextConn += 1
+        client = conn
+        clients.set(conn.id, conn)
+        link.send({ t: 'welcome', conn: conn.id, dataDir: options.dataDir })
+        touch()
         return
       }
-      case 'cmd': {
-        if (executor) return // 执行者不发命令
-        conn.gen = message.gen
-        // 路由在下一段接上（U48 第二段）——这一处**不静默吞**：客户端据 `line` 知道
-        // 自己那句话没人接，而不是对着一个不动的屏发呆。
-        conn.link.send({ t: 'line', text: '这条路还没接上（U48 第二段）' })
+
+      if (client !== undefined) {
+        if (message.t === 'cmd') onCommand(client, message.gen, message.cmd)
+        if (message.t === 'bye') dropClient(client.id)
         return
       }
-      case 'bye': {
-        clients.delete(conn.id)
-        conn.link.close()
+
+      // 走到这儿＝这条连接立起来时说的是执行者那一路（`hello` 那一刻定下的，之后不变），
+      // 故收下的是执行者那一族
+      if (executor !== undefined) onExecutorMessage(executor, message as ExecutorToManager)
+    })
+
+    link.onClose(() => {
+      if (client !== undefined) dropClient(client.id)
+      if (executor !== undefined) retire(executor, '连接断了')
+    })
+
+    /** 认领一条执行者连接——令牌对上哪一代就是哪一代。 */
+    function adopt(message: Extract<ExecutorToManager, { t: 'hello' }>): Executor | undefined {
+      const found = awaiting.get(message.token)
+      if (found === undefined) {
+        // 令牌不认（上一代留下的 / 别的摊调错门了）：**不留一条无人负责的连接**
+        link.send({ t: 'bye', why: '这个令牌不对应任何一代执行者' })
+        link.close()
+        return undefined
+      }
+
+      awaiting.delete(message.token)
+      found.link = link as unknown as Link<ExecutorToManager>
+      found.session = message.session ?? found.session
+      found.workspace = message.workspace
+      found.lastSeen = now()
+      // 认领的这一刻补一条「现在有几个人看你」——`bind` 那一次发的时候它还没连上来
+      // （`link` 是空的），而它接下来的收缩判据正需要这个数。
+      tellWatchers(found)
+      return found
+    }
+  }
+
+  function dropClient(id: number): void {
+    const conn = clients.get(id)
+    if (conn === undefined) return
+    clients.delete(id)
+    conn.target?.watchers.delete(id)
+    if (conn.target !== undefined) tellWatchers(conn.target)
+    conn.link.close()
+    // 最后一个看客走了——**不是「停」**：执行者照跑。收不收它归收缩那条路：
+    // 它自己按「没有连接者 ＋ 没有在途调用或待答项」判（见 `executor.ts` 的收缩那一跳）。
+    options.log?.(`窗口 ${id} 断开（挂着的客户端 ${clients.size}）`)
+    touch()
+  }
+
+  // —— 命令：路由 ——
+
+  /**
+   * 一条命令——**先验代次，再路由**。
+   *
+   * 验代次这一条（设计 · 状态可信度、独占与重新连接 ①：「**过期连接携带旧代次的命令
+   * 一律拒绝**，不能让旧窗口误操作新运行」）落在这里：
+   *
+   * - 带了号 ⇒ 它必须**就是**当下那个目标的号（不是「曾经是」——目标一换，旧号当场作废）；
+   * - 没带号 ⇒ 只收「还没有目标」的那些窗口说的（它还没被指派过，谈不上过期）。
+   *
+   * 拒绝是**有回声**的（一句 `line`）：静默丢弃会让窗口对着一个不动的屏发呆，
+   * 而「我这条为什么不生效」正是那一刻唯一要答的问题。
+   */
+  function onCommand(conn: ClientConn, gen: number | null, command: Command): void {
+    if (gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
+      conn.link.send({
+        t: 'line',
+        text:
+          conn.target === undefined
+            ? '这一代已经不在了——它那条命令没生效（接着敲就是，会给你起新的一代）'
+            : `这一代已经过去了（那是第 ${gen} 代，现在是第 ${conn.target.gen} 代）——它那条命令没生效`,
+      })
+      return
+    }
+
+    // **换目标的只有这两条**（见文件头注）
+    if (command.type === 'session.open') {
+      retarget(conn, { kind: 'open', session: command.session })
+      return
+    }
+    if (command.type === 'session.new') {
+      // 开一条新的＝**离开当下这条**：给它换一个还没开张的执行者，旧的照跑
+      retarget(conn, { kind: 'new' })
+      return
+    }
+
+    const target = conn.target ?? spawnFresh(conn)
+    if (target === undefined) {
+      conn.link.send({ t: 'line', text: '起不了执行者——这条命令没能送到' })
+      return
+    }
+
+    deliver(target, command)
+  }
+
+  /**
+   * 换目标——`session` 给了就是「切到那一条」，不给就是「开一条新的」。
+   *
+   * 复用那一条规矩：**当下这个执行者还没开张、而且只有这一个看客**时就用它
+   * （免得起一个只用几毫秒的进程）；否则按会话找已经活着的那一个，再没有才起新的。
+   */
+  function retarget(
+    conn: ClientConn,
+    how: { readonly kind: 'open'; readonly session: string } | { readonly kind: 'new' },
+  ): void {
+    const current = conn.target
+
+    if (how.kind === 'open') {
+      const command: Command = { type: 'session.open', session: how.session }
+
+      const live = liveOf(how.session)
+      if (live !== undefined) {
+        bind(conn, live)
+        // 它已经在那条会话上——`session.open` 过去是**无事**（内核不报）。
+        // 故这里补一条 `session.list`：那一条**一定会**报一次状态，窗口据此重画、
+        // 选择器据以合上。两句都发，是为了「换到了」这件事在屏上**有回声**。
+        deliver(live, command)
+        deliver(live, { type: 'session.list' })
         return
       }
+
+      if (reusable(current, conn)) {
+        const reused = current as Executor
+        bind(conn, reused)
+        deliver(reused, command)
+        return
+      }
+
+      const spawned = spawn({ session: how.session, explicit: true, cwd: conn.cwd })
+      if (spawned === undefined) {
+        conn.link.send({ t: 'line', text: `起不了执行者——没切到 ${how.session}` })
+        return
+      }
+      bind(conn, spawned)
+      deliver(spawned, command)
+      return
+    }
+
+    const command: Command = { type: 'session.new' }
+
+    if (reusable(current, conn)) {
+      const reused = current as Executor
+      bind(conn, reused)
+      deliver(reused, command)
+      return
+    }
+
+    const spawned = spawn({ session: null, explicit: false, cwd: conn.cwd })
+    if (spawned === undefined) {
+      conn.link.send({ t: 'line', text: '起不了执行者——没开成新的那条' })
+      return
+    }
+    bind(conn, spawned)
+    deliver(spawned, command)
+  }
+
+  /** 「当下这个执行者还有用吗」——**没开张 ＋ 只有这一个看客**才敢往上叠新目标。 */
+  function reusable(current: Executor | undefined, conn: ClientConn): boolean {
+    if (current === undefined || current.dead) return false
+    if (current.session !== null) return false
+    return current.watchers.size <= 1 && (current.watchers.size === 0 || current.watchers.has(conn.id))
+  }
+
+  /** 把窗口挂到某一代上——**换看客**是这一处的全部动作（旧的那一代照跑）。 */
+  function bind(conn: ClientConn, executor: Executor): void {
+    const from = conn.target
+    from?.watchers.delete(conn.id)
+    if (from !== undefined && from !== executor) tellWatchers(from)
+
+    conn.target = executor
+    executor.watchers.add(conn.id)
+    conn.gen = executor.gen
+    conn.link.send({ t: 'target', gen: executor.gen, session: executor.session })
+    tellWatchers(executor)
+  }
+
+  /** 告诉某一代「现在还有几个人看你」——收缩那条路的一半判据（见 `wire.ts` 的 `watchers`）。 */
+  function tellWatchers(executor: Executor): void {
+    executor.link?.send({ t: 'watchers', count: executor.watchers.size })
+  }
+
+  /** 已经活着的那一代（按会话找）——**独占推进权**就落在这一条上：一条会话至多一个。 */
+  function liveOf(session: string): Executor | undefined {
+    for (const one of executors) {
+      if (!one.dead && one.session === session) return one
+    }
+    return undefined
+  }
+
+  /** 起一个还没开张的执行者——**窗口的第一条命令**走它（空白启动页此时才有进程）。 */
+  function spawnFresh(conn: ClientConn): Executor | undefined {
+    const spawned = spawn({ session: null, explicit: false, cwd: conn.cwd })
+    if (spawned !== undefined) bind(conn, spawned)
+    return spawned
+  }
+
+  /** 真起一个——登记在**发车那一刻**（不是等它连上来）：两个窗口同时要同一条会话时，
+   *  第二个必须**当场**看得见第一个，否则会各起一个。 */
+  function spawn(input: {
+    readonly session: string | null
+    readonly explicit: boolean
+    readonly cwd: string
+  }): Executor | undefined {
+    const gen = nextGen
+    nextGen += 1
+    const token = `${gen}-${crypto.randomUUID()}`
+
+    let spawned: SpawnedExecutor
+    try {
+      spawned = options.launch.spawn({
+        gen,
+        token,
+        session: input.session,
+        cwd: input.cwd,
+        magic: options.magic,
+        socket: paths.socket,
+      })
+    } catch (error) {
+      options.log?.(`起执行者不成：${String(error)}`)
+      return undefined
+    }
+
+    const executor: Executor = {
+      gen,
+      token,
+      explicit: input.explicit,
+      session: input.session,
+      workspace: [],
+      pid: spawned.pid,
+      spawned,
+      link: undefined,
+      ready: false,
+      pending: [],
+      watchers: new Set(),
+      lastSeen: now(),
+      pingSeq: 0,
+      dead: false,
+    }
+
+    executors.add(executor)
+    awaiting.set(token, executor)
+
+    spawned.onExit((reason) => {
+      retire(executor, reason)
+    })
+
+    options.log?.(`起了执行者 第 ${gen} 代 pid=${spawned.pid ?? '?'} 会话=${input.session ?? '（还没开张）'}`)
+    touch()
+    return executor
+  }
+
+  /**
+   * 送一条命令给执行者。
+   *
+   * **没 `ready` 就先攒着**：从起进程到能干活那一段（装载 ＋ 发现 ＋ 恢复）是秒级，
+   * 而窗口那边已经在等着了——先送出去只会是「敲了没反应」。攒着的那一份在 `ready`
+   * 到达时按序放行。
+   */
+  function deliver(executor: Executor, command: Command): void {
+    if (executor.dead) return
+
+    if (executor.link === undefined || !executor.ready) {
+      executor.pending.push(command)
+      return
+    }
+    executor.link.send({ t: 'cmd', cmd: command })
+  }
+
+  // —— 执行者那一路 ——
+
+  function onExecutorMessage(executor: Executor, message: ExecutorToManager): void {
+    executor.lastSeen = now()
+
+    switch (message.t) {
+      case 'hello':
+        // 认领在 `adopt` 里做了（那是**连接**那一跳的事）；这里只补一次登记
+        return
+      case 'ready': {
+        executor.ready = true
+        const queued = executor.pending
+        executor.pending = []
+        for (const command of queued) deliver(executor, command)
+        return
+      }
+      case 'bound':
+        executor.session = message.session
+        return
+      case 'ev':
+        onEvent(executor, message.event)
+        return
+      case 'pong':
+        return
+      case 'done':
+        retire(executor, `自己收摊：${message.why}`)
+        return
       default:
-        // 执行者那几支（`bound` / `done` / `pong`）在这一段还没接上——忽略；
-        // 它们到 U48 第二段才有主，早于那一段不该在路上出现。
         return
     }
-  })
+  }
 
-  conn.link.onClose(() => {
-    clients.delete(conn.id)
-  })
+  /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
+  function onEvent(executor: Executor, event: KernelEvent): void {
+    // 会话从事件里认（这就是 `bound` 那条路的日常形态：首条消息一按下回车，
+    // 事件就带上了真会话号）——**不另立一份「它现在在哪条会话上」的真源**。
+    if (event.session !== '' && event.session !== undefined) {
+      if (executor.session === null || event.kind === 'session.state') {
+        executor.session = event.session
+      }
+    }
+    if (event.kind === 'session.state') {
+      const active = event.data.active
+      if (typeof active === 'string' && active !== '') executor.session = active
+    }
+
+    for (const id of [...executor.watchers]) {
+      const conn = clients.get(id)
+      if (conn === undefined) continue
+      conn.link.send({ t: 'ev', gen: executor.gen, event })
+    }
+  }
+
+  /** 核销——自己退了 / 被杀 / 管理者叫停；**只走一遍**。 */
+  function retire(executor: Executor, reason: string): void {
+    if (executor.dead) return
+    executor.dead = true
+    executors.delete(executor)
+    awaiting.delete(executor.token)
+    executor.pending = []
+
+    for (const id of [...executor.watchers]) {
+      const conn = clients.get(id)
+      if (conn === undefined) continue
+      conn.target = undefined
+      // **窗口不是跟着死**：它下一次发命令时管理者会按需要起新的那一代
+      // （见 `onCommand`）——「断的是执行者，不是界面」。
+      //
+      // `detached`（作废旧号）与 `line`（说一句给人听）**两件都要**：前者是**机器**
+      // 要的（不作废的话它下一条命令会被当成过期误操作挡下），后者是**人**要的。
+      conn.link.send({ t: 'detached', why: reason })
+      conn.link.send({ t: 'line', text: `它那一代执行者收摊了（${reason}）` })
+    }
+    executor.watchers.clear()
+    executor.link?.close()
+
+    options.log?.(`核销第 ${executor.gen} 代执行者（${reason}）`)
+    touch()
+  }
+
+  /** 生命探测——**只看「连还通不通」**，不看它在不在干活（长测试静默照样是活的）。 */
+  const probe = setInterval(() => {
+    for (const executor of [...executors]) {
+      if (executor.dead || executor.link === undefined) continue
+      executor.pingSeq += 1
+      executor.link.send({ t: 'ping', seq: executor.pingSeq })
+    }
+  }, probeIntervalMs)
+  probe.unref?.()
+
+  /**
+   * **它是不是该退了**——「没有执行者、客户端及待处理的投递 / 唤起责任时，管理者退出；
+   * 单纯历史或笔记待办不阻止退出，**不成为永远占机器的 daemon**」（设计 · 收缩）。
+   *
+   * 投递与唤起那两件责任当前还没有（它们随 U50 与协作那一块到站），故这一跳的判据就是
+   * **两手都空**。两处细节：
+   *
+   * - **不是在空的那一刻就退**，而是空够一段时间（`IDLE_MS`）：起管理者与连上来之间
+   *   有一段（`magic` 先 `startManager`、再 `connectManager`），当场退的话会把
+   *   「刚起来的那个」当成「没人要的那个」；
+   * - 判据用的是**最后一次有动静的时刻**（`lastActivity`），不是「当下空不空」——
+   *   窗口来了又走、执行者起了又收，那几跳之间也各有间隙。
+   */
+  let lastActivity = now()
+
+  function touch(): void {
+    lastActivity = now()
+  }
+
+  const idle = setInterval(() => {
+    if (stopped) return
+    if (clients.size > 0 || executors.size > 0) return
+    if (now() - lastActivity < IDLE_MS) return
+    stop('没有执行者、也没有窗口了')
+  }, IDLE_CHECK_MS)
+  idle.unref?.()
+
+  /**
+   * 收摊——**先礼后兵，且「礼」是有界的**。
+   *
+   * 礼 ＝ 给每一代一句 `bye`，让它自己走到收尾那两跳（等外部服务器释放、再关库——
+   * 顺序见 `executor.ts`）。那两跳里可能有**要落盘的东西**（没落完的授权记账），
+   * 故不能`bye`完就开杀。
+   *
+   * 兵 ＝ 有界等待之后还没退的，`kill`。**先礼不等于无限期地等**：收摊这一跳要是能
+   * 被一个不听话的执行者拖住，管理者的「无执行者、无客户端时就退出」那条当场不成立。
+   *
+   * ⚠️ **`server.stop(false)`**（不关在用的连接）：连接一断，执行者那边就只剩
+   * 「断开＝自己停」那一条路了——那本来是对的，但那样一来 `bye` 就成了白说一句，
+   * 而它的意义正是「让你把手上那两跳走完」。故监听先撤、连接留着。
+   */
+  function stop(why: string): void {
+    if (stopped) return
+    stopped = true
+    clearInterval(probe)
+
+    for (const executor of [...executors]) {
+      executor.link?.send({ t: 'bye', why: `管理者收摊：${why}` })
+    }
+
+    for (const conn of [...clients.values()]) {
+      conn.link.send({ t: 'line', text: `管理者收摊：${why}` })
+      conn.link.close()
+    }
+    clients.clear()
+
+    try {
+      server.stop(false)
+    } catch {
+      // 已经停了
+    }
+    clearRecord(paths)
+
+    const deadline = now() + SHUTDOWN_GRACE_MS
+    const wait = setInterval(() => {
+      if (executors.size === 0 || now() > deadline) {
+        clearInterval(wait)
+
+        // 到点还没退的——**兵**。`retire` 顺手把它从表里摘掉，故这一跳走完表是空的
+        for (const executor of [...executors]) {
+          executor.spawned.kill()
+          retire(executor, `管理者收摊：${why}（到点没退）`)
+        }
+
+        options.log?.(`管理者收摊（${why}）`)
+        settle()
+      }
+    }, 25)
+    wait.unref?.()
+  }
+
+  options.log?.(`管理者就位 pid=${manager.record.pid} socket=${paths.socket}`)
+  return manager
 }
 
 /** 那条路径上有人 listen 吗——**用「连得上」判**（比 `stat` 准：尸首也 `stat` 得到）。 */

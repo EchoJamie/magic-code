@@ -3,17 +3,18 @@
  *
  * 这一层只做三件：**连上、说声我是谁、把话递来递去**。它**不认识任何域**，也不持有
  * 任何执行状态——「窗口只是展示入口」这条（设计 · 会话与运行管理）在这里是结构上的
- * 事实：`client.ts` 里一个字都没有「会话 / 运行 / 执行者」的概念，它只有一条连接。
+ * 事实：本文件里一个字都没有「会话 / 运行 / 执行者」的概念，它只有一条连接与一个
+ * **代次**（那个代次是机器要的：过期连接的命令一律拒绝，见 `manager.ts` 的 `onCommand`）。
  *
  * 转成外壳要的 `ControlTransport` 是**下一跳**的事（`./terminal.ts`）：那一跳要把
- * 「哪条事件属于我正看的那条会话」「代次过期怎么回话」这些判断加上去，而它们不属于
+ * 「哪条事件属于我正看的那条会话」「失联怎么显示」这些加上去，而它们不属于
  * 「一条连接怎么说话」。
  *
- * ## 为什么 `hello` 与 `welcome` 是一次往返
+ * ## 代次为什么由这一层自己记
  *
- * 连上之后**先报身份、再受理命令**：管理者要说得出「这条连接是谁」，而客户端要说得出
- * 「我连上的是哪一摊」（数据目录）——两句话在**同一次往返**里说完，免得出现
- * 「已经能发命令了，可我还不知道自己在跟谁说话」那一小段。
+ * 「我认的是哪一代」不是调用方要操心的东西——它是**连接的状态**，由管理者告知
+ * （`welcome` / `target` / `detached` 三条），也由这一层在每条命令上原样带上。
+ * 让每个调用点自己记一个数，迟早有一处忘了更新——而那一处的症状是**命令被静默拒绝**。
  */
 
 import type { Socket } from 'bun'
@@ -26,22 +27,34 @@ export type ManagerClient = {
   readonly conn: number
   /** 这一摊运行的数据目录（管理者的自报）。 */
   readonly dataDir: string
-  /** 内核来的事件 ＋ 它的**执行者代次**（`null` ＝ 与代次无关的读数）。 */
+  /** 我此刻认的执行者代次（`null` ＝ 还没有目标）。 */
+  gen(): number | null
+  /** 管理者指派的目标换了一条会话——外壳据以认「我现在在看哪条」（`null` ＝ 还没开张）。 */
+  onTarget(listener: (session: string | null) => void): void
+  /** 内核来的事件 ＋ 它的**执行者代次**。 */
   onEvent(listener: (event: KernelEvent, gen: number | null) => void): void
   /** 管理者**给人看**的话（代次过期、它要退了……）——外壳落成一行回执。 */
   onLine(listener: (text: string) => void): void
   /** 连接断了（**只报一次**）——「管理者不可达」那一路。 */
   onClose(listener: (error?: Error) => void): void
-  /** 发一条命令，带上我认的代次（`null` ＝ 还没认过任何一代）。 */
-  send(command: Command, gen: number | null): void
+  /** 发一条命令（代次由这一层带上）。 */
+  send(command: Command): void
   close(): void
   readonly closed: boolean
+}
+
+export type ConnectOptions = {
+  /** 启动目录——管理者按它起执行者（工作区默认根的缺省）。缺省 `process.cwd()`。 */
+  readonly cwd?: string | undefined
+  /** 诊断用的标签（哪一类窗口）——缺省不给。 */
+  readonly label?: string | undefined
+  readonly timeoutMs?: number | undefined
 }
 
 /** 连上管理者——连不上（没人 listen / 路径是尸首）返回 `undefined`，不抛。 */
 export async function connectManager(
   socketPath: string,
-  options: { readonly label?: string | undefined; readonly timeoutMs?: number | undefined } = {},
+  options: ConnectOptions = {},
 ): Promise<ManagerClient | undefined> {
   let socket: Socket<unknown>
   try {
@@ -54,17 +67,38 @@ export async function connectManager(
   }
 
   const link = linkOf<ManagerToClient>(socket)
-  const greeted = await greet(link, options.label, options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS)
+  const greeted = await greet(
+    link,
+    {
+      cwd: options.cwd ?? process.cwd(),
+      ...(options.label === undefined ? {} : { label: options.label }),
+    },
+    options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
+  )
   if (greeted === undefined) {
     link.close()
     return undefined
   }
 
+  /** 我认的执行者代次——由管理者那三条消息维护（见文件头注）。 */
+  let gen: number | null = null
+  const targetListeners: ((session: string | null) => void)[] = []
   const eventListeners: ((event: KernelEvent, gen: number | null) => void)[] = []
   const lineListeners: ((text: string) => void)[] = []
 
   link.onMessage((message) => {
     switch (message.t) {
+      case 'target':
+        gen = message.gen
+        for (const listener of [...targetListeners]) listener(message.session)
+        return
+      case 'detached':
+        // 那一代收了——**当下就作废旧号**（不作废的话，下一条命令会被当成过期误操作
+        // 挡下来，而这个窗口其实只是想接着干，见 `manager.ts` 的 `retire`）。
+        gen = null
+        for (const listener of [...targetListeners]) listener(null)
+        for (const listener of [...lineListeners]) listener(message.why)
+        return
       case 'ev':
         for (const listener of [...eventListeners]) listener(message.event, message.gen)
         return
@@ -72,7 +106,7 @@ export async function connectManager(
         for (const listener of [...lineListeners]) listener(message.text)
         return
       default:
-        // `welcome` 已经在上面的往返里收掉了；执行者那几支不该出现在客户端的连接上
+        // `welcome` 已经在上面的往返里收掉了
         return
     }
   })
@@ -80,6 +114,10 @@ export async function connectManager(
   return {
     conn: greeted.conn,
     dataDir: greeted.dataDir,
+    gen: () => gen,
+    onTarget(listener) {
+      targetListeners.push(listener)
+    },
     onEvent(listener) {
       eventListeners.push(listener)
     },
@@ -89,7 +127,7 @@ export async function connectManager(
     onClose(listener) {
       link.onClose(listener)
     },
-    send(command, gen) {
+    send(command) {
       link.send({ t: 'cmd', gen, cmd: command })
     },
     close() {
@@ -113,7 +151,7 @@ const HANDSHAKE_TIMEOUT_MS = 3_000
  */
 async function greet(
   link: Link<ManagerToClient>,
-  label: string | undefined,
+  hello: { readonly cwd: string; readonly label?: string },
   timeoutMs: number,
 ): Promise<{ readonly conn: number; readonly dataDir: string } | undefined> {
   return new Promise((resolve) => {
@@ -133,6 +171,6 @@ async function greet(
     })
     link.onClose(() => finish(undefined))
 
-    link.send(label === undefined ? { t: 'hello', role: 'client' } : { t: 'hello', role: 'client', label })
+    link.send({ t: 'hello', role: 'client', ...hello })
   })
 }

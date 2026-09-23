@@ -30,7 +30,18 @@ import type { Command, KernelEvent } from '@magic/contracts'
 
 /** 客户端 → 管理者。 */
 export type ClientToManager =
-  | { readonly t: 'hello'; readonly role: 'client'; readonly label?: string }
+  | {
+      readonly t: 'hello'
+      readonly role: 'client'
+      readonly label?: string
+      /**
+       * **启动目录**——窗口在哪儿起的。执行者按它算工作区默认根
+       * （配置没写 `workspaceRoots` 时「启动目录＝默认根」，U18 那条`??`）。
+       * 它是**窗口的属性**，而窗口是客户端：不给的话执行者只能拿管理者自己那一份，
+       * 于是「在 A 目录敲 magic」会落到管理者当初被唤起时的目录上。
+       */
+      readonly cwd: string
+    }
   /** `gen` ＝ 这个窗口认的执行者代次（`null` ＝ 还没认过任何一代）。 */
   | { readonly t: 'cmd'; readonly gen: number | null; readonly cmd: Command }
   | { readonly t: 'bye'; readonly why: string }
@@ -44,6 +55,24 @@ export type ManagerToClient =
       /** 数据目录的规范形（管理者就是按它认的自己这一摊）。 */
       readonly dataDir: string
     }
+  /**
+   * **客户端换到了另一个执行者**——`gen` 是**当下**那一代的号，`session` 是它认的会话
+   * （`null` ＝ 那条执行者还没开张）。
+   *
+   * 为什么要有这一条：代次是**窗口认的**（它发命令时得带上），而换目标是管理者做的
+   * ——不告诉它换成了哪一代，它下一步发的命令就会被当成过期的那一代（U48 第三段）。
+   * 它也是外壳「我现在在看哪条会话」那条读数的**权威来处**。
+   */
+  | { readonly t: 'target'; readonly gen: number; readonly session: string | null }
+  /**
+   * **窗口与它那一代脱开了**——那一代收了（自退 / 被杀 / 管理者收摊），而这个窗口还在。
+   *
+   * ⚠️ **窗口不是跟着死**：它下一次发命令时管理者会按需要起新的一代（见 `onCommand`）。
+   * 但**它手上那个代次必须先作废**——不作废的话，它带着旧号发的下一条命令会被当成
+   * 「过期连接误操作」挡下来（U48 第三段那条判据），而它其实只是想接着干。
+   * 「什么时候该忘掉旧号」这件事只有管理者说了算，故由这一条说。
+   */
+  | { readonly t: 'detached'; readonly why: string }
   /** `gen` ＝ 这条事件出自哪一代执行者（没有代次可言时给 `null`）。 */
   | { readonly t: 'ev'; readonly gen: number | null; readonly event: KernelEvent }
   /** 一句**给人看**的话（代次过期、管理者要退了……）——客户端把它落成一行回执。 */
@@ -61,6 +90,13 @@ export type ExecutorToManager =
       /** 工作区整组根（规范形 · 声明序）——登记里要它。 */
       readonly workspace: readonly string[]
     }
+  /**
+   * **这一代开工了**——发现那一跳跑完、恢复跑完、可以收命令了。
+   *
+   * 管理者据它把攒下的命令放行：起进程到能干活那一段（装载 ＋ 发现 ＋ 恢复）是秒级，
+   * 而窗口那边已经在等着了——**先攒着、到点了再送**，比「命令发出去无声落空」好。
+   */
+  | { readonly t: 'ready' }
   | { readonly t: 'ev'; readonly event: KernelEvent }
   | { readonly t: 'pong'; readonly seq: number }
   /** **跑起来之后才开张**（D5 那条路）——补一条登记，管理者据以把它挂到会话名下。 */
@@ -72,6 +108,14 @@ export type ExecutorToManager =
 export type ManagerToExecutor =
   | { readonly t: 'cmd'; readonly cmd: Command }
   | { readonly t: 'ping'; readonly seq: number }
+  /**
+   * **还有几个窗口盯着你**——收缩那条路要看它（设计：「运行已结束、没有在途调用或待答项、
+   * **也没有连接者** ⇒ 持久化状态后释放该执行者」）。
+   *
+   * 为什么由管理者说：连接是**它**在管，执行者看不见「外面还有没有人看」——而那正是
+   * 收不收的**一半判据**。另一半（在途调用、待答项）归执行者自己（它看得见内核的状态）。
+   */
+  | { readonly t: 'watchers'; readonly count: number }
   | { readonly t: 'bye'; readonly why: string }
 
 /** 线上消息的总表——判别收窄用得到它。 */

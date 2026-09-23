@@ -102,7 +102,7 @@ export function normalizeDataDir(dataDir: string): string {
 
 /** 规范化数据目录的**指纹**（运行目录那一层目录名）——同一 dataDir ⇒ 同一指纹。 */
 export function fingerprintOf(normalizedDataDir: string): string {
-  return createHash('sha256').update(normalizedDataDir).digest('hex').slice(0, 12)
+  return createHash('sha256').update(normalizedDataDir).digest('hex').slice(0, 10)
 }
 
 /**

@@ -517,7 +517,60 @@ async function runScript(assembly: Assembly, path: string): Promise<void> {
   console.log(`   记录库 ${assembly.paths.database}（可直读全过程）`)
 }
 
+/**
+ * **执行者那一支**（U48）——`magic --internal-executor …`。
+ *
+ * ⚠️ **不是产品命令**：用户敲不出来（`--help` 里一个字都没有），也没有任何一条产品路径
+ * 需要它。它是**管理者与执行者之间的私约**——管理者按这几个参数起进程，进程照它连回去
+ * （见 `./run/launch.ts` 与 `./run/executor.ts`）。与 `ui.ts` 那条「研发设施不是产品命令」
+ * 同一条口径：**别把它写进 USAGE**。
+ *
+ * 返回 `undefined` ＝ 「这不是执行者那一支」，`main` 接着按普通入口走。
+ */
+async function runExecutorMode(argv: readonly string[]): Promise<number | undefined> {
+  if (argv[0] !== '--internal-executor') return undefined
+
+  const valueOf = (flag: string): string | undefined => {
+    const at = argv.indexOf(flag)
+    return at === -1 ? undefined : argv[at + 1]
+  }
+
+  const socket = argv[1]
+  const token = valueOf('--token')
+  const session = valueOf('--session')
+  const cwd = valueOf('--cwd')
+  const magicHome = valueOf('--magic-home')
+  const magicBase = valueOf('--magic-base')
+
+  if (
+    socket === undefined ||
+    token === undefined ||
+    session === undefined ||
+    cwd === undefined ||
+    magicHome === undefined ||
+    magicBase === undefined
+  ) {
+    console.error('执行者入参不全——这条入口由管理者调用，不手工跑（见 packages/app/src/run/launch.ts）')
+    return 1
+  }
+
+  const { runExecutor } = await import('./run/executor.ts')
+  const outcome = await runExecutor({
+    socket,
+    token,
+    session: session === '-' ? null : session,
+    cwd,
+    magic: { home: magicHome, base: magicBase },
+  })
+
+  return outcome.kind === 'ok' ? 0 : 1
+}
+
 async function main(): Promise<number> {
+  // **执行者那一支先走**（U48）——它不认 `--help` 那一族，也不该被 `parseArgs` 拦下
+  const asExecutor = await runExecutorMode(process.argv.slice(2))
+  if (asExecutor !== undefined) return asExecutor
+
   let args: Args
   try {
     args = parseArgs(process.argv.slice(2))

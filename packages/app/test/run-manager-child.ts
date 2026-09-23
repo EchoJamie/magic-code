@@ -17,9 +17,9 @@
  */
 
 import { existsSync, writeFileSync } from 'node:fs'
+import { createProcessLauncher } from '../src/run/launch.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { startManager } from '../src/run/manager.ts'
-import type { ExecutorLauncher } from '../src/run/manager.ts'
 
 const [home, base, dataDir, tmpdir, readyFile, goFile, resultFile] = process.argv.slice(2)
 if (
@@ -34,19 +34,18 @@ if (
   throw new Error('用法：run-manager-child.ts <home> <base> <dataDir> <tmpdir> <ready> <go> <result>')
 }
 
-/** 这一段（立管理者）用不到执行者——真起执行者的是第二段那条用例。 */
-const launch: ExecutorLauncher = {
-  launch() {
-    throw new Error('这一段不该有人要执行者')
-  },
-}
+/**
+ * **真起进程**的启动器——竞争那一组没有命令过去，故一个执行者都不会起来；
+ * 用它是因为「管理者被杀 ⇒ 执行者自行停止」那一条要有真子进程才证得了。
+ */
+const launch = createProcessLauncher()
 
 const paths = runPathsOf({ home, base }, dataDir, tmpdir)
 
 writeFileSync(readyFile, '')
 while (!existsSync(goFile)) Bun.sleepSync(1) // 栅栏——等到一声令下
 
-const started = await startManager({ paths, dataDir, launch })
+const started = await startManager({ paths, dataDir, magic: { home, base }, launch })
 
 if (started.role !== 'manager') {
   writeFileSync(resultFile, JSON.stringify({ role: started.role, socket: paths.socket }))
