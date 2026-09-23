@@ -521,13 +521,58 @@ describe('选择器（`/resume` · `/model`）', () => {
 
 // ══ Ctrl+C ═══════════════════════════════════════════════════════════
 
-describe('Ctrl+C（空闲退出 · 工作中中断）', () => {
-  test('空闲 ⇒ 退出（交回组件去退）；工作中 ⇒ 发 `turn.interrupt`，不退', () => {
+describe('Ctrl+C（空闲按两次退出 · 工作中中断）', () => {
+  test('空闲第一下**不退出**——只把那一行挂上；第二下才走', () => {
     const idle = live()
-    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(true)
 
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(false)
+    expect(idle.view().exitArmed).toBe(true) // 那一行挂上了（画不画是渲染层的事）
+
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(true) // 第二下：交回组件去退
+    expect(idle.commands()).toEqual([]) // 两下都没惊动内核
+  })
+
+  test('两下之间**敲一个字** ⇒ 那一行撤掉，且「再按一次」不作数了（要重新按两下）', () => {
+    const idle = live()
+
+    idle.press({ kind: 'ctrl+c' })
+    idle.type('甲') // 用户又不想走了
+    expect(idle.view().exitArmed).toBe(false)
+    expect(idle.view().draft).toBe('甲') // 那一个字正常落进草稿
+
+    // 那一下**不作数**：再按一次只是重新挂上，不是退出
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(false)
+    expect(idle.view().exitArmed).toBe(true)
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(true)
+  })
+
+  test('两下之间**别的键**（`esc` 这类不落草稿的）同样把它撤掉', () => {
+    const idle = live()
+
+    idle.press({ kind: 'ctrl+c' })
+    idle.press({ kind: 'escape' })
+
+    expect(idle.view().exitArmed).toBe(false)
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(false) // 又从第一下起算
+  })
+
+  test('挂上之后这一轮又跑起来了 ⇒ 那一下是**中断**，不是「第二次按」（门也当场撤掉）', () => {
+    // ⚠️ 常态下够不着（提交那一跳是按键，已经把门撤了）；够得着的情形是「恢复跑出在途
+    //    那一轮」——第一下按在恢复跑完之前。这一条钉的是：真碰上了也**不许**直接退出。
+    const app = live()
+    app.press({ kind: 'ctrl+c' })
+    app.spy.emit(event('turn.start', {}))
+    expect(app.view().exitArmed).toBe(true) // 起手挂上的那一下还在
+
+    expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false) // 中断，不退
+    expect(app.view().exitArmed).toBe(false)
+    expect(app.commands()).toEqual([{ type: 'turn.interrupt' }])
+  })
+
+  test('工作中按 Ctrl+C ⇒ 只发中断，不退（与改前一致）', () => {
     const busy = live()
     busy.spy.emit(event('turn.start', {}))
+
     expect(busy.press({ kind: 'ctrl+c' }).exit).toBe(false)
     expect(busy.commands()).toEqual([{ type: 'turn.interrupt' }])
   })
@@ -538,6 +583,31 @@ describe('Ctrl+C（空闲退出 · 工作中中断）', () => {
 
     expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false)
     expect(app.commands()).toEqual([{ type: 'turn.interrupt' }])
+  })
+})
+
+// ══ 终端没了（`hangUp`）═══════════════════════════════════════════════
+
+describe('hangUp（终端断了 / 收到收摊信号——**不设「按两次」那道门**）', () => {
+  test('空闲 ⇒ 当场放行（对面已经没人在按了）', () => {
+    const idle = live()
+    expect(idle.shell.hangUp().exit).toBe(true)
+    expect(idle.view().exitArmed).toBe(false) // 也不留下那一行
+  })
+
+  test('工作中 ⇒ 替我们发中断，不退（沿既有）', () => {
+    const busy = live()
+    busy.spy.emit(event('turn.start', {}))
+
+    expect(busy.shell.hangUp().exit).toBe(false)
+    expect(busy.commands()).toEqual([{ type: 'turn.interrupt' }])
+  })
+
+  test('刚好挂上那一行时断了 ⇒ 照样当场放行（不是「第二次」）', () => {
+    const idle = live()
+    idle.press({ kind: 'ctrl+c' })
+
+    expect(idle.shell.hangUp().exit).toBe(true)
   })
 })
 

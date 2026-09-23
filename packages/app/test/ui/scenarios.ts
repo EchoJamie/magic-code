@@ -26,7 +26,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HINT_IDLE, placeholderOf } from '@magic/tui'
+import { HINT_EXIT_ARMED, HINT_IDLE, placeholderOf } from '@magic/tui'
 import { REPO_ROOT, UiWaitTimeout, createUiSession } from './driver.ts'
 import type { Capture, UiSession, UiSessionOptions } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
@@ -214,10 +214,12 @@ const bootInputResizeExit: Scenario = {
       `整份缓冲实际 ${countExact(cleared.history, '⏺ 收到，我在。')} 条`,
     )
 
-    // —— 退出：空闲时 ctrl+c ＝ 走人 ——
+    // —— 退出：空闲**按两次**走人（U46：第一下只印那一行、不退出）——
+    // 第一下等的就是那一行上屏 ⇒ 既证明**没退出**，也证明该说的说了
+    await session.key('ctrl+c', { until: { text: HINT_EXIT_ARMED }, timeoutMs: 5_000 })
     await session.key('ctrl+c')
     const report = await session.close({ graceMs: 2_000 })
-    ui.check(report.exit.by === 'app', 'ctrl+c 让应用自己退了场', `退出缘由 ${report.exit.by}`)
+    ui.check(report.exit.by === 'app', '两下 ctrl+c 让应用自己退了场', `退出缘由 ${report.exit.by}`)
     ui.check(report.exit.code === 0, '退出码是 0', `实际 ${report.exit.code}`)
 
     // 退出之后内容留在终端（内联渲染的既有性质）——屏上那些字还在
@@ -611,7 +613,20 @@ const mcpApproval: Scenario = {
       `pid ${grand}`,
     )
 
-    await descended.key('ctrl+c') // 应用自己退场（收尾那一跳在 cli 的 finally 里）
+    // 应用自己退场（收尾那一跳在 cli 的 finally 里）——空闲**按两次**才走（U46）。
+    //
+    // ⚠️ **先看它此刻闲不闲**：服务器崩了之后代理会**再试一次**，屏上往往又挂起一张卡
+    //    （或这一轮还在跑）。那种时候 `ctrl+c` 是**中断**，不是退出的第一下（外壳的既有语义）。
+    //    ⚠️ 反过来，**闲着的时候千万别先按那一下**——它会挂上「再按一次」，而被 `quit()`
+    //    当成第二次 ⇒ 当场退出、等不到那一行（这条实测栽过）。
+    const beforeQuit = await descended.screen()
+    const text = beforeQuit.lines.map((line) => line.text).join('\n')
+    if (!text.includes(HINT_IDLE)) {
+      await descended.key('ctrl+c') // 中断这一轮（卡随之作废）
+      await descended.wait({ absent: 'y 批准这一次' }, { timeoutMs: 15_000 }).catch(() => undefined)
+    }
+
+    await descended.quit()
     await descended.close({ graceMs: 3_000 })
     ui.check(!isAlive(grand as number), '应用退出后：那一层仍然不在', `pid ${grand}`)
 

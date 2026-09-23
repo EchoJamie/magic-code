@@ -109,7 +109,8 @@ async function close(session: UiSession): Promise<void> {
 
   // 先等它闲下来——忙的时候 `ctrl+c` 是**中断**不是退出（外壳的既有语义）
   await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
-  await session.key('ctrl+c')
+  // 空闲**按两次**才走（U46）——`quit()` 就是那一套（第一下只印那一行）
+  await session.quit()
   const report = await session.close({ graceMs: 3_000 })
   const how = `${report.exit.by}（code ${report.exit.code ?? '-'} / signal ${report.exit.signal ?? '-'}）`
 

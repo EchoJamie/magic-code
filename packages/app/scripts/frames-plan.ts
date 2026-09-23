@@ -320,11 +320,11 @@ async function typeLine(session: UiSession, text: string, shown = text): Promise
 
 /** 收摊——走共用驱动那一套，并交回**它是怎么走的**（`app` ＝ 自己走的）。 */
 async function finish(session: UiSession): Promise<string> {
-  // 工作中按 ctrl+c ＝ 中断（外壳的既有语义），空闲时再按 ＝ 退出
-  for (let at = 0; at < 3; at += 1) {
-    await session.key('ctrl+c').catch(() => {})
-    await Bun.sleep(150)
-  }
+  // 忙的时候那一下是**中断**（外壳的既有语义：工作中＝中断）；等它闲下来，再走
+  // 「空闲按两次」那条路（U46）——`quit()` 就是那一套
+  await session.key('ctrl+c').catch(() => {})
+  await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
+  await session.quit().catch(() => {})
 
   const closed = await session.close({ graceMs: 1500 })
 
@@ -690,7 +690,8 @@ function marksOf(plan: PlanNote): readonly string[] {
  */
 async function shutDownApp(session: UiSession, label: string): Promise<void> {
   await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
-  await session.key('ctrl+c')
+  // 空闲**按两次**才走（U46）——`quit()` 就是那一套
+  await session.quit()
   const closed = await session.close({ graceMs: 3_000 })
 
   check(closed.exit.by === 'app', `${label}：外壳自己收的场（exit.by=${closed.exit.by}）`)

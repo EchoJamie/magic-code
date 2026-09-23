@@ -687,8 +687,8 @@ async function close(session: UiSession): Promise<void> {
   // 等不到也不硬等：下面照样收摊（SIGTERM 那条路仍在），只是 `by` 会如实记成我们杀的。
   await session.wait({ text: '○ 空闲' }, { timeoutMs: 10_000 }).catch(() => undefined)
 
-  // 再按 `ctrl+c`（空闲＝退出）——**让它自己走**，`by` 才说明得了「它认得收摊这件事」
-  await session.key('ctrl+c')
+  // 再走「按两次」那条路（U46）——**让它自己走**，`by` 才说明得了「它认得收摊这件事」
+  await session.quit()
   const report = await session.close({ graceMs: 3_000 })
   const how = `${report.exit.by}（code ${report.exit.code ?? '-'} / signal ${report.exit.signal ?? '-'}）`
 

@@ -7,12 +7,13 @@
  * 真模型适配链。按键**经真 PTY** 送到 CLI 的 stdin（不是往 React 组件的 props 里塞事件），
  * 屏上的字**从它写出的字节里读**（不是拿视图对象算出来的）。
  *
- * ## 六件操作（就是公开面的全部）
+ * ## 七件操作（就是公开面的全部）
  *
  * | 操作 | 语义 |
  * | --- | --- |
  * | `send(text)` | 往 PTY 写一串正文（与手打同形——逐字进同一个 stdin） |
  * | `key(name)` | 敲一个**闭集里**的键；不认识的名字**当场报错**（不悄悄换成另一种按键） |
+ * | `quit()` | **照产品的方式退出**：空闲连按两次 `ctrl+c`（U46——一次不再走得掉） |
  * | `resize(cols, rows)` | 改窗口：**同一有序操作**里更新 PTY 与 VT，并给自己那个子进程发 `SIGWINCH` |
  * | `wait(cond)` | 等**可见屏**上的条件成立（超时有界；超时＝结构化失败 ＋ 留现场） |
  * | `capture(label)` | **只观察**：读此刻的屏（文本 ＋ 字格 ＋ 光标）并存成一帧 |
@@ -36,7 +37,7 @@ import { mkdirSync, readFileSync, copyFileSync, existsSync, readdirSync } from '
 import { join, resolve } from 'node:path'
 // 判「放开输入了没有」的那句提示——**取产品自己那个常量**（不是抄一份字面量：
 // 文案改了它跟着改，抄的那份会悄悄过期，而这类过期最坏的表现是「等条件永远为真」）
-import { HINT_IDLE } from '@magic/tui'
+import { HINT_EXIT_ARMED, HINT_IDLE } from '@magic/tui'
 import { createArtifacts } from './artifacts.ts'
 import type { Artifacts, FrameRecord } from './artifacts.ts'
 import { startFixture } from './fixture.ts'
@@ -73,6 +74,14 @@ export type UiKey = keyof typeof KEYS
 
 /** 键名的合法值（报错时列给人看）。 */
 export const UI_KEYS = Object.keys(KEYS) as UiKey[]
+
+/**
+ * **空闲**那一格的锚（状态行左位）——`quit()` 等「它真闲下来了」用它。
+ *
+ * ⚠️ **不用右位那句 `/ 命令 · ctrl+c 退出`**：状态行窄窗**从右往左省**，46 列上那句话
+ * 已经被省掉了——拿它当条件，窄窗那一趟必然等到超时（实测栽过）。
+ */
+const IDLE_MARK = '○ 空闲'
 
 /**
  * 等条件的闭集——「文字出现 / 文字消失 / 某个坐标上出现」。
@@ -220,6 +229,18 @@ export type UiSession = {
   resize(columns: number, rows: number): Promise<void>
   wait(condition: WaitCondition, options?: WaitOptions): Promise<WaitResult>
   capture(options?: { readonly label?: string }): Promise<Capture>
+  /**
+   * **照产品的方式退出**（U46）——空闲 **连按两次 `ctrl+c`**：第一下**不退出**（只挂上
+   * 「再按一次 ctrl+c 退出」那一行），第二下才走。
+   *
+   * 为什么不写一句 `key('ctrl+c')` 就完事：「空闲按一次 ＝ 退出」自 U46 起**不再是产品行为**
+   * （设计 · 会话与运行管理：一个键在一个状态下只有一种走法，统一成按两次）。收尾那一段
+   * 要判的正是「**应用自己走的**」（`close()` 报 `exit.by === 'app'`），那就得按它认的走完。
+   *
+   * ⚠️ **两下之间要等那一行上屏**：连着写两次会让「第一下」还没落地就发第二下——
+   * 那还是两个「第一下」（顺序由 PTY 保证，但两下之间没有发生任何事）。
+   */
+  quit(): Promise<void>
   /**
    * **把终端抽掉**（D26）——关掉 PTY master，**一个信号都不发**：终端窗口关了 /
    * 管道断了就是这一下。随后用 `close()` 看它是**自己走的**（`exit.by === 'app'`）
@@ -495,6 +516,26 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
         },
         session,
       )
+    },
+
+    quit: async () => {
+      // **先等它真闲下来**：忙的时候 `ctrl+c` 是**中断**（外壳的既有语义），两下会被吃掉一下
+      // ——那正是产品该有的样子，但不是收尾该走的姿势（会卡在「那一行没出现」上超时）。
+      //
+      // ⚠️ **等两次、中间睡一下**：「空闲」那句在**上一轮刚收口、下一跳还没画出来**时
+      //    就已经是那个样子了——立刻按下去会按在「其实还在跑」上（`frames-copy-tui.ts`
+      //    那一处记过同一跤：卡收了、下一趟模型还没回来的那半秒）。
+      //
+      // ⚠️ **锚用状态行左位那两个空格加「○ 空闲」，不用右位那句 `/ 命令 · ctrl+c 退出`**：
+      //    窄窗上右位会被省掉（状态行「从右往左省」），拿它当条件在 46 列上永远等不到。
+      await session.wait({ text: IDLE_MARK }, { timeoutMs: 15_000 })
+      await Bun.sleep(300)
+      await session.wait({ text: IDLE_MARK }, { timeoutMs: 15_000 })
+
+      // 第一下：等那一行**真上屏**（那就是「这一下落地了」的证据，也顺带判了产品真印了它）
+      await session.key('ctrl+c', { until: { text: HINT_EXIT_ARMED }, timeoutMs: 5_000 })
+      // 第二下：走
+      await session.key('ctrl+c')
     },
 
     resize: async (nextColumns, nextRows) => {

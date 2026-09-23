@@ -55,6 +55,7 @@ export {
 
 export {
   COMMANDS,
+  HINT_EXIT_ARMED,
   HINT_IDLE,
   appendEcho,
   appendOutput,

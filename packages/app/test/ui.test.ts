@@ -495,7 +495,9 @@ describe('U40-2 · 光标显隐与翻帧', () => {
       //    那里已经没有「藏 → 显」这一翻（留着是恒真的空转）。应用的起手与收尾另有
       //    「`失败/EOF` 后自有应用与 HTTP 服务都已退出而产物仍在」那几条看着；接管中退出
       //    该不该还回来归产品，不靠这一条钉。
-      await session.key('ctrl+c')
+      //
+      // 收摊照产品的方式走：空闲**按两次** `ctrl+c`（U46）——`quit()` 就是那一套
+      await session.quit()
     } finally {
       await session.close({ graceMs: 2_000 })
     }
