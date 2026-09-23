@@ -326,6 +326,237 @@ describe('⑤ 刷新：只更新信息，**不动你的焦点与草稿**', () =>
   })
 })
 
+// ══ 四 · 接入与维护（连接供应商 / 管理连接）═══════════════════════════
+
+describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
+  // 设计 · 模型与上下文「首次接入」：「选择供应商及官方区域，认证使用**独立的隐藏输入**
+  // 或既有环境变量引用，**不经对话输入、工具参数或历史**」；「确认后保存连接并获取列表」。
+
+  /** 走到「密钥那一屏」为止（挑一家那一步走完）。 */
+  function atKeyPrompt(stage: Stage, existing: readonly ModelCatalogRow[] = []): void {
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+    stage.feed([event('provider.catalog', { entries: existing })])
+    stage.press({ kind: 'enter' }) // 选定第一家（MiniMax）
+  }
+
+  const promptOf = (stage: Stage): { readonly label: string; readonly display: string } | undefined => {
+    const dock = stage.shell.getView().dock
+
+    return dock.kind === 'prompt' ? dock.prompt : undefined
+  }
+
+  test('`/model connect` 先问一次连接一览（要拿它算一个空的连接 id）', () => {
+    const stage = createStage()
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage)).toEqual([{ type: 'provider.list' }])
+  })
+
+  test('一览回来才开「挑一家」那一屏（首批注册的那两家）', () => {
+    const stage = createStage()
+    stage.type('/model connect')
+    stage.press({ kind: 'enter' })
+    stage.feed([event('provider.catalog', { entries: [] })])
+
+    expect(pickerOf(stage)?.source).toBe('vendor')
+    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['minimax', 'deepseek'])
+  })
+
+  test('选定一家 ⇒ 开**密钥那一屏**：标签说明不回显，屏上只有圆点', () => {
+    const stage = createStage()
+    atKeyPrompt(stage)
+
+    const prompt = promptOf(stage)
+    expect(prompt?.label).toContain('不回显')
+
+    stage.type('sk-secret-1234')
+    // **一个真字符都不上屏**——屏上那一串是圆点
+    expect(promptOf(stage)?.display).toBe('•'.repeat('sk-secret-1234'.length))
+    expect(JSON.stringify(stage.shell.getView())).not.toContain('sk-secret-1234')
+  })
+
+  test('回车 ⇒ 保存这条连接（供应商 ＋ 那串凭据），抽屉收起', () => {
+    const stage = createStage()
+    atKeyPrompt(stage)
+    stage.type('sk-abc')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage)).toEqual([
+      { type: 'provider.list' },
+      { type: 'provider.save', provider: 'minimax', vendor: 'minimax', apiKey: 'sk-abc' },
+    ])
+    expect(stage.shell.getView().dock.kind).toBe('input')
+  })
+
+  test('**留空 ＝ 走环境变量**（不往配置里写凭据）——那一条不带 `apiKey`', () => {
+    // 设计：「认证使用独立的隐藏输入**或既有环境变量引用**」。
+    const stage = createStage()
+    atKeyPrompt(stage)
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'provider.save', provider: 'minimax', vendor: 'minimax' })
+  })
+
+  test('**id 撞了就加序号**——同一个 id 再存一次是「改那一条」，不是新建', () => {
+    const stage = createStage()
+    atKeyPrompt(stage, [conn('minimax', { vendor: 'minimax' })])
+    stage.type('sk-abc')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'provider.save',
+      provider: 'minimax-2',
+      vendor: 'minimax',
+      apiKey: 'sk-abc',
+    })
+  })
+
+  test('`esc` 取消：不发任何命令、不留痕迹（那串凭据就此作废）', () => {
+    const stage = createStage()
+    atKeyPrompt(stage)
+    stage.type('sk-abc')
+
+    stage.press({ kind: 'escape' })
+
+    expect(sent(stage)).toEqual([{ type: 'provider.list' }])
+    expect(stage.shell.getView().dock.kind).toBe('input')
+    expect(stage.shell.getView().settled.some((row) => row.kind === 'receipt')).toBe(false)
+  })
+
+  test('保存的回话到了 ⇒ 留一行回执（有话说时）**并接着取一次模型列表**', () => {
+    // 设计：「确认后保存连接并获取列表」。
+    const stage = createStage()
+    atKeyPrompt(stage)
+    stage.type('sk-abc')
+    stage.press({ kind: 'enter' })
+    const before = sent(stage).length
+
+    stage.feed([event('provider.catalog', { entries: [], note: '接上了' })])
+
+    expect(sent(stage).slice(before)).toEqual([{ type: 'model.list' }])
+    const receipts = stage.shell.getView().settled.filter((row) => row.kind === 'receipt')
+    expect(receipts.some((row) => row.kind === 'receipt' && row.text.includes('接上了'))).toBe(true)
+  })
+
+  test('凭据**不进输入历史**（`↑` 翻不出它来）', () => {
+    const stage = createStage()
+    atKeyPrompt(stage)
+    stage.type('sk-abc')
+    stage.press({ kind: 'escape' })
+    stage.type('普通一句')
+
+    stage.press({ kind: 'up' }) // 翻历史
+
+    expect(stage.shell.getView().draft).not.toContain('sk-abc')
+  })
+})
+
+describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
+  const connected = [
+    conn('personal', { name: '个人号', vendor: 'minimax', model: 'MiniMax-M3', cache: cacheOf({ models: ['MiniMax-M3'] }) }),
+  ]
+
+  /** 走到某一条连接的**管理明细**那一屏。 */
+  function atDetail(stage: Stage): void {
+    stage.type('/model manage')
+    stage.press({ kind: 'enter' })
+    stage.feed([event('provider.catalog', { entries: connected })])
+    stage.press({ kind: 'enter' }) // 进这一条
+  }
+
+  test('`/model manage` 先问一次连接一览，答复到了开一览那一屏', () => {
+    const stage = createStage()
+    stage.type('/model manage')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage)).toEqual([{ type: 'provider.list' }])
+    stage.feed([event('provider.catalog', { entries: connected })])
+
+    expect(pickerOf(stage)?.source).toBe('provider')
+    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['个人号'])
+    // 副文案说清**是什么供应商、认证从哪儿来**（不含糊说「已设置」）
+    expect(pickerOf(stage)?.rows[0]?.meta).toContain('minimax')
+    expect(pickerOf(stage)?.rows[0]?.meta).toContain('认证')
+  })
+
+  test('进明细那一屏：四件动作都在，连接自己的几格写在说明里', () => {
+    const stage = createStage()
+    atDetail(stage)
+
+    expect(pickerOf(stage)?.source).toBe('provider-detail')
+    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['rename', 'key', 'refresh', 'remove'])
+    expect(pickerOf(stage)?.hint).toContain('连接 personal')
+  })
+
+  test('改名 ⇒ 开输入屏（现名预填），回车发 `provider.save { name }`', () => {
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'enter' }) // 第一行＝改名
+
+    const dock = stage.shell.getView().dock
+    expect(dock.kind).toBe('prompt')
+    expect(dock.kind === 'prompt' ? dock.prompt.display : '').toBe('个人号') // 预填现名
+
+    // 改成「我的号」：先把现名删掉
+    for (let at = 0; at < 3; at += 1) stage.press({ kind: 'backspace' })
+    stage.type('我的号')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'provider.save', provider: 'personal', name: '我的号' })
+  })
+
+  test('更新认证 ⇒ 密钥屏（隐藏），回车把新密钥发出去', () => {
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' }) // 第二行＝更新认证
+
+    const dock = stage.shell.getView().dock
+    expect(dock.kind === 'prompt' ? dock.prompt.label : '').toContain('不回显')
+
+    stage.type('sk-new')
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'provider.save', provider: 'personal', apiKey: 'sk-new' })
+  })
+
+  test('刷新这一条 ⇒ 点名刷那条连接', () => {
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'model.refresh', provider: 'personal' })
+  })
+
+  test('移除 ⇒ 发移除命令（引用检查归内核，拒绝时由回话说明）', () => {
+    const stage = createStage()
+    atDetail(stage)
+    for (let at = 0; at < 3; at += 1) stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({ type: 'provider.remove', provider: 'personal' })
+  })
+
+  test('移除之后的回话到了：留一行回执，而**那一屏退回一览**（明细说的那条没了）', () => {
+    const stage = createStage()
+    atDetail(stage)
+    for (let at = 0; at < 3; at += 1) stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' })
+
+    stage.feed([event('provider.catalog', { entries: [], note: '已移除 personal' })])
+
+    // **退回输入行**（不是一张空的一览）：明细的主语没了，这一屏就立不住；
+    // 而空一览是「0 行接管着输入」那号死胡同（`openPicker` 的 P0）
+    expect(stage.shell.getView().dock.kind).toBe('input')
+    const receipts = stage.shell.getView().settled.filter((row) => row.kind === 'receipt')
+    expect(receipts.some((row) => row.kind === 'receipt' && row.text.includes('已移除'))).toBe(true)
+  })
+})
+
 // ══ 四 · 屏面（宽度与高度）═════════════════════════════════════════════
 
 describe('⑥ 候选**每项一行**（设计 · 终端交互）', () => {

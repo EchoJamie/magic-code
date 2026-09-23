@@ -34,6 +34,7 @@ import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList, maxPickerLines, pickerLayout } from './picker.ts'
+import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
 
 /**
@@ -286,6 +287,18 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
     return [h(DecisionCard, { key: 'card', pending: view.dock.pending }), ...flash]
   }
 
+  if (view.dock.kind === 'prompt') {
+    return [
+      h(PromptLine, {
+        key: 'prompt',
+        prompt: view.dock.prompt,
+        columns,
+        maxLines: maxDraftLines(rows),
+      }),
+      ...flash,
+    ]
+  }
+
   if (view.dock.kind === 'picker') {
     // 候选列在**输入行之上**（与自动补全那一栏同一位置：先看候选，再看自己在打的那句话）。
     return [
@@ -411,6 +424,21 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
     // ⚠️ 账与屏同源：这里比屏上多算一行，活动区就少一行，矮窗上**真光标高一行**
     //    （见本文件 `dock` 那一段注）。
     return material + 3 + flash
+  }
+
+  if (view.dock.kind === 'prompt') {
+    // 标签那一行 ＋ 输入行那一片（与草稿同取 `draftHeight`）＋ 说明（按实际折几行算）＋ 闪一句
+    const note =
+      view.dock.prompt.note === undefined
+        ? 0
+        : wrap(view.dock.prompt.note, Math.max(8, columns - 4)).length
+
+    return (
+      1 +
+      draftHeight(view.dock.prompt.display, view.dock.prompt.caret, columns, maxDraftLines(rows)) +
+      note +
+      flash
+    )
   }
 
   if (view.dock.kind === 'picker') {

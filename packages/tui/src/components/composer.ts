@@ -93,6 +93,14 @@ export type ComposerProps = {
    * 盒子 `paddingX: 1` ⇒ 内容宽 ＝ 列数 − 2）。**必给**：不给就算不出视觉行。
    */
   readonly columns: number
+  /**
+   * **空着时那一行占位**——不给就按 `tone` 取常态那几句（见 `placeholderOf`）。
+   *
+   * 由头（U41）：这一行不只用作「交代一件事」——本地小输入（改名 / 密钥）也借它画
+   * （那一路的空态说的是「输入新名字」「贴上密钥」，不是「交代一件事、回车发送」）。
+   * 占位**不是草稿的一部分**，故由调用方一句话给它，不在这儿按用途分支。
+   */
+  readonly placeholder?: string
 }
 
 /** 占位文字（每个面孔一句实话）。 */
@@ -547,6 +555,7 @@ export function Composer({
   tone,
   maxLines = Number.POSITIVE_INFINITY,
   columns,
+  placeholder,
 }: ComposerProps): ReactElement {
   const promptColor = tone === 'idle' ? PALETTE.user : PALETTE.dim
   const box = useRef(null)
@@ -594,7 +603,7 @@ export function Composer({
               { color: row.notice ? PALETTE.faint : PALETTE.fg },
               row.text === ''
                 ? draft === '' && at === 0
-                  ? placeholderOf(tone)
+                  ? (placeholder ?? placeholderOf(tone))
                   : ' '
                 : refPieces(row.text, row.spans),
             ),

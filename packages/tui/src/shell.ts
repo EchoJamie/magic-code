@@ -15,6 +15,7 @@
  * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
  */
 
+import { apiKeyEnvVarOf } from '@magic/contracts'
 import type {
   Command,
   ControlTransport,
@@ -54,6 +55,11 @@ import {
   sessionRows,
   skillHint,
   skillRows,
+  authLabelOf,
+  cacheLabelOf,
+  closePrompt,
+  manageMetaOf,
+  openPrompt,
   picked,
   rebuild,
   reduce,
@@ -76,9 +82,9 @@ import {
   wire,
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
-import type { ShellView, WindowTable } from './view.ts'
-import { leftSpan } from './components/composer.ts'
-import { usageLabel } from './components/lines.ts'
+import type { PromptState, ShellView, WindowTable } from './view.ts'
+import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
+import { isPrintable, usageLabel } from './components/lines.ts'
 
 // 建壳入参里用到的形态在视图那层（`view.ts`）——转出去，好让拿 `ShellOptions` 的人
 // 一处就取全（`run.ts` 的 `RunTuiOptions` 正是这么取的）
@@ -159,7 +165,48 @@ function statusLines(view: ShellView): readonly string[] {
 const STATUS_TITLE = '此刻'
 
 /** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` · `/skills` 各一种。 */
-type PendingPicker = 'session' | 'model' | 'grants' | 'skills' | 'mcp'
+type PendingPicker = 'session' | 'model' | 'grants' | 'skills' | 'mcp' | 'connect' | 'manage'
+
+/**
+ * **内置的供应商适配**（首批那两家）——接入流程里供人挑的那两个。
+ *
+ * ⚠️ **这一格是临时的，理由要看清**：契约里目前**没有**「内置了哪些适配、各自支持哪些
+ * 官方区域」的读面（`provider.list` 只列**已经接上的**连接）。而设计 · 命令行与配置把首批
+ * 写死成「注册 `minimax`、`deepseek`」，接入流程又必须让人在这两家之间挑一个。
+ *
+ * 三条兜底，使这一格**不会静默出错**：
+ * ① `provider.save` 收到认不出的 `vendor` **会拒绝并说明**（契约：「认不出就不猜」）
+ *    ——摆在这儿而内核不认的选项，落不进配置；
+ * ② **区域那一步没做**：`region` 的合法值同样没有读面，而「取值别猜」是项目规矩
+ *    （第一批两家的区域/地址归适配），故接的是**适配自带的官方默认地址**，这一条写进回报；
+ * ③ 内核补上那个读面之后，这一格**整个删掉**——改读答复，不在这边留第二份。
+ */
+const VENDORS: readonly { readonly id: string; readonly label: string }[] = [
+  { id: 'minimax', label: 'MiniMax' },
+  { id: 'deepseek', label: 'DeepSeek' },
+]
+
+/**
+ * 一次**本地小输入**（U41）——问一件小事、收一行字（改名 / 密钥那一类）。
+ *
+ * 与草稿那份输入的分野（见 `Dock` 里 `prompt` 那一支）：那一路提交出去的是**交代**，
+ * 这一路是**一次设置**——不进记录、不给模型看、不进输入历史。
+ */
+type Ask = {
+  /** 问的是什么——一行标签（密钥那一路会自动补上「输入不回显」）。 */
+  readonly label: string
+  /** 隐藏输入（密钥）：屏上只见圆点，真值只在壳里。 */
+  readonly secret: boolean
+  /** 初始值（改名时给现名；密钥一律空串）。 */
+  readonly value: string
+  readonly caret: number
+  /** 空着时那一行的占位（一句实话）。 */
+  readonly placeholder: string
+  /** 底下那行补充说明（可省）。 */
+  readonly note?: string
+  /** 回车时**要发什么**——`null` ＝ 什么都不发（只是收起来）。 */
+  readonly submit: (value: string) => Command | null
+}
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
 export type ShellOptions = {
@@ -382,6 +429,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /** 等回话的选择器意图（`/session` / `/model` / `/grants` / `/skills` 各问一次）。 */
   let waiting: PendingPicker | null = null
+
+  /**
+   * **一次等着答复的动作意图**（U41）——`provider.save` 之后的回话到了要接着做的那件事
+   * （「确认后保存连接并获取列表」：保存完顺手去取一次模型列表）。
+   *
+   * 为什么需要它：契约把「保存 / 移除的结果」定成**回话**（`provider.catalog` 带 `note`），
+   * 而不是命令上的返回值——而外壳要按**这一次动作**决定下一步。认不回是哪一次就不接。
+   */
+  let awaiting: 'connect' | 'edit' | null = null
+
+  /**
+   * **管理明细正说着哪一条连接**（U41）——空串＝没在明细那一屏。
+   *
+   * 由 `submit` 进那一屏时写下、由重铺那一处读它：明细是「**某一条连接**的一屏」，
+   * 而这一位就是「哪一条」——同 `/mcp <名字>` 的 `mcpServer`（不靠行内容反推）。
+   */
+  let manageAt = ''
+
+  /**
+   * **正在问的一件小事**（U41）——改名 / 密钥那一类，`null` ＝ 没在问。
+   *
+   * ⚠️ **值存在这里、不在视图里**（见 `PromptState` 的注）：密钥进不了视图对象，
+   * 也就进不了渲染、取帧与快照；`submit` 那一格是外壳自己按用途给的（一次设置要发什么命令）。
+   */
+  let asking: Ask | null = null
 
   /**
    * `/mcp <名字>` 的**预置那一台**——只在「等外部服务器一屏」那一趟有效（答复到了交给抽屉）。
@@ -673,7 +745,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         waiting = null
         openModelPicker(event.data.note ?? '')
       } else {
+        // 两处都试：各自只认自己那一扇开着（刷新模型那一屏 / 管理那两屏上刚发起的「刷新这一条」）
         refreshModelPicker(event.data.note ?? '')
+        refreshManagePicker()
+      }
+    }
+
+    // 连接一览 / 保存回话回来了（U41）——三路分得开，按**在等什么**判（不认字面）：
+    // ① 正等「接入」的第一步 ⇒ 开「挑一家」那一屏；
+    // ② 正等「管理」 ⇒ 开连接一览那一屏；
+    // ③ 都不是 ⇒ 这是**保存 / 移除之后的回话**：留一行回执（有话说时）、照新一览重铺，
+    //    而接入那一路还接着办一件收尾的事——**保存成功就去取一次模型列表**
+    //    （设计：「确认后保存连接并获取列表」）。
+    if (event.kind === 'provider.catalog') {
+      if (waiting === 'connect') {
+        waiting = null
+        openVendorPicker()
+      } else if (waiting === 'manage') {
+        waiting = null
+        openManagePicker(event.data.note ?? '')
+      } else {
+        if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
+        refreshManagePicker()
+        if (awaiting === 'connect') {
+          awaiting = null
+          waiting = 'model'
+          send({ type: 'model.list' })
+        }
       }
     }
 
@@ -900,6 +998,366 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * `/model`——**条目表不在事件里**（契约没有读侧），故列表只有「见过的 ＋ 当前那条」，
    * 而内核回话里的缘由（它本就列出已注册的名字）作列表下方的说明 ✓ 不解析、只照贴。
    */
+  /**
+   * 管理明细上那四件动作（U41）。
+   *
+   * 三处分寸：
+   * - **改名 / 更新认证** 都借本地小输入那一屏（`openAsk`）——一件**一次设置**，
+   *   不走草稿那条路（那条是给模型的交代）；
+   * - **留空的分寸各不相同**（故各写各的说明）：新名字留空＝**取消**（空名字不是一个名字）；
+   *   密钥留空＝**清除**（设计明文：「回到环境变量回退」）；
+   * - **移除只发一条命令**：引用检查归内核（设计：「移除前列出默认/角色/活跃使用引用；
+   *   有引用先替换或取消，不静默级联删除」）——它拒绝时把缘由写进回话的 `note`，
+   *   外壳照印，不在这儿预判。
+   */
+  const manageAction = (value: string): void => {
+    const entry = view.models.find((one) => one.provider === manageAt)
+    if (entry === undefined) return
+
+    if (value === 'rename') {
+      const now = entry.name ?? entry.provider
+      openAsk({
+        label: '新名字',
+        secret: false,
+        value: now,
+        caret: now.length,
+        placeholder: '连接名',
+        note: `连接 id 仍是「${entry.provider}」——改名不动引用`,
+        submit: (name) => {
+          const trimmed = name.trim()
+          awaiting = 'edit' // 回话到了重铺这一屏（改名不动模型列表，故不去拉它）
+
+          return trimmed === '' ? null : { type: 'provider.save', provider: entry.provider, name: trimmed }
+        },
+      })
+      return
+    }
+
+    if (value === 'key') {
+      openAsk({
+        label: '密钥',
+        secret: true,
+        value: '',
+        caret: 0,
+        placeholder: '粘贴或输入新密钥',
+        note: '回车＝换掉 · 留空＝清除（回到环境变量回退）',
+        submit: (key) => {
+          awaiting = 'edit'
+
+          return { type: 'provider.save', provider: entry.provider, apiKey: key }
+        },
+      })
+      return
+    }
+
+    if (value === 'refresh') {
+      send({ type: 'model.refresh', provider: entry.provider })
+      return
+    }
+
+    if (value === 'remove') {
+      send({ type: 'provider.remove', provider: entry.provider })
+    }
+  }
+
+  // —— 本地小输入（U41）：改名 / 密钥那一类 ——
+
+  /** `/model manage` 的第一步：**连接一览**（同一份行，取材就是 `view.models`）。 */
+  const openManagePicker = (note: string): void => {
+    const rows = view.models.map((entry) => ({
+      label: entry.name ?? entry.provider,
+      meta: manageMetaOf(entry),
+      current: false,
+      value: entry.provider,
+      oneLine: true,
+    }))
+
+    const lines = [
+      rows.length === 0 ? '还没有接上任何供应商——/model connect 接一条' : '回车＝管理这一条',
+      ...(note === '' ? [] : [note]),
+    ]
+
+    commit(openPicker(view, { source: 'provider', selected: 0, rows, hint: lines.join('\n') }))
+  }
+
+  /**
+   * 管理第二步：**这一条能做那几件**（改名 / 更新认证 / 刷新 / 移除）。
+   *
+   * 连接自己的那几格（id · 供应商 · 区域 · 地址 · 模型 · 缓存）写在**下方那行说明**里——
+   * 它们是**查阅**用的，不占候选格（一屏上的每一格都得影响用户的动作）。
+   */
+  const openManageDetail = (who: string): void => {
+    const entry = view.models.find((one) => one.provider === who)
+    if (entry === undefined) return // 一览里没有这一条＝不该走到这儿
+
+    manageAt = who
+
+    const lines = [
+      `连接 ${entry.provider}`,
+      `模型 ${entry.model ?? '还没选过'} · ${cacheLabelOf(entry)}`,
+      ...(entry.baseURL === undefined ? [] : [`地址 ${entry.baseURL}`]),
+    ]
+
+    commit(
+      openPicker(view, {
+        source: 'provider-detail',
+        selected: 0,
+        rows: [
+          {
+            label: '改名',
+            meta: `现在是「${entry.name ?? entry.provider}」`,
+            current: false,
+            value: 'rename',
+            oneLine: true,
+          },
+          { label: '更新认证', meta: authLabelOf(entry), current: false, value: 'key', oneLine: true },
+          {
+            label: '刷新这一条',
+            meta: cacheLabelOf(entry),
+            current: false,
+            value: 'refresh',
+            oneLine: true,
+          },
+          {
+            label: '移除这条连接',
+            meta: '已发生的记录不随它删除',
+            current: false,
+            value: 'remove',
+            oneLine: true,
+          },
+        ],
+        hint: lines.join('\n'),
+      }),
+    )
+  }
+
+  /**
+   * 保存 / 移除 / 刷新之后**照新的读面重铺**（抽屉还开着才动它，收起时就只留那一行回执）。
+   *
+   * 重铺哪一屏由**当下开着的那一扇**说了算（加上 `manageAt` 那位：管理明细是**某一条连接**的
+   * 一屏）——不靠行内容反推（那要靠字面比较，改一句话就静默失配）。
+   *
+   * 连接**没了**（刚移除掉）就退回一览：明细说的是那一条，它不在了，这一屏就立不住。
+   */
+  const refreshManagePicker = (): void => {
+    if (view.dock.kind !== 'picker') return
+
+    if (view.dock.picker.source === 'provider') {
+      openManagePicker('')
+      return
+    }
+
+    if (view.dock.picker.source === 'provider-detail') {
+      if (view.models.some((one) => one.provider === manageAt)) {
+        openManageDetail(manageAt)
+        return
+      }
+
+      // 这一条没了（刚移除掉）⇒ **把这一屏收起**，退回输入行——明细说的是那一条，
+      // 它不在了，这一屏就没有主语了。⚠️ 不改成「开一张空的一览」：0 行的抽屉接管着
+      // 输入却不给东西可点（打不了字、没得选，看着就是卡死——`openPicker` 那条 P0 的由来）
+      commit(closePicker(view))
+    }
+  }
+
+  // —— 本地小输入（U41）：改名 / 密钥那一类 ——
+  //
+  // 这一小段是**一切本地小输入的共用出口**：`openAsk` 接管输入行、`askKey` 认那几个编辑键、
+  // 回车交给问的人那一格 `submit`（一次设置要发什么命令）、`esc` 收回**不留痕迹**。
+  // 密钥那一路另有一条硬规矩：**值只在壳里**（视图拿到的是圆点，见 `PromptState` 的注）。
+
+  /** 一次小输入要画的几格——密钥那一路在这儿换成圆点（真值不出去）。 */
+  const promptViewOf = (ask: Ask): PromptState => {
+    if (!ask.secret) {
+      return {
+        label: ask.label,
+        display: ask.value,
+        caret: ask.caret,
+        placeholder: ask.placeholder,
+        ...(ask.note === undefined ? {} : { note: ask.note }),
+      }
+    }
+
+    return {
+      // 「输入不回显」是**这一屏的事实**，写在标签上——用户得知道自己打的字为什么看不见
+      label: `${ask.label}（输入不回显）`,
+      display: '•'.repeat([...ask.value].length),
+      // 圆点一字符一格：插入点按**码点**数，与画出来的那一串同尺
+      caret: [...ask.value.slice(0, ask.caret)].length,
+      placeholder: ask.placeholder,
+      ...(ask.note === undefined ? {} : { note: ask.note }),
+    }
+  }
+
+  /** 视图里那一份（派生：值在 `asking`，屏上那一份按它算出来）。 */
+  const withAskView = (ask: Ask): ShellView => ({
+    ...view,
+    dock: { kind: 'prompt', prompt: promptViewOf(ask) },
+  })
+
+  const openAsk = (ask: Ask): void => {
+    asking = ask
+    commit(openPrompt(view, promptViewOf(ask)))
+  }
+
+  const closeAsk = (): void => {
+    asking = null
+    commit(closePrompt(view))
+  }
+
+  /** 编辑当前这一份小输入（值一变就重画——视图那一份是**派生**的，不另存）。 */
+  const editAsk = (value: string, caret: number): void => {
+    const held = asking
+    if (held === null) return
+
+    asking = { ...held, value, caret: Math.max(0, Math.min(caret, value.length)) }
+    commit(withAskView(asking))
+  }
+
+  /**
+   * 按下回车——**交回给问的人**：`submit` 给一条命令就发出去，给 `null` 就只是收起来。
+   *
+   * ⚠️ **先落地、后发命令**（那条老次序）：进程内传输是同步直连的，反过来的话这次
+   * `commit` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
+   */
+  const submitAsk = (): ShellEffect => {
+    const held = asking
+    if (held === null) return NONE
+
+    const command = held.submit(held.value)
+    asking = null
+    commit(closePrompt(view))
+    if (command !== null) send(command)
+
+    return NONE
+  }
+
+  /** 小输入那几键——只认**单行编辑**该认的那些（没有换行、没有历史、没有候选）。 */
+  const askKey = (input: ShellKey): ShellEffect => {
+    const held = asking
+    if (held === null) return NONE
+
+    switch (input.kind) {
+      case 'char':
+        if (!isPrintable(input.char)) return NONE
+        editAsk(
+          held.value.slice(0, held.caret) + input.char + held.value.slice(held.caret),
+          held.caret + input.char.length,
+        )
+        return NONE
+
+      case 'backspace': {
+        const [from, to] = leftSpan(held.value, held.caret)
+        if (from === to) return NONE
+        editAsk(held.value.slice(0, from) + held.value.slice(to), from)
+        return NONE
+      }
+
+      case 'delete': {
+        const [from, to] = rightSpan(held.value, held.caret)
+        if (from === to) return NONE
+        editAsk(held.value.slice(0, from) + held.value.slice(to), from)
+        return NONE
+      }
+
+      case 'left':
+        editAsk(held.value, stepLeft(held.value, held.caret))
+        return NONE
+
+      case 'right':
+        editAsk(held.value, stepRight(held.value, held.caret))
+        return NONE
+
+      case 'paste': {
+        // **单行**：控制字符（含换行、Tab）不收——粘一串**带尾换行**的密钥是常事，
+        // 而那一个换行落进值里就是一条查不出来的错（屏上是圆点，看不出多了一格）
+        const text = [...input.text].filter((char) => isPrintable(char)).join('')
+        if (text === '') return NONE
+        editAsk(
+          held.value.slice(0, held.caret) + text + held.value.slice(held.caret),
+          held.caret + text.length,
+        )
+        return NONE
+      }
+
+      case 'escape':
+        closeAsk()
+        return NONE
+
+      case 'enter':
+        return submitAsk()
+
+      // 上下键 / Tab / 换行在这一屏没有活——**什么都不做**（不当正文，也不装作有别的用法）
+      default:
+        return NONE
+    }
+  }
+
+  // —— 接入供应商（U41 · `/model connect`）——
+
+  /**
+   * **取一个还没被占的连接 id**——拿供应商名打底，撞了就加序号。
+   *
+   * 为什么要这一步：契约的 `provider.save`「在**已有 id** 上给 ＝ 改那一条」——同一个 id
+   * 再存一次是**改写**，不是新建。故接新连接之前先算一个空的（一览在手上：`view.models`）。
+   */
+  const freeIdOf = (vendor: string): string => {
+    const taken = new Set(view.models.map((entry) => entry.provider))
+    if (!taken.has(vendor)) return vendor
+
+    for (let at = 2; ; at += 1) {
+      const next = `${vendor}-${at}`
+      if (!taken.has(next)) return next
+    }
+  }
+
+  /** 接入第一步：**挑一家**（内置适配那两家）。 */
+  const openVendorPicker = (): void => {
+    commit(
+      openPicker(view, {
+        source: 'vendor',
+        selected: 0,
+        rows: VENDORS.map((one) => ({
+          label: one.label,
+          meta: one.id,
+          current: false,
+          value: one.id,
+          oneLine: true,
+        })),
+        hint: '接上之后就能从它的接口取模型列表——不用逐个型号登记',
+      }),
+    )
+  }
+
+  /**
+   * 接入第二步：**问密钥**（隐藏输入）。
+   *
+   * 三条分寸都在这一屏上：
+   * - **不回显**（`secret`）——屏上只见圆点，值只在壳里；
+   * - **可以留空**：设计「认证使用独立的隐藏输入**或既有环境变量引用**」——留空＝不往配置里
+   *   写凭据，走 `MAGIC_<连接 id>_API_KEY` 回退（那一行的说明把这句写出来，指到具体那个名字）；
+   * - **保存之后顺手取一次列表**（设计：「确认后保存连接并获取列表」）——见 `awaiting`。
+   */
+  const askKeyFor = (vendor: string): void => {
+    const id = freeIdOf(vendor)
+
+    openAsk({
+      label: '密钥',
+      secret: true,
+      value: '',
+      caret: 0,
+      placeholder: '粘贴或输入密钥',
+      note: `回车＝保存这条连接 · 留空＝改用环境变量 ${apiKeyEnvVarOf(id)}`,
+      submit: (value) => {
+        awaiting = 'connect'
+
+        return value === ''
+          ? { type: 'provider.save', provider: id, vendor }
+          : { type: 'provider.save', provider: id, vendor, apiKey: value }
+      },
+    })
+  }
+
   const openModelPicker = (note: string): void => {
     // **取材＝连接一览 ＋ 各自的缓存读数**（U41）——不再是「配置条目」（那正是本项要拆掉的
     // 约束：型号得逐个登记才列得出来）。铺行的规矩全在 `modelRows` 一处（行主文案＝模型名 ·
@@ -1295,6 +1753,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE
 
+    // **本地小输入开着的时候，键归它**（U41）——但 `ctrl+c` 是全局的（空闲＝退出、
+    // 工作中＝中断），故它照旧落下去走 `exitOrInterrupt`：一条本地小输入不该把退出挡住。
+    if (view.dock.kind === 'prompt' && input.kind !== 'ctrl+c') return askKey(input)
+
     {
     }
 
@@ -1494,6 +1956,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
     if (!ready) return bootRefusal()
     if (view.dock.kind === 'decision') return refuse('回车')
+    // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
+    if (view.dock.kind === 'prompt') return submitAsk()
 
     if (view.dock.kind === 'picker') {
       const row = picked(view)
@@ -1539,6 +2003,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 外部服务器那一屏（U39）：**纯读**——回车不改变任何东西（重连是另一条命令，
       // 明写 `/mcp reconnect <名字>`）。留着这一支是**必须**的：不然它会落到下面的换模型上。
       if (view.dock.picker.source === 'mcp') return NONE
+
+      // 连接一览（U41 · `/model manage` 的第一步）：选定＝**进这一条的管理明细**
+      if (view.dock.picker.source === 'provider') {
+        openManageDetail(row.value)
+        return NONE
+      }
+
+      // 管理明细那一屏：四件动作各走各的（★ 都已由内核的**回话**收尾——见 `onEvent`）
+      if (view.dock.picker.source === 'provider-detail') {
+        manageAction(row.value)
+        return NONE
+      }
+
+      // 供应商那一屏（U41 · `/model connect` 的第一步）：选定＝**接着问密钥**
+      // （隐藏输入那一屏由 `askKeyFor` 开——同位置同开合，接管输入行）
+      if (view.dock.picker.source === 'vendor') {
+        askKeyFor(row.value)
+        return NONE
+      }
 
       // 模型那一屏（U41）：选定＝**切到这条连接的这个精确模型**（两件一起给——
       // 合法的两条连接可以有同名模型，只报模型名认不出是谁）。
@@ -1773,6 +2256,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 外壳据它铺选择器（连接 ＋ 各自缓存里的模型）并把 ④ 的分母定下来。
       // ⚠️ 原先是发空参的 `model.switch`、拿**失败的缘由**当列表说明——那不是读面
       //（以「换失败了」作答，还白落一笔 `model.switched`）。
+      // **接入**：先问一次连接一览（要拿它算一个还没被占的连接 id——见 `freeIdOf`），
+      // 答复到了再开「挑一家」那一屏。
+      if (arg === 'connect') {
+        waiting = 'connect'
+        return only(cleared, { type: 'provider.list' })
+      }
+
+      // **管理**：先问一次连接一览，答复到了开「一览」那一屏（同一份行，两个读面共用）
+      if (arg === 'manage') {
+        waiting = 'manage'
+        return only(cleared, { type: 'provider.list' })
+      }
+
       if (arg === '') {
         waiting = 'model'
         return only(cleared, { type: 'model.list' })
@@ -1782,7 +2278,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // ⚠️ U41 起**取消了 `/model <条目>` 那条直达**：列表的取材从「配置条目」换成了
       // 「模型」——同一个词现在既可能是连接也可能是模型，按字面猜一个再切过去，
       // 猜错就是「换到了另一个模型上」而用户以为只是敲了个名字。
-      return only(appendReceipt(cleared, `认得的用法：/model · /model refresh [连接]`))
+      return only(appendReceipt(cleared, `认得的用法：/model · /model refresh [连接] · /model connect · /model manage`))
     }
 
     // `/mcp`（U39）——**纯查询型**：记录区什么都不进，只在左下开抽屉。

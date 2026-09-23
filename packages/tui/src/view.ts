@@ -32,7 +32,7 @@ import type {
   UsedSkill,
   UsedSkillEntry,
 } from '@magic/contracts'
-import { mcpToolLabel, parseMcpToolName, sanitizeForDisplay } from '@magic/contracts'
+import { apiKeyEnvVarOf, mcpToolLabel, parseMcpToolName, sanitizeForDisplay } from '@magic/contracts'
 // 草稿里那几处引用的形态（外壳侧）——纯编辑规则在 `./components/inline.ts`
 import type { DraftRef } from './components/inline.ts'
 
@@ -254,7 +254,16 @@ export type Picker = {
    * 取材的来路。五处各一门：`/session` 读目录、`/model` 读条目表、`/grants` 读授权名录
    * （U22 · B13）、`/skills` 读技能目录（U33）、**`@` 读路径候选**（U36）——**同位置同开合**。
    */
-  readonly source: 'session' | 'model' | 'grants' | 'skills' | 'paths' | 'mcp'
+  readonly source:
+    | 'session'
+    | 'model'
+    | 'grants'
+    | 'skills'
+    | 'paths'
+    | 'mcp'
+    | 'vendor'
+    | 'provider'
+    | 'provider-detail'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -282,11 +291,39 @@ export type Picker = {
   readonly anchor?: { readonly start: number; readonly end: number }
 }
 
+/**
+ * **一次本地小输入**要画的那几格（U41）——改名 / 密钥走的都是这一形。
+ *
+ * ⚠️ **密钥那一路，`display` 是圆点**：真值只在**外壳手上**那一份（`Shell` 的 `asking`），
+ * 不进视图对象——视图是要被渲染、被取景、被快照的东西，凭据没有理由出现在里面
+ * （设计：「配置写入 600，界面隐藏输入不进入普通输入历史」）。
+ */
+export type PromptState = {
+  /** 问的是什么——一行标签（如「新名字」「密钥（输入不回显）」）。 */
+  readonly label: string
+  /** 输入行**要画的那一串**（密钥＝圆点；不是真值）。 */
+  readonly display: string
+  /** 插入点在这串里的下标（与 `display` 同尺——密钥也一字符一格）。 */
+  readonly caret: number
+  /** 空着时那一行的占位（一句实话：要输入什么）。 */
+  readonly placeholder: string
+  /** 底下那行补充说明（可省）——如「留空＝不动已存的那把」。 */
+  readonly note?: string
+}
+
 /** 左下交互区——**四种用法同一位置、同一开合**。 */
 export type Dock =
   | { readonly kind: 'input' }
   | { readonly kind: 'decision'; readonly pending: PendingDecision }
   | { readonly kind: 'picker'; readonly picker: Picker }
+  /**
+   * **本地小输入**（U41）——接管输入行，问一件小事（改名 / 密钥）。
+   *
+   * 与 `input` 的分野：那一路提交出去的是**交代**（`input.submit`，进记录、进模型），
+   * 这一路提交出去的是**一次设置**（`provider.save` 一类），**不进记录、不给模型看**。
+   * 故它不是「草稿的另一种面孔」——是一块**另起的小界面**（同 `decision` / `picker` 一样接管）。
+   */
+  | { readonly kind: 'prompt'; readonly prompt: PromptState }
 
 // ══ slash 候选（D12）═════════════════════════════════════════════════
 
@@ -471,6 +508,13 @@ export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
 export const HINT_PICKER_READ = '↑↓ 选 · esc 收起'
 /** 自动补全右位提示（原型 · 场景 11）。 */
 export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
+/**
+ * 本地小输入的右位提示（U41）——这一屏能做的就两件：回车交出去、`esc` 收回。
+ *
+ * ⚠️ 与上面那几条**分开一句**是有由头的：那几句里都有「↑↓ 选」，而这一屏没有「选」
+ * 这回事（它就是一行字）——照抄一句带「↑↓」的提示，就是教用户按一个没有用的键。
+ */
+export const HINT_PROMPT = '回车 确定 · esc 取消'
 
 export type ShellStatus = {
   readonly state: StatusState
@@ -1727,6 +1771,38 @@ function tailOf(
   return parts.length === 0 ? undefined : parts
 }
 
+/** 管理面那一行连接长什么样（副文案）——**只报手上有的事实**，没有的不编。 */
+export function manageMetaOf(entry: ModelCatalogRow): string {
+  const parts = [entry.vendor ?? '兼容接入']
+  if (entry.region !== undefined) parts.push(entry.region)
+  parts.push(authLabelOf(entry))
+
+  return parts.join(' · ')
+}
+
+/**
+ * 认证来处那一句——**说清是哪儿来的**，不含糊说「已设置」（设计 · 维护连接）。
+ * 两处都没有（这条连接还没有可用认证）＝**如实说没有**。
+ */
+export function authLabelOf(entry: ModelCatalogRow): string {
+  if (entry.keySource === 'config') return '认证：配置文件'
+  if (entry.keySource === 'env') return `认证：环境变量 ${apiKeyEnvVarOf(entry.provider)}`
+
+  return '认证：还没有'
+}
+
+/** 缓存那半句——几个模型 / 什么时候取的 /（有则）这次没刷成。 */
+export function cacheLabelOf(entry: ModelCatalogRow): string {
+  const cache = entry.cache
+  if (cache?.snapshot === undefined) return cache?.refreshing === true ? '正在取' : '还没取过'
+
+  const count = `${cache.snapshot.models.length} 个模型`
+  const when = dayLabel(cache.snapshot.fetchedAt)
+
+  return cache.failure === undefined ? `${count} · ${when} 取的` : `${count} · ${when} 取的（上次没刷成）`
+}
+
+
 /**
  * `/model` 列表下方那行说明——**只说有事要说的那几件**。
  *
@@ -2304,6 +2380,18 @@ export function movePicker(view: ShellView, delta: number): ShellView {
 
   const selected = (picker.selected + delta + count) % count
   return { ...view, dock: { kind: 'picker', picker: { ...picker, selected } } }
+}
+
+/** 开一次本地小输入——**接管输入行**（同选择器与裁决卡：同一位置、同一开合）。 */
+export function openPrompt(view: ShellView, prompt: PromptState): ShellView {
+  return patchStatus({ ...view, dock: { kind: 'prompt', prompt } }, { hint: HINT_PROMPT })
+}
+
+/** 收起本地小输入——`esc` **不留痕迹**（无回执、不发命令）。 */
+export function closePrompt(view: ShellView): ShellView {
+  return view.dock.kind === 'prompt'
+    ? patchStatus({ ...view, dock: { kind: 'input' } }, { hint: HINT_IDLE })
+    : view
 }
 
 /** 收起选择器——`esc` **不留痕迹**（无回执）。 */
