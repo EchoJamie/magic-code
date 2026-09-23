@@ -124,6 +124,18 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
         }
       })(),
 
+    // 倒序、有界读（U34）——语义照真实现（`before` 不含 · 按记录序交回 · 一次封顶）：
+    // 桩在「哪些条目算数」上不发一言（那是调用方的判据），只答「之前最近的 N 条是哪几条」
+    readEntriesBack: (
+      _sessionId: SessionId,
+      before: RecordId | undefined,
+      limit: number,
+    ): Promise<readonly Entry[]> => {
+      const ceiling = before ?? Number.MAX_SAFE_INTEGER
+      const picked = entries.filter((entry) => entry.id < ceiling).slice(-Math.max(limit, 0))
+      return Promise.resolve(limit <= 0 ? [] : picked)
+    },
+
     readEvents: (sessionId: SessionId): AsyncIterable<KernelEvent> =>
       (async function* (): AsyncIterable<KernelEvent> {
         for (const event of events) {

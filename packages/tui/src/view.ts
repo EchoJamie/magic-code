@@ -817,6 +817,13 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'input.settled':
       return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
 
+    // 计划变更（U34）——**占位**：本行只为让判别联合在这一版里仍然穷尽
+    // （`default` 是 `assertNever`，新 kind 不加这一格整仓编译不过）。
+    // 计划清单的投影（落进 `ShellView`、`Ctrl T` 收起/展开、动态区布局）归界面线
+    // （`feat-plan-view`）：他们接上契约之后**替换本行**，不另立第二种事件来源。
+    case 'plan.changed':
+      return view
+
     case 'model.error':
       return patchStatus(
         appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`),

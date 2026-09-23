@@ -22,7 +22,17 @@
  */
 
 import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
-import type { Content, Entry, EntryRange, NewEntry, SessionSummary, UsedSkill } from './entries.ts'
+import type {
+  Content,
+  Entry,
+  EntryKind,
+  EntryRange,
+  NewEntry,
+  PlanNote,
+  PlanSnapshot,
+  SessionSummary,
+  UsedSkill,
+} from './entries.ts'
 // MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
 import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
@@ -144,6 +154,34 @@ export interface RecordsService {
   appendEntry(entry: NewEntry): RecordId
   appendEvent(event: KernelEvent): void
   readEntries(sessionId: SessionId, range?: EntryRange): AsyncIterable<Entry>
+  /**
+   * **倒序、有界读**（U34）——取 `before` **之前**（不含它）最近的至多 `limit` 条，
+   * 按**记录序**（id 升序）交回。
+   *
+   * ## 为什么另开一条口子，而不让调用方拿 `readEntries` 自己倒着扫
+   *
+   * 两个真用例都是「从后往前、找到就停」，而它们要的东西在**记录序的另一端**：
+   * - **当前计划**——最近一条成功且含 `plan` 的 `tool-result`（每轮装配都要问一次）；
+   * - **回查历史**——活动窗口之前最近的一页（每页条数有上限）。
+   * 用顺序读跑这两件事＝每次都把整条会话读一遍（长会话下正是最贵的那一种）。
+   *
+   * ## 分工与限度
+   *
+   * 判据（「哪些条目算数」——计划字段、窗口边界）**不在本域**：本口子只答
+   * 「`before` 之前最近的 N 条是什么」，与 `readEntries` 同一条纪律（记录域**说不判**）。
+   * `before` 缺席 ＝ 从**最新一条**起往回取。
+   *
+   * `limit` 由调用方给（有界），本域不另设上限；返回不足 `limit` 条 ＝ 到头了
+   * （没有更多更早的记录）。
+   *
+   * ⚠️ 与 `readEntries` 一样**按会话分束**：`before` 取自别的会话不会串线
+   * （那一侧本来就被会话条件滤掉）。
+   */
+  readEntriesBack(
+    sessionId: SessionId,
+    before: RecordId | undefined,
+    limit: number,
+  ): Promise<readonly Entry[]>
   /** 恢复 / 审计。 */
   readEvents(sessionId: SessionId): AsyncIterable<KernelEvent>
   /**
@@ -726,6 +764,84 @@ export type PathCandidate = {
   readonly external: boolean
 }
 
+// —— 计划与历史（U34）——
+
+/**
+ * **回查历史的定位**（`history_read` 的参数面）——**两种定位不混用**：
+ * - `before` —— 向前翻页的游标（取它**之前**的一页）；
+ * - `entry` ＋ `offset` —— 一条已知记录（`offset` 只用于**该条长内容的续读**）。
+ *
+ * 两者同时给＝拒绝（见 `HistoryPage.note` 那条：不静默挑一个）。
+ * ⚠️ **不接受会话 id**：三个辅助工具一律**绑定当前会话**（设计明写：不让模型任意指定
+ * 其他会话、不接受数据库路径或任意 blob 路径——参数面里根本没有那些格子）。
+ */
+export type HistoryQuery = {
+  readonly before?: RecordId
+  readonly entry?: RecordId
+  readonly offset?: number
+}
+
+/**
+ * **一条回查到的记录**——**留住 id 与类别，内容按上限节选**。
+ *
+ * `truncated` ＋ `nextOffset` 是「节选」这对词的两半：前者说**这里不是全文**，
+ * 后者给出**接着读的那一格**（读的人据此再要一次，而不是把半截当全份下结论）。
+ * 二者**成对出现**（截了就一定给得了续读位置；没截就都不给）。
+ *
+ * ⚠️ **不许把节选伪报成全文**（工单明写）：`text` 只到上限为止，超出部分由上面那两位说话。
+ */
+export type HistoryEntry = {
+  readonly id: RecordId
+  readonly kind: EntryKind
+  readonly text: string
+  readonly truncated?: true
+  readonly nextOffset?: number
+}
+
+/**
+ * **一页有界记录**（`history_read` 的产物）——片段 ＋ 继续往前的位置。
+ *
+ * `nextBefore` ＝ **最早已返回那条的 id**：把它原样交回 `before` 就是下一页
+ * （读的是它**之前**的记录，故**不会跳过**本页因篇幅未展开的那几条——那几条比它更早）。
+ * 到会话开头了就不给（没有更早的了）。
+ *
+ * `note` —— 一句话说明（为什么一条都没有 / 定位用得不成立）；不给＝片段自明。
+ */
+export type HistoryPage = {
+  readonly entries: readonly HistoryEntry[]
+  readonly nextBefore?: RecordId
+  readonly note?: string
+}
+
+/**
+ * **模型侧的笔记与历史读取面**（U34）——对话域实现、装配按**会话**绑定后注入工具域。
+ *
+ * ## 为什么在对话域而不在工具域
+ *
+ * 两件都有「**当前上下文到哪儿了**」这一层判断，而那是对话域的专利：
+ * - `readPlan` —— 当前计划 ＝ 最近一条成功且含 `plan` 的工具结果（**记录即真源**）；
+ * - `readHistory` —— 缺位置时**从活动窗口之前**读起（窗口边界＝摘要 ＋ 近段，
+ *   那条判据在 `context.ts` 的 `planContext`，别处再算一遍就是第二套边界）。
+ *
+ * 故工具域只拿这一对**只读回调**：它不认识记录、不认识上下文，也不经 shell 访问数据库
+ * （工具域**不碰文件系统**——那条纪律照旧）。
+ *
+ * ## 两条边界（都在实现那一侧卡死，不押调用方自觉）
+ *
+ * - **绑定当前会话**：两个方法都不收会话参数——模型给不出第二个会话；
+ * - **只读**：写笔记走更新工具那条**结果载荷**通道（`ToolResult.plan`），
+ *   本面一个写口都没有（读与写各走各的路，读面没法被拿来改记录）。
+ *
+ * 返回**都是异步**：记录读取本就是异步的（`RecordsService` 的那条口径），
+ * 读面不另造一套同步壳。
+ */
+export type PlanReader = {
+  /** 当前计划笔记（内容 ＋ 记录位置）——没建立过为 `{ entry: null, plan: null }`。 */
+  readPlan(): Promise<PlanSnapshot>
+  /** 同会话内有界的一条回查入口（见 `HistoryQuery` / `HistoryPage`）。 */
+  readHistory(query: HistoryQuery): Promise<HistoryPage>
+}
+
 /** 装配 → 控制域（外壳经传输接入）。 */
 export interface ControlHub {
   /** 命令 → 各域。 */
@@ -894,6 +1010,20 @@ export type ToolResult = {
    * 文案当跨域协议，改个措辞就断）。取**引用**那一趟不带它：「后续引用不重复报整项技能」。
    */
   readonly skill?: UsedSkill
+  /**
+   * **这一次调用交付了一份计划更新**（U34）——只有更新笔记的那件工具的成功结果会填。
+   *
+   * 与 `skill` 同一处境：说话的是**工具**（它才知道这次要写什么），而**落账与通报**归
+   * 对话域（条目 ＋ 瞬时事件都由它落）。四个环节各归各位：
+   * ① 工具**只核对参数**并交回这一位（**不自行先写记录**）；
+   * ② 对话域把它随工具结果**一次**落进条目载荷（`ToolResultPayload.plan`）；
+   * ③ 条目**追加成功之后**才发 `plan.changed`；
+   * ④ 上下文与查询都从**那一条记录**取当前计划。
+   * ——故「不先写计划再写工具结果」是结构上就成立的：这条通道上根本没有第二条写路径。
+   *
+   * ⚠️ **`null` ＝ 清空**（不是「没有这一位」）：理由与三态见 `ToolResultPayload.plan`。
+   */
+  readonly plan?: PlanNote | null
 }
 
 // —— 权限域 ——

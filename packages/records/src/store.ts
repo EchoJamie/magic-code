@@ -142,6 +142,17 @@ export type RecordsStore = {
    */
   readEntries(session: SessionId, range?: EntryRange): AsyncIterable<Entry>
   /**
+   * **倒序、有界读**（U34）——`before` 之前（不含）最近的至多 `limit` 条，按记录序交回。
+   *
+   * 与 `readEntries` 同一条分工（域侧这一张按 id 直取，不必先造会话实例）；
+   * 端口侧那一张见契约 `RecordsService.readEntriesBack`（判据与由头都写在那儿）。
+   */
+  readEntriesBack(
+    session: SessionId,
+    before: RecordId | undefined,
+    limit: number,
+  ): Promise<readonly Entry[]>
+  /**
    * **blob 存取**（写权唯一归本域）——**不经会话实例**：blob 引用与会话无关
    * （它是记录域内部键，契约里对消费者不透明）。会话未定时取回正文要用它（读面同例）。
    */
@@ -266,6 +277,15 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
       ORDER BY id
       LIMIT ?`,
   )
+  // 倒序取一页（U34）——同一张表、同一个 `(session, id)` 索引，只是换个方向走：
+  // 「从后往前、找最近的 N 条」是当前计划与回查历史那两个读面的共同形状（见端口注）。
+  const selectEntriesBack = db.query<EntryRow, [string, number, number]>(
+    `SELECT id, session, kind, content_kind, content_text, content_blob, payload, at, source
+       FROM ${ENTRIES_TABLE}
+      WHERE session = ? AND id < ?
+      ORDER BY id DESC
+      LIMIT ?`,
+  )
   const selectEvents = db.query<EventRow, [string, number, number]>(
     `SELECT id, session, turn, at, kind, data
        FROM ${EVENTS_TABLE}
@@ -353,6 +373,28 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     )
   }
 
+  /**
+   * 倒序、有界读（U34）——见契约 `RecordsService.readEntriesBack`。
+   *
+   * **一次一句**（不是分页流）：调用方要的就是「最近的一页」，`limit` 当场封顶；
+   * 返回时**翻回记录序**（id 升序）——调用方照常按「先发生先读」理解这一页，
+   * 不必自己记得查询是倒着走的（呈现在前、方向在后，省一次口误）。
+   *
+   * SQL 侧的界：`before` 缺席以 `MAX_SAFE_INTEGER` 顶上（「就是最新那条起」——
+   * 不写第二条语句：两种定位同一句，行为不会分叉）。
+   */
+  function readEntriesBack(
+    sessionId: SessionId,
+    before: RecordId | undefined,
+    limit: number,
+  ): Promise<readonly Entry[]> {
+    assertSessionId(sessionId)
+    const ceiling = before ?? Number.MAX_SAFE_INTEGER
+    const rows = limit <= 0 ? [] : selectEntriesBack.all(sessionId, ceiling, limit)
+
+    return Promise.resolve(rows.reverse().map(entryOfRow))
+  }
+
   function readEvents(sessionId: SessionId): AsyncIterable<KernelEvent> {
     assertSessionId(sessionId)
     return paginate(
@@ -423,6 +465,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
         appendEntry: (entry) => appendEntry(session, entry),
         appendEvent: (event) => appendEvent(session, event),
         readEntries: (sessionId, range) => readEntries(sessionId, range),
+        readEntriesBack,
         readEvents: (sessionId) => readEvents(sessionId),
         // 在途识别（恢复 ①）——**端口面**（U25）：恢复的编排搬去应用层之后，消费方
         // 够不着 `RecordsStore` 那把把手（域外只认端口）。与 `readEvents` 同例：方法收 id。
@@ -433,6 +476,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     },
 
     readEntries,
+    readEntriesBack,
     blobs,
 
     listSessions,
