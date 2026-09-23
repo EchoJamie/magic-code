@@ -21,7 +21,14 @@
  */
 
 import type { JSONValue } from 'ai'
-import type { ModelInfo, ProviderConfig, ReasoningSetting } from '@magic/contracts'
+import type {
+  ModelInfo,
+  ProviderConfig,
+  ReasoningSetting,
+  ReasoningSupport,
+  VendorInfo,
+  VendorRegion,
+} from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import { MODEL_CONTEXT_BUILTIN } from './capacity.ts'
 import { MODEL_TRAITS_BUILTIN } from './traits.ts'
@@ -76,10 +83,14 @@ export async function collectPages(
 export type VendorAdapter = {
   /** 适配名——即 `ProviderConfig.vendor`。 */
   readonly id: string
-  /** 官方区域 → 该区域的 OpenAI 兼容基址。 */
-  readonly regions: Readonly<Record<string, string>>
-  /** `region` 没写时用哪个。 */
-  readonly defaultRegion: string
+  /** **可读名**（界面接入选「哪一家」时显示的就是它）。 */
+  readonly label: string
+  /**
+   * 官方区域——**第一项是缺省**（`region` 没写时用它）。
+   *
+   * 数组而不是字典：**次序本身是信息**（缺省那一个），且界面要照序铺行。
+   */
+  readonly regions: readonly VendorRegion[]
   /**
    * 解析这条连接该走的基址——明确写了 `baseURL` 就用它（「高级地址只在明确需要时编辑」），
    * 否则按区域取官方地址；**认不出返回 `undefined`**（调用方报错，不猜）。
@@ -185,12 +196,13 @@ async function getJson(ctx: VendorRequestContext, path: string): Promise<unknown
  */
 export const MINIMAX_VENDOR: VendorAdapter = {
   id: 'minimax',
-  regions: { cn: 'https://api.minimax.cn/v1' },
-  defaultRegion: 'cn',
+  label: 'MiniMax',
+  // ⚠️ 这是**新建官方连接**的地址（文档给的 `api.minimax.cn`）；旧兼容连接用的
+  // `api.minimaxi.com` 一个字不动——那是另一条路，不因域名变化自动迁移凭据
+  regions: [{ id: 'cn', label: '中国大陆', baseURL: 'https://api.minimax.cn/v1' }],
 
   baseURLOf(config) {
-    if (config.baseURL !== undefined) return config.baseURL
-    return this.regions[config.region ?? this.defaultRegion]
+    return resolveBaseURL(this.regions, config)
   },
 
   async listModels(ctx) {
@@ -269,14 +281,13 @@ export const MINIMAX_VENDOR: VendorAdapter = {
  */
 export const DEEPSEEK_VENDOR: VendorAdapter = {
   id: 'deepseek',
-  regions: { default: 'https://api.deepseek.com' },
-  defaultRegion: 'default',
+  label: 'DeepSeek',
+  regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
   // 思考模式的工具往返要求把历史轮的 `reasoning_content` 原样回传（官方文档明文）
   echoesReasoning: true,
 
   baseURLOf(config) {
-    if (config.baseURL !== undefined) return config.baseURL
-    return this.regions[config.region ?? this.defaultRegion]
+    return resolveBaseURL(this.regions, config)
   },
 
   async listModels(ctx) {
@@ -284,9 +295,21 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
     return collectPages(() => Promise.resolve({ models: toModelsOf(body) }))
   },
 
-  /** 无补充：官方没有给出容量 / 能力声明，缺项**如实保留未知**（不按型号名猜）。 */
+  /**
+   * 缺项补充——**思考能力的依据来自官方文档**（`guides/thinking_mode`，2026-09-23）：
+   * 开关 `thinking.type = enabled|disabled`、档位 `reasoning_effort = low|high|max`、
+   * **没有 token 预算参数**。列表本身只回 `id`，故这份能力只能由适配补
+   *（设计：「必要缺项按官方资料补充」）。
+   *
+   * 容量**不补**：官方价目表写「1M / 384K」，`K`/`M` 的单位无从判定（同 `capacity.ts`
+   * 拒收 MiniMax「64 K」那条判据）——说不准的数不上屏，如实未知。
+   */
   supplement(info) {
-    return info
+    return {
+      ...info,
+      // API 给了的不覆盖（补充排在供应商当前信息之后）
+      ...(info.reasoning === undefined ? { reasoning: REASONING_SUPPORT } : {}),
+    }
   },
 
   /**
@@ -314,6 +337,26 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
   },
 }
 
+/**
+ * 该走哪个基址——**明确写了 `baseURL` 就用它**（「高级地址只在明确需要时编辑」），
+ * 否则按区域取官方地址；**认不出返回 `undefined`**（调用方报错，不猜）。
+ */
+function resolveBaseURL(
+  regions: readonly VendorRegion[],
+  config: ProviderConfig,
+): string | undefined {
+  if (config.baseURL !== undefined) return config.baseURL
+
+  const wanted = config.region ?? regions[0]?.id
+  return regions.find((one) => one.id === wanted)?.baseURL
+}
+
+/** DeepSeek 的思考能力（官方文档 2026-09-23）——全线模型同一套，故是适配级的常量。 */
+const REASONING_SUPPORT: ReasoningSupport = {
+  levels: ['low', 'high', 'max'],
+  disable: true,
+}
+
 // —— 注册表 ——
 
 /**
@@ -335,4 +378,18 @@ export function vendorOf(id: string): VendorAdapter | undefined {
 /** 已注册的适配名（**报错话里要列它**——用户打错字时当场看得见有哪些可选）。 */
 export function vendorIds(): readonly string[] {
   return Object.keys(ADAPTERS)
+}
+
+/**
+ * **内置供应商与官方区域的读面**（U41 返修）——界面「接入」时据此列。
+ *
+ * 由头（工单）：「官方信息由适配统一提供，**不能让界面维护第二份表**」。
+ * 故这一份是**从适配现取**的，不是另存的一张常量表——加一家只改 `ADAPTERS`。
+ */
+export function vendorCatalog(): readonly VendorInfo[] {
+  return Object.values(ADAPTERS).map((adapter) => ({
+    vendor: adapter.id,
+    label: adapter.label,
+    regions: adapter.regions,
+  }))
 }

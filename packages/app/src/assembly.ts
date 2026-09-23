@@ -95,6 +95,7 @@ import {
   createModelInfoService,
   createModelRegistry,
   resolveConnection,
+  vendorCatalog,
   windowOfSelection,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
@@ -1305,9 +1306,16 @@ export function assemble(options: AssembleOptions): Assembly {
     }
   }
 
-  /** `provider.catalog` 的载荷——与 `model.catalog` 同一份行（见 `catalogRows`）。 */
+  /**
+   * `provider.catalog` 的载荷——与 `model.catalog` 同一份行（见 `catalogRows`）
+   * ＋ **内置供应商与官方区域**（U41 返修）。
+   *
+   * 后者是**适配现取的**（`vendorCatalog()`），不是装配这一层另存的一张表：
+   * 官方信息只有一个出处，界面接入选供应商 / 区域时读的就是它。
+   */
   const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => ({
     entries: catalogRows(models),
+    vendors: vendorCatalog(),
     ...(note === undefined ? {} : { note }),
   })
 

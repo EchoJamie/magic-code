@@ -38,6 +38,38 @@ export type ModelRef = {
   readonly model: string
 }
 
+// —— 内置供应商的读面 ——
+
+/**
+ * 一个**官方区域**——界面「接入」时列的就是它。
+ *
+ * ⚠️ 它是**适配提供的**（不是界面或装配里的一张常量表）：官方信息只有一个出处，
+ * 两张表迟早各说一套（U41 返修 · 工单：「官方信息由适配统一提供，不能让界面维护第二份表」）。
+ */
+export type VendorRegion = {
+  /** 写进 `providers.<id>.region` 的就是它。 */
+  readonly id: string
+  /** 可读名（给人看的）。 */
+  readonly label: string
+  /** 该区域的官方基址——**已经解析好的**，界面只显示、不拼。 */
+  readonly baseURL: string
+}
+
+/**
+ * 一个**内置供应商**——界面接入选「哪一家」时列的就是它。
+ *
+ * 它答三件事：这家叫什么、有哪些官方区域、**缺省区域是哪一个**。
+ * 认证怎么给不在这里：那按**连接 id** 走既有的 `apiKey` / `MAGIC_<连接ID>_API_KEY`。
+ */
+export type VendorInfo = {
+  /** 写进 `providers.<id>.vendor` 的就是它。 */
+  readonly vendor: string
+  /** 可读名（如 `DeepSeek`）。 */
+  readonly label: string
+  /** 官方区域——**第一项是缺省**（不选区域时用它）。空数组不会出现。 */
+  readonly regions: readonly VendorRegion[]
+}
+
 // —— 模型信息 ——
 
 /**

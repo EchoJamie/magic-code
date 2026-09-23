@@ -13,6 +13,7 @@ import {
   DEEPSEEK_VENDOR,
   MINIMAX_VENDOR,
   collectPages,
+  vendorCatalog,
   vendorIds,
   vendorOf,
 } from '../src/vendors.ts'
@@ -171,6 +172,33 @@ describe('按官方接口的已知差异', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════
+// 三之二 · 内置供应商与官方区域的读面（U41 返修 · 界面「接入」用）
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('供应商读面', () => {
+  test('列已注册的两家：名字 ＋ 官方区域（**从适配现取**，不是另一张表）', () => {
+    const vendors = vendorCatalog()
+
+    expect(vendors.map((one) => one.vendor)).toEqual(['minimax', 'deepseek'])
+    expect(vendors.map((one) => one.label)).toEqual(['MiniMax', 'DeepSeek'])
+
+    // 每一家至少一个区域，且**第一项就是缺省**——与 `baseURLOf` 同源（同一份 `regions`）
+    for (const one of vendors) {
+      expect(one.regions.length).toBeGreaterThan(0)
+      const fallback = one.regions[0]
+      expect(fallback).toBeDefined()
+      expect(vendorOf(one.vendor)?.baseURLOf({})).toBe(fallback?.baseURL)
+    }
+
+    // 列出来的地址**就是适配真会用的那个**（两处同源，不会各说一套）
+    const minimax = vendors.find((one) => one.vendor === 'minimax')
+    expect(minimax?.regions.some((region) => region.baseURL === 'https://api.minimax.cn/v1')).toBe(true)
+    const deepseek = vendors.find((one) => one.vendor === 'deepseek')
+    expect(deepseek?.regions[0]?.baseURL).toBe('https://api.deepseek.com')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
 // 四 · 缺项补充：**不添型号 · 不覆盖 API 给的**
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -198,8 +226,28 @@ describe('缺项补充', () => {
     expect(filled.limits?.maxContextTokens).toBe(1234)
   })
 
-  test('DeepSeek：官方没给容量 / 能力 ⇒ 一个字都不补（缺项如实未知）', () => {
-    expect(DEEPSEEK_VENDOR.supplement({ id: 'deepseek-flash' })).toEqual({ id: 'deepseek-flash' })
+  test('DeepSeek：补**思考能力**（官方文档有依据），容量一个字都不补', () => {
+    // **原锚**：「官方没给容量 / 能力 ⇒ 一个字都不补」。
+    // **为何变**：独立首验的反例要求「真实列表形成的 DeepSeek 读面须提供已支持的思考选择」
+    // ——列表本身只回 `id`，而官方 `guides/thinking_mode` 确实给了开关与三档；
+    // 设计也说「必要缺项按官方资料补充」。**容量仍不补**（官方写「1M / 384K」，单位不肯定）。
+    // **新锚**：思考能力补（`levels` 三档 ＋ 可关闭），`limits` 一格不加。
+    const filled = DEEPSEEK_VENDOR.supplement({ id: 'deepseek-flash' })
+
+    expect(filled.reasoning?.levels).toEqual(['low', 'high', 'max'])
+    expect(filled.reasoning?.disable).toBe(true)
+    // 没有预算参数（官方没给）——**不给这一位**，别编一个 0 或区间
+    expect(filled.reasoning?.budget).toBeUndefined()
+    // 容量缺项如实未知
+    expect(filled.limits).toBeUndefined()
+  })
+
+  test('DeepSeek：**API 给了的不覆盖**（补充排在供应商当前信息之后）', () => {
+    const given: ModelInfo = {
+      id: 'deepseek-flash',
+      reasoning: { levels: ['high'] },
+    }
+    expect(DEEPSEEK_VENDOR.supplement(given)).toEqual(given)
   })
 })
 
