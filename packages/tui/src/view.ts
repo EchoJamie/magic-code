@@ -1922,6 +1922,18 @@ export function reasoningHint(support: ReasoningSupport | undefined): string {
  * ⚠️ **更新时间只在这里出现一次**（过期的那些），新鲜的连接**不报时间**：设计写的是
  * 「供应商信息与更新时间**按需**可见」——按需＝详情里查得到，不是每个连接都在列表上挂一行。
  */
+/**
+ * 那一行说明里**最多逐条报几条连接**——实现级常量。
+ *
+ * 由头（真跑量出来的）：这一行原先**没有上界**——30 条「还没取过」的连接就是 30 行说明，
+ * 而说明是**候选窗口之外**另加的，于是交互区一路长到把记录区整个顶出屏幕
+ * （真 PTY 60×24 · 30 条连接实测：分隔线以上一行不剩）。
+ *
+ * 取 3 的由头：它是一屏里「还看得过来」的条数；再多就**折起来报数**并指到 `/model manage`
+ * （那里逐条列着每条连接的认证与缓存读数，正是「到底哪条有状况」该去的地方）。
+ */
+const MAX_MODEL_NOTES = 3
+
 export function modelHint(entries: readonly ModelCatalogRow[], note?: string): string {
   const lines: string[] = []
 
@@ -1951,10 +1963,15 @@ export function modelHint(entries: readonly ModelCatalogRow[], note?: string): s
   // （`HINT_PICKER`，五扇抽屉同一句），各屏另加一个键就得各写一句——而它一变，
   // 认它当判据的装置（`app/test/ui/scenarios.ts` 的抽屉场景）当场全红。
   // 列表下方报键位有先例（`/grants` 的「回车＝撤销选定那条」），照它。
-  lines.push('→ 看这条的详情 · /model refresh 刷新 · /model connect 连接供应商 · /model manage 管理连接')
-  if (note !== undefined && note !== '') lines.push(note)
+  // **折起来如实报数**（见 `MAX_MODEL_NOTES`）——超出的那几条不逐行铺，指到管理页去
+  const heads = lines.slice(0, MAX_MODEL_NOTES)
+  const rest = lines.length - heads.length
+  if (rest > 0) heads.push(`… 另有 ${rest} 条连接也有状况——/model manage 里逐条看`)
 
-  return lines.join('\n')
+  heads.push('→ 看这条的详情 · /model refresh 刷新 · /model connect 连接供应商 · /model manage 管理连接')
+  if (note !== undefined && note !== '') heads.push(note)
+
+  return heads.join('\n')
 }
 
 // ══ 授权抽屉（`/grants` · U22）═══════════════════════════════════════

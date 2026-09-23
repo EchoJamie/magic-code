@@ -1195,7 +1195,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     const lines = [
       `连接 ${entry.provider}`,
-      `模型 ${entry.model ?? '还没选过'} · ${cacheLabelOf(entry)}`,
+      `默认模型 ${entry.model ?? '还没选过'}`,
+      `缓存 ${cacheLabelOf(entry)}`,
       ...(entry.baseURL === undefined ? [] : [`地址 ${entry.baseURL}`]),
     ]
 
@@ -1418,9 +1419,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       openPicker(view, {
         source: 'vendor',
         selected: 0,
+        // 副文案**留空**：连接 id 就是它的名字（`MiniMax` / `minimax` 只差大小写），
+        // 再报一遍是同一条信息说两遍（一屏上的每一格都得说别处没说的）
         rows: VENDORS.map((one) => ({
           label: one.label,
-          meta: one.id,
+          meta: '',
           current: false,
           value: one.id,
           oneLine: true,

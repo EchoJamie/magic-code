@@ -87,6 +87,29 @@ function keep(out: string, shot: Capture, label: string): void {
   console.log(`\n── ${label} ──\n${shot.text}`)
 }
 
+/**
+ * **待内核接线**的一条——据实打印读数，**不判红**。
+ *
+ * 由头（2026-09-23 实测）：契约里的五条新命令（`provider.list` / `provider.save` /
+ * `provider.remove` / `model.default.set` / `model.refresh`）在**控制域没有分支**
+ * （`packages/control/src/hub.ts` 的 `route()` switch 缺这五支，而它没有 `default`）
+ * ——发出去的命令被**静默丢弃**。故 `/model connect`、`/model manage`、`/model refresh`
+ * 在真装配上「草稿被清、屏上再无动静」（现场见 `--out` 里那一屏）。
+ *
+ * 那一段归**内核线**（`control` 不在界面线所有权内），故这一格：
+ * - **不判红**（判红了，装置整趟跑不完，后面的判据一条都到不了）；
+ * - **照实打印**（哪一步没到、屏上是什么）；
+ * - **接线到了就出声**：那时这一条该转成硬判据——见 `check`。
+ */
+function blocked(what: string, reached: boolean, reading: string): void {
+  if (reached) {
+    console.log(`  ✓ ${what}（接线已到——把这一条转成硬判据）`)
+    return
+  }
+
+  console.log(`  · 待内核接线：${what} —— ${reading}`)
+}
+
 /** 屏上有没有这一行。 */
 function has(shot: Capture, needle: string): boolean {
   return shot.lines.some((line) => line.includes(needle))
@@ -449,7 +472,123 @@ async function longList(out: string): Promise<void> {
   }
 }
 
-// ══ ⑤ 配置不被发现模型撑大（**读盘**，不是读屏）════════════════════════
+// ══ ⑤ 接入：密钥那一屏**不回显**（真终端上验）══════════════════════════
+
+/** 打进密钥屏的那一串——**只为证明它不上屏**（不是真 key，一眼看得出是假的）。 */
+const TYPED_SECRET = 'sk-fake-u41-typed-secret'
+
+/**
+ * 接通一条供应商：挑一家 → **密钥屏** → 保存。
+ *
+ * 这一屏要证的是三件**只有真终端说得清**的事：
+ * ① 密钥屏上**一个真字符都不出来**（屏上是圆点）；
+ * ② 原文既不在屏上、也不在应用的原始输出字节里（留档给取证）；
+ * ③ 取消（`esc`）之后什么都没发生——不发命令、不留回执。
+ *
+ * ⚠️ **限度写在这儿**：`provider.save` 的后端接线归内核线（本装置跑的这一刻还是「还没做」
+ * 的回话），故这一屏验的是**界面与按键路径**；「保存之后真去供应商那儿取列表」那一段
+ * 等内核接上之后再跑一遍（回报里记着）。
+ */
+async function connecting(out: string): Promise<void> {
+  const bench = compatBench()
+  const session = await start({ label: 'u41-接入' }, bench, out)
+
+  try {
+    await typeLine(session, '/model connect')
+    await pressKey(session, 'enter')
+    await Bun.sleep(800)
+    const picking = await session.capture({ label: '08-挑一家供应商' })
+    keep(out, picking, '08-挑一家供应商')
+
+    const opened = has(picking, 'MiniMax')
+    blocked(
+      '`/model connect` 开到「挑一家」那一屏（要 `provider.list` 的答复）',
+      opened,
+      '屏上仍是空闲输入行——命令被控制域静默丢弃（见 `blocked` 的注）',
+    )
+    // 接线还没到 ⇒ 这一屏走不下去了：后面的判据等它（**不判红**，如实收摊）
+    if (!opened) return
+
+    check(has(picking, 'DeepSeek'), '另一家也在')
+
+    // —— 密钥那一屏 ——
+    await pressKey(session, 'enter', { until: { text: '不回显' }, timeoutMs: 10_000 })
+    await typeLine(session, TYPED_SECRET)
+    const typed = await session.capture({ label: '09-密钥屏（输入不回显）' })
+    keep(out, typed, '09-密钥屏（输入不回显）')
+
+    check(has(typed, '不回显'), '标签就写着「输入不回显」——用户知道自己的字为什么看不见')
+    check(!has(typed, TYPED_SECRET), '**打进去的那串一个字都不上屏**')
+    check(has(typed, '•'), '屏上是圆点（看得出「打进去了几个字」）')
+    // 原始字节也查一遍（屏上没画 ≠ 没写出去）
+    check(!session.rawText().includes(TYPED_SECRET), '**应用的原始输出里也没有它**')
+    writeFileSync(join(out, '09-原始字节里搜密钥.txt'), [
+      `在应用写出的 ${session.rawText().length} 个字符里搜「${TYPED_SECRET}」的结论：`,
+      session.rawText().includes(TYPED_SECRET) ? '**搜到了**（不该）' : '一个字符都没有',
+      '',
+      '（这是原始 stdout，含 ANSI 与历次重绘——屏上没画不等于没写出去，故两处都查）',
+      '',
+    ].join('\n'), 'utf8')
+
+    // —— 取消：什么都不该发生 ——
+    await pressKey(session, 'esc', { until: { absent: '不回显' }, timeoutMs: 10_000 })
+    await Bun.sleep(300)
+    const gone = await session.capture({ label: '10-取消之后' })
+    keep(out, gone, '10-取消之后')
+
+    check(!has(gone, '不回显'), '这一屏收起了')
+    check(bench.fixture.requests().length === 0, '全程零模型请求（夹具那儿一条都没有）')
+  } finally {
+    await close(session)
+    await bench.fixture.stop()
+  }
+}
+
+// ══ ⑥ 管理：连接一览 → 某一条的明细 ═══════════════════════════════════
+
+/**
+ * `/model manage` 那一屏（管理面的真读数：`provider.list` 这一条**已经真接**了）。
+ *
+ * 看的是**层级与文案**：一览上一个连接一行（供应商 · 认证来处），进明细是四件动作，
+ * 连接自己的那几格写在下方说明里。
+ */
+async function managing(out: string): Promise<void> {
+  const bench = compatBench()
+  const session = await start({ label: 'u41-管理' }, bench, out)
+
+  try {
+    await typeLine(session, '/model manage')
+    await pressKey(session, 'enter')
+    await Bun.sleep(800)
+    const list = await session.capture({ label: '11-连接一览' })
+    keep(out, list, '11-连接一览')
+
+    const opened = has(list, '认证：配置文件')
+    blocked(
+      '`/model manage` 开到「连接一览」那一屏（要 `provider.list` 的答复）',
+      opened,
+      '屏上仍是空闲输入行——命令被控制域静默丢弃（见 `blocked` 的注）',
+    )
+    if (!opened) return
+
+    check(has(list, 'personal'), '一览里有那条连接')
+    check(has(list, '认证：配置文件'), '**认证来处说得清**（配置文件 / 环境变量，不含糊说「已设置」）')
+
+    await pressKey(session, 'enter', { until: { text: '移除这条连接' }, timeoutMs: 10_000 })
+    const detail = await session.capture({ label: '12-这一条的明细' })
+    keep(out, detail, '12-这一条的明细')
+
+    check(has(detail, '改名'), '四件动作都在：改名')
+    check(has(detail, '更新认证'), '更新认证')
+    check(has(detail, '移除这条连接'), '移除（并标明已有记录不随它删除）')
+    check(has(detail, '连接 personal'), '连接自己的那几格写在下方说明里')
+  } finally {
+    await close(session)
+    await bench.fixture.stop()
+  }
+}
+
+// ══ ⑦ 配置不被发现模型撑大（**读盘**，不是读屏）════════════════════════
 
 /**
  * 「用户配置不因发现模型而膨胀」＋「保存不泄露凭据」——**两件都读盘**，不读屏。
@@ -515,6 +654,8 @@ const SCENES: readonly { readonly name: string; readonly run: (out: string) => P
   { name: '取消不留痕', run: cancelling },
   { name: '窄窗列表', run: narrow },
   { name: '长列表', run: longList },
+  { name: '接入', run: connecting },
+  { name: '管理', run: managing },
   { name: '配置与凭据', run: configAndSecrets },
 ]
 

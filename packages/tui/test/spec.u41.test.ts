@@ -792,7 +792,10 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
 
     const frame = await stage.screen({ columns: 60, rows: 24 })
 
-    expect(frame.has('… 下面还有 19 条')).toBe(true) // 满窗 12 格 − 1 条提示 ⇒ 画 11 条、余 19
+    // 满窗 12 格 − 2 行说明 ⇒ 预算 10 格；画 9 条 ＋ 1 行折叠提示 ⇒ 余 21。
+    // ⚠️ 这个数**含说明行**：说明与候选同一片交互区，共用半屏那一份预算
+    //    （与草稿那一片同一条规矩；不这么算，说明一长就把记录区挤没——真跑量到过）
+    expect(frame.has('… 下面还有 21 条')).toBe(true)
   })
 
   test('**焦点可见**：`↓` 挪出这一窗之后窗口跟着平移，选中那条仍在屏上', async () => {
@@ -803,7 +806,7 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     const frame = await stage.screen({ columns: 60, rows: 24 })
 
     expect(frame.has('model-15')).toBe(true) // 选中那条（第 16 行）
-    expect(frame.has('… 上面还有 6 条')).toBe(true) // 上头折起来的如实报
+    expect(frame.has('… 上面还有 8 条')).toBe(true) // 上头折起来的如实报
     expect(frame.has('model-0　')).toBe(false) // 折起来的那几条确实没画
   })
 

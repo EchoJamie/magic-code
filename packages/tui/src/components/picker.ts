@@ -27,6 +27,7 @@ import { createElement as h } from 'react'
 import type { Picker, PickerRow } from '../view.ts'
 import { groupHeads } from '../view.ts'
 import { clip, inkWidth } from './composer.ts'
+import { wrap } from './lines.ts'
 import { PALETTE } from './lines.ts'
 
 /**
@@ -78,6 +79,24 @@ const GAP_WIDTH = 2
  */
 export function maxPickerLines(rows: number): number {
   return Math.max(1, Math.floor(rows / 2))
+}
+
+/**
+ * **候选那一头这一屏能占几行**——半屏**扣掉下面那行说明**（`picker.hint`）要占的行数。
+ *
+ * 由头（真跑量出来的）：说明那行与候选是**同一片交互区**里的两截——早先只封了候选
+ * （半屏），说明是另加的，于是「半屏候选 ＋ 三行说明」比半屏还高，矮终端上记录区被挤没。
+ * 与草稿那一片同一条规矩：**正文与提示共用同一份预算**（`composerLayout` 的折叠那一段
+ * 写的就是这条，U31 二轮退回栽过）。
+ *
+ * ⚠️ **账与屏同取这一处**：渲染（`PickerList`）与高度账（`app.ts` 的 `dockHeightOf`）
+ * 都调它——分头算一次就重演「账 N 行、屏 N+1 行 ⇒ 真光标高一行」。
+ */
+export function pickerBudget(picker: Picker, columns: number, rows: number): number {
+  const hint =
+    picker.hint === undefined ? 0 : wrap(picker.hint, Math.max(8, columns - 4)).length
+
+  return Math.max(1, maxPickerLines(rows) - hint)
 }
 
 /**
@@ -178,7 +197,7 @@ export function pickerLayout(picker: Picker, budget: number = Number.POSITIVE_IN
 }
 
 export function PickerList({ picker, columns, rows = Number.POSITIVE_INFINITY }: PickerProps) {
-  const { items } = pickerLayout(picker, maxPickerLines(rows))
+  const { items } = pickerLayout(picker, pickerBudget(picker, columns, rows))
 
   const lines = items.map((item) => {
     if (item.kind === 'head') {

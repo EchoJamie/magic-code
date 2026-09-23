@@ -33,7 +33,7 @@ import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './comp
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
-import { PickerList, maxPickerLines, pickerLayout } from './picker.ts'
+import { PickerList, pickerBudget, pickerLayout } from './picker.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
 
@@ -446,7 +446,10 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
     // 并画一条「… 上面/下面还有 N 条」，三者（行 ＋ 分组头 ＋ 提示）都在它交出来的 `items` 里。
     // ⚠️ **账与屏同取这一处**（`pickerLayout`）：分头算一次就会重演「账 N 行、屏 N+1 行」
     // ⇒ 矮终端上真光标高一行（U31 那一族的老账，本文件上面那一段注写的就是它）。
-    const candidates = pickerLayout(view.dock.picker, maxPickerLines(rows)).items.length
+    const candidates = pickerLayout(
+      view.dock.picker,
+      pickerBudget(view.dock.picker, columns, rows),
+    ).items.length
     // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/session` 的长得多
     // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
     // （D11 那条「行高与实际不符」的老账，正是这么来的）
