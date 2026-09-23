@@ -50,6 +50,7 @@ import type {
   McpConnection,
   McpConnectionState,
   McpToolRejection,
+  ModelCatalogRow,
   ModelGateway,
   ModelSwitchRequest,
   RecordsService,
@@ -750,10 +751,16 @@ export function assemble(options: AssembleOptions): Assembly {
 
     const service = createConversationSession({
       session,
-      // **开局的模型名**——缺省条目的 `model`，随每次调用送模型域（技术方案：模型名取自请求）。
+      // **开局的模型名**——缺省连接 ＋ 它默认的模型，随每次调用送模型域
+      //（技术方案：模型名取自请求）。
       // 会话中途换模型**不经过这里**：注册表的选中会在这个名字之上接管（换模型＝换接缝下游，
-      // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）
-      model: loaded.provider.model,
+      // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）。
+      //
+      // ⚠️ **U41：可能一个都拿不到**（注册表缺席的替身网关 / 还没选过默认模型）——
+      // 空串在这里是「还没定」的占位，**不是**一个可用的模型名：真送出去会被供应商拒。
+      // 「没定就拒绝提交并提示先选模型」的拦截归**后端接线那一笔**（本笔先落契约与读面，
+      // 见回报）；在那之前，这条路径只保证装配不因缺模型名而崩。
+      model: models?.current()?.model ?? loaded.provider?.model ?? '',
       prompt: promptVarsOf(workspace, options, now),
       gateway,
       tools,
@@ -909,9 +916,10 @@ export function assemble(options: AssembleOptions): Assembly {
    * 读数（`providers` 可以一条都没有），两者混作一谈会让外壳把「没有注册表」显示成
    * 「一条都没有」。
    */
-  const listModels = (): void => {
+  const listModels = (note?: string): void => {
     if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
-    sink.emit(requireActiveStamper().stamp('model.catalog', catalogOf(models)))
+    const catalog = catalogOf(models)
+    sink.emit(requireActiveStamper().stamp('model.catalog', note === undefined ? catalog : { ...catalog, note }))
   }
 
   /**
@@ -1010,7 +1018,12 @@ export function assemble(options: AssembleOptions): Assembly {
   const contextWindowOf = (registry: ModelRegistry | undefined): number | null => {
     if (registry === undefined) return null
 
-    return windowOfSelection(windowTable, registry.current())
+    // 还没有去向（没配缺省连接 / 还没选过模型）⇒ **没有分母可言**——不取列表第一项，
+    // 也不拿别的模型的窗长顶上（「拿不到的不编」）
+    const current = registry.current()
+    if (current === undefined) return null
+
+    return windowOfSelection(windowTable, current)
   }
 
   /**
@@ -1150,17 +1163,60 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
   const readSkills = (): SkillCatalog => skills.discover()
 
+  /**
+   * 连接一览 —— `model.catalog` 与 `provider.catalog` **共用的一份**（U41）。
+   *
+   * 两个读面说的是同一批连接，故只产出一次：选择器与「管理供应商」那一屏看到的
+   * 「这条连接叫什么、走哪家、默认用哪个模型」必须是同一份，不能两处各拼一遍。
+   *
+   * 一位一位地**有才给**（`name` / `vendor` / `region` / `baseURL` / `model` / `reasoning`
+   * / `contextWindow`）：缺的那一位＝**不知道或没设置**，外壳据此少显示一格，不显示空串。
+   */
+  const catalogRows = (registry: ModelRegistry | undefined): readonly ModelCatalogRow[] => {
+    if (registry === undefined) return []
+
+    return registry.list().map((entry) => {
+      const config = loaded.config.providers[entry.id]
+      return {
+        provider: entry.id,
+        ...(config?.name === undefined ? {} : { name: config.name }),
+        ...(config?.vendor === undefined ? {} : { vendor: config.vendor }),
+        ...(config?.region === undefined ? {} : { region: config.region }),
+        ...(config?.baseURL === undefined ? {} : { baseURL: config.baseURL }),
+        ...(entry.model === undefined ? {} : { model: entry.model }),
+        ...(config?.reasoning === undefined ? {} : { reasoning: config.reasoning }),
+        ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
+      }
+    })
+  }
+
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
+    const current = registry.current()
     return {
-      entries: registry.list().map((entry) => ({
-        provider: entry.id,
-        model: entry.model,
-        ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
-      })),
-      current: registry.current(),
+      entries: catalogRows(registry),
+      // 还没有去向（没配缺省连接 / 还没选过模型）⇒ **不给这一位**——外壳报「先选模型」，
+      // 不拿列表第一项当成「当前」（设计明文）
+      ...(current === undefined ? {} : { current }),
     }
+  }
+
+  /** `provider.catalog` 的载荷——与 `model.catalog` 同一份行（见 `catalogRows`）。 */
+  const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => ({
+    entries: catalogRows(models),
+    ...(note === undefined ? {} : { note }),
+  })
+
+  /**
+   * **管理面的连接一览**（U41）——`/model` 的「管理供应商」那一屏。
+   *
+   * 走法照 `listModels`：**空手打开也照答**（那一下开一张空壳；原因与姿势见它那段注）。
+   * 读的是**配置**（连接的身份与设置）——已在手上，不必再问谁要。
+   */
+  const listProviders = (note?: string): void => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    sink.emit(requireActiveStamper().stamp('provider.catalog', providerCatalogOf(note)))
   }
 
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；
@@ -1181,6 +1237,17 @@ export function assemble(options: AssembleOptions): Assembly {
     // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
     // 答复走事件（`model.catalog`，不落库）
     onModelList: () => listModels(),
+    // U41 · 供应商与模型管理——**这一笔先交公共契约与读面**（界面线据此并行接入），
+    // 保存 / 移除 / 设为默认 / 手动刷新四条命令的实现在**随后一笔**接上。
+    //
+    // 这一笔**如实回一句**：不假装成功、也不静默丢弃——用户按了就该有回声，
+    // 而回声说的是真话（这个版本还没有那项能力）。⚠️ 下一笔替换这四条时，
+    // 别把回话一并删成静默。
+    onModelRefresh: () => listModels('刷新模型列表还没做——这个版本还不能自动获取'),
+    onModelDefaultSet: () => listModels('保存默认还没做——这个版本换模型不会写进配置'),
+    onProviderList: () => listProviders(),
+    onProviderSave: () => listProviders('接入与修改连接还没做——这个版本只能查看已配置的连接'),
+    onProviderRemove: () => listProviders('移除连接还没做——这个版本只能查看已配置的连接'),
     // 授权名录 ＋ 撤销（U22）——**归装配**（`grants.json` 的读写都在它这一层，域不碰文件系统）
     onGrantsList: () => listGrants(),
     onGrantsRevoke: (workspace, index) => revokeGrants(workspace, index),

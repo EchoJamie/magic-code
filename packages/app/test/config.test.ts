@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CONFIG_FILE, DEFAULT_DATA_DIR, apiKeyEnvVarOf } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
@@ -34,8 +35,10 @@ describe('形制照读（字面冻结）', () => {
     const loaded = loadFrom(validConfig())
 
     expect(loaded.providerId).toBe('minimax')
-    expect(loaded.provider.model).toBe('MiniMax-M3')
-    expect(loaded.provider.baseURL).toBe('https://api.minimaxi.com/v1')
+    // `provider` 可缺（U41：还没配过缺省连接的配置就是这样）——本用例的配置里它该在，
+    // 故 `!` 是断言本身的一部分，不是绕过检查
+    expect(loaded.provider!.model).toBe('MiniMax-M3')
+    expect(loaded.provider!.baseURL).toBe('https://api.minimaxi.com/v1')
     expect(Object.keys(loaded.config.providers)).toEqual(['minimax'])
   })
 
@@ -65,7 +68,7 @@ describe('形制照读（字面冻结）', () => {
         },
       }),
     )
-    expect(withTraits.provider.traits).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(withTraits.provider!.traits).toEqual({ inlineThinking: { tag: 'think' } })
 
     const empty = loadFrom(
       validConfig({
@@ -73,12 +76,12 @@ describe('形制照读（字面冻结）', () => {
       }),
     )
     // `{}` ＝**显式声明无特征**——不是「按常规处理」，故必须存在且为空对象
-    expect(empty.provider.traits).toEqual({})
+    expect(empty.provider!.traits).toEqual({})
 
     const none = loadFrom(
       validConfig({ providers: { minimax: { baseURL: 'https://x/v1', model: 'm' } } }),
     )
-    expect(none.provider.traits).toBeUndefined()
+    expect(none.provider!.traits).toBeUndefined()
   })
 
   /**
@@ -91,24 +94,39 @@ describe('形制照读（字面冻结）', () => {
         providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: 200_000 } },
       }),
     )
-    expect(declared.provider.contextWindow).toBe(200_000)
+    expect(declared.provider!.contextWindow).toBe(200_000)
 
     const none = loadFrom(
       validConfig({ providers: { minimax: { baseURL: 'https://x/v1', model: 'm' } } }),
     )
     // 不写就没有这一位——**不是 0、不是 NaN**（拿不到就说拿不到）
-    expect(none.provider.contextWindow).toBeUndefined()
-    expect('contextWindow' in none.provider).toBe(false)
+    expect(none.provider!.contextWindow).toBeUndefined()
+    expect('contextWindow' in none.provider!).toBe(false)
   })
 
   test('缺省配置文件落点＝契约的 CONFIG_FILE（不在 app 里重写一份字面量）', () => {
     expect(CONFIG_FILE).toBe('~/.magic/config.json')
-    // 不传 path 时读 CONFIG_FILE——展开后即 `${HOME}/.magic/config.json`（此处置家目录探针）
-    expect(() => loadConfig({ home: HOME })).toThrow(ConfigError)
+
+    // 不传 path 时读 CONFIG_FILE——展开后即 `${HOME}/.magic/config.json`（此处置家目录探针）。
+    //
+    // U41 改判：**文件不在不再是错**（首次运行就是这样），故落点改用一份**坏内容**来验。
+    // **原锚**：「文件不存在 ⇒ 报错里的 `path` 就是缺省落点」；**为何变**：空配置要能进入
+    // 接入流程，缺文件不再报错（见下面「文件不存在」那条）；**新锚**：在同一个落点上放
+    // 一份读不懂的内容，报出来的 `path` 仍是它——判据（读的是契约那个落点）没松，
+    // 只是换了个能触发报错的输入。
+    const dir = tempDir('magic-config-')
     try {
-      loadConfig({ home: HOME })
-    } catch (error) {
-      expect((error as ConfigError).path).toBe(join(HOME, '.magic/config.json'))
+      mkdirSync(join(dir, '.magic'), { recursive: true })
+      writeFileSync(join(dir, '.magic', 'config.json'), '{ 这不是 JSON }', 'utf8')
+
+      expect(() => loadConfig({ home: dir })).toThrow(ConfigError)
+      try {
+        loadConfig({ home: dir })
+      } catch (error) {
+        expect((error as ConfigError).path).toBe(join(dir, '.magic', 'config.json'))
+      }
+    } finally {
+      removeDir(dir)
     }
   })
 })
@@ -163,10 +181,25 @@ describe('dataDir 解析', () => {
 })
 
 describe('报错取「一声响」（不静默兜底）', () => {
-  test('文件不存在——点名路径', () => {
+  /**
+   * U41 补锚：**文件不在 ≠ 配置坏**（设计 · 命令行与配置：「首次无配置/空连接允许进入
+   * 接入流程」＋「损坏配置必须报告具体位置，不能当空配置覆盖」）。
+   *
+   * **原锚**：「文件不存在 ⇒ 抛 `ConfigError`」（首站：配置是启动的必需品）；
+   * **为何变**：新装用户手上还没有那份文件，照旧一声响等于把人挡在门外；
+   * **新锚**：缺文件 ⇒ **空配置**（`providers: {}` ＋ 契约的缺省数据目录），
+   * 而坏内容照旧报错点名（下一条用例）——两件事分开，判据没松。
+   */
+  test('文件不存在——空配置（首次运行就是这样，不是错）', () => {
     const dir = tempDir('magic-config-')
     try {
-      expect(() => loadConfig({ path: join(dir, 'nope.json'), home: HOME })).toThrow(ConfigError)
+      const loaded = loadConfig({ path: join(dir, 'nope.json'), home: HOME })
+
+      expect(loaded.config.providers).toEqual({})
+      expect(loaded.providerId).toBeUndefined()
+      expect(loaded.provider).toBeUndefined()
+      // 数据目录仍按契约的缺省给（空配置也落得了账）
+      expect(loaded.config.dataDir).toBe(join(HOME, '.magic'))
     } finally {
       removeDir(dir)
     }
@@ -186,13 +219,18 @@ describe('报错取「一声响」（不静默兜底）', () => {
     const cases: readonly [unknown, RegExp][] = [
       [validConfig({ defaultProvider: '' }), /defaultProvider 须是非空字符串/],
       [validConfig({ providers: {} }), /defaultProvider「minimax」不在 providers 里/],
+      // U41 改判这两条的期望文案——**原锚**：「缺 `baseURL` / 缺 `model` ⇒ 各报一句
+      // 『须是非空字符串』」；**为何变**：两条接入路径的必填项不同了——有 `vendor` 的连接
+      // 由适配给地址、型号来自接口，两者都可省；没有 `vendor` 的兼容接入两者仍必给，
+      // 但缺的是「接入方式没说清」而不是「这个字段类型不对」；**新锚**：兼容接入缺哪一件
+      // 就报哪一件缺（并指出两条路怎么走），报错仍**点名到字段**、仍**不降级**。
       [
         validConfig({ providers: { minimax: { model: 'MiniMax-M3' } } }),
-        /providers\.minimax\.baseURL 须是非空字符串/,
+        /providers\.minimax 两样都没有/,
       ],
       [
         validConfig({ providers: { minimax: { baseURL: 'https://x/v1' } } }),
-        /providers\.minimax\.model 须是非空字符串/,
+        /providers\.minimax\.model 没写/,
       ],
       [
         validConfig({

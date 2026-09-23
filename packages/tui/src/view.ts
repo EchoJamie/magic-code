@@ -776,6 +776,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
         status: { ...view.status, window: windowOfCatalog(view, event.data) },
       }
 
+    // 供应商管理面的一屏（U41）——**收进视图**：与 `model.catalog` **同一份行**
+    //（同一批连接的两个读面，内核那边就是一处产出，见 `catalogRows`），故落在同一格：
+    // 开 / 关与回执是外壳的事（`shell.ts`），此处只落数据。
+    case 'provider.catalog':
+      return { ...view, models: event.data.entries }
+
     // 授权名录（读侧答复 · U22）——**收进视图**：抽屉据它铺行，那一行度量据它算；
     // 开抽屉 / 刷新 / 留回执是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
     // （照 `model.catalog` 的姿势：归约落数据，处置归外壳）

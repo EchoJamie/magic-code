@@ -20,7 +20,15 @@
 
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import type { MagicConfig, McpConfig, McpServerConfig, ProviderConfig } from '@magic/contracts'
+import type {
+  MagicConfig,
+  McpConfig,
+  McpServerConfig,
+  ModelLimits,
+  ProviderConfig,
+  ProviderModelOverride,
+  ReasoningSetting,
+} from '@magic/contracts'
 import {
   apiKeyEnvVarOf,
   CONFIG_FILE,
@@ -50,10 +58,13 @@ export type LoadedConfig = {
   readonly path: string
   /** 形制原样（`dataDir` 已展开）。 */
   readonly config: MagicConfig
-  /** `defaultProvider` 的落地——也是环境变量回退名的来源。 */
-  readonly providerId: string
+  /**
+   * `defaultProvider` 的落地——**没配过就不给**（U41 起可缺：首次接入 / 还没选过默认）。
+   * 它也是环境变量回退名（`apiKeyEnvVarOf`）的来源，故缺省时没有那一路回退可言。
+   */
+  readonly providerId?: string
   /** `providers[providerId]` 原样——含 `traits` 覆盖位（模型域按「键在即接管」裁定）。 */
-  readonly provider: ProviderConfig
+  readonly provider?: ProviderConfig
 }
 
 /** 加载入参——三项皆可注入（测试与入口复用同一函数，规则只写一遍）。 */
@@ -104,7 +115,105 @@ function asContextWindow(value: unknown, path: string, field: string): number | 
   return value
 }
 
-/** 一个供应商条目——`{ baseURL, apiKey?, model, traits?, contextWindow? }`。 */
+/** 可选文本位——写错了照旧报错，没写就不给这一位（不拿空串冒充「写过了」）。 */
+function asOptionalText(value: unknown, path: string, field: string): string | undefined {
+  return value === undefined ? undefined : asText(value, path, field)
+}
+
+/**
+ * 思考设置（U41）——四支判别（`ReasoningSetting`）。
+ *
+ * 值本身**只判形制**（正整数 / 非空串）：「这个模型支不支持这一档」归模型域按能力判
+ * （设计：能力描述只指导校验）——配置层没有能力表，不该在这儿猜。
+ */
+function asReasoning(value: unknown, path: string, field: string): ReasoningSetting {
+  const raw = asObject(value, path, field)
+  const mode = raw['mode']
+
+  switch (mode) {
+    case 'default':
+    case 'off':
+      return { mode }
+    case 'level':
+      return { mode, level: asText(raw['level'], path, `${field}.level`) }
+    case 'budget': {
+      const budget = raw['budgetTokens']
+      if (typeof budget !== 'number' || !Number.isInteger(budget) || budget <= 0) {
+        throw new ConfigError(path, `${field}.budgetTokens 须是正整数（token）`)
+      }
+      return { mode, budgetTokens: budget }
+    }
+    default:
+      throw new ConfigError(
+        path,
+        `${field}.mode 须是 default（模型默认）/ off（明确关闭）/ level（档位）/ budget（预算）之一`,
+      )
+  }
+}
+
+/** 令牌规格（可选三位）——判据同 `contextWindow`：给了就须是正整数。 */
+function asLimits(value: unknown, path: string, field: string): ModelLimits {
+  const raw = asObject(value, path, field)
+  const pick = (key: keyof ModelLimits): number | undefined =>
+    asContextWindow(raw[key], path, `${field}.${key}`)
+
+  const maxInputTokens = pick('maxInputTokens')
+  const maxOutputTokens = pick('maxOutputTokens')
+  const maxContextTokens = pick('maxContextTokens')
+
+  return {
+    ...(maxInputTokens === undefined ? {} : { maxInputTokens }),
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(maxContextTokens === undefined ? {} : { maxContextTokens }),
+  }
+}
+
+/**
+ * 按精确模型 id 的覆盖表（U41）——`{ limits?, traits?, reasoning? }`。
+ *
+ * ⚠️ **漏带＝静默失效**（同权限段那几条教训）：配置里写了覆盖而这里不接，
+ * 用户的明确声明就悄悄不起作用——且不报错。故这一行有测试钉着。
+ */
+function asModelOverrides(
+  value: unknown,
+  path: string,
+  field: string,
+): Readonly<Record<string, ProviderModelOverride>> {
+  const raw = asObject(value, path, field)
+  const overrides: Record<string, ProviderModelOverride> = {}
+
+  for (const [id, entry] of Object.entries(raw)) {
+    const one = asObject(entry, path, `${field}.${id}`)
+    const limits = one['limits'] === undefined ? undefined : asLimits(one['limits'], path, `${field}.${id}.limits`)
+    const traits = one['traits'] === undefined ? undefined : asTraits(one['traits'], path, `${field}.${id}.traits`)
+    const reasoning =
+      one['reasoning'] === undefined
+        ? undefined
+        : asReasoning(one['reasoning'], path, `${field}.${id}.reasoning`)
+
+    overrides[id] = {
+      ...(limits === undefined ? {} : { limits }),
+      ...(traits === undefined ? {} : { traits }),
+      ...(reasoning === undefined ? {} : { reasoning }),
+    }
+  }
+
+  return overrides
+}
+
+/**
+ * 一个供应商条目（U41 形制）——`{ vendor?, name?, region?, baseURL?, apiKey?, model?,
+ * reasoning?, modelOverrides?, traits?, contextWindow? }`。
+ *
+ * **两条接入路径的必填项不同**（设计 · 命令行与配置「旧配置兼容与保存」）：
+ * - **官方适配**（有 `vendor`）——地址由适配提供、型号来自接口缓存，故 `baseURL` 与
+ *   `model` 都可省。写错 `vendor`（认不出）**不在这一层拒**：这一层只判形制，
+ *   「这个 vendor 认不认识」归模型域的适配注册表——两处各判一遍就是两处各说一套。
+ * - **兼容接入**（无 `vendor`）——走原协议、原地址与原默认模型，故两者**必给**：
+ *   没有型号来源（无接口发现）、也没有地址可退。
+ *
+ * `model` 缺省 ＝ **还没选过默认**（不是错）：不取列表第一项，由用户选一次。
+ */
 function asProvider(value: unknown, path: string, field: string): ProviderConfig {
   const raw = asObject(value, path, field)
   const apiKey = raw['apiKey']
@@ -114,11 +223,43 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
   }
 
   const contextWindow = asContextWindow(raw['contextWindow'], path, `${field}.contextWindow`)
+  const vendor = asOptionalText(raw['vendor'], path, `${field}.vendor`)
+  const baseURL = asOptionalText(raw['baseURL'], path, `${field}.baseURL`)
+  const model = asOptionalText(raw['model'], path, `${field}.model`)
+
+  if (vendor === undefined && baseURL === undefined) {
+    throw new ConfigError(
+      path,
+      `${field} 两样都没有——给 vendor（内置供应商：minimax / deepseek）走官方接入，` +
+        '或给 baseURL ＋ model 走原有的兼容接入',
+    )
+  }
+  if (vendor === undefined && model === undefined) {
+    throw new ConfigError(
+      path,
+      `${field}.model 没写——兼容接入（没有 vendor）没有型号来源，` +
+        '请写出这条连接默认用哪个模型',
+    )
+  }
+
+  const name = asOptionalText(raw['name'], path, `${field}.name`)
+  const region = asOptionalText(raw['region'], path, `${field}.region`)
+  const reasoning =
+    raw['reasoning'] === undefined ? undefined : asReasoning(raw['reasoning'], path, `${field}.reasoning`)
+  const modelOverrides =
+    raw['modelOverrides'] === undefined
+      ? undefined
+      : asModelOverrides(raw['modelOverrides'], path, `${field}.modelOverrides`)
 
   return {
-    baseURL: asText(raw['baseURL'], path, `${field}.baseURL`),
+    ...(vendor === undefined ? {} : { vendor }),
+    ...(name === undefined ? {} : { name }),
+    ...(region === undefined ? {} : { region }),
+    ...(baseURL === undefined ? {} : { baseURL }),
     apiKey: apiKey as string | undefined,
-    model: asText(raw['model'], path, `${field}.model`),
+    ...(model === undefined ? {} : { model }),
+    ...(reasoning === undefined ? {} : { reasoning }),
+    ...(modelOverrides === undefined ? {} : { modelOverrides }),
     ...(raw['traits'] === undefined ? {} : { traits: asTraits(raw['traits'], path, `${field}.traits`) }),
     ...(contextWindow === undefined ? {} : { contextWindow }),
   }
@@ -333,6 +474,13 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   try {
     text = readFileSync(path, 'utf8')
   } catch (error) {
+    // **文件不在 ≠ 配置坏**（U41）：首次运行就是这样——照旧一声响会把人挡在门外，
+    // 而设计要的是「首次无配置允许进入接入流程」。故这里只放行 **ENOENT**
+    // （文件根本没有）：空配置照常返回，用户接上供应商时**保存**才创建它。
+    // 别的读失败（权限 / 是个目录…）照旧报——那不是「还没配」，那是真有问题。
+    if ((error as { code?: string }).code === 'ENOENT') {
+      return { path, config: { providers: {}, dataDir: expandHome(DEFAULT_DATA_DIR, home) } }
+    }
     const reason = error instanceof Error ? error.message : String(error)
     throw new ConfigError(
       path,
@@ -350,16 +498,20 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
 
   const raw = asObject(parsed, path, '配置根')
 
-  const providerId = asText(raw['defaultProvider'], path, 'defaultProvider')
+  // `defaultProvider` 与 `providers` 都**可缺**（U41）：还没接过东西的配置就是这样。
+  // 变宽松的只有「缺」这一种：写了但**指不到**照样报错（拼错名字是最常见的一种，
+  // 静默回落会让用户对着一条不生效的配置发呆）。
+  const providerId =
+    raw['defaultProvider'] === undefined ? undefined : asText(raw['defaultProvider'], path, 'defaultProvider')
 
-  const providersRaw = asObject(raw['providers'], path, 'providers')
+  const providersRaw = raw['providers'] === undefined ? {} : asObject(raw['providers'], path, 'providers')
   const providers: Record<string, ProviderConfig> = {}
   for (const [id, entry] of Object.entries(providersRaw)) {
     providers[id] = asProvider(entry, path, `providers.${id}`)
   }
 
-  const provider = providers[providerId]
-  if (provider === undefined) {
+  const provider = providerId === undefined ? undefined : providers[providerId]
+  if (providerId !== undefined && provider === undefined) {
     const known = Object.keys(providers).join(' / ') || '（一个都没有）'
     throw new ConfigError(
       path,
@@ -444,12 +596,22 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
  * 「来处」的判据与 `resolveApiKey` 同源：配置里非空即用配置，否则回退环境变量。
  */
 export function describeConfig(loaded: LoadedConfig): string {
+  // 还没配过（首次运行 / 刚清空）——如实说「还没有默认供应商」，不印一个空名字
+  if (loaded.providerId === undefined || loaded.provider === undefined) {
+    const count = Object.keys(loaded.config.providers).length
+    const connections =
+      count === 0 ? '还没有接入任何供应商' : `已接入 ${count} 条连接，还没选定默认`
+    return `配置 ${loaded.path} · ${connections} · 数据目录 ${loaded.config.dataDir}`
+  }
+
   const keyFrom = loaded.provider.apiKey?.trim()
     ? '配置文件'
     : `环境变量 ${apiKeyEnvVarOf(loaded.providerId)}`
+  // 型号可能还没选过（新接入的连接）——那就不印那一格，不写「（undefined）」
+  const model = loaded.provider.model === undefined ? '' : `（${loaded.provider.model}）`
 
   return (
-    `配置 ${loaded.path} · 供应商 ${loaded.providerId}（${loaded.provider.model}）` +
+    `配置 ${loaded.path} · 供应商 ${loaded.providerId}${model}` +
     ` · key 取自${keyFrom} · 数据目录 ${loaded.config.dataDir}`
   )
 }

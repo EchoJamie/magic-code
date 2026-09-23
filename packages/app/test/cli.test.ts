@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
@@ -119,14 +119,43 @@ describe('入口 magic', () => {
     }
   })
 
-  test('配置缺——报「配置有问题」并退 1', async () => {
+  /**
+   * U41 补锚：**文件不在 ≠ 配置坏**（设计 · 命令行与配置：「首次无配置允许进入接入流程」
+   * ＋「损坏配置必须报告具体位置，不能当空配置覆盖」）。
+   *
+   * **原锚**：空家目录（没有 `config.json`）⇒ 退 1 ＋ 报「配置有问题」；
+   * **为何变**：新装用户手上就没有那份文件，照旧报错等于把人挡在门外——缺文件现在走
+   * 空配置（下一条用例钉它）；**新锚**：**坏内容**照旧点名报错退 1，
+   * 两件事分开，报错这一半一个字没松。
+   */
+  test('配置坏了——报「配置有问题」并退 1', async () => {
     const home = tempDir('magic-cli-')
     try {
+      mkdirSync(join(home, '.magic'), { recursive: true })
+      writeFileSync(join(home, '.magic', 'config.json'), '{ 这不是 JSON }', 'utf8')
+
       const result = await run(home)
 
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('配置有问题')
       expect(result.stderr).toContain('config.json')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  /**
+   * 空配置要能起步（U41 验收：「空配置能进入接入/选择」「不在启动阶段以缺配置退出」）。
+   *
+   * 没有终端时它照样退场（外壳那一关），但**不是因为配置**——这一条钉的正是那个分别：
+   * 两个都退 1 的场面里，「为什么退」不能混。
+   */
+  test('还没有配置——不报「配置有问题」（首次运行要能进入接入流程）', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      const result = await run(home)
+
+      expect(result.stderr).not.toContain('配置有问题')
     } finally {
       removeDir(home)
     }

@@ -158,7 +158,9 @@ export type VendorStreamer = (
 export function createVendorStreamer(options: VendorStreamerOptions): VendorStreamer {
   const provider = createOpenAICompatible({
     name: options.providerId,
-    baseURL: options.config.baseURL,
+    // 兼容接入（旧形制）必须有地址；官方适配（有 `vendor`）的地址由适配提供——
+    // 本条路径在没有显式地址时退回首接端点常量（U41 适配接入后由适配解析，见回报）
+    baseURL: options.config.baseURL ?? MINIMAX_BASE_URL,
     apiKey: options.apiKey,
     // 流式用量——不置此则供应商不回 usage，`model.usage` 事件无从产生
     includeUsage: true,

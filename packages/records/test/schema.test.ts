@@ -103,7 +103,7 @@ describe('判据 3 · 不落库清单', () => {
     }
   })
 
-  test('不落库清单＝契约常量（十二个 kind，一字不差）', () => {
+  test('不落库清单＝契约常量（十三个 kind，一字不差）', () => {
     // 第 17 轮补锚：`model.retry` 与两个实时增量同列——退避期间那个「正在等」是实时信号、
     // 不是重放事实；重试次数另落 `ModelCallResult.attempts`，故不落库不丢信息。
     // U16 补锚：`session.state` 同列；第 19 轮：`session.history` 同列（读出来的，不是过程事实）——它是**快照**（此刻有哪些会话、当前在哪条），
@@ -122,7 +122,9 @@ describe('判据 3 · 不落库清单', () => {
     // 且它是**边打边问**的动作（每改一个字问一次），落库只会把观测淹掉。
     // U39 补锚：`mcp.catalog`——同 `skills.catalog` 那条（读出来的不落库 ＋ 反复看）；
     // 重连这个动作也不落库（它不产生外部效果）。
-    // **新锚**：十二条（两单各加一条，各自那条判据都没松）。
+    // U41 补锚：`provider.catalog`——同 `model.catalog` 那条（配置本来就在盘上，
+    // 管理页看的就是它）；保存 / 移除这个动作也不落库（痕在配置文件里）。
+    // **新锚**：十三条（U41 加一条，各自那条判据都没松）。
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'grants.catalog',
       'input.settled',
@@ -131,6 +133,7 @@ describe('判据 3 · 不落库清单', () => {
       'model.delta',
       'model.retry',
       'paths.catalog',
+      'provider.catalog',
       'session.history',
       'session.state',
       'skill.used',

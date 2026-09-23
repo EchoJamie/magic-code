@@ -9,6 +9,7 @@
  */
 
 import type { McpConfig } from './mcp.ts'
+import type { ProviderModelOverride, ReasoningSetting } from './model.ts'
 import type { ModelTraits } from './ports.ts'
 
 /** 配置文件落点。 */
@@ -35,38 +36,71 @@ export const DEFAULT_DATA_DIR = '~/.magic'
 export const GRANTS_FILE = '~/.magic/grants.json'
 
 /**
- * 供应商条目（`providers.<id>`——`<id>` 任意命名）。
- * 加供应商 / 同家多模型＝`providers` 加条目，形制不变。
+ * 供应商条目（`providers.<id>`——`<id>` 是**用户连接**的 id，任意命名）。
+ *
+ * **一个连接 ≠ 一个型号**（U41 改形）：`model` 是**用户默认选择**，不是它支持的模型全集
+ * ——型号来自供应商接口的缓存（见 `model.ts`）。故本条目**可以只有一个 `vendor`**：
+ *
+ * ```json
+ * { "providers": { "deepseek": { "vendor": "deepseek" } } }
+ * ```
+ *
+ * 两条接入路径同处一表：
+ * - **官方适配**（有 `vendor`）——认证方式、官方地址、列表/详情接口、调用协议与令牌口径
+ *   由内置适配提供（首批 `minimax` / `deepseek`）；`baseURL` 只在**明确需要**时写；
+ * - **旧兼容**（无 `vendor`）——照旧 `baseURL` ＋ `model` 走原协议，**不猜域名、不把它
+ *   当成官方适配已经可用**（设计 · 命令行与配置「旧配置兼容与保存」）。
  */
 export type ProviderConfig = {
-  readonly baseURL: string
+  /**
+   * **内置供应商适配名**——新建官方连接必有；首批 `minimax` / `deepseek`。
+   *
+   * ⚠️ 不从用户起的 id 或未知 URL **猜**供应商：认不出就是没有这一位（＝兼容接入）。
+   */
+  readonly vendor?: string
+  /** 可读连接名——缺省＝用 id。**改名保留 id**（id 是引用键，不是给人看的）。 */
+  readonly name?: string
+  /** 该供应商支持的**官方区域**——可读标识，由适配解释成具体地址。 */
+  readonly region?: string
+  /**
+   * 明确设置的高级地址——**常规 URL 由适配提供**，本键只在明确需要时写。
+   *
+   * ⚠️ 地址变化是**接入范围变化**（旧缓存随之废弃），**不自动迁移密钥**。
+   */
+  readonly baseURL?: string
   /** 空 / 缺省 → 回退环境变量（见 `apiKeyEnvVarOf`）；**永不入记录 / 事件**。 */
   readonly apiKey?: string
-  readonly model: string
   /**
-   * **模型特征标记的覆盖位**——内置表未覆盖的模型在此标注（表外模型 / 私有端点 /
-   * 供应商改了行为的唯一出口）。
+   * 此连接的**用户默认选择**——可省略。
+   *
+   * **省略 ＝ 还没选过**（新接入的连接就是这样）：不取列表第一项、不偷偷设默认，
+   * 首次运行由用户选一次（设计：「没有保存默认时，不把列表首项/最新项偷偷设为默认」）。
+   * 默认型号变更后未明确指定思考设置时，采用**目标模型**的默认。
+   */
+  readonly model?: string
+  /** 该模型的思考设置——可省略（缺省＝模型默认）。形态见 `model.ts` · `ReasoningSetting`。 */
+  readonly reasoning?: ReasoningSetting
+  /**
+   * 按**精确模型 id** 的少量必要覆盖——不作为模型注册要求。
+   *
+   * 与缓存**分开存**（不改写缓存来伪装供应商声明）；消费时优先级最高。
+   * 形态见 `model.ts` · `ProviderModelOverride`。
+   */
+  readonly modelOverrides?: Readonly<Record<string, ProviderModelOverride>>
+  /**
+   * **模型特征标记的覆盖位**（旧形制）——U41 起读作「该连接 `model` 那一个」的精确覆盖。
    * 判据「**键在即接管**」——本键存在即**整组覆盖**内置表（含 `{}` ＝显式声明无特征）；
    * 键缺省 → 常规行为（不猜、不切）。形态见 `ports.ts` · `ModelTraits`。
    */
   readonly traits?: ModelTraits
   /**
-   * **上下文窗口总量**（token）——状态行 `12.4k/200k` 的**分母**（缺陷 D10 · 第 1 样）。
+   * **上下文窗口总量**（token，旧形制）——状态行 `12.4k/200k` 的**分母**。
    *
-   * **为什么键在这**——窗长是**供应商 / 模型元数据**，模型域自己算不出来（它只见消息，
-   * 不见模型的规格）。两条来处：
-   * - **本键**——用户在此声明（本地端点 / 私有部署的真实窗长只有他知道；U30 起这是**覆盖位**）；
-   * - **模型域的内置容量表**（U30 落形：按**准确的模型 id**，官方出处见 `@magic/model`
-   *   的 `capacity.ts`，与 `traits` 的 `MODEL_TRAITS_BUILTIN` 同族）——已知模型不必让用户自己补。
+   * U41 起与 `traits` 同一条读法：**只映射为该连接 `model` 那一个模型的精确覆盖**
+   * （声明属于「这一条目 ＋ 它的模型」两件）——同条目换到别的模型时这份声明不跟过去，
+   * 那个模型多长查模型信息缓存与缺项补充，查不到就是不知道（分母不给）。
    *
-   * **缺省 ＝ 不给分母**——`model.usage` 上就没有 `contextWindow` 这个位，外壳显示不出
-   * `12.4k/200k` 就不显示（拿不到就说拿不到，不拿假数占位）。
-   *
-   * **声明属于「这一条目 ＋ 它的模型」两件**（2026-09-20 裁）——消费按 `provider ＋ model`
-   * 一起看：只有**选中就是该条目的模型**时这份声明才算数。由头：合法的两个端点可以给
-   * **同名模型**声明不同的窗长（本地部署量化过 / 网关另有一层裁法），一条声明盖到另一条头上
-   * 是错的。同一条目下换到**另一个**模型（`model.switch { model }`）时，这份声明也不跟过去
-   * ——那个模型多长，查内置表，查不到就是不知道（分母不给）。
+   * **缺省 ＝ 不给分母**——外壳显示不出 `12.4k/200k` 就不显示（拿不到就说拿不到）。
    */
   readonly contextWindow?: number
 }
@@ -181,7 +215,14 @@ export type SkillsConfig = {
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
-  readonly defaultProvider: string
+  /**
+   * 新建普通会话采用**哪个连接的默认选择**（U41 起可缺省）。
+   *
+   * 缺省 ＝ 还没有默认（新装 / 还没接过）：**进入接入或选择流程，不取列表第一项**，
+   * 也不在启动阶段以「缺配置」退出（设计 · 命令行与配置：「首次无配置/空连接允许进入
+   * 接入流程」）。用户选定后才由「设为默认」写回这里与对应连接的 `model`。
+   */
+  readonly defaultProvider?: string
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly dataDir: string
   /** 权限段（阶段 2）——见 `PermissionsConfig`。 */

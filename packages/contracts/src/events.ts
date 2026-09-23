@@ -13,6 +13,8 @@
 
 import type { Content, Entry, SessionSummary, UsedSkill } from './entries.ts'
 import type { RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
+// 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
+import type { ModelInfoRead, ReasoningSetting } from './model.ts'
 
 // —— 标量与枚举 ——
 
@@ -102,8 +104,10 @@ export type EventKind =
   | 'skill.used'
   // 控制 · 输入——**完整输入已被会话收下**（或没成，U33）；**不落库**
   | 'input.settled'
-  // 控制 · 模型——**读侧命令（`model.list`）的答复**：注册表全量（缺陷 D10 · 第 3 样）；**不落库**
+  // 控制 · 模型——**读侧命令（`model.list`）的答复**：连接与模型信息缓存的一屏；**不落库**
   | 'model.catalog'
+  // 控制 · 供应商——**管理面的读侧答复**（U41）：`provider.list` / 保存 / 移除的回话；**不落库**
+  | 'provider.catalog'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
   | 'session.state'
   // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
@@ -136,17 +140,58 @@ export type OutputDelta = {
 }
 
 /**
- * 模型条目表的一行——`model.catalog` 的载荷（缺陷 D10 · 第 3 样）。
+ * 模型面的一行——`model.catalog` 的载荷（缺陷 D10 · 第 3 样；U41 改形）。
  *
  * 名字不取 `ModelEntry`：本项目里「条目」专职记录域的 `Entry`（`Entry` / `NewEntry`），
  * 两个「条目」在同一份契约里撞脸＝日后必混。
+ *
+ * **一行 ＝ 一条连接**（不是一条「配置条目 ＋ 它的型号」）——U41 起型号来自供应商接口的
+ * 缓存（`cache.snapshot.models`），配置里的 `model` 只是**用户默认选择**，可以没有。
  */
 export type ModelCatalogRow = {
-  /** `providers` 的键（**条目名**）——不是供应商细节，是「哪一格」。 */
+  /** `providers` 的键（**连接 id**）——不是供应商细节，是「哪一格」。 */
   readonly provider: string
-  /** 该条目的默认模型（`providers.<id>.model`）。 */
-  readonly model: string
-  /** 上下文窗口总量——**配置声明了才有**（见 `ProviderConfig.contextWindow`）；没声明就不给。 */
+  /** 连接可读名（`providers.<id>.name`）——缺省＝用 id。 */
+  readonly name?: string
+  /**
+   * 内置供应商适配名（`providers.<id>.vendor`）——**没有＝兼容接入**。
+   *
+   * 读面照给（界面据它区分「官方自动获取」与「原协议兼容」），但没人该按它猜型号。
+   */
+  readonly vendor?: string
+  /**
+   * 该连接的**用户默认选择**（`providers.<id>.model`）——**没选过就不给这一位**。
+   *
+   * 不给不等于「一个模型都没有」：它说的只是「这个连接还没有默认」。
+   */
+  readonly model?: string
+  /**
+   * 该模型的思考设置（`providers.<id>.reasoning`）——没设过就不给这一位。
+   * 意义与 `model` 绑定：换了模型而没显式改设置时，取**目标模型**的默认。
+   */
+  readonly reasoning?: ReasoningSetting
+  /**
+   * 该连接**管理面**的几格（U41；与模型选择面共用这一行——管理页与选择器说的是
+   * 同一批连接，分成两种行只会让两处各写一套「这条连接长什么样」）。
+   */
+  readonly region?: string
+  /** 明确写下的高级地址——**没写就不给这一位**（常规 URL 由适配提供，不是「没有地址」）。 */
+  readonly baseURL?: string
+  /**
+   * 认证的**来处**——`config`（配置文件里的 `apiKey`）｜ `env`（回退环境变量）。
+   *
+   * ⚠️ **给的是来处，不是凭据**：两处都没有（这条连接还没有可用认证）就不给这一位。
+   * 管理页据它说「认证：配置文件 / 环境变量」，而不是含糊的「已设置」。
+   */
+  readonly keySource?: 'config' | 'env'
+  /** 该连接**模型信息缓存**的读数——见 `ModelInfoRead`。 */
+  readonly cache?: ModelInfoRead
+  /**
+   * 该连接**当前默认模型**的上下文窗总量（token）——状态行 `12.4k/200k` 的分母。
+   *
+   * 两处皆无（既没有用户覆盖、也没有缓存与缺项补充的依据）就**不给这一位**：
+   * 外壳显示不出分母就不显示，不拿假数占位。
+   */
   readonly contextWindow?: number
 }
 
@@ -338,8 +383,21 @@ export type EventDataOf = {
   }
   'model.call.end': EmptyPayload
   'model.usage': {
-    readonly inputTokens: number
-    readonly outputTokens: number
+    /**
+     * 本次**完整**输入消耗（**含**已计入输入的缓存部分）。
+     * **未上报＝不给这一位**——不补零（服务端明说 0 才是 0，见 `ModelUsage`）。
+     */
+    readonly inputTokens?: number
+    /** 本次**完整**输出消耗（**含**该供应商计入输出的思考部分）。同理不补零。 */
+    readonly outputTokens?: number
+    /** 供应商给出的总用量——保留其定义；未给且无法完整推导＝不给这一位。 */
+    readonly totalTokens?: number
+    /** 细分 · 缓存读——**不得与 `inputTokens` 相加**（它已含在里面）。 */
+    readonly cacheReadTokens?: number
+    /** 细分 · 缓存写——同上。 */
+    readonly cacheWriteTokens?: number
+    /** 细分 · 思考——**不得与 `outputTokens` 相加**。 */
+    readonly reasoningTokens?: number
     /**
      * **上下文窗口总量**（token）——`inputTokens/outputTokens` 之外，状态行
      * `12.4k/200k` 的**分母**（缺陷 D10 · 第 1 样）。
@@ -523,14 +581,32 @@ export type EventDataOf = {
   // **不落库**：它是**读出来的**（注册表本来就在内存里），落库＝把同一张表存 N 遍
   // （照 `session.history` 同一条理由）。
   'model.catalog': {
-    /** 注册表里的**全部**条目（配置顺序）。空表 ＋ `note` ＝ 这次装配没有注册表。 */
+    /** 配置里的**全部**连接（配置顺序）。空表 ＋ `note` ＝ 这次装配没有注册表。 */
     readonly entries: readonly ModelCatalogRow[]
     /**
-     * 此刻会走哪一条——**未切换过＝缺省条目 ＋ 它的默认模型**（`stream` 的实际去向）。
+     * 此刻会走哪一条——**未切换过＝缺省连接 ＋ 它的默认模型**（`stream` 的实际去向）。
      * 外壳据以在表里标「当前」；这次装配没有注册表时缺席。
+     *
+     * ⚠️ **可能压根没有「当前」**：还没选过模型的新连接（或一条连接都没有）就没有去向
+     * ——那时这一位缺席，报「还没选模型」，**不取列表第一项顶上**。
      */
     readonly current?: ModelSelectionRef
     /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
+    readonly note?: string
+  }
+  // 控制 · 供应商——**管理面的读侧答复**（U41）：`provider.list` 的答复，以及
+  // `provider.save` / `provider.remove` 之后的回话（照 `mcp.reconnect` 之于 `mcp.catalog`
+  // 的姿势——动作的**结果**就是那一屏的新状态，不另立一条「保存成功」）。
+  // **不落库**：与 `model.catalog` 同一条——它是**读出来的**（配置本来就在盘上）。
+  'provider.catalog': {
+    /** 连接一览（配置顺序）——与 `model.catalog` 的 `entries` **同一行形态**。 */
+    readonly entries: readonly ModelCatalogRow[]
+    /**
+     * 一句话说明——保存 / 移除之后的回话、或有事要说的地方。
+     *
+     * 保存 / 移除**没成**也走这一条（`ok:false` 不另立 kind）：它是一次用户动作的结果，
+     * 与「内核自身异常」不是一类，混进 `error` 会污染观测（同 `model.switched` 的理由）。
+     */
     readonly note?: string
   }
   // session——会话面（阶段 2 · U16）。**查询答复 ＋ 变更通报**两种时机共用一个 kind：
@@ -742,6 +818,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 且 `/mcp` 是**反复看**的动作，每按一下留一笔「问过」只会污染观测。
   // 重连这个动作也不落库：它不产生外部效果（重放要的是「发生过什么」）。
   'mcp.catalog',
+  // 供应商管理面同列的理由（U41）：与 `model.catalog` 同一条——它是**读出来的**
+  // （配置本来就在盘上），落库＝把同一份读数存 N 遍。**保存与移除的动作也不是事件**：
+  // 它们的痕在配置文件里（少了一条 / 多了一条），重放要的是「发生过什么」，
+  // 不是「某人看过一次管理页」。
+  'provider.catalog',
 ]
 
 /**

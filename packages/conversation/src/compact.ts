@@ -126,8 +126,16 @@ export type Compactor = {
    * 两处各存一个数＝迟早各认一段，那正是「摘要＋近段」最不该出的错。
    */
   readonly nearEntries: number
-  /** 记一次 `model.usage` 读数——**触发判据的唯一来处**（不另猜上下文有多长）。 */
-  observe(usage: { readonly inputTokens: number; readonly contextWindow?: number | undefined }): void
+  /**
+   * 记一次 `model.usage` 读数——**触发判据的唯一来处**（不另猜上下文有多长）。
+   *
+   * ⚠️ `inputTokens` **未上报**（U41 起用量各字段分别允许未知）＝这一次**不观察**：
+   * 不伪造一次零用量（那会让压缩阈值永远够不着），也不单方面换掉分母。
+   */
+  observe(usage: {
+    readonly inputTokens?: number | undefined
+    readonly contextWindow?: number | undefined
+  }): void
   /** 用量到阈值了吗（在开一轮之前问一次）。 */
   needed(): boolean
   /** 压一次——成 / 不成都如实报，**不抛**（失败不降级是调用方的姿势，不是异常）。 */
@@ -200,6 +208,9 @@ export function createCompactor(deps: CompactorDeps): Compactor {
     nearEntries: deps.nearEntries,
 
     observe(reading): void {
+      // **没报输入用量就不观察**——既不留一次假的零，也不只换分母（U41）
+      if (reading.inputTokens === undefined) return
+
       usage = reading.inputTokens
       // 分母跟着分子走（D10 的口径）：两条同刻同源，不拿一个滞后的窗长配一个新用量
       contextWindow = reading.contextWindow

@@ -34,11 +34,30 @@ import type { WindowTable } from './capacity.ts'
 
 // —— 形态 ——
 
+/**
+ * **还没定下走谁**——`stream` 那一步的失败（不是构造期：`MissingApiKeyError` 管的是
+ * 「这条连接没配好」，本错管的是「一条都还没接 / 还没选过」）。
+ *
+ * 它是**调用路径上的异常**而不是 `model.error` 事件：还没到模型那一步，
+ * 没有「这次调用」可归（与 `MissingApiKeyError` 同一条理由）。
+ */
+export class NoModelSelectionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'NoModelSelectionError'
+  }
+}
+
 /** 注册表里的一格——**供应商细节不出域**：只给「叫什么、默认用哪个模型、窗多长」。 */
 export type ProviderEntry = {
   readonly id: string
-  /** 该条目的默认模型（`providers.<id>.model`）。 */
-  readonly model: string
+  /**
+   * 该连接的**用户默认模型**（`providers.<id>.model`）——**没选过就不给这一位**。
+   *
+   * U41 起型号来自供应商接口的缓存，配置里的 `model` 只是「这个连接默认用哪个」，
+   * 新接上的连接可以还没有它（用户第一次选完才会有）。
+   */
+  readonly model?: string
   /**
    * 该条目的**上下文窗口总量**（token）——**声明了就用它，否则查内置表**（U30）。
    *
@@ -95,19 +114,22 @@ export interface ModelRegistry extends ModelGateway {
    * 不同的窗长，平表会让甲的声明盖到乙头上。
    */
   windowTable(): WindowTable
-  /** 配置里的缺省条目 id（`defaultProvider`）。 */
-  defaultProviderId(): string
+  /** 配置里的缺省连接 id（`defaultProvider`）——**没配过就不给**（U41 起可缺）。 */
+  defaultProviderId(): string | undefined
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
   selection(): ModelSelection | undefined
   /**
-   * **此刻会走哪一条**——`selection()` 的「没有就补缺省」版：未切换过＝缺省条目 ＋
-   * 该条目的默认模型（`stream` 的实际去向）。
+   * **此刻会走哪一条**——`selection()` 的「没有就补缺省」版：未切换过＝缺省连接 ＋
+   * 该连接的默认模型（`stream` 的实际去向）。
    *
    * 两个读法并存各有其用：`selection()` 回答「**换过没有**」（`undefined` 本身就是信息），
    * 本方法回答「**现在是谁**」——外壳的模型选择器要标「当前」，问的是后者
    * （缺陷 D10 · 第 3 样）。
+   *
+   * ⚠️ **U41 起可能 `undefined`**——还没选过模型（或一条连接都没有）时就**没有去向**：
+   * 那时由调用方报「先选模型」，**不取列表第一项顶上**（设计明文）。
    */
-  current(): ModelSelection
+  current(): ModelSelection | undefined
   has(id: string): boolean
   /** 换模型——会话中途调用，下一轮起走新条目（见文件头注）。 */
   use(request: ModelSwitchRequest): ModelSwitchResult
@@ -116,8 +138,13 @@ export interface ModelRegistry extends ModelGateway {
 export type ModelRegistryOptions = {
   /** 配置里的 `providers` 原样（形制见共享语言 · 配置形制）。 */
   readonly providers: Readonly<Record<string, ProviderConfig>>
-  /** 配置里的 `defaultProvider`——开局走它。 */
-  readonly defaultProvider: string
+  /**
+   * 配置里的 `defaultProvider`——开局走它；**没配过就不给**（U41 起可缺）。
+   *
+   * 缺省时**不预造任何网关**，也不挑一条顶上：`current()` 为空、`stream()` 报「先选模型」，
+   * 直到用户选一次（设计：「无默认时进入选择流程，不取列表第一项」）。
+   */
+  readonly defaultProvider?: string
   /** 信封铸造器——**按会话实例构造**，各条目的网关共用同一个（见 `createModelGateway`）。 */
   readonly stamper: EventStamper
   /** 中间件链——逐条目的网关共用（横切逻辑与「走哪家」无关）。 */
@@ -153,8 +180,8 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
   // ⚠️ 查表一律走 `ownOf`（只认自有键）——条目名是用户给的字符串，普通索引会从
   // `Object.prototype` 上摸到东西（见 `capacity.ts` 的 `ownOf` 注）
-  const defaultEntry = ownOf(providers, defaultProvider)
-  if (defaultEntry === undefined) {
+  const defaultEntry = defaultProvider === undefined ? undefined : ownOf(providers, defaultProvider)
+  if (defaultProvider !== undefined && defaultEntry === undefined) {
     const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
     throw new Error(`缺省供应商「${defaultProvider}」不在 providers 里——已配：${known}`)
   }
@@ -185,8 +212,8 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     return gateway
   }
 
-  /** 开局那条——**构造期就造**（缺 key 当场报；见函数头注）。 */
-  gatewayFor(defaultProvider)
+  /** 开局那条——**构造期就造**（缺 key 当场报；见函数头注）。**没配缺省就不预造**。 */
+  if (defaultProvider !== undefined) gatewayFor(defaultProvider)
 
   /** 当前选中；`undefined` ＝未切换（走缺省条目、模型名取自请求）。 */
   let selected: ModelSelection | undefined
@@ -194,10 +221,14 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
   return {
     list(): readonly ProviderEntry[] {
       return entries.map(([id, config]) => {
-        const window = resolveContextWindow(config.model, config.contextWindow)
+        // 没选过默认模型 —— 窗长无从谈起（那份声明属于「这一条 ＋ 它的模型」两件）
+        const window =
+          config.model === undefined
+            ? undefined
+            : resolveContextWindow(config.model, config.contextWindow)
         return {
           id,
-          model: config.model,
+          ...(config.model === undefined ? {} : { model: config.model }),
           // 两处皆无就不给这个位（不拿 0 / 占位符冒充「不知道」）
           ...(window === undefined ? {} : { contextWindow: window }),
         }
@@ -209,7 +240,8 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       // 内置表原样转出去（只读）——它按准确模型 id 算，与条目无关。
       const declared: Record<string, { model: string; window: number }> = {}
       for (const [id, config] of entries) {
-        if (config.contextWindow !== undefined) {
+        // 两件都要有：声明属于「这一条 ＋ 它的模型」——没选过模型就没有「它那个模型」
+        if (config.contextWindow !== undefined && config.model !== undefined) {
           declared[id] = { model: config.model, window: config.contextWindow }
         }
       }
@@ -217,7 +249,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       return { builtin: MODEL_CONTEXT_BUILTIN, declared }
     },
 
-    defaultProviderId(): string {
+    defaultProviderId(): string | undefined {
       return defaultProvider
     },
 
@@ -225,10 +257,14 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       return selected
     },
 
-    current(): ModelSelection {
-      // 未切换过——缺省条目 ＋ **它的**默认模型（`stream` 那时正是这么走的：请求给的模型名
-      // 由装配按缺省条目填，见 `Assembly` 里 `model: loaded.provider.model` 那一处）
-      return selected ?? { provider: defaultProvider, model: defaultEntry.model }
+    current(): ModelSelection | undefined {
+      // 未切换过——缺省连接 ＋ **它的**默认模型（`stream` 那时正是这么走的：请求给的模型名
+      // 由装配按缺省连接填）。
+      // ⚠️ 缺省连接没配、或它还没选过模型 ⇒ **没有去向**（`undefined`）——那时如实报
+      // 「先选模型」，**不取列表第一项顶上**。
+      if (selected !== undefined) return selected
+      if (defaultProvider === undefined || defaultEntry?.model === undefined) return undefined
+      return { provider: defaultProvider, model: defaultEntry.model }
     },
 
     has(id: string): boolean {
@@ -244,6 +280,10 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       }
 
       const providerId = askedProvider ?? selected?.provider ?? defaultProvider
+      if (providerId === undefined) {
+        return { ok: false, reason: '还没有可用的连接——先接入一个供应商' }
+      }
+
       const entry = ownOf(providers, providerId)
       if (entry === undefined) {
         const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
@@ -251,6 +291,10 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       }
 
       const model = askedModel !== undefined && askedModel.length > 0 ? askedModel : entry.model
+      // 连接在、模型不在 —— 报「先选模型」，**不挑一个顶上**（设计：不取列表第一项）
+      if (model === undefined || model.length === 0) {
+        return { ok: false, reason: `连接「${providerId}」还没有默认模型——请指明用哪个模型` }
+      }
 
       // **网关在这一步就造**（不是等下一轮调用）——切不过去就该在「切」这一下说清楚：
       // 缺 key 的缘由经 `use` 的返回值交回，而不是拖到下一轮炸在对话域里（那里只会报
@@ -268,15 +312,20 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       const chosen = selected
-      if (chosen === undefined) {
-        // 未切换——缺省条目 ＋ **请求给的模型名**（技术方案 · 配置与密钥：「模型名取自请求」）
-        return gatewayFor(defaultProvider).stream(request, streamOptions)
+      if (chosen !== undefined) {
+        return gatewayFor(chosen.provider).stream(
+          { ...request, model: chosen.model },
+          streamOptions,
+        )
       }
 
-      return gatewayFor(chosen.provider).stream(
-        { ...request, model: chosen.model },
-        streamOptions,
-      )
+      // 未切换——缺省连接 ＋ **请求给的模型名**（技术方案 · 配置与密钥：「模型名取自请求」）。
+      // ⚠️ 没配缺省 ⇒ **无处可去**：这里抛（调用方据以报「先接入供应商 / 先选模型」），
+      // 不退回某一条看上去顺眼的连接——那会把「我没选」变成「它替我选了」。
+      if (defaultProvider === undefined) {
+        throw new NoModelSelectionError('还没有可用的供应商连接——先接入一个供应商')
+      }
+      return gatewayFor(defaultProvider).stream(request, streamOptions)
     },
   }
 }

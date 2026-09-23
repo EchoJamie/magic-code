@@ -897,7 +897,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 攒的那些只认得**这趟会话调过 / 换过**的条目，注册表里没碰过的一律列不出来。
     const rows = view.models.map((entry) => ({
       label: entry.provider,
-      meta: entry.model,
+      // 默认模型可以还没有（新接上的连接还没选过）——那时副栏留空，不编一行字
+      meta: entry.model ?? '',
       current: entry.model === current,
       value: entry.provider,
     }))
