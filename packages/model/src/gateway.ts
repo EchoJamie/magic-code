@@ -351,6 +351,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         provider: providerId,
         // 窗长随**用量**上报（分母跟着分子走）——**有效输入预算**，与出站请求同一份解析
         contextWindow: specOf(effective.model).inputBudget,
+        // 同一个数再早报一次（`model.call.start`）——外壳在请求开始那一刻就有分母
+        inputBudget: specOf(effective.model).inputBudget,
         secret: apiKey,
         // 生效标记——同一份解析里出（用户覆盖 → 适配补充）
         traits: specOf(effective.model).traits,

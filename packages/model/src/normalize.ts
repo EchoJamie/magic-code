@@ -84,6 +84,12 @@ export type NormalizeOptions = {
    */
   readonly contextWindow?: number | undefined
   /**
+   * **这次调用的有效输入预算**（U41 返修）——写进 `model.call.start`，让外壳在请求
+   * **开始**那一刻就有分母（不必等整轮收束的 `model.usage`）。与 `contextWindow`
+   * 是**同一个数**（同一次解析），只是两个时点各报一次。
+   */
+  readonly inputBudget?: number | undefined
+  /**
    * 信封铸造器（技术方案 · 领域划分 · 信封的归属 v0 锚定）——**产出方铸**。
    * `id` / `session` / `turn` / `at` 四件全由它盖；归一不自造计数、不取时钟。
    */
@@ -102,6 +108,8 @@ type PendingToolCall = {
 type NormalizeState = {
   readonly model: string
   readonly provider: string | undefined
+  /** 这次调用的有效输入预算（见 `NormalizeOptions.inputBudget`）。 */
+  readonly inputBudget: number | undefined
   readonly secret: string | undefined
   /** 上下文窗口总量（条目配置声明了才有）——随 `model.usage` 出去的那个分母。 */
   readonly contextWindow: number | undefined
@@ -135,6 +143,7 @@ function createState(options: NormalizeOptions): NormalizeState {
   return {
     model: options.model,
     provider: options.provider,
+    inputBudget: options.inputBudget,
     secret: options.secret,
     contextWindow: options.contextWindow,
     stamper: options.stamper,
@@ -416,7 +425,7 @@ export function toKernelEvents(
 
   async function* pump(): AsyncGenerator<KernelEvent> {
     try {
-      yield modelCallStart(state.stamper, state.model, state.provider)
+      yield modelCallStart(state.stamper, state.model, state.provider, state.inputBudget)
 
       for await (const part of parts) {
         for (const event of consume(part, state)) yield event

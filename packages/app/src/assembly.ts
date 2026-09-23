@@ -50,6 +50,7 @@ import type {
   McpConnection,
   McpConnectionState,
   McpToolRejection,
+  ModelCacheAccess,
   ModelCatalogRow,
   ModelInfo,
   ModelDefaultRequest,
@@ -110,6 +111,7 @@ import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
 import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
 import { loadGrants, saveGrants } from './grants-file.ts'
+import { configFingerprintOf, modelCacheAccessOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
@@ -718,9 +720,71 @@ export function assemble(options: AssembleOptions): Assembly {
    * 还没有会话时没有信封可铸，那次不发——`/model` 按下去会现问一次，不会丢。
    */
   const modelCache = createFileModelInfoCache(loaded.config.dataDir)
+
+  /**
+   * 本进程的唯一值——**环境变量来源**那支身份用（`persistent: false`，不落盘）。
+   * 它只作「这不是别的进程」的标记，进不了磁盘文件名以外的任何地方。
+   */
+  const processToken = crypto.randomUUID()
+
+  /**
+   * 某条连接**此刻**的接入身份（U41 返修 · 缓存接口裁决）——缓存按它隔离存储。
+   *
+   * 认证**取自配置文件**（那条连接写了 `apiKey`）时，身份是「配置文件的指纹」——
+   * 同一个文件在另一个进程里算得出同一个串，故那份缓存跨进程可复用；
+   * **走环境变量回退**时没有可验证的共同身份 ⇒ `persistent: false`（不落盘）。
+   *
+   * ⚠️ 指纹取的是**此刻**的（含 inode 与 ctime）——保存配置之后它自己就会变，
+   * 于是旧范围的缓存**再也读不到**，不需要黑名单也不需要时间戳比对。
+   */
+  const cacheAccessOf = (provider: string, config: ProviderConfig | undefined): ModelCacheAccess => {
+    const fromFile =
+      config?.apiKey !== undefined && config.apiKey.trim().length > 0
+        ? configFingerprintOf(loaded.path)
+        : undefined
+
+    return modelCacheAccessOf({
+      provider,
+      ...(fromFile === undefined ? {} : { config: fromFile }),
+      processToken,
+    })
+  }
+
+  /**
+   * 清一份**旧范围**的缓存——**失败要可见**（裁决：清除失败不吞，写进答复）。
+   *
+   * 返回一句给人看的话（没成时）或 `undefined`（成了 / 本来就没有）。
+   * ⚠️ 它清的是**旧身份**那一份：范围隔离之下，新范围那份本来就与它互不相干。
+   */
+  /** 两句回话合成一句（都没有 ⇒ `undefined`，答复里就不带 `note`）。 */
+  const twoNotes = (first: string | undefined, second: string | undefined): string | undefined => {
+    const parts = [first, second].filter((one): one is string => one !== undefined)
+    return parts.length === 0 ? undefined : parts.join('；')
+  }
+
+  const dropCacheQuietly = async (
+    target: { readonly provider: string; readonly access: ModelCacheAccess } | undefined,
+  ): Promise<string | undefined> => {
+    if (target === undefined) return undefined
+
+    try {
+      await modelCache.drop(target.provider, target.access)
+      return undefined
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return `旧缓存没能清掉（${reason}）——它不会串进当前范围，但会占着磁盘`
+    }
+  }
+
   const modelInfo: ModelInfoService = createModelInfoService({
     connections: () =>
-      Object.entries(providerBook).map(([id, config]) => resolveConnection({ providerId: id, config })),
+      Object.entries(providerBook).map(([id, config]) => {
+        const resolved = resolveConnection({ providerId: id, config })
+        // **合成接入身份**（U41 返修）：契约资料（`ModelCacheAccess`）由本线算、
+        // 连接资料由 `resolveConnection` 给——两件一起交给域（新缓存实现直接消费它）。
+        // 先落到变量再返回：这是**结构兼容**的合成，不是另立一份影子类型。
+        return { ...resolved, cacheAccess: cacheAccessOf(id, config) }
+      }),
     cache: modelCache,
     fetch: options.modelFetch ?? (globalThis.fetch as FetchLike),
     now,
@@ -1008,12 +1072,20 @@ export function assemble(options: AssembleOptions): Assembly {
     // `model.call.start` 只说「这次用了谁」，说不出「何时改的、为什么没改成」。
     // 成了＝带上落地后的选中；没成＝原选原样保留（切不动就不动），只说缘由。
     // 盖章走**转发铸造器**（U16）：注册表是进程级的，事件要落在**当下那条会话**上。
+    // **落地后的有效输入预算**（U41 返修）——换模型**当下**就要换的那个分母。
+    // 未知（那个模型没有窗长依据）时就**不给这一位**：外壳据「在不在」**清空**，
+    // 沿用旧模型的容量就是报错一个数。
+    const budget = result.ok
+      ? models.capacityOf(result.selection.provider, result.selection.model)?.inputBudget
+      : undefined
+
     sink.emit(
       result.ok
         ? forwardStamper.stamp('model.switched', {
             ok: true,
             provider: result.selection.provider,
             model: result.selection.model,
+            ...(budget === undefined ? {} : { inputBudget: budget }),
           })
         : forwardStamper.stamp('model.switched', { ok: false, reason: result.reason }),
     )
@@ -1332,8 +1404,9 @@ export function assemble(options: AssembleOptions): Assembly {
         ...(keySourceOf(entry.id, config) === undefined
           ? {}
           : { keySource: keySourceOf(entry.id, config) }),
-        // **有效输入预算**（U41 返修）——外壳的分母与出站 / 用量 / 压缩同源。
-        // 没有依据（配置、缓存、适配补充都没有）就**不给这一位**——显示不出来就不显示
+        // **该连接默认模型**的有效输入预算（U41 返修）——没有依据就不给这一位。
+        // ⚠️ 它**不是**「当前选择」的分母：当前选中可以是同连接下的另一个模型——
+        // 外壳要那个数请看 `model.catalog.currentInputBudget`（同一份解析）。
         ...(inputBudgetOf(entry.id, entry.model) === undefined
           ? {}
           : { contextWindow: inputBudgetOf(entry.id, entry.model) }),
@@ -1347,11 +1420,18 @@ export function assemble(options: AssembleOptions): Assembly {
     if (registry === undefined) return { entries: [], note: NO_REGISTRY }
 
     const current = registry.current()
+    // **当前选择**的有效输入预算（U41 返修）——别拿某一行的 `contextWindow` 顶替：
+    // 那一行说的是**该连接的默认模型**多长，而当前选中完全可以是同一条连接下的**另一个**
+    // 模型（`model.switch { model }`）。按 `current` 算，与出站、用量同源。
+    const currentBudget =
+      current === undefined ? undefined : registry.capacityOf(current.provider, current.model)?.inputBudget
+
     return {
       entries: catalogRows(registry),
       // 还没有去向（没配缺省连接 / 还没选过模型）⇒ **不给这一位**——外壳报「先选模型」，
       // 不拿列表第一项当成「当前」（设计明文）
       ...(current === undefined ? {} : { current }),
+      ...(currentBudget === undefined ? {} : { currentInputBudget: currentBudget }),
     }
   }
 
@@ -1467,8 +1547,16 @@ export function assemble(options: AssembleOptions): Assembly {
    * 「读回来」这一步不是多余：它用的是**加载器同一把尺子**（形制 · `~` 展开 · 必填项），
    * 写进去的东西必须读得回来才算成了。
    */
-  const saveProviderCommand = (request: ProviderSaveRequest): void => {
+  const saveProviderCommand = async (request: ProviderSaveRequest): Promise<void> => {
     const before = providerBook[request.provider]
+    // **旧范围**的身份——在保存**之前**算：保存之后配置文件的指纹自己就变了，
+    // 那时再算出来的是新范围（拿它去清旧那份就清错了）
+    const beforeTarget =
+      before === undefined
+        ? undefined
+        : { provider: request.provider, access: cacheAccessOf(request.provider, before) }
+    /** 清除旧缓存的回话（没成才有）——与重建的回话合成一句交给答复。 */
+    let cleared: string | undefined
 
     const outcome = saveProvider({
       path: loaded.path,
@@ -1497,11 +1585,13 @@ export function assemble(options: AssembleOptions): Assembly {
     // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
     if (scopeChanged(before, providerBook[request.provider])) {
       modelInfo.drop(request.provider)
-      void modelCache.drop(request.provider)
+      // **清除旧范围那一份**（裁决：`drop` 明确指定身份，碰不到别的范围）。
+      // ⚠️ **失败要可见**：不 `void` 掉——接住它，写进这次答复（清除失败不吞）
+      cleared = await dropCacheQuietly(beforeTarget)
     }
 
     const rebuilt = rebuildRegistry()
-    listProviders(rebuilt.ok ? undefined : rebuilt.reason)
+    listProviders(twoNotes(rebuilt.ok ? undefined : rebuilt.reason, cleared))
   }
 
   /**
@@ -1511,11 +1601,16 @@ export function assemble(options: AssembleOptions): Assembly {
    * 配置层拦的是「它是默认」（那在文件里）。两处各拦一半，合起来才是「有引用先处理」。
    * 已发生的记录不随移除而删除（那是记录域的事，本命令碰都不碰）。
    */
-  const removeProviderCommand = (provider: string): void => {
+  const removeProviderCommand = async (provider: string): Promise<void> => {
     if (models?.current()?.provider === provider) {
       listProviders(`「${provider}」正在用——先换到别的连接再移除它`)
       return
     }
+
+    // **被移除那条的**身份——同样要**在改动之前**算
+    const removed = providerBook[provider]
+    const removedTarget =
+      removed === undefined ? undefined : { provider, access: cacheAccessOf(provider, removed) }
 
     const outcome = removeProvider({
       path: loaded.path,
@@ -1535,10 +1630,10 @@ export function assemble(options: AssembleOptions): Assembly {
     if (defaultProviderId === provider) defaultProviderId = undefined
 
     modelInfo.drop(provider)
-    void modelCache.drop(provider)
+    const cleared = await dropCacheQuietly(removedTarget)
 
     const rebuilt = rebuildRegistry()
-    listProviders(rebuilt.ok ? undefined : rebuilt.reason)
+    listProviders(twoNotes(rebuilt.ok ? undefined : rebuilt.reason, cleared))
   }
 
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；

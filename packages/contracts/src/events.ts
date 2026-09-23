@@ -380,6 +380,15 @@ export type EventDataOf = {
      * 缺省＝未给（Faux 与直接喂 chunk 的用例不记这个）；取件层真实现一律给。
      */
     readonly provider?: string
+    /**
+     * **这一次调用的有效输入预算**（token · U41 返修）——与 `model.usage.contextWindow`
+     * **同一个数**（同一次解析），只是**更早**给：外壳在请求开始那一刻就能把分母摆上，
+     * 不必等整轮收束。
+     *
+     * 缺省＝**不知道**（那条连接 / 那个模型没有窗长依据）——那时外壳**不给分母**，
+     * 与前一位「不给就是不知道」同一条口径。
+     */
+    readonly inputBudget?: number
   }
   'model.call.end': EmptyPayload
   'model.usage': {
@@ -521,6 +530,14 @@ export type EventDataOf = {
     /** 落地后的选中（`ok: true` 时有 —— 也是「现在走的哪一格」）。 */
     readonly provider?: string
     readonly model?: string
+    /**
+     * **落地后的有效输入预算**（token · U41 返修）——换模型**当下**就要换的那个分母。
+     *
+     * ⚠️ **每次成功切换都带**（未知时**不带**）：外壳据「在不在」**清空**上一次的分母
+     * ——换到一个没有窗长依据的模型时，沿用旧模型的容量就是**报错一个数**。
+     * 它与 `model.usage.contextWindow`、`Assembly.contextWindow` 同源（一次解析）。
+     */
+    readonly inputBudget?: number
     /** 没换成的缘由（**说给人听**的一句话，含已注册的条目名）。 */
     readonly reason?: string
   }
@@ -591,6 +608,16 @@ export type EventDataOf = {
      * ——那时这一位缺席，报「还没选模型」，**不取列表第一项顶上**。
      */
     readonly current?: ModelSelectionRef
+    /**
+     * **当前选择的有效输入预算**（token · U41 返修）——外壳要的那个分母。
+     *
+     * ⚠️ **别拿 `entries` 里某一行的 `contextWindow` 顶替**：那一行说的是**该连接的默认
+     * 模型**多长，而当前选中完全可以是**同一条连接下的另一个模型**（`model.switch { model }`）
+     * ——拿默认行推算会**报错一个数**。这一位按 `current` 算，与出站、用量同源。
+     *
+     * 缺省＝不知道（当前选择没有窗长依据，或压根没有当前选择）——外壳据此**不给分母**。
+     */
+    readonly currentInputBudget?: number
     /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
     readonly note?: string
   }

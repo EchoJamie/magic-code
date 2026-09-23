@@ -354,6 +354,84 @@ describe('一条连接的闭环', () => {
     }
   })
 
+  test('**当前选择**的预算三处同源：切换当下 / 读面 / 调用开始（U41 返修）', async () => {
+    const land = stage()
+    const vendor = fakeVendor()
+
+    try {
+      // 只给**非默认**的那个型号一条覆盖——这样「拿默认行推算」会当场露馅：
+      // 默认行（deepseek-flash）**没有**窗长依据，而当前选中（deepseek-v4-pro）有
+      const configPath = writeConfig(land.root, {
+        defaultProvider: 'ds',
+        providers: {
+          ds: {
+            vendor: 'deepseek',
+            apiKey: 'sk-not-a-real-key',
+            model: 'deepseek-flash',
+            modelOverrides: {
+              'deepseek-v4-pro': { limits: { maxContextTokens: 30_000, maxOutputTokens: 1_000 } },
+            },
+          },
+        },
+        dataDir: land.dataDir,
+      })
+
+      const assembly = assemble({
+        cwd: land.workspace,
+        config: loadConfig({ path: configPath, home: land.root }),
+        modelFetch: vendor.fetch,
+        grantsFile: join(land.root, 'magic', 'grants.json'),
+        home: land.root,
+        prompt: { platform: 'darwin', date: '2026-09-23' },
+      })
+      const shell = attachShell(assembly.shell)
+      await assembly.ready()
+
+      // 先走一轮（**还没有会话时切换不发 `model.switched`**——那是既有语义：
+      // 事件是「会话的可观测事实」，没有会话就没有可记之处）
+      await shell.submit('先走一轮')
+      // 缺省那个型号**没有窗长依据** ⇒ 这一轮的分母**缺席**（不知道就说不知道）
+      const firstStart = shell.events.findLast(
+        (event): event is Extracted<'model.call.start'> => event.kind === 'model.call.start',
+      )
+      expect(firstStart?.data.inputBudget).toBeUndefined()
+
+      // ① **切换当下**：`model.switched` 就把新分母带上（不必等一次调用）
+      const switched = waitFor(shell, 'model.switched')
+      expect(assembly.switchModel({ provider: 'ds', model: 'deepseek-v4-pro' }).ok).toBe(true)
+      const switchedEvent = await switched
+      expect(switchedEvent.data.inputBudget).toBe(30_000 - 1_000)
+
+      // ② **读面**：`currentInputBudget` 是**当前选中**那个型号的数——
+      //    ⚠️ 而 `entries[0].contextWindow`（**该连接的默认模型**）这里**缺席**
+      //    （flash 没有窗长依据）——外壳据「在不在」清空，不拿默认行推算
+      const catalog = await (async () => {
+        const armed = waitFor(shell, 'model.catalog')
+        shell.send({ type: 'model.list' })
+        return armed
+      })()
+      expect(catalog.data.current).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(catalog.data.currentInputBudget).toBe(30_000 - 1_000)
+      expect(catalog.data.entries[0]?.contextWindow).toBeUndefined()
+
+      // ③ **调用开始**：`model.call.start` 与后面的 `model.usage` 是同一个数
+      await shell.submit('换过之后再走一轮')
+      const start = shell.events.findLast(
+        (event): event is Extracted<'model.call.start'> => event.kind === 'model.call.start',
+      )
+      const usage = shell.events.findLast(
+        (event): event is Extracted<'model.usage'> => event.kind === 'model.usage',
+      )
+      expect(start?.data.inputBudget).toBe(30_000 - 1_000)
+      expect(usage?.data.contextWindow).toBe(30_000 - 1_000)
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      land.dispose()
+    }
+  })
+
   test('认证来处照给：环境变量那一支说「来自环境变量」；两处都没有就不给这一位', async () => {
     const land = stage()
     const vendor = fakeVendor()

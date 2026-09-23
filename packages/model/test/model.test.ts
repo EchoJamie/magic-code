@@ -929,7 +929,8 @@ describe('中间件位', () => {
     const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamper, MINIMAX_MODEL, 'minimax'), // 条目名随事件上报（第 17 轮）
+        // 预算**同一份解析**给两处：请求开始这一刻就带上（与下面的 usage 同一个数）
+        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', 1_000_000 - MAX_COMPLETION_TOKENS),
         modelDelta(stamper, 'text', 'ok'),
         modelCallEnd(stamper),
       ]),
@@ -1290,7 +1291,8 @@ describe('假端点回环 · 流式事件序列', () => {
     const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamper, MINIMAX_MODEL, 'minimax'), // 条目名随事件上报（第 17 轮）
+        // 预算**同一份解析**给两处：请求开始这一刻就带上（与下面的 usage 同一个数）
+        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', 1_000_000 - MAX_COMPLETION_TOKENS),
         modelDelta(stamper, 'text', '你'),
         modelDelta(stamper, 'text', '好'),
         modelDelta(stamper, 'thinking', '简短想'),
