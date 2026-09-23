@@ -255,6 +255,53 @@ describe('一条连接的闭环', () => {
     }
   })
 
+  test('认证来处照给：环境变量那一支说「来自环境变量」；两处都没有就不给这一位', async () => {
+    const land = stage()
+    const vendor = fakeVendor()
+
+    // 缺省那条**不写** `apiKey`（走环境变量回退）；另一条两处都没有——
+    // 它**不是缺省**，故不会在构造期被预造网关（那条路缺 key 才抛）。
+    const configPath = writeConfig(land.root, {
+      defaultProvider: 'ds',
+      providers: {
+        ds: { vendor: 'deepseek' },
+        other: { baseURL: 'https://x/v1', model: 'm' },
+      },
+      dataDir: land.dataDir,
+    })
+
+    process.env['MAGIC_DS_API_KEY'] = 'sk-not-a-real-key'
+    try {
+      const assembly = assemble({
+        cwd: land.workspace,
+        config: loadConfig({ path: configPath, home: land.root }),
+        modelFetch: vendor.fetch,
+        grantsFile: join(land.root, 'magic', 'grants.json'),
+        home: land.root,
+        prompt: { platform: 'darwin', date: '2026-09-23' },
+      })
+      const shell = attachShell(assembly.shell)
+      await assembly.ready()
+
+      const armed = waitFor(shell, 'model.catalog')
+      shell.send({ type: 'model.list' })
+      const rows = (await armed).data.entries
+
+      // **说的是来处，不是凭据**：那一格只有 `'config'` / `'env'` 两个取值
+      expect(rows.find((one) => one.provider === 'ds')?.keySource).toBe('env')
+      // 两处都没有 ⇒ **不给这一位**（不冒充「已设置」）
+      expect(rows.find((one) => one.provider === 'other')?.keySource).toBeUndefined()
+      // 凭据本身一个字都没进读面
+      expect(JSON.stringify(rows)).not.toContain('sk-not-a-real-key')
+
+      shell.dispose()
+      assembly.close()
+    } finally {
+      delete process.env['MAGIC_DS_API_KEY']
+      land.dispose()
+    }
+  })
+
   test('兼容接入的连接（没 `vendor`）照旧能用：**不自动列表**，但调用照走原协议', async () => {
     const land = stage()
     const vendor = fakeVendor()

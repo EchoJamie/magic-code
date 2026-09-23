@@ -65,7 +65,7 @@ import type {
   TurnId,
   WorkspaceService,
 } from '@magic/contracts'
-import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, expandHome } from '@magic/contracts'
+import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, apiKeyEnvVarOf, expandHome } from '@magic/contracts'
 import { createActions } from '@magic/actions'
 import type { SessionPorts } from '@magic/actions'
 import { createConversationService, createConversationSession } from '@magic/conversation'
@@ -1255,6 +1255,21 @@ export function assemble(options: AssembleOptions): Assembly {
    * 一位一位地**有才给**（`name` / `vendor` / `region` / `baseURL` / `model` / `reasoning`
    * / `contextWindow`）：缺的那一位＝**不知道或没设置**，外壳据此少显示一格，不显示空串。
    */
+  /**
+   * 认证的**来处**（U41）——`config`（配置文件里写了 `apiKey`）｜ `env`（回退环境变量）。
+   *
+   * ⚠️ **给的是来处，不是凭据**：判据只看「有没有」与「从哪来」，值一个字符都不出这一层
+   *（管理页据它说「认证：配置文件 / 环境变量」，而不是含糊的「已设置」）。
+   */
+  const keySourceOf = (
+    id: string,
+    config: ProviderConfig | undefined,
+  ): 'config' | 'env' | undefined => {
+    if (config?.apiKey !== undefined && config.apiKey.trim().length > 0) return 'config'
+    const fromEnv = process.env[apiKeyEnvVarOf(id)]
+    return fromEnv !== undefined && fromEnv.trim().length > 0 ? 'env' : undefined
+  }
+
   const catalogRows = (registry: ModelRegistry | undefined): readonly ModelCatalogRow[] => {
     if (registry === undefined) return []
 
@@ -1268,6 +1283,9 @@ export function assemble(options: AssembleOptions): Assembly {
         ...(config?.baseURL === undefined ? {} : { baseURL: config.baseURL }),
         ...(entry.model === undefined ? {} : { model: entry.model }),
         ...(config?.reasoning === undefined ? {} : { reasoning: config.reasoning }),
+        ...(keySourceOf(entry.id, config) === undefined
+          ? {}
+          : { keySource: keySourceOf(entry.id, config) }),
         ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
         // 缓存读数（U41）——**有才给**：空对象（还没取过、兼容接入）就不给这一位
         ...(Object.keys(modelInfo.read(entry.id)).length === 0 ? {} : { cache: modelInfo.read(entry.id) }),
