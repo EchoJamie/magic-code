@@ -51,7 +51,7 @@ import { createShell } from '../src/shell.ts'
 import type { ShellView } from '../src/view.ts'
 import { event } from './events.ts'
 import { blankRuns } from './invariants.ts'
-import { createStage } from './screen.ts'
+import { createStage, show } from './screen.ts'
 import type { Frame } from './screen.ts'
 import { createSpyTransport } from './fakes.ts'
 import { record } from './terminal.ts'
@@ -260,15 +260,32 @@ describe('⑤ 接续（重建）之后仍在最前面', () => {
     expect(view.settled.filter((row) => row.kind === 'banner')).toHaveLength(1)
   })
 
-  test('换会话（记录区清空重来）——字标照旧在最前面', () => {
+  // ⚠️ **本条 2026-09-24 按新行为改写**（U43 · 缺陷 D28 乙的裁定）：原句是
+  //    『换会话（记录区清空重来）——字标照旧在最前面』，钉的是 `settled` 里有**新种的一条字标**
+  //    （`toHaveLength(1)` ＋ `settled[0].kind === 'banner'`）。裁定『换会话不重印』之后，
+  //    那一条正是要它**不在**的东西——**判据没删，换成了它的反面**：
+  //    ① 这一页里**一条字标都没有**；② 而**屏上仍只有一份**（开机印的那一份）。
+  test('换会话（记录区清空重来）——**不种新字标**，屏上仍是开机那一份（U43）', async () => {
     const stage = createStage()
+    // ⚠️ **逐帧录**（`show(views)` 而不是一帧一屏）：这一句的下半问的是「屏幕上累计印了几份」，
+    //    单帧取景只看得到「这一页里有没有字标」——那正是本单要它没有的那一件
+    //    （`describe('④')` 里「内联随内容滚动」那条同此：时机类的话只在帧序里现形）
+    const views: ShellView[] = [stage.shell.getView()]
     stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+    views.push(stage.shell.getView())
     stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙' }] })])
+    views.push(stage.shell.getView())
 
     const view = stage.shell.getView()
 
-    expect(view.settled).toHaveLength(1)
-    expect(view.settled[0]?.kind).toBe('banner')
+    // 这一页**清空重来**（内容由随后读回来的历史铺），而**字标不在它上面**
+    expect(view.settled).toHaveLength(0)
+    expect(view.page).toBeGreaterThan(0) // 确实另开了一页（防空转）
+
+    // 屏上仍是**一份**：开机印的那一份。换会话既不重印，也擦不掉它
+    //（内联渲染＋主缓冲：已写出去的内容归终端——形态本身的限度，见缺陷 D28 乙）
+    const frame = await show(views, { columns: 100, rows: 30 })
+    expect(frame.screen.lines.filter((line) => line === WIDE_ON_SCREEN[0])).toHaveLength(1)
   })
 
   // ⚠️ **删掉过一条**（U31 三轮）：『**空态没有被字标挡住**』——那句空态引导语

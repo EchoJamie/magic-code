@@ -702,6 +702,19 @@ export type ShellView = {
    * 它们落进终端 scrollback（滚动与复制归终端 ✓），也是 D11 的结构性护栏。
    */
   readonly settled: readonly LogRow[]
+  /**
+   * **这一页的编号**（U43）——记录区**整块换掉**（＝另开一页）时**加一**，
+   * 渲染层拿它当 `<Static>` 的 key（见 `components/app.ts` 的 `pageOf`）。
+   *
+   * 由头：记录区换掉之后，屏上那批行要**重新写一遍**（`Static` 只追加新项，认旧游标）
+   * ——那是重挂的理由。而**「换会话」不是「又启动一次」**：字标只在开机印一次
+   * （设计 · 终端呈现），故页的身份**不能**再挂在记录区开头那一行（字标）的**对象身份**上
+   * ——那条耦合逼出来的正是「换会话必须重印字标」（缺陷 D28 乙）。
+   *
+   * **只管「开没开新页」，不管页里有什么**：`rebuild` 往**已经开着的**那一页里填历史，
+   * 编号不动（见 `rebuild`）；`createView` 给 `0`（开机那一页），此后每换一次会话 `＋1`。
+   */
+  readonly page: number
   /** 输入行的**候选**（D12）——不在补全里就是 `null`。 */
   readonly completion: CompletionState | null
   readonly status: ShellStatus
@@ -840,6 +853,8 @@ export function createView(): ShellView {
   return {
     rows: [],
     settled: [],
+    // 开机那一页（此后每换一条会话 ＋1——见 `ShellView.page`）
+    page: 0,
     completion: null,
     status: {
       state: 'idle',
@@ -1279,15 +1294,29 @@ function reduceSessionState(view: ShellView, data: SessionStateData): ShellView 
     status: { ...view.status, session: title },
   }
 
-  // 换了会话 ⇒ 记录区清空重来。**字标照旧在最前面**（`bannerFirst`）：
-  // 它属于「记录区」而不是「哪一条会话」——切走一条就没有它，屏上会像是掉了块东西
-  // （何况 `AppView` 的 `Static` 按会话换 key，切过去本就等于重开一页）。
+  // 换了会话 ⇒ **另开一页**（`page ＋1`）＋ 记录区清空重来，内容由随后读回来的历史
+  // （`rebuild`）铺。
+  //
+  // ⚠️ **不种新字标**（U43 · 缺陷 D28 乙的裁定）：字标属**启动**那一刻，只在开机印一次
+  // （设计 · 终端呈现）。这一屏的界由既有回执 `· 已切到 <名字>` 承担。
+  // 页号加一不是「换页的装饰」——它是**重挂 `Static` 的理由**：记录区整块换掉之后，
+  // 屏上那批行要重新写一遍（`Static` 只认它自己的游标），而那正是**旧的、按字标对象认页**
+  // 那一套顺带做的事（也顺带把字标又印了一遍）。页身份摘到 `page` 上，两件事就分开了：
+  // **重挂照做，字标不再跟着走**（见 `ShellView.page`）。
   //
   // **计划那一块同一条**（U34）：换会话**先移除旧清单**（设计：不能短暂串到新会话）——
   // 新会话的那一份由随后读回来的历史（`rebuild`）重铺。收起的位与视口也归零：
   // 每一条会话都从「默认展开、从头看」开始。
   return switched
-    ? { ...base, rows: [], settled: bannerFirst([]), plan: { entry: null, plan: null }, planCollapsed: false, planTop: 0 }
+    ? {
+        ...base,
+        rows: [],
+        settled: [],
+        page: view.page + 1,
+        plan: { entry: null, plan: null },
+        planCollapsed: false,
+        planTop: 0,
+      }
     : base
 }
 
@@ -1323,37 +1352,41 @@ function bannerRow(): LogRow {
 }
 
 /**
- * 记录区 → **带上字标**的形态：字标**恒在最前、且恒只一行**。
+ * 记录区 → **带上字标**的形态：字标**恒在最前、且恒只一行**（幂等：先滤掉已有的再放一个）。
  *
- * 为什么要有这一处收口：`settled` 只在**追加**的两处（`settle` / `appendSettled`）天然保得住
- * 最前面那一行，而**整块换掉** `settled` 的两处——外壳开局（`withBanner`）、
- * 换会话（`reduceSessionState`）——各经一次本函数，就不必靠「记得别把它弄丢」。
+ * ⚠️ **只归开机那一处**（`withBanner`）——「开机印一次」是字标在本仓唯一的用法
+ * （设计 · 终端呈现）。**换会话不走这儿**（U43）：那一下记录区照旧整块换掉、
+ * 页号照旧加一，但**不种新字标**（见 `reduceSessionState` 那一段注）。
  *
- * ⚠️ **本函数＝「开一页」**：它**种一条新的字标**，而字标那一行的**对象身份就是页的身份**
- * （渲染层据此认换页，见 `components/app.ts` 的 `pageOf`）。故**「填一页」的地方不归它管**——
- * 历史回来铺内容走 `pageHeaderOf`（`rebuild` 用），拿的是**这一页已有的那一条**，
- * 对象不变＝不换页。两处都开新页，屏上就多出字标（U29 验收：甲→乙一次切换印 4 份）。
- *
- * 幂等：先把已有的字标滤掉再放一个，故重复调用不会攒出两行。
+ * ⚠️ **它不「开页」**：页的身份是 `ShellView.page`（一个数），与「谁在最前面」无关——
+ * 种不种这一行，都不影响 `<Static>` 重挂与否（见 `components/app.ts` 的 `pageOf`）。
  */
 function bannerFirst(rows: readonly LogRow[]): readonly LogRow[] {
   return [bannerRow(), ...rows.filter((row) => row.kind !== 'banner')]
 }
 
 /**
- * 这一页的**页头**（字标那一行）——`settled[0]` 是它就**照用本尊**（**对象不变＝不换页**），
- * 没有才种一条新的。
+ * 用历史铺一页时的**页头**——**这一页有字标就照用本尊（对象不变），没有就一行都不补**。
  *
- * 与 `bannerFirst` 的分工就是「填」与「开」：`rebuild`（历史回来铺内容）走这一条。
+ * 「有没有」看的是 `settled[0]`：开机那一页**有**（`withBanner` 种的，`rebuild` 得把它
+ * 留在最前面，不然 `--session` 接续那条路开局就把它换没了）；换会话开的那一页**没有**
+ * （`reduceSessionState` 只清空、不种），故历史直接从头铺。
+ *
+ * ⚠️ **绝不在这儿补种一个**（U43 改）：这条路上补种＝又在**填**的时候**开**了一页——
+ * 屏上多一份字标（D28 乙）。页开不开由 `page` 管，不归本函数。
  */
-function pageHeaderOf(view: ShellView): LogRow {
+function pageHeaderOf(view: ShellView): readonly LogRow[] {
   const first = view.settled[0]
 
-  return first !== undefined && first.kind === 'banner' ? first : bannerRow()
+  return first !== undefined && first.kind === 'banner' ? [first] : []
 }
 
 /**
  * **印一次字标**（外壳开局调，见 `createShell`）——记录区最前面那一块。
+ *
+ * ⚠️ **本仓唯一印字标的地方**（U43）：换会话只清空记录区、不种新字标
+ * （见 `reduceSessionState` 那一段注）。开机那一页＝`createView` 给的页号 `0`，
+ * 故这一处也不动页号。
  *
  * 只在外壳开局这一处种：`createView` 仍是「空视图」（`record.ts` 的标本、
  * 纯归约的用例都直接拿它当起点，那里没有「启动」这回事）。
@@ -1426,14 +1459,13 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 用**重建的会话内容**替换记录区（缺陷 D1）——只挑会话内容那一类，
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
  *
- * ⚠️ **字标仍在最前面**，但**用的是这一页已有的那一条**（`pageHeaderOf`：对象不变）——
- * 这一跳把 `settled` 整个换掉，字标是「记录区最前面那一块」，不保它 `--session` 接续那条路
- * （开局 `boot` 跑完读一次历史 ⇒ 走到这儿）当场就没有字标了。
+ * ⚠️ **字标在这一页上有就留在最前面**（`pageHeaderOf`：**照用本尊、不补种**）——
+ * 这一跳把 `settled` 整个换掉，不保它 `--session` 接续那条路（开局 `boot` 跑完读一次历史
+ * ⇒ 走到这儿）当场就没有字标了；而**换会话开的那一页本来就没有字标**，故历史直接从头铺。
  *
- * ⚠️ **本函数不「开页」**（U29 验收改）：开页＝种新字标＝换页（见 `bannerFirst` 那段注），
- * 而这一跳是「往**已经开着的那一页**里填历史」——换会话那一下 `reduceSessionState`
- * 已经开过页了，这里再开一次，屏上就多一份字标（甲→乙一次切换实测 4 份：开局 1 ＋
- * `rebuild` 两处各 1 ＋ 换会话 1）。**别把这一处改回 `bannerFirst`。**
+ * ⚠️ **本函数不「开页」**（U29 验收改 · U43 后仍是这条）：页开不开由 `ShellView.page` 管，
+ * 而这一跳是「往**已经开着的那一页**里填历史」——页号一动，`Static` 就重挂、这一页整批行
+ * 又写一遍（甲→乙一次切换实测 4 份字标，就是这么来的）。**别在这一处动页号。**
  */
 export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
   // **计划那一份也从这同一批条目里取**（U34）：切会话 / 重开之后清单要跟着回来，
@@ -1443,7 +1475,7 @@ export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
 
   return {
     ...view,
-    settled: [pageHeaderOf(view), ...rebuildRows(entries)],
+    settled: [...pageHeaderOf(view), ...rebuildRows(entries)],
     rows: [],
     // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
     // 已经上屏的新计划（或清空）盖回去（与 `withPlan` 同一把尺子）。

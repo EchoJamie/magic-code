@@ -171,7 +171,8 @@ describe('② 窄窗（字标换成一行版那一侧）', () => {
 // ══ ④ 换页仍要「印得出来」（换页判据动了，这条钉住它的另一半）════════
 
 /**
- * **一页一个页头**——换会话那条路（记录区被换掉两次：换会话那一下、历史回来那一下）。
+ * **开机那一份字标不许跟着换会话走**——换会话那条路（记录区被换掉两次：换会话那一下、
+ * 历史回来那一下）。
  *
  * 判据是**精确份数**（不是「至少」）：`bannerCopies` 每多一份＝终端上多一块字标。
  *
@@ -181,11 +182,16 @@ describe('② 窄窗（字标换成一行版那一侧）', () => {
  *
  * 三形各钉一句：
  * - **接续**（开局就有历史）：字标**只一份**——历史是往开局那一页里填，不是另开一页；
- * - **切换**：切之前 1 份、切之后 2 份——**切一次只新增一份**；
- * - **来回切**：每切一次多一份（不是「切一次之后就不再增」）。
+ * - **切换**：切之前 1 份、切之后**仍是 1 份**——新页有**行**、没有字标（U43）；
+ * - **来回切**：切几次都只是那**一份**（开机印的那一个）。
+ *
+ * ⚠️ **这三句的份数原先是 1 / 2 / 3**（切一次新增一份）——那是 U29 时按当时的实现钉的
+ * （`bannerFirst` 每次种一条新字标 ⇒ 顺带换了页身份）。U43 裁定「换会话不重印字标」之后，
+ * 「新页**有行**」这一条更该钉在**行**上：切换那两形改成数**新页那几行印了几遍**
+ * （切走再切回 ⇒ 甲那两行共印两遍），份数仍钉**精确值**，判据没有放宽。
  *
  * 旧页留在 scrollback 里（内联渲染的既定行为：切走＝另起一页，旧的滚在上面）——
- * 这里不问它，问的是**新增了几份页头**。
+ * 这里量的正是「屏幕上累计印了几份」，故开机那一份**一直在数**。
  */
 describe('④ 一页一个页头（换会话那条路）', () => {
   const 甲: Entry[] = [
@@ -206,7 +212,7 @@ describe('④ 一页一个页头（换会话那条路）', () => {
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
   })
 
-  test('**切一次只新增一份**：切之前 1 份、切之后 2 份（新页有页头也有新行）', async () => {
+  test('**切一次不新增**：切之前 1 份、切之后**仍是 1 份**（新页有行、没有字标）', async () => {
     const stage = createStage()
     const views = takes(stage, [
       () => stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })]),
@@ -220,11 +226,12 @@ describe('④ 一页一个页头（换会话那条路）', () => {
     expect(before.has('› 甲：看看有什么')).toBe(true)
 
     const after = await show(views, WIDE) // 乙那一页铺完
-    expect(bannerCopies(after, WIDE.columns)).toBe(2) // ← 只多那一份
-    expect(after.has('› 乙：就一句')).toBe(true)
+    expect(bannerCopies(after, WIDE.columns)).toBe(1) // ← **不新增**（U43）
+    expect(after.has('› 乙：就一句')).toBe(true) // 新页的行照常铺出来（另半句）
+    expect(countOf(after, '› 乙：就一句')).toBe(1) // 而且只印一遍（重挂不许把行重印）
   })
 
-  test('**来回切**：每切一次多一份（不是「切一次之后就不再增」）', async () => {
+  test('**来回切**：切几次都只是开机那一份（而每一页的行各印各的）', async () => {
     const stage = createStage()
     const step = (id: string, title: string): (() => void) => () => {
       stage.feed([event('session.state', { active: id, sessions: [{ id, at: 0, title }] })])
@@ -239,8 +246,12 @@ describe('④ 一页一个页头（换会话那条路）', () => {
     ])
     const frame = await show(views, WIDE)
 
-    expect(bannerCopies(frame, WIDE.columns)).toBe(3)
-    expect(frame.has('› 甲：看看有什么')).toBe(true) // 切回来那页也有内容
+    expect(bannerCopies(frame, WIDE.columns)).toBe(1) // ← 切几次都只是那一份
+    // **切回来的那一页确实重铺了**：甲那两行印过两遍（开机那次 ＋ 切回来那次），
+    // 乙那一行一遍——份数照钉精确值（不是「至少出现过」）
+    expect(countOf(frame, '› 甲：看看有什么')).toBe(2)
+    expect(countOf(frame, '⏺ 甲：列一下。')).toBe(2)
+    expect(countOf(frame, '› 乙：就一句')).toBe(1)
   })
 })
 

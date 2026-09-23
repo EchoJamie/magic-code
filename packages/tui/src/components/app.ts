@@ -116,8 +116,10 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     { flexDirection: 'column' },
     // **已定局的行走 Static**——写一次即入 scrollback，此后不重绘（D11 的结构性护栏）。
     //
-    // `key` 按**页**——记录区整块换掉时（开局 / 重建 / 换会话）重挂，那些行才会被写出来
+    // `key` 按**页**——记录区整块换掉的那一下（换会话开了新页）才重挂，那一批行才会被写出来
     // （Static 只追加新项：`items` 一变短，它的游标就落在数组外，一行都不印）。
+    // ⚠️ **重挂的那一下不重印字标**（U43）：页号一动，写出来的是**这一页里的行**——
+    // 换会话开的新页里**没有字标**（见 `ShellView.page` 与 `reduceSessionState`）。
     //
     // ⚠️ **别拿会话 id 当页号**（原写法，缺陷 D25）：会话 id 与「记录区换了一页」是两回事——
     // `/grants` 这类读侧命令会先在装配那边开一张**空壳**会话（信封必带会话），
@@ -191,34 +193,22 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
 /**
  * 一页的编号（U29）——`<Static>` 只在**记录区真的换了一页**时重挂（见 `key:` 那一段注）。
  *
- * 页的身份＝**记录区开头那一行**（字标那一行）。这一条立得住，是因为**整块换掉**
- * `settled` 的三处（开局 `withBanner` · 重建 `rebuild` · 换会话 `reduceSessionState`）
- * **都经 `bannerFirst`**，而 `bannerFirst` 每次都种一个**新的字标对象**；
- * 追加（`settle` / `appendSettled`）只往后接，开头那一行的对象不动。
- * ⇒ 开头那一行的**对象身份**＝页的身份（记在 WeakMap 里：那个对象活着，页号就还在）。
+ * 页的身份＝`view.page`（U43 改）——**一个随「开页」递增的数**，由归约那一侧给
+ * （见 `ShellView.page`：`createView` 给 0，换会话 ＋1）。
  *
- * 空 `settled` 给 `none`——`createView` 的起点（标本与纯归约的用例）没有「页」这回事，
- * 那时 `Static` 本来也没东西可印。**这一档与原写法（`static:none`）逐字节相同**，
- * 故既有标本与快照不受影响。
+ * ⚠️ **原先认的是记录区开头那一行（字标）的对象身份**——那时的由头是「整块换掉 `settled`
+ * 的地方都会种一个新字标对象，故开头那一行换对象＝换页」。那套写法把**「换会话」与
+ * 「又启动一次」绑成了一件事**：换会话必须种新字标，字标就跟着重印（缺陷 D28 乙，
+ * 甲→乙一次切换印 4 份）。摘下来之后就只剩它真正要说的那一句：**页号变了 ⇒ 重挂**。
  *
- * 领号这一步在渲染里做（首次见到某页时领）——**同一份视图重画拿到的号一样**，
+ * 与「页里有什么」无关：`rebuild` 往已经开着的那一页里填历史，页号不动 ⇒ `Static` 不重挂、
+ * 只写新增的那些行；换会话页号 ＋1 ⇒ 重挂、那一批行整批写一遍。
+ *
+ * 号直接取自视图（不再在渲染里领）——**同一份视图画出来还是同一个 key**，
  * 故取景 / 快照仍是确定的（`AppView` 那条「给视图与尺寸就画一屏」照旧成立）。
  */
-const pageIds = new WeakMap<LogRow, number>()
-let pageCount = 0
-
 function pageOf(view: ShellView): string {
-  const first: LogRow | undefined = view.settled[0]
-  if (first === undefined) return 'none'
-
-  let id = pageIds.get(first)
-  if (id === undefined) {
-    pageCount += 1
-    id = pageCount
-    pageIds.set(first, id)
-  }
-
-  return String(id)
+  return String(view.page)
 }
 
 /**

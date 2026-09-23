@@ -87,29 +87,9 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
   await session.send(text, { until: { text }, timeoutMs: 10_000 })
 }
 
-/**
- * 等屏上的某个**条件**成立（`wait` 的闭集装不下「数一数」这类判据，故自己轮询 `screen()`）。
- *
- * 超时**如实失败**（带上此刻的整屏）——不重发、不重试。
- */
-async function waitUntil(
-  session: UiSession,
-  what: string,
-  ok: (lines: readonly string[]) => boolean,
-  timeoutMs = 10_000,
-): Promise<readonly string[]> {
-  const until = Bun.nanoseconds() + timeoutMs * 1e6
-
-  for (;;) {
-    const { lines } = await session.screen()
-    const text = lines.map((line) => line.text)
-
-    if (ok(text)) return text
-    if (Bun.nanoseconds() > until) throw new Error(`等「${what}」超时（${timeoutMs}ms）。屏：\n${text.join('\n')}`)
-
-    await Bun.sleep(40)
-  }
-}
+// ⚠️ **删掉过一个 `waitUntil` 帮手**（U43）：它原先只服务「换会话后又多出一份字标」那一处等待
+// ——裁定「不重印」之后那句判据连同它一起去掉了（同形的帮手在 `frames-u43-tui.ts` 里，
+// 那边量的正是「整份缓冲里只有一份」）。
 
 /**
  * 等**真光标挪到别处**（`from` 是挪之前那一列）——返回新列。
@@ -191,8 +171,13 @@ async function sessionNew(): Promise<void> {
     //
     // ⚠️ 为什么敲**两次**：第一次新建时外壳还没收到过 `session.state`（`view.sessionId` 仍是
     // `null`），`reduceSessionState` 认不出「换了会话」⇒ 记录区**照旧不重建**（这是既有实现，
-    // 本单不动）。**第二次**才走「切走一条 ⇒ 记录区重建」那一支——那时屏上会多出一份字标
-    // （D28**乙**，未裁决、本次不动），也就是「切换确实生效了」这个可等的观察。
+    // 本单不动）。**第二次**才走「切走一条 ⇒ 记录区重建」那一支。
+    //
+    // ⚠️ **那一下原先靠「屏上多出第二份字标」当可等的观察**——2026-09-24 U43 裁定「换会话不重印
+    // 字标」之后，那个观察**没有了**：换会话只清空记录区、不种新字标，而这一条会话又是空的，
+    // 于是这一跳**在屏上什么都不印**（回执那半早已由 D28 甲删掉）。故这里改成等「这一下被吃下」
+    // （草稿清空）——与上一处同一个信号；紧接着**就这么判**：屏上仍只有一份字标。
+    // 严判（整份缓冲、来回切、窄窗）归 `frames-u43-tui.ts`。
     await typeLine(session, '/session new')
     await session.key('enter')
     // 等**这一下被吃下**（草稿被清空）再取帧——「屏上有没有那行回执」要在同一帧上判
@@ -205,10 +190,15 @@ async function sessionNew(): Promise<void> {
 
     await typeLine(session, '/session new')
     await session.key('enter')
-    await waitUntil(session, '换会话后的第二份字标', (lines) => bannerRows(lines) >= 10, 15_000)
+    await session.wait({ absent: '/session new' }, { timeoutMs: 10_000 })
     const twice = await session.capture({ label: '04-再新建一次（换了会话）' })
     keep(twice)
 
+    check(
+      bannerRows(twice.history) === 5,
+      '换会话之后**仍只有一份字标**（不再重印——U43）',
+      `整份缓冲实际 ${bannerRows(twice.history)} 行块字`,
+    )
     check(
       !twice.history.some((line) => line.includes('已新建一条会话')),
       '整份缓冲里都没有那行回执（含滚进 scrollback 的）',
