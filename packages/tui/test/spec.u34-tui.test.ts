@@ -15,13 +15,15 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { render } from 'ink-testing-library'
+import chalk from 'chalk'
+import { render, render as inkRender } from 'ink-testing-library'
 import { createElement as h } from 'react'
 import type { Entry, EntryPayload, PlanNote, PlanStep } from '@magic/contracts'
-import { TuiApp, breathingOf, liveLayoutOf } from '../src/components/app.ts'
+import { AppView, TuiApp, breathingOf, liveLayoutOf } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
-import { PALETTE } from '../src/components/lines.ts'
-import { planStyleOf } from '../src/plan.ts'
+import { PALETTE, displayWidth } from '../src/components/lines.ts'
+import { rowLines } from '../src/components/log.ts'
+import { planBlockOf, planStyleOf } from '../src/plan.ts'
 import { hasPlan, planFromEntries, withPlan } from '../src/view.ts'
 import { createStage } from './screen.ts'
 import { blankRuns, duplicates, overflows } from './invariants.ts'
@@ -98,7 +100,7 @@ describe('U34 · 计划投影', () => {
 
     const frame = await stage.screen({ columns: 80, rows: 24 })
 
-    expect(frame.has('■ 改提示')).toBe(true)
+    expect(frame.has('▪ 改提示')).toBe(true)
     expect(frame.has('■ 读登录逻辑')).toBe(true)
     expect(frame.has('□ 跑一遍')).toBe(true)
     // 没溢出就不该有那一行提示（放得下时不用报「还有几行」）
@@ -138,7 +140,9 @@ describe('U34 · 计划投影', () => {
 
     // 先落到甲这条会话上（开局那一下：`null` → 真 id 不算「换」），再攒一份计划
     stage.feed([event('session.state', { active: 'session-a', sessions: [] })])
-    stage.feed([event('plan.changed', { entry: 30, plan: note(step('上一条会话的')) })])
+    stage.feed([
+      event('plan.changed', { entry: 30, plan: note(step('上一条会话的')) }, { session: 'session-a' }),
+    ])
     expect(hasPlan(stage.shell.getView())).toBe(true)
 
     stage.feed([event('session.state', { active: 'session-b', sessions: [] })])
@@ -234,7 +238,7 @@ describe('U34 · 清单那一块', () => {
     const frame = await stage.screen({ columns: 80, rows: 24 })
 
     expect(frame.has('■ 第一步')).toBe(true)
-    expect(frame.has('■ 换个法子验证')).toBe(true)
+    expect(frame.has('▪ 换个法子验证')).toBe(true)
     expect(frame.has('□ 补一条新加的')).toBe(true)
   })
 
@@ -247,7 +251,7 @@ describe('U34 · 清单那一块', () => {
     const frame = await stage.screen({ columns: 40, rows: 24 })
     const lines = frame.record.map((line) => line.text)
     // 首行带方块，续行是两格缩进——拼起来仍是**原文一字不少**
-    const at = lines.findIndex((line) => line.startsWith('■ '))
+    const at = lines.findIndex((line) => line.startsWith('▪ '))
     expect(at).toBeGreaterThan(-1)
     const joined = [lines[at]?.slice(2), ...lines.slice(at + 1).map((line) => line.slice(2))]
       .join('')
@@ -296,15 +300,15 @@ describe('U34 · 清单那一块', () => {
     ])
 
     // 24 行：画得出来
-    expect((await stage.screen({ columns: 80, rows: 24 })).has('■ 第二步')).toBe(true)
+    expect((await stage.screen({ columns: 80, rows: 24 })).has('▪ 第二步')).toBe(true)
 
     // 8 行：交互区与状态行之后没余量了 ⇒ 暂不绘清单（也不落历史、不清屏）
     const short = await stage.screen({ columns: 80, rows: 8 })
-    expect(short.has('■ 第二步')).toBe(false)
+    expect(short.has('▪ 第二步')).toBe(false)
     expect(short.has('□ 第三步')).toBe(false)
 
     // 恢复高度 ⇒ 还原（视图那一份没丢，画不画只是当下的账）
-    expect((await stage.screen({ columns: 80, rows: 24 })).has('■ 第二步')).toBe(true)
+    expect((await stage.screen({ columns: 80, rows: 24 })).has('▪ 第二步')).toBe(true)
   })
 
   test('清单不把动态帧撑破（帧尾那个换行还在 · 真光标落在输入行）', async () => {
@@ -362,12 +366,12 @@ describe('U34 · `Ctrl T` 与翻页', () => {
     const folded = await stage.screen({ columns: 80, rows: 24 })
 
     expect(folded.has('计划已收起 · ctrl+t 展开')).toBe(true)
-    expect(folded.has('■ 第二步')).toBe(false)
+    expect(folded.has('▪ 第二步')).toBe(false)
 
     stage.press({ kind: 'ctrl+t' })
     const back = await stage.screen({ columns: 80, rows: 24 })
 
-    expect(back.has('■ 第二步')).toBe(true)
+    expect(back.has('▪ 第二步')).toBe(true)
     expect(back.has('计划已收起')).toBe(false)
   })
 
@@ -562,7 +566,7 @@ describe('U34 · 三态的样子', () => {
     expect(done.every((cell) => cell.strikethrough === false)).toBe(true) // 不划掉
 
     // **进行中**：方块是主题色，文字加粗、不压暗
-    const glyph = doing.find((cell) => cell.text === '■')
+    const glyph = doing.find((cell) => cell.text === '▪')
     expect(glyph?.fg).toBe(PALETTE.warn)
     expect(doing.some((cell) => cell.bold)).toBe(true)
     expect(doing.every((cell) => cell.dim)).toBe(false)
@@ -576,7 +580,7 @@ describe('U34 · 三态的样子', () => {
 
   test('呼吸只动方块那一格——文字一直加粗（不跟着一亮一暗）', async () => {
     const stage = createStage()
-    stage.feed([event('plan.changed', { entry: 1, plan })])
+    stage.feed([event('plan.changed', { entry: 1, plan }), event('turn.start', {})])
 
     stage.at(0) // 一轮的两端（最暗）
     const dimmest = await stage.screen({ columns: 80, rows: 24 })
@@ -584,13 +588,13 @@ describe('U34 · 三态的样子', () => {
     const brightest = await stage.screen({ columns: 80, rows: 24 })
 
     const fgAt = (frame: Awaited<ReturnType<typeof stage.screen>>): string | null | undefined =>
-      frame.cellsOf(frame.rowOf('正在做的那步')).find((cell) => cell.text === '■')?.fg
+      frame.cellsOf(frame.rowOf('正在做的那步')).find((cell) => cell.text === '▪')?.fg
 
     expect(fgAt(dimmest)).not.toBe(fgAt(brightest))
     expect(fgAt(brightest)).toBe(PALETTE.warn)
     const text = brightest
       .cellsOf(brightest.rowOf('正在做的那步'))
-      .filter((cell) => cell.text.trim() !== '' && cell.text !== '■')
+      .filter((cell) => cell.text.trim() !== '' && cell.text !== '▪')
     expect(text.length).toBeGreaterThan(0)
     expect(text.every((cell) => cell.bold)).toBe(true)
   })
@@ -602,7 +606,7 @@ describe('U34 · 三态的样子', () => {
     // 剥掉色码之后仍是三行、方块与文字都在（`plain` 就是无色那一档的读法）
     const frame = await stage.screen({ columns: 80, rows: 24 })
     expect(plain(frame.screen.lines.join('\n'))).toContain('□ 还没轮到')
-    expect(plain(frame.screen.lines.join('\n'))).toContain('■ 正在做的那步')
+    expect(plain(frame.screen.lines.join('\n'))).toContain('▪ 正在做的那步')
   })
 })
 
@@ -684,5 +688,217 @@ describe('U34 · 三个辅助工具的工具卡', () => {
     const frame = await stage.screen({ columns: 80, rows: 24 })
 
     expect(frame.has('exec')).toBe(true)
+  })
+})
+
+// ══ 八 · 返修（2026-09-23 独立验收退回的五项）═════════════════════════
+//
+// 五项都**按反例写**（独立验收给的最小复现原样搬进来），且**不止纯函数**：
+// 每一项都要在**真渲染出来的那一屏**或**定局之后的记录**上咬一口。
+
+describe('返修① · 辅助工具详情可查', () => {
+  const call = (id: number) =>
+    event('tool.call', { name: 'plan_update', args: { plan: { steps: [], notes: '' } } }, { id })
+  const result = (id: number) =>
+    event('tool.result', { call: id, ok: true, output: { text: 'UPDATE_DETAIL_ABC' } })
+
+  test('默认不画；`ctrl+o` 一到，名字与结果都在（既有那一个展开键）', async () => {
+    const stage = createStage()
+
+    stage.feed([event('turn.start', {}), call(20), result(20)])
+    const quiet = await stage.screen({ columns: 100, rows: 30 })
+
+    expect(quiet.has('plan_update')).toBe(false)
+    expect(quiet.has('UPDATE_DETAIL_ABC')).toBe(false)
+
+    stage.press({ kind: 'ctrl+o' })
+    const shown = await stage.screen({ columns: 100, rows: 30 })
+
+    expect(shown.has('plan_update')).toBe(true)
+    expect(shown.has('UPDATE_DETAIL_ABC')).toBe(true)
+  })
+
+  test('`turn.end` 之后那一行**还在记录区里**（定局不丢行 · 展开仍可读）', () => {
+    const stage = createStage()
+
+    stage.feed([event('turn.start', {}), call(20), result(20), event('turn.end', { reason: 'settled' })])
+
+    const settled = stage.shell.getView().settled
+    const tools = settled.filter((row) => row.kind === 'tool')
+
+    expect(tools.length).toBe(1)
+    // 收起时它一行都不占，展开时详情照出（记录区里的形态由 `rowLines` 一处给）
+    const row = tools[0]
+    if (row === undefined) throw new Error('这一行该在')
+    expect(rowLines(row, { columns: 100, expanded: false })).toEqual([])
+    expect(rowLines(row, { columns: 100, expanded: true }).length).toBeGreaterThan(0)
+  })
+
+  test('重建（切会话回来）也留着那一行——不是只在当场看得见', () => {
+    const stage = createStage()
+
+    stage.feed([
+      event('session.history', {
+        session: 'session-test',
+        done: true,
+        entries: [
+          entry(1, 'tool-call', { name: 'plan_update', args: {} }),
+          entry(2, 'tool-result', { ok: true, output: { text: 'UPDATE_DETAIL_ABC' } }),
+        ],
+      }),
+    ])
+
+    expect(stage.shell.getView().settled.filter((row) => row.kind === 'tool').length).toBe(1)
+  })
+})
+
+describe('返修② · 真无色下三态仍分得开', () => {
+  const three = note(step('做完的那步', 'completed'), step('正在做的那步', 'in_progress'), step('还没轮到'))
+
+  test('**不发一个 SGR**（chalk 0 档 · 不拧色档）时三态各有各的字形', async () => {
+    const stage = createStage()
+    stage.feed([event('plan.changed', { entry: 1, plan: three })])
+
+    const restore = chalk.level
+    chalk.level = 0
+    const ui = inkRender(h(AppView, { view: stage.shell.getView(), columns: 80, rows: 24 }))
+    try {
+      const frame = ui.lastFrame() ?? ''
+
+      expect(frame).not.toContain(`${String.fromCharCode(27)}[`) // 一个控制序列都没有
+      expect(frame).toContain('□ 还没轮到')
+      expect(frame).toContain('▪ 正在做的那步')
+      expect(frame).toContain('■ 做完的那步')
+    } finally {
+      ui.unmount()
+      chalk.level = restore
+    }
+  })
+
+  test('剥掉色之后（有色那一档）同样是三个字形', async () => {
+    const stage = createStage()
+    stage.feed([event('plan.changed', { entry: 1, plan: three })])
+
+    const text = plain((await stage.screen({ columns: 80, rows: 24 })).screen.lines.join('\n'))
+
+    expect(text).toContain('□ 还没轮到')
+    expect(text).toContain('▪ 正在做的那步')
+    expect(text).toContain('■ 做完的那步')
+  })
+})
+
+describe('返修③ · 收起提示的高度账', () => {
+  test('20 列：提示截断，height 与实占行数一致', async () => {
+    const block = planBlockOf({ plan: note(step('一步')), collapsed: true, top: 0, columns: 20, budget: 1 })
+
+    expect(block.height).toBe(1)
+    expect(displayWidth(block.rows[0]?.text ?? '')).toBeLessThanOrEqual(20)
+
+    const stage = createStage()
+    stage.feed([event('plan.changed', { entry: 1, plan: note(step('一步')) })])
+    stage.press({ kind: 'ctrl+t' })
+
+    const frame = await stage.screen({ columns: 20, rows: 10 })
+    const lines = frame.screen.lines
+
+    // **一行**（折成两行就是「账 1 行、屏 2 行」——U31 那条老账）
+    expect(lines.filter((line) => line.includes('计划已收起')).length).toBe(1)
+    expect(lines.some((line) => line.trim() === '展开')).toBe(false)
+  })
+})
+
+describe('返修④ · 实时计划也要看信封上的会话', () => {
+  test('旧会话晚到的**更新**不串进新会话；当前会话的照收', () => {
+    const stage = createStage()
+
+    stage.feed([event('session.state', { active: 'A', sessions: [] })])
+    stage.feed([event('plan.changed', { entry: 5, plan: note(step('A 的计划')) }, { session: 'A' })])
+    expect(hasPlan(stage.shell.getView())).toBe(true)
+
+    stage.feed([event('session.state', { active: 'B', sessions: [] })])
+    expect(hasPlan(stage.shell.getView())).toBe(false)
+
+    // 晚到的旧会话更新——丢
+    stage.feed([event('plan.changed', { entry: 9, plan: note(step('A 晚到的更新')) }, { session: 'A' })])
+    expect(hasPlan(stage.shell.getView())).toBe(false)
+
+    // 新会话自己的照收（对照组：不是把实时那一路整个关掉）
+    stage.feed([event('plan.changed', { entry: 9, plan: note(step('B 的计划')) }, { session: 'B' })])
+    expect(stage.shell.getView().plan.plan?.steps[0]?.text).toBe('B 的计划')
+  })
+
+  test('旧会话晚到的**清空**不动新会话那一份', () => {
+    const stage = createStage()
+
+    stage.feed([event('session.state', { active: 'A', sessions: [] })])
+    stage.feed([event('session.state', { active: 'B', sessions: [] })])
+    stage.feed([event('plan.changed', { entry: 9, plan: note(step('B 的计划')) }, { session: 'B' })])
+    expect(hasPlan(stage.shell.getView())).toBe(true)
+
+    stage.feed([event('plan.changed', { entry: 12, plan: null }, { session: 'A' })])
+
+    expect(hasPlan(stage.shell.getView())).toBe(true)
+    expect(stage.shell.getView().plan.entry).toBe(9)
+  })
+})
+
+describe('返修⑤ · 看不见的进行中项不动（共享时钟也在）', () => {
+  /** 21 步，只有第一步进行中——翻到第 10 行之后屏上就没有它了。 */
+  const many = note(
+    ...Array.from({ length: 21 }, (_unused, at) => step(`第 ${at + 1} 步`, at === 0 ? 'in_progress' : 'pending')),
+  )
+  /** 一个**正在跑**的工具行——共享那支钟就是为它走的（「时钟在走 ≠ 这一块该动」）。 */
+  const running = [event('tool.call', { name: 'exec', args: { cmd: 'sleep 9' } }, { id: 90 })]
+
+  /** 清单那几行的字格（逐格：色 · 粗体 · 压暗）——静止与否拿它比。 */
+  const planCells = (frame: Awaited<ReturnType<ReturnType<typeof createStage>['screen']>>): string =>
+    frame.screen.lines
+      .map((line, at) => ({ line, at }))
+      .filter((entry) => entry.line.includes('步：做完这一件'))
+      .map((entry) => JSON.stringify(frame.cellsOf(entry.at).map((cell) => [cell.text, cell.fg, cell.bold, cell.dim])))
+      .join('\n')
+
+  test('进行中项翻出视口 ⇒ 不呼吸（`hasRunning` 跟着画出来的行）', () => {
+    const stage = createStage()
+    stage.feed([event('plan.changed', { entry: 1, plan: many }), event('turn.start', {}), ...running])
+
+    const top = liveLayoutOf(stage.shell.getView(), 60, 16).plan
+    expect(top.hasRunning).toBe(true)
+    expect(breathingOf(stage.shell.getView(), top)).toBe(true)
+
+    stage.press({ kind: 'planTop', top: 10 })
+    const scrolled = liveLayoutOf(stage.shell.getView(), 60, 16).plan
+
+    expect(scrolled.hasRunning).toBe(false)
+    expect(breathingOf(stage.shell.getView(), scrolled)).toBe(false)
+  })
+
+  test('计划该静止时**共享的 `now` 不起作用**（工具在跑、钟在走，清单不动）', async () => {
+    const stage = createStage()
+    stage.feed([event('plan.changed', { entry: 1, plan: many }), event('turn.start', {}), ...running])
+    stage.press({ kind: 'planTop', top: 10 })
+
+    stage.at(0) // 钟在两处都走：工具行的耗时与（本该静止的）清单
+    const dark = await stage.screen({ columns: 60, rows: 16 })
+    stage.at(1000)
+    const light = await stage.screen({ columns: 60, rows: 16 })
+
+    expect(planCells(dark)).toBe(planCells(light)) // 逐格相同＝一动不动
+    expect(dark.screen.lines.some((line) => line.includes('⟳'))).toBe(true) // 对照：工具那行确实在动
+  })
+
+  test('等待 / 出错时也不动（同一条：状态不对就不呼吸）', async () => {
+    const stage = createStage()
+    stage.feed([event('plan.changed', { entry: 1, plan: many }), event('turn.start', {})])
+    const working = liveLayoutOf(stage.shell.getView(), 60, 16).plan
+    expect(breathingOf(stage.shell.getView(), working)).toBe(true)
+
+    stage.feed([event('turn.end', { reason: 'settled' })])
+    const idle = liveLayoutOf(stage.shell.getView(), 60, 16).plan
+    expect(breathingOf(stage.shell.getView(), idle)).toBe(false)
+
+    stage.feed([event('model.error', { tier: 'terminal', message: '断了' })])
+    const failed = liveLayoutOf(stage.shell.getView(), 60, 16).plan
+    expect(breathingOf(stage.shell.getView(), failed)).toBe(false)
   })
 })

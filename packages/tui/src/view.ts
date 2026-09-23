@@ -120,8 +120,10 @@ export type LogRow =
        * 或重复计划全文；原始调用/结果仍完整保存，既有工具详情展开可查，**失败正常可见**。」
        * 计划本身另有去处（清单那一块就地刷新），再刷一串卡就是把同一件事说两遍。
        *
-       * ⚠️ **只是「默认不画」，不是「丢掉」**：行照旧在本轮里（多件裁决报数、耗时都还要它），
-       * 画不画由 `shownRow` 一处判——失败 / 被拒 / 被扣下的照旧上屏。
+       * ⚠️ **只是「默认不画」，不是「丢掉」**：行照旧进记录区（定局与重建都留着它，
+       * 多件裁决报数、耗时也还要它）。画不画是**渲染那一处**的事：`components/log.ts`
+       * 的 `rowBody` 按这一格与 `expanded`（既有那一个展开键）判——**失败 / 被拒 / 被扣下
+       * 照旧可见**，`ctrl+o` 展开之后与别的工具行长得一模一样（详情可查）。
        */
       readonly quiet?: true
     }
@@ -187,19 +189,6 @@ export const PLAN_TOOLS: ReadonlySet<string> = new Set(['plan_read', 'plan_updat
 /** 这个工具名是不是那三个辅助工具之一（参数由调用方给**注册名**，不是给显示名）。 */
 export function quietTool(name: string): boolean {
   return PLAN_TOOLS.has(name)
-}
-
-/**
- * 这一行**画不画**——**一处判定、三处用**（活动区画哪几条 · 定局时收哪几条 · 重建铺哪些行）。
- * 各写一遍的话，切一趟会话回来屏上就多出几行（或漏几行）。
- *
- * 只有一种行会被收起：**安静的辅助工具、且跑成了**。跑动中先不画（省得一进一出一闪），
- * 失败 / 被拒 / 被扣下的照旧可见（设计：「失败正常可见」）。
- */
-export function shownRow(row: LogRow): boolean {
-  if (row.kind !== 'tool' || row.quiet !== true) return true
-
-  return row.state !== 'ok' && row.state !== 'running'
 }
 
 /** 手上有没有一份**画得出来**的清单（没有步骤＝没有清单——辅助笔记不铺在清单里）。 */
@@ -921,7 +910,14 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
 
     // 计划那一份落账之后发的瞬时事件（U34）——**落进视图的唯一实时来路**。
     // 「新旧」由 `withPlan` 一处判（历史晚到不能覆盖更新或清空）。
+    //
+    // **会话隔离**：信封不是当前这条会话的一律丢——换会话之后，旧会话那条流上**晚到**的
+    // 更新 / 清空不许串进新会话（工单：「换会话先移除旧清单，不能短暂串到新会话」）。
+    // 判据与 `shell.ts` 的 `accumulate`（历史分块）**同一条**：还没认到会话时（`null`）
+    // 一律先收下，认得了才按信封挑。
     case 'plan.changed':
+      if (view.sessionId !== null && event.session !== view.sessionId) return view
+
       return withPlan(view, event.data.entry, event.data.plan)
 
     case 'session.state':
@@ -1205,11 +1201,10 @@ function reduceUserEntry(view: ShellView): ShellView {
 export function settle(view: ShellView): ShellView {
   if (view.rows.length === 0) return view
 
-  // **安静的那些到这儿落地**（成功的不上屏）：不进 `settled` 就进不了 `Static`
-  // ——那一区「写一次就不再重绘」，进去了就再也拿不出来了（见 `shownRow`）。
-  const shown = view.rows.filter(shownRow)
-
-  return { ...view, settled: [...view.settled, ...shown], rows: [] }
+  // ⚠️ **一行都不摘**（U34 返修：「默认不画」不许在这里变成「丢掉」）——安静的那几个工具
+  // 行照旧进 `settled`（记录区里它在，展开之后看得见），画不画是渲染那一处的事
+  // （`components/log.ts` 按 `quiet` ＋ `expanded` 判）。在这儿滤掉＝那一行**永久不可查**。
+  return { ...view, settled: [...view.settled, ...view.rows], rows: [] }
 }
 
 // ══ 写入口（外壳用）══════════════════════════════════════════════════
@@ -1446,8 +1441,8 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
         elapsedMs: null,
         startedAt: null,
         output: [],
-        // 辅助工具那三个：恢复时也不必刷出来（`shownRow` 会在铺屏前把它们摘掉——
-        // 结果那一条落进 `state` 之后才判得准）
+        // 辅助工具那三个：恢复时也照这条规矩走（默认不画 · 展开可查 · 失败可见）——
+        // 判据全在渲染那一处（`components/log.ts`），行照旧留在记录区里
         ...(payload?.name !== undefined && quietTool(payload.name) ? { quiet: true as const } : {}),
       })
       pendingAt = rows.length - 1
@@ -1492,9 +1487,10 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
     else rows.push({ kind: 'receipt', key: `rb:s:${entry.id}`, text: `（摘要）${text}` })
   }
 
-  // 配对与收拢都做完之后才摘安静的那几行（`shownRow` 一处判）：**先判结果**——
-  // 失败的那一笔照旧留在屏上（连它那条工具调用一起，不然结果挂在一行没有的调用上）
-  return collapseToolGroups(rows.filter(shownRow))
+  // **一行都不摘**（返修）：安静的那几个工具行照旧铺进记录区——「默认不画」由渲染那一处
+  // 按 `quiet` ＋ `expanded` 判（`components/log.ts`）。在这儿滤掉＝切一趟会话回来
+  // 那一行就**永久不可查**了（`Static` 写一次就不再重绘）。
+  return collapseToolGroups(rows)
 }
 
 /**

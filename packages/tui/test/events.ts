@@ -18,17 +18,22 @@ export function nextId(): number {
   return sequence
 }
 
-/** 造一个事件；`turn` 缺省＝1（轮内事件），传 `null` 造轮外事件。 */
+/**
+ * 造一个事件；`turn` 缺省＝1（轮内事件），传 `null` 造轮外事件。
+ *
+ * `session` 缺省＝`TEST_SESSION`——**换一条会话的信封**要显式给（U34 返修④：
+ * 「旧会话那条流上晚到的计划事件」那一类反例，靠的就是信封上的会话）。
+ */
 export function event<K extends EventKind>(
   kind: K,
   data: EventDataOf[K],
-  options: { readonly id?: number; readonly turn?: TurnId | null } = {},
+  options: { readonly id?: number; readonly turn?: TurnId | null; readonly session?: SessionId } = {},
 ): EventEnvelope<K> {
   const id = options.id ?? nextId()
 
   return {
     id,
-    session: TEST_SESSION,
+    session: options.session ?? TEST_SESSION,
     turn: options.turn === undefined ? 1 : options.turn,
     at: TEST_AT + id,
     kind,

@@ -447,6 +447,21 @@ function rowBody(
     }
 
     case 'tool':
+      // **安静的工具行**（U34 · 计划读写与历史回查那三个）：**默认不占地方，展开就照常画**。
+      //
+      // 「默认不另刷一串工具卡或重复计划全文」（设计）——它们的成功结果与计划本身说的是同一
+      // 件事，再铺一张卡就是同一件事说两遍；而**「默认不画」不等于「永久不可查」**：
+      // `ctrl+o`（既有那一个展开键）一到，它们与别的工具行**长得一模一样**（名字 · 参数 ·
+      // 结果正文全在）——不新造查看面。
+      //
+      // 判据三件（`quiet` 只在 `view.ts` 的产生处写）：
+      // - 成功（含跑动中）⇒ 收起时不画；
+      // - **没跑成（失败 / 被拒 / 被扣下）⇒ 照旧可见**（设计：「失败正常可见」）；
+      // - 展开 ⇒ 画。
+      if (row.quiet === true && !expanded && row.state !== 'failed' && row.state !== 'rejected' && row.state !== 'unexecuted') {
+        return []
+      }
+
       return toolLines(row, columns, expanded, options.now ?? null)
 
     case 'toolgroup':

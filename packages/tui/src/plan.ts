@@ -149,16 +149,25 @@ export function planMoreLine(hiddenAbove: number, hiddenBelow: number, columns: 
 // ══ 方块：状态怎么落在那一格上 ════════════════════════════════════════
 
 /**
- * 状态 → 字形（设计 · 任务推进：**未开始为空心、进行中与已完成为实心方块**）。
+ * 状态 → 字形（设计 · 任务推进：「未开始为空心、进行中与已完成为实心方块」＋
+ * 「具体字形以终端实际可辨、对齐稳定为准」）。
  *
- * 只两个字：**空心**与**实心**——「未开始 / 进行中 / 已完成」三态靠**字形 ＋ 颜色 ＋
- * 文字强调**一起分（无色环境里剩下的正是字形与强调，见 `planStyleOf`）。
- * 具体字形以终端实际可辨、对齐稳定为准（设计留的那一句），取 `□` / `■`：
- * 同一个方块族的空心与实心，一比一宽，不会一列一列地错开。
+ * **三个各不相同的方块**（同一个方块族、同宽，不会一列一列地错开）：
+ *
+ * | 状态 | 字形 | 由头 |
+ * | --- | --- | --- |
+ * | 未开始 | `□` 空心 | 设计原话 |
+ * | 进行中 | `▪` **小**实心 | 设计原话是「主题色实心」——可**无色终端里色与粗体一个都不发**（`FORCE_COLOR=0` 连 `SGR 1` 都没有） |
+ * | 已完成 | `■` 实心 | 设计原话 |
+ *
+ * ⚠️ **为什么当前那一步不能也是 `■`**（2026-09-23 独立验收退回②）：`■` ＋ `■` 的区别
+ * 全靠颜色与粗体，而**真无色输出里这两件都不存在** ⇒ 三态当场退化成两态。故「当前」
+ * 这一格改用**小实心**（`▪`）：字形的差别在纯文本里也读得出来，色与呼吸只是**加强**它。
+ * （呈现参考面里当前那一步用的正是这个记号。）
  */
 export const GLYPHS: Readonly<Record<PlanStep['status'], string>> = {
   pending: '□',
-  in_progress: '■',
+  in_progress: '▪',
   completed: '■',
 }
 
@@ -226,17 +235,25 @@ export type PlanRow =
   /** 收起那一行（`PLAN_FOLDED`）。 */
   | { readonly kind: 'folded'; readonly key: string; readonly text: string }
 
-/** 一块清单：画出来的行 ＋ 高度 ＋ 翻页要用的那一窗。 */
+/** 一块清单：画出来的行 ＋ 高度 ＋ 翻页要用的那一窗 ＋ 呼吸的判据。 */
 export type PlanBlock = {
   readonly rows: readonly PlanRow[]
   /** 占几行（＝ `rows.length`——**账与屏同一个数**，别处别再数一遍）。 */
   readonly height: number
   /** 行视口那一窗（没有清单 / 没地方 / 收起了 ⇒ `null`）。 */
   readonly window: PlanWindow | null
+  /**
+   * **这一块里有没有正在进行中的一步**（U34 返修⑤）——只看**真画出来的那几行**。
+   *
+   * 由头（独立验收退回⑤）：把整份 `steps` 扫一遍的话，进行中那一步**翻出视口**之后
+   * 屏上一片 pending，而那格方块还在暗一档亮一档地呼吸——「看不见的东西在动」，
+   * 且白烧重绘。判据跟着**画出来的行**走，就不必有第二套可见性判断。
+   */
+  readonly hasRunning: boolean
 }
 
 /** 空块——**不占位**（没有计划时不占位，也不为显示而强制生成计划）。 */
-const NO_BLOCK: PlanBlock = { rows: [], height: 0, window: null }
+const NO_BLOCK: PlanBlock = { rows: [], height: 0, window: null, hasRunning: false }
 
 /**
  * **一整块清单**——**布局、高度与渲染同取这一处**（设计：「同一布局函数负责换行、
@@ -263,7 +280,14 @@ export function planBlockOf(input: {
   if (steps.length === 0) return NO_BLOCK
   if (input.budget <= 0) return NO_BLOCK
   if (input.collapsed) {
-    return { rows: [{ kind: 'folded', key: 'plan:folded', text: PLAN_FOLDED }], height: 1, window: null }
+    // ⚠️ **展开提示也保证占一行**（返修③）：它比窄窗还宽时**截断**，不由终端折
+    // ——折了就是「账 1 行、屏 2 行」，矮终端上动态帧正好顶满 ⇒ 真光标高一行（U31 那条老账）。
+    return {
+      rows: [{ kind: 'folded', key: 'plan:folded', text: truncate(PLAN_FOLDED, input.columns) }],
+      height: 1,
+      window: null,
+      hasRunning: false,
+    }
   }
 
   /** 折完之后的每一步：`[步骤下标, 状态, 这一行是不是首行, 文字]`。 */
@@ -302,7 +326,13 @@ export function planBlockOf(input: {
     })
   }
 
-  return { rows, height: rows.length, window }
+  // 呼吸的判据跟着**真画出来的行**走（见 `PlanBlock.hasRunning`）
+  return {
+    rows,
+    height: rows.length,
+    window,
+    hasRunning: rows.some((row) => row.kind === 'step' && row.status === 'in_progress'),
+  }
 }
 
 // ══ 呼吸：进行中那一格的亮度 ══════════════════════════════════════════

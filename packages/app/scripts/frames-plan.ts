@@ -41,6 +41,8 @@ const TUI_RUN = join(REPO, 'packages/tui/src/run.ts')
 
 /** `Ctrl T` 那一个字节（`0x14`）——写的是**真字节**：与手按同一个键、进同一个 stdin。 */
 const CTRL_T = String.fromCharCode(0x14)
+/** `Ctrl O` 那一个字节（`0x0f`，既有那一个展开键）——同上。 */
+const CTRL_O = String.fromCharCode(0x0f)
 /** `PgDn`（`CSI 6 ~`）——同上。 */
 const PG_DN = `${String.fromCharCode(0x1b)}[6~`
 /** 退格（`0x7f`）——清草稿用（那半句是「收起/展开不动草稿」那一屏的证据）。 */
@@ -305,10 +307,10 @@ async function main(): Promise<void> {
 
       await typeLine(session, '登录失败那条提示太笼统了，改一下')
       await session.key('enter')
-      await session.wait({ text: '■ 改提示文案' }, { timeoutMs: 10_000 })
+      await session.wait({ text: '▪ 改提示文案' }, { timeoutMs: 10_000 })
       const built = await session.capture({ label: '02-计划建立' })
       keep(out, built, '02-计划建立')
-      check(built.text.includes('■ 改提示文案'), '默认展开：进行中那一步在屏上')
+      check(built.text.includes('▪ 改提示文案'), '默认展开：进行中那一步在屏上（小实心）')
       check(built.text.includes('□ 跑一遍失败的几条路'), '未开始那一步也在（空心）')
       check(built.text.includes('■ 读登录提示那三处分支'), '已完成那一步在（实心）')
       check(!built.text.includes('PgUp/PgDn'), '放得下就不起提示行')
@@ -328,10 +330,10 @@ async function main(): Promise<void> {
       const folded = await session.capture({ label: '04-收起' })
       keep(out, folded, '04-收起')
       check(folded.text.includes('计划已收起 · ctrl+t 展开'), '收起之后留一行把手')
-      check(!folded.text.includes('■ 改提示文案'), '收起之后步骤行不画')
+      check(!folded.text.includes('▪ 改提示文案'), '收起之后步骤行不画')
       check(folded.text.includes('半句草稿'), '收起不动草稿')
 
-      await session.send(CTRL_T, { until: { text: '■ 认证失败按原文案改' }, timeoutMs: 10_000 })
+      await session.send(CTRL_T, { until: { text: '▪ 认证失败按原文案改' }, timeoutMs: 10_000 })
       const back = await session.capture({ label: '05-展开回来' })
       keep(out, back, '05-展开回来')
       check(back.text.includes('半句草稿'), '展开也不动草稿')
@@ -341,7 +343,7 @@ async function main(): Promise<void> {
       await session.send(BACKSPACE.repeat(4), { until: { absent: '半句草稿' }, timeoutMs: 10_000 })
       await typeLine(session, '就这样，收工')
       await session.key('enter')
-      await session.wait({ absent: '■ 认证失败按原文案改' }, { timeoutMs: 10_000 })
+      await session.wait({ absent: '▪ 认证失败按原文案改' }, { timeoutMs: 10_000 })
       const cleared = await session.capture({ label: '06-结束移除' })
       keep(out, cleared, '06-结束移除')
       check(!cleared.text.includes('□ 跑一遍失败的几条路'), '清空之后步骤行全没了')
@@ -433,7 +435,7 @@ async function main(): Promise<void> {
       await session.wait({ text: '正在改这一处' }, { timeoutMs: 10_000 })
       const shot = await session.capture({ label: '10-矮窗让位' })
       keep(out, shot, '10-矮窗让位')
-      check(!shot.text.includes('■ 改提示文案'), '矮窗里清单一行都不画（不落历史、不清屏）')
+      check(!shot.text.includes('▪ 改提示文案'), '矮窗里清单一行都不画（不落历史、不清屏）')
       check(shot.text.includes('›'), '输入行照旧在（先保证它）')
     } finally {
       await session.close().catch(() => {})
@@ -447,13 +449,16 @@ async function main(): Promise<void> {
     try {
       await typeLine(session, '无色也读得出来')
       await session.key('enter')
-      await session.wait({ text: '■ 改提示文案' }, { timeoutMs: 10_000 })
+      await session.wait({ text: '▪ 改提示文案' }, { timeoutMs: 10_000 })
       const shot = await session.capture({ label: '11-无色' })
       keep(out, shot, '11-无色')
 
-      check(shot.text.includes('■ 改提示文案'), '无色环境：进行中仍是实心方块')
-      check(shot.text.includes('□ 跑一遍失败的几条路'), '无色环境：未开始仍是空心方块')
-      check(!session.rawText().includes(`${ESC}[38;`), '无色那一趟没发前景色码（色不是唯一辨识）')
+      // 真无色：**一个 SGR 都不发**（色 · 粗体 · 压暗全是 SGR）——三态只剩字形可依
+      const sgr = new RegExp(`${ESC}\\[[0-9;]*m`, 'g')
+      check(!sgr.test(session.rawText()), '无色那一趟一个 SGR 都没发（含粗体与压暗）')
+      check(shot.text.includes('□ 跑一遍失败的几条路'), '无色下「未开始」是空心方块')
+      check(shot.text.includes('▪ 改提示文案'), '无色下「进行中」是小实心方块')
+      check(shot.text.includes('■ 读登录提示那三处分支'), '无色下「已完成」是实心方块——三态各有各的字形')
     } finally {
       await session.close().catch(() => {})
     }
@@ -472,6 +477,49 @@ async function main(): Promise<void> {
       keep(out, shot, '12-重开不复活')
       check(!shot.text.includes('□'), '重开之后旧清单一个方块都不剩')
       check(shot.text.includes('这件事做完了。'), '记录还在（过程沿既有记录留作排障）')
+    } finally {
+      await session.close().catch(() => {})
+    }
+  }
+
+  // —— 七 · 窄窗收起（20 列）：提示截断，**一行** ——
+  {
+    const { session } = await start({ label: '07-fold20', variant: 'full', columns: 20, rows: 12, forceColor: '3' }, out)
+
+    try {
+      await typeLine(session, '窄窗')
+      await session.key('enter')
+      await session.wait({ text: '跑一遍失败的几条路' }, { timeoutMs: 10_000 })
+      await session.send(CTRL_T, { until: { text: '计划已收起' }, timeoutMs: 10_000 })
+      const shot = await session.capture({ label: '13-窄窗收起' })
+      keep(out, shot, '13-窄窗收起')
+      check(
+        shot.lines.filter((line) => line.includes('计划已收起')).length === 1,
+        '20 列：收起提示只占一行（截断，不是折成两行）',
+      )
+      check(!shot.lines.some((line) => line.trim() === '展开'), '折下去的那半截没有冒出来')
+    } finally {
+      await session.close().catch(() => {})
+    }
+  }
+
+  // —— 八 · 工具详情（ctrl+o）：默认不画，展开就看得到 ——
+  {
+    const { session } = await start({ label: '08-detail', variant: 'full', columns: 100, rows: 30, forceColor: '3' }, out)
+
+    try {
+      await typeLine(session, '改一下提示')
+      await session.key('enter')
+      await session.wait({ text: '▪ 改提示文案' }, { timeoutMs: 10_000 })
+      const quiet = await session.capture({ label: '14-工具详情（收起）' })
+      keep(out, quiet, '14-工具详情-收起')
+      check(!quiet.text.includes('plan_update'), '辅助工具默认不刷工具卡')
+
+      await session.send(CTRL_O, { until: { text: 'plan_update' }, timeoutMs: 10_000 })
+      const shown = await session.capture({ label: '15-工具详情（展开）' })
+      keep(out, shown, '15-工具详情-展开')
+      check(shown.text.includes('plan_update'), '`ctrl+o` 之后工具名在（既有那一个展开键）')
+      check(shown.text.includes('计划已更新'), '结果也在（详情可查）')
     } finally {
       await session.close().catch(() => {})
     }

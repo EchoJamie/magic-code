@@ -30,7 +30,7 @@ import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
 import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { groupHeads, hasRunningTool, shownRow } from '../view.ts'
+import { groupHeads, hasRunningTool } from '../view.ts'
 import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
@@ -174,7 +174,12 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // **步骤清单**（U34）——**动态区末尾、输入区上方**（设计）；默认展开、就地刷新。
     // ⚠️ 它在**分隔线之上**：那一块仍属「这一屏正在发生什么」，而分隔线划的是记录区与
     // 交互区之间的界（输入框那一侧才是交互区）。没有清单时一行都不占（`height === 0`）。
-    ...(plan.height === 0 ? [] : [h(PlanList, { key: 'plan', block: plan, now })]),
+    //
+    // ⚠️ **`now` 只在呼吸为真时才交出去**（返修⑤）：钟是**共享**的（工具在跑它也走），
+    // 无条件递给清单的话，该静止的时候那格方块照样会跟着暗一档亮一档。
+    ...(plan.height === 0
+      ? []
+      : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? now : null })]),
     // **全屏只有这一条分隔线**（记录区与交互区之间）
     h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns))),
     h(Box, { flexDirection: 'column' }, ...dockOf(view, columns, rows)),
@@ -250,9 +255,11 @@ type LiveEntry = {
  *    算——同一条交界行两本账，差的正是一行分段。
  */
 function liveAreaOf(view: ShellView, columns: number, budget: number): readonly LiveEntry[] {
-  // **安静的那几行不画也不占**（U34 · `shownRow`）：它们与「上一条是谁」一起算的话，
-  // 摘掉一行就会在交界处多留（或少留）一行分段——故**先摘、再按摘完的次序算**。
-  const rows = view.rows.filter(shownRow)
+  // ⚠️ **这儿一行都不摘**（U34 返修①）：安静的那几个工具行也在本轮里，只是**渲染那一处
+  // 不出行**（`components/log.ts` 按 `quiet` ＋ `expanded` 判）——故它们的显示行数是 0，
+  // 也就自然不占预算（`heightOf` 走的是同一个 `rowLines`）。在这儿滤掉＝它们连
+  // 「展开可查」都没了（`ctrl+o` 展开时得能看见）。
+  const rows = view.rows
   const spacedAt = (index: number): boolean =>
     needsSpacerAfter(index === 0 ? view.settled.at(-1) : rows[index - 1], rows[index])
 
@@ -314,20 +321,23 @@ export function liveLayoutOf(
 }
 
 /**
- * **清单那一格的呼吸**（U34）——只在「**清单可见**（画得出来）· **实际工作中** ·
- * **有进行中项**」时动（设计：空闲、等待、错误、收起或卸载时停止）。
+ * **清单那一格的呼吸**（U34）——只在「**进行中那一步真在屏上** · **实际工作中**」时动
+ * （设计：空闲、等待、错误、收起或卸载时停止）。
  *
  * 钟不是新开一个：与工具行那个「跑到第几秒」共用活壳里那支按需 200ms 的钟
  * （`useLiveClock`）——两种动都只是「画的时候多个此刻」，合在一起滴答不冲突。
  *
- * ⚠️ 「可见」按**真在显示清单那一块**算（`window !== null`），不是按「手上有计划」算：
- * 收起了、极矮窗口里一行都没画、根本没有计划——这三种都**没在显示清单**，
- * 此时还滴答就是白烧重绘（受控渲染是 U21 的那笔账）。
+ * ⚠️ 判据落在 `block.hasRunning` 上——**只看真画出来的那几行**（见 `PlanBlock.hasRunning`）：
+ * 拿整份 `steps` 扫的话，进行中那一步翻出视口之后屏上全在动；收起 / 极矮窗口没画清单时
+ * 同理（返修⑤）。
+ *
+ * ⚠️ **光让钟停还不够**（同一个返修）：共享的 `now` 若**无条件**递给清单，工具在跑时
+ * 那格方块照样会暗一档亮一档——「时钟在走」与「这一块该不该动」是两件事。故调用方
+ * （`AppView`）**只在呼吸为真时**才把 `now` 交给 `PlanList`，否则给 `null`（＝画原色、
+ * 一动不动）。
  */
 export function breathingOf(view: ShellView, block: PlanBlock): boolean {
-  if (view.status.state !== 'working' || block.window === null) return false
-
-  return (view.plan.plan?.steps ?? []).some((step) => step.status === 'in_progress')
+  return view.status.state === 'working' && block.hasRunning
 }
 
 /** 左下交互区的内容（四种用法）。 */
