@@ -119,6 +119,7 @@ import { PLAN_TOOL_NAMES, createToolRuntime, defineMcpTools, definePlanTools, de
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
+import { saveAttachmentFile } from './attachment-file.ts'
 import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
 import { loadGrants, saveGrants } from './grants-file.ts'
 import { configFingerprintOf, modelCacheAccessOf } from './cache-access.ts'
@@ -911,6 +912,24 @@ export function assemble(options: AssembleOptions): Assembly {
   let models: ModelRegistry | undefined
   if (options.modelGateway === undefined) models = registryOf()
 
+  /**
+   * **此刻这个模型吃不吃图**（U37）——三态探针，交给对话域（见 `LoopRuntime.acceptsImages`）。
+   *
+   * 三处合成一处：
+   * - 问**注册表的当下去向**（`current()`，与 `stream()` 真走的那个是同一份读数）；
+   * - 要那份**能力读数**（`capabilityOf`：用户覆盖 → 缓存里的资料）——解析归模型域一处；
+   * - 没依据（没选过模型 / 压根没有注册表）⇒ `undefined`＝**不知道**。
+   *
+   * ⚠️ **每次现算、不缓存**：用户换完模型，下一轮就该按新模型判。且 `models` 这个变量本身
+   * 会在保存配置之后被换掉（`rebuildRegistry`），快照会一直指着旧那一张。
+   */
+  const currentAcceptsImages = (): boolean | undefined => {
+    const at = models?.current()
+    if (at === undefined) return undefined
+
+    return models?.capabilityOf(at.provider, at.model)?.image
+  }
+
 
   /**
    * **按当下的连接资料重建注册表**（保存之后）。
@@ -1067,6 +1086,11 @@ export function assemble(options: AssembleOptions): Assembly {
       materials,
       // 上下文策略的覆盖位（U19 的压缩阈值走这里进域；不给＝域内缺省）
       context: options.context,
+      // **图片与当前模型对不对得上**（U37）——探针问的是**此刻**（每次提交时现算）：
+      // 用户中途换了模型，下一轮就该按新模型判（抓一份快照会让它一直按开局那个模型说事）。
+      // ⚠️ **`models` 缺席**（替身网关 / 用例）⇒ `undefined`＝**不知道**——照发，
+      // 请求真失败再如实报错（见 `LoopRuntime.acceptsImages` 那三态）。
+      acceptsImages: currentAcceptsImages,
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
       // 对话域只出重建面（`ConversationService.rebuild`）。见下 `actions`。
     })
@@ -1119,6 +1143,9 @@ export function assemble(options: AssembleOptions): Assembly {
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
     now,
+    // 导出原图（U37）——**落盘那一步在这儿**（域不碰文件系统，同配置 / 授权的读写）；
+    // 取字节那一半在对话域（它握着记录里那份 blob）
+    saveAttachment: (file) => saveAttachmentFile(file),
   })
 
   /**
@@ -1794,6 +1821,10 @@ export function assemble(options: AssembleOptions): Assembly {
     // 路径候选（读侧 · U36）——**归装配**（它握着执行域的路径面，同技能目录那一处）；
     // 答复走事件（`paths.catalog`，不落库）。**异步**：它要真去看一眼目录。
     onPathList: (query) => void listPaths(query),
+    // 图片附件（U37）——**原样转手**给对话域（条目载荷里那份引用只有它认得，
+    // 同 `history.read` 的站位）；答复走事件（`attachments.catalog`，不落库）
+    onAttachmentList: () => void conversation.readAttachments(),
+    onAttachmentExport: (entry) => void conversation.exportAttachment(entry),
     // 外部服务器（读侧 ＋ 显式重连 · U39）——**归装配**（那一束连接是它编排的，同
     // `model.list` 之于注册表）；答复走事件（`mcp.catalog`，不落库）
     onMcpList: () => listMcp(),

@@ -45,6 +45,13 @@ export type FixtureRequest = {
   readonly messages: number
   /** 最后一条 user 正文（截断）——「实际发出去的是什么」的物证。 */
   readonly lastUser: string
+  /**
+   * 最后一条 user 消息里**图像部件**的个数（U37）——「图真到了端点上吗」的物证。
+   *
+   * `lastUser` 只拼文字那几件（图没有文字），故「带图了没有」得另报一个数：
+   * 判据要是只看正文，把图丢在取件层也照样绿。
+   */
+  readonly images: number
   /** 这次请求带了工具吗（工具调用那一路要它）。 */
   readonly tools: number
   /** 相对夹具起好的时刻（毫秒）。 */
@@ -92,6 +99,7 @@ export function startFixture(options: FixtureOptions): Fixture {
         model: typeof body['model'] === 'string' ? body['model'] : model,
         messages: messages.length,
         lastUser: lastUserOf(messages),
+        images: imagesOf(messages),
         tools,
         at: (Bun.nanoseconds() - started) / 1e6,
       })
@@ -137,6 +145,23 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
   } catch {
     return {}
   }
+}
+
+/** 最后一条 user 消息里的图像部件数（U37）——`image_url` 那一形（OpenAI 兼容的出站形态）。 */
+function imagesOf(messages: readonly unknown[]): number {
+  for (let at = messages.length - 1; at >= 0; at -= 1) {
+    const message = messages[at]
+    if (typeof message !== 'object' || message === null) continue
+    const entry = message as { role?: unknown; content?: unknown }
+    if (entry.role !== 'user') continue
+    if (!Array.isArray(entry.content)) return 0
+
+    return entry.content.filter(
+      (part) => typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'image_url',
+    ).length
+  }
+
+  return 0
 }
 
 /** 最后一条 user 的正文（AI SDK 可能发数组形态的 content——只取文本块）。 */

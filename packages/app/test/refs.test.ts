@@ -67,8 +67,12 @@ function userText(stage: Stage, index: number): string {
 function lastUserText(stage: Stage, index: number): string {
   const messages = lastModel(stage).requests[index]?.messages ?? []
   const found = [...messages].reverse().find((message) => message.role === 'user')
+  if (found === undefined) return ''
 
-  return found?.content ?? ''
+  // U37 起用户消息的正文可能是**部件串**（带图那条）——这里只取文字那几件
+  return typeof found.content === 'string'
+    ? found.content
+    : found.content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
 }
 
 /** 库里的 `user` 条目（直读——不经读 API）。 */

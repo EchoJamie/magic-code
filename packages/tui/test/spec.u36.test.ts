@@ -47,6 +47,14 @@ function refs(stage: Stage): readonly DraftRef[] {
   return stage.shell.getView().refs
 }
 
+/**
+ * 草稿上一处引用**是不是工作区外那份只读附件**——只有文件 / 图片那两支带这一位
+ * （U37 起 `DraftRef` 是判别联合，见其类型注）。
+ */
+function externalOf(ref: DraftRef | undefined): boolean | undefined {
+  return ref !== undefined && ref.kind !== 'skill' && ref.kind !== 'dir' ? ref.external === true : undefined
+}
+
 /** 一路选入一个文件引用：`@` → 答复 → 回车。 */
 function pickFile(stage: Stage, display: string, kind: 'file' | 'directory' = 'file'): void {
   stage.press({ kind: 'char', char: '@' })
@@ -518,7 +526,7 @@ describe('U36 · 选定：引用留在原位', () => {
     feedPaths(stage, '', [{ path: '/etc/hosts', display: '/etc/hosts', kind: 'file', external: true }])
     stage.press(ENTER)
 
-    expect(refs(stage)[0]?.external).toBe(true)
+    expect(externalOf(refs(stage)[0])).toBe(true)
     expect(refs(stage)[0]?.marker).toBe('@/etc/hosts')
   })
 })

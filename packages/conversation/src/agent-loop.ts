@@ -147,6 +147,20 @@ export type LoopRuntime = {
    * 新形（带位置）走这里（见 `refs.ts` 的文件头注）。
    */
   readonly refs?: RefDelivery | undefined
+  /**
+   * **当前模型吃不吃图**（U37）——三态：`true` 明确支持 · `false` **明确不支持** ·
+   * `undefined` **不知道**（缺省）。
+   *
+   * 由装配给（它握着注册表与模型信息缓存——本域不认识模型）。用途只有一个：
+   * **带图的那一条交代在发出去之前**拦下来（设计 · 文件与图片：「模型明确不支持图像时
+   * 保留输入，提示换模型或移除图片，不能静默丢图发文字」）。
+   *
+   * ⚠️ **`undefined` 照发**：不知道就按不知道办，请求真失败再如实报错——
+   * 把未知当「不支持」拦下来，等于凭空禁掉一批其实能看图的模型。
+   *
+   * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
+   */
+  readonly acceptsImages?: (() => boolean | undefined) | undefined
 }
 
 /**
@@ -191,6 +205,15 @@ export async function agentLoop(
   if (!delivery.ok) {
     // 材料取不到＝这一份输入**没进会话**：配对一次 false（说得出是哪一份、为什么）
     refuse(runtime, input, delivery.reason)
+    return 'rejected'
+  }
+
+  // **图片与当前模型对不对得上**（U37）——拦在**落账之前**（见 `LoopRuntime.acceptsImages`）。
+  // 位置很要紧：这一条要落进会话的话，后面每一轮都会带着一张当前模型看不见的图发出去
+  // ——那是「每次都坏一遍」，比当场回绝严重得多。
+  const wrongModel = imageRefusal(runtime, delivery.refs)
+  if (wrongModel !== undefined) {
+    refuse(runtime, input, wrongModel)
     return 'rejected'
   }
 
@@ -384,6 +407,37 @@ async function loadRefs(
   }
 
   return runtime.refs.load(refs)
+}
+
+/**
+ * **带图的那一条，当前模型吃不吃得下**（U37）——`undefined` ＝放行。
+ *
+ * 只在**明确不支持**时回一句拒绝的缘由（设计：那种情形要「保留输入，提示换模型或移除图片」）。
+ * 三种情形各有各的话，用户看完就知道下一步动哪儿：
+ * - 「不知道」⇒ 放行（见 `LoopRuntime.acceptsImages`——未知不是「不支持」）；
+ * - 「支持」⇒ 放行；
+ * - 「不支持」⇒ 拒绝，并**指出两条出路**（换模型 / 把图去掉）。
+ *
+ * ⚠️ **缘由里不点模型名**：本域手上那个 `runtime.model` 是**开局时那一个**（模型域那侧
+ * 中途换过的话，它已经不新了），而探针问的是**此刻**——两者一旦不同，这句话就成了
+ * 「编出一个当下不成立的事实」。**拿不准的不说**：改用 `/model` 指路（用户在那儿看得见
+ * 此刻是谁），缘由本身照样说清了是哪一处出的问题。
+ */
+function imageRefusal(
+  runtime: LoopRuntime,
+  refs: readonly InputRefEntry[],
+): string | undefined {
+  const images = refs.filter((ref) => ref.kind === 'image')
+  if (images.length === 0) return undefined
+  if (runtime.acceptsImages?.() !== false) return undefined
+
+  const which = images.map((ref) => ref.name).join(' · ')
+
+  return (
+    `这一条带${images.length === 1 ? '了一张图片' : `了 ${images.length} 张图片`}（${which}），` +
+    `而当前模型明确不支持图片输入——换一个支持看图的模型（用 /model 看此刻是谁），` +
+    `或把这几处图片引用去掉再发（这一条没跑，原稿还在）。`
+  )
 }
 
 /** 一份输入**没进会话**——配对一次 `ok:false`（给了 `ref` 才发；失败不静默）。 */

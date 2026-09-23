@@ -66,6 +66,8 @@ import type {
   ToolCall,
   ToolResultPayload,
   ToolCallPayload,
+  UserContentPart,
+  UserMessageContent,
   UsedSkillEntry,
 } from '@magic/contracts'
 import { planMaterialOf } from './plan.ts'
@@ -77,6 +79,14 @@ import { planMaterialOf } from './plan.ts'
  * 缺省值与策略对象（`./policy.ts`）同源——读侧单独用时不至于各写一个数。
  */
 export const DEFAULT_BLOB_TEXT_LIMIT = 2000
+
+/**
+ * 引用表里**文本那几支**（技能 / 文件 / 目录）——`inlineOf` 的入参面（U37）。
+ *
+ * 拿它当类型而不是再判一次 `ref.kind !== 'image'`：**图片根本进不了那条只产出字符串的路**
+ * （字节放不进 `string`）。走错路 tsc 当场报，不必等运行期去发现「有一张图被当成了空文本」。
+ */
+export type TextRefEntry = Exclude<InputRefEntry, { kind: 'image' }>
 
 /**
  * 「近段」边界（条目数）——压缩时**不压**的尾部，也是装配时从摘要往前认回来的那一段
@@ -199,13 +209,20 @@ export async function assembleContext(
       const refs = refsPayloadOf(payload)
       const skills = userPayloadOf(payload)
 
-      const body =
-        refs.length > 0
-          ? inlineOf(text, refs)
-          : skills.length === 0
-            ? text
-            : `${skillsBlockOf(skills)}\n\n${text}`
+      if (refs.length > 0) {
+        // **带图与否走两条形**（U37）：没有图时仍是**一个字符串**（纯文字那条老路
+        // 逐字不动——旧用例、旧记录、旧行为全都不受影响）；有图时才是**部件串**
+        // （文字与图片按用户排的次序排开）。
+        //
+        // 判据取「这一条**载荷里有没有图片**」而不是「装配时能不能取回字节」：
+        // 前者是记录里的既成事实，后者要看 blob 还在不在——按后者判，一张取不回的图
+        // 会把整条消息**悄悄退回**纯文字形（正是「有路径就当送过图」那条错法）。
+        messages.push({ role: 'user', content: await userBodyOf(text, refs, skills, input.records) })
+        index += 1
+        continue
+      }
 
+      const body = skills.length === 0 ? text : `${skillsBlockOf(skills)}\n\n${text}`
       messages.push({ role: 'user', content: body })
       index += 1
       continue
@@ -436,8 +453,8 @@ export function userPayloadOf(payload: EntryPayload | undefined): readonly UsedS
 }
 
 /**
- * 用户条目的载荷 → 引用表（U36）——**只认三件齐全的**（位置 / 标记 / 来源），
- * 内容那一格按 kind 各取各的（技能与文件都要 `text`，目录也一样）。
+ * 用户条目的载荷 → 引用表（U36）——**只认该支那几件齐全的**（位置 / 标记 / 来源，外加各支
+ * 自己的内容那几格：技能与文件 / 目录要 `text`，图片要 `mime` ＋ `blob`）。
  *
  * 缺件的条目**不当作材料**（当作没有）：与 `userPayloadOf` 同一条姿势——半条材料会让模型
  * 按一份内核都没看全的东西干活。旧库（只有 `skills` 键）在这里读出空数组，走另一支。
@@ -456,11 +473,35 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
     const at = item['at']
     const marker = item['marker']
     const from = item['source']
-    const text = item['text']
     if (typeof at !== 'number' || typeof marker !== 'string') continue
-    if (typeof from !== 'string' || typeof text !== 'string') continue
+    if (typeof from !== 'string') continue
 
     const label = typeof item['label'] === 'string' ? item['label'] : ''
+
+    // **图片这一支先认**（U37）：它的内容那几格与别支不同（`mime` / `blob` 而不是 `text`），
+    // 故不能走下面「先要 `text` 字符串」那道公共闸——那会把每一张图都判成缺件丢掉
+    if (item['kind'] === 'image') {
+      const name = item['name']
+      const mime = item['mime']
+      const blob = item['blob']
+      if (typeof name !== 'string' || typeof mime !== 'string' || typeof blob !== 'string') continue
+
+      refs.push({
+        kind: 'image',
+        at,
+        marker,
+        source: from,
+        label,
+        name,
+        mime,
+        blob,
+        ...(item['external'] === true ? { external: true as const } : {}),
+      })
+      continue
+    }
+
+    const text = item['text']
+    if (typeof text !== 'string') continue
 
     if (item['kind'] === 'skill') {
       const name = item['name']
@@ -510,8 +551,12 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
  *   一整摞材料摆在最前面、再由用户自己认哪份管哪处；
  * - **位置越界一律夹回**（手改过的旧记录 / 越界数据）：宁可把材料摆在末尾，也不把它丢掉
  *   或插到一段文字中间。
+ *
+ * ⚠️ **它只管文本那几支**（入参就排除了图片——`TextRefEntry`）：图得走 `userBodyOf`
+ * 那条部件串的路（字节放不进字符串）。这不是「少支持一种」——是**类型上就不许**
+ * 把一张图塞进这条只产出字符串的路（走错了 tsc 当场报，不必等运行时去猜）。
  */
-export function inlineOf(text: string, refs: readonly InputRefEntry[]): string {
+export function inlineOf(text: string, refs: readonly TextRefEntry[]): string {
   const ordered = [...refs].sort((left, right) => left.at - right.at)
   let out = ''
   let cursor = 0
@@ -524,6 +569,86 @@ export function inlineOf(text: string, refs: readonly InputRefEntry[]): string {
   }
 
   return out + text.slice(cursor)
+}
+
+/**
+ * 一条 `user` 条目的正文 → **模型要收的那一份**（U37）——文字与图片**按用户排的次序**排开。
+ *
+ * ## 什么时候是字符串、什么时候是部件串
+ *
+ * 判据只有一条：**这一条载荷里有没有图片**。
+ * - **没有** ⇒ 返回 `inlineOf` 那个字符串——纯文字那条老路**逐字不动**
+ *   （旧记录、旧用例、旧行为全不受影响）；
+ * - **有** ⇒ 返回部件串：文字照旧是那些字（引用那一段一个字不剥），图片**插在它被说出来的
+ *   那个位置**（`materialBlockOf` 那套抬头 / 收尾的边界照样给——见下面那一段）。
+ *
+ * ## 图片那一段的形状
+ *
+ * 每张图占**三段**：抬头（`〔本次材料 · 图片 label〕`）→ **图像部件**（字节本体）→
+ * 收尾（`〔图片完 · label〕`）。抬头那几句不是装饰：模型得知道**这一块是用户递过来的图**，
+ * 而不是它自己查出来的东西（同文件 / 技能那两处的抬头由头）；收尾那一道是**边界**——
+ * 长材料之后接着的文字若没有边界，会被读成材料的一部分。
+ *
+ * ## 取不回字节怎么办
+ *
+ * **抛**（由调用方按「这一轮出错」处置），**不悄悄跳过那张图**：跳过＝用户以为递了图、
+ * 模型手里却没有——正是设计明令不许的那件事（「不能把有路径或'有图'提示当成模型已看图」）。
+ */
+export async function userBodyOf(
+  text: string,
+  refs: readonly InputRefEntry[],
+  skills: readonly UsedSkillEntry[],
+  records: { readonly blobs: BlobStore },
+): Promise<UserMessageContent> {
+  const ordered = [...refs].sort((left, right) => left.at - right.at)
+  // **没有图 ⇒ 走字符串那条老路**（`inlineOf` 的入参就排除了图片，此处的收窄因此是实打实的）
+  const texts = ordered.filter((ref): ref is TextRefEntry => ref.kind !== 'image')
+  if (texts.length === ordered.length) {
+    return texts.length === 0
+      ? (skills.length === 0 ? text : `${skillsBlockOf(skills)}\n\n${text}`)
+      : inlineOf(text, texts)
+  }
+
+  const parts: UserContentPart[] = []
+  let cursor = 0
+
+  for (const ref of ordered) {
+    // 材料接在**引用文字之后**（`at` ＋ 标记长度），且不许越过上一份材料——与 `inlineOf` 同规
+    const end = Math.max(cursor, Math.min(ref.at + ref.marker.length, text.length))
+    pushText(parts, `${text.slice(cursor, end)}\n`)
+
+    if (ref.kind === 'image') {
+      parts.push({ type: 'text', text: `${imageHeadOf(ref)}\n` })
+      parts.push({ type: 'image', mime: ref.mime, data: await records.blobs.get(ref.blob) })
+      pushText(parts, `\n${imageTailOf(ref)}\n`)
+    } else {
+      pushText(parts, `${materialBlockOf(ref)}\n`)
+    }
+
+    cursor = end
+  }
+
+  pushText(parts, text.slice(cursor))
+
+  return parts
+}
+
+/** 往部件串里添一段文字——**空串不进**（免得攒出一堆零长度部件，供应商那头还得各判一次）。 */
+function pushText(parts: UserContentPart[], text: string): void {
+  if (text.length === 0) return
+  parts.push({ type: 'text', text })
+}
+
+/** 图片那一块的抬头——**说清「这是用户递来的一张图」**（与文件 / 技能那两处同一套口径）。 */
+function imageHeadOf(ref: Extract<InputRefEntry, { kind: 'image' }>): string {
+  const external = ref.external === true ? '（工作区外 · 只读附件）' : ''
+
+  return `〔本次材料 · 图片 ${ref.name}（来源 ${ref.label}${external}）〕`
+}
+
+/** 图片那一块的收尾——**边界**（同 `materialBlockOf` 那条理由）。 */
+function imageTailOf(ref: Extract<InputRefEntry, { kind: 'image' }>): string {
+  return `〔图片完 · ${ref.name}〕`
 }
 
 /**
@@ -541,7 +666,7 @@ export function inlineOf(text: string, refs: readonly InputRefEntry[]): string {
  * 截断 / 未展开**在抬头就说明白**（`truncated` / `omitted`）：宁可先说「只送到这里」，
  * 也不能让模型以为手里是全份（设计：不能静默缺材料）。
  */
-function materialBlockOf(ref: InputRefEntry): string {
+function materialBlockOf(ref: TextRefEntry): string {
   const kind = ref.kind === 'skill' ? '技能' : ref.kind === 'dir' ? '目录' : '文件'
   const external = ref.kind === 'file' && ref.external === true ? '（工作区外 · 只读附件）' : ''
   const cut = ref.kind === 'file' && ref.truncated === true ? '（原文更长，这里是前一段）' : ''

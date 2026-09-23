@@ -346,9 +346,16 @@ async function renderSegment(entries: readonly Entry[], deps: CompactorDeps): Pr
  *
  * 技能报技能名；文件 / 目录报**用户写的那一处**（`marker`，`@` 已在里面）——
  * 那是材料在正文里的样子，也是「这一处指的是哪一份」的唯一说法（同名的两份文件靠路径分）。
+ *
+ * **图片多标一句「（图片）」**（U37）：摘要是给下一段用的「发生过什么」，
+ * 而 `@shot.png` 这个名字**说明不了它是图还是文件**——不标的话，压缩之后接着干活的模型
+ * 只当用户提过一份叫这个名字的材料。⚠️ 标的是**当时带了什么**，不是「模型看过了」：
+ * 这一点正是设计划的那条界线（附件引用 ≠ 本轮已送原图）。
  */
 function refNameOf(ref: InputRefEntry): string {
-  return ref.kind === 'skill' ? ref.name : ref.marker
+  if (ref.kind === 'skill') return ref.name
+
+  return ref.kind === 'image' ? `${ref.marker}（图片）` : ref.marker
 }
 
 /** 一条条目 → 一段文本。 */

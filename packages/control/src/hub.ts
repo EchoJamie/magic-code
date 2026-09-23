@@ -111,6 +111,17 @@ export function createControlHub(): ControlHubFace {
         // 同 `skills.list`）。本域不认识文件系统，答复走事件（`paths.catalog`，不落库）。
         target.onPathList(command.query)
         return
+      case 'attachments.list':
+        // 本会话送出的图片（读侧 · U37）——**原样转手**给**对话域**（条目与那份载荷形态
+        // 归它，同 `history.read` 的站位）。答复走事件（`attachments.catalog`，不落库）：
+        // 命令面只发不收。
+        target.onAttachmentList()
+        return
+      case 'attachments.export':
+        // 导出原图（U37）——同一条路（记录里那份字节归对话域读，落盘那一步它经装配注入的
+        // 写口完成）。**不在这里解释 `entry`**：记录位置就是身份，本域不认识记录。
+        target.onAttachmentExport(command.entry)
+        return
       case 'mcp.list':
         // 外部服务器的一屏（读侧 · U39）——**原样转手**给**装配**（那一束连接是它编排的，
         // 同 `model.list` 之于注册表）。本域不认识 MCP，答复走事件（`mcp.catalog`，不落库）。

@@ -1861,3 +1861,114 @@ describe('消息装配', () => {
     expect(events.at(-1)?.kind).toBe('model.call.end')
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// 八 · 图片输入（U37）——**真请求体里的那些字节**
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 判据落在**出站请求体**上（不是「内核侧构造了个部件」）：供应商真正收到的是
+ * `image_url` 里那段数据 URL——把它解回来与送出去的字节逐字节比。
+ *
+ * 由头（工单的完成出口）：「文字配图和纯图片输入均能**实际送达**模型」——
+ * 只验内核侧形态的话，取件层把图丢了也照样绿。
+ */
+describe('U37 · 图片输入：出站请求体里的图像部件', () => {
+  /** 一段**认得出是图片**的字节（PNG 魔数 ＋ 后面几个字节——本层不判完整性，那在执行域）。 */
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+
+  function gatewayWith(fetch: typeof globalThis.fetch) {
+    return createModelGateway({
+      providerId: 'minimax',
+      stamper: testStamper(),
+      config: CONFIG,
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+  }
+
+  /** 出站那一格 `content`（OpenAI 兼容里用户消息可以是字符串或部件数组）。 */
+  type WireContent = string | readonly Record<string, unknown>[]
+
+  function userContentOf(body: Record<string, unknown>, index = 0): WireContent | undefined {
+    const messages = body['messages'] as readonly Record<string, unknown>[] | undefined
+
+    return messages?.[index]?.['content'] as WireContent | undefined
+  }
+
+  test('纯图片：出站是一个 `image_url` 部件，数据 URL 里就是那些字节', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
+    )
+
+    await drain(
+      gatewayWith(fetch).stream({
+        model: MINIMAX_MODEL,
+        messages: [
+          { role: 'user', content: [{ type: 'image', mime: 'image/png', data: PNG }] },
+        ],
+      }),
+    )
+
+    const content = userContentOf(seen[0]?.body ?? {})
+    expect(Array.isArray(content)).toBe(true)
+    if (!Array.isArray(content)) return
+
+    const image = content.find((part) => part['type'] === 'image_url')
+    expect(image).toBeDefined()
+    const url = (image?.['image_url'] as { url?: string } | undefined)?.url ?? ''
+    expect(url.startsWith('data:image/png;base64,')).toBe(true)
+
+    // **逐字节对得上**——解回来与送出去的同一串
+    const decoded = new Uint8Array(Buffer.from(url.slice('data:image/png;base64,'.length), 'base64'))
+    expect([...decoded]).toEqual([...PNG])
+  })
+
+  test('文字配图：文字与图片**按用户排的次序**出站', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
+    )
+
+    await drain(
+      gatewayWith(fetch).stream({
+        model: MINIMAX_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '看这张图 @报错.png' },
+              { type: 'text', text: '〔本次材料 · 图片 报错.png〕' },
+              { type: 'image', mime: 'image/png', data: PNG },
+              { type: 'text', text: '是什么问题？' },
+            ],
+          },
+        ],
+      }),
+    )
+
+    const content = userContentOf(seen[0]?.body ?? {})
+    expect(Array.isArray(content)).toBe(true)
+    if (!Array.isArray(content)) return
+
+    // 次序照旧：文字 → 文字 → 图 → 文字（图片在它被说出来的那个位置）
+    expect(content.map((part) => part['type'])).toEqual(['text', 'text', 'image_url', 'text'])
+    expect(content[0]?.['text']).toBe('看这张图 @报错.png')
+    expect(content[3]?.['text']).toBe('是什么问题？')
+  })
+
+  test('纯文字照旧是一个字符串（加图片那一支之前逐字同形）', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
+    )
+
+    await drain(
+      gatewayWith(fetch).stream({
+        model: MINIMAX_MODEL,
+        messages: [{ role: 'user', content: '就一句话' }],
+      }),
+    )
+
+    expect(userContentOf(seen[0]?.body ?? {})).toBe('就一句话')
+  })
+})

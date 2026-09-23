@@ -11,9 +11,15 @@
  */
 
 import { jsonSchema, streamText, tool } from 'ai'
-import type { JSONSchema7, JSONValue, ModelMessage as AiSdkMessage, ToolSet } from 'ai'
+import type {
+  JSONSchema7,
+  JSONValue,
+  ModelMessage as AiSdkMessage,
+  ToolSet,
+  UserContent,
+} from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import type { ModelMessage, ModelRequest, ToolSpec } from '@magic/contracts'
+import type { ModelMessage, ModelRequest, ToolSpec, UserMessageContent } from '@magic/contracts'
 import type { ModelStreamOptions } from './call.ts'
 import type { VendorStreamPart } from './normalize.ts'
 import type { VendorAdapter } from './vendors.ts'
@@ -75,7 +81,7 @@ function toAiSdkMessages(
     .map((message): AiSdkMessage => {
       switch (message.role) {
         case 'user':
-          return { role: 'user', content: message.content }
+          return { role: 'user', content: toUserContent(message.content) }
         case 'assistant': {
           const calls = message.toolCalls ?? []
           // **只回传给要求它的那一家**：思考是那一个模型的私有协议内容，
@@ -124,6 +130,35 @@ function toAiSdkMessages(
           }
       }
     })
+}
+
+/**
+ * 用户消息的正文 → 取件层那一形（U37）。
+ *
+ * ## 字符串那一支不走这里
+ *
+ * 纯文字（绝大多数消息）**原样交回字符串**：SDK 自己认得「一个字符串＝一段文字」，
+ * 转成 `[{type:'text'}]` 只会让出站请求体多一层包装（且与加这一条之前不再逐字同形——
+ * 那条「旧行为一字不动」的承诺要靠它守）。**带图那一刻才转部件**。
+ *
+ * ## 图为什么走 `file` 部件而不是 `image`
+ *
+ * ⚠️ 取件层（AI SDK v7）的 `image` 部件**已废弃**——它自己会当场打一条 deprecation
+ * 警告，并按「`file` ＋ `mediaType`」重新解释（`convertImagePartToFilePart`）。
+ * 我们**按它给的下一代形状写**（`{type:'file', data, mediaType:'image/png'}`），
+ * 于是：出站那一格仍是 `image_url` 的数据 URL（`@ai-sdk/openai-compatible` 对
+ * 顶层类型是 image 的 file 部件正是这么转的），而**不再借道一个已废弃的中间形**。
+ *
+ * 形状的接法只有文件名不同：内核侧叫 `mime`（我们自己的词），SDK 那格叫 `mediaType`。
+ */
+function toUserContent(content: UserMessageContent): UserContent {
+  if (typeof content === 'string') return content
+
+  return content.map((part) =>
+    part.type === 'text'
+      ? { type: 'text' as const, text: part.text }
+      : { type: 'file' as const, data: part.data, mediaType: part.mime },
+  )
 }
 
 /** 工具定义——**不带执行体**：模型只出请求，执行归内核工具机制 + 权限闸门。 */

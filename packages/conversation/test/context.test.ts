@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Content, ModelMessage } from '@magic/contracts'
+import type { Content, ModelMessage, UserMessageContent } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
 import type { FauxRecords } from '@magic/faux'
 import { assembleContext } from '../src/context.ts'
@@ -36,8 +36,16 @@ const AT = 1_700_000_000_000
 
 /** 取消息的正文（工具消息取 `output`）——断言用的窄化助手。 */
 function textOfMessage(message: ModelMessage): string {
-  return message.role === 'tool' ? message.output : message.content
+  return message.role === 'tool' ? message.output : textOfContent(message.content)
 }
+
+/** 一条模型消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。 */
+function textOfContent(content: UserMessageContent): string {
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
+}
+
 
 /** 造一束记录域桩——装配只经 `RecordsService` 读（不认知记录域内部）。 */
 function recordsWith(): FauxRecords {

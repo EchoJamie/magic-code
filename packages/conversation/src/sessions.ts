@@ -31,6 +31,8 @@
  */
 
 import type {
+  AttachmentRow,
+  BlobRef,
   BlobStore,
   ConversationService,
   Entry,
@@ -38,11 +40,13 @@ import type {
   EventSink,
   EventStamper,
   RebuildHandoff,
+  RecordId,
   SessionCommand,
   SessionId,
   SessionSummary,
   Timestamp,
 } from '@magic/contracts'
+import { refsPayloadOf } from './context.ts'
 import type { ConversationSession, RebuildReport } from './service.ts'
 
 /** 默认标题的字符上限——「首条消息摘要」的**实现级常量**（措辞可调，见回报备案）。 */
@@ -109,7 +113,29 @@ export type SessionHostDeps = {
   readonly now: () => Timestamp
   /** 默认标题的字符上限——缺省 `TITLE_LIMIT`。 */
   readonly titleLimit?: number
+  /**
+   * **把一份图片字节落到盘上**（U37）——`/attachments` 的「查看原图」那一步。
+   *
+   * 由装配实现（**域不碰文件系统**，同配置 / 授权落盘的姿势）。分工：
+   * - 本域**取字节**（从记录里那份 blob）并说清这是哪一张（名字 / 类型）；
+   * - 装配管**落点与唯一性**（唯一命名 · 不覆盖已有文件 · 不自动打开）。
+   *
+   * 缺省＝这一条命令不可用（照实回一句，不假装导出了）。
+   */
+  readonly saveAttachment?: SaveAttachment | undefined
 }
+
+/**
+ * 导出原图的落点（装配实现）——**唯一命名、不覆盖**。
+ *
+ * 为什么这一格在装配而不在本域：盘是装配那一层的事（同配置 / 授权文件的读写），
+ * 而「这一份叫什么、放哪儿、重名怎么办」是**落点的规矩**，不是会话的知识。
+ */
+export type SaveAttachment = (file: {
+  readonly name: string
+  readonly mime: string
+  readonly bytes: Uint8Array
+}) => Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly reason: string }>
 
 /**
  * 会话主面 ＝ 端口 ＋ 三件域外看不见的（控制面的入口、启动流转、活跃位读数）。
@@ -133,6 +159,16 @@ export type SessionHost = Omit<ConversationService, 'rebuild'> & {
    * `session.history`（**不落库**）。`session` 不给＝当下这条。
    */
   readHistory(session?: SessionId): Promise<void>
+  /**
+   * **本会话送过的图片**（`attachments.list` 的落点 · U37）——经 `RecordsService.readEntries`
+   * 读、推一条 `attachments.catalog`（**不落库**）。
+   */
+  readAttachments(session?: SessionId): Promise<void>
+  /**
+   * **导出原图**（`attachments.export` 的落点 · U37）——字节从记录里取，
+   * 落盘经装配注入的 `saveAttachment`；答复照走 `attachments.catalog`（`note` 说结果）。
+   */
+  exportAttachment(entry: RecordId): Promise<void>
 }
 
 /** 一次动作的收场——`undefined` ＝**无事可说**（不发事件）。 */
@@ -308,6 +344,105 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     void seen
   }
 
+  // —— 图片附件（U37 · `/attachments` 的读侧与「查看原图」）——
+
+  /**
+   * **本会话送过的图片**——从条目里读出来（**记录就是真源**，不另立一本账）。
+   *
+   * 读法：按会话顺序过 `user` 条目，取它们载荷 `refs` 里的 image 支。三件按原样交出去
+   * （名字 / 类型 / 出处 / 字节数），外加那一格的 **blob 引用**——「加入本次输入」靠它，
+   * 而那正是「源文件删了也取得回」那句话赖以成立的东西。
+   *
+   * ⚠️ **不含会话参数**：与 `history.read` 同一条——问的就是**当下这条**，
+   * 外壳不该（也不能）让内核去列别的会话的材料。还没有会话＝空表（不是错）。
+   */
+  async function readAttachments(session?: SessionId): Promise<void> {
+    const target = session ?? active?.session
+    const stamper = current().stamper
+    if (target === undefined || target !== active?.session) {
+      deps.sink.emit(stamper.stamp('attachments.catalog', { rows: [] }))
+      return
+    }
+
+    deps.sink.emit(stamper.stamp('attachments.catalog', { rows: await attachmentRowsOf(target) }))
+  }
+
+  /**
+   * **导出原图**（「查看原图」）——字节**从记录里取**（不碰原路径），落盘那一步交给装配。
+   *
+   * 三种失败各说各的话，且都不假装成功：那一张不在了（记录里没有这条 id）、
+   * 这份字节取不回来（blob 读不出）、落盘没成（装配给的原因）。成的时候给出**路径**
+   * ——那是用户下一步要的东西（自己拿去看 / 发给别人）。
+   */
+  async function exportAttachment(entry: RecordId): Promise<void> {
+    const target = active?.session
+    const stamper = current().stamper
+    const rows = target === undefined ? [] : await attachmentRowsOf(target)
+    const row = rows.find((one) => one.entry === entry)
+    const note = await exportNoteOf(row)
+
+    deps.sink.emit(stamper.stamp('attachments.catalog', { rows, note }))
+  }
+
+  async function exportNoteOf(row: AttachmentRow | undefined): Promise<string> {
+    if (row === undefined) return '这一张不在这条会话里（可能换了会话）——重新按 /attachments 看一眼'
+    if (deps.saveAttachment === undefined) return '这次装配没有接导出落点——取不出来的图导不到盘上'
+
+    let bytes: Uint8Array
+    try {
+      bytes = await deps.records.blobs.get(row.blob)
+    } catch (error) {
+      return `这份字节取不回来了（${messageOf(error)}）——记录里那一份可能坏了`
+    }
+
+    const saved = await deps.saveAttachment({ name: row.name, mime: row.mime, bytes })
+
+    return saved.ok ? `原图已导出 → ${saved.path}` : `没能导出：${saved.reason}`
+  }
+
+  /** 一条会话里送过的图片——按**送出的先后**（记录序），每条 `user` 条目里的 image 引用各占一行。 */
+  async function attachmentRowsOf(session: SessionId): Promise<readonly AttachmentRow[]> {
+    const rows: AttachmentRow[] = []
+
+    for await (const entry of deps.records.readEntries(session)) {
+      if (entry.kind !== 'user') continue
+
+      for (const ref of refsPayloadOf(entry.payload)) {
+        if (ref.kind !== 'image') continue
+
+        rows.push({
+          entry: entry.id,
+          name: ref.name,
+          mime: ref.mime,
+          bytes: await sizeOfBlob(ref.blob),
+          at: entry.at,
+          source: ref.source,
+          label: ref.label,
+          blob: ref.blob,
+        })
+      }
+    }
+
+    return rows
+  }
+
+  /**
+   * 字节数——**读一次 blob 头**（`BlobStore` 只有整取与整存两面，故取回来量一下）。
+   *
+   * 为什么不把长度记进条目：那一栏是**给列表看的读数**，而条目载荷要的是「这份材料是什么」。
+   * 多存一格数字＝多一处会与字节对不上的地方（记录里每多一个可推导的字段，就多一次
+   * 「两处不一致时信谁」的问题）。取回的代价只有列一次 `/attachments`——一次性动作。
+   * 取不回（字节坏了）＝如实报 0，列表照列（那一行仍要看得见——它是「取回」的入口，
+   * 而不是「读数好不好看」）。
+   */
+  async function sizeOfBlob(blob: BlobRef): Promise<number> {
+    try {
+      return (await deps.records.blobs.get(blob)).length
+    } catch {
+      return 0
+    }
+  }
+
   /**
    * 重建面（恢复 ⑤ · U25）——**装载 ＋ 认下水位与开工位 ＋ 让外壳知道自己在哪条会话上**。
    *
@@ -341,6 +476,8 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     interrupt: () => active?.service.interrupt(),
     rebuild,
     readHistory,
+    readAttachments,
+    exportAttachment,
 
     listSessions: () => catalog(),
 

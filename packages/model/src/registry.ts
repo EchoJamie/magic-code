@@ -26,6 +26,7 @@
 import type {
   EventStamper,
   KernelEvent,
+  ModelCapabilities,
   ModelInfo,
   ModelRequest,
   ProviderConfig,
@@ -35,7 +36,7 @@ import type { FetchLike } from './ai-sdk.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
-import { MissingApiKeyError, createModelGateway, effectiveSpecOf } from './gateway.ts'
+import { MissingApiKeyError, createModelGateway, effectiveCapabilitiesOf, effectiveSpecOf } from './gateway.ts'
 import type { EffectiveSpec } from './gateway.ts'
 import { modelCallStart, modelErrorEvent } from './events.ts'
 import { vendorOf } from './vendors.ts'
@@ -164,6 +165,14 @@ export interface ModelRegistry extends ModelGateway {
    * 改由**事件**带这一位数（`model.switched` / `model.call.start` 的 `inputBudget`）。
    */
   capacityOf(provider: string, model: string): EffectiveSpec | undefined
+  /**
+   * **某个模型的能力读数**（U37）——`chat` / `image` 那几位，**没依据就不给这一位**。
+   *
+   * 与 `capacityOf` 并列的第二处读数，值取「用户明确覆盖 → 供应商 API 当前有效信息」，
+   * **未知不给位**（不冒充「不支持」）。今天的用处只有一个但很硬：带图的那一条交代据此
+   * 在**发出去之前**拦下来（设计：「模型明确不支持图像时保留输入，提示换模型或移除图片」）。
+   */
+  capabilityOf(provider: string, model: string): ModelCapabilities | undefined
   /** 配置里的缺省连接 id（`defaultProvider`）——**没配过就不给**（U41 起可缺）。 */
   defaultProviderId(): string | undefined
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
@@ -379,6 +388,13 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
         known: options.modelInfoOf?.(provider, model),
         fallbackOutputTokens: options.maxCompletionTokens,
       })
+    },
+
+    capabilityOf(provider: string, model: string): ModelCapabilities | undefined {
+      const config = ownOf(providers, provider)
+      if (config === undefined) return undefined
+
+      return effectiveCapabilitiesOf(model, config, options.modelInfoOf?.(provider, model))
     },
 
     defaultProviderId(): string | undefined {

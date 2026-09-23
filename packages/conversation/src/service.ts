@@ -110,6 +110,13 @@ export type ConversationDeps = {
    * 不当作没有引用照跑。
    */
   readonly materials?: Materials | undefined
+  /**
+   * **当前模型吃不吃图**（U37）——三态探针（明确支持 / **明确不支持** / 不知道），
+   * 由装配给（注册表与模型信息缓存在它那一层，本域不认识模型）。
+   *
+   * 缺省＝不知道：带图照发，请求真失败再如实报错（见 `LoopRuntime.acceptsImages`）。
+   */
+  readonly acceptsImages?: (() => boolean | undefined) | undefined
 }
 
 /**
@@ -205,7 +212,12 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * 新形（`UserInput.refs`）走这一份、**按位置展开**。两份都由同一对来源面喂
    * （`deps.skills` 与 `deps.materials`）——两形读的是同一棵树，不会各说一套。
    */
-  const refs = createRefDelivery({ skills: deps.skills, materials: deps.materials })
+  const refs = createRefDelivery({
+    skills: deps.skills,
+    materials: deps.materials,
+    // 图片的字节要进记录（U37）——写权唯一归记录域，故经它的公开面
+    blobs: deps.records.blobs,
+  })
 
   const runtime: LoopRuntime = {
     session: deps.session,
@@ -226,6 +238,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     rules,
     skills,
     refs,
+    acceptsImages: deps.acceptsImages,
   }
 
   /**

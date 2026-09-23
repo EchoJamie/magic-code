@@ -419,3 +419,64 @@ describe('注册表 · 每条目各归其位', () => {
     void fetch
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// U37 · 能力读数 —— **带图那一条交代在发出去之前**要问的那一格
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 判据三件：
+ * 1. **用户明确覆盖**（`modelOverrides[<精确 id>].capabilities.image`）——今天「明确不支持」
+ *    唯一的正当来路（列表接口只给 `id`，型号名又不许猜）；
+ * 2. **缓存里那份资料**（`modelInfoOf` 给的 `capabilities`）——API 真给了就算数；
+ * 3. **两处都没有 ⇒ `undefined`**——不知道就是不知道（**不冒充「不支持」**，
+ *    否则会凭空禁掉一批其实能看图的模型）。
+ */
+describe('U37 · 能力读数', () => {
+  test('用户覆盖：把某个模型明确标成「不吃图」', () => {
+    const registry = registryOf(
+      { alpha: { ...ALPHA, modelOverrides: { 'alpha-1': { capabilities: { image: false } } } } },
+      { apiKeys: { alpha: 'ka' } },
+    )
+
+    expect(registry.capabilityOf('alpha', 'alpha-1')).toEqual({ image: false })
+  })
+
+  test('缓存里那份资料也算数（API 给了就用它）', () => {
+    const registry = registryOf(
+      { alpha: ALPHA },
+      {
+        apiKeys: { alpha: 'ka' },
+        modelInfoOf: (provider, model) =>
+          provider === 'alpha' && model === 'alpha-1' ? { id: model, capabilities: { image: true } } : undefined,
+      },
+    )
+
+    expect(registry.capabilityOf('alpha', 'alpha-1')).toEqual({ image: true })
+  })
+
+  test('两处都没有 ⇒ `undefined`（不知道，不冒充「不支持」）', () => {
+    const registry = registryOf({ alpha: ALPHA }, { apiKeys: { alpha: 'ka' } })
+
+    expect(registry.capabilityOf('alpha', 'alpha-1')).toBeUndefined()
+    expect(registry.capabilityOf('没有这条连接', 'x')).toBeUndefined()
+  })
+
+  test('用户覆盖盖过缓存里那份（优先级：用户覆盖 → API 资料 → 未知）', () => {
+    const registry = registryOf(
+      { alpha: { ...ALPHA, modelOverrides: { 'alpha-1': { capabilities: { image: false } } } } },
+      { apiKeys: { alpha: 'ka' }, modelInfoOf: (_, model) => ({ id: model, capabilities: { image: true } }) },
+    )
+
+    expect(registry.capabilityOf('alpha', 'alpha-1')?.image).toBe(false)
+  })
+
+  test('同条目换到别的模型：覆盖**不跟过去**（它是「这一条 ＋ 那个模型」两件的事）', () => {
+    const registry = registryOf(
+      { alpha: { ...ALPHA, modelOverrides: { 'alpha-1': { capabilities: { image: false } } } } },
+      { apiKeys: { alpha: 'ka' } },
+    )
+
+    expect(registry.capabilityOf('alpha', 'alpha-2')).toBeUndefined()
+  })
+})

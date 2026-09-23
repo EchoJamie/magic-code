@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { KernelEvent, ModelMessage, SessionId } from '@magic/contracts'
+import type { KernelEvent, ModelMessage, SessionId, UserMessageContent } from '@magic/contracts'
 import type { Assembly } from '../src/assembly.ts'
 import { attachShell, runShellScript } from '../src/shell.ts'
 import type { ShellHandle } from '../src/shell.ts'
@@ -30,8 +30,16 @@ const WORKSPACE_CALL = { name: 'exec', args: { cmd: 'mkdir -p src/new' } }
 
 /** 一条模型消息的正文——`role:'tool'` 那支不带 `content`（正文在 `output`），按判别取。 */
 function textOf(message: ModelMessage): string {
-  return 'content' in message ? message.content : `${message.name}: ${message.output}`
+  return 'content' in message ? textOfContent(message.content) : `${message.name}: ${message.output}`
 }
+
+/** 一条模型消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。 */
+function textOfContent(content: UserMessageContent): string {
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
+}
+
 
 /**
  * 往库里摆一份**崩溃现场**——「有 `tool.call` 无 `tool.result`」＋一个没收尾的轮。

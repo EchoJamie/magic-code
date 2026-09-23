@@ -47,6 +47,11 @@ import {
   movePicker,
   openPicker,
   pathHint,
+  ATTACH_ACTION,
+  EXPORT_ACTION,
+  attachmentDetailRows,
+  attachmentHint,
+  attachmentRows,
   pathRows,
   resolveSkill,
   sessionHint,
@@ -94,6 +99,7 @@ import {
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
 import type { PromptState, ShellView } from './view.ts'
+import type { AttachmentRow, RecordId } from '@magic/contracts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
@@ -188,7 +194,15 @@ function statusLines(view: ShellView): readonly string[] {
 const STATUS_TITLE = '此刻'
 
 /** 一次「等内核回话再开选择器」的意图——`/session` · `/model` · `/grants` · `/skills` 各一种。 */
-type PendingPicker = 'session' | 'model' | 'grants' | 'skills' | 'mcp' | 'connect' | 'manage'
+type PendingPicker =
+  | 'session'
+  | 'model'
+  | 'grants'
+  | 'skills'
+  | 'mcp'
+  | 'connect'
+  | 'manage'
+  | 'attachments'
 
 
 /**
@@ -495,6 +509,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 剥正文会落空、再按回车又回到同一个岔口。同名就是同名：范围在这里**钉死**。
    */
   let skillScope: readonly SkillCatalogRow[] | null = null
+
+  /**
+   * **详情那一屏正说着哪一张图**（U37）——那条记录的 id；`null` ＝ 没在详情那一屏。
+   *
+   * 与 `manageAt` / `detailAt` 同一条由头：**明细得有主语**。而这一位尤其要紧——
+   * 「查看原图」要按它去问内核要那一条记录里的字节；拿行内容反推（比如再去名字里找）
+   * 就撞上「同名两张图」那道墙（同一张名字送两次是常事）。
+   */
+  let attachmentAt: RecordId | null = null
 
   /**
    * **技能名问过没有**（每个壳一次）——打 `/` 那一下问一遍（见 `askSkills`）。
@@ -814,6 +837,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 提交**没收下** ⇒ 按原 pairing 键认回那份草稿（U33）。回执那半行由 `reduce` 落
     // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
     if (event.kind === 'input.settled' && !event.data.ok) restoreDraft(event.data.ref)
+
+    // 送过的图片一屏回来了（U37）——两只分得开，按**在等什么**判（不认字面）：
+    // ① 正等「送过的图片」（`/attachments` 那条路）⇒ 开抽屉；
+    // ② 不是 ⇒ 那是**导出那一下的回话**：留一行回执（「导到哪儿了 / 为什么没成」）。
+    //    ⚠️ 回执**不跟着抽屉走**（同 `grants.catalog` 那条）：导出那一屏照旧开着，
+    //    用户接着还能按「加入本次输入」——两件事互不耽误。
+    if (event.kind === 'attachments.catalog') {
+      if (waiting === 'attachments') {
+        waiting = null
+        openAttachments()
+      } else if (event.data.note !== undefined) {
+        commit(appendReceipt(view, event.data.note))
+      }
+    }
 
     // 授权名录回来了 ⇒ 开抽屉（`/grants` 那条路）／**撤销之后刷新它 ＋ 留一行回执**。
     // 两处分得开：`waiting` 只在「刚问过」时为真；撤销那次是抽屉**已经开着**。
@@ -1647,6 +1684,83 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     )
   }
 
+  // —— 图片附件（U37 · `/attachments`）——
+
+  /**
+   * **开「送过的图片」那一屏**——行取自视图里那一份答复（`view.attachments`）。
+   *
+   * 与 `/skills` / `@` 同一处开合（左下抽屉）：**只是列一列**，选定才进详情那一屏。
+   * 0 行时 `openPicker` 会把说明落成一行回执（`attachmentHint` 给的那句话）——
+   * 空表**不接管输入**（P0 那条既有分寸）。
+   */
+  const openAttachments = (): void => {
+    const rows = view.attachments?.rows ?? []
+
+    commit(
+      openPicker(view, {
+        source: 'attachments',
+        selected: 0,
+        rows: attachmentRows(rows),
+        hint: attachmentHint({ count: rows.length, detail: false }),
+      }),
+    )
+  }
+
+  /**
+   * **进一张图的详情那一屏**（U37）——两条动作：查看原图 / 加入本次输入。
+   *
+   * 找不着那一行＝答复在抽屉开着的时候被换掉了（换了会话 / 内核重问了）：照实收起、
+   * 什么都不做，不拿一个编出来的身份凑数（同 `/skills` 那条无名录时的处置）。
+   */
+  const openAttachmentDetail = (entry: RecordId): void => {
+    attachmentAt = entry
+
+    commit(
+      openPicker(view, {
+        source: 'attachment-detail',
+        selected: 0,
+        rows: attachmentDetailRows(),
+        hint: attachmentHint({ count: 1, detail: true }),
+      }),
+    )
+  }
+
+  /**
+   * **「加入本次输入」**（U37）——把那一张**放回输入行**（不发送、不读盘）。
+   *
+   * 三件同时成立才是对的：
+   * - **引用带回那份字节的把手**（`blob`）——提交那一刻内核按它取回，**一路不碰原路径**；
+   *   这正是「源文件删掉、会话重开之后仍能再用它」的落点；
+   * - **插在打开列表前那个位置**（`anchor`，同 `/skills` / `@` 两处）：`/attachments`
+   *   是命令，草稿已被它清空，故那一格即句首的 `[0, 0)`——**不一律追加到末尾**
+   *   （设计 · 文件与图片：「在打开查询前的输入位置插入引用」）；
+   * - **不发送**：选定一个动作不等于把交代发出去。
+   */
+  const attachImage = (row: AttachmentRow, anchor: { readonly start: number; readonly end: number }): void => {
+    const marker = markerOf({ kind: 'image', name: row.name })
+
+    commit(
+      withCompletion({
+        ...closePicker(view),
+        ...replaceWith(
+          view.draft,
+          view.refs,
+          { from: anchor.start, to: anchor.end },
+          {
+            kind: 'image',
+            marker,
+            name: row.name,
+            mime: row.mime,
+            blob: row.blob,
+            label: row.label,
+            source: row.source,
+          },
+          view.caret,
+        ),
+      }),
+    )
+  }
+
   // —— 路径（U36 · 正文里的 `@`）——
 
   /**
@@ -1978,6 +2092,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 从草稿里撤回（设计：「取消归还原稿及选区」——那一段本来就不算用户说的话）。
         if (view.dock.kind === 'picker') {
           const anchor = view.dock.picker.source === 'paths' ? view.dock.picker.anchor : undefined
+          // 详情那一屏收起来时把主语一并放下（「这一屏在说哪一张」不跨屏留着——同 `manageAt`）
+          if (view.dock.picker.source === 'attachment-detail') attachmentAt = null
           commit(closePicker(view))
           if (anchor !== undefined) eraseAt(anchor.start, anchor.end)
           return NONE
@@ -2197,6 +2313,34 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (chosen === undefined) return (commit(closePicker(view)), NONE)
 
         bindSkill(chosen, view.dock.picker.anchor ?? { start: 0, end: 0 })
+        return NONE
+      }
+
+      // 送过的图片那一屏（U37）：选定＝**进这一张的详情**（不发送、不导出——
+      // 那两条动作在下一屏，见 `attachmentDetailRows`）。
+      if (view.dock.picker.source === 'attachments') {
+        const entry = Number(row.value)
+        if (Number.isInteger(entry)) openAttachmentDetail(entry)
+        return NONE
+      }
+
+      // 一张图的详情（U37）：两条动作**各走各的**——导出交给内核（它握着那份字节），
+      // 「加入本次输入」在本地就把引用放进输入行（不惊动内核，等用户真的回车）。
+      if (view.dock.picker.source === 'attachment-detail') {
+        if (attachmentAt === null) return NONE
+
+        if (row.value === EXPORT_ACTION) {
+          // 抽屉**不关**：导出结果是一条回执（`attachments.catalog` 带 `note`），
+          // 关掉的话用户就看不见那句「导到哪儿了」
+          send({ type: 'attachments.export', entry: attachmentAt })
+          return NONE
+        }
+
+        const row2 = view.attachments?.rows.find((one) => one.entry === attachmentAt)
+        // 找不着那一行＝答复在开着的时候被换掉了——照实收起、什么都不放（同 `pickPath`）
+        if (row2 === undefined || row.value !== ATTACH_ACTION) return (commit(closePicker(view)), NONE)
+
+        attachImage(row2, { start: 0, end: 0 })
         return NONE
       }
 
@@ -2549,6 +2693,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       waiting = 'mcp'
       mcpServer = arg
       return only(cleared, { type: 'mcp.list' })
+    }
+
+    // `/attachments`（U37）——**读侧 ＋ 两条动作**：记录区什么都不进，只在左下开抽屉。
+    // 与 `/skills` 同一姿势：**先问一次**（答复是 `attachments.catalog`），外壳据它铺行。
+    // 无参——问的就是「这条会话送过哪些图」（会话由内核按当下活跃那条绑）。
+    if (word === '/attachments') {
+      waiting = 'attachments'
+      return only(cleared, { type: 'attachments.list' })
     }
 
     // `/grants`（U22 · B13）——**交互配置型**：记录区什么都不进，只在左下开抽屉。
