@@ -191,15 +191,19 @@ export function planBlockOf(entry: RecordId, plan: PlanNote): string {
  * 计划材料的体量＝模型自己写的笔记，与工具结果同属既有预算；预算闸门在模型域那一侧，
  * 本文件不另立一套（另立＝第二处口径，两处迟早对不上）。
  */
-export async function planMaterialOf(input: {
-  readonly records: RecordsService
-  readonly session: SessionId
+export function planMaterialOf(input: {
   /** 本次装配里**完整展开成工具消息**的那些工具结果条目 id。 */
   readonly delivered: ReadonlySet<RecordId>
-  /** 本次装配展开过的全部条目（用来找「旧计划还看得见吗」）。 */
-  readonly entries: readonly Entry[]
-}): Promise<ModelMessage | undefined> {
-  const snapshot = await readPlanOf(input.records, input.session)
+  /**
+   * 这条会话的**全部条目**（装配那一步本就已经读齐，见 `./context.ts`）。
+   *
+   * 为什么收整份而不是再读一次：装配每轮都把条目读尽了，这里**照着同一份内存里的清单找**
+   * 即可——再走一遍记录读面等于把「读一遍全部条目」做两遍（每次请求都做）。
+   * 工具那一侧（`readPlanOf`）没有这份清单，故它走反向分页；**判据是同一个 `planFieldOf`**。
+   */
+  readonly all: readonly Entry[]
+}): ModelMessage | undefined {
+  const snapshot = snapshotIn(input.all)
   if (snapshot.entry === null) return undefined // 没有过计划——不加空材料
 
   const shown = input.delivered.has(snapshot.entry)
@@ -207,7 +211,7 @@ export async function planMaterialOf(input: {
   if (snapshot.plan === null) {
     // 清空：清空那一条看不见了，或窗口里还躺着更早那份计划的正文——两种都会让
     // 摘要 / 近段里的旧计划冒充「当前计划」。各说一句，把这个歧义消掉。
-    if (shown && !stalePlanVisible(input.entries, input.delivered, snapshot.entry)) return undefined
+    if (shown && !stalePlanVisible(input.all, input.delivered, snapshot.entry)) return undefined
 
     return {
       role: 'assistant',
@@ -218,6 +222,19 @@ export async function planMaterialOf(input: {
   if (shown) return undefined
 
   return { role: 'assistant', content: planBlockOf(snapshot.entry, snapshot.plan) }
+}
+
+/** 内存里找当前计划（判据与分页那一支同一个 `planFieldOf`）——见 `planMaterialOf`。 */
+function snapshotIn(all: readonly Entry[]): PlanSnapshot {
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    const entry = all[index]
+    if (entry === undefined) continue
+
+    const field = planFieldOf(entry)
+    if (field !== undefined) return { entry: entry.id, plan: field.plan }
+  }
+
+  return { entry: null, plan: null }
 }
 
 /** 窗口里还看得见**更早那份计划**的正文吗（清空之后的歧义就出在它身上）。 */

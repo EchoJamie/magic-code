@@ -277,12 +277,9 @@ export async function assembleContext(
   // （设计 · 上下文接入：最新内容已被压出窗口时，追加一份带记录位置的 assistant 会话材料）。
   // 判据与限度都在 `./plan.ts`：只有「当前计划条目没被完整送达」时才加，加的是**既有笔记**
   // 而不是新交代（故不用 system 角色、不伪造用户消息）。
-  const material = await planMaterialOf({
-    records: input.records,
-    session: input.session,
-    delivered,
-    entries,
-  })
+  // （判据与限度都在 `./plan.ts`：只有「当前计划条目没被完整送达」时才加，
+  //   加的是**既有笔记**而不是新交代——故不用 system 角色、不伪造用户消息。）
+  const material = planMaterialOf({ delivered, all })
   if (material !== undefined) messages.push(material)
 
   return messages

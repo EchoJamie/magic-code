@@ -322,7 +322,9 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     const { records, add } = ledger()
     add({ kind: 'user', content: { text: '你好' } })
 
-    expect(await planMaterialOf({ records, session: SESSION, delivered: new Set(), entries: [] })).toBeUndefined()
+    const all: Entry[] = []
+    for await (const entry of records.readEntries(SESSION)) all.push(entry)
+    expect(planMaterialOf({ delivered: new Set(), all })).toBeUndefined()
   })
 
   test('当前计划那一条**完整落在窗口里**：不再复制一份正文', async () => {
@@ -331,12 +333,7 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     const all: Entry[] = []
     for await (const entry of records.readEntries(SESSION)) all.push(entry)
 
-    const material = await planMaterialOf({
-      records,
-      session: SESSION,
-      delivered: new Set<RecordId>([id]),
-      entries: all,
-    })
+    const material = await planMaterialOf({ delivered: new Set<RecordId>([id]), all })
     expect(material).toBeUndefined()
   })
 
@@ -346,7 +343,7 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     const all: Entry[] = []
     for await (const entry of records.readEntries(SESSION)) all.push(entry)
 
-    const material = await planMaterialOf({ records, session: SESSION, delivered: new Set(), entries: all })
+    const material = await planMaterialOf({ delivered: new Set(), all })
     expect(material?.role).toBe('assistant')
     expect(materialText(material)).toContain(`#${id}`)
     expect(materialText(material)).toContain('定位登录失败提示')
@@ -365,11 +362,9 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     for await (const entry of records.readEntries(SESSION)) all.push(entry)
 
     const material = await planMaterialOf({
-      records,
-      session: SESSION,
       // 清空那一条在窗口里，但更早那份计划也在（近段还没走出去）
       delivered: new Set<RecordId>([old, cleared]),
-      entries: all,
+      all,
     })
     expect(materialText(material)).toContain('已清空')
   })
@@ -381,7 +376,7 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     const all: Entry[] = []
     for await (const entry of records.readEntries(SESSION)) all.push(entry)
 
-    const material = await planMaterialOf({ records, session: SESSION, delivered: new Set(), entries: all })
+    const material = await planMaterialOf({ delivered: new Set(), all })
     expect(materialText(material)).toContain('已清空')
   })
 
@@ -392,12 +387,7 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     const all: Entry[] = []
     for await (const entry of records.readEntries(SESSION)) all.push(entry)
 
-    const material = await planMaterialOf({
-      records,
-      session: SESSION,
-      delivered: new Set<RecordId>([cleared]),
-      entries: all,
-    })
+    const material = await planMaterialOf({ delivered: new Set<RecordId>([cleared]), all })
     expect(material).toBeUndefined()
   })
 })
