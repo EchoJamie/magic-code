@@ -463,4 +463,32 @@ describe('Context 装配 · blob 引用', () => {
 
     expect(textOfMessage(messages[1] as ModelMessage)).toBe('短')
   })
+
+  /**
+   * **那条 `blobTextLimit` 只管 blob 的节选**（U34 返修 · 独立验收退回的那条反例）。
+   *
+   * 两个方向都钉：
+   * - **内联正文原样**——它就是「面向模型的文本」，那条 limit 的由头是 blob 取回
+   *   （记录只存引用、正文归装配取回，取回的那一份可能极长）。把内联也套上它，
+   *   等于**凭空给所有条目加一道暗限**：实测 2225 字符的用户交代只剩 2030，
+   *   尾巴上的要求当场丢掉，而使用者一个字都看不见；
+   * - **blob 照旧节选**——修法不许在这一头过头（上面那两条用例接着管这一头）。
+   */
+  test('内联正文**不受** blobTextLimit 约束——整份送达，一个字不截', async () => {
+    const records = makeFauxRecords()
+    const long = `${'a'.repeat(2200)}TAIL_REQUIREMENT_PRESERVE`
+    records.appendEntry({ kind: 'user', content: { text: long }, at: AT })
+
+    const messages = await assembleContext({
+      records,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      blobTextLimit: 4,
+    })
+
+    const user = textOfMessage(messages[1] as ModelMessage)
+    expect(user).toBe(long)
+    expect(user).toContain('TAIL_REQUIREMENT_PRESERVE')
+    expect(user).not.toContain('截断')
+  })
 })

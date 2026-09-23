@@ -166,6 +166,51 @@ try {
     ].join('\n'),
   )
 
+  // —— 长内容那两处（返修的反例）：长输入整份送达 ＋ 长记录的续读参数 ——
+  //
+  // 独立验收退回的两条都在这一小段里看得见：① 内联正文**不**那条 2000 字符的节选管
+  // （2225 字符的交代整份送达，尾巴上的要求不丢）；② 节选那一条把 `entry` / `offset`
+  // 交给模型（照着重读就是后半段）——两处都从**真实发送的那一份请求**里读出来。
+  const long = `${'a'.repeat(2200)}TAIL_REQUIREMENT_PRESERVE`
+  const longs = stage.assemble({
+    turns: [
+      { text: '答复一', usage: { inputTokens: 500, outputTokens: 5 } },
+      { text: '摘要：前面那一条很长' },
+      { toolCalls: [{ name: 'history_read', args: {} }], usage: { inputTokens: 1, outputTokens: 1 } },
+      { text: '接着读', usage: { inputTokens: 1, outputTokens: 1 } },
+    ],
+    context: { compactAtTokens: 100, nearEntries: 0 },
+  })
+  const longHandle = attachShell(longs.shell)
+  await longHandle.submit(long)
+  await longHandle.submit('第二件事')
+  longHandle.dispose()
+
+  const longRequests = lastModel(stage).requests
+  const first = longRequests[0]?.messages ?? []
+  const user = first.find((message) => message.role === 'user')
+  const userBody = user === undefined ? '' : lineOf(user)
+  const toolPart = longRequests
+    .flatMap((request) => request.messages)
+    .filter((message) => message.role === 'tool')
+    .map(lineOf)
+    .join('\n')
+
+  writeFileSync(
+    join(out, '长内容.txt'),
+    [
+      '【① 长用户交代整份送达（内联正文不受那条 2000 字符的节选约束）】',
+      `提交的输入长度：${long.length}`,
+      `模型收到的那条消息长度：${userBody.length - '── user\n'.length}`,
+      `尾部要求（TAIL_REQUIREMENT_PRESERVE）在不在：${userBody.includes('TAIL_REQUIREMENT_PRESERVE') ? '在' : '丢了'}`,
+      `有没有被标截断：${userBody.includes('截断') ? '有（不该有）' : '没有'}`,
+      '',
+      '【② 长记录在回查里标节选，并把续读参数交给模型（下面这条是真实发出的工具消息）】',
+      toolPart,
+    ].join('\n'),
+  )
+  longs.close()
+
   console.log(`证据已落到 ${out}`)
 } finally {
   stage.dispose()

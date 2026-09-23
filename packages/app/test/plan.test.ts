@@ -398,6 +398,120 @@ describe('U34 · 指导与工具随请求送达（首次即到、压缩后仍在
   })
 })
 
+describe('U34 · 反例：那条节选上限只管 blob，不碰内联正文', () => {
+  /**
+   * **独立验收退回的第一条**：`contentTextOf` 一度把**所有内联正文**也过了一遍
+   * 2000 字符的节选——真装配里 2225 字符的用户交代只剩 2030，尾巴上的要求当场丢掉
+   * （main 上是完整的）。这条用例照验收那次的同一手法钉住：同一个输入，尾部必须在。
+   */
+  test('2225 字符的用户交代整份送达——尾部要求不丢、没有截断标记', async () => {
+    const long = `${'a'.repeat(2200)}TAIL_REQUIREMENT_PRESERVE`
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble({ turns: [{ text: '知道了' }] })
+      const shell = attachShell(assembly.shell)
+      await shell.submit(long)
+      shell.dispose()
+
+      const sent = lastModel(stage).requests[0]?.messages ?? []
+      const user = sent.find((message) => message.role === 'user')
+      const body = user === undefined ? '' : sentText([user])
+
+      expect(body).toHaveLength(long.length)
+      expect(body).toContain('TAIL_REQUIREMENT_PRESERVE')
+      expect(body).not.toContain('截断')
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  /**
+   * **长历史页的页尾**：那条记录在回查里该标节选，而**接着读的两格参数要真发到下一趟请求里**
+   * （验收明写：断言落在实际请求上，不是只看域内部的 `HistoryPage`）。
+   */
+  test('长记录的节选把 `entry` / `offset` 交给模型——下趟请求里看得到', async () => {
+    const long = '甲'.repeat(2500)
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble({
+        turns: [
+          { text: '答复一', usage: { inputTokens: 500, outputTokens: 5 } },
+          { text: '摘要：前面那条很长' },
+          { toolCalls: [{ name: 'history_read', args: {} }], usage: { inputTokens: 1, outputTokens: 1 } },
+          { text: '接着读', usage: { inputTokens: 1, outputTokens: 1 } },
+        ],
+        context: { compactAtTokens: 100, nearEntries: 0 },
+      })
+      const shell = attachShell(assembly.shell)
+
+      await shell.submit(long)
+      await shell.submit('第二件事')
+      shell.dispose()
+
+      const toolOutput = lastModel(stage)
+        .requests.flatMap((request) => request.messages)
+        .filter((message): message is Extract<ModelMessage, { role: 'tool' }> => message.role === 'tool')
+        .map((message) => message.output)
+        .join('\n')
+
+      // 节选：前 2000 字在、后 500 字不在，且**续读参数**就在回执里
+      expect(toolOutput).toContain('甲'.repeat(50))
+      expect(toolOutput).toContain('节选')
+      expect(toolOutput).toMatch(/entry=\d+ offset=2000/)
+      expect(toolOutput).not.toContain('甲'.repeat(2500))
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  /** **长计划完整送达**：回执是内联文本，再长也整份走（不截断、也不重复两份）。 */
+  test('长计划（内联回执远超 2000 字符）整份送达；压缩后重送的那份也是全的、只有一份', async () => {
+    const plan: PlanNote = {
+      steps: [{ text: '定位登录失败提示', status: 'completed' }],
+      notes: `约束：${'乙'.repeat(2400)}TAIL_PLAN_PRESERVE`,
+    }
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble({
+        turns: [
+          { toolCalls: [{ name: 'plan_update', args: { plan } }], usage: { inputTokens: 500, outputTokens: 5 } },
+          { text: '记下了', usage: { inputTokens: 500, outputTokens: 5 } },
+          { text: '摘要：前面在改登录提示' },
+          { text: '接着干', usage: { inputTokens: 1, outputTokens: 1 } },
+        ],
+        context: { compactAtTokens: 100, nearEntries: 0 },
+      })
+      const shell = attachShell(assembly.shell)
+
+      await shell.submit('第一件事')
+      await shell.submit('第二件事')
+      shell.dispose()
+
+      const requests = lastModel(stage).requests
+      // 更新那一趟之后：回执整份进上下文（内联不截断）
+      const afterUpdate = sentText(requests[1]?.messages ?? [])
+      expect(afterUpdate).toContain('TAIL_PLAN_PRESERVE')
+      expect(afterUpdate).not.toContain('截断')
+
+      // 压出去之后：重新交付的那一份也是全的，且**只有一份**（不重复正文）
+      const afterCompact = sentText(requests.at(-1)?.messages ?? [])
+      expect(afterCompact).toContain('TAIL_PLAN_PRESERVE')
+      expect(afterCompact.split('既有计划笔记').length - 1).toBe(1)
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
 describe('U34 · 权限是窄的', () => {
   test('三件自动放行；**别的工具照旧要问**（规则只匹配那三个名字）', async () => {
     const stage = makeStage()

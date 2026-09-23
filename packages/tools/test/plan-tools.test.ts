@@ -202,6 +202,37 @@ describe('U34 · history_read', () => {
     expect(log.asked[1]).toEqual({ entry: 3, offset: 2000 })
   })
 
+  /**
+   * **节选那一条要交出续读的两格参数**（U34 返修 · 独立验收退回的第二条）：
+   * 只写「节选」而不说怎么接着读，等于把「这里还有」变成一句没法行动的话——
+   * 模型手上只有半条正文，只能猜偏移量。
+   */
+  test('节选那一条把 `entry` 与 `offset` 原样写给模型（照着重读就是后半段）', async () => {
+    const typed = stubReader(
+      { entry: 7, plan: PLAN },
+      { entries: [{ id: 3, kind: 'user', text: '前一段', truncated: true, nextOffset: 2000 }] },
+    )
+    const output = (await run(typed.reader, 'history_read')).output
+
+    expect(output).toContain('节选')
+    expect(output).toContain('entry=3')
+    expect(output).toContain('offset=2000')
+
+    // 只来了一半（标了截断却没给续读位置）：退回一句「节选」，**不编**一个偏移量出来
+    const half = stubReader({ entry: 7, plan: PLAN }, {
+      entries: [{ id: 3, kind: 'user', text: '前一段', truncated: true }],
+    })
+    const halfOutput = (await run(half.reader, 'history_read')).output
+    expect(halfOutput).toContain('节选')
+    expect(halfOutput).not.toContain('offset=')
+
+    // 没截断的那一条**一句都不多**（别给模型添没用的提示）
+    const whole = stubReader({ entry: 7, plan: PLAN }, {
+      entries: [{ id: 4, kind: 'user', text: '完整一条' }],
+    })
+    expect((await run(whole.reader, 'history_read')).output).not.toContain('节选')
+  })
+
   test('长内容那一页标「节选」；空页如实说没有', async () => {
     const typed = stubReader(
       { entry: 7, plan: PLAN },

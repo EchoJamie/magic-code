@@ -197,7 +197,7 @@ function readReceipt(snapshot: PlanSnapshot): string {
 function historyReceipt(page: HistoryPage): string {
   const head = page.entries.length === 0 ? '这段没有可读的记录。' : ''
   const body = page.entries
-    .map((entry) => `#${entry.id} ${kindLabelOf(entry)}${entry.truncated === true ? '（节选）' : ''}\n${entry.text}`)
+    .map((entry) => `#${entry.id} ${kindLabelOf(entry)}${cutHintOf(entry)}\n${entry.text}`)
     .join('\n\n')
 
   const lines: string[] = []
@@ -211,6 +211,25 @@ function historyReceipt(page: HistoryPage): string {
   if (page.note !== undefined) lines.push(page.note)
 
   return lines.join('\n')
+}
+
+/**
+ * 节选那一条的**续读参数**——`entry` ＋ `offset` **原样写进回执**。
+ *
+ * 由头（独立验收退回 · 第二条）：域那边本来就给出 `nextOffset`，但回执只写了「节选」——
+ * 模型手里只有半条正文，**没有接着读的那两格参数**，只能猜偏移量。标了截断却不说怎么续读，
+ * 等于把「这里还有」变成一句没法行动的话。
+ *
+ * ⚠️ 与页尾那条 `before=` **分工不混**（契约 `HistoryQuery`：两种定位各管各的）：
+ * 这一格管**同一条长内容往后读**，页尾那一格管**往前翻页**。
+ * `truncated` 与 `nextOffset` 在契约里成对出现；万一只来了一半，退回一句「节选」
+ * （不编一个偏移量出来）。
+ */
+function cutHintOf(entry: HistoryEntry): string {
+  if (entry.truncated !== true) return ''
+  if (entry.nextOffset === undefined) return '（节选）'
+
+  return `（节选——后面还有，接着读用 entry=${entry.id} offset=${entry.nextOffset}）`
 }
 
 /** 记录类别 → 中文短标签（工具结果另标成败——失败那几条正是回查时要找的）。 */

@@ -341,6 +341,15 @@ export async function contentTextOf(
  * 与 `contentTextOf` 同一份文本，另带**「完整送达了吗」**——U34 的计划材料据它判
  * 「最新笔记是不是已经完整落在这一次的消息里」（设计：正文被截断的不算已经送达）。
  *
+ * ## ⚠️ 那条 `limit` **只管 blob 的节选**（内联正文一个字都不截）
+ *
+ * 这是**既有语义**，不是本单元新定的：内联条文本来就是「面向模型的文本」（工具域按自己的
+ * 上限截好了才交过来），而这条 `limit` 的由头是**blob 取回**——记录只存引用、正文归装配取回，
+ * 取回的那一份可能极长，故按策略截断。把内联正文也套上这条，等于**凭空给所有条目加了一道
+ * 2000 字符的暗限**：用户输入、助手正文、摘要、工具结果一起被截，而使用者一个字都看不见
+ * （实测：2225 字符的用户交代在真装配里只剩 2030，尾巴上的要求当场丢掉）。
+ *
+ * 故此处按内容形态分两支：**内联＝原样、恒为完整**；**blob＝按 `limit` 节选**，
  * 截断留痕照旧（模型看得到「这里被截了」与原文规模，才不会把半截结果当完整事实下结论）。
  */
 export async function deliveredTextOf(
@@ -348,7 +357,9 @@ export async function deliveredTextOf(
   records: { readonly blobs: BlobStore },
   limit: number,
 ): Promise<{ readonly text: string; readonly complete: boolean }> {
-  const text = await rawTextOf(content, records)
+  if ('text' in content) return { text: content.text, complete: true }
+
+  const text = new TextDecoder().decode(await records.blobs.get(content.blob))
   if (text.length <= limit) return { text, complete: true }
 
   return {
