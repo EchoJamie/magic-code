@@ -22,6 +22,8 @@ import type {
   KernelEvent,
   ModelCatalogRow,
   ModelErrorTier,
+  ModelInfo,
+  ModelRef,
   PathCatalogRow,
   RecordId,
   SessionId,
@@ -197,6 +199,15 @@ export type PickerRow = {
    * 分组头画在**这一组第一行之前**（见 `groupHeads`）；`/model` 不给（不分组的列表）。
    */
   readonly group?: string
+  /**
+   * **这一行选中的是什么**（U41）——模型行给**连接 id ＋ 精确模型 id** 两件。
+   *
+   * 由头：模型这一摊的**选择键是两件**（合法的两条连接可以有同名模型，只报模型名认不出是谁
+   * ——设计 · 模型与上下文明文）。而 `value` 是一格字符串，把它拼成 `连接/模型` 再在选定那一刻
+   * **拆回来**，就是「按字面反推结构」——那种协议最容易在两处各写一半（模型名里有个 `/`
+   * 就当场分家）。故**在造行的地方**把结构带着走（同 `/grants` 行的 `revoke`）。
+   */
+  readonly pick?: ModelRef
   /**
    * **压暗**——「别的项目」的行（工作区≠你此刻所在的那个）。
    * 这是**视觉次序**，不是可用性：压暗的行**照样选得中、切得过去**。
@@ -610,12 +621,21 @@ export type ShellView = {
    */
   readonly mcp: McpCatalog | null
   /**
-   * **模型条目表**（`model.list` 的答复 · 缺陷 D10 第 3 样）——`/model` 选择器的取材，
-   * 且是**全量**（含从未调用过的条目）。
+   * **连接一览**（`model.catalog` / `provider.catalog` 的答复）——`/model` 与 `/model manage`
+   * 两屏的取材（同一份行，内核那边就是一处产出）。
    *
    * ⚠️ 与 `catalog` 分开：那个是**会话**目录（`SessionSummary`）——同名不同物，别合。
    */
   readonly models: readonly ModelCatalogRow[]
+  /**
+   * **此刻会走哪一条**（`model.catalog` 的 `current`）——「正在用」那一格标在谁头上。
+   *
+   * ⚠️ **可以没有**（`null`）：还没选过模型的新连接、或一条连接都没有时**没有去向**——
+   * 那时**一行都不标当前**（设计明文：不取列表第一项顶上）。原先这格取自
+   * `status.model`（真跑过才有的那一格），U41 起改读答复里的 `current`：它说的是
+   * 「**此刻**会走哪一条」，包含「换过但还没调用过」那种（那才是选择器该标的）。
+   */
+  readonly modelCurrent: ModelRef | null
   /**
    * **窗长表**（U30）——换模型之后 ④ 的分母的取材（形态见 `WindowTable`）。
    *
@@ -668,6 +688,7 @@ export function createView(): ShellView {
     paths: null,
     mcp: null,
     models: [],
+    modelCurrent: null,
     windowTable: null,
     grants: null,
     turnTools: 0,
@@ -773,6 +794,9 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
       return {
         ...view,
         models: event.data.entries,
+        // **此刻会走哪一条**——答复说没有（还没选过模型）就落回 `null`：不沿用上一条，
+        // 也不拿列表首项顶上（那不是「此刻在用的」，是个编出来的事实）
+        modelCurrent: event.data.current ?? null,
         status: { ...view.status, window: windowOfCatalog(view, event.data) },
       }
 
@@ -1627,6 +1651,128 @@ export function sessionHint(
   )
 
   return hasHere ? undefined : `本工作区：${headOf(here)}`
+}
+
+// ══ 模型选择（U41 · 供应商与模型）═════════════════════════════════════
+
+/**
+ * **`/model` 的行**——取材是**连接一览 ＋ 各自的缓存读数**（不再是「配置条目」）。
+ *
+ * 设计（模型与上下文 · 选择模型）：「先展示已有缓存，再按需刷新」「**行主文案为模型名，
+ * 副文案为供应商/连接名**」「实际选择键是"连接 id ＋ 精确模型 id"」。
+ *
+ * 三条分寸写在行里：
+ * - **只列适用于对话的**（`capabilities.chat === false` 的不混入——设计 · 列表取舍）
+ *   而那判据**只认 API 给的**：这一位**缺省＝未知**，未知照列（不冒充「不支持」）；
+ * - **已有选择照留**：不在最近一次列表里的那个模型**仍然列着**并标明这一事实
+ *   （设计：「模型不在最新列表时，已有选择仍明确保留并提示此事实」）；
+ * - **副文案是连接名**（缺省＝id）：合法的两条连接可以有同名模型，认谁就看这一格。
+ */
+export function modelRows(
+  entries: readonly ModelCatalogRow[],
+  current: ModelRef | null,
+): readonly PickerRow[] {
+  const rows: PickerRow[] = []
+
+  for (const entry of entries) {
+    const connection = entry.name ?? entry.provider
+
+    for (const one of modelsOf(entry)) {
+      rows.push({
+        label: one.info.name ?? one.info.id,
+        // 连接名打头（窄窗先保住它——同名模型靠它分辨），其后才是补充的那几格
+        meta: [connection, ...(tailOf(one, entry) ?? [])].join(' · '),
+        current:
+          current !== null && current.provider === entry.provider && current.model === one.info.id,
+        // `value` 只作行与行之间的区分（选定带的是 `pick` 那两件，见 `PickerRow.pick`）
+        value: `${entry.provider} ${one.info.id}`,
+        pick: { provider: entry.provider, model: one.info.id },
+        oneLine: true,
+        keep: connection,
+      })
+    }
+  }
+
+  return rows
+}
+
+/** 一个连接该列出哪些模型——缓存里的 ＋（不在缓存里的）**已有选择**。 */
+function modelsOf(entry: ModelCatalogRow): readonly { readonly info: ModelInfo; readonly cached: boolean }[] {
+  const cached = (entry.cache?.snapshot?.models ?? []).filter(
+    // **列表取舍**：明确说了「不适用于对话」的不混入（`false` 才排除；**未知照列**）
+    (one) => one.capabilities?.chat !== false,
+  )
+  const out = cached.map((info) => ({ info, cached: true }))
+
+  // 这个连接的默认 / 已有选择——缓存里没有也**留着**（且标明它不在最近一次列表里）
+  if (entry.model !== undefined && !out.some((one) => one.info.id === entry.model)) {
+    out.push({ info: { id: entry.model }, cached: false })
+  }
+
+  return out
+}
+
+/** 副文案里连接名之后的那几格——**只在真有话要说时才给**（没有就一个字不加）。 */
+function tailOf(
+  one: { readonly info: ModelInfo; readonly cached: boolean },
+  entry: ModelCatalogRow,
+): readonly string[] | undefined {
+  const parts: string[] = []
+
+  // **显示名与 id 不是同一个**时把 id 报出来（送出去的是它——用户核对得到）
+  if (one.info.name !== undefined && one.info.name !== one.info.id) parts.push(one.info.id)
+  if (!one.cached) parts.push('不在最近一次列表里')
+  if (entry.vendor === undefined && entry.cache === undefined) parts.push('兼容接入')
+
+  return parts.length === 0 ? undefined : parts
+}
+
+/**
+ * `/model` 列表下方那行说明——**只说有事要说的那几件**。
+ *
+ * 三件由头（各自都在别处查不到）：
+ * - **缓存的状态**：还没取过 / 正在取 / 过期 / 上次没取成——「能用不能用、新不新」是用户此刻
+ *   唯一要判断的事（设计：「失败……返回最后成功时间与本次失败原因」）；
+ * - **三个动作怎么走**：它们沿 `/model` 展开（设计：不再新增一组按内部能力命名的 slash
+ *   命令），故得在这儿指出来；
+ * - **内核那句 `note`**（有则）——装配有话说时说（如「本次装配没有注册表」）。
+ *
+ * ⚠️ **更新时间只在这里出现一次**（过期的那些），新鲜的连接**不报时间**：设计写的是
+ * 「供应商信息与更新时间**按需**可见」——按需＝详情里查得到，不是每个连接都在列表上挂一行。
+ */
+export function modelHint(entries: readonly ModelCatalogRow[], note?: string): string {
+  const lines: string[] = []
+
+  for (const entry of entries) {
+    const connection = entry.name ?? entry.provider
+    const cache = entry.cache
+
+    if (cache?.snapshot === undefined) {
+      lines.push(
+        cache?.refreshing === true
+          ? `${connection}：正在取模型列表……`
+          : `${connection}：还没取过模型——/model refresh 刷新`,
+      )
+    } else if (cache.stale === true) {
+      lines.push(
+        cache.refreshing === true
+          ? `${connection}：列表是 ${dayLabel(cache.snapshot.fetchedAt)} 取的，正在重新去取`
+          : `${connection}：列表是 ${dayLabel(cache.snapshot.fetchedAt)} 取的（过期了——/model refresh 刷新）`,
+      )
+    }
+
+    // 失败**照说**，哪怕旧列表还在用（「有旧缓存而这次没刷成」是两件事，得都说清）
+    if (cache?.failure !== undefined) lines.push(`${connection}：上次没取成——${cache.failure.reason}`)
+  }
+
+  // 「详情」那一个键放在这儿（不在右位）：右位那条键位提示是**共用**的
+  // （`HINT_PICKER`，五扇抽屉同一句），各屏另加一个键就得各写一句——而它一变，
+  // 认它当判据的装置（`app/test/ui/scenarios.ts` 的抽屉场景）当场全红。
+  // 列表下方报键位有先例（`/grants` 的「回车＝撤销选定那条」），照它。
+  lines.push('→ 看这条的详情 · /model refresh 刷新 · /model connect 连接供应商 · /model manage 管理连接')
+  if (note !== undefined && note !== '') lines.push(note)
+
+  return lines.join('\n')
 }
 
 // ══ 授权抽屉（`/grants` · U22）═══════════════════════════════════════

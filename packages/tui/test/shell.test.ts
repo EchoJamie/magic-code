@@ -144,14 +144,30 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     expect(app.rows()).toEqual([])
   })
 
-  test('`/model <条目>`——直接发换模型，不进记录区', () => {
+  test('`/model refresh [连接]`——刷新意图，不进记录区', () => {
+    // **原锚**：`/model <条目>` ＝ 直接发一条 `model.switch { provider }`（换到那个条目）。
+    // **为何变**（U41 · 2026-09-23）：列表的取材从「配置条目」换成「模型」，同一个词
+    //   现在既可能是连接也可能是模型——按字面猜一个再切过去，猜错就是「换到了另一个
+    //   模型上」而用户以为只是敲了个名字。故那条直达**取消**，`/model` 后面改认**子动作**
+    //   （`refresh` / `connect` / `manage`——设计：三个动作沿 `/model` 展开）。
+    // **新锚**：`/model refresh` 发刷新意图；带不带连接各一条（缺省＝当前那条连接）。
+    const app = live()
+
+    app.type('/model refresh')
+    app.press(ENTER)
+
+    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'model.refresh' }])
+    expect(app.rows()).toEqual([])
+  })
+
+  test('`/model <不认得的词>`——如实说一句（不猜、不当交代发出去）', () => {
     const app = live()
 
     app.type('/model minimax-m2')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'model.switch', provider: 'minimax-m2' }])
-    expect(app.rows()).toEqual([])
+    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.rows().some((row) => row.kind === 'receipt')).toBe(true)
   })
 
   /**
@@ -387,11 +403,16 @@ describe('选择器（`/session` · `/model`）', () => {
 
     expect(app.view().dock.kind).toBe('picker')
     const dock = app.view().dock
-    // **全量**——两条都列出来，哪怕这趟会话一条都没调用过
-    expect(dock.kind === 'picker' ? dock.picker.rows.map((row) => row.label) : []).toEqual([
-      'minimax',
-      'local',
-    ])
+    // **全量**——两条都列出来，哪怕这趟会话一条都没调用过。
+    // **原锚**：行 ＝ 连接（`label` 是 `minimax` / `local`）。
+    // **为何变**（U41）：一行改报**模型**（设计：「行主文案为模型名，副文案为供应商/连接名」）
+    //   ——连接名挪到副文案那一格。
+    // **新锚**：行的主文案是各自的默认模型，副文案里带着连接名。
+    const rows = dock.kind === 'picker' ? dock.picker.rows : []
+    expect(rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'qwen3'])
+    // 副文案**以连接名打头**（其后可能还有别的话——如「不在最近一次列表里」）；
+    // 断「打头」而不是断整串：那些尾巴是有内容的判据，另外几条在 `spec.u41.test.ts` 里咬
+    expect(rows.map((row) => row.meta.split(' · ')[0])).toEqual(['minimax', 'local'])
   })
 
   /**
@@ -587,7 +608,16 @@ describe('选择器选定模型', () => {
     )
     app.press(ENTER) // 选定当前那一条
 
-    expect(app.commands()).toContainEqual({ type: 'model.switch', provider: 'minimax' })
+    // **原锚**：`{ type: 'model.switch', provider: 'minimax' }`（选择键＝条目名一件）。
+    // **为何变**（U41）：选择键是**连接 id ＋ 精确模型 id** 两件（设计明文——合法的两条
+    //   连接可以有同名模型，只报连接名认不出是谁）。契约的 `ModelSwitchRequest.model`
+    //   本来就是给这个用的。
+    // **新锚**：两件一起给。
+    expect(app.commands()).toContainEqual({
+      type: 'model.switch',
+      provider: 'minimax',
+      model: 'MiniMax-M3',
+    })
     expect(app.view().dock.kind).toBe('input')
   })
 })

@@ -169,9 +169,11 @@ exports[`场景 10 · \`/model\`（同一处、同一开合） 列表报条目�
   █   █ █   █  ███  ███  ████    ████  ███  ████  █████
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  1 minimax　MiniMax-M3
-  2 minimax-m2　MiniMax-M2
- 　也可直接打 \`/model <条目>\`
+  1 MiniMax-M3　minimax · 不在最近一次列表里 · 兼容接入
+  2 MiniMax-M2　minimax-m2 · 不在最近一次列表里 · 兼容接入
+ 　minimax：还没取过模型——/model refresh 刷新
+ minimax-m2：还没取过模型——/model refresh 刷新
+ → 看这条的详情 · /model refresh 刷新 · /model connect 连接供应商 · /model manage 管理连接
  ○ 空闲 · 修复时区处理… · MiniMax-M3                                     ↑↓ 选 · 回车 定 · esc 收起"
 `;
 

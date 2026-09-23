@@ -49,6 +49,8 @@ import {
   mcpHint,
   mcpRows,
   mcpToolRows,
+  modelHint,
+  modelRows,
   sessionRows,
   skillHint,
   skillRows,
@@ -661,11 +663,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       }
     }
 
-    // 条目表回来了 ⇒ 开选择器（`/model` 不带参数的那条路）。说明取 `note`——
-    // 只在有事要说时给（如「本次装配没有供应商注册表」），不给＝表自明。
-    if (event.kind === 'model.catalog' && waiting === 'model') {
-      waiting = null
-      openModelPicker(event.data.note ?? '')
+    // 连接一览回来了 ⇒ 两件（U41）：
+    // ① **正等着开抽屉**（`/model` 那条路）：开；0 行时 `openPicker` 会把说明落成一行回执；
+    // ② **抽屉已经开着**（`/model refresh` 那一路，或刷新回来的第二屏）：**就地重铺**
+    //    ——设计：「刷新只更新信息，**不抢走列表当前焦点**、不清草稿、不写回默认」。
+    //    故重铺要保住当前选中那一行（`refreshModelPicker` 里做），且**不关抽屉**。
+    if (event.kind === 'model.catalog') {
+      if (waiting === 'model') {
+        waiting = null
+        openModelPicker(event.data.note ?? '')
+      } else {
+        refreshModelPicker(event.data.note ?? '')
+      }
     }
 
     // 技能目录回来了 ⇒ 两件。
@@ -892,31 +901,66 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 而内核回话里的缘由（它本就列出已注册的名字）作列表下方的说明 ✓ 不解析、只照贴。
    */
   const openModelPicker = (note: string): void => {
-    const current = view.status.model
-    // **取材＝`model.catalog` 的全量条目**（D10）——不是「边看边攒」的那些：
-    // 攒的那些只认得**这趟会话调过 / 换过**的条目，注册表里没碰过的一律列不出来。
-    //
-    // ⚠️ **一行一条**（`oneLine`）——模型名可以很长（`MiniMax-Text-01` 只是短的），
-    // 折行就是交互区高度账与屏分家（U31 那一族的账：矮终端上真光标当场高一行）。
-    // 设计 · 终端交互写死了「候选每项一行，名称/简述同排」，故截断交给渲染层按列宽做，
-    // 账照旧一条一行。窄窗下先留住的是 `label`（连接名／模型名），先被截的是 `meta`。
-    const rows = view.models.map((entry) => ({
-      label: entry.provider,
-      // 默认模型可以还没有（新接上的连接还没选过）——那时副栏留空，不编一行字
-      meta: entry.model ?? '',
-      current: entry.model === current,
-      value: entry.provider,
-      oneLine: true,
-    }))
+    // **取材＝连接一览 ＋ 各自的缓存读数**（U41）——不再是「配置条目」（那正是本项要拆掉的
+    // 约束：型号得逐个登记才列得出来）。铺行的规矩全在 `modelRows` 一处（行主文案＝模型名 ·
+    // 副文案＝连接名 · 只列适用于对话的 · 已有选择照留）。
+    const rows = modelRows(view.models, view.modelCurrent)
 
     commit(
       openPicker(view, {
         source: 'model',
+        // 落在**此刻会走的那一条**上（没有去向就从头起——不拿首项冒充当前）
         selected: Math.max(0, rows.findIndex((row) => row.current)),
         rows,
-        hint: note === '' ? '也可直接打 `/model <条目>`' : note,
+        hint: modelHint(view.models, note === '' ? undefined : note),
       }),
     )
+  }
+
+  /**
+   * **就地重铺**（U41 · 刷新那一路）——设计：「刷新只更新信息，**不抢走列表当前焦点**、
+   * 不清草稿、不写回默认」。
+   *
+   * 重铺＝换掉行与说明，**选中那条按身份（连接 ＋ 模型）认回来**：列表顺序变了、新增了几条、
+   * 甚至当前那条挪了位置，用户手上那一下都不该被抢走。
+   *
+   * 0 行照 `refreshGrantsPicker` 那条老规矩办：**收起抽屉**（0 行的抽屉接管着输入却不给
+   * 东西可点——打不了字、没得选，看着就是卡死），内核那句说明落成记录区一行回执。
+   */
+  const refreshModelPicker = (note: string): void => {
+    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'model') return
+
+    const held = picked(view)?.pick
+    const rows = modelRows(view.models, view.modelCurrent)
+    const hint = modelHint(view.models, note === '' ? undefined : note)
+
+    if (rows.length === 0) {
+      commit(closePicker(view))
+      if (hint !== '') commit(appendReceipt(view, hint))
+      return
+    }
+
+    const at =
+      held === undefined
+        ? view.dock.picker.selected
+        : rows.findIndex((row) => row.pick?.provider === held.provider && row.pick.model === held.model)
+
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          ...view.dock.picker,
+          rows,
+          // 认不回来（那条模型从列表里没了）⇒ **夹回范围内**，不跳远、也不越界
+          selected: Math.min(
+            Math.max(0, at === -1 ? view.dock.picker.selected : at),
+            rows.length - 1,
+          ),
+          hint,
+        },
+      },
+    })
   }
 
   // —— 技能（U33 · 终端入口）——
@@ -1496,10 +1540,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 明写 `/mcp reconnect <名字>`）。留着这一支是**必须**的：不然它会落到下面的换模型上。
       if (view.dock.picker.source === 'mcp') return NONE
 
-      // 换模型：回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）
-      send({ type: 'model.switch', provider: row.value })
-      commit(closePicker(view))
-      return NONE
+      // 模型那一屏（U41）：选定＝**切到这条连接的这个精确模型**（两件一起给——
+      // 合法的两条连接可以有同名模型，只报模型名认不出是谁）。
+      // 回执由内核的 `model.switched` 事件给（那才是真结果，不由外壳先报）。
+      if (view.dock.picker.source === 'model') {
+        const pick = row.pick
+        if (pick === undefined) return NONE // 不该有这种行（行是 `modelRows` 铺的）
+        send({ type: 'model.switch', provider: pick.provider, model: pick.model })
+        commit(closePicker(view))
+        return NONE
+      }
+
+      return NONE // 认不出的来路（不该走到这儿）——**什么都不做**，不拿它当换模型
     }
 
     // 候选开着 ⇒ 回车**先选定**（原型 · 场景 11）；**已经打全了就直接发**
@@ -1704,15 +1756,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return only(cleared, { type: 'skills.list' })
     }
 
+    // `/model`（U41 改形）——**交互配置型**：主体是模型选择，另三个动作沿它展开
+    // （设计：「不再新增一组按内部能力命名的 slash 命令」——动作挂在同一个入口下，
+    // 写法照 `/session new` · `/mcp reconnect` 的既有姿势）。
     if (word === '/model') {
-      if (arg !== '') return only(cleared, { type: 'model.switch', provider: arg })
+      // **刷新**：显式意图可绕过时效（设计 · 刷新）。`provider` 缺省＝当前选中那条连接。
+      // ⚠️ 按**完整命令词**认（同 `/mcp reconnect` 那条注：连接 id 可以长成 `refresh-2`）
+      if (arg === 'refresh' || arg.startsWith('refresh ')) {
+        const who = arg.slice('refresh'.length).trim()
+        waiting = 'model'
+        // 先回旧缓存那一屏、刷新完成再回一屏（契约这么定的）——两趟都归 `model.catalog`
+        return only(cleared, who === '' ? { type: 'model.refresh' } : { type: 'model.refresh', provider: who })
+      }
 
-      // 不带参数 ⇒ **问一次条目表**（D10 的读侧命令 `model.list`）：答复是 `model.catalog`，
-      // 外壳据它铺选择器（**全量**，含从未调用过的条目）并把 ④ 的分母定下来。
+      // 不带参数 ⇒ **问一次连接一览**（读侧命令 `model.list`）：答复是 `model.catalog`，
+      // 外壳据它铺选择器（连接 ＋ 各自缓存里的模型）并把 ④ 的分母定下来。
       // ⚠️ 原先是发空参的 `model.switch`、拿**失败的缘由**当列表说明——那不是读面
       //（以「换失败了」作答，还白落一笔 `model.switched`）。
-      waiting = 'model'
-      return only(cleared, { type: 'model.list' })
+      if (arg === '') {
+        waiting = 'model'
+        return only(cleared, { type: 'model.list' })
+      }
+
+      // 认不出那个词 ⇒ **如实说一句**（不静默丢，也不当交代发出去）。
+      // ⚠️ U41 起**取消了 `/model <条目>` 那条直达**：列表的取材从「配置条目」换成了
+      // 「模型」——同一个词现在既可能是连接也可能是模型，按字面猜一个再切过去，
+      // 猜错就是「换到了另一个模型上」而用户以为只是敲了个名字。
+      return only(appendReceipt(cleared, `认得的用法：/model · /model refresh [连接]`))
     }
 
     // `/mcp`（U39）——**纯查询型**：记录区什么都不进，只在左下开抽屉。

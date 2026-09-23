@@ -449,8 +449,12 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
 
     const frame = app.screen()
     expect(frame).toContain('minimax')
-    // **全量**：注册表里另一条也在（这趟会话从没调用过它）
-    expect(frame).toContain('minimax-m2')
+    // **全量**：另一条连接上的模型也在（这趟会话从没调用过它）。
+    // **原锚**：屏上找得到条目名 `minimax-m2`（行 ＝ 连接）。
+    // **为何变**（U41）：一行改报**模型**——`minimax-m2` 那条连接现在体现在**副文案**上，
+    //   主文案是它的模型名。
+    // **新锚**：屏上找得到它的模型名 `MiniMax-M2`。
+    expect(frame).toContain('MiniMax-M2')
     expect(frame).toMatchSnapshot()
   })
 })
