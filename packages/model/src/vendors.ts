@@ -98,6 +98,12 @@ export type VendorAdapter = {
     modelId: string,
   ): Promise<Pick<ModelInfo, 'id' | 'name' | 'description' | 'capabilities' | 'limits' | 'reasoning'> | undefined>
   /**
+   * **助手消息里的思考要回传**——该供应商的协议要求（DeepSeek 的思考模式在带 tools 时
+   * 不回传历史轮的 `reasoning_content` 就 400）。**没有这一位＝不带**：
+   * 思考是**这一家这一个模型**的私有协议内容，不转发给其它供应商（设计明文）。
+   */
+  readonly echoesReasoning?: boolean | undefined
+  /**
    * **请求体改写**（该供应商已知的参数名差异）——没有这一位就原样发。
    *
    * 挂在这里而不是配置里：「参数」不入配置形制（技术方案：供应商差异封接缝）；
@@ -265,6 +271,8 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
   id: 'deepseek',
   regions: { default: 'https://api.deepseek.com' },
   defaultRegion: 'default',
+  // 思考模式的工具往返要求把历史轮的 `reasoning_content` 原样回传（官方文档明文）
+  echoesReasoning: true,
 
   baseURLOf(config) {
     if (config.baseURL !== undefined) return config.baseURL

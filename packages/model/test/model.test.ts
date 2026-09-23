@@ -1010,6 +1010,91 @@ function capture(reply: () => Response): { fetch: typeof globalThis.fetch; seen:
   return { fetch: fake, seen }
 }
 
+describe('思考的工具往返（U41）', () => {
+  /**
+   * **DeepSeek 的思考模式要求回传**：带 tools 时，历史轮的 `reasoning_content`
+   * 不回传就 400。判据落在**出站请求体**上——不是「我们记住了」，是「真发出去了」。
+   */
+  test('要求回传的那家：助手消息的思考进请求体（`reasoning_content`）', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+      ),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'ds',
+      stamper: testStamper(),
+      config: { vendor: 'deepseek', apiKey: 'test-key' },
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    await drain(
+      gateway.stream({
+        model: 'deepseek-flash',
+        messages: [
+          { role: 'user', content: '读一下那个文件' },
+          {
+            role: 'assistant',
+            content: '我看看',
+            toolCalls: [{ id: 'call-1', name: 'read', args: { path: 'a.txt' } }],
+            reasoning: '先看清路径再动手',
+          },
+          { role: 'tool', callId: 'call-1', name: 'read', ok: true, output: '内容' },
+        ],
+      }),
+    )
+
+    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
+    const assistant = sent.messages.find((one) => one['role'] === 'assistant')
+    expect(assistant?.['reasoning_content']).toBe('先看清路径再动手')
+    // 正文与调用照旧（思考只是**多带**一份，不改别的）
+    expect(assistant?.['tool_calls']).toHaveLength(1)
+  })
+
+  test('**反例**：不要求回传的适配（兼容接入）一个字都不带', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+      ),
+    )
+
+    // 兼容接入（没有 `vendor`）——原协议原样：多出来的那一位**不转发**
+    const gateway = createModelGateway({
+      providerId: 'mm',
+      stamper: testStamper(),
+      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M3' },
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    await drain(
+      gateway.stream({
+        model: 'MiniMax-M3',
+        messages: [
+          { role: 'user', content: '嗨' },
+          {
+            role: 'assistant',
+            content: '我看看',
+            toolCalls: [{ id: 'call-1', name: 'read', args: { path: 'a.txt' } }],
+            reasoning: '上家模型想的事',
+          },
+          { role: 'tool', callId: 'call-1', name: 'read', ok: true, output: '内容' },
+        ],
+      }),
+    )
+
+    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
+    const assistant = sent.messages.find((one) => one['role'] === 'assistant')
+    expect(assistant?.['reasoning_content']).toBeUndefined()
+  })
+})
+
 describe('假端点回环 · 流式事件序列', () => {
   /**
    * D10 · 第 1 样——状态行 `12.4k/200k` 的**分母**：条目配置声明了窗长，就**随用量一起到**

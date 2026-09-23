@@ -65,7 +65,11 @@ function toInstructions(messages: readonly ModelMessage[]): string | undefined {
   return systems.map((message) => message.content).join('\n\n')
 }
 
-function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
+function toAiSdkMessages(
+  messages: readonly ModelMessage[],
+  /** 该供应商要不要那份思考（U41）——见 `VendorAdapter.echoesReasoning`。 */
+  echoReasoning: boolean,
+): AiSdkMessage[] {
   return messages
     .filter((message) => message.role !== 'system')
     .map((message): AiSdkMessage => {
@@ -74,21 +78,33 @@ function toAiSdkMessages(messages: readonly ModelMessage[]): AiSdkMessage[] {
           return { role: 'user', content: message.content }
         case 'assistant': {
           const calls = message.toolCalls ?? []
-          if (calls.length === 0) return { role: 'assistant', content: message.content }
-          return {
-            role: 'assistant',
-            content: [
-              ...(message.content.length > 0
-                ? [{ type: 'text' as const, text: message.content }]
-                : []),
-              ...calls.map((call) => ({
-                type: 'tool-call' as const,
-                toolCallId: call.id,
-                toolName: call.name,
-                input: call.args,
-              })),
-            ],
+          // **只回传给要求它的那一家**：思考是那一个模型的私有协议内容，
+          // 换个供应商照发等于把上家的东西递到别人那儿（设计：「不转发给其它供应商」）
+          const reasoning = echoReasoning ? message.reasoning : undefined
+
+          // **思考块排在正文之前**（供应商按序读它）。`@ai-sdk/openai-compatible` 会把
+          // assistant 的 reasoning part 转回 `reasoning_content` —— DeepSeek 的工具往返
+          // 要的就是这个（U41）。没有那一位（绝大多数情形）时与加它之前逐字同形
+          const content = [
+            ...(reasoning === undefined || reasoning.length === 0
+              ? []
+              : [{ type: 'reasoning' as const, text: reasoning }]),
+            ...(message.content.length > 0
+              ? [{ type: 'text' as const, text: message.content }]
+              : []),
+            ...calls.map((call) => ({
+              type: 'tool-call' as const,
+              toolCallId: call.id,
+              toolName: call.name,
+              input: call.args,
+            })),
+          ]
+
+          if (content.length === 0) return { role: 'assistant', content: message.content }
+          if (content.length === 1 && content[0]?.type === 'text') {
+            return { role: 'assistant', content: message.content }
           }
+          return { role: 'assistant', content }
         }
         case 'tool':
           return {
@@ -215,7 +231,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
     const result = streamText({
       model,
       ...(instructions === undefined ? {} : { instructions }),
-      messages: toAiSdkMessages(request.messages),
+      messages: toAiSdkMessages(request.messages, options.adapter?.echoesReasoning === true),
       ...(request.tools === undefined || request.tools.length === 0
         ? {}
         : { tools: toAiSdkTools(request.tools) }),

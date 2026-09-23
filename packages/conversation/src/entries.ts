@@ -25,6 +25,7 @@
  */
 
 import type {
+  AssistantPayload,
   Content,
   InputRefEntry,
   RecordId,
@@ -86,13 +87,24 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
   }
 }
 
-/** 正文条目（`user` / `assistant`）——落账并回 id（事件按它引用这条内容）。 */
+/**
+ * 正文条目（`user` / `assistant`）——落账并回 id（事件按它引用这条内容）。
+ *
+ * `payload` **只有 `assistant` 用得上**（U41：供应商要求回传的那份思考）——
+ * 给了才写那一位，不给就与加它之前逐字同形（旧记录照读）。
+ */
 export async function appendTextEntry(
   log: EntryLog,
   kind: 'user' | 'assistant',
   text: string,
+  payload?: AssistantPayload,
 ): Promise<RecordId> {
-  return log.records.appendEntry({ kind, content: await contentOf(text, log), at: log.now() })
+  return log.records.appendEntry({
+    kind,
+    content: await contentOf(text, log),
+    ...(payload === undefined ? {} : { payload }),
+    at: log.now(),
+  })
 }
 
 /**
