@@ -54,6 +54,16 @@ export type {
   ProviderEntry,
 } from './registry.ts'
 
+// —— ①之三 模型信息（U41：缓存与时效策略 · 供应商适配）——
+//
+// ⚠️ **适配本身不上公开面**（`VendorAdapter` / `MINIMAX_VENDOR` / `DEEPSEEK_VENDOR`
+// 都是域内件，装配只见 `ProviderConfig.vendor` 这个名字）：出去的只有「一份可用读数」
+// 与「拿它要什么」。测试要深链 `../src/vendors.ts`（照测试面分面的先例）。
+
+export { createModelInfoService, resolveConnection } from './model-info.ts'
+export type { ModelConnection, ModelInfoService, ModelInfoServiceOptions } from './model-info.ts'
+export { MODEL_INFO_FAILURE_COOLDOWN_MS, MODEL_INFO_TTL_MS } from './model-info.ts'
+
 // —— ③ 构造子（Faux Provider 与循环测试用；信封由注入的 `EventStamper` 铸）——
 
 export {

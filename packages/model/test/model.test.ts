@@ -196,14 +196,14 @@ describe('归一 · 正文流', () => {
         modelCallStart(stamper, MINIMAX_MODEL),
         modelDelta(stamper, 'text', '你'),
         modelDelta(stamper, 'text', '好'),
-        modelUsage(stamper, 12, 3),
+        modelUsage(stamper, { inputTokens: 12, outputTokens: 3, totalTokens: 15 }),
         modelCallEnd(stamper),
       ]),
     )
     expect(result.text).toBe('你好')
     expect(result.thinking).toBe('')
     expect(result.toolCalls).toEqual([])
-    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 3 })
+    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 3, totalTokens: 15 })
     expect(result.finishReason).toBe('stop')
     expect(result.error).toBeUndefined()
     expect(result.aborted).toBe(false)
@@ -239,7 +239,7 @@ describe('归一 · 正文流', () => {
       ]),
     )
 
-    expect(payloads(events)).toContainEqual(bare(modelUsage(testStamper(), 7, 2)))
+    expect(payloads(events)).toContainEqual(bare(modelUsage(testStamper(), { inputTokens: 7, outputTokens: 2, totalTokens: 9 })))
   })
 })
 
@@ -274,7 +274,7 @@ describe('归一 · 思考与工具调用', () => {
         modelDelta(stamper, 'toolcall', '', 'exec', 'call-1'),
         modelDelta(stamper, 'toolcall', '{"cmd"', 'exec', 'call-1'),
         modelDelta(stamper, 'toolcall', ':"ls"}', 'exec', 'call-1'),
-        modelUsage(stamper, 30, 10),
+        modelUsage(stamper, { inputTokens: 30, outputTokens: 10, totalTokens: 40 }),
         modelCallEnd(stamper),
       ]),
     )
@@ -493,7 +493,7 @@ describe('特征标记 · 内置表', () => {
         modelCallStart(stamper, MINIMAX_MODEL),
         modelDelta(stamper, 'thinking', '想想'),
         modelDelta(stamper, 'text', '\n\n正文'),
-        modelUsage(stamper, 9, 4),
+        modelUsage(stamper, { inputTokens: 9, outputTokens: 4, totalTokens: 13 }),
         modelCallEnd(stamper),
       ]),
     )
@@ -1037,10 +1037,10 @@ describe('假端点回环 · 流式事件序列', () => {
       declared.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
     expect(withWindow.events.filter((event) => event.kind === 'model.usage').map((event) => event.data)).toEqual([
-      { inputTokens: 12_400, outputTokens: 40, contextWindow: 200_000 },
+      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 },
     ])
     // 聚合结果**不动**——窗长是「这次调用之外」的东西，不是用量的一部分
-    expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40 })
+    expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0 })
 
     const silent = createModelGateway({
       providerId: 'minimax',
@@ -1055,8 +1055,27 @@ describe('假端点回环 · 流式事件序列', () => {
       silent.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
     const usage = withoutWindow.events.find((event) => event.kind === 'model.usage')
-    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40 })
-    expect('contextWindow' in (usage?.data ?? {})).toBe(false)
+    // **U41 改锚**：这一位以前「只有条目声明了才有」；现在说的是**有效容量**——
+    // 用户声明 → 该家适配的缺项补充 → 未知（设计：「替换当前『内置表只供界面、事件容量
+    // 只认配置』的分叉」「输入上限、预留输出与所显示分母须同口径」）。
+    // MiniMax-M3 有官方窗长（该家适配的补充表），故**没声明也带着它**。
+    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 1_000_000 })
+
+    // **反例**（改了这处行为的对照）：**不在补充表里**的模型照旧**没有这一位**——
+    // 「不知道就是不知道」那一半没松（app 的读数用例里那条「乙」是同一个反例）。
+    const unknown = createModelGateway({
+      providerId: 'minimax',
+      stamper: testStamper(),
+      config: CONFIG,
+      apiKey: 'test-key',
+      fetch: capture(sseReply).fetch,
+      env: {},
+    })
+    const unknownCall = await drain(
+      unknown.stream({ model: 'some-unlisted-model', messages: [{ role: 'user', content: '嗨' }] }),
+    )
+    const unknownUsage = unknownCall.events.find((event) => event.kind === 'model.usage')
+    expect('contextWindow' in (unknownUsage?.data ?? {})).toBe(false)
   })
 
   test('SSE → 取件层 → 归一：序列与聚合结果都对', async () => {
@@ -1096,7 +1115,11 @@ describe('假端点回环 · 流式事件序列', () => {
         modelDelta(stamper, 'text', '你'),
         modelDelta(stamper, 'text', '好'),
         modelDelta(stamper, 'thinking', '简短想'),
-        modelUsage(stamper, 11, 5),
+        modelUsage(
+          stamper,
+          { inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0 },
+          1_000_000,
+        ),
         modelCallEnd(stamper),
       ]),
     )
@@ -1445,7 +1468,7 @@ describe('端口形态', () => {
     expect(payloads([modelDelta(stamper, 'toolcall', '{}', 'exec', 'c1')])).toEqual([
       { kind: 'model.delta', data: { channel: 'toolcall', text: '{}', name: 'exec', id: 'c1' } },
     ])
-    expect(payloads([modelUsage(stamper, 1, 2)])).toEqual([
+    expect(payloads([modelUsage(stamper, { inputTokens: 1, outputTokens: 2 })])).toEqual([
       { kind: 'model.usage', data: { inputTokens: 1, outputTokens: 2 } },
     ])
     expect(payloads([modelCallEnd(stamper)])).toEqual([{ kind: 'model.call.end', data: {} }])

@@ -21,6 +21,7 @@ import type {
   KernelEvent,
   ModelFinishReason,
   ModelTraits,
+  ModelUsage,
   ToolCall,
 } from '@magic/contracts'
 import type { ModelCallResult, ModelStream } from './call.ts'
@@ -110,7 +111,8 @@ type NormalizeState = {
   text: string
   thinking: string
   readonly pending: Map<string, PendingToolCall>
-  usage: { inputTokens: number; outputTokens: number } | undefined
+  /** 实际用量——**各字段分别可缺**（未上报＝不知道，不补零）。 */
+  usage: ModelUsage | undefined
   /** 供应商未给 / 未走完＝`undefined`（「是否走完」由 `complete` 表述）。 */
   finishReason: ModelFinishReason | undefined
   error: { tier: ReturnType<typeof classifyModelError>; message: string } | undefined
@@ -167,15 +169,38 @@ function toFinishReason(reason: FinishReason | string | undefined): ModelFinishR
 }
 
 /**
- * 用量归一——`undefined` 视作 0，但**两者皆缺**时返回 `undefined`（不发 `model.usage`）。
- * 契约要求 `number`，故不把「未上报」伪装成 0。
+ * 用量归一（U41 改形）——**各字段分别允许未知**。
+ *
+ * 撤销了原先「缺一个就补零」的简化：**服务端明确返回 0 才是 0**，没回来就是**不知道**
+ * （设计 · 模型与上下文「用量归一」）。全部字段都缺才返回 `undefined`——那一次不发
+ * `model.usage`。
+ *
+ * 口径（设计逐条）：
+ * - `inputTokens` ——**完整**输入消耗（**含**已计入输入的缓存部分）；
+ * - `outputTokens` ——**完整**输出消耗（**含**该供应商计入输出的思考部分）；
+ * - `cacheRead` / `cacheWrite` / `reasoning` ——**仅作细分**，**不得与上面两个相加**；
+ * - `totalTokens` —— 保留**供应商自己给的定义**，我们不去替它加一个。
+ *
+ * 数据源优先取 SDK 已归一的字段（`inputTokens` / `outputTokens` / `totalTokens` 与两组
+ * details），不回到供应商原始 JSON 里另加一遍——那正是 DeepSeek 缓存命中被重复计数的来路。
  */
-function toUsage(usage: LanguageModelUsage | undefined): { inputTokens: number; outputTokens: number } | undefined {
+function toUsage(usage: LanguageModelUsage | undefined): ModelUsage | undefined {
   if (usage === undefined) return undefined
-  const input = usage.inputTokens
-  const output = usage.outputTokens
-  if (input === undefined && output === undefined) return undefined
-  return { inputTokens: input ?? 0, outputTokens: output ?? 0 }
+
+  const cacheRead = usage.inputTokenDetails?.cacheReadTokens
+  const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens
+  const reasoning = usage.outputTokenDetails?.reasoningTokens
+
+  const mapped: ModelUsage = {
+    ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+    ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+    ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+    ...(cacheRead === undefined ? {} : { cacheReadTokens: cacheRead }),
+    ...(cacheWrite === undefined ? {} : { cacheWriteTokens: cacheWrite }),
+    ...(reasoning === undefined ? {} : { reasoningTokens: reasoning }),
+  }
+
+  return Object.keys(mapped).length === 0 ? undefined : mapped
 }
 
 /** 解析不出即取空对象——同时置 `invalid`，让调用方知道参数不可信。 */
@@ -273,14 +298,7 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
       // 收束前先吐残片——否则标签尾部的半截留在切分器里，正文截掉一截
       const events: KernelEvent[] = flushText(state)
       if (state.usage !== undefined) {
-        events.push(
-          modelUsage(
-            state.stamper,
-            state.usage.inputTokens,
-            state.usage.outputTokens,
-            state.contextWindow,
-          ),
-        )
+        events.push(modelUsage(state.stamper, state.usage, state.contextWindow))
       }
       events.push(modelCallEnd(state.stamper))
       state.closed = true

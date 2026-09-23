@@ -124,6 +124,15 @@ export type ModelInfo = {
   readonly limits?: ModelLimits
   /** 该模型支持的思考形态——没有依据时不给这一位。 */
   readonly reasoning?: ReasoningSupport
+  /**
+   * **正文与思考的通道特征**——决定归一要不要把内嵌的 `<think>…</think>` 切到
+   * `thinking` 通道（形态与判据见 `ports.ts` · `ModelTraits`，「**键在即接管**」）。
+   *
+   * 它随模型信息一起走（由供应商适配按**该家 + 精确型号**补，或按该模型的用户覆盖给），
+   * 而不是按裸型号名在域里查一张跨供应商的表——这正是 U41 要撤的那件事。
+   * 缺省 ＝ 无依据：正文原样走 `text`，**不猜、不切**。
+   */
+  readonly traits?: ModelTraits
 }
 
 // —— 快照与读取 ——

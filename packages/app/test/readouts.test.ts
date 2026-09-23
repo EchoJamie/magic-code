@@ -181,7 +181,9 @@ describe('读数 1 · 上下文窗口总量', () => {
         'alpha',
       ])
       expect(eventsOfKind(handle.events, 'model.usage').map((e) => e.data)).toEqual([
-        { inputTokens: 11, outputTokens: 5, contextWindow: 200_000 },
+        // U41 补位：SDK 归一出的细分与总额一并带出（假端点回 `cached_tokens: 0` /
+        // `reasoning_tokens: 0`——**服务端明确返回 0 才是 0**，故这两格在）
+        { inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 },
       ])
 
       handle.dispose()
@@ -214,8 +216,8 @@ describe('读数 1 · 上下文窗口总量', () => {
       const usages = eventsOfKind(handle.events, 'model.usage').map((e) => e.data)
       expect(usages).toHaveLength(2)
       // 甲那份带着分母、乙那份**连键都没有**（不是 `undefined` 占位，是缺席）
-      expect(usages[0]).toEqual({ inputTokens: 11, outputTokens: 5, contextWindow: 200_000 })
-      expect(usages[1]).toEqual({ inputTokens: 22, outputTokens: 5 })
+      expect(usages[0]).toEqual({ inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 })
+      expect(usages[1]).toEqual({ inputTokens: 22, outputTokens: 5, totalTokens: 27, cacheReadTokens: 0, reasoningTokens: 0 })
       expect('contextWindow' in (usages[1] ?? {})).toBe(false)
 
       handle.dispose()

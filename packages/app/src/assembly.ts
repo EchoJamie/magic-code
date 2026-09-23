@@ -51,8 +51,11 @@ import type {
   McpConnectionState,
   McpToolRejection,
   ModelCatalogRow,
+  ModelDefaultRequest,
   ModelGateway,
   ModelSwitchRequest,
+  ProviderConfig,
+  ProviderSaveRequest,
   RecordsService,
   RulesLoad,
   RulesProblem,
@@ -81,8 +84,19 @@ import {
   createSkills,
   createWorkspaceService,
 } from '@magic/execution'
-import type { FetchLike, ModelRegistry, ModelSwitchResult, WindowTable } from '@magic/model'
-import { createModelRegistry, windowOfSelection } from '@magic/model'
+import type {
+  FetchLike,
+  ModelInfoService,
+  ModelRegistry,
+  ModelSwitchResult,
+  WindowTable,
+} from '@magic/model'
+import {
+  createModelInfoService,
+  createModelRegistry,
+  resolveConnection,
+  windowOfSelection,
+} from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
 import { createRecordsStore } from '@magic/records'
@@ -93,7 +107,9 @@ import { createToolRuntime, defineMcpTools, defineSkillTool } from '@magic/tools
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
+import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
 import { loadGrants, saveGrants } from './grants-file.ts'
+import { createFileModelInfoCache } from './model-cache.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
 const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
@@ -214,6 +230,13 @@ export type Assembly = {
    * 结果原样交回调用方（脚本据以决定继续还是当场停）。
    */
   readonly switchModel: (request: ModelSwitchRequest) => ModelSwitchResult
+  /**
+   * **模型信息面**（U41）——`model.catalog` 里那份缓存读数的出处。
+   *
+   * 装配之外（自检 / 验收装置）要它，是为了能**显式刷新**与读当下那一格，
+   * 而不必绕控制面发命令。
+   */
+  readonly modelInfo: ModelInfoService
   /**
    * **外壳侧一端**（契约 `ControlTransport`）——接外壳。
    * 用法＝先 `subscribe(…)`、后 `send(…)`（顺序纪律见文件头注）。
@@ -679,17 +702,67 @@ export function assemble(options: AssembleOptions): Assembly {
     return activeStamper
   }
 
+  /**
+   * **连接资料的真源**（U41）——开局的取自配置；`provider.save` / `remove` / 设为默认
+   * 落盘成功后**换掉它**（注册表与模型信息面都从这儿读，故两处不会各说一套）。
+   *
+   * 为什么不是直接把 `loaded.config` 改掉：那是**加载那一刻**的读数（自检、数据目录、
+   * 权限段都指着它），改它等于把「这一趟读到了什么」与「现在配的是什么」混成一件。
+   */
+  let providerBook: Readonly<Record<string, ProviderConfig>> = loaded.config.providers
+  /** 默认连接 id——「设为默认」会换它（同上，与 `loaded` 分开）。 */
+  let defaultProviderId: string | undefined = loaded.providerId
+  /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
+  let configMtime: number | undefined = loaded.mtimeMs
+
   // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
   // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
-  let models: ModelRegistry | undefined
-  if (options.modelGateway === undefined) {
-    models = createModelRegistry({
-      providers: loaded.config.providers,
-      defaultProvider: loaded.providerId,
+  const registryOf = (): ModelRegistry =>
+    createModelRegistry({
+      providers: providerBook,
+      ...(defaultProviderId === undefined ? {} : { defaultProvider: defaultProviderId }),
       stamper: forwardStamper,
       fetch: options.modelFetch,
     })
+
+  let models: ModelRegistry | undefined
+  if (options.modelGateway === undefined) models = registryOf()
+
+  /**
+   * **按当下的连接资料重建注册表**（保存之后）。
+   *
+   * 不成（新连接缺 key / 缺省指向了不存在的连接）时**保留原来那一张**：
+   * 配置已经落盘了，这一次装配用不上它——如实说一句，别把装配整个带崩。
+   */
+  const rebuildRegistry = (): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
+    if (options.modelGateway !== undefined) return { ok: true }
+    try {
+      models = registryOf()
+      return { ok: true }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
+    }
   }
+
+  /**
+   * **模型信息面**（U41）——连接资料现取（改完配置立刻对得上）、缓存落盘走 app 的实现。
+   *
+   * `onChange`：取到新列表 / 这次没取成 ⇒ **再发一屏 `model.catalog`**。
+   * 还没有会话时没有信封可铸，那次不发——`/model` 按下去会现问一次，不会丢。
+   */
+  const modelCache = createFileModelInfoCache(loaded.config.dataDir)
+  const modelInfo: ModelInfoService = createModelInfoService({
+    connections: () =>
+      Object.entries(providerBook).map(([id, config]) => resolveConnection({ providerId: id, config })),
+    cache: modelCache,
+    fetch: options.modelFetch ?? (globalThis.fetch as FetchLike),
+    now,
+    onChange: () => {
+      if (chain === undefined) return
+      sink.emit(requireActiveStamper().stamp('model.catalog', catalogOf(models)))
+    },
+  })
 
   /**
    * **窗长表**（U30）——内置表 ＋ 各条目自己声明的覆盖位；**注册表缺席＝空表**
@@ -747,7 +820,17 @@ export function assemble(options: AssembleOptions): Assembly {
       // 快照会让那一条链的工具表永远停在「还没连上」的那一刻。给函数＝**每次现取**。
       tools: () => [skillTool, ...mcpTools()],
     })
-    const gateway: ModelGateway = models ?? options.modelGateway?.(stamper) ?? missingGateway()
+    // **转发**而不是取值：注册表会在保存配置之后重建（U41），而这一束链是会话级的——
+    // 抓一份快照会让已开的会话一直用旧表（同 `forwardStamper` 那条理由）。
+    //
+    // ⚠️ **只有注册表那一路是转发**：替身网关与缺省桩在开束时**求值一次**——
+    // 替身工厂每次调用都造一个新的（`makeStage` 那个还往数组里记），开一次会话造一个
+    // 是原样，**每次 `stream` 都造**会把它的进度归零（实测：Faux 的固定事件序列永远
+    // 走不到头，用例挂死在等 `turn.end`）。
+    const fixed = models ?? options.modelGateway?.(stamper) ?? missingGateway()
+    const gateway: ModelGateway = {
+      stream: (request, streamOptions) => (models ?? fixed).stream(request, streamOptions),
+    }
 
     const service = createConversationSession({
       session,
@@ -1176,7 +1259,7 @@ export function assemble(options: AssembleOptions): Assembly {
     if (registry === undefined) return []
 
     return registry.list().map((entry) => {
-      const config = loaded.config.providers[entry.id]
+      const config = providerBook[entry.id]
       return {
         provider: entry.id,
         ...(config?.name === undefined ? {} : { name: config.name }),
@@ -1186,6 +1269,8 @@ export function assemble(options: AssembleOptions): Assembly {
         ...(entry.model === undefined ? {} : { model: entry.model }),
         ...(config?.reasoning === undefined ? {} : { reasoning: config.reasoning }),
         ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
+        // 缓存读数（U41）——**有才给**：空对象（还没取过、兼容接入）就不给这一位
+        ...(Object.keys(modelInfo.read(entry.id)).length === 0 ? {} : { cache: modelInfo.read(entry.id) }),
       }
     })
   }
@@ -1219,6 +1304,168 @@ export function assemble(options: AssembleOptions): Assembly {
     sink.emit(requireActiveStamper().stamp('provider.catalog', providerCatalogOf(note)))
   }
 
+  /** 取文件的 `mtimeMs`（拿不到＝`undefined`——保存前那次比对据此跳过）。 */
+  const mtimeOf = (path: string): number | undefined => {
+    try {
+      return statSync(path).mtimeMs
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * **接入范围变了吗**——变了就该废弃那条连接的模型信息缓存（设计明文）。
+   *
+   * 比四件：供应商适配 · 地址 · 区域 · 认证。⚠️ 认证只在此处**比较相等性**，
+   * 不进任何文案、不入快照、不落日志（「凭据只进不出」）。
+   */
+  const scopeChanged = (
+    before: ProviderConfig | undefined,
+    after: ProviderConfig | undefined,
+  ): boolean => {
+    // 新建 / 移除：一律作废（那是另一条连接的缓存，留着没有用）
+    if (before === undefined || after === undefined) return true
+
+    return (
+      before.vendor !== after.vendor ||
+      before.baseURL !== after.baseURL ||
+      before.region !== after.region ||
+      before.apiKey !== after.apiKey
+    )
+  }
+
+  /**
+   * **显式刷新模型信息**（U41）——绕开有效期与失败冷却（那是用户明确的要求，不是自动重试）。
+   *
+   * 答复走 `model.catalog`：**先回旧缓存那一屏**，刷新完成后再由 `modelInfo` 的
+   * `onChange` 发一屏（成或不成都有话说）。**不硬闯**：`refresh` 自己会等冷却。
+   */
+  const refreshModels = async (provider?: string): Promise<void> => {
+    const target = provider ?? models?.current()?.provider ?? defaultProviderId
+    if (target === undefined) {
+      listModels('还没有可刷新的连接——先接入一个供应商')
+      return
+    }
+    if (!modelInfo.canFetch(target)) {
+      listModels(`「${target}」是兼容接入——它没有模型列表接口，取不到可刷新的东西`)
+      return
+    }
+
+    listModels()
+    await modelInfo.refresh(target)
+  }
+
+  /**
+   * **设为默认**（U41）——写**配置里的默认选择**，与 `model.switch` 改当下那一件分开。
+   *
+   * 写盘成功才动内存真源（失败保留原样，缘由交回答复）；重建注册表让新默认立刻生效。
+   */
+  const setDefaultModel = (request: ModelDefaultRequest): void => {
+    const outcome = setModelDefault({
+      path: loaded.path,
+      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      request,
+    })
+    if (!outcome.ok) {
+      listModels(outcome.reason)
+      return
+    }
+
+    configMtime = mtimeOf(loaded.path)
+    providerBook = {
+      ...providerBook,
+      [request.provider]: {
+        ...providerBook[request.provider],
+        model: request.model,
+        ...(request.reasoning === undefined ? {} : { reasoning: request.reasoning }),
+      },
+    }
+    defaultProviderId = request.provider
+
+    const rebuilt = rebuildRegistry()
+    listModels(rebuilt.ok ? undefined : rebuilt.reason)
+  }
+
+  /**
+   * **保存一条连接**（接入 / 改名 / 更新认证 / 改地址）——落盘 → 读回来 → 换内存真源。
+   *
+   * 「读回来」这一步不是多余：它用的是**加载器同一把尺子**（形制 · `~` 展开 · 必填项），
+   * 写进去的东西必须读得回来才算成了。
+   */
+  const saveProviderCommand = (request: ProviderSaveRequest): void => {
+    const before = providerBook[request.provider]
+
+    const outcome = saveProvider({
+      path: loaded.path,
+      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      request,
+    })
+    if (!outcome.ok) {
+      listProviders(outcome.reason)
+      return
+    }
+
+    configMtime = mtimeOf(loaded.path)
+
+    let reloaded: LoadedConfig
+    try {
+      reloaded = loadConfig({ path: loaded.path, home: options.home ?? homedir() })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      listProviders(`配置已写盘，但读不回来：${reason}`)
+      return
+    }
+
+    providerBook = reloaded.config.providers
+    defaultProviderId = reloaded.providerId
+
+    // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
+    if (scopeChanged(before, providerBook[request.provider])) {
+      modelInfo.drop(request.provider)
+      void modelCache.drop(request.provider)
+    }
+
+    const rebuilt = rebuildRegistry()
+    listProviders(rebuilt.ok ? undefined : rebuilt.reason)
+  }
+
+  /**
+   * **移除一条连接**（U41）——**不静默级联**（设计：「有引用先替换或取消」）。
+   *
+   * 拦在装配这一层的是「**正在用的那条**」：那是本次装配的实况（`current()`），
+   * 配置层拦的是「它是默认」（那在文件里）。两处各拦一半，合起来才是「有引用先处理」。
+   * 已发生的记录不随移除而删除（那是记录域的事，本命令碰都不碰）。
+   */
+  const removeProviderCommand = (provider: string): void => {
+    if (models?.current()?.provider === provider) {
+      listProviders(`「${provider}」正在用——先换到别的连接再移除它`)
+      return
+    }
+
+    const outcome = removeProvider({
+      path: loaded.path,
+      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      provider,
+    })
+    if (!outcome.ok) {
+      listProviders(outcome.reason)
+      return
+    }
+
+    configMtime = mtimeOf(loaded.path)
+
+    const next = { ...providerBook }
+    delete next[provider]
+    providerBook = next
+    if (defaultProviderId === provider) defaultProviderId = undefined
+
+    modelInfo.drop(provider)
+    void modelCache.drop(provider)
+
+    const rebuilt = rebuildRegistry()
+    listProviders(rebuilt.ok ? undefined : rebuilt.reason)
+  }
+
   // ── 4 命令路由 → 各域（`input.submit` / `turn.interrupt` / `session.*` → 对话域；
   //                      `decision.answer` → 权限域；`model.switch` → 装配）──
   hub.bind({
@@ -1237,17 +1484,14 @@ export function assemble(options: AssembleOptions): Assembly {
     // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
     // 答复走事件（`model.catalog`，不落库）
     onModelList: () => listModels(),
-    // U41 · 供应商与模型管理——**这一笔先交公共契约与读面**（界面线据此并行接入），
-    // 保存 / 移除 / 设为默认 / 手动刷新四条命令的实现在**随后一笔**接上。
-    //
-    // 这一笔**如实回一句**：不假装成功、也不静默丢弃——用户按了就该有回声，
-    // 而回声说的是真话（这个版本还没有那项能力）。⚠️ 下一笔替换这四条时，
-    // 别把回话一并删成静默。
-    onModelRefresh: () => listModels('刷新模型列表还没做——这个版本还不能自动获取'),
-    onModelDefaultSet: () => listModels('保存默认还没做——这个版本换模型不会写进配置'),
+    // 供应商与模型管理（U41）——**归装配**（配置的读写 · 缓存的落点都在它这一层，
+    // 域不碰文件系统；同 `grants.list` 之于授权文件）。前三条答复走 `provider.catalog`、
+    // 后两条走 `model.catalog`（用户按一下就该看到那一屏的新样子）。
+    onModelRefresh: (provider) => void refreshModels(provider),
+    onModelDefaultSet: (request) => setDefaultModel(request),
     onProviderList: () => listProviders(),
-    onProviderSave: () => listProviders('接入与修改连接还没做——这个版本只能查看已配置的连接'),
-    onProviderRemove: () => listProviders('移除连接还没做——这个版本只能查看已配置的连接'),
+    onProviderSave: (request) => saveProviderCommand(request),
+    onProviderRemove: (provider) => removeProviderCommand(provider),
     // 授权名录 ＋ 撤销（U22）——**归装配**（`grants.json` 的读写都在它这一层，域不碰文件系统）
     onGrantsList: () => listGrants(),
     onGrantsRevoke: (workspace, index) => revokeGrants(workspace, index),
@@ -1276,6 +1520,7 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     config: loaded,
     models,
+    modelInfo,
     switchModel,
     records: recordsStore,
     paths: recordsStore.paths,
@@ -1298,7 +1543,13 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     mcpServers,
     // 发现那一跳（见 `Assembly.ready`）：空转（没配服务器）时一步就完
-    ready: () => mcp.ready(),
+    //
+    // 顺带**预热模型信息缓存**（U41）：启动时把盘上那份读回内存——读面（同步）才有东西可给。
+    // 缺文件 / 损坏都只是「还没有」，不是错。
+    ready: async () => {
+      await modelInfo.warmup()
+      await mcp.ready()
+    },
     // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍
     shutdown: () => mcp.shutdown(),
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
