@@ -470,6 +470,48 @@ describe('U34 · 反例：那条节选上限只管 blob，不碰内联正文', (
     }
   })
 
+  /**
+   * **长历史页**：一页装不下的那一头要给出**往前翻的位置**（`before=`），且同样落在
+   * 真实发出的那一条工具消息里——与单条续读的 `entry=/offset=` **分工不混**。
+   */
+  test('长历史页给出「往前翻」的位置——下趟请求里看得到 `before=`', async () => {
+    const stage = makeStage()
+
+    try {
+      // 七次提交攒出十三四条记录（每页至多十条）：前六次各一趟，最后一次先压再回查
+      const turns = [
+        { text: '答复一' },
+        { text: '答复二' },
+        { text: '答复三' },
+        { text: '答复四' },
+        { text: '答复五' },
+        { text: '答复六', usage: { inputTokens: 500, outputTokens: 5 } },
+        { text: '摘要：前面那几件事' },
+        { toolCalls: [{ name: 'history_read', args: {} }], usage: { inputTokens: 1, outputTokens: 1 } },
+        { text: '看到了', usage: { inputTokens: 1, outputTokens: 1 } },
+      ]
+      const assembly = stage.assemble({ turns, context: { compactAtTokens: 100, nearEntries: 0 } })
+      const shell = attachShell(assembly.shell)
+
+      for (const text of ['一', '二', '三', '四', '五', '六']) await shell.submit(text)
+      await shell.submit('第七件事')
+      shell.dispose()
+
+      const toolOutput = lastModel(stage)
+        .requests.flatMap((request) => request.messages)
+        .filter((message): message is Extract<ModelMessage, { role: 'tool' }> => message.role === 'tool')
+        .map((message) => message.output)
+        .join('\n')
+
+      expect(toolOutput).toMatch(/#\d+/)
+      expect(toolOutput).toMatch(/before=\d+/)
+
+      assembly.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
   /** **长计划完整送达**：回执是内联文本，再长也整份走（不截断、也不重复两份）。 */
   test('长计划（内联回执远超 2000 字符）整份送达；压缩后重送的那份也是全的、只有一份', async () => {
     const plan: PlanNote = {
