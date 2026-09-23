@@ -38,7 +38,13 @@ function skillText(name: string, description = `关于 ${name} 的专项做法`,
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
 }
 
-/** 造技能面——`roots` 是工作区根，`home` 是用户目录，`sources` 是点名的补充目录。 */
+/**
+ * 造技能面——`roots` 是工作区根，`home` 是用户目录，`sources` 是点名的补充目录。
+ *
+ * **Magic 基础目录取 `<home>/.magic`**（U42 起它与 `home` 是两个入参）：不设 `MAGIC_HOME`
+ * 时两者本就同源，本文件那些「用户技能写在 `<home>/.magic/skills` 里」的用例因此一字不动。
+ * 两处**不共源**的那种情形由「用户那两处不同源」那条用例单独钉。
+ */
 function skillsOf(
   roots: readonly string[],
   home: string,
@@ -46,6 +52,7 @@ function skillsOf(
 ): Skills {
   return createSkills({
     workspace: createWorkspaceService({ roots }),
+    magicBase: join(home, '.magic'),
     home,
     ...(sources === undefined ? {} : { sources }),
   })
@@ -82,6 +89,38 @@ describe('U33 · 发现', () => {
         'user-agents@user/agents',
       ])
       expect(catalog.problems).toEqual([])
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /**
+   * U42 · **用户那两处不共源**——原生那处从 **Magic 基础目录**派生（`MAGIC_HOME` 一改
+   * 它就跟），兼容入口（`.agents`）仍在**家目录**下。
+   *
+   * 由头：`MAGIC_HOME` 换的是 Magic 自己的落点，不是家目录；而 `.agents` 是 Agent Skills
+   * 的**外部约定**（别家工具也往那儿放），不属于本次重定位。两处若还共用 `home` 一个入参，
+   * `MAGIC_HOME` 一设，用户自己的 `.agents` 技能就会**悄悄从发现面消失**。
+   */
+  test('用户那两处**不同源**——原生随基础目录走，兼容入口仍在家目录下', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'user-home')
+      const base = join(land.at, 'elsewhere', '.magic')
+      put(base, 'skills/mine/SKILL.md', skillText('mine'))
+      put(home, '.agents/skills/compat/SKILL.md', skillText('compat'))
+
+      const catalog = createSkills({
+        workspace: createWorkspaceService({ roots: [land.at] }),
+        magicBase: base,
+        home,
+      }).discover()
+
+      expect(namesOf(catalog)).toEqual(['mine@user/magic', 'compat@user/agents'])
+      expect(catalog.skills.map((skill) => skill.label)).toEqual([
+        '用户 .magic/skills',
+        '用户 .agents/skills',
+      ])
     } finally {
       land.dispose()
     }
@@ -483,6 +522,7 @@ describe('U33 · 按需读取', () => {
       put(land.at, '.magic/skills/big/SKILL.md', skillText('big', '说明', 'x'.repeat(200)))
       const skills = createSkills({
         workspace: createWorkspaceService({ roots: [land.at] }),
+        magicBase: join(land.at, 'home', '.magic'),
         home: join(land.at, 'home'),
         limits: { maxMaterialChars: 50 },
       })
@@ -504,6 +544,7 @@ describe('U33 · 按需读取', () => {
       put(land.at, '.magic/skills/two/SKILL.md', skillText('two'))
       const skills = createSkills({
         workspace: createWorkspaceService({ roots: [land.at] }),
+        magicBase: join(land.at, 'home', '.magic'),
         home: join(land.at, 'home'),
         limits: { maxSkills: 1 },
       })

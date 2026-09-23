@@ -7,6 +7,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { MagicHome } from '@magic/contracts'
+import { resolveMagicHome } from '@magic/contracts'
 
 /** 造一个空目录（`mkdtemp`——名字不撞车）。 */
 export function tempDir(prefix = 'magic-app-'): string {
@@ -23,6 +25,17 @@ export function writeConfig(dir: string, body: unknown): string {
   const path = join(dir, 'config.json')
   writeFileSync(path, typeof body === 'string' ? body : JSON.stringify(body, null, 2), 'utf8')
   return path
+}
+
+/**
+ * **统一基础路径**（U42）——用例一律**显式**给基址，不读进程环境。
+ *
+ * 给的是空环境：家目录＝传入的那一处，Magic 的东西落在它下面的 `.magic` 里
+ * （`resolveMagicHome({}, home)`）；要用 `MAGIC_HOME` 那条路，就把环境显式传进去
+ * ——别让它从跑测试的那个 shell 漏进来（那会让用例的落点随开发者的环境漂）。
+ */
+export function magicAt(home: string): MagicHome {
+  return resolveMagicHome({}, home)
 }
 
 /** 一份能用的配置（形制照冻结的字面）——各用例按需改字段。 */

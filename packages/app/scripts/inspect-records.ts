@@ -3,7 +3,9 @@
  * 验收查询脚本 —— **直读记录库**（阶段 1 的验收读法：技术方案 · 记录 · 存储）。
  *
  * 「交代一件事，它跑一条命令，记录里看得到全过程」——本脚本就是**读那个记录**的眼睛：
- * 拿裸 `bun:sqlite` 打开 `~/.magic/records.db`，把事件流与会话条目摊开给人看。
+ * 拿裸 `bun:sqlite` 打开配置里那个 `dataDir` 下的 `records.db`（默认＝**统一基础路径**
+ * 下的 `<基础目录>/records.db`，即不设 `MAGIC_HOME` 时的 `~/.magic/records.db`），
+ * 把事件流与会话条目摊开给人看。
  * **不经记录域的 API**——正是要证明「库在那儿、谁都读得动」，而不是「经我们的代码才看得见」。
  *
  * 一处别处没有的红利：**条目与事件共用同一个 id 空间**（记录域拥有 · `nextId()`），
@@ -33,13 +35,17 @@ type Args = {
   readonly help: boolean
 }
 
-const USAGE = `magic 记录库查询 —— 直读 ~/.magic/records.db
+const USAGE = `magic 记录库查询 —— 直读记录库
 
 用法：
   inspect-records.ts                 列会话 + 最近一个会话的全过程
   inspect-records.ts --sessions      只列会话
   inspect-records.ts --session <id>  指定会话
-  inspect-records.ts --db <路径>     指认库文件（默认从 ~/.magic/config.json 的 dataDir 取）
+  inspect-records.ts --db <路径>     指认库文件（默认按配置的 dataDir 找）
+
+默认那条路问的是配置：读 Magic 基础目录下的 config.json（不设 MAGIC_HOME 时就是
+~/.magic/config.json），再取它里面 dataDir 那一格——与 magic 自己用同一份配置，
+故不会看错地方。数据落在别处时用 --db 指认。
 `
 
 function parseArgs(argv: readonly string[]): Args {
@@ -73,6 +79,11 @@ function parseArgs(argv: readonly string[]): Args {
 /**
  * 库文件在哪——默认**问配置**（与运行时同一个来处，故不会看错地方）；
  * 文件名取自记录域公开的常量（`DATABASE_FILE`），不在 app 里重写一份字面量。
+ *
+ * `loadConfig()` 不带参数时走**统一基础路径**（U42：`MAGIC_HOME` 指到别处就读那一处）
+ * ——脚本因此与主程序看同一个地方，不必自己拼一遍家目录。
+ * `--db` 给的路径**照字面**（`~` 展开到真家目录）：那是「我明确要读这一个文件」，
+ * 不再替用户改道。
  */
 function resolveDatabasePath(explicit: string | undefined): string {
   if (explicit !== undefined) return expandHome(explicit, homedir())

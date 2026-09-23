@@ -26,7 +26,8 @@
  *
  * 1. **项目**——各工作区根下的 `<root>/.magic/skills`（`magic`）与 `<root>/.agents/skills`
  *    （`agents`）；
- * 2. **用户**——`<home>/.magic/skills` 与 `<home>/.agents/skills`；
+ * 2. **用户**——`<Magic 基础目录>/skills`（原 `~/.magic/skills`，U42 起随 `MAGIC_HOME` 走）
+ *    与 `<home>/.agents/skills`；
  * 3. **补充**——用户显式配置的 `skills.sources` 点名的目录（`configured`）。
  *
  * **次序即优先级**：项目 → 用户 → 配置；同作用域内 `magic` → `agents`。它不是排序偏好，
@@ -107,13 +108,21 @@ export const DEFAULT_SKILL_LIMITS: SkillLimits = {
   maxMaterialChars: 20_000,
 }
 
-/** 装配期构造入参——根视图 ＋ 用户目录 ＋ 用户点名的补充目录 ＋ 上限覆盖位（测试用）。 */
+/** 装配期构造入参——根视图 ＋ 用户那两处 ＋ 用户点名的补充目录 ＋ 上限覆盖位（测试用）。 */
 export type SkillsOptions = {
   /** 工作区（项目那一类来源的来处）。 */
   readonly workspace: WorkspaceService
   /**
-   * **用户目录**（`~`）——用户那一类来源的来处（`<home>/.magic/skills` 等）。
+   * **Magic 基础目录**（U42）——用户那一类里**原生那处**的来处（`<基础目录>/skills`）。
    * 由装配给（本文件不读环境变量，同 `createProjectRules` 不读 `rules.sources` 之外的配置）。
+   */
+  readonly magicBase: string
+  /**
+   * **家目录**（`~`）——用户那一类里**兼容那处**的来处（`<home>/.agents/skills`）。
+   *
+   * 与 `magicBase` 分开两个入参，是因为它们**不再是同一个目录**（U42）：Magic 自己的东西
+   * 从基础目录派生（`MAGIC_HOME` 一旦指了别处，它就跟着走），而 `.agents` 是 Agent Skills
+   * 的外部约定、不是 Magic 的目录——设计里「外部兼容材料不属于此次重定位」。
    */
   readonly home: string
   /**
@@ -241,14 +250,14 @@ function sourceDirs(options: SkillsOptions): readonly SourceDir[] {
     }
   }
 
-  for (const entry of SKILL_DIRS) {
-    dirs.push({
-      dir: join(options.home, entry.segment, 'skills'),
-      source: 'user',
-      origin: entry.origin,
-      named: false,
-    })
-  }
+  // **用户那一类的两处不同源**（U42）：项目那两处是**同一个目录名**的两种入口，用户这
+  // 两处不是——原生那处在 **Magic 基础目录**下（`MAGIC_HOME` 一改它就跟着走），兼容那处
+  // （`.agents`）仍在**家目录**下。次序即优先级没变（原生在前）。
+  //
+  // 标签照旧报 `用户 .magic/skills`：基础目录**就是**那个 `.magic` 目录（`<MAGIC_HOME>/.magic`），
+  // 名字说的是「它在 Magic 自己的那棵树里」，与它被挪到哪儿无关。
+  dirs.push({ dir: join(options.magicBase, 'skills'), source: 'user', origin: 'magic', named: false })
+  dirs.push({ dir: join(options.home, '.agents', 'skills'), source: 'user', origin: 'agents', named: false })
 
   // 用户点名的那些：**不在这里判绝对 / 相对**——判据在 `childrenOf` 那一趟（读不动就是读不动，
   // 而相对串指哪儿取决于进程在哪儿启动，`childrenOf` 报的是那一处的原文）。

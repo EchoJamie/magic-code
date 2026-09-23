@@ -47,6 +47,7 @@ import type {
   EventStamper,
   GrantRow,
   KernelEvent,
+  MagicHome,
   McpConnection,
   McpConnectionState,
   McpToolRejection,
@@ -61,7 +62,7 @@ import type {
   TurnId,
   WorkspaceService,
 } from '@magic/contracts'
-import { GRANTS_FILE, TRANSIENT_EVENT_KINDS, expandHome } from '@magic/contracts'
+import { GRANTS_FILE_NAME, TRANSIENT_EVENT_KINDS, expandHome, resolveMagicHome } from '@magic/contracts'
 import { createActions } from '@magic/actions'
 import type { SessionPorts } from '@magic/actions'
 import {
@@ -113,7 +114,7 @@ export type EnvironmentVars = {
 export type AssembleOptions = {
   /** **启动目录**——首站单根＝默认根（技术方案 · 执行 · 工作区）。须是**已存在**的路径。 */
   readonly cwd: string
-  /** 已加载的配置——缺省 `loadConfig()`（读 `~/.magic/config.json`）。 */
+  /** 已加载的配置——缺省 `loadConfig({ magic })`（读 `<基础目录>/config.json`）。 */
   readonly config?: LoadedConfig | undefined
   /**
    * 模型实现——**工厂**（入参＝装配刚造好的那个铸造器）；缺省＝按配置造真端点网关
@@ -155,14 +156,20 @@ export type AssembleOptions = {
   /** 提示词的环境注入项（见 `EnvironmentVars`）。 */
   readonly prompt?: EnvironmentVars | undefined
   /**
-   * **授权文件的落点**——缺省 `GRANTS_FILE`（`~/.magic/grants.json`，`~` 在此展开）。
+   * **授权文件的落点**——缺省 `<基础目录>/grants.json`（`~` 在此展开）。
    *
-   * ⚠️ **不跟 `dataDir` 走**：它是**授权**的落点，与 `config.json` 一样住 `~/.magic`
+   * ⚠️ **不跟 `dataDir` 走**：它是**授权**的落点，与 `config.json` 一样住基础目录
    * （`dataDir` 是**记录**的落点，可被用户指到别处）。给这个覆盖位是为了测试能指到临时目录。
    */
   readonly grantsFile?: string | undefined
-  /** 家目录（展开 `GRANTS_FILE` 的 `~`；缺省 `os.homedir()`）——与配置加载器同一个来处。 */
-  readonly home?: string | undefined
+  /**
+   * **统一基础路径**（契约 `MagicHome`：家目录 ＋ Magic 基础目录）——**装配只解析这一处**，
+   * 配置加载 / 授权落点 / 用户技能三件共用同一个结果（U42）。
+   *
+   * 缺省按启动环境现解析（`MAGIC_HOME` → 家目录，其下追加 `.magic`）。给这个口的有两处：
+   * **测试沙地**（指一块自己的基址，免得去摸开发者真那份）与**入口**（可显式定死一份）。
+   */
+  readonly magic?: MagicHome | undefined
   /**
    * **外部工具（MCP）两条上限的覆盖位**（U38）——连接 / 发现与一次调用各一道（毫秒）。
    *
@@ -229,6 +236,14 @@ export type Assembly = {
   readonly session: SessionId | undefined
   /** 本次装配用的配置（自检报告用；**不含 key**）。 */
   readonly config: LoadedConfig
+  /**
+   * **本次装配的统一基础路径**（U42）——配置 / 数据 / 授权 / 用户技能都从它派生，
+   * 后续新增在它下面的东西（如模型缓存）也接**这一个**已解析的结果，不另拼一份家目录。
+   *
+   * 报出来（而不是留在装配内部）的由头：`MAGIC_HOME` 的效果要让**看得见**——自检的
+   * 各条路径都由它推出来，本项是那几条共同的基址。
+   */
+  readonly magic: MagicHome
   /**
    * **供应商注册表**（多条目的真路径）——`providers` 里有多少条就注册多少条；
    * 会话中途换模型＝调它的 `use()`（技术方案 · 模型策略 · 切换）。
@@ -454,7 +469,10 @@ function localDate(at: Timestamp): string {
  * 不判断（那是各域）。反过来说，凡在此处出现的 `if`，都该先问一句「这判断归谁」。
  */
 export function assemble(options: AssembleOptions): Assembly {
-  const loaded = options.config ?? loadConfig()
+  // **统一基础路径在装配根解析一次**（U42）——配置、授权、用户技能三件都从这里取，
+  // 不在各域各拼一遍「家目录 ＋ `.magic`」（设计明文：各域只接收已解析路径）。
+  const magic = options.magic ?? resolveMagicHome(process.env, homedir())
+  const loaded = options.config ?? loadConfig({ magic })
   const now = options.now ?? Date.now
 
   // ── 2 构造各域实现 ────────────────────────────────────────────────
@@ -522,12 +540,15 @@ export function assemble(options: AssembleOptions): Assembly {
    * （模型自主选用走 `skill` 工具）——工单明写「同一个来源口」，故**同一个实例**递两处。
    * 各造一份的话，两条路对「有什么、在哪儿」会各说一套。
    *
-   * `home` 从与配置、授权文件**同一个**来处取（`options.home ?? homedir()`）——
-   * 三处指同一个家目录，测试沙箱化时才不会漏掉一处（真家目录被写脏是本项目栽过的坑）。
+   * 两处来源从与配置、授权文件**同一个**解析结果取（`magic` 那两份，U42）——四处指同一块
+   * 基址，测试沙箱化时才不会漏掉一处（真家目录被写脏是本项目栽过的坑）。
+   * ⚠️ 用户技能那两处**不是同一个目录**：原生从 `magic.base` 派生，兼容入口仍在家目录下
+   * （见 `SkillsOptions` 的注）。
    */
   const skills = createSkills({
     workspace,
-    home: options.home ?? homedir(),
+    magicBase: magic.base,
+    home: magic.home,
     sources: loaded.config.skills?.sources ?? [],
   })
 
@@ -571,7 +592,10 @@ export function assemble(options: AssembleOptions): Assembly {
   //
   // 三件都在这一步：**读文件**（启动期一次，同配置）→ **造账本**（纯内存，跨会话共用）
   // → **接落盘**（账本变了就写回）。权限域自己不碰文件系统，读写都在这一层。
-  const grantsPath = expandHome(options.grantsFile ?? GRANTS_FILE, options.home ?? homedir())
+  const grantsPath =
+    options.grantsFile === undefined
+      ? `${magic.base}/${GRANTS_FILE_NAME}`
+      : expandHome(options.grantsFile, magic.home)
   const loadedGrants = loadGrants(grantsPath)
   /** 有攒着没落的记账（命中统计）——收尾时补一次（见 `close`）。 */
   let grantsDirty = false
@@ -707,6 +731,9 @@ export function assemble(options: AssembleOptions): Assembly {
       defaultProvider: loaded.providerId,
       stamper: forwardStamper,
       fetch: options.modelFetch,
+      // 缺 key 那句提示要**指对地方**（U42）：配置文件的落点随 `MAGIC_HOME` 走，
+      // 模型域自己拼不出来——实际读的那一份只有这里知道（`loaded.path`）。
+      configPath: loaded.path,
     })
   }
 
@@ -1255,6 +1282,7 @@ export function assemble(options: AssembleOptions): Assembly {
       return conversation.active()
     },
     config: loaded,
+    magic,
     models,
     switchModel,
     records: recordsStore,
