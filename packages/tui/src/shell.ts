@@ -1026,10 +1026,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     })
   }
 
-  /**
-   * `/model`——**条目表不在事件里**（契约没有读侧），故列表只有「见过的 ＋ 当前那条」，
-   * 而内核回话里的缘由（它本就列出已注册的名字）作列表下方的说明 ✓ 不解析、只照贴。
-   */
   // —— 模型详情 / 思考设置（U41）——
 
   /** 这一条模型在手上的资料（缓存里那一条；`undefined` ＝ 缓存里没有它）。 */
