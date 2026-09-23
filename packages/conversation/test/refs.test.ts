@@ -26,6 +26,7 @@ import type {
 } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
 import { assembleContext, inlineOf, refsPayloadOf } from '../src/context.ts'
+import type { TextRefEntry } from '../src/context.ts'
 import { createRefDelivery } from '../src/refs.ts'
 
 const AT = 1_700_000_000_000
@@ -80,6 +81,24 @@ function fileRef(at: number, marker: string, source = '/ws/src/login.ts'): Input
   return { kind: 'file', at, marker, source }
 }
 
+/**
+ * 一处引用（记录侧形态）的**文本**——U37 起 `InputRefEntry` 多了图片支（它没有 `text`，
+ * 内容是字节），故取正文前先收窄（不 `as`）。
+ */
+function textOfRef(ref: InputRefEntry | undefined): string | undefined {
+  return ref === undefined || ref.kind === 'image' ? undefined : ref.text
+}
+
+/** 一条用户消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。 */
+function textOfUser(message: ModelMessage | undefined): string {
+  if (message === undefined || message.role !== 'user') return ''
+  const content = message.content
+
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
+}
+
 // ══ 送达 ══════════════════════════════════════════════════════════════
 
 describe('U36 · 送达：按位置取齐', () => {
@@ -107,9 +126,9 @@ describe('U36 · 送达：按位置取齐', () => {
       ['file', 21, '@src/login.ts'],
     ])
     // 内容随引用一起落定（技能名与来源**取读回来的那一份**）
-    expect(loaded.refs[0]?.text).toBe('要求：先看登录')
+    expect(textOfRef(loaded.refs[0])).toBe('要求：先看登录')
     expect(loaded.refs[1]?.source).toBe(REVIEW.path)
-    expect(loaded.refs[1]?.text).toBe('逐条核对清单。')
+    expect(textOfRef(loaded.refs[1])).toBe('逐条核对清单。')
   })
 
   test('乱序给进来也按位置排（位置是那一处引用自己的，不靠数组顺序）', async () => {
@@ -158,7 +177,7 @@ describe('U36 · 送达：按位置取齐', () => {
 // ══ 展开 ══════════════════════════════════════════════════════════════
 
 describe('U36 · 展开：材料摆在它被说出来的那个位置', () => {
-  const refs: readonly InputRefEntry[] = [
+  const refs: readonly TextRefEntry[] = [
     {
       kind: 'file',
       at: 4,
@@ -304,12 +323,11 @@ describe('U36 · 装配：走记录里那一份，不重读文件', () => {
     const messages = await assembleContext({ records, session: 's1', systemPrompt: SYSTEM })
     const user = messages.find((one): one is Extract<ModelMessage, { role: 'user' }> => one.role === 'user')
 
-    expect(user?.content).toContain('要求：先看登录')
-    expect(user?.content).toContain('逐条核对清单。')
+    const said = textOfUser(user)
+    expect(said).toContain('要求：先看登录')
+    expect(said).toContain('逐条核对清单。')
     // 位置：需求在 `/review` **之前**（它是句首那一处引用的材料）
-    expect(user?.content.indexOf('要求：先看登录')).toBeLessThan(
-      user?.content.indexOf('/review') ?? Number.POSITIVE_INFINITY,
-    )
+    expect(said.indexOf('要求：先看登录')).toBeLessThan(said.indexOf('/review'))
   })
 
   test('重放不重读文件：源改了，历史那一份照旧', async () => {
@@ -326,7 +344,7 @@ describe('U36 · 装配：走记录里那一份，不重读文件', () => {
     const messages = await assembleContext({ records, session: 's1', systemPrompt: SYSTEM })
     const user = messages.find((one) => one.role === 'user')
 
-    expect(user?.content).toContain('当时那一份')
+    expect(textOfUser(user)).toContain('当时那一份')
   })
 
   test('旧记录（`skills`，无位置）照旧统一前置——不替它编插入点', async () => {
@@ -342,8 +360,9 @@ describe('U36 · 装配：走记录里那一份，不重读文件', () => {
     const user = messages.find((one) => one.role === 'user')
 
     // 旧形的抬头照旧（`本次使用技能：`）——那是它当时的样子
-    expect(user?.content).toContain('本次使用技能：review')
-    expect(user?.content.indexOf('逐条核对清单。')).toBeLessThan(user?.content.indexOf('照它做') ?? 0)
+    const said = textOfUser(user)
+    expect(said).toContain('本次使用技能：review')
+    expect(said.indexOf('逐条核对清单。')).toBeLessThan(said.indexOf('照它做'))
   })
 
   test('载荷收窄：缺件的条目**不当作材料**（当作没有）', () => {
@@ -355,5 +374,202 @@ describe('U36 · 装配：走记录里那一份，不重读文件', () => {
     expect(broken({ refs: [{ kind: 'skill', at: 0, marker: '/a', name: 'a', source: '/p' }] })).toEqual([])
     expect(broken({ skills: [] })).toEqual([])
     expect(refsPayloadOf(undefined)).toEqual([])
+  })
+})
+
+// ══ U37 · 图片：字节落 blob，进请求的是图像部件 ═════════════════════════
+
+/** 判据：**图片不走文本那几条尺子**（字节原样落库 / 原样进请求），且**一路不回头读原文件**。 */
+describe('U37 · 图片引用：字节落 blob，装配成图像部件', () => {
+  /** 1×1 真 PNG（67 字节）——这里当「用户选的那张图」。 */
+  const PNG = new Uint8Array(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  )
+
+  /** 材料面桩——只给图片那一支（文本那几支别的用例在验）。 */
+  function imageMaterials(): Materials {
+    return {
+      load: async (requests: readonly MaterialRequest[]): Promise<MaterialLoad> => ({
+        ok: true,
+        materials: requests.map((request) => ({
+          kind: 'image' as const,
+          path: request.source,
+          label: request.source,
+          name: 'shot.png',
+          mime: 'image/png',
+          bytes: PNG,
+        })),
+      }),
+      candidates: async () => ({ rows: [] }),
+    }
+  }
+
+  test('送达：材料那几格落进条目，字节**另存 blob**（条目载荷里放不下字节）', async () => {
+    const records = makeFauxRecords()
+    const delivery = createRefDelivery({
+      skills: stubSkills(),
+      materials: imageMaterials(),
+      blobs: records.blobs,
+    })
+
+    const loaded = await delivery.load([
+      { kind: 'file', at: 4, marker: '@shot.png', source: '/ws/shot.png' },
+    ])
+
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) return
+
+    const ref = loaded.refs[0]
+    expect(ref?.kind).toBe('image')
+    if (ref?.kind !== 'image') return
+
+    expect(ref.name).toBe('shot.png')
+    expect(ref.mime).toBe('image/png')
+    expect(ref.marker).toBe('@shot.png')
+    expect(ref.source).toBe('/ws/shot.png')
+    // 逐字节存进去了（引用不透明，按契约取回来验）
+    expect([...(await records.blobs.get(ref.blob))]).toEqual([...PNG])
+  })
+
+  test('没接 blob 落点 ⇒ **这一条不跑**（不静默丢图发文字）', async () => {
+    const delivery = createRefDelivery({ materials: imageMaterials() })
+
+    const loaded = await delivery.load([
+      { kind: 'file', at: 0, marker: '@shot.png', source: '/ws/shot.png' },
+    ])
+
+    expect(loaded.ok).toBe(false)
+    if (!loaded.ok) expect(loaded.reason).toContain('blob')
+  })
+
+  test('从历史取回的那一张：**不碰材料面**（源文件删了也取回得来）', async () => {
+    let asked = 0
+    const delivery = createRefDelivery({
+      materials: {
+        load: async (): Promise<MaterialLoad> => {
+          asked += 1
+          return { ok: false, reason: '不该走到这儿——历史那一张不按路径读' }
+        },
+        candidates: async () => ({ rows: [] }),
+      },
+    })
+
+    const loaded = await delivery.load([
+      {
+        kind: 'image',
+        at: 0,
+        marker: '@shot.png',
+        source: '/ws/shot.png',
+        label: 'shot.png',
+        name: 'shot.png',
+        mime: 'image/png',
+        blob: 'blob_7',
+      },
+    ])
+
+    expect(asked).toBe(0) // **一次都没问材料面**（这正是「不依赖原路径」）
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) return
+
+    const ref = loaded.refs[0]
+    expect(ref?.kind === 'image' && ref.blob).toBe('blob_7')
+  })
+
+  test('图文混排：位置照旧按 `at` 排（图片那一处不挤掉别处）', async () => {
+    const records = makeFauxRecords()
+    const delivery = createRefDelivery({
+      skills: stubSkills(),
+      materials: imageMaterials(),
+      blobs: records.blobs,
+    })
+
+    const loaded = await delivery.load([
+      { kind: 'file', at: 20, marker: '@shot.png', source: '/ws/shot.png' },
+      skillRef(2, '/review'),
+    ])
+
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) return
+    expect(loaded.refs.map((ref) => [ref.kind, ref.at])).toEqual([
+      ['skill', 2],
+      ['image', 20],
+    ])
+  })
+
+  test('装配：用户消息成了**部件串**——图在它被说出来的那个位置，字节是它本体', async () => {
+    const records = makeFauxRecords({ blobs: { blob_1: PNG } })
+    records.appendEntry({
+      kind: 'user',
+      content: { text: '看 @shot.png 是什么问题' },
+      payload: {
+        refs: [
+          {
+            kind: 'image',
+            at: 2,
+            marker: '@shot.png',
+            source: '/ws/shot.png',
+            label: 'shot.png',
+            name: 'shot.png',
+            mime: 'image/png',
+            blob: 'blob_1',
+          },
+        ],
+      },
+      at: AT,
+    })
+
+    const messages = await assembleContext({ records, session: 's1', systemPrompt: SYSTEM })
+    const user = messages.find((one) => one.role === 'user')
+    const content = user?.content
+
+    expect(Array.isArray(content)).toBe(true)
+    if (!Array.isArray(content)) return
+
+    // 图挂在「`@shot.png` 之后」那一格：前面是正文，然后是图，后面接着剩下的话
+    const parts = content as readonly { type: string }[]
+    expect(parts.filter((part) => part.type === 'image')).toHaveLength(1)
+
+    const image = content.find((part) => part.type === 'image')
+    if (image?.type !== 'image') return
+    expect(image.mime).toBe('image/png')
+    expect([...image.data]).toEqual([...PNG])
+
+    // 正文一个字不剥（引用那一段还在句子里）
+    const text = content
+      .map((part) => (part.type === 'text' ? part.text : '〔图〕'))
+      .join('')
+    expect(text).toContain('看 @shot.png')
+    expect(text).toContain('是什么问题')
+    expect(text.indexOf('@shot.png')).toBeLessThan(text.indexOf('〔图〕'))
+    expect(text.indexOf('〔图〕')).toBeLessThan(text.indexOf('是什么问题'))
+  })
+
+  test('字节取不回来 ⇒ **抛**（不悄悄跳过那张图）', async () => {
+    const records = makeFauxRecords() // 没有 blob_9 这一份
+    records.appendEntry({
+      kind: 'user',
+      content: { text: '看 @shot.png' },
+      payload: {
+        refs: [
+          {
+            kind: 'image',
+            at: 2,
+            marker: '@shot.png',
+            source: '/ws/shot.png',
+            label: 'shot.png',
+            name: 'shot.png',
+            mime: 'image/png',
+            blob: 'blob_9',
+          },
+        ],
+      },
+      at: AT,
+    })
+
+    // 抛（不是「少一张图照跑」）——调用方按「这一轮出错」处置
+    await expect(assembleContext({ records, session: 's1', systemPrompt: SYSTEM })).rejects.toThrow()
   })
 })

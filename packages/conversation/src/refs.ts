@@ -26,6 +26,7 @@
  */
 
 import type {
+  BlobStore,
   InputRef,
   InputRefEntry,
   Material,
@@ -50,6 +51,13 @@ export type RefLoad =
 export function createRefDelivery(sources: {
   readonly skills?: Skills | undefined
   readonly materials?: Materials | undefined
+  /**
+   * **blob 落点**（U37）——图片的字节要进记录（写权唯一归记录域，经它的公开面）。
+   *
+   * 不给＝这一趟带不了图：图片材料取到了也送不出去（那正是「丢掉材料继续跑」，
+   * 故与取不到同一条出口——**整条不跑**，不静默退化成纯文字）。
+   */
+  readonly blobs?: BlobStore | undefined
 }): RefDelivery {
   /**
    * 取一份技能主文——名字与来源**两件缺一不可**（只给名字的话，同名两条会静默取到
@@ -81,8 +89,15 @@ export function createRefDelivery(sources: {
     }
   }
 
-  /** 文件 / 目录：位置与身份取自引用，内容取自材料（那两样在实现侧已合成一份）。 */
-  function entryOf(ref: InputRef, material: Material): InputRefEntry {
+  /**
+   * 文件 / 目录 / 图片：位置与身份取自引用，内容取自材料（那两样在实现侧已合成一份）。
+   *
+   * **图片那支要落一次库**（`blobs.put`）——它是唯一一处「内容不是文本」的材料：
+   * 条目载荷里放不下字节，放的是 blob 引用（见契约 `InputRefEntry` 的 image 支）。
+   * 落库这一步在**送达那一趟**做（材料取到了才算数）；没接 blob 落点＝这一条不跑
+   * （见 `createRefDelivery` 的入参注）。
+   */
+  async function entryOf(ref: InputRef, material: Material): Promise<InputRefEntry> {
     if (material.kind === 'dir') {
       return {
         kind: 'dir',
@@ -92,6 +107,24 @@ export function createRefDelivery(sources: {
         label: material.label,
         text: material.text,
         ...(material.omitted === undefined ? {} : { omitted: material.omitted }),
+      }
+    }
+
+    if (material.kind === 'image') {
+      if (sources.blobs === undefined) {
+        throw new Error('这次装配没有接 blob 落点——图片材料的字节没处存，所以这一条没跑')
+      }
+
+      return {
+        kind: 'image',
+        at: ref.at,
+        marker: ref.marker,
+        source: material.path,
+        label: material.label,
+        name: material.name,
+        mime: material.mime,
+        blob: await sources.blobs.put(material.bytes),
+        ...(ref.kind === 'file' && ref.external === true ? { external: true as const } : {}),
       }
     }
 
@@ -109,12 +142,34 @@ export function createRefDelivery(sources: {
     }
   }
 
+  /**
+   * **从历史取回的那一张**（U37 · `InputRef` 的 image 支）——**不读文件系统**。
+   *
+   * 字节早在当时那条交代里落库了，这一趟只是**照原样再引用一次**（同一个 blob，
+   * 同一个名字与类型）——这正是「源文件删了也取回得来」那句话的落点：
+   * 整条路上一处都没回头看那个路径。
+   */
+  function historyImageOf(ref: Extract<InputRef, { kind: 'image' }>): InputRefEntry {
+    return {
+      kind: 'image',
+      at: ref.at,
+      marker: ref.marker,
+      source: ref.source,
+      label: ref.label,
+      name: ref.name,
+      mime: ref.mime,
+      blob: ref.blob,
+      ...(ref.external === true ? { external: true as const } : {}),
+    }
+  }
+
   return {
     async load(refs: readonly InputRef[]): Promise<RefLoad> {
       // 按位置排——**只排序，不改次序**（见文件头注）
       const ordered = [...refs].sort((left, right) => left.at - right.at)
 
-      const wanted = ordered.filter((ref) => ref.kind !== 'skill')
+      // **要现取的那几支**（技能走自己的口，历史图片那一支连盘都不碰——见 `historyImageOf`）
+      const wanted = ordered.filter((ref) => ref.kind !== 'skill' && ref.kind !== 'image')
       if (wanted.length > 0 && sources.materials === undefined) {
         return { ok: false, reason: '这次装配没有接材料来源——文件 / 目录引用取不了，所以这一条没跑' }
       }
@@ -133,7 +188,7 @@ export function createRefDelivery(sources: {
         materials = loaded.materials
       }
 
-      // ② 按位置合并（技能的正文与材料的清单各归各处）
+      // ② 按位置合并（技能的正文、图片的字节、材料的清单各归各处）
       const refs2: InputRefEntry[] = []
       let at = 0
 
@@ -145,6 +200,11 @@ export function createRefDelivery(sources: {
           continue
         }
 
+        if (ref.kind === 'image') {
+          refs2.push(historyImageOf(ref))
+          continue
+        }
+
         const material = materials[at]
         at += 1
         if (material === undefined) {
@@ -152,10 +212,20 @@ export function createRefDelivery(sources: {
           return { ok: false, reason: `材料没能取齐（${ref.marker}）——请重新发送这一条` }
         }
 
-        refs2.push(entryOf(ref, material))
+        try {
+          refs2.push(await entryOf(ref, material))
+        } catch (error) {
+          // 图片那支的落库失败（没接 blob 落点 / 写不进去）——**这一条不跑**：
+          // 字节没处存就等于这份材料送不出去，而「送半份」是明令不许的
+          return { ok: false, reason: messageOf(error) }
+        }
       }
 
       return { ok: true, refs: refs2 }
     },
   }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

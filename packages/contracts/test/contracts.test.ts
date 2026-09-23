@@ -456,6 +456,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onAttachmentList: () => undefined,
+    onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   }
@@ -476,6 +478,8 @@ export function rememberTravelsThroughBothPorts(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onAttachmentList: () => undefined,
+    onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   }
@@ -552,6 +556,8 @@ export function routesCarryModelSwitch(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onAttachmentList: () => undefined,
+    onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   }
@@ -652,7 +658,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 六条读面答复（D10 · U33 · U36 · U39 · U41）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 七条读面答复（D10 · U33 · U36 · U37 · U39 · U41）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -680,6 +686,10 @@ describe('事件契约', () => {
       // 且它是**边打边问**的动作（`@` 之后每改一个字问一次），留痕只会把观测淹掉。
       // 当时带了哪份材料另有痕：`user` 条目的载荷 `refs`（位置 / 来源 / 实际交付内容）。
       'paths.catalog',
+      // U37：图片附件同列——**同一条判据的第六处**（那份字节与名字 / 类型 / 出处本来就
+      // 躺在 `user` 条目的载荷 `refs` 里，不在另一张表里），落库＝把同一件事存第二遍；
+      // 且回执那一格（导出的临时文件路径）**一次性**——重放到第二天早就没人清了。
+      'attachments.catalog',
       // U33：技能使用回执同列——**同一条判据的第三个来源**（依据在**条目载荷**里：
       // `UserPayload.refs` / 旧形的 `skills` 的名字 / 来源 / 正文），落库＝把同一件事存第二遍。
       'skill.used',

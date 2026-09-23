@@ -19,6 +19,7 @@
 
 import type {
   EventStamper,
+  ModelCapabilities,
   ModelInfo,
   ModelLimits,
   ModelRequest,
@@ -165,6 +166,28 @@ function effectiveLimits(
       : adapter.supplement(known ?? { id: model }).limits
 
   const merged: ModelLimits = { ...supplemented, ...known?.limits, ...override }
+  return Object.keys(merged).length === 0 ? undefined : merged
+}
+
+/**
+ * **生效的能力读数**（U37）——用户覆盖 → 供应商 API 当前有效信息 → **未知**（不给位）。
+ *
+ * 与 `effectiveLimits` 是同一条优先级的两处落点，只有一条差别：**本处没有「适配补项」那一档**
+ * ——今天没有任何一家适配声明过能力（列表接口只给 `id`，见 `vendors.ts` 的文件头注），
+ * 硬留一个恒空的档位只会让人以为「写了就会生效」。真有那家给得出时，加它是一行的事。
+ *
+ * 返回 `undefined` ＝**一位都没有依据**（调用方按「不知道」办，**不当作不支持**）。
+ */
+export function effectiveCapabilitiesOf(
+  model: string,
+  config: ProviderConfig,
+  known: ModelInfo | undefined,
+): ModelCapabilities | undefined {
+  const merged: ModelCapabilities = {
+    ...known?.capabilities,
+    ...overrideOf(config, model)?.capabilities,
+  }
+
   return Object.keys(merged).length === 0 ? undefined : merged
 }
 

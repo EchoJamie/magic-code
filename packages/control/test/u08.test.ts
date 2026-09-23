@@ -92,6 +92,12 @@ export function commandSubjectOf(command: Command): string {
     case 'paths.list':
       // U36 路径候选——`@` 之后打的那一段原样递过来（解析归实现那一侧）
       return `列路径候选：${command.query}`
+    case 'attachments.list':
+      // U37 图片附件读侧——无参：问的就是「这条会话送过哪些图」
+      return '列图片附件'
+    case 'attachments.export':
+      // U37 导出原图——给的是一条**记录位置**（那份字节在记录里）
+      return `导出原图：记录 ${command.entry}`
     case 'mcp.list':
       // U39 外部服务器读侧——无参：问的就是「配了哪些、各是什么状态」
       return '列外部服务器'
@@ -185,6 +191,8 @@ export function hubFaceRealizesPort(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onAttachmentList: () => undefined,
+    onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   })
@@ -221,6 +229,8 @@ export function routesAreContractShape(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onAttachmentList: () => undefined,
+    onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   }
@@ -260,6 +270,8 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onAttachmentList: () => undefined,
+    onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     ...overrides,

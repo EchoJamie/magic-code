@@ -25,6 +25,7 @@ import type {
   SessionId,
   ToolResultPayload,
   TurnId,
+  UserPayload,
 } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
 import { databasePathOf, removeDataDir, tempDataDir } from './tmp.ts'
@@ -288,6 +289,40 @@ describe('判据 1 · 落取回环', () => {
         }),
       ).toThrow(/user/)
 
+      // U37：图片那一支**收下**（它没有 `text`——内容是字节，落在 blob 里）——
+      // 落取回环对得上，且**缺件的（少 blob / 少 mime）照拒**。
+      const image: UserPayload = {
+        refs: [
+          {
+            kind: 'image',
+            at: 0,
+            marker: '@shot.png',
+            source: '/ws/shot.png',
+            label: 'shot.png',
+            name: 'shot.png',
+            mime: 'image/png',
+            blob: 'blob_1',
+          },
+        ],
+      }
+      records.appendEntry({ kind: 'user', content: { text: '看这张' }, at, payload: image })
+
+      const one = image.refs?.[0]
+      for (const broken of [
+        { ...one, blob: undefined }, // 字节的把手没了——取回不来
+        { ...one, mime: undefined }, // 类型没了——送模型时拼不出图像部件
+        { ...one, name: undefined },
+      ]) {
+        expect(() =>
+          records.appendEntry({
+            kind: 'user',
+            content: { text: '看这张' },
+            at,
+            payload: { refs: [broken] } as unknown as UserPayload,
+          }),
+        ).toThrow(/user/)
+      }
+
       // 技能材料那一份**收下**，且**落取回环**对得上（正身：名字 / 来源 / 正文三件齐全）
       const material = {
         skills: [
@@ -303,7 +338,8 @@ describe('判据 1 · 落取回环', () => {
 
       const back: Entry[] = []
       for await (const entry of records.readEntries(SESSION)) back.push(entry)
-      expect(back.map((entry) => entry.payload)).toEqual([material])
+      // **两形各归各位**：图片那一份与技能那一份都原样回来（次序即写入序）
+      expect(back.map((entry) => entry.payload)).toEqual([image, material])
       expect(() =>
         records.appendEntry({
           kind: 'tool-result',

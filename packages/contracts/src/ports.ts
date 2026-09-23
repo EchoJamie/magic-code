@@ -684,6 +684,26 @@ export type Material =
       readonly text: string
       readonly omitted?: number
     }
+  /**
+   * **一张图片**（U37）——**取的是字节，不是文本**。
+   *
+   * 二进制不当文本解码（那正是三、只收文本那一条要挡的）；图片是那条规矩的**例外出口**：
+   * 它本来就不是文本，送模型走的也是**图像部件**（`UserContentPart`）而不是字符串。
+   *
+   * - `mime` —— 按**字节**认出来的那一种（不是按扩展名猜的）：扩展名与内容不一致时
+   *   以内容为准（内容才是供应商真正要吃的东西）；
+   * - `name` —— 文件名（人读；屏上与历史行报得出的那一个）；
+   * - `bytes` —— 本体。**写进记录的那一步由对话域转 blob**（blob 写权唯一归记录域，
+   *   本端口只把字节交出去，不自己落库——同 `Sandbox.read` 的姿势）。
+   */
+  | {
+      readonly kind: 'image'
+      readonly path: string
+      readonly label: string
+      readonly name: string
+      readonly mime: string
+      readonly bytes: Uint8Array
+    }
 
 /**
  * 一次材料读取的结果——**判别式，不抛**（与 `ToolResult` / `SkillRead` 同法）。
@@ -720,6 +740,11 @@ export type MaterialLoad =
  *   `MaterialRequest.external`（用户明确选定那一个），且只收**单个文件**；
  * - **二进制不当文本**——按路径引用只收文本材料；二进制给出确定的拒绝与出口
  *   （让模型用工具去处理），不糊一串乱码进上下文。
+ *
+ * **图片是这条规矩的例外出口**（U37）：它**也不是文本**，但有一条正当的去处——
+ * 作为**图像部件**送模型（见 `Material` 的 `image` 支）。判据是**字节**（认得出来才算），
+ * 不是扩展名：扩展名说是图片而内容不是（截断 / 根本不是图）＝**确定的拒绝**，
+ * 不退回按文本读、更不假装送出去了。
  *
  * ## 路径候选是同一个面
  *
@@ -867,6 +892,38 @@ export interface ControlHub {
 // —— 模型域 ——
 
 /**
+ * **用户消息里的一件内容部件**（U37）——文字，或一张图片。
+ *
+ * 图片**不是文本的另一种写法**：它有独立的部件形态，供应商适配据 `mime` 拼成自己的
+ * 图像参数（OpenAI 兼容那一路是 `image_url` 的数据 URL）。把它编码进字符串再让下游
+ * 解出来，等于让「模型到底看没看到那张图」这件事只能靠猜。
+ *
+ * ⚠️ **字节在这里**（`data`）：装配那一刻从记录里取回。取回失败＝**这一条不跑**
+ * （不静默退化成纯文字请求——设计明写：不允许「有路径就算已经送过图」）。
+ */
+export type UserContentPart =
+  | { readonly type: 'text'; readonly text: string }
+  | {
+      readonly type: 'image'
+      /** MIME（按字节认出来的那一种）。 */
+      readonly mime: string
+      /** 图片字节本体。 */
+      readonly data: Uint8Array
+    }
+
+/**
+ * 用户消息的正文——**一个字符串，或一串部件**。
+ *
+ * 纯文字（绝大多数消息）就是那个字符串：它**等价于**「一个文字部件」，这一条是唯一的口径
+ * （两种写法不许各说一套）——故需要按部件遍历的消费者先过 `userPartsOf`（`@magic/model`
+ * 的归一入口），别在各自那一处再判一次 `typeof content === 'string'`。
+ *
+ * 带图的那一刻必须是部件：**文字与图片按用户安排的顺序**进请求（设计 · 文件与图片：
+ * 「文字与图片按用户安排的顺序进入模型请求」），而顺序只有串起来的形态载得住。
+ */
+export type UserMessageContent = string | readonly UserContentPart[]
+
+/**
  * 模型消息（内核侧形态——供应商无关）。
  *
  * **上下文由对话域装配**——系统提示词即 `role:'system'` 的首条消息；工具结果回填即
@@ -875,7 +932,7 @@ export interface ControlHub {
  */
 export type ModelMessage =
   | { readonly role: 'system'; readonly content: string }
-  | { readonly role: 'user'; readonly content: string }
+  | { readonly role: 'user'; readonly content: UserMessageContent }
   | {
       readonly role: 'assistant'
       readonly content: string
@@ -1348,6 +1405,22 @@ export type CommandRoutes = {
    * 把它组起来（工作区根 / 用户目录 / 用户点名的来源）是装配的活。
    */
   onPathList(query: string): void
+  /**
+   * **本会话已送出的图片**（`/attachments` 的读侧 · U37）→ **对话域**。
+   *
+   * 与 `onHistoryRead` 同一条分工：**会话与条目归它**（图片附件就是 `user` 条目载荷里的
+   * `refs`，那份形态只有本域认得），而装配够不着那一层。答复走事件
+   * （`attachments.catalog`，**不落库**）：命令面只发不收。
+   */
+  onAttachmentList(): void
+  /**
+   * **导出原图**（`/attachments` 的「查看原图」 · U37）→ **对话域**（记录里那份字节归它读）。
+   *
+   * 字节的读在对话域（它握着 `BlobStore`），**落到盘上那一步**由它经装配注入的写口完成
+   * （域不碰文件系统——见 `ConversationDeps.saveAttachment`）。答复走 `attachments.catalog`
+   * （`note` 给出落点或没成的缘由）。
+   */
+  onAttachmentExport(entry: RecordId): void
   /**
    * **外部服务器的一屏**（`/mcp` 的读侧 · U39）→ **装配**（它编排着那一束连接的生命周期）。
    *

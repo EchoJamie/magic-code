@@ -15,11 +15,20 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Materials } from '@magic/contracts'
+import type { Material, Materials } from '@magic/contracts'
 import { createMaterials } from '../src/materials.ts'
 import { createWorkspaceService } from '../src/workspace.ts'
 
 // —— 夹具 ——
+
+/**
+ * 材料 → 文本。**只有文本那两支有正文**（U37 起 `Material` 多了图片支，它的内容是字节）——
+ * 用例关心的是「按路径读到了什么字」，故这一处把图片那支收成 `undefined`，
+ * 图片自己的判据在下面那一节单写。
+ */
+function textOf(material: Material | undefined): string | undefined {
+  return material === undefined || material.kind === 'image' ? undefined : material.text
+}
 
 function sandbox(): { readonly at: string; dispose: () => void } {
   const at = mkdtempSync(join(tmpdir(), 'magic-materials-'))
@@ -47,12 +56,12 @@ describe('U36 · 文件：按身份取，到上限为止，只收文本', () => 
       const materials = materialsAt(sand.at)
 
       const first = await materials.load([{ kind: 'file', source: join(sand.at, 'src/需求.md') }])
-      expect(first.ok && first.materials[0]?.text).toBe('第一版')
+      expect(first.ok && textOf(first.materials[0])).toBe('第一版')
 
       // 用之前改了文件——下一趟读到的是新的（设计：材料动态读取，不做版本）
       put(sand.at, 'src/需求.md', '第二版')
       const second = await materials.load([{ kind: 'file', source: join(sand.at, 'src/需求.md') }])
-      expect(second.ok && second.materials[0]?.text).toBe('第二版')
+      expect(second.ok && textOf(second.materials[0])).toBe('第二版')
     } finally {
       sand.dispose()
     }
@@ -70,7 +79,7 @@ describe('U36 · 文件：按身份取，到上限为止，只收文本', () => 
 
       const material = read.materials[0]
       expect(material?.kind === 'file' && material.truncated).toBe(true)
-      expect(material?.text.length).toBe(64 * 1024)
+      expect(textOf(material)?.length).toBe(64 * 1024)
     } finally {
       sand.dispose()
     }
@@ -180,7 +189,7 @@ describe('U36 · 目录：有界清单，明确未展开的部分', () => {
       const material = read.materials[0]
       expect(material?.kind).toBe('dir')
       // 一层：`sub/` 在里面，`sub/b.ts` 不在（不递归塞进整个项目）
-      expect(material?.text).toBe('a.ts\nsub/')
+      expect(textOf(material)).toBe('a.ts\nsub/')
       expect(material?.kind === 'dir' && material.omitted).toBeUndefined()
     } finally {
       sand.dispose()
@@ -198,7 +207,7 @@ describe('U36 · 目录：有界清单，明确未展开的部分', () => {
       if (!read.ok) return
 
       const material = read.materials[0]
-      expect(material?.text.split('\n')).toHaveLength(200)
+      expect(textOf(material)?.split('\n')).toHaveLength(200)
       expect(material?.kind === 'dir' ? material.omitted : undefined).toBe(5)
     } finally {
       sand.dispose()
@@ -250,7 +259,7 @@ describe('U36 · 工作区外：不因输入获准，只收用户明确选定的
       const file = await materials.load([
         { kind: 'file', source: join(outside.at, 'notes.md'), external: true },
       ])
-      expect(file.ok && file.materials[0]?.text).toBe('外面的笔记')
+      expect(file.ok && textOf(file.materials[0])).toBe('外面的笔记')
       // 身份是**真路径**（`realpath` 之后）——`/var` 在 macOS 上实为 `/private/var`
       expect(file.ok && file.materials[0]?.label).toBe(realpathSync(join(outside.at, 'notes.md')))
 
@@ -346,7 +355,7 @@ describe('U36 · 链接绕出去：候选不列、load 不给当「里头的」�
       expect(candidates.rows[0]?.display).toBe(realpathSync(join(sand.outside, 'secret.txt')))
 
       const read = await materials.load([{ kind: 'file', source: path, external: true }])
-      expect(read.ok && read.materials[0]?.text).toBe('外面的东西')
+      expect(read.ok && textOf(read.materials[0])).toBe('外面的东西')
     } finally {
       sand.dispose()
     }
@@ -360,7 +369,7 @@ describe('U36 · 链接绕出去：候选不列、load 不给当「里头的」�
       symlinkSync(join(sand.inside, 'real.txt'), join(sand.inside, 'alias.txt'))
 
       const read = await materials.load([{ kind: 'file', source: join(sand.inside, 'alias.txt') }])
-      expect(read.ok && read.materials[0]?.text).toBe('里头的')
+      expect(read.ok && textOf(read.materials[0])).toBe('里头的')
 
       const rows = await materials.candidates('alias', 30)
       expect(rows.rows.map((row) => row.external)).toEqual([false])
@@ -434,7 +443,7 @@ describe('U36 · 声明原形：文件不在了按「不在了」说，不误报
       const materials = materialsAt(sand.at)
 
       const found = await materials.load([{ kind: 'file', source: join(sand.at, 'a.txt') }])
-      expect(found.ok && found.materials[0]?.text).toBe('甲')
+      expect(found.ok && textOf(found.materials[0])).toBe('甲')
 
       const missing = await materials.load([{ kind: 'file', source: join(sand.at, 'gone.txt') }])
       expect(missing.ok).toBe(false)
@@ -503,6 +512,155 @@ describe('U36 · 路径候选：只列一层，工作区外不做目录浏览', 
       const dir = await materials.candidates(`${outside.at}/`, 30)
       expect(dir.rows).toEqual([])
       expect(dir.note).toContain('只收单个文件')
+    } finally {
+      sand.dispose()
+      outside.dispose()
+    }
+  })
+})
+
+// ══ U37 · 图片：按字节认，走另一条出口 ═══════════════════════════════════
+
+/**
+ * 判据三件（对应工单的验收）：**真图取得到字节** · **坏文件与半张图当场拒绝** ·
+ * **上限如实说**。图片这一支与文本那三把尺子（2000 字符截断 / NUL / UTF-8）**不相干**——
+ * 它取的是字节、给的是字节。
+ */
+describe('U37 · 图片：按字节认，走另一条出口', () => {
+  /** 1×1 真 PNG（67 字节）。 */
+  const PNG = new Uint8Array(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  )
+
+  function putBytes(root: string, relative: string, bytes: Uint8Array): string {
+    const path = join(root, relative)
+    mkdirSync(join(path, '..'), { recursive: true })
+    writeFileSync(path, bytes)
+    return path
+  }
+
+  test('一张真图：取回来的是**字节 ＋ 认出来的类型**（不按扩展名猜）', async () => {
+    const sand = sandbox()
+    try {
+      // 名字故意骗人：内容是 PNG，名字说 .jpg
+      putBytes(sand.at, 'shot.jpg', PNG)
+      const materials = materialsAt(sand.at)
+
+      const read = await materials.load([{ kind: 'file', source: join(sand.at, 'shot.jpg') }])
+      expect(read.ok).toBe(true)
+      if (!read.ok) return
+
+      const material = read.materials[0]
+      expect(material?.kind).toBe('image')
+      if (material?.kind !== 'image') return
+      expect(material.mime).toBe('image/png') // **内容说了算**
+      expect(material.name).toBe('shot.jpg') // 名字照旧（那是用户的叫法）
+      expect([...material.bytes]).toEqual([...PNG]) // 逐字节，一个不少
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('没有扩展名也认得出（截图的常见样子）——内容就是判据', async () => {
+    const sand = sandbox()
+    try {
+      putBytes(sand.at, '截图', PNG)
+      const materials = materialsAt(sand.at)
+
+      const read = await materials.load([{ kind: 'file', source: join(sand.at, '截图') }])
+      expect(read.ok).toBe(true)
+      if (!read.ok) return
+
+      expect(read.materials[0]?.kind).toBe('image')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('半截的图当场拒（不送半张出去让对面报错）', async () => {
+    const sand = sandbox()
+    try {
+      // 尾巴（IEND 那一块）切掉 12 字节——文件还能读，但已经不是一张完整的 PNG
+      putBytes(sand.at, 'cut.png', PNG.subarray(0, PNG.length - 12))
+      const materials = materialsAt(sand.at)
+
+      const read = await materials.load([{ kind: 'file', source: join(sand.at, 'cut.png') }])
+      expect(read.ok).toBe(false)
+      if (read.ok) return
+
+      expect(read.reason).toContain('没传完')
+      expect(read.reason).toContain('cut.png')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('名字像图、内容不是：拒绝的那句话点破这一层（不让人往「换个文本工具」上找）', async () => {
+    const sand = sandbox()
+    try {
+      put(sand.at, 'shot.png', '这不是图片，是一段文本')
+      const materials = materialsAt(sand.at)
+
+      const read = await materials.load([{ kind: 'file', source: join(sand.at, 'shot.png') }])
+      expect(read.ok).toBe(true) // 内容能被当文本读——那就当文本读（**内容说了算**）
+      if (!read.ok) return
+
+      expect(textOf(read.materials[0])).toBe('这不是图片，是一段文本')
+
+      // 真正的坏文件（名字像图、内容是二进制）才拒，且那句点破「文件可能坏了」
+      putBytes(sand.at, 'broken.png', new Uint8Array([0x00, 0x01, 0x02, 0x00]))
+      const broken = await materials.load([{ kind: 'file', source: join(sand.at, 'broken.png') }])
+      expect(broken.ok).toBe(false)
+      if (broken.ok) return
+
+      expect(broken.reason).toContain('break.png'.replace('break', 'broken'))
+      expect(broken.reason).toContain('坏')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('超过单张上限：整条不跑，且说得出是**哪张、多大、怎么办**', async () => {
+    const sand = sandbox()
+    try {
+      // 一张「大的」PNG：真魔数 ＋ 撑到上限之上，并以 IEND 收尾（结构底线过得去）
+      const big = new Uint8Array(5 * 1024 * 1024 + 64)
+      big.set(PNG.subarray(0, PNG.length - 12), 0)
+      big.set(PNG.subarray(PNG.length - 12), big.length - 12)
+      putBytes(sand.at, 'big.png', big)
+      const materials = materialsAt(sand.at)
+
+      const read = await materials.load([{ kind: 'file', source: join(sand.at, 'big.png') }])
+      expect(read.ok).toBe(false)
+      if (read.ok) return
+
+      expect(read.reason).toContain('big.png')
+      expect(read.reason).toContain('MiB')
+      expect(read.reason).toContain('一份都没送出去')
+    } finally {
+      sand.dispose()
+    }
+  })
+
+  test('工作区外那一张也走同一条出口（用户明确选定的只读附件）', async () => {
+    const sand = sandbox()
+    const outside = sandbox()
+    try {
+      const path = putBytes(outside.at, 'outside.png', PNG)
+      const materials = materialsAt(sand.at)
+
+      const read = await materials.load([{ kind: 'file', source: path, external: true }])
+      expect(read.ok).toBe(true)
+      if (!read.ok) return
+
+      const material = read.materials[0]
+      expect(material?.kind).toBe('image')
+      // 没有 `external` 那一位就取不到（外部不因输入 `@` 获准——既有那条边界照旧）
+      const refused = await materials.load([{ kind: 'file', source: path }])
+      expect(refused.ok).toBe(false)
     } finally {
       sand.dispose()
       outside.dispose()

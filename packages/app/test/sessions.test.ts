@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { KernelEvent, ModelMessage, SessionSummary } from '@magic/contracts'
+import type { KernelEvent, ModelMessage, SessionSummary, UserMessageContent } from '@magic/contracts'
 import { attachShell } from '../src/shell.ts'
 import type { ShellHandle } from '../src/shell.ts'
 import { makeStage } from './support.ts'
@@ -26,8 +26,16 @@ function attach(assembly: ReturnType<Stage['assemble']>): ShellHandle {
 
 /** 一条模型消息的正文——`role:'tool'` 那支不带 `content`（正文在 `output`），按判别取。 */
 function textOf(message: ModelMessage): string {
-  return 'content' in message ? message.content : `${message.name}: ${message.output}`
+  return 'content' in message ? textOfContent(message.content) : `${message.name}: ${message.output}`
 }
+
+/** 一条模型消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。 */
+function textOfContent(content: UserMessageContent): string {
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
+}
+
 
 /** 等一条 `session.state`——会话命令的答复（命令面只发不收，答复走事件）。 */
 async function nextState(handle: ShellHandle, timeoutMs = 5000): Promise<SessionSummary[]> {

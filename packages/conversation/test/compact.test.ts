@@ -333,3 +333,77 @@ describe('压缩 · 失败不降级（B5）', () => {
     ])
   })
 })
+
+// ══ U37 · 图片与压缩：摘要里报名字，字节不动（要用的那一刻仍取回得来）═══════
+
+/**
+ * 判据（设计 · 文件与图片）：「压缩保留附件引用及已得出的信息；**再次需要图像时可以取回**，
+ * 不能把『有附件引用』写成『模型本轮已看见原图』」。
+ *
+ * 落到这一层是两件：
+ * - **摘要那一段**报得出「这一轮带过一张图」（`@shot.png（图片）`）——否则压缩之后接着
+ *   干活的模型只当用户提过一份叫这个名字的材料；
+ * - **不把字节当文本渲染**（二进制进摘要只会糊一屏乱码），也**不谎称模型看过了**。
+ */
+describe('U37 · 压缩：图片只报名字，不说话过了', () => {
+  /** 1×1 真 PNG——摘要那一段里它只该以名字出现。 */
+  const PNG = new Uint8Array(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  )
+
+  test('旧段里那张图：摘要请求里报名字（不铺字节、不说「已看见」）', async () => {
+    const stage = makeStage({
+      turns: [
+        { text: '第一轮答复', usage: { inputTokens: 100, outputTokens: 5 } },
+        { text: '摘要：看了一张图' },
+        { text: '第二轮答复', usage: { inputTokens: 20, outputTokens: 5 } },
+      ],
+    })
+
+    // 旧段里那条带图的交代（字节落在记录域的 blob 里）
+    const blob = await stage.records.blobs.put(PNG)
+    stage.records.appendEntry({
+      kind: 'user',
+      content: { text: '看 @shot.png' },
+      payload: {
+        refs: [
+          {
+            kind: 'image',
+            at: 2,
+            marker: '@shot.png',
+            source: '/ws/shot.png',
+            label: 'shot.png',
+            name: 'shot.png',
+            mime: 'image/png',
+            blob,
+          },
+        ],
+      },
+      at: FIXED_AT,
+    })
+    for (let index = 0; index < 3; index += 1) {
+      stage.records.appendEntry({ kind: 'user', content: { text: `第 ${index} 件：${'长'.repeat(120)}` }, at: FIXED_AT })
+      stage.records.appendEntry({ kind: 'assistant', content: { text: `办了 ${'好'.repeat(120)}` }, at: FIXED_AT })
+    }
+
+    const compact = makeCompactor(stage, { policy: { compactAtTokens: 50, nearEntries: 2 } })
+    const runtime = makeLoopRuntime(stage, { compact })
+    // 第一轮跑出用量（越过阈值）⇒ **下一轮开跑前**才压——故两趟
+    await agentLoop(runtime, { text: '接着来' }, signal())
+    await agentLoop(runtime, { text: '再来' }, signal())
+
+    // 摘要那一次调用（第 2 条请求）的正文——旧段渲染成的文本
+    const asked = sentTextAt(stage.gateway.requests, 1)
+
+    expect(asked).toContain('@shot.png（图片）') // 报得出「带过一张图」
+    expect(asked).not.toContain('iVBORw0KGgo') // 字节没被当文本铺进来
+    expect(asked).not.toContain('已看见')
+    expect(asked).not.toContain('已送达')
+
+    // **字节还在**（压缩只动送模型的那一份，记录 append-only）——再要它时取回得来
+    expect([...(await stage.records.blobs.get(blob))]).toEqual([...PNG])
+  })
+})

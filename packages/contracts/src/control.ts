@@ -11,7 +11,7 @@
 
 import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
-import type { DecisionId, SessionId } from './ids.ts'
+import type { BlobRef, DecisionId, RecordId, SessionId } from './ids.ts'
 import type { ReasoningSetting } from './model.ts'
 
 /**
@@ -30,15 +30,15 @@ export type SkillRef = {
 }
 
 /**
- * **正文里的引用**（U36）——文件 / 目录 / 技能，**留在用户说的那个位置**。
+ * **正文里的引用**（U36）——文件 / 目录 / 技能 / 图片，**留在用户说的那个位置**。
  *
  * 与 `InputRefEntry`（记录侧）的分工：这里只有**位置 ＋ 身份**——正文是那一句原话
  * （引用文字就在里面），材料本身**到真实提交那一刻才取**（文件读当前内容、技能取主文）。
  * 取回来之后与位置、来源一起落进 `InputRefEntry`（那是记录侧，多一份「实际交付内容」）。
  *
  * - `at` —— 引用文字在 `text` 里的起点（UTF-16 下标）；
- * - `marker` —— 那一段文字是什么（`@src/login.ts` / `/review`），随正文一起走；
- * - `source` —— **身份**（真路径）：技能＝技能目录真路径，文件 / 目录＝那条路径的真身。
+ * - `marker` —— 那一段文字是什么（`@src/login.ts` / `/review` / `@shot.png`），随正文一起走；
+ * - `source` —— **身份**（真路径）：技能＝技能目录真路径，文件 / 目录 / 图片＝那条路径的真身。
  *   同名两份技能靠它分开；「失效不换同名项」也才有判据。
  */
 export type InputRef = InputRefPlace &
@@ -46,6 +46,26 @@ export type InputRef = InputRefPlace &
     | { readonly kind: 'skill'; readonly name: string; readonly source: string }
     | { readonly kind: 'file'; readonly source: string; readonly external?: true }
     | { readonly kind: 'dir'; readonly source: string; readonly external?: true }
+    /**
+     * **从历史里取回的那一张图**（U37）——`/attachments` 的「加入本次输入」给的引用。
+     *
+     * ⚠️ **与上面三支不同：它不按 `source` 现读**。那一份字节早随当时的条目落库了，
+     * 而它恰恰可能是「源文件已经删掉」的那一张——设计明写「复用保存字节，**不依赖原路径**」。
+     * 故这一支带的是**字节所在**（`blob`，对消费者不透明，同 `BlobRef` 的定义）＋
+     * 「它是什么」（`mime` / `name`），提交那一刻按引用取回字节、不再碰文件系统。
+     *
+     * `source` / `label` 仍在：它们是**这份材料的出处**（历史行与记录都要它——
+     * 「这是从哪儿来的那一张」不能因为源文件没了就答不上来）。
+     */
+    | {
+        readonly kind: 'image'
+        readonly source: string
+        readonly label: string
+        readonly name: string
+        readonly mime: string
+        readonly blob: BlobRef
+        readonly external?: true
+      }
   )
 
 /**
@@ -376,6 +396,35 @@ export type SkillList = { readonly type: 'skills.list' }
 export type PathList = { readonly type: 'paths.list'; readonly query: string }
 
 /**
+ * `attachments.list`——**本会话已送出的图片**（U37 · `/attachments` 的读侧）。
+ *
+ * **由头**：源文件删掉、会话重开之后仍要取得回那一张图（设计 · 文件与图片：
+ * 「删掉原文件、重开会话后仍能取回并继续使用」），而取回的依据是**记录里那份字节**，
+ * 不是盘上那个路径。外壳够不着记录（域与外壳都只经控制面说话），故与
+ * `history.read` / `skills.list` 同一处境：读走命令面，答复走事件（`attachments.catalog`，
+ * **不落库** —— 条目本来就在库里，再存一遍读数只是多一张会过期的表）。
+ *
+ * **无参**——问的就是「这一条会话送过哪些图片」。会话由内核按**当下活跃**那条绑
+ * （同一族命令的既定姿势：不让外壳指定别的会话）。
+ */
+export type AttachmentList = { readonly type: 'attachments.list' }
+
+/**
+ * `attachments.export`——**把那一张的原图导出成本地文件**（U37 · 「查看原图」）。
+ *
+ * 与 `attachments.list` 分开的理由：那一条是**读**（不改变任何东西），这一条
+ * **真的在盘上落一个文件**——用户的动作（按下「查看原图」），答复照走 `attachments.catalog`
+ * （`note` 说导出到哪儿 / 为什么没成），与 `mcp.reconnect` 之后照走 `mcp.catalog` 同一条姿势。
+ *
+ * `entry` ＝那一张**落在哪条记录上**（`AttachmentRow.entry`）——记录位置就是身份，
+ * 不另编一串 id。**导出不碰原路径**：字节从记录里取（源文件没了照样导得出）。
+ *
+ * **只写新文件**：落点是唯一命名的临时文件，**不覆盖已有文件**、**不自动打开外部应用**
+ * （设计明文）；「自动用看图软件打开」不在内核的射程里。
+ */
+export type AttachmentExport = { readonly type: 'attachments.export'; readonly entry: RecordId }
+
+/**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
  * ＋ U33 的技能目录一支 ＋ U36 的路径候选一支）——外壳发往内核的全部消息。
  * `mcp.list`——**外部服务器的一屏**（U39）。
@@ -425,6 +474,8 @@ export type Command =
   | GrantsRevoke
   | SkillList
   | PathList
+  | AttachmentList
+  | AttachmentExport
   | McpList
   | McpReconnect
 

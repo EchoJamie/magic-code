@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Entry, ModelMessage, NewEntry, PlanNote, RecordId } from '@magic/contracts'
+import type { Entry, ModelMessage, NewEntry, PlanNote, RecordId, UserMessageContent } from '@magic/contracts'
 import { makeFauxRecords } from '@magic/faux'
 import { planContext } from '../src/context.ts'
 import {
@@ -57,9 +57,17 @@ function ledger(): {
 function materialText(message: ModelMessage | undefined): string {
   if (message === undefined) return ''
   if (message.role === 'assistant' || message.role === 'user' || message.role === 'system') {
-    return message.content
+    return textOfContent(message.content)
   }
+
   return message.output
+}
+
+/** 一条模型消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。 */
+function textOfContent(content: UserMessageContent): string {
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
 }
 
 /** 一次成功的计划更新（工具结果 ＋ `plan` 载荷）。 */

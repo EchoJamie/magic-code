@@ -17,6 +17,7 @@
 import type {
   DecisionWeight,
   Entry,
+  AttachmentRow,
   EventDataOf,
   InputRefEntry,
   KernelEvent,
@@ -392,6 +393,8 @@ export type Picker = {
     | 'provider-detail'
     | 'model-detail'
     | 'model-reasoning'
+    | 'attachments'
+    | 'attachment-detail'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -486,6 +489,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/skills', summary: '技能：浏览 · 搜索 · 选定' },
   // U39——**纯查询型**（选项＝读一眼，回车不改变任何东西）；`/mcp <名字>` 看那一台的明细。
   { name: '/mcp', summary: '外部工具服务器：状态 · 工具 · 重连' },
+  // U37——**只承担已送出材料的查找与取回**（设计 · 文件与图片）：本会话送过的图片
+  // 在这儿查看原图 / 再放回输入行。它**不是**「待发送附件列表」——草稿上的引用在原位
+  // 编辑（删掉那一段文字就取消那处材料），两种对象不混在一个入口里。
+  { name: '/attachments', summary: '送过的图片：查看原图 · 加入本次输入' },
   { name: '/help', summary: '这张表' },
 ]
 
@@ -790,6 +797,14 @@ export type ShellView = {
    */
   readonly mcp: McpCatalog | null
   /**
+   * **本会话送过的图片**（`attachments.catalog` 的答复 · U37）——`/attachments` 的取材。
+   *
+   * 与 `grants` / `skills` / `mcp` 同一条：**拿到过就有**，没问过是 `null`（「拿不到的不编」
+   * ——「一张都没送过」与「还没问过」不是一回事，抽屉等答复才开）。它是**一帧的快照**：
+   * 每按一次 `/attachments` 现问一次。
+   */
+  readonly attachments: AttachmentsCatalog | null
+  /**
    * **连接一览**（`model.catalog` / `provider.catalog` 的答复）——`/model` 与 `/model manage`
    * 两屏的取材（同一份行，内核那边就是一处产出）。
    *
@@ -877,6 +892,7 @@ export function createView(): ShellView {
     skills: null,
     paths: null,
     mcp: null,
+    attachments: null,
     models: [],
     vendors: [],
     modelCurrent: null,
@@ -901,6 +917,9 @@ export type PathsCatalog = EventDataOf['paths.catalog']
 
 /** 外部服务器的一屏（`mcp.catalog` 的载荷 · U39）——`/mcp` 选择器的取材。 */
 export type McpCatalog = EventDataOf['mcp.catalog']
+
+/** 本会话送过的图片（`attachments.catalog` 的载荷 · U37）——`/attachments` 两屏的取材。 */
+export type AttachmentsCatalog = EventDataOf['attachments.catalog']
 
 // ══ 归约（事件 → 一屏）═══════════════════════════════════════════════
 
@@ -1027,6 +1046,12 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     // 开抽屉 / 重连之后刷新是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
     case 'mcp.catalog':
       return { ...view, mcp: event.data }
+
+    // 图片附件（读侧答复 · U37）——**收进视图**（`/attachments` 两屏据它铺行）；
+    // 开抽屉 / 刷新 / 留回执是外壳的事（`shell.ts` 的 `onEvent`），此处只落数据
+    // （照 `grants.catalog` / `skills.catalog` 的姿势：归约落数据，处置归外壳）
+    case 'attachments.catalog':
+      return { ...view, attachments: event.data }
 
     // 计划那一份落账之后发的瞬时事件（U34）——**落进视图的唯一实时来路**。
     // 「新旧」由 `withPlan` 一处判（历史晚到不能覆盖更新或清空）。
@@ -2575,6 +2600,86 @@ export function pathRows(rows: readonly PathCatalogRow[]): readonly PickerRow[] 
     value: row.path,
     oneLine: true,
   }))
+}
+
+/**
+ * **`/attachments` 那一屏的行**（U37）——本会话送过的一张图占一行。
+ *
+ * 一行说四件（**用户按它认得出是哪一张**，这是这一屏唯一的用处）：
+ * - **名字**（`label`）——他当时选的那份文件叫什么；
+ * - **类型 ＋ 大小**（`meta`）——「这真的是那张 PNG 吗」常靠它认（大小按 KiB / MiB 报，
+ *   与人看文件的习惯一致，而不是一串字节数）；
+ * - **什么时候送的**（时间）——同一张图送过两次时分得开；
+ * - `value` ＝**那条记录的 id**（字符串化）——选定之后要拿它去问详情 / 导出，
+ *   而**记录位置就是身份**（不另编一串 id）。
+ *
+ * ⚠️ **不显示字节内容**：这一屏是**认哪一张**，不是看图（要看图有「查看原图」那一条出口，
+ * 拿到的是本地路径）。几十 KB 的 base64 铺进来，这一屏就再也认不出东西了。
+ */
+export function attachmentRows(rows: readonly AttachmentRow[]): readonly PickerRow[] {
+  return rows.map((row) => ({
+    label: row.name,
+    meta: `${row.mime.replace(/^image\//, '')} · ${sizeLabel(row.bytes)} · ${clockOf(row.at)}`,
+    current: false,
+    value: String(row.entry),
+    oneLine: true,
+  }))
+}
+
+/**
+ * **一张图的详情那一屏**（U37）——两条动作，别无其他。
+ *
+ * 两条各说清**它做什么**（而不是「导出」「使用」这种动词）：
+ * - **查看原图** ⇒ 落一个本地文件并给出路径（不自动打开外部应用——设计明文）；
+ * - **加入本次输入** ⇒ 把这一张**再放进输入行**（复用记录里的字节，**不依赖原文件还在**）。
+ *
+ * ⚠️ 两条都**不发送**：选定一个动作不等于把交代发出去（同 `/skills` 选定即绑定那条分寸）。
+ */
+export function attachmentDetailRows(): readonly PickerRow[] {
+  return [
+    { label: '查看原图', meta: '导出到本地文件，给出路径', current: false, value: EXPORT_ACTION, oneLine: true },
+    { label: '加入本次输入', meta: '把这张图放回输入行（用已保存的字节）', current: false, value: ATTACH_ACTION, oneLine: true },
+  ]
+}
+
+/** 详情那两条动作的值——**结构不从字面反推**（同 `PickerRow.pick` 那条由头）。 */
+export const EXPORT_ACTION = 'export'
+export const ATTACH_ACTION = 'attach'
+
+/**
+ * `/attachments` 两屏下方那行说明——**各自说别处没说的那一件**。
+ *
+ * ⚠️ **详情那一屏不复述两条动作**：它们就在上面那两行里写着（「导出到本地文件 / 放回输入行」），
+ * 再念一遍就是同一件事说两遍（`AGENTS.md`：读每一条，问「它告诉了我什么别处没说的」）。
+ * 那一屏真正没人说过的是这句：**这两条都只做那一件事，不会把交代发出去**——
+ * 用户按下回车之前最需要知道的正是它。
+ */
+export function attachmentHint(input: {
+  readonly count: number
+  /** 现在在详情那一屏（行的读法不一样）。 */
+  readonly detail: boolean
+}): string {
+  if (input.detail) return '两条都只做那一件事——不会把这次交代发出去'
+
+  return input.count === 0
+    ? '这条会话还没送过图片——用 @ 选一张（比如 @截图.png），送过之后就在这儿'
+    : '选定一张看能做什么（查看原图 / 放回输入行）'
+}
+
+/** 字节数 → 人读的大小（同盘上文件的那种读法）。 */
+function sizeLabel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KiB`
+
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
+}
+
+/** 时刻 → 当日几点几分（这一屏不需要日期：列的是**本会话**送过的东西）。 */
+function clockOf(at: number): string {
+  const when = new Date(at)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+
+  return `${pad(when.getHours())}:${pad(when.getMinutes())}`
 }
 
 /**

@@ -16,13 +16,19 @@
  * （外部路径不做目录浏览）。取到的是一份**只读附件**：读一次内容，
  * **沙箱的根一条都不动**，后续任何工具的可写范围不因此扩大。
  *
- * ## 三、只收文本
+ * ## 三、只收文本——**图片是那个例外出口**（U37）
  *
  * 二进制（含 NUL 字节 / UTF-8 读不出来）**不当文本解码**——给了乱码进上下文比没有更坏。
  * 拒绝时给出确定的出口（「要用它就让工具去处理」），不是一句「读不了」。
  *
+ * **图片本来也不是文本**，但它有一条正当的去处：作为**图像部件**送模型（见契约 `Material`
+ * 的 `image` 支）。所以这一条不是「多放一种文本进来」，而是「另开一条出口」：
+ * 按**字节**认得出是图，就走 `image` 支（交字节，不解码、不截断）；认不出，照旧按文本处理、
+ * 照旧拒二进制。判据与完整性检查都收在 `images.ts` 一处。
+ *
  * 上限与截断都**如实标**（`truncated` / `omitted` 一路带到记录里）：宁可说「只送到这里」，
- * 也不能让模型以为手里是全份（设计：不能静默缺材料）。
+ * 也不能让模型以为手里是全份（设计：不能静默缺材料）。**图片的尺子另有一把**（字节，
+ * 见 `DEFAULT_IMAGE_BYTES`）——它不按字符算，也不该被文本那条上限管着。
  */
 
 import type {
@@ -38,6 +44,8 @@ import type {
 import { realpathSync } from 'node:fs'
 import { open, readdir, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
+import { checkImageIntact, looksLikeImageName, sniffImage } from './images.ts'
+import type { SniffedImage } from './images.ts'
 import { isInside } from './workspace.ts'
 
 /** 装配期构造入参——与沙箱一样：工作区端口由装配给（同一份实现，边界因此同源）。 */
@@ -63,6 +71,27 @@ export const DEFAULT_MATERIAL_BYTES = 64 * 1024
  * 也不悄悄截断几份）——用户手上的动作是「去掉几份再发」，那句话要在回执里说得出。
  */
 export const DEFAULT_TOTAL_CHARS = 256 * 1024
+
+/**
+ * **一张图的上限**——**字节**（实现级常量）。
+ *
+ * 取 5 MiB 的由头：截图工具的常见产物（一张 4K 屏的 PNG / 一张照片）都在 1–3 MiB，
+ * 5 MiB 够装下一张没压过的整屏截图，又不至于让「带图」变成一次必然超限的动作。
+ * 超过就**整条不跑并说清**（不静默截断——切一半的图送出去，对面要么报错要么看见半张，
+ * 两种都比当场说清坏）。要送更大的图＝先压小（那是用户手上做得到的事）。
+ */
+export const DEFAULT_IMAGE_BYTES = 5 * 1024 * 1024
+
+/**
+ * 一次交代里**图片的合计上限**——**字节**（实现级常量）。
+ *
+ * 与文本那条（`DEFAULT_TOTAL_CHARS`）**分开两把尺子**：它们管的不是同一件事——
+ * 文本那条防的是「上下文被文字吃满」，图片这条防的是「一次请求带着几十兆字节出门」。
+ * 混成一条，要么把一张正常截图卡掉，要么放一摞图把请求撑爆。
+ *
+ * 20 MiB ≈ 四张顶格的图：够「这几张截图一起看」，再多就不是一次性交代该有的量了。
+ */
+export const DEFAULT_IMAGE_TOTAL_BYTES = 20 * 1024 * 1024
 
 /** 目录清单最多列几项——超出的**如实报数**（`omitted`），不静默少列。 */
 export const DEFAULT_DIR_ENTRIES = 200
@@ -326,19 +355,33 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
     async load(requests: readonly MaterialRequest[]): Promise<MaterialLoad> {
       const materials: Material[] = []
+      // **两把尺子各记各的**（见 `DEFAULT_IMAGE_TOTAL_BYTES`）：文本按字符、图片按字节
       let total = 0
+      let imageBytes = 0
 
       for (const request of requests) {
         const read = await loadOne(request)
         if (!read.ok) return { ok: false, reason: read.reason }
 
-        total += read.material.text.length
-        if (total > DEFAULT_TOTAL_CHARS) {
-          return {
-            ok: false,
-            reason:
-              `这一条带的材料太大了（已过 ${Math.round(DEFAULT_TOTAL_CHARS / 1024)} KiB 字符）` +
-              `——去掉几份再发，或让它用 read / exec 按需读（此刻一份都没送出去）。`,
+        if (read.material.kind === 'image') {
+          imageBytes += read.material.bytes.length
+          if (imageBytes > DEFAULT_IMAGE_TOTAL_BYTES) {
+            return {
+              ok: false,
+              reason:
+                `这一条带的图片太多了（合计已过 ${Math.round(DEFAULT_IMAGE_TOTAL_BYTES / 1024 / 1024)} MiB）` +
+                `——去掉几张再发（此刻一份都没送出去）。`,
+            }
+          }
+        } else {
+          total += read.material.text.length
+          if (total > DEFAULT_TOTAL_CHARS) {
+            return {
+              ok: false,
+              reason:
+                `这一条带的材料太大了（已过 ${Math.round(DEFAULT_TOTAL_CHARS / 1024)} KiB 字符）` +
+                `——去掉几份再发，或让它用 read / exec 按需读（此刻一份都没送出去）。`,
+            }
           }
         }
 
@@ -396,19 +439,10 @@ export function createMaterials(options: MaterialsOptions): Materials {
         }
       }
 
-      const bytes = await readBounded(at.real)
-      if (!bytes.ok) return { ok: false, reason: bytes.reason }
+      const read = await readFileMaterial(at.real)
+      if (!read.ok) return { ok: false, reason: read.reason }
 
-      return {
-        ok: true,
-        material: {
-          kind: 'file',
-          path: at.real,
-          label: at.real,
-          text: bytes.text,
-          ...(bytes.truncated ? { truncated: true as const } : {}),
-        },
-      }
+      return { ok: true, material: materialOf(read, at.real, at.real) }
     }
 
     if (request.kind === 'dir') {
@@ -447,75 +481,158 @@ export function createMaterials(options: MaterialsOptions): Materials {
       }
     }
 
-    const bytes = await readBounded(at.real)
-    if (!bytes.ok) return { ok: false, reason: bytes.reason }
+    const read = await readFileMaterial(at.real)
+    if (!read.ok) return { ok: false, reason: read.reason }
 
-    return {
-      ok: true,
-      material: {
-        kind: 'file',
-        path: at.real,
-        label: displayOf(at.real),
-        text: bytes.text,
-        ...(bytes.truncated ? { truncated: true as const } : {}),
-      },
-    }
+    return { ok: true, material: materialOf(read, at.real, displayOf(at.real)) }
   }
 }
 
-// —— 读文件（有界 ＋ 只收文本）——
+// —— 读文件（有界 ＋ 文本 / 图片两条出口）——
 
-type ReadBytes =
-  | { readonly ok: true; readonly text: string; readonly truncated: boolean }
+/** 一次文件读取的产物——文本一支（原样）或图片一支（U37 新开的那条出口）。 */
+type ReadFile =
+  | { readonly ok: true; readonly kind: 'text'; readonly text: string; readonly truncated: boolean }
+  | {
+      readonly ok: true
+      readonly kind: 'image'
+      readonly mime: string
+      readonly bytes: Uint8Array
+    }
   | { readonly ok: false; readonly reason: string }
 
 /**
- * 读一个有界的前缀，**只收文本**。
+ * 读一份文件材料——**先按字节决定它走哪条出口**（见文件头注 · 三）。
  *
- * 三件：
- * ① **到上限为止**（`truncated`）；② **含 NUL 字节＝二进制**（不当文本解码）；
- * ③ **UTF-8 读不出＝二进制**——截断处可能正劈在一个多字节字符中间，故先把尾部那半片
- * 让掉再判（半片是**我们截的**，不是文件的问题）。
+ * 顺序是刻意的：**先认图，再论文本**。
+ * - 认得出来是图 ⇒ 走图片那支，**不套文本那几条尺子**（它本来就不是文本：截断到 2000
+ *   字符的图没有任何意义，把 NUL 当「二进制」拒掉更是错怪它）；
+ * - 认不出来 ⇒ 原样走文本那支（上限、NUL、UTF-8 三条判据一个不删）。
+ *
+ * 前缀先读一次（64 KiB），够认出魔数；真是一张比这更大的图时再整份补读一次
+ * （图片那支的上限是 `DEFAULT_IMAGE_BYTES`）——**小图与文本都只开一次文件**。
  */
-async function readBounded(absolute: string): Promise<ReadBytes> {
-  let kept: Uint8Array
-  let truncated: boolean
+async function readFileMaterial(absolute: string): Promise<ReadFile> {
+  const prefix = await readPrefix(absolute)
+  if (!prefix.ok) return prefix
 
-  // 只读**前缀**（上限 ＋ 1 字节用来判「有没有更多」）——大文件不整份进内存
-  // （同 `files.ts` 的 `readText` 那条姿势；差别是这里要自己判二进制，故拿的是字节）
+  const image = sniffImage(prefix.bytes)
+  if (image !== undefined) return readImage(absolute, prefix, image)
+
+  if (prefix.bytes.includes(0)) {
+    // 名字像是图片、内容却不是——**说清这一条**：只说「二进制」会把用户带到
+    // 「那我换个文本工具」那条岔路上去，而他要办的事是「换一张图 / 看看这份文件怎么了」
+    const named = looksLikeImageName(absolute)
+      ? `（这个文件名像是图片，可内容既不是认得出的图片、也不是文本——文件可能坏了）`
+      : ''
+    return {
+      ok: false,
+      reason:
+        `「${absolute}」像是二进制文件（含 NUL 字节）——按路径引用只收文本，` +
+        `不当文本解码${named}。要用它就让工具去处理（例如 exec / read）。`,
+    }
+  }
+
+  const text = decodeUtf8(prefix.bytes, prefix.truncated)
+  if (text === null) {
+    const named = looksLikeImageName(absolute)
+      ? `（这个文件名像是图片，可内容不是认得出的图片——文件可能坏了）`
+      : ''
+    return {
+      ok: false,
+      reason: `「${absolute}」不是 UTF-8 文本（解码读不出）${named}——按路径引用只收文本；要用它就让工具去处理。`,
+    }
+  }
+
+  return { ok: true, kind: 'text', text, truncated: prefix.truncated }
+}
+
+/**
+ * 图片那一支——把整份读进来（图不能被截断：半张图送出去没有意义），
+ * 过一遍**单张上限**与**完整性底线**（都收在 `images.ts`／本文件常量一处）。
+ */
+async function readImage(
+  absolute: string,
+  prefix: { readonly bytes: Uint8Array; readonly truncated: boolean },
+  image: SniffedImage,
+): Promise<ReadFile> {
+  const whole = prefix.truncated ? await readWhole(absolute) : { ok: true as const, bytes: prefix.bytes }
+  if (!whole.ok) return whole
+
+  if (whole.bytes.length > DEFAULT_IMAGE_BYTES) {
+    return {
+      ok: false,
+      reason:
+        `「${basename(absolute)}」这一张有 ${megabytesOf(whole.bytes.length)}，` +
+        `超过单张图片的上限 ${Math.round(DEFAULT_IMAGE_BYTES / 1024 / 1024)} MiB——先压小一点再带` +
+        `（此刻一份都没送出去）。`,
+    }
+  }
+
+  const intact = checkImageIntact(whole.bytes, image)
+  if (!intact.ok) {
+    return {
+      ok: false,
+      reason: `「${basename(absolute)}」${intact.reason}——这一份送不出完整的图，换一张或重新导出它（此刻一份都没送出去）。`,
+    }
+  }
+
+  return { ok: true, kind: 'image', mime: image.mime, bytes: whole.bytes }
+}
+
+/** 读前缀（上限 ＋ 1 字节用来判「有没有更多」）——大文件不整份进内存。 */
+async function readPrefix(
+  absolute: string,
+): Promise<{ readonly ok: true; readonly bytes: Uint8Array; readonly truncated: boolean } | { readonly ok: false; readonly reason: string }> {
   try {
     const handle = await open(absolute, 'r')
 
     try {
       const buffer = new Uint8Array(DEFAULT_MATERIAL_BYTES + 1)
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
-      truncated = bytesRead > DEFAULT_MATERIAL_BYTES
-      kept = buffer.subarray(0, Math.min(bytesRead, DEFAULT_MATERIAL_BYTES))
+      const truncated = bytesRead > DEFAULT_MATERIAL_BYTES
+
+      return { ok: true, bytes: buffer.subarray(0, Math.min(bytesRead, DEFAULT_MATERIAL_BYTES)), truncated }
     } finally {
       await handle.close()
     }
   } catch (error) {
     return { ok: false, reason: `读不了「${absolute}」：${reasonOf(error)}` }
   }
+}
 
-  if (kept.includes(0)) {
-    return {
-      ok: false,
-      reason:
-        `「${absolute}」像是二进制文件（含 NUL 字节）——按路径引用只收文本，` +
-        `不当文本解码。要用它就让工具去处理（例如 exec / read）。`,
+/** 整份读一张图——到**单张上限 ＋ 1** 为止（多那一个字节只为判「超了没有」）。 */
+async function readWhole(
+  absolute: string,
+): Promise<{ readonly ok: true; readonly bytes: Uint8Array } | { readonly ok: false; readonly reason: string }> {
+  try {
+    const handle = await open(absolute, 'r')
+
+    try {
+      const buffer = new Uint8Array(DEFAULT_IMAGE_BYTES + 1)
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+
+      return { ok: true, bytes: buffer.subarray(0, bytesRead) }
+    } finally {
+      await handle.close()
     }
+  } catch (error) {
+    return { ok: false, reason: `读不了「${absolute}」：${reasonOf(error)}` }
+  }
+}
+
+/** 一次读取的产物 → 材料（文本 / 图片两支各归各的形）。 */
+function materialOf(read: Extract<ReadFile, { ok: true }>, path: string, label: string): Material {
+  if (read.kind === 'image') {
+    return { kind: 'image', path, label, name: basename(path), mime: read.mime, bytes: read.bytes }
   }
 
-  const text = decodeUtf8(kept, truncated)
-  if (text === null) {
-    return {
-      ok: false,
-      reason: `「${absolute}」不是 UTF-8 文本（解码读不出）——按路径引用只收文本；要用它就让工具去处理。`,
-    }
-  }
+  return { kind: 'file', path, label, text: read.text, ...(read.truncated ? { truncated: true as const } : {}) }
+}
 
-  return { ok: true, text, truncated }
+/** 字节数 → 人读的兆数（拒绝理由里那一句）。 */
+function megabytesOf(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
 }
 
 /**

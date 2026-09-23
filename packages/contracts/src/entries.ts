@@ -186,13 +186,13 @@ export type UsedSkillEntry = UsedSkill & {
  * 「当时到底送了什么」也还答得出（`text` 就是那一份）。目录另记**未展开**的部分
  * （`omitted`），不假装列全了。
  *
- * ## 三支共有的四格
+ * ## 各支共有的那几格
  *
  * - `at` —— 在**正文**里的位置（UTF-16 下标，`content.text` 的坐标）；
- * - `marker` —— 正文里那一段是什么（`@src/login.ts` / `/review`）；
- * - `source` —— **身份**：技能＝技能目录真路径（`Skill.path`）· 文件 / 目录＝真路径；
+ * - `marker` —— 正文里那一段是什么（`@src/login.ts` / `/review` / `@shot.png`）；
+ * - `source` —— **身份**：技能＝技能目录真路径（`Skill.path`）· 文件 / 目录 / 图片＝真路径；
  * - `label` —— 来源的**人读标签**（技能＝发现处产出的「项目 .magic/skills」一类；
- *   文件 / 目录＝写入那一刻相对所属根的写法 / 工作区外的绝对写法）。
+ *   文件 / 目录 / 图片＝写入那一刻相对所属根的写法 / 工作区外的绝对写法）。
  *
  * ⚠️ **`source` 与 `Entry.source` 是两件事**：后者是 `SessionId`（条目归属的会话），
  * 此处是**材料来源**。两个「来源」在同一张表上撞了名，但空格分明（同 `UserPayload.skills`
@@ -233,9 +233,34 @@ export type InputRefEntry = InputRefPlace &
         readonly text: string
         readonly omitted?: number
       }
+    | {
+        /**
+         * **一张图片**（U37）——内容不在 `text` 里，而是一份 **blob 引用**。
+         *
+         * 二进制不当文本（设计 · 文件与图片）：字节落 blob，此处只留「在哪儿 ＋ 是什么」
+         * ——`mime` 与 `name` 是下一轮**送模型**（拼图像部件）与**历史呈现**（报得出是
+         * 哪一张）要用的两件。恢复不依赖原文件仍在：字节已随这条记录落库
+         * （设计：「图片以 blob 保存字节，用户条目保存 MIME、名称及引用」）。
+         *
+         * ⚠️ **它≠「模型本轮已看见原图」**：这一支只证明「这份字节进了会话」；
+         * 有没有真送进请求、压缩之后是不是还在窗口里，是**装配那一刻**的事
+         * （设计：「不能把有附件引用写成模型本轮已看见原图」）。
+         */
+        readonly kind: 'image'
+        readonly source: string
+        readonly label: string
+        /** 文件名——屏上与历史行报得出的那一个（「截图 2026-09-20.png」）。 */
+        readonly name: string
+        /** MIME 类型（按字节认出来的那一种，不是按扩展名猜的）。 */
+        readonly mime: string
+        /** 字节本体所在——**写权归记录域**（本格对消费者不透明，同 `BlobRef` 的定义）。 */
+        readonly blob: BlobRef
+        /** **取自工作区之外**（同 `file` 支那一位，理由同）。 */
+        readonly external?: true
+      }
   )
 
-/** 引用的**位置那两格**（三支共有——见 `InputRefEntry`）。 */
+/** 引用的**位置那两格**（各支共有——见 `InputRefEntry`）。 */
 export type InputRefPlace = {
   /** 在正文里的位置（UTF-16 下标；`content.text` 的坐标）。 */
   readonly at: number

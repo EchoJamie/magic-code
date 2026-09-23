@@ -91,7 +91,8 @@ export function assertEntryShape(entry: NewEntry): void {
     if (entry.payload !== undefined && !isUserPayload(entry.payload)) {
       throw new Error(
         'user 条目的载荷只装这次交代带出去的材料——两形：`{ refs: [{ kind, at, marker, source, ' +
-          'label, text }] }`（U36：带位置的那一份）或 `{ skills: [{ name, source, label, text }] }`' +
+          'label, text }] }`（U36：带位置的那一份；U37 另加图片那一支 `{ kind: "image", name, ' +
+          'mime, blob }`——它没有 text，内容是字节）或 `{ skills: [{ name, source, label, text }] }`' +
           '（U33 旧形：无位置）。别的东西没有位置（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
       )
     }
@@ -238,19 +239,38 @@ function isUsedSkills(skills: unknown): boolean {
 }
 
 /**
- * 新形（U36）：每一处**位置（`at` 数字 ＋ `marker` 字符串）＋ 身份（`source`）＋ 正文**，
- * `kind` 三支之一。技能那支另要有 `name`（回执与模型取引用都读它）。
+ * 新形（U36 · U37）：每一处**位置（`at` 数字 ＋ `marker` 字符串）＋ 身份（`source`）**，
+ * 外加**该支自己的内容那几格**——`kind` 四支之一。
+ *
+ * | kind | 还必须有 |
+ * | --- | --- |
+ * | `skill` | `name`（回执与模型取引用都读它）＋ `text`（当时那份主文） |
+ * | `file` / `dir` | `text`（实际交付的内容 / 有界清单） |
+ * | `image` | `name` ＋ `mime` ＋ **`blob`**（字节所在——**没有 `text`**：二进制不当文本） |
+ *
+ * ⚠️ **图片那一支不能拿 `text` 当判据**：它本来就没有正文（内容是字节）。收窄时先按 `kind`
+ * 分岔，再各查各的那几件——「一个函数里一套字段表」正是当初把图挡在门外的原因
+ * （写侧硬闸收得紧是对的，但收得**不对**就会把合法的一种形状判成坏数据）。
  */
 function isInputRefs(refs: unknown): boolean {
   if (!Array.isArray(refs)) return false
 
   return refs.every((item) => {
     if (!isRecord(item)) return false
+    if (typeof item['at'] !== 'number' || typeof item['marker'] !== 'string') return false
+    if (typeof item['source'] !== 'string') return false
+
+    if (item['kind'] === 'image') {
+      return (
+        typeof item['name'] === 'string' &&
+        typeof item['mime'] === 'string' &&
+        typeof item['blob'] === 'string'
+      )
+    }
 
     const kind = item['kind']
     if (kind !== 'skill' && kind !== 'file' && kind !== 'dir') return false
-    if (typeof item['at'] !== 'number' || typeof item['marker'] !== 'string') return false
-    if (typeof item['source'] !== 'string' || typeof item['text'] !== 'string') return false
+    if (typeof item['text'] !== 'string') return false
 
     return kind !== 'skill' || typeof item['name'] === 'string'
   })

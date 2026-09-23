@@ -28,6 +28,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { Command, Entry, KernelEvent, SkillCatalogRow } from '@magic/contracts'
+import type { DraftRef } from '../src/components/inline.ts'
 import { createShell } from '../src/shell.ts'
 import { logLines } from '../src/components/log.ts'
 import { MAX_CANDIDATES, createView, rebuild } from '../src/view.ts'
@@ -37,6 +38,14 @@ import { event } from './events.ts'
 
 const ENTER = { kind: 'enter' } as const
 const ESC = { kind: 'escape' } as const
+
+/**
+ * 草稿上一处引用的**名字**（技能与图片各有各的 `name`，文件 / 目录没有）——
+ * U37 起 `DraftRef` 是判别联合，`name` 只在那两支上（见其类型注）。
+ */
+function nameOf(ref: DraftRef | undefined): string | undefined {
+  return ref !== undefined && (ref.kind === 'skill' || ref.kind === 'image') ? ref.name : undefined
+}
 
 /** 一份技能（目录真路径即身份——同名两份靠它分开）。 */
 function skill(
@@ -449,7 +458,7 @@ describe('U33 · 提交与失败保稿', () => {
     const view = stage.shell.getView()
     expect(view.draft).toBe('/pdf 帮我看看') // 交代保住了（原样，含那一处引用）
     expect(view.caret).toBe(9)
-    expect(view.refs[0]?.name).toBe('pdf') // 引用与它的身份也一起回来
+    expect(nameOf(view.refs[0])).toBe('pdf') // 引用与它的身份也一起回来
     // 缘由**出声**（哪一份来源出的问题）
     expect(said(stage)).toContain('没送出')
     expect(said(stage)).toContain('不再成立')
@@ -556,7 +565,7 @@ describe('U33 · 提交与失败保稿', () => {
     ])
 
     expect(stage.shell.getView().draft).toBe('/pdf 排着的那条')
-    expect(stage.shell.getView().refs[0]?.name).toBe('pdf')
+    expect(nameOf(stage.shell.getView().refs[0])).toBe('pdf')
   })
 })
 
@@ -586,7 +595,7 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 12 })])
 
     expect(stage.shell.getView().draft).toBe('/pdf 打了一半')
-    expect(stage.shell.getView().refs[0]?.name).toBe('pdf')
+    expect(nameOf(stage.shell.getView().refs[0])).toBe('pdf')
   })
 
   test('接管期间打字不进草稿（喂给裁决作答）——不认的键当场说一句', () => {

@@ -31,25 +31,59 @@ import { stepLeft, stepRight } from './composer.ts'
 /**
  * 草稿里的一处引用——**位置（`start`/`end`，UTF-16 码元）＋ 身份**。
  *
- * 三个 kind 与契约的 `InputRef` 一一对应；`marker` 与 `draft.slice(start, end)` 恒等
+ * 四个 kind 与契约的 `InputRef` 一一对应；`marker` 与 `draft.slice(start, end)` 恒等
  * （区间是那段文字的账，两处不许各说各的——`markerOf` 一处产出，改也是它一处改）。
+ *
+ * ## 为什么是判别联合而不是「一个带可选字段的对象」（U37）
+ *
+ * 各支要的东西**不一样**：技能要 `name`，图片要 `mime` ＋ `blob`（**字节所在**），
+ * 文件 / 目录什么都不要。平铺成可选字段的话，「一张没带 blob 的图」在类型上**是合法的**
+ * ——而它根本提交不出去（`wireOf` 只能拿一个空串顶上，或者当场崩）。收成联合：
+ * 有 `kind: 'image'` 就必有 `blob`，走错路 tsc 当场报。
+ *
+ * ⚠️ `blob` **对这里不透明**：它是记录里那份字节的把手，外壳只**原样带着它走**
+ * （不解析、不比较）。它存在这里正是为了「源文件删了也取得回」——
+ * 那张图从历史里插回输入行时，一路都没回头看那个路径。
  */
-export type DraftRef = {
+export type DraftRef = DraftRefPlace &
+  (
+    | { readonly kind: 'skill'; readonly name: string }
+    | { readonly kind: 'file'; readonly external?: true }
+    | { readonly kind: 'dir'; readonly external?: true }
+    | {
+        readonly kind: 'image'
+        readonly name: string
+        readonly mime: string
+        /** 字节所在（记录里那一份）——**不透明**，见类型注。 */
+        readonly blob: string
+        /** 来源的人读写法（历史那一行给的；写进记录要用它）。 */
+        readonly label: string
+        readonly external?: true
+      }
+  )
+
+/** 引用共有的那几格——位置 ＋ 身份（见 `DraftRef`）。 */
+export type DraftRefPlace = {
   readonly start: number
   readonly end: number
-  readonly kind: 'skill' | 'file' | 'dir'
   /** 正文里那一段（`@src/login.ts` / `/review`）——**与区间同物**。 */
   readonly marker: string
-  /** 身份：技能＝技能目录真路径，文件 / 目录＝真路径。 */
+  /** 身份：技能＝技能目录真路径，文件 / 目录 / 图片＝真路径。 */
   readonly source: string
-  /** 技能名（`kind: 'skill'` 才有；提交时随引用一起走，报错时指得出是谁）。 */
-  readonly name?: string
-  /** 取自工作区之外的只读附件（`kind: 'file'` 才有）。 */
-  readonly external?: true
 }
 
-/** 一处的身份那几格（`marker` 之外的）——造引用时给这个，位置由插入点算。 */
-export type RefIdentity = Omit<DraftRef, 'start' | 'end' | 'marker'>
+/**
+ * 一处的身份那几格（`marker` 之外的）——造引用时给这个，位置由插入点算。
+ *
+ * 用**分配式** `Omit`（而不是 TS 自带的那个）：自带的 `Omit<A | B, K>` 只取联合的
+ * **公共键**，会把四支压成一个空壳——那样 `RefIdentity` 就丢了 `blob` / `name`
+ * 这些正是各支要的东西。
+ */
+export type RefIdentity = DraftRef extends infer One
+  ? One extends DraftRef
+    ? Omit<One, 'start' | 'end' | 'marker'>
+    : never
+  : never
 
 /** 按起点排序（各处改完都过它一道——区间表恒有序，后面每一步才好写）。 */
 function sorted(refs: readonly DraftRef[]): readonly DraftRef[] {
@@ -247,12 +281,21 @@ export function shiftedRefs(refs: readonly DraftRef[], delta: number): readonly 
 /** 一处引用 → 命令面上的那一份（`at` ＝ 起点；`marker` 随正文一起走）。 */
 export function wireOf(ref: DraftRef): InputRef {
   if (ref.kind === 'skill') {
+    return { kind: 'skill', at: ref.start, marker: ref.marker, name: ref.name, source: ref.source }
+  }
+
+  if (ref.kind === 'image') {
+    // **整份照搬**（含 `blob`）：这一支不按路径现读——字节早在记录里了（见 `DraftRef` 的注）
     return {
-      kind: 'skill',
+      kind: 'image',
       at: ref.start,
       marker: ref.marker,
-      name: ref.name ?? ref.marker.replace(/^\//, ''),
       source: ref.source,
+      label: ref.label,
+      name: ref.name,
+      mime: ref.mime,
+      blob: ref.blob,
+      ...(ref.external === true ? { external: true as const } : {}),
     }
   }
 
@@ -271,13 +314,16 @@ export function wire(refs: readonly DraftRef[]): readonly InputRef[] {
 }
 
 /**
- * **引用文字该怎么写**（一处产出）——文件 / 目录带 `@`，目录带尾斜杠，技能带 `/`。
+ * **引用文字该怎么写**（一处产出）——文件 / 目录 / 图片带 `@`，目录带尾斜杠，技能带 `/`。
  *
  * 目录那个尾斜杠：设计 · 文件与图片「目录加 `/` 后向内浏览」——屏上那一处因此一眼看得出
  * 它是个目录（`@src/`），而身份仍只到 `src`（尾斜杠不是路径的一部分）。
+ *
+ * **图片与文件同形**（`@shot.png`）：设计 · 文件与图片「图片引用留在句中，正常显示足以
+ * 辨认的名称」——那一处写的就是名字，**不另铺常驻附件行**（类型与大小按需查询，或失败时说）。
  */
 export function markerOf(part: {
-  readonly kind: 'skill' | 'file' | 'dir'
+  readonly kind: 'skill' | 'file' | 'dir' | 'image'
   readonly name: string
 }): string {
   if (part.kind === 'skill') return `/${part.name}`

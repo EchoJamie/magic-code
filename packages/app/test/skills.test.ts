@@ -15,7 +15,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { EventStamper, KernelEvent, ModelGateway, SkillRef } from '@magic/contracts'
+import type { EventStamper, KernelEvent, ModelGateway, ModelMessage, SkillRef } from '@magic/contracts'
 import { createModelGateway } from '@magic/model'
 import { attachShell, runShellScript } from '../src/index.ts'
 import type { ShellHandle } from '@magic/app'
@@ -113,6 +113,20 @@ function realSkill(stage: Stage, name: string): string {
  * 它请求的调用（那才是「模型说了要干什么」）。只取 `content` 会把回填整段丢掉——
  * 「工具读回来的东西进没进上下文」这条判据当场变成永远为真。
  */
+/**
+ * 一条用户消息的正文（U37 起可能是**部件串**——带图那条）——只取文字那几件。
+ *
+ * 与 `requestText` 分开：那个取的是**整份请求的拼接文本**，这里要的是某一条消息本身。
+ */
+function textOfUser(message: ModelMessage | undefined): string {
+  if (message === undefined || !('content' in message)) return ''
+  const content = message.content
+
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => (part.type === 'text' ? part.text : '〔图片〕')).join('')
+}
+
 function requestText(stage: Stage, index: number): string {
   return (lastModel(stage).requests[index]?.messages ?? [])
     .map((message) => {
@@ -387,10 +401,11 @@ describe('U33 · 显式选定：随交代一并送达', () => {
       const messages = lastModel(stage).requests[0]?.messages ?? []
       const user = messages.filter((message) => message.role === 'user')
       expect(user).toHaveLength(1)
-      expect(user[0]?.content).toContain('〔本次使用技能：pdf（来源 项目 .magic/skills）〕')
-      expect(user[0]?.content).toContain('先数页数，再抽文本')
+      const said = textOfUser(user[0])
+      expect(said).toContain('〔本次使用技能：pdf（来源 项目 .magic/skills）〕')
+      expect(said).toContain('先数页数，再抽文本')
       // 交代本身在材料之后——「先把这份技能摆上，再是这个任务」
-      expect(user[0]?.content?.indexOf('先数页数')).toBeLessThan(user[0]?.content?.indexOf('照它做') ?? 0)
+      expect(said.indexOf('先数页数')).toBeLessThan(said.indexOf('照它做'))
       expect(requestText(stage, 0)).not.toContain('别的做法')
 
       // —— 真事件：回执 ＋ 收下（配对键原样带回） ——
