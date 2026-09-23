@@ -2,38 +2,93 @@
  * 共享语言 · 配置形制（已冻结 · 字面冻结字段名）。
  *
  * 出处：技术方案 · 配置与密钥。
- * 配置文件 `~/.magic/config.json`；字段随阶段生长——**形制首站即立**。
+ * 配置文件住 **Magic 基础目录**下（默认 `~/.magic/config.json`，见 `resolveMagicHome`）；
+ * 字段随阶段生长——**形制首站即立**。
  * **密钥纪律**——`apiKey` 存配置文件（提示 600 权限）或环境变量覆盖；**key 永不入记录 / 事件**。
  *
- * 本文件是共享语言中**唯一带物的地方**——两个无依赖纯函数（规则载体）；其余皆类型。
+ * 本文件是共享语言中**唯一带物的地方**——三个无依赖纯函数（规则载体）；其余皆类型。
  */
 
 import type { McpConfig } from './mcp.ts'
 import type { ProviderModelOverride, ReasoningSetting } from './model.ts'
 import type { ModelTraits } from './ports.ts'
 
-/** 配置文件落点。 */
-export const CONFIG_FILE = '~/.magic/config.json'
-
 /**
- * 数据目录默认值（`dataDir` 键缺省时由加载器补）——`records.db` + `blobs/` 落于此。
- * ⚠️ 用前须经 `expandHome`（下文）——字面 `~` 直接交给运行时库会静默落于 cwd。
+ * **Magic 基础目录的末段名**（U42）——统一基础路径 ＝ `<MAGIC_HOME 或 $HOME>` ＋ 它。
+ *
+ * 这一串是**布局**（「Magic 的东西都在 `.magic` 底下」），不是某个绝对路径：
+ * 绝对路径只有一处算得出来（`resolveMagicHome`）。
  */
-export const DEFAULT_DATA_DIR = '~/.magic'
+export const MAGIC_DIR = '.magic'
 
 /**
- * **授权文件落点**（U22 · 技术方案 · 权限「授权的落点」）——内核**自持**的那一个文件。
+ * **配置文件名**（U42 起是**名字**，不再是 `~/.magic/config.json` 那个绝对路径）。
+ *
+ * 落点由基础目录 ＋ 本名拼出——见 `resolveMagicHome`。别在别处再写一份
+ * `'.magic/config.json'`：那样 `MAGIC_HOME` 一改，改动就漏了那一处。
+ */
+export const CONFIG_FILE_NAME = 'config.json'
+
+/**
+ * **授权文件名**（U22 · 技术方案 · 权限「授权的落点」）——内核**自持**的那一个文件。
+ * 落点＝基础目录 ＋ 本名（`<基础目录>/grants.json`）。
  *
  * **为什么不写 `config.json`**：那是**用户手写**的（写回它要操心原子写 · 保留用户编辑 ·
  * 并发）；授权的写回只落在**一个内核全权持有的文件**上，那三件麻烦就都不成问题。
  *
  * **一个文件，不是一项目一文件**——安全相关的东西价值在**一眼看全**（能扫、能删）；
  * 散进几十个小文件的那一刻它就不再被审。**按工作区绝对路径分节**（见 `grants.catalog`）。
- *
- * ⚠️ 用前须经 `expandHome`（同 `DEFAULT_DATA_DIR`）——字面 `~` 直接交给运行时库
- * 会在 cwd 下造一个名为 `~` 的目录，且不报错。
  */
-export const GRANTS_FILE = '~/.magic/grants.json'
+export const GRANTS_FILE_NAME = 'grants.json'
+
+/**
+ * **统一基础路径**（U42）——解析出来的两件，一起往下传。
+ *
+ * **为什么是两件而不是一件**：`MAGIC_HOME` 换的是 **Magic 自己的落点**，不是**家目录**。
+ * 用户写在配置里的 `~/work` 照旧指他真那个家（「不修改系统 HOME」是这一条的由头），
+ * 而 Magic 的配置 / 数据 / 授权 / 用户技能都从基础目录派生。两件事混成一个值，
+ * 迟早有一处要么把 `~/work` 拽到 `MAGIC_HOME` 底下、要么在 `MAGIC_HOME` 指了别处时
+ * 仍去摸旧 `.magic`。
+ */
+export type MagicHome = {
+  /** **家目录**——用户写的 `~/…` 展开到它（`MAGIC_HOME` 不改写它）。 */
+  readonly home: string
+  /**
+   * **Magic 基础目录**（＝统一基础路径）——`<MAGIC_HOME 或家目录>/.magic`。
+   * 配置 / 会话记录与 blob / 授权文件 / Magic 用户技能等全部原 `~/.magic` 内容都从它派生。
+   */
+  readonly base: string
+}
+
+/**
+ * **统一基础路径的解析出口**（U42 · 设计「命令行与配置 · MAGIC_HOME：统一基础路径」）——
+ * 全仓**只此一处**拼这个路径。
+ *
+ * - `MAGIC_HOME` 给了（非空）就用它，否则用家目录；两种情形下**都在其下追加 `.magic`**；
+ * - `MAGIC_HOME` 里的前导 `~` 照全仓那把尺子展开（`expandHome`）——手写在环境里的路径
+ *   与手写在配置里的路径用**同一个**展开器，不然 `MAGIC_HOME=~/x` 会在 cwd 下造一个
+ *   名叫 `~` 的目录且不报错（`dataDir` 踩过的那个坑）；
+ * - **不读 `process.env`、不取 `os.homedir()`**：环境与家目录由调用方给（契约层保持
+ *   无依赖，同 `expandHome`）。app 在**读配置之前**解析一次，此后各域只收已解析的路径
+ *   （设计明文：不各建一套解析或回退机制）。
+ *
+ * **不做的事**：不建目录、不检查存不存在（那是用到它的那一处的事），也不改 `process.env.HOME`
+ * ——「不修改系统 HOME」是设计里明写的一条。
+ */
+export function resolveMagicHome(
+  env: Readonly<Record<string, string | undefined>>,
+  home: string,
+): MagicHome {
+  const configured = env['MAGIC_HOME']?.trim()
+  const root =
+    configured === undefined || configured === '' ? home : expandHome(configured, home)
+
+  // 尾随的 `/` 不改变所指（`MAGIC_HOME=/tmp/x/` 与 `/tmp/x` 是同一处）——但不去动根 `/`：
+  // `${'/'}/.magic` ＝ `/.magic` 是对的，把它剥成空串才是错的。
+  const trimmed = root.length > 1 ? root.replace(/\/+$/, '') : root
+
+  return { home, base: `${trimmed}/${MAGIC_DIR}` }
+}
 
 /**
  * 供应商条目（`providers.<id>`——`<id>` 是**用户连接**的 id，任意命名）。
@@ -261,8 +316,8 @@ export function apiKeyEnvVarOf(providerId: string): string {
  * 家目录由调用方注入（配置加载器取 `node:os` 的 `homedir()`）——契约层保持无依赖。
  *
  * **名字是 `expandHome`，不是 `expandDataDir`**（U28 改名）：射程从一开始就是「前导 `~`
- * 展开」这件事本身，而用它的**不止 `dataDir`**——工作区根（U27）与授权文件落点
- * （`GRANTS_FILE`，U22）走的是**同一个**展开器（「一处展开，四处同理」）。
+ * 展开」这件事本身，而用它的**不止 `dataDir`**——工作区根（U27）与 Magic 基础目录
+ * （`MAGIC_HOME`，U42）走的是**同一个**展开器（「一处展开，四处同理」）。
  * 旧名是它的出身（最早只为 `dataDir` 写），留着会让读的人以为「这函数只管数据目录」，
  * 于是别处再写一套更宽的规则——**名字与射程错位**，迟早分叉（`U27` 备案 1）。
  */

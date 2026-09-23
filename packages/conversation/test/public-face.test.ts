@@ -15,10 +15,15 @@ import type { ContextPolicy, ConversationDeps, PromptVars } from '../src/index.t
 import * as face from '../src/index.ts'
 
 describe('公开面', () => {
-  test('值面两件——端口实现（会话主面）＋ 一条会话的实例（装配的 open 工厂造它）', () => {
+  test('值面三件——端口实现（会话主面 ＋ 计划与历史的读面）＋ 一条会话的实例（装配的 open 工厂造它）', () => {
+    // U34 补锚：**原锚**是「域包的 exports 只出端口实现 ＋ 装配期构造入参形态」那一句；
+    // **为何变**：本域多实现了一个契约端口（`PlanReader`——工具域那三件读协作笔记与
+    //   会话记录时用的那对只读回调），它也**只有本域能给**（判断在上下文那一侧）；
+    // **新锚**：同一句话多一件——值面三件都是「端口实现 / 一条会话的实例」，判据一个字没松。
     expect(Object.keys(face).sort()).toEqual([
       'createConversationService',
       'createConversationSession',
+      'createPlanReader',
     ])
   })
 
@@ -49,6 +54,13 @@ describe('公开面', () => {
       'DEFAULT_CONTEXT_POLICY',
       'summarize', // 标题的裁法（域内件——默认标题与改名共用一套，不对外承诺措辞）
       'TITLE_LIMIT',
+      // U34：计划那几件里**只有读面出去**（`createPlanReader`）——窗口算术、材料拼装、
+      // 计划字段的收窄都是域内件，域外要的是「读得到」，不是「怎么读的」
+      'readPlanOf',
+      'readHistoryOf',
+      'planMaterialOf',
+      'planBlockOf',
+      'planFieldOf',
     ]) {
       expect(exported.has(internal)).toBe(false)
     }

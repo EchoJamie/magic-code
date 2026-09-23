@@ -195,6 +195,9 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         content,
         // **交付身份原样过手**（U33）——有就带、没有就不带（不补 `undefined` 占位）
         ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
+        // **计划载荷同理**（U34）——⚠️ 判的是 `undefined`（不在场）而非真假：
+        // `null` 是**清空**，带上它才算数（见契约 `ToolResult.plan`）
+        ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
       }
     },
   }

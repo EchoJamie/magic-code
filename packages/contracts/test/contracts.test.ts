@@ -245,6 +245,8 @@ export function recordsServiceIsImplementable(): void {
     appendEntry: () => next++,
     appendEvent: () => {},
     readEntries: () => (async function* (): AsyncIterable<Entry> {})(),
+    // 倒序、有界读（U34）——空库从后往前也没有
+    readEntriesBack: async () => [],
     readEvents: () => (async function* (): AsyncIterable<KernelEvent> {})(),
     // 在途识别（恢复 ① · U25）——「干净会话」就是一条也说不出：空扫描
     scanInFlight: async (session) => ({ session, openTurn: null, lastTurn: null, calls: [] }),
@@ -689,11 +691,18 @@ describe('事件契约', () => {
       // 发现的结果，都不在库里），且 `/mcp` 也是反复看的动作。重连也不落库：
       // 它不产生外部效果（重放要的是「发生过什么」）。
       'mcp.catalog',
+      // U34：计划变更同列——**原锚**是「读出来的不落库」（U34 之前的十二条都挂它）；
+      // **为何变**：计划也开了一条读面（清单要落进界面，条目落账之后报一声）；
+      // **新锚**：同一判据多一格——内容本就在条目载荷里（`ToolResultPayload.plan`），
+      // 落库＝把同一件事存第二遍；且它是**此刻的读数**（同 `session.state` 那条：
+      // 快照落库，恢复时读到的旧通报会与当下的清单打架）。
+      'plan.changed',
       // U41：供应商管理面同列——**原锚**是 `model.catalog` 那条「读出来的不落库」
       // （配置本来就在盘上，不在库里）；**为何变**：模型面与供应商面各开了一条读面
       // （`/model` 的主体 ＋ 管理那一屏）；**新锚**：同一判据多一格，字面规则一个没动。
       // 保存 / 移除**这个动作**也不落库：它的痕在配置文件里（少了一条 / 多了一条）。
       'provider.catalog',
+
     ])
   })
 

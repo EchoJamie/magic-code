@@ -26,6 +26,8 @@ import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
 import { bannerOf } from '../banner.ts'
+import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
+import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { hasRunningTool } from '../view.ts'
@@ -34,6 +36,7 @@ import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList, pickerBudget, pickerLayout } from './picker.ts'
+import { PlanList } from './plan.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
 
@@ -85,10 +88,14 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
   //    而裁决卡 / 选择器 / 补全候选是各自算的行数，封顶够不着它们）——于是「账 4 行、
   //    屏 5 行」这号分家又回来了：矮窗上活动区多算了一行 ⇒ 帧正好顶满 ⇒ 真光标高一行
   //    （40×8 的接管屏就是那一格）。账与屏**同取 `dockHeightOf` 一处**，剩下的格子归活动区。
-  const dock = dockHeightOf(view, columns, rows)
   // 空态那一行**已删**（用户 2026-09-20 定：那句「会话在你按下第一次回车时才建立」没有动作价值，
-  // 原型早已删掉）——账里也就不再有这一项：帧的三段只剩活动区、`CHROME_LINES`、交互区。
-  const liveBudget = Math.max(0, rows - 1 - CHROME_LINES - dock)
+  // 原型早已删掉）——账里也就不再有这一项：帧的几段只剩活动区、`CHROME_LINES`、交互区。
+  //
+  // **U34 起，这一段余量还要再分一次**（活动区 ↔ 步骤清单）：先保证交互区，再给当前
+  // 回复留够（`PLAN_KEEP_LINES`），剩下的才是清单的——分法与折行都在 `planBlockOf` 一处
+  // （`liveLayoutOf` 就干这一件），故「账 4 行、屏 5 行」那号事不会在清单这儿重演。
+  const { plan, rest } = liveLayoutOf(view, columns, rows)
+  const liveBudget = Math.max(0, rest - plan.height)
   const live = liveAreaOf(view, columns, liveBudget)
 
   // **字标在放不下的宽度上要「一行都不占」**（设计 · 极窄：「不印，优先保证正文与输入空间」）。
@@ -165,6 +172,15 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
         now,
       }),
     ),
+    // **步骤清单**（U34）——**动态区末尾、输入区上方**（设计）；默认展开、就地刷新。
+    // ⚠️ 它在**分隔线之上**：那一块仍属「这一屏正在发生什么」，而分隔线划的是记录区与
+    // 交互区之间的界（输入框那一侧才是交互区）。没有清单时一行都不占（`height === 0`）。
+    //
+    // ⚠️ **`now` 只在呼吸为真时才交出去**（返修⑤）：钟是**共享**的（工具在跑它也走），
+    // 无条件递给清单的话，该静止的时候那格方块照样会跟着暗一档亮一档。
+    ...(plan.height === 0
+      ? []
+      : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? now : null })]),
     // **全屏只有这一条分隔线**（记录区与交互区之间）
     h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns))),
     h(Box, { flexDirection: 'column' }, ...dockOf(view, columns, rows)),
@@ -240,6 +256,10 @@ type LiveEntry = {
  *    算——同一条交界行两本账，差的正是一行分段。
  */
 function liveAreaOf(view: ShellView, columns: number, budget: number): readonly LiveEntry[] {
+  // ⚠️ **这儿一行都不摘**（U34 返修①）：安静的那几个工具行也在本轮里，只是**渲染那一处
+  // 不出行**（`components/log.ts` 按 `quiet` ＋ `expanded` 判）——故它们的显示行数是 0，
+  // 也就自然不占预算（`heightOf` 走的是同一个 `rowLines`）。在这儿滤掉＝它们连
+  // 「展开可查」都没了（`ctrl+o` 展开时得能看见）。
   const rows = view.rows
   const spacedAt = (index: number): boolean =>
     needsSpacerAfter(index === 0 ? view.settled.at(-1) : rows[index - 1], rows[index])
@@ -272,6 +292,53 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
 /** 一行的显示行数（只数，不渲染——借记录区的纯函数）。 */
 function heightOf(row: LogRow, columns: number, expanded: boolean, spaced: boolean): number {
   return rowLines(row, { columns, expanded, spaced }).length
+}
+
+/**
+ * **动态区的这一屏怎么分**（U34）——余量先给交互区，再给当前回复留够，**剩下的归清单**。
+ *
+ * **一处算术、三处取用**：铺屏（`AppView`）、量行（`dockHeightOf` 的那笔账）、
+ * **动画开关**（活壳据「清单画不画得出来」决定要不要滴答）。三处各算一套的话，
+ * 「清单看得见却不动」或「看不见还在动」这种账当场分家。
+ *
+ * `rest` 是**分给活动区与清单的总量**（交互区与分隔线、状态行都还没扣）——调用方拿它
+ * 减 `plan.height` 就是活动区的预算（清单那一块只吃它自己那一份，活动区不变少）。
+ */
+export function liveLayoutOf(
+  view: ShellView,
+  columns: number,
+  rows: number,
+): { readonly plan: PlanBlock; readonly rest: number } {
+  const rest = Math.max(0, rows - 1 - CHROME_LINES - dockHeightOf(view, columns, rows))
+  const plan = planBlockOf({
+    plan: view.plan.plan,
+    collapsed: view.planCollapsed,
+    top: view.planTop,
+    columns,
+    budget: planBudgetOf(rest),
+  })
+
+  return { plan, rest }
+}
+
+/**
+ * **清单那一格的呼吸**（U34）——只在「**进行中那一步真在屏上** · **实际工作中**」时动
+ * （设计：空闲、等待、错误、收起或卸载时停止）。
+ *
+ * 钟不是新开一个：与工具行那个「跑到第几秒」共用活壳里那支按需 200ms 的钟
+ * （`useLiveClock`）——两种动都只是「画的时候多个此刻」，合在一起滴答不冲突。
+ *
+ * ⚠️ 判据落在 `block.hasRunning` 上——**只看真画出来的那几行**（见 `PlanBlock.hasRunning`）：
+ * 拿整份 `steps` 扫的话，进行中那一步翻出视口之后屏上全在动；收起 / 极矮窗口没画清单时
+ * 同理（返修⑤）。
+ *
+ * ⚠️ **光让钟停还不够**（同一个返修）：共享的 `now` 若**无条件**递给清单，工具在跑时
+ * 那格方块照样会暗一档亮一档——「时钟在走」与「这一块该不该动」是两件事。故调用方
+ * （`AppView`）**只在呼吸为真时**才把 `now` 交给 `PlanList`，否则给 `null`（＝画原色、
+ * 一动不动）。
+ */
+export function breathingOf(view: ShellView, block: PlanBlock): boolean {
+  return view.status.state === 'working' && block.hasRunning
 }
 
 /** 左下交互区的内容（四种用法）。 */
@@ -524,13 +591,29 @@ export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
   const { exit } = useApp()
-  const now = useLiveClock(hasRunningTool(view))
+  // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
+  // 翻页据它算「一页到哪」（见下）
+  const { plan } = liveLayoutOf(view, columns, rows)
+  const now = useLiveClock(hasRunningTool(view) || breathingOf(view, plan))
 
   const feed = (key: ShellKey): void => {
     if (shell.key(key).exit) exit()
   }
 
   useInput((input, key) => {
+    // **清单翻页**（U34）——`PgUp` / `PgDn`。
+    //
+    // ⚠️ 这一跳**只有这一层做得了**：一页几行＝屏上放得下几行，而列数、终端高度、
+    // 交互区的高度账都在这儿（外壳不猜屏有多高，见 `ShellKey.planTop`）。
+    // 故这里算**目标位置**，外壳只存；「没有选择器/审批接管时才生效」那条规矩归外壳判
+    // （它才知道此刻左下开着什么）。
+    if (key.pageUp === true || key.pageDown === true) {
+      if (plan.window !== null) {
+        feed({ kind: 'planTop', top: planScrolled(plan.window, key.pageDown === true ? 1 : -1) })
+      }
+      return
+    }
+
     for (const mapped of toShellKeys(input, key)) feed(mapped)
   })
 
@@ -560,6 +643,9 @@ export function toShellKeys(
 ): readonly ShellKey[] {
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]
   if (key.ctrl === true && input === 'o') return [{ kind: 'ctrl+o' }]
+  // `Ctrl T`——收起/展开当前清单（U34）。两条来路同形：裸控制码 `\x14`（Ink 解成
+  // `ctrl＋字母 t`）与 kitty 协议下的 `CSI 116;5u`（`use-input` 那两支都归到 `input === 't'`）。
+  if (key.ctrl === true && input === 't') return [{ kind: 'ctrl+t' }]
   if (key.tab === true) return [{ kind: 'tab' }]
 
   // **`shift+回车` ＝ 换行**（原型 · 键盘）。两条来路都要认（这就是「两条来路」那件事）：

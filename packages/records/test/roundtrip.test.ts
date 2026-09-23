@@ -20,8 +20,10 @@ import type {
   EventKind,
   KernelEvent,
   NewEntry,
+  PlanNote,
   RecordId,
   SessionId,
+  ToolResultPayload,
   TurnId,
 } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
@@ -311,6 +313,25 @@ describe('判据 1 · 落取回环', () => {
         }),
       ).toThrow(/tool-result/)
 
+      // 工具结果的可选位 `plan`（U34）——**只增不改的兼容位**：给了照收、形状不对即拒。
+      // 形状错的那几条：状态不在词表里 · 步骤不是对象 · notes 不是字符串。
+      // ⚠️ 这些值**故意不是** `PlanNote`（要验的正是运行时那道硬闸），故此处只能落一次
+      // 断言（类型层本来就拦得住它们——那道闸拦的是「库里的旧行 / 手写的 JSON」，不是本文件）。
+      for (const broken of [
+        { steps: [{ text: '一步', status: 'doing' }], notes: '' },
+        { steps: ['一步'], notes: '' },
+        { steps: [], notes: 3 },
+      ]) {
+        expect(() =>
+          records.appendEntry({
+            kind: 'tool-result',
+            content: { text: '已更新' },
+            at,
+            payload: { ok: true, output: { text: '已更新' }, plan: broken } as unknown as ToolResultPayload,
+          }),
+        ).toThrow(/tool-result/)
+      }
+
       // 会话 id 是分束的键——空串不是会话
       expect(() => store.serviceFor('')).toThrow(/session/)
       // 信封的 session 与服务实例不一致＝跨会话串线，拒
@@ -324,6 +345,91 @@ describe('判据 1 · 落取回环', () => {
           data: {},
         }),
       ).toThrow(/session/)
+
+      store.close()
+    } finally {
+      removeDataDir(dir)
+    }
+  })
+
+  /**
+   * U34 · **计划载荷的三态**：缺字段 / 有值 / `null`（清空）——落取回环逐字段相等。
+   *
+   * 判据的重点在**缺字段与 `null` 分得开**（契约 `ToolResultPayload.plan` 那条注）：
+   * 用真假判断把两者混在一起，读侧就分不出「这次清空了」与「这次跟计划无关」。
+   */
+  test('工具结果携带计划更新——三态落取回环逐字段相等（缺字段 / 有值 / null）', async () => {
+    const dir = tempDataDir()
+    try {
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      const records = store.serviceFor(SESSION)
+      const at = T0 + 2
+
+      const plan: PlanNote = {
+        steps: [
+          { text: '定位登录失败提示', status: 'completed' },
+          { text: '覆盖四个失败分支', status: 'in_progress' },
+        ],
+        notes: '目标：保持已输入内容',
+      }
+
+      records.appendEntry({ kind: 'tool-result', content: { text: '无关的一次结果' }, at, payload: { ok: true, output: { text: '无关的一次结果' } } })
+      records.appendEntry({ kind: 'tool-result', content: { text: '已更新计划' }, at: at + 1, payload: { ok: true, output: { text: '已更新计划' }, plan } })
+      records.appendEntry({ kind: 'tool-result', content: { text: '已清空计划' }, at: at + 2, payload: { ok: true, output: { text: '已清空计划' }, plan: null } })
+
+      const back: Entry[] = []
+      for await (const entry of records.readEntries(SESSION)) back.push(entry)
+
+      expect(back.map((entry) => entry.payload)).toEqual([
+        { ok: true, output: { text: '无关的一次结果' } },
+        { ok: true, output: { text: '已更新计划' }, plan },
+        // `null` 与「没有这一位」在 JSON 列上**不是同一个值**——这条是两者的分界
+        { ok: true, output: { text: '已清空计划' }, plan: null },
+      ])
+
+      store.close()
+    } finally {
+      removeDataDir(dir)
+    }
+  })
+
+  /**
+   * U34 · **倒序、有界读**（`readEntriesBack`）——当前计划与回查历史共用的一条读面。
+   *
+   * 四条判据：`before` **不含**它自己 · 交回按**记录序**（升序）· `limit` 封顶 ·
+   * 到头（没有更早的了）如实少给。跨会话不串线（`before` 取自别条会话也不越界）。
+   */
+  test('倒序、有界读：before 不含 · 升序交回 · limit 封顶 · 跨会话不串线', async () => {
+    const dir = tempDataDir()
+    try {
+      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      const records = store.serviceFor(SESSION)
+      const other = store.serviceFor(OTHER_SESSION)
+
+      const ids: RecordId[] = []
+      for (let index = 0; index < 5; index += 1) {
+        ids.push(
+          records.appendEntry({ kind: 'assistant', content: { text: `第 ${index} 条` }, at: T0 + index }),
+        )
+      }
+      other.appendEntry({ kind: 'assistant', content: { text: '别条会话' }, at: T0 })
+
+      const idsText = (list: readonly Entry[]): string[] =>
+        list.map((entry) => ('text' in entry.content ? entry.content.text : ''))
+
+      // 一次封顶：最近两条，按记录序交回
+      expect(idsText(await records.readEntriesBack(SESSION, undefined, 2))).toEqual([
+        '第 3 条',
+        '第 4 条',
+      ])
+      // `before` 不含它自己——给最后一条的 id，取到的是它之前那两条
+      const last = ids[4] ?? 0
+      expect(idsText(await records.readEntriesBack(SESSION, last, 2))).toEqual(['第 2 条', '第 3 条'])
+      // 到头：还剩一条就给一条（不补齐、不重复）
+      const earliest = ids[0] ?? 0
+      expect(idsText(await records.readEntriesBack(SESSION, earliest, 2))).toEqual([])
+      // 跨会话不串线：拿别条会话的 `before` 也只看本条会话
+      expect(idsText(await records.readEntriesBack(SESSION, undefined, 99))).toHaveLength(5)
 
       store.close()
     } finally {

@@ -27,6 +27,8 @@ import type {
   ReasoningSetting,
   ReasoningSupport,
   PathCatalogRow,
+  PlanNote,
+  PlanSnapshot,
   RecordId,
   SessionId,
   SessionSummary,
@@ -115,6 +117,19 @@ export type LogRow =
       readonly startedAt: number | null
       /** 结果 / 输出的行（dim 缩进块）。 */
       readonly output: readonly string[]
+      /**
+       * **这一笔不必上屏**（U34 · `quietTool`）——计划读写与历史回查那三个辅助工具。
+       *
+       * 由头（设计 · 任务推进 · 终端投影与布局）：「成功的三个辅助工具**默认不另刷一串工具卡**
+       * 或重复计划全文；原始调用/结果仍完整保存，既有工具详情展开可查，**失败正常可见**。」
+       * 计划本身另有去处（清单那一块就地刷新），再刷一串卡就是把同一件事说两遍。
+       *
+       * ⚠️ **只是「默认不画」，不是「丢掉」**：行照旧进记录区（定局与重建都留着它，
+       * 多件裁决报数、耗时也还要它）。画不画是**渲染那一处**的事：`components/log.ts`
+       * 的 `rowBody` 按这一格与 `expanded`（既有那一个展开键）判——**失败 / 被拒 / 被扣下
+       * 照旧可见**，`ctrl+o` 展开之后与别的工具行长得一模一样（详情可查）。
+       */
+      readonly quiet?: true
     }
   /**
    * 折叠的**一组**工具调用（重建时同轮的连续调用并成一行——原型 · 场景 12：
@@ -153,6 +168,97 @@ export function hasRunningTool(view: ShellView): boolean {
 /** 是不是**会话内容**那一类（重建只挑它们；其余是屏上痕迹，切走就没了）。 */
 export function isSessionRow(row: LogRow): boolean {
   return row.kind === 'user' || row.kind === 'assistant' || row.kind === 'thinking' || row.kind === 'tool'
+}
+
+// ══ 计划（U34）：投影 ＋ 块 ═══════════════════════════════════════════
+
+/**
+ * **手上的当前计划**（U34）——外壳只认**已提交记录**来的那一份（设计：`ShellView` 只保存
+ * 来自已提交记录的当前投影及本地展开/滚动位置）。
+ *
+ * 两条来路，**都经 `withPlan` 一处收口**：初始与切会话走 `session.history` 重建
+ * （`planFromEntries` 从条目里取），实时走瞬时事件 `plan.changed`。
+ */
+export type PlanProjection = PlanSnapshot
+
+/**
+ * **辅助工具名**（U34）——计划读写与历史回查那三个。
+ *
+ * 名字按契约（设计 · 数据与工具契约的表：`plan_read` / `plan_update` / `history_read`）。
+ * 它们只读同会话记录或写协作笔记，**不需要用户逐次审批**；成功时也**不另刷工具卡**
+ * （见 `LogRow` 里 `quiet` 那一格）。失败照旧可见——故是「默认不画」，不是「不认」。
+ */
+export const PLAN_TOOLS: ReadonlySet<string> = new Set(['plan_read', 'plan_update', 'history_read'])
+
+/** 这个工具名是不是那三个辅助工具之一（参数由调用方给**注册名**，不是给显示名）。 */
+export function quietTool(name: string): boolean {
+  return PLAN_TOOLS.has(name)
+}
+
+/**
+ * 这一行**默认画不画**——**一处判定、两处用**：
+ * ① 渲染那一处（`components/log.ts` 的 `rowBody`）收起时不出行；② **历史重建的收拢**
+ * （`collapseToolGroups`）不把它算进分组的名称与计数。
+ *
+ * 写在一处是有由头的（2026-09-23 复验退回）：两处各判一套的话，收拢只认「是不是 tool 行」，
+ * 于是**成功辅助调用在历史里又被重新印出来**——`● 2 次工具调用（plan_update · plan_read）`，
+ * 而单看某一行它明明是「默认不画」的。
+ *
+ * 判据三件：成功（含跑动中）⇒ 默认不画；**没跑成（失败 / 被拒 / 被扣下）⇒ 照旧可见**；
+ * 展开由调用方另判（`expanded` 只影响画不画，不影响「算不算进分组」）。
+ */
+export function quietRowHidden(row: LogRow): boolean {
+  if (row.kind !== 'tool' || row.quiet !== true) return false
+
+  return row.state !== 'failed' && row.state !== 'rejected' && row.state !== 'unexecuted'
+}
+
+/** 手上有没有一份**画得出来**的清单（没有步骤＝没有清单——辅助笔记不铺在清单里）。 */
+export function hasPlan(view: ShellView): boolean {
+  return (view.plan.plan?.steps.length ?? 0) > 0
+}
+
+/**
+ * **收下一份新的当前计划**（`plan.changed`）——**按条目 id 判新旧**。
+ *
+ * 设计明写：「以计划条目 id 比较新旧，**历史晚到不能覆盖更新或清空**」。两条来路都会
+ * 落到这儿（实时事件、分块读回来的历史），而读历史那一趟比实时慢——晚到的那一份
+ * **旧**内容不许把已经上屏的新计划盖回去。
+ *
+ * `entry` 是**数字**且单调（契约 `RecordId`：「单调，排序权威」），故「新」就是「大」。
+ * 还没有计划时（`entry === null`）一律收下。
+ */
+export function withPlan(view: ShellView, entry: RecordId, plan: PlanNote | null): ShellView {
+  const current = view.plan.entry
+  if (current !== null && entry <= current) return view
+
+  return { ...view, plan: { entry, plan } }
+}
+
+/**
+ * **条目里那一条当前计划**（重建用）——**从后往前，遇到第一个带 `plan` 字段的工具结果就停**。
+ *
+ * 两条分寸直接来自设计（·保存与读取是一条链）：
+ * - **「含 `plan` 字段」与「`plan` 是 `null`」是两件事**：缺字段＝普通工具结果（跳过），
+ *   `null`＝清空（**到此为止，不继续往前找**——清空之后旧的计划不是当前计划）；
+ * - **失败结果不携带有效更新**：`ok === false` 的那一条跳过（它没写进去）。
+ *
+ * 找不到 ⇒ `{entry: null, plan: null}`：**没建立过计划**，如实说没有。
+ */
+export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (entry === undefined || entry.kind !== 'tool-result') continue
+
+    const payload = entry.payload as { readonly ok?: boolean; readonly plan?: PlanNote | null } | undefined
+    if (payload === undefined || payload.ok === false) continue
+    if (!Object.hasOwn(payload, 'plan')) continue
+
+    // 字段在 = 这一条就是那次更新（值可以是 `null`＝清空）；缺字段才是「不是它」
+    return { entry: entry.id, plan: payload.plan ?? null }
+  }
+
+  return { entry: null, plan: null }
 }
 
 // ══ 左下交互区（四种用法同一位置）════════════════════════════════════
@@ -722,6 +828,29 @@ export type ShellView = {
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
+   * **当前计划**（U34）——步骤清单与辅助笔记那一份（投影见 `PlanProjection`）。
+   *
+   * 它**不是**外壳自己攒的账：内容只有两个来处——**已提交的记录**（重建时从条目里取）
+   * 与**瞬时事件 `plan.changed`**（那一条也是「条目已经落账」之后才发的）。外壳既不
+   * 从显示文案里猜，也不另存一份进度。
+   *
+   * 缺席＝`{entry: null, plan: null}`：**没有计划**（不占位、不强制生成）。
+   */
+  readonly plan: PlanProjection
+  /**
+   * **清单收起没有**（U34 · `Ctrl T`）——**本地视图**：不落库、不进上下文、不发模型请求
+   * （设计：默认展开，`Ctrl T` 收起/展开**只改本地视图**）。
+   */
+  readonly planCollapsed: boolean
+  /**
+   * **清单行视口的第一行**（U34）——**本地**滚动位置，同上不落库。
+   *
+   * ⚠️ **只夹下界（≥0），上界留给渲染层**：一份清单总共折成几行、屏上放得下几行，
+   * 只有渲染那一层量得出（列数与终端高度都在那儿）。故这儿存的是「想去第几行」，
+   * 画的时候由 `planWindow` 夹回范围（计划变短、窗口变小都不会把视口留在半空）。
+   */
+  readonly planTop: number
+  /**
    * 回显过几条用户消息（**单调递增**，只给 React 的 key 用）。
    *
    * 由头（U24 顺带查出 · 本轮收）：用户行的 key 原先是 `user.echo:${rows.length}`——
@@ -765,6 +894,10 @@ export function createView(): ShellView {
     windowTable: null,
     grants: null,
     turnTools: 0,
+    // **没有计划**（不占位）· 默认展开（设计）· 视口从头开始
+    plan: { entry: null, plan: null },
+    planCollapsed: false,
+    planTop: 0,
     echoes: 0,
   }
 }
@@ -901,6 +1034,18 @@ export function reduce(view: ShellView, event: KernelEvent): ShellView {
     case 'mcp.catalog':
       return { ...view, mcp: event.data }
 
+    // 计划那一份落账之后发的瞬时事件（U34）——**落进视图的唯一实时来路**。
+    // 「新旧」由 `withPlan` 一处判（历史晚到不能覆盖更新或清空）。
+    //
+    // **会话隔离**：信封不是当前这条会话的一律丢——换会话之后，旧会话那条流上**晚到**的
+    // 更新 / 清空不许串进新会话（工单：「换会话先移除旧清单，不能短暂串到新会话」）。
+    // 判据与 `shell.ts` 的 `accumulate`（历史分块）**同一条**：还没认到会话时（`null`）
+    // 一律先收下，认得了才按信封挑。
+    case 'plan.changed':
+      if (view.sessionId !== null && event.session !== view.sessionId) return view
+
+      return withPlan(view, event.data.entry, event.data.plan)
+
     case 'session.state':
       return reduceSessionState(view, event.data)
 
@@ -996,6 +1141,8 @@ function appendToolFragment(
         elapsedMs: null,
         startedAt: null,
         output: [],
+        // 名字这就认得出时先收着（后面 `tool.call` 还会再认一次——两条路都要有）
+        ...(name !== undefined && quietTool(name) ? { quiet: true as const } : {}),
       }),
     )
   }
@@ -1029,6 +1176,7 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
         // 都要它）。流式先建行的那条路（下面那个分支）一直有，这一支原先漏了。
         startedAt: at,
         output: [],
+        ...(quietTool(data.name) ? { quiet: true as const } : {}),
       }),
     )
   }
@@ -1041,6 +1189,8 @@ function reduceToolCall(view: ShellView, id: RecordId, data: ToolCallData, at: n
     args: data.args,
     // 发起时刻：**事件自带 `at`**（域不各自取时钟，外壳只做差）
     startedAt: row.startedAt ?? at,
+    // 「不必上屏」在这儿认（`tool.call` 一定带着注册名：流式那几个片段可能还没认出来）
+    ...(quietTool(data.name) ? { quiet: true as const } : {}),
   }))
 }
 
@@ -1153,7 +1303,13 @@ function reduceSessionState(view: ShellView, data: SessionStateData): ShellView 
   // 换了会话 ⇒ 记录区清空重来。**字标照旧在最前面**（`bannerFirst`）：
   // 它属于「记录区」而不是「哪一条会话」——切走一条就没有它，屏上会像是掉了块东西
   // （何况 `AppView` 的 `Static` 按会话换 key，切过去本就等于重开一页）。
-  return switched ? { ...base, rows: [], settled: bannerFirst([]) } : base
+  //
+  // **计划那一块同一条**（U34）：换会话**先移除旧清单**（设计：不能短暂串到新会话）——
+  // 新会话的那一份由随后读回来的历史（`rebuild`）重铺。收起的位与视口也归零：
+  // 每一条会话都从「默认展开、从头看」开始。
+  return switched
+    ? { ...base, rows: [], settled: bannerFirst([]), plan: { entry: null, plan: null }, planCollapsed: false, planTop: 0 }
+    : base
 }
 
 /**
@@ -1171,6 +1327,9 @@ function reduceUserEntry(view: ShellView): ShellView {
 export function settle(view: ShellView): ShellView {
   if (view.rows.length === 0) return view
 
+  // ⚠️ **一行都不摘**（U34 返修：「默认不画」不许在这里变成「丢掉」）——安静的那几个工具
+  // 行照旧进 `settled`（记录区里它在，展开之后看得见），画不画是渲染那一处的事
+  // （`components/log.ts` 按 `quiet` ＋ `expanded` 判）。在这儿滤掉＝那一行**永久不可查**。
   return { ...view, settled: [...view.settled, ...view.rows], rows: [] }
 }
 
@@ -1365,7 +1524,19 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * `rebuild` 两处各 1 ＋ 换会话 1）。**别把这一处改回 `bannerFirst`。**
  */
 export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
-  return { ...view, settled: [pageHeaderOf(view), ...rebuildRows(entries)], rows: [] }
+  // **计划那一份也从这同一批条目里取**（U34）：切会话 / 重开之后清单要跟着回来，
+  // 而它一直是会话记录的一部分（设计：读取、呈现与上下文同读这份来源）。
+  const plan = planFromEntries(entries)
+  const fresh = plan.entry !== null && (view.plan.entry === null || plan.entry > view.plan.entry)
+
+  return {
+    ...view,
+    settled: [pageHeaderOf(view), ...rebuildRows(entries)],
+    rows: [],
+    // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
+    // 已经上屏的新计划（或清空）盖回去（与 `withPlan` 同一把尺子）。
+    ...(fresh ? { plan } : {}),
+  }
 }
 
 /**
@@ -1396,6 +1567,9 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
         elapsedMs: null,
         startedAt: null,
         output: [],
+        // 辅助工具那三个：恢复时也照这条规矩走（默认不画 · 展开可查 · 失败可见）——
+        // 判据全在渲染那一处（`components/log.ts`），行照旧留在记录区里
+        ...(payload?.name !== undefined && quietTool(payload.name) ? { quiet: true as const } : {}),
       })
       pendingAt = rows.length - 1
       continue
@@ -1439,6 +1613,9 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
     else rows.push({ kind: 'receipt', key: `rb:s:${entry.id}`, text: `（摘要）${text}` })
   }
 
+  // **一行都不摘**（返修）：安静的那几个工具行照旧铺进记录区——「默认不画」由渲染那一处
+  // 按 `quiet` ＋ `expanded` 判（`components/log.ts`）。在这儿滤掉＝切一趟会话回来
+  // 那一行就**永久不可查**了（`Static` 写一次就不再重绘）。
   return collapseToolGroups(rows)
 }
 
@@ -1459,6 +1636,11 @@ const RECENT_GROUPS = 5
  * - **≥2 次才收**——收拢是为了**省行**：`● 1 次工具调用（ls）` 与 `● ls .` 同样占一行，
  *   却把参数丢了 ⇒ 1 次收是**净损失**；
  * - **末尾 `RECENT_GROUPS` 组不收**——展开策略按**条数**，不是「只有最后一组」。
+ *
+ * ⚠️ **数的是「看得见的」那几条**（2026-09-23 复验退回）：默认不画的行（成功辅助调用，
+ * 见 `quietRowHidden`）既不进名称也不进计数——不这样的话，**单看某一行它明明不画**，
+ * 恢复历史时却从分组摘要里又冒出来（`● 2 次工具调用（plan_update · plan_read）`）。
+ * 一段里看得见的不足两条就不收：**收了反而是净损失**（同上面「≥2 次才收」那条账）。
  */
 function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
   const segments = toolSegments(rows)
@@ -1466,6 +1648,13 @@ function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
 
   /** 末尾这几段保持逐条展开。 */
   const recent = new Set(segments.slice(-RECENT_GROUPS).map((segment) => segment.start))
+
+  /** 一段里**看得见**的那几个名字（默认不画的不算）。 */
+  const visibleNames = (segment: { readonly start: number; readonly end: number }): readonly string[] =>
+    rows
+      .slice(segment.start, segment.end + 1)
+      .filter((row): row is Extract<LogRow, { kind: 'tool' }> => row.kind === 'tool' && !quietRowHidden(row))
+      .map((row) => row.name)
 
   /** 摘要行插在每段的**首行**位置；段内其余行丢掉。 */
   const summaryAt = new Map<number, readonly string[]>()
@@ -1475,10 +1664,10 @@ function collapseToolGroups(rows: readonly LogRow[]): readonly LogRow[] {
     if (recent.has(segment.start)) continue
     if (segment.end === segment.start) continue // 单次调用不收
 
-    summaryAt.set(
-      segment.start,
-      rows.slice(segment.start, segment.end + 1).map((row) => (row.kind === 'tool' ? row.name : '')),
-    )
+    const names = visibleNames(segment)
+    if (names.length <= 1) continue // 看得见的不足两条：不收（收了只有净损失）
+
+    summaryAt.set(segment.start, names)
     for (let index = segment.start + 1; index <= segment.end; index += 1) dropped.add(index)
   }
 

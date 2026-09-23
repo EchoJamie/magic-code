@@ -19,6 +19,7 @@ import type {
   EntryKind,
   EntryPayload,
   NewEntry,
+  PlanNote,
   RecordId,
   SessionId,
   ToolCallPayload,
@@ -78,7 +79,10 @@ export function assertEntryShape(entry: NewEntry): void {
 
   if (entry.kind === 'tool-result') {
     if (!isToolResultPayload(entry.payload)) {
-      throw new Error('tool-result 条目的载荷须为 { ok, output }——它是重放真源，不可省')
+      throw new Error(
+        'tool-result 条目的载荷须为 { ok, output }（可选 { plan }——U34：更新笔记那件工具的计划载荷，' +
+          '有值＝当前计划、null＝清空）——它是重放真源，不可省',
+      )
     }
     return
   }
@@ -150,7 +154,37 @@ export function isToolCallPayload(payload: unknown): payload is ToolCallPayload 
 }
 
 export function isToolResultPayload(payload: unknown): payload is ToolResultPayload {
-  return isRecord(payload) && typeof payload['ok'] === 'boolean' && isContent(payload['output'])
+  if (!isRecord(payload)) return false
+  if (typeof payload['ok'] !== 'boolean' || !isContent(payload['output'])) return false
+
+  // 计划更新那一位（U34）——**只增不改的兼容位**：给了就得是那一份（或 `null` ＝ 清空），
+  // 没给照旧什么都不多。与 `user` 条目那条硬闸同一个姿势：**放行两种形状，不是放行一切形状**
+  // （计划笔记是模型据以接着干活的那份，形状坏了读侧就只能猜）。
+  const plan = payload['plan']
+  return plan === undefined || plan === null || isPlanNote(plan)
+}
+
+/**
+ * 计划笔记的形状（U34）——步骤（文字 ＋ 三格状态之一）＋ 辅助笔记（字符串）。
+ *
+ * **只查结构，不查内容**：不查字数、不查步数、不查「是不是只有一个进行中」、不查模板
+ * （设计明写：这些一律不做）。`notes` 可以是空串——「没记别的」是一件合法的事。
+ */
+export function isPlanNote(value: unknown): value is PlanNote {
+  if (!isRecord(value)) return false
+  if (typeof value['notes'] !== 'string') return false
+
+  const steps = value['steps']
+  if (!Array.isArray(steps)) return false
+
+  return steps.every(
+    (step) => isRecord(step) && typeof step['text'] === 'string' && isPlanStepStatus(step['status']),
+  )
+}
+
+/** 步骤状态——词表就是那三格（`PlanStepStatus` 的运行时对照）。 */
+export function isPlanStepStatus(value: unknown): boolean {
+  return value === 'pending' || value === 'in_progress' || value === 'completed'
 }
 
 export function isContent(value: unknown): value is Content {

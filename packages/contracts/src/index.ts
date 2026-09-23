@@ -5,8 +5,8 @@
  * 域包只 import 本包（＋许可外部库）；域之间互不 import、域不认知外壳与装配——
  * **本包是唯一的跨域入口**。
  *
- * **纯类型、零运行时依赖**（共享内核保持小而稳）；例外只有 `config.ts` 的两个
- * 无依赖纯函数（`apiKeyEnvVarOf` / `expandHome`——规则载体）。
+ * **纯类型、零运行时依赖**（共享内核保持小而稳）；例外只有 `config.ts` 的三个
+ * 无依赖纯函数（`apiKeyEnvVarOf` / `expandHome` / `resolveMagicHome`——规则载体）。
  *
  * 两件：
  * 1. **共享语言**——`ids`（标识与时间口径）· `entries`（条目与 blob 引用）·

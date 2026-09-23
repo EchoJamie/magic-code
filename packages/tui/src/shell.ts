@@ -50,6 +50,7 @@ import {
   sessionHint,
   grantsHint,
   grantsRows,
+  hasPlan,
   mcpHint,
   mcpRows,
   mcpToolRows,
@@ -123,6 +124,22 @@ export type ShellKey =
   | { readonly kind: 'down' }
   | { readonly kind: 'ctrl+c' }
   | { readonly kind: 'ctrl+o' }
+  /**
+   * **`Ctrl T`**——收起/展开当前清单（U34）。
+   *
+   * 设计 · 任务推进：「`Ctrl T` 保留主动收起/展开当前清单的能力，默认仍为展开，
+   * 不成为看计划的必经步骤」。**只改本地视图**——不发模型请求、不动草稿与引用、
+   * 不动插入点、也不动输入历史（故它走 `commit` 而不是 `edit`：后者会把翻历史那一格归位）。
+   */
+  | { readonly kind: 'ctrl+t' }
+  /**
+   * **清单翻页**——把行视口挪到第 `top` 行（U34）。
+   *
+   * ⚠️ **收的是「到哪一行」而不是「翻几行」**：一页 ＝ 屏上放得下的那几行，而**列数、
+   * 终端高度、交互区的高度账只有渲染那一层有**。故目标位置由渲染层按手里那一窗算好
+   * （`plan.ts` 的 `planScrolled`：夹在两头之间），外壳只存不猜——同一条「拿不到的不编」。
+   */
+  | { readonly kind: 'planTop'; readonly top: number }
   | { readonly kind: 'paste'; readonly text: string }
   | { readonly kind: 'other'; readonly label: string }
 
@@ -1915,6 +1932,27 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       case 'ctrl+o':
         commit({ ...view, expanded: !view.expanded })
+        return NONE
+
+      // `Ctrl T`——收起/展开当前清单（U34）。**只改本地视图**：不发送、不碰草稿。
+      // 没有清单时不切（切了也没人看得见，而「默认展开」是设计明写的——别让它悄悄
+      // 变成一个「下次建立计划就收着」的埋伏）。接管（裁决）期间照旧管用：它不经过
+      // 输入框，也不是答复键，挡它没有理由。
+      case 'ctrl+t':
+        if (!hasPlan(view)) return NONE
+        commit({ ...view, planCollapsed: !view.planCollapsed })
+        return NONE
+
+      // 翻页的目标位置由渲染层算好（见 `ShellKey.planTop` 那段注）——这儿只存。
+      //
+      // ⚠️ **接管着就不翻**（设计：翻页只在清单溢出且**没有选择器/审批接管**时生效）：
+      //    那两种时候左下那一块另有主人（候选要上下选、裁决要作答），翻页让位。
+      //    「溢出」那一半不必再判：没溢出时渲染层给的 `top` 就是当前值（`planWindow`
+      //    夹住了），存下去等于没动。
+      // 夹一道下界：手搭的视图可能给过负数（同 `caretAt` 那种防御）。
+      case 'planTop':
+        if (view.dock.kind !== 'input') return NONE
+        commit({ ...view, planTop: Math.max(0, Math.trunc(input.top) || 0) })
         return NONE
 
       case 'paste':

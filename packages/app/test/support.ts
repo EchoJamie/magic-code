@@ -19,7 +19,7 @@ import type { FauxGateway, FauxTurn } from '@magic/faux'
 import { createFauxGateway } from '@magic/faux'
 import type { Assembly, AssembleOptions } from '../src/index.ts'
 import { assemble, loadConfig } from '../src/index.ts'
-import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
+import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 /** 一段「交代一件事、它跑一条命令」的 Faux 脚本——冒烟的标准剧本。 */
 export const SMOKE_TURNS: readonly FauxTurn[] = [
@@ -91,12 +91,16 @@ export function makeStage(options: StageOptions = {}): Stage {
         // 「按 `a`」的用例直接把测试的临时工作区**写进了用户的真文件**（6 节全是
         // `/private/var/folders/…/magic-app-*/ws`）——测试污染真实数据，是这一层总该防住的。
         grantsFile: join(root, 'magic', 'grants.json'),
-        // **家目录也落沙地**（U33）：用户那一类技能来源是 `<home>/.magic/skills` 与
-        // `<home>/.agents/skills`——不给这一条，每个 app 用例都会去扫**用户真的**
+        // **家目录也落沙地**（U33）：用户那一类技能来源是 `<基础目录>/skills` 与
+        // `<家目录>/.agents/skills`——不给这一条，每个 app 用例都会去扫**用户真的**
         // 那两个目录（读到了什么全看这台机器上装了什么，用例当场不可复现）。
         // 与 `grantsFile` 同一条纪律：装配级用例一律沙地化，不碰真东西。
-        home: root,
-        config: loadConfig({ path: configPath, home: root }),
+        //
+        // **显式给基址而不是靠 `MAGIC_HOME`**（U42）：`magicAt(root)` 走的是同一个解析
+        // 出口，但**空环境**——跑测试那个 shell 里万一设了 `MAGIC_HOME`，用例的落点
+        // 也不会跟着漂（同 `grantsFile` 的理由：沙地是显式指的，不是继承来的）。
+        magic: magicAt(root),
+        config: loadConfig({ path: configPath, magic: magicAt(root) }),
         modelGateway: (stamper) => {
           const gateway = createFauxGateway({ stamper, turns, stepDelayMs })
           models.push(gateway)

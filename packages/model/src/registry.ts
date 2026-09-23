@@ -159,6 +159,11 @@ export type ModelRegistryOptions = {
   readonly fetch?: FetchLike | undefined
   /** 环境变量来源——缺省 `process.env`。 */
   readonly env?: Readonly<Record<string, string | undefined>> | undefined
+  /**
+   * **实际读的那一份配置文件**（U42）——只往下递给缺 key 那句提示用
+   * （见 `MissingApiKeyError`：配置文件落点随 `MAGIC_HOME` 走，不能写死一处）。
+   */
+  readonly configPath?: string | undefined
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
 }
@@ -206,6 +211,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       apiKey: options.apiKeys?.[id],
       fetch: options.fetch,
       env: options.env,
+      configPath: options.configPath,
       maxCompletionTokens: options.maxCompletionTokens,
     })
     built.set(id, gateway)

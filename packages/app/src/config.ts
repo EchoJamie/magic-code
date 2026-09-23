@@ -1,14 +1,17 @@
 /**
  * 配置加载 —— 装配视图第 1 步（技术方案 · 配置与密钥）。
  *
- * 读 `~/.magic/config.json`（形制**字面冻结**：`{ defaultProvider, providers{<id>{baseURL,
- * apiKey, model, traits?, contextWindow?}}, dataDir }`）→ 校验 → 落地成 `LoadedConfig`。
+ * 读**基础目录**下的 `config.json`（默认 `~/.magic/config.json`；`MAGIC_HOME` 指到别处时
+ * 跟着走——见契约 `resolveMagicHome`）；形制**字面冻结**：`{ defaultProvider, providers{<id>{baseURL,
+ * apiKey, model, traits?, contextWindow?}}, dataDir }` → 校验 → 落地成 `LoadedConfig`。
  *
- * **两处规矩落在这里**：
+ * **三处规矩落在这里**：
  * - **`dataDir` 前导 `~` 在加载时展开**（契约 `expandHome`）——记录域**不展开**且对 `~`
  *   即拒（`assertPlainDataDir`）。字面 `~` 直通运行时库会在 cwd 下造一个名为 `~` 的目录，
  *   不报错；故展开**必须发生在交给记录域之前**，本文件是那一步。
  *   **工作区根同此**（U27）——同一个展开器、同一个落点（见 `asWorkspaceRoots` 头注）。
+ * - **`dataDir` 的旧落点归位**（U42）——写着 `~/.magic` 及其子目录的，改走基础目录
+ *   （见 `asDataDir` 头注）：旧配置不构成绕过 `MAGIC_HOME` 的例外。
  * - **key 不在这里解析**——解析归模型域的装配面（`resolveApiKey` / `createModelGateway`
  *   构造期抛 `MissingApiKeyError` 即启动期报错），**装配根是它唯一的调用者**；
  *   次序＝显式 → 配置 `apiKey` → `MAGIC_<ID>_API_KEY`。本文件只把 `ProviderConfig`
@@ -22,6 +25,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import type {
   MagicConfig,
+  MagicHome,
   McpConfig,
   McpServerConfig,
   ModelLimits,
@@ -31,10 +35,11 @@ import type {
 } from '@magic/contracts'
 import {
   apiKeyEnvVarOf,
-  CONFIG_FILE,
-  DEFAULT_DATA_DIR,
+  CONFIG_FILE_NAME,
   expandHome,
+  MAGIC_DIR,
   MCP_NAME_SEPARATOR,
+  resolveMagicHome,
 } from '@magic/contracts'
 
 /** 配置加载失败——CLI 捕它、打印消息、退场（不带栈：这不是程序 bug，是配置的事）。 */
@@ -67,12 +72,18 @@ export type LoadedConfig = {
   readonly provider?: ProviderConfig
 }
 
-/** 加载入参——三项皆可注入（测试与入口复用同一函数，规则只写一遍）。 */
+/** 加载入参——各件皆可注入（测试与入口复用同一函数，规则只写一遍）。 */
 export type LoadConfigOptions = {
-  /** 配置文件路径（可含前导 `~`）——缺省 `CONFIG_FILE`（`~/.magic/config.json`）。 */
+  /** 配置文件路径（可含前导 `~`）——缺省 `<基础目录>/config.json`。 */
   readonly path?: string
-  /** 家目录——缺省 `os.homedir()`；契约层保持无依赖，故由调用方注入。 */
-  readonly home?: string
+  /**
+   * **统一基础路径**（契约 `MagicHome`：家目录 ＋ Magic 基础目录）。
+   * 缺省按启动环境现解析（`MAGIC_HOME` → 家目录，其下追加 `.magic`）。
+   *
+   * 给这个口是为了**测试与脚本**能指一块自己的沙地（照 `path` 的先例）；
+   * 产品路径上只有装配根调它一次，故这里是「拿到已解析的路径」，不另做一套解析。
+   */
+  readonly magic?: MagicHome | undefined
 }
 
 /** 报错一律点名到字段（`path → providers.minimax.model`），省得用户对着整份 JSON 找。 */
@@ -263,6 +274,38 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
     ...(raw['traits'] === undefined ? {} : { traits: asTraits(raw['traits'], path, `${field}.traits`) }),
     ...(contextWindow === undefined ? {} : { contextWindow }),
   }
+}
+
+/**
+ * **`dataDir` 的落地**（U42）——两步：**展开前导 `~`** ＋ **旧落点归位**。
+ *
+ * 归位那一步（设计明文：「指向原 `~/.magic` 及其子目录的 Magic 数据路径统一按下节基础路径
+ * 解析，**不能因写在旧配置中而绕过 `MAGIC_HOME`**；指向其它目录的自定义数据路径保持原义」）：
+ *
+ * - `~/.magic` 本身 → **基础目录**（不设 `MAGIC_HOME` 时两者本就同一条，故这是零变化）；
+ * - `~/.magic/data` 这类子路径 → 基础目录下**同样的相对位置**（`<基础目录>/data`）；
+ * - **别处照旧**：`~/work` 还是用户家的 `work`、`/var/tmp/x` 还是那条绝对路径
+ *   ——`MAGIC_HOME` 换的是 **Magic 自己的落点**，不是家目录（设计里与「不修改系统 HOME」
+ *   同一条理由）。
+ *
+ * ⚠️ **判据是「展开之后落在旧 `.magic` 之下」，不是「字符串以 `~/.magic` 开头」**：
+ * 拿字面串比对的话，`/Users/me/.magic` 这种**写全了的绝对路径**会从旁边溜过去——那正是
+ * 「写死了就绕得过」的一种。子路径那一支比较时带上 `/`（`${old}/`），故 `~/.magicX`
+ * 这类**同前缀的别的目录**不会被误伤。
+ *
+ * 只对 `dataDir` 做这一步：其余几处（工作区根 / 规约与技能的来源）点的是**用户的东西**，
+ * 不是 Magic 的数据目录——给它们也套一层归位，等于把用户指到别处的路径悄悄改道。
+ */
+function asDataDir(raw: string, magic: MagicHome): string {
+  const expanded = expandHome(raw, magic.home)
+  const old = `${magic.home}/${MAGIC_DIR}`
+
+  if (expanded === old) return magic.base
+  if (!expanded.startsWith(`${old}/`)) return expanded
+
+  // 分隔斜杠归一：`~/.magic/`（尾随）与 `~/.magic//data`（重复）都落成基础目录那一支的写法
+  const tail = expanded.slice(old.length).replace(/^\/+/, '')
+  return tail === '' ? magic.base : `${magic.base}/${tail}`
 }
 
 /**
@@ -460,15 +503,19 @@ function asMcpConfig(value: unknown, path: string): McpConfig {
 /**
  * 读并校验配置文件。
  *
- * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补 `DEFAULT_DATA_DIR`；
+ * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补**基础目录**；
  * 其余键缺省即报错（首站形制里它们不是可选的）。
  *
  * **`workspaceRoots` 是唯一「缺省＝有效行为」的新键**——缺省 → 装配根回落启动目录
  * （阶段 1 姿态）；**键在即接管**（见契约 `WorkspaceRoots`：不再并入启动目录）。
  */
 export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
-  const home = options.home ?? homedir()
-  const path = expandHome(options.path ?? CONFIG_FILE, home)
+  // **统一基础路径在这一步解析**（U42）——读配置**之前**，且只在这里解析一次
+  // （设计明文：app 在读取配置之前统一解析基础目录，各域只接收已解析路径）。
+  const magic = options.magic ?? resolveMagicHome(process.env, homedir())
+  /** 家目录——用户写的 `~/…` 展开到它（**不是**基础目录：`MAGIC_HOME` 不改写系统家目录）。 */
+  const home = magic.home
+  const path = expandHome(options.path ?? `${magic.base}/${CONFIG_FILE_NAME}`, home)
 
   let text: string
   try {
@@ -479,7 +526,8 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     // （文件根本没有）：空配置照常返回，用户接上供应商时**保存**才创建它。
     // 别的读失败（权限 / 是个目录…）照旧报——那不是「还没配」，那是真有问题。
     if ((error as { code?: string }).code === 'ENOENT') {
-      return { path, config: { providers: {}, dataDir: expandHome(DEFAULT_DATA_DIR, home) } }
+      // 数据目录按**基础目录**给（U42：不再是那个字面量常量——空配置也落得了账）
+      return { path, config: { providers: {}, dataDir: magic.base } }
     }
     const reason = error instanceof Error ? error.message : String(error)
     throw new ConfigError(
@@ -519,10 +567,10 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     )
   }
 
-  // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）
-  const dataDir = expandHome(
-    raw['dataDir'] === undefined ? DEFAULT_DATA_DIR : asText(raw['dataDir'], path, 'dataDir'),
-    home,
+  // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）＋ 旧落点归位（U42，见 `asDataDir` 头注）
+  const dataDir = asDataDir(
+    raw['dataDir'] === undefined ? magic.base : asText(raw['dataDir'], path, 'dataDir'),
+    magic,
   )
 
   // 权限段（阶段 2）：`rules` 的值**原样带过**——条目形态的权威是权限域的 `parseRules`

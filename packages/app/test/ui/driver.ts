@@ -266,6 +266,23 @@ export type UiSessionOptions = {
   /** 额外的 CLI 参数（如 `['--session','s-1']`）。 */
   readonly argv?: readonly string[]
   /**
+   * **外借的沙地**——给了就用它，**收摊不删它**（它归借出方管）。
+   *
+   * 由头（U34 联调收口）：一块沙地 ＝ 一份配置 ＋ 一个数据库 ＋ 一个工作区；
+   * 「关掉应用、再开一个接着看」那条判据要的正是**同一个家目录**，而缺省那一条
+   * 每趟 `mkdtemp` 一块新的——没有这个口子，只能另造一套终端驱动去复用，那正是
+   * 要被删掉的那份重复（绕过同步帧、有界采样与运行档案）。
+   *
+   * ⚠️ **给了它就得同时给 `fixture`**：配置里的 `baseURL` 已经指着那一台夹具，
+   * 另起一台＝指向一个没人听的端口。外借的两件**都不进**本驱动的清理清单
+   * （正常收摊与起手失败两条路都不动它们），借出方自己停、自己删。
+   *
+   * ⚠️ **本趟自己的**东西照旧归本驱动：子进程（退出确认）· PTY · VT · 产物目录。
+   */
+  readonly sandbox?: Sandbox
+  /** **外借的夹具**——与 `sandbox` 成对（见上）。 */
+  readonly fixture?: Fixture
+  /**
    * **换掉整个被测命令**（缺省＝`bun <checkout>/packages/app/src/cli.ts`）。
    *
    * 给**自证探针**用：把被测命令换成一个能自报 `process.stdout.columns/rows` 的小进程——
@@ -343,14 +360,21 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
   const rows = options.rows ?? 30
   const scrollback = options.scrollback ?? 2_000
 
-  const fixture = (owned.fixture =
-    options.turns === undefined ? null : startFixture({ turns: options.turns, model: options.model }))
-  const sandbox = (owned.sandbox = createSandbox({
-    baseURL: fixture?.baseURL,
-    model: options.model,
-    forceColor: options.forceColor,
-    config: options.config,
-  }))
+  // **外借的**（`options.fixture` / `options.sandbox`）**不进 `owned`**——收摊那两条路
+  // 只动 `owned` 里那几件，于是外借的沙地与夹具原封不动（见 `UiSessionOptions.sandbox`）
+  const fixture =
+    options.fixture ??
+    (options.turns === undefined
+      ? null
+      : (owned.fixture = startFixture({ turns: options.turns, model: options.model })))
+  const sandbox =
+    options.sandbox ??
+    (owned.sandbox = createSandbox({
+      baseURL: fixture?.baseURL,
+      model: options.model,
+      forceColor: options.forceColor,
+      config: options.config,
+    }))
 
   // 摊平成可变数组——`Bun.spawn` 收的是 `string[]`，而选项里给的是只读的
   const argv: string[] = [...(options.command ?? [process.execPath, cli, ...(options.argv ?? [])])]
@@ -654,12 +678,13 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       // 先给它一点**自己走**的余地：刚敲过 ctrl+c 时那一跳还在路上，
       // 一上来就 SIGTERM 会把「用户让它退的」记成「我们杀的」（判据当场分不出来）
       const by = await shutDown(child, closeOptions.graceMs ?? 600)
-      await releaseTerminal(fixture, vt, pty)
+      await releaseTerminal(owned.fixture, vt, pty)
 
       // 记录库与授权是**现场的一部分**（「记录不丢不重」这类判据要直读它）——
       // 在删沙地之前抄进产物目录（子进程已退，文件不再被占）
       snapshotSandbox(sandbox, artifacts)
-      if (closeOptions.keepSandbox !== true) sandbox.dispose()
+      // 自有沙地才删（外借的归借出方）——`owned.sandbox === null` ⇔ 外借
+      if (owned.sandbox !== null && closeOptions.keepSandbox !== true) owned.sandbox.dispose()
 
       const exit = { code: child.exitCode, signal: child.signalCode, by }
       // 这一趟要是**失败过**（等超时等），结局照失败记——收摊不把失败擦成「跑完了」

@@ -244,8 +244,67 @@ export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
       return analyzeWrite(call, ctx)
     case 'skill':
       return analyzeSkill(call, ctx)
+    case 'plan_read':
+    case 'history_read':
+      return analyzeSessionRead(call.name)
+    case 'plan_update':
+      return analyzePlanUpdate()
     default:
       return unclassifiable(call.name, `工具「${call.name}」不在机械分析表内`)
+  }
+}
+
+// —— 计划与历史（U34 · 三个会话内置辅助工具）——
+
+/**
+ * **三个内置辅助工具**（`plan_read` / `plan_update` / `history_read`）——**一律轻**。
+ *
+ * ⚠️ 这三格**必须显式写**（与 `skill` 那格同一条理由，见其注）：分析表覆盖不到的形态
+ * 一律兜底 `heavy`，而 `ToolSpec.danger` **不参与**这条判定——不写，它们每次调用都会弹卡。
+ *
+ * ## 为什么是轻
+ *
+ * 三件只动**同一份协作笔记与会话记录**（设计：读写与历史查询绑定当前会话）：
+ * - **不碰工作区**——没有文件被读被写被删，故 `landings` 为空、操作类型只有读 / 改笔记；
+ * - **不给模型新的可达面**——会话 id 与记录位置都不是参数（工具入口那一侧卡死），
+ *   模型给不出第二个会话、也指不了库文件或任意 blob；
+ * - **不外发、不执行**——不出网、不起进程（`@magic/tools` 那三件不接沙箱）。
+ *
+ * 故它们与「放行区：读与搜索」同类，走既有的「轻操作 ＋ 规则命中」放行路径
+ * （装配按名字追加内存规则，见 `@magic/app` · `assembly.ts`）。
+ *
+ * ## 影响面为空，规则只能按名字写
+ *
+ * `landings: []` 是有意的：这三件**没有路径可判**（它们不解析任何参数中的路径）。
+ * 于是「缺省路径＝根内」那一格对它们恒真（`rules.ts`：空影响面不受路径格约束），
+ * 规则轴实际上按**工具名**命中——正是装配要的那一种窄规则。
+ */
+function analyzeSessionRead(tool: string): Analysis {
+  const what =
+    tool === 'plan_read'
+      ? '读的是这个会话的计划笔记（步骤清单与辅助笔记）'
+      : '读的是这个会话的一段实际记录（用户交代、助手答复、工具调用与结果）'
+
+  return {
+    weight: 'light',
+    material: [`${what}——不碰工作区里的文件。`, '会话由内核绑定：调用的参数里没有会话标识。'].join('\n'),
+    ops: ['read'],
+    landings: [],
+  }
+}
+
+/** 更新笔记（`plan_update`）——写的是协作笔记，不是工作区里的文件。 */
+function analyzePlanUpdate(): Analysis {
+  return {
+    weight: 'light',
+    material: [
+      '写的是这个会话的计划笔记（整体替换或清空）——不碰工作区里的文件。',
+      '它保存模型的判断，不验证工作完成、也不控制执行。',
+    ].join('\n'),
+    // 操作类型记 `edit`（改的是已有笔记），不记 `overwrite`：后者的词义是整写文件，
+    // 混进来会让「放行整写」一类规则意外覆盖到它（虽然规则还要过路径那一格）
+    ops: ['edit'],
+    landings: [],
   }
 }
 

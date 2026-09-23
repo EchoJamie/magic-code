@@ -27,6 +27,7 @@
 import type {
   Content,
   InputRefEntry,
+  PlanNote,
   RecordId,
   RecordsService,
   Timestamp,
@@ -68,6 +69,14 @@ export type ToolOutcome = {
    */
   readonly skill?: UsedSkill
   /**
+   * **这一次调用交付了一份计划更新**（U34）——从 `ToolResult.plan` 原样过来
+   * （见契约那一格：`null` ＝ 清空，与「没有这一位」分得开）。
+   *
+   * 它落进条目载荷（`ToolResultPayload.plan`），而**条目落账是它唯一的写点**：
+   * 更新工具不自行写记录、事件也晚于这一步才发（见 `agent-loop.ts` 的 `plan.changed`）。
+   */
+  readonly plan?: PlanNote | null
+  /**
    * **压根没跑**（规约重审扣下 / 材料超限停批——本域唯一的两种产生处，见 `agent-loop.ts`
    * 的 `withholds`）。`ok` 分不开「没有开始」与「跑了没成」，故另记一位，与事件同源。
    * 缺省 ＝ 未标（工具域回来的结果都不是它）。
@@ -83,6 +92,8 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
     content: result.content,
     // 交付身份**原样过手**（有就带、没有就不带——不补 `undefined` 占位）
     ...(result.skill === undefined ? {} : { skill: result.skill }),
+    // 计划载荷同理——⚠️ 判 `undefined`（不在场）而非真假：`null` 是**清空**
+    ...(result.plan === undefined ? {} : { plan: result.plan }),
   }
 }
 
@@ -152,6 +163,11 @@ export function appendToolCallEntry(log: EntryLog, call: ToolCall): RecordId {
  *
  * `notExecuted` **只在这一处往载荷里写**，且只在给出来时写（缺省不留位——与事件侧同口径：
  * 「没这一位」本身就是一条信息，别拿 `false` 占位）。
+ *
+ * **计划更新也在这儿落地**（U34）——「工具只核对参数、由对话域一次落账」这句话的落点：
+ * 更新工具交回载荷（`ToolOutcome.plan`），结果与计划字段**同一次**进这条条目；
+ * 写入侧的硬闸（`@magic/records`）照旧把关，形状不对连条目都落不下去。
+ * ⚠️ **清空要写出 `plan: null` 这个键**（不是省略）——省略就是「这次跟计划无关」。
  */
 export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): RecordId {
   return log.records.appendEntry({
@@ -161,6 +177,7 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): Reco
       ok: outcome.ok,
       output: outcome.content,
       ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
+      ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
       ...(outcome.notExecuted === undefined ? {} : { notExecuted: outcome.notExecuted }),
     },
     at: log.now(),

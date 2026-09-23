@@ -94,8 +94,34 @@ export type {
 
 // —— 一屏（`AppView` 纯呈现 · `TuiApp` 活壳）——
 
-export { AppView, TuiApp, dockHeightOf, toShellKeys } from './components/app.ts'
+export { AppView, TuiApp, breathingOf, dockHeightOf, liveLayoutOf, toShellKeys } from './components/app.ts'
 export type { AppViewProps, TuiAppProps } from './components/app.ts'
+
+// —— 步骤清单（U34 · 排版与视口 ＋ 那一小块）——
+//
+// 排版那一层是**纯函数**（预算 · 折行 · 行视口 · 呼吸的数学）：账与屏同取一处，
+// 外壳与渲染都只认它（见 `plan.ts` 头注）。
+
+export {
+  BREATH_MS,
+  GLYPHS,
+  MARK_WIDTH,
+  PLAN_FOLDED,
+  PLAN_KEEP_LINES,
+  breathColor,
+  breathOf,
+  planBlockOf,
+  planBudgetOf,
+  planMoreLabel,
+  planMoreLine,
+  planScrolled,
+  planStyleOf,
+  planWindow,
+  stepLines,
+} from './plan.ts'
+export type { PlanBlock, PlanRow, PlanStyle, PlanWindow } from './plan.ts'
+export { PlanList } from './components/plan.ts'
+export type { PlanListProps } from './components/plan.ts'
 
 // —— 显示部件（快照与自持组件用）——
 

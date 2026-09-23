@@ -71,6 +71,8 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
         if (row?.first === undefined) return
         yield { id: 1, kind: 'user', content: { text: row.first }, at: row.at + 1 }
       })(),
+    // 倒序、有界读（U34）——本文件的用例不验回查，空即可
+    readEntriesBack: async (): Promise<readonly Entry[]> => [],
     readEvents: (): AsyncIterable<KernelEvent> => (async function* (): AsyncIterable<KernelEvent> {})(),
     // 在途识别（恢复 ① · U25）——本文件的用例不验扫描，一律「干净会话」
     scanInFlight: async (session: SessionId) => ({ session, openTurn: null, lastTurn: null, calls: [] }),

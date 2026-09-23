@@ -26,7 +26,7 @@ import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { tuiOptions } from '../src/cli.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
-import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
+import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
 // 夹具 —— 两个条目（**甲声明了窗长、乙没声明**——两形对照），端点换假的
@@ -126,7 +126,8 @@ function stage(): {
       const { modelFetch, modelGateway } = options
       return assemble({
         cwd: workspace,
-        config: loadConfig({ path: configPath, home: root }),
+        config: loadConfig({ path: configPath, magic: magicAt(root) }),
+        magic: magicAt(root),
         prompt: { platform: 'darwin', date: '2026-09-19' },
         ...(modelFetch === undefined ? {} : { modelFetch }),
         ...(modelGateway === undefined ? {} : { modelGateway }),

@@ -152,6 +152,12 @@ export type Cell = {
   readonly fg: string | null
   readonly bg: string | null
   readonly bold: boolean
+  /**
+   * **压暗**（`SGR 2`）——U34 · 步骤清单用它表达「这一项已经做完」（完成项弱化）。
+   *
+   * 与 `bold` / `strikethrough` 同一条坑：`isDim()` 也是**掩过位的位段**，一律按非零判。
+   */
+  readonly dim: boolean
   readonly strikethrough: boolean
   /**
    * **反显**（`SGR 7`）——输入行那只「光标」就是这么画的（`composer.ts` 的 `inverse` 空格）。
@@ -223,6 +229,7 @@ function readCell(cell: IBufferCell): Cell {
     // 删除线得到的是 `-2147483648`。**写成 `=== 1` 就永远为假**（判据当场空转，
     // 「谁都没加粗」看着还挺像那么回事）。故一律按**非零**判。
     bold: cell.isBold() !== 0,
+    dim: cell.isDim() !== 0,
     strikethrough: cell.isStrikethrough() !== 0,
     inverse: cell.isInverse() !== 0,
   }

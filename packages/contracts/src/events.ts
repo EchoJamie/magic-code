@@ -11,7 +11,7 @@
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
-import type { Content, Entry, SessionSummary, UsedSkill } from './entries.ts'
+import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
 import type { RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
 import type { ModelInfoRead, ReasoningSetting } from './model.ts'
@@ -104,6 +104,8 @@ export type EventKind =
   | 'skill.used'
   // 控制 · 输入——**完整输入已被会话收下**（或没成，U33）；**不落库**
   | 'input.settled'
+  // 计划——**当前计划笔记变了**（U34）：更新 / 清空落账之后那一条；**不落库**
+  | 'plan.changed'
   // 控制 · 模型——**读侧命令（`model.list`）的答复**：连接与模型信息缓存的一屏；**不落库**
   | 'model.catalog'
   // 控制 · 供应商——**管理面的读侧答复**（U41）：`provider.list` / 保存 / 移除的回话；**不落库**
@@ -575,6 +577,35 @@ export type EventDataOf = {
      */
     readonly reason?: string
   }
+  // 计划——**当前计划笔记变了**（U34）。两种时机共用这一个 kind：
+  // **更新落账** 与 **清空落账**（`plan: null`）——同一个动作的两面，各报各的。
+  //
+  // ⚠️ **它只覆盖「实时」那一路**（设计 · 终端投影：初始与切会话走既有 `session.history`
+  // 重建，实时走 `plan.changed`）：重建那一路的交条目的通道本来就带着**条目载荷**
+  // （`ToolResultPayload.plan` 就在里面），外壳据它认回当前计划——那一条**要用
+  // 条目 id 比较新旧**（历史晚到不能盖掉更新或清空）。
+  // 故本事件**不在切会话时补发**：补发要挑一个「外壳已经订上」的时刻，而重建发生在放开输入
+  // **之前**（装配纪律），那一刻的补发只会丢。
+  //
+  // **不落库**：内容本来就在条目载荷里（`ToolResultPayload.plan`，一次更新一条记录），
+  // 落库＝把同一件事存第二遍；重放要的是「当时计划是什么」（读条目就有），
+  // 不是「屏上闪了一下」。
+  'plan.changed': {
+    /**
+     * 这份内容落在**哪条记录**上（更新 / 清空的那条 `tool-result` 条目）。
+     *
+     * 外壳以它**比较新旧**：历史晚到不能盖掉更新的那一条（换会话时也据它先清旧清单）。
+     * 它同时是回查线索（模型要复核时按它翻记录）。
+     */
+    readonly entry: RecordId
+    /**
+     * 变化之后的当前计划：**有值** ＝ 就是它；**`null`** ＝ 清空。
+     *
+     * ⚠️ 与条目载荷同一条口径（见 `ToolResultPayload.plan`）：`null` 与「没有这一位」
+     * 是两件事——这一条**必在位**，清空也要报出来（界面据以移除清单）。
+     */
+    readonly plan: PlanNote | null
+  }
   // 控制 · 模型——**读侧命令（`model.list`）的答复**（缺陷 D10 · 第 3 样）。
   // 外壳的 `/model` 要的是**注册表全量**（含从未调用过的条目），而外壳够不着注册表
   // （那是装配的把手）——与 `session.history` 同一处境、同一走法：**命令进、事件出**。
@@ -818,6 +849,11 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 且 `/mcp` 是**反复看**的动作，每按一下留一笔「问过」只会污染观测。
   // 重连这个动作也不落库：它不产生外部效果（重放要的是「发生过什么」）。
   'mcp.catalog',
+  // 计划变更同列的理由（U34）：它是**条目载账之后的一声通报**——内容本来就在条目载荷里
+  // （`ToolResultPayload.plan`），落库＝把同一件事存第二遍。重放要的是「当时计划是什么」
+  // （读条目就有），不是「屏上闪了一下」；且它是**此刻的读数**，落库之后恢复时读到的旧通报
+  // 会与当下的清单打架（同 `session.state` 那条：快照落库，重放时越读越乱）。
+  'plan.changed',
   // 供应商管理面同列的理由（U41）：与 `model.catalog` 同一条——它是**读出来的**
   // （配置本来就在盘上），落库＝把同一份读数存 N 遍。**保存与移除的动作也不是事件**：
   // 它们的痕在配置文件里（少了一条 / 多了一条），重放要的是「发生过什么」，

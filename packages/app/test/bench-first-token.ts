@@ -29,9 +29,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { KernelEvent } from '@magic/contracts'
+import { resolveMagicHome } from '@magic/contracts'
 
-/** 真配置的落点（与 `config.ts` 的 `CONFIG_FILE` 同）。 */
-const REAL_CONFIG = join(homedir(), '.magic', 'config.json')
+/** 真配置的落点——**统一基础路径**下的那一份（U42：跟着 `MAGIC_HOME` 走，不再写死 `~/.magic`）。 */
+const REAL_CONFIG = `${resolveMagicHome(process.env, homedir()).base}/config.json`
 
 export type FirstToken = {
   /** 回车 → 命令进内核（本地那一段）。 */
@@ -48,12 +49,17 @@ export async function firstTokenOnce(prompt: string): Promise<FirstToken> {
   // **复制**配置（不是改写真的那份）；`dataDir: "~/.magic"` 展开到临时家
   writeFileSync(join(home, '.magic', 'config.json'), readFileSync(REAL_CONFIG))
 
+  // **这一趟的基址就是临时家**（U42）：配置、`~` 展开、用户技能与授权全落在它底下
+  // ——真家里那几样一处都不碰（本探针的硬规矩，见文件头注）。
+  const magic = resolveMagicHome({}, home)
+
   const { assemble, loadConfig, attachShell } = await import('../src/index.ts')
 
   try {
     const assembly = assemble({
       cwd: join(home, 'ws'),
-      config: loadConfig({ path: join(home, '.magic', 'config.json'), home }),
+      magic,
+      config: loadConfig({ path: join(home, '.magic', 'config.json'), magic }),
     })
     const handle = attachShell(assembly.shell, { timeoutMs: 60_000 })
 

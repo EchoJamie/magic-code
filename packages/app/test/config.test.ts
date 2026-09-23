@@ -9,10 +9,10 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { CONFIG_FILE, DEFAULT_DATA_DIR, apiKeyEnvVarOf } from '@magic/contracts'
+import { CONFIG_FILE_NAME, MAGIC_DIR, apiKeyEnvVarOf, resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { ConfigError, describeConfig, loadConfig } from '../src/index.ts'
-import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
+import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 /** 家目录——注入值（契约层的展开函数不读环境，故由调用方给）。 */
 /** 工作区根（U26 起 `createRecordsStore` 必给）——本文件量的是数据落点，与归属无关。 */
@@ -20,11 +20,14 @@ const ROOTS = ['/work/alpha']
 
 const HOME = '/home/tester'
 
-function loadFrom(body: unknown, extra: { path?: string } = {}) {
+function loadFrom(
+  body: unknown,
+  extra: { path?: string; magic?: ReturnType<typeof magicAt> } = {},
+) {
   const dir = tempDir('magic-config-')
   const path = extra.path ?? writeConfig(dir, body)
   try {
-    return loadConfig({ path, home: HOME })
+    return loadConfig({ path, magic: extra.magic ?? magicAt(HOME) })
   } finally {
     removeDir(dir)
   }
@@ -104,29 +107,33 @@ describe('形制照读（字面冻结）', () => {
     expect('contextWindow' in none.provider!).toBe(false)
   })
 
-  test('缺省配置文件落点＝契约的 CONFIG_FILE（不在 app 里重写一份字面量）', () => {
-    expect(CONFIG_FILE).toBe('~/.magic/config.json')
+  /**
+   * **落点随基础目录走**（U42）＋ **读不懂才报错**（U41）。
+   *
+   * U42 把「配置文件落点」从一个写死的字面量改成「基础目录 ＋ 文件名」两段
+   * （`MAGIC_DIR` / `CONFIG_FILE_NAME`）——拼出来的绝对路径只剩 `resolveMagicHome` 一处。
+   * U41 又改了触发条件：**文件不在不再是错**（首次运行就是这样，要能进入接入流程），
+   * 故这一条改用一份**读不懂的内容**来验落点——报出来的 `path` 仍是它，判据没松。
+   */
+  test('缺省配置文件落点＝基础目录下的 config.json', () => {
+    expect(MAGIC_DIR).toBe('.magic')
+    expect(CONFIG_FILE_NAME).toBe('config.json')
 
-    // 不传 path 时读 CONFIG_FILE——展开后即 `${HOME}/.magic/config.json`（此处置家目录探针）。
-    //
-    // U41 改判：**文件不在不再是错**（首次运行就是这样），故落点改用一份**坏内容**来验。
-    // **原锚**：「文件不存在 ⇒ 报错里的 `path` 就是缺省落点」；**为何变**：空配置要能进入
-    // 接入流程，缺文件不再报错（见下面「文件不存在」那条）；**新锚**：在同一个落点上放
-    // 一份读不懂的内容，报出来的 `path` 仍是它——判据（读的是契约那个落点）没松，
-    // 只是换了个能触发报错的输入。
+    // 不传 path 时读它——展开后即 `<基础目录>/config.json`
     const dir = tempDir('magic-config-')
     try {
       mkdirSync(join(dir, '.magic'), { recursive: true })
       writeFileSync(join(dir, '.magic', 'config.json'), '{ 这不是 JSON }', 'utf8')
 
-      expect(() => loadConfig({ home: dir })).toThrow(ConfigError)
+      expect(() => loadConfig({ magic: magicAt(dir) })).toThrow(ConfigError)
       try {
-        loadConfig({ home: dir })
+        loadConfig({ magic: magicAt(dir) })
       } catch (error) {
         expect((error as ConfigError).path).toBe(join(dir, '.magic', 'config.json'))
       }
     } finally {
       removeDir(dir)
+
     }
   })
 })
@@ -149,12 +156,23 @@ describe('dataDir 解析', () => {
     expect(loadFrom(validConfig({ dataDir: './rel' })).config.dataDir).toBe('./rel')
   })
 
-  test('dataDir 缺省——补契约的 DEFAULT_DATA_DIR 再展开', () => {
+  /**
+   * **原锚**：`expect(DEFAULT_DATA_DIR).toBe('~/.magic')`——缺省值那时是契约里的一串字面路径。
+   *
+   * **为何变**（U42）：缺省不再是「写死的 `~/.magic`」，而是**基础目录本身**——同一个字面
+   * 路径在 `MAGIC_HOME` 指到别处时会把人带回旧目录，正是要撤掉的那一类。
+   *
+   * **新锚**：缺省＝基础目录；不设 `MAGIC_HOME` 时仍是 `${HOME}/.magic`（旧行为一字不变），
+   * 指了就落在指的那处。
+   */
+  test('dataDir 缺省——基础目录本身', () => {
     const body = validConfig()
     delete body['dataDir']
 
-    expect(DEFAULT_DATA_DIR).toBe('~/.magic')
     expect(loadFrom(body).config.dataDir).toBe(join(HOME, '.magic'))
+
+    const elsewhere = { home: HOME, base: '/tmp/magic-home-elsewhere/.magic' }
+    expect(loadFrom(body, { magic: elsewhere }).config.dataDir).toBe(elsewhere.base)
   })
 
   test('展开**必须**在交给记录域之前——原样交过去会被拒（跨域对证）', () => {
@@ -163,7 +181,7 @@ describe('dataDir 解析', () => {
       // 家目录＝真目录，故展开后的落点是能真建的（沙地量，不碰真 ~/.magic）
       const loaded = loadConfig({
         path: writeConfig(dir, validConfig({ dataDir: '~/magic-data' })),
-        home: dir,
+        magic: magicAt(dir),
       })
       expect(loaded.config.dataDir).toBe(join(dir, 'magic-data'))
 
@@ -180,6 +198,83 @@ describe('dataDir 解析', () => {
   })
 })
 
+/**
+ * U42 · **MAGIC_HOME：统一基础路径** —— 判据：**不设变量一字不变 · 设了全落在新目录 ·
+ * 旧配置写死 `~/.magic` 也不构成例外 · 别的路径原义**。
+ *
+ * 本文件钉的是**解析与加载**那一层（基础目录怎么算出来、`dataDir` 怎么归位）；
+ * 装配与真 CLI 那一层（授权文件 / 用户技能 / 读写落点）钉在 `magic-home.test.ts`。
+ */
+describe('MAGIC_HOME：统一基础路径（U42）', () => {
+  const ENV = { MAGIC_HOME: '/tmp/magic-test' }
+  const ELSEWHERE = resolveMagicHome(ENV, HOME)
+  const dirOf = (raw: string): string =>
+    loadFrom(validConfig({ dataDir: raw }), { magic: ELSEWHERE }).config.dataDir
+
+  test('不设变量——基础目录＝家目录下的 .magic（旧行为一字不变）', () => {
+    const magic = resolveMagicHome({}, HOME)
+
+    expect(magic.home).toBe(HOME)
+    expect(magic.base).toBe(join(HOME, '.magic'))
+  })
+
+  test('设了——基础目录＝它下面的 .magic；**家目录不动**（不修改系统 HOME）', () => {
+    expect(ELSEWHERE.base).toBe('/tmp/magic-test/.magic')
+    // `~` 仍指**真**家目录——`MAGIC_HOME` 换的是 Magic 的落点，不是家
+    expect(ELSEWHERE.home).toBe(HOME)
+  })
+
+  test('空串 / 全空白＝没设（不是「基础目录是空串」那种荒唐落点）', () => {
+    expect(resolveMagicHome({ MAGIC_HOME: '' }, HOME).base).toBe(join(HOME, '.magic'))
+    expect(resolveMagicHome({ MAGIC_HOME: '   ' }, HOME).base).toBe(join(HOME, '.magic'))
+  })
+
+  test('前导 `~` 照全仓那把尺子展开；尾随 `/` 不改变所指', () => {
+    expect(resolveMagicHome({ MAGIC_HOME: '~/base' }, HOME).base).toBe(join(HOME, 'base/.magic'))
+    expect(resolveMagicHome({ MAGIC_HOME: '/tmp/x/' }, HOME).base).toBe('/tmp/x/.magic')
+  })
+
+  test('缺省配置文件落点跟着走——去读的是新目录下那一份', () => {
+    // **原锚**（U42）：「读不到 ⇒ 抛 `ConfigError`，报出来的 `path` 是新落点」。
+    // **为何变**（U41）：**文件不在不再是错**（首次运行就是这样，要能进入接入流程），
+    //   故「拿报错看落点」这一手不成立了；判据本身（读的是新目录那份）一个字没动。
+    // **新锚**：返回的 `path` 就是新落点——`loadConfig` 把它交出来，照读即可。
+    expect(loadConfig({ magic: ELSEWHERE }).path).toBe('/tmp/magic-test/.magic/config.json')
+  })
+
+  test('dataDir 写死旧落点**不构成例外**——`~/.magic` 及其子路径归到基础目录', () => {
+    expect(dirOf('~/.magic')).toBe(ELSEWHERE.base)
+    expect(dirOf('~/.magic/')).toBe(ELSEWHERE.base) // 尾随斜杠同义
+    expect(dirOf('~/.magic/data')).toBe(join(ELSEWHERE.base, 'data'))
+    // **写全了的绝对路径**同样归位——「写死就绕得过」不是一条路
+    expect(dirOf(join(HOME, '.magic'))).toBe(ELSEWHERE.base)
+    expect(dirOf(join(HOME, '.magic', 'data', 'blobs'))).toBe(join(ELSEWHERE.base, 'data/blobs'))
+  })
+
+  test('**别的路径原义**——归位只认旧那一棵树（这处修法在相反情形下仍成立）', () => {
+    // 用户自己另指的落点照旧：`~` 展开到**家**，不展开到 `MAGIC_HOME`
+    expect(dirOf('~/other')).toBe(join(HOME, 'other'))
+    expect(dirOf('/var/tmp/data')).toBe('/var/tmp/data')
+    expect(dirOf('~')).toBe(HOME)
+    expect(dirOf('./rel')).toBe('./rel')
+    // 同前缀的**别的目录**不许误伤（判据是「落在旧那一棵树之下」，不是「以那串开头」）
+    expect(dirOf('~/.magicX')).toBe(join(HOME, '.magicX'))
+    expect(dirOf(join(HOME, 'x', '.magic'))).toBe(join(HOME, 'x', '.magic'))
+  })
+
+  test('不设变量时归位是**零变化**——同一份旧配置，展开结果与从前逐字相同', () => {
+    expect(loadFrom(validConfig({ dataDir: '~/.magic' })).config.dataDir).toBe(join(HOME, '.magic'))
+    expect(loadFrom(validConfig({ dataDir: '~/.magic/records' })).config.dataDir)
+      .toBe(join(HOME, '.magic/records'))
+  })
+
+  test('配置里的**其它** `~` 不与基础目录相干——工作区根照旧展开到家', () => {
+    const loaded = loadFrom(validConfig({ workspaceRoots: ['~/work'] }), { magic: ELSEWHERE })
+
+    expect(loaded.config.workspaceRoots).toEqual([join(HOME, 'work')])
+  })
+})
+
 describe('报错取「一声响」（不静默兜底）', () => {
   /**
    * U41 补锚：**文件不在 ≠ 配置坏**（设计 · 命令行与配置：「首次无配置/空连接允许进入
@@ -193,13 +288,14 @@ describe('报错取「一声响」（不静默兜底）', () => {
   test('文件不存在——空配置（首次运行就是这样，不是错）', () => {
     const dir = tempDir('magic-config-')
     try {
-      const loaded = loadConfig({ path: join(dir, 'nope.json'), home: HOME })
+      const loaded = loadConfig({ path: join(dir, 'nope.json'), magic: magicAt(HOME) })
 
       expect(loaded.config.providers).toEqual({})
       expect(loaded.providerId).toBeUndefined()
       expect(loaded.provider).toBeUndefined()
-      // 数据目录仍按契约的缺省给（空配置也落得了账）
+      // 数据目录仍按契约的缺省给（空配置也落得了账）——U42 起是**基础目录本身**
       expect(loaded.config.dataDir).toBe(join(HOME, '.magic'))
+
     } finally {
       removeDir(dir)
     }
