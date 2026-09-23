@@ -22,6 +22,9 @@ import type {
   Entry,
   EventKind,
   KernelEvent,
+  ModelInfo,
+  ModelRef,
+  ReasoningSetting,
   SessionId,
   SkillCatalogRow,
 } from '@magic/contracts'
@@ -52,12 +55,16 @@ import {
   mcpToolRows,
   modelHint,
   modelRows,
+  reasoningHint,
+  reasoningRows,
   sessionRows,
   skillHint,
   skillRows,
   authLabelOf,
   cacheLabelOf,
+  modelDetailRows,
   closePrompt,
+  dayLabel,
   manageMetaOf,
   openPrompt,
   picked,
@@ -84,7 +91,7 @@ import {
 import type { DraftRef } from './components/inline.ts'
 import type { PromptState, ShellView, WindowTable } from './view.ts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
-import { isPrintable, usageLabel } from './components/lines.ts'
+import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
 // 建壳入参里用到的形态在视图那层（`view.ts`）——转出去，好让拿 `ShellOptions` 的人
 // 一处就取全（`run.ts` 的 `RunTuiOptions` 正是这么取的）
@@ -446,6 +453,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 而这一位就是「哪一条」——同 `/mcp <名字>` 的 `mcpServer`（不靠行内容反推）。
    */
   let manageAt = ''
+
+  /** **详情那一屏正说着哪一条模型**（U41）——与 `manageAt` 同一条由头（明细得有主语）。 */
+  let detailAt: ModelRef = { provider: '', model: '' }
+
+  /**
+   * 本会话里用户**亲手选过**的思考设置——按「连接 ＋ 模型」那一对记着（U41）。
+   *
+   * 由头：思考设置是**当前选择的一部分**（`model.switch` 的 `reasoning`），而「设为默认」
+   * 也接受它。可外壳手上没有「此刻的思考设置」这份读数（契约的 `current` 只给两件）。
+   * 这一格记的是**外壳自己那一下动作**（用户在这台壳上选过什么），不是从别处推的——
+   * 换了模型就不带过去（设计明文：不把原模型的档位或预算盲目带过另一个模型）。
+   */
+  let chosenReasoning: {
+    readonly provider: string
+    readonly model: string
+    readonly setting: ReasoningSetting
+  } | null = null
+
+  /** 这一条此刻的思考设置（**用户在这台壳上选过的才算**——没选过就是「没设过」）。 */
+  const reasoningOf = (pick: ModelRef): ReasoningSetting | undefined =>
+    chosenReasoning !== null &&
+    chosenReasoning.provider === pick.provider &&
+    chosenReasoning.model === pick.model
+      ? chosenReasoning.setting
+      : undefined
 
   /**
    * **正在问的一件小事**（U41）——改名 / 密钥那一类，`null` ＝ 没在问。
@@ -998,6 +1030,75 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * `/model`——**条目表不在事件里**（契约没有读侧），故列表只有「见过的 ＋ 当前那条」，
    * 而内核回话里的缘由（它本就列出已注册的名字）作列表下方的说明 ✓ 不解析、只照贴。
    */
+  // —— 模型详情 / 思考设置（U41）——
+
+  /** 这一条模型在手上的资料（缓存里那一条；`undefined` ＝ 缓存里没有它）。 */
+  const infoOf = (pick: ModelRef): ModelInfo | undefined =>
+    view.models
+      .find((one) => one.provider === pick.provider)
+      ?.cache?.snapshot?.models.find((one) => one.id === pick.model)
+
+  /**
+   * **模型详情那一屏**——两条动作（思考设置 / 设为默认），资料写在下方那行说明里。
+   *
+   * 资料那几行都是**手上有才报**（规格 / 描述 / 缓存时间）：拿不到的不编——
+   * 与状态行 ④ 那条「分母拿不到就不显示」是同一条规矩。
+   */
+  const openModelDetail = (pick: ModelRef): void => {
+    const entry = view.models.find((one) => one.provider === pick.provider)
+    const info = infoOf(pick)
+    const limits = info?.limits
+    const spec =
+      limits === undefined
+        ? '规格：供应商没给'
+        : `规格：${
+            [
+              limits.maxInputTokens === undefined ? null : `输入 ${tokenLabel(limits.maxInputTokens)}`,
+              limits.maxOutputTokens === undefined ? null : `输出 ${tokenLabel(limits.maxOutputTokens)}`,
+              limits.maxContextTokens === undefined ? null : `窗口 ${tokenLabel(limits.maxContextTokens)}`,
+            ]
+              .filter((one): one is string => one !== null)
+              .join(' · ') || '供应商没给'
+          }`
+
+    const lines = [
+      `${pick.model}　@ ${entry?.name ?? pick.provider}`,
+      ...(info?.name === undefined ? [] : [`显示名 ${info.name}`]),
+      ...(info?.description === undefined ? [] : [info.description]),
+      spec,
+      `缓存：${
+        entry?.cache?.snapshot === undefined
+          ? '还没取过这一条的模型列表'
+          : `${dayLabel(entry.cache.snapshot.fetchedAt)} 取的`
+      }`,
+    ]
+
+    detailAt = pick
+    commit(
+      openPicker(view, {
+        source: 'model-detail',
+        selected: 0,
+        rows: modelDetailRows(),
+        hint: lines.join('\n'),
+      }),
+    )
+  }
+
+  /** 思考那一屏——**行由能力描述长出来**（见 `reasoningRows`），说明照实说清它声明了什么。 */
+  const openReasoningPicker = (pick: ModelRef): void => {
+    const support = infoOf(pick)?.reasoning
+    const rows = reasoningRows(support, reasoningOf(pick) ?? null)
+
+    commit(
+      openPicker(view, {
+        source: 'model-reasoning',
+        selected: Math.max(0, rows.findIndex((row) => row.current)),
+        rows,
+        hint: [reasoningHint(support), '回车＝把这一条用到当前模型上'].join('\n'),
+      }),
+    )
+  }
+
   /**
    * 管理明细上那四件动作（U41）。
    *
@@ -1386,7 +1487,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 东西可点——打不了字、没得选，看着就是卡死），内核那句说明落成记录区一行回执。
    */
   const refreshModelPicker = (note: string): void => {
-    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'model') return
+    if (view.dock.kind !== 'picker') return
+
+    // 详情 / 思考两屏的资料也来自这一份读数（规格 · 缓存时间 · 思考能力）——照旧的读数重铺
+    if (view.dock.picker.source === 'model-detail') {
+      openModelDetail(detailAt)
+      return
+    }
+    if (view.dock.picker.source === 'model-reasoning') {
+      openReasoningPicker(detailAt)
+      return
+    }
+
+    if (view.dock.picker.source !== 'model') return
 
     const held = picked(view)?.pick
     const rows = modelRows(view.models, view.modelCurrent)
@@ -1843,7 +1956,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       case 'right':
         if (view.dock.kind === 'decision') return refuse('右移')
-        if (view.dock.kind === 'picker') return NONE
+        if (view.dock.kind === 'picker') {
+          // **`→` ＝ 看这一条的详情**（U41）——只有模型那一屏给了这个键（别的抽屉没有「详情」
+          // 这回事，故它们的左右照旧什么都不做，见列表下方那行说明）
+          if (view.dock.picker.source === 'model') {
+            const pick = picked(view)?.pick
+            if (pick !== undefined) openModelDetail(pick)
+          }
+          return NONE
+        }
         commit({ ...view, caret: stepRightOver(view.refs, view.draft, caretAt()) })
         return NONE
 
@@ -2003,6 +2124,38 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 外部服务器那一屏（U39）：**纯读**——回车不改变任何东西（重连是另一条命令，
       // 明写 `/mcp reconnect <名字>`）。留着这一支是**必须**的：不然它会落到下面的换模型上。
       if (view.dock.picker.source === 'mcp') return NONE
+
+      // 模型详情那一屏（U41）：两件动作
+      if (view.dock.picker.source === 'model-detail') {
+        if (row.value === 'reasoning') openReasoningPicker(detailAt)
+        if (row.value === 'default') {
+          const setting = reasoningOf(detailAt)
+          send({
+            type: 'model.default.set',
+            provider: detailAt.provider,
+            model: detailAt.model,
+            // 用户在这台壳上给这一条选过思考设置就一并存下来；没选过＝不写这一位（模型默认）
+            ...(setting === undefined ? {} : { reasoning: setting }),
+          })
+        }
+        return NONE
+      }
+
+      // 思考那一屏（U41）：选定＝**把这一条用到当前模型上**（`model.switch` 带 `reasoning`）
+      if (view.dock.picker.source === 'model-reasoning') {
+        const setting = row.reasoning
+        if (setting === undefined) return NONE // 不该有这种行（行是 `reasoningRows` 铺的）
+
+        chosenReasoning = { provider: detailAt.provider, model: detailAt.model, setting }
+        send({
+          type: 'model.switch',
+          provider: detailAt.provider,
+          model: detailAt.model,
+          reasoning: setting,
+        })
+        commit(closePicker(view))
+        return NONE
+      }
 
       // 连接一览（U41 · `/model manage` 的第一步）：选定＝**进这一条的管理明细**
       if (view.dock.picker.source === 'provider') {

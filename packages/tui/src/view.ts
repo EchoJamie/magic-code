@@ -24,6 +24,8 @@ import type {
   ModelErrorTier,
   ModelInfo,
   ModelRef,
+  ReasoningSetting,
+  ReasoningSupport,
   PathCatalogRow,
   RecordId,
   SessionId,
@@ -209,6 +211,13 @@ export type PickerRow = {
    */
   readonly pick?: ModelRef
   /**
+   * **这一行选定之后要用的思考设置**（U41）——思考那一屏给。
+   *
+   * 与 `pick` 同一条由头：**结构不从字面反推**（`level:high` 那种写法要在两处各解析一半）。
+   * 缺省 ＝ 这一行不是选思考设置的。
+   */
+  readonly reasoning?: ReasoningSetting
+  /**
    * **压暗**——「别的项目」的行（工作区≠你此刻所在的那个）。
    * 这是**视觉次序**，不是可用性：压暗的行**照样选得中、切得过去**。
    */
@@ -264,6 +273,8 @@ export type Picker = {
     | 'vendor'
     | 'provider'
     | 'provider-detail'
+    | 'model-detail'
+    | 'model-reasoning'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -1804,6 +1815,101 @@ export function cacheLabelOf(entry: ModelCatalogRow): string {
 
 
 /**
+ * **模型详情那一屏的行**（U41）——两条动作，连接与模型的资料写在下方那行说明里。
+ *
+ * 设计（模型与上下文 · 应用设置）：「**详情可改该模型支持的思考设置**，另有'**设为默认**'动作」。
+ * 两件都是「对**这一条**模型做的事」，故与「选定＝切过去」分开：列表上回车是切换，
+ * 要看详情得明确按 `→` 进这一屏（同 `enter` 与「详情」两个动作在别处的分寸）。
+ */
+export function modelDetailRows(): readonly PickerRow[] {
+  return [
+    { label: '思考设置', meta: '', current: false, value: 'reasoning', oneLine: true },
+    {
+      label: '设为默认',
+      meta: '新建会话就用它',
+      current: false,
+      value: 'default',
+      oneLine: true,
+    },
+  ]
+}
+
+/**
+ * **思考那一屏的行**（U41）——只列**这个模型声明支持**的那几形。
+ *
+ * 设计（思考能力与供应商适配）：「思考设置在契约中区分'模型默认''明确关闭''指定档位'
+ * '指定 token 预算'，**只开放具体模型和接入路径支持的形态**」「未声明支持就不能发送假参数」。
+ * 故这一屏的行**完全由能力描述长出来**：
+ *
+ * - `模型默认` —— 永远有（它是「不发送任何思考参数」，不需要模型声明什么）；
+ * - `明确关闭` —— **只在 `disable === true` 时给**（关闭与默认不是一回事：那是「说了别想」）；
+ * - 档位 —— 由 `levels` 逐条给（**不假设同一套低/中/高**）；
+ * - 预算 —— 本轮**不给**（要一个数值输入 + 范围校验，取舍见回报）；
+ *   能力里只声明了预算而没有档位的模型，这一屏就只有「模型默认」。
+ *
+ * `current` ＝ 此刻这一条生效的设置——标出「正在用」那一格（没有＝模型默认）。
+ */
+export function reasoningRows(
+  support: ReasoningSupport | undefined,
+  current: ReasoningSetting | null,
+): readonly PickerRow[] {
+  const setting: ReasoningSetting = current ?? { mode: 'default' }
+  const mark = (one: ReasoningSetting): boolean =>
+    one.mode === setting.mode &&
+    (one.mode !== 'level' || (setting.mode === 'level' && one.level === setting.level)) &&
+    (one.mode !== 'budget' || (setting.mode === 'budget' && one.budgetTokens === setting.budgetTokens))
+
+  const rows: PickerRow[] = [
+    {
+      label: '模型默认',
+      meta: '不发送思考参数，服务端自己定',
+      current: mark({ mode: 'default' }),
+      value: 'default',
+      reasoning: { mode: 'default' },
+      oneLine: true,
+    },
+  ]
+
+  if (support?.disable === true) {
+    rows.push({
+      label: '明确关闭',
+      meta: '说了别想（与「默认」不是一回事）',
+      current: mark({ mode: 'off' }),
+      value: 'off',
+      reasoning: { mode: 'off' },
+      oneLine: true,
+    })
+  }
+
+  for (const level of support?.levels ?? []) {
+    rows.push({
+      label: level,
+      meta: '档位',
+      current: mark({ mode: 'level', level }),
+      value: `level:${level}`,
+      reasoning: { mode: 'level', level },
+      oneLine: true,
+    })
+  }
+
+  return rows
+}
+
+/** 思考那一屏上方那句实话——**这个模型声明了什么，就说什么**（没声明＝如实说没有）。 */
+export function reasoningHint(support: ReasoningSupport | undefined): string {
+  if (support === undefined) return '这个模型没有声明思考档位——只能按模型默认用'
+
+  const parts: string[] = []
+  if (support.levels !== undefined && support.levels.length > 0) parts.push(`${support.levels.length} 个档位`)
+  if (support.disable === true) parts.push('可明确关闭')
+  if (support.budget !== undefined) parts.push('支持 token 预算（本版本还没做）')
+
+  return parts.length === 0
+    ? '这个模型没有声明思考档位——只能按模型默认用'
+    : `这个模型支持：${parts.join(' · ')}`
+}
+
+/**
  * `/model` 列表下方那行说明——**只说有事要说的那几件**。
  *
  * 三件由头（各自都在别处查不到）：
@@ -2070,7 +2176,7 @@ function percentOf(part: number, whole: number): string {
 }
 
 /** 时刻 → `MM-DD`（本地时区）——抽屉里只报「最近什么时候」，精确到分没必要。 */
-function dayLabel(at: number): string {
+export function dayLabel(at: number): string {
   const d = new Date(at)
   const pad = (n: number): string => String(n).padStart(2, '0')
 

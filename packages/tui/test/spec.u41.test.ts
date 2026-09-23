@@ -37,7 +37,16 @@ const LONG_TAIL = 'long-suffix'
 
 /** 一条连接的缓存读数（只给用得着的那几格）。 */
 function cacheOf(options: {
-  readonly models?: readonly (string | { readonly id: string; readonly name?: string; readonly chat?: boolean })[]
+  readonly models?: readonly (
+    | string
+    | {
+        readonly id: string
+        readonly name?: string
+        readonly chat?: boolean
+        readonly limits?: { readonly maxInputTokens?: number; readonly maxContextTokens?: number }
+        readonly reasoning?: { readonly levels?: readonly string[]; readonly disable?: boolean }
+      }
+  )[]
   readonly fetchedAt?: number
   readonly stale?: boolean
   readonly refreshing?: boolean
@@ -50,6 +59,8 @@ function cacheOf(options: {
           id: one.id,
           ...(one.name === undefined ? {} : { name: one.name }),
           ...(one.chat === undefined ? {} : { capabilities: { chat: one.chat } }),
+          ...(one.limits === undefined ? {} : { limits: one.limits }),
+          ...(one.reasoning === undefined ? {} : { reasoning: one.reasoning }),
         },
   )
 
@@ -554,6 +565,151 @@ describe('⑪ 管理：改名 / 更新认证 / 刷新 / 移除', () => {
     expect(stage.shell.getView().dock.kind).toBe('input')
     const receipts = stage.shell.getView().settled.filter((row) => row.kind === 'receipt')
     expect(receipts.some((row) => row.kind === 'receipt' && row.text.includes('已移除'))).toBe(true)
+  })
+})
+
+// ══ 四 · 详情 / 思考设置 / 设为默认 ═══════════════════════════════════
+
+describe('⑫ 详情：`→` 进这一条，看规格、改思考、设为默认', () => {
+  const rich = [
+    conn('personal', {
+      name: '个人号',
+      model: 'MiniMax-M3',
+      cache: cacheOf({
+        fetchedAt: 1_700_000_000_000,
+        models: [
+          {
+            id: 'MiniMax-M3',
+            limits: { maxInputTokens: 1_000_000, maxContextTokens: 200_000 },
+            reasoning: { levels: ['low', 'high'], disable: true },
+          },
+          { id: 'MiniMax-Text-01' },
+        ],
+      }),
+    }),
+  ]
+
+  /**
+   * 开列表 → 挪到第 `at` 条 → 按 `→` 进**那一条**的详情。
+   *
+   * ⚠️ 「挪」必须在**列表那一屏**上做：进了详情之后上下是在详情的两条动作里挪
+   * （第一版就是这么写错的——挪完再按 `→`，人已经在详情里了）。
+   */
+  function atDetail(stage: Stage, at = 0, entries = rich): void {
+    open(stage, entries)
+    for (let step = 0; step < at; step += 1) stage.press({ kind: 'down' })
+    stage.press({ kind: 'right' })
+  }
+
+  test('`→` 进详情那一屏：两条动作在，资料写在下方说明里', () => {
+    const stage = createStage()
+    atDetail(stage)
+
+    expect(pickerOf(stage)?.source).toBe('model-detail')
+    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['reasoning', 'default'])
+    const hint = pickerOf(stage)?.hint ?? ''
+    expect(hint).toContain('规格：')
+    expect(hint).toContain('缓存：')
+  })
+
+  test('规格**手上有才报**（供应商没给就如实说没给）', () => {
+    const stage = createStage()
+    atDetail(stage, 1) // 第二条（那条没有 limits）
+
+    expect(pickerOf(stage)?.hint).toContain('规格：供应商没给')
+  })
+
+  test('思考那一屏的**行由能力描述长出来**：模型默认 ＋ 明确关闭 ＋ 两个档位', () => {
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'enter' }) // 第一行＝思考设置
+
+    expect(pickerOf(stage)?.source).toBe('model-reasoning')
+    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['模型默认', '明确关闭', 'low', 'high'])
+    expect(pickerOf(stage)?.rows[0]?.current).toBe(true) // 没设过＝模型默认
+  })
+
+  test('没声明思考能力 ⇒ **只有「模型默认」**，说明如实说（不编档位）', () => {
+    const stage = createStage()
+    atDetail(stage, 1) // 第二条：没有 reasoning 声明
+    stage.press({ kind: 'enter' })
+
+    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['模型默认'])
+    expect(pickerOf(stage)?.hint).toContain('没有声明思考档位')
+  })
+
+  test('选定一个档位 ⇒ `model.switch` 带上它（思考随同验证）', () => {
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'enter' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' }) // 「low」
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'model.switch',
+      provider: 'personal',
+      model: 'MiniMax-M3',
+      reasoning: { mode: 'level', level: 'low' },
+    })
+  })
+
+  test('设为默认 ⇒ `model.default.set`（没选过思考设置就**不带**那一位）', () => {
+    // 设计：换当前模型与保存默认**分开**；默认那一笔不替用户编思考设置（缺省＝模型默认）。
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' })
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'model.default.set',
+      provider: 'personal',
+      model: 'MiniMax-M3',
+    })
+  })
+
+  test('选过思考设置之后设为默认 ⇒ 把它一并存下来', () => {
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'enter' }) // 思考设置
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' }) // 「high」
+    stage.press({ kind: 'enter' })
+
+    atDetail(stage) // 回列表再进详情
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' }) // 设为默认
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'model.default.set',
+      provider: 'personal',
+      model: 'MiniMax-M3',
+      reasoning: { mode: 'level', level: 'high' },
+    })
+  })
+
+  test('**换了模型就不带过去**——思考设置按「连接 ＋ 模型」那一对记着', () => {
+    // 设计：「组合改变而未显式指定思考设置时取目标模型默认，**不把原模型的档位或预算
+    // 盲目带过去**」。
+    const stage = createStage()
+    atDetail(stage)
+    stage.press({ kind: 'enter' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' }) // 给 MiniMax-M3 选了 high
+
+    // 换到另一条模型，再进它的详情
+    atDetail(stage, 1) // 第二条：MiniMax-Text-01
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' }) // 设为默认
+
+    expect(sent(stage).at(-1)).toEqual({
+      type: 'model.default.set',
+      provider: 'personal',
+      model: 'MiniMax-Text-01',
+    })
   })
 })
 
