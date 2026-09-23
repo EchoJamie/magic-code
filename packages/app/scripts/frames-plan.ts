@@ -23,7 +23,8 @@
  * ## 跑法
  *
  * ```
- * bun packages/app/scripts/frames-plan.ts --out <目录>
+ * bun packages/app/scripts/frames-plan.ts --out <目录>            # 夹具边界那一半（脚本化传输）
+ * bun packages/app/scripts/frames-plan.ts --out <目录> --live     # 联调那一半（真装配 · 只换模型网关）
  * ```
  *
  * 出十二屏：开机（不占位）· 计划建立 · 改路线 · 收起 · 展开回来 · 结束移除 ·
@@ -32,15 +33,20 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import type { PlanNote } from '@magic/contracts'
 import { PALETTE } from '@magic/tui'
-import { createUiSession } from '../test/ui/index.ts'
-import type { Capture, UiSession } from '../test/ui/index.ts'
+import { createSandbox, createUiSession, startFixture } from '../test/ui/index.ts'
+import type { Capture, FixtureRequest, FixtureTurn, Sandbox, UiSession } from '../test/ui/index.ts'
+import { createVt } from '../test/ui/vt.ts'
+import { readDatabase } from '../test/support.ts'
 
 const REPO = resolve(import.meta.dir, '../../..')
 const TUI_RUN = join(REPO, 'packages/tui/src/run.ts')
 
 /** `Ctrl T` 那一个字节（`0x14`）——写的是**真字节**：与手按同一个键、进同一个 stdin。 */
 const CTRL_T = String.fromCharCode(0x14)
+/** `Ctrl C` 那一个字节（`0x03`）——空闲＝退出 · 工作中＝中断（归外壳判）。 */
+const CTRL_C = String.fromCharCode(0x03)
 /** `Ctrl O` 那一个字节（`0x0f`，既有那一个展开键）——同上。 */
 const CTRL_O = String.fromCharCode(0x0f)
 /** `PgDn`（`CSI 6 ~`）——同上。 */
@@ -75,6 +81,39 @@ function amberShades(raw: string): number {
   }
 
   return warm.size
+}
+
+/**
+ * 留一屏（**联调那一半**）——文本 ＋ 外壳写出的原始字节（色与重量在里面），并印一份给人读。
+ *
+ * 与上面那个 `keep()` 分开：那一半用的是共用驱动的 `Capture`（含字格与光标），
+ * 这一半是真应用**自己起的一趟**，读数按同一套口径取（可见区行 ＋ 原始字节）。
+ */
+function keepLive(out: string, app: { text(): string; raw(): string }, label: string): string {
+  const text = app.text()
+  writeFileSync(join(out, `${label}.txt`), `${text}\n`, 'utf8')
+  writeFileSync(join(out, `${label}.ansi`), app.raw(), 'utf8')
+  console.log(`\n── ${label} ──\n${text}`)
+
+  return text
+}
+
+/**
+ * **真实请求轨迹**落盘——夹具收到的每一次模型请求（次序 · 工具件数 · 最后一条 user 说了什么）。
+ *
+ * 它是「模型真的调了工具」那一件的物证：请求里有 `tools`（工具说明真的送进去了）、
+ * 一条交代换来几次往返（工具调一次、回一句，共两次）、以及**发起之前零请求**之类。
+ */
+function keepTrace(out: string, fixture: { requests(): readonly FixtureRequest[] }, label: string): readonly FixtureRequest[] {
+  const requests = fixture.requests()
+  const lines = requests.map(
+    (one) => `${one.n}. ${one.path} · model=${one.model} · messages=${one.messages} · tools=${one.tools} · user=${one.lastUser}`,
+  )
+
+  writeFileSync(join(out, `${label}.txt`), `${lines.join('\n')}\n`, 'utf8')
+  console.log(`\n── ${label}（${requests.length} 次请求）──\n${lines.join('\n')}`)
+
+  return requests
 }
 
 /** 一条判据的结论——**不过就当场抛**（留帧装置不是「看看而已」，判据得咬人）。 */
@@ -316,6 +355,13 @@ async function main(): Promise<void> {
   if (at === -1 || out === '') throw new Error('用法：bun packages/app/scripts/frames-plan.ts --out <目录>')
 
   mkdirSync(out, { recursive: true })
+
+  // **联调那一半**（真装配）——与夹具那一半分两趟跑，别混在一个产物目录里解释
+  if (process.argv.includes('--live')) {
+    await live(out)
+    await Bun.write(Bun.stdout, `\n联调帧落在：${out}\n`)
+    return
+  }
 
   // —— 一 · 完整那一趟（100×30 · 有色）：建立 → 改路线 → 收起 → 展开 → 结束移除 ——
   {
@@ -566,6 +612,297 @@ async function main(): Promise<void> {
   }
 
   await Bun.write(Bun.stdout, `\n帧落在：${out}\n`)
+}
+
+
+// ══ 联调那一半（`--live`）：真装配 · 真工具落账 · 真终端 ═══════════════════
+//
+// 与上面那一半的分工，一句话：
+// - **默认**（不带 `--live`）：**夹具边界**——传输是脚本化的假内核（预排事件），
+//   证的是显示与按键路径；
+// - **`--live`**：**真装配**——真 `cli.ts`（真装配根 · 真记录域 · 真工具域 · 真权限 · 真外壳），
+//   **只把模型网关换成受控返回**（loopback 夹具 ＋ 合成假 key，一个付费请求都不发、
+//   真 `~/.magic` 零触碰）：模型**真的调** `plan_update`，工具**真的落账**，屏上的清单
+//   **真的从记录里长出来**——不是预排内核事件。
+//
+// 三趟跑在**同一块沙地**上（同一份配置 / 数据库 / 工作区），故「关闭重开」是真的关掉
+// 那个进程、再拿 `--session <id>` 另起一个：清单该保留的保留、该不复活的就不复活。
+
+/** 联调那一半的剧本——模型**真的调**辅助工具（不是预排内核事件）。 */
+const LIVE_TURNS: readonly FixtureTurn[] = [
+  { kind: 'tool', name: 'plan_update', args: { plan: PLAN_FIRST } },
+  { kind: 'text', text: '先理了一遍，这就动手。' },
+  { kind: 'tool', name: 'plan_update', args: { plan: PLAN_EDITED } },
+  { kind: 'text', text: '路线改了，已完成那两步留着。' },
+  { kind: 'tool', name: 'plan_update', args: { plan: null } },
+  { kind: 'text', text: '这件事到这儿。' },
+]
+
+type LiveOptions = {
+  readonly label: string
+  readonly argv: readonly string[]
+  readonly columns: number
+  readonly rows: number
+}
+
+/** 一趟真应用（真 PTY）——用共用的那几件拼：`Bun.Terminal` ＋ VT 读屏。 */
+type LiveApp = {
+  readonly pty: Bun.Terminal
+  readonly child: Bun.Subprocess
+  /** 往 PTY 写（＝手打）。 */
+  write(text: string): Promise<void>
+  /** 敲一个字节串（回车 / 退格 / `Ctrl T` …）。 */
+  key(bytes: string): Promise<void>
+  /** 等屏上出现某一串（只查**可见区**——超了就是没等到，如实失败）。 */
+  waitFor(needle: string, timeoutMs?: number): Promise<void>
+  /** 此刻可见区的那几行。 */
+  lines(): readonly string[]
+  text(): string
+  /** 原始字节（色与重量在里面）。 */
+  raw(): string
+  /** 收摊：先给 `Ctrl C` 自己走的余地，再 SIGTERM、再 SIGKILL，如实报怎么走的。 */
+  close(): Promise<string>
+}
+
+async function liveApp(sandbox: Sandbox, options: LiveOptions): Promise<LiveApp> {
+  const vt = createVt({ columns: options.columns, rows: options.rows, scrollback: 2_000 })
+  const decoder = new TextDecoder()
+  let raw = ''
+
+  const pty = new Bun.Terminal({
+    cols: options.columns,
+    rows: options.rows,
+    data: (_terminal: Bun.Terminal, chunk: Uint8Array) => {
+      const text = decoder.decode(chunk, { stream: true })
+      if (text === '') return
+      raw += text
+      vt.write(text)
+    },
+  })
+
+  const child = Bun.spawn([process.execPath, ...options.argv], {
+    terminal: pty,
+    cwd: sandbox.workspace,
+    env: sandbox.env,
+  })
+
+  const lines = (): readonly string[] => vt.screen().lines.map((line) => line.text)
+
+  // **起手那一下的余量**（共用驱动文件头注 1 那条坑，实测会丢键）：首帧落了之后还得等
+  // 一小会儿——Ink 那一下 `tcsetattr`（开 raw 模式）落定**之前**写进去的字节会被丢掉。
+  // ⚠️ 这是**一次**的余量，不是场景同步的手段（后面每一步仍靠 `waitFor` 等屏上的条件）。
+  for (let at = 0; at < 250; at += 1) {
+    await vt.settled()
+    if (lines().some((line) => line.trim() !== '')) break
+    await Bun.sleep(40)
+  }
+  if (child.exitCode !== null || child.signalCode !== null) {
+    throw new Error(`「${options.label}」还没画出第一帧就退了（code=${child.exitCode} signal=${child.signalCode}）`)
+  }
+  await Bun.sleep(150)
+
+  const app: LiveApp = {
+    pty,
+    child,
+    write: async (text) => {
+      pty.write(text)
+      await Bun.sleep(60) // 与手打同形：先让它读走
+    },
+    key: async (bytes) => {
+      pty.write(bytes)
+      await Bun.sleep(80)
+    },
+    waitFor: async (needle, timeoutMs = 12_000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        await vt.settled()
+        if (lines().some((line) => line.includes(needle))) return
+        await Bun.sleep(40)
+      }
+
+      throw new Error(`等「${needle}」超时。此刻屏上：\n${lines().join('\n')}`)
+    },
+    lines,
+    text: () => lines().join('\n'),
+    raw: () => raw,
+    close: async () => {
+      pty.write(CTRL_C)
+      await Bun.sleep(200)
+      pty.write(CTRL_C)
+      await Bun.sleep(400)
+
+      if (child.exitCode === null) {
+        child.kill('SIGTERM')
+        await Bun.sleep(600)
+      }
+      if (child.exitCode === null) child.kill('SIGKILL')
+      await child.exited
+
+      return child.exitCode === 0 && child.signalCode === null ? 'app' : `code=${child.exitCode} signal=${child.signalCode}`
+    },
+  }
+
+  return app
+}
+
+/** 记录里**带计划**的那些条目（按记录序）——「工具真的落账了吗」看它。 */
+function planEntriesOf(sandbox: Sandbox): readonly (PlanNote | null)[] {
+  const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+  try {
+    return db.entries.flatMap((entry) => {
+      if (entry.kind !== 'tool-result' || entry.payload === null) return []
+
+      const payload = JSON.parse(entry.payload) as { readonly ok?: boolean; readonly plan?: PlanNote | null }
+      if (!Object.hasOwn(payload, 'plan')) return []
+
+      return [payload.plan ?? null]
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/** 一条计划的步骤文字（比对「屏上那一份」与「记录里那一份」用）。 */
+const stepTextsOf = (plan: PlanNote | null): readonly string[] => plan?.steps.map((one) => one.text) ?? []
+
+async function live(out: string): Promise<void> {
+  // 夹具（受控模型网关）＋ 一块**三趟共用**的沙地
+  const fixture = startFixture({ turns: LIVE_TURNS })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL, forceColor: '3' })
+  const cli = join(REPO, 'packages/app/src/cli.ts')
+  const argv = [cli]
+
+  let sessionId = ''
+
+  try {
+    // —— 一 · 新会话：交代一句，模型真的调 plan_update ——
+    const first = await liveApp(sandbox, { label: 'L1', argv, columns: 100, rows: 30 })
+    try {
+      await first.waitFor('○ 空闲')
+      await first.write('登录失败那条提示太笼统了，改一下')
+      await first.waitFor('登录失败那条提示太笼统了，改一下')
+      await first.key('\r')
+      await first.waitFor('▪ 改提示文案')
+      await first.waitFor('○ 空闲')
+
+      const shot = keepLive(out, first, 'L1-建立（真装配）')
+      for (const [at, step] of PLAN_FIRST.steps.entries()) {
+        const mark = step.status === 'completed' ? '■' : step.status === 'in_progress' ? '▪' : '□'
+        check(shot.includes(`${mark} ${step.text}`), `清单第 ${at + 1} 步在屏上（${mark}）`)
+      }
+      check(!shot.includes('plan_update'), '辅助工具的成功调用不刷工具卡（真装配这一趟也是）')
+
+      // **工具真的落账**：记录里有那一条带 `plan` 的结果；它与屏上那一份**一致**
+      const stored = planEntriesOf(sandbox)
+      check(stored.length === 1, '记录里有一条带计划的工具结果', `实得 ${stored.length} 条`)
+      check(
+        stepTextsOf(stored[0] ?? null).join('｜') === stepTextsOf(PLAN_FIRST).join('｜'),
+        '清单与持久记录一致（两步文字逐条相同）',
+      )
+
+      // 收起 / 展开：**零模型请求**，草稿仍在
+      const before = fixture.requests().length
+      await first.write('半句草稿')
+      await first.waitFor('半句草稿')
+      await first.key(CTRL_T)
+      await first.waitFor('计划已收起')
+      check(first.text().includes('半句草稿'), '收起之后草稿仍在')
+      await first.key(CTRL_T)
+      await first.waitFor('▪ 改提示文案')
+      check(fixture.requests().length === before, '收起 / 展开一个模型请求都没追加', `${before} → ${fixture.requests().length}`)
+      keepLive(out, first, 'L1-收起展开后')
+
+      // **真实请求轨迹**：一条交代换来两次往返（调工具 ＋ 回话），工具说明真的送进去了
+      const trace = keepTrace(out, fixture, 'L1-请求轨迹')
+      check(trace.length === 2, '一条交代 ＝ 两次模型往返（先调工具、再回话）', `实得 ${trace.length}`)
+      check((trace[0]?.tools ?? 0) >= 3, '工具说明真的随请求送进去了（至少那三件）', `实得 ${trace[0]?.tools ?? 0}`)
+      check(trace[0]?.lastUser.includes('登录失败那条提示太笼统了'), '第一次请求里就是那句交代')
+      check(trace[1]?.messages > trace[0]?.messages, '第二次往返带着工具结果（上下文长了）')
+
+      const how = await first.close()
+      check(how === 'app', `第一趟自己收的场（${how}）`)
+    } finally {
+      first.pty.close()
+    }
+
+    // —— 二 · 关闭重开（`--session`）：清单该**保留**，改路线、再清空 ——
+    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+    sessionId = db.sessions.at(-1)?.id ?? ''
+    db.close()
+    check(sessionId !== '', '拿到那条会话的 id（重开要它）')
+
+    const second = await liveApp(sandbox, { label: 'L2', argv: [...argv, '--session', sessionId], columns: 100, rows: 30 })
+    try {
+      await second.waitFor('○ 空闲')
+      await second.waitFor('▪ 改提示文案') // 清单从**记录**里回来
+      const reopened = keepLive(out, second, 'L2-重开保留')
+
+      check(
+        PLAN_FIRST.steps.every((step) => reopened.includes(step.text)),
+        '重开之后清单整份回来了（取自记录，不是重发事件）',
+      )
+      check(fixture.requests().length === 2, '重开那一跳**零模型请求**', `实得 ${fixture.requests().length}`)
+
+      // 改路线：模型真的再调一次 plan_update
+      await second.write('网络失败那条也补上')
+      await second.waitFor('网络失败那条也补上')
+      await second.key('\r')
+      await second.waitFor('补一条网络失败的提示')
+      await second.waitFor('○ 空闲')
+      const edited = keepLive(out, second, 'L3-改路线（真装配）')
+      check(edited.includes('■ 读登录提示那三处分支'), '改路线之后已完成项还在')
+
+      const afterEdit = planEntriesOf(sandbox)
+      check(afterEdit.length === 2, '第二次更新也落了账', `实得 ${afterEdit.length} 条`)
+      check(
+        stepTextsOf(afterEdit[1] ?? null).join('｜') === stepTextsOf(PLAN_EDITED).join('｜'),
+        '记录里那一份就是屏上这一份（改路线之后）',
+      )
+
+      // 清空：模型真的调 `plan_update {plan: null}`
+      await second.write('就这样，收工')
+      await second.waitFor('就这样，收工')
+      await second.key('\r')
+      await second.waitFor('○ 空闲')
+      await Bun.sleep(300)
+      const cleared = keepLive(out, second, 'L4-清空（真装配）')
+      check(!cleared.includes('□ 跑一遍失败的几条路'), '清空之后清单退出界面')
+
+      const afterClear = planEntriesOf(sandbox)
+      check(afterClear.length === 3 && afterClear[2] === null, '清空也落了账（那一条的 `plan` 是 null）')
+      check(
+        stepTextsOf(afterClear[0] ?? null).join('｜') === stepTextsOf(PLAN_FIRST).join('｜') &&
+          stepTextsOf(afterClear[1] ?? null).join('｜') === stepTextsOf(PLAN_EDITED).join('｜'),
+        '先前那两条**没被改写**（历史是追加的）',
+      )
+
+      const trace2 = keepTrace(out, fixture, 'L2-请求轨迹')
+      check(trace2.length === 6, '整趟（建立 · 改路线 · 清空）＝ 六次往返', `实得 ${trace2.length}`)
+
+      const how = await second.close()
+      check(how === 'app', `第二趟自己收的场（${how}）`)
+    } finally {
+      second.pty.close()
+    }
+
+    // —— 三 · 再关闭重开：清空过了 ⇒ 清单**不复活**，记录仍在 ——
+    const third = await liveApp(sandbox, { label: 'L3', argv: [...argv, '--session', sessionId], columns: 100, rows: 30 })
+    try {
+      await third.waitFor('○ 空闲')
+      await Bun.sleep(500)
+      const again = keepLive(out, third, 'L5-重开不复活（真装配）')
+      check(!again.includes('□ ') && !again.includes('▪ '), '清空之后重开：旧清单一个方块都不剩')
+      check(again.includes('这件事到这儿。'), '记录还在（过程沿既有记录留作排障）')
+
+      const how = await third.close()
+      check(how === 'app', `第三趟自己收的场（${how}）`)
+    } finally {
+      third.pty.close()
+    }
+  } finally {
+    await fixture.stop()
+    sandbox.dispose()
+  }
 }
 
 if (import.meta.main) await main()
