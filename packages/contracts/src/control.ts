@@ -12,6 +12,7 @@
 import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { DecisionId, SessionId } from './ids.ts'
+import type { ReasoningSetting } from './model.ts'
 
 /**
  * **草稿里绑定的技能引用**（U33）——**只带身份，不带正文**。
@@ -134,9 +135,17 @@ export type TurnInterrupt = {
  * ＝留在这家换模型 · 都给＝一起换 · **都不给＝不晓得更成什么**（如实报，不猜）。
  */
 export type ModelSwitchRequest = {
-  /** `providers` 的键（条目名）。 */
+  /** `providers` 的键（**连接 id**）。 */
   readonly provider?: string
+  /** **精确模型 id**（供应商原始 id）——不是型号族名。 */
   readonly model?: string
+  /**
+   * **这次采用的思考设置**（U41）——合法值由该模型的能力给出（见 `ReasoningSupport`）。
+   *
+   * 缺省 ＝ **模型默认**（不发送任何思考参数）。不把原模型的档位 / 预算盲目带过去：
+   * 换了模型而没显式指定时，取**目标模型**的默认。
+   */
+  readonly reasoning?: ReasoningSetting
 }
 
 /**
@@ -216,6 +225,92 @@ export type HistoryRead = {
  * 失败缘由——**那不是读面**（读面不该以「换失败了」作答，也不该因此落库一笔）。
  */
 export type ModelList = { readonly type: 'model.list' }
+
+/**
+ * `grants.list`——**授权名录的读侧命令**（U22 · 技术方案 · 权限「授权的落点」：
+ * 「配两件：**查看 / 撤销**（`/grants`）与**陈旧节**的显式列出」）。
+ *
+ * **由头**：授权存 `~/.magic/grants.json`（内核自持的一个文件），而外壳够不着它——
+ * 与 `model.list` / `history.read` 同一处境：**控制面是唯一一直通的路**。
+ * 答复走事件（`grants.catalog`，**不落库**）——它是**读出来的**，落库＝把同一张表存 N 遍。
+ *
+ * **无参**——问的就是「本工作区记着哪些、别处还有哪些节」；分节键（本工作区）由答复里的
+ * `workspace` 一并给（同一次往返说清一整屏）。
+ */
+export type ProviderList = { readonly type: 'provider.list' }
+
+/**
+ * 保存一条连接（U41）——**接入 / 改名 / 更新认证 / 改地址**共一个动作。
+ *
+ * `provider` 是在**没接过的 id** 上给 ＝ 新建（那时 `vendor` 必给：新建官方连接必有）；
+ * 在已有 id 上给 ＝ 改那一条。**改名保留 id**（改名是改 `name`，不是换 id——
+ * id 是引用键，换掉它等于把默认选择、记录里的归属一起切断）。
+ *
+ * `apiKey` **缺省 ＝ 不动已存的那个**：管理页改个名字不该顺手把凭据抹掉。
+ * 给了空串 ＝ **清除**（回到环境变量回退）。
+ *
+ * 保存**不静默改**别的东西：不动默认选择、不动思考设置、不动别的连接
+ * （设计 · 模型与上下文「维护连接」）。
+ */
+export type ProviderSave = { readonly type: 'provider.save' } & ProviderSaveRequest
+
+/** `provider.save` 的负载——命令负载与路由入参同一形态（同 `ModelSwitchRequest` 之例）。 */
+export type ProviderSaveRequest = {
+  /** 连接 id（`providers` 的键）——新建时就是用户起的那一个。 */
+  readonly provider: string
+  /** 内置供应商适配名——**只在接入 / 更换供应商时给**；认不出就不猜（不换适配）。 */
+  readonly vendor?: string
+  readonly name?: string
+  readonly region?: string
+  readonly baseURL?: string
+  /** 凭据——**缺省 ＝ 不改**；空串 ＝ 清除（回退环境变量）。**不入日志 / 事件 / 记录**。 */
+  readonly apiKey?: string
+}
+
+/**
+ * 移除一条连接（U41）——**不静默级联**（设计 · 模型与上下文「维护连接」）。
+ *
+ * 有引用（默认选择 / 角色 / 正在用）时**先要求替换或取消**：命令照发，答复说明缘由，
+ * 由用户决定。已发生的记录**不随移除而删除**。
+ */
+export type ProviderRemove = {
+  readonly type: 'provider.remove'
+  readonly provider: string
+}
+
+/**
+ * **设为默认**（U41）——把这条连接与这个模型写成「新建普通会话采用的默认选择」。
+ *
+ * 与 `model.switch` **分开**（设计明文「换当前模型与保存默认分开」）：那条只改**当下**
+ * 走谁、**不写配置**；这一条写配置、**不改当前**。两个动作各有各的时机与后果，
+ * 混成一条会让人分不清「我刚才改的是这次还是以后」。
+ */
+export type ModelDefaultSet = { readonly type: 'model.default.set' } & ModelDefaultRequest
+
+/** `model.default.set` 的负载——命令负载与路由入参同一形态。 */
+export type ModelDefaultRequest = {
+  readonly provider: string
+  /** **精确模型 id**。 */
+  readonly model: string
+  /** 该模型的思考设置——缺省 ＝ 不写这一位（模型默认）。 */
+  readonly reasoning?: ReasoningSetting
+}
+
+/**
+ * `model.refresh`——**显式刷新意图**（U41）。
+ *
+ * 由头：自动检查走**有效期**（新鲜就用、过期先回旧缓存再后台刷），而用户有时明确要知道
+ * 「现在供应商那儿有哪些」——**手动刷新可绕过时效**（设计 · 模型与上下文「刷新」）。
+ *
+ * `provider` 缺省 ＝ **当前选中那条连接**（`/model` 停在哪儿就刷哪儿）。
+ * 答复走 `model.catalog`：**先回旧缓存那一屏，刷新完成后按同一条 kind 再回一屏**
+ * （不落库）。不刷新没有缓存的连接也不报错——如实说「还没取过」即可。
+ * 撞上 60 秒退避窗口时**不硬闯**（缘由写在答复的 `note` 上），不自行循环重试。
+ */
+export type ModelRefresh = {
+  readonly type: 'model.refresh'
+  readonly provider?: string
+}
 
 /**
  * `grants.list`——**授权名录的读侧命令**（U22 · 技术方案 · 权限「授权的落点」：
@@ -321,6 +416,11 @@ export type Command =
   | SessionCommand
   | HistoryRead
   | ModelList
+  | ModelRefresh
+  | ModelDefaultSet
+  | ProviderList
+  | ProviderSave
+  | ProviderRemove
   | GrantsList
   | GrantsRevoke
   | SkillList

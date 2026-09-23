@@ -98,6 +98,21 @@ export function commandSubjectOf(command: Command): string {
     case 'mcp.reconnect':
       // U39 显式重连——真的重走一趟起手与发现（不重放业务调用）
       return `重连外部服务器：${command.server}`
+    case 'model.refresh':
+      // U41 显式刷新——绕开有效期，明确要求现在就取一趟
+      return `刷新模型信息：${command.provider ?? '（当前那条）'}`
+    case 'model.default.set':
+      // U41 设为默认——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）
+      return `设为默认：${command.provider} / ${command.model}`
+    case 'provider.list':
+      // U41 管理面读侧——无参：问的就是「配了哪些连接」
+      return '列供应商连接'
+    case 'provider.save':
+      // U41 接入 / 改名 / 更新认证 / 改地址共一个动作
+      return `保存供应商：${command.provider}`
+    case 'provider.remove':
+      // U41 移除——有引用时不静默级联（缘由交回答复）
+      return `移除供应商：${command.provider}`
     case 'session.list':
       return '列会话'
     case 'session.new':
@@ -161,6 +176,11 @@ export function hubFaceRealizesPort(): void {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onModelRefresh: () => undefined,
+    onModelDefaultSet: () => undefined,
+    onProviderList: () => undefined,
+    onProviderSave: () => undefined,
+    onProviderRemove: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
@@ -192,6 +212,11 @@ export function routesAreContractShape(): void {
     onSession: (command) => void command.type,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onModelRefresh: () => undefined,
+    onModelDefaultSet: () => undefined,
+    onProviderList: () => undefined,
+    onProviderSave: () => undefined,
+    onProviderRemove: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
@@ -226,6 +251,11 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
+    onModelRefresh: () => undefined,
+    onModelDefaultSet: () => undefined,
+    onProviderList: () => undefined,
+    onProviderSave: () => undefined,
+    onProviderRemove: () => undefined,
     onGrantsList: () => undefined,
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,

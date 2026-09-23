@@ -902,7 +902,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 账照旧一条一行。窄窗下先留住的是 `label`（连接名／模型名），先被截的是 `meta`。
     const rows = view.models.map((entry) => ({
       label: entry.provider,
-      meta: entry.model,
+      // 默认模型可以还没有（新接上的连接还没选过）——那时副栏留空，不编一行字
+      meta: entry.model ?? '',
       current: entry.model === current,
       value: entry.provider,
       oneLine: true,

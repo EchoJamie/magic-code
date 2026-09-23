@@ -21,7 +21,14 @@
  * ③ `DecisionId` ＝裁决配对的**请求事件** id。
  */
 
-import type { Command, ModelSwitchRequest, SessionCommand, UserInput } from './control.ts'
+import type {
+  Command,
+  ModelDefaultRequest,
+  ModelSwitchRequest,
+  ProviderSaveRequest,
+  SessionCommand,
+  UserInput,
+} from './control.ts'
 import type { Content, Entry, EntryRange, NewEntry, SessionSummary, UsedSkill } from './entries.ts'
 // MCP 那一支的身份源（`mcp.ts` 与本节互为类型引用——两边都是 `import type`，编译期擦除）
 import type { ExternalToolRef } from './mcp.ts'
@@ -833,10 +840,36 @@ export type ModelTraits = {
   readonly inlineThinking?: { readonly tag: string }
 }
 
-/** token 用量。 */
+/**
+ * token 用量——一次模型调用的**实际读数**（U41 改形：各字段**分别允许未知**）。
+ *
+ * ## 口径（设计 · 模型与上下文「用量归一」）
+ *
+ * - `inputTokens`——本次**完整**输入消耗（**含**已计入输入的缓存部分）；
+ * - `outputTokens`——本次**完整**输出消耗（**含**该供应商计入输出的思考部分）；
+ * - 缓存读/写、思考——**仅作可选细分**：它们已经含在上面两个数里，
+ *   **不能再与它们相加**（DeepSeek 的 `prompt_tokens` 已等于缓存命中与未命中之和，
+ *   再加 `prompt_cache_hit_tokens` 就是重复计数）。
+ *
+ * ## 未给 ≠ 0
+ *
+ * **每一格分别是可选的**：服务端**明确返回 0 才是 0**，没回来就是**不知道**
+ * （原实现「缺一个就补零」已按设计撤销）。消费者同样不许把缺省再次补零。
+ *
+ * `totalTokens` 保留**供应商自己给的定义**；未给且无法完整推导时保持未知
+ * （不从两个分项自己加一个出来冒充）。
+ */
 export type ModelUsage = {
-  readonly inputTokens: number
-  readonly outputTokens: number
+  readonly inputTokens?: number
+  readonly outputTokens?: number
+  /** 供应商给出的总用量——保留其定义（本域不自己加一个顶上）。 */
+  readonly totalTokens?: number
+  /** 细分 · 缓存读——**不得与 `inputTokens` 相加**（它已含在里面）。 */
+  readonly cacheReadTokens?: number
+  /** 细分 · 缓存写——同上。 */
+  readonly cacheWriteTokens?: number
+  /** 细分 · 思考——**不得与 `outputTokens` 相加**。 */
+  readonly reasoningTokens?: number
 }
 
 // —— 工具域 ——
@@ -1113,6 +1146,31 @@ export type CommandRoutes = {
    * 条目表的真源在装配这一步，`model.switched` 的产出也早已收拢在这儿（缺陷 D16）。
    */
   onModelList(): void
+  /**
+   * **显式刷新模型信息**（U41）→ **装配**（它握着模型信息缓存与在途获取）。
+   *
+   * 与 `onModelList` 的分别：那条是**读**（新鲜就用、过期先回旧缓存再后台刷），
+   * 这条是**明确要求现在就取一趟**——绕开有效期。答复同走 `model.catalog`。
+   */
+  onModelRefresh(provider?: string): void
+  /**
+   * **设为默认**（U41）→ **装配**（配置的写落点在它那一层，域不碰文件系统）。
+   *
+   * 与 `onModelSwitch` 的分别：那条改**当下**走谁（不写盘），这条写**配置里的默认**；
+   * 两条**不做同一件事**，也不互相代劳。
+   */
+  onModelDefaultSet(request: ModelDefaultRequest): void
+  /**
+   * **管理面的连接一览**（U41）→ **装配**（它握着配置与凭据的读取）。
+   *
+   * 控制域**原样转手**（同 `onModelList` 的姿势）——它不认识配置，也不知道配了哪些连接；
+   * 答复走事件（`provider.catalog`，**不落库**）：命令面只发不收。
+   */
+  onProviderList(): void
+  /** **保存一条连接**（接入 / 改名 / 更新认证 / 改地址）→ 装配（写盘归它）。 */
+  onProviderSave(request: ProviderSaveRequest): void
+  /** **移除一条连接** → 装配（写盘归它；有引用时的处置见 `ProviderRemove`）。 */
+  onProviderRemove(provider: string): void
   /**
    * **授权名录**（`/grants` 的读侧）→ **装配**（它握着 `~/.magic/grants.json` 的读写）。
    *

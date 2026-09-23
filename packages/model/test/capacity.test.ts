@@ -239,8 +239,9 @@ describe('条目出口 · `list()` 与 `windowTable()`', () => {
 
     const table = registry.windowTable()
     for (const entry of registry.list()) {
+      // 本用例的配置里每条都写了默认模型——`!` 是断言的一部分（U41 起这一位可缺）
       expect(entry.contextWindow ?? null).toBe(
-        windowOfSelection(table, { provider: entry.id, model: entry.model }),
+        windowOfSelection(table, { provider: entry.id, model: entry.model! }),
       )
     }
   })

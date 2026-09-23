@@ -272,10 +272,14 @@ describe('读数 3 · 模型条目表', () => {
       await handle.submit('嗨')
 
       const catalog = await askCatalog(handle)
-      // **乙一次都没调用过**，照样在表里——这正是「全量」与「见过的」之分
+      // **乙一次都没调用过**，照样在表里——这正是「全量」与「见过的」之分。
+      // U41 补位：`baseURL` 进了读面（管理那一屏要显示这条连接接的是哪儿）——
+      // **原锚**是「条目名 ＋ 默认模型 ＋ 窗长」；**为何变**：读面从「配置条目表」
+      // 扩成「连接一览」（选择器与管理页共用一行）；**新锚**：多一位用户自己写的地址，
+      // 判据没松（凭据仍不进这一行）。
       expect(catalog.data.entries).toEqual([
-        { provider: 'alpha', model: 'alpha-1', contextWindow: 200_000 },
-        { provider: 'beta', model: 'beta-1' },
+        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', contextWindow: 200_000 },
+        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1' },
       ])
       expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'alpha-1' })
       expect(catalog.data.note).toBeUndefined()
@@ -303,11 +307,12 @@ describe('读数 3 · 模型条目表', () => {
       expect(assembly.switchModel({ model: 'beta-x' }).ok).toBe(true)
 
       const catalog = await askCatalog(handle)
-      // 选中**未必是表里的某一行**——表说的是「每条目默认用谁」，选中说的是「此刻用谁」
+      // 选中**未必是表里的某一行**——表说的是「每条连接默认用谁」，选中说的是「此刻用谁」
       expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'beta-x' })
+      // （U41 起行里多一位 `baseURL`——见上一条用例的补锚说明）
       expect(catalog.data.entries).toEqual([
-        { provider: 'alpha', model: 'alpha-1', contextWindow: 200_000 },
-        { provider: 'beta', model: 'beta-1' },
+        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', contextWindow: 200_000 },
+        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1' },
       ])
 
       handle.dispose()
