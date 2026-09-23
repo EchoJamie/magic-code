@@ -88,18 +88,20 @@ function keep(out: string, shot: Capture, label: string): void {
 }
 
 /**
- * **待内核接线**的一条——据实打印读数，**不判红**。
+ * **待集成**的一条——据实打印读数，**不判红**，也**不算成功**。
  *
- * 由头（2026-09-23 实测）：契约里的五条新命令（`provider.list` / `provider.save` /
- * `provider.remove` / `model.default.set` / `model.refresh`）在**控制域没有分支**
- * （`packages/control/src/hub.ts` 的 `route()` switch 缺这五支，而它没有 `default`）
- * ——发出去的命令被**静默丢弃**。故 `/model connect`、`/model manage`、`/model refresh`
- * 在真装配上「草稿被清、屏上再无动静」（现场见 `--out` 里那一屏）。
+ * 由头（2026-09-23 实测两次、原因不同，都要写清）：
+ * ① 内核 `9a9eaf1` 之前，五条新命令在**控制域没有分支**（`control/src/hub.ts` 的 `route()`
+ *    switch 缺这五支、又没有 `default`），命令被静默丢弃——**那一笔已由内核修好**；
+ * ② 本分支（界面返修这一条）**没有内核那几笔**（hub 路由在后端那一串提交里，工单要求
+ *    「不自行全量合内核分支」），故 `/model connect`、`/model manage`、`/model refresh`
+ *    在这儿仍是「草稿被清、屏上再无动静」；接入那一步另要 `provider.catalog` 的
+ *    **供应商名单**那一格，也随那一笔。
  *
- * 那一段归**内核线**（`control` 不在界面线所有权内），故这一格：
- * - **不判红**（判红了，装置整趟跑不完，后面的判据一条都到不了）；
- * - **照实打印**（哪一步没到、屏上是什么）；
- * - **接线到了就出声**：那时这一条该转成硬判据——见 `check`。
+ * 故这一格：
+ * - **不判红**（判红了整趟跑不完，后面的判据一条都到不了）；
+ * - **照实打印**（哪一步没到、屏上是什么）——**它不算成功**，集成那一趟要重跑并转成硬判据；
+ * - 接线到了就出声（打 ✓ 并提示「把这一条转成硬判据」）。
  */
 function blocked(what: string, reached: boolean, reading: string): void {
   if (reached) {
@@ -107,7 +109,7 @@ function blocked(what: string, reached: boolean, reading: string): void {
     return
   }
 
-  console.log(`  · 待内核接线：${what} —— ${reading}`)
+  console.log(`  · 未验证（待集成）：${what} —— ${reading}`)
 }
 
 /** 屏上有没有这一行。 */
@@ -502,9 +504,9 @@ async function connecting(out: string): Promise<void> {
 
     const opened = has(picking, 'MiniMax')
     blocked(
-      '`/model connect` 开到「挑一家」那一屏（要 `provider.list` 的答复）',
+      '`/model connect` 开到「挑一家」那一屏（要 `provider.list` 的答复 ＋ 名单那一格）',
       opened,
-      '屏上仍是空闲输入行——命令被控制域静默丢弃（见 `blocked` 的注）',
+      '屏上仍是空闲输入行——本分支没有内核的 hub 路由与后端那几笔（见 `blocked` 的注）',
     )
     // 接线还没到 ⇒ 这一屏走不下去了：后面的判据等它（**不判红**，如实收摊）
     if (!opened) return
@@ -567,7 +569,7 @@ async function managing(out: string): Promise<void> {
     blocked(
       '`/model manage` 开到「连接一览」那一屏（要 `provider.list` 的答复）',
       opened,
-      '屏上仍是空闲输入行——命令被控制域静默丢弃（见 `blocked` 的注）',
+      '屏上仍是空闲输入行——本分支没有内核的 hub 路由与后端那几笔（见 `blocked` 的注）',
     )
     if (!opened) return
 
