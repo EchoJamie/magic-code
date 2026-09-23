@@ -37,7 +37,7 @@
  * 连接——管理者一死，OS 把它那一头的 socket 收掉，这里当场读到断开。
  */
 
-import type { KernelEvent, MagicHome } from '@magic/contracts'
+import type { KernelEvent, MagicHome, ModelSwitchRequest } from '@magic/contracts'
 import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
 import { loadConfig } from '../config.ts'
@@ -69,6 +69,8 @@ export type ExecutorOptions = {
    * 环境自己解析一遍，读到的是开发者**真那份**配置（`launch.ts` 头注同此）。
    */
   readonly magic: MagicHome
+  /** **开局的换模型请求**（`--provider` / `--model`）——装配之后、开工之前落地。 */
+  readonly switch?: ModelSwitchRequest | undefined
   /** 诊断——缺省不打印（这条线上不写业务日志）。 */
   readonly log?: ((line: string) => void) | undefined
 }
@@ -111,6 +113,20 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     link.send({ t: 'done', why: `装配没成：${reason}` })
     link.close()
     return { kind: 'failed', reason }
+  }
+
+  /**
+   * **开局的换模型请求**——落地在**登记之前、收命令之前**（「开局选中在放开输入之前
+   * 落地：开局那几轮就该走它，而不是第一轮走缺省、第二轮才换」——`cli.ts` 那条先例）。
+   *
+   * 它落在**这一代自己的**注册表上（注册表是执行者件的、进程级的），故不去动别的
+   * 执行者的选中——「模型选择按 Agent 独立装配，不共享可变选择」。
+   */
+  if (options.switch !== undefined) {
+    const result = assembly.switchModel(options.switch)
+    // 成没成都**如实记**：失败是一句给人看的回执（`--script` 那条路会当场停，
+    // 而这里是**带在路上的窗口**——停不得，故报一句、接着开工）
+    options.log?.(result.ok ? `开局选中 → ${result.selection.model}` : `开局选中没成：${result.reason}`)
   }
 
   // **登记**（`hello`）在装配之后发：工作区整组根是装配才算得出来的

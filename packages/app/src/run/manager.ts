@@ -29,10 +29,14 @@
  * 保存：**执行身份、绑定关系、连接与子进程句柄**——也就是「谁在跑、跑到第几代、
  * 哪条连接还挂着」这一层事实。下面那张**登记表**（`Executor`）就是它。
  *
- * **不复制**对话、计划笔记与审批事实：那些归记录域（`records.db`）。管理者**自己不开库**：
- * 库迁移由第一个起来的执行者经记录域那条既有路完成（`createRecordsStore` 开库即迁移），
- * 而管理者一个字都不往库里写——「管理者不是第二个数据库」在这里是结构上的事实，
- * 不是纪律。
+ * **不复制**对话、计划笔记与审批事实：那些归记录域（`records.db`）。管理者开库**只为
+ * 两件事**——**先完成迁移再起执行者**（设计明文），与**判「那条会话在不在」**
+ * （`--session` 打错一个字母要报错退场）。它一个字都不往库里写、不读条目、不读计划，
+ * 「管理者不是第二个数据库」在这里是结构上的事实，不是纪律。
+ *
+ * 迁移为什么要抢在执行者前面：开库那一下（建表 / 换 WAL / 跑 `user_version`）**不是**
+ * 并发安全的——两个执行者同时开一份**全新的**库会一起撞在 DDL 上。先让一个人把它带过
+ * 去，后面来的就只是「打开一份已经成形的库」。
  *
  * ## 路由：它凭什么把话带到正确的执行者那里
  *
@@ -47,7 +51,8 @@
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Socket } from 'bun'
-import type { Command, KernelEvent, MagicHome } from '@magic/contracts'
+import type { Command, KernelEvent, MagicHome, ModelSwitchRequest } from '@magic/contracts'
+import { createRecordsStore } from '@magic/records'
 import { ensureRunDir, tightenSocket } from './paths.ts'
 import type { RunPaths } from './paths.ts'
 import { linkOf, socketHandlers } from './wire.ts'
@@ -77,6 +82,8 @@ type ClientConn = {
   /** 它此刻在跟哪个执行者说话（`undefined` ＝ 还没有目标）。 */
   target: Executor | undefined
   readonly label: string | undefined
+  /** 开局那条换模型请求（`--provider` / `--model`）——为它起新的一代时带过去。 */
+  readonly switch: ModelSwitchRequest | undefined
 }
 
 /**
@@ -108,6 +115,14 @@ type Executor = {
   /** 上一次听见它（`pong` / 任何一条消息）——诊断与生命探测用。 */
   lastSeen: number
   pingSeq: number
+  /**
+   * **手里有没有活**——从 `agent.state` 认（与执行者收缩那一跳同一个判据）。
+   *
+   * 管理者为什么要知道它：`session.new` / `session.open` 这两条**内核忙时会挡回**
+   * （`BUSY_NOTE`），而那正是「屏上得有话说」的一条。挡回这件事只有内核说了算，
+   * 故忙的时候管理者**不替它换目标**，把命令原样转过去让它自己回话。
+   */
+  busy: boolean
   /** 已经核销（自己退了 / 被杀 / 管理者叫停）——不再收命令、不再广播。 */
   dead: boolean
 }
@@ -160,6 +175,13 @@ export type ExecutorRequest = {
   readonly magic: MagicHome
   /** 管理者监听的那条 socket——执行者要连它。 */
   readonly socket: string
+  /**
+   * **开局的换模型请求**——窗口 `hello` 里带的那一个，随「为它起的那一代」落地。
+   *
+   * 只有**为这个窗口新起的那一代**收它：接上一代已经在跑的会话时不再apply（那一代
+   * 有它自己的选中——「模型选择按 Agent 独立装配，不共享可变选择」是设计明文）。
+   */
+  readonly switch?: ModelSwitchRequest | undefined
 }
 
 /** 一个真起了的进程——管理者只管「它还活着没有、叫它退它退不退」。 */
@@ -269,6 +291,22 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     settle = resolve
   })
 
+  /**
+   * **先把库带过迁移那一跳**（设计明文：「管理者先完成库迁移再启动执行者」）。
+   *
+   * `workspace: []` 是**如实**的：管理者不建会话行，故那个「会话归属哪几条根」
+   * 的参数在这儿没有内容可言——它只在建行那一刻被写进库里（那一步归执行者）。
+   * 开不动库就**别当管理者**：连库都带不起来的进程，起执行者也只是把同一件事故
+   * 推迟到别人那儿炸。
+   */
+  let store: ReturnType<typeof createRecordsStore>
+  try {
+    store = createRecordsStore({ dataDir: options.dataDir, workspace: [] })
+  } catch (error) {
+    options.log?.(`库迁移没成：${String(error)}`)
+    return undefined
+  }
+
   let server: ReturnType<typeof Bun.listen>
   try {
     server = Bun.listen({
@@ -276,6 +314,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       socket: socketHandlers((socket) => accept(socket as Socket<unknown>)),
     })
   } catch {
+    store.close()
     return undefined
   }
 
@@ -329,12 +368,37 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           cwd: message.cwd,
           target: undefined,
           label: message.label,
+          switch: message.switch,
         }
         nextConn += 1
         client = conn
+
+        // **`--session` 那道校验**（U28 · 台账随批小修 8）——库里没有这条就**回绝**，
+        // 不静默开一条空的。由管理者做，因为**只有它手上开着库**（窗口那一侧按设计
+        // 不开库）；报的那句话与今天逐字同形，故「打错一个字母」这条路一处未变。
+        if (message.session !== undefined && !store.hasSession(message.session)) {
+          link.send({
+            t: 'welcome',
+            conn: conn.id,
+            dataDir: options.dataDir,
+            refuse:
+              `没有这条会话：${message.session}——` +
+              `--session 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
+          })
+          link.close()
+          return
+        }
+
         clients.set(conn.id, conn)
         link.send({ t: 'welcome', conn: conn.id, dataDir: options.dataDir })
         touch()
+
+        // **开局就定下的目标**：给了 `--session` ⇒ 现在就按它要一代执行者
+        // （这也是「接回旧会话」那条路的起点：那条会话已经有一代在跑就直接接上，
+        // 没有就为它起一代——`liveOf` 那一条判据两头都管）
+        if (message.session !== undefined) {
+          retarget(conn, { kind: 'open', session: message.session })
+        }
         return
       }
 
@@ -416,13 +480,32 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     }
 
     // **换目标的只有这两条**（见文件头注）
-    if (command.type === 'session.open') {
-      retarget(conn, { kind: 'open', session: command.session })
-      return
-    }
-    if (command.type === 'session.new') {
-      // 开一条新的＝**离开当下这条**：给它换一个还没开张的执行者，旧的照跑
-      retarget(conn, { kind: 'new' })
+    if (command.type === 'session.open' || command.type === 'session.new') {
+      // **忙时不动目标**——原样转给当下那一代，由**内核**自己回话
+      // （`BUSY_NOTE`：「正在跑一轮——先 Ctrl+C 中断，再切会话」）。
+      // 这条不让管理者替它换目标，是因为「忙时挡回」是**内核的口径**：拦在这里另起一代，
+      // 就成了「明明在跑，按一下却什么也没发生就换了会话」——那一句该说的话没了。
+      if (conn.target !== undefined && conn.target.busy) {
+        deliver(conn.target, command)
+        return
+      }
+
+      if (command.type === 'session.open') {
+        retarget(conn, { kind: 'open', session: command.session })
+        return
+      }
+
+      // **开一条新的不换目标**——原样转给当下那一代，由它自己开一条新链
+      // （与今天同一个形态、同一次往返）。换一代在这里没有好处：
+      // 旧的会话是**空闲**的（忙时上面已经挡回去了），而空闲且没人看的会话本来就会被收缩；
+      // 反倒多出「起一个新进程」那两百毫秒——屏上那次翻页会因此**挪到两百毫秒之后**，
+      // 而 `/clear` 看着就该是「按下去就翻」。
+      const target = conn.target ?? spawnFresh(conn)
+      if (target === undefined) {
+        conn.link.send({ t: 'line', text: '起不了执行者——这一条没能送到' })
+        return
+      }
+      deliver(target, command)
       return
     }
 
@@ -468,7 +551,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         return
       }
 
-      const spawned = spawn({ session: how.session, explicit: true, cwd: conn.cwd })
+      const spawned = spawn({
+        session: how.session,
+        explicit: true,
+        cwd: conn.cwd,
+        ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+      })
       if (spawned === undefined) {
         conn.link.send({ t: 'line', text: `起不了执行者——没切到 ${how.session}` })
         return
@@ -487,7 +575,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
-    const spawned = spawn({ session: null, explicit: false, cwd: conn.cwd })
+    const spawned = spawn({
+      session: null,
+      explicit: false,
+      cwd: conn.cwd,
+      ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+    })
     if (spawned === undefined) {
       conn.link.send({ t: 'line', text: '起不了执行者——没开成新的那条' })
       return
@@ -531,7 +624,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   /** 起一个还没开张的执行者——**窗口的第一条命令**走它（空白启动页此时才有进程）。 */
   function spawnFresh(conn: ClientConn): Executor | undefined {
-    const spawned = spawn({ session: null, explicit: false, cwd: conn.cwd })
+    const spawned = spawn({
+      session: null,
+      explicit: false,
+      cwd: conn.cwd,
+      ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+    })
     if (spawned !== undefined) bind(conn, spawned)
     return spawned
   }
@@ -542,6 +640,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     readonly session: string | null
     readonly explicit: boolean
     readonly cwd: string
+    readonly switch?: ModelSwitchRequest | undefined
   }): Executor | undefined {
     const gen = nextGen
     nextGen += 1
@@ -556,6 +655,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         cwd: input.cwd,
         magic: options.magic,
         socket: paths.socket,
+        ...(input.switch === undefined ? {} : { switch: input.switch }),
       })
     } catch (error) {
       options.log?.(`起执行者不成：${String(error)}`)
@@ -576,6 +676,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       watchers: new Set(),
       lastSeen: now(),
       pingSeq: 0,
+      busy: false,
       dead: false,
     }
 
@@ -653,6 +754,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       const active = event.data.active
       if (typeof active === 'string' && active !== '') executor.session = active
     }
+    // 「手里有没有活」——与执行者收缩那一跳同一个判据（`agent.state` 说在跑还是在等）
+    if (event.kind === 'agent.state') executor.busy = event.data.state !== 'waiting'
 
     for (const id of [...executor.watchers]) {
       const conn = clients.get(id)
@@ -760,6 +863,13 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       // 已经停了
     }
     clearRecord(paths)
+    // 管理者手上那份库连接——**它活过任何一个窗口**（设计：「关闭一个窗口不能关闭
+    // 其他会话的数据库连接」），故只在管理者自己退的这一跳关
+    try {
+      store.close()
+    } catch {
+      // 已经关了
+    }
 
     const deadline = now() + SHUTDOWN_GRACE_MS
     const wait = setInterval(() => {

@@ -21,6 +21,9 @@
 import { existsSync } from 'node:fs'
 import type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './manager.ts'
 
+/** 开局选中走参数（JSON 一份）——它是**窗口的属性**，随发车那一跳递进去。 */
+const SWITCH_FLAG = '--switch'
+
 export type SpawnOptions = {
   /** 入口脚本（`packages/app/src/cli.ts`）——缺省按本文件的位置推。 */
   readonly entry?: string | undefined
@@ -65,6 +68,7 @@ export function createProcessLauncher(options: SpawnOptions = {}): ExecutorLaunc
           request.magic.home,
           '--magic-base',
           request.magic.base,
+          ...(request.switch === undefined ? [] : [SWITCH_FLAG, JSON.stringify(request.switch)]),
         ],
         {
           // 子进程的**环境照传**（它要读用户的 `PATH` / 供应商的环境变量 key）。

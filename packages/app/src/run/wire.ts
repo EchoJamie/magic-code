@@ -26,7 +26,7 @@
  */
 
 import type { Socket } from 'bun'
-import type { Command, KernelEvent } from '@magic/contracts'
+import type { Command, KernelEvent, ModelSwitchRequest } from '@magic/contracts'
 
 /** 客户端 → 管理者。 */
 export type ClientToManager =
@@ -34,6 +34,23 @@ export type ClientToManager =
       readonly t: 'hello'
       readonly role: 'client'
       readonly label?: string
+      /**
+       * **显式接续**那条会话（`--session <id>`，U25 的恢复入口）。
+       *
+       * 由窗口在这一跳说，而不是等它后来发 `session.open`：接续是**开局就定下**的目标
+       * ——界面一起来就该落在那条会话上（开屏、读历史、恢复都在它上面）。晚一步说，
+       * 那几件都得先问一句「我到哪条会话上」，多一次往返还多一个中间态。
+       */
+      readonly session?: string
+      /**
+       * **开局的换模型请求**（`--provider` / `--model`）。
+       *
+       * 为什么由窗口在这一跳说、而不是随后发一条 `model.switch`：选中要**落在第一轮之前**
+       * ——「开局就落地」那条（`cli.ts` 的注）说的正是这件事。晚一步发，第一轮已经带着
+       * 缺省模型跑出去了。它随窗口走到**管理者发车那一刻**，由执行者在装配之后、
+       * 收第一条命令之前落地（见 `executor.ts`）。
+       */
+      readonly switch?: ModelSwitchRequest
       /**
        * **启动目录**——窗口在哪儿起的。执行者按它算工作区默认根
        * （配置没写 `workspaceRoots` 时「启动目录＝默认根」，U18 那条`??`）。
@@ -54,6 +71,15 @@ export type ManagerToClient =
       readonly conn: number
       /** 数据目录的规范形（管理者就是按它认的自己这一摊）。 */
       readonly dataDir: string
+      /**
+       * **这条窗口服务不了**（`--session` 打错一个字母是唯一一条）。
+       *
+       * 为什么由管理者在这一跳回绝：它手上才有库（那条会话在不在**只有库说了算**），
+       * 而窗口那一侧按设计**不开库**。回绝之后连接当场关——窗口拿不到一个可用的
+       * 连接，就只能如实报错退场，而这正是「打错一个字母报错退场，不静默开一条空的」
+       * 那条（U28）要的形态。
+       */
+      readonly refuse?: string
     }
   /**
    * **客户端换到了另一个执行者**——`gen` 是**当下**那一代的号，`session` 是它认的会话

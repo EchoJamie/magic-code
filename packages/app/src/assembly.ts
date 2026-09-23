@@ -465,7 +465,7 @@ export function createStamper(input: {
  * ⚠️ **只包根注册这一步**——网关（缺 key）· 记录域那些构造期的抛各有各的处置，
  * 别顺手一起裹：那是另一件事，得单独议（本轮已随回报备案）。
  */
-function openWorkspace(loaded: LoadedConfig, cwd: string): WorkspaceService {
+export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService {
   try {
     return createWorkspaceService({ roots: loaded.config.workspaceRoots ?? [cwd] })
   } catch (error) {
@@ -499,7 +499,7 @@ export function assemble(options: AssembleOptions): Assembly {
   // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
   // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
-  const workspace = openWorkspace(loaded, options.cwd)
+  const workspace = workspaceOf(loaded, options.cwd)
   const sandbox = createSandbox({ workspace })
 
   /**

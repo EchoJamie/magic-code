@@ -22,6 +22,20 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { linkOf, socketHandlers } from './wire.ts'
 import type { Link, ManagerToClient } from './wire.ts'
 
+/**
+ * 管理者说「这条窗口我服务不了」——**只有 `--session` 打错一个字母那一条**。
+ *
+ * 为什么这一处**抛**（而别处一律「连不上就返回 `undefined`」）：这不是「连不上」——
+ * 连接是通的、对面是活的，它只是**明确回绝了**。而回绝的理由是要给人看的
+ * （`没有这条会话：s-typo——…`），故不能糊成一个 `undefined` 让调用方自己猜。
+ */
+export class ManagerRefused extends Error {
+  constructor(readonly reason: string) {
+    super(reason)
+    this.name = 'ManagerRefused'
+  }
+}
+
 export type ManagerClient = {
   /** 管理者给的连接编号（诊断用）。 */
   readonly conn: number
@@ -44,6 +58,8 @@ export type ManagerClient = {
 }
 
 export type ConnectOptions = {
+  /** **显式接续**那条会话（`--session <id>`）——开局就落在这条上（见 `wire.ts` 的注）。 */
+  readonly session?: string | undefined
   /** 启动目录——管理者按它起执行者（工作区默认根的缺省）。缺省 `process.cwd()`。 */
   readonly cwd?: string | undefined
   /** 诊断用的标签（哪一类窗口）——缺省不给。 */
@@ -72,12 +88,20 @@ export async function connectManager(
     {
       cwd: options.cwd ?? process.cwd(),
       ...(options.label === undefined ? {} : { label: options.label }),
+      ...(options.session === undefined ? {} : { session: options.session }),
     },
     options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
   )
   if (greeted === undefined) {
     link.close()
     return undefined
+  }
+
+  // **这条窗口服务不了**（`--session` 打错一个字母）——如实把它交出去，让入口报错退场。
+  // 「报错不降级」在这里是结构上的：连接已经关了，拿不到一个能用的 `ManagerClient`。
+  if (greeted.refuse !== undefined) {
+    link.close()
+    throw new ManagerRefused(greeted.refuse)
   }
 
   /** 我认的执行者代次——由管理者那三条消息维护（见文件头注）。 */
@@ -151,12 +175,18 @@ const HANDSHAKE_TIMEOUT_MS = 3_000
  */
 async function greet(
   link: Link<ManagerToClient>,
-  hello: { readonly cwd: string; readonly label?: string },
+  hello: {
+    readonly cwd: string
+    readonly label?: string
+    readonly session?: string
+  },
   timeoutMs: number,
-): Promise<{ readonly conn: number; readonly dataDir: string } | undefined> {
+): Promise<{ readonly conn: number; readonly dataDir: string; readonly refuse?: string } | undefined> {
   return new Promise((resolve) => {
     let done = false
-    const finish = (value: { readonly conn: number; readonly dataDir: string } | undefined): void => {
+    const finish = (
+      value: { readonly conn: number; readonly dataDir: string; readonly refuse?: string } | undefined,
+    ): void => {
       if (done) return
       done = true
       clearTimeout(timer)
@@ -167,7 +197,11 @@ async function greet(
 
     link.onMessage((message) => {
       if (message.t !== 'welcome') return
-      finish({ conn: message.conn, dataDir: message.dataDir })
+      finish({
+        conn: message.conn,
+        dataDir: message.dataDir,
+        ...(message.refuse === undefined ? {} : { refuse: message.refuse }),
+      })
     })
     link.onClose(() => finish(undefined))
 
