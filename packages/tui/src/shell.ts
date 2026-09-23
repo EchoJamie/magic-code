@@ -423,6 +423,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let waiting: PendingPicker | null = null
 
   /**
+   * **`/session new` 发出去了、还在等答复**（U43 补条）——答复到了按**真实结果**回一行回执
+   * （见 `onEvent` 里那一支：切成了才说，被内核挡回就什么都不说）。
+   *
+   * 与 `waiting` 分开：那个管的是「答复到了开哪一扇抽屉」，这个管的是「这一句要不要说」。
+   * 也**只认自己发出去的那一条**——外来的 `session.state`（别的面开了会话）不该冒这句话。
+   */
+  let openingNew = false
+
+  /**
    * **一次等着答复的动作意图**（U41）——`provider.save` 之后的回话到了要接着做的那件事
    * （「确认后保存连接并获取列表」：保存完顺手去取一次模型列表）。
    *
@@ -749,6 +758,22 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (waiting === 'session') {
         waiting = null
         openSessionPicker()
+      }
+
+      // `/session new` 的答复（U43 补条）⇒ **按真实结果**留一行回执。
+      //
+      // 这一跳原先屏上零输出：目标是一条空会话 ⇒ 没有历史可铺，字标又不在换会话时重印
+      //（本单裁掉的那件），于是「按了没反应」（真帧上「切到空会话那一屏」与「切之前那一屏」
+      // 逐行相同）。补的这句**只说动作**（开了 / 没开），不说存储什么时候发生
+      //（D28 甲 否掉的是「首条消息按下回车才落库」那半句，不是回执本身）。
+      //
+      // ⚠️ **在答复这一侧发、不在敲命令那一侧发**：「按真实结果回执」——
+      // 内核忙的时候 `fresh()` 会挡回（`BUSY_NOTE`，活跃位**不动**），那时什么都没开，
+      // 敲命令就发回执会说一句假话。判据就是「活跃位换没换」这一格
+      //（与上面 `readHistory` 同一把尺子；`null → 新 id` 也算换——那一下真的开了新会话）。
+      if (openingNew) {
+        openingNew = false
+        if (before !== event.data.active) commit(appendReceipt(view, '已开一条新会话'))
       }
     }
 
@@ -2164,6 +2189,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (row === undefined) return NONE
 
       if (view.dock.picker.source === 'session') {
+        // 抽屉这一条路**不是** `/session new`——把上一句可能留下的旗子放掉，
+        // 免得那一边的答复还没到、这一边的回执被顶上（两句回执各归各的）
+        openingNew = false
         send({ type: 'session.open', session: row.value })
         // **选定后留一行回执**（原型 · 场景 10）；切过去之后重建由 `session.state` 触发
         commit(appendReceipt(closePicker(view), `已切到 ${row.label}`))
@@ -2459,12 +2487,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     // —— 交互配置型：记录区什么都不进 ——
     if (word === '/session') {
+      // 这一族的意图**每一条都重判一遍**：上一句留下的旗子不许落到下一句头上
+      //（`/session new` 之后紧跟 `/session` 列表：答复不会来两次）
+      openingNew = arg === 'new'
+
       if (arg === '' || arg === 'list') {
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
       }
-      // **没有回执**（D28甲）：新建说的是「存储什么时候发生」，答不出「影响用户的哪个动作」；
-      // 而它在首条消息之前既不上屏也不落库（D5）。换会话那一路的重建归 `session.state`。
+      // **回执在答复那一侧发**（U43 补条）：敲命令时不发——「已开一条新会话」说出口就得
+      // 是真开了，而内核忙的时候 `fresh()` 会把它挡回（见 `onEvent` 里那一支的注）。
+      // 原先这一句一个字都不回，由头见 D28 甲（否掉的是「存储什么时候发生」那半句）。
       if (arg === 'new') return only(cleared, { type: 'session.new' })
       if (arg === 'title' || arg.startsWith('title ')) {
         const title = arg.slice('title'.length).trim()

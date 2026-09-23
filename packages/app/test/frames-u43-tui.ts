@@ -19,6 +19,13 @@
  * 每屏上判四件：**字标只有一份**（且在最前） · **回执在**（这一屏的界） ·
  * **目标会话的记录铺出来了** · **没有残块**。
  *
+ * ## `/session new` 那一跳（U43 补条）
+ *
+ * 切到的是**空**会话 ⇒ 没有历史可铺，而字标又不在换会话时重印——不补一手的话这一跳
+ * 屏上零输出（「按了没反应」）。补的是 `· 已开一条新会话`（只说动作、不说存储时机）。
+ * 这里判两句：**它在**（刻在应答那一侧：内核忙时会挡回，那时一个字都不该说）·
+ * **那一屏＝切之前那一屏 ＋ 正好一行**（不加行高、不新造块）。
+ *
  * ## 跑法
  *
  * ```
@@ -76,6 +83,18 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
 /** 屏上 `needle` 出现几次。 */
 function countOn(lines: readonly string[], needle: string): number {
   return lines.filter((line) => line.includes(needle)).length
+}
+
+/**
+ * **记录区**那几行（分隔线之上）——含滚进 scrollback 的。
+ *
+ * `Capture.lines` 是可见那一屏（底下还压着输入行与状态行），而「这一跳多印了什么」问的是
+ * 记录区：拿它比对才能说清「多出来的**正好是**那一样」。
+ */
+function recordOf(shot: Capture): readonly string[] {
+  const divider = shot.history.findIndex((line) => /^─{8,}$/u.test(line.trim()))
+
+  return divider === -1 ? [...shot.history] : shot.history.slice(0, divider)
 }
 
 /**
@@ -195,14 +214,26 @@ async function switching(): Promise<void> {
     keep(jia)
     check(bannerCopies(jia) === 1, '甲落账之后：仍只有开机那一份字标')
 
-    // —— `/session new`：切到一条**空会话**（此后不再种字标——本单要改的就是这一下） ——
+    // —— `/session new`：切到一条**空会话**（此后不再种字标；而这一跳要看得出「生效了」） ——
     await typeLine(session, '/session new')
     await session.key('enter')
-    // 等这一下**被吃下**（草稿清空）再取帧——不能在按键写出去的那一刻取
-    await session.wait({ absent: '/session new' }, { timeoutMs: 10_000 })
+    // 等的就是**那一行回执**（U43 补条）：它由内核答复到了才发——等到它＝这一跳真落地了。
+    // 不拿「草稿被清空」当条件：那只是命令被吃下，此刻屏上什么都还没变。
+    await session.wait({ text: '· 已开一条新会话' }, { timeoutMs: 10_000 })
     const fresh = await session.capture({ label: '03-切到空会话' })
     keep(fresh)
     check(bannerCopies(fresh) === 1, '切到空会话：**不重印字标**（仍只有开机那一份）')
+    check(
+      countOn(fresh.history, '· 已开一条新会话') === 1,
+      '`/session new` 那一跳**看得见**：回执照旧回执的形制、只此一行',
+      `实际 ${countOn(fresh.history, '· 已开一条新会话')} 行`,
+    )
+    // 「切到空会话那一屏」与「切之前那一屏」**不能再逐行相同**——多出来的必须**正好**是那一行
+    check(
+      recordOf(fresh).join('\n') === [...recordOf(jia), '· 已开一条新会话'].join('\n'),
+      '那一屏＝切之前那一屏 ＋ **正好一行**回执（不加行高、不新造块）',
+      `切之前 ${recordOf(jia).length} 行 → 切之后 ${recordOf(fresh).length} 行`,
+    )
 
     // —— 乙落账 ——
     await typeLine(session, '第二条会话的交代')
@@ -290,7 +321,15 @@ async function narrow(): Promise<void> {
 
     await typeLine(session, '/session new')
     await session.key('enter')
-    await session.wait({ absent: '/session new' }, { timeoutMs: 10_000 })
+    // 窄窗下这一跳也得看得见（回执是一行短句，46 列放得下）
+    await session.wait({ text: '· 已开一条新会话' }, { timeoutMs: 10_000 })
+    const fresh = await session.capture({ label: '07a-窄窗切到空会话' })
+    keep(fresh)
+    check(bannerCopies(fresh) === 1, '窄窗下切到空会话：**不重印字标**（仍只有一份）')
+    check(
+      fresh.history.every((line) => line.includes('█') === false),
+      '窄窗下切到空会话也**没有块字残块**',
+    )
 
     await typeLine(session, '第二条会话的交代')
     await session.key('enter', { until: { text: '收到乙的交代。' }, timeoutMs: 20_000 })

@@ -191,6 +191,61 @@ describe('② 切到一条还没有记录的会话', () => {
   })
 })
 
+// ══ ④ `/session new` 那一跳不能静着（2026-09-24 工单补条）═══════════════
+
+/**
+ * 两句：**开了就说一句**（`· 已开一条新会话`，形制同既有回执、不加行高）·
+ * **没开就一个字都不说**——内核忙的时候 `fresh()` 会把它挡回（活跃位不动），
+ * 那时说「已开一条」就是假话（「按真实结果回执」）。
+ *
+ * ⚠️ 判据落在**答复那一侧**：回执不是敲命令时就发的，故帧序里 `session.state` 那一拍
+ * 才是它该出现的地方（见下方两形）。
+ */
+describe('④ `/session new`：按真实结果留一行回执', () => {
+  /** 敲一句 `/session new`——命令出去之后，回执该不该发由**答复**定。 */
+  const openNew = (stage: Stage): readonly (() => void)[] => [
+    () => stage.type('/session new'),
+    () => stage.press(ENTER),
+  ]
+
+  test('**开了**（活跃位换了）⇒ 那一屏＝切之前那一屏 ＋ **正好一行**回执', async () => {
+    const stage = createStage()
+    const views = takes(stage, [
+      () => stage.feed([catalog('s1')]),
+      () => stage.feed([history('s1', 甲)]),
+      ...openNew(stage),
+      () => stage.feed([catalog('s2')]), // 内核答复：新会话到位（这就是「真实结果」）
+      () => stage.feed([history('s2', [])]), // 空会话：读回来一条都没有（没有东西可铺）
+    ])
+
+    const before = await show(views.slice(0, 3), WIDE) // 敲之前那一屏
+    const after = await show(views, WIDE) // 切到空会话那一屏
+
+    // **不再逐行相同**：切之前那一屏 ＋ 正好一行——多一行是回执，不多不少（不加行高）
+    expect(after.content.map((line) => line.text)).toEqual([
+      ...before.content.map((line) => line.text),
+      '· 已开一条新会话',
+    ])
+    expect(countOf(after, '· 已开一条新会话')).toBe(1) // 每件事只报一次
+  })
+
+  test('**没开**（活跃位没换——内核挡回）⇒ 一个字都不说，屏上原样', async () => {
+    const stage = createStage()
+    const views = takes(stage, [
+      () => stage.feed([catalog('s1')]),
+      () => stage.feed([history('s1', 甲)]),
+      ...openNew(stage),
+      () => stage.feed([catalog('s1')]), // 忙：活跃位**不动**（`fresh()` 的 BUSY 那一支）
+    ])
+
+    const before = await show(views.slice(0, 3), WIDE)
+    const after = await show(views, WIDE)
+
+    expect(after.screen.lines).toEqual(before.screen.lines)
+    expect(after.has('· 已开一条新会话')).toBe(false)
+  })
+})
+
 // ══ ③ 窄窗：块字本就不印，换会话那一屏别有残块 ═══════════════════════
 
 describe('③ 窄窗（字标换成一行版那一档）', () => {

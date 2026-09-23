@@ -87,9 +87,32 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
   await session.send(text, { until: { text }, timeoutMs: 10_000 })
 }
 
-// ⚠️ **删掉过一个 `waitUntil` 帮手**（U43）：它原先只服务「换会话后又多出一份字标」那一处等待
-// ——裁定「不重印」之后那句判据连同它一起去掉了（同形的帮手在 `frames-u43-tui.ts` 里，
-// 那边量的正是「整份缓冲里只有一份」）。
+/**
+ * 等屏上的某个**条件**成立（`wait` 的闭集装不下「数一数」这类判据，故自己轮询 `screen()`）。
+ *
+ * 超时**如实失败**（带上此刻的整屏）——不重发、不重试、不拿固定 sleep 当同步。
+ *
+ * （U43 期间删过一次又回来：原先它守的是「换会话后又多出一份字标」那条等待——那句随裁定
+ * 作废；现在守的是「两次 `/session new` 各留过一行回执」，同样是**数一数**才判得出的。）
+ */
+async function waitUntil(
+  session: UiSession,
+  what: string,
+  ok: (lines: readonly string[]) => boolean,
+  timeoutMs = 10_000,
+): Promise<readonly string[]> {
+  const until = Bun.nanoseconds() + timeoutMs * 1e6
+
+  for (;;) {
+    const { lines } = await session.screen()
+    const text = lines.map((line) => line.text)
+
+    if (ok(text)) return text
+    if (Bun.nanoseconds() > until) throw new Error(`等「${what}」超时（${timeoutMs}ms）。屏：\n${text.join('\n')}`)
+
+    await Bun.sleep(40)
+  }
+}
 
 /**
  * 等**真光标挪到别处**（`from` 是挪之前那一列）——返回新列。
@@ -190,7 +213,13 @@ async function sessionNew(): Promise<void> {
 
     await typeLine(session, '/session new')
     await session.key('enter')
-    await session.wait({ absent: '/session new' }, { timeoutMs: 10_000 })
+    // 这一跳现在**看得见**了（U43 补条：`· 已开一条新会话`）——等**第二行**到（第一行在 `03` 那一步）
+    await waitUntil(
+      session,
+      '第二次 `/session new` 的回执',
+      (lines) => countOn(lines, '· 已开一条新会话') >= 2,
+      10_000,
+    )
     const twice = await session.capture({ label: '04-再新建一次（换了会话）' })
     keep(twice)
 
@@ -198,6 +227,11 @@ async function sessionNew(): Promise<void> {
       bannerRows(twice.history) === 5,
       '换会话之后**仍只有一份字标**（不再重印——U43）',
       `整份缓冲实际 ${bannerRows(twice.history)} 行块字`,
+    )
+    check(
+      countOn(twice.history, '· 已开一条新会话') === 2,
+      '两次 `/session new` 各留**一行**回执（只说动作，不说落库时机）',
+      `整份缓冲实际 ${countOn(twice.history, '· 已开一条新会话')} 行`,
     )
     check(
       !twice.history.some((line) => line.includes('已新建一条会话')),
