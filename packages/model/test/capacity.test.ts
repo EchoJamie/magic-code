@@ -247,6 +247,57 @@ describe('条目出口 · `list()` 与 `windowTable()`', () => {
   })
 
   /**
+   * **新出口 `capacityOf()`**（U41 返修）——有效**输入预算**：请求、显示、压缩同一份解析。
+   *
+   * ⚠️ 它与上面的 `windowTable()` **并存是过渡**：旧表报窗长原值，新出口已为本次输出
+   * 预留——两条链数值不一致是过渡期的实情（界面接完新出口后统一删旧链）。
+   */
+  test('新出口：合用窗口**为本次输出预留**（缺省输出 4096 也算已发出去的数）', () => {
+    const registry = registryOf({ alpha: CONFIG('my-local-llama') })
+
+    const spec = registry.capacityOf('alpha', 'my-local-llama')
+    // 没有输出覆盖 ⇒ 真会送的是缺省那一个 —— 复核：「当前请求参数并非未知」
+    expect(spec?.maxOutputTokens).toBe(4_096)
+    expect(spec?.inputBudget).toBeUndefined() // 这份配置里没有窗长依据
+
+    const declared = registryOf({ alpha: { ...CONFIG('MiniMax-M2'), contextWindow: 10_000 } })
+    expect(declared.capacityOf('alpha', 'MiniMax-M2')?.inputBudget).toBe(10_000 - 4_096)
+  })
+
+  test('新出口：**两道约束取共同允许的范围**——独立输入上限不被合用窗口放大', () => {
+    const registry = registryOf({
+      alpha: {
+        ...CONFIG('my-local-llama'),
+        modelOverrides: {
+          'my-local-llama': {
+            limits: { maxContextTokens: 10_000, maxInputTokens: 3_000, maxOutputTokens: 2_000 },
+          },
+        },
+      },
+    })
+
+    const spec = registry.capacityOf('alpha', 'my-local-llama')
+    // 合用窗口预留后是 8000，但独立输入上限说 3000 —— **取较小的那一个**
+    expect(spec?.maxOutputTokens).toBe(2_000)
+    expect(spec?.inputBudget).toBe(3_000)
+  })
+
+  test('新出口：同名模型两条目**各查各的**（旧表那条口径的延续）', () => {
+    const registry = registryOf({
+      'alpha-gw': { ...CONFIG('MiniMax-M2'), contextWindow: 32_768 },
+      'beta-direct': CONFIG('MiniMax-M2'),
+    })
+
+    expect(registry.capacityOf('alpha-gw', 'MiniMax-M2')?.contextWindow).toBe(32_768)
+    expect(registry.capacityOf('beta-direct', 'MiniMax-M2')?.contextWindow).toBe(204_800)
+  })
+
+  test('新出口：未知连接 / 未知模型 ⇒ `undefined`（不知道就是不知道）', () => {
+    const registry = registryOf({ alpha: CONFIG('MiniMax-M2') })
+    expect(registry.capacityOf('nope', 'MiniMax-M2')).toBeUndefined()
+  })
+
+  /**
    * **原型上有名字的条目名**（验收边界）：`providers` 的查表也只认自有键——
    * 否则 `has('toString')` 报 `true`，`use({ provider: 'toString' })` 会把
    * `Object.prototype.toString` 当配置去解 key（实测 `TypeError: …trim is not a function`）。

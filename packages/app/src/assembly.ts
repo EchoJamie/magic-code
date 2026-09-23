@@ -51,6 +51,7 @@ import type {
   McpConnectionState,
   McpToolRejection,
   ModelCatalogRow,
+  ModelInfo,
   ModelDefaultRequest,
   ModelGateway,
   ModelSwitchRequest,
@@ -96,7 +97,6 @@ import {
   createModelRegistry,
   resolveConnection,
   vendorCatalog,
-  windowOfSelection,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { PermissionRule, RuleProblem } from '@magic/permission'
@@ -346,6 +346,15 @@ export type Assembly = {
    */
   readonly contextWindow: number | null
   /**
+   * **窗长表**（U30 · **过渡期暂留**）——旧链：外壳自己拿表算，与 gateway 另算容量
+   * 曾是两处各说一套（复核点名）。
+   *
+   * **正身已经是 `Assembly.contextWindow` 与 `model.catalog` 的 `contextWindow`**
+   * （同一份有效规格）；本表等界面接完新出口后统一删。**在那之前两条链的数值会不一致**
+   * （旧表报窗长原值，新出口已为本次输出预留）——过渡期的实情，不是最终态。
+   */
+  readonly windowTable: WindowTable
+  /**
    * **项目规约的按需读数**（U32）——现读一次「各根一级 ＋ 显式来源」，连**没加载进来的那些**
    * 一起交回（`--check` 那一行与启动回执的话都从这儿来）。
    *
@@ -362,20 +371,6 @@ export type Assembly = {
    * （与规约的按目标筛选不同——技能不按目标适用，它是一份清单）。
    */
   readonly readSkills: () => SkillCatalog
-  /**
-   * **窗长表**（U30）——内置容量表 ＋ 各条目**自己声明**的覆盖位，**分开装**：
-   * 内置表按**准确模型 id** 算（与条目无关），声明**只属于配置它的条目及对应模型**
-   * （消费按 `provider ＋ model` 一起看——见 `windowOfSelection`）。
-   *
-   * 为什么要整张表进外壳：换模型是**运行时**的事（`/model` 一按就换），那一刻外壳得
-   * **当场**知道新模型多长——而它够不着注册表。表递过去，`model.switched` 一到就查得出；
-   * 查不到＝不知道（分母 `null`），**不沿用前一个模型的容量**。
-   *
-   * 注册表缺席 ⇒ **空表**（＝什么都不知道）：与上面 `contextWindow` 的 `null` 同一条口径
-   * ——不编。（两者不并成一个位：`contextWindow` 是**开机那一刻**的读数，本表是**之后**
-   * 每一次切换的取材——外壳开机时手里还没有模型名，查不了表。）
-   */
-  readonly windowTable: WindowTable
   /**
    * 工作区**注册根列表**（阶段 3 多根）——执行域构造时逐条取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
@@ -716,54 +711,6 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
   let configMtime: number | undefined = loaded.mtimeMs
 
-  // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
-  // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
-  const registryOf = (): ModelRegistry =>
-    createModelRegistry({
-      providers: providerBook,
-      ...(defaultProviderId === undefined ? {} : { defaultProvider: defaultProviderId }),
-      stamper: forwardStamper,
-      fetch: options.modelFetch,
-    })
-
-  let models: ModelRegistry | undefined
-  if (options.modelGateway === undefined) models = registryOf()
-
-  /**
-   * **按当下的连接资料重建注册表**（保存之后）。
-   *
-   * 不成（新连接缺 key / 缺省指向了不存在的连接）时**保留原来那一张**：
-   * 配置已经落盘了，这一次装配用不上它——如实说一句，别把装配整个带崩。
-   */
-  const rebuildRegistry = (): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
-    if (options.modelGateway !== undefined) return { ok: true }
-
-    // **先记下当前选择**（返修 · 首验反例「改连接显示名不得丢失当前模型选择」「设为默认
-    // 不得偷偷切换当前模型」）：重建是为了让**配置改动**生效（改名 / 接入新连接 / 存默认），
-    // 它**不是「换模型」的动作**——新注册表的选中是空的，不搬过去就等于顺手把用户的当前
-    // 选择切回了缺省。选择只由 `model.switch`（改当下）与用户显式动作改变。
-    const kept = models?.selection()
-
-    try {
-      models = registryOf()
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
-    }
-
-    if (kept !== undefined) {
-      // 搬不回（那条连接被移除 / 新配置里缺 key）= **留新注册表的缺省**，不在这里报错：
-      // 用户那一次动作（保存 / 移除）的答复已经在说它自己的事，再叠一句只会让人分不清
-      models.use({
-        provider: kept.provider,
-        model: kept.model,
-        ...(kept.reasoning === undefined ? {} : { reasoning: kept.reasoning }),
-      })
-    }
-
-    return { ok: true }
-  }
-
   /**
    * **模型信息面**（U41）——连接资料现取（改完配置立刻对得上）、缓存落盘走 app 的实现。
    *
@@ -784,13 +731,85 @@ export function assemble(options: AssembleOptions): Assembly {
   })
 
   /**
-   * **窗长表**（U30）——内置表 ＋ 各条目自己声明的覆盖位；**注册表缺席＝空表**
-   * （＝什么都不知道，与 `Assembly.contextWindow` 的 `null` 同一条口径）。
+   * 该模型**已知的资料**（来自模型信息缓存）——**有效规格的一处来路**（U41 返修）。
    *
-   * 这是一份**值**（配置定的，不随切换漂）——开机那一格与外壳此后每次切换的取材
-   * 都读它，判定统一走 `windowOfSelection`（一处口径，不会分叉）。
+   * 复核点名「模型信息缓存未进入 gateway 的有效规格」：供应商在列表/详情里给了
+   * `limits` / `reasoning` / `traits` 时，它们要参与**这一次调用**的规格解析，
+   * 而不是只躺在读面上。
+   *
+   * **纯查的口径**：走 `read()` 的现成三道闸（在途共享 · 失败冷却 · 新鲜度），
+   * 故它不会因为「被多查几次」而多打接口。
+   */
+  const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
+    modelInfo.read(provider).snapshot?.models.find((one) => one.id === model)
+
+  // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
+  // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
+  const registryOf = (): ModelRegistry =>
+    createModelRegistry({
+      providers: providerBook,
+      ...(defaultProviderId === undefined ? {} : { defaultProvider: defaultProviderId }),
+      stamper: forwardStamper,
+      fetch: options.modelFetch,
+      // 有效规格要看得见缓存里那份资料（见 `knownModelOf`）
+      modelInfoOf: knownModelOf,
+    })
+
+  let models: ModelRegistry | undefined
+  if (options.modelGateway === undefined) models = registryOf()
+
+  /**
+   * **窗长表**（U30 · **过渡期暂留**）——内置表 ＋ 各条目自己声明的覆盖位。
+   *
+   * ⚠️ U41 返修起，**分母的正身是 `ModelRegistry.capacityOf`**（有效输入预算：与出站请求、
+   * 用量事件、压缩同一份解析，见 `Assembly.contextWindow` 与 `catalogRows`）。
+   * 这张表是**旧链**（外壳自己拿表算），复核点名它「与 gateway 另算容量」两处各说一套——
+   * 故它是**过渡件**：界面接完新出口之后统一删。**在那之前两条链的数值会不一致**
+   * （旧表报窗长原值，新出口已为本次输出预留），这是过渡期的实情，不得当最终态。
    */
   const windowTable: WindowTable = models?.windowTable() ?? { builtin: {}, declared: {} }
+
+  /**
+   * **按当下的连接资料重建注册表**（保存之后）。
+   *
+   * 不成（新连接缺 key / 缺省指向了不存在的连接）时**保留原来那一张**：
+   * 配置已经落盘了，这一次装配用不上它——如实说一句，别把装配整个带崩。
+   */
+  const rebuildRegistry = (): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
+    if (options.modelGateway !== undefined) return { ok: true }
+
+    // **先记下「此刻真会走的那个」**（返修 · 首验与复核的同根反例：「改连接显示名不得丢失
+    // 当前模型选择」「设为默认不得偷偷切换当前模型」）。
+    //
+    // ⚠️ 记的是 `current()` 而**不是** `selection()`：后者只在用户**显式切换过**时才有值。
+    // 没切过时（走配置里那条缺省）记 `selection()` 会漏掉一整路——保存另一个默认之后，
+    // 重建出来的缺省换了人，当前选择就**跟着漂**了，而那同样不是用户的动作。
+    // 认「此刻走谁」这一件事，本来就该问 `current()`。
+    const kept = models?.current()
+
+    try {
+      models = registryOf()
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
+    }
+
+    if (kept !== undefined) {
+      // 把它**固化成显式选中**——重建完之后「此刻走谁」与重建之前是同一个。
+      // （没切过时这一步让 `selection()` 由空变有值，那是实情：从这一刻起，这个选择是
+      // 用户当时正在用的那一个，不该再被后来的「默认」改动带走。）
+      //
+      // 搬不回（那条连接被移除 / 新配置里缺 key）= **留新注册表的缺省**，不在这里报错：
+      // 用户那一次动作（保存 / 移除）的答复已经在说它自己的事，再叠一句只会让人分不清
+      models.use({
+        provider: kept.provider,
+        model: kept.model,
+        ...(kept.reasoning === undefined ? {} : { reasoning: kept.reasoning }),
+      })
+    }
+
+    return { ok: true }
+  }
 
   /** 一次「开一条会话」的产物——切换时整束换掉（单活跃：同时只留一束）。 */
   type Chain = {
@@ -1125,7 +1144,9 @@ export function assemble(options: AssembleOptions): Assembly {
     const current = registry.current()
     if (current === undefined) return null
 
-    return windowOfSelection(windowTable, current)
+    // **有效输入预算**（U41 返修）——与出站请求、`model.usage.contextWindow` 同一份解析。
+    // 此前这里查的是 `windowTable`（另一条链），gateway 又另有一套算法：两处各说一套。
+    return registry.capacityOf(current.provider, current.model)?.inputBudget ?? null
   }
 
   /**
@@ -1289,6 +1310,12 @@ export function assemble(options: AssembleOptions): Assembly {
     return fromEnv !== undefined && fromEnv.trim().length > 0 ? 'env' : undefined
   }
 
+  /** 某条连接某个模型的**有效输入预算**——读面那一格（与出站/用量/压缩同源）。 */
+  const inputBudgetOf = (provider: string, model: string | undefined): number | undefined => {
+    if (model === undefined || models === undefined) return undefined
+    return models.capacityOf(provider, model)?.inputBudget
+  }
+
   const catalogRows = (registry: ModelRegistry | undefined): readonly ModelCatalogRow[] => {
     if (registry === undefined) return []
 
@@ -1305,7 +1332,11 @@ export function assemble(options: AssembleOptions): Assembly {
         ...(keySourceOf(entry.id, config) === undefined
           ? {}
           : { keySource: keySourceOf(entry.id, config) }),
-        ...(entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow }),
+        // **有效输入预算**（U41 返修）——外壳的分母与出站 / 用量 / 压缩同源。
+        // 没有依据（配置、缓存、适配补充都没有）就**不给这一位**——显示不出来就不显示
+        ...(inputBudgetOf(entry.id, entry.model) === undefined
+          ? {}
+          : { contextWindow: inputBudgetOf(entry.id, entry.model) }),
         // 缓存读数（U41）——**有才给**：空对象（还没取过、兼容接入）就不给这一位
         ...(Object.keys(modelInfo.read(entry.id)).length === 0 ? {} : { cache: modelInfo.read(entry.id) }),
       }
@@ -1602,8 +1633,9 @@ export function assemble(options: AssembleOptions): Assembly {
     get contextWindow(): number | null {
       return contextWindowOf(models)
     },
-    // 窗长表（U30）——注册表缺席＝空表（不知道有哪些模型的窗长，同 `contextWindow` 的 `null`）
+    // 旧链（过渡期暂留）——见 `windowTable` 常量处的说明
     windowTable,
+    // 窗长表（U30）——注册表缺席＝空表（不知道有哪些模型的窗长，同 `contextWindow` 的 `null`）
     workspaceRoots: workspace.roots(),
     // **没有会话就不跑恢复**：空手打开没有在途可处置，跑了反而要铸一个 id 才有信封——
     // 那正是 D5 要免掉的。显式接续（`startup` 给了 id）时才跑。

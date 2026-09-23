@@ -1056,7 +1056,7 @@ describe('调用设置与容量（U41 返修）', () => {
     expect(window).toBe(8_000)
   })
 
-  test('**反例**：没有输出上限时，联合窗口**不**凭空减一个数（不编）', async () => {
+  test('没有输出上限时，联合窗口为**本次实际请求的那个数**预留', async () => {
     const { body, window } = await callOnce(
       {
         vendor: 'deepseek',
@@ -1066,10 +1066,12 @@ describe('调用设置与容量（U41 返修）', () => {
       'known',
     )
 
-    // 请求仍带缺省那一个（那是**我们请求时带的数**，不是模型规格）
+    // 请求仍带缺省那一个
     expect(body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
-    // 而分母就是窗总量——**不拿我们自己的常量去减模型规格**（那是编）
-    expect(window).toBe(10_000)
+    // **分母也要减它**——独立复核否掉了上一轮「常量不算规格、所以不减」那条口径：
+    // 「预留依据是**本次实际请求**，不是供应商最大输出规格是否已知；当前请求参数并非未知」。
+    // 故 10000 的联合窗口剩 10000 − 4096。
+    expect(window).toBe(10_000 - MAX_COMPLETION_TOKENS)
   })
 
   test('独立输入上限**不机械减去**输出上限（两者不是一回事）', async () => {
@@ -1214,7 +1216,7 @@ describe('假端点回环 · 流式事件序列', () => {
       declared.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
     expect(withWindow.events.filter((event) => event.kind === 'model.usage').map((event) => event.data)).toEqual([
-      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 200_000 },
+      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 195_904 },
     ])
     // 聚合结果**不动**——窗长是「这次调用之外」的东西，不是用量的一部分
     expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0 })
@@ -1236,7 +1238,7 @@ describe('假端点回环 · 流式事件序列', () => {
     // 用户声明 → 该家适配的缺项补充 → 未知（设计：「替换当前『内置表只供界面、事件容量
     // 只认配置』的分叉」「输入上限、预留输出与所显示分母须同口径」）。
     // MiniMax-M3 有官方窗长（该家适配的补充表），故**没声明也带着它**。
-    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 1_000_000 })
+    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 995_904 })
 
     // **反例**（改了这处行为的对照）：**不在补充表里**的模型照旧**没有这一位**——
     // 「不知道就是不知道」那一半没松（app 的读数用例里那条「乙」是同一个反例）。
@@ -1295,7 +1297,8 @@ describe('假端点回环 · 流式事件序列', () => {
         modelUsage(
           stamper,
           { inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0 },
-          1_000_000,
+          // **有效输入预算**（U41 返修）：M3 的联合窗口 1M 为本次输出（缺省 4096）预留后
+          1_000_000 - MAX_COMPLETION_TOKENS,
         ),
         modelCallEnd(stamper),
       ]),

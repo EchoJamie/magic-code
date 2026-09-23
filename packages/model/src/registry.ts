@@ -26,6 +26,7 @@
 import type {
   EventStamper,
   KernelEvent,
+  ModelInfo,
   ModelRequest,
   ProviderConfig,
   ReasoningSetting,
@@ -34,7 +35,8 @@ import type { FetchLike } from './ai-sdk.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
-import { MissingApiKeyError, createModelGateway } from './gateway.ts'
+import { MissingApiKeyError, createModelGateway, effectiveSpecOf } from './gateway.ts'
+import type { EffectiveSpec } from './gateway.ts'
 import { modelCallStart, modelErrorEvent } from './events.ts'
 import { vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
@@ -161,6 +163,18 @@ export interface ModelRegistry extends ModelGateway {
    * 不同的窗长，平表会让甲的声明盖到乙头上。
    */
   windowTable(): WindowTable
+  /**
+   * **某个模型的有效规格**（U41 返修 · 新出口）——显示、出站、压缩**同一份解析**。
+   *
+   * 由头（设计 · 模型与上下文「统一消费」）：「模型域解析一次有效选择与令牌规格，
+   * 为当前请求形成不可变读数，贯穿调用、事件和容量消费」。
+   *
+   * ⚠️ **与 `windowTable()` 并存是过渡**：旧链（`registry.windowTable → 装配 → 外壳`）
+   * 让外壳自己拿表算分母、gateway 另有一套算法，两处各说一套（复核点名）。新出口一次
+   * 解析完；**界面接完这一格之后，旧链统一删**——在那之前两条链的**数值会不一致**
+   * （旧表报窗长原值，新出口已为本次输出预留），这是过渡期的实情，不是最终态。
+   */
+  capacityOf(provider: string, model: string): EffectiveSpec | undefined
   /** 配置里的缺省连接 id（`defaultProvider`）——**没配过就不给**（U41 起可缺）。 */
   defaultProviderId(): string | undefined
   /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
@@ -245,6 +259,15 @@ export type ModelRegistryOptions = {
   readonly env?: Readonly<Record<string, string | undefined>> | undefined
   /** 输出上限覆盖（取件层常量，见 `ai-sdk.ts`）。 */
   readonly maxCompletionTokens?: number | undefined
+  /**
+   * **某连接某模型已知的资料**（来自模型信息缓存）——装配给（它才够得着那份缓存）。
+   *
+   * 有效规格的一处来路（优先级：用户覆盖 → **供应商 API 当前有效信息** → 缺项补充 → 未知）。
+   * 缺省＝没有缓存可看，规格只由配置与适配补齐（与加它之前一字不差）。
+   */
+  readonly modelInfoOf?:
+    | ((provider: string, model: string) => ModelInfo | undefined)
+    | undefined
 }
 
 // —— 装配 ——
@@ -339,6 +362,19 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
           // 两处皆无就不给这个位（不拿 0 / 占位符冒充「不知道」）
           ...(window === undefined ? {} : { contextWindow: window }),
         }
+      })
+    },
+
+    capacityOf(provider: string, model: string): EffectiveSpec | undefined {
+      const config = ownOf(providers, provider)
+      if (config === undefined) return undefined
+
+      return effectiveSpecOf({
+        model,
+        config,
+        adapter: adapterFor(provider),
+        known: options.modelInfoOf?.(provider, model),
+        fallbackOutputTokens: options.maxCompletionTokens,
       })
     },
 
