@@ -20,7 +20,8 @@
  * ④ **事件构造子**——两个 kind（装配与测试用）；
  * ⑤ **规则**——`PermissionRule` 形态 ＋ `parseRules`（配置解析 · 只读）；
  * ⑥ **授权**（U22）——`Grant` / `GrantsFile` 形态 ＋ `parseGrants`（**授权文件**解析 · 只读）
- *    ＋ `createGrantLedger`（**工作区级**账本 · 纯内存）。
+ *    ＋ `createGrantLedger`（**工作区级**账本 · 纯内存）；U47 补 `GrantEdit` ＋
+ *    `applyGrantEdit`（**一项增删**＋把它落到一份文件上——落盘那一跳的「改」那一半）。
  *
  * 不出去的：命令分解表 · 路径判据与模式匹配 · 在途询问表（域内物）。
  */
@@ -54,7 +55,8 @@ export { parseRules } from './rules.ts'
 
 export type {
   Grant,
-  GrantChange,
+  GrantEdit,
+  GrantHit,
   GrantLedger,
   GrantLedgerOptions,
   GrantParseResult,
@@ -62,6 +64,7 @@ export type {
   GrantsFile,
 } from './grants.ts'
 export {
+  applyGrantEdit,
   createGrantLedger,
   emptyGrants,
   GRANTS_VERSION,

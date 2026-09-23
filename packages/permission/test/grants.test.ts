@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { GrantsFile } from '../src/index.ts'
+import type { GrantEdit, GrantsFile } from '../src/index.ts'
 import {
   createGrantLedger,
   emptyGrants,
@@ -121,12 +121,12 @@ describe('授权文件 · 解析（只读 · 从严）', () => {
 // ══ 账本 ══════════════════════════════════════════════════════════════
 
 /** 造一个账本——`now` 可注入（陈旧那条判据要看它）。 */
-function book(file?: GrantsFile, now = (): number => NOW, onChange?: (f: GrantsFile, c: string) => void) {
+function book(file?: GrantsFile, now = (): number => NOW, onChange?: (edit: GrantEdit) => void) {
   return createGrantLedger({
     workspace: HERE,
     ...(file === undefined ? {} : { file }),
     now,
-    ...(onChange === undefined ? {} : { onChange: onChange as never }),
+    ...(onChange === undefined ? {} : { onChange }),
   })
 }
 
@@ -155,7 +155,7 @@ describe('账本 · 记（`a`）', () => {
 
   test('记新的一条报 `grant` 缘由——**装配据以立刻落盘**', () => {
     const seen: string[] = []
-    const ledger = book(undefined, () => NOW, (_file, change) => void seen.push(change))
+    const ledger = book(undefined, () => NOW, (edit) => void seen.push(edit.kind))
 
     ledger.remember({ tool: 'read' })
     ledger.remember({ tool: 'read' }) // 重复的不报（什么都没变）
@@ -191,7 +191,7 @@ describe('账本 · 命中记账（久未命中的原料）', () => {
 
   test('命中报 `hit` 缘由——**攒着，不立刻落盘**（见 app 侧的接线）', () => {
     const seen: string[] = []
-    const ledger = book(undefined, () => NOW, (_file, change) => void seen.push(change))
+    const ledger = book(undefined, () => NOW, (edit) => void seen.push(edit.kind))
 
     ledger.remember({ tool: 'read' })
     ledger.hit({ tool: 'read' })
@@ -203,7 +203,7 @@ describe('账本 · 命中记账（久未命中的原料）', () => {
 describe('账本 · 撤销（`/grants` 那两件里的第二件）', () => {
   test('撤一条——名录里没了，报 `revoke` 缘由', () => {
     const seen: string[] = []
-    const ledger = book(undefined, () => NOW, (_file, change) => void seen.push(change))
+    const ledger = book(undefined, () => NOW, (edit) => void seen.push(edit.kind))
     ledger.remember({ tool: 'read' })
     ledger.remember({ tool: 'grep' })
 

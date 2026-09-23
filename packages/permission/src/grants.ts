@@ -21,6 +21,14 @@
  * - **账本**（`createGrantLedger`）——**纯内存**，本域仍然**不碰文件系统**：落盘是装配的事
  *   （同配置文件的先例），账本只把「变了」报出去（`onChange`）。
  *
+ * ## 报的是「改了哪一项」，不是整份（U47）
+ *
+ * 报出去的是 **`GrantEdit`**（一项增删），不是整份快照——这是「多执行者共享一份
+ * `grants.json`」的前置（设计 · 会话与运行管理「多执行者共享数据的前置条件」第二项）。
+ * 账本**不知道**盘上现在是什么（那是装配读的文件），故它只说「我加了这一条 / 撤了那一条」；
+ * 把这项改动落到**当前内容**上归 `applyGrantEdit`，读与写、以及串行的锁，归装配。
+ * 账本因此在并发下仍然自洽：它管的是**本进程**那一份，盘上那一份谁都不许拿旧账本覆写。
+ *
  * ## 分节键
  *
  * 一节 ＝ 一个工作区，键是**默认根的规范形**（`roots()[0]`）。三条由头：
@@ -215,16 +223,133 @@ function readAccounting(
   return { meta }
 }
 
-// ══ 账本 ══════════════════════════════════════════════════════════════
+// ══ 改动单元 ══════════════════════════════════════════════════════════
 
-/** 账本变了的缘由——装配据以决定「现在落盘还是攒着」（见 `GrantLedgerOptions.onChange`）。 */
-export type GrantChange =
+/**
+ * **一项增删**——账本报出去的落盘单位（U47）。**不是整份快照。**
+ *
+ * 由头（设计 · 会话与运行管理「多执行者共享数据的前置条件」第二项）：原先报的是
+ * **整份文件**，装配拿它整份覆写——两个执行者各持旧账本，后落盘的那个把前一个的
+ * 改动**抹掉**，撤销也会被旧的那一份**复活**。改成「说清楚我改了哪一项」，装配那一侧
+ * 就能做到「读**当前**内容 → 应用这一项 → 原子保存」，并使这一串**串行**执行。
+ *
+ * `hit` 单独一支、且可以攒着（见 `GrantLedgerOptions.onChange`）：它是每一次自动放行
+ * 都发生的事，逐次写盘＝白烧 io，而掉电丢的只是统计，不是授权。
+ */
+export type GrantEdit =
   /** 新记了一条（`a`）——**立刻落盘**（这是那份文件存在的理由）。 */
-  | 'grant'
-  /** 撤了一条 / 一节——**立刻落盘**（撤销不落盘＝下次启动又回来了）。 */
-  | 'revoke'
-  /** 命中记账——**攒着**（每一次自动放行都写盘＝白烧 io；掉电丢的是统计，不是授权）。 */
-  | 'hit'
+  | { readonly kind: 'grant'; readonly workspace: string; readonly grant: Grant }
+  /**
+   * 撤了一条（`/grants` 选定即撤）——**立刻落盘**（撤销不落盘＝下次启动又回来了）。
+   *
+   * `index` 是它在**撤的那一刻**名录里的位置；`rule` 是三格身份。两个都给，是因为
+   * 落盘要落在一份**重读来的当前内容**上（并发前置）：索引对得上就直接那一条，
+   * 对不上（盘上已被别人动过）就按身份找——找不到＝那一条已经不在了，这一项就是空操作。
+   */
+  | {
+      readonly kind: 'revoke'
+      readonly workspace: string
+      readonly index: number
+      readonly rule: PermissionRule
+    }
+  /** 整节撤掉（陈旧节那条路——路径已不在）。 */
+  | { readonly kind: 'section'; readonly workspace: string }
+  /**
+   * 命中记账——**攒着**（每一次自动放行都写盘＝白烧 io；掉电丢的是统计，不是授权）。
+   *
+   * 一次可以带好几笔：装配把攒下的合到一次锁里落盘，不必一笔一锁。
+   */
+  | { readonly kind: 'hit'; readonly updates: readonly GrantHit[] }
+
+/** 一笔命中记账——够重建那一条的两个记账位。 */
+export type GrantHit = {
+  readonly workspace: string
+  readonly rule: PermissionRule
+  readonly lastHitAt: number
+  readonly hits: number
+}
+
+/**
+ * **把一项增删应用到一份授权文件上**（纯函数）——落盘那一跳的「改」那一半。
+ *
+ * 装配拿它做「读**当前**内容 → 应用这一项 → 原子保存」（见 `GrantEdit`）：
+ * 输入是**刚从盘上读来的**那一份，输出是写回去的那一份。本函数不碰文件系统
+ * （域纪律），也不知道盘上有过什么——**这就是它能在并发下不出错的原因**。
+ *
+ * 逐项的分寸：
+ * - `grant`——同形的已在册就不再加（用户的话说过了，不必说两遍；并发下这一句也挡住
+ *   别人刚加进去的那一条）；
+ * - `revoke`——先按 `index` 对身份，对不上再按身份找第一条；都没找到＝**空操作**
+ *   （不抛、不新建节）——那一条已经不在了就不该被这一项弄回来；
+ * - `section`——整节删掉；那节不在＝空操作；
+ * - `hit`——**只改在册的那些**（不在册的直接跳过）：撤销**不得**被一笔迟到的命中记账
+ *   复活。
+ *
+ * 空节不留（与 `parseGrants` 的读面同一分寸：撤销掉最后一条＝那一节也没了）。
+ */
+export function applyGrantEdit(file: GrantsFile, edit: GrantEdit): GrantsFile {
+  const workspaces: Record<string, readonly Grant[]> = { ...file.workspaces }
+
+  /** 替掉某一节——**空节不留**（撤销掉最后一条＝那一节也没了，与读面同一分寸）。 */
+  const put = (workspace: string, grants: readonly Grant[]): void => {
+    if (grants.length === 0) delete workspaces[workspace]
+    else workspaces[workspace] = grants
+  }
+
+  switch (edit.kind) {
+    case 'grant': {
+      const grants = workspaces[edit.workspace] ?? []
+      if (grants.some((seen) => sameRule(seen, edit.grant))) break
+      put(edit.workspace, [...grants, { ...edit.grant }])
+      break
+    }
+
+    case 'revoke': {
+      const grants = workspaces[edit.workspace]
+      if (grants === undefined) break
+
+      const at = grants[edit.index]
+      const target =
+        at !== undefined && sameRule(at, edit.rule)
+          ? edit.index
+          : grants.findIndex((seen) => sameRule(seen, edit.rule))
+      if (target === -1) break
+
+      put(
+        edit.workspace,
+        grants.filter((_, index) => index !== target),
+      )
+      break
+    }
+
+    case 'section': {
+      delete workspaces[edit.workspace]
+      break
+    }
+
+    case 'hit': {
+      for (const update of edit.updates) {
+        const grants = workspaces[update.workspace]
+        if (grants === undefined) continue
+
+        const index = grants.findIndex((seen) => sameRule(seen, update.rule))
+        if (index === -1) continue // 不在册＝**不复活**（撤销之后迟到的记账就落在这儿）
+
+        put(
+          update.workspace,
+          grants.map((grant, at) =>
+            at === index ? { ...grant, lastHitAt: update.lastHitAt, hits: update.hits } : grant,
+          ),
+        )
+      }
+      break
+    }
+  }
+
+  return { version: file.version, workspaces }
+}
+
+// ══ 账本 ══════════════════════════════════════════════════════════════
 
 export type GrantLedgerOptions = {
   /** 本工作区——**分节键＝默认根的规范形**（见文件头注「分节键」）。 */
@@ -233,8 +358,13 @@ export type GrantLedgerOptions = {
   readonly file?: GrantsFile | undefined
   /** 时钟（毫秒）——「久未命中」的判据要它；缺省 `Date.now`。 */
   readonly now?: (() => number) | undefined
-  /** 变了就报（**落盘归调用方**——本域不碰文件系统）。 */
-  readonly onChange?: ((file: GrantsFile, change: GrantChange) => void) | undefined
+  /**
+   * 变了就报**改了哪一项**（**落盘归调用方**——本域不碰文件系统）。
+   *
+   * ⚠️ 报的是 `GrantEdit`（一项增删），**不是整份快照**（U47）：报整份，调用方就只能整份
+   * 覆写，两个执行者各持旧账本时后落盘的会把前一个的改动抹掉。见 `GrantEdit`。
+   */
+  readonly onChange?: ((edit: GrantEdit) => void) | undefined
 }
 
 /**
@@ -267,7 +397,13 @@ export type GrantLedger = {
   sections(): readonly string[]
   /** `/grants` 要的那一份（本工作区，声明序）——`stale` 在这里算好。 */
   view(): readonly GrantRow[]
-  /** 落盘用的整份快照——**已按当前账本重建**（空节不留）。 */
+  /**
+   * **整份快照**——已按当前账本重建（空节不留）。
+   *
+   * ⚠️ **不是落盘的那一份**（U47 起）：落盘走 `GrantEdit`（一项改动落到**重读来的**
+   * 当前内容上），拿这份快照整份覆写会把别的执行者的改动抹掉。它留作**本进程所知的
+   * 整份**这张读面（验收与诊断用）。
+   */
   snapshot(): GrantsFile
 }
 
@@ -288,9 +424,7 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
     return fresh
   }
 
-  const changed = (change: GrantChange): void => options.onChange?.(build(), change)
-
-  /** 整份快照——**空节落盘时不留**（撤销掉最后一条＝那一节也没了）。 */
+  /** 整份快照——**空节不留**（撤销掉最后一条＝那一节也没了）。 */
   const build = (): GrantsFile => {
     const workspaces: Record<string, readonly Grant[]> = {}
     for (const [key, grants] of sections) {
@@ -307,8 +441,9 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
     remember(rule) {
       const grants = mine()
       if (grants.some((seen) => sameRule(seen, rule))) return // 同形的已在册——不必说两遍
-      grants.push({ ...rule, grantedAt: now() })
-      changed('grant')
+      const grant: Grant = { ...rule, grantedAt: now() }
+      grants.push(grant)
+      options.onChange?.({ kind: 'grant', workspace, grant: { ...grant } })
     },
 
     hit(rule) {
@@ -319,16 +454,23 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
 
       const found = grants[index] as Grant
       const at = now()
-      grants[index] = { ...found, lastHitAt: at, hits: (found.hits ?? 0) + 1 }
-      changed('hit')
+      const hits = (found.hits ?? 0) + 1
+      grants[index] = { ...found, lastHitAt: at, hits }
+      options.onChange?.({
+        kind: 'hit',
+        updates: [{ workspace, rule, lastHitAt: at, hits }],
+      })
     },
 
     revoke(section, index) {
       // **不新建节**（与 `remember` / `hit` 不同）：撤一条不存在的＝没撤成，不该顺手造一节
       const grants = sections.get(section)
       if (grants === undefined || index < 0 || index >= grants.length) return false
-      grants.splice(index, 1)
-      changed('revoke')
+      const [removed] = grants.splice(index, 1)
+      // 报的是**撤掉的那一条**（三格身份）——`splice` 之后就拿不到它了
+      if (removed !== undefined) {
+        options.onChange?.({ kind: 'revoke', workspace: section, index, rule: removed })
+      }
       return true
     },
 
@@ -336,7 +478,7 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
       const grants = sections.get(section)
       if (grants === undefined) return 0
       sections.delete(section)
-      changed('revoke')
+      options.onChange?.({ kind: 'section', workspace: section })
       return grants.length
     },
 

@@ -12,6 +12,18 @@
  *    之后从内存发号。瞬时事件（`model.delta` 等不落库）也吃号，故计数器
  *    **不能**由 `max(表.id)` 反推——那会让重启后重发已发过的号。块预留的代价是
  *    **跳号**：库里看到的空档＝期间有瞬时事件消耗。单调性与唯一性不受影响。
+ *
+ * **U47 · 块预留是记录域的短事务**（设计 · 会话与运行管理「多执行者共享数据的前置条件」
+ * 第一条）：原先「读水位 → 加一块 → 写回」是三次分开的动作，两个执行者同时预留会
+ * **读到同一个水位**、各自从同一个 base 发号 ⇒ **重号**。现在这三步合进**一条 SQL**
+ * （`INSERT … ON CONFLICT DO UPDATE … RETURNING`）——SQLite 把单条语句当一次隐式事务
+ * 执行，写锁一拿到底，故「读到的水位」与「写回的水位」之间没有缝。**交给数据库，
+ * 而不是自己 `BEGIN`**：自己起事务在「已在别的事务里」时会炸，而这条语句没有那个形态。
+ *
+ * **单进程下的行为逐位不变**（收口不是加功能）：空库仍从 1 起（`INSERT` 那一支写
+ * `1+BLOCK`、返回 `1+BLOCK`）、水位仍按块推、发出去的号与跳号位置一模一样——
+ * 变的只是「这三步之间能不能插进另一个执行者」。设计里那两条跨会话的规矩（id 不代表全机
+ * 先后 · 重连水位限定同一 Session/Run）不受影响：本文件只管发号，不管谁拿号。
  */
 
 import type { Database } from 'bun:sqlite'
@@ -31,12 +43,20 @@ export type IdSpace = {
 }
 
 export function createIdSpace(db: Database): IdSpace {
-  const readWatermark = db.query<{ value: string }, []>(
-    `SELECT value FROM ${META_TABLE} WHERE key = ${quote(NEXT_ID_KEY)}`,
-  )
-  const writeWatermark = db.query<never, [string]>(
-    `INSERT INTO ${META_TABLE} (key, value) VALUES (${quote(NEXT_ID_KEY)}, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  /**
+   * **预留一块＝一条语句**（读改写同体，见文件头注「U47」）。
+   *
+   * 两支各写各的初值、`RETURNING` 统一给**推高之后**的水位：
+   * - **空库**（无行）：`INSERT` 写 `1 + BLOCK`，返回它——`base` 反推回来正是 `1`；
+   * - **既有库**：`DO UPDATE` 就地加一块，返回加完之后的值——`base` 反推正是原值。
+   *
+   * 值走 `CAST(… AS INTEGER)` 再加：水位列是 `TEXT`（`records_meta.value`），
+   * 存进去时由列亲和性转回文本——与原先 `String(next)` 落盘的是同一个字面。
+   */
+  const reserveBlock = db.query<{ value: string }, []>(
+    `INSERT INTO ${META_TABLE} (key, value) VALUES (${quote(NEXT_ID_KEY)}, ${1 + RESERVE_BLOCK})
+       ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ${RESERVE_BLOCK}
+     RETURNING value`,
   )
 
   let cursor = 0 // 下一个可发的号
@@ -44,11 +64,14 @@ export function createIdSpace(db: Database): IdSpace {
 
   /** 预留一块——把水位推上去，号码落进内存窗口。重启后从水位续，绝不回头。 */
   const reserve = (): void => {
-    const row = readWatermark.get() // 无行＝库还是新的（bun:sqlite 的 `.get()` 无行给 null）
-    const base = row === null ? 1 : Number(row.value)
-    const next = base + RESERVE_BLOCK
-    writeWatermark.run(String(next))
-    cursor = base
+    const row = reserveBlock.get()
+    // `DO UPDATE` 那一支必给一行（`DO NOTHING` 才会什么都不给）——给不出就是语句被改坏了。
+    // 此处**不猜**：凭猜接着发号＝静默重号，那正是本单元要治的那件事。
+    if (row === null) {
+      throw new Error('块预留没拿回新水位（`RETURNING` 一行都没给）——拒绝凭猜发号')
+    }
+    const next = Number(row.value)
+    cursor = next - RESERVE_BLOCK
     ceiling = next
   }
 
