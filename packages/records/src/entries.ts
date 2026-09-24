@@ -91,9 +91,11 @@ export function assertEntryShape(entry: NewEntry): void {
     if (entry.payload !== undefined && !isUserPayload(entry.payload)) {
       throw new Error(
         'user 条目的载荷只装这次交代带出去的材料——两形：`{ refs: [{ kind, at, marker, source, ' +
-          'label, text }] }`（U36：带位置的那一份；U37 另加图片那一支 `{ kind: "image", name, ' +
-          'mime, blob }`——它没有 text，内容是字节）或 `{ skills: [{ name, source, label, text }] }`' +
-          '（U33 旧形：无位置）。别的东西没有位置（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
+          'label }] }`（U36：带位置的那一份；U37 另加图片那一支 `{ kind: "image", name, ' +
+          'mime, blob }`——它没有 text，内容是字节；U63 起文件 / 目录 / 技能的 `text` 也是选配：' +
+          '送达方式改成「模型按需自读」，正文由模型自己取）或 `{ skills: [{ name, source, label, ' +
+          'text }] }`（U33 旧形：无位置）。别的东西没有位置' +
+          '（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
       )
     }
     return
@@ -244,13 +246,20 @@ function isUsedSkills(skills: unknown): boolean {
  *
  * | kind | 还必须有 |
  * | --- | --- |
- * | `skill` | `name`（回执与模型取引用都读它）＋ `text`（当时那份主文） |
- * | `file` / `dir` | `text`（实际交付的内容 / 有界清单） |
+ * | `skill` | `name`（回执与模型取引用都读它） |
+ * | `file` / `dir` | 就上面那三件（位置 ＋ 身份）——**自读那一版没有正文**，见下 |
  * | `image` | `name` ＋ `mime` ＋ **`blob`**（字节所在——**没有 `text`**：二进制不当文本） |
+ *
+ * ⚠️ **`text` 是选配，不能拿它当齐全的判据**（U63 改）。原先文件 / 目录 / 技能三支
+ * 「必须有 `text`」——那时送达方式是**引用即进**，正文随请求展开，没有正文就是坏数据。
+ * 送达方式改成「**模型按需自读**」之后，这几支**本来就没有正文**（它由模型自己用工具取，
+ * 落在工具条目里）：再拿 `text` 当闸，会把每一条新记录都判成坏数据、当场写入失败。
+ * 有它的仍认——那是旧记录（引用即进那一版）与工作区外那份只读附件。
  *
  * ⚠️ **图片那一支不能拿 `text` 当判据**：它本来就没有正文（内容是字节）。收窄时先按 `kind`
  * 分岔，再各查各的那几件——「一个函数里一套字段表」正是当初把图挡在门外的原因
  * （写侧硬闸收得紧是对的，但收得**不对**就会把合法的一种形状判成坏数据）。
+ * U63 这一处是同一个教训的第二次：**判据跟着形态走，不跟着「上一版长什么样」走**。
  */
 function isInputRefs(refs: unknown): boolean {
   if (!Array.isArray(refs)) return false
@@ -270,7 +279,8 @@ function isInputRefs(refs: unknown): boolean {
 
     const kind = item['kind']
     if (kind !== 'skill' && kind !== 'file' && kind !== 'dir') return false
-    if (typeof item['text'] !== 'string') return false
+    // 正文在场时必须真是字符串（不在场＝自读那一版，合法）
+    if (item['text'] !== undefined && typeof item['text'] !== 'string') return false
 
     return kind !== 'skill' || typeof item['name'] === 'string'
   })

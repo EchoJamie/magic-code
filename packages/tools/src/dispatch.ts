@@ -29,7 +29,14 @@
  * 这也是「请求 → 闸门」之间唯一被加过料的一件，且加的是**注册表的事实**，不是猜测。
  */
 
-import type { OutputDelta, RecordId, ToolCall, ToolResult, ToolRuntime } from '@magic/contracts'
+import type {
+  OutputDelta,
+  RecordId,
+  ToolCall,
+  ToolResult,
+  ToolRuntime,
+  WorkspaceService,
+} from '@magic/contracts'
 import { toContent } from './blobs.ts'
 import { toolCallEvent, toolOutputDeltaEvent, toolResultEvent } from './events.ts'
 import {
@@ -47,6 +54,48 @@ import { defineToolsetV1 } from './toolset.ts'
 
 /** 竞速的哨兵——与任何裁决值都不同型，收窄时不会与 `Decision` 撞。 */
 const ABORTED = Symbol('aborted')
+
+/**
+ * **放行区那几件读与搜索的工具**（U63）——名字 → 「这一趟读多宽」。
+ *
+ * 名字取自工具集 v1 的冻结行（契约 `TOOLSET_V1`：`read` / `ls` / `grep` / `glob`），
+ * 只列**真读了内容**的那三件：
+ * - `read` / `ls` —— 读的就是 `path` 那一处（文件 / 目录）；
+ * - `grep` —— 在 `path` 以内**搜内容**：落在它下面的材料都算碰过。
+ *
+ * ⚠️ **`glob` 不在此列**：它只按名字列，看见名字不等于读过内容。宁可在「没读」那一侧
+ * 多说一句，也不把「列了个名字」说成「读过了」——后者会让用户以为材料进了模型眼前，
+ * 而它没有（那正是这一位要防的那件事）。
+ *
+ * 认的是**工具名**而不是「有没有 `path` 参数」：`write` / `edit` 也带路径，
+ * 但它们不是「读了哪份材料」。
+ */
+const READ_TOOLS: ReadonlyMap<string, 'exact' | 'subtree'> = new Map([
+  ['read', 'exact'],
+  ['ls', 'exact'],
+  ['grep', 'subtree'],
+])
+
+/**
+ * 这一趟落到哪一处（见契约 `ToolResult.read`）——**只在那几件读与搜索成功时才给**。
+ *
+ * 落点走 `WorkspaceService.resolve`（**与沙箱同一把尺子**）：模型给的是相对写法
+ * （`src/login.ts`），材料记的是真路径——中间那一步归位只有这一处做得对。
+ * 归不了位（越界）时不给：那一次调用本来也会被沙箱拒（成功才走到这儿，故这是兜底）。
+ */
+function readPlaceOf(call: ToolCall, workspace: WorkspaceService): ToolResult['read'] {
+  const covers = READ_TOOLS.get(call.name)
+  if (covers === undefined) return undefined
+
+  const given = call.args['path']
+  const path = typeof given === 'string' && given !== '' ? given : '.'
+
+  try {
+    return { path: workspace.resolve(path).absolute, covers }
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * 让一个 Promise 与信号竞速：信号先到即以 `ABORTED` 落定（**不抛**——调用方要的是
@@ -188,11 +237,16 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       const content = await toContent(outcome.output, options.blobs)
       options.sink.emit(toolResultEvent(options.stamper, callRef, outcome.ok, content))
 
+      // **读到哪儿了**（U63）——只读那三件**成了**才报（没成＝没读到，报它会把
+      // 「读失败」说成「读过」）。落点归位在这一层做（见 `readPlaceOf`）：沙箱就在这儿。
+      const read = outcome.ok ? readPlaceOf(call, options.workspace) : undefined
+
       return {
         ok: outcome.ok,
         output: outcome.output,
         callRef,
         content,
+        ...(read === undefined ? {} : { read }),
         // **交付身份原样过手**（U33）——有就带、没有就不带（不补 `undefined` 占位）
         ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
         // **计划载荷同理**（U34）——⚠️ 判的是 `undefined`（不在场）而非真假：

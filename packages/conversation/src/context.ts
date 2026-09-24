@@ -454,7 +454,11 @@ export function userPayloadOf(payload: EntryPayload | undefined): readonly UsedS
 
 /**
  * 用户条目的载荷 → 引用表（U36）——**只认该支那几件齐全的**（位置 / 标记 / 来源，外加各支
- * 自己的内容那几格：技能与文件 / 目录要 `text`，图片要 `mime` ＋ `blob`）。
+ * 自己的内容那几格：图片要 `mime` ＋ `blob`）。
+ *
+ * ⚠️ **`text` 是选配**（U63）：文件 / 目录 / 技能的送达方式改成了「模型按需自读」，
+ * 新记录里没有这一格（正文由模型自己取，落在工具条目里）；旧记录与工作区外那份只读附件
+ * 带着它。**认条目时不拿它当齐全的判据**——否则新记录会被整条丢掉（比多送半条更坏）。
  *
  * 缺件的条目**不当作材料**（当作没有）：与 `userPayloadOf` 同一条姿势——半条材料会让模型
  * 按一份内核都没看全的东西干活。旧库（只有 `skills` 键）在这里读出空数组，走另一支。
@@ -500,13 +504,17 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
       continue
     }
 
-    const text = item['text']
-    if (typeof text !== 'string') continue
+    // **正文是选配**（U63）——文件 / 目录 / 技能的送达方式改成了「模型按需自读」，
+    // 新记录里**没有这一格**（正文由模型自己取，落在工具条目里）。有它的是旧记录
+    // （引用即进那一版）与工作区外那份只读附件——装配据「有没有正文」分两条路读
+    // （见 `inlineOf`）。
+    const text = typeof item['text'] === 'string' ? item['text'] : undefined
+    const body = text === undefined ? {} : { text }
 
     if (item['kind'] === 'skill') {
       const name = item['name']
       if (typeof name !== 'string') continue
-      refs.push({ kind: 'skill', at, marker, name, source: from, label, text })
+      refs.push({ kind: 'skill', at, marker, name, source: from, label, ...body })
       continue
     }
 
@@ -518,7 +526,7 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
         marker,
         source: from,
         label,
-        text,
+        ...body,
         ...(typeof omitted === 'number' ? { omitted } : {}),
       })
       continue
@@ -531,7 +539,7 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
         marker,
         source: from,
         label,
-        text,
+        ...body,
         ...(item['truncated'] === true ? { truncated: true as const } : {}),
         ...(item['external'] === true ? { external: true as const } : {}),
       })
@@ -552,6 +560,14 @@ export function refsPayloadOf(payload: EntryPayload | undefined): readonly Input
  * - **位置越界一律夹回**（手改过的旧记录 / 越界数据）：宁可把材料摆在末尾，也不把它丢掉
  *   或插到一段文字中间。
  *
+ * ## 只有带正文的那几条才展开（U63）
+ *
+ * **自读那一版没有 `text`**——文件 / 目录 / 技能的送达方式改成了「模型按需自读」，
+ * 正文不随请求展开：那几处**一个字都不加**，引用就留在正文里它原来的位置，模型据它
+ * 自己去读（见契约 `InputRefEntry`）。这一条对**旧记录**（引用即进那一版）与
+ * **工作区外那份只读附件**照旧展开——判据就是「条目里有没有正文」，两条路同在一处，
+ * 不必另立一个版本位。
+ *
  * ⚠️ **它只管文本那几支**（入参就排除了图片——`TextRefEntry`）：图得走 `userBodyOf`
  * 那条部件串的路（字节放不进字符串）。这不是「少支持一种」——是**类型上就不许**
  * 把一张图塞进这条只产出字符串的路（走错了 tsc 当场报，不必等运行时去猜）。
@@ -562,9 +578,12 @@ export function inlineOf(text: string, refs: readonly TextRefEntry[]): string {
   let cursor = 0
 
   for (const ref of ordered) {
+    // **自读那一版**：不展开，也不动游标（引用文字本来就在 `text` 里）
+    if (ref.text === undefined) continue
+
     // 材料接在**引用文字之后**（`at` ＋ 标记长度），且不许越过上一份材料
     const end = Math.max(cursor, Math.min(ref.at + ref.marker.length, text.length))
-    out += `${text.slice(cursor, end)}\n${materialBlockOf(ref)}\n`
+    out += `${text.slice(cursor, end)}\n${materialBlockOf(ref, ref.text)}\n`
     cursor = end
   }
 
@@ -615,16 +634,22 @@ export async function userBodyOf(
   for (const ref of ordered) {
     // 材料接在**引用文字之后**（`at` ＋ 标记长度），且不许越过上一份材料——与 `inlineOf` 同规
     const end = Math.max(cursor, Math.min(ref.at + ref.marker.length, text.length))
-    pushText(parts, `${text.slice(cursor, end)}\n`)
 
     if (ref.kind === 'image') {
+      pushText(parts, `${text.slice(cursor, end)}\n`)
       parts.push({ type: 'text', text: `${imageHeadOf(ref)}\n` })
       parts.push({ type: 'image', mime: ref.mime, data: await records.blobs.get(ref.blob) })
       pushText(parts, `\n${imageTailOf(ref)}\n`)
-    } else {
-      pushText(parts, `${materialBlockOf(ref)}\n`)
+      cursor = end
+      continue
     }
 
+    // **自读那一版**（U63）：没有正文＝不展开、也不动游标——与 `inlineOf` 同一条（见其注）
+    const block = blockOf(ref)
+    if (block === undefined) continue
+
+    pushText(parts, `${text.slice(cursor, end)}\n`)
+    pushText(parts, `${block}\n`)
     cursor = end
   }
 
@@ -652,7 +677,20 @@ function imageTailOf(ref: Extract<InputRefEntry, { kind: 'image' }>): string {
 }
 
 /**
+ * 一处引用的材料块——**自读那一版没有正文，故没有块**（U63）。
+ *
+ * 它同时是「展开 / 不展开」那条分岔的**唯一收窄处**：`text` 在契约上可选，
+ * 在这儿判一次、窄一次，两条装配路（`inlineOf` / `userBodyOf`）都只拿判完的结果。
+ */
+function blockOf(ref: TextRefEntry): string | undefined {
+  return ref.text === undefined ? undefined : materialBlockOf(ref, ref.text)
+}
+
+/**
  * 一处引用的材料块——**抬头说清是什么；结尾划出边界**。
+ *
+ * `body` 由调用方给（**只有带正文的那几条才走得到这里**——自读那一版没有正文，
+ * 见 `blockOf`）：正文在 `ref.text` 上是可选的，取值处**一处收窄**比每处都判一次干净。
  *
  * 抬头两件（缺一件，模型就会把材料当成别的东西）：
  * - **类别**（技能 / 文件 / 目录）——技能是「别人写好的做法」，文件是「读出来的事实」；
@@ -672,7 +710,7 @@ function imageTailOf(ref: Extract<InputRefEntry, { kind: 'image' }>): string {
  * 截断 / 未展开**在抬头就说明白**（`truncated` / `omitted`）：宁可先说「只送到这里」，
  * 也不能让模型以为手里是全份（设计：不能静默缺材料）。
  */
-function materialBlockOf(ref: TextRefEntry): string {
+function materialBlockOf(ref: TextRefEntry, body: string): string {
   const kind = ref.kind === 'skill' ? '技能' : ref.kind === 'dir' ? '目录' : '文件'
   const external = ref.kind === 'file' && ref.external === true ? '（工作区外 · 只读附件）' : ''
   const cut = ref.kind === 'file' && ref.truncated === true ? '（原文更长，这里是前一段）' : ''
@@ -683,7 +721,7 @@ function materialBlockOf(ref: TextRefEntry): string {
       ? `〔本次技能 · ${ref.name}〕`
       : `〔本次材料 · ${kind} ${ref.label}${external}${cut}${more}〕`
 
-  return `${head}\n${ref.text}\n〔${ref.kind === 'skill' ? '技能' : '材料'}完 · ${ref.kind === 'skill' ? ref.name : ref.label}〕`
+  return `${head}\n${body}\n〔${ref.kind === 'skill' ? '技能' : '材料'}完 · ${ref.kind === 'skill' ? ref.name : ref.label}〕`
 }
 
 /**

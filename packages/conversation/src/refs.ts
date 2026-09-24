@@ -3,7 +3,19 @@
  *
  * 上游是两个只读来源面（执行域实现）：`Skills`（技能目录）与 `Materials`（文件 / 目录）。
  * 本文件只做一件：把用户交代里的**引用表**变成**落账形态**——每一处引用连同
- * 「来源身份 ＋ 本次实际交付的内容」一起，**按它在正文里的位置排好**。
+ * 「来源身份 ＋（引用即进那几支）本次实际交付的内容」一起，**按它在正文里的位置排好**。
+ *
+ * ## 送达方式按类型分（U63）
+ *
+ * **文件 / 目录 / 技能 ⇒ 模型按需自读**：正文**不随请求展开**，引用留在交代里的原位，
+ * 模型自己用 `read` / `ls` / `grep` / `glob` / `skill` 去取（省上下文——不把那一轮可能
+ * 用不上的材料塞进请求）。故这几支**条目里不带 `text`**；这一趟取它们是为了**校验**。
+ *
+ * **图片 ⇒ 引用即进**（照旧）：没有读图的工具，而且一张图往往就是那件事本身。
+ * **工作区外那一个只读附件同理**——沙箱只认根内的绝对路径，模型手上没有能读它的路。
+ *
+ * 「引用了 ≠ 看过了」那半条（读了要说 · 没读也要说）不在这儿：它要等这一轮真跑起来才谈得上，
+ * 归 `./agent-loop.ts`。
  *
  * ## 为什么按位置排而不是按类型分堆
  *
@@ -62,6 +74,10 @@ export function createRefDelivery(sources: {
   /**
    * 取一份技能主文——名字与来源**两件缺一不可**（只给名字的话，同名两条会静默取到
    * 先发现的那条）。取回来的是哪一份，就以它为准落账：外壳只是把名字记在正文里。
+   *
+   * ⚠️ **取回来的那一份主文不进条目**（U63）——送达方式是**模型按需自读**（见文件头注），
+   * 这一趟读它是为了**校验**：这个技能还在不在、主文读不读得出来（取不到＝整条不跑，
+   * 与「不换同名项、不忽略那一处继续」同一条出口）。模型要正文，自己用 `skill` 工具取。
    */
   function readSkill(
     ref: Extract<InputRef, { kind: 'skill' }>,
@@ -84,7 +100,6 @@ export function createRefDelivery(sources: {
         name: read.material.skill.name,
         source: read.material.skill.path,
         label: read.material.skill.label,
-        text: read.material.text,
       },
     }
   }
@@ -92,12 +107,22 @@ export function createRefDelivery(sources: {
   /**
    * 文件 / 目录 / 图片：位置与身份取自引用，内容取自材料（那两样在实现侧已合成一份）。
    *
-   * **图片那支要落一次库**（`blobs.put`）——它是唯一一处「内容不是文本」的材料：
-   * 条目载荷里放不下字节，放的是 blob 引用（见契约 `InputRefEntry` 的 image 支）。
-   * 落库这一步在**送达那一趟**做（材料取到了才算数）；没接 blob 落点＝这一条不跑
-   * （见 `createRefDelivery` 的入参注）。
+   * ## 两样去处，按材料的形态分（U63）
+   *
+   * - **文本那几支（文件 / 目录）不再带正文**——送达方式是模型按需自读，正文不随请求展开
+   *   （见文件头注）。这一趟读它们是为了**校验**（在不在 / 是不是普通文本 / 目录确实是目录），
+   *   以及给下面的图片那一支认路。
+   * - **图片照旧**（引用即进）：没有读图的工具，而且一张图往往就是那件事本身。它的字节
+   *   还要**落一次库**（`blobs.put`）——内容是二进制，条目载荷里放不下，放的是 blob 引用
+   *   （见契约 `InputRefEntry` 的 image 支）。落库这一步在**送达那一趟**做（材料取到了
+   *   才算数）；没接 blob 落点＝这一条不跑（见 `createRefDelivery` 的入参注）。
+   *
+   * ⚠️ **工作区外那一个只读附件仍带正文**（`external`）：模型手上没有能读它的路
+   * （沙箱只认根内的绝对路径），展开是它唯一的送达方式——取值理由与图片同一条。
    */
   async function entryOf(ref: InputRef, material: Material): Promise<InputRefEntry> {
+    const external = ref.kind === 'file' && ref.external === true
+
     if (material.kind === 'dir') {
       return {
         kind: 'dir',
@@ -105,8 +130,6 @@ export function createRefDelivery(sources: {
         marker: ref.marker,
         source: material.path,
         label: material.label,
-        text: material.text,
-        ...(material.omitted === undefined ? {} : { omitted: material.omitted }),
       }
     }
 
@@ -124,7 +147,7 @@ export function createRefDelivery(sources: {
         name: material.name,
         mime: material.mime,
         blob: await sources.blobs.put(material.bytes),
-        ...(ref.kind === 'file' && ref.external === true ? { external: true as const } : {}),
+        ...(external ? { external: true as const } : {}),
       }
     }
 
@@ -134,11 +157,15 @@ export function createRefDelivery(sources: {
       marker: ref.marker,
       source: material.path,
       label: material.label,
-      text: material.text,
-      ...(material.truncated === true ? { truncated: true as const } : {}),
-      ...(ref.kind === 'file' && ref.external === true ? { external: true as const } : {}),
       // ⚠️ `external` 取**引用**上那一位（用户选定那一刻的事实），不取材料的形态：
       // 它记的是「这份材料是作为工作区外的只读附件取来的」，与内容怎么读无关
+      ...(external
+        ? {
+            text: material.text,
+            ...(material.truncated === true ? { truncated: true as const } : {}),
+            external: true as const,
+          }
+        : {}),
     }
   }
 

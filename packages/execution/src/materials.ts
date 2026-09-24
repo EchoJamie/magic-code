@@ -26,9 +26,13 @@
  * 按**字节**认得出是图，就走 `image` 支（交字节，不解码、不截断）；认不出，照旧按文本处理、
  * 照旧拒二进制。判据与完整性检查都收在 `images.ts` 一处。
  *
- * 上限与截断都**如实标**（`truncated` / `omitted` 一路带到记录里）：宁可说「只送到这里」，
- * 也不能让模型以为手里是全份（设计：不能静默缺材料）。**图片的尺子另有一把**（字节，
- * 见 `DEFAULT_IMAGE_BYTES`）——它不按字符算，也不该被文本那条上限管着。
+ * 上限与截断都**如实标**（`truncated` / `omitted`）：宁可说「只送到这里」，也不能让模型
+ * 以为手里是全份（设计：不能静默缺材料）。**图片的尺子另有一把**（字节，见
+ * `DEFAULT_IMAGE_BYTES`）——它不按字符算，也不该被文本那条上限管着。
+ *
+ * ⚠️ **文本那几支 U63 起不再随请求展开**（送达方式改成「模型按需自读」）：这一趟读它们
+ * 是**校验与认路**（在不在 / 是不是普通文本 / 目录确实是目录 / 图片认得出），正文本身
+ * 不进请求（见契约 `InputRefEntry`）。**图片照旧引用即进**，工作区外那一份只读附件照旧。
  */
 
 import type {
@@ -58,19 +62,19 @@ export type MaterialsOptions = {
  *
  * 取 64 KiB 的由头：与沙箱 `read` 的缺省同一个数（`files.ts` 的 `DEFAULT_MAX_READ_BYTES`）
  * ——「引用读到的」与「工具读到的」在**同一个上限**上说话，用户不必记两把尺子。
- * 到上限即截断并**如实标**（`truncated`），要更多让模型用 `read` / `exec` 自己去取。
+ * 到上限即截断并**如实标**（`truncated`）。
+ *
+ * ⚠️ **文本材料 U63 起不再随请求展开**（送达方式改成「模型按需自读」），故这一趟读它
+ * 是为了**校验与认路**（见文件头注）；`truncated` 那一标仍有用——图片那一支走的是
+ * 另一条路（见 `readFileMaterial`），而工作区外那份只读附件照旧展开。
+ *
+ * ⚠️ **原先还有一条「一次交代里全部文本材料的总量上限」**（256 KiB 字符，由头是
+ * 「十条交代拼起来会把这一次请求撑爆」）——U63 之后**它守的那件事不存在了**：文本材料的
+ * 正文一个字都不进请求。留着它只会把「带了好几份大文件」按旧由头拒掉，而那理由已不成立。
+ * **图片的合计上限照旧**（`DEFAULT_IMAGE_TOTAL_BYTES`）——那一条守的是「一次请求带着
+ * 几十兆字节出门」，而图片仍是引用即进。
  */
 export const DEFAULT_MATERIAL_BYTES = 64 * 1024
-
-/**
- * 一次交代里全部材料的**总量上限**——**字符**（实现级常量）。
- *
- * 由头：单条 64 KiB 挡不住「一次带十份」——十条交代拼起来同样是几百 KB 进上下文，
- * 而这一次请求可能因此当场超限（白搭一次调用）。256 KiB ≈ 六万 token 上下：够一次带上
- * 几份真材料，又不至于把窗口一口吃满。**超了就整条不跑并说清**（不静默少带，
- * 也不悄悄截断几份）——用户手上的动作是「去掉几份再发」，那句话要在回执里说得出。
- */
-export const DEFAULT_TOTAL_CHARS = 256 * 1024
 
 /**
  * **一张图的上限**——**字节**（实现级常量）。
@@ -85,9 +89,8 @@ export const DEFAULT_IMAGE_BYTES = 5 * 1024 * 1024
 /**
  * 一次交代里**图片的合计上限**——**字节**（实现级常量）。
  *
- * 与文本那条（`DEFAULT_TOTAL_CHARS`）**分开两把尺子**：它们管的不是同一件事——
- * 文本那条防的是「上下文被文字吃满」，图片这条防的是「一次请求带着几十兆字节出门」。
- * 混成一条，要么把一张正常截图卡掉，要么放一摞图把请求撑爆。
+ * 它是这一次交代里**唯一**的总量上限（U63：文本那条随「自读」一并撤了，见
+ * `DEFAULT_MATERIAL_BYTES` 的注）：图片**引用即进**，一摞图确实会把一次请求撑爆。
  *
  * 20 MiB ≈ 四张顶格的图：够「这几张截图一起看」，再多就不是一次性交代该有的量了。
  */
@@ -355,8 +358,8 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
     async load(requests: readonly MaterialRequest[]): Promise<MaterialLoad> {
       const materials: Material[] = []
-      // **两把尺子各记各的**（见 `DEFAULT_IMAGE_TOTAL_BYTES`）：文本按字符、图片按字节
-      let total = 0
+      // 图片那一把尺子（见 `DEFAULT_IMAGE_TOTAL_BYTES`）——文本 U63 起不再随请求展开，
+      // 故**没有**「全部材料合计」这一条了（见 `DEFAULT_MATERIAL_BYTES` 的注）
       let imageBytes = 0
 
       for (const request of requests) {
@@ -371,16 +374,6 @@ export function createMaterials(options: MaterialsOptions): Materials {
               reason:
                 `这一条带的图片太多了（合计已过 ${Math.round(DEFAULT_IMAGE_TOTAL_BYTES / 1024 / 1024)} MiB）` +
                 `——去掉几张再发（此刻一份都没送出去）。`,
-            }
-          }
-        } else {
-          total += read.material.text.length
-          if (total > DEFAULT_TOTAL_CHARS) {
-            return {
-              ok: false,
-              reason:
-                `这一条带的材料太大了（已过 ${Math.round(DEFAULT_TOTAL_CHARS / 1024)} KiB 字符）` +
-                `——去掉几份再发，或让它用 read / exec 按需读（此刻一份都没送出去）。`,
             }
           }
         }
