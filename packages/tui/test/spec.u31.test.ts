@@ -156,7 +156,9 @@ describe('真光标 · 折行与折叠', () => {
     const frame = await stage.screen({ columns: 80, rows: 24 })
 
     // 尾部那 24 个 x 落在第二行 —— 1（左留白）＋ 24 ＝ 25
-    expect(frame.screen.cursor).toEqual({ x: 25, y: frame.rowOf('○ 空闲') - 1 })
+    // ⚠️ **`- 2` 不是 `- 1`**（U59）：下沿那条分隔线现在夹在**输入区与状态行之间**，
+    // 故输入行那一片的末行＝状态行往上**两**行（中间隔着那条线）。
+    expect(frame.screen.cursor).toEqual({ x: 25, y: frame.rowOf('○ 空闲') - 2 })
   })
 
   test('移动之后真光标跟着走（不是停在原地）', async () => {
@@ -190,7 +192,8 @@ describe('真光标 · 折行与折叠', () => {
 
     expect(frame.has('… 上面还有 2 行')).toBe(true) // 6 − 4：**视觉行**的账；那 4 行 ＋ 这条提示 ＝ 5
     // 插入点在末尾 ⇒ 它那一行（最后一条视觉行，12 宽）必须在屏上，落点在该行末尾
-    expect(frame.screen.cursor).toEqual({ x: 1 + 12, y: viewportOf(frame, frame.rowOf('○ 空闲')) - 1 })
+    // ⚠️ `- 2`：输入区末行与状态行之间隔着那条下线（U59，同上一条）
+    expect(frame.screen.cursor).toEqual({ x: 1 + 12, y: viewportOf(frame, frame.rowOf('○ 空闲')) - 2 })
   })
 
   test('交互区高度按**视觉行**算（原锚：按 `\\n` 数逻辑行）', () => {
@@ -464,9 +467,10 @@ describe('返工二 · 折叠提示与正文共用高度预算', () => {
     expect(frame.has('… 上面还有 4 行')).toBe(true) // 8 − 4：4 行正文 ＋ 1 行提示 ＝ 5
     // 最后一条视觉行是 36 个 a（首行 `› ` ＋ 36 个铺满，其后每行 38 个）
     // ⇒ 落点在左留白 1 ＋ 36 列之后
+    // ⚠️ `- 2`：输入区末行与状态行之间隔着那条下线（U59，同上面那两条）
     expect(frame.screen.cursor).toEqual({
       x: 1 + 36,
-      y: viewportOf(frame, frame.rowOf('○ 空闲')) - 1,
+      y: viewportOf(frame, frame.rowOf('○ 空闲')) - 2,
     })
   })
 })

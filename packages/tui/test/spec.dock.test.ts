@@ -265,8 +265,9 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
     for (const columns of [100, 44]) {
       const frame = await stage.screen({ columns, rows: 30 })
 
-      // `frame.dock` 含**状态行**那一行；`dockHeightOf` 数的是交互区（卡 ＋ 闪一句），不含它
-      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 30) + 1)
+      // **U59 起两边都只数交互区**（卡 ＋ 闪一句）：下沿那条线挪到「输入区与状态行之间」之后，
+      // `frame.dock` 切到下线为止、不含状态行，`dockHeightOf` 数的也还是这些行——**不必再 `+1`**
+      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 30))
     }
   })
 

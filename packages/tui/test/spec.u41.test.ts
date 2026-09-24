@@ -1032,8 +1032,9 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     for (const rows of [24, 18, 10]) {
       const frame = await stage.screen({ columns: 60, rows })
 
-      // `frame.dock` 含**状态行**那一行；`dockHeightOf` 数的是交互区，不含它
-      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows) + 1)
+      // **U59 起两边都只数交互区**：下沿那条线挪到「输入区与状态行之间」之后，
+      // `frame.dock` 切到下线为止、不含状态行，`dockHeightOf` 数的也是这些——**不必再 `+1`**
+      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows))
     }
   })
 
@@ -1107,7 +1108,8 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     for (const rows of [24, 14]) {
       const frame = await stage.screen({ columns: 60, rows })
 
-      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows) + 1)
+      // U59：同上一条——`frame.dock` 与 `dockHeightOf` 现在都**只**数交互区
+      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows))
     }
   })
 })

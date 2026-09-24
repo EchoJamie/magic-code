@@ -96,11 +96,12 @@ async function close(session: UiSession): Promise<void> {
  *
  * ⚠️ **取帧之后当场调**：`cellsOf` 是**活视图**（闭包里走的是当前缓冲），这一刻之后应用还会
  * 画很多帧，事后再调读到的是**别的行**（真栽过：交完卷再量，14 格的那一行读成 7 格）。
- * 行文本也是「状态行上面那一行」——这一档没有候选/抽屉，交互区就是输入行 ＋ 状态行。
+ * 行文本也是「状态行上面**两**行」——这一档没有候选/抽屉，交互区就是输入行；
+ * U59 起输入行与状态行**之间还夹着那条分隔线**（U45 那会儿夹的是状态行本身）。
  */
 function draftRowOf(shot: Capture): { readonly at: number; readonly text: string; readonly width: number } {
   const statusAt = shot.lines.findIndex((line) => /[○●▲]/.test(line) && line.includes('·'))
-  const at = statusAt - 1
+  const at = statusAt - 2
 
   return { at, text: shot.lines[at] ?? '', width: shot.cellsOf(at).length }
 }

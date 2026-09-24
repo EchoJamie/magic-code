@@ -38,7 +38,8 @@ function isSeparator(line: string, columns: number): boolean {
  * 还没画出来（只录了半屏 / 空档）＝ `-1`。
  *
  * ⚠️ **取第一条，不是最后一条**（U45）：`AppView` 起有**两条**分隔线——上面那条划的是
- * 记录区与交互区的界，下面那条（交互区下沿）把「输入行 ＋ 状态行」从底下封住。
+ * 记录区与交互区的界，下面那条划的是**交互区与状态行**（U59 挪正：U45 原把它加在状态行
+ * 之下，那是装帧不是划界）。
  * 拿最后一条当界，`recordArea` 就会把**整个交互区与状态行**算进记录区
  * （`blankRuns` / `duplicates` 那几条当场满屏假红）。底下那一条归 `footerAt`。
  */
@@ -49,8 +50,8 @@ export function dividerAt(screen: Screen): number {
 /**
  * **下沿那条分隔线**的行号（U45）——**最后一条**满宽 `─`；一条都没有时 `-1`。
  *
- * 与 `dividerAt` 成对：`dividerAt` 之上是记录区，两条之间是交互区 ＋ 状态行
- * （`screen.ts` 的 `Frame.dock` 正是这么切的）。
+ * 与 `dividerAt` 成对：`dividerAt` 之上是记录区，两条**之间**是交互区，这条线**之下**是状态行
+ * （`screen.ts` 的 `Frame.dock` / `Frame.statusLine` 正是这么切的，U59 起）。
  */
 export function footerAt(screen: Screen): number {
   return screen.lines.findLastIndex((line) => isSeparator(line, screen.columns))

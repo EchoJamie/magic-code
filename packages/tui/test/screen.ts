@@ -90,13 +90,15 @@ export type Frame = {
    */
   readonly content: readonly Line[]
   /**
-   * 交互区的行（**两条**分隔线**之间**）——输入行 / 裁决卡 / 选择器，以及最后那行状态行。
+   * 交互区的行（**两条**分隔线**之间**）——输入行 / 裁决卡 / 选择器。
    *
    * ⚠️ **下沿那条线不算在里面**（U45）：它是 `AppView` 的收尾（交互区下沿的界），
    * 不是「交互区里的一行」。故切法是「上沿 ＋1 → 下沿」，没有下沿那条线时到最后一个非空行。
+   * ⚠️ **状态行也不算在里面**（U59）：下沿那条线挪到「输入区与状态行之间」之后，
+   * 它划开的正是这两块——状态行在线**之下**，是独立的一格（见 `statusLine`）。
    */
   readonly dock: readonly Line[]
-  /** 状态行——**下沿那条线之上**最后一条非空行（`AppView` 把它摆在交互区末位）。 */
+  /** 状态行——**下沿那条线之下**最后一条非空行（U59 起 `AppView` 把它摆在屏末；改前它在上沿与下沿之间）。 */
   readonly statusLine: string
   /** 第 `row` 行的格子（到最后一个非空格为止）。 */
   cellsOf(row: number): readonly Cell[]
@@ -181,19 +183,24 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number
   const { screen } = cells
   const rows = screen.lines.map((text, row) => ({ row, text }))
   const divider = dividerAt(screen)
-  // **下沿那条线**（U45）——它把「输入行 ＋ 状态行」从底下封住，**不算交互区的一行**。
-  // 只有一条分隔线时它俩是同一条（＝当前没有下沿线那一档），故 `bottom` 取「下沿的上一行」。
+  // **下沿那条线**（U45 加 · **U59 挪**）——它现在划的是**输入区与状态行之间**，故它之下
+  // 只剩状态行那一行（`AppView` 末尾的次序：交互区 → 下线 → 状态行），它**不算交互区的一行**。
+  //
+  // ⚠️ **U45 那一版是「取下线上一行」当底**（那时状态行在下线之上）——照搬过来会把
+  // **输入行**当成状态行（`statusLine` 于是量到 `› …` 那一行，一屏的红）。改法两处：
+  // 交互区切到 `footer` 为止，状态行取 `footer` **之下**那一条。
   const footer = footerAt(screen)
-  const bottom = footer === -1 ? rows.filter((entry) => entry.text.trim() !== '').at(-1)?.row ?? -1 : footer - 1
-  const lastNonBlank = rows.slice(0, bottom + 1).filter((entry) => entry.text.trim() !== '').at(-1)
+  const lastNonBlank = rows.filter((entry) => entry.text.trim() !== '').at(-1)
+  // 交互区的下界：有下线取下线，没有（半屏 / 只画出一条线那一档）退回最后一个非空行之后
+  const end = footer === -1 ? (lastNonBlank?.row ?? -1) + 1 : footer
   const record = rows.slice(0, divider === -1 ? (lastNonBlank?.row ?? -1) + 1 : divider)
 
   const frame: Frame = {
     screen,
     record,
     content: contentOf(record, columns),
-    dock: divider === -1 ? [] : rows.slice(divider + 1, bottom + 1),
-    statusLine: lastNonBlank?.text ?? '',
+    dock: divider === -1 ? [] : rows.slice(divider + 1, end),
+    statusLine: rows.slice(footer === -1 ? 0 : footer + 1).filter((entry) => entry.text.trim() !== '').at(-1)?.text ?? '',
     cellsOf: cells.cellsOf,
     rawCellsOf: cells.rawCellsOf,
     textAt: (row) => cells.screen.lines[row] ?? '',
