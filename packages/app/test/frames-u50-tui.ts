@@ -182,6 +182,15 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
 
     await typeLine(other, '/resume')
     await other.key('enter', { until: { text: '长话' }, timeoutMs: 20_000 })
+
+    // **甲窗在它自己那一轮跑着的时候又交代了两句**（U50 那一行「停止时还有已接收输入」）——
+    // 它们排在队里（内核那边一次只干一件），随后会被那一下停止**标为未执行**。
+    // ⚠️ 写在取景之前：取景那一扇（乙窗）看到的是**同一条运行**，而这两句是甲窗的交代。
+    await typeLine(mine, '补一句甲')
+    await mine.key('enter')
+    await typeLine(mine, '补一句乙')
+    await mine.key('enter')
+
     const list = await other.capture({ label: `${mark}-01-列表（选中那一条）` })
     keep(list)
     check(has(list, '执行中'), '那一条标着「执行中」（有东西可停）', list.text)
@@ -200,6 +209,12 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     await waitUntil(other, '局部停止的回执', (lines) =>
       lines.some((line) => line.includes('只停了')),
     )
+    // ⚠️ **等那一行也落了定**再取帧：回执是当场回的，而运行事实是**推**来的
+    //    （合并窗 100ms ＋ 内核那边的中止要跑完）——不等它，取到的还是「跑着」那一屏
+    await waitUntil(other, '那一行不再是「在跑」的样子', (lines) => {
+      const row = line0(lines, '长话')
+      return row.includes('当前空闲') || row.includes('已停止')
+    }, 15_000)
     const partial = await other.capture({ label: `${mark}-02-只停这一轮` })
     keep(partial)
     check(has(partial, '只停了'), '回执说清中断的是哪个范围（局部）', partial.text)
@@ -215,7 +230,47 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
       detailLine(partial, '长话'),
     )
 
-    // ② **整体停止**（`ctrl+x`）——收这条运行
+    // ② **停止时那两句交代**（U50）——**保留并标为未执行**，且**不再往下跑**
+    //
+    // ⚠️ 取的是**甲窗**的屏：那两句是它交代的，回执也落在它那儿（谁交代谁收）
+    // ⚠️ 回执那一行**会折行**（「未执」＋「行」各在一行上），故判据要先把折行接起来：
+    //    逐行 `includes('未执行')` 会当场判假（实测栽过一次）
+    const flat = (lines: readonly string[]): string => lines.map((line) => line.trim()).join('')
+
+    await waitUntil(mine, '那两句被标为未执行', (lines) => {
+      const joined = flat(lines)
+      return joined.split('没送出').length - 1 >= 2 && joined.includes('未执行')
+    }, 15_000)
+    const held = await mine.capture({ label: `${mark}-07-停下来的那两句交代` })
+    keep(held)
+    check(
+      flat(held.lines).split('没送出').length - 1 >= 2,
+      '停下时那两句交代**逐条回执**（一条一句，不是吞掉）',
+      `${flat(held.lines).split('没送出').length - 1} 条`,
+    )
+    check(
+      flat(held.lines).includes('未执行'),
+      '话里明写着**未执行**（保留，不是失败、也不是丢了）',
+      '',
+    )
+    check(
+      !flat(held.lines).includes('请重新发送'),
+      '没有把它们说成「丢了、请重发」（那是从前的话）',
+      '',
+    )
+    check(
+      held.lines.some((line) => line.includes('› 补一句乙')),
+      '最后那一条**回到了草稿**（用户手上那份交代不丢）',
+      '',
+    )
+    // 那一轮只跑过**第一句**（后面两句没被消费）——模型那一头一趟都没为它们发过
+    check(
+      fixture.requests().length <= 2,
+      '它们**没有**在停止之后接着跑（模型请求数没涨）',
+      `请求 ${fixture.requests().length} 趟`,
+    )
+
+    // ③ **整体停止**（`ctrl+x`）——收这条运行
     //
     // ⚠️ 判据要**认得出这一档的回执**，而且要认得出那是**回执**：
     //   - 局部那一句里也有「停了」（「只停了…」）——拿它当条件会恒真；
@@ -245,7 +300,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     check(rowLine(done, '长话').includes('已停止'), '那一行落了定：读得出来它停了', rowLine(done, '长话'))
     check(!rowLine(done, '长话').includes('执行中'), '它**不再**是执行中', rowLine(done, '长话'))
 
-    // ③ **通知**：完成与失败各一条（第三类「需要你」由审批卡那一屏自带，归 U38 的帧）
+    // ④ **通知**：完成与失败各一条（第三类「需要你」由审批卡那一屏自带，归 U38 的帧）
     // **等抽屉真收起来**——判据取**输入行那句占位**（「交代一件事」），它两趟都在
     // （⚠️ 不能拿状态行那句键位提示当判据：**窄窗里它本来就不出现**，那会当场恒真，
     //   后面那几个字于是打进筛词里——实测栽过一次）
