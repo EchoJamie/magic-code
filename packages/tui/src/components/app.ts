@@ -747,6 +747,20 @@ export function TuiApp({ shell }: TuiAppProps) {
 
   useFlipOnNewPage(shell, rows)
 
+  /**
+   * **`/exit` 放行了 ⇒ 收摊**（U52）——**不在按键那一刻**（那一下只是把停止的意图发出去），
+   * 而在外壳判定「可以走了」那一跳：会话停到 `done`（或到点没停成、实话已经说过）之后，
+   * `view.leaving` 置上，界面到这儿才退（设计：「**资源确认退出之后**才退界面」）。
+   *
+   * 为什么由这一层落成 `exit()`：收摊是 Ink 的事（`useApp` 的 `exit` 才卸载），外壳那一层
+   * 够不着它；外壳只说「可以走了」，怎么走归这儿。
+   */
+  useEffect(() => {
+    if (!view.leaving) return
+    const timer = setTimeout(() => exit(), 0)
+    return () => clearTimeout(timer)
+  }, [view.leaving, exit])
+
   const feed = (key: ShellKey): void => {
     if (shell.key(key).exit) exit()
   }

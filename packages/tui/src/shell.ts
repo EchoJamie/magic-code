@@ -677,6 +677,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let attachmentAt: RecordId | null = null
 
   /**
+   * **`/exit` 正等着哪一条会话停下来**（U52）——`null` ＝ 没在等。
+   *
+   * 认的是**两样都对上**（会话 ＋ 整体那一档）：正等着的时候，别的窗口停的、或者同一
+   * 会话的局部那一档（`turn`）的报告不该把我放走——放早了就是「资源还没确认退出，
+   * 界面已经没了」，正是设计那句「不是发出去就走」要防的。
+   *
+   * 放行之后**当场清空**（`null`）：一条会话只放行一次，此后别的报告与这一趟无关。
+   */
+  let exitWait: SessionId | null = null
+
+  /**
+   * **`/exit` 敲在「这条会话还没认出来」的时候**（U52）——把意图挂上，等活跃位一到再办。
+   *
+   * 撞见它的窗口（真 PTY 上量到）：窗口刚开张、**首条消息正跑着**的那几百毫秒里，
+   * 外壳手上还没有会话 id——`session.state`（活跃位那一条）还没到。而 `/exit` 要停的正是
+   * 「当前这条会话」：认不出是哪一条就停不了。
+   *
+   * ⚠️ **此刻不能降级成「只离开」**（那正是这一单要补的那个缺：工作中退出＝真停），
+   * 也不猜一条（猜错就是停错了别人的运行）。故只挂一个「等」——那一声答复一到，
+   * 照常停、停了再走（见 `onEvent` 里 `session.state` 那一支的收尾）。
+   *
+   * 它**不带时限**：等的是「这一轮正在跑」这个事实所依附的那一条会话，而那一轮还在跑，
+   * 那一份事实就一定会到。真要半路不想走了，`ctrl+c` 两下仍是「只离开」那扇门。
+   */
+  let exitWaitsForSession = false
+
+  /**
    * **技能名问过没有**（每个壳一次）——打 `/` 那一下问一遍（见 `askSkills`）。
    *
    * 为什么要这一位：输入行的候选要按技能名筛，而那需要一份目录；可发现面是**真的扫目录树**，
@@ -963,6 +990,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           commit(appendPageNote(view, `已切到 ${label}`))
         }
       }
+
+      // **`/exit` 正等着「这条会话是哪一条」**（U52）——活跃位一到，接着把它停掉
+      // （见 `exitWaitsForSession` 那一格的注）。**只在这一声答复真把活跃位带出来时**才办：
+      // `note` 到了＝这一跳没成（活跃位没动），那不算认出来了。
+      if (exitWaitsForSession && view.sessionId !== null && event.data.note === undefined) {
+        exitWaitsForSession = false
+        stopForExit(view.sessionId)
+      }
+    }
+
+    // **那一道闸跟着它等的那一轮走**（U52）——这一轮收场了、会话 id 始终没来 ⇒ 已经没有
+    // 可停的东西了，照「真·空手开机」办：直接走。
+    //
+    // ⚠️ **不带这一条，那道闸就是个会活过头的东西**：用户不再等它（敲了别的、又回来做了
+    // 点别的）时，它会在**下一次**活跃位到达时把一条**他不打算停的**会话停掉。带上它之后
+    // 这道闸只在「那一轮还在跑」期间有效——而那一轮在跑时，这一屏**切不动会话**
+    // （忙时 `/resume` / `/clear` 被内核挡回），故它等的那一条只可能是它原来那一条。
+    if (exitWaitsForSession && event.kind === 'turn.end' && view.sessionId === null) {
+      exitWaitsForSession = false
+      commit({ ...view, leaving: true })
     }
 
     // 连接一览回来了 ⇒ 两件（U41）：
@@ -1350,17 +1397,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   options.stopped?.((report) => {
     if (disposed) return
     const title = nameOfSession(report.session)
-    commit(
-      appendReceipt(
-        view,
-        stopReceiptOf({
-          title,
-          scope: report.scope,
-          phase: report.phase,
-          note: report.note,
-        }),
-      ),
+    const said = appendReceipt(
+      view,
+      stopReceiptOf({
+        title,
+        scope: report.scope,
+        phase: report.phase,
+        note: report.note,
+      }),
     )
+
+    // **`/exit` 正等着这一条**（U52）——两拍终局都放行，中间那拍（`accepted`）不放：
+    //
+    // - `done`——**资源确认退出了**，这才是「等了再退」等的那个事实；
+    // - `unconfirmed`——到点还没收完。**如实说过就放行**（上面那一行已经说了「没能停掉
+    //   『X』」＋ 缘由）。不把用户卡在一个他明确说了要走的界面上：要只离开，另一扇门
+    //   （Ctrl+C 两次）一直开着，而这一条该说的实话已经落进 scrollback 了。
+    //
+    // ⚠️ **`accepted` 那一拍绝不放行**——它只是「受理了」，此刻走出门就是「发出去就走」，
+    //    正是设计那句话防的事。
+    const go =
+      exitWait !== null &&
+      report.session === exitWait &&
+      report.scope === 'run' &&
+      (report.phase === 'done' || report.phase === 'unconfirmed')
+
+    if (go) exitWait = null
+    commit(go ? { ...said, leaving: true } : said)
   })
 
   /**
@@ -2482,11 +2545,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   // —— 键 ——
 
+  /**
+   * **这一屏还在干活吗**（这一轮在跑，或在等你答复）——与 `hangUp` / `run.ts` 的
+   * `busy()` 同一套口径：一处定义，三处别各判各的。
+   */
+  const busy = (): boolean =>
+    view.status.state === 'working' || view.status.state === 'retrying' || view.dock.kind === 'decision'
+
   /** 工作中／有待答 ⇒ **替我们发中断**并返回 `true`（「这一下不是退出」）；否则 `false`。 */
   const interruptPending = (): boolean => {
-    const busy = view.status.state === 'working' || view.status.state === 'retrying'
-
-    if (!busy && view.dock.kind !== 'decision') return false
+    if (!busy()) return false
 
     send({ type: 'turn.interrupt' })
     return true
@@ -2512,6 +2580,73 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
 
     return EXIT
+  }
+
+  /**
+   * **`/exit` 那一下**（U52）——**先停掉当前这条会话，资源确认退出之后再退界面**。
+   *
+   * ## 为什么是「停」而不只是「关」
+   *
+   * 2026-09-24 用户裁：TUI 与服务已经分开（U48），`/exit` 是**明确说出口的动作**
+   * （与「按两次」那条同源：打出来的词就是有意的），故它承载得了更强的语义——
+   * **「这条我不做了」**。两个动作于是各管各的：
+   *
+   * | 动作 | 语义 |
+   * | --- | --- |
+   * | `/exit` | **停掉当前会话，然后退出界面** |
+   * | Ctrl+C 两次 | **只离开**，工作继续 |
+   *
+   * 顺带把「服务侧怎么退出」答了：**逐条停 ⇒ 没有执行者 ⇒ 管理者自己收缩**（那条规则
+   * 早就有），**不另造一个「服务退出」的开关**。
+   *
+   * ## 三件不许（工单「要做对的几件」）
+   *
+   * - **不另造一条停止通路**：走的就是 U50 交付的那个入口（`options.stop` ＋ 整体那一档
+   *   `run`），连回执都是 `stopped` 那条线拼好的（`正在停「X」` / `「X」停了`）——
+   *   这一处**一个字都不多说**（同一条事实说两遍是设计明防的）。
+   * - **不是发出去就走**：**这一跳不退**。放行在 `stopped` 那一头——`done` 才置
+   *   `view.leaving`（设计：「资源确认退出后才报已停止」）。
+   * - **不谎称已停**：停不掉那一拍（`unconfirmed`）照实说，也**照样放行**——到点还没
+   *   收完就如实说「还没收完」，但不把用户**卡在这儿**。他要是只想离开，另一扇门
+   *   （Ctrl+C 两次）一直开着；而这一条已经说过实话了。
+   */
+  const beginExit = (): ShellEffect => {
+    const target = view.sessionId
+
+    // ① **没有停止的来路**（用例 / 演示：`options.stop` 没接上）：这台外壳背后没有
+    //    「服务那一头」，自然也没有可停的运行——直接走，**不留话**（没有发生过
+    //    「停掉什么」这件事，印一句「没停成」反倒是在报一件没发生的事）。
+    if (options.stop === undefined) {
+      commit({ ...view, leaving: true })
+      return NONE
+    }
+
+    // ② **还没有会话**。两件要分开：
+    //
+    // - **窗内没有这一轮在跑** ⇒ 真·空手开机：没有可停的东西，直接走；
+    // - **有这一轮在跑** ⇒ 这条会话**才刚开张、外壳还没认出它是哪一条**（`session.state`
+    //   那一声答复还没到——U44 起就记着这件事：首条消息开张时外壳收不到它，`/clear`
+    //   那一跳踩过同一个窗口）。此刻**不能降级成「只离开」**：那正是这一单要补的那个缺
+    //   （工作中退出＝真停）。故把意图挂上，那一声答复一到就接着办（见 `onEvent`）。
+    if (target === null) {
+      if (busy()) exitWaitsForSession = true
+      else commit({ ...view, leaving: true })
+      return NONE
+    }
+
+    stopForExit(target)
+    return NONE
+  }
+
+  /**
+   * **停这一条，然后等着走**（U52）——`beginExit` 与「等会话认出来」那一路共用。
+   *
+   * 认的是「会话 ＋ 整体那一档」两样都对上：正等着的时候，别的窗口停的、或者同一会话
+   * 局部那一档（`turn`）的报告，都不该把我放走。
+   */
+  const stopForExit = (target: SessionId): void => {
+    exitWait = target
+    options.stop?.(target, 'run')
   }
 
   /**
@@ -3066,10 +3201,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // **发命令之前**的快照，会把答复刚写进去的东西整个盖掉。
       // 实测（真外壳 ＋ 真装配）：`/model` 的选择器就是这么开不出来的——
       // `model.catalog` 到了、`view.models` 也写上了，随即被盖回输入区。
-      const { next, commands } = runSlash(view, text)
+      const { next, commands, leaving } = runSlash(view, text)
       draft(next)
       for (const command of commands) send(command)
-      return NONE
+      // `/exit`（U52）——**先落地、后动手**（同上面那条次序）：停止那一跳的答复有可能
+      // **当场**回来（进程内传输是同步的），先 commit 再调它，答复改的那份视图才不会被
+      // 这一跳的旧快照盖回去。
+      return leaving ? beginExit() : NONE
     }
 
     return sendInput(text, placed)
@@ -3132,16 +3270,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const runSlash = (
     from: ShellView,
     text: string,
-  ): { readonly next: ShellView; readonly commands: readonly Command[] } => {
+  ): { readonly next: ShellView; readonly commands: readonly Command[]; readonly leaving: boolean } => {
     const [word, ...rest] = text.split(/\s+/)
     const arg = rest.join(' ')
     // 命令把这一行整个吃掉了（交互配置型不带正文）——**引用也跟着走**：
     // 它们指向的那段文字已经不在草稿里了（留着就是「正文没了、材料还在」的暗带）。
     const cleared: ShellView = { ...from, draft: '', caret: 0, refs: [] }
     /** 本地这一下的改动 ＋ 待发的命令——两件一起交回调用方（它决定次序）。 */
-    const only = (next: ShellView, ...commands: Command[]): { next: ShellView; commands: readonly Command[] } => ({
+    const only = (
+      next: ShellView,
+      ...commands: Command[]
+    ): { next: ShellView; commands: readonly Command[]; leaving: boolean } => ({
       next,
       commands,
+      leaving: false,
     })
 
     // —— 纯输出型：输出进记录区，**命令本身不回显** ——
@@ -3200,6 +3342,28 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return only(appendReceipt(cleared, '还没有会话可改名——先交代一句开张'))
       }
       return only(cleared, { type: 'session.rename', session: from.sessionId, title })
+    }
+
+    // `/exit`（U52 · 设计 · 命令行与配置的会话入口表 ＋ 会话与运行管理的「离开、停止与
+    // 异常退出」）——**停掉当前这条会话，资源确认退出之后才退界面**。
+    //
+    // ⚠️ **不挂 `exitArmed`**（那条是指向 Ctrl+C 的）。「按两次」那道门的由头是**同一个键
+    // 在同一个状态下有时一次有时两次，用户没法预期**——`ctrl+c` 在「工作中＝中断／空闲＝
+    // 退出」之间跳才需要它；`/exit` 是**打出来的词**，本来就已经是「有意的」，再要两下
+    // 只是白费（设计原文）。它**补的正是那个缺**：想退出时，`ctrl+c` 在工作中只会中断，
+    // 而「这条我不做了」此前没有说出口的地方。
+    //
+    // ⚠️ **这一跳只把意图带出去**（`leaving: true`），**退出不在这儿发生**：停一条会话要
+    // 等管理者那条编排走完（`done` 才放行，见 `beginExit`）。
+    //
+    // ⚠️ **不带参数**（同 `/clear` 的姿势）：`/exit` 是个动作，不是一族动作的入口。
+    // 多写的词如实回一句——**不静默吞**，也不当交代发出去。
+    if (word === '/exit') {
+      if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/exit（不带参数）'))
+      // 本地这一下只有一个意图：停掉这条、然后走。**当场不留回执**——「停哪一条」那句话
+      // 由停止编排那一头拼（`正在停「X」`），此处再印一句就是同一条事实说两遍
+      // （设计：一屏上的提示各自说不同的东西）。
+      return { next: cleared, commands: [], leaving: true }
     }
 
     // `/skills`（U33）——**交互配置型**：记录区什么都不进，只在左下开抽屉。

@@ -110,6 +110,7 @@ export type ScenarioName =
   | 'mcp-approval-edge'
   | 'mcp-underscore-name'
   | 'stop-not-rollback'
+  | 'exit-command'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -1262,6 +1263,134 @@ const stopNotRollback: Scenario = {
   },
 }
 
+/**
+ * **U52 · `/exit`**——「**停掉当前这条会话，资源确认退出之后**才退界面」。
+ *
+ * 三条判据各对工单里的一句话（判据名照抄工单，好对账）：
+ *
+ * - **一次就走**——敲一次回车就走，不按两次、也不要「再确认一次」；
+ * - **等了再退**——回执**先「正在停」、后「停了」**：「受理」不是「停了」，
+ *   而界面只在**后一拍**才收摊（设计：「**资源确认退出后**才报已停止」）；
+ * - **点了名**——回执带的是**这条会话的名字**，不是「停了一个东西」。
+ *
+ * ⚠️ **还有一条是实测栽过才加上来的**：整批回执**只印一遍**。收摊若落在「写出去那几行」
+ * 所属的**同一趟**重绘里，Ink 会把刚写出去的静态行**再写一遍**——真 PTY 上看得明明白白：
+ * 那四条回执上下各一份（U52 开发时踩到，改法是**收摊挪到下一拍**，见 `app.ts` 那一处
+ * `setTimeout`）。判据钉住它，免得哪一改又长回来。
+ *
+ * 两条路各走一趟：**空闲**（会话在、没在跑）与**工作中**（这一轮正长着）——
+ * 后者钉的是「**不等这一轮**」：那一轮不会跑完，流式正文停在半截。
+ */
+const exitCommand: Scenario = {
+  name: 'exit-command',
+  title: '`/exit`：停掉这条会话再退出（一次就走 · 等了再退 · 回执只印一遍）',
+  anchors: 'U52 验收：`/exit` 一次就走；资源确认退出之后才退界面；回执点名且不重印',
+  story: async (ui, options) => {
+    // —— ① 空闲：会话在、这一轮早跑完了 ——
+    const session = await ui.open({
+      label: 'U52-exit-空闲',
+      columns: 100,
+      rows: 30,
+      turns: [{ kind: 'text', text: '收到，我在。', chunks: 2, chunkDelayMs: 120 }],
+      ...where(options),
+    })
+
+    // ⚠️ **写一次、等这一下生效**（同下面 `/exit` 那一处注：回车与正文挤进同一个读块时，
+    //    回车会当场没有——这一句就永远不提交）。锚带**前导空格**＝只认输入行那一格。
+    await session.send('你好', { until: { text: ' › 你好' }, timeoutMs: 15_000 })
+    await session.key('enter')
+    await session.wait({ text: '收到，我在。' }, { timeoutMs: 25_000 })
+    // 等**状态行那一格**闲下来（锚 `HINT_IDLE` 会量成窗口宽度，见 `IDLE_STATE` 那段注）
+    await session.wait({ text: IDLE_STATE }, { timeoutMs: 20_000 })
+
+    // ⚠️ **写一次、等这一下生效**（工单「界面验收工具」那处糖，也是踩出来的）：
+    //    回车若与正文挤进**同一个读块**（`/exit\r`），Ink 就把它当一串正文——回车当场没有，
+    //    这一句永远不提交。锚 `› /exit`（**前导空格**：那是输入行那一格）——
+    //    候选那一行是 `› /exit　停掉…`，**不带前导空格**，故这个锚只认输入行。
+    await session.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
+    await session.key('enter')
+
+    // **两拍都得在**：先「正在停」（受理），后「停了」（核销）
+    await session.wait({ text: '正在停' }, { timeoutMs: 15_000 })
+    await session.wait({ text: '停了' }, { timeoutMs: 25_000 })
+
+    const leaving = await session.capture({ label: '空闲敲 /exit 之后' })
+    const report = await session.close({ graceMs: 3_000 })
+
+    ui.check(
+      report.exit.by === 'app',
+      '`/exit` 让应用自己退了场（不是我们杀的）',
+      `退出缘由 ${report.exit.by}`,
+    )
+    ui.check(report.exit.code === 0, '退出码是 0（与关窗那条路一致）', `实际 ${report.exit.code}`)
+
+    const said = leaving.lines
+    ui.check(
+      said.filter((line) => line.includes('正在停')).length === 1,
+      '「正在停」那一句只印了一遍',
+      `实际 ${said.filter((line) => line.includes('正在停')).length} 遍`,
+    )
+    ui.check(
+      said.filter((line) => line.includes('停了')).length === 1,
+      '「停了」那一句只印了一遍',
+      `实际 ${said.filter((line) => line.includes('停了')).length} 遍`,
+    )
+    ui.check(
+      said.some((line) => line.includes('正在停')),
+      '回执**点了名**（说得出停的是哪一条）',
+      said.filter((line) => line.includes('· ')).join(' / '),
+    )
+    ui.check(
+      !said.some((line) => line.includes(HINT_EXIT_ARMED)),
+      '**没有**冒 Ctrl+C 那一行（那是另一个键的门）',
+      '（`/exit` 不挂「再按一次」那道门）',
+    )
+
+    // —— ② 工作中：这一轮正长着，敲 `/exit` ——
+    const tail = '这一句是最后一截，跑到这儿就说明那一轮跑完了。'
+    const busy = await ui.open({
+      label: 'U52-exit-工作中',
+      columns: 100,
+      rows: 30,
+      turns: [{ kind: 'text', text: `正文先长一会儿。${tail}`, chunks: 40, chunkDelayMs: 400 }],
+      ...where(options),
+    })
+
+    await busy.send('说一句长话', { until: { text: ' › 说一句长话' }, timeoutMs: 15_000 })
+    // 锚状态行那句「ctrl+c 中断」＝**这一轮真在跑**（它在工作中那一格才出现）
+    await busy.key('enter', { until: { text: 'ctrl+c 中断' }, timeoutMs: 25_000 })
+
+    await busy.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
+    await busy.key('enter')
+    await busy.wait({ text: '停了' }, { timeoutMs: 30_000 })
+
+    const mid = await busy.capture({ label: '工作中敲 /exit 之后' })
+    const busyReport = await busy.close({ graceMs: 3_000 })
+
+    ui.check(
+      busyReport.exit.by === 'app',
+      '工作中敲 `/exit` 也是应用自己退了场',
+      `退出缘由 ${busyReport.exit.by}`,
+    )
+    ui.check(
+      busyReport.exit.code === 0,
+      '工作中敲 `/exit` 退出码也是 0',
+      `实际 ${busyReport.exit.code}`,
+    )
+    // **不等这一轮**：那一轮没跑完，尾巴那一截始终没上屏
+    ui.check(
+      !mid.text.includes(tail),
+      '那一轮**没有等它跑完**（尾巴那一截没上屏）',
+      '（`/exit` 停的是这条会话，不是「跑完再走」）',
+    )
+    ui.check(
+      mid.lines.some((line) => line.includes('停了')),
+      '工作中的回执也说清了「停了」',
+      mid.lines.filter((line) => line.includes('· ')).join(' / '),
+    )
+  },
+}
+
 /** 等一屏条件成立——场景里那几处「等效果」用它（轮询是用例的事）。 */
 async function waitScreen(
   session: UiSession,
@@ -1291,6 +1420,7 @@ export const SCENARIOS: readonly Scenario[] = [
   assistantAcrossCalls,
   isolationRepeatParallel,
   stopNotRollback,
+  exitCommand,
 ]
 
 export function scenarioNames(): readonly ScenarioName[] {

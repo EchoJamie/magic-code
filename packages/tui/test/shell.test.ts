@@ -7,16 +7,17 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Command, KernelEvent } from '@magic/contracts'
+import type { Command, KernelEvent, SessionId, StopPhase, StopScope } from '@magic/contracts'
+import type { StopReport } from '../src/shell.ts'
 import { createShell } from '../src/shell.ts'
-import type { ShellKey } from '../src/shell.ts'
+import type { ShellKey, ShellOptions } from '../src/shell.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 
-/** 起一个壳 ＋ 间谍传输。 */
-function live() {
+/** 起一个壳 ＋ 间谍传输（`options` 给「停止那条线」这类外部来路——缺省＝一个都不接）。 */
+function live(options: ShellOptions = {}) {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, options)
 
   return {
     shell,
@@ -583,6 +584,217 @@ describe('Ctrl+C（空闲按两次退出 · 工作中中断）', () => {
 
     expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false)
     expect(app.commands()).toEqual([{ type: 'turn.interrupt' }])
+  })
+})
+
+// ══ `/exit`（U52）══════════════════════════════════════════════════════
+
+/**
+ * **`/exit` 一次就走**（设计 · 命令行与配置的会话入口表 ＋ 会话与运行管理的
+ * 「离开、停止与异常退出」）。
+ *
+ * 那三条判据的由来：**「按两次」那条规矩针对的是 Ctrl+C 这个随手按的键**（它在
+ * 「工作中＝中断／空闲＝退出」之间跳，用户没法预期）；`/exit` 是**打出来的词**，
+ * 本来就已经是「有意的」。故它**不挂 `exitArmed`**——那一格是给 Ctrl+C 的。
+ *
+ * ⚠️ **它退的方式与 Ctrl+C 不同**（2026-09-24 用户裁）：`/exit`＝**停掉当前这条会话，
+ * 资源确认退出之后才退界面**；Ctrl+C 两次＝**只离开**，工作继续。故下面这组用例判的是
+ * **两跳**：敲下去那一跳只把停止的意图发出去（**不退**），等 `done` 到了才放行。
+ */
+describe('/exit（停掉这条会话，然后退出界面）', () => {
+  /** 打一整条 slash 并回车——回的是**回车那一下**的效果。 */
+  function run(app: ReturnType<typeof live>, text: string) {
+    app.type(text)
+    return app.press(ENTER)
+  }
+
+  /** 一条会话在场（`session.state` 把活跃位定下来）。 */
+  function withSession(app: ReturnType<typeof live>, id = 's1'): void {
+    app.spy.emit(event('session.state', { active: id, sessions: [{ id, at: 0, title: '甲的事' }] }))
+  }
+
+  /**
+   * **停止那条线的假来路**（U50 的形：`stop` 发意图、`stopped` 回报告）。
+   *
+   * 它就是外壳与「本机管理者」之间的那两格——用例据此**按拍子**把报告喂回去，
+   * 判「等到了没有」。
+   */
+  function stopWire() {
+    const asked: { readonly session: string; readonly scope: StopScope }[] = []
+    let report: ((one: StopReport) => void) | undefined
+
+    return {
+      asked,
+      stop: (session: SessionId, scope: StopScope) => {
+        asked.push({ session, scope })
+      },
+      stopped: (listener: (one: StopReport) => void) => {
+        report = listener
+      },
+      /** 管理者回一拍（`accepted` / `done` / `unconfirmed`）——缺省是整体那一档。 */
+      tell: (session: string, phase: StopPhase, extra: { scope?: StopScope; note?: string } = {}) =>
+        report?.({
+          session,
+          scope: extra.scope ?? 'run',
+          phase,
+          ...(extra.note === undefined ? {} : { note: extra.note }),
+        }),
+    }
+  }
+
+  test('敲下去 ⇒ **发一条整体停止**（当前这条会话），**当场不退**', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    withSession(app)
+
+    expect(run(app, '/exit').exit).toBe(false) // 不走 ShellEffect.exit 那条（那是不等的路）
+    expect(app.view().leaving).toBe(false) // 也还没到「可以走了」
+    expect(app.view().exitArmed).toBe(false) // 门是给 ctrl+c 的，这一条不走它
+
+    // **整体那一档**（「停这件事」）——不是 `turn`：`/exit` 说的是「这条我不做了」
+    expect(wire.asked).toEqual([{ session: 's1', scope: 'run' }])
+    // 这一条**不发** `turn.interrupt`（那是局部那一档的事），目录查询那一条是打 `/` 发的
+    expect(app.commands()).toEqual([ASK_SKILLS])
+  })
+
+  test('**受理了还不走**——`done` 到了才放行（「资源确认退出之后」）', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    withSession(app)
+    run(app, '/exit')
+
+    wire.tell('s1', 'accepted')
+    // 这一拍只是「受理」——此刻走出门就是「发出去就走」，正是设计防的那件事
+    expect(app.view().leaving).toBe(false)
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt', text: '正在停「甲的事」' })
+
+    wire.tell('s1', 'done')
+    expect(app.view().leaving).toBe(true) // 可以走了（界面那一层看着这一格收摊）
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt', text: '「甲的事」停了' })
+  })
+
+  test('**停不掉**：如实说「没能停掉…」，**也照样放行**（不把用户卡在这儿）', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    withSession(app)
+    run(app, '/exit')
+
+    wire.tell('s1', 'accepted')
+    wire.tell('s1', 'unconfirmed', { note: '那一个进程认不出归属——一个信号都没发' })
+
+    expect(app.rows().at(-1)).toMatchObject({
+      kind: 'receipt',
+      text: '没能停掉「甲的事」：那一个进程认不出归属——一个信号都没发',
+    })
+    // **不谎称已停**（那一行说的是「没能停掉」）· **也不把用户卡住**：要只离开，
+    // 另一扇门（Ctrl+C 两次）一直开着，而实话已经落进 scrollback 了
+    expect(app.view().leaving).toBe(true)
+  })
+
+  test('**别的报告不放行**——别的会话 / 局部那一档都与我这一趟无关', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    withSession(app)
+    run(app, '/exit')
+
+    wire.tell('s2', 'done') // 别的窗口停的 —— 与我这一趟无关
+    expect(app.view().leaving).toBe(false)
+
+    // 同一会话、但**局部**那一档（`turn`）——那不是「这条停了」（那条运行还在）
+    wire.tell('s1', 'done', { scope: 'turn' })
+    expect(app.view().leaving).toBe(false)
+
+    // 正等的那一条、那一档来了才放行
+    wire.tell('s1', 'accepted')
+    expect(app.view().leaving).toBe(false)
+    wire.tell('s1', 'done')
+    expect(app.view().leaving).toBe(true)
+  })
+
+  /**
+   * **首条消息正跑着的那几百毫秒**（U52 在真 PTY 上撞到的）：这一轮在跑，而外壳手上
+   * **还没有会话 id**（`session.state` 那一声答复还没到）。
+   *
+   * 此刻**不许降级成「只离开」**——那正是这一单要补的那个缺（工作中退出＝真停）；
+   * 也不许猜一条。故：把意图挂上，活跃位一到接着办。
+   */
+  test('**会话还没认出来时敲**：挂上等着，活跃位一到再停（不降级成「只离开」）', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    app.spy.emit(event('turn.start', {})) // 这一轮在跑，但 `session.state` 还没来
+
+    expect(run(app, '/exit').exit).toBe(false)
+    expect(app.view().leaving).toBe(false) // 也不走——停了才走
+    expect(wire.asked).toEqual([]) // 还不知道是哪一条，一条都不停
+
+    // 活跃位到了（这一声答复把会话 id 带出来）⇒ 接着把刚才那一下办完
+    app.spy.emit(
+      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
+    )
+    expect(wire.asked).toEqual([{ session: 's1', scope: 'run' }])
+
+    wire.tell('s1', 'done')
+    expect(app.view().leaving).toBe(true)
+  })
+
+  /**
+   * **那道闸不活过头**：等的那一轮收场了、会话 id 始终没来 ⇒ 已经没有可停的东西了。
+   *
+   * 不带这条的话，它会一直挂到**下一次**活跃位到达——而那可能是用户后来才开/切的那一条，
+   * 停它就是**停错了一条**（项目里「不误杀」那条硬规矩）。
+   */
+  test('等的那一轮**收场了**、会话还是没认出来 ⇒ 没有可停的：直接走', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    app.spy.emit(event('turn.start', {}))
+    run(app, '/exit')
+    expect(app.view().leaving).toBe(false) // 还在等
+
+    app.spy.emit(event('turn.end', { reason: 'settled' }))
+    expect(app.view().leaving).toBe(true) // 直接走
+    expect(wire.asked).toEqual([]) // 一条都没停（没有可停的）
+
+    // 而且**不会**在后来的那一条上补一刀
+    app.spy.emit(
+      event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] }),
+    )
+    expect(wire.asked).toEqual([])
+  })
+
+  test('**真·空手开机**（一个会话都没有、也没在跑）：没有可停的东西——直接走', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+
+    run(app, '/exit')
+
+    expect(app.view().leaving).toBe(true)
+    expect(wire.asked).toEqual([]) // 一条停止都不发
+  })
+
+  test('多写了词 ⇒ 如实回一句，**不退也不停**（不带参数，同 `/clear` 的姿势）', () => {
+    const wire = stopWire()
+    const app = live({ stop: wire.stop, stopped: wire.stopped })
+    withSession(app)
+
+    expect(run(app, '/exit 现在').exit).toBe(false)
+    expect(app.view().leaving).toBe(false)
+    expect(wire.asked).toEqual([])
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt', text: '认得的用法：/exit（不带参数）' })
+  })
+
+  /**
+   * **接管（裁决挂着、这一轮在等你答复）期间发不出去**——回车归答复，那条是既有接管
+   * 规矩（敲进去的每个字都当答复键判，非答复键当场说一句），本单不动它。
+   *
+   * 这一条钉的是**边界**，不是「/exit 不好使」：要退，`ctrl+c` 照旧能中断这一轮
+   * （见上面那条「全局键，接管不吞」），中断之后再 `/exit` 就走——两件事各归各的入口。
+   */
+  test('接管期间敲不进去——回车归答复（既有接管规矩）', () => {
+    const app = live()
+    ask(app)
+
+    expect(run(app, '/exit').exit).toBe(false)
+    expect(app.view().draft).toBe('') // 那几个字进不了草稿（都当答复键走了）
   })
 })
 
