@@ -125,10 +125,36 @@ describe('U36 · 送达：按位置取齐', () => {
       ['skill', 10, '/review'],
       ['file', 21, '@src/login.ts'],
     ])
-    // 内容随引用一起落定（技能名与来源**取读回来的那一份**）
-    expect(textOfRef(loaded.refs[0])).toBe('要求：先看登录')
-    expect(loaded.refs[1]?.source).toBe(REVIEW.path)
-    expect(textOfRef(loaded.refs[1])).toBe('逐条核对清单。')
+
+    // **正文不随引用落账**（U63 · 送达方式按类型分）：这三支都是「模型按需自读」，
+    // 取这一趟是为了**校验**（三份都取到了，故这一条跑得下去）——正文由模型自己用工具取，
+    // 落在工具条目里。留存的是**位置 ＋ 身份**（下方那几件）。
+    expect(loaded.refs.every((ref) => textOfRef(ref) === undefined)).toBe(true)
+
+    // 技能名与来源**取读回来的那一份**（外壳带过来的只是正文里那几个字）
+    const skill = loaded.refs[1]
+    expect(skill?.kind === 'skill' && skill.name).toBe('review')
+    expect(skill?.source).toBe(REVIEW.path)
+    expect(skill?.kind === 'skill' && skill.label).toBe(REVIEW.label)
+    // 文件那两处的身份是**材料给的真路径**（不是外壳带来的写法）
+    expect(loaded.refs[0]?.source).toBe('/ws/需求.md')
+    expect(loaded.refs[2]?.source).toBe('/ws/src/login.ts')
+  })
+
+  test('工作区外那份只读附件**照旧带正文**（模型手上没有能读它的路）', async () => {
+    const delivery = createRefDelivery({
+      materials: stubMaterials({ '/outside/notes.md': '外面的笔记' }),
+    })
+
+    const loaded = await delivery.load([
+      { kind: 'file', at: 2, marker: '@/outside/notes.md', source: '/outside/notes.md', external: true },
+    ])
+
+    expect(loaded.ok).toBe(true)
+    if (!loaded.ok) return
+
+    expect(textOfRef(loaded.refs[0])).toBe('外面的笔记')
+    expect(loaded.refs[0]?.kind === 'file' && loaded.refs[0].external).toBe(true)
   })
 
   test('乱序给进来也按位置排（位置是那一处引用自己的，不靠数组顺序）', async () => {
@@ -375,10 +401,32 @@ describe('U36 · 装配：走记录里那一份，不重读文件', () => {
     const broken = (payload: unknown): ReturnType<typeof refsPayloadOf> =>
       refsPayloadOf(payload as never)
 
+    // 位置三件不全（`marker` / `source` 缺一）——判不出来是哪一处引用，不当材料
     expect(broken({ refs: [{ kind: 'file', at: 0, marker: '@x' }] })).toEqual([])
-    expect(broken({ refs: [{ kind: 'skill', at: 0, marker: '/a', name: 'a', source: '/p' }] })).toEqual([])
+    expect(broken({ refs: [{ kind: 'file', at: 0, source: '/p' }] })).toEqual([])
+    // 技能少了名字：认不出是哪一份（回执与「读了没」都靠它）
+    expect(broken({ refs: [{ kind: 'skill', at: 0, marker: '/a', source: '/p' }] })).toEqual([])
     expect(broken({ skills: [] })).toEqual([])
     expect(refsPayloadOf(undefined)).toEqual([])
+  })
+
+  test('**没有正文也算齐全**（U63 自读）——位置 / 标记 / 来源 / 名字在，就是一份材料', () => {
+    // 改判的由头：正文在契约上成了选配（自读那一版没有它），故**不能再拿它当齐全的判据**
+    // ——那样会把新记录整条丢掉（比多送半条更坏）。
+    const refs = refsPayloadOf({
+      refs: [
+        { kind: 'file', at: 0, marker: '@src/a.ts', source: '/ws/src/a.ts', label: 'src/a.ts' },
+        { kind: 'dir', at: 9, marker: '@src/', source: '/ws/src', label: 'src' },
+        { kind: 'skill', at: 14, marker: '/review', name: 'review', source: '/ws/.magic/skills/review', label: '项目 .magic/skills' },
+      ],
+    } as never)
+
+    expect(refs.map((ref) => [ref.kind, ref.at, ref.marker])).toEqual([
+      ['file', 0, '@src/a.ts'],
+      ['dir', 9, '@src/'],
+      ['skill', 14, '/review'],
+    ])
+    expect(refs.every((ref) => textOfRef(ref) === undefined)).toBe(true)
   })
 })
 

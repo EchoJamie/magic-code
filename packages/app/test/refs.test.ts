@@ -90,7 +90,8 @@ function payloadOf(row: { readonly payload: string | null }): {
     readonly at: number
     readonly marker: string
     readonly source: string
-    readonly text: string
+    /** **选配**（U63）：自读那一版没有正文——有它的是旧记录与工作区外那份只读附件。 */
+    readonly text?: string
     readonly truncated?: true
     readonly omitted?: number
     readonly external?: true
@@ -102,7 +103,12 @@ function payloadOf(row: { readonly payload: string | null }): {
 // ══ 工单的示例场景 ════════════════════════════════════════════════════
 
 describe('U36 · 「先读 @需求.md，再按 /review 检查 @src/login.ts」', () => {
-  test('从真实输入到模型请求：三处引用按原句次序、材料各就各位', async () => {
+  /**
+   * ⚠️ **本组 U63 改判**：三支（文件 / 目录 / 技能）的送达方式从「引用即进」（正文随请求
+   * 展开在那一处引用之后）改成「**模型按需自读**」——请求里只有引用那几个字，正文由模型
+   * 自己用 `read` / `ls` / `skill` 去取。故下面断的是「**一个字都没展开**」＋「**收了尾**」。
+   */
+  test('从真实输入到模型请求：引用原样留在句子里，三份正文一个都没展开', async () => {
     const stage = makeStage()
     try {
       put(stage.workspace, '需求.md', '要求：先看登录逻辑。')
@@ -126,28 +132,14 @@ describe('U36 · 「先读 @需求.md，再按 /review 检查 @src/login.ts」',
       await sendAndWait(shell, { text, refs, ref: 'draft-1' })
       shell.dispose()
 
-      // —— 模型请求：那句原话连同三份材料，**次序与位置都在** ——
+      // —— 模型请求：那句原话**整句连着**，三份材料一个字都不在里面 ——
       const said = userText(stage, 0)
-      // 正文一个字不剥——那一句原话的三个片段都还在（材料插在每一处引用**之后**，
-      // 故整句不再连续：这是「就地展开」的代价，也正是它的意思）
-      expect(said).toContain('先读 @需求.md')
-      expect(said).toContain('，再按 /review')
-      expect(said).toContain(' 检查 @src/login.ts')
-      expect(said).toContain('要求：先看登录逻辑。')
-      expect(said).toContain('逐条核对清单。')
-      expect(said).toContain('export const login = () => 1')
+      expect(said).toContain(text) // 引用留在原位——它是用户表达的一部分
+      expect(said).not.toContain('要求：先看登录逻辑。')
+      expect(said).not.toContain('逐条核对清单。')
+      expect(said).not.toContain('export const login = () => 1')
 
-      const needAt = said.indexOf('要求：先看登录逻辑。')
-      const skillAt = said.indexOf('逐条核对清单。')
-      const loginAt = said.indexOf('export const login = () => 1')
-      expect(needAt).toBeLessThan(skillAt) // 需求 → 技能 → 登录（与句子同序）
-      expect(skillAt).toBeLessThan(loginAt)
-      // 每一份材料紧跟在它那一处引用**之后**（不是堆在最前面）
-      expect(needAt).toBeGreaterThan(said.indexOf('@需求.md'))
-      expect(skillAt).toBeGreaterThan(said.indexOf('/review'))
-      expect(loginAt).toBeGreaterThan(said.indexOf('@src/login.ts'))
-
-      // —— 真记录：位置 / 身份 / 实际交付内容三样都在 ——
+      // —— 真记录：位置 ＋ 身份在，**正文不在**（它由模型自己取，落在工具条目里）——
       const rows = userRows(assembly)
       expect(rows).toHaveLength(1)
       const payload = payloadOf(rows[0] as { payload: string | null })
@@ -156,17 +148,77 @@ describe('U36 · 「先读 @需求.md，再按 /review 检查 @src/login.ts」',
         ['skill', 13, '/review'],
         ['file', 26, '@src/login.ts'],
       ])
-      expect(payload.refs?.[0]?.text).toBe('要求：先看登录逻辑。')
-      expect(payload.refs?.[1]?.source).toBe(review)
+      expect(payload.refs?.every((ref) => ref.text === undefined)).toBe(true)
+      expect(payload.refs?.[0]?.source).toBe(need)
+      expect(payload.refs?.[1]?.source).toBe(review) // 技能那一份取自**读回来的**那一份
       expect(payload.refs?.[2]?.source).toBe(login)
       // **没有技能时一字不多**的旧形也不在了：这一条只写 `refs`
       expect(rows[0]?.payload).not.toContain('"skills"')
+
+      // —— 收束时**说了话**（工单第 3 条）：模型一个工具都没调 ⇒ 三份都没读 ——
+      const unread = shell.events.filter((event) => event.kind === 'input.unread')
+      expect(unread).toHaveLength(1)
+      expect(unread[0]?.kind === 'input.unread' && unread[0].data.markers).toEqual([
+        '@需求.md',
+        '/review',
+        '@src/login.ts',
+      ])
     } finally {
       stage.dispose()
     }
   })
 
-  test('提交后改动 / 删掉源文件，重开会话：**已入会话的那一份仍取回**（历史不被改写）', async () => {
+  test('模型真去读了：请求里没有正文，而**工具那一趟**把正文取回来（读了就不报「没读」）', async () => {
+    const stage = makeStage()
+    try {
+      put(stage.workspace, 'src/login.ts', 'export const login = () => 1')
+
+      // 剧本：第一趟请求一个 `read`，第二趟给结论文——就是「按需自读」那个姿势
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'read', args: { path: 'src/login.ts' } }] }, { text: '看过了。' }],
+      })
+      const shell = attachShell(assembly.shell)
+
+      const text = '看 @src/login.ts'
+      await sendAndWait(shell, {
+        text,
+        refs: [{ kind: 'file', at: 2, marker: '@src/login.ts', source: realpathSync(join(stage.workspace, 'src/login.ts')) }],
+        ref: 'draft-1',
+      })
+      shell.dispose()
+
+      // 第 1 趟：引用留在原位，正文不在
+      const first = userText(stage, 0)
+      expect(first).toContain(text)
+      expect(first).not.toContain('export const login = () => 1')
+
+      // 第 2 趟：**模型自己读回来的那一份**在请求里（这才是「本次实际交付的内容」）——
+      // 它落在工具消息上（`role: 'tool'`），不是用户消息
+      const messages = lastModel(stage).requests[1]?.messages ?? []
+      const toolText = messages
+        .filter((message) => message.role === 'tool')
+        .map((message) => ('output' in message ? message.output : ''))
+        .join('\n')
+      expect(toolText).toContain('export const login = () => 1')
+
+      // 记录里那一次调用与结果都在（自读的痕落在工具条目上）
+      expect(shell.events.some((event) => event.kind === 'tool.call' && event.data.name === 'read')).toBe(true)
+
+      // **读了就不报「没读」**——那一份已经进过请求了
+      expect(shell.events.filter((event) => event.kind === 'input.unread')).toHaveLength(0)
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  /**
+   * ⚠️ **本组 U63 改判**：原先断的是「当时送出去的那一份正文留在载荷里，源文件改了删了也照旧」
+   * ——那是**引用即进**那一版的语义（正文随请求展开，故要存快照）。自读那一版里
+   * **引用这一趟不留正文**（正文由模型自己取，落在**工具条目**里），故这里改断两件事：
+   * ① 记录 append-only：已入会话那一条的位置与身份**一个字不动**；
+   * ② 源没了之后**再引用它当场拦下**（校验那一趟的活——不静默、不换同名项）。
+   */
+  test('源改了：已入会话那一条**一个字不动**（记录 append-only）；源删了：再引用它当场拦下', async () => {
     const stage = makeStage()
     try {
       const need = put(stage.workspace, '需求.md', '第一版：先看登录。')
@@ -179,37 +231,46 @@ describe('U36 · 「先读 @需求.md，再按 /review 检查 @src/login.ts」',
         ref: 'draft-1',
       })
       shell.dispose()
-      first.close()
 
-      // 源文件改了（换成第二版）
+      // 源文件改了（换成第二版）——再交代一次，引用同一处
       put(stage.workspace, '需求.md', '第二版：改看注册。')
-
-      // 重开（同一块沙地、同一个库）——历史那一条里的那一份**照旧**，新调用取的是新的那一版
-      const second = stage.assemble({ turns: [{ text: '好' }] })
-      const shell2 = attachShell(second.shell)
       put(stage.workspace, 'b.txt', '乙')
 
+      const second = stage.assemble({ turns: [{ text: '好' }] })
+      const shell2 = attachShell(second.shell)
       await sendAndWait(shell2, {
         text: '再看 @需求.md 与 @b.txt',
         refs: [
-          { kind: 'file', at: 3, marker: '@需求.md', source: join(stage.workspace, '需求.md') },
+          { kind: 'file', at: 3, marker: '@需求.md', source: realpathSync(join(stage.workspace, '需求.md')) },
           { kind: 'file', at: 13, marker: '@b.txt', source: realpathSync(join(stage.workspace, 'b.txt')) },
         ],
         ref: 'draft-2',
       })
+
+      // 两句交代各自记着**自己的那一处引用**（位置 ＋ 身份），互不覆盖
+      const rows = userRows(second)
+      expect(rows).toHaveLength(2)
+      const refsOf = (at: number) => payloadOf(rows[at] as { payload: string | null }).refs
+      expect(refsOf(0)?.map((ref) => [ref.at, ref.marker])).toEqual([[2, '@需求.md']])
+      expect(refsOf(1)?.map((ref) => [ref.at, ref.marker])).toEqual([[3, '@需求.md'], [13, '@b.txt']])
+      expect(refsOf(0)?.[0]?.source).toBe(refsOf(1)?.[0]?.source) // 同一份材料：身份同一条真路径
+
+      // —— 把源文件**删掉**：再引用它**当场拦下**（校验那一趟的活），原稿还回输入区 ——
+      rmSync(join(stage.workspace, '需求.md'))
+      await sendAndWait(shell2, {
+        text: '再读 @需求.md',
+        refs: [{ kind: 'file', at: 3, marker: '@需求.md', source: join(stage.workspace, '需求.md') }],
+        ref: 'draft-3',
+      })
       shell2.dispose()
 
-      // 新调用取的是**新的那一版**（材料动态读取：文件改了，下一趟读到的就是新的）
-      expect(userText(stage, 0)).toContain('第二版：改看注册。')
+      const settled = shell2.events.filter((event) => event.kind === 'input.settled')
+      const last = settled[settled.length - 1]
+      expect(last?.kind === 'input.settled' && last.data.ok).toBe(false)
+      expect(last?.kind === 'input.settled' && last.data.reason).toContain('不在了')
+      // 第三条**没进会话**（那两句交代照旧两条）
+      expect(userRows(second)).toHaveLength(2)
 
-      // 再把源文件**删掉**——已入会话的那两份快照仍取回（记录里存的是**当时那一份**，
-      // 不依赖源文件还在）
-      rmSync(join(stage.workspace, '需求.md'))
-
-      // 历史那一条**没被改写**（记录 append-only）：当时送出去的那一份还在载荷里
-      const rows = userRows(second)
-      expect(payloadOf(rows[0] as { payload: string | null }).refs?.[0]?.text).toBe('第一版：先看登录。')
-      expect(payloadOf(rows[1] as { payload: string | null }).refs?.[0]?.text).toBe('第二版：改看注册。')
       second.close()
     } finally {
       stage.dispose()
@@ -220,14 +281,21 @@ describe('U36 · 「先读 @需求.md，再按 /review 检查 @src/login.ts」',
 // ══ 边界（都有确定结果）════════════════════════════════════════════════
 
 describe('U36 · 边界：目录 / 超限 / 二进制 / 工作区外', () => {
-  test('目录：给的是**有界清单**（一层），未展开的部分如实报数', async () => {
+  /**
+   * ⚠️ **本组 U63 改判**：目录原先送的是「有界清单」（一层、最多 200 项、说清未列出的部分）。
+   * 改成「模型按需自读」之后**清单不再进请求**——模型自己 `ls` 那一下才是它这一轮看到的。
+   * 故这里断两件事：**请求里没有清单**；而模型 `ls` 之后，**那一趟的结果里是真清单**
+   * （自读走的是同一条有界列目录的路）。
+   */
+  test('目录：清单不随请求展开——模型自己 `ls`，读回来的才是清单', async () => {
     const stage = makeStage()
     try {
       put(stage.workspace, 'src/a.ts', 'a')
       put(stage.workspace, 'src/sub/b.ts', 'b')
-      for (let at = 0; at < 205; at += 1) put(stage.workspace, `src/many/m${at}.txt`, 'x')
 
-      const assembly = stage.assemble({ turns: [{ text: '好' }] })
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'ls', args: { path: 'src' } }] }, { text: '看过了' }],
+      })
       const shell = attachShell(assembly.shell)
 
       await sendAndWait(shell, {
@@ -239,24 +307,40 @@ describe('U36 · 边界：目录 / 超限 / 二进制 / 工作区外', () => {
       })
       shell.dispose()
 
+      // ① 第一趟：引用留在原位，清单不在请求里
       const said = userText(stage, 0)
-      expect(said).toContain('a.ts')
-      expect(said).toContain('sub/')
-      expect(said).not.toContain('sub/b.ts') // 不递归塞进整个项目
+      expect(said).toContain('看看 @src/')
+      expect(said).not.toContain('a.ts')
+      expect(said).not.toContain('sub/')
 
-      const rows = userRows(assembly)
-      const ref = payloadOf(rows[0] as { payload: string | null }).refs?.[0]
+      // ② 模型自己 `ls` 之后：清单在**工具那一趟**（一眼分得出文件与目录：目录带尾斜杠）
+      const messages = lastModel(stage).requests[1]?.messages ?? []
+      const toolText = messages
+        .filter((message) => message.role === 'tool')
+        .map((message) => ('output' in message ? message.output : ''))
+        .join('\n')
+      expect(toolText).toContain('a.ts')
+      expect(toolText).toContain('sub/')
+      expect(toolText).not.toContain('sub/b.ts') // 只列一层，不递归塞进整个项目
+
+      // ③ 记录里那一处引用：位置 ＋ 身份在，**清单不在**（它由模型自己取）
+      const ref = payloadOf(userRows(assembly)[0] as { payload: string | null }).refs?.[0]
       expect(ref?.kind).toBe('dir')
-      expect(ref?.omitted).toBeUndefined() // 一层目录里的条数不多：没有未列出的
+      expect(ref?.text).toBeUndefined()
+      expect(ref?.omitted).toBeUndefined()
+
+      // ④ **读了就不报「没读」**（`ls` 落在这一处，账认得出）
+      expect(shell.events.filter((event) => event.kind === 'input.unread')).toHaveLength(0)
     } finally {
       stage.dispose()
     }
   })
 
-  test('目录超限：列到上限为止，**未列出的部分在模型面前说得出**（不静默缺材料）', async () => {
+  test('目录很大也只是目录：清单不进请求，故不再有「未列出的部分」要说', async () => {
     const stage = makeStage()
     try {
-      for (let at = 0; at < 205; at += 1) put(stage.workspace, `many/m${String(at).padStart(3, '0')}.txt`, 'x')
+      // 250 项——原先这一条会撞上「一层最多 200 项、另有 N 项未列」那条有界清单
+      for (let at = 0; at < 250; at += 1) put(stage.workspace, `many/m${String(at).padStart(3, '0')}.txt`, 'x')
 
       const assembly = stage.assemble({ turns: [{ text: '好' }] })
       const shell = attachShell(assembly.shell)
@@ -268,13 +352,13 @@ describe('U36 · 边界：目录 / 超限 / 二进制 / 工作区外', () => {
       })
       shell.dispose()
 
-      // 材料到上限为止（200 项），**抬头里说清还有 5 项没列**——模型据此知道手里不是全份
-      const said = userText(stage, 0)
-      expect(said).toContain('只列了这一层，另有 5 项未列')
-      expect(said.split('\n').filter((line) => line.startsWith('m')).length).toBe(200)
+      // 请求里一条清单都没有（也就无所谓「列到上限」那一说）
+      expect(userText(stage, 0)).toContain('看看 @many/')
+      expect(userText(stage, 0)).not.toContain('m000.txt')
 
-      const rows = userRows(assembly)
-      expect(payloadOf(rows[0] as { payload: string | null }).refs?.[0]?.omitted).toBe(5)
+      // 那一趟也没白跑：取它是为了**校验**（写的确实是个列得动的目录），故这一条跑得下去
+      expect(userRows(assembly)).toHaveLength(1)
+      expect(payloadOf(userRows(assembly)[0] as { payload: string | null }).refs?.[0]?.kind).toBe('dir')
     } finally {
       stage.dispose()
     }
@@ -373,7 +457,12 @@ describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前
     throw new Error(`等「${what}」超时`)
   }
 
-  test('`↑` 召回带引用的那一句 → 编辑 → 再提交：请求里是**当时**的文件内容，记录两笔都在', async () => {
+  /**
+   * ⚠️ **本组 U63 改判**：原先断的是「请求里是**当时**的文件内容」（引用即进 ⇒ 再提交时
+   * 重读当前那一份）。自读那一版里**引用不再展开正文**，故这里只断历史与记录那一半，
+   * 正文那一半改由上面「模型真去读了」那条咬（模型自己读，落在工具条目里）。
+   */
+  test('`↑` 召回带引用的那一句 → 编辑 → 再提交：整份草稿往返，记录两笔都在', async () => {
     const stage = makeStage()
     try {
       const file = put(stage.workspace, 'a.txt', '第一版')
@@ -419,9 +508,10 @@ describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前
       await until(() => lastModel(stage).requests.length >= 1, '第一次模型请求')
 
       const first = userText(stage, 0)
-      expect(first).toContain('第一版')
-      expect(first).toContain('逐条核对清单。')
-      expect(first).toContain('先读 @a.txt')
+      // 引用留在原位（那一句原话逐字在），而**正文一个都没展开**（U63：按需自读）
+      expect(first).toContain('先读 @a.txt，再按 /review 检查')
+      expect(first).not.toContain('第一版')
+      expect(first).not.toContain('逐条核对清单。')
 
       // —— 改源文件：**已发送的那一份**不该被改写 ——
       put(stage.workspace, 'a.txt', '第二版')
@@ -452,24 +542,28 @@ describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前
       await until(() => lastModel(stage).requests.length >= 2, '第二次模型请求')
       await until(() => userRows(assembly).length === 2, '第二条条目落账')
 
-      // ① 实际模型输入：**重新提交时才读** ⇒ 读到的是第二版（不是召回那一刻、更不是当初那一份）
+      // ① 实际模型输入：召回回来的那一句**逐字在**（正文与引用都在原处），正文仍不展开
       const second = lastUserText(stage, 1)
-      expect(second).toContain('第二版')
-      expect(second).not.toContain('第一版') // 这一次读到的是当时那一份，不是召回那一刻、更不是当初那一份
       expect(second).toContain('再看一遍')
-      expect(second).toContain('逐条核对清单。') // 技能那处身份也随召回一起回来了
+      expect(second).toContain('@a.txt')
+      expect(second).toContain('/review')
+      expect(second).not.toContain('第一版')
+      expect(second).not.toContain('第二版')
+      expect(second).not.toContain('逐条核对清单。')
 
-      // ② 记录：两笔各自留着当时那一份（历史不被改写），位置自证
+      // ② 记录：两笔各自留着**自己的那一处引用**（位置 ＋ 身份），历史不被改写
       const rows = userRows(assembly)
       const [one, two] = rows.map((row) => payloadOf(row as { payload: string | null }))
       expect(one?.refs?.map((ref) => [ref.kind, ref.at, ref.marker, ref.text])).toEqual([
-        ['file', 3, '@a.txt', '第一版'],
-        ['skill', 13, '/review', '逐条核对清单。'],
+        ['file', 3, '@a.txt', undefined],
+        ['skill', 13, '/review', undefined],
       ])
       expect(two?.refs?.map((ref) => [ref.kind, ref.at, ref.marker, ref.text])).toEqual([
-        ['file', 3, '@a.txt', '第二版'],
-        ['skill', 13, '/review', '逐条核对清单。'],
+        ['file', 3, '@a.txt', undefined],
+        ['skill', 13, '/review', undefined],
       ])
+      // 技能那一处的身份取自**读回来的那一份**（两次都一样）
+      expect(one?.refs?.[1]?.source).toBe(two?.refs?.[1]?.source)
       for (const [index, payload] of [one, two].entries()) {
         const text = rows[index]?.content_text ?? ''
         for (const ref of payload?.refs ?? []) {
@@ -575,7 +669,9 @@ describe('U36 · 忙时：整份输入入队，出队不串', () => {
       expect(rows).toHaveLength(2)
       const refs = rows.map((row) => payloadOf(row as { payload: string | null }).refs?.[0])
       expect(refs.map((ref) => ref?.source)).toEqual([a, b])
-      expect(refs.map((ref) => ref?.text)).toEqual(['甲的材料', '乙的材料'])
+      // 正文不在载荷里（U63：自读那一版不留正文），次序与身份照旧各归各的
+      expect(refs.map((ref) => ref?.text)).toEqual([undefined, undefined])
+      expect(refs.map((ref) => ref?.marker)).toEqual(['@a.txt', '@b.txt'])
     } finally {
       stage.dispose()
     }
@@ -593,6 +689,205 @@ describe('U36 · 忙时：整份输入入队，出队不串', () => {
       const rows = userRows(assembly)
       expect(rows[0]?.payload).toBeNull() // 载荷不写（与加这一条之前逐字同形）
       expect(userText(stage, 0)).toContain('就说一句话')
+    } finally {
+      stage.dispose()
+    }
+  })
+})
+
+// ══ U63 · 送达方式：文件 / 目录 / 技能 ⇒ 模型按需自读 ══════════════════
+
+/**
+ * 这一组咬两件事（工单第 1 条与第 3 条）：
+ *
+ * - **请求里不再展开正文**——引用留在原位，模型据它去读；
+ * - **「读了要说，没读也要说」**——只配前一半不够：模型没读时那一轮结束屏上什么也没有，
+ *   用户照样以为它看了 ⇒ 收束时报一句「本次没读：…」。
+ *
+ * 判据收在**真请求 ＋ 真事件**上（沙地里的文件是真文件、工具是真执行）。
+ */
+describe('U63 · 自读：账认得出「读了哪一份」', () => {
+  /** 一条交代里那个「没读」回执报的是哪几份（没发＝空数组）。 */
+  function unreadOf(events: readonly KernelEvent[]): readonly string[] {
+    const found = events.find((event) => event.kind === 'input.unread')
+    return found?.kind === 'input.unread' ? found.data.markers : []
+  }
+
+  const fileRefOf = (stage: { readonly workspace: string }, name: string, at: number): InputRef => ({
+    kind: 'file',
+    at,
+    marker: `@${name}`,
+    source: realpathSync(join(stage.workspace, name)),
+  })
+
+  test('`read` 读到那一份 ⇒ 不报「没读」', async () => {
+    const stage = makeStage()
+    try {
+      put(stage.workspace, 'a.txt', '甲的正文')
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'read', args: { path: 'a.txt' } }] }, { text: '看了' }],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await sendAndWait(shell, { text: '看 @a.txt', refs: [fileRefOf(stage, 'a.txt', 2)], ref: 'd' })
+      shell.dispose()
+
+      expect(unreadOf(shell.events)).toEqual([])
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('`grep` 在它上面那一层搜内容 ⇒ 算读过（读的宽度是「这一处以内的全部」）', async () => {
+    const stage = makeStage()
+    try {
+      put(stage.workspace, 'src/a.ts', '甲的正文')
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'grep', args: { pattern: '正文', path: 'src' } }] }, { text: '看了' }],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await sendAndWait(shell, {
+        text: '看 @src/a.ts',
+        refs: [fileRefOf(stage, 'src/a.ts', 2)],
+        ref: 'd',
+      })
+      shell.dispose()
+
+      expect(unreadOf(shell.events)).toEqual([])
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('`ls` 上一层只看见名字、没看见内容 ⇒ **仍报「没读」**（宁可多说一句）', async () => {
+    const stage = makeStage()
+    try {
+      put(stage.workspace, 'src/a.ts', '甲的正文')
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'ls', args: { path: 'src' } }] }, { text: '列了一下' }],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await sendAndWait(shell, {
+        text: '看 @src/a.ts',
+        refs: [fileRefOf(stage, 'src/a.ts', 2)],
+        ref: 'd',
+      })
+      shell.dispose()
+
+      expect(unreadOf(shell.events)).toEqual(['@src/a.ts'])
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('读了一个目录**里面**的文件 ⇒ 那一份目录引用算读过', async () => {
+    const stage = makeStage()
+    try {
+      put(stage.workspace, 'src/a.ts', '甲的正文')
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'read', args: { path: 'src/a.ts' } }] }, { text: '看了' }],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await sendAndWait(shell, {
+        text: '看 @src/',
+        refs: [{ kind: 'dir', at: 2, marker: '@src/', source: realpathSync(join(stage.workspace, 'src')) }],
+        ref: 'd',
+      })
+      shell.dispose()
+
+      expect(unreadOf(shell.events)).toEqual([])
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('读**失败**的那一趟不算读过（`ok:false` 不记）', async () => {
+    const stage = makeStage()
+    try {
+      put(stage.workspace, 'a.txt', '甲的正文')
+      const assembly = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'read', args: { path: 'a.txt' } }] }, { text: '没读到' }],
+      })
+      const shell = attachShell(assembly.shell)
+
+      await sendAndWait(shell, { text: '看 @a.txt', refs: [fileRefOf(stage, 'a.txt', 2)], ref: 'd' })
+      shell.dispose()
+
+      // 这一趟读成了（真文件在），故不报；下面另起一条真的读不成的情形
+      expect(unreadOf(shell.events)).toEqual([])
+
+      // 换成读一个**不在的**路径：那一趟 `ok:false`，不算读过
+      const stage2 = makeStage()
+      try {
+        put(stage2.workspace, 'a.txt', '甲的正文')
+        const assembly2 = stage2.assemble({
+          turns: [{ toolCalls: [{ name: 'read', args: { path: '没有这个文件.txt' } }] }, { text: '没读到' }],
+        })
+        const shell2 = attachShell(assembly2.shell)
+        await sendAndWait(shell2, { text: '看 @a.txt', refs: [fileRefOf(stage2, 'a.txt', 2)], ref: 'd' })
+        shell2.dispose()
+
+        expect(unreadOf(shell2.events)).toEqual(['@a.txt'])
+      } finally {
+        stage2.dispose()
+      }
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  test('技能：显式引用**不再随请求展开**；模型读了才回「本次使用技能」', async () => {
+    const stage = makeStage()
+    try {
+      put(
+        stage.workspace,
+        '.magic/skills/review/SKILL.md',
+        '---\nname: review\ndescription: 检查改动\n---\n\n逐条核对清单。',
+      )
+      const review = realpathSync(join(stage.workspace, '.magic/skills/review'))
+
+      // ① 模型**不读**：正文不进请求，回执一条都不发，收束时说「没读」
+      const quiet = stage.assemble({ turns: [{ text: '好' }] })
+      const shellA = attachShell(quiet.shell)
+      await sendAndWait(shellA, {
+        text: '按 /review 看看',
+        refs: [{ kind: 'skill', at: 2, marker: '/review', name: 'review', source: review }],
+        ref: 'd1',
+      })
+      shellA.dispose()
+
+      expect(userText(stage, 0)).not.toContain('逐条核对清单。')
+      expect(shellA.events.filter((event) => event.kind === 'skill.used')).toEqual([])
+      expect(unreadOf(shellA.events)).toEqual(['/review'])
+
+      // ② 模型**读了**（真走 `skill` 工具）：下一趟请求里才有正文，回执照说
+      const loud = stage.assemble({
+        turns: [{ toolCalls: [{ name: 'skill', args: { name: 'review' } }] }, { text: '照它做' }],
+      })
+      const shellB = attachShell(loud.shell)
+      await sendAndWait(shellB, {
+        text: '按 /review 看看',
+        refs: [{ kind: 'skill', at: 2, marker: '/review', name: 'review', source: review }],
+        ref: 'd2',
+      })
+      shellB.dispose()
+
+      // 正文落在**工具那一趟**（模型自己取回来的那份）
+      const messages = lastModel(stage).requests[1]?.messages ?? []
+      const toolText = messages
+        .filter((message) => message.role === 'tool')
+        .map((message) => ('output' in message ? message.output : ''))
+        .join('\n')
+      expect(toolText).toContain('逐条核对清单。')
+
+      const used = shellB.events.filter((event) => event.kind === 'skill.used')
+      expect(used).toHaveLength(1)
+      expect(used[0]?.kind === 'skill.used' && used[0].data.skills.map((one) => one.name)).toEqual(['review'])
+      // 读了就不报「没读」
+      expect(unreadOf(shellB.events)).toEqual([])
     } finally {
       stage.dispose()
     }

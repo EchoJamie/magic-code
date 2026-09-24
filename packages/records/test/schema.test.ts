@@ -103,7 +103,7 @@ describe('判据 3 · 不落库清单', () => {
     }
   })
 
-  test('不落库清单＝契约常量（十五个 kind，一字不差）', () => {
+  test('不落库清单＝契约常量（十六个 kind，一字不差）', () => {
     // 第 17 轮补锚：`model.retry` 与两个实时增量同列——退避期间那个「正在等」是实时信号、
     // 不是重放事实；重试次数另落 `ModelCallResult.attempts`，故不落库不丢信息。
     // U16 补锚：`session.state` 同列；第 19 轮：`session.history` 同列（读出来的，不是过程事实）——它是**快照**（此刻有哪些会话、当前在哪条），
@@ -132,11 +132,15 @@ describe('判据 3 · 不落库清单', () => {
     // 那份字节与名字 / 类型 / 出处本来就躺在 `user` 条目的载荷里；且回执那一格（导出的
     // 临时文件路径）是一次性的，留下只会变成一串早就没用的路径。
     // **新锚**：十五条，字面规则一个没动。
+    // U63 补锚：`input.unread`——同 `skill.used` 那条（依据在**条目**里：引用了哪几份在
+    // `UserPayload.refs`，读没读在工具条目里；落库＝把同一件事存第二遍）。
+    // **新锚**：十六条，字面规则一个没动。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'attachments.catalog',
       'grants.catalog',
       'input.settled',
+      'input.unread',
       'mcp.catalog',
       'model.catalog',
       'model.delta',
