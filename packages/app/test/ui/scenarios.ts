@@ -35,7 +35,9 @@ import { readDatabase } from '../support.ts'
 
 /** 没出包的文案锚（见文件头注 3）——判据用到它们时，`detail` 里写上这一份。 */
 const COPY = {
-  pickerHint: '↑↓ 选 · 回车 定 · esc 收起',
+  // ⚠️ U61 改过这一句（多了 `← 退`）——按上面注 3 那条，字面量锚跟着改，
+  //    它红的正是时候：这一句是「抽屉真开了」的判据，提示一变就得有人来看一眼。
+  pickerHint: '↑↓ 选 · 回车 定 · ← 退 · esc 收起',
   decideHint: 'y / a / n',
   approval: '批准',
 } as const

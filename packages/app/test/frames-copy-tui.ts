@@ -237,7 +237,7 @@ async function sessionNew(): Promise<void> {
     // ⚠️ 等的必须是**抽屉真开了**（那句右位提示），不能等「第一件事」——记录区里本来就有
     //    那四个字（首条消息的回显），拿它当条件**恒真**，第二下回车就会在抽屉开出之前打出去
     //    （实测栽过一次：两下回车挤在一起，哪一下都没选中）。
-    await session.key('enter', { until: { text: '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · esc 收起' }, timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · ← 退 · esc 收起' }, timeoutMs: 10_000 })
     await session.key('enter', { until: { text: '已切到' }, timeoutMs: 10_000 })
     const back = await session.capture({ label: '05-切回旧会话' })
     keep(back)
