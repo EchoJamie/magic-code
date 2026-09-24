@@ -27,6 +27,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HINT_EXIT_ARMED, HINT_IDLE, placeholderOf } from '@magic/tui'
+import { statusLineOf } from './anchors.ts'
 import { REPO_ROOT, UiWaitTimeout, createUiSession } from './driver.ts'
 import type { Capture, UiSession, UiSessionOptions } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
@@ -1246,6 +1247,16 @@ const stopNotRollback: Scenario = {
       stopped.text.slice(0, 400),
     )
 
+    // **那一屏不自相矛盾**（U54 · 缺陷 D34）——`/resume` 里 `ctrl+x` 停的正是**本窗这条**
+    // 会话：执行者退场之后没人再报 `turn.end`，故从前那一格会一直写着「● 工作中」，
+    // 与上面那句「停了」摆在同一屏上打架。修法是那一格改读管理者推的运行事实（`withRunFacts`）。
+    //
+    // ⚠️ 判据落在**状态行那一格**上（`statusLineOf`），不是全屏找那几个字：输入行那句占位
+    //    「（工作中——想插话可以打…）」与列表详情里都可能出现同一个词。
+    const status = statusLineOf(stopped.lines)
+    ui.check(!status.includes('工作中'), '停完之后**状态行那一格不再写着「工作中」**', status)
+    ui.check(status.includes(IDLE_STATE), '它收成了那一档：此刻没在跑（不是刚发生的那件事）', status)
+
     // —— 三条判据 ——
     ui.check(existsSync(artifact), '产物文件在停止之后仍然在', artifact)
     if (existsSync(artifact)) {
@@ -1388,6 +1399,14 @@ const exitCommand: Scenario = {
       '工作中的回执也说清了「停了」',
       mid.lines.filter((line) => line.includes('· ')).join(' / '),
     )
+
+    // **那一屏不自相矛盾**（U54 · 缺陷 D34 的现场就是这一帧）——`/exit` 走的是**整体**那一档：
+    // 执行者退场之后没人再报 `turn.end`，故从前那一格会一直写着「● 工作中」，与上面那句
+    // 「停了」摆在同一屏上打架。⚠️ 这一帧**看得见**（U52 的回报当初记成「紧接着就退、看不见」，
+    // 不对），故判据照样钉在这儿。
+    const leavingStatus = statusLineOf(mid.lines)
+    ui.check(!leavingStatus.includes('工作中'), '`/exit` 停完那一格不再写着「工作中」', leavingStatus)
+    ui.check(leavingStatus.includes(IDLE_STATE), '它收成了那一档：此刻没在跑', leavingStatus)
   },
 }
 

@@ -218,6 +218,37 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number
  * 走的是**真链路**：事件喂进 `createShell` → 键喂进外壳 → `AppView` → Ink → 终端。
  * 规格说的是**用户看得见的那一屏**，所以取景从壳起、到屏止。
  */
+/**
+ * **一份可推的运行事实**（U54）——`RunFeed` 那一形，外加一个「推」的把手给用例。
+ *
+ * 为什么用例要自己拿这个东西：真管理者**推**事实，而 `RunFeed.subscribe` 的监听在
+ * `createShell` 构造那一刻就接上了（订阅之后不可换）——想演「事实变了」，就得从**订阅之前**
+ * 手里就有它，故它由用例造好递进 `StageOptions.runsFeed`。
+ */
+export type RunsFeed = {
+  current(): readonly RunRow[]
+  subscribe(listener: (rows: readonly RunRow[]) => void): void
+  /** 推一份新的事实（＝管理者那一下推送）。 */
+  push(rows: readonly RunRow[]): void
+}
+
+/** 造一份可推的运行事实（初值 ＋ 此后由 `push` 推）。 */
+export function createRunsFeed(initial: readonly RunRow[] = []): RunsFeed {
+  let rows = initial
+  const listeners = new Set<(rows: readonly RunRow[]) => void>()
+
+  return {
+    current: () => rows,
+    subscribe: (listener) => {
+      listeners.add(listener)
+    },
+    push: (next) => {
+      rows = next
+      for (const listener of [...listeners]) listener(rows)
+    },
+  }
+}
+
 /** 取景台的入参——都可省（省了＝按「拿不到」办：没有窗总量、没有钟）。 */
 export type StageOptions = {
   /** 上下文窗总量（状态行 ④ 的分母）——`D10` 的出口合入前没人传，故缺省 `null`。 */
@@ -232,6 +263,14 @@ export type StageOptions = {
    * 缺省不给 ⇒ 那一屏照旧只有目录、一行状态都不标（「拿不到的不编」，同 `workspaceRoots`）。
    */
   readonly runs?: readonly RunRow[]
+  /**
+   * **运行事实的来路**（U54）——要**推**那一趟（事实变了 ⇒ 外壳跟着收尾）就走它。
+   *
+   * 与 `runs` 的分工：那一格给的是**构造那一刻的读数**（`current()` 一次，此后再不动），
+   * 只够验「列表按事实铺行」；而 D34 那条路要的恰恰是**此后的变化**——管理者停掉一条之后
+   * 推来新的一份。故这一格收一个**真 feed**：用例拿 `stage.pushRuns(...)` 推。
+   */
+  readonly runsFeed?: RunsFeed
   /** **开局就接的那条会话**（只作开屏摘要的排除项）。 */
   readonly openingSession?: string
   /** **接回快照**（U49）——接上它之后喂一份进去，等于管理者刚把「此刻」推来了。 */
@@ -246,6 +285,11 @@ export type Stage = {
   press(key: ShellKey): ShellEffect
   /** 投一串事件。 */
   feed(events: readonly KernelEvent[]): void
+  /**
+   * **推一份新的运行事实**（U54）——只有给了 `StageOptions.runsFeed` 的那些台推得动
+   * （别的台没有那条来路，推了就当没接运行事实）。
+   */
+  pushRuns(rows: readonly RunRow[]): void
   /** 发出去的命令（不含订阅动作）。 */
   commands(): readonly Command[]
   /**
@@ -263,9 +307,11 @@ export function createStage(options: StageOptions = {}): Stage {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
     ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),
-    ...(options.runs === undefined
-      ? {}
-      : { runs: { current: () => options.runs as readonly RunRow[], subscribe: () => {} } }),
+    ...(options.runsFeed !== undefined
+      ? { runs: options.runsFeed }
+      : options.runs === undefined
+        ? {}
+        : { runs: { current: () => options.runs as readonly RunRow[], subscribe: () => {} } }),
     ...(options.openingSession === undefined ? {} : { openingSession: options.openingSession }),
     ...(options.resumed === undefined ? {} : { resumed: { subscribe: options.resumed } }),
   })
@@ -281,6 +327,7 @@ export function createStage(options: StageOptions = {}): Stage {
     feed: (events) => {
       for (const item of events) spy.emit(item)
     },
+    pushRuns: (next) => options.runsFeed?.push(next),
     commands: () => spy.commands,
     at: (value) => {
       now = value

@@ -26,7 +26,7 @@ export type {
 } from './driver.ts'
 
 // **被测对象那一侧的词汇表**（U51 第九条）——机制层不认识它，由调用方传进来
-export { MAGIC_ANCHORS, MAGIC_IDLE_MARK, READY_MIN_COLUMNS } from './anchors.ts'
+export { MAGIC_ANCHORS, MAGIC_IDLE_MARK, READY_MIN_COLUMNS, statusLineOf } from './anchors.ts'
 
 export { SCENARIOS, ScenarioFailure, runScenario, scenarioNames, recordOf } from './scenarios.ts'
 export type {

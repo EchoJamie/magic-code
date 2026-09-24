@@ -1587,7 +1587,7 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
   // **计划那一块同一条**（U34）：换会话**先移除旧清单**（设计：不能短暂串到新会话）——
   // 新会话的那一份由随后读回来的历史（`rebuild`）重铺。收起的位与视口也归零：
   // 每一条会话都从「默认展开、从头看」开始。
-  return turned
+  const after = turned
     ? {
         ...base,
         rows: [],
@@ -1600,6 +1600,13 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
         planTop: 0,
       }
     : base
+
+  // **换了一条会话 ⇒ 状态行那一格照新那条的运行事实收**（U54）——那一格说的是**这条**
+  // 会话此刻在不在跑，而上一条那几档（工作中 / 空闲）跟着换页一起过期了。
+  //
+  // 这正是 D34 的另一半现场：翻回一条**已经停了**的会话，上一屏那一格还写着工作中。
+  // 判据与推事实那一路**同一处**（`foldRunState`），不在这儿另写一遍。
+  return foldRunState(after)
 }
 
 /**
@@ -2211,6 +2218,99 @@ export function stateLabel(state: StatusState): string {
     case 'error':
       return '▲ 出错'
   }
+}
+
+/**
+ * **运行事实 → 状态行那一格**（U54）——那一格只答一件事：**这条会话此刻在不在跑**。
+ *
+ * ## 为什么要有这一跳
+ *
+ * 这一格原先**是外壳自己攒的**：`turn.start` 抬到「工作中」、`turn.end` 收回「空闲」。
+ * 那在**外壳看得见的那条流**上是对的，而停这个动作**从管理者那一头发起**——
+ *
+ * - `/resume` 里 `ctrl+x` 停**当前这条**（D34 的现场）、
+ * - `/exit`（它走的就是整体那一档）、
+ * - 以及收尾那两跳抢在 `turn.end` 前面（执行者收摊比事件快）的那一档，
+ *
+ * 都会出现「**没人再报 `turn.end`**」：执行者退场之后，外壳那一头**没有下文**，那一格就
+ * 永远停在「● 工作中」。同一屏上于是两句话打架——回执说「停了」，状态行说还在跑。
+ *
+ * 根子是**两处各判一遍**（U49 记过的那条）：**列表读管理者推的运行事实，状态行读外壳
+ * 自己攒的**。故修法不是就地补一个「被停掉了就收回空闲」的判据（那是第三处判断），
+ * 而是**把「在不在跑」交给那同一份事实**——`runs`（`ShellOptions.runs`）本来就是推来的。
+ * 收尾收成「○ 空闲」（不是「已停止」）：**那一句话归回执**（三分类：刚发生的事仅当时回执），
+ * 界线见下。
+ *
+ * ## 界线：这一格是**外壳的**，不是运行事实的展示位（2026-09-24 用户裁定）
+ *
+ * 那一格说的是「**我这边这一轮在不在跑**」；**「是被停掉的、不是自然跑完的」归列表那一行**
+ * ——U49/U50 已经把那件事分得很清（「已停止」带缘由 vs「当前空闲 · 上一轮被中断」）。
+ * 把一个事实摆两个地方，正是这一单要收掉的那种毛病。
+ *
+ * ⚠️ 故**不许**为了「照同一条分」而往这一格加词（比如「已停止」）：那会打破「五态固定词」，
+ * 也让「停了」这句话在回执与状态行各说一遍。**运行事实的完整样子在列表那一行**
+ * （`sessionRows` / `runDetail`），要加就加到那儿。
+ *
+ * ## 只管「在不在跑」这一轴，只管两面
+ *
+ * | 事实说 | 那一格 |
+ * | --- | --- |
+ * | `running`（有在途调用 / 这一轮开着 / 还没起来） | **工作中** |
+ * | `idle`（手上没活）· `stopped`（那一代已核销） | **空闲** |
+ * | `waiting` · `stopping` · `unknown` | **不碰**（见下） |
+ *
+ * 另外三面各有各的来路，**不归这条管**：`等你定夺` 归那张卡（`withDecisionStatus`）、
+ * `正在重试` 归 `model.retry`、`出错` 归 `model.error`——它们说的是「在做什么」与「刚出了
+ * 什么状况」，不是「在不在跑」。故折叠只在这两面之间来回，**既不抬也不压**那三面。
+ *
+ * ⚠️ **`stopping` 不碰**：那一档的事实依据是「**已受理停止，资源尚未全部退出**」——
+ * 那一刻「跑没跑」本就是半截，而设计明写「**不能提前显示已停止**」。故那一格照外壳收到的
+ * 事件走（`turn.interrupt` 之后 `turn.end` 一到就是空闲），**等核销到了才由 `stopped` 收**。
+ *
+ * ⚠️ **`unknown` 不碰**：「拿不准的不编」（设计：失联期间历史 `running` 不是现况）——
+ * 那一档连「有没有活」都还证不出来，拿它去改这一格等于拿一个不确定的东西冒充此刻。
+ *
+ * ## 两处分寸
+ *
+ * - **只认当前这条会话**：`view.runs` 里别的那些会话的运行事实**一个字都不影响本壳**
+ *   （在列表里停别人那一条，本窗口的状态行照旧）；
+ * - **没有那一行就不动**（拿不到的不编）：会话还没落进目录、或这一趟压根没接运行事实
+ *   （用例 / 演示）⇒ 那一格照旧由事件说话。
+ */
+export function withRunFacts(view: ShellView, rows: readonly RunRow[]): ShellView {
+  return foldRunState({ ...view, runs: rows })
+}
+
+/** 那一格该长什么样——`undefined` ＝ 这条事实（或这条会话）**不碰它**。 */
+function factFaceOf(state: RunState): StatusState | undefined {
+  if (state === 'running') return 'working'
+  if (state === 'idle' || state === 'stopped') return 'idle'
+
+  // `waiting` / `stopping` / `unknown`——见 `withRunFacts` 那两段：它们的「在不在跑」半截，
+  // 或压根证不出来，故不归这一格管
+  return undefined
+}
+
+/** 折一次：**当前那条会话**的运行事实说「在跑 / 没在跑」，那一格就照它收。 */
+function foldRunState(view: ShellView): ShellView {
+  const run = view.sessionId === null ? undefined : view.runs.find((one) => one.session === view.sessionId)
+  const said = run === undefined ? undefined : factFaceOf(run.state)
+  if (said === undefined || said === view.status.state) return view
+
+  // **只在「工作中 ⇄ 空闲」这一轴上来回**（别的三面不归这条管，见 `withRunFacts`）
+  const was = said === 'working' ? 'idle' : 'working'
+  if (view.status.state !== was) return view
+
+  return patchStatus(view, {
+    state: said,
+    amount: null,
+    // 右位是本状态的键位提示——收了尾，它得跟着换，否则一屏上「● 空闲 ＋ ctrl+c 中断」又打架。
+    // ⚠️ 只换**本状态那一句**：抽屉 / 卡开着的右位归它们自己（`HINT_PICKER*` / `HINT_DECIDE*`），
+    // 那不是这一格的脸，替它改了就是把别人的提示抹掉。
+    hint: view.status.hint === (said === 'working' ? HINT_IDLE : HINT_WORKING)
+      ? (said === 'working' ? HINT_WORKING : HINT_IDLE)
+      : view.status.hint,
+  })
 }
 
 // ══ 选择器（`/resume` · `/model`）════════════════════════════════════
