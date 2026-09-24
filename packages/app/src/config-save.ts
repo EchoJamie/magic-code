@@ -162,10 +162,20 @@ export function saveProvider(input: {
 }
 
 /**
- * 移除一条连接——**不静默级联**：默认选择指着它时**拒绝**（设计：「有引用先替换或取消」）。
+ * 移除一条连接——**任何时候都允许**（U60 起）。
  *
- * 判断落在这一层是因为**这里读得到配置**（默认选择就在同一份文件里）；
- * 「有没有活跃使用」是装配的账，由它在调用前先拦（见 `assembly.ts` 的 `removeProvider`）。
+ * ## 为什么不拦「它还是默认」了
+ *
+ * 原先这里拒绝、装配那一层再拦「它正在用」（设计：「有引用先替换或取消」）。那条**不需要
+ * 靠禁止来满足**，而且它有个硬死锁：**只有一条连接时没别的可切 ⇒ 永远删不掉**——新用户
+ * 第一次接错 key、接错家，正撞在这里出不去。
+ *
+ * **删除之后的状态本来就存在**：删掉当前那条 ⇒「当前」变成**没有** ⇒ 外壳当场报「先选
+ * 模型」（0 供应商时正是这个状态）。**不静默、不级联、用户看得见**（U60 工单原话）。
+ *
+ * 故这里只做**收拾引用**这一件：`defaultProvider` 指着被删的那条就**一并清掉**——那是
+ * 一个指向已删对象的死引用，不是「顺手改用户的别的选择」，更不是级联（级联＝替用户把
+ * 另一个选择按下，那正是设计要防的**静默级联**）。
  */
 export function removeProvider(input: {
   readonly path: string
@@ -176,17 +186,20 @@ export function removeProvider(input: {
     path: input.path,
     ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
     update(raw) {
-      if (raw['defaultProvider'] === input.provider) {
-        return { ok: false, reason: `「${input.provider}」是当前默认——先换一个默认再移除它` }
-      }
-
       const providers = providersOf(raw)
       if (!Object.hasOwn(providers, input.provider)) {
         return { ok: false, reason: `没有「${input.provider}」这条连接` }
       }
 
       delete providers[input.provider]
-      return { ok: true, raw: { ...raw, providers } }
+
+      // 默认指着它 ⇒ 一并清掉（**不留一条指向已删连接的默认**——那是下一趟加载会当场
+      // 报「defaultProvider 不在 providers 里」的坏配置）。别的键一律不动。
+      if (raw['defaultProvider'] !== input.provider) return { ok: true, raw: { ...raw, providers } }
+
+      const next: Record<string, unknown> = { ...raw, providers }
+      delete next['defaultProvider']
+      return { ok: true, raw: next }
     },
   })
 }

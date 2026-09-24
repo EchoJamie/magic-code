@@ -82,6 +82,9 @@ import type { RefDelivery } from './refs.ts'
 import type { RulesDelivery } from './rules.ts'
 import { needsReviewText, overflowText } from './rules.ts'
 import type { SkillsDelivery } from './skills.ts'
+// ⚠️ **只取类型**（`import type`）：入参那几件的形态住在 `./service.ts`（构造入参的落点），
+// 而本文件是它的一个**视图**——真值那条线是 `service.ts → agent-loop.ts`，这一条不回头。
+import type { SubmitRefusal } from './service.ts'
 
 /**
  * 一次交代的收场——三种**轮次收场**（`TurnEndReason`，会写进 `turn.end`）
@@ -161,6 +164,24 @@ export type LoopRuntime = {
    * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
    */
   readonly acceptsImages?: (() => boolean | undefined) | undefined
+  /**
+   * **这一条交代此刻发得出去吗**（U60）——发不出去就回一句**给人看的话**
+   * （`undefined` ＝发得出去）。
+   *
+   * 与 `acceptsImages` 同一个姿势、同一条理由：本域不认识供应商，而「此刻有没有可走的
+   * 模型」只有装配答得上来（注册表在它那一层）。
+   *
+   * 用途只有一个：**一条连接都没接**（或接了但没选走哪个）时，在落账之前把整条交代拦下来。
+   * 「不跑」照 `rejected` 那三层办（不落 `user` 条目 · 不进模型请求 · 原稿还回输入区）——
+   * 但比那三层多一层：**那一轮压根不开**，屏上因此不会先闪一下「工作中」再报错。
+   * 「装作在跑」比不报更坏（工单原话）。
+   *
+   * ⚠️ **拦在取材料之前**（本函数第一件）：发都发不出去，去读那几份文件只是白读；
+   * 而且用户此刻要修的是**更靠前的那一件**（先接供应商），不是某处引用。
+   *
+   * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
+   */
+  readonly submitRefusal?: (() => SubmitRefusal | undefined) | undefined
 }
 
 /**
@@ -196,6 +217,14 @@ export async function agentLoop(
   signal: AbortSignal,
 ): Promise<InputOutcome> {
   const log = entryLogOf(runtime)
+
+  // **此刻发得出去吗**（U60）——拦在**头一件**上（见 `LoopRuntime.submitRefusal`：
+  // 发不出去就不该先开一轮、也不该白读那几份材料）。
+  const blocked = runtime.submitRefusal?.()
+  if (blocked !== undefined) {
+    refuse(runtime, input, blocked.reason, blocked.keepDraft)
+    return 'rejected'
+  }
 
   // **按引用取材料**（U36）——正文里的每一处引用各取各的那一份，取不到就停在这一条上
   // （见函数头注）。旧形（`skills`，无位置）走另一条老路：材料统一前置、照旧落旧键。
@@ -440,13 +469,26 @@ function imageRefusal(
   )
 }
 
-/** 一份输入**没进会话**——配对一次 `ok:false`（给了 `ref` 才发；失败不静默）。 */
-function refuse(runtime: LoopRuntime, input: UserInput, reason: string): void {
+/**
+ * 一份输入**没进会话**——配对一次 `ok:false`（给了 `ref` 才发；失败不静默）。
+ *
+ * `keepDraft`（U60）：**这一份草稿要不要还回输入行**。缺省还（U33 起的老规矩：没送出
+ * 就不丢稿——用户要改的多半就是稿子里那一处引用）。给 `false` 只有一种情形：
+ * **下一步要敲的是一条命令**（见 `SubmitRefusal.keepDraft`：还回去反而挡路）。
+ * 稿子不丢，它在 `↑` 历史里。
+ */
+function refuse(
+  runtime: LoopRuntime,
+  input: UserInput,
+  reason: string,
+  keepDraft?: boolean,
+): void {
   runtime.sink.emit(
     runtime.stamper.stamp('input.settled', {
       ...(input.ref === undefined ? {} : { ref: input.ref }),
       ok: false,
       reason,
+      ...(keepDraft === undefined ? {} : { keepDraft }),
     }),
   )
 }

@@ -39,7 +39,7 @@ import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { ManagerClient } from './client.ts'
 import { unreadSummaryOf } from '@magic/tui'
-import { mcpNoticesOf, workspaceOf } from '../assembly.ts'
+import { mcpNoticesOf, noModelNotice, workspaceOf } from '../assembly.ts'
 import { cacheAccessFor } from '../cache-access.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
 import type { LoadedConfig } from '../config.ts'
@@ -289,6 +289,35 @@ function startupContextWindow(inputs: TerminalInputs): number | null {
 function startupReceipts(inputs: TerminalInputs): readonly string[] {
   const { client, loaded, cwd } = inputs
   const said: string[] = [...mcpNoticesOf(client.mcp)]
+
+  /**
+   * **还没接供应商 / 还没选好走哪个模型**（U60）——新用户的第一步。
+   *
+   * 由头：在一台干净机器上起 TUI（0 供应商、配置空），**那一屏什么也没说**——他
+   * 看着一块字标加一行输入提示，不知道要干什么、更不知道要先接供应商。
+   * 而这一形**装置原先造不出来**（沙地写死一条合成 `local`），于是没人验过它。
+   *
+   * 为什么落在**起手那一句**上而不是状态行：配置**不回显**（见 `AGENTS.md`
+   * 「屏幕上常驻的每一格，问它影响用户的哪个动作」——「用哪个模型」是用户自己定的配置）。
+   * 而这一句说的是**此刻干不了活**，它影响的是**下一步动作**，那就该说。
+   *
+   * 两句分开是因为**缺的东西不一样、下一步也不一样**（合成一句就得含糊）：
+   * - 一条连接都没有（新机器 · 刚把最后一条删了）⇒ 先去接；
+   * - 有连接但没有缺省（删掉了原来那条默认的 · 手写的配置没写 `defaultProvider`）
+   *   ⇒ 去挑一个。
+   *
+   * ⚠️ **「有连接」看的是配置**（`providers` 非空），**不是** `providerId`：后者说的是
+   * 「缺省是谁」，两者答的是不同的问题。少了这半，删掉当前那条之后重新打开又会是一片静默。
+   *
+   * ⚠️ 话**一字不改地**取自 `noModelNotice`（与提交那一道拦共用「缺什么 · 怎么接」那半句）
+   * ——同一条事实在两处说成两样，正是「底层换了就放过外观差别」那类毛病。
+   * 判据这一侧给的是**开局那一刻的配置**：还没启动过一轮，缺省在就是「有得走」。
+   */
+  const noModel = noModelNotice({
+    connections: Object.keys(loaded.config.providers).length,
+    hasModel: loaded.providerId !== undefined,
+  })
+  if (noModel !== undefined) said.push(noModel)
 
   /**
    * **离开期间那几件事**（U50）——「下一次打开汇总未读事项」就落在这儿。

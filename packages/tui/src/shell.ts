@@ -1063,9 +1063,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 答复可能后到——先到的那一份不该盖掉用户已经改过的查询）。
     if (event.kind === 'paths.catalog') refreshPaths()
 
-    // 提交**没收下** ⇒ 按原 pairing 键认回那份草稿（U33）。回执那半行由 `reduce` 落
+    // 提交**没收下** ⇒ 按原 pairing 键认下那一份草稿（U33）。回执那半行由 `reduce` 落
     // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
-    if (event.kind === 'input.settled' && !event.data.ok) restoreDraft(event.data.ref)
+    // ⚠️ **不还回输入行的那一种也要走这一趟**：配对键得收掉，不然那一份永远等着认领的
+    // 稿子会在用户改完草稿再回来时被认错（见 `settleDraft`）。
+    if (event.kind === 'input.settled' && !event.data.ok) {
+      settleDraft(event.data.ref, event.data.keepDraft !== false)
+    }
     /**
      * **首条交代开张之后，把目录取回来一次**（U50）。
      *
@@ -2519,22 +2523,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
-   * **按原 ref 认回原稿**——失败那一条交出去的正文与引用，回到草稿上（原型：草稿不丢）。
+   * **认下「这一份交出去的东西」的终态**——失败那一条的正文与引用，按 `keepDraft` 处置。
    *
    * 三条分寸：
    * - **只认自己交出去的那一份**（`ref` 对不上、或没有等着认领的＝不是这一次，不动）；
    * - **用户动过草稿就不认**（`edit` 已经把 `lastSubmit` 清了）——那正是「不覆盖后来编辑的新稿」；
    * - **认领一次就清掉**：同一份不会被两条失败各还一遍。
    *
-   * 回执（「没送出：…」那一行）由 `reduce` 落——它说的是**这一次交代没出去**，
-   * 本函数只管把草稿那几件还回来（正文 · 插入点 · 引用）。
+   * 回执（「没送出：…」那一行）由 `reduce` 落——它说的是**这一次交代没出去**。
+   * 本函数只管草稿：交出那一份**还在**，但要不要摆回输入行，由产生方说（`keepDraft`）。
+   * **不摆回去≠丢掉**——它在 `↑` 历史里（`sendInput` 交出去那一刻就记下了），
+   * 用户按 `↑` 照样翻得回来（见 `input.settled.keepDraft` 那条注）。
    */
-  const restoreDraft = (ref: string | undefined): void => {
+  const settleDraft = (ref: string | undefined, keepDraft: boolean): void => {
     // 名字避开外面那个 `waiting`（等选择器的意图）——两件不相干的事，别撞名
     const held = lastSubmit
     if (held === null || ref === undefined || held.ref !== ref) return
 
     lastSubmit = null
+    if (!keepDraft) return
     // 插入点摆到末尾（那一份交出去时多半已经打完了）；引用原样回到原位
     commit(
       withCompletion({
