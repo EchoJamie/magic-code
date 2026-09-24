@@ -465,7 +465,7 @@ export function createStamper(input: {
  * ⚠️ **只包根注册这一步**——网关（缺 key）· 记录域那些构造期的抛各有各的处置，
  * 别顺手一起裹：那是另一件事，得单独议（本轮已随回报备案）。
  */
-function openWorkspace(loaded: LoadedConfig, cwd: string): WorkspaceService {
+export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService {
   try {
     return createWorkspaceService({ roots: loaded.config.workspaceRoots ?? [cwd] })
   } catch (error) {
@@ -499,7 +499,7 @@ export function assemble(options: AssembleOptions): Assembly {
   // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
   // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
-  const workspace = openWorkspace(loaded, options.cwd)
+  const workspace = workspaceOf(loaded, options.cwd)
   const sandbox = createSandbox({ workspace })
 
   /**
@@ -1971,6 +1971,47 @@ export function assemble(options: AssembleOptions): Assembly {
  * 用户配了一台服务器、盼着它的工具出现，结果一件都没有、还一声不响——那是最让人对着
  * 空气发呆的一种失败。故这里**点名到服务器**（`--check` 那一行给全貌）。
  */
+/**
+ * **外部工具那两句**（U48 第六段抽出来的）——「连不上」与「有件工具没收下」。
+ *
+ * 抽出来的由头：这同一句话现在有**两处**要念——执行者的 `Assembly.notices`（`--check`
+ * 与 `--script` 那条路），与**窗口那一侧的开关屏回执**（它的读数来自**管理者的预检**）。
+ * 各写一份的话，同一条事实迟早在两处说成两样（用户看到的差别正是「底层换了」那类差别，
+ * 而那一条是明文不许放过的）。
+ *
+ * 它认的是**读数**（服务器名 ＋ 状态 ＋ 拒收件数）而不是某一种连接对象：探针的结论与
+ * 工具连接的状态在这个形状上重合，故两边都给得出来。
+ */
+export function mcpNoticesOf(
+  rows: readonly {
+    readonly server: string
+    readonly state: { readonly status: string; readonly reason?: string | undefined }
+    readonly rejected: number
+  }[],
+): readonly string[] {
+  const said: string[] = []
+
+  // 连不上的那几条**各说一句**（不与别的并成一句：这一条要能一眼看出是哪台服务器）
+  for (const row of rows) {
+    if (row.state.status !== 'unavailable') continue
+    said.push(
+      `外部工具服务器「${row.server}」连不上：${row.state.reason ?? '未说缘由'}` +
+        '——本次它的工具不可用（内置工具不受影响）',
+    )
+  }
+  // 有工具被拒收也说一句（返工 B）——**说清「没进来几件」并把人指去 `--check`**：
+  // 拒收是**服务器那边**的毛病（名字不合规 / 重名），不说的话用户只会觉得「少了几件工具」
+  for (const row of rows) {
+    if (row.rejected === 0) continue
+    said.push(
+      `外部工具服务器「${row.server}」有 ${row.rejected} 件工具没能收下` +
+        '——名字不合规或与同台重名（`--check` 看缘由）',
+    )
+  }
+
+  return said
+}
+
 function noticesOf(
   rejectedRules: readonly RuleProblem[],
   grantsNote: string | undefined,
@@ -1992,23 +2033,17 @@ function noticesOf(
   if (broken.length > 0) {
     said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
   }
-  // 连不上的那几条**各说一句**（不与别的并成一句：这一条要能一眼看出是哪台服务器）
-  for (const connection of connections) {
-    if (connection.state.status !== 'unavailable') continue
-    said.push(
-      `外部工具服务器「${connection.server}」连不上：${connection.state.reason}` +
-        '——本次它的工具不可用（内置工具不受影响）',
-    )
-  }
-  // 有工具被拒收也说一句（返工 B）——**说清「没进来几件」并把人指去 `--check`**：
-  // 拒收是**服务器那边**的毛病（名字不合规 / 重名），不说的话用户只会觉得「少了几件工具」
-  for (const connection of connections) {
-    if (connection.rejected.length === 0) continue
-    said.push(
-      `外部工具服务器「${connection.server}」有 ${connection.rejected.length} 件工具没能收下` +
-        '——名字不合规或与同台重名（`--check` 看缘由）',
-    )
-  }
+  // 外部工具那两句——**在 `mcpNoticesOf` 里**（一处产出、两处念：执行者的 `notices`
+  // 与窗口那一侧的开屏回执，见 U48 第六段）
+  said.push(
+    ...mcpNoticesOf(
+      connections.map((connection) => ({
+        server: connection.server,
+        state: connection.state,
+        rejected: connection.rejected.length,
+      })),
+    ),
+  )
   if (grantsNote !== undefined) said.push(grantsNote)
 
   return said

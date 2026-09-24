@@ -52,6 +52,15 @@ export type RunTuiOptions = {
    * 不给 / 空数组＝启动一句多余的话都不说（常态）。见 `ShellOptions.receipts`。
    */
   readonly receipts?: readonly string[] | undefined
+  /**
+   * **外面那一头没了**（U48）——订阅它；回调一响，外壳**自己收摊**。
+   *
+   * 由头（设计 · 会话与运行管理）：「**终端**：呈现与输入客户端，**断流后自身应退出，
+   * 不能空转充当后台执行者**」。窗口的内核在管理者那一头——那条连接一断，界面就没有
+   * 任何可接的东西了，留着只是空转占着机器。它与 stdin 断开那条（D26）是**两条独立
+   * 的**「这一头没人了」：一条是终端没了，一条是内核没了。
+   */
+  readonly onGone?: ((listener: () => void) => void) | undefined
 }
 
 /**
@@ -212,6 +221,11 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   // 就断了（起手那一段，或恢复跑到一半）的话，上面那些监听一个都不会响。故补一道
   // **状态**判据：流已经读到过头 / 已经销毁，就等于刚收到那一下。
   if (stdin.readableEnded === true || stdin.destroyed === true) onTerminalGone()
+
+  // **外面那一头没了 ⇒ 收摊**——装在收摊那一套之前（`closeOut` 一立好就接上）
+  options.onGone?.(() => {
+    closeOut()
+  })
 
   try {
     // **先接订阅（构造即订阅）→ 再跑启动流转 → 最后才放开输入**

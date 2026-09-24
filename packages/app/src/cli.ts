@@ -3,8 +3,12 @@
  * `magic` —— 命令行入口（可执行名，技术方案 · 工程结构）。
  *
  * 三件活，都不承载逻辑：
- * - **默认**——装配 → **起真外壳**（`@magic/tui`，U09）。装配根只做「接线 ＋ 起外壳」：
+ * - **默认**——**经本机连接接入管理者，再起真外壳**（U48）。这条路**不走装配**：
+ *   窗口这一侧一个字都不执行（不开库、不拉外部服务器、不造闸门与工具域），
+ *   呈现要的那几件（配置 / 工作区 / 当下那个模型的窗）由 `./run/terminal.ts` 现取。
  *   **交互逻辑全在 `@magic/tui`**，本入口一行呈现都不写（装配视图第 5 步）。
+ *   另有两支内部入口（`--internal-manager` / `--internal-executor`）**不是产品命令**：
+ *   由窗口按需拉起，见 `./run/manager.ts` 与 `./run/executor.ts`。
  * - **`--script <文件>`**——装配 → 接**脚本化驱动**（`./shell.ts`）→ 按脚本放开输入 →
  *   打印持久类事件的 JSONL 轨迹（瞬时增量是渲染用的，塞进终端只会淹掉轨迹，故不印）。
  * - **`--check`**——装配一次并报一份自检（配置来处 · 供应商表 · 数据落点 · 工作区根 · 会话 ·
@@ -14,13 +18,18 @@
  *   启动参数那一入口）；会话中途换模型走 `--script` 的 `{ "switch": … }` 步骤。
  */
 
+import { homedir, tmpdir } from 'node:os'
 import type { KernelEvent, SkillCatalog } from '@magic/contracts'
+import { resolveMagicHome } from '@magic/contracts'
 import { TOOLSET_V1, sanitizeForDisplay } from '@magic/contracts'
 import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import { assemble } from './assembly.ts'
 import type { Assembly } from './assembly.ts'
 import { ConfigError, describeConfig } from './config.ts'
+import { workspaceOf } from './assembly.ts'
+import type { LoadedConfig } from './config.ts'
+import { ManagerRefused } from './run/client.ts'
 import { runShellScript } from './shell.ts'
 import type { ShellScript } from './shell.ts'
 
@@ -517,7 +526,236 @@ async function runScript(assembly: Assembly, path: string): Promise<void> {
   console.log(`   记录库 ${assembly.paths.database}（可直读全过程）`)
 }
 
+/**
+ * **执行者那一支**（U48）——`magic --internal-executor …`。
+ *
+ * ⚠️ **不是产品命令**：用户敲不出来（`--help` 里一个字都没有），也没有任何一条产品路径
+ * 需要它。它是**管理者与执行者之间的私约**——管理者按这几个参数起进程，进程照它连回去
+ * （见 `./run/launch.ts` 与 `./run/executor.ts`）。与 `ui.ts` 那条「研发设施不是产品命令」
+ * 同一条口径：**别把它写进 USAGE**。
+ *
+ * 返回 `undefined` ＝ 「这不是执行者那一支」，`main` 接着按普通入口走。
+ */
+async function runExecutorMode(argv: readonly string[]): Promise<number | undefined> {
+  if (argv[0] !== '--internal-executor') return undefined
+
+  const valueOf = (flag: string): string | undefined => {
+    const at = argv.indexOf(flag)
+    return at === -1 ? undefined : argv[at + 1]
+  }
+
+  const socket = argv[1]
+  const token = valueOf('--token')
+  const session = valueOf('--session')
+  const cwd = valueOf('--cwd')
+  const magicHome = valueOf('--magic-home')
+  const magicBase = valueOf('--magic-base')
+
+  if (
+    socket === undefined ||
+    token === undefined ||
+    session === undefined ||
+    cwd === undefined ||
+    magicHome === undefined ||
+    magicBase === undefined
+  ) {
+    console.error('执行者入参不全——这条入口由管理者调用，不手工跑（见 packages/app/src/run/launch.ts）')
+    return 1
+  }
+
+  const { runExecutor } = await import('./run/executor.ts')
+  const raw = valueOf('--switch')
+  const outcome = await runExecutor({
+    socket,
+    token,
+    session: session === '-' ? null : session,
+    cwd,
+    magic: { home: magicHome, base: magicBase },
+    ...(raw === undefined ? {} : { switch: JSON.parse(raw) as ModelSwitchRequest }),
+  })
+
+  return outcome.kind === 'ok' ? 0 : 1
+}
+
+/**
+ * **终端那一支**（U48 默认路径）——**窗口经本机连接接入管理者**。
+ *
+ * 今天这条路是「一个进程里同时装配界面与执行」；现在它拆成两件：
+ *
+ * ```
+ *   magic（本进程）   读配置 → 接上/拉起管理者 → 接上本机连接 → 起外壳（呈现与输入）
+ *   管理者（按需）    socket · 登记 · 路由 · 收缩
+ *   执行者（按需）    内核 · 工具 · 记录端口
+ * ```
+ *
+ * 本进程因此**一个字都不执行**：不开库、不拉外部服务器、不造闸门与工具域——
+ * 「空白启动页只有客户端，没有会话和执行者」在这一条路上是结构上的事实。
+ *
+ * 三件仍然在本进程里做，且都不是执行：**读配置**（窗口按它认工作区与当下那个模型的窗）、
+ * **认工作区**（呈现分组要真路径）、**接外壳**。见 `./run/terminal.ts` 那张对照表。
+ *
+ * ⚠️ **`--check` 与 `--script` 不走这条路**：它们不是终端（一个体检、一个无人值守的
+ * 驱动），保留既有的进程内装配——那两条路一个字都没改。
+ */
+async function runTerminal(args: Args): Promise<number> {
+  const { loadConfig } = await import('./config.ts')
+  const { runPathsOf } = await import('./run/paths.ts')
+  const { connectOrStartManager } = await import('./run/spawn-manager.ts')
+  const { startupRegistry, terminalOptions } = await import('./run/terminal.ts')
+
+  const magic = resolveMagicHome(process.env, homedir())
+
+  let loaded: LoadedConfig
+  try {
+    loaded = loadConfig({ magic })
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      console.error(`配置有问题：${error.message}`)
+      return 1
+    }
+    throw error
+  }
+
+  // 工作区根先认一遍（今天是装配第 2 步的事）——根不合格是**配置事故**，
+  // 报的还是那句 `配置有问题：…`，与今天一字不差
+  try {
+    workspaceOf(loaded, process.cwd())
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      console.error(`配置有问题：${error.message}`)
+      return 1
+    }
+    throw error
+  }
+
+  // **开局选中先在这一侧验一遍**——认不得的条目**当场退场**（与今天同一条路、同一句话）。
+  // 真正**落地**的是执行者那一头（选中按 Agent 独立装配）；这里验过了，请求才递进去。
+  // ⚠️ **它排在「不是终端」那道判据之前**：今天的次序也是这样（装配里先验、`runTui`
+  // 里才查 TTY），而那条路有用例钉着（`cli.test.ts` · 不认识的条目——退 1）。
+  if (args.switch !== undefined) {
+    const registry = startupRegistry({ loaded, switch: args.switch })
+    const applied = registry?.use(args.switch)
+    if (applied !== undefined && !applied.ok) {
+      console.error(`换模型不成功：${applied.reason}`)
+      return 1
+    }
+    if (applied !== undefined) {
+      console.log(`—— 本次走 ${applied.selection.provider}（${applied.selection.model}）`)
+    }
+  }
+
+  // **不是终端就说人话**（Ink 在非 TTY 上抛 raw mode 的栈——用户看不懂，也不是他的错）。
+  // 放在拉管理者**之前**：跑不成界面的那一次不该在机器上留下一个后台进程
+  if (process.stdin.isTTY !== true) {
+    console.error('外壳需要一个终端（stdin 不是 TTY）——请在终端里启动。')
+    return 1
+  }
+
+  const paths = runPathsOf(magic, loaded.config.dataDir, tmpdir())
+
+  let client: Awaited<ReturnType<typeof connectOrStartManager>>
+  try {
+    client = await connectOrStartManager(paths.socket, {
+      connect: {
+        cwd: process.cwd(),
+        label: 'terminal',
+        ...(args.session === undefined ? {} : { session: args.session }),
+        ...(args.switch === undefined ? {} : { switch: args.switch }),
+      },
+    })
+  } catch (error) {
+    // **回绝**（`--session` 打错一个字母）——照今天那句话原样报出来，退 1
+    if (error instanceof ManagerRefused) {
+      console.error(error.reason)
+      return 1
+    }
+    throw error
+  }
+
+  if (client === undefined) {
+    console.error(`起不了本机执行管理者——它们都要经 ${paths.socket} 接入，而它没起来`)
+    return 1
+  }
+
+  // ⚠️ **`@magic/tui` 在这里才 import**（不放在文件顶上，同 `--check` / `--script` 那两处
+  // 的理由）：Ink ＋ React 那一整棵依赖树实测 120.4ms，而本进程在接上管理者之前
+  // 什么都不画；提前加载等于为「连不上」那几条路白付这笔账。
+  const { runTui } = await import('@magic/tui')
+  const tui = await runTui(
+    terminalOptions({
+      client,
+      loaded,
+      magic,
+      cwd: process.cwd(),
+      ...(args.switch === undefined ? {} : { switch: args.switch }),
+    }),
+  )
+
+  await tui.waitUntilExit()
+
+  // **窗口走了**：收掉自己这一条连接。**不等管理者**——按设计它可能要接着把活干完
+  // （「关闭窗口继续执行」），而本进程该退了（「断流后自身应退出，不能空转充当
+  // 后台执行者」）。它手上那两件责任空了，自己会收摊（`manager.ts` 的 `idle`）。
+  client.close()
+  return 0
+}
+
+/**
+ * **管理者那一支**（U48）——`magic --internal-manager <socket>`。
+ *
+ * ⚠️ **不是产品命令**（同执行者那一支）：由第一个窗口 `detached` 拉起来，活着直到
+ * 「没有执行者、客户端及待处理的投递 / 唤起责任」（见 `run/manager.ts` 的 `idle`）。
+ *
+ * 它**守着不退**：退出只有两条路——收缩那条（两手都空够一段）或收到信号。
+ * 这条入口**不打印任何东西**：拉它的人已经把三个流都接开了（`spawn-manager.ts`）。
+ */
+async function runManagerMode(argv: readonly string[]): Promise<number | undefined> {
+  if (argv[0] !== '--internal-manager') return undefined
+
+  const socket = argv[1]
+  if (socket === undefined) return 1
+
+  const { resolveMagicHome } = await import('@magic/contracts')
+  const { homedir } = await import('node:os')
+  const { loadConfig } = await import('./config.ts')
+  const { runPathsOf } = await import('./run/paths.ts')
+  const { startManager } = await import('./run/manager.ts')
+  const { createProcessLauncher } = await import('./run/launch.ts')
+
+  const magic = resolveMagicHome(process.env, homedir())
+  const loaded = loadConfig({ magic })
+  const paths = runPathsOf(magic, loaded.config.dataDir, tmpdir())
+  // 路径由发车的人给（它就是按这条算的）——对不上说明两处算的方式分叉了，如实退场
+  if (paths.socket !== socket) return 1
+
+  const started = await startManager({
+    paths,
+    dataDir: loaded.config.dataDir,
+    magic,
+    launch: createProcessLauncher({ stderr: 'ignore' }),
+    // **外部工具预检**（U48 第六段）——管理者启动时**连一遍、报状态、断开**。
+    // 配的那几台从这一处递进去（管理者不自己再读一遍配置）；窗口接上就读得到结论。
+    mcp: loaded.config.mcp?.servers ?? {},
+  })
+  // 已经有一个了（两个窗口同时起步的常态）——**连接它、不另起**，本进程随即退场
+  if (started.role !== 'manager') return 0
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => started.manager.stop(`收到 ${signal}`))
+  }
+
+  await started.manager.waitUntilExit()
+  return 0
+}
+
 async function main(): Promise<number> {
+  // **内部那两支先走**（U48）——它们不认 `--help` 那一族，也不该被 `parseArgs` 拦下
+  const asManager = await runManagerMode(process.argv.slice(2))
+  if (asManager !== undefined) return asManager
+
+  const asExecutor = await runExecutorMode(process.argv.slice(2))
+  if (asExecutor !== undefined) return asExecutor
+
   let args: Args
   try {
     args = parseArgs(process.argv.slice(2))
@@ -530,6 +768,10 @@ async function main(): Promise<number> {
     console.log(USAGE)
     return 0
   }
+
+  // **默认那条＝终端**（U48）——它**不走装配**（窗口这一侧一个字都不执行，见 `runTerminal`）。
+  // `--script` 与 `--check` 两条仍走下面那段既有的进程内装配，**一字未改**。
+  if (args.script === undefined && !args.check) return await runTerminal(args)
 
   let assembly: Assembly
   try {
@@ -586,23 +828,8 @@ async function main(): Promise<number> {
       return 0
     }
 
-    if (args.check) {
-      report(assembly)
-      return 0
-    }
-
-    // 默认：起真外壳——装配只做「接线 ＋ 起外壳」，交互逻辑全在 @magic/tui。
-    // `boot` ＝启动流转（应用层的恢复用例，对开局那条会话跑一次）：`runTui` 会在
-    // **订阅之后、放开输入之前**跑它（渲染在订阅那一步之内——次序与「渲染前 / 后」无关，
-    // 要紧的是**输入那一道闸**：恢复没跑完，回车不受理）
-    // （装配纪律：恢复要发事件，外壳得先订上；反了就是用户能在恢复跑完前打字）
-    // ⚠️ **`@magic/tui` 在这里才 import**（不放在文件顶上）——Ink ＋ React 那一整棵
-    // 依赖树实测 **120.4ms**（`bench-boot.ts`），而 `--check` / `--script` 这两条路
-    // **一帧都不画**，顶上那个静态 import 是让它们白付这笔账（`bun test` 同样白付）。
-    // 起外壳这条路的账不变——它本来就要付。
-    const { runTui } = await import('@magic/tui')
-    const tui = await runTui(tuiOptions(assembly))
-    await tui.waitUntilExit()
+    // 只剩 `--check` 那一条还没走（`--script` 在上面 return 了）
+    report(assembly)
     return 0
   } finally {
     // **收尾两跳**（U38）：先等外部服务器释放（关 stdin → 等 → 杀，规范里的次序），
