@@ -35,7 +35,8 @@ import {
   modelUsage,
 } from './events.ts'
 import type { InlineDelta, TextSplitter } from './inline-thinking.ts'
-import { inlineThinkingSplitter, passthroughSplitter } from './inline-thinking.ts'
+import { inlineThinkingSplitter, passthroughSplitter, probingSplitter } from './inline-thinking.ts'
+import { knownInlineTags } from './traits.ts'
 
 /** 取件层的流形态——**接缝内部**。AI SDK 的 `TextStreamPart` 不越过接缝。 */
 /**
@@ -74,9 +75,19 @@ export type NormalizeOptions = {
   readonly secret?: string | undefined
   /**
    * **生效的**模型特征标记——由 `resolveModelTraits` 裁定后传入（见 `traits.ts`）。
-   * 缺省 / 无 `inlineThinking` ＝ 常规行为：正文原样走 `text`，**不猜、不切**。
+   * 无 `inlineThinking` ＝ 常规行为：正文原样走 `text`，**不猜、不切**。
+   *
+   * 缺省（`undefined`）＝**不知道这个模型是哪一类**——那时才装探针：
+   * 模型输出**以某个已知标签开头**才认、认下并留存（见 `learnInlineThinking`）。
    */
   readonly traits?: ModelTraits | undefined
+  /**
+   * **认下内嵌思考**时的回调（U65 第二层）——探针认出来的那一刻调一次，带标签名。
+   *
+   * 由**网关**接：记进 `LearnedTraits`（这个模型名下一次直接按它办）。不接也行——
+   * 这一次照样切对，只是下一轮还得再认一遍。归一本身**不持有**那份记忆（本文件仍是纯的）。
+   */
+  readonly learnInlineThinking?: ((tag: string) => void) | undefined
   /**
    * **上下文窗口总量**（token）——`model.usage` 上那个分母（缺陷 D10 · 第 1 样）。
    * 由网关从条目配置传入（`ProviderConfig.contextWindow`）。**缺省 ＝ 不给分母**——
@@ -131,12 +142,23 @@ type NormalizeState = {
 }
 
 /**
- * 正文切分位——**标记驱动**（技术方案 · 模型策略：不当通例处理）。
- * 命中 `inlineThinking` 才切；否则原样走 `text`。
+ * 正文切分位——**标记驱动**（技术方案 · 模型策略：不当通例处理）。三处出口，判据只有一条：
+ * 这个模型**知不知道**是哪一类。
+ *
+ * - 知道，且标了 `inlineThinking` ⇒ 按它切；
+ * - 知道，且**明说无特征**（`{}`）⇒ 原样走 `text`（**不探**——那是用户的出口，见 `traits.ts`）；
+ * - **不知道** ⇒ 探针：模型输出以已知标签开头才认（探针本身不含「无条件切分」，见
+ *   `probingSplitter` 的判据）。
  */
-function createSplitter(traits: ModelTraits | undefined): TextSplitter {
-  const tag = traits?.inlineThinking?.tag
-  return tag === undefined || tag.length === 0 ? passthroughSplitter() : inlineThinkingSplitter(tag)
+function createSplitter(options: NormalizeOptions): TextSplitter {
+  const tag = options.traits?.inlineThinking?.tag
+  if (tag !== undefined && tag.length > 0) return inlineThinkingSplitter(tag)
+  if (options.traits !== undefined) return passthroughSplitter()
+
+  return probingSplitter({
+    tags: knownInlineTags(),
+    learn: options.learnInlineThinking,
+  })
 }
 
 function createState(options: NormalizeOptions): NormalizeState {
@@ -147,7 +169,7 @@ function createState(options: NormalizeOptions): NormalizeState {
     secret: options.secret,
     contextWindow: options.contextWindow,
     stamper: options.stamper,
-    splitter: createSplitter(options.traits),
+    splitter: createSplitter(options),
     text: '',
     thinking: '',
     pending: new Map(),

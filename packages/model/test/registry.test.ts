@@ -19,7 +19,13 @@ import { describe, expect, test } from 'bun:test'
 import type { ProviderConfig } from '@magic/contracts'
 import { drainStream, makeTestStamper } from '@magic/faux'
 import type { ModelRegistry } from '../src/index.ts'
-import { MissingApiKeyError, createModelRegistry } from '../src/index.ts'
+import {
+  MissingApiKeyError,
+  createLearnedTraits,
+  createModelRegistry,
+  matchBuiltinTraits,
+  resolveModelTraits,
+} from '../src/index.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
 // 夹具 —— 两个条目（甲 / 乙），各在各的端点上
@@ -380,7 +386,10 @@ describe('注册表 · 每条目各归其位', () => {
           object: 'chat.completion.chunk',
           created: 1,
           model,
-          choices: [{ index: 0, delta: { content: '<think>想想</think>正文' } }],
+          // ⚠️ 标签**在正文中间**（U65）：这一段拿来量的是「没标注就不切」那一半，
+          //    而「以标签**开头**」是另一条强信号（认下并留存，见 model.test.ts
+          //    的「认下的那些」那组）——两件不能混在同一份夹具里量
+          choices: [{ index: 0, delta: { content: '正文里说一句 <think>想想</think> 就完' } }],
         })}\n\n` +
           `data: ${JSON.stringify({
             id: 'c1',
@@ -406,17 +415,72 @@ describe('注册表 · 每条目各归其位', () => {
     )
 
     expect(result.thinking).toBe('想想')
-    expect(result.text).toBe('正文')
+    expect(result.text).toBe('正文里说一句  就完')
 
     // 同一个模型名在**没有覆盖位**的条目下不切（判据 ③：皆未命中＝不猜不切）
     registry.use({ provider: 'alpha', model: 'my-local-llama' })
     const plain = await drainStream(
       registry.stream({ model: 'my-local-llama', messages: [{ role: 'user', content: '嗨' }] }),
     )
-    expect(plain.result.text).toBe('<think>想想</think>正文')
+    expect(plain.result.text).toBe('正文里说一句 <think>想想</think> 就完')
     expect(plain.result.thinking).toBe('')
 
     void fetch
+  })
+
+  /**
+   * U65 的**接线**判据——「认下的那些」由**装配根造、注册表传给每一个网关**。
+   *
+   * 由头：这条正是漏传过一次的那种地方（注册表那一跳不传，网关就永远查不到——
+   * 而每一件单独看都对）。故这里量的是**跨两轮**：第一轮认下，第二轮**同一个注册表**
+   * 直接按它办，且**痕迹读得出来**（`entries()`）。
+   */
+  test('认下的那些随注册表进网关——第一轮认出、第二轮直接按它办', async () => {
+    const body = JSON.stringify({
+      id: 'c1',
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: 'acme-reasoner-v9',
+      choices: [{ index: 0, delta: { content: '<think>想</think>正文' } }],
+    })
+    const scripted = (async () =>
+      new Response(
+        `data: ${body}\n\n` +
+          `data: ${JSON.stringify({
+            id: 'c1',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: 'acme-reasoner-v9',
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          })}\n\n` +
+          'data: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      )) as unknown as typeof globalThis.fetch
+
+    const learned = createLearnedTraits()
+    const registry = registryOf(
+      { alpha: { ...ALPHA, model: 'acme-reasoner-v9' } },
+      { fetch: scripted, apiKeys: { alpha: 'ka' }, learnedTraits: learned },
+    )
+
+    const first = await drainStream(
+      registry.stream({ model: 'acme-reasoner-v9', messages: [{ role: 'user', content: '嗨' }] }),
+    )
+    expect(first.result).toMatchObject({ thinking: '想', text: '正文' })
+    // **痕迹**（可查）：认下了哪一个模型名、认成了什么
+    expect(learned.entries()).toEqual([
+      ['acme-reasoner-v9', { inlineThinking: { tag: 'think' } }],
+    ])
+
+    // 第二轮：**同一个模型名**——走的是认下的那一份（表里并没有它）
+    expect(matchBuiltinTraits('acme-reasoner-v9')).toBeUndefined()
+    expect(resolveModelTraits('acme-reasoner-v9', undefined, learned)).toEqual({
+      inlineThinking: { tag: 'think' },
+    })
+    const second = await drainStream(
+      registry.stream({ model: 'acme-reasoner-v9', messages: [{ role: 'user', content: '嗨' }] }),
+    )
+    expect(second.result).toMatchObject({ thinking: '想', text: '正文' })
   })
 })
 

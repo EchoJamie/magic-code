@@ -19,7 +19,8 @@
  * 「这一趟模型说什么」按请求次序取——第 n 次请求用第 n 个回合，**用完了重复最后一个**。
  * 三形：
  * - `text`——流式吐一段字（可分块 ＋ 块间延时：**中间屏取样**要的就是这段「长出来的过程」）；
- *   另可带 `reasoning`（U64：思考那一份随历史轮回传所要的物证）；
+ *   另可带 `reasoning`（U64：思考那一份要随历史轮**回传**；U65：给了它就是「思考走独立通道」
+ *   那一形）——两单各有一处判据要它，见那个字段的注；
  * - `tool`——请求一个工具调用（走真闸门 → 裁决卡 → 真执行 → 再回模型）；
  * - `http`——甩一个错状态（判据要的失败现场）。
  */
@@ -29,19 +30,23 @@ export type FixtureTurn =
   | {
       readonly kind: 'text'
       readonly text: string
+      /**
+       * **这一回合模型回的思考**（U64 起）——按 DeepSeek 那一路的 `reasoning_content` 流出去
+       * （思考在前、正文在后，与真端点同序）。两单各有一处判据要它：
+       *
+       * - **U64**：那份思考**不进屏**、但要随历史轮**回传**（U41 的口径）——而「回传与否」
+       *   只有看**下一次请求的正文**才知道（见 `FixtureRequest.assistantReasoning`）；
+       * - **U65**：给了它，这个模型就是「**思考走独立通道**」那一类——思考**不在正文里**，
+       *   故正文里就算出现 `<think>` 字样，那也是正文、**一个字都不许切**。
+       *   不给＝MiniMax 那一形（思考内嵌在正文里，由生效标记 / 探针裁定）。
+       *
+       * 缺省不给：既有那些回合一字不动（夹具历来不给思考，也正是这两条路一直没被验过的原因）。
+       */
+      readonly reasoning?: string
       /** 切成几块吐（缺省 3）——块越多，「中间屏」越抓得到。 */
       readonly chunks?: number
       /** 块间延时（毫秒，缺省 120）——真流式是**长出来的**，不是一次性落下来的。 */
       readonly chunkDelayMs?: number
-      /**
-       * **这一回合模型回的思考**（U64）——按 DeepSeek 那一路的 `reasoning_content` 流出去
-       * （思考在前、正文在后，与真端点同序）。
-       *
-       * 由头：思考**不进屏**那一份要随历史轮**回传**（U41）——而「回传与否」只有看
-       * **下一次请求的正文**才知道（见 `FixtureRequest.assistantReasoning`）。缺省不给：
-       * 既有那些回合一字不动（夹具历来不给思考，也正是那条路一直没被验过的原因）。
-       */
-      readonly reasoning?: string
     }
   | { readonly kind: 'tool'; readonly name: string; readonly args: Record<string, unknown> }
   | { readonly kind: 'http'; readonly status: number; readonly message: string }
@@ -314,6 +319,7 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
         push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: reasoning } }] }))
       }
       push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
+
       for (let at = 0; at < text.length; at += size) {
         push(
           frame(model, { choices: [{ index: 0, delta: { content: text.slice(at, at + size) } }] }),

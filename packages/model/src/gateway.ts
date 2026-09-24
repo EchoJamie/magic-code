@@ -37,6 +37,7 @@ import { toKernelEvents } from './normalize.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { withTransientRetry } from './retry.ts'
 import { resolveModelTraits } from './traits.ts'
+import type { LearnedTraits } from './traits.ts'
 import { ownOf, resolveContextWindow } from './capacity.ts'
 import { vendorIds, vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
@@ -125,15 +126,26 @@ function overrideOf(config: ProviderConfig, model: string): ProviderModelOverrid
   return Object.keys(legacy).length === 0 ? undefined : legacy
 }
 
-/** **生效的通道特征**——用户覆盖 → 该家适配的缺项补充 → 无（正文原样走，不猜不切）。 */
+/**
+ * **生效的通道特征**——用户覆盖 → 认下的那些 → 该家适配的缺项补充 → 无（探针，见 `traits.ts`）。
+ *
+ * 「认下的那些」（U65）排在**这里**而不是 `resolveModelTraits` 里面：官方适配那条路
+ * **不过** `resolveModelTraits`（它走 `adapter.supplement`），而用户真跑时走哪条路由配置说了算
+ * ——认下的东西要**两条路都作数**，故它得挂在两者的**共同上游**。
+ */
 function traitsOf(
   model: string,
   config: ProviderConfig,
   adapter: VendorAdapter | undefined,
   known: ModelInfo | undefined,
+  learned: LearnedTraits | undefined,
 ): ModelTraits | undefined {
   const override = overrideOf(config, model)?.traits
   if (override !== undefined) return override
+
+  // 这个模型名**真出过**内嵌思考（上一次认下的）——比表准，直接按它办
+  const fromUse = learned?.get(model)
+  if (fromUse !== undefined) return fromUse
 
   // **官方适配**按该家的补充来（把缓存里那份喂进去：**API 给了的不覆盖**）；
   // **兼容接入**（无适配）走域内的已知差异表——那条路的能力一个字不删
@@ -230,6 +242,11 @@ export function effectiveSpecOf(input: {
   readonly known?: ModelInfo | undefined
   /** 输出上限的兜底（取件层常量，见 `ai-sdk.ts`）。 */
   readonly fallbackOutputTokens?: number | undefined
+  /**
+   * **认下的那些**（U65）——装配根造一份、各条目共用（见 `traits.ts` 的 `LearnedTraits`）。
+   * 缺省＝没有可查的（与加它之前一字不差：表与覆盖位照旧裁定）。
+   */
+  readonly learned?: LearnedTraits | undefined
 }): EffectiveSpec {
   const limits = effectiveLimits(input.model, input.config, input.adapter, input.known)
   const maxOutputTokens =
@@ -250,7 +267,7 @@ export function effectiveSpecOf(input: {
         ? byContext
         : Math.min(byContext, byInput)
 
-  const traits = traitsOf(input.model, input.config, input.adapter, input.known)
+  const traits = traitsOf(input.model, input.config, input.adapter, input.known, input.learned)
 
   return {
     maxOutputTokens,
@@ -286,6 +303,13 @@ export type ModelGatewayOptions = {
    * 缺项补充 → 未知」）——**此前 gateway 只看配置与适配补充，缓存里那份没进来**（复核点名）。
    */
   readonly modelInfoOf?: ((model: string) => ModelInfo | undefined) | undefined
+  /**
+   * **认下的那些**（U65）——内嵌思考随用生长的那一份（见 `traits.ts` 的 `LearnedTraits`）。
+   *
+   * 装配根**造一份、各条目共用**：认下的是**模型的行为**，与走哪条连接无关（同一条
+   * `MiniMax-M2.7-highspeed` 换个端点还是它）。缺省＝不记也不查（本轮的探针照样切对）。
+   */
+  readonly learnedTraits?: LearnedTraits | undefined
   /**
    * **瞬时档退避重试**的策略（技术方案 · 模型策略 · 错误分档——「回退逻辑放内核」）。
    * 缺省 `DEFAULT_RETRY_POLICY`；`maxAttempts: 1` ＝ 不重试。策略与判据见 `retry.ts`。
@@ -357,6 +381,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       adapter,
       known: options.modelInfoOf?.(model),
       fallbackOutputTokens: options.maxCompletionTokens,
+      learned: options.learnedTraits,
     })
 
   const streamVendor = createVendorStreamer({
@@ -404,8 +429,16 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
           // 同一个数再早报一次（`model.call.start`）——外壳在请求开始那一刻就有分母
           inputBudget: spec.inputBudget,
           secret: apiKey,
-          // 生效标记——同一份解析里出（用户覆盖 → 适配补充）
+          // 生效标记——同一份解析里出（用户覆盖 → 认下的 → 适配补充）
           traits: spec.traits,
+          // 认下内嵌思考 ⇒ 记进那一份（**下一次**这个模型名直接按它办，不必再探）
+          ...(options.learnedTraits === undefined
+            ? {}
+            : {
+                learnInlineThinking: (tag: string) => {
+                  options.learnedTraits?.remember(effective.model, { inlineThinking: { tag } })
+                },
+              }),
           stamper: options.stamper,
         },
       )
