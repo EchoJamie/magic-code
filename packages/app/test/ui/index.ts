@@ -11,10 +11,12 @@
  */
 
 export { createUiSession, UiWaitTimeout, UI_KEYS, REPO_ROOT, DEFAULT_ARTIFACTS_ROOT, rawBytesOf } from './driver.ts'
+export { summarizeRun } from './artifacts.ts'
 export type {
   Capture,
   CloseReport,
   SessionFacts,
+  UiAnchors,
   UiKey,
   UiSession,
   UiSessionOptions,
@@ -22,6 +24,9 @@ export type {
   WaitOptions,
   WaitResult,
 } from './driver.ts'
+
+// **被测对象那一侧的词汇表**（U51 第九条）——机制层不认识它，由调用方传进来
+export { MAGIC_ANCHORS, MAGIC_IDLE_MARK, READY_MIN_COLUMNS } from './anchors.ts'
 
 export { SCENARIOS, ScenarioFailure, runScenario, scenarioNames, recordOf } from './scenarios.ts'
 export type {
@@ -35,6 +40,14 @@ export type {
 
 export { createControl } from './control.ts'
 export type { Control, ControlOptions, ControlReply, ControlRequest } from './control.ts'
+
+// 「一趟脚本」那一等入口（U51 第一条）——给一个步骤文件，一条命令跑完、自己收尾
+export { parseSteps, runSteps } from './steps.ts'
+export type { Step, StepFile, StepOutcome, StepRun, StepRunOptions } from './steps.ts'
+
+// 「只驱动、只取帧」（U51 第二条）——同一趟故事，一条判据都不判
+export { describeReading, runScenarioFrames, framesScenarioNames } from './frames-only.ts'
+export type { FramesRun, FramesRunOptions, Reading } from './frames-only.ts'
 
 export { startFixture } from './fixture.ts'
 export type { Fixture, FixtureRequest, FixtureTurn } from './fixture.ts'

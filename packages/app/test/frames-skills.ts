@@ -144,6 +144,11 @@ async function shoot(
   writeFileSync(join(out, `${name}.txt`), visible(bytes), 'utf8')
   console.log(visible(bytes).slice(-1200))
 
+  // ⚠️ **退出要按两下**（U46 改的口径；U51 补上这两行）——与 `frames-rules.ts`·`shoot`
+  //    同一处教训：只推一下 `waitUntilExit()` 永远不返回，整支脚本就「卡死」在那儿。
+  //    两下之间**等那一行真上屏**：连着推两次会让两下都成了「第一下」。
+  stdin.push('\u0003')
+  await until(tty, '再按一次 ctrl+c 退出')
   stdin.push('\u0003')
   await handle.waitUntilExit()
   assembly.close()

@@ -25,6 +25,8 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { removeDir, tempDir, validConfig, writeConfig } from '../tmp.ts'
+import { MAGIC_ANCHORS } from './anchors.ts'
+import type { UiAnchors } from './driver.ts'
 
 /** 假的 key——**故意一眼看得出是假的**（真要有人把它抄去用，抄不坏任何东西）。 */
 export const FAKE_API_KEY = 'sk-fake-u40-not-a-real-key'
@@ -47,6 +49,15 @@ export type Sandbox = {
   readonly grantsPath: string
   /** 交给子进程的环境（已剔凭据、已换 HOME）。 */
   readonly env: Record<string, string>
+  /**
+   * **被测对象那一侧的词汇**（U51 第九条）——驱动那几步要等的词由它给（见 `anchors.ts`）。
+   *
+   * 挂在沙地上是有由头的：沙地本来就是**这一趟跑的是谁**那份适配器（配置 · 库 · 工作区 ·
+   * 环境都是照它写的），锚是同一件事的另一面。于是**没显式传锚的那条路**（`scenarios.ts`
+   * 今天就是）拿到的仍是 Magic 那一份，行为一字不差；而**换被测命令**时换的是沙地，
+   * 驱动一行都不动。
+   */
+  readonly anchors: UiAnchors
   dispose(): void
 }
 
@@ -107,6 +118,7 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
     configPath,
     grantsPath: join(home, '.magic', 'grants.json'),
     env: childEnv({ home, forceColor: options.forceColor ?? '3' }),
+    anchors: MAGIC_ANCHORS,
     dispose: () => removeDir(root),
   }
 }
