@@ -315,4 +315,124 @@ describe('攒块里的正文', () => {
     expect(toShellKeys('\r', { return: true })).toEqual([{ kind: 'enter' }])
     expect(toShellKeys('\n', {})).toEqual([{ kind: 'newline' }])
   })
+
+  /**
+   * **D35 · 那一按要作数**——正文与回车挤进同一个读块时（真 PTY 实测：`/exit` 与紧接的回车
+   * 并成一个读块），Ink 把整块当一串正文 ⇒ 回车当场没有 ⇒ 整条命令按下去什么都不发生。
+   *
+   * 认的条件就三条（见 `trailingEnterOf`）：**末尾是 `\r` · 块里 `\r` 只这一个 · 块里没有 `\n`**。
+   * 下面正面那一组钉「认回来了」，反面那一组钉「**粘贴不许被切碎**」——**后者比前者重要**。
+   */
+  test('**正文＋回车挤进一个读块** ⇒ 末尾那一下仍是回车（D35）', () => {
+    expect(toShellKeys('/exit\r', {})).toEqual([
+      { kind: 'char', char: '/' },
+      { kind: 'char', char: 'e' },
+      { kind: 'char', char: 'x' },
+      { kind: 'char', char: 'i' },
+      { kind: 'char', char: 't' },
+      { kind: 'enter' },
+    ])
+
+    // 一个字 ＋ 回车、以及中文字那句，同一条规矩（不与字数挂钩）
+    expect(toShellKeys('a\r', {})).toEqual([{ kind: 'char', char: 'a' }, { kind: 'enter' }])
+    expect(toShellKeys('你好\r', {})).toEqual([
+      { kind: 'char', char: '你' },
+      { kind: 'char', char: '好' },
+      { kind: 'enter' },
+    ])
+  })
+
+  test('反面 · **带换行的块一个字符都不动**（多行粘贴不许被切碎）', () => {
+    // 裸 LF 的多行粘贴（终端不认 bracketed paste 时就是这样落进来的）
+    expect(toShellKeys('line1\nline2\n', {})).toEqual(
+      [...'line1\nline2\n'].map((char) => ({ kind: 'char', char })),
+    )
+    // CRLF 的多行粘贴：`\r` 不止一个 ⇒ 不认
+    expect(toShellKeys('line1\r\nline2\r\n', {})).toEqual(
+      [...'line1\r\nline2\r\n'].map((char) => ({ kind: 'char', char })),
+    )
+    // 「一段 CR 结尾的多行」：末尾虽然只有一个 `\r`，但块里还有一个 ⇒ 不认
+    expect(toShellKeys('a\rb\r', {})).toEqual(
+      [...'a\rb\r'].map((char) => ({ kind: 'char', char })),
+    )
+    // **敲了一半的多行草稿 ＋ 回车**：块里有 `\n` ⇒ 照样不认（代价如实记在 `trailingEnterOf`）
+    expect(toShellKeys('a\nb\r', {})).toEqual(
+      [...'a\nb\r'].map((char) => ({ kind: 'char', char })),
+    )
+  })
+
+  test('反面 · `\r` 在块中间、以及连着两个 `\r` ⇒ 都不是回车', () => {
+    expect(toShellKeys('a\rb', {})).toEqual([
+      { kind: 'char', char: 'a' },
+      { kind: 'char', char: '\r' },
+      { kind: 'char', char: 'b' },
+    ])
+    expect(toShellKeys('\r\r', {})).toEqual([
+      { kind: 'char', char: '\r' },
+      { kind: 'char', char: '\r' },
+    ])
+  })
+})
+
+// ══ 合块那一跳走到底（D35）═══════════════════════════════════════════
+
+describe('挤进同一个读块的正文与回车', () => {
+  /**
+   * `toShellKeys` 那一层认回来了还不够——**得走到底**：键进了外壳、草稿清了、命令发出去了。
+   * 这一支钉的正是「按下去**屏上有反应**」（修前：一动不动）。
+   */
+  test('一次写「正文＋回车」⇒ 提交（外壳收到输入，输入行清空）', async () => {
+    const { app, commands } = liveApp()
+
+    await app.waitForFrame((frame) => frame.includes('交代一件事'))
+    // ⚠️ **一次 `write`**——「敲完立刻回车」那一形（`app.type` 把整串交给假 stdin，
+    // 走的就是 Ink 的解析，与真 PTY 里那一个读块同形）
+    await app.type('看下工作区\r')
+
+    await app.waitForFrame((frame) => frame.includes('交代一件事'))
+    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区', ref: 'draft-1' }])
+
+    app.unmount()
+  })
+
+  test('反面：多行粘贴那一次写 ⇒ **不提交**，整段原样进草稿', async () => {
+    const { app, commands } = liveApp()
+
+    await app.waitForFrame((frame) => frame.includes('交代一件事'))
+    await app.type('第一行\n第二行\n')
+
+    // 两行都在草稿里（`\n` 在正文里是真换行），命令一条都没发
+    await app.waitForFrame((frame) => frame.includes('第一行') && frame.includes('第二行'))
+    expect(commands()).toEqual([])
+
+    app.unmount()
+  })
+
+  /**
+   * **审批卡上那一下**（`y\\r` 挤一块）——这里钉的是**它不越界**：
+   * 认回来的那个回车只走「回车该走的那条路」，**不会顺手把草稿发出去**。
+   *
+   * 裁决卡那一屏回车本来就不好使（`submit()` 里 `decision` 那支是 `refuse('回车')`），
+   * 故此刻它当场说一句、什么都不发——与「先按 y、再单独按一下回车」逐字同形。
+   */
+  test('裁决卡上 `y\\r` 挤一块 ⇒ 答复发出去了，**草稿没被捎带发出去**', async () => {
+    const { app, push, commands } = liveApp()
+
+    await push(
+      [
+        event('turn.start', {}),
+        event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
+        event('tool.decision.request', { call: 71, name: 'exec', material: 'ls', weight: 'light' }, { id: 88 }),
+      ],
+      (frame) => frame.includes('● 等你定夺'),
+    )
+
+    await app.type('y\r')
+    await app.waitForFrame((frame) => frame.includes('先答复'))
+
+    // **只有答复那一条**——没有 `input.submit`
+    expect(commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
+
+    app.unmount()
+  })
 })
