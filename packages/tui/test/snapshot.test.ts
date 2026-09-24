@@ -124,6 +124,20 @@ const ROWS = 30
  *   **一屏仍是两条线、固定高度仍是三行**（`CHROME_LINES` 一分没动），**记录区一字未动**；
  *   **十六张动的是同一处、也只动这两行**（`diff`：每张两行换位，共 64 行）。
  *
+ * **⑪ 块与块之间补上一整行（U67）** —— **原锚**：记录区里空行**只出现在用户消息之前**
+ *   （`needsSpacerAfter` 只判「这一条是不是用户消息」）；用户 → 助手、助手 → 工具组、
+ *   工具组 → 下一条发言那几道交界**都是紧贴的**。
+ *   **为何变**：设计那句「用户发言、助手发言与各组工具**之间**留一整行」里的「之间」是
+ *   **双向**的，实现只做了**一半**——用户 2026-09-25 真跑时发现「我输入之后与模型回复
+ *   之间没有空行」。判据改按**块**分（一块＝一条用户发言 / 一条助手发言 / 一个工具组，
+ *   回执与命令输出贴在前一块尾巴上），**相邻两块之间留一整行、块内紧凑**。
+ *   **新锚**：每一道块交界**多一个空行**（`diff` 里那个 `+` 开头的空串）。
+ *   各张动的行数：场景 2 ＋3 · 场景 3 ＋2 · 场景 4 ＋1 · 场景 9 ＋1 · 场景 10 ＋2 ·
+ *   场景 12 ＋3 · 场景 14 ＋3 · 「规格细节 · 收拢」＋14；**其余逐字未动**
+ *   （场景 1 开机空屏没有两块、场景 5–8 与 11、13 那一屏上只有一块或块数没变）。
+ *   ⚠️ **记录区的字一个没改**（只有空行变多）；**高度的账**照旧按实算的行数走
+ *   （`heightOf` 走同一个 `rowLines`，分段行本来就在里面）。
+ *
  * ⚠️ **先归一化**（`plain`——剥掉 ANSI）：这一层量的是**文字与布局**，而色是**环境**给的
  * （Ink 经 `chalk`，档位看 `FORCE_COLOR` / TTY）。不剥就是**缺陷 D17**：同一个仓、同一份代码，
  * 换个 shell（设了 `FORCE_COLOR` 的工具链 / CI / IDE 集成终端）**21 例当场全红**——
@@ -741,7 +755,7 @@ describe('场景 11 · slash 自动补全', () => {
 // ══ 密度 ＋ D11 护栏 ═════════════════════════════════════════════════
 
 describe('密度（原型 · 密度节）', () => {
-  test('条目之间**不插空行**；只有用户消息之前留一行分段', () => {
+  test('**块之间留一整行 · 块内紧凑**（U67）', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('跑一下')
@@ -756,8 +770,13 @@ describe('密度（原型 · 密度节）', () => {
     const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
     const spacers = lines.filter((line) => line.spacer === true).length
 
-    expect(spacers).toBe(0) // 首条用户消息之前不必分段（顶上没有东西）
-    // 分段行只出现在**用户消息之前**：拿一个带两条用户消息的行列来验
+    // ⚠️ **U67 改**——**原锚** `toBe(0)`（「首条用户消息之前不必分段：顶上没有东西」）。
+    //    **为何变**：那一格判的是「顶上有没有东西」，而这一列里**顶上没有字标**（本轮的行）；
+    //    真正的正题是**块与块之间**：这一列是 `› 跑一下` / `⏺ 好。` / `● ls` 三块，
+    //    交界两处 ⇒ 两行。**新锚** `toBe(2)`。
+    expect(spacers).toBe(2)
+
+    // 分段行只出现在**块与块之间**（不是每条之前）：拿一个带两条用户消息的行列来验
     const withTwo = [
       { kind: 'user' as const, key: 'u1', text: '甲', echoed: false },
       { kind: 'assistant' as const, key: 'a1', text: '嗯' },
@@ -766,9 +785,30 @@ describe('密度（原型 · 密度节）', () => {
     const spaced = logLines(withTwo, { columns: 100, expanded: false })
     const at = spaced.findIndex((line) => line.spacer === true)
 
-    expect(spaced.filter((line) => line.spacer === true)).toHaveLength(1) // 只有乙之前那一条
+    // ⚠️ **U67 改**——**原锚** `toHaveLength(1)`（「只有乙之前那一条」）。
+    //    **为何变**：同一条「之间」——`甲` 与 `嗯` **之间**也是一道交界，早先只做了后一半。
+    //    **新锚** `toHaveLength(2)`；`at > 0` 照旧（甲之前顶上没有东西，不分）。
+    expect(spaced.filter((line) => line.spacer === true)).toHaveLength(2)
     expect(at).toBeGreaterThan(0) // 不在开头（甲之前不必分）
     expect(spaced[at]?.segments.length).toBe(0) // 就是那一条空行
+
+    // **块内紧凑**：同一组的两条工具行之间不许冒出空行（设计明文）
+    const inGroup = [
+      { kind: 'tool' as const, key: 't1', call: 1, name: 'ls', argsText: '', args: null, state: 'ok' as const, elapsedMs: null, startedAt: null, output: [] },
+      { kind: 'receipt' as const, key: 'x1', text: '本次使用技能：pdf' },
+      { kind: 'tool' as const, key: 't2', call: 2, name: 'read', argsText: '', args: null, state: 'ok' as const, elapsedMs: null, startedAt: null, output: [] },
+    ]
+    const tight = logLines(inGroup, { columns: 100, expanded: false })
+
+    // 回执贴在前一块的尾巴上（`blockOf` 不长块），故它不把这一组切成两半
+    expect(tight.filter((line) => line.spacer === true)).toHaveLength(0)
+    expect(tight.map((line) => line.segments.map((piece) => piece.text).join(''))).toEqual([
+      '● ls',
+      '  ✓ 完成',
+      '· 本次使用技能：pdf',
+      '● read',
+      '  ✓ 完成',
+    ])
   })
 
   test('**空内容不渲染**（D6 的外壳侧重保险）——只发工具调用的那一轮不产生行', () => {
@@ -968,7 +1008,11 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     //    **新锚**：3 条＝**前留白 ＋ 首条用户消息那条分段（＝后留白）＋ 第二条用户消息之前那条**。
     //    这条钉的东西没变——**分段真的占一行**（不是只算出来）——变的是**有几条**。
     //    ⚠️ 字标画幅那 5 行不在此列（那不是空行）。
-    expect(lines.filter((line) => line.trim() === '')).toHaveLength(3)
+    //
+    // ⚠️ **U67 再改（⑪）**——**原锚** `toHaveLength(3)`。**为何变**：这一屏上的块多了一道
+    //    交界——`› 甲` 与 `⏺ 嗯` **之间**（早先只做「用户消息之前」那一半，故它没有）。
+    //    **新锚** 4 条＝前留白 ＋ `› 甲` 那条（＝字标后留白）＋ `⏺ 嗯` 之前 ＋ `› 乙` 之前。
+    expect(lines.filter((line) => line.trim() === '')).toHaveLength(4)
   })
 
   test('D19 · 首尾的空行仍然不渲染（那是模型的格式噪声）', () => {
@@ -1095,7 +1139,14 @@ describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', ()
     expect(reply).toHaveLength(1)
     expect(reply[0]?.segments.map((piece) => piece.text).join('')).toBe('⏺ 甲乙丙丁')
     // 首尾的空行**不渲染**（密度）
-    expect(lines.some((line) => line.segments.every((piece) => piece.text.trim() === ''))).toBe(false)
+    // ⚠️ **U67 补一句「不是分段那一行」**（`line.spacer !== true`）：这一句问的是**正文里**
+    //    有没有空行（D13 的形），而**分段行**（块与块之间那一行）本来就是一条空行、且
+    //    `segments` 为空 ⇒ 不加这一句会被它**假红**（拿它当「正文多出空行」）。
+    //    **不是放宽判据**：正文那几条照样按原文逐字比（上面那两条），这里只是把「分段」
+    //    从「正文的空行」里摘出去——两者是两回事。
+    expect(
+      lines.some((line) => line.spacer !== true && line.segments.every((piece) => piece.text.trim() === '')),
+    ).toBe(false)
   })
 
   test('正文中间的换行照旧折行（首尾才去空）', () => {

@@ -131,8 +131,17 @@ export type { PlanListProps } from './components/plan.ts'
 
 // —— 显示部件（快照与自持组件用）——
 
-export { LogRowView, logLines, needsSpacer, needsSpacerAfter, rowLines } from './components/log.ts'
-export type { LogLine, LogRowProps, Segment } from './components/log.ts'
+export {
+  LogRowView,
+  logLines,
+  needsSpacer,
+  needsSpacerAfter,
+  rowDrawn,
+  rowLines,
+  spacerEnd,
+  spacerWalk,
+} from './components/log.ts'
+export type { LogLine, LogRowProps, Segment, SpacerWalk } from './components/log.ts'
 export { DecisionCard } from './components/decision.ts'
 export { Composer, placeholderOf } from './components/composer.ts'
 export type { ComposerTone } from './components/composer.ts'
