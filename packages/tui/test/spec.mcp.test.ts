@@ -130,7 +130,9 @@ describe('`/mcp` · 查询那一屏', () => {
     const app = live()
     open(app)
 
-    expect(app.view().status.hint).toBe('↑↓ 选 · esc 收起')
+    // ⚠️ U61 起这一句多了 `← 退`（接管屏里 `←` 弹一层、`esc` 全收——两个动作两个键）；
+    //    本句问的那半句（**不说「回车 定」**）一个字没变。
+    expect(app.view().status.hint).toBe('↑↓ 选 · ← 退 · esc 收起')
     expect(app.view().status.hint).not.toContain('回车')
   })
 

@@ -96,7 +96,7 @@ import {
   // **运行事实收尾状态行那一格**（U54）——构造与推来那两跳都走它（见 `withRunFacts`）
   withRunFacts,
 } from './view.ts'
-import type { PageTurn, PickerRow, SessionScope } from './view.ts'
+import type { Dock, PageTurn, PickerRow, SessionScope } from './view.ts'
 import {
   backspaceRange,
   deleteRange,
@@ -114,7 +114,7 @@ import {
 import type { DraftRef } from './components/inline.ts'
 import type { PromptState, ShellView } from './view.ts'
 import type { AttachmentRow, RecordId, RunRow, RunSnapshot } from '@magic/contracts'
-import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
+import { leftSpan, rightSpan, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
@@ -262,6 +262,28 @@ type Ask = {
   readonly note?: string
   /** 回车时**要发什么**——`null` ＝ 什么都不发（只是收起来）。 */
   readonly submit: (value: string) => Command | null
+}
+
+/**
+ * **一屏**——`←` 弹回来要照原样摆回去的那一份（U61）。
+ *
+ * 设计 · 终端交互：「**选择器是「层」，一套栈管所有**」——`←` 弹一层、弹到空就收起、
+ * `esc` 一律全收。⚠️ **栈的单位是「那一屏」，不是「那个选择器」**：接入那一路是
+ * 「选供应商 → 选区域 → 问密钥」，**选择器与本地小输入交替**，它们都是层。
+ *
+ * 装的就是「把这一屏重新摆出来」所需的全部：
+ * - `dock`——这一屏本身（行、选中、筛词、锚点都在 `Picker` 里；`prompt` 那一支在下面另说）；
+ * - `manageAt` / `detailAt` / `attachmentAt`——**明细那一屏的主语**。它们住在壳里而不在
+ *   视图里（同 `Dock` 那条由头：拿不到的不编、结构不从字面反推），故弹回来时得一起还；
+ * - `asking`——本地小输入**问的是什么**。⚠️ 与视图里那一份（圆点）不同，这一份带着
+ *   用户敲进去的**真值**（密钥也走它）——它只在壳手上，弹回来还给壳。
+ */
+type Layer = {
+  readonly dock: Dock
+  readonly manageAt: string
+  readonly detailAt: ModelRef
+  readonly attachmentAt: RecordId | null
+  readonly asking: Ask | null
 }
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
@@ -646,6 +668,97 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let asking: Ask | null = null
 
   /**
+   * **屏的栈**（U61）——`←` 弹一层弹的就是它；**栈底是输入行本身**（不在这个数组里，
+   * 「弹到空」就是弹到它＝收起，与 `esc` 同效）。
+   *
+   * 三处口径（缺一处就是两套交互）：
+   * - **进一层**就在那一跳 `enterLayer()`：打开选择器 · `→` 看详情 · 接入那种
+   *   「一步接一步」的每一屏（**含本地小输入**——那是本单最容易做窄的地方）；
+   * - **回输入行就清空**（`commit` 那一处收口）：屏都收起来了，栈里那几屏便没有主语
+   *   （再弹出来就是把一屏**早撤下的**东西硬摆回去）；
+   * - **`esc` 不走这里**——它一贯「一律全收」（收起这一屏，栈随上面那条清掉），
+   *   与 `←` 井水不犯河水（设计：两个动作、两个键，不混）。
+   */
+  let layers: readonly Layer[] = []
+
+  /** 此刻这一屏——收进栈里的那一份（见 `Layer`）。 */
+  const layerNow = (): Layer => ({
+    dock: view.dock,
+    manageAt,
+    detailAt,
+    attachmentAt,
+    asking,
+  })
+
+  /**
+   * **进一层**——开一屏新的：把此刻这一屏收进栈里，`←` 那一下好照原样摆回来。
+   *
+   * ⚠️ **只在「屏 → 屏」那一跳叫它**（`submit` 里进明细 / 接入那几步 · `→` 看详情 ·
+   * 明细里那几件要问一件小事的动作）。**重铺不算**（刷新之后照旧那一屏、`@` 那个筛词
+   * 一变就重开同一栏）——那些也叫它，栈里就会堆上一串「同一屏的旧快照」，
+   * 用户按一次 `←` 看着像没动。
+   */
+  const enterLayer = (): void => {
+    // 从输入行开的屏底下没有「上一屏」（栈底就是输入行）——不压，`←` 那一下便是收起
+    if (view.dock.kind === 'input' || view.dock.kind === 'decision') return
+    layers = [...layers, layerNow()]
+  }
+
+  /** 把栈里那一层照原样摆回来——**光标位置、草稿与选区照旧**（草稿那三格压根没动过）。 */
+  const restoreLayer = (layer: Layer): void => {
+    manageAt = layer.manageAt
+    detailAt = layer.detailAt
+    attachmentAt = layer.attachmentAt
+    asking = layer.asking
+
+    if (layer.dock.kind === 'picker') {
+      commit(openPicker(view, layer.dock.picker))
+      return
+    }
+    if (layer.dock.kind === 'prompt' && layer.asking !== null) {
+      commit(openPrompt(view, promptViewOf(layer.asking)))
+    }
+  }
+
+  /**
+   * 收起此刻这一屏、回输入行——**`esc` 那一支与「`←` 弹到空」共用这一处**。
+   *
+   * ⚠️ 设计写的是「弹到空就收起（**与 `esc` 同效**）」——同效就得**真同效**：`esc` 在这
+   * 几屏上本来就不只是「把抽屉关掉」，故那两件收尾的事一并放这儿：
+   * - `@` 那一栏另把「还只是查询、没成引用」的那一段从草稿里撤回（设计：「取消归还原稿
+   *   及选区」——那一段本来就不算用户说的话）；
+   * - 图片详情那一屏收起来时把主语放下（「这一屏在说哪一张」不跨屏留着，同 `manageAt`）。
+   */
+  const collapseDock = (): void => {
+    if (view.dock.kind === 'picker') {
+      const anchor = view.dock.picker.source === 'paths' ? view.dock.picker.anchor : undefined
+      if (view.dock.picker.source === 'attachment-detail') attachmentAt = null
+      commit(closePicker(view))
+      if (anchor !== undefined) eraseAt(anchor.start, anchor.end)
+      return
+    }
+    if (view.dock.kind === 'prompt') closeAsk()
+  }
+
+  /**
+   * **`←` 弹一层**——有上一层就摆回去，弹到空便收起（与 `esc` 同效）。
+   *
+   * ⚠️ **不与输入打架**（设计明文）：「选择器开着时归选择器（那时光标不在输入行）；
+   * 没开时照旧移光标」——`←` 这一支只在**接管屏**（选择器 / 本地小输入）上收，
+   * 草稿那一头照旧由 `case 'left'` 移插入点。与 `↑↓` 同一分工。
+   */
+  const popLayer = (): void => {
+    const below = layers.at(-1)
+    if (below === undefined) {
+      collapseDock()
+      return
+    }
+
+    layers = layers.slice(0, -1)
+    restoreLayer(below)
+  }
+
+  /**
    * `/mcp <名字>` 的**预置那一台**——只在「等外部服务器一屏」那一趟有效（答复到了交给抽屉）。
    * 空串＝总览那一屏（`/mcp` 无参）。
    */
@@ -751,6 +864,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 任何一条都会把「启动中」抹掉，而**回车那时仍是不受理的** ⇒ 屏上就变成
     // 「看着闲着、按了却没反应」（原型 · 交互逻辑最不想要的那种）。
     const next = ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
+    // **回了输入行 ⇒ 屏的栈清空**（U61）——栈里装的是「还在底下的那几屏」，而屏全收起来
+    // 之后它们已经没有主语了。这是**唯一的收口**（视图的每一处改动都经这里），
+    // 故 `esc` 那条路不必另写一句：它收起屏、dock 一回到 `input`，栈自然跟着空。
+    if (next.dock.kind === 'input') layers = []
     view = next
     if (streaming) notifyCoalesced()
     else {
@@ -1027,11 +1144,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    而接入那一路还接着办一件收尾的事——**保存成功就去取一次模型列表**
     //    （设计：「确认后保存连接并获取列表」）。
     if (event.kind === 'provider.catalog') {
+      // ⚠️ **这一跳是「打开选择器」＝进一层**（U61）：`enterLayer()` 只在**底下那一屏还在**
+      //    时才压栈——从入口行点进来时它把 `/model` 那张列表压住（`←` 退得回去），
+      //    从命令行打进来时底下就是输入行，它什么都不做（`←` 那一下便是收起）。
       if (waiting === 'connect') {
         waiting = null
+        enterLayer()
         openVendorPicker()
       } else if (waiting === 'manage') {
         waiting = null
+        enterLayer()
         openManagePicker(event.data.note ?? '')
       } else {
         if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
@@ -1656,6 +1778,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     if (value === 'rename') {
       const now = entry.name ?? entry.provider
+      enterLayer() // 进「问新名字」那一屏（U61）——`←` 退回管理明细
       openAsk({
         label: '新名字',
         secret: false,
@@ -1674,6 +1797,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
 
     if (value === 'key') {
+      enterLayer() // 进「问密钥」那一屏（U61）——`←` 退回管理明细
       openAsk({
         label: '密钥',
         secret: true,
@@ -1695,6 +1819,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // ——它此前没有落点，而「接一条自己那台兼容端点 / 受控端点」正需要它。
       // ⚠️ 地址是**接入范围**的一部分：改它＝这条连接换了地方（内核据此废弃旧缓存，
       //    「改变服务地址/认证范围须明确影响该连接」），故留空＝**回到官方地址**，不是「不改」。
+      enterLayer() // 进「问地址」那一屏（U61）——`←` 退回管理明细
       openAsk({
         label: '高级地址',
         secret: false,
@@ -1733,7 +1858,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       value === 'connect' ? '/model connect' : value === 'manage' ? '/model manage' : '/model refresh'
     const { next, commands } = runSlash(view, word)
 
-    commit(closePicker(next))
+    // ⚠️ **这一屏先不关**（U61）：这一跳只是**把命令发出去**，答复一到就接着开下一屏
+    //    （挑一家 / 连接一览）——那一下才是「进一层」，压栈就发生在答复那一头
+    //    （`provider.catalog` 那两处 `enterLayer()`）。关上再开的话，中间那一跳
+    //    会把 dock 打回输入行，栈跟着被清（「回输入行就清空」那条）——列表就压不住了。
+    //
+    //    顺带也更好看：答复那几毫秒里屏上留的是**刚才那一屏**，而不是闪一下输入行。
+    // ⚠️ **刷新那一条不受影响**：它回来照旧是**这一屏**（就棫重铺），答复那一头不压栈。
+    commit(next)
     for (const command of commands) send(command)
 
     return NONE
@@ -1947,10 +2079,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
-      case 'left':
-        editAsk(held.value, stepLeft(held.value, held.caret))
-        return NONE
-
+      // ⚠️ **`←` 不在这一屏了**（U61）：接管屏里它一律是「弹一层」——归 `key()` 那道门
+      //（在选择器 / 本地小输入上收口），到不了这里。`→` 照旧：它是**这一行字里**的移动，
+      // 而这一屏没有「进一层」可言（同别的抽屉「没有详情就不报那个键」那条口径）。
       case 'right':
         editAsk(held.value, stepRight(held.value, held.caret))
         return NONE
@@ -2681,6 +2812,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // ⚠️ 先 `commit` 再往下走：`view` 是本闭包里的 `let`，下面各支读到的就是清过的那一份。
     if (view.exitArmed && input.kind !== 'ctrl+c') commit({ ...view, exitArmed: false })
 
+    // **`←` 弹一层**（U61）——接管屏（选择器 ／ 本地小输入）里 `←` 一律归屏，
+    // **草稿那一头（没开屏）才照旧移插入点**（见下面 `case 'left'`）。与 `↑↓`
+    // 「选择器里选择／不在就翻历史」同一分工（设计明文）。
+    //
+    // ⚠️ **这一支排在本地小输入那道门之前**：小输入的键位归 `askKey`，而它认的 `←`
+    // 是老面孔（移插入点）——照那个走，本单的要害那一趟（问密钥 →「←」→ 选区域）
+    // 就还是回不去。屏里有屏的键位，这一格说清楚的是「`←` 在这一屏干什么」。
+    if (input.kind === 'left' && (view.dock.kind === 'picker' || view.dock.kind === 'prompt')) {
+      popLayer()
+      return NONE
+    }
+
     // **本地小输入开着的时候，键归它**（U41）——但 `ctrl+c` 是全局的（空闲＝退出、
     // 工作中＝中断），故它照旧落下去走 `exitOrInterrupt`：一条本地小输入不该把退出挡住。
     if (view.dock.kind === 'prompt' && input.kind !== 'ctrl+c') return askKey(input)
@@ -2731,16 +2874,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
 
       case 'escape':
-        // 选择器开着 ⇒ 收起（**不留痕迹**）；`@` 那一栏另把「还只是查询、没成引用」的那一段
-        // 从草稿里撤回（设计：「取消归还原稿及选区」——那一段本来就不算用户说的话）。
+        // 选择器开着 ⇒ 收起（**不留痕迹**）。⚠️ **一律全收**，与本单新加的 `←`（弹一层）
+        // 分开走（设计：「两个动作、两个键，不混」）——`esc` 一按到底，`←` 一次一层。
+        // 这一支的语义一个字没改（U61 只是把「收起」那几步抽进了 `collapseDock`——
+        // 「弹到空」那一跳要**与它同效**，两处各写一遍迟早分家）。
         if (view.dock.kind === 'picker') {
-          const anchor = view.dock.picker.source === 'paths' ? view.dock.picker.anchor : undefined
-          // 详情那一屏收起来时把主语一并放下（「这一屏在说哪一张」不跨屏留着——同 `manageAt`）
-          if (view.dock.picker.source === 'attachment-detail') attachmentAt = null
-          commit(closePicker(view))
-          if (anchor !== undefined) eraseAt(anchor.start, anchor.end)
+          collapseDock()
           return NONE
         }
+        // 本地小输入开着时到不了这一支（上面那道门把它交给 `askKey`，它认 `esc`＝`closeAsk`）
+        if (view.dock.kind === 'prompt') return NONE
         if (view.dock.kind === 'decision') return NONE // 接管期间 `esc` **无动作**
         // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
         if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
@@ -2798,9 +2941,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       case 'enter':
         return submit()
 
+      // ⚠️ **接管屏（选择器 / 本地小输入）到不了这一支**——上面那道门已经把
+      //    「`←` 弹一层」收走了（U61）。这里只剩**草稿那一头**：真移插入点。
       case 'left':
         if (view.dock.kind === 'decision') return refuse('左移')
-        if (view.dock.kind === 'picker') return NONE
         // **草稿一个字都不动**（只挪插入点）⇒ 不走 `edit()`：翻出来的历史还认得上一条。
         // 插入点挨着一处引用时**整处跨过去**（引用是一个编辑单位，见 `inline.ts`）。
         commit({ ...view, caret: stepLeftOver(view.refs, view.draft, caretAt()) })
@@ -2813,7 +2957,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           // 这回事，故它们的左右照旧什么都不做，见列表下方那行说明）
           if (view.dock.picker.source === 'model') {
             const pick = picked(view)?.pick
-            if (pick !== undefined) openModelDetail(pick)
+            // `→` 看详情＝**进一层**（U61：设计「进一层：打开选择器 · `→` 看详情 ·
+            // 接入那种一步接一步的每一屏——都算」）——`←` 退回列表，焦点照旧那一格
+            if (pick !== undefined) {
+              enterLayer()
+              openModelDetail(pick)
+            }
           }
           return NONE
         }
@@ -3012,7 +3161,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 那两条动作在下一屏，见 `attachmentDetailRows`）。
       if (view.dock.picker.source === 'attachments') {
         const entry = Number(row.value)
-        if (Number.isInteger(entry)) openAttachmentDetail(entry)
+        // 进这一张的详情＝**进一层**（U61）——`←` 退回列表那一屏（`/attachments` 也是多级的）
+        if (Number.isInteger(entry)) {
+          enterLayer()
+          openAttachmentDetail(entry)
+        }
         return NONE
       }
 
@@ -3042,7 +3195,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       // 模型详情那一屏（U41）：两件动作
       if (view.dock.picker.source === 'model-detail') {
-        if (row.value === 'reasoning') openReasoningPicker(detailAt)
+        // 思考那一屏是**从详情那一屏进的一层**（U61）——用 `←` 退回来时详情照旧在
+        if (row.value === 'reasoning') {
+          enterLayer()
+          openReasoningPicker(detailAt)
+        }
         if (row.value === 'default') {
           const setting = reasoningOf(detailAt)
           send({
@@ -3074,6 +3231,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       // 连接一览（U41 · `/model manage` 的第一步）：选定＝**进这一条的管理明细**
       if (view.dock.picker.source === 'provider') {
+        enterLayer() // 进了明细那一屏（U61）——`←` 退回一览
         openManageDetail(row.value)
         return NONE
       }
@@ -3089,6 +3247,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         const pickedVendor = view.vendors.find((one) => one.vendor === row.value)
         if (pickedVendor === undefined) return NONE // 名单里没有这一家（不该有这种行）
 
+        // **接入那一路是「一步接一步」的每一屏都算一层**（U61）：这里要么进区域那一屏、
+        // 要么直接进问密钥那一屏——两条都是进一层，故先压栈再开（选错家想重选就回得来）。
+        enterLayer()
         if (pickedVendor.regions.length > 1) openRegionPicker(pickedVendor)
         else askKeyFor(pickedVendor, undefined) // 没得选 ⇒ 不写 `region`（约定：缺省那项）
 
@@ -3103,6 +3264,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         const region = pickedVendor?.regions.find((one) => one.id === row.value)
         if (pickedVendor === undefined || region === undefined) return NONE
 
+        // ⚠️ **这一跳是本单的要害**（U61）：问密钥那一屏是**本地小输入**，不是选择器——
+        //    它照样是一层（设计：栈的单位是「那一屏」，不是「那个选择器」）。
+        enterLayer()
         askKeyFor(pickedVendor, region)
         return NONE
       }

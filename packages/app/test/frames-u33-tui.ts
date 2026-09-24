@@ -414,7 +414,7 @@ async function builtinClash(out: string, configured: string): Promise<void> {
     await typeLine(session, '/model')
     // ⚠️ 锚换过（U51）：原先抄的是 `/resume` 那一屏的键位提示（带「打字筛 · tab 换范围」，
     //    那是 U49 给 `/resume` 加的）。`/model` 开的是**条目选择器**，提示就是常态那一句。
-    await session.key('enter', { until: { text: '↑↓ 选 · 回车 定 · esc 收起' }, timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: '↑↓ 选 · 回车 定 · ← 退 · esc 收起' }, timeoutMs: 10_000 })
     const cmd = await session.capture({ label: '08a-内置-model' })
     keep(out, cmd, '08a-内置-model')
     check(has(cmd, 'local') || has(cmd, 'MiniMax'), '`/model` 开的是条目选择器（内置含义保留）')

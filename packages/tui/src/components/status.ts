@@ -24,7 +24,7 @@ export type StatusLineProps = {
 const SEP = ' · '
 
 export function StatusLine({ status, columns }: StatusLineProps) {
-  const left = degrade(status, columns)
+  const left = degrade(status, columns, status.hint)
 
   return h(
     Box,
@@ -57,7 +57,7 @@ function stateColor(state: ShellStatus['state']): string {
  *
  * ① 状态**永不省**（它是视觉锚）。
  */
-function degrade(status: ShellStatus, columns: number): readonly string[] {
+function degrade(status: ShellStatus, columns: number, hint: string): readonly string[] {
   const title = status.session ?? '新会话'
   const model = status.model
   const usage = status.usage
@@ -71,24 +71,36 @@ function degrade(status: ShellStatus, columns: number): readonly string[] {
 
   // 逐步省：先去用量，再去模型，最后截标题（每步算一次「连同右位放不放得下」）
   let kept = [...cells]
-  if (!fits(kept, columns)) kept = [kept[0] ?? '', null, null]
-  if (!fits(kept, columns)) kept = [truncate(kept[0] ?? '', Math.max(4, columns - 20)), null, null]
+  if (!fits(kept, columns, hint)) kept = [kept[0] ?? '', null, null]
+  if (!fits(kept, columns, hint)) kept = [truncate(kept[0] ?? '', Math.max(4, columns - 20)), null, null]
 
   return kept.filter((cell): cell is string => cell !== null && cell !== '')
 }
 
+/**
+ * **右位那一串**（连同状态那格与两侧留白）大概要占多少列——左半那两处都按它让位。
+ *
+ * ⚠️ **短提示照旧走那个用惯了的预算（24）**：那条口径调过几轮（「从右往左省」那三条
+ * 用例钉的就是它），别顺手动它。提示**比它还长**时（选择器那一屏就是——U61 起那一行
+ * 多了 `← 退`）按它**实际**占的算：不然多出来的那几列是从**提示自己**身上扣的
+ * ——它整段不出现，而设计要的是「左半那几格让位」（工单 U61：「别为它挤掉更要紧的」）。
+ */
+function rightCost(hint: string): number {
+  return Math.max(24, displayWidth(hint) + 8)
+}
+
 /** 左段（含状态那格）连同右位放不放得下——粗算即可（留 2 列余量）。 */
-function fits(cells: readonly (string | null)[], columns: number): boolean {
+function fits(cells: readonly (string | null)[], columns: number, hint: string): boolean {
   const width = cells
     .filter((cell): cell is string => cell !== null && cell !== '')
     .reduce((sum, cell) => sum + displayWidth(cell) + SEP.length, 0)
 
-  return width + 24 <= columns - 4
+  return width + rightCost(hint) <= columns - 4
 }
 
 /** 右位放不下就整段不出现。 */
 function fitting(hint: string, columns: number, left: readonly string[]): string {
   const used = left.reduce((sum, cell) => sum + displayWidth(cell) + SEP.length, 0)
 
-  return displayWidth(hint) + used + 8 <= columns - 2 ? hint : ''
+  return used + rightCost(hint) <= columns - 2 ? hint : ''
 }
