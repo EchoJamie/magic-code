@@ -116,15 +116,35 @@ export type LogRow =
       readonly args: Readonly<Record<string, unknown>> | null
       readonly state: ToolRunState
       /**
-       * 这次调用**经过的墙钟**（`tool.call` 的事件时刻 → `tool.result` 的事件时刻）。
+       * 这次调用**跑了多久**——**只算执行本身**（U66 · 设计 · 终端交互：「工具那行的计时
+       * 只算执行本身」）：**放行/批准那一刻 → 结果那一刻**。
        *
-       * ⚠️ **不是**裁决耗时：`tool.decision.elapsedMs` 是权限域「提示 → 答复」那一段
+       * ⚠️ **不是**「含闸门等待的那一段」——那是**改判**：本格原写作「`tool.call` → `tool.result`，
+       * 含闸门等待（人工批准时那段是人在想）」，而**在等你 ≠ 在执行**那一条把它推翻了
+       * （用户 2026-09-25 看真机：卡片挂着时那一行还在涨）。现在那段等待**不进这个数**
+       * ——它归 `tool.decision.elapsedMs`（裁决的账，与这里**两笔分开**）。
+       *
+       * ⚠️ **也不是**裁决耗时本身：`tool.decision.elapsedMs` 是权限域「提示 → 答复」那一段
        * （自动放行时≈0），拿它当工具耗时就会在屏上报「✓ 0ms」（第 22 轮查明并改）。
-       * 语义如实记：这是**发起 → 落地**的墙钟——**含**闸门等待（人工批准时那段是人在想）。
+       *
+       * **没跑的那一笔没有这个数**（`null`）：被拒 / 规约扣下 —— 两条都在动手之前就结束了。
        */
       readonly elapsedMs: number | null
-      /** 发起时刻（`tool.call` 的 `at`）——算上面那个差用。 */
+      /**
+       * **起算时刻** —— `tool.call` 的 `at`；**批准之后换成裁决那一刻**（见
+       * `reduceVerdict`：重新起算＝「从零开始」）。
+       */
       readonly startedAt: number | null
+      /**
+       * **这一笔正等着裁决**（`tool.decision.request` 到了、答复还没到）——**卡片挂着**。
+       *
+       * 由头（U66）：**在等你 ≠ 在执行**（设计 · 会话与运行管理那张表里「等待你」是独立
+       * 一档）。故卡片挂着时那一行**不报「跑了多久」**（`components/log.ts` 的 `toolLines`
+       * 按这一位停表）——它没在跑，那一段是人在想。
+       *
+       * 落在**答复 / 轮收束**那一刻摘掉（`undock`）：停表的理由没了，那一行就该照旧。
+       */
+      readonly awaitingDecision?: true
       /** 结果 / 输出的行（dim 缩进块）。 */
       readonly output: readonly string[]
       /**
@@ -1166,7 +1186,7 @@ export function reduce(
     case 'tool.decision.request':
       return reduceDecision(view, event.id, event.data)
     case 'tool.decision':
-      return reduceVerdict(view, event.data)
+      return reduceVerdict(view, event.data, event.at)
 
     case 'message.user':
       return reduceUserEntry(view)
@@ -1481,18 +1501,42 @@ function reduceToolResult(view: ShellView, data: ToolResultData, at: number): Sh
     // **扣下那一路同上**：也没跑，故单列一态——省得那行画成一次失败的耗时。
     state: row.state === 'rejected' ? 'rejected' : unexecuted ? 'unexecuted' : data.ok ? 'ok' : 'failed',
     output: textOfLines(text),
-    // 墙钟＝发起 → 落地（`tool.call` 的 `at` → 这条 `tool.result` 的 `at`）。
+    // 跑了多久＝**起算时刻 → 落地**（`startedAt` → 这条 `tool.result` 的 `at`）。
+    // 起算时刻在**批准那一刻**（`reduceVerdict`）——人工件那一段「人在想」的不算数，
+    // 故这个数就是**真跑的那一段**（U66；放行是自动的、没有那一段时它与 `tool.call` 同一刻）。
     // **倒退的钟当没量到**（`null`）：负数上屏就是报了个假的耗时——如实记＝没有就是没有。
-    // **没跑的那一笔根本没有「耗了多久」这回事**（拦截发生在动手之前，两个事件背靠背发出）：
-    // 那个差是实现的偶然，不是这次调用的账，故一律 `null`。
+    // **没跑的那一笔根本没有「耗了多久」这回事**（拦截发生在动手之前）：
+    // 被拒与规约扣下这两条都是这样（**这两个叉画的是同一件事：它没起手**）。
     elapsedMs:
-      unexecuted || row.startedAt === null || at < row.startedAt ? null : at - row.startedAt,
+      unexecuted || row.state === 'rejected' || row.startedAt === null || at < row.startedAt
+        ? null
+        : at - row.startedAt,
   }))
 }
 
 type VerdictData = Extract<KernelEvent, { kind: 'tool.decision' }>['data']
 
-function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
+/**
+ * `tool.decision` 到了——**这一笔的账从这一刻重新起算**（U66）。
+ *
+ * ## 为什么是「从零起算」，不是「两段相加」
+ *
+ * 因为**今天的裁决必定在起手之前**：分发那条链是「请求 → **闸门** → 执行 → 回填」
+ * （`@magic/tools` 的 `dispatch.ts`），而闸门的 `decide` 就在执行那一步的前一行——
+ * **批准那一刻，这件工具一次都还没跑过**。故待裁决那一段里**没有「已跑的」可丢**：
+ * 起算点从「发起」挪到「批准」＝**从零开始**，不是把谁吞了。
+ *
+ * ⚠️ **将来若出现「执行到一半才弹卡」的形态**（外部工具那种边跑边问的），这一处要改成
+ * **两段相加**（已跑的那一段 ＋ 批准之后那一段），**别拿这一行的写法直接套**——那才会
+ * 「把已跑的那段吞了」。判据很直白：批准那一刻 `startedAt` 若已有过一次执行，
+ * 就得先把它累积起来，而不是覆盖。
+ *
+ * ## 只认「问过的那一笔」
+ *
+ * 起算点只在**真挂过卡**的那一行上挪（`awaitingDecision`）：**自动放行**那条路不发询问，
+ * 它的计时照旧从**发起**算起（与改动前逐字相同——那是「没弹卡」那一档的账）。
+ */
+function reduceVerdict(view: ShellView, data: VerdictData, at: number): ShellView {
   const target = indexOfCall(view, data.call)
   const rows =
     target === -1
@@ -1503,6 +1547,10 @@ function reduceVerdict(view: ShellView, data: VerdictData): ShellView {
                 ...row,
                 // 裁决的耗时（提示 → 答复）**不进工具行**——那是裁决的账（见行上 `elapsedMs` 的注）
                 ...(data.decision === 'reject' ? { state: 'rejected' as const } : {}),
+                // **批准 ⇒ 起算点挪到这一刻**（见上注：批准在执行之前，故是「从零开始」）
+                ...(data.decision === 'approve' && row.awaitingDecision === true
+                  ? { startedAt: at }
+                  : {}),
               }
             : row,
         )
@@ -1524,8 +1572,17 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
   const position =
     view.turnTools <= 1 ? null : { index: toolIndex(view, data.call), total: view.turnTools }
 
+  /**
+   * **这一笔从此刻起等着你**（U66）——那一行要停表：它没在跑，「等他答」不是「它在动」。
+   * 摘掉它的地方只有一个：`undock`（答复到了 / 轮收束，两个出口都经它）。
+   */
+  const asked = patchTool(view, indexOfCall(view, data.call), (row) => ({
+    ...row,
+    awaitingDecision: true as const,
+  }))
+
   const pending: ShellView = {
-    ...view,
+    ...asked,
     dock: {
       kind: 'decision',
       pending: {
@@ -2181,6 +2238,9 @@ export function undock(view: ShellView): ShellView {
 
   return {
     ...view,
+    // **这一笔不再等你了**（U66）——接管解除＝停表的理由没了（答复到了、或者轮收束了），
+    // 那一行此后照旧按 `startedAt` 说话。⚠️ 不摘的话它会**永远**不报耗时。
+    rows: clearAwaiting(view.rows, view.dock.pending.call),
     dock: { kind: 'input' },
     draft,
     // 夹一道：手搭的视图可能给过越界的插入点（同 `shell.ts` 的 `caretAt`）
@@ -2192,6 +2252,24 @@ export function undock(view: ShellView): ShellView {
     stashed: null,
     flash: null,
   }
+}
+
+/**
+ * 把某一笔的**「等裁决」那一位摘掉**（U66）——只有 `undock` 用它。
+ *
+ * 摘的时机＝**接管解除**，两个出口都经那儿：答复到了（`reduceVerdict`）· 轮收束
+ * （`turn.end`）。两处都是「这一笔不再等你了」，故两个出口同一处摘——**不在别处各摘一遍**。
+ *
+ * ⚠️ **只动真带着这一位的行**（`awaitingDecision === true` 才新建对象）：其余行**原样交回**
+ * ——归约从不改入参那条纪律在这儿也成立（`rowLines` 的身份缓存靠它）。
+ */
+function clearAwaiting(rows: readonly LogRow[], call: RecordId): readonly LogRow[] {
+  return rows.map((row) => {
+    if (row.kind !== 'tool' || row.call !== call || row.awaitingDecision !== true) return row
+
+    const { awaitingDecision: _answered, ...rest } = row
+    return rest
+  })
 }
 
 /** 「不静默吞键」——接管期间按了不认的键，当场说一句（原型 · 场景 6）。 */

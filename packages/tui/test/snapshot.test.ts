@@ -376,6 +376,9 @@ describe('场景 7 · 多件裁决', () => {
     const frame = app.screen()
     expect(frame).toContain('2 / 3')
     expect(frame).toContain('● 等你定夺 2/3')
+    // ⚠️ **U66 改了这张帧**：被问的那一件（`write b`）**不再画底下那行读数**
+    // （`⟳ 运行中` 那条没了）——在等裁决 ≠ 在执行，那一行不说「跑了多久」。
+    // 同一屏上没被问的那两件（`a` / `c`）照旧，它们在那一格里的身份是「还没落定」。
     expect(frame).toMatchSnapshot()
   })
 })
@@ -391,7 +394,12 @@ describe('场景 8 · 答完之后', () => {
     ])
     app.type('打了一半的话')
     app.key({ kind: 'char', char: 'y' })
-    app.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 1200 })])
+    // ⚠️ **裁决事件也要显式给 id**（U66）：起算点从此锚在**裁决那一刻**（＝这一条信封的 `at`），
+    // 而缺省 id 是本文件**全局递增**的那个计数——不钉死的话，这一帧里的耗时随
+    // 「本文件里前面加了几条用例」而变（这个数本来就不是这条用例要判的东西）。
+    app.feed([
+      event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 1200 }, { id: 90 }),
+    ])
     app.feed([
       event('tool.result', { call: 71, ok: true, output: { text: '写好了' } }, { id: 271 }),
       // 第二件：工具先落，再问（件数就是从这里数的）
