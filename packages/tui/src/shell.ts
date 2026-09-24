@@ -654,20 +654,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /**
    * `/skills <词>` 的**预置筛词**——只在「等技能目录」那一趟有效（答复到了交给抽屉）。
    *
-   * 同时也是**同名直达分不出唯一时的入口**：那时拿技能名当筛词开同一扇抽屉
-   * （见 `submit` 里 `hit.kind === 'many'` 那一支）——一套机制两处用，
-   * 不另造一个「同名候选」界面。
+   * （U57 时它还有第二个来路：「同名直达分不出唯一」那一支也拿技能名当筛词开同一扇抽屉。
+   * 同名在发现那一层只剩一条之后，那一支没了，这一格只剩 `/skills <词>` 一处用。）
    */
   let skillSeed = ''
-
-  /**
-   * 同名那一路的**取材范围**（`/<名字>` 在同一档里分不出唯一时给）——`null` ＝ 全目录。
-   *
-   * 为什么不拿「筛词＝名字」当同一件事：筛词是**子串**匹配，`pdf` 会把 `pdftools` 和
-   * 「简述里提到 pdf」的都筛进来——那样子挑出来的那份名字与草稿里那个斜杠词**对不上**，
-   * 剥正文会落空、再按回车又回到同一个岔口。同名就是同名：范围在这里**钉死**。
-   */
-  let skillScope: readonly SkillCatalogRow[] | null = null
 
   /**
    * **详情那一屏正说着哪一张图**（U37）——那条记录的 id；`null` ＝ 没在详情那一屏。
@@ -2169,25 +2159,21 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *
    * 0 行时（没筛词的）`openPicker` 会把它落成一行回执、不开抽屉——空名录不开空抽屉（P0）。
    *
-   * `startAt` ＝ **进来时停在那一份上**（按它的真路径认，不按下标）：候选栏里同档同名
-   * 现在**各占一条**（见 `skillCommands`），用户在那一栏上挑的是第几条，这一屏就停在第几条
-   * ——挑哪一份就落在哪一份头上，不必进来再挑一遍（U57）。
-   * 按路径认而不是按下标：这一屏的行是**筛过**的（`skillRows` 按名字/来源/简述筛），
-   * 下标与候选栏那几条对不上号（别的技能只要简述里带了这个词也会进来）。认不出来就退回第一行。
+   * 取材是**视图里那一份目录**（`view.skills`），不再有第二份取材（U57 那个 `skillScope`
+   * 随「同名 ⇒ 展开候选」一起退回：候选栏上停哪一条、那一屏就停在谁头上，都得有名有姓的
+   * 一对同名才谈得上，而**同名在发现那一层只剩一条**了）。
    */
   const openSkillsPicker = (
     filter: string,
     anchor: { readonly start: number; readonly end: number },
-    startAt?: string,
   ): void => {
     const catalog = view.skills
-    const rows = skillRows(skillScope ?? catalog?.skills ?? [], filter)
-    const at = startAt === undefined ? -1 : rows.findIndex((row) => row.value === startAt)
+    const rows = skillRows(catalog?.skills ?? [], filter)
 
     commit(
       openPicker(view, {
         source: 'skills',
-        selected: at < 0 ? 0 : at,
+        selected: 0,
         rows,
         filter,
         anchor,
@@ -3161,26 +3147,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // ⚠️ **U36：名称不再被剥掉**——`/review 检查 @src/login.ts` 原样是提交内容，
       // 那一处引用**就排在句首**（`marker` ＝ `/review`），随正文一起进模型请求。
       if (!COMMANDS.some((command) => command.name === word)) {
-        const hit = resolveSkill(word.slice(1), view.skills?.skills ?? [])
-
-        // 同一档里分不出唯一 ⇒ **展开同名候选让用户点**（不静默随目录顺序挑一个）——
-        // 草稿**原样留着**，锚点就定在那个词上（选定即把它换成 `/名称` 并绑上身份）。
+        // ⚠️ **句首这个词上已经贴着一处绑好的引用 ⇒ 这一下就是提交**（U57 修 D32 第 4 步）。
         //
-        // ⚠️ **已经在那一屏上挑定了的，这一下就是提交**（U57 · D32 第 4 步）：词上正贴着
-        //    一处绑好的引用，说明来源**用户已经指明过了**，再展开一遍等于把这一条吃掉——
-        //    请求一条都发不出去，而屏上看着像发出去了（「按了没反应」最难查的那一形）。
-        //    判法和 `one` 那一支同源：掐过头空白之后，句首那个词的起点就在 0 上
-        //    （`placed` 已经按 `head` 搬过，见上面那段注）。
-        if (hit.kind === 'many') {
-          if (refStartingAt(placed, 0) !== undefined) return sendInput(text, placed)
+        // 当初这一行在「同名 ⇒ 展开候选」那一支里：名字分不出唯一时那一支会**再展开一遍
+        // 选择器**，把用户刚挑好的那一处引用吃掉——请求一条都发不出去，而屏上看着像发出去了
+        // （「按了没反应」最难查的那一形）。
+        //
+        // **U58 之后同名不再并存**（发现那一层只留一条，见 `skills.ts`）⇒ 那一支没了，
+        // 这一行也就不该再挂在它底下：它守的本来就不是「同名」，而是一条**独立的不变量**——
+        // 来源**用户已经指明过**（引用是带身份的），回车不该再问一遍。故提到这一层来，
+        // 与「分不分得出唯一」无关。（`submittable` 已经在上面拦掉了「只有引用、没有交代」
+        // 那一形，故这里走到的一定是有正话说的一次提交。）
+        if (refStartingAt(placed, 0) !== undefined) return sendInput(text, placed)
 
-          skillScope = hit.skills
-          // 锚点是**原草稿**里的坐标（`bindSkill` 拿它去切草稿）——头上有空白时
-          // 整段要跟着 `head` 走，写成 0 会切错一格（`one` 那一支用的是 `placed`，
-          // 那边天生就差一个 `head`，故两处看着不一样、其实同源）。
-          openSkillsPicker(word.slice(1), { start: head, end: head + word.length })
-          return NONE
-        }
+        const hit = resolveSkill(word.slice(1), view.skills?.skills ?? [])
 
         if (hit.kind === 'one') {
           // **只输入了名称**（`/pdf` 后面没有别的话）＝**只把它放进草稿**
@@ -3208,19 +3188,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           }
 
           // 名称已在正文里（原位），只补一处身份上去——引用就排在它原来的位置。
-          // 已经绑过的（先前从候选里选过一次）不重复绑。
-          const bound = refStartingAt(placed, 0) !== undefined
-            ? placed
-            : putRef(placed, {
-                kind: 'skill',
-                marker: `/${hit.skill.name}`,
-                name: hit.skill.name,
-                source: hit.skill.path,
-                start: 0,
-                end: word.length,
-              })
-
-          return sendInput(text, bound)
+          // 已经绑过的那一形在上面那道闸上就走了（它直接提交），故这里是**还没绑**的这一形。
+          return sendInput(
+            text,
+            putRef(placed, {
+              kind: 'skill',
+              marker: `/${hit.skill.name}`,
+              name: hit.skill.name,
+              source: hit.skill.path,
+              start: 0,
+              end: word.length,
+            }),
+          )
         }
       }
 
@@ -3246,12 +3225,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *
    * 两种归宿，按那一行是什么分：
    * - **内置命令** ⇒ 照旧补全文字（它是整行的操作入口，补完接着打参数）；
-   * - **技能名** ⇒ **在词的原处放一句技能引用**（U36：带身份，不再只是几个字）——
-   *   同名两份分不出唯一时展开抽屉让用户按来源挑（草稿原样留着，锚点定在那个词上）。
-   *   ⚠️ **仍不在这里替用户挑**（设计：同一优先级下不能唯一确定时展开同名候选，
-   *   不静默随列表顺序选取）——候选栏那几条同名的行（U57）挑中的是「看哪一份」，
-   *   落定哪一份仍在那一屏上按回车。故这一跳只把**用户在候选栏上停的那一条**
-   *   原样带到那一屏（`startAt`），落点对得上，少挑一遍。
+   * - **技能名** ⇒ **在词的原处放一句技能引用**（U36：带身份，不再只是几个字）。
+   *
+   * ⚠️ U57 那一手（同名 ⇒ 把候选栏上停的那一条原样带到「按来源挑一份」那一屏）随
+   * 2026-09-25 的裁定退回：**同名在发现那一层只剩一条**，候选栏上一个名字也只剩一条行，
+   * 「挑哪一份」这件事不再存在——选定就是选定，没有第二跳。
    */
   const pickCompletion = (): void => {
     const completion = view.completion
@@ -3265,21 +3243,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
 
     const hit = resolveSkill(row.name.slice(1), view.skills?.skills ?? [])
-
-    if (hit.kind === 'many') {
-      // 这一条在**同名那一摊**里排第几 —— 候选栏那几行与 `hit.skills` 同序同源
-      // （同名所以同分，排序是稳的，见 `matchCommands`），故按行数一遍就够。
-      const group = (completion?.candidates ?? []).filter((one) => one.name === row.name)
-      const chosen = hit.skills[group.indexOf(row)]
-
-      skillScope = hit.skills
-      openSkillsPicker(
-        row.name.slice(1),
-        { start: word.start, end: word.end },
-        chosen?.path,
-      )
-      return
-    }
 
     if (hit.kind === 'one') {
       commit(
@@ -3414,8 +3377,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (word === '/skills') {
       waiting = 'skills'
       skillSeed = arg
-      // 这是**浏览面**：从头看全目录，不是「同名挑一份」那一摊
-      skillScope = null
       return only(cleared, { type: 'skills.list' })
     }
 

@@ -1024,16 +1024,18 @@ describe('slash 候选（D12 · 纯函数级）', () => {
   /**
    * **技能名也在候选里**（U33）——三条分寸各考一条：
    * **打了名字才列**（光一个 `/` 不列，那一屏问的是「有哪些命令」）·
-   * **同一档同名各占一条、带来源** · **与内置命令同名的不列**（内置命令保留含义）。
+   * **一个名字一条，只带名称与简述** · **与内置命令同名的不列**（内置命令保留含义）。
    *
-   * ⚠️ **二变**（U57 · 修 D32）：这一条原判「**同名只列一条**（要挑去 `/skills`）」。
-   * 那个口径正是 D32 的现场——只打 `/twins` 时候选栏上一条，用户根本不知道库里有第二份；
-   * 而这一档**不能静默挑一个**（`resolveSkill`：同一优先级分不出唯一就展开），
-   * 于是那一条按下去还得再挑一次，屏上却一个字没说。现在**同名的各占一条**，
-   * 来源就写在（或先保在）自己那一行上（设计 · 技能调用：「来源要写全到能区分」）。
-   * **其余两条一字未动**；「分得出唯一时仍是一条」另有一条用例（`spec.u33-tui`）。
+   * ⚠️ **三变**（U58 · 2026-09-25）：这一条判过「同名只列一条」（初版）与「同一档同名各占
+   * 一条、带来源」（U57）。**两个口径都随「同名只留一条」作废**——同名在**发现那一层**
+   * 收成一条（`execution/src/skills.ts`），候选栏这一处只剩「把那一份列出来」；
+   * 来源那一格也一并收掉（它的由头是同名并存）。
+   *
+   * ⚠️ **这一处不按名字去重**：去重是发现那一层的事，两处各判一遍必然分叉（U49 那条教训）。
+   * 故喂一份带同名的清单它就照列两条——真实来源（`skills.discover`）不会给出那种清单；
+   * 同名谁赢由 `packages/execution/test/skills.test.ts` 咬。
    */
-  test('技能名进候选：按名筛 · 同档同名各占一条带来源 · 内置命令不让位', async () => {
+  test('技能名进候选：按名筛 · 一个名字一条（名称 ＋ 简述）· 内置命令不让位', async () => {
     const { matchCommands } = await import('../src/view.ts')
     const skill = (name: string, description = '') => ({
       name,
@@ -1043,21 +1045,17 @@ describe('slash 候选（D12 · 纯函数级）', () => {
       source: 'project' as const,
       origin: 'magic' as const,
     })
-    const catalog = [skill('ui-review', '检查布局'), skill('debug'), skill('ui-review', '另一份'), skill('model')]
+    const catalog = [skill('ui-review', '检查布局'), skill('debug'), skill('model')]
 
-    // 同名的两份各占一条（名字一样，**差异在来源那半截上**）
-    expect(matchCommands('/ui', catalog).map((row) => row.name)).toEqual(['/ui-review', '/ui-review'])
-    expect(matchCommands('/ui', catalog).map((row) => row.summary)).toEqual([
-      '项目 .magic/skills · 检查布局',
-      '项目 .magic/skills · 另一份',
-    ])
-    // 分得出唯一的那一份照旧一条，且**不带来源**（名称本身就认得出来）
+    // 一条候选＝名称 ＋ 简述（**没有来源那一格**）
+    expect(matchCommands('/ui', catalog)).toEqual([{ name: '/ui-review', summary: '检查布局' }])
+    // 简述为空就是空——不拿来源那一格去补
     expect(matchCommands('/deb', catalog)).toEqual([{ name: '/debug', summary: '' }])
     // 光一个 `/`：六条命令，一条技能都不列（`/skills` 就在那六条里）
     expect(matchCommands('/', catalog).map((row) => row.name)).toEqual(
       expect.not.arrayContaining(['/ui-review']),
     )
-    // `model` 那一份与内置命令同名⇒不列；`model` 只有一份，故不带来源那条口径不在这条上
+    // `model` 那一份与内置命令同名⇒不列（内置命令保留含义；该技能仍能从 `/skills` 选）
     expect(matchCommands('/model', catalog).map((row) => row.name)).toEqual(['/model'])
   })
 })

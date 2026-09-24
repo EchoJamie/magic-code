@@ -147,16 +147,26 @@ describe('U33 · 送达：取主文', () => {
 // ══ 目录块 ═══════════════════════════════════════════════════════════
 
 describe('U33 · 目录块', () => {
-  test('同名两个来源——**才**把目录补上（来源用于区分同名对象时须保留）', () => {
+  /**
+   * **行上不带技能目录的路径**（U58 收）：曾经「同名两个来源」才把目录补在行尾，
+   * 好让模型把目录交给 `skill` 工具的 `source` 参数指明取哪一份；同名只留一条之后，
+   * 那个参数与这一截一起收掉（`@magic/tools` 的 `skill-tool.ts`）——
+   * **名字就是完整的地址**，模型用 `{"name": "…"}` 取就够了。
+   *
+   * 来源那一句（`（来源 项目 .magic/skills）`）照旧留：它是「这一份从哪儿来」，
+   * 与同名与否无关（同块首那句「来自这个项目与这台机器」）。
+   */
+  test('行上只有名称 ＋ 描述 ＋ 来源；**不带技能目录路径**（模型按名字取）', () => {
+    const body = renderSkillsBlock({ skills: [PDF], problems: [] })?.body ?? ''
+
+    expect(body).toContain('`pdf`')
+    expect(body).toContain('（来源 项目 .magic/skills）')
+    expect(body).not.toContain('/ws/.magic/skills/pdf')
+
+    // 同名清单（真实来源给不出，这里只证明**块也不因为同名多印什么**）
     const same: Skill[] = [PDF, { ...PDF, path: '/home/me/.magic/skills/pdf', source: 'user' }]
-
-    const body = renderSkillsBlock({ skills: same, problems: [] })?.body ?? ''
-
-    expect(body).toContain('/ws/.magic/skills/pdf')
-    expect(body).toContain('/home/me/.magic/skills/pdf')
-
-    const single = renderSkillsBlock({ skills: [PDF], problems: [] })?.body ?? ''
-    expect(single).not.toContain('/ws/.magic/skills/pdf')
+    const twins = renderSkillsBlock({ skills: same, problems: [] })?.body ?? ''
+    expect(twins).not.toContain('/home/me/.magic/skills/pdf')
   })
 
   test('坏的照报（`error`）· 取舍不报（`choice`）', () => {

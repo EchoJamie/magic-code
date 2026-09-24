@@ -349,24 +349,24 @@ describe('判据 5 · 看不懂从严（按不可逆假定问）', () => {
 // （兜底那一支一个字未改，别的未知工具照旧 `heavy`）。
 
 describe('U33 · 技能读取的归类', () => {
+  /**
+   * **影响面落点收掉了**（U58）：原先这一格拿模型给的 `source`（技能目录）算 `landings`
+   * ——那个参数随「同名只留一条」一起收了（它的唯一由头是同名），落点也就没有来处。
+   */
   test('`skill` 归**轻**——读的是只读来源，材料里说清是哪一份', () => {
-    const { weight, material } = weigh(call('skill', { name: 'pdf', source: '/home/me/.magic/skills/pdf' }))
+    const { weight, material } = weigh(call('skill', { name: 'pdf' }))
 
     expect(weight).toBe('light')
     expect(material).toContain('只读材料')
     expect(material).toContain('pdf')
-    expect(material).toContain('/home/me/.magic/skills/pdf')
-  })
-
-  test('只给名字（没给来源）：仍**轻**——落点由工具入口按已发现身份归位', () => {
-    const { weight, material } = weigh(call('skill', { name: 'pdf' }))
-
-    expect(weight).toBe('light')
+    // 落点由工具入口按已发现身份归位（模型指不了路径），材料这一句说得出这件事
     expect(material).toContain('按名字取')
   })
 
-  test('技能目录在工作区之外——**照样轻**（读材料不是越界；越界必闸管的是写 / 删 / 移）', () => {
+  test('多给一个 `source`（参数表里已没有这一格）**不改判**——照样轻', () => {
+    // 读的边界不在这一层：能读哪些由 `Skills` 端口按已发现身份与来源内相对引用卡死
     const { weight } = weigh(call('skill', { name: 'pdf', source: '/elsewhere/skills/pdf' }))
+
     expect(weight).toBe('light')
   })
 

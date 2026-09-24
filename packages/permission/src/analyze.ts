@@ -323,28 +323,23 @@ function analyzePlanUpdate(): Analysis {
  * **不收回执的落点**：不因为 `skill` 是「本单新加的」，就顺带放宽别的未知工具——
  * 兜底那一支一个字没动（`default` 仍是 `unclassifiable`）。
  *
- * **影响面词条**（`landings`）取 `source`（技能目录路径，模型给了才认）——
- * 它的用途是规则轴比对（工具 × 路径模式 × 操作类型），故照实给；给不出来就不给
- * （缺省＝只按名字取，那条路在工具入口里归位，不涉及「模型指了哪儿」）。
- * ⚠️ 技能目录**可能在**工作区之外（用户目录下的 `~/.magic/skills`）：`landPath`
- * 照旧算出 `inside: false`，但那**不构成越界必闸**——必闸清单的越界条目管的是
- * 「工作区外的**写 / 删 / 移**」，读材料不在此列（同 `analyzeSearch` 那条口径）。
+ * **没有影响面词条**（`landings: []`）：模型**给不出**技能目录。原先它手上有个 `source`
+ * 参数（同名有多个来源时用它指明取哪一个），那一格就是拿它算的；同名在发现那一层只剩一条
+ * 之后那个参数收掉了（见 `@magic/tools` 的 `skill-tool.ts`），落点也就没有来处——
+ * 「按名字取哪一份」由工具入口按已发现的身份归位，与「模型指了哪儿」无关。
+ * ⚠️ 技能目录**可能在**工作区之外（用户目录下的 `~/.magic/skills`），但这**不构成越界必闸**
+ * ——必闸清单的越界条目管的是「工作区外的**写 / 删 / 移**」，读材料不在此列
+ * （同 `analyzeSearch` 那条口径）。
  */
-function analyzeSkill(call: ToolCall, ctx: PermissionContext): Analysis {
-  const source = firstString(call.args, (key) => key === 'source')
+function analyzeSkill(call: ToolCall, _ctx: PermissionContext): Analysis {
   const path = firstString(call.args, (key) => key === 'name')
-
-  const where =
-    source === undefined
-      ? '技能目录（按名字取，落点由工具入口按已发现的身份归位）'
-      : `技能目录 ${source.value}`
   const what = path === undefined ? '技能材料' : `技能「${path.value}」的正文或引用`
 
   return {
     weight: 'light',
-    material: [`读的是一份只读材料：${what}`, `来源：${where}`].join('\n'),
+    material: [`读的是一份只读材料：${what}`, '来源：技能目录（按名字取，落点由工具入口按已发现的身份归位）'].join('\n'),
     ops: ['read'],
-    landings: source === undefined ? [] : [landPath(source.value, ctx)],
+    landings: [],
   }
 }
 

@@ -165,78 +165,84 @@ describe('U33 · `/skills` 的抽屉', () => {
     feedCatalog(stage, [skill('pdf'), skill('debug')])
 
     const picker = pickerOf(stage)
-    // 候选每项一行：名称（label）＋ 来源 · 简述（meta）——同名两份靠来源分得开
+    // 候选每项一行：**名称 ＋ 简述**——2026-09-25 起不再印来源那一格（见下一条）
     expect(picker.rows.map((row) => row.label)).toEqual(['pdf', 'debug'])
-    expect(picker.rows[0]?.meta).toBe('项目 .magic/skills · pdf 的简述')
+    expect(picker.rows[0]?.meta).toBe('pdf 的简述')
     expect(picker.rows.every((row) => row.oneLine === true)).toBe(true)
   })
 
-  test('同名两份各占一行、来源可辨；选定＝在原处留下那一份的身份', () => {
+  /**
+   * **来源那一格收掉了**（U58 · 2026-09-25 用户定）：它印在行上的由头是「同名并存时把两份
+   * 分开」，而**同名只留一条**（判定在上游的发现层）之后，它成了没有信息量的额外显示
+   * ——设计 · 技能调用：「来源优先级是**内部规则**，不在界面上呈现」。
+   *
+   * 记录里仍保留当时用的是哪一份（那是依据，不是显示）；读取失败的话与 `magic --check`
+   * 也照旧指明来源。
+   */
+  test('`/skills` 每项一行：**名称 ＋ 简述**（不带来源）；选定＝在原处留下那一份的身份', () => {
     const stage = createStage()
-    const two = [
-      skill('pdf', { label: '项目 .magic/skills' }),
-      skill('pdf', { label: '用户 .magic/skills' }),
-    ]
 
-    openSkills(stage, '/skills', two)
-    expect(pickerOf(stage).rows.map((row) => row.meta.split(' · ')[0])).toEqual([
-      '项目 .magic/skills',
-      '用户 .magic/skills',
-    ])
-    expect(pickerOf(stage).rows.map((row) => row.current)).toEqual([false, false])
+    openSkills(stage, '/skills', [skill('pdf'), skill('debug', { description: '看日志' })])
 
-    // **原锚**：选定后 `view.bound.ref.path === '/ws/project/pdf'`，再开抽屉时那份标「当前」；
-    // **为何变**（U36）：草稿上不再挂一条独立的「当前技能」——引用就写在正文里，
-    // 「当前」这件事由草稿那一行自己说；**新锚**：草稿里出现 `/pdf` 那一段引用，
-    // 身份取的是选定的那一份（同名两份靠它分开）。
-    stage.press(ENTER) // 选定头一份
+    const rows = pickerOf(stage).rows
+    expect(rows.map((row) => row.meta)).toEqual(['pdf 的简述', '看日志'])
+    expect(rows.map((row) => row.current)).toEqual([false, false])
+
+    // 选定第二条：草稿里留下的是**这一条**的身份（真路径）
+    stage.press({ kind: 'down' })
+    stage.press(ENTER)
     expect(stage.shell.getView().refs).toEqual([
-      { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' },
+      { start: 0, end: 6, kind: 'skill', marker: '/debug', name: 'debug', source: '/ws/project/debug' },
     ])
     // 选定之后抽屉收起（选定即离开列表，回去看草稿）
-    expect(stage.shell.getView().draft).toBe('/pdf')
+    expect(stage.shell.getView().draft).toBe('/debug')
     expect(stage.shell.getView().dock.kind).toBe('input')
   })
 
+  /**
+   * 选定＝**只把那处引用放进草稿**：正文一字不动、一条命令都不发（不发送、不加载主文）。
+   *
+   * ⚠️ **驱动换了一条路**（U58）：原锚走的是「同名 ⇒ 展开那一屏、在那一屏上选定」，
+   * 同名不再并存 ⇒ 那一屏不存在了。真会话里「选定一处引用」现在只有两条路：`/skills`
+   * 选一份（锚点在打开列表前那一格），以及**候选栏上 `Tab`**（绑在词的原处）——
+   * 「原位」那一形只有后者，故这里走它。
+   */
   test('选定＝**在词的原处放一句引用**：正文留着、一条命令都不发（不发送、不加载主文）', () => {
     const stage = createStage()
-    const tied = [
-      { ...skill('pdf'), path: '/ws/a/pdf' },
-      { ...skill('pdf'), path: '/ws/b/pdf' },
-    ]
-    directHit(stage, '/pdf 先打半句', tied)
+    stage.type('/pdf')
+    feedCatalog(stage, [skill('pdf')])
     const before = stage.commands().length
 
-    stage.press(ENTER) // 选定
+    stage.press({ kind: 'tab' }) // 候选栏上选定那一条
 
     const view = stage.shell.getView()
     // **原锚**：选定后正文是「剥掉斜杠词」的 `先打半句`、插入点 4、绑定挂在 `view.bound` 上；
     // **为何变**（U36）：`/pdf` 不再被抽走——它就留在句首那一格，身份随它一起记；
     // **新锚**：正文一字不动、引用区间覆盖 `/pdf` 那四个字，插入点落在它之后。
     expect(view.refs).toEqual([
-      { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/a/pdf' },
+      { start: 0, end: 4, kind: 'skill', marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' },
     ])
-    expect(view.draft).toBe('/pdf 先打半句')
-    expect(view.caret).toBe(9) // 用户原来那一格（末尾）——不搬去别处
-    expect(view.dock.kind).toBe('input') // 抽屉收起
+    expect(view.draft).toBe('/pdf')
+    expect(view.caret).toBe(4) // 用户原来那一格（词尾）——不搬去别处
     expect(stage.commands()).toHaveLength(before) // 一条命令都不发（「零模型请求」的根就在这儿）
   })
 
+  /**
+   * `esc` 取消＝不留痕迹：抽屉收起、草稿一个字不动、**没留下半处引用**。
+   *
+   * ⚠️ **驱动改了**（U58）：原锚靠「同名展开」那一屏才做得出「抽屉开着而草稿里有正文」
+   * （`/skills` 自己是个斜杠命令，打它之前草稿先被清掉），而那一屏不存在了。
+   * 这里咬的还是那两件：**取消不写草稿**、**不留引用**。
+   */
   test('`esc` 取消＝不留痕迹，草稿一个字不动', () => {
     const stage = createStage()
-    // 走**同名展开**那一路：它是唯一「抽屉开着而草稿里有正文」的形态
-    // （`/skills` 自己是个斜杠命令，打它之前草稿先被清掉了）
-    const tied = [
-      { ...skill('pdf'), path: '/ws/a/pdf' },
-      { ...skill('pdf'), path: '/ws/b/pdf' },
-    ]
-    directHit(stage, '/pdf 半句话', tied)
+    openSkills(stage, '/skills', [skill('pdf'), skill('debug')])
     expect(pickerOf(stage).rows).toHaveLength(2)
 
     stage.press(ESC)
 
     expect(stage.shell.getView().dock.kind).toBe('input')
-    expect(stage.shell.getView().draft).toBe('/pdf 半句话') // 一个字都没动
+    expect(stage.shell.getView().draft).toBe('') // 一个字都没进去
     expect(stage.shell.getView().refs).toEqual([]) // 也没留下半处引用
   })
 
@@ -397,30 +403,30 @@ describe('U33 · `/<技能名>` 直达', () => {
     expect(stage.commands().some((one) => one.type === 'session.new')).toBe(false)
   })
 
-  test('**同名同档分不出唯一** ⇒ 展开同名候选，不静默挑一个', () => {
+  /**
+   * **同名同档分不出唯一**那一档整条撤了（U58 · 2026-09-25）——原判据是「展开同名候选，
+   * 不静默挑一个」。新规矩是**同名在发现那一层就只剩一条**：`/名字 交代` 一次提交，
+   * 带走的就是留下那一份的身份（**次序即优先级**：项目 ＞ 用户、`.magic` ＞ `.agents`）。
+   *
+   * 发现层那一半（谁赢、怎么保证确定）在 `packages/execution/test/skills.test.ts`
+   * 与 `packages/app/test/skills.test.ts`；这里钉的是**外壳这一跳**：
+   * 拿到唯一那一份 ⇒ 绑上它的身份，一步发出去。
+   */
+  test('`/名字 交代` 一次提交：绑的是**发现留下的那一份**（同名不再并存）', () => {
     const stage = createStage()
-    // 两处都是 project ＋ magic（多根工作区那种）——档位一样，排不出先后
-    const tied = [
-      { ...skill('pdf'), path: '/ws/a/.magic/skills/pdf' },
-      { ...skill('pdf'), path: '/ws/b/.magic/skills/pdf' },
+    const rows = [
+      skill('pdf', { label: '项目 .magic/skills', path: '/ws/a/.magic/skills/pdf' }),
+      skill('pdf', { label: '用户 .magic/skills', path: '/ws/b/.magic/skills/pdf' }),
     ]
 
-    directHit(stage, '/pdf 帮我看看', tied)
+    directHit(stage, '/pdf 帮我看看', rows)
 
-    expect(submitted(stage)).toEqual([]) // 没提交
-    expect(stage.shell.getView().refs).toEqual([]) // 也没静默挑一个
-
-    const picker = pickerOf(stage)
-    expect(picker.rows.map((row) => row.value)).toEqual([
+    const sent = submitted(stage)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.type === 'input.submit' ? sent[0].refs?.[0]?.source : undefined).toBe(
       '/ws/a/.magic/skills/pdf',
-      '/ws/b/.magic/skills/pdf',
-    ])
-    expect(picker.hint).toContain('同名的')
-
-    stage.press(ENTER) // 选定头一份
-    // 选定的是哪一份，写在引用的身份上（同名两份靠它分）；正文一字不动
-    expect(stage.shell.getView().refs[0]?.source).toBe('/ws/a/.magic/skills/pdf')
-    expect(stage.shell.getView().draft).toBe('/pdf 帮我看看')
+    )
+    expect(said(stage)).not.toContain('不认得的命令')
   })
 
   test('**内置命令保留**：`/model` 仍是换模型；同名技能从 `/skills` 里选', () => {
@@ -618,41 +624,27 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
 
 // ══ 独立验收退回的三处（真 PTY 反例 —— 逐条固化成负例回归）══════════════
 
-describe('退回① · 候选的来源必须辨得出来（两行不能逐字相同）', () => {
-  /**
-   * **负例回归**：同一处两份同名（`first/` 与 `second/` 都自称 `twins`）。
-   *
-   * 旧行为：两行都是 `twins　项目 .magic/skills · …`——**逐字相同**，用户没有依据挑一份。
-   * 来源的细分由**发现处**产出（`Skill.label`，见 `execution/src/skills.ts` 的
-   * `sourceLabelOf`）；这一条钉的是「那一串到屏上真的分成两行」。
-   */
-  test('同档同名两份：两行的来源不同', () => {
-    const stage = createStage()
-    const twins = [
-      skill('twins', { label: '项目 .magic/skills/first', description: '同一句简述' }),
-      skill('twins', { label: '项目 .magic/skills/second', description: '同一句简述' }),
-    ]
-
-    directHit(stage, '/twins body', twins)
-
-    const rows = pickerOf(stage).rows
-    expect(rows).toHaveLength(2)
-    expect(rows[0]?.meta).not.toBe(rows[1]?.meta) // 旧行为下这两串一模一样
-    expect(rows[0]?.meta).toContain('first')
-    expect(rows[1]?.meta).toContain('second')
-  })
-
+/**
+ * 退回①那一组原判「候选的**来源**必须辨得出来（两行不能逐字相同）」——同名的两份各占一条、
+ * 各带来源。**整组随「同名只留一条」作废**（U58 · 2026-09-25）：同名不再并存，也就没有
+ * 「两行逐字相同」这回事；来源那一格从界面上收掉了（设计 · 技能调用）。
+ *
+ * 这一组里真正还活着的那条判据是**额度的分法**（独立验收二轮退回的那条「过正」）：
+ * 放得下就一个字都不截；放不下**先保住名称**、截断落在简述身上。下面就留这一条。
+ */
+describe('额度分法 · 名称在先，截断落在简述身上', () => {
   /**
    * **负例回归**（独立验收二轮退回的那条「过正」）：**宽窗下名称放得下就不许截它**。
    *
    * 旧行为：名称**无条件**限在一半列宽（100 列下 47 列），于是 60 字符的名字被截，
-   * 而 meta 那边还空着二十来列没用上——把设计「名称/来源在前，简述在后」的优先级
-   * 倒过来了（截断该落在简述身上）。
+   * 而 meta 那边还空着二十来列没用上——把设计「名称在前、简述在后」的优先级倒过来了
+   * （截断该落在简述身上）。
    */
   test('**宽窗（100 列）**：名称整串都在，被截的是简述', async () => {
     const stage = createStage()
     const long = 'a'.repeat(60) // front-matter 的名字上限 64——放得下就不该截
-    const note = '这份简述写得很长，长到整行装不下，宽窗下该被截断的是它'
+    // 简述长到与名字一起装不进整行——放不下时就该轮到它被截
+    const note = '这份简述写得很长，长到与名字一起装不下整行，宽窗下该被截断的是它而不是名字'
 
     openSkills(stage, '/skills', [skill(long, { description: note })])
 
@@ -665,216 +657,165 @@ describe('退回① · 候选的来源必须辨得出来（两行不能逐字相
     expect(row).toContain(long)
     // 名称之后紧跟的是那个全角分隔——不是省略号
     expect(row[row.indexOf(long) + long.length]).toBe('　')
-    // 来源照旧在（它也是「必留」的那一段）
-    expect(row).toContain('项目 .magic/skills')
     // **截断落在简述身上**
     expect(row).not.toContain(note)
+    // 来源那一格一个字都不在（U58 收掉的）
+    expect(row).not.toContain('.magic/skills')
   })
 
   /**
-   * **负例回归**：起手即窄（60 列）＋ 56 字符的技能名，来源被名字挤没了。
+   * **窄窗（60 列）＋ 56 字符的名字**：放不下时**名称先吃满整行**，截断落在简述身上。
    *
-   * 旧行为：名称优先裁至全宽 ⇒ 两行都只剩同一串截断的名字，连「项目 / 用户」都没了。
-   * 新判据：**名称至多占一半**，来源永远留得下——两行的来源仍要分得开。
+   * ⚠️ **判据换了**（U58）：原判「名称至多占一半、来源永远留得下」——那一半是给**来源**
+   * 扣的额度，来源收掉之后这一扣就没有由头了（设计 · 技能调用：「别把名称无条件限死一半；
+   * 窄窗先保住名称、再截断简述」）。现在名称拿到的是整行，简述被挤掉。
    */
-  test('窄窗（60 列）＋ 长名字：来源仍分得开（项目 / 用户）', async () => {
+  test('窄窗（60 列）＋ 长名字：**名称先吃满**，简述被挤掉（不再给它划一半）', async () => {
     const stage = createStage()
     const long = 'a'.repeat(56)
 
-    openSkills(stage, '/skills', [
-      skill(long, { label: '项目 .magic/skills', description: `${long} 的简述` }),
-      skill(long, { label: '用户 .magic/skills', description: `${long} 的简述` }),
-    ])
+    openSkills(stage, '/skills', [skill(long, { description: `${long} 的简述` })])
 
     const lines = (await stage.screen({ columns: 60, rows: 24 })).dock.map((line) => line.text)
-    const rows = lines.filter((line) => line.includes(long.slice(0, 8)))
+    const row = lines.find((line) => line.includes(long.slice(0, 8)))
+    expect(row).toBeDefined()
+    if (row === undefined) return
 
-    expect(rows).toHaveLength(2)
-    expect(rows[0]).toContain('项目 .magic/skills')
-    expect(rows[1]).toContain('用户 .magic/skills')
     // 仍是**每项一行**（挤掉的是简述，不是折行）
-    expect(rows[0]?.length).toBeLessThanOrEqual(60)
-    expect(rows[1]?.length).toBeLessThanOrEqual(60)
+    expect(row.length).toBeLessThanOrEqual(60)
+    // 名称拿到的额度比旧行为**多出一大截**（旧行为下它被来源挤到只剩一半）
+    expect(row).toContain('a'.repeat(45))
+    // 简述**一个字都不留**——它才是被截的那一段
+    expect(row).not.toContain('的简述')
+    // **整行只有一个省略号**（名称尾巴上那个）：简述那边的额度只剩一位时不给它留字
+    // ——孤零零一个「…」不说明任何事（`partsOf` 那一处的分寸）
+    expect(row.split('…')).toHaveLength(2)
   })
 })
 
-// ══ U57 · 同档同名挑得动（D32）════════════════════════════════════════
+// ══ U57 那一手里**还活着**的一件：已经绑好的引用，回车＝提交 ══════════════
 
 /**
- * 现场（真跑撞见的那四步）：`/twins` → 候选栏只出一条 → `↓`+`Tab` 才开出那一屏 →
- * 在那一屏上 `↓`+回车，草稿上**还是那几个字母** → 接着打正文再回车，**又弹回那一屏**，
- * 一条请求都没发出去。
+ * U57（D32）那一手做了三件：候选栏同名各占一条 · 那一屏停在挑中的那一份上 ·
+ * **回车又走一遍「同名 ⇒ 展开候选」时不再把已经绑好的引用吃掉**。
  *
- * 三条都要咬住：**候选栏上就分得开** · **挑定即绑上身份** · **回车就是提交**（不再展开）。
+ * **前两件随本单退回**（U58 · 2026-09-25 用户定）：同名在**发现那一层**就只剩一条，
+ * 「分不出唯一 ⇒ 展开候选」这件事整个不存在了——那一屏、那两条候选、`startAt`
+ * 一并收掉（见 `view.ts` 的 `skillCommands`、`shell.ts` 的 `submit`）。
+ *
+ * **第三件不是「同名」那一路的附属品**：它守的是一条独立的不变量——
+ * 词上已经贴着一处**绑好的引用**（来源用户已经指明过），回车就该是提交，
+ * 不该再问一遍。故它被**提到不依赖同名的那一层**（`submit` 里那道闸），
+ * 下面这一条钉的就是它。
  */
-describe('U57 · 同档同名（D32）', () => {
-  /** 同档同名的两份——目录名与技能名不一致，故来源带一段位置（设计：「来源要写全到能区分」）。 */
-  const twins = [
-    skill('twins', {
-      label: '项目 .magic/skills/first',
-      description: '独立验证技能',
-      path: '/ws/.magic/skills/first',
-    }),
-    skill('twins', {
-      label: '项目 .magic/skills/second',
-      description: '独立验证技能',
-      path: '/ws/.magic/skills/second',
-    }),
-  ]
-
+describe('U57 · 已经绑好的引用：回车＝提交（D32 第 4 步留下的那条不变量）', () => {
   /**
-   * **候选栏上就分得开**（D32 第 1 步）。
+   * 旧行为（D32 现场）：挑定之后那一处**已经是引用**，回车却又走一遍「展开候选」，
+   * **又弹回同一屏**、一条请求都没发——用户以为发出去了，在等一个不会来的回复。
    *
-   * 旧行为：同名的只列一条 `/twins`——用户根本不知道库里有第二份，要按一下 `Tab`
-   * 才在下一屏看见。而这一档**不能静默挑一个**，于是那一条按下去还得再挑一次，
-   * 屏上却一个字没说（「看着选了、其实没选」的源头）。
+   * 这一条钉的是**结果**（一步发出去、身份就是绑好的那一处、没多出第二处）。
+   * ⚠️ 它对**那道闸**并不敏感：`putRef` 本来就把落在同一个区间上的旧引用换掉，
+   * 故「绑好的那一处不许被吃掉」在 `one` 那一支里**本来也成立**；
+   * 那道闸单独能被咬住的是下一条（名字查不到的那一形）。
    */
-  test('候选栏：同档同名**各占一条**，来源就写在自己那一行上', () => {
+  test('**绑好引用的词，回车＝提交**：一步发出去，不再弹回选择器', () => {
     const stage = createStage()
     stage.type('/twins')
-    feedCatalog(stage, twins)
+    feedCatalog(stage, [skill('twins', { path: '/ws/.magic/skills/twins' })])
 
-    const candidates = stage.shell.getView().completion?.candidates ?? []
-    expect(candidates.map((row) => row.name)).toEqual(['/twins', '/twins'])
-    // 两行**不是逐字相同**——差异在来源那半截上（名称本来就一样）
-    expect(candidates.map((row) => row.summary)).toEqual([
-      '项目 .magic/skills/first · 独立验证技能',
-      '项目 .magic/skills/second · 独立验证技能',
-    ])
-  })
+    stage.press({ kind: 'tab' }) // 候选栏上选定 ⇒ 词上贴了一处绑好的引用
+    expect(stage.shell.getView().refs).toHaveLength(1)
 
-  /**
-   * **反面**：分得出唯一的那些照旧——候选栏**一条**，且**不带来源**。
-   *
-   * 带上去是白重复：名称本身就认得出来（设计：「同名时补必要来源」）。
-   * 不同档的同名（项目 / 用户）也走这一条：直达按已定来源优先级解析，最优那一档是唯一的。
-   */
-  test('分得出唯一时照旧一条、不带来源（不同档的同名也在这一档）', () => {
-    const stage = createStage()
-    stage.type('/pdf')
-    feedCatalog(stage, [
-      skill('pdf', { label: '项目 .magic/skills' }),
-      skill('pdf', { label: '用户 .magic/skills' }),
-      skill('solo'),
-    ])
-
-    const candidates = stage.shell.getView().completion?.candidates ?? []
-    expect(candidates).toEqual([{ name: '/pdf', summary: 'pdf 的简述' }])
-  })
-
-  /**
-   * **候选栏上挑哪一份，那一屏就停在哪一份**。
-   *
-   * 两条列同一串名字，挑第几条就落到第几条上——在那一栏上停的那一行不至于白停
-   * （不然又是一回「看着选了、其实没选」）。
-   */
-  test('候选栏上挪一格再 `Tab`：那一屏**停在第二份**上', () => {
-    const stage = createStage()
-    stage.type('/twins')
-    feedCatalog(stage, twins)
-
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'tab' })
-
-    const picker = pickerOf(stage)
-    expect(picker.selected).toBe(1)
-    expect(picker.rows[picker.selected]?.value).toBe('/ws/.magic/skills/second')
-  })
-
-  /**
-   * **回车就是提交**（D32 第 4 步）——本单的正主。
-   *
-   * 旧行为：挑定之后那一处**已经是引用**，而回车又走一遍「同名 ⇒ 展开候选」，
-   * 于是**又弹回同一屏**、一条请求都没发——用户以为发出去了，在等一个不会来的回复。
-   * 判据：第二下回车**交出去了**（`input.submit`），抽屉别再开回来。
-   */
-  test('**挑定之后回车＝提交**：不再弹回选择器，交代真发出去', () => {
-    const stage = createStage()
-    directHit(stage, '/twins 帮我看看', twins)
-
-    // 第一下回车：分不出唯一 ⇒ 展开（不静默挑一个），此刻**一条都没交出去**
-    expect(pickerOf(stage).rows).toHaveLength(2)
-    expect(submitted(stage)).toEqual([])
-
-    stage.press({ kind: 'down' }) // 在那一屏上挪到第二份
-    stage.press(ENTER) // 选定它
-    expect(stage.shell.getView().refs[0]?.source).toBe('/ws/.magic/skills/second')
-    expect(stage.shell.getView().draft).toBe('/twins 帮我看看')
+    stage.type(' 帮我看看')
     expect(submitted(stage)).toEqual([]) // 选定不等于发送
 
-    stage.press(ENTER) // 这一下就是提交（D32 第 4 步：不再弹回那一屏）
-    expect(stage.shell.getView().dock.kind).toBe('input')
+    stage.press(ENTER) // 这一下就是提交
 
-    const sent = submitted(stage)
-    const one = sent[0]
-    expect(sent).toHaveLength(1)
-    // 交出去的那一份带着**挑定的那一处身份**（第二份），不是「又展开一遍」
-    expect(one?.type === 'input.submit' ? one.refs?.[0]?.source : undefined).toBe(
-      '/ws/.magic/skills/second',
-    )
-  })
-
-  /**
-   * **没挑过的那一份仍不许静默挑**：`/twins 交代` 一次回车，展开那一屏——
-   * 与旧行为一字不差（本单只补「已经挑定了的那一处」）。
-   */
-  test('没绑定过的同名 ⇒ 照旧展开那一屏（不静默随目录顺序挑）', () => {
-    const stage = createStage()
-    directHit(stage, '/twins 帮我看看', twins)
-
-    expect(pickerOf(stage).rows.map((row) => row.value)).toEqual([
-      '/ws/.magic/skills/first',
-      '/ws/.magic/skills/second',
+    expect(stage.shell.getView().dock.kind).toBe('input') // 没弹出任何选择器
+    // 交出去的那一份带着**那一处已经绑好的身份**，且**只有这一处**
+    expect(submitted(stage)).toEqual([
+      {
+        type: 'input.submit',
+        text: '/twins 帮我看看',
+        refs: [
+          { kind: 'skill', at: 0, marker: '/twins', name: 'twins', source: '/ws/.magic/skills/twins' },
+        ],
+        ref: 'draft-1',
+      },
     ])
-    expect(submitted(stage)).toEqual([])
-    expect(stage.shell.getView().refs).toEqual([])
   })
 
   /**
-   * **掐掉头空白之后锚点仍在那个词上**：草稿以空格开头时，展开那一屏 → 选定 →
-   * 正文头一格不被吃掉（锚点按 `head` 换算；旧写法写死 0，会切错一格）。
+   * **名字在目录里已经查不到了，那一处绑好的引用照旧交出去**——这是那道闸**单独**管着的一形
+   * （拿掉它，这一条当场转红）。
+   *
+   * 判据：词上贴着一处已绑好的引用时，**不拿目录去重判它是不是技能**——用户已经指明过来源，
+   * 该不该收、收得住收不住是内核那一头按身份宣布的事（设计：「显式选定后绑定该来源，
+   * 失效不换同名项」；失败回执也说得出是谁）。这里要的是**把它交出去**，
+   * 而不是掉进「不认得的命令」——那等于把用户选过的一处引用当成一句打错的命令。
    */
-  test('草稿以空格开头：选定也落在那个词上（切不掉正文第一格）', () => {
+  test('目录里查不到这个名字了：已绑好的那一处**照旧交出去**（不当成「不认得的命令」）', () => {
+    const stage = createStage()
+    stage.type('/twins')
+    feedCatalog(stage, [skill('twins', { path: '/ws/.magic/skills/twins' })])
+    stage.press({ kind: 'tab' }) // 先绑好
+    stage.type(' 帮我看看')
+
+    // 目录刷新：这份技能在磁盘上被改名 / 挪走了——名字查不到了
+    feedCatalog(stage, [skill('other', { path: '/ws/.magic/skills/other' })])
+    stage.press(ENTER)
+
+    expect(submitted(stage)).toHaveLength(1)
+    expect(said(stage)).not.toContain('不认得的命令')
+  })
+
+  /**
+   * **掐掉头空白之后锚点仍在那个词上**：草稿以空格开头时，绑定的引用不该吃掉正文第一格
+   * （锚点按掐掉的头几格换算；写死 0 会切错一格）。
+   *
+   * U57 时这一条走的是「同名 ⇒ 展开那一屏 → 选定」；同名不再并存，改由**直达那一支**钉
+   * ——`head` 那段换算在 `one` 那一支里照旧是活的。
+   */
+  test('草稿以空格开头：绑定的引用仍落在那个词上（切不掉正文第一格）', () => {
     const stage = createStage()
     stage.type(' /twins 帮我看看')
-    feedCatalog(stage, twins)
+    feedCatalog(stage, [skill('twins', { path: '/ws/.magic/skills/twins' })])
     stage.press(ENTER)
 
-    expect(pickerOf(stage).rows).toHaveLength(2)
-
-    stage.press({ kind: 'down' }) // 选第二份
-    stage.press(ENTER)
-
-    expect(stage.shell.getView().draft).toBe(' /twins 帮我看看')
-    expect(stage.shell.getView().refs[0]?.source).toBe('/ws/.magic/skills/second')
-    expect(stage.shell.getView().refs[0]?.start).toBe(1)
+    expect(submitted(stage)).toEqual([
+      {
+        type: 'input.submit',
+        text: '/twins 帮我看看', // 掐掉的那个空格不进正文
+        refs: [
+          { kind: 'skill', at: 0, marker: '/twins', name: 'twins', source: '/ws/.magic/skills/twins' },
+        ],
+        ref: 'draft-1',
+      },
+    ])
   })
 })
 
 describe('退回② · 选定不搬正文里的插入点（U36 改形：不再剥前缀）', () => {
   /**
-   * **负例回归**：把插入点摆到末尾（或摆到别处）——「选定之后接着打，字得跟在我原来那一格」。
+   * **负例回归**：把插入点摆到词里——「选定之后接着打，字得跟在我原来那一格」。
    *
    * **原锚**：`/twins abc|d` 选定之后正文变成 `abcd`、插入点 3（因为开头那截被剥掉了）；
-   * **为何变**（U36）：不再剥——`/twins` 留在原位，故插入点是**用户原来那一格**（10，
-   * 在 `c` 与 `d` 之间）跟着长度差平移之后的那个位置；**新锚**：接着打 `Z` 得到 `abcZd`
-   * （而不是被摆到末尾的 `abcdZ`）。
+   * **为何变**（U36）：不再剥——`/twins` 留在原位，故插入点是**用户原来那一格**；
+   * **新锚**：选定（候选栏上 `Tab`）之后，插入点仍是 `abc|d` 那一格，接着打 `Z`
+   * 得到 `abcZd`（而不是被摆到末尾的 `abcdZ`）。
+   *
+   * ⚠️ **驱动换了**（U58）：原锚走「回车 ⇒ 展开同名候选 ⇒ 选定」，同名不再并存 ⇒
+   * 那一屏没了。「选定一处引用」现在只剩候选栏上 `Tab` 与 `/skills` 两条路，这里走前者。
    */
   test('插入点仍是用户原来那一格：`/twins abc|d` 选完接着打 ⇒ `abcZd`', () => {
     const stage = createStage()
-    const twins = [
-      { ...skill('twins'), path: '/ws/a/twins' },
-      { ...skill('twins'), path: '/ws/b/twins' },
-    ]
 
     stage.type('/twins abcd')
-    feedCatalog(stage, twins)
+    feedCatalog(stage, [skill('twins')])
     stage.press({ kind: 'left' }) // 光标到 `abc|d`
     expect(stage.shell.getView().caret).toBe(10)
 
-    stage.press(ENTER) // 名字分不出唯一 ⇒ 展开同名候选
-    expect(pickerOf(stage).rows).toHaveLength(2)
-    stage.press(ENTER) // 选定头一份
+    stage.press({ kind: 'tab' }) // 候选栏上选定那一条
 
     const view = stage.shell.getView()
     expect(view.draft).toBe('/twins abcd') // 一字不剥

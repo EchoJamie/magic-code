@@ -27,11 +27,22 @@
  * `danger: light` 只声明了「这一类动作的方向」；**真正的判定在权限域**
  * （`analyze.ts` 的 `skill` 那一条）——不在这儿，也不靠 `ToolSpec` 一个字段说了算。
  *
- * ## 同名怎么办
+ * ## 同名怎么办：**没有这个问题了**（2026-09-25 收）
  *
- * 名字不唯一时**不静默挑一个**（「不能静默选错技能」）：回填里列出各来源的目录，
- * 让模型带 `source` 再要一次。用户显式选定的那一条路上不存在这个问题
- * （绑定草稿时带的就是身份），故这一条只影响模型自主选用。
+ * 曾经这里有一个 `source` 参数：名字不唯一时**不静默挑一个**，回填里列出各来源的目录，
+ * 让模型带 `source` 再要一次。那个参数随「**同名只留一条**」一起收掉——
+ * 同名在**发现那一层**就只剩一份了（项目级 ＞ 用户级、`.magic` ＞ `.agents`，
+ * 同档按目录名字典序取第一个，见 `@magic/execution` 的 `skills.ts`），
+ * 于是「名字 → 哪一份」是一个**单值**：名字本身就是完整的地址，没有第二件要说的事。
+ *
+ * ⚠️ **不是把那个判定挪走，是它成立的前提没了**：收掉 `source` 之后，这里**不保留**
+ * 任何「名字不唯一」的分支——一份判定留在那儿当死代码，比没有更坏（读的人会以为它活着）。
+ * 真出现同名的目录（桩、或将来别处喂进来的清单），取的是**次序里靠前的那一份**：
+ * 那正是发现层的规则，此处不另立一套。
+ *
+ * ⚠️ 连带的一处：`analyze.ts` 的 `skill` 那一格原先拿模型给的 `source` 算**影响面落点**
+ * （规则轴比对）。参数没了，落点就没有来处——那一格同步收窄成「只按名字取」，
+ * 不再假装知道模型指了哪儿。读的边界本来也不由它担保（见上「边界」）。
  */
 
 import type { Skill, SkillMaterial, SkillRead, Skills, UsedSkill } from '@magic/contracts'
@@ -40,13 +51,14 @@ import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused } from './toolkit.ts'
 
 /**
- * 参数模式——**键名锚定在本文件**（`name` / `source` / `relative`）。
+ * 参数模式——**键名锚定在本文件**（`name` / `relative`）。
  *
  * 不放进契约的「参数键全表」：那张表管的是**工具集 v1 七件**（阶段 2 冻结的公开词表），
  * 而这一件是**本单元按需长出来的一件**，键名与语义都在这里。
  *
- * `description` 是给模型读的说明书——三个键各答一个问题：要哪个技能 · 哪一份来源 ·
- * 来源里的哪一份文件。
+ * `description` 是给模型读的说明书——两个键各答一个问题：要哪个技能 · 取哪一份文件。
+ * **一个名字一份技能**（同名在发现那一层就收成一条了，见文件头注），故不需要第三个键
+ * 去指「哪一份来源」。
  */
 export const SKILL_PARAMETERS = {
   type: 'object',
@@ -57,11 +69,6 @@ export const SKILL_PARAMETERS = {
     name: {
       type: 'string',
       description: '技能名称——取系统提示词「可用技能」一节里列的那个名字',
-    },
-    source: {
-      type: 'string',
-      description:
-        '技能目录的路径——只在提示词里那一行列了「目录 …」时才需要（同名技能有两个来源时用它指明取哪一个）',
     },
     relative: {
       type: 'string',
@@ -96,14 +103,13 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
       const name = args['name']
       if (!isText(name)) return refused('参数错误：name 须为非空字符串')
 
-      const source = args['source']
       const relative = args['relative']
       if (relative !== undefined && !isText(relative)) {
         return refused('参数错误：relative 须为非空字符串（不给就取主文）')
       }
 
-      // 身份缺一半时先按名字在**这一趟的发现结果**里找：唯一就给它，不唯一就报出各处
-      const target = resolve(skills, name, isText(source) ? source : undefined)
+      // 身份由**这一趟的发现结果**给（名字 → 那一份的真路径）；没有这个名字就照实说
+      const target = resolve(skills, name)
       if (typeof target === 'string') return refused(target)
 
       const read: SkillRead =
@@ -124,40 +130,41 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
   }
 }
 
-/** 归位结果——要么是一处技能，要么是一句给模型的回填（不静默挑一个）。 */
+/**
+ * 归位结果——要么是一处技能（名字 ＋ 真路径），要么是一句给模型的回填。
+ *
+ * **两种结果**：取到了 / 没有这个名。曾经还有第三种（同名多个 ⇒ 报出各处让模型指明），
+ * 随 `source` 参数一起收掉——同名在发现那一层只剩一条（见文件头注），
+ * 这里也就只剩「有 / 没有」。**不保留那条判定当死代码**：真出现同名的清单，
+ * 取的是**靠前那一份**（发现层的次序），此处不另立一套。
+ */
 function resolve(
   skills: Skills,
   name: string,
-  source: string | undefined,
 ): { readonly name: string; readonly path: string } | string {
-  if (source !== undefined) return { name, path: source }
-
   // **一次发现，两处用**（挑与报）——现扫本就是每次调用的代价，别为了报错再扫一遍
   const catalog = skills.discover().skills
-  const found = catalog.filter((skill) => skill.name === name)
-  if (found.length === 1) return { name, path: found[0]?.path ?? '' }
+  const found = catalog.find((skill) => skill.name === name)
+  if (found !== undefined) return { name, path: found.path }
 
-  if (found.length === 0) {
-    const known = [...new Set(catalog.map((skill) => skill.name))]
-    return known.length === 0
-      ? `没有「${name}」这个技能——这台机器上这次一个技能都没发现（技能清单见系统提示词的「可用技能」一节）`
-      : `没有「${name}」这个技能。可用的有：${known.join(' · ')}`
-  }
+  const known = [...new Set(catalog.map((skill) => skill.name))]
 
-  // 同名多个——**报出各处，让模型指明**（不静默按列表顺序取一个）
-  return (
-    `「${name}」有 ${found.length} 个来源，得指明取哪一个——带上 source 再要一次：\n` +
-    found.map((skill) => `- ${skill.path}`).join('\n')
-  )
+  return known.length === 0
+    ? `没有「${name}」这个技能——这台机器上这次一个技能都没发现（技能清单见系统提示词的「可用技能」一节）`
+    : `没有「${name}」这个技能。可用的有：${known.join(' · ')}`
 }
 
 /**
  * 材料 → 面向模型的文本——**抬头说清这是哪一份**。
  *
- * 抬头两件的用处与上下文里那份同源（`context.ts` 的 `skillsBlockOf`）：名字让模型知道
- * 手上是什么，来源让同名分得开。**技能说明与读出来的数据是两种东西**（工单明写）：
- * 这两个抬头就是那条分界线——工具读回来的这一份**也算「技能里写的」**，
- * 不是模型自己查出来的事实（工作区里的 `read` 才是）。
+ * **技能说明与读出来的数据是两种东西**（工单明写）：这个抬头就是那条分界线——
+ * 工具读回来的这一份**也算「技能里写的」**，不是模型自己查出来的事实
+ * （工作区里的 `read` 才是）。
+ *
+ * ⚠️ **抬头不报来源**（2026-09-25 用户裁）：原先报的是技能目录的路径，由头是
+ * 「同名分得开」；同名**只留一条**之后名字已经唯一（模型本来就是按名字要的），
+ * 路径对它是没有信息量的额外字。给**记录与体检**的几处留着（`ToolResult.skill`
+ * 那一位、会话条目载荷、`magic --check`）——那是依据，不是给模型看的材料。
  *
  * ⚠️ 抬头是**给人（与模型）读的**，不是协议：交付身份走 `ToolResult.skill` 那一位。
  * 谁要认「这一趟读的是哪个技能」，读那一位，**不要来抠这一行字**。
@@ -165,9 +172,8 @@ function resolve(
 function compose(material: SkillMaterial, relative: string | undefined): string {
   const { skill, text } = material
   const what = relative === undefined ? MAIN_HEADING : `${REFERENCE_HEADING} ${relative}`
-  const which = relative === undefined ? skill.name : `${skill.name} 的`
 
-  return `〔${what}：${which}（来源 ${skill.path}）〕\n${text}`
+  return `〔${what}：${skill.name}〕\n${text}`
 }
 
 /** 材料 → 交付身份（契约 `UsedSkill` 的三件）——标签取发现结果上那一个（见其注）。 */

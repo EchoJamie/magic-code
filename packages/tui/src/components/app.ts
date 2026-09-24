@@ -539,9 +539,9 @@ function Completion({
 
       return h(
         Text,
-        // ⚠️ **键里得带位次**（U57）：同一档同名的技能现在**各占一条**，名字是一样的
-        //    （差异在来源那半截上）——只按名字取键，同名的几条会撞成一个。
-        { key: `c:${index}:${candidate.name}` },
+        // 名字取键就够——候选里**一个名字只出现一次**（技能同名在发现那一层就去重了，
+        // 见 `view.ts` 的 `skillCommands`）。U57 那一位次前缀随同名并列一起退回。
+        { key: `c:${candidate.name}` },
         h(
           Text,
           { color: index === completion.selected ? PALETTE.user : PALETTE.faint, bold: index === completion.selected },
