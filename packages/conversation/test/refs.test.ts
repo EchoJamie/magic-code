@@ -224,12 +224,17 @@ describe('U36 · 展开：材料摆在它被说出来的那个位置', () => {
     expect(said).toContain('检查 @src/login.ts')
   })
 
-  test('材料有明确的来源边界（抬头 ＋ 结尾）——技能与文件分得开', () => {
+  /**
+   * ⚠️ **技能那一处的抬头不带来源**（2026-09-25 用户裁）：同名只留一条之后名字已唯一，
+   * 来源对模型是没有信息量的额外字。文件 / 目录那两处仍写路径——那是**这份材料本身**
+   * （模型要知道读的是哪一份文件），与技能的「来源」不是一回事。
+   */
+  test('材料有明确的边界（抬头 ＋ 结尾）——技能与文件分得开', () => {
     const said = inlineOf('看 @需求.md 与 /review', refs)
 
     expect(said).toContain('〔本次材料 · 文件 需求.md〕')
     expect(said).toContain('〔材料完 · 需求.md〕')
-    expect(said).toContain('〔本次技能 · review（来源 项目 .magic/skills）〕')
+    expect(said).toContain('〔本次技能 · review〕')
     expect(said).toContain('〔技能完 · review〕')
   })
 

@@ -59,13 +59,14 @@ describe('U33 · skill 工具', () => {
     const main = await run(port, { name: 'pdf' })
     expect(main.ok).toBe(true)
     expect(main.output).toContain('主文正文')
-    // 抬头：是哪一份、从哪儿来、哪一版——技能说明与读出来的数据从这一行起分得开
-    expect(main.output).toContain('〔技能主文：pdf（来源 /sk/pdf）〕')
+    // 抬头：是哪一份——技能说明与读出来的数据从这一行起分得开
+    // （**不带来源**：名字已唯一，路径对模型是没有信息量的额外字——2026-09-25 用户裁）
+    expect(main.output).toContain('〔技能主文：pdf〕')
 
     const reference = await run(port, { name: 'pdf', relative: 'references/x.md' })
     expect(reference.ok).toBe(true)
     expect(reference.output).toContain('引用正文')
-    expect(reference.output).toContain('〔技能引用 references/x.md：pdf 的（来源 /sk/pdf）〕')
+    expect(reference.output).toContain('〔技能引用 references/x.md：pdf〕')
 
     expect(asked).toEqual(['main:pdf@/sk/pdf', 'ref:pdf@/sk/pdf/references/x.md'])
   })

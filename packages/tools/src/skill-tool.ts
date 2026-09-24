@@ -157,10 +157,14 @@ function resolve(
 /**
  * 材料 → 面向模型的文本——**抬头说清这是哪一份**。
  *
- * 抬头两件的用处与上下文里那份同源（`context.ts` 的 `skillsBlockOf`）：名字让模型知道
- * 手上是什么，来源让同名分得开。**技能说明与读出来的数据是两种东西**（工单明写）：
- * 这两个抬头就是那条分界线——工具读回来的这一份**也算「技能里写的」**，
- * 不是模型自己查出来的事实（工作区里的 `read` 才是）。
+ * **技能说明与读出来的数据是两种东西**（工单明写）：这个抬头就是那条分界线——
+ * 工具读回来的这一份**也算「技能里写的」**，不是模型自己查出来的事实
+ * （工作区里的 `read` 才是）。
+ *
+ * ⚠️ **抬头不报来源**（2026-09-25 用户裁）：原先报的是技能目录的路径，由头是
+ * 「同名分得开」；同名**只留一条**之后名字已经唯一（模型本来就是按名字要的），
+ * 路径对它是没有信息量的额外字。给**记录与体检**的几处留着（`ToolResult.skill`
+ * 那一位、会话条目载荷、`magic --check`）——那是依据，不是给模型看的材料。
  *
  * ⚠️ 抬头是**给人（与模型）读的**，不是协议：交付身份走 `ToolResult.skill` 那一位。
  * 谁要认「这一趟读的是哪个技能」，读那一位，**不要来抠这一行字**。
@@ -168,9 +172,8 @@ function resolve(
 function compose(material: SkillMaterial, relative: string | undefined): string {
   const { skill, text } = material
   const what = relative === undefined ? MAIN_HEADING : `${REFERENCE_HEADING} ${relative}`
-  const which = relative === undefined ? skill.name : `${skill.name} 的`
 
-  return `〔${what}：${which}（来源 ${skill.path}）〕\n${text}`
+  return `〔${what}：${skill.name}〕\n${text}`
 }
 
 /** 材料 → 交付身份（契约 `UsedSkill` 的三件）——标签取发现结果上那一个（见其注）。 */
