@@ -479,7 +479,8 @@ export type CommandSpec = {
  * 各条的性质：
  * - `/help` · `/status`——**纯输出型**（本地就能答，不进记录区的对话）；
  * - `/clear` · `/resume` · `/rename` · `/model` · `/grants` · `/skills`——**交互配置型**
- *   （开选择器 / 当场换一页）。
+ *   （开选择器 / 当场换一页）；
+ * - `/exit`——**走人型**：它一件事都不改视图，只管**停掉当前这条会话再离开**（见下）。
  *
  * ⚠️ **会话那三条按「动作」命名，不按「实体」**（U44 · 设计 · 命令行与配置）——
  * 用户认的是动作，而字典里 Session 属**内核层**（「一次交互的完整记录」）：把它做成用户
@@ -498,6 +499,19 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: '/clear', summary: '清屏，另起一条' },
   { name: '/resume', summary: '回到之前某一条' },
   { name: '/rename', summary: '改当前这条的名字' },
+  // U52——**停掉当前这条会话，然后退出界面**。与上面三条**同属「按动作命名」那一族**
+  // （设计 · 命令行与配置的会话入口表里就排在 `/rename` 之后），故挨着摆。
+  //
+  // ⚠️ **一次就走**，不挂「按两次」那道门：那条规矩针对的是 **Ctrl+C 这个随手按的键**
+  // （它在「工作中＝中断／空闲＝退出」之间跳，用户没法预期）；`/exit` 是**打出来的词**，
+  // 本来就已经是「有意的」，再要两下只是白费。故它**不挂 `exitArmed`**——那一格是给
+  // Ctrl+C 的。
+  //
+  // ⚠️ **它停的是「这条」，Ctrl+C 两次是「只离开」**（2026-09-24 用户裁）——两个动作各管
+  // 各的：`/exit` 是明确说出口的「这条我不做了」（停掉当前会话再退），Ctrl+C 两次是
+  // 「我走开一下」（只离开，工作继续）。**窗口被关**那一头不归这两条管（拔线、断流，
+  // 我们拦不住）。分工写进 `summary` 那一句里——那是**唯一**该说它的地方（不塞常驻提示）。
+  { name: '/exit', summary: '停掉这条会话再退出（只离开＝ctrl+c 两次）' },
   { name: '/status', summary: '看这一趟用了多少、模型是谁' },
   { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
   { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
@@ -908,6 +922,18 @@ export type ShellView = {
    *   `Shell.hangUp`，不设这道门（见那一处的注）。
    */
   readonly exitArmed: boolean
+  /**
+   * **可以走了**（U52）——`/exit` 那一条的路：**先停掉当前这条会话，资源确认退出之后**
+   * 才置上它，界面据此收摊（`app.ts` 那一处 `useEffect`）。
+   *
+   * 为什么要有这一格，而不是像 Ctrl+C 那样当场返回一个 `ShellEffect.exit`：`/exit`
+   * 的退出**不在按键那一刻决定**——它要等管理者那条停止编排走完（`done` 才放行）。
+   * 键那一跳返回不了未来的事，故「放行」由**停止报告到达**那一处置上，界面看着它走。
+   *
+   * 与 `exitArmed` 是两格、两回事：那一格是 Ctrl+C 的**门**（第一下挂上、第二下才走），
+   * 这一格是 `/exit` 的**等**（等的是「资源真退了」那条事实，不是「再按一下」）。
+   */
+  readonly leaving: boolean
   /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
   readonly expanded: boolean
   /** 当前会话 id（还没有会话＝`null`）。 */
@@ -1047,6 +1073,8 @@ export function createView(): ShellView {
     flash: null,
     // 还没按过 Ctrl+C（U46）
     exitArmed: false,
+    // `/exit` 还没喊过（U52）
+    leaving: false,
     expanded: false,
     sessionId: null,
     catalog: [],

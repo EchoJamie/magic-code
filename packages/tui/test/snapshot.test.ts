@@ -485,6 +485,10 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     expect(frame).toContain('/clear')
     expect(frame).toContain('/resume')
     expect(frame).toContain('/rename')
+    // U52——`/exit` 也在这张表上（**它是内置命令**：同名技能不许顶掉它）。
+    // 这一行是给用户看的那一句，照旧是大白话（不印内部词）；它还要**说清与 Ctrl+C 的
+    // 分工**（`/exit` 是「停掉这条」，不是「关掉窗口」）——两句都得在。
+    expect(frame).toContain('/exit　停掉这条会话再退出（只离开＝ctrl+c 两次）')
     expect(frame).not.toContain('/session')
     // **命令本身不回显**——记录区里没有 `› /help` 那一行（候选里的那条不算：
     // 它在左下交互区、不在记录区）
@@ -992,6 +996,8 @@ describe('slash 候选（D12 · 纯函数级）', () => {
    * `s` 不是 `/mcp` 的子序列）。
    * ⚠️ **四变**（`U37`）：`/attachments` 进了命令表——全表由七条变八条，且 `/s` 那一列
    * 多了它（`s` 是它的**末位子串**，与 `/grants` 同类，按名字序排在它前面）。
+   * ⚠️ **六变**（`U52`）：`/exit` 进了命令表——全表由十条变**十一条**。
+   * `/s` 那一列**不动**（`s` 不是 `/exit` 的子序列：`e` `x` `i` `t` 里没有它）。
    * **判据本身一字未改**（前缀在前 · 子序列在后 · 全表列全）。技能名那一批不在这条里
    * ——它们要**给了目录**才列（见下面那条用例）。
    */
@@ -1009,7 +1015,9 @@ describe('slash 候选（D12 · 纯函数级）', () => {
       '/grants',
       '/resume',
     ])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(10) // 全列（真存在的十条）
+    // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
+    expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(11) // 全列（真存在的十一条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 
