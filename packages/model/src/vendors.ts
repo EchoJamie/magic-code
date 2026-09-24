@@ -31,7 +31,7 @@ import type {
 } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import { MODEL_CONTEXT_BUILTIN } from './capacity.ts'
-import { MODEL_TRAITS_BUILTIN } from './traits.ts'
+import { matchBuiltinTraits } from './traits.ts'
 
 /** 发一次请求要的东西——地址与凭据由**连接**给定（适配不猜、不存）。 */
 export type VendorRequestContext = {
@@ -232,17 +232,19 @@ export const MINIMAX_VENDOR: VendorAdapter = {
   /**
    * 缺项补充——MiniMax 的官方模型表（窗长）与实测行为（内嵌思考）。
    *
-   * 两张表按**准确的型号 id** 逐行写（与 `capacity.ts` / `traits.ts` 是**同一份**常量：
-   * 官方资料只有一个出处，兼容接入那条路按模型名查它、官方适配这条路按适配补它，
-   * 内容因此不会分叉）。
+   * 两张表（与 `capacity.ts` / `traits.ts` 是**同一份**常量：官方资料只有一个出处，
+   * 兼容接入那条路按模型名查它、官方适配这条路按适配补它，内容因此不会分叉）。
+   *
+   * ⚠️ **U65 起两样的查法不一样**：特征标记按**家族**查（`matchBuiltinTraits`——
+   * `MiniMax-M2.7-highspeed` 落 M2 那一条），窗长仍按**精确 id** 查。不是漏改：
+   * 内嵌思考有「同一线不同版本号行为相同」的实测依据（见 `traits.ts` 那条注），
+   * 而窗长是**逐型号的规格**，没有依据说小改款的窗口跟着走——不按型号名猜。
    */
   supplement(info) {
     const window = Object.hasOwn(MODEL_CONTEXT_BUILTIN, info.id)
       ? MODEL_CONTEXT_BUILTIN[info.id]
       : undefined
-    const traits = Object.hasOwn(MODEL_TRAITS_BUILTIN, info.id)
-      ? MODEL_TRAITS_BUILTIN[info.id]
-      : undefined
+    const traits = matchBuiltinTraits(info.id)
 
     return {
       ...info,

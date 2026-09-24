@@ -41,6 +41,7 @@ import type { EffectiveSpec } from './gateway.ts'
 import { modelCallStart, modelErrorEvent } from './events.ts'
 import { vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
+import type { LearnedTraits } from './traits.ts'
 import { ownOf, resolveContextWindow } from './capacity.ts'
 
 // —— 形态 ——
@@ -271,6 +272,13 @@ export type ModelRegistryOptions = {
   readonly modelInfoOf?:
     | ((provider: string, model: string) => ModelInfo | undefined)
     | undefined
+  /**
+   * **认下的那些**（U65）——内嵌思考随用生长的那一份（见 `traits.ts` 的 `LearnedTraits`）。
+   *
+   * 装配根造**一份**、这里**逐条目的网关各传同一份**：认下的是模型的行为，与哪条连接无关。
+   * 缺省＝不记也不查（探针照旧切对，只是下一轮还得再认一遍）。
+   */
+  readonly learnedTraits?: LearnedTraits | undefined
 }
 
 // —— 装配 ——
@@ -325,6 +333,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       env: options.env,
       configPath: options.configPath,
       maxCompletionTokens: options.maxCompletionTokens,
+      learnedTraits: options.learnedTraits,
       // ⚠️ **按 provider 绑定再传**（U41 返修 · 补漏传）：注册表那一格是
       // `(provider, model) => ModelInfo | undefined`，而网关只认**自己那一家**的模型。
       // 不绑就直接递下去的话，网关会拿**别的条目**的 id 去查自己这一家的模型
@@ -387,6 +396,8 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
         adapter: adapterFor(provider),
         known: options.modelInfoOf?.(provider, model),
         fallbackOutputTokens: options.maxCompletionTokens,
+        // 同一份来路：读面与真跑那份解析必须一致（含认下的那些）
+        learned: options.learnedTraits,
       })
     },
 

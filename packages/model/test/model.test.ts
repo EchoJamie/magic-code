@@ -43,10 +43,13 @@ import {
   MINIMAX_MODEL,
   MissingApiKeyError,
   classifyModelError,
+  createLearnedTraits,
   createModelGateway,
   createModelRegistry,
   describeModelError,
   isAbortError,
+  knownInlineTags,
+  matchBuiltinTraits,
   modelCallEnd,
   modelCallStart,
   modelDelta,
@@ -165,11 +168,14 @@ function normalize(
   parts: readonly Part[],
   model = MINIMAX_MODEL,
   override?: ModelTraits,
+  /** 认下内嵌思考时的回调（U65）——缺省＝不记（只切）。 */
+  learn?: (tag: string) => void,
 ): ModelStream {
   return toKernelEvents(fromParts(parts), {
     model,
     stamper: testStamper(),
     traits: resolveModelTraits(model, override),
+    ...(learn === undefined ? {} : { learnInlineThinking: learn }),
   })
 }
 
@@ -504,12 +510,32 @@ describe('特征标记 · 内置表', () => {
     expect(JSON.stringify(payloads(events))).not.toContain('think>')
   })
 
-  test('内置表确有那两条（按模型名匹配，不是按供应商）', () => {
+  /**
+   * 判据（U65 改锚）：**型号主干（家族）**，不是完整名字、更不是供应商。
+   *
+   * 改由：**同一个病犯过三次**——09-16 表里只有 M3、09-18 M2 漏了、09-25
+   * `M2.7-highspeed` 又漏了。三次都是**同一条模型线换了版本号**，而每一次都靠用户真跑
+   * 撞出来。故从「名字一模一样」换成「**同类行为、不同版本号**」。
+   */
+  test('内置表按**型号主干**匹配——同线的版本号落同一条，不是一个名字一行', () => {
+    // 第 16 / 18 轮真端点实测的那两条
     expect(resolveModelTraits(MINIMAX_MODEL)).toEqual({ inlineThinking: { tag: 'think' } })
-    // 第 18 轮补锚：M2 同样内嵌正文（第 17 轮真跑暴露，屏上曾看得见裸标签）
     expect(resolveModelTraits('MiniMax-M2')).toEqual({ inlineThinking: { tag: 'think' } })
-    // 表外（同家的其余变体 / 别家）＝常规行为：不猜、不切
-    expect(resolveModelTraits('MiniMax-M2.7')).toBeUndefined()
+
+    // 同线的版本号（09-25 真机取证用的就是 `MiniMax-M2.7-highspeed`）——全落 M2 那一条
+    expect(resolveModelTraits('MiniMax-M2.5-highspeed')).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(resolveModelTraits('MiniMax-M2.7-highspeed')).toEqual({ inlineThinking: { tag: 'think' } })
+    // M3 那一线的将来小改款同理
+    expect(matchBuiltinTraits('MiniMax-M3.1')).toEqual({ inlineThinking: { tag: 'think' } })
+
+    // 反面一：**不是拿供应商当家族**——同家的 M1 不在表里，坦荡地不认
+    expect(matchBuiltinTraits('MiniMax-M1')).toBeUndefined()
+    expect(matchBuiltinTraits('MiniMax')).toBeUndefined()
+    // 反面二：**主干后面要接分隔符**——`M20` 是另一个模型名，不是 M2 的小改款
+    expect(matchBuiltinTraits('MiniMax-M20')).toBeUndefined()
+    expect(matchBuiltinTraits('gpt-4o')).toBeUndefined()
+    // 反面三：键是从外面来的字符串，别从 `Object.prototype` 上摸到东西
+    expect(matchBuiltinTraits('constructor')).toBeUndefined()
   })
 
   test('标签跨增量边界也切得干净（半截标签留住，不吐错通道）', async () => {
@@ -625,38 +651,229 @@ describe('特征标记 · 覆盖位', () => {
 })
 
 describe('特征标记 · 皆未命中', () => {
-  /** 判据 ③——不猜、不切：正文原样走 text。 */
-  test('表外模型无标注 → 正文原样走 text，标签也不动（判据 ③）', async () => {
+  /**
+   * 判据 ③——不猜、不切：正文原样走 `text`。**表外模型**（内置表不认、也没有覆盖位）
+   * 就拿这一段量。
+   *
+   * ⚠️ **U65 起这条判据的边界更清了**：认下的信号是「**模型输出以已知标签开头**」，
+   * 故这里量的是它的**反面**——标签**在正文中间**。正常模型摘抄一段带标签的文本是常事
+   * （用户贴进来、模型引用用户的话都是这一形），那**一个字都不许动**。
+   */
+  test('表外模型、标签**在正文中间** → 原样走 text，标签也不动（判据 ③）', async () => {
     const { events, result } = await drain(
       normalize(
-        [{ type: 'start' }, textDelta('<think>想想</think>\n\n正文'), finishPart('stop')],
+        [
+          { type: 'start' },
+          textDelta('前面的话'),
+          textDelta('<think>想想</think>'),
+          textDelta('后面的话'),
+          finishPart('stop'),
+        ],
         'gpt-4o',
+      ),
+    )
+
+    const stamper = testStamper()
+    // ⚠️ **三段原样过**——第一格是「前」，探针当场分晓（那不是任何标签头），
+    //    于是后面的 `<think>` 连停都不停一下（见 `probingSplitter` 的留尾判据）
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamper, 'gpt-4o'),
+        modelDelta(stamper, 'text', '前面的话'),
+        modelDelta(stamper, 'text', '<think>想想</think>'),
+        modelDelta(stamper, 'text', '后面的话'),
+        modelCallEnd(stamper),
+      ]),
+    )
+    expect(result.thinking).toBe('')
+    expect(result.text).toBe('前面的话<think>想想</think>后面的话')
+    expect(resolveModelTraits('gpt-4o')).toBeUndefined()
+  })
+
+  test('切分**不是接缝通例**——同一段文本，常规模型原样、命中标记才切', async () => {
+    const parts = [{ type: 'start' } as Part, textDelta('引一句：<think>x</think>y'), finishPart('stop')]
+
+    const plain = await drain(normalize(parts, 'gpt-4o'))
+    const inline = await drain(normalize(parts, MINIMAX_MODEL))
+
+    expect(plain.result.text).toBe('引一句：<think>x</think>y')
+    expect(plain.result.thinking).toBe('')
+    expect(inline.result.text).toBe('引一句：y')
+    expect(inline.result.thinking).toBe('x')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// 一之三 · 认下的那些（U65 第二层）—— 随用生长
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * 第一层（家族主干）治的是**版本号不同**那一类；供应商真推一个**新名字**时，表仍然漏。
+ * 故第二层：**认出来之后记住它**——信号是**模型输出以某个已知标签开头**。
+ *
+ * 判据四条，一条不松：
+ * ① 认得出（这一轮就切对）；
+ * ② **记下了**——下一次这个模型名**直接按它办**，不必再过探针；
+ * ③ 反面：**判据取严**——标签在正文中间不算、半截标签不算；
+ * ④ **可关**——认错了，覆盖位压得住（那是既有的出口）。
+ */
+describe('特征标记 · 认下的那些（U65）', () => {
+  /** 一份「已认下」的——与装配根造的那一份同形。 */
+  const seen = (model: string): ReturnType<typeof createLearnedTraits> => {
+    const learned = createLearnedTraits()
+    learned.remember(model, { inlineThinking: { tag: 'think' } })
+    return learned
+  }
+
+  test('② 认下之后**下一次直接按它办**——不必再过探针，也不必等表', async () => {
+    // 表外的模型名（不是 MiniMax 那两条主干，也不是别家已知的）＋ 内嵌思考的回复
+    const model = 'acme-reasoner-v9'
+
+    // 第一趟：没有认下的那一份 ⇒ 探针看输出，认下
+    const learned = createLearnedTraits()
+    const before = await drain(
+      normalize([{ type: 'start' }, textDelta('<think>想</think>正文'), finishPart('stop')], model, undefined,
+        (tag) => learned.remember(model, { inlineThinking: { tag } })),
+    )
+    expect(before.result).toMatchObject({ thinking: '想', text: '正文' })
+    // **痕迹留下来了**（可查）
+    expect(learned.entries()).toEqual([[model, { inlineThinking: { tag: 'think' } }]])
+
+    // 第二趟：**同一个模型名**——先查「认下的那些」，连探针都不装
+    expect(resolveModelTraits(model, undefined, learned)).toEqual({ inlineThinking: { tag: 'think' } })
+    const after = await drain(
+      normalize([{ type: 'start' }, textDelta('<think>想</think>正文'), finishPart('stop')], model,
+        resolveModelTraits(model, undefined, learned)),
+    )
+    expect(after.result).toMatchObject({ thinking: '想', text: '正文' })
+  })
+
+  test('探针：**跨增量边界**也认得出（`<thi` ＋ `nk>`），不与已有切分打架', async () => {
+    const learned = createLearnedTraits()
+    const { events, result } = await drain(
+      normalize(
+        [
+          { type: 'start' },
+          textDelta('<thi'),
+          textDelta('nk>半'),
+          textDelta('句</think>正文'),
+          finishPart('stop'),
+        ],
+        'acme-reasoner-v9',
+        undefined,
+        (tag) => learned.remember('acme-reasoner-v9', { inlineThinking: { tag } }),
       ),
     )
 
     const stamper = testStamper()
     expect(payloads(events)).toEqual(
       payloads([
-        modelCallStart(stamper, 'gpt-4o'),
-        modelDelta(stamper, 'text', '<think>想想</think>\n\n正文'),
+        modelCallStart(stamper, 'acme-reasoner-v9'),
+        modelDelta(stamper, 'thinking', '半'),
+        modelDelta(stamper, 'thinking', '句'),
+        modelDelta(stamper, 'text', '正文'),
         modelCallEnd(stamper),
       ]),
     )
-    expect(result.thinking).toBe('')
-    expect(result.text).toBe('<think>想想</think>\n\n正文')
-    expect(resolveModelTraits('gpt-4o')).toBeUndefined()
+    expect(result).toMatchObject({ thinking: '半句', text: '正文' })
+    expect(learned.get('acme-reasoner-v9')).toEqual({ inlineThinking: { tag: 'think' } })
   })
 
-  test('切分**不是接缝通例**——同一段文本，常规模型原样、命中标记才切', async () => {
-    const parts = [{ type: 'start' } as Part, textDelta('<think>x</think>y'), finishPart('stop')]
+  test('反面：**半截标签**就断了 ⇒ 按正文算，不认（不完整的标签不是标签）', async () => {
+    const learned = createLearnedTraits()
+    const { events, result } = await drain(
+      normalize(
+        [{ type: 'start' }, textDelta('<thi'), finishPart('stop')],
+        'acme-reasoner-v9',
+        undefined,
+        (tag) => learned.remember('acme-reasoner-v9', { inlineThinking: { tag } }),
+      ),
+    )
 
-    const plain = await drain(normalize(parts, 'gpt-4o'))
-    const inline = await drain(normalize(parts, MINIMAX_MODEL))
+    const stamper = testStamper()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamper, 'acme-reasoner-v9'),
+        modelDelta(stamper, 'text', '<thi'),
+        modelCallEnd(stamper),
+      ]),
+    )
+    expect(result).toMatchObject({ text: '<thi', thinking: '' })
+    expect(learned.entries()).toEqual([])
+  })
 
-    expect(plain.result.text).toBe('<think>x</think>y')
-    expect(plain.result.thinking).toBe('')
-    expect(inline.result.text).toBe('y')
-    expect(inline.result.thinking).toBe('x')
+  /**
+   * 反面（**不许动常规模型那条**）——思考走**独立字段**的模型，正文里恰好有 `<think>` 字样。
+   *
+   * 这一条同时钉住两件：`reasoning` 那条独立通道**一个字没动**（DeepSeek 那条路），
+   * 且探针**不给它添乱**——正文不因「出现过」被切走、也不会被认下。
+   */
+  test('反面：思考走独立字段的正常模型 ⇒ 正文原样，且**不认**', async () => {
+    const learned = createLearnedTraits()
+    const { events, result } = await drain(
+      normalize(
+        [
+          { type: 'start' },
+          reasoningDelta('先想'),
+          textDelta('照它说的：<think>这是你贴的</think>——就这个意思。'),
+          finishPart('stop'),
+        ],
+        'gpt-4o',
+        undefined,
+        (tag) => learned.remember('gpt-4o', { inlineThinking: { tag } }),
+      ),
+    )
+
+    // 思考走**独立通道**（`reasoning-delta` → `thinking`），一个字没动
+    expect(result.thinking).toBe('先想')
+    // 正文原样——标签在**中间**，探针早在一格就判「不是」
+    expect(result.text).toBe('照它说的：<think>这是你贴的</think>——就这个意思。')
+    expect(learned.entries()).toEqual([])
+    // 独立通道那条照旧：思考走 `thinking` 增量，正文走 `text` 增量（一个字没动）
+    expect(
+      events.some((event) => event.kind === 'model.delta' && event.data.channel === 'thinking'),
+    ).toBe(true)
+  })
+
+  test('④ **可关**——覆盖位压过认下的那些（认错了的出口）', async () => {
+    const model = 'acme-reasoner-v9'
+    const learned = seen(model)
+
+    // 没覆盖：按认下的办
+    expect(resolveModelTraits(model, undefined, learned)).toEqual({ inlineThinking: { tag: 'think' } })
+    // 用户说「这个模型没有内嵌思考」⇒ `{}` 就是它，认下的那些也压得住
+    expect(resolveModelTraits(model, {}, learned)).toEqual({})
+
+    // 落到切分上：给 `{}` 之后，同一段回复**一个字都不切**（也不进探针）
+    const { events, result } = await drain(
+      normalize(
+        [{ type: 'start' }, textDelta('<think>不切</think>正文'), finishPart('stop')],
+        model,
+        {},
+      ),
+    )
+
+    const stamper = testStamper()
+    expect(payloads(events)).toEqual(
+      payloads([
+        modelCallStart(stamper, model),
+        modelDelta(stamper, 'text', '<think>不切</think>正文'),
+        modelCallEnd(stamper),
+      ]),
+    )
+    expect(result).toMatchObject({ text: '<think>不切</think>正文', thinking: '' })
+  })
+
+  test('认的是**这一个模型名**——同线的另一个名字不跟着认（那是它的输出说了算）', () => {
+    const learned = seen('acme-reasoner-v9')
+
+    expect(learned.get('acme-reasoner-v9')).toBeDefined()
+    expect(learned.get('acme-reasoner-v10')).toBeUndefined()
+    expect(resolveModelTraits('acme-reasoner-v10', undefined, learned)).toBeUndefined()
+  })
+
+  test('已知标签**从表里现取**（不另立名单）——表里有的才认', () => {
+    expect(knownInlineTags()).toEqual(['think'])
   })
 })
 

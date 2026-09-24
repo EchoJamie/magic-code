@@ -203,7 +203,7 @@ describe('供应商读面', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('缺项补充', () => {
-  test('MiniMax：按**精确 id** 补官方窗长与实测特征', () => {
+  test('MiniMax：按**精确 id** 补官方窗长，按**实测**补特征标记', () => {
     const filled = MINIMAX_VENDOR.supplement({ id: 'MiniMax-M3' })
 
     expect(filled.limits?.maxContextTokens).toBe(1_000_000)
@@ -211,6 +211,30 @@ describe('缺项补充', () => {
     // 两种都只补「API 没给」的那几格，不该凭空多出输入/输出上限
     expect(filled.limits?.maxInputTokens).toBeUndefined()
     expect(filled.limits?.maxOutputTokens).toBeUndefined()
+  })
+
+  /**
+   * U65：官方适配这条路上，**特征标记按家族查**（`MiniMax-M2.7-highspeed` 落 M2 那条），
+   * 而**窗长仍按精确 id 查**——两样的查法**故意不一样**：
+   *
+   * - 内嵌思考有「同一线不同版本号行为相同」的实测依据（`traits.ts` 那条注）；
+   * - 窗长是**逐型号的规格**，没有依据说小改款的窗口跟着走——不按型号名猜
+   *   （设计：「不按型号家族 / 前缀猜」）。
+   *
+   * 09-25 真机取证用的就是这个模型名：它当时既没被认成内嵌思考（而它确实是）。
+   */
+  test('MiniMax：**同线的小改款**落同一条特征——窗长仍逐行精确（两样故意不一样）', () => {
+    // 09-25 真机取证用的就是它：窗长表里**逐行有它**（官方表给的就是这个精确 id），
+    // 特征表里当时**没有它**——于是思考没被拆，整段 `<think>` 当正文落库也印屏
+    const real = MINIMAX_VENDOR.supplement({ id: 'MiniMax-M2.7-highspeed' })
+    expect(real.traits).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(real.limits?.maxContextTokens).toBe(204_800)
+
+    // 将来的小版本：**特征**按家族落 M3 那条；**窗长**表里没有就不给这一位
+    //（不按型号名猜一个数——设计：「不按型号家族 / 前缀猜」）
+    const future = MINIMAX_VENDOR.supplement({ id: 'MiniMax-M3.1' })
+    expect(future.traits).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(future.limits).toBeUndefined()
   })
 
   test('**不添型号**：表里没有的就原样返回（一个字段都不加）', () => {

@@ -101,11 +101,13 @@ import {
 } from '@magic/execution'
 import type {
   FetchLike,
+  LearnedTraits,
   ModelInfoService,
   ModelRegistry,
   ModelSwitchResult,
 } from '@magic/model'
 import {
+  createLearnedTraits,
   createModelInfoService,
   createModelRegistry,
   resolveConnection,
@@ -1028,6 +1030,15 @@ export function assemble(options: AssembleOptions): Assembly {
   const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
     modelInfo.read(provider).snapshot?.models.find((one) => one.id === model)
 
+  /**
+   * **认下的内嵌思考**（U65）——造一份、**整个装配共用**。
+   *
+   * ⚠️ **必须在 `registryOf` 之外造**：它就是被重建的那一个（保存配置 / 换连接之后
+   * `rebuildRegistry` 会再叫一次 `registryOf`），而「认下的那些」是**这一次用下来学到的
+   * 东西**——它属于这个进程，不该被一次配置保存抹掉。认的是模型的行为，与走哪条连接无关。
+   */
+  const learnedTraits: LearnedTraits = createLearnedTraits()
+
   // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
   // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
   const registryOf = (): ModelRegistry =>
@@ -1041,6 +1052,8 @@ export function assemble(options: AssembleOptions): Assembly {
       configPath: loaded.path,
       // 有效规格要看得见缓存里那份资料（见 `knownModelOf`）
       modelInfoOf: knownModelOf,
+      // 以及「认下的那些」（见上）
+      learnedTraits,
 
     })
 

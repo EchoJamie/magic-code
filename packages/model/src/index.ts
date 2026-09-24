@@ -82,7 +82,15 @@ export {
 
 export { classifyModelError, describeModelError, isAbortError, redactSecrets } from './errors.ts'
 
-export { MODEL_TRAITS_BUILTIN, resolveModelTraits } from './traits.ts'
+// 特征标记（U65 起按**家族**匹配；另有「认下的那些」——随用生长的那一份，见 `traits.ts`）
+export {
+  MODEL_TRAITS_BUILTIN,
+  createLearnedTraits,
+  knownInlineTags,
+  matchBuiltinTraits,
+  resolveModelTraits,
+} from './traits.ts'
+export type { LearnedTraits } from './traits.ts'
 
 // 容量（上下文窗总量 · U30）——与 `traits` 同族的内置表 ＋ 覆盖判定。
 // ⚠️ **旧的「窗长表」出口已撤**（U41 返修）：分母改由 `ModelRegistry.capacityOf` 一次解析，
