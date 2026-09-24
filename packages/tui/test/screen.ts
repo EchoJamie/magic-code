@@ -98,8 +98,15 @@ export type Frame = {
    * 它划开的正是这两块——状态行在线**之下**，是独立的一格（见 `statusLine`）。
    */
   readonly dock: readonly Line[]
-  /** 状态行——**下沿那条线之下**最后一条非空行（U59 起 `AppView` 把它摆在屏末；改前它在上沿与下沿之间）。 */
+  /** 状态行——**下沿那条线之下头一条非空行**（U59 起 `AppView` 把它摆在屏末；改前它在上沿与下沿之间）。 */
   readonly statusLine: string
+  /**
+   * 状态行在屏幕矩阵里的行号——**状态行之下还有什么**（U68：待确认的那一行就挂在那儿）
+   * 这类判据要拿它当锚；`statusLine` 只是一段文本，量不出「谁在谁之下」。
+   *
+   * 没有分隔线（只录了半屏）时给 `-1`，与 `statusLine` 空串同一个意思。
+   */
+  readonly statusRow: number
   /** 第 `row` 行的格子（到最后一个非空格为止）。 */
   cellsOf(row: number): readonly Cell[]
   /**
@@ -195,12 +202,20 @@ function frameOf(cells: Awaited<ReturnType<typeof screenCells>>, columns: number
   const end = footer === -1 ? (lastNonBlank?.row ?? -1) + 1 : footer
   const record = rows.slice(0, divider === -1 ? (lastNonBlank?.row ?? -1) + 1 : divider)
 
+  // ⚠️ **状态行取「下线之下头一条非空行」，不是「之下最后一条」**（U68）：状态行之下从
+  //    U68 起**还有东西**（待确认的那一行，它挂着时是屏末那一条）——照旧取最后一条，
+  //    量到的就成了那一行，而**这一格的判据全是关于状态行的**（`○ 空闲` / 提示那句）。
+  //    没有分隔线那一档（半屏）照旧退回整屏最后一条非空行。
+  const statusRow =
+    footer === -1 ? (lastNonBlank?.row ?? -1) : rows.findIndex((entry) => entry.row > footer && entry.text.trim() !== '')
+
   const frame: Frame = {
     screen,
     record,
     content: contentOf(record, columns),
     dock: divider === -1 ? [] : rows.slice(divider + 1, end),
-    statusLine: rows.slice(footer === -1 ? 0 : footer + 1).filter((entry) => entry.text.trim() !== '').at(-1)?.text ?? '',
+    statusLine: statusRow === -1 ? '' : (rows[statusRow]?.text ?? ''),
+    statusRow,
     cellsOf: cells.cellsOf,
     rawCellsOf: cells.rawCellsOf,
     textAt: (row) => cells.screen.lines[row] ?? '',

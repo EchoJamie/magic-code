@@ -10,9 +10,11 @@
  * - **已定局的行**（上一轮及更早）→ `<Static>`：**写一次就不再重绘**——它们落进终端
  *   scrollback，滚动与复制都归终端 ✓。⚠️ **这也是 D11 的结构性护栏**：写出去的永不重擦。
  * - **本轮的行**（在流式、还会变）→ 活动区：就地重绘（高度按内容，**不填满窗口**）。
- * - **分隔线 ＋ 交互区 ＋ 分隔线 ＋ 状态行** → 活动区尾部（U45 起是**两条**线：上面那条分开
- *   记录区与交互区，下面那条分开交互区与状态行。**U59 把下面那条挪到这儿**——U45 原先加在
- *   状态行**之下**，那是把「输入行 ＋ 状态行」框起来，不是划界，见 `separatorOf`）。
+ * - **分隔线 ＋ 交互区 ＋ 分隔线 ＋ 状态行**（＋ 挂着的**待确认的那一行**）→ 活动区尾部
+ *   （U45 起是**两条**线：上面那条分开记录区与交互区，下面那条分开交互区与状态行。
+ *   **U59 把下面那条挪到这儿**——U45 原先加在状态行**之下**，那是把「输入行 ＋ 状态行」
+ *   框起来，不是划界，见 `separatorOf`。**U68 把「待确认的那一行」放到状态行之下**——
+ *   它是**那一刻回执**，不是交互区的一格，见 `exitArmedLine`）。
  *
  * ⚠️ **要防的那个 bug**（原型 · 交互逻辑）：内联下重绘擦不干净＝同一段重复堆进 scrollback。
  * 两条护栏：① 已定局的行走 `Static`（不重绘）；② **一行一个 `<Text>`、行内不写换行**
@@ -200,6 +202,16 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // 换的只是这两行谁在上谁在下。
     separatorOf(columns),
     h(StatusLine, { status: view.status, columns }),
+    // **待确认的那一行**（U46 · **U68 挪到这儿**）——**状态行之下**、**缩进对齐状态行**，
+    // 仍是屏底（**不另加线**：线是划界用的，一屏恰好两条，见上面那一段）。
+    //
+    // ⚠️ **它原先在输入行上方**（`dockOf` 里那一格），U68 挪出来，两条由头：
+    //    ① 那一行**不是关于输入的**（它不告诉你怎么打字）——放在上面会**打断
+    //       「输入行 ↔ 状态行」那一对**（U59 刚把两条线收成框住它们）；
+    //    ② 它**独占一行挤进输入区**（用户在真机上看到的就是「塞进了两条线之间」）。
+    //    挪到状态行之下，它就从「交互区里多出来的一格」变成「状态行那条回执」——
+    //    那正是它的归类（那一刻回执，见 `HINT_EXIT_ARMED`）。
+    ...exitArmedLine(view),
   )
 }
 
@@ -291,12 +303,15 @@ export function flipBytes(rows: number): string {
 /**
  * 动态帧里**除活动区之外**的固定行数——**两条分隔线 ＋ 状态行**（各一行，U45 起是三条）。
  *
- * 它是活动区预算那个减法里的一项：动态帧 ＝ 活动区 ＋ `CHROME_LINES` ＋ 交互区。
- * 交互区那一项不在这里（它按内容算，见 `dock` 那一段注）。
+ * 它是活动区预算那个减法里的一项：动态帧 ＝ 活动区 ＋ `chromeHeightOf` ＋ 交互区。
+ * 交互区那一项不在这里（它按内容算，见 `dock` 那一段注）；**待确认的那一行**那一条
+ * 也不在这里（它在状态下**面**，挂在不在都要算——见 `chromeHeightOf`）。
  *
  * ⚠️ **下沿那条线也是固定行**（U45）：加了它却不加这里的账，活动区就多算一行 ⇒ 帧正好顶满
  * ⇒ 真光标高一行（U31 那一族的老病：账与屏必须同取一处，见上面 `liveBudget` 那一段注）。
  * **U59 挪这条线时这个数一分没动**——换的是「这两行谁在上谁在下」，行数还是那三行。
+ * **U68 把「待确认的那一行」挪到状态行之下时，这个数同样一分没动**——它加的是
+ * `chromeHeightOf` 那一笔，不是这一笔。
  */
 const CHROME_LINES = 3
 
@@ -380,7 +395,7 @@ export function liveLayoutOf(
   columns: number,
   rows: number,
 ): { readonly plan: PlanBlock; readonly rest: number } {
-  const rest = Math.max(0, rows - 1 - CHROME_LINES - dockHeightOf(view, columns, rows))
+  const rest = Math.max(0, rows - 1 - chromeHeightOf(view) - dockHeightOf(view, columns, rows))
   const plan = planBlockOf({
     plan: view.plan.plan,
     collapsed: view.planCollapsed,
@@ -413,31 +428,32 @@ export function breathingOf(view: ShellView, block: PlanBlock): boolean {
 }
 
 /**
- * **待确认的那一行**（U46）——空闲按 Ctrl+C 的第一下印的那一句，落在**输入行上方**
- * （与「等模型回来…」那类临时提示同一格）。
+ * **待确认的那一行**（U46 · **U68 挪位**）——空闲按 Ctrl+C 的第一下印的那一句，
+ * 落在**状态行之下**、**缩进对齐状态行**。
  *
  * 三处分寸都落在这一格上，别改坏：
  * - **不落记录、不进 scrollback**——它必须**能被清掉**（回执 `·` 那条路印一次就进
- *   scrollback，走不了这一条）；清的理由只有一个（用户又不想走了），收口在 `shell.ts`
- *   的 `key`，此处只管画。
- * - **判决只有一条**（`showsExitArmed`）：`dockOf` 照它画、`dockHeightOf` 照它记 1 行——
- *   两处各判各的，矮窗上就是「账少一行、屏多一行」⇒ 真光标高一行（U31 那一族的老账）。
- * - **位置取「交互区最上面那一格」**（不是「紧贴输入行」）：选择器 / 本地小输入开着时
- *   照样得说得出这句话——「空闲按一次不退出」是一条**不随左下开着什么而变**的规矩
- *   （一个键在一个状态下只有一种走法，那正是本单的由头）。贴着那一片的顶边，三种用法
- *   下都在同一处；常态下它就是输入行正上方那一行。
+ *   scrollback，走不了这一条）；清的理由有两条（用户又不想走了 · 1.5 秒到点自己撤），
+ *   都收口在 `shell.ts`（`disarmExit`），此处只管画。
+ * - **判决只有一条**（`showsExitArmed`）：`AppView` 照它画、`chromeHeightOf` 照它记 1 行
+ *   ——两处各判各的，矮窗上就是「账少一行、屏多一行」⇒ 真光标高一行（U31 那一族的老账）。
+ * - **位置在状态行之下**（U68）：那一行**不是关于输入的**，放在输入行上面会打断
+ *   「输入行 ↔ 状态行」那一对、还独占一行挤进输入区（见 `AppView` 末尾那一处注）。
+ *   它**不随左下开着什么而变**（选择器 / 本地小输入开着时照说）——「空闲按一次不退出」
+ *   是一条**一个键在一个状态下只有一种走法**的规矩，那正是 U46 的由头。
  *
- * 行首那两个全角空格与本地小输入的标签（`prompt.ts`）同形制——「输入行上方那一行」
- * 就这一副面孔，不另造一种缩进。
+ * **缩进**：与状态行同取一副面孔——`StatusLine` 的根盒子是 `paddingX: 1`，这里照办
+ * （不写字面空格：改一处就够，两者永远对得上）。**不是**输入行上方那副全角空格面孔了。
  */
 function exitArmedLine(view: ShellView): readonly ReactElement[] {
   return showsExitArmed(view)
-    ? [h(Text, { key: 'exitArmed', color: PALETTE.dim }, `　${HINT_EXIT_ARMED}`)]
+    ? [h(Box, { key: 'exitArmed', paddingX: 1 }, h(Text, { color: PALETTE.dim }, HINT_EXIT_ARMED))]
     : []
 }
 
 /**
- * **那一行在不在**——渲染与高度账**同取这一处**（见 `exitArmedLine` 那一段注）。
+ * **那一行在不在**——渲染与高度账**同取这一处**（见 `exitArmedLine` 那一段注、
+ * 以及 `chromeHeightOf`）。
  *
  * ⚠️ **裁决接管那一片不算**：那一屏的键是「答复」的键，`ctrl+c` 在那里是**中断**、
  * 从来不挂这一行（`shell.ts` 的 `exitOrInterrupt`）——排除它，两处才对得上。
@@ -450,8 +466,9 @@ function showsExitArmed(view: ShellView): boolean {
 function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
   const flash =
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
-  // 待确认的那一行（U46）——**交互区最上面那一格**（三种用法下都在同一处，见 `exitArmedLine`）
-  const exitArmed = exitArmedLine(view)
+
+  // ⚠️ **待确认的那一行不在这里**（U68 挪到状态行之下了，见 `AppView` 末尾与
+  //    `exitArmedLine`）——交互区这一块只剩「输入行 ↔ 状态行」那一对之间的东西。
 
   if (view.dock.kind === 'decision') {
     // **不画输入行**（D29）：接管期间打不进字，那句「等你的答复」与状态行的「● 等你定夺」
@@ -463,7 +480,6 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
 
   if (view.dock.kind === 'prompt') {
     return [
-      ...exitArmed,
       h(PromptLine, {
         key: 'prompt',
         prompt: view.dock.prompt,
@@ -477,7 +493,6 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   if (view.dock.kind === 'picker') {
     // 候选列在**输入行之上**（与自动补全那一栏同一位置：先看候选，再看自己在打的那句话）。
     return [
-      ...exitArmed,
       // `rows` 一路给到候选那一头：**半屏封顶**按它算（`maxPickerLines`），
       // 与高度账同取 `pickerLayout` 一处（见 `dockHeightOf` 里那一段注）
       h(PickerList, { key: 'picker', picker: view.dock.picker, columns, rows }),
@@ -502,8 +517,6 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   }
 
   return [
-    // **待确认的那一行**（U46）——交互区最上面那一格（常态下就是输入行上方那一行）
-    ...exitArmed,
     ...(view.completion === null
       ? []
       : [h(Completion, { key: 'completion', completion: view.completion, columns })]),
@@ -593,8 +606,8 @@ function maxDraftLines(rows: number): number {
  */
 export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
   const flash = view.flash === null ? 0 : 1
-  // 待确认的那一行（U46）——**与 `dockOf` 同取 `showsExitArmed` 一处**（那一处画、这里记 1 行）
-  const exitArmed = showsExitArmed(view) ? 1 : 0
+  // ⚠️ **待确认的那一行不在这一笔账里**（U68）：它画在**状态行之下**，已不属交互区
+  //    ——它的那一行归 `chromeHeightOf`（那才是「活动区之外的全部固定行」那一笔）。
   const completing = completionLines(view)
 
   if (view.dock.kind === 'decision') {
@@ -616,7 +629,6 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         : wrap(view.dock.prompt.note, Math.max(8, columns - 4)).length
 
     return (
-      exitArmed +
       1 +
       draftHeight(view.dock.prompt.display, view.dock.prompt.caret, columns, maxDraftLines(rows)) +
       note +
@@ -648,7 +660,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         ? draftHeight(view.draft, view.caret, columns, maxDraftLines(rows))
         : 0
 
-    return exitArmed + candidates + hint + composer + flash
+    return candidates + hint + composer + flash
   }
 
   // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。
@@ -656,7 +668,22 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
   //    那两行都算在内；各算一套迟早对不上（D11 那条「行高与实际不符」就是这么来的）。
   // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删，账里那一格随之去掉）：
   //    引用就长在草稿那几行里，不另占一行。
-  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + exitArmed + flash
+  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash
+}
+
+/**
+ * **活动区之外那一整块的固定行数**（U68）——两条分隔线 ＋ 状态行（`CHROME_LINES`），
+ * **外加状态行之下那一行**（待确认的那一行挂着时）。
+ *
+ * ⚠️ **它原先记在 `dockHeightOf` 里**——那时那一行画在交互区最上面一格，归那一笔账。
+ * U68 把它挪到状态行之下之后，它就不再是「交互区的一行」了：账留在原处而屏换了地方
+ * 迟早对不上（矮窗上就是「账多一行、屏少一行」⇒ 真光标高一行，U31 那一族的老账）。
+ * **账与屏同源**这一条不变，变的只是它归哪一笔。
+ *
+ * ⚠️ 判据仍**只有一处**（`showsExitArmed`）：画（`exitArmedLine`）与记（这里）同取它。
+ */
+export function chromeHeightOf(view: ShellView): number {
+  return CHROME_LINES + (showsExitArmed(view) ? 1 : 0)
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */

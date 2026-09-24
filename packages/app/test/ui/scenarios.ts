@@ -229,9 +229,10 @@ const bootInputResizeExit: Scenario = {
     )
 
     // —— 退出：空闲**按两次**走人（U46：第一下只印那一行、不退出）——
-    // 第一下等的就是那一行上屏 ⇒ 既证明**没退出**，也证明该说的说了
-    await session.key('ctrl+c', { until: { text: HINT_EXIT_ARMED }, timeoutMs: 5_000 })
-    await session.key('ctrl+c')
+    // ⚠️ **走 `quit()`，不在这儿自己写两下**（U68）：那道门**只开一小会儿**（1.5 秒），
+    //    第二下必须落在门内——「等那一行上屏」等多久才算不误点，是**驱动那一层的账**
+    //    （它照 `anchors.exitArmedWindowMs` 有界地等，见 `driver.ts` 的 `quit`）。
+    await session.quit()
     const report = await session.close({ graceMs: 2_000 })
     ui.check(report.exit.by === 'app', '两下 ctrl+c 让应用自己退了场', `退出缘由 ${report.exit.by}`)
     ui.check(report.exit.code === 0, '退出码是 0', `实际 ${report.exit.code}`)

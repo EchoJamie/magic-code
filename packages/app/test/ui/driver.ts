@@ -117,6 +117,17 @@ export type UiAnchors = {
    * 但两下之间没有发生任何事）。产品那边这句文案改了就传新的进来，本层不认识它。
    */
   readonly exitArmed: string
+  /**
+   * **那一句话在屏上作数多久**（毫秒 · U68）——`quit()` 等它的**上界**。
+   *
+   * 由头：产品那边那道门**只开一小会儿**（U68 起是 1.5 秒），过了就「再按一次」成了
+   * **新的一次**——收尾的第二下若落在门外，应用根本不会退，`close()` 只能杀，报出来的
+   * 缘由就与产品行为无关了。故这一等**必须有界**，且明显短于那个窗口。
+   *
+   * ⚠️ **它是被测对象那一侧的数**（那一格的时限是产品定的），故由调用方传进来——
+   * 本层不认识它，同 `ready` / `idle` / `exitArmed` 那三格。
+   */
+  readonly exitArmedWindowMs: number
 }
 
 /**
@@ -576,8 +587,17 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       await Bun.sleep(300)
       await session.wait({ text: anchors.idle }, { timeoutMs: 15_000 })
 
-      // 第一下：等那一行**真上屏**（那就是「这一下落地了」的证据，也顺带判了产品真印了它）
-      await session.key('ctrl+c', { until: { text: anchors.exitArmed }, timeoutMs: 5_000 })
+      // 第一下按下去，**等那一行真上屏**（那就是「这一下落地了」的证据，也顺带判了产品真印了它）
+      //
+      // ⚠️ **但这一等必须有界**（U68）：那道门**只开一小会儿**，等过头它就作废了——
+      //    第二下成了「新的一次」，应用不退，收尾只能靠 `close()` 杀，报出来的缘由就
+      //    与产品行为无关了。故上界取**那个窗口的三分之二**（留出第二下自己要走的工夫）。
+      //    等不到也照按（这一下按下去照样作数：那一字节先到了），只如实记一步。
+      const windowMs = anchors.exitArmedWindowMs
+      await session.key('ctrl+c')
+      await session.wait({ text: anchors.exitArmed }, { timeoutMs: Math.floor((windowMs * 2) / 3) }).catch(() => {
+        artifacts.step('quit-anchor-late', { windowMs })
+      })
       // 第二下：走
       await session.key('ctrl+c')
     },
