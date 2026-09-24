@@ -100,13 +100,15 @@ import type { PageTurn, PickerRow, SessionScope } from './view.ts'
 import {
   backspaceRange,
   deleteRange,
+  imageIndexOf,
   insertText,
   markerOf,
   putRef,
   refStartingAt,
   removeRange,
-  shiftedRefs,
   replaceWith,
+  retype,
+  shiftedRefs,
   stepLeftOver,
   stepRightOver,
   wire,
@@ -720,6 +722,61 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     readonly refs: readonly DraftRef[]
   } | null = null
 
+  /**
+   * **这一段输入里图片的名字表**（U62）——**内容身份 → 编号**（`Image#N` 那个 `N`）。
+   *
+   * 三条都写在这一处：
+   * - **身份是内容**（字节的 sha256），不是名字、也不是路径——图不一定来自文件
+   *   （剪贴板来的就没有文件），拿文件名当身份，同名不同内容的两张就分不开；
+   * - **一段输入内**：所以它是一段草稿的表，交出去（`sendInput` 清稿）就重置——
+   *   下一段输入从 `Image#1` 重新数；
+   * - **同一份内容恒是同一个名字**：同一张图引用两次得到同一个号（不然模型以为那是两张），
+   *   两张不同的图得到两个号。
+   *
+   * ⚠️ **编号不回收**：把 `Image#1` 那一处删掉之后，再来一张新图拿的是**下一个号**，
+   * 不是 1。回收会撞上「用户已经在正文里写了『看 Image#1』」那件事——名字是给人和模型
+   * **指认**用的，改一个已经说出口的名字比多号一个更坏。
+   */
+  let imageNames = new Map<string, number>()
+
+  /**
+   * 把稿子里**已经在的**图片名字认下来（历史翻回来 / 提交失败把稿子还回来那两处）。
+   *
+   * 由头：那几处的名字**已经写在正文里**（`Image#3`），而这张表是外壳的现编账——
+   * 整份换稿之后不认下来的话，接着新加一张图会**又编出一个 3**，同一段输入里就撞名了。
+   * 认下来之后新号从「已有的张数 ＋ 1」往下发（`imageNumberOf`）。
+   *
+   * 只认得出「编号 ＋ 内容身份」都齐的那种（`Image#N` 的写法 ＋ 那一支带的 blob）：
+   * 用户自己打的字、旧记录里没有编号的那种不编（见 `inline.ts` 的 `imageIndexOf`）。
+   */
+  const adoptImageNames = (refs: readonly DraftRef[]): void => {
+    for (const ref of refs) {
+      if (ref.kind !== 'image') continue
+      const n = imageIndexOf(ref.marker)
+      if (n === undefined || imageNames.has(ref.blob)) continue
+
+      imageNames.set(ref.blob, n)
+    }
+  }
+
+  /**
+   * 给一份**内容身份**取编号——已经有的照旧（同内容同名字），没有的发下一个。
+   *
+   * 「下一个」取**已发出的那个最大的 ＋ 1**，不是「几张 ＋ 1」：历史里翻回来的一句可能
+   * 只带着 `Image#3` 那一处（另外两张删掉了），按张数发会从 2 起，而 3 已经有人用了
+   * ——那就是**撞名**。按最大号往下发，撞不上。
+   */
+  const imageNumberOf = (blob: string, refs: readonly DraftRef[]): number => {
+    adoptImageNames(refs)
+    const known = imageNames.get(blob)
+    if (known !== undefined) return known
+
+    const next = Math.max(0, ...imageNames.values()) + 1
+    imageNames.set(blob, next)
+
+    return next
+  }
+
   /** 攒着的那一次补发（`undefined` ＝ 窗口里没排着）。 */
   let pending: ReturnType<typeof setTimeout> | undefined
 
@@ -1062,6 +1119,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 路径候选回来了 ⇒ **只认正开着 `@` 那一栏、且 query 对得上的那一次**（边打边问，
     // 答复可能后到——先到的那一份不该盖掉用户已经改过的查询）。
     if (event.kind === 'paths.catalog') refreshPaths()
+
+    // 选定那一条认出来了（U62）⇒ **是图就把那一处改写成 `Image#N`**（见 `identifyPicked`）。
+    if (event.kind === 'paths.identified') identifyPicked(event.data)
 
     // 提交**没收下** ⇒ 按原 pairing 键认下那一份草稿（U33）。回执那半行由 `reduce` 落
     // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
@@ -2263,9 +2323,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *   是命令，草稿已被它清空，故那一格即句首的 `[0, 0)`——**不一律追加到末尾**
    *   （设计 · 文件与图片：「在打开查询前的输入位置插入引用」）；
    * - **不发送**：选定一个动作不等于把交代发出去。
+   *
+   * 那一处的名字是**编号**（`Image#N`，U62）——取号按**内容身份**（`row.blob` 就是那一份
+   * 字节的 sha256），故同一张图从这一屏放回两次、或与 `@` 选进来的同一张并用，都是同一个名字。
    */
   const attachImage = (row: AttachmentRow, anchor: { readonly start: number; readonly end: number }): void => {
-    const marker = markerOf({ kind: 'image', name: row.name })
+    const marker = markerOf({ kind: 'image', n: imageNumberOf(row.blob, view.refs) })
 
     commit(
       withCompletion({
@@ -2423,6 +2486,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *
    * 替换掉的是**整段查询**（从 `@` 到用户打到的位置）：设计 · 文件与图片
    * 「选定后收起候选，在查询原处留下文件/目录引用，其余正文不动；不追加独立附件行」。
+   *
+   * ## 文件再问一句「它是什么」（U62）
+   *
+   * 目录到此为止（`@src/` 就是它该有的样子）。**文件**多走一趟 `paths.identify`：
+   * 它可能**是一张图**，而图片那一处的写法是**编号**（`Image#N`）——不是路径，也不用文件名。
+   * 这一问要读一次内容，故只在**选定之后**发（设计：「选定才是用户的动作」）。
+   *
+   * ⚠️ **先落稿、后问**（次序是刻意的，与 `input.submit` 那条同）：答复回来时那一处引用
+   * 得**已经在稿子里**——改名那一步是在原处替换（`retype`），不是另插一处。
+   * 问不出来（不是图 / 读不了 / 不在了）⇒ 什么都不发生：那一处**照旧是 `@路径`**
+   * （真到提交那一刻取不到，由那一条如实报错）。
    */
   const pickPath = (): void => {
     const anchor = view.dock.kind === 'picker' ? view.dock.picker.anchor : undefined
@@ -2449,6 +2523,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         ),
       }),
     )
+
+    if (kind === 'file') {
+      send({
+        type: 'paths.identify',
+        path: found.path,
+        ...(found.external ? { external: true as const } : {}),
+      })
+    }
   }
 
   /**
@@ -2485,6 +2567,49 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
+   * **选定那一条认出来了**（U62）——是图就把那一处**在原处**改成 `Image#N`。
+   *
+   * 四条分寸：
+   * - **没认出图 ⇒ 什么都不做**：那一处照旧是 `@路径`（设计：不假装有文件名——
+   *   一份读不出图的文件本来就没有「图片的名字」可言），也不在选入的时候就先报一串；
+   * - **认的是路径**（答复原样回声）⇒ 改的是**稿子里 `source` 正是它**的那几处：
+   *   同一份文件选进来两次，两处一起改，而它们**共用同一个编号**（同内容同名字）；
+   * - **已经不在稿子里的**（答复后到，用户已经删了那一段 / 已经交出去了）⇒ 无一处可改，
+   *   `retype` 原样还回来，这里也就不动（不新插、不复活）；
+   * - 走 `edit`（人动草稿那条口）而不是 `commit`：这确实是**改草稿**——历史游标该归位，
+   *   而「交出去那一份等着认领」也就此作罢（稿子已经不是交出去时那一份了）。
+   */
+  const identifyPicked = (data: Extract<KernelEvent, { kind: 'paths.identified' }>['data']): void => {
+    const image = data.image
+    if (image === undefined) return
+    // 稿子里已经没有那一处了（答复后到：用户删了它 / 已经交出去了）⇒ 连号都不取
+    // （取号是「这一段输入」的账，取一个用不上的只会平白多出个空号）
+    if (!view.refs.some((ref) => ref.kind === 'file' && ref.source === data.path)) return
+
+    const marker = markerOf({ kind: 'image', n: imageNumberOf(image.blob, view.refs) })
+    const renamed = retype(view.draft, view.refs, caretAt(), (ref) =>
+      ref.kind === 'file' && ref.source === data.path
+        ? {
+            marker,
+            ref: {
+              kind: 'image',
+              source: ref.source,
+              label: image.label,
+              name: image.name,
+              mime: image.mime,
+              blob: image.blob,
+              ...(ref.external === true ? { external: true as const } : {}),
+            },
+          }
+        : undefined,
+    )
+    // 一处都没换 ⇒ `retype` 把**原来那个数组**原样还回来了（一个字节都没动过）
+    if (renamed.refs === view.refs) return
+
+    editAt(renamed.draft, renamed.caret, renamed.refs)
+  }
+
+  /**
    * **一次提交**（U33 起，U36 改形）——正文 ＋ 它里面的引用 ＋ 配对键，三件一起交给内核。
    *
    * 三条写在一处：
@@ -2500,6 +2625,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     lastSubmit = { ref, text, refs }
 
     const cleared: ShellView = { ...view, draft: '', caret: 0, refs: [] }
+    // **这一段输入到此为止，编号也归零**（U62）：`Image#N` 是**一段输入内**的编号，
+    // 下一段交代从 `Image#1` 重新数（留着上一段的号只会让新的一句里平地冒出个 `Image#4`）。
+    // ⚠️ 失败还稿那一路（`settleDraft`）会整份把引用摆回来，编号在那时**认回来**
+    // （见 `adoptImageNames`）——这里先清掉不会让还回来的那几个名字撞号。
+    imageNames = new Map()
     // 历史记的是**整份草稿**：正文 ＋ 它里面的引用（位置与身份都在，见 `HistoryEntry`）——
     // `↑` 翻回来的是**当时那一句**，接着改、再发一次都不必重选。
     // 连着提交两份一模一样的不重复记（与从前那条「同上一条相同就不记」同一分寸）。

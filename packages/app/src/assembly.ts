@@ -1456,6 +1456,60 @@ export function assemble(options: AssembleOptions): Assembly {
     )
   }
 
+  /**
+   * **认一认选定的那一条**（U62 · 图片的名字）。
+   *
+   * 与 `listPaths` 只差一件事，而那一件正是两边分开的由头：**这一条真的读一次内容**。
+   * 浏览那一趟（每改一个字问一次）一个字都不读（契约 `PathList` 那条注）；这一趟是
+   * 用户**按下回车选定之后**才来的——正是设计说的「选定才是用户的动作」。
+   *
+   * 读走 `Materials.load`（**不另开一条读径**）：限长、图片那两把尺子、二进制判定、
+   * 工作区外只收单个文件——全是既有的那一份判据，这里一个字都不重写。
+   * 读到的**不是图**（文本 / 读不了 / 不在了）⇒ 答复里就没有 `image` 那一格：
+   * 那一处引用照旧是 `@路径` 那个块，一个字不变。
+   *
+   * 是图 ⇒ 把字节经**记录域的公开面**落成 blob（写权唯一归它），拿回的那一串 sha256
+   * 就是**内容身份**——也就是那一处 `Image#N` 取号所依据的那一件，同时是送达时
+   * 要读的那一份（**同内容只落一份**，重选同一张图不会存第二遍）。
+   *
+   * ⚠️ **里面任何一步炸了都只是「没认出图」**（照发一条没有 `image` 的答复），**不往上抛**：
+   * 这一问是**辅助**——它答不上来顶多是那一处没有编号（照旧 `@路径`），而真到提交那一刻
+   * 取不到，**由那一条如实报错**（设计：不两条路各报一次、也不在选入的时候先报一串）。
+   * 往上抛更坏：这一条是 `void` 出去的（同 `listPaths`），抛出去就是一次
+   * **没人接的 rejection**——一处读不了的图能把整台机器带下去。
+   */
+  const identifyPath = async (path: string, external?: true): Promise<void> => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+
+    let image: EventDataOf['paths.identified']['image']
+    try {
+      const found = await materials.load([
+        { kind: 'file', source: path, ...(external === true ? { external: true as const } : {}) },
+      ])
+      const material = found.ok ? found.materials[0] : undefined
+
+      image =
+        material === undefined || material.kind !== 'image'
+          ? undefined
+          : {
+              mime: material.mime,
+              name: material.name,
+              bytes: material.bytes.length,
+              blob: await recordsStore.blobs.put(material.bytes),
+              label: material.label,
+            }
+    } catch {
+      image = undefined
+    }
+
+    sink.emit(
+      requireActiveStamper().stamp('paths.identified', {
+        path,
+        ...(image === undefined ? {} : { image }),
+      }),
+    )
+  }
+
   const skillCatalogOf = (): EventDataOf['skills.catalog'] => {
     const found = skills.discover()
 
@@ -1989,6 +2043,10 @@ export function assemble(options: AssembleOptions): Assembly {
     // 路径候选（读侧 · U36）——**归装配**（它握着执行域的路径面，同技能目录那一处）；
     // 答复走事件（`paths.catalog`，不落库）。**异步**：它要真去看一眼目录。
     onPathList: (query) => void listPaths(query),
+    // 认一认选定的那一条（U62 · 图片的名字）——**归装配**（同 `onPathList`：执行域的
+    // 路径面在它手里），而落 blob 那一步经**记录域**的公开面（写权唯一归它）。
+    // 答复走事件（`paths.identified`，不落库）。**异步**：它真要读一次内容。
+    onPathIdentify: (path, external) => void identifyPath(path, external),
     // 图片附件（U37）——**原样转手**给对话域（条目载荷里那份引用只有它认得，
     // 同 `history.read` 的站位）；答复走事件（`attachments.catalog`，不落库）
     onAttachmentList: () => void conversation.readAttachments(),

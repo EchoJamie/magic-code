@@ -396,6 +396,34 @@ export type SkillList = { readonly type: 'skills.list' }
 export type PathList = { readonly type: 'paths.list'; readonly query: string }
 
 /**
+ * `paths.identify`——**认一认「我选定的这一条」**（U62 · 图片的名字）。
+ *
+ * **由头**：图片的**名字**是 `Image#N`（设计 · 文件与图片「图片的身份与名字」），
+ * 而名字要**指认得出来**——同一张图（同内容）在一段输入里必须是同一个名字，
+ * 两张不同的图必须分得开。判据是**内容身份**（字节的 sha256），而外壳**不碰盘**
+ * （域与外壳都只经控制面说话）——它按不下 sha256 这一刀。
+ *
+ * 所以选定那一下要**问一次**：这一条是不是一张图？是的话，它的内容身份是什么？
+ *
+ * ⚠️ **为什么与 `paths.list` 分开，而不是把它加宽**：那一条是**边打边问**的浏览
+ * （每改一个字问一次），设计明写它**不读内容**（「选定才是用户的动作，材料到提交那一刻
+ * 才读」）。把「读一次内容」塞进浏览面，等于**每打一个字就把候选里那几张图读一遍**。
+ * 这一条只在**回车选定之后**发——那正是设计说的那个「用户的动作」。
+ *
+ * ⚠️ **只认得出「是 / 不是图片」与它的身份，不改这次交代的送达**：材料怎么到模型那条
+ * 归别处（U63 那一面）；这里问到的身份，是**块上的名字**据以取号的那一件。
+ *
+ * `path` ＝选定的**真路径**（`PathCatalogRow.path`，身份就是它）；
+ * `external` ＝那一条在不在工作区里（用户在候选里看到的那一格，**原样带过来**——
+ * 「工作区外只收单个文件、走只读附件」那条判据在实现侧，外壳不自己判里外）。
+ */
+export type PathIdentify = {
+  readonly type: 'paths.identify'
+  readonly path: string
+  readonly external?: true
+}
+
+/**
  * `attachments.list`——**本会话已送出的图片**（U37 · `/attachments` 的读侧）。
  *
  * **由头**：源文件删掉、会话重开之后仍要取得回那一张图（设计 · 文件与图片：
@@ -426,7 +454,7 @@ export type AttachmentExport = { readonly type: 'attachments.export'; readonly e
 
 /**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支 ＋ U36 的路径候选一支）——外壳发往内核的全部消息。
+ * ＋ U33 的技能目录一支 ＋ U36 的路径候选一支 ＋ U62 的认出选定那一条）——外壳发往内核的全部消息。
  * `mcp.list`——**外部服务器的一屏**（U39）。
  *
  * **由头**：`/mcp` 要列已配置的身份、连接状态与工具数，而外壳够不着那一束连接
@@ -474,6 +502,7 @@ export type Command =
   | GrantsRevoke
   | SkillList
   | PathList
+  | PathIdentify
   | AttachmentList
   | AttachmentExport
   | McpList

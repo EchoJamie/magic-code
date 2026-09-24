@@ -132,6 +132,10 @@ describe('判据 3 · 不落库清单', () => {
     // 那份字节与名字 / 类型 / 出处本来就躺在 `user` 条目的载荷里；且回执那一格（导出的
     // 临时文件路径）是一次性的，留下只会变成一串早就没用的路径。
     // **新锚**：十五条，字面规则一个没动。
+    // U62 补锚：`paths.identified`——同 `paths.catalog` 那一条（**读出来的**不落库：
+    // 内容就在盘上，这一问只是「选定的这一条是什么」的当场答复，问几次都不混）。
+    // 那一处引用到底带了什么材料同样**另有痕**（`user` 条目的载荷 `refs`，含图片那份 blob）。
+    // **新锚**：十六条，字面规则一个没动。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'attachments.catalog',
@@ -142,6 +146,7 @@ describe('判据 3 · 不落库清单', () => {
       'model.delta',
       'model.retry',
       'paths.catalog',
+      'paths.identified',
       'plan.changed',
       'provider.catalog',
 

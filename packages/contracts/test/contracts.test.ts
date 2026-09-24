@@ -456,6 +456,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onPathIdentify: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -478,6 +479,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onPathIdentify: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -556,6 +558,7 @@ export function routesCarryModelSwitch(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onPathIdentify: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -686,6 +689,10 @@ describe('事件契约', () => {
       // 且它是**边打边问**的动作（`@` 之后每改一个字问一次），留痕只会把观测淹掉。
       // 当时带了哪份材料另有痕：`user` 条目的载荷 `refs`（位置 / 来源 / 实际交付内容）。
       'paths.catalog',
+      // U62：认出选定那一条的答复同列——**同一条判据的第七处**（内容就在盘上，不在库里），
+      // 且它只是「这一条是什么」的**当场答复**（问几次都不混，落库只会把这句答复存 N 遍）。
+      // 那一处引用到底带了什么材料另有痕：`user` 条目的载荷 `refs`（含图片那份 blob）。
+      'paths.identified',
       // U37：图片附件同列——**同一条判据的第六处**（那份字节与名字 / 类型 / 出处本来就
       // 躺在 `user` 条目的载荷 `refs` 里，不在另一张表里），落库＝把同一件事存第二遍；
       // 且回执那一格（导出的临时文件路径）**一次性**——重放到第二天早就没人清了。

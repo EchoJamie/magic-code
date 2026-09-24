@@ -173,6 +173,82 @@ export function widen(
   }
 }
 
+/**
+ * **把几处引用就地换成另一种**（U62）——正文那一段与区间、插入点**一起**跟着走。
+ *
+ * 由头：`@` 那一栏选定一条**文件**时，那一处先按路径写进正文（那一刻还不知道它是什么）；
+ * 「它其实是一张图」是**问过内核之后**才知道的（`paths.identify`）。知道了就要把那一处
+ * 改写成图片的样子（`Image#N` ＋ 内容身份）——**改名不是新插一处**：位置、前后文字、
+ * 插入点都该停在原处。
+ *
+ * 三条：
+ * - **只动点名的那几处**（`next` 返回 `undefined` ＝ 不动它），其余区间按长度差平移；
+ * - **插入点**落在某处被换的那一段**里面**时，挪到新 marker 之后（与 `replaceWith`
+ *   同一条分寸：刚换完，接着打的字跟在这一处后面）；
+ * - **一处都没换 ⇒ 原样还回去**（一个字节都不动——「没认出图」那一趟因此不留痕）。
+ */
+export function retype(
+  draft: string,
+  refs: readonly DraftRef[],
+  caret: number,
+  next: (ref: DraftRef) => { readonly marker: string; readonly ref: RefIdentity } | undefined,
+): { readonly draft: string; readonly refs: readonly DraftRef[]; readonly caret: number } {
+  const ordered = sorted(refs)
+  /** 换哪几处——按**原来那个区间对象**认（`next` 返回什么就换什么）。 */
+  const replacementOf = new Map<DraftRef, { readonly marker: string; readonly ref: RefIdentity }>()
+  const swaps: { readonly from: number; readonly to: number; readonly marker: string }[] = []
+
+  for (const ref of ordered) {
+    const replacement = next(ref)
+    if (replacement === undefined) continue
+    replacementOf.set(ref, replacement)
+    swaps.push({ from: ref.start, to: ref.end, marker: replacement.marker })
+  }
+
+  if (swaps.length === 0) return { draft, refs, caret }
+
+  // 正文：被换掉那几段就地换掉，其余一个字不动
+  let text = ''
+  let cursor = 0
+  for (const swap of swaps) {
+    text += draft.slice(cursor, swap.from) + swap.marker
+    cursor = swap.to
+  }
+  text += draft.slice(cursor)
+
+  /** `pos` **之前**那几段带来的长度差（落在某一段里面由 `moved` 单独处置）。 */
+  const shiftBefore = (pos: number): number =>
+    swaps.reduce((sum, swap) => (swap.to <= pos ? sum + swap.marker.length - (swap.to - swap.from) : sum), 0)
+
+  const moved = (pos: number): number => {
+    const inside = swaps.find((swap) => swap.from < pos && pos < swap.to)
+
+    return inside === undefined
+      ? pos + shiftBefore(pos)
+      : inside.from + shiftBefore(inside.from) + inside.marker.length
+  }
+
+  const movedRefs = ordered.map((ref) => {
+    const replacement = replacementOf.get(ref)
+    if (replacement !== undefined) {
+      const start = moved(ref.start)
+
+      return {
+        ...replacement.ref,
+        marker: replacement.marker,
+        start,
+        end: start + replacement.marker.length,
+      }
+    }
+
+    const start = moved(ref.start)
+
+    return { ...ref, start, end: start + (ref.end - ref.start) }
+  })
+
+  return { draft: text, refs: movedRefs, caret: moved(Math.max(0, Math.min(caret, draft.length))) }
+}
+
 /** 插一处引用（`[start, end)` 是它在正文里的那一段）——与已有区间**不叠**（叠的去掉）。 */
 export function putRef(refs: readonly DraftRef[], ref: DraftRef): readonly DraftRef[] {
   return sorted([...refs.filter((one) => one.end <= ref.start || one.start >= ref.end), ref])
@@ -314,19 +390,45 @@ export function wire(refs: readonly DraftRef[]): readonly InputRef[] {
 }
 
 /**
- * **引用文字该怎么写**（一处产出）——文件 / 目录 / 图片带 `@`，目录带尾斜杠，技能带 `/`。
+ * **引用文字该怎么写**（一处产出）——文件 / 目录带 `@`（目录带尾斜杠），技能带 `/`，
+ * **图片是编号**（`Image#N`）。
  *
  * 目录那个尾斜杠：设计 · 文件与图片「目录加 `/` 后向内浏览」——屏上那一处因此一眼看得出
  * 它是个目录（`@src/`），而身份仍只到 `src`（尾斜杠不是路径的一部分）。
  *
- * **图片与文件同形**（`@shot.png`）：设计 · 文件与图片「图片引用留在句中，正常显示足以
- * 辨认的名称」——那一处写的就是名字，**不另铺常驻附件行**（类型与大小按需查询，或失败时说）。
+ * ## 图片为什么是编号，不是名字（U62 · 2026-09-25 定）
+ *
+ * 文件 / 目录那一处写的是**路径**——因为要靠它去读（模型按需自读）。图片**不需要路径**
+ * （引用即进，随请求直接成部件），**也不假装有文件名**：图不一定来自文件（剪贴板来的
+ * 就没有文件）。所以它写的是一个**一段输入内的编号**，指认得出来即可——
+ * **它不是地址**，是给模型和你指认用的（见 `设计 · 文件与图片#图片的身份与名字`）。
+ *
+ * ⚠️ **编号由调用方给**（`n`），不是这里现算：同一份内容在同一段输入里必须给同一个编号，
+ * 而「哪几份内容已经有编号了」是稿子那一侧的事（见 `shell.ts` 的 `imageNumberOf`）。
+ * 这里只管**怎么把它写出来**——两处各写一遍就会有一处分叉。
  */
-export function markerOf(part: {
-  readonly kind: 'skill' | 'file' | 'dir' | 'image'
-  readonly name: string
-}): string {
+export function markerOf(
+  part:
+    | { readonly kind: 'skill' | 'file' | 'dir'; readonly name: string }
+    | { readonly kind: 'image'; readonly n: number },
+): string {
   if (part.kind === 'skill') return `/${part.name}`
+  if (part.kind === 'image') return `Image#${part.n}`
 
   return part.kind === 'dir' ? `@${part.name}/` : `@${part.name}`
+}
+
+/**
+ * 那一段文字是不是一个图片编号（`Image#N`）——是的话给出 `N`。
+ *
+ * 由头：编号是**稿子那一侧现编的**（内核不认识它），而稿子有几处会被整份换掉
+ * （输入历史翻回来、提交失败把稿子还回来）。换回来那几处的名字已经写在正文里了
+ * ——照着把它们认下来，接着新加一张图才**不会又编出同一个号**。
+ *
+ * 认不出来（用户自己打的字、旧记录里没有编号的那种）⇒ `undefined`：不编。
+ */
+export function imageIndexOf(marker: string): number | undefined {
+  const matched = /^Image#([1-9][0-9]*)$/.exec(marker)
+
+  return matched === null ? undefined : Number(matched[1])
 }

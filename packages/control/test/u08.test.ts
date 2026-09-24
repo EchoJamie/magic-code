@@ -92,6 +92,9 @@ export function commandSubjectOf(command: Command): string {
     case 'paths.list':
       // U36 路径候选——`@` 之后打的那一段原样递过来（解析归实现那一侧）
       return `列路径候选：${command.query}`
+    case 'paths.identify':
+      // U62 认出选定那一条——路径与「在不在工作区里」都原样递（判里外归实现那一侧）
+      return `认这一条：${command.path}${command.external === true ? '（工作区外）' : ''}`
     case 'attachments.list':
       // U37 图片附件读侧——无参：问的就是「这条会话送过哪些图」
       return '列图片附件'
@@ -191,6 +194,7 @@ export function hubFaceRealizesPort(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onPathIdentify: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -229,6 +233,7 @@ export function routesAreContractShape(): void {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onPathIdentify: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -270,6 +275,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onGrantsRevoke: () => undefined,
     onSkillList: () => undefined,
     onPathList: () => undefined,
+    onPathIdentify: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -451,14 +457,24 @@ describe('命令进——外壳 → 内核', () => {
         // 漏接的话命令到此为止（外壳那边看着就是「`@` 按了没反应」——真 PTY 上就是这么抓到的：
         // 单元用例走的是间谍传输，压根不经过控制域，接没接上它看不见）。
         onPathList: (query) => seen.push(`paths:${query}`),
+        // U62 新加的一支（「认一认选定的那一条」）同理：漏接的话外壳选了一张图之后
+        // 那一处**永远不会变成 `Image#N`**（问出去没有回声），而单测走间谍传输看不见。
+        onPathIdentify: (path, external) => seen.push(`identify:${path}:${external === true}`),
       }),
     )
     hub.attach(kernel)
 
     shell.send({ type: 'skills.list' })
     shell.send({ type: 'paths.list', query: 'src/lo' })
+    shell.send({ type: 'paths.identify', path: '/ws/shot.png' })
+    shell.send({ type: 'paths.identify', path: '/tmp/x.png', external: true })
 
-    expect(seen).toEqual(['skills', 'paths:src/lo'])
+    expect(seen).toEqual([
+      'skills',
+      'paths:src/lo',
+      'identify:/ws/shot.png:false',
+      'identify:/tmp/x.png:true',
+    ])
   })
 
   test('裁决答复按**请求事件 id** 配对——与 `call` 字段两 id 不混', () => {
