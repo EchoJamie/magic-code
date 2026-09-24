@@ -27,7 +27,6 @@
  * ```
  */
 
-import { existsSync } from 'node:fs'
 import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
 import type { Sandbox, UiSession } from './ui/index.ts'
 
@@ -297,5 +296,4 @@ if (import.meta.main) {
   }
 
   console.log('四场全过。')
-  if (!existsSync('/dev/null')) console.log('（这台机器的 /dev/null 不在了——上面那些读数都别信）')
 }
