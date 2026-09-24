@@ -381,7 +381,7 @@ async function builtinClash(out: string, configured: string): Promise<void> {
 
     // `/model` 仍是**换模型**那个内置命令（开的是条目选择器，不是技能抽屉）
     await typeLine(session, '/model')
-    await session.key('enter', { until: { text: '↑↓ 选 · 回车 定 · esc 收起' }, timeoutMs: 10_000 })
+    await session.key('enter', { until: { text: '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · esc 收起' }, timeoutMs: 10_000 })
     const cmd = await session.capture({ label: '08a-内置-model' })
     keep(out, cmd, '08a-内置-model')
     check(has(cmd, 'local') || has(cmd, 'MiniMax'), '`/model` 开的是条目选择器（内置含义保留）')

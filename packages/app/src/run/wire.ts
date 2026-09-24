@@ -11,9 +11,9 @@
  * | 方向 | 消息 |
  * | --- | --- |
  * | 客户端 → 管理者 | `hello`（我是窗口）· `cmd`（带着我认的**代次**）· `bye` |
- * | 管理者 → 客户端 | `welcome`（你连上了谁）· `ev`（事件 ＋ 它的代次）· `line`（给人看的一句话） |
- * | 执行者 → 管理者 | `hello`（我是哪条会话的执行者）· `bound` · `ev` · `pong` · `done` |
- * | 管理者 → 执行者 | `cmd` · `ping` · `bye` |
+ * | 管理者 → 客户端 | `welcome`（你连上了谁）· `target` · `detached` · `ev` · `line` · **`runs`**（这一摊的运行事实）· **`resumed`**（接回的那一份快照） |
+ * | 执行者 → 管理者 | `hello`（我是哪条会话的执行者）· `bound` · `ev` · `pong` · `done` · **`stopping`** · **`snapshot`** |
+ * | 管理者 → 执行者 | `cmd` · `ping` · `bye` · **`snapshot`**（要一份接回快照） |
  *
  * ## 帧
  *
@@ -26,7 +26,14 @@
  */
 
 import type { Socket } from 'bun'
-import type { Command, KernelEvent, McpConnectionState, ModelSwitchRequest } from '@magic/contracts'
+import type {
+  Command,
+  KernelEvent,
+  McpConnectionState,
+  ModelSwitchRequest,
+  RunRow,
+  RunSnapshot,
+} from '@magic/contracts'
 
 /**
  * **一台外部服务器的预检读数**（U48 第六段）——**探针的结论，不是工具连接的状态**。
@@ -105,7 +112,29 @@ export type ManagerToClient =
        * 那条（U28）要的形态。
        */
       readonly refuse?: string
+      /**
+       * **这一摊的运行事实**（U49）——此刻有哪几条会话在跑、各自什么状态。
+       *
+       * 为什么随 `welcome` 一起下来：它是**服务状态**的一部分（同 `mcp` 那一格），
+       * 与「这个窗口眼下在看哪条会话」无关——开屏那张摘要说的是**这一摊**有几项在跑。
+       */
+      readonly runs: readonly RunRow[]
     }
+  /**
+   * **运行事实变了**（U49）——管理者按需推（有了就推，不带请求）。
+   *
+   * 为什么是**推**而不是等窗口问：那张表的用处一半在「我不用问就知道它在等我」。
+   * 让窗口轮询等于把「多久问一次」变成用户等待的下界；而事实是管理者手上现成的。
+   * 合并推送（见 `manager.ts` 的 `pushRuns`）：状态变即刻推，输出那类变化按小窗合并。
+   */
+  | { readonly t: 'runs'; readonly rows: readonly RunRow[] }
+  /**
+   * **接回的那一份快照**（U49）——同一代次的「此刻」＋ 事件水位。
+   *
+   * ⚠️ **它必须先于水位之后的事件到达**：管理者是先订阅并缓冲、拿到快照才放行的
+   * （见 `manager.ts` 的 `bind`）。窗口收到它就照它把在飞的那几件画回去。
+   */
+  | { readonly t: 'resumed'; readonly gen: number; readonly snapshot: RunSnapshot }
   /**
    * **客户端换到了另一个执行者**——`gen` 是**当下**那一代的号，`session` 是它认的会话
    * （`null` ＝ 那条执行者还没开张）。
@@ -152,8 +181,30 @@ export type ExecutorToManager =
   | { readonly t: 'pong'; readonly seq: number }
   /** **跑起来之后才开张**（D5 那条路）——补一条登记，管理者据以把它挂到会话名下。 */
   | { readonly t: 'bound'; readonly session: string }
-  /** 自己收摊了（收缩那条路）——管理者据以核销，不再等它。 */
+  /**
+   * **自己开始收摊了**（收缩那条路）——管理者据以把它记成「停止中」，**不再等它**。
+   *
+   * ⚠️ **它与 `stopping` 是一对，和 `done` 也是**：这一条说的是「我受理了这件事，正在
+   * 把资源退出去」，而不是「我已经没了」。**核销在进程真退的那一刻**（管理者那头的
+   * `onExit`）——「停止中不能提前显示已停止」这条判据靠的正是这个分界。
+   */
   | { readonly t: 'done'; readonly why: string }
+  /**
+   * **已受理停止、正在退出资源**（U49）——`bye` 那条路（管理者收摊 / 到点没退）与
+   * 信号那条路都经它说一声。
+   *
+   * 与 `done` 分开：`done` 是**自己决定**收的（没人看、手上也没事），这一条是**别人叫它
+   * 收的**。对管理者来说两件事的后果一样（记成停止中），但缘由不同——诊断时看得清是谁
+   * 让谁退的。
+   */
+  | { readonly t: 'stopping'; readonly why: string }
+  /**
+   * **接回快照**（U49）——回答管理者那一条 `snapshot`（按 `seq` 配对）。
+   *
+   * 它**在同一个事件循环里现算**（收到就答，中间不 await）：这样「水位之后的事件」与
+   * 「快照里已含的内容」之间不可能夹进一条——事件 id 单调，凡 id 大于水位的都还没发生。
+   */
+  | { readonly t: 'snapshot'; readonly seq: number; readonly snapshot: RunSnapshot }
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
@@ -167,6 +218,8 @@ export type ManagerToExecutor =
    * 收不收的**一半判据**。另一半（在途调用、待答项）归执行者自己（它看得见内核的状态）。
    */
   | { readonly t: 'watchers'; readonly count: number }
+  /** **要一份接回快照**——管理者在把某个窗口挂到这一代上时发（见 `ManagerToClient` 的 `resumed`）。 */
+  | { readonly t: 'snapshot'; readonly seq: number }
   | { readonly t: 'bye'; readonly why: string }
 
 /** 线上消息的总表——判别收窄用得到它。 */

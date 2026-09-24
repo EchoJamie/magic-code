@@ -24,6 +24,7 @@
 // —— 启动 ——
 
 export { runTui } from './run.ts'
+export type { RunFeed, ResumeFeed } from './shell.ts'
 export type { RunTuiOptions, TuiHandle } from './run.ts'
 
 // —— 会话壳（控制面接线 ＋ 键位语义）——

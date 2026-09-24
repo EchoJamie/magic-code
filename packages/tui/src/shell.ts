@@ -67,6 +67,10 @@ import {
   reasoningHint,
   reasoningRows,
   sessionRows,
+  applyResume,
+  inActiveSection,
+  runDetail,
+  runSummary,
   skillHint,
   skillRows,
   authLabelOf,
@@ -84,7 +88,7 @@ import {
   withBanner,
   withContextWindow,
 } from './view.ts'
-import type { PageTurn } from './view.ts'
+import type { PageTurn, PickerRow, SessionScope } from './view.ts'
 import {
   backspaceRange,
   deleteRange,
@@ -101,7 +105,7 @@ import {
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
 import type { PromptState, ShellView } from './view.ts'
-import type { AttachmentRow, RecordId } from '@magic/contracts'
+import type { AttachmentRow, RecordId, RunRow, RunSnapshot } from '@magic/contracts'
 import { leftSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
@@ -278,6 +282,43 @@ export type ShellOptions = {
    * **一句都留不下**（`run.ts` 的次序正是「boot → 放开输入 → 读历史」）。
    */
   readonly receipts?: readonly string[] | undefined
+  /**
+   * **运行事实的来路**（U49）——「谁在跑、什么状态」由管理者**推**来（不必问）。
+   *
+   * 为什么走一条**独立于事件**的路：它是**服务状态**（管理者手上的事实），不是内核事件
+   * ——内核一个字都不背运行管理（设计 · 本机执行结构）。混进事件面就是拿内核的语言
+   * 说管理面的话，两边迟早各说一套。
+   *
+   * **不给**（用例 / 演示）⇒ 那一屏照旧只有目录，一行状态都不标——「拿不到的不编」。
+   */
+  readonly runs?: RunFeed | undefined
+  /**
+   * **接回快照的来路**（U49）——挂到某一代上之后，管理者取来那一代的「此刻」。
+   *
+   * **不给** ⇒ 接回那一手不做（照旧只铺记录里的历史）。
+   */
+  readonly resumed?: ResumeFeed | undefined
+  /**
+   * **这一趟开局就接的那条会话**（`--session <id>`）——只作开屏那张摘要的排除项
+   * （设计：摘要说的是**其他**活跃工作，而这条正是用户为它来的）。
+   */
+  readonly openingSession?: string | undefined
+}
+
+/**
+ * **运行事实的来路**（U49）——当下那一份 ＋ 变化时的通知。
+ *
+ * 两件都要：`current()` 给「现在就打开列表」那一刻的读数（不等下一次变化），
+ * `subscribe` 给此后的变化。
+ */
+export type RunFeed = {
+  readonly current: () => readonly RunRow[]
+  readonly subscribe: (listener: (rows: readonly RunRow[]) => void) => void
+}
+
+/** **接回快照的来路**（U49）——`gen` 是这份快照出自哪一代（诊断与配对用）。 */
+export type ResumeFeed = {
+  readonly subscribe: (listener: (gen: number, snapshot: RunSnapshot) => void) => void
 }
 
 /**
@@ -390,6 +431,27 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const startup: readonly string[] = options.receipts ?? []
   let startupSaid = false
   if (startup.length > 0) view = startup.reduce((acc, text) => appendReceipt(acc, text), view)
+
+  /**
+   * 运行事实（U49）——接上那一份当下读数；此后由管理者推着走（下面那一段订阅）。
+   *
+   * ⚠️ **与「启动那几句」不同**：它**不进记录区**（不是回执），只是视图里的一格——
+   * 列表每次现读它。摘要那一行才落记录（而且只落一次，见下）。
+   */
+  view = { ...view, runs: options.runs?.current() ?? [] }
+
+  // **开屏那张摘要**（U49 · 设计：「首页仅在**确有其他活跃工作**时出现一次摘要，例如
+  // 『2 项执行中 · 1 项需要你』，指向列表，**不反复刷屏**」）。
+  //
+  // 三处分寸都在这一跳上：
+  // - **一次**——它是一条回执（落进记录区、此后随页面走），不是状态行那种常驻读数；
+  // - **确有**——一条活跃的都没有就一个字都不说（空白开一条新的时屏上不该多一行）；
+  // - **其他**——这一趟开局就接的那条会话（`--session`）不算「别的活跃工作」：
+  //   用户正是为它来的。
+  {
+    const summary = runSummary(view.runs, options.openingSession)
+    if (summary !== undefined) view = appendReceipt(view, summary)
+  }
 
   let disposed = false
   /** 「放开输入」了没有——`boot` 完成那一下翻真（见 `Shell.releaseInput`）。 */
@@ -975,32 +1037,199 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     commit(next)
     rebuildFor = null
     rebuildEntries = []
+    // **接回来的那一段画在历史之后**（U49）——早一步画会被这一跳的 `rebuild` 抹掉
+    drawResumed()
   }
 
   const unsubscribeTransport = transport.subscribe(onEvent)
 
+  /**
+   * **接回的那一份快照**（U49）——**先收着，等记录区铺完再画**。
+   *
+   * 两件在次序上咬着的：① 快照说的是「此刻」——比记录里任何一条都新，故它必须画在
+   * 历史**之后**（不然会被 `rebuild` 一并抹去）；② 而历史是**随后**一趟才回来的
+   * （`session.open` → `session.state` → `history.read` → `session.history`）。
+   * 故它到这儿先进暂存格，`accumulate` 那一跳铺完历史立刻叫我（`drawResumed`）。
+   *
+   * ⚠️ **没人叫就自己画**（`resumed` 一到而当时并没有重建在跑）——那种情形下没有
+   * 「等」的理由：它就是一个当场要画的东西。
+   */
+  let pendingResume: RunSnapshot | null = null
+  /** 那一份暂存的快照最多等多久（毫秒）——见 `drawResumed`。 */
+  const RESUME_SETTLE_MS = 300
+  let resumeTimer: ReturnType<typeof setTimeout> | undefined
+
+  const drawResumed = (): void => {
+    if (resumeTimer !== undefined) {
+      clearTimeout(resumeTimer)
+      resumeTimer = undefined
+    }
+    if (pendingResume === null) return
+    if (rebuildFor !== null) return // 记录区正在重建——等它铺完（`accumulate` 那一跳）
+    const snapshot = pendingResume
+    pendingResume = null
+    commit(applyResume(view, snapshot))
+  }
+
+  /**
+   * 收下一份快照，**等历史铺完再画**（见 `pendingResume` 的注）。
+   *
+   * 「等」有一个**上界**（`RESUME_SETTLE_MS`）：一旦这一趟并没有换会话（比如就那么
+   * 重绑回原来那条），`session.history` 那一趟根本不会来——那时死等就是**把事实扣在手里**。
+   * 到点照画：画的是**此刻的事实**，不是「等一个可能不来的东西」。
+   */
+  const holdResumed = (snapshot: RunSnapshot): void => {
+    pendingResume = snapshot
+    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
+    resumeTimer = setTimeout(drawResumed, RESUME_SETTLE_MS)
+    resumeTimer.unref?.()
+  }
+
   // —— 选择器 ——
 
-  /** `/resume`——目录已到手，开它（行：按工作区分组，U26——见 `sessionRows`）。 */
-  const openSessionPicker = (): void => {
-    const rows = sessionRows(view.catalog, view.sessionId, options.workspaceRoots)
-    // 下方那行说明：**空态优先**（「还没有会话」比「这儿是哪儿」更该先知道）；
-    // 否则本工作区一条都没有时报一句「这儿是哪儿」——整表皆暗时那是唯一说得通的话（U27）
-    const hint =
+  /**
+   * **`/resume` 那一屏自己的两格**（U49）——筛选（当前工作区 / 全部）与搜索词。
+   *
+   * 它们**只活在这一屏开着的时候**（收起即重置）：那是「我这一次要找哪一条」的临时状态，
+   * 不是一条该被记住的偏好——下次打开时用户要的是全貌（而全貌里第一条正是「需要你」）。
+   */
+  let sessionScope: SessionScope = 'all'
+  let sessionQuery = ''
+
+  /** 那一屏的行（**一处算**——开、筛、运行事实变了这三条路都走它）。 */
+  const sessionPickerRows = (): readonly PickerRow[] =>
+    sessionRows({
+      catalog: view.catalog,
+      active: view.sessionId,
+      here: options.workspaceRoots,
+      runs: view.runs,
+      scope: sessionScope,
+      query: sessionQuery,
+    })
+
+  /**
+   * 抽屉下方那一行说明（U49）——**选中那一条的执行详情**（设计：「长信息放选中详情」
+   * 与「执行详情给当前动作、开始时间、最近一次可确认进展与输出」）。
+   *
+   * 没有运行事实的那一条（历史里从没在这一次运行里跑过的会话）**不编详情**，
+   * 退回既有的那句话（「这儿是哪儿」/ 空态）。
+   */
+  const sessionPickerHint = (rows: readonly PickerRow[]): string | undefined => {
+    const selected = rows[view.dock.kind === 'picker' ? view.dock.picker.selected : 0]
+    const run = selected === undefined ? undefined : view.runs.find((one) => one.session === selected.value)
+    // 两件**各说各的**，故都在：筛的是什么（筛词）与**这一屏收窄到哪儿**（范围）。
+    // 只说一半的话，用户看着一张短表不知道另一半去哪了（收窄的那一条最常见）
+    const head = [
+      sessionQuery === '' ? '' : `筛选「${sessionQuery}」`,
+      sessionScope === 'here' ? '只看本工作区' : '',
+    ]
+      .filter((piece) => piece !== '')
+      .join(' · ')
+
+    if (run !== undefined) {
+      // 活跃那一段里，状态与动作都已经在「组头 ＋ 副文案」上了——详情只补别处没说过的
+      const detail = runDetail(run, Date.now(), { inActiveSection: inActiveSection(run.state) })
+      return head === '' ? detail : `${head} · ${detail}`
+    }
+
+    // 空态优先（「还没有会话」比「这儿是哪儿」更该先知道）；否则本工作区一条都没有时
+    // 报一句「这儿是哪儿」——整表皆暗时那是唯一说得通的话（U27）
+    const tail =
       rows.length === 0
         ? '还没有落过账的会话——交代一句就开张'
         : sessionHint(view.catalog, options.workspaceRoots)
 
+    const said = [head, tail].filter((piece) => piece !== undefined && piece !== '').join(' · ')
+    // **一句都没有就不给这一格**（`undefined`，不是空串）：空串会照样占一行
+    // ——屏上凭空多一条空白（真帧上量出来的）
+    return said === '' ? undefined : said
+  }
+
+  /** `/resume`——目录已到手，开它（行：活跃在前、再按工作区分组，见 `sessionRows`）。 */
+  const openSessionPicker = (): void => {
+    // **开一屏就是一屏新的**：筛词与范围从零起（它们是「我这一次要找哪一条」的临时状态，
+    // 不是一条该被记住的偏好——下次打开时用户要的是全貌，而全貌第一条正是「需要你」）
+    sessionScope = 'all'
+    sessionQuery = ''
+
+    const rows = sessionPickerRows()
+    const hint = sessionPickerHint(rows)
+
     commit(
       openPicker(view, {
         source: 'session',
-        // 选中项＝**当前那条**——分组之后行序变了，故在**分好组的行**里找它
+        // 选中项＝**当前那条**——分组之后行序变了，故在**分好组的行**里找它。
+        // 一条都没有（筛没了 / 目录空）时落 0：`openPicker` 那一跳自己会判开不开。
         selected: Math.max(0, rows.findIndex((row) => row.value === view.sessionId)),
         rows,
+        filter: sessionQuery,
         ...(hint === undefined ? {} : { hint }),
       }),
     )
   }
+
+  /**
+   * **这一屏开着的时候，行与详情就地重铺**（U49）——两处都调它：
+   *
+   * - **筛选 / 搜索**（用户刚敲了一个字）：行跟着变，**选中项尽量留在原来那一条上**
+   *   （能留住就留住——用户是在找它）；
+   * - **运行事实变了**（管理者推来新的一份）：状态与详情跟着变。⚠️ 这一条是那张表的
+   *   用处所在——**列表开着不动，也能看见「它刚变成需要你了」**。
+   */
+  const refreshSessionPicker = (): void => {
+    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'session') return
+
+    const picker = view.dock.picker
+    const rows = sessionPickerRows()
+    // 一条都没有且**没在筛**时不开抽屉（P0：0 行的抽屉看着就是卡死）——收起它，照旧
+    // 走「0 行不开抽屉」那条既有口径（`openPicker`）
+    if (rows.length === 0 && sessionQuery === '') {
+      commit(openPicker({ ...view, dock: { kind: 'input' } }, { ...picker, rows, filter: sessionQuery }))
+      return
+    }
+
+    const keep = picker.rows[picker.selected]?.value
+    const found = rows.findIndex((row) => row.value === keep)
+    const hint = sessionPickerHint(rows)
+
+    commit({
+      ...view,
+      dock: {
+        kind: 'picker',
+        picker: {
+          source: 'session',
+          rows,
+          selected: found === -1 ? Math.min(picker.selected, Math.max(0, rows.length - 1)) : found,
+          filter: sessionQuery,
+          ...(hint === undefined ? {} : { hint }),
+        },
+      },
+    })
+  }
+
+  // —— U49：运行事实与接回快照的订阅（**构造即接**，与技术方案 · 控制域同一条纪律）——
+
+  /**
+   * **运行事实变了**——落进视图，顺手把开着的那一屏就地重铺。
+   *
+   * 两件都要：视图那一格是**下一次**开列表时的取材；而列表**此刻开着**时，用户正看着
+   * 它——「它刚变成需要你了」这件事得当场看得见（那正是这张表存在的理由）。
+   */
+  options.runs?.subscribe((rows) => {
+    if (disposed) return
+    commit({ ...view, runs: rows })
+    refreshSessionPicker()
+  })
+
+  /**
+   * **接回快照到了**——先收着，等记录区铺完再画（见 `pendingResume`）。
+   *
+   * ⚠️ **断了的那条不算**：`disposed` 之后什么都不做（收摊之后画的每一帧都是白画）。
+   */
+  options.resumed?.subscribe((_gen, snapshot) => {
+    if (disposed) return
+    holdResumed(snapshot)
+  })
 
   /**
    * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/resume` · `/model` 同位置同开合**
@@ -2238,6 +2467,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (view.dock.kind === 'picker') {
           // 路径那一栏里 `Tab` ＝ **把选中的那一条补进查询**（目录则再往里看一层）
           if (view.dock.picker.source === 'paths') tabPath()
+          // **`/resume` 那一屏**（U49）——`Tab` ＝ **只看本工作区 / 全部**（设计：
+          // 「提供当前工作区/全部的筛选」）。切换**不关抽屉、不丢搜索词**：用户是在
+          // 「同一件事换个看法」，不是在换一件事。
+          if (view.dock.picker.source === 'session') {
+            sessionScope = sessionScope === 'all' ? 'here' : 'all'
+            refreshSessionPicker()
+          }
           return NONE
         }
         if (view.completion !== null) pickCompletion()
@@ -2273,6 +2509,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 抽屉里退格＝**放宽筛选**（打字那一支的对面；按字素删，中文也删得对）
         if (view.dock.kind === 'picker') {
           const picker = view.dock.picker
+
+          // **`/resume` 那一屏**（U49）——退格＝**把搜索词删一个字**（与打字那一支对称）。
+          // 它不给「整段撤回」那条：搜的是用户自己打的词，删空就是没有筛词（不关抽屉）。
+          if (picker.source === 'session') {
+            const query = sessionQuery.slice(0, leftSpan(sessionQuery, sessionQuery.length)[0])
+            if (query !== sessionQuery) {
+              sessionQuery = query
+              refreshSessionPicker()
+            }
+            return NONE
+          }
+
           if (picker.source !== 'skills' && picker.source !== 'paths') return NONE
 
           const filter = picker.filter ?? ''
@@ -2306,6 +2554,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 抽屉里打字＝**筛**（U33 `/skills` 的搜索 · U36 `@` 的路径）——其余选择器照旧吞掉
         if (view.dock.kind === 'picker') {
           const picker = view.dock.picker
+
+          // **`/resume` 那一屏**（U49）——打字＝**按名字筛**（设计：「提供……名称搜索」）。
+          // 筛词**只留在这一屏**（`sessionQuery`），不写进草稿：它不是用户那句交代的一部分
+          // （与 `@` 那一段不同，见 `Picker.anchor`）。
+          if (picker.source === 'session') {
+            sessionQuery += input.char
+            refreshSessionPicker()
+            return NONE
+          }
+
           if (picker.source !== 'skills' && picker.source !== 'paths') return NONE
 
           const filter = (picker.filter ?? '') + input.char

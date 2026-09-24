@@ -77,6 +77,37 @@ export function configFingerprintOf(path: string): ConfigFingerprint | undefined
  * ⚠️ **不含密钥或其摘要**（裁决明文）；`processToken` 由装配在**本进程**生成一次，
  * 只作「这不是别的进程」的标记——它进不了磁盘文件名以外的任何地方。
  */
+/**
+ * **一条连接此刻的接入身份**——「认证从哪来」这一跳在这里判，**只判这一处**。
+ *
+ * 判据（裁决明文）：认证取自配置文件（那条连接写了非空的 `apiKey`）⇒ 用配置文件的指纹；
+ * 走环境变量回退 ⇒ 没有可验证的共同身份（`persistent: false`，不落盘）。
+ *
+ * ⚠️ **为什么要有这一个壳**：装配（装配根）与终端（窗口那一侧算开屏的分母）**都要**
+ * 这条身份，而两处各写一遍「什么算 '取自配置文件'」必然分叉——分叉的症状是**同一份缓存
+ * 换一个进程就读不到了**（读的时候开的是另一份文件）。一处判，两处用。
+ */
+export function cacheAccessFor(input: {
+  readonly provider: string
+  /** 配置文件路径——认证取自它时用（那一跳才取指纹）。 */
+  readonly configPath: string
+  /** 该连接写在配置里的 `apiKey`（**不落盘、不进身份**，只用来判「从哪来」）。 */
+  readonly apiKey?: string | undefined
+  /** 本进程的唯一值（环境变量来源用）。 */
+  readonly processToken: string
+}): ModelCacheAccess {
+  const fromFile =
+    input.apiKey !== undefined && input.apiKey.trim().length > 0
+      ? configFingerprintOf(input.configPath)
+      : undefined
+
+  return modelCacheAccessOf({
+    provider: input.provider,
+    ...(fromFile === undefined ? {} : { config: fromFile }),
+    processToken: input.processToken,
+  })
+}
+
 export function modelCacheAccessOf(input: {
   /** 连接 id（`providers` 的键）。 */
   readonly provider: string

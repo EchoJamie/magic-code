@@ -32,9 +32,14 @@ import type {
   PlanNote,
   PlanSnapshot,
   RecordId,
+  RunRow,
+  RunSnapshot,
+  RunState,
   SessionId,
   SessionSummary,
   SkillCatalogRow,
+  SnapshotDecision,
+  SnapshotTool,
   UsedSkill,
   UsedSkillEntry,
 } from '@magic/contracts'
@@ -650,6 +655,13 @@ export const HINT_PICKER = '↑↓ 选 · 回车 定 · esc 收起'
  * 明写 `/mcp reconnect <名字>`），照抄 `HINT_PICKER` 就是教用户按一个没有用的键。
  */
 export const HINT_PICKER_READ = '↑↓ 选 · esc 收起'
+/**
+ * **`/resume` 那一屏**的右位提示（U49）——它比别的抽屉多两个键：**打字筛**与**`tab` 换范围**。
+ *
+ * 由头与上一条同：键位提示得**对得上键位**。这一屏收了「名称搜索」与「当前工作区/全部」
+ * 两件（设计明文），不报出来用户就只能自己撞——而抽屉一开就把输入接管了，撞也撞不出回声。
+ */
+export const HINT_PICKER_SESSION = '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · esc 收起'
 /** 自动补全右位提示（原型 · 场景 11）。 */
 export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
 /**
@@ -804,6 +816,16 @@ export type ShellView = {
   /** 会话目录（`session.list` 的答复）。 */
   readonly catalog: readonly SessionSummary[]
   /**
+   * **运行事实**（U49）——管理者推来的那一份「谁在跑、什么状态」。
+   *
+   * 与 `catalog` 的分工**不是重复**，是两件事的合流：目录说的是**记录域里有哪些会话**
+   * （执行者那头答），运行事实说的是**此刻哪几条在跑、有没有人在等你**（管理者那头答）。
+   * `/resume` 那一屏每一行的状态就是靠它标出来的——目录本身一个字都不知道这些。
+   *
+   * 空数组 ＝ **一条在跑的都没有**（不是「还没问到」：它是推来的，接上管理者就有）。
+   */
+  readonly runs: readonly RunRow[]
+  /**
    * **授权名录**（`grants.catalog` 的答复 · U22）——`/grants` 抽屉的取材。
    *
    * 与 `catalog` / `models` 并列的第三张表：**拿到过就有**，没问过是 `null`
@@ -929,6 +951,7 @@ export function createView(): ShellView {
     expanded: false,
     sessionId: null,
     catalog: [],
+    runs: [],
     skills: null,
     paths: null,
     mcp: null,
@@ -1282,10 +1305,20 @@ type ToolOutputData = Extract<KernelEvent, { kind: 'tool.output.delta' }>['data'
 
 /** 执行输出增量——按行攒（末行继续接），等价于「流式 append」。 */
 function reduceToolOutput(view: ShellView, data: ToolOutputData): ShellView {
-  const target = indexOfCall(view, data.call)
+  return addToolOutput(view, data.call, data.text)
+}
+
+/**
+ * 往某一行的工具输出尾部接一段——**增量与接回快照共用这一处**。
+ *
+ * 共用是为了「两处各写一套『怎么接』」那类分叉：接回来的那几行与当场看的几行必须
+ * 长得一模一样，否则同一条工具在别人屏上是一种折行、在接回来的人屏上是另一种。
+ */
+function addToolOutput(view: ShellView, call: RecordId, text: string): ShellView {
+  const target = indexOfCall(view, call)
   if (target === -1) return view
 
-  return patchTool(view, target, (row) => ({ ...row, output: appendText2(row.output, data.text) }))
+  return patchTool(view, target, (row) => ({ ...row, output: appendText2(row.output, text) }))
 }
 
 type ToolResultData = Extract<KernelEvent, { kind: 'tool.result' }>['data']
@@ -1662,7 +1695,15 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
         argsText:
           payload?.args === undefined ? '' : argsJson(payload.args as Readonly<Record<string, unknown>>),
         args: (payload?.args as Readonly<Record<string, unknown>> | undefined) ?? null,
-        state: 'ok',
+        /**
+         * **初值是「在跑」，不是「已完成」**——配到结果的那条随后覆盖它。
+         *
+         * 由头（接回那一路量出来的）：一条 `tool-call` 条目**没有**配对的 `tool-result`
+         * 就是**在途**（记录与恢复明文：「从有 `tool.call` 无 `tool.result` 识别在途」）。
+         * 早先默认写 `ok`，于是「重开一页 / 切回来看」时，一件**可能还在跑**的工具
+         * 在屏上是「✓ 完成」——那正是「把半段当完整结果」。
+         */
+        state: 'running',
         elapsedMs: null,
         startedAt: null,
         output: [],
@@ -1716,6 +1757,120 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
   // 按 `quiet` ＋ `expanded` 判（`components/log.ts`）。在这儿滤掉＝切一趟会话回来
   // 那一行就**永久不可查**了（`Static` 写一次就不再重绘）。
   return collapseToolGroups(rows)
+}
+
+/**
+ * 接回快照在记录区里用的那个「来源 id」——`0` **不在 id 空间里**（记录域从 1 起发号）。
+ *
+ * 造行要一个 id（键就是 `${kind}:${id}`），而快照里那几段**不是某一条事件**——
+ * 它是「此刻的样子」。给 0 是为了让那些行的键一眼看得出是接回来的，且永不与真事件撞号。
+ */
+const RESUME_SOURCE = 0
+
+/**
+ * **把接回的那一份「此刻」画回屏上**（U49）——设计 · 状态可信度、独占与重新连接 ③：
+ * 「重连获取同一代次的快照＋事件水位……**活动流式内容从有效执行者取当前快照**」，
+ * 与「选择仍在运行的会话：接回同一 Run……**恢复当前流式内容、进度与待答项**」。
+ *
+ * ## 三件排在一起，各有各的由头
+ *
+ * 1. **在飞的正文**（`text` / `thinking`）——记录里**没有它**（流式增量不落库），
+ *    不画回去就是一段没有开头的回复（或者更坏：把上一轮半段当完整结果）；
+ * 2. **在跑的工具**——同上：`tool.call` 落库了、而它的输出没有，于是「一行工具在跑」
+ *    这件事只有快照带得回来；
+ * 3. **挂着的卡**——`tool.decision.request` 不落库，故「有件事在等你」这件事同样只有
+ *    快照说得出。⚠️ **已经有了就不重挂**（当下这一份更新）。
+ *
+ * ⚠️ **它必须排在记录区重建之后**（`rebuild`）：重建把 `rows` 整个换掉，早一步画的
+ * 那几行会被它一并抹去。次序由调用方（`shell.ts`）保证——见那一处的注。
+ *
+ * ⚠️ **它写的是 `rows` 而不是 `settled`**：这三件都还在动（正文还会往下长、工具还会出
+ * 结果），而后来的增量只往 `rows` 的末行上接（`appendText` / `addToolOutput`）。
+ */
+export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
+  let next = view
+
+  if (snapshot.thinking !== undefined) {
+    next = appendText(
+      next,
+      RESUME_SOURCE,
+      'thinking',
+      snapshot.thinkingTruncated === true ? `（接回只带了末尾）\n${snapshot.thinking}` : snapshot.thinking,
+    )
+  }
+  if (snapshot.text !== undefined) {
+    next = appendText(
+      next,
+      RESUME_SOURCE,
+      'assistant',
+      snapshot.textTruncated === true ? `（这一段太长，接回只带了末尾）\n${snapshot.text}` : snapshot.text,
+    )
+  }
+
+  for (const tool of snapshot.tools) {
+    next = adoptTool(next, tool)
+    for (const line of tool.output) next = addToolOutput(next, tool.call, `${line}\n`)
+  }
+
+  /**
+   * ⚠️ **状态行先铺、裁决卡后挂**：卡一挂上就把输入接管了，它那句键位提示也该压过
+   * 「ctrl+c 中断」——次序反了的话，接回来的人看着一张卡，状态行却说「中断」。
+   */
+  if (snapshot.turnOpen) {
+    next = patchStatus(next, { state: 'working', amount: null, hint: HINT_WORKING })
+  }
+  // 在跑的是哪个模型 / 它的窗——不画回去的话，状态行左半边是空的（同一个界面两种样子）
+  if (snapshot.model !== undefined) {
+    next = patchStatus(next, { model: snapshot.model, window: snapshot.window ?? null })
+  }
+
+  if (snapshot.decisions.length > 0 && next.dock.kind !== 'decision') {
+    const one = snapshot.decisions[0] as SnapshotDecision
+    next = reduceDecision(next, one.id, {
+      call: one.call,
+      name: one.name,
+      material: one.material,
+      weight: one.weight,
+      ...(one.external === true ? { external: true } : {}),
+    })
+  }
+
+  return next
+}
+
+/**
+ * **把一笔在飞的工具认到屏上**（接回用）——三条路，各对一种现状：
+ *
+ * 1. **屏上已经有它**（`call` 对得上）⇒ 把它标回「在跑」（重建那一路初值本就如此，
+ *    这里补的是「实时那一行」）；
+ * 2. **记录里有一笔对得上、还没有结果的**（切回来时记录已经铺好了）⇒ **认领**过来：
+ *    那一行的 `call` 改写成这一次调用的 id，此后它的输出与结果就都落在它身上了。
+ *    配对的判据是**工具名 ＋ 参数**——两处说的是**同一次调用**（同一个 `ToolCall`），
+ *    不是「拿名字猜」：名字与参数都在事件上，逐字比得出来；
+ * 3. **哪儿都没有** ⇒ 照事件那一路新起一行。
+ *
+ * ⚠️ 第 2 条要的由头：条目与事件**各有各的 id**（契约明文：`tool-call` 载荷「**不带**
+ * `call` 引用——条目自身即那次调用」）。不认领的话，接回来那一笔的结果**永远落不到
+ * 那一行上**（按 id 找不到），屏上就一直停在它切走时的样子。
+ */
+function adoptTool(view: ShellView, tool: SnapshotTool): ShellView {
+  const known = indexOfCall(view, tool.call)
+  if (known !== -1) return patchTool(view, known, (row) => ({ ...row, state: 'running' }))
+
+  const argsText = argsJson(tool.args)
+  const pending = findToolIndex(
+    view,
+    (row) =>
+      row.call !== null &&
+      row.state === 'running' &&
+      row.name === tool.name &&
+      row.argsText === argsText,
+  )
+  if (pending !== -1) {
+    return patchTool(view, pending, (row) => ({ ...row, call: tool.call, startedAt: tool.at }))
+  }
+
+  return reduceToolCall(view, tool.call, { name: tool.name, args: tool.args }, tool.at)
 }
 
 /**
@@ -1934,32 +2089,215 @@ export function stateLabel(state: StatusState): string {
 // ══ 选择器（`/resume` · `/model`）════════════════════════════════════
 
 /**
- * **`/resume` 那一屏的行** —— 目录按**工作区分组**（U26；词典 · Workspace / Session：
- * 一个会话属于一个工作区）。
+ * **`/resume` 那一屏的行**（U26 立起来 · U49 升级）——两段合流：
  *
- * 三条规格：
- * ① **分组头 ＋ 全部列出**——每一组顶着它的工作区路径；别的项目**不藏**（列表是
- *    「找到会话」的地方，藏起来＝找不到；而「换个目录接着上次的活」是真场景）；
- * ② **本工作区那组在前**——你此刻在那儿，那儿的会话排前头（组内仍是目录的序：最近在前）；
- * ③ **别的项目压暗**——视觉次序上的区分，**不挡路**（仍可切）。
+ * | 段 | 说的是什么 | 事实来处 |
+ * | --- | --- | --- |
+ * | **活跃那一段**（需要你 → 执行中 → 正在收尾 → 状态待确认） | 此刻**有活**的那几条 | 管理者的运行事实（`view.runs`） |
+ * | **历史那几段**（按工作区分组） | 落过账、而此刻没在跑的 | 记录域的目录（`view.catalog`） |
  *
- * 归属**缺席**的（`workspace` 没有——列加上之前落账的会话）单列一组，头是
- * 「（工作区未记录）」：**不拿「当下的启动目录」顶上**（那正是这一列要断掉的东西），
- * 也**不压暗**（无从判断它是不是「别处」——**不编**；压暗留给判得实的那些）。
+ * 设计（会话与运行管理 · 用户如何发现和接回）：「**默认先显示『需要你』和『执行中』**，
+ * 再显示当前工作区历史；其他工作区**明确分组并可看**。提供当前工作区 / 全部的筛选和
+ * 名称搜索。」上面那个次序就是这一句。
  *
- * `here` ＝ **本进程的工作区**（装配递进来，见 `ShellOptions.workspaceRoots`）。
- * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗——「拿不到的不编」（同 `contextWindow` 那一路）。
+ * ## 五条分寸
+ *
+ * ① **每组一个头**：活跃那几段的头是**状态**（那一行要的就是「谁在等我」），历史那几段
+ *    的头是**工作区路径**（分得开「这儿」与「别处」）；
+ * ② **别的项目压暗**——视觉次序上的区分，**不挡路**（仍可切）；活跃段里别处的行**不压暗**
+ *    而是在副文案里点名它属于哪儿——「它在等你」这件事比「它在别的项目里」重要；
+ * ③ **没有运行事实的会话不给状态**——目录里那一条只说明「落过账」，此刻在不在跑
+ *    **没人说过**，故**不编一个「空闲」**（拿不到的不编）；
+ * ④ **归属缺席单列一组**，头是「（工作区未记录）」：不拿当下的启动目录顶上（那正是这一列
+ *    要断掉的东西），也不压暗（无从判断它是不是「别处」）；
+ * ⑤ `here` ＝ **本进程的工作区**（装配递进来）。**不给＝不知道自己在哪儿** ⇒ 一组都不压暗。
+ *
+ * ## 筛选与搜索
+ *
+ * `scope` 说的是**历史那几段要不要别的项目**（活跃那一段不受它管：需要你的事跑到别的
+ * 项目里去了，那也是需要你）。`query` 按**名字**筛（子串、不分大小写）——它筛的是
+ * 全部行（含活跃段：「我要找的那一条」与「哪一条在等我」是两个问题，各问各的）。
  */
-export function sessionRows(
-  catalog: readonly SessionSummary[],
-  active: SessionId | null,
-  here?: readonly string[],
-): readonly PickerRow[] {
+export type SessionScope = 'all' | 'here'
+
+export type SessionListInput = {
+  readonly catalog: readonly SessionSummary[]
+  readonly active: SessionId | null
+  readonly here?: readonly string[] | undefined
+  /** 运行事实（管理者推来的那一份）——按会话对号入座。 */
+  readonly runs: readonly RunRow[]
+  readonly scope: SessionScope
+  readonly query: string
+}
+
+/**
+ * 活跃那几段的**次序**（需要你在最前）——设计那一句「先显示『需要你』和『执行中』」。
+ *
+ * `stopped` / `idle` 不在这一列：它们说的是**没在跑**的会话，归历史那一段（不然
+ * 「历史」两个字就没有着落了——每一条会话都曾经跑过）。
+ */
+const ACTIVE_ORDER: readonly RunState[] = ['waiting', 'running', 'stopping', 'unknown']
+
+/** 活跃那几段的头——**动作口吻**（那一段要回答的是「我得做什么」）。 */
+const ACTIVE_HEAD: Readonly<Record<string, string>> = {
+  waiting: '需要你',
+  running: '执行中',
+  stopping: '正在收尾',
+  unknown: '状态待确认',
+}
+
+/**
+ * 这一行归**活跃那一段**吗（需要你 / 执行中 / 收尾中 / 待确认）——列表与详情据此分工：
+ * 活跃那一段的行**副文案写的是动作**，故它那一行不需要详情再念一遍动作。
+ */
+export function inActiveSection(state: RunState): boolean {
+  return ACTIVE_ORDER.includes(state)
+}
+
+/** 六行状态的字面——**列表与详情念的是这一份**（设计那张表左栏的词）。 */
+export function runStateLabel(state: RunState): string {
+  switch (state) {
+    case 'running':
+      return '执行中'
+    case 'waiting':
+      return '等待你'
+    case 'stopping':
+      return '停止中'
+    case 'stopped':
+      return '已停止'
+    case 'idle':
+      return '当前空闲'
+    case 'unknown':
+      return '状态待确认'
+  }
+}
+
+/** 一段时长 → 人读（`12 秒` / `3 分 12 秒` / `2 小时 5 分`）——**不报小数秒**。 */
+export function elapsedLabel(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+}
+
+/** 时刻（`12:03:41`）——一天之内的事不必带日期。 */
+export function clockLabel(at: number): string {
+  const date = new Date(at)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/**
+ * **开屏那张摘要**（U49）——「2 项执行中 · 1 项需要你」，没有别的活跃工作就 `undefined`。
+ *
+ * 判据（设计 · 会话与运行管理）：「首页**仅在确有其他活跃工作**时出现**一次**摘要，
+ * 例如『2 项执行中 · 1 项需要你』，**指向列表**，不反复刷屏」。
+ *
+ * 三条都在字面上：
+ * - **活跃**（需要你 · 执行中 · 收尾中 · 待确认）——「当前空闲」「已停止」不是**工作**，
+ *   把它们数进来说的是另一件事（历史有多长）；
+ * - **其他**——`opening` （这一趟开局就接的那条）不算：用户正是为它来的；
+ * - **数一数 ＋ 指路**——不是一份「完成率」，也不把 PID 摊在屏上（设计明文）。
+ */
+export function runSummary(rows: readonly RunRow[], opening?: string): string | undefined {
+  const others = rows.filter((row) => row.session !== opening)
+  const count = (state: RunState): number => others.filter((row) => row.state === state).length
+
+  const said: string[] = []
+  if (count('waiting') > 0) said.push(`${count('waiting')} 项需要你`)
+  if (count('running') > 0) said.push(`${count('running')} 项执行中`)
+  if (count('stopping') > 0) said.push(`${count('stopping')} 项正在收尾`)
+  if (count('unknown') > 0) said.push(`${count('unknown')} 项状态待确认`)
+
+  return said.length === 0 ? undefined : `${said.join(' · ')} —— /resume 看它们`
+}
+
+/** 工作区的一眼分辨（末一段路径）——**别的项目**的行在副文案里点名它。 */
+function shortWorkspace(workspace: readonly string[]): string {
+  const first = workspace[0] ?? ''
+  const parts = first.split('/').filter((part) => part !== '')
+  return parts[parts.length - 1] ?? first
+}
+
+/** 这一条的运行事实（没有就是没有——**不编**）。 */
+function runOf(runs: readonly RunRow[], session: SessionId): RunRow | undefined {
+  return runs.find((row) => row.session === session)
+}
+
+/**
+ * 列表里那一行的**副文案**（状态与动作）——「每项一行：标题、工作区的必要区分、
+ * 当前/最近工作的状态和动作」（设计明文）。
+ *
+ * 两段各说各的，**不重复**：
+ * - **活跃段**（组头已经是状态了）⇒ 说**动作**（此刻在干什么 / 上一句进展），
+ *   别处的行再点名它属于哪个工作区；
+ * - **历史段**（组头是工作区）⇒ 说**状态**（当前空闲 / 已停止），别处那几组已经有压暗
+ *   与组头了，不再重复工作区。
+ */
+function metaOf(row: RunRow | undefined, options: { readonly grouped: boolean; readonly elsewhere: boolean; readonly mine: boolean }): string {
+  if (row === undefined) return ''
+
+  if (!options.grouped) {
+    const what = row.action ?? row.progress?.what ?? ''
+    const where = options.elsewhere ? shortWorkspace(row.workspace) : ''
+    return [what, where].filter((piece) => piece !== '').join(' · ')
+  }
+
+  return runStateLabel(row.state)
+}
+
+export function sessionRows(input: SessionListInput): readonly PickerRow[] {
+  const { catalog, active, here, runs, scope, query } = input
   const mine = here === undefined ? null : identityOf(here)
+  const needle = query.trim().toLowerCase()
+  const titleOf = (session: SessionSummary): string => session.title ?? '（无标题）'
+  const visible = catalog.filter(
+    (session) => needle === '' || titleOf(session).toLowerCase().includes(needle),
+  )
+  const isMine = (session: SessionSummary): boolean =>
+    session.workspace !== undefined && mine !== null && identityOf(session.workspace) === mine
+
+  const out: PickerRow[] = []
+  const shown = new Set<SessionId>()
+
+  // —— ① 活跃那一段（按状态分组；组内最近的在前）——
+  for (const state of ACTIVE_ORDER) {
+    const group = visible
+      .filter((session) => runOf(runs, session.id)?.state === state)
+      // 「只看本工作区」也管这一段（它是一句**范围**，不是「历史那一段的开关」）；
+      // 当下这一条**永远留着**——用户正看着它，哪怕它是别的项目的
+      .filter((session) => scope === 'all' || isMine(session) || session.id === active)
+      .sort((left, right) => (runOf(runs, right.id)?.since ?? 0) - (runOf(runs, left.id)?.since ?? 0))
+
+    for (const session of group) {
+      const row = runOf(runs, session.id) as RunRow
+      const elsewhere = session.workspace !== undefined && mine !== null && !isMine(session)
+      out.push({
+        label: titleOf(session),
+        meta: [
+          metaOf(row, { grouped: false, elsewhere, mine: mine !== null && isMine(session) }),
+          session.id === active ? '正在用' : '',
+        ]
+          .filter((piece) => piece !== '')
+          .join(' · '),
+        current: session.id === active,
+        value: session.id,
+        group: ACTIVE_HEAD[state],
+        // **一项一行**（设计 · 终端交互：「候选每项一行，名称/简述同排；窄窗先保住名称、
+        // 再截断简述」）——窄窗下让**名称**活着，状态/动作被截
+        oneLine: true,
+      })
+      shown.add(session.id)
+    }
+  }
+
+  // —— ② 历史那几段（按工作区分组，本工作区在前）——
+  const rest = visible.filter((session) => !shown.has(session.id))
   const found = new Map<string, Group>()
   const groups: Group[] = []
 
-  for (const session of catalog) {
+  for (const session of rest) {
     const key = identityOf(session.workspace)
     let group = found.get(key)
     if (group === undefined) {
@@ -1975,20 +2313,77 @@ export function sessionRows(
       groups.push(group)
     }
 
+    const row = runOf(runs, session.id)
     group.rows.push({
-      label: session.title ?? '（无标题）',
-      meta: session.id === active ? '正在用' : '',
+      label: titleOf(session),
+      meta: [row === undefined ? '' : runStateLabel(row.state), session.id === active ? '正在用' : '']
+        .filter((piece) => piece !== '')
+        .join(' · '),
       current: session.id === active,
       value: session.id,
+      oneLine: true,
     })
   }
 
-  // 本工作区那组在前，其余照**出现序**（＝目录的序：组里最近一条的时间先后）
+  // 本工作区那组在前，其余照**出现序**（＝目录的序：组里最近一条的时间先后）。
+  // 「只看本工作区」⇒ 只留判得实属于这儿的那一组（归属缺席的**不冒充**属于这儿）。
   const ordered = [...groups.filter((group) => group.mine), ...groups.filter((group) => !group.mine)]
+  const kept = scope === 'here' ? ordered.filter((group) => group.mine) : ordered
 
-  return ordered.flatMap((group) =>
-    group.rows.map((row) => ({ ...row, group: group.head, faint: group.elsewhere })),
-  )
+  return [
+    ...out,
+    ...kept.flatMap((group) =>
+      group.rows.map((row) => ({ ...row, group: group.head, faint: group.elsewhere })),
+    ),
+  ]
+}
+
+/**
+ * **选中那一行的执行详情**（U49）——「当前动作、开始时间、最近一次可确认进展与输出」
+ * （设计 · 会话与运行管理）。它就是抽屉下方那一行说明（`Picker.hint`）。
+ *
+ * ## 三条分寸（都是设计明文）
+ *
+ * - **长测试无输出可以仍在执行**：没有新输出时**如实报持续时间**（`已跑 3 分`），
+ *   一个字都不说「卡死」——**几秒无字不构成判据**；
+ * - **不拿心跳伪装业务进展**：时长与进展都只来自**事实**（`action` 是此刻在途的那件
+ *   事，`progress` 是可确认的里程碑）——心跳根本不在这条线上（见 `facts.ts`）；
+ * - **拿不到的不填**：没有输出就是没有输出，没有进展就是没有进展，不编一句。
+ *
+ * `now` 由调用方给（活壳给真钟，取景给固定值）——**帧才是确定的**。
+ */
+export function runDetail(
+  row: RunRow,
+  now: number,
+  options: { readonly inActiveSection?: boolean } = {},
+): string {
+  const said: string[] = []
+  const active = options.inActiveSection === true
+
+  // **活跃那一段**：组头就是状态、行的副文案就是动作——详情再念一遍＝同一句话说两遍。
+  // 故它从「多久」说起。**历史那一段**没有那两格（组头是工作区、副文案只写状态），
+  // 状态与缘由就得由详情带上。
+  if (!active) said.push(runStateLabel(row.state))
+  if (row.state === 'stopped' && row.reason !== undefined) said.push(row.reason)
+  if (row.action !== undefined && !active) said.push(row.action)
+  said.push(`已持续 ${elapsedLabel(now - row.since)}`)
+
+  if (row.progress !== undefined) {
+    // 有「此刻在做的事」时不再复述进展（那多半就是同一件事的开头）——
+    // 详情这一行不是越长越好，**每一截都要说得上它比别处多说了什么**
+    if (row.action === undefined) said.push(`最近进展 ${clockLabel(row.progress.at)} ${row.progress.what}`)
+  }
+
+  if (row.output !== undefined) {
+    const sample = row.output.sample.replace(/\s+/g, ' ').trim()
+    said.push(
+      sample === ''
+        ? `最近输出 ${clockLabel(row.output.at)}`
+        : `最近输出 ${clockLabel(row.output.at)} ${sample.length > 48 ? `${sample.slice(-48)}` : sample}`,
+    )
+  }
+
+  return said.join(' · ')
 }
 
 /**
@@ -2967,7 +3362,12 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
   }
 
   // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）
-  const keys = picker.source === 'mcp' ? HINT_PICKER_READ : HINT_PICKER
+  const keys =
+    picker.source === 'mcp'
+      ? HINT_PICKER_READ
+      : picker.source === 'session'
+        ? HINT_PICKER_SESSION
+        : HINT_PICKER
 
   return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: keys })
 }

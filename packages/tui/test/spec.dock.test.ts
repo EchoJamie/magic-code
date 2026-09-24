@@ -414,7 +414,9 @@ describe('slash 的两种走法', () => {
     expect(frame.content).toEqual([]) // 记录区**一行都不进**
     expect(frame.has('1 记录查询优化')).toBe(true) // 选择器开在左下
     expect(frame.has('正在用')).toBe(true) // 当前那条有标记
-    expect(frame.statusLine).toContain('↑↓ 选 · 回车 定 · esc 收起')
+    // **键位提示对得上键位**（U49 加了两个键）：「名称搜索」与「当前工作区 / 全部」的筛选
+    // 落在这一屏上（设计明文），抽屉一开就接管输入——不报出来用户只能自己撞，撞不出回声
+    expect(frame.statusLine).toContain('↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · esc 收起')
   })
 
   /**

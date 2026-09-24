@@ -19,6 +19,7 @@ import { createElement as h } from 'react'
 import { createShell } from './shell.ts'
 import { TuiApp } from './components/app.ts'
 import type { ControlTransport } from '@magic/contracts'
+import type { RunFeed, ResumeFeed } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
@@ -61,6 +62,22 @@ export type RunTuiOptions = {
    * 的**「这一头没人了」：一条是终端没了，一条是内核没了。
    */
   readonly onGone?: ((listener: () => void) => void) | undefined
+  /**
+   * **运行事实的来路**（U49）——`/resume` 那一屏每一行的状态据它来。
+   *
+   * 由管理者推（**服务状态**，不是内核事件）：不给 ⇒ 那一屏照旧只有目录，一行状态都不标。
+   * 见 `ShellOptions.runs`。
+   */
+  readonly runs?: RunFeed | undefined
+  /** **接回快照的来路**（U49）——挂到某一代上之后取来那一代的「此刻」。见 `ShellOptions.resumed`。 */
+  readonly resumed?: ResumeFeed | undefined
+  /**
+   * **这一趟开局就接的那条会话**（`--session <id>`）——只用于**开屏那张摘要**：
+   * 它是「为它来的那条」，不算「别的活跃工作」（设计：摘要说的是**其他**活跃工作）。
+   *
+   * 拿不到就不给 ⇒ 摘要照常数全部——**不猜**（那一位本来就是可省的开局参数）。
+   */
+  readonly openingSession?: string | undefined
 }
 
 /**
@@ -95,6 +112,9 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
     receipts: options.receipts,
+    runs: options.runs,
+    resumed: options.resumed,
+    openingSession: options.openingSession,
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
     inputReady: options.boot === undefined,

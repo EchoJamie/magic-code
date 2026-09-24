@@ -24,7 +24,7 @@
 
 import chalk from 'chalk'
 import { createElement as h } from 'react'
-import type { Command, KernelEvent } from '@magic/contracts'
+import type { Command, KernelEvent, RunRow, RunSnapshot } from '@magic/contracts'
 import { bannerOf } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
@@ -226,6 +226,16 @@ export type StageOptions = {
   readonly workspaceRoots?: readonly string[]
   /** 受理输入了没有（U25 那道闸）——`false` ＝ 启动中（回车不受理、命令一律丢弃）。 */
   readonly inputReady?: boolean
+  /**
+   * **运行事实**（U49）——`/resume` 那一屏每一行的状态据它。
+   *
+   * 缺省不给 ⇒ 那一屏照旧只有目录、一行状态都不标（「拿不到的不编」，同 `workspaceRoots`）。
+   */
+  readonly runs?: readonly RunRow[]
+  /** **开局就接的那条会话**（只作开屏摘要的排除项）。 */
+  readonly openingSession?: string
+  /** **接回快照**（U49）——接上它之后喂一份进去，等于管理者刚把「此刻」推来了。 */
+  readonly resumed?: (listener: (gen: number, snapshot: RunSnapshot) => void) => void
 }
 
 export type Stage = {
@@ -253,6 +263,11 @@ export function createStage(options: StageOptions = {}): Stage {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
     ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),
+    ...(options.runs === undefined
+      ? {}
+      : { runs: { current: () => options.runs as readonly RunRow[], subscribe: () => {} } }),
+    ...(options.openingSession === undefined ? {} : { openingSession: options.openingSession }),
+    ...(options.resumed === undefined ? {} : { resumed: { subscribe: options.resumed } }),
   })
   let now: number | null = null
 

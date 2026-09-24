@@ -46,6 +46,14 @@ const RUN_DIR_NAME = 'run'
 const SOCKET_NAME = 'm.sock'
 /** 管理者自报身份的那一份（pid / 起始时刻 / 数据目录）——诊断与重启核对用。 */
 const RECORD_NAME = 'manager.json'
+/**
+ * **运行登记**（U49）——「上次有哪几代、各自跑到哪儿」的那一份。
+ *
+ * 它与 `manager.json` 是两件事：那一份说的是**管理者自己**（谁在管、什么时候起的），
+ * 这一份说的是**它管的那些运行**（哪条会话、第几代、进程号、什么状态）。重启核对要的是
+ * 后者——U48 时只有前一份，于是核对只到「路径有没有尸首」。
+ */
+const RUNS_NAME = 'runs.json'
 
 /** 一条 socket 路径放不下的说明——超长时用它报给人听（不是「内部错误」）。 */
 export class SocketPathTooLong extends Error {
@@ -69,6 +77,8 @@ export type RunPaths = {
   readonly socket: string
   /** 管理者自报身份的那一份。 */
   readonly record: string
+  /** **运行登记**那一份（见 `RUNS_NAME`）。 */
+  readonly runs: string
 }
 
 /**
@@ -130,7 +140,12 @@ export function runPathsOf(magic: MagicHome, dataDir: string, tmpdir: string): R
 }
 
 function pathsIn(dir: string): RunPaths {
-  return { dir, socket: join(dir, SOCKET_NAME), record: join(dir, RECORD_NAME) }
+  return {
+    dir,
+    socket: join(dir, SOCKET_NAME),
+    record: join(dir, RECORD_NAME),
+    runs: join(dir, RUNS_NAME),
+  }
 }
 
 function fits(socketPath: string): boolean {
