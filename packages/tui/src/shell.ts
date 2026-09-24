@@ -93,6 +93,8 @@ import {
   stopReceiptOf,
   withBanner,
   withContextWindow,
+  // **运行事实收尾状态行那一格**（U54）——构造与推来那两跳都走它（见 `withRunFacts`）
+  withRunFacts,
 } from './view.ts'
 import type { PageTurn, PickerRow, SessionScope } from './view.ts'
 import {
@@ -501,7 +503,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * ⚠️ **与「启动那几句」不同**：它**不进记录区**（不是回执），只是视图里的一格——
    * 列表每次现读它。摘要那一行才落记录（而且只落一次，见下）。
    */
-  view = { ...view, runs: options.runs?.current() ?? [] }
+  view = withRunFacts(view, options.runs?.current() ?? [])
 
   // **开屏那张摘要**（U49 · 设计：「首页仅在**确有其他活跃工作**时出现一次摘要，例如
   // 『2 项执行中 · 1 项需要你』，指向列表，**不反复刷屏**」）。
@@ -1381,7 +1383,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   options.runs?.subscribe((rows) => {
     if (disposed) return
-    commit({ ...view, runs: rows })
+    // **收下那一份事实，顺手把状态行那一格收尾**（U54）——见 `withRunFacts`：那一格答的是
+    // 「这条会话此刻在不在跑」，而**只有管理者说得出来**（停这个动作从它那一头发起，
+    // 执行者退场之后没人再报 `turn.end`——外壳那一头于是没有下文，那一格就永远停在
+    // 「● 工作中」，与回执那句「停了」在同一屏上打架）。
+    commit(withRunFacts(view, rows))
     refreshSessionPicker()
   })
 

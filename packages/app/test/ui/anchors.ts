@@ -47,6 +47,30 @@ export const MAGIC_IDLE_MARK = '○ 空闲'
  */
 export const READY_MIN_COLUMNS = 40
 
+/**
+ * **状态行那一格**（左下最后一行，U54）——判据落到**那一格**上，不落到全屏。
+ *
+ * 取法：屏底那一条分隔线（U45 加的「状态行之下」那一条）**上面**那一行。
+ *
+ * ⚠️ **不能拿「全屏找那几个字」代替**：
+ *
+ * - 输入行那句占位在「工作中」时写着 `（工作中——想插话可以打…）`——全屏找「工作中」
+ *   在**还没跑完**时也是真的，量的就成了「这一屏上有没有这三个字」；
+ * - 回执 / 列表那一行的详情里也可能出现同一个词（「这一轮没跑完就停了」那类）。
+ *
+ * 而这一格恰恰是本单要判的那一件（缺陷 D34：回执说「停了」而这一格还写着「工作中」）。
+ */
+export function statusLineOf(lines: readonly string[]): string {
+  for (let at = lines.length - 1; at >= 0; at -= 1) {
+    const line = lines[at] ?? ''
+    if (line.trim() === '') continue
+    // 最后那个非空行应当是屏底那条分隔线（`─` 一串）；它上面那一行就是状态行
+    return /^─+$/u.test(line.trim()) ? (lines[at - 1] ?? '') : ''
+  }
+
+  return ''
+}
+
 /** Magic 这一侧的锚。 */
 export const MAGIC_ANCHORS: UiAnchors = {
   ready: (columns) => (columns >= READY_MIN_COLUMNS ? { text: HINT_IDLE } : null),

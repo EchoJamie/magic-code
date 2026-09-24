@@ -1667,7 +1667,18 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
     options.log?.(`核销第 ${executor.gen} 代执行者（${reason}）`)
     saveRuns()
-    pushRuns()
+    /**
+     * **核销这一推不经过合并窗**（U54）——它是**终局事实**，而紧接着下面那一跳就要回
+     * 「已停」那一拍（`afterEnd` ⇒ `settleStop`）。
+     *
+     * 两件必须**同一拍出去**：晚 100ms（`RUNS_PUSH_MS`）的话，窗口先收到「停了」、
+     * 屏上那一格却还写着「● 工作中」——**那正是 D34 那一屏**（而且 `/exit` 那条路上
+     * 界面紧接着就收摊，合并窗一到，这一份事实**再也追不上**）。
+     *
+     * ⚠️ 合并窗本是为**流式那一格最热的路**设的（一秒几十条的输出增量），
+     * 一次核销不是那种东西：一条终局事实多推一次，换的是「回执与运行事实同一拍」。
+     */
+    pushRuns(true)
     touch()
 
     /**

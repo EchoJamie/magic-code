@@ -33,7 +33,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
+import { createUiSession, createSandbox, startFixture, statusLineOf } from './ui/index.ts'
 import type { Capture, UiSession } from './ui/index.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
@@ -299,6 +299,29 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     keep(done)
     check(rowLine(done, '长话').includes('已停止'), '那一行落了定：读得出来它停了', rowLine(done, '长话'))
     check(!rowLine(done, '长话').includes('执行中'), '它**不再**是执行中', rowLine(done, '长话'))
+
+    /**
+     * **反向那一半**（U54 · 缺陷 D34）——停的是**别人**那一条，**本窗自己那一格一个字都不该动**。
+     *
+     * 由头：状态行那一格（U54 起）读的是**管理者推的运行事实**，而那份事实里躺着好几条会话。
+     * 拿错一条（比如「表里第一条在跑的」）就会让**停别人**把本窗那一格抬成「● 工作中」——
+     * 那正是这一条要咬住的。乙窗自己这条会话这一整段都闲着，故它该一直是「○ 空闲」。
+     *
+     * ⚠️ **判的是状态行那一格**（`statusLineOf`），不是全屏找那几个字：输入行那句占位
+     * 与列表详情里都可能有同一个词。
+     */
+    for (const shot of [list, partial, whole, done]) {
+      check(
+        !statusLineOf(shot.lines).includes('工作中'),
+        `停别人的时候本窗那一格不写「工作中」（${shot.label}）`,
+        statusLineOf(shot.lines),
+      )
+    }
+    check(
+      statusLineOf(done.lines).includes('○ 空闲'),
+      '本窗那一格照旧是「○ 空闲」（没被别的会话的运行事实带跑）',
+      statusLineOf(done.lines),
+    )
 
     // ④ **通知**：完成与失败各一条（第三类「需要你」由审批卡那一屏自带，归 U38 的帧）
     // **等抽屉真收起来**——判据取**输入行那句占位**（「交代一件事」），它两趟都在
