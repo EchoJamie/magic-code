@@ -849,6 +849,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
       bind(conn, spawned)
       deliver(spawned, command)
+      // ⚠️ **这一条不能省**（同上面「接上已经活着的那一代」那一路）：为这条会话新起的那一代
+      // 是**带着会话号装配**的（`assemble({ session })`），故它的 `switchTo` 判「已经在的那条
+      // ＝无事」——`session.open` 过去**一声不响**，窗口就此停在旧那一页上（屏不动、回执也不来）。
+      // `session.list` 那一条**一定会**报一次状态：窗口据此重画、选择器据以合上。
+      deliver(spawned, { type: 'session.list' })
       return
     }
 

@@ -154,6 +154,8 @@ describe('U49 · 执行详情那一行', () => {
         output: { at: 2_000, sample: 'Running 3/12\n…' },
       }),
       now,
+      // 历史那一段：组头是工作区、副文案只写状态——状态与动作都得由详情带上
+      { inActiveSection: false },
     )
     expect(said).toContain('执行中')
     expect(said).toContain('正在跑 bash')
@@ -161,6 +163,21 @@ describe('U49 · 执行详情那一行', () => {
     expect(said).toContain('Running 3/12')
     // 有「此刻在做的事」时**不再复述进展**（那多半就是同一件事的开头）
     expect(said).not.toContain('开始跑 bash')
+  })
+
+  test('活跃那一段：详情**只补别处没说过的**（状态在组头上、动作在副文案里）', () => {
+    const row = run('s-1', 'running', { since: 1_000, action: '正在跑 bash' })
+    expect(runDetail(row, now, { inActiveSection: true })).toBe('已持续 3 分 12 秒')
+
+    // 历史那一段没有那两格——状态与动作由详情带上
+    const said = runDetail(row, now, { inActiveSection: false })
+    expect(said).toContain('执行中')
+    expect(said).toContain('正在跑 bash')
+  })
+
+  test('「已停止」那一行的缘由**两段都带**（它是那一行唯一说得出的停点）', () => {
+    const row = run('s-1', 'stopped', { since: 1_000, reason: '手动中断' })
+    expect(runDetail(row, now, { inActiveSection: true })).toContain('手动中断')
   })
 
   test('长测试没有输出——只如实报持续时间，一个字都不说卡死', () => {

@@ -68,6 +68,7 @@ import {
   reasoningRows,
   sessionRows,
   applyResume,
+  inActiveSection,
   runDetail,
   runSummary,
   skillHint,
@@ -1126,7 +1127,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       .join(' · ')
 
     if (run !== undefined) {
-      const detail = runDetail(run, Date.now())
+      // 活跃那一段里，状态与动作都已经在「组头 ＋ 副文案」上了——详情只补别处没说过的
+      const detail = runDetail(run, Date.now(), { inActiveSection: inActiveSection(run.state) })
       return head === '' ? detail : `${head} · ${detail}`
     }
 

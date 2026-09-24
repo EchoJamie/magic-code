@@ -39,6 +39,7 @@ import type {
   SessionSummary,
   SkillCatalogRow,
   SnapshotDecision,
+  SnapshotTool,
   UsedSkill,
   UsedSkillEntry,
 } from '@magic/contracts'
@@ -1694,7 +1695,15 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
         argsText:
           payload?.args === undefined ? '' : argsJson(payload.args as Readonly<Record<string, unknown>>),
         args: (payload?.args as Readonly<Record<string, unknown>> | undefined) ?? null,
-        state: 'ok',
+        /**
+         * **初值是「在跑」，不是「已完成」**——配到结果的那条随后覆盖它。
+         *
+         * 由头（接回那一路量出来的）：一条 `tool-call` 条目**没有**配对的 `tool-result`
+         * 就是**在途**（记录与恢复明文：「从有 `tool.call` 无 `tool.result` 识别在途」）。
+         * 早先默认写 `ok`，于是「重开一页 / 切回来看」时，一件**可能还在跑**的工具
+         * 在屏上是「✓ 完成」——那正是「把半段当完整结果」。
+         */
+        state: 'running',
         elapsedMs: null,
         startedAt: null,
         output: [],
@@ -1799,8 +1808,20 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
   }
 
   for (const tool of snapshot.tools) {
-    next = reduceToolCall(next, tool.call, { name: tool.name, args: tool.args }, tool.at)
+    next = adoptTool(next, tool)
     for (const line of tool.output) next = addToolOutput(next, tool.call, `${line}\n`)
+  }
+
+  /**
+   * ⚠️ **状态行先铺、裁决卡后挂**：卡一挂上就把输入接管了，它那句键位提示也该压过
+   * 「ctrl+c 中断」——次序反了的话，接回来的人看着一张卡，状态行却说「中断」。
+   */
+  if (snapshot.turnOpen) {
+    next = patchStatus(next, { state: 'working', amount: null, hint: HINT_WORKING })
+  }
+  // 在跑的是哪个模型 / 它的窗——不画回去的话，状态行左半边是空的（同一个界面两种样子）
+  if (snapshot.model !== undefined) {
+    next = patchStatus(next, { model: snapshot.model, window: snapshot.window ?? null })
   }
 
   if (snapshot.decisions.length > 0 && next.dock.kind !== 'decision') {
@@ -1814,16 +1835,42 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
     })
   }
 
-  // **状态行**：这一轮开着 ⇒ 与 `turn.start` 那一跳**同一副面孔**（工作中 ＋ 那句提示）
-  if (snapshot.turnOpen) {
-    next = patchStatus(next, { state: 'working', amount: null, hint: HINT_WORKING })
-  }
-  // 在跑的是哪个模型 / 它的窗——不画回去的话，状态行左半边是空的（同一个界面两种样子）
-  if (snapshot.model !== undefined) {
-    next = patchStatus(next, { model: snapshot.model, window: snapshot.window ?? null })
+  return next
+}
+
+/**
+ * **把一笔在飞的工具认到屏上**（接回用）——三条路，各对一种现状：
+ *
+ * 1. **屏上已经有它**（`call` 对得上）⇒ 把它标回「在跑」（重建那一路初值本就如此，
+ *    这里补的是「实时那一行」）；
+ * 2. **记录里有一笔对得上、还没有结果的**（切回来时记录已经铺好了）⇒ **认领**过来：
+ *    那一行的 `call` 改写成这一次调用的 id，此后它的输出与结果就都落在它身上了。
+ *    配对的判据是**工具名 ＋ 参数**——两处说的是**同一次调用**（同一个 `ToolCall`），
+ *    不是「拿名字猜」：名字与参数都在事件上，逐字比得出来；
+ * 3. **哪儿都没有** ⇒ 照事件那一路新起一行。
+ *
+ * ⚠️ 第 2 条要的由头：条目与事件**各有各的 id**（契约明文：`tool-call` 载荷「**不带**
+ * `call` 引用——条目自身即那次调用」）。不认领的话，接回来那一笔的结果**永远落不到
+ * 那一行上**（按 id 找不到），屏上就一直停在它切走时的样子。
+ */
+function adoptTool(view: ShellView, tool: SnapshotTool): ShellView {
+  const known = indexOfCall(view, tool.call)
+  if (known !== -1) return patchTool(view, known, (row) => ({ ...row, state: 'running' }))
+
+  const argsText = argsJson(tool.args)
+  const pending = findToolIndex(
+    view,
+    (row) =>
+      row.call !== null &&
+      row.state === 'running' &&
+      row.name === tool.name &&
+      row.argsText === argsText,
+  )
+  if (pending !== -1) {
+    return patchTool(view, pending, (row) => ({ ...row, call: tool.call, startedAt: tool.at }))
   }
 
-  return next
+  return reduceToolCall(view, tool.call, { name: tool.name, args: tool.args }, tool.at)
 }
 
 /**
@@ -2099,6 +2146,14 @@ const ACTIVE_HEAD: Readonly<Record<string, string>> = {
   unknown: '状态待确认',
 }
 
+/**
+ * 这一行归**活跃那一段**吗（需要你 / 执行中 / 收尾中 / 待确认）——列表与详情据此分工：
+ * 活跃那一段的行**副文案写的是动作**，故它那一行不需要详情再念一遍动作。
+ */
+export function inActiveSection(state: RunState): boolean {
+  return ACTIVE_ORDER.includes(state)
+}
+
 /** 六行状态的字面——**列表与详情念的是这一份**（设计那张表左栏的词）。 */
 export function runStateLabel(state: RunState): string {
   switch (state) {
@@ -2229,6 +2284,9 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
         current: session.id === active,
         value: session.id,
         group: ACTIVE_HEAD[state],
+        // **一项一行**（设计 · 终端交互：「候选每项一行，名称/简述同排；窄窗先保住名称、
+        // 再截断简述」）——窄窗下让**名称**活着，状态/动作被截
+        oneLine: true,
       })
       shown.add(session.id)
     }
@@ -2263,6 +2321,7 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
         .join(' · '),
       current: session.id === active,
       value: session.id,
+      oneLine: true,
     })
   }
 
@@ -2293,11 +2352,20 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
  *
  * `now` 由调用方给（活壳给真钟，取景给固定值）——**帧才是确定的**。
  */
-export function runDetail(row: RunRow, now: number): string {
-  const said: string[] = [runStateLabel(row.state)]
+export function runDetail(
+  row: RunRow,
+  now: number,
+  options: { readonly inActiveSection?: boolean } = {},
+): string {
+  const said: string[] = []
+  const active = options.inActiveSection === true
 
+  // **活跃那一段**：组头就是状态、行的副文案就是动作——详情再念一遍＝同一句话说两遍。
+  // 故它从「多久」说起。**历史那一段**没有那两格（组头是工作区、副文案只写状态），
+  // 状态与缘由就得由详情带上。
+  if (!active) said.push(runStateLabel(row.state))
   if (row.state === 'stopped' && row.reason !== undefined) said.push(row.reason)
-  if (row.action !== undefined) said.push(row.action)
+  if (row.action !== undefined && !active) said.push(row.action)
   said.push(`已持续 ${elapsedLabel(now - row.since)}`)
 
   if (row.progress !== undefined) {
