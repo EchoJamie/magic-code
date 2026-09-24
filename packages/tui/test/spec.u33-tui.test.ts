@@ -698,6 +698,159 @@ describe('退回① · 候选的来源必须辨得出来（两行不能逐字相
   })
 })
 
+// ══ U57 · 同档同名挑得动（D32）════════════════════════════════════════
+
+/**
+ * 现场（真跑撞见的那四步）：`/twins` → 候选栏只出一条 → `↓`+`Tab` 才开出那一屏 →
+ * 在那一屏上 `↓`+回车，草稿上**还是那几个字母** → 接着打正文再回车，**又弹回那一屏**，
+ * 一条请求都没发出去。
+ *
+ * 三条都要咬住：**候选栏上就分得开** · **挑定即绑上身份** · **回车就是提交**（不再展开）。
+ */
+describe('U57 · 同档同名（D32）', () => {
+  /** 同档同名的两份——目录名与技能名不一致，故来源带一段位置（设计：「来源要写全到能区分」）。 */
+  const twins = [
+    skill('twins', {
+      label: '项目 .magic/skills/first',
+      description: '独立验证技能',
+      path: '/ws/.magic/skills/first',
+    }),
+    skill('twins', {
+      label: '项目 .magic/skills/second',
+      description: '独立验证技能',
+      path: '/ws/.magic/skills/second',
+    }),
+  ]
+
+  /**
+   * **候选栏上就分得开**（D32 第 1 步）。
+   *
+   * 旧行为：同名的只列一条 `/twins`——用户根本不知道库里有第二份，要按一下 `Tab`
+   * 才在下一屏看见。而这一档**不能静默挑一个**，于是那一条按下去还得再挑一次，
+   * 屏上却一个字没说（「看着选了、其实没选」的源头）。
+   */
+  test('候选栏：同档同名**各占一条**，来源就写在自己那一行上', () => {
+    const stage = createStage()
+    stage.type('/twins')
+    feedCatalog(stage, twins)
+
+    const candidates = stage.shell.getView().completion?.candidates ?? []
+    expect(candidates.map((row) => row.name)).toEqual(['/twins', '/twins'])
+    // 两行**不是逐字相同**——差异在来源那半截上（名称本来就一样）
+    expect(candidates.map((row) => row.summary)).toEqual([
+      '项目 .magic/skills/first · 独立验证技能',
+      '项目 .magic/skills/second · 独立验证技能',
+    ])
+  })
+
+  /**
+   * **反面**：分得出唯一的那些照旧——候选栏**一条**，且**不带来源**。
+   *
+   * 带上去是白重复：名称本身就认得出来（设计：「同名时补必要来源」）。
+   * 不同档的同名（项目 / 用户）也走这一条：直达按已定来源优先级解析，最优那一档是唯一的。
+   */
+  test('分得出唯一时照旧一条、不带来源（不同档的同名也在这一档）', () => {
+    const stage = createStage()
+    stage.type('/pdf')
+    feedCatalog(stage, [
+      skill('pdf', { label: '项目 .magic/skills' }),
+      skill('pdf', { label: '用户 .magic/skills' }),
+      skill('solo'),
+    ])
+
+    const candidates = stage.shell.getView().completion?.candidates ?? []
+    expect(candidates).toEqual([{ name: '/pdf', summary: 'pdf 的简述' }])
+  })
+
+  /**
+   * **候选栏上挑哪一份，那一屏就停在哪一份**。
+   *
+   * 两条列同一串名字，挑第几条就落到第几条上——在那一栏上停的那一行不至于白停
+   * （不然又是一回「看着选了、其实没选」）。
+   */
+  test('候选栏上挪一格再 `Tab`：那一屏**停在第二份**上', () => {
+    const stage = createStage()
+    stage.type('/twins')
+    feedCatalog(stage, twins)
+
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'tab' })
+
+    const picker = pickerOf(stage)
+    expect(picker.selected).toBe(1)
+    expect(picker.rows[picker.selected]?.value).toBe('/ws/.magic/skills/second')
+  })
+
+  /**
+   * **回车就是提交**（D32 第 4 步）——本单的正主。
+   *
+   * 旧行为：挑定之后那一处**已经是引用**，而回车又走一遍「同名 ⇒ 展开候选」，
+   * 于是**又弹回同一屏**、一条请求都没发——用户以为发出去了，在等一个不会来的回复。
+   * 判据：第二下回车**交出去了**（`input.submit`），抽屉别再开回来。
+   */
+  test('**挑定之后回车＝提交**：不再弹回选择器，交代真发出去', () => {
+    const stage = createStage()
+    directHit(stage, '/twins 帮我看看', twins)
+
+    // 第一下回车：分不出唯一 ⇒ 展开（不静默挑一个），此刻**一条都没交出去**
+    expect(pickerOf(stage).rows).toHaveLength(2)
+    expect(submitted(stage)).toEqual([])
+
+    stage.press({ kind: 'down' }) // 在那一屏上挪到第二份
+    stage.press(ENTER) // 选定它
+    expect(stage.shell.getView().refs[0]?.source).toBe('/ws/.magic/skills/second')
+    expect(stage.shell.getView().draft).toBe('/twins 帮我看看')
+    expect(submitted(stage)).toEqual([]) // 选定不等于发送
+
+    stage.press(ENTER) // 这一下就是提交（D32 第 4 步：不再弹回那一屏）
+    expect(stage.shell.getView().dock.kind).toBe('input')
+
+    const sent = submitted(stage)
+    const one = sent[0]
+    expect(sent).toHaveLength(1)
+    // 交出去的那一份带着**挑定的那一处身份**（第二份），不是「又展开一遍」
+    expect(one?.type === 'input.submit' ? one.refs?.[0]?.source : undefined).toBe(
+      '/ws/.magic/skills/second',
+    )
+  })
+
+  /**
+   * **没挑过的那一份仍不许静默挑**：`/twins 交代` 一次回车，展开那一屏——
+   * 与旧行为一字不差（本单只补「已经挑定了的那一处」）。
+   */
+  test('没绑定过的同名 ⇒ 照旧展开那一屏（不静默随目录顺序挑）', () => {
+    const stage = createStage()
+    directHit(stage, '/twins 帮我看看', twins)
+
+    expect(pickerOf(stage).rows.map((row) => row.value)).toEqual([
+      '/ws/.magic/skills/first',
+      '/ws/.magic/skills/second',
+    ])
+    expect(submitted(stage)).toEqual([])
+    expect(stage.shell.getView().refs).toEqual([])
+  })
+
+  /**
+   * **掐掉头空白之后锚点仍在那个词上**：草稿以空格开头时，展开那一屏 → 选定 →
+   * 正文头一格不被吃掉（锚点按 `head` 换算；旧写法写死 0，会切错一格）。
+   */
+  test('草稿以空格开头：选定也落在那个词上（切不掉正文第一格）', () => {
+    const stage = createStage()
+    stage.type(' /twins 帮我看看')
+    feedCatalog(stage, twins)
+    stage.press(ENTER)
+
+    expect(pickerOf(stage).rows).toHaveLength(2)
+
+    stage.press({ kind: 'down' }) // 选第二份
+    stage.press(ENTER)
+
+    expect(stage.shell.getView().draft).toBe(' /twins 帮我看看')
+    expect(stage.shell.getView().refs[0]?.source).toBe('/ws/.magic/skills/second')
+    expect(stage.shell.getView().refs[0]?.start).toBe(1)
+  })
+})
+
 describe('退回② · 选定不搬正文里的插入点（U36 改形：不再剥前缀）', () => {
   /**
    * **负例回归**：把插入点摆到末尾（或摆到别处）——「选定之后接着打，字得跟在我原来那一格」。

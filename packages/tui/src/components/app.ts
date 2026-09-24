@@ -539,7 +539,9 @@ function Completion({
 
       return h(
         Text,
-        { key: `c:${candidate.name}` },
+        // ⚠️ **键里得带位次**（U57）：同一档同名的技能现在**各占一条**，名字是一样的
+        //    （差异在来源那半截上）——只按名字取键，同名的几条会撞成一个。
+        { key: `c:${index}:${candidate.name}` },
         h(
           Text,
           { color: index === completion.selected ? PALETTE.user : PALETTE.faint, bold: index === completion.selected },

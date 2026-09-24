@@ -1023,10 +1023,17 @@ describe('slash 候选（D12 · 纯函数级）', () => {
 
   /**
    * **技能名也在候选里**（U33）——三条分寸各考一条：
-   * **打了名字才列**（光一个 `/` 不列，那一屏问的是「有哪些命令」）· **同名只列一条**
-   * （要挑去 `/skills`，那里同名各占一行）· **与内置命令同名的不列**（内置命令保留含义）。
+   * **打了名字才列**（光一个 `/` 不列，那一屏问的是「有哪些命令」）·
+   * **同一档同名各占一条、带来源** · **与内置命令同名的不列**（内置命令保留含义）。
+   *
+   * ⚠️ **二变**（U57 · 修 D32）：这一条原判「**同名只列一条**（要挑去 `/skills`）」。
+   * 那个口径正是 D32 的现场——只打 `/twins` 时候选栏上一条，用户根本不知道库里有第二份；
+   * 而这一档**不能静默挑一个**（`resolveSkill`：同一优先级分不出唯一就展开），
+   * 于是那一条按下去还得再挑一次，屏上却一个字没说。现在**同名的各占一条**，
+   * 来源就写在（或先保在）自己那一行上（设计 · 技能调用：「来源要写全到能区分」）。
+   * **其余两条一字未动**；「分得出唯一时仍是一条」另有一条用例（`spec.u33-tui`）。
    */
-  test('技能名进候选：按名筛 · 同名一条 · 内置命令不让位', async () => {
+  test('技能名进候选：按名筛 · 同档同名各占一条带来源 · 内置命令不让位', async () => {
     const { matchCommands } = await import('../src/view.ts')
     const skill = (name: string, description = '') => ({
       name,
@@ -1038,14 +1045,20 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     })
     const catalog = [skill('ui-review', '检查布局'), skill('debug'), skill('ui-review', '另一份'), skill('model')]
 
-    expect(matchCommands('/ui', catalog).map((row) => row.name)).toEqual(['/ui-review'])
+    // 同名的两份各占一条（名字一样，**差异在来源那半截上**）
+    expect(matchCommands('/ui', catalog).map((row) => row.name)).toEqual(['/ui-review', '/ui-review'])
+    expect(matchCommands('/ui', catalog).map((row) => row.summary)).toEqual([
+      '项目 .magic/skills · 检查布局',
+      '项目 .magic/skills · 另一份',
+    ])
+    // 分得出唯一的那一份照旧一条，且**不带来源**（名称本身就认得出来）
+    expect(matchCommands('/deb', catalog)).toEqual([{ name: '/debug', summary: '' }])
     // 光一个 `/`：六条命令，一条技能都不列（`/skills` 就在那六条里）
     expect(matchCommands('/', catalog).map((row) => row.name)).toEqual(
       expect.not.arrayContaining(['/ui-review']),
     )
-    // 同名只列一条；`/model` 是内置命令，同名技能不在这一列（它仍能从 `/skills` 选）
+    // `model` 那一份与内置命令同名⇒不列；`model` 只有一份，故不带来源那条口径不在这条上
     expect(matchCommands('/model', catalog).map((row) => row.name)).toEqual(['/model'])
-    expect(matchCommands('/deb', catalog).map((row) => row.name)).toEqual(['/debug'])
   })
 })
 

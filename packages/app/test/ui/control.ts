@@ -34,6 +34,8 @@
  * - 会话活在这个进程活着的时候；进程一走，现场（产物目录）还在，接着用新的进程看。
  */
 
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { createUiSession, UiWaitTimeout, UI_KEYS } from './driver.ts'
 import type { CloseReport, UiKey, UiSession, UiSessionOptions, WaitCondition } from './driver.ts'
 import type { FixtureTurn } from './fixture.ts'
@@ -65,6 +67,18 @@ export type ControlRequest = {
   readonly artifacts?: string
   readonly argv?: readonly string[]
   readonly checkout?: string
+  /**
+   * `start` 用：**起手先往工作区摆几份文件**（相对路径 → 内容，中间目录自动建）。
+   *
+   * 由头（U57）：技能、规约这类**按目录发现**的东西，屏上要验的那几屏（候选栏、选择器）
+   * 全得先有材料。没这个口子，验技能就只能绕开本入口另搭一套装置——而那正是 U51 要删掉的
+   * 重复。摆的落点是**沙地的工作区**（`session.facts().workspace`），不碰真仓库、不碰真家目录。
+   *
+   * ⚠️ **摆在起手之后**（会话已经起来、首帧已到）：发现面本来就是**每次现扫**的
+   * （「材料动态读取」），故摆下去就认——不必重开一次窗。这一点与 `frames-u33-tui.ts`
+   * 里 `putCatalog` 的处置同源。
+   */
+  readonly files?: Readonly<Record<string, string>>
 }
 
 /** 一条答复——`ok` 为假时 `error.kind` 说清是哪一类（助手据此决定下一步）。 */
@@ -195,8 +209,11 @@ export function createControl(options: ControlOptions = {}): Control {
             }
             // 起不来就**在这一跳里收拾干净**（`createUiSession` 自己清）——不登记一个半成品
             const session = await createUiSession(startOptions)
+            // **先登记再摆夹具**：摆不动时这一跳照实报失败，而收尾仍收得掉这个窗口
+            // （`closeAll` 只认登记过的）——半个现场比没有现场更难查。
             sessions.set(sessionId, session)
             current = sessionId
+            if (request.files !== undefined) layFiles(session.facts().workspace, request.files)
             log(`起会话 ${sessionId}（pid ${session.pid}）· ${session.runDir}`)
 
             return done(id, { session: sessionId, ...session.facts(), ...(await stateOf(session)) })
@@ -359,6 +376,24 @@ export function createControl(options: ControlOptions = {}): Control {
       sessions.clear()
       current = undefined
     },
+  }
+}
+
+/**
+ * 摆起手用的那几份文件（`start` 的 `files`）——相对路径落在 `root` 下，中间目录自动建。
+ *
+ * 路径**不许爬出工作区**（`../` 那种）：沙地是「另一个终端」，不是「另一位开发者的机器」
+ * ——摆到外面去就等于绕开了这块沙地，而绕开之后收尾也删不干净。
+ */
+function layFiles(root: string, files: Readonly<Record<string, string>>): void {
+  for (const [relative, text] of Object.entries(files)) {
+    const path = join(root, relative)
+    if (path !== root && !path.startsWith(root.endsWith('/') ? root : `${root}/`)) {
+      throw new Error(`起手文件只能摆在工作区里：「${relative}」落到 ${path} 去了`)
+    }
+
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, text, 'utf8')
   }
 }
 
