@@ -1710,23 +1710,23 @@ const isRule = (line: string): boolean => /^─+$/u.test(line.trim())
  * 一帧里那**两条**分隔线各自的行号（U45 起是两条，见 `separatorOf`）。
  *
  * - `top`——**记录区与交互区之间**那一条（记录区的顶边）；
- * - `bottom`——**交互区下沿**那一条（`AppView` 收尾画的那一行，其后只剩屏幕空白）。
+ * - `bottom`——**输入区与状态行之间**那一条（U59 挪到这儿；U45 那会儿它在状态行**之下**）。
  *
- * ⚠️ **U45 之前「最后一条分隔线」就是顶边**（那时只有一条）。多了下沿那条之后，再取最后一条
- * 就会把**整个交互区与状态行**算进记录区——抽屉一开，「记录区」当场多出七八行
- *（首轮就是这么现形的：空名录后 10 行 · 开抽屉后 17 行）。
+ * ⚠️ **认它们靠「这一帧最后的两条」**（U59 改的；U45 那版认的是「最后一条，且它下面是空白」）：
+ * 布局是 `… 记录区 → 上沿 → 交互区 → 下沿 → 状态行`，故这一帧的收尾就是那两条
+ * ——**下沿下面还有状态行那一行**，正是 U45 那条旧判据（「它下面是空白」）不再成立的原因。
+ * 照旧判据办的话，`top` 会取到下沿 ⇒ **整个交互区与状态行当场算进记录区**
+ * （抽屉一开，「记录区」多出七八行；实测：空名录后 9 行 · 开抽屉后 16 行）。
  *
- * 认下沿那一格的依据是**它下面是空白**（它是这一帧的最后一行内容）——不是「倒数第二条」：
- * 只录了半屏、还没画到下沿时，`bottom` 给 `-1`，那一条只能算顶边（与 U45 之前同一副面孔）。
- * 改窗残影（旧分隔线还留在屏上，D27）落在**上面**，不影响这两格。
+ * 只录了半屏（还没画到下沿，只有一条线）时 `bottom` 给 `-1`，那一条只能算顶边
+ * ——与 U45 之前同一副面孔。改窗残影（旧分隔线还留在屏上，D27）落在**上面**，
+ * 而这两条是**这一帧最后画的两条**，故不受它影响（比旧判据还稳一点）。
  */
 function dividersOf(lines: readonly string[]): { readonly top: number; readonly bottom: number } {
   const last = lines.findLastIndex(isRule)
-  const atEnd = last !== -1 && lines.slice(last + 1).every((line) => line.trim() === '')
+  const before = lines.findLastIndex((line, at) => at < last && isRule(line))
 
-  return atEnd
-    ? { top: lines.findLastIndex((line, at) => at < last && isRule(line)), bottom: last }
-    : { top: last, bottom: -1 }
+  return before === -1 ? { top: last, bottom: -1 } : { top: before, bottom: last }
 }
 
 /**
@@ -1744,7 +1744,8 @@ export function recordOf(capture: Capture): readonly string[] {
  * 缓冲里的**记录区**（非空行）——「记录不丢不重」这类判据的取材。
  *
  * 取法是「**上沿**那条分隔线**之上**」：上沿以下就是**活动区**（输入行 / 抽屉 / 状态行），
- * 那里本来就该随操作变（抽屉开合动的正是它）；下沿那条（U45）属**收尾**，更不在记录区里。
+ * 那里本来就该随操作变（抽屉开合动的正是它）；下沿那条（U45 加 · U59 挪）与它**之下**的
+ * 状态行属**收尾**，更不在记录区里。
  */
 function recordHistoryOf(capture: Capture): readonly string[] {
   const { top } = dividersOf(capture.history)

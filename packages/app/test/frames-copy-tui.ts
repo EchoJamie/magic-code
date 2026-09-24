@@ -261,12 +261,19 @@ async function sessionNew(): Promise<void> {
 
 // ══ D29 · 审批接管 ═══════════════════════════════════════════════════
 
-/** 交互区那几行（**分隔线之下、状态行之上**——不含状态行，也不含状态行底下那些空屏行）。 */
+/**
+ * 交互区那几行（**两条分隔线之间**——不含下面那条线，也不含它**之下**的状态行）。
+ *
+ * ⚠️ **U59 改过切法**：U45 那会儿下面那条线在状态行之下，故「切到最后一个非空行之前」
+ * 恰好把状态行捎进去了；线挪到「输入区与状态行之间」之后，那个切法会把**下沿线本身**
+ * 算进来。现在切到**下面那条线**为止——状态行与它底下的空屏行都在外。
+ */
 function dockRows(shot: Capture): readonly string[] {
-  const divider = shot.lines.findIndex((line) => /^─{8,}$/u.test(line.trim()))
-  const lastNonBlank = shot.lines.reduce((at, line, row) => (line.trim() === '' ? at : row), -1)
+  const isRule = (line: string): boolean => /^─{8,}$/u.test(line.trim())
+  const top = shot.lines.findIndex(isRule)
+  const bottom = shot.lines.findLastIndex(isRule)
 
-  return shot.lines.slice(divider + 1, lastNonBlank)
+  return shot.lines.slice(top + 1, bottom === top ? undefined : bottom)
 }
 
 /** 接管那一屏**逐条对**：卡在、键位在、状态行在，**输入提示行不在**。 */

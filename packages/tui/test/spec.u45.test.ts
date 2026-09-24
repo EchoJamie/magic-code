@@ -21,12 +21,22 @@
  *   `view.sessionId` 还是 `null`——「`null → 活跃位`」落在「换页」那一格里，若不认 `note`，
  *   屏被清掉、字标**凭空多印一块**，而内核其实一个字都没答应。
  *
- * ## 之二 · 交互区下沿那条线
+ * ## 之二 · 两条线划开哪两块（**U59 挪过位置**）
  *
- * 一屏**恰好两条**满宽分隔线（记录区／交互区之间 ＋ 交互区下沿），**同宽同色**；
- * 输入行与状态行被夹在当中；**两条之外不多线**（工单硬约束 3）；
+ * 一屏**恰好两条**满宽分隔线，**同宽同色**，**两条之外不多线**（工单硬约束 3）；
  * 极窄档照旧整宽（既有那一手，不新造分支）——且**账与屏同源**（`CHROME_LINES` 那一笔：
  * 少算了，矮窗上帧正好顶满 ⇒ 真光标高一行，那是 U31 那一族的老病）。
+ *
+ * ⚠️ **哪一块被夹在当中，U59 改过**（用户 2026-09-25 指出「U45 加错了位置」）：
+ *
+ * | | 上面那条 | 下面那条 | 夹在两条之间的是 |
+ * | --- | --- | --- | --- |
+ * | **U45（错）** | 记录区／交互区 | 状态行**之下** | 输入行 **＋** 状态行 |
+ * | **U59（对）** | 记录区／交互区 | **输入区／状态行** | **只有输入区** |
+ *
+ * 由头：用户原话是「输入区 **与** 底部状态栏」——那条线划的是**这两块**，
+ * 不是给「输入行 ＋ 状态行」整块加个下边框（那是装帧，不是划界）。
+ * **总数没变**（还是两条线、还是三行固定高度），换的只是这两行谁在上谁在下。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -156,7 +166,7 @@ describe('之一 · 内核挡回（`note` 在）⇒ 不翻页、不种字标', (
 
 // ══ 之二 · 两条分隔线 ═════════════════════════════════════════════════
 
-describe('之二 · 交互区下沿那条分隔线', () => {
+describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）', () => {
   test('一屏**恰好两条**满宽线，且**同宽同色**（走既有那条的样式）', async () => {
     const frame = await createStage().screen(WIDE)
     const rows = rulesOf(frame)
@@ -171,19 +181,88 @@ describe('之二 · 交互区下沿那条分隔线', () => {
     }
   })
 
-  test('**输入行与状态行夹在当中**——三块一眼分得开', async () => {
+  test('**输入行夹在当中 · 状态行在下线之下**——三块一眼分得开（U59 的位置）', async () => {
     const frame = await createStage().screen(WIDE)
     const [top, bottom] = rulesOf(frame) as [number, number]
     const composer = frame.screen.lines.findLastIndex((line) => line.includes('›'))
     const status = frame.screen.lines.findLastIndex((line) => line.includes('○ ') || line.includes('● '))
 
+    // 上面那条与下面那条之间：**只有输入区**
     expect(composer).toBeGreaterThan(top)
     expect(composer).toBeLessThan(bottom)
-    expect(status).toBeGreaterThan(composer)
-    expect(status).toBeLessThan(bottom)
+    // 状态行在**下面那条线之下**（U45 那会儿它在两条线之间——那正是本单要挪的）
+    expect(status).toBeGreaterThan(bottom)
+    // **下线之下不再有线**（工单边界）：两条线都在状态行之上
+    expect(rulesOf(frame).every((row) => row < status)).toBe(true)
   })
 
-  test('**两条之外不多线**：记录区里没有、输入行与状态行之间也没有', async () => {
+  /**
+   * **三种形态各看一眼**（工单边界）：选择器 / 裁决卡 / 本地小输入开着时**照旧**——
+   * 它们整块夹在那两条线之间，**只是下界从「状态行之下」变成「状态行之上」**。
+   *
+   * ⚠️ 这一格最要紧（工单原话）：那三种形态**整块**都在线下沿之上；
+   * 量的是「那块东西的最后一行 < 下线 < 状态行」——线一挪错，三条同时红。
+   */
+  const 三块分得开 = (frame: Frame, where: string, 形态那一行: string): void => {
+    const rows = rulesOf(frame)
+    // 线还是**两条**（三种形态下都不许多出一条）
+    expect(rows, `${where}：恰好两条线`).toHaveLength(2)
+    const [top, bottom] = rows as [number, number]
+    const status = frame.screen.lines.findLastIndex((line) => line.includes('○ ') || line.includes('● '))
+
+    // 那一块整块夹在两条线**之间**（`Frame.dock` 切的就是这一段——「下界从状态行之下
+    // 变成状态行之上」这句话在屏上就是它）
+    expect(top, `${where}：两线之间有东西`).toBeLessThan(bottom)
+    expect(
+      frame.dock.some((line) => line.text.includes(形态那一行)),
+      `${where}：那一块在**两线之间**`,
+    ).toBe(true)
+    // 而状态行在**下线之下**
+    expect(status, `${where}：状态行在**下线之下**`).toBeGreaterThan(bottom)
+    // **下线之下不再有线**（工单边界）：两条线都在状态行之上
+    expect(rows.every((row) => row < status), `${where}：状态行之下不再有线`).toBe(true)
+  }
+
+  test('**选择器开着**：候选整块在下线之上，状态行仍在下线之下', async () => {
+    const stage = createStage()
+    stage.type('/resume')
+    stage.press(ENTER)
+    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+
+    expect(stage.shell.getView().dock.kind).toBe('picker') // 防空转：真开着
+    三块分得开(await stage.screen(WIDE), '选择器', '甲的事')
+  })
+
+  test('**裁决卡开着**：卡整块在下线之上，状态行仍在下线之下', async () => {
+    const stage = createStage()
+    stage.feed([
+      event('tool.call', { name: 'write', args: {} }, { id: 71 }),
+      event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/a.ts', weight: 'light' }, { id: 88 }),
+    ])
+
+    expect(stage.shell.getView().dock.kind).toBe('decision') // 防空转
+    三块分得开(await stage.screen(WIDE), '裁决卡', 'y 批准')
+  })
+
+  /**
+   * **本地小输入**（`/model manage` → 进这条连接 → 改名）——三种形态里最深的一条链，
+   * 但正是工单点名要看的那一格：接管着**输入行本身**时，那条线是不是还在它上方。
+   */
+  test('**本地小输入开着**：小输入整块在下线之上，状态行仍在下线之下', async () => {
+    const stage = createStage()
+    stage.type('/model manage')
+    stage.press(ENTER)
+    stage.feed([
+      event('provider.catalog', { entries: [{ provider: 'personal', name: '个人号' }], vendors: [] }),
+    ])
+    stage.press(ENTER) // 进这条连接
+    stage.press(ENTER) // 第一行＝改名
+
+    expect(stage.shell.getView().dock.kind).toBe('prompt') // 防空转：真到了小输入那一屏
+    三块分得开(await stage.screen(WIDE), '本地小输入', '新名字')
+  })
+
+  test('**两条之外不多线**：记录区里没有、那两条之外也没有', async () => {
     const stage = createStage()
     stage.type('先交代一句')
     stage.press(ENTER)

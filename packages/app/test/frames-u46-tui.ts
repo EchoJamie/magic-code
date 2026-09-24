@@ -107,7 +107,7 @@ function alive(pid: number): boolean {
   }
 }
 
-/** 一帧是不是**完整的**（两条线 ＋ 输入行 ＋ 状态行，且后两者夹在两条线之间）。 */
+/** 一帧是不是**完整的**（两条线 ＋ 输入行 ＋ 状态行；输入行夹在线之间、状态行在下线之下——U59）。 */
 function checkFrame(shot: Capture, where: string): void {
   const shown = shot.lines.filter((line) => isRule(line))
   check(shown.length === 2, `${where}：可见屏上**恰好两条**分隔线`, `实际 ${shown.length} 条`)
@@ -118,7 +118,9 @@ function checkFrame(shot: Capture, where: string): void {
   const last = shot.lines.findLastIndex((line) => isRule(line))
 
   check(composer > first && composer < last, `${where}：输入行在两条线之间`)
-  check(status > first && status < last, `${where}：状态行在两条线之间`)
+  // ⚠️ **状态行在下线之下**（U59）：这条线划的是「输入区 **与** 状态行」这两块（U45 原把它
+  //    加在状态行之下，那是把两者框起来——加错了位置）
+  check(status > last, `${where}：状态行在**下线之下**`)
 }
 
 /** 那一行**紧贴输入行上方**（中间不夹别的东西）。 */

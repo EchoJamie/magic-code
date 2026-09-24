@@ -50,7 +50,13 @@ export const READY_MIN_COLUMNS = 40
 /**
  * **状态行那一格**（左下最后一行，U54）——判据落到**那一格**上，不落到全屏。
  *
- * 取法：屏底那一条分隔线（U45 加的「状态行之下」那一条）**上面**那一行。
+ * 取法：屏底那一条分隔线（**输入区与状态行之间**那一条，U45 加 · **U59 挪到这儿**）
+ * **下面**那一条非空行。
+ *
+ * ⚠️ **U45 那版取的是「最后那条分隔线**上面**那一行」**——那时下沿那条在状态行之下、
+ * 是这一帧的最后一行内容，故「上面那一行」正是状态行。U59 把线挪到状态行**之上**之后，
+ * 同一条取法量到的是**输入行**（实测：真帧套件三条当场红，`statusLineOf` 交出
+ * `› （等模型回来…）` 那一行）。**判据没变，改的是线在哪**——故取法随之翻到线**之下**。
  *
  * ⚠️ **不能拿「全屏找那几个字」代替**：
  *
@@ -61,11 +67,13 @@ export const READY_MIN_COLUMNS = 40
  * 而这一格恰恰是本单要判的那一件（缺陷 D34：回执说「停了」而这一格还写着「工作中」）。
  */
 export function statusLineOf(lines: readonly string[]): string {
-  for (let at = lines.length - 1; at >= 0; at -= 1) {
+  // 屏底那条分隔线（可见区最后一条 `─` 一串）——它之下就是状态行那一格
+  const bottom = lines.findLastIndex((line) => /^─+$/u.test(line.trim()))
+  if (bottom === -1) return ''
+
+  for (let at = bottom + 1; at < lines.length; at += 1) {
     const line = lines[at] ?? ''
-    if (line.trim() === '') continue
-    // 最后那个非空行应当是屏底那条分隔线（`─` 一串）；它上面那一行就是状态行
-    return /^─+$/u.test(line.trim()) ? (lines[at - 1] ?? '') : ''
+    if (line.trim() !== '') return line
   }
 
   return ''
