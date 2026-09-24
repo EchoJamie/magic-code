@@ -12,7 +12,7 @@
  * | --- | --- |
  * | 客户端 → 管理者 | `hello`（我是窗口）· `cmd`（带着我认的**代次**）· `bye` |
  * | 管理者 → 客户端 | `welcome`（你连上了谁）· `target` · `detached` · `ev` · `line` · **`runs`**（这一摊的运行事实）· **`resumed`**（接回的那一份快照） |
- * | 执行者 → 管理者 | `hello`（我是哪条会话的执行者）· `bound` · `ev` · `pong` · `done` · **`stopping`** · **`snapshot`** |
+ * | 执行者 → 管理者 | `hello`（我是哪条会话的执行者）· `bound` · `ev` · `pong` · `done` · `stopping` · **`snapshot`** · **`owned`**（我握着哪几组自有进程） |
  * | 管理者 → 执行者 | `cmd` · `ping` · `bye` · **`snapshot`**（要一份接回快照） |
  *
  * ## 帧
@@ -31,6 +31,7 @@ import type {
   KernelEvent,
   McpConnectionState,
   ModelSwitchRequest,
+  OwnedProcess,
   RunRow,
   RunSnapshot,
 } from '@magic/contracts'
@@ -179,6 +180,18 @@ export type ExecutorToManager =
   | { readonly t: 'ready' }
   | { readonly t: 'ev'; readonly event: KernelEvent }
   | { readonly t: 'pong'; readonly seq: number }
+  /**
+   * **我手上握着哪几组自有进程**（U50）——「执行者崩溃或被杀 ⇒ 管理者收回**已登记**
+   * 自有进程组」那句里的**已登记**就是这一条（说出去了才算登记）。
+   *
+   * 三条口径与账一致（见契约 `ProcessLedger`）：**一组一笔**（不数进程树）· **带身份**
+   * （`startedAt`，号会被回收再分配）· **只报我们起的**（`exec` 的命令与 MCP 的 stdio
+   * 服务器；HTTP 连接与用户自己的服务从来不进这本账）。
+   *
+   * ⚠️ **它是「全量」不是「增量」**：账变了就报当下这一刻的全部——增量要配对，一条丢了
+   * 就永远差一笔；全量最坏是白报一次（管理者按最后一次覆盖）。
+   */
+  | { readonly t: 'owned'; readonly processes: readonly OwnedProcess[] }
   /** **跑起来之后才开张**（D5 那条路）——补一条登记，管理者据以把它挂到会话名下。 */
   | { readonly t: 'bound'; readonly session: string }
   /**

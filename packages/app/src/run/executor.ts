@@ -73,6 +73,14 @@ const SNAPSHOT_OUTPUT_LINES = 20
 /** 攒一条工具输出时留多少字符——**先按字符封顶**（长测试一行能吐几十万字符）。 */
 const SNAPSHOT_OUTPUT_CHARS = 4_000
 
+/**
+ * 上报自有进程组前的合并窗（毫秒）——见那份登记的注。
+ *
+ * 取一百毫秒：它只该合并掉「同一次动作连着起几组」那种连发，**不该**把一个真起的进程
+ * 压到看不见——执行者被杀与它起一个进程之间通常隔着秒级，故这一窗的两端都够。
+ */
+const OWNED_REPORT_MS = 100
+
 /** 在飞的一条工具调用——输出按末尾一截攒，快照时再切成行。 */
 type LiveTool = {
   readonly call: number
@@ -442,6 +450,39 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     }
     link.close()
   }
+
+  /**
+   * **自有进程组的登记**（U50）——账变了就报当下这一刻的全量。
+   *
+   * 为什么要报：执行者**被杀**时它自己跑不到收尾那两跳（「关外部服务器」在
+   * `assembly.shutdown()` 里），那时只有管理者手上这一份登记能把它起的那些进程收回来
+   * （设计：「执行者崩溃或被杀 ⇒ 管理者收回独占权与**已登记**自有进程组」）。
+   *
+   * 两条实现上的取舍：
+   * - **合并一小窗**（`OWNED_REPORT_MS`）：一条命令起手就是一笔，逐笔报是白报（一场会话
+   *   里跑几百条命令是常事），而窗只有几十毫秒——真被杀时最多晚报这一窗；
+   * - **与上一份一样就不发**：账没变时重复报只是噪音（管理者按最后一次覆盖）。
+   */
+  let ownedSent = ''
+  let ownedTimer: ReturnType<typeof setTimeout> | undefined
+  const reportOwned = (): void => {
+    if (closing) return
+    const processes = assembly.ledger.list()
+    const serialized = JSON.stringify(processes)
+    if (serialized === ownedSent) return
+    ownedSent = serialized
+    link.send({ t: 'owned', processes })
+  }
+  assembly.ledger.onChange(() => {
+    if (ownedTimer !== undefined) return
+    ownedTimer = setTimeout(() => {
+      ownedTimer = undefined
+      reportOwned()
+    }, OWNED_REPORT_MS)
+    ownedTimer.unref?.()
+  })
+  // 起手先报一次（空账也报）：这一代「手上握着什么」是管理者要知道的第一件事
+  reportOwned()
 
   link.onMessage((message: ManagerToExecutor) => {
     switch (message.t) {

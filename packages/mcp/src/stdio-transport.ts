@@ -38,6 +38,7 @@
 import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
+import type { ProcessLedger } from '@magic/contracts'
 import type { OwnedTransport } from './connection.ts'
 
 /** 关 stdin 之后等它自己退多久（毫秒）——到点即按组收。 */
@@ -55,6 +56,14 @@ export type OwnedStdioOptions = {
   readonly args?: readonly string[]
   /** 追加给子进程的环境（密钥从这儿进）——在官方默认环境之上。 */
   readonly env?: Readonly<Record<string, string>>
+  /**
+   * **归属账**（U50）——这一条连接起来的进程组记它一笔。
+   *
+   * 这一层的收尾（`shutdown`）只在这一条连接自己手上：**执行者被 `SIGKILL` 时它跑不到**
+   * ——那时得有别人（管理者）照账来收。账是装配造的、两处共用（沙箱的每一条命令与这里的
+   * 每一条服务器），本层只负责「起手记一笔」（见契约 `ProcessLedger`）。
+   */
+  readonly ledger?: ProcessLedger | undefined
 }
 
 /** 端口 —— 官方 `Transport` 三件（`start` / `send` / `close`）＋ 归属与收尾。 */
@@ -104,6 +113,10 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
 
       child = spawned
       pgid = spawned.pid
+
+      // **记账**（U50）：这一组归我们的执行者——执行者要是被杀了，收尾这一段跑不到，
+      // 那时只有账上这一笔能把它找回来（见 `OwnedStdioOptions.ledger`）。
+      options.ledger?.add({ pgid: spawned.pid, what: `mcp:${options.command}` })
 
       void pump(spawned)
       void watchExit(spawned)

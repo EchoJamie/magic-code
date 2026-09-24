@@ -23,6 +23,7 @@ import type {
   ListEntry,
   MatchHit,
   MatchOptions,
+  ProcessLedger,
   ReadResult,
   Sandbox,
   WorkspaceService,
@@ -40,6 +41,13 @@ import { matchIn } from './match.ts'
 export type SandboxOptions = {
   /** 工作区端口——沙箱的 cwd 约束由它给出（同域两端口，边界规则**同源**）。 */
   readonly workspace: WorkspaceService
+  /**
+   * **归属账**（U50）——每一条命令起来的那一组记它一笔（见 `CommandOptions.ledger`）。
+   *
+   * 由装配造一本、**两处共用**（这里与 MCP 的 stdio 传输）：一个进程里「哪些进程是我们
+   * 起的」只该有一本账；两处各造一本，收尾时就得两处都问，而漏问的那一处正是要防的事。
+   */
+  readonly ledger?: ProcessLedger | undefined
 }
 
 /**
@@ -81,6 +89,7 @@ export function createSandbox(options: SandboxOptions): Sandbox {
         maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),
         onOutput: opts.onOutput,
         signal: opts.signal,
+        ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
       })
     },
 

@@ -67,6 +67,7 @@ import type {
   MagicHome,
   McpServerConfig,
   ModelSwitchRequest,
+  OwnedProcess,
   RunRow,
   RunSnapshot,
 } from '@magic/contracts'
@@ -79,8 +80,8 @@ import { linkOf, socketHandlers } from './wire.ts'
 import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 import {
   actionOf,
-  alive,
   endKindOf,
+  holdsPid,
   isProgress,
   newRunRecord,
   progressOf,
@@ -92,6 +93,8 @@ import {
 } from './facts.ts'
 import type { RunRecord, StoredRun, StoredRuns } from './facts.ts'
 import { RUNS_VERSION, STORED_RUNS_LIMIT } from './facts.ts'
+import { reclaim, reclaimNoteOf } from './reclaim.ts'
+import { startTimeOf } from '@magic/execution'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {
@@ -403,12 +406,20 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
   writeRecord(paths, record)
 
-  // **重启核对**（U49）：上一次留下的那几代，今天还成不成立——逐条读、逐条判
-  // （判据在 `facts.ts` 的 `reconcile`，此处只把它读进来）。读不动就当没有：
+  // **重启核对**（U49 立、U50 补上「句柄身份」那一半）：上一次留下的那几代，今天还成不成立
+  // ——逐条读、逐条判（判据在 `facts.ts` 的 `reconcile`/`holdsPid`）。读不动就当没有：
   // 这份文件是**诊断品**，它坏了不该拦住启动（同 `manager.json` 那条口径）。
+  //
+  // U50 补的那一半：判「还在不在」时**连它的启动时刻一起核**（`startTimeOf`）——一个
+  // 复用了同一个号的无关进程从此骗不过去（U49 如实记过的那条限度收在这一跳上）。
   for (const stored of readRuns(paths)) {
-    const record = reconcile(stored, now())
+    const record = reconcile(stored, now(), startTimeOf)
     lastRuns.set(record.session as string, record)
+
+    // **上一代留下的自有进程组**（U50）：已经证实不在的那些，照登记收回来——它当年
+    // 多半没跑完收尾那两跳（管理者异常退出那条路），起的进程就成了没人认领的后台。
+    // ⚠️ **只对「证实已结束」的那些动手**：还站着的（状态待确认）照旧一个都不碰。
+    if (record.ended !== undefined && record.owned.length > 0) void reclaimRun(record)
   }
 
   /**
@@ -990,6 +1001,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         startedAt: now(),
         explicit: input.explicit,
         pid: spawned.pid,
+        // **身份那一位当场读**（U50）：那一刻它就站在眼前，是唯一读得准的时候；
+        // 重启核对与生命探测拿它判「还是不是这一代」（读不到就缺席，那一档退回保守）
+        procStartedAt: spawned.pid === undefined ? undefined : startTimeOf(spawned.pid),
       }),
       spawned,
       link: undefined,
@@ -1068,6 +1082,16 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         saveRuns()
         pushRuns()
         return
+      /**
+       * **它手上握着哪几组自有进程**（U50）——照单收下（全量，按最后一次覆盖）。
+       *
+       * 这一步只落账、不上屏（进程号不进任何读数——设计「不把 PID 常驻」），故**不推
+       * 运行事实**；落盘则要（管理者自己没了那条路上，新一代照盘上这一份收）。
+       */
+      case 'owned':
+        executor.run.owned = message.processes
+        saveRuns()
+        return
       case 'ev':
         onEvent(executor, message.event)
         return
@@ -1086,6 +1110,28 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       default:
         return
     }
+  }
+
+  /**
+   * **照登记收那一代的自有进程组**（U50）——收完把「没收回来的」写在缘由上。
+   *
+   * 两处调用它：这一趟里没了的（`retire`），与**上一次管理者留下的**（启动核对）。
+   * 两处的判据都一样：**只对已经证实不在了的那一代动手**（见 `reclaim.ts` 的头注）。
+   *
+   * ⚠️ **它是异步的**：收尾有界但要走完三段（等 → TERM → 等 → KILL → 等）。故那一行
+   * 的「已停止」照旧**当场**成立（进程真没了才叫核销），要不要补一句「没收干净」由这一跳
+   * 回来时补——**不为了收尾把状态卡在半路**。
+   */
+  async function reclaimRun(record: RunRecord): Promise<void> {
+    const report = await reclaim(record.owned)
+    const note = reclaimNoteOf(report)
+    if (note === undefined || record.ended === undefined) return
+
+    record.reclaimNote = note
+    refresh(record, now())
+    options.log?.(`收回第 ${record.gen} 代的自有进程组：${note}`)
+    saveRuns()
+    pushRuns()
   }
 
   /** 记下「已受理停止」——**停止中**那一行的来处（`ended` 一到它就跳过去了）。 */
@@ -1268,6 +1314,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     saveRuns()
     pushRuns()
     touch()
+
+    // **收回它手上的自有进程组**（U50）——被杀那一代自己跑不到收尾那两跳，这一份登记就是
+    // 为它留的（设计：「执行者崩溃或被杀 ⇒ 管理者收回独占权与已登记自有进程组」）。
+    // 收没收到如实写回缘由（`reclaim.ts`），**不伪报取消成功**。
+    if (executor.run.owned.length > 0) void reclaimRun(executor.run)
   }
 
   /** 生命探测——**只看「连还通不通」**，不看它在不在干活（长测试静默照样是活的）。 */
@@ -1283,7 +1334,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
      *
      * 那些记录说的是「上一次管理者退出时它还在」——而它多半正在收尾，几秒后就没了。
      * 不往下走的话，那一条会话会**永远**停在「状态待确认」（用户看得见，却什么也没发生）。
-     * 判据仍是**事实**：它那个进程还在不在（`alive`）。
+     * 判据仍是**事实**：它那个进程还在不在。
+     *
+     * ⚠️ **「在不在」是两问**（U50）：号在，且那个号上站着的还是当初那一个（`holdsPid`）
+     * ——只问前一半的话，一个复用了同一个号的无关进程会把这条会话永远钉在「待确认」上
+     * （U49 如实记过的那条限度）。
      *
      * ⚠️ **只查我们记过号的那些**（不是扫全机 PID）——与设计那条一致：生命探测
      * 「不扫描全机 PID、不以 CPU 阈值自动杀进程」。
@@ -1292,11 +1347,13 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     for (const [session, run] of lastRuns) {
       if (run.ended !== undefined || run.stopping) continue
       if (liveOf(session) !== undefined) continue
-      if (run.pid !== undefined && alive(run.pid)) continue
+      if (holdsPid(run, startTimeOf)) continue
 
       run.ended = { at: now(), why: '它已经不在了', kind: 'crashed' }
       refresh(run, now())
       moved = true
+      // 落定为「异常退出」的这一刻，顺带把它登记过的自有进程组收回来（U50）
+      if (run.owned.length > 0) void reclaimRun(run)
     }
     if (moved) saveRuns()
     // **顺带把运行事实重推一次**（U49）——同一趟「有限频率」，为的是「多久了」那一格。
@@ -1492,10 +1549,13 @@ export function readRuns(paths: RunPaths): readonly StoredRun[] {
     if (typeof run.session !== 'string' || run.session === '') continue
     if (typeof run.gen !== 'number' || typeof run.startedAt !== 'number') continue
     if (!Array.isArray(run.workspace)) continue
+
+    const owned = ownedOf(run.owned)
     kept.push({
       session: run.session,
       gen: run.gen,
       ...(typeof run.pid === 'number' ? { pid: run.pid } : {}),
+      ...(typeof run.procStartedAt === 'number' ? { procStartedAt: run.procStartedAt } : {}),
       startedAt: run.startedAt,
       workspace: run.workspace,
       state: run.state ?? 'idle',
@@ -1503,9 +1563,36 @@ export function readRuns(paths: RunPaths): readonly StoredRun[] {
       ...(run.lastTurn === undefined ? {} : { lastTurn: run.lastTurn }),
       ...(typeof run.why === 'string' ? { why: run.why } : {}),
       ...(run.kind === undefined ? {} : { kind: run.kind }),
+      // **自有进程组那一笔也要读得回来**（U50）——照登记收是重启核对的一半
+      ...(owned === undefined ? {} : { owned }),
     })
   }
   return kept
+}
+
+/**
+ * 盘上那一笔自有进程组的账——**逐条校验**（判据与这份文件里其余各格同）。
+ *
+ * 三条都要：号得是个正整数（否则 `kill(-pgid)` 打到的是别人）、`what` 得说得出来、
+ * 启动时刻有就是数。**一条都没有 ⇒ `undefined`**（不写一个空数组进落盘形——缺席即无事）。
+ */
+function ownedOf(raw: unknown): readonly OwnedProcess[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+
+  const kept: OwnedProcess[] = []
+  for (const one of raw) {
+    if (typeof one !== 'object' || one === null) continue
+    const group = one as Partial<OwnedProcess>
+    if (typeof group.pgid !== 'number' || !Number.isInteger(group.pgid) || group.pgid <= 0) continue
+    if (typeof group.what !== 'string') continue
+    kept.push({
+      pgid: group.pgid,
+      startedAt: typeof group.startedAt === 'number' ? group.startedAt : undefined,
+      what: group.what,
+    })
+  }
+
+  return kept.length === 0 ? undefined : kept
 }
 
 /**

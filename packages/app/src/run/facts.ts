@@ -33,7 +33,8 @@
  * - **拿不到的不填**：没有输出就是没有输出，详情只说「已持续多久」。
  */
 
-import type { KernelEvent, RunRow, RunState, TurnEndReason } from '@magic/contracts'
+import type { KernelEvent, OwnedProcess, RunRow, RunState, TurnEndReason } from '@magic/contracts'
+import { PROCESS_START_TOLERANCE_MS } from '@magic/execution'
 
 /**
  * 这一代是怎么收的。
@@ -64,6 +65,31 @@ export type RunRecord = {
   workspace: readonly string[]
   /** 进程号——**仅作诊断与重启核对**，一个界面都不印它（设计：「不把 PID 常驻」）。 */
   pid: number | undefined
+  /**
+   * **那个进程自己**是什么时候起的（`ps` 读出来，毫秒）——身份核对的那一位（U50）。
+   *
+   * 为什么光有 `pid` 不够：号会被系统**回收再分配**。重启核对与生命探测拿它判「还是不是
+   * 当初那一代」——一个复用了同一个号的无关进程骗不过它（U49 那条「偏保守」的限度就收在
+   * 这里：判得出「不是它」就把那条会话放出来，而不是让它永远停在「状态待确认」）。
+   *
+   * `undefined` ＝ 读不到（`ps` 不可用一类）——那一档退回 U49 的保守：按「还在」算。
+   */
+  procStartedAt: number | undefined
+  /**
+   * **这一代手上握着的自有进程组**（U50）——由执行者报来（`wire.ts` 的 `owned`）。
+   *
+   * 「执行者崩溃或被杀 ⇒ 管理者收回独占权与**已登记**自有进程组」那句里的登记就是它：
+   * 执行者被杀时它自己收不了尾，管理者照这一份收（判据与限度见 `@magic/execution` 的
+   * `reapOwned`——**证明不了归属的一个都不碰**）。
+   */
+  owned: readonly OwnedProcess[]
+  /**
+   * 收尾那一段**没能收回来的那些**（U50）——一句人话，附在「已停止」的缘由后面。
+   *
+   * 为什么要有这一格：设计写着异常那条路「**外部效果不明不伪报取消成功**」——收不干净
+   * 就得说出来，而不是让「已停止」三个字把没收拾完的事盖过去。
+   */
+  reclaimNote: string | undefined
   /** 它的控制连接**接上过**没有——「失联」的判据要它（没接上过就谈不上失去）。 */
   everConnected: boolean
   /** 控制连接此刻还在不在（认领之后、核销之前为真）。 */
@@ -119,6 +145,8 @@ export function newRunRecord(input: {
   readonly startedAt: number
   readonly explicit: boolean
   readonly pid: number | undefined
+  /** 那个进程自己的启动时刻（`ps` 读的）——读不到就缺席（见 `RunRecord.procStartedAt`）。 */
+  readonly procStartedAt?: number | undefined
 }): RunRecord {
   return {
     gen: input.gen,
@@ -127,6 +155,9 @@ export function newRunRecord(input: {
     explicit: input.explicit,
     workspace: [],
     pid: input.pid,
+    procStartedAt: input.procStartedAt,
+    owned: [],
+    reclaimNote: undefined,
     everConnected: false,
     connected: false,
     ready: false,
@@ -216,12 +247,19 @@ export function stopReasonOf(record: RunRecord): string | undefined {
   // **现判一次**，不读 `record.state` 那一格：它是 `refresh` 维护的（写完 `ended` 而没
   // 来得及 `refresh` 的中间态很常见）——读它会让「缘由」比「状态」慢半拍，而两者本是同一件事
   if (runStateOf(record) !== 'stopped') return undefined
-  if (record.ended !== undefined && record.ended.kind === 'crashed') {
-    return `异常退出：${record.ended.why}`
-  }
-  if (record.lastTurn === 'error') return '这一轮出错了'
-  if (record.lastTurn === 'aborted') return '手动中断'
-  return record.ended?.why ?? '没跑完就停了'
+
+  const base =
+    record.ended !== undefined && record.ended.kind === 'crashed'
+      ? `异常退出：${record.ended.why}`
+      : record.lastTurn === 'error'
+        ? '这一轮出错了'
+        : record.lastTurn === 'aborted'
+          ? '手动中断'
+          : (record.ended?.why ?? '没跑完就停了')
+
+  // **收尾没收回来的那些要说出来**（U50）——「外部效果不明不伪报取消成功」：
+  // 「已停止」三个字盖不住「还有一组进程站着」这件事，故缘由后面跟着它
+  return record.reclaimNote === undefined ? base : `${base}（${record.reclaimNote}）`
 }
 
 /** 上一轮怎么收的 → 这一代的收法（**只用于「它自己退的」那条路**）。 */
@@ -381,6 +419,11 @@ export type StoredRun = {
   readonly session: string
   readonly gen: number
   readonly pid?: number
+  /**
+   * 那个进程自己的启动时刻（U50）——重启核对拿它与 `pid` 一起判「还是不是当初那一代」。
+   * 缺省＝当年读不到（`ps` 不可用）——那一档退回 U49 的保守（按「还在」算）。
+   */
+  readonly procStartedAt?: number
   readonly startedAt: number
   readonly workspace: readonly string[]
   readonly state: RunState
@@ -388,6 +431,14 @@ export type StoredRun = {
   readonly lastTurn?: TurnEndReason
   readonly why?: string
   readonly kind?: EndKind
+  /**
+   * 那一代当年手上握着的自有进程组（U50）——重启核对的另一半取材。
+   *
+   * 为什么它也要落盘：管理者**自己**没了的那条路上，新一代管理者起来时执行者多半也已经
+   * 没了（或正在没），而它起的进程组可能还站着——不在盘上留一笔，那些就成了没人认领的后台
+   * （设计：「任何存活进程都须有负责人」）。
+   */
+  readonly owned?: readonly OwnedProcess[]
 }
 
 /** 落盘那一份的形制版本——将来加字段时读的人据此判。 */
@@ -430,6 +481,34 @@ export function alive(pid: number): boolean {
 }
 
 /**
+ * **那个号上站着的还是当初那一个吗**（U50）——`pid` 与它的启动时刻两位合判。
+ *
+ * 三条：
+ * - **号都没了** ⇒ 不是（最干脆的一档）；
+ * - **时刻对得上** ⇒ 是；
+ * - **时刻读不到**（当年没记下，或此刻 `ps` 不给）⇒ **算「是」**——保守那一支是「按还在
+ *   算」（拿不准的宁可占着这条会话，也不放一个新的出来跟它抢同一条）。
+ *
+ * ⚠️ 与 `@magic/execution` 的 `sameProcess` **方向相反**：那一个用在「要不要发信号」上，
+ * 读不到一律**不杀**；这一个用在「它还在不在」上，读不到一律**按在算**。两条的方向都是
+ * 「拿不准的别动手」，落点不同（一个是不杀别人，一个是不放行重开）。
+ */
+export function holdsPid(
+  record: {
+    readonly pid?: number | undefined
+    readonly procStartedAt?: number | undefined
+  },
+  startedAtOf: ((pid: number) => number | undefined) | undefined,
+): boolean {
+  if (record.pid === undefined || !alive(record.pid)) return false
+  if (record.procStartedAt === undefined || startedAtOf === undefined) return true
+
+  const seen = startedAtOf(record.pid)
+  if (seen === undefined) return true
+  return Math.abs(record.procStartedAt - seen) <= PROCESS_START_TOLERANCE_MS
+}
+
+/**
  * **重启核对**——盘上那一份说的事，今天还成不成立。
  *
  * 两条判据，各对一种实情：
@@ -443,15 +522,22 @@ export function alive(pid: number): boolean {
  * 落盘里那条 `state` 只用于一件事：**它当时是不是已经结束了**。是（`idle` / `stopped`）
  * 就照原样留作「最近一次运行」——**已经结束的事实回不去**，重启不该把它翻成「待确认」。
  */
-export function reconcile(stored: StoredRun, now: number): RunRecord {
+export function reconcile(
+  stored: StoredRun,
+  now: number,
+  /** 读一个进程自己的启动时刻（`ps`）——缺省不读，见下。 */
+  startedAtOf?: ((pid: number) => number | undefined) | undefined,
+): RunRecord {
   const record = newRunRecord({
     gen: stored.gen,
     session: stored.session,
     startedAt: stored.startedAt,
     explicit: false,
     pid: stored.pid,
+    procStartedAt: stored.procStartedAt,
   })
   record.workspace = stored.workspace
+  record.owned = stored.owned ?? []
   record.lastTurn = stored.lastTurn
   record.busy = false
   record.action = undefined
@@ -472,7 +558,11 @@ export function reconcile(stored: StoredRun, now: number): RunRecord {
   }
 
   // 盘上那一条说的还不是「结束了」——那今天还成不成立，**由进程在不在说了算**
-  if (stored.pid !== undefined && alive(stored.pid)) {
+  //
+  // ⚠️ **「在不在」是两问**（U50）：号还在，且**那个号上站着的还是当初那一个**
+  // （判据见 `holdsPid`）。只问前一半的话，一个复用了同一个号的无关进程会让这条会话永远
+  // 停在「状态待确认」——那正是 U49 如实记下的那条限度。
+  if (holdsPid(stored, startedAtOf)) {
     record.stopping = stored.state === 'stopping'
     record.state = runStateOf(record)
     record.since = stored.since
@@ -492,11 +582,15 @@ export function storedRunOf(record: RunRecord): StoredRun | undefined {
     session: record.session,
     gen: record.gen,
     ...(record.pid === undefined ? {} : { pid: record.pid }),
+    ...(record.procStartedAt === undefined ? {} : { procStartedAt: record.procStartedAt }),
     startedAt: record.startedAt,
     workspace: record.workspace,
     state: record.state,
     since: record.since,
     ...(record.lastTurn === undefined ? {} : { lastTurn: record.lastTurn }),
     ...(record.ended === undefined ? {} : { why: record.ended.why, kind: record.ended.kind }),
+    // **自有进程组那一份也要落盘**（U50）：管理者自己没了的那条路上，新一代管理者起来时
+    // 执行者多半也没了或正在没——不落这一笔，它起的那些进程就成了没人认领的后台
+    ...(record.owned.length === 0 ? {} : { owned: record.owned }),
   }
 }

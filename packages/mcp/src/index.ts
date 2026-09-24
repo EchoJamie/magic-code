@@ -31,7 +31,7 @@
  * （工具定义在 `@magic/tools` 的 `defineMcpTools` 里合成——本包只管「连接」这一件事）。
  */
 
-import type { McpConnection, McpServerConfig } from '@magic/contracts'
+import type { McpConnection, McpServerConfig, ProcessLedger } from '@magic/contracts'
 import { isHttpConfig } from '@magic/contracts'
 import { MCP_CALL_TIMEOUT_MS, MCP_CONNECT_TIMEOUT_MS } from './connection.ts'
 import { createHttpConnection } from './http.ts'
@@ -72,6 +72,14 @@ export type McpServersOptions = {
   readonly connectTimeoutMs?: number
   /** 一次调用的上限（毫秒）——缺省 `MCP_CALL_TIMEOUT_MS`。 */
   readonly callTimeoutMs?: number
+  /**
+   * **归属账**（U50）——stdIO 那几条连接起来的进程组记它一笔。
+   *
+   * 由装配造一本、**两处共用**（沙箱的每一条命令与这里的每一条服务器）：会话跑起来之后
+   * 「哪些进程是我们的」只该有一本账（见契约 `ProcessLedger`）。HTTP 那几条没有本机进程，
+   * 自然不记；**预检那条路不给**（那是服务启动时的一趟探针，不归任何 Run）。
+   */
+  readonly ledger?: ProcessLedger | undefined
 }
 
 /**
@@ -93,7 +101,11 @@ export function createMcpServers(options: McpServersOptions): McpServers {
 
     return isHttpConfig(config)
       ? createHttpConnection({ ...shared, config })
-      : createStdioConnection({ ...shared, config })
+      : createStdioConnection({
+          ...shared,
+          config,
+          ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
+        })
   })
 
   // 起手那一趟**当场发车**（不 await）——`ready()` 收它们的落定；`start()` 自己不抛

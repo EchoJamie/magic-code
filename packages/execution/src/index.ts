@@ -23,6 +23,22 @@
 export { createSandbox } from './sandbox.ts'
 export type { SandboxOptions } from './sandbox.ts'
 
+/**
+ * **自有进程组的归属与收尾**（U50）——不是端口，是这一域给出去的两件本事：
+ * 账（`createProcessLedger`，装配造一本、两处共用）与收尾 / 核对
+ * （`reapOwned` / `startTimeOf` / `sameProcess`——管理者的「收回已登记自有进程组」用它）。
+ */
+export {
+  PROCESS_START_TOLERANCE_MS,
+  createProcessLedger,
+  groupAlive,
+  reapOwned,
+  sameProcess,
+  signalGroup,
+  startTimeOf,
+} from './groups.ts'
+export type { ReapOutcome, ReapTimes } from './groups.ts'
+
 export { createWorkspaceService } from './workspace.ts'
 export type { WorkspaceOptions } from './workspace.ts'
 
