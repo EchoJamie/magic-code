@@ -18,6 +18,8 @@
  *
  * - **形态与解析**（`Grant` / `parseGrants`）——文件怎么读，**解析从严**：读不懂的条目
  *   **不生效**（而不是退化成更宽的规则），连同缘由交回调用方。这与 `parseRules` 同一姿势。
+ *   **整份读不懂另算**（D31）：那不是「有几条不生效」，是「盘上有什么我们不知道」——
+ *   账本照旧给空的那一份，但**这一份不许拿去落盘**（`unreadable`，见 `GrantParseResult`）。
  * - **账本**（`createGrantLedger`）——**纯内存**，本域仍然**不碰文件系统**：落盘是装配的事
  *   （同配置文件的先例），账本只把「变了」报出去（`onChange`）。
  *
@@ -89,7 +91,7 @@ export function emptyGrants(): GrantsFile {
   return { version: GRANTS_VERSION, workspaces: {} }
 }
 
-/** 被拒的条目——`index` 是它在那一节里的位置（`-1` ＝整节 / 整个值就不是那一形）。 */
+/** 被拒的条目——`index` 是它在那一节里的位置（`-1` ＝**整节**，不是某一条）。 */
 export type GrantProblem = {
   /** 哪一节（分节键）。 */
   readonly workspace: string
@@ -101,6 +103,17 @@ export type GrantProblem = {
 export type GrantParseResult = {
   readonly file: GrantsFile
   readonly rejected: readonly GrantProblem[]
+  /**
+   * **整份读不懂**的缘由（D31）——三样：整个值不是对象 · `version` 不认 · `workspaces`
+   * 不是对象。`undefined` ＝整份读得懂（个别条目读不懂是 `rejected` 那一支）。
+   *
+   * ⚠️ **这一位在，就说明 `file` 那份空账本是「没读进来」，不是「盘上没有」。**
+   * 两者在账本上长得一模一样（都是空），但处置**相反**：读得懂才谈得上落盘。
+   * 拿一份空账本去写，就是把用户那份东西**抹掉**——**单进程、不并发也会踩**
+   * （[[缺陷/D31 授权文件读不懂时被下一次写入抹掉]]）。故它是**不许写**的信号，
+   * 不是「有几条不生效」那种可以照写的提醒（见 `grants-file.ts` 的 `commitGrants`）。
+   */
+  readonly unreadable?: string
 }
 
 /**
@@ -108,19 +121,25 @@ export type GrantParseResult = {
  *
  * 入参是 `JSON.parse` 出来的**原值**（`unknown`）——形状不对＝不收：
  *
- * - **整个值不是对象** → 空文件 ＋ 一条缘由；
+ * - **整个值不是对象** → 空文件 ＋ `unreadable`（整份读不懂）；
  * - **`version` 不认**（在，且 ≠ 本版）→ 整份不收（那是**将来的**内核写的，本轮读不懂它）；
  *   ⚠️ `version` **缺席按本版认**（文件是人手可写的，缺一个元数据键不该让整份授权失效）；
+ * - **`workspaces` 不是对象** → 同上（整份读不懂）；
  * - **逐条**：读不懂的**不收**（复用规则那一套 `readRuleEntry`——同一套「什么算合格的规则」），
  *   记账位（`grantedAt` / `lastHitAt` / `hits`）形态不对也**不收**（宁可少一条授权，不可多一条）。
  *
- * 三种情形都**不抛**：读文件的人是装配，它要把「有几条读不懂」报成一行话给用户看。
+ * **整份读不懂与个别条目读不懂是两件事**（D31）：前者 `unreadable`，盘上那份**不许写**
+ * （我们不知道里面有什么）；后者 `rejected`，文件本身读得懂、照写不误（那几条不生效，
+ * 缘由已报给用户）。分界就在**这份文件整体能不能读**。
+ *
+ * 两种情形都**不抛**：读文件的人是装配，它要把「有几条读不懂」报成一行话给用户看。
  */
 export function parseGrants(raw: unknown): GrantParseResult {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     return {
       file: emptyGrants(),
-      rejected: [{ workspace: '', index: -1, reason: '授权文件须是一个对象（形如 { version, workspaces }）' }],
+      rejected: [],
+      unreadable: '整个值须是一个对象（形如 { version, workspaces }）',
     }
   }
 
@@ -130,13 +149,8 @@ export function parseGrants(raw: unknown): GrantParseResult {
   if (version !== undefined && version !== GRANTS_VERSION) {
     return {
       file: emptyGrants(),
-      rejected: [
-        {
-          workspace: '',
-          index: -1,
-          reason: `授权文件的版本 ${String(version)} 不认（本轮只认 ${GRANTS_VERSION}）——整份未加载`,
-        },
-      ],
+      rejected: [],
+      unreadable: `版本 ${String(version)} 不认（本轮只认 ${GRANTS_VERSION}）`,
     }
   }
 
@@ -147,7 +161,8 @@ export function parseGrants(raw: unknown): GrantParseResult {
   if (typeof sections !== 'object' || sections === null || Array.isArray(sections)) {
     return {
       file: emptyGrants(),
-      rejected: [{ workspace: '', index: -1, reason: 'workspaces 须是对象（一节一个工作区）' }],
+      rejected: [],
+      unreadable: '`workspaces` 须是对象（一节一个工作区）',
     }
   }
 

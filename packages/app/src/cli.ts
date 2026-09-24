@@ -395,6 +395,13 @@ const CONTINUATION = '             '
  * 用户得知道有这么几节等着处置（撤销入口在 `/grants`）。
  */
 function describeGrants(assembly: Assembly): string {
+  // **读不懂**那一路先说（D31）：那时账本是空的，按 `grantsView` 报「无」就成了假话——
+  // 用户那份文件里可能有几十条授权，只是我们读不懂。缘由与「怎么办」都在这一行里。
+  const unreadable = assembly.grantsUnreadable
+  if (unreadable !== undefined) {
+    return `⚠️ 读不懂（本次不加载、也不会写它）：${unreadable} · ${assembly.grantsPath}`
+  }
+
   const view = assembly.grantsView()
   const count = view.grants.length
   const head = count === 0 ? '无（批准时按 a 就是记一条）' : `${count} 条（本工作区）`

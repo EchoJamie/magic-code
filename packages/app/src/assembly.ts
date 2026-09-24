@@ -318,6 +318,14 @@ export type Assembly = {
    */
   readonly grantsView: () => GrantsView
   /**
+   * **授权文件读不懂**的缘由（D31）——一句话；`undefined` ＝读得懂。
+   *
+   * 有值＝**本次会话一个字都不往那份文件里写**（见 `persistGrants` 的头注）：原文件留在原地
+   * 一个字节不动，用户改对之后**下次启动**自然恢复。自检那一行（`--check`）据它说话——
+   * 那时候 `grantsView` 只会报「无」（空账本），不点破就成了假话。
+   */
+  readonly grantsUnreadable: string | undefined
+  /**
    * **启动那几句要说的话**（U22 · 审计第 13 条）——外壳开局进记录区**一行回执**。
    *
    * 由头：解析从严（读不懂的规则 / 授权**不生效**）这件事原先**只有 `--check` 会说**，
@@ -637,6 +645,20 @@ export function assemble(options: AssembleOptions): Assembly {
       ? `${magic.base}/${GRANTS_FILE_NAME}`
       : expandHome(options.grantsFile, magic.home)
   const loadedGrants = loadGrants(grantsPath)
+
+  /**
+   * **授权文件读不懂**的缘由（D31）——有值＝**本次会话一个字都不往那份文件里写**。
+   *
+   * 两处立起它（都不撤）：
+   * ① 启动那一次读出来读不懂（`loadedGrants.unreadable`）——本次会话的起点；
+   * ② 会话中途它被写坏了（落盘那一跳现读时读不懂，见 `persistGrants`）——那时才立。
+   *
+   * **为什么不撤**：读不懂⇒我们不知道文件里有什么⇒**不知道就没资格写**。用户当场把它改对，
+   * 也仍然等到**下一次启动**才认它（那一次读得懂，一切照常）——无需修复命令、不留状态。
+   * 会中途撤的话，行为就成了「改对的那一刻起、之前攒的改动一起落盘」，那是一句说不清的话。
+   */
+  let grantsUnreadable = loadedGrants.unreadable
+
   /**
    * 攒着没落的**命中记账**（U47）——收尾时补一次（见 `close`）。
    *
@@ -685,12 +707,33 @@ export function assemble(options: AssembleOptions): Assembly {
    * **没写成的攒到下一次**（见 `unsettled`）——改动是**幂等**的（加一条会去重、撤一条找
    * 不到就跳过），故重来一次不会写坏什么，而这一跳原先那份整份快照**本来**也是这个效果
    * （它一写就把账本整个写出去，上次没落成的自然跟着落地）。
+   *
+   * ## 读不懂就一个字都不写（D31）
+   *
+   * 文件读不懂时**连试都不试**：不落盘、不攒、不报「没写成」。
+   *
+   * - **不落盘**——盘上那份东西里有什么我们不知道，写下去＝拿空账本抹掉用户的授权。
+   *   这一条在写入口（`commitGrants`）另钉了一道，不指望调用方记得（见下 `ok: false`）。
+   * - **不攒**——攒着＝每按一次 `a` 都重试一次同一面墙；而「改对文件之后攒着的一起落盘」
+   *   不是本单要的行为（恢复看**下一次启动**，见 `grantsUnreadable`）。
+   * - **不报「没写成」**——它不是失败，是本单定的规矩。要说的话是**开机那一行**
+   *   （`grantsNotes`），**只说一次**，而不是每次按 `a` 都往屏上刷一句。
    */
   const persistGrants = (edits: readonly GrantEdit[]): void => {
+    if (edits.length === 0 || grantsUnreadable !== undefined) return
+
     const all = [...unsettled, ...edits]
 
     try {
-      commitGrants(grantsPath, all)
+      const done = commitGrants(grantsPath, all)
+      if (!done.ok) {
+        // **会话中途它才读不懂**（启动时读得懂、盘上那份后来被写坏了）：这一跳现读现发现。
+        // 立起闸、并**丢掉攒着的那些**（理由同上面「不攒」）——从这一刻起本次会话不再写它。
+        grantsUnreadable = done.reason
+        unsettled = []
+        return
+      }
+
       unsettled = []
       grantsWriteError = undefined
     } catch (error) {
@@ -735,6 +778,34 @@ export function assemble(options: AssembleOptions): Assembly {
     grants: grants.view(),
     stale: staleSections(),
   })
+
+  /**
+   * **授权文件读不懂**那一句（D31）——**一处产出，三处念**：开机那一行（`notices`）、
+   * `/grants` 那一屏（`grants.catalog` 的 `note`）、自检那一行（`--check` 的 `describeGrants`）。
+   *
+   * 要说清三件（单子里点的名）：**哪个文件** · **读不懂在哪** · **怎么办**。
+   * 还有一件是用户当场会看见的那个后果——**本次一条都没加载、也不改动这个文件**（他原来点过的
+   * 授权这次不生效，会重新被问），不说就成了「凭空又问了一遍」。
+   *
+   * **开机那一行只报一次**（本单明文）：这一句在开机回执里出现一次，此后按 `a` 不再刷屏
+   * （落盘那一跳读不懂时**一个字都不写、也不报**，见 `persistGrants`）。`/grants` 与 `--check`
+   * 是用户**主动去看**时才念的同一句——那不是「刷」，`/grants` 缺了它才是在骗人（一屏空名录
+   * 看着就像「你本来就没有授权」）。
+   */
+  const grantsTroubleNote = (): string | undefined =>
+    grantsUnreadable === undefined
+      ? undefined
+      : `授权文件读不懂——${grantsPath}：${grantsUnreadable}` +
+        '。本次一条都没加载，也不改动这个文件；改对之后，下次启动就恢复'
+
+  /**
+   * **开机那几句里属于授权的那几句**——两件事分两句说（`noticesOf` 一条一句地贴进记录区）：
+   *
+   * ① **整份读不懂**（D31，`grantsTroubleNote`）；
+   * ② 文件读得懂、但**有个别条目读不懂**（`loadedGrants.note`）——那几条不生效，照旧照写。
+   */
+  const grantsNotes = (): readonly string[] =>
+    [grantsTroubleNote(), loadedGrants.note].filter((line): line is string => line !== undefined)
 
   // 记录域：数据目录（`~` 已在加载时展开——记录域拒收 `~`）＋ **本进程的工作区**。
   //
@@ -1445,8 +1516,11 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const grantsCatalogOf = (note?: string): EventDataOf['grants.catalog'] => {
     const view = grantsView()
-    // 三句话合成一句：调用方给的那句 · 落盘失败（见 `grantsWriteError`）——都没事时不给 `note`
-    const said = [note, grantsWriteError].filter((line): line is string => line !== undefined)
+    // 几句话合成一句：调用方给的那句 · **文件读不懂**（D31：那一屏缺了它就在骗人——一屏空名录
+    // 看着就像「你本来就没有授权」）· 落盘失败（见 `grantsWriteError`）——都没事时不给 `note`
+    const said = [note, grantsTroubleNote(), grantsWriteError].filter(
+      (line): line is string => line !== undefined,
+    )
 
     return {
       workspace: view.workspace,
@@ -1917,6 +1991,10 @@ export function assemble(options: AssembleOptions): Assembly {
     rejectedRules: parsedRules.rejected,
     grantsPath,
     grantsView,
+    // **现读**（同 `notices` 那位）：会话中途它才读不懂时（见 `persistGrants`），这一位跟着变
+    get grantsUnreadable(): string | undefined {
+      return grantsUnreadable
+    },
     readRules,
     readSkills,
     // **现读**（见 `Assembly.notices` 的注）：外部服务器连不上那一条要等 `ready()` 才落定，
@@ -1924,7 +2002,7 @@ export function assemble(options: AssembleOptions): Assembly {
     get notices(): readonly string[] {
       return noticesOf(
         parsedRules.rejected,
-        loadedGrants.note,
+        grantsNotes(),
         loaded.path,
         readRules().problems,
         mcp.connections,
@@ -2035,7 +2113,7 @@ export function mcpNoticesOf(
 
 function noticesOf(
   rejectedRules: readonly RuleProblem[],
-  grantsNote: string | undefined,
+  grantsNotes: readonly string[],
   configPath: string,
   rulesProblems: readonly RulesProblem[],
   connections: readonly McpConnection[],
@@ -2065,7 +2143,8 @@ function noticesOf(
       })),
     ),
   )
-  if (grantsNote !== undefined) said.push(grantsNote)
+  // 授权那几句（U22 · D31）——**授权文件读不懂**与**有个别条目读不懂**各是一句
+  said.push(...grantsNotes)
 
   return said
 }

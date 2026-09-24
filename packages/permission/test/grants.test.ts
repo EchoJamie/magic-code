@@ -62,14 +62,24 @@ describe('授权文件 · 解析（只读 · 从严）', () => {
     const parsed = parseGrants({ version: 99, workspaces: { [HERE]: [{ tool: 'read', grantedAt: 1 }] } })
 
     expect(parsed.file.workspaces).toEqual({})
-    expect(parsed.rejected[0]?.index).toBe(-1)
-    expect(parsed.rejected[0]?.reason).toContain('99')
+    expect(parsed.unreadable).toContain('99')
+    // **整份读不懂**（不只是一条不生效）——盘上那份因此**不许写**（D31）
+    expect(parsed.rejected).toEqual([])
   })
 
-  test('整个值不是对象 / `workspaces` 不是对象——空文件 ＋ 缘由（不抛）', () => {
-    expect(parseGrants(null).rejected).toHaveLength(1)
-    expect(parseGrants([1, 2]).rejected).toHaveLength(1)
-    expect(parseGrants({ workspaces: [] }).rejected[0]?.reason).toContain('workspaces')
+  test('整个值不是对象 / `workspaces` 不是对象——空文件 ＋ **整份读不懂**（不抛）', () => {
+    expect(parseGrants(null).unreadable).toContain('对象')
+    expect(parseGrants([1, 2]).unreadable).toContain('对象')
+    expect(parseGrants({ workspaces: [] }).unreadable).toContain('workspaces')
+    // 三条都不算「有坏条目」——**坏的是整份**（分界见 `GrantParseResult.unreadable`）
+    expect(parseGrants(null).rejected).toEqual([])
+  })
+
+  test('**个别**条目读不懂不在这条线上——文件整体读得懂，`unreadable` 不给', () => {
+    const parsed = parseGrants({ workspaces: { [HERE]: [{ tool: 'read', grantedAt: 1 }, { tool: 42 }] } })
+
+    expect(parsed.unreadable).toBeUndefined()
+    expect(parsed.rejected).toHaveLength(1)
   })
 
   test('一节不是数组——拒那一节，其余照收', () => {
