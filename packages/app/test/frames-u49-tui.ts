@@ -153,8 +153,9 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     keep(filtered)
     check(has(filtered, '筛选「长话」'), '筛词报在屏上（用户看得见自己在筛什么）', filtered.text)
 
-    // ④ `tab` 换范围
-    await other.key('tab')
+    // ④ `tab` 换范围——**等效果**（写一次不等待的话，取帧可能抢在这一键被受理之前；
+    //    与上面「等筛选真发生」同一条教训，真跑里栽过一次）
+    await other.key('tab', { until: { text: '只看本工作区' }, timeoutMs: 10_000 })
     const scope = await other.capture({ label: `${mark}-04-只看本工作区` })
     keep(scope)
     check(has(scope, '只看本工作区'), '换范围了，且**与筛词各说各的**（两件都在）', scope.text)
