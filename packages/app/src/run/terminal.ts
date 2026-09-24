@@ -24,7 +24,14 @@
  * （而「空白启动页……没有会话和执行者」正是要免掉这件事）。有了目标之后照常放行。
  */
 
-import type { Command, ControlTransport, KernelEvent, MagicHome } from '@magic/contracts'
+import type {
+  Command,
+  ControlTransport,
+  KernelEvent,
+  MagicHome,
+  ModelInfo,
+  ModelInfoSnapshot,
+} from '@magic/contracts'
 import { parseRules } from '@magic/permission'
 import { createProjectRules } from '@magic/execution'
 import { createModelRegistry } from '@magic/model'
@@ -32,6 +39,8 @@ import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { ManagerClient } from './client.ts'
 import { mcpNoticesOf, workspaceOf } from '../assembly.ts'
+import { cacheAccessFor } from '../cache-access.ts'
+import { createFileModelInfoCache } from '../model-cache.ts'
 import type { LoadedConfig } from '../config.ts'
 
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */
@@ -49,7 +58,26 @@ export type TerminalInputs = {
    * （`cli.ts` 在起外壳之前先跑一次切换）。真正的切换发生在**执行者**那一头。
    */
   readonly switch?: { readonly provider?: string; readonly model?: string } | undefined
+  /**
+   * **开局就接的那条会话**（`--session <id>`）——只给开屏那张摘要当**排除项**
+   * （U49：摘要说的是**其他**活跃工作）。
+   */
+  readonly session?: string | undefined
+  /**
+   * **模型信息缓存的读数**（U49 收口的那一格）——状态行 ④ **开机的分母**。
+   *
+   * 由头（U48 如实记的限度）：窗口这一侧原来**不读**这份缓存，于是「还没跑过任何一次
+   * 调用」时那一格没有分母（`12.4k` 而不是 `12.4k/200k`），要等第一次
+   * `model.call.start` 才归位。而「认当下那个模型的窗」**本来就是窗口这一侧的活**
+   * （见本文件头注那张表最后一行）——补上它，那一格开局就与跑起来之后同形。
+   *
+   * 由 `cli.ts` 读好递进来（**一处读、一处判**），本层不自己碰盘。
+   */
+  readonly modelInfo?: ModelInfoLookup | undefined
 }
+
+/** 「某连接某模型已知的资料」的一处来路——形状与模型域的 `modelInfoOf` 同源。 */
+export type ModelInfoLookup = (provider: string, model: string) => ModelInfo | undefined
 
 /**
  * 造外壳要的那份入参——**订阅先接上**（构造即接），发命令是其后的事。
@@ -69,6 +97,17 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     contextWindow: startupContextWindow(inputs),
     workspaceRoots: workspaceOf(loaded, cwd).roots(),
     receipts: startupReceipts(inputs),
+    // **运行事实**（U49）——管理者推来的那一份：`/resume` 每一行的状态据它，
+    // 而开屏那张摘要也从它数（外壳自己在构造那一刻取一次初值，见 `ShellOptions.runs`）。
+    runs: {
+      current: () => client.runs(),
+      subscribe: (listener) => client.onRuns(listener),
+    },
+    // **接回快照**（U49）——挂到某一代上之后管理者取来那一代的「此刻」
+    resumed: {
+      subscribe: (listener) => client.onResumed(listener),
+    },
+    ...(inputs.session === undefined ? {} : { openingSession: inputs.session }),
     // **管理者不在了 ⇒ 窗口自己退**（见 `run.ts` 的 `onGone`）：「断流后自身应退出，
     // 不能空转充当后台执行者」。连接断的那一刻界面已经没有任何内核可接。
     onGone: (listener: () => void) => {
@@ -142,6 +181,10 @@ export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefin
         beginTurn: () => {},
       },
       configPath: loaded.path,
+      // **模型信息缓存那一份资料**（U49 收口）——有它，配置与内置表都不认得那个模型时
+      // 也拿得到窗长（状态行 ④ 开机的分母）。没有就是没有，判定照旧（`capacityOf`
+      // 缺省那条路不会因为多给它一份而变松）。
+      ...(inputs.modelInfo === undefined ? {} : { modelInfoOf: inputs.modelInfo }),
     })
   } catch {
     return undefined
@@ -157,6 +200,45 @@ export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefin
 export type RegistryInputs = {
   readonly loaded: LoadedConfig
   readonly switch?: { readonly provider?: string; readonly model?: string } | undefined
+  /** 模型信息缓存的读数（见 `TerminalInputs.modelInfo`）。 */
+  readonly modelInfo?: ModelInfoLookup | undefined
+}
+
+/**
+ * **读一份模型信息缓存**（U49）——开屏那一格的分母要用它，而它是**盘上的东西**。
+ *
+ * 由 `cli.ts` 在起外壳之前调一次（**一处读**）：窗口这一侧不自己碰盘，只照结果算分母。
+ *
+ * 三条：**读的是本范围的哪一份**（身份只判一处，见 `cache-access.ts` 的 `cacheAccessFor`）·
+ * **读不到就是读不到**（没有那份文件 / 读不懂 / 认证走环境变量 ⇒ `undefined`，
+ * 屏上照旧只报已用量——**不编**）· **不触发刷新**（`read` 是纯读，见 `model-cache.ts`）。
+ */
+export async function readModelInfo(loaded: LoadedConfig): Promise<ModelInfoLookup | undefined> {
+  const provider = loaded.providerId
+  if (provider === undefined) return undefined
+
+  const entry = loaded.config.providers[provider]
+  if (entry === undefined) return undefined
+
+  const access = cacheAccessFor({
+    provider,
+    configPath: loaded.path,
+    apiKey: entry.apiKey,
+    processToken: crypto.randomUUID(),
+  })
+  if (!access.persistent) return undefined // 环境变量来路：盘上根本没有它那一份
+
+  const cache = createFileModelInfoCache(loaded.config.dataDir)
+  let snapshot: ModelInfoSnapshot | undefined
+  try {
+    snapshot = await cache.read(provider, access)
+  } catch {
+    // 读一份缓存读不动不该拦住开屏（它是**可重建**的东西）——照「拿不到」办
+    return undefined
+  }
+  if (snapshot === undefined) return undefined
+
+  return (_provider, model) => snapshot.models.find((one) => one.id === model)
 }
 
 /**

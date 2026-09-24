@@ -18,7 +18,7 @@
  */
 
 import type { Socket } from 'bun'
-import type { Command, KernelEvent } from '@magic/contracts'
+import type { Command, KernelEvent, RunRow, RunSnapshot } from '@magic/contracts'
 import { linkOf, socketHandlers } from './wire.ts'
 import type { Link, ManagerToClient, McpProbeRow } from './wire.ts'
 
@@ -50,6 +50,22 @@ export type ManagerClient = {
   readonly mcp: readonly McpProbeRow[]
   /** 我此刻认的执行者代次（`null` ＝ 还没有目标）。 */
   gen(): number | null
+  /**
+   * **这一摊此刻的运行事实**（U49）——「谁在跑、什么状态」。
+   *
+   * 它是**服务状态**（推来的，不必问）：`welcome` 里那一份就在这儿，此后每次变化
+   * 由管理者推进来。窗口的会话列表据它给每一行标状态、开屏那张摘要据它数几条在跑。
+   */
+  runs(): readonly RunRow[]
+  /** 运行事实变了（**订阅**；`welcome` 那一份之后才算「变了」——初值走 `runs()`）。 */
+  onRuns(listener: (rows: readonly RunRow[]) => void): void
+  /**
+   * **接回的那一份快照**（U49）——挂到某一代上之后，管理者取来那一代的「此刻」＋ 水位。
+   *
+   * ⚠️ **它一定先于水位之后的事件到达**（管理者那一侧先订阅并缓冲、拿到快照才放行，
+   * 见 `manager.ts` 的 `bind`）。外壳据此把在飞的回复、在跑的工具与挂着的卡画回去。
+   */
+  onResumed(listener: (gen: number, snapshot: RunSnapshot) => void): void
   /** 管理者指派的目标换了一条会话——外壳据以认「我现在在看哪条」（`null` ＝ 还没开张）。 */
   onTarget(listener: (session: string | null) => void): void
   /** 内核来的事件 ＋ 它的**执行者代次**。 */
@@ -113,12 +129,23 @@ export async function connectManager(
 
   /** 我认的执行者代次——由管理者那三条消息维护（见文件头注）。 */
   let gen: number | null = null
+  /** 这一摊的运行事实——`welcome` 那一份是初值，此后由 `runs` 那一条推着走。 */
+  let runRows: readonly RunRow[] = greeted.runs
   const targetListeners: ((session: string | null) => void)[] = []
   const eventListeners: ((event: KernelEvent, gen: number | null) => void)[] = []
   const lineListeners: ((text: string) => void)[] = []
+  const runListeners: ((rows: readonly RunRow[]) => void)[] = []
+  const resumedListeners: ((gen: number, snapshot: RunSnapshot) => void)[] = []
 
   link.onMessage((message) => {
     switch (message.t) {
+      case 'runs':
+        runRows = message.rows
+        for (const listener of [...runListeners]) listener(runRows)
+        return
+      case 'resumed':
+        for (const listener of [...resumedListeners]) listener(message.gen, message.snapshot)
+        return
       case 'target':
         gen = message.gen
         for (const listener of [...targetListeners]) listener(message.session)
@@ -147,6 +174,13 @@ export async function connectManager(
     dataDir: greeted.dataDir,
     mcp: greeted.mcp,
     gen: () => gen,
+    runs: () => runRows,
+    onRuns(listener) {
+      runListeners.push(listener)
+    },
+    onResumed(listener) {
+      resumedListeners.push(listener)
+    },
     onTarget(listener) {
       targetListeners.push(listener)
     },
@@ -203,6 +237,7 @@ async function greet(
       readonly conn: number
       readonly dataDir: string
       readonly mcp: readonly McpProbeRow[]
+      readonly runs: readonly RunRow[]
       readonly refuse?: string
     }
   | undefined
@@ -215,6 +250,7 @@ async function greet(
             readonly conn: number
             readonly dataDir: string
             readonly mcp: readonly McpProbeRow[]
+            readonly runs: readonly RunRow[]
             readonly refuse?: string
           }
         | undefined,
@@ -233,6 +269,7 @@ async function greet(
         conn: message.conn,
         dataDir: message.dataDir,
         mcp: message.mcp,
+        runs: message.runs,
         ...(message.refuse === undefined ? {} : { refuse: message.refuse }),
       })
     })

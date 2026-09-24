@@ -1,5 +1,5 @@
 /**
- * **本机执行管理者**（U48）——一摊运行里**唯一**的那一个。
+ * **本机执行管理者**（U48 立起来 · U49 补上「可见入口」那一半）——一摊运行里**唯一**的那一个。
  *
  * 设计（会话与运行管理 · 本机执行结构）：
  *
@@ -47,18 +47,51 @@
  * 别的命令一律**原样转手**给当下那个目标（包括 `session.list`：目录是记录域的事实，
  * 而记录域的那一头是执行者手里的内核，管理者不替它抄一份）。没有目标时**先起一个**——
  * 一个还没开张的执行者（D5：首条消息按下回车才建会话，在那之前它一个会话都不占）。
+ *
+ * ## U49 补上的三件（都在这一层，内核一行没动）
+ *
+ * 1. **运行事实有了一份给窗口的读数**（`runs()` / `pushRuns`）：谁在跑、什么状态、
+ *    在干什么、有没有人在等答复。判定只有一处（`facts.ts` 的 `runStateOf`）。
+ * 2. **登记落盘 ＋ 重启核对**（`runs.json`）：U48 那份 `manager.json` 只说管理者自己，
+ *    于是「重启核对」只到「路径有没有尸首」。现在盘上有「上次有哪几代、各自到哪儿」，
+ *    重启按进程还在不在**逐条**核对。
+ * 3. **接回＝先订阅并缓冲，再拿快照 ＋ 水位**（`bind`）：快照与订阅之间那条缝由
+ *    「先缓冲、拿到水位再放行」补上——按 id 去重的落点也在那一跳。
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Socket } from 'bun'
-import type { Command, KernelEvent, MagicHome, McpServerConfig, ModelSwitchRequest } from '@magic/contracts'
+import type {
+  Command,
+  KernelEvent,
+  MagicHome,
+  McpServerConfig,
+  ModelSwitchRequest,
+  RunRow,
+  RunSnapshot,
+} from '@magic/contracts'
 import { probeMcp } from './preflight.ts'
 import type { McpProbeRow } from './wire.ts'
 import { createRecordsStore } from '@magic/records'
 import { ensureRunDir, tightenSocket } from './paths.ts'
 import type { RunPaths } from './paths.ts'
 import { linkOf, socketHandlers } from './wire.ts'
-import type { ClientToManager, ExecutorToManager, Link } from './wire.ts'
+import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
+import {
+  actionOf,
+  alive,
+  endKindOf,
+  isProgress,
+  newRunRecord,
+  progressOf,
+  reconcile,
+  refresh,
+  runRowOf,
+  storedRunOf,
+  tailOf,
+} from './facts.ts'
+import type { RunRecord, StoredRun, StoredRuns } from './facts.ts'
+import { RUNS_VERSION, STORED_RUNS_LIMIT } from './facts.ts'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {
@@ -86,6 +119,16 @@ type ClientConn = {
   readonly label: string | undefined
   /** 开局那条换模型请求（`--provider` / `--model`）——为它起新的一代时带过去。 */
   readonly switch: ModelSwitchRequest | undefined
+  /**
+   * **这个窗口正等着的快照号**（U49）——非 `null` 时进来的事件**先攒着不发**。
+   *
+   * 这一格就是设计那句「**先订阅并缓冲**，或提供原子订阅快照」的落点：窗口一挂到某一代
+   * 上就**已经在收**了，而快照是随后一趟往返才回来的——中间那段的事件若不攒着，
+   * 就正好掉进「快照与订阅之间那条缝」。
+   */
+  awaiting: number | null
+  /** 等着快照的那段时间里攒下的事件（按到达序，放行时按 id 去重、只放水位之后的）。 */
+  buffered: KernelEvent[]
 }
 
 /**
@@ -101,32 +144,22 @@ type Executor = {
   readonly token: string
   /** **显式接续**起的那一代（发车时就带着会话号）；`false` ＝ 还没开张（D5）。 */
   readonly explicit: boolean
-  /** 当下认的会话（`null` ＝ 还没开张）。 */
-  session: string | null
-  workspace: readonly string[]
-  readonly pid: number | undefined
+  /** **运行事实**（U49）——会话 / 状态 / 进展 / 待答项全在这一格里，判定见 `facts.ts`。 */
+  readonly run: RunRecord
   readonly spawned: SpawnedExecutor
   /** 连上之后才有；在那之前它还没开口。 */
   link: Link<ExecutorToManager> | undefined
-  /** 出过 `ready` 没有——`hello` → `ready` 之间攒下的命令见 `pending`。 */
-  ready: boolean
-  /** 还没送出去的命令（**先攒后送**：没人接的话发出去就是「敲了没反应」）。 */
-  pending: Command[]
+  /** 还没送出去的东西（**先攒后送**：没人接的话发出去就是「敲了没反应」）。 */
+  queued: ManagerToExecutor[]
   /** 盯着它的窗口连接号——事件按这一份广播。 */
   readonly watchers: Set<number>
   /** 上一次听见它（`pong` / 任何一条消息）——诊断与生命探测用。 */
   lastSeen: number
   pingSeq: number
-  /**
-   * **手里有没有活**——从 `agent.state` 认（与执行者收缩那一跳同一个判据）。
-   *
-   * 管理者为什么要知道它：`session.new` / `session.open` 这两条**内核忙时会挡回**
-   * （`BUSY_NOTE`），而那正是「屏上得有话说」的一条。挡回这件事只有内核说了算，
-   * 故忙的时候管理者**不替它换目标**，把命令原样转过去让它自己回话。
-   */
-  busy: boolean
-  /** 已经核销（自己退了 / 被杀 / 管理者叫停）——不再收命令、不再广播。 */
-  dead: boolean
+  /** 快照的号（U49）——一问一答按它对上。 */
+  snapSeq: number
+  /** 发出去还没回来的那几个快照，各是给哪个窗口的（`seq → conn.id`）。 */
+  readonly asking: Map<number, number>
 }
 
 export type ManagerOptions = {
@@ -189,7 +222,7 @@ export type ExecutorRequest = {
   /**
    * **开局的换模型请求**——窗口 `hello` 里带的那一个，随「为它起的那一代」落地。
    *
-   * 只有**为这个窗口新起的那一代**收它：接上一代已经在跑的会话时不再apply（那一代
+   * 只有**为这个窗口新起的那一代**收它：接上一代已经在跑的会话时不再 apply（那一代
    * 有它自己的选中——「模型选择按 Agent 独立装配，不共享可变选择」是设计明文）。
    */
   readonly switch?: ModelSwitchRequest | undefined
@@ -217,6 +250,12 @@ export type Manager = {
   clients(): number
   /** 这一摊里活着的执行者（按会话归）。 */
   executors(): readonly { readonly session: string | null; readonly gen: number; readonly pid: number | undefined }[]
+  /**
+   * **这一摊此刻的运行事实**（U49）——与推给窗口的那一份**同一处产出**（`rows()`）。
+   *
+   * 给验收装置一个不必起窗口就能读的读数（同 `clients()` / `executors()` 的姿势）。
+   */
+  runs(): readonly RunRow[]
   /** 显式收摊（收缩那条路与用例的收尾都走它）。 */
   stop(why: string): void
   /** 等它真退干净（socket 摘掉、执行者收光、连接关光）。 */
@@ -256,6 +295,18 @@ const IDLE_MS = 2_000
 const IDLE_CHECK_MS = 250
 
 /**
+ * **运行事实变了之后隔多久推一次**（毫秒）。
+ *
+ * 这一格管的是「同一瞬间连着变好几处」那种情形：一轮里 `agent.state`・`tool.call`・
+ * `progress` 会连着翻好几次，逐条推是白推（屏上只画最后那一份）。取一百毫秒：
+ * 人眼分不出来，而合并掉的写与推送省下了数量级。
+ */
+const RUNS_PUSH_MS = 100
+
+/** 运行登记落盘的合并窗（毫秒）——见 `saveRuns`。 */
+const RUNS_SAVE_MS = 300
+
+/**
  * **立一个管理者，或者认出已经有的那一个**。
  *
  * 返回 `existing` 时调用方该去 `connectManager`（见 `client.ts`）——本函数**不替它连**：
@@ -293,6 +344,13 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   const executors = new Set<Executor>()
   /** 待认领的执行者——按令牌找（它连上来时给的正是那个令牌）。 */
   const awaiting = new Map<string, Executor>()
+  /**
+   * **已经不在跑的那些运行**（U49）——按会话留一条「最近一次运行」。
+   *
+   * 两个来处：这一趟里收掉的（`retire`），与**上一次管理者留下的**（`readRuns`）。
+   * 列表上「当前/最近状态」那一格就是它；`ended !== undefined` ＝ 这一条已经结束。
+   */
+  const lastRuns = new Map<string, RunRecord>()
 
   let nextConn = 1
   let nextGen = 1
@@ -340,6 +398,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
   writeRecord(paths, record)
 
+  // **重启核对**（U49）：上一次留下的那几代，今天还成不成立——逐条读、逐条判
+  // （判据在 `facts.ts` 的 `reconcile`，此处只把它读进来）。读不动就当没有：
+  // 这份文件是**诊断品**，它坏了不该拦住启动（同 `manager.json` 那条口径）。
+  for (const stored of readRuns(paths)) {
+    const record = reconcile(stored, now())
+    lastRuns.set(record.session as string, record)
+  }
+
   /**
    * **外部工具预检**（U48 第六段）——**连接 → 报状态 → 断开**，一趟，挂在管理者的启动上。
    *
@@ -363,6 +429,117 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   /** 预检的读数——它是**服务状态**，窗口接上就读得到（`welcome.mcp`）。 */
   let probed: readonly McpProbeRow[] = []
 
+  // —— 运行事实：一处产出、两处用（推给窗口 ＋ 落盘）——
+
+  /**
+   * **这一摊此刻的运行事实**——列表与详情要的那一份。
+   *
+   * 两个来处合起来才是「当前/最近」：活着的那些执行者（**当前**），与已经收掉的那些
+   * 「最近一次运行」（**最近**）。同一条会话两头都有时**以活着的为准**（那才是现况）。
+   * 还没开张的执行者（`session === null`）没有会话可挂，故不入表——**列表按会话说话**。
+   */
+  function rows(): readonly RunRow[] {
+    const out: RunRow[] = []
+    const live = new Set<string>()
+
+    /**
+     * **列表按目录说话**——只对**库里点得出名**的会话发言。
+     *
+     * 挡的是那一格**空壳**：内核为「要点一次会话面的命令」（`session.list`）开的临时会话
+     * （`conversation` 那一处的 `current()`），它还没有任何条目、**目录里也没有它**。
+     * 让它进这张表，用户会在 `/resume` 里看见一条点不出来、也切不过去的行。
+     * 判据就是「库里有没有这一行」（`hasSession`）——与 `--session` 那道校验同一把尺子。
+     *
+     * ⚠️ 首条消息一按下回车它就落账 ⇒ 那一格当场归位（不必等下一次推送）。
+     */
+    const known = (session: string): boolean => store.hasSession(session)
+
+    for (const executor of executors) {
+      const session = executor.run.session
+      if (session === null || !known(session)) continue
+      live.add(session)
+      out.push(runRowOf(executor.run))
+    }
+
+    for (const [session, run] of lastRuns) {
+      if (live.has(session) || !known(session)) continue
+      out.push(runRowOf(run))
+    }
+
+    return out
+  }
+
+  /** 这一推的定时器——合并窗见 `RUNS_PUSH_MS`。 */
+  let pushTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * **推运行事实**（合并一次）——窗口不必问，事实变了它自己知道。
+   *
+   * ⚠️ **不逐条推**：这一格最热的是流式输出（`tool.output.delta` 一秒几十条），
+   * 逐条推等于把「进度」变成网络噪音。合并窗之内的变化只落最后那一份。
+   */
+  function pushRuns(immediate = false): void {
+    if (pushTimer !== undefined) {
+      if (!immediate) return
+      clearTimeout(pushTimer)
+      pushTimer = undefined
+    }
+    if (stopped) return
+
+    if (!immediate) {
+      pushTimer = setTimeout(() => {
+        pushTimer = undefined
+        pushRuns(true)
+      }, RUNS_PUSH_MS)
+      pushTimer.unref?.()
+      return
+    }
+
+    const payload = rows()
+    for (const conn of clients.values()) conn.link.send({ t: 'runs', rows: payload })
+  }
+
+  /** 落盘的合并窗定时器——见 `saveRuns`。 */
+  let saveTimer: ReturnType<typeof setTimeout> | undefined
+
+  /**
+   * **把登记落盘**（`runs.json`）——重启核对的取材。
+   *
+   * 合并写（`RUNS_SAVE_MS`）：一轮里这几格会连着变好几次，而每一次都写一遍盘是白写
+   * （读的人只看最后那一份）。⚠️ **合并窗的大小就是「管理者被杀时会丢多少登记」**，
+   * 故它取的是一个**诊断可以接受**的量级——这份文件不是权威状态，权威是活着的那几个
+   * `Executor`；丢了它顶多是重启后少认出一条「最近一次运行」。
+   */
+  function saveRuns(immediate = false): void {
+    if (saveTimer !== undefined) {
+      if (!immediate) return
+      clearTimeout(saveTimer)
+      saveTimer = undefined
+    }
+
+    if (!immediate) {
+      saveTimer = setTimeout(() => {
+        saveTimer = undefined
+        saveRuns(true)
+      }, RUNS_SAVE_MS)
+      saveTimer.unref?.()
+      return
+    }
+
+    // **活着的排在后面**——同一条会话两头都有时，新的那一份盖住旧的（读的人按序 set）
+    const stored: StoredRun[] = []
+    for (const run of lastRuns.values()) {
+      const one = storedRunOf(run)
+      if (one !== undefined) stored.push(one)
+    }
+    for (const executor of executors) {
+      const one = storedRunOf(executor.run)
+      if (one !== undefined) stored.push(one)
+    }
+
+    writeRuns(paths, stored.slice(-STORED_RUNS_LIMIT), now())
+  }
+
   /** 一摊运行的那几件工具——`stop` 与各自的收尾都要它们，故在闭包里立。 */
   const manager: Manager = {
     record,
@@ -370,8 +547,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     clients: () => clients.size,
     executors: () =>
       [...executors]
-        .filter((one) => !one.dead)
-        .map((one) => ({ session: one.session, gen: one.gen, pid: one.pid })),
+        .filter((one) => one.run.ended === undefined)
+        .map((one) => ({ session: one.run.session, gen: one.gen, pid: one.run.pid })),
+    runs: () => rows(),
     stop,
     waitUntilExit: () => exited,
   }
@@ -403,6 +581,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           target: undefined,
           label: message.label,
           switch: message.switch,
+          awaiting: null,
+          buffered: [],
         }
         nextConn += 1
         client = conn
@@ -417,6 +597,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             dataDir: options.dataDir,
             // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
             mcp: probed,
+            // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
+            runs: [],
             refuse:
               `没有这条会话：${message.session}——` +
               `--session 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
@@ -430,10 +612,17 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
         // **押在预检上**（见 `preflight` 那一跳的注）：窗口接上就能读到结论，
         // 且读到的**一定是落定后的那一份**——半份读数比晚一会儿更坏（用户据此以为通了）。
-        void preflight.then((rows) => {
-          probed = rows
+        void preflight.then((mcpRows) => {
+          probed = mcpRows
           if (link.closed) return
-          link.send({ t: 'welcome', conn: conn.id, dataDir: options.dataDir, mcp: probed })
+          link.send({
+            t: 'welcome',
+            conn: conn.id,
+            dataDir: options.dataDir,
+            mcp: probed,
+            // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
+            runs: rows(),
+          })
         })
 
         // **开局就定下的目标**：给了 `--session` ⇒ 现在就按它要一代执行者
@@ -473,12 +662,19 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
       awaiting.delete(message.token)
       found.link = link as unknown as Link<ExecutorToManager>
-      found.session = message.session ?? found.session
-      found.workspace = message.workspace
+      if (message.session !== null && message.session !== undefined) {
+        found.run.session = message.session
+      }
+      found.run.workspace = message.workspace
+      found.run.everConnected = true
+      found.run.connected = true
       found.lastSeen = now()
+      refresh(found.run, now())
       // 认领的这一刻补一条「现在有几个人看你」——`bind` 那一次发的时候它还没连上来
       // （`link` 是空的），而它接下来的收缩判据正需要这个数。
       tellWatchers(found)
+      saveRuns()
+      pushRuns()
       return found
     }
   }
@@ -489,6 +685,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     clients.delete(id)
     conn.target?.watchers.delete(id)
     if (conn.target !== undefined) tellWatchers(conn.target)
+    conn.awaiting = null
+    conn.buffered = []
     conn.link.close()
     // 最后一个看客走了——**不是「停」**：执行者照跑。收不收它归收缩那条路：
     // 它自己按「没有连接者 ＋ 没有在途调用或待答项」判（见 `executor.ts` 的收缩那一跳）。
@@ -522,13 +720,38 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
+    /**
+     * **裁决答复**那一跳（U49 · 设计 ⑥）——「审批只有一份，第一条有效答复落账后其它窗口
+     * 即时移除；**晚到答复明确已处理**」。
+     *
+     * 「不再次执行工具」那一半是**内核**保的（`gate.resolve` 对陌生 id 直接忽略：
+     * 迟到 / 重复 / 伪造都进不去）。管理者这一跳补的是**那一句话**——晚到的那个窗口
+     * 按了半天没反应，得有人告诉它「这一件已经处理过了」。
+     *
+     * ⚠️ **只在「我们知道它已经答复过」时拦下**：知道才拦，不知道就照原样转过去让内核
+     * 判。反过来（没听说过的就丢掉）会把一条**合法**的答复吞了——那样这一轮就永远卡在
+     * 等答复上，而卡住的那一头没有任何人看得见。
+     */
+    if (command.type === 'decision.answer' && conn.target !== undefined) {
+      const run = conn.target.run
+      if (!run.decisions.has(command.id) && run.resolvedDecisions.has(command.id)) {
+        conn.link.send({
+          t: 'line',
+          text: '这一件已经处理过了——答复只算第一次，那件工具不会再跑一遍',
+        })
+        return
+      }
+      deliver(conn.target, command)
+      return
+    }
+
     // **换目标的只有这两条**（见文件头注）
     if (command.type === 'session.open' || command.type === 'session.new') {
       // **忙时不动目标**——原样转给当下那一代，由**内核**自己回话
       // （`BUSY_NOTE`：「正在跑一轮——先 Ctrl+C 中断，再切会话」）。
       // 这条不让管理者替它换目标，是因为「忙时挡回」是**内核的口径**：拦在这里另起一代，
       // 就成了「明明在跑，按一下却什么也没发生就换了会话」——那一句该说的话没了。
-      if (conn.target !== undefined && conn.target.busy) {
+      if (conn.target !== undefined && conn.target.run.busy) {
         deliver(conn.target, command)
         return
       }
@@ -538,17 +761,23 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         return
       }
 
-      // **开一条新的不换目标**——原样转给当下那一代，由它自己开一条新链
-      // （与今天同一个形态、同一次往返）。换一代在这里没有好处：
-      // 旧的会话是**空闲**的（忙时上面已经挡回去了），而空闲且没人看的会话本来就会被收缩；
-      // 反倒多出「起一个新进程」那两百毫秒——屏上那次翻页会因此**挪到两百毫秒之后**，
-      // 而 `/clear` 看着就该是「按下去就翻」。
-      const target = conn.target ?? spawnFresh(conn)
-      if (target === undefined) {
-        conn.link.send({ t: 'line', text: '起不了执行者——这一条没能送到' })
+      // **`/clear` ＝ 这个窗口开一条新的**（U49 改判 · 由头见 `retarget` 里 `new` 那一段）。
+      // 两条例外：还没开张的那个执行者直接用它（空白启动页按一下不必白起一个进程），
+      // 以及忙时（上面已经挡回了）。
+      const current = conn.target
+      if (reusable(current, conn)) {
+        const reused = current as Executor
+        bind(conn, reused)
+        deliver(reused, command)
         return
       }
-      deliver(target, command)
+
+      const fresh = spawnFresh(conn)
+      if (fresh === undefined) {
+        conn.link.send({ t: 'line', text: '起不了执行者——没开成新的那条' })
+        return
+      }
+      deliver(fresh, command)
       return
     }
 
@@ -587,6 +816,20 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         return
       }
 
+      // **上一次那一代还没证实结束**（U49）——它可能还在收尾。设计明文：
+      // 「失联……**不能重复启动同会话**」。故这一条**如实拒绝**并说清缘由，
+      // 不悄悄起第二个（那正是要防的那件事）。
+      const held = lastRuns.get(how.session)
+      if (held !== undefined && held.ended === undefined) {
+        conn.link.send({
+          t: 'line',
+          text:
+            `没切到 ${how.session}：上一次那条执行者还没有证实结束（它可能正在收尾）` +
+            '——同一个会话不能同时起两个。/resume 里那一行标着「状态待确认」',
+        })
+        return
+      }
+
       if (reusable(current, conn)) {
         const reused = current as Executor
         bind(conn, reused)
@@ -618,28 +861,33 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
-    const spawned = spawn({
-      session: null,
-      explicit: false,
-      cwd: conn.cwd,
-      ...(conn.switch === undefined ? {} : { switch: conn.switch }),
-    })
+    const spawned = spawnFresh(conn)
     if (spawned === undefined) {
       conn.link.send({ t: 'line', text: '起不了执行者——没开成新的那条' })
       return
     }
-    bind(conn, spawned)
     deliver(spawned, command)
   }
 
   /** 「当下这个执行者还有用吗」——**没开张 ＋ 只有这一个看客**才敢往上叠新目标。 */
   function reusable(current: Executor | undefined, conn: ClientConn): boolean {
-    if (current === undefined || current.dead) return false
-    if (current.session !== null) return false
+    if (current === undefined || current.run.ended !== undefined) return false
+    if (current.run.session !== null) return false
     return current.watchers.size <= 1 && (current.watchers.size === 0 || current.watchers.has(conn.id))
   }
 
-  /** 把窗口挂到某一代上——**换看客**是这一处的全部动作（旧的那一代照跑）。 */
+  /**
+   * 把窗口挂到某一代上——**换看客**是这一处的全部动作（旧的那一代照跑）。
+   *
+   * U49 在这一跳上加了**接回**那一手（设计 · 状态可信度、独占与重新连接 ③）：
+   *
+   * > 重连获取同一代次的「快照＋事件水位」，随后续接水位后的消息；**先订阅并缓冲**，
+   * > 或提供原子订阅快照，避免快照与订阅之间丢事件。
+   *
+   * 走的是前者：**挂上去的同一刻**就把这个窗口记进 `watchers`（于是事件开始往它的
+   * 缓冲里落），再向执行者要一份快照；快照回来（带水位）之后**先放快照、再放缓冲里
+   * 水位之后的那几条**。订阅因此不晚于快照，而快照里的东西一定不重复。
+   */
   function bind(conn: ClientConn, executor: Executor): void {
     const from = conn.target
     from?.watchers.delete(conn.id)
@@ -648,8 +896,24 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     conn.target = executor
     executor.watchers.add(conn.id)
     conn.gen = executor.gen
-    conn.link.send({ t: 'target', gen: executor.gen, session: executor.session })
+
+    conn.link.send({ t: 'target', gen: executor.gen, session: executor.run.session })
+
+    // **先订阅并缓冲**——这一格就是那道缝的补丁（见本函数的注）
+    conn.awaiting = 0
+    conn.buffered = []
+    askSnapshot(executor, conn)
+
     tellWatchers(executor)
+  }
+
+  /** 向某一代要一份快照，回来的那一份给这个窗口。 */
+  function askSnapshot(executor: Executor, conn: ClientConn): void {
+    executor.snapSeq += 1
+    const seq = executor.snapSeq
+    conn.awaiting = seq
+    executor.asking.set(seq, conn.id)
+    send(executor, { t: 'snapshot', seq })
   }
 
   /** 告诉某一代「现在还有几个人看你」——收缩那条路的一半判据（见 `wire.ts` 的 `watchers`）。 */
@@ -660,7 +924,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   /** 已经活着的那一代（按会话找）——**独占推进权**就落在这一条上：一条会话至多一个。 */
   function liveOf(session: string): Executor | undefined {
     for (const one of executors) {
-      if (!one.dead && one.session === session) return one
+      if (one.run.ended === undefined && one.run.session === session) return one
     }
     return undefined
   }
@@ -709,18 +973,21 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       gen,
       token,
       explicit: input.explicit,
-      session: input.session,
-      workspace: [],
-      pid: spawned.pid,
+      run: newRunRecord({
+        gen,
+        session: input.session,
+        startedAt: now(),
+        explicit: input.explicit,
+        pid: spawned.pid,
+      }),
       spawned,
       link: undefined,
-      ready: false,
-      pending: [],
+      queued: [],
       watchers: new Set(),
       lastSeen: now(),
       pingSeq: 0,
-      busy: false,
-      dead: false,
+      snapSeq: 0,
+      asking: new Map(),
     }
 
     executors.add(executor)
@@ -731,25 +998,32 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     })
 
     options.log?.(`起了执行者 第 ${gen} 代 pid=${spawned.pid ?? '?'} 会话=${input.session ?? '（还没开张）'}`)
+    saveRuns()
+    pushRuns()
     touch()
     return executor
   }
 
   /**
-   * 送一条命令给执行者。
+   * 送一条东西给执行者（命令 / 快照请求）。
    *
    * **没 `ready` 就先攒着**：从起进程到能干活那一段（装载 ＋ 发现 ＋ 恢复）是秒级，
    * 而窗口那边已经在等着了——先送出去只会是「敲了没反应」。攒着的那一份在 `ready`
    * 到达时按序放行。
    */
-  function deliver(executor: Executor, command: Command): void {
-    if (executor.dead) return
+  function send(executor: Executor, message: ManagerToExecutor): void {
+    if (executor.run.ended !== undefined) return
 
-    if (executor.link === undefined || !executor.ready) {
-      executor.pending.push(command)
+    if (executor.link === undefined || !executor.run.ready) {
+      executor.queued.push(message)
       return
     }
-    executor.link.send({ t: 'cmd', cmd: command })
+    executor.link.send(message)
+  }
+
+  /** 送一条**命令**——`send` 的那一层皮（读起来仍是「送一条命令」）。 */
+  function deliver(executor: Executor, command: Command): void {
+    send(executor, { t: 'cmd', cmd: command })
   }
 
   // —— 执行者那一路 ——
@@ -762,14 +1036,26 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         // 认领在 `adopt` 里做了（那是**连接**那一跳的事）；这里只补一次登记
         return
       case 'ready': {
-        executor.ready = true
-        const queued = executor.pending
-        executor.pending = []
-        for (const command of queued) deliver(executor, command)
+        executor.run.ready = true
+        // 起来那一刻「正在起执行者」这件事就完了（那一格由 `actionOf` 之外的一处写，
+        // 故在这儿清）——`busy` 不动：它说的是**内核**手上有活没有，与本跳无关
+        executor.run.action = undefined
+        refresh(executor.run, now())
+        const queued = executor.queued
+        executor.queued = []
+        for (const one of queued) {
+          if (executor.run.ended !== undefined) break
+          executor.link?.send(one)
+        }
+        saveRuns()
+        pushRuns()
         return
       }
       case 'bound':
-        executor.session = message.session
+        executor.run.session = message.session
+        refresh(executor.run, now())
+        saveRuns()
+        pushRuns()
         return
       case 'ev':
         onEvent(executor, message.event)
@@ -777,48 +1063,185 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       case 'pong':
         return
       case 'done':
-        retire(executor, `自己收摊：${message.why}`)
+        // **自己受理了收摊**——记成「停止中」，核销等进程真退（见 `retire`）
+        markStopping(executor, message.why)
+        return
+      case 'stopping':
+        markStopping(executor, message.why)
+        return
+      case 'snapshot':
+        onSnapshot(executor, message.seq, message.snapshot)
         return
       default:
         return
     }
   }
 
+  /** 记下「已受理停止」——**停止中**那一行的来处（`ended` 一到它就跳过去了）。 */
+  function markStopping(executor: Executor, why: string): void {
+    if (executor.run.ended !== undefined) return
+    executor.run.stopping = true
+    refresh(executor.run, now())
+    options.log?.(`第 ${executor.gen} 代受理了停止：${why}`)
+    saveRuns()
+    pushRuns()
+  }
+
+  /**
+   * 快照回来了——**先放快照，再放缓冲里水位之后的那几条**。
+   *
+   * 三处判据：
+   * - **按 `seq` 对上**：回来的那一份属于哪一次请求（同一个窗口可能连着绑过两回）；
+   * - **按 id 去重 ＋ 只放水位之后的**：缓冲里可能混着快照已经含进去的那几条
+   *   （缓冲区比执行者算快照那一刻要早开一步）——设计明文「持久记录按 id 去重」；
+   * - **先去重再排序**：缓冲按到达序，而 id 是排序权威，故放行前按 id 排一遍。
+   */
+  function onSnapshot(executor: Executor, seq: number, snapshot: RunSnapshot): void {
+    const connId = executor.asking.get(seq)
+    executor.asking.delete(seq)
+    if (connId === undefined) return
+
+    const conn = clients.get(connId)
+    if (conn === undefined || conn.awaiting !== seq) return
+
+    conn.awaiting = null
+    conn.link.send({ t: 'resumed', gen: executor.gen, snapshot })
+
+    const seen = new Set<number>()
+    const rest: KernelEvent[] = []
+    for (const event of conn.buffered.sort((left, right) => left.id - right.id)) {
+      if (event.id <= snapshot.watermark || seen.has(event.id)) continue
+      seen.add(event.id)
+      rest.push(event)
+    }
+    conn.buffered = []
+
+    for (const event of rest) conn.link.send({ t: 'ev', gen: executor.gen, event })
+  }
+
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
+    const run = executor.run
+    const at = now()
+
     // 会话从事件里认（这就是 `bound` 那条路的日常形态：首条消息一按下回车，
-    // 事件就带上了真会话号）——**不另立一份「它现在在哪条会话上」的真源**。
+    // 事件就带上了真会话号）——**不另立一份「它现在在哪条会话」的真源**。
     if (event.session !== '' && event.session !== undefined) {
-      if (executor.session === null || event.kind === 'session.state') {
-        executor.session = event.session
+      if (run.session === null || event.kind === 'session.state') {
+        run.session = event.session
       }
     }
     if (event.kind === 'session.state') {
       const active = event.data.active
-      if (typeof active === 'string' && active !== '') executor.session = active
+      if (typeof active === 'string' && active !== '') run.session = active
     }
-    // 「手里有没有活」——与执行者收缩那一跳同一个判据（`agent.state` 说在跑还是在等）
-    if (event.kind === 'agent.state') executor.busy = event.data.state !== 'waiting'
+
+    // —— 运行事实那几格（U49）——**一处更新，判定在 `facts.ts` ——
+    switch (event.kind) {
+      case 'agent.state':
+        run.busy = event.data.state !== 'waiting'
+        break
+      case 'turn.start':
+        run.turnActive = true
+        // 新的一轮开始 ⇒ 上一轮那些「已答复」的记账清掉（它们只在本轮之内管用）
+        run.resolvedDecisions.clear()
+        break
+      case 'turn.end':
+        run.turnActive = false
+        run.lastTurn = event.data.reason
+        run.lastTurnAt = event.at
+        // **轮收束 ⇒ 悬着的裁决作废**——与执行者那一侧同一条口径（`executor.ts`）：
+        // 卡挂着的时候这一轮没结束，故那条「等你」照旧成立。
+        run.decisions.clear()
+        break
+      case 'tool.decision.request':
+        run.decisions.set(event.id, event.data.call)
+        break
+      case 'tool.decision': {
+        // 答复落地——请求那一条从「挂着」挪到「已处理」（晚到的答复据此被认出来）
+        for (const [id, call] of run.decisions) {
+          if (call === event.data.call) {
+            run.decisions.delete(id)
+            run.resolvedDecisions.add(id)
+          }
+        }
+        break
+      }
+      case 'tool.output.delta':
+        run.output = { at, sample: tailOf(run.output?.sample, event.data.text) }
+        break
+      default:
+        break
+    }
+
+    const action = actionOf(event)
+    if (action !== undefined) run.action = action ?? undefined
+
+    if (isProgress(event)) {
+      const what = progressOf(event)
+      if (what !== undefined) run.progress = { at, what }
+    }
+
+    refresh(run, at)
 
     for (const id of [...executor.watchers]) {
       const conn = clients.get(id)
       if (conn === undefined) continue
+      // 等着快照的那一段：**先攒着**（放行的次序与去重见 `onSnapshot`）
+      if (conn.awaiting !== null) {
+        conn.buffered.push(event)
+        continue
+      }
       conn.link.send({ t: 'ev', gen: executor.gen, event })
     }
+
+    saveRuns()
+    pushRuns()
   }
 
-  /** 核销——自己退了 / 被杀 / 管理者叫停；**只走一遍**。 */
+  /**
+   * 核销——自己退了 / 被杀 / 管理者叫停；**只走一遍**。
+   *
+   * U49 把「这一代怎么收的」记进了运行事实（`ended`）：它是**已停止**与**当前空闲**
+   * 那条分水岭（判据见 `facts.ts` 的 `runStateOf`）。三条来路各有各的真相：
+   *
+   * - **自己收的**（收缩那条路，`stopping` 为真）⇒ 上一轮怎么收的说了算：好好收的算
+   *   `normal`（那一行是**当前空闲**），被打断过算 `aborted`（**已停止 · 手动中断**）；
+   * - **被杀 / 连接断了而它没说自己要收** ⇒ `crashed`（**已停止 · 异常退出**）。
+   *   这一条**不猜**：设计写着异常退出那条路「不伪报取消成功」，而我们没有它的收场回执。
+   */
   function retire(executor: Executor, reason: string): void {
-    if (executor.dead) return
-    executor.dead = true
+    if (executor.run.ended !== undefined) return
+
+    const at = now()
+    const kind = executor.run.stopping
+      ? endKindOf(executor.run.lastTurn)
+      : executor.run.lastTurn === 'aborted'
+        ? ('aborted' as const)
+        : ('crashed' as const)
+
+    executor.run.ended = { at, why: reason, kind }
+    executor.run.connected = false
+    executor.run.busy = false
+    executor.run.turnActive = false
+    executor.run.decisions.clear()
+    executor.run.action = undefined
+    refresh(executor.run, at)
+
     executors.delete(executor)
     awaiting.delete(executor.token)
-    executor.pending = []
+    executor.queued = []
+    executor.asking.clear()
+
+    // **留一条「最近一次运行」**——列表上「当前/最近状态」那一格要它
+    if (executor.run.session !== null) lastRuns.set(executor.run.session, executor.run)
 
     for (const id of [...executor.watchers]) {
       const conn = clients.get(id)
       if (conn === undefined) continue
       conn.target = undefined
+      conn.awaiting = null
+      conn.buffered = []
       // **窗口不是跟着死**：它下一次发命令时管理者会按需要起新的那一代
       // （见 `onCommand`）——「断的是执行者，不是界面」。
       //
@@ -831,16 +1254,46 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     executor.link?.close()
 
     options.log?.(`核销第 ${executor.gen} 代执行者（${reason}）`)
+    saveRuns()
+    pushRuns()
     touch()
   }
 
   /** 生命探测——**只看「连还通不通」**，不看它在不在干活（长测试静默照样是活的）。 */
   const probe = setInterval(() => {
     for (const executor of [...executors]) {
-      if (executor.dead || executor.link === undefined) continue
+      if (executor.run.ended !== undefined || executor.link === undefined) continue
       executor.pingSeq += 1
       executor.link.send({ t: 'ping', seq: executor.pingSeq })
     }
+
+    /**
+     * **重启核对出来的那些「待确认」也要往下走**（U49）。
+     *
+     * 那些记录说的是「上一次管理者退出时它还在」——而它多半正在收尾，几秒后就没了。
+     * 不往下走的话，那一条会话会**永远**停在「状态待确认」（用户看得见，却什么也没发生）。
+     * 判据仍是**事实**：它那个进程还在不在（`alive`）。
+     *
+     * ⚠️ **只查我们记过号的那些**（不是扫全机 PID）——与设计那条一致：生命探测
+     * 「不扫描全机 PID、不以 CPU 阈值自动杀进程」。
+     */
+    let moved = false
+    for (const [session, run] of lastRuns) {
+      if (run.ended !== undefined || run.stopping) continue
+      if (liveOf(session) !== undefined) continue
+      if (run.pid !== undefined && alive(run.pid)) continue
+
+      run.ended = { at: now(), why: '它已经不在了', kind: 'crashed' }
+      refresh(run, now())
+      moved = true
+    }
+    if (moved) saveRuns()
+    // **顺带把运行事实重推一次**（U49）——同一趟「有限频率」，为的是「多久了」那一格。
+    //
+    // 由头：长测试**没有输出、没有事件**，而列表上「已跑 3 分 12 秒」这件事仍在变。
+    // 不推的话那一格就冻在开列表那一刻（用户看着它，它却不动）。这不是心跳伪装进展
+    // ——推的是**时长事实**，一个字都没说「它在干活」（`progress` 只由业务里程碑更新）。
+    pushRuns()
   }, probeIntervalMs)
   probe.unref?.()
 
@@ -856,6 +1309,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    *   「刚起来的那个」当成「没人要的那个」；
    * - 判据用的是**最后一次有动静的时刻**（`lastActivity`），不是「当下空不空」——
    *   窗口来了又走、执行者起了又收，那几跳之间也各有间隙。
+   *
+   * ⚠️ **「最近一次运行」那一份不拦它**：那是历史（设计：单纯历史不阻止退出）。
    */
   let lastActivity = now()
 
@@ -889,10 +1344,18 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (stopped) return
     stopped = true
     clearInterval(probe)
+    if (pushTimer !== undefined) clearTimeout(pushTimer)
+    if (saveTimer !== undefined) clearTimeout(saveTimer)
 
     for (const executor of [...executors]) {
+      // **已受理停止**——那一格进登记（「停止中」那一行的事实依据）
+      if (executor.run.ended === undefined) {
+        executor.run.stopping = true
+        refresh(executor.run, now())
+      }
       executor.link?.send({ t: 'bye', why: `管理者收摊：${why}` })
     }
+    saveRuns(true)
 
     for (const conn of [...clients.values()]) {
       conn.link.send({ t: 'line', text: `管理者收摊：${why}` })
@@ -924,6 +1387,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           executor.spawned.kill()
           retire(executor, `管理者收摊：${why}（到点没退）`)
         }
+        saveRuns(true)
 
         // 预检那一趟自己的收尾在它的 `finally` 里（断开它起的那些）——等它落定再
         // 报「退干净了」，否则入口一 `process.exit` 就把那一跳切在半路
@@ -988,5 +1452,64 @@ function clearRecord(paths: RunPaths): void {
     unlinkSync(paths.record)
   } catch {
     // 同上
+  }
+}
+
+/**
+ * 读上一次留下的那份运行登记——**读不懂＝没有**（同 `manager.json` 那条口径）。
+ *
+ * 一处**逐条**校验：这份文件是诊断品，不是权威状态，坏了不该拦住启动；但读进来的
+ * 每一条都得是像样的（按会话、代次、时刻），否则「重启核对」会拿着半截记录乱判。
+ */
+export function readRuns(paths: RunPaths): readonly StoredRun[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(paths.runs, 'utf8'))
+  } catch {
+    return []
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) return []
+  const runs = (parsed as Partial<StoredRuns>).runs
+  if (!Array.isArray(runs)) return []
+
+  const kept: StoredRun[] = []
+  for (const one of runs) {
+    if (typeof one !== 'object' || one === null) continue
+    const run = one as Partial<StoredRun>
+    if (typeof run.session !== 'string' || run.session === '') continue
+    if (typeof run.gen !== 'number' || typeof run.startedAt !== 'number') continue
+    if (!Array.isArray(run.workspace)) continue
+    kept.push({
+      session: run.session,
+      gen: run.gen,
+      ...(typeof run.pid === 'number' ? { pid: run.pid } : {}),
+      startedAt: run.startedAt,
+      workspace: run.workspace,
+      state: run.state ?? 'idle',
+      since: typeof run.since === 'number' ? run.since : run.startedAt,
+      ...(run.lastTurn === undefined ? {} : { lastTurn: run.lastTurn }),
+      ...(typeof run.why === 'string' ? { why: run.why } : {}),
+      ...(run.kind === undefined ? {} : { kind: run.kind }),
+    })
+  }
+  return kept
+}
+
+/**
+ * 写那份运行登记——**原子替换**（同目录临时文件 ＋ `rename`）。
+ *
+ * 为什么不像 `manager.json` 那样直接写：那一份是「一行 JSON」级别的小东西，坏了顶多
+ * 少一条诊断；而这一份**重启时要逐条读**——写一半被看见就是拿着半截记录乱判。
+ * 临时文件先写、再换名，读到的要么是上一份完整的、要么是这一份完整的。
+ */
+function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
+  const body: StoredRuns = { v: RUNS_VERSION, at, runs }
+  const temp = `${paths.runs}.tmp-${process.pid}`
+  try {
+    writeFileSync(temp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
+    renameSync(temp, paths.runs)
+  } catch {
+    // 写不下去只影响重启核对的那一份取材——它为这个把管理者拦下来说不过去
   }
 }

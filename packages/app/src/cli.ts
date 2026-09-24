@@ -601,7 +601,7 @@ async function runTerminal(args: Args): Promise<number> {
   const { loadConfig } = await import('./config.ts')
   const { runPathsOf } = await import('./run/paths.ts')
   const { connectOrStartManager } = await import('./run/spawn-manager.ts')
-  const { startupRegistry, terminalOptions } = await import('./run/terminal.ts')
+  const { readModelInfo, startupRegistry, terminalOptions } = await import('./run/terminal.ts')
 
   const magic = resolveMagicHome(process.env, homedir())
 
@@ -680,6 +680,12 @@ async function runTerminal(args: Args): Promise<number> {
   // ⚠️ **`@magic/tui` 在这里才 import**（不放在文件顶上，同 `--check` / `--script` 那两处
   // 的理由）：Ink ＋ React 那一整棵依赖树实测 120.4ms，而本进程在接上管理者之前
   // 什么都不画；提前加载等于为「连不上」那几条路白付这笔账。
+  // **模型信息缓存的读数**（U49）——开屏那一格的分母要用它（U48 记的那条限度：
+  // 「窗口这一侧不读模型信息缓存」）。读它是**一次纯读**（不触发刷新、不落盘），
+  // 而「认当下那个模型的窗」本来就是窗口这一侧的活（见 `./run/terminal.ts` 那张表）。
+  // ⚠️ 读不动／没有那份 ⇒ `undefined` ⇒ 分母照旧缺一格——**不编**（D10 那条判据）
+  const modelInfo = await readModelInfo(loaded)
+
   const { runTui } = await import('@magic/tui')
   const tui = await runTui(
     terminalOptions({
@@ -688,6 +694,8 @@ async function runTerminal(args: Args): Promise<number> {
       magic,
       cwd: process.cwd(),
       ...(args.switch === undefined ? {} : { switch: args.switch }),
+      ...(args.session === undefined ? {} : { session: args.session }),
+      ...(modelInfo === undefined ? {} : { modelInfo }),
     }),
   )
 

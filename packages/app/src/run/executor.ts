@@ -37,10 +37,17 @@
  * 连接——管理者一死，OS 把它那一头的 socket 收掉，这里当场读到断开。
  */
 
-import type { KernelEvent, MagicHome, ModelSwitchRequest } from '@magic/contracts'
+import type {
+  KernelEvent,
+  MagicHome,
+  ModelSwitchRequest,
+  RunSnapshot,
+  SnapshotDecision,
+} from '@magic/contracts'
 import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
 import { loadConfig } from '../config.ts'
+import { isProgress, progressOf, tailOf } from './facts.ts'
 import { linkOf, socketHandlers } from './wire.ts'
 import type { ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 
@@ -51,6 +58,29 @@ import type { ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
  * 又不至于让一个真没人要的进程白占着机器。
  */
 const SHRINK_SETTLE_MS = 400
+
+/**
+ * **接回快照里那份流式正文带多大**（字符）——见 `liveOf` 的注。
+ *
+ * 十万字符≈五万 token：一条助手消息长到这个量级已经不是常态。留这么大是为了
+ * **绝大多数接回都不必截断**——而真截断的时候要**说得出来**（`textTruncated`）。
+ */
+const SNAPSHOT_TEXT_LIMIT = 100_000
+
+/** 快照里一条在飞工具的输出留多少行——取**末尾**（末尾才是「刚才在说什么」）。 */
+const SNAPSHOT_OUTPUT_LINES = 20
+
+/** 攒一条工具输出时留多少字符——**先按字符封顶**（长测试一行能吐几十万字符）。 */
+const SNAPSHOT_OUTPUT_CHARS = 4_000
+
+/** 在飞的一条工具调用——输出按末尾一截攒，快照时再切成行。 */
+type LiveTool = {
+  readonly call: number
+  readonly name: string
+  readonly args: Readonly<Record<string, unknown>>
+  readonly at: number
+  output: string
+}
 
 export type ExecutorOptions = {
   /** 管理者监听的那条 socket。 */
@@ -163,32 +193,193 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   /** 待答的裁决——按**那次工具调用**记（请求与答复两头都带 `call`，配对键就是它）。 */
   const pendingDecisions = new Set<number>()
 
+  /**
+   * **此刻这一轮长什么样**（U49）——**接回快照**的取材（设计 · 状态可信度、独占与重新连接 ③）。
+   *
+   * 为什么得由执行者攒：流式增量（`model.delta` / `tool.output.delta`）**不落库**
+   * （记录域那条「不逐条落库」的规矩），故**记录里根本没有它们**——一个刚接回来的窗口
+   * 若只读记录，看到的是一段**没有开头**（或者更坏：把上一轮半段当完整结果）的回复。
+   * 那份「此刻」只有一直看着事件流的这一头有。
+   *
+   * 攒的规矩**与外壳那一侧同一套**（`view.ts` 的归约）——两处各写一套「哪条增量算哪一段」
+   * 必然分叉，而分叉的症状是「接回来之后那一段与别人屏幕上不一样」。
+   */
+  const live = {
+    /** 水位——这一头见过的**最后一条事件的 id**（快照就停在这儿）。 */
+    lastId: 0,
+    /** 这一轮开着吗（`turn.start` 之后、`turn.end` 之前）。 */
+    turnOpen: false,
+    /** 在飞的助手正文 / 思考（按通道攒）。 */
+    text: '',
+    thinking: '',
+    /** 攒到头了没有——攒到头就**只留末尾**，并如实标出来（不冒充完整）。 */
+    textTrimmed: false,
+    thinkingTrimmed: false,
+    /** 在飞的工具调用（有 `tool.call`、还没有 `tool.result`）——输出按**末尾一截**攒。 */
+    tools: new Map<number, LiveTool>(),
+    /** 还挂着的裁决卡（有请求、还没答复）——答复了／轮收束了就撤。 */
+    decisions: new Map<number, SnapshotDecision>(),
+    /** 最近一次可确认进展与最近一次输出（与管理者那一侧同一份口径）。 */
+    progress: undefined as { readonly at: number; readonly what: string } | undefined,
+    output: undefined as { readonly at: number; readonly sample: string } | undefined,
+    /** 在跑的模型与它的窗（`model.call.start` 自带）——状态行那两格。 */
+    model: undefined as string | undefined,
+    window: undefined as number | undefined,
+  }
+
+  /** 攒一段流式正文——**有界**：超了就只留末尾，并记下「截过」。 */
+  function gather(which: 'text' | 'thinking', chunk: string): void {
+    const merged = `${live[which]}${chunk}`
+    if (merged.length <= SNAPSHOT_TEXT_LIMIT) {
+      live[which] = merged
+      return
+    }
+    live[which] = merged.slice(-SNAPSHOT_TEXT_LIMIT)
+    if (which === 'text') live.textTrimmed = true
+    else live.thinkingTrimmed = true
+  }
+
+  /** 一次新回复开始时把在飞那一段清空（`turn.start` / `model.call.start` / 助手落账三处）。 */
+  function resetStream(): void {
+    live.text = ''
+    live.thinking = ''
+    live.textTrimmed = false
+    live.thinkingTrimmed = false
+  }
+
+  /** 这一轮的「此刻」——一份**现算**的快照（收到请求当场答，中间不 await，见 `wire.ts`）。 */
+  function snapshotNow(): RunSnapshot {
+    return {
+      watermark: live.lastId,
+      turnOpen: live.turnOpen,
+      ...(live.text === '' ? {} : { text: live.text }),
+      ...(live.thinking === '' ? {} : { thinking: live.thinking }),
+      ...(live.textTrimmed ? { textTruncated: true } : {}),
+      ...(live.thinkingTrimmed ? { thinkingTruncated: true } : {}),
+      tools: [...live.tools.values()].map((tool) => ({
+        call: tool.call,
+        name: tool.name,
+        args: tool.args,
+        at: tool.at,
+        output: tool.output.split('\n').slice(-SNAPSHOT_OUTPUT_LINES),
+      })),
+      decisions: [...live.decisions.values()],
+      ...(live.progress === undefined ? {} : { progress: live.progress }),
+      ...(live.output === undefined ? {} : { output: live.output }),
+      ...(live.model === undefined ? {} : { model: live.model }),
+      ...(live.window === undefined ? {} : { window: live.window }),
+    }
+  }
+
+  /**
+   * 一条事件进来了——**两件事同一次过一遍**：① 收缩的判据（`busy` / 待答项）；
+   * ② 快照的取材（`live`）。分两个 switch 写同一件事，迟早有一处只更新了一半。
+   */
   function track(event: KernelEvent): void {
+    // 水位跟着事件走——快照停在「这一条上」，水位之后的都还没发生
+    live.lastId = event.id
+
+    if (isProgress(event)) {
+      const what = progressOf(event)
+      if (what !== undefined) live.progress = { at: event.at, what }
+    }
+
     switch (event.kind) {
       case 'agent.state':
         busy = event.data.state !== 'waiting'
         return
-      case 'tool.decision.request':
-        pendingDecisions.add(event.data.call)
+
+      // —— 这一轮那几件（快照的取材）——
+
+      case 'turn.start':
+        live.turnOpen = true
+        resetStream()
+        live.tools.clear()
+        live.decisions.clear()
         return
-      case 'tool.decision':
-        pendingDecisions.delete(event.data.call)
-        return
-      /**
-       * **轮收束 ⇒ 悬着的裁决作废**——与外壳那一侧**同一个口径**（`view.ts` 的
-       * `turn.end`：「悬着的裁决作废（那件工具跑不成了）：撤卡 ＋ 归还草稿」）。
-       *
-       * ⚠️ **不清这一下，会漏一个永远收不掉的执行者**（实测跑出来的）：卡挂在半路、
-       * 这一轮被中断（Ctrl+C）或出错时，**裁决答复那一条事件不会来**——于是这个集合里
-       * 那一格永远留着，而「有在途调用或待答项」是**不收**的一条判据 ⇒ 它就此钉在那儿，
-       * 管理者也跟着不走（它以为手上还压着一件待办）。
-       *
-       * 清了之后设计那一条不受影响：**卡还挂着**的时候这一轮没结束，`turn.end` 就不会来
-       * ——「等待用户的有效工作可保留事件阻塞的执行者」照旧成立。
-       */
-      case 'turn.end':
+
+      case 'turn.end': {
+        live.turnOpen = false
+        resetStream()
+        live.tools.clear()
+        live.decisions.clear()
+        /**
+         * **轮收束 ⇒ 悬着的裁决作废**——与外壳那一侧**同一个口径**（`view.ts` 的
+         * `turn.end`：「悬着的裁决作废（那件工具跑不成了）：撤卡 ＋ 归还草稿」）。
+         *
+         * ⚠️ **不清这一下，会漏一个永远收不掉的执行者**（实测跑出来的）：卡挂在半路、
+         * 这一轮被中断（Ctrl+C）或出错时，**裁决答复那一条事件不会来**——于是这个集合里
+         * 那一格永远留着，而「有在途调用或待答项」是**不收**的一条判据 ⇒ 它就此钉在那儿，
+         * 管理者也跟着不走（它以为手上还压着一件待办）。
+         *
+         * 清了之后设计那一条不受影响：**卡还挂着**的时候这一轮没结束，`turn.end` 就不会来
+         * ——「等待用户的有效工作可保留事件阻塞的执行者」照旧成立。
+         */
         pendingDecisions.clear()
         return
+      }
+
+      // 一次模型调用＝一段回复：新的一段从空开始（视图那一边的「同通道增量并进上一行」
+      // 也是这么分的——两段之间隔着工具行）
+      case 'model.call.start':
+        resetStream()
+        live.model = event.data.model
+        live.window = event.data.inputBudget
+        return
+
+      case 'model.delta':
+        if (event.data.channel === 'text') gather('text', event.data.text)
+        if (event.data.channel === 'thinking') gather('thinking', event.data.text)
+        return
+
+      // 助手那条**已落账**（内容进了条目）⇒ 在飞的那一段到此为止
+      case 'message.assistant':
+        resetStream()
+        return
+
+      case 'tool.call':
+        live.tools.set(event.id, {
+          call: event.id,
+          name: event.data.name,
+          args: event.data.args,
+          at: event.at,
+          output: '',
+        })
+        return
+
+      case 'tool.output.delta': {
+        live.output = { at: event.at, sample: tailOf(live.output?.sample, event.data.text) }
+        const tool = live.tools.get(event.data.call)
+        // 末尾一截就够（快照里那几行说的是「刚才在说什么」）
+        if (tool !== undefined) {
+          tool.output = tailOf(tool.output, event.data.text, SNAPSHOT_OUTPUT_CHARS)
+        }
+        return
+      }
+
+      case 'tool.result':
+        live.tools.delete(event.data.call)
+        return
+
+      case 'tool.decision.request':
+        pendingDecisions.add(event.data.call)
+        live.decisions.set(event.id, {
+          id: event.id,
+          call: event.data.call,
+          name: event.data.name,
+          material: event.data.material,
+          weight: event.data.weight,
+          ...(event.data.external === true ? { external: true } : {}),
+        })
+        return
+
+      case 'tool.decision':
+        pendingDecisions.delete(event.data.call)
+        for (const [id, one] of live.decisions) {
+          if (one.call === event.data.call) live.decisions.delete(id)
+        }
+        return
+
       default:
         return
     }
@@ -232,6 +423,16 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     closing = true
     options.log?.(`执行者收摊（${why}）`)
 
+    /**
+     * **先说一声「我受理了、正在退资源」**（U49）——那一格就是**停止中**。
+     *
+     * 它必须**排在收尾两跳之前**：那两跳（等外部服务器释放、再关库）可能要几秒，而
+     * 那几秒里这一代既不是「在跑」也不是「已经没了」——正是设计说的「**已受理停止，
+     * 资源尚未全部退出**」。晚一步说（等收完了再说）就成了「先显示已停止」，而那一条
+     * 判据明写着不许（「停止中不能提前显示已停止」）。
+     */
+    link.send({ t: 'stopping', why })
+
     // 两跳的顺序照 `cli.ts` 那条先例：**先等外部服务器释放，再关库**——
     // 反过来的话，还活着的工具调用会写进一个已经关掉的事务。
     try {
@@ -254,6 +455,16 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         watching = message.count
         heardWatchers = true
         considerShrink()
+        return
+      /**
+       * **接回快照**（U49）——**当场答，中间一步都不 await**。
+       *
+       * 那条纪律是这一整条链成立的前提：水位（`live.lastId`）与快照里的内容必须是
+       * **同一刻**的。中间只要让出一次事件循环，就可能有一条事件既进了水位、又没进快照
+       * （或者反过来）——而另一头正是按「水位之后的都还没发生」来放行的。
+       */
+      case 'snapshot':
+        link.send({ t: 'snapshot', seq: message.seq, snapshot: snapshotNow() })
         return
       case 'bye':
         void closeOut(message.why)

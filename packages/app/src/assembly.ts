@@ -122,7 +122,7 @@ import { ConfigError, loadConfig } from './config.ts'
 import { saveAttachmentFile } from './attachment-file.ts'
 import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
-import { configFingerprintOf, modelCacheAccessOf } from './cache-access.ts'
+import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
@@ -831,18 +831,15 @@ export function assemble(options: AssembleOptions): Assembly {
    * ⚠️ 指纹取的是**此刻**的（含 inode 与 ctime）——保存配置之后它自己就会变，
    * 于是旧范围的缓存**再也读不到**，不需要黑名单也不需要时间戳比对。
    */
-  const cacheAccessOf = (provider: string, config: ProviderConfig | undefined): ModelCacheAccess => {
-    const fromFile =
-      config?.apiKey !== undefined && config.apiKey.trim().length > 0
-        ? configFingerprintOf(loaded.path)
-        : undefined
-
-    return modelCacheAccessOf({
+  const cacheAccessOf = (provider: string, config: ProviderConfig | undefined): ModelCacheAccess =>
+    // 「什么算『认证取自配置文件』」只判一处（`cache-access.ts`）——窗口那一侧算开屏的
+    // 分母时读的是**同一份**缓存，两处各判一遍迟早开成两份文件
+    cacheAccessFor({
       provider,
-      ...(fromFile === undefined ? {} : { config: fromFile }),
+      configPath: loaded.path,
+      apiKey: config?.apiKey,
       processToken,
     })
-  }
 
   /**
    * 清一份**旧范围**的缓存——**失败要可见**（裁决：清除失败不吞，写进答复）。
