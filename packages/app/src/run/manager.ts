@@ -355,6 +355,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   let nextConn = 1
   let nextGen = 1
   let stopped = false
+  /**
+   * 手上那份库连接关了没有——**收摊那一路还要读运行事实**（`rows()` 按目录说话那一跳
+   * 要查库），而库在收摊的前半段就关了。关了之后**不筛**：那时该照列（拿不到的不编）。
+   */
+  let storeClosed = false
   let settle: () => void = () => {}
   const exited = new Promise<void>((resolve) => {
     settle = resolve
@@ -452,7 +457,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
      *
      * ⚠️ 首条消息一按下回车它就落账 ⇒ 那一格当场归位（不必等下一次推送）。
      */
-    const known = (session: string): boolean => store.hasSession(session)
+    const known = (session: string): boolean =>
+      storeClosed ? true : store.hasSession(session)
 
     for (const executor of executors) {
       const session = executor.run.session
@@ -1376,6 +1382,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     clearRecord(paths)
     // 管理者手上那份库连接——**它活过任何一个窗口**（设计：「关闭一个窗口不能关闭
     // 其他会话的数据库连接」），故只在管理者自己退的这一跳关
+    storeClosed = true
     try {
       store.close()
     } catch {

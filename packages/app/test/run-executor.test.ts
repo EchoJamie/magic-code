@@ -19,6 +19,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createRecordsStore } from '@magic/records'
 import { connectManager } from '../src/run/client.ts'
 import type { ManagerClient } from '../src/run/client.ts'
 import { createProcessLauncher } from '../src/run/launch.ts'
@@ -305,6 +306,42 @@ describe('U48-S3 · 独占与代次', () => {
     } finally {
       manager.stop('用例收尾')
       await manager.waitUntilExit()
+      g.dispose()
+    }
+  }, 60_000)
+})
+
+/** 这一支要用的那条会话 id——形制与上面 `session.open` 那几条同。 */
+const SESSION = 'aaaaaaaa-0000-0000-0000-000000000009'
+
+describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () => {
+  test('管理者收摊那一刻：那一行是「停止中」——已受理，资源尚未全退', async () => {
+    const g = ground('stopping')
+    // 真会话（列表按目录说话：库里点得出的会话才有那一行）
+    const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+    store.setSessionTitle(SESSION, '收摊那条', Date.now())
+    store.close()
+
+    const manager = await standUp(g)
+
+    try {
+      const client = await open(g, manager, 'a')
+      client.send({ type: 'session.open', session: SESSION })
+      await waitFor('真执行者起来并接上那条会话', () =>
+        manager.runs().some((row) => row.session === SESSION && row.state === 'idle'),
+      )
+
+      // **发起收摊**——`bye` 刚发出去，那一代还在（收尾两跳还没走完）
+      manager.stop('用例收尾')
+
+      // **同步读**：那一刻它就是「已受理停止、资源尚未全部退出」
+      const row = manager.runs().find((one) => one.session === SESSION)
+      expect(row?.state).toBe('stopping')
+      expect(row?.holds).toBe(true)
+
+      await manager.waitUntilExit()
+    } finally {
+      await manager.waitUntilExit().catch(() => {})
       g.dispose()
     }
   }, 60_000)
