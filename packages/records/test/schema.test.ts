@@ -134,6 +134,9 @@ describe('判据 3 · 不落库清单', () => {
     // **新锚**：十五条，字面规则一个没动。
     // U63 补锚：`input.unread`——同 `skill.used` 那条（依据在**条目**里：引用了哪几份在
     // `UserPayload.refs`，读没读在工具条目里；落库＝把同一件事存第二遍）。
+    // U62 补锚：`paths.identified`——同 `paths.catalog` 那一条（**读出来的**不落库：
+    // 内容就在盘上，这一问只是「选定的这一条是什么」的当场答复，问几次都不混）。
+    // 那一处引用到底带了什么材料同样**另有痕**（`user` 条目的载荷 `refs`，含图片那份 blob）。
     // **新锚**：十六条，字面规则一个没动。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
@@ -146,6 +149,7 @@ describe('判据 3 · 不落库清单', () => {
       'model.delta',
       'model.retry',
       'paths.catalog',
+      'paths.identified',
       'plan.changed',
       'provider.catalog',
 

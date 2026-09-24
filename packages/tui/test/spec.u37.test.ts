@@ -154,7 +154,9 @@ describe('U37 · 一张图的详情：两条动作各走各的', () => {
 
     const view = stage.shell.getView()
     expect(view.dock.kind).toBe('input') // 抽屉收起（回到输入行）
-    expect(view.draft).toBe('@截图.png')
+    // 那一处写的是**编号**（U62）——不是文件名：名字按**内容身份**取（`row.blob`），
+    // 同一张图放回来两次、或与 `@` 选进来的同一张并用，都是同一个名字
+    expect(view.draft).toBe('Image#1')
 
     const ref = refs(stage)[0]
     expect(ref?.kind).toBe('image')
@@ -186,7 +188,7 @@ describe('U37 · 一张图的详情：两条动作各走各的', () => {
     expect(wire?.kind).toBe('image')
     if (wire?.kind !== 'image') return
     expect(wire.blob).toBe('blob_7')
-    expect(wire.marker).toBe('@截图.png')
+    expect(wire.marker).toBe('Image#1')
     expect(wire.mime).toBe('image/png')
   })
 
@@ -199,7 +201,7 @@ describe('U37 · 一张图的详情：两条动作各走各的', () => {
     type(stage, '这个报错怎么回事')
 
     const view = stage.shell.getView()
-    expect(view.draft).toBe('@截图.png这个报错怎么回事')
+    expect(view.draft).toBe('Image#1这个报错怎么回事')
     expect(refs(stage)).toHaveLength(1) // 引用还在原处（没被那串字挤掉）
   })
 

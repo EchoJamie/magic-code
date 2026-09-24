@@ -1429,6 +1429,16 @@ export type CommandRoutes = {
    */
   onPathList(query: string): void
   /**
+   * **认一认选定的那一条**（U62 · 图片的名字）→ **装配**（同 `onPathList`：路径面归它）。
+   *
+   * 控制域**原样转手**——它不认识文件系统、读不了内容；答复走事件（`paths.identified`，
+   * **不落库**）：命令面只发不收。
+   *
+   * **与 `onPathList` 分开的由头**（同其契约注）：那一条是浏览（不读内容），
+   * 这一条**真的要读一次**——只在用户按下回车选定之后发。
+   */
+  onPathIdentify(path: string, external?: true): void
+  /**
    * **本会话已送出的图片**（`/attachments` 的读侧 · U37）→ **对话域**。
    *
    * 与 `onHistoryRead` 同一条分工：**会话与条目归它**（图片附件就是 `user` 条目载荷里的

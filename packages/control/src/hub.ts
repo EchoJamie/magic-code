@@ -111,6 +111,13 @@ export function createControlHub(): ControlHubFace {
         // 同 `skills.list`）。本域不认识文件系统，答复走事件（`paths.catalog`，不落库）。
         target.onPathList(command.query)
         return
+      case 'paths.identify':
+        // 认一认选定的那一条（U62 · 图片的名字）——同一条路（执行域的路径面在装配手里）。
+        // 本域不认识文件系统，**也不判里外**：`external` 是用户选定那一刻的事实，
+        // 原样带过去（同 `decision.answer` 的 `remember` 之例：控制域只带话，不翻译）。
+        // 答复走事件（`paths.identified`，不落库）。
+        target.onPathIdentify(command.path, command.external)
+        return
       case 'attachments.list':
         // 本会话送出的图片（读侧 · U37）——**原样转手**给**对话域**（条目与那份载荷形态
         // 归它，同 `history.read` 的站位）。答复走事件（`attachments.catalog`，不落库）：

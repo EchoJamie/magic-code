@@ -1359,6 +1359,12 @@ export function reduce(
     case 'context.compacted':
       return view
 
+    // **认出选定那一条的答复**（U62）——`reduce` 这一层**不改视图**：那一处该写成什么样
+    // （`Image#N`）是**稿子**的事，由外壳自己按答复改（见 `shell.ts` 的 `identifyPicked`）。
+    // 这里只是一条「收下了、别处处置」的出口，不是一个空壳分支。
+    case 'paths.identified':
+      return view
+
     default:
       return assertNever(event)
   }

@@ -603,10 +603,15 @@ export function inlineOf(text: string, refs: readonly TextRefEntry[]): string {
  *
  * ## 图片那一段的形状
  *
- * 每张图占**三段**：抬头（`〔本次材料 · 图片 label〕`）→ **图像部件**（字节本体）→
- * 收尾（`〔图片完 · label〕`）。抬头那几句不是装饰：模型得知道**这一块是用户递过来的图**，
+ * 每张图占**三段**：抬头（`〔本次材料 · 图片 Image#N（来源 …）〕`）→ **图像部件**（字节本体）→
+ * 收尾（`〔图片完 · Image#N〕`）。抬头那几句不是装饰：模型得知道**这一块是用户递过来的图**，
  * 而不是它自己查出来的东西（同文件 / 技能那两处的抬头由头）；收尾那一道是**边界**——
  * 长材料之后接着的文字若没有边界，会被读成材料的一部分。
+ *
+ * ⚠️ **抬头写的是那块上的名字**（`marker` ＝ `Image#N`），**不是文件名**（U62）：
+ * 正文里那一处写的就是这个编号，抬头若换个名字说同一张图，模型手上就**成了两个名字**
+ * ——而这一对抬头 / 收尾的全部用处正是「这一块配得上前文哪一处」。文件名仍在
+ * （`（来源 …）` 那半句，和条目载荷里的 `name`），但它是**出处**，不是那份材料叫什么。
  *
  * ## 取不回字节怎么办
  *
@@ -664,16 +669,22 @@ function pushText(parts: UserContentPart[], text: string): void {
   parts.push({ type: 'text', text })
 }
 
-/** 图片那一块的抬头——**说清「这是用户递来的一张图」**（与文件 / 技能那两处同一套口径）。 */
+/**
+ * 图片那一块的抬头——**说清「这是用户递来的一张图」**（与文件 / 技能那两处同一套口径）。
+ *
+ * 第一格是**那块上的名字**（`marker`：`Image#N`）——正文里那一处写的就是它，两处对得上，
+ * 模型才知道这一块配的是哪一处交代（见文件头注那一条）。`label` 是**出处**（从哪儿来的
+ * 那一张），不是它的名字——图不一定来自文件，名字与出处本就是两件事。
+ */
 function imageHeadOf(ref: Extract<InputRefEntry, { kind: 'image' }>): string {
   const external = ref.external === true ? '（工作区外 · 只读附件）' : ''
 
-  return `〔本次材料 · 图片 ${ref.name}（来源 ${ref.label}${external}）〕`
+  return `〔本次材料 · 图片 ${ref.marker}（来源 ${ref.label}${external}）〕`
 }
 
-/** 图片那一块的收尾——**边界**（同 `materialBlockOf` 那条理由）。 */
+/** 图片那一块的收尾——**边界**（同 `materialBlockOf` 那条理由），名字与抬头同一处取。 */
 function imageTailOf(ref: Extract<InputRefEntry, { kind: 'image' }>): string {
-  return `〔图片完 · ${ref.name}〕`
+  return `〔图片完 · ${ref.marker}〕`
 }
 
 /**

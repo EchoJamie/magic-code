@@ -1,8 +1,14 @@
 /**
  * U37 · **图片输入到模型请求的留帧装置**——真 PTY ＋ 本地模型夹具，落成可核对的帧。
  *
+ * ⚠️ **U62 起那一处写的是编号**（`Image#N`），不是文件名 / 路径：名字按**内容身份**
+ * （字节的 sha256）在一段输入里取号，同一张图在两处出现就是同一个名字。故下面几处判据
+ * 跟着改了字面（`看 @报错.png` → `看 Image#1`，`@截图.png` → `Image#1`），
+ * 并补了一条「认不出图的那一处不编号」（坏图那一屏）。
+ *
  * `bun test` **不收它**（文件名不是 `*.test.ts`）。按键 → 视图 → 命令那一半在
- * `packages/tui/test/spec.u37.test.ts`；这里补的是**只有真终端才说得清的那几件**：
+ * `packages/tui/test/spec.u37.test.ts`（命名那一半在 `spec.u62.test.ts`）；
+ * 这里补的是**只有真终端才说得清的那几件**：
  * - 屏上**长什么样**（引用那一段怎么写、有没有多出一行附件清单——`AGENTS.md` 的看帧四项）；
  * - **图真到了端点上吗**（夹具按出站请求体里的 `image_url` 数张数，不是看内核侧）；
  * - **删掉源文件之后**从 `/attachments` 取回、再送一次，端点**又收到一张**；
@@ -133,11 +139,15 @@ async function sending(out: string): Promise<void> {
     keep(out, candidates, '01a-候选（图也在里面）')
     check(has(candidates, '报错.png'), '图片文件在 `@` 候选里（沿用既有入口，没有另一个选择器）')
 
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    // 认出来之后那一处**就地**成了编号（U62）——等的就是它（名字是内容身份取的号，
+    // 不是文件名）；输入行那一格（`› ` 开头）才是判据，别拿记录区里同名的旧行顶上
+    await pressKey(session, 'enter', { until: { text: '› 看 Image#1' }, timeoutMs: 10_000 })
     const picked = await session.capture({ label: '01-选入图片' })
     keep(out, picked, '01-选入图片')
 
-    check(has(picked, '看 @报错.png'), '引用留在它被说出来的位置（那句话还在）')
+    check(has(picked, '› 看 Image#1'), '引用留在它被说出来的位置（那句话还在）')
+    check(has(picked, 'Image#1'), '那一处写的是**编号**（不是文件名、也不是路径）')
+    check(!has(picked, '报错.png'), '**不假装有文件名**（文件名一个字都不上屏）')
     check(!has(picked, '（待发送）'), '**不另铺常驻附件行**（设计：引用就在正文里）')
     check(session.requests().length === 0, '**选入不发模型请求**（夹具收到 0 条）')
 
@@ -151,11 +161,16 @@ async function sending(out: string): Promise<void> {
     check(requests.length === before + 1, `提交之后**正好一次**请求（实测 ${requests.length} 条）`)
     check(requests.at(-1)?.images === 1, `端点上**收到了一张图**（实测 ${requests.at(-1)?.images ?? 0} 张）`)
     check(
-      (requests.at(-1)?.lastUser ?? '').includes('看 @报错.png'),
+      (requests.at(-1)?.lastUser ?? '').includes('看 Image#1'),
       '正文一个字不剥（引用那一段还在）',
       requests.at(-1)?.lastUser ?? '',
     )
-    check(has(sent, '看 @报错.png'), '记录区回显的是**原话**')
+    check(
+      (requests.at(-1)?.lastUser ?? '').includes('〔本次材料 · 图片 Image#1（来源'),
+      '抬头说的是**同一个名字**（正文那一处与材料那一块对得上）',
+      requests.at(-1)?.lastUser ?? '',
+    )
+    check(has(sent, '看 Image#1'), '记录区回显的是**原话**')
 
     // —— ③ 记录：图片引用 ＋ blob（不是字节本体现在那张表里）——
     const raw = readDatabase(join(session.facts().dataDir, 'records.db'))
@@ -201,7 +216,10 @@ async function broken(out: string): Promise<void> {
 
     check(has(refused, '没送出'), '当场说一句「没送出」（不静默失败）')
     check(has(refused, '没传完'), '缘由说得出**是哪一种不过**（半截的图）')
+    // **认不出图 ⇒ 那一处照旧是路径**（不是「硬安一个编号」）：一份连完整图片都不算的
+    // 文件，本来就没有「图片的名字」可言——名字是内容身份换来的
     check(has(refused, '看 @半截.png'), '**原稿保住**（那句话连同引用还在输入行上）')
+    check(!has(refused, 'Image#'), '认不出图的那一处**不编号**（不假装它是张图）')
     check(session.requests().length === 0, '一个模型请求都没发出去')
   } finally {
     await close(session)
@@ -229,7 +247,7 @@ async function retrieving(out: string): Promise<void> {
     await session.send('@', { until: { text: '@' }, timeoutMs: 10_000 })
     await session.send('截图', { until: { text: '@截图' }, timeoutMs: 10_000 })
     await session.wait({ text: '截图.png　文件' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    await pressKey(session, 'enter', { until: { text: '› 看 Image#1' }, timeoutMs: 10_000 })
     await pressKey(session, 'enter', { until: { text: '看到了。' }, timeoutMs: 15_000 })
 
     check(session.requests().at(-1)?.images === 1, '第一次：端点上收到一张图')
@@ -285,11 +303,13 @@ async function retrieving(out: string): Promise<void> {
     await pressKey(session, 'down')
 
     // —— ⑥ 「加入本次输入」⇒ 引用回到输入行，再送一次 ——
-    await pressKey(session, 'enter', { until: { text: '@截图.png' }, timeoutMs: 10_000 })
+    // ⚠️ 判据钉在**输入行那一格**（`› ` 开头）：记录区里那条 `看 Image#1` 也叫这个名字，
+    // 拿裸的 `Image#1` 当判据会**立刻为真**（用例误绿、真动作还没发生）
+    await pressKey(session, 'enter', { until: { text: '› Image#1' }, timeoutMs: 10_000 })
     const back = await session.capture({ label: '06a-加入本次输入' })
     keep(out, back, '06a-加入本次输入')
 
-    check(has(back, '@截图.png'), '那一张**放回了输入行**（复用保存的字节，不依赖原路径）')
+    check(has(back, '› Image#1'), '那一张**放回了输入行**（复用保存的字节，不依赖原路径）')
 
     await typeLine(session, '还是这个错')
     const before = session.requests().length
