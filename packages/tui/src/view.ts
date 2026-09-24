@@ -547,9 +547,8 @@ export type CompletionState = {
  * 三条分寸：
  * - **打了名字才列**（`/` 之后一个字都没打时不列技能）：`/` 那一下问的是「有哪些命令」，
  *   把仓库里几十个技能一并倒出来会把那一屏淹掉，也让 `/skills` 这个入口看不见了；
- * - **同名只列一条**（按发现次序取头一份）：直达本来就是按来源优先级取唯一一份
- *   （`resolveSkill`），列两条同名的行只会让人以为要挑；要挑去 `/skills`
- *   ——那里**同名各占一行**，来源可辨；
+ * - **同一档同名各占一条、带来源**（U57 起；缘由见 `skillCommands`）：分得出唯一时仍是一条，
+ *   分不出时才把同名的各列一条——那一栏上就分得开，不必先按一下 `Tab` 才知道有两份；
  * - **与内置命令同名的技能不列**：内置命令保留含义（工单明写），该技能仍能从 `/skills`
  *   选出来——故此处是「不列」，不是「不认」。
  */
@@ -606,7 +605,26 @@ export function activeWordOf(draft: string, caret: number): ActiveWord | undefin
   return { start, end: at, word, atStart: /^\s*$/.test(draft.slice(0, start)) }
 }
 
-/** 技能名那一批候选（见 `matchCommands` 那三条分寸）——`summary` 用技能的简述。 */
+/**
+ * 技能名那一批候选（见 `matchCommands` 那几条分寸）——`summary` 用技能的简述。
+ *
+ * ## 同一档同名时**各占一条**（U57 · D32）
+ *
+ * 原先这里按名字去重、只留头一份。可「排在前头」与「并列」在**用户眼里**长得一样：
+ * 只列一条 `/twins`，谁也不知道库里其实有两份——要等到按了 `Tab` 才在下一屏看见。
+ * 而恰好是这一档（同一来源优先级分不出唯一）**不能静默挑一个**（`resolveSkill`），
+ * 于是那一条候选给的是一个「按下去还要再挑一次」的承诺，屏上却一个字都没说。
+ *
+ * 现在按 `resolveSkill` 的判法分两种：
+ * - **分得出唯一**（目录里只这一份 / 最高那一档只一份）⇒ 照旧**一条**，不带来源
+ *   （名称本身就认得出来，带上是白重复一个名字）；
+ * - **分不出唯一** ⇒ **同名的各占一条**，每条**把来源写进那一行**
+ *   （设计 · 技能调用：「来源要写全到能区分」）——那一栏上就分得开，
+ *   不必先按一下才知道有两份。
+ *
+ * 两条都**只改列什么，不改选什么**：选哪一份仍归那一屏（`openSkillsPicker`）——
+ * 「同一优先级下不能唯一确定时展开同名候选，**不静默随列表顺序选取**」。
+ */
 function skillCommands(word: string, skills: readonly SkillCatalogRow[]): readonly CommandSpec[] {
   if (word.replace(/^\//, '') === '') return []
 
@@ -616,9 +634,16 @@ function skillCommands(word: string, skills: readonly SkillCatalogRow[]): readon
   for (const skill of skills) {
     const name = `/${skill.name}`
     if (taken.has(name)) continue
-    taken.add(name) // 同名多份只留头一份（次序即优先级，同 `resolveSkill` 的取法）
+    taken.add(name)
 
-    commands.push({ name, summary: skill.description })
+    const hit = resolveSkill(skill.name, skills)
+    if (hit.kind !== 'many') {
+      commands.push({ name, summary: skill.description })
+      continue
+    }
+
+    // 同名那一摊：这一条起，同名的每一份各来一条，来源就写在它自己那一行上
+    for (const one of hit.skills) commands.push({ name, summary: `${one.label} · ${one.description}` })
   }
 
   return commands

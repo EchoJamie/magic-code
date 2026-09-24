@@ -74,7 +74,8 @@ const USAGE = `界面验收工具（开发命令，不是产品命令）
         ] }
 
       命令就那几条：start / send / key / resize / wait / capture / quit / close / sessions
-      （与 serve 同一套，学一次就够）。两处糖：start 可以写 "as" 给窗口起名；
+      （与 serve 同一套，学一次就够）。几处糖：start 可以写 "as" 给窗口起名；
+      start 可以写 "files" 先往工作区摆几份文件（相对路径 → 内容，验技能 / 规约要用）；
       send / key 可以写 "wait" ＋ "timeoutMs" ＝「写一次，等这一下生效」；
       quit ＝ 照产品的方式退出（空闲连按两次 ctrl+c 那一路，你不必自己数两下），
       close ＝ 收摊并报「谁让它退的场」（答复里的 exit.by）。
