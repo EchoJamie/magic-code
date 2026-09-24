@@ -1,8 +1,12 @@
 /**
  * U33 · `skill` 工具 —— **受限读取入口**这一件（工具域这一半）。
  *
- * 判据：**一个工具取两形**（主文 / 来源内的引用）· **不静默挑同名** · **读不到照实说** ·
- * 抬头把「技能说明」与「工作区里读到的数据」分开。
+ * 判据：**一个工具取两形**（主文 / 来源内的引用）· **名字就是完整的地址**（同名只留一条，
+ * 见下）· **读不到照实说** · 抬头把「技能说明」与「工作区里读到的数据」分开。
+ *
+ * ⚠️ **判据二变**（U58 · 2026-09-25）：原判「**不静默挑同名**」——那时工具有一个 `source`
+ * 参数，名字不唯一就回填列出各来源让模型指明。同名在**发现那一层**只留一条之后那个参数
+ * 收掉了（它的唯一由头就是同名），故这里改成咬「**按名字取，取到次序里靠前的那一份**」。
  *
  * 本文件用**桩 `Skills` 端口**（工具域不碰文件系统，边界归执行域）——真盘上的那条路
  * 由 `packages/execution/test/skills.test.ts`（来源面）与
@@ -74,25 +78,30 @@ describe('U33 · skill 工具', () => {
     expect(asked).toEqual(['main:other@/sk/other'])
   })
 
-  test('**同名两个来源**：不带 `source` 不静默挑一个——回填里列出各处', async () => {
+  /**
+   * 清单里真出现同名（**真实来源不会给**——`skills.discover` 按同名只留一条）：
+   * 取靠前那一份。这里**不另立一套判定**（U49：两处各判一遍必然分叉），
+   * 靠前就是发现层的次序（次序即优先级）。
+   */
+  test('清单里真出现同名 ⇒ 取**靠前那一份**（不在此处另判一次）', async () => {
     const { port, asked } = stubSkills([PDF, { ...PDF, path: '/sk/dup' }])
 
     const outcome = await run(port, { name: 'pdf' })
 
-    expect(outcome.ok).toBe(false)
-    expect(outcome.output).toContain('有 2 个来源')
-    expect(outcome.output).toContain('/sk/pdf')
-    expect(outcome.output).toContain('/sk/dup')
-    // 一次读取都没发生（没挑、也没试）
-    expect(asked).toEqual([])
+    expect(outcome.ok).toBe(true)
+    expect(asked).toEqual(['main:pdf@/sk/pdf'])
   })
 
-  test('指明了来源就按身份取——**哪怕它与发现结果对不上**也照传给来源口（由它判）', async () => {
+  /**
+   * **参数表里没有 `source` 这一格**（U58 收掉的那一个）：多给的键不当回事——
+   * 读的东西仍由**发现结果**定，模型编一个路径进来也不认。
+   */
+  test('多给一个 `source` 也不作数——按名字归位（读哪儿由发现结果定）', async () => {
     const { port, asked } = stubSkills([PDF])
 
     await run(port, { name: 'pdf', source: '/elsewhere/pdf' })
 
-    expect(asked).toEqual(['main:pdf@/elsewhere/pdf'])
+    expect(asked).toEqual(['main:pdf@/sk/pdf'])
   })
 
   test('没有这个技能：回填列出可用的（空清单时说清「这次一个都没发现」）', async () => {

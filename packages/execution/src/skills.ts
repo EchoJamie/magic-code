@@ -31,9 +31,29 @@
  * 3. **补充**——用户显式配置的 `skills.sources` 点名的目录（`configured`）。
  *
  * **次序即优先级**：项目 → 用户 → 配置；同作用域内 `magic` → `agents`。它不是排序偏好，
- * 是**同名时的取舍**（`/名字` 直达取靠前那份，其余同名项仍在列、仍可明确选中）。
+ * 是**同名时的取舍**——同名**只留一条**，留下的就是这一序里靠前的那一份（见下）。
  * 「Magic 自身第一」用在这儿：`.magic/skills` 是主，`.agents/skills` 是**兼容入口**；
  * 用户点名的目录是补充（与 `ProjectRule.kind` 把 `source` 排最后同一条理由）。
+ *
+ * ## 同名只留一条（2026-09-25 用户定）
+ *
+ * **一个名字在发现结果里只出现一次。** 由头：同名技能**很可能是同一份**（项目里放了一份、
+ * 用户目录也放了一份），列两份是噪音。留下谁：
+ *
+ * - **跨档**：项目级 ＞ 用户级；同一作用域里 `.magic` ＞ `.agents`（＝上面那一序靠前的赢）；
+ * - **同档**（同一个来源目录里两份，无优先级可讲）：按**技能目录名的字典序**取第一个。
+ *
+ * 判定只发生在**这一处**（`discover` 里那一个 `kept` 集合）。呈现层不另外去重、也不把
+ * 多出来的「藏起来」——藏起来是假动作：底下还是两份，别的地方（按名字读、模型那份清单）
+ * 照样会露，两处各判一遍必然分叉。
+ *
+ * **确定**是硬要求（同档那一档尤其）：来源目录的次序由本文件写死（`sourceDirs`），
+ * 一个来源目录里各份的次序由 `childrenOf` 按**目录名码位序**排——不是文件系统返回的顺序，
+ * 也不是随 locale 变的 `localeCompare`。同一份材料跑两遍，赢的必须是同一个。
+ *
+ * ⚠️ **由此而来的一个后果**（如实记）：被盖住的那一份**不在发现结果里**，于是按它的真路径
+ * 读（`readAt` 的归位那一步）不再认——旧记录里绑过那一份的引用会报「来源没了，请重新选择」。
+ * 那是「发现面不认的就不读」这条既有口径的直接结果，不是新判据。
  *
  * ## 三条边界（都不是靠自觉，是代码里唯一的入口）
  *
@@ -202,6 +222,14 @@ function discover(options: SkillsOptions, limits: SkillLimits): SkillCatalog {
   const problems: SkillProblem[] = []
   /** 物理同源去重——真路径为键（软链接指同一个目录的两条入口只算一个实体）。 */
   const seen = new Set<string>()
+  /**
+   * **同名去重**——名字为键，先到的那一份留下（见文件头注「同名只留一条」）。
+   *
+   * 这里就是那条判定的**唯一一处**：跨档靠 `sourceDirs` 的次序（项目 → 用户；`.magic` →
+   * `.agents`），同档靠 `childrenOf` 的目录名码位序。**后到的那一份不报 `problems`**——
+   * 被盖住是产品按设计做的选择，不是「读不懂」那一类。
+   */
+  const kept = new Set<string>()
   /** 到上限之后还剩几个没看——**如实计数并报出来**，不静默截。 */
   let skipped = 0
 
@@ -217,7 +245,12 @@ function discover(options: SkillsOptions, limits: SkillLimits): SkillCatalog {
       }
 
       const one = readOne(candidate.dir, candidate.place, at, problems, limits)
-      if (one !== undefined) skills.push(one)
+      // 读不懂的那一份**不占名字**：它没被认下，同名的下一份照样可以顶上来
+      if (one === undefined) continue
+      if (kept.has(one.name)) continue
+
+      kept.add(one.name)
+      skills.push(one)
     }
   }
 
@@ -269,7 +302,21 @@ function sourceDirs(options: SkillsOptions): readonly SourceDir[] {
 }
 
 /**
- * 一个来源目录下的**技能目录真路径**（一层，按目录名排序）。
+ * 目录名比较——**按码位**，不用 `localeCompare`。
+ *
+ * 这一序不是排版偏好：**同档同名的两份取的就是这里排第一的那一份**（`discover`），
+ * 故它必须是**确定的**。`localeCompare` 随进程 locale（`LANG` / `LC_ALL`）走——同一份材料、
+ * 同一台机器，换一次环境变量就可能换个「第一个」，而那种错在界面上看不出来。
+ * 码位序只与字符本身有关：跑在哪儿、什么环境，结果都一样。
+ */
+function byDirectoryName(left: Dirent, right: Dirent): number {
+  if (left.name === right.name) return 0
+
+  return left.name < right.name ? -1 : 1
+}
+
+/**
+ * 一个来源目录下的**技能目录真路径**（一层，按目录名码位序）。
  *
  * 三件如实报（都是 `error`）：
  * - 来源目录**读不动**（有它但列不出来）——底下那一摊一个都没看过；
@@ -311,7 +358,7 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly FoundSkil
   }
 
   const found: FoundSkill[] = []
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const entry of entries.sort(byDirectoryName)) {
     if (entry.name.startsWith('.')) continue
 
     const child = join(at.dir, entry.name)
@@ -421,25 +468,29 @@ function readOne(
  * 来源的人读标签（契约 `Skill.label`）——「哪一类来源 · 哪个入口 ·（名字没说的那一段）位置」。
  *
  * 前两段各有各的用处：**作用域**（项目 / 用户 / 配置）说「这是谁的技能」，
- * **入口**（`.magic` / `.agents`）说「它从哪个目录长出来的」。同名时两句都要有，
- * 人才分得清「项目里那个」与「我自己那个」。
+ * **入口**（`.magic` / `.agents`）说「它从哪个目录长出来的」。
+ *
+ * ⚠️ **2026-09-25 起它不再上界面**：候选栏那一行、使用回执、系统提示词里那份清单原来都印
+ * 它，那几处印它的由头是「同名并存时把两份分开」；同名**只留一条**之后（见文件头注），
+ * 那个由头没了，界面就不再显示来源（设计 · 技能调用：「来源优先级是内部规则」）。
+ * **标签本身照旧产出**——它现在的用处是**记录与诊断**：会话里留着当时用的是哪一份
+ * （那是依据，不是显示）· `magic --check` 里逐条报得出 · 模型手上那份材料抬头
+ * 用它说清「这一份是从哪儿来的」。
  *
  * ## 第三段：**只在名字没说的时候补**（U33 独立验收退回①）
  *
  * `name` 取 front-matter 那一个、**不取目录名**（见文件头注）——于是「同一个作用域、
- * 同一个入口下两份同名的技能」是真能出现的：`.magic/skills/first` 与 `.magic/skills/second`
- * 都自称 `twins`。那时前两段**一模一样**，用户在候选列表里根本认不出哪份是哪份
- * （真 PTY 反例：两行逐字相同）。位置（目录名）就是为这一格补的。
+ * 同一个入口下两份同名的技能」当时是真能出现的：`.magic/skills/first` 与 `.magic/skills/second`
+ * 都自称 `twins`。那时前两段**一模一样**，人在候选列表里根本认不出哪份是哪份
+ * （真 PTY 反例：两行逐字相同）。位置（目录名）就是为那一格补的。
+ *
+ * **同名不再并存之后这一段的由头没了，但它照旧这么写**：记录里那句「当时用的是哪一份」
+ * 仍是这个读法——改名目录、软链接那一路照样带一段位置（它说的是「技能躺在哪个目录里」，
+ * 与同名与否无关）。
  *
  * ⚠️ **目录名说了名字已经说过的事就不补**：绝大多数技能目录与名字同名
- * （`skills/pdf/` 里那份 `pdf`），补上就是 `项目 .magic/skills/pdf` 里白白重复一个 `pdf`
- * ——草稿行与使用回执都是「名字 · 来源」并排，重复一眼看得见。故判据是**信息量**
- * 而不是「有没有目录」：位置**不**等于名字，才说明它带来了一条名字没说的信息。
- *
- * **限度如实记**：多根工作区下「两个根里同一个相对位置、同一个名字」的两份，这一格
- * 仍然分不开（两边的位置都等于名字）——那种情形要分辨得靠完整路径（`Skill.path` 里
- * 有，交给模型的那份目录块也照印），交互面上不再拖一串 `/Users/…`（路径是机器上的坐标，
- * 不是技能的一部分——同 `conversation/prompt/skills.ts` 那条注）。
+ * （`skills/pdf/` 里那份 `pdf`），补上就是 `项目 .magic/skills/pdf` 里白白重复一个 `pdf`。
+ * 故判据是**信息量**而不是「有没有目录」：位置**不**等于名字，才说明它带来了一条名字没说的信息。
  *
  * **写在这儿**（而不是消费侧各拼一遍）：这一处是唯一知道「哪个 segment 归哪个来源」的地方
  * ——别处拼的话，改一个目录名就要满仓找。

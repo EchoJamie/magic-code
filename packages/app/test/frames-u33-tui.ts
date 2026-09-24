@@ -111,8 +111,15 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
   await session.send(text, { until: { text }, timeoutMs: 10_000 })
 }
 
-/** **开 `/skills` 抽屉**：打那条命令、回车、等列表铺开（抽屉由答复那一下开）。 */
-async function openDrawer(session: UiSession, rows = '项目 .magic/skills'): Promise<void> {
+/**
+ * **开 `/skills` 抽屉**：打那条命令、回车、等列表铺开（抽屉由答复那一下开）。
+ *
+ * ⚠️ **等待锚换过**（U58）:原先等的是行上的来源那串字（`项目 .magic/skills`）——
+ * 来源那一格从行上收掉了（见下 ① 那几条），故改等**列表铺出来那一行的说明**
+ * （「直接打字可筛选」）。⚠️ 别拿状态行的键位当锚：输入态那句里也有 `esc 收起`，
+ * 等它等于什么都没等（真栽过一趟：抽屉还没开就取帧了）。
+ */
+async function openDrawer(session: UiSession, rows = '直接打字可筛选'): Promise<void> {
   await typeLine(session, '/skills')
   await session.key('enter', { until: { text: rows }, timeoutMs: 10_000 })
 }
@@ -187,17 +194,19 @@ async function pickAndSend(out: string, configured: string): Promise<void> {
     keep(out, list, '01-技能列表')
 
     check(has(list, 'pdf'), '列表里有 pdf')
-    check(has(list, '项目 .magic/skills'), '项目那一份的来源报得出来')
-    check(has(list, '用户 .magic/skills'), '**同名的那一份用户来源**也在列（两行，来源可辨）')
-    check(has(list, '项目 .agents/skills'), '兼容入口那一份的来源与原生**分得开**')
-    check(has(list, '配置来源 .magic/skills'), '**配置点名**的那一份在列')
+    check(has(list, '兼容入口那一份'), '兼容入口那一份（不同名）照旧在列')
+    check(has(list, '配置里点名的那一份'), '**配置点名**的那一份在列')
     // 软链接那一份的名字取自**目标**里的 `SKILL.md`（`audit`）——它自己叫 `linked`，
     // 屏上出现的是目标的名字，正说明链接是**跟出去读的**
     check(has(list, 'audit'), '**目录软链接**的那一份在列（名字来自链接指向的那一处）')
-    // 候选每项一行（简化同名的两份各占一行、不挤在一行里）
+    // **同名只留一条**（U58 · 2026-09-25）：项目那份 `pdf` 盖住用户那份 —— 用户在列里看不见
+    check(!has(list, '我个人的 PDF 做法'), '同名只留一条：**用户那份被项目那份盖住**（不在列）')
+    // **来源那一格收掉了**：行上只有名称与简述
+    check(!has(list, '.magic/skills'), '行上不带来源那一格（2026-09-25 收）')
+    // 候选每项一行：一行一读就是「名称 ＋ 简述」
     check(
-      rowOf(list, '项目 .magic/skills') !== rowOf(list, '用户 .magic/skills'),
-      '同名的两份各占一行',
+      list.lines.some((line) => line.includes('pdf') && line.includes('处理 PDF：抽文本')),
+      '那一行读得通（名称 ＋ 简述，不带来源）',
     )
 
     // —— ② 选定：草稿那一行，**此刻一个模型请求都没发** ——
@@ -258,7 +267,7 @@ async function cancel(out: string, configured: string): Promise<void> {
     keep(out, shot, '04-取消')
 
     check(!has(shot, '/pdf'), '`esc` 之后草稿上没有挂任何技能')
-    check(!has(shot, '项目 .magic/skills'), '抽屉收起了（列表那几行不在屏上）')
+    check(!has(shot, 'audit'), '抽屉收起了（列表那几行不在屏上）')
     check(session.requests().length === 0, '取消一路一个模型请求都没发')
   } finally {
     await close(session)
@@ -444,7 +453,14 @@ async function builtinClash(out: string, configured: string): Promise<void> {
 
 // ══ ⑩～⑬ 独立验收退回的三处（真 PTY 复现）════════════════════════════
 
-/** ⑪ 窄窗（**起手即 60 列**，不 resize）＋ 56 字符的名字：来源不能被名字挤没。 */
+/**
+ * ⑪ 窄窗（**起手即 60 列**，不 resize）＋ 56 字符的名字：**名称先吃满整行**。
+ *
+ * ⚠️ **判据改了**（U58 · 2026-09-25）：原判「来源不能被名字挤没」（两行各保住自己的来源）。
+ * 来源那一格收掉、同名只留一条之后，这一条只剩一份——判的是**放不下时谁让位**：
+ * 名称拿到的是整行，截断落在简述身上（设计 · 技能调用：「窄窗先保住名称、再截断简述」；
+ * 原先那「名称至多占一半」是给**来源**扣的额度，来源没了那一扣也就没有由头了）。
+ */
 async function narrowLongName(out: string, configured: string): Promise<void> {
   const long = 'a'.repeat(56)
   const session = await createUiSession({
@@ -466,13 +482,11 @@ async function narrowLongName(out: string, configured: string): Promise<void> {
     keep(out, shot, '11-窄窗长名')
 
     const rows = shot.lines.filter((line) => line.includes(long.slice(0, 8)))
-    check(rows.length === 2, `两份各占一行（实测 ${rows.length} 行）`)
-    check(rows[0]?.includes('项目 .magic/skills') === true, '第一行保住了「项目」来源', rows[0] ?? '')
-    check(rows[1]?.includes('用户 .magic/skills') === true, '第二行保住了「用户」来源', rows[1] ?? '')
-    check(
-      rows.every((line) => line.length <= shot.columns),
-      '每项仍是一行（没折行）',
-    )
+    check(rows.length === 1, `同名只留一条（实测 ${rows.length} 行）`)
+    const row = rows[0] ?? ''
+    check(row.includes('a'.repeat(45)), '**名称先吃满整行**（放不下也不先截它）', row)
+    check(!row.includes('那一份'), '**截断落在简述身上**（它一个字都不留）', row)
+    check(row.length <= shot.columns, '每项仍是一行（没折行）', row)
   } finally {
     await close(session)
   }
@@ -501,7 +515,7 @@ async function wideLongName(out: string, configured: string): Promise<void> {
     const row = shot.lines.find((line) => line.includes(long.slice(0, 8))) ?? ''
     check(row.includes(long), '**名称整串都在**（宽窗下放得下就不截）', row)
     check(row[row.indexOf(long) + long.length] === '　', '名称之后不是省略号')
-    check(row.includes('项目 .magic/skills'), '来源也在')
+    check(!row.includes('.magic/skills'), '行上没有来源那一格（2026-09-25 收）')
     check(!row.includes(note), '**截断落在简述身上**')
   } finally {
     await close(session)

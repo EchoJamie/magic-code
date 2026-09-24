@@ -18,15 +18,17 @@
  *    说明书必须在这儿，模型没有别的地方知道它；
  * 3. **用户点名的那一个会直接送上来**——省得模型看到正文已经在消息里，还要再取一次。
  *
- * ## 为什么**不带**路径（除非要区分同名）
+ * ## 为什么**不带**路径
  *
  * 路径是机器上的坐标，不是技能的一部分——每行都拖一串 `/Users/...` 只会把清单糊掉。
- * 但**同名的两个**必须分得开（「不能静默选错技能」）：那时才把目录补上，
- * 与交互约束里「来源用于区分同名对象时须保留」是同一条。
+ * 曾经这里的例外是「**同名的那两个**必须分得开」：那时把目录补在行尾，好让模型再把目录
+ * 交给 `skill` 工具指明取哪一份。那个例外随「**同名只留一条**」（2026-09-25）一并去掉：
+ * 同名在发现那一层就只剩一条（项目级 ＞ 用户级、`.magic` ＞ `.agents`），
+ * **一个名字一份技能**，模型用名字取就够了——`skill` 工具那边也不再收路径
+ * （见 `@magic/tools` 的 `skill-tool.ts`）。
  *
- * 用户同名的情形不止一种：同一个名字在两个来源都有（项目一份、用户一份）是真常见的
- * ——一份是「这个项目的做法」，一份是「我这台机器的习惯」。清单里两行都在，
- * 模型按任务挑，`skill` 工具按目录取，两边对得上。
+ * 行尾那个 `（来源 …）` 留着：它是**这一份来自哪儿**（项目 / 用户 / 哪个入口）——
+ * 与上面那段开场白是一件事的逐项说法，不是给「分开两份」用的。
  */
 
 import type { Skill, SkillCatalog, SkillProblem } from '@magic/contracts'
@@ -65,7 +67,7 @@ export function renderSkillsBlock(input: {
 
   if (skills.length > 0) {
     parts.push(PREAMBLE)
-    for (const skill of skills) parts.push(entryOf(skill, skills))
+    for (const skill of skills) parts.push(entryOf(skill))
   }
 
   // **只说「坏了」的那一类**（`error`）——取舍那类（原生顶掉兼容、项目顶掉用户）
@@ -90,12 +92,12 @@ export { SKILLS_BLOCK_ID, SKILLS_HEADING } from './assembly.ts'
  *
  * 描述**原样照抄**（不折行、不截断）：它是模型判断「该不该用」的唯一依据，
  * 动一个字都是我替作者改了说明。
+ *
+ * 行尾只有 `（来源 label）`：**按名字取**是完整的地址（同名在发现那一层只留一条），
+ * 故不再需要那一截「· 目录 <路径>」——它是给 `source` 参数用的，参数已随同名一起收掉。
  */
-function entryOf(skill: Skill, all: readonly Skill[]): string {
-  const same = all.filter((other) => other.name === skill.name).length > 1
-  const where = same ? ` · 目录 ${skill.path}` : ''
-
-  return `- \`${skill.name}\`：${skill.description}（来源 ${skill.label}${where}）`
+function entryOf(skill: Skill): string {
+  return `- \`${skill.name}\`：${skill.description}（来源 ${skill.label}）`
 }
 
 /**

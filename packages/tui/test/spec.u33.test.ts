@@ -24,7 +24,12 @@ function rowsOf(stage: ReturnType<typeof createStage>): readonly string[] {
 }
 
 describe('U33 · 技能使用回执', () => {
-  test('`skill.used` ⇒ 一行「本次使用技能：名称（来源 …）」', () => {
+  /**
+   * **回执只报名字**（U58 · 2026-09-25 收）：来源那一截的由头是「同名并存时把两份分开」，
+   * 同名只留一条之后它没有信息量了（设计 · 技能调用：「本次使用技能：名称」）。
+   * 当时用的是哪一份仍在**记录**里（载荷带着来源与正文）——那是依据，不是这一行要说的。
+   */
+  test('`skill.used` ⇒ 一行「本次使用技能：名称」（不带来源）', () => {
     const stage = createStage()
 
     stage.feed([
@@ -35,10 +40,12 @@ describe('U33 · 技能使用回执', () => {
       }),
     ])
 
-    expect(rowsOf(stage).join('\n')).toContain('本次使用技能：pdf（来源 项目 .magic/skills）')
+    const said = rowsOf(stage).join('\n')
+    expect(said).toContain('本次使用技能：pdf')
+    expect(said).not.toContain('来源')
   })
 
-  test('一次用了两件——一行里都报出来（各自带来源）', () => {
+  test('一次用了两件——一行里都报出来', () => {
     const stage = createStage()
 
     stage.feed([
@@ -50,9 +57,7 @@ describe('U33 · 技能使用回执', () => {
       }),
     ])
 
-    const said = rowsOf(stage).join('\n')
-    expect(said).toContain('alpha（来源 项目 .magic/skills）')
-    expect(said).toContain('beta（来源 用户 .magic/skills）')
+    expect(rowsOf(stage).join('\n')).toContain('本次使用技能：alpha · beta')
   })
 })
 

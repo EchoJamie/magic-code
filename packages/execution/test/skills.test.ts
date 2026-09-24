@@ -2,7 +2,7 @@
  * U33 · 技能的来源面 —— 判据：**发现对不对 · 身份分得开 · 读不懂的不扩大**。
  *
  * 本文件只咬**执行域这一半**（有什么、在哪儿、是哪一版）：三类来源 · 去重与优先 ·
- * 同名照列 · 按身份读取 · 来源内的引用边界 · 诊断。「什么时候送进模型」归对话域与装配，
+ * **同名只留一条** · 按身份读取 · 来源内的引用边界 · 诊断。「什么时候送进模型」归对话域与装配，
  * 判据在 `@magic/conversation` 与 `packages/app/test/skills.test.ts`。
  *
  * 判定法同 `rules.test.ts`：临时目录当真工作区（**测试用 fs 不受守护拦**——守护面收窄至
@@ -126,20 +126,22 @@ describe('U33 · 发现', () => {
     }
   })
 
-  test('点名的补充目录也算一个来源；**同名时默认两处赢**（补充排最后）', () => {
+  test('点名的补充目录也算一个来源；**同名时默认那一档赢**（补充排最后）', () => {
     const land = sandbox()
     try {
       const home = join(land.at, 'home')
       const extra = join(land.at, 'shared-skills')
       put(land.at, '.magic/skills/dup/SKILL.md', skillText('dup', '项目那一份'))
       put(extra, 'dup/SKILL.md', skillText('dup', '共享盘那一份'))
+      put(extra, 'only/SKILL.md', skillText('only', '只有共享盘有'))
 
       const catalog = skillsOf([land.at], home, [extra]).discover()
 
-      // 两条都在（同名照列——「其他同名项显示来源并可明确选取」）
-      expect(namesOf(catalog)).toEqual(['dup@project/magic', 'dup@configured/magic'])
-      // 次序即优先级：靠前那条是 `/dup` 直达取到的那一个
+      // 补充那一处照样算一个来源——它自己那份（不同名的）照样发现得了
+      expect(namesOf(catalog)).toEqual(['dup@project/magic', 'only@configured/magic'])
+      // **同名只留一条**：留下的是档位靠前的那一份（项目 ＞ 配置来源）；补充那份不报诊断
       expect(catalog.skills[0]?.description).toBe('项目那一份')
+      expect(catalog.problems).toEqual([])
     } finally {
       land.dispose()
     }
@@ -267,32 +269,130 @@ describe('U33 · 来源标签', () => {
   })
 
   /**
-   * **负例回归**（U33 独立验收退回①）：同档同名的两份，标签必须分得开。
+   * **同档同名只留一条**（U58 · 2026-09-25 用户定）——同一个来源目录里两份，
+   * 按**技能目录名的字典序**取第一个。
    *
-   * 旧行为：两份都报 `项目 .magic/skills` —— 候选列表里两行**逐字相同**，
-   * 用户没有任何依据挑一份（真 PTY 反例）。
+   * 这一条的旧判据是「两行的来源不同」（U33 独立验收退回①）——那时同名并存，
+   * 候选列表里两行逐字相同，用户没有依据挑一份，故把位置（目录名）补进标签里。
+   * 同名不再并存 ⇒ 那一格由「分得开」变成「只留一条」，这条用例跟着改判。
+   *
+   * **反着摆**（先 `second` 后 `first`）：`readdir` 在常见文件系统上按创建序返回，
+   * 若拿它当顺序，这一条会倒过来——判据不许靠那个。
    */
-  test('**同一处两份同名的**——标签带上位置，两行不再逐字相同', () => {
+  test('**同档同名**只留一条——留下的是**目录名字典序第一个**（不靠 readdir 顺序）', () => {
     const land = sandbox()
     try {
       const home = join(land.at, 'home')
       // 名字取 front-matter 那一个、**不取目录名**（见文件头注）——故「同一处两份同名」
       // 是真能出现的：`first/` 与 `second/` 都自称 `twins`
-      put(land.at, '.magic/skills/first/SKILL.md', skillText('twins'))
-      put(land.at, '.magic/skills/second/SKILL.md', skillText('twins'))
+      put(land.at, '.magic/skills/second/SKILL.md', skillText('twins', '第二份'))
+      put(land.at, '.magic/skills/first/SKILL.md', skillText('twins', '第一份'))
 
-      const labels = skillsOf([land.at], home)
-        .discover()
-        .skills.map((skill) => `${skill.name}=${skill.label}`)
+      const skills = skillsOf([land.at], home).discover().skills
 
-      expect(labels).toEqual([
+      expect(skills.map((skill) => `${skill.name}=${skill.label}`)).toEqual([
         'twins=项目 .magic/skills/first',
-        'twins=项目 .magic/skills/second',
+      ])
+      // 留下的是字典序第一个那一份**本体**（不是拿名字随手配一个）
+      expect(skills[0]?.description).toBe('第一份')
+      expect(skills[0]?.path).toBe(realpathSync(join(land.at, '.magic/skills/first')))
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /**
+   * **码位序**（不是 `localeCompare`）：这一条钉的是「字典序」到底是哪一种——
+   * `localeCompare` 按进程 locale 的排序表走（`apple` 会排在 `Zebra` 前面），
+   * 而它随 `LANG` / `LC_ALL` 变；码位序只看字符本身（`Z` 在 `a` 前）。
+   * 同档同名取的是**这里排第一的那一份**，故必须是后者。
+   */
+  test('同档取的是**码位序**第一个（不随进程 locale 变）', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      put(land.at, '.magic/skills/apple/SKILL.md', skillText('twins', '小写那个'))
+      put(land.at, '.magic/skills/Zebra/SKILL.md', skillText('twins', '大写那个'))
+
+      const skills = skillsOf([land.at], home).discover().skills
+
+      expect(skills.map((skill) => skill.label)).toEqual(['项目 .magic/skills/Zebra'])
+      expect(skills[0]?.description).toBe('大写那个')
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /** 跑两遍、换个摆放次序，结果一致——「确定」这条单独咬一次（同档那一档的要害）。 */
+  test('同档同名**跑两遍结果一致**（目录的摆放次序换一次，赢的还是同一个）', () => {
+    const first = sandbox()
+    const second = sandbox()
+    try {
+      const homeA = join(first.at, 'home')
+      const homeB = join(second.at, 'home')
+
+      for (const name of ['aaa', 'mmm', 'zzz']) {
+        put(first.at, `.magic/skills/${name}/SKILL.md`, skillText('twins', `${name} 摆在前头`))
+      }
+      for (const name of ['zzz', 'mmm', 'aaa']) {
+        put(second.at, `.magic/skills/${name}/SKILL.md`, skillText('twins', `${name} 摆在后头`))
+      }
+
+      const one = skillsOf([first.at], homeA).discover().skills
+      const two = skillsOf([second.at], homeB).discover().skills
+
+      expect(one.map((skill) => skill.label)).toEqual(['项目 .magic/skills/aaa'])
+      expect(two.map((skill) => skill.label)).toEqual(one.map((skill) => skill.label))
+    } finally {
+      first.dispose()
+      second.dispose()
+    }
+  })
+
+  /** **跨档**：项目级 ＞ 用户级；同一作用域里 `.magic` ＞ `.agents`（四处同名，取最靠前一档）。 */
+  test('**跨档同名**：项目级盖用户级、`.magic` 盖 `.agents`', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      put(land.at, '.magic/skills/twins/SKILL.md', skillText('twins', '项目 .magic 那一份'))
+      put(land.at, '.agents/skills/twins/SKILL.md', skillText('twins', '项目 .agents 那一份'))
+      put(home, '.magic/skills/twins/SKILL.md', skillText('twins', '用户 .magic 那一份'))
+      put(home, '.agents/skills/twins/SKILL.md', skillText('twins', '用户 .agents 那一份'))
+
+      const skills = skillsOf([land.at], home).discover().skills
+
+      expect(skills.map((skill) => `${skill.name}=${skill.label}`)).toEqual(['twins=项目 .magic/skills'])
+      expect(skills[0]?.description).toBe('项目 .magic 那一份')
+    } finally {
+      land.dispose()
+    }
+  })
+
+  /** **不同名的一个都不许少**：去重只认同名，别的照旧（反面判据）。 */
+  test('**不同名的技能一个都不少**（去重只认同名）', () => {
+    const land = sandbox()
+    try {
+      const home = join(land.at, 'home')
+      put(land.at, '.magic/skills/aaa/SKILL.md', skillText('aaa'))
+      put(land.at, '.magic/skills/bbb/SKILL.md', skillText('bbb'))
+      put(land.at, '.agents/skills/ccc/SKILL.md', skillText('ccc'))
+      put(home, '.magic/skills/ddd/SKILL.md', skillText('ddd'))
+
+      expect(skillsOf([land.at], home).discover().skills.map((skill) => skill.name)).toEqual([
+        'aaa',
+        'bbb',
+        'ccc',
+        'ddd',
       ])
     } finally {
       land.dispose()
     }
   })
+
+  /**
+   * 物理同源那条既有规矩**照旧**（软链接指同一份）——它与同名去重是两件事：
+   * 那条管的是「同一个目录经两条入口进来」，与名字叫什么无关（另有用例咬它）。
+   */
 
   /**
    * 位置**只在名字没说的时候补**：目录名与技能名相同（绝大多数技能）就不补——

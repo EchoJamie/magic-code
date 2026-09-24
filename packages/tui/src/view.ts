@@ -368,16 +368,18 @@ export type PickerRow = {
    */
   readonly oneLine?: boolean
   /**
-   * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（技能行里＝来源那半截）。
+   * **必留的那一段**（`oneLine` 行用）——它是 `meta` 的**前缀**（如 MCP 那行的状态说法、
+   * 连接那行的连接名）。
    *
-   * 由头（独立验收二轮）：一行的额度是「名称 ＋ meta」两段分，而**截断该落在简述身上**
-   * （设计 · 终端交互：「窄窗先保住名称/来源、再截断简述」）。渲染层光看 `meta` 不知道
-   * 哪一截是来源、哪一截是简述——量错地方就会在宽窗下也去截名称（那正是二轮退回的那条
-   * 「过正」）。故由**造行的人**（它知道哪一段是来源）把这一格交出来，渲染层据它留额度：
+   * 由头（独立验收二轮）：一行的额度是「名称 ＋ meta」两段分，而**截断该落在 meta 的后半**
+   * （设计 · 终端交互：「窄窗先保住名称、再截断简述」）。渲染层光看 `meta` 不知道
+   * 哪一截不许被挤掉——量错地方就会在宽窗下也去截名称（那正是二轮退回的那条「过正」）。
+   * 故由**造行的人**（它知道哪一段必留）把这一格交出来，渲染层据它留额度：
    * 名称按需取，但**先扣掉这一段**。
    *
    * ⚠️ 与 `meta` 同源、是它的前缀——两格给同一串不重复：`meta` 是整行要写的字，
    * 这一格只说「其中哪一部分不许被挤掉」。
+   * ⚠️ **技能那一行不给这一格**（2026-09-25 起）：它的 meta 只有简述，没有必留段。
    */
   readonly keep?: string
 }
@@ -547,8 +549,8 @@ export type CompletionState = {
  * 三条分寸：
  * - **打了名字才列**（`/` 之后一个字都没打时不列技能）：`/` 那一下问的是「有哪些命令」，
  *   把仓库里几十个技能一并倒出来会把那一屏淹掉，也让 `/skills` 这个入口看不见了；
- * - **同一档同名各占一条、带来源**（U57 起；缘由见 `skillCommands`）：分得出唯一时仍是一条，
- *   分不出时才把同名的各列一条——那一栏上就分得开，不必先按一下 `Tab` 才知道有两份；
+ * - **一个名字一条、不带来源**（2026-09-25 定；缘由见 `skillCommands`）：同名在发现那一层
+ *   就只留了一条，故这里看见的名字都是唯一的——来源是内部规则，不上界面；
  * - **与内置命令同名的技能不列**：内置命令保留含义（工单明写），该技能仍能从 `/skills`
  *   选出来——故此处是「不列」，不是「不认」。
  */
@@ -606,44 +608,30 @@ export function activeWordOf(draft: string, caret: number): ActiveWord | undefin
 }
 
 /**
- * 技能名那一批候选（见 `matchCommands` 那几条分寸）——`summary` 用技能的简述。
+ * 技能名那一批候选（见 `matchCommands` 那几条分寸）——**名称 ＋ 简述，不带来源**。
  *
- * ## 同一档同名时**各占一条**（U57 · D32）
+ * 一个名字一条：同名在**发现那一层**就只留了一条（见 [[设计/技能]]「同名只留一条」，
+ * 判定在读侧 `skills.discover`，这儿只管把那一份列出来）。
  *
- * 原先这里按名字去重、只留头一份。可「排在前头」与「并列」在**用户眼里**长得一样：
- * 只列一条 `/twins`，谁也不知道库里其实有两份——要等到按了 `Tab` 才在下一屏看见。
- * 而恰好是这一档（同一来源优先级分不出唯一）**不能静默挑一个**（`resolveSkill`），
- * 于是那一条候选给的是一个「按下去还要再挑一次」的承诺，屏上却一个字都没说。
+ * ⚠️ **U57 那一版（同名的各占一条、各带来源）随 2026-09-25 的裁定退回**：那一条的由头是
+ * 「同名并存时把两份分开」，同名不再并存 ⇒ 来源那一格成了没有信息量的额外显示
+ * （设计 · 技能调用：「来源优先级是**内部规则**，不在界面上呈现」）。
+ * 故这里不再看 `label`，也不再按 `resolveSkill` 分岔——它已经只会给出唯一那一份。
  *
- * 现在按 `resolveSkill` 的判法分两种：
- * - **分得出唯一**（目录里只这一份 / 最高那一档只一份）⇒ 照旧**一条**，不带来源
- *   （名称本身就认得出来，带上是白重复一个名字）；
- * - **分不出唯一** ⇒ **同名的各占一条**，每条**把来源写进那一行**
- *   （设计 · 技能调用：「来源要写全到能区分」）——那一栏上就分得开，
- *   不必先按一下才知道有两份。
- *
- * 两条都**只改列什么，不改选什么**：选哪一份仍归那一屏（`openSkillsPicker`）——
- * 「同一优先级下不能唯一确定时展开同名候选，**不静默随列表顺序选取**」。
+ * ⚠️ **这里不按名字去重**（U57 之前那一手也不该回来）：同名收成一条是**发现那一层**的事，
+ * 这一处只负责「列出来」——两处各判一遍必然分叉（U49）。
  */
 function skillCommands(word: string, skills: readonly SkillCatalogRow[]): readonly CommandSpec[] {
   if (word.replace(/^\//, '') === '') return []
 
-  const taken = new Set(COMMANDS.map((command) => command.name))
+  const reserved = new Set(COMMANDS.map((command) => command.name))
   const commands: CommandSpec[] = []
 
   for (const skill of skills) {
     const name = `/${skill.name}`
-    if (taken.has(name)) continue
-    taken.add(name)
+    if (reserved.has(name)) continue
 
-    const hit = resolveSkill(skill.name, skills)
-    if (hit.kind !== 'many') {
-      commands.push({ name, summary: skill.description })
-      continue
-    }
-
-    // 同名那一摊：这一条起，同名的每一份各来一条，来源就写在它自己那一行上
-    for (const one of hit.skills) commands.push({ name, summary: `${one.label} · ${one.description}` })
+    commands.push({ name, summary: skill.description })
   }
 
   return commands
@@ -1315,12 +1303,13 @@ export function reduce(
 
     // 技能使用回执（U33）——**主文确实进了本次上下文**之后内核才发这一条
     // （见契约 `skill.used`）：故它到了＝这件事成了，回执照说。
-    // 一行一项，措辞与内核给的来源标签一致（`label` 由内核产出，外壳照印——
-    // 恢复时也一样，见条目载荷里那一栏）。
+    // 一行一项，**只报名字**（2026-09-25 收）：来源那一截的由头是「同名并存时把两份分开」，
+    // 同名在发现那一层只剩一条之后它就没有信息量了（设计 · 技能调用：「本次使用技能：名称」）。
+    // 当时用的是哪一份**仍在记录里**（载荷带来源与正文）——那是依据，不是这一行要说的。
     case 'skill.used':
       return appendReceipt(
         view,
-        `本次使用技能：${event.data.skills.map((one) => `${one.name}（来源 ${one.label}）`).join(' · ')}`,
+        `本次使用技能：${event.data.skills.map((one) => one.name).join(' · ')}`,
       )
 
     // 提交的收场（U33）——**只有「没跑」那一格进记录区**：收下了的那一条不必报
@@ -3284,59 +3273,49 @@ const UNRECORDED_HEAD = '（工作区未记录）'
 // ══ 技能（U33 · 终端入口）═══════════════════════════════════════════
 
 /**
- * 同名直达的判据——**唯一确定没有**。
+ * `/<名称>` 的解析结果——**取到了 / 没有这个名**。
  *
- * 「取哪一份」由发现面的次序说了算（项目 → 用户 → 配置；同作用域原生 → 兼容），
- * 而次序之外还有一件：**同一档里并列时不许挑**（那等于随目录顺序蒙）。两档合在一处判，
- * 结果三态——取到了 / 要展开 / 没有这个名。
+ * 前身是个三态（还有一态「同名多份、分不出唯一 ⇒ 展开候选让用户点」）。那个三态随
+ * 2026-09-25 的裁定去掉：同名**在发现那一层就已经只留了一条**（项目级 ＞ 用户级、
+ * `.magic` ＞ `.agents`、同档取目录名字典序第一个——见 [[设计/技能]]「同名只留一条」），
+ * 故「分不出唯一」这件事到不了这一层。
+ *
+ * ⚠️ **档位判定不再在这里各写一遍**：原先这一处也有一份 `source × origin` 的排序，
+ * 与发现面的次序是同一个规则的两处实现——两处各判一遍必然分叉（U49 那条教训）。
+ * 现在**取哪一份只由发现面说了算**，这里只按名字认。
  */
 export type SkillHit =
   | { readonly kind: 'one'; readonly skill: SkillCatalogRow }
-  /**
-   * 同名多份、且**最高那一档里也分不出唯一**——展开同名候选让用户点，不静默挑一个。
-   * 携带的是**全部同名项**（含低一档的）：列表里本来就允许明确选其他来源。
-   */
-  | { readonly kind: 'many'; readonly skills: readonly SkillCatalogRow[] }
   | { readonly kind: 'none' }
 
 /**
- * **同名直达**（`/<名称>` 敲回车那条路）——解析出唯一那一份（见 `SkillHit`）。
+ * **同名直达**（`/<名称>` 敲回车那条路）——解析出发现面留下的那一份。
  *
- * 档的算法：`source` 三档（项目 0 · 用户 1 · 配置 2）× 10 ＋ `origin` 两档（原生 0 · 兼容 1）
- * ——两件都取自发现面的产物（`SkillCatalogRow` 那两格的注写了为什么必须随目录下来）。
- *
- * ⚠️ **不靠数组顺序取头一份**：目录确实是按优先级排的，但「排在前头」与「并列」在数组里
- * 长得一样——判据得来自那两格，不是下标。
+ * 按名字取**第一份**（而不是断言「只有一份」）：发现面保证一个名字只产出一条，
+ * 故这里是那条保证的消费口；真有不唯一的情形（桩、或将来别处喂进来的清单），
+ * 取的也是**次序里靠前的那一份**——那正是发现层的规则，不另立一套。
  */
 export function resolveSkill(name: string, catalog: readonly SkillCatalogRow[]): SkillHit {
-  const same = catalog.filter((one) => one.name === name)
-  const first = same[0]
-  if (first === undefined) return { kind: 'none' }
+  const one = catalog.find((skill) => skill.name === name)
 
-  let best = first
-  for (const one of same) if (rankOfSkill(one) < rankOfSkill(best)) best = one
-
-  const top = same.filter((one) => rankOfSkill(one) === rankOfSkill(best))
-
-  return top.length === 1 ? { kind: 'one', skill: best } : { kind: 'many', skills: same }
-}
-
-/** 一份技能在「同名取谁」上的档位（见 `resolveSkill`——两件都来自发现面）。 */
-function rankOfSkill(skill: SkillCatalogRow): number {
-  const source = skill.source === 'project' ? 0 : skill.source === 'user' ? 1 : 2
-  const origin = skill.origin === 'magic' ? 0 : 1
-
-  return source * 10 + origin
+  return one === undefined ? { kind: 'none' } : { kind: 'one', skill: one }
 }
 
 /**
- * **`/skills` 的行**——候选每项一行：名称 ＋ 来源 ＋ 简述。
+ * **`/skills` 的行**——候选每项一行：**名称 ＋ 简述**。
  *
  * 两件写死在行里：
  * - **每项一行**（`oneLine`）——简述是用户自己写的，可以很长；折行了高度账当场分家
  *   （见 `PickerRow.oneLine` 的注）；
- * - **来源在前、简述在后**——窄窗截断时**先丢简述**：名称与来源才是分辨同名的那两眼
- *   （终端交互：「窄窗先保住名称/来源、再截断简述」）。
+ * - **名称在前、简述在后**——窄窗截断时**先丢简述**（终端交互：「窄窗先保住名称、
+ *   再截断简述」）。故这一行**不交 `keep`**：那一格是给「meta 里有一段必留的字」
+ *   （来源、连接名）用的，而这一行的名称本来就是 `label` 自己——再扣一道额度反而会把
+ *   名称先截掉（那正是设计里「别把名称无条件限死一半」警告的那一形）。
+ *
+ * ⚠️ **来源那一格已收（2026-09-25）**：原先 meta 是「来源 · 简述」、`keep` 押着来源
+ * ——那都是为「同名并存时把两份分开」设的；同名在发现那一层只剩一条之后，
+ * 来源不再是这一屏要说的东西（设计 · 技能调用：「来源优先级是内部规则」）。
+ * 它仍在**记录与诊断**里（会话记得当时用的是哪一份、`magic --check` 逐条报得出）。
  *
  * ⚠️ **U36 起不再有「移除当前技能」那一行**（`REMOVE_SKILL` 已删）：引用长在正文里，
  * 要摘就在那一处按退格——抽屉里再放一行全局的移除，是同一件事的两个入口，
@@ -3350,14 +3329,14 @@ export function skillRows(
   const rows: PickerRow[] = []
 
   for (const skill of catalog) {
+    // 筛词仍认来源（它是这一项的**事实**，只是不再印在行上）——`/skills users` 这类
+    // 按来源找的用法照旧管用，且不因为「不显示」就丢
     const haystack = `${skill.name} ${skill.label} ${skill.description}`.toLowerCase()
     if (needle !== '' && !haystack.includes(needle)) continue
 
     rows.push({
       label: skill.name,
-      meta: `${skill.label} · ${skill.description}`,
-      // **来源那半截必留**（简述在后，先被截）——同名两份分不分得开全看它
-      keep: skill.label,
+      meta: skill.description,
       current: false,
       value: skill.path,
       oneLine: true,
@@ -3526,15 +3505,9 @@ export function skillHint(input: {
   const { catalog, filter, shown } = input
   const lines: string[] = []
 
-  // **同名的那一摊**（`/<名字>` 分不出唯一时正是这么开的：拿名字当筛词，见 `shell.ts`）——
-  // 与「随手打的筛词」不同，这一屏要的是「按来源挑一份」，说清楚才不至于让人以为筛错了
-  const sameName = filter === '' ? 0 : (catalog?.skills ?? []).filter((one) => one.name === filter).length
-
-  if (sameName > 1) {
-    // 「回车」那半句归状态行（`↑↓ 选 · 回车 定 · esc 收起`）——这里只说**那一下意味着什么**
-    // （选定不是发送），一句一事，不跟右位重述键位（独立验收 · 看帧「文案」那一条）
-    lines.push(`「${filter}」有 ${sameName} 份同名的——按来源挑一份（选中不等于发送）`)
-  } else if (shown === 0 && filter !== '') {
+  // ⚠️ 这里原有一条「「x」有 N 份同名的——按来源挑一份」：它是「同名 ⇒ 展开候选」那一手
+  // 的说明，随 2026-09-25 的裁定去掉（同名在发现那一层只剩一条，那一屏再也开不出来）。
+  if (shown === 0 && filter !== '') {
     // 筛空了 ⇒ 抽屉收起、这句话落成回执——得说清「怎么办」，不然就是「打了几个字，抽屉没了」
     lines.push(`没有匹配「${filter}」的技能——退格删一个字，或换个词再打 /skills`)
   } else if (filter !== '') {

@@ -298,18 +298,19 @@ describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () 
   })
 
   /**
-   * **负例回归**（U33 独立验收退回①）：同一处两份同名——读侧交回来的**来源必须分得开**。
+   * **同档同名只留一条**（U58 · 2026-09-25 用户定）：同一个来源目录里两份，
+   * 留**目录名字典序第一个**那一份，另一份**在发现结果里就不存在**。
    *
-   * 旧行为：两行都报 `项目 .magic/skills`（作用域 ＋ 入口两段），候选列表里两行**逐字相同**，
-   * 用户没有任何依据挑一份（真 PTY 反例）。名字取自 front-matter、不取目录名，
-   * 故「同一处两份同名」是真能出现的。
+   * 这一条的旧判据是「两行的来源不同」（U33 独立验收退回①：那时同名并存、两行逐字相同，
+   * 用户没有依据挑一份）。同名不再并存 ⇒ 改成咬「只留一条、留对了那一条」。
+   * 名字取自 front-matter、不取目录名，故「同一处两份同名」是真能出现的。
    */
-  test('**同档同名的两份**：两行的来源不同（这正是候选列表要拿来做判据的那一串）', async () => {
+  test('**同档同名的两份**：读侧只交回来一条（字典序第一个那一份）', async () => {
     const stage = makeStage()
 
     try {
-      put(stage.workspace, '.magic/skills/first/SKILL.md', skillText('twins', '独立验证技能', '第一份正文。'))
       put(stage.workspace, '.magic/skills/second/SKILL.md', skillText('twins', '独立验证技能', '第二份正文。'))
+      put(stage.workspace, '.magic/skills/first/SKILL.md', skillText('twins', '独立验证技能', '第一份正文。'))
 
       const assembly = stage.assemble({ turns: [{ text: '你好' }] })
       const handle = attachShell(assembly.shell)
@@ -317,12 +318,10 @@ describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () 
 
       expect(catalog.data.skills.map((row) => `${row.name}（${row.label}）`)).toEqual([
         'twins（项目 .magic/skills/first）',
-        'twins（项目 .magic/skills/second）',
       ])
-      // 身份也各是各的——选哪份、读哪份，靠的是它
+      // 留下的那一份身份就是它自己的目录——按它读得到，按没留下的那一份读不到
       expect(catalog.data.skills.map((row) => row.path)).toEqual([
         realpathSync(join(stage.workspace, '.magic/skills/first')),
-        realpathSync(join(stage.workspace, '.magic/skills/second')),
       ])
       // 正文仍不带（目录只搬元数据）
       expect(JSON.stringify(catalog.data)).not.toContain('第一份正文')
@@ -353,7 +352,7 @@ describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () 
     }
   })
 
-  test('**同名的两份都在**，且**次序即优先级**（项目在前、用户在后）', async () => {
+  test('**跨档同名**只留一条，且是**项目那一份**（项目级 ＞ 用户级）', async () => {
     const stage = makeStage()
 
     try {
@@ -367,8 +366,8 @@ describe('U33 · 技能目录的读侧（终端入口那一半的取材）', () 
 
       expect(catalog.data.skills.map((row) => `${row.name}@${row.label}`)).toEqual([
         'pdf@项目 .magic/skills',
-        'pdf@用户 .magic/skills',
       ])
+      expect(catalog.data.skills[0]?.description).toBe('项目那一份')
 
       handle.dispose()
       assembly.close()
@@ -491,35 +490,37 @@ describe('U33 · 模型自主选用：走真工具通路', () => {
     }
   })
 
-  test('同名两个来源：不带 `source` 时**不静默挑一个**——回填里列出各处，指明后再取', async () => {
+  /**
+   * 模型那一头只给名字（`skill` 工具的 `source` 参数随同名一起收掉了）——
+   * 同名不再并存，故名字本身就是完整的地址，取到的是**发现留下的那一份**（项目级赢）。
+   */
+  test('模型只给名字：取**发现留下的那一份**（同名不再并存，无需指明来源）', async () => {
     const stage = makeStage()
     try {
       put(stage.workspace, '.magic/skills/dup/SKILL.md', skillText('dup', '项目那一份', '项目正文。'))
-      const userPath = join(stage.root, '.magic/skills/dup')
       put(stage.root, '.magic/skills/dup/SKILL.md', skillText('dup', '用户那一份', '用户正文。'))
 
       const assembly = stage.assemble({
-        turns: [
-          { toolCalls: [{ name: 'skill', args: { name: 'dup' } }] },
-          { toolCalls: [{ name: 'skill', args: { name: 'dup', source: userPath } }] },
-          { text: '好了' },
-        ],
+        turns: [{ toolCalls: [{ name: 'skill', args: { name: 'dup' } }] }, { text: '好了' }],
       })
       const shell = attachShell(assembly.shell)
       await shell.submit('用那个技能')
       shell.dispose()
 
-      const results = eventsOfKind(shell.events, 'tool.result')
-      expect(results[0]?.data.ok).toBe(false)
-      expect(results[1]?.data.ok).toBe(true)
+      expect(eventsOfKind(shell.events, 'tool.result')[0]?.data.ok).toBe(true)
 
-      // 第一次的回填说清了「有哪几个来源」（不是随便挑了一个）
-      const said = requestText(stage, 1)
-      expect(said).toContain('有 2 个来源')
-      expect(said).toContain(projectSkill(stage, 'dup'))
-      expect(said).toContain(userPath)
-      // 指明了来源之后取到的是**用户那一份**
-      expect(requestText(stage, 2)).toContain('用户正文')
+      // 工具那一趟带走的是**项目那一份**的身份（随工具结果落账，不是从回填正文里抠的）
+      const raw = readDatabase(assembly.paths.database)
+      const results = raw.entries.filter((row) => row.kind === 'tool-result')
+      expect(JSON.parse(results[0]?.payload ?? '{}').skill).toEqual({
+        name: 'dup',
+        source: realSkill(stage, 'dup'),
+        label: '项目 .magic/skills',
+      })
+      raw.close()
+
+      expect(requestText(stage, 1)).toContain('项目正文')
+      expect(requestText(stage, 1)).not.toContain('用户正文')
 
       assembly.close()
     } finally {
