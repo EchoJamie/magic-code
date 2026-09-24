@@ -1,0 +1,19 @@
+{
+  "label": "例子-看一眼窄窗",
+  "steps": [
+    {
+      "cmd": "start",
+      "as": "甲",
+      "cols": 100,
+      "rows": 30,
+      "turns": [{ "kind": "text", "text": "先是一半，然后才是另一半。", "chunks": 6, "chunkDelayMs": 80 }]
+    },
+    { "cmd": "send", "session": "甲", "text": "说一句长话" },
+    { "cmd": "key", "session": "甲", "key": "enter", "wait": { "text": "先是一半" }, "timeoutMs": 20000 },
+    { "cmd": "capture", "session": "甲", "label": "01-提交之后" },
+    { "cmd": "resize", "session": "甲", "columns": 46, "rows": 30 },
+    { "cmd": "capture", "session": "甲", "label": "02-窄窗" },
+    { "cmd": "quit", "session": "甲" },
+    { "cmd": "close", "session": "甲" }
+  ]
+}

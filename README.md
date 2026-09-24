@@ -48,7 +48,38 @@ bun run magic --script <文件>   # 无人值守跑一段脚本，打印事件�
 bun run check                   # 质量闸：typecheck + test
 bun run typecheck
 bun test
+
+# 界面验收（研发设施，不是产品命令）
+bun run ui --help               # 它是什么、四条子命令怎么跑
+bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏** ⇒ 这条
 ```
+
+### 界面验收工具（`bun run ui`）
+
+**要验证界面长什么样，先用它。** 它起**真 `cli.ts`**（真装配 → 真外壳 → 真模型适配链）、
+按键**经真 PTY** 送进去、屏上的字**从写出的字节里读**（`@xterm/headless`）——模型那头是
+环回夹具（合成假 key，一个付费请求都不发），每一次运行一套隔离的 HOME / 库 / 工作区。
+
+**四条子命令，§要哪半取哪半**：
+
+| 命令 | 给什么 |
+| --- | --- |
+| `bun run ui list` | 内置场景的名字 |
+| `bun run ui run <场景>` | **判据**：开发写的那套断言过没过 |
+| `bun run ui run <场景> --frames` | **帧**：同一趟故事，**一条判据都不判**——每个该判的地方取一帧、记下此刻的读数 |
+| `bun run ui script <步骤文件>` | **一段你自己的交互**：一条命令跑完、自己收尾、帧与读数落盘 |
+| `bun run ui serve` | 常驻控制进程（stdin/stdout 逐行 JSON），跨多次调用操作同一个实例 |
+
+**「要跑一段自己写的看看屏」＝写一个步骤文件**（`ui script`；`--help` 里有可照抄的例子，
+`packages/app/test/ui/example-steps.json` 是一份能直接跑的）。步骤文件就是一段 JSON，
+每一步**就是 `serve` 认的那条命令**（`start` / `send` / `key` / `resize` / `wait` / `capture` /
+`quit` / `close`）；**别在外面拿 bash ＋ FIFO 把 `serve` 包起来**——那条路已经开在这儿了。
+
+**看帧是四项**（`AGENTS.md`）：布局 · 文案语义 · 层级 · 通读。**「判据过了」不等于「看得过去」。**
+
+**位置**：入口 `packages/app/scripts/ui.ts`；驱动与产物那一侧 `packages/app/test/ui/`；
+每次运行的现场（`run.json` · `steps.ndjson` · `raw.bin` · `frames/` · `viewer.html`）
+落在 `.ui-runs/`（已忽略入库）。
 
 ### 换模型（阶段 2）
 

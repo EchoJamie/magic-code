@@ -35,9 +35,6 @@
 
 import { mkdirSync, readFileSync, copyFileSync, existsSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-// 判「放开输入了没有」的那句提示——**取产品自己那个常量**（不是抄一份字面量：
-// 文案改了它跟着改，抄的那份会悄悄过期，而这类过期最坏的表现是「等条件永远为真」）
-import { HINT_EXIT_ARMED, HINT_IDLE } from '@magic/tui'
 import { createArtifacts } from './artifacts.ts'
 import type { Artifacts, FrameRecord } from './artifacts.ts'
 import { startFixture } from './fixture.ts'
@@ -80,18 +77,44 @@ export type UiKey = keyof typeof KEYS
 export const UI_KEYS = Object.keys(KEYS) as UiKey[]
 
 /**
- * **空闲**那一格的锚（状态行左位）——`quit()` 等「它真闲下来了」用它。
+ * **被测对象那一侧的词汇**（U51 第九条）——**机制这一层不认识它，由调用方给**。
  *
- * ⚠️ **不用右位那句 `/ 命令 · ctrl+c 退出`**：状态行窄窗**从右往左省**，46 列上那句话
- * 已经被省掉了——拿它当条件，窄窗那一趟必然等到超时（实测栽过）。
+ * 驱动认的是「往 PTY 写字节、从 VT 读屏」，可它有三步必须知道**某个词**才成立：
+ * 起手那道闸什么时候算放开、空闲长什么样、按第一下 ctrl+c 之后哪句话该出现。
+ * 那些词是**被测对象的话**，故从外面传进来——判据一句话：**换个被测命令，本文件不用改**。
  *
- * 出包给各留帧套件：U50 起，**首条交代落账之后目录会回来一趟**（`shell.ts` 里 `input.settled`
- * 那一跳——回执要带标题），于是状态行左位从「新会话」换成了**那条会话的真标题**；标题一长，
- * 窄窗里右位那句就按同一条口径让位。几支既有套件的窄窗那一趟原本拿右位那句当「空闲了没有」
- * 的条件，那一跳起会白等到超时（`frames-u43/u44/u45` 实测）——它们的意图是「它闲下来了」，
- * 就该锚**这一格**。
+ * 缺省从沙地取（`Sandbox.anchors`，见 `sandbox.ts`）——Magic 那一条路走的就是缺省。
  */
-export const IDLE_MARK = '○ 空闲'
+export type UiAnchors = {
+  /**
+   * **起手那道闸放开时屏上该有的那句话**——等它＝「放开输入了」。
+   *
+   * 给的是**宽度到条件的函数**：窄窗上那句提示会被整段省掉（状态行「从右往左省」），
+   * 那时**根本没有这道闸可等**——返回 `null` 明说这一档没有，驱动据此记一步
+   * `ready-gate-absent`（**不假装等到**，见 `waitForFrame`）。
+   */
+  readonly ready: (columns: number) => WaitCondition | null
+  /**
+   * **空闲**那一格的锚（状态行左位）——`quit()` 等「它真闲下来了」用它。
+   *
+   * ⚠️ 取**左位**那一格：状态行窄窗从右往左省，右位那句最先让位（46 列上还在、30 列上就没了，
+   * 实测）——拿右位当条件，窄窗那一趟必然等到超时。
+   *
+   * ⚠️ **U50 起多一条由头**：首条交代落账之后目录会回来一趟（`shell.ts` 的 `input.settled`
+   * 那一跳——回执要带标题），状态行左位于是从「新会话」换成**那条会话的真标题**；标题一长，
+   * 窄窗里右位那句按同一条口径让位。几支既有套件的窄窗那一趟原本拿右位那句当「空闲了没有」，
+   * 那一跳起会白等到超时（`frames-u43/u44/u45` 实测）——它们的意图是「它闲下来了」，
+   * 就该锚**这一格**。
+   */
+  readonly idle: string
+  /**
+   * **空闲按第一下 `ctrl+c` 之后屏上出现的那句话**。
+   *
+   * `quit()` 拿它判「第一下落地了」——连写两次会让两下**都成了第一下**（顺序由 PTY 保证，
+   * 但两下之间没有发生任何事）。产品那边这句文案改了就传新的进来，本层不认识它。
+   */
+  readonly exitArmed: string
+}
 
 /**
  * 等条件的闭集——「文字出现 / 文字消失 / 某个坐标上出现」。
@@ -325,6 +348,12 @@ export type UiSessionOptions = {
   readonly config?: Record<string, unknown>
   /** 子进程的 `FORCE_COLOR`（缺省 3）。 */
   readonly forceColor?: string
+  /**
+   * **被测对象那一侧的词汇**（U51 第九条）——不给就取沙地那份（`Sandbox.anchors`）。
+   *
+   * 显式给它是为了**换被测命令**：新对象写一份新锚传进来，本层一行都不用改。
+   */
+  readonly anchors?: UiAnchors
   /** 起手就等到的「应用已经挂上」判据——缺省等**首帧出现**（见 `waitForFrame`）。 */
   readonly skipReady?: boolean
   /**
@@ -406,6 +435,8 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       forceColor: options.forceColor,
       config: options.config,
     }))
+  // 锚：显式给的优先；没给就取沙地那份（＝被测对象那一侧的适配器给的，见 `UiAnchors`）
+  const anchors = options.anchors ?? sandbox.anchors
 
   // 摊平成可变数组——`Bun.spawn` 收的是 `string[]`，而选项里给的是只读的
   const argv: string[] = [...(options.command ?? [process.execPath, cli, ...(options.argv ?? [])])]
@@ -538,12 +569,12 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       //
       // ⚠️ **锚用状态行左位那两个空格加「○ 空闲」，不用右位那句 `/ 命令 · ctrl+c 退出`**：
       //    窄窗上右位会被省掉（状态行「从右往左省」），拿它当条件在 46 列上永远等不到。
-      await session.wait({ text: IDLE_MARK }, { timeoutMs: 15_000 })
+      await session.wait({ text: anchors.idle }, { timeoutMs: 15_000 })
       await Bun.sleep(300)
-      await session.wait({ text: IDLE_MARK }, { timeoutMs: 15_000 })
+      await session.wait({ text: anchors.idle }, { timeoutMs: 15_000 })
 
       // 第一下：等那一行**真上屏**（那就是「这一下落地了」的证据，也顺带判了产品真印了它）
-      await session.key('ctrl+c', { until: { text: HINT_EXIT_ARMED }, timeoutMs: 5_000 })
+      await session.key('ctrl+c', { until: { text: anchors.exitArmed }, timeoutMs: 5_000 })
       // 第二下：走
       await session.key('ctrl+c')
     },
@@ -610,6 +641,9 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
               total: screen.total,
               styles: painted.styles,
               lines: painted.lines,
+              // 与屏同刻那两格（D30）：`bytes` 是**屏对应的**水位
+              bytes,
+              written: artifacts.bytes(),
             },
             plain,
           )
@@ -681,6 +715,9 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
           total: screen.total,
           styles: painted.styles,
           lines: painted.lines,
+          // 与屏同刻那两格（D30）——`bytes` 与 `written` 的口径差见 `WaitCondition.writtenFrame`
+          bytes,
+          written: artifacts.bytes(),
         },
         plain,
       )
@@ -757,7 +794,8 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
   // 探针子进程根本没有它；等它只会白等到超时
   if (options.skipReady !== true) {
     await waitForFrame(session, artifacts, child, {
-      waitInputGate: options.command === undefined,
+      // 被测命令被换掉时不等那道闸——那是**产品外壳**的起手姿态，别的进程根本没有它
+      readyGate: options.command === undefined ? anchors.ready(columns) : null,
       timeoutMs: options.readyTimeoutMs ?? 20_000,
     })
   }
@@ -867,6 +905,10 @@ function recordFrame(artifacts: Artifacts, screen: VtScreen, label: string): voi
       total: screen.total,
       styles: painted.styles,
       lines: painted.lines,
+      // 起手失败这一条**没有**取帧那一刻的 VT 水位可读（VT 可能就是没起来的那一件）——
+      // 不编一个数：给 0，并由抬头那一行照实说这是起手失败那一张。
+      bytes: 0,
+      written: artifacts.bytes(),
     },
     screen.lines.map((line) => line.text).join('\n'),
   )
@@ -890,8 +932,15 @@ async function waitForFrame(
   artifacts: Artifacts,
   child: Bun.Subprocess,
   options: {
-    /** 等不等「放开输入」那一跳——被测命令是**产品外壳**时才等（见函数头注第 2 条）。 */
-    readonly waitInputGate: boolean
+    /**
+     * 「放开输入」那一跳的判据——被测命令是**产品外壳**时才给（见函数头注第 2 条），
+     * 且由被测对象那一侧给（`UiAnchors.ready`）。
+     *
+     * `null` ＝ **这一档没有这道闸**（如极窄窗上那句提示被整段省掉，等它必然白等满十五秒）。
+     * 两条路都**记一步**：`ready`（闸真的开了）／`ready-gate-absent`（这一档没有闸，
+     * 给一点起步余量就走）——**不把「没有闸」记成「闸开了」**。
+     */
+    readonly readyGate: WaitCondition | null
     /** 等第一帧的上限（缺省 20 秒；自证把它压小，好把起手失败那条路跑得完）。 */
     readonly timeoutMs: number
   },
@@ -904,8 +953,15 @@ async function waitForFrame(
       // 首帧落了以后给 Ink 一点余量（它那一下 `tcsetattr` 落定之前来的按键会被丢掉——
       // 早先 pty 那几轮实测的坑 1）。这是**起手一次的余量**，不是场景同步手段。
       await Bun.sleep(120)
-      if (options.waitInputGate) await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
-      artifacts.step('ready', { columns: screen.columns, rows: screen.rows })
+      if (options.readyGate !== null) {
+        await session.wait(options.readyGate, { timeoutMs: 15_000 })
+        artifacts.step('ready', { columns: screen.columns, rows: screen.rows })
+      } else {
+        // **没有闸可等**：不拿一句「等着等着就超时」把窄窗那一档整趟废掉，但也**不假装**——
+        // 记一步说清是「这一档没有这道闸」，那几步起步余量是补它的（有界、且记账）。
+        artifacts.step('ready-gate-absent', { columns: screen.columns, rows: screen.rows })
+        await Bun.sleep(300)
+      }
       return
     }
 

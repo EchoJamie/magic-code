@@ -30,7 +30,23 @@ import type { VtCursor } from './vt.ts'
 /** 原始字节的缺省上限（8 MiB）——够一次界面验收跑完，又不至于把仓库撑爆。 */
 export const RAW_LIMIT_BYTES = 8 * 1024 * 1024
 
-/** 一帧（写进 `frames/*.json` 的那份）——**够画出这一屏**，且与尺寸无关地自洽。 */
+/**
+ * 一帧（写进 `frames/*.json` 的那份）——**够画出这一屏**，且与尺寸无关地自洽。
+ *
+ * ## 帧要能自证（U51 第八条）
+ *
+ * 一张帧文件**离开这一趟现场**（贴进回报、发给别人看）之后，还得说得清**它是谁画的**：
+ *
+ * | 自证什么 | 哪一格 |
+ * | --- | --- |
+ * | **哪个提交** | `commit` ＋ `dirty`（脏树上取的帧不许冒充一棵干净的树） |
+ * | **什么尺寸** | `columns` × `rows` |
+ * | **有没有截断** | `truncated`（这份现场是不是完整的——截了就不该被当成完整证据） |
+ * | **屏与水位同刻** | `bytes`（**屏对应的**字节水位）＋ `written`（应用一共写出了多少） |
+ *
+ * 前两格与 `truncated` 由 `frame()` 从 `run.json` 那份运行信息里补（**一处取、不各写各的**），
+ * 后两格由取帧的人给（**只有它知道那个数**，见 `driver.ts`·`capture` 的同刻那一段）。
+ */
 export type FrameRecord = {
   readonly n: number
   /** 出自第几步（`steps.ndjson` 里的 `n`）。 */
@@ -39,6 +55,15 @@ export type FrameRecord = {
   readonly at: number
   readonly columns: number
   readonly rows: number
+  /** 画这一帧的那个提交（与 `run.json` 同源）——**免得多张帧凑成一摞时分不清谁是谁**。 */
+  readonly commit: string
+  readonly dirty: boolean
+  /** 取这一帧时这份现场是不是已经截断（截了就不是完整证据）。 */
+  readonly truncated: boolean
+  /** **屏对应的**字节水位（与屏同刻取，D30）—— `frame-audit verify` 拿它重放对帧。 */
+  readonly bytes: number
+  /** 同一刻应用**一共**写出了多少字节（含还没上屏的半截帧）——与 `bytes` 不是一回事。 */
+  readonly written: number
   /**
    * 光标：坐标 ＋ **显隐**（同一支 VT 取样，见 `vt.ts`·`VtCursor`）。
    *
@@ -116,8 +141,13 @@ export type Artifacts = {
   raw(chunk: string): void
   /** 此刻的字节水位（步与字节对得上号）。 */
   bytes(): number
-  /** 存一帧（文本 ＋ 字格数据），返回帧号。 */
-  frame(frame: Omit<FrameRecord, 'n'>, plain: string): number
+  /**
+   * 存一帧（文本 ＋ 字格数据），返回帧号。
+   *
+   * 调用方只管**它知道的那几格**（尺寸 · 光标 · 水位 · 行）；`commit` / `dirty` / `truncated`
+   * 由这一层从运行信息里补——**同一个提交不许在两张帧上写出两个值**。
+   */
+  frame(frame: Omit<FrameRecord, 'n' | 'commit' | 'dirty' | 'truncated'>, plain: string): number
   /** 收尾：刷字节、写 `run.json`、生成查看页。 */
   finish(outcome: RunInfo['outcome'], extra?: { failure?: RunInfo['failure']; exit?: RunInfo['exit'] }): void
 }
@@ -222,14 +252,24 @@ export function createArtifacts(options: ArtifactsOptions): Artifacts {
     frame: (frame, plain) => {
       flush()
       frameCount += 1
-      const record: FrameRecord = { ...frame, n: frameCount }
+      // **帧自证的那三格从运行信息里补**（U51 第八条）：同一个提交 / 脏标记 / 截断状态
+      // 不许在两张帧上写出两个值——故只此一处取，调用方只给「只有它知道」的那几格。
+      const record: FrameRecord = {
+        ...frame,
+        n: frameCount,
+        commit: info.commit,
+        dirty: info.dirty,
+        truncated: info.truncated,
+      }
       const name = `${String(frameCount).padStart(4, '0')}-${slug(frame.label)}`
       writeFileSync(join(runDir, 'frames', `${name}.json`), JSON.stringify(record), 'utf8')
+      // 抬头这一行是**给人读的帧自证**（`frame-audit.ts` 按 `—— ` 那一下切正文，故格式别乱动）
       writeFileSync(
         join(runDir, 'frames', `${name}.txt`),
         `${plain}\n\n—— 第 ${frame.step} 步 · ${frame.label} · ${frame.columns}×${frame.rows} · ` +
           `光标 (${frame.cursor.x}, ${frame.cursor.y})${frame.cursor.hidden === true ? ' **隐藏**' : ''} · ` +
-          `存档 ${frame.scrollback} 行 ——\n`,
+          `存档 ${frame.scrollback} 行 · 提交 ${short(record.commit)}${record.dirty ? '（脏）' : ''} · ` +
+          `水位 ${record.bytes}（写出 ${record.written}）${record.truncated ? ' · **本现场已截断**' : ''} ——\n`,
         'utf8',
       )
       info.frames = frameCount
@@ -294,6 +334,11 @@ function round(value: number): number {
   return Math.round(value * 10) / 10
 }
 
+/** 提交号取前 7 位（帧抬头那一行要能一眼读过去；完整号在 `run.json` 里）。 */
+function short(commit: string): string {
+  return commit.slice(0, 7)
+}
+
 /** 读回一份现场（查看页生成用）——**只看这几个文件**，不依赖内存里的状态。 */
 export function readRun(runDir: string): { info: RunInfo; steps: RunStep[]; frames: FrameRecord[] } {
   const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunInfo
@@ -314,6 +359,31 @@ function readJsonLines<T>(path: string): T[] {
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line) as T)
+}
+
+/**
+ * 一趟现场**自证的那一行**（U51 第八条）——命令行每跑完一趟都打它。
+ *
+ * 三件必须一眼看得见：**哪个提交**（脏不脏）· **什么尺寸** · **有没有截断**。
+ * 由头是这一条：**不能默默给一份过期的读数**——旧提交的帧、截断了的现场，
+ * 都要在报告里自己说出来，而不是等着看的人去翻 `run.json`。
+ *
+ * 读的是盘上那份 `run.json`（**不是内存里的**）：现场能离开这一趟进程活着，
+ * 这一行也得能。
+ */
+export function summarizeRun(runDir: string): string {
+  try {
+    const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as RunInfo
+
+    return (
+      `提交 ${info.commit.slice(0, 7)}${info.dirty ? '（脏）' : ''} · ` +
+      `开窗 ${info.terminal.columns}×${info.terminal.rows} · 帧 ${info.frames} · 步骤 ${info.steps} · ` +
+      `${info.truncated ? '**已截断（这份现场不完整）**' : '未截断'} · 结局 ${info.outcome}`
+    )
+  } catch {
+    // 读不动就照实说读不动——**不编一个看起来正常的摘要**
+    return `（${runDir} 的 run.json 读不动——这份现场不能当证据使）`
+  }
 }
 
 /** 整块删掉一次运行（清场用——**只在明确要删时才调**）。 */

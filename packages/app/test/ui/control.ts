@@ -45,10 +45,19 @@ export type ControlRequest = {
   readonly session?: string
   readonly text?: string
   readonly key?: string
+  /**
+   * `send` / `key` 用：**写完之后等这个条件**（「这一下生效了」）。
+   *
+   * ⚠️ **写一次，不重放**——`until` 是「等它」，不是「没出现就再写一遍」。
+   * 由头（U49 真跑里栽过）：`key('tab')` 写完不等，取帧会抢在这一键被受理之前；
+   * 而重放更糟——碰上不幂等的动作（批准 `y`、回车把下一条也送出去）就是**误批**。
+   */
+  readonly wait?: WaitCondition
+  /** 上面那个 `wait` 的上限（毫秒）——也是 `wait` 这一条自己的上限。 */
+  readonly timeoutMs?: number
   readonly columns?: number
   readonly rows?: number
   readonly condition?: WaitCondition
-  readonly timeoutMs?: number
   readonly label?: string
   /** `start` 用：模型剧本 / 尺寸 / 产物根 / 额外的 CLI 参数。 */
   readonly turns?: readonly FixtureTurn[]
@@ -165,7 +174,12 @@ export function createControl(options: ControlOptions = {}): Control {
         switch (request.cmd) {
           case 'start': {
             counter += 1
-            const sessionId = `s${counter}`
+            // 号可以自己起（给步骤文件用：`{"cmd":"start","as":"甲"}` 之后就按名字指它）；
+            // 不起就照旧 s1 / s2 …… 重名当场拦下——两个窗口叫同一个名字，"指谁"就没有答案了
+            const sessionId = request.session ?? `s${counter}`
+            if (sessions.has(sessionId)) {
+              return fail(id, 'bad-request', `已经有叫「${sessionId}」的窗口了——换一个号`)
+            }
             const startOptions: UiSessionOptions = {
               label: request.label ?? `控制-${sessionId}`,
               ...(request.cols === undefined ? {} : { columns: request.cols }),
@@ -192,7 +206,7 @@ export function createControl(options: ControlOptions = {}): Control {
             const target = resolve(request)
             if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
             if (typeof request.text !== 'string') return fail(id, 'bad-request', 'send 要给 text')
-            await target.session.send(request.text)
+            await target.session.send(request.text, untilOf(request))
 
             return done(id, { session: target.name, sent: request.text, ...(await stateOf(target.session)) })
           }
@@ -205,7 +219,7 @@ export function createControl(options: ControlOptions = {}): Control {
               // 未支持的键**明确报错**，不悄悄换成另一种按键（工单的话）
               return fail(id, 'bad-request', `不认得的键「${request.key}」——有的是：${UI_KEYS.join(' / ')}`)
             }
-            await target.session.key(request.key as UiKey)
+            await target.session.key(request.key as UiKey, untilOf(request))
 
             return done(id, { session: target.name, key: request.key, ...(await stateOf(target.session)) })
           }
@@ -280,6 +294,17 @@ export function createControl(options: ControlOptions = {}): Control {
             })
           }
 
+          case 'quit': {
+            // **照产品的方式退出**——「空闲连按两次 ctrl+c」那一路（U46）。写步骤文件的人
+            // 不必知道那条规矩，更不必自己数两下；要「应用自己走的」这条证据就用它。
+            // 它**不收摊**：进程退了，PTY / VT / 现场都还在，接着 `close` 收（那一步报 `exit.by`）。
+            const target = resolve(request)
+            if (target === undefined) return fail(id, 'no-session', '还没起实例——先发一条 {"cmd":"start"}')
+            await target.session.quit()
+
+            return done(id, { session: target.name, ...(await stateOf(target.session)) })
+          }
+
           case 'close': {
             const target = resolve(request)
             if (target === undefined) return fail(id, 'no-session', '没有可关的实例')
@@ -302,7 +327,11 @@ export function createControl(options: ControlOptions = {}): Control {
           }
 
           default:
-            return fail(id, 'bad-request', `不认得的 cmd「${request.cmd}」——有的是：start / send / key / resize / wait / capture / close / sessions`)
+            return fail(
+              id,
+              'bad-request',
+              `不认得的 cmd「${request.cmd}」——有的是：start / send / key / resize / wait / capture / quit / close / sessions`,
+            )
         }
       } catch (error) {
         // 兜底：**绝不把控制进程带下去**（一条命令炸了不该掀掉整张桌子）
@@ -330,6 +359,20 @@ export function createControl(options: ControlOptions = {}): Control {
       sessions.clear()
       current = undefined
     },
+  }
+}
+
+/**
+ * `send` / `key` 那两处 `wait` ＋ `timeoutMs` ——**合起来才是「写一次、等它生效」**。
+ *
+ * 不给 `wait` 就是「写完即回」（与以前一字不差）；给了就是一个 `WriteUntil`。
+ */
+function untilOf(request: ControlRequest): { until: WaitCondition; timeoutMs?: number } | undefined {
+  if (request.wait === undefined) return undefined
+
+  return {
+    until: request.wait,
+    ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
   }
 }
 

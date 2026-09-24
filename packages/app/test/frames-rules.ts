@@ -163,6 +163,13 @@ async function shoot(
   writeFileSync(join(out, `${name}.txt`), visible(bytes), 'utf8')
   console.log(visible(bytes).slice(-1200))
 
+  // ⚠️ **退出要按两下**（U46 改的口径；U51 补上这两行）：空闲按第一下 ctrl+c 只挂上
+  //    「再按一次 ctrl+c 退出」那一行，**第二下才走**。本函数原先只推一下，于是
+  //    `waitUntilExit()` **永远不返回**——`frames-rules` / `frames-skills` 两支在基线上
+  //    「卡死」就是这么来的（2026-09-24 查实：不是平台问题，是这里没跟上产品那次改动）。
+  //    两下之间**等那一行真上屏**：连着推两次会让两下都成了「第一下」。
+  stdin.push('\u0003')
+  await until(tty, '再按一次 ctrl+c 退出')
   stdin.push('\u0003')
   await handle.waitUntilExit()
   assembly.close()
