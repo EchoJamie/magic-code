@@ -33,10 +33,18 @@ function pathsOf(sandbox: Sandbox): ReturnType<typeof runPathsOf> {
   return runPathsOf({ home: sandbox.home, base: join(sandbox.home, '.magic') }, sandbox.dataDir, tmpdir())
 }
 
-/** 等一个条件成立（默认 15 秒）——轮询是用例的事，产品那几跳都是事件驱动的。 */
-async function waitFor(what: string, ok: () => boolean, timeoutMs = 15_000): Promise<void> {
+/**
+ * 等一个条件成立（默认 15 秒）——轮询是用例的事，产品那几跳都是事件驱动的。
+ *
+ * `ok` 可以是异步的（数进程那类要问一问系统）——与 `run-resume.test.ts` 那一份同形。
+ */
+async function waitFor(
+  what: string,
+  ok: () => boolean | Promise<boolean>,
+  timeoutMs = 15_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (!ok()) {
+  while (!(await ok())) {
     if (Date.now() > deadline) throw new Error(`等不到：${what}`)
     await Bun.sleep(50)
   }
@@ -284,4 +292,105 @@ describe('U48-S5 · 终端是客户端', () => {
       removeDir(runs)
     }
   }, 60_000)
+})
+
+/** 那两句交代——**短**（判据按行找，长句会折成两行）。两处共用同一份，免得写岔。 */
+const SAID = '记一句短话'
+const REPLY = '好，记下了。'
+
+/**
+ * U53 · **D33**——`--session <id>` 起来，**记录区一个字都不铺**。
+ *
+ * `cli.test.ts` 那两支验的是 `--check --session`（**非终端**：装配开局装载那条会话），
+ * 而 U48 之后**终端那条路不再装配**——接续成了「窗口向管理者要那条会话的那一代」这件事。
+ * 那一侧一直没人看着，D33 就是从这道缝里过去的（缺陷话：「这正是它漏掉的原因」）。
+ *
+ * 故这一支走**真终端那条路**（真 PTY · 真 `cli.ts` · 真管理者 · 真执行者），判三件：
+ *
+ * 1. **记录区铺出来**——那条会话现有的历史（原话 ＋ 回话）在屏上；
+ * 2. **不是重跑**——模型一次都没被再问过（「查看不触发重新执行」的物证是调用数，不是屏）；
+ * 3. **同一条会话只有一个执行者**——按实际进程数证（`pgrep`），不是看屏。
+ *
+ * ⚠️ **两扇窗借同一块沙地**（同一个 dataDir ⇒ 同一个管理者）：各开一块就成了两个互不
+ * 相干的管理者，而「接的是**那一条**会话」这件事只有在同一摊上才成立。
+ */
+describe('U53 · `--session` 接续（真窗口）', () => {
+  /** 一条有内容的会话，起起来（照产品的方式退出），再把它的 id 交回来。 */
+  async function withContent(sandbox: Sandbox, fixture: ReturnType<typeof startFixture>): Promise<string> {
+    const window = await createUiSession({ label: '第一程', sandbox, fixture })
+    // **收过摊没有**——`close()` 没有二次调用守卫，收两遍会把现场再翻一次
+    let shut = false
+
+    try {
+      await window.send(SAID, { until: { text: SAID }, timeoutMs: 15_000 })
+      await window.key('enter')
+      await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
+      // **闲下来再收**（忙的时候 ctrl+c 是中断不是退出，助手那句就落不了账）
+      await window.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
+
+      await window.quit()
+      const closed = await window.close({ graceMs: 8_000 })
+      shut = true
+      expect(closed.exit.by).not.toBe('sigkill') // 自己走的，不是被拔电
+    } finally {
+      if (!shut) await window.close().catch(() => {})
+    }
+
+    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+    try {
+      expect(db.sessions.length).toBe(1)
+      return db.sessions[0]?.id ?? ''
+    } finally {
+      db.close()
+    }
+  }
+
+  test('拿那条 id 起来——记录区铺出来，模型没被再问过，执行者只有一个', async () => {
+    const runs = tempDir('magic-u53-session-runs-')
+    // ⚠️ **锚要短**（窄窗 / 折行都不至于把它断开）：判据按**行**找
+    const fixture = startFixture({ turns: [{ kind: 'text', text: REPLY }] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      const id = await withContent(sandbox, fixture)
+      expect(id).not.toBe('')
+      expect(fixture.requests().length).toBe(1)
+
+      window = await createUiSession({
+        label: '第二程',
+        artifacts: runs,
+        sandbox,
+        fixture,
+        argv: ['--session', id],
+      })
+
+      // ① **记录区铺出来了**——那条会话现有的历史在屏上（D33 要的正是这一条）。
+      //    ⚠️ 锚**回话那一行**：`SAID` 那句话在**状态行上本来就有一份**（标题＝首句），
+      //    拿它当条件时，记录区一个字不铺它照样成立——那正是 D33 当初没被看见的原因
+      //    （实测：修前跑这一支，等到 `SAID` 是过得去的、等到 `REPLY` 才卡住）。
+      await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
+      // 而那条交代**铺在记录区里**（行首那个 `›`——状态行上没有它）
+      const back = await window.capture({ label: '接续之后' })
+      expect(back.lines.some((line) => line.includes(`› ${SAID}`))).toBe(true)
+
+      // ② **不是重跑**：模型一次都没被再问过（物证是调用数，不是屏）
+      expect(fixture.requests().length).toBe(1)
+
+      // ③ **同一条会话只有一个执行者**——按实际进程数证（不是看屏）
+      await waitFor('只剩一条执行者', async () => (await straysIn(sandbox)).executors.length === 1)
+
+      const closed = await window.close({ graceMs: 8_000 })
+      expect(closed.exit.by).not.toBe('sigkill')
+      window = undefined
+
+      // 窗口走了 ⇒ 那一代也收（没有连接者、手上也没事）
+      await waitFor('执行者收掉', async () => (await straysIn(sandbox)).executors.length === 0, 20_000)
+    } finally {
+      await window?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
 })

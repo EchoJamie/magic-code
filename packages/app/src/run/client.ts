@@ -15,6 +15,23 @@
  * 「我认的是哪一代」不是调用方要操心的东西——它是**连接的状态**，由管理者告知
  * （`welcome` / `target` / `detached` 三条），也由这一层在每条命令上原样带上。
  * 让每个调用点自己记一个数，迟早有一处忘了更新——而那一处的症状是**命令被静默拒绝**。
+ *
+ * ## 收话这一跳为什么排在打招呼**之前**（U53 · D33）
+ *
+ * 管理者的 `welcome` **押在外部工具预检上**（U48 第六段：那几台此刻通不通），而
+ * 「开局就接哪条会话」这件事它在收到 `hello` 的**同一刻**就办了——`--session <id>`
+ * 那条路上，`target`（连同它那条会话）**先于 `welcome`** 发出来。
+ *
+ * 而 `greet` 里那一个监听只认 `welcome`、别的一律丢（`wire.ts` 的 `linkOf` 按**派发
+ * 那一刻**挂着的监听逐个送）。故本层若把收话这一跳挂在 `await greet(...)` **之后**，
+ * 那条 `target` 就落在这一层还不认识它的时候：**这一整条连接从此不知道自己认的是哪一代**
+ * （`gen` 一直是 `null`）。症状不是报错，是**静默**——
+ * `terminal.ts` 那道闸（「还没有目标就别问历史」）据此把开局那一次 `history.read` 丢掉，
+ * 于是记录区一个字都不铺，而状态行照旧认得出那条会话（标题是从 `session.list` 那一跳
+ * 来的）。这正是 D33。
+ *
+ * 故次序反过来：**先订阅、后说话**——与设计给重连定的那条同一句话
+ * （「先订阅并缓冲……避免快照与订阅之间丢事件」· 状态可信度、独占与重新连接 ③）。
  */
 
 import type { Socket } from 'bun'
@@ -140,31 +157,11 @@ export async function connectManager(
   }
 
   const link = linkOf<ManagerToClient>(socket)
-  const greeted = await greet(
-    link,
-    {
-      cwd: options.cwd ?? process.cwd(),
-      ...(options.label === undefined ? {} : { label: options.label }),
-      ...(options.session === undefined ? {} : { session: options.session }),
-    },
-    options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
-  )
-  if (greeted === undefined) {
-    link.close()
-    return undefined
-  }
-
-  // **这条窗口服务不了**（`--session` 打错一个字母）——如实把它交出去，让入口报错退场。
-  // 「报错不降级」在这里是结构上的：连接已经关了，拿不到一个能用的 `ManagerClient`。
-  if (greeted.refuse !== undefined) {
-    link.close()
-    throw new ManagerRefused(greeted.refuse)
-  }
 
   /** 我认的执行者代次——由管理者那三条消息维护（见文件头注）。 */
   let gen: number | null = null
-  /** 这一摊的运行事实——`welcome` 那一份是初值，此后由 `runs` 那一条推着走。 */
-  let runRows: readonly RunRow[] = greeted.runs
+  /** 这一摊的运行事实——`welcome` 那一份是初值（那一下在下面补），此后由 `runs` 那一条推着走。 */
+  let runRows: readonly RunRow[] = []
   const noticeListeners: ((notice: RunNotice) => void)[] = []
   const targetListeners: ((session: string | null) => void)[] = []
   const eventListeners: ((event: KernelEvent, gen: number | null) => void)[] = []
@@ -217,6 +214,32 @@ export async function connectManager(
         return
     }
   })
+
+  // **订阅接上了，才开口说话**（见文件头注：`--session` 那条路上 `target` 先于 `welcome`）
+  const greeted = await greet(
+    link,
+    {
+      cwd: options.cwd ?? process.cwd(),
+      ...(options.label === undefined ? {} : { label: options.label }),
+      ...(options.session === undefined ? {} : { session: options.session }),
+    },
+    options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
+  )
+  if (greeted === undefined) {
+    link.close()
+    return undefined
+  }
+
+  // **这条窗口服务不了**（`--session` 打错一个字母）——如实把它交出去，让入口报错退场。
+  // 「报错不降级」在这里是结构上的：连接已经关了，拿不到一个能用的 `ManagerClient`。
+  if (greeted.refuse !== undefined) {
+    link.close()
+    throw new ManagerRefused(greeted.refuse)
+  }
+
+  // `welcome` 那一份运行事实**是初值**——它现算于预检落定的那一刻，故不比此前任何一条
+  // 推送旧（推送的读数也算在同一个当下，而它更晚）；此后的变化由 `runs` 那一条推着走。
+  runRows = greeted.runs
 
   return {
     conn: greeted.conn,
