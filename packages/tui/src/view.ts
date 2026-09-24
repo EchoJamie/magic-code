@@ -32,6 +32,7 @@ import type {
   PlanNote,
   PlanSnapshot,
   RecordId,
+  RunNotice,
   RunRow,
   RunSnapshot,
   RunState,
@@ -40,6 +41,8 @@ import type {
   SkillCatalogRow,
   SnapshotDecision,
   SnapshotTool,
+  StopPhase,
+  StopScope,
   UsedSkill,
   UsedSkillEntry,
 } from '@magic/contracts'
@@ -662,8 +665,104 @@ export const HINT_PICKER_READ = '↑↓ 选 · esc 收起'
  * 两件（设计明文），不报出来用户就只能自己撞——而抽屉一开就把输入接管了，撞也撞不出回声。
  */
 export const HINT_PICKER_SESSION = '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · esc 收起'
+
+/**
+ * **停止那两个键**（U50）——报在**选中那一条的详情那一行**，不挂在状态行右位。
+ *
+ * 为什么不去挤状态行：那一行右位是**放不下就整段不出现**的（既有口径），而这一串
+ * 键位提示长约八十列——加上左边「○ 空闲 · <标题>」之后，一百列的窗口上就已经挤掉了
+ * （实测：几条既有 TUI 用例当场红）。详情那一行是**整行**给选中项的，宽窄两档都容得下它。
+ *
+ * 另一条口径也是它：**低频操作按需出现**——只有选中那一条**真能停**（跑着 / 等着 /
+ * 收尾中 / 待确认）时才报这两个键；一条早就停了的行上摆两个按不动的键，是教用户白按。
+ */
+export const STOP_KEYS_HINT = 'ctrl+x 停 · ctrl+w 只停这一轮'
+
+/**
+ * **停止那一句回执**（U50）——按「哪一条 + 哪一档 + 走到了哪一拍」说一句给人看的话。
+ *
+ * 这一句话的唯一判据是设计那一行：「**资源确认退出后**才报已停止，**不把局部成功显示为
+ * 整体成功**」。故三拍说的是三件不同的事，**没有一个词可以省**：
+ *
+ * - `accepted`——**只是受理**（`正在停`，不是「停了」）；
+ * - `done`——核销了才叫停（`停了`）；
+ * - `unconfirmed`——没停成 / 证实不了（`没能停掉`，后面跟缘由）。
+ *
+ * 局部那一档（`turn`）**永远不说「停了」**：它只收掉这一轮，那条运行还在、还能接着用。
+ */
+export function stopReceiptOf(input: {
+  readonly title: string
+  readonly scope: StopScope
+  readonly phase: StopPhase
+  readonly note?: string | undefined
+}): string {
+  const who = `「${input.title}」`
+  const why = input.note === undefined || input.note === '' ? '' : `：${input.note}`
+
+  if (input.scope === 'turn') {
+    return input.phase === 'done'
+      ? `只停了${who}这一轮——那条运行还在（可以接着用）`
+      : `没能中断${who}那一轮${why}`
+  }
+
+  switch (input.phase) {
+    case 'accepted':
+      return `正在停${who}${why}`
+    case 'done':
+      return `${who}停了${input.note === undefined ? '' : `（${input.note}）`}`
+    case 'unconfirmed':
+      return `没能停掉${who}${why}`
+  }
+}
 /** 自动补全右位提示（原型 · 场景 11）。 */
 export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
+
+/**
+ * **刚刚那件事的一句回执**（U50）——三类各说各的，**说给用户的话在这一层拼**。
+ *
+ * 为什么不在管理者那一头拼：**标题只有这一层手上有**（目录在这儿；管理者只读得到
+ * 「这条会话在不在」，它按设计不读会话内容）。故管理者报「哪一条、哪一类、什么料」，
+ * 话由这儿说。
+ *
+ * ⚠️ 三类**不能互借词**：「跑完了」不是「成功」（一次回复结束不等于工作完成——设计
+ * 「完成说明留在结果正文，不由运行列表认证」），「出错了」要说得出是哪一步错的。
+ */
+export function noticeReceiptOf(notice: RunNotice, title: string): string {
+  const who = `「${title}」`
+
+  switch (notice.kind) {
+    case 'done':
+      return `${who}那一轮跑完了`
+    case 'failed':
+      return `${who}出错了${notice.detail === undefined ? '' : `：${notice.detail}`}`
+    case 'needs-you':
+      return `${who}等你定夺${notice.detail === undefined ? '' : `：${notice.detail}`}`
+  }
+}
+
+/**
+ * **离开期间那几件事的一句汇总**（U50）——「下一次打开汇总未读事项」的落点。
+ *
+ * 与开屏那张运行摘要（`runSummary`）**判然两件**：那一张说**此刻**有哪几项在跑/在等你，
+ * 这一张说**你不在的时候发生了什么**（那些事此刻早已过去——一条会话可能已经停了）。
+ * 两句都在，谁也不替谁。
+ *
+ * 三条口径与设计那一行对齐：**只报未读**（说过的那些不重念）、**指路**（`/resume`）、
+ * 一句都没有就**不说**（`undefined`，不占一行）。
+ */
+export function unreadSummaryOf(notices: readonly RunNotice[]): string | undefined {
+  const unread = notices.filter((one) => one.unread)
+  if (unread.length === 0) return undefined
+
+  const count = (kind: RunNotice['kind']): number =>
+    unread.filter((one) => one.kind === kind).length
+  const said: string[] = []
+  if (count('done') > 0) said.push(`${count('done')} 项跑完`)
+  if (count('failed') > 0) said.push(`${count('failed')} 项出错`)
+  if (count('needs-you') > 0) said.push(`${count('needs-you')} 项等你`)
+
+  return `你不在的时候：${said.join(' · ')} —— /resume 看是哪几条`
+}
 /**
  * 本地小输入的右位提示（U41）——这一屏能做的就两件：回车交出去、`esc` 收回。
  *
@@ -2365,6 +2464,14 @@ export function runDetail(
   // 状态与缘由就得由详情带上。
   if (!active) said.push(runStateLabel(row.state))
   if (row.state === 'stopped' && row.reason !== undefined) said.push(row.reason)
+
+  /**
+   * **运行还在，而上一轮没跑完**（U50）——那一行是「当前空闲」（「已停止」要有核销），
+   * 可「停点在哪」这件事不能就这么消失（设计：「看停点、检查未知效果、明确继续」）。
+   * 故由这一格补一句：它比「当前空闲」多说的是**上一轮是怎么没的**。
+   */
+  if (row.state !== 'stopped' && row.lastTurn === 'aborted') said.push('上一轮被中断')
+  if (row.state !== 'stopped' && row.lastTurn === 'error') said.push('上一轮出错了')
   if (row.action !== undefined && !active) said.push(row.action)
   said.push(`已持续 ${elapsedLabel(now - row.since)}`)
 

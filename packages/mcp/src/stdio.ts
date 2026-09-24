@@ -17,7 +17,7 @@
  */
 
 import { McpError } from '@modelcontextprotocol/sdk/types.js'
-import type { McpConnection, McpStdioConfig } from '@magic/contracts'
+import type { McpConnection, McpStdioConfig, ProcessLedger } from '@magic/contracts'
 import { createConnection, GuardError } from './connection.ts'
 import type { OwnedTransport } from './connection.ts'
 import { createOwnedStdioTransport } from './stdio-transport.ts'
@@ -30,6 +30,8 @@ export type StdioConnectionOptions = {
   readonly config: McpStdioConfig
   readonly connectTimeoutMs?: number
   readonly callTimeoutMs?: number
+  /** **归属账**（U50）——这一条连接起来的进程组记它一笔（见 `OwnedStdioOptions.ledger`）。 */
+  readonly ledger?: ProcessLedger | undefined
 }
 
 /** stdio 连接——端口 ＋ 起手（**启动那一步归编排者调**，端口本身不含它）。 */
@@ -53,6 +55,7 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
           command: config.command,
           ...(config.args === undefined ? {} : { args: [...config.args] }),
           ...(config.env === undefined ? {} : { env: { ...config.env } }),
+          ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
         }),
       startupReason: (error) => startupReason(error, config.command),
       goneReason: SERVER_GONE,

@@ -57,6 +57,7 @@ export {
 export {
   COMMANDS,
   HINT_EXIT_ARMED,
+  STOP_KEYS_HINT,
   HINT_IDLE,
   appendEcho,
   appendOutput,
@@ -67,6 +68,7 @@ export {
   isSessionRow,
   matchCommands,
   movePicker,
+  noticeReceiptOf,
   openPicker,
   picked,
   rebuild,
@@ -76,6 +78,7 @@ export {
   takeOver,
   textOfLines,
   undock,
+  unreadSummaryOf,
   withBanner,
   withContextWindow,
   withDecisionStatus,

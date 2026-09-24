@@ -59,6 +59,7 @@ import type {
   ModelSwitchRequest,
   ProviderConfig,
   ProviderSaveRequest,
+  ProcessLedger,
   RecordsService,
   RulesLoad,
   RulesProblem,
@@ -92,6 +93,7 @@ import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import {
   DEFAULT_CANDIDATES,
   createMaterials,
+  createProcessLedger,
   createProjectRules,
   createSandbox,
   createSkills,
@@ -413,6 +415,14 @@ export type Assembly = {
    * 关库（blob 无需收尾）＋ **发起**外部服务器的释放（不等它——要等请 `await shutdown()`）。
    */
   close(): void
+  /**
+   * **这一代手上握着的自有进程组**（U50）——账本身（见契约 `ProcessLedger`）。
+   *
+   * 由**执行者**报给管理者（`wire.ts` 的 `owned`）：管理者据此在「执行者被杀」那条路上
+   * 把没人管的进程收回来。**读一次就是一次现读**（账顺手摘掉已经没了的），不是快照；
+   * 账一变会喊一声（`onChange`），执行者据此**当场**报，不必等下一趟定时。
+   */
+  readonly ledger: ProcessLedger
 }
 
 /**
@@ -500,7 +510,17 @@ export function assemble(options: AssembleOptions): Assembly {
   // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
   const workspace = workspaceOf(loaded, options.cwd)
-  const sandbox = createSandbox({ workspace })
+
+  /**
+   * **自有进程的归属账**（U50）——这一个进程起的每一组进程都记在这儿，**两处共用**
+   * （沙箱的每一条命令 ＋ MCP 的每一条 stdio 服务器）。
+   *
+   * 为什么要有一本账：执行者被 `SIGKILL` 时它自己跑不到收尾那两跳，**谁起的这一组**就得
+   * 有人知道（设计：「执行者崩溃或被杀 ⇒ 管理者收回……**已登记**自有进程组」）。账跟着
+   * **执行者这一代**走（执行者是一个进程，账就是它这一个进程的），由它上报给管理者。
+   */
+  const ledger = createProcessLedger()
+  const sandbox = createSandbox({ workspace, ledger })
 
   /**
    * **外部工具服务器**（U38）——配置里显式写了的那几条，一条一个进程。
@@ -516,6 +536,8 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const mcp: McpServers = createMcpServers({
     servers: loaded.config.mcp?.servers ?? {},
+    // **同一本账**（U50）——stdio 那几条服务器的进程组也记进去（见 `ledger` 的注）
+    ledger,
     ...(options.mcpTimeouts?.connectTimeoutMs === undefined
       ? {}
       : { connectTimeoutMs: options.mcpTimeouts.connectTimeoutMs }),
@@ -1919,6 +1941,8 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍
     shutdown: () => mcp.shutdown(),
+    // 自有进程组那一本账（见 `Assembly.ledger`）——账自己摘掉已经没了的那些
+    ledger,
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。

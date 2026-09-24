@@ -18,7 +18,16 @@
  */
 
 import type { Socket } from 'bun'
-import type { Command, KernelEvent, RunRow, RunSnapshot } from '@magic/contracts'
+import type {
+  Command,
+  KernelEvent,
+  RunNotice,
+  RunRow,
+  RunSnapshot,
+  SessionId,
+  StopPhase,
+  StopScope,
+} from '@magic/contracts'
 import { linkOf, socketHandlers } from './wire.ts'
 import type { Link, ManagerToClient, McpProbeRow } from './wire.ts'
 
@@ -34,6 +43,19 @@ export class ManagerRefused extends Error {
     super(reason)
     this.name = 'ManagerRefused'
   }
+}
+
+/**
+ * **停止走到了哪一拍**（U50）——管理者报的四件，话由外壳按自己的目录拼。
+ *
+ * 为什么不直接回一句话：**那句话要带上会话的标题**，而标题只有窗口手上有（目录在它那儿，
+ * 管理者只读得到「这条会话在不在」）。故这一头只报「哪一条、哪一档、到了哪一拍」。
+ */
+export type StopReport = {
+  readonly session: SessionId
+  readonly scope: StopScope
+  readonly phase: StopPhase
+  readonly note?: string
 }
 
 export type ManagerClient = {
@@ -70,6 +92,18 @@ export type ManagerClient = {
   onTarget(listener: (session: string | null) => void): void
   /** 内核来的事件 ＋ 它的**执行者代次**。 */
   onEvent(listener: (event: KernelEvent, gen: number | null) => void): void
+  /**
+   * **停止某一条运行**（U50）——整体（`run`）或局部（`turn`），由用户明确选择。
+   *
+   * 它是**运行管理**的动作，不是内核命令：不经过 `Command` 那一族（见 `wire.ts` 的注）。
+   */
+  stop(session: SessionId, scope: StopScope): void
+  /** 停止走到了哪一拍（受理 / 已核销 / 没能证实）——外壳据它落一行回执。 */
+  onStopped(listener: (report: StopReport) => void): void
+  /** **离开期间留下的那几件事**（U50）——接上时随 `welcome` 一起下来，此后不重发。 */
+  readonly unread: readonly RunNotice[]
+  /** **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你，三类之外没有。 */
+  onNotice(listener: (notice: RunNotice) => void): void
   /** 管理者**给人看**的话（代次过期、它要退了……）——外壳落成一行回执。 */
   onLine(listener: (text: string) => void): void
   /** 连接断了（**只报一次**）——「管理者不可达」那一路。 */
@@ -131,11 +165,13 @@ export async function connectManager(
   let gen: number | null = null
   /** 这一摊的运行事实——`welcome` 那一份是初值，此后由 `runs` 那一条推着走。 */
   let runRows: readonly RunRow[] = greeted.runs
+  const noticeListeners: ((notice: RunNotice) => void)[] = []
   const targetListeners: ((session: string | null) => void)[] = []
   const eventListeners: ((event: KernelEvent, gen: number | null) => void)[] = []
   const lineListeners: ((text: string) => void)[] = []
   const runListeners: ((rows: readonly RunRow[]) => void)[] = []
   const resumedListeners: ((gen: number, snapshot: RunSnapshot) => void)[] = []
+  const stoppedListeners: ((report: StopReport) => void)[] = []
 
   link.onMessage((message) => {
     switch (message.t) {
@@ -145,6 +181,19 @@ export async function connectManager(
         return
       case 'resumed':
         for (const listener of [...resumedListeners]) listener(message.gen, message.snapshot)
+        return
+      case 'notice':
+        for (const listener of [...noticeListeners]) listener(message.notice)
+        return
+      case 'stopped':
+        for (const listener of [...stoppedListeners]) {
+          listener({
+            session: message.session,
+            scope: message.scope,
+            phase: message.phase,
+            ...(message.note === undefined ? {} : { note: message.note }),
+          })
+        }
         return
       case 'target':
         gen = message.gen
@@ -181,6 +230,13 @@ export async function connectManager(
     onResumed(listener) {
       resumedListeners.push(listener)
     },
+    onStopped(listener) {
+      stoppedListeners.push(listener)
+    },
+    unread: greeted.notices,
+    onNotice(listener) {
+      noticeListeners.push(listener)
+    },
     onTarget(listener) {
       targetListeners.push(listener)
     },
@@ -195,6 +251,9 @@ export async function connectManager(
     },
     send(command) {
       link.send({ t: 'cmd', gen, cmd: command })
+    },
+    stop(session, scope) {
+      link.send({ t: 'stop', session, scope })
     },
     close() {
       link.send({ t: 'bye', why: '窗口收摊' })
@@ -238,6 +297,7 @@ async function greet(
       readonly dataDir: string
       readonly mcp: readonly McpProbeRow[]
       readonly runs: readonly RunRow[]
+      readonly notices: readonly RunNotice[]
       readonly refuse?: string
     }
   | undefined
@@ -251,6 +311,7 @@ async function greet(
             readonly dataDir: string
             readonly mcp: readonly McpProbeRow[]
             readonly runs: readonly RunRow[]
+            readonly notices: readonly RunNotice[]
             readonly refuse?: string
           }
         | undefined,
@@ -270,6 +331,7 @@ async function greet(
         dataDir: message.dataDir,
         mcp: message.mcp,
         runs: message.runs,
+        notices: message.notices,
         ...(message.refuse === undefined ? {} : { refuse: message.refuse }),
       })
     })

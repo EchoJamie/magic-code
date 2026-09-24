@@ -797,6 +797,10 @@ export function toShellKeys(
   // `Ctrl T`——收起/展开当前清单（U34）。两条来路同形：裸控制码 `\x14`（Ink 解成
   // `ctrl＋字母 t`）与 kitty 协议下的 `CSI 116;5u`（`use-input` 那两支都归到 `input === 't'`）。
   if (key.ctrl === true && input === 't') return [{ kind: 'ctrl+t' }]
+  // `Ctrl X` / `Ctrl W`——会话列表里停选中的那一条（U50）：整体 / 局部两档。
+  // 只在 `/resume` 那一屏有意义（见 `shell.ts` 那两个键的注），别处按下去是无声的。
+  if (key.ctrl === true && input === 'x') return [{ kind: 'ctrl+x' }]
+  if (key.ctrl === true && input === 'w') return [{ kind: 'ctrl+w' }]
   if (key.tab === true) return [{ kind: 'tab' }]
 
   // **`shift+回车` ＝ 换行**（原型 · 键盘）。两条来路都要认（这就是「两条来路」那件事）：

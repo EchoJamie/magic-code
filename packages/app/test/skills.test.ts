@@ -754,9 +754,13 @@ describe('U33 · 失效与排队', () => {
 })
 
 describe('U33 · 停下时清掉的排队输入', () => {
-  test('**逐条配对 `ok:false`**（没进会话＝明确失败），且那一条不留条目', async () => {
+  test('**逐条配对 `ok:false`**（没进会话），且那一条不留条目——U50 起那句改说「未执行」', async () => {
     // 由头（2026-09-21 规划裁）：`input.settled` 的契约是「给了 `ref` 必有终态」——
     // 停下的那一刻，排着的那些的去处是**明确失败**，不是「也许以后会跑」。
+    //
+    // ⚠️ **U50 改了那句理由**（判据没放宽，条数一字不动）：从前说「请重新发送」——
+    // 那是把一份**留着的**交代说成了一次**丢失**（用户得重打一遍）。设计那一行写的是
+    // 「保留并标为未执行」：终态照给，话改成「标着「未执行」留着（没有接着跑）」。
     const stage = makeStage()
     try {
       const path = projectSkill(stage, 'test')
@@ -782,7 +786,7 @@ describe('U33 · 停下时清掉的排队输入', () => {
 
       // **没进会话的排队项：一条 `ok:false`**（不是「没有终态」）
       expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
-        { ref: 'queued-ref', ok: false, reason: '停下了——这一条还没轮到，没进会话，请重新发送' },
+        { ref: 'queued-ref', ok: false, reason: '停下了——这一条还没轮到，标着「未执行」留着（没有接着跑）' },
       ])
       // 它确实没进会话：库里没有它那条用户条目
       expect(userRows(assembly).map((row) => row.content_text)).toEqual(['先跑这件'])

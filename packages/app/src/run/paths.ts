@@ -54,6 +54,17 @@ const RECORD_NAME = 'manager.json'
  * 后者——U48 时只有前一份，于是核对只到「路径有没有尸首」。
  */
 const RUNS_NAME = 'runs.json'
+/**
+ * **未读事项那一份**（U50）——离开期间发生的那几件事（完成 / 失败 / 需要你）。
+ *
+ * 为什么它也要落盘：管理者**自己没有窗口、也没有执行者时会退**（设计 · 收缩）——
+ * 而「跑完的那一刻没人看着」正是它要记的那一格（关掉窗口、活还在跑）。不落盘的话，
+ * 用户回来时那件事就没人提起了（设计：「下一次打开汇总**未读**事项」）。
+ *
+ * **它有界**（见 `NOTICES_LIMIT`）：这是「上次离开之后发生了什么」的一份便条，
+ * 不是第二套日志（记录域那一条才是权威）。
+ */
+const NOTICES_NAME = 'notices.json'
 
 /** 一条 socket 路径放不下的说明——超长时用它报给人听（不是「内部错误」）。 */
 export class SocketPathTooLong extends Error {
@@ -79,6 +90,8 @@ export type RunPaths = {
   readonly record: string
   /** **运行登记**那一份（见 `RUNS_NAME`）。 */
   readonly runs: string
+  /** **未读事项**那一份（见 `NOTICES_NAME`）。 */
+  readonly notices: string
 }
 
 /**
@@ -145,6 +158,7 @@ function pathsIn(dir: string): RunPaths {
     socket: join(dir, SOCKET_NAME),
     record: join(dir, RECORD_NAME),
     runs: join(dir, RUNS_NAME),
+    notices: join(dir, NOTICES_NAME),
   }
 }
 

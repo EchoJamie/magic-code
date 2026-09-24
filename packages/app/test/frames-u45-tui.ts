@@ -41,6 +41,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { HINT_IDLE, bannerOf } from '@magic/tui'
 import { createUiSession } from './ui/index.ts'
+import { IDLE_MARK } from './ui/driver.ts'
 import type { Capture, UiSession } from './ui/index.ts'
 import type { VtScreen } from './ui/vt.ts'
 import { removeDir, tempDir } from './tmp.ts'
@@ -387,11 +388,14 @@ async function narrow(): Promise<void> {
   })
 
   try {
-    await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
+    await session.wait({ text: IDLE_MARK }, { timeoutMs: 20_000 })
 
     await typeLine(session, 甲说)
     await session.key('enter', { until: { text: '列好了' }, timeoutMs: 20_000 })
-    await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
+    // ⚠️ 等**状态那一格**，不等右位那句键位提示：这一趟是 46 列的窄窗，而首条交代落账后
+    //    状态行左位换成**真标题**，右位那句按既有口径让位（U50 起；由头见 `driver.ts` 的
+    //    `IDLE_MARK`）。拿它当条件＝量窗口宽度，不是「它闲下来了没有」。
+    await session.wait({ text: IDLE_MARK }, { timeoutMs: 15_000 })
 
     await typeLine(session, '/clear')
     await session.key('enter')
@@ -417,7 +421,7 @@ async function narrow(): Promise<void> {
 
     await typeLine(session, 乙说)
     await session.key('enter', { until: { text: '也列好了' }, timeoutMs: 20_000 })
-    await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
+    await session.wait({ text: IDLE_MARK }, { timeoutMs: 15_000 })
 
     await typeLine(session, '/resume')
     await session.key('enter')

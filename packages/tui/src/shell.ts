@@ -27,8 +27,11 @@ import type {
   VendorInfo,
   VendorRegion,
   ReasoningSetting,
+  RunNotice,
   SessionId,
   SkillCatalogRow,
+  StopPhase,
+  StopScope,
 } from '@magic/contracts'
 import {
   COMMANDS,
@@ -84,7 +87,10 @@ import {
   openPrompt,
   picked,
   rebuild,
+  noticeReceiptOf,
   reduce,
+  STOP_KEYS_HINT,
+  stopReceiptOf,
   withBanner,
   withContextWindow,
 } from './view.ts'
@@ -135,6 +141,22 @@ export type ShellKey =
    * 不动插入点、也不动输入历史（故它走 `commit` 而不是 `edit`：后者会把翻历史那一格归位）。
    */
   | { readonly kind: 'ctrl+t' }
+  /**
+   * **`Ctrl X`**——停**选中的那一条运行**（U50 · **整体**那一档）。
+   *
+   * 由头（设计 · 会话与运行管理）：「会话/成员详情选择停止」（**按明确选择的整体或局部
+   * 范围编排**）。会话列表就是「详情」入口，故两个范围各有一个键——**这一条是整体**：
+   * 收这条运行的全部资源（在途 ＋ 自有进程组），执行者随后退出。
+   */
+  | { readonly kind: 'ctrl+x' }
+  /**
+   * **`Ctrl W`**——**只停这一轮**（U50 · **局部**那一档）。
+   *
+   * 与上一条分开是有由头的：设计把「中断这一轮」与「停这件事」当两件事写（一个是局部
+   * 原语，一个要「全部相关成员及递归分发」），且明写「**不能把局部成功显示为整体成功**」
+   * ——两个范围共用一个键，用户就没法表达他要哪一个。
+   */
+  | { readonly kind: 'ctrl+w' }
   /**
    * **清单翻页**——把行视口挪到第 `top` 行（U34）。
    *
@@ -303,6 +325,47 @@ export type ShellOptions = {
    * （设计：摘要说的是**其他**活跃工作，而这条正是用户为它来的）。
    */
   readonly openingSession?: string | undefined
+  /**
+   * **停一条运行**（U50）——整体（`run`）或局部（`turn`），**由用户明确选择**。
+   *
+   * 由外层转给本机管理者（窗口这一侧不做判断：谁是管理者、那一代还在不在，都不归它知道）。
+   * **不给**（用例 / 演示）⇒ 那一屏的停止键收起（按下去只落一句「这儿停不了」）。
+   */
+  readonly stop?: ((session: SessionId, scope: StopScope) => void) | undefined
+  /**
+   * **停止走到了哪一拍**（U50）——受理 / 已核销 / 没能证实，各落一行回执。
+   *
+   * 报的是**结构化**的（哪一条、哪一档、哪一拍），**话由这一层拼**——因为那句话要带上
+   * 会话的标题，而标题只有这一层手上有（目录在这儿）。
+   */
+  readonly stopped?: ((listener: (report: StopReport) => void) => void) | undefined
+  /**
+   * **管理者说的一句给人看的话**（U50 接上）——代次过期、它要收摊、那一代收摊了……
+   *
+   * ⚠️ 这一条**原先是断的**（U48 起了线、U49 没用上）：管理者说了话，屏上一行都没有。
+   * 停止那条路正要靠它（「没切到」「起不了执行者」那几句都在这一条上）。
+   */
+  readonly lines?: ((listener: (text: string) => void) => void) | undefined
+  /**
+   * **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你，三类之外没有（见 `RunNotice`）。
+   *
+   * 与 `stopped` 分开：那一条是**用户自己按的**那一下的回执，这一条是**他没看着的时候**
+   * 发生的事——两件事的读者心情都不一样（一个在等结果，一个刚回来）。
+   */
+  readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
+}
+
+/**
+ * **停止走到了哪一拍**（U50）——与 `@magic/app` 那一侧同形（那边是产出方）。
+ *
+ * 契约里没有它：它是**管理者 ↔ 外壳**之间的运行管理读数，不是内核的语言（同 `RunRow`）。
+ * 两处各写一个形状会分叉，故这一份是**照抄那边那条消息**的最小形（字段一字不差）。
+ */
+export type StopReport = {
+  readonly session: SessionId
+  readonly scope: StopScope
+  readonly phase: StopPhase
+  readonly note?: string
 }
 
 /**
@@ -964,6 +1027,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 提交**没收下** ⇒ 按原 pairing 键认回那份草稿（U33）。回执那半行由 `reduce` 落
     // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
     if (event.kind === 'input.settled' && !event.data.ok) restoreDraft(event.data.ref)
+    /**
+     * **首条交代开张之后，把目录取回来一次**（U50）。
+     *
+     * 由头：会话是**首条消息**那一刻才建的，而目录（`session.state` 带的 `sessions`）
+     * 只在**会话命令**那几支上发——于是这条新会话的**标题**在窗口这一侧一直缺席，直到
+     * 下一次 `/resume`。而通知那几行回执要拿标题说话（「「<标题>」那一轮跑完了」），
+     * 缺席就只剩一个 id——那是**内部东西漏到屏上**，最不该有的一种漏。
+     *
+     * ⚠️ **不是每一条交代都问**：只在「这一条是新开张的」时候值得（`ok:true` 且目录里
+     * 还没有它）——不然每发一句就多一趟往返，而那一趟什么新东西都没带回来。
+     */
+    if (event.kind === 'input.settled' && event.data.ok && event.session !== '') {
+      if (!view.catalog.some((one) => one.id === event.session)) send({ type: 'session.list' })
+    }
 
     // 送过的图片一屏回来了（U37）——两只分得开，按**在等什么**判（不认字面）：
     // ① 正等「送过的图片」（`/attachments` 那条路）⇒ 开抽屉；
@@ -1129,7 +1206,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (run !== undefined) {
       // 活跃那一段里，状态与动作都已经在「组头 ＋ 副文案」上了——详情只补别处没说过的
       const detail = runDetail(run, Date.now(), { inActiveSection: inActiveSection(run.state) })
-      return head === '' ? detail : `${head} · ${detail}`
+      // **这一条真能停**才报停止那两个键（U50 · 低频操作按需出现）：报在详情这一行，
+      // 不挤状态行右位（那一行放不下就整段不出现，见 `STOP_KEYS_HINT` 的注）
+      const actions = inActiveSection(run.state) ? STOP_KEYS_HINT : ''
+      return [head, detail, actions].filter((piece) => piece !== '').join(' · ')
     }
 
     // 空态优先（「还没有会话」比「这儿是哪儿」更该先知道）；否则本工作区一条都没有时
@@ -1144,6 +1224,43 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // ——屏上凭空多一条空白（真帧上量出来的）
     return said === '' ? undefined : said
   }
+
+  /**
+   * **停选中的那一条**（U50）——`ctrl+x` ＝ 整体（这条运行）· `ctrl+w` ＝ 局部（这一轮）。
+   *
+   * 设计那句「会话/成员详情选择停止」在这里落成两个键：**范围由用户明确选择**，而这一层
+   * 只做两件——把选的是哪一条读出来、把它交出去。**一个判断都不做**：那条运行是死是活、
+   * 该不该核销、收没收到，全归本机管理者（它手上才有那一摊的运行事实）。
+   *
+   * 回执**不在这里落**（那是 `options.stopped` 的事）：按下的这一刻还什么都不知道，
+   * 当场说一句「已停止」正是设计要防的那种谎话（「资源确认退出后才报已停止」）。
+   */
+  const askStop = (scope: StopScope): ShellEffect => {
+    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'session') return NONE
+
+    const row = picked(view)
+    if (row === undefined) return NONE
+
+    if (options.stop === undefined) {
+      // 没有来路（用例 / 演示）——**如实说**，不留一个按下去没反应的键
+      commit(appendReceipt(view, '这个窗口没有连着运行管理——停不了'))
+      return NONE
+    }
+
+    options.stop(row.value, scope)
+    return NONE
+  }
+
+  /**
+   * **这条会话在目录里叫什么**（U50）——回执那一行要带上标题。
+   *
+   * ⚠️ **认不得就不拿 id 顶**：会话 id 是内部的一半（UUID），把它印到屏上是最坏的一种
+   * 「实现细节漏出去」。认不得就说**用户视角的那一句**（「你这条会话」/「另一条会话」）
+   * ——少一点信息，但一个字都不编。
+   */
+  const nameOfSession = (session: SessionId): string =>
+    view.catalog.find((one) => one.id === session)?.title ??
+    (session === view.sessionId ? '你这条会话' : '另一条会话')
 
   /** `/resume`——目录已到手，开它（行：活跃在前、再按工作区分组，见 `sessionRows`）。 */
   const openSessionPicker = (): void => {
@@ -1219,6 +1336,53 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (disposed) return
     commit({ ...view, runs: rows })
     refreshSessionPicker()
+  })
+
+  // —— U50：停止那一族（回执 · 管理者说的话）——
+
+  /**
+   * **停止走到了哪一拍**——落一行回执，**话在这一层拼**（它要带上那条会话的标题，
+   * 而标题只有这一层手上有：目录在这儿，管理者只读得到「这条会话在不在」）。
+   *
+   * ⚠️ **三拍说三件事**（`stopReceiptOf`）：受理不是停、核销了才叫停、没能停掉的要说出
+   * 缘由——「不把局部成功显示为整体成功」就落在这一处。
+   */
+  options.stopped?.((report) => {
+    if (disposed) return
+    const title = nameOfSession(report.session)
+    commit(
+      appendReceipt(
+        view,
+        stopReceiptOf({
+          title,
+          scope: report.scope,
+          phase: report.phase,
+          note: report.note,
+        }),
+      ),
+    )
+  })
+
+  /**
+   * **管理者说了一句给人看的话**——落一行回执（U50 把这条线接上）。
+   *
+   * 由头：U48 就把这条线架起来了（`client.onLine`），可**屏上一行都没有**——管理者说的
+   * 「这一代已经过去了」「起不了执行者」全落在空气里。停止那条路正要靠它。
+   */
+  options.lines?.((text) => {
+    if (disposed) return
+    commit(appendReceipt(view, text))
+  })
+
+  /**
+   * **刚刚发生了一件事**（U50）——完成的 / 出错的 / 等你的，落一行回执。
+   *
+   * ⚠️ **三类之外一个都不来**（谁在什么时候说，判据在管理者那一头：设计「不持续播报
+   * 『还在跑』」）；同一条事实也只来一次（跨窗口去重按那条事实的号）。
+   */
+  options.notices?.((notice) => {
+    if (disposed) return
+    commit(appendReceipt(view, noticeReceiptOf(notice, nameOfSession(notice.session))))
   })
 
   /**
@@ -2478,6 +2642,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         }
         if (view.completion !== null) pickCompletion()
         return NONE
+
+      // —— 停止（U50）：`/resume` 那一屏的两个键，各对应设计里那两档「明确选择的」范围 ——
+      case 'ctrl+x':
+        return askStop('run')
+
+      case 'ctrl+w':
+        return askStop('turn')
 
       case 'enter':
         return submit()

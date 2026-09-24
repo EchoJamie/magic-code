@@ -160,12 +160,12 @@ describe('ConversationService · 中断', () => {
     expect(statesOf(stage)).toEqual(['resumed', 'waiting'])
   })
 
-  test('打断一并清掉排队中的交代——「停下」就是停下', async () => {
+  test('打断：排队中的交代**保留并标为未执行**（U50）——「停下」就是停下，但也不丢', async () => {
     const stage = makeStage({ turns: [{ text: ['一', '二', '三', '四'] }], stepDelayMs: 2 })
     const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '头一件' })
-    service.submit({ text: '还没轮到的那件' })
+    service.submit({ text: '还没轮到的那件', ref: 'draft-2' })
     await waitFor(
       () => (stage.sink.byKind('model.delta').length >= 1 ? true : undefined),
       '第一条正文增量',
@@ -174,9 +174,43 @@ describe('ConversationService · 中断', () => {
     service.interrupt()
     await waitUntilIdle(stage.sink)
 
-    // 排队的第二件没跑（记录里只有第一件）
+    // ① **不在停止后继续消费**：排队的第二件没跑（记录里只有第一件）
     expect(stage.records.entries.map((entry) => entry.content)).toEqual([{ text: '头一件' }])
     expect(stage.sink.byKind('turn.end').map((event) => event.data.reason)).toEqual(['aborted'])
+
+    // ② **标为未执行 ＋ 保留**：逐条配对一条终态，且那句话说得出它是什么
+    //    （从前那句是「请重新发送」——把一份留着的交代说成了一次丢失，用户得重打一遍）
+    const settled = stage.sink.byKind('input.settled')
+    expect(settled).toHaveLength(1)
+    expect(settled[0]?.data.ok).toBe(false)
+    expect(settled[0]?.data.reason).toContain('未执行')
+    expect(settled[0]?.data.reason).not.toContain('请重新发送')
+    expect(stage.sink.byKind('error')).toHaveLength(0) // 它不是错误，是「还没轮到」
+  })
+
+  test('停下之后接着交代：留着的那几条**不跟着跑**（U50）', async () => {
+    const stage = makeStage({
+      turns: [{ text: ['一', '二', '三', '四'] }, { text: '回新那一件' }],
+      stepDelayMs: 2,
+    })
+    const service = createConversationSession(depsOf(stage))
+
+    service.submit({ text: '头一件' })
+    service.submit({ text: '还没轮到的那件', ref: 'draft-2' })
+    await waitFor(
+      () => (stage.sink.byKind('model.delta').length >= 1 ? true : undefined),
+      '第一条正文增量',
+    )
+    service.interrupt()
+    await waitUntilIdle(stage.sink)
+
+    // 用户重新交代了一句——**那一条留着的不会跟着走**（要跑只有重新交代这条路）
+    service.submit({ text: '重新交代的那一句' })
+    await waitUntilIdle(stage.sink)
+
+    expect(
+      stage.records.entries.filter((entry) => entry.kind === 'user').map((entry) => entry.content),
+    ).toEqual([{ text: '头一件' }, { text: '重新交代的那一句' }])
   })
 
   test('空闲时打断——什么都不发生（空闲时的 Ctrl+C ＝ 退出，归外壳发起）', async () => {

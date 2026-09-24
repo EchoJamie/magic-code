@@ -17,7 +17,7 @@
  *   甚至 exit 0，于是「已超时 / 已取消」会被报成成功。SIGKILL 不可捕获，语义才闭合。
  */
 
-import type { ExecResult, OutputDelta } from '@magic/contracts'
+import type { ExecResult, OutputDelta, ProcessLedger } from '@magic/contracts'
 
 /** 超时缺省——毫秒（技术方案 · 执行 · 原语形态：缺省＝实现级常量）。 */
 export const DEFAULT_TIMEOUT_MS = 120_000
@@ -72,7 +72,18 @@ export type CommandOptions = {
   readonly maxOutputBytes: number
   readonly onOutput?: (delta: OutputDelta) => void
   readonly signal?: AbortSignal
+  /**
+   * **归属账**（U50）——起来的这一组记它一笔。
+   *
+   * 为什么要记：执行者被 `SIGKILL` 时它自己来不及收尾，**谁起的这一组**就得有人知道
+   * （设计：「执行者崩溃或被杀 ⇒ 管理者收回……**已登记**自有进程组」）。不记账的那条路
+   * （用例 / 直连沙箱）照旧能跑——缺省不给就是不给。
+   */
+  readonly ledger?: ProcessLedger | undefined
 }
+
+/** 账上那句「什么起的」留多长——够认出来就行，不把整条命令搬进账里。 */
+const LEDGER_WHAT_CHARS = 40
 
 /**
  * 把一道流读干——**读到 EOF 才停**（即便已到上限也不能停手：停了管道写满，命令会卡死）。
@@ -154,6 +165,14 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
       message: `启动失败（cwd: ${options.cwd}）：${error instanceof Error ? error.message : String(error)}`,
     }
   }
+
+  // **记账**（U50）：起来的这一组归谁——组长就是刚起来的那个（`detached` 保证）。
+  // 记在这一跳（spawn 成功之后、干活之前）：账上多一条不碍事，少一条就没人在收尾时
+  // 找得到它。什么时候摘由账自己判（组没了就摘，见 `groups.ts`）。
+  options.ledger?.add({
+    pgid: proc.pid,
+    what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
+  })
 
   // 取消——信号一响就按组收命。**不另立分支**：收命后 `proc.exited` 自然落定 137，
   // 走的是「命令跑了 · exit≠0」那条正道（取消不是沙箱级失败，见上）。
