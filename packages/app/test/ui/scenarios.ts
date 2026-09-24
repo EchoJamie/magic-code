@@ -111,6 +111,7 @@ export type ScenarioName =
   | 'mcp-underscore-name'
   | 'stop-not-rollback'
   | 'exit-command'
+  | 'packed-enter'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -1295,8 +1296,9 @@ const exitCommand: Scenario = {
       ...where(options),
     })
 
-    // ⚠️ **写一次、等这一下生效**（同下面 `/exit` 那一处注：回车与正文挤进同一个读块时，
-    //    回车会当场没有——这一句就永远不提交）。锚带**前导空格**＝只认输入行那一格。
+    // ⚠️ **写一次、等这一下生效**（工单「界面验收工具」那处糖）。正文与回车仍**分两次写**
+    //    （见 `driver.ts` 文件头注 2）——挤一块从 U56 起也走得通，但常态动作照旧是两下。
+    //    锚带**前导空格**＝只认输入行那一格。
     await session.send('你好', { until: { text: ' › 你好' }, timeoutMs: 15_000 })
     await session.key('enter')
     await session.wait({ text: '收到，我在。' }, { timeoutMs: 25_000 })
@@ -1304,9 +1306,11 @@ const exitCommand: Scenario = {
     await session.wait({ text: IDLE_STATE }, { timeoutMs: 20_000 })
 
     // ⚠️ **写一次、等这一下生效**（工单「界面验收工具」那处糖，也是踩出来的）：
-    //    回车若与正文挤进**同一个读块**（`/exit\r`），Ink 就把它当一串正文——回车当场没有，
-    //    这一句永远不提交。锚 `› /exit`（**前导空格**：那是输入行那一格）——
-    //    候选那一行是 `› /exit　停掉…`，**不带前导空格**，故这个锚只认输入行。
+    //    这一句写下去要等它真上了屏再敲回车——不然锚 `› /exit` 还没出现，回车就发出去了。
+    //    （当年另有一层原因：回车与正文挤进同一读块会丢；那一条是 D35，U56 已修，
+    //    正面那一形改由本文件的 `packed-enter` 钉着。）
+    //    锚 `› /exit`（**前导空格**：那是输入行那一格）——候选那一行是
+    //    `› /exit　停掉…`，**不带前导空格**，故这个锚只认输入行。
     await session.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await session.key('enter')
 
@@ -1391,6 +1395,133 @@ const exitCommand: Scenario = {
   },
 }
 
+/**
+ * **D35 · 正文与回车挤进同一个读块时，回车要有**——正反两面各钉住。
+ *
+ * ## 这一场为什么必须用**一次写**
+ *
+ * 驱动那边 `send()` 与 `key('enter')` 是**两次写**（`driver.ts` 文件头注 2 的老绕法），
+ * 于是这一形从来照不到。而真 PTY 实测：**六次写、每字一次、间隔 0ms**，仍然并成同一个
+ * `/exit\r` 读块——**合块与终端的写边界无关**，只取决于应用读得快不快（「App 正忙、
+ * 敲完立刻回车」正是它）。故这里的「一次 `send`」与真终端里那一形**同源**。
+ *
+ * ## 反面比正面要紧
+ *
+ * 认回来的条件只有三条（`trailingEnterOf`）：末尾是 `\r` · 块里 `\r` 只这一个 · 块里没有 `\n`。
+ * 这一场把「**粘贴的多行**」两种来路都钉住：**裸多行块**（终端不认 bracketed paste 时的样子）
+ * 与**真 bracketed 粘贴**——都不许被切碎，也不许被当成交付发出去。
+ */
+const packedEnter: Scenario = {
+  name: 'packed-enter',
+  title: '正文与回车挤进同一个读块：那一按要作数（D35），粘贴的多行不许被切碎',
+  anchors: 'U56 验收：一次写「正文＋回车」就提交；裸多行块与 bracketed 粘贴都原样进草稿',
+  story: async (ui, options) => {
+    // —— ① 正面：正文与回车挤进同一个读块 ——
+    const session = await ui.open({
+      label: 'U56-挤块-正面',
+      columns: 100,
+      rows: 30,
+      turns: [{ kind: 'text', text: '收到，我在。', chunks: 2, chunkDelayMs: 60 }],
+      ...where(options),
+    })
+
+    // 一次写：正文与回车同块——**修前这一下什么都不发生**（回车当场没有）
+    await session.send('你好\r', { until: { text: '收到，我在。' }, timeoutMs: 25_000 })
+
+    const sent = session.requests()
+    ui.check(sent.length === 1, '一次写「正文＋回车」**提交了**（模型那头收到一条）', `实际 ${sent.length} 条`)
+    ui.check(
+      sent[0]?.lastUser === '你好',
+      '提交出去的正文就是那一句（回车没被当成一个正文字符塞进去）',
+      `实际 ${JSON.stringify(sent[0]?.lastUser)}`,
+    )
+
+    // 同一形再走一遍产品里最要紧的那条命令：`/exit` ——**一次写**，那一按要作数
+    await session.send('/exit\r', { until: { text: '停了' }, timeoutMs: 30_000 })
+    const leaving = await session.capture({ label: '一次写 /exit\\r 之后' })
+    const report = await session.close({ graceMs: 3_000 })
+
+    ui.check(
+      leaving.lines.some((line) => line.includes('停了')),
+      '一次写 `/exit\\r`：**停到「停了」那一拍**（回执落了记录区）',
+      leaving.lines.filter((line) => line.includes('· ')).join(' / '),
+    )
+    ui.check(
+      report.exit.by === 'app',
+      '一次写 `/exit\\r`：应用**自己退了场**（不是我们杀的）',
+      `退出缘由 ${report.exit.by}`,
+    )
+    ui.check(report.exit.code === 0, '退出码是 0', `实际 ${report.exit.code}`)
+
+    // —— ② 反面一：**裸多行块**（终端不认 bracketed paste 时，粘贴就是这样落进来的）——
+    const raw = await ui.open({
+      label: 'U56-挤块-裸多行',
+      columns: 100,
+      rows: 30,
+      turns: [{ kind: 'text', text: '收到，我在。' }],
+      ...where(options),
+    })
+
+    // 一次写一整段带换行的正文：三行，末尾还带一个换行
+    await raw.send('第一行\n第二行\n第三行\n', { until: { text: '第三行' }, timeoutMs: 20_000 })
+    // 一段「CR 结尾的多行」——末尾虽然只有一个 `\r`，块里还有一个 ⇒ 也不许认
+    await raw.send('甲\r乙\r', { until: { text: '› ' }, timeoutMs: 20_000 })
+    // 普通多字符（一次写）：照旧是正文，不提交
+    await raw.send('正文', { until: { text: '正文' }, timeoutMs: 20_000 })
+    // 裸 LF ＝ `shift+回车` 的换行——**这条规矩一个字没动**
+    await raw.send('\n', { until: { text: '正文' }, timeoutMs: 20_000 })
+
+    const rawShot = await raw.capture({ label: '裸多行块 ＋ CR 多行 ＋ 普通正文' })
+    const rawReport = await raw.close({ graceMs: 2_000 })
+
+    ui.check(
+      raw.requests().length === 0,
+      '**裸多行块一次也没提交**（粘贴的多行不是「提交」）',
+      `实际 ${raw.requests().length} 条请求`,
+    )
+    ui.check(
+      rawShot.lines.some((line) => line.includes('第三行')),
+      '那一整段**原样在草稿里**（三行都在，没被切碎）',
+      rawShot.lines.filter((line) => line.includes('行')).join(' / '),
+    )
+    ui.check(rawReport.exit.by === 'sigterm', '反面那一场是我们收的场（它自己没走）', rawReport.exit.by)
+
+    // —— ③ 反面二：**真 bracketed 粘贴**（marker 那一对字节）——
+    const paste = await ui.open({
+      label: 'U56-挤块-bracketed',
+      columns: 100,
+      rows: 30,
+      turns: [{ kind: 'text', text: '收到，我在。', chunks: 2, chunkDelayMs: 60 }],
+      ...where(options),
+    })
+
+    await paste.send('\u001B[200~粘贴的第一行\n粘贴的第二行\n\u001B[201~', {
+      until: { text: '粘贴的第一行' },
+      timeoutMs: 20_000,
+    })
+    await paste.wait({ text: '粘贴的第二行' }, { timeoutMs: 20_000 })
+
+    ui.check(
+      paste.requests().length === 0,
+      'bracketed 粘贴**不提交**（它走的是另一条信道，不是「按了一下回车」）',
+      `实际 ${paste.requests().length} 条请求`,
+    )
+
+    // 粘贴之后**紧跟**一次回车（另一次写）⇒ 该提交，交出去的必须**一个字不差**
+    await paste.send('\r', { until: { text: '收到，我在。' }, timeoutMs: 25_000 })
+
+    const pasted = paste.requests()
+    ui.check(pasted.length === 1, '粘贴之后敲回车：提交了一次', `实际 ${pasted.length} 条`)
+    ui.check(
+      pasted[0]?.lastUser === '粘贴的第一行\n粘贴的第二行',
+      '**粘贴的多行原样交给了模型**（换行还在、一个字没切）',
+      `实际 ${JSON.stringify(pasted[0]?.lastUser)}`,
+    )
+
+    await paste.close({ graceMs: 2_000 })
+  },
+}
+
 /** 等一屏条件成立——场景里那几处「等效果」用它（轮询是用例的事）。 */
 async function waitScreen(
   session: UiSession,
@@ -1421,6 +1552,7 @@ export const SCENARIOS: readonly Scenario[] = [
   isolationRepeatParallel,
   stopNotRollback,
   exitCommand,
+  packedEnter,
 ]
 
 export function scenarioNames(): readonly ScenarioName[] {
