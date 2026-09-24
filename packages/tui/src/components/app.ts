@@ -35,7 +35,7 @@ import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { HINT_EXIT_ARMED, hasRunningTool } from '../view.ts'
 import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
-import { LogRowView, needsSpacer, needsSpacerAfter, rowLines } from './log.ts'
+import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList, pickerBudget, pickerLayout } from './picker.ts'
 import { PlanList } from './plan.ts'
@@ -148,8 +148,8 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           expanded: view.expanded,
           // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
           // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
-          // （用户消息该有的分段时有时无）。`items === view.settled` 时不差分毫。
-          spaced: needsSpacer(items, index),
+          // （该有分段的地方时有时无）。`items === view.settled` 时不差分毫。
+          spaced: needsSpacer(items, index, view.expanded),
         }),
     }),
     // ⚠️ **空态那一块已删**（用户 2026-09-20 定：启动屏上「会话在你按下第一次回车时才建立」
@@ -332,17 +332,21 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
   // 也就自然不占预算（`heightOf` 走的是同一个 `rowLines`）。在这儿滤掉＝它们连
   // 「展开可查」都没了（`ctrl+o` 展开时得能看见）。
   const rows = view.rows
-  const spacedAt = (index: number): boolean =>
-    needsSpacerAfter(index === 0 ? view.settled.at(-1) : rows[index - 1], rows[index])
 
   if (budget <= 0) return []
+
+  // ⚠️ **交界那一条走的是同一条规矩**（U67）：把已定局那一列走完的状态接过来，再走本轮
+  // ——两段合成一列，故「上一块是谁」跨得过接缝（收尾那个回执贴的是**它前面那块**，
+  // 不是「已定局的末条」这一格）。分两处各判一套的话，同一个交界在账与屏上会有两种行为
+  // （U31 三轮退回那笔老账，见上面那一段注）。
+  const { flags } = spacerWalk(rows, view.expanded, spacerEnd(view.settled, view.expanded))
 
   const entries: LiveEntry[] = []
   let used = 0
 
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index] as LogRow
-    const spaced = spacedAt(index)
+    const spaced = flags[index] === true
     const size = heightOf(row, columns, view.expanded, spaced)
     const room = budget - used
 

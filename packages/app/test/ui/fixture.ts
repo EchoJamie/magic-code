@@ -33,7 +33,26 @@ export type FixtureTurn =
       /** 块间延时（毫秒，缺省 120）——真流式是**长出来的**，不是一次性落下来的。 */
       readonly chunkDelayMs?: number
     }
-  | { readonly kind: 'tool'; readonly name: string; readonly args: Record<string, unknown> }
+  | {
+      readonly kind: 'tool'
+      readonly name: string
+      readonly args: Record<string, unknown>
+      /**
+       * **这一回合先说的那句**（缺省＝一个字都不说）。
+       *
+       * 真供应商的一回合可以**又说话又调工具**（正文分块流完，紧跟着 `tool_calls`），
+       * 而这一档原先只会发 `tool_calls` ⇒ 留帧装置造不出
+       * 「`⏺ 我先看看。` ＋ `● ls …`」那一形（U67 的块交界有一半落在它上面）。
+       * 给了 `text` 就照 `text` 那一档的折法**先流一段正文**，再发工具调用。
+       *
+       * ⚠️ **不给＝一个字都没有**——这一形也是要的：「模型一句话都没说就调工具」时屏上是
+       * `› 改个文件` **紧接** `⟳ ls …`（中间没有 `⏺` 那句，见设计 · 终端呈现那一条的补正）。
+       */
+      readonly text?: string
+      /** 正文切成几块吐 / 块间延时（同 `text` 那一档的缺省：3 块 · 120ms）。 */
+      readonly chunks?: number
+      readonly chunkDelayMs?: number
+    }
   | { readonly kind: 'http'; readonly status: number; readonly message: string }
 
 /** 夹具收到的一次请求——**回填送达了吗 / 提交前是不是零请求**这类判据靠它。 */
@@ -204,6 +223,28 @@ function frame(model: string, payload: Record<string, unknown>): string {
 }
 
 /**
+ * 一段正文分块吐出去（块间真等）——`text` 那一档与「又说话又调工具」那一档共用这一处。
+ *
+ * 空的正文也发那个 `content: ''` 的角色帧：`http` 那一档走的就是这一形（原先如此，
+ * 不改它的字节）。
+ */
+async function streamText(
+  push: (text: string) => void,
+  model: string,
+  text: string,
+  chunks: number,
+  delayMs: number,
+): Promise<void> {
+  const size = Math.ceil(text.length / Math.max(1, chunks))
+
+  push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
+  for (let at = 0; at < text.length; at += size) {
+    push(frame(model, { choices: [{ index: 0, delta: { content: text.slice(at, at + size) } }] }))
+    if (delayMs > 0) await Bun.sleep(delayMs)
+  }
+}
+
+/**
  * 一回合的 SSE 字节流——**按块真流**（块间真等）。
  *
  * `ReadableStream` 的 `start` 里顺序 `await`：写一块、等一会儿、再写下一块。
@@ -217,6 +258,10 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
       const push = (text: string): void => controller.enqueue(encoder.encode(text))
 
       if (turn.kind === 'tool') {
+        // **先说那句**（给了才说）——真供应商就是这样：正文分块流完，紧跟着 `tool_calls`
+        if (turn.text !== undefined && turn.text !== '') {
+          await streamText(push, model, turn.text, turn.chunks ?? 3, turn.chunkDelayMs ?? 120)
+        }
         push(
           frame(model, {
             choices: [
@@ -238,6 +283,17 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
           }),
         )
         push(frame(model, { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }))
+        // 用量帧（收尾那一格）——与 `text` 那一档同形：一回合一份，模型域据此上屏
+        push(
+          frame(model, {
+            choices: [],
+            usage: {
+              prompt_tokens: 1_000 + callIndex,
+              completion_tokens: (turn.text ?? '').length,
+              total_tokens: 1_000 + callIndex + (turn.text ?? '').length,
+            },
+          }),
+        )
         push('data: [DONE]\n\n')
         controller.close()
         return
@@ -246,15 +302,8 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
       const text = turn.kind === 'text' ? turn.text : ''
       const chunks = turn.kind === 'text' ? Math.max(1, turn.chunks ?? 3) : 1
       const delayMs = turn.kind === 'text' ? (turn.chunkDelayMs ?? 120) : 0
-      const size = Math.ceil(text.length / chunks)
 
-      push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
-      for (let at = 0; at < text.length; at += size) {
-        push(
-          frame(model, { choices: [{ index: 0, delta: { content: text.slice(at, at + size) } }] }),
-        )
-        if (delayMs > 0) await Bun.sleep(delayMs)
-      }
+      await streamText(push, model, text, chunks, delayMs)
       push(frame(model, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }))
       // 用量帧（收尾那一格）——状态行 ④ 的分母/分子据此上屏
       push(

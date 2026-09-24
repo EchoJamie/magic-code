@@ -4,7 +4,9 @@
  * 三条规矩（原型 · 组件规格 ＋ 密度节）：
  * - **三类行各有其形**：会话内容（`›` 用户 · `⏺` 助手 · `●` 工具）· 命令输出（dim 块）·
  *   命令回执（`·` 最弱）；
- * - **密度**：条目之间**不插空行**（分层靠标记 / 缩进 / 明暗）；**只有用户消息之前**留一行分段；
+ * - **密度**：**块内不插空行**（分层靠标记 / 缩进 / 明暗）· **相邻两块之间留一整行**
+ *   （U67 补全：块＝一条用户发言 / 一条助手发言 / 一个工具组，见下面「分段」那一节
+ *   ——早先只判「这一条是不是用户消息」，只留了**一半**）；
  *   **空内容不渲染**（缺陷 D6 的外壳侧双保险）；工具结果与工具行同组缩进；思考默认折一行；
  * - **助手正文走 Markdown**（缺陷 D14）——五样（粗体 · 行内代码 · 代码块 · 列表 · 标题）在
  *   `../markdown.ts` 里解析成显示行，本文件只负责折行与挂缩进（换皮不动解析）；
@@ -41,7 +43,7 @@ export type LogLine = {
   readonly segments: readonly Segment[]
   /** 整行背景（用户行：整行淡青）。 */
   readonly background?: string
-  /** **分段行**（用户消息之前那一行，原型 · 密度）——渲染成空行。 */
+  /** **分段行**（块与块之间那一行，见「分段」一节）——渲染成空行。 */
   readonly spacer?: boolean
 }
 
@@ -57,7 +59,7 @@ export type LogRowProps = {
   readonly row: LogRow
   readonly columns: number
   readonly expanded: boolean
-  /** 这条行之前留不留一行分段（用户消息之前＝留）。 */
+  /** 这条行之前留不留一行分段（上一块与这一块不同＝留，见「分段」一节）。 */
   readonly spaced: boolean
   /**
    * **开头跳过几个显示行**（U31 三轮退回）——缺省 0（整条照画）。
@@ -124,7 +126,7 @@ export function LogRowView({
 
 /**
  * 记录行 → 显示行（纯函数）。
- * `spaced` ＝ 这条之前留一行分段（**只有用户消息之前**——原型 · 密度）。
+ * `spaced` ＝ 这条之前留一行分段（**上一块与这一块不同**，见文件头「密度」那一条）。
  *
  * **带缓存**（U21 · 增量重绘）——一屏上一条行在一帧里会被问两遍（活动区的行数预算
  * 与真渲染各一次），而流式时同一行还会被**逐帧**问下去。两处的答案只由
@@ -300,32 +302,216 @@ function wrapAssistant(
   return out
 }
 
+// ══ 分段：块与块之间留一整行（U67）══════════════════════════════════
+
+/** **走一遍攒下的两格**：上一条画得出来的行 ＋ 上一块的块别（分段那笔账的全部输入）。 */
+export type SpacerContext = {
+  /** 上一条**画得出来**的行（一行都不占的那些不算——见 `rowDrawn`）。 */
+  readonly previous: LogRow | undefined
+  /** **上一块**的块别（`undefined` ＝顶上还没有块）。 */
+  readonly block: string | undefined
+}
+
+/** 顶上（还没有任何行）那一份。 */
+const NO_SPACER_CONTEXT: SpacerContext = { previous: undefined, block: undefined }
+
+/**
+ * **块**与「块之间留一整行、块内紧凑」——设计 · 终端呈现那一条（2026-09-25 写准）。
+ *
+ * ## 判据按「块」分，不按「谁在中间」分
+ *
+ * 一块＝**一条用户发言** / **一条助手发言** / **一个工具组**（这一批发起的调用 · 结果 ·
+ * 所属附件 · 回执合起来算一块）；**相邻两块之间留一整行，块内紧凑**。
+ *
+ * ⚠️ **别写成「用户 ↔ 助手 ↔ 工具组」那种以助手为中心的说法**（用户 2026-09-25 补正）：
+ * 用户输入之后紧跟的**可能直接就是工具**（模型一句话都没说就调工具，屏上是
+ * `› 改个文件` 紧接 `⟳ write note.txt`、**中间没有 `⏺` 那句**）。按「块」分才不漏这一形。
+ *
+ * ## 这一支以前只做了一半
+ *
+ * 原判据是 `row?.kind === 'user' && previous.kind !== 'banner'`——**只判「这一条是不是
+ * 用户消息」** ⇒ 只在用户消息**之前**留，用户消息之后（`⏺` 之前）不留。设计那句
+ * 「…**之间**」是双向的，于是「我输入之后与模型回复之间没有空行」一路没人发现
+ * ——因为帧上一直长这样、看着像正常的。
+ *
+ * ## 三条不许（都在下面的实现里有着落）
+ *
+ * - **别用线**——线是划界用的（那两条已经各划一块），消息之间加线就成了装帧。这一支
+ *   只吐**空行**（`SPACER`）；
+ * - **别把字标自带的后留白弄成两行**——字标结尾自带 `BANNER_GAP_BOTTOM`，故它**后面
+ *   紧挨着的那一条**不再叠这一层（见下面 `needsSpacerAfter` 的第一支）；
+ * - **两处同一条规矩**——活动区那个交界（上一条在 `settled`、这一条在 `rows`）与
+ *   已定局那一列走的是**同一个** `spacerWalk`，`app.ts` 只负责把两段接上。
+ */
+
+/**
+ * 一行**自己**长不长一块——`undefined` ＝**不长**（字标 · 命令输出 · 回执）。
+ *
+ * 不长块的这三样**贴在前一块的尾巴上**：故它们前面不留分段、也不把块切开。
+ * 由头：设计明写工具组那一块含**回执**（「这一批发起的调用 · 结果 · 所属附件 · 回执
+ * 合起来算一块」）；字标与命令输出同理——它们本就是前一块的装帧与产物。
+ *
+ * ⚠️ **用户行按 `key` 认块**（不是一律 `'user'`）：设计说的是「一块＝**一条**用户发言」
+ * ——两条挨着的用户消息是两块，中间该有一行。
+ * ⚠️ **助手与思考**同属一块（`'speech'`）：`appendText` 把同类增量并在同一行，正文与思考
+ * **交替**时才分行——那几行是**同一轮里说的**，中间不留空。
+ */
+function blockOf(row: LogRow): string | undefined {
+  switch (row.kind) {
+    case 'user':
+      return `u:${row.key}`
+    case 'assistant':
+    case 'thinking':
+      return 'speech'
+    // **连续的工具行算一个工具组**（相邻才比较 ⇒ 挨着的两条工具行＝同一组）——单条调用、
+    // 结果的续行、收拢的 `● N 次工具调用` 都落在这一块里
+    case 'tool':
+    case 'toolgroup':
+      return 'tool'
+    case 'banner':
+    case 'output':
+    case 'receipt':
+      return undefined
+  }
+}
+
+/**
+ * 这一行**在屏上占不占地方**——一行都不占的那些（空正文的助手 / 思考 · 收起的安静工具行）
+ * **不参与分段那笔账**：
+ *
+ * - 不给它们留分段（留了就是一条**孤零零的空行**——它后面什么也没有）；
+ * - 算「上一条是谁」时也跳过它们。
+ *
+ * ⚠️ **第二条不能省**——省了，「模型一句话都没说就调工具」那一形（用户 → 空助手行 → 工具）
+ * 就会两边各留一行、**连成两行空行**（`invariants.ts` 的 `blankRuns` 当场红）；而只做第一条
+ * 又会把用户与工具之间那一行**整个丢掉**（正是工单点名要有帧的那一形）。
+ *
+ * ⚠️ **判据与 `rowBody` 必须同步**（那边是「一条行 → 显示行」的出处）：这里只在**不折行
+ * 就能判**的三处下结论，其余一律当「占地方」——不去调 `rowBody`（助手那条要解析 Markdown，
+ * 每帧为算分段付这个价钱不值）。
+ */
+export function rowDrawn(row: LogRow, expanded: boolean): boolean {
+  switch (row.kind) {
+    case 'assistant':
+    case 'thinking':
+      return row.text.trim() !== ''
+    // 安静的工具行：成功（含跑动中）＋ 收起 ⇒ 一行都不画（见 `quietRowHidden`）
+    case 'tool':
+      return !(quietRowHidden(row) && !expanded)
+    default:
+      return true
+  }
+}
+
+/**
+ * 紧邻的两条之间留不留一行分段——**「这一条起不起新的一块」×「上一块是谁」**。
+ *
+ * 拆出这一支是为了**活动区那一段交界**（`app.ts`）：那儿没有一整列可索引（上一条在
+ * `settled` 里、这一条在 `rows` 里），只有「上一条是谁、上一块是谁」。两处必须是**同一条规矩**，
+ * 否则同一屏上同一个交界会有两种行为。
+ *
+ * 四支判据，每条都有由头：
+ * - **顶上没有东西**（`previous === undefined`）⇒ 不留——首条不必分段，顶上没有东西要分；
+ * - **这一条一行都不占** ⇒ 不留（见 `rowDrawn`：留了就是一条孤零零的空行）；
+ * - **上一条是字标** ⇒ 不留——字标结尾自带一行留白（`BANNER_GAP_BOTTOM`）。不排这一支，
+ *   字标之后的第一条用户消息前面会**空两行**（`invariants.ts` 的 `blankRuns` 当场红）；
+ * - **这一条不长块**（回执 / 命令输出）⇒ 不留——它贴在前一块的尾巴上。
+ *
+ * 剩下的就是正题：**这一块与上一块不同 ⇒ 留一整行**。
+ */
+export function needsSpacerAfter(
+  previous: LogRow | undefined,
+  block: string | undefined,
+  row: LogRow | undefined,
+  expanded: boolean,
+): boolean {
+  if (previous === undefined || row === undefined) return false
+  if (previous.kind === 'banner') return false
+  if (!rowDrawn(row, expanded)) return false
+
+  const own = blockOf(row)
+
+  return own !== undefined && own !== block
+}
+
+/** 走完一列之后攒下的东西——**接着它往下走**（活动区那一列与已定局那一列的接缝）。 */
+export type SpacerWalk = {
+  /** 每一条之前留不留一行分段（与 `rows` 一一对应）。 */
+  readonly flags: readonly boolean[]
+  /** 走完之后的状态（活动区从这儿接着走）。 */
+  readonly end: SpacerContext
+}
+
+/**
+ * 一路走过去，问每一行「你前面留不留一整行」——**分段那笔账只有走一遍才算得准**。
+ *
+ * 为什么不能只看紧邻的两条：「这一条贴在前一块的尾巴上」（回执 / 命令输出）意味着
+ * **上一块是谁**要一直记着——`tool · 回执 · tool` 那一串是**一个**工具组，中间一行都不留。
+ *
+ * `from` 缺省＝从顶上走；活动区那一列把它传成 `settled` 走完的状态（见 `app.ts`）。
+ */
+export function spacerWalk(
+  rows: readonly LogRow[],
+  expanded: boolean,
+  from: SpacerContext = NO_SPACER_CONTEXT,
+): SpacerWalk {
+  const flags: boolean[] = []
+  let previous = from.previous
+  let block = from.block
+
+  for (const row of rows) {
+    const drawn = rowDrawn(row, expanded)
+    flags.push(needsSpacerAfter(previous, block, row, expanded))
+    if (!drawn) continue
+
+    // 不长块的那三样（回执 / 命令输出 / 字标）**不动块别**——它们贴在前一块的尾巴上
+    block = blockOf(row) ?? block
+    previous = row
+  }
+
+  return { flags, end: { previous, block } }
+}
+
+/**
+ * 从顶上走一遍的结果——**按数组身份攒着**（同 `rowLines` 那条缓存的口径）。
+ *
+ * 由头：已定局那一列一帧里要被问好几遍（活动区那个交接问一次、已定局那一侧每加一行
+ * 又问一次），而它**一帧内身份不变**（换对象式地长，见 `view.ts` 的写法）。
+ * 不攒的话每次问都是 `O(列长)`——长会话里那笔账会跟着列长一起长。
+ */
+const walkCache = new WeakMap<readonly LogRow[], { readonly expanded: boolean; readonly walk: SpacerWalk }>()
+
+/** 从顶上走一遍 `rows`（带按身份攒的那一层）。 */
+function cachedWalk(rows: readonly LogRow[], expanded: boolean): SpacerWalk {
+  const hit = walkCache.get(rows)
+  if (hit !== undefined && hit.expanded === expanded) return hit.walk
+
+  const walk = spacerWalk(rows, expanded)
+  walkCache.set(rows, { expanded, walk })
+
+  return walk
+}
+
+/** 走完 `rows` 之后的状态（活动区接着它往下走的那一份）。 */
+export function spacerEnd(rows: readonly LogRow[], expanded: boolean): SpacerContext {
+  return cachedWalk(rows, expanded).end
+}
+
+/** 一条之前留不留一行分段（已定局那一列的取法——给它一列与下标）。 */
+export function needsSpacer(rows: readonly LogRow[], index: number, expanded: boolean): boolean {
+  return cachedWalk(rows, expanded).flags[index] ?? false
+}
+
 /** 一屏上的**全部**显示行（含分段）——快照取景与行数预算用。 */
 export function logLines(
   rows: readonly LogRow[],
   options: { readonly columns: number; readonly expanded: boolean; readonly now?: number | null },
 ): readonly LogLine[] {
-  return rows.flatMap((row, index) => rowLines(row, { ...options, spaced: needsSpacer(rows, index) }))
-}
+  const { flags } = spacerWalk(rows, options.expanded)
 
-/** 用户消息之前留一行分段；首条不必（顶上没有东西要分隔）。 */
-export function needsSpacer(rows: readonly LogRow[], index: number): boolean {
-  return needsSpacerAfter(index > 0 ? rows[index - 1] : undefined, rows[index])
-}
-
-/**
- * 紧邻的两条之间留不留一行分段——**「这条是不是用户消息」×「上一条是不是字标」**。
- *
- * 拆出这一支是为了**活动区那一段交界**（`app.ts`）：那儿没有 `rows` 数组可索引
- * （上一条在 `settled` 里、这一条在 `rows` 里），只有「上一条是谁」。两处必须是**同一条规矩**，
- * 否则同一屏上「用户消息之前」会有两种行为。
- *
- * ⚠️ **字标不加这一层**：它自己结尾就带一行留白（`BANNER_GAP_BOTTOM`）。
- * 不排这一支的话，字标之后的第一条用户消息前面会**空两行**——那是「成片空行」，
- * `invariants.ts` 的 `blankRuns` 当场红（≤1 行）。
- */
-export function needsSpacerAfter(previous: LogRow | undefined, row: LogRow | undefined): boolean {
-  return previous !== undefined && row?.kind === 'user' && previous.kind !== 'banner'
+  return rows.flatMap((row, index) =>
+    rowLines(row, { ...options, spaced: flags[index] === true }),
+  )
 }
 
 function rowBody(
