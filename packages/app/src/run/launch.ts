@@ -2,7 +2,8 @@
  * **真起一个执行者进程**（U48）——`ExecutorLauncher` 的生产实现。
  *
  * 三件都在这一处：**怎么起**（`bun <入口> --internal-executor …`）、**拿什么认它**
- * （令牌走参数）、**怎么叫它退**（先礼后兵的「兵」）。
+ * （令牌走参数）、**怎么叫它退**（先礼后兵的「兵」——那一记可以是 TERM 也可以是 KILL，
+ * 见 `SpawnedExecutor.kill`：停止那条路照设计走「有界等待 → TERM → KILL → 等待退出」）。
  *
  * ## 为什么命令行参数里带基础路径
  *
@@ -95,9 +96,9 @@ export function createProcessLauncher(options: SpawnOptions = {}): ExecutorLaunc
         onExit(listener) {
           void done.then(listener)
         },
-        kill() {
+        kill(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM') {
           try {
-            child.kill('SIGTERM')
+            child.kill(signal)
           } catch {
             // 已经退了：收尾这一跳不该抛
           }

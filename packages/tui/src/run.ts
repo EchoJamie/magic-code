@@ -18,8 +18,8 @@ import { render } from 'ink'
 import { createElement as h } from 'react'
 import { createShell } from './shell.ts'
 import { TuiApp } from './components/app.ts'
-import type { ControlTransport } from '@magic/contracts'
-import type { RunFeed, ResumeFeed } from './shell.ts'
+import type { ControlTransport, RunNotice, SessionId, StopScope } from '@magic/contracts'
+import type { RunFeed, ResumeFeed, StopReport } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
@@ -78,6 +78,14 @@ export type RunTuiOptions = {
    * 拿不到就不给 ⇒ 摘要照常数全部——**不猜**（那一位本来就是可省的开局参数）。
    */
   readonly openingSession?: string | undefined
+  /** **停一条运行**（U50）——整体 / 局部，由用户明确选择。见 `ShellOptions.stop`。 */
+  readonly stop?: ((session: SessionId, scope: StopScope) => void) | undefined
+  /** **停止走到了哪一拍**（U50）——受理 / 已核销 / 没能证实，各落一行回执。见 `ShellOptions.stopped`。 */
+  readonly stopped?: ((listener: (report: StopReport) => void) => void) | undefined
+  /** **管理者说的那句话**（U50 接上）——见 `ShellOptions.lines`。 */
+  readonly lines?: ((listener: (text: string) => void) => void) | undefined
+  /** **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你。见 `ShellOptions.notices`。 */
+  readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
 }
 
 /**
@@ -115,6 +123,10 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     runs: options.runs,
     resumed: options.resumed,
     openingSession: options.openingSession,
+    stop: options.stop,
+    stopped: options.stopped,
+    lines: options.lines,
+    notices: options.notices,
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
     inputReady: options.boot === undefined,

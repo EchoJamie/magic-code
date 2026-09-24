@@ -38,6 +38,7 @@ import { createModelRegistry } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { ManagerClient } from './client.ts'
+import { unreadSummaryOf } from '@magic/tui'
 import { mcpNoticesOf, workspaceOf } from '../assembly.ts'
 import { cacheAccessFor } from '../cache-access.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
@@ -107,6 +108,17 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     resumed: {
       subscribe: (listener) => client.onResumed(listener),
     },
+    // **停止那一族**（U50）——两个键（整体 / 局部）发出去，三拍回执收回来。
+    //
+    // ⚠️ **回执要带标题**：管理者只报「哪一条、哪一档、到了哪一拍」，话由外壳按它自己的
+    // 目录拼——故这一跳**原样转手**，一个字都不加工（见 `wire.ts` 的 `stopped`）。
+    stop: (session, scope) => client.stop(session, scope),
+    stopped: (listener) => client.onStopped((report) => listener(report)),
+    // **管理者说的那句话**（U50 接上）——U48 起了这条线、U49 没用上，屏上一直没有它
+    // （「这一代已经过去了」「起不了执行者」那些话全落在空气里）。
+    lines: (listener) => client.onLine((text) => listener(text)),
+    // **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你；三类之外管理者一个都不发
+    notices: (listener) => client.onNotice((notice) => listener(notice)),
     ...(inputs.session === undefined ? {} : { openingSession: inputs.session }),
     // **管理者不在了 ⇒ 窗口自己退**（见 `run.ts` 的 `onGone`）：「断流后自身应退出，
     // 不能空转充当后台执行者」。连接断的那一刻界面已经没有任何内核可接。
@@ -277,6 +289,15 @@ function startupContextWindow(inputs: TerminalInputs): number | null {
 function startupReceipts(inputs: TerminalInputs): readonly string[] {
   const { client, loaded, cwd } = inputs
   const said: string[] = [...mcpNoticesOf(client.mcp)]
+
+  /**
+   * **离开期间那几件事**（U50）——「下一次打开汇总未读事项」就落在这儿。
+   *
+   * 为什么与开屏那张运行摘要并列而不是合成一句：两张说的是**两件事**（一张「此刻有谁
+   * 在跑」，一张「你不在的时候出了什么」），合成一句就分不清「它还在跑」与「它跑完了」。
+   */
+  const unread = unreadSummaryOf(client.unread)
+  if (unread !== undefined) said.push(unread)
   const rejected = parseRules(loaded.config.permissions?.rules ?? []).rejected
 
   if (rejected.length > 0) {

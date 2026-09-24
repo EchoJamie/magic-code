@@ -10,8 +10,8 @@
  *
  * | 方向 | 消息 |
  * | --- | --- |
- * | 客户端 → 管理者 | `hello`（我是窗口）· `cmd`（带着我认的**代次**）· `bye` |
- * | 管理者 → 客户端 | `welcome`（你连上了谁）· `target` · `detached` · `ev` · `line` · **`runs`**（这一摊的运行事实）· **`resumed`**（接回的那一份快照） |
+ * | 客户端 → 管理者 | `hello`（我是窗口）· `cmd`（带着我认的**代次**）· **`stop`**（停某一条运行）· `bye` |
+ * | 管理者 → 客户端 | `welcome`（你连上了谁）· `target` · `detached` · `ev` · `line` · **`runs`**（这一摊的运行事实）· **`resumed`**（接回的那一份快照）· **`stopped`**（停止走到了哪一拍）· **`notice`**（刚发生的一件要告诉你的事） |
  * | 执行者 → 管理者 | `hello`（我是哪条会话的执行者）· `bound` · `ev` · `pong` · `done` · `stopping` · **`snapshot`** · **`owned`**（我握着哪几组自有进程） |
  * | 管理者 → 执行者 | `cmd` · `ping` · `bye` · **`snapshot`**（要一份接回快照） |
  *
@@ -32,8 +32,12 @@ import type {
   McpConnectionState,
   ModelSwitchRequest,
   OwnedProcess,
+  RunNotice,
   RunRow,
   RunSnapshot,
+  SessionId,
+  StopPhase,
+  StopScope,
 } from '@magic/contracts'
 
 /**
@@ -86,6 +90,17 @@ export type ClientToManager =
     }
   /** `gen` ＝ 这个窗口认的执行者代次（`null` ＝ 还没认过任何一代）。 */
   | { readonly t: 'cmd'; readonly gen: number | null; readonly cmd: Command }
+  /**
+   * **停止某一条运行**（U50）——**止于管理者**，不转给执行者（它不是内核命令）。
+   *
+   * 为什么走这一条而不是 `cmd`：停止是**运行管理**的事——「按明确选择的整体或局部范围
+   * 编排」要的正是应用层那一眼（谁在跑、哪一代、手上握着哪几组进程）。内核一个字的运行
+   * 管理都不背（设计明文），`Command` 是内核与外壳之间的语言，故不往它里面塞。
+   *
+   * ⚠️ **不带代次**：窗口认的代次是「我在看哪一代」，而停止说的是「**这一条**别跑了」
+   * ——用户按会话/工作操作（设计：「PID 和创建时间仅作诊断」），故按会话点名。
+   */
+  | { readonly t: 'stop'; readonly session: SessionId; readonly scope: StopScope }
   | { readonly t: 'bye'; readonly why: string }
 
 /** 管理者 → 客户端。 */
@@ -120,7 +135,21 @@ export type ManagerToClient =
        * 与「这个窗口眼下在看哪条会话」无关——开屏那张摘要说的是**这一摊**有几项在跑。
        */
       readonly runs: readonly RunRow[]
+      /**
+       * **离开期间发生的那几件事**（U50）——只在「那一刻一个窗口都没连着」时留下的那些。
+       *
+       * 与 `runs` 一格并不同源：那一份说「此刻什么样」，这一份说「你不在的时候发生了
+       * 什么，还没人跟你说过」。给过一次就算说过（管理者那边当场标已读）。
+       */
+      readonly notices: readonly RunNotice[]
     }
+  /**
+   * **刚刚发生了一件事**（U50）——完成的 / 出错的 / 等你的。
+   *
+   * 三类之外一个都不发（设计：「不持续播报『还在跑』」），同一条事实也一次（去重键在
+   * 管理者那一头）。**说给用户的那句话由外壳拼**（会话标题在它手上），这一条只报料。
+   */
+  | { readonly t: 'notice'; readonly notice: RunNotice }
   /**
    * **运行事实变了**（U49）——管理者按需推（有了就推，不带请求）。
    *
@@ -154,6 +183,21 @@ export type ManagerToClient =
    * 「什么时候该忘掉旧号」这件事只有管理者说了算，故由这一条说。
    */
   | { readonly t: 'detached'; readonly why: string }
+  /**
+   * **停止走到了哪一拍**（U50）——回执**回给发起的那个窗口**（其余窗口看运行事实）。
+   *
+   * 为什么按会话 ＋ 范围报、不报一句现成的话：**说给用户的那句话要带上那条会话的标题**，
+   * 而标题只有窗口手上有（目录在它那儿，管理者只读得到「这条会话在不在」）。故管理者报
+   * 「哪一条、哪一档、到了哪一拍」，话由外壳按它自己的目录拼（`shell.ts` 的收据那一跳）。
+   */
+  | {
+      readonly t: 'stopped'
+      readonly session: SessionId
+      readonly scope: StopScope
+      readonly phase: StopPhase
+      /** 为什么没停成（`unconfirmed` 时给）——说人话，外壳接在回执后面。 */
+      readonly note?: string
+    }
   /** `gen` ＝ 这条事件出自哪一代执行者（没有代次可言时给 `null`）。 */
   | { readonly t: 'ev'; readonly gen: number | null; readonly event: KernelEvent }
   /** 一句**给人看**的话（代次过期、管理者要退了……）——客户端把它落成一行回执。 */

@@ -85,9 +85,29 @@ describe('U49 · 六行状态逐行对事实', () => {
     expect(runStateOf(killed)).toBe('stopped')
     expect(stopReasonOf(killed)).toBe('异常退出：进程退出（码 null）')
 
-    // **还活着、但上一轮是出错收的**——同样归这一行（「当前空闲」说「已正常结束」，不成立）
-    expect(runStateOf(record({ lastTurn: 'error' }))).toBe('stopped')
-    expect(stopReasonOf(record({ lastTurn: 'error' }))).toBe('这一轮出错了')
+    // **还活着、但上一轮是出错收的** ⇒ **当前空闲**（U50 收紧的那一档）
+    //
+    // ⚠️ 这一条**改了判据**（U49 时断的是 `stopped`）：那一行的事实依据是「执行者与自有资源
+    // **已核销**」，而这一条里那一代还活着——上一轮怎么收的是**另一件事**，由 `lastTurn`
+    // 带出去（行上那一格），不拿它冒充整个运行停掉了（设计：「不把局部成功显示为整体成功」）。
+    expect(runStateOf(record({ lastTurn: 'error' }))).toBe('idle')
+    expect(runRowOf(record({ lastTurn: 'error' })).lastTurn).toBe('error')
+  })
+
+  test('运行还在的时候，上一轮被打断**不叫「已停止」**（U50 改判）', () => {
+    // 用户按了一下「只停这一轮」：那一轮断了，而这条运行还在、还能接着用
+    const interrupted = record({ lastTurn: 'aborted' })
+    expect(runStateOf(interrupted)).toBe('idle')
+    expect(stopReasonOf(interrupted)).toBeUndefined()
+    // 而「上一轮被中断」这件事不能就这么消失——它由行上那一格带出去（详情里说得出停点）
+    expect(runRowOf(interrupted).lastTurn).toBe('aborted')
+    expect(runRowOf(interrupted).reason).toBeUndefined()
+
+    // 它**后来真收摊了**（核销）⇒ 那一行才跳到「已停止 · 手动中断」
+    const gone = record({ lastTurn: 'aborted' })
+    gone.ended = { at: 3_000, why: '自己收摊：没人看了', kind: 'aborted' }
+    expect(runStateOf(gone)).toBe('stopped')
+    expect(stopReasonOf(gone)).toBe('手动中断')
   })
 
   test('当前空闲 · 没有在途调用与待答项，上一轮正常结束', () => {
@@ -247,5 +267,22 @@ describe('U49 · 进展、动作与输出', () => {
     expect(endKindOf('aborted')).toBe('aborted')
     expect(endKindOf('settled')).toBe('normal')
     expect(endKindOf(undefined)).toBe('normal')
+
+    // **U50 补的那一位**：收摊那一刻这一轮还开着 ⇒ 被打断（`turn.end` 可能还没落）。
+    // 不补它的话，「用户按停 → 执行者退出」那一档会读成 `normal` ⇒ 「当前空闲」
+    // ——看起来像什么都没发生过（实测栽在 `stop-not-rollback` 那一场上）
+    expect(endKindOf(undefined, true)).toBe('aborted')
+    expect(endKindOf('settled', true)).toBe('aborted')
+    expect(endKindOf('settled', false)).toBe('normal')
+  })
+
+  test('「手动中断」不靠 `lastTurn` 那一格才有（U50）', () => {
+    // 收摊时那一轮还开着、而 `turn.end` 没落——缘由仍要说得出是「手动中断」，
+    // 不能退成 `ended.why` 那种「连接断了」的什么也没说的话
+    // （核销那一跳会把 `turnActive` 抹掉——判 kind 是**在它还在的时候**做的，见 `retire`）
+    const cut = record({ stopping: true })
+    cut.ended = { at: 2_000, why: '连接断了', kind: 'aborted' }
+    expect(runStateOf(cut)).toBe('stopped')
+    expect(stopReasonOf(cut)).toBe('手动中断')
   })
 })

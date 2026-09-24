@@ -13,8 +13,8 @@
  *
  * - **排队**——一次只干一件；干活时又来交代，排着（收束后接着跑）。端口是 `void`：
  *   工作异步跑，调用方不等。
- * - **中断**——在途打断（`signal` 落到模型流与工具）＋ **清掉排队中的交代**：
- *   「停下」就是停下，否则会立刻接着跑下一件，与「回到等待输入」相抵。
+ * - **中断**——在途打断（`signal` 落到模型流与工具）＋ **排队中的交代保留并标为未执行**
+ *   （U50）：停止后不接着跑（否则与「回到等待输入」相抵），但也不丢（见 `holdQueued`）。
  *   **空闲时打断＝无事**——「空闲时 Ctrl+C ＝ 退出」由外壳发起（首站不设确认），本域不猜。
  * - **状态转场**——`agent.start`（**首次开工前**发，构造期不发：外壳那时还没订上——装配
  *   纪律「先接订阅、后放开输入」）· `agent.state{resumed}`（干活）· `agent.state{waiting}`
@@ -168,6 +168,14 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * （没有「当前技能」那种东西可读），故忙时两条不同技能的交代出队后**各自身份不串**。
    */
   const pending: UserInput[] = []
+  /**
+   * **停下那一刻从队里挪出来的那几条**（U50）——**未执行**、也**不会再被消费**。
+   *
+   * 与 `pending` 分开是有由头的：`pending` 是**要跑的**（`drain` 一趟接一趟地取），
+   * 而这几条**不跑**——它们只是留着，等用户重新交代（`submit` 一到就清掉，见 `holdQueued`）。
+   * 混在一个队里，下一次 `submit` 就会把它们一并送出——那正是设计不许的「停止后继续消费」。
+   */
+  const held: UserInput[] = []
 
   /**
    * **压缩器**（阶段 3 · U19）——按会话实例各一份，故它记得的用量读数**随会话走**
@@ -242,24 +250,45 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   }
 
   /**
-   * **清掉排队中的交代**——它们**没进会话**（一条条目都没落），故每一份都配对一次
-   * `input.settled{ok:false}`（给了 `ref` 的才发）。
+   * **停下那一刻，排队里的交代**（U50）——**保留并标为未执行**。
    *
-   * 由头（2026-09-21 规划裁）：`input.settled` 的契约是「给了 `ref` 必有终态」——
-   * 白名单式的「成了才回」会让外壳永等一份草稿。停下的那一刻，这些交代的去处是
-   * **明确失败**，不是「也许以后会跑」。
+   * 设计（会话与运行管理 · 离开、停止与异常退出）：
+   *
+   * > 停止时还有已接收输入 ｜ **保留并标为未执行，不在停止后继续消费**；用户以后
+   * > **明确继续/取消**。
+   *
+   * 三条各落一处：
+   * - **不在停止后继续消费**——它们从 `pending` 挪进 `held`，而 `drain` 只读 `pending`
+   *   ⇒ 停止之后没有任何一条路会把它们送出去（**要跑只有一条路：用户重新交代**）；
+   * - **保留**——`held` 留着它们（正文 ＋ 它绑的那几件原样），外壳那一侧另有把正文还给
+   *   草稿的那一条（`restoreDraft`），用户手上那份交代因此**不丢**；
+   * - **标为未执行**——逐条配对 `input.settled{ok:false}`（给了 `ref` 的才发），话里
+   *   **明写着「未执行」**：这不是失败，是**还没轮到**。
+   *
+   * 由头（2026-09-21 规划裁，一字不改）：`input.settled` 的契约是「给了 `ref` 必有终态」
+   * ——白名单式的「成了才回」会让外壳永等一份草稿。故终态照给，只是**话变了**：
+   * 从前那句「请重新发送」把它说成一次**丢失**（用户得重打一遍），而现在它是**留着的**。
    *
    * ⚠️ 发的事件用的是**当下活跃那条会话**的信封（它们本来就没能进任何会话——
    * 说得出「这一条没成」就够，不编一条会话出来）。
+   *
+   * **限度（如实记）**：完整的「未执行交代」界面（列出来、逐条继续或撤销、入队即保存
+   * 到重启不丢）归 [[设计/运行中输入]]，**那一块未授权实施**。本处只做到设计这一行要的
+   * 那三件：不丢、不接着跑、说得出来；`held` 在一次新的交代到来时清掉（用户已经用行动
+   * 说了「那几件我不等了」）。
    */
-  function dropQueued(): void {
-    for (const input of pending.splice(0)) {
+  function holdQueued(): void {
+    const stopped = pending.splice(0)
+    if (stopped.length === 0) return
+
+    held.push(...stopped)
+    for (const input of stopped) {
       if (input.ref === undefined) continue
       sink.emit(
         stamper.stamp('input.settled', {
           ref: input.ref,
           ok: false,
-          reason: '停下了——这一条还没轮到，没进会话，请重新发送',
+          reason: '停下了——这一条还没轮到，标着「未执行」留着（没有接着跑）',
         }),
       )
     }
@@ -287,9 +316,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
         if (outcome === 'rejected') continue
         // 中止 / 出错＝停下：排队中的交代**不再续跑**（「回到等待输入」是当场的），
-        // 并**逐条配对**（没进会话＝明确失败，见 `dropQueued`）
+        // 并**逐条配对**（没进会话＝明确失败，见 `holdQueued`）
         if (outcome !== 'settled') {
-          dropQueued()
+          holdQueued()
           break
         }
       }
@@ -309,15 +338,18 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     submit(input: UserInput): void {
       // **整份入队**（正文 ＋ 它绑的技能 ＋ 配对键）——不是只留正文：
       // 忙时两条交代各绑各的技能，出队后不能被串成同一条（U33 工单明写）
+      // 用户又交代了一句 ⇒ **那几件他不要了**（留着的未执行交代到此为止——完整语义见
+      // `holdQueued` 的限度那一句）。摆在入队之前：这一句是新的开始，不是上一次的续。
+      held.length = 0
       pending.push(input)
       if (!running) void drain()
     },
 
     interrupt(): void {
       current?.abort()
-      // 「停下」就是停下——排队的交代一并清掉（见文件头注），并**逐条配对**：
-      // 它们没进会话，那就是「没成」（见 `dropQueued`）
-      dropQueued()
+      // 「停下」就是停下——排队那几条**保留并标为未执行**（U50 · 见 `holdQueued`）：
+      // 不丢、不接着跑、逐条说清它们还没轮到
+      holdQueued()
     },
 
     busy: () => running,

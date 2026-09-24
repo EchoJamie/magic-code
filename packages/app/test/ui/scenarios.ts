@@ -49,6 +49,14 @@ const COPY = {
  */
 const TOOL_DONE = '✓'
 
+/**
+ * 状态行左半**第一格**的词（空闲）——「它又闲下来了」那条判据的锚。
+ *
+ * 与 `HINT_IDLE` 分开：那一句在**右位**，而右位是**放不下就整段不出现**的（既有口径）
+ * ——窄窗里它本来就不该在，拿它当「空闲了没有」的条件，量的就成了窗口宽度。
+ */
+const IDLE_STATE = '○ 空闲'
+
 /** 一条「已知未修」的登记：**谁欠着、为什么不修**。 */
 export type KnownOpen = {
   /** 欠账的缺陷档（库内 `缺陷/Dxx …`）。 */
@@ -101,6 +109,7 @@ export type ScenarioName =
   | 'mcp-approval'
   | 'mcp-approval-edge'
   | 'mcp-underscore-name'
+  | 'stop-not-rollback'
 
 export type ScenarioOptions = {
   /** 产物根（缺省 `<checkout>/.ui-runs`）。 */
@@ -798,7 +807,12 @@ const mcpApprovalEdge: Scenario = {
     // —— 三 · 取消：拖住的那件，批准之后按中断 ——
     // ⚠️ 每一步都**等回空闲**再走下一步：并排跑满测试时，抢在上一轮收尾之前敲回车
     // 会被当成「工作中插话」排队（实测：回车落在收尾那一下，卡姗姗来迟、判据超时）
-    await session.wait({ text: HINT_IDLE })
+    //
+    // ⚠️ 等的是**状态那一格**（「○ 空闲」），不是右位那句键位提示（`HINT_IDLE`）：
+    //    这一步已经在 44 列的窄窗里了，而状态行左半**这一版带着真正的会话标题**
+    //    （U50 起首条交代落账后目录会回来一趟，见 `shell.ts` 的 `input.settled` 那一跳），
+    //    标题一长，右位那句就按既有口径整段让位——拿它当条件会白等到超时（实测栽过）。
+    await session.wait({ text: IDLE_STATE })
     await session.send('再来件拖住的')
     await session.wait({ text: '› 再来件拖住的' }, { timeoutMs: 10_000 })
     await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
@@ -820,7 +834,7 @@ const mcpApprovalEdge: Scenario = {
     )
 
     // —— 四 · 断连：服务器在途没了 ——
-    await session.wait({ text: HINT_IDLE })
+    await session.wait({ text: IDLE_STATE })
     await session.send('来件会崩的')
     await session.wait({ text: '› 来件会崩的' }, { timeoutMs: 10_000 })
     await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
@@ -843,7 +857,7 @@ const mcpApprovalEdge: Scenario = {
     )
 
     // —— 收尾：空闲再取一帧（键位与状态行都回到常态）——
-    await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
+    await session.wait({ text: IDLE_STATE }, { timeoutMs: 20_000 })
     await session.capture({ label: '收尾' })
 
     rmSync(dir, { recursive: true, force: true })
@@ -1161,6 +1175,111 @@ async function awaitToolResult(
 }
 
 /** 六组场景的表——用例与命令行都从这儿取。 */
+// ═══════════════════════════════════════════════════════════════════════
+// 十 · 停止（U50）：停止不是回滚
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * **停止不是回滚**（U50 · 设计「离开、停止与异常退出」末段与工单的验收）。
+ *
+ * > 停止**不是回滚**；已经发生的文件修改和远端操作**不能说成撤销**。
+ *
+ * 这一场造的是**真的改过东西**再停：模型那一头先让 `write` 工具**真写一个文件**
+ * （走真闸门 → 真裁决卡 → 批准 → 真落盘），随后是一段长回话；趁着它还在长，从
+ * `/resume` 里把这条运行停掉。判据三条：
+ *
+ * 1. 那个文件**原样还在**（停止没有把已经发生的事抹掉）；
+ * 2. 屏上（含原始字节）**没有一句话**说「撤销 / 回滚 / 恢复」；
+ * 3. 停本身是**真的**（回执说「停了」，且那一行落了定）。
+ */
+const stopNotRollback: Scenario = {
+  name: 'stop-not-rollback',
+  title: '停止不是回滚 —— 真改过文件再停，产物原样在，没有一句话说撤销',
+  anchors: 'U50 验收「停止不是回滚」：造一次已经改过文件的停止，确认记录与回执不谎称撤销',
+  story: async (ui, options) => {
+    const written = '这一份是停止之前写下的'
+    const streamed = '停我看看：这一句会一直长下去，长到按停为止。'
+
+    const session = await ui.open({
+      label: 'U50-停止不是回滚',
+      columns: 100,
+      rows: 30,
+      turns: [
+        // ① 先**真写一个文件**（write 是必闸：整文件覆盖要问）
+        { kind: 'tool', name: 'write', args: { path: '产物.txt', content: written } },
+        // ② 再是一段长回话——停就停在这上头（块多、块间慢：停下来要有东西可停）
+        { kind: 'text', text: streamed, chunks: 60, chunkDelayMs: 400 },
+      ],
+      ...where(options),
+    })
+
+    // —— 真改一次东西 ——
+    await session.send('改点东西')
+    // 锚**状态行那句「等你定夺」**，不锚键位提示——`write` 必闸那一档的键位是
+    // 「y / n」（轻的那一档才是 `y / a / n`），拿 `decideHint` 当条件会白等到超时（实测栽过）
+    await session.key('enter', { until: { text: '等你定夺' }, timeoutMs: 15_000 })
+    const card = await session.capture({ label: '裁决卡' })
+    ui.check(card.text.includes('write'), '裁决卡点名了要调用的工具', card.text.slice(0, 400))
+
+    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    const artifact = join(session.facts().workspace, '产物.txt')
+    ui.check(existsSync(artifact), '那一笔真写下去了（停止之前，文件已经在）', artifact)
+
+    // —— 长回话跑起来，然后**把它停掉** ——
+    await session.wait({ text: '停我看看' }, { timeoutMs: 25_000 })
+
+    // 从列表里停：`/resume` 开抽屉 → `ctrl+x` 停选中的那一条
+    // ⚠️ 锚**那一行上的停止键**（它只在「抽屉开着 ＋ 选中那一条真能停」时才有）——
+    //    拿别处的字当条件容易当场恒真（`/resume` 三个字本来就该打上去）
+    await session.send('/resume')
+    await session.key('enter', { until: { text: 'ctrl+x 停' }, timeoutMs: 15_000 })
+    await session.key('ctrl+x')
+    await session.wait({ text: '停了' }, { timeoutMs: 25_000 })
+    // 那一行落了定（运行事实是推来的：等**那一行**读得出「已停止」）
+    await waitScreen(session, (lines) => lines.some((line) => line.includes('已停止')), 20_000)
+
+    const stopped = await session.capture({ label: '停了之后' })
+    ui.check(
+      stopped.lines.some((line) => line.includes('停了')),
+      '停止的回执在（这一下是真停）',
+      stopped.text.slice(0, 400),
+    )
+
+    // —— 三条判据 ——
+    ui.check(existsSync(artifact), '产物文件在停止之后仍然在', artifact)
+    if (existsSync(artifact)) {
+      ui.check(
+        readFileSync(artifact, 'utf8') === written,
+        '它的内容**一字没动**（停止没有把它抹掉、也没有写回去）',
+        `实读：${readFileSync(artifact, 'utf8')}`,
+      )
+    }
+    ui.check(
+      !/撤销|回滚|恢复原状/u.test(session.rawText()),
+      '**没有一句话**说「已经发生的被撤销了」',
+      '（停止不是回滚：记录与回执都不谎称撤销）',
+    )
+  },
+}
+
+/** 等一屏条件成立——场景里那几处「等效果」用它（轮询是用例的事）。 */
+async function waitScreen(
+  session: UiSession,
+  ok: (lines: readonly string[]) => boolean,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const until = Bun.nanoseconds() + timeoutMs * 1e6
+  for (;;) {
+    const screen = await session.screen()
+    const lines = screen.lines.map((line) => line.text)
+    if (ok(lines)) return
+    if (Bun.nanoseconds() > until) {
+      throw new Error(`等屏超时（${timeoutMs}ms）：\n${lines.join('\n')}`)
+    }
+    await Bun.sleep(40)
+  }
+}
+
 export const SCENARIOS: readonly Scenario[] = [
   bootInputResizeExit,
   drawerOpenClose,
@@ -1171,6 +1290,7 @@ export const SCENARIOS: readonly Scenario[] = [
   missingTextFailure,
   assistantAcrossCalls,
   isolationRepeatParallel,
+  stopNotRollback,
 ]
 
 export function scenarioNames(): readonly ScenarioName[] {

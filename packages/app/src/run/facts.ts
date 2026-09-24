@@ -198,8 +198,8 @@ export function newRunRecord(input: {
  *    同样无从谈起——拿不准的那一格不报成「空闲」。
  * 3. **有仍有效的提问或审批** ⇒ 等待你（它优先于执行中：模型正卡在等你）。
  * 4. **有在途的模型/工具调用**（`busy` 或这一轮开着）⇒ 执行中。
- * 5. **上一轮不是好好收的**（被打断 / 出错），或那一代是异常收的 ⇒ 已停止。
- * 6. 其余（手上没活，上一轮正常结束）⇒ 当前空闲。
+ * 5. **那一代是异常收的**，或上一轮不是好好收的**而它已经收了** ⇒ 已停止。
+ * 6. 其余（手上没活）⇒ 当前空闲——**运行还在的时候，上一轮被打断不叫「已停止」**。
  */
 export function runStateOf(record: RunRecord): RunState {
   if (record.stopping && record.ended === undefined) return 'stopping'
@@ -213,12 +213,26 @@ export function runStateOf(record: RunRecord): RunState {
     return 'running'
   }
 
+  /**
+   * ⚠️ **「已停止」要有核销**（U50 收紧的那一档）。
+   *
+   * 那一行的事实依据是**「执行者与自有资源已核销」**（设计那张表）。U49 写这一条判定时
+   * 手上还没有「写」的那一半，只能拿**上一轮怎么收的**当替身（上一轮被打断 ⇒ 已停止）
+   * ——那在「一代真的收摊了」那几档上是对的，可它漏了一格最要紧的：
+   *
+   * > **用户按了一下「只停这一轮」，运行其实还在、还能接着用，列表却当场写着「已停止」。**
+   *
+   * 那正是设计不许的「**不把局部成功显示为整体成功**」，也是本单验收要问的那一句
+   * （「读起来是『停了』还是『不知道停没停』」）。故 U50 把判据换成**事实本身**：
+   * 没有核销就不是已停止——上一轮被中断那件事由行的 `lastTurn` 带出去（详情里说得出
+   * 「上一轮被中断」），而不是拿它冒充整个运行停掉了。
+   */
   const broke = record.lastTurn === 'aborted' || record.lastTurn === 'error'
   if (record.ended !== undefined) {
     return !broke && record.ended.kind === 'normal' ? 'idle' : 'stopped'
   }
 
-  return broke ? 'stopped' : 'idle'
+  return 'idle'
 }
 
 /**
@@ -248,13 +262,21 @@ export function stopReasonOf(record: RunRecord): string | undefined {
   // 来得及 `refresh` 的中间态很常见）——读它会让「缘由」比「状态」慢半拍，而两者本是同一件事
   if (runStateOf(record) !== 'stopped') return undefined
 
+  // **次序即优先级**（U50 调过一次）：异常那一档最响，「一轮被切」次之，再往下才是
+  // 「上一轮出错了」与「它自己收摊的缘由」。⚠️ 「一轮被切」不再只看 `lastTurn`——
+  // 收摊时那一轮还开着也算（`endKindOf` 那一处补的正是它），否则那条缘由会落成
+  // 「连接断了」这种**什么也没说**的话。
+  //
+  // ⚠️ **四档都要走到最后那一跳**（「没能收回来」是加在末尾的）：这里**不许提前 return**
+  //    ——U50 改这一处时就踩过：`crashed` 那一档一分出去，异常退出那一条就再也带不上
+  //    「还有几组进程没能收回来」（`run-stop.test.ts` 的 PID 重用那一条当场红）。
   const base =
-    record.ended !== undefined && record.ended.kind === 'crashed'
+    record.ended?.kind === 'crashed'
       ? `异常退出：${record.ended.why}`
-      : record.lastTurn === 'error'
-        ? '这一轮出错了'
-        : record.lastTurn === 'aborted'
-          ? '手动中断'
+      : record.ended?.kind === 'aborted' || record.lastTurn === 'aborted'
+        ? '手动中断'
+        : record.lastTurn === 'error'
+          ? '这一轮出错了'
           : (record.ended?.why ?? '没跑完就停了')
 
   // **收尾没收回来的那些要说出来**（U50）——「外部效果不明不伪报取消成功」：
@@ -262,9 +284,21 @@ export function stopReasonOf(record: RunRecord): string | undefined {
   return record.reclaimNote === undefined ? base : `${base}（${record.reclaimNote}）`
 }
 
-/** 上一轮怎么收的 → 这一代的收法（**只用于「它自己退的」那条路**）。 */
-export function endKindOf(lastTurn: TurnEndReason | undefined): EndKind {
-  return lastTurn === 'aborted' ? 'aborted' : 'normal'
+/**
+ * 上一轮怎么收的 → 这一代的收法（**只用于「它自己退的」那条路**）。
+ *
+ * ⚠️ **U50 补了 `turnActive` 这一位**：光看 `lastTurn` 会漏掉最要紧的那一档——
+ *
+ * > 用户按了停止，执行者收摊退出，而**那一轮的 `turn.end` 还没来得及落**
+ * > （收尾那两跳抢在事件前面），于是 `lastTurn` 还是 `undefined` ⇒ 判成 `normal`
+ * > ⇒ 那一行读作「**当前空闲**」——**看起来像什么都没发生过**。
+ >
+ * 而这一刻是真停：一轮正跑着被切了。故判据补上「**收摊那一刻这一轮还开着吗**」，
+ * 开着就算被打断（`aborted`）。反过来，一轮好好收束之后才退的那一档（`turnActive`
+ * 为假、`lastTurn` 是 `settled`）照旧 `normal`——那才是「当前空闲」。
+ */
+export function endKindOf(lastTurn: TurnEndReason | undefined, turnActive = false): EndKind {
+  return turnActive || lastTurn === 'aborted' ? 'aborted' : 'normal'
 }
 
 /**
@@ -402,6 +436,9 @@ export function runRowOf(record: RunRecord): RunRow {
     ...(record.progress === undefined ? {} : { progress: record.progress }),
     ...(record.output === undefined ? {} : { output: record.output }),
     ...(reason === undefined ? {} : { reason }),
+    // **上一轮怎么收的**（U50）——「当前空闲」那一行靠它说得出「上一轮被中断」：
+    // 核销之前不叫「已停止」，而那件事不能就这么消失（用户得知道停点在哪）
+    ...(record.lastTurn === undefined ? {} : { lastTurn: record.lastTurn }),
     workspace: record.workspace,
     holds: blocksNewRun(record.state),
   }

@@ -62,6 +62,10 @@ const KEYS: Record<string, string> = {
   esc: '\u001b',
   // 空闲＝退出 · 工作中＝中断（原型 · 键盘）——**归外壳判**，故这里就是这一个字节
   'ctrl+c': '\u0003',
+  // U50：`/resume` 那一屏的两个停止键——**整体**（停这条运行）与**局部**（只停这一轮）。
+  // 裸控制码：`ctrl+x` ＝ 0x18、`ctrl+w` ＝ 0x17（Ink 解成「字母 ＋ ctrl」）。
+  'ctrl+x': '\u0018',
+  'ctrl+w': '\u0017',
   tab: '\t',
   backspace: '\u007f',
   up: '\u001b[A',

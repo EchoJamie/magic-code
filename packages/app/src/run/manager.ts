@@ -67,9 +67,13 @@ import type {
   MagicHome,
   McpServerConfig,
   ModelSwitchRequest,
+  NoticeKind,
   OwnedProcess,
+  RunNotice,
   RunRow,
   RunSnapshot,
+  StopPhase,
+  StopScope,
 } from '@magic/contracts'
 import { probeMcp } from './preflight.ts'
 import type { McpProbeRow } from './wire.ts'
@@ -88,13 +92,18 @@ import {
   reconcile,
   refresh,
   runRowOf,
+  stopReasonOf,
   storedRunOf,
   tailOf,
 } from './facts.ts'
 import type { RunRecord, StoredRun, StoredRuns } from './facts.ts'
 import { RUNS_VERSION, STORED_RUNS_LIMIT } from './facts.ts'
 import { reclaim, reclaimNoteOf } from './reclaim.ts'
-import { startTimeOf } from '@magic/execution'
+import { NOTICES_LIMIT, NOTICES_VERSION, noticeKey, noticeOf } from './notices.ts'
+import type { StoredNotices } from './notices.ts'
+import { osNotifier } from './system-notify.ts'
+import type { SystemNotifier } from './system-notify.ts'
+import { reapOwned, startTimeOf } from '@magic/execution'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {
@@ -193,6 +202,23 @@ export type ManagerOptions = {
   readonly now?: (() => number) | undefined
   /** 生命探测的间隔（毫秒）——缺省 5 秒；见 `PROBE_INTERVAL_MS`。 */
   readonly probeIntervalMs?: number | undefined
+  /**
+   * **停止时给执行者的宽限**（毫秒）——`bye` 之后等它自己走完收尾那两跳。
+   *
+   * 由头与 `SHUTDOWN_GRACE_MS` 同：那两跳（等外部服务器释放、再关库）本来就有界，
+   * 故这个数取「它们走完还要多久」——MCP 那条路最坏是 2s（等它自己退）＋ 1s（TERM）
+   * ＋ 1s（KILL），加一截余量取八秒。用例把它调小。
+   */
+  readonly stopGraceMs?: number | undefined
+  /** 停止时 TERM 之后再等多久才 KILL（毫秒）——缺省三秒；见 `STOP_KILL_MS`。 */
+  readonly stopKillMs?: number | undefined
+  /**
+   * **无人连接时怎么弹那条系统通知**——缺省 `osNotifier()`（macOS 的通知中心）。
+   *
+   * 收成端口是为了用例：**不许真弹**（跑一趟用例在用户屏幕上蹦几十条通知，
+   * 那不是验证是骚扰），而「无人连接时才弹、一条事实只弹一次」这两条判据照样要量。
+   */
+  readonly notifySystem?: SystemNotifier | undefined
   /** 诊断——缺省不打印（**这条线上不写业务日志**）。 */
   readonly log?: ((line: string) => void) | undefined
 }
@@ -237,8 +263,13 @@ export type SpawnedExecutor = {
   readonly pid: number | undefined
   /** 子进程退出了（正常 / 被杀 / 起不来）——**「自有子进程退出」那一路**。 */
   onExit(listener: (reason: string) => void): void
-  /** 叫它退——先礼（`bye` 走连接）后兵（这里是兵）。 */
-  kill(): void
+  /**
+   * 叫它退——先礼（`bye` 走连接）后兵（这里是兵）。
+   *
+   * U50 起可以点名哪一记「兵」：停止那一条路照设计那一句走
+   * 「**有界等待 → TERM → KILL → 等待退出**」（缺省仍是 TERM——收摊那一跳一字未动）。
+   */
+  kill(signal?: 'SIGTERM' | 'SIGKILL'): void
 }
 
 /**
@@ -292,6 +323,17 @@ const PROBE_INTERVAL_MS = 5_000
  */
 const SHUTDOWN_GRACE_MS = 2_000
 
+/**
+ * 停止时给执行者的宽限（毫秒）——见 `ManagerOptions.stopGraceMs`。
+ *
+ * 八秒＝MCP 那条收尾路的最坏情形（等 2s ＋ TERM 1s ＋ KILL 1s）＋ 一截余量。到点还没退的
+ * 按「不听话」处理（TERM，再 `STOP_KILL_MS` 仍不退就 KILL）——**先礼不等于无限期地等**。
+ */
+const STOP_GRACE_MS = 8_000
+
+/** 停止时那第二记「兵」等多久（毫秒）——TERM 之后仍不退就 KILL。 */
+const STOP_KILL_MS = 3_000
+
 /** 「两手都空」要空够多久才退（毫秒）——见 `bindManager` 里 `idle` 那一段的注。 */
 const IDLE_MS = 2_000
 /** 那件事多久看一次（毫秒）——它只是个判据，不需要比这更勤。 */
@@ -342,6 +384,8 @@ export async function startManager(options: ManagerOptions): Promise<StartResult
 function bindManager(options: ManagerOptions, now: () => number): Manager | undefined {
   const { paths } = options
   const probeIntervalMs = options.probeIntervalMs ?? PROBE_INTERVAL_MS
+  const stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS
+  const stopKillMs = options.stopKillMs ?? STOP_KILL_MS
 
   const clients = new Map<number, ClientConn>()
   const executors = new Set<Executor>()
@@ -616,6 +660,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             mcp: probed,
             // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
             runs: [],
+            notices: [],
             refuse:
               `没有这条会话：${message.session}——` +
               `--session 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
@@ -639,6 +684,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             mcp: probed,
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
             runs: rows(),
+            // **离开期间那几件事**（U50）——给过一次就算说过（当场标已读）
+            notices: takeUnread(),
           })
         })
 
@@ -653,6 +700,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
       if (client !== undefined) {
         if (message.t === 'cmd') onCommand(client, message.gen, message.cmd)
+        // **停止**（U50）止于管理者——它不是内核命令，故不转给执行者（见 `wire.ts`）
+        if (message.t === 'stop') stopRun(client, message.session, message.scope)
         if (message.t === 'bye') dropClient(client.id)
         return
       }
@@ -709,6 +758,297 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     // 它自己按「没有连接者 ＋ 没有在途调用或待答项」判（见 `executor.ts` 的收缩那一跳）。
     options.log?.(`窗口 ${id} 断开（挂着的客户端 ${clients.size}）`)
     touch()
+  }
+
+  // —— 通知：三类转换（U50）——
+
+  /**
+   * **留着的那些「刚刚发生的事」**——开头先读盘上那一份（上一次管理者离开时留下的未读）。
+   */
+  const notices: RunNotice[] = [...readNotices(paths)]
+  /** 已经说过的那些（去重键）——**同一件事实只说一次**（设计：「单一事实跨窗口去重」）。 */
+  const said = new Set<string>(notices.map((one) => one.id))
+  const notifySystem = options.notifySystem ?? osNotifier()
+
+  /**
+   * **说话**——三件事之一刚发生。
+   *
+   * 四条次序都是判据：
+   * 1. **先查说没说过**（`said`）：同一条事实重放、几个窗口都收到、重启之后又碰上——
+   *    都只算一件（落盘的那些进 `said` 就是为了跨重启）；
+   * 2. **有窗口连着 ⇒ 送给它们**（当场看得见，不必弹系统通知，也就不标未读）；
+   * 3. **一个窗口都没有 ⇒ 标未读 ＋ 弹一条系统通知**——那正是「无人连接时」那一格；
+   * 4. **落盘**：未读要活过管理者自己的退出（它没窗口、也没执行者时会退）。
+   */
+  function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string): void {
+    const id = noticeKey(session, kind, fact)
+    if (said.has(id)) return
+    said.add(id)
+
+    const anyone = clients.size > 0
+    const notice: RunNotice = {
+      id,
+      session,
+      kind,
+      at: now(),
+      ...(detail === undefined ? {} : { detail }),
+      unread: !anyone,
+    }
+
+    notices.push(notice)
+    while (notices.length > NOTICES_LIMIT) notices.shift()
+    saveNotices()
+
+    if (anyone) {
+      for (const conn of clients.values()) conn.link.send({ t: 'notice', notice })
+      return
+    }
+
+    // **没人看着**：系统通知只报「哪一类 ＋ 去看」，不报会话 id（管理者认不得标题，
+    // 而把一个内部 id 弹到桌面上是最坏的漏法——具体是哪一条由下次打开那张汇总说）
+    notifySystem(`${noticeWord(kind)}——打开看是哪条`)
+  }
+
+  /** 那一类转换的一句短话（系统通知与汇总共用一份词表）。 */
+  function noticeWord(kind: NoticeKind): string {
+    switch (kind) {
+      case 'done':
+        return '有一件工作跑完了一轮'
+      case 'failed':
+        return '有一件工作出错了'
+      case 'needs-you':
+        return '有一件工作正等着你'
+    }
+  }
+
+  /** 把未读那几条交给新连上来的窗口，并**当场标已读**（它们已经跟用户照过面了）。 */
+  function takeUnread(): readonly RunNotice[] {
+    const unread = notices.filter((one) => one.unread)
+    if (unread.length === 0) return []
+
+    // 标已读＝**换一份**（`RunNotice` 是只读形，与运行事实那几件同一条口径：
+    // 谁读到的都是当时那一份，不会被后来的人悄悄改掉）
+    for (const one of unread) {
+      const at = notices.indexOf(one)
+      if (at !== -1) notices[at] = { ...one, unread: false }
+    }
+    saveNotices()
+    return unread
+  }
+
+  /** 落盘（合并写，同 `saveRuns` 那条口径——这一份也是便条，不是权威）。 */
+  let noticesTimer: ReturnType<typeof setTimeout> | undefined
+  function saveNotices(): void {
+    if (noticesTimer !== undefined) return
+    noticesTimer = setTimeout(() => {
+      noticesTimer = undefined
+      writeNotices(paths, notices, now())
+    }, RUNS_SAVE_MS)
+    noticesTimer.unref?.()
+  }
+
+  // —— 停止：范围编排（U50）——
+
+  /**
+   * **等着「停到哪一拍」那些窗口**——按会话记。
+   *
+   * 按会话而不是按代次：一条会话在一个时刻至多一代（独占推进权），而停止说的正是
+   * 「这一条别跑了」——用户按会话/工作操作。`scope` 一并记着（回执里要说得清哪一档）。
+   */
+  const stopWaiters = new Map<string, { readonly conns: Set<number>; readonly scope: StopScope }>()
+
+  /** 回一句「停到哪一拍」——按会话 ＋ 范围，话由外壳按它自己的目录拼（见 `wire.ts`）。 */
+  function reportStop(
+    connId: number,
+    session: string,
+    scope: StopScope,
+    phase: StopPhase,
+    note?: string,
+  ): void {
+    clients.get(connId)?.link.send({
+      t: 'stopped',
+      session,
+      scope,
+      phase,
+      ...(note === undefined ? {} : { note }),
+    })
+  }
+
+  /** 核销之后回「已完成」——**这一拍才算「已停」**（设计：「资源确认退出后才报已停止」）。 */
+  function settleStop(session: string, note?: string): void {
+    const waiting = stopWaiters.get(session)
+    if (waiting === undefined) return
+    stopWaiters.delete(session)
+    for (const id of waiting.conns) reportStop(id, session, waiting.scope, 'done', note)
+  }
+
+  /** 记下「这个窗口在等这一条会话的停止结果」。 */
+  function awaitStop(conn: ClientConn, session: string, scope: StopScope): void {
+    const waiting = stopWaiters.get(session) ?? { conns: new Set<number>(), scope }
+    waiting.conns.add(conn.id)
+    stopWaiters.set(session, waiting)
+  }
+
+  /**
+   * **停止**（U50）——把「整体 / 局部」那个意图映射成要动的那几条运行，再动手。
+   *
+   * 设计：
+   *
+   * > 会话/成员详情选择停止 ｜ 按明确选择的**整体或局部**范围编排，再对具体 Run 取消
+   * > 模型/工具并收尾；**资源确认退出后**才报已停止，**不把局部成功显示为整体成功**。
+   * >
+   * > 运行层执行具体 Run 的中断与自有工具资源回收；**应用层**……将整体/局部意图映射为
+   * > 正确范围，**不能只中断入口就声称整体已停**。
+   *
+   * ## 范围是怎么映射的
+   *
+   * 两档各映射成「要动的那一组」——**这一处是唯一的映射点**（将来协作的成员范围也加在
+   * 这里，不在 UI、不在内核）：
+   *
+   * | 那一档 | 映射出来的范围 | 动手 |
+   * | --- | --- | --- |
+   * | `turn`（局部） | 这条会话**活着的那一代** | 送一句 `turn.interrupt`——**只收这一轮** |
+   * | `run`（整体） | 活着的那一代 ＋ **没证实结束的那一份记录** | 取消在途 → 收尾 → 核销 → 收回自有进程组 |
+   *
+   * 「整体」那一档把**失联那一份**也算进范围（`lastRuns` 里 `ended` 还没写的那一条）：
+   * 它可能还站着（控制连接断了而进程没死）——那正是「**收回独占权**」要处置的那一格。
+   * 只中断入口那一轮**不算整体已停**：那一档的完成判据是范围内**每一条都核销**。
+   *
+   * ## 三件不许
+   *
+   * - **不报错**：重复停止**安全受理**（已在停 / 早停了，各回一句实话，不是失败）；
+   * - **不误杀**：失联那一代先核对身份（号 ＋ 启动时刻）——**证明不了归属的一个信号都不发**；
+   * - **不冒充**：没证实停掉的说 `unconfirmed`，**不把局部成功显示为整体成功**。
+   */
+  function stopRun(conn: ClientConn, session: string, scope: StopScope): void {
+    const live = liveOf(session)
+    const stale = lastRuns.get(session)
+
+    if (scope === 'turn') {
+      if (live === undefined) {
+        reportStop(
+          conn.id,
+          session,
+          scope,
+          'unconfirmed',
+          '它这会儿没有活着的一代在跑——没有可以中断的那一轮',
+        )
+        return
+      }
+
+      deliver(live, { type: 'turn.interrupt' })
+      // **局部到此为止**：不置 `stopping`、不送 `bye`、不报已停——「那条运行还在」是这一档
+      // 的全部语义（设计：「**不能把局部成功显示为整体成功**」）
+      reportStop(conn.id, session, scope, 'done', '只停了这一轮，那条运行还在（可以接着用）')
+      return
+    }
+
+    // —— 整体：这条运行的全部资源 ＋ 它自己 ——
+
+    if (live !== undefined) {
+      // **受理**（重复停止照收）——「停止中」那一行的事实依据就在这一格
+      const again = live.run.stopping
+      live.run.stopping = true
+      refresh(live.run, now())
+      saveRuns()
+      pushRuns()
+
+      awaitStop(conn, session, scope)
+      reportStop(conn.id, session, scope, 'accepted', again ? '它已经在停了——这一下照旧受理' : undefined)
+
+      // ① 先取消在途的模型 / 工具（设计：「对具体 Run **取消模型/工具**并收尾」）
+      deliver(live, { type: 'turn.interrupt' })
+      // ② 再叫它收尾（`bye`＝执行者那条「把资源退干净再走」的路）
+      send(live, { t: 'bye', why: '收到停止' })
+      // ③ 有界：到点还没退，照「先礼后兵」往下推（TERM → 再等 → KILL → 等退出）
+      escalateStop(live)
+      return
+    }
+
+    // **没有活着的一代**——那要看盘上那份记录：
+    if (stale === undefined || stale.ended !== undefined) {
+      // 早就没了（或它压根没跑过）：**重复停止安全受理**，如实说一句就是
+      reportStop(
+        conn.id,
+        session,
+        scope,
+        'done',
+        stale === undefined ? '它这会儿没有在跑的运行' : `它早就停了（${stopReasonOf(stale) ?? '已停止'}）`,
+      )
+      return
+    }
+
+    // **没证实结束的那一份**（失联 / 正在收尾）：照登记收回——**先核对身份，再动手**
+    awaitStop(conn, session, scope)
+    reportStop(conn.id, session, scope, 'accepted', '它这会儿联系不上——照登记收回它')
+    void reclaimStale(session, stale)
+  }
+
+  /**
+   * **收回一份失联的运行**（U50）——「管理者收回独占权与已登记自有进程组」的那条路。
+   *
+   * 次序两跳，都在**证明归属之后**：
+   * 1. 那个执行者进程自己（号 ＋ 启动时刻对得上才 TERM → 等 → KILL → 等退出）；
+   * 2. 它登记过的自有进程组（`reclaimRun`）。
+   *
+   * 证实不了（号已经被别人用了 / 领头那个不在了）就**一个信号都不发**，回一句 `unconfirmed`
+   * ——「不误杀」比「这一次停成」重要（设计：「拿不准的不编」，且非 Magic 创建的进程不被
+   * 停止动作误杀）。
+   */
+  async function reclaimStale(session: string, record: RunRecord): Promise<void> {
+    const outcome =
+      record.pid === undefined
+        ? ({ kind: 'gone' } as const)
+        : await reapOwned({ pgid: record.pid, startedAt: record.procStartedAt, what: '执行者' })
+
+    if (outcome.kind === 'stranger' || outcome.kind === 'unprovable' || outcome.kind === 'left') {
+      const waiting = stopWaiters.get(session)
+      stopWaiters.delete(session)
+      for (const id of waiting?.conns ?? []) {
+        reportStop(id, session, 'run', 'unconfirmed', outcome.note)
+      }
+      return
+    }
+
+    // 进程真没了 ⇒ 那一刻才是「核销」
+    record.ended = { at: now(), why: '停止：照登记收回（它当时已经联系不上）', kind: 'crashed' }
+    record.stopping = false
+    refresh(record, now())
+
+    const note = record.owned.length > 0 ? await reclaimRun(record) : undefined
+    saveRuns()
+    pushRuns()
+    settleStop(session, note)
+  }
+
+  /**
+   * **先礼后兵的那条路**（U50 · 设计「有界等待 → TERM → KILL → 等待退出」）。
+   *
+   * 礼已经给过了（`bye` 走连接）。到点还没退 ⇒ 一记 TERM；再等 `stopKillMs` 还没退 ⇒ KILL。
+   * 两记都发出去之后**不再等**：那一代照旧停在「停止中」（事实如此——它确实还没退），
+   * 而**不谎报已停**。
+   */
+  function escalateStop(executor: Executor): void {
+    const deadline = now() + stopGraceMs
+    const timer = setInterval(() => {
+      if (executor.run.ended !== undefined || stopped) {
+        clearInterval(timer)
+        return
+      }
+      if (now() < deadline) return
+      clearInterval(timer)
+
+      options.log?.(`第 ${executor.gen} 代没理会停止——按下去了`)
+      executor.spawned.kill('SIGTERM')
+
+      const later = setTimeout(() => {
+        if (executor.run.ended !== undefined) return
+        options.log?.(`第 ${executor.gen} 代 TERM 之后还没退——KILL`)
+        executor.spawned.kill('SIGKILL')
+      }, stopKillMs)
+      later.unref?.()
+    }, 100)
+    timer.unref?.()
   }
 
   // —— 命令：路由 ——
@@ -1122,16 +1462,17 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 的「已停止」照旧**当场**成立（进程真没了才叫核销），要不要补一句「没收干净」由这一跳
    * 回来时补——**不为了收尾把状态卡在半路**。
    */
-  async function reclaimRun(record: RunRecord): Promise<void> {
+  async function reclaimRun(record: RunRecord): Promise<string | undefined> {
     const report = await reclaim(record.owned)
     const note = reclaimNoteOf(report)
-    if (note === undefined || record.ended === undefined) return
+    if (note === undefined || record.ended === undefined) return undefined
 
     record.reclaimNote = note
     refresh(record, now())
     options.log?.(`收回第 ${record.gen} 代的自有进程组：${note}`)
     saveRuns()
     pushRuns()
+    return note
   }
 
   /** 记下「已受理停止」——**停止中**那一行的来处（`ended` 一到它就跳过去了）。 */
@@ -1210,9 +1551,21 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         // **轮收束 ⇒ 悬着的裁决作废**——与执行者那一侧同一条口径（`executor.ts`）：
         // 卡挂着的时候这一轮没结束，故那条「等你」照旧成立。
         run.decisions.clear()
+        /**
+         * **两类转换就在这儿**（U50）：跑完了 / 出错了。
+         *
+         * ⚠️ **`aborted` 不说**——那是用户自己按的中断（`turn.interrupt`），他刚做完这件事，
+         * 弹一条「它停了」等于拿通知复述他本人。而设计那三类里本来也没有它。
+         */
+        if (run.session !== null) {
+          if (event.data.reason === 'settled') notify(run.session, 'done', event.id)
+          if (event.data.reason === 'error') notify(run.session, 'failed', event.id, '这一轮出错了')
+        }
         break
       case 'tool.decision.request':
         run.decisions.set(event.id, event.data.call)
+        // **第三类：需要你**（U50）——那正是他不在的时候会卡住的那一件
+        if (run.session !== null) notify(run.session, 'needs-you', event.id, event.data.name)
         break
       case 'tool.decision': {
         // 答复落地——请求那一条从「挂着」挪到「已处理」（晚到的答复据此被认出来）
@@ -1272,7 +1625,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
     const at = now()
     const kind = executor.run.stopping
-      ? endKindOf(executor.run.lastTurn)
+      ? // **收摊那一刻这一轮还开着**也算被打断（U50）：收尾那两跳可能抢在
+        // `turn.end` 前面，光看 `lastTurn` 会把一次真停读成「当前空闲」
+        endKindOf(executor.run.lastTurn, executor.run.turnActive)
       : executor.run.lastTurn === 'aborted'
         ? ('aborted' as const)
         : ('crashed' as const)
@@ -1315,10 +1670,44 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     pushRuns()
     touch()
 
-    // **收回它手上的自有进程组**（U50）——被杀那一代自己跑不到收尾那两跳，这一份登记就是
-    // 为它留的（设计：「执行者崩溃或被杀 ⇒ 管理者收回独占权与已登记自有进程组」）。
-    // 收没收到如实写回缘由（`reclaim.ts`），**不伪报取消成功**。
-    if (executor.run.owned.length > 0) void reclaimRun(executor.run)
+    /**
+     * **异常退出也是一类转换**（U50）——「失败」。
+     *
+     * 只报 `crashed` 那一档（被杀 / 跑着跑着没了）：正常收摊是「完成」，而**用户自己叫停的**
+     * 那一档（`stopping` 起头的）他刚按过——两档都不在这儿报（见 `notify` 的注）。
+     */
+    if (executor.run.ended?.kind === 'crashed' && executor.run.session !== null) {
+      notify(
+        executor.run.session,
+        'failed',
+        `${executor.gen}@${executor.run.ended.at}`,
+        `异常退出：${reason}`,
+      )
+    }
+
+    // **收回它的自有进程组 ＋ 回那一拍「已停」**（U50）——见 `afterEnd`
+    afterEnd(executor.run)
+  }
+
+  /**
+   * **核销之后那一段**（U50）——收资源，然后（有人等着的话）回那一拍「已停」。
+   *
+   * 两处调用它：这一趟里没了的（`retire`）与失联那些落定为「异常退出」的（生命探测）。
+   * 次序是设计那一句「**资源确认退出后**才报已停止」：**收干净了才算停**——收不干净的
+   * 那句缘由跟着回执一起出去（`reclaim.ts`），**不伪报取消成功**。
+   */
+  function afterEnd(run: RunRecord): void {
+    const session = run.session
+    const waiting = session !== null && stopWaiters.has(session)
+
+    if (run.owned.length === 0) {
+      if (waiting && session !== null) settleStop(session)
+      return
+    }
+
+    void reclaimRun(run).then((note) => {
+      if (waiting && session !== null) settleStop(session, note)
+    })
   }
 
   /** 生命探测——**只看「连还通不通」**，不看它在不在干活（长测试静默照样是活的）。 */
@@ -1352,8 +1741,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       run.ended = { at: now(), why: '它已经不在了', kind: 'crashed' }
       refresh(run, now())
       moved = true
-      // 落定为「异常退出」的这一刻，顺带把它登记过的自有进程组收回来（U50）
-      if (run.owned.length > 0) void reclaimRun(run)
+      // 落定为「异常退出」的这一刻，顺带把它的自有进程组收回来（U50）＋回那一拍
+      afterEnd(run)
     }
     if (moved) saveRuns()
     // **顺带把运行事实重推一次**（U49）——同一趟「有限频率」，为的是「多久了」那一格。
@@ -1568,6 +1957,43 @@ export function readRuns(paths: RunPaths): readonly StoredRun[] {
     })
   }
   return kept
+}
+
+/**
+ * 读上一次留下的那份**未读事项**——**读不懂＝没有**（同 `runs.json` 那条口径）。
+ *
+ * 一条一条校验（`noticeOf`）：坏一条丢一条，其余照收——它是便条，不是权威状态。
+ */
+export function readNotices(paths: RunPaths): readonly RunNotice[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(paths.notices, 'utf8'))
+  } catch {
+    return []
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) return []
+  const list = (parsed as Partial<StoredNotices>).notices
+  if (!Array.isArray(list)) return []
+
+  const kept: RunNotice[] = []
+  for (const one of list) {
+    const notice = noticeOf(one)
+    if (notice !== undefined) kept.push(notice)
+  }
+  return kept.slice(-NOTICES_LIMIT)
+}
+
+/** 写那一份未读事项——**原子替换**（同 `writeRuns` 那条由头：写一半被看见就是半截记录）。 */
+function writeNotices(paths: RunPaths, notices: readonly RunNotice[], at: number): void {
+  const body: StoredNotices = { v: NOTICES_VERSION, at, notices }
+  const temp = `${paths.notices}.tmp-${process.pid}`
+  try {
+    writeFileSync(temp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
+    renameSync(temp, paths.notices)
+  } catch {
+    // 写不下去只影响「下次打开汇总未读」这一件事——它为这个把管理者拦下来说不过去
+  }
 }
 
 /**
