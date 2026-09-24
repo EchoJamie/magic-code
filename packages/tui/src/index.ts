@@ -29,7 +29,7 @@ export type { RunTuiOptions, TuiHandle } from './run.ts'
 
 // —— 会话壳（控制面接线 ＋ 键位语义）——
 
-export { createShell } from './shell.ts'
+export { createShell, EXIT_ARM_MS } from './shell.ts'
 export type { Shell, ShellEffect, ShellKey, ShellOptions } from './shell.ts'
 
 // —— diff（工具输出的已知形态之一：改了什么 · U20）——

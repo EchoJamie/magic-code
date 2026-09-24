@@ -170,6 +170,20 @@ export type ShellKey =
   | { readonly kind: 'paste'; readonly text: string }
   | { readonly kind: 'other'; readonly label: string }
 
+/**
+ * 「再按一次」那道门**开着多久**（毫秒 · U68）。
+ *
+ * 到点就**撤掉那一行、同时取消那次监听**——此后再按是**新的一次**（重新挂上），
+ * 不是「接着上一次」。
+ *
+ * ⚠️ **它为什么该有时限**（U68 推翻了 U46 的「不加时限」）：按三分类——
+ * **配置不回显 · 状态可常驻 · 刚发生的事 ⇒ 那一刻回执**——「你按了一次 Ctrl+C」是
+ * **刚发生的事**，那就该是**那一刻回执**（过一会儿自己撤），不是常驻一格。
+ * 原先那条理由（「加了就是『按了没反应』的变体」）**把归类的错当成了交互的错**：
+ * 加时限不是「没反应」，是「回执该有的样子」。
+ */
+export const EXIT_ARM_MS = 1_500
+
 /** 按键的结果——`exit` 由组件去真退出（外壳不碰终端）。 */
 export type ShellEffect = { readonly exit: boolean }
 
@@ -2570,25 +2584,74 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     return true
   }
 
+  /** 那道门的钟（`undefined` ＝ 没挂着）。挂上时起、撤下时清——**两处收口见下**。 */
+  let exitArmTimer: ReturnType<typeof setTimeout> | undefined
+
+  /** 撤钟——只清定时器，**不动视图**（视图那一半按调用处的情形走）。 */
+  const stopExitClock = (): void => {
+    if (exitArmTimer === undefined) return
+
+    clearTimeout(exitArmTimer)
+    exitArmTimer = undefined
+  }
+
   /**
-   * 空闲按 Ctrl+C——**按两次才走**（U46 · 设计「离开、停止与异常退出」）。
+   * **把那一行撤掉 ＋ 收钟**——「任何别的输入」与「中断那一下」两条路共用这一处。
    *
-   * 第一下**不退出**，只把那一行挂上（`HINT_EXIT_ARMED`）；第二下才放行。
-   * 中间那一条线的清理由 `key` 兜（任何别的输入都把它收了——用户又不想走了）。
+   * ⚠️ **两件必须一起做**（只撤行、不收钟的话，那支钟到点还会把**后来重新挂上的**那一次
+   * 误撤掉：用户会看到「明明刚按过，它却自己没了」）。同理，起钟前也得先清旧的
+   * （见 `armExit`），一处挂只留一支钟。
+   */
+  const disarmExit = (): void => {
+    stopExitClock()
+    if (view.exitArmed) commit({ ...view, exitArmed: false })
+  }
+
+  /**
+   * **挂上那道门 ＋ 起钟**（U68）——第一下按 Ctrl+C 走的就是这一跳。
+   *
+   * 钟到点干两件：**撤掉那一行** · **取消这一次监听**（`exitArmed` 落回假 ⇒ 下一次按
+   * 从头算）。两件其实是同一件：那一道门的状态就是 `exitArmed` 这一格。
+   *
+   * ⚠️ `unref`：测试 / 演示里不该因为一支钟把进程多拽住 1.5 秒（同 `holdResumed` 那一处）。
+   */
+  const armExit = (): void => {
+    stopExitClock()
+    commit({ ...view, exitArmed: true })
+    exitArmTimer = setTimeout(() => {
+      exitArmTimer = undefined
+      if (!view.exitArmed) return
+      commit({ ...view, exitArmed: false })
+    }, EXIT_ARM_MS)
+    exitArmTimer.unref?.()
+  }
+
+  /**
+   * 空闲按 Ctrl+C——**按两次才走**（U46 · U68 加了时限 · 设计「离开、停止与异常退出」）。
+   *
+   * 第一下**不退出**，只把那一行挂上（`HINT_EXIT_ARMED`）**并起 1.5 秒的钟**；
+   * 钟内再按一下才放行。两条清理由：
+   * - **到点**（`armExit` 里那支钟）——那一行自己撤，再按是**新的一次**；
+   * - **任何别的输入**（`key` 兜着，见那一处）——用户又不想走了。
+   *
+   * 两者都收在 `disarmExit` 一处——「那一行还在不在」与「那一下算不算数」是**同一格**，
+   * 两处各清各的迟早分开（只撤了行、监听还挂着，就会「看不见那一行却一按就退」）。
    */
   const exitOrInterrupt = (): ShellEffect => {
     if (interruptPending()) {
       // ⚠️ **中断不是「第二次按」**：它是另一件事（这一轮在跑），故那一道门当场撤掉——
       //    不然「按一次挂上 → 干了点别的（比如提交了一句话）→ 再来一下」会直接退出。
-      if (view.exitArmed) commit({ ...view, exitArmed: false })
+      disarmExit()
       return NONE
     }
 
     if (!view.exitArmed) {
-      commit({ ...view, exitArmed: true })
+      armExit()
       return NONE
     }
 
+    // 第二下（在钟内）——放行。钟随这一下收掉：退出之后它再烧一次只是白叫醒一个没人看的屏。
+    stopExitClock()
     return EXIT
   }
 
@@ -2678,8 +2741,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 不再为真的话，再按一下还会走。`ctrl+c` 那一支不走这里：它自己管（第一下挂上、
     // 第二下走），故那一下不会被自己的清理抹掉。
     //
+    // ⚠️ **钟也一起收**（U68）：只撤行、不收钟的话，那支钟到点还会把**后来重新挂上的**
+    //    那一次误撤掉（`disarmExit` 一处管两件）。
+    //
     // ⚠️ 先 `commit` 再往下走：`view` 是本闭包里的 `let`，下面各支读到的就是清过的那一份。
-    if (view.exitArmed && input.kind !== 'ctrl+c') commit({ ...view, exitArmed: false })
+    if (input.kind !== 'ctrl+c') disarmExit()
 
     // **本地小输入开着的时候，键归它**（U41）——但 `ctrl+c` 是全局的（空闲＝退出、
     // 工作中＝中断），故它照旧落下去走 `exitOrInterrupt`：一条本地小输入不该把退出挡住。
@@ -3587,6 +3653,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       disposed = true
       if (pending !== undefined) clearTimeout(pending)
       pending = undefined
+      // 「再按一次」那道门的钟（U68）——收摊之后它再来一下只是白叫醒一个没人看的屏
+      stopExitClock()
       unsubscribeTransport()
       watchers.clear()
     },
