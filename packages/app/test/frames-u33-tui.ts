@@ -25,15 +25,18 @@
  * bun packages/app/test/frames-u33-tui.ts --out <目录>
  * ```
  *
- * 出九屏：`01-技能列表`（项目/用户同名 · 原生/兼容 · 软链接 · 配置点名）·
+ * 出的那十几屏：`01-技能列表`（项目/用户同名 · 原生/兼容 · 软链接 · 配置点名）·
  * `02-选定之后`（草稿那一行）· `03-提交之后`（回执）· `04-取消`（`esc` 不留痕迹）·
- * `05-移除技能`（保留正文）· `06-来源失效`（保稿）· `07-窄窗`·`08-内置同名`·`09-切会话`。
+ * `05-清草稿`· `06-来源失效`（保稿）· `07-窄窗`·`08a-内置-model`·`08b-同名技能`·
+ * `11-窄窗长名`·`12-选定之前`·`13-补全之后接着打`·**`14-恢复之后`**（`--session` 接续）·
+ * `15-宽窗长名`。
  */
 
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createUiSession } from './ui/index.ts'
+import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
 import type { Capture, UiSession } from './ui/index.ts'
+import { readDatabase } from './support.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
 /** 一条判据的结论——**不过就当场抛**（留帧装置不是「看看而已」，判据得咬人）。 */
@@ -555,27 +558,110 @@ async function keepCaret(out: string, configured: string): Promise<void> {
   }
 }
 
-// ══ ⑬ 真 `--session <id>` 恢复：**整节删掉，另报**（2026-09-24 · U51）═══════
+// ══ ⑬ 真 `--session <id>` 恢复（U33 立、U51 摘、U53 挂回来）════════════
 
 /**
- * 本节原判：第一程发一条带技能的交代、落账、退出；第二程拿那条会话 id 接续，
- * 屏上该认得出那条消息。**今天它判不了**——第二程**记录区一个字都不铺**：
+ * 第一程发一条**带技能的**交代、落账、退出；第二程拿那条会话 id 接续，屏上该认得出
+ * 那条消息——**连同它的技能来源**。
  *
- * - 屏上只有字标 ＋ 分隔线 ＋ 输入行 ＋ 状态行（`raw.bin` 一共 2208 字节，不含任何正文）；
- * - 状态行**认得出那条会话**（`○ 空闲 · /pdf 把这份 PDF 处理一下`——标题就是首句），
- *   说明**装载那一步是成的**，缺的是**记录区没重建**；
- * - **与技能无关**：另用一条纯文字的交代复跑，同样一个字都不铺
- *   （`bun <探针>` 真跑现场见回报「未解决限制」）。
+ * ## 它为什么被摘掉过（U51 · 2026-09-24）
  *
- * ⚠️ **不是本单弄坏的**：U51 一行产品代码都没动（本单是研发设施），驱动这一侧改的是
- * 等待锚、帧抬头与起手那道闸。**但也不能当作「基线同款」就此放过**——
- * 这看着像一处**产品缺陷**（`magic --session <id>` 是 README 里写着的接续入口），
- * 故本节**整节删掉**、**在回报里点名**，不在这儿留一条红的或一条假装能过的判据
- * （`研发/界面验收工具`：别让「看起来有覆盖」的摆设留着）。
+ * 第二程**记录区一个字都不铺**（`raw.bin` 2208 字节、不含正文；状态行照旧认得出那条会话，
+ * 因为标题是从 `session.list` 那一跳来的）⇒ 本节一条判据都判不了。U51 一行产品代码没动，
+ * 判它是**产品缺陷**并整节摘掉、在回报里点名（`研发/界面验收工具`：别让「看起来有覆盖」
+ * 的摆设留着）——那一处缺陷即 **D33**。
  *
- * 要接着查它，从这儿起步：`records.domain` 里那条会话的条目取不取得到，
- * 与外壳的 `readHistory()` 挂在哪一跳上。
+ * ## 挂回来时改了两处（U53）
+ *
+ * 1. **选定技能那一步的等待锚**：原判等的是草稿材料行的 `（待发送）`——U36 起那一行没了
+ *    （引用就写在正文里）。今天选定之后屏上出现的是**草稿里那个引用**（`› /pdf`），
+ *    故等它。⚠️ 接下去打正文要**先隔一个空格**：插入点落在引用末尾，紧着打会与它黏成
+ *    一个词，那一下被当成命令（实测：`/pdf把这份` ⇒ 「不认得的命令」）。
+ *    （记录区那一行来源的写法没变，仍是 `技能：pdf · 项目 .magic/skills`。）
+ * 2. **两扇窗共用一块沙地**：原判拿 `config: { dataDir }` 让两个**各起一块**沙地的窗口
+ *    落到同一条数据目录上——U48 之后不行了：运行目录按「基础目录 ＋ dataDir 指纹」算，
+ *    两个 HOME 就是两个管理者，而「同一 dataDir 只有一个管理者」是设计的明文。
+ *    故借**同一块沙地**（同一位管理者、同一条数据目录），与 `frames-u49-tui.ts` 同形。
+ *
+ * ## 它比「铺出来了」多判的那一件
+ *
+ * **来源读的是记录里那一份，不是重新读盘**：第二程起来之前把技能目录**从盘上撤掉**——
+ * 屏上那一行来源若还在，只可能来自记录（材料是动态的，重读会拿到今天的，冒充当时那一份）。
  */
+async function restored(out: string, configured: string): Promise<void> {
+  const runs = join(out, 'runs')
+  const fixture = startFixture({ turns: [{ kind: 'text', text: '照它做，先数页数。' }] })
+  const sandbox = createSandbox({
+    baseURL: fixture.baseURL,
+    config: { skills: { sources: [configured] } },
+  })
+  const windows: UiSession[] = []
+
+  try {
+    // —— 第一程：一条带技能的交代 ——
+    const first = await createUiSession({ label: 'u33-恢复-第一程', artifacts: runs, sandbox, fixture })
+    windows.push(first)
+
+    putCatalog(first, configured)
+    await openDrawer(first)
+    await first.key('down') // 头一行是 `audit`；选「项目那一份 pdf」（与正文对得上）
+    // ⚠️ **选定之后屏上出现的是草稿里那个引用**（U36 起：材料行没了，引用就写在正文里）——
+    //    故等的是它，不是原判那个 `（待发送）`（那是草稿材料行的写法，已经不存在了）
+    await first.key('enter', { until: { text: '› /pdf' }, timeoutMs: 5_000 })
+    // ⚠️ **头一个字符是空格**：引用是插在插入点上的（插入点落在引用**末尾**，见 U33 的
+    //    「字插在原位」那一节）——紧接着打字会与它黏成一个词，那一下被当成命令
+    //    （实测：`/pdf把这份` ⇒ 「不认得的命令」）。
+    await typeLine(first, ' 把这份 PDF 处理一下')
+    await first.key('enter', { until: { text: '照它做，先数页数。' }, timeoutMs: 15_000 })
+    // **等它闲下来再收**——忙的时候 `ctrl+c` 是中断不是退出，助手那条就落不了账
+    // （实测：收早了，恢复出来只剩用户那句、答复没了）
+    await close(first)
+    windows.length = 0
+
+    let id = ''
+    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+    try {
+      id = db.sessions[0]?.id ?? ''
+      check(id !== '', '第一程落下了一条会话（记录库直读）')
+      check(db.entries.length >= 2, '第一程的条目落了账（用户 ＋ 助手）')
+    } finally {
+      db.close()
+    }
+
+    // ⚠️ **把技能从盘上撤掉**（项目与用户两处）——第二程那一行来源只可能来自记录
+    for (const root of [sandbox.workspace, sandbox.home]) {
+      rmSync(join(root, '.magic', 'skills'), { recursive: true, force: true })
+    }
+
+    // —— 第二程：拿那条 id 起来 ——
+    const second = await createUiSession({
+      label: 'u33-恢复-第二程',
+      artifacts: runs,
+      sandbox,
+      fixture,
+      argv: ['--session', id],
+    })
+    windows.push(second)
+
+    await second.wait({ text: '把这份 PDF 处理一下' }, { timeoutMs: 20_000 })
+    // 历史**分块推**——用户那句在第一块就可能到了，助手那句在后头；等齐了再取帧
+    await second.wait({ text: '照它做，先数页数。' }, { timeoutMs: 20_000 })
+    const shot = await second.capture({ label: '14-恢复之后' })
+    keep(out, shot, '14-恢复之后')
+
+    check(has(shot, '把这份 PDF 处理一下'), '恢复出了那条交代的正文')
+    check(has(shot, '技能：pdf · 项目 .magic/skills'), '**技能来源也在**（盘上已经撤掉，只可能来自记录）')
+    check(has(shot, '照它做，先数页数。'), '助手那句也重建回来了（历史是整段铺的）')
+    check(!has(shot, '本次使用技能'), '**不伪造使用回执**（那是当时的事，恢复不重放）')
+
+    await close(second)
+    windows.length = 0
+  } finally {
+    for (const window of windows) await window.close().catch(() => {})
+    await fixture.stop()
+    sandbox.dispose()
+  }
+}
 
 /**
  * 收摊——**看它是自己走的还是被杀的**（`exit.by`）。
@@ -627,6 +713,7 @@ if (import.meta.main) {
     await narrowLongName(out, configured)
     await wideLongName(out, configured)
     await keepCaret(out, configured)
+    await restored(out, configured)
     console.log(`\n全部判据通过。帧落在 ${out}`)
   } finally {
     removeDir(configured)
