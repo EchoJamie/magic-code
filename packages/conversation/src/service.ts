@@ -117,6 +117,37 @@ export type ConversationDeps = {
    * 缺省＝不知道：带图照发，请求真失败再如实报错（见 `LoopRuntime.acceptsImages`）。
    */
   readonly acceptsImages?: (() => boolean | undefined) | undefined
+  /**
+   * **这一条交代此刻发得出去吗**（U60）——发不出去就回一句**给人看的话**
+   * （`undefined` ＝发得出去）。
+   *
+   * 由装配给（「有没有可走的连接」是它那一层的账，本域不认识供应商）。用途只有一个：
+   * **压根没有可走的模型时**，在落账之前把这一条拦下来——不给它开一轮、
+   * 不落 `user` 条目、屏上不出现「工作中」（见 `LoopRuntime.submitRefusal`）。
+   *
+   * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
+   */
+  readonly submitRefusal?: (() => SubmitRefusal | undefined) | undefined
+}
+
+/**
+ * **一条交代被拦下来的结论**（U60）——为什么，以及那一份稿子怎么处置。
+ *
+ * 形态定在这儿（而不是主循环那一边）：它是**构造入参**的一部分，而本文件就是入参形态的
+ * 落点（见 `index.ts` 那张表；`LoopRuntime` 只是它的一个视图，用 `import type` 取）。
+ */
+export type SubmitRefusal = {
+  /** **为什么**——给人看的一句话（本域一个字都不加工，原样落进 `input.settled.reason`）。 */
+  readonly reason: string
+  /**
+   * **这一份草稿还回输入行吗**——缺省还（U33 起的老规矩：没送出就不丢稿）。
+   *
+   * `false` 只有一个由头：**下一步要敲的是一条命令**（还没接供应商时得先去
+   * `/model connect`）——稿子还回输入行的话，那条命令会接在稿子尾巴上
+   * （`你好/model connect`），成了一句谁也不认的话。稿子**不丢**：它在 `↑` 历史里
+   * （`sendInput` 交出去那一刻就记下了），故这儿的取舍是「换个地方放着」，不是「丢掉」。
+   */
+  readonly keepDraft?: boolean
 }
 
 /**
@@ -247,6 +278,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     skills,
     refs,
     acceptsImages: deps.acceptsImages,
+    submitRefusal: deps.submitRefusal,
   }
 
   /**

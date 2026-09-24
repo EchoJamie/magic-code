@@ -940,9 +940,9 @@ export function assemble(options: AssembleOptions): Assembly {
    * 返回一句给人看的话（没成时）或 `undefined`（成了 / 本来就没有）。
    * ⚠️ 它清的是**旧身份**那一份：范围隔离之下，新范围那份本来就与它互不相干。
    */
-  /** 两句回话合成一句（都没有 ⇒ `undefined`，答复里就不带 `note`）。 */
-  const twoNotes = (first: string | undefined, second: string | undefined): string | undefined => {
-    const parts = [first, second].filter((one): one is string => one !== undefined)
+  /** 几段回话合成一句（一段都没有 ⇒ `undefined`，答复里就不带 `note`）。 */
+  const twoNotes = (...said: readonly (string | undefined)[]): string | undefined => {
+    const parts = said.filter((one): one is string => one !== undefined)
     return parts.length === 0 ? undefined : parts.join('；')
   }
 
@@ -1225,6 +1225,25 @@ export function assemble(options: AssembleOptions): Assembly {
       // 用户中途换了模型，下一轮就该按新模型判（抓一份快照会让它一直按开局那个模型说事）。
       // ⚠️ **`models` 缺席**（替身网关 / 用例）⇒ `undefined`＝**不知道**——照发，
       // 请求真失败再如实报错（见 `LoopRuntime.acceptsImages` 那三态）。
+      // **只要一条连接都没接（或接了没选走哪个），这一条交代就发不出去**（U60）——
+      // 拦在对话域**落账之前**：不开轮、不落条目、屏上也不先闪一下「工作中」。
+      //
+      // 由头：新用户在 0 供应商时发一句，今天会先把那一轮**装模作样地开起来**
+      // （状态行「● 工作中」、消息已上屏），再报一句模型错——「装作在跑」比不报更坏。
+      //
+      // ⚠️ **读的是 `models?.current()`**（此刻真会走的那个），**不是** `defaultProviderId`：
+      // 用户在会话里切换过模型时后者还是配置里那条旧的——照它判会把**发得出去**的那一条
+      // 也拦下来。`models === undefined`（替身网关 / 用例）⇒ `hasModel` 真 ⇒ **不拦**
+      // （那一头压根没有供应商可查，与 `acceptsImages` 的「不知道就照发」同一条口径）。
+      submitRefusal: () => {
+        const reason = noModelRefusal({
+          connections: Object.keys(providerBook).length,
+          hasModel: models === undefined || models.current() !== undefined,
+        })
+        // ⚠️ **这一条被拦下时稿子不还回输入行**：下一步要敲的是 `/model connect`
+        // 那条命令，稿子挡在输入行上它就会接在稿子尾巴上（见 `SubmitRefusal`）。
+        return reason === undefined ? undefined : { reason, keepDraft: false }
+      },
       acceptsImages: currentAcceptsImages,
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
       // 对话域只出重建面（`ConversationService.rebuild`）。见下 `actions`。
@@ -1876,18 +1895,23 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /**
-   * **移除一条连接**（U41）——**不静默级联**（设计：「有引用先替换或取消」）。
+   * **移除一条连接**（U41）——**任何时候都允许**（U60 起：当前那条也删得掉）。
    *
-   * 拦在装配这一层的是「**正在用的那条**」：那是本次装配的实况（`current()`），
-   * 配置层拦的是「它是默认」（那在文件里）。两处各拦一半，合起来才是「有引用先处理」。
+   * 原先这里拦「正在用的那条」（`models?.current()?.provider === provider`），由头是
+   * 「不静默级联（有引用先替换或取消）」。那条**不需要靠禁止来满足**，而且它把新用户
+   * 关在门外：**只有一条连接时没别的可切 ⇒ 永远删不掉**——第一次接错 key、接错家，
+   * 就出不去了。删掉之后「当前」自然回到**没有**（重组时它自己回 `undefined`），
+   * 那是个**本来就存在**的状态（0 供应商时正是它），外壳当场报「先选模型」。
+   *
+   * 两条分寸：
+   * - **收拾引用**：删的是缺省那条就一并清掉（配置文件那一半在 `config-save.ts`，
+   *   内存这一半在下面）——那是一个指向已删对象的死引用，**不是级联**；
+   * - **不悄悄换到另一条**：`rebuildRegistry` 只把**原来那个**选择搬回去，搬不回就留空
+   *   ——**绝不顺手替用户挑一个**（那才是设计要防的「静默级联」）。
+   *
    * 已发生的记录不随移除而删除（那是记录域的事，本命令碰都不碰）。
    */
   const removeProviderCommand = async (provider: string): Promise<void> => {
-    if (models?.current()?.provider === provider) {
-      listProviders(`「${provider}」正在用——先换到别的连接再移除它`)
-      return
-    }
-
     // **被移除那条的**身份——同样要**在改动之前**算
     const removed = providerBook[provider]
     const removedTarget =
@@ -1914,7 +1938,13 @@ export function assemble(options: AssembleOptions): Assembly {
     const cleared = await dropCacheQuietly(removedTarget)
 
     const rebuilt = rebuildRegistry()
-    listProviders(twoNotes(rebuilt.ok ? undefined : rebuilt.reason, cleared))
+    // **当场说清**（U60）——删的要是**当前那条**，用户此刻已经没有可走的模型了：
+    // 不说，他就得自己发一句撞一次才发现。说的仍是**同一份话**（`noModelAdvice`）。
+    const note = providerRemovedNote(provider, {
+      connections: Object.keys(providerBook).length,
+      hasModel: models === undefined || models.current() !== undefined,
+    })
+    listProviders(twoNotes(note, rebuilt.ok ? undefined : rebuilt.reason, cleared))
   }
 
 
@@ -2109,6 +2139,88 @@ export function mcpNoticesOf(
   }
 
   return said
+}
+
+/**
+ * **还没接供应商 / 还没选好走哪个模型**（U60）——「此刻发不出去」那一句话的**唯一出处**。
+ *
+ * 三处念的是同一件事（起手那一句 · 提交被拦 · 删掉当前那条之后的回执），故 **copy 只写
+ * 这一份**：各写一份的话，同一条事实迟早在三处说成三样（`mcpNoticesOf` 那条注同理）。
+ *
+ * 说的是**三件**（工单原话）：**缺什么**（还没接供应商 / 还没选好走哪个模型）·
+ * **怎么接**（敲哪条命令）· **在哪儿**（哪一屏）。
+ *
+ * ⚠️ **两句不是一个模子刻的**：缺的东西不一样，下一步也不一样。合成一句就得含糊
+ * ——「还没有可用的模型」那种话对**一条都没接**的人（该去接）与**接了没选**的人
+ * （该去挑）是两条路。
+ *
+ * `undefined` ＝**发得出去**（接好了也选好了）。
+ */
+export function noModelAdvice(input: {
+  /** 配好的连接条数（**不是**「缺省是谁」——两者答的是不同的问题）。 */
+  readonly connections: number
+  /** 此刻真会走的那一条定下来了没有（注册表的 `current()`，不是配置里的缺省）。 */
+  readonly hasModel: boolean
+}): string | undefined {
+  if (input.hasModel) return undefined
+  if (input.connections === 0) return '还没有接上供应商——敲 /model connect 接一条'
+
+  return '还没有选好走哪个模型——敲 /model 挑一个'
+}
+
+/**
+ * **起手那一句**（U60）——开局第一次贴进记录区。
+ *
+ * 比 `noModelAdvice` 多一件：**在哪儿**（工单要的三件是「缺什么 · 怎么接 · 在哪儿」）。
+ * 报的是 `/model` 那一屏里**真有的那一行**（`连接供应商`——`view.ts` 的 `modelActionRows`
+ * 钉死的第一行）：用户照这句敲下去，看见的就是它，一个字都不必猜。
+ */
+export function noModelNotice(input: {
+  readonly connections: number
+  readonly hasModel: boolean
+}): string | undefined {
+  const advice = noModelAdvice(input)
+  if (advice === undefined) return undefined
+
+  return input.connections === 0 ? `${advice}（/model 那一屏第一条就是它）` : advice
+}
+
+/**
+ * **提交被拦那一句**（U60）——「没送出：」后面接的就是它。
+ *
+ * 比 `noModelAdvice` 多一件：**稿子去哪儿了**。这一条没送出去，而稿子**不还回输入行**
+ * （下一步要敲的是一条命令，稿子挡在那儿那条命令就接在它尾巴上了，见
+ * `input.settled` 的 `restoreDraft`）——不说一声，用户会以为打的那一段没了。
+ */
+export function noModelRefusal(input: {
+  readonly connections: number
+  readonly hasModel: boolean
+}): string | undefined {
+  const advice = noModelAdvice(input)
+  if (advice === undefined) return undefined
+
+  return `${advice}（原稿在 ↑ 里）`
+}
+
+/**
+ * **删掉一条连接之后的回执**（U60）——「当场说清」那一句。
+ *
+ * 两形：
+ * - **还有得走**（删的不是当前那条）⇒ 只报**刚发生的事**（哪条断了）；
+ * - **没得走了**（删的正是当前那条 · 或它是最后一条）⇒ 报事 ＋ **此刻是什么状态、
+ *   下一步去哪儿**——`noModelAdvice` 那句**一字不改地**接在逗号后面（同一条事实
+ *   在两处说成两样，正是 `mcpNoticesOf` 那条注要防的）。
+ *
+ * ⚠️ **不写「已换成 XXX」**：移除**不替用户挑**（见 `removeProviderCommand`）。
+ * 这一句只说实况，一个字都不编。
+ */
+export function providerRemovedNote(
+  provider: string,
+  state: { readonly connections: number; readonly hasModel: boolean },
+): string {
+  const advice = noModelAdvice(state)
+
+  return advice === undefined ? `「${provider}」已断开` : `「${provider}」已断开，${advice}`
 }
 
 function noticesOf(

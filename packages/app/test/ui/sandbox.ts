@@ -24,6 +24,7 @@
 
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { CONFIG_FILE_NAME, MAGIC_DIR } from '@magic/contracts'
 import { removeDir, tempDir, validConfig, writeConfig } from '../tmp.ts'
 import { MAGIC_ANCHORS } from './anchors.ts'
 import type { UiAnchors } from './driver.ts'
@@ -70,6 +71,19 @@ export type SandboxOptions = {
   readonly forceColor?: string
   /** 配置里额外加的键（如 `permissions.rules`）。 */
   readonly config?: Record<string, unknown>
+  /**
+   * **这一趟有没有接供应商**（U60）——「0 供应商」那一形原先造不出来。
+   *
+   * - `'local'`（缺省）：合成那一条（见文件头注）——**既有场景走的就是它，一字不动**；
+   * - `'none'`：**干净机器那一形**——配置文件**根本不落**。加载器对「文件不在」走的是
+   *   ENOENT 那一支（`config.ts` 的 `loadConfig`：首次运行就是这样），读成
+   *   `{ providers: {} }`；于是整条路上一个供应商都没有，而**什么都没被合成出来**。
+   *
+   * 为什么是「不落文件」而不是「落一份 `{}`」：两者加载结果相同（`dataDir` 都回落到
+   * 基础目录），但**文件不在**才是用户那台干净机器的原样——`config-save` 那条保存路
+   * （接入时创建它）也才跟着一起被验到。见 `dataDir` 那一处的注。
+   */
+  readonly provider?: 'local' | 'none'
 }
 
 /**
@@ -81,29 +95,40 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
   const root = tempDir('magic-u40-')
   const home = join(root, 'home')
   const workspace = join(root, 'ws')
-  const dataDir = join(root, 'data')
+  const configPath = join(home, MAGIC_DIR, CONFIG_FILE_NAME)
+  /**
+   * **0 供应商那一形**（U60）——配置文件不落，`dataDir` 也就没有那一行可读。
+   *
+   * 于是它**只剩一个来源**：加载器给空配置补的那一个（`magic.base` ＝ `$HOME/.magic`）。
+   * 这里照实跟它对齐（不是「随手挑一个」）：`SessionFacts.dataDir`、产物档案、以及
+   * 用例里直接读库那几条，看的是**同一个数**——不然用例会去一个空目录里找记录库，
+   * 而它当场读成「什么都没发生」。
+   */
+  const bare = options.provider === 'none'
+  const dataDir = bare ? join(home, MAGIC_DIR) : join(root, 'data')
 
-  let configPath: string
   try {
-    for (const dir of [join(home, '.magic'), workspace, dataDir]) mkdirSync(dir, { recursive: true })
+    for (const dir of [join(home, MAGIC_DIR), workspace, dataDir]) mkdirSync(dir, { recursive: true })
 
     // `writeConfig(dir, …)` 把 `config.json` 写进那个目录——故给它 `$HOME/.magic/`
-    configPath = writeConfig(
-      join(home, '.magic'),
-      validConfig({
-        defaultProvider: 'local',
-        providers: {
-          local: {
-            baseURL: options.baseURL ?? DEAD_BASE_URL,
-            apiKey: FAKE_API_KEY,
-            model: options.model ?? 'MiniMax-M3',
+    if (!bare) {
+      writeConfig(
+        join(home, MAGIC_DIR),
+        validConfig({
+          defaultProvider: 'local',
+          providers: {
+            local: {
+              baseURL: options.baseURL ?? DEAD_BASE_URL,
+              apiKey: FAKE_API_KEY,
+              model: options.model ?? 'MiniMax-M3',
+            },
           },
-        },
-        // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿
-        dataDir,
-        ...options.config,
-      }),
-    )
+          // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿
+          dataDir,
+          ...options.config,
+        }),
+      )
+    }
   } catch (error) {
     // 半成品沙地由**创建者**自己删——抛出去之后没人知道这块目录落在哪儿
     removeDir(root)

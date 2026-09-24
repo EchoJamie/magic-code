@@ -179,7 +179,13 @@ describe('拒写的两种情形', () => {
 })
 
 describe('移除与设为默认', () => {
-  test('移除**不静默级联**：默认指着它时拒绝', () => {
+  /**
+   * U60 · **任何时候都删得掉**（含当前那条）。
+   *
+   * 原先默认指着它时拒绝——那条把新用户关在门外（只有一条连接时没别的可切 ⇒ 永远删不掉）。
+   * 删掉之后的状态本来就存在（0 供应商就是它），故**收拾引用**即可，不必禁止。
+   */
+  test('删**当前默认**那条：删得掉，且 `defaultProvider` 一并清掉', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
@@ -187,14 +193,50 @@ describe('移除与设为默认', () => {
         providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } },
       })
 
-      const refused = removeProvider({ path, provider: 'a' })
-      expect(refused.ok).toBe(false)
-      expect(refused.ok === false && refused.reason).toMatch(/先换一个默认/)
-      // 两条都还在
-      expect(Object.keys(PROVIDERS_OF(path))).toEqual(['a', 'b'])
+      expect(removeProvider({ path, provider: 'a' })).toEqual({ ok: true })
+      // 那条没了，默认**也不留一个指向已删对象的死引用**
+      expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
+      expect(READ(path)['defaultProvider']).toBeUndefined()
+      // 同一把尺子读回来：一次配置加载应当接受它（死引用会让它当场报错）
+      expect(loadConfig({ path, magic: magicAt(dir) }).providerId).toBeUndefined()
+      // ⚠️ **没悄悄换到 b**——剩下的那条原样在，但**没被扶正**
+      expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
 
-      // 不是默认的那条照删
+      // 不是默认的那条照旧删得掉
       expect(removeProvider({ path, provider: 'b' })).toEqual({ ok: true })
+      expect(Object.keys(PROVIDERS_OF(path))).toEqual([])
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  test('删**最后一条**（它同时是默认）：删得掉——删到空是一条正经状态', () => {
+    const dir = tempDir('magic-save-')
+    try {
+      const path = writeConfig(dir, {
+        defaultProvider: 'only',
+        providers: { only: { vendor: 'deepseek' } },
+      })
+
+      expect(removeProvider({ path, provider: 'only' })).toEqual({ ok: true })
+      expect(READ(path)).toEqual({ providers: {} })
+      // 空配置**读得回来**（U41 起 `providers` / `defaultProvider` 都可缺）
+      const loaded = loadConfig({ path, magic: magicAt(dir) })
+      expect(loaded.providerId).toBeUndefined()
+      expect(Object.keys(loaded.config.providers)).toEqual([])
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  test('没有那条连接：照旧拒（这不是「删得掉删不掉」的事，是它压根不在）', () => {
+    const dir = tempDir('magic-save-')
+    try {
+      const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } } })
+
+      const refused = removeProvider({ path, provider: 'nope' })
+      expect(refused.ok).toBe(false)
+      expect(refused.ok === false && refused.reason).toMatch(/没有「nope」这条连接/)
       expect(Object.keys(PROVIDERS_OF(path))).toEqual(['a'])
     } finally {
       removeDir(dir)
