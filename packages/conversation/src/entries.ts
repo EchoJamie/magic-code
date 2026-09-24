@@ -7,7 +7,7 @@
  * | kind | 正文（`content`） | 载荷（`payload`） |
  * | --- | --- | --- |
  * | `user` | **用户的话**（超阈值转 blob） | ——，或随这次交代送出去的技能材料（U33） |
- * | `assistant` | 正文（超阈值转 blob） | —— |
+ * | `assistant` | 正文（超阈值转 blob） | ——，或供应商要求回传的那份思考（U41：`{ reasoning }`，没思考就整个键不写） |
  * | `tool-call` | 空 | `{ name, args }`——**重放真源** |
  * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物；读技能的那件另带交付身份（U33） |
  * | `summary` | 摘要全文（超阈值同样转 blob） | ——（阶段 3 压缩的产物，见 `./compact.ts`） |

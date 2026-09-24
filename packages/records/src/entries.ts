@@ -14,6 +14,7 @@
  */
 
 import type {
+  AssistantPayload,
   Content,
   Entry,
   EntryKind,
@@ -59,7 +60,14 @@ export type ToolResultEntry = Entry & {
  * | `tool-call` | **必须有** `{ name, args }` |
  * | `tool-result` | **必须有** `{ ok, output }` |
  * | `user` | **可有**（U33 起：随这次交代送出去的技能材料；U36 起：带位置的引用）；不带＝纯文本交代 |
- * | 其余 | **必须没有** |
+ * | `assistant` | **可有**（U41 起：供应商要求回传的那份思考）——**核准形状只有 `{ reasoning: string }`** |
+ * | 其余（`summary`） | **必须没有** |
+ *
+ * ⚠️ **`assistant` 那一格是 U64 补的**：U41 落了「思考进载荷」这条写入路径，而这张表
+ * 还写着「其余必须没有」——于是**真实供应商第一次返回思考**时，那一轮的回复在收尾落账
+ * 那一步当场抛掉（模型回完了，话却没落下来）。**由头是成立的**（那份思考是重放真源：
+ * DeepSeek 带 tools 时不回传就 400），错的是这张表没跟上。
+ * **开的只是一格，不是把门拆了**——别的形状照拒（见 `isAssistantPayload`）。
  *
  * **`user` 那一格是「只增不改」的落点**：加它之前落在库里的条目一条都不动
  * （没有载荷的 `user` 条目照读照认），而**没有材料的交代照样不带载荷**——
@@ -99,10 +107,23 @@ export function assertEntryShape(entry: NewEntry): void {
     return
   }
 
+  if (entry.kind === 'assistant') {
+    if (entry.payload !== undefined && !isAssistantPayload(entry.payload)) {
+      throw new Error(
+        'assistant 条目的载荷只装**供应商要求回传的那份思考**——核准形状只有 `{ reasoning: ' +
+          'string }` 这一形（U41：DeepSeek 带 tools 时要求历史轮的 `reasoning_content` 原样' +
+          '回传，不回则 400——故它是重放真源）。没有思考就**不写这个键**（不是写个空对象）：' +
+          '载荷是重放真源，不是杂物抽屉',
+      )
+    }
+    return
+  }
+
   if (entry.payload !== undefined) {
     throw new Error(
-      `条目 kind=${entry.kind} 不带载荷——载荷只有工具条目与 user 条目有（技术方案 · 记录 · 条目：` +
-        `tool-call＝名 + 参数 · tool-result＝ok / error + 输出 · user＝随它送出去的技能材料）`,
+      `条目 kind=${entry.kind} 不带载荷——载荷只有工具条目、user 条目与 assistant 条目（思考）` +
+        `有（技术方案 · 记录 · 条目：tool-call＝名 + 参数 · tool-result＝ok / error + 输出 · ` +
+        `user＝随它送出去的技能材料 · assistant＝供应商要求回传的那份思考）`,
     )
   }
 }
@@ -186,6 +207,25 @@ export function isPlanNote(value: unknown): value is PlanNote {
 /** 步骤状态——词表就是那三格（`PlanStepStatus` 的运行时对照）。 */
 export function isPlanStepStatus(value: unknown): boolean {
   return value === 'pending' || value === 'in_progress' || value === 'completed'
+}
+
+/**
+ * `assistant` 条目的载荷（U64 · U41 那一份思考）——**只认 `{ reasoning: string }` 这一形**。
+ *
+ * 两条判据，缺一不可（与 `isUserPayload` 同一姿势）：
+ * - **只许这一个键**——多一个键当场拒。这正是「kind 与载荷强对应」这道硬闸在
+ *   `assistant` 这一格上的形态：**放行一种形状，不是放行一切形状**；
+ * - **`reasoning` 必在且是字符串**——空对象（`{}`）不算「带了点东西」，它是
+ *   「没有载荷」写错了地方（同 `isUserPayload` 末尾那条注）。
+ *
+ * **不查内容**：不查字数、不查有没有换行、不查是不是「像思考」——那一份是模型的原话，
+ * 记录域只如实留痕（「留痕」这条纪律见 `AssistantPayload` 那条注）。
+ */
+export function isAssistantPayload(payload: unknown): payload is AssistantPayload {
+  if (!isRecord(payload)) return false
+  if (Object.keys(payload).some((key) => key !== 'reasoning')) return false
+
+  return typeof payload['reasoning'] === 'string'
 }
 
 export function isContent(value: unknown): value is Content {
