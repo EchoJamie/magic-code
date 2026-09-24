@@ -14,6 +14,7 @@
 import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import type {
+  AssistantPayload,
   Entry,
   EventDataOf,
   EventEnvelope,
@@ -340,6 +341,40 @@ describe('判据 1 · 落取回环', () => {
       for await (const entry of records.readEntries(SESSION)) back.push(entry)
       // **两形各归各位**：图片那一份与技能那一份都原样回来（次序即写入序）
       expect(back.map((entry) => entry.payload)).toEqual([image, material])
+
+      // U64：`assistant` 那一格**开**了——但开的是**一格**，不是「随便什么都能放」。
+      //
+      // 由头（U41）：DeepSeek 的思考模式在带 tools 时要求把历史轮的 `reasoning_content`
+      // 原样回传（不回则 400）——那份思考**确实是重放真源**，故它在表里该有位置。
+      // ⚠️ **核准的只有这一形**：`{ reasoning: string }`。这条表仍是「重放真源」，
+      // 不是杂物抽屉——多一个键、换个类型、给个空对象，**一条都不放行**。
+      const reasoning = { reasoning: '先看清路径再动手' }
+      records.appendEntry({ kind: 'assistant', content: { text: '看完了' }, at, payload: reasoning })
+      // 不带载荷的 `assistant` 照旧（**既有条目一字不动**：旧写入路径产出的行与新路径逐字同形）
+      records.appendEntry({ kind: 'assistant', content: { text: '没有思考的一轮' }, at })
+
+      for (const broken of [
+        { foo: 1 }, // 别的东西——载荷不是杂物抽屉
+        {}, // 空载荷＝「没有载荷」写错了地方（与 `user` 那条同一姿势）
+        { reasoning: 3 }, // 形状不对：那一格是**文字**
+        { reasoning: '想过了', extra: 1 }, // 多带一位：只许 `reasoning` 这一个键
+      ]) {
+        expect(() =>
+          records.appendEntry({
+            kind: 'assistant',
+            content: { text: '看完了' },
+            at,
+            payload: broken as unknown as AssistantPayload,
+          }),
+        ).toThrow(/assistant/)
+      }
+
+      // **读得回来**：那一份逐字一致；没载荷那条**一个键都不多**（两形分得开）
+      const afterAssistant: Entry[] = []
+      for await (const entry of records.readEntries(SESSION)) afterAssistant.push(entry)
+      const landed = afterAssistant.filter((entry) => entry.kind === 'assistant')
+      expect(landed.map((entry) => entry.payload)).toEqual([reasoning, undefined])
+      expect(landed.map((entry) => entry.content)).toEqual([{ text: '看完了' }, { text: '没有思考的一轮' }])
       expect(() =>
         records.appendEntry({
           kind: 'tool-result',

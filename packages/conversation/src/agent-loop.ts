@@ -70,6 +70,7 @@ import type {
 } from '@magic/contracts'
 import type { Compactor } from './compact.ts'
 import { DEFAULT_NEAR_ENTRIES, assembleContext } from './context.ts'
+import type { TextRefEntry } from './context.ts'
 import type { EntryLog, ToolOutcome } from './entries.ts'
 import {
   appendTextEntry,
@@ -284,24 +285,147 @@ export async function agentLoop(
     runtime.sink.emit(runtime.stamper.stamp('input.settled', { ref: input.ref, ok: true }))
   }
 
-  // **回执的兑现点**（收下 ＋ 用到的技能）——**按「这一次交代」记一份账，跨轮不重来**
+  // **回执的兑现点**（收下 ＋ **真读到的**技能）——**按「这一次交代」记一份账，跨轮不重来**
   // （见 `createAnnouncer`：首轮报过一次就不再报，工具轮再多也只有那一次）。
-  // 两形合在一处报：正文里的技能引用（U36）与旧形的 `skills`（U33）——**身份那一栏**
-  // （名字 ＋ 来源 ＋ 来源标签）两形都给得出，回执因此不分成两句。
-  const announce = createAnnouncer(runtime, [
-    ...legacy.used,
-    ...delivery.refs
-      .filter((ref): ref is Extract<InputRefEntry, { kind: 'skill' }> => ref.kind === 'skill')
-      .map((ref) => ({ name: ref.name, source: ref.source, label: ref.label })),
-  ])
+  //
+  // ⚠️ **只有旧形（无位置的 `skills`）预支在这里**（U63 改）：那些材料**随请求展开**
+  // （照旧统一摆在正文之前），故「送进了模型」当场成立。**正文里的技能引用（U36）不预支**——
+  // 它的送达方式改成了「模型按需自读」：引用了**不等于**看过了，只有模型真用 `skill` 工具
+  // 取回来、那一份进了下一趟请求，才谈得上「本次使用技能」（与「没读也要有痕迹」那一半
+  // 同源，见 `createMaterialWatch`）。
+  const announce = createAnnouncer(runtime, legacy.used)
+
+  // **这一轮引用了、却还没被读过的**（U63）——收束时报一声（见 `finish`）。
+  const watch = createMaterialWatch(delivery.refs)
 
   for (;;) {
     // 轮间中止——不再开新轮（「回到等待输入」）
-    if (signal.aborted) return 'aborted'
+    if (signal.aborted) return finish(runtime, watch, 'aborted')
 
-    const turn = await runTurn(runtime, signal, announce)
-    if (turn.reason !== 'settled' || !turn.continues) return turn.reason
+    const turn = await runTurn(runtime, signal, announce, watch)
+    if (turn.reason !== 'settled' || !turn.continues) return finish(runtime, watch, turn.reason)
   }
+}
+
+/**
+ * 收场那一句——**「引用了、却没被读过」要说出来**（U63 · 设计 2026-09-25 补的那半条）。
+ *
+ * 由头：文件 / 目录 / 技能的送达方式改成了「模型按需自读」，于是**「引用了」不等于
+ * 「看过了」**。只配「读了要说」（`skill.used` 那一条）不够：模型没读时那一轮结束
+ * **屏上什么也没有**，用户照样以为它看了。故收束时把没读到的那几份报出来。
+ *
+ * 报的是**这一份材料在交代里怎么写的**（`marker`：`@src/a.ts` / `/review`）——用户据它
+ * 认得出是哪儿处引用，不必再翻译一次。
+ *
+ * **收束才报**（不是每轮）：多轮工作里模型可能在后面才读，逐轮报会把同一件事说好几遍。
+ * 三种收场（收束 / 中止 / 出错）都报：那三种情形下屏上都会静下来，用户都会以为它读过了。
+ */
+function finish(runtime: LoopRuntime, watch: MaterialWatch, outcome: InputOutcome): InputOutcome {
+  const unread = watch.unread()
+  if (unread.length > 0) {
+    runtime.sink.emit(runtime.stamper.stamp('input.unread', { markers: unread }))
+  }
+
+  return outcome
+}
+
+/**
+ * **一次交代里「引用了、但没被读过」的那几份**（U63）。
+ *
+ * ## 认「读过」的判据是结构化的，不是比字符串
+ *
+ * 两处证据，各按各自的身份：
+ * - **技能**——工具结果上那一位 `skill.name`（`ToolResult.skill`，U33 起就有的那条通道）；
+ * - **文件 / 目录**——工具结果上的**落点**（`ToolResult.read`：已归位的真路径 ＋ 读多宽）。
+ *
+ * ⚠️ **为什么不让对话域拿模型的原话去比**：模型给的是相对写法（`src/login.ts`），
+ * 材料记的是真路径（`/ws/src/login.ts`）——中间那一步归位只有沙箱那一层做得对。
+ * 靠字符串比对的话，改个写法就认不出（错向「说它没读」——一句当场为假的话）。
+ *
+ * ## 只看那几份「自读」的
+ *
+ * 图片、以及工作区外那份只读附件**照旧引用即进**（它们的条目里带着正文）——
+ * 那几份随请求展开，没有「读没读」这回事，不进这份账。
+ *
+ * ## 一份材料被同一句话引用两次
+ *
+ * 按**身份**记（技能是名字、文件是目录是那一条真路径），故同一份读一次就算读过
+ * （设计：「重复引用也不能因按身份去重而丢掉出现位置」说的是**位置**，账是另一回事）；
+ * 报出来时按 `marker` 去重，免得同一串字在那一行里出现两遍。
+ */
+type MaterialWatch = {
+  /** 一次工具调用回来了——按结果记「哪几份材料这一趟被读到了」。 */
+  see(outcome: ToolOutcome): void
+  /** 收束时问一次：还有哪几份**没被读过**（按交代里的次序，同一处只算一次）。 */
+  unread(): readonly string[]
+}
+
+function createMaterialWatch(refs: readonly InputRefEntry[]): MaterialWatch {
+  // 自读那一份＝没有条目正文的那几支（见契约 `InputRefEntry`：正文在＝引用即进）
+  const watched = refs.filter(
+    (ref): ref is TextRefEntry => ref.kind !== 'image' && ref.text === undefined,
+  )
+  const done = new Set<string>()
+
+  return {
+    see(outcome): void {
+      if (!outcome.ok) return
+
+      // 技能——身份由工具交回（名字即完整地址，同名在发现那一层已只剩一条）
+      if (outcome.skill !== undefined) done.add(skillKey(outcome.skill.name))
+
+      const at = outcome.read
+      if (at === undefined) return
+
+      for (const ref of watched) {
+        if (ref.kind === 'skill') continue
+        if (touched(ref.source, at)) done.add(placeKey(ref.source))
+      }
+    },
+
+    unread(): readonly string[] {
+      const markers: string[] = []
+      for (const ref of watched) {
+        if (done.has(identityKeyOf(ref))) continue
+        if (!markers.includes(ref.marker)) markers.push(ref.marker)
+      }
+
+      return markers
+    },
+  }
+}
+
+/** 一份材料的身份键——技能按名字，文件 / 目录按那条真路径（两处都用整串比，不拼前缀误伤）。 */
+function identityKeyOf(ref: TextRefEntry): string {
+  return ref.kind === 'skill' ? skillKey(ref.name) : placeKey(ref.source)
+}
+
+function skillKey(name: string): string {
+  return `skill ${name}`
+}
+
+function placeKey(source: string): string {
+  return `place ${source}`
+}
+
+/**
+ * 这一趟读的落在这一份材料的范围里吗——**两向都算**（判据见 `createMaterialWatch`）。
+ *
+ * - **落在它里面**（`at.path` 起于 `source` 之下）：读了一个目录里的文件 / 列了一个子目录
+ *   ——那一份材料确实被用上了；
+ * - **在它外面那一处以内搜过内容**（`covers: 'subtree'`，`grep` 那种）：范围内的都算碰过。
+ *
+ * ⚠️ **`exact` 那一档不向外扩**：`ls` 一个父目录只看见名字、没看见内容（`glob` 同理），
+ * 把那说成「读过」会让用户以为材料进了模型眼前，而它没有。
+ */
+function touched(source: string, at: { readonly path: string; readonly covers: 'exact' | 'subtree' }): boolean {
+  return under(at.path, source) || (at.covers === 'subtree' && under(source, at.path))
+}
+
+/** `child` 落在 `parent` 里（含同一处）——按**段边界**判，不认字符串前缀相邻（同工作区那一把尺子）。 */
+function under(child: string, parent: string): boolean {
+  if (child === parent) return true
+  return child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
 }
 
 /**
@@ -512,6 +636,8 @@ async function runTurn(
    * 报什么、报几次由账自己判，故逐条调也无妨。
    */
   announce: Announcer,
+  /** 「引用了、却没被读过」那份账（U63）——每次工具返回都记一笔，收束时问一次。 */
+  watch: MaterialWatch,
 ): Promise<TurnOutcome> {
   const { gateway, tools, sink, stamper } = runtime
 
@@ -668,7 +794,7 @@ async function runTurn(
     for (const call of calls) {
       if (signal.aborted) return close(runtime, 'aborted', false)
       if (heldText !== undefined) withholds(runtime, call, heldText)
-      else await runToolCall(runtime, call, signal, announce)
+      else await runToolCall(runtime, call, signal, announce, watch)
     }
 
     return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted)
@@ -695,6 +821,7 @@ async function runToolCall(
   call: ToolCall,
   signal: AbortSignal,
   announce: Announcer,
+  watch: MaterialWatch,
 ): Promise<void> {
   const log = entryLogOf(runtime)
 
@@ -709,6 +836,8 @@ async function runToolCall(
     // **模型自主取到一份技能主文**（U33）——记进回执账，等它进了下一趟请求再报
     // （身份由工具结构化给出，不从回填正文里认；取引用那一趟不带这一位）
     if (outcome.skill !== undefined) announce.deliver(outcome.skill)
+    // **这一趟读到了哪些材料**（U63）——记进那份账，收束时据此说「哪几份没读」
+    watch.see(outcome)
   } catch (error) {
     // 端口承诺「结果，不是异常」（与沙箱同法）；抛了＝工具域违约。
     // 不炸掉整轮：以失败回填——模型与用户都看得到「这次没成」。

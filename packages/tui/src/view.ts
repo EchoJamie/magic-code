@@ -1312,6 +1312,16 @@ export function reduce(
         `本次使用技能：${event.data.skills.map((one) => one.name).join(' · ')}`,
       )
 
+    // 未读材料回执（U63）——**引用了 ≠ 看过了**：文件 / 目录 / 技能改成「模型按需自读」
+    // 之后，模型**没读**时那一轮收束屏上什么也没有，用户照样以为它看了 ⇒ 内核把
+    // 「本次交代里引用了、却没被读过的那几份」报出来（见契约 `input.unread`）。
+    // 与 `skill.used` 一正一反：那条说「读了这些」，这条说「这些没读」——两条各说各的。
+    // 材料按用户在交代里写的那个样子报（`marker`：`@src/a.ts` / `/review`），他认得出来是哪一处。
+    case 'input.unread':
+      return event.data.markers.length === 0
+        ? view
+        : appendReceipt(view, `本次没读：${event.data.markers.join(' · ')}`)
+
     // 提交的收场（U33）——**只有「没跑」那一格进记录区**：收下了的那一条不必报
     // （同一件事 `turn.start` 的「正在干活」已经在说，再补一句就是每提交一次添一行噪声）。
     // 没跑的那一条**必须出声**：这一条交代一个字都没发出去，用户得知道为什么。

@@ -19,8 +19,8 @@
  * 「这一趟模型说什么」按请求次序取——第 n 次请求用第 n 个回合，**用完了重复最后一个**。
  * 三形：
  * - `text`——流式吐一段字（可分块 ＋ 块间延时：**中间屏取样**要的就是这段「长出来的过程」）；
- *   另可带一段 `reasoning`（U65）：**独立字段**的思考，先于正文吐——U65 要的「两种供应商的
- *   回复形态」＝带它（思考走独立通道那一形）与不带它（思考内嵌在正文里那一形）；
+ *   另可带 `reasoning`（U64：思考那一份要随历史轮**回传**；U65：给了它就是「思考走独立通道」
+ *   那一形）——两单各有一处判据要它，见那个字段的注；
  * - `tool`——请求一个工具调用（走真闸门 → 裁决卡 → 真执行 → 再回模型）；
  * - `http`——甩一个错状态（判据要的失败现场）。
  */
@@ -31,13 +31,16 @@ export type FixtureTurn =
       readonly kind: 'text'
       readonly text: string
       /**
-       * **这一轮先吐一段「独立字段」的思考**（`reasoning_content`，U65）——「思考走独立通道」
-       * 那一形（DeepSeek 那条路，也见于别家）。
+       * **这一回合模型回的思考**（U64 起）——按 DeepSeek 那一路的 `reasoning_content` 流出去
+       * （思考在前、正文在后，与真端点同序）。两单各有一处判据要它：
        *
-       * 给了它，这个模型就是**行为正常**的那一类：它的思考**不在正文里**，
-       * 故正文就算出现 `<think>` 字样，那也是正文，**一个字都不许切**。
+       * - **U64**：那份思考**不进屏**、但要随历史轮**回传**（U41 的口径）——而「回传与否」
+       *   只有看**下一次请求的正文**才知道（见 `FixtureRequest.assistantReasoning`）；
+       * - **U65**：给了它，这个模型就是「**思考走独立通道**」那一类——思考**不在正文里**，
+       *   故正文里就算出现 `<think>` 字样，那也是正文、**一个字都不许切**。
+       *   不给＝MiniMax 那一形（思考内嵌在正文里，由生效标记 / 探针裁定）。
        *
-       * 不给＝MiniMax 那一形（思考内嵌在正文里，由生效标记 / 探针裁定）。
+       * 缺省不给：既有那些回合一字不动（夹具历来不给思考，也正是这两条路一直没被验过的原因）。
        */
       readonly reasoning?: string
       /** 切成几块吐（缺省 3）——块越多，「中间屏」越抓得到。 */
@@ -66,6 +69,14 @@ export type FixtureRequest = {
   readonly images: number
   /** 这次请求带了工具吗（工具调用那一路要它）。 */
   readonly tools: number
+  /**
+   * 请求体里**最后一条 assistant 消息**的 `reasoning_content`（U64）——「上一轮那份思考
+   * **真回传了吗**」的物证（U41 的口径：不回传则 400）。
+   *
+   * 没有那一位＝`undefined`（**不编一个空串**：空串是「回了空的」，与「压根没带」两回事）。
+   * 取**最后一条**：判据问的是「紧接着的上一轮那条」，而更早那些手写的假历史不在这个提问里。
+   */
+  readonly assistantReasoning: string | undefined
   /** 相对夹具起好的时刻（毫秒）。 */
   readonly at: number
 }
@@ -103,7 +114,13 @@ export function startFixture(options: FixtureOptions): Fixture {
       const body = await readBody(req)
       const messages = Array.isArray(body['messages']) ? (body['messages'] as unknown[]) : []
       const tools = Array.isArray(body['tools']) ? (body['tools'] as unknown[]).length : 0
-      const turn = options.turns[index] ?? options.turns.at(-1) ?? DEFAULT_TURN
+      // ⚠️ **只有「对话」那一跳吃剧本**（U64）：接了 `vendor` 的连接会先来一发
+      // `GET /models` 刷能力表——它不是一次对话，却会把第 0 个回合**吃掉**，
+      // 于是「第一轮模型说了什么」整个错位一格（实测栽在这儿：带思考那一回合被
+      // 目录刷新领走，对话拿到的是留给下一轮的那段没思考的话，本单的要害当场没被验到）。
+      // 别的请求照旧**照最后那个回合回**——判据只关心对话那几跳。
+      const chat = /\/chat\/completions$/u.test(new URL(req.url).pathname)
+      const turn = chat ? (options.turns[index] ?? options.turns.at(-1) ?? DEFAULT_TURN) : DEFAULT_TURN
 
       requests.push({
         n: requests.length + 1,
@@ -113,9 +130,10 @@ export function startFixture(options: FixtureOptions): Fixture {
         lastUser: lastUserOf(messages),
         images: imagesOf(messages),
         tools,
+        assistantReasoning: assistantReasoningOf(messages),
         at: (Bun.nanoseconds() - started) / 1e6,
       })
-      index += 1
+      if (chat) index += 1
 
       if (turn.kind === 'http') {
         return new Response(JSON.stringify({ error: { message: turn.message } }), {
@@ -174,6 +192,40 @@ function imagesOf(messages: readonly unknown[]): number {
   }
 
   return 0
+}
+
+/**
+ * 最后一条 assistant 消息带回来的思考（U64）——**两种形制都认**：
+ * `reasoning_content` 那一格（OpenAI 兼容的出站形态，模型域用例钉的就是它），
+ * 或 content 数组里的 `reasoning` 部件（取件层若换了形制，这里也照样读得出）。
+ *
+ * ⚠️ **两处都读**是为了**不放宽**判据：只认一种写法时，形制一换这里就读成 `undefined`，
+ * 而那正好是「没回传」的样子——用例会**假绿**。认得出才算数，认不出就是真没有。
+ */
+function assistantReasoningOf(messages: readonly unknown[]): string | undefined {
+  for (let at = messages.length - 1; at >= 0; at -= 1) {
+    const message = messages[at]
+    if (typeof message !== 'object' || message === null) continue
+    const entry = message as { role?: unknown; content?: unknown }
+    if (entry.role !== 'assistant') continue
+
+    const direct = (message as { reasoning_content?: unknown }).reasoning_content
+    if (typeof direct === 'string') return direct
+
+    if (Array.isArray(entry.content)) {
+      const parts = entry.content
+        .filter(
+          (part) =>
+            typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'reasoning',
+        )
+        .map((part) => String((part as { text?: unknown }).text ?? ''))
+      if (parts.length > 0) return parts.join('')
+    }
+
+    return undefined
+  }
+
+  return undefined
 }
 
 /** 最后一条 user 的正文（AI SDK 可能发数组形态的 content——只取文本块）。 */
@@ -256,26 +308,17 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
       }
 
       const text = turn.kind === 'text' ? turn.text : ''
+      const reasoning = turn.kind === 'text' ? turn.reasoning : undefined
       const chunks = turn.kind === 'text' ? Math.max(1, turn.chunks ?? 3) : 1
       const delayMs = turn.kind === 'text' ? (turn.chunkDelayMs ?? 120) : 0
       const size = Math.ceil(text.length / chunks)
 
-      push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
-
-      // 独立字段的思考（U65）——**先于正文**吐（真端点也是这个次序：想完再说）。
-      // 取件层据 `reasoning_content` 产 `reasoning-delta`，接缝把它送进 `thinking` 通道。
-      const reasoning = turn.kind === 'text' ? (turn.reasoning ?? '') : ''
-      if (reasoning.length > 0) {
-        const step = Math.max(1, Math.ceil(reasoning.length / 2))
-        for (let at = 0; at < reasoning.length; at += step) {
-          push(
-            frame(model, {
-              choices: [{ index: 0, delta: { reasoning_content: reasoning.slice(at, at + step) } }],
-            }),
-          )
-          if (delayMs > 0) await Bun.sleep(Math.floor(delayMs / 2))
-        }
+      // 思考在前（真端点就是这个序：`reasoning_content` 先流完，正文才开始）。
+      // **没给思考时一个字节都不多**——既有那些回合的帧与加它之前逐帧同形。
+      if (reasoning !== undefined && reasoning.length > 0) {
+        push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: reasoning } }] }))
       }
+      push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
 
       for (let at = 0; at < text.length; at += size) {
         push(

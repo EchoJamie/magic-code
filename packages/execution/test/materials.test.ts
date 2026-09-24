@@ -153,7 +153,12 @@ describe('U36 · 文件：按身份取，到上限为止，只收文本', () => 
     }
   })
 
-  test('总量超限整批拒，并说清怎么办（不静默少带）', async () => {
+  // ⚠️ **改判（U63）**：原先这里测的是「一次交代里全部文本材料的合计上限（256 KiB 字符）
+  // 超了整批拒」——那一条守的是「十条交代拼起来会把这一次请求撑爆」。送达方式改成
+  // 「模型按需自读」之后**它的由头没了**：文本材料的正文一个字都不进请求（见
+  // `DEFAULT_MATERIAL_BYTES` 的注），留着它只会按一个已不成立的理由把好事拒掉。
+  // 故本条改成**反过来断**：一次带五份大文件照取不误，且每份仍按单份上限截断。
+  test('文本材料不再有合计上限（U63 自读）——五份大文件照取，单份仍按 64 KiB 截断', async () => {
     const sand = sandbox()
     try {
       for (const name of ['a', 'b', 'c', 'd', 'e']) put(sand.at, `${name}.txt`, 'x'.repeat(60 * 1024))
@@ -163,9 +168,10 @@ describe('U36 · 文件：按身份取，到上限为止，只收文本', () => 
         ['a', 'b', 'c', 'd', 'e'].map((name) => ({ kind: 'file' as const, source: join(sand.at, `${name}.txt`) })),
       )
 
-      expect(read.ok).toBe(false)
-      if (read.ok) return
-      expect(read.reason).toContain('去掉几份')
+      expect(read.ok).toBe(true)
+      expect(read.ok && read.materials).toHaveLength(5)
+      // 单份那一把尺子照旧（60 KiB < 64 KiB，故这一批都没被截）
+      expect(read.ok && read.materials[0]?.kind === 'file' && read.materials[0].truncated).toBeFalsy()
     } finally {
       sand.dispose()
     }

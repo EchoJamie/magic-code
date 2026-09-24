@@ -7,7 +7,7 @@
  * | kind | 正文（`content`） | 载荷（`payload`） |
  * | --- | --- | --- |
  * | `user` | **用户的话**（超阈值转 blob） | ——，或随这次交代送出去的技能材料（U33） |
- * | `assistant` | 正文（超阈值转 blob） | —— |
+ * | `assistant` | 正文（超阈值转 blob） | ——，或供应商要求回传的那份思考（U41：`{ reasoning }`，没思考就整个键不写） |
  * | `tool-call` | 空 | `{ name, args }`——**重放真源** |
  * | `tool-result` | **面向模型的文本**（工具域截好的那份） | `{ ok, output }`——**记录侧形态**，与 `tool.result` 事件的 `output` 同物；读技能的那件另带交付身份（U33） |
  * | `summary` | 摘要全文（超阈值同样转 blob） | ——（阶段 3 压缩的产物，见 `./compact.ts`） |
@@ -83,6 +83,13 @@ export type ToolOutcome = {
    * 缺省 ＝ 未标（工具域回来的结果都不是它）。
    */
   readonly notExecuted?: true
+  /**
+   * **这一趟读到哪儿了**（U63）——从 `ToolResult.read` 原样过来（见契约那一格）。
+   *
+   * **不进条目载荷**：它记的是「这一轮怎么走的」（供「引用了却没读过」那条回执当场判），
+   * 而工具条目本身就在记录里——重放要的是「读了什么」，不是「当时报没报过落点」。
+   */
+  readonly read?: ToolResult['read']
 }
 
 /** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
@@ -95,6 +102,8 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
     ...(result.skill === undefined ? {} : { skill: result.skill }),
     // 计划载荷同理——⚠️ 判 `undefined`（不在场）而非真假：`null` 是**清空**
     ...(result.plan === undefined ? {} : { plan: result.plan }),
+    // 读到哪儿了（U63）——同一条过手姿势
+    ...(result.read === undefined ? {} : { read: result.read }),
   }
 }
 

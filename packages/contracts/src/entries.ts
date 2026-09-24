@@ -186,6 +186,24 @@ export type UsedSkillEntry = UsedSkill & {
  * 「当时到底送了什么」也还答得出（`text` 就是那一份）。目录另记**未展开**的部分
  * （`omitted`），不假装列全了。
  *
+ * ## 正文在不在，本身就是一条事实（U63 · 送达方式按类型分）
+ *
+ * 文件 / 目录 / 技能的**送达方式**是「**模型按需自读**」——正文**不随请求展开**，引用留在
+ * 交代里的原位（设计 · 终端交互：「引用留在交代的位置」）。故 U63 起写下的条目**没有 `text`**：
+ *
+ * - 提交那一刻取一趟，取的是**校验**——这一条在不在、是不是普通文本、写的目录是不是目录、
+ *   工作区外那一条是不是用户明确选定的那一个（失败＝整条不跑，照旧还回原稿）；
+ * - 送进会话的是**引用本身**（`marker` ＋ `source` ＋ `label`）——模型要用哪一份、用多少，
+ *   自己用 `read` / `ls` / `grep` / `glob` / `skill` 去取。它取回来的那一份落在**工具条目**里
+ *   ——那才是这一轮的「实际交付内容」（「引用了 ≠ 看过了」，设计明写）。
+ *
+ * ⚠️ **老记录带着 `text`**（U36 起那一版：引用即进，正文随请求展开）。装配按
+ * 「**有条目正文就展开，没有就留在原位**」读：旧记录因此**逐字重放**，既不替它编一个插入点，
+ * 也不假装它当时是自读的。**工作区外那一份只读附件同理**（见 `external` 那一格）。
+ *
+ * **图片**那一支不在此列：它照旧**引用即进**（没有读图的工具，而且一张图往往就是那件事
+ * 本身）——见 `image` 支。
+ *
  * ## 各支共有的那几格
  *
  * - `at` —— 在**正文**里的位置（UTF-16 下标，`content.text` 的坐标）；
@@ -206,15 +224,15 @@ export type InputRefEntry = InputRefPlace &
         readonly name: string
         readonly source: string
         readonly label: string
-        /** 当时送进上下文的那一份主文——**是它本体，不是引用**。 */
-        readonly text: string
+        /** 见下「正文在不在，本身就是一条事实」——自读那一版**没有这一格**。 */
+        readonly text?: string
       }
     | {
         readonly kind: 'file'
         readonly source: string
         readonly label: string
-        /** 实际交付的文件内容（可能截断——`truncated` 一并记着）。 */
-        readonly text: string
+        /** 见下「正文在不在，本身就是一条事实」——自读那一版**没有这一格**。 */
+        readonly text?: string
         readonly truncated?: true
         /**
          * **取自工作区之外**（U36）——用户明确选定的那一个只读附件。
@@ -222,6 +240,10 @@ export type InputRefEntry = InputRefPlace &
          * 记它有两个用处：① 审计上说得清「这份材料不在工作区里」（它的来源路径也不在工作区
          * 内，光看 `source` 要另判一次才认得出）；② 重放时模型面前那一行据它标「只读附件」。
          * **它不是授权**——沙箱的根一条都没动（见契约 `Materials`）。
+         *
+         * ⚠️ **这一支照旧带 `text`**（U63）：模型手上没有能读它的路——沙箱只认根内的绝对路径，
+         * 工作区外那一个读不到（权限那一侧「读的越界不闸」不改变这一点：砂箱压根不给它落点）。
+         * 展开是它唯一的送达方式，故与图片同为**引用即进**。
          */
         readonly external?: true
       }
@@ -229,8 +251,8 @@ export type InputRefEntry = InputRefPlace &
         readonly kind: 'dir'
         readonly source: string
         readonly label: string
-        /** 有界清单——**只有这一层**，未列出的项如实报数（`omitted`）。 */
-        readonly text: string
+        /** 见下「正文在不在，本身就是一条事实」——自读那一版**没有这一格**。 */
+        readonly text?: string
         readonly omitted?: number
       }
     | {
@@ -293,12 +315,25 @@ export type UserPayload = {
  *
  * ⚠️ 它是**这一家这一个模型**的私有协议内容：换供应商时由适配决定带不带
  * （设计：「不转发给其它供应商」）。
+ *
+ * ## 核准的**只有这一形**（U64 · 记录域跟上）
+ *
+ * `reasoning` **必给且是字符串**——不是可选位。理由与 `UserPayload` 那条同法：
+ * 载荷在这里是**重放真源**，不是杂物抽屉；**空载荷（`{}`）＝「没有载荷」写错了地方**，
+ * 不是一种合法的「带了点东西」。故「这一轮没有思考」的表达方式是**整个 `payload` 缺席**
+ * （`Entry.payload?` 本来就是可选的），而不是写一个空对象。
+ *
+ * ⚠️ **U41 那一段（模型侧的原样回传）本单一个字没动**：错的是记录域那张表没跟上
+ * （`assistant` 落在「其余必须没有」那一格里），不是由头不成立。
  */
 export type AssistantPayload = {
-  readonly reasoning?: string
+  readonly reasoning: string
 }
 
-/** 条目的载荷（技术方案 · 记录：条目字段「载荷」——工具条目有，`user` 条目自 U33 起有）。 */
+/**
+ * 条目的载荷（技术方案 · 记录：条目字段「载荷」——工具条目有，`user` 条目自 U33 起有，
+ * `assistant` 条目自 U41 起有：供应商要求回传的那份思考，见 `AssistantPayload`）。
+ */
 export type EntryPayload =
   | ToolCallPayload
   | ToolResultPayload
@@ -313,7 +348,8 @@ export type Entry = {
   /**
    * 载荷——`tool-call` / `tool-result` 有（结构对齐事件侧、为重放真源）；
    * **`user` 条目自 U33 起可有**（随这次交代送出去的技能材料，见 `UserPayload`）；
-   * 其余 kind 无。
+   * **`assistant` 条目自 U41 起可有**（供应商要求回传的那份思考，见 `AssistantPayload`）
+   * ——⚠️ **可有＝那一份核准形状**，不是「随便什么都能放」；其余 kind 一个都不带。
    *
    * TODO(规划侧)：kind 与载荷支的**强对应**未在类型上表达（此处为可选联合）；
    * 若需编译期强制，可改为按 kind 的映射——属只增不改，等单元实需时再定。

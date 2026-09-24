@@ -465,8 +465,12 @@ describe('U37 · 坏文件与超限：不假报成功', () => {
       })
 
       const wire = armedWithImagesOf(gateway.bodies[0] ?? '')
-      expect(wire.images).toHaveLength(0) // 没有图像部件
-      expect(wire.text).toContain('其实是文字') // 但内容真送到了（当文本）
+      expect(wire.images).toHaveLength(0) // 没有图像部件（它压根不是图——内容说了算）
+      // ⚠️ **改判（U63）**：正文不再随请求展开（文本材料改成「模型按需自读」），
+      // 故这一条**不再**在请求里断「其实是文字」——那正是本次要撤掉的那一件。
+      // 送达那一半由 `refs.test.ts` 咬（模型调了读的工具）；这里守的还是原来那一件事：
+      // **名字像图也骗不过内容**（不谎称送了图）。
+      expect(wire.text).not.toContain('其实是文字')
 
       assembly.close()
     } finally {
