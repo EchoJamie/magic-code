@@ -31,7 +31,7 @@ import { createModelRegistry } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { ManagerClient } from './client.ts'
-import { workspaceOf } from '../assembly.ts'
+import { mcpNoticesOf, workspaceOf } from '../assembly.ts'
 import type { LoadedConfig } from '../config.ts'
 
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */
@@ -68,9 +68,6 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // 「外壳那一跳」挪到了「执行者那一跳」，判据一字未松。
     contextWindow: startupContextWindow(inputs),
     workspaceRoots: workspaceOf(loaded, cwd).roots(),
-    // 启动那几句——只算**配置说得出来的**那两条（权限规则 / 项目规约）。
-    // 另两条（授权文件读不懂、外部服务器连不上）要碰授权文件与 MCP 连接，归执行者；
-    // 它们到站之后会走 `/grants` 与 `/mcp` 那两屏（那一屏本来就说的是同一件事）。
     receipts: startupReceipts(inputs),
     // **管理者不在了 ⇒ 窗口自己退**（见 `run.ts` 的 `onGone`）：「断流后自身应退出，
     // 不能空转充当后台执行者」。连接断的那一刻界面已经没有任何内核可接。
@@ -178,15 +175,26 @@ function startupContextWindow(inputs: TerminalInputs): number | null {
 }
 
 /**
- * 启动那几句——**只算配置说得出来的那两条**（被拒的权限规则 · 项目规约没加载上的）。
+ * 启动那几句——三样。
  *
- * 与 `Assembly.notices` 的关系：那一条通道有四样话，另两样（授权文件读不懂、外部
- * 服务器连不上）**要碰授权文件与外部连接**，归执行者；窗口这一侧不算它们。
- * 两条通道说的是同一批事实的两半，不重不漏——用户看到的那些话，来处各是各的。
+ * | 话 | 来处 |
+ * | --- | --- |
+ * | 被拒的权限规则 | 配置（本函数现算） |
+ * | 项目规约没加载上的 | 配置 ＋ 盘上那几份文件（本函数现算） |
+ * | **外部工具服务器连不上 / 有件没收下** | **管理者的预检**（U48 第六段：`client.mcp`） |
+ *
+ * 第三样为什么在**管理者**那儿：那是一句「**此刻**通不通」——只有真连一遍才知道，
+ * 而「连一遍」这件事按裁定归**本机服务**，不归窗口、也不为它单起后台。窗口这一侧
+ * 只把读数**念出来**。
+ *
+ * 念的话**一字不改地**取自 `mcpNoticesOf`（与执行者的 `Assembly.notices` **同一处产出**）
+ * ——同一条事实在两处说成两样，正是「底层换了就放过外观差别」那类毛病。
+ *
+ * ⚠️ **授权文件读不懂那一句不在**：它要碰授权文件，而那归执行者。
  */
 function startupReceipts(inputs: TerminalInputs): readonly string[] {
-  const { loaded, cwd } = inputs
-  const said: string[] = []
+  const { client, loaded, cwd } = inputs
+  const said: string[] = [...mcpNoticesOf(client.mcp)]
   const rejected = parseRules(loaded.config.permissions?.rules ?? []).rejected
 
   if (rejected.length > 0) {

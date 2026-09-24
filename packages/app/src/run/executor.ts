@@ -174,6 +174,21 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       case 'tool.decision':
         pendingDecisions.delete(event.data.call)
         return
+      /**
+       * **轮收束 ⇒ 悬着的裁决作废**——与外壳那一侧**同一个口径**（`view.ts` 的
+       * `turn.end`：「悬着的裁决作废（那件工具跑不成了）：撤卡 ＋ 归还草稿」）。
+       *
+       * ⚠️ **不清这一下，会漏一个永远收不掉的执行者**（实测跑出来的）：卡挂在半路、
+       * 这一轮被中断（Ctrl+C）或出错时，**裁决答复那一条事件不会来**——于是这个集合里
+       * 那一格永远留着，而「有在途调用或待答项」是**不收**的一条判据 ⇒ 它就此钉在那儿，
+       * 管理者也跟着不走（它以为手上还压着一件待办）。
+       *
+       * 清了之后设计那一条不受影响：**卡还挂着**的时候这一轮没结束，`turn.end` 就不会来
+       * ——「等待用户的有效工作可保留事件阻塞的执行者」照旧成立。
+       */
+      case 'turn.end':
+        pendingDecisions.clear()
+        return
       default:
         return
     }

@@ -733,6 +733,9 @@ async function runManagerMode(argv: readonly string[]): Promise<number | undefin
     dataDir: loaded.config.dataDir,
     magic,
     launch: createProcessLauncher({ stderr: 'ignore' }),
+    // **外部工具预检**（U48 第六段）——管理者启动时**连一遍、报状态、断开**。
+    // 配的那几台从这一处递进去（管理者不自己再读一遍配置）；窗口接上就读得到结论。
+    mcp: loaded.config.mcp?.servers ?? {},
   })
   // 已经有一个了（两个窗口同时起步的常态）——**连接它、不另起**，本进程随即退场
   if (started.role !== 'manager') return 0

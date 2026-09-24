@@ -51,7 +51,9 @@
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Socket } from 'bun'
-import type { Command, KernelEvent, MagicHome, ModelSwitchRequest } from '@magic/contracts'
+import type { Command, KernelEvent, MagicHome, McpServerConfig, ModelSwitchRequest } from '@magic/contracts'
+import { probeMcp } from './preflight.ts'
+import type { McpProbeRow } from './wire.ts'
 import { createRecordsStore } from '@magic/records'
 import { ensureRunDir, tightenSocket } from './paths.ts'
 import type { RunPaths } from './paths.ts'
@@ -142,6 +144,15 @@ export type ManagerOptions = {
    * 临时目录时，子进程若照环境自己解析一遍，读到的是**开发者真那份**配置。
    */
   readonly magic: MagicHome
+  /**
+   * **外部工具预检要连的那几台**（`mcp.servers` 原样）——缺省一条都没有（空转）。
+   *
+   * 由入口（`cli.ts`）从**它刚读的那份配置**里取：管理者不自己再读一遍配置
+   * ——一处读、两处同一个值，两边才不会各认一份。
+   */
+  readonly mcp?: Readonly<Record<string, McpServerConfig>> | undefined
+  /** 预检的连接上限（毫秒）——缺省＝适配器那个实现级常量；用例把它调小。 */
+  readonly mcpConnectTimeoutMs?: number | undefined
   /** 时钟——缺省 `Date.now`。 */
   readonly now?: (() => number) | undefined
   /** 生命探测的间隔（毫秒）——缺省 5 秒；见 `PROBE_INTERVAL_MS`。 */
@@ -329,6 +340,29 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
   writeRecord(paths, record)
 
+  /**
+   * **外部工具预检**（U48 第六段）——**连接 → 报状态 → 断开**，一趟，挂在管理者的启动上。
+   *
+   * 三条都是从「它是探针不是工具连接」来的（设计 · MCP 接入 · 服务启动时的预检）：
+   * - **不为它单起后台**：就在这个进程里跑，跑完就收——它不另起执行者、不建会话；
+   * - **不持有工具、不供会话使用**：读数只上「服务状态」那一格（`welcome.mcp`），
+   *   工具表交给谁这个问题**根本不出现在这一路上**；
+   * - **不断路**：探针失败不影响管理者起得来（连不上的那几台落成 `unavailable` 的读数）。
+   *
+   * ⚠️ **窗口是「等它落定」而不是「拿到半份」**：`accept` 那一头把 `welcome` 押在这条
+   * promise 上（见下）。押的代价是第一个窗口多等这一趟——而那与今天一样
+   * （`cli.ts` 起外壳之前本来就要 `await assembly.ready()`）。
+   */
+  const preflight = probeMcp({
+    servers: options.mcp ?? {},
+    ...(options.mcpConnectTimeoutMs === undefined
+      ? {}
+      : { connectTimeoutMs: options.mcpConnectTimeoutMs }),
+    ...(options.log === undefined ? {} : { log: options.log }),
+  })
+  /** 预检的读数——它是**服务状态**，窗口接上就读得到（`welcome.mcp`）。 */
+  let probed: readonly McpProbeRow[] = []
+
   /** 一摊运行的那几件工具——`stop` 与各自的收尾都要它们，故在闭包里立。 */
   const manager: Manager = {
     record,
@@ -381,6 +415,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             t: 'welcome',
             conn: conn.id,
             dataDir: options.dataDir,
+            // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
+            mcp: probed,
             refuse:
               `没有这条会话：${message.session}——` +
               `--session 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
@@ -390,8 +426,15 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         }
 
         clients.set(conn.id, conn)
-        link.send({ t: 'welcome', conn: conn.id, dataDir: options.dataDir })
         touch()
+
+        // **押在预检上**（见 `preflight` 那一跳的注）：窗口接上就能读到结论，
+        // 且读到的**一定是落定后的那一份**——半份读数比晚一会儿更坏（用户据此以为通了）。
+        void preflight.then((rows) => {
+          probed = rows
+          if (link.closed) return
+          link.send({ t: 'welcome', conn: conn.id, dataDir: options.dataDir, mcp: probed })
+        })
 
         // **开局就定下的目标**：给了 `--session` ⇒ 现在就按它要一代执行者
         // （这也是「接回旧会话」那条路的起点：那条会话已经有一代在跑就直接接上，
@@ -882,8 +925,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           retire(executor, `管理者收摊：${why}（到点没退）`)
         }
 
-        options.log?.(`管理者收摊（${why}）`)
-        settle()
+        // 预检那一趟自己的收尾在它的 `finally` 里（断开它起的那些）——等它落定再
+        // 报「退干净了」，否则入口一 `process.exit` 就把那一跳切在半路
+        void preflight.catch(() => {}).finally(() => {
+          options.log?.(`管理者收摊（${why}）`)
+          settle()
+        })
       }
     }, 25)
     wait.unref?.()

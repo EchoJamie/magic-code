@@ -589,7 +589,16 @@ const mcpApproval: Scenario = {
       ...where(options),
     })
 
-    const grand = await waitForDescendant(grandLog)
+    // ⚠️ **先把这一轮点起来，再去数那一层**（U48 第六段改的次序，判据一个字没动）：
+    //
+    // 同一台服务器现在会被拉起**两次**——管理者的**预检**一次（连接 → 报状态 → 断开，
+    // 探针，**不供会话使用**），执行者的**工具连接**一次（随会话存续）。判据要的是
+    // **后者**：只有它才随会话存续、才该跟着服务器一起被收。而执行者要等这一轮真发出去
+    // 才存在（空白启动页没有会话、没有执行者），故「先发一句、再数」。
+    const already = countDescendants(grandLog) // 预检那一条（配了外部工具就必然有）
+    await descended.send('把服务器弄崩')
+    await descended.key('enter') // 提交——执行者由此起手，它的工具连接随之拉起那一层
+    const grand = await waitForDescendant(grandLog, 8_000, already)
     ui.check(
       typeof grand === 'number' && isAlive(grand),
       '服务器自己拉起的那一层在跑（先确认它真起来了）',
@@ -600,8 +609,7 @@ const mcpApproval: Scenario = {
     //
     // 这是独立复验退回的那一条的组合：崩过之后再 close，SDK 那侧已经没有 pid 可数了，
     // 故「数后代」必须发生在**它还活着的时候**（起手与每次调用之前），不能等收尾那一刻。
-    await descended.send('把服务器弄崩')
-    await descended.key('enter', { until: { text: 'y 批准这一次' } })
+    await descended.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
     await descended.send('y', { until: { text: '未收到结果' }, timeoutMs: 15_000 })
 
     await waitGone(grand as number)
@@ -619,20 +627,46 @@ const mcpApproval: Scenario = {
   },
 }
 
-/** 等服务器把它拉起的那个后代记进流水（有界——夹具自己写，别无限等）。 */
-async function waitForDescendant(log: string, timeoutMs = 5_000): Promise<number | undefined> {
+/** 已经记进流水的后代个数——调用点据它「再数一层新的」（见 `waitForDescendant`）。 */
+function countDescendants(log: string): number {
+  return descendants(log).length
+}
+
+/**
+ * 等**第 `beyond + 1` 个**后代出现（有界——夹具自己写，别无限等）；交回它的 pid。
+ *
+ * ⚠️ **为什么要 `beyond`**（U48 第六段）：同一台服务器会被拉起**两次**——管理者的
+ * **预检**一次（连接 → 报状态 → 断开，探针）、执行者的**工具连接**一次（随会话存续）。
+ * 判据要的是**后者**：只有它才该跟着服务器一起被收。而「取第一条」会拿到预检那条，
+ * 那一条**按设计已经断开、早不在**了——不是收得不对，是问错了人。
+ *
+ * 流水里只有一行时（没配预检那条路）`beyond = 0`，与改之前一字不差。
+ */
+async function waitForDescendant(
+  log: string,
+  timeoutMs = 5_000,
+  beyond = 0,
+): Promise<number | undefined> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    if (existsSync(log)) {
-      for (const line of readFileSync(log, 'utf8').split('\n')) {
-        if (line.trim() === '') continue
-        const entry = JSON.parse(line) as { kind?: string; pid?: number }
-        if (entry.kind === 'child') return entry.pid
-      }
-    }
+    const found = descendants(log)
+    if (found.length > beyond) return found[beyond]
     await Bun.sleep(50)
   }
   return undefined
+}
+
+/** 流水里记下的后代 pid（按写入序）。 */
+function descendants(log: string): number[] {
+  if (!existsSync(log)) return []
+
+  const found: number[] = []
+  for (const line of readFileSync(log, 'utf8').split('\n')) {
+    if (line.trim() === '') continue
+    const entry = JSON.parse(line) as { kind?: string; pid?: number }
+    if (entry.kind === 'child' && entry.pid !== undefined) found.push(entry.pid)
+  }
+  return found
 }
 
 /**

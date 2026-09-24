@@ -26,7 +26,24 @@
  */
 
 import type { Socket } from 'bun'
-import type { Command, KernelEvent, ModelSwitchRequest } from '@magic/contracts'
+import type { Command, KernelEvent, McpConnectionState, ModelSwitchRequest } from '@magic/contracts'
+
+/**
+ * **一台外部服务器的预检读数**（U48 第六段）——**探针的结论，不是工具连接的状态**。
+ *
+ * 两件事都叫「连 MCP」，但目的、生命周期、归属都不同（设计 · MCP 接入）：
+ * 探针答的是「**此刻**配的东西通不通」、归**本机服务（管理者）**、连接 → 报状态 → **断开**；
+ * 工具连接答的是「这一轮要用哪些工具」、归**执行者**、随会话存续。
+ *
+ * 故这一份上线路的只有**读数**：没有工具表、没有凭据、没有连接。执行者那一轮照旧
+ * 自己连一次——「预检通过」不是那一次的免死金牌。
+ */
+export type McpProbeRow = {
+  readonly server: string
+  readonly state: McpConnectionState
+  /** 发现时拒收的件数（服务器自报的名字不合规 / 与同台重名）。 */
+  readonly rejected: number
+}
 
 /** 客户端 → 管理者。 */
 export type ClientToManager =
@@ -71,6 +88,14 @@ export type ManagerToClient =
       readonly conn: number
       /** 数据目录的规范形（管理者就是按它认的自己这一摊）。 */
       readonly dataDir: string
+      /**
+       * **这一摊的外部工具预检读数**（U48 第六段）——管理者启动时那一趟探针的结论。
+       *
+       * 窗口据它落开屏那一句（「外部工具服务器「broken」连不上：<缘由>」）。它是**服务
+       * 状态**的一部分：接上管理者就读得到，与有没有会话、有没有执行者无关
+       * ——「空白启动页只有客户端」那条因此不受影响。
+       */
+      readonly mcp: readonly McpProbeRow[]
       /**
        * **这条窗口服务不了**（`--session` 打错一个字母是唯一一条）。
        *

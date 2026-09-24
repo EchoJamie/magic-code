@@ -20,7 +20,7 @@
 import type { Socket } from 'bun'
 import type { Command, KernelEvent } from '@magic/contracts'
 import { linkOf, socketHandlers } from './wire.ts'
-import type { Link, ManagerToClient } from './wire.ts'
+import type { Link, ManagerToClient, McpProbeRow } from './wire.ts'
 
 /**
  * 管理者说「这条窗口我服务不了」——**只有 `--session` 打错一个字母那一条**。
@@ -41,6 +41,13 @@ export type ManagerClient = {
   readonly conn: number
   /** 这一摊运行的数据目录（管理者的自报）。 */
   readonly dataDir: string
+  /**
+   * **这一摊的外部工具预检读数**（U48 第六段）——管理者启动时那一趟探针的结论。
+   *
+   * 它是**服务状态**的一部分（不是执行状态、更不是工具连接）：窗口据它落开屏那一句
+   * 「外部工具服务器「broken」连不上：<缘由>」。空数组＝一条都没配，或都通。
+   */
+  readonly mcp: readonly McpProbeRow[]
   /** 我此刻认的执行者代次（`null` ＝ 还没有目标）。 */
   gen(): number | null
   /** 管理者指派的目标换了一条会话——外壳据以认「我现在在看哪条」（`null` ＝ 还没开张）。 */
@@ -138,6 +145,7 @@ export async function connectManager(
   return {
     conn: greeted.conn,
     dataDir: greeted.dataDir,
+    mcp: greeted.mcp,
     gen: () => gen,
     onTarget(listener) {
       targetListeners.push(listener)
@@ -164,8 +172,17 @@ export async function connectManager(
   }
 }
 
-/** 握手的等待上限——本机 socket，一秒已是千倍余量；到点当「这个过程序不对」处理。 */
-const HANDSHAKE_TIMEOUT_MS = 3_000
+/**
+ * 握手的等待上限——**三十秒**。
+ *
+ * 为什么不是「本机 socket 只要一秒」那个量级：管理者的 `welcome` **押在外部工具预检上**
+ * （U48 第六段）——它要把「你配的那几台此刻通不通」一并答出来，而那一趟的每台上限
+ * 是十秒。三秒会把「一台连不上的服务器」误判成「这个过程序不对」。
+ *
+ * 三十秒＝预检那一趟的最坏情形（并行等，各十秒）＋ 一截余量。到点仍然**当场放弃**
+ * （不是重试、也不是降级成一个没有 `conn` 的客户端）：回话没来意味着对面那条路不对。
+ */
+const HANDSHAKE_TIMEOUT_MS = 30_000
 
 /**
  * 说一声「我是窗口」，等管理者回话。
@@ -181,11 +198,26 @@ async function greet(
     readonly session?: string
   },
   timeoutMs: number,
-): Promise<{ readonly conn: number; readonly dataDir: string; readonly refuse?: string } | undefined> {
+): Promise<
+  | {
+      readonly conn: number
+      readonly dataDir: string
+      readonly mcp: readonly McpProbeRow[]
+      readonly refuse?: string
+    }
+  | undefined
+> {
   return new Promise((resolve) => {
     let done = false
     const finish = (
-      value: { readonly conn: number; readonly dataDir: string; readonly refuse?: string } | undefined,
+      value:
+        | {
+            readonly conn: number
+            readonly dataDir: string
+            readonly mcp: readonly McpProbeRow[]
+            readonly refuse?: string
+          }
+        | undefined,
     ): void => {
       if (done) return
       done = true
@@ -200,6 +232,7 @@ async function greet(
       finish({
         conn: message.conn,
         dataDir: message.dataDir,
+        mcp: message.mcp,
         ...(message.refuse === undefined ? {} : { refuse: message.refuse }),
       })
     })

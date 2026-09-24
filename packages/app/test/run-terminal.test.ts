@@ -42,16 +42,24 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 15_000): Pro
   }
 }
 
-/** 沙地里还有没有这一摊的进程（按启动目录认——执行者与管理者都带着沙地的路径）。 */
-async function straysIn(sandbox: Sandbox): Promise<string[]> {
+/**
+ * 沙地里还有没有**这一摊的进程**——按启动目录认（管理者与执行者都带着沙地里的路径）。
+ *
+ * ⚠️ **两类分开数**（U48 第六段）：`--internal-manager` 是**本机服务**，它「空白启动页」
+ * 本来就有（设计明文：「管理者的存在不算『空白启动页有执行者』——它本来就在」）；
+ * `--internal-executor` 才是**执行者**。判据要的是后者一个都没有，故分开交回。
+ */
+async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executors: string[] }> {
   const proc = Bun.spawn(['pgrep', '-fl', sandbox.root], { stdout: 'pipe', stderr: 'ignore' })
   const text = await new Response(proc.stdout as ReadableStream<Uint8Array>).text()
   await proc.exited
 
-  return text
-    .split('\n')
-    .filter((line) => line.includes('internal-'))
-    .filter((line) => line.trim() !== '')
+  const lines = text.split('\n').filter((line) => line.trim() !== '')
+
+  return {
+    managers: lines.filter((line) => line.includes('internal-manager')),
+    executors: lines.filter((line) => line.includes('internal-executor')),
+  }
 }
 
 describe('U48-S5 · 终端是客户端', () => {
@@ -93,7 +101,7 @@ describe('U48-S5 · 终端是客户端', () => {
       // **不留人**：两手空了 ⇒ 管理者自己收摊（收摊之后路径是干净的）
       await waitFor('管理者自己退场', () => !existsSync(paths.socket), 20_000)
       await Bun.sleep(500)
-      expect(await straysIn(sandbox)).toEqual([])
+      expect(await straysIn(sandbox)).toEqual({ managers: [], executors: [] })
 
       // **外借的沙地原封不动**（回收归借出方）
       expect(existsSync(sandbox.root)).toBe(true)
@@ -151,6 +159,108 @@ describe('U48-S5 · 终端是客户端', () => {
       removeDir(runs)
     }
   }, 60_000)
+
+  /**
+   * **U48 第六段的判据**（与上一支合起来才是：那句话回到开屏 **AND** 空窗口仍然没有
+   * 会话、没有执行者）。
+   *
+   * 两件一起咬：
+   * - 开屏那一句**由管理者给**（它的预检读数随 `welcome` 过来）——所以配了一台连不上的
+   *   服务器时，那句话必须在**第一帧**上；
+   * - 而这一帧**没有一个执行者**在跑——预检是**探针**（连接 → 报状态 → 断开），
+   *   不是「为它单起一个后台」。
+   */
+  test('配了连不上的外部工具：那句话在开屏上（管理者给的），而空窗口仍没有执行者', async () => {
+    const runs = tempDir('magic-u48-preflight-runs-')
+    const fixture = startFixture({ turns: [] })
+    const sandbox = createSandbox({
+      baseURL: fixture.baseURL,
+      config: { mcp: { servers: { broken: { command: '/nonexistent/mcp-server-for-u48' } } } },
+    })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '预检', artifacts: runs, sandbox, fixture })
+
+      const boot = await window.capture({ label: '开屏' })
+      // 三件与 `Assembly.notices` 那句**同词**（判据的锚就是它）
+      expect(boot.text).toContain('broken')
+      expect(boot.text).toContain('连不上')
+      expect(boot.text).toContain('外部工具服务器')
+
+      // **一个执行者都没有**——预检不另起后台，也没有会话（首条消息才开张）。
+      // 管理者在（它本来就在，预检就挂在它的启动上），故这里数的是**执行者**
+      expect((await straysIn(sandbox)).executors).toEqual([])
+
+      const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+      try {
+        expect(db.sessions.length).toBe(0)
+        expect(db.entries.length).toBe(0)
+      } finally {
+        db.close()
+      }
+
+      const closed = await window.close()
+      expect(closed.exit.by).not.toBe('sigkill')
+      window = undefined
+
+      // 窗口走了、执行者一个没起 ⇒ 管理者也退（预检那一趟的连接早断了，不留人）
+      await waitFor('管理者自己退场', () => !existsSync(pathsOf(sandbox).socket), 20_000)
+    } finally {
+      await window?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 90_000)
+
+  /**
+   * **卡挂着的那一轮被中断之后，执行者要收得掉**（回归：漏一个永远收不掉的执行者）。
+   *
+   * 由头是**实测跑出来的**：裁决卡挂在半路、这一轮被 Ctrl+C 中断时，**答复那一条事件
+   * 不会来**——执行者若只按「请求／答复配对」记待答项，那一格就永远留着，而「有在途调用
+   * 或待答项」是**不收**的一条判据 ⇒ 它就此钉在那儿，管理者也跟着不走。
+   *
+   * 口径与外壳那一侧**同一条**（`view.ts` 的 `turn.end`：「轮收束 ⇒ 悬着的裁决作废」）
+   * ——故这里量的正是那条边界：**轮收束之后，那一格必须清掉**。
+   *
+   * ⚠️ **与「等待用户的有效工作可保留执行者」不冲突**：卡**还挂着**时这一轮没结束，
+   * `turn.end` 不会来——保留照旧。这里中断的是那一轮，卡已经作废了。
+   */
+  test('悬着的裁决卡随轮收束作废——那一代执行者收得掉，管理者也跟着退', async () => {
+    const runs = tempDir('magic-u48-cancel-runs-')
+    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'echo hi' } }] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '中断卡', artifacts: runs, sandbox, fixture })
+
+      await window.send('跑一条命令')
+      // 内置件是**轻**的 ⇒ 三键位（`y / a / n`）。⚠️ `HINT_DECIDE_LIGHT` **没出包**
+      // （`@magic/tui` 只出去包的常量），故这里按**字面量**锚——与 `ui/scenarios.ts`
+      // 里 `COPY.decideHint` 同一条先例：真要改那处文案，判据会红，那正是该有的反应。
+      await window.key('enter', { until: { text: 'y / a / n' }, timeoutMs: 20_000 })
+
+      // **卡还挂着的时候中断这一轮**——答复永远不会来（那正是这个用例要的那条边）
+      await window.key('ctrl+c')
+      await window.wait({ text: '/ 命令 · ctrl+c 退出' }, { timeoutMs: 15_000 })
+
+      const closed = await window.close()
+      expect(closed.exit.by).not.toBe('sigkill')
+      window = undefined
+
+      // **两手都空 ⇒ 执行者先收、管理者再退**（卡若还钉着，这两跳都不会发生）
+      await waitFor('管理者自己退场', () => !existsSync(pathsOf(sandbox).socket), 20_000)
+      await Bun.sleep(500)
+      expect(await straysIn(sandbox)).toEqual({ managers: [], executors: [] })
+    } finally {
+      await window?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 90_000)
 
   test('终端断流——窗口自己退场，不留一个空转的后台', async () => {
     const runs = tempDir('magic-u48-drop-runs-')
