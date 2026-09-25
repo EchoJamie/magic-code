@@ -59,6 +59,9 @@ import { refused, rowOf } from './toolkit.ts'
  *
  * 注意它**不是**大块转存的阈值（见 `blobs.ts` 头注）：上限管「命令能产出多少」——
  * 超了截断；阈值管「记录怎么存」——超了转存。两者互不代替。
+ *
+ * ⚠️ **这个数管「留多少」，不管「留哪一头」**——越限时留哪一头归沙箱（U93：**头尾都留**，
+ * 中段省掉并在省略处写明，见 `execution/src/exec.ts` 的 `drain`）。要动这个数**另议**。
  */
 export const EXEC_MAX_OUTPUT_BYTES = 64 * 1024
 
@@ -160,12 +163,14 @@ function composeOutcome(result: ExecResult, signal: AbortSignal | undefined): To
 
   // 正文**两支组装同一份**：跑过的命令，无论收尾是「跑完」还是「被掐断」，
   // 它已经说出来的话都照原样带上（`ok:true` 与超时两支的 `stdout` / `stderr` 同形同口径）。
+  // ⚠️ **截断那句不在这儿**（U93）——原先这里缀一条 `[输出已截断（上限 N 字节）]`，
+  // 而 U93 起沙箱**头尾都留**、并在**省略处**写明「省了多少 ＋ 怎么看全」（`exec.ts` 的
+  // `truncationNote`，照 U82 那段省略说明的形状）。再缀一条就是**同一件事说两遍**
+  // （那条注还落在正文末尾——读起来像「尾巴也被砍了」，与事实相反）。
+  // 每道流各管各的那一句：stdout 截了写在 stdout 的省略处，stderr 截了写在 stderr 里。
   const blocks: string[] = []
   if (result.stdout !== '') blocks.push(result.stdout)
   if (result.stderr !== '') blocks.push(`[stderr]\n${result.stderr}`)
-  if (result.truncated === true) {
-    blocks.push(`[输出已截断（上限 ${EXEC_MAX_OUTPUT_BYTES} 字节）]`)
-  }
   const body = blocks.join('\n')
 
   // 超时——**与取消同一口径**：抬头说「跑过了、被掐断」，已有输出照常带回。

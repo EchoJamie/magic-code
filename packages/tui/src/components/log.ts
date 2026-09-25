@@ -778,8 +778,13 @@ function verdictOf(
   if (row.state === 'unexecuted') {
     return { marker: '!', color: PALETTE.warn, text: firstLineOf(row.output) ?? '未执行' }
   }
+  // **失败那一行保头也保尾**（U93）——它跟上面两支的**形状不同**：被拒 / 被扣下那两句
+  // 把「为什么 ＋ 用什么」写在**头里**（`messages.ts` 的 `refusalOutput` 明写「第一行要能
+  // 独立读」，`rules.ts` 那两句也是「未执行 · 由此往下读」），而失败这句的**收梢那一句**
+  // （「该怎么办」）落在最后那几个字上——`D41` 那一半只解决到「名分一次」，指引要展开才
+  // 看得见。故这一支另给一把尺子（头也留、尾也留，见 `truncateMid`）。
   if (row.state === 'failed') {
-    return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '失败' }
+    return { marker: '✗', color: PALETTE.danger, text: failedLineOf(row.output) }
   }
 
   // **大块结果另有一句话要说**（U82）——有多大、屏上有没有铺全、正文去哪儿看
@@ -973,7 +978,15 @@ function liveClock(row: Extract<LogRow, { kind: 'tool' }>, now: number | null): 
   return elapsed < 0 ? null : durationLabel(elapsed)
 }
 
-/** 结果的首条非空行（失败缘由就在那儿）。 */
+/**
+ * 结果的首条非空行（**被拒 / 被扣下**那两句的缘由就在那儿）。
+ *
+ * ⚠️ **这一支只留头**（U93 起仍是）——那两句的形状是「**由前往后读**」：
+ * `messages.ts` 的 `refusalOutput` 明写「第一行要能独立读（已拒绝 ＋ 为什么 ＋ 用什么）」，
+ * `rules.ts` 的 `未执行 · …` 同理（「首行得自己读出没跑」）。要害在**前段**，中截反而会把
+ * 「用什么」（`trash` 那一半）挤掉——**故这两支的尺子本单一个字不动**。
+ * 失败那一支另走 `failedLineOf`（保头保尾），见那处的注。
+ */
 function firstLineOf(output: readonly string[]): string | null {
   const line = nonEmptyLines(output)[0]
 
@@ -983,6 +996,85 @@ function firstLineOf(output: readonly string[]): string | null {
 function truncateLine(text: string, width: number): string {
   const clean = text.trim()
   return displayWidth(clean) <= width ? clean : `${clean.slice(0, width)}…`
+}
+
+/** 失败那一行铺几列（实现级常量；**折叠态只有一行**是这一格的硬约束——见 `truncateMid`）。 */
+const FAILED_LINE_COLUMNS = 48
+
+/**
+ * 中段省掉时，**尾巴保几个字**（其余全给头）——**量出来的数**，推导见 `truncateMid`：
+ * 13 是收梢那一句（`上级目录不存在——先建目录` / `用 exec ＋ curl`）要的量。
+ */
+const FAILED_TAIL_CHARS = 13
+
+/** 失败那一行的整句话——首行口径照旧（取输出的首行），**变的是它被裁到几列、裁哪一头**。 */
+function failedLineOf(output: readonly string[]): string {
+  const line = nonEmptyLines(output)[0]
+
+  return line === undefined ? '失败' : truncateMid(line, FAILED_LINE_COLUMNS)
+}
+
+/**
+ * 截到宽度——**保头也保尾**，中段省掉（U93 · `D41` 的「另一半」）。
+ *
+ * ## 为什么不是「只留头」
+ *
+ * 失败那整句是这个形状（U83 定的措辞，一个字不许动）：
+ *
+ * ```
+ * 写入失败（<路径>）：上级目录不存在——先建目录
+ * ```
+ *
+ * **要害全在后半截**：为什么（`：` 之后那句原委）＋ 该怎么办（`——` 之后那句指引）。
+ * 而路径可以很长——按头裁 48 列时，屏上只剩「名分 ＋ 半个路径」，那句指引要 `ctrl+o`
+ * 展开才看得到（`D41` 的「只解决了一半」，U83 如实报的）。折叠态只有一行时，这一行
+ * 得自己把「为什么 ＋ 该怎么办」读出来。
+ *
+ * ## 分配：**尾保 13 个字，余下的全给头**（量出来的，不是拍的）
+ *
+ * 这一行两头装的是两样东西：**头里是「名分 ＋ 对象 ＋ 原委的开头」**（哪件工具 · 在哪一处 ·
+ * 为什么），**尾里是收梢那一句**（「该怎么办」常落在最后那几个字上）。拿本仓真跑里出得来的
+ * 三句量一量：
+ *
+ * | 真句子 | 两边各要几个字 |
+ * | --- | --- |
+ * | `取不得「http://localhost:8080/x」——本机地址（localhost）不走「取网页」这条路；要访问本地服务用 exec ＋ curl` | 头要 **34** 才装得下「名分 ＋ 地址 ＋ **本机地址**」（各半＝23、尾重＝19 都装不下——屏上只剩「取不得「http://localhos…」）；尾要 **13** 才装得下「用 exec ＋ curl」 |
+ * | `写入失败（<六十字的绝对路径>）：上级目录不存在——先建目录` | 尾要 **13** 才装得下收梢那句（`上级目录不存在——先建目录`）；头再多也只是路径 |
+ * | `文件超长（超过 50 MiB）——不做编辑，以免写回截断内容；改用 exec（如 sed / python）分段改` | 尾 13 正好落在「/ python）分段改」——**出口**那一头 |
+ *
+ * ⇒ **尾恒取 13 字，头拿剩下的 34**——两句的要害都落得进来。
+ * ⚠️ **这是个紧数**：尾少一个字，`取不得「…」——本机地址` 就短一口（U72 真跑里那条
+ * 「缘由说得出口」的判据当场红，见 `frames-u72-tui.ts` 的 ④）；尾多一个字，收梢那句就缺一角。
+ * **要动它，先把上面这三句重跑一遍。**
+ *
+ * ## 尺子**照旧是既有的那一把**（本单只改「留哪一头」）
+ *
+ * 触发与预算都沿用 `truncateLine` 那一套：**按显示宽判**（`displayWidth > width` 才动手）、
+ * **按码点切**（切出来的是字，不是列）。⚠️ 这一条是**实测逼出来的**：改成「按列切」时，
+ * `已取消——已停止等待并发出取消请求（取消不等于远端撤销，未收到结果）` 那一句（36 个字、
+ * 70 列）会**第一次被切**——而它正好是 U38 要屏上读到的那句（U40 的
+ * `mcp-approval-edge` 那条判据当场红）。**本单要改的是「留哪一头」，不是那行留多少**——
+ * 顺手把中文那类的可见字数砍半，就是把别人的判据切掉了。
+ *
+ * ⚠️ **两处顺带的（都在这一行上）**：
+ * - 「宽度超了、**字符数却没超预算**」那一档**原样返回**。旧写法在这一档会缀一个**假省略号**
+ *   （`…未收到结果）…`——什么都没省却说「还有」），是一句假话，故去掉；
+ * - 省略处只有一个 `…`：这一行的预算容不下「省了多少」那两格——报数是**模型那一份**的事
+ *   （`exec.ts` 的 `truncationNote`）。两处**规则同一条**（头尾都留 · 省略处留记号），
+ *   预算各随各的格。
+ */
+function truncateMid(text: string, width: number): string {
+  const clean = text.trim()
+  if (displayWidth(clean) <= width) return clean
+
+  const chars = [...clean]
+  const budget = Math.max(width - 1, 0) // 中间那个 `…` 占一个字
+  if (chars.length <= budget) return clean
+
+  const tail = Math.min(FAILED_TAIL_CHARS, budget)
+  const head = budget - tail
+
+  return `${chars.slice(0, head).join('')}…${chars.slice(chars.length - tail).join('')}`
 }
 
 /**

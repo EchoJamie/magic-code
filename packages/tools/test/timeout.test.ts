@@ -72,12 +72,18 @@ describe('U69 · 超时与取消同一口径', () => {
     expect(outcome.output).toBe('已超时——命令跑过了、被掐断（2000ms 到点）')
   })
 
-  test('② 截断标记照旧带上（超时的命令也可能话太多）', async () => {
+  /**
+   * ⚠️ **U93 改的口径**：超时这一支的截断标记不再由本域缀——截断那句归**沙箱**写在
+   * 正文的**省略处**（头尾之间，见 `execution/src/exec.ts` 的 `truncationNote`）。
+   * 这一条只钉「本域不替它再说一遍」：超时抬头在前、正文照旧带回，**没有**那条旧标记。
+   */
+  test('② 截断标记归沙箱写（本域不另缀——超时的命令也可能话太多）', async () => {
     const deps = makeToolDeps({ exec: { x: timedOut({ truncated: true }) } })
 
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
-    expect(outcome.output).toContain('[输出已截断（上限')
+    expect(outcome.output).not.toContain('[输出已截断')
+    expect(outcome.output.startsWith('已超时——命令跑过了、被掐断（2000ms 到点）\n')).toBe(true)
   })
 
   test('③ 与取消互斥：两边各自的抬头，谁也冒充不了谁', async () => {

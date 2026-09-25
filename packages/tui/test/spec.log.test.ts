@@ -444,3 +444,80 @@ describe('记录区的三类行（后两类不重建）', () => {
     expect(after.has('已换模型')).toBe(false) // 命令回执：屏上痕迹，不重建
   })
 })
+
+// ══ 五 · 失败那一行的裁法（U93 · D41 的另一半）════════════════════════
+
+/**
+ * `D41` 只解决了一半：措辞去重之后，**折叠态那一行仍然只铺 48 列的头**，长路径下
+ * 「为什么 ＋ 该怎么办」被切在半路，要 `ctrl+o` 展开才看得到（U83 如实报的）。
+ *
+ * U93 把这一行改成**保头也保尾**（中段省掉、留一个 `…`）。这一节钉三件：
+ * 长路径下**两头都在** · 短路径**逐字未变** · **另两支的尺子没被顺手改掉**
+ * （被拒 / 被扣下那两句的要害在**头里**，见 `log.ts` 的 `firstLineOf`）。
+ */
+describe('失败那一行——保头也保尾（U93）', () => {
+  /** 一条失败的工具结果——整句就是 `namedFailure` 那个形状（U83 定的措辞，一个字不动）。 */
+  const failure = (path: string, reason = '上级目录不存在——先建目录') => [
+    event('tool.call', { name: 'write', args: { path } }, { id: 71 }),
+    event(
+      'tool.result',
+      { call: 71, ok: false, output: { text: `写入失败（${path}）：${reason}` } },
+      {},
+    ),
+  ]
+
+  /**
+   * 结果那一行的**正文**部分——`  ✗ `、缩进与那句耗时（`1ms · `，**量出来的、会变**）
+   * 都不参与 48 列这笔账（48 是 `log.ts` 给那句正文的预算，见 `FAILED_LINE_COLUMNS`）。
+   */
+  const verdictOf = (line: string): string => line.replace(/^\s*[✗!]\s+(?:\S+\s+·\s+)?/, '')
+
+  test('长路径——**尾部那句指引在折叠态也读得到**（中段省掉、留 `…`）', async () => {
+    const stage = live()
+    // 长到能把那一行撑过 48 列（真实工作区路径就是这个量级）
+    stage.feed(failure('/var/folders/z9/qq6xk2pj7d7g0v_8tqp1hlz80000gn/T/u93-no-dir/u93-new.txt'))
+
+    const frame = await stage.screen({ columns: 100, rows: 24 })
+    const line = frame.textAt(frame.rowOf('写入失败'))
+    const said = verdictOf(line)
+
+    expect(line.startsWith('  ✗ ')).toBe(true) // 失败那个叉照旧
+    expect(said).toContain('写入失败') // 名分（头那一半）
+    expect(said).toContain('…') // 中段省掉、留了记号
+    // **这一条就是本单的要害**：整句原委 ＋ 指引在折叠态读得到（改前只到「半个路径」）
+    expect(said.endsWith('上级目录不存在——先建目录')).toBe(true)
+    // 折叠态**只有一行**：没有换行，也不越 48 个字的预算（`FAILED_LINE_COLUMNS`）
+    expect(said).not.toContain('\n')
+    expect([...said].length).toBeLessThanOrEqual(48)
+  })
+
+  test('短路径——那一行**逐字未变**（反面：不为长路径改掉短的那一形）', async () => {
+    const stage = live()
+    stage.feed(failure('note.txt'))
+
+    const frame = await stage.screen({ columns: 100, rows: 24 })
+    const line = frame.textAt(frame.rowOf('写入失败'))
+
+    // 短的那一形走的是「不超宽 ⇒ 原样」那条路——**与改前逐字相同**（真帧里的改前对照另证）
+    expect(verdictOf(line)).toBe('写入失败（note.txt）：上级目录不存在——先建目录')
+    expect(verdictOf(line)).not.toContain('…')
+  })
+
+  test('反面 · **被扣下**那一支的尺子没动（要害在头里，中截会把它挤掉）', async () => {
+    const stage = live()
+    // 首行是「未执行 · …」那一句（`conversation/src/rules.ts` 定的），这里撑长它看裁法
+    const said = `未执行 · 规约已更新，重新审视后再操作${'（补充说明）'.repeat(8)}`
+    stage.feed([
+      event('tool.call', { name: 'write', args: { path: 'note.txt' } }, { id: 71 }),
+      event('tool.result', { call: 71, ok: false, output: { text: said }, notExecuted: true }, {}),
+    ])
+
+    const frame = await stage.screen({ columns: 100, rows: 24 })
+    const line = frame.textAt(frame.rowOf('未执行'))
+
+    expect(line).toContain('未执行 · 规约已更新') // 头照旧读得出
+    // **仍然只留头**：中截那一形收在原文的尾巴上，这一支收在 `…` 上
+    expect(line.endsWith('…')).toBe(true)
+    expect(line.split('（补充说明）').length - 1).toBeLessThan(8) // 尾巴那几段没跟进来
+  })
+})
