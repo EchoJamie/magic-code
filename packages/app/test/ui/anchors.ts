@@ -85,7 +85,8 @@ export const MAGIC_ANCHORS: UiAnchors = {
   idle: MAGIC_IDLE_MARK,
   exitArmed: HINT_EXIT_ARMED,
   /**
-   * 那一句话**作数多久**——取自产品那边那支钟（`EXIT_ARM_MS`，U68 起是 1.5 秒）。
+   * 那一句话**作数多久**——取自产品那边那支钟（`EXIT_ARM_MS`；U68 起有它，
+   * **U74 缩到 1 秒**）。
    *
    * ⚠️ **拿产品的数、不另写一个字面量**：收尾的第二下能不能作数全看这个窗口，
    * 两处各记一个数，产品改了这边不跟，套件就会**偶发地**红（而那种红最难查）。

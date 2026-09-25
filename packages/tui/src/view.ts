@@ -820,13 +820,21 @@ export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
  *
  * ⚠️ 三类**不能互借词**：「跑完了」不是「成功」（一次回复结束不等于工作完成——设计
  * 「完成说明留在结果正文，不由运行列表认证」），「出错了」要说得出是哪一步错的。
+ *
+ * ⚠️ **「跑完了」那一条不再产出**（2026-09-25 用户定，见设计 · 会话与运行管理「通知」那一格）：
+ * 「那一轮跑完了」这条回执**整个撤掉**——**你正看着它跑完**，印了是复述；**你没看着**，
+ * 它也不该落到你正读的**别的页**上（没看着那一档只走**本机系统通知**＋**下次打开一句
+ * 汇总**两条，都在管理者那一头，不是这条回执）。
+ *
+ * ⇒ 这一支对 `done` 返回 `undefined`，**屏上那一格随之没有**。管理者那一头也已不再
+ * 把它送给窗口（`manager.ts` 的 `notify`）——这一支是**第二道**：即便它来了，也印不出来。
  */
-export function noticeReceiptOf(notice: RunNotice, title: string): string {
+export function noticeReceiptOf(notice: RunNotice, title: string): string | undefined {
   const who = `「${title}」`
 
   switch (notice.kind) {
     case 'done':
-      return `${who}那一轮跑完了`
+      return undefined
     case 'failed':
       return `${who}出错了${notice.detail === undefined ? '' : `：${notice.detail}`}`
     case 'needs-you':

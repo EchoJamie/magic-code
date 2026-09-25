@@ -15,7 +15,7 @@
  * | --- | --- | --- |
  * | 局部停止 | 列表里对选中的那一条按 `ctrl+w` | 回执写着「只停了这一轮」，而那一行**不是**已停止 |
  * | 整体停止 | 同一条按 `ctrl+x` | 回执先「正在停」再「停了」，那一行**才是**已停止 |
- * | 通知 | 一轮跑完 / 一轮出错 | 两类各一行回执（三类里「需要你」由审批卡那一屏自带） |
+ * | 通知 | 一轮跑完 / 一轮出错 | ⚠️ **跑完那一类一个字都不印**（那条回执 U74 撤掉了）· 出错那一类照旧一行（三类里「需要你」由审批卡那一屏自带） |
  *
  * ## 两扇窗，一块沙地
  *
@@ -323,17 +323,25 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
       statusLineOf(done.lines),
     )
 
-    // ④ **通知**：完成与失败各一条（第三类「需要你」由审批卡那一屏自带，归 U38 的帧）
+    // ④ **通知**：⚠️ **「跑完了」那一条整个撤掉了**（U74，2026-09-25 用户定）——
+    //    **不是**改落点、**不是**改次序，是**不要了**；「失败」那一类照旧一条
+    //    （第三类「需要你」由审批卡那一屏自带，归 U38 的帧）
+    //
     // **等抽屉真收起来**——判据取**输入行那句占位**（「交代一件事」），它两趟都在
     // （⚠️ 不能拿状态行那句键位提示当判据：**窄窗里它本来就不出现**，那会当场恒真，
     //   后面那几个字于是打进筛词里——实测栽过一次）
     await other.key('esc', { until: { text: '交代一件事' }, timeoutMs: 10_000 })
     await typeLine(other, '短话')
     await other.key('enter')
-    await waitUntil(other, '完成那一类通知', (lines) => lines.some((line) => line.includes('跑完了')))
-    const notified = await other.capture({ label: `${mark}-05-跑完的那一条通知` })
+    // ⚠️ **U74 改**：等的从「那行回执」换成「**那一句答复本身**」——回执撤掉之后，
+    //    「这一轮跑完了没有」只剩屏上这段正文说得出来（拿回执当条件会白等到超时）
+    await waitUntil(other, '那一句答复上了屏', (lines) =>
+      lines.some((line) => line.includes('第二句短话。')),
+    )
+    const notified = await other.capture({ label: `${mark}-05-跑完那一屏（没有那行回执）` })
     keep(notified)
-    check(has(notified, '跑完了'), '「完成」那一类有一行回执', notified.text)
+    check(!has(notified, '跑完了'), '「完成」那一类**一个字都不印**（那条回执整个撤掉了）', notified.text)
+    check(has(notified, '第二句短话。'), '而它跑完这一件事**照旧看得见**（正文自己就是那个结果）', notified.text)
 
     await typeLine(other, '出错那句')
     await other.key('enter')
