@@ -1,5 +1,5 @@
 {
-  "label": "u69-超时那一屏",
+  "label": "u69-超时那一屏（U76：判轻默认通 ⇒ 这一趟没有裁决卡）",
   "steps": [
     {
       "cmd": "start",
@@ -21,31 +21,45 @@
         }
       ]
     },
-    { "cmd": "send", "session": "甲", "text": "把依赖装一下" },
+    {
+      "cmd": "send",
+      "session": "甲",
+      "text": "把依赖装一下"
+    },
     {
       "cmd": "key",
       "session": "甲",
       "key": "enter",
-      "wait": { "text": "y / a / n" },
-      "timeoutMs": 20000
-    },
-    { "cmd": "capture", "session": "甲", "label": "01-裁决卡（这一次带了超时）" },
-    {
-      "cmd": "send",
-      "session": "甲",
-      "text": "y",
-      "wait": { "text": "已超时" },
+      "wait": {
+        "text": "已超时"
+      },
       "timeoutMs": 30000
     },
-    { "cmd": "capture", "session": "甲", "label": "02-超时那一屏" },
+    {
+      "cmd": "capture",
+      "session": "甲",
+      "label": "01-超时那一屏（这一次带了 timeoutMs）"
+    },
     {
       "cmd": "wait",
       "session": "甲",
-      "condition": { "text": "我不当它是没跑" },
+      "condition": {
+        "text": "我不当它是没跑"
+      },
       "timeoutMs": 30000
     },
-    { "cmd": "capture", "session": "甲", "label": "03-模型读到的那个意思（它没当「没跑」）" },
-    { "cmd": "quit", "session": "甲" },
-    { "cmd": "close", "session": "甲" }
+    {
+      "cmd": "capture",
+      "session": "甲",
+      "label": "02-模型读到的那个意思（它没当「没跑」）"
+    },
+    {
+      "cmd": "quit",
+      "session": "甲"
+    },
+    {
+      "cmd": "close",
+      "session": "甲"
+    }
   ]
 }
