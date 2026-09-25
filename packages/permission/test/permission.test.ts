@@ -481,6 +481,116 @@ describe('判据 2 · 越界（U76：不是必闸判据了）', () => {
   })
 })
 
+// ══ U80 · 内核自己的只读落点 ═════════════════════════════════════════
+
+/**
+ * **内核自己那处**（U80）——`exec` 后台那一形的**输出目录**：判据上**不算越界**。
+ *
+ * ## 由头（权限域这一半欠着的那一条）
+ *
+ * 设计明写那个输出文件**落在工作区之外**（运行目录下），又明写那一格的送达方式是
+ * 「**用既有的 `read` 读那个文件**」。而权限域那条「**按路径的规则只认根内**」
+ * （`rules.ts` · `matchesPath` 缺省路径＝根内，判据是 `landings.every(inside)`）之下，
+ * **`{tool:'read'}`（＝「本工作区总是允许 read」那一形）盖不住它**。
+ * 它是**我们自己的产物**、不是用户的东西 ⇒ **不算越界**。
+ *
+ * ## ⚠️ 本单的**要害是反面**：**认一处 ≠ 放一片**
+ *
+ * - **认的是点过名的这几处**——同一份名单下，工作区外「用户的东西」照旧判根外；
+ * - **只认读那一类**——`write` / `edit` 那两路**压根不接**这一位（往那处写照旧根外必闸）。
+ *
+ * ## 观察面（为什么直取 `analyze`）
+ *
+ * 读类判轻 ⇒ **默认通、不弹卡**（U76）⇒ 材料的写法与落点这件事**不再经事件出口**。
+ * 故这一组直取 `analyze`（本域公开面之一，「供外壳预览与测试直取」），
+ * `readOnlyDirs` 由测试**照闸门那一侧给**（装配那一跳归 `@magic/app`）。
+ */
+describe('U80 · 内核自己的只读落点（那处不算越界）', () => {
+  /** 后台输出目录——`exec` 后台那一形落在工作区之外的那一处（形如 `<基础目录>/run/<指纹>/bg`）。 */
+  const BG_DIR = '/Users/me/.magic/run/8b0ed361ea/bg'
+  const BG_LOG = `${BG_DIR}/bg-1.log`
+  /** 工作区外**用户自己的**一个文件——反面那一格用它。 */
+  const USER_FILE = '/Users/me/.zshrc'
+
+  /** 直取分析——读类那一支；`dirs` 就是闸门那一侧给的 `readOnlyDirs`。 */
+  const analyzed = (tool: string, path: string, dirs?: readonly string[]) =>
+    analyze(call(tool, { path }), context(), dirs)
+
+  test('① 认下那处：`inside` 为真，且说得出是**按哪一条判据**认的（`own`）', () => {
+    const landing = analyzed('read', BG_LOG, [BG_DIR]).landings[0]
+
+    expect(landing?.inside).toBe(true)
+    expect(landing?.via).toBe('own')
+    expect(landing?.root).toBe(BG_DIR)
+  })
+
+  test('① 读与搜索**同一类**：四件都认（不是只给 `read` 开的小口）', () => {
+    for (const tool of ['read', 'grep', 'glob', 'ls']) {
+      expect(analyzed(tool, BG_DIR, [BG_DIR]).landings[0]?.inside, tool).toBe(true)
+    }
+  })
+
+  test('① 材料照实说——**不印「根内 ·」**：它不是一条根，印成根内会让人以为往那儿写也行', () => {
+    const material = analyzed('read', BG_LOG, [BG_DIR]).material
+
+    expect(material).toContain(`${BG_LOG}（内核自己的产物——不算越界）`)
+    expect(material).not.toContain('根内')
+  })
+
+  test('② 反面 · 同一份名单下，工作区外**用户的东西**照旧根外', () => {
+    const landing = analyzed('read', USER_FILE, [BG_DIR]).landings[0]
+
+    expect(landing?.inside).toBe(false)
+    expect(landing?.via).toBeUndefined()
+    expect(analyzed('read', USER_FILE, [BG_DIR]).material).toContain(`${USER_FILE}（根外）`)
+  })
+
+  test('② 反面 · 认的是**那一条目录**：同级的邻居不算（前缀边界不当成「一片」）', () => {
+    // `bg-1.log.bak` 与 `bg/` 的兄弟目录——词法上都不在 `bg/` 里
+    expect(analyzed('read', `${BG_DIR}/../../bgc/bg-1.log`, [BG_DIR]).landings[0]?.inside).toBe(false)
+    expect(analyzed('read', '/Users/me/.magic/run/8b0ed361ea/other/bg-1.log', [BG_DIR]).landings[0]?.inside)
+      .toBe(false)
+  })
+
+  test('② 反面 · **没接**这一位 ⇒ 一处都不认（既有装配与用例因此一字不动）', () => {
+    const landing = analyzed('read', BG_LOG).landings[0]
+
+    expect(landing?.inside).toBe(false)
+    expect(analyzed('read', BG_LOG).material).toContain(`${BG_LOG}（根外）`)
+  })
+
+  test('③ 反面 · **写 / 改那两路不接**这一位：往那处写照旧判根外（照旧必闸）', () => {
+    for (const tool of ['write', 'edit']) {
+      const pass = weighing(analyze(call(tool, { path: BG_LOG, content: 'x' }), context(), [BG_DIR]))
+
+      expect(pass.weight, tool).toBe('heavy')
+      expect(pass.reason, tool).toBe('out-of-bounds')
+      expect(pass.material, tool).toContain(`${BG_LOG}（根外）`)
+    }
+  })
+
+  test('③ 反面 · `exec` 那一路也不接（它那一支照旧：删除照拒、判重照问）', async () => {
+    // 命令里点着那个输出文件——它落在哪儿**不影响**删除那一类的拒（入名单与落在哪儿无关）
+    const { refusal, material } = await refusedBy(call('exec', { cmd: `rm ${BG_LOG}` }))
+
+    expect(refusal).toBe('irreversible')
+    expect(material).toContain(`${BG_LOG}（根外）`)
+  })
+
+  test('根内那一侧一字不动：落在根内的读照旧「根内 · <根>」', () => {
+    const material = analyzed('read', 'src/a.ts', [BG_DIR]).material
+
+    expect(material).toContain('/work/proj/src/a.ts（根内 · /work/proj）')
+  })
+
+  test('判不出的形态（`~` 前缀）**不因这一位**变成「认下」——照旧按根外处置', () => {
+    const landing = analyzed('read', '~/.zshrc', [BG_DIR]).landings[0]
+
+    expect(landing?.inside).toBe(false)
+    expect(landing?.forms).toEqual([])
+  })
+})
+
 /**
  * **材料面** —— 直取 `analyze`（本域公开面之一，注释写着「供外壳预览与测试直取」）。
  *

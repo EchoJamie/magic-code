@@ -1344,6 +1344,11 @@ export function assemble(options: AssembleOptions): Assembly {
       now,
       rules: [...parsedRules.rules, ...planRules],
       grants,
+      // **内核自己那处**（U80）——读类调用认它作「不算越界」，于是「本工作区总是允许 read」
+      // 那一类规则（缺省路径＝根内）盖得住那个输出文件（见 `PermissionGateOptions.readOnlyDirs`）。
+      // ⚠️ **与沙箱那一份同源**：同一个 `backgroundDir` 给两处（沙箱那半 U70 已落）——
+      // 名单一处算，两处用；两处各拼一份迟早对不上。
+      ...(backgroundDir === undefined ? {} : { readOnlyDirs: [backgroundDir] }),
       // 全放行（U73）——**每一代闸门都照这一个布尔造**（换会话时新开的闸门同样带着它：
       // 它是**这一代执行者**的属性，不是某一条会话的）。缺省不给＝照旧问
       ...(options.allowAll === true ? { allowAll: true } : {}),

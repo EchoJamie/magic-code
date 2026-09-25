@@ -195,6 +195,35 @@ export type PermissionGateOptions = {
    */
   readonly allowAll?: boolean | undefined
   /**
+   * **内核自己的只读落点**（U80）——**读类调用**除各根之外另认的几处。
+   *
+   * 当前只有一处：`exec` 后台那一形的**输出目录**（设计明写它落在工作区之外）。
+   * 设计又说那一格的送达方式就是「**用既有的 `read` 读那个文件**」——而权限域那条
+   * 「**按路径的规则只认根内**」（`rules.ts` · `matchesPath`：缺省路径＝根内，
+   * 判据是 `landings.every(inside)`）之下，**「本工作区总是允许 read」那一类规则
+   * 盖不住它**（U70 记下的那条摩擦：每次读我们自己的产物都要问一次）。
+   * 它是**我们自己的产物**、**不是用户的东西** ⇒ **不算越界**。这一位就是把那个判据补给权限域。
+   *
+   * ⚠️ **那条摩擦今天已不复现**——U76 把链的底翻成「**默认通**」之后，读那一类
+   * （判轻）**一律不问**，配不配规则都一样。⇒ **本单落的是判据，不是一处可见的行为变化**：
+   * 规则那一格（缺省路径＝根内）从此盖得住它，落点判据也不再把它当「用户的东西」。
+   * 如实记：这一位今天**没有一条屏幕可见的差别**（真帧与「没有差别」都在 `验证/` 那一份里）。
+   *
+   * ## ⚠️ **「认一处」不是「放一片」**——本单的要害
+   *
+   * - **认的是点过名的这几处**：工作区外「用户的东西」照旧判根外，规则照旧盖不住
+   *   （那一条**一个字没松**）；
+   * - **只认读那一类**：`edit` / `write` / `exec` 不接这一位（见 `analyze` 第三参）——
+   *   往那处**写 / 删 / 移照旧判根外**；
+   * - **不是第二条根**：不参与相对路径解析、不进 `WorkspaceService.roots()`——
+   *   「根有几条」那件事在装配与提示词两处都不变。
+   *
+   * 名单由**装配一处**给出，与执行域那份（`SandboxOptions.readOnlyDirs`）**同一个来源**
+   * （同一处 `backgroundDir` 给两处）——两处各拼一份迟早对不上。
+   * **缺省不给＝一处都不认**：既有装配与用例因此一字不动。
+   */
+  readonly readOnlyDirs?: readonly string[] | undefined
+  /**
    * 时钟（毫秒）——**度量**用：裁决耗时 ＝ 本域开始处理这次裁决 → 裁决落定
    * （`tool.decision.elapsedMs`；两种路径同一口径，见 `events.ts` · `decisionMade`）。
    * 缺省 `Date.now`；显式注入便于测试（域不各自读时钟，取用经此一处）。
@@ -228,6 +257,11 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   const rules = options.rules ?? []
   /** 全放行——**构造时定死**（见 `PermissionGateOptions.allowAll`；本域没有改它的口）。 */
   const allowAll = options.allowAll === true
+  /**
+   * **内核自己的只读落点**（U80）——读类调用另认的几处（见 `PermissionGateOptions.readOnlyDirs`）。
+   * 归零成空数组：缺省不给＝一处都不认，故「没接这一位」与「接了空表」是同一件事。
+   */
+  const readOnlyDirs = options.readOnlyDirs ?? []
 
   /** 在途询问——**请求事件 id** → 待答复（答复按此配对）。 */
   const pending = new Map<DecisionId, Pending>()
@@ -251,7 +285,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   return {
     decide(call, ctx, callRef) {
       const started = now() // 度量起点：本域开始处理这次裁决（人工 / 自动同一把尺子）
-      const analysis = analyze(call, ctx)
+      const analysis = analyze(call, ctx, readOnlyDirs)
 
       // ⓪ **删除那一类：内核直接拒**（U77）——**这一步必须排在最前**。
       //
@@ -397,7 +431,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
      * 调用方**不该**拿这一位去替 `decide` 做判断（问了就是两次裁决）。
      */
     refusalOf(call, ctx) {
-      return analyze(call, ctx).refusal
+      // 与 `decide` **同一次机械分析**（同参同源，见头注那句「一处产出」）
+      return analyze(call, ctx, readOnlyDirs).refusal
     },
   }
 }

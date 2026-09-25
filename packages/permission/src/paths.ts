@@ -36,7 +36,12 @@ export type Landing = {
   readonly given: string
   /** 归一后的绝对路径；**判不出**（如 `~` 前缀）为 `undefined`。 */
   readonly absolute: string | undefined
-  /** 落在某个根内——判不出＝`false`（按根外处置）。 */
+  /**
+   * 落在某个根内——判不出＝`false`（按根外处置）。
+   *
+   * ⚠️ **U80 起也含「内核自己的只读落点」那一支**（`via === 'own'`，见 `landPath`）：
+   * 它**不是**一条工作区根，但判据上**不算越界**，故这一位为真。
+   */
   readonly inside: boolean
   /** 落在哪个根内（`inside` 为真时有值）——报的是**规范形**（身份）。 */
   readonly root: string | undefined
@@ -51,10 +56,11 @@ export type Landing = {
    */
   readonly forms: readonly string[]
   /**
-   * 命中是靠哪一张表——`'real'` ＝规范形 · `'declared'` ＝声明原形 · 判不出 / 根外为 `undefined`。
-   * 只影响**材料措辞**（说清楚「是按用户写的那个写法认的」），不参与判定。
+   * 命中是靠哪一张表——`'real'` ＝规范形 · `'declared'` ＝声明原形 ·
+   * `'own'` ＝**内核自己的只读落点**（U80，见 `landPath`）· 判不出 / 根外为 `undefined`。
+   * 只影响**材料措辞**（说清楚是「按哪一条判据认的」），不参与判定。
    */
-  readonly via: 'real' | 'declared' | undefined
+  readonly via: 'real' | 'declared' | 'own' | undefined
 }
 
 /** 归一根——尾斜杠与 `.` 去掉，便于比对。 */
@@ -101,8 +107,38 @@ function formsOf(primary: string, alternate: string): readonly string[] {
  * **判不出**（`~` 前缀——按根外）。
  *
  * 落点对**两张表**都比，次序与执行域**同源**（逐条根：规范形在前、声明原形在后）。
+ *
+ * ## `readOnlyDirs`：内核自己的只读落点（U80）
+ *
+ * **除各根之外，读类调用另认的几处**——由调用方点名（本域**不自己拼、不自己猜**：
+ * 名单归装配，与执行域那份 `SandboxOptions.readOnlyDirs` **同一个来源**）。
+ * 当前只有一处：`exec` 后台那一形的**输出目录**（设计明写它落在工作区之外）。
+ *
+ * 它是**我们自己的产物**，不是用户的东西 ⇒ **不算越界**（这一步就是本条的全部：
+ * `inside: true`）。由头：权限域那条「按路径的规则只认根内」之下，
+ * **「本工作区总是允许 read」那一类规则盖不住它**（`rules.ts` · `matchesPath`）。
+ * ⚠️ 那条摩擦（「每次读我们自己的产物都要问一次」）是 **U70** 记下的，那时链的底还是
+ * 「默认问」；**U76 起判轻的默认通**，它已不复现 ⇒ **本单落的是判据**（规则那一格与
+ * 落点判据），不是一处看得见的行为变化（见 `PermissionGateOptions.readOnlyDirs`）。
+ *
+ * ## 三条分寸
+ *
+ * - ⚠️ **「认一处」不是「放一片」**：认的是**点过名的这几处**，工作区外「用户的东西」
+ *   照旧判根外（`inside: false`，规则照旧盖不住）。**那一条一个字没松**；
+ * - ⚠️ **只给读类调用**（`analyze` 只把这一位交给 `analyzeSearch`）：`edit` / `write` /
+ *   `exec` 不给 ⇒ 往那儿写 / 删 / 移照旧判根外。缺省（不给）＝**一处都不认**，
+ *   既有调用因此一字不动；
+ * - ⚠️ **不是第二条根**：不进 `ctx.roots`、不参与相对路径解析，也不进
+ *   `WorkspaceService` 那张表（「根有几条」在装配与提示词那两处都不变）。
+ *
+ * 判定次序：**各条根先比**，都落不下再看这几处——落在根内的写法与措辞因此**逐字不变**。
+ * 与工作区那条边界**同一把尺子**（`isInside`，纯词法，不额外承诺挡住符号链接）。
  */
-export function landPath(given: string, ctx: PermissionContext): Landing {
+export function landPath(
+  given: string,
+  ctx: PermissionContext,
+  readOnlyDirs?: readonly string[],
+): Landing {
   // `~` 展开要读环境变量（HOME），域不读环境变量——判不出即从严（按根外）
   if (given === '~' || given.startsWith('~/')) {
     return { given, absolute: undefined, inside: false, root: undefined, forms: [], via: undefined }
@@ -139,6 +175,14 @@ export function landPath(given: string, ctx: PermissionContext): Landing {
     }
   }
 
+  // 各条根都落不下 ⇒ 再看**内核自己那处**（U80）——次序如此，根内的写法与措辞一字不动。
+  // `forms` 只给这一种写法：它不是一条根，没有「另一样写法」可言。
+  for (const dir of readOnlyDirs ?? []) {
+    const base = normalizeRoot(dir)
+    if (!isInside(absolute, base)) continue
+    return { given, absolute, inside: true, root: base, forms: [absolute], via: 'own' }
+  }
+
   return { given, absolute, inside: false, root: undefined, forms: [absolute], via: undefined }
 }
 
@@ -158,9 +202,15 @@ export function expandPattern(pattern: string, ctx: PermissionContext): string {
   return resolve(normalizeRoot(ctx.defaultRoot), pattern)
 }
 
-/** 落点的材料显示——`影响面：<绝对或原样>（根内 / 根外 / 判不出）`。 */
+/** 落点的材料显示——`影响面：<绝对或原样>（根内 / 根外 / 判不出 / 内核自己的产物）`。 */
 export function describeLanding(landing: Landing): string {
   if (landing.absolute === undefined) return `${landing.given}（判不出——按根外处置）`
+
+  // **内核自己那处**（U80）——⚠️ **不印「根内 ·」那个前缀**：它判据上确实算根内
+  // （`inside` 为真、规则照根内比对），但它**不是**一条工作区根（见 `landPath`）——
+  // 印成「根内 · <那个目录>」会让读的人以为往那儿写也可以，而写 / 删 / 移那一侧
+  // **照旧判根外**。说的话与判据说的是同一件事：**不算越界**。
+  if (landing.via === 'own') return `${landing.absolute}（内核自己的产物——不算越界）`
 
   // 按**声明原形**认的要说出来：用户看到的路径与他写下的那一串对得上，
   // 才说得通「为什么这一条算在根内」（否则屏上是 `/private/tmp/…`，他写的是 `/tmp/…`）

@@ -421,6 +421,66 @@ describe('声明原形（U22）——落点认两张表', () => {
   })
 })
 
+// ══ 判据 · 缺省路径（＝根内）那一格：U80 起盖得住「内核自己那处」══════════
+
+/**
+ * **内核自己的只读落点**（U80）——`exec` 后台那一形的**输出目录**。
+ *
+ * ## 这一格要钉的是**由头那句话**
+ *
+ * 规则不写路径时，缺省是「**根内**」——判据落在 `matchesPath`（`landings.every(inside)`）。
+ * 而那个输出文件**落在工作区之外**（设计明文），于是 **`{tool:'read'}`（＝按 `a` 记下的
+ * 「本工作区总是允许 read」那一形）盖不住它** ⇒ 每次读我们自己的产物都要问一次。
+ * 它是**我们自己的产物**、不是用户的东西 ⇒ U80 起**不算越界**，这一格因此为真。
+ *
+ * ⚠️ **反面在同一份名单里**：认的是**那几处**、且**只在读那一类**——
+ * 同一份配置下，工作区外「用户的东西」照旧根外（规则照旧盖不住），
+ * 而**写 / 删 / 移**那一侧压根不接这一位（`analyze` 只把这一位交给 `analyzeSearch`）。
+ *
+ * ## ⚠️ 探针为什么是 `matchRule` 而不是「问没问」
+ *
+ * 同 U77 换过一次的那条由头：读类判**轻** ⇒ 默认通 ⇒ **问没问**这件事在读类上
+ * 两种情形**一样**（都不问）。故这里与 U77 同一姿势——**面**由真 `analyze` 给，
+ * **匹配本身**直取 `matchRule`：测的就是「这一格盖不盖得住」。
+ */
+describe('缺省路径（＝根内）那一格：U80 起盖得住内核自己那处', () => {
+  /** 后台输出目录（`<基础目录>/run/<指纹>/bg`）——它**不在**任何一条根里。 */
+  const BG_DIR = '/Users/me/.magic/run/8b0ed361ea/bg'
+  const BG_LOG = `${BG_DIR}/bg-1.log`
+  /** 工作区外**用户自己的**一个文件——反面那一格用它。 */
+  const USER_FILE = '/Users/me/.zshrc'
+
+  /** 读那一件的**面**——`dirs` 照闸门那一侧给的 `readOnlyDirs` 给（缺省＝没接这一位）。 */
+  function hitRead(path: string, rules: readonly PermissionRule[], dirs?: readonly string[]): boolean {
+    const face = analyze(call('read', { path }), context(), dirs)
+    return matchRule(rules, { tool: 'read', ops: face.ops, landings: face.landings }, context()) !== undefined
+  }
+
+  test('`{tool:"read"}`（缺省路径＝根内）**盖得住**那个输出文件', () => {
+    expect(hitRead(BG_LOG, [{ tool: 'read' }], [BG_DIR])).toBe(true)
+  })
+
+  test('⚠️ 反面 · 同一条规则**盖不住**工作区外用户自己的文件', () => {
+    expect(hitRead(USER_FILE, [{ tool: 'read' }], [BG_DIR])).toBe(false)
+  })
+
+  test('⚠️ 反面 · 认的是**那一条目录**，不是「工作区外一律」', () => {
+    // 另一个工作区外的目录（同级的邻居）照旧盖不住
+    expect(hitRead('/Users/me/.magic/run/8b0ed361ea/other/bg-1.log', [{ tool: 'read' }], [BG_DIR])).toBe(false)
+  })
+
+  test('**没接**这一位 ⇒ 照旧盖不住（既有装配与用例一字不动）', () => {
+    expect(hitRead(BG_LOG, [{ tool: 'read' }])).toBe(false)
+  })
+
+  test('写那一类**不接**这一位：`{tool:"write"}` 盖不住往那处的写（照旧必闸）', () => {
+    const face = analyze(call('write', { path: BG_LOG, content: 'x' }), context(), [BG_DIR])
+    const hit = matchRule([{ tool: 'write' }], { tool: 'write', ops: face.ops, landings: face.landings }, context())
+
+    expect(hit).toBeUndefined()
+  })
+})
+
 // ══ 判据 · 「总是允许」的落点＝**工作区**（U22 迁移）════════════════════
 
 /**
