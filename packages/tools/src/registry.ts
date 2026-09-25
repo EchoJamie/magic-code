@@ -68,6 +68,14 @@ export type ToolRunResult = {
    * （`appendToolResultEntry` → `plan.changed`）。本域（分发）不认识计划，只是原样带上去。
    */
   readonly plan?: PlanNote | null
+  /**
+   * **这一轮停在这儿**（U72）——只有「取网页」那一件会填，且只在**没配提炼模型**时。
+   *
+   * 与 `skill` / `plan` 同一处境：执行体只交回这一位，**收束那一轮归对话域**
+   * （`agentLoop` 的收口）——工具不碰循环。为什么这一种失败不能交给模型自己处置，
+   * 见契约 `ToolResult.halt` 那一段（绕道 `exec curl` 会把整件事绕过去）。
+   */
+  readonly halt?: true
 }
 
 /** 一条工具定义——规格（送模型）＋ 执行体（经沙箱）。 */

@@ -39,6 +39,16 @@ export { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 export { createModelGateway, MissingApiKeyError, resolveApiKey } from './gateway.ts'
 export type { ModelGatewayOptions } from './gateway.ts'
 
+/**
+ * **提炼面**（U72）——「取网页」那一次按问题提炼的调用。
+ *
+ * 公开面里只有这两件：**怎么造它**（`createPageDistiller`，给一条网关 ＋ 一个型号名）
+ * 与**造它的入参**。⚠️ 那条护栏（不带任何工具）不出现在这两件里的任何一格——
+ * 它落在实现里（`distill.ts` 的 `distill` 函数体），契约 `PageDistiller` 的注里有全文。
+ */
+export { createPageDistiller } from './distill.ts'
+export type { PageDistillerOptions } from './distill.ts'
+
 // 注入用 fetch（假端点回放 SSE）——`fetch` 是构造入参的一件，其形态随之出口
 export type { FetchLike } from './ai-sdk.ts'
 

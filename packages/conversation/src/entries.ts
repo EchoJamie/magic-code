@@ -90,6 +90,14 @@ export type ToolOutcome = {
    * 而工具条目本身就在记录里——重放要的是「读了什么」，不是「当时报没报过落点」。
    */
   readonly read?: ToolResult['read']
+  /**
+   * **这一轮停在这儿**（U72）——从 `ToolResult.halt` 原样过来（见契约那一格）。
+   *
+   * ⚠️ **不落条目载荷**（照 `skill` / `read` 的先例）：它是「这一轮怎么收的」的当下事实，
+   * 依据自有别处（那条工具结果条目就在记录里，说得出同一件事）。它的去处只有一个——
+   * `runTurn` 收口时决定**还开不开下一轮**。
+   */
+  readonly halt?: true
 }
 
 /** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
@@ -104,6 +112,8 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
     ...(result.plan === undefined ? {} : { plan: result.plan }),
     // 读到哪儿了（U63）——同一条过手姿势
     ...(result.read === undefined ? {} : { read: result.read }),
+    // 这一轮停在这儿（U72）——同一条（判 `true`：这一位是**声明**，不是可假的值）
+    ...(result.halt === true ? { halt: true as const } : {}),
   }
 }
 

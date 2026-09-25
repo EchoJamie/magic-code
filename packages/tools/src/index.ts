@@ -69,3 +69,19 @@ export { defineSkillTool } from './skill-tool.ts'
  * 装配另按名字追加放行规则——名字散在各处时，改名会静默只改一半。
  */
 export { definePlanTools, PLAN_TOOL_NAMES } from './plan-tools.ts'
+
+/**
+ * **取网页**（U72）——`options.tools` 追加出口上的第四束。
+ *
+ * 与 `skill` / `plan` 同一处境：它要的两样依赖（`WebSource` 出网面 · `PageDistiller`
+ * 提炼面）不在本域默认七件的射程里，由装配造好递进来。
+ *
+ * ⚠️ **这也是「工具可以调模型」那条护栏的落点**（设计 · 工具执行与权限）：那次提炼调用
+ * **不带任何工具**、**深度恒为 1**——它是**这一件工具**的构造入参，不是工具域的公共能力
+ * （`ToolRunContext` 一个字都没多）。别的工具想调模型，是另开一条这样的窄端口 ＋ 一次裁决。
+ */
+export { defineWebFetchTool } from './web-fetch-tool.ts'
+export type { WebFetchDeps } from './web-fetch-tool.ts'
+
+/** 网页正文 → markdown 的上限（回执要报的那个数）——装配与用例都读它一处。 */
+export { WEB_PAGE_MAX_CHARS } from './web-fetch-tool.ts'

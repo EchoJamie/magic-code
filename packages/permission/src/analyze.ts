@@ -20,7 +20,7 @@ import type {
   PermissionContext,
   ToolCall,
 } from '@magic/contracts'
-import { mcpToolLabel, parseMcpToolName } from '@magic/contracts'
+import { mcpToolLabel, parseMcpToolName, webTargetOf } from '@magic/contracts'
 import type { SegmentAnalysis } from './commands.ts'
 import { OP_LABEL, OP_REASON, WRITE_OPS, decompose } from './commands.ts'
 import type { RuleOp } from './ops.ts'
@@ -35,7 +35,11 @@ import { describeLanding, landPath } from './paths.ts'
  * - `reason` 只在 `heavy` 时给——命中的必闸判据（`unknown` ＝看不懂）；
  * - `ops` / `landings` ＝ **规则轴**（阶段 2）：规则条目是（工具 × 路径模式 × 操作类型），
  *   后两格照这两个字段比对。它们与 `weight` **同一处产出**——规则匹配与危险判定读的是
- *   同一份结论，两条路径因此结构上无从分叉（必闸 ＞ 规则 ＞ 默认问）。
+ *   同一份结论，两条路径因此结构上无从分叉（必闸 ＞ 规则 ＞ 默认问）；
+ * - `host`（U72）＝ **规则轴上的第四格**，只在「取网页」那一件上有值：外发的去向是**域名**，
+ *   它不是路径（不落在任何根里）、也不是操作类型（`outbound` 已经说了「往外发」）。
+ *   给它单列一格而不是塞进路径：两条判据的语义毫不相干，混用会让「根内那几个字」
+ *   突然要能匹配域名（`rules.ts` 的 `matchesHost` 与 `matchesPath` 因此各判各的）。
  */
 export type Analysis = {
   readonly weight: DecisionWeight
@@ -54,6 +58,15 @@ export type Analysis = {
   readonly title?: string
   /** **这一次是外部操作**（U38）——外壳据以换口径（效果由服务器决定）、不给「总是允许」。 */
   readonly external?: boolean
+  /**
+   * **这一次发往哪个域名**（U72）——取网页那一件给得出就给。
+   *
+   * 它同时是**规则轴多出来的那一格**（`rule.host`）：卡上说清去向、「总是允许」按域名记，
+   * 两件事读的都是这一个值（见 `Analysis` 头注那条「一处产出」）。
+   * 给不出（地址不合格 / 参数读不出）＝缺席——那时**没有可记的域名**，
+   * 规则那一格也无从比对（见 `rules.ts` 的 `matchesHost`）。
+   */
+  readonly host?: string
 }
 
 /** 必闸判据的中文（材料用——呈现是给人的）。 */
@@ -244,6 +257,8 @@ export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
       return analyzeWrite(call, ctx)
     case 'skill':
       return analyzeSkill(call, ctx)
+    case 'web_fetch':
+      return analyzeWebFetch(call, ctx)
     case 'plan_read':
     case 'history_read':
       return analyzeSessionRead(call.name)
@@ -341,6 +356,77 @@ function analyzeSkill(call: ToolCall, _ctx: PermissionContext): Analysis {
     ops: ['read'],
     landings: [],
   }
+}
+
+/**
+ * **取网页**（`web_fetch` · U72）——**外发 ⇒ 必闸**，而「总是允许」**落在域名上**。
+ *
+ * ## 为什么必闸
+ *
+ * 必闸清单里「外发」那一条（设计 · 工具执行与权限）管的就是这一件：请求发出去即收不回。
+ * 它同时是**唯一一条说得出去处**的外发——`exec` 跑 `curl` 时去向藏在命令行里、
+ * 由命令分析去猜；这一件的去处就是参数里那一个域名，**照实写出来**正是卡该做的事。
+ *
+ * ## 「总是允许」为什么按域名给（而不是按工具）
+ *
+ * 按工具给＝「取网页」这一类从此不再问 ⇒ 往后的每一次取网都自动放行，**包括从没见过的域名**；
+ * 那正好把外发这一条必闸掏空。按域名给＝用户答的是「**往这家发**」这一件事，换一家照问
+ * ——这一件里「总是允许」的实际含义本来就是它（设计 · 网页与搜索：「按域名给，不按工具给」）。
+ *
+ * ## 落点：`Analysis.host` ＋ 规则那多出来的一格
+ *
+ * `host` 交出去之后有两位用处，都在这一个值上（`host` 的注）：
+ * 卡上写清去向（`tool.decision.request.host`）；授权凝成 `{tool, op, host}` 那一条
+ * （`grants.ts` 的 `grantOf`），于是「同一域名不再问、别的域名照问」是**匹配本身**的结果。
+ *
+ * ⚠️ **没有域名的不给授权**：参数里读不出合格地址（本机 / 无点 / 非 http(s)）时 `host` 缺席，
+ * 那时 `a` 根本不给（卡上那一格没有）——「总是允许」记的是一个**域名**，
+ * 而这个调用没有域名可记。工具那一侧会**在发请求之前**拒（同一个 `webTargetOf`）。
+ */
+function analyzeWebFetch(call: ToolCall, _ctx: PermissionContext): Analysis {
+  const raw = call.args['url']
+  const target = webTargetOf(raw)
+
+  // 地址不合格——**它一个字节都发不出去**（工具在发请求之前就拒）。这一步仍照必闸问：
+  // 分析表覆盖不到的形态一律兜底从严，而这一件本就是必闸类；材料照实说清「不会发出去」，
+  // 让人看明白这一张卡批的是什么。⚠️ 不给 `host`（没有域名可记，见上注）。
+  if (!target.ok) {
+    return {
+      weight: 'heavy',
+      reason: 'outbound',
+      material: [
+        `工具：${call.name}`,
+        `这个调用取不得：${target.reason}`,
+        '处置：不会发出任何请求；批准与否都不改变这一点（要访问这类地址，用 exec ＋ curl）。',
+      ].join('\n'),
+      ops: ['outbound'],
+      landings: [],
+    }
+  }
+
+  const asked = firstString(call.args, (key) => key === 'prompt')
+
+  return {
+    weight: 'heavy',
+    reason: 'outbound',
+    material: [
+      `取网页：GET ${target.url}`,
+      `域名：${target.host}`,
+      '外发：只把上面这个地址发过去——问的是什么、看的是什么，都不会发到这个站点。',
+      ...(asked === undefined ? [] : [`问的是：${oneLine(asked.value)}`]),
+    ].join('\n'),
+    ops: ['outbound'],
+    landings: [],
+    host: target.host,
+  }
+}
+
+/**
+ * 一句话压成一行（材料是**逐行**铺的，换行会把卡上的行数撑开）。
+ * 只做这一件事，不截断——参数原样看得见是卡的规矩（`parameterLines` 同此）。
+ */
+function oneLine(text: string): string {
+  return text.replace(/\s+/gu, ' ').trim()
 }
 
 /**

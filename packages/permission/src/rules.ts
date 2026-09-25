@@ -1,7 +1,7 @@
 /**
  * 规则 —— 自动放行的**唯一**入口（技术方案 · 权限：规则化（阶段 2））。
  *
- * > 自动放行 ＝ 规则命中：条目 ＝（工具 × 路径模式 × 操作类型）→ 允许；
+ * > 自动放行 ＝ 规则命中：条目 ＝（工具 × 路径模式 × 操作类型 × 域名）→ 允许；
  * > **必闸类为禁区**——任何规则不可放行（清单即禁区）。「总是允许」＝**工作区级授权**
  * > （见 `grants.ts`）；持久规则存配置文件、用户维护（写回机制留后）。
  *
@@ -23,18 +23,22 @@ import { expandPattern } from './paths.ts'
 import { RULE_OPS, type RuleOp } from './ops.ts'
 
 /**
- * 一条规则 —— （工具 × 路径模式 × 操作类型）→ 允许。
+ * 一条规则 —— （工具 × 路径模式 × 操作类型 × **域名**）→ 允许。
  *
- * - `tool`——工具名；`'*'` ＝任意工具。**必填**（其余两格缺省时它就是整条规则的全部）。
+ * - `tool`——工具名；`'*'` ＝任意工具。**必填**（其余几格缺省时它就是整条规则的全部）。
  * - `path`——路径模式（`*` 段内 · `**` 跨段 · `?` 单字符）；**缺省＝根内**（工作区内）。
  *   相对模式按**默认根**展开（与越界判据同源：相对按默认根 · 绝对须落根内）。
  * - `op`——操作类型（单个或一组）；**缺省＝任意**。给的是一组时，本次调用的**每一个**
  *   操作类型都要在组里才算命中（规则声明的是「这一类调用整体放行」）。
+ * - `host`（U72）——**域名**模式（`*` 段内 · `?` 单字符；同 `globToRegExp` 那套写法，
+ *   如 `*.example.com`）。只有「取网页」那一件带得出这一格（见 `analyzeWebFetch`）。
+ *   ⚠️ **这一次调用有域名时，不写 `host` 的规则一律不命中**——见 `matchesHost`。
  */
 export type PermissionRule = {
   readonly tool: string
   readonly path?: string
   readonly op?: RuleOp | readonly RuleOp[]
+  readonly host?: string
 }
 
 /** 被拒的条目——`index` ＝ 它在配置数组里的位置（`-1` ＝整个值就不是数组）。 */
@@ -50,7 +54,7 @@ export type RuleParseResult = {
 }
 
 /** 条目认得的键——不认得的键**不收**（`pth` 写了不等于没写）。 */
-const RULE_KEYS: readonly string[] = ['tool', 'path', 'op']
+const RULE_KEYS: readonly string[] = ['tool', 'path', 'op', 'host']
 
 /**
  * 解析配置里的权限规则（**只读**——本域不写回）。
@@ -118,6 +122,12 @@ function problemOf(entry: unknown): string | undefined {
     return '路径模式须是非空字符串'
   }
 
+  // 域名模式（U72）——与路径同一姿态：给了就得是个像样的字符串（空串不猜、不扩成通配）
+  const host = fields['host']
+  if (host !== undefined && !nonEmptyString(host)) {
+    return '域名模式须是非空字符串'
+  }
+
   const op = fields['op']
   if (op !== undefined) {
     const list = Array.isArray(op) ? op : [op]
@@ -137,12 +147,15 @@ function toRule(fields: Record<string, unknown>): PermissionRule {
   const tool = (fields['tool'] as string).trim()
   const path = fields['path']
   const op = fields['op']
+  const host = fields['host']
 
   return {
     tool,
     ...(typeof path === 'string' ? { path: path.trim() } : {}),
     // 给单值就给单值、给一组就给一组——**原样**（不替用户归一：写下的形态看得见）
     ...(op === undefined ? {} : { op: op as RuleOp | readonly RuleOp[] }),
+    // 域名归一成小写（域名本就不分大小写；`webTargetOf` 那一侧也已经小写）
+    ...(typeof host === 'string' ? { host: host.trim().toLowerCase() } : {}),
   }
 }
 
@@ -162,6 +175,16 @@ export type CallFace = {
   readonly tool: string
   readonly ops: readonly RuleOp[]
   readonly landings: readonly Landing[]
+  /**
+   * **这一次发往哪个域名**（U72）——`Analysis.host` 原样过来（缺省＝这一次没有域名这一维）。
+   *
+   * 与 `landings` 分开两位，而不是把域名混进落点词条里：落点那一套从头到尾说的是
+   * 「在**工作区**的哪儿」（`inside` 判根内根外、`expandPattern` 按默认根展开），
+   * 而域名不在任何根里——混进去之后，`matchesPath` 那条「缺省＝根内」的语义
+   * 会顺带决定「域名缺省怎么办」，两件事在一格里各说各的（正是 `PermissionRule`
+   * 那条「路径模式与域名各判各的」）。
+   */
+  readonly host?: string
 }
 
 /**
@@ -181,7 +204,38 @@ export function matchRule(
 function matches(rule: PermissionRule, face: CallFace, ctx: PermissionContext): boolean {
   if (rule.tool !== '*' && rule.tool !== face.tool) return false
   if (!coversOps(rule.op, face.ops)) return false
+  if (!matchesHost(rule.host, face)) return false
   return matchesPath(rule.path, face.landings, ctx)
+}
+
+/**
+ * 域名一格——**缺省只在「这一次没有域名」时才是「不过问」**。
+ *
+ * 两种缺省各说一件事：
+ * - **调用这一侧没有域名**（既有那些工具）⇒ 域名格对它**恒真**：这一维根本不存在，
+ *   规则写不写 `host` 都不该影响它（既有那一批规则一字不动）；
+ * - **调用这一侧有域名、规则没写** ⇒ **不命中**。
+ *
+ * ## 为什么是「不命中」而不是「缺省＝任意域名」
+ *
+ * 这一件是**必闸类**（外发）。「必闸类优先于任何允许规则」那条不许被一句没写全的规则
+ * 掏空——`{ tool: 'web_fetch' }`（或 `'*'`）若算作「任意域名都放行」，用户随手写的一条
+ * 宽规则就让**往后的每一次取网**都不再问，包括从没见过的域名。要求写下域名，等于要求
+ * 用户把「往哪一家发」这一件**明确说出口**——那正是「总是允许按域名给」的意思
+ * （设计 · 网页与搜索；`analyzeWebFetch` 有一整段）。
+ *
+ * ⚠️ 这与**路径**那一格的缺省（`path === undefined` ＝「根内」）不矛盾：那一格的缺省收窄，
+ * 是因为「用户不写路径」的意图本就落在自己那摊子里；域名这一维则**没有**这样一个安全的
+ * 默认值——「随便哪家都行」恰恰是唯一不能默认的那一种。
+ *
+ * 写法同路径：`*` 段内 · `?` 单字符（`globToRegExp` 一处供两个轴用），其余字面。
+ * 域名不分大小写，故两边都比小写。
+ */
+function matchesHost(declared: string | undefined, face: CallFace): boolean {
+  if (face.host === undefined) return true
+  if (declared === undefined) return false
+
+  return globToRegExp(declared).test(face.host.toLowerCase())
 }
 
 /**
@@ -269,5 +323,9 @@ export function describeRule(rule: PermissionRule): string {
       ? '任意操作'
       : `操作 ${(Array.isArray(rule.op) ? rule.op : [rule.op]).join(' / ')}`
 
-  return `${tool} × ${path} × ${ops}`
+  // 域名那一格**只在写了时才报**（U72）：缺省那一位在「取网页」上等于**不命中**
+  // （见 `matchesHost`），报成「任意域名」会正好说反——那一行是用户对账用的，不能说反。
+  const host = rule.host === undefined ? '' : ` × 域名 ${rule.host}`
+
+  return `${tool} × ${path} × ${ops}${host}`
 }
