@@ -211,17 +211,22 @@ describe('U13 · ls', () => {
     expect(result.output).toBe('[空目录]')
   })
 
-  test('沙箱失败（目录不存在 / 是文件）→ ok:false ＋ 原委', async () => {
+  test('沙箱失败（目录不存在 / 是文件）→ ok:false ＋ 沙箱那句**逐字**回填（列目录归文件类）', async () => {
+    // `ls` 与 `grep` / `glob` 同在这个文件里，但**归文件类**（U83 · D41 只碰读 / 写 /
+    // 列目录 / 编辑）：沙箱那句 `列目录失败（path）：目录不存在` 已是一整句 ⇒ 原样回填。
+    // ⚠️ 上面搜索那两支**不在本单的边界内**，它们的措辞一个字不动。
+    const reason = '列目录失败（/w/no-such）：目录不存在'
     const failing = {
       ...makeFauxSandbox(),
-      list: () => Promise.reject(new Error('列目录失败（/w/no-such）：目录不存在')),
+      list: () => Promise.reject(new Error(reason)),
     }
     const { runtime } = makeToolDeps({ sandbox: failing })
 
     const result = await runtime.invoke({ id: 'c1', name: 'ls', args: { path: 'no-such' } }, {})
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('列目录失败：列目录失败（/w/no-such）：目录不存在')
+    expect(result.output).toBe(reason)
+    expect(result.output.split('列目录失败').length - 1).toBe(1)
   })
 
   test('参数错误：path 给了却不成形（不静默当缺省）', async () => {
