@@ -1373,6 +1373,17 @@ export function reduce(
     case 'input.settled':
       return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
 
+    // **后台命令结束了**（U70）——留在屏上那一行回执。
+    //
+    // 与「回一条给模型」**分开做**（设计：那一条发给模型、这一条按通知口径给屏，两件事
+    // 别混成一件事做）：给模型的那一条走交代通道落进会话（见 `UserPayload.notice`），
+    // 给屏的就是这一行——**说出是哪一条、跑成什么样、输出在哪儿**。
+    //
+    // 为什么必须出声：模型多半会紧接着去 `read` 那个文件、说点什么，而**为什么**它忽然
+    // 开口，屏上得有个交代（不然用户只看见模型对着空气回了一句）。
+    case 'exec.background.done':
+      return appendReceipt(view, backgroundDoneText(event.data))
+
     case 'model.error':
       return patchStatus(
         appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`),
@@ -1983,7 +1994,14 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
     pendingAt = -1
     const text = contentTextOf(entry)
 
-    if (entry.kind === 'user') {
+    if (entry.kind === 'user' && noticeOf(entry.payload)) {
+      // **内核自己投的那一条**（U70）——照铺，但**不铺成用户那一行**（见 `noticeOf`）。
+      // 与它当场出现在屏上时的样子对齐：都是一行回执（`·`），不是一句「我说的」。
+      //
+      // ⚠️ **正文一个字不裁**（不照 `firstLine` 缩）：那条消息要指得出**输出文件的路径**，
+      // 裁掉尾巴就等于把它唯一有用的那一截丢了（它自己会折行，折行有折行的样子）。
+      rows.push({ kind: 'receipt', key: `rb:x:${entry.id}`, text })
+    } else if (entry.kind === 'user') {
       const skills = usedSkillsOf(entry.payload)
       rows.push({
         kind: 'user',
@@ -2198,6 +2216,46 @@ function toolSegments(rows: readonly LogRow[]): readonly { readonly start: numbe
   }
 
   return segments
+}
+
+/**
+ * **后台命令结束的那一行**（U70）——给屏的措辞（与给模型那条**分开写**：那条要进上下文，
+ * 这条只给人看这一眼；两处各按各自读者说话，故不共用一个字符串）。
+ *
+ * 三档说清「它怎么了」——「停不掉」不在这一行（那是 `stop` 的返回值说的，
+ * 屏上还没有它的入口）：
+ * - 自己跑完且 `exit 0` ⇒ 跑完了；
+ * - 自己跑完但非 0 ⇒ 结束了（带上退出码——**非 0 不等于没跑**）；
+ * - 按 id 停的 ⇒ 已停掉（**不是**「跑完了」——两件事，用户要分得清）；
+ * - 退出码读不到 ⇒ 如实说读不到，**不编一个 0**。
+ */
+function backgroundDoneText(data: EventDataOf['exec.background.done']): string {
+  const how =
+    data.stopped === true
+      ? `已停掉 ${data.id}`
+      : data.ok
+        ? `${data.id} 跑完了`
+        : `${data.id} 结束了（非正常退出）`
+
+  const code = data.exit === null ? '退出码读不到' : `exit ${data.exit}`
+  return `${how}（${code}）· ${firstLine(data.command)} · 输出 ${data.outputPath}`
+}
+
+/** 一条命令的第一行——回执里点名用（整条多行命令铺上去只会把那行撑成一堵墙）。 */
+function firstLine(command: string): string {
+  const line = command.split('\n', 1)[0]?.trim() ?? ''
+  return line.length > 60 ? `${line.slice(0, 60)}…` : line
+}
+
+/**
+ * **这一条 `user` 条目是内核自己投的**（U70 · `UserPayload.notice`）——不是用户说的。
+ *
+ * 读它是为了**别把内核的话安到用户嘴里**：重建会话时那种条目照旧铺进记录区（它是会话的
+ * 一部分），但**不铺成用户那一行**（青底 ＋ `› ` 是「这句是我说的」的记号）——
+ * 铺成一行回执，与它当场出现在屏上时的样子一致。
+ */
+function noticeOf(payload: Entry['payload']): boolean {
+  return (payload as { readonly notice?: unknown } | undefined)?.['notice'] === true
 }
 
 /**

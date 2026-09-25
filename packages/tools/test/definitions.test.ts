@@ -90,8 +90,15 @@ describe('U06 · 定义与注册', () => {
     const properties = parameters?.properties as Record<string, { type?: string }> | undefined
     expect(properties?.cmd?.type).toBe('string')
 
-    // 单一键——不再有候选集（技术方案 · 工具：参数键部分锚定）
-    expect(Object.keys(properties ?? {})).toEqual(['cmd'])
+    // **命令还是那一个键**——不再有候选集（技术方案 · 工具：参数键部分锚定）。
+    //
+    // ⚠️ **U70 改了这一条**（改的是判据、不是口径）：`exec` 现在还有第二个键
+    // `background`——设计 · 工具执行与权限「**`exec` 有「后台」那一形**」第一格明写
+    // 「`exec` 的一个布尔参数（**不新造工具**）」。
+    // 原判据「键只有一个」在新行为下不再成立；**收窄后的判据是「命令键仍是 `cmd`、
+    // 新键只有这一个、且它是布尔」**——放宽的部分如实写在这儿，没有偷偷松掉。
+    expect(Object.keys(properties ?? {})).toEqual(['cmd', 'background'])
+    expect(properties?.background?.type).toBe('boolean')
   })
 
   test('默认集＝工具集 v1 七件（阶段 1 的「仅 exec」随 U13 到站作废）；追加仍是追加', () => {

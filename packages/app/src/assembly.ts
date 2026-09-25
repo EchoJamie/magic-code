@@ -38,8 +38,10 @@
  */
 
 import { statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import type {
+  BackgroundFinish,
+  BackgroundRuns,
   ControlTransport,
   EventDataOf,
   EventKind,
@@ -92,6 +94,7 @@ import type {
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import {
   DEFAULT_CANDIDATES,
+  createBackgroundRuns,
   createMaterials,
   createProcessLedger,
   createProjectRules,
@@ -128,6 +131,7 @@ import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
+import { backgroundOutputDirOf, runPathsOf } from './run/paths.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
 const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
@@ -433,6 +437,18 @@ export type Assembly = {
    * 账一变会喊一声（`onChange`），执行者据此**当场**报，不必等下一趟定时。
    */
   readonly ledger: ProcessLedger
+  /**
+   * **后台运行的登记**（U70）——`exec` 的后台那一形的那一本（起 · 按 id 停）。
+   *
+   * 交给外壳侧的理由与 `ledger` 同一条：**验收与将来的 `/ps` 要有把手**。
+   * 「按 id 停」这一格今天**没有用户入口**（`/ps` 那一屏另开一单）——本单只要
+   * 「id 停得掉」成立，故先经这一个把手验（见回报）。
+   *
+   * `undefined` ＝ **这次装配算不出运行目录**（socket 路径太长那一档，见下）
+   * ⇒ 后台那一形不接：`exec` 的 `background` 会照实回一句「这次装配没接」，
+   * 而不是静默退回前台。
+   */
+  readonly background: BackgroundRuns | undefined
 }
 
 /**
@@ -493,6 +509,38 @@ export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService
   }
 }
 
+/**
+ * **后台命令结束**那一条投给模型的交代（U70）——**两行**：第一行说「怎么了」，
+ * 第二行说「输出在哪儿、怎么看」。
+ *
+ * 为什么要投这么一条（而不是让模型自己去轮询）：设计 · `exec` 的后台那一形第四格
+ * ——「跑完 ⇒ 自动回一条给模型的消息（带那个输出文件路径），**模型自己决定读不读**」。
+ * 故这一条只要说全三件（哪一条 · 跑成什么样 · 输出在哪儿）就够，**不替模型下结论**
+ * （不判「成功 / 失败该怎么处置」——那是它的活）。
+ *
+ * 措辞上的两处刻意：
+ * - **说话人不是用户**——抬头用 `〔…〕` 这种记号（与本仓别处的系统旁注同一族），
+ *   而条目载荷另有 `notice` 那一位管着屏上那一行与会话标题（见 `deliverBackgroundDone`）；
+ * - **「停掉」与「跑完」分开说**——对用户与模型都不是同一件事（设计 · 停止那一节：
+ *   「停了什么、停到哪一步」要说得出来）。
+ */
+function backgroundNoticeText(finish: BackgroundFinish): string {
+  const how =
+    finish.stopped === true
+      ? '后台命令已停掉'
+      : finish.ok
+        ? '后台命令跑完了'
+        : '后台命令结束了（非正常退出）'
+  const code = finish.exit === null ? '退出码读不到' : `exit ${finish.exit}`
+  const first = finish.command.split('\n', 1)[0]?.trim() ?? ''
+  const shown = first.length > 80 ? `${first.slice(0, 80)}…` : first
+
+  return [
+    `〔${how}〕${finish.id}（${code}）· ${shown}`,
+    `完整输出在 ${finish.outputPath} —— 要看就用 read 读它。`,
+  ].join('\n')
+}
+
 /** 本地日期（`YYYY-MM-DD`）——提示词的注入项 `date` 取它（用户的一天，不是 UTC 的一天）。 */
 function localDate(at: Timestamp): string {
   const d = new Date(at)
@@ -530,7 +578,38 @@ export function assemble(options: AssembleOptions): Assembly {
    * **执行者这一代**走（执行者是一个进程，账就是它这一个进程的），由它上报给管理者。
    */
   const ledger = createProcessLedger()
-  const sandbox = createSandbox({ workspace, ledger })
+
+  /**
+   * **后台命令的输出落点**（U70）——`exec` 的后台那一形把输出写在这儿。
+   *
+   * 设计明写它**落在工作区之外**（运行目录下）：落在工作区里会被当成项目文件，
+   * 也会被后续的 `ls` / `grep` 撞上。故这里现算一次运行目录（`runPathsOf` —— 与终端 /
+   * 管理者算的是**同一个键**：同一 dataDir 算到同一处），其下的 `bg/` 就是它。
+   *
+   * ⚠️ **算不出就不接这一形**（而不是编一个落点）：`runPathsOf` 只在那条 socket 路径
+   * 两处都放不下时才抛——那时终端与管理者也起不来（同一个键）。此处**如实降级**
+   * （后台那一形不接，`exec` 的前台那一形照旧），不把启动整条链拖下水。
+   */
+  const backgroundDir = ((): string | undefined => {
+    try {
+      return backgroundOutputDirOf(runPathsOf(magic, loaded.config.dataDir, tmpdir()))
+    } catch {
+      return undefined
+    }
+  })()
+
+  const backgroundRuns =
+    backgroundDir === undefined
+      ? undefined
+      : createBackgroundRuns({ dir: backgroundDir, workspace, ledger })
+
+  const sandbox = createSandbox({
+    workspace,
+    ledger,
+    // **取输出那一格的落点**（U70）——「用既有的 `read` 读那个文件」要落得下来，
+    // 边界就得在这儿让开一条**只读**的口子（见 `SandboxOptions.readOnlyDirs`）
+    ...(backgroundDir === undefined ? {} : { readOnlyDirs: [backgroundDir] }),
+  })
 
   /**
    * **外部工具服务器**（U38）——配置里显式写了的那几条，一条一个进程。
@@ -1194,6 +1273,29 @@ export function assemble(options: AssembleOptions): Assembly {
       // ③ **三个内置辅助工具**（U34）：计划笔记与历史回查。它们按会话造（上面那一份读面
       //    绑的就是本条会话），与「现取」不冲突——这一束本来就是本条链自己的。
       tools: () => [skillTool, ...planTools, ...mcpTools()],
+
+      /**
+       * **后台那一形**（U70）——**按会话绑好**的一道门面。
+       *
+       * 为什么要在这儿包一层（而不是把登记那一本直接递进去）：登记是**进程级**的
+       * （它管着进程，进程比会话活得久），而「跑完 ⇒ 回一条给模型」要落回**发起它的那条
+       * 会话**——那条线只有装配知道（工具域不认识会话）。故 `start` 在这一层补上
+       * `onFinish` 那一位：谁发起，就回到谁那儿。
+       *
+       * `stop` **原样转手**：停是按 id 停的，与「哪条会话发起的」无关（id 全局唯一）。
+       */
+      ...(backgroundRuns === undefined
+        ? {}
+        : {
+            background: {
+              start: (cmd: string, opts?: { readonly cwd?: string }) =>
+                backgroundRuns.start(cmd, {
+                  ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
+                  onFinish: (finish) => deliverBackgroundDone(session, finish),
+                }),
+              stop: (id: string) => backgroundRuns.stop(id),
+            },
+          }),
     })
     // **转发**而不是取值：注册表会在保存配置之后重建（U41），而这一束链是会话级的——
     // 抓一份快照会让已开的会话一直用旧表（同 `forwardStamper` 那条理由）。
@@ -1314,6 +1416,47 @@ export function assemble(options: AssembleOptions): Assembly {
     // 取字节那一半在对话域（它握着记录里那份 blob）
     saveAttachment: (file) => saveAttachmentFile(file),
   })
+
+  /**
+   * **后台命令跑完了**（U70）——两件事**分开做**（设计明写：那一条发给模型、
+   * 给不给用户看另按通知，别混成一件事做）：
+   *
+   * ① **给屏**——一条 `exec.background.done`（**不落库**）：屏上多一行回执，点名是哪一条、
+   *    跑成什么样、输出在哪儿。用户因此看得见「模型为什么忽然又开口了」。
+   * ② **给模型**——一条**带输出文件路径的交代**投进**它自己那条会话**：模型据此自己决定
+   *    读不读那个文件。它落成一条 `user` 条目，载荷带 `notice`（说话人是内核，不是用户
+   *    ——见契约 `UserPayload.notice`），故标题与屏上那一行都不冒充用户。
+   *
+   * ## 两条分寸
+   *
+   * - **只投给发起它的那条会话**（设计 · 通知：「一件事归它自己那条会话——回执与裁决都只
+   *   落在它说的那条会话里，**不落到别的会话的页上**」）。故这里先问一句「它还是当下
+   *   这条吗」：不是就**什么都不做**——事件会画到别人的页上，投递也会投错地方。
+   *   ⚠️ **限度如实记**：这一形今天做不到「投给一条不在前台的会话」（用户切走了、
+   *   后台命令跑完了）——那需要一个「按会话投递而不上屏」的面，属后面的单
+   *   （`/ps` 那一屏与离开续跑是同一片）。
+   * - **`dev server` 那一形永远不会走到这儿**：登记的 `onFinish` 只在**进程真退出**时响
+   *   （设计：「『输出安静了』不等于『它结束了』」）。
+   *
+   * 函数声明（不写成 `const` 箭头）是为了让上面 `open` 那一处能**先引用后定义**——
+   * 这一跳只可能在装配整条走完之后才被调到（那时每一件都初始化过了）。
+   */
+  function deliverBackgroundDone(session: SessionId, finish: BackgroundFinish): void {
+    if (chain?.session !== session) return
+
+    sink.emit(
+      forwardStamper.stamp('exec.background.done', {
+        id: finish.id,
+        command: finish.command,
+        outputPath: finish.outputPath,
+        ok: finish.ok,
+        exit: finish.exit,
+        ...(finish.stopped === true ? { stopped: true as const } : {}),
+      }),
+    )
+
+    conversation.submit({ text: backgroundNoticeText(finish), notice: true })
+  }
 
   /**
    * **应用层**（U25）——编排那一层的落地：恢复是它的第一个真用例。
@@ -2122,6 +2265,9 @@ export function assemble(options: AssembleOptions): Assembly {
     shutdown: () => mcp.shutdown(),
     // 自有进程组那一本账（见 `Assembly.ledger`）——账自己摘掉已经没了的那些
     ledger,
+    // 后台运行的登记（见 `Assembly.background`）——**「按 id 停」今天没有用户入口**
+    // （`/ps` 那一屏另开一单），验它、以及将来的 `/ps`，都从这一个把手进
+    background: backgroundRuns,
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。

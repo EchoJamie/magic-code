@@ -49,6 +49,7 @@ import type {
 } from '@magic/contracts'
 import {
   contentTextOf,
+  noticeOf,
   refsPayloadOf,
   toolCallPayloadOf,
   toolResultPayloadOf,
@@ -383,7 +384,10 @@ async function renderEntry(entry: Entry, deps: CompactorDeps): Promise<string> {
         ? ''
         : refHead + (skills.length === 0 ? '' : `〔本次使用技能：${skills.map((one) => one.name).join(' · ')}〕\n`)
 
-    return `【用户】\n${head}${text}`
+    // **内核自己投的那一条不叫「用户」**（U70）——它说的是「后台命令跑完了」，
+    // 记成【用户】就是把内核的话安到用户嘴里。摘要里如实标成【系统通知】，
+    // 摘要的读者（模型）因此仍认得出那是谁说的。
+    return noticeOf(entry.payload) ? `【系统通知】\n${text}` : `【用户】\n${head}${text}`
   }
   if (entry.kind === 'assistant') return `【助手】\n${text}`
   // 反复压缩（B6）：这份旧摘要落在待压的旧段里，照旧当一段正文喂进去——摘要的摘要

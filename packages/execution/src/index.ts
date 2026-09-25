@@ -24,6 +24,13 @@ export { createSandbox } from './sandbox.ts'
 export type { SandboxOptions } from './sandbox.ts'
 
 /**
+ * **后台运行登记**（U70）——`exec` 的后台那一形的实现（起 · 说一声 · 按 id 停）。
+ * 与沙箱并列的第五件：沙箱管「在轮内跑一条」，它管「交出去、按 id 停」。
+ */
+export { createBackgroundRuns } from './background.ts'
+export type { BackgroundOptions } from './background.ts'
+
+/**
  * **自有进程组的归属与收尾**（U50）——不是端口，是这一域给出去的两件本事：
  * 账（`createProcessLedger`，装配造一本、两处共用）与收尾 / 核对
  * （`reapOwned` / `startTimeOf` / `sameProcess`——管理者的「收回已登记自有进程组」用它）。

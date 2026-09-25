@@ -17,12 +17,23 @@
  * 模型要换目录就在命令里自己 `cd`（命令里的 `cd` 归权限域分析，不归本文件）。
  * 本阶段**不给模型 `cwd` 参数**：参数键只锚了 `cmd` 一个（技术方案 · 工具 · 参数键），
  * 未锚的键不发明（U13 若需要再谈）。
+ *
+ * **后台那一形**（U70）——`background` 这个布尔位把这一条命令**交出去**：不占着这一轮，
+ * 进程接着跑，回执给「id ＋ 输出文件路径」（设计 · 工具执行与权限 · 六格）。本文件只做
+ * **发起那一格**：起 · 停归执行域（`BackgroundRuns`），「跑完回一条给模型」归装配那一层
+ * （登记在进程真退出时发）——三条界线都在各自那一处写着，此处不重复判。
  */
 
 import type { ExecResult } from '@magic/contracts'
-import { OUTPUT_CANCELED_RUNNING, OUTPUT_EXEC_NO_CMD } from './messages.ts'
-import type { ToolDefinition, ToolRunResult } from './registry.ts'
-import { rowOf } from './toolkit.ts'
+import {
+  backgroundStarted,
+  backgroundStartFailed,
+  OUTPUT_BACKGROUND_UNSUPPORTED,
+  OUTPUT_CANCELED_RUNNING,
+  OUTPUT_EXEC_NO_CMD,
+} from './messages.ts'
+import type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.ts'
+import { refused, rowOf } from './toolkit.ts'
 
 /**
  * 超时常量——缺省 120 秒。
@@ -56,6 +67,40 @@ export const EXEC_PARAMETERS = {
   },
   required: ['cmd'],
   additionalProperties: false,
+} as const
+
+/**
+ * **`exec` 的这一形另外那一位**（U70）——后台那一形的发起（六格的第一格）。
+ *
+ * ## 为什么是**叠加**，不是往 `EXEC_PARAMETERS` 里添一笔
+ *
+ * `EXEC_PARAMETERS` 这一个对象**归 U69 拥有**（它在那儿添超时那一项）——两单各改一遍
+ * 同一个对象，迟早在那处撞车。故本单元只**在自己这一层叠上自己那一项**：`cmd` 仍是
+ * 契约锚定的那个键（技术方案 · 工具 · 参数键），`background` 是这一形自己的开关。
+ *
+ * ## 描述里要说清的三件
+ *
+ * 模型只有这一段话可读，而这一形的用法全在这一段里：
+ * - **交出去就不占着这一轮**（命令接着跑，这一轮可以接着干别的）——这一形存在的理由；
+ * - **立刻回「id ＋ 输出文件路径」**，看进展用 `read` 读那个文件；
+ * - **跑完会有一条消息回来**（带那个路径）——故**不要轮着读它等结束**。
+ *
+ * 另有一句得说：**它没有超时**（别把这一形当「避免超时的绕法」使唤——要等结果的命令
+ * 照旧前台跑）。
+ */
+const EXEC_PARAMETERS_WITH_BACKGROUND = {
+  ...EXEC_PARAMETERS,
+  properties: {
+    ...EXEC_PARAMETERS.properties,
+    background: {
+      type: 'boolean',
+      description:
+        '交出去、不占着这一轮（dev server / watch / 长时间构建那一类）。' +
+        '立刻回一个 id 与输出文件路径，命令接着跑；要看进展就用 read 读那个文件。' +
+        '它跑完时会有一条消息带那个路径回来——不要轮着读它等结束。' +
+        '这一形没有超时；要当场等结果的命令别用它。缺省＝跟前台一样。',
+    },
+  },
 } as const
 
 /**
@@ -101,17 +146,56 @@ function composeOutcome(result: ExecResult, signal: AbortSignal | undefined): To
   return { ok: result.exit === 0, output: blocks.join('\n') }
 }
 
+/**
+ * **后台那一形**——把命令交给后台登记，当场把回执交回模型。
+ *
+ * 三件各归各位：
+ * - **本文件**只转手（起在哪、停在哪儿归执行域；跑完怎么投一条消息回来归装配那一层）；
+ * - **「跑完 ⇒ 回一条给模型」不在这儿**——那一声由登记在**进程真退出**时发（见
+ *   `BackgroundRuns.start` 的 `onFinish`），这一跳**不等它**（等了就又不占着这一轮了）；
+ * - ⚠️ **「输出安静了」不等于「它结束了」**：本文件**一个字都不据输出判结束**。
+ *
+ * 没接后台能力时**不静默退回前台**——那是改了这一条调用的意思（见 `OUTPUT_BACKGROUND_UNSUPPORTED`）。
+ */
+async function startBackground(cmd: string, ctx: ToolRunContext): Promise<ToolRunResult> {
+  const runs = ctx.background
+  if (runs === undefined) return refused(OUTPUT_BACKGROUND_UNSUPPORTED)
+
+  const started = await runs.start(cmd)
+  if (!started.ok) return refused(backgroundStartFailed(started.reason))
+
+  // `ok: true`——**交出去这件事做成了**（命令后来跑成什么样是另一件事，由那一声回执说）。
+  // 这里报 false 会让模型以为「没跑」，而它其实正在跑。
+  return { ok: true, output: backgroundStarted(started.id, started.outputPath) }
+}
+
 /** 造 `exec` 的工具定义。 */
 export function defineExecTool(): ToolDefinition {
   const row = rowOf('exec')
 
   return {
-    spec: { name: row.name, summary: row.summary, parameters: EXEC_PARAMETERS, danger: row.danger },
+    spec: {
+      name: row.name,
+      summary: row.summary,
+      parameters: EXEC_PARAMETERS_WITH_BACKGROUND,
+      danger: row.danger,
+    },
 
     async run(args, ctx): Promise<ToolRunResult> {
       const cmd = args.cmd
       if (typeof cmd !== 'string' || cmd.trim() === '') {
         return { ok: false, output: OUTPUT_EXEC_NO_CMD }
+      }
+
+      // **后台那一形**（U70）——交出去就回，不占着这一轮。
+      //
+      // 判据是 `=== true`：`background` 只在「要这一形」时给得成真；写成别的（字符串 /
+      // 数字 / 缺席）一律按**前台**走 —— 前台是这一形之外的老路，一个字都不动。
+      //
+      // ⚠️ **闸门照走**：这一支在 `run` 里，而 `run` 只可能在闸门批准之后被调到
+      // （分发：闸门在执行路径内、不可绕过）——后台**不是**绕过裁决的口子。
+      if (args['background'] === true) {
+        return startBackground(cmd, ctx)
       }
 
       const result = await ctx.sandbox.exec(cmd, {

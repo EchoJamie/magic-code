@@ -7,6 +7,9 @@
  * **加第十二条**：`Materials`（文件 / 目录材料来源面，U36）——同一条分工的第三次；
  * 多一条**只读边界**：工作区外的那一个只收**单个文件**（用户明确选定的只读附件），
  * 目录不在此列。
+ * **加第十三条**：`BackgroundRuns`（后台运行登记，U70）——与 `Sandbox` 同一个姿势
+ * （工具域 → 执行域），管的是**另一件事**：沙箱的 `exec` 是「在轮内跑一条」，
+ * 这一条是「交出去、按 id 停」（设计 · `exec` 的后台那一形）。
  *
  * 出处：技术方案 · 领域划分（「契约（耦合契约）」· 端口签名 v0 · 依赖规则）。
  * **依赖倒置的落点**——域包只 import `@magic/contracts`（＋许可外部库）；域之间互不 import、
@@ -274,12 +277,116 @@ export interface Sandbox {
    * **为什么要有这个口子**：`write` / `edit` 走「读 → 改 → 写回」时，按缺省上限读到的
    * 是**截断文本**——原样写回即**抹掉尾巴**（数据安全件）。故 `edit` 显式放大上限
    * （实现常量 1 MiB），仍超限则**即拒并指出出口**（走 `exec`）。
+   *
+   * **落点不止工作区**（U70）：除各根之外，实现另认**内核自己的一处只读落点**
+   * （后台命令的输出目录，在工作区之外）——「取输出用既有的 `read`」那一格的落点。
+   * 它是**只读**的：`write` / `list` / `match` 一个都不认那一处（见 `SandboxOptions`）。
    */
   read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult>
   write(path: string, data: WriteData): Promise<void>
   list(path: string): Promise<readonly ListEntry[]>
   match(pattern: string, opts: MatchOptions): Promise<readonly MatchHit[]>
 }
+
+// —— 后台运行（`exec` 的后台那一形 · U70）——
+
+/**
+ * **一条后台运行的结束回执**（`BackgroundRuns.start` 的 `onFinish`）——**说全**三件：
+ * 是哪一条、跑成什么样、输出在哪儿。
+ *
+ * 它为什么不是 `ExecResult`：那一位说的是「一次**在轮内**的执行做成了没有」——而这里
+ * 命令**早就交出去了**（发起那一轮当场就收了回执），此刻说的是它**后来的结局**。
+ * 两者不是同一件事，硬套一个形态就得给每个字段编一个「后台时它是什么意思」。
+ */
+export type BackgroundFinish = {
+  /** 那条运行的 id（发起时回执上给过的那一个）。 */
+  readonly id: string
+  /** 交出去的那条命令（回执上照原样给一眼）。 */
+  readonly command: string
+  /** **它的输出文件**（工作区之外）——模型按需读的就是这一份。 */
+  readonly outputPath: string
+  /** 命令自己跑到头且 `exit 0` 才算成；非 0 / 被信号收掉都不算。 */
+  readonly ok: boolean
+  /** 退出码；读不到时为 `null`（**不编一个数出来**——同 `ExecResult` 那条口径）。 */
+  readonly exit: number | null
+  /** **是「停掉」那一支**（按 id 停的），不是它自己跑完的。缺省＝自己结束的。 */
+  readonly stopped?: true
+}
+
+/**
+ * **后台运行登记**（工具域 → 执行域）——「把一条命令交出去、按 id 停得掉」这两件事。
+ *
+ * 出处：设计 · 工具执行与权限「**`exec` 有「后台」那一形**」的第一格与第五格——
+ * 发起（`exec` 的一个布尔参数）与停（**按那个 id 停**，落实在**进程组**上）。
+ *
+ * ## 三件定死的
+ *
+ * - **命令跑在进程组里**（与在轮内的 `exec` 同一姿势：`detached` 自成一组）——
+ *   「按 id 停」因此落到实处是**按组收**，命令起的孙进程一并收走，不留一窝逃逸的孤儿；
+ * - **输出落在工作区之外**（运行目录下）——落在工作区里会被当成项目文件，
+ *   也会被后续的 `ls` / `grep` 撞上（设计明写）；
+ * - **「输出安静了」不等于「它结束了」**——结束只有两条路：它自己跑完，或按 id 停。
+ *   故 `onFinish` 只在**进程真的退出**时响一次；dev server 挂着就不响。
+ *
+ * ## 停止是**按 id**的，不是「全停」
+ *
+ * 设计 · 会话与运行管理：「**不做『一次全停』**……逐条停不是权宜之计，是设计」。
+ * 故本面只有 `stop(id)`——没有 `stopAll`，也没有按命令名杀。
+ */
+export interface BackgroundRuns {
+  /**
+   * 交出一条命令——**立刻**回「认得出它的 id ＋ 它的输出文件路径」。
+   *
+   * 返回之后命令在本进程之外继续跑（不占发起那一轮）。**发起过程本身的失败**
+   * （建的目录不对、进程起不来）走返回值——那时压根没有 id 可给。
+   */
+  start(cmd: string, opts?: BackgroundStartOptions): Promise<BackgroundStart>
+  /**
+   * **按 id 停**——命令、连它起的孙进程一并收掉。
+   *
+   * 四种结局都**说得出口**（见 `BackgroundStop.result`）：「收干净了」「停不掉，为什么」
+   * 「本来就已经结束了」「认不出这个 id」。收不干净时**如实说**，不拿一句「已停止」冒充。
+   */
+  stop(id: string): Promise<BackgroundStop>
+}
+
+/** `BackgroundRuns.start` 的入参。 */
+export type BackgroundStartOptions = {
+  /**
+   * 在哪里跑——**与沙箱同一条解析规则**（相对按默认根 · 绝对须落根内）；缺省＝默认根。
+   *
+   * 越界即拒（进程不启动）——判据与沙箱原语同源，执行域一处判。
+   */
+  readonly cwd?: string
+  /**
+   * **它结束之后说一声**（自己跑完 / 被停掉了都算一次）——内核据此回一条给模型。
+   *
+   * 只在**真退出**时响：dev server 一直挂着就没有这一声（设计：「『输出安静了』不等于
+   * 『它结束了』」）。回调抛错不外溢——它是通报，不该带倒收尾那一跳。
+   */
+  readonly onFinish?: (finish: BackgroundFinish) => void
+}
+
+/** `BackgroundRuns.start` 的产物——判别式（**发起不成立**是返回值，不是异常）。 */
+export type BackgroundStart =
+  | {
+      readonly ok: true
+      /** 认得出它的 id——回执上给模型看，停也按它停。 */
+      readonly id: string
+      /** **它的输出文件**（工作区之外）——模型要读的就是这一份。 */
+      readonly outputPath: string
+    }
+  | { readonly ok: false; readonly reason: string }
+
+/** `BackgroundRuns.stop` 的产物——「停掉了什么」要说得出来。 */
+export type BackgroundStop =
+  /**
+   * 收干净了。`note` 是给人看的一句。
+   * `already` ＝**它本来就结束了**（本次没有动它）——「停在已经结束的东西上」不是失败，
+   * 但与「是我收掉的」不是一回事，故分开说。
+   */
+  | { readonly ok: true; readonly note: string; readonly already?: true }
+  | { readonly ok: false; readonly reason: string }
 
 /** 工具域 / 装配 → 执行域。 */
 export interface WorkspaceService {

@@ -59,7 +59,7 @@ export type ToolResultEntry = Entry & {
  * | --- | --- |
  * | `tool-call` | **必须有** `{ name, args }` |
  * | `tool-result` | **必须有** `{ ok, output }` |
- * | `user` | **可有**（U33 起：随这次交代送出去的技能材料；U36 起：带位置的引用）；不带＝纯文本交代 |
+ * | `user` | **可有**（U33 起：随这次交代送出去的技能材料；U36 起：带位置的引用；U70 起：说话人的标记 `notice`）；不带＝纯文本交代 |
  * | `assistant` | **可有**（U41 起：供应商要求回传的那份思考）——**核准形状只有 `{ reasoning: string }`** |
  * | 其余（`summary`） | **必须没有** |
  *
@@ -102,7 +102,8 @@ export function assertEntryShape(entry: NewEntry): void {
           'label }] }`（U36：带位置的那一份；U37 另加图片那一支 `{ kind: "image", name, ' +
           'mime, blob }`——它没有 text，内容是字节；U63 起文件 / 目录 / 技能的 `text` 也是选配：' +
           '送达方式改成「模型按需自读」，正文由模型自己取）或 `{ skills: [{ name, source, label, ' +
-          'text }] }`（U33 旧形：无位置）。别的东西没有位置' +
+          'text }] }`（U33 旧形：无位置）；另可带 `notice: true`（U70：这一条是**内核自己' +
+          '投的**，不是用户说的——当前只有「后台命令跑完了」那一件）。别的东西没有位置' +
           '（技术方案 · 记录 · 条目：载荷是重放真源，不是杂物抽屉）',
       )
     }
@@ -254,7 +255,9 @@ export function isContent(value: unknown): value is Content {
  */
 export function isUserPayload(payload: unknown): payload is UserPayload {
   if (!isRecord(payload)) return false
-  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs')) return false
+  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs' && key !== 'notice')) {
+    return false
+  }
 
   const skills = payload['skills']
   if (skills !== undefined && !isUsedSkills(skills)) return false
@@ -262,8 +265,14 @@ export function isUserPayload(payload: unknown): payload is UserPayload {
   const refs = payload['refs']
   if (refs !== undefined && !isInputRefs(refs)) return false
 
+  // `notice`（U70）——**说话人**的标记（内核自己投的那一条：后台命令结束）。
+  // 只有 `true` 这一种写法：写 `false` 是「说了但没带」的两种说法并存，同 `ToolResultPayload`
+  // 那里 `notExecuted` 的口径（「没这一位」本身就是一条信息）。
+  const notice = payload['notice']
+  if (notice !== undefined && notice !== true) return false
+
   // 空载荷（一个键都没有）不算「带了材料」——它是「没有载荷」写错了地方
-  return skills !== undefined || refs !== undefined
+  return skills !== undefined || refs !== undefined || notice === true
 }
 
 /** 旧形（U33）：技能材料三件齐全（名字 / 来源 / 正文）。 */
