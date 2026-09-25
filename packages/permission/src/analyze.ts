@@ -293,8 +293,18 @@ export function unclassifiable(tool: string, why: string): Analysis {
  *
  * 分析表**对标工具集 v1 的静态危险归类**（`ToolSpec.danger`）：静态归 `by-call` 的
  * （`exec` · `write`）在此**按调用落定**——这正是「按调用判定」的落点。
+ *
+ * ## 第三参：内核自己的只读落点（U80）
+ *
+ * ⚠️ **只交给「读与搜索」那一支**（`analyzeSearch`）——`edit` / `write` / `exec` 一律不接，
+ * 故往那几处写 / 删 / 移**照旧判根外**（判据见 `landPath` 头注那三条分寸）。
+ * 「哪几处」由闸门给（`PermissionGateOptions.readOnlyDirs`），缺省＝一处都不认。
  */
-export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
+export function analyze(
+  call: ToolCall,
+  ctx: PermissionContext,
+  readOnlyDirs?: readonly string[],
+): Analysis {
   // **外部调用先认身份**（U38）——参数解析得出与否都不改变「这是一次外部操作」：
   // 身份有两处来路，都**不是模型说的**（见 `externalOf`）。
   const external = externalOf(call)
@@ -312,7 +322,7 @@ export function analyze(call: ToolCall, ctx: PermissionContext): Analysis {
     case 'grep':
     case 'glob':
     case 'ls':
-      return analyzeSearch(call, ctx)
+      return analyzeSearch(call, ctx, readOnlyDirs)
     case 'edit':
       return analyzeEdit(call, ctx)
     case 'write':
@@ -517,15 +527,35 @@ const DEFAULT_ROOT = '.'
  *   此处**不假装知道落点** ⇒ 归「判不出」。
  *
  * ⇒「判不出」只留给**真正看不懂**的形态，不再兜住「没给参数」这种合法写法。
+ *
+ * ## 内核自己的只读落点（U80）——**只有这一支**接那位
+ *
+ * 读类调用的落点除各根之外**另认几处**（`readOnlyDirs`，当前一处：`exec` 后台那一形的
+ * 输出目录）——那是**我们自己的产物**、不是用户的东西 ⇒ **不算越界**。
+ * 由头与三条分寸见 `paths.ts` · `landPath` 的头注；**「哪几处」不在这儿拼**，由闸门给。
+ *
+ * ⚠️ **只有读与搜索这一支接**：本支出的操作类型恒为 `read`，而这四件也正是「读材料」那一类
+ * （设计 · 权限：「读材料不在此列」）。`edit` / `write` / `exec` 那三支**不接**——
+ * 往那处**写 / 删 / 移照旧判根外**（「认一处」不等于「放一片」，那是本单的要害）。
+ *
+ * ⚠️ **与沙箱那一半的分寸不完全对称**（如实记）：执行域那处只认 `read` 一件
+ * （`SandboxOptions.readOnlyDirs`：`list` / `match` 都不认），而这一支是**读与搜索一类四件**。
+ * 于是 `ls` / `grep` / `glob` 点名那处时，**判据上算根内、执行上仍够不着**（沙箱照旧回越界）。
+ * 这一格**不是本单的射程**（工单明写「不动 U70 已经落的那半」）——此处不按工具名分两路，
+ * 正是因为「判据落在一处，别散」：**归类的边界是「读材料」这一类，不是某几个工具名**。
  */
-function analyzeSearch(call: ToolCall, ctx: PermissionContext): Analysis {
+function analyzeSearch(
+  call: ToolCall,
+  ctx: PermissionContext,
+  readOnlyDirs?: readonly string[],
+): Analysis {
   const path = firstString(call.args, isPathKey)
 
   if (path === undefined && PATH_REQUIRED_TOOLS.includes(call.name)) {
     return unclassifiable(call.name, `参数里缺必填的路径字段（参数键全表：${call.name} 的 path 必填）`)
   }
 
-  const landing = landPath(path?.value ?? DEFAULT_ROOT, ctx)
+  const landing = landPath(path?.value ?? DEFAULT_ROOT, ctx, readOnlyDirs)
   const material =
     path === undefined
       ? `影响面：${describeLanding(landing)}（调用没给路径——参数键全表：缺省＝默认根）`

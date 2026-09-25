@@ -58,8 +58,11 @@ export type SandboxOptions = {
    *
    * - **只读**——只有 `read` 认它；`write` / `list` / `match` 一个都不认（能从这儿读到，
    *   不等于能对它执行工具——同 `Materials` 那句「只读来源不扩大执行范围」）；
-   * - **不是第二条根**——不参与相对路径解析、不进 `WorkspaceService.roots()`
-   *   （故闸门那一侧照旧把它看成「根外」，一行都不改：权限闸门不动）；
+   * - **不是第二条根**——不参与相对路径解析、不进 `WorkspaceService.roots()`。
+   *   （U70 时这一句还接着「故闸门那一侧照旧把它看成根外」——**U80 起不是了**：
+   *   闸门那一侧也认它，读类调用判「不算越界」，见 `PermissionGateOptions.readOnlyDirs`。
+   *   两处**同一个来源**：装配那一个 `backgroundDir` 给两处。仍不是根——只是判据上
+   *   不算越界，根表一个字没动。）；
    * - **词法判定**——与工作区那条边界同一把尺子（`isInside`），不额外承诺挡住符号链接。
    */
   readonly readOnlyDirs?: readonly string[] | undefined
