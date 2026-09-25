@@ -59,6 +59,12 @@ import {
   pathRows,
   resolveSkill,
   sessionHint,
+  // **配置一览（U71）**——四行怎么铺、筛词怎么说、第 4 项那一屏报什么，都在 `view.ts` 一处
+  // （这一层只管开屏 / 重铺 / 选定之后进哪儿）
+  CONFIG_PATHS_TITLE,
+  configHint,
+  configPathLines,
+  configRows,
   grantsHint,
   grantsRows,
   hasPlan,
@@ -246,7 +252,12 @@ function statusLines(view: ShellView): readonly string[] {
 
 const STATUS_TITLE = '此刻'
 
-/** 一次「等内核回话再开选择器」的意图——`/resume` · `/model` · `/grants` · `/skills` 各一种。 */
+/**
+ * 一次「等内核回话再开选择器」的意图——`/resume` · `/model` · `/grants` · `/skills` 各一种。
+ *
+ * ⚠️ **`'config'` 是唯一一个等三份答复的**（见 `configPending`）：那一屏的四行里三行的
+ * 当前值各有自己的读侧命令，缺一份那一格就只能写「还没问到」。
+ */
 type PendingPicker =
   | 'session'
   | 'model'
@@ -256,6 +267,23 @@ type PendingPicker =
   | 'connect'
   | 'manage'
   | 'attachments'
+  | 'config'
+
+/**
+ * `/config` 开屏要问的那三份读数——**一份都不能少**（少一份，那一格就成了「还没问到」）。
+ *
+ * ⚠️ **命令与它回来的那一发事件成对写在一处**：分两处写（一处列命令、一处列事件）就有
+ * 「加了一份读数、忘了加那条命令」那一类静默失配——而它的表现是**这一屏再也开不出来**
+ * （等一份永远不来的答复），最难查的那一形。条数也从这一处取（`CONFIG_READINGS.length`）。
+ */
+const CONFIG_READINGS: readonly {
+  readonly command: Command
+  readonly event: KernelEvent['kind']
+}[] = [
+  { command: { type: 'model.list' }, event: 'model.catalog' },
+  { command: { type: 'grants.list' }, event: 'grants.catalog' },
+  { command: { type: 'mcp.list' }, event: 'mcp.catalog' },
+]
 
 
 /**
@@ -325,6 +353,21 @@ export type ShellOptions = {
    * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗（「拿不到的不编」——同 `contextWindow`）。
    */
   readonly workspaceRoots?: readonly string[] | undefined
+  /**
+   * **数据目录**（U71 · `/config` 第 4 项那一格）——配置 `dataDir` 的落点，**已解析的绝对路径**。
+   *
+   * 为什么要从外面递：它是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何一条读侧
+   * 命令答得出来——而窗口这一侧本来就「读配置只为呈现」（见 `packages/app/src/run/terminal.ts`
+   * 那张表）。**不给＝那一格空着**（「拿不到的不编」，同 `contextWindow` / `workspaceRoots`）。
+   */
+  readonly dataDir?: string | undefined
+  /**
+   * **系统家目录**（U71）——**只用来把屏上的路径缩成 `~/…`**（`/config` 那一行右边还摆着
+   * 别的字，一长串 `/Users/<谁>/…` 会把值那一格撑满）。
+   *
+   * **不给＝照原样写绝对路径**（缩不了就不缩，不编一个家目录出来）。
+   */
+  readonly home?: string | undefined
   /**
    * **受理输入了没有**——缺省 `true`（不设闸）。
    *
@@ -609,6 +652,28 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /** 等回话的选择器意图（`/resume` / `/model` / `/grants` / `/skills` 各问一次）。 */
   let waiting: PendingPicker | null = null
+
+  /**
+   * **`/config` 还在等几份读数**（U71）——`0` ＝ 没在等。
+   *
+   * 由头：那一屏四行里有三行的「当前值」**各有自己的读侧命令**（连接一览 · 授权名录 ·
+   * 外部工具一屏）。要「不进去就知道现在是什么」，就得**先问全再开屏**——少问一份，
+   * 那一格就只能写「还没问到」，而这一屏存在的全部理由正是**竖着扫一眼就看全**。
+   *
+   * ⚠️ **三份一起问、齐了才开**（不是来一份开一次）：先开再补的话，用户会看见那一格
+   * 从空到有地自己变一次——而「它现在是什么」这个问题，屏上不该有第二个答案。
+   * 三份都是便宜的本机读数（读注册表 / 读授权文件 / 读内存里的连接状态）。
+   */
+  let configPending = 0
+
+  /**
+   * **这一屏正在筛的词**（U71）——同 `/resume` 的 `sessionQuery`：只留在这一屏，
+   * **不写进草稿**（它不是用户那句交代的一部分，与 `@` 那一段不同，见 `Picker.anchor`）。
+   *
+   * 开一屏就是一屏新的（`openConfigPicker` 里清零）：筛词是「我这一次找哪一项」的临时状态，
+   * 不是一条该被记住的偏好。
+   */
+  let configQuery = ''
 
   /**
    * **一次换页动作发出去了、还在等答复**（U44）——`/clear` 或 `/resume` 选定某条。`null` ＝ 没在等。
@@ -1134,6 +1199,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    **这一页带不带字标**（U45：`'new'` 印 / `'open'` 不印）。
     //    给宽了，「问一次目录」开出来的空壳会话也会把屏翻掉。
     commit(reduce(view, event, { turn: turn?.kind ?? null }), STREAMING.has(event.kind))
+
+    // **`/config` 那三份读数**（U71）——三份都到齐了才开屏（由头见 `configPending` 那段注）。
+    //
+    // ⚠️ **不 `return`**：下面那几支各有自己的一点活（授权文件读不懂那句、重连回执那一句
+    // 都挂在各自那一支上），这一跳只管**开屏**——它不该把别人的话吞掉。
+    // ⚠️ **排在 `reduce` 之后**：开屏要的那三格刚由 `reduce` 落进视图。
+    if (waiting === 'config' && CONFIG_READINGS.some((one) => one.event === event.kind)) {
+      configPending -= 1
+      if (configPending <= 0) {
+        waiting = null
+        openConfigPicker()
+      }
+    }
 
     if (event.kind === 'session.state') {
       // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
@@ -1763,6 +1841,77 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         },
       },
     })
+  }
+
+  // —— 配置一览（U71 · `/config`）——
+
+  /**
+   * **`/config` 的取材**——**一处取**（开屏与每次重铺共用一份，免得两处取成两样）。
+   *
+   * 四路：三份读数从**视图**里取（`model.catalog` / `grants.catalog` / `mcp.catalog` 各自
+   * 落下的那一格），两条路径从**入参**里取（`ConfigPaths`——那两件没有命令问得到，
+   * 由装配递进来）。筛词从壳上那一位取（它不住在视图里，同 `sessionQuery`）。
+   */
+  const configInput = (): Parameters<typeof configRows>[0] => ({
+    paths: {
+      dataDir: options.dataDir,
+      home: options.home,
+      workspaceRoots: options.workspaceRoots,
+    },
+    models: view.models,
+    current: view.modelCurrent,
+    grants: view.grants,
+    mcp: view.mcp,
+    filter: configQuery,
+  })
+
+  /**
+   * **`/config` 那一屏**——三份读数都到齐了才开（见 `configPending`）。
+   *
+   * 选中项从 0 起（每次开都从头）：这一屏不是「当前在哪条」，是**一扇门**——四行都是要进的
+   * 地方，没有一条该被预先选中。
+   */
+  const openConfigPicker = (): void => {
+    // 开一屏就是一屏新的：筛词从零起（见 `configQuery`）
+    configQuery = ''
+    const rows = configRows(configInput())
+
+    commit(
+      openPicker(view, {
+        source: 'config',
+        selected: 0,
+        rows,
+        filter: configQuery,
+        hint: configHint({ filter: configQuery, shown: rows.length }),
+      }),
+    )
+  }
+
+  /**
+   * **筛词一变就整个重铺**（打字 / 退格两处都调它）——与 `/resume` 那一屏同一姿势：
+   * 行跟着筛词变，**选中项尽量留在原来那一项上**（用户是在找它）。
+   *
+   * 0 行照开（不是「收起」）：`openPicker` 那条「0 行不开抽屉」的例外正是为**正在筛**立的
+   * ——0 行在筛的时候**是一个回答**（「没有这一项」），而用户手上那几个动作一个不少
+   * （接着打、退格、`esc`）。那一句回答由 `configHint` 写在列表下方。
+   */
+  const refreshConfigPicker = (): void => {
+    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'config') return
+
+    const held = picked(view)?.value
+    const rows = configRows(configInput())
+    // 认不回来（那一项被筛掉了）⇒ 从头起——**不夹在旧下标上**（那会指到别的项上去）
+    const at = held === undefined ? 0 : rows.findIndex((row) => row.value === held)
+
+    commit(
+      openPicker(view, {
+        source: 'config',
+        selected: at === -1 ? 0 : at,
+        rows,
+        filter: configQuery,
+        hint: configHint({ filter: configQuery, shown: rows.length }),
+      }),
+    )
   }
 
   // —— 模型详情 / 思考设置（U41）——
@@ -3182,6 +3331,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
             return NONE
           }
 
+          // **`/config` 那一屏**（U71）——退格＝**把筛词删一个字**（与打字那一支对称）。
+          // 退到空＝**全表**（设计明文）。
+          //
+          // ⚠️ **它没有 `/skills` 那一条「整段撤回」**：那一支撤的是 `@` 写进草稿的那一段
+          //（`anchor`），而这一屏的筛词**压根不在草稿里**（它就是这一屏自己的临时状态）——
+          // 撤到空就停在空表＝全表，不顺手把抽屉也收了（那会让「想看一眼全表」变成「按没了」）
+          // ——照 `/resume` 的先例（那一屏的退格也是这个走法）。
+          //
+          // ⚠️ **`esc` 不走这里**（设计明文）：清过滤归退格，`esc` 一律全收——不许把
+          //    「先清过滤、再全收」两段造在同一个键上（见上面 `case 'escape'` 那一支）。
+          if (picker.source === 'config') {
+            const query = configQuery.slice(0, leftSpan(configQuery, configQuery.length)[0])
+            if (query !== configQuery) {
+              configQuery = query
+              refreshConfigPicker()
+            }
+            return NONE
+          }
+
           if (picker.source !== 'skills' && picker.source !== 'paths') return NONE
 
           const filter = picker.filter ?? ''
@@ -3222,6 +3390,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           if (picker.source === 'session') {
             sessionQuery += input.char
             refreshSessionPicker()
+            return NONE
+          }
+
+          // **`/config` 那一屏**（U71）——打字＝**筛**（设计：「打字即过滤」，不设专门的
+          // 搜索模式）。筛词只留在这一屏（`configQuery`），不写进草稿：它不是用户那句交代的
+          // 一部分（与 `@` 那一段不同，见 `Picker.anchor`）。
+          //
+          // ⚠️ **筛的是「名称 ＋ 当前值」两处**（行上写着的那些字，见 `configRows` 的 `hits`）
+          // ——不是只筛名称：用户想找「数据目录」未必记得这一项叫什么。
+          if (picker.source === 'config') {
+            configQuery += input.char
+            refreshConfigPicker()
             return NONE
           }
 
@@ -3302,6 +3482,58 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (view.dock.kind === 'picker') {
       const row = picked(view)
       if (row === undefined) return NONE
+
+      // **配置一览**（U71）——选定＝**进那一项自己那一屏**。
+      //
+      // ⚠️ **这一条不重造任何一件交互**（设计：「不在 `/config` 里重造一遍」）：前三项
+      //    各把**那一条读侧命令原样发出去**，答复到了走的是**与直接打那条 slash 一模一样**
+      //    的那几支（`onEvent` 里的 `openModelPicker` / `openGrantsPicker` / `openMcpPicker`）
+      //    ——故屏上「逐字同形」不是靠照抄，是**同一条路**。
+      //
+      // ⚠️ **进那一项＝进一层**（U61：栈的单位是「那一屏」）：`←` 退回这一屏接着挑。
+      //    从输入行打 `/model` 时这一跳不压栈（栈底就是输入行）——两处的差别只在**回来的
+      //    地方不一样**，那一屏本身一个字都不差。
+      if (view.dock.picker.source === 'config') {
+        if (row.value === 'model') {
+          enterLayer()
+          waiting = 'model'
+          send({ type: 'model.list' })
+          return NONE
+        }
+
+        if (row.value === 'grants') {
+          enterLayer()
+          waiting = 'grants'
+          send({ type: 'grants.list' })
+          return NONE
+        }
+
+        if (row.value === 'mcp') {
+          enterLayer()
+          waiting = 'mcp'
+          mcpServer = '' // 总览那一屏（`/mcp` 无参）——不是某一台的明细
+          send({ type: 'mcp.list' })
+          return NONE
+        }
+
+        // **第 4 项没有可进的入口**——它今天要手改配置文件才动得了，故它「自己那一屏」
+        // 就是**一份读出来的账**（纯输出进记录区，同 `/status` 的姿势）：两件事实**写全**
+        // （列表里那一格是缩过、截过的，见 `configRows` 的那条注）。
+        //
+        // ⚠️ **这一跳不压栈**：记录区那一块不是「一屏能退回来的东西」（`←` 在那儿是移光标）。
+        //    收屏之后输入行照旧在，接着打 `/config` 就是这一屏——比一个退不回去的层干净。
+        const lines = configPathLines({
+          dataDir: options.dataDir,
+          home: options.home,
+          workspaceRoots: options.workspaceRoots,
+        })
+        commit(
+          lines.length === 0
+            ? appendReceipt(closePicker(view), '这一趟没拿到数据目录与工作区根')
+            : appendOutput(closePicker(view), CONFIG_PATHS_TITLE, lines),
+        )
+        return NONE
+      }
 
       // `/resume` 那一屏：选定＝切过去。
       if (view.dock.picker.source === 'session') {
@@ -3745,6 +3977,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       waiting = 'skills'
       skillSeed = arg
       return only(cleared, { type: 'skills.list' })
+    }
+
+    // `/config`（U71 · 设计 · 命令行与配置「一个看得到『现在配成什么样』的入口」）——
+    // **交互配置型**：记录区什么都不进，只在左下开一屏（四行：可配项 ＋ 它的当前值）。
+    //
+    // ⚠️ **三份读数一起问、齐了才开**（见 `configPending`）：四行里三行的当前值各有自己的
+    //    读侧命令，缺哪一份那一格就只能写「还没问到」——而「不进去就知道现在是什么」
+    //    正是这一屏的全部理由。
+    //
+    // ⚠️ **这一条自己不铺行、更不重造任何一件交互**：选中哪一行，就把那一条读侧命令
+    //    **原样发出去**（与直接打 `/model` / `/grants` / `/mcp` 走同一条路，见 `submit`
+    //    那一支）——设计：「选中之后进到它们本来的那一屏，行为逐字同形」。
+    if (word === '/config') {
+      if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/config（不带参数）'))
+      waiting = 'config'
+      configPending = CONFIG_READINGS.length
+      return only(cleared, ...CONFIG_READINGS.map((one) => one.command))
     }
 
     // `/model`（U41 改形）——**交互配置型**：主体是模型选择，另三个动作沿它展开

@@ -47,6 +47,13 @@ export type RunTuiOptions = {
    */
   readonly workspaceRoots?: readonly string[] | undefined
   /**
+   * **数据目录**（U71 · `/config` 第 4 行那一格）——已解析的绝对路径。
+   * 见 `ShellOptions.dataDir`。
+   */
+  readonly dataDir?: string | undefined
+  /** **系统家目录**（U71 · 只用来把屏上的路径缩成 `~/…`）。见 `ShellOptions.home`。 */
+  readonly home?: string | undefined
+  /**
    * **启动那几句要说的话**（U22 · 审计第 13 条）——装配把话备好（`Assembly.notices`：
    * 被拒的权限规则 / 授权文件读不懂），外壳开局落成记录区里的一行回执。
    *
@@ -119,6 +126,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const shell = createShell(options.transport, {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
+    dataDir: options.dataDir,
+    home: options.home,
     receipts: options.receipts,
     runs: options.runs,
     resumed: options.resumed,

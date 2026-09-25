@@ -468,7 +468,14 @@ export function tuiOptions(assembly: Assembly): RunTuiOptions {
     contextWindow: assembly.contextWindow,
     // 工作区（U26）：列表按工作区分组要它认「别的项目」——与交给记录域的是**同一个值**
     // （`workspace.roots()`：realpath 后的规范形 · 声明序），一头锚进记录、一头用于认路。
+    // `/config` 第 4 行那一格也读它（U71）。
     workspaceRoots: assembly.workspaceRoots,
+    // **数据目录与家目录**（U71 · `/config` 第 4 行）——那一格报「配成什么样」，而这两件
+    // 是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何命令问得到：故与工作区根
+    // 一样，从装配这一侧**递值**（窗口那一侧的同一条，见 `run/terminal.ts`）。
+    // 家目录只用来把屏上的路径缩成 `~/…`（省那一格的地方）——**不参与任何解析**。
+    dataDir: assembly.config.config.dataDir,
+    home: assembly.magic.home,
     // 启动那几句（U22 · 审计第 13 条）：解析从严（读不懂的规则 / 授权**不生效**）原先
     // 只有 `--check` 会说，走 TUI 这条路**一声不响**。话由装配备好（`Assembly.notices`）、
     // 外壳落成记录区的一行回执——**空数组＝启动一句多余的话都不说**。

@@ -277,6 +277,10 @@ export type StageOptions = {
   readonly contextWindow?: number | null
   /** 本进程的工作区（U26 · `/resume` 那一屏分组的取材）——不给＝不知道自己在哪儿。 */
   readonly workspaceRoots?: readonly string[]
+  /** 数据目录（U71 · `/config` 第 4 行那一格）——不给＝那一格空着。 */
+  readonly dataDir?: string
+  /** 系统家目录（U71 · 只用来把屏上的路径缩成 `~/…`）——不给＝照原样写绝对路径。 */
+  readonly home?: string
   /** 受理输入了没有（U25 那道闸）——`false` ＝ 启动中（回车不受理、命令一律丢弃）。 */
   readonly inputReady?: boolean
   /**
@@ -328,6 +332,8 @@ export function createStage(options: StageOptions = {}): Stage {
   const shell = createShell(spy.transport, {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
+    dataDir: options.dataDir,
+    home: options.home,
     ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),
     ...(options.runsFeed !== undefined
       ? { runs: options.runsFeed }

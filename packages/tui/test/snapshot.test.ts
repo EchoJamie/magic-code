@@ -518,6 +518,9 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     // 这一行是给用户看的那一句，照旧是大白话（不印内部词）；它还要**说清与 Ctrl+C 的
     // 分工**（`/exit` 是「停掉这条」，不是「关掉窗口」）——两句都得在。
     expect(frame).toContain('/exit　停掉这条会话再退出（只离开＝ctrl+c 两次）')
+    // U71——`/config` 也在表上。这张表**从命令表出**（`HELP_LINES` 就是 `COMMANDS` 铺的）：
+    // 加了命令而这一行没跟上，就是「设计里有、帮助里没有」那类漏。
+    expect(frame).toContain('/config　看现在配成什么样（选定进那一项）')
     expect(frame).not.toContain('/session')
     // **命令本身不回显**——记录区里没有 `› /help` 那一行（候选里的那条不算：
     // 它在左下交互区、不在记录区）
@@ -1057,13 +1060,17 @@ describe('slash 候选（D12 · 纯函数级）', () => {
    * 多了它（`s` 是它的**末位子串**，与 `/grants` 同类，按名字序排在它前面）。
    * ⚠️ **六变**（`U52`）：`/exit` 进了命令表——全表由十条变**十一条**。
    * `/s` 那一列**不动**（`s` 不是 `/exit` 的子序列：`e` `x` `i` `t` 里没有它）。
+   * ⚠️ **七变**（`U71`）：`/config` 进了命令表——全表由十一条变**十二条**。
+   * `/g` 那一列**多了它**（`g` 是 `/config` 的**子序列**——`/`…`g`，与 `/grants` 同档，
+   * 排在**前缀命中**的 `/grants` 之后，这正是本用例一直在考的「匹配度」）。
+   * `/s` 那一列照旧不动（`s` 不是 `/config` 的子序列）。
    * **判据本身一字未改**（前缀在前 · 子序列在后 · 全表列全）。技能名那一批不在这条里
    * ——它们要**给了目录**才列（见下面那条用例）。
    */
   test('`/g` —— 出 `/grants`（它现在真存在）', async () => {
     const { matchCommands } = await import('../src/view.ts')
 
-    expect(matchCommands('/g').map((row) => row.name)).toEqual(['/grants'])
+    expect(matchCommands('/g').map((row) => row.name)).toEqual(['/grants', '/config'])
     // ⚠️ **五变**（`U44`）：`/session` 撤掉、换 `/clear` · `/resume` · `/rename` 三条——
     // 全表还是十条（撤一条换三条）。`/s` 那一列里 `/session` 没了，`/resume` 进来
     // （`s` 是它的**子序列**，与 `/attachments` / `/grants` 同档，按名字序排在最后）。
@@ -1076,7 +1083,7 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(11) // 全列（真存在的十一条）
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(12) // 全列（真存在的十二条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 
