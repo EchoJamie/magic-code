@@ -1489,6 +1489,15 @@ describe('调用设置与容量（U41 返修）', () => {
 
 describe('思考的工具往返（U41）', () => {
   /**
+   * 取件层补的那一句的**原文**（`src/ai-sdk.ts` 的 `ABSENT_REASONING_NOTE`）。
+   *
+   * 此处**逐字**写死而**不 import**：这一句是「往上下文里塞的话」，改一个字都该让人过目
+   * （设计 · 提示词与指令 丙）；而且写死才**反向验得动**——在改前的检出上，这几条要红在
+   * **判据那一句**上，不是红在「导不出这个名字」上。
+   */
+  const ABSENT_REASONING_NOTE = '（这一轮没有产出思考。）'
+
+  /**
    * **DeepSeek 的思考模式要求回传**：带 tools 时，历史轮的 `reasoning_content`
    * 不回传就 400。判据落在**出站请求体**上——不是「我们记住了」，是「真发出去了」。
    */
@@ -1569,6 +1578,150 @@ describe('思考的工具往返（U41）', () => {
     const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
     const assistant = sent.messages.find((one) => one['role'] === 'assistant')
     expect(assistant?.['reasoning_content']).toBeUndefined()
+  })
+
+  /**
+   * **D45 那一形**（U95）：要求回传的那一家，**这一条助手消息没有思考** ⇒ 补上一句说明。
+   *
+   * 「没有」不是「丢了」——模型那一轮真没产出思考（`reasoningTokens: 0`，U92 查穿的），
+   * 载荷按契约整个键不写，回传时自然拿不出来；而 DeepSeek 只认末尾那个助手回合带着它。
+   * 故补一位**非空**的说明（空串会被 SDK 整键丢掉，等于没补）。
+   *
+   * 顺带钉住反面：**本来就有思考的那条逐字未变**——补的是缺的那一位，不是覆盖。
+   */
+  test('**D45 那一形**：助手消息没有思考 ⇒ 补上一句非空的说明（有思考的逐字未变）', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+      ),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'ds',
+      stamper: testStamper(),
+      config: { vendor: 'deepseek', apiKey: 'test-key' },
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    await drain(
+      gateway.stream({
+        model: 'deepseek-flash',
+        messages: [
+          { role: 'user', content: '接着做' },
+          // ⚠️ 这一条就是 D45 的真 offender：有工具调用、**载荷里没有思考**
+          //    （模型那一轮 `reasoningTokens: 0` ⇒ 契约的非空串无从写起）
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'call-1', name: 'smc_probe', args: { path: 'a.swift' } }],
+          },
+          { role: 'tool', callId: 'call-1', name: 'smc_probe', ok: true, output: '写了' },
+          // 对照：这一条**有**思考——它必须逐字原样出去
+          { role: 'assistant', content: '跑完了', reasoning: '先编译再运行' },
+          { role: 'user', content: '继续' },
+        ],
+      }),
+    )
+
+    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
+    const assistants = sent.messages.filter((one) => one['role'] === 'assistant')
+
+    // ① 缺的那条补上了，且**非空**（空串会被 SDK 的 `reasoning.length > 0` 判掉）
+    expect(assistants[0]?.['reasoning_content']).toBe(ABSENT_REASONING_NOTE)
+    expect(String(assistants[0]?.['reasoning_content']).length).toBeGreaterThan(0)
+
+    // ② 反面：本来就有思考的那条**逐字未变**
+    expect(assistants[1]?.['reasoning_content']).toBe('先编译再运行')
+    // 补上的这一位**不是**那一条的思考（别把缺的那格拿别人的顶上）
+    expect(assistants[0]?.['reasoning_content']).not.toBe(assistants[1]?.['reasoning_content'])
+  })
+
+  /**
+   * **第二形**（U92 新查出 · U95 一并覆盖）：**压缩之后计划笔记再交付**落在末尾。
+   *
+   * 装配在末尾补的那条**合成的**助手消息（`conversation/src/plan.ts` 的 `planMaterialOf`，
+   * `role: 'assistant'`）同样带不了思考——而它就是「末尾那个助手回合」。
+   * 判据落在**最后一条**上：DeepSeek 要的正是尾上那一条（U92 实验 B：给中间那条补、末尾照旧缺 ⇒ 仍 400）。
+   */
+  test('**第二形**：末尾那条合成的助手消息（计划笔记再交付）同样带着这一位', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+      ),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'ds',
+      stamper: testStamper(),
+      config: { vendor: 'deepseek', apiKey: 'test-key' },
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    // 末尾那条的**形状照着 `planMaterialOf` 的产出**（合成助手消息：只有正文，没有思考）
+    const material = { role: 'assistant' as const, content: '〔既有计划笔记 · 记录 #16739〕\n步骤：\n1. [进行中] 调研' }
+
+    await drain(
+      gateway.stream({
+        model: 'deepseek-flash',
+        messages: [{ role: 'user', content: '接着做' }, material],
+      }),
+    )
+
+    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
+    const last = sent.messages.at(-1)
+    expect(last?.['role']).toBe('assistant')
+    expect(last?.['reasoning_content']).toBe(ABSENT_REASONING_NOTE)
+    // 正文一个字未动（补的是思考位，不是正文）
+    expect(last?.['content']).toBe(material.content)
+  })
+
+  /**
+   * **反面**（U95 判据 ④）：**不要求回传的那一家**（兼容接入 ⇒ `echoesReasoning` 不在）
+   * **一个字都不补**——不能给所有供应商都塞这一位。
+   */
+  test('**反面**：不要求回传的那家，缺思考也一位不补', async () => {
+    const { fetch, seen } = capture(() =>
+      sse(
+        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+      ),
+    )
+
+    const gateway = createModelGateway({
+      providerId: 'mm',
+      stamper: testStamper(),
+      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M3' },
+      apiKey: 'test-key',
+      fetch,
+      env: {},
+    })
+
+    await drain(
+      gateway.stream({
+        model: 'MiniMax-M3',
+        messages: [
+          { role: 'user', content: '嗨' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'call-1', name: 'read', args: { path: 'a.txt' } }],
+          },
+          { role: 'tool', callId: 'call-1', name: 'read', ok: true, output: '内容' },
+        ],
+      }),
+    )
+
+    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
+    const assistant = sent.messages.find((one) => one['role'] === 'assistant')
+    // 出站体里那一位**整个键都不在**（与加这一条之前逐字同形）
+    expect(assistant?.['reasoning_content']).toBeUndefined()
+    expect(Object.hasOwn(assistant ?? {}, 'reasoning_content')).toBe(false)
   })
 })
 

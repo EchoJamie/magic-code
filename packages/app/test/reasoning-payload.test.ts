@@ -183,3 +183,90 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
     }
   })
 })
+
+/**
+ * U95 · **D45 的真正修法**：末尾那个助手回合**必须带着这一位出门**。
+ *
+ * 上面那一组验的是「有思考时回不回传」；这一组验的是**没有思考时**——而 D45 恰恰是这一形：
+ * 那一轮 DeepSeek **压根没产出思考**（`reasoningTokens: 0`），载荷按契约整个键不写，
+ * 于是回传时拿不出东西、对面 400（成因由 U92 查穿）。
+ *
+ * ## 判据落在**出站请求体**上（不是条目、也不是我们记不记得）
+ *
+ * 补的那一位必须**非空**：`@ai-sdk/openai-compatible` 写这一格的条件是
+ * `reasoning.length > 0`——空串会被整键丢掉，等于没补（U92 实验 A ④）。
+ * 故这里除了逐字对那一句，还**单独钉一次「非空」**：只对逐字的话，把那一句改成空串
+ * 会连判据一起绿过去。
+ *
+ * ⚠️ **补的是说明、不是思考**（不许编造模型想过什么）——原文见 `EXPECTED_NOTE` 那条注。
+ */
+describe('U95 · 没有思考的那一轮：要求回传的那家补上一句说明', () => {
+  /**
+   * 取件层补的那一句的**原文**（`packages/model/src/ai-sdk.ts` 的 `ABSENT_REASONING_NOTE`）。
+   * 此处**逐字**写死：它是「往上下文里塞的话」，改一个字都该让人过目（设计 · 提示词与指令 丙）。
+   */
+  const EXPECTED_NOTE = '（这一轮没有产出思考。）'
+
+  test('模型这一轮没产出思考——下一次请求里那条助手消息带着补上的这一位（非空）', async () => {
+    const fixture = startFixture({
+      model: MODEL,
+      // ⚠️ 剧本**不给 `reasoning`**——正是 D45 那一形（模型没产出思考）
+      turns: [
+        { kind: 'text', text: REPLY },
+        { kind: 'text', text: '好，接着来。' },
+      ],
+    })
+    const stage = stageOn(fixture, { vendor: 'deepseek' })
+    let assembly: ReturnType<Stage['assemble']> | undefined
+
+    try {
+      assembly = stage.assemble({ modelGateway: undefined })
+      const handle = attachShell(assembly.shell)
+
+      await sendAndWait(handle, '看一下这个仓库')
+      await sendAndWait(handle, '接着做')
+
+      // 条目里**照旧没有思考那一格**（记录如实：那一轮真没有，不伪造痕迹）
+      expect(assistantRows(assembly.paths.database)[0]?.payload).toEqual(null)
+
+      const chats = chatsOf(fixture)
+      expect(chats).toHaveLength(2)
+      // **要害**：出站体里那一位补上了，且**非空**（空串会被 SDK 整键丢掉）
+      expect(chats[1]?.assistantReasoning).toBe(EXPECTED_NOTE)
+      expect((chats[1]?.assistantReasoning ?? '').length).toBeGreaterThan(0)
+    } finally {
+      assembly?.close()
+      await fixture.stop()
+      stage.dispose()
+    }
+  })
+
+  test('**反面**·兼容接入：同一形**一位都不补**（不给不要求的那家塞）', async () => {
+    const fixture = startFixture({
+      model: MODEL,
+      turns: [
+        { kind: 'text', text: REPLY },
+        { kind: 'text', text: '好，接着来。' },
+      ],
+    })
+    // 没有 `vendor` ＝ 兼容接入（不要求回传）⇒ 补这一位的那条路整个不走
+    const stage = stageOn(fixture)
+    let assembly: ReturnType<Stage['assemble']> | undefined
+
+    try {
+      assembly = stage.assemble({ modelGateway: undefined })
+      const handle = attachShell(assembly.shell)
+
+      await sendAndWait(handle, '看一下这个仓库')
+      await sendAndWait(handle, '接着做')
+
+      const chats = chatsOf(fixture)
+      expect(chats).toHaveLength(2)
+      expect(chats[1]?.assistantReasoning).toBeUndefined()
+    } finally {
+      assembly?.close()
+      await fixture.stop()
+      stage.dispose()
+    }
+  })
+})
