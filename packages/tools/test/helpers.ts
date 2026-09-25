@@ -95,8 +95,21 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
 export function execCall(
   cmd: string,
   id = 'call_1',
-): { id: string; name: string; args: { cmd: string } } {
+): { id: string; name: 'exec'; args: Record<string, unknown> } {
   return { id, name: 'exec', args: { cmd } }
+}
+
+/**
+ * 一个 `exec` 调用，**参数自己给全**（U69 的超时那一档要用）。
+ *
+ * 与 `execCall` 分开而不是加个第三参：`execCall(cmd)` 那一形是「只给命令」的写法，
+ * 超时是**另一个问题**（等多久），混进同一个签名里，谁都得回头看参数位置。
+ */
+export function execCallWith(
+  args: Record<string, unknown>,
+  id = 'call_1',
+): { id: string; name: 'exec'; args: Record<string, unknown> } {
+  return { id, name: 'exec', args }
 }
 
 /**

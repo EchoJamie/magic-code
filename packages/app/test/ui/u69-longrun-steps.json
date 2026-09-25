@@ -1,0 +1,38 @@
+{
+  "label": "u69-长活不被掐",
+  "steps": [
+    {
+      "cmd": "start",
+      "as": "乙",
+      "cols": 100,
+      "rows": 30,
+      "turns": [
+        {
+          "kind": "tool",
+          "name": "exec",
+          "args": { "cmd": "sleep 125 && echo 构建完成" }
+        },
+        { "kind": "text", "text": "构建跑到底了——没设上界，也就没人掐它。" }
+      ]
+    },
+    { "cmd": "send", "session": "乙", "text": "构建一下" },
+    {
+      "cmd": "key",
+      "session": "乙",
+      "key": "enter",
+      "wait": { "text": "y / a / n" },
+      "timeoutMs": 20000
+    },
+    { "cmd": "capture", "session": "乙", "label": "01-裁决卡（这一次**没**给 timeoutMs）" },
+    {
+      "cmd": "send",
+      "session": "乙",
+      "text": "y",
+      "wait": { "text": "✓" },
+      "timeoutMs": 200000
+    },
+    { "cmd": "capture", "session": "乙", "label": "02-长活跑到自己结束（125.0s，活过了 120 秒那个旧常量）" },
+    { "cmd": "quit", "session": "乙" },
+    { "cmd": "close", "session": "乙" }
+  ]
+}

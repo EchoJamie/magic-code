@@ -147,7 +147,8 @@ describe('makeFauxSandbox', () => {
     const sandbox = makeFauxSandbox({
       exec: {
         'ls': { ok: true, exit: 0, stdout: 'a.txt\n', stderr: '' },
-        'boom': { ok: false, reason: 'timeout', message: '超时' },
+        // 超时那一支**带上已产出的输出**（U69）——桩照契约的形态给，不给旧形那一份
+        boom: { ok: false, reason: 'timeout', message: '超时', timeoutMs: 300, stdout: '半截', stderr: '' },
       },
     })
 
@@ -156,6 +157,9 @@ describe('makeFauxSandbox', () => {
       ok: false,
       reason: 'timeout',
       message: '超时',
+      timeoutMs: 300,
+      stdout: '半截',
+      stderr: '',
     })
   })
 

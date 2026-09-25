@@ -77,7 +77,7 @@ describe('U06 · 定义与注册', () => {
     expect(runtime.definitions()[0]?.danger).toEqual({ level: 'by-call', note: '按命令解析' })
   })
 
-  test('参数模式＝可序列化的 JSON Schema，命令键锚定单一键 cmd', () => {
+  test('参数模式＝可序列化的 JSON Schema，命令键锚定 cmd、超时那一项可省', () => {
     const { runtime } = makeToolDeps()
     const parameters = runtime.definitions()[0]?.parameters
     expect(parameters).toBeDefined()
@@ -87,11 +87,20 @@ describe('U06 · 定义与注册', () => {
 
     expect(parameters?.type).toBe('object')
     expect(parameters?.required).toEqual(['cmd'])
-    const properties = parameters?.properties as Record<string, { type?: string }> | undefined
+    const properties = parameters?.properties as
+      | Record<string, { type?: string | readonly string[]; description?: string }>
+      | undefined
     expect(properties?.cmd?.type).toBe('string')
 
-    // 单一键——不再有候选集（技术方案 · 工具：参数键部分锚定）
-    expect(Object.keys(properties ?? {})).toEqual(['cmd'])
+    // 两把键——`cmd` 与 `timeoutMs`（U69 加的后一把）。不再有候选集
+    // （技术方案 · 工具：参数键部分锚定）
+    expect(Object.keys(properties ?? {})).toEqual(['cmd', 'timeoutMs'])
+
+    // 「不设上界」那个写法**得在模式里看得见**：`null` 是正当的一档，不是「忘了填」。
+    // 光靠一句 description 是不够的——模式是模型真正读到的那份。
+    expect(properties?.timeoutMs?.type).toEqual(['number', 'null'])
+    // 且它**不是必填**：不填与 `null` 同义（设计：「不填＝一直等」）
+    expect(parameters?.required).not.toContain('timeoutMs')
   })
 
   test('默认集＝工具集 v1 七件（阶段 1 的「仅 exec」随 U13 到站作废）；追加仍是追加', () => {

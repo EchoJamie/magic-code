@@ -1196,6 +1196,10 @@ export type BlobStore = {
  *
  * 命令跑了 ＝ `ok: true`（`exit` 非 0 ＝**命令失败**，不是沙箱失败）；
  * 沙箱级失败 ＝ `ok: false` + `reason`。**错误＝返回值**（不抛）。
+ *
+ * ⚠️ **超时那一支与另两支不同形**（U69）：超时 =「**命令跑过了、被掐断**」，不是
+ * 「压根没执行」——故它**照 `ok:true` 那一支带上两道流**（收尸时已经排空，只是原先没带出来）。
+ * 另两支（cwd 越界／启动失败）是**进程没起来**，没有输出可言，故不带。
  */
 export type ExecResult =
   | {
@@ -1208,7 +1212,22 @@ export type ExecResult =
     }
   | {
       readonly ok: false
-      readonly reason: ExecFailureReason
+      readonly reason: 'timeout'
+      readonly message: string
+      /**
+       * **真报了的那条上界**——报文里那个数的**唯一出处**（调用方自己记的那份可能与之不符：
+       * 换过沙箱实现、或调用方压根没给而上界另有其源）。工具域据它措辞。
+       */
+      readonly timeoutMs: number
+      /** 被掐断前**已经产出**的输出——与 `ok:true` 那一支同形、同口径。 */
+      readonly stdout: string
+      readonly stderr: string
+      /** 超限截断（同上；不到上限就没有这个字段）。 */
+      readonly truncated?: boolean
+    }
+  | {
+      readonly ok: false
+      readonly reason: Exclude<ExecFailureReason, 'timeout'>
       readonly message: string
     }
 
@@ -1220,11 +1239,17 @@ export type ExecFailureReason =
 
 /**
  * `exec` 选项——cwd 约束 · 流式回调 · 取消 · 超时 / 输出上限。
- * **毫秒 / 字节**；缺省＝实现级常量（技术方案 · 执行 · 原语形态）。
+ * **毫秒 / 字节**；`maxOutputBytes` 缺省＝实现级常量（技术方案 · 执行 · 原语形态）。
  */
 export type ExecOptions = {
   readonly cwd?: string
-  readonly timeoutMs?: number
+  /**
+   * **超时上界**（毫秒）——`null` / 缺省 ＝ **不设上界**（一直等）。U69 起无缺省常量：
+   * 「这条命令该等多久」没有全局答案，由调用方按手上的事给（设计 · 工具执行与权限）。
+   *
+   * ⚠️ **别拿 `0` 当「不设」**——读起来像「立刻超时」，而真值另有其形（`null`）。
+   */
+  readonly timeoutMs?: number | null
   readonly maxOutputBytes?: number
   /** 流式增量——实时回调；消费方转 `tool.output.delta` 事件（**不落库**）。 */
   readonly onOutput?: (delta: OutputDelta) => void
