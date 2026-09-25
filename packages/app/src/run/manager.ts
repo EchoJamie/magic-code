@@ -792,27 +792,51 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 2. **有窗口连着 ⇒ 送给它们**（当场看得见，不必弹系统通知，也就不标未读）；
    * 3. **一个窗口都没有 ⇒ 标未读 ＋ 弹一条系统通知**——那正是「无人连接时」那一格；
    * 4. **落盘**：未读要活过管理者自己的退出（它没窗口、也没执行者时会退）。
+   *
+   * ## ⚠️「跑完了」那一档：**一个字都不说**（2026-09-25 用户定 · U74）
+   *
+   * 设计（会话与运行管理 · 通知）：「跑完了」**一律不印回执**——那条整个撤掉了。
+   * 由头：**你正看着它跑完**，印了是复述；**你没看着**，它也不该落到你正读的**别的页**上。
+   *
+   * ⇒ 这一档有**两条**判据，与别的两类不同：
+   *
+   * | 这条会话 | 做什么 |
+   * | --- | --- |
+   * | **有窗口正看着它** | **一个字都不说**（连落盘都不必——没有「离开期间」可言） |
+   * | **没有窗口正看着它** | 只走既有那两条：**系统通知**（当场）＋ **未读**（下次打开一句汇总） |
+   *
+   * ⚠️ **判据是「这条会话有没有窗口正看着它」，不是「有没有窗口连着」**——两者差在
+   * 「A 会话开着、B 会话在后台跑完」这一形：按「有没有窗口」，B 那件事**两头都不说**
+   * （系统通知不弹、回执又不该印），那一条就没人告诉用户了。
+   *
+   * ⚠️ **只挪这一档**：`failed` / `needs-you` 与停止那一类**一个字没动**（判据照旧是
+   * 「有没有窗口连着」、话术照旧由外壳拼）。「需要你」那半在 U74 里明写**照旧**。
    */
   function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string): void {
     const id = noticeKey(session, kind, fact)
     if (said.has(id)) return
     said.add(id)
 
-    const anyone = clients.size > 0
+    // 有人在场吗（见上表：这一档看「正看着这条会话」的窗口，其余照旧看「连着没有」）
+    const watched = kind === 'done' ? watchersOf(session) > 0 : clients.size > 0
+
+    // **你正看着它跑完 ⇒ 一句话都没有**：那条回执不要了，也就没有「落到哪」可言
+    if (kind === 'done' && watched) return
+
     const notice: RunNotice = {
       id,
       session,
       kind,
       at: now(),
       ...(detail === undefined ? {} : { detail }),
-      unread: !anyone,
+      unread: !watched,
     }
 
     notices.push(notice)
     while (notices.length > NOTICES_LIMIT) notices.shift()
     saveNotices()
 
-    if (anyone) {
+    if (watched) {
       for (const conn of clients.values()) conn.link.send({ t: 'notice', notice })
       return
     }
@@ -820,6 +844,25 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     // **没人看着**：系统通知只报「哪一类 ＋ 去看」，不报会话 id（管理者认不得标题，
     // 而把一个内部 id 弹到桌面上是最坏的漏法——具体是哪一条由下次打开那张汇总说）
     notifySystem(`${noticeWord(kind)}——打开看是哪条`)
+  }
+
+  /**
+   * **这条会话此刻有没有窗口正看着它**——`notify` 那一档的判据（见那一处的注）。
+   *
+   * 「正看着」＝这个窗口的**目标**就摆在它身上（`ClientConn.target`，换会话那两条命令
+   * 才动它）。⚠️ **不是「有没有窗口连着」**：窗口可以开着、看的却是别的一条。
+   *
+   * ⚠️ **已经结束的那一代不算看客**：目标还停在一条收摊了的运行上时，用户看的其实是
+   * 那个窗口自己的屏，不构成「有人正看着这条会话」。
+   */
+  function watchersOf(session: string): number {
+    let count = 0
+    for (const conn of clients.values()) {
+      const target = conn.target
+      if (target === undefined || target.run.ended !== undefined) continue
+      if (target.run.session === session) count += 1
+    }
+    return count
   }
 
   /** 那一类转换的一句短话（系统通知与汇总共用一份词表）。 */

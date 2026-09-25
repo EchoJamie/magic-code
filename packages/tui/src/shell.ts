@@ -184,13 +184,16 @@ export type ShellKey =
  * 到点就**撤掉那一行、同时取消那次监听**——此后再按是**新的一次**（重新挂上），
  * 不是「接着上一次」。
  *
+ * ⚠️ **一秒**（2026-09-25 用户真跑之后从 1.5 秒缩到 1 秒）——设计那一节写的时限
+ * 随之改成 1 秒。它是**那一刻回执**：一次按下的确认，一秒足够看清。
+ *
  * ⚠️ **它为什么该有时限**（U68 推翻了 U46 的「不加时限」）：按三分类——
  * **配置不回显 · 状态可常驻 · 刚发生的事 ⇒ 那一刻回执**——「你按了一次 Ctrl+C」是
  * **刚发生的事**，那就该是**那一刻回执**（过一会儿自己撤），不是常驻一格。
  * 原先那条理由（「加了就是『按了没反应』的变体」）**把归类的错当成了交互的错**：
  * 加时限不是「没反应」，是「回执该有的样子」。
  */
-export const EXIT_ARM_MS = 1_500
+export const EXIT_ARM_MS = 1_000
 
 /** 按键的结果——`exit` 由组件去真退出（外壳不碰终端）。 */
 export type ShellEffect = { readonly exit: boolean }
@@ -1719,7 +1722,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   options.notices?.((notice) => {
     if (disposed) return
-    commit(appendReceipt(view, noticeReceiptOf(notice, nameOfSession(notice.session))))
+    const line = noticeReceiptOf(notice, nameOfSession(notice.session))
+    // ⚠️ **没有那一句就不落行**（U74）：「跑完了」那一条**不再产出**——它不是「换了个
+    // 落点」也不是「往后挪一挪」，是**不要了**（设计 · 会话与运行管理「通知」那一格）。
+    // 其余两类照旧各落一行（`failed` / `needs-you` 一个字没动）。
+    if (line === undefined) return
+    commit(appendReceipt(view, line))
   })
 
   /**
