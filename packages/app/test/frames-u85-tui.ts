@@ -403,6 +403,22 @@ async function sceneHomeEnd(): Promise<void> {
     // 工作区里放一个文件——`@` 那一栏才选得出引用（引用是这一场的主角之一）
     put(scene.session.facts().workspace, '笔记.md', '笔记正文')
 
+    // —— 空草稿：两下都是**无事发生**（`lineSpan('', 0)` ＝ `[0, 0]`）——
+    // 这一档屏上本来就看不出动静，故判据是**反面**：不报错、不留回执、草稿不被写脏。
+    const blank = await scene.session.capture({ label: '③-前-空草稿（前）' })
+    keep(blank)
+    await pressKey(scene.session, 'ctrl+a')
+    await waitCursor(scene.session, { x: 3, y: composerRowOf(blank) })
+    await pressKey(scene.session, 'ctrl+e')
+    await waitCursor(scene.session, { x: 3, y: composerRowOf(blank) })
+    const stillBlank = await scene.session.capture({ label: '③-前-空草稿（按过行首行末之后）' })
+    keep(stillBlank)
+    check(
+      stillBlank.text === blank.text,
+      '③ 空草稿：`ctrl+a` / `ctrl+e` 两下按下去**屏上什么都没变**（不报错、不留回执）',
+      stillBlank.lines[composerRowOf(stillBlank)] ?? '',
+    )
+
     // —— 摆一份**两行、带引用**的草稿（全程不提交）——
     //
     // ⚠️ **那一格空格不能省**：`@` 要在**词边界**上才开候选（`shell.ts` 的 `opensPath`：
