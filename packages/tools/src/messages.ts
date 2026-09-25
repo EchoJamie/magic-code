@@ -226,13 +226,21 @@ export const writeDoneOutput = (path: string, bytes: number): string =>
 
 export const editDoneOutput = (path: string): string => `已替换 1 处（${path}）`
 
-// —— 失败回填（名分 ＋ 沙箱的原委，沙箱的报文精确——本域只加名分、不改口径）——
+// —— 失败回填 ——
+//
+// ⚠️ **文件类（读 / 写 / 列目录 / 编辑）这一路不加前缀**（U83 · 缺陷 D41）——沙箱抛的
+// 报文本身就是**一整句**：名分 ＋ 路径 ＋ 原委（`execution/files.ts` 的 `namedFailure`，
+// 那里也写着「只拼一次」）。本域再加一次名分，屏上就成了
+// 「写入失败：写入失败（path）：上级目录不存在——先建目录」：**同一条事实说两遍，而
+// 真正有用的那句指引被淹在里头**（D41 的实测后果：模型读成「此路不通」而改道）。
+// ⇒ 这几支的捕处一律 `refused(reasonOf(error))`，**原样回填、一个字不改**。
+//
+// 例外是**搜索那一支**（`grep` / `glob`）：本单的边界是只碰文件类，搜索类的措辞不动，
+// 故这一行原样留着。它那一支的名分**时有时无**——「正则无效…」那一路靠它补名分，
+// 而 `match.ts` 抛的「目录不存在 / 不是目录」那两路**自己已经带了名分**（同一份 D41
+// 重复还在那儿），留给碰搜索措辞的那一单。
 
-export const readFailedOutput = (reason: string): string => `读取失败：${reason}`
-export const writeFailedOutput = (reason: string): string => `写入失败：${reason}`
-export const editFailedOutput = (reason: string): string => `编辑失败：${reason}`
 export const searchFailedOutput = (reason: string): string => `搜索失败：${reason}`
-export const listFailedOutput = (reason: string): string => `列目录失败：${reason}`
 
 // —— 外部工具（MCP · U38）——
 //

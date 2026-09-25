@@ -61,17 +61,23 @@ describe('U13 · read', () => {
     expect(result.output).toBe('abc\n[已截断——文件超长，只读到前一段]')
   })
 
-  test('沙箱失败（越界 / 不存在）→ ok:false ＋ 原委照带（工具不自造口径）', async () => {
+  test('沙箱失败（越界 / 不存在）→ ok:false ＋ 沙箱那句**逐字**回填（不加前缀、不自造口径）', async () => {
+    // 沙箱抛的报文**本身是一整句**（名分 ＋ 路径 ＋ 原委）——U83 · D41 之前这里会在
+    // 前头再缀一个 `读取失败：`，屏上成了「读取失败：读取失败（path）：…」：同一条事实
+    // 说两遍，有用的那句被淹在里头。⇒ 判据就是**一个字都不许动**。
+    const reason = '读取失败（/etc/hosts）：文件不存在'
     const failing = {
       ...makeFauxSandbox(),
-      read: () => Promise.reject(new Error('读取失败（/etc/hosts）：文件不存在')),
+      read: () => Promise.reject(new Error(reason)),
     }
     const { runtime, sink } = makeToolDeps({ sandbox: failing })
 
     const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/etc/hosts' } }, {})
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('读取失败：读取失败（/etc/hosts）：文件不存在')
+    expect(result.output).toBe(reason)
+    // 名分只出现一次（U83 的判据本身）
+    expect(result.output.split('读取失败').length - 1).toBe(1)
     // 失败照样收链（请求 → 结果）——链不断，模型看得到「这一次没成」
     expect(sink.events.map((event) => event.kind)).toEqual(['tool.call', 'tool.result'])
   })
@@ -125,10 +131,14 @@ describe('U13 · write', () => {
     expect(sandbox.writes).toEqual([{ path: 'blank.txt', data: { text: '' } }])
   })
 
-  test('沙箱失败（如上级目录不存在）→ ok:false ＋ 原委', async () => {
+  test('沙箱失败（如上级目录不存在）→ ok:false ＋ 那一句原样带出（指引一个字不少）', async () => {
+    // ⚠️ 这一条钉的是**内层那句指引**（「上级目录不存在——先建目录」）——它是这句话里
+    // 唯一能照做的东西，**逐字都在**；而名分**只有一次**（U83 · D41 之前是
+    // 「写入失败：写入失败（path）：…」）。
+    const reason = '写入失败（/w/no-dir/x.txt）：上级目录不存在——先建目录'
     const failing = {
       ...makeFauxSandbox(),
-      write: () => Promise.reject(new Error('写入失败（/w/no-dir/x.txt）：上级目录不存在——先建目录')),
+      write: () => Promise.reject(new Error(reason)),
     }
     const { runtime } = makeToolDeps({ sandbox: failing })
 
@@ -138,8 +148,9 @@ describe('U13 · write', () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.output).toContain('写入失败：')
-    expect(result.output).toContain('上级目录不存在')
+    expect(result.output).toBe(reason)
+    expect(result.output).toContain('上级目录不存在——先建目录')
+    expect(result.output.split('写入失败').length - 1).toBe(1)
   })
 
   test('参数错误：path 与 content 各有说法，都不碰沙箱', async () => {
@@ -298,10 +309,14 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
     expect(sandbox.writes).toEqual([])
   })
 
-  test('读不成（沙箱抛）→ ok:false ＋ 编辑失败的名分', async () => {
+  test('读不成（沙箱抛）→ ok:false ＋ 沙箱那句原样（这一支的形制与读/写/列目录齐）', async () => {
+    // U83 · D41：编辑这一支原先缀了 `编辑失败：`，于是成了「名分 ＋ 名分 ＋ 沙箱的话」
+    // ——四条文件类里唯独它说两遍。现在与那三条同形：**沙箱那句话就是全部**，
+    // 名分是「卡在哪一步」那一个（编辑＝读 → 改 → 写回），**只出现一次**。
+    const reason = '读取失败（a.ts）：文件不存在'
     const failing = {
       ...makeFauxSandbox(),
-      read: () => Promise.reject(new Error('读取失败（a.ts）：文件不存在')),
+      read: () => Promise.reject(new Error(reason)),
     }
     const { runtime } = makeToolDeps({ sandbox: failing })
 
@@ -311,7 +326,8 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
     )
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('编辑失败：读取失败（a.ts）：文件不存在')
+    expect(result.output).toBe(reason)
+    expect(result.output.split('失败').length - 1).toBe(1)
   })
 
   test('参数错误：old 空串 / new 非串，各有说法且不碰沙箱', async () => {

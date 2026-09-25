@@ -30,7 +30,15 @@ import { join } from 'node:path'
  */
 export const DEFAULT_MAX_READ_BYTES = 64 * 1024
 
-/** 动作名——进报文的名分（同一份原委，不同动作说不同的话）。 */
+/**
+ * 动作名——进报文的名分（同一份原委，不同动作说不同的话）。
+ *
+ * ⚠️ **失败那句话只在本文件拼一次**（U83 · 缺陷 D41）——名分 ＋ 路径 ＋ 原委三者
+ * 全在下面 `namedFailure` 那一处成句，**工具边界不再另加一层前缀**（`file-tools.ts`
+ * 的捕处只把这句话原样回填）。由头：D41 里两处各加了一次前缀，屏上成了
+ * 「写入失败：写入失败（path）：…」——**同一条事实说了两遍，而真正有用的那句指引
+ * （「上级目录不存在——先建目录」）被淹在前缀里**，模型据此读成「此路不通」。
+ */
 type Op = '读取' | '写入' | '列目录'
 
 /** `ENOENT` 各动作的名分——同一个错误码，三种事实（读不到文件 / 建不了文件 / 列不了目录）。 */
@@ -38,6 +46,16 @@ const MISSING_OF: Record<Op, string> = {
   读取: '文件不存在',
   写入: '上级目录不存在——先建目录',
   列目录: '目录不存在',
+}
+
+/**
+ * **失败那句话的唯一样式**（U83 · D41）——名分 ＋ 路径 ＋ 原委，一次成句。
+ *
+ * 本文件里三处抛失败都经它（`failureOf` 与 `readText` 的「是目录」那一支）：
+ * 一句话的形制只此一处说了算，调用方（工具域）**只回填、不再拼**。
+ */
+function namedFailure(op: Op, absolute: string, cause: string): Error {
+  return new Error(`${op}失败（${absolute}）：${cause}`)
 }
 
 /**
@@ -60,7 +78,7 @@ function failureOf(op: Op, absolute: string, error: unknown): Error {
             : undefined
 
   const cause = error instanceof Error ? error.message : String(error)
-  return new Error(`${op}失败（${absolute}）：${named ?? cause}`)
+  return namedFailure(op, absolute, named ?? cause)
 }
 
 /**
@@ -79,7 +97,7 @@ export async function readText(absolute: string, cap: number): Promise<ReadResul
     throw failureOf('读取', absolute, error)
   }
 
-  if (info.isDirectory()) throw new Error(`读取失败（${absolute}）：是目录，不是文件`)
+  if (info.isDirectory()) throw namedFailure('读取', absolute, '是目录，不是文件')
 
   if (info.size <= cap) {
     try {

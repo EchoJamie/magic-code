@@ -13,6 +13,10 @@
  *   参数无效）沙箱侧**抛**，捕在**这里**、收敛成 `ToolResult` 的判别式（`ok:false` ＋ 一句话）。
  *
  * 一处刻意的**不猜**：`edit` 的「唯一」是全部语义——找不到、找到多处，都**不动文件**并照实报。
+ *
+ * 失败那句的**形制只有一处说了算**（U83 · 缺陷 D41）：沙箱抛的报文**本身是一整句**
+ * （名分 ＋ 路径 ＋ 原委，见 `execution/files.ts` 的 `namedFailure`），本域捕到它之后
+ * **原样回填**——再缀一个名分，屏上就成了「写入失败：写入失败（path）：…」。
  */
 
 import type { ReadResult } from '@magic/contracts'
@@ -20,7 +24,6 @@ import { isText } from './args.ts'
 import { byteLength } from './blobs.ts'
 import {
   editDoneOutput,
-  editFailedOutput,
   editTooLargeOutput,
   OUTPUT_CONTENT_REQUIRED,
   OUTPUT_EDIT_AMBIGUOUS,
@@ -31,9 +34,7 @@ import {
   OUTPUT_OLD_REQUIRED,
   OUTPUT_PATH_REQUIRED,
   OUTPUT_READ_TRUNCATED,
-  readFailedOutput,
   writeDoneOutput,
-  writeFailedOutput,
 } from './messages.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused, reasonOf, rowOf } from './toolkit.ts'
@@ -92,7 +93,9 @@ export function defineReadTool(): ToolDefinition {
       try {
         return { ok: true, output: composeRead(await ctx.sandbox.read(path)) }
       } catch (error) {
-        return refused(readFailedOutput(reasonOf(error)))
+        // 原样回填：沙箱那句已是**一整句**（名分 ＋ 路径 ＋ 原委），本域不再加前缀
+        // （U83 · D41——「写入失败：写入失败（path）：…」就是把一条事实说了两遍）
+        return refused(reasonOf(error))
       }
     },
   }
@@ -144,7 +147,8 @@ export function defineWriteTool(): ToolDefinition {
         await ctx.sandbox.write(path, { text: content })
         return { ok: true, output: writeDoneOutput(path, byteLength(content)) }
       } catch (error) {
-        return refused(writeFailedOutput(reasonOf(error)))
+        // 同 `read`：一句话由沙箱一次拼成（见 `messages.ts`「失败回填」那一段注）
+        return refused(reasonOf(error))
       }
     },
   }
@@ -238,7 +242,19 @@ export function defineEditTool(): ToolDefinition {
 
         return { ok: true, output: editDoneOutput(path) }
       } catch (error) {
-        return refused(editFailedOutput(reasonOf(error)))
+        /**
+         * 原文照回填（不再缀 `编辑失败：`）——**这一支原先形制不一样**：读 / 写 / 列目录
+         * 三处是「名分 ＋ 沙箱的话」，编辑这一支却成了「名分 ＋ 名分 ＋ 沙箱的话」
+         * （沙箱那句自己带名分），四条路里唯独它说两遍（U83 · D41）。
+         *
+         * 这一支的 `读取` / `写入` 名分**是实话**：编辑就是「读 → 改 → 写回」，报的是
+         * 卡在哪一步。而「哪件工具失败了」上一行已经写着（`● edit {…}` 那份回执），
+         * 失败那句里再补一个「编辑失败」就成了同一件事说第三遍。
+         *
+         * 其余那几条（未找到待替换文本 / 出现多处 / 文件超长 / 新旧相同）本来就不带名分
+         * ——本单只去重、不改内容，它们一个字不动。
+         */
+        return refused(reasonOf(error))
       }
     },
   }

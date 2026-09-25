@@ -309,3 +309,71 @@ describe('U13 · list —— 列目录', () => {
     await expect(box.list('../..')).rejects.toThrow(/工作区越界/)
   })
 })
+
+// ══ 失败那句的形制（U83 · 缺陷 D41）══════════════════════════════════
+
+/**
+ * **动作名只在此处拼一次**（`files.ts` 的 `namedFailure`）——判据落在这一层。
+ *
+ * 由头：这条链上原先**两层各加了一次前缀**——这里产出 `写入失败（path）：原因`，
+ * 工具域 `messages.ts` 又缀一个 `写入失败：`，屏上成了
+ * 「写入失败：写入失败（path）：上级目录不存在——先建目录」：**同一条事实说两遍**，
+ * 而唯一能照做的那句指引被淹在前缀里。⇒ 本层这三个动作的报文就是**最终那句话**，
+ * 工具边界只回填、不再拼（`packages/tools` 那侧同有判据）。
+ *
+ * 钉的是三件一起：**名分一次** ＋ **路径在**（模型据此改法）＋ **原委（含可照做的指引）在**。
+ */
+describe('U83 · 失败报文 —— 名分一次 · 路径在 · 原委在', () => {
+  /** 报文里的名分出现次数（`读取失败` / `写入失败` / `列目录失败` 各数各的）。 */
+  const nameCount = (message: string, name: string): number =>
+    message.split(`${name}失败`).length - 1
+
+  test('写入：上级目录不存在', async () => {
+    const { box, root } = freshSandbox()
+
+    const message = await box
+      .write('no-dir/x.txt', { text: 'X' })
+      .then(() => '')
+      .catch((error: Error) => error.message)
+
+    expect(message).toBe(`写入失败（${join(root, 'no-dir', 'x.txt')}）：上级目录不存在——先建目录`)
+    expect(nameCount(message, '写入')).toBe(1)
+  })
+
+  test('读取：文件不存在', async () => {
+    const { box, root } = freshSandbox()
+
+    const message = await box
+      .read('no-such.txt')
+      .then(() => '')
+      .catch((error: Error) => error.message)
+
+    expect(message).toBe(`读取失败（${join(root, 'no-such.txt')}）：文件不存在`)
+    expect(nameCount(message, '读取')).toBe(1)
+  })
+
+  test('列目录：目录不存在', async () => {
+    const { box, root } = freshSandbox()
+
+    const message = await box
+      .list('no-such-dir')
+      .then(() => '')
+      .catch((error: Error) => error.message)
+
+    expect(message).toBe(`列目录失败（${join(root, 'no-such-dir')}）：目录不存在`)
+    expect(nameCount(message, '列目录')).toBe(1)
+  })
+
+  test('认不出的错误码照抄原委——名分仍只一次（不吞、不编）', async () => {
+    const { box, root } = freshSandbox()
+    seed(root, 'a-dir', 'x') // 拿文件当目录：`ENOTDIR`
+
+    const message = await box
+      .list('a-dir/sub')
+      .then(() => '')
+      .catch((error: Error) => error.message)
+
+    expect(message).toBe(`列目录失败（${join(root, 'a-dir', 'sub')}）：不是目录`)
+    expect(nameCount(message, '列目录')).toBe(1)
+  })
+})

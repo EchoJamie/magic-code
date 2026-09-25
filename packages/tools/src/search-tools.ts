@@ -14,7 +14,6 @@ import type { ListEntry, MatchHit } from '@magic/contracts'
 import { isText } from './args.ts'
 import {
   cappedOutput,
-  listFailedOutput,
   OUTPUT_EMPTY_DIR,
   OUTPUT_NO_MATCH,
   OUTPUT_PATH_REQUIRED,
@@ -174,7 +173,10 @@ export function defineLsTool(): ToolDefinition {
         // 缺省＝工作区默认根——「.」按默认根解析（与沙箱 `match` 的起点缺省同一姿势）
         return { ok: true, output: composeLs(await ctx.sandbox.list(scope ?? '.')) }
       } catch (error) {
-        return refused(listFailedOutput(reasonOf(error)))
+        // ⚠️ **这一支不加前缀**（与上面 `grep` / `glob` 那一支不同）——列目录归**文件类**：
+        // 沙箱那句 `列目录失败（path）：目录不存在` 已是一整句，本域再缀一次就是
+        // 「列目录失败：列目录失败（…）：…」（U83 · D41）。搜索那两支的措辞本单不动。
+        return refused(reasonOf(error))
       }
     },
   }
