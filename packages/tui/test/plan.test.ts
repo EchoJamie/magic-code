@@ -9,12 +9,16 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import type { PlanNote } from '@magic/contracts'
 import {
   BREATH_MS,
   MARK_WIDTH,
+  PLAN_INDENT,
   PLAN_KEEP_LINES,
   breathColor,
   breathOf,
+  goalLines,
+  planBlockOf,
   planBudgetOf,
   planMoreLabel,
   planMoreLine,
@@ -41,18 +45,28 @@ describe('动态区余量的分配', () => {
 // ══ 一条步骤的折行 ═══════════════════════════════════════════════════
 
 describe('步骤文字折行', () => {
-  test('折的是文字那一截——方块那一格（两列）留出来', () => {
-    // 10 列里文字占 8 列：`1234567890` 十列，折成 8 ＋ 2
-    expect(stepLines('1234567890', 10)).toEqual(['12345678', '90'])
+  // ⚠️ **U90 起折的是「退了一级之后」剩下的那几列**：前缀 ＝ `PLAN_INDENT`（步骤退一级）
+  // ＋ `MARK_WIDTH`（方块那一格）。下面三支的**期望值**跟着改了（那一级进了前缀），
+  // 判据本身没改——仍是「文字那一截按剩下的列宽折、中文两列、Tab 先展开」。
+  const PREFIX = PLAN_INDENT + MARK_WIDTH
+
+  test('折的是文字那一截——退一级 ＋ 方块那一格都留出来', () => {
+    // 10 列里文字占 10 − 2 − 2 ＝ 6 列：`1234567890` 十列，折成 6 ＋ 4
+    expect(stepLines('1234567890', 10)).toEqual(['123456', '7890'])
+    expect(PREFIX).toBe(4)
   })
 
   test('中文按两列算（与记录区同一把尺子）', () => {
-    // 6 列里文字占 4 列：一行放得下两个汉字，第三个起折行
-    expect(stepLines('一二三四五', 6)).toEqual(['一二', '三四', '五'])
+    // 8 列里文字占 4 列：一行放得下两个汉字，第三个起折行
+    expect(stepLines('一二三四五', 8)).toEqual(['一二', '三四', '五'])
   })
 
   test('Tab 按终端的规矩展开后再折（同一个 `\\t` 只该有一个宽度）', () => {
-    expect(stepLines('a\tb', 12)).toEqual(['a       b'])
+    // 14 列里文字占 10 列：`a` ＋ 一个制表位（到第 9 列）＋ `b` ＝ 9 列，一行放得下。
+    // ⚠️ **U90 把列数从 12 挪到 14**——不是放宽判据：退一级之后文字那一截少了两列，
+    //    这一串在 12 列下会折成两行；要验的仍是「Tab 展成几列」（同一个 `\t` 一个宽度），
+    //    故把列数补回去让它落回一行，那一串的**期望值一个字没动**。
+    expect(stepLines('a\tb', 14)).toEqual(['a       b'])
   })
 
   test('极窄窗口不把宽度算成 0 或负数', () => {
@@ -60,8 +74,88 @@ describe('步骤文字折行', () => {
     expect(stepLines('ab', 0).length).toBeGreaterThan(0)
   })
 
-  test('方块那一格是两列——与记录区的行首标记同宽', () => {
+  test('方块那一格是两列——与记录区的行首标记同宽；退一级另是两列', () => {
     expect(MARK_WIDTH).toBe(2)
+    expect(PLAN_INDENT).toBe(2)
+  })
+})
+
+// ══ 目标那一行（U90）═══════════════════════════════════════════════
+
+describe('目标那一行的折行', () => {
+  test('它顶格——按**整幅列宽**折（前缀一个字都不扣）', () => {
+    // 与步骤同一串字：步骤在 10 列里折成 6 ＋ 4，目标在 10 列里折成 10
+    expect(goalLines('1234567890', 10)).toEqual(['1234567890'])
+    expect(goalLines('一二三四五', 10)).toEqual(['一二三四五'])
+  })
+
+  test('长目标正常折（不裁短、不省略），中文仍按两列算', () => {
+    expect(goalLines('一二三四五六', 6)).toEqual(['一二三', '四五六'])
+  })
+
+  test('极窄窗口也给出至少一列', () => {
+    expect(goalLines('ab', 0).length).toBeGreaterThan(0)
+  })
+})
+
+// ══ 一整块清单：目标在头、步骤退一级（U90）═══════════════════════════
+
+describe('清单那一块：目标顶格 ＋ 步骤退一级', () => {
+  const plan = (goal?: string): PlanNote => ({
+    ...(goal === undefined ? {} : { goal }),
+    steps: [
+      { text: '读登录逻辑', status: 'completed' },
+      { text: '改提示', status: 'in_progress' },
+    ],
+    notes: '约束：别动引用',
+  })
+
+  const block = (one: PlanNote, columns = 80, budget = 20): ReturnType<typeof planBlockOf> =>
+    planBlockOf({ plan: one, collapsed: false, top: 0, columns, budget })
+
+  test('有目标 ⇒ 头一行是它（无记号、无 at），步骤行整块跟在后面', () => {
+    const rows = block(plan('修好登录失败提示')).rows
+
+    expect(rows[0]).toEqual({ kind: 'goal', key: 'plan:goal:0', text: '修好登录失败提示' })
+    expect(rows.slice(1).map((row) => row.kind)).toEqual(['step', 'step'])
+    expect(rows[1]).toMatchObject({ at: 0, status: 'completed', text: '读登录逻辑', head: true })
+    expect(rows[2]).toMatchObject({ at: 1, status: 'in_progress', text: '改提示', head: true })
+  })
+
+  test('⚠️ 反面：没给目标 ⇒ **一行都没有**（不留空表头），步骤照旧第一行', () => {
+    const rows = block(plan()).rows
+
+    expect(rows.some((row) => row.kind === 'goal')).toBe(false)
+    expect(rows[0]).toMatchObject({ kind: 'step', at: 0, head: true })
+    expect(rows.length).toBe(2)
+  })
+
+  test('目标也进**同一份行账**：高度 ＝ 画出来的行数（多一行就是多一行）', () => {
+    const withGoal = block(plan('修好登录失败提示'))
+    const bare = block(plan())
+
+    expect(withGoal.height).toBe(withGoal.rows.length)
+    expect(withGoal.height).toBe(bare.height + 1)
+  })
+
+  test('长目标折两行 ⇒ 两行都算进账里（不是「一行目标」的固定账）', () => {
+    // 20 列下：6 个汉字（12 列）一行；12 个汉字（24 列）折成两行
+    const one = block(plan('一二三四五六'), 20)
+    const two = block(plan('一二三四五六七八九十十一'), 20)
+
+    expect(one.rows.filter((row) => row.kind === 'goal').length).toBe(1)
+    expect(two.rows.filter((row) => row.kind === 'goal').length).toBe(2)
+    expect(two.height).toBe(one.height + 1)
+  })
+
+  test('只有目标、没有步骤 ⇒ **不占位**（清单是步骤那一份，光有表头不成表）', () => {
+    expect(block({ goal: '修好登录失败提示', steps: [], notes: '' }).height).toBe(0)
+  })
+
+  test('收起的把手不受影响（收起时仍是那一条，与有没有目标无关）', () => {
+    const folded = planBlockOf({ plan: plan('修好登录失败提示'), collapsed: true, top: 0, columns: 80, budget: 20 })
+
+    expect(folded.rows.map((row) => row.kind)).toEqual(['folded'])
   })
 })
 

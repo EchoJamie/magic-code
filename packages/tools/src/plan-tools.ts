@@ -79,9 +79,24 @@ const STEP_STATUS = {
   description: '这一步的进展：未开始 / 进行中 / 已完成',
 } as const
 
+/**
+ * 目标那一格（U90）——**用户看得见**：清单顶上顶格那一行「这件事是什么」。
+ *
+ * ⚠️ **说明必须说清它是新的一格**（「模型读得到才会填」）：不写清，模型会照提示词把目标
+ * 混在辅助笔记里（那是 U90 之前的写法），而这一行**不从 `notes` 里猜**——没填就是没有。
+ * 故这句里点明三件：**是什么**（这件事要得到的结果）· **给谁看**（用户会看到）· **可选**
+ * （没有就整个不给，别用空串凑）。
+ */
+const PLAN_GOAL = {
+  type: 'string',
+  description:
+    '这件事要得到的结果，一句话，用户会看到它顶在清单上方（步骤挂在它下面）。' +
+    '没有明确的目标就整个不给这一项——不要用空串或随手写一句凑上。',
+} as const
+
 export const PLAN_READ_PARAMETERS = {
   type: 'object',
-  description: '取当前会话的计划笔记（步骤清单与辅助笔记）。没有建立过就如实说没有。',
+  description: '取当前会话的计划笔记（目标、步骤清单与辅助笔记）。没有建立过就如实说没有。',
   properties: {},
   required: [],
   additionalProperties: false,
@@ -90,13 +105,14 @@ export const PLAN_READ_PARAMETERS = {
 export const PLAN_UPDATE_PARAMETERS = {
   type: 'object',
   description:
-    '更新当前计划笔记：给 plan 就整体替换（步骤清单 ＋ 辅助笔记），给 null 就清空。' +
+    '更新当前计划笔记：给 plan 就整体替换（目标 ＋ 步骤清单 ＋ 辅助笔记），给 null 就清空。' +
     '它保存你的判断，不验证工作是否完成、也不控制执行。',
   properties: {
     plan: {
       type: ['object', 'null'],
       description: '新的计划内容；null ＝ 清空当前计划笔记（过程仍在会话记录里）',
       properties: {
+        goal: PLAN_GOAL,
         steps: {
           type: 'array',
           description: '有序步骤清单——用户会看到它，按你要得到的结果拆',
@@ -157,10 +173,15 @@ const STATUS_LABEL: Readonly<Record<PlanStep['status'], string>> = {
  * 计划内容摆成文本——**读与写共用一处**（两处各写一遍，改一处漏一处）。
  *
  * 空的两处**如实说空**，不留一行空白让读的人猜「是不是没抄全」：
- * 没有步骤就说「（还没有步骤）」，没有笔记就不占一行。
+ * 没有步骤就说「（还没有步骤）」，**没有目标 / 笔记就不占一行**。
+ *
+ * 次序与界面**同一份**（U90）：目标在先（清单上那一行顶格）、步骤在后。
  */
 export function planTextOf(plan: PlanNote): string {
-  const lines: string[] = ['步骤：']
+  const lines: string[] = []
+
+  if (plan.goal !== undefined) lines.push(`目标：${plan.goal}`)
+  lines.push('步骤：')
 
   if (plan.steps.length === 0) lines.push('（还没有步骤）')
   else plan.steps.forEach((step, index) => lines.push(`${index + 1}. [${STATUS_LABEL[step.status]}] ${step.text}`))
@@ -170,7 +191,7 @@ export function planTextOf(plan: PlanNote): string {
 }
 
 /** 没建立过计划时的回执——**如实说没有**，不编一份空的。 */
-const NO_PLAN = '这个会话还没有计划笔记。需要时用 plan_update 建立一份（步骤清单 ＋ 辅助笔记）。'
+const NO_PLAN = '这个会话还没有计划笔记。需要时用 plan_update 建立一份（目标 ＋ 步骤清单 ＋ 辅助笔记）。'
 
 /**
  * 读的回执（`plan_read`）。
@@ -257,7 +278,7 @@ function readTool(reader: PlanReader): ToolDefinition {
   return {
     spec: {
       name: PLAN_READ_TOOL,
-      summary: '取当前会话的计划笔记（步骤清单与辅助笔记）',
+      summary: '取当前会话的计划笔记（目标、步骤清单与辅助笔记）',
       parameters: PLAN_READ_PARAMETERS,
       danger: { level: 'light' },
     },
@@ -319,7 +340,7 @@ function updateTool(): ToolDefinition {
  */
 function planOf(raw: unknown): PlanNote | string {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return '参数错误：plan 须是 { steps, notes } 对象，或 null（清空）'
+    return '参数错误：plan 须是 { steps, notes }（另可给 goal）对象，或 null（清空）'
   }
 
   const fields = raw as Record<string, unknown>
@@ -350,7 +371,17 @@ function planOf(raw: unknown): PlanNote | string {
     return '参数错误：plan.notes 须是字符串（没有就留空串）'
   }
 
-  return { steps: parsed, notes: notes ?? '' }
+  // 目标那一格（U90）——**可选**，且**空白的收成「不给」**：整份计划里那一格只有两种样子，
+  // 「有一句目标」或「压根没有这个键」。留一个空串在场，界面上就是一条空表头
+  // （「没有目标时那一行不出现」——那一行的判据是**键在不在场**，故空串不能放进来）。
+  const goal = fields['goal']
+  if (goal !== undefined && typeof goal !== 'string') {
+    return '参数错误：plan.goal 须是一句短文本（没有目标就整个不给这一项）'
+  }
+
+  const want = (goal ?? '').trim()
+
+  return { ...(want === '' ? {} : { goal: want }), steps: parsed, notes: notes ?? '' }
 }
 
 function historyTool(reader: PlanReader): ToolDefinition {

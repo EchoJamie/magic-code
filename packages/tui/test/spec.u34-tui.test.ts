@@ -23,7 +23,7 @@ import { AppView, TuiApp, breathingOf, liveLayoutOf } from '../src/components/ap
 import { createShell } from '../src/shell.ts'
 import { PALETTE, displayWidth } from '../src/components/lines.ts'
 import { logLines, rowLines } from '../src/components/log.ts'
-import { planBlockOf, planStyleOf } from '../src/plan.ts'
+import { MARK_WIDTH, PLAN_INDENT, planBlockOf, planStyleOf } from '../src/plan.ts'
 import { hasPlan, planFromEntries, withPlan } from '../src/view.ts'
 import { createStage } from './screen.ts'
 import { blankRuns, duplicates, overflows } from './invariants.ts'
@@ -255,9 +255,14 @@ describe('U34 · 清单那一块', () => {
     //    一个字不少），换的只是**从哪一段行里读它**。
     const lines = frame.dock.map((line) => line.text)
     // 首行带方块，续行是两格缩进——拼起来仍是**原文一字不少**
-    const at = lines.findIndex((line) => line.startsWith('▪ '))
+    //
+    // ⚠️ **U90 起方块前头还多一级**（步骤退到目标那一行下面）：前缀宽度从 `MARK_WIDTH`
+    //    改成 `PLAN_INDENT ＋ MARK_WIDTH`。**判据本身一个字没改**（折行、续行对齐、
+    //    原文一字不少），改的只是「文字从第几列起」这一笔——退一级正是本单要的形。
+    const at = lines.findIndex((line) => line.startsWith(`${' '.repeat(PLAN_INDENT)}▪ `))
     expect(at).toBeGreaterThan(-1)
-    const joined = [lines[at]?.slice(2), ...lines.slice(at + 1).map((line) => line.slice(2))]
+    const cut = PLAN_INDENT + MARK_WIDTH
+    const joined = [lines[at]?.slice(cut), ...lines.slice(at + 1).map((line) => line.slice(cut))]
       .join('')
       .slice(0, long.length)
 

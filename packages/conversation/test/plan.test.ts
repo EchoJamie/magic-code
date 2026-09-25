@@ -29,11 +29,18 @@ const SESSION = 's-plan'
 const AT = 1_700_000_000_000
 
 const PLAN: PlanNote = {
+  goal: '让登录失败提示说得清哪儿错了',
   steps: [
     { text: '定位登录失败提示', status: 'completed' },
     { text: '覆盖四个失败分支', status: 'in_progress' },
   ],
   notes: '约束：保留已输入内容',
+}
+
+/** U90 之前那一形（没有 `goal` 那一格）——旧记录照旧读得回来。 */
+const LEGACY: PlanNote = {
+  steps: [{ text: '老笔记里的一步', status: 'pending' }],
+  notes: '老笔记',
 }
 
 /** 造一个记录桩 ＋ 逐条落账的小助手（id 由桩按序发）。 */
@@ -360,6 +367,30 @@ describe('U34 · 计划材料（压缩 / 中断之后重新交付）', () => {
     // 说清它是什么——且**不是**用户的新要求（也不是系统指令）
     expect(materialText(material)).toContain('既有计划笔记')
     expect(materialText(material)).toContain('不是用户的新要求')
+  })
+
+  // ══ U90 · 目标那一格进了材料 ═════════════════════════════════════════
+
+  test('目标随材料一起交付，且排在步骤之前（与清单同一个次序）', async () => {
+    const { records, add } = ledger()
+    add(planResult(PLAN))
+    const all: Entry[] = []
+    for await (const entry of records.readEntries(SESSION)) all.push(entry)
+
+    const text = materialText(await planMaterialOf({ delivered: new Set(), all }))
+    expect(text).toContain('目标：让登录失败提示说得清哪儿错了')
+    expect(text.indexOf('目标：')).toBeLessThan(text.indexOf('步骤：'))
+  })
+
+  test('⚠️ 反面：旧笔记（没有目标那一格）不补一行空的「目标：」', async () => {
+    const { records, add } = ledger()
+    add(planResult(LEGACY))
+    const all: Entry[] = []
+    for await (const entry of records.readEntries(SESSION)) all.push(entry)
+
+    const text = materialText(await planMaterialOf({ delivered: new Set(), all }))
+    expect(text).toContain('老笔记里的一步')
+    expect(text).not.toContain('目标：')
   })
 
   test('清空之后旧计划的正文还看得见：补一句「已清空」消歧义', async () => {
