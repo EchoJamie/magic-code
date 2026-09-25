@@ -504,3 +504,62 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     }
   })
 })
+
+/**
+ * **`--allow-all`**（U73 · 全放行）—— 审计的是**这一位有没有别的入口**。
+ *
+ * 判据锚的是「我要什么」：**它只从命令行来**。故这一份只管**参数面**——
+ * 「敲得出来（不被当成坏参数）」「用法里写清了它」；至于它**落到哪儿**（闸门）
+ * 在 `test/allow-all.test.ts`，**真 PTY 上长什么样**在真帧装置（`frames-u73-tui.ts`）。
+ *
+ * ⚠️ 全放行**只走终端那条路**：`--check` / `--script` 是**进程内装配**，收不到它
+ * （下面第二条钉的就是这一条——同一个参数配 `--check` 照旧跑自检，而自检里那一步
+ * 该不该问，闸门是**照旧问**的）。
+ */
+describe('入口 magic · 全放行（`--allow-all` · U73）', () => {
+  test('用法里写清了这条入口——**且写清了它只在起会话那一刻给**', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      const result = await run(home, '--help')
+
+      expect(result.stdout).toContain('--allow-all')
+      // 三件事各说一次：**只给这一次** · **界面上换不来**（看状态行） · **必闸照问**
+      expect(result.stdout).toContain('只在这儿给')
+      expect(result.stdout).toContain('状态行')
+      expect(result.stdout).toContain('照旧问你')
+      // ⚠️ **不叫 `mode`**（设计明文：「mode」这个词留给别的用途）——判的是**参数名**，
+      // 故按**词**比、不按子串比：`--model` 那个词里本来就有 `--mode` 这四个字母加两个。
+      expect(result.stdout.split(/\s+/u)).not.toContain('--mode')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('敲得出来——不被当成坏参数（与 `--check` 同用即跑自检）', async () => {
+    const { home } = stageWithConfig()
+
+    try {
+      const result = await run(home, '--allow-all', '--check')
+
+      expect(result.stderr).toBe('')
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).not.toContain('不认得的参数')
+    } finally {
+      removeDir(home)
+    }
+  })
+
+  test('**不带值**——多出来的那个词照旧是坏参数（它是一个开关，不是一个可点名的设置）', async () => {
+    const home = tempDir('magic-cli-')
+
+    try {
+      // `--allow-all true` 这种写法不该被悄悄吃下：第二个词是**位置参数**，没人认它
+      const result = await run(home, '--allow-all', 'true', '--check')
+
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('不认得的参数')
+    } finally {
+      removeDir(home)
+    }
+  })
+})

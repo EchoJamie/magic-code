@@ -40,6 +40,7 @@ const USAGE = `magic —— 软件工程智能体
   magic --session <id>         接着一条已有的会话干
   magic --provider <id>        开局用哪个供应商（配置里 providers 的条目名）
   magic --model <名>           开局用哪个模型（也可以单独用，不带 --provider）
+  magic --allow-all            这一次起会话不问常规的调用（只给这一次；见下）
   magic -h, --help             显示这份帮助
 
 接着上次的活，得说一声：不给 --session 就是新会话（直接敲 magic 也不会先建一条——
@@ -47,6 +48,12 @@ const USAGE = `magic —— 软件工程智能体
 打错一个字母会报错退场，不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。
 接上之后先跑一次恢复（处置上次崩溃时没做完的那件事），恢复跑完才收你的输入。
 开局没给 --provider / --model 就用配置里的缺省条目；中途换模型在界面里打 /model。
+
+--allow-all 是让这一次会话放行常规的调用：这类调用不再问你，直接做。
+它只在这儿给——界面里换不来，想看它有没有生效就看状态行（那一格写着「全放行」）。
+⚠️ 删除、覆盖、破坏性 git、提权、外发、越界这几类照旧问你，它放不了这些。
+要接着上次那条会话继续（magic --session <id> --allow-all），带不带它都行：带＝接上后是全放行，
+不带＝接上后照旧问。
 
 下面两条不是日常用法：
   magic --check                把配置、数据存哪、工作区、会话挨个查一遍，查完就退出
@@ -75,6 +82,15 @@ type Args = {
   readonly session?: string | undefined
   /** 开局的换模型请求（`--provider` / `--model` 的落地）——两件都没给即 `undefined`。 */
   readonly switch?: ModelSwitchRequest | undefined
+  /**
+   * **全放行**（U73）——`--allow-all` 带没带。
+   *
+   * ⚠️ **这是它在产品上的唯一入口**：界面里**没有**任何切进全放行的键位、slash 或设置项
+   * ——「开始那一刻」是它唯一的入口，因为**能中途切的，就等于模型能说服用户切、或误按就切**
+   * （`设计/工具执行与权限`·「全放行：只在起会话那一刻给」）。它因此不落 `config.json`：
+   * 不是配置，是**这一次起会话**的状态；也**不是「模式」**——它只是权限这一维的一个取值。
+   */
+  readonly allowAll?: boolean | undefined
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -83,6 +99,7 @@ function parseArgs(argv: readonly string[]): Args {
   let provider: string | undefined
   let model: string | undefined
   let session: string | undefined
+  let allowAll = false
 
   /** 取值——缺值 / 撞上另一个选项即报（`--provider --check` 这类笔误不该被当成名字）。 */
   const valueOf = (flag: string, index: number): string => {
@@ -120,6 +137,10 @@ function parseArgs(argv: readonly string[]): Args {
       i += 1
       continue
     }
+    if (arg === '--allow-all') {
+      allowAll = true
+      continue
+    }
     throw new Error(`不认得的参数「${arg}」（见 magic --help）`)
   }
 
@@ -128,6 +149,7 @@ function parseArgs(argv: readonly string[]): Args {
     check,
     script,
     session,
+    ...(allowAll ? { allowAll: true } : {}),
     ...(provider === undefined && model === undefined ? {} : { switch: { provider, model } }),
   }
 }
@@ -579,6 +601,9 @@ async function runExecutorMode(argv: readonly string[]): Promise<number | undefi
     cwd,
     magic: { home: magicHome, base: magicBase },
     ...(raw === undefined ? {} : { switch: JSON.parse(raw) as ModelSwitchRequest }),
+    // **全放行**（U73）——无值的一个开关（`launch.ts` 的 `--allow-all`）。
+    // 它是**私约里的那一半**：用户那一侧的名字与说法写在 `USAGE`，用户敲不出来这一支。
+    ...(argv.includes('--allow-all') ? { allowAll: true } : {}),
   })
 
   return outcome.kind === 'ok' ? 0 : 1
@@ -668,6 +693,9 @@ async function runTerminal(args: Args): Promise<number> {
         label: 'terminal',
         ...(args.session === undefined ? {} : { session: args.session }),
         ...(args.switch === undefined ? {} : { switch: args.switch }),
+        // 全放行（U73）——**由窗口在这一跳说**，随管理者发车那一跳进执行者的装配
+        // （见 `wire.ts` 的 `allowAll`）。窗口自己不判它、也不执行它：闸门长在执行者那一头。
+        ...(args.allowAll === true ? { allowAll: true } : {}),
       },
     })
   } catch (error) {

@@ -132,6 +132,13 @@ type ClientConn = {
   /** 开局那条换模型请求（`--provider` / `--model`）——为它起新的一代时带过去。 */
   readonly switch: ModelSwitchRequest | undefined
   /**
+   * **全放行**（U73）——这个窗口起手带没带 `--allow-all`；为它起新的一代时带过去。
+   *
+   * 与 `switch` 同一个道理：**只有为这个窗口新起的那一代收它**。挂回一条已经活着的那一代
+   * 时不再 apply——那一代有它自己的那一个（见 `wire.ts` 的 `allowAll`）。
+   */
+  readonly allowAll: boolean | undefined
+  /**
    * **这个窗口正等着的快照号**（U49）——非 `null` 时进来的事件**先攒着不发**。
    *
    * 这一格就是设计那句「**先订阅并缓冲**，或提供原子订阅快照」的落点：窗口一挂到某一代
@@ -255,6 +262,11 @@ export type ExecutorRequest = {
    * 有它自己的选中——「模型选择按 Agent 独立装配，不共享可变选择」是设计明文）。
    */
   readonly switch?: ModelSwitchRequest | undefined
+  /**
+   * **全放行**（U73）——同上：**只有为这个窗口新起的那一代**收它，且要赶在
+   * **执行者造闸门之前**（那是装配期的事，没有事后改的口）。
+   */
+  readonly allowAll?: boolean | undefined
 }
 
 /** 一个真起了的进程——管理者只管「它还活着没有、叫它退它退不退」。 */
@@ -642,6 +654,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           target: undefined,
           label: message.label,
           switch: message.switch,
+          allowAll: message.allowAll,
           awaiting: null,
           buffered: [],
         }
@@ -1199,6 +1212,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         explicit: true,
         cwd: conn.cwd,
         ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+        ...(conn.allowAll === true ? { allowAll: true } : {}),
       })
       if (spawned === undefined) {
         conn.link.send({ t: 'line', text: `起不了执行者——没切到 ${how.session}` })
@@ -1298,6 +1312,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       explicit: false,
       cwd: conn.cwd,
       ...(conn.switch === undefined ? {} : { switch: conn.switch }),
+      ...(conn.allowAll === true ? { allowAll: true } : {}),
     })
     if (spawned !== undefined) bind(conn, spawned)
     return spawned
@@ -1310,6 +1325,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     readonly explicit: boolean
     readonly cwd: string
     readonly switch?: ModelSwitchRequest | undefined
+    readonly allowAll?: boolean | undefined
   }): Executor | undefined {
     const gen = nextGen
     nextGen += 1
@@ -1325,6 +1341,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         magic: options.magic,
         socket: paths.socket,
         ...(input.switch === undefined ? {} : { switch: input.switch }),
+        ...(input.allowAll === true ? { allowAll: true } : {}),
       })
     } catch (error) {
       options.log?.(`起执行者不成：${String(error)}`)

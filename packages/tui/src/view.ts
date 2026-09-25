@@ -876,6 +876,18 @@ export type ShellStatus = {
    * 出口合入后，`createShell` 的 `contextWindow` 一接即上屏（渲染那半已经写好并有用例）。
    */
   readonly window: number | null
+  /**
+   * **这一代在执行全放行**（U73）——命令行 `--allow-all` 起的那一代。**一个布尔**，
+   * 没有第二档（设计明文：它不是「模式」，只是权限这一维的一个取值）。
+   *
+   * 由**执行者**随快照报来（`RunSnapshot.allowAll`），不是窗口拿自己那份 argv 猜的：
+   * 窗口可能只是**挂上**了一条早就活着的那一代（那一代带的是它起手带的那个布尔）。
+   *
+   * ⚠️ **它是常驻一格**，不是回执——设计按三分类把它归进「状态（随使用变）⇒ 常驻」，
+   * 因为**「看不见的裸奔是最坏的一形」**：用户必须随时知道自己在全放行。
+   * 故它**不会自己消失**、也得**扛得住窄窗**（见 `components/status.ts` 的 `degrade`）。
+   */
+  readonly allowAll: boolean
   /** 右位提示——**独立一栏，出现/消失不推动左半**。 */
   readonly hint: string
 }
@@ -1121,6 +1133,9 @@ export function createView(): ShellView {
       model: null,
       usage: null,
       window: null,
+      // 起手先按「不是」——**报它由执行者给**（见 `ShellStatus.allowAll`），
+      // 而执行者还没起来时本来也就没有闸门，没有哪一次放行是「全放行放的」
+      allowAll: false,
       hint: HINT_IDLE,
     },
     dock: { kind: 'input' },
@@ -2069,6 +2084,11 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
   if (snapshot.model !== undefined) {
     next = patchStatus(next, { model: snapshot.model, window: snapshot.window ?? null })
   }
+
+  // **这一代的它**（U73）——照快照原样报，**缺席＝不在全放行**（故无条件赋值，
+  // 不像上面那两格是「没给就不动」）：换到另一条不是全放行的会话上去时，那一格必须**灭掉**
+  // ——留着就是撒谎，而这一格撒谎正是设计点名不许的那一形（「看不见的裸奔」）。
+  next = patchStatus(next, { allowAll: snapshot.allowAll === true })
 
   if (snapshot.decisions.length > 0 && next.dock.kind !== 'decision') {
     const one = snapshot.decisions[0] as SnapshotDecision

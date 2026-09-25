@@ -210,6 +210,18 @@ export type AssembleOptions = {
   readonly mcpTimeouts?:
     | { readonly connectTimeoutMs?: number; readonly callTimeoutMs?: number }
     | undefined
+  /**
+   * **全放行**（U73）——**起会话那一刻**由命令行（`--allow-all`）给的**一个布尔**，
+   * 随这一代执行者定死：判轻的调用不再弹卡，**必闸类照样挡**
+   * （见 `@magic/permission` 的 `PermissionGateOptions.allowAll`）。
+   *
+   * ⚠️ **它是「权限」那一维的一个取值，不是智能体的运行模式**（设计明文）：循环 · 工具集 ·
+   * 计划 · 上下文 · 执行边界 · 能看见哪些工具——**一个字都不动**。
+   * ⚠️ **是装配期入参，不是配置键**——它**不进 `config.json`**：那是「用户自己定的」那一类，
+   * 而这一位是**这一次起会话**的状态（`--check` / `--script` 两条进程内路不收它，
+   * 故它们拿到的永远是 `undefined`＝照旧问）。
+   */
+  readonly allowAll?: boolean | undefined
 }
 
 /** 装配产物——外壳侧一端 ＋ 自检 / 验收要用的把手。 */
@@ -1157,6 +1169,9 @@ export function assemble(options: AssembleOptions): Assembly {
       now,
       rules: [...parsedRules.rules, ...planRules],
       grants,
+      // 全放行（U73）——**每一代闸门都照这一个布尔造**（换会话时新开的闸门同样带着它：
+      // 它是**这一代执行者**的属性，不是某一条会话的）。缺省不给＝照旧问
+      ...(options.allowAll === true ? { allowAll: true } : {}),
     })
 
     /**

@@ -24,6 +24,13 @@ import type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './manag
 
 /** 开局选中走参数（JSON 一份）——它是**窗口的属性**，随发车那一跳递进去。 */
 const SWITCH_FLAG = '--switch'
+/**
+ * **全放行**（U73）——**没有值**的一个布尔开关（这一位只有「带／不带」两形）。
+ *
+ * ⚠️ 用户那一侧**同名**只是省得两处对着一张表；产品上的名字与说法在 `cli.ts` 的 `USAGE`
+ * （**不是 `mode`**，也不叫任何「模式」——设计明文：「mode」这个词留给别的用途）。
+ */
+const ALLOW_ALL_FLAG = '--allow-all'
 
 export type SpawnOptions = {
   /** 入口脚本（`packages/app/src/cli.ts`）——缺省按本文件的位置推。 */
@@ -70,6 +77,7 @@ export function createProcessLauncher(options: SpawnOptions = {}): ExecutorLaunc
           '--magic-base',
           request.magic.base,
           ...(request.switch === undefined ? [] : [SWITCH_FLAG, JSON.stringify(request.switch)]),
+          ...(request.allowAll === true ? [ALLOW_ALL_FLAG] : []),
         ],
         {
           // 子进程的**环境照传**（它要读用户的 `PATH` / 供应商的环境变量 key）。

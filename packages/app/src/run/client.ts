@@ -38,6 +38,7 @@ import type { Socket } from 'bun'
 import type {
   Command,
   KernelEvent,
+  ModelSwitchRequest,
   RunNotice,
   RunRow,
   RunSnapshot,
@@ -103,6 +104,10 @@ export type ManagerClient = {
    *
    * ⚠️ **它一定先于水位之后的事件到达**（管理者那一侧先订阅并缓冲、拿到快照才放行，
    * 见 `manager.ts` 的 `bind`）。外壳据此把在飞的回复、在跑的工具与挂着的卡画回去。
+   *
+   * ⚠️ **它可能比订阅先到**（U73 实测）——故**晚来的订阅者当场补一份最近的那份**
+   * （见 `lateResumed`）。不补的话那一份被**静默丢掉**，而丢掉它的症状是**屏上少东西、不报错**
+   * ——正是 D33 那一族（同一处「先订阅、后说话」的缝，另一头）。
    */
   onResumed(listener: (gen: number, snapshot: RunSnapshot) => void): void
   /** 管理者指派的目标换了一条会话——外壳据以认「我现在在看哪条」（`null` ＝ 还没开张）。 */
@@ -134,6 +139,16 @@ export type ManagerClient = {
 export type ConnectOptions = {
   /** **显式接续**那条会话（`--session <id>`）——开局就落在这条上（见 `wire.ts` 的注）。 */
   readonly session?: string | undefined
+  /**
+   * **开局的换模型请求**（`--provider` / `--model`）——随 `hello` 递给管理者，
+   * 由管理者放在**为这个窗口新起的那一代**的发车参数上（见 `wire.ts` 的 `switch`）。
+   */
+  readonly switch?: ModelSwitchRequest | undefined
+  /**
+   * **全放行**（U73）——命令行 `--allow-all` 在**这一个窗口**上定下的那个布尔；
+   * 与 `switch` 同一条路，进执行者**造闸门之前**（见 `wire.ts` 的 `allowAll`）。
+   */
+  readonly allowAll?: boolean | undefined
   /** 启动目录——管理者按它起执行者（工作区默认根的缺省）。缺省 `process.cwd()`。 */
   readonly cwd?: string | undefined
   /** 诊断用的标签（哪一类窗口）——缺省不给。 */
@@ -168,6 +183,18 @@ export async function connectManager(
   const lineListeners: ((text: string) => void)[] = []
   const runListeners: ((rows: readonly RunRow[]) => void)[] = []
   const resumedListeners: ((gen: number, snapshot: RunSnapshot) => void)[] = []
+  /**
+   * 最近一份接回快照——**晚来的订阅者当场补它**（U73）。
+   *
+   * 由头（实测，不是设想）：`--session <id>` 那条路上「挂到某一代上」发生在**收 `hello`
+   * 的同一刻**（见本文件头注），快照那一问也就在那时发出去；那一代**已经活着**时它答得极快，
+   * 于是这一份**可能早于外壳第一次订阅**到达。而收话这一跳只认**派发那一刻挂着的监听**
+   * ——没有监听＝**丢掉**。症状不是报错，是**屏上少一段**（接回来那一格不亮），与 D33 同一族。
+   *
+   * 为什么不另排一条队列：这一份的语义本来就是「**此刻的样子**」——只有**最近那一份**有意义，
+   * 补一份旧的反而会拿一个过时的此刻去盖实时事件（与 `runs()` 那条「初值 ＋ 订阅」同形）。
+   */
+  let lateResumed: { readonly gen: number; readonly snapshot: RunSnapshot } | undefined
   const stoppedListeners: ((report: StopReport) => void)[] = []
 
   link.onMessage((message) => {
@@ -177,6 +204,7 @@ export async function connectManager(
         for (const listener of [...runListeners]) listener(runRows)
         return
       case 'resumed':
+        lateResumed = { gen: message.gen, snapshot: message.snapshot }
         for (const listener of [...resumedListeners]) listener(message.gen, message.snapshot)
         return
       case 'notice':
@@ -222,6 +250,13 @@ export async function connectManager(
       cwd: options.cwd ?? process.cwd(),
       ...(options.label === undefined ? {} : { label: options.label }),
       ...(options.session === undefined ? {} : { session: options.session }),
+      // ⚠️ **这两件必须在这里逐字转交**：`hello` 那一头（`wire.ts`）与管理者那一头
+      // （`manager.ts`）早就认它们，唯独这一跳原先**按 `ConnectOptions` 的旧形状拼**
+      // ——`switch` 因此从来没上过线（`--provider` / `--model` 在终端那条路上是**哑的**，
+      // 只有 `--script` 那条进程内路走得到）。U73 补上转交，两件走同一条路。
+      // 判据：`hello` 的字段少了谁，跑一次真 PTY 就看得见（那是**行为**，不是形状）。
+      ...(options.switch === undefined ? {} : { switch: options.switch }),
+      ...(options.allowAll === true ? { allowAll: true } : {}),
     },
     options.timeoutMs ?? HANDSHAKE_TIMEOUT_MS,
   )
@@ -252,6 +287,9 @@ export async function connectManager(
     },
     onResumed(listener) {
       resumedListeners.push(listener)
+      // **晚来的当场补一份**（见 `lateResumed` 的注）——补在**登记之后**：
+      // 补这一下里要是又来了新的一份，那条广播找得到这个监听，别把它漏在两次之间。
+      if (lateResumed !== undefined) listener(lateResumed.gen, lateResumed.snapshot)
     },
     onStopped(listener) {
       stoppedListeners.push(listener)
@@ -312,6 +350,10 @@ async function greet(
     readonly cwd: string
     readonly label?: string
     readonly session?: string
+    /** 开局的换模型请求（`--provider` / `--model`）——见 `wire.ts` 的 `switch`。 */
+    readonly switch?: ModelSwitchRequest
+    /** 全放行（U73）——见 `wire.ts` 的 `allowAll`。 */
+    readonly allowAll?: boolean
   },
   timeoutMs: number,
 ): Promise<

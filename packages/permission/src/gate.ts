@@ -13,6 +13,12 @@
  *   必闸禁区 ＞ 项目规约（留缝·不实现） ＞ 用户手写规则 ＞ 点出来的授权 ＞ 默认问
  * ```
  *
+ * 而 **「全放行」**（U73 · `options.allowAll`）**不是这条链上的一格，也不是一个「模式」**
+ * ——它是**权限这一维的一个取值**，只动「该不该做」那一问的**默认答什么**：**一个布尔**
+ * （全放行 ／ 不全放行），**不给它加档、不留扩展位**（设计明文）。它落在本域的效果只有一件：
+ * 判**轻**的调用不必配规则就落进「自动放行」；判**重**的那一格它**够不着**（必闸禁区仍在最左）。
+ * 链上每一格的次序因此一字未动，`analyze` 那一刀也一个字没改。
+ *
  * 本文件是这条链的**唯一落定处**；括号里标出每一格住在哪儿：
  * - **必闸禁区**——`analyze` 每次当场重判（判据不押规则作者的自觉）；
  * - **项目规约**——**留缝不实现**（设计明文：采纳它要配「首次确认 ＋ 只许收窄」）；
@@ -145,6 +151,22 @@ export type PermissionGateOptions = {
    */
   readonly grants: GrantLedger
   /**
+   * **全放行**（U73）——**权限这一维的一个取值**（不是「模式」、不是新的一层）：**一个布尔**，
+   * **只在起会话那一刻**由命令行给；会话活着的时候**没有任何入口改它**（它是构造入参，
+   * 本域不提供 setter——「对话期间切不进去」在代码里就是这个形状）。
+   *
+   * 落了什么：判**轻**的调用**不再弹卡**——与「规则命中」走**同一条**自动放行路
+   * （`decider: 'auto'`、耗时照测、事件照发），只是不必先配一条规则。
+   *
+   * ⚠️ **必闸类照样挡**：下面那道 `weight === 'light'` 的门**一字不动**——判重的
+   * （删 / 覆 / 破坏性 git / 提权 / 外发 / 越界 / 看不懂）**照旧弹卡**。
+   * 「全放行 ≠ 连必闸也放」是设计明文，故这里**不写第二套判据**：轻重那一刀仍归 `analyze`，
+   * 这一位只是**不押「有没有规则」**——它是**过闸时的输入**，不是判据的一部分。
+   *
+   * 由头与边界见 `设计/工具执行与权限`·「全放行：**只在起会话那一刻给**」。
+   */
+  readonly allowAll?: boolean | undefined
+  /**
    * 时钟（毫秒）——**度量**用：裁决耗时 ＝ 本域开始处理这次裁决 → 裁决落定
    * （`tool.decision.elapsedMs`；两种路径同一口径，见 `events.ts` · `decisionMade`）。
    * 缺省 `Date.now`；显式注入便于测试（域不各自读时钟，取用经此一处）。
@@ -176,6 +198,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   const { sink, stamper, grants } = options
   const now = options.now ?? Date.now
   const rules = options.rules ?? []
+  /** 全放行——**构造时定死**（见 `PermissionGateOptions.allowAll`；本域没有改它的口）。 */
+  const allowAll = options.allowAll === true
 
   /** 在途询问——**请求事件 id** → 待答复（答复按此配对）。 */
   const pending = new Map<DecisionId, Pending>()
@@ -211,12 +235,18 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       tally.total += 1
 
-      // **必闸 ＞ 规则**：命中的规则只在判定为**轻**时才有资格放行；判重一律问——
-      // 必闸类是禁区（清单即禁区），任何规则不可放行。判据不押规则作者的自觉。
-      if (hit !== undefined && weight === 'light') {
+      // **必闸 ＞ 规则与全放行**：命中的规则、或**全放行**，都只在判定为**轻**时才有资格
+      // 放行；判重一律问——必闸类是禁区（清单即禁区），任何规则、全放行都不放行。
+      // 判据不押规则作者的自觉，**也不押全放行的自觉**：这一行对两条来路是同一句话。
+      //
+      // ⚠️ 轻重那一刀仍归 `analyze`（上面那一行），本行**不另立判据**——「全放行会不会
+      // 放掉必闸」因此不是一句承诺，是这一行的形状：`weight` 不是 `light` 就落不到这儿。
+      if (weight === 'light' && (hit !== undefined || allowAll)) {
         // 授权**真省了一次点击**才记账（`hit` 的语义见 `grants.ts`）——
-        // 命中却被否决的不记：那条授权并没有替用户挡下什么
-        if (granted !== undefined) grants.hit(granted)
+        // 命中却被否决的不记：那条授权并没有替用户挡下什么。
+        // ⚠️ **全放行下也不记**：这一笔放行不是它挣来的（判轻就放，与命没命中无关），
+        //    记了等于替一条**此刻并没在起作用**的授权续命——陈旧那一格正是据 `hit` 判的。
+        if (granted !== undefined && !allowAll) grants.hit(granted)
         return autoAllow(callRef, started)
       }
 
