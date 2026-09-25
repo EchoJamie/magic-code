@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig } from '../src/index.ts'
-import { removeProvider, saveProvider, setModelDefault } from '../src/config-save.ts'
+import { removeProvider, saveProvider, setModelDefault, setWebFetch } from '../src/config-save.ts'
 import { magicAt, removeDir, tempDir, writeConfig } from './tmp.ts'
 
 const READ = (path: string): Record<string, unknown> =>
@@ -279,6 +279,48 @@ describe('移除与设为默认', () => {
       const outcome = setModelDefault({ path, request: { provider: 'ghost', model: 'm' } })
       expect(outcome.ok).toBe(false)
       expect(outcome.ok === false && outcome.reason).toMatch(/先接入它/)
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  // —— 「取网页用的模型」（U78）——
+
+  test('取网页用的模型：**只写 `webFetch` 那一格**（连接与默认一个字不动）', () => {
+    const dir = tempDir('magic-save-')
+    try {
+      const path = writeConfig(dir, {
+        defaultProvider: 'a',
+        providers: {
+          a: { vendor: 'deepseek', model: 'deepseek-flash' },
+          b: { vendor: 'minimax', model: 'MiniMax-M3' },
+        },
+      })
+
+      expect(
+        setWebFetch({ path, request: { provider: 'b', model: 'MiniMax-M2.5-highspeed' } }),
+      ).toEqual({ ok: true })
+
+      // 写的是它自己那一条（**换一条连接**——「不与当前会话混」正是这一格的意义）
+      expect(READ(path)['webFetch']).toEqual({ provider: 'b', model: 'MiniMax-M2.5-highspeed' })
+      // 三处原样：默认连接 · 各连接的默认模型 · 连接条目本身
+      expect(READ(path)['defaultProvider']).toBe('a')
+      expect(PROVIDERS_OF(path)['a']).toEqual({ vendor: 'deepseek', model: 'deepseek-flash' })
+      expect(PROVIDERS_OF(path)['b']).toEqual({ vendor: 'minimax', model: 'MiniMax-M3' })
+    } finally {
+      removeDir(dir)
+    }
+  })
+
+  test('取网页用的模型指向一条不存在的连接 ⇒ 拒（先接入它），且**不写盘**', () => {
+    const dir = tempDir('magic-save-')
+    try {
+      const path = writeConfig(dir, { providers: {} })
+
+      const outcome = setWebFetch({ path, request: { provider: 'ghost', model: 'm' } })
+      expect(outcome.ok).toBe(false)
+      expect(outcome.ok === false && outcome.reason).toMatch(/先接入它/)
+      expect(READ(path)['webFetch']).toBeUndefined()
     } finally {
       removeDir(dir)
     }

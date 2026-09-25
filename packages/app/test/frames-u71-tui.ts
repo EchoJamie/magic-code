@@ -44,7 +44,7 @@ type WriteUntil = { readonly until: WaitCondition; readonly timeoutMs?: number }
 
 /** 这一趟要等的锚——**只有那一屏才有**的那一句（拿别处也有的字当锚等于没等）。 */
 const ANCHOR = {
-  /** `/config` 那一屏：最后一行那个项名（四行都在时它才在，故它一到＝这一屏铺全了）。 */
+  /** `/config` 那一屏：最后一行那个项名（五行都在时它才在，故它一到＝这一屏铺全了）。 */
   config: '数据目录与工作区根',
   /** `/model` 那一屏：末尾那三条常驻入口行（U41）。 */
   model: '连接供应商',
@@ -112,7 +112,7 @@ function rowOf(shot: Capture, needle: string): number {
  * 开出 `/config` 那一屏（打命令 → 回车 → **等最后那一行项名**）。
  *
  * ⚠️ 等最后那一行而不等第一行，是有由头的：这一屏**三份读数齐了才开**，故最后一行项名
- * 上屏＝四行都铺全了、四格的值也都填上了（少一份它压根不开）。等第一行则会撞上
+ * 上屏＝五行都铺全了、四格的值也都填上了（少一份它压根不开）。等第一行则会撞上
  * 「屏刚铺到一半」的那一刻。
  */
 async function openConfig(session: UiSession): Promise<void> {
@@ -135,7 +135,7 @@ if (import.meta.main) {
    * 起一个真 UI 会话。
    *
    * 配置：**两条连接**（第二条是给走 C「换一个模型」用的）＋ **一台真外部工具服务器**
-   * （`fake-server.ts`，真进程真协议）——故四行各有各的实情可报。
+   * （`fake-server.ts`，真进程真协议）——故五行各有各的实情可报。
    */
   const open = (label: string, columns = 100, rows = 30) =>
     createUiSession({
@@ -185,28 +185,37 @@ if (import.meta.main) {
 
       const first = await session.capture({ label: 'A1-开屏（每行都看得见现在是什么）' })
       keep(first, 'A1-开屏（每行都看得见现在是什么）')
-      // ① 四行都在，且每行右边都有值（不是空着）
+      // ① 五行都在，且每行右边都有值（不是空着）
+      // ⚠️ **U78 起多一行「取网页用的模型」**（设计 · 命令行与配置：那一项随该功能落地再加）
       check(
-        ['模型与连接', '本工作区授权', '外部工具', '数据目录与工作区根'].every((name) => has(first, name)),
-        'A1：四个可配项都在这一屏上',
+        ['模型与连接', '取网页用的模型', '本工作区授权', '外部工具', '数据目录与工作区根'].every((name) =>
+          has(first, name),
+        ),
+        'A1：五个可配项都在这一屏上',
       )
       check(has(first, 'MiniMax-M3 · local'), 'A1：「模型与连接」报的是**此刻走哪一条**')
       check(has(first, '还没有'), 'A1：「本工作区授权」报的是本工作区的实情（这一趟没按过 a）')
       check(has(first, '1 台'), 'A1：「外部工具」报的是**配了几台**（配置里那台真服务器在）')
-      // **右列对齐**：四行的值起于同一列（屏上量的，不是拿视图对象算的）
-      const values = ['MiniMax-M3 · local', '还没有', '1 台']
+      check(has(first, '取网页用的模型'), 'A1：U78 那一行在（这一趟配置里没给 `webFetch`）')
+      check(
+        first.lines.some((line) => line.includes('取网页用的模型') && line.includes('还没配')),
+        'A1：它报的是**还没配**（不留空、不编一个默认）',
+        first.lines.find((line) => line.includes('取网页用的模型'))?.trim() ?? '（没有那一行）',
+      )
+      // **右列对齐**：五行的值起于同一列（屏上量的，不是拿视图对象算的）
+      const values = ['MiniMax-M3 · local', '还没配', '还没有', '1 台']
       const cols = values.map((value) => {
         const line = first.lines[rowOf(first, value)] ?? ''
         return line.indexOf(value)
       })
       check(
         cols.every((col) => col > 0) && new Set(cols).size === 1,
-        'A1：右列的值**对齐**（三格的起始列相同）',
+        'A1：右列的值**对齐**（四格的起始列相同）',
         `量到 ${JSON.stringify(cols)}`,
       )
       check(
         first.lines.some((line) => line.includes('数据目录与工作区根')),
-        'A1：第 4 行（数据目录与工作区根）也在',
+        'A1：末行（数据目录与工作区根）也在',
       )
       check(has(first, '打字筛'), 'A1：右位提示报出了「打字筛」（不报，用户不知道打进去的字去哪了）')
 
@@ -225,8 +234,10 @@ if (import.meta.main) {
       const cleared = await session.capture({ label: 'A3-退格清过滤（退到空＝全表）' })
       keep(cleared, 'A3-退格清过滤（退到空＝全表）')
       check(
-        ['模型与连接', '本工作区授权', '外部工具', '数据目录与工作区根'].every((name) => has(cleared, name)),
-        'A3：退到空＝**全表**（四行都回来了）',
+        ['模型与连接', '取网页用的模型', '本工作区授权', '外部工具', '数据目录与工作区根'].every((name) =>
+          has(cleared, name),
+        ),
+        'A3：退到空＝**全表**（五行都回来了）',
       )
 
       // ③ `esc` 一下就全收——**过滤还开着时**也是（不是「先清过滤、再全收」）
@@ -308,8 +319,9 @@ if (import.meta.main) {
       await booted(session)
       await openConfig(session)
 
-      for (let step = 0; step < 3; step += 1) await pressKey(session, 'down')
-      // ⚠️ 等的是**抽屉收了**（右位提示回到空闲那句），不是那块输出出现：那两件事不是同一刻，
+      // ⚠️ **四下**：U78 起「取网页用的模型」占了第 2 行，末行（数据目录与工作区根）是第 5 行
+      for (let step = 0; step < 4; step += 1) await pressKey(session, 'down')
+      // ⚠️ 等的是**抽屉收了**（右位提示空闲那句），不是那块输出出现：那两件事不是同一刻，
       //    只等正文会让取帧落在「屏刚换、光标还没归位」那一瞬（实测两趟同屏、光标读数不同）。
       await pressKey(session, 'enter', { until: { text: HINT_IDLE }, timeoutMs: 10_000 })
       const shot = await session.capture({ label: 'D1-第 4 项自己那一屏' })
@@ -395,7 +407,7 @@ if (import.meta.main) {
 
       const shot = await session.capture({ label: 'F1-46 列窄窗' })
       keep(shot, 'F1-46 列窄窗')
-      check(has(shot, ANCHOR.config), 'F1：窄窗上四项照旧都在')
+      check(has(shot, ANCHOR.config), 'F1：窄窗上五项照旧都在')
       // 长值**截断**（行尾一个 `…`），不是折行——折行会把整屏撑乱，`oneLine` 那一格就是管它的
       const truncated = shot.lines.filter((line) => line.includes('…')).length
       check(truncated >= 1, 'F1：长值截断（行尾 `…`），没有折成第二行', `带省略号的行 ${truncated} 条`)

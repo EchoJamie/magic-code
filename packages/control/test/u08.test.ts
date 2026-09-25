@@ -113,6 +113,9 @@ export function commandSubjectOf(command: Command): string {
     case 'model.default.set':
       // U41 设为默认——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）
       return `设为默认：${command.provider} / ${command.model}`
+    case 'webfetch.set':
+      // U78 取网页用的模型——写**配置里那一格**（与「当前会话说谁」「新建会话的默认」三件分开）
+      return `取网页用的模型：${command.provider} / ${command.model}`
     case 'provider.list':
       // U41 管理面读侧——无参：问的就是「配了哪些连接」
       return '列供应商连接'
@@ -187,6 +190,7 @@ export function hubFaceRealizesPort(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelDefaultSet: () => undefined,
+    onWebFetchSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -226,6 +230,7 @@ export function routesAreContractShape(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelDefaultSet: () => undefined,
+    onWebFetchSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -268,6 +273,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelDefaultSet: () => undefined,
+    onWebFetchSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,

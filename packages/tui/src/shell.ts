@@ -102,7 +102,7 @@ import {
   // **运行事实收尾状态行那一格**（U54）——构造与推来那两跳都走它（见 `withRunFacts`）
   withRunFacts,
 } from './view.ts'
-import type { Dock, PageTurn, PickerRow, SessionScope } from './view.ts'
+import type { Dock, ModelScope, PageTurn, PickerRow, SessionScope } from './view.ts'
 import {
   backspaceRange,
   deleteRange,
@@ -271,6 +271,11 @@ type PendingPicker =
   | 'manage'
   | 'attachments'
   | 'config'
+  /**
+   * **等「取网页用的模型」那一次保存的回话**（U78）——与 `'model'` 分开：那一样是等
+   * 一屏新读数（回去铺列表），这一样是等**一次动作的结果**（收起抽屉、留一行回执）。
+   */
+  | 'webFetchSave'
 
 /**
  * `/config` 开屏要问的那三份读数——**一份都不能少**（少一份，那一格就成了「还没问到」）。
@@ -720,6 +725,30 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /** **详情那一屏正说着哪一条模型**（U41）——与 `manageAt` 同一条由头（明细得有主语）。 */
   let detailAt: ModelRef = { provider: '', model: '' }
+
+  /**
+   * **模型那一屏这一次是替谁挑**（U78）——`session` ＝「当前会话走谁」（`/model` 那一趟，
+   * 选一条就切过去）；`webFetch` ＝「取网页用哪个模型」（`/config` 那一行进来的那一趟，
+   * 选一条是**写配置**）。
+   *
+   * ⚠️ **这一位必须存在，不能拿行文案或来源反推**（同 `manageAt` / `detailAt` 那条由头）：
+   * 两趟开的是**同一扇抽屉**（`source: 'model'`），行也是同一个函数铺的——差别只在
+   * 「怎么读当前那一条」「那行说明怎么说」「回车之后干什么」这三处，而它们都归这一位管。
+   *
+   * 由 `submit` 进那一屏之前写下（`/config` 那一行写 `webFetch`、`/model` 那一支写回
+   * `session`），此后由重铺那一处读它——**出那一屏就把它还原**（`session` 是常态）。
+   */
+  let modelScope: ModelScope = 'session'
+
+  /**
+   * 「此刻的当前那一条」——**按作用对象取**（U78）：会话那一趟取 `view.modelCurrent`，
+   * 取网页那一趟取 `view.webFetch`（`null` ＝ 还没配，那一屏一行都不标「现在配的是它」）。
+   *
+   * 两处都用这**一个**函数：列表标「当前」与 `selected` 落在谁头上必须是同一份读数
+   * （各取一套的话，屏上标着 A、光标却落在 B 上）。
+   */
+  const scopeCurrent = (): ModelRef | null =>
+    modelScope === 'webFetch' ? view.webFetch : view.modelCurrent
 
   /**
    * 本会话里用户**亲手选过**的思考设置——按「连接 ＋ 模型」那一对记着（U41）。
@@ -1279,7 +1308,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    ——设计：「刷新只更新信息，**不抢走列表当前焦点**、不清草稿、不写回默认」。
     //    故重铺要保住当前选中那一行（`refreshModelPicker` 里做），且**不关抽屉**。
     if (event.kind === 'model.catalog') {
-      if (waiting === 'model') {
+      if (waiting === 'webFetchSave') {
+        // **「取网页用的模型」保存的回话**（U78）——那一屏在回车上就收了（见 `submit`），
+        // 这里只留一行回执：装配在 `note` 里说清「成了是存了哪一对 / 没成是为什么」。
+        //
+        // ⚠️ **它不改会话的模型**：这一位是那一件工具用谁（设计 · 网页与搜索那条
+        //    「两处不能混」）——故这里不碰状态行、也不动 `view.modelCurrent`
+        //    （两者都来自答复里各自的格子，`reduce` 那一处已经落地了）。
+        waiting = null
+        modelScope = 'session'
+        if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
+      } else if (waiting === 'model') {
         waiting = null
         openModelPicker(event.data.note ?? '')
       } else {
@@ -1868,6 +1907,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     },
     models: view.models,
     current: view.modelCurrent,
+    // 「取网页用的模型」那一格（U78）——与 `current` 同一个来处（`model.catalog`），
+    // 但**各是各的**：那是当前会话走谁，这一位是那一件工具用谁（空着＝还没配）
+    webFetch: view.webFetch,
     grants: view.grants,
     mcp: view.mcp,
     filter: configQuery,
@@ -2441,7 +2483,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // **取材＝连接一览 ＋ 各自的缓存读数**（U41）——不再是「配置条目」（那正是本项要拆掉的
     // 约束：型号得逐个登记才列得出来）。铺行的规矩全在 `modelRows` 一处（行主文案＝模型名 ·
     // 副文案＝连接名 · 只列适用于对话的 · 已有选择照留）。
-    const rows = modelRows(view.models, view.modelCurrent)
+    //
+    // ⚠️ **两趟共用这一屏、行的铺法一字不差**（U78）：差的只有「谁算当前那一条」与那行说明
+    //    ——`/model` 那一趟是**当前会话**走谁，`/config` 那一趟是**取网页**用谁（见 `modelScope`）。
+    const rows = modelRows(view.models, scopeCurrent())
 
     commit(
       openPicker(view, {
@@ -2449,7 +2494,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 落在**此刻会走的那一条**上（没有去向就从头起——不拿首项冒充当前）
         selected: Math.max(0, rows.findIndex((row) => row.current)),
         rows,
-        hint: modelHint(view.models, note === '' ? undefined : note),
+        hint: modelHint(view.models, note === '' ? undefined : note, modelScope),
       }),
     )
   }
@@ -2480,8 +2525,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (view.dock.picker.source !== 'model') return
 
     const held = picked(view)?.pick
-    const rows = modelRows(view.models, view.modelCurrent)
-    const hint = modelHint(view.models, note === '' ? undefined : note)
+    // 重铺与铺**同一份读数、同一句话**（U78）——不然刷新一次那一屏就换了个人说话
+    const rows = modelRows(view.models, scopeCurrent())
+    const hint = modelHint(view.models, note === '' ? undefined : note, modelScope)
 
     if (rows.length === 0) {
       commit(closePicker(view))
@@ -3308,7 +3354,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (view.dock.kind === 'picker') {
           // **`→` ＝ 看这一条的详情**（U41）——只有模型那一屏给了这个键（别的抽屉没有「详情」
           // 这回事，故它们的左右照旧什么都不做，见列表下方那行说明）
-          if (view.dock.picker.source === 'model') {
+          //
+          // ⚠️ **取网页那一趟不给**（U78）：详情那一屏的两条动作（思考设置 / 设为默认）
+          // 都是**当前会话**那一摊的事，在这一趟里一个都不该做——摆着就是两条会走错的岔路。
+          // 那一屏的说明里也**不报这个键**（按下去没反应比不报更坏，见 `modelHint`）。
+          if (view.dock.picker.source === 'model' && modelScope === 'session') {
             const pick = picked(view)?.pick
             // `→` 看详情＝**进一层**（U61：设计「进一层：打开选择器 · `→` 看详情 ·
             // 接入那种一步接一步的每一屏——都算」）——`←` 退回列表，焦点照旧那一格
@@ -3507,6 +3557,21 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //    地方不一样**，那一屏本身一个字都不差。
       if (view.dock.picker.source === 'config') {
         if (row.value === 'model') {
+          // `/model` 那一趟：换**当前会话**走谁（不写配置）
+          modelScope = 'session'
+          enterLayer()
+          waiting = 'model'
+          send({ type: 'model.list' })
+          return NONE
+        }
+
+        // **取网页用的模型**（U78）——**同一扇选择器、另一件事**：选一条是**写配置里那一格**
+        // （`webfetch.set`），**不换当前会话的模型**（设计 · 网页与搜索：两处不能混）。
+        // ⚠️ **读的还是那条读侧命令**（`model.list`）：那一屏要的连接一览 ＋ 缓存读数 ＋
+        //    「现在配的是哪一对」都在同一条答复上（`model.catalog` 的 `webFetch`），
+        //    不另立一条只问一格的命令。
+        if (row.value === 'webFetch') {
+          modelScope = 'webFetch'
           enterLayer()
           waiting = 'model'
           send({ type: 'model.list' })
@@ -3717,6 +3782,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //    可以有同名模型，只报模型名认不出是谁）。回执由内核的 `model.switched` 给。
       if (view.dock.picker.source === 'model') {
         if (row.pick === undefined) return modelAction(row.value)
+
+        // **取网页那一趟：回车＝保存**（U78）——同一个键、同一个位置，做的是另一件事
+        // （写配置里 `webFetch` 那一格）。**保存是显式动作**：这一屏的全部意义就是它，
+        // 故回车上不多加一道确认（同 `/model` 的回车不多问一句）。
+        // 回执由答复那一侧落（见 `waiting` 的 `'webFetchSave'`）——成了说一句、没成说缘由。
+        if (modelScope === 'webFetch') {
+          send({ type: 'webfetch.set', provider: row.pick.provider, model: row.pick.model })
+          waiting = 'webFetchSave'
+          commit(closePicker(view))
+          return NONE
+        }
 
         send({ type: 'model.switch', provider: row.pick.provider, model: row.pick.model })
         commit(closePicker(view))
@@ -4012,6 +4088,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // （设计：「不再新增一组按内部能力命名的 slash 命令」——动作挂在同一个入口下，
     // 写法照 `/mcp reconnect` 的既有姿势）。
     if (word === '/model') {
+      // **这一趟挑的是谁**（U78）：在模型那一屏里按动作（「刷新模型」那一行）＝**留在同一趟**
+      // ——它是那一屏的原地重铺，不该把作用对象换了；从输入行打 `/model` ＝**当前会话那一趟**
+      // （不沿用上一屏留下的那个作用对象：那样 `/model` 会莫名其妙地开成「取网页」那一趟）。
+      modelScope =
+        from.dock.kind === 'picker' && from.dock.picker.source === 'model' ? modelScope : 'session'
+
       // **刷新**：显式意图可绕过时效（设计 · 刷新）。`provider` 缺省＝当前选中那条连接。
       // ⚠️ 按**完整命令词**认（同 `/mcp reconnect` 那条注：连接 id 可以长成 `refresh-2`）
       if (arg === 'refresh' || arg.startsWith('refresh ')) {

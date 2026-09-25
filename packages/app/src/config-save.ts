@@ -7,7 +7,7 @@
  * ① **原子替换**——写临时文件再 `rename`；权限 600（与首次创建一致）；
  * ② **保存前重新读取**——改的是**盘上当下那一份**，不是加载时那份陈旧快照；
  *    且**保留无关字段**（权限 · MCP · 工作区根…原样带过）：本文件只碰
- *    `providers` 与 `defaultProvider` 两项，别的一律不动。
+ *    `providers` / `defaultProvider` / `webFetch`（U78）三格，别的一律不动。
  * ③ **外部改过就提示重载**——加载时记下的 `mtime` 与当下不符 ⇒ 拒绝这次写入，
  *    把「先重新载入」交给用户（**不拿陈旧整份文件覆盖**别人的改动）。
  *
@@ -17,7 +17,12 @@
 
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { ModelDefaultRequest, ProviderSaveRequest, ReasoningSetting } from '@magic/contracts'
+import type {
+  ModelDefaultRequest,
+  ProviderSaveRequest,
+  ReasoningSetting,
+  WebFetchSetRequest,
+} from '@magic/contracts'
 
 /** 保存的结果——判别式（**不抛**：写不成是用户要读的一句话，不是异常）。 */
 export type SaveOutcome = { readonly ok: true } | { readonly ok: false; readonly reason: string }
@@ -232,6 +237,46 @@ export function setModelDefault(input: {
       }
 
       return { ok: true, raw: { ...raw, providers, defaultProvider: input.request.provider } }
+    },
+  })
+}
+
+/**
+ * **取网页用的模型**（U78）——写配置里 `webFetch` 那一格（设计 · 网页与搜索：
+ * 「在 `/config` 里挑」，保存是显式动作）。
+ *
+ * ## 为什么只写这一格
+ *
+ * 它与「当前会话走谁」（`model.switch`，不写盘）和「新建会话的默认」（`defaultProvider`
+ * ＋ `providers.<id>.model`）是**三件不同的事**：取网页省的是上下文，提炼那一步用哪个模型
+ * 可以另外挑（想省钱就挑个小的）。故这里**一个别的键都不碰**——`providers` /
+ * `defaultProvider` 原样带过（同 `saveProvider` 那条「保留无关字段」的姿势）。
+ *
+ * ⚠️ **不校验型号在不在缓存里**：选择的键是「连接 ＋ 精确模型 id」两件（同 `WebFetchConfig`），
+ * 而型号清单一头来自供应商接口、随时在变——拿一份可能过期的列表拦用户的明确选择，
+ * 是拿我们的缓存去否他的决定。**认不出的连接**才拦（那个是配置内部的死引用）。
+ */
+export function setWebFetch(input: {
+  readonly path: string
+  readonly loadedAt?: number | undefined
+  readonly request: WebFetchSetRequest
+}): SaveOutcome {
+  return editConfigFile({
+    path: input.path,
+    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
+    update(raw) {
+      const providers = providersOf(raw)
+      if (!Object.hasOwn(providers, input.request.provider)) {
+        return { ok: false, reason: `没有「${input.request.provider}」这条连接——先接入它` }
+      }
+
+      return {
+        ok: true,
+        raw: {
+          ...raw,
+          webFetch: { provider: input.request.provider, model: input.request.model },
+        },
+      }
     },
   })
 }

@@ -1125,6 +1125,16 @@ export type ShellView = {
    * 「**此刻**会走哪一条」，包含「换过但还没调用过」那种（那才是选择器该标的）。
    */
   readonly modelCurrent: ModelRef | null
+  /**
+   * **「取网页」那一件工具用哪个模型**（U78 · `model.catalog` 的 `webFetch`）——
+   * `/config` 那一行「取网页用的模型」的当前值，也是那一屏选择器标「现在配的是谁」的依据。
+   *
+   * ⚠️ **与 `modelCurrent` 是两件事**（设计 · 网页与搜索：「两处不能混」）：那是**当前会话**
+   * 走谁，这一位是**取网页那一件**用谁。取网页省的是上下文，提炼那一步用哪个模型可以另外挑。
+   *
+   * `null` ＝ **还没配**（不是「回落到当前会话那个」）——那一行照实写「还没配」。
+   */
+  readonly webFetch: ModelRef | null
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
@@ -1202,6 +1212,7 @@ export function createView(): ShellView {
     models: [],
     vendors: [],
     modelCurrent: null,
+    webFetch: null,
     grants: null,
     turnTools: 0,
     // **没有计划**（不占位）· 默认展开（设计）· 视口从头开始
@@ -1346,6 +1357,9 @@ export function reduce(
         // **此刻会走哪一条**——答复说没有（还没选过模型）就落回 `null`：不沿用上一条，
         // 也不拿列表首项顶上（那不是「此刻在用的」，是个编出来的事实）
         modelCurrent: event.data.current ?? null,
+        // **取网页用谁**（U78）——同一条注：答复说没有＝**还没配**，落回 `null`。
+        // ⚠️ 不回落到 `modelCurrent`：那正是这一格明确要消掉的静默回落。
+        webFetch: event.data.webFetch ?? null,
         status: { ...view.status, window: windowOfCatalog(view, event.data) },
       }
 
@@ -3212,7 +3226,21 @@ export function reasoningHint(support: ReasoningSupport | undefined): string {
  */
 const MAX_MODEL_NOTES = 3
 
-export function modelHint(entries: readonly ModelCatalogRow[], note?: string): string {
+/**
+ * 这一屏选的是**哪一件东西用的模型**（U78）——`/model` 自己的那一屏是「当前会话」，
+ * `/config` 那一行进来的是「取网页」。
+ *
+ * ⚠️ **作用对象必须说清**（设计 · 命令行与配置那条「选择要显示作用对象」）：同一扇选择器
+ * 被两处用，若一个字不差地长一个样，用户就没法知道这一次回车改的是哪一件——而这两件
+ * **后果完全不同**（一件改当前会话、一件只改取网页那一件工具）。
+ */
+export type ModelScope = 'session' | 'webFetch'
+
+export function modelHint(
+  entries: readonly ModelCatalogRow[],
+  note?: string,
+  scope: ModelScope = 'session',
+): string {
   const lines: string[] = []
 
   for (const entry of entries) {
@@ -3252,9 +3280,20 @@ export function modelHint(entries: readonly ModelCatalogRow[], note?: string): s
   //（它是对**当前选中那一行**的动作，做不成一行——「这条」指谁得看焦点）。
   // 空态那一句**不再指路**：那一行入口就在它上面（且正被选中）——「选「连接供应商」接一条」
   // 是把行上的字再说一遍（一屏上的每一格都得说别处没说的）
-  heads.push(entries.length === 0 ? '还没有接上任何供应商' : '→ 看这条的详情')
+  if (entries.length === 0) heads.push('还没有接上任何供应商')
+  // ⚠️ **取网页那一趟不报「→ 详情」**（U78）：那儿 `→` 是空的（详情那一屏的动作是
+  //    「思考设置 / 设为默认」，两件都是**当前会话**的事，在这一趟里一个都不该做）。
+  //    报一个按下去没反应的键，比不报更坏——那正是本单要消掉的那一类。
+  else if (scope === 'session') heads.push('→ 看这条的详情')
 
   if (note !== undefined && note !== '') heads.push(note)
+
+  // **作用对象那一句摆在最前**（U78）：它是「这一屏在做什么」的回答，别的几行都是
+  // 细节（缓存新不新、内核有没有话说）。取网页那一趟把「回车＝用它提炼」也一并说了——
+  // 那一屏的 `→` 是空的，`↑↓` 之外只剩这一个键有事做。
+  if (scope === 'webFetch') {
+    heads.unshift('取网页用的模型：选一条回车＝用它提炼；当前会话的模型不受影响')
+  }
 
   return heads.join('\n')
 }
@@ -3455,19 +3494,27 @@ export type ConfigPaths = {
 /** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
 export type ConfigItem = {
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
-  readonly key: 'model' | 'grants' | 'mcp' | 'paths'
+  readonly key: 'model' | 'webFetch' | 'grants' | 'mcp' | 'paths'
   readonly name: string
 }
 
 /**
- * **第一版列这四项**（设计明文：「模型与连接（`/model`）· 本工作区授权（`/grants`）·
- * 外部工具（`/mcp`）· 数据目录与工作区根」）。
+ * **第一版那四项**（设计明文：「模型与连接（`/model`）· 本工作区授权（`/grants`）·
+ * 外部工具（`/mcp`）· 数据目录与工作区根」）**＋ U78 加的「取网页用的模型」**。
+ *
+ * 第五项是那一屏设计里**早就预留的那一格**（设计 · 命令行与配置：「后加的项各自带自己的屏，
+ * `/config` 只多一行——**「取网页用的模型」那一项随该功能落地再加**」）——U71 落地时它还没到
+ * 该加的时候（那一件工具归 U72），本单补上。
  *
  * ⚠️ **后加的项各自带自己的屏，这一屏只多一行**（设计）：故它是**一张表**，
  * 铺行、筛词、回车那三处都从这一处取——加一项不必改三处。
  */
 export const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'model', name: '模型与连接' },
+  // ↓ U78 加的那一行（设计 · 命令行与配置：「取网页用的模型」那一项随该功能落地再加）。
+  //   摆在「模型与连接」紧后面：两行都是「挑一个模型」，竖着扫一眼时挨着看最省事；
+  //   末行那个「数据目录与工作区根」是一份纯读出来的账（没有可进的入口），仍旧垫底。
+  { key: 'webFetch', name: '取网页用的模型' },
   { key: 'grants', name: '本工作区授权' },
   { key: 'mcp', name: '外部工具' },
   { key: 'paths', name: '数据目录与工作区根' },
@@ -3532,6 +3579,30 @@ function configModelValue(entries: readonly ModelCatalogRow[], current: ModelRef
 }
 
 /**
+ * ①-b **取网页用的模型**的当前值（U78）——配的那一对（形如 `MiniMax-M3 · 个人版`）。
+ *
+ * ⚠️ **没配时写「还没配」**（工单明文：不要留空、不要编一个默认）——这一句也是那一趟
+ * `web_fetch` 报错时用户要照着找的那一行：**它得在这儿答得出来**（指一个跑不了的入口，
+ * 比不指更坏）。
+ *
+ * 名字取法与 `configModelValue` **同一条**（模型名取 `info.name ?? id`、连接名取
+ * `entry.name ?? id`）——两处各取一套的话，屏上这一格会与它通向的那一屏对不上。
+ */
+function configWebFetchValue(
+  entries: readonly ModelCatalogRow[],
+  webFetch: ModelRef | null,
+): string {
+  if (webFetch === null) return '还没配'
+
+  const entry = entries.find((one) => one.provider === webFetch.provider)
+  const connection = entry?.name ?? webFetch.provider
+  // 缓存里没有它（那条模型从最近一次列表里没了）⇒ 照实报精确 id——不拿别的顶上
+  const info = entry?.cache?.snapshot?.models.find((one) => one.id === webFetch.model)
+
+  return `${info?.name ?? webFetch.model} · ${connection}`
+}
+
+/**
  * ② **本工作区授权**的当前值——**几条**（少了／多了跟着变）。
  *
  * ⚠️ **不报「授权来源」**（规则来的还是 `a` 记的）：那是 `/grants` 那一屏的上下文。
@@ -3569,8 +3640,9 @@ function configPathsValue(paths: ConfigPaths): string {
  * **`/config` 的行**——一行一项：**名称 ＋ 它的当前值**（右列对齐，见 `paddedLabel`）。
  *
  * 三件事写在这一处：
- * - **值从哪来**：三行来自各自的读数（`models` / `grants` / `mcp`，都是**开屏之前刚问回来的**
- *   那一份），第四行来自装配递进来的两条路径（见 `ConfigPaths`）；
+ * - **值从哪来**：四行来自各自的读数（`models` / `grants` / `mcp`，都是**开屏之前刚问回来的**
+ *   那一份；「取网页用的模型」是 `webFetch` 那一格——它落在 `model.catalog` 同一条答复上），
+ *   末行来自装配递进来的两条路径（见 `ConfigPaths`）；
  * - **`value` 是动作键**（`ConfigItem['key']`）——选定之后进哪一项由它说了算（`shell.ts`
  *   的 `submit` 那一支），**不从行文案反推**（同 `PickerRow.pick` / `revoke` 那条由头）；
  * - **`oneLine`**：这一屏的每一行**担保只占一行**（超宽由渲染层截断加 `…`）。
@@ -3583,6 +3655,8 @@ export function configRows(input: {
   readonly paths: ConfigPaths
   readonly models: readonly ModelCatalogRow[]
   readonly current: ModelRef | null
+  /** 「取网页用的模型」那一格（U78）——`null` ＝ 还没配。 */
+  readonly webFetch: ModelRef | null
   readonly grants: GrantsCatalog | null
   readonly mcp: McpCatalog | null
   /** 正在筛的词——空串＝全表。 */
@@ -3590,6 +3664,7 @@ export function configRows(input: {
 }): readonly PickerRow[] {
   const values: Readonly<Record<ConfigItem['key'], string>> = {
     model: configModelValue(input.models, input.current),
+    webFetch: configWebFetchValue(input.models, input.webFetch),
     grants: configGrantsValue(input.grants),
     mcp: configMcpValue(input.mcp),
     paths: configPathsValue(input.paths),

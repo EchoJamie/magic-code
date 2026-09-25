@@ -781,6 +781,16 @@ export type EventDataOf = {
      * 缺省＝不知道（当前选择没有窗长依据，或压根没有当前选择）——外壳据此**不给分母**。
      */
     readonly currentInputBudget?: number
+    /**
+     * **「取网页」那一件工具用哪个模型**（U78）——配置里 `webFetch` 那一格，**读出来的**。
+     *
+     * 与 `current` 分开：那是**当前会话**走谁，这一位是**取网页那一件**用谁
+     * （设计 · 网页与搜索：两处不能混）。`/config` 那一行「取网页用的模型」据它填值。
+     *
+     * ⚠️ **缺省 ＝ 还没配**（同 `WebFetchConfig` 那一条）——**不取 `current` 顶上**：
+     * 那是「静默回落」，而这一格明确要消掉的正是它。
+     */
+    readonly webFetch?: ModelSelectionRef
     /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
     readonly note?: string
   }
