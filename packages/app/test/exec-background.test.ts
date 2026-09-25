@@ -99,6 +99,17 @@ describe('U70 · 后台那一形（全链）', () => {
       expect(sent).toContain(outputPath)
       expect(sent).toContain('后台命令跑完了')
 
+      // —— ④′ 措辞：那一条**读着是陈述**（U81 · 设计 · 提示词与指令 丙） ——
+      //
+      // 它是**我们投进去的**（不是用户说的、也不是模型自己生成的）⇒ 一律事实陈述：
+      // 写成命令式会触发模型自己的注入防御，它反而把那段上报给用户。
+      // 判据落在**逐字**上（不是「不含某几个词」）：两行、第二行**只报输出在哪儿**——
+      // 从前缀着的「要看就用 read 读它」是吩咐它做事，撤掉之后这一条因此钉得住。
+      const injected = (third?.messages ?? []).map(textOf).find((one) => one.includes('后台命令跑完了'))
+      const noticeLines = (injected ?? '').split('\n')
+      expect(noticeLines.length).toBe(2)
+      expect(noticeLines[1]).toBe(`完整输出在 ${outputPath}`)
+
       // —— ⑤ 它是一条 `user` 条目，但**不是用户说的**（载荷带 notice） ——
       const users = eventsOfKind(shell.events, 'message.user')
       expect(users.length).toBe(2) // 真交代一条 ＋ 内核投的一条
@@ -184,8 +195,11 @@ describe('U70 · 后台那一形（全链）', () => {
 
       // 停掉也回一条给模型（说得清是「停的」）——下一轮请求里看得到
       await until(() => eventsOfKind(shell.events, 'turn.end').length >= 3)
-      const sent = (lastModel(stage).requests[2]?.messages ?? []).map(textOf).join('\n')
-      expect(sent).toContain('后台命令已停掉')
+      const stoppedSent = (lastModel(stage).requests[2]?.messages ?? []).map(textOf)
+      expect(stoppedSent.join('\n')).toContain('后台命令已停掉')
+      // 停掉那一支**同一套措辞**（U81）：第二行照旧只报输出在哪儿，不吩咐它去读
+      const stoppedNotice = stoppedSent.find((one) => one.includes('后台命令已停掉'))
+      expect((stoppedNotice ?? '').split('\n')[1]).toBe(`完整输出在 ${done?.data.outputPath ?? ''}`)
 
       shell.dispose()
       assembly.close()
