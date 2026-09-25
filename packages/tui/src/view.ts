@@ -148,6 +148,33 @@ export type LogRow =
       /** 结果 / 输出的行（dim 缩进块）。 */
       readonly output: readonly string[]
       /**
+       * **结果是大块**（U82）——记录里存的是**引用**（越过 `BLOB_THRESHOLD_BYTES`，8 KiB）。
+       *
+       * ## 由头（`D40` · 用户真跑指出）
+       *
+       * 屏上原先把 `Content` 的 blob 支**原样印出来**：`（大块转存 2252f436c77f71fbb9…）`。
+       * 用户读成「**有个转储文件**」——那串 sha256 是**我们自己才认识的 id**，而面向用户的
+       * 每个字，读者是用户（`AGENTS.md`）。它既说不出「这块有多大」，也看不出「没全带回来」。
+       *
+       * ## 正文就留在行里，不另去取
+       *
+       * 执行输出**本来就是流式攒进 `output` 的**（`tool.output.delta` → `addToolOutput`），
+       * 而原先结果一落地就用那串引用把它**换掉了**（`reduceToolResult`）——屏上因此只剩一个
+       * 哈希，正文白攒一场。这一格改的就是那一处：**大块结果的正文原样留在 `output`**，
+       * 屏上另说一句「大块、没铺全」（`components/log.ts` 的 `bulkSummaryOf`）。
+       *
+       * ⚠️ **为什么不是「异步取回再补上」**：行一落地就定局（`tool.result` 与 `turn.end`
+       * 同一拍就到了），而定局的行进 `<Static>`——**写一次就不再重绘**（见 `settle` 与
+       * `components/app.ts`）。取回的那一份到得再快也在定局之后，补不上去。
+       * 正文必须**落地那一刻就在行里**，流式攒下的那一份正是。
+       *
+       * 限度如实记（见回报）：**不流式的工具**（`read` 那一类）转存之后行里没有正文
+       * ——那时屏上只说「大块、没铺全」，展开也没有更多可看。⚠️ 这一格**只影响屏上那一份**：
+       * 模型那一份取的是条目**正文**（工具条目一律内联，见 `rebuildRows` 那一处与
+       * `entries.ts`），与记录里那份引用是两件事。
+       */
+      readonly bulk?: true
+      /**
        * **这一笔不必上屏**（U34 · `quietTool`）——计划读写与历史回查那三个辅助工具。
        *
        * 由头（设计 · 任务推进 · 终端投影与布局）：「成功的三个辅助工具**默认不另刷一串工具卡**
@@ -1620,7 +1647,11 @@ function reduceToolResult(view: ShellView, data: ToolResultData, at: number): Sh
   const target = indexOfCall(view, data.call)
   if (target === -1) return view
 
-  const text = 'text' in data.output ? data.output.text : `（大块转存 ${data.output.blob}）`
+  // **大块结果不印那串引用**（U82 · `D40`）——记录侧存的是 blob 引用，屏上要说的是
+  // 「这块很大、没全带回来」，而 sha256 是**我们自己才认识的 id**（用户把它读成
+  // 「有个转储文件」）。正文取流式攒下的那一份（见 `LogRow` 上 `bulk` 那一格的注）。
+  const bulk = 'blob' in data.output
+  const text = 'text' in data.output ? data.output.text : ''
   // **「这一笔没跑」是结果自己带的一位**（`notExecuted`，产生处写：`@magic/conversation`
   // 的 `withholds`）——不从正文里认字眼（2026-09-20 三轮裁，改的正是二轮那条正文协议：
   // 真跑失败、输出首行恰是「未执行后续步骤」时它会认错，把一次真写盘的调用画成没跑）。
@@ -1632,7 +1663,9 @@ function reduceToolResult(view: ShellView, data: ToolResultData, at: number): Sh
     // 不让它被降级成「失败」（两者含义不同：一个是没跑，一个是跑了没成）。
     // **扣下那一路同上**：也没跑，故单列一态——省得那行画成一次失败的耗时。
     state: row.state === 'rejected' ? 'rejected' : unexecuted ? 'unexecuted' : data.ok ? 'ok' : 'failed',
-    output: textOfLines(text),
+    // **大块：流式攒下的那几行原样留着**（U82）——原先拿引用换掉它，屏上就只剩一个哈希；
+    // 留着它，「展开才出」那条既有的渲染路径照旧画得出来（正文因此看得见）
+    ...(bulk ? { bulk: true as const } : { output: textOfLines(text) }),
     // 跑了多久＝**起算时刻 → 落地**（`startedAt` → 这条 `tool.result` 的 `at`）。
     // 起算时刻在**批准那一刻**（`reduceVerdict`）——人工件那一段「人在想」的不算数，
     // 故这个数就是**真跑的那一段**（U66；放行是自动的、没有那一段时它与 `tool.call` 同一刻）。
@@ -2059,14 +2092,20 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
       if (row !== undefined && row.kind === 'tool') {
         const payload = entry.payload as { readonly ok?: boolean; readonly notExecuted?: true } | undefined
         const ok = payload?.ok !== false
-        const text = contentTextOf(entry)
+        // **大块那一支与事件那一路同形**（U82）：接回来的一屏与当场看的那一屏必须长得一样
+        // ——一处印引用、一处说「大块」，同一条工具就变成两副面孔了（同 `addToolOutput` 的注）。
+        const bulk = 'blob' in entry.content
+        const text = bulk ? '' : contentTextOf(entry)
         rows[pendingAt] = {
           ...row,
           // **与事件那一路同判**：读的是**同一位**（条目载荷与事件数据同源，见
           // `ToolResultPayload`）——屏上的样子只该有一种：切了会话 / 重开一页回来，
           // 扣下的那行不能变回「失败」。
           state: payload?.notExecuted === true ? 'unexecuted' : ok ? 'ok' : 'failed',
-          output: textOfLines(text),
+          // ⚠️ **重建这一路没有流式那份正文**（没跑过，自然没攒下）——行里只有引用，
+          // 故只说「大块、没铺全」，展开也没有更多可看（限度见上面那条注释块）
+          output: bulk ? [] : textOfLines(text),
+          ...(bulk ? { bulk: true as const } : {}),
         }
       }
       pendingAt = -1
@@ -2377,9 +2416,20 @@ function usedSkillsOf(payload: Entry['payload']): readonly UsedSkill[] {
   return [...legacy, ...positional]
 }
 
-/** 条目的正文——内联取文本，blob 引用不解析（外壳的既有姿势）。 */
+/**
+ * 条目的正文——内联取文本；**大块（引用）那一支不解析，也一个字都不印那串 id**（U82）。
+ *
+ * 由头就是工单那条「**不出现任何内部 id**」：原先这里写的是
+ * `（大块转存 ${entry.content.blob}）`——重建那一屏因此把 sha256 印给了用户
+ * （`D40`：用户读成「有个转储文件」）。它与工具结果那一路（`rebuildRows` 的
+ * 大块分支）**同形**：说「长、没铺全」，不说那串我们才认识的 id。
+ *
+ * 走得到这一支的是**长正文**的条目：越过 8192 字符的用户交代 / 助手正文 / 摘要
+ * （`conversation` 的 `contentOf` 写侧转存）。⚠️ 与工具结果那一路一样，正文**这儿没有**
+ * （记录里存的是引用），故只说这一句——**不编规模**（那边流式攒下的那一份是工具专有）。
+ */
 function contentTextOf(entry: Entry): string {
-  return 'text' in entry.content ? entry.content.text : `（大块转存 ${entry.content.blob}）`
+  return 'text' in entry.content ? entry.content.text : '（这一条很长，屏幕上没铺全）'
 }
 
 // ══ 接管（裁决挂着时占住输入框）══════════════════════════════════════
@@ -4288,6 +4338,17 @@ export function textOfLines(text: string): readonly string[] {
   if (lines[lines.length - 1] === '') lines.pop()
 
   return lines
+}
+
+/**
+ * 结果里的**非空行**（空行不上屏——密度那条）。
+ *
+ * 归这一处（与 `textOfLines` 挨着）是因为**两个地方要用同一个数**：屏上画的是它
+ * （`components/log.ts` 的结果块），而大块那一行报的「几行」也是它（同处 `bulkSummaryOf`）
+ * ——两处各判一遍的话，报的数与画出来的行数迟早对不上。
+ */
+export function nonEmptyLines(lines: readonly string[]): readonly string[] {
+  return lines.filter((line) => line.trim() !== '')
 }
 
 function secondsLabel(delayMs: number): string {

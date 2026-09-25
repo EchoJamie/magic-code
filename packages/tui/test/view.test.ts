@@ -188,13 +188,69 @@ describe('工具链（call → 询问 → 裁决 → 结果）', () => {
     expect(rowAt(builtin, 0)).toMatchObject({ name: 'exec' })
   })
 
-  test('大块转存——结果只留 blob 引用（外壳不解析）', () => {
+  /**
+   * ⚠️ **U82 改判**：这一条原先是「结果只留 blob 引用」——`output` 里留着
+   * `（大块转存 blob_7）` 那串**引用本身**，屏上也就把它原样印给了用户（`D40`：
+   * 用户读成「有个转储文件」）。现在引用**一个字都不上屏**，且**先前流式攒下的正文
+   * 不再被它换掉**——大块那一行因此仍带着正文（展开才出的那条既有路径照旧画得出来）。
+   */
+  test('大块转存——引用不落进显示行，流式攒下的正文留着', () => {
     const view = viewed([
       event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
+      event('tool.output.delta', { call: 71, channel: 'stdout', text: '第一行\n第二行' }),
       event('tool.result', { call: 71, ok: true, output: { blob: 'blob_7' } }),
     ])
 
-    expect(rowAt(view, 0)).toMatchObject({ output: ['（大块转存 blob_7）'] })
+    const row = rowAt(view, 0)
+    expect(row).toMatchObject({ output: ['第一行', '第二行'], bulk: true })
+    expect(JSON.stringify(row)).not.toContain('大块转存')
+  })
+
+  /**
+   * **不流式的工具**（`read` 那一类）转存之后行里没有正文——那也说「大块」，
+   * 只是没有行数可报（`bulk` 到位、`output` 是空的）。限度如实记，见 `view.ts` 那条注。
+   */
+  test('大块转存而没攒下正文——仍是「大块」，正文一份都没有（不编）', () => {
+    const view = viewed([
+      event('tool.call', { name: 'read', args: {} }, { id: 71 }),
+      event('tool.result', { call: 71, ok: true, output: { blob: 'blob_7' } }),
+    ])
+
+    expect(rowAt(view, 0)).toMatchObject({ output: [], bulk: true })
+  })
+
+  /** 内联那一支**一个字不动**：正文照旧是结果正文（不被大块那一支改动碰到）。 */
+  test('内联结果照旧——正文取结果正文，不带大块那一位', () => {
+    const view = viewed([
+      event('tool.call', { name: 'ls', args: {} }, { id: 72 }),
+      event('tool.result', { call: 72, ok: true, output: { text: '小结果' } }),
+    ])
+
+    expect(rowAt(view, 0)).toMatchObject({ output: ['小结果'] })
+    expect(rowAt(view, 0)).not.toHaveProperty('bulk')
+  })
+
+  /**
+   * **重建那一屏也不印内部 id**（U82 · 工单 ① 点名的那两处之一，`contentTextOf`）。
+   *
+   * 走到那一支的是**长正文**的条目：越过 8192 字符的用户交代 / 助手正文（写侧转存）。
+   * 原先屏上落的是 `（大块转存 <sha256>）`——与工具结果那一路同一种病。
+   */
+  test('重建：长正文的条目**不印那串引用**（说「长、没铺全」）', () => {
+    const entries: readonly Entry[] = [
+      { id: 1, kind: 'user', content: { blob: 'blob_long' }, at: 0 },
+      { id: 2, kind: 'assistant', content: { blob: 'blob_long2' }, at: 1 },
+      { id: 3, kind: 'user', content: { text: '短的那条照旧' }, at: 2 },
+    ]
+
+    const view = rebuild(createView(), entries)
+    const said = onScreen(view).map((row) => JSON.stringify(row)).join('\\n')
+
+    expect(said).not.toContain('大块转存')
+    expect(said).not.toContain('blob_long')
+    expect(said).toContain('（这一条很长，屏幕上没铺全）')
+    // 短的那条一个字不动
+    expect(said).toContain('短的那条照旧')
   })
 
   test('执行输出增量按行攒——末行继续接', () => {

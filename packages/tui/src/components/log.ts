@@ -27,7 +27,7 @@ import type { DiffKind, DiffRow } from '../diff.ts'
 import { markdownStream } from '../markdown.ts'
 import type { MdLine } from '../markdown.ts'
 import type { LogRow } from '../view.ts'
-import { quietRowHidden, textOfLines } from '../view.ts'
+import { nonEmptyLines, quietRowHidden, textOfLines } from '../view.ts'
 import { PALETTE, displayWidth, durationLabel, expandTabs, wrap } from './lines.ts'
 
 /** 一行里的一段（同段一个颜色）。 */
@@ -746,7 +746,7 @@ function toolLines(
     ]
   }
 
-  const verdict = verdictOf(row)
+  const verdict = verdictOf(row, expanded)
   const meta = [
     seg(`${INDENT}${verdict.marker} `, verdict.color, true),
     seg(
@@ -759,7 +759,10 @@ function toolLines(
 }
 
 /** 结果行那半句——按**形态**出（见 `toolLines` 的头注）。 */
-function verdictOf(row: Extract<LogRow, { kind: 'tool' }>): {
+function verdictOf(
+  row: Extract<LogRow, { kind: 'tool' }>,
+  expanded: boolean,
+): {
   readonly marker: string
   readonly color: string
   readonly text: string
@@ -779,7 +782,44 @@ function verdictOf(row: Extract<LogRow, { kind: 'tool' }>): {
     return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '失败' }
   }
 
-  return { marker: '✓', color: PALETTE.ok, text: summaryOf(row) }
+  // **大块结果另有一句话要说**（U82）——有多大、屏上有没有铺全、正文去哪儿看
+  const bulk = bulkSummaryOf(row, expanded)
+
+  return { marker: '✓', color: PALETTE.ok, text: bulk ?? summaryOf(row) }
+}
+
+/**
+ * **大块结果那一行**（U82）——记录里存的是引用（越过 8 KiB）时，屏上说什么。
+ *
+ * 三条都得说到（工单 U82 · ①）：
+ * - **不出现任何内部 id**——那串 sha256 原样印出来，用户读成「有个转储文件」（`D40` 现场）；
+ * - **看得出「这块内容大、没全带回来」**——「大块输出」是这块大，`（屏幕上没铺全）`
+ *   是没全带回来（折叠时正文确实不在屏上）；
+ * - **有路看到内容**——正文就在这一行里（`output`），`ctrl+o` 展开即见（既有那一条展开键，
+ *   与别的工具行同一个走法）。
+ *
+ * 两态各说各的（同一行的两种状态，不是两句话）：
+ * - **收起**：多大 ＋ 没铺全；
+ * - **展开**：正文就在下面——此时只报规模，不再说「没铺全」（那句话此刻不再为真）。
+ *
+ * ⚠️ **「展开即见」有一个既有的窗口**：`ctrl+o` 只对**还在活动区**的行管用——已定局的行
+ * 进 `<Static>`，**写一次就不再重绘**（U72 的留帧记过同一条：「按了等于没按」）。
+ * 故这一行**不印「按 ctrl+o」这种指路的话**：定局之后那句话就是个跑不了的入口
+ * （`AGENTS.md`：「指一个跑不了的入口，比不指更坏」）。限度如实记在回报里。
+ *
+ * ⚠️ **行数取自 `row.output`**：那是**流式攒下的正文本身**（U82 起大块结果不再被引用换掉），
+ * 数它＝数屏上真画得出来的行数——**不编一个数**。
+ *
+ * ⚠️ **没有正文就不报行数**：不流式的工具（`read` 那一类）转存之后行里没有正文
+ * （见 `view.ts` 上 `bulk` 那一格的注），那时只说「大块、没铺全」——**不知道的不编**。
+ */
+function bulkSummaryOf(row: Extract<LogRow, { kind: 'tool' }>, expanded: boolean): string | null {
+  if (row.bulk !== true) return null
+
+  const lines = nonEmptyLines(row.output).length
+  const scale = lines === 0 ? '大块输出' : `大块输出 ${lines} 行`
+
+  return expanded ? scale : `${scale}（屏幕上没铺全）`
 }
 
 /** 工具的**列表类**（结果一条一行，故「几行」＝「几项」）——名字取自工具集 v1 的冻结行。 */
@@ -931,11 +971,6 @@ function liveClock(row: Extract<LogRow, { kind: 'tool' }>, now: number | null): 
   const elapsed = now - row.startedAt
 
   return elapsed < 0 ? null : durationLabel(elapsed)
-}
-
-/** 结果里的非空行（空行不上屏——密度那条）。 */
-function nonEmptyLines(output: readonly string[]): readonly string[] {
-  return output.filter((line) => line.trim() !== '')
 }
 
 /** 结果的首条非空行（失败缘由就在那儿）。 */
