@@ -510,6 +510,33 @@ export function rightSpan(text: string, at: number): readonly [number, number] {
   return [from, stepRight(text, from)]
 }
 
+/**
+ * 插入点**所在那一行**占哪一段——给 `ctrl+a` / `ctrl+e`（行首 / 行末）用（U85）。
+ *
+ * 返回 `[行首, 行末)`：**按 `\n` 划界**（那个换行符本身**不落在任何一行里**——行末在它
+ * **之前**，见下）。
+ *
+ * 三条分寸：
+ *
+ * - **行＝逻辑行**（`\n` 划界），**不是视觉行**：屏上折出来的那几行是排版（随终端宽度变），
+ *   而 `ctrl+e` 该停在用户写下的那一句末尾——按视觉行算的话，同一份草稿在 40 列与 120 列
+ *   上会停在两个地方（readline 这一对键历来也是按逻辑行）。
+ * - **插入点正好压在 `\n` 上时算在左那一边**（＝上一行的末）——`lastIndexOf` 取的是
+ *   **插入点之前**那一个 `\n`，故那个位置的行首是上一行的开头、行末就是插入点自己。
+ *   「行末」在 `\n` 前停下（不越过它）：`ctrl+e` 落在换行符**之前**，接着敲字是把这一行续长，
+ *   不是另起一行。
+ * - **引用不受影响**（`inline.ts`）：引用的 marker 里没有 `\n`（`@src/login.ts` / `/review`），
+ *   故这两个落点**不可能落在引用中间**——不必像左右移动那样走 `stepLeftOver` / `stepRightOver`。
+ *
+ * 空草稿 ⇒ `[0, 0)`，两个键都停在 0（不偏、也不报错）。
+ */
+export function lineSpan(text: string, at: number): readonly [number, number] {
+  const stop = Math.max(0, Math.min(at, text.length))
+  const next = text.indexOf('\n', stop)
+
+  return [text.lastIndexOf('\n', stop - 1) + 1, next === -1 ? text.length : next]
+}
+
 // —— 画 ——
 
 /**

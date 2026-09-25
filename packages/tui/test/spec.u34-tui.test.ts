@@ -250,7 +250,10 @@ describe('U34 · 清单那一块', () => {
     stage.feed([event('plan.changed', { entry: 1, plan: note(step(long, 'in_progress')) })])
 
     const frame = await stage.screen({ columns: 40, rows: 24 })
-    const lines = frame.record.map((line) => line.text)
+    // ⚠️ **U85 起清单在交互区那一带**（上沿分隔线**之下**）——原先量的是 `record`
+    //    （那正是 D43 的病：它站在记录那一侧）。**判据本身一个字没改**（折行、续行对齐、
+    //    一个字不少），换的只是**从哪一段行里读它**。
+    const lines = frame.dock.map((line) => line.text)
     // 首行带方块，续行是两格缩进——拼起来仍是**原文一字不少**
     const at = lines.findIndex((line) => line.startsWith('▪ '))
     expect(at).toBeGreaterThan(-1)

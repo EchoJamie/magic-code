@@ -74,6 +74,10 @@ const KEYS: Record<string, string> = {
   // 裸控制码：`ctrl+x` ＝ 0x18、`ctrl+w` ＝ 0x17（Ink 解成「字母 ＋ ctrl」）。
   'ctrl+x': '\u0018',
   'ctrl+w': '\u0017',
+  // U85：`ctrl+a` / `ctrl+e`（行首 / 行末）——裸控制码 0x01 / 0x05，Ink 解成「字母 ＋ ctrl」
+  // （同上面那两件）。加它是因为这一对键的判据非真 PTY 说不了（见 `frames-u85-tui.ts`）。
+  'ctrl+a': '\u0001',
+  'ctrl+e': '\u0005',
   tab: '\t',
   backspace: '\u007f',
   up: '\u001b[A',
