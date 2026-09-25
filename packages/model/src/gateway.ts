@@ -240,7 +240,13 @@ export function effectiveSpecOf(input: {
   readonly adapter?: VendorAdapter | undefined
   /** 该模型**已知的资料**（来自模型信息缓存）——有效规格的又一处来路。 */
   readonly known?: ModelInfo | undefined
-  /** 输出上限的兜底（取件层常量，见 `ai-sdk.ts`）。 */
+  /**
+   * 输出上限的**兜底**（取件层常量，见 `ai-sdk.ts` 的 `MAX_COMPLETION_TOKENS`）。
+   *
+   * ⚠️ **排在模型信息之后**：正路是 `limits.maxOutputTokens`（供应商接口真给的那一数，
+   * U91）；这里只在**一位都没有**时才落下来（今天：MiniMax 与兼容接入——见那条注里
+   * 「权宜」的由头）。
+   */
   readonly fallbackOutputTokens?: number | undefined
   /**
    * **认下的那些**（U65）——装配根造一份、各条目共用（见 `traits.ts` 的 `LearnedTraits`）。

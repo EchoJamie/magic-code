@@ -38,7 +38,26 @@ export const MINIMAX_MODEL = 'MiniMax-M3'
 // —— 取件层常量（技术方案：供应商差异封接缝——「参数」暂不入首站形制）——
 
 /**
- * 输出上限（取件层常量——「参数」暂不入配置形制，需要时按生长加键）。
+ * 输出上限的**兜底**——⚠️ **权宜，不是设定**（U91）。
+ *
+ * ## 正路是「取自模型信息」
+ *
+ * 一次请求真送多少输出，由 `effectiveSpecOf`（`gateway.ts`）**一次解析**：用户覆盖 →
+ * 供应商接口给的规格（`ModelInfo.limits.maxOutputTokens`）→ **本常量**。
+ * 故它只在**前面几处一位都没有**时才落下来。
+ *
+ * ## 为什么留着它、又为什么说它是权宜
+ *
+ * 留着是因为**确实有取不到的时候**：MiniMax 的列表与详情接口**都只有四个字段**
+ * （`id`/`object`/`created`/`owned_by`），官方文档也只给上下文窗长、不给输出上限
+ * （2026-09-26 实测，见 `vendors.ts` 的 `toModelsOf`）——那一格没有出处，
+ * 按「说不准的数不上屏」**不许编一个数顶上**（同 `capacity.ts` 拒收 MiniMax「64 K」）。
+ * 兼容接入（没有适配）那条路同理：连列表都没有。
+ *
+ * 说它是权宜，是因为 4096 **真截断过**（U91 工单记的那一轮：`outputTokens: 4096`、
+ * 其中 `reasoningTokens: 3480`，留给正文的空间不够 ⇒ 工具调用参数被截在半路，
+ * 落成「参数解析不出——未执行」）。凡**取得到**模型信息那一格的模型，走的都不是它。
+ *
  * 由 SDK 的 `maxOutputTokens` 落到 `max_tokens`，再经下方改写成为 `max_completion_tokens`。
  */
 export const MAX_COMPLETION_TOKENS = 4096
@@ -218,7 +237,8 @@ export type VendorStreamer = (
    * ⚠️ 它**不能**在取件层「按模型现算」：那样同一趟调用的输出上限与
    * `model.call.start` / `model.usage` 报的输入预算会**各解析一次**——中途缓存或配置一变，
    * 出站 4000、分母却按旧的 2000 算，两者相加就**超过窗口**（独立复核的真反例）。
-   * 缺省 `MAX_COMPLETION_TOKENS`（直接调本层的测试用）。
+   * 缺省 `MAX_COMPLETION_TOKENS`（直接调本层的测试用）——⚠️ 那是个**权宜兜底**，
+   * 正常路径由网关按模型信息解析后传下来（见 `MAX_COMPLETION_TOKENS` 那条注）。
    */
   maxOutputTokens?: number,
 ) => AsyncIterable<VendorStreamPart>

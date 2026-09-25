@@ -63,10 +63,84 @@ describe('列表获取', () => {
     const models = await DEEPSEEK_VENDOR.listModels(ctxOf(fetch))
 
     expect(models.map((one) => one.id)).toEqual(['deepseek-flash', 'deepseek-v4-pro'])
-    // **只认 `id`**：`owned_by` 那类既不调用也不呈现，收了只会让人以为「一直有」
+    // **收「调用真用得到」的那几格**：`owned_by` 那类既不调用也不呈现，收了只会让人
+    // 以为「一直有」；这份响应里**没有规格可收** ⇒ 一个 `limits` 都不给（不凭空造）
     expect(models[0]).toEqual({ id: 'deepseek-flash' })
     expect(seen[0]?.url).toBe('https://api.deepseek.com/models')
     expect(seen[0]?.authorization).toBe('Bearer sk-not-a-real-key')
+  })
+
+  /**
+   * **U91 的真响应形状**——2026-09-26 对 `https://api.deepseek.com/models` 实测抄回，
+   * 逐字（键序照抄；两台模型的数一样，故留一台＋一台对照）。
+   *
+   * 判据：`max_output_tokens` 收进 `limits.maxOutputTokens`——**它就是出站请求体里
+   * 那个输出上限的来路**（网关 → 取件层 → `max_tokens`）。此前这一格被整个丢掉，
+   * 输出上限只能落回取件层常量 4096。
+   */
+  test('DeepSeek：接口给的 `max_output_tokens` 收进规格（其余各格仍不收）', async () => {
+    const { fetch } = capturing({
+      object: 'list',
+      data: [
+        {
+          id: 'deepseek-flash',
+          object: 'model',
+          owned_by: 'deepseek',
+          name: 'DeepSeek-V4.1-Flash',
+          context_window: 1_048_576,
+          max_output_tokens: 393_216,
+          input_modalities: ['text', 'image'],
+          output_modalities: ['text'],
+          effort: { supported_levels: ['low', 'high', 'max'], default_level: 'high' },
+          api_capabilities: { anthropic_messages: { system_prompt_update: 'in-history' } },
+        },
+      ],
+    })
+
+    const models = await DEEPSEEK_VENDOR.listModels(ctxOf(fetch))
+
+    // **只有那一格**：名字 / 模态 / effort / 联合窗口都不收（不调用也不呈现）
+    expect(models).toEqual([{ id: 'deepseek-flash', limits: { maxOutputTokens: 393_216 } }])
+    // 联合窗口**明确不收**——它进的是分母与压缩阈值，不在 U91 射程（别顺手收进来）
+    expect(models[0]?.limits?.maxContextTokens).toBeUndefined()
+  })
+
+  /**
+   * 「读不懂就不给这一位」——同 `capacity.ts` 那条口径（零 / 非法规格不当作无限大）。
+   * 少了这条，一个字符串或 0 就会一路发进请求体的输出上限。
+   */
+  test('DeepSeek：`max_output_tokens` 读不懂（字符串 / 0 / 负 / 小数）⇒ 当作没给', async () => {
+    const { fetch } = capturing({
+      object: 'list',
+      data: [
+        { id: 'a', max_output_tokens: '393216' },
+        { id: 'b', max_output_tokens: 0 },
+        { id: 'c', max_output_tokens: -1 },
+        { id: 'd', max_output_tokens: 1.5 },
+        { id: 'e', max_output_tokens: null },
+      ],
+    })
+
+    const models = await DEEPSEEK_VENDOR.listModels(ctxOf(fetch))
+
+    expect(models).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }])
+  })
+
+  /**
+   * ⚠️ **反面：MiniMax 一个数都取不到**（2026-09-26 实测，列表与详情都是这四个字段）。
+   *
+   * 这一条钉住「没有就**如实没有**」：它那条路照旧落回取件层常量（`ai-sdk.ts` 里
+   * 标了「权宜」的那一个）——**不许替它编一个输出上限**。
+   */
+  test('MiniMax：四个字段的响应 ⇒ 一格规格都不给（它那条路没有这一位可取）', async () => {
+    const { fetch } = capturing({
+      object: 'list',
+      data: [{ id: 'MiniMax-M3', object: 'model', created: 1_780_272_000, owned_by: 'minimax' }],
+    })
+
+    const models = await MINIMAX_VENDOR.listModels(ctxOf(fetch, 'https://api.minimax.cn/v1'))
+
+    expect(models).toEqual([{ id: 'MiniMax-M3' }])
   })
 
   test('MiniMax：官方地址在 `/v1` 下', async () => {

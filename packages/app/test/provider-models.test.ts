@@ -12,6 +12,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { KernelEvent, ModelCatalogRow } from '@magic/contracts'
+import { MAX_COMPLETION_TOKENS } from '@magic/model'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { magicAt, removeDir, tempDir, writeConfig } from './tmp.ts'
 
@@ -36,7 +37,19 @@ function frame(payload: Record<string, unknown>): string {
   })}\n\n`
 }
 
-function fakeVendor(): { readonly fetch: typeof globalThis.fetch; readonly calls: Call[] } {
+/**
+ * 假供应商——列表那一条回什么由 `listed` 给（缺省＝**只含 `id`/`object`/`owned_by` 的
+ * 老形状**：那正是 MiniMax 实测的形状，也是这条链路此前的假设）。
+ *
+ * ⚠️ U91：DeepSeek 实测**多给几格**（`max_output_tokens` 等），故那几条用例整份照抄
+ * 真响应传进来——形状一变，判据才咬得住。
+ */
+function fakeVendor(
+  listed: readonly Record<string, unknown>[] = [
+    { id: 'deepseek-flash', object: 'model', owned_by: 'deepseek' },
+    { id: 'deepseek-v4-pro', object: 'model', owned_by: 'deepseek' },
+  ],
+): { readonly fetch: typeof globalThis.fetch; readonly calls: Call[] } {
   const calls: Call[] = []
 
   const fetch = (async (input: unknown, init?: { headers?: unknown; body?: unknown }) => {
@@ -52,16 +65,10 @@ function fakeVendor(): { readonly fetch: typeof globalThis.fetch; readonly calls
     })
 
     if (url.endsWith('/models')) {
-      return new Response(
-        JSON.stringify({
-          object: 'list',
-          data: [
-            { id: 'deepseek-flash', object: 'model', owned_by: 'deepseek' },
-            { id: 'deepseek-v4-pro', object: 'model', owned_by: 'deepseek' },
-          ],
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
+      return new Response(JSON.stringify({ object: 'list', data: listed }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
     }
 
     return new Response(
@@ -561,11 +568,148 @@ describe('一条连接的闭环', () => {
       expect(chat?.body?.['model']).toBe('MiniMax-M3')
       // 没打过列表接口
       expect(vendor.calls.filter((call) => call.url.endsWith('/models'))).toHaveLength(0)
+      // U91 **反面**：这条路没有模型信息可取（连列表都不打）⇒ 输出上限落回
+      // 取件层那个**权宜**兜底——**不许**因此多出别的参数来
+      expect(chat?.body?.['max_completion_tokens']).toBe(MAX_COMPLETION_TOKENS)
 
       shell.dispose()
       assembly.close()
     } finally {
       land.dispose()
     }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════
+// U91 · 输出上限取自模型信息 —— 判据落在**出站请求体**上
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * DeepSeek 的列表响应 **逐字抄自实测**（2026-09-26 `GET https://api.deepseek.com/models`）——
+ * 键序、名字、那几个数都是真的。`max_output_tokens` 就是本单要的那一格。
+ */
+const DEEPSEEK_LISTED: readonly Record<string, unknown>[] = [
+  {
+    id: 'deepseek-flash',
+    object: 'model',
+    owned_by: 'deepseek',
+    name: 'DeepSeek-V4.1-Flash',
+    context_window: 1_048_576,
+    max_output_tokens: 393_216,
+    input_modalities: ['text', 'image'],
+    output_modalities: ['text'],
+    effort: { supported_levels: ['low', 'high', 'max'], default_level: 'high' },
+    api_capabilities: { anthropic_messages: { system_prompt_update: 'in-history' } },
+  },
+  {
+    id: 'deepseek-v4-pro',
+    object: 'model',
+    owned_by: 'deepseek',
+    name: 'DeepSeek-V4-Pro',
+    context_window: 1_048_576,
+    max_output_tokens: 393_216,
+    input_modalities: ['text'],
+    output_modalities: ['text'],
+    effort: { supported_levels: ['low', 'high', 'max'], default_level: 'high' },
+    api_capabilities: { anthropic_messages: { system_prompt_update: 'leading-only' } },
+  },
+]
+
+/**
+ * 走一遍真路：装配 → 等列表**真落到缓存里** → 选模型 → 发一条 → 取**出站请求体**。
+ *
+ * 端点换假的（列表与对话同一把假 fetch），其余全真：控制面 · 装配 · 模型域 ·
+ * 模型信息缓存 · 取件层。
+ */
+async function outboundBodyOf(
+  listed: readonly Record<string, unknown>[],
+  model: string,
+): Promise<{ readonly body: Record<string, unknown>; readonly land: string }> {
+  const land = stage()
+  const vendor = fakeVendor(listed)
+
+  try {
+    const assembly = assemble({
+      cwd: land.workspace,
+      config: loadConfig({ path: land.configPath, magic: magicAt(land.root) }),
+      modelFetch: vendor.fetch,
+      grantsFile: join(land.root, 'magic', 'grants.json'),
+      magic: magicAt(land.root),
+      prompt: { platform: 'darwin', date: '2026-09-23' },
+    })
+    const shell = attachShell(assembly.shell)
+    await assembly.ready()
+
+    // 读面同步答复、获取是它顺手发起的**后台**那一趟——**问到看得见为止**（同首条用例）
+    for (let i = 0; i < 20; i += 1) {
+      const armed = waitFor(shell, 'model.catalog')
+      shell.send({ type: 'model.list' })
+      const row = (await armed).data.entries[0]
+      if ((row?.cache?.snapshot?.models.length ?? 0) > 0) break
+      await Bun.sleep(10)
+    }
+
+    expect(assembly.switchModel({ provider: 'ds', model }).ok).toBe(true)
+    await shell.submit('嗨')
+
+    const chat = vendor.calls.find((call) => call.url.endsWith('/chat/completions'))
+    shell.dispose()
+    assembly.close()
+    // `land` 一并交回：临时工作区路径**就是请求体的一部分**（系统提示里写了它），
+    // 对拍两条请求体时要把它抹平——否则红的是路径，不是产品行为
+    return { body: chat?.body ?? {}, land: land.workspace }
+  } finally {
+    land.dispose()
+  }
+}
+
+describe('U91 · 输出上限取自模型信息', () => {
+  test('接口给了那一数 ⇒ 请求体里的输出上限就是它（不再是 4096）', async () => {
+    const { body } = await outboundBodyOf(DEEPSEEK_LISTED, 'deepseek-flash')
+
+    // 模型信息里那个数（`max_output_tokens`）一路落到请求体
+    expect(body['max_tokens']).toBe(393_216)
+    expect(body['max_tokens']).not.toBe(MAX_COMPLETION_TOKENS)
+    // DeepSeek 没有参数名改写 ⇒ 仍是标准 `max_tokens`（U41 那条照旧）
+    expect(body['max_completion_tokens']).toBeUndefined()
+  })
+
+  /**
+   * ⚠️ **反面**：模型信息里**没有这一位**时**不许编**——落回权宜兜底，
+   * 且**不因此多出别的参数**（同一把假端点，只是列表少给一格）。
+   */
+  test('接口没给那一数 ⇒ 落回权宜兜底（不编，也不多出别的参数）', async () => {
+    const listed = DEEPSEEK_LISTED.map(({ max_output_tokens: _drop, ...rest }) => rest)
+
+    const { body } = await outboundBodyOf(listed, 'deepseek-flash')
+
+    expect(body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
+    expect(body['max_completion_tokens']).toBeUndefined()
+  })
+
+  /**
+   * ⚠️ **反面**：这一改**只动输出上限**——请求体里其余各格与改前逐字同形。
+   *
+   * 拿「给的那份」与「没给的那份」对拍：除 `max_tokens` 一个键之外，两份应当**一字不差**。
+   * （这条判据是防我自己顺手把 `context_window` 之类也收进请求的。）
+   */
+  test('只动输出上限那一格：两份请求体**除它之外一字不差**', async () => {
+    const withIt = await outboundBodyOf(DEEPSEEK_LISTED, 'deepseek-flash')
+    const without = await outboundBodyOf(
+      DEEPSEEK_LISTED.map(({ max_output_tokens: _drop, ...rest }) => rest),
+      'deepseek-flash',
+    )
+
+    expect(withIt.body['max_tokens']).toBe(393_216)
+    expect(without.body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
+
+    // 把**那一格**（与临时工作区那条路径）抹掉之后，两份必须完全相同——
+    // 多出 / 少了任何别的键，这里就红
+    const strip = (one: { body: Record<string, unknown>; land: string }): string =>
+      JSON.stringify(Object.fromEntries(Object.entries(one.body).filter(([key]) => key !== 'max_tokens')))
+        .split(one.land)
+        .join('<工作区>')
+
+    expect(strip(withIt)).toBe(strip(without))
   })
 })
