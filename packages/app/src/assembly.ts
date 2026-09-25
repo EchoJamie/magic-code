@@ -547,14 +547,23 @@ export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService
 
 /**
  * **后台命令结束**那一条投给模型的交代（U70）——**两行**：第一行说「怎么了」，
- * 第二行说「输出在哪儿、怎么看」。
+ * 第二行说「输出在哪儿」。
  *
  * 为什么要投这么一条（而不是让模型自己去轮询）：设计 · `exec` 的后台那一形第四格
  * ——「跑完 ⇒ 自动回一条给模型的消息（带那个输出文件路径），**模型自己决定读不读**」。
  * 故这一条只要说全三件（哪一条 · 跑成什么样 · 输出在哪儿）就够，**不替模型下结论**
  * （不判「成功 / 失败该怎么处置」——那是它的活）。
  *
- * 措辞上的两处刻意：
+ * ## 措辞：**一律事实陈述**（U81 · 设计 · 提示词与指令 丙）
+ *
+ * 这一条是**我们投进去的**（不是用户说的、也不是模型自己生成的）——注入的话写成命令式
+ * 会触发模型自己的注入防御，**它反而把那段上报给用户**（官方原文：*write the text as
+ * factual statements rather than imperative system instructions*）。故第二行**只报
+ * 「输出在哪儿」这一件事实**：原先缀着的「要看就用 read 读它」是**吩咐它做事**，撤掉
+ * ——读不读由它自己决定，而「那条输出文件用 `read` 读得到」这件事，它在前一步拿到
+ * 的那条回执里已经知道了（`@magic/tools` 的 `backgroundStarted`）。
+ *
+ * 措辞上的另外两处刻意：
  * - **说话人不是用户**——抬头用 `〔…〕` 这种记号（与本仓别处的系统旁注同一族），
  *   而条目载荷另有 `notice` 那一位管着屏上那一行与会话标题（见 `deliverBackgroundDone`）；
  * - **「停掉」与「跑完」分开说**——对用户与模型都不是同一件事（设计 · 停止那一节：
@@ -573,7 +582,7 @@ function backgroundNoticeText(finish: BackgroundFinish): string {
 
   return [
     `〔${how}〕${finish.id}（${code}）· ${shown}`,
-    `完整输出在 ${finish.outputPath} —— 要看就用 read 读它。`,
+    `完整输出在 ${finish.outputPath}`,
   ].join('\n')
 }
 
