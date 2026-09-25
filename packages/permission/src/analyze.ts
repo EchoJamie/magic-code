@@ -3,8 +3,8 @@
  *
  * 出处：技术方案 · 权限：判定 ＝ 内核的机械分析——工具调用是结构化的（工具名 ＋ 参数）：
  * 命令可解析、路径可比对工作区边界、读写类型天然可分；**不押模型自述**。
- * 姿态：**默认通**，只有**名单里那两条**（`exec` · 见下）与**工具自己的那几处必闸**
- * 要问；**判不出来的按默认通**（U76 · 2026-09-25 用户定）。其余详见下面那一段。
+ * 姿态：**默认通**——`exec` 上**只剩改权限那一类要问**（删除那一类 U77 起**直接拒**，
+ * 见下），另有**工具自己的那几处必闸**；**判不出来的按默认通**（U76 · 2026-09-25 用户定）。
  *
  * 本域只做**域内机械分析**：不 import 执行域 / 工具域，不碰文件系统（域间只经契约）。
  * 故凡需「文件是否存在 / 内容是什么」才能判的形态（如 `write` 的新建 vs 覆盖）
@@ -14,16 +14,18 @@
  *
  * `weight` 仍是「要不要过闸」那一问的**唯一产出**，但**两路的底不一样**了：
  *
- * - **`exec` 那一路**（`analyzeExec` → `commands.ts`）：**默认通**——只有**名单那两条**
- *   （删除 · 改权限/属主/属性/ACL）判重，其余（移动 · 覆盖 · 破坏性 git · `sudo` 那类 ·
- *   越界 · 外发 · **判不出来**）一律判轻 ⇒ 不必配规则就过。**这是本单（U76）改的那一处。**
+ * - **`exec` 那一路**（`analyzeExec` → `commands.ts`）：**默认通**——**判重的只剩
+ *   改权限 / 属主 / 属性 / ACL 那一类**（删除那一类 U77 起走**另一形**：`refusal`，
+ *   见 `AnalysisRefused`），其余（移动 · 覆盖 · 破坏性 git · `sudo` 那类 · 越界 · 外发 ·
+ *   `trash` · **判不出来**）一律判轻 ⇒ 不必配规则就过。
+ *   （U76 把底从"默认问"翻成"默认通"；**U77 把删除移出"问"那一档**。）
  * - **非 `exec` 那一路**（`write` · `edit` · `web_fetch` · MCP 外部操作 · 表外工具）：
  *   **一个字没动**——判重的仍判重（`write` 的判不出 · `edit` 的越界 · 取网页的外发 ·
  *   外部操作一律必闸）。⚠️ **射程只到 `exec`**（工单明文），别顺手把这一路也放宽：
  *   那几处的例外（`byHost` 按域名）正是靠"判重"立着的。
  *
  * 阶段 1 全人工门下本节只定呈现轻重；阶段 2 起清单是自动放行禁区（U14）——
- * U76 之后那份清单**只剩两条**，且**默认通**（链的底换了，见 `gate.ts` 头注）。
+ * **U77 之后那份清单只剩一条**（改权限），且链的底是**默认通**（见 `gate.ts` 头注）。
  */
 
 import type {
@@ -31,6 +33,7 @@ import type {
   DecisionWeight,
   ExternalToolRef,
   PermissionContext,
+  RefusalKind,
   ToolCall,
 } from '@magic/contracts'
 import { mcpToolLabel, parseMcpToolName, webTargetOf } from '@magic/contracts'
@@ -54,7 +57,12 @@ import { describeLanding, landPath } from './paths.ts'
  *   给它单列一格而不是塞进路径：两条判据的语义毫不相干，混用会让「根内那几个字」
  *   突然要能匹配域名（`rules.ts` 的 `matchesHost` 与 `matchesPath` 因此各判各的）。
  */
-export type Analysis = {
+export type Analysis = AnalysisPass | AnalysisRefused
+
+/** 「问 ／ 通」那一形——**判据决定轻重**，闸门照轻重走（见 `AnalysisRefused` 的反面）。 */
+export type AnalysisPass = {
+  /** **`refusal` 缺席是这一形的判据**（判别式）——见 `AnalysisRefused`。 */
+  readonly refusal?: undefined
   readonly weight: DecisionWeight
   readonly reason?: DangerReason
   readonly material: string
@@ -79,6 +87,37 @@ export type Analysis = {
    * 给不出（地址不合格 / 参数读不出）＝缺席——那时**没有可记的域名**，
    * 规则那一格也无从比对（见 `rules.ts` 的 `matchesHost`）。
    */
+  readonly host?: string
+}
+
+/**
+ * **内核直接拒**那一形（U77）——删除那一类（设计 · 权限「`rm` 直接拒，指路 `trash`」）。
+ *
+ * ## 为什么另立一形，而不是给 `AnalysisPass` 添一格布尔
+ *
+ * 因为**次序错一步就是灾难**：拒的那一笔若落到"默认通 / 全放行"那一条支上，
+ * `--allow-all` 之下 `rm` 就会被**放行**——而这一单要的恰恰是**全放行也照拒**。
+ * 做成判别联合之后，**`weight` 在这一形上根本不存在**：闸门想读它必须先分支，
+ * 「忘了先判拒」**编译期就报**（不是靠注释提醒）。
+ *
+ * ## 这一形上有什么
+ *
+ * - `refusal` ＝**拒的理由**（两支，措辞不同，见契约 `RefusalKind`）；
+ * - `material` ＝ 同一份命令分解（**为什么出格**照旧说得出来：`判据：不可逆（收不回）`）
+ *   ——它如今不上面板（没有卡），留着是为了审计与用例读得出同一个结论；
+ * - `ops` / `landings` / `title` / `external` / `host` ＝ 与另一形同义（规则轴与呈现的原料，
+ *   一律照旧产出——**别让"拒了"变成"少算了几格"**）。
+ *
+ * ⚠️ **不受 `--allow-all` 影响**：那一档只动「问不问」（三个维度里的第一个），
+ * 而这里拒的理由是「**这个命令不可逆**」——两件事不混（规划侧定，见工单）。
+ */
+export type AnalysisRefused = {
+  readonly refusal: RefusalKind
+  readonly material: string
+  readonly ops: readonly RuleOp[]
+  readonly landings: readonly Landing[]
+  readonly title?: string
+  readonly external?: boolean
   readonly host?: string
 }
 
@@ -603,6 +642,16 @@ function judge(segments: readonly SegmentAnalysis[]): Analysis {
   // 影响面取各段词条之并
   const ops = [...new Set(segments.map((segment) => segment.op))]
   const landings = segments.flatMap((segment) => segment.landings)
+
+  // **删除那一类先落地**（U77）——一段落拒，整条就拒（逐段判、取最严那一半）。
+  // 一支里同时有 `rm` 与 `shred` 时取 `no-substitute`（**不给替代**那一支）：
+  // 指路说"用 trash"在那种串里是**错的**（`shred` 那半截换个更弱的做法就是没照它办）。
+  const refusals = segments.map((segment) => segment.refusal).filter((one) => one !== undefined)
+  const refusal: RefusalKind | undefined = refusals.includes('no-substitute')
+    ? 'no-substitute'
+    : refusals[0]
+
+  if (refusal !== undefined) return { refusal, material, ops, landings }
 
   return reason === undefined
     ? { weight: 'light', material, ops, landings }

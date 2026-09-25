@@ -17,6 +17,7 @@ import type {
   ToolCall,
   TurnId,
 } from '@magic/contracts'
+import type { Analysis, AnalysisPass } from '../src/analyze.ts'
 import type { GrantLedger } from '../src/grants.ts'
 import { createGrantLedger } from '../src/grants.ts'
 
@@ -99,4 +100,18 @@ export function call(name: string, args: Readonly<Record<string, unknown>> = {})
  */
 export function ledger(workspace = '/work/proj'): GrantLedger {
   return createGrantLedger({ workspace })
+}
+
+/**
+ * 取一份**「问 ／ 通」那一形**的分析（U77 起 `Analysis` 是**判别联合**）。
+ *
+ * 用在只关心轻重 / 材料的用例上——真碰上「**直接拒**」那一形（删除那一类）就**当场抛**：
+ * 那种用例的前提不成立（它压根没有 `weight`），静默读个 `undefined` 出来比抛更坏。
+ * 凡是要判"拒还是问"的用例，**别用这个**——直接读 `analysis.refusal`。
+ */
+export function weighing(analysis: Analysis): AnalysisPass {
+  if (analysis.refusal !== undefined) {
+    throw new Error(`这一笔是"直接拒"那一形（${analysis.refusal}），没有 weight——用例前提不成立`)
+  }
+  return analysis
 }

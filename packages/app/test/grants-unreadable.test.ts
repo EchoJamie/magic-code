@@ -42,7 +42,7 @@ import { eventsOfKind, makeStage, type Stage } from './support.ts'
  * 一条**判重的**执行命令（名单第一类 · 删除）——本文件要的是「过闸 → 人批 → 试图落盘」
  * 那一跳，**只有判重的调用才有卡可答**（U76 起判轻的默认通、根本不问）。
  */
-const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
 
 /**
  * 一次**判重却带域名**的调用（取网页）——「改对之后自然恢复」那一条靠它。
@@ -372,7 +372,8 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
       // 「不落盘」不是「什么都没记住」，这两件事在这个用例里分得开
       const remembered = assembly.grantsView().grants.map((row) => row.describe)
       expect(remembered).toHaveLength(1)
-      expect(remembered[0]).toContain('delete') // 记的就是删除这一类
+      // ⚠️ U77 起夹具是**改权限**（删除那一类不给授权了）——记的就是这一类
+      expect(remembered[0]).toContain('system')
 
       shell.dispose()
       assembly.close()

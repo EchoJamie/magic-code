@@ -47,7 +47,7 @@ const WEB_FETCH_TURN = {
   toolCalls: [{ name: 'web_fetch', args: { url: 'https://example.com/a', prompt: '看什么' } }],
 }
 /** 一条必闸命令——`rm` 归删除（不可逆），且工作区外／内都入必闸清单。 */
-const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
 
 /** 裸接控制面——订阅事件 ＋ 按需答复。 */
 function bareShell(assembly: Assembly) {
@@ -336,7 +336,7 @@ describe('U28 · 历史累计（跨会话那笔账）', () => {
       const before = eventsOfKind(first.shell.events, 'grants.catalog')[0]?.data
       expect(before?.decisions).toEqual({ total: 1, uncovered: 1, vetoed: 0 })
       // 历史＝库里那些（这一趟的裁决当场就落了库，故它已经在里头）
-      expect(before?.history).toEqual({ total: 1, auto: 0 })
+      expect(before?.history).toEqual({ total: 1, auto: 0, kernel: 0 })
       finish(first.assembly, first.shell)
 
       // 第二趟（＝关掉再开）：本会话一条都还没走过，历史接着上一趟数
@@ -347,7 +347,7 @@ describe('U28 · 历史累计（跨会话那笔账）', () => {
 
       const after = eventsOfKind(shell2.events, 'grants.catalog')[0]?.data
       expect(after?.decisions).toEqual({ total: 0, uncovered: 0, vetoed: 0 })
-      expect(after?.history).toEqual({ total: 1, auto: 0 })
+      expect(after?.history).toEqual({ total: 1, auto: 0, kernel: 0 })
       finish(second, shell2)
     } finally {
       stage.dispose()

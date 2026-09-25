@@ -317,7 +317,7 @@ describe('查询（`/mcp` 那一屏 · `mcp.list` → `mcp.catalog`）', () => {
           // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的默认通、
           // **不弹卡**——下面「第二次询问 → 批准 → 内置照常跑」那三步就没有对象；
           // **新锚**：名单里的删除打头（必问），`内置照常` 那串输出原样留着。
-          { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build && echo 内置照常' } }] },
+          { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo 内置照常' } }] },
           { text: '好' },
         ],
       })

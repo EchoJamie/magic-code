@@ -38,7 +38,7 @@
  * 链的底从「默认问」翻成「**默认通**」——判轻的（读 · 只读命令 · 判不出来的）**不问**，
  * 名单收缩到**两条**（删除 · 改权限 / 属主 / 属性 / ACL，且射程只到 `exec`）。故：
  *
- * - **① 那一张卡要靠「命令里带一段名单里的动作」造出来**（这里用 `rm -rf build`）——
+ * - **① 那一张卡要靠「命令里带一段名单里的动作」造出来**（这里用 `chmod 755 .`）——
  *   后台那一形照旧过闸门这件事**一个字没松**，松的是"哪些命令要问"；
  * - 其余几屏（②③ 的发起 · ④ 的取输出 · ⑤ 的两次读）从前的卡**只是推进流程的手段**，
  *   如今一律换成**等工具真跑完**（模型那一句答复 ＝ 它收到了工具结果）。
@@ -225,16 +225,18 @@ async function settled(session: UiSession): Promise<void> {
 async function startFrame(): Promise<void> {
   // 剧本**可变**：第三条（读输出）要知道那个路径，而路径要先有沙地才算得出（见文件头注）
   //
-  // ⚠️ **命令开头那一段 `rm -rf build` 是装置上的讲究**（U76）：判轻的调用**默认通、
-  // 不弹卡**（链的底换了），而本屏要留的正是「**带 `background` 的调用照旧过闸门**」——
-  // 故命令里必须有一段**名单里的动作**（U76 起名单只剩两条：删除 · 改权限/属主/属性/ACL）。
+  // ⚠️ **命令开头那一段 `chmod 755 .` 是装置上的讲究**：判轻的调用**默认通、不弹卡**，
+  // 而本屏要留的正是「**带 `background` 的调用照旧过闸门**」——故命令里必须有一段
+  // **要授权**的动作。U76 那份名单有两条，本装置当时用的是删除；**U77 起删除直接拒**
+  // （连卡都不出），故改用名单里**剩下那一条**（改权限）。
+  //
   // 它不影响后面几屏：输出照旧是 `起手` / `收工` 那两行，交出去的号照旧是 `bg-1`。
   // `sleep 2`（原 0.8）是给「交出去 → 模型接着说下一句」留足余量（命令得**还在跑**）。
   const turns: FixtureTurn[] = [
     {
       kind: 'tool',
       name: 'exec',
-      args: { cmd: 'rm -rf build; echo 起手; sleep 2; echo 收工', background: true },
+      args: { cmd: 'chmod 755 .; echo 起手; sleep 2; echo 收工', background: true },
       text: '这条命令交出去跑，我不占着这一轮。',
     },
     { kind: 'text', text: '交出去了，我先做别的。' },
@@ -243,8 +245,9 @@ async function startFrame(): Promise<void> {
   const fixture = startFixture({ turns })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
   const outputPath = outputPathOf(sandbox)
-  // 让那一段 `rm` **真删掉点东西**（卡上说的事要在沙地里真发生）——`-f` 之下删不存在的
-  // 也不报错，但「这一下真删了一棵目录」经得起看
+  // 造一棵 `build/`：**这一屏要的是"命令真在沙地里跑"**（改权限那一段跑的是工作区目录本身，
+  // 它一定在；`build/` 留给后面几屏那种"沙地里有个东西"的观感）。留着不动，是因为
+  // 本装置判的是后台那一形（发起 · 取输出 · 停），不是删除——那套另有专门的真帧装置。
   mkdirSync(join(sandbox.workspace, 'build'), { recursive: true })
   writeFileSync(join(sandbox.workspace, 'build', '产物.txt'), 'U70 的构建产物\n', 'utf8')
   // 第三条：**由「跑完」那一条唤醒**，模型用既有的 `read` 去读那个文件
@@ -274,11 +277,15 @@ async function startFrame(): Promise<void> {
     // —— ① 带后台参数的调用**照旧弹卡**（反面那一句）——卡上点得出名单里那一段 ——
     const card = await passCard(session, '01-裁决卡（后台那一形照旧过闸门）')
     check(
-      has(card, 'rm -rf build —— 删除（不可逆）'),
-      '① 卡上点名的正是**名单里那一段**——后台不是绕过裁决的口子（命令分解照列）',
+      has(card, 'chmod 755 . —— 改权限 · 属主 · 属性 / ACL（不可逆）'),
+      '① 卡上点名的正是**要授权的那一段**——后台不是绕过裁决的口子（命令分解照列）',
       card.text,
     )
-    check(has(card, '判据：不可逆（收不回）'), '① 判据那一行说得出为什么问', card.text)
+    check(
+      has(card, '判据：系统级（改权限 / 属主 / 属性 / ACL）'),
+      '① 判据那一行说得出为什么问',
+      card.text,
+    )
 
     // —— ② 交出去了：回执当场给模型，而这一轮**接着走** ——
     //

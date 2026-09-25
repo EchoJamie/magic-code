@@ -41,7 +41,7 @@ function catalog(over: Partial<EventDataOf['grants.catalog']> = {}): EventDataOf
     stale: ['/work/gone'],
     decisions: { total: 8, uncovered: 4, vetoed: 1 },
     // 历史累计（U28）——**跨会话**那笔账（库里那些会话一起数）
-    history: { total: 20, auto: 15 },
+    history: { total: 20, auto: 15, kernel: 0 },
     ...over,
   }
 }
@@ -309,25 +309,45 @@ describe('P0 —— `/grants` 不许把输入吃掉', () => {
  * 判据锚的是「我要什么」：**这个项目值不值得配规则**——本会话那个数只够看「这一趟
  * 顺不顺」，跨会话才答得了这一问（`交接/进度台账.md` · 随批小修 12）。
  *
- * ⚠️ **历史只有两类**（`decider` 在库里那条事件上）：自动放行 / 还得你点——
- * 「未配规则」是本会话分得出的细账，历史里**分不开**（见契约 `DecisionHistory`）。
+ * ⚠️ **历史按 `decider` 分**（它在库里那条事件上）：自动放行（`auto`）· **内核直接拒**
+ * （`kernel`，U77 补的）· 还得你点（**差**）——「未配规则」是本会话分得出的细账，
+ * 历史里**分不开**（见契约 `DecisionHistory`）。
  */
 describe('历史累计 —— 跨会话那笔账', () => {
   test('报**两格**：自动放行 ＋ 还得你点（后一个是差，不是另存的一位）', () => {
     const app = live()
-    openDrawer(app, { history: { total: 20, auto: 15 } })
+    openDrawer(app, { history: { total: 20, auto: 15, kernel: 0 } })
 
     const hint = app.picker()?.hint ?? ''
     expect(hint).toContain('历史累计 20 次裁决')
     expect(hint).toContain('自动放行 15 次（75%）')
     expect(hint).toContain('还得你点 5 次（25%）')
+    // ⚠️ **`kernel` 为 0 时一个字都不加**（U77）：老库、老屏上这一行与加那一格之前**逐字相同**
+    expect(hint).not.toContain('内核直接拒')
+  })
+
+  /**
+   * ⚠️ **「内核直接拒」要单独报出来**（U77）——`decider: 'kernel'` 是那一单新加的：
+   * 从前"没问就拒"混在 `auto` 里，被这一行读成"自动放行"（**正好反着**）。
+   *
+   * 三件一起咬：**那一格报了出来** ＋ **它没被算进"自动放行"** ＋
+   * **"还得你点"里也没有它**（拒不是"替你点过了"）。
+   */
+  test('**内核直接拒**自己一格——不混进「自动放行」，也不算"还得你点"', () => {
+    const app = live()
+    openDrawer(app, { history: { total: 20, auto: 15, kernel: 3 } })
+
+    const hint = app.picker()?.hint ?? ''
+    expect(hint).toContain('自动放行 15 次（75%）')
+    expect(hint).toContain('内核直接拒 3 次（15%）')
+    expect(hint).toContain('还得你点 2 次（10%）') // 20 − 15 − 3
   })
 
   test('两笔账**各占一行**——分母不是一回事（这一趟 / 这个项目的全部会话）', () => {
     const app = live()
     openDrawer(app, {
       decisions: { total: 8, uncovered: 4, vetoed: 1 },
-      history: { total: 20, auto: 15 },
+      history: { total: 20, auto: 15, kernel: 0 },
     })
 
     const lines = (app.picker()?.hint ?? '').split('\n')
@@ -338,7 +358,7 @@ describe('历史累计 —— 跨会话那笔账', () => {
 
   test('历史**一条裁决都没有**时——不报那一行（0 次不是一个占比）', () => {
     const app = live()
-    openDrawer(app, { history: { total: 0, auto: 0 } })
+    openDrawer(app, { history: { total: 0, auto: 0, kernel: 0 } })
 
     const hint = app.picker()?.hint ?? ''
     expect(hint).toContain('本会话') // 本会话那笔账照报（两笔账各判各的）

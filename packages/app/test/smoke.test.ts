@@ -28,16 +28,19 @@ const TRANSIENT = ['model.delta', 'tool.output.delta'] as const
  * ⚠️ **原锚**：`exec echo hello-magic`（判轻）；**为何变**：U76 起**判轻的不再问**
  * （默认通——「经闸门」那一段只在 `tool.decision` 上记一条 `decider: 'auto'`），
  * 拿它当夹具，`tool.decision.request` 根本不会出现，「链走通」与「拒绝路径」两支
- * 要判的那件事（请求 → 答复 → 回填）就没有对象；**新锚**：`rm -rf build && echo hello-magic`
- * ——第一段是**名单里**的删除（必问），第二段把 `hello-magic` 那串输出原样留着，
- * 故下面「输出落库 / 回填送达」那几条判据的锚**一个字都不用换**。
+ * 要判的那件事（请求 → 答复 → 回填）就没有对象；**U76 的新锚**：`rm -rf build && echo hello-magic`
+ * ——第一段是**名单里**的删除（必问），第二段把 `hello-magic` 那串输出原样留着。
+ *
+ * ⚠️ **U77 又换了一次锚**：删除那一类改成**直接拒**（不问），故那条 `rm` **造不出卡**了
+ * ——第一段换成 `chmod 755 .`（名单里剩下的那一条，照旧必问），第二段一字不动
+ * ⇒ 下面「输出落库 / 回填送达」那几条判据的锚**照旧一个字不用换**。
  *
  * （`support.ts` 的 `SMOKE_TURNS` 仍留在原处：那是**判轻不问**那一形的现成夹具，
  * 别的用例若要它，拿默认那份即可——本文件要的是「有卡」那一形，故自带。）
  */
 const GATED_TURNS: readonly FauxTurn[] = [
   {
-    toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build && echo hello-magic' } }],
+    toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo hello-magic' } }],
     usage: { inputTokens: 11, outputTokens: 3 },
   },
   { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },
@@ -107,11 +110,16 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       expect(request?.data.name).toBe('exec')
       // 判断材料给足了（命令分解）——呈现轻重的判据在权限域，此处只认它非空
       expect(request?.data.material).toContain('echo hello-magic')
-      // ⚠️ **为何问**（U76）：问的由头是**名单里**那一段（删除），不是判轻的第二段——
-      // 材料里两段都在，末尾那一行点名「不可逆」，呈现轻重跟着是 `heavy`。
+      // ⚠️ **为何问**：问的由头是**名单里**那一段（改权限），不是判轻的第二段——
+      // 材料里两段都在，末尾那一行点名「系统级」，呈现轻重跟着是 `heavy`。
+      //
+      // ⚠️ **U77 换的探针**：从前这一段是**删除**（U76 起名单那两条之一）；
+      // 如今删除那一类**直接拒、根本不问**（设计「`rm` 直接拒，指路 `trash`」），
+      // 故能造出「一张卡」的只剩**改权限那一族**。删除那一套的验收归
+      // `frames-u77-tui.ts`，不在这条冒烟链上兼职。
       expect(request?.data.weight).toBe('heavy')
-      expect(request?.data.material).toContain('删除（不可逆）')
-      expect(request?.data.material).toContain('判据：不可逆（收不回）')
+      expect(request?.data.material).toContain('改权限 · 属主 · 属性 / ACL（不可逆）')
+      expect(request?.data.material).toContain('判据：系统级（改权限 / 属主 / 属性 / ACL）')
 
       // —— 3 回填送达：**第二次**模型调用的上下文里躺着这次工具结果 ——
       const toolResult = eventsOfKind(events, 'tool.result')[0]
@@ -173,7 +181,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
         const toolCall = raw.entries.find((row) => row.kind === 'tool-call')
         expect(JSON.parse(toolCall?.payload ?? '{}')).toEqual({
           name: 'exec',
-          args: { cmd: 'rm -rf build && echo hello-magic' },
+          args: { cmd: 'chmod 755 . && echo hello-magic' },
         })
 
         const toolResultRow = raw.entries.find((row) => row.kind === 'tool-result')

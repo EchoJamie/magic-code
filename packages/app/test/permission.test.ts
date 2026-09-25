@@ -35,8 +35,18 @@ import type { Fixture, FixtureTurn } from './ui/fixture.ts'
 /** 一条只读命令（机械分析判「轻」、`ops: ['read']`）——**U76 起默认通**，不必配规则也不再弹卡。 */
 const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }] }
 
-/** 名单里的一条（删除）——**U76 起不配规则也照问**（名单即禁区），卡上那句判据是「不可逆」。 */
-const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+/**
+ * **名单里剩下那一条**（改权限）——不配规则也照问（名单即禁区），卡上那句判据是「系统级」。
+ *
+ * ⚠️ **U77 换的探针**：从前这里是**删除**（`rm -rf build`）；如今删除那一类
+ * **直接拒、根本不问**（见下面 `REFUSED_TURN`），能造出"一张卡"的只剩改权限这一族。
+ * 用 `chmod 755 .`（工作区目录本身）是**装置上的讲究**：它一定存在 ⇒ 命令跑得成
+ * （`ok: true`），而 `755` 保留属主的 `rwx` ⇒ 不把后面几步走出毛病来。
+ */
+const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
+
+/** **删除那一类**——U77 起**直接拒**（不问、也没有卡），回执里指路 `trash`。 */
+const REFUSED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
 
 /** 会话那一条连接上的模型（夹具回的话按请求里的名字记账——判据不看它，配置里得有）。 */
 const SESSION_MODEL = 'MiniMax-M3'
@@ -195,38 +205,52 @@ describe('权限规则 —— 配置真的接进闸门', () => {
 
   /**
    * ⚠️ **原锚**：「键缺省 ＝ 无规则 ＝ **一律问**」（阶段 1 全人工门的姿态）。
-   * **为何变**：U76 把链的底换了——**默认通**：不在名单里就不问（判轻的不必配规则）。
-   * **新锚**：键缺省这一档下的**两半**各钉一下——判轻的**不问**（裁者 `auto`）、
-   * **名单那两条照问**（它不在「默认通」的射程里）。两条一起看，才是现在的「无规则」。
+   * **为何变**：U76 把链的底换了——**默认通**：判轻的不必配规则也不问。
+   * ⚠️ **U77 又换了一次**：删除那一类从"要授权"整类移出、改成**直接拒**
+   * ⇒ 能造出"一张卡"的只剩**改权限那一族**。
+   * **新锚**：键缺省这一档下的**三半**各钉一下——判轻的**不问**（裁者 `auto`）、
+   * **改权限照问**（名单里剩下那一条）、**删除照拒**（不问，也没跑）。三件一起看，
+   * 才是现在的「无规则」。
    */
-  test('键缺省 ＝ 无规则 ⇒ **默认通**：判轻的不问；名单那两条照问', async () => {
+  test('键缺省 ＝ 无规则 ⇒ **默认通**：判轻的不问、改权限照问、删除照拒', async () => {
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble({ turns: [READ_ONLY_TURN, GATED_TURN, { text: '完了' }] })
+      const assembly = stage.assemble({
+        turns: [READ_ONLY_TURN, GATED_TURN, REFUSED_TURN, { text: '完了' }],
+      })
       expect(assembly.permissionRules).toEqual([])
 
       const shell = bareShell(assembly)
-      assembly.shell.send({ type: 'input.submit', text: '跑两下' })
-      await until(() => shell.requests.length >= 1, '名单那一条问起')
+      assembly.shell.send({ type: 'input.submit', text: '跑三下' })
+      await until(() => shell.requests.length >= 1, '改权限那一条问起')
 
-      // 只问了名单里那一条——前一条只读命令**没弹卡**，它走的是 `auto`
+      // 只问了改权限那一条——前一条只读命令**没弹卡**，它走的是 `auto`
       expect(shell.requests).toHaveLength(1)
       expect(eventsOfKind(shell.events, 'tool.decision').map((v) => v.data.decider)).toEqual(['auto'])
 
-      // 问的那一条说得出凭什么（名单第一类：删除 · 不可逆）
+      // 问的那一条说得出凭什么（名单里只剩的那一类）
       const card = eventsOfKind(shell.events, 'tool.decision.request')[0]
       expect(card?.data.weight).toBe('heavy')
-      expect(card?.data.material).toContain('删除（不可逆）')
+      expect(card?.data.material).toContain('改权限 · 属主 · 属性 / ACL（不可逆）')
 
       shell.answer(shell.requests[0] ?? -1)
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '两条都跑完')
+      // 三发各有各的结局（第三发是**被拒**的那一条——它照样落一条 `tool.result`）
+      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 3, '三发都落定')
 
-      // 两条裁决各留各的痕：默认通的那一条没人答过，人答的那一条裁者是 `user`
+      // 三发各留各的痕：默认通的没人答过（`auto`）· 人答的那条 `user` ·
+      // **被拒的那条也没有询问**（`auto` ＋ `reject`——见下面那条断言）
       expect(eventsOfKind(shell.events, 'tool.decision').map((v) => v.data.decider)).toEqual([
-        'auto',
-        'user',
+        'auto', // 判轻的：没问就**放行**
+        'user', // 改权限：人答的
+        'kernel', // 删除：没问就**拒**（⚠️ 不是 `auto`——那一格说的是「没问就放行」）
       ])
+
+      const results = eventsOfKind(shell.events, 'tool.result')
+      expect(results[2]?.data.ok, '删除那一条：**被拒、压根没跑**').toBe(false)
+      const refusedText = (results[2]?.data.output as { text?: string } | undefined)?.text ?? ''
+      expect(refusedText, '回执要说得出为什么').toContain('不可逆')
+      expect(refusedText, '回执要指路').toContain('trash')
 
       await untilSettled(shell)
       shell.dispose()

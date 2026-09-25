@@ -27,7 +27,7 @@
  *
  * | 张 | 工单那一格 | 该在屏上看见什么 |
  * | --- | --- | --- |
- * | ① | **不带参数起** | 名单里那一条照问：`│ exec · 不可逆` 那张卡**照出**；判轻的不弹卡 |
+ * | ① | **不带参数起** | 要授权那一条照问：`│ exec · 不可逆` 那张卡**照出**；判轻的不弹卡 |
  * | ①b | 名单上按 `a`（U73 那条搬这儿） | 「**必闸类不可「总是允许」**」——默认档下同样成立 |
  * | ② | **带参数起** | `✓ Nms · …` 直接跑完——**一张卡都没有** |
  * | ③ | 状态行那一格（宽窗 100） | `○ 空闲 · 全放行 · …`（那一格**永不省**） |
@@ -205,8 +205,15 @@ function onlySessionOf(sandbox: Sandbox): string {
  * 它如今用来量另一件事——**默认档与全放行档在这类调用上分不出差别**（差别在名单那两条上）。
  */
 const LIGHT: FixtureTurn = { kind: 'tool', name: 'exec', args: { cmd: 'ls -la' } }
-/** 一条**名单里**的命令（判重 · 删除 → 不可逆）——默认档照问，**全放行档也不问**（U76）。 */
-const HEAVY: FixtureTurn = { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } }
+/**
+ * 一条**要授权**的命令（**名单里剩下那一条**：改权限）——默认档照问，**全放行档也不问**（U76）。
+ *
+ * ⚠️ **U77 换的**：从前这里是**删除**（`rm -rf build`）。如今删除那一类**直接拒**
+ * （连卡都不出、全放行也照拒）——它没法再造出"一张卡"，故换成改权限。
+ * 用 `chmod 755 .`（工作区目录本身）是装置上的讲究：它一定存在 ⇒ 跑得成，
+ * 而 `755` 保留属主 `rwx` ⇒ 不把后面几步走出毛病来。
+ */
+const HEAVY: FixtureTurn = { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }
 
 // ══ ①②③④⑤⑦ · 四个窗口（各自一块沙地）════════════════════════════════
 
@@ -246,7 +253,7 @@ async function scenePlain(): Promise<void> {
     keep(shot, '01-不带参数起-名单那条照问')
 
     check(has(shot, '· 不可逆'), '① 不带参数起：**卡照出**（`│ exec · 不可逆`）')
-    check(has(shot, '删除（不可逆）'), '① 卡上说得出是名单里那一类')
+    check(has(shot, '改权限 · 属主 · 属性 / ACL（不可逆）'), '① 卡上说得出是名单里那一类')
     check(has(shot, 'y 批准'), '① 卡上有键位（`y 批准`）')
     check(!statusLineOf(shot.lines).includes(MARK), '① **状态行那一行**里也没有它')
 
@@ -339,13 +346,13 @@ async function sceneGated(): Promise<void> {
     rows: 30,
     artifacts: join(out, 'runs'),
     argv: ['--allow-all'],
-    turns: [HEAVY, { kind: 'text', text: '删掉了。' }],
+    turns: [HEAVY, { kind: 'text', text: '改好了。' }],
   })
 
   try {
     await session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
-    await typeLine(session, '删掉 build')
-    await session.key('enter', { until: { text: '删掉了。' }, timeoutMs: 40_000 })
+    await typeLine(session, '改一下权限')
+    await session.key('enter', { until: { text: '改好了。' }, timeoutMs: 40_000 })
     await waitStatusLine(session, MARK)
 
     const shot = await session.capture({ label: '04-全放行-连名单那一条也放' })
@@ -557,7 +564,7 @@ async function sceneResume(): Promise<void> {
 
     const thirdShot = await third.capture({ label: '09b-第三程-照旧问' })
     check(has(thirdShot, '· 不可逆'), '⑨ **回去照旧问**：卡照出（名单里那一条、同一条会话）')
-    check(has(thirdShot, '删除（不可逆）'), '⑨ 卡上说得出是名单里那一类')
+    check(has(thirdShot, '改权限 · 属主 · 属性 / ACL（不可逆）'), '⑨ 卡上说得出是名单里那一类')
 
     await third.send('y', { until: { text: '看过了。' }, timeoutMs: 40_000 })
     await third.quit()

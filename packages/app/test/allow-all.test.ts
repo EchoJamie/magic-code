@@ -26,7 +26,7 @@ import { eventsOfKind, makeStage } from './support.ts'
 /** 一条只读命令（机械分析判「轻」· `ops: ['read']`）——**不问**。 */
 const LIGHT_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }] }
 /** 一条**名单里**的命令（判重 · `delete` → 不可逆）——默认下照问，全放行下**也不问**。 */
-const HEAVY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+const HEAVY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
 
 /** 裸接控制面——订阅事件，要答复时自己答（同 `permission.test.ts` 那一手）。 */
 function bareShell(assembly: Assembly) {
@@ -76,13 +76,13 @@ describe('全放行 —— 启动入参真的接进闸门', () => {
     }
   })
 
-  test('**名单那两条也不弹**——工具真跑了，裁决留痕（`decider: auto`）', async () => {
+  test('**名单里那一条也不弹**——工具真跑了，裁决留痕（`decider: auto`）', async () => {
     const stage = makeStage()
 
     try {
       const assembly = stage.assemble({ allowAll: true, turns: [HEAVY_TURN, { text: '好' }] })
       const shell = bareShell(assembly)
-      assembly.shell.send({ type: 'input.submit', text: '删掉 build' })
+      assembly.shell.send({ type: 'input.submit', text: '改一下权限' })
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
       shell.dispose()
 
@@ -95,7 +95,7 @@ describe('全放行 —— 启动入参真的接进闸门', () => {
     }
   })
 
-  test('**不给它时：判轻的照样不问、名单那两条照问**——两档的差别就在那两条上', async () => {
+  test('**不给它时：判轻的照样不问、名单里那一条照问**——两档的差别就在那一条上', async () => {
     const stage = makeStage()
 
     try {
@@ -108,18 +108,52 @@ describe('全放行 —— 启动入参真的接进闸门', () => {
       expect(eventsOfKind(lightShell.events, 'tool.decision.request')).toEqual([])
       light.close()
 
-      // 名单那两条：照问（卡挂着，没答之前一步都不跑）
+      // 名单里那一条（改权限）：照问（卡挂着，没答之前一步都不跑）
       const heavy = stage.assemble({ turns: [HEAVY_TURN, { text: '好' }] })
       const heavyShell = bareShell(heavy)
-      heavy.shell.send({ type: 'input.submit', text: '删掉 build' })
+      heavy.shell.send({ type: 'input.submit', text: '改一下权限' })
       await until(() => heavyShell.requests.length >= 1, '裁决请求')
       heavyShell.dispose()
 
       expect(eventsOfKind(heavyShell.events, 'tool.decision.request')[0]?.data.weight).toBe('heavy')
-      expect(eventsOfKind(heavyShell.events, 'tool.decision.request')[0]?.data.material).toContain('删除')
+      expect(eventsOfKind(heavyShell.events, 'tool.decision.request')[0]?.data.material).toContain('改权限')
       expect(eventsOfKind(heavyShell.events, 'tool.result')).toEqual([]) // 没答之前没跑
 
       heavy.close()
+    } finally {
+      stage.dispose()
+    }
+  })
+
+  /**
+   * **删除那一类：全放行下也照拒**（U77 · 规划侧定）——**拒的理由是"这个命令不可逆"，
+   * 不是"你该问我"**；而 `--allow-all` 只动「问不问」那一维，两件事不混。
+   *
+   * 装配级判三件：**不问**（这一档的承诺）· **也不放**（工具那一步压根没跑）·
+   * **回执说得出该用什么**（`trash`——只拒不说，模型只会换着花样再试）。
+   */
+  test('**删除那一类：这一档下也照拒**——不问，但也不放（回执指路 `trash`）', async () => {
+    const stage = makeStage()
+
+    try {
+      const assembly = stage.assemble({
+        allowAll: true,
+        turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }, { text: '好' }],
+      })
+      const shell = bareShell(assembly)
+      assembly.shell.send({ type: 'input.submit', text: '删掉 build' })
+      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '回填')
+
+      expect(eventsOfKind(shell.events, 'tool.decision.request'), '这一档的承诺照旧：不问').toEqual([])
+
+      const result = eventsOfKind(shell.events, 'tool.result')[0]
+      expect(result?.data.ok, '照拒——工具那一步压根没跑').toBe(false)
+      const output = (result?.data.output as { text?: string } | undefined)?.text ?? ''
+      expect(output, '回执要说得出为什么').toContain('不可逆')
+      expect(output, '回执要指路').toContain('trash')
+
+      shell.dispose()
+      assembly.close()
     } finally {
       stage.dispose()
     }

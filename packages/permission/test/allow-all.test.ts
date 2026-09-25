@@ -167,11 +167,6 @@ describe('全放行 · **连必闸也放**——真的什么都不问（U76）',
    * 一起钉住，是因为这一档要的是「**什么都不问**」，不是「比默认多问少问」。
    */
   const ALL_PASS: readonly { readonly why: string; readonly one: ToolCall }[] = [
-    { why: '删除', one: call('exec', { cmd: 'rm -rf build' }) },
-    { why: '删除（find -delete）', one: call('exec', { cmd: 'find . -name "*.log" -delete' }) },
-    { why: '删除（隔着 `sudo`）', one: call('exec', { cmd: 'sudo rm -rf /tmp/x' }) },
-    { why: '删除（越界）', one: call('exec', { cmd: 'rm /etc/hosts' }) },
-    { why: '删除（命令替换里的）', one: call('exec', { cmd: 'rm -rf $(cat targets.txt)' }) },
     { why: '改权限（chmod）', one: call('exec', { cmd: 'chmod 777 secret.key' }) },
     { why: '改属主（chown）', one: call('exec', { cmd: 'chown root secret.key' }) },
     { why: '覆盖（重定向）', one: call('exec', { cmd: 'echo hi > config.json' }) },
@@ -197,8 +192,35 @@ describe('全放行 · **连必闸也放**——真的什么都不问（U76）',
     })
   }
 
+  /**
+   * ⚠️ **删除那一类是这一档的一个例外**（U77 · 规划侧定）——**全放行下也照拒**。
+   *
+   * 由头：**拒的理由是"这个命令不可逆"，不是"你该问我"**——而 `--allow-all`
+   * **只动「问不问」那一维**（设计的三个维度：该不该做 · 能碰什么 · 对哪里做）。
+   * 两件事不混。故这一组量的是：**不问（这一档的承诺照旧兑现）＋ 也不放（拒照旧生效）**。
+   */
+  const STILL_REFUSED: readonly { readonly why: string; readonly one: ToolCall }[] = [
+    { why: '删除', one: call('exec', { cmd: 'rm -rf build' }) },
+    { why: '删除（find -delete）', one: call('exec', { cmd: 'find . -name "*.log" -delete' }) },
+    { why: '删除（隔着 `sudo`）', one: call('exec', { cmd: 'sudo rm -rf /tmp/x' }) },
+    { why: '删除（越界）', one: call('exec', { cmd: 'rm /etc/hosts' }) },
+    { why: '删除（命令替换里的）', one: call('exec', { cmd: 'rm -rf $(cat targets.txt)' }) },
+    { why: '删除（shred——没有替代那一支）', one: call('exec', { cmd: 'shred secret.key' }) },
+  ]
+
+  for (const { why, one } of STILL_REFUSED) {
+    test(`${why}：**全放行时照拒**（不问，但也不放）`, async () => {
+      const result = await pass(one, { allowAll: true })
+
+      expect(result.asked, '这一档的承诺照旧：不问').toBe(false)
+      expect(result.h.countOf('tool.decision.request')).toBe(0)
+      // **但也不放**——拒的理由不是"你该问我"，故这一档动不着它
+      expect(result.verdict).toBe('reject')
+    })
+  }
+
   test('**这一档比默认更放**——差分：同一批调用，不带它时问的，带上就不问了', async () => {
-    const gated: readonly string[] = ['rm -rf build', 'chmod 777 secret.key']
+    const gated: readonly string[] = ['chmod 777 secret.key', 'chmod 400 secret.key']
 
     for (const cmd of gated) {
       const off = await pass(call('exec', { cmd }))
@@ -208,9 +230,19 @@ describe('全放行 · **连必闸也放**——真的什么都不问（U76）',
       expect(on.asked, `${cmd} 带全放行：不问`).toBe(false)
     }
 
-    // 而判轻的那一类两档一样（见 ① 那一条）——差别**只在名单那两条上**
+    // 而判轻的那一类两档一样（见 ① 那一条）——差别**只在"要授权"的那一类上**
     for (const cmd of ['ls -la', 'mkdir -p src/new', 'git push origin main']) {
       expect((await pass(call('exec', { cmd }))).asked, cmd).toBe(false)
+    }
+
+    // ⚠️ **删除那一类两档也一样**（都拒）——它是"更放"这条差分**唯一不覆盖**的一格：
+    // 那一格动的不是"问不问"，是"这个命令不可逆"（见上面 `STILL_REFUSED` 那一组）
+    for (const cmd of ['rm -rf build', 'shred secret.key']) {
+      const off = await pass(call('exec', { cmd }))
+      const on = await pass(call('exec', { cmd }), { allowAll: true })
+
+      expect(off.verdict, `${cmd} 不带全放行：照拒`).toBe('reject')
+      expect(on.verdict, `${cmd} 带全放行：照拒`).toBe('reject')
     }
   })
 

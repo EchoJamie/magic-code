@@ -4,23 +4,31 @@
  * **判据归机械分析，不押模型自述**：命令是结构化的——切段（`&&` · `||` · `|` · `;` · 换行）、
  * 取程序词、对表归类、把路径词条比对工作区边界。
  *
- * ## 名单只剩两条（U76 · 2026-09-25 用户定）
+ * ## 名单只剩一条 ＋ 删除那一类"直接拒"（U77 · 2026-09-25 用户定）
  *
- * **要用户明确授权的只有两类**（设计 · 工具执行与权限「危险命令名单：**收缩到两条**」）：
+ * **要用户明确授权的只剩一类**（设计 · 工具执行与权限「危险命令名单：收缩到两条」＋
+ * 同篇「`rm` 直接拒，指路 `trash`」）：
  *
  * ```
- *   删除                rm 那类（含 -r / -f / -rf）＋ find 的 -delete
- *   改权限 / 属主 / 属性 / ACL      chmod · chown · chgrp · chattr · chflags · setfacl
+ *   要授权   改权限 / 属主 / 属性 / ACL   chmod · chown · chgrp · chattr · chflags · setfacl
+ *   直接拒   删除                        rm 那族（含 -r / -f / -rf）＋ find 的 -delete ＋ shred / srm
  * ```
+ *
+ * ⚠️ **删除那一类**从"要授权"整类移出——它**不问、直接拒**（拒的理由是**这一类不可逆**，
+ * 不是"你该问我"）。回执里要告诉模型**该用什么**（`trash`）；`shred` / `srm` 除外
+ * （它们要的就是不可逆 ⇒ **不给替代**）。见 `REFUSAL_OF`。
  *
  * **其余一律默认通**——移动 / 重命名 · 覆盖 · 破坏性 git · `sudo` 那类 · 越界 · 外发 ·
- * **以及判不出来的**（命令替换 / 变量展开 / 包一层 shell / 表外程序 / 跑任意代码）——
+ * `trash` · **以及判不出来的**（命令替换 / 变量展开 / 包一层 shell / 表外程序 / 跑任意代码）——
  * **靠提示词要求模型自己小心**（那是一道**软防线**，设计已认下：模型可以不听）。
  *
- * ⇒ 本文件的表只回答**两件事**：这一段**在不在名单里**（`OP_REASON`），以及**它在干什么**
- * （`OP_LABEL`，给卡上读）。**不在名单里 ≠ 判不出**：`mv` 我们知道它是移动，
- * 它只是不再需要授权而已——故「归类」与「入不入名单」在这一版里是同一条线，
- * 由 `OP_REASON` 一处落定。
+ * ⇒ 本文件的表回答**三件事**：这一段**在不在名单里**（`OP_REASON`）、**它在干什么**
+ * （`OP_LABEL`，给卡上读）、以及**删除那一类怎么处置**（`REFUSAL_OF`）。
+ * **不在名单里 ≠ 判不出**：`mv` 我们知道它是移动，它只是不再需要授权而已。
+ *
+ * ⚠️ **删除那一格的 `OP_REASON` 现在只说"它为什么出格"**（不可逆），**不再表示"要问"**
+ * ——处置归 `REFUSAL_OF` 那一处。两件事分开之后，`OP_REASON` 仍是"判据"，
+ * 只是「重」的那一档现在只剩改权限那一类。
  *
  * ⚠️ **判不出来按默认通**（同日用户定）：**它不是一条命令名**，是「读不懂」——
  * 而这一层控的是「**明确危险的**」，读不懂不在那一条里。**代价已认：这一档不再有兜底。**
@@ -37,7 +45,7 @@
  * 表是可维护物（技术方案 · 权限：危险分级维护——随用补充）：补一条＝在对应集合里加一个词。
  */
 
-import type { DangerReason, PermissionContext } from '@magic/contracts'
+import type { DangerReason, PermissionContext, RefusalKind } from '@magic/contracts'
 import type { Landing } from './paths.ts'
 import { landPath } from './paths.ts'
 
@@ -60,14 +68,17 @@ export type CommandOp =
   | 'unknown'
 
 /**
- * 该归类给出的**名单判据**（`undefined` ＝**不在名单里 ⇒ 默认通**）。
+ * 该归类给出的**判据**（`undefined` ＝ 这一格给不出判据）。
  *
  * ⚠️ **`undefined` 不再是「放行区方向」那一半白名单**——它是**默认**：不在名单里就通，
  * 与「它是什么」无关（设计 · 权限「默认是通；这一层控的是「禁止」」）。
- * 表上给得出判据的只有两格，正是名单那两条：
+ * 表上给得出判据的只有两格：
  *
- * - `delete` → 不可逆（`rm` 那类）；
- * - `system` → 系统级（**只有**改权限 / 属主 / 属性 / ACL 那一族产出它，见 `PERMISSION`）。
+ * - `delete` → 不可逆（`rm` 那族）——⚠️ **U77 起它不再表示"要问"**：删除那一类
+ *   **直接拒**（处置归 `SegmentAnalysis.refusal`，见文件头注）。这一格留着，是因为
+ *   「为什么这一段出格」仍要说得出来（材料末尾那行 `判据：`）；
+ * - `system` → 系统级（**只有**改权限 / 属主 / 属性 / ACL 那一族产出它，见 `PERMISSION`）
+ *   ——**名单里只剩这一格要问**。
  *
  * ⚠️ **其余几格一律 `undefined`**：覆盖 · 移动 · 外发 · 判不出都**不在名单里**——
  * 后两类（外发 · 判不出）**不是"我们放行了"，是"这一层不再管它"**
@@ -115,13 +126,25 @@ export const OP_LABEL: Readonly<Record<CommandOp, string>> = {
 // —— 词表 ——
 
 /**
- * **名单第一类 · 删除**（`rm` 那类）——授权之后走回收站，不是真删（设计 · 权限）。
+ * **删除那一类**（`rm` 那族 ＋ `find` 的 `-delete`）——U77 起**归"直接拒"，不归"问"**。
  *
- * `srm` 是刻意的：它**不在名单里就等于漏了**——`shred` / `srm` 的意图就是不可逆，
- * 回收站那一套换不掉它们（设计 · 权限「删除：授权之后走回收站」把这两件并列为
- * 「换不掉的」）⇒ 它们照旧落在「要用户明确授权」这一格。
+ * 处置见 `REFUSAL_OF`：拒的理由是**这一类不可逆**，且**回执要告诉模型用什么**
+ * （设计 · 权限「`rm` 直接拒，指路 `trash`」）。
+ *
+ * `shred` / `srm` 也在这张表里——它们**照样拒**，只是**拒的理由不同**
+ * （它要的就是不可逆 ⇒ 回执不给替代）。收在同一张表里是因为「认得出它是删除」
+ * 是同一件事；**怎么处置**由 `REFUSAL_OF` 分。
  */
 const DELETE = ['rm', 'rmdir', 'unlink', 'shred', 'srm', 'remove']
+
+/**
+ * 删除那一族里**没有替代**的那两件——`shred` / `srm`（设计明文：它的意图就是不可逆，
+ * **不许换个更弱的做法糊过去**，回执也**不必给替代**）。
+ *
+ * 其余几件（`rm` / `rmdir` / `unlink` / `remove` / `find -delete`）**不可逆但有替代**
+ * （`trash`：进废纸篓、能捞回）⇒ 回执指路。
+ */
+const NO_SUBSTITUTE = ['shred', 'srm']
 const OVERWRITE = ['truncate', 'dd', 'tee', 'install', 'cp']
 const MOVE = ['mv', 'rename', 'mmv']
 const CREATE = ['mkdir', 'touch']
@@ -350,6 +373,13 @@ export type SegmentAnalysis = {
   readonly raw: string
   readonly program: string | undefined
   readonly op: CommandOp
+  /**
+   * **这一段要"直接拒"吗、理由是哪一条**（U77）——`undefined` ＝ 不拒（问 ／ 通）。
+   *
+   * 只有删除那一族产出它，两支在 `REFUSAL_OF` 那一处说明。**逐段判**（与 `op` 同源）：
+   * `cd x && rm -rf y` 里那段 `rm` 照落拒，`cd x` 不落。
+   */
+  readonly refusal: RefusalKind | undefined
   /** 会动盘的路径词条（`WRITE_OPS` 那几类取，其余不取——材料要给得出「它动了哪儿」）。 */
   readonly landings: readonly Landing[]
   /** 判不出的缘由（材料用）。 */
@@ -598,6 +628,11 @@ function analyzeSegment(segment: Segment, ctx: PermissionContext): SegmentAnalys
   const redirected = writes.length > 0 && (owned === 'read' || owned === 'create' || owned === 'unknown')
   const op: CommandOp = redirected ? 'overwrite' : owned
 
+  // **删除那一类：不是"问"，是"直接拒"**（U77）——理由按程序词分两支（见 `REFUSAL_OF`）。
+  // ⚠️ **按 `op` 判、不按 `owned`**：重定向提级只把 read/create/unknown 提成 overwrite，
+  // 删除**提不动**（那一支压根不含 `delete`）——故两处读的是同一个结论。
+  const refusal = op === 'delete' ? REFUSAL_OF(program) : undefined
+
   // 会动盘的操作取路径词条（材料要给得出「它动了哪儿」——入不入名单是另一回事）
   const landings: Landing[] = []
   if (WRITE_OPS.includes(op)) {
@@ -616,7 +651,23 @@ function analyzeSegment(segment: Segment, ctx: PermissionContext): SegmentAnalys
     for (const text of candidates) landings.push(landPath(text, ctx))
   }
 
-  return { raw: segment.raw, program, op, landings, notes }
+  return { raw: segment.raw, program, op, refusal, landings, notes }
+}
+
+/**
+ * **删除那一段，拒的理由是哪一条**（U77）——两支，措辞不同（见 `RefusalKind`）。
+ *
+ * - `shred` / `srm` ⇒ **没有替代**：「它要的就是不可逆」——**不许换个更弱的做法糊过去**；
+ * - 其余（`rm` / `rmdir` / `unlink` / `remove` / `find -delete`）⇒ **不可逆但有替代**：
+ *   回执要说得出**该用什么**（`trash`：进废纸篓、能捞回）。
+ *
+ * ⚠️ **程序词读不出时按"有替代"那一支**（`program === undefined`）：读不出的删除
+ * 更可能是 `rm` 那一族（`shred` 是少数），而两支里「指路」是**更保守**的那一支
+ * （至少给模型一条走得通的路）。**判据仍然只认得出是删除**（`op === 'delete'`）——
+ * 这一处不另立判据。
+ */
+function REFUSAL_OF(program: string | undefined): RefusalKind {
+  return program !== undefined && NO_SUBSTITUTE.includes(program) ? 'no-substitute' : 'irreversible'
 }
 
 /**
@@ -659,6 +710,7 @@ export function decompose(command: string, ctx: PermissionContext): readonly Seg
         raw: command,
         program: undefined,
         op: 'unknown',
+        refusal: undefined,
         landings: [],
         notes: ['空命令——没有可分析的段'],
       },

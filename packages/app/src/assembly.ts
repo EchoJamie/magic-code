@@ -37,8 +37,9 @@
  * （`./shell.ts`）把这条次序写在订阅与发命令的相对位置上，别处别自己拼。
  */
 
-import { statSync } from 'node:fs'
+import { accessSync, constants, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type {
   BackgroundFinish,
   BackgroundRuns,
@@ -1376,6 +1377,16 @@ export function assemble(options: AssembleOptions): Assembly {
       //    （造一次、用一路——缓存挂在它身上，见那一件自己的注）。
       tools: () => [skillTool, ...planTools, webFetchTool, ...mcpTools()],
 
+      // **这台机器上有没有 `trash`**（U77）——删除那一类被内核拒时，回执据此指路。
+      //
+      // 探在**装配**这一层：`trash` 是 macOS 15 起自带的 CLI（`/usr/bin/trash`），
+      // 老系统上没有；而「这台机器上有什么」是环境的事——工具域不碰文件系统、
+      // 也不读环境（那两件归执行域与装配），故探好**递进去**。
+      //
+      // ⚠️ **探一次就够**：它在进程活着的时候不会变（把 `trash` 装上也得到下次启动）——
+      // 而"探得准"比"探得勤"要紧（工单：**不许假装它一定在**）。
+      trashAvailable: commandOnPath('trash'),
+
       /**
        * **后台那一形**（U70）——**按会话绑好**的一道门面。
        *
@@ -2604,6 +2615,36 @@ function isDirectory(path: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * **这条命令在这台机器上跑得起来吗**（U77）——按 `PATH` 逐个目录找一个**可执行的**文件。
+ *
+ * 用途专一：`trash`（macOS 15 起自带，`/usr/bin/trash`）在不在——删除那一类被内核拒时，
+ * 回执是**指路**还是**如实说没有**，全看这一个布尔（工单：**不许假装它一定在**）。
+ *
+ * 三条分寸：
+ * - **只认 `PATH`**——将来真去跑那条命令时，shell 走的是同一条路：`PATH` 里没有的东西，
+ *   命令跑起来也找不到（写死几个系统目录去翻，反而会说出一个"其实跑不了"的"有"）；
+ * - **要可执行位**（`X_OK`）——同名但不可执行的占位文件不算数；
+ * - **拿不准就站"没有"那一边**（读不到 `PATH` / 目录读不动 ⇒ `false`）：
+ *   **指一个跑不了的命令比不指更坏**（工单明文），故这一边错得起。
+ */
+function commandOnPath(name: string): boolean {
+  const path = process.env['PATH']
+  if (path === undefined) return false
+
+  for (const dir of path.split(':')) {
+    if (dir === '') continue
+    try {
+      accessSync(join(dir, name), constants.X_OK)
+      return true
+    } catch {
+      // 这个目录里没有它 / 它不可执行——看下一个
+    }
+  }
+
+  return false
 }
 
 /**

@@ -26,6 +26,7 @@ import type {
   PermissionContext,
   PermissionGate,
   RecordId,
+  RefusalKind,
   ToolCall,
 } from '@magic/contracts'
 
@@ -37,6 +38,14 @@ export type FauxDecider =
 export type FauxPermissionGateOptions = {
   /** 给了就自动答复；不给则人工（`decide` 挂起，等 `resolve`）。 */
   readonly auto?: FauxDecider
+  /**
+   * **内核直接拒的那一笔**（U77）——给了就：`decide` 答 `reject`，且 `refusalOf` 回这一条。
+   *
+   * 由头：删除那一类**不问、直接拒**（设计 · 权限「`rm` 直接拒，指路 `trash`」），
+   * 而工具域要按**拒的理由**挑措辞（指路 ／ 不给替代）。桩要能把这一形造出来，
+   * 否则「内核拒」与「用户拒」在测试里长得一模一样——而它们要说的不是同一句话。
+   */
+  readonly refusal?: RefusalKind
 }
 
 /** 一次询问的留痕——调用 ＋ 上下文 ＋ **链引用**。 */
@@ -99,6 +108,9 @@ export function makeFauxPermissionGate(
     async decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision> {
       requests.push({ call, ctx, callRef })
 
+      // **内核直接拒**（U77）——与自动放行同一姿势：不问，当场给答复
+      if (options.refusal !== undefined) return 'reject'
+
       const auto = options.auto
       if (auto !== undefined) {
         return typeof auto === 'function' ? auto(call, ctx) : auto
@@ -111,6 +123,11 @@ export function makeFauxPermissionGate(
       return new Promise<Decision>((resolve) => {
         waiting.set(id, resolve)
       })
+    },
+
+    // U77 · 契约那一位（可选口）：给了 `refusal` 就答得出来
+    refusalOf(): RefusalKind | undefined {
+      return options.refusal
     },
 
     resolve(requestId: DecisionId, decision: Decision, opts?: { remember?: boolean }): void {

@@ -464,7 +464,7 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
         ],
         stale: [],
         decisions: { total: 1, uncovered: 0, vetoed: 0 },
-        history: { total: 1, auto: 1 },
+        history: { total: 1, auto: 1, kernel: 0 },
       }),
     ])
 

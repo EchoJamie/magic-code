@@ -44,6 +44,7 @@ import {
   OUTPUT_CANCELED_BEFORE_RUN,
   OUTPUT_INVALID_ARGS,
   OUTPUT_REJECTED,
+  refusalOutput,
   unknownToolOutput,
 } from './messages.ts'
 import { createRegistry } from './registry.ts'
@@ -212,7 +213,20 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
 
     const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef), opts.signal)
     if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)
-    if (decision === 'reject') return refused(OUTPUT_REJECTED)
+
+    // **被拒**分两种，说的不是同一句话（U77）：
+    // - **用户拒的**（点了 `n`）⇒ 就那句泛泛的「已拒绝——未执行」——那是他的决定，
+    //   模型该做的是停下来问，不是换写法（系统提示词里那条）；
+    // - **内核直接拒的**（删除那一类——`rm` 杀不可逆）⇒ 回执里**要指路**
+    //   （「改用 `trash`」），只拒不说模型只会换着花样再试。
+    // 哪一种是**问闸门**（`refusalOf`，可选口）——**本域不解析命令**（域间不 import，
+    // 判据只在权限域那一处产）。问不出口子（旧实现 / 替身）＝照旧那句泛泛的。
+    if (decision === 'reject') {
+      const refusedBy = options.gate.refusalOf?.(asked, contextOf())
+      return refused(
+        refusedBy === undefined ? OUTPUT_REJECTED : refusalOutput(refusedBy, options.trashAvailable),
+      )
+    }
 
     return execute(call, definition, opts, onOutput)
   }

@@ -254,3 +254,75 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
     expect(deps.records.events.map((e) => e.kind)).toEqual(['tool.call', 'tool.result'])
   })
 })
+
+// ══ U77 · 删除那一类被内核拒时：回执要指路 ═══════════════════════════
+
+/**
+ * 设计 · 权限「`rm` 直接拒，指路 `trash`」（**本单权威**）：
+ *
+ * > **`rm` 那类 ⇒ 直接拒**（**不是"问"**），**回执里告诉模型用什么**……
+ * > **不要只说"拒绝"。**
+ *
+ * 而 `shred` / `srm` 是另一支：**它要的就是不可逆**——**回执不给替代**。
+ *
+ * ## 为什么在工具域钉这一条
+ *
+ * **拒这件事**归权限域（它答 `reject`），**怎么说**归本域（`messages.ts`）。
+ * 两件分得开，是因为「用户拒」与「内核拒」**要说的不是同一句话**：
+ * 前者是用户的决定（停下问清），后者得**告诉模型该用什么**——只拒不说，
+ * 它只会换着花样再试。本域判断这件事的唯一依据是**闸门给的 `refusalOf`**（契约那一口），
+ * 它自己不解析命令（域间不 import）。
+ */
+describe('U77 · 内核拒的那一笔：回执指路（用户拒的那一笔照旧）', () => {
+  test('`irreversible` ＋ 这台机器有 `trash` ⇒ 说清为什么 ＋ 指路', async () => {
+    const deps = makeToolDeps({ refusal: 'irreversible', trashAvailable: true })
+
+    const outcome = await deps.runtime.invoke(execCall('rm -rf build'), {})
+
+    expect(deps.sandbox.execs, '拒＝**一步都不跑**').toHaveLength(0)
+    expect(deps.sink.byKind('tool.result')[0]?.data.ok).toBe(false)
+    // 为什么（不可逆）＋ 用什么（`trash`，进废纸篓、能捞回）
+    expect(outcome.output).toContain('不可逆')
+    expect(outcome.output).toContain('trash')
+    expect(outcome.output).toContain('废纸篓')
+  })
+
+  test('`irreversible` ＋ 这台机器**没有** `trash` ⇒ **如实说**，不许指一个跑不了的命令', async () => {
+    const deps = makeToolDeps({ refusal: 'irreversible', trashAvailable: false })
+
+    const outcome = await deps.runtime.invoke(execCall('rm -rf build'), {})
+
+    expect(outcome.output).toContain('这台机器上没有 `trash`')
+    // **不许**再指它（工单：指一个跑不了的命令比不指更坏）
+    expect(outcome.output).not.toContain('改用 `trash`')
+  })
+
+  test('`no-substitute`（`shred` / `srm`）⇒ 拒，且**不给替代**', async () => {
+    const deps = makeToolDeps({ refusal: 'no-substitute', trashAvailable: true })
+
+    const outcome = await deps.runtime.invoke(execCall('shred -u secret.key'), {})
+
+    expect(outcome.output).toContain('shred')
+    expect(outcome.output).toContain('收不回来') // 为什么拒
+    expect(outcome.output, '它要的就是不可逆——换个更弱的做法等于没照它办').not.toContain('trash')
+  })
+
+  test('**用户拒的那一笔照旧**那句泛泛的——两种"拒"分得开', async () => {
+    const deps = makeToolDeps({ decider: 'reject' }) // 替身闸门没给 `refusalOf`（＝人答的）
+
+    const outcome = await deps.runtime.invoke(execCall('rm -rf build'), {})
+
+    expect(outcome.output).toBe('已拒绝——未执行')
+  })
+
+  test('回执的**首行**要能独立读（被拒的工具在屏上折叠成一行）', async () => {
+    const deps = makeToolDeps({ refusal: 'irreversible', trashAvailable: true })
+
+    const outcome = await deps.runtime.invoke(execCall('rm -rf build'), {})
+    const first = outcome.output.split('\n')[0] ?? ''
+
+    // 首行同时带上「为什么」与「用什么」——屏上那一行取的就是它
+    expect(first).toContain('不可逆')
+    expect(first).toContain('trash')
+  })
+})
