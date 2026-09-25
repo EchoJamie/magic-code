@@ -1,15 +1,22 @@
 /**
- * U07 · 权限域（闸门 · 人工版）测试 —— 验收：**工作分解 · 波次 1「验收判据 · U07」六条**。
+ * U07 · 权限域（闸门）测试 —— 验收：**工作分解 · 波次 1「验收判据 · U07」六条**。
  *
  * 逐条对应：
- * 1. 一律经人工门——每个调用都产生 `tool.decision.request`，批准才执行；
- * 2. 呈现轻重——必闸类 `heavy`（材料＝命令分解 / 影响面），其余 `light`；
+ * 1. 过闸——**判重的**产生 `tool.decision.request`，批准才执行；
+ * 2. 呈现轻重——**名单里那两条** `heavy`（材料＝命令分解 / 影响面），**其余 `light`**；
  * 3. 答复流转——`decision.answer`（配对＝请求事件 id）→ `tool.decision`（`decider` · `elapsedMs`）；
  * 4. 拒绝回填——被拒调用得 `reject`（不执行）；同轮其余调用照常；
- * 5. 看不懂从严——无法归类的形态按不可逆假定（`heavy`）；
+ * 5. 判不出来——**「读不懂」的命令按默认通**（U76）；**调用形态不可信**那一档仍从严；
  * 6. 裁决不入记录——裁决过程只走事件、不入条目。
  *
- * 一切经**契约面**：注入 `EventSink` / `EventStamper`，读回事件与返回值——测试不碰域内部件。
+ * ⚠️ **U76 改过本文件的多条判据**（2026-09-25 用户定）：从前是「阶段 1 全人工门」——
+ * **每个调用都要问**，判轻的也不例外；现在**默认通**（不在名单里就不必配规则），
+ * 名单只剩两条（删除 · 改权限/属主/属性/ACL）。改法不是把判据放宽，而是**换锚**：
+ * 「判轻」这件事本身现在**可观测**——它表现为**不发询问事件 ＋ 落一条 `auto` 裁决**。
+ *
+ * 一切经**契约面**：注入 `EventSink` / `EventStamper`，读回事件与返回值。
+ * 例外是「材料面」那一支：判轻的不弹卡 ⇒ 材料不再经事件出口，那几处**直取 `analyze`**
+ * （本域公开面之一，注释里写着「供外壳预览与测试直取」）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -20,58 +27,106 @@ import type {
   PermissionGate as PermissionGatePort,
   ToolCall,
 } from '@magic/contracts'
-import { createPermissionGate } from '../src/index.ts'
-import { call, context, harness, ledger, type Harness } from './helpers.ts'
+import { analyze, createPermissionGate } from '../src/index.ts'
+import { call, context, harness, ledger, type EventOf, type Harness } from './helpers.ts'
+
+/** 走一次闸门：那两条事件（问没问 ＋ 裁决）与扇出记录。 */
+function through(
+  toolCall: ToolCall,
+  roots: readonly string[] = ['/work/proj'],
+): {
+  readonly request: EventOf<'tool.decision.request'> | undefined
+  readonly decision: EventOf<'tool.decision'> | undefined
+  readonly seq: Harness
+} {
+  const h = harness()
+  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
+  void gate.decide(toolCall, context(roots), 1) // 链引用必填（本轮契约）
+
+  return { request: h.eventsOf('tool.decision.request')[0], decision: h.eventsOf('tool.decision')[0], seq: h }
+}
 
 /**
- * 走一次闸门，只取**呈现轻重**与材料——本域的首要可观测面（询问事件的 `weight` / `material`）。
- * 不答复：用例只问「怎么问」，不问「答什么」。
+ * **照问**那一类（名单里那两条）——取呈现轻重与材料。
+ *
+ * 没问＝这条用例的前提不成立（**当场抛**，不静默给个空）：默认通之后，
+ * 「以为会问、其实不问」正是最该抓的回归。
  */
 function weigh(
   toolCall: ToolCall,
   roots: readonly string[] = ['/work/proj'],
 ): { readonly weight: DecisionWeight; readonly material: string; readonly seq: Harness } {
-  const h = harness()
-  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
-  void gate.decide(toolCall, context(roots), 1) // 链引用必填（本轮契约）
+  const { request, seq } = through(toolCall, roots)
+  if (request === undefined) throw new Error('这一笔**没问**（默认通）——要判重的调用才用 weigh')
+  return { weight: request.data.weight, material: request.data.material, seq }
+}
 
-  const request = h.eventsOf('tool.decision.request')[0]
-  if (request === undefined) throw new Error('未发询问事件')
-  return { weight: request.data.weight, material: request.data.material, seq: h }
+/**
+ * **默认通**那一类——断言它**不问**、直接放行。
+ *
+ * 两件一起才说明「放行」：**没有询问**（不是卡住了）＋ **裁决是 `auto`**
+ * （不是有人替它批的）。
+ */
+function passes(toolCall: ToolCall, roots: readonly string[] = ['/work/proj']): Harness {
+  const { request, decision, seq } = through(toolCall, roots)
+  expect(request, '默认通：不发询问').toBeUndefined()
+  expect(decision?.data.decision).toBe('approve')
+  expect(decision?.data.decider).toBe('auto')
+  return seq
 }
 
 // ══ 参数键（技术方案 · 工具：参数键部分锚定）═════════════════════════
 
 describe('参数键', () => {
   test('exec 的命令字段＝单一键 `cmd`——别的键名不再兜底（从严）', () => {
-    expect(weigh(call('exec', { cmd: 'ls' })).weight).toBe('light')
+    // `cmd` 给对了：命令读得出（`ls` 不在名单里）⇒ 默认通
+    passes(call('exec', { cmd: 'ls' }))
 
-    // 「已按候选键兜底者收窄为单一键」（技术方案 · 工具）——写错的键名不该被猜中
+    // 「已按候选键兜底者收窄为单一键」（技术方案 · 工具）——写错的键名不该被猜中。
+    // ⚠️ **这一半照旧从严**：读不到命令字段＝**这一笔调用形态不成立**，
+    // 不是「读不懂这条命令」（U76 的「判不出来 ⇒ 通」管的是后者，见「判据 5」）。
     expect(weigh(call('exec', { command: 'ls' })).weight).toBe('heavy')
     expect(weigh(call('exec', { script: 'ls' })).weight).toBe('heavy')
     expect(weigh(call('exec', { shell: 'ls' })).weight).toBe('heavy')
   })
 
   test('路径类工具的键名**仍是候选集**——其余工具键名随 U13 定（未定处不得依赖）', () => {
-    expect(weigh(call('read', { path: 'src/a.ts' })).weight).toBe('light')
-    expect(weigh(call('read', { filePath: 'src/a.ts' })).weight).toBe('light')
-    expect(weigh(call('edit', { file_path: 'src/a.ts' })).weight).toBe('light')
-    expect(weigh(call('ls', { dir: 'src' })).weight).toBe('light')
+    // 参数键读得出 ⇒ 这一笔读得懂 ⇒ 默认通（读类与根内增量编辑都不在名单里）
+    passes(call('read', { path: 'src/a.ts' }))
+    passes(call('read', { filePath: 'src/a.ts' }))
+    passes(call('edit', { file_path: 'src/a.ts' }))
+    passes(call('ls', { dir: 'src' }))
   })
 })
 
 // ══ 判据 1 · 一律经人工门 ════════════════════════════════════════════
 
-describe('判据 1 · 一律经人工门', () => {
-  test('每个工具调用都产生一条 tool.decision.request——轻类亦然', async () => {
+describe('判据 1 · 过闸（判重的才问）', () => {
+  test('判重的每一次调用都产生一条 tool.decision.request', async () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
-    void gate.decide(call('read', { path: 'a.txt' }), context(), 1)
+    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
 
     const requests = h.eventsOf('tool.decision.request')
     expect(requests.length).toBe(1)
-    expect(requests[0]?.data.name).toBe('read')
+    expect(requests[0]?.data.name).toBe('exec')
+  })
+
+  /**
+   * ⚠️ **这一条 U76 换过锚**（原：「每个工具调用都产生一条请求——轻类亦然」）。
+   *
+   * 默认通之后，「判轻」不再是「弹一张轻的卡」，而是**根本不弹卡**——
+   * 故它由这半边接住（正面在「不在名单里 ⇒ 默认通」那一组里逐条量）。
+   */
+  test('判轻的**不产生**询问——只落一条 `auto` 裁决（默认通）', async () => {
+    const h = harness()
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
+
+    expect(await gate.decide(call('read', { path: 'a.txt' }), context(), 1)).toBe('approve')
+
+    expect(h.countOf('tool.decision.request')).toBe(0)
+    expect(h.eventsOf('tool.decision')[0]?.data.decider).toBe('auto')
   })
 
   test('未答复＝不落定（批准才执行）', async () => {
@@ -80,7 +135,7 @@ describe('判据 1 · 一律经人工门', () => {
 
     let verdict: Decision | undefined
     void gate
-      .decide(call('read', { path: 'a.txt' }), context(), 1)
+      .decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
       .then((decision) => void (verdict = decision))
 
     await Promise.resolve()
@@ -106,14 +161,217 @@ describe('判据 1 · 一律经人工门', () => {
 
 // ══ 判据 2 · 呈现轻重 ════════════════════════════════════════════════
 
-describe('判据 2 · 呈现轻重（轻——放行区方向）', () => {
-  test('读与搜索：read / grep / glob / ls 一律轻', () => {
-    for (const name of ['read', 'grep', 'glob', 'ls']) {
-      const { weight } = weigh(call(name, { path: 'src' }))
-      expect(weight, `${name} 的呈现轻重`).toBe('light')
-    }
+describe('判据 2 · 名单里那两条 ⇒ **照问**（U76：名单只剩两条）', () => {
+  /**
+   * **名单第一类 · 删除**（`rm` 那类）——逐条对表的是「**这一段在不在名单里**」。
+   *
+   * ⚠️ `sudo rm -rf x` 也在表里：`sudo` 这一版是**包装词**（跳过它找真正的程序词），
+   * 否则一个前缀就把删除藏过去了。而 `sudo ls` 那类**不问**（见下一组）。
+   */
+  const DELETE: readonly { readonly why: string; readonly cmd: string }[] = [
+    { why: '删除', cmd: 'rm -rf build' },
+    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
+    { why: '删除（shred —— 回收站换不掉的）', cmd: 'shred secret.key' },
+    { why: '删除（srm —— 同上）', cmd: 'srm secret.key' },
+    { why: '删除（rmdir）', cmd: 'rmdir build' },
+    { why: '删除（unlink）', cmd: 'unlink build/a.o' },
+    { why: '删除（隔着 `sudo` 也认得出）', cmd: 'sudo rm -rf /tmp/x' },
+  ]
+
+  /**
+   * **名单第二类 · 改权限 / 属主 / 属性 / ACL**——判据**按类收，不按名字收**
+   * （2026-09-25 用户定：同族将来多一件，照口径收进来即可，判据本身不动）。
+   */
+  const PERMISSION: readonly { readonly why: string; readonly cmd: string }[] = [
+    { why: '改权限（chmod）', cmd: 'chmod 777 secret.key' },
+    { why: '改属主（chown）', cmd: 'chown root secret.key' },
+    { why: '改属组（chgrp）', cmd: 'chgrp staff secret.key' },
+    { why: '改属性（chattr）', cmd: 'chattr +i secret.key' },
+    { why: '改属性（chflags）', cmd: 'chflags hidden secret.key' },
+    { why: '改 ACL（setfacl）', cmd: 'setfacl -m u:echo:r secret.key' },
+  ]
+
+  for (const { why, cmd } of [...DELETE, ...PERMISSION]) {
+    test(`${why}：「${cmd}」照问`, () => {
+      const { weight, material } = weigh(call('exec', { cmd }))
+      expect(weight).toBe('heavy')
+      // 重呈现要给足判断材料：命令分解（技术方案 · 权限：呈现——diff / 命令分解 / 影响面）
+      expect(material).toContain('命令分解')
+      expect(material).toContain(cmd.split(' ')[0] ?? '')
+    })
+  }
+
+  test('材料里说得出是**哪一类**入的名单（判据那一行）', () => {
+    expect(weigh(call('exec', { cmd: 'rm -rf build' })).material).toContain('判据：不可逆（收不回）')
+    expect(weigh(call('exec', { cmd: 'chmod 600 secret.key' })).material).toContain(
+      '判据：系统级（改权限 / 属主 / 属性 / ACL）',
+    )
+  })
+})
+
+/**
+ * **其余一律默认通**（U76 · 2026-09-25 用户定）——**那是一道软防线**（设计已认下：
+ * 模型可以不听；闸门才是硬的，而这几类不在闸门里）。
+ *
+ * ⚠️ **这一组是本单的要害**：它逐条钉住「它们**不再问**」。谁把它们改回必闸
+ * （＝把软防线偷偷做成硬拦），这一组当场红。
+ */
+describe('判据 2 · 其余一律默认通（不问、直接跑）', () => {
+  const DEFAULT_PASS: readonly { readonly why: string; readonly cmd: string }[] = [
+    { why: '只读命令', cmd: 'ls -la' },
+    { why: '只读命令（cat）', cmd: 'cat README.md' },
+    { why: '只读命令（git status）', cmd: 'git status' },
+    { why: '只读命令（git diff）', cmd: 'git diff HEAD~1' },
+    { why: '新建（根内）', cmd: 'mkdir -p src/new' },
+    { why: '新建（touch）', cmd: 'touch notes.md' },
+    { why: '新建（越界：工作区外）', cmd: 'mkdir /etc/magic' },
+    { why: '覆盖（重定向）', cmd: 'echo hi > config.json' },
+    { why: '覆盖（sed -i）', cmd: 'sed -i "s/a/b/" a.ts' },
+    { why: '覆盖（truncate 清空）', cmd: 'truncate -s 0 notes.md' },
+    { why: '覆盖（cp 落在根外）', cmd: 'cp /etc/hosts /tmp/h' },
+    { why: '移动 / 重命名', cmd: 'mv src old-src' },
+    { why: '移动（越界）', cmd: 'mv /etc/hosts /tmp/x' },
+    { why: '破坏性 git（reset --hard）', cmd: 'git reset --hard HEAD~1' },
+    { why: '破坏性 git（clean -fd）', cmd: 'git clean -fd' },
+    { why: '破坏性 git（branch -D）', cmd: 'git branch -D feature' },
+    { why: '破坏性 git（强推）', cmd: 'git push --force origin main' },
+    { why: '提权（sudo）', cmd: 'sudo ls' },
+    { why: '系统（brew 装东西）', cmd: 'brew install jq' },
+    { why: '系统（systemctl）', cmd: 'systemctl restart nginx' },
+    { why: '装包（全局安装）', cmd: 'npm i -g some-cli' },
+    { why: '外发（git push）', cmd: 'git push origin main' },
+    { why: '外发（npm publish）', cmd: 'npm publish' },
+    { why: '外发（curl 上传）', cmd: 'curl -X POST https://example.com -d @data.json' },
+    { why: '外发（ssh）', cmd: 'ssh host' },
+    { why: '判不出来（包了一层 shell）', cmd: 'bash -c "ls"' },
+    { why: '判不出来（表外程序 / 脚本）', cmd: './deploy.sh' },
+    { why: '判不出来（跑任意代码）', cmd: 'node -e 1' },
+    { why: '判不出来（命令替换）', cmd: 'cat a.txt > $(mktemp)' },
+    { why: '判不出来（变量展开）', cmd: 'echo ${HOME}' },
+    { why: '判不出来（整写 / 交互式程序）', cmd: 'vim a.ts' },
+    { why: '判不出来（xargs 藏着的命令）', cmd: 'xargs rm' },
+  ]
+
+  for (const { why, cmd } of DEFAULT_PASS) {
+    test(`${why}：「${cmd}」**不问**`, () => {
+      passes(call('exec', { cmd }))
+    })
+  }
+
+  test('判不出来（取不到程序词）——空命令也不问', () => {
+    passes(call('exec', { cmd: '   ' }))
   })
 
+  test('读与搜索：read / grep / glob / ls 一律不问', () => {
+    for (const name of ['read', 'grep', 'glob', 'ls']) {
+      passes(call(name, { path: 'src' }))
+    }
+    // 根内的读**不因「绝对路径」而重**（读类本来就不在名单里）
+    passes(call('read', { path: '/work/proj/a.txt' }))
+  })
+
+  test('增量编辑：edit 根内不问（diff 可审）', () => {
+    passes(call('edit', { path: 'a.ts', oldString: 'a', newString: 'b' }))
+  })
+})
+
+/**
+ * **复合命令按段判、取最严**（设计明文）——`&&` / `;` / `|` 串起来的**逐段各自判**：
+ * 一段的无害**不许被别段带累**，一段入名单也**不许被别段冲淡**。
+ * ⚠️ 判轻的不弹卡 ⇒ 这一条的**正面**（不问）由 `passes` 量，**反面**（照问 ＋ 材料里
+ * 看得出是哪一段）由 `weigh` 量——两面都要，否则「按段判」只落了一半。
+ */
+describe('判据 2 · 复合命令按段判、取最严', () => {
+  test('`cd x && rm -rf y` —— 那段 `rm` **看得出**（照落名单）', () => {
+    const { weight, material } = weigh(call('exec', { cmd: 'cd x && rm -rf y' }))
+
+    expect(weight).toBe('heavy')
+    expect(material).toContain('命令分解（2 段）')
+    expect(material).toContain('cd x')
+    expect(material).toContain('rm -rf y —— 删除（不可逆）')
+    expect(material).toContain('判据：不可逆（收不回）')
+  })
+
+  test('`cd x && git status` —— **不问**（两段都不在名单里）', () => {
+    passes(call('exec', { cmd: 'cd x && git status' }))
+  })
+
+  test('`cd x && chmod 600 y` —— 权限那一段照落名单', () => {
+    const { weight, material } = weigh(call('exec', { cmd: 'cd x && chmod 600 y' }))
+    expect(weight).toBe('heavy')
+    expect(material).toContain('chmod 600 y')
+  })
+
+  test('取最严＝不取最宽：`ls && rm -rf build` 照问', () => {
+    weigh(call('exec', { cmd: 'ls && rm -rf build' }))
+  })
+
+  test('一段看得懂、一段判不出的：`rm -rf $(cat f)` 照问（看得懂的那段照报）', () => {
+    const { weight, material } = weigh(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
+
+    expect(weight).toBe('heavy')
+    expect(material).toContain('删除') // 看得懂的那一段照报
+    expect(material).toContain('命令替换') // 判不出的那一段照说——两条并列，不藏
+  })
+
+  test('`find . -delete && ls` —— 删的那一段照问', () => {
+    weigh(call('exec', { cmd: 'find . -name "*.log" -delete && ls' }))
+  })
+})
+
+/**
+ * **越界**（U76：不再是必闸判据）——但它**两种情形仍然分得开**，两条都要钉住：
+ *
+ * - **删 / 改权限那两条**：入不入名单**与落在哪儿无关**（`rm /etc/hosts` 照问）——
+ *   越界那一格撤掉**不会**把手伸到名单里去；
+ * - **其余几类**：根外的写 / 移**照旧不问**（不许把撤掉的必闸偷偷加回来）。
+ *
+ * ⚠️ **不是 `exec` 那两处照旧判重**（`edit` / `write` 落根外）——工单明写射程只到 `exec`。
+ */
+describe('判据 2 · 越界（U76：不是必闸判据了）', () => {
+  test('删除在路上：`rm /etc/hosts` 照问（入名单与落在哪儿无关）', () => {
+    const { weight, material, seq } = weigh(call('exec', { cmd: 'rm /etc/hosts' }))
+    expect(weight).toBe('heavy')
+    // 材料仍要说清落在哪、出没出界（那是判断材料，不是判据）
+    expect(material).toContain('影响面：/etc/hosts（根外）')
+    expect(seq.countOf('tool.decision.request')).toBe(1)
+  })
+
+  test('删除以 `..` 逃出根：照问', () => {
+    weigh(call('exec', { cmd: 'rm ../../etc/passwd' }))
+  })
+
+  test('**撤掉的那一格不许加成判据**：材料里不再有「越界」那条判据', () => {
+    const { material } = weigh(call('exec', { cmd: 'rm /etc/hosts' }))
+    expect(material).not.toContain('判据：越界')
+    expect(material).toContain('判据：不可逆（收不回）')
+  })
+
+  test('非 `exec` 那两处照旧判重：`edit` 落根外重（射程只到 `exec`）', () => {
+    const { weight, material } = weigh(call('edit', { path: '/etc/hosts' }))
+    expect(weight).toBe('heavy')
+    expect(material).toContain('/etc/hosts')
+  })
+
+  test('非 `exec` 那两处照旧判重：`write` 的新建 / 覆盖域内判不出 —— 重（影响面照给）', () => {
+    const { weight, material } = weigh(call('write', { path: 'a.txt', content: 'x' }))
+    expect(weight).toBe('heavy')
+    expect(material).toContain('/work/proj/a.txt')
+  })
+})
+
+/**
+ * **材料面** —— 直取 `analyze`（本域公开面之一，注释写着「供外壳预览与测试直取」）。
+ *
+ * ⚠️ **为什么不走闸门**（U76）：这一组判的是**材料的写法**（段文本怎么回写、影响面取哪些词条），
+ * 而它举的例全是**判轻的调用**——默认通之后它们**不弹卡**，材料也就**不再经事件出口**。
+ * 判据本身一条没放宽：换的是观察面，不是尺子。
+ */
+function materialOf(toolCall: ToolCall, roots: readonly string[] = ['/work/proj']): string {
+  return analyze(toolCall, context(roots)).material
+}
+
+describe('命令分解 · 段文本（记号原样回写）', () => {
   /**
    * 缺陷 D15 —— **没给路径的读类调用**。
    *
@@ -130,148 +388,68 @@ describe('判据 2 · 呈现轻重（轻——放行区方向）', () => {
     ]
 
     for (const [name, args] of pathless) {
-      const { weight, material } = weigh(call(name, args))
+      const analysis = analyze(call(name, args), context())
 
-      expect(weight, `${name} 没给路径时的呈现轻重`).toBe('light')
-      expect(material, `${name} 的材料该说清落点`).toContain('/work/proj')
-      expect(material, `${name} 的材料该说清那是缺省来的`).toContain('缺省＝默认根')
+      expect(analysis.weight, `${name} 没给路径时的呈现轻重`).toBe('light')
+      expect(analysis.material, `${name} 的材料该说清落点`).toContain('/work/proj')
+      expect(analysis.material, `${name} 的材料该说清那是缺省来的`).toContain('缺省＝默认根')
     }
   })
 
-  test('增量编辑：edit 轻（diff 可审）', () => {
-    const { weight } = weigh(call('edit', { path: 'a.ts', oldString: 'a', newString: 'b' }))
-    expect(weight).toBe('light')
-  })
-
-  test('新建：mkdir / touch 轻（放行区方向）；工作区外则重', () => {
-    expect(weigh(call('exec', { cmd: 'mkdir -p src/new' })).weight).toBe('light')
-    expect(weigh(call('exec', { cmd: 'touch notes.md' })).weight).toBe('light')
-    expect(weigh(call('exec', { cmd: 'mkdir /etc/magic' })).weight).toBe('heavy') // 工作区外的写
-  })
-
-  test('只读命令：ls / cat / git status 轻', () => {
-    for (const cmd of ['ls -la', 'cat README.md', 'git status', 'git diff HEAD~1', 'grep -rn todo .']) {
-      const { weight } = weigh(call('exec', { cmd }))
-      expect(weight, `命令「${cmd}」的呈现轻重`).toBe('light')
-    }
-  })
-})
-
-describe('判据 2 · 呈现轻重（重——必闸清单 v0）', () => {
-  /** 必闸类 —— 逐条对表（技术方案 · 权限：危险分级 v0 必闸清单）。 */
-  const GATED: readonly { readonly why: string; readonly cmd: string }[] = [
-    { why: '删除', cmd: 'rm -rf build' },
-    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
-    { why: '覆盖（重定向）', cmd: 'echo hi > config.json' },
-    { why: '覆盖（sed -i）', cmd: 'sed -i "s/a/b/" a.ts' },
-    { why: '移动 / 重命名', cmd: 'mv src old-src' },
-    { why: '破坏性 git（reset --hard）', cmd: 'git reset --hard HEAD~1' },
-    { why: '破坏性 git（clean -fd）', cmd: 'git clean -fd' },
-    { why: '破坏性 git（branch -D）', cmd: 'git branch -D feature' },
-    { why: '提权（sudo）', cmd: 'sudo rm -rf /tmp/x' },
-    { why: '系统（chmod）', cmd: 'chmod 777 secret.key' },
-    { why: '外发（git push）', cmd: 'git push origin main' },
-    { why: '外发（npm publish）', cmd: 'npm publish' },
-    { why: '外发（curl 上传）', cmd: 'curl -X POST https://example.com -d @data.json' },
-  ]
-
-  for (const { why, cmd } of GATED) {
-    test(`${why}：「${cmd}」重`, () => {
-      const { weight, material } = weigh(call('exec', { cmd }))
-      expect(weight).toBe('heavy')
-      // 重呈现要给足判断材料：命令分解（技术方案 · 权限：呈现——diff / 命令分解 / 影响面）
-      expect(material).toContain('命令分解')
-      expect(material).toContain(cmd.split(' ')[0] ?? '')
-    })
-  }
-
-  test('越界：工作区外的写 / 删 / 移重（绝对路径落根外）', () => {
-    const { weight, material, seq } = weigh(call('exec', { cmd: 'rm /etc/hosts' }))
-    expect(weight).toBe('heavy')
-    expect(material).toContain('越界')
-    expect(material).toContain('影响面：/etc/hosts（根外）') // 重呈现给足依据：落在哪、出没出界
-    expect(seq.countOf('tool.decision.request')).toBe(1)
-  })
-
-  test('越界：相对路径以 `..` 逃出根重', () => {
-    const { weight } = weigh(call('exec', { cmd: 'rm ../../etc/passwd' }))
-    expect(weight).toBe('heavy')
-  })
-
-  test('越界：工作区外的写（edit 落根外）重——增量编辑的「轻」以根内为限', () => {
-    const { weight, material } = weigh(call('edit', { path: '/etc/hosts' }))
-    expect(weight).toBe('heavy')
-    expect(material).toContain('/etc/hosts')
-  })
-
-  test('覆盖：write 的新建 / 覆盖域内判不出 —— 重（影响面照给）', () => {
-    const { weight, material } = weigh(call('write', { path: 'a.txt', content: 'x' }))
-    expect(weight).toBe('heavy')
-    expect(material).toContain('/work/proj/a.txt')
-  })
-
-  test('一段命令命中多条判据——材料并列（push --force：外发 ＋ 不可逆）', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'git push --force origin main' }))
-    expect(weight).toBe('heavy')
-    expect(material).toContain('外发')
-    expect(material).toContain('不可逆')
-  })
-
-  test('轻类重呈现的边界：根内的读不因「绝对路径」而重', () => {
-    const { weight } = weigh(call('read', { path: '/work/proj/a.txt' }))
-    expect(weight).toBe('light')
-  })
-})
-
-describe('命令分解 · 段文本（记号原样回写）', () => {
   test('描述符复制 `2>&1` —— 记号不吞，段文本原样', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'ls -la 2>&1' }))
-
-    expect(material).toContain('  1. ls -la 2>&1 —— 只读')
-    expect(weight).toBe('light') // 复制描述符不是写入——归类不受影响
+    expect(materialOf(call('exec', { cmd: 'ls -la 2>&1' }))).toContain('  1. ls -la 2>&1 —— 只读')
+    // 复制描述符不是写入——归类不受影响
+    expect(analyze(call('exec', { cmd: 'ls -la 2>&1' }), context()).weight).toBe('light')
   })
 
   test('丢弃 `2>/dev/null` —— 段文本原样，且仍不算覆盖', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'ls -la 2>/dev/null' }))
-
-    expect(material).toContain('  1. ls -la 2>/dev/null —— 只读')
-    expect(weight).toBe('light')
+    expect(materialOf(call('exec', { cmd: 'ls -la 2>/dev/null' }))).toContain('  1. ls -la 2>/dev/null —— 只读')
+    expect(analyze(call('exec', { cmd: 'ls -la 2>/dev/null' }), context()).weight).toBe('light')
   })
 
   test('重定向 —— 记号与目标都留在段文本里', () => {
-    const out = weigh(call('exec', { cmd: 'cat a.txt > out.txt' }))
-    expect(out.material).toContain('  1. cat a.txt > out.txt —— 覆盖 / 整写（不可逆）')
-
-    const append = weigh(call('exec', { cmd: 'echo x >> log.txt' }))
-    expect(append.material).toContain('  1. echo x >> log.txt —— 覆盖 / 整写（不可逆）')
+    expect(materialOf(call('exec', { cmd: 'cat a.txt > out.txt' }))).toContain(
+      '  1. cat a.txt > out.txt —— 覆盖 / 整写',
+    )
+    expect(materialOf(call('exec', { cmd: 'echo x >> log.txt' }))).toContain(
+      '  1. echo x >> log.txt —— 覆盖 / 整写',
+    )
   })
 
-  test('记号回写不改「判不出」那条语义路径——目标里的命令替换照旧入单', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'cat a.txt > $(mktemp)' }))
-
-    expect(weight).toBe('heavy')
+  test('记号回写不改「判不出」那条语义路径——目标里的命令替换照旧说得出', () => {
+    const material = materialOf(call('exec', { cmd: 'cat a.txt > $(mktemp)' }))
     expect(material).toContain('命令替换') // UNRESOLVABLE 仍按 raw 判定
   })
 })
 
 describe('判断材料——不许有假影响面（误报比缺报更坏）', () => {
   test('重定向的正文不是路径：echo 的操作数不入影响面', () => {
-    const { material } = weigh(call('exec', { cmd: 'echo hi > config.json' }))
+    // ⚠️ 拿一条**判重**的复合命令取卡（`&&` 后面那段 `rm` 入名单）——
+    // 材料的写法与它是哪一段引起的无关，而卡片要真出得来才读得到材料
+    const material = materialOf(call('exec', { cmd: 'echo hi > config.json && rm -rf build' }))
+
     expect(material).toContain('/work/proj/config.json') // 重定向目标＝确凿的路径
     expect(material).not.toContain('/work/proj/hi')
   })
 
   test('子命令与包名不是路径：git / npm 的操作数不入影响面', () => {
-    const clean = weigh(call('exec', { cmd: 'git clean -fd' }))
-    expect(clean.material).toContain('删除')
-    expect(clean.material).not.toContain('影响面')
+    const clean = materialOf(call('exec', { cmd: 'git clean -fd' }))
+    expect(clean).not.toContain('影响面')
 
-    const publish = weigh(call('exec', { cmd: 'npm publish' }))
-    expect(publish.material).not.toContain('影响面')
+    const publish = materialOf(call('exec', { cmd: 'npm publish' }))
+    expect(publish).not.toContain('影响面')
+  })
+
+  test('包装词不是路径：`sudo rm -rf x` 的影响面里没有 `sudo`', () => {
+    // 包装词那一格是 U76 新开的（`sudo` 从"判据"变成"跳过它找程序词"）——
+    // 程序词**之前**的词一律不当路径收（收进来就是一条假影响面）
+    const material = materialOf(call('exec', { cmd: 'sudo rm -rf x' }))
+    expect(material).toContain('影响面：/work/proj/x')
+    expect(material).not.toContain('/work/proj/sudo')
   })
 
   test('判不出的词条不当路径：命令替换的碎片不入影响面', () => {
-    const { material } = weigh(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
+    const material = materialOf(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
 
     // 原命令照引（那是命令分解的正文），但**一条影响面都不许给**——
     // 连碰了哪些文件都说不清时，编出来的「影响面」是假的
@@ -281,61 +459,76 @@ describe('判断材料——不许有假影响面（误报比缺报更坏）', (
   })
 
   test('sed 的首参是脚本不是路径（其余照取）', () => {
-    const { material } = weigh(call('exec', { cmd: 'sed -i s/a/b/ src/a.ts' }))
+    // 埋在一段判重的命令里（`&&` 后面那段 `rm`），好让同样的材料在卡上也读得到
+    const material = materialOf(call('exec', { cmd: 'sed -i s/a/b/ src/a.ts && rm -rf build' }))
     expect(material).toContain('/work/proj/src/a.ts')
     expect(material).not.toContain('/work/proj/s/a/b')
   })
 })
 
-// ══ 判据 5 · 看不懂从严 ══════════════════════════════════════════════
+// ══ 判据 5 · 「判不出来」的两条路 ═════════════════════════════════════
 
-describe('判据 5 · 看不懂从严（按不可逆假定问）', () => {
-  test('参数解析不出（契约 `ToolCall.invalid`）——重', () => {
-    const { weight, material } = weigh({ ...call('rm'), invalid: true })
-    expect(weight).toBe('heavy')
-    expect(material).toContain('参数')
-  })
+/**
+ * **「读不懂」按默认通，「调用形态不可信」照旧问**——这两条边界要分得开，
+ * 否则「判不出来 ⇒ 通」会被读成"什么都可以不问"。
+ *
+ * - **读不懂的是那条命令**（命令替换 · 变量展开 · 包一层 shell · 表外程序 · 跑任意代码 ·
+ *   整写 / 交互式程序）：**默认通**（U76 · 2026-09-25 用户定）。**代价已认**：这一档
+ *   不再有兜底。
+ * - **不成立的是这一笔调用**（参数解析不出 · 缺命令字段 · 工具名不在表内）：
+ *   **照旧问**。它不是「读不懂这条命令」，是「这一笔调用形态不可信」——
+ *   与「危险命令名单」那张表无关，故 U76 没动它。
+ */
+describe('判据 5 · 「读不懂的命令」按默认通（U76）', () => {
+  const UNREADABLE: readonly { readonly why: string; readonly cmd: string }[] = [
+    { why: '包一层 shell（bash -c）', cmd: 'bash -c "ls"' },
+    { why: '陌生程序（脚本）', cmd: './deploy.sh' },
+    { why: '跑任意代码（解释器）', cmd: 'node -e 1' },
+    { why: '命令替换 / 变量展开', cmd: 'echo $(date)' },
+    { why: '整写 / 交互式程序（编辑器）', cmd: 'vim src/a.ts' },
+    { why: '整写 / 交互式程序（nano）', cmd: 'nano notes.md' },
+  ]
 
-  test('工具名不在分析表内——重', () => {
-    const { weight, material } = weigh(call('frobnicate', { what: 'ever' }))
-    expect(weight).toBe('heavy')
-    expect(material).toContain('frobnicate')
-  })
+  for (const { why, cmd } of UNREADABLE) {
+    test(`${why}：「${cmd}」**不问**`, () => {
+      passes(call('exec', { cmd }))
+    })
+  }
 
-  test('包一层 shell（bash -c）——内层判不出，重', () => {
-    const { weight } = weigh(call('exec', { cmd: 'bash -c "ls"' }))
-    expect(weight).toBe('heavy')
-  })
-
-  test('陌生程序（脚本）——重', () => {
-    const { weight } = weigh(call('exec', { cmd: './deploy.sh' }))
-    expect(weight).toBe('heavy')
-  })
-
-  test('命令替换 / 变量展开——实际执行判不出，重（删的意图仍入单）', () => {
+  test('看得懂与看不懂**并列**的那一条（`rm -rf $(cat f)`）——删的意图照落名单', () => {
     const { weight, material } = weigh(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
     expect(weight).toBe('heavy')
     expect(material).toContain('删除') // 看得懂的部分照报
     expect(material).toContain('命令替换') // 判不出的部分照说——两条并列，不藏
   })
 
-  test('整写 / 交互式程序（编辑器）——新建还是覆盖判不出，重', () => {
-    // 与 `write` 同一处域内盲区：不碰文件系统就问不到存在性
-    expect(weigh(call('exec', { cmd: 'vim src/a.ts' })).weight).toBe('heavy')
-    expect(weigh(call('exec', { cmd: 'nano notes.md' })).weight).toBe('heavy')
+  test('`~` 前缀判不出（域不读环境变量）——按根外处置；落名单的那条照问', () => {
+    // ⚠️ 这条的重点不是 `~`：`rm` **本身就是名单里的删除**——判不出不改变它入名单
+    weigh(call('exec', { cmd: 'rm -rf ~/.cache' }))
+    // 而 `~` 那一段不再入名单之后，同样的判不出不再引起询问
+    passes(call('exec', { cmd: 'ls ~/.cache' }))
+  })
+})
+
+describe('判据 5 · 「调用形态不可信」照旧从严', () => {
+  test('参数解析不出（契约 `ToolCall.invalid`）——重', () => {
+    const { weight, material } = weigh({ ...call('exec', { cmd: 'ls' }), invalid: true })
+    expect(weight).toBe('heavy')
+    expect(material).toContain('参数')
+  })
+
+  test('工具名不在分析表内——重（那是"这件工具我不认识"，不是"这条命令我读不懂"）', () => {
+    const { weight, material } = weigh(call('frobnicate', { what: 'ever' }))
+    expect(weight).toBe('heavy')
+    expect(material).toContain('frobnicate')
   })
 
   test('找不到命令字段 / **缺必填的**路径字段——重', () => {
     expect(weigh(call('exec', {})).weight).toBe('heavy')
     // `read` 的 `path` 按**参数键全表**是**必填** ⇒ 缺了就是模式不符的调用，此处不假装知道落点。
     // ⚠️ 这一条**只对必填的键**成立——`ls` / `grep` / `glob` 的 `path` 是可选键，
-    // 没给仍归**轻**（缺陷 D15 · 见「判据 2」那一条）。
+    // 没给仍归**轻**（缺陷 D15 · 见「命令分解 · 段文本」那一组）。
     expect(weigh(call('read', {})).weight).toBe('heavy')
-  })
-
-  test('`~` 前缀判不出（域不读环境变量）——按根外处置，重', () => {
-    const { weight } = weigh(call('exec', { cmd: 'rm -rf ~/.cache' }))
-    expect(weight).toBe('heavy')
   })
 })
 
@@ -354,20 +547,24 @@ describe('U33 · 技能读取的归类', () => {
    * ——那个参数随「同名只留一条」一起收了（它的唯一由头是同名），落点也就没有来处。
    */
   test('`skill` 归**轻**——读的是只读来源，材料里说清是哪一份', () => {
-    const { weight, material } = weigh(call('skill', { name: 'pdf' }))
+    const analysis = analyze(call('skill', { name: 'pdf' }), context())
 
-    expect(weight).toBe('light')
-    expect(material).toContain('只读材料')
-    expect(material).toContain('pdf')
+    expect(analysis.weight).toBe('light')
+    expect(analysis.material).toContain('只读材料')
+    expect(analysis.material).toContain('pdf')
     // 落点由工具入口按已发现身份归位（模型指不了路径），材料这一句说得出这件事
-    expect(material).toContain('按名字取')
+    expect(analysis.material).toContain('按名字取')
+  })
+
+  test('`skill` 判轻 ⇒ **不问**（默认通）', () => {
+    passes(call('skill', { name: 'pdf' }))
   })
 
   test('多给一个 `source`（参数表里已没有这一格）**不改判**——照样轻', () => {
     // 读的边界不在这一层：能读哪些由 `Skills` 端口按已发现身份与来源内相对引用卡死
-    const { weight } = weigh(call('skill', { name: 'pdf', source: '/elsewhere/skills/pdf' }))
+    const analysis = analyze(call('skill', { name: 'pdf', source: '/elsewhere/skills/pdf' }), context())
 
-    expect(weight).toBe('light')
+    expect(analysis.weight).toBe('light')
   })
 
   test('**别的未知工具照旧从严**（兜底那一支没被这一格带松）', () => {
@@ -399,7 +596,7 @@ describe('判据 3 · 答复流转', () => {
     const clock = { value: 1_000 }
     const { gate, h } = timed(clock)
 
-    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 7)
+    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 7)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -420,7 +617,7 @@ describe('判据 3 · 答复流转', () => {
   test('配对键是请求事件 id——拿调用链引用去答复＝配不上（不落定）', async () => {
     const { gate, h } = timed({ value: 0 })
     let verdict: Decision | undefined
-    void gate.decide(call('read', { path: 'a.txt' }), context(), 7).then((d) => void (verdict = d))
+    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 7).then((d) => void (verdict = d))
 
     gate.resolve(7 as never, 'approve') // 7 ＝ `call`，不是请求事件 id
     await Promise.resolve()
@@ -431,7 +628,7 @@ describe('判据 3 · 答复流转', () => {
 
   test('陌生 id 的答复＝忽略（不抛、不发裁决事件）', () => {
     const { gate, h } = timed({ value: 0 })
-    void gate.decide(call('read', { path: 'a.txt' }), context(), 1)
+    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
 
     expect(() => gate.resolve(9_999, 'approve')).not.toThrow()
     expect(h.countOf('tool.decision')).toBe(0)
@@ -439,7 +636,7 @@ describe('判据 3 · 答复流转', () => {
 
   test('重复答复＝只认第一次（第二次不覆盖、不重发事件）', async () => {
     const { gate, h } = timed({ value: 0 })
-    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
+    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -464,18 +661,18 @@ describe('判据 3 · 答复流转', () => {
 
     gate = createPermissionGate({ sink: answering, stamper: h.stamper, grants: ledger() })
 
-    expect(await gate.decide(call('read', { path: 'a.txt' }), context(), 1)).toBe('approve')
+    expect(await gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)).toBe('approve')
     expect(h.countOf('tool.decision')).toBe(1)
   })
 
   test('调用链引用原样入事件——不加工、不冒充', () => {
     const { gate, h } = timed({ value: 0 })
-    void gate.decide(call('read', { path: 'a.txt' }), context(), 7)
+    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 7)
 
     // 事件 `call` ＝ 调用方给的 `tool.call` 事件 id（串链依据）
     expect(h.eventsOf('tool.decision.request')[0]?.data.call).toBe(7)
 
-    void gate.decide(call('read', { path: 'b.txt' }), context(), 8_888)
+    void gate.decide(call('exec', { cmd: 'rm -rf dist' }), context(), 8_888)
     expect(h.eventsOf('tool.decision.request')[1]?.data.call).toBe(8_888)
   })
 })
@@ -502,9 +699,9 @@ describe('判据 4 · 拒绝回填', () => {
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     // 同轮三个调用（首站按序逐个：各自过闸 → 执行 → 回填）
-    const first = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
+    const first = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
     const second = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 2)
-    const third = gate.decide(call('edit', { path: 'b.ts' }), context(), 3)
+    const third = gate.decide(call('exec', { cmd: 'chmod 600 b.ts' }), context(), 3)
 
     const requests = h.eventsOf('tool.decision.request')
     expect(requests.length).toBe(3)
@@ -532,9 +729,9 @@ describe('判据 4 · 拒绝回填', () => {
 
     let firstVerdict: Decision | undefined
     void gate
-      .decide(call('read', { path: 'a.txt' }), context(), 1)
+      .decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
       .then((decision) => void (firstVerdict = decision))
-    const second = gate.decide(call('read', { path: 'b.txt' }), context(), 1)
+    const second = gate.decide(call('exec', { cmd: 'rm -rf dist' }), context(), 1)
 
     const requests = h.eventsOf('tool.decision.request')
     gate.resolve(requests[1]?.id ?? -1, 'approve') // 只答第二个
@@ -552,7 +749,7 @@ describe('判据 6 · 裁决不入记录', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
-    const verdict = gate.decide(call('read', { path: 'a.txt' }), context(), 1)
+    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
     gate.resolve(request.id, 'approve')

@@ -38,7 +38,16 @@ const COPY = {
   // ⚠️ U61 改过这一句（多了 `← 退`）——按上面注 3 那条，字面量锚跟着改，
   //    它红的正是时候：这一句是「抽屉真开了」的判据，提示一变就得有人来看一眼。
   pickerHint: '↑↓ 选 · 回车 定 · ← 退 · esc 收起',
-  decideHint: 'y / a / n',
+  /**
+   * 裁决卡的右位键位（**重的那一档**）。
+   *
+   * ⚠️ **原锚**：`y / a / n`（轻件那一档）；**为何变**（U76）：判轻的调用**默认通**、
+   * 根本不弹卡——**屏上再没有一张轻卡可等**（`HINT_DECIDE_LIGHT` 那一档就此无从出现），
+   * 而这两个场景要的正是「有卡」那一形，夹具只能换成**名单里**的命令（删除），
+   * 于是卡落在**重**那一档；**新锚**：`y / n`（＝`HINT_DECIDE_HEAVY`，与
+   * `HINT_DECIDE_LIGHT` 一样**没出包**，按字面量锚，先例见文件头注 3）。
+   */
+  decideHint: 'y / n',
   approval: '批准',
 } as const
 
@@ -360,8 +369,13 @@ const modelStreamApproval: Scenario = {
     const streamed = '甲乙丙丁戊己庚辛壬癸'
     const head = [...streamed].slice(0, 3).join('')
     const tail = [...streamed].at(-1) as string
+    // ⚠️ **原锚**：`exec echo hello-magic`（判轻的只读命令）；**为何变**（U76）：判轻的
+    // 调用**默认通、不弹卡**——拿它当夹具，这一场景要判的「裁决接管」当场落空；
+    // **新锚**：`rm -rf build && echo hello-magic`——第一段是**名单里**的删除（必问），
+    // 第二段把 `hello-magic` 那串输出原样留着，故下面「结果行」与「记录库」两条判据的锚
+    // **一个字都不用换**（`echo hello-magic` 也仍在卡上的命令分解里，见「给了实际业务参数」）。
     const turns: readonly FixtureTurn[] = [
-      { kind: 'tool', name: 'exec', args: { cmd: 'echo hello-magic' } },
+      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build && echo hello-magic' } },
       { kind: 'text', text: streamed, chunks: 4, chunkDelayMs: 220 },
     ]
     const session = await ui.open({
@@ -379,6 +393,18 @@ const modelStreamApproval: Scenario = {
     ui.check(deciding.text.includes('exec'), '裁决卡点名了要调用的工具', '')
     ui.check(deciding.text.includes('echo hello-magic'), '裁决卡给了实际业务参数', '')
     ui.check(deciding.text.includes(COPY.approval), '裁决卡给了键位与后果', `锚＝「${COPY.approval}」`)
+    // ⚠️ **卡的口径跟着夹具变**（U76）：问的由头是名单里那一条 ⇒ 这一张落在**重**档——
+    // 副题说「不可逆」，键位那行三格俱全（`a` 划掉＝必闸类不给「总是允许」）。
+    ui.check(
+      deciding.text.includes('exec · 不可逆'),
+      '裁决卡说的是重档口径（不可逆）',
+      '锚＝卡的副题「│ exec · 不可逆」',
+    )
+    ui.check(
+      deciding.text.includes('本工作区总是允许'),
+      '键位那行给全了三格（`a` 那一格划掉——必闸类不给「总是允许」）',
+      '锚＝键位行「y 批准　a 本工作区总是允许　n 拒绝」',
+    )
 
     // —— 批准 → 真执行 → 再回模型 ——
     // 敲的是 `y` 这个**字符**——PTY 上一次按键本来就是它，故走 `send`（`key` 只收功能键）。
@@ -551,7 +577,10 @@ const mcpApproval: Scenario = {
       columns: 100,
       rows: 24,
       turns: [
-        { kind: 'tool', name: 'exec', args: { cmd: 'echo 内置照常' } },
+        // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的不弹卡，
+        // 「先等一张卡、再批准」那两步没有对象；**新锚**：名单里的删除打头，`内置照常`
+        // 那串输出原样留在第二段 ⇒ 下面「结果行」那条判据的锚一个字不用换。
+        { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build && echo 内置照常' } },
         { kind: 'text', text: '好' },
       ],
       config: {
@@ -570,7 +599,7 @@ const mcpApproval: Scenario = {
     )
 
     await broken.send('跑个内置的')
-    // 内置那件是**轻**的（`exec` 只读命令）⇒ 三键位（`y / a / n`，见 `COPY.decideHint`）
+    // 内置那件走的是**名单里**的删除 ⇒ 重档键位（`y / n`，见 `COPY.decideHint` 那一段）
     await broken.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 10_000 })
     await broken.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await broken.capture({ label: '内置工具照常' })

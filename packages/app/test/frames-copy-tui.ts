@@ -16,7 +16,7 @@
  * | 组 | 屏 | 判什么 |
  * | --- | --- | --- |
  * | D28甲 | `01-起手` · `02-首条消息之后` · `03-新建会话之后` · `04-再新建一次（换了会话）` · `05-切回旧会话` | 新建会话**不印回执**；首条消息前**不建空会话**、首条消息**正常建**；切换与失败回执**不受影响** |
- * | D29 | `06-轻审批接管` · `07-连续裁决（草稿已收）` · `08-草稿归还` · `09-重审批接管` · `10-窄启动审批` | 接管态**不显示输入提示行**；卡的材料 / 键位 / 状态行仍在；草稿与插入点**答完归还**、**不自动发送** |
+ * | D29 | `06-审批接管` · `07-连续裁决（草稿已收）` · `08-草稿归还` · `09-重审批接管` · `10-窄启动审批` | 接管态**不显示输入提示行**；卡的材料 / 键位 / 状态行仍在；草稿与插入点**答完归还**、**不自动发送** |
  *
  * ## 跑法
  *
@@ -321,11 +321,13 @@ async function approvals(): Promise<void> {
     rows: 30,
     artifacts: join(out, 'runs'),
     turns: [
-      // ① 轻审批：`sleep 2` 让工具**真跑两秒**——那两秒里输入行是可编辑的，
-      //    草稿正好在「第二件裁决接管」之前打好（真场景，不是摆出来的）
-      { kind: 'tool', name: 'exec', args: { cmd: 'sleep 2; echo slow-done' } },
-      // ② 连续第二件（同一轮里逐件问）
-      { kind: 'tool', name: 'exec', args: { cmd: 'echo second' } },
+      // ① 一件**要问的**命令：`sleep 2` 让工具**真跑两秒**——那两秒里输入行是可编辑的，
+      //    草稿正好在「第二件裁决接管」之前打好（真场景，不是摆出来的）。
+      //    ⚠️ **U76 起没有"轻审批"了**：判轻的调用**不问**（默认通），故这一段必须夹在
+      //    名单那一条上（`rm`）才弹得出卡——本帧要看的（接管 · 草稿收起 · 归还）一字未改。
+      { kind: 'tool', name: 'exec', args: { cmd: 'sleep 2 && rm -rf build' } },
+      // ② 连续第二件（同一轮里逐件问）——同样落在名单那一条上
+      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf dist' } },
       { kind: 'text', text: '两件都办完了' },
     ],
   })
@@ -333,14 +335,14 @@ async function approvals(): Promise<void> {
   try {
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
 
-    // —— ① 轻审批接管 ——
+    // —— ① 审批接管 ——
     await typeLine(session, '跑一下')
     await session.key('enter', { until: { text: 'y 批准' }, timeoutMs: 20_000 })
-    const light = await session.capture({ label: '06-轻审批接管' })
-    keep(light)
+    const first = await session.capture({ label: '06-审批接管' })
+    keep(first)
 
-    checkTakeover(light, '轻审批', 'y 批准')
-    check(light.cursor.hidden, '接管中**真光标藏起来了**（没有可编辑的落点）', JSON.stringify(light.cursor))
+    checkTakeover(first, '审批接管', 'y 批准')
+    check(first.cursor.hidden, '接管中**真光标藏起来了**（没有可编辑的落点）', JSON.stringify(first.cursor))
 
     // —— 批准 → 工具真跑两秒：**趁这两秒打草稿**（工作中可打，真场景不是摆出来的） ——
     await session.send('y')

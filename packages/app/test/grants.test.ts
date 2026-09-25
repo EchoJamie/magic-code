@@ -13,17 +13,39 @@
  *
  * 走**真配置加载器**与**真闸门**——只有模型是替身；`grantsFile` 指到沙地里
  * （不碰真的 `~/.magic`）。
+ *
+ * ## ⚠️ U76 之后：夹具从「只读命令」挪到「取网页」（2026-09-25）
+ *
+ * 闸门换了底（`gate.ts` 头注那条链）：**默认通**——判轻的调用**根本走不到闸门那一问**
+ * （`echo` 一类从此连卡都没有，自然也没有可拨的 `a`）；而**名单那两条**（删除 · 改权限族）
+ * 的授权**放不出任何东西**（`hit && byHost` 是仅存的自动放行口，而名单类的 face 没有域名）。
+ * ⇒ 「同类第二次不再问」这句话**只在带域名的那一件上还成立**：取网页（`web_fetch`）。
+ * 本文件的夹具因此换成它——**不必配提炼模型**：卡挂在**执行之前**，判据要的
+ * 「问没问 / 放没放」全在闸门那一跳，取回成不成不影响（`ok: false` 那一条是「没配」的
+ * 正常收束，见 `web-fetch-tool.ts`）。
+ * ⚠️ 反面那条（名单即禁区）照旧：`GATED_TURN` 一发 `rm -rf build` 就说得清。
  */
 
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import type { FauxTurn } from '@magic/faux'
 import type { Command, KernelEvent } from '@magic/contracts'
 import type { Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage, type Stage } from './support.ts'
 
-/** 一条只读命令——机械分析判「轻」（`ops: ['read']`），故「总是允许」对它开放。 */
-const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }] }
+/**
+ * 取网页那一发——**判重 · 外发 · 带域名**（`host: example.com`）。
+ *
+ * ⚠️ **U76 后的夹具就是它**（由头见文件头注）：默认通之下判轻的调用不再经过闸门那一问，
+ * 而名单那两条的授权又放不出任何东西——**「总是允许」还发得动的地方只剩这一格**
+ * （`hit && byHost`）。卡挂在**执行之前**，故这里**不配提炼模型**也照样有卡、
+ * 照样记得下一条 `{tool, op, host}` 的授权；取回那一跳回了「还没配」并就地收束
+ * （`web-fetch-tool.ts` 的 `NOT_CONFIGURED`），与本文件的判据无关。
+ */
+const WEB_FETCH_TURN = {
+  toolCalls: [{ name: 'web_fetch', args: { url: 'https://example.com/a', prompt: '看什么' } }],
+}
 /** 一条必闸命令——`rm` 归删除（不可逆），且工作区外／内都入必闸清单。 */
 const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
 
@@ -68,6 +90,8 @@ function grantsPathOf(stage: Stage): string {
 type StoredGrant = {
   readonly tool: string
   readonly op?: readonly string[]
+  /** 域名那一格（U72）——「取网页」的授权必须带上它（那一格缺了＝任意域名，见 `grantOf`）。 */
+  readonly host?: string
   readonly grantedAt: number
 }
 type StoredFile = {
@@ -95,8 +119,14 @@ function sectionKeyOf(stage: Stage): string {
   return key
 }
 
-/** 跑一轮：装配 → 提交一句 → 等闸门问。返回装配与那一束观察面。 */
-async function askOnce(stage: Stage, turns = [READ_ONLY_TURN, { text: '好' }]) {
+/**
+ * 跑一轮：装配 → 提交一句 → 等闸门问。返回装配与那一束观察面。
+ *
+ * ⚠️ `turns` 的类型**显式写着**（不靠缺省值推）：夹具换过两次（只读命令 → 取网页），
+ * 而下面还有几条用例自己要给剧本（如必闸那条给 `GATED_TURN`）——不写类型，缺省值
+ * 会把形参推成「只有取网页那一种形状」，递别的一发就编译不过（实测踩过）。
+ */
+async function askOnce(stage: Stage, turns: readonly FauxTurn[] = [WEB_FETCH_TURN, { text: '好' }]) {
   const assembly = stage.assemble({ grantsFile: grantsPathOf(stage), turns })
   const shell = bareShell(assembly)
   assembly.shell.send({ type: 'input.submit', text: '跑一下' })
@@ -125,8 +155,12 @@ describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话�
 
       expect(file.version).toBe(1)
       expect(Object.keys(file.workspaces)).toEqual([section])
-      expect(file.workspaces[section]?.map((grant) => [grant.tool, grant.op])).toEqual([
-        ['exec', ['read']],
+      // ⚠️ **原锚**：`['exec', ['read']]`（那时夹具是一条只读命令）。
+      // **为何变**：U76 后判轻的调用**不再经过闸门那一问**（默认通），那条路上没有 `a` 可拨；
+      // **新锚**：能问出授权的只剩**取网页**，故条目是三格 `{工具 × 操作 outbound × 域名}`
+      // ——域名那一格是**必须写上**的（缺了＝任意域名，见 `grantOf` 的注）。
+      expect(file.workspaces[section]?.map((grant) => [grant.tool, grant.op, grant.host])).toEqual([
+        ['web_fetch', ['outbound'], 'example.com'],
       ])
       expect(file.workspaces[section]?.[0]?.grantedAt).toBeNumber()
     } finally {
@@ -134,6 +168,11 @@ describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话�
     }
   })
 
+  /**
+   * ⚠️ **这条判据本身一个字没动**（U76 也只是换了夹具）：授权落在**工作区**里，
+   * 重起一次装配它照样生效——只不过「同类」如今是**取网页那一类**（判重 ＋ 带域名）。
+   * 名单那两条**没有**「重起不再问」这一说（它们是不可授权的），见下一条用例。
+   */
   test('**重起不再问**——第二次装配读同一份文件，同类直接放行（裁者是 `auto`）', async () => {
     const stage = makeStage()
     try {
@@ -195,7 +234,11 @@ describe('U22 · `/grants` 的两条路（读侧 ＋ 撤销）', () => {
 
       const catalog = eventsOfKind(shell.events, 'grants.catalog')[0]?.data
       expect(catalog?.workspace).toBe(assembly.workspaceRoots[0] as string)
-      expect(catalog?.grants.map((row) => row.describe)).toEqual(['工具 exec × 根内 × 操作 read'])
+      // 名录那一行照四格报——**域名那一格在写了时才报**（U72；「不写」在取网页上＝不命中，
+      // 报成「任意域名」会说反）。夹具换成取网页后，那一行多了「× 域名 example.com」。
+      expect(catalog?.grants.map((row) => row.describe)).toEqual([
+        '工具 web_fetch × 根内 × 操作 outbound × 域名 example.com',
+      ])
       expect(catalog?.stale).toEqual([])
       // 放行区那一笔账（`B10` 口径的原料）：这一件是**人答的**（问了）⇒ uncovered＝1
       expect(catalog?.decisions).toEqual({ total: 1, uncovered: 1, vetoed: 0 })

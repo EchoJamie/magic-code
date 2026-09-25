@@ -8,14 +8,18 @@
  * | ① 读了 / 没读 | 同一条交代里两处引用：模型读了其中一份 ⇒ 请求里两份正文都没有，而**只有没读的那一份**被报出来 |
  * | ② 技能 | 显式引用**不随请求展开**；模型真走 `skill` 工具读了才回「本次使用技能」 |
  * | ③ 图片 | **照旧引用即进**（请求里真有图像部件），且不进「没读」那份账 |
- * | ④ 权限 | 读那一趟弹的是**普通那张轻卡**（不是为「引用」新加的闸）；拨了「本工作区总是允许」之后**不再问**；工作区外那份只读附件照旧 |
+ * | ④ 权限 | 读那一趟**不弹卡**（判轻的默认通）；**加了引用的读与普通读走的是同一条路**；工作区外那份只读附件照旧 |
  *
- * ⚠️ **关于「读那几种不弹卡」**（工单验收那一行）：放行区那几种是**轻**——轻的落点是
- * 「命中用户规则 / 已保存授权即自动放行」，不是「一律不问」。这条沙地是全新临时家目录
- * （没有规则、没有点出的授权），故**第一次**同类调用仍会问一次——那是**产品既有行为**，
- * 本单**一个字节都没动权限那一层**。④ 那一屏把这条说清楚：卡是普通那张 `read` 的轻卡
- * （键位 `y / a / n`、影响面是根内那条路径、**卡上没有一个「引用」字样**），
- * 而拨了 `a` 之后同类调用就直接跑完。 |
+ * ⚠️ **关于「读那几种不弹卡」**（工单验收那一行）：放行区那几种是**轻**——U76 起链的底
+ * 从「默认问」翻成「**默认通**」，判轻的（读与搜索 · 技能 · 只读命令）**不再问**：
+ * `gate.ts` 那一行是 `weight === 'light'` 直接自动放行，**不必先配规则**。
+ * 故这一支如今**一个裁决卡都没有**——凡从前「等卡 → 答卡」那几步，都换成**等工具真跑完**。
+ *
+ * ④ 那一屏把这条说清楚：带 `@` 引用的那一趟读与**不带引用**的普通读**走的是同一条路**
+ * （都不弹卡、都真跑下去）；而「拨了 `a` 之后同类不再问」那半**不再有对象**——
+ * `a`（「总是允许」）记的是一个「同类不再问」的判断，而这一类**本来就没人问**；
+ * 且名单里那两条**不可授权**（卡上那一格是划掉的，见 `decision.ts`），
+ * `a` 如今只在**取网**那件上**按域名**给（U72）。**别把它写成「授权放行了它」——那是假话。** |
  *
  * ## 走的是真链路（到屏为止）
  *
@@ -114,27 +118,27 @@ function putPng(where: string, relative: string): void {
 }
 
 /**
- * 一次裁决卡的答复——**它是「放行区那几种」那一档的普通轻卡**（键位 `y / a / n`）。
+ * **这一屏没有裁决卡**——判轻的（读 · 技能 · 只读命令）U76 起**默认通、不问**，
+ * 故本支凡「等卡 → 答卡」那几步**都没有了**（那个 helper 连同它的注释一并撤掉：
+ * 它描述的那张卡**不再出现**，留着会把人引到一条走不通的路上）。
  *
- * 由头：放行区那几种是「**轻**」——轻的落点是「命中用户规则 / 已保存授权即自动放行」，
- * **不是「一律不问」**（见 `@magic/permission` 的 `gate.ts`：落到链底就是问）。
- * 这条沙地是全新临时家目录（没有规则、也没点出过授权），故第一次同类调用仍会问一次；
- * 产品既有行为，本单一个字没动它。答复写 `y`（只批这一次）——要演示「拨了 `a` 之后不再问」
- * 的那一屏走 `answer` 参数。
+ * 判据两件一起（只判一件都读不准）：
+ * - **卡自己的东西不在**：键位行 `y 批准` 只在卡上（`decision.ts` 的 `keyHint`，轻卡重卡
+ *   都有它，外部件写作 `y 批准这一次`）——屏上没有它就说明没卡
+ *   ⚠️ **不能拿全屏找 `等你定夺` 代替**：那四个字**也在旧卡的回执行里**
+ *   （`· 「…」等你定夺：read`），回执写完就留在屏上（U70 的四屏就这么假红过一回）；
+ * - **状态行不是裁决态**：`等你定夺` 与**两种键位提示**（轻 `y / a / n` · 重 `y / n`，
+ *   `view.ts` 的 `HINT_DECIDE_LIGHT / HEAVY`）说出口的都是「此刻」，卡撤了就变。
+ *   ⚠️ 两串都要判：只判 `y / n` 会把**轻卡**放过去（`y / a / n` 里没有连续的 `y / n`）。
  */
-async function passCard(
-  session: UiSession,
-  label: string,
-  out: string,
-  answer: 'y' | 'a' = 'y',
-): Promise<Capture> {
-  await session.wait({ text: '等你定夺' }, { timeoutMs: 15_000 })
-  const card = await session.capture({ label })
-  keep(out, card, label)
-  await session.send(answer)
-  await Bun.sleep(200)
-
-  return card
+function noCard(shot: Capture, what: string): void {
+  const status = statusLineOf(shot.lines)
+  check(!has(shot, 'y 批准'), `${what}：**没有卡**（卡上的键位行不在——判轻的默认通）`, shot.text)
+  check(
+    !status.includes('等你定夺') && !status.includes('y / n') && !status.includes('y / a / n'),
+    `${what}：状态行也不是裁决态（根本没问）`,
+    status,
+  )
 }
 
 /**
@@ -225,9 +229,14 @@ async function unread(out: string): Promise<void> {
     check(has(composed, '先读 @需求.md，再对照 @没用上.md'), '两处引用都在它们被说出来的位置')
     check(session.requests().length === 0, '**选定不发请求**（夹具 0 条）')
 
-    // —— 提交：模型那一趟要 `read`，先过那张**普通轻卡**（见 `passCard`）——
-    await pressKey(session, 'enter', { until: { text: '等你定夺' }, timeoutMs: 20_000 })
-    await passCard(session, '01b-读的裁决卡', out)
+    // —— 提交：模型那一趟要 `read`——**它不问**（U76：读判轻＝默认通）。
+    //    从前那张「读的卡」只是**推进流程的手段**（答了它模型才读得下去），如今它不再出现，
+    //    故这一步换成**等工具真跑完**（模型那一句答复 ＝ 它收到了读的结果）。 ——
+    await pressKey(session, 'enter')
+    await session.wait({ text: '照需求改好了。' }, { timeoutMs: 20_000 })
+    const opened = await session.capture({ label: '01b-读不弹卡（默认通）' })
+    keep(out, opened, '01b-读不弹卡（默认通）')
+    noCard(opened, '① 读那一趟')
 
     await settled(session)
     const sent = await session.capture({ label: '01-读了与没读' })
@@ -322,8 +331,13 @@ async function skills(out: string): Promise<void> {
     await Bun.sleep(200)
     await typeLine(loud, ' 看看')
 
-    await pressKey(loud, 'enter', { until: { text: '等你定夺' }, timeoutMs: 20_000 })
-    await passCard(loud, '02b-技能读取的裁决卡', out, 'a')
+    // ⚠️ **`skill` 也是判轻的**（U76 起默认通）——这一趟同样**不弹卡**，
+    //    从前那张卡（拨的是 `a`）只是推进流程的手段：如今等工具真跑完就够。
+    await pressKey(loud, 'enter')
+    await loud.wait({ text: '照它核对完了。' }, { timeoutMs: 20_000 })
+    const readShot = await loud.capture({ label: '02b-技能读取不弹卡（默认通）' })
+    keep(out, readShot, '02b-技能读取不弹卡（默认通）')
+    noCard(readShot, '② 走 `skill` 工具读技能那一趟')
 
     await settled(loud)
     const shot = await loud.capture({ label: '02-技能读了' })
@@ -377,10 +391,21 @@ async function images(out: string): Promise<void> {
 /**
  * **权限没被带坏**——两件事：
  *
- * ① **引用没加闸**：`read` 弹的是**普通那张轻卡**（`y / a / n`、影响面是根内那条路径、
- *    卡上没有一个「引用」字样）——它是产品既有那一张，不是为「引用」新加的；
- *    而拨了 `a`（本工作区总是允许）之后，**第二次同类调用直接跑完、不再问**
- *    （放行区那几种「一律轻」的落点：命中已保存授权即自动放行）；
+ * ① **引用没加闸**：读**不问**——U76 起判轻的调用**默认通**（`gate.ts`：`weight === 'light'`
+ *    直接自动放行，不必先配规则）。于是「为引用新加了一道闸」这件事**在屏上没有落点**：
+ *    带 `@` 引用的那一趟读与**不带引用**的普通读那一趟**走的是同一条路**（都不弹卡、都真跑）。
+ *
+ *    ⚠️ **【原锚 / 为何变 / 新锚】**
+ *    - **原锚**：`read` 弹的是那张轻卡（`y / a / n`、影响面是根内那条路径、卡上没有
+ *      「引用」字样），拨 `a` 之后第二次同类**不再问**。
+ *    - **为何变**：链的底从「默认问」翻成「默认通」——判轻的调用**根本就走不到发卡那一步**
+ *      （不是「被那条授权放过了」）。**那张卡与那条授权都不再出现**，故原锚**没有对象**。
+ *    - **新锚**：**两趟读走同一条路**——一趟带 `@` 引用、一趟不带，两屏都**没有卡**，
+ *      两趟都真跑下去（工具行在、模型收到了结果接着说下一句）。
+ *
+ *    ⚠️ **别把这条写成「那条授权放行了它」——那是假话**：`a` 记的是一个「同类不再问」的
+ *    判断，而这一类本来就没人问；且名单里那两条**不可授权**（卡上那一格是划掉的），
+ *    `a` 如今只在**取网**那件上按域名给（U72）。本屏**不做**授权那件事（没有对象可做）。
  * ② **工作区外那份只读附件照旧**：经候选明确选定的那一个文件仍是引用即进
  *    （模型手上没有能读它的路——沙箱只认根内的绝对路径），请求里真有它的正文。
  */
@@ -401,44 +426,44 @@ async function permissions(out: string): Promise<void> {
     put(workspace, 'a.txt', '甲：先看登录逻辑。')
     put(workspace, 'b.txt', '乙：再看注册逻辑。')
 
-    // —— ① 第一次读：普通轻卡，拨 `a` ——
+    // —— ① 第一趟：**带 `@` 引用**的那一次读——它不问 ——
     await typeLine(session, '读 ')
     await typeAt(session)
     await session.send('a.txt', { until: { text: '@a.txt' }, timeoutMs: 10_000 })
     await session.wait({ text: 'a.txt　文件' }, { timeoutMs: 10_000 })
     await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
 
-    await pressKey(session, 'enter', { until: { text: '等你定夺' }, timeoutMs: 20_000 })
-    const card = await passCard(session, '04-读的普通轻卡', out, 'a')
+    // ⚠️ **等的是「工具真跑完」**（模型那一句答复），不是卡——卡不再出现（U76）
+    await pressKey(session, 'enter')
+    await session.wait({ text: '读完了。' }, { timeoutMs: 20_000 })
 
-    check(has(card, 'y / a / n'), '卡是**轻那一档**（键位 y / a / n——放行区那几种的档）')
-    check(has(card, 'read'), '卡的标题是那次调用本身（`read`）')
-    check(!card.text.includes('引用'), '**卡上没有「引用」字样**——引用没给这一趟加任何东西')
-    check(card.text.includes('a.txt'), '影响面说的是那一趟真读的路径（不是「你引用了它」）')
+    const first = await session.capture({ label: '04a-第一次读（带引用，不弹卡）' })
+    keep(out, first, '04a-第一次读（带引用，不弹卡）')
+    noCard(first, '④ 带引用那一趟读')
+    check(has(first, 'read {"path":"a.txt"}'), '④ 那一趟**真跑了**（工具行在——它不是被卡住了）')
 
-    await settled(session)
-    const first = await session.capture({ label: '04a-第一次读（拨了总是允许）' })
-    keep(out, first, '04a-第一次读（拨了总是允许）')
-
-    // —— ② 第二次读：**不再问**（放行区那几种的全部落点就在这一屏） ——
-    await typeLine(session, '再读 ')
-    await typeAt(session)
-    await session.send('b.txt', { until: { text: '@b.txt' }, timeoutMs: 10_000 })
-    await session.wait({ text: 'b.txt　文件' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { absent: '　文件' }, timeoutMs: 10_000 })
+    // —— ② 第二趟：**普通读**（`b.txt` 只当普通文字提到，不带 `@`）——走的是同一条路 ——
+    await typeLine(session, '再读 b.txt')
     await pressKey(session, 'enter')
     await session.wait({ text: '又读完了。' }, { timeoutMs: 20_000 })
     await settled(session)
 
-    const second = await session.capture({ label: '04b-第二次读（不再问）' })
-    keep(out, second, '04b-第二次读（不再问）')
+    const second = await session.capture({ label: '04b-第二次读（普通读，同一条路）' })
+    keep(out, second, '04b-第二次读（普通读，同一条路）')
 
-    // ⚠️ 判据落在**状态行那一格**上（`statusLineOf`），不是全屏找那几个字：
-    // 上一轮那张卡的收尾（`· 「读 @a.txt」等你定夺：read`）还在 scrollback 里躺着。
+    // ⚠️ 判据落在**状态行那一格**上（`statusLineOf`），不是全屏找那几个字。
     const status = statusLineOf(second.lines)
-    check(!status.includes('等你定夺'), '**第二次同类读不再弹卡**（`a` 那条授权直接放行）', status)
+    check(!status.includes('等你定夺'), '**两趟读都没有卡**——带引用的与普通的走的是同一条路（默认通）', status)
     check(status.includes(MAGIC_IDLE_MARK), '那一轮跑完了（回到空闲——没卡着等裁决）', status)
-    check(has(second, 'read {"path":"b.txt"}'), '第二次读真跑下去了（结果行在）')
+    check(has(second, 'read {"path":"b.txt"}'), '第二趟读真跑下去了（结果行在）')
+
+    // ⚠️ **第二趟真是「普通读」**：它那条交代里**一处引用都没有**（记录直读）。
+    //    这一条是本屏新锚里「普通读」那一半的物证——不加它，「两趟同路」就只剩屏上看着像。
+    const secondRefs = payloadOf(session, 1)
+    check(
+      (secondRefs.refs?.length ?? 0) === 0,
+      `第二趟那条交代里**一处引用都没有**（实测 ${secondRefs.refs?.length ?? 0} 处——它那一段没带 @）`,
+    )
     writeRequests(out, '04-请求.txt', session)
   } finally {
     await close(session)

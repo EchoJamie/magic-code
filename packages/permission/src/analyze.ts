@@ -3,14 +3,27 @@
  *
  * 出处：技术方案 · 权限：判定 ＝ 内核的机械分析——工具调用是结构化的（工具名 ＋ 参数）：
  * 命令可解析、路径可比对工作区边界、读写类型天然可分；**不押模型自述**。
- * 姿态：不可逆从严、可逆从宽——**看不懂的形态按不可逆假定问**。
+ * 姿态：**默认通**，只有**名单里那两条**（`exec` · 见下）与**工具自己的那几处必闸**
+ * 要问；**判不出来的按默认通**（U76 · 2026-09-25 用户定）。其余详见下面那一段。
  *
  * 本域只做**域内机械分析**：不 import 执行域 / 工具域，不碰文件系统（域间只经契约）。
- * 故凡需「文件是否存在 / 内容是什么」才能判的形态（如 `write` 的新建 vs 覆盖），
- * 一律归入「看不懂」——按不可逆假定问。
+ * 故凡需「文件是否存在 / 内容是什么」才能判的形态（如 `write` 的新建 vs 覆盖）
+ * **本域判不出**——**在工具那一路上照旧按不可逆假定问**（U76 的射程只到 `exec`）。
  *
- * 阶段 1 全人工门：本节的产出**只定呈现轻重**（`weight`）与判断材料；阶段 2 起，
- * 必闸清单才是自动放行禁区（U14）。
+ * ## `weight` 是什么（U76 起，两路各表）
+ *
+ * `weight` 仍是「要不要过闸」那一问的**唯一产出**，但**两路的底不一样**了：
+ *
+ * - **`exec` 那一路**（`analyzeExec` → `commands.ts`）：**默认通**——只有**名单那两条**
+ *   （删除 · 改权限/属主/属性/ACL）判重，其余（移动 · 覆盖 · 破坏性 git · `sudo` 那类 ·
+ *   越界 · 外发 · **判不出来**）一律判轻 ⇒ 不必配规则就过。**这是本单（U76）改的那一处。**
+ * - **非 `exec` 那一路**（`write` · `edit` · `web_fetch` · MCP 外部操作 · 表外工具）：
+ *   **一个字没动**——判重的仍判重（`write` 的判不出 · `edit` 的越界 · 取网页的外发 ·
+ *   外部操作一律必闸）。⚠️ **射程只到 `exec`**（工单明文），别顺手把这一路也放宽：
+ *   那几处的例外（`byHost` 按域名）正是靠"判重"立着的。
+ *
+ * 阶段 1 全人工门下本节只定呈现轻重；阶段 2 起清单是自动放行禁区（U14）——
+ * U76 之后那份清单**只剩两条**，且**默认通**（链的底换了，见 `gate.ts` 头注）。
  */
 
 import type {
@@ -22,7 +35,7 @@ import type {
 } from '@magic/contracts'
 import { mcpToolLabel, parseMcpToolName, webTargetOf } from '@magic/contracts'
 import type { SegmentAnalysis } from './commands.ts'
-import { OP_LABEL, OP_REASON, WRITE_OPS, decompose } from './commands.ts'
+import { OP_LABEL, OP_REASON, decompose } from './commands.ts'
 import type { RuleOp } from './ops.ts'
 import type { Landing } from './paths.ts'
 import { describeLanding, landPath } from './paths.ts'
@@ -69,12 +82,22 @@ export type Analysis = {
   readonly host?: string
 }
 
-/** 必闸判据的中文（材料用——呈现是给人的）。 */
+/**
+ * 判据的中文（材料用——呈现是给人的）。
+ *
+ * ⚠️ **`system` 那一行 U76 改过措辞**：从前它说的是「提权 · 系统」那一大类
+ * （`sudo` · `brew` · `systemctl` …），如今**只有改权限 / 属主 / 属性 / ACL 那一族**
+ * 产出它（名单第二类，见 `commands.ts` 的 `PERMISSION`）——措辞跟着收窄，
+ * 不然卡上会给 `chmod` 配一句「机器全局 / 已装环境」，读着不对。
+ *
+ * 其余几行仍是**非 `exec` 那一路**在用的（`write` 的判不出 · `edit` 的越界 ·
+ * `web_fetch` 的外发 · MCP 的外部操作）——那一路本单没动（工单：射程只到 `exec`）。
+ */
 const REASON_LABEL: Readonly<Record<DangerReason, string>> = {
   external: '外部操作（效果由服务器决定）',
   irreversible: '不可逆（收不回）',
   'out-of-bounds': '越界（工作区之外）',
-  system: '系统级（机器全局 / 已装环境）',
+  system: '系统级（改权限 / 属主 / 属性 / ACL）',
   outbound: '外发（出去即收不回）',
   unknown: '看不懂（无法归类——按不可逆假定问）',
 }
@@ -487,7 +510,8 @@ function analyzeEdit(call: ToolCall, ctx: PermissionContext): Analysis {
   return {
     weight: 'heavy',
     reason: 'out-of-bounds',
-    material: impact([landing], '工作区外的写——越界即必闸（技术方案 · 权限：必闸清单 · 越界）'),
+    material: impact([landing], '工作区外的写——**工具侧的**必闸：越界（技术方案 · 权限：必闸清单 · 越界）。'
+        + '⚠️ `exec` 那一路的名单收缩（U76）**只到命令那一层**——这两处是工具自己的判定，不在那次收缩的射程里。'),
     ops: ['edit'],
     landings: [landing],
   }
@@ -515,7 +539,8 @@ function analyzeWrite(call: ToolCall, ctx: PermissionContext): Analysis {
     return {
       weight: 'heavy',
       reason: 'out-of-bounds',
-      material: impact([landing], '工作区外的写——越界即必闸（技术方案 · 权限：必闸清单 · 越界）'),
+      material: impact([landing], '工作区外的写——**工具侧的**必闸：越界（技术方案 · 权限：必闸清单 · 越界）。'
+        + '⚠️ `exec` 那一路的名单收缩（U76）**只到命令那一层**——这两处是工具自己的判定，不在那次收缩的射程里。'),
       ops,
       landings: [landing],
     }
@@ -551,19 +576,24 @@ function analyzeExec(call: ToolCall, ctx: PermissionContext): Analysis {
   return judge(segments)
 }
 
-/** 逐段裁决 → 轻重 ＋ 代表判据 ＋ 命令分解材料。 */
+/**
+ * 逐段裁决 → 轻重 ＋ 代表判据 ＋ 命令分解材料。
+ *
+ * **逐段判、取最严**（设计明文）：`&&` / `;` / `|` 串起来的**每段各自判**，
+ * 一段的无害**不许被别段带累**，反过来一段入名单也**不许被别段冲淡**——
+ * `cd x && rm -rf y` 里那段 `rm` **照落名单**（这正是「复合命令按段判」那一半要的效果）。
+ *
+ * ⚠️ **这里只收「入名单」那两类判据**（`OP_REASON` 给得出东西的才收）：
+ * 越界 · 外发 · 覆盖 · 移动 · 判不出**一律不再入判据**（U76：它们不在名单里）。
+ * 影响面词条照旧逐段取（`segment.landings`）——材料要说得清它动了哪儿，
+ * 但**动过哪儿不等于要拦**：越界那一条撤了（设计 · 权限：`sudo` · 越界 · 外发都默认通）。
+ */
 function judge(segments: readonly SegmentAnalysis[]): Analysis {
   const reasons: DangerReason[] = []
 
   for (const segment of segments) {
     const reason = OP_REASON[segment.op]
     if (reason !== undefined) reasons.push(reason)
-    reasons.push(...segment.extra) // 一段多判据（如 `push --force` ＝ 外发 ＋ 不可逆）
-
-    // 越界只对写 / 删 / 移生效（必闸清单 · 越界条目）
-    if (WRITE_OPS.includes(segment.op) && segment.landings.some((landing) => !landing.inside)) {
-      reasons.push('out-of-bounds')
-    }
   }
 
   const reason = representative(reasons)

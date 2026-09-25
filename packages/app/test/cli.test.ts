@@ -206,8 +206,9 @@ describe('入口 magic', () => {
       expect(result.stdout).not.toContain('sk-test-not-a-real-key')
       // 外壳位如实交代（真外壳归 U09）
       expect(result.stdout).toContain('U09')
-      // 权限规则：没配也要**明说**（那是阶段 1 姿态，不是漏配——用户得能分辨这两者）
-      expect(result.stdout).toContain('权限规则　无（缺省＝一律问，阶段 1 姿态）')
+      // 权限规则：没配也要**明说**（U76 起那是常态——不在名单里的调用本来就不问，
+      // 不是漏配；说清这件事，用户才不会以为自己少配了什么）
+      expect(result.stdout).toContain('权限规则　无（缺省＝不必配——不在名单里的调用本来就不问）')
       // 工具集：**从契约的冻结行现取**（第 18 轮补锚——此行曾写死「exec（阶段 1 唯一工具）」，
       // 工具集 v1 到站后它成了假话）；七件按表的次序
       expect(result.stdout).toContain('工具集　　exec / read / write / edit / grep / glob / ls（7 件')
@@ -242,7 +243,7 @@ describe('入口 magic', () => {
       const result = await run(home, '--check')
 
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('权限规则　1 条（必闸禁区凌驾其上） · ⚠️ 被拒 1 条')
+      expect(result.stdout).toContain('权限规则　1 条（名单里的那两条，规则也放不动） · ⚠️ 被拒 1 条')
       expect(result.stdout).toContain('第 2 条')
       expect(result.stdout).toContain('pth')
     } finally {
@@ -523,10 +524,14 @@ describe('入口 magic · 全放行（`--allow-all` · U73）', () => {
       const result = await run(home, '--help')
 
       expect(result.stdout).toContain('--allow-all')
-      // 三件事各说一次：**只给这一次** · **界面上换不来**（看状态行） · **必闸照问**
+      // 三件事各说一次：**只给这一次** · **界面上换不来**（看状态行） · **真的什么都不问**。
+      // ⚠️ 第三条 U76 改过（原锚是「必闸照问」——那是 U73 的旧版）：这一档现在连名单
+      // 那两条也放，故用法里要说的正是这件事，否则用户按旧印象以为它兜得住。
       expect(result.stdout).toContain('只在这儿给')
       expect(result.stdout).toContain('状态行')
-      expect(result.stdout).toContain('照旧问你')
+      expect(result.stdout).toContain('真的什么都不问')
+      // 反面同时写上：不带它时那两条照问（不然「什么都不问」会被读成默认也这样）
+      expect(result.stdout).toContain('删除与改权限/改属主那两条照问')
       // ⚠️ **不叫 `mode`**（设计明文：「mode」这个词留给别的用途）——判的是**参数名**，
       // 故按**词**比、不按子串比：`--model` 那个词里本来就有 `--mode` 这四个字母加两个。
       expect(result.stdout.split(/\s+/u)).not.toContain('--mode')

@@ -20,6 +20,17 @@
  * 走**真配置加载器**与**真闸门**——只有模型是替身；`grantsFile` 指到沙地里（不碰真的
  * `~/.magic`）。除「真进程并发」外都在同一进程里确定性复现（「旧账本」是**内存事实**，
  * 不必真并发）；那一条非要真进程——它是「锁」本身在被测。
+ *
+ * ## fixture 随 U76 换过（默认通 ＋ 名单只剩两条）
+ *
+ * 从前「配一条规则才通」，故随便一条 `echo` / `ls` 都弹卡、都能按 `a`。如今**判轻的不问**
+ * ——拿判轻的当 fixture，闸门一声不响，整条路都走不到。故本文件的 fixture 一律换成
+ * **判重的**那两类（删除 · 改权限，见 `commands.ts`）：只有它们还会弹卡。
+ *
+ * ⚠️ 随之而来的一件事：**判重的执行命令不可授权**——`a` 记下的那条授权**放不了它**
+ * （门的放行判据只剩「判轻」与「判重却带域名」，见 `gate.ts`）。故「撤销不得被复活」
+ * 那一条里的**自动放行 ＋ 命中记账**改走**按域名**那一条路（`web_fetch` × 域名）：
+ * 那是如今唯一「配了授权 ⇒ 不再问」的形态，也正是那一跳要看的。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -40,10 +51,34 @@ import type { Assembly } from '../src/index.ts'
 import { commitGrants } from '../src/grants-file.ts'
 import { eventsOfKind, makeStage, type Stage } from './support.ts'
 
-/** 一条只读命令——机械分析判「轻」（`ops: ['read']`），故「总是允许」对它开放。 */
-const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }] }
-/** 工具与上一条**不同**的那一条——两次「总是允许」凝出的规则才不是同一条。 */
-const OTHER_TOOL_TURN = { toolCalls: [{ name: 'ls', args: { path: '.' } }] }
+/**
+ * 一条**判重的**执行命令（名单第一类 · 删除）——U76 起只有它这一类还会弹卡。
+ *
+ * ⚠️ **判轻的不能当 fixture**（`echo` / `ls` 从前是这么用的）：默认通之后它们**不问**，
+ * 于是「等闸门问了一次」就成了等一个永远不来的东西——本文件改 fixture 时实打实踩过。
+ */
+const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+/**
+ * 另一条**判重的**——**名单第二类**（改权限）。**操作类型**与上一条不同，
+ * 故两次「总是允许」凝出的授权**不是同一条**（「两条都留着」那句断言要的就是这个）。
+ */
+const PERMISSION_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 600 f' } }] }
+/**
+ * 一次**判重却带域名**的调用（取网页）——「撤销不得被复活」那一条的自动放行靠它。
+ *
+ * 由头（U76）：判重的执行命令**不可授权**（`a` 记下的那条放不了它），故「命中 ⇒ 不再问
+ * ⇒ 攒下一笔命中记账」这条链只剩**按域名**那一格走得通（见文件头注）。它判重（外发），
+ * 却因授权写明了域名而自动放行——正是那一跳要看的。
+ *
+ * 这一趟**不出网**：没配「提炼用的模型」时工具在**取回之前**就收束
+ * （`web-fetch-tool.ts` 的 `NOT_CONFIGURED`）——本用例要的那几件事全在闸门与账本上，
+ * 工具跑到哪一步都无所谓，但**一个字节都不发出去**这件事得有保证。
+ */
+const WEB_TURN = {
+  toolCalls: [
+    { name: 'web_fetch', args: { url: 'https://example.com/pricing', prompt: '多少钱？' } },
+  ],
+}
 
 /** 裸接控制面——订阅事件 ＋ 按需答复。 */
 function bareShell(assembly: Assembly) {
@@ -91,6 +126,26 @@ type StoredFile = {
 /** 读**盘上**那份授权文件——不是读内存里的账本（判据就在这一句）。 */
 function stored(path: string): StoredFile {
   return JSON.parse(readFileSync(path, 'utf8')) as StoredFile
+}
+
+/**
+ * 盘上那一节的授权**身份**（`工具:操作类型`，排序后）——「谁还在」这句断言的落点。
+ *
+ * 为什么不用旧的 `grant.tool`：U76 之后判重的命令只剩删除 / 改权限两族，两条 fixture
+ * **都是 `exec`** ——只看工具名，两条规则与一条规则长得一模一样（那就等于把断言放宽了）。
+ * 操作类型那一格才是这两条的区别所在（`exec:delete` / `exec:system`）。
+ */
+function idsIn(path: string, section: string): string[] {
+  return (stored(path).workspaces[section] ?? [])
+    .map((grant) => `${grant.tool}:${opsOf(grant).join(',')}`)
+    .sort()
+}
+
+/** 一条授权的操作类型（单值 / 一组 / 缺省三种写法）——材料用。 */
+function opsOf(grant: Grant): readonly string[] {
+  const op = grant.op
+  if (op === undefined) return []
+  return typeof op === 'string' ? [op] : [...op]
 }
 
 /** 手写一份授权文件（要「启动时账本里就有 G1」时用）。 */
@@ -162,23 +217,20 @@ describe('U47 · 授权文件：多个写入者不互相覆盖', () => {
       const path = grantsPathOf(stage)
       // **两条都先装配**（此刻盘上还什么都没有）——于是两边手上的账本都是「空」，
       // 这正是并发里的那个起点：谁都不知道对方后来写了什么。
-      const first = await askOnce(stage, [READ_ONLY_TURN, { text: '好' }], path)
-      const second = await askOnce(stage, [OTHER_TOOL_TURN, { text: '好' }], path)
+      const first = await askOnce(stage, [DELETE_TURN, { text: '好' }], path)
+      const second = await askOnce(stage, [PERMISSION_TURN, { text: '好' }], path)
 
       first.shell.answer(first.shell.requests[0] as number, { remember: true })
       await until(() => eventsOfKind(first.shell.events, 'tool.result').length >= 1, '第一条跑完')
 
       const section = first.assembly.workspaceRoots[0] as string
-      expect(stored(path).workspaces[section]?.map((grant) => grant.tool)).toEqual(['exec'])
+      expect(idsIn(path, section)).toEqual(['exec:delete'])
 
       second.shell.answer(second.shell.requests[0] as number, { remember: true })
       await until(() => eventsOfKind(second.shell.events, 'tool.result').length >= 1, '第二条跑完')
 
-      // **两条都在**——旧实现（整份快照覆写）到这儿只剩 `ls` 那一条
-      expect(stored(path).workspaces[section]?.map((grant) => grant.tool).sort()).toEqual([
-        'exec',
-        'ls',
-      ])
+      // **两条都在**——旧实现（整份快照覆写）到这儿只剩后写的那一条
+      expect(idsIn(path, section)).toEqual(['exec:delete', 'exec:system'])
 
       first.shell.dispose()
       second.shell.dispose()
@@ -195,8 +247,8 @@ describe('U47 · 授权文件：多个写入者不互相覆盖', () => {
     try {
       // 两个沙地＝两个数据目录、两个工作区（分节键也不同），但**指同一份授权文件**
       const path = grantsPathOf(here)
-      const first = await askOnce(here, [READ_ONLY_TURN, { text: '好' }], path)
-      const second = await askOnce(there, [OTHER_TOOL_TURN, { text: '好' }], path)
+      const first = await askOnce(here, [DELETE_TURN, { text: '好' }], path)
+      const second = await askOnce(there, [PERMISSION_TURN, { text: '好' }], path)
 
       first.shell.answer(first.shell.requests[0] as number, { remember: true })
       await until(() => eventsOfKind(first.shell.events, 'tool.result').length >= 1, '第一条跑完')
@@ -229,21 +281,31 @@ describe('U47 · 授权文件：撤销不得被复活', () => {
     try {
       const path = grantsPathOf(stage)
       const section = sectionKeyOf(stage)
-      const gone: Grant = { tool: 'exec', op: ['read'], grantedAt: 1 }
+      // G1 **按域名给**（U76）：判重的执行命令不可授权，故「命中 ⇒ 自动放行 ⇒ 攒一笔
+      // 命中记账」这条链只剩按域名那一格走得通（见文件头注）。
+      const gone: Grant = { tool: 'web_fetch', op: ['outbound'], host: 'example.com', grantedAt: 1 }
       writeGrants(path, { version: 1, workspaces: { [section]: [gone] } })
 
       // 持有 G1 的装配：装配完就跑一轮（G1 命中 → **自动放行**，攒下一笔命中记账等收尾补落）
-      const held = await runOnce(stage, [READ_ONLY_TURN, { text: '好' }], path)
+      const held = await runOnce(stage, [WEB_TURN, { text: '好' }], path)
       expect(held.shell.requests).toEqual([]) // 没问＝真的是授权命中那条路
-      expect(stored(path).workspaces[section]?.map((grant) => grant.tool)).toEqual(['exec'])
+      // **判重也自动放行**——取网页是判重的（外发），默认通放不了它；这一条 `auto`
+      // 只可能来自**读到的那条授权**（域名那一格命中），正是本用例要的起点
+      expect(eventsOfKind(held.shell.events, 'tool.decision').map((event) => event.data.decider)).toEqual([
+        'auto',
+      ])
+      // 那一跳**攒下了**一笔命中记账（`hits` 记在内存账本上，收尾才补落）——没有这一句，
+      // 后半段「收尾补落」就是一句空话（它等的那个东西压根没发生）
+      expect(held.assembly.grantsView().grants[0]?.hits).toBe(1)
+      expect(idsIn(path, section)).toEqual(['web_fetch:outbound'])
 
       // **另一处撤掉它**（并发的第二个写入者——走的就是落盘那一跳）
       commitGrants(path, [{ kind: 'revoke', workspace: section, index: 0, rule: gone }])
       expect(stored(path).workspaces[section]).toBeUndefined()
 
       // 持旧账本的那一方**再写一次**（换一条规则）——它内存里那条 G1 不许跟着回来
-      const again = await allowOnce(stage, [OTHER_TOOL_TURN, { text: '好' }], path)
-      expect(stored(path).workspaces[section]?.map((grant) => grant.tool)).toEqual(['ls'])
+      const again = await allowOnce(stage, [DELETE_TURN, { text: '好' }], path)
+      expect(idsIn(path, section)).toEqual(['exec:delete'])
 
       // 收尾（把攒着的命中记账补落）——旧实现到这儿会拿**整份快照**把 G1 写回来
       held.shell.dispose()
@@ -251,7 +313,8 @@ describe('U47 · 授权文件：撤销不得被复活', () => {
       again.shell.dispose()
       again.assembly.close()
 
-      expect(stored(path).workspaces[section]?.map((grant) => grant.tool)).toEqual(['ls'])
+      // 那一笔补落的记账找的是**在册的** G1：它已经不在了，于是整条落空（不建节、不复活）
+      expect(idsIn(path, section)).toEqual(['exec:delete'])
     } finally {
       stage.dispose()
     }
@@ -402,7 +465,7 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
       // 一趟脚本两轮：第一轮的授权写不成（盘被锁着），第二轮换一条规则再写
       const assembly = stage.assemble({
         grantsFile: path,
-        turns: [READ_ONLY_TURN, { text: '好' }, OTHER_TOOL_TURN, { text: '好' }] as never,
+        turns: [DELETE_TURN, { text: '好' }, PERMISSION_TURN, { text: '好' }] as never,
       })
       const shell = bareShell(assembly)
 
@@ -422,10 +485,7 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
 
       // **第一轮那条也在**——没写成的攒到了下一次，不是丢了
       const section = assembly.workspaceRoots[0] as string
-      expect(stored(path).workspaces[section]?.map((grant) => grant.tool).sort()).toEqual([
-        'exec',
-        'ls',
-      ])
+      expect(idsIn(path, section)).toEqual(['exec:delete', 'exec:system'])
 
       shell.dispose()
       assembly.close()
