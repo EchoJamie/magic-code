@@ -428,20 +428,26 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   /**
    * 裁决的历史累计（见 `RecordsStore.decisionHistory` 那条注）——
-   * **数出来的只有两格**：走了几次裁决、其中几次没问就放行（`decider: 'auto'`）；
-   * 「还得你点」是差，不另存一位（三个数里两个数得出来，第三个就不该再存一遍）。
+   * **数出来的有三格**：走了几次裁决 · 其中几次**没问就放行**（`decider: 'auto'`）·
+   * 几次**没问就拒**（`decider: 'kernel'`，U77 起删除那一类）；
+   * 「还得你点」是差，不另存一位（数得出的那几个存不存都行，差那一个不必再存一遍）。
+   *
+   * ⚠️ **`kernel` 与 `auto` 必须分开数**：这一本账的口径是「**没问**就怎样」——
+   * 合成一格，那本账就把"拒"读成"放行"了（口径写在契约 `DecisionHistory` 那条注里）。
    */
   function decisionHistory(): DecisionHistory {
     let total = 0
     let auto = 0
+    let kernel = 0
 
     for (const row of selectDecisions.all(workspaceColumn)) {
       const data = JSON.parse(row.data) as EventDataOf['tool.decision']
       total += 1
       if (data.decider === 'auto') auto += 1
+      if (data.decider === 'kernel') kernel += 1
     }
 
-    return { total, auto }
+    return { total, auto, kernel }
   }
 
   /** 在不在库里（见 `RecordsStore.hasSession`）——一行存在即「在」。 */

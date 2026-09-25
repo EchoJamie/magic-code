@@ -59,7 +59,7 @@ function catalog(over: Partial<EventDataOf['grants.catalog']> = {}): EventDataOf
     ],
     stale: ['/work/gone'],
     decisions: { total: 8, uncovered: 4, vetoed: 1 },
-    history: { total: 20, auto: 15 },
+    history: { total: 20, auto: 15, kernel: 0 },
     ...over,
   }
 }

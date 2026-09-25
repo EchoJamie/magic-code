@@ -241,9 +241,9 @@ describe('权限规则 —— 配置真的接进闸门', () => {
       // 三发各留各的痕：默认通的没人答过（`auto`）· 人答的那条 `user` ·
       // **被拒的那条也没有询问**（`auto` ＋ `reject`——见下面那条断言）
       expect(eventsOfKind(shell.events, 'tool.decision').map((v) => v.data.decider)).toEqual([
-        'auto',
-        'user',
-        'auto',
+        'auto', // 判轻的：没问就**放行**
+        'user', // 改权限：人答的
+        'kernel', // 删除：没问就**拒**（⚠️ 不是 `auto`——那一格说的是「没问就放行」）
       ])
 
       const results = eventsOfKind(shell.events, 'tool.result')

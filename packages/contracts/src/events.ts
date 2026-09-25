@@ -39,21 +39,37 @@ export type OutputChannel = 'stdout' | 'stderr'
 /** 裁决询问的**呈现轻重**（轻 / 重——技术方案 · 权限：摩擦对准高危）。 */
 export type DecisionWeight = 'light' | 'heavy'
 
-/** 裁者——首站恒 `user`；`auto` 为阶段 2 规则化的留位。 */
-export type Decider = 'user' | 'auto'
+/**
+ * **裁者**——这一次裁决**是谁定的**。
+ *
+ * - `user`——**人答的**（外壳上那一下 `y` / `n`）；
+ * - `auto`——**没问就放行**（规则或授权命中 · 判定为轻）；
+ * - `kernel`——**没问就拒**（内核按名单自己定的，**没有人被问过**——U77 起删除那一类就是它）。
+ *
+ * ⚠️ **`kernel` 与 `auto` 分开，不是名字好听**：下面那本历史账（`DecisionHistory`）
+ * 的口径是「**没问**就怎样」——两者都"没问"，但一个是**放行**、一个是**拒**。
+ * 合成一格，那一本账就把"拒"读成"放行"了（**正好反着**）。
+ * 而结论本身也在事件上（`Decision.decision`）：`decider` 说的是**谁**，`decision` 说的是**什么**。
+ */
+export type Decider = 'user' | 'auto' | 'kernel'
 
 /**
- * **裁决的历史累计**（U28 · `B10` 口径的**跨会话**面）——按 `decider` 分出来的两格。
+ * **裁决的历史累计**（U28 · `B10` 口径的**跨会话**面）——按 `decider` 分出来的三格。
  *
  * 由头（`交接/进度台账.md` · 随批小修 12 · `U22` 待决 1 规划侧裁「要」）：
  * 本会话那个数（`grants.catalog` 的 `decisions`）只够看「**这一趟**顺不顺」；
  * **看「这个项目值不值得配规则」得跨会话**。
  *
- * **读数只有两格**（`decider` 在事件上，它只分得开这两类）：
+ * **读数三格**（`decider` 在事件上，它分得开这三类）：
  * - `total` ＝走过的裁决数（库里的 `tool.decision` 事件数——`decide` 每次都落一条）；
- * - `auto` ＝其中**没问就放行**的（`decider: 'auto'`：规则或授权命中、判定为轻）。
+ * - `auto` ＝其中**没问就放行**的（`decider: 'auto'`：规则或授权命中、判定为轻）；
+ * - `kernel` ＝其中**没问就拒**的（`decider: 'kernel'`：内核按名单自己拒的——U77 起删除那一类）。
  *
- * ⇒ **还得你点 ＝ `total - auto`**（不另存一位：三个数里两个是数出来的，第三个是差）。
+ * ⇒ **还得你点 ＝ `total - auto - kernel`**（不另存一位：数出来的三个，第四个是差）。
+ *
+ * ⚠️ **`kernel` 那一格 U77 补的**：从前"没问就拒"也落在 `auto` 上——
+ * 于是这一本账（口径是「**没问就放行**」）会把**拒**读成**放行**，正好反着。
+ * 分开之后，`auto` 只数真的放行过的那一些。
  *
  * ⚠️ **历史分不开 `vetoed`**：库里那条事件没有「命中规则却被必闸禁区否决」这一位
  * （那要读 `tool.decision.request` 的呈现材料——**文本不是判据**）。
@@ -63,6 +79,8 @@ export type Decider = 'user' | 'auto'
 export type DecisionHistory = {
   readonly total: number
   readonly auto: number
+  /** **没问就拒**的（`decider: 'kernel'`）——U77 起删除那一类。 */
+  readonly kernel: number
 }
 
 // —— kind 族 ——
@@ -844,7 +862,7 @@ export type EventDataOf = {
     /**
      * **同一个库里的历史累计**（U28 · 台账随批小修 12）——**跨会话**的那一笔账，
      * 读自记录域的读面（`RecordsStore.decisionHistory`）：本工作区的会话们走过的
-     * 全部裁决，按 `decider` 分成两格（见 `DecisionHistory`）。
+     * 全部裁决，按 `decider` 分成三格（见 `DecisionHistory`）。
      *
      * 由头：`decisions` 只够看「这一趟顺不顺」（闸门按会话实例构造）；
      * **「这个项目值不值得配规则」得跨会话**——故这一格与它并列，不合并

@@ -82,7 +82,8 @@ function passes(toolCall: ToolCall, roots: readonly string[] = ['/work/proj']): 
  * 三件一起才叫"直接拒"：
  * - **没发询问**（不是"卡住了"——卡住了也不会没有 `tool.decision.request`）；
  * - **裁决是 `reject`**（返回给工具域的那个值）；
- * - **裁者是 `auto`**（内核按规则自己定的，没人被问过）。
+ * - **裁者是 `kernel`**（内核按规则自己定的，没人被问过——⚠️ **不是 `auto`**：那一格的
+ *   口径是「没问就**放行**」；写成它，这一笔「拒」会被读成「放行」，正好反着）。
  *
  * ⚠️ 「这一笔**没被拒**」＝**用例前提不成立**，当场抛（同 `weigh` / `passes` 的姿势）：
  * 静默地拿到一个「其实是要问的」调用，会让整条用例测的不是它以为自己测的那件事。
@@ -104,7 +105,7 @@ async function refusedBy(
   expect(h.eventsOf('tool.decision.request'), '直接拒＝**不发询问**（屏上没有卡）').toEqual([])
   expect(decision).toBe('reject')
   expect(made?.data.decision).toBe('reject')
-  expect(made?.data.decider).toBe('auto')
+  expect(made?.data.decider).toBe('kernel')
 
   return { refusal, material: analyze(toolCall, ctx).material, seq: h }
 }
@@ -357,7 +358,7 @@ describe('判据 2 · 其余一律默认通（不问、直接跑）', () => {
   }
 
   /**
-   * **`trash` 本身不拦**（U77）——**它可逆**（进废纸篓、能「放回原处」）⇒ 默认通。
+   * **`trash` 本身不拦**（U77）——**它可逆**（东西进废纸篓，捞得回来）⇒ 默认通。
    *
    * ⚠️ 这一条与上面那一圈是**两件事**：上面那圈是"不在名单里"（软防线）；
    * 这一条是"**它就是那条正道**"——删除被拒之后，模型改用 `trash` 应当**一路畅通**

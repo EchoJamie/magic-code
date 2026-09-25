@@ -264,15 +264,18 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       // 想读它就得先分支（`analyze.ts` 那两个型的注里写着），"忘了先判拒"编译期就报。
       //
       // **不发询问**（没有卡）：拒不是问，模型那边收到的是回执里那句话（工具域写的）。
-      // 落一条 `decision: 'reject'` 的裁决事件——**裁者是 `auto`**：内核按规则自己定的，
-      // 没人被问过（`DecisionHistory` 把 `auto` 读作"没问就放行"，这一笔会被算进去——
-      // 如实记在回报的限度里；事件上 `decision: 'reject'` 分得开两者）。
+      // 落一条 `decision: 'reject'` 的裁决事件——**裁者是 `kernel`**：内核按规则自己定的，
+      // 没人被问过。
+      //
+      // ⚠️ **不能写成 `auto`**（U77 补的那一格）：`DecisionHistory` 那本账的口径是
+      // 「**没问**就怎样」，而 `auto` 那一格说的是「没问就**放行**」——写成它，
+      // 这一笔"拒"会被读成"放行"（**正好反着**）。`Decider.kernel` 就是为这一笔加的。
       if (analysis.refusal !== undefined) {
         sink.emit(
           decisionMade(stamper, {
             call: callRef,
             decision: 'reject',
-            decider: 'auto',
+            decider: 'kernel',
             elapsedMs: now() - started,
           }),
         )

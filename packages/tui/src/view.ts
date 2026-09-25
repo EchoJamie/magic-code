@@ -3690,21 +3690,26 @@ function frictionLabel(decisions: GrantsCatalog['decisions']): string {
 /**
  * 放行区的账 · **历史累计**（U28 · 跨会话）——**这个项目值不值得配规则**看的是它。
  *
- * ⚠️ **两格，不是本会话那三格**：库里那条事件只有 `decider`（`auto` / `user`），
- * 记不下「命中规则却被必闸禁区否决」——故这里**不报「未配规则」**（那是本会话分得出的
- * 细账，历史里分不开），只报历史真能分开的两类（见契约 `DecisionHistory` 那条注）。
+ * ⚠️ **按 `decider` 分，不是本会话那三格**：库里那条事件只有 `decider`，记不下
+ * 「命中规则却被必闸禁区否决」——故这里**不报「未配规则」**（那是本会话分得出的细账，
+ * 历史里分不开），只报历史真能分开的那几类（见契约 `DecisionHistory` 那条注）。
+ *
+ * ⚠️ **「内核直接拒」那一格只在有的时候报**（U77）：`decider: 'kernel'` 是那一单新加的
+ * ——从前"没问就拒"混在 `auto` 里被读成"自动放行"（正好反着）。**没有它就一个字不加**：
+ * 老库、老屏上的那一行与加这一格之前**逐字相同**，不因为多了一格就整行变样。
  *
  * **没走过裁决就不报**（同 `frictionLabel`：0 次不是一个占比）——历史为空时这行整个不给。
  */
 function historyLabel(history: GrantsCatalog['history']): string | undefined {
-  const { total, auto } = history
+  const { total, auto, kernel } = history
   if (total === 0) return undefined
 
-  const asked = total - auto
-  return (
-    `历史累计 ${total} 次裁决：自动放行 ${auto} 次（${percentOf(auto, total)}）` +
-    ` · 还得你点 ${asked} 次（${percentOf(asked, total)}）`
-  )
+  const asked = total - auto - kernel
+  const parts = [`自动放行 ${auto} 次（${percentOf(auto, total)}）`]
+  if (kernel > 0) parts.push(`内核直接拒 ${kernel} 次（${percentOf(kernel, total)}）`)
+  parts.push(`还得你点 ${asked} 次（${percentOf(asked, total)}）`)
+
+  return `历史累计 ${total} 次裁决：${parts.join(' · ')}`
 }
 
 function percentOf(part: number, whole: number): string {

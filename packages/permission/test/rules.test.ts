@@ -304,12 +304,12 @@ describe('名单即禁区——任何规则不可放行（U76：名单只剩两�
       expect(result.h.countOf('tool.decision.request')).toBe(0)
       expect(result.verdict, '照拒').toBe('reject')
 
-      // ⚠️ 落的那一条裁决是 `reject` + `decider: 'auto'`——**这一笔在"自动放行"那本账上
-      // 会被算进去**（`DecisionHistory.auto` 的口径是「没问就……」）。账的失真如实记在
-      // 回报的限度里；事件上 `decision: 'reject'` 分得开，故库里仍读得回来。
+      // ⚠️ 落的那一条裁决是 `reject` + `decider: 'kernel'`——**「没问就拒」与「没问就放行」
+      // 是两件事**（那本账的口径正是「没问就怎样」）：U77 补的那一格就是为把它们分开
+      // （写成 `auto` 的话，「拒」会被读成「放行」——正好反着；回归用例在 records 那一边）。
       const made = result.h.eventsOf('tool.decision')[0]
       expect(made?.data.decision).toBe('reject')
-      expect(made?.data.decider).toBe('auto')
+      expect(made?.data.decider).toBe('kernel')
     })
   }
 
