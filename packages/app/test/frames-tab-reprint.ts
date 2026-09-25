@@ -1,10 +1,11 @@
 /**
  * **Tab 多行重印**的留帧装置（2026-09-22 · [[交接/工单/Tab多行重印]]）——真 PTY，固定窗口。
  *
- * 判据（工单「交付判据 1」）：**单次提交之后等到空闲，用户每一条原始逻辑行在整块缓冲
- * （可见区 ＋ scrollback）里只出现一次**——不能只判请求数或「某句还在」。为做到这一点，
- * 装置把应用写出的**全部字节**喂给 VT 模型，读回含 scrollback 的整块缓冲（`screen.history`），
- * 逐行与「原始逻辑行（空白折叠后）」比对。
+ * 判据（工单「交付判据 1」）：**单次提交之后等到空闲，用户每一条原始逻辑行在「正文区」
+ * （可见区 ＋ scrollback 里状态行以上那一段）里只出现一次**——不能只判请求数或「某句还在」。
+ * 为做到这一点，装置把应用写出的**全部字节**喂给 VT 模型，读回含 scrollback 的整块缓冲
+ * （`screen.history`），**去掉状态行那一格之后**逐行与「原始逻辑行（空白折叠后）」比对
+ * （为什么不算状态行：见 `bodyOf`——U87 修账那一处）。
  *
  * 另外三档（判据 2）：**无 Tab 多行**与**单行**作对照；**46×30** 窄窗同段再来一遍。
  * 每档都核对：模型请求**恰好 1 条**、用户记录**恰好 1 条**、载荷**逐字**（Tab 仍是 Tab——
@@ -123,12 +124,34 @@ async function waitCursorMove(session: UiSession, from: number): Promise<void> {
   throw new Error(`真光标一直停在 x=${from}（等它挪一格）`)
 }
 
-/** 每条原始逻辑行在整块缓冲里**只出现一次**（判据 1 的正文面）。 */
+/**
+ * **状态行那一格不算正文**——「每条原始逻辑行只出现一次」数的是**正文区**（状态行以上）。
+ *
+ * 由头（U87 · 修账）：这一支原先拿**整块缓冲**（可见区 ＋ scrollback）逐行比对，而**状态行
+ * 也在里面**——那一格印着这条会话的**标题**，而标题就是首句。于是「标题恰是首句」的那两档，
+ * 末行正文在状态行里**被数成第二次**：
+ *
+ * - `first-line-multiline-46`——46 列下状态行只印到标题（`○ 空闲 · left right next`），
+ *   末尾正是 `next` ⇒ `checkOnce` 数出 2 次；
+ * - `first-line-wrap`——`left right` 在状态行里再来一遍 ⇒ 「首段只占一条物理行」数出 2 条。
+ *
+ * **红的不是产品，是这把尺量错了对象**：状态行是外壳的常驻格（标题 · 型号 · 用量 · 键位），
+ * 不是这一趟的正文，它出现几次与「正文有没有重印」无关。同一文件里折行那一档的尾段计数
+ * **早就只数状态行以上**（见那一处的注）——U87 把非折行那几档也收到同一条口径上，
+ * 两处合成这一支。
+ */
+function bodyOf(lines: readonly string[]): readonly string[] {
+  const statusAt = lines.findIndex((line) => /[○●▲]/.test(line) && line.includes('·'))
+
+  return statusAt === -1 ? lines : lines.slice(0, statusAt)
+}
+
+/** 每条原始逻辑行在**正文区**里**只出现一次**（判据 1 的正文面——口径见 `bodyOf`）。 */
 function checkOnce(lines: readonly string[], text: string): void {
   for (const raw of text.split('\n')) {
     const want = flatten(raw)
     const times = lines.filter((line) => line === want || line.endsWith(` ${want}`)).length
-    check(times === 1, `「${want}」在整块缓冲里只出现一次（实测 ${times} 次）`, lines.join(' / '))
+    check(times === 1, `「${want}」在**正文区**里只出现一次（实测 ${times} 次）`, lines.join(' / '))
   }
 }
 
@@ -224,27 +247,27 @@ async function scenario(options: {
     const idle = await session.capture({ label: `${options.label}-03-空闲` })
     keep(options.out, idle, `${options.label}-03-空闲`)
 
-    // —— 整块缓冲（可见区 ＋ scrollback）：每条原始逻辑行**只出现一次** ——
+    // —— 整块缓冲（可见区 ＋ scrollback）的**正文区**：每条原始逻辑行**只出现一次** ——
     const screen = await session.screen()
     const lines = screen.history.map(flatten).filter((line) => line !== '')
+    // ⚠️ 数的是**正文区**（状态行以上）——口径与由头见 `bodyOf`（U87 修账）
+    const body = bodyOf(lines)
     if (options.folded === undefined) {
-      checkOnce(lines, options.text)
+      checkOnce(body, options.text)
     } else {
       // 折行那一档：首行折成了几条 ⇒ 分开判（见 `folded` 的注），其余逻辑行照旧
       const folded = options.folded
-      const head = lines.filter((line) => line.includes(folded.head))
+      const head = body.filter((line) => line.includes(folded.head))
       check(head.length === 1, `首段「${folded.head}」只占一条物理行（实测 ${head.length} 条）`, head.join(' / '))
-      // ⚠️ **只数正文那一段**（状态行以上）：状态行里有供应商名（`MiniMax-M3` 带一个 `x`），
-      //    全屏数会多出一两个——那与「正文留了几份」无关
-      const statusAt = lines.findIndex((line) => /[○●▲]/.test(line) && line.includes('·'))
-      const body = statusAt === -1 ? lines : lines.slice(0, statusAt)
+      // ⚠️ 尾段那个字符只数**正文那一段**（状态行以上）：状态行里有供应商名（`MiniMax-M3`
+      //    带一个 `x`），全屏数会多出一两个——那与「正文留了几份」无关
       const marks = body.join('').split(folded.mark.char).length - 1
       check(
         marks === folded.mark.times,
         `尾段那 ${folded.mark.times} 个「${folded.mark.char}」在屏上只有这么多（实测 ${marks}）`,
         lines.slice(0, 4).join(' / '),
       )
-      checkOnce(lines, options.text.split('\n').slice(1).join('\n'))
+      checkOnce(body, options.text.split('\n').slice(1).join('\n'))
     }
 
     // —— **样式不动制表位**（独立复核 `b25b9ff`）：同一段可见文字，加粗/行内代码那几行要一样 ——

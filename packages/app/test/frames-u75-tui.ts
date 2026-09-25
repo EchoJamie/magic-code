@@ -326,9 +326,38 @@ async function main(): Promise<void> {
     // —— 甲：一条 `read` ＋ 几十轮短交代（条目数堆到五十条以上）——
     await typeLine(session, 甲说)
     await session.key('enter')
-    // 读那份大材料要过一道闸（`read` 也在闸内）——先等卡真开着，再按 `a`「本工作区总是允许」
-    await session.wait({ text: 'y 批准' }, { timeoutMs: 20_000 })
-    await session.send('a', { until: { text: `甲答第1句` }, timeoutMs: 30_000 })
+
+    // ⚠️ **判据换过（U87）**——**换的不是「该咬什么」，是「拿什么证」**。
+    //
+    //   这一支原先在这里等**一张 `read` 的裁决卡**（`y 批准`）再拨 `a`「本工作区总是允许」
+    //   ——那是 U76 之前的产品行为：链的底是「默认问」，读也要过一道闸。
+    //   **U76 起判轻的调用默认通、不问**（`gate.ts`：`weight === 'light'` 直接自动放行），
+    //   那张卡**根本不会出现** ⇒ 那一步永远等不到（本单基线实测：20 秒超时）。
+    //
+    //   **它要证的那件事一个字没变：那一趟读**确实发生了**（不是被闸挡住、也没有静默跳过）
+    //   ——**否则这一单要造的那条大记录根本造不出来**。今天这件事的证据换成了工具自己：
+    //   **跑完了那一行（`● read …`）在屏上**——`⟳` 是「刚开跑」，`●` 是「跑完了」，
+    //   被卡在裁决上时停在 `⟳`（旧那一版实测如此）。
+    //
+    //   ⚠️ **等的是「两者之一先出现」，超时在这儿不判**（同本文件 `switchTo` 那条的由头）：
+    //   这一步等的是「那一趟读跑起来了没有」，而**没跑起来、卡在裁决上**正是旧那一版的样子
+    //   ——在这儿抛，报出去的是一句「等超时了」，比判据该说的那句含糊得多。
+    //   故谁先到就取那一帧，下面两条判据管的正是「**是哪一种**」。
+    try {
+      await waitUntil(
+        session,
+        '那一趟读跑完 或 裁决卡',
+        (lines) => countOn(lines, '● read') >= 1 || countOn(lines, 'y 批准') >= 1,
+      )
+    } catch (error) {
+      console.log(`  ⚠ ${(error as Error).message.split('\n')[0]}`)
+    }
+
+    const 读那一趟 = await session.capture({ label: '00-那一趟读（不弹卡）' })
+    keep(读那一趟)
+    check(countOn(读那一趟.lines, '● read') >= 1, '那一趟 `read` **真跑下去了**（跑完了那一行在——不是被卡在裁决上）')
+    check(countOn(读那一趟.lines, 'y 批准') === 0, '**没有裁决卡**（U76：读判轻、默认通、不问）')
+    await session.wait({ text: `甲答第1句` }, { timeoutMs: 30_000 })
     for (let i = 2; i <= 甲轮数; i += 1) {
       await typeLine(session, `甲说第${i}句`)
       await session.key('enter', { until: { text: `甲答第${i}句` }, timeoutMs: 20_000 })
