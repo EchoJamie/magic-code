@@ -1320,6 +1320,14 @@ export type ToolCall = {
    */
   readonly invalid?: boolean
   /**
+   * **参数不成形时，供应商给的原文**（U84 · 缺陷 D42）——已脱敏、已按上限截断。
+   *
+   * 只在**给了、但收不成参数对象**时在场（见契约 `EventDataOf['tool.call'].rawArgs`：
+   * 那一位是它的落点）。**这一位是诊断材料，不是参数**：权限域 / 沙箱 / 装配都不读它
+   * （`args` 才是参数），谁都不许拿它当「模型其实说了什么」去执行。
+   */
+  readonly rawArgs?: string
+  /**
    * **外部工具的注册表身份**（U38）——这一位在＝这是一次**外部调用**。
    *
    * **来处唯一**：分发查到工具定义之后附上（`ToolDefinition.external` → 此位），

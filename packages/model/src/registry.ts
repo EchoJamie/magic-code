@@ -63,7 +63,9 @@ function errorStream(stamper: EventStamper, model: string, message: string): Mod
   const detail = { tier: 'terminal' as const, message }
   const events = (async function* (): AsyncGenerator<KernelEvent> {
     yield modelCallStart(stamper, model)
-    yield modelErrorEvent(stamper, detail.tier, detail.message)
+    // 「哪个模型」照样报（U84）——这一条是「没走到任何一条连接」，故**没有 `provider` 那一位**：
+    // 缺它就是「一条都没选中」这件事本身，不是没记
+    yield modelErrorEvent(stamper, detail.tier, detail.message, { model })
   })()
 
   return {

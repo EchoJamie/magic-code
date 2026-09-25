@@ -116,11 +116,24 @@ export function modelDelta(
   })
 }
 
-/** 模型域错误——已分档（瞬时 / 超限 / 终态——技术方案 · 模型策略 · 错误分档）。 */
+/**
+ * 模型域错误——已分档（瞬时 / 超限 / 终态——技术方案 · 模型策略 · 错误分档）。
+ *
+ * `provider` / `model` 可选带上（U84 · 缺陷 D44）——**这一条要能单独读**：拿到一条
+ * `model.error` 就知道是哪条连接、哪个模型出的错，不必回翻同轮前一条 `model.call.start`
+ * 去拼。两位都与 `model.call.start` 同源同口径（缺省＝未给）。
+ */
 export function modelErrorEvent(
   stamper: EventStamper,
   tier: ModelErrorTier,
   message: string,
+  /** 出错时手上有的那两件——拿不到就不给对应那一位（不编）。 */
+  where?: { readonly provider?: string | undefined; readonly model?: string | undefined },
 ): KernelEvent {
-  return stamper.stamp('model.error', { tier, message })
+  return stamper.stamp('model.error', {
+    tier,
+    message,
+    ...(where?.provider === undefined ? {} : { provider: where.provider }),
+    ...(where?.model === undefined ? {} : { model: where.model }),
+  })
 }

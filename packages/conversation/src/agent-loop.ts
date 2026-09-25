@@ -932,7 +932,15 @@ function withholds(runtime: LoopRuntime, call: ToolCall, text: string): void {
   const log = entryLogOf(runtime)
 
   appendToolCallEntry(log, call)
-  const opened = runtime.stamper.stamp('tool.call', { name: call.name, args: call.args })
+  // **不成形时那段原文随行**（U84）——与工具域那一条同一形（见 `@magic/tools` 的
+  // `toolCallEvent`）：本域不 import 工具域（域间只经契约），故这一位在两处各自成形，
+  // 但字段名与判据只有契约那一份。扣下的这一批**同样**可能是坏参数——
+  // 「没执行」与「参数不成形」是两件事，后者照样要有据可查。
+  const opened = runtime.stamper.stamp('tool.call', {
+    name: call.name,
+    args: call.args,
+    ...(call.rawArgs === undefined ? {} : { rawArgs: call.rawArgs }),
+  })
   runtime.sink.emit(opened)
 
   // **「没跑」由产生处写死**（`notExecuted`）：条目与事件**同源同带**——外壳实时看事件、

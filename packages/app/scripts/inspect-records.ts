@@ -161,10 +161,21 @@ function describeEvent(row: EventRow): string {
       return `模型 ${String(data['model'] ?? '')}`
     case 'model.usage':
       return `用量 in ${String(data['inputTokens'])} / out ${String(data['outputTokens'])}`
+    // 失败那一条要**自己就把话说完**（U84）：哪条连接、哪个模型、什么错——
+    // 不指望读的人回翻同一条调用前面的 `model.call.start` 去拼
     case 'model.error':
-      return `分档 ${String(data['tier'])}：${inline(String(data['message'] ?? ''), 48)}`
-    case 'tool.call':
-      return `${String(data['name'])} ${inline(JSON.stringify(data['args'] ?? {}), 48)}`
+      return (
+        `${whereOf(data)}分档 ${String(data['tier'])}：${inline(String(data['message'] ?? ''), 48)}`
+      )
+    case 'tool.call': {
+      // 参数不成形时，这里把供应商给的**原文**一并摆出来（U84）——
+      // 条目里那格只会是 `args: {}`，光看它会以为模型压根没给参数
+      const raw = data['rawArgs']
+      const shown = `${String(data['name'])} ${inline(JSON.stringify(data['args'] ?? {}), 48)}`
+      return raw === undefined
+        ? shown
+        : `${shown} · 参数原文 ${inline(String(raw), 60)}`
+    }
     case 'tool.decision.request':
       return `询问 ${String(data['name'])}（${String(data['weight'])}）· 调用链 #${String(data['call'])}`
     case 'tool.decision':
@@ -174,6 +185,17 @@ function describeEvent(row: EventRow): string {
     default:
       return inline(row.data, 60)
   }
+}
+
+/**
+ * 「哪条连接 · 哪个模型」——缺哪件就不写哪件（**不补空位**：没给这一位与空串是两回事）。
+ * 两件都缺时给一个空串（那条记录本来就只说得清「什么错」）。
+ */
+function whereOf(data: Record<string, unknown>): string {
+  const parts = [data['provider'], data['model']].filter(
+    (one): one is string => typeof one === 'string' && one.length > 0,
+  )
+  return parts.length === 0 ? '' : `${parts.join(' · ')}：`
 }
 
 /** 条目的「是什么」——工具条目把载荷带上（重放真源就在这儿）。 */

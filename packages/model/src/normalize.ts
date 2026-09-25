@@ -25,7 +25,7 @@ import type {
   ToolCall,
 } from '@magic/contracts'
 import type { ModelCallResult, ModelStream } from './call.ts'
-import { classifyModelError, describeModelError, isAbortError } from './errors.ts'
+import { classifyModelError, describeModelError, isAbortError, redactSecrets } from './errors.ts'
 import {
   modelCallEnd,
   modelCallStart,
@@ -114,6 +114,11 @@ type PendingToolCall = {
   argsRaw: string
   args: Readonly<Record<string, unknown>> | undefined
   invalid: boolean
+  /**
+   * **不成形时那段原文**（U84）——`undefined` ＝没给参数（或参数收成了，用不着它）。
+   * 已截断、已脱敏（见 `rawOf`）。
+   */
+  raw: string | undefined
 }
 
 type NormalizeState = {
@@ -234,8 +239,66 @@ function toUsage(usage: LanguageModelUsage | undefined): ModelUsage | undefined 
   return Object.keys(mapped).length === 0 ? undefined : mapped
 }
 
-/** 解析不出即取空对象——同时置 `invalid`，让调用方知道参数不可信。 */
-function toArgs(input: unknown): { args: Readonly<Record<string, unknown>>; invalid: boolean } {
+/**
+ * **不成形参数的原文上限**（字符）——U84，缺陷 D42「参数解析不出把原文丢了」。
+ *
+ * 取的是一段能**认清成因**的量：够看见这串东西的头部与断点（是 JSON 断在半路？
+ * 是个字符串？是个数组？），又不会让一条坏调用把记录撑成必须翻页的东西。
+ * 对照同域已有的两道：判档用的文本上限 4000（`errors.ts`），报给用户那句 500。
+ * **它不是给模型看的**（模型那边本来就有 `args: {}` 加一句「参数解析不出」），
+ * 故不必迁就「一屏读完」，但也没有理由比正常调用占的地方更大。
+ */
+const RAW_ARGS_LIMIT = 2000
+
+/** 非字符串的值（数字 / 数组 / `null`…）——照 JSON 写出来；写不出来（循环引用）就退回字符串形。 */
+function safeJsonOf(value: unknown): string {
+  try {
+    const text = JSON.stringify(value)
+    return text === undefined ? String(value) : text
+  } catch {
+    return String(value)
+  }
+}
+
+/** 截一段——超限即截，并在末尾写明「原文还有多长」（读的人据此知道后面还有东西）。 */
+function clip(text: string): string {
+  if (text.length <= RAW_ARGS_LIMIT) return text
+  return `${text.slice(0, RAW_ARGS_LIMIT)}…（原文共 ${text.length} 字，已截断）`
+}
+
+/**
+ * **不成形时那段原文**（U84）——两处来源，**取更贴近原文的那一个**：
+ *
+ * ① 流里攒下的那串文本（`text`）——**供应商原样给的**，一字未动，首选；
+ * ② 它没有时（SDK 直接把解析好的值交过来，没走增量），才把那个值照 JSON 写出来
+ *    （`value`）——那是还原，不是原文，但总比丢掉强。
+ *
+ * 两处都没有（空文本 ＋ `undefined`）⇒ `undefined` ＝**压根没给参数**。
+ *
+ * 出来之前过两道：**脱敏**（密钥纪律「key 只向下流」——模型的参数里可能原样带着
+ * 用户粘过的 key；与错误消息那一道同一把尺子）＋**截断**。
+ */
+function rawOf(state: NormalizeState, text: string, value: unknown): string | undefined {
+  const source = text.length > 0 ? text : value === undefined ? '' : safeJsonOf(value)
+  if (source.length === 0) return undefined
+  return redactSecrets(clip(source), state.secret)
+}
+
+/**
+ * 解析不出即取空对象——同时置 `invalid`，让调用方知道参数不可信。
+ *
+ * ⚠️ **「没给」与「给了但不成形」在这里就分开**（U84，缺陷 D42）：
+ * - `input === undefined` ⇒ `invalid: false`——**没给参数**，不是坏参数
+ *   （零参工具走的就是这一支，照旧放行）；
+ * - 其余非对象（字符串 / 数字 / 数组 / `null`）⇒ `invalid: true`——**给了，但不成形**。
+ *
+ * 原文**不在这里取**：那要问流里攒下的那串文本（见 `rawOf`），而本函数是纯的、
+ * 手上只有解析后的值。
+ */
+function toArgs(input: unknown): {
+  args: Readonly<Record<string, unknown>>
+  invalid: boolean
+} {
   if (input !== null && typeof input === 'object' && !Array.isArray(input)) {
     return { args: input as Readonly<Record<string, unknown>>, invalid: false }
   }
@@ -288,6 +351,7 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
         argsRaw: '',
         args: undefined,
         invalid: false,
+        raw: undefined,
       })
       // 空文本增量——零参工具不会有参数片段，工具名只在流里出现这一次
       return [modelDelta(state.stamper, 'toolcall', '', part.toolName, part.id)]
@@ -301,6 +365,8 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
     case 'tool-call': {
       const existing = state.pending.get(part.toolCallId)
       const { args, invalid } = toArgs(part.input)
+      // 原文优先取**流里攒下的那串**（同一 id 的增量片段），没有才退回解析后的值
+      const kept = invalid ? rawOf(state, existing?.argsRaw ?? '', part.input) : undefined
       if (existing === undefined) {
         state.pending.set(part.toolCallId, {
           id: part.toolCallId,
@@ -308,11 +374,13 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
           argsRaw: '',
           args,
           invalid,
+          raw: kept,
         })
       } else {
         existing.name = part.toolName
         existing.args = args
         existing.invalid = invalid
+        existing.raw = kept
       }
       return []
     }
@@ -346,7 +414,13 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
       const tier = classifyModelError(part.error)
       const message = describeModelError(part.error, state.secret)
       state.error = { tier, message }
-      return [...flushText(state), modelErrorEvent(state.stamper, tier, message)]
+      return [
+        ...flushText(state),
+        modelErrorEvent(state.stamper, tier, message, {
+          provider: state.provider,
+          model: state.model,
+        }),
+      ]
     }
     case 'abort': {
       state.aborted = true
@@ -381,14 +455,22 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
 
 // —— 落定 ——
 
-/** 在途工具调用收口——`tool-call` 未到者，用攒下的参数片段兜底。 */
+/**
+ * 在途工具调用收口——`tool-call` 未到者，用攒下的参数片段兜底。
+ *
+ * 三岔与 `toArgs` 同一副判据（U84，「没给」与「给了但不成形」要分得开）：
+ * ① **收成了** ⇒ 原样；
+ * ② **没给**（片段一片都没攒下）⇒ 空参数、**不是坏参数**、也没有原文；
+ * ③ **给了但不成形**（片段攒下了，JSON 却解不出 / 解出来不是对象）⇒ `invalid`
+ *    且**把那段原文一并带走**——这正是它跟②在记录里分得开的那一格。
+ */
 function settleToolCalls(state: NormalizeState): ToolCall[] {
   const calls: ToolCall[] = []
   for (const call of state.pending.values()) {
     if (call.args !== undefined) {
       calls.push(
         call.invalid
-          ? { id: call.id, name: call.name, args: call.args, invalid: true }
+          ? { ...rawFieldOf(call.raw), id: call.id, name: call.name, args: call.args, invalid: true }
           : { id: call.id, name: call.name, args: call.args },
       )
       continue
@@ -402,14 +484,35 @@ function settleToolCalls(state: NormalizeState): ToolCall[] {
       const { args, invalid } = toArgs(parsed)
       calls.push(
         invalid
-          ? { id: call.id, name: call.name, args, invalid: true }
+          ? {
+              ...rawFieldOf(rawOf(state, call.argsRaw, parsed)),
+              id: call.id,
+              name: call.name,
+              args,
+              invalid: true,
+            }
           : { id: call.id, name: call.name, args },
       )
     } catch {
-      calls.push({ id: call.id, name: call.name, args: {}, invalid: true })
+      // 断在半路——**这一串就是原文**（收口这一步是它唯一的去处）
+      calls.push({
+        ...rawFieldOf(rawOf(state, call.argsRaw, undefined)),
+        id: call.id,
+        name: call.name,
+        args: {},
+        invalid: true,
+      })
     }
   }
   return calls
+}
+
+/**
+ * 「有原文才带这一位」——`ToolCall.rawArgs` 是可缺位（**只增不改**：不给就与加它之前
+ * 逐字同形）。判 `undefined`（不在场），不判真假：空串也是一段原文（模型真给了个空串）。
+ */
+function rawFieldOf(raw: string | undefined): { rawArgs?: string } {
+  return raw === undefined ? {} : { rawArgs: raw }
 }
 
 function snapshot(state: NormalizeState): ModelCallResult {
@@ -465,7 +568,10 @@ export function toKernelEvents(
         const tier = classifyModelError(error)
         const message = describeModelError(error, state.secret)
         state.error = { tier, message }
-        yield modelErrorEvent(state.stamper, tier, message)
+        yield modelErrorEvent(state.stamper, tier, message, {
+          provider: state.provider,
+          model: state.model,
+        })
       }
     } finally {
       settle(snapshot(state))
