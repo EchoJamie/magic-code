@@ -146,7 +146,7 @@ export { DecisionCard } from './components/decision.ts'
 export { Composer, placeholderOf } from './components/composer.ts'
 export type { ComposerTone } from './components/composer.ts'
 export { PickerList } from './components/picker.ts'
-export { StatusLine } from './components/status.ts'
+export { StatusLine, ALLOW_ALL_LABEL } from './components/status.ts'
 export {
   PALETTE,
   displayWidth,

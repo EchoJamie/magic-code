@@ -109,6 +109,13 @@ export type ExecutorOptions = {
   readonly magic: MagicHome
   /** **开局的换模型请求**（`--provider` / `--model`）——装配之后、开工之前落地。 */
   readonly switch?: ModelSwitchRequest | undefined
+  /**
+   * **全放行**（U73）——命令行 `--allow-all` 在这一个窗口上定下的那个布尔。
+   *
+   * ⚠️ **它必须赶在装配之前**（不像 `switch` 能等装配之后落地）：闸门是**装配期造的**，
+   * 造完就没有改它的口——它正是「对话期间切不进去」那条规矩在代码里的形状。
+   */
+  readonly allowAll?: boolean | undefined
   /** 诊断——缺省不打印（这条线上不写业务日志）。 */
   readonly log?: ((line: string) => void) | undefined
 }
@@ -145,6 +152,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       magic,
       // **显式接续**：给了 id 就是那条会话；不给＝一个会话都不开（D5）
       ...(options.session === null ? {} : { session: options.session }),
+      // 全放行——**造闸门用的那一跳**（见 `ExecutorOptions.allowAll`）
+      ...(options.allowAll === true ? { allowAll: true } : {}),
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -276,6 +285,11 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       ...(live.output === undefined ? {} : { output: live.output }),
       ...(live.model === undefined ? {} : { model: live.model }),
       ...(live.window === undefined ? {} : { window: live.window }),
+      // **这一代的它**（U73）——**由这一代自己报**，不押窗口那一侧的 argv：
+      // 挂上一条**已经活着**的那一代时，那一代带的是它起手带的那个布尔，与此刻这个窗口
+      // 敲的命令行无关（同一个会话可能正被两个窗口看着）。窗口据它画状态行那一格——
+      // 「报的是闸门此刻真的怎么判」，不是「我以为我带没带那个参数」。
+      ...(options.allowAll === true ? { allowAll: true } : {}),
     }
   }
 

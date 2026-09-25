@@ -10,7 +10,7 @@ import { renderToString } from 'ink'
 import { createElement as h } from 'react'
 import type { Entry, KernelEvent } from '@magic/contracts'
 import { AppView } from '../src/components/app.ts'
-import { StatusLine } from '../src/components/status.ts'
+import { ALLOW_ALL_LABEL, StatusLine } from '../src/components/status.ts'
 import { createShell } from '../src/shell.ts'
 import type { ShellStatus } from '../src/view.ts'
 import { HINT_IDLE } from '../src/view.ts'
@@ -133,6 +133,7 @@ describe('状态行 · 四格与降级', () => {
     model: 'MiniMax-M3',
     usage: 12400,
     window: null,
+    allowAll: false,
     hint: HINT_IDLE,
     ...patch,
   })
@@ -177,7 +178,93 @@ describe('状态行 · 四格与降级', () => {
   test('还没有会话时 ② 报「新会话」（不空一格）', () => {
     expect(line({ session: null })).toContain('新会话')
   })
+
+  /**
+   * U73 · **全放行那一格**——`设计/工具执行与权限`：
+   * 「**这不是配置，是状态** ⇒ 常驻。**用户必须随时看得见自己在全放行**」。
+   *
+   * 四条判据：**在**（全放行时就有）· **位置**（① 之后、② 之前，四格次序不动）·
+   * **不在**（不全放行时那格整格不存在，既有四格一字不动）· **永不省**（窄窗也留着）。
+   */
+  describe('全放行那一格（U73）', () => {
+    test('全放行时就有——挂在 ① 之后、② 之前（四格次序一字不动）', () => {
+      const text = line({ allowAll: true })
+
+      expect(text).toContain(ALLOW_ALL_LABEL)
+      expect(text.indexOf('○ 空闲')).toBeLessThan(text.indexOf(ALLOW_ALL_LABEL))
+      expect(text.indexOf(ALLOW_ALL_LABEL)).toBeLessThan(text.indexOf('时区修正'))
+      // ②③④ 那三格的相对次序照旧
+      expect(text.indexOf('时区修正')).toBeLessThan(text.indexOf('MiniMax-M3'))
+      expect(text.indexOf('MiniMax-M3')).toBeLessThan(text.indexOf('12.4k'))
+    })
+
+    test('不在全放行时**整格不存在**——既有四格一字不动（左段逐字比）', () => {
+      const off = line({ allowAll: false })
+      const on = line({ allowAll: true })
+
+      expect(off).not.toContain(ALLOW_ALL_LABEL)
+      // 除了多出来那一格，**左段逐字相同**（` · ` 的分栏也照旧）。
+      // 比的是左段、不是整行：右位是独立一栏、位置随左段宽度走，不是内容。
+      expect(leftOf(on).replace(` · ${ALLOW_ALL_LABEL}`, '')).toBe(leftOf(off))
+    })
+
+    test('**永不省**——三档宽度下都在（它跟 ① 一样是常驻，②③④ 才让位）', () => {
+      for (const columns of [100, 60, 30]) {
+        const text = line({ allowAll: true }, columns)
+
+        expect(text).toContain('○ 空闲')
+        expect(text).toContain(ALLOW_ALL_LABEL)
+      }
+    })
+
+    /**
+     * ⚠️ **它要占宽度**，这一条把话说明白（别把它读成「多一格什么也没发生」）。
+     *
+     * 这条判据钉的是**降级那条规矩没变**，不是「阈值没变」：
+     * ②③④ 让位的次序还是**从右往左**（用量 → 模型 → 标题），第 ① 位与全放行那一格
+     * **一格都不省**；而这一格**实打实占 9 列**（` · 全放行`），左段因此宽了 9 列——
+     * 在某个宽度带上，同一屏会比不在全放行时**早让一步**。那是「多了一格」的算术，
+     * 不是规矩变了：**全放行时活下来的那几格，永远是不在全放行时活下来的那几格的子集**。
+     */
+    test('降级的**规矩**没变——②③④ 只可能**更早**让位，次序与「谁永不省」都不动', () => {
+      const droppable = ['时区修正', 'MiniMax-M3', '12.4k']
+
+      for (let columns = 30; columns <= 120; columns += 2) {
+        const off = line({ allowAll: false }, columns)
+        const on = line({ allowAll: true }, columns)
+
+        // 永不省那两格：任何宽度都在
+        expect(on).toContain('○ 空闲')
+        expect(on).toContain(ALLOW_ALL_LABEL)
+
+        // ②③④：全放行时活下来的，必是不在全放行时活下来的**子集**（只少不多）
+        const keptOff = droppable.filter((cell) => off.includes(cell))
+        const keptOn = droppable.filter((cell) => on.includes(cell))
+        expect(keptOn.every((cell) => keptOff.includes(cell))).toBe(true)
+
+        // 次序照旧：活下来的那几格在两种情形下都是同一个先后
+        const order = (text: string) => droppable.filter((cell) => text.includes(cell))
+        expect(order(on)).toEqual(keptOn)
+        expect(order(off)).toEqual(keptOff)
+      }
+    })
+
+    test('够宽时**五格齐**——多出来的那一格不是拿谁换的', () => {
+      const text = line({ allowAll: true }, 100)
+
+      expect(text).toContain('○ 空闲')
+      expect(text).toContain(ALLOW_ALL_LABEL)
+      expect(text).toContain('时区修正')
+      expect(text).toContain('MiniMax-M3')
+      expect(text).toContain('12.4k')
+    })
+  })
 })
+
+/** 一行的**左段**（`space-between` 之前那一截）——右位是独立一栏，位置随左段走。 */
+function leftOf(text: string): string {
+  return text.split(/\s{2,}/)[0] ?? ''
+}
 
 // ⚠️ **删掉过一节**（U31 三轮）：『空态判定（缺陷 D3）』——它量的是开机那句引导语
 //    （`你按下第一次回车时才建立`）在不在。那句 2026-09-20 由用户定删（没有动作价值，
