@@ -116,6 +116,14 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
   const items =
     bannerOf(columns).length > 0 ? view.settled : view.settled.filter((row) => row.kind !== 'banner')
 
+  // ⚠️ **恒在的那几格各带一个 key**（U96）——**下面这几个孩子里，只有它们是恒在的**：
+  //    记录区那一头（`Static` 与本轮那几行）**有 key**，而**数组里没有 key 的孩子是按下标
+  //    配对的**（React 的隐式 key）——行数一变（一行落定、流式长出一行……），后面这几个的
+  //    下标跟着挪 ⇒ 配不上 ⇒ **旧的卸、新的挂**。重挂的代价看得见：`Composer` 的 `anchor`
+  //    （量出来的那一格锚）当场归零 ⇒ 那一趟 `setCursorPosition(undefined)` ⇒ **真光标当帧
+  //    藏起来**；▲ 有清单 ＋ 空草稿时最刺眼：用户正要打字，插入点却没了（缺陷 D46）。
+  //    **实测**（100×30 一趟真会话）：不带 key，`Composer` 重挂 **6 次**、有 6 趟 `spot` 是空的；
+  //    带上 key **0 次**（只剩开机那一趟——锚还没量到）。用例 `test/spec.u96.test.ts`。
   return h(
     Box,
     { flexDirection: 'column' },
@@ -180,7 +188,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
       }),
     ),
     // **上面这一条**——记录区与交互区之间的界。
-    separatorOf(columns),
+    separatorOf(columns, 'rule:record'),
     // **步骤清单**（U34 · **U85 挪到这条线之下**）——**输入区上方**、**与输入区同侧**；
     // 默认展开、就地刷新。没有清单时一行都不占（`height === 0`）。
     //
@@ -200,7 +208,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     ...(plan.height === 0
       ? []
       : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? now : null })]),
-    h(Box, { flexDirection: 'column' }, ...dockOf(view, columns, rows)),
+    h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, rows)),
     // **下面这一条**（U45 加 · **U59 挪**）——**输入区与状态行之间**的界。状态行之下**不再有线**。
     //
     // ⚠️ **U45 把它加错了位置**：加在状态行**之下**，成了「把输入行 ＋ 状态行框起来」——
@@ -211,8 +219,8 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // **两条同形制**（同宽、同色、同一条 `separatorOf`）——一屏**恰好两条**，别再加第三条
     //（线是划界用的，不是装帧）。高度的账**一分没动**：还是两条线 ＋ 状态行（见 `CHROME_LINES`），
     // 换的只是这两行谁在上谁在下。
-    separatorOf(columns),
-    h(StatusLine, { status: view.status, columns }),
+    separatorOf(columns, 'rule:status'),
+    h(StatusLine, { key: 'status', status: view.status, columns }),
     // **待确认的那一行**（U46 · **U68 挪到这儿**）——**状态行之下**、**缩进对齐状态行**，
     // 仍是屏底（**不另加线**：线是划界用的，一屏恰好两条，见上面那一段）。
     //
@@ -236,9 +244,12 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
  *
  * ⚠️ 宽度取 `max(1, columns)`——极窄档也照整宽画（既有那一手，不新造分支）：
  * 那是**划界**，窄屏上更需要它。
+ *
+ * **`key` 是必给的**（U96）——这两条线是**恒在的兄弟**，不给 key 就是按下标配对，
+ * 记录区行数一变它就重挂（由头见 `AppView` 末尾那一大段注）。
  */
-function separatorOf(columns: number): ReactElement {
-  return h(Text, { color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns)))
+function separatorOf(columns: number, key: string): ReactElement {
+  return h(Text, { key, color: PALETTE.ghost }, '─'.repeat(Math.max(1, columns)))
 }
 
 /**
