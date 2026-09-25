@@ -5,7 +5,8 @@
  * 有一部分在 `packages/tui/test/spec.u33-tui.test.ts`（纯按键 → 视图 ＋ 命令）；
  * 这里补的是**只有真终端才说得清的那几件**：
  * - 屏上**长什么样**（布局 · 文案 · 层级 · 通读——`AGENTS.md` 的看帧四项）；
- * - **提交前零模型请求**、**提交后请求里带的是哪一份主文**（夹具的请求表是物证）；
+ * - **提交前零模型请求**、**提交后那份技能真交到了模型手上**（U63 起正文按需自读：
+ *   第一次请求里不带主文、模型要了之后那次请求里带——两半见 ③ 那一处的注；夹具的请求表是物证）；
  * - **窄窗**下候选还成不成行；
  * - 应用与夹具**由监督者收干净**（`close()` 的 `exit.by`：它自己走的 / 我们杀的）。
  *
@@ -34,8 +35,8 @@
 
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
-import type { Capture, UiSession } from './ui/index.ts'
+import { MAGIC_IDLE_MARK, createUiSession, createSandbox, startFixture } from './ui/index.ts'
+import type { Capture, FixtureRequest, UiSession } from './ui/index.ts'
 import { readDatabase } from './support.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
@@ -129,6 +130,17 @@ function has(shot: Capture, needle: string): boolean {
   return shot.lines.some((line) => line.includes(needle))
 }
 
+/**
+ * 一次出站请求的**整份请求体**（判「某段正文在不在这一次请求里」要看它）。
+ *
+ * ⚠️ **不能拿 `lastUser` 代替**：那个字段是**截到 200 字符**的「最后一条 user 正文」，
+ * 而 U63 起**正文走的是工具结果**（role 是 `tool`，不是 `user`）——`lastUser` 里
+ * 压根看不到它。判「材料到没到模型手上」得读整份 `body`。
+ */
+function bodyTextOf(request: FixtureRequest | undefined): string {
+  return request === undefined ? '' : JSON.stringify(request.body)
+}
+
 /** 帧里的行号（找不到＝-1）。 */
 function rowOf(shot: Capture, needle: string): number {
   return shot.lines.findIndex((line) => line.includes(needle))
@@ -181,8 +193,12 @@ async function pickAndSend(out: string, configured: string): Promise<void> {
     label: 'u33-选择与提交',
     artifacts: join(out, 'runs'),
     config: { skills: { sources: [configured] } },
-    // 长一点、慢一点：提交那一下之后屏上要留得住「长出来的过程」
-    turns: [{ kind: 'text', text: '照它做，先数页数。', chunks: 4, chunkDelayMs: 60 }],
+    // 长一点、慢一点：提交那一下之后屏上要留得住「长出来的过程」。
+    // ⚠️ **头一个回合是模型自己去要技能**（U63 起正文按需自读，见 ③ 那一处的注）
+    turns: [
+      { kind: 'tool', name: 'skill', args: { name: 'pdf' } },
+      { kind: 'text', text: '照它做，先数页数。', chunks: 4, chunkDelayMs: 60 },
+    ],
   })
 
   try {
@@ -223,7 +239,7 @@ async function pickAndSend(out: string, configured: string): Promise<void> {
     check(!has(bound, '（待发送）'), '不另列「待发送材料」那一行')
     check(session.requests().length === 0, '**选定不发模型请求**（夹具收到 0 条）')
 
-    // —— ③ 提交：正文 ＋ 技能一次送出 ——
+    // —— ③ 提交：正文 ＋ 技能引用送出去；技能**正文**由模型按需自取（U63 · 判据 U87 改锚）——
     // ⚠️ **前导空格不是凑数**（U51 补记）：选定之后草稿头一格就是那处引用（`/pdf`），
     //    紧跟正文而不隔一个空格的话，整个开头连成一个词（`/pdf把这份`）——外壳按
     //    「草稿以 `/` 起头」把它当成一条命令，当场回一句「不认得的命令」。
@@ -231,15 +247,46 @@ async function pickAndSend(out: string, configured: string): Promise<void> {
     //    故这里照打——不掩盖产品行为，只是把这一步写成真实的样子。
     await typeLine(session, ' 把这份 PDF 处理一下')
     await session.key('enter', { until: { text: '照它做，先数页数。' }, timeoutMs: 15_000 })
+    // 等这一轮**真收束**——回执（`本次使用技能`）是收束那一刻才发的，早一帧抓下去它还没到
+    await session.wait({ text: MAGIC_IDLE_MARK }, { timeoutMs: 20_000 })
     const sent = await session.capture({ label: '03-提交之后' })
     keep(out, sent, '03-提交之后')
 
+    // ⚠️ **判据换过（U87）**——**换的不是「该咬什么」，是「拿什么证」**。
+    //
+    //   原来咬的是：`提交之后**技能主文真的进了这次请求**`（请求体里认得出 `第一步：先数页数。`）
+    //   ——那是 U63 之前的产品行为：**材料随用户消息整段递进去**。U63 把送达方式改成
+    //   **模型按需自读**（`conversation/refs.ts` 文件头注：文件 / 目录 / 技能都不再随请求展开，
+    //   引用留在交代里的原位，模型自己用 `skill` 工具取），于是那一句**没有对象了**：
+    //   第一次请求里不可能有主文——**再拿它当判据，红的会是产品今天正确的样子**。
+    //
+    //   **它要证的那件事一个字没变：这一趟里那份技能真交到了模型手上。**今天这件事的证据
+    //   分成两半，缺一不可：
+    //
+    //   | 半 | 咬的是 | 谁把它弄红 |
+    //   | --- | --- | --- |
+    //   | ① 第一次请求里**没有**主文 | 送达方式是自读、不是整段递进 | 退回旧样（重新整段展开） |
+    //   | ② 模型要了之后，主文**真进了紧接着那次请求** | 要了**真给到**（取件那一趟没断） | 工具结果送不回去 / 自读那条路坏掉 |
+    //
+    //   只判 ① 会被「送达整个坏掉」蒙过去（那时 ① 照样绿），只判 ② 会被「又退回整段递进」
+    //   蒙过去——**故两半一起判**，这也正是下面那两条。
     const requests = session.requests()
-    check(requests.length === 1, `提交之后**正好一次**模型请求（实测 ${requests.length} 条）`)
-    const carried = requests[0]?.lastUser ?? ''
-    check(carried.includes('第一步：先数页数。'), '**技能主文真的进了这次请求**（请求体里认得出它）', carried)
-    check(carried.includes('把这份 PDF 处理一下'), '用户那句话也在同一条消息里')
-    check(has(sent, '本次使用技能：pdf'), '模型真回来之后，回执给了一次')
+    check(
+      requests.length === 2,
+      `这一趟**两次模型请求**（提交那一次 ＋ 模型要到技能之后收尾那一次；实测 ${requests.length} 条）`,
+    )
+
+    // ① 第一次请求：引用原样留在句子里，而**主文不随请求递进**
+    const first = bodyTextOf(requests[0])
+    check(!first.includes(PDF_BODY), '第一次请求里**没有技能主文**（U63：不整段递进去，模型按需自取）', first.slice(0, 400))
+    check(first.includes('把这份 PDF 处理一下'), '用户那句话在同一条消息里')
+
+    // ② 模型要了（走 `skill` 工具）——**正文真到了它手上**
+    const second = bodyTextOf(requests[1])
+    check(second.includes(PDF_BODY), '**模型要了、技能主文真进了紧接着那次请求**（要了就给到）', second.slice(0, 400))
+
+    check(has(sent, '本次使用技能：pdf'), '读了才回「本次使用技能：pdf」')
+    check(!has(sent, '本次没读'), '读了就不报「没读」')
     check(has(sent, '把这份 PDF 处理一下'), '用户那句话在记录区（斜杠那截不回显）')
     check(!has(sent, '› /skills'), '入口命令本身不回显')
   } finally {
