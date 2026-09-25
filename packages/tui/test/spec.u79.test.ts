@@ -47,9 +47,13 @@ describe('U79 · 「需要你」那一行回执', () => {
     expect(noticeReceiptOf(notice('needs-you', 'exec'), '时区修正')).toBeUndefined()
   })
 
-  test('**逐类写死**：今天只剩 `failed` 那一类还落行', () => {
+  test('**逐类写死**：今天只剩 `failed` 那一格还拼得出那句话', () => {
     // 「三类转换」那一张表的今天——一行一行写，不拿一条等式概括
     // （概括式的一改就全绿，而这正是要盯住的那一格：**哪几类还会印**）
+    //
+    // ⚠️ **U86 起这一条只管「这一支还拼不拼得出」**：管理者那一头三类**都不再往窗口送**
+    // （「出错了」也按「还在看」判了），故这三格**今天一格都到不了屏上**。
+    // 判据本身一个字没改——改的是它读出来的意思；清掉整条通道是另一笔活，见 `view.ts`。
     expect(noticeReceiptOf(notice('done'), '时区修正')).toBeUndefined()
     expect(noticeReceiptOf(notice('needs-you'), '时区修正')).toBeUndefined()
     expect(noticeReceiptOf(notice('failed'), '时区修正')).not.toBeUndefined()

@@ -14,7 +14,8 @@
  * 5. **崩溃后收回自有进程组**——只碰证明得了归属的（同族的外人不碰、PID 重用不误杀）；
  * 6. **通知**——三类转换 · 跨窗口去重 · 不播报还在跑 · 无人连接时系统通知 ＋ 未读汇总；
  *    另加 **U79**：`needs-you` 这一档**不回执、不广播**（看着它一个字不说 ·
- *    没看着才弹系统通知 ＋ 记未读）。
+ *    没看着才弹系统通知 ＋ 记未读）；另加 **U86**：`failed` 这一档**同一把尺子**
+ *    （U74 → U79 → U86 三类走齐，D38 的最后一格）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -526,7 +527,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
 })
 
 describe('U50 · 通知', () => {
-  test('**「跑完了」与「需要你」都不说** · `failed` 照旧一条 · 跨窗口只报一次 · 不播报「还在跑」', async () => {
+  test('**三类都不说** · 跨窗口只报一次 · 不播报「还在跑」', async () => {
     const g = ground('notice')
     seed(g, ['s-7'])
     const said: string[] = []
@@ -578,17 +579,30 @@ describe('U50 · 通知', () => {
       expect(got.filter((one) => one.session === 's-7').some((one) => one.kind === 'done')).toBe(false)
       expect(said.length).toBe(0) // 「正看着」那一档连系统通知都不发（更不标未读）
 
-      // **失败**（第二条，也是今天**唯一**还落行的那一类）
+      /**
+       * **失败**（U86 起：这一档也按「还在看」判——有窗口正看着它 ⇒ **一个字都不说**）。
+       *
+       * ⚠️ 改之前它是**唯一**还落行的那一类（`failed` 照旧按「有没有窗口连着」、
+       * 照旧广播给连着的那几扇窗）——那正是 D38「通知回执的落点」最后一格。
+       */
       fake.emit('turn.start', {}, 's-7')
       fake.emit('turn.end', { reason: 'error' }, 's-7')
-      await waitFor('失败那条到了', () => got.some((one) => one.kind === 'failed'))
+      await Bun.sleep(200)
 
-      // 说出来的**只有这一条**，**没有多余的**（`done` / `needs-you` 两条都不在其中）
-      await Bun.sleep(150)
+      // 三类**一条都没落**：说给用户听的那句话整条通道今天没有产出
       const kinds = got.filter((one) => one.session === 's-7').map((one) => one.kind)
-      expect([...kinds].sort()).toEqual(['failed'])
+      expect(kinds).toEqual([])
       expect(request).toBeGreaterThan(0)
       expect(said.length).toBe(0) // 有窗口看着 ⇒ 不弹系统通知
+
+      /**
+       * 而且**没记未读**——「看着它」那一档连落盘都不必（没有「离开期间」可言）。
+       * ⚠️ 拿**后连上来的窗口**当尺子（它收的那份 `welcome` 就是汇总取材）：
+       * 只 sleep 后断言 `got` 为空咬不住「其实记了未读、只是没送窗口」那一形。
+       */
+      const back = await open(g, b.manager)
+      expect(back.unread).toEqual([])
+      back.close()
 
       two.close()
       one.close()
@@ -874,6 +888,176 @@ describe('U79 · 通知：「需要你」不回执、不广播', () => {
       expect(back.unread[0]?.unread).toBe(true)
 
       back.close()
+    } finally {
+      await b.dispose()
+    }
+  }, 30_000)
+})
+
+/**
+ * **U86 · 「出错了」那一档：同一把尺子**——管理者那一侧的判据（D38 的最后一格）。
+ *
+ * 设计（会话与运行管理 · 通知）：「出错了」**你正看着** ⇒ 不印（**屏上已经有那一行**）·
+ * **没看着** ⇒ 系统通知 ＋ 下次打开汇总。
+ *
+ * ⚠️ **判据是「这条会话有没有窗口正看着它」，不是「有没有窗口连着」**——与 `done`（U74）、
+ * `needs-you`（U79）**同一把尺子**。改之前这一档是唯一还按「有没有窗口连着」判的，
+ * 于是「A 页开着、B 会话出错」那一形里 B 那件事**落到 A 的页上**，而系统通知又不弹。
+ *
+ * ⚠️ 系统通知走**端口记账**（`notifySystem`），**不许真弹**（真弹是 `osascript`）。
+ * 真 PTY 那一趟（A 页干净 · 正看着 B 时那件事照旧在屏上）在 `frames-u86-tui.ts`。
+ */
+describe('U86 · 通知：「出错了」也按「还在看」判', () => {
+  /**
+   * **A 页开着、B 会话出错**——本单要证的那一形（D38 那一格）。
+   *
+   * ⚠️ **「没人看着」必须拿「另一个窗口把它跑起来、随后那个窗口走了」来造**：
+   * 本窗开着而看着别的一条会话，正是旧判据（`clients.size > 0`）会误判成「有人看」的那一形。
+   */
+  test('A 页开着、B 会话出错：**不落到 A 那一页** · 系统通知弹 · 未读落盘 · 下次打开汇总一句', async () => {
+    const g = ground('u86-elsewhere')
+    seed(g, ['s-a', 's-b'])
+    const said: string[] = []
+    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+
+    try {
+      // **A 页**——一个窗口开着，它「正看着」的是 s-a
+      const aPage = await open(g, b.manager)
+      const got: RunNotice[] = []
+      aPage.onNotice((notice) => got.push(notice))
+      aPage.send({ type: 'session.open', session: 's-a' })
+      await waitFor('A 发车', () => b.requests.length === 1)
+      const fakeA = await b.attach(0)
+      fakeA.ready('s-a')
+      await waitFor('A 开张', () => rowOf(aPage, 's-a') !== undefined)
+
+      // **B 会话**——另一个窗口把它跑起来，随后那个窗口走了（没人再看它）
+      const bPage = await open(g, b.manager)
+      bPage.send({ type: 'session.open', session: 's-b' })
+      await waitFor('B 发车', () => b.requests.length === 2)
+      const fakeB = await b.attach(1)
+      fakeB.ready('s-b')
+      await waitFor('B 开张', () => rowOf(aPage, 's-b') !== undefined)
+      bPage.close()
+      await Bun.sleep(80)
+
+      // 那一轮出错了——**A 页开着，可没人看着 s-b**
+      fakeB.emit('turn.start', {}, 's-b')
+      fakeB.emit('turn.end', { reason: 'error' }, 's-b')
+
+      // ① **不广播**：A 那一页（那个窗口）上一条都没有（改之前它会印进 A）
+      await waitFor('系统通知弹了一条', () => said.length === 1)
+      // 逐字：桌面那一句是**用户看的话**（管理者认不得标题，故不报会话 id）
+      expect(said[0]).toBe('有一件工作出错了——打开看是哪条')
+      await Bun.sleep(150)
+      expect(got.filter((one) => one.session === 's-b')).toEqual([])
+
+      // ② **未读落盘**（合并写那一跳要等）——B 那件事正等着用户回来看
+      const paths = runPathsOf(g.magic, g.dataDir, tmpdir())
+      await waitFor('写进了盘里', () => {
+        try {
+          return readFileSync(paths.notices, 'utf8').includes('s-b')
+        } catch {
+          return false
+        }
+      })
+
+      // ③ **下次打开汇总一句**（随 `welcome` 下来，且**只给一次**）——**不逐条念**
+      const back = await open(g, b.manager)
+      expect(back.unread.map((one) => one.session)).toEqual(['s-b'])
+      expect(back.unread[0]?.kind).toBe('failed')
+      expect(back.unread[0]?.unread).toBe(true)
+      expect(unreadSummaryOf(back.unread)).toBe('你不在的时候：1 项出错 —— /resume 看是哪几条')
+
+      const again = await open(g, b.manager)
+      expect(again.unread).toEqual([]) // 说过了就不再念
+
+      // 之后也不会再弹第二条（同一条事实只说一次）
+      expect(said.length).toBe(1)
+
+      aPage.close()
+      back.close()
+      again.close()
+    } finally {
+      await b.dispose()
+    }
+  }, 30_000)
+
+  /**
+   * **三类同一把尺子**——这一条盯的就是「**换了一档有没有真的换全**」。
+   *
+   * 按类分的那几格（U74 只挪 `done`、U79 只挪 `needs-you`）逐单挪完之后，最容易留下的
+   * 病是**还有一档偷偷按旧尺子**：下面两张小表一正一反，**逐类写死**——
+   * 谁把某一档退回「有没有窗口连着」，当场红。
+   */
+  test('**三类同一把尺子**：看着它三类都不说 · 没看着三类各弹一条（逐字）', async () => {
+    const g = ground('u86-same-ruler')
+    seed(g, ['s-w', 's-n'])
+    const said: string[] = []
+    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+
+    try {
+      // —— **正**：有窗口正看着 s-w ⇒ 三类**一样都不说**（回执 · 系统通知 · 未读）——
+      const page = await open(g, b.manager)
+      const got: RunNotice[] = []
+      page.onNotice((notice) => got.push(notice))
+      page.send({ type: 'session.open', session: 's-w' })
+      await waitFor('发车', () => b.requests.length === 1)
+      const fake = await b.attach(0)
+      fake.ready('s-w')
+      await waitFor('开张', () => rowOf(page, 's-w') !== undefined)
+
+      fake.emit(
+        'tool.decision.request',
+        { call: 1, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
+        's-w',
+      )
+      fake.emit('tool.decision', { call: 1, decision: 'approve', decider: 'user', elapsedMs: 5 }, 's-w')
+      fake.emit('turn.start', {}, 's-w')
+      fake.emit('turn.end', { reason: 'settled' }, 's-w')
+      fake.emit('turn.start', {}, 's-w')
+      fake.emit('turn.end', { reason: 'error' }, 's-w')
+      await Bun.sleep(200)
+
+      expect(got).toEqual([]) // 三类一条都没落到窗口上
+      expect(said).toEqual([]) // 也不弹系统通知（有人正看着它）
+      const back = await open(g, b.manager)
+      expect(back.unread).toEqual([]) // 也没记未读——「看着它」那一档没有「离开期间」可言
+      back.close()
+
+      // —— **反**：一个人都没看着 s-n ⇒ 三类各弹一条、**逐字**（词表三类不能互借）——
+      page.close()
+      await Bun.sleep(80)
+
+      const fresh = await open(g, b.manager)
+      fresh.send({ type: 'session.open', session: 's-n' })
+      await waitFor('s-n 发车', () => b.requests.length === 2)
+      const fakeN = await b.attach(1)
+      fakeN.ready('s-n')
+      await waitFor('s-n 开张', () => rowOf(fresh, 's-n') !== undefined)
+      fresh.close()
+      await Bun.sleep(80)
+
+      fakeN.emit('turn.start', {}, 's-n')
+      fakeN.emit('turn.end', { reason: 'settled' }, 's-n')
+      fakeN.emit(
+        'tool.decision.request',
+        { call: 2, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
+        's-n',
+      )
+      fakeN.emit('turn.start', {}, 's-n')
+      fakeN.emit('turn.end', { reason: 'error' }, 's-n')
+      await waitFor('三条都弹了', () => said.length === 3)
+
+      // **逐类写死**（不排序、不概括：一改就得当场看见是哪一类变了）
+      expect(said).toEqual([
+        '有一件工作跑完了一轮——打开看是哪条',
+        '有一件工作正等着你——打开看是哪条',
+        '有一件工作出错了——打开看是哪条',
+      ])
+      const unread = await open(g, b.manager)
+      expect(unread.unread.map((one) => one.kind).sort()).toEqual(['done', 'failed', 'needs-you'])
+      unread.close()
     } finally {
       await b.dispose()
     }

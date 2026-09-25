@@ -323,9 +323,10 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
       statusLineOf(done.lines),
     )
 
-    // ④ **通知**：⚠️ **「跑完了」那一条整个撤掉了**（U74，2026-09-25 用户定）——
-    //    **不是**改落点、**不是**改次序，是**不要了**；「失败」那一类照旧一条
-    //    （第三类「需要你」由审批卡那一屏自带，归 U38 的帧）
+    // ④ **通知**：⚠️ **运行通知那一条通道整个撤掉了**——「跑完了」是 U74（2026-09-25 用户定）、
+    //    「需要你」是 U79、「出错了」是 U86，三类走齐。**不是**改落点、**不是**改次序，
+    //    是**不要了**：有人正看着它 ⇒ 屏上本来就有那一行；没人看着 ⇒ 系统通知 ＋ 未读
+    //    （那两条在管理者那一头，见 `run-stop.test.ts` 的「A 页开着、B 会话出错」那条）。
     //
     // **等抽屉真收起来**——判据取**输入行那句占位**（「交代一件事」），它两趟都在
     // （⚠️ 不能拿状态行那句键位提示当判据：**窄窗里它本来就不出现**，那会当场恒真，
@@ -345,10 +346,20 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
 
     await typeLine(other, '出错那句')
     await other.key('enter')
-    await waitUntil(other, '失败那一类通知', (lines) => lines.some((line) => line.includes('出错了')))
-    const failed = await other.capture({ label: `${mark}-06-出错的那一条通知` })
+    // ⚠️ **U86 改**：等的从「那行回执」换成「**那一件事真的到了**」（`模型错误（…）：…`）
+    //    ——出错那一类**不再另印一条回执**（你正看着它，错本来就在屏上），
+    //    拿回执当条件会白等到超时
+    await waitUntil(other, '那一件事上了屏', (lines) =>
+      lines.some((line) => line.includes('夹具按剧本报错')),
+    )
+    const failed = await other.capture({ label: `${mark}-06-出错那一屏（没有那行回执）` })
     keep(failed)
-    check(has(failed, '出错了'), '「失败」那一类有一行回执', failed.text)
+    check(!has(failed, '出错了'), '「失败」那一类**不再另印一条回执**（U86：看着它就不说）', failed.text)
+    check(
+      has(failed, '模型错误'),
+      '而那一件事**照旧看得见**（错在屏上——撤的是那条回执，不是它）',
+      failed.text,
+    )
 
     // ④ 再交代一句，把状态行从「出错」带回空闲（见夹具第四场）
     await typeLine(other, '收尾')
