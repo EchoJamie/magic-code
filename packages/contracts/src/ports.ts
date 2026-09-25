@@ -135,7 +135,12 @@ export interface ModelGateway {
    * 对 DeepSeek 就落到它的官方默认（**开 ＋ high**）。
    *
    * 缺省 ＝ 不动（由实现侧按「当前选中 / 模型默认」自行补齐）——故这一位**不是必填**，
-   * 只有「这一跳的思考设置与当前选中无关」的调用方（压缩：固定不思考）才给。
+   * 只有「这一跳的思考设置与当前选中无关」的调用方才给：
+   * **压缩**（`compact.ts` 的 `summarize`）与**提炼**（`distill.ts`）——两处都是固定不思考。
+   *
+   * ⚠️ **这一位是「给适配层的」**，两条路都到得了（U99 查清）：压缩那一跳经注册表
+   * （`registry.ts` 的 `withReasoning` 让调用方明说的那一份不被覆盖），提炼那一跳**不经注册表**
+   * （装配按 `webFetch.provider` 单造网关，见 `distill.ts` 那一段注）——由调用方直给。
    */
   stream(
     req: ModelRequest,
