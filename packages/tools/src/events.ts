@@ -24,9 +24,17 @@ import type {
 /**
  * 请求 —— 「模型请求了这次调用」。
  * 名称与参数**原样**入事件（不做解释——解释是给模型的回填，判定是权限域的活）。
+ *
+ * `rawArgs`（U84）只在**参数不成形**时随行——那一段原文是**记录**（事后判成因用），
+ * 不是参数：落进事件的 `data` 即到此为止，装配读的是条目里的 `{name, args}`，
+ * 这一位永远进不了模型上下文（缺陷 D42）。
  */
 export function toolCallEvent(stamper: EventStamper, call: ToolCall): KernelEvent {
-  return stamper.stamp('tool.call', { name: call.name, args: call.args })
+  return stamper.stamp('tool.call', {
+    name: call.name,
+    args: call.args,
+    ...(call.rawArgs === undefined ? {} : { rawArgs: call.rawArgs }),
+  })
 }
 
 /**

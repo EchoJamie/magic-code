@@ -304,7 +304,7 @@ describe('归一 · 思考与工具调用', () => {
     expect(result.toolCalls).toEqual([{ id: 'call-9', name: 'read', args: { path: 'a.ts' } }])
   })
 
-  test('参数解析不出＝invalid，不冒充空参', async () => {
+  test('参数解析不出＝invalid，不冒充空参，且**原文带走**', async () => {
     const { result } = await drain(
       normalize([
         { type: 'start' },
@@ -314,9 +314,83 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
+    // `rawArgs` 是 U84 加的（缺陷 D42）：判据一并**收紧**——坏在哪一串要拿得出来
     expect(result.toolCalls).toEqual([
-      { id: 'call-x', name: 'exec', args: {}, invalid: true },
+      { id: 'call-x', name: 'exec', args: {}, invalid: true, rawArgs: '{"cmd": ' },
     ])
+  })
+
+  test('「没给参数」与「给了但不成形」分得开（U84 · 缺陷 D42）', async () => {
+    const { result } = await drain(
+      normalize([
+        { type: 'start' },
+        // 零参：名字到了，参数片段一片都没有
+        { type: 'tool-input-start', id: 'call-none', toolName: 'ls' },
+        // 给了：片段攒下了，JSON 断在半路
+        { type: 'tool-input-start', id: 'call-bad', toolName: 'exec' },
+        { type: 'tool-input-delta', id: 'call-bad', delta: '{"cmd": "ls ' },
+        finishPart('tool-calls'),
+      ]),
+    )
+
+    // 没给 ⇒ 不是坏参数、没有原文；给了但不成形 ⇒ 坏参数 ＋ 原文在
+    expect(result.toolCalls).toEqual([
+      { id: 'call-none', name: 'ls', args: {} },
+      { id: 'call-bad', name: 'exec', args: {}, invalid: true, rawArgs: '{"cmd": "ls ' },
+    ])
+  })
+
+  test('参数给了个不是对象的东西（JSON 没错）——照样 invalid，原文是那串 JSON', async () => {
+    const { result } = await drain(
+      normalize([
+        { type: 'start' },
+        { type: 'tool-input-start', id: 'call-s', toolName: 'read' },
+        { type: 'tool-input-delta', id: 'call-s', delta: '"/tmp/a.ts"' },
+        finishPart('tool-calls'),
+      ]),
+    )
+
+    expect(result.toolCalls).toEqual([
+      { id: 'call-s', name: 'read', args: {}, invalid: true, rawArgs: '"/tmp/a.ts"' },
+    ])
+  })
+
+  test('原文按上限截断，且截断处**写明还有多长**（别让人以为到那儿就完了）', async () => {
+    const long = `{"cmd": "${'x'.repeat(3000)}"}`
+    const { result } = await drain(
+      normalize([
+        { type: 'start' },
+        { type: 'tool-input-start', id: 'call-long', toolName: 'exec' },
+        { type: 'tool-input-delta', id: 'call-long', delta: `${long.slice(0, 2500)},` },
+        finishPart('tool-calls'),
+      ]),
+    )
+
+    const raw = result.toolCalls?.[0]?.rawArgs ?? ''
+    expect(raw.startsWith('{"cmd": "xxx')).toBe(true)
+    expect(raw.endsWith('…（原文共 2501 字，已截断）')).toBe(true)
+    expect(raw.length).toBe(2000 + '…（原文共 2501 字，已截断）'.length)
+  })
+
+  test('原文先过脱敏——记录里不许带 key（U84）', async () => {
+    const secret = 'sk-live-abcdefghijklmnop'
+    const { result } = await drain(
+      toKernelEvents(
+        fromParts([
+          { type: 'start' },
+          { type: 'tool-input-start', id: 'call-k', toolName: 'write' },
+          { type: 'tool-input-delta', id: 'call-k', delta: `{"path": "${secret}`, },
+          finishPart('tool-calls'),
+        ]),
+        { model: MINIMAX_MODEL, stamper: testStamper(), secret, traits: resolveModelTraits(MINIMAX_MODEL) },
+      ),
+    )
+
+    const raw = result.toolCalls?.[0]?.rawArgs ?? ''
+    expect(raw).not.toContain(secret)
+    expect(raw).toContain('***')
+    // 脱敏之外，形状照样留得住（它是拿来判成因的，不是拿来藏的）
+    expect(raw).toContain('{"path": "')
   })
 
   test('零参工具不出参数片段', async () => {
@@ -370,10 +444,15 @@ describe('归一 · 错误与中断', () => {
 
     expect(events).toHaveLength(3)
     expect(events[0]?.kind).toBe('model.call.start')
+    // `model` 是 U84 加的（缺陷 D44）：这一条要**自己就答完「哪个模型出的错」**
     expect(payloads(events.slice(2))).toEqual([
       {
         kind: 'model.error',
-        data: { tier: 'transient', message: 'Rate limit exceeded, please retry later' },
+        data: {
+          tier: 'transient',
+          message: 'Rate limit exceeded, please retry later',
+          model: MINIMAX_MODEL,
+        },
       },
     ])
     expect(result.error?.tier).toBe('transient')

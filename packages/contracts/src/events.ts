@@ -486,7 +486,28 @@ export type EventDataOf = {
      */
     readonly contextWindow?: number
   }
-  'model.error': { readonly tier: ModelErrorTier; readonly message: string }
+  /**
+   * 请求失败（U84）——**一条就把「哪一家、哪个模型、什么错」答完**。
+   *
+   * 由头（缺陷 D44「请求失败零留痕」）：报错之后要查「是哪条连接、哪个模型出的」，
+   * 此前只能翻**同一轮前一条** `model.call.start` 去拼——那要求读的人知道有那一条、
+   * 且它还在近旁（换一轮、日志只截一段就拼不出来了）。**记录要自持**：一条错误记录，
+   * 四件齐全（第四件「什么时候」在信封的 `at` 上）。
+   *
+   * `provider` / `model` 与 `model.call.start` 同源同口径（**只增不改**：缺省＝未给，
+   * 与加这两位之前逐字同形）——它们是**记录**，不是判定：没有任何一处按它们改行为。
+   *
+   * ⚠️ **不进模型上下文**：它是事件（已发生的过程），条目才是重放真源、才进装配——
+   * 失败那一轮不该因为「记了一笔」而污染后续请求（U84 的硬边界，用例咬住）。
+   */
+  'model.error': {
+    readonly tier: ModelErrorTier
+    readonly message: string
+    /** 走的哪一格（`providers` 的键）——不知道就不给这一位（与 `model.call.start` 同口径）。 */
+    readonly provider?: string
+    /** 请求里那一个模型名——不知道就不给这一位。 */
+    readonly model?: string
+  }
   'model.delta': {
     // 不落库——实时订阅专用
     readonly channel: DeltaChannel
@@ -501,6 +522,22 @@ export type EventDataOf = {
     readonly name: string
     /** 工具各自的参数模式。 */
     readonly args: Readonly<Record<string, unknown>>
+    /**
+     * **参数不成形时，供应商给的原文**（U84 · 缺陷 D42「参数解析不出把原文丢了」）。
+     *
+     * 只在**给了、但收不成参数对象**时在场（`args` 因此是空对象）：
+     * - **压根没给**（零参 / 空参数串）⇒ 没有这一位，且照常是「不是坏参数」——
+     *   这正是它与「给了但不成形」分开的那一格；
+     * - **给了但不成形**（JSON 断在半路 / 根本不是对象）⇒ 原文截一段留在这儿。
+     *
+     * 留它只为**事后判得出成因**（是断在哪儿、给的是什么形状），**不是给模型看**：
+     * 故它走事件（已发生的过程），**不走条目**——条目的 `{name, args}` 是重放真源，
+     * 装配照着它重建请求；这一位永远不进上下文。
+     *
+     * 已脱敏（key 只向下流：`normalize` 那一处过一遍 `redactSecrets`）· 已按上限截断
+     * （截断时末尾带一句说明，免得读的人以为原文到那儿就完了）。
+     */
+    readonly rawArgs?: string
   }
   'tool.decision.request': {
     readonly call: RecordId
