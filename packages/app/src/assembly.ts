@@ -42,6 +42,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
   BackgroundFinish,
+  BackgroundRunning,
   BackgroundRuns,
   ControlTransport,
   EventDataOf,
@@ -647,6 +648,59 @@ export function assemble(options: AssembleOptions): Assembly {
     backgroundDir === undefined
       ? undefined
       : createBackgroundRuns({ dir: backgroundDir, workspace, ledger })
+
+  /**
+   * **哪条会话交出去的**（U89）——一条会话一份「它起过的那些 id」。
+   *
+   * 为什么要另立这一本：登记（`backgroundRuns`）是**进程级**的——它管着进程，进程比会话
+   * 活得久，故它只知道「哪些还站着」，**不知道那是谁交的**（执行域不认识会话，那正是
+   * `open` 里包那一层门面的理由）。而「还在跑的后台命令」要进的是**某一条会话**的请求 ⇒
+   * 归属这件事只能在这一层记：**谁起，就记在谁名下**。
+   *
+   * 三处分寸：
+   * - **记在装配这一层、按会话 id 键**（不是按链实例）：切走再切回来，同一条会话**还是同一条**
+   *   ——它起的那些命令既没停、也没换主人，回来时就该照样看得见；
+   * - **只记 id，不记别的**：命令与输出路径的真源在登记那一本（`running()` 每次现读）；
+   *   在这儿再抄一份就是第二真源，摘账那一刻必然对不上；
+   * - **结束就忘**（`forgetBackground`）：`onFinish` 只由**真退出**触发（跑完 / 被停），
+   *   故这一忘与「它不在 `running()` 里了」是同一件事的两面，不会各说一套。
+   *
+   * ⚠️ **限度如实记**：登记里那些**不是经这条会话起的**（比如别的窗口那条会话起的），
+   * 这一层压根不知道它们存在——那种漏记的方向是**少报**，不是错报（不会把别人的说成你的）。
+   */
+  const backgroundOwners = new Map<SessionId, Set<string>>()
+
+  /** 记一笔：这条 id 是**这条会话**交出去的。 */
+  const rememberBackground = (session: SessionId, id: string): void => {
+    const mine = backgroundOwners.get(session)
+    if (mine === undefined) backgroundOwners.set(session, new Set([id]))
+    else mine.add(id)
+  }
+
+  /** 忘一笔：它已经结束了（自己跑完 / 被停掉）——那一本空了的会话顺手从表里摘掉。 */
+  const forgetBackground = (session: SessionId, id: string): void => {
+    const mine = backgroundOwners.get(session)
+    if (mine === undefined) return
+
+    mine.delete(id)
+    if (mine.size === 0) backgroundOwners.delete(session)
+  }
+
+  /**
+   * **这条会话此刻还在跑的后台命令**（U89）——交给对话域那份现读（每次请求算一遍）。
+   *
+   * 判据是**两本账的交集**：登记说「此刻哪些还站着」（现读，跑完的当场不在列），
+   * 归属那一本说「哪些是这条会话交的」。任一本说不在，就不进这一块——
+   * 故「跑完了 / 被停了」**下一趟就没有它**（工单反面 ②），别的会话起的不进这一条（反面 ④）。
+   */
+  const runningBackgroundOf = (session: SessionId): readonly BackgroundRunning[] => {
+    if (backgroundRuns === undefined) return []
+
+    const mine = backgroundOwners.get(session)
+    if (mine === undefined || mine.size === 0) return []
+
+    return backgroundRuns.running().filter((run) => mine.has(run.id))
+  }
 
   const sandbox = createSandbox({
     workspace,
@@ -1411,17 +1465,34 @@ export function assemble(options: AssembleOptions): Assembly {
        * `onFinish` 那一位：谁发起，就回到谁那儿。
        *
        * `stop` **原样转手**：停是按 id 停的，与「哪条会话发起的」无关（id 全局唯一）。
+       *
+       * ⚠️ **`start` 与 `onFinish` 两处要顺手记一笔归属**（U89）——交给模型那一块
+       * 「还在跑的后台命令」按会话算，而登记不认识会话（见 `backgroundOwners` 的注）：
+       * 起成了记一笔、结束了（跑完 / 被停）忘一笔。
        */
       ...(backgroundRuns === undefined
         ? {}
         : {
             background: {
-              start: (cmd: string, opts?: { readonly cwd?: string }) =>
-                backgroundRuns.start(cmd, {
+              start: async (cmd: string, opts?: { readonly cwd?: string }) => {
+                const started = await backgroundRuns.start(cmd, {
                   ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
-                  onFinish: (finish) => deliverBackgroundDone(session, finish),
-                }),
+                  onFinish: (finish) => {
+                    // **先忘后说**：那一块（下一次请求算）与那一声回执是两件事，
+                    // 顺序上先让实况对——即便下面那一跳因为「用户切走了」什么都不做
+                    forgetBackground(session, finish.id)
+                    deliverBackgroundDone(session, finish)
+                  },
+                })
+
+                // **交出去了才记**：发起不成立（进程没起来）时压根没有在跑的东西
+                if (started.ok) rememberBackground(session, started.id)
+                return started
+              },
               stop: (id: string) => backgroundRuns.stop(id),
+              // **读面照转手**（U89）——一道门面就该与它包的那一件同形；这一条工具域今天
+              // 不读（它只要「起」与「停」），留着是因为**端口上它就在**：少一个会静默换了契约。
+              running: () => backgroundRuns.running(),
             },
           }),    })
     // **转发**而不是取值：注册表会在保存配置之后重建（U41），而这一束链是会话级的——
@@ -1487,6 +1558,11 @@ export function assemble(options: AssembleOptions): Assembly {
         return reason === undefined ? undefined : { reason, keepDraft: false }
       },
       acceptsImages: currentAcceptsImages,
+      // **这条会话还在跑的后台命令**（U89）——现读的 thunk（每请求算一遍），
+      // 对话域把它接成系统提示词的第四个追加块（见 `prompt/background.ts`）。
+      // 这次装配没接后台那一形（算不出运行目录）时不给这一位：那一形压根不在，
+      // 也就没有「还在跑」可言——不给＝这一块不接线（与恒空的读数同形，但少一条假路）。
+      ...(backgroundRuns === undefined ? {} : { background: () => runningBackgroundOf(session) }),
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
       // 对话域只出重建面（`ConversationService.rebuild`）。见下 `actions`。
     })

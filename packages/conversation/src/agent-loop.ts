@@ -49,6 +49,7 @@
  */
 
 import type {
+  BackgroundRunning,
   EventKind,
   EventSink,
   EventStamper,
@@ -79,6 +80,7 @@ import {
   appendUserEntry,
   toolOutcomeOf,
 } from './entries.ts'
+import { withBackgroundRuns } from './prompt/background.ts'
 import type { RefDelivery } from './refs.ts'
 import type { RulesDelivery } from './rules.ts'
 import { needsReviewText, overflowText } from './rules.ts'
@@ -195,6 +197,17 @@ export type LoopRuntime = {
    * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
    */
   readonly submitRefusal?: (() => SubmitRefusal | undefined) | undefined
+  /**
+   * **这条会话此刻还在跑的后台命令**（U89）——每请求现取一次，接成一个追加块
+   * （见 `./prompt/background.ts`）。
+   *
+   * 与 `rules` / `skills` 同一处接上、同一个姿势（**现取现接**）：它答的是「此刻」，
+   * 而**一条命令在这一轮里跑完了**正是常态——抓一份快照，下一轮就会把已经结束的
+   * 说成还在跑（那比不报更坏：模型据此以为还能等到它的输出）。
+   *
+   * 不给这一位（旧装配、用例）＝这一块压根不接线（行为与加它之前一字不动）。
+   */
+  readonly background?: (() => readonly BackgroundRunning[]) | undefined
 }
 
 /**
@@ -469,9 +482,10 @@ const RESPONSE_EVENTS: ReadonlySet<EventKind> = new Set<EventKind>([
 ])
 
 /**
- * 系统提示词的两处追加——规约在前、技能目录在后（次序的由头见 `prompt/skills.ts`）。
+ * 系统提示词的三处追加——规约 → 技能目录 → 后台命令（次序的由头见 `prompt/skills.ts`
+ * 与 `prompt/background.ts`：越往后越当下）。
  *
- * 拆成两个小函数只是为了让上面那行读得出来「谁先谁后」；两处都**不接线就原样交回**。
+ * 拆成几个小函数只是为了让下面那行读得出来「谁先谁后」；三处都**不接线就原样交回**。
  */
 function withRules(runtime: LoopRuntime): string {
   return runtime.rules?.promptFor(runtime.systemPrompt) ?? runtime.systemPrompt
@@ -479,6 +493,16 @@ function withRules(runtime: LoopRuntime): string {
 
 function withSkills(runtime: LoopRuntime, base: string): string {
   return runtime.skills?.promptFor(base) ?? base
+}
+
+/**
+ * 后台命令那一块（U89）——**每请求现取**（`runtime.background()` 是一次现读，不是快照）。
+ *
+ * ⚠️ 它在**每一趟请求**上都算一次，包括超限重发那一趟（`assembleContext` 就在那个循环里）
+ * ——那正是要的：重发时的实况可能已经变了（命令在这一轮里跑完了）。
+ */
+function withBackground(runtime: LoopRuntime, base: string): string {
+  return runtime.background === undefined ? base : withBackgroundRuns(base, runtime.background())
 }
 
 /**
@@ -684,10 +708,11 @@ async function runTurn(
       const messages = await assembleContext({
         records: runtime.records,
         session: runtime.session,
-        // **项目规约 ＋ 技能目录**在装配这一步接上（U32 · U33）——都现取现接：
-        // 改过的下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块（见 `prompt/skills.ts`）；
+        // **项目规约 ＋ 技能目录 ＋ 后台命令**在装配这一步接上（U32 · U33 · U89）——
+        // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
+        // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
-        systemPrompt: withSkills(runtime, withRules(runtime)),
+        systemPrompt: withBackground(runtime, withSkills(runtime, withRules(runtime))),
         blobTextLimit: runtime.blobTextLimit,
         // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,

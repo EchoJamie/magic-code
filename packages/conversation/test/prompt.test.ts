@@ -15,6 +15,8 @@ import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  BACKGROUND_BLOCK_ID,
+  BACKGROUND_HEADING,
   ENVIRONMENT_BLOCK_ID,
   ENVIRONMENT_HEADING,
   PROJECT_RULES_BLOCK_ID,
@@ -37,15 +39,16 @@ const VARS: PromptVars = { cwd: '/ws/magic-code', platform: 'darwin', date: '202
 const BLOCK_IDS: PromptBlockId[] = [...PROMPT_SECTIONS, ENVIRONMENT_BLOCK_ID]
 
 /**
- * 块标识 → 边界锚——三个追加块（环境 / 项目规约 / 技能目录）各有自己的标题，四段按
- * `sectionHeading` 算。后续块（项目规约 U32、技能目录 U33）由 `withProjectRules` /
- * `withSkillsCatalog` 追加，**不在** `buildPromptBlocks` 的产物里，故它们不进
- * `BLOCK_IDS`；这里的表先认全，免得日后加块时又漏一处。
+ * 块标识 → 边界锚——四个追加块（环境 / 项目规约 / 技能目录 / 后台命令）各有自己的标题，
+ * 四段按 `sectionHeading` 算。后续块（项目规约 U32、技能目录 U33、后台命令 U89）由
+ * `withProjectRules` / `withSkillsCatalog` / `withBackgroundRuns` 追加，**不在**
+ * `buildPromptBlocks` 的产物里，故它们不进 `BLOCK_IDS`；这里的表先认全，免得日后加块时又漏一处。
  */
 function headingOf(id: PromptBlockId): string {
   if (id === ENVIRONMENT_BLOCK_ID) return ENVIRONMENT_HEADING
   if (id === PROJECT_RULES_BLOCK_ID) return PROJECT_RULES_HEADING
   if (id === SKILLS_BLOCK_ID) return SKILLS_HEADING
+  if (id === BACKGROUND_BLOCK_ID) return BACKGROUND_HEADING
   return sectionHeading(id)
 }
 

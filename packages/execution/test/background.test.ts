@@ -303,6 +303,101 @@ describe('判据 3 · 停——按 id 停，落在进程组上', () => {
   })
 })
 
+// ══ 判据 5 · 读面（还在跑的那些 · U89）═════════════════════════════════
+
+/**
+ * 「**还在跑**」这件事此前问不到：登记只在自己内部那本账上，而模型需要的正是它
+ * （设计 · 提示词与指令 甲 ②：没有它，模型会**重复启动同一条命令**）。
+ *
+ * 这一面的判据是**两向**的：在跑的在列 · 跑完的 / 被停的**当场不在列**。
+ * 后者尤其要紧——「删不准说成还在跑」（工单明文）：把已经结束的说成还在跑，
+ * 比不报更坏（模型据此以为还能等到它的输出）。
+ */
+describe('判据 5 · 读面——只列此刻真没退出的', () => {
+  test('一条在跑的：三件对得上（id / 命令 / 输出文件）', async () => {
+    const land = freshLand()
+    const { runs } = runsOn(land)
+
+    const started = startedOf(await runs.start('sleep 30', {}))
+    const live = runs.running()
+
+    expect(live).toEqual([
+      { id: started.id, command: 'sleep 30', outputPath: started.outputPath },
+    ])
+
+    await runs.stop(started.id)
+  })
+
+  test('⚠️ 自己跑完 ⇒ 当场不在列（不是「还在列着」）', async () => {
+    const land = freshLand()
+    const done: BackgroundFinish[] = []
+    const { runs } = runsOn(land)
+
+    const started = startedOf(
+      await runs.start('true', { onFinish: (finish) => done.push(finish) }),
+    )
+    await until(() => done.length === 1)
+
+    expect(runs.running()).toEqual([])
+    // 「结没结束」与「在不在列」是同一件事的两面——那一声回执响过，这一面就该空了
+    expect(started.id).toBe('bg-1')
+  })
+
+  test('⚠️ 被停掉 ⇒ 也不在列（跑完与被停，两条路都不许说成还在跑）', async () => {
+    const land = freshLand()
+    const done: BackgroundFinish[] = []
+    const { runs, ledger } = runsOn(land)
+
+    const started = startedOf(
+      await runs.start('sleep 30', { onFinish: (finish) => done.push(finish) }),
+    )
+    await until(() => groupPids(pgidOf(ledger)).length >= 1)
+    expect(runs.running().length).toBe(1)
+
+    await runs.stop(started.id)
+    await until(() => done.length === 1)
+
+    expect(runs.running()).toEqual([])
+  })
+
+  test('一条都没有 ⇒ 空表（不是 undefined、也不是一条编出来的）', async () => {
+    const land = freshLand()
+    const { runs } = runsOn(land)
+
+    expect(runs.running()).toEqual([])
+  })
+
+  test('几条按**交出去的次序**排（1 在前、2 在后）；摘一条不影响别条', async () => {
+    const land = freshLand()
+    const done: BackgroundFinish[] = []
+    const { runs } = runsOn(land)
+
+    const first = startedOf(await runs.start('sleep 30', {}))
+    const second = startedOf(await runs.start('true', { onFinish: (finish) => done.push(finish) }))
+
+    await until(() => done.length === 1)
+    // 短的那条跑完了 ⇒ 只剩第一条，且它还在原位
+    expect(runs.running().map((run) => run.id)).toEqual([first.id])
+    expect(runs.running()[0]?.command).toBe('sleep 30')
+
+    await runs.stop(second.id) // 本来就结束了——说得清，不会误伤第一条
+    await runs.stop(first.id)
+  })
+
+  test('⚠️ dev server 那种挂着的：**一直在列**（不据「输出安静了」摘它）', async () => {
+    const land = freshLand()
+    const { runs } = runsOn(land)
+
+    const started = startedOf(await runs.start('echo 起来了; sleep 30', {}))
+    await Bun.sleep(300)
+
+    // 安静了（不再吐字）——但没结束：读面照旧列着它
+    expect(runs.running().map((run) => run.id)).toEqual([started.id])
+
+    await runs.stop(started.id)
+  })
+})
+
 // ══ 判据 4 · 取输出（「用既有的 read 读那个文件」）══════════════════════
 
 describe('判据 4 · 取输出——既有 `read` 读得到，写 / 列 / 匹配都不认', () => {

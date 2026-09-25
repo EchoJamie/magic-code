@@ -48,12 +48,31 @@ export const SKILLS_BLOCK_ID = 'skills'
 /** 技能目录块的标题行（**边界锚**）。 */
 export const SKILLS_HEADING = '## 可用技能'
 
-/** 块的标识——段结构四段之一，或三个追加块（环境注入 · 项目规约 · 技能目录）。 */
+/**
+ * 后台命令块标识（U89）。
+ *
+ * 同一条先例——**只增不改**：段结构 `PROMPT_SECTIONS` 仍是四段，这一块以**追加块**
+ * 落于技能目录块之后（见 `./background.ts`）。它是四块里**唯一一块与时刻有关**的
+ * （此刻哪些命令还站着）——故每请求现取一次，且**没有在跑的就整块不出现**。
+ */
+export const BACKGROUND_BLOCK_ID = 'background'
+
+/**
+ * 后台命令块的标题行（**边界锚**）。
+ *
+ * 标题里就写着「**还在跑**」：这一块里列的每一条**都是此刻没结束的**——收起来那一行
+ * 也要说什么（它是模型判断「要不要再起一条」的唯一依据）。没有在跑的 ⇒ 整块不出现，
+ * 故读到这一行＝确实有东西在跑（同技能目录块「一个都没有就不摆空块」那一条）。
+ */
+export const BACKGROUND_HEADING = '## 还在跑的后台命令'
+
+/** 块的标识——段结构四段之一，或四个追加块（环境注入 · 项目规约 · 技能目录 · 后台命令）。 */
 export type PromptBlockId =
   | PromptSectionId
   | typeof ENVIRONMENT_BLOCK_ID
   | typeof PROJECT_RULES_BLOCK_ID
   | typeof SKILLS_BLOCK_ID
+  | typeof BACKGROUND_BLOCK_ID
 
 /** 装配产物的一块。 */
 export type PromptBlock = {
@@ -153,16 +172,17 @@ export function buildSystemPrompt(vars: PromptVars): string {
 }
 
 /**
- * 已知标题 → 块标识（四段 + 环境块 + 项目规约块）。
+ * 已知标题 → 块标识（四段 + 环境块 + 项目规约块 + 技能目录块 + 后台命令块）。
  *
- * 规约块那一行**即便多数产物里没有这一块也要在**：缺席与「读不出来」是两回事——
- * 少了它，一份带规约的提示词会被切错（规约的标题与正文被算进环境块里）。
+ * 后来那几块**即便多数产物里没有它们也要在**：缺席与「读不出来」是两回事——
+ * 少了一行，一份带那一块的提示词会被切错（它的标题与正文被算进上一块里）。
  */
 const BLOCK_ID_BY_HEADING: ReadonlyMap<string, PromptBlockId> = new Map<string, PromptBlockId>([
   ...PROMPT_SECTIONS.map((id): readonly [string, PromptBlockId] => [sectionHeading(id), id]),
   [ENVIRONMENT_HEADING, ENVIRONMENT_BLOCK_ID],
   [PROJECT_RULES_HEADING, PROJECT_RULES_BLOCK_ID],
   [SKILLS_HEADING, SKILLS_BLOCK_ID],
+  [BACKGROUND_HEADING, BACKGROUND_BLOCK_ID],
 ])
 
 /**
