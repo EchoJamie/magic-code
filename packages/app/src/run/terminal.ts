@@ -97,6 +97,12 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // 「外壳那一跳」挪到了「执行者那一跳」，判据一字未松。
     contextWindow: startupContextWindow(inputs),
     workspaceRoots: workspaceOf(loaded, cwd).roots(),
+    // **数据目录与家目录**（U71 · `/config` 第 4 行那一格）——与工作区根同一条：**呈现要它们**，
+    // 而它们是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何命令问得到。
+    // 这一层手上本来就有（`inputs.loaded` / `inputs.magic`，见本文件头注那张表最后一行），
+    // 故是**转手**、不是新读一遍盘。家目录只用来把屏上的路径缩成 `~/…`——不参与任何解析。
+    dataDir: loaded.config.dataDir,
+    home: inputs.magic.home,
     receipts: startupReceipts(inputs),
     // **运行事实**（U49）——管理者推来的那一份：`/resume` 每一行的状态据它，
     // 而开屏那张摘要也从它数（外壳自己在构造那一刻取一次初值，见 `ShellOptions.runs`）。

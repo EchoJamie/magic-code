@@ -425,6 +425,14 @@ export type Picker = {
     | 'model-reasoning'
     | 'attachments'
     | 'attachment-detail'
+    /**
+     * **配置一览**（U71）——`/config` 那一屏：四行「可配项 ＋ 当前值」，选定进那一项
+     * 自己那一屏（`ConfigItem` 的 `key` 落在 `PickerRow.value` 上）。
+     *
+     * ⚠️ 它是**唯一**一个「行不是从某一份读数铺出来的」抽屉：那一屏的取材是别的抽屉
+     * **下一层**的东西（连接一览 ＋ 授权名录 ＋ 外部工具 ＋ 装配给的那两条路径）。
+     */
+    | 'config'
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -535,6 +543,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   // 我们拦不住）。分工写进 `summary` 那一句里——那是**唯一**该说它的地方（不塞常驻提示）。
   { name: '/exit', summary: '停掉这条会话再退出（只离开＝ctrl+c 两次）' },
   { name: '/status', summary: '看这一趟用了多少、模型是谁' },
+  // U71——**配置的总入口**：一屏看见「现在配成什么样」，选定进那一项自己那一屏。
+  // 它排在 `/model` / `/grants` / `/mcp` 之前：那三条是**它通向的那几屏**，这一条是门。
+  { name: '/config', summary: '看现在配成什么样（选定进那一项）' },
   { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
   { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
   // U33——**它是内置命令**（不是技能）：故在表上、名字不许被技能顶掉。
@@ -724,6 +735,23 @@ export const HINT_PICKER_READ = '↑↓ 选 · ← 退 · esc 收起'
  * 两件（设计明文），不报出来用户就只能自己撞——而抽屉一开就把输入接管了，撞也撞不出回声。
  */
 export const HINT_PICKER_SESSION = '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · ← 退 · esc 收起'
+
+/**
+ * **`/config` 那一屏**的右位提示（U71）——与通用的那句只差**打字筛**。
+ *
+ * 由头同 `HINT_PICKER_SESSION`：这一屏的输入被接管去当筛词（设计「**打字即过滤**（不设
+ * 专门的搜索模式）· 退格清过滤」），不报出来，用户打进去的字就去了一个看不见的地方。
+ *
+ * ⚠️ **`esc` 那半句一字都不能变**：设计明文——`esc` 在这一屏**不负责清过滤**（清过滤归
+ * 退格），**不许造「先清过滤、再全收」的两段 `esc`**（同一个键有时一次有时两次，用户
+ * 没法预期）。提示跟着写「收起」，就是那一条在屏上的落点。
+ *
+ * ⚠️ **退格那半句没写进这一串，是量过宽的**：挂在状态行右位，**放不下就整段不出现**
+ * （见 `components/status.ts` 的 `fitting`），而 `/resume` 那句（比这句只多`tab 换范围`）
+ * 在 80 列窗口上余量已经不多——再加 `· 退格清` 就是拿整句去换半句。清过滤是打字的对面，
+ * 照 `/resume` 的先例（那一句也只报「打字筛」）。
+ */
+export const HINT_PICKER_CONFIG = '↑↓ 选 · 回车 定 · 打字筛 · ← 退 · esc 收起'
 
 /**
  * **停止那两个键**（U50）——报在**选中那一条的详情那一行**，不挂在状态行右位。
@@ -3310,6 +3338,240 @@ function mcpToolCount(server: McpCatalog['servers'][number]): string {
   return server.state.status === 'available' ? ` · ${server.tools.length} 件工具` : ''
 }
 
+// ══ 配置一览（`/config` · U71）════════════════════════════════════════
+
+/**
+ * **`/config` 那一屏里「不是读数」的那两件**——数据目录与工作区根。
+ *
+ * 另外三行（连接 · 授权 · 外部工具）各有自己的读侧命令可问，唯独这两件**是进程启动那一刻
+ * 就定下的**（配置 ＋ 启动目录），没有任何命令答得出来。装配把**已解析的那两份**递进来
+ * （同 `ShellOptions.workspaceRoots` 的姿势）：**拿不到的不编**——没给就那一格空着、那一屏
+ * 少一行，绝不拿一个拼出来的路径顶上。
+ */
+export type ConfigPaths = {
+  /** 数据目录（配置 `dataDir` 的落点 · 已解析的绝对路径）。 */
+  readonly dataDir?: string | undefined
+  /** 系统家目录——**只用来把屏上的路径缩成 `~/…`**（长路径在那一行里放不下）。 */
+  readonly home?: string | undefined
+  /** 工作区根（规范形 · 声明序，`[0]` 是默认根）。 */
+  readonly workspaceRoots?: readonly string[] | undefined
+}
+
+/** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
+export type ConfigItem = {
+  /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
+  readonly key: 'model' | 'grants' | 'mcp' | 'paths'
+  readonly name: string
+}
+
+/**
+ * **第一版列这四项**（设计明文：「模型与连接（`/model`）· 本工作区授权（`/grants`）·
+ * 外部工具（`/mcp`）· 数据目录与工作区根」）。
+ *
+ * ⚠️ **后加的项各自带自己的屏，这一屏只多一行**（设计）：故它是**一张表**，
+ * 铺行、筛词、回车那三处都从这一处取——加一项不必改三处。
+ */
+export const CONFIG_ITEMS: readonly ConfigItem[] = [
+  { key: 'model', name: '模型与连接' },
+  { key: 'grants', name: '本工作区授权' },
+  { key: 'mcp', name: '外部工具' },
+  { key: 'paths', name: '数据目录与工作区根' },
+]
+
+/** 名称那一格最宽是几个字——补齐全靠它（见 `paddedLabel`）。 */
+const CONFIG_LABEL_CHARS = Math.max(...CONFIG_ITEMS.map((item) => [...item.name].length))
+
+/**
+ * 名称补齐到同宽——**「右列对齐」全在这一手**（设计：「每行**一个可配项 ＋ 它的当前值**
+ * （右列对齐）」）。
+ *
+ * 渲染那一层给的是「序号 ＋ 名称 ＋ 一个全角空格 ＋ meta」（`components/picker.ts` 的
+ * `PickerList`），名称是**变长**的——四条不补齐，值那一列就参差不齐，而这一屏的全部意义
+ * 正是**竖着扫一眼**。
+ *
+ * 补的是**全角空格**（与那一格的分隔同一个字符）：四个名称都是全角汉字，按**字**补齐
+ * 即按**列**补齐（`inkWidth` 那边一列不多、一列不少）。补出来的是行尾空白——看不见。
+ */
+function paddedLabel(name: string): string {
+  return name + '　'.repeat(CONFIG_LABEL_CHARS - [...name].length)
+}
+
+/**
+ * 家目录下的路径缩成 `~/…`——**给那一格省地方**（`/Users/<谁>/.magic` 这种头谁都知道，
+ * 而那一行的右边还有别的字）。
+ *
+ * 三条：不知道家目录 ⇒ 原样（拿不到的不编）· 正好是家目录 ⇒ `~` · 在家目录下 ⇒ 换成 `~/`。
+ * **不在家目录下的照旧写绝对路径**——那正是用户要认出来的那一格。
+ */
+function tildify(path: string, home: string | undefined): string {
+  if (home === undefined) return path
+  const base = home.replace(/\/+$/u, '')
+  if (base === '') return path
+  if (path === base) return '~'
+
+  return path.startsWith(`${base}/`) ? `~${path.slice(base.length)}` : path
+}
+
+/**
+ * ① **模型与连接**的当前值——**此刻会走哪一条**（`模型名 · 连接名`）。
+ *
+ * 记号**一字不新造**：那一格取自 `model.catalog` 的 `current`（与 `/model` 那屏标「正在用」
+ * 是**同一份读数**），名称的取法也与 `modelRows` 同一条（模型名取 `info.name ?? id`、
+ * 连接名取 `entry.name ?? id`）——两处各取一套的话，屏上那一栏就会与它通向的那一屏对不上。
+ *
+ * 两种「没有去向」分开说（同 `--check` 的 `describeProviders`）：**一条连接都没接入**与
+ * **接入了但没选过模型**是两件事，后者进去挑一条就有。
+ *
+ * ⚠️ **不报「几条连接」**：那是各入口自己的上下文（设计明文：不复制连接状态），
+ * 这一格说的是「现在走谁」。
+ */
+function configModelValue(entries: readonly ModelCatalogRow[], current: ModelRef | null): string {
+  if (current === null) return entries.length === 0 ? '还没接入' : '还没选模型'
+
+  const entry = entries.find((one) => one.provider === current.provider)
+  const connection = entry?.name ?? current.provider
+  // 缓存里没有它（用户换过的那个模型从最近一次列表里没了）⇒ 照实报精确 id——不拿别的顶上
+  const info = entry?.cache?.snapshot?.models.find((one) => one.id === current.model)
+
+  return `${info?.name ?? current.model} · ${connection}`
+}
+
+/**
+ * ② **本工作区授权**的当前值——**几条**（少了／多了跟着变）。
+ *
+ * ⚠️ **不报「授权来源」**（规则来的还是 `a` 记的）：那是 `/grants` 那一屏的上下文。
+ * 陈旧的节（别的工作区）也不进这一格——这一行说的是**本工作区**。
+ */
+function configGrantsValue(catalog: GrantsCatalog | null): string {
+  if (catalog === null) return ''
+  return catalog.grants.length === 0 ? '还没有' : `${catalog.grants.length} 条`
+}
+
+/**
+ * ③ **外部工具**的当前值——**配了几台**。
+ *
+ * ⚠️ **不报「连上没有 · 各有几件工具」**（设计明文点名的「工具数」）：那是 `/mcp` 那一屏
+ * 的上下文。这一格说的是**配置里写了几台**。
+ */
+function configMcpValue(catalog: McpCatalog | null): string {
+  if (catalog === null) return ''
+  return catalog.servers.length === 0 ? '还没配' : `${catalog.servers.length} 台`
+}
+
+/** ④ **数据目录与工作区根**的当前值——两条路作一段（多个根时报个数，逐个摆进它那一屏）。 */
+function configPathsValue(paths: ConfigPaths): string {
+  const parts: string[] = []
+  if (paths.dataDir !== undefined) parts.push(tildify(paths.dataDir, paths.home))
+
+  const roots = paths.workspaceRoots ?? []
+  if (roots.length === 1) parts.push(tildify(roots[0] as string, paths.home))
+  else if (roots.length > 1) parts.push(`${roots.length} 个根`)
+
+  return parts.join(' · ')
+}
+
+/**
+ * **`/config` 的行**——一行一项：**名称 ＋ 它的当前值**（右列对齐，见 `paddedLabel`）。
+ *
+ * 三件事写在这一处：
+ * - **值从哪来**：三行来自各自的读数（`models` / `grants` / `mcp`，都是**开屏之前刚问回来的**
+ *   那一份），第四行来自装配递进来的两条路径（见 `ConfigPaths`）；
+ * - **`value` 是动作键**（`ConfigItem['key']`）——选定之后进哪一项由它说了算（`shell.ts`
+ *   的 `submit` 那一支），**不从行文案反推**（同 `PickerRow.pick` / `revoke` 那条由头）；
+ * - **`oneLine`**：这一屏的每一行**担保只占一行**（超宽由渲染层截断加 `…`）。
+ *   ⚠️ 这一位**不能省**：路径与模型名都可能很长，折行了就是「账 N 行、屏 N+1 行」，
+ *   矮终端上真光标当场高一行（U31 那个老账）。**长值怎么收＝截断**（不是折行）——
+ *   折行会把「右列对齐」这件事整个毁掉，而**完整那一份在它自己那一屏里**（第 4 项那一屏
+ *   报的就是全路径）。
+ */
+export function configRows(input: {
+  readonly paths: ConfigPaths
+  readonly models: readonly ModelCatalogRow[]
+  readonly current: ModelRef | null
+  readonly grants: GrantsCatalog | null
+  readonly mcp: McpCatalog | null
+  /** 正在筛的词——空串＝全表。 */
+  readonly filter: string
+}): readonly PickerRow[] {
+  const values: Readonly<Record<ConfigItem['key'], string>> = {
+    model: configModelValue(input.models, input.current),
+    grants: configGrantsValue(input.grants),
+    mcp: configMcpValue(input.mcp),
+    paths: configPathsValue(input.paths),
+  }
+
+  const needle = input.filter.trim().toLowerCase()
+
+  return CONFIG_ITEMS.filter((item) => hits(needle, item.name, values[item.key])).map((item) => ({
+    label: paddedLabel(item.name),
+    meta: values[item.key],
+    // 这一屏没有「当前那一条」这回事（四行都是入口，不是候选项）
+    current: false,
+    value: item.key,
+    oneLine: true,
+  }))
+}
+
+/**
+ * 筛词中不中——**按屏上看得见的那些字筛**（名称 ＋ 当前值那一格）。
+ *
+ * 与 `/skills` / `/resume` 同一条口径（那两个也是拿**行上写着的字**筛）：用户打的词就在眼前，
+ * 中不中他一眼看得出来。空词＝全中（退到空＝全表）。
+ */
+function hits(needle: string, name: string, value: string): boolean {
+  return needle === '' || `${name} ${value}`.toLowerCase().includes(needle)
+}
+
+/**
+ * 抽屉下方那行说明——**两件，谁说谁**：
+ *
+ * - **没在筛**：`回车＝进那一项`。这一屏的那件事（「选中 ⇒ 进它自己那一屏」）**别处一个字
+ *   都没说**——状态行右位那句是通用的「回车 定」，而这里「定」下去发生的是**换一屏**
+ *   （照 `/grants` 那句「回车＝撤销选定那条」的先例）；
+ * - **在筛**：报出筛词。⚠️ **必须报**——输入被这一屏接管了，不报用户就看不见自己打的字
+ *   去了哪儿（见 `Picker.filter` 的注）。0 行也照报：那时「没有这一项」**是一个回答**，
+ *   不是一个空档（照 `/skills` 同一条）。
+ */
+export function configHint(input: {
+  readonly filter: string
+  /** 筛过之后还剩几行。 */
+  readonly shown: number
+}): string {
+  if (input.filter === '') return '回车＝进那一项'
+
+  return input.shown === 0
+    ? `没有匹配「${input.filter}」的项——退格删一个字`
+    : `筛选「${input.filter}」——接着打收窄，退格删一个字`
+}
+
+/** 第 4 项那一屏的抬头（纯输出那一块的头一行）。 */
+export const CONFIG_PATHS_TITLE = '数据与工作区根'
+
+/**
+ * **第 4 项自己那一屏**——数据目录与工作区根，**两个完整值**（不缩、不截）。
+ *
+ * 为什么它有「一屏」而 `/model` 那三项是抽屉：那三项**各有自己改配置的地方**（选定就是进
+ * 那儿去改），而这两件今天是**手改配置文件**才动得了的——它没有可进的入口，于是它自己
+ * 那一屏就是**一份读出来的账**（同 `/status` 的姿势：纯输出进记录区，不是一个可操作的屏）。
+ * 这也正是那一格在列表里截断、而这里必须写全的理由：**细节有地方看**。
+ *
+ * ⚠️ **多根时头一条标「默认根」**（`--check` 的 `describeRoots` 同一条口径）：相对路径与
+ * 新文件落它——「平等平铺 ＋ 一个默认」里那个「默认」是**看得见**的一条。单根时不标
+ * （没得比，标了是废话）。
+ */
+export function configPathLines(paths: ConfigPaths): readonly string[] {
+  const lines: string[] = []
+  if (paths.dataDir !== undefined) lines.push(`  数据目录　${paths.dataDir}`)
+
+  const roots = paths.workspaceRoots ?? []
+  roots.forEach((root, index) => {
+    const mark = roots.length > 1 && index === 0 ? '（默认根）' : ''
+    lines.push(`  工作区根　${root}${mark}`)
+  })
+
+  return lines
+}
+
 /**
  * 放行区的账 · **本会话**（`B10`）——**两个占比**，各自说各自的话（见契约 `grants.catalog`）：
  *
@@ -3713,13 +3975,16 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
     return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
   }
 
-  // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）
+  // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）、
+  // 能筛的那两屏要报「打字筛」（见 `HINT_PICKER_SESSION` / `HINT_PICKER_CONFIG`）
   const keys =
     picker.source === 'mcp'
       ? HINT_PICKER_READ
       : picker.source === 'session'
         ? HINT_PICKER_SESSION
-        : HINT_PICKER
+        : picker.source === 'config'
+          ? HINT_PICKER_CONFIG
+          : HINT_PICKER
 
   return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: keys })
 }
