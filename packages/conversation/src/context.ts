@@ -77,8 +77,19 @@ import { planMaterialOf } from './plan.ts'
  * 只定「一条 blob 正文最多带多少进上下文」——**与压缩是两件事**：这个管单条的粗细，
  * 压缩管整段的去留（阈值 / 近段边界见 `./policy.ts`）。
  * 缺省值与策略对象（`./policy.ts`）同源——读侧单独用时不至于各写一个数。
+ *
+ * ⚠️ **这一格是「头 ＋ 尾」两段的总量，不是「只取头部」**（U82 改定，见 `deliveredTextOf`）。
+ * 由头（`D40`）：工具的结论（构建报错、测试结果）**在末尾**，而只取头部的那一版把
+ * 8 KiB～64 KiB 之间、`exec` 已认定「值得留下」的输出砍成开头 2000 字符
+ * （`EXEC_MAX_OUTPUT_BYTES` 是 64 KiB，两把尺子差 30 倍）——模型看不见错误，
+ * 于是改写新命令去探（用户会话 `c5df9940` 现场）。保留中间那一段并没有让模型更能干活：
+ * 它要的是「开头说了什么 ＋ 结尾怎么了」。
+ *
+ * **为什么从 2000 抬到 4000**：头部**一个字不减**（还是 2000——既有行为不动，不制造回归），
+ * 抬的那 2000 全给尾部。代价是每条大结果至多多带 2000 字符（中文约 1～2k token），
+ * 而这条路径本来就只对**越过 `BLOB_THRESHOLD_BYTES` 的那几笔**生效——拿它换「结论看得到」是划算的。
  */
-export const DEFAULT_BLOB_TEXT_LIMIT = 2000
+export const DEFAULT_BLOB_TEXT_LIMIT = 4000
 
 /**
  * 引用表里**文本那几支**（技能 / 文件 / 目录）——`inlineOf` 的入参面（U37）。
@@ -184,7 +195,9 @@ export async function assembleContext(
   // 压缩过就先摆摘要头，再展开「近段 ＋ 摘要之后的条目」（见文件头注 · 边界由摘要位置定）
   const plan = planContext({ entries: all, nearEntries: input.nearEntries ?? DEFAULT_NEAR_ENTRIES })
   if (plan.summary !== undefined) {
-    messages.push(summaryMessage(await contentTextOf(plan.summary.content, input.records, limit)))
+    messages.push(
+      summaryMessage(await contentTextOf(plan.summary.content, input.records, limit, plan.summary.id)),
+    )
   }
 
   const entries = plan.entries
@@ -204,7 +217,7 @@ export async function assembleContext(
       //
       // 两半都取自**这一条条目**（话在正文、材料在载荷），故重放时逐字复原模型当时看到
       // 的那一份，**不重新去读文件**（源改了之后新调用才取新的，历史不被改写）。
-      const text = await contentTextOf(entry.content, input.records, limit)
+      const text = await contentTextOf(entry.content, input.records, limit, entry.id)
       const payload = entry.payload
       const refs = refsPayloadOf(payload)
       const skills = userPayloadOf(payload)
@@ -255,7 +268,7 @@ export async function assembleContext(
         // 重放时因此逐字复原模型当时看到的那一份。
         //
         // 另记「这一份是不是完整的」（U34）——计划材料只认完整的那些（见 `delivered`）
-        const content = await deliveredTextOf(resultEntry.content, input.records, limit)
+        const content = await deliveredTextOf(resultEntry.content, input.records, limit, resultEntry.id)
         if (content.complete) delivered.add(resultEntry.id)
 
         toolMessages.push({
@@ -271,7 +284,7 @@ export async function assembleContext(
 
       messages.push({
         role: 'assistant',
-        content: await contentTextOf(entry.content, input.records, limit),
+        content: await contentTextOf(entry.content, input.records, limit, entry.id),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
         // **该次答复的思考**（U41）——载荷里留着就带回去（供应商要求回传时用得上，
         // 送不送由模型域的适配决定）。不在条目里就一个字不加（旧记录照读）
@@ -285,7 +298,7 @@ export async function assembleContext(
     // `summary`——它落在**近段窗口里**（旧摘要离得太近，还没被新摘要顶掉）。照旧当一段
     // 摘要块送出去：窗口里出现的摘要**没被新摘要覆盖**，丢了就是真丢（见 `planContext`）。
     if (entry.kind === 'summary') {
-      messages.push(summaryMessage(await contentTextOf(entry.content, input.records, limit)))
+      messages.push(summaryMessage(await contentTextOf(entry.content, input.records, limit, entry.id)))
       index += 1
       continue
     }
@@ -354,8 +367,9 @@ export async function contentTextOf(
   content: Content,
   records: { readonly blobs: BlobStore },
   limit: number,
+  record: RecordId,
 ): Promise<string> {
-  return (await deliveredTextOf(content, records, limit)).text
+  return (await deliveredTextOf(content, records, limit, record)).text
 }
 
 /**
@@ -372,19 +386,46 @@ export async function contentTextOf(
  *
  * 故此处按内容形态分两支：**内联＝原样、恒为完整**；**blob＝按 `limit` 节选**，
  * 截断留痕照旧（模型看得到「这里被截了」与原文规模，才不会把半截结果当完整事实下结论）。
+ *
+ * ## ⚠️ blob 那一支**取头也取尾**（U82 改定）
+ *
+ * 原写法是 `slice(0, limit)`——**只留开头**。而工具结果里最要紧的那一段在**末尾**：
+ * 构建日志的报错、测试报告的失败清单、编译器最后那几行，全在结尾。只取头部等于
+ * 把「结论」换成「开场白」，模型据此只会再发一条命令去探（`D40` 的现场）。
+ * 故这一支改成**头 `limit` 的一半 ＋ 尾 `limit` 的一半**（总量见 `DEFAULT_BLOB_TEXT_LIMIT`）。
+ *
+ * 省略处**必须说得出两件事**，缺一条都不行：
+ * - **省略了多少**——省掉多少字符 / 原文多长 / 给的是哪两段（不报数就是让模型
+ *   把半截当完整事实下结论，那正是原先这条注自己担心的事）；
+ * - **怎么看全**——全文仍在会话记录里，`history_read` 带 `entry=<记录 id>` 能分段读回
+ *   （`record` 就是这个 id）。**光截不指路**＝把「这里还有」变成一句没法行动的话
+ *   （`plan-tools.ts` 的 `cutHintOf` 那条注释骂的就是这个）。
+ *
+ * 尾部那一支按字符切（不按行）：一段长行被切开也比丢掉整段结论强，且切点有省略标记兜着。
  */
 export async function deliveredTextOf(
   content: Content,
   records: { readonly blobs: BlobStore },
   limit: number,
+  record: RecordId,
 ): Promise<{ readonly text: string; readonly complete: boolean }> {
   if ('text' in content) return { text: content.text, complete: true }
 
   const text = new TextDecoder().decode(await records.blobs.get(content.blob))
   if (text.length <= limit) return { text, complete: true }
 
+  // 头上取整（`limit` 是奇数时多出的那一个字符归头部）——总量恒为 `limit`
+  const head = Math.ceil(limit / 2)
+  const tail = limit - head
+
   return {
-    text: `${text.slice(0, limit)}\n…（截断：原文 ${text.length} 字符，以上为前 ${limit} 字符）`,
+    text: [
+      text.slice(0, head),
+      `…（截断：中间省略 ${text.length - limit} 字符，原文共 ${text.length} 字符；` +
+        `以上是开头 ${head} 字符、以下是结尾 ${tail} 字符。全文仍在会话记录里——` +
+        `要读全就用 history_read（entry=${record}），它一次给一段，不够时会给续读位置）`,
+      text.slice(text.length - tail),
+    ].join('\n'),
     complete: false,
   }
 }

@@ -361,7 +361,7 @@ function refNameOf(ref: InputRefEntry): string {
 
 /** 一条条目 → 一段文本。 */
 async function renderEntry(entry: Entry, deps: CompactorDeps): Promise<string> {
-  const text = await contentTextOf(entry.content, deps.records, deps.blobTextLimit)
+  const text = await contentTextOf(entry.content, deps.records, deps.blobTextLimit, entry.id)
 
   if (entry.kind === 'user') {
     // **技能材料只报名字**（U33）——正文不展开：摘要要的是「发生过什么」，

@@ -439,7 +439,13 @@ describe('Context 装配 · blob 引用', () => {
     expect(textOfMessage(messages[2] as ModelMessage)).not.toContain('全量输出')
   })
 
-  test('blob 文本按策略截断——取前 N 字符，并留可读的截断标记（原文长度在内）', async () => {
+  /**
+   * ⚠️ **U82 改判**：这一条原先是「取**前** N 字符」（`startsWith('一二三四')`）。
+   * 现在 blob 那一支**头尾都留**——故断言换成「头部那半 ＋ 尾部那半都在」，
+   * 判据没有放宽：省略处照样要报数（原文字数），且另加一条「怎么看全」的引导。
+   * 尾部那半是这一改的**要害**（构建日志的报错在末尾），故它单独咬一句。
+   */
+  test('blob 文本按策略截断——**头尾都留**，并留可读的截断标记（省略多少 ＋ 怎么看全）', async () => {
     const records = makeFauxRecords()
     const ref = await records.blobs.put('一二三四五六七八九十')
     records.appendEntry({ kind: 'user', content: { blob: ref }, at: AT })
@@ -452,9 +458,36 @@ describe('Context 装配 · blob 引用', () => {
     })
 
     const user = textOfMessage(messages[1] as ModelMessage)
-    expect(user.startsWith('一二三四')).toBe(true)
+    expect(user.startsWith('一二')).toBe(true) // 头部那半（limit=4 → 2）
+    expect(user.endsWith('九十')).toBe(true) // 尾部那半——结论在这儿
     expect(user).toContain('截断')
     expect(user).toContain('10') // 原文长度——截断与否看得见
+    expect(user).toContain(`省略 ${10 - 4}`) // 省略了多少（说得出口的那个数）
+    expect(user).toContain('history_read') // 怎么看全（引导，不是干截）
+  })
+
+  /**
+   * **尾部是这一改的要害**（U82 · `D40`）：构建日志 / 测试报告的结论在末尾，
+   * 只取头部那一版把它们整个丢掉了。故这一条拿一段「开头无信息、结尾才是答案」的
+   * 构造去咬——模型必须看得到最后那几行。
+   */
+  test('长 blob 的**尾部结论**进得了上下文（开头是噪声、答案在末尾）', async () => {
+    const records = makeFauxRecords()
+    const noise = `${'编译中……\n'.repeat(40)}`
+    const answer = 'error: 这里就是失败原因'
+    const ref = await records.blobs.put(`${noise}${answer}`)
+    records.appendEntry({ kind: 'user', content: { blob: ref }, at: AT })
+
+    const messages = await assembleContext({
+      records,
+      session: SESSION,
+      systemPrompt: SYSTEM_PROMPT,
+      blobTextLimit: 200,
+    })
+
+    const user = textOfMessage(messages[1] as ModelMessage)
+    expect(user).toContain(answer)
+    expect(user).toContain('省略')
   })
 
   test('不超限的 blob 文本原样——不无谓改写字面', async () => {
