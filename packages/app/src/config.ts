@@ -33,6 +33,7 @@ import type {
   ProviderConfig,
   ProviderModelOverride,
   ReasoningSetting,
+  WebFetchConfig,
 } from '@magic/contracts'
 import {
   apiKeyEnvVarOf,
@@ -510,6 +511,32 @@ function asMcpConfig(value: unknown, path: string): McpConfig {
 }
 
 /**
+ * `webFetch` 那一格（U72）——「取网页」的提炼模型：**供应商 ＋ 型号**两件都要。
+ *
+ * 两件都要的理由与 `ModelSelection` 同一条（只写型号说不清是哪一家）——见契约 `WebFetchConfig`。
+ * 缺 / 空 / 类型不对一律点名报错（`asText` 的老口径：报错一律点到字段），
+ * **不静默回落**到默认连接或当前会话那个模型（那正是这一格要消掉的那件事）。
+ */
+function asWebFetch(
+  raw: unknown,
+  path: string,
+  providers: Readonly<Record<string, ProviderConfig>>,
+): WebFetchConfig | undefined {
+  if (raw === undefined) return undefined
+
+  const fields = asObject(raw, path, 'webFetch')
+  const provider = asText(fields['provider'], path, 'webFetch.provider')
+  const model = asText(fields['model'], path, 'webFetch.model')
+
+  if (providers[provider] === undefined) {
+    const known = Object.keys(providers).join(' / ') || '（一个都没有）'
+    throw new ConfigError(path, `webFetch.provider「${provider}」不在 providers 里——已配：${known}`)
+  }
+
+  return { provider, model }
+}
+
+/**
  * 读并校验配置文件。
  *
  * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补**基础目录**；
@@ -585,6 +612,17 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     )
   }
 
+  /**
+   * `webFetch` 那一格的校验（U72）——与 `defaultProvider` 同一条姿势：
+   * 写了就要**指得到**。
+   *
+   * 两处都从严，理由同源：拼错连接名是最常见的一种，而**静默回落**会让人对着一条
+   * 不生效的配置发呆——在这一格上尤其闷（报出来的还是「还没配提炼用的模型」，
+   * 而用户明明配了）。型号那一格不校验有没有：型号清单来自供应商缓存，不在配置里
+   * （设计 · 命令行与配置：不要求用户登记型号）。
+   */
+  const webFetch = asWebFetch(raw['webFetch'], path, providers)
+
   // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）＋ 旧落点归位（U42，见 `asDataDir` 头注）
   const dataDir = asDataDir(
     raw['dataDir'] === undefined ? magic.base : asText(raw['dataDir'], path, 'dataDir'),
@@ -651,6 +689,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
           }),
       ...(skillSources === undefined ? {} : { skills: { sources: skillSources } }),
       ...(mcp === undefined ? {} : { mcp }),
+      ...(webFetch === undefined ? {} : { webFetch }),
     },
     providerId,
     provider,

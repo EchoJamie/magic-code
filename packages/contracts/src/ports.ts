@@ -797,6 +797,121 @@ export type PathCandidate = {
   readonly external: boolean
 }
 
+// —— 取网页（U72）——
+
+/**
+ * **取回面**（U72）——把一份网页取回来（工具域 → 执行域）。
+ *
+ * ## 为什么它是一条端口，而不是让工具自己 `fetch`
+ *
+ * 与沙箱同一条理由（本文件头注：域只经契约、执行边界管原语）：**出网是边界动作**。
+ * 三条规矩都落在实现那一侧，一处写死：
+ * - **`http` 一律升 `https`**、`localhost` 与无点主机名**发请求之前就拒**（判据在
+ *   `web.ts` 的 `webTargetOf`——**它再走一遍**，不假设调用方替它判过）；
+ * - **不跟随跨主机重定向**：跳走了就把「从哪跳到哪」交回来（设计明写：让模型自己再取一次），
+ *   而不是替它跟过去——跟过去意味着**卡上写的那个域名与实际到达的域名不是一个**；
+ * - **只有 http / https**。
+ *
+ * 入参是**写的那个地址**（未经归一的原话）：归一与拒绝都在实现里做一次。
+ */
+export interface WebSource {
+  fetchPage(url: string, opts?: { readonly signal?: AbortSignal }): Promise<PageFetch>
+}
+
+/** 取回的结果——取到了 / 没取到（三种没取到的来路分得开，回执的话各不相同）。 */
+export type PageFetch = PageFetchOk | PageFetchFailure
+
+export type PageFetchOk = {
+  readonly ok: true
+  /** 归一之后的地址（可能与给的那个不同：`http` 升了 `https`）。 */
+  readonly url: string
+  /** HTTP 状态码——回执要报它。 */
+  readonly status: number
+  /** 正文字节数——回执要报它（**响应体的字节**，不是转出来那份 markdown 的长度）。 */
+  readonly bytes: number
+  /** 正文原文（HTML / 纯文本；**转 markdown 是工具那一侧的事**）。 */
+  readonly body: string
+  readonly contentType?: string
+  /**
+   * **响应体超长，只读到了上限那一截**——`bytes` 是**读到的那部分**，不是页面的全部。
+   *
+   * 单列一位而不是让调用方拿 `bytes` 去比上限：**上限归实现定**（换一个实现就换一个数），
+   * 而「这一份是不是全的」是调用方要说给模型听的一句实话（少读了还说「就这些」是最坏的一种）。
+   */
+  readonly truncated?: true
+}
+
+export type PageFetchFailure = {
+  readonly ok: false
+  /**
+   * - `refused` ——**压根没发**（地址不合格：本机 / 无点 / 非 http(s)）；
+   * - `failed` ——发了没成（连不上、超时、出错码……）；
+   * - `off-host-redirect` ——它跳到**别的主机**去了，本端口**不跟**（`from` / `to` 给出去向）。
+   */
+  readonly kind: 'refused' | 'failed' | 'off-host-redirect'
+  /** 给模型看的一句话（它据此改法）。 */
+  readonly reason: string
+  /** `off-host-redirect` 时给：**从哪**。 */
+  readonly from?: string
+  /** `off-host-redirect` 时给：**跳到哪**。 */
+  readonly to?: string
+}
+
+/**
+ * **提炼面**（U72）——**一次按问题提炼**的模型调用（工具域 → 模型域）。
+ *
+ * ## ⚠️ 这是「工具可以调模型」那条护栏唯一的开口
+ *
+ * 设计（工具执行与权限 ·「工具可以调模型——但只到"终点"为止」）把这一手限定在**一个用途**：
+ * **把大块内容按一个问题提炼掉**。本端口就是那个用途的形状——
+ *
+ * - **它没有「工具」这个参数**：「那次调用不带任何工具」不是实现自觉，而是**这个面根本
+ *   交不出去**（`ModelRequest.tools` 没有来处）。⇒ 深度恒为 1，工具生不出工具；
+ * - **它不是通用能力**：「不做一般化」那条口径落在这里——要再开口，是**再加一条这样的
+ *   窄端口 ＋ 一次裁决**，而不是把某个「随便调模型」的方法挂到工具的执行现场上。
+ *
+ * 因此**只有被点名的工具**拿得到它：`defineWebFetchTool` 的构造入参里才有这一位
+ * （`skill` / `plan` 那几件是从 `options.tools` 追加出口进来的，本件同路），
+ * 工具域的全局执行现场（`ToolRunContext`）**一个字都没多**。
+ *
+ * ## 那次调用进不进记录
+ *
+ * 它是**真发生的一次调用**（用量与错误都算数），但**不是主会话的一轮**：正文不回主会话
+ * 上下文，模型的事件也不转发给外壳（否则外壳会把提炼出来的那段字当成助手的答复渲染出来
+ * ——压缩摘要那一趟正是同一条处置，见 `compact.ts` 的 `summarize`）。
+ */
+export interface PageDistiller {
+  distill(
+    input: {
+      /** 取的哪个网页（进提示词，让模型知道这段话的来路）。 */
+      readonly url: string
+      /** 转成 markdown 之后的正文。 */
+      readonly page: string
+      /** 模型给的「我要知道什么」。 */
+      readonly prompt: string
+    },
+    opts?: { readonly signal?: AbortSignal },
+  ): Promise<DistillOutcome>
+}
+
+/**
+ * 提炼的结果——成了 / 没成。
+ *
+ * ⚠️ **「还没配提炼用的模型」不在这里**：那是**有没有这一条端口**的事——工具拿到
+ * `undefined`（配置里 `webFetch` 空着）就是没配，那一步根本走不到 `distill`。
+ * 拿一个 outcome 分支去表达「这一件压根没有」，会让同一件事有两个说法
+ * （一个空对象 / 一句布尔标记只是把同一件事换个地方讲，还多出「有一位但用不了」的中间态）。
+ */
+export type DistillOutcome =
+  | {
+      readonly ok: true
+      readonly answer: string
+      /** 这一趟**实际用的那个模型名**——回执据它说得出话（不然「用的哪个模型」只能靠猜）。 */
+      readonly model: string
+    }
+  /** 配了，但这一趟没成（连不上 / 供应商报错 / 被掐断 / 没给出答案）——照普通失败办。 */
+  | { readonly ok: false; readonly kind: 'failed'; readonly reason: string }
+
 // —— 计划与历史（U34）——
 
 /**
@@ -1145,6 +1260,23 @@ export type ToolResult = {
     readonly path: string
     readonly covers: 'exact' | 'subtree'
   }
+  /**
+   * **这一轮停在这儿**（U72）——只有「取网页」那一件会带，且只在**没配提炼模型**时。
+   *
+   * ## 由头：这一种失败**不能**交给模型自己处置
+   *
+   * 其余失败都是「模型据此改法」——工具没成，它换个写法再试。这一条不是：模型能想到的
+   * 「换个法子」全都**把整件事绕过去了**——工单原话：「它若改用 `exec curl` 去抓，**这一手
+   * 就被整个绕开了**」。（省上下文正是这一件存在的理由，绕道之后一个字节都没省，而且
+   * 主模型面前摆着的是整页原文。）
+   *
+   * 故它**就地收束这一轮**：工具结果照落（模型与用户都看得见「还没配、取不到」），
+   * 但**不再开下一轮**（见 `agentLoop` 的 `runTurn` 收口）。
+   *
+   * ⚠️ **不落记录**（照 `skill` / `read` 的先例）：它是「这一轮为什么停」的当下事实，
+   * 依据自有别处——那条工具结果条目就在记录里，说得出同一件事。
+   */
+  readonly halt?: true
 }
 
 // —— 权限域 ——

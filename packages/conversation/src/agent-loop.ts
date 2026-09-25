@@ -97,6 +97,18 @@ import type { SubmitRefusal } from './service.ts'
 export type InputOutcome = TurnEndReason | 'rejected'
 
 /**
+ * **这一轮已停住**（U72）——本批余下的调用**一件都不跑**，回填这一句。
+ *
+ * 与 `needsReviewText` / `overflowText` 同族（都是「扣下一次调用、说清为什么」的那句话），
+ * 只是缘由在这一件：它前头那件工具**交了 `halt`**（取网页没配提炼模型），这一轮到此为止。
+ * 措辞按那两句的老口径——**没执行 · 为什么 · 下一步怎么办**，且不宣称任何副作用发生过。
+ */
+const STOPPED_TEXT =
+  '这一轮已停住——本次调用没有执行。\n' +
+  '原因：同一轮里前一件工具要求就地收束（取网页那一件没配提炼用的模型）。\n' +
+  '下一步：等用户配好之后，接着说一句重新开始这一轮。'
+
+/**
  * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
  * 每个字段都是一件「不知道自己是谁的」依赖：模型 / 工具 / 记录皆经端口，实现在别处。
  */
@@ -791,13 +803,32 @@ async function runTurn(
           : undefined
 
     // 同轮多工具——**按序逐个**（并行执行留后评估）；一个被拒只影响该调用
+    //
+    // ⚠️ **有一件交了 `halt` ⇒ 这一轮就地收束**（U72）——见下面那两行与 `stopped`。
+    let stopped = false
+
     for (const call of calls) {
       if (signal.aborted) return close(runtime, 'aborted', false)
-      if (heldText !== undefined) withholds(runtime, call, heldText)
-      else await runToolCall(runtime, call, signal, announce, watch)
+
+      if (stopped) {
+        // 本批余下的**一件都不跑**——理由与「材料超限整批停批」同一条（`preflight` 那一段）：
+        // 半批执行过的状态最难解释。且这一轮**本就不会再开下一轮**，让它们跑完也没人看
+        // （结果要等下一次交代才会进模型眼前）——白做，还多留下几笔动过手脚的痕迹。
+        withholds(runtime, call, STOPPED_TEXT)
+        continue
+      }
+
+      if (heldText !== undefined) {
+        withholds(runtime, call, heldText)
+        continue
+      }
+
+      const outcome = await runToolCall(runtime, call, signal, announce, watch)
+      if (outcome.halt === true) stopped = true
     }
 
-    return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted)
+    // `continues` 为假 ⇒ 回到等待输入（工单第 5 条：这一轮就地收束）
+    return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted && !stopped)
   } catch (error) {
     // 兜底——内核自身异常（非模型 / 工具域）：产生方就近发 `error`，本轮以「错误」收束
     return close(runtime, 'error', false, error)
@@ -822,7 +853,7 @@ async function runToolCall(
   signal: AbortSignal,
   announce: Announcer,
   watch: MaterialWatch,
-): Promise<void> {
+): Promise<ToolOutcome> {
   const log = entryLogOf(runtime)
 
   // 调用条目先落账——它与结果条目成对，「有调用无结果」＝在途（阶段 2 恢复按它找）
@@ -848,6 +879,9 @@ async function runToolCall(
 
   const resultId = appendToolResultEntry(log, outcome)
   announcePlan(runtime, outcome, resultId)
+
+  // **交回结果**（U72）——调用方据 `halt` 决定还开不开下一轮；别的字段它一个字都不读
+  return outcome
 }
 
 /**

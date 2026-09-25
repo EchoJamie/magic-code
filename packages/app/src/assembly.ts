@@ -61,6 +61,8 @@ import type {
   ProviderSaveRequest,
   ProcessLedger,
   RecordsService,
+  WebFetchConfig,
+  WebSource,
   RulesLoad,
   RulesProblem,
   SessionId,
@@ -97,6 +99,7 @@ import {
   createProjectRules,
   createSandbox,
   createSkills,
+  createWebSource,
   createWorkspaceService,
 } from '@magic/execution'
 import type {
@@ -108,8 +111,10 @@ import type {
 } from '@magic/model'
 import {
   createLearnedTraits,
+  createModelGateway,
   createModelInfoService,
   createModelRegistry,
+  createPageDistiller,
   resolveConnection,
   vendorCatalog,
 } from '@magic/model'
@@ -119,7 +124,14 @@ import { createRecordsStore } from '@magic/records'
 import type { RecordsStore } from '@magic/records'
 import { createMcpServers } from '@magic/mcp'
 import type { McpServers } from '@magic/mcp'
-import { PLAN_TOOL_NAMES, createToolRuntime, defineMcpTools, definePlanTools, defineSkillTool } from '@magic/tools'
+import {
+  PLAN_TOOL_NAMES,
+  createToolRuntime,
+  defineMcpTools,
+  definePlanTools,
+  defineSkillTool,
+  defineWebFetchTool,
+} from '@magic/tools'
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
@@ -167,6 +179,16 @@ export type AssembleOptions = {
    * 注入了替身网关（`modelGateway`）时本项无意义——那条路不走注册表。
    */
   readonly modelFetch?: FetchLike | undefined
+  /**
+   * **取回面的注入出口**（U72）——缺省＝真出网（`createWebSource()`，走全局 `fetch`）。
+   *
+   * 用途与 `modelFetch` 一字不差：让装配层用例能拿**真工具 · 真闸门 · 真分发的整条链**
+   * 跑，而把**唯一那一跳出网**换成替身（判据要的是「取回来的那一页怎么变成答案」，
+   * 不是「真站点的 HTML 长什么样」——后者进不了任何一条判据，却会让用例跟着网络抖）。
+   *
+   * ⚠️ **它只换取回**：提炼那一跳照旧走模型域（`modelFetch` 管它）。
+   */
+  readonly webSource?: WebSource | undefined
   /**
    * **显式接续**：给 id ＝ 开局就装载这条会话（并跑一次恢复处置在途）。
    * **不给 ＝ 启动＝新会话**（D4）：一个会话都不开，首条消息按下回车才建立（D5）。
@@ -890,6 +912,17 @@ export function assemble(options: AssembleOptions): Assembly {
   let providerBook: Readonly<Record<string, ProviderConfig>> = loaded.config.providers
   /** 默认连接 id——「设为默认」会换它（同上，与 `loaded` 分开）。 */
   let defaultProviderId: string | undefined = loaded.providerId
+  /**
+   * **「取网页」的提炼模型**（U72）——配置里它自己那一条；**空着 ＝ 还没配**。
+   *
+   * 与 `providerBook` 同一处境：开局取自配置，保存之后换掉它（读的那一方按需现取，
+   * 故「配完接着说一句就能继续」不需要重启）。
+   *
+   * ⚠️ **写这一格的那条路不在本单元**（`/config` 那一行归 U71）——本单元只把它**读进来**、
+   * 递到取网页那一件手上。写的那一步落地时，记得在这一处同步（同 `saveProviderCommand`
+   * 对 `providerBook` 的那一句）。
+   */
+  let webFetchConfig: WebFetchConfig | undefined = loaded.config.webFetch
   /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
   let configMtime: number | undefined = loaded.mtimeMs
 
@@ -1061,6 +1094,58 @@ export function assemble(options: AssembleOptions): Assembly {
   if (options.modelGateway === undefined) models = registryOf()
 
   /**
+   * **取网页那一件工具**（U72）——`options.tools` 追加集里的第四束（见 `open` 里那一行）。
+   *
+   * ## 为什么在这里造、造一次
+   *
+   * **缓存挂在它身上**（`web-fetch-tool.ts` 的 `pageOf`：15 分钟内取过的页面不再取），
+   * 每轮重造就等于没有缓存。⇒ 造**一次**，把会变的那两件（配置里的提炼模型）做成
+   * **现取的函数**递进去（同 `forwardStamper` / `tools` 那个 thunk 的老姿势）。
+   *
+   * ## 提炼那一条模型怎么来的：**不走注册表**
+   *
+   * 注册表的 `stream` 会把**当前选中**盖在 `request.model` 上（`registry.ts`），
+   * 而这一件要的恰恰是**配置里它自己那一条**（工单第 5 条：不跟当前会话的模型走）。
+   * 故这里按 `webFetch` 指名的那条连接**单造一个网关**——它不参与会话的模型切换，
+   * 也就不会跟着漂。
+   *
+   * ⚠️ **缺 key 在这一步抛**（`createModelGateway` 的既有口径）。这里接住它、把它变成
+   * 一件**每次都如实报同一个缘由**的提炼面：那仍然是「配置这一件事没配全」，
+   * 但它**不是**「还没配提炼用的模型」（那一位是空的）——故**不 `halt`**，
+   * 让模型把这句话如实告诉用户（halt 只留给空着那一种，见 `WebFetchDeps`）。
+   */
+  const webFetchTool = defineWebFetchTool({
+    web: options.webSource ?? createWebSource(),
+    distiller: () => {
+      const chosen = webFetchConfig
+      if (chosen === undefined) return undefined
+
+      const entry = providerBook[chosen.provider]
+      if (entry === undefined) return undefined
+
+      // 造网关**每次调用现造**：它内部要解析 key（可能缺），而「缺 key」在构造期抛——
+      // 现造才能把那一句接住、变成一次失败的提炼（而不是把装配整个带崩）。
+      let gateway: ModelGateway
+      try {
+        gateway = createModelGateway({
+          providerId: chosen.provider,
+          config: entry,
+          stamper: forwardStamper,
+          fetch: options.modelFetch,
+          configPath: loaded.path,
+          modelInfoOf: (model) => knownModelOf(chosen.provider, model),
+          learnedTraits,
+        })
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        return { distill: () => Promise.resolve({ ok: false as const, kind: 'failed' as const, reason }) }
+      }
+
+      return createPageDistiller({ gateway, model: chosen.model })
+    },
+  })
+
+  /**
    * **此刻这个模型吃不吃图**（U37）——三态探针，交给对话域（见 `LoopRuntime.acceptsImages`）。
    *
    * 三处合成一处：
@@ -1193,7 +1278,9 @@ export function assemble(options: AssembleOptions): Assembly {
       //
       // ③ **三个内置辅助工具**（U34）：计划笔记与历史回查。它们按会话造（上面那一份读面
       //    绑的就是本条会话），与「现取」不冲突——这一束本来就是本条链自己的。
-      tools: () => [skillTool, ...planTools, ...mcpTools()],
+      // ④ **取网页**（U72）：出网与提炼两样都不在默认七件的射程里，故从这条出口进来
+      //    （造一次、用一路——缓存挂在它身上，见那一件自己的注）。
+      tools: () => [skillTool, ...planTools, webFetchTool, ...mcpTools()],
     })
     // **转发**而不是取值：注册表会在保存配置之后重建（U41），而这一束链是会话级的——
     // 抓一份快照会让已开的会话一直用旧表（同 `forwardStamper` 那条理由）。
@@ -1948,6 +2035,8 @@ export function assemble(options: AssembleOptions): Assembly {
 
     providerBook = reloaded.config.providers
     defaultProviderId = reloaded.providerId
+    // 「取网页」的提炼模型同理（U72）——保存之后立刻对得上，不必重启
+    webFetchConfig = reloaded.config.webFetch
 
     // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
     if (scopeChanged(before, providerBook[request.provider])) {

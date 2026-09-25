@@ -50,3 +50,18 @@ export type { SkillsOptions } from './skills.ts'
 
 export { createMaterials, DEFAULT_CANDIDATES } from './materials.ts'
 export type { MaterialsOptions } from './materials.ts'
+
+/**
+ * **取回面**（`WebSource` · U72）——出网那一件原语（抓一个 URL）。
+ *
+ * 落在这里的理由与沙箱同源（见 `../src/web.ts` 头注）：它是**边界动作**，
+ * 三条规矩（只认 http(s) 且升 https、本机与无点主机名发请求之前就拒、不跟随跨主机重定向）
+ * 在一处写死。工具那一件经这条端口取网，不自己 `fetch`。
+ */
+export {
+  createWebSource,
+  WEB_FETCH_MAX_BYTES,
+  WEB_FETCH_MAX_REDIRECTS,
+  WEB_FETCH_TIMEOUT_MS,
+} from './web.ts'
+export type { WebSourceOptions } from './web.ts'

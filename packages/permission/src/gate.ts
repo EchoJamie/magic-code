@@ -199,10 +199,15 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   return {
     decide(call, ctx, callRef) {
       const started = now() // 度量起点：本域开始处理这次裁决（人工 / 自动同一把尺子）
-      const { weight, material, ops, landings, title, external } = analyze(call, ctx)
+      const { weight, material, ops, landings, title, external, host } = analyze(call, ctx)
 
       // 规则轴与判定轴读的是**同一份** `analyze` 结论——两条路径结构上无从分叉
-      const face: CallFace = { tool: call.name, ops, landings }
+      const face: CallFace = {
+        tool: call.name,
+        ops,
+        landings,
+        ...(host === undefined ? {} : { host }),
+      }
       // **优先级链的次序就在这两行**：手写规则在前、点出来的授权在后
       //（项目规约那一格**留缝不实现**——它要在两者之间，见文件头注那条链）
       const configured = matchRule(rules, face, ctx)
@@ -213,7 +218,9 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       // **必闸 ＞ 规则**：命中的规则只在判定为**轻**时才有资格放行；判重一律问——
       // 必闸类是禁区（清单即禁区），任何规则不可放行。判据不押规则作者的自觉。
-      if (hit !== undefined && weight === 'light') {
+      //
+      // ⚠️ **唯一的例外在那儿**（U72）：外发那一件**按域名**放行——见 `byHost`。
+      if (hit !== undefined && (weight === 'light' || byHost(hit, face))) {
         // 授权**真省了一次点击**才记账（`hit` 的语义见 `grants.ts`）——
         // 命中却被否决的不记：那条授权并没有替用户挡下什么
         if (granted !== undefined) grants.hit(granted)
@@ -233,6 +240,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
         material: hit === undefined ? material : vetoed(material, hit),
         weight,
         ...(external === true ? { external: true } : {}),
+        // **这一次发往哪个域名**（U72）——卡上写清去向，也是「总是允许」那一格对不对得上的依据
+        ...(host === undefined ? {} : { host }),
       })
 
       // **先登记、后扇出**——外壳可能在同一调用栈里答复（答复不必等一轮事件循环），
@@ -282,6 +291,29 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
     tally: () => ({ ...tally }),
   }
+}
+
+/**
+ * **按域名放行**（U72）——「必闸 ＞ 规则」那一条的**唯一例外**，也是「总是允许按域名给」
+ * 在判定上的那一半。
+ *
+ * ## 它凭什么算例外
+ *
+ * 必闸之所以是禁区，是**规则表达不了那个判断**：一条 `{tool:'exec', op:['delete']}`
+ * 说的是「这一类事别再问」，可用户当时答的是**某一次删除**——宽窄对不上，所以不放行。
+ * 域名这一格恰恰把宽窄补上了：命中它**必须**是一次带域名的调用 ＋ 一条**写明域名**的规则
+ * （`matchesHost`：这一侧有域名时，没写域名的规则根本不命中）。于是放行的这一条
+ * 说的就是**用户点头的那一件事本身**——「往 `example.com` 发」。
+ *
+ * ## 判据是**这一次调用**带没带域名，不是规则带了没
+ *
+ * 两件都要（`face.host !== undefined` 与 `rule.host !== undefined`）：
+ * 只看规则那一侧的话，一条写给 `exec` 的 `{tool:'exec', host:'x.com'}` 会顺带把
+ * **所有** `exec` 调用都放行（`exec` 的 face 没有域名这一维，`matchesHost` 对它恒真）——
+ * 那是把一个必闸类的口子开到最大。故判据落在**这一次调用**上。
+ */
+function byHost(rule: PermissionRule, face: CallFace): boolean {
+  return face.host !== undefined && rule.host !== undefined
 }
 
 /**

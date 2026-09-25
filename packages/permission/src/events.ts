@@ -31,6 +31,13 @@ export function decisionRequest(
      * 只读 / 幂等就放权）。写成可选位而非布尔必填：既有产出方（内置工具）一字不动。
      */
     readonly external?: boolean
+    /**
+     * **这一次发往哪个域名**（U72）——取网页那一件（`analyzeWebFetch`）给得出就给。
+     *
+     * 外壳据它在卡上写清去向，并据它决定**必闸件上给不给「总是允许」**那一格
+     * （那一格的授权记的是域名，见契约 `EventDataOf['tool.decision.request'].host`）。
+     */
+    readonly host?: string
   },
 ): KernelEvent {
   return stamper.stamp('tool.decision.request', {
@@ -40,6 +47,7 @@ export function decisionRequest(
     weight: input.weight,
     // 只在真为外部时带键（与「缺席可辨、不给假值」同一条口径）
     ...(input.external === true ? { external: true } : {}),
+    ...(input.host === undefined ? {} : { host: input.host }),
   })
 }
 

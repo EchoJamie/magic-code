@@ -252,6 +252,8 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         // **计划载荷同理**（U34）——⚠️ 判的是 `undefined`（不在场）而非真假：
         // `null` 是**清空**，带上它才算数（见契约 `ToolResult.plan`）
         ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
+        // **这一轮停在这儿**（U72）——原样过手（本域不认识「哪一轮」，收束归对话域）
+        ...(outcome.halt === true ? { halt: true as const } : {}),
       }
     },
   }

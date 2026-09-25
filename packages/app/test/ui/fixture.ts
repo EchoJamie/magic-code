@@ -96,6 +96,15 @@ export type FixtureRequest = {
    * 取**最后一条**：判据问的是「紧接着的上一轮那条」，而更早那些手写的假历史不在这个提问里。
    */
   readonly assistantReasoning: string | undefined
+  /**
+   * **出站请求体原样**（U72）——上面那几格是给它做的常见读法，这一格是**物证本身**。
+   *
+   * 由头：有几条判据问的是「这个键在不在」（如「那次调用**不带任何工具**」——
+   * `'tools' in body === false`）。上面那几格答不了这类问题：`tools: 0` 与
+   * 「压根没有 `tools` 这一格」在那儿长得一样，而两者对供应商是两件事。
+   * 留着原样，判据就不必去猜，也不必改这个夹具。
+   */
+  readonly body: Record<string, unknown>
   /** 相对夹具起好的时刻（毫秒）。 */
   readonly at: number
 }
@@ -150,6 +159,7 @@ export function startFixture(options: FixtureOptions): Fixture {
         images: imagesOf(messages),
         tools,
         assistantReasoning: assistantReasoningOf(messages),
+        body,
         at: (Bun.nanoseconds() - started) / 1e6,
       })
       if (chat) index += 1

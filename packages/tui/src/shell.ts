@@ -3264,7 +3264,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
     if (char === 'a') {
-      if (pending.weight === 'heavy') {
+      // **必闸类不给 `a`——外发那一件是例外**（U72）：它带域名时按域名记
+      //（卡上那一格也照实画成活的、措辞「总是允许这个域名」，见 `decision.ts`）。
+      // 两处判据同一位（`pending.host`）：一处改一处漏，屏上就会出现「画得出来、
+      // 按下去说不行」那种卡。
+      if (pending.weight === 'heavy' && pending.host === undefined) {
         // 外部操作说不出「可逆 / 不可逆」那套词——按它自己的缘由说（U38）；
         // 键位也不在这儿再列一遍（卡上就写着，返工 B：一屏只说一次）
         commit(

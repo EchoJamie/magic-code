@@ -66,9 +66,9 @@ export const GRANTS_VERSION = 1
 export const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000
 
 /**
- * 一条授权 —— 规则三格（工具 × 路径模式 × 操作类型）＋ 记账三件。
+ * 一条授权 —— 规则四格（工具 × 路径模式 × 操作类型 × 域名）＋ 记账三件。
  *
- * 三格与 `PermissionRule` **同一形态**（同一套解析、同一套匹配、同一关必闸禁区）——
+ * 几格与 `PermissionRule` **同一形态**（同一套解析、同一套匹配、同一关必闸禁区）——
  * 授权不是第二种规则，只是**它从哪儿来**不同（点出来的 vs 手写的）。
  */
 export type Grant = PermissionRule & {
@@ -516,9 +516,9 @@ function rowOf(grant: Grant, now: number): GrantRow {
   }
 }
 
-/** 两条授权同不同——工具 × 路径 × 操作三格全等（顺序无关的集合比对）。 */
+/** 两条授权同不同——工具 × 路径 × 操作 × **域名**四格全等（顺序无关的集合比对）。 */
 export function sameRule(a: PermissionRule, b: PermissionRule): boolean {
-  return a.tool === b.tool && a.path === b.path && opKey(a.op) === opKey(b.op)
+  return a.tool === b.tool && a.path === b.path && a.host === b.host && opKey(a.op) === opKey(b.op)
 }
 
 function opKey(op: PermissionRule['op']): string {
@@ -527,15 +527,30 @@ function opKey(op: PermissionRule['op']): string {
 }
 
 /**
- * 「总是允许」凝出的那一条授权 ——（工具 × 本次调用的操作类型）；路径一格缺省＝**根内**。
+ * 「总是允许」凝出的那一条授权 ——（工具 × 本次调用的操作类型 × **本次的域名**）；
+ * 路径一格缺省＝**根内**。
  *
- * 三格照技术方案「按（工具 × 路径模式 × 操作类型）记录」落：工具**收到具体名**
+ * 四格照技术方案「按（工具 × 路径模式 × 操作类型）记录」落，第四格见下：工具**收到具体名**
  * （不推广到别的工具）、操作类型收到**本次实际发生的那几类**（复合命令的每一段都算数）、
  * 路径不写＝根内（用户说的是「这类事别再问」，不是「机器上哪儿都行」）。
+ *
+ * ## 域名那一格：**有就必须带上**（U72）
+ *
+ * 这一处正是「**按域名给，不按工具给**」的落点（设计 · 网页与搜索）。不带上它的后果是
+ * 具体的：`{ tool: 'web_fetch', op: ['outbound'] }` 这一条会命中**任意域名**的取网
+ * ——用户答的本来是「往这家发」，记下来的却成了「往哪家发都行」。
+ *
+ * 反面（调用没有域名，如 `exec` / `write`）**不补这一格**：补一个空串或通配，
+ * 会让「这一次没有域名」与「这一次的域名是某某」在匹配上分不开（`matchesHost` 那两种缺省）。
  */
 export function grantOf(face: {
   readonly tool: string
   readonly ops: readonly RuleOp[]
+  readonly host?: string
 }): PermissionRule {
-  return { tool: face.tool, op: [...face.ops] }
+  return {
+    tool: face.tool,
+    op: [...face.ops],
+    ...(face.host === undefined ? {} : { host: face.host }),
+  }
 }

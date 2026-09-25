@@ -310,6 +310,13 @@ export type PendingDecision = {
    */
   readonly external?: boolean
   /**
+   * **这一次发往哪个域名**（U72 · 来自 `tool.decision.request.data.host`）。
+   *
+   * 两位用处：卡上写清去向（材料里已经有一行，这里是为**键位那一格**——`a` 记的是
+   * 「哪一家」）；以及**必闸件上「总是允许」是否给**（缺席＝不给，见 `decision.ts`）。
+   */
+  readonly host?: string
+  /**
    * 多件裁决的**第几件 / 共几件**（原型 · 场景 7：件数报两处——卡上 ＋ 状态行）。
    * 单件时 `null`（不报数）。
    */
@@ -1634,6 +1641,8 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
         weight: data.weight,
         // 外部操作（U38）——只在真为外部时带键（缺席可辨：内置工具一字不动）
         ...(data.external === true ? { external: true } : {}),
+        // 这一次发往哪个域名（U72）——同上：没有这一维就不带键
+        ...(data.host === undefined ? {} : { host: data.host }),
         position,
       },
     },
