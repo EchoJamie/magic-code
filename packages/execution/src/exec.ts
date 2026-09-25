@@ -107,6 +107,29 @@ const LEDGER_WHAT_CHARS = 40
  * **解码按流式续接**（`{ stream: true }`）——块边界不保证落在字符边界上，
  * 逐块独立解码会把跨块的多字节字符劈成乱码；`text` 与增量**同源**，
  * 故「增量拼接 ＝ 终值」这条判据由构造保证，不靠事后拼装。
+ *
+ * ## ⚠️ 越过上限时**头尾都留**（U93 · `D40` 的「乙」那一半）
+ *
+ * 原写法是 `value.subarray(0, room)`——**只留开头，超出部分只丢不换**。而结论常在
+ * **尾部**：构建日志的报错、测试报告的失败清单、编译器最后那几行。只留头 ＝ 把结论换成
+ * 开场白（`D40` 现场：108930 字节的输出，模型手里只有开头那 65557）。
+ *
+ * 故上限**内**分两段：**头一半 ＋ 尾一半**（上限那个数一个字没动——改的是「留哪一头」，
+ * 不是「留多少」）。取整与 U82 在上下文那一侧落的那一手同形：**奇数时多出的那一字节归头**。
+ *
+ * 两条随之而来的形态：
+ *
+ * - **头那一半照旧实时吐出去**（`sink`——屏幕上看的、记录里攒的都是它）。头之后的字节
+ *   先攒在一个**只留最后 `tailCap` 字节**的缓冲里；到头来若**没越过上限**，那一段原样
+ *   补吐出去（于是「增量拼接 ＝ 终值」这条判据**一个字没破**），越过了才是「尾巴那一份」。
+ * - **中段省掉**，并在省略处**写明省了多少、怎么看全**（`truncationNote`——照 U82 那段
+ *   省略说明的形状：那一段是模型唯一能据以判断「这份是不是完整」的东西）。
+ *
+ * ## 头尾相接处的两片半截字符
+ *
+ * 头那一半停在半片多字节字符上时**不冲**（冲出来只会是个替换符——丢掉比编造诚实，
+ * 这条是既有的）；尾巴那一份另起一个解码器，且**从半片字符之后接上**——两处都不编造
+ * 替换符。尾巴的末尾是**这条流真正的结尾**，故照常冲（与非截断那一支同一条规矩）。
  */
 async function drain(
   stream: ReadableStream<Uint8Array>,
@@ -118,7 +141,14 @@ async function drain(
   const decoder = new TextDecoder()
   let text = ''
   let seen = 0
-  let truncated = false
+
+  // 上限里面的两段。`cap` 理应恒为正（`sandbox.ts` 的 `positiveOr` 兜着），
+  // 但本函数是导出面的下一层、谁直连都可能——故两段都夹在 0 以上，别让负数变成抛。
+  const headCap = Math.max(0, Math.ceil(cap / 2))
+  const tailCap = Math.max(0, cap - headCap)
+  const tailBuf = new Uint8Array(tailCap)
+  let tailLen = 0 // 尾巴缓冲里现有几个字节（≤ tailCap）
+  let headDone = 0 // 头部已经吐出去几个字节
 
   const emit = (chunk: string): void => {
     if (chunk.length === 0) return
@@ -126,26 +156,97 @@ async function drain(
     sink?.({ channel, text: chunk })
   }
 
+  /** 往尾巴缓冲里续一段——**只留最后 `tailCap` 字节**（更早的丢掉：它们是中段）。 */
+  const keepTail = (piece: Uint8Array): void => {
+    if (tailCap === 0 || piece.length === 0) return
+
+    if (piece.length >= tailCap) {
+      tailBuf.set(piece.subarray(piece.length - tailCap))
+      tailLen = tailCap
+      return
+    }
+
+    const drop = Math.max(0, tailLen + piece.length - tailCap)
+    if (drop > 0) {
+      tailBuf.copyWithin(0, drop, tailLen)
+      tailLen -= drop
+    }
+    tailBuf.set(piece, tailLen)
+    tailLen += piece.length
+  }
+
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
 
-    // 上限**按字节**记（`maxOutputBytes` 是字节）——超出部分丢弃，但**照读不辍**：
+    // 上限**按字节**记（`maxOutputBytes` 是字节）——超出部分不留，但**照读不辍**：
     // 停手会让管道写满，命令卡在写不动上，那就不是「截断」而是「挂死」了。
-    const room = cap - seen
     seen += value.length
-    if (value.length > room) truncated = true
 
-    const accepted = value.length <= room ? value : value.subarray(0, Math.max(room, 0))
-    if (accepted.length > 0) emit(decoder.decode(accepted, { stream: true }))
+    let rest = value
+    if (headDone < headCap) {
+      const room = headCap - headDone
+      const part = value.length <= room ? value : value.subarray(0, room)
+      headDone += part.length
+      if (part.length > 0) emit(decoder.decode(part, { stream: true }))
+      rest = value.subarray(part.length)
+    }
+    keepTail(rest)
   }
 
-  // 收尾——冲掉末尾未完的多字节序列（跨块字符的最后一片）。**截断时不冲**：
-  // 那半片是被我们砍断的，冲出来只会是一个替换符（U+FFFD）——丢掉比编造诚实，
-  // 也保住「终值字节数 ≤ 上限」这条不变量。
-  if (!truncated) emit(decoder.decode())
+  // 缓冲里那一段的**绝对起点**（它在整条流里的字节位置）——据它认出头之后还该补多少。
+  const bufferedFrom = seen - tailLen
+  const afterHead = tailBuf.subarray(Math.max(0, headCap - bufferedFrom), tailLen)
 
-  return { text, truncated }
+  if (seen <= cap) {
+    // 没越过上限：整条流一个字节都不少——头之后的续文接着喂同一个解码器，
+    // 末尾照常冲（跨块字符的最后一片就在这儿接上）。
+    if (afterHead.length > 0) emit(decoder.decode(afterHead, { stream: true }))
+    emit(decoder.decode())
+
+    return { text, truncated: false }
+  }
+
+  emit(`${text.endsWith('\n') ? '' : '\n'}${truncationNote(seen - cap, seen, headCap, tailCap)}\n`)
+  emit(decodeFromCharStart(afterHead))
+
+  return { text, truncated: true }
+}
+
+/**
+ * 中段省掉那一句——**省了多少 ＋ 原文多大 ＋ 两头各留多少 ＋ 怎么看全**（U93）。
+ *
+ * 照 U82 在上下文那一侧落的那一段省略说明的形状（`conversation/src/context.ts` 的
+ * `deliveredTextOf`）：四件都得出——**光截不指路**＝把「这里还有」变成一句没法行动的话
+ * （`plan-tools.ts` 那条注释骂的就是这个）。
+ *
+ * ⚠️ **单位是字节**（这里的尺子就是字节：`maxOutputBytes` 按字节算），与 U82 那一段的
+ * 字符不同——那是它的尺子。两处**规则同一条**（头尾都留 · 省略处报数指路），单位各随各的账。
+ *
+ * 「怎么看全」这一句不同于 U82 那一处：那边正文还在会话记录里（`history_read` 读得回），
+ * 这里的**中段是真丢了**（流读过去就没了、记录里也没有）——故指的是一条**重跑**的路：
+ * 把输出落成文件再分次取。⚠️ 不指一条跑不了的入口（`AGENTS.md`）。
+ */
+function truncationNote(omitted: number, total: number, head: number, tail: number): string {
+  return (
+    `…（截断：中间省略 ${omitted} 字节，原文共 ${total} 字节；` +
+    `以上是开头 ${head} 字节、以下是结尾 ${tail} 字节。` +
+    '要看全就重跑一次、把输出落成文件再分次取——' +
+    '如 `cmd > out.txt 2>&1`，之后用 `read`，或 `tail` / `grep` / `sed` 取其中一段）'
+  )
+}
+
+/**
+ * 从**半片多字节字符之后**开始解码（尾巴那一份的开头就在这半片上）。
+ *
+ * 丢掉领头那几个续接字节（`10xxxxxx`），从下一个字符的开头接——不这样，尾巴的头一个字
+ * 就是个替换符（那正是本文件一贯不肯编造的东西）。末尾照常冲：那是这条流真正的结尾。
+ */
+function decodeFromCharStart(bytes: Uint8Array): string {
+  let at = 0
+  while (at < bytes.length && ((bytes[at] as number) & 0xc0) === 0x80) at += 1
+
+  return new TextDecoder().decode(bytes.subarray(at))
 }
 
 /**

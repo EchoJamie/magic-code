@@ -99,7 +99,13 @@ describe('U06 · 流式与终值', () => {
     expect(deps.sandbox.execs).toHaveLength(0) // 一个都没发下去
   })
 
-  test('截断 → 终值带截断标记（沙箱截到上限；本域照实转述，不假装完整）', async () => {
+  /**
+   * ⚠️ **U93 起本域不再缀截断标记**——截断那句由沙箱写在**省略处**（头尾之间），
+   * 本域照实转述正文、一个字不加。原先这里缀的 `[输出已截断（上限 N 字节）]` 与沙箱
+   * 那句是同一件事说两遍，且它落在正文**末尾**——读起来像「尾巴也被砍了」，与事实相反。
+   * 故这条判据改成：「截断这件事，本域不替沙箱再说一遍」。
+   */
+  test('截断 → 正文照实转述（截断那句归沙箱写在省略处，本域不另缀）', async () => {
     const deps = makeToolDeps({
       exec: { x: { ok: true, exit: 0, stdout: 'AAAA', stderr: '', truncated: true } },
     })
@@ -107,7 +113,8 @@ describe('U06 · 流式与终值', () => {
     const outcome = await deps.runtime.invoke(execCall('x'), {})
 
     expect(outcome.ok).toBe(true)
-    expect(outcome.output).toBe(`AAAA\n[输出已截断（上限 ${EXEC_MAX_OUTPUT_BYTES} 字节）]`)
+    expect(outcome.output).toBe('AAAA')
+    expect(outcome.output).not.toContain('输出已截断')
   })
 
   test('命令失败（exit 非 0）→ ok:false ＋ `[exit N]`——命令失败不是沙箱失败，但都是失败', async () => {

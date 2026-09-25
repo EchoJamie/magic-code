@@ -125,7 +125,7 @@ const LONG_HEAD = '〔这段交代的开头〕'
 const LONG_TAIL = '〔而这里是要害：末尾这句要求〕'
 const LONG_FILL = 9000
 
-/** 越过 `EXEC_MAX_OUTPUT_BYTES`（64 KiB）的那一条——`06` 对照帧用。 */
+/** 越过 `EXEC_MAX_OUTPUT_BYTES`（64 KiB）的那一条——`06` 那一帧用。 */
 const HUGE_CMD = 'seq 1 20000 | sed "s/^/u82h-/"'
 
 // ══ 起手与收摊 ══════════════════════════════════════════════════════
@@ -284,10 +284,12 @@ async function sceneScreen(): Promise<void> {
  * - `04` **长交代**（> 8192 字符 ⇒ 存成 blob）⇒ 请求体里那条 `user` 消息**头尾都在**，
  *   省略处报数且指得出怎么读全（**这就是本单改的那一处**）；
  * - `05` **大结果**（未越 64 KiB 上限）⇒ 模型那条 `tool` 消息**整份都在**（头尾自然都在）；
- * - `06` **对照 · `KNOWN_OPEN`**：工具输出**越过 `EXEC_MAX_OUTPUT_BYTES`（64 KiB）**时，
- *   模型那一份**只剩开头**——`exec` 的上限按**头**截（`execution/src/exec.ts` 的 `drain`：
- *   `value.subarray(0, room)`），尾巴整个丢掉。**工单明写不动那个上限**，故本单一字未改，
- *   只把这条事实**钉在帧里**（谁动了它，这一条会红——回头重读一遍）。
+ * - `06` **越过 `EXEC_MAX_OUTPUT_BYTES`（64 KiB）**时的那一形——**U82 当时钉的是「只剩开头」**
+ *   （`drain` 里 `value.subarray(0, room)`，尾巴整个丢掉；那条上限**工单明写不动**，故 U82
+ *   一字未改，只把这事实钉在帧里，并明写「谁动了它这一条会红」）。
+ *   ⚠️ **U93 把它动了**（改的是**留哪一头**，不是留多少）：越过上限时**头尾都留**、中段省掉
+ *   并在省略处写明 ⇒ 本帧的判据**按新行为更新**（这一条正是 U82 留的那句「回头重读」）。
+ *   本单 **`EXEC_MAX_OUTPUT_BYTES` 那个数一个字没动**（`frames-u93` 的 ④ 那一格另钉）。
  */
 async function sceneDelivered(): Promise<void> {
   const longText = `${LONG_HEAD}${'x'.repeat(LONG_FILL)}${LONG_TAIL}`
@@ -337,21 +339,28 @@ async function sceneDelivered(): Promise<void> {
     check(!bigTool.includes('截断'), '⑤ 这一份没被截（未越 exec 的上限——内联＝原样，一个字不截）')
     writeFileSync(join(out, '05-模型那份-大结果.txt'), `${bigTool}\n`, 'utf8')
 
-    // —— 06 对照（KNOWN_OPEN）：越过 64 KiB 时只剩开头 ——
+    // —— 06 越过 64 KiB 上限那一形（U93 改判：头尾都留） ——
     await typeLine(scene.session, '再跑个更大的')
     await scene.session.key('enter', { until: { text: '收到三号。' }, timeoutMs: 90_000 })
     await scene.session.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
 
     const huge = lastToolOf(scene.session, 'u82h-1')
-    writeFileSync(join(out, '06-对照-越过上限只剩开头.txt'), `${huge}\n`, 'utf8')
+    writeFileSync(join(out, '06-越过上限-头尾都留.txt'), `${huge}\n`, 'utf8')
     console.log(
-      `\n── 06 对照（越过 64 KiB 上限的那一份，${huge.length} 字符）──\n` +
+      `\n── 06 越过 64 KiB 上限的那一份（${huge.length} 字符）──\n` +
         `头 40：${JSON.stringify(huge.slice(0, 40))}\n尾 60：${JSON.stringify(huge.slice(-60))}\n`,
     )
+    // ⚠️ **U93 改判**（原判据是 `!huge.includes('u82h-20000')`——「只剩开头」）：
+    // 越过上限时头尾都留，故尾巴那一行**必须在**，且省略处那句得在。
     check(
-      huge.includes('u82h-1') && !huge.includes('u82h-20000'),
-      '⑥ 对照 · KNOWN_OPEN：越过 64 KiB 上限时**只剩开头**（尾巴整个丢掉——本单不动那条上限）',
+      huge.includes('u82h-1') && huge.includes('u82h-20000'),
+      '⑥ 越过 64 KiB 上限时**头尾都留**（尾巴那一行到得了模型——U93 改的是留哪一头）',
       huge.slice(-60),
+    )
+    check(
+      huge.includes('…（截断：') && huge.includes('中间省略'),
+      '⑥ 省略处写明「省了多少」（不是干截）',
+      huge.slice(0, 200),
     )
   } finally {
     await closeScene(scene)

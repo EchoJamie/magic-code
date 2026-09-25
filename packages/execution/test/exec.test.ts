@@ -4,7 +4,8 @@
  * 六条判据中与本文件相关者（工作分解 · 验收判据）：
  * 1. **回环**——常规命令 → `ok:true` · exit=0 · stdout 正确；exit 非 0 命令 → `ok:true` · exit≠0；
  * 2. **流式**——`onOutput` 按序收到 stdout / stderr 增量（拼接与终值一致；截断时到上限为止）；
- * 3. **超限**——超 `maxOutputBytes` → `truncated` ＋ 终值截断；
+ * 3. **超限**——超 `maxOutputBytes` → `truncated` ＋ **头尾各留一半**（U93 改的口径：
+ *    原先只留头，结论在尾部的那一类够不着；见「判据 3」那一节的头注）；
  * 4. **失败三例**——timeout / cwd 越界（**进程不启动**）/ 启动失败——各归 `reason`；
  * 5. **取消**——`opts.signal` 中止在途 → **返回不抛**。
  *
@@ -327,18 +328,67 @@ describe('判据 2 · 流式——增量实时到达', () => {
 
 // ══ 判据 3 · 超限 ═════════════════════════════════════════════════════
 
-describe('判据 3 · 超限——截断加标记', () => {
+/**
+ * ⚠️ **U93 改了口径**：越过上限时**头尾都留**（各半），中段省掉并在**省略处**写明。
+ * 原先是 `value.subarray(0, room)`——**只留开头**，于是「结论在尾部」的那一类
+ * （构建日志的报错 · 测试报告的失败清单）到不了模型手里（`D40` 现场）。
+ *
+ * ⚠️ **上限那个数一个字没动**（工单明文）：`CAP` 还是那个 `CAP`，改的是「留哪一头」。
+ */
+const bodyOf = (stdout: string): string => {
+  const at = stdout.indexOf('…（截断：')
+  if (at === -1) return stdout
+
+  const end = stdout.indexOf('\n', at)
+
+  // 说明与正文之间那个换行是说明自己带的（头已以换行收尾时就不重复加）——故一并去掉，
+  // 留下的就是**头 ＋ 尾**两段原文。
+  return `${stdout.slice(0, at).replace(/\n$/, '')}${end === -1 ? '' : stdout.slice(end + 1)}`
+}
+
+describe('判据 3 · 超限——头尾都留（U93）', () => {
   const CAP = 64
 
-  test('超 `maxOutputBytes` → `truncated` ＋ 终值截断（按字节计）', async () => {
+  test('超 `maxOutputBytes` → `truncated` ＋ **头尾各留一半**', async () => {
     const { box } = freshSandbox()
 
     const result = await box.exec('printf "A%.0s" $(seq 1 500)', { maxOutputBytes: CAP })
 
     if (!result.ok) throw new Error('期望命令跑过')
     expect(result.truncated).toBe(true)
-    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(CAP)
-    expect(result.stdout).toBe('A'.repeat(CAP)) // 截到上限为止，不是齐根砍
+    expect(result.stdout).toContain('…（截断：') // 省略处有记号
+    expect(bodyOf(result.stdout)).toBe('A'.repeat(CAP)) // 头 ＋ 尾 ＝ 上限，一个字节不多
+    expect(result.stdout.startsWith('A'.repeat(CAP / 2))).toBe(true) // 头上那半是原文
+    expect(result.stdout.endsWith('A'.repeat(CAP / 2))).toBe(true) // 尾巴那半也是
+  })
+
+  test('**尾部才有结论**的输出——结论进得了这一份（`D40` 的要害）', async () => {
+    const { box } = freshSandbox()
+
+    // 头是噪声、结论在末尾——只留头的那一版正好把它丢掉
+    const result = await box.exec('seq 1 5000 | sed "s/^/noise-/"; echo 结论在这', {
+      maxOutputBytes: 1024,
+    })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBe(true)
+    expect(result.stdout.startsWith('noise-1\n')).toBe(true) // 头在
+    expect(result.stdout.endsWith('结论在这\n')).toBe(true) // 尾也在
+  })
+
+  test('省略说明——**说得出省了多少 ＋ 怎么看全**', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 500)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.stdout).toContain('中间省略 436 字节') // 500 − 64，省掉的那个数
+    expect(result.stdout).toContain('原文共 500 字节')
+    expect(result.stdout).toContain('开头 32 字节')
+    expect(result.stdout).toContain('结尾 32 字节')
+    // 指路：**光截不指路**＝把「这里还有」变成一句没法行动的话
+    expect(result.stdout).toContain('要看全')
+    expect(result.stdout).toContain('read')
   })
 
   test('未超上限 → 不设 `truncated`（字段缺席＝没截）· 全文完好', async () => {
@@ -361,7 +411,19 @@ describe('判据 3 · 超限——截断加标记', () => {
     expect(result.stdout).toHaveLength(CAP)
   })
 
-  test('截断时增量也**到上限为止**——增量拼接 ＝ 终值 ＝ 上限内前缀', async () => {
+  test('上限**之内**不切中段——`CAP/2` 与 `CAP` 之间的那一段整份送来', async () => {
+    const { box } = freshSandbox()
+
+    // 50 字节 < 64：头那一半（32）之外还剩 18 字节——它们是**尾那份缓冲**兜的，
+    // 到头来没越上限，就得原样补吐出去（不许凭空少一截）
+    const result = await box.exec('printf "A%.0s" $(seq 1 50)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBeUndefined()
+    expect(result.stdout).toBe('A'.repeat(50))
+  })
+
+  test('截断时增量拼接 ＝ 终值（**这条一条没破**）——头尾与说明都在增量里', async () => {
     const { box } = freshSandbox()
     const deltas: OutputDelta[] = []
 
@@ -373,7 +435,7 @@ describe('判据 3 · 超限——截断加标记', () => {
     const joined = deltas.map((delta) => delta.text).join('')
     if (!result.ok) throw new Error('期望命令跑过')
     expect(joined).toBe(result.stdout)
-    expect(Buffer.byteLength(joined)).toBeLessThanOrEqual(CAP)
+    expect(joined).toContain('…（截断：') // 屏幕上看到的也是同一份（含说明）
   })
 
   test('**每道流各自计**——stdout 截了不牵连 stderr', async () => {
@@ -385,20 +447,22 @@ describe('判据 3 · 超限——截断加标记', () => {
 
     if (!result.ok) throw new Error('期望命令跑过')
     expect(result.truncated).toBe(true)
-    expect(result.stdout).toBe('A'.repeat(CAP))
-    expect(result.stderr).toBe('EEE') // 另一道流完好
+    expect(bodyOf(result.stdout)).toBe('A'.repeat(CAP))
+    expect(result.stderr).toBe('EEE') // 另一道流完好，也没有被塞进说明
   })
 
-  test('多字节——截在字符中间不吐乱码（半个字符丢掉，不编造替换符）', async () => {
+  test('多字节——切在字符中间**不吐乱码**（半片丢掉，不编造替换符）', async () => {
     const { box } = freshSandbox()
 
-    // 「中」＝ 3 字节；上限 10 字节 ＝ 3 个整字 ＋ 1 字节残片
+    // 「中」＝ 3 字节；上限 10 ＝ 头 5（1 整字 ＋ 2 字节残片）＋ 尾 5（从那半片之后接上）
     const result = await box.exec('printf "中%.0s" $(seq 1 20)', { maxOutputBytes: 10 })
 
     if (!result.ok) throw new Error('期望命令跑过')
     expect(result.truncated).toBe(true)
-    expect(result.stdout).toBe('中中中')
-    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(10)
+    expect(result.stdout).not.toContain('�') // 两处半片都不编造
+    expect(bodyOf(result.stdout)).toBe('中中') // 头尾各一个**整字**
+    expect(result.stdout.startsWith('中')).toBe(true)
+    expect(result.stdout.endsWith('中')).toBe(true)
   })
 
   test('大输出不卡死——命令写 5MB、上限 1KB，仍照常收束（读干不辍）', async () => {
@@ -412,7 +476,9 @@ describe('判据 3 · 超限——截断加标记', () => {
     const { stdout, stderr, exit } = streamsOf(result)
     expect(exit).toBe(0) // 没被截断这件事拖死
     expect(okOf(result).truncated).toBe(true)
-    expect(stdout.length).toBeLessThanOrEqual(1024)
+    expect(bodyOf(stdout).length).toBeLessThanOrEqual(1024) // 头 ＋ 尾 不越上限
+    expect(stdout.startsWith('x\n')).toBe(true)
+    expect(stdout.endsWith('x\n')).toBe(true)
     expect(stderr).toBe('DONE\n') // 排空到 EOF，命令的收尾输出照样收得到
   })
 })
