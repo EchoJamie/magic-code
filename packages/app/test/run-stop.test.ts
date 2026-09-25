@@ -622,7 +622,8 @@ describe('U50 · 通知', () => {
    * 这一形：按「有没有窗口」，B 那件事**两头都不说**（系统通知不弹、回执又不该印），
    * 那一条就没人告诉用户了。D38（缺陷 · 通知回执的落点与次序）的「判据」那一半。
    *
-   * ⚠️ 系统通知走**端口记账**（`notifySystem`），**不许真弹**（真弹是 `osascript`）。
+   * ⚠️ 系统通知走**端口记账**（`notifySystem`）——**缺省就不发**（U98 起真发的实现已删，
+ * 见 `system-notify.ts` 的文件头；接一个记账用的假是**显式动作**）。
    */
   test('A 页开着、B 会话跑完：A 页不印 · 系统通知弹 · 切进 B 汇总一句', async () => {
     const g = ground('elsewhere')
@@ -738,7 +739,8 @@ describe('U50 · 通知', () => {
  * 「A 页开着、B 会话在等你」那一形里，按「有没有窗口连着」会**两头都不说**
  * （回执不该印、系统通知又不弹）——那一条就没人告诉用户了（D38 那半）。
  *
- * ⚠️ 系统通知走**端口记账**（`notifySystem`），**不许真弹**（真弹是 `osascript`）。
+ * ⚠️ 系统通知走**端口记账**（`notifySystem`）——**缺省就不发**（U98 起真发的实现已删，
+ * 见 `system-notify.ts` 的文件头；接一个记账用的假是**显式动作**）。
  * 真 PTY 那一趟（A 页干净 · 连上 B 直接进卡）在 `frames-u79-tui.ts`。
  */
 describe('U79 · 通知：「需要你」不回执、不广播', () => {
@@ -904,7 +906,8 @@ describe('U79 · 通知：「需要你」不回执、不广播', () => {
  * `needs-you`（U79）**同一把尺子**。改之前这一档是唯一还按「有没有窗口连着」判的，
  * 于是「A 页开着、B 会话出错」那一形里 B 那件事**落到 A 的页上**，而系统通知又不弹。
  *
- * ⚠️ 系统通知走**端口记账**（`notifySystem`），**不许真弹**（真弹是 `osascript`）。
+ * ⚠️ 系统通知走**端口记账**（`notifySystem`）——**缺省就不发**（U98 起真发的实现已删，
+ * 见 `system-notify.ts` 的文件头；接一个记账用的假是**显式动作**）。
  * 真 PTY 那一趟（A 页干净 · 正看着 B 时那件事照旧在屏上）在 `frames-u86-tui.ts`。
  */
 describe('U86 · 通知：「出错了」也按「还在看」判', () => {
@@ -1129,6 +1132,112 @@ describe('U50 · 重启核对里的句柄身份', () => {
       await waitFor('那个进程真没了', () => startTimeOf(sleeper.pid as number) === undefined, 5_000).catch(
         () => undefined,
       )
+    }
+  }, 30_000)
+})
+
+/**
+ * **U98 · 缺省不发**——「接一个真通知器」从此是**显式动作**。
+ *
+ * 由头（用户 2026-09-26 报）：测试与真跑都会往他桌上推系统通知，而那些通知**点不开**
+ * ——一点「显示」进的是 Script Editor。根子在两处：那条路**借的是别人的身份**（归属算在
+ * 那个脚本编辑器头上），而管理者**缺省就是「真发」**（子进程没有注入点，一律落到缺省）。
+ *
+ * 本单把缺省换成 `silentNotifier`（**一个字都不发**）并删掉那份实现；端口照旧留着。
+ * 故这一组量的是**缺省那一格**：不接通知器的管理者，那一跳**零调用**。
+ */
+describe('U98 · 缺省不发：不接通知器的管理者，那一跳零调用', () => {
+  /**
+   * 判据：**不带 `notifySystem` 起的管理者 ⇒ 通知端口零调用**。
+   *
+   * 缺省那个实现什么都不做，故「零调用」没法从返回值上看——用**镜子**量：**真发那一族**
+   * 不管换成谁，都得**起一个子进程**把那一句话当参数递出去（本机这一路全在起进程上，
+   * 旧那一份也是）。镜子里凡 argv 带着那句通知话术的都记一笔 ⇒ 收尾断言**一笔都没有**。
+   *
+   * ⚠️ **反向验证**：把缺省接回一个**会真发**的实现（`?? 起进程发的那个`），这条当场红
+   * （镜子里立刻多一笔）。**接一个记账用的假**那一形在真进程那一趟里量（`u98-evidence.ts`
+   * 的见证文件）——那一趟的骰子长在**子进程**上，进程内的镜子够不着。
+   *
+   * ⚠️ **镜子量得到什么、量不到什么**（如实说）：它咬得住「起进程发」那一族——本机通知
+   * 那件事**只能**那么办，故这就是那一族的分界；它咬不住「在进程里记个账、什么都没做」
+   * 的那种假，而**那一种本来也不打扰用户**，不在本单要防的那一形里。
+   */
+  test('不带 notifySystem：未读照落 · 汇总照念 · 而镜子里一句都没递出去', async () => {
+    const g = ground('silent')
+    seed(g, ['s-n'])
+
+    /**
+     * **镜子**——记下每一次起进程的 argv，**只记，不改**（原样转发给真的那一个）。
+     *
+     * ⚠️ **两支都要挂**：起进程有同步异步两条（`ps` 那种探测走的是同步那一支），
+     * 只挂一支的话「没看见」可能只是没照着这条路走——**镜子的空白得是真的空白**。
+     */
+    const spawned: string[][] = []
+    const seen = (cmd: unknown): void => {
+      spawned.push(Array.isArray(cmd) ? cmd.map(String) : [`（对象形）${JSON.stringify(cmd)}`])
+    }
+    const real = Bun.spawn
+    const realSync = Bun.spawnSync
+    Bun.spawn = ((...args: unknown[]) => {
+      seen(args[0])
+      return (real as unknown as (...rest: unknown[]) => unknown)(...args)
+    }) as typeof Bun.spawn
+    Bun.spawnSync = ((...args: unknown[]) => {
+      seen(args[0])
+      return (realSync as unknown as (...rest: unknown[]) => unknown)(...args)
+    }) as typeof Bun.spawnSync
+
+    /** 那一句话术——**凡是把这一句递出去的进程，都算「发过了」**（三类通知都带它）。 */
+    const deliverable = (argv: readonly string[]): boolean => argv.some((one) => one.includes('打开看是哪条'))
+
+    // **不传 `notifySystem`**——这一条量的正是缺省那一格
+    let b: Bench | undefined
+    try {
+      b = await bench(g)
+
+      // **先有一个窗口**把这条会话跑起来，然后它走了（此刻没人看着它）
+      const first = await open(g, b.manager)
+      first.send({ type: 'session.open', session: 's-n' })
+      await waitFor('发车', () => b?.requests.length === 1)
+      const fake = await b.attach(0)
+      fake.ready('s-n')
+      await waitFor('开张', () => rowOf(first, 's-n') !== undefined)
+      first.close()
+      await Bun.sleep(80)
+
+      // 跑完那一轮——**没有任何窗口在场**
+      fake.emit('turn.start', {}, 's-n')
+      fake.emit('turn.end', { reason: 'settled' }, 's-n')
+
+      // ① **那一跳照走**：未读落盘（这一半 U98 一字未动）——没这一条，下面的「零」不算数
+      const paths = runPathsOf(g.magic, g.dataDir, tmpdir())
+      await waitFor('未读落盘', () => {
+        try {
+          return readFileSync(paths.notices, 'utf8').includes('s-n')
+        } catch {
+          return false
+        }
+      })
+
+      // ② **下一次打开那一句汇总一字未变**
+      const back = await open(g, b.manager)
+      expect(back.unread.map((one) => one.session)).toEqual(['s-n'])
+      expect(unreadSummaryOf(back.unread)).toBe('你不在的时候：1 项跑完 —— /resume 看是哪几条')
+      back.close()
+
+      // ③ **而通知端口零调用**：镜子里没有任何一次起进程带着那句通知话术
+      const delivered = spawned.filter(deliverable)
+      expect(delivered).toEqual([])
+
+      // **尺子自校**——同一条话术手工递一次，镜子必须抓得住它：抓不住的话，上面那个
+      // 「空」只是「没量着」，不是「没发过」（这正是本单要避免的那种自证）。
+      // ⚠️ 镜子认的是**那一句话术**（三类通知都带的那半句），不是哪个程序名——故这一下
+      // 用什么命令递都行，不必也不能写出那个真通知器的名字（那名字全仓已无一处）
+      seen(['某个真通知器', '--say', '跑完了一轮——打开看是哪条'])
+      expect(spawned.filter(deliverable).length).toBe(1)
+    } finally {
+      Bun.spawn = real
+      await b?.dispose()
     }
   }, 30_000)
 })
