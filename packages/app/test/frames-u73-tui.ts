@@ -1,8 +1,18 @@
 #!/usr/bin/env bun
 /**
- * U73 · **全放行：只在起会话那一刻给**——真 PTY 留帧与验收判据。
+ * U73 立 · **U76 改定** · **全放行：只在起会话那一刻给**——真 PTY 留帧与验收判据。
  *
  * `bun test` **不收它**（文件名不是 `*.test.ts`）。
+ *
+ * ⚠️ **本装置 U76 大改过一次**（2026-09-25 用户定）：U73 那一版落的是
+ * 「**放轻的、必闸照样挡**」，而用户随后**改定**为「**连必闸也放——真的什么都不问**」
+ * （由头：默认已经是「通」，只剩那张例外表要问；若全放行也不放它，**这一档就是个空开关**）。
+ * 同时「**默认问**」翻成了「**默认通**」（判轻的不必配规则）。
+ *
+ * ⇒ **装置本身留着**（它的四条护栏一个字没变），但**两处锚换了**：
+ *
+ * - 「判轻的会弹卡」→ **判轻的不弹卡**（故凡要一张卡的地方，夹的都是**名单里那一条**）；
+ * - 「全放行时必闸照样弹」→ **全放行时连它也不弹**（④ 整条反过来）。
  *
  * ## 判的是哪一件事
  *
@@ -10,23 +20,23 @@
  *
  * 1. **只能起会话时给**（命令行带参数）——**对话期间不许切进全放行**；
  * 2. **但「退出去、用全放行 resume 回来」要成立**（照接续那条既有路，别新造一条）；
- * 3. ⚠️ **必闸类照样挡**（删除 · 覆盖 · 破坏性 git · 越权 · 外发 · 越界）；
+ * 3. ⚠️ **它连必闸也放**（U76 改定：删除 · 改权限/属主/属性/ACL 两类名单）；
  * 4. ⚠️ **必须在屏上看得见**（状态行报着——「看不见的裸奔是最坏的一形」）。
  *
- * ## 七张帧（工单那六条 ＋ 一形对照）
+ * ## 八张帧（工单那六条 ＋ 一形对照）
  *
  * | 张 | 工单那一格 | 该在屏上看见什么 |
  * | --- | --- | --- |
- * | ① | **不带参数起** | 照旧问：`│ exec · 可逆` 那张卡**照出** |
+ * | ① | **不带参数起** | 名单里那一条照问：`│ exec · 不可逆` 那张卡**照出**；判轻的不弹卡 |
+ * | ①b | 名单上按 `a`（U73 那条搬这儿） | 「**必闸类不可「总是允许」**」——默认档下同样成立 |
  * | ② | **带参数起** | `✓ Nms · …` 直接跑完——**一张卡都没有** |
  * | ③ | 状态行那一格（宽窗 100） | `○ 空闲 · 全放行 · …`（那一格**永不省**） |
- * | ④ | **必闸类照样弹** | `│ exec · 不可逆` ＋ 键位 `y 批准　a 本工作区总是允许　n 拒绝`（`a` 划掉） |
- * | ⑤ | 必闸上按 `a` | 「**必闸类不可「总是允许」**」——全放行时这一条**照样成立** |
+ * | ④ | **全放行：连名单那两条也放** | 同一个 `rm`，带参数时**也不弹卡**（工具真跑） |
  * | ⑥ | **反证 · 对话期间切不进去** | 参照面那个 `shift+tab` **按下去什么也没发生**；slash 面上**没有那一格** |
  * | ⑦ | 状态行那一格（窄窗 46） | `○ 空闲 · 全放行 · …`——四格次序不乱、降级照旧 |
  *
  * 外加一程两趟（⑧⑨）：**退出后用全放行 resume 回来** ⇒ 接上了、状态行照报、
- * 常规调用不问；**同一趟不带参数 resume** ⇒ 回去照旧问。
+ * 常规调用不问；**同一趟不带参数 resume** ⇒ 名单里那一条**回去照旧问**。
  *
  * ## 每条判据怎么咬
  *
@@ -37,8 +47,8 @@
  * - **反证那一条**（第 ⑥ 张）**直接按那个键**：`shift+tab` 的字节（`\u001b[Z`）**写进真 PTY**，
  *   屏上一个字都不许变。**slash 面**那一半比的是**候选表本身**（与 `COMMANDS` 逐名相等）
  *   ——「表上没有那一格」不能只写在注释里。
- * - **不问**的判据是**卡没出**（`· 可逆` 一行不在）＋ **工具真跑了**（`✓` 那一行在）——
- *   两条一起才说明「放行」而不是「卡住了」。
+ * - **不问**的判据是**卡没出**（整屏没有裁决卡：`· 不可逆` 那一行不在）＋
+ *   **工具真跑了**（`✓` 那一行在）——两条一起才说明「放行」而不是「卡住了」。
  *
  * ## 跑法
  *
@@ -188,17 +198,23 @@ function onlySessionOf(sandbox: Sandbox): string {
   }
 }
 
-/** 一条只读命令（机械分析判「轻」）——**全放行时该不问，不带这个参数照旧问**。 */
+/**
+ * 一条只读命令（机械分析判「轻」）——**两档都不问**（U76：默认通 ⇒ 全放行更是如此）。
+ *
+ * ⚠️ **U73 那一版拿它当"默认档会弹卡"的对照**，那个对照**没了**：判轻的**一律不问**。
+ * 它如今用来量另一件事——**默认档与全放行档在这类调用上分不出差别**（差别在名单那两条上）。
+ */
 const LIGHT: FixtureTurn = { kind: 'tool', name: 'exec', args: { cmd: 'ls -la' } }
-/** 一条必闸命令（判重 · 删除 → 不可逆）——**全放行时也该问**。 */
+/** 一条**名单里**的命令（判重 · 删除 → 不可逆）——默认档照问，**全放行档也不问**（U76）。 */
 const HEAVY: FixtureTurn = { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } }
 
 // ══ ①②③④⑤⑦ · 四个窗口（各自一块沙地）════════════════════════════════
 
 /**
- * **不带参数起 ⇒ 照旧问**（①）＋ 状态行**没有**那一格。
+ * **不带参数起 ⇒ 名单里那一条照问**（①）＋ 判轻的不弹卡 ＋ 状态行**没有**那一格。
  *
- * 这一趟同时是「它的反面」：同一个调用、同一份剧本，与下一趟只差一个参数。
+ * 这一趟同时是「它的反面」：与下一趟（带参数）只差一个参数，而那一条命令在那一趟
+ * **也不弹卡**（④）——两档的差别全落在这里。
  */
 async function scenePlain(): Promise<void> {
   const session = await createUiSession({
@@ -206,23 +222,46 @@ async function scenePlain(): Promise<void> {
     columns: 100,
     rows: 30,
     artifacts: join(out, 'runs'),
-    turns: [LIGHT, { kind: 'text', text: '看过了。' }],
+    turns: [LIGHT, { kind: 'text', text: '看过了。' }, HEAVY, { kind: 'text', text: '那我先不动它。' }],
   })
 
   try {
     await session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
+
+    // —— 先跑一条判轻的：**不弹卡**（U76：默认通，不必配规则）——
     await typeLine(session, '跑一下 ls')
-    await session.key('enter', { until: { text: '· 可逆' }, timeoutMs: 40_000 })
+    await session.key('enter', { until: { text: '看过了。' }, timeoutMs: 40_000 })
+    const light = await session.capture({ label: '01a-不带参数起-判轻的不弹卡' })
+    keep(light, '01a-不带参数起-判轻的不弹卡')
 
-    const shot = await session.capture({ label: '01-不带参数起-照旧问' })
-    keep(shot, '01-不带参数起-照旧问')
+    check(!has(light, '· 可逆'), '① 判轻的：**不弹卡**（U76 起默认通）')
+    check(has(light, '✓'), '① 工具**真跑了**（放行不是卡住）')
+    check(!has(light, MARK), '① 状态行**没有**那一格（这一趟不在全放行）')
 
-    check(has(shot, '· 可逆'), '① 不带参数起：**卡照出**（`│ exec · 可逆`）')
+    // —— 再跑一条名单里的：**照问** ——
+    await typeLine(session, '删掉 build')
+    await session.key('enter', { until: { text: '· 不可逆' }, timeoutMs: 40_000 })
+
+    const shot = await session.capture({ label: '01-不带参数起-名单那条照问' })
+    keep(shot, '01-不带参数起-名单那条照问')
+
+    check(has(shot, '· 不可逆'), '① 不带参数起：**卡照出**（`│ exec · 不可逆`）')
+    check(has(shot, '删除（不可逆）'), '① 卡上说得出是名单里那一类')
     check(has(shot, 'y 批准'), '① 卡上有键位（`y 批准`）')
-    check(!has(shot, MARK), '① 状态行**没有**那一格（这一趟不在全放行）')
     check(!statusLineOf(shot.lines).includes(MARK), '① **状态行那一行**里也没有它')
 
-    await session.send('y', { until: { text: '看过了。' }, timeoutMs: 40_000 })
+    // —— ⑤（U73 那一格搬到这里）：名单上按 `a` **照样被挡** ——
+    // ⚠️ **为什么搬**：U73 时这一条是在「全放行」窗口里量的；U76 起全放行**连它也不弹卡**
+    // （那一趟没有卡可按），故这条判据落在**默认档**这一张卡上——它说的是同一件事：
+    // 「名单里的东西不可用『总是允许』绕过」。
+    await session.send('a', { until: { text: '必闸类不可' }, timeoutMs: 10_000 })
+    const refused = await session.capture({ label: '01b-名单上按a-被挡' })
+    keep(refused, '01b-名单上按a-被挡')
+
+    check(has(refused, '必闸类不可「总是允许」'), '⑤ 名单上按 `a`：被挡下并说清缘由')
+    check(has(refused, '· 不可逆'), '⑤ 卡**还挂着**（那一下没有答复掉它）')
+
+    await session.send('n', { until: { text: '那我先不动它。' }, timeoutMs: 40_000 })
     await session.quit()
   } finally {
     await session.close({ graceMs: 3_000 })
@@ -267,7 +306,7 @@ async function sceneAllowAll(columns: number, rows: number, mark: string): Promi
     const shot = await session.capture({ label: mark })
     keep(shot, mark)
 
-    check(!has(shot, '· 可逆'), '② 带参数起：**一张卡都没有**（`· 可逆` 那一行不在）')
+    check(!has(shot, '· 不可逆'), '② 带参数起：**一张卡都没有**（整屏没有裁决卡）')
     check(has(shot, '✓'), '② 工具**真跑了**（`✓` 那一行在——放行不是卡住）')
     check(has(shot, '看过了。'), '② 模型收到了结果、接着说下一句')
 
@@ -287,10 +326,11 @@ async function sceneAllowAll(columns: number, rows: number, mark: string): Promi
 }
 
 /**
- * **必闸类照样弹**（④）＋ 必闸上按 `a` 被挡（⑤）。
+ * **全放行：连名单那两条也放**（④）——与上一趟只差一个参数。
  *
- * 与上一趟只差剧本里那条命令（`rm -rf build`）——**同一个布尔、同一份配置**。
- * 「全放行 ≠ 连必闸也放」这句话在这两张帧上是一次**对照实验**。
+ * ⚠️ **这一张帧 U76 整条反过来过**：U73 那一版是「必闸类照样弹」（旧设计），
+ * 用户 2026-09-25 改定为「**真的什么都不问**」。原来那张卡（含按 `a` 被挡那半）
+ * 现在落在**默认档**那一趟里（见 `scenePlain` 的 ① / ①b）。
  */
 async function sceneGated(): Promise<void> {
   const session = await createUiSession({
@@ -299,39 +339,23 @@ async function sceneGated(): Promise<void> {
     rows: 30,
     artifacts: join(out, 'runs'),
     argv: ['--allow-all'],
-    turns: [HEAVY, { kind: 'text', text: '那我先不动它。' }],
+    turns: [HEAVY, { kind: 'text', text: '删掉了。' }],
   })
 
   try {
     await session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
     await typeLine(session, '删掉 build')
-    await session.key('enter', { until: { text: '· 不可逆' }, timeoutMs: 40_000 })
+    await session.key('enter', { until: { text: '删掉了。' }, timeoutMs: 40_000 })
     await waitStatusLine(session, MARK)
 
-    const shot = await session.capture({ label: '04-必闸类照样弹' })
-    keep(shot, '04-必闸类照样弹')
+    const shot = await session.capture({ label: '04-全放行-连名单那一条也放' })
+    keep(shot, '04-全放行-连名单那一条也放')
 
-    check(has(shot, '· 不可逆'), '④ 必闸类：**卡照出**（`│ exec · 不可逆`）')
-    check(has(shot, '删除'), '④ 材料说的是必闸那一类（`删除`）')
-    check(!has(shot, '✓'), '④ 没答复之前**一步都没跑**')
-    check(statusLineOf(shot.lines).includes('y / n'), '④ 状态行右位是重件键位 `y / n`')
-    check(!statusLineOf(shot.lines).includes('y / a / n'), '④ 右位**没有** `a`（必闸类照旧不给）')
-    check(statusLineOf(shot.lines).includes(MARK), '④ 全放行时那一格照旧报着（必闸照问**不是**把它丢了）')
+    check(!has(shot, '· 不可逆'), '④ **一张卡都没有**（连名单里那一条也不问——U76 改定）')
+    check(!statusLineOf(shot.lines).includes('y / n'), '④ 右位不是裁决键位（根本没问）')
+    check(has(shot, '✓'), '④ 工具**真跑了**（放行不是卡住）')
+    check(statusLineOf(shot.lines).includes(MARK), '④ 那一格照旧报着（不问了**不是**把状态也丢了）')
 
-    // ⑤ 卡上照旧按得下 `a`——而它**照旧不管用**（这一条全放行时同样成立）
-    await session.send('a', { until: { text: '必闸类不可' }, timeoutMs: 10_000 })
-    await waitStatusLine(session, MARK)
-    const refused = await session.capture({ label: '05-必闸上按a-被挡' })
-    keep(refused, '05-必闸上按a-被挡')
-
-    check(
-      has(refused, '必闸类不可「总是允许」'),
-      '⑤ 必闸上按 `a`：被挡下并说清缘由（全放行不改这一条）',
-    )
-    check(has(refused, '· 不可逆'), '⑤ 卡**还挂着**（那一下没有答复掉它）')
-    check(statusLineOf(refused.lines).includes(MARK), '⑤ 全放行时那一格照旧报着')
-
-    await session.send('n', { until: { text: '那我先不动它。' }, timeoutMs: 40_000 })
     await session.quit()
   } finally {
     await session.close({ graceMs: 3_000 })
@@ -427,7 +451,11 @@ async function sceneNoWayIn(): Promise<void> {
  * | 3 | `--session <id>`（**不带参数**） | 接上了 · 状态行**不报** · 常规调用**照旧问** |
  *
  * 剧本按请求次序取：`text` → `tool` → `text` → `tool` → `text`——
- * 于是第 2 程与第 3 程**各拿到一条只读命令**，两程的差别只剩「带没带那个参数」。
+ * 于是第 2 程与第 3 程**各拿到一条命令**，两程的差别只剩「带没带那个参数」。
+ *
+ * ⚠️ **第 3 程那一条是名单里那一条**（U76 起）：判轻的**两档都不问**，
+ * 故「回去照旧问」这件事**只有夹在名单上才量得出来**；第 2 程那条判轻的，
+ * 在带参数那一程里照样不问（放行不是它带来的，两者都通）。
  */
 async function sceneResume(): Promise<void> {
   const fixture = startFixture({
@@ -435,8 +463,8 @@ async function sceneResume(): Promise<void> {
       { kind: 'text', text: '记下了。' },
       LIGHT,
       { kind: 'text', text: '看过了。' },
-      LIGHT,
-      { kind: 'text', text: '看过了。' },
+      HEAVY,
+      { kind: 'text', text: '那我先不动它。' },
     ],
   })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -493,7 +521,9 @@ async function sceneResume(): Promise<void> {
     await second.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
 
     const secondShot = await second.capture({ label: '08b-第二程-照旧不问' })
-    check(!has(secondShot, '· 可逆'), '⑧ 接回来的这一程：常规调用**照样不问**（没有卡）')
+    // ⚠️ 判据锚的是「**整屏没有卡**」——U76 起判轻的**两档都不弹卡**（'· 可逆' 那一形
+    // 已经没有产出了，拿它当锚会变成一句空话），故改锚在重件那句话上。
+    check(!has(secondShot, '· 不可逆'), '⑧ 接回来的这一程：**没有卡**（轻类不问）')
     check(has(secondShot, '✓'), '⑧ 工具真跑了')
     await second.quit()
     await waitFor('第二程的执行者收掉', async () => (await executorsIn(sandbox)) === 0)
@@ -522,11 +552,12 @@ async function sceneResume(): Promise<void> {
       statusLineOf(plain.lines),
     )
 
-    await typeLine(third, '跑一下 ls')
-    await third.key('enter', { until: { text: '· 可逆' }, timeoutMs: 40_000 })
+    await typeLine(third, '删掉 build')
+    await third.key('enter', { until: { text: '· 不可逆' }, timeoutMs: 40_000 })
 
     const thirdShot = await third.capture({ label: '09b-第三程-照旧问' })
-    check(has(thirdShot, '· 可逆'), '⑨ **回去照旧问**：卡照出（同一个调用、同一个会话）')
+    check(has(thirdShot, '· 不可逆'), '⑨ **回去照旧问**：卡照出（名单里那一条、同一条会话）')
+    check(has(thirdShot, '删除（不可逆）'), '⑨ 卡上说得出是名单里那一类')
 
     await third.send('y', { until: { text: '看过了。' }, timeoutMs: 40_000 })
     await third.quit()

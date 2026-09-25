@@ -10,10 +10,15 @@
  * ## 本文件钉四件事（＝工单「处置」那四条）
  *
  * ① **读不懂 ⇒ 一律不覆写**——原文件**逐字节不动**（不改名 · 不备份 · 不另起新文件）；
- * ② **不是全拒**——该过闸的照过闸（用户可以再一次一次地批），按 `a` **当场有效**（本次会话内）
- *    但**不落盘**；
+ * ② **不是全拒**——该过闸的照过闸（用户可以再一次一次地批）；按 `a` 记下的那一条**进内存**
+ *    （本次会话的名录里有它）、**不落盘**。
+ *    ⚠️ **但「按 `a` 之后不再问」这一半 U76 起不成立了**：名单里的两类（删除 · 改权限）
+ *    **不可授权**——`a` 换不来「不再问」那件事，同形的下一件照旧过闸（见那一组用例）。
+ *    判轻的那些反而**不问**了（默认通），故本文件的 fixture 一律取**判重的**执行命令。
  * ③ **报得出来**——开机那一行点名**文件**与**缘由**，且**只报一次**；
  * ④ **改对之后自然恢复**——改回合法 JSON，**下一次启动**照旧读它、长期放行回来；无修复命令。
+ *    那一条的「长期放行」取**按域名**的授权（U76 起唯一「配了授权 ⇒ 不再问」的形态，
+ *    见那一组用例的头注）。
  *
  * ## 分界（本单没动的那些）
  *
@@ -33,15 +38,40 @@ import { loadGrants } from '../src/grants-file.ts'
 import type { Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage, type Stage } from './support.ts'
 
-/** 一条只读命令——机械分析判「轻」，故「总是允许」对它开放（同 `grants.test.ts`）。 */
-const READ_ONLY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }] }
+/**
+ * 一条**判重的**执行命令（名单第一类 · 删除）——本文件要的是「过闸 → 人批 → 试图落盘」
+ * 那一跳，**只有判重的调用才有卡可答**（U76 起判轻的默认通、根本不问）。
+ */
+const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+
+/**
+ * 一次**判重却带域名**的调用（取网页）——「改对之后自然恢复」那一条靠它。
+ *
+ * 由头（U76）：判重的执行命令**不可授权**，故「读到一条授权 ⇒ 不再问」这条链只剩
+ * **按域名**那一格走得通（`gate.ts`：判轻 ／ 判重却带域名）。它判重（外发），默认通
+ * 放不了它——于是那一句 `decider: 'auto'` 只可能来自**读到的那条授权**。
+ *
+ * 这一趟**不出网**：没配「提炼用的模型」时工具在**取回之前**就收束
+ * （`web-fetch-tool.ts` 的 `NOT_CONFIGURED`），故断言落不到网络上去。
+ */
+const WEB_TURN = {
+  toolCalls: [
+    { name: 'web_fetch', args: { url: 'https://example.com/pricing', prompt: '多少钱？' } },
+  ],
+}
 
 /** 授权文件落在沙地里（**不碰真的 `~/.magic`**）。 */
 function grantsPathOf(stage: Stage): string {
   return join(stage.root, 'magic', 'grants.json')
 }
 
-/** 一份**合法**的授权文件（一条真授权）——「截断」与「改对之后」两处都用它。 */
+/**
+ * 一份**合法**的授权文件（一条真授权）——「截断」与「会话中途坏掉」两处都用它。
+ *
+ * ⚠️ 它写的是 `{tool, op:['read']}` 那一条——**放不了任何东西**（U76：判轻的本就不问，
+ * 判重的执行命令不可授权）。这一点正合那两处用例的用法：只要盘上是一份**读得懂**的文件，
+ * 而它那条授权够不着下面要跑的那一件就够了。要「读到授权 ⇒ 不再问」得用 `webGrantFile`。
+ */
 function validGrants(section: string, tool = 'exec'): string {
   return `${JSON.stringify(
     {
@@ -66,6 +96,32 @@ function writeTruncated(stage: Stage, section: string, keep = 40): string {
   const cut = text.slice(0, text.length - keep)
   writeFileSync(path, cut)
   return cut
+}
+
+/**
+ * 一份**合法**的授权文件，那一条授权**按域名给**（取网页 · `example.com`）。
+ *
+ * 为什么不照 `validGrants` 用 `{tool:'exec', op:['read']}`：U76 起那种授权**放不了任何东西**
+ * （判轻的本就不问，判重的执行命令不可授权）——「读到了它 ⇒ 不再问」这句就没法验。
+ */
+function webGrantFile(section: string): string {
+  return `${JSON.stringify(
+    {
+      version: 1,
+      workspaces: {
+        [section]: [
+          {
+            tool: 'web_fetch',
+            op: ['outbound'],
+            host: 'example.com',
+            grantedAt: 1_700_000_000_000,
+          },
+        ],
+      },
+    },
+    null,
+    2,
+  )}\n`
 }
 
 /** 盘上那一份的**原始字节**（逐字节比就是这个）——不是解析出来的对象。 */
@@ -244,7 +300,7 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
 
       const assembly = stage.assemble({
         grantsFile: grantsPathOf(stage),
-        turns: [READ_ONLY_TURN, { text: '好' }],
+        turns: [DELETE_TURN, { text: '好' }],
       })
       const said = assembly.notices
 
@@ -270,7 +326,7 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
     }
   })
 
-  test('**一次一议**——读不懂不是「全拒」：该过闸的照过闸，批了就真跑；按 `a` **当场有效**', async () => {
+  test('**一次一议**——读不懂不是「全拒」：该过闸的照过闸，批了就真跑；按 `a` 只进内存', async () => {
     const stage = makeStage()
     try {
       const section = sectionKeyOf(stage)
@@ -279,11 +335,11 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
       const assembly = stage.assemble({
         grantsFile: grantsPathOf(stage),
         turns: [
-          READ_ONLY_TURN,
+          DELETE_TURN,
           { text: '好' },
-          READ_ONLY_TURN,
+          DELETE_TURN,
           { text: '好' },
-          READ_ONLY_TURN,
+          DELETE_TURN,
           { text: '好' },
         ],
       })
@@ -302,11 +358,21 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
       shell.answer(shell.requests[1] as number, { remember: true }) // 这一下按 `a`
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '第二件跑完')
 
-      // 第三件（同形）：本次会话内**不再问**（`a` 当场有效）
+      // ⚠️ **这一条 U76 换过**：旧版断言「第三件不再问（`a` 当场有效）」。默认通之后
+      // **名单里的两类不可授权**——`a` 记下的那一条放不了删除 / 改权限，同形的下一件
+      // **照旧过闸**。故这里断的是**新的事实**：第三次**照样问**，且裁者是**人**（不是 `auto`）。
       shell.send({ type: 'input.submit', text: '第三件' })
+      await until(() => shell.requests.length >= 3, '第三件照旧过闸')
+      shell.answer(shell.requests[2] as number)
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 3, '第三件跑完')
-      expect(shell.requests).toHaveLength(2) // 没问第三次
-      expect(eventsOfKind(shell.events, 'tool.decision').at(-1)?.data.decider).toBe('auto')
+      expect(shell.requests).toHaveLength(3) // 问了第三次——名单里的东西授权不动它
+      expect(eventsOfKind(shell.events, 'tool.decision').at(-1)?.data.decider).toBe('user')
+
+      // 而 `a` **仍是有效的**——它进了**内存**（本次会话的名录里有那一条）：
+      // 「不落盘」不是「什么都没记住」，这两件事在这个用例里分得开
+      const remembered = assembly.grantsView().grants.map((row) => row.describe)
+      expect(remembered).toHaveLength(1)
+      expect(remembered[0]).toContain('delete') // 记的就是删除这一类
 
       shell.dispose()
       assembly.close()
@@ -353,12 +419,16 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
       broken.close()
 
       // 用户把它改对（就是原文件该有的样子）——没有别的动作
-      writeFileSync(grantsPathOf(stage), validGrants(section))
+      writeFileSync(grantsPathOf(stage), webGrantFile(section))
 
       // 第二趟（＝关掉再开）：读得懂，那条授权生效 ⇒ **一次都不问**
+      //
+      // ⚠️ 这一条必须是**按域名**那一条授权（U76）：拿判轻的调用验「长期放行回来」是**空话**
+      // ——判轻的本就默认通，不问不是那条授权的功劳。取网页判重，默认通放不了它，
+      // 故这里那次 `auto` **只可能**来自刚读回来的那一条。
       const fixed = stage.assemble({
         grantsFile: grantsPathOf(stage),
-        turns: [READ_ONLY_TURN, { text: '好' }],
+        turns: [WEB_TURN, { text: '好' }],
       })
       expect(fixed.grantsUnreadable).toBeUndefined()
       expect(fixed.notices).toEqual([])
@@ -385,13 +455,16 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
       const section = sectionKeyOf(stage)
       const path = grantsPathOf(stage)
       mkdirSync(dirname(path), { recursive: true })
-      // 起点是**好的**，且那条授权**够不着**下面要跑的那一件（`exec`）——
-      // 故它照旧过闸，才有「按 `a` ⇒ 落盘」这一跳可看
+      // 起点是**好的**，且那条授权**够不着**下面要跑的那一件——故它照旧过闸，
+      // 才有「按 `a` ⇒ 落盘」这一跳可看。
+      // ⚠️ U76 之后有两重够不着：工具名对不上（`ls` × `exec`），且**删除这一类本就不授权**
+      // ——即便那条授权写的是 `exec`，判重的执行命令也放不了（`gate.ts` 的放行判据只有
+      // 「判轻」与「判重却带域名」两条）。
       writeFileSync(path, validGrants(section, 'ls'))
 
       const assembly = stage.assemble({
         grantsFile: path,
-        turns: [READ_ONLY_TURN, { text: '好' }],
+        turns: [DELETE_TURN, { text: '好' }],
       })
       expect(assembly.grantsUnreadable).toBeUndefined()
 

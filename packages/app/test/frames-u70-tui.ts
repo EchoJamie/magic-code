@@ -15,10 +15,10 @@
  *
  * | 张 | 工单那一格 | 该在屏上看见什么 |
  * | --- | --- | --- |
- * | ① | 照旧过闸门 | 带 `background` 的调用**照样弹卡**（后台不是绕过裁决的口子） |
+ * | ① | 照旧过闸门 | 带 `background` 的调用**照样弹卡**（后台不是绕过裁决的口子）——命令里带一段 `rm`（**名单里那一条**，U76 起名单只剩两条），那一张卡照出 |
  * | ② | 发起 | `✓ … 已交出去，这一轮不等它：bg-1` ＋ 输出文件路径；模型**接着说话** |
  * | ③ | 跑完 ⇒ 给屏那一声 | `· bg-1 跑完了（exit 0）· …`（**带那个路径**） |
- * | ④ | 取输出 | 模型用**既有的 `read`** 读那个文件（它在**工作区之外**），读出内容 |
+ * | ④ | 取输出 | 模型用**既有的 `read`** 读那个文件（它在**工作区之外**），读出内容——**不弹卡**（读判轻） |
  * | ⑤ | dev server 那一形 | 一条**永不结束**的命令：**没有**「跑完」那一声，而 `read`
  *      那个文件**看得到后续新增的输出**（读两遍，第二遍多出几行） |
  *
@@ -30,7 +30,18 @@
  *   第 n 个回合），而沙地的家目录是随机的 ⇒ 先起夹具、再建沙地、**算出路径之后再往剧本
  *   里补那一回合**。借用式起会话（`sandbox` ＋ `fixture` 外借）正是为这条链准备的。
  * - ⚠️ **一条权限规则都不加**：这一单要留的恰恰是「**该弹卡还是弹卡**」（工单反面那一句）。
- *   加规则＝把要验的东西验没了。
+ *   加规则＝把要验的东西验没了。⚠️ 这句话的射程 U76 起变小了：**默认通**之下还该弹的
+ *   只剩**名单里那一段**（下一节），"该不该问"由命令自己说了算——本支照旧一条规则不加。
+ *
+ * ## ⚠️ U76 起：这个装置里的卡只剩一张
+ *
+ * 链的底从「默认问」翻成「**默认通**」——判轻的（读 · 只读命令 · 判不出来的）**不问**，
+ * 名单收缩到**两条**（删除 · 改权限 / 属主 / 属性 / ACL，且射程只到 `exec`）。故：
+ *
+ * - **① 那一张卡要靠「命令里带一段名单里的动作」造出来**（这里用 `rm -rf build`）——
+ *   后台那一形照旧过闸门这件事**一个字没松**，松的是"哪些命令要问"；
+ * - 其余几屏（②③ 的发起 · ④ 的取输出 · ⑤ 的两次读）从前的卡**只是推进流程的手段**，
+ *   如今一律换成**等工具真跑完**（模型那一句答复 ＝ 它收到了工具结果）。
  *
  * ## 判据怎么咬
  *
@@ -130,18 +141,22 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
 }
 
 /**
- * 一次裁决卡的答复——**逐张把它留在帧里**。
+ * 一次裁决卡的答复——**逐张把它留在帧里**，并把它交回给调用方判内容。
  *
- * 这一趟**一条规则都不加**（见文件头注），故每一次调用都会问一次：后台那一形要留下的
- * 证据正是「**它照旧过闸门**」。
+ * ⚠️ **U76 起这个装置里只剩一张卡**（① 那一张：命令里带了一段名单里的动作）。
+ * 答复写 `y`（批准这一次）——`a`（「总是允许」）在**必闸类上是划掉的**（`decision.ts`），
+ * U76 起它只在**取网**那件上按域名给（U72）。
  */
-async function passCard(session: UiSession, label: string, answer: 'y' | 'a' = 'y'): Promise<void> {
+async function passCard(session: UiSession, label: string, answer: 'y' | 'a' = 'y'): Promise<Capture> {
   await waitCard(session)
-  keep(await session.capture({ label }))
+  const card = await session.capture({ label })
+  keep(card)
   await session.send(answer)
   // 等这一张真撤了再往下走——不等的话下一步的等待可能被**上一张的回执**满足
   // （`· 「…」等你定夺：read` 那一行留在屏上，「等你定夺」那四个字照旧在）
   await waitCardGone(session)
+
+  return card
 }
 
 /**
@@ -177,6 +192,29 @@ async function waitCardGone(session: UiSession, timeoutMs = 20_000): Promise<voi
   throw new Error('那一张卡一直没撤')
 }
 
+/**
+ * 判「这一趟**没有卡**」——判轻的调用**默认通**（U76 链的底换了），屏上什么都不该多。
+ *
+ * ⚠️ **不能拿全屏找「等你定夺」代替**：那四个字**也在旧卡的回执行里**
+ * （`· 「把这条构建交出去」等你定夺：exec`，见 `waitCard` 那条注），回执写完就留在屏上
+ * ⇒ 一场里只要开过一张卡，后面每一帧都命中它（U70 的 ④ 就这么**假红**了一回：
+ * 屏上那句是 ① 那张卡的回执，卡早收了、状态行也早归位了）。
+ *
+ * 够准的两件：**卡自己的东西不在**（键位行 `y 批准` 只在卡上——屏上没有它就说明没卡）
+ * ＋ **状态行不是裁决态**（那一格说的是「此刻」，卡撤了就变回「工作中 / 空闲」）。
+ * ⚠️ 键位提示**两串都要判**（轻 `y / a / n` · 重 `y / n`，`HINT_DECIDE_LIGHT / HEAVY`）：
+ * 只判 `y / n` 会把轻卡放过去（`y / a / n` 里没有连续的 `y / n`）。
+ */
+function noCardHere(shot: Capture, what: string): void {
+  const status = statusLineOf(shot.lines)
+  check(!has(shot, 'y 批准'), `${what}：**没有卡**（卡上的键位行不在——判轻的默认通）`, shot.text)
+  check(
+    !status.includes('等你定夺') && !status.includes('y / n') && !status.includes('y / a / n'),
+    `${what}：状态行也不是裁决态（根本没问）`,
+    status,
+  )
+}
+
 /** 等这一轮真收束（状态行回到空闲）。 */
 async function settled(session: UiSession): Promise<void> {
   await session.wait({ text: MAGIC_IDLE_MARK }, { timeoutMs: 30_000 })
@@ -186,11 +224,17 @@ async function settled(session: UiSession): Promise<void> {
 
 async function startFrame(): Promise<void> {
   // 剧本**可变**：第三条（读输出）要知道那个路径，而路径要先有沙地才算得出（见文件头注）
+  //
+  // ⚠️ **命令开头那一段 `rm -rf build` 是装置上的讲究**（U76）：判轻的调用**默认通、
+  // 不弹卡**（链的底换了），而本屏要留的正是「**带 `background` 的调用照旧过闸门**」——
+  // 故命令里必须有一段**名单里的动作**（U76 起名单只剩两条：删除 · 改权限/属主/属性/ACL）。
+  // 它不影响后面几屏：输出照旧是 `起手` / `收工` 那两行，交出去的号照旧是 `bg-1`。
+  // `sleep 2`（原 0.8）是给「交出去 → 模型接着说下一句」留足余量（命令得**还在跑**）。
   const turns: FixtureTurn[] = [
     {
       kind: 'tool',
       name: 'exec',
-      args: { cmd: 'echo 起手; sleep 0.8; echo 收工', background: true },
+      args: { cmd: 'rm -rf build; echo 起手; sleep 2; echo 收工', background: true },
       text: '这条命令交出去跑，我不占着这一轮。',
     },
     { kind: 'text', text: '交出去了，我先做别的。' },
@@ -199,6 +243,10 @@ async function startFrame(): Promise<void> {
   const fixture = startFixture({ turns })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
   const outputPath = outputPathOf(sandbox)
+  // 让那一段 `rm` **真删掉点东西**（卡上说的事要在沙地里真发生）——`-f` 之下删不存在的
+  // 也不报错，但「这一下真删了一棵目录」经得起看
+  mkdirSync(join(sandbox.workspace, 'build'), { recursive: true })
+  writeFileSync(join(sandbox.workspace, 'build', '产物.txt'), 'U70 的构建产物\n', 'utf8')
   // 第三条：**由「跑完」那一条唤醒**，模型用既有的 `read` 去读那个文件
   turns.push({
     kind: 'tool',
@@ -223,12 +271,18 @@ async function startFrame(): Promise<void> {
     await typeLine(session, '把这条构建交出去')
     await session.key('enter')
 
-    // —— ① 带后台参数的调用**照旧弹卡**（反面那一句） ——
-    await passCard(session, '01-裁决卡（后台那一形照旧过闸门）')
+    // —— ① 带后台参数的调用**照旧弹卡**（反面那一句）——卡上点得出名单里那一段 ——
+    const card = await passCard(session, '01-裁决卡（后台那一形照旧过闸门）')
+    check(
+      has(card, 'rm -rf build —— 删除（不可逆）'),
+      '① 卡上点名的正是**名单里那一段**——后台不是绕过裁决的口子（命令分解照列）',
+      card.text,
+    )
+    check(has(card, '判据：不可逆（收不回）'), '① 判据那一行说得出为什么问', card.text)
 
     // —— ② 交出去了：回执当场给模型，而这一轮**接着走** ——
     //
-    // 锚取**模型接着说的那句**：命令还在跑（`sleep 0.8`），而这一轮已经往下走了——
+    // 锚取**模型接着说的那句**：命令还在跑（`sleep 2`），而这一轮已经往下走了——
     // 「不占着这一轮」在屏上就是这个样子。
     await session.wait({ text: '交出去了，我先做别的' }, { timeoutMs: 20_000 })
     const handed = await session.capture({ label: '02-交出去了（这一轮不占着）' })
@@ -243,6 +297,12 @@ async function startFrame(): Promise<void> {
 
     // —— ③ 跑完 ⇒ 自动多一条带那个路径的消息（给屏那一行） ——
     await settled(session)
+    // ⚠️ **这一拨的时机 U76 起变了**（见 `expand` 的注：定局之后拨不动）：
+    // 从前那张「读输出」的卡挡在读前面，卡挂着的时候拨**一定**来得及；如今读**不问**
+    // （判轻的默认通），而它是被「跑完」那一声**唤醒**的——故这一拨要赶在那一句
+    // 落地**之前**（命令还在 `sleep 2` 里，窗口够宽）。轮 1 的行这时已经定局
+    // （`settled` 等到了空闲），故这一拨**不会改动 02 / 03 两帧**。
+    await expand(session)
     await session.wait({ text: 'bg-1 跑完了' }, { timeoutMs: 20_000 })
     const done = await session.capture({ label: '03-跑完那一声（给屏）' })
     keep(done)
@@ -251,10 +311,13 @@ async function startFrame(): Promise<void> {
 
     // —— ④ 取输出：模型用**既有的 `read`** 读那个文件（它在工作区之外） ——
     //
-    // 拨展开**走在这一次读之前**（见 `expand` 的注：定局之后拨不动）
-    await expand(session)
-    await passCard(session, '04-读输出的裁决卡（写的是「根外」）')
+    // ⚠️ **这一趟不弹卡**（读判轻——U76 起默认通；根外的**读**也不在必闸里：越界那一条
+    // 管的是「工作区外的写 / 删 / 移」）。从前的卡只是推进流程的手段，如今等**工具真跑完**
+    // （模型当时那一句答复）就够。
     await session.wait({ text: '读到了，输出确实在文件里' }, { timeoutMs: 20_000 })
+    const noCard = await session.capture({ label: '04-读输出不弹卡（默认通）' })
+    keep(noCard)
+    noCardHere(noCard, '④ 取输出那一趟')
     await settled(session)
 
     // 收起来那一行只报「几行」——**展开**才看得见读了什么（`ctrl+o`）。
@@ -313,7 +376,13 @@ async function serverFrame(): Promise<void> {
 
     await typeLine(session, '起一个一直跑的服务')
     await session.key('enter')
-    await passCard(session, '06-服务的裁决卡')
+    // ⚠️ **这一笔不弹卡**（U76：`exec` 判轻的默认通——这条命令一段都不在名单里；
+    // 而①那一张卡照出的原因在**命令里带了 `rm`**，不是"后台"这件事）。
+    // 从前那张卡只是推进流程的手段，如今**等回执那一行**（`〔bg-1〕…`）＝真交出去了。
+    await session.wait({ text: '〔bg-1〕' }, { timeoutMs: 20_000 })
+    const handed = await session.capture({ label: '06-服务交出去不弹卡（默认通）' })
+    keep(handed)
+    noCardHere(handed, '⑥ 交出去那一趟')
     await session.wait({ text: '它没结束' }, { timeoutMs: 20_000 })
     await settled(session)
 
@@ -326,11 +395,18 @@ async function serverFrame(): Promise<void> {
 
     // —— ⑤ 之一：read 那个文件，看得到此刻已有的输出 ——
     // 同上：展开要走在读之前（这一拨之后一直有效，第二遍读照旧看得见）
-    await expand(session)
     await typeLine(session, '读一眼它的输出')
+    // ⚠️ **展开位要赶在这一遍读渲染之前拨**（`expand` 的注：行一定局就重画不动了）：
+    // 从前拨在这张卡挂着的时候（卡挡在读前面，一定来得及），如今读**不问**（U76）——
+    // 而打字**不会**把这一格收回（`shell.ts` 里写 `expanded: false` 的只有「`esc` ＋ 空稿」
+    // 那一支，3240 行），故这一拨就落在**回车之前**；拨完一直有效，第二遍读照旧看得见
+    await expand(session)
     await session.key('enter')
-    await passCard(session, '08-读服务输出的裁决卡')
+    // ⚠️ 读不问（U76）——等工具真跑完（模型那一句答复）就够，没有卡可等
     await session.wait({ text: '读了一遍' }, { timeoutMs: 20_000 })
+    const readOnce = await session.capture({ label: '08-读一眼不弹卡（默认通）' })
+    keep(readOnce)
+    noCardHere(readOnce, '⑤ 读那一眼')
     await settled(session)
     // 收起来那一行只报「几行」——展开才看得见读了什么（同 ④ 那一处）
     await session.send('\u000f')
@@ -345,11 +421,17 @@ async function serverFrame(): Promise<void> {
     await Bun.sleep(2_000)
     await typeLine(session, '再看看它长到哪儿了')
     await session.key('enter')
-    // ⚠️ **打字会把展开位收回**（`shell.ts` 的输入编辑那一支：`edit({…, expanded: false})`）
-    // ——故每一次输入之后都要重拨一次，不然这一遍读出来的正文又收起来了
+    // ⚠️ **展开位要在这一遍读执行之前拨**（`expand` 的注：定局之后拨不动）——
+    // （原注说「打字会把展开位收回」：照 `shell.ts` 看**不成立**——写 `expanded: false` 的
+    // 只有「`esc` ＋ 空稿」那一支。位置照原样留着：它落在读执行之前，那才是要紧的。）
+    // 从前有一张卡挡在读前面，卡挂着的时候拨一定来得及；如今读**不问**（U76），
+    // 故这一拨紧跟着回车落下去（它只是个视图开关，不挡任何东西）。
     await expand(session)
-    await passCard(session, '10-再读一次的裁决卡')
+    // ⚠️ 读不问（U76）——等工具真跑完（模型那一句答复）就够
     await session.wait({ text: '又读了一遍' }, { timeoutMs: 20_000 })
+    const readTwice = await session.capture({ label: '10-再读不弹卡（默认通）' })
+    keep(readTwice)
+    noCardHere(readTwice, '⑤ 第二遍读')
     await settled(session)
     await session.send('\u000f')
     await Bun.sleep(400)

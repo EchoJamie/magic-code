@@ -16,21 +16,43 @@ import { describe, expect, test } from 'bun:test'
 import { realpathSync } from 'node:fs'
 import { attachShell } from '../src/index.ts'
 import type { KernelEvent } from '@magic/contracts'
+import type { FauxTurn } from '@magic/faux'
 import { eventsOfKind, kindTrail, lastModel, makeStage, readDatabase } from './support.ts'
 
 /** 瞬时类——实时订阅专用，**不落库**（记录 schema v0 规则 ①）。 */
 const TRANSIENT = ['model.delta', 'tool.output.delta'] as const
+
+/**
+ * 冒烟剧本（U76 起**本文件自带一份**，不再用 `support.ts` 的 `SMOKE_TURNS`）。
+ *
+ * ⚠️ **原锚**：`exec echo hello-magic`（判轻）；**为何变**：U76 起**判轻的不再问**
+ * （默认通——「经闸门」那一段只在 `tool.decision` 上记一条 `decider: 'auto'`），
+ * 拿它当夹具，`tool.decision.request` 根本不会出现，「链走通」与「拒绝路径」两支
+ * 要判的那件事（请求 → 答复 → 回填）就没有对象；**新锚**：`rm -rf build && echo hello-magic`
+ * ——第一段是**名单里**的删除（必问），第二段把 `hello-magic` 那串输出原样留着，
+ * 故下面「输出落库 / 回填送达」那几条判据的锚**一个字都不用换**。
+ *
+ * （`support.ts` 的 `SMOKE_TURNS` 仍留在原处：那是**判轻不问**那一形的现成夹具，
+ * 别的用例若要它，拿默认那份即可——本文件要的是「有卡」那一形，故自带。）
+ */
+const GATED_TURNS: readonly FauxTurn[] = [
+  {
+    toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build && echo hello-magic' } }],
+    usage: { inputTokens: 11, outputTokens: 3 },
+  },
+  { text: '跑完了', usage: { inputTokens: 21, outputTokens: 7 } },
+]
 
 describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真控制）', () => {
   test('交代 → 模型 → 工具（经闸门）→ 回填 → 收束，全过程落库', async () => {
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble()
+      const assembly = stage.assemble({ turns: GATED_TURNS })
       // 假外壳：**先订阅、后放开输入**（`attachShell` 里订阅，`submit` 才发命令）
       const shell = attachShell(assembly.shell)
 
-      await shell.submit('跑一下 echo')
+      await shell.submit('清一下构建目录，再回显一句')
       shell.dispose()
       assembly.close()
 
@@ -85,6 +107,11 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       expect(request?.data.name).toBe('exec')
       // 判断材料给足了（命令分解）——呈现轻重的判据在权限域，此处只认它非空
       expect(request?.data.material).toContain('echo hello-magic')
+      // ⚠️ **为何问**（U76）：问的由头是**名单里**那一段（删除），不是判轻的第二段——
+      // 材料里两段都在，末尾那一行点名「不可逆」，呈现轻重跟着是 `heavy`。
+      expect(request?.data.weight).toBe('heavy')
+      expect(request?.data.material).toContain('删除（不可逆）')
+      expect(request?.data.material).toContain('判据：不可逆（收不回）')
 
       // —— 3 回填送达：**第二次**模型调用的上下文里躺着这次工具结果 ——
       const toolResult = eventsOfKind(events, 'tool.result')[0]
@@ -146,7 +173,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
         const toolCall = raw.entries.find((row) => row.kind === 'tool-call')
         expect(JSON.parse(toolCall?.payload ?? '{}')).toEqual({
           name: 'exec',
-          args: { cmd: 'echo hello-magic' },
+          args: { cmd: 'rm -rf build && echo hello-magic' },
         })
 
         const toolResultRow = raw.entries.find((row) => row.kind === 'tool-result')
@@ -172,10 +199,11 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble()
+      // 夹具同上：**名单里**的命令才有卡可拒（U76 起判轻的不问，见 `GATED_TURNS`）
+      const assembly = stage.assemble({ turns: GATED_TURNS })
       const shell = attachShell(assembly.shell, { decide: () => 'reject' })
 
-      await shell.submit('跑一下 echo')
+      await shell.submit('清一下构建目录，再回显一句')
       shell.dispose()
       assembly.close()
 

@@ -237,7 +237,10 @@ describe('U48-S5 · 终端是客户端', () => {
    */
   test('悬着的裁决卡随轮收束作废——那一代执行者收得掉，管理者也跟着退', async () => {
     const runs = tempDir('magic-u48-cancel-runs-')
-    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'echo hi' } }] })
+    // ⚠️ **原锚**：`exec echo hi`（判轻）；**为何变**（U76）：判轻的调用**默认通、不弹卡**
+    // ——这一条要的正是一张**悬着的卡**，夹具换成**名单里**的删除（必问，且没人答它）；
+    // **新锚**：卡落在**重**那一档，右位键位是 `y / n`（见下）。
+    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     let window: UiSession | undefined
 
@@ -245,10 +248,10 @@ describe('U48-S5 · 终端是客户端', () => {
       window = await createUiSession({ label: '中断卡', artifacts: runs, sandbox, fixture })
 
       await window.send('跑一条命令')
-      // 内置件是**轻**的 ⇒ 三键位（`y / a / n`）。⚠️ `HINT_DECIDE_LIGHT` **没出包**
+      // 内置件走的是**名单里**的删除 ⇒ 重档键位（`y / n`）。⚠️ `HINT_DECIDE_HEAVY` **没出包**
       // （`@magic/tui` 只出去包的常量），故这里按**字面量**锚——与 `ui/scenarios.ts`
       // 里 `COPY.decideHint` 同一条先例：真要改那处文案，判据会红，那正是该有的反应。
-      await window.key('enter', { until: { text: 'y / a / n' }, timeoutMs: 20_000 })
+      await window.key('enter', { until: { text: 'y / n' }, timeoutMs: 20_000 })
 
       // **卡还挂着的时候中断这一轮**——答复永远不会来（那正是这个用例要的那条边）
       await window.key('ctrl+c')

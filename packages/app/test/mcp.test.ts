@@ -459,7 +459,13 @@ describe('失败路径', () => {
 
     try {
       const assembly = stage.assemble({
-        turns: [{ toolCalls: [{ name: 'exec', args: { cmd: 'echo 内置照常' } }] }, { text: '好' }],
+        // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的调用默认通、
+        // **不弹卡**——这一条要的正是「卡 → 批准 → 内置件照跑」那一路；**新锚**：名单里的
+        // 删除打头（必问），`内置照常` 那串输出原样留在第二段。
+        turns: [
+          { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build && echo 内置照常' } }] },
+          { text: '好' },
+        ],
       })
       await assembly.ready()
 
@@ -471,7 +477,8 @@ describe('失败路径', () => {
       // 开屏那几句话里点名到它（`/mcp` 那一屏归 U39，U38 至少要说得出来）
       expect(assembly.notices.join('\n')).toContain('broken')
 
-      // 内置工具照常：这一轮 `exec` 不问也能跑（读类规则不需要——先批准再说）
+      // 内置工具照常：这一轮 `exec` 走的是**名单里**那条（删除）——照旧问一次，
+      // 批准之后就真跑（U76 起不问的只是判轻的那些）
       const shell = bareShell(assembly)
       assembly.shell.send({ type: 'input.submit', text: '跑个内置的' })
       await until(() => shell.requests().length >= 1, '审批询问')

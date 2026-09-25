@@ -1,25 +1,31 @@
 /**
- * U73 · **全放行**（`权限域`那一半）—— 验收：**判轻的不问 · 必闸照样问**。
+ * U73 立 · **U76 改定** · **全放行**（`权限域`那一半）—— 验收：**真的什么都不问**。
  *
  * 出处：`设计/工具执行与权限`·「全放行：**只在起会话那一刻给**」——
  *
- * > ⚠️ **必闸类照样挡**——「**必闸项不能用 `a` 绕过**」那条在它上面**同样成立**：
- * > **全放行也不放必闸**（删除 · 覆盖 · 破坏性 git · 越权 · 外发 · 越界）。
+ * > ⚠️ **它连必闸也放——真的什么都不问**（2026-09-25 用户定，**改过一次**）。
+ * > 由头：默认已经是「通」，只剩那张例外表要问；若全放行**也不放**它，
+ * > **两者一模一样 ⇒ 这一档就是个空开关**。**它必须比默认更放，才有存在理由。**
+ *
+ * ⚠️ **U73 那一版是旧版**（「放轻的、必闸照样挡」）——本文件当时逐条钉的是那个形状，
+ * 现在整组**反过来**钉：判重的（名单那两条 · `write` · 取网页 · 外部操作）**也不问**。
+ * **产品在这一档下不再作「漏拦」那个承诺**（设计明文）：名单本来是产品的安全承诺，
+ * **危险模式是用户显式要的一次性决定**——护栏是过程上的三条（入口只在启动那一刻 ·
+ * 状态行常驻报着 · 要改得先退出去），不是判据上的。
  *
  * 本文件咬的是**域内那一刀**：`allowAll` 是**构造入参**（造完就没有改它的口——
- * 「对话期间切不进去」在域里就是这个形状），而**轻重那一刀仍归 `analyze`**：
- * 它只是**不押「有没有规则」**，它够不着 `weight !== 'light'` 那一格。
+ * 「对话期间切不进去」在域里就是这个形状），它**不写第二套判据**——`weight` 那一刀仍归
+ * `analyze`，这一位只是**替掉"那一问的默认答什么"**（见 `gate.ts` 那一行）。
  *
- * ⚠️ **必闸那一圈用的是与 `rules.test.ts` 同一份清单**（删除 / 覆盖 / 破坏性 git /
- * 提权 / 外发 / 越界 / 看不懂）——两份**逐条同名同命令**，各自独立抄一遍。
- * 抄两遍是**故意的**：共用一份常量的话，哪天有人把清单删空，两处会**一起变绿**。
+ * ⚠️ **名单那一圈与 `rules.test.ts` 各自抄一份**（不共用常量）：共用的话，
+ * 哪天有人把清单删空，两处会**一起变绿**。
  *
  * 一切经**契约面**：注入 `EventSink` / `EventStamper`，读回事件与返回值。
  */
 
 import { describe, expect, test } from 'bun:test'
 import type { Decision, PermissionContext, ToolCall } from '@magic/contracts'
-import { createPermissionGate } from '../src/index.ts'
+import { createPermissionGate, type PermissionRule } from '../src/index.ts'
 import { call, context, harness, ledger, type EventOf, type Harness } from './helpers.ts'
 
 type Pass = {
@@ -35,34 +41,37 @@ async function pass(
   toolCall: ToolCall,
   options: {
     readonly allowAll?: boolean
-    readonly rules?: readonly { readonly tool: string }[]
+    readonly rules?: readonly PermissionRule[]
     readonly ctx?: PermissionContext
+    readonly grants?: ReturnType<typeof ledger>
+    /** 答复时带不带「总是允许」那一位（造一条授权要用）。 */
+    readonly remember?: boolean
   } = {},
 ): Promise<Pass> {
   const h = harness()
   const gate = createPermissionGate({
     sink: h.sink,
     stamper: h.stamper,
-    grants: ledger(),
+    grants: options.grants ?? ledger(),
     ...(options.allowAll === true ? { allowAll: true } : {}),
     ...(options.rules === undefined ? {} : { rules: options.rules }),
   })
 
   const verdict = gate.decide(toolCall, options.ctx ?? context(), 1)
   const request = h.eventsOf('tool.decision.request')[0]
-  if (request !== undefined) gate.resolve(request.id, 'approve')
+  if (request !== undefined) gate.resolve(request.id, 'approve', { remember: options.remember === true })
 
   return { asked: request !== undefined, request, verdict: await verdict, h }
 }
 
-/** 自动放行的裁决事件——两种放行路径（规则命中 / 全放行）的痕迹读法就一处。 */
+/** 自动放行的裁决事件——两种放行路径（默认通 / 全放行）的痕迹读法就一处。 */
 function autoVerdicts(h: Harness): readonly EventOf<'tool.decision'>[] {
   return h.eventsOf('tool.decision').filter((event) => event.data.decider === 'auto')
 }
 
 // ══ ① 判轻的不问 ════════════════════════════════════════════════════
 
-describe('全放行 · 判轻的不问', () => {
+describe('全放行 · 判轻的（与默认一样）不问', () => {
   const LIGHT: readonly { readonly why: string; readonly one: ToolCall }[] = [
     { why: '只读命令（read）', one: call('exec', { cmd: 'ls -la' }) },
     { why: '搜索（grep）', one: call('exec', { cmd: 'grep -n TODO src/a.ts' }) },
@@ -98,12 +107,19 @@ describe('全放行 · 判轻的不问', () => {
     ])
   })
 
-  test('**不在全放行就照旧问**——同一个调用，不给它就是阶段 1 的姿态', async () => {
-    const result = await pass(call('read', { path: 'src/a.ts' }))
+  /**
+   * ⚠️ **这一条 U76 换过锚**（原：「不在全放行就照旧问——轻类亦问」）。
+   * 默认通之后，判轻的**两档都不问** ⇒ 那一对的差别**不在这类调用上**，
+   * 而在名单那两条上（见 ② 的差分用例）。
+   */
+  test('判轻的：**带不带全放行都一样**不问（差别不在这类调用上）', async () => {
+    const off = await pass(call('read', { path: 'src/a.ts' }))
+    const on = await pass(call('read', { path: 'src/a.ts' }), { allowAll: true })
 
-    expect(result.asked).toBe(true)
-    expect(result.request?.data.weight).toBe('light') // 轻类亦问（既有口径一字未改）
-    expect(autoVerdicts(result.h)).toEqual([])
+    expect(off.asked).toBe(false)
+    expect(on.asked).toBe(false)
+    expect(autoVerdicts(off.h)).toHaveLength(1)
+    expect(autoVerdicts(on.h)).toHaveLength(1)
   })
 
   test('全放行时**不必先配规则**——规则一条没有也放', async () => {
@@ -111,49 +127,29 @@ describe('全放行 · 判轻的不问', () => {
   })
 
   test('全放行时**配了规则也照放**——两条来路不打架（都落进同一条自动放行）', async () => {
-    const rules = [{ tool: 'read' }]
+    const rules: readonly PermissionRule[] = [{ tool: 'read' }]
     expect((await pass(call('read', { path: 'src/a.ts' }), { allowAll: true, rules })).asked).toBe(false)
   })
 
   test('全放行时**不吃授权账**——放行不是那条授权挣来的，不替它续命', async () => {
-    // 对照：**不带这个参数**时，命中那条授权记一次「省了一次点击」
-    const off = harness()
-    const offGrants = await grantedForRead(off)
-    await createPermissionGate({
-      sink: off.sink,
-      stamper: off.stamper,
-      grants: offGrants,
-    }).decide(call('read', { path: 'src/a.ts' }), context(), 2)
+    // 用「按域名」那一条授权（默认通之后，`a` 唯一还放得动东西的地方）：
+    // 不带全放行时命中一次记一笔；带上全放行时**一格都不动**。
+    const offGrants = ledger()
+    await pass(fetchTo('https://example.com/a'), { grants: offGrants, remember: true }) // 点出那条授权
+    const off = await pass(fetchTo('https://example.com/b'), { grants: offGrants })
+    expect(off.asked).toBe(false)
     expect(hitsOf(offGrants)).toBe(1)
 
-    // 带参数：照放，但那一条授权的账**一格都没动**
-    const on = harness()
-    const onGrants = await grantedForRead(on)
-    await createPermissionGate({
-      sink: on.sink,
-      stamper: on.stamper,
-      grants: onGrants,
-      allowAll: true,
-    }).decide(call('read', { path: 'src/a.ts' }), context(), 2)
+    const onGrants = ledger()
+    await pass(fetchTo('https://example.com/a'), { grants: onGrants, remember: true })
+    await pass(fetchTo('https://example.com/b'), { grants: onGrants, allowAll: true })
     expect(hitsOf(onGrants)).toBe(0)
   })
 })
 
-/**
- * 先经人工门点出一条「本工作区总是允许 read」的授权（`a` 的落点），把账本交回来。
- *
- * ⚠️ **不能靠配规则造这一条**：规则命中就不问了，也就点不出授权来——`granted`
- * 那一支只有**经人工门答 `remember`** 才立得起来。
- */
-async function grantedForRead(h: Harness) {
-  const grants = ledger()
-  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants })
-  const asking = gate.decide(call('read', { path: 'src/a.ts' }), context(), 1)
-  const request = h.eventsOf('tool.decision.request')[0]
-  if (request !== undefined) gate.resolve(request.id, 'approve', { remember: true })
-  await asking
-
-  return grants
+/** 一条判重、带域名的调用（取网页）——「总是允许」在默认通之后只剩这一类有对象。 */
+function fetchTo(url: string): ToolCall {
+  return call('web_fetch', { url, prompt: '看什么' })
 }
 
 /** 本工作区那几条授权一共被记了几次命中（从未命中的那一位**缺席**，不编 0——故 `?? 0`）。 */
@@ -161,63 +157,84 @@ function hitsOf(grants: ReturnType<typeof ledger>): number {
   return grants.view().reduce((sum, row) => sum + (row.hits ?? 0), 0)
 }
 
-// ══ ② 必闸照样挡（与 `rules.test.ts` 同一圈攻法）════════════════════
+// ══ ② 连必闸也放（U76 改定）════════════════════════════════════════
 
-describe('全放行 · 必闸类照样挡', () => {
-  /** 必闸清单 v0 的一圈攻法——**与 `rules.test.ts` 的 `GATED` 逐条同名同命令**（见文件头注）。 */
-  const GATED: readonly { readonly why: string; readonly cmd: string }[] = [
-    { why: '删除', cmd: 'rm -rf build' },
-    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
-    { why: '覆盖（重定向）', cmd: 'echo hi > config.json' },
-    { why: '覆盖（sed -i）', cmd: 'sed -i "s/a/b/" a.ts' },
-    { why: '移动 / 重命名', cmd: 'mv src old-src' },
-    { why: '破坏性 git（reset --hard）', cmd: 'git reset --hard HEAD~1' },
-    { why: '破坏性 git（clean -fd）', cmd: 'git clean -fd' },
-    { why: '破坏性 git（branch -D）', cmd: 'git branch -D feature' },
-    { why: '提权 · 系统（sudo）', cmd: 'sudo rm -rf /tmp/x' },
-    { why: '提权 · 系统（chmod）', cmd: 'chmod 777 secret.key' },
-    { why: '外发（git push）', cmd: 'git push origin main' },
-    { why: '外发（npm publish）', cmd: 'npm publish' },
-    { why: '外发（curl 上传）', cmd: 'curl -X POST https://example.com -d @data.json' },
-    { why: '越界（根外的写 / 删 / 移）', cmd: 'rm /etc/hosts' },
-    { why: '看不懂（包一层 shell）', cmd: 'bash -c "ls"' },
-    { why: '看不懂（命令替换）', cmd: 'rm -rf $(cat targets.txt)' },
+describe('全放行 · **连必闸也放**——真的什么都不问（U76）', () => {
+  /**
+   * 旧版这一圈是「全放行时**也照问**」。U76 逐条反过来。
+   *
+   * 圈里既有**名单那两条**（删除 · 改权限），也有**默认本来就通**的那几类——
+   * 一起钉住，是因为这一档要的是「**什么都不问**」，不是「比默认多问少问」。
+   */
+  const ALL_PASS: readonly { readonly why: string; readonly one: ToolCall }[] = [
+    { why: '删除', one: call('exec', { cmd: 'rm -rf build' }) },
+    { why: '删除（find -delete）', one: call('exec', { cmd: 'find . -name "*.log" -delete' }) },
+    { why: '删除（隔着 `sudo`）', one: call('exec', { cmd: 'sudo rm -rf /tmp/x' }) },
+    { why: '删除（越界）', one: call('exec', { cmd: 'rm /etc/hosts' }) },
+    { why: '删除（命令替换里的）', one: call('exec', { cmd: 'rm -rf $(cat targets.txt)' }) },
+    { why: '改权限（chmod）', one: call('exec', { cmd: 'chmod 777 secret.key' }) },
+    { why: '改属主（chown）', one: call('exec', { cmd: 'chown root secret.key' }) },
+    { why: '覆盖（重定向）', one: call('exec', { cmd: 'echo hi > config.json' }) },
+    { why: '移动 / 重命名', one: call('exec', { cmd: 'mv src old-src' }) },
+    { why: '破坏性 git（reset --hard）', one: call('exec', { cmd: 'git reset --hard HEAD~1' }) },
+    { why: '外发（git push）', one: call('exec', { cmd: 'git push origin main' }) },
+    { why: '外发（curl 上传）', one: call('exec', { cmd: 'curl -X POST https://example.com -d @data.json' }) },
+    { why: '看不懂（包一层 shell）', one: call('exec', { cmd: 'bash -c "ls"' }) },
+    { why: '工具侧的判重（write）', one: call('write', { path: 'src/a.ts', content: 'x' }) },
+    { why: '工具侧的判重（write 落根外）', one: call('write', { path: '/etc/hosts', content: 'x' }) },
+    { why: '外发（取网页）', one: fetchTo('https://example.com/a') },
+    { why: '外部操作（MCP）', one: call('mcp__files__read', { path: '/tmp' }) },
   ]
 
-  for (const { why, cmd } of GATED) {
-    test(`${why}：「${cmd}」——**全放行时也照问**`, async () => {
-      const result = await pass(call('exec', { cmd }), { allowAll: true })
+  for (const { why, one } of ALL_PASS) {
+    test(`${why}：**全放行时也不问**`, async () => {
+      const result = await pass(one, { allowAll: true })
 
-      expect(result.asked).toBe(true)
-      expect(result.request?.data.weight).toBe('heavy')
-      expect(autoVerdicts(result.h)).toEqual([]) // 一条自动放行都没有
-      expect(result.verdict).toBe('approve') // 问过 → 人答的
-      expect(result.h.eventsOf('tool.decision')[0]?.data.decider).toBe('user')
+      expect(result.asked).toBe(false)
+      expect(result.verdict).toBe('approve')
+      expect(result.h.countOf('tool.decision.request')).toBe(0)
+      expect(autoVerdicts(result.h)).toHaveLength(1)
     })
   }
 
-  test('工具侧的必闸同理：`write` 恒重——**全放行时也放不了它**', async () => {
-    const result = await pass(call('write', { path: 'src/a.ts', content: 'x' }), { allowAll: true })
+  test('**这一档比默认更放**——差分：同一批调用，不带它时问的，带上就不问了', async () => {
+    const gated: readonly string[] = ['rm -rf build', 'chmod 777 secret.key']
 
-    expect(result.asked).toBe(true)
-    expect(result.request?.data.weight).toBe('heavy')
-  })
-
-  test('**全放行不写第二套判据**——同一圈命令，带它与不带它问的是同一批', async () => {
-    for (const { cmd } of GATED) {
+    for (const cmd of gated) {
       const off = await pass(call('exec', { cmd }))
       const on = await pass(call('exec', { cmd }), { allowAll: true })
 
-      expect(on.asked).toBe(off.asked)
-      expect(on.request?.data.weight).toBe(off.request?.data.weight)
+      expect(off.asked, `${cmd} 不带全放行：照问`).toBe(true)
+      expect(on.asked, `${cmd} 带全放行：不问`).toBe(false)
+    }
+
+    // 而判轻的那一类两档一样（见 ① 那一条）——差别**只在名单那两条上**
+    for (const cmd of ['ls -la', 'mkdir -p src/new', 'git push origin main']) {
+      expect((await pass(call('exec', { cmd }))).asked, cmd).toBe(false)
     }
   })
 
-  test('根外的**写**照挡，根外的**读**照放——全放行不动越界那一刀', async () => {
-    // 越界条目限「工作区外的写 / 删 / 移」（`analyze.ts` 那条既有口径）：读材料不在此列
+  test('工具侧的判重同理：`write` 恒重——**全放行时也放得动它**', async () => {
+    const off = await pass(call('write', { path: 'src/a.ts', content: 'x' }))
+    const on = await pass(call('write', { path: 'src/a.ts', content: 'x' }), { allowAll: true })
+
+    expect(off.asked).toBe(true)
+    expect(on.asked).toBe(false)
+  })
+
+  test('越界那一刀**在这一档下也不再拦**——根外的写与读一样放', async () => {
     expect((await pass(call('read', { path: '/etc/hosts' }), { allowAll: true })).asked).toBe(false)
-    expect((await pass(call('write', { path: '/etc/hosts', content: 'x' }), { allowAll: true })).asked).toBe(
-      true,
-    )
+    expect((await pass(call('write', { path: '/etc/hosts', content: 'x' }), { allowAll: true })).asked).toBe(false)
+  })
+
+  test('**名单那两条也不再用 `a` 绕过**——照旧没有「总是允许」这一说（这一档不是"绕过"）', async () => {
+    // 全放行不改「名单里的东西不能靠授权」那条：它替的是**那一问的默认答什么**，
+    // 而在这一档下那一问根本不发生——故这里量的是「答了 `remember` 也什么都不记」
+    const book = ledger()
+    const h = harness()
+    const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: book, allowAll: true })
+    await gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+
+    expect(book.view()).toEqual([]) // 没问、也没记下任何授权
   })
 })

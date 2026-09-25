@@ -109,9 +109,13 @@ describe('U49 · 接回（真窗口）', () => {
 
   test('两个窗口看同一条会话：一张卡只答一次，答完另一处**当场撤掉**', async () => {
     const runs = tempDir('magic-u49-decide-runs-')
+    // ⚠️ **原锚**：`exec echo u49-只跑一次`（判轻）；**为何变**（U76）：判轻的调用
+    // **默认通、不弹卡**，而这一条要的正是「两个窗口各挂一张待答的卡」；**新锚**：
+    // 第一段换成**名单里**的删除（必问），第二段把 `u49-只跑一次` 那串输出原样留着
+    // ⇒ 下面「那一件工具真跑了一次（结果在屏上）」那条判据的锚一个字不用换。
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { cmd: 'echo u49-只跑一次' } },
+        { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build && echo u49-只跑一次' } },
         { kind: 'text', text: '跑完了' },
       ],
     })
@@ -123,7 +127,9 @@ describe('U49 · 接回（真窗口）', () => {
       windows.push(one)
 
       await one.send('跑一条命令', { until: { text: '跑一条命令' }, timeoutMs: 10_000 })
-      await one.key('enter', { until: { text: 'y / a / n' }, timeoutMs: 20_000 })
+      // 卡是**重**那一档（名单里的删除）⇒ 右位键位 `y / n`。⚠️ `HINT_DECIDE_HEAVY`
+      // **没出包**，按**字面量**锚（同 `ui/scenarios.ts` 的 `COPY.decideHint` 先例）。
+      await one.key('enter', { until: { text: 'y / n' }, timeoutMs: 20_000 })
 
       // 第二扇窗接回同一条会话——那一张卡**也在它屏上**（快照带回来的「待答项」）
       const two = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture })
@@ -137,17 +143,17 @@ describe('U49 · 接回（真窗口）', () => {
       expect(asking.text).toContain('需要你')
 
       await two.key('enter')
-      await two.wait({ text: 'y / a / n' }, { timeoutMs: 20_000 })
+      await two.wait({ text: 'y / n' }, { timeoutMs: 20_000 })
 
       const both = await two.capture({ label: '01-两个窗口都挂着这张卡' })
-      expect(both.text).toContain('y / a / n')
+      expect(both.text).toContain('y / n')
 
       // **甲窗答复**——乙窗那张卡应当**当场撤掉**（同一件事实，两个窗口各画一份）
       await one.send('y')
-      await two.wait({ absent: 'y / a / n' }, { timeoutMs: 20_000 })
+      await two.wait({ absent: 'y / n' }, { timeoutMs: 20_000 })
 
       const gone = await two.capture({ label: '02-另一处已撤掉' })
-      expect(gone.text).not.toContain('y / a / n')
+      expect(gone.text).not.toContain('y / n')
       // 而那一件工具**真跑了一次**（结果在屏上）
       await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
 
