@@ -147,11 +147,28 @@ export type VendorAdapter = {
 // —— 列表响应归一（两家共用的那半：`{ object: 'list', data: [{ id, … }] }`）——
 
 /**
- * 把 `{ data: [...] }` 归一成模型信息——**只认 `id`**。
+ * 把 `{ data: [...] }` 归一成模型信息——**`id` 必要，规格有的才收**。
  *
- * 两家列表**只保证 `id`**（MiniMax 另有 `created` / `owned_by`，DeepSeek 有 `owned_by`）：
- * 那些既不是调用要用的、也不是选择要看的，收了只会让人以为「这些字段一直有」。
- * 其余一切（规格 / 能力）走 `supplement` 或详情。
+ * ## 收哪些、不收哪些
+ *
+ * **收「调用真用得到」的那几格**。今天只有一格：`max_output_tokens`（U91）——
+ * 它进 `limits.maxOutputTokens`，再由网关落到请求体的输出上限。
+ * 立这条判据的由头（U91 实测）：**供应商确实会把它连列表一起给**，而此前这里把它
+ * 整格丢掉了，输出上限只能一路落回取件层那个常量（4096）。
+ *
+ * 其余一律不收（`created` / `owned_by` / `name` / `context_window` / `input_modalities`…）：
+ * 那些既不调用也不呈现，收了只会让人以为「这些字段一直有」。规格与能力里**没被收的那几格**
+ * 照旧走 `supplement`（适配按官方出处补）或详情——**本函数不替它们编**。
+ *
+ * ## 读不懂就不给这一位
+ *
+ * `max_output_tokens` **是正整数才算数**（同「零 / 非法规格不当作无限大」那条口径）：
+ * 字符串、0、负数、小数一律**当作没给**——宁可让输出上限落回兜底那个数，
+ * 也不拿一个读不懂的值去发请求。
+ *
+ * ⚠️ **两家给的不一样**（2026-09-26 实测 `GET /models`）：DeepSeek 逐模型给
+ * `max_output_tokens`；MiniMax 的列表与详情**都只有四个字段**（`id`/`object`/`created`/`owned_by`）
+ * ——它那条路压根没有这一格可取，故照旧走兜底（见 `ai-sdk.ts` 的 `MAX_COMPLETION_TOKENS`）。
  */
 function toModelsOf(body: unknown): readonly ModelInfo[] {
   if (typeof body !== 'object' || body === null) throw new Error('模型列表不是对象')
@@ -164,7 +181,14 @@ function toModelsOf(body: unknown): readonly ModelInfo[] {
     const id = (one as { id?: unknown }).id
     // **id 是调用时要送的那个名字**——不是字符串就跳过（收了也用不了）
     if (typeof id !== 'string' || id.length === 0) continue
-    models.push({ id })
+
+    const raw = (one as { max_output_tokens?: unknown }).max_output_tokens
+    const maxOutput = typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : undefined
+
+    models.push({
+      id,
+      ...(maxOutput === undefined ? {} : { limits: { maxOutputTokens: maxOutput } }),
+    })
   }
   return models
 }
@@ -271,12 +295,17 @@ export const MINIMAX_VENDOR: VendorAdapter = {
 
 /**
  * DeepSeek 开放平台（官方文档 2026-09-23）：
- * - 列表 `GET /models`（**无分页、无详情接口、没有容量声明**——公开结构只有
- *   `id` / `object` / `owned_by`）；
+ * - 列表 `GET /models`（**无分页、无详情接口**）；
  * - 故本适配**不实现 `retrieveModel`**：不拼造详情 URL（设计明文）；
- * - 容量（官方价目表写「1M」上下文 /「384K」输出）**不收**：`K` / `M` 的单位无从判定
- *   （`1,000,000` 还是 `1,048,576`？）——与 `capacity.ts` 拒收 MiniMax `M2-her`
+ * - **容量不给这一位**：官方**价目表**写「1M」上下文 /「384K」输出，`K` / `M` 的单位
+ *   无从判定（`1,000,000` 还是 `1,048,576`？）——与 `capacity.ts` 拒收 MiniMax `M2-her`
  *   那条「64 K」同一条判据：**说不准的数不上屏**，落到未知就如实未知。
+ *
+ *   ⚠️ **U91 实测更正**（2026-09-26）：**列表接口自己给得出整数**——逐模型有
+ *   `context_window` 与 `max_output_tokens`（如 `deepseek-flash`：1048576 / 393216）。
+ *   故「说不准」这条**只对价目表那句话成立**，接口给的那两个数是**准的**：
+ *   本单收 `max_output_tokens`（见 `toModelsOf`）；`context_window` 仍不收——
+ *   那是另一格（进的是分母与压缩阈值），不在本单射程。
  *
  * 思考模式（`guides/thinking_mode`，2026-09-23）：`thinking.type = enabled|disabled`、
  * 档位 `reasoning_effort = low|high|max`、**默认开启且默认 high**、**无 token 预算参数**。
@@ -300,11 +329,14 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
   /**
    * 缺项补充——**思考能力的依据来自官方文档**（`guides/thinking_mode`，2026-09-23）：
    * 开关 `thinking.type = enabled|disabled`、档位 `reasoning_effort = low|high|max`、
-   * **没有 token 预算参数**。列表本身只回 `id`，故这份能力只能由适配补
-   *（设计：「必要缺项按官方资料补充」）。
+   * **没有 token 预算参数**。**列表接口不给思考能力**（那几格它没有），故这份能力
+   * 只能由适配补（设计：「必要缺项按官方资料补充」）。
    *
-   * 容量**不补**：官方价目表写「1M / 384K」，`K`/`M` 的单位无从判定（同 `capacity.ts`
-   * 拒收 MiniMax「64 K」那条判据）——说不准的数不上屏，如实未知。
+   * 容量**不补**：价目表那两句「1M / 384K」的 `K`/`M` 单位无从判定（同 `capacity.ts`
+   * 拒收 MiniMax「64 K」那条判据）——**补缺项要有出处，不能拿说不准的数顶上**。
+   *
+   * ⚠️ **U91 起有一格不从这里来**：`max_output_tokens` **由接口自己给**，归一那一跳
+   * 就收了（见 `toModelsOf`）——`supplement` 的契约是「补 API **没给**的」，故它不碰。
    */
   supplement(info) {
     return {
