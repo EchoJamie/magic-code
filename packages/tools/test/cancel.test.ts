@@ -85,14 +85,19 @@ describe('U06 · 取消', () => {
     expect(outcome.output).toBe('[exit 137]')
   })
 
-  test('取消 ≠ 超时：沙箱级失败照旧归 reason，不进取消这一支', async () => {
+  test('取消 ≠ 超时：超时照旧归 reason，**抬头不混进取消那一句**', async () => {
     const controller = new AbortController()
     const deps = makeToolDeps({
-      exec: { x: { ok: false, reason: 'timeout', message: '命令超时（200ms）未完成——已终止' } },
+      exec: {
+        x: { ok: false, reason: 'timeout', message: '命令超时（200ms）未完成——已终止', timeoutMs: 200, stdout: '', stderr: '' },
+      },
     })
 
+    // 信号也中止了（用户按了 Ctrl+C）**同时**到点——两支互斥由构造保证：
+    // 超时那一支只可能来自沙箱的自持计时器，故这一趟说的是「超时」那一句，
+    // 不是「已取消」（同一次里不会两句都出现，见 `composeOutcome` 那一支的注）。
     const outcome = await deps.runtime.invoke(execCall('x'), { signal: controller.signal })
 
-    expect(outcome.output).toBe('exec 未能执行（timeout）：命令超时（200ms）未完成——已终止')
+    expect(outcome.output).toBe('已超时——命令跑过了、被掐断（200ms 到点）')
   })
 })

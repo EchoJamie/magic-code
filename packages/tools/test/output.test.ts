@@ -5,20 +5,24 @@
  * - **流式**：沙箱 `opts.onOutput` 的增量转 `tool.output.delta` 事件（**不落库**）；
  *   终值进 `tool.result`；
  * - **大块转存**：超阈值的输出经记录域转存 blob，**事件只留引用**；
- * - **超时 / 输出上限为常量**（超限截断）——常量由本域显式交沙箱，不吃沙箱实现的缺省。
+ * - **输出上限为常量**（超限截断）——常量由本域显式交沙箱，不吃沙箱实现的缺省；
+ * - **超时是参数、不是常量**（U69）——不填就是 `null`（＝不设上界），见下面那一节。
  *
  * 文本形态是**实现级自选**（技术方案只定到「超限截断」「大块转存归调用方」）——故用例钉死
- * 本实现选定的形态，谁改谁红。三条：
+ * 本实现选定的形态，谁改谁红。四条：
  * - 命令跑了 → 输出＝正文 ＋（stderr 块）＋（截断块）＋（`[exit N]`，仅非 0）；
- * - 沙箱级失败 → 输出＝`exec 未能执行（reason）：message`；
+ * - **超时**（U69 起与「没跑成」分开）→ 抬头＝「已超时——命令跑过了、被掐断（Nms 到点）」，
+ *   **已产出的输出照常带回**，不带 `[exit N]`；
+ * - 没跑成（cwd 越界 / 启动失败）→ 输出＝`exec 未能执行（reason）：message`；
  * - 转存／执行异常 → 回落内联 / 以失败回填，**不丢结果、不炸调用**。
  */
 
 import { describe, expect, test } from 'bun:test'
 import type { BlobStore } from '@magic/contracts'
-import { EXEC_MAX_OUTPUT_BYTES, EXEC_TIMEOUT_MS } from '../src/exec-tool.ts'
+import { EXEC_MAX_OUTPUT_BYTES } from '../src/exec-tool.ts'
 import { BLOB_THRESHOLD_BYTES } from '../src/blobs.ts'
-import { collector, execCall, makeToolDeps } from './helpers.ts'
+import { OUTPUT_EXEC_BAD_TIMEOUT } from '../src/messages.ts'
+import { collector, execCall, execCallWith, makeToolDeps } from './helpers.ts'
 
 describe('U06 · 流式与终值', () => {
   test('沙箱 onOutput 的增量转 tool.output.delta——逐条带链引用；终值进 tool.result', async () => {
@@ -61,13 +65,38 @@ describe('U06 · 流式与终值', () => {
     expect(deps.sink.byKind('tool.result')[0]?.data.output).toEqual({ text: outcome.output })
   })
 
-  test('超时 / 输出上限为常量——每次都显式交沙箱（不吃实现缺省）', async () => {
+  test('输出上限是常量——每次都显式交沙箱（不吃实现缺省）', async () => {
     const deps = makeToolDeps()
 
     await deps.runtime.invoke(execCall('ls'), {})
 
-    expect(deps.sandbox.execs[0]?.opts.timeoutMs).toBe(EXEC_TIMEOUT_MS)
     expect(deps.sandbox.execs[0]?.opts.maxOutputBytes).toBe(EXEC_MAX_OUTPUT_BYTES)
+  })
+
+  test('超时**不是常量**——不填就是 `null`（＝不设上界），填了就是这个数', async () => {
+    const deps = makeToolDeps()
+
+    await deps.runtime.invoke(execCall('ls'), {})
+    expect(deps.sandbox.execs[0]?.opts.timeoutMs).toBeNull()
+
+    await deps.runtime.invoke(execCallWith({ cmd: 'ls', timeoutMs: 2500 }), {})
+    expect(deps.sandbox.execs[1]?.opts.timeoutMs).toBe(2500)
+
+    // `null` 是**显式的**「一直等」——与不填同义，但不是「沙箱自己看着办」
+    await deps.runtime.invoke(execCallWith({ cmd: 'ls', timeoutMs: null }), {})
+    expect(deps.sandbox.execs[2]?.opts.timeoutMs).toBeNull()
+  })
+
+  test('超时参数写错 → 参数错误那一句，**不猜也不悄悄换一种语义**（也不调沙箱）', async () => {
+    const deps = makeToolDeps()
+
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '5000']) {
+      const outcome = await deps.runtime.invoke(execCallWith({ cmd: 'ls', timeoutMs: bad }), {})
+      expect(outcome.ok).toBe(false)
+      expect(outcome.output).toBe(OUTPUT_EXEC_BAD_TIMEOUT)
+    }
+
+    expect(deps.sandbox.execs).toHaveLength(0) // 一个都没发下去
   })
 
   test('截断 → 终值带截断标记（沙箱截到上限；本域照实转述，不假装完整）', async () => {
@@ -104,19 +133,7 @@ describe('U06 · 流式与终值', () => {
   })
 })
 
-describe('U06 · 沙箱级失败（错误＝返回值）', () => {
-  test('超时 → ok:false，归在返回值里、不抛', async () => {
-    const deps = makeToolDeps({
-      exec: { x: { ok: false, reason: 'timeout', message: '命令超时（120000ms）未完成——已终止' } },
-    })
-
-    const outcome = await deps.runtime.invoke(execCall('x'), {})
-
-    expect(outcome.ok).toBe(false)
-    expect(outcome.output).toBe('exec 未能执行（timeout）：命令超时（120000ms）未完成——已终止')
-    expect(deps.sink.byKind('tool.result')[0]?.data.ok).toBe(false)
-  })
-
+describe('U06 · 没跑成（错误＝返回值）', () => {
   test('cwd 越界 / 启动失败 → 同样归返回值，reason 原样带出', async () => {
     for (const reason of ['out-of-bounds', 'spawn'] as const) {
       const deps = makeToolDeps({

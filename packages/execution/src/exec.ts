@@ -15,12 +15,18 @@
  *   不留给用户一窝逃逸的孤儿（实测：只杀直接子进程时 `sleep` 会活下来）。
  * - **`SIGKILL` 收命**——实测 `SIGTERM` 可被命令 `trap` 掉：忽略 TERM 的命令会照常跑完
  *   甚至 exit 0，于是「已超时 / 已取消」会被报成成功。SIGKILL 不可捕获，语义才闭合。
+ *
+ * ⚠️ **超时没有缺省常量了**（U69）——原先这里有一个 `DEFAULT_TIMEOUT_MS = 120_000`，
+ * 谁不显式给就套上它。撤掉的理由是它**替所有命令回答了一个没有全局答案的问题**：
+ * 「这条命令该等多久」只有发起那件事的人知道（`ls` 与一次构建不是一回事）。
+ * 留一个常量当兜底，就是留着 D39 那个坑——120 秒一刀切掐掉正当的长活
+ * （2026-09-25 实测：`swift package resolve` 跑到 123.5 秒被掐，而它真在下载依赖）。
+ * 现在**缺省 ＝ 不设上界**（一直等）；上界由调用方按手上的事给（设计 · 工具执行与权限）。
+ * 一道来的还有**输出**：超时那一支不再是「没跑成」，它**把两道流带回**——命令跑过了
+ * （见下面 `TimeoutToken` 与那一支的注）。
  */
 
 import type { ExecResult, OutputDelta, ProcessLedger } from '@magic/contracts'
-
-/** 超时缺省——毫秒（技术方案 · 执行 · 原语形态：缺省＝实现级常量）。 */
-export const DEFAULT_TIMEOUT_MS = 120_000
 
 /** 输出上限缺省——字节；**每道流各自计**（见 `sandbox.ts` 头注的取舍说明）。 */
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
@@ -31,8 +37,14 @@ export const KILLED_EXIT = 137
 /** 跑命令的宿主 shell——`-c` 取一条命令行。 */
 const SHELL = 'sh'
 
-/** 超时标记——私有哨兵：退出码是数字，令牌不是数字，两者在 `race` 里不会撞车。 */
-const TIMED_OUT = Symbol('timeout')
+/**
+ * 超时令牌——私有哨兵，**载着真报了的那条上界**（毫秒）。
+ *
+ * 两件事合成一个值：**退出码是数字，令牌是对象**，两者在 `race` 里不会撞车（哨兵不变的那条）；
+ * 令牌**带着那一条上界**，于是报文与 `timeoutMs` 都从**报了的那个数**取，
+ * 不必拿调用方自己记的那份来对——两处各记一份，迟早有对不上的那天。
+ */
+type TimeoutToken = { readonly boundMs: number }
 
 /** 永不落定的 Promise——竞速位上的「本条件不参与裁决」（只让失败冒头，不让成功抢先）。 */
 const NEVER = new Promise<never>(() => undefined)
@@ -68,7 +80,11 @@ type OutputSink = (delta: OutputDelta) => void
 /** 一次执行的进程侧入参——cwd 已是绝对路径（路径问题归 `sandbox.ts`）。 */
 export type CommandOptions = {
   readonly cwd: string
-  readonly timeoutMs: number
+  /**
+   * 超时上界——**`null` ＝ 不设上界**（一直等，本文件不立计时器）。缺省常量已撤（见上）。
+   * 归一化（合法／非法值各归哪一档）归 `sandbox.ts`，本文件只收两种：一个正数，或 `null`。
+   */
+  readonly timeoutMs: number | null
   readonly maxOutputBytes: number
   readonly onOutput?: (delta: OutputDelta) => void
   readonly signal?: AbortSignal
@@ -185,17 +201,25 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
 
   // 超时＝自持计时器 ＋ 哨兵，**不从退出码反推**：命令自己死成 137（`kill -9 $$`）
   // 与「被我们超时收掉」同码不同界，靠退出码猜必然混为一类。
+  //
+  // **有上界才立计时器**：`null` ＝ 不设上界，此时竞速位上放「永不落定」——
+  // 一则不白养一个定时器，二则语义就写在脸上：这一路**没有**会到点的那个东西。
+  const bound = options.timeoutMs
   let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline = new Promise<typeof TIMED_OUT>((markTimeout) => {
-    timer = setTimeout(() => markTimeout(TIMED_OUT), options.timeoutMs)
-  })
+  const deadline: Promise<TimeoutToken> =
+    bound === null
+      ? NEVER
+      : new Promise((markTimeout) => {
+          timer = setTimeout(() => markTimeout({ boundMs: bound }), bound)
+        })
 
   // 读流若**自己坏掉**（消费方回调抛错一类），必须当场浮上来——否则要等命令跑完
   // 才发作：既白等一场，又漏掉收命（`NEVER` 让「正常读完」不参与裁决，只让失败冒头）。
   const drained = Promise.all([stdoutTask, stderrTask])
 
   try {
-    let outcome: number | typeof TIMED_OUT
+    // 竞速位的三种落定：退出码（数字）、超时令牌（对象，见 `TimeoutToken`）、以及永不落定。
+    let outcome: number | TimeoutToken
     try {
       outcome = await Promise.race([proc.exited, deadline, drained.then(() => NEVER)])
     } finally {
@@ -203,13 +227,22 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
       options.signal?.removeEventListener('abort', onAbort) // 摘监听——信号常比单次执行长寿
     }
 
-    if (outcome === TIMED_OUT) {
+    if (typeof outcome === 'object') {
+      // **超时不是「没执行」**（设计：命令跑过的结果与调用不成立分开）——命令跑了 123.5 秒、
+      // 真在做，副作用可能已经发生。故这一支**照正常那一支把两道流带回**：收尸时
+      // `stdoutTask` / `stderrTask` 本来就排空到 EOF（`await proc.exited` 之后 `drained`
+      // 已是可取的终值），原先只是**没把值带出来**——D39 丢的就是这一份。
       killTree(proc)
-      await Promise.all([proc.exited, stdoutTask, stderrTask]) // 收尸 ＋ 排空，不留悬着的读
+      await proc.exited // 收尸
+      const [stdout, stderr] = await drained // 排空，不留悬着的读
       return {
         ok: false,
         reason: 'timeout',
-        message: `命令超时（${options.timeoutMs}ms）未完成——已终止`,
+        message: `命令超时（${outcome.boundMs}ms）未完成——已终止`,
+        timeoutMs: outcome.boundMs,
+        stdout: stdout.text,
+        stderr: stderr.text,
+        ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}),
       }
     }
 

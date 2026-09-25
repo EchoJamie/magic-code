@@ -8,6 +8,10 @@
  * 4. **失败三例**——timeout / cwd 越界（**进程不启动**）/ 启动失败——各归 `reason`；
  * 5. **取消**——`opts.signal` 中止在途 → **返回不抛**。
  *
+ * ⚠️ **U69 改了口径的两处**（本文件跟着改，见各自的注）：
+ * ① **超时那一支带上已产出的输出**（D39：它跑了、被掐断，不是「没执行」）；
+ * ② **超时没有缺省常量了**——不设 ＝ 无上界（旧常量 120 秒已撤，见下面「无上界」那一节）。
+ *
  * 两条实测教训（U01 契约层审查 M1 / M2 的实测，本文件沿用）：
  * - 「命令不存在」＝ **exit 127**（经 shell），**不是**沙箱级失败——别与启动失败混为一类；
  * - `Bun.spawn` 对不存在的**可执行文件**直接抛 ENOENT / cwd 不存在同样抛——**抛**才是启动失败。
@@ -418,6 +422,15 @@ function failureOf(result: ExecResult): { reason: string; message: string } {
   return { reason: result.reason, message: result.message }
 }
 
+/** 取**超时**那一支（U69）——另两支没有输出可谈，故单拎一个收窄助手。 */
+function timedOutOf(result: ExecResult): Extract<ExecResult, { ok: false; reason: 'timeout' }> {
+  if (result.ok || result.reason !== 'timeout') {
+    const what = result.ok ? `命令跑过（exit=${result.exit}）` : `reason=${result.reason}`
+    throw new Error(`期望超时（ok:false · reason:'timeout'），实为${what}`)
+  }
+  return result
+}
+
 describe('判据 4 · 失败三例——各归 `reason`', () => {
   test('超时 → `reason: timeout`（不把 SIGKILL 的 137 当答案）', async () => {
     const { box } = freshSandbox()
@@ -428,6 +441,20 @@ describe('判据 4 · 失败三例——各归 `reason`', () => {
 
     expect(failureOf(result).reason).toBe('timeout')
     expect(elapsed).toBeLessThan(3000) // 真收命了，不是等它自己睡醒
+  })
+
+  test('超时那一支**带上已产出的输出**（U69）——收尸排空时值不该丢', async () => {
+    const { box } = freshSandbox()
+
+    // 先吐两行、再拖到超时。命令**跑过了**这件事，`stdout` / `stderr` 就是它的物证。
+    const result = await box.exec('printf 半截; printf 警告 >&2; sleep 5', { timeoutMs: 300 })
+
+    expect(failureOf(result).reason).toBe('timeout')
+    const timed = timedOutOf(result)
+    expect(timed.stdout).toBe('半截')
+    expect(timed.stderr).toBe('警告')
+    // 上界也带出来——工具域那一边的抬头要的是**真报了的那条**，不是它自己记的
+    expect(timed.timeoutMs).toBe(300)
   })
 
   test('超时**连命令起的孙进程一起收**——不留一窝孤儿', async () => {
@@ -647,7 +674,18 @@ describe('选项韧性——非法值不悄悄变成另一种语义', () => {
     expect(okOf(result).truncated).toBeUndefined()
   })
 
-  test('`timeoutMs: NaN` 不立刻收命（回落实现常量）', async () => {
+  // ⚠️ **这两条 U69 改了口径**：旧口径是「一个写错的数 ⇒ 回落 120 秒那个实现常量」，
+  // 现在那个常量撤了（见下「无上界」那一节），一个写错的数落到**无上界**——
+  // 宁可多等，不可误掐：一个写错的数不该把一条正在下载依赖的命令收掉。
+  //
+  // ⚠️ **这里咬得到什么、咬不到什么，写明白**：下面两条量的是「**不是立刻超时**」——
+  // 一条写错的数不该把命令收掉（若谁把非法值归一成 `0` 毫秒，这两条当场红）。
+  // 而「它与『不设』是同一条路」那一半，**便宜的判据咬不到**：两者只在 120 秒之后才分岔，
+  // 量它就得再跑一次两分钟（真跑用例在下「无上界」那一节，走的是**不设**那一条路；
+  // 给非法值也配一趟两分钟，多验的只是同一件事）。故那一半由
+  // `sandbox.ts`·`timeoutBoundOf` 的实现与注释兜着，**不谎称用例钉住了它**。
+  // 模型那一侧够不着这里——工具域的参数校验在更外面就把写错的值拦下了。
+  test('`timeoutMs: NaN` 不立刻收命，也不当成一个上界', async () => {
     const { box } = freshSandbox()
 
     const result = await box.exec('printf done', { timeoutMs: Number.NaN })
@@ -656,14 +694,61 @@ describe('选项韧性——非法值不悄悄变成另一种语义', () => {
     expect(streamsOf(result).stdout).toBe('done')
   })
 
-  test('`timeoutMs: 0` / 负数＝回落常量，不是「立刻超时」也不是「无上限」', async () => {
+  test('`timeoutMs: 0` / 负数不能变成「立刻超时」——命令照跑完', async () => {
     const { box } = freshSandbox()
 
     const zero = await box.exec('printf a', { timeoutMs: 0 })
     const negative = await box.exec('printf b', { timeoutMs: -1 })
 
     expect(streamsOf(zero).exit).toBe(0)
+    expect(streamsOf(zero).stdout).toBe('a')
     expect(streamsOf(negative).exit).toBe(0)
+    expect(streamsOf(negative).stdout).toBe('b')
+  })
+})
+
+// ══ U69 · 无上界（不设＝一直等） ═══════════════════════════════════════
+//
+// 用户 2026-09-25 定：**超时是调用方给的一个量，不是系统常量**；不设＝一直等。
+// 旧常量（`DEFAULT_TIMEOUT_MS = 120_000`）已撤——它 120 秒一刀切掐掉过正当的长活
+// （实测：`swift package resolve` 跑到 123.5 秒被掐，而它真在下载依赖）。
+//
+// ⚠️ **本条用例是贵的那一条**（约两分钟）——它非这么贵不可：要证的正是「活过了 120 秒
+// 这个旧常量」，压不出来。**不许为了让用例快而把上界加回来**（那等于把要证的结论当条件）。
+// 唯一能压的是**贴着常量走**：睡 121 秒，不多睡。
+
+describe('U69 · 无上界——不设就是不设，跑到它自己结束', () => {
+  test(
+    '**不传超时** → 一条长活活过旧常量（121 秒）自己结束，不被掐',
+    async () => {
+      const { box } = freshSandbox()
+
+      const started = Date.now()
+      // 有上界（旧常量 120 秒）时：这一条会被 SIGKILL 收掉 ⇒ `reason: 'timeout'`。
+      // 无上界时：它自己睡醒、exit 0、输出完好。
+      const result = await box.exec('sleep 121 && printf survived', {})
+      const elapsed = Date.now() - started
+
+      expect(elapsed).toBeGreaterThan(120_000) // 真活过了旧常量——不是「很快返回了」
+      expect(okOf(result).exit).toBe(0)
+      expect(streamsOf(result).stdout).toBe('survived')
+    },
+    130_000, // 用例自身的上限——比被测的那 121 秒宽一截
+  )
+
+  test('显式写 `null` 与**不写**是同一条路（那一档要有个看得见的写法）', async () => {
+    const { box } = freshSandbox()
+
+    // 两条都**短**（不重复上面那两分钟）：咬的是「两者都＝无上界」——
+    // 若 `null` 被当成「没给」而回落到某个常量，它与不写就不是同一条路了；
+    // 若被当成 `0`（「立刻超时」），下面第一条当场红。
+    const explicit = await box.exec('printf a', { timeoutMs: null })
+    const omitted = await box.exec('printf b', {})
+
+    expect(streamsOf(explicit).exit).toBe(0)
+    expect(streamsOf(explicit).stdout).toBe('a')
+    expect(streamsOf(omitted).exit).toBe(0)
+    expect(streamsOf(omitted).stdout).toBe('b')
   })
 })
 

@@ -140,12 +140,18 @@ describe('U70 · 前台那一形一字不动', () => {
   })
 
   test('参数模式仍是叠在 EXEC_PARAMETERS 之上——那个对象本身没被改（它归 U69）', () => {
-    // `EXEC_PARAMETERS` 只有 `cmd` 一个键（本单元**一个字节都没动它**）
-    expect(Object.keys(EXEC_PARAMETERS.properties)).toEqual(['cmd'])
-    // 而送给模型的那一份多了 `background`
+    // ⚠️ **判的是「关系」，不是一份冻结的键名**（U69 合入时改的这条）：
+    // 原写法把键名写死（`['cmd']` / `['cmd','background']`），U69 往 `EXEC_PARAMETERS`
+    // 里添了 `timeoutMs` 之后它当场红——**红的不是"叠加被破了"，是"名单过期了"**。
+    // 这个用例真正要守的是**叠加关系**：`background` 不进那个对象，只叠在送给模型的那一份上。
+    expect(Object.keys(EXEC_PARAMETERS.properties)).not.toContain('background')
+
     const deps = makeToolDeps()
     const parameters = deps.runtime.definitions()[0]?.parameters
-    expect(Object.keys(parameters?.properties ?? {})).toEqual(['cmd', 'background'])
+    expect(Object.keys(parameters?.properties ?? {})).toEqual([
+      ...Object.keys(EXEC_PARAMETERS.properties),
+      'background',
+    ])
   })
 
   test('闸门放行的那一趟照旧把结果回填（后台那位不掺和别的工具）', async () => {

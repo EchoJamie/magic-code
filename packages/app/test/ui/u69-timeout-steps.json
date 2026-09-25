@@ -1,0 +1,51 @@
+{
+  "label": "u69-超时那一屏",
+  "steps": [
+    {
+      "cmd": "start",
+      "as": "甲",
+      "cols": 100,
+      "rows": 30,
+      "turns": [
+        {
+          "kind": "tool",
+          "name": "exec",
+          "args": {
+            "cmd": "echo '正在下载依赖 10%'; echo '正在下载依赖 55%'; sleep 60",
+            "timeoutMs": 3000
+          }
+        },
+        {
+          "kind": "text",
+          "text": "到点被掐断了。看提示它已经跑过一段、那两行也在——我不当它是没跑。"
+        }
+      ]
+    },
+    { "cmd": "send", "session": "甲", "text": "把依赖装一下" },
+    {
+      "cmd": "key",
+      "session": "甲",
+      "key": "enter",
+      "wait": { "text": "y / a / n" },
+      "timeoutMs": 20000
+    },
+    { "cmd": "capture", "session": "甲", "label": "01-裁决卡（这一次带了超时）" },
+    {
+      "cmd": "send",
+      "session": "甲",
+      "text": "y",
+      "wait": { "text": "已超时" },
+      "timeoutMs": 30000
+    },
+    { "cmd": "capture", "session": "甲", "label": "02-超时那一屏" },
+    {
+      "cmd": "wait",
+      "session": "甲",
+      "condition": { "text": "我不当它是没跑" },
+      "timeoutMs": 30000
+    },
+    { "cmd": "capture", "session": "甲", "label": "03-模型读到的那个意思（它没当「没跑」）" },
+    { "cmd": "quit", "session": "甲" },
+    { "cmd": "close", "session": "甲" }
+  ]
+}

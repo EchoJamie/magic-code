@@ -30,11 +30,7 @@ import type {
   WorkspaceService,
   WriteData,
 } from '@magic/contracts'
-import {
-  DEFAULT_MAX_OUTPUT_BYTES,
-  DEFAULT_TIMEOUT_MS,
-  runCommand,
-} from './exec.ts'
+import { DEFAULT_MAX_OUTPUT_BYTES, runCommand } from './exec.ts'
 import { DEFAULT_MAX_READ_BYTES, listDir, readText, writeInto } from './files.ts'
 import { matchIn } from './match.ts'
 import { isInside } from './workspace.ts'
@@ -70,11 +66,33 @@ export type SandboxOptions = {
 }
 
 /**
- * 取正有限数，否则回落缺省——`NaN` / 0 / 负数都不该悄悄变成「立刻超时」或「全都截掉」；
+ * 取正有限数，否则回落缺省——`NaN` / 0 / 负数都不该悄悄变成「全都截掉」；
  * 缺省永远是**实数上限**（不是「无上限」）。
+ *
+ * ⚠️ **只管输出上限**（U69）——超时**不走这里**：它的「没给」不是回落某个常量，而是
+ * **无上界**（见下 `timeoutBoundOf`）。两者共用一个函数，正是「不设」表达不出来的缘由。
  */
 function positiveOr(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+/**
+ * 超时上界的归一 —— **`null` / 缺省 ＝ 无上界**（一直等）。
+ *
+ * 与 `positiveOr` 分开写，正是 U69 的要害：那个函数把 0 / 负数 / 非有限值一律当「没给」、
+ * 回落到一个实数常量——于是**「无上界」根本写不出来**，而谁要是以为 `0` 是「不设」，
+ * 拿到的是 120 秒的旧常量（读起来还像「立刻超时」，三头不搭）。
+ *
+ * 这一处的三档：
+ * - `null` / `undefined` ⇒ 无上界（**显式写法与缺省同义**：`null` 是写给读的人看的）；
+ * - 正有限数 ⇒ 就是它；
+ * - 其余（0 · 负数 · `NaN` · `Infinity`）⇒ **也按无上界**——**宁可多等，不可误掐**：
+ *   一个写错的数不该把一条正在下载依赖的命令收掉（D39 的由头就是被误掐）。
+ *   ⚠️ 这道宽容只在**原语这一层**；模型给的值走的是工具域的参数校验，写错在更外面就报了。
+ */
+function timeoutBoundOf(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  return Number.isFinite(value) && value > 0 ? value : null
 }
 
 /** 造一个沙箱实例（阶段 1：进程级薄隔离——工作目录约束；权限闸门在工具域）。 */
@@ -125,7 +143,7 @@ export function createSandbox(options: SandboxOptions): Sandbox {
 
       return runCommand(cmd, {
         cwd,
-        timeoutMs: positiveOr(opts.timeoutMs, DEFAULT_TIMEOUT_MS),
+        timeoutMs: timeoutBoundOf(opts.timeoutMs),
         maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),
         onOutput: opts.onOutput,
         signal: opts.signal,
