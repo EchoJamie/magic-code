@@ -30,6 +30,7 @@
  */
 
 import type {
+  BackgroundRunning,
   EventSink,
   EventStamper,
   Materials,
@@ -128,6 +129,17 @@ export type ConversationDeps = {
    * 不给这一位（旧装配、用例）＝恒 `undefined`（行为与加它之前一字不动）。
    */
   readonly submitRefusal?: (() => SubmitRefusal | undefined) | undefined
+  /**
+   * **这条会话此刻还在跑的后台命令**（U89）——每请求现取一次，接成一个追加块
+   * （见 `./prompt/background.ts`）。
+   *
+   * 由装配给，理由同 `acceptsImages`：**「哪几条是这条会话交出去的」只有它知道**
+   * （登记是进程级的，它只知道「哪些进程还站着」，不知道那是谁交的），本域不认识会话之外的东西。
+   *
+   * 不给这一位（旧装配、用例）＝**这一块压根不接线**（行为与加它之前一字不动）；
+   * 给了一位而它这一趟回空表＝**这一块不出现**（没有后台任务就不占位，工单明文）。
+   */
+  readonly background?: (() => readonly BackgroundRunning[]) | undefined
 }
 
 /**
@@ -279,6 +291,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     refs,
     acceptsImages: deps.acceptsImages,
     submitRefusal: deps.submitRefusal,
+    background: deps.background,
   }
 
   /**

@@ -8,6 +8,7 @@
  * | 那一格 | 落在哪儿 |
  * | --- | --- |
  * | 发起 | `start` —— 起进程组、开输出文件、回 id ＋ 路径，**当场返回** |
+ * | 还在跑的那些 | `running()` —— 读面（U89）：照 `live` 现读，**只列真没退出的** |
  * | 交接 | `onFinish` —— 它**真退出了**才响一次（dev server 一直挂着就一直不响） |
  * | 取输出 | **不在本文件**：模型用既有的 `read` 读那个文件（沙箱认这处只读落点） |
  * | 停 | `stop(id)` —— 按**进程组**收，走 U50 那套收尾 |
@@ -40,6 +41,7 @@ import { closeSync, mkdirSync, openSync, realpathSync } from 'node:fs'
 import { join, resolve as resolvePath } from 'node:path'
 import type {
   BackgroundFinish,
+  BackgroundRunning,
   BackgroundRuns,
   BackgroundStart,
   BackgroundStop,
@@ -228,6 +230,25 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
       )
 
       return { ok: true, id, outputPath }
+    },
+
+    /**
+     * **还在跑的那些**（U89）——照 `live` 那本账现读一遍，按交出去的次序（`Map` 的插入序）。
+     *
+     * 三件事各归各位，这一跳一个都不多做：
+     * - **不另立一本账**——`live` 就是「还站着」的账（`settle` 摘它、`start` 添它）；
+     *   读面另存一份快照＝两处迟早对不上（摘账那一刻起它就不该再出现）。
+     * - **不判「输出安静了」**——同文件头注那条：安静不等于结束，故这里**一个字都不看输出**，
+     *   只看进程还在不在账上。
+     * - **给的是读数不是引用**（`command` / `outputPath` 那两串原样照抄，不截断、不改写）：
+     *   显示怎么裁是消费方的事（模型那一侧只截首行），执行域不做那个决定。
+     */
+    running(): readonly BackgroundRunning[] {
+      return [...live.values()].map((run) => ({
+        id: run.id,
+        command: run.command,
+        outputPath: run.outputPath,
+      }))
     },
 
     async stop(id): Promise<BackgroundStop> {

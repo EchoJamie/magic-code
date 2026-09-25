@@ -26,6 +26,8 @@ export {
 export type { PromptSection } from './sections.ts'
 
 export {
+  BACKGROUND_BLOCK_ID,
+  BACKGROUND_HEADING,
   BLOCK_SEPARATOR,
   ENVIRONMENT_BLOCK_ID,
   ENVIRONMENT_HEADING,
@@ -45,3 +47,5 @@ export type { PromptBlock, PromptBlockId, PromptVars } from './assembly.ts'
 export { renderProjectRulesBlock, withProjectRules } from './rules.ts'
 
 export { renderSkillsBlock, withSkillsCatalog } from './skills.ts'
+
+export { renderBackgroundBlock, withBackgroundRuns } from './background.ts'

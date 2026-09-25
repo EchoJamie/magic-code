@@ -38,6 +38,9 @@ function fakeRuns(options: {
         stopped.push(id)
         return options.stop ?? { ok: true, note: '已停掉' }
       },
+      // **读面**（U89）——工具域一个字都不读它（这一支只管「起」与「停」）；
+      // 它在这儿是因为**端口上就在**（谁实现 `BackgroundRuns` 谁就得答这一面）。
+      running: () => [],
     },
   }
 }
