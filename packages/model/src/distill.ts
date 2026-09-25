@@ -69,9 +69,30 @@ export function createPageDistiller(options: PageDistillerOptions): PageDistille
 
       // ⚠️ **这里就是护栏 1**：请求里没有 `tools` 这一格，且**也不许有**
       //（契约 `PageDistiller` 的入参里根本没有来处）。加参数时先读那一段。
+      //
+      // **这一次的思考设置：明确不要思考**（U99，照压缩那一条口径）。
+      // 由头同 `compact.ts` 的 `summarize`，逐条同构：提炼是**信息搬运**（照着问题把页面
+      // 正文里那几段摘出来），**不是解题**——思考在这里只烧钱、只拖时间，改不了答案。
+      // 且它同属**内核的内务调用**（头注第 2 条：一条都不 `sink.emit`）。
+      //
+      // ⚠️ **这里一个字不判供应商**：给的是**一套设置**，翻由适配层做（`vendors.ts` 的
+      // `reasoningOf`）——翻得出来照发（DeepSeek ⇒ `thinking.type = 'disabled'`）；
+      // 这家没有对应参数（MiniMax / 兼容接入）⇒ **什么都不发**，既不静默、也不硬塞一个
+      // 没依据的参数；`{ gap }` 那条缺口的说明本就没有听众（内务调用，无用户可报）——
+      // 与压缩那一处**同一形制**（见 `compact.ts` 那一段注）。
+      //
+      // ⚠️ **设置由这里直给，中途没有补齐者**（U99 查清的那一件，与压缩那边不同）：
+      // 本件走的网关是装配按 `webFetch.provider` **单造的** `createModelGateway`
+      //（`assembly.ts`：不经注册表——那边的 `stream` 会把当前选中盖在 `request.model` 上，
+      // 而这件要的恰恰是配置里它自己那一条）。故注册表 `withReasoning` 那条路**一步都不到**，
+      // 这一位从 `gateway.ts` 的 `stream` **原样递到取件层**（`ai-sdk.ts` 的 `reasoningOption`
+      // 是唯一的读点）——**只改这一行就够**，注册表一个字不用动。
       const stream = options.gateway.stream(
         { model: options.model, messages },
-        opts?.signal === undefined ? {} : { signal: opts.signal },
+        {
+          reasoning: { mode: 'off' },
+          ...(opts?.signal === undefined ? {} : { signal: opts.signal }),
+        },
       )
 
       let text = ''
