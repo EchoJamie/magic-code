@@ -285,9 +285,19 @@ async function summarize(
     { role: 'user', content: await renderSegment(old, deps) },
   ]
 
+  // **明确关闭思考**（U97）——走的是**与循环同一套契约**：给一套设置，各家适配自己翻
+  // （DeepSeek ⇒ `thinking.type = 'disabled'`；翻不出的那家照 `{ gap }` 那条既有形制办）。
+  //
+  // ⚠️ **固定 `off`，不看会话里那一档**（设计 · 模型与上下文「压缩那一次调用」）：
+  // 摘要是**内核的内务调用**，不是会话的一部分——用户在会话里选的档位**管的是对话**。
+  // 压缩是**信息搬运**（照四要素把旧段抄成摘要）而非解题，且它是**大输入**调用：
+  // 开思考又慢又贵、收益不明。**本处一个字不判供应商**（那是适配层的事，见 `vendors.ts`）。
+  //
+  // ⚠️ 这一位**不是必给**的：缺省照旧——注册表按「当前选中 / 模型默认」补齐（U41）。
+  // 给了它，就等于说「这一跳的思考设置**由本调用方说了算**」。
   const stream = deps.gateway.stream(
     { model: deps.model, messages },
-    signal === undefined ? {} : { signal },
+    { reasoning: { mode: 'off' }, ...(signal === undefined ? {} : { signal }) },
   )
 
   let text = ''

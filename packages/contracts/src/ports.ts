@@ -51,6 +51,7 @@ import type {
 import type { ExternalToolRef } from './mcp.ts'
 import type { Decider, Decision, EventDataOf, EventKind, KernelEvent, OutputDelta } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId, TurnId } from './ids.ts'
+import type { ReasoningSetting } from './model.ts'
 
 // ══ 端口 ══════════════════════════════════════════════════════════════
 
@@ -125,7 +126,21 @@ export type RebuildHandoff = {
 
 /** 对话域 → 模型域。 */
 export interface ModelGateway {
-  stream(req: ModelRequest, opts: { signal?: AbortSignal }): ModelStream
+  /**
+   * 起一次调用。
+   *
+   * ⚠️ **`reasoning` 是 U97 加的**（**只增不改**：既有调用方一个字不动）——理由：
+   * 思考设置那一套契约（`ReasoningSetting` → 各家适配自己翻）此前**只走注册表的选中态**，
+   * 于是**内核自己的内务调用够不着它**：压缩那次 `stream()` 只给了 `{ model, messages }`，
+   * 对 DeepSeek 就落到它的官方默认（**开 ＋ high**）。
+   *
+   * 缺省 ＝ 不动（由实现侧按「当前选中 / 模型默认」自行补齐）——故这一位**不是必填**，
+   * 只有「这一跳的思考设置与当前选中无关」的调用方（压缩：固定不思考）才给。
+   */
+  stream(
+    req: ModelRequest,
+    opts: { signal?: AbortSignal; reasoning?: ReasoningSetting },
+  ): ModelStream
 }
 
 /** 对话域 → 工具域。闸门在 `invoke` 路径内（不可绕过）。 */

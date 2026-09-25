@@ -202,11 +202,23 @@ export interface ModelRegistry extends ModelGateway {
  *
  * 已切换走选中态那份、未切换走配置里缺省连接那份；两处同一条拼装，
  * 免得再出现「一处带了、一处没带」（返修的根因）。
+ *
+ * ⚠️ **本表只管「调用方没说时替它补齐」，不覆盖调用方明说的那一份**（U97 更正）。
+ * 由头：注册表存在的意义是「**别处不知道走哪条连接**」——思考设置那一格由此推出来；
+ * 而**调用方自己给了设置**的场合（压缩那一跳：内务调用，固定不思考），它说的就是它要的。
+ * 此前这里是无条件覆盖，后果实测可见：用户把 DeepSeek 的档位设成 high，压缩那次请求
+ * 照样带着 `reasoning_effort: high` 出门——**「固定不思考」成了一纸空文**（U97 物证：
+ * 改前 / 改后两份出站请求体**逐字相同**）。
+ *
+ * ⚠️ **循环那条路一个字没动**：它本来就不传这一位（`agentLoop` 里没有 `reasoning`），
+ * 走的仍是「注册表补齐」这一支——用户设的档位照旧生效（U97 用例与探针都咬着这一条）。
  */
 function withReasoning(
   streamOptions: ModelStreamOptions | undefined,
   reasoning: ReasoningSetting | undefined,
 ): ModelStreamOptions | undefined {
+  // 调用方明说的照它——它是**知道这一跳要什么**的那一方（见上注）
+  if (streamOptions?.reasoning !== undefined) return streamOptions
   if (reasoning === undefined) return streamOptions
   return { ...streamOptions, reasoning }
 }
