@@ -101,7 +101,7 @@ import { RUNS_VERSION, STORED_RUNS_LIMIT } from './facts.ts'
 import { reclaim, reclaimNoteOf } from './reclaim.ts'
 import { NOTICES_LIMIT, NOTICES_VERSION, noticeKey, noticeOf } from './notices.ts'
 import type { StoredNotices } from './notices.ts'
-import { osNotifier } from './system-notify.ts'
+import { silentNotifier } from './system-notify.ts'
 import type { SystemNotifier } from './system-notify.ts'
 import { reapOwned, startTimeOf } from '@magic/execution'
 
@@ -220,13 +220,19 @@ export type ManagerOptions = {
   /** 停止时 TERM 之后再等多久才 KILL（毫秒）——缺省三秒；见 `STOP_KILL_MS`。 */
   readonly stopKillMs?: number | undefined
   /**
-   * **没人看着那条会话时怎么弹系统通知**——缺省 `osNotifier()`（macOS 的通知中心）。
+   * **没人看着那条会话时怎么弹系统通知**——缺省 `silentNotifier`（**一个字都不发**）。
+   *
+   * ⚠️ **接一个真通知器是「谁要发谁自己接」**（U98）：缺省**没有真发这回事**，不是
+   * 「真发着、只是关得掉」。由头见 `./system-notify.ts` 的文件头——今天**一处都不接**，
+   * 因为那条路借的是别人的身份（归属算在 Script Editor 头上，用户点了进不去）。
    *
    * ⚠️ **判据是「有没有窗口正看着这条会话」，不是「有没有窗口连着」**（三类同此，
-   * 见 `notify` 的注）：A 页开着而 B 那件事发生时，这一跳**照弹**。
+   * 见 `notify` 的注）：A 页开着而 B 那件事发生时，这一跳**照走**——至于走成什么，
+   * 由这一格接的是谁说了算（缺省什么都不做）。
    *
-   * 收成端口是为了用例：**不许真弹**（跑一趟用例在用户屏幕上蹦几十条通知，
-   * 那不是验证是骚扰），而「没人看着才弹、一条事实只弹一次」这两条判据照样要量。
+   * 收成端口是为了用例：一条**记账用的**假 notifier 接在这儿，「没人看着才发、一条事实
+   * 只发一次」这两条判据照样量得到，而**跑一趟用例在用户屏幕上蹦几十条通知**那种事
+   * 从一开始就不会发生（缺省就不发）。
    */
   readonly notifySystem?: SystemNotifier | undefined
   /** 诊断——缺省不打印（**这条线上不写业务日志**）。 */
@@ -784,7 +790,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   const notices: RunNotice[] = [...readNotices(paths)]
   /** 已经说过的那些（去重键）——**同一件事实只说一次**（设计：「单一事实跨窗口去重」）。 */
   const said = new Set<string>(notices.map((one) => one.id))
-  const notifySystem = options.notifySystem ?? osNotifier()
+  const notifySystem = options.notifySystem ?? silentNotifier
 
   /**
    * **说话**——三件事之一刚发生。
@@ -871,6 +877,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
     // **系统通知只报「哪一类 ＋ 去看」**，不报会话 id（管理者认不得标题，
     // 而把一个内部 id 弹到桌面上是最坏的漏法——具体是哪一条由下次打开那张汇总说）
+    //
+    // ⚠️ **这一格接的是谁，由 `notifySystem` 说了算**（U98 起缺省**什么都不发**：
+    // 真发那一支借的是别人的身份，已删——见 `system-notify.ts` 的文件头）。
+    // 端口照旧留着，「谁要发谁自己接」；故下面这一声**照走**，走成什么由接的那位定。
     notifySystem(`${noticeWord(kind)}——打开看是哪条`)
   }
 
