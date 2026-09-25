@@ -146,16 +146,26 @@ export async function appendTextEntry(
 export async function appendUserEntry(
   log: EntryLog,
   text: string,
-  input: { readonly refs?: readonly InputRefEntry[]; readonly skills?: readonly UsedSkillEntry[] },
+  input: {
+    readonly refs?: readonly InputRefEntry[]
+    readonly skills?: readonly UsedSkillEntry[]
+    /**
+     * **这一条不是用户说的**（U70）——内核自己投的（当前只有一件：后台命令跑完了）。
+     * 它走的是同一条通道（要进上下文给模型看），只是载荷里记下**说话人**：
+     * 会话标题与屏上那一行因此都不会把它当成用户的话（见契约 `UserPayload.notice`）。
+     */
+    readonly notice?: true
+  },
 ): Promise<RecordId> {
   const refs = input.refs ?? []
   const skills = input.skills ?? []
   const payload =
-    refs.length === 0 && skills.length === 0
+    refs.length === 0 && skills.length === 0 && input.notice !== true
       ? undefined
       : {
           ...(refs.length === 0 ? {} : { refs }),
           ...(skills.length === 0 ? {} : { skills }),
+          ...(input.notice === true ? { notice: true as const } : {}),
         }
 
   return log.records.appendEntry({

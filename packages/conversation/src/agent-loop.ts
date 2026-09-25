@@ -263,9 +263,14 @@ export async function agentLoop(
 
   try {
     // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
+    //
+    // ⚠️ **内核自己投的那一条走的是同一条路**（U70：后台命令跑完了那一句）——它也是
+    // 「一条要进上下文的话」，只是载荷记着说话人（`notice`）。它**不进** `refs` / `skills`
+    // 那两格（那两格记的是材料），故只多带一个标记位。
     const entryId = await appendUserEntry(log, input.text, {
       refs: delivery.refs,
       skills: legacy.used,
+      ...(input.notice === true ? { notice: true as const } : {}),
     })
     runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
   } catch (error) {

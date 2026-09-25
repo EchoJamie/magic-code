@@ -138,9 +138,14 @@ describe('判据 3 · 不落库清单', () => {
     // 内容就在盘上，这一问只是「选定的这一条是什么」的当场答复，问几次都不混）。
     // 那一处引用到底带了什么材料同样**另有痕**（`user` 条目的载荷 `refs`，含图片那份 blob）。
     // **新锚**：十六条，字面规则一个没动。
+    // U70 补锚：`exec.background.done`——同 `skill.used` / `input.unread` 那一条
+    // （依据在**条目**里：那条 `user` 条目载荷带着 `notice`，重放读它就说得清
+    // 「当时跑过哪条后台命令、结局如何」）；这一条本身只是**给屏的实时通报**。
+    // **新锚**：十七条，字面规则一个没动。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'attachments.catalog',
+      'exec.background.done',
       'grants.catalog',
       'input.settled',
       'input.unread',

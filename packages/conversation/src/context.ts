@@ -425,6 +425,17 @@ export function toolResultPayloadOf(payload: EntryPayload | undefined): ToolResu
 }
 
 /**
+ * 用户条目的载荷 → **这一条是不是内核自己投的**（U70 · `UserPayload.notice`）。
+ *
+ * 判据只有 `=== true` 一种写法（契约那一位就是这么定的：写 `false` 是「说了但没带」的
+ * 两种说法并存）。读它的两处都只为一件——**别把内核的话安到用户嘴里**：
+ * 会话标题（首条消息摘要）与压缩摘要的抬头。
+ */
+export function noticeOf(payload: EntryPayload | undefined): boolean {
+  return (payload as { readonly notice?: unknown } | undefined)?.notice === true
+}
+
+/**
  * 用户条目的载荷 → 技能材料（U33）——**只认三件齐全的**（名字 / 来源 / 正文）。
  *
  * 缺一件的那条**不当作材料**（当作没有）：它进不了模型眼前这件事，比多送半条要好——

@@ -46,7 +46,7 @@ import type {
   SessionSummary,
   Timestamp,
 } from '@magic/contracts'
-import { refsPayloadOf } from './context.ts'
+import { noticeOf, refsPayloadOf } from './context.ts'
 import type { ConversationSession, RebuildReport } from './service.ts'
 
 /** 默认标题的字符上限——「首条消息摘要」的**实现级常量**（措辞可调，见回报备案）。 */
@@ -222,10 +222,19 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     return derived === undefined ? row : { ...row, title: derived }
   }
 
-  /** 首条**用户**消息的摘要——条目按序读，见着第一条就收（后面不必读）。 */
+  /**
+   * 首条**用户**消息的摘要——条目按序读，见着第一条就收（后面不必读）。
+   *
+   * ⚠️ **内核自己投的那一条不算首条用户消息**（U70）：后台命令跑完时内核会在会话里留
+   * 一条 `user` 条目（要进上下文给模型看），载荷带着 `notice` 标记。不跳过它的话，
+   * 一条**用户一个字还没说**的会话标题会变成「（后台命令跑完了）…」——标题是给用户认
+   * 会话用的（通知那一屏也靠它定位，见设计 · 会话与运行管理 · 通知），拿内核的话顶上
+   * 就等于这条会话在他眼里叫了个他没说过的名字。跳过去，标题仍是**他说的第一句**。
+   */
   async function derivedTitle(session: SessionId): Promise<string | undefined> {
     for await (const entry of deps.records.readEntries(session)) {
       if (entry.kind !== 'user') continue
+      if (noticeOf(entry.payload)) continue
 
       return summarize(await textOf(entry.content), limit)
     }

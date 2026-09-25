@@ -152,6 +152,25 @@ export function runPathsOf(magic: MagicHome, dataDir: string, tmpdir: string): R
   throw new SocketPathTooLong(fallback.socket, MAX_SOCKET_PATH)
 }
 
+/**
+ * **后台命令的输出目录**（U70）——运行目录下的 `bg/`，`exec` 的后台那一形把输出写在这儿。
+ *
+ * 为什么是运行目录下而不是数据目录下：设计原话就是「**输出文件落在工作区之外**
+ * （**运行目录**下）」。落在这里另有两件顺带的好处：
+ * - **权限同源**——运行目录是 `0700`（见 `ensureRunDir`），输出可能带着命令吐出来的
+ *   任何东西（含密钥一类），不该比它更宽；
+ * - **同一 dataDir 算到同一处**——与 socket / 运行登记 / 未读事项同一个键（见文件头注）。
+ *
+ * ⚠️ **名字由本文件一处定义**：输出目录与 `exec` 的那一边（装配算、沙箱认）说的是
+ * 同一处，两处各拼一遍字符串迟早对不上。
+ */
+const OUTPUT_DIR_NAME = 'bg'
+
+/** 后台命令的输出目录（见 `OUTPUT_DIR_NAME`）。 */
+export function backgroundOutputDirOf(runs: RunPaths): string {
+  return join(runs.dir, OUTPUT_DIR_NAME)
+}
+
 function pathsIn(dir: string): RunPaths {
   return {
     dir,

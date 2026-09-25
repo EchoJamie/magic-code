@@ -10,7 +10,7 @@
  * （别再各写一份，两份迟早对不上）。
  */
 
-import type { BlobStore, OutputDelta, WorkspaceService } from '@magic/contracts'
+import type { BackgroundRuns, BlobStore, OutputDelta, WorkspaceService } from '@magic/contracts'
 import type {
   FauxDecider,
   FauxExecScript,
@@ -52,6 +52,13 @@ export type ToolDepsOptions = {
    * 没有那一档，而截断是 `edit` 的**数据安全件**，非测不可）。
    */
   readonly sandbox?: FauxSandbox
+  /**
+   * 后台运行登记（U70）——`exec` 的后台那一形要的那一件。
+   *
+   * 缺省**不给**：这一位不给＝这一形用不了（`background` 当场回一句「这次装配没接」），
+   * 而那正是「旧装配一字不动」要保的姿势——多数用例只管前台，不必为此拖一个桩进来。
+   */
+  readonly background?: BackgroundRuns
 }
 
 /** 一束现成的替身——多数用例照这样拼。铸造器**一束一份**（信封同源）。 */
@@ -86,6 +93,7 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
     stamper,
     blobs: options.blobs ?? records.blobs,
     ...(options.tools === undefined ? {} : { tools: options.tools }),
+    ...(options.background === undefined ? {} : { background: options.background }),
   })
 
   return { stamper, sandbox, gate, sink, records, workspace, runtime }

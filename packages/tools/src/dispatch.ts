@@ -184,6 +184,9 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         sandbox: options.sandbox,
         signal: opts.signal,
         onOutput,
+        // **后台那一形**（U70）——这一位不给就是不给（`exec` 照实回一句「没接」，见
+        // `messages.ts`）；这一跳只转手，不认识会话说不上「跑完说给谁听」
+        background: options.background,
       })
     } catch (error) {
       return refused(crashedOutput(reasonOf(error)))

@@ -15,6 +15,7 @@
  */
 
 import type {
+  BackgroundRuns,
   ExternalToolRef,
   OutputDelta,
   PlanNote,
@@ -33,6 +34,19 @@ export type ToolRunContext = {
    * `onOutput`）。执行体只需把它原样交给沙箱的 `opts.onOutput`。
    */
   readonly onOutput: ((delta: OutputDelta) => void) | undefined
+  /**
+   * **后台运行登记**（U70）——`exec` 的后台那一形要的那一件（起 · 按 id 停）。
+   *
+   * 缺省不给 ＝ 这一形用不了（`exec` 的 `background` 会照实回一句「这次装配没接」，
+   * 不静默退回前台——见 `messages.ts` 那一处）。旧装配与只验前台的用例因此一字不动。
+   *
+   * 它**不是沙箱的第二种走法**：沙箱管「在轮内跑一条」（同一条命令，等它结束），
+   * 这一件管「交出去、按 id 停」——两件事各有各的六格（设计 · `exec` 的后台那一形）。
+   *
+   * **可选位**：既有执行体与用例大多手写这个现场（只给沙箱与信号），加一个必填位会把
+   * 它们全部推去改一遍——而「没接后台」本就是这一位的合法取值（那一形当场回一句「没接」）。
+   */
+  readonly background?: BackgroundRuns | undefined
 }
 
 /** 执行体的产出——终值（`ok` 与**面向模型的文本**）。记录侧形态由分发按大块转存定。 */

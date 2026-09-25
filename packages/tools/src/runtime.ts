@@ -11,6 +11,7 @@
  */
 
 import type {
+  BackgroundRuns,
   BlobStore,
   EventSink,
   EventStamper,
@@ -61,4 +62,15 @@ export type ToolRuntimeOptions = {
   readonly stamper: EventStamper
   readonly blobs: BlobStore
   readonly tools?: readonly ToolDefinition[] | (() => readonly ToolDefinition[]) | undefined
+  /**
+   * **后台运行登记**（U70）——`exec` 的后台那一形要的第七件（起 · 按 id 停）。
+   *
+   * 不给 ＝ 这一形用不了（`exec` 的 `background` 当场回一句「这次装配没接」）——
+   * 旧装配与只验前台的用例一字不动。
+   *
+   * 它由**装配**给（执行域那一件在它手上），且装配通常会给一个**按会话绑好**的门面：
+   * 「跑完 ⇒ 回一条给模型」那一声要落回**发起它的那条会话**，而那条线只有装配知道
+   * （工具域不认识会话——它只把命令交出去）。
+   */
+  readonly background?: BackgroundRuns | undefined
 }
