@@ -1754,7 +1754,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   })
 
   /**
-   * **刚刚发生了一件事**（U50）——完成的 / 出错的 / 等你的，落一行回执。
+   * **刚刚发生了一件事**（U50）——出错的落一行回执。
    *
    * ⚠️ **三类之外一个都不来**（谁在什么时候说，判据在管理者那一头：设计「不持续播报
    * 『还在跑』」）；同一条事实也只来一次（跨窗口去重按那条事实的号）。
@@ -1762,9 +1762,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   options.notices?.((notice) => {
     if (disposed) return
     const line = noticeReceiptOf(notice, nameOfSession(notice.session))
-    // ⚠️ **没有那一句就不落行**（U74）：「跑完了」那一条**不再产出**——它不是「换了个
-    // 落点」也不是「往后挪一挪」，是**不要了**（设计 · 会话与运行管理「通知」那一格）。
-    // 其余两类照旧各落一行（`failed` / `needs-you` 一个字没动）。
+    // ⚠️ **没有那一句就不落行**（U74 / U79）：「跑完了」与「需要你」两条都**不再产出**
+    // ——它们不是「换了个落点」也不是「往后挪一挪」，是**不要了**
+    // （设计 · 会话与运行管理「通知」那一格：「跑完了」→ 撤；「需要你」→ 卡就在眼前）。
+    // 落到行上的只剩 `failed` 那一类（**一个字没动**）。
     if (line === undefined) return
     commit(appendReceipt(view, line))
   })

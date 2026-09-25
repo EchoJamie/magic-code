@@ -29,6 +29,9 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ExecResult, OutputDelta, Sandbox } from '@magic/contracts'
 import { createSandbox, createWorkspaceService } from '../src/index.ts'
+// ⚠️ 从 `sandbox.ts` 直接取那一格归一的函数（它不是包的公开面，见那一处的注——U79 为
+// 「缺省 ⇒ 无上界」这条规则露出来的那一面）；测试直接 import 源文件是同仓既有的走法。
+import { timeoutBoundOf } from '../src/sandbox.ts'
 
 // —— 夹具 ——
 
@@ -713,33 +716,74 @@ describe('选项韧性——非法值不悄悄变成另一种语义', () => {
 // 旧常量（`DEFAULT_TIMEOUT_MS = 120_000`）已撤——它 120 秒一刀切掐掉过正当的长活
 // （实测：`swift package resolve` 跑到 123.5 秒被掐，而它真在下载依赖）。
 //
-// ⚠️ **本条用例是贵的那一条**（约两分钟）——它非这么贵不可：要证的正是「活过了 120 秒
-// 这个旧常量」，压不出来。**不许为了让用例快而把上界加回来**（那等于把要证的结论当条件）。
-// 唯一能压的是**贴着常量走**：睡 121 秒，不多睡。
+// ⚠️ **U79 把这条用例的形态改了**（原文：贴着旧常量真睡 121 秒 ⇒ **门贵约两分钟**，
+// 且**实测 flake 过一次**）：改成**注入一个小上界**，两件事在同一条判据里咬住——
+//
+// ① **给了上界它真掐，且掐的就是我们给的那一个**：`timeoutMs: BOUND` 对一条比 `BOUND`
+//    长的活当场收命，报出来的 `timeoutMs` 逐字是 `BOUND`——「**上界是我们给的那个**」
+//    （`ExecResult` 那一格本就是为此立的：报文里那个数的**唯一出处**）；
+// ② **不传就没有上界**：**同样长**的那一条活跑到自己结束、输出完好——
+//    「**它活过了那个上界**」这条判据**没有被删掉**，只是换了尺子：拿**同一个样本里
+//    当场证明真会掐人**的那个数当尺，而不是拿墙上的钟（从前量的是 `elapsed > 120_000`）。
+//
+// ⚠️ **`LONG` 不随 `BOUND` 走**（两个都是写死的短数）——这正是**反证**成立的那一手：
+// 把 `BOUND` 改回旧常量（`120_000`）⇒ ① 那条**当场红**（同一条只有 `LONG` 长的活不会被
+// 120 秒掐到，`failureOf` 那一跳直接抛），**而且不必真等两分钟**。
+//
+// ⚠️ **代价写明白**：这样改之后，「**有人把旧常量当兜底加回来**」这一半，上面那条**咬不到**
+// （那条活只有 1.2 秒，120 秒的兜底碰不到它）。那一半改由**下一节那条归一的判据**咬
+// （`timeoutBoundOf`：缺省 / `null` / 写错的数 ⇒ `null`）——**当场红，不等**。
 
 describe('U69 · 无上界——不设就是不设，跑到它自己结束', () => {
+  /**
+   * 用例**注入的小上界**（毫秒）——旧常量（120 秒）的替身。
+   *
+   * 两条路都用它当尺子：**显式给出去**的那一条要被它掐住，**不传**的那一条要活过它。
+   */
+  const BOUND = 400
+  /** 那条「长活」的长度——**比 `BOUND` 长一截、与它不联动**（见文件头「反证」那条注）。 */
+  const LONG = 1_200
+
   test(
-    '**不传超时** → 一条长活活过旧常量（121 秒）自己结束，不被掐',
+    '**给了上界就掐（掐的就是我们给的那个）** · **不传就活过它**自己结束',
     async () => {
       const { box } = freshSandbox()
 
-      const started = Date.now()
-      // 有上界（旧常量 120 秒）时：这一条会被 SIGKILL 收掉 ⇒ `reason: 'timeout'`。
-      // 无上界时：它自己睡醒、exit 0、输出完好。
-      const result = await box.exec('sleep 121 && printf survived', {})
-      const elapsed = Date.now() - started
+      // ① 同一个上界**显式给出去**：同长度的活当场被收，且报出来的就是它
+      const killed = await box.exec(`sleep ${LONG / 1_000}`, { timeoutMs: BOUND })
+      const hit = timedOutOf(killed)
+      // 「上界是我们给的那个」——不是旧常量、也不是别的什么数
+      expect(hit.timeoutMs).toBe(BOUND)
 
-      expect(elapsed).toBeGreaterThan(120_000) // 真活过了旧常量——不是「很快返回了」
-      expect(okOf(result).exit).toBe(0)
-      expect(streamsOf(result).stdout).toBe('survived')
+      // ② **不传**：同样长的活跑到自己结束——上界那一档真的不存在
+      const survived = await box.exec(`sleep ${LONG / 1_000} && printf survived`, {})
+      expect(okOf(survived).exit).toBe(0)
+      expect(streamsOf(survived).stdout).toBe('survived')
     },
-    130_000, // 用例自身的上限——比被测的那 121 秒宽一截
+    20_000, // 用例自身的上限——两跳加起来约 1.6 秒，留足余量
   )
+
+  /**
+   * **「旧常量不许回来」**——上一节说明白的那一半（U79 换过来的另一半判据）。
+   *
+   * ⚠️ **为什么能「当场红」**：归一这一格是**纯函数**，「缺省 ⇒ 无上界」这件事不必等
+   * 任何一条命令跑完就能判。谁把旧常量当兜底加回来（`?? 120_000`），头两行当场红。
+   */
+  test('「不设」的归一：缺省 / `null` / 写错的数 ⇒ **无上界**（旧常量不许回来）', () => {
+    expect(timeoutBoundOf(undefined)).toBeNull()
+    expect(timeoutBoundOf(null)).toBeNull()
+    // 写错的数**也不许**变成「上界」（U69 的另一半：宁可多等，不可误掐）
+    expect(timeoutBoundOf(0)).toBeNull()
+    expect(timeoutBoundOf(-1)).toBeNull()
+    expect(timeoutBoundOf(Number.NaN)).toBeNull()
+    // 给什么就是什么
+    expect(timeoutBoundOf(BOUND)).toBe(BOUND)
+  })
 
   test('显式写 `null` 与**不写**是同一条路（那一档要有个看得见的写法）', async () => {
     const { box } = freshSandbox()
 
-    // 两条都**短**（不重复上面那两分钟）：咬的是「两者都＝无上界」——
+    // 两条都**短**（不重复上面那一趟）：咬的是「两者都＝无上界」——
     // 若 `null` 被当成「没给」而回落到某个常量，它与不写就不是同一条路了；
     // 若被当成 `0`（「立刻超时」），下面第一条当场红。
     const explicit = await box.exec('printf a', { timeoutMs: null })

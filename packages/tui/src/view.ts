@@ -820,14 +820,22 @@ export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
  *
  * ⚠️ 三类**不能互借词**：「跑完了」不是「成功」（一次回复结束不等于工作完成——设计
  * 「完成说明留在结果正文，不由运行列表认证」），「出错了」要说得出是哪一步错的。
+ * （**今天只剩「出错了」还在这张表上产出**——另两类各自撤了，见下两条。）
  *
  * ⚠️ **「跑完了」那一条不再产出**（2026-09-25 用户定，见设计 · 会话与运行管理「通知」那一格）：
  * 「那一轮跑完了」这条回执**整个撤掉**——**你正看着它跑完**，印了是复述；**你没看着**，
  * 它也不该落到你正读的**别的页**上（没看着那一档只走**本机系统通知**＋**下次打开一句
  * 汇总**两条，都在管理者那一头，不是这条回执）。
  *
- * ⇒ 这一支对 `done` 返回 `undefined`，**屏上那一格随之没有**。管理者那一头也已不再
- * 把它送给窗口（`manager.ts` 的 `notify`）——这一支是**第二道**：即便它来了，也印不出来。
+ * ⚠️ **「需要你」那一条也不再产出**（2026-09-25 用户定 · U79，同一格的下一行）：
+ * **卡在那条会话里**，**你连上它时直接进那张卡**（U49 的接回快照已承担）⇒
+ * **它不回执、不广播**。「等你定夺」那句话是把**就在你眼前的那张卡**再说一遍。
+ * （⚠️ 状态行那一格的「等你定夺」是**另一件事**，照旧——它说的是「此刻在等你」，
+ * 由 `status.ts` 画；这一支管的是**那一次转换留下的回执行**。）
+ *
+ * ⇒ 这一支对 `done` 与 `needs-you` 都返回 `undefined`，**屏上那一格随之没有**。
+ * 管理者那一头也都已不再把它们送给窗口（`manager.ts` 的 `notify`）——这一支是**第二道**：
+ * 即便它们来了，也印不出来。
  */
 export function noticeReceiptOf(notice: RunNotice, title: string): string | undefined {
   const who = `「${title}」`
@@ -838,7 +846,7 @@ export function noticeReceiptOf(notice: RunNotice, title: string): string | unde
     case 'failed':
       return `${who}出错了${notice.detail === undefined ? '' : `：${notice.detail}`}`
     case 'needs-you':
-      return `${who}等你定夺${notice.detail === undefined ? '' : `：${notice.detail}`}`
+      return undefined
   }
 }
 
