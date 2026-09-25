@@ -122,7 +122,7 @@ import {
 import type { DraftRef } from './components/inline.ts'
 import type { PromptState, ShellView } from './view.ts'
 import type { AttachmentRow, RecordId, RunRow, RunSnapshot } from '@magic/contracts'
-import { leftSpan, rightSpan, stepRight } from './components/composer.ts'
+import { leftSpan, lineSpan, rightSpan, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
@@ -136,6 +136,15 @@ export type ShellKey =
   /** 光标键（U31）——插入点左右挪一个**字素**（中文 / emoji 不切坏）。 */
   | { readonly kind: 'left' }
   | { readonly kind: 'right' }
+  /**
+   * **行首 / 行末**（`ctrl+a` / `ctrl+e` · U85）——插入点所在那一**行**的两端。
+   *
+   * 「行」是**逻辑行**（`\n` 划界），不是屏上折出来的视觉行（由头见 `components/composer.ts`
+   * 的 `lineSpan`）。与左右键同一条规矩：**只挪插入点、草稿一个字不动**——故它也走 `commit`
+   * 而不是 `edit`（后者会把翻历史那一格归位）。
+   */
+  | { readonly kind: 'lineStart' }
+  | { readonly kind: 'lineEnd' }
   /** `delete`（前向删除）——删插入点**右边**那一个字素。 */
   | { readonly kind: 'delete' }
   | { readonly kind: 'escape' }
@@ -3371,6 +3380,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         }
         commit({ ...view, caret: stepRightOver(view.refs, view.draft, caretAt()) })
         return NONE
+
+      // **行首 / 行末**（U85）——`ctrl+a` / `ctrl+e`：插入点跳到**所在那一行**的两端。
+      //
+      // 三条与左右键同源的分寸（各写各的就会走成两副面孔）：
+      // ① **草稿一个字都不动**（只挪插入点）⇒ 不走 `edit()`：翻出来的历史还认得上一条；
+      // ② **接管（裁决）期间不静默吞**——说一句，同 `←` / `→`；
+      // ③ **选择器开着时什么都不做**：那一屏的键归屏（`←` 是弹一层、`→` 是看详情），
+      //    行首行末在那儿没有活——**不越过屏去动后面那份草稿**。
+      case 'lineStart':
+      case 'lineEnd': {
+        const to = input.kind === 'lineStart' ? '行首' : '行末'
+        if (view.dock.kind === 'decision') return refuse(to)
+        if (view.dock.kind === 'picker') return NONE
+
+        const [start, end] = lineSpan(view.draft, caretAt())
+        commit({ ...view, caret: input.kind === 'lineStart' ? start : end })
+        return NONE
+      }
 
       case 'backspace':
         if (view.dock.kind === 'decision') return refuse('退格')
