@@ -190,14 +190,22 @@ export function isToolResultPayload(payload: unknown): payload is ToolResultPayl
 }
 
 /**
- * 计划笔记的形状（U34）——步骤（文字 ＋ 三格状态之一）＋ 辅助笔记（字符串）。
+ * 计划笔记的形状（U34 · **U90 加 `goal`**）——目标（可选）＋ 步骤（文字 ＋ 三格状态之一）
+ * ＋ 辅助笔记（字符串）。
  *
  * **只查结构，不查内容**：不查字数、不查步数、不查「是不是只有一个进行中」、不查模板
  * （设计明写：这些一律不做）。`notes` 可以是空串——「没记别的」是一件合法的事。
+ *
+ * ⚠️ **`goal` 是可选位**（不是「必须有、可以是空串」）：**缺在场与在场是两件事**——
+ * 前者＝没有目标（清单上那一行不出现），后者＝有一句目标。因此这里放行**两种**形状，
+ * 与 `plan` 那一位同一姿势（只增不改的兼容位：U90 之前写下的笔记里压根没有这个键）。
  */
 export function isPlanNote(value: unknown): value is PlanNote {
   if (!isRecord(value)) return false
   if (typeof value['notes'] !== 'string') return false
+
+  const goal = value['goal']
+  if (goal !== undefined && typeof goal !== 'string') return false
 
   const steps = value['steps']
   if (!Array.isArray(steps)) return false

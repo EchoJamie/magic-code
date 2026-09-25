@@ -541,7 +541,13 @@ async function main(): Promise<void> {
     try {
       await typeLine(session, '窄窗')
       await session.key('enter')
-      await session.wait({ text: '跑一遍失败的几条路' }, { timeoutMs: 10_000 })
+      // ⚠️ **等的这一串 U90 换过**（由头是**这一场的前置**，不是它的判据）：
+      //    20 列里步骤**退了一级**（`PLAN_INDENT`），文字那一截从 18 列收成 16 列 ⇒
+      //    「跑一遍失败的几条路」（18 列）从**一行**变成**两行**，于是它落到这一档的行视口
+      //    之外（20×12 里清单只放得下 4 行）——**等它是等一个永远不来的东西**，
+      //    红的是超时，不是这条判据（U87 那条「超时红 ≠ 判据咬得住」）。
+      //    改等**第一条步骤**（它在任何列宽下都画得出来），下面那两条判据一个字没动。
+      await session.wait({ text: '■ 读登录提示' }, { timeoutMs: 10_000 })
       await session.send(CTRL_T, { until: { text: '计划已收起' }, timeoutMs: 10_000 })
       const shot = await session.capture({ label: '13-窄窗收起' })
       keep(out, shot, '13-窄窗收起')

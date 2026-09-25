@@ -49,20 +49,45 @@ export function planBudgetOf(rest: number): number {
  * 方块那一格的宽度（列）——`■` 自己一列，后面跟一个空格（读起来才是「方块 ＋ 步骤」
  * 两段，而不是「■续写」）。续行照这个宽度悬挂缩进，文字左边缘对得齐。
  *
- * ⚠️ **与记录区的行首对齐**：记录区那些行也是「一个标记 ＋ 一个空格」
- * （`› ` / `⏺ ` 各 2 列，见 `components/log.ts`）——清单就在它们下方，差一列就看着歪。
+ * ⚠️ **U90 起方块不在第 0 列了**（前面还有 `PLAN_INDENT` 那一级）——「一个标记 ＋ 一个
+ * 空格」这条**关系**没变，变的是它挂在谁下面：前两列归**目标那一行**的层次。
  */
 export const MARK_WIDTH = 2
 
 /**
+ * **步骤退一级的列数**（U90）——目标顶格当表头，步骤挂在它下面、整块右移这一级。
+ *
+ * 2 就是本仓「一级」的老数（同 `MARK_WIDTH`、同草稿续行的缩进）：不必新造一个宽度，
+ * 一眼看得出「上面那行是这一块的名目，下面这些是它的步骤」。
+ *
+ * ⚠️ **这是排版不是层级**：步骤之间**没有父子树**（设计明写步骤不设 id / 依赖树），
+ * 这里退一级只为读起来分得开——**不引入任何结构**，行视口 / 翻页 / 溢出提示照旧按
+ * **一行一行**算（退一级只影响每行折多宽，不影响有几行）。
+ */
+export const PLAN_INDENT = 2
+
+/**
  * 一条步骤的文字 → 显示行（按显示列宽折，Tab 按终端的规矩展）。
  *
- * 只折**文字**那一截：方块那一格是首行自己的前缀。折行沿用记录区那支 `wrap`
- * （中文算 2 列、Tab 按制表位展开——2026-09-22 那一轮立的规矩：**同一个 `\t` 在三处
- * 量出三个宽度**，故显示层一律先展开再量）。
+ * 只折**文字**那一截：**缩进那一级 ＋ 方块那一格**都是首行自己的前缀。折行沿用记录区
+ * 那支 `wrap`（中文算 2 列、Tab 按制表位展开——2026-09-22 那一轮立的规矩：**同一个 `\t`
+ * 在三处量出三个宽度**，故显示层一律先展开再量）。
+ *
+ * ⚠️ **退一级就是在这儿落到折行宽度上的**（U90 最容易弄坏的一处）：少算那一级，
+ * 每行的第一个字就会在窄窗里被终端自己折下去——**账仍是那个数，屏多出一行**，
+ * 矮终端上动态帧当场顶满 ⇒ 真光标高一行（U31 那一族的老账）。
  */
 export function stepLines(text: string, columns: number): readonly string[] {
-  return wrap(text, Math.max(1, columns - MARK_WIDTH))
+  return wrap(text, Math.max(1, columns - PLAN_INDENT - MARK_WIDTH))
+}
+
+/**
+ * **目标那一行** → 显示行（U90）——它**顶格**，故按整幅列宽折：没有前缀可扣。
+ *
+ * 折行照旧用同一支 `wrap`：目标是一句话，长短由模型定，长了就正常折（不裁短、不省略）。
+ */
+export function goalLines(text: string, columns: number): readonly string[] {
+  return wrap(text, Math.max(1, columns))
 }
 
 // ══ 行视口：放不下时**只在清单内部**滚 ══════════════════════════════
@@ -218,9 +243,12 @@ export const PLAN_FOLDED = '计划已收起 · ctrl+t 展开'
  * 清单上的一行——**渲染层照着画就行**（画什么、画几行都定死在这一处）。
  *
  * `head` 是「这一行带方块」：一条步骤的文字折成几行时，**只有第一行顶方块**，
- * 续行悬挂缩进对齐文字（`MARK_WIDTH` 那一段注）。
+ * 续行悬挂缩进对齐文字（`MARK_WIDTH` 那一段注）。目标那几行**没有方块**——
+ * 它是表头，一眼看去就不该与步骤同形（层次靠缩进，不靠记号）。
  */
 export type PlanRow =
+  /** 目标那一行（U90）——**顶格**、无记号：整块清单的名目。 */
+  | { readonly kind: 'goal'; readonly key: string; readonly text: string }
   | {
       readonly kind: 'step'
       readonly key: string
@@ -259,15 +287,23 @@ const NO_BLOCK: PlanBlock = { rows: [], height: 0, window: null, hasRunning: fal
  * **一整块清单**——**布局、高度与渲染同取这一处**（设计：「同一布局函数负责换行、
  * 高度测量与实际渲染」）。
  *
- * 四条按次序：
- * 1. 没有计划 / 一条步骤都没有 ⇒ **空块**（辅助笔记不铺在清单里，故只有笔记也算没有）；
+ * 五条按次序：
+ * 1. 没有计划 / 一条步骤都没有 ⇒ **空块**（辅助笔记不铺在清单里，故只有笔记也算没有；
+ *    U90 之后**只有目标也算没有**——清单是**步骤**那一份，目标是它的表头，光有表头不成表）；
  * 2. **没地方**（`budget ≤ 0`，见 `planBudgetOf`）⇒ 空块——极矮窗口暂不绘清单，
  *    恢复高度即还原（**不落历史、不清屏补救**：那是「重挂历史区」那条老账）；
  * 3. **收起** ⇒ 一行（`PLAN_FOLDED`）——收起是用户自己按的，得留个把手告诉他怎么展开；
- * 4. 展开 ⇒ 折行 → 起视口 → 铺行（溢出时末尾补一行 `planMoreLine`）。
+ * 4. 展开 ⇒ **目标那几行（顶格）** → **步骤那几行（退一级）** → 起视口 → 铺行
+ *    （溢出时末尾补一行 `planMoreLine`）；
+ * 5. 目标的键**不在场**时第 4 步里那一段整个没有（U90：不留空表头）。
  *
  * ⚠️ **每一行都保证占一行**（折行在这儿做完、提示行在这儿截断）：终端自己折的那一行
  * 不在这笔账里，矮终端上动态帧就会顶满 ⇒ 真光标高一行（U31 三轮那条老账）。
+ * **U90 退一级之后这条更要紧**：折行宽度少了那一级，`wrap` 若还按整幅算，
+ * 屏上就会多出终端自己折的行——账与屏当场分家（本单 ④ 那一条）。
+ *
+ * ⚠️ **目标与步骤同属一份行账**：视口、翻页、溢出提示**一个字没改**，照旧一行一行算
+ * （设计明写不碰行视口）——退一级只改每行折多宽，不改有几行。
  */
 export function planBlockOf(input: {
   readonly plan: PlanNote | null
@@ -290,12 +326,27 @@ export function planBlockOf(input: {
     }
   }
 
-  /** 折完之后的每一步：`[步骤下标, 状态, 这一行是不是首行, 文字]`。 */
-  const lines: { readonly at: number; readonly status: PlanStep['status']; readonly head: boolean; readonly text: string }[] = []
+  /** 折完之后的一行（两块的共同形态）——**视口照旧从头到尾一行一行数**。 */
+  type PlanLine =
+    | { readonly kind: 'goal'; readonly text: string }
+    | {
+        readonly kind: 'step'
+        readonly at: number
+        readonly status: PlanStep['status']
+        readonly head: boolean
+        readonly text: string
+      }
+
+  const lines: PlanLine[] = []
+
+  // 目标在先、**顶格**（U90）。键不在场＝没有目标 ⇒ 这一段一行都不占（不留空表头）。
+  if (input.plan?.goal !== undefined) {
+    goalLines(input.plan.goal, input.columns).forEach((text) => lines.push({ kind: 'goal', text }))
+  }
 
   steps.forEach((step, at) => {
     stepLines(step.text, input.columns).forEach((text, line) => {
-      lines.push({ at, status: step.status, head: line === 0, text })
+      lines.push({ kind: 'step', at, status: step.status, head: line === 0, text })
     })
   })
 
@@ -307,14 +358,18 @@ export function planBlockOf(input: {
     const line = lines[index]
     if (line === undefined) continue
 
-    rows.push({
-      kind: 'step',
-      key: `plan:${line.at}:${index}`,
-      at: line.at,
-      status: line.status,
-      text: line.text,
-      head: line.head,
-    })
+    rows.push(
+      line.kind === 'goal'
+        ? { kind: 'goal', key: `plan:goal:${index}`, text: line.text }
+        : {
+            kind: 'step',
+            key: `plan:${line.at}:${index}`,
+            at: line.at,
+            status: line.status,
+            text: line.text,
+            head: line.head,
+          },
+    )
   }
 
   // 溢出提示**随溢出出现**（没溢出就没有这一行——放得下时那一格归步骤）

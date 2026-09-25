@@ -388,10 +388,14 @@ describe('判据 1 · 落取回环', () => {
       // 形状错的那几条：状态不在词表里 · 步骤不是对象 · notes 不是字符串。
       // ⚠️ 这些值**故意不是** `PlanNote`（要验的正是运行时那道硬闸），故此处只能落一次
       // 断言（类型层本来就拦得住它们——那道闸拦的是「库里的旧行 / 手写的 JSON」，不是本文件）。
+      // ⚠️ U90 加的一档：**目标那一格只有在场且是字符串才收**（缺在场＝没有目标，是合法的
+      //    形状——U90 之前写下的笔记里压根没有这个键，旧记录要照旧读得出来）。
       for (const broken of [
         { steps: [{ text: '一步', status: 'doing' }], notes: '' },
         { steps: ['一步'], notes: '' },
         { steps: [], notes: 3 },
+        { goal: 3, steps: [], notes: '' },
+        { goal: null, steps: [], notes: '' },
       ]) {
         expect(() =>
           records.appendEntry({
@@ -437,16 +441,22 @@ describe('判据 1 · 落取回环', () => {
       const at = T0 + 2
 
       const plan: PlanNote = {
+        goal: '让登录失败提示说得清是哪儿错了', // U90 起目标自带一格
         steps: [
           { text: '定位登录失败提示', status: 'completed' },
           { text: '覆盖四个失败分支', status: 'in_progress' },
         ],
-        notes: '目标：保持已输入内容',
+        notes: '约束：保持已输入内容',
       }
+
+      // **U90 之前写下的那一形**（没有 `goal` 这一格）——旧记录照旧读得回来，
+      // 「只增不改的兼容位」在这里是**实打实要过一道**的：库里的旧行就长这样。
+      const legacy: PlanNote = { steps: [{ text: '老笔记里的一步', status: 'pending' }], notes: '老笔记' }
 
       records.appendEntry({ kind: 'tool-result', content: { text: '无关的一次结果' }, at, payload: { ok: true, output: { text: '无关的一次结果' } } })
       records.appendEntry({ kind: 'tool-result', content: { text: '已更新计划' }, at: at + 1, payload: { ok: true, output: { text: '已更新计划' }, plan } })
       records.appendEntry({ kind: 'tool-result', content: { text: '已清空计划' }, at: at + 2, payload: { ok: true, output: { text: '已清空计划' }, plan: null } })
+      records.appendEntry({ kind: 'tool-result', content: { text: '旧形状的计划' }, at: at + 3, payload: { ok: true, output: { text: '旧形状的计划' }, plan: legacy } })
 
       const back: Entry[] = []
       for await (const entry of records.readEntries(SESSION)) back.push(entry)
@@ -456,7 +466,12 @@ describe('判据 1 · 落取回环', () => {
         { ok: true, output: { text: '已更新计划' }, plan },
         // `null` 与「没有这一位」在 JSON 列上**不是同一个值**——这条是两者的分界
         { ok: true, output: { text: '已清空计划' }, plan: null },
+        // 没有 `goal` 那一格的那一份：原样落、原样取回（不补一个空串进去）
+        { ok: true, output: { text: '旧形状的计划' }, plan: legacy },
       ])
+      // 取回来的那一份里**没有 `goal` 这个键**（不是 `goal: undefined`、更不是空串）
+      const oldOne = (back[3]?.payload as { readonly plan?: object }).plan ?? {}
+      expect(Object.hasOwn(oldOne, 'goal')).toBe(false)
 
       store.close()
     } finally {

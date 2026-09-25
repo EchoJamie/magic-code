@@ -86,6 +86,11 @@ function isPlanNote(value: unknown): value is PlanNote {
   const steps = fields['steps']
   if (typeof fields['notes'] !== 'string' || !Array.isArray(steps)) return false
 
+  // ⚠️ 目标那一格（U90）**可选**：只有「在场但不是字符串」才算坏形状——
+  // 缺在场＝没有目标（U90 之前写下的笔记里压根没有这个键，形状照旧合法）。
+  const goal = fields['goal']
+  if (goal !== undefined && typeof goal !== 'string') return false
+
   return steps.every((step) => {
     if (typeof step !== 'object' || step === null) return false
     const one = step as Record<string, unknown>
@@ -154,7 +159,13 @@ const STATUS_LABEL: Readonly<Record<string, string>> = {
  * 也不提高其中内容的指令优先级）。
  */
 export function planBlockOf(entry: RecordId, plan: PlanNote): string {
-  const lines = [`〔既有计划笔记 · 记录 #${entry}〕`, '步骤：']
+  const lines = [`〔既有计划笔记 · 记录 #${entry}〕`]
+
+  // 目标在先（U90）——它是这份笔记的抬头，与清单上那一行同一个次序。
+  // **没有就整个不出现**（不留一个空的「目标：」——那与清单上「不留空表头」是同一条）。
+  // 判「在场与否」就够：空白在写面（`plan_update` 的参数解析）已经收掉了。
+  if (plan.goal !== undefined) lines.push(`目标：${plan.goal}`)
+  lines.push('步骤：')
 
   if (plan.steps.length === 0) lines.push('（还没有步骤）')
   else {
