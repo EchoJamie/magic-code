@@ -12,7 +12,9 @@
  * 3. **重复停止**——安全受理，不是报错；
  * 4. **执行者不理会**——有界等待 → TERM → KILL → 等退出；
  * 5. **崩溃后收回自有进程组**——只碰证明得了归属的（同族的外人不碰、PID 重用不误杀）；
- * 6. **通知**——三类转换 · 跨窗口去重 · 不播报还在跑 · 无人连接时系统通知 ＋ 未读汇总。
+ * 6. **通知**——三类转换 · 跨窗口去重 · 不播报还在跑 · 无人连接时系统通知 ＋ 未读汇总；
+ *    另加 **U79**：`needs-you` 这一档**不回执、不广播**（看着它一个字不说 ·
+ *    没看着才弹系统通知 ＋ 记未读）。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -524,7 +526,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
 })
 
 describe('U50 · 通知', () => {
-  test('**「跑完了」一个字都不说** · 其余两类各一条 · 跨窗口只报一次 · 不播报「还在跑」', async () => {
+  test('**「跑完了」与「需要你」都不说** · `failed` 照旧一条 · 跨窗口只报一次 · 不播报「还在跑」', async () => {
     const g = ground('notice')
     seed(g, ['s-7'])
     const said: string[] = []
@@ -552,13 +554,17 @@ describe('U50 · 通知', () => {
       await Bun.sleep(120)
       expect(got.length).toBe(0)
 
-      // **需要你**（第一条）
+      // **需要你**（U79 起：**一个字都不说**——卡就在正看着它的那一页上）
       const request = fake.emit(
         'tool.decision.request',
         { call: 1, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
         's-7',
       )
-      await waitFor('需要你那条到了', () => got.some((one) => one.kind === 'needs-you'))
+      // 那件事**没丢**：它落在**这条会话自己**那一行上（`RunRow.action`，卡就在屏上）
+      await waitFor('那一行写着「等你定夺」', () => rowOf(one, 's-7')?.action === '等你定夺：bash')
+      await Bun.sleep(120)
+      expect(got.filter((one) => one.session === 's-7')).toEqual([]) // 一条回执都没有
+      expect(said.length).toBe(0) // 也不弹系统通知（有人正看着它）
       fake.emit('tool.decision', { call: 1, decision: 'approve', decider: 'user', elapsedMs: 5 }, 's-7')
 
       // **完成**（U74 起：这一条**一个字都不说**——有窗口正看着它跑完）
@@ -572,15 +578,15 @@ describe('U50 · 通知', () => {
       expect(got.filter((one) => one.session === 's-7').some((one) => one.kind === 'done')).toBe(false)
       expect(said.length).toBe(0) // 「正看着」那一档连系统通知都不发（更不标未读）
 
-      // **失败**（第二条）
+      // **失败**（第二条，也是今天**唯一**还落行的那一类）
       fake.emit('turn.start', {}, 's-7')
       fake.emit('turn.end', { reason: 'error' }, 's-7')
       await waitFor('失败那条到了', () => got.some((one) => one.kind === 'failed'))
 
-      // 说出来的**两条**，**没有多余的**（`done` 那一条不在其中）
+      // 说出来的**只有这一条**，**没有多余的**（`done` / `needs-you` 两条都不在其中）
       await Bun.sleep(150)
       const kinds = got.filter((one) => one.session === 's-7').map((one) => one.kind)
-      expect([...kinds].sort()).toEqual(['failed', 'needs-you'])
+      expect([...kinds].sort()).toEqual(['failed'])
       expect(request).toBeGreaterThan(0)
       expect(said.length).toBe(0) // 有窗口看着 ⇒ 不弹系统通知
 
@@ -701,6 +707,173 @@ describe('U50 · 通知', () => {
 
       back.close()
       again.close()
+    } finally {
+      await b.dispose()
+    }
+  }, 30_000)
+})
+
+/**
+ * **U79 · 「需要你」那一档：不回执、不广播**——管理者那一侧的判据。
+ *
+ * 设计（会话与运行管理 · 通知）：「需要你」**卡在那条会话里**（它不动）· **你连上它时
+ * 直接进那张卡**（U49 的接回快照已承担，**不在本单**）· **它不回执、不广播** ·
+ * **一个窗口都没有时，才加一记本机系统通知**。
+ *
+ * ⚠️ **判据是「这条会话有没有窗口正看着它」**（与 `done` 同一把尺子）：
+ * 「A 页开着、B 会话在等你」那一形里，按「有没有窗口连着」会**两头都不说**
+ * （回执不该印、系统通知又不弹）——那一条就没人告诉用户了（D38 那半）。
+ *
+ * ⚠️ 系统通知走**端口记账**（`notifySystem`），**不许真弹**（真弹是 `osascript`）。
+ * 真 PTY 那一趟（A 页干净 · 连上 B 直接进卡）在 `frames-u79-tui.ts`。
+ */
+describe('U79 · 通知：「需要你」不回执、不广播', () => {
+  test('**看着它 ⇒ 一个字都不说**：回执 · 系统通知 · 未读，三样都没有', async () => {
+    const g = ground('u79-watched')
+    seed(g, ['s-w'])
+    const said: string[] = []
+    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const page = await open(g, b.manager)
+
+    const got: RunNotice[] = []
+    page.onNotice((notice) => got.push(notice))
+
+    try {
+      page.send({ type: 'session.open', session: 's-w' })
+      await waitFor('发车', () => b.requests.length === 1)
+      const fake = await b.attach(0)
+      fake.ready('s-w')
+      await waitFor('开张', () => rowOf(page, 's-w') !== undefined)
+
+      fake.emit(
+        'tool.decision.request',
+        { call: 1, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
+        's-w',
+      )
+
+      // 那件事**没丢**——它落在**这条会话自己**那一行上（卡就在正看着它的那一页上）
+      await waitFor('那一行写着「等你定夺」', () => rowOf(page, 's-w')?.action === '等你定夺：bash')
+      await Bun.sleep(150)
+
+      expect(got).toEqual([]) // ① 回执：一条都没有（更不广播给别的窗口）
+      expect(said).toEqual([]) // ② 系统通知：不弹（有人正看着它）
+      // ③ 未读：也没记——后连上来的窗口那一路**收不到这条汇总**
+      const back = await open(g, b.manager)
+      expect(back.unread).toEqual([])
+
+      back.close()
+      page.close()
+    } finally {
+      await b.dispose()
+    }
+  }, 30_000)
+
+  /**
+   * **A 页开着、B 会话在等你**——本单要证的那一形（也是 D38 里「两头都不说」那一形）。
+   */
+  test('A 页开着、B 会话在等：**不落到 A 页** · 系统通知弹 · 未读落盘 · 下次打开汇总一句', async () => {
+    const g = ground('u79-elsewhere')
+    seed(g, ['s-a', 's-b'])
+    const said: string[] = []
+    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+
+    try {
+      // **A 页**——一个窗口开着，它「正看着」的是 s-a
+      const aPage = await open(g, b.manager)
+      const got: RunNotice[] = []
+      aPage.onNotice((notice) => got.push(notice))
+      aPage.send({ type: 'session.open', session: 's-a' })
+      await waitFor('A 发车', () => b.requests.length === 1)
+      const fakeA = await b.attach(0)
+      fakeA.ready('s-a')
+      await waitFor('A 开张', () => rowOf(aPage, 's-a') !== undefined)
+
+      // **B 会话**——另一个窗口把它跑起来，随后那个窗口走了（没人再看它）
+      const bPage = await open(g, b.manager)
+      bPage.send({ type: 'session.open', session: 's-b' })
+      await waitFor('B 发车', () => b.requests.length === 2)
+      const fakeB = await b.attach(1)
+      fakeB.ready('s-b')
+      await waitFor('B 开张', () => rowOf(aPage, 's-b') !== undefined)
+      bPage.close()
+      await Bun.sleep(80)
+
+      fakeB.emit(
+        'tool.decision.request',
+        { call: 1, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
+        's-b',
+      )
+
+      // ① **不广播**：A 那一页上一条都没有（改之前它会印进 A——判据是「有没有窗口连着」）
+      await waitFor('系统通知弹了一条', () => said.length === 1)
+      // 逐字：桌面那一句是**用户看的话**（管理者认不得标题，故不报会话 id）
+      expect(said[0]).toBe('有一件工作正等着你——打开看是哪条')
+      await Bun.sleep(150)
+      expect(got.filter((one) => one.session === 's-b')).toEqual([])
+
+      // ② **未读落盘**（合并写那一跳要等）——B 那件事正等着用户回来看
+      const paths = runPathsOf(g.magic, g.dataDir, tmpdir())
+      await waitFor('写进了盘里', () => {
+        try {
+          return readFileSync(paths.notices, 'utf8').includes('s-b')
+        } catch {
+          return false
+        }
+      })
+
+      // ③ **下次打开汇总一句**（随 `welcome` 下来，且**只给一次**）
+      const back = await open(g, b.manager)
+      expect(back.unread.map((one) => one.session)).toEqual(['s-b'])
+      expect(unreadSummaryOf(back.unread)).toBe('你不在的时候：1 项等你 —— /resume 看是哪几条')
+
+      const again = await open(g, b.manager)
+      expect(again.unread).toEqual([]) // 说过了就不再念
+
+      // 之后也不会再弹第二条（同一条事实只说一次）
+      expect(said.length).toBe(1)
+      // 而**那件事还在**：那条运行这一行照旧写着「等你定夺」（它不动、没人自动答复）
+      expect(rowOf(aPage, 's-b')?.action).toBe('等你定夺：bash')
+
+      aPage.close()
+      back.close()
+      again.close()
+    } finally {
+      await b.dispose()
+    }
+  }, 30_000)
+
+  test('**一个窗口都没有**：系统通知一把（工单验收那一形）', async () => {
+    const g = ground('u79-nowindow')
+    seed(g, ['s-n'])
+    const said: string[] = []
+    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+
+    try {
+      // 先有一个窗口把它跑起来，然后它走了（此刻**一个窗口都没有**）
+      const first = await open(g, b.manager)
+      first.send({ type: 'session.open', session: 's-n' })
+      await waitFor('发车', () => b.requests.length === 1)
+      const fake = await b.attach(0)
+      fake.ready('s-n')
+      await waitFor('开张', () => rowOf(first, 's-n') !== undefined)
+      first.close()
+      await Bun.sleep(80)
+
+      fake.emit(
+        'tool.decision.request',
+        { call: 1, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
+        's-n',
+      )
+
+      await waitFor('系统通知弹了一条', () => said.length === 1)
+      // 逐字：桌面那一句是**用户看的话**（管理者认不得标题，故不报会话 id）
+      expect(said[0]).toBe('有一件工作正等着你——打开看是哪条')
+
+      const back = await open(g, b.manager)
+      expect(back.unread.map((one) => one.kind)).toEqual(['needs-you'])
+      expect(back.unread[0]?.unread).toBe(true)
+
+      back.close()
     } finally {
       await b.dispose()
     }

@@ -8,11 +8,15 @@
  *
  * | 件 | 正面 | 反面 |
  * | --- | --- | --- |
- * | ① 「跑完了」那条回执 | `done` **不再产出**任何一行 | 别的两类（`failed` / `needs-you`）**逐字不变** |
+ * | ① 「跑完了」那条回执 | `done` **不再产出**任何一行 | `failed` **逐字不变** |
  * | ② 思考自成一块 | `（思考）…` **上下各留一整行** | 不带思考的那一轮**一字不动**（不白撑一行） |
  *
  * ⚠️ ①②的「落点」「次序」不在这条判据里：①那一件不是「换个地方印」，是**不要了**
  * （「跑完了」那一条**整个撤掉**，2026-09-25 用户定）。
+ *
+ * ⚠️ **本文件当年那句「`needs-you` 一处没动」已经不再成立**——那一条是 **U79 撤的**
+ * （同一个设计格子里的下一行：「需要你」不回执、不广播），本文件那一支跟着改；
+ * 那一类自己的正反面判据在 `spec.u79.test.ts`。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -46,14 +50,17 @@ describe('「跑完了」那条回执', () => {
     expect(noticeReceiptOf(notice('done'), '时区修正')).toBeUndefined()
   })
 
-  test('别的两类**逐字不变**（`failed` / `needs-you` 一处没动）', () => {
+  test('`failed` **逐字不变**（那一类一处没动）', () => {
     // ⚠️ 逐字写死：这两句是**用户看的话**，改了就得在这儿改——不拿「包含」那种软判据糊过去
     expect(noticeReceiptOf(notice('failed'), '时区修正')).toBe('「时区修正」出错了')
     expect(noticeReceiptOf(notice('failed', '这一轮出错了'), '时区修正')).toBe(
       '「时区修正」出错了：这一轮出错了',
     )
-    expect(noticeReceiptOf(notice('needs-you'), '时区修正')).toBe('「时区修正」等你定夺')
-    expect(noticeReceiptOf(notice('needs-you', 'exec'), '时区修正')).toBe('「时区修正」等你定夺：exec')
+  })
+
+  test('⚠️ **`needs-you` 当年那一句也不产出了**（U79 改的口径，别把它当成「一字没动」）', () => {
+    expect(noticeReceiptOf(notice('needs-you'), '时区修正')).toBeUndefined()
+    expect(noticeReceiptOf(notice('needs-you', 'exec'), '时区修正')).toBeUndefined()
   })
 })
 

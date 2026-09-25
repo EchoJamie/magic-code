@@ -89,8 +89,19 @@ function positiveOr(value: number | undefined, fallback: number): number {
  * - 其余（0 · 负数 · `NaN` · `Infinity`）⇒ **也按无上界**——**宁可多等，不可误掐**：
  *   一个写错的数不该把一条正在下载依赖的命令收掉（D39 的由头就是被误掐）。
  *   ⚠️ 这道宽容只在**原语这一层**；模型给的值走的是工具域的参数校验，写错在更外面就报了。
+ *
+ * ## 为什么它露在**模块的面上**（U79 加的 `export`）
+ *
+ * 这一格是「不设 ＝ 一直等」这条规则的**唯一落点**，此前**只有这段注释兜着**：用例那一头
+ * 够不到它——「缺省真的没上界」与「缺省回落某个常量」只在旧常量（120 秒）之后才分岔，
+ * 量它就得真等两分钟（`exec.test.ts` 那条贵用例量的正是这个，且实测 flake 过一次）。
+ *
+ * U79 把那条贵用例改成**注入一个小上界**（同一条判据：给上界就掐、不给就活过它）之后，
+ * 「**旧常量不许回来**」这一半就只剩下面这一跳咬得住——故让它露在面上，由用例直接钉住
+ * 「缺省 / `null` / 写错的数 ⇒ `null`」。谁把旧常量当兜底加回来（`?? 120_000` 那一手），
+ * 那条判据**当场红**，不必等那两分钟。
  */
-function timeoutBoundOf(value: number | null | undefined): number | null {
+export function timeoutBoundOf(value: number | null | undefined): number | null {
   if (value === null || value === undefined) return null
   return Number.isFinite(value) && value > 0 ? value : null
 }

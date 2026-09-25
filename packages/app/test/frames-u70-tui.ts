@@ -152,8 +152,9 @@ async function passCard(session: UiSession, label: string, answer: 'y' | 'a' = '
   const card = await session.capture({ label })
   keep(card)
   await session.send(answer)
-  // 等这一张真撤了再往下走——不等的话下一步的等待可能被**上一张的回执**满足
-  // （`· 「…」等你定夺：read` 那一行留在屏上，「等你定夺」那四个字照旧在）
+  // 等这一张真撤了再往下走——不等的话下一步的等待可能被**上一张留下的东西**满足
+  // （那句话从前是那张卡的回执 `· 「…」等你定夺：read`，**U79 起这一类不再印**；
+  //   状态行那一格照旧，故这里的等待条件一个字未改）
   await waitCardGone(session)
 
   return card
@@ -166,8 +167,9 @@ async function passCard(session: UiSession, label: string, answer: 'y' | 'a' = '
  * （`· 「把这条构建交出去」等你定夺：read`），而回执写完就留在屏上 ⇒ 全屏找它会
  * **当场命中上一张的回执**，于是「y」在卡还没开出来的时候就写进了输入区，
  * 卡随后开出来、一直挂着（帧上留下一个 `› y` 的现场）。
- *
- * 状态行是**一格**（`statusLineOf` 取的就是它），卡撤了那一格就变了——故只有它够准。
+ * ⚠️ **U79 起这一类不再印回执**（`noticeReceiptOf` 对 `needs-you` 不产出、管理者也不送）
+ * ——那条假绿的来路没了，**但这一条判法照旧**：状态行是**一格**
+ * （`statusLineOf` 取的就是它），说的是「此刻」，卡撤了那一格就变。
  */
 async function waitCard(session: UiSession, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -199,6 +201,8 @@ async function waitCardGone(session: UiSession, timeoutMs = 20_000): Promise<voi
  * （`· 「把这条构建交出去」等你定夺：exec`，见 `waitCard` 那条注），回执写完就留在屏上
  * ⇒ 一场里只要开过一张卡，后面每一帧都命中它（U70 的 ④ 就这么**假红**了一回：
  * 屏上那句是 ① 那张卡的回执，卡早收了、状态行也早归位了）。
+ * ⚠️ **U79 起那条回执不再印**（见 `waitCard` 那条注的后半）——同一句话在这一支里
+ * 现在只会来自**状态行**，但下面那两件判据照旧一件不少。
  *
  * 够准的两件：**卡自己的东西不在**（键位行 `y 批准` 只在卡上——屏上没有它就说明没卡）
  * ＋ **状态行不是裁决态**（那一格说的是「此刻」，卡撤了就变回「工作中 / 空闲」）。
