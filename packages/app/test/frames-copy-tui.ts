@@ -325,9 +325,9 @@ async function approvals(): Promise<void> {
       //    草稿正好在「第二件裁决接管」之前打好（真场景，不是摆出来的）。
       //    ⚠️ **U76 起没有"轻审批"了**：判轻的调用**不问**（默认通），故这一段必须夹在
       //    名单那一条上（`rm`）才弹得出卡——本帧要看的（接管 · 草稿收起 · 归还）一字未改。
-      { kind: 'tool', name: 'exec', args: { cmd: 'sleep 2 && rm -rf build' } },
+      { kind: 'tool', name: 'exec', args: { cmd: 'sleep 2 && chmod 755 .' } },
       // ② 连续第二件（同一轮里逐件问）——同样落在名单那一条上
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf dist' } },
+      { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } },
       { kind: 'text', text: '两件都办完了' },
     ],
   })

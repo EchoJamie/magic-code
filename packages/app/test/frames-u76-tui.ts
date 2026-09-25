@@ -48,7 +48,7 @@
  * 「破坏性 git」与 `cd x && git status` 那几帧要真跑得过去，屏上才读得出「不问、直接跑」。
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { ALLOW_ALL_LABEL } from '@magic/tui'
 import { createSandbox, createUiSession, REPO_ROOT, startFixture, statusLineOf } from './ui/index.ts'
@@ -162,6 +162,11 @@ function prepareWorkspace(workspace: string): void {
   // 名单第二条那几帧要 `chmod`/`chown` 真成功（不然屏上只剩一句 `No such file`，
   // 而那张帧要说的是「它**真跑了**」）
   writeFileSync(join(workspace, 'secret.key'), '不是真的钥匙\n', 'utf8')
+
+  // **删除那一类的两帧要一座"真有东西"的 build/**（U77）：被拒之后屏上那句「文件还在」
+  // 得**真有份文件**可查——空手说"没删掉"是查不出来的
+  mkdirSync(join(workspace, 'build'), { recursive: true })
+  writeFileSync(join(workspace, 'build', '产物.txt'), 'U76/U77 的构建产物\n', 'utf8')
 }
 
 /** 一帧的底架：起一块**备好的**沙地 ＋ 一台夹具，收摊那一跳也一并交出去。 */
@@ -212,38 +217,46 @@ async function closeScene(scene: {
 // ══ ①②④ · 名单那两条照问 / 其余不问 / 全放行连它们也放 ══════════════
 
 /**
- * **① 名单那两条照问**（删除 · 改权限/属主/属性/ACL）——它们**是唯一还问的**。
+ * **① 删除那一类"直接拒" ＋ 名单里那条"照问"**（U77 换的锚）。
  *
- * 一段窗口里两条都走一遍：同一个布尔、同一份配置，只差命令。
+ * ⚠️ **U76 那一版是「名单那两条照问」**（删除 ＋ 改权限，**都弹卡**）。
+ * **U77 起删除从"要授权"整类移出**——它**不问、直接拒**（回执里指路 `trash`），
+ * 故能弹卡的只剩**改权限那一族**。两半一起留帧，才是现在的名单。
+ *
+ * ⚠️ **删除那两帧的判据是四件一起**（不是"看着像"）：**没有卡** ＋ **回执说了为什么**
+ * ＋ **回执指了路** ＋ **那一份文件还在**（`build/产物.txt` 真在沙地里）。
  */
 async function sceneList(): Promise<void> {
   const scene = await openScene({
     label: 'u76-名单两条',
     turns: [
       { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } },
-      { kind: 'text', text: '那我不删了。' },
+      { kind: 'text', text: '那我改用 trash。' },
       { kind: 'tool', name: 'exec', args: { cmd: 'chmod 600 secret.key' } },
       { kind: 'text', text: '权限也没动。' },
     ],
   })
 
   try {
+    // —— 删除：**不弹卡、直接拒**（U77）——
     await typeLine(scene.session, '删掉 build')
-    await scene.session.key('enter', { until: { text: '· 不可逆' }, timeoutMs: 40_000 })
+    await scene.session.key('enter', { until: { text: '那我改用 trash。' }, timeoutMs: 40_000 })
+    await scene.session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
 
-    const remove = await scene.session.capture({ label: '01-删除照问' })
-    keep(remove, '01-删除照问')
+    const remove = await scene.session.capture({ label: '01-删除直接拒' })
+    keep(remove, '01-删除直接拒')
 
-    check(has(remove, '· 不可逆'), '① 删除：**卡照出**（`│ exec · 不可逆`）')
-    check(has(remove, 'rm -rf build —— 删除（不可逆）'), '① 材料说的是名单里那一类（`删除（不可逆）`）')
-    check(has(remove, '判据：不可逆（收不回）'), '① 判据那一行说得出为什么问')
-    check(statusLineOf(remove.lines).includes('y / n'), '① 右位是重件键位 `y / n`')
-    check(!statusLineOf(remove.lines).includes(MARK), '① 不带 `--allow-all`：状态行**没有**那一格')
-    check(!has(remove, '✓'), '① 没答复之前**一步都没跑**')
+    check(!has(remove, '· 不可逆'), '① 删除：**一张卡都没有**（不是"问"，是"直接拒"）')
+    check(!statusLineOf(remove.lines).includes('y / n'), '① 右位不是裁决键位（根本没问）')
+    check(has(remove, '已拒绝'), '① 回执是「拒绝」那一形（不是"完成"）')
+    check(has(remove, '不可逆'), '① 回执说得出**为什么**')
+    check(has(remove, 'trash'), '① 回执**指了路**（只拒不说，模型只会换着花样再试）')
+    check(
+      existsSync(join(scene.sandbox.workspace, 'build', '产物.txt')),
+      '① **那一份文件还在**（拒＝一步都没跑）',
+    )
 
-    await scene.session.send('n', { until: { text: '那我不删了。' }, timeoutMs: 40_000 })
-
-    // —— ② 名单第二类：改权限 ——
+    // —— 名单里剩下那一条：改权限 ——
     await typeLine(scene.session, '改一下 secret.key 的权限')
     await scene.session.key('enter', { until: { text: '· 不可逆' }, timeoutMs: 40_000 })
 
@@ -251,8 +264,8 @@ async function sceneList(): Promise<void> {
     keep(chmod, '02-改权限照问')
 
     check(has(chmod, 'chmod 600 secret.key —— 改权限 · 属主 · 属性 / ACL（不可逆）'), '① 改权限：卡照出，材料点名那一类')
-    check(has(chmod, '判据：系统级（改权限 / 属主 / 属性 / ACL）'), '① 判据那一行改了措辞（U76：那一格只剩这一族在产）')
-    check(statusLineOf(chmod.lines).includes('y / n'), '① 右位同上')
+    check(has(chmod, '判据：系统级（改权限 / 属主 / 属性 / ACL）'), '① 判据那一行说得出为什么问')
+    check(statusLineOf(chmod.lines).includes('y / n'), '① 右位是重件键位 `y / n`')
     check(!has(chmod, '✓'), '① 没答复之前**一步都没跑**')
 
     await scene.session.send('n', { until: { text: '权限也没动。' }, timeoutMs: 40_000 })
@@ -316,38 +329,51 @@ async function sceneDefaultPass(): Promise<void> {
 }
 
 /**
- * **④ 全放行：连名单那两条也放**——与 `01` `02` 是**同一个调用**、**只差一个参数**。
+ * **④ 全放行：要授权的那一条也不问，而删除照拒**（U77 换的锚）。
  *
- * 「全放行 ≠ 连必闸也放」是 U73 那一版的旧话（用户已改定）。这一张帧就是改定的那一半。
+ * ⚠️ **U76 那一版是「连名单那两条也放」**；**U77 起删除那一类是个例外**——
+ * **全放行下也照拒**（规划侧定）。由头：**拒的理由是"这个命令不可逆"，不是"你该问我"**，
+ * 而 `--allow-all` **只动「问不问」那一维**（设计的三个维度里的第一个）。两件事不混。
+ *
+ * 故这一趟两帧：**改权限不问（这一档的承诺照旧兑现）** ＋ **删除照拒（例外照旧成立）**。
  */
 async function sceneAllowAll(): Promise<void> {
   const scene = await openScene({
     label: 'u76-全放行',
     argv: ['--allow-all'],
     turns: [
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } },
-      { kind: 'text', text: '删掉了。' },
       { kind: 'tool', name: 'exec', args: { cmd: 'chmod 600 secret.key' } },
       { kind: 'text', text: '改好了。' },
+      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } },
+      { kind: 'text', text: '那我改用 trash。' },
     ],
   })
 
   try {
-    for (const [frame, message, until, why] of [
-      ['10-全放行-删除也不问', '删掉 build', '删掉了。', '④ 删除（名单里那一条）'],
-      ['11-全放行-改权限也不问', '改一下 secret.key 的权限', '改好了。', '④ 改权限（名单里另一条）'],
-    ] as const) {
-      await said(scene.session, message, until)
-      // 那一格是**随快照**上屏的（见 `waitStatusLine`）——判据等它，不赌时刻
-      await waitStatusLine(scene.session, MARK)
+    await said(scene.session, '改一下 secret.key 的权限', '改好了。')
+    // 那一格是**随快照**上屏的（见 `waitStatusLine`）——判据等它，不赌时刻
+    await waitStatusLine(scene.session, MARK)
 
-      const shot = await scene.session.capture({ label: frame })
-      keep(shot, frame)
+    const shot = await scene.session.capture({ label: '10-全放行-改权限也不问' })
+    keep(shot, '10-全放行-改权限也不问')
+    check(!has(shot, '· 不可逆'), '④ 改权限：全放行时**也不问**（卡没出）')
+    check(has(shot, '改好了。'), '④ 工具**真跑了**')
+    check(statusLineOf(shot.lines).includes(MARK), '④ 状态行那一格**照报着**（② 常驻）')
 
-      check(!has(shot, '· 不可逆'), `${why}：全放行时**也不问**（卡没出）`)
-      check(has(shot, until), `${why}：工具**真跑了**`)
-      check(statusLineOf(shot.lines).includes(MARK), `${why}：状态行那一格**照报着**（② 常驻）`)
-    }
+    // —— 而**删除那一类照拒**（U77 的例外）——
+    await typeLine(scene.session, '删掉 build')
+    await scene.session.key('enter', { until: { text: '那我改用 trash。' }, timeoutMs: 40_000 })
+    await scene.session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
+
+    const refused = await scene.session.capture({ label: '11-全放行-删除照拒' })
+    keep(refused, '11-全放行-删除照拒')
+    check(!has(refused, '· 不可逆'), '④ 删除：全放行下**也不问**（这一档的承诺照旧）')
+    check(has(refused, '已拒绝'), '④ **但也不放**——照拒（拒的理由不是"你该问我"）')
+    check(has(refused, 'trash'), '④ 回执照旧指路')
+    check(
+      existsSync(join(scene.sandbox.workspace, 'build', '产物.txt')),
+      '④ **那一份文件还在**（照拒＝一步都没跑）',
+    )
   } finally {
     await closeScene(scene)
   }
@@ -358,9 +384,7 @@ async function sceneAllowAll(): Promise<void> {
 /**
  * **按域名放行**（U72）——**正反各一趟**。
  *
- * 配置里写一条 `{ tool: 'web_fetch', host: 'magic-u76.invalid' }`：
- * 往**这个域名**取网页不问（正），**换一个域名**照问（反）。`git push`（外发 · `exec`）
- * 也在这一张帧里——它不问是"名单收缩"的结果，与按域名那条路**互不相干**。
+ * ⚠️ 第一条帧要的是「那段 `rm` **看得出**」——材料里两段都列着，抹掉哪一段都读不出来。
  */
 async function sceneByHost(): Promise<void> {
   const scene = await openScene({
@@ -420,16 +444,18 @@ async function sceneByHost(): Promise<void> {
 // ══ ⑤ · 复合命令按段判、取最严 ═══════════════════════════════════════
 
 /**
- * **一段入名单，整串就照问**（取最严，不是取最宽）；**两段都不在名单里，整串不问**。
+ * **一段"要授权"，整串就照问**（取最严，不是取最宽）；**两段都不在名单里，整串不问**。
  *
- * ⚠️ 第一条帧要的是「那段 `rm` **看得出**」——材料里两段都列着，抹掉哪一段都读不出来。
+ * ⚠️ **U77 换的锚**：从前这一段用的是 `cd x && rm -rf y`（删除那一类）——
+ * 如今它**直接拒**（连卡都不出），故"按段判"的正面改用**复合命令里那段被拒的**
+ * （材料里照样看得出是**第二段**的事），反面照旧用 `cd x && git status`。
  */
 async function sceneCompound(): Promise<void> {
   const scene = await openScene({
     label: 'u76-复合命令',
     turns: [
       { kind: 'tool', name: 'exec', args: { cmd: 'cd x && rm -rf y' } },
-      { kind: 'text', text: '那我不删了。' },
+      { kind: 'text', text: '那我改用 trash。' },
       { kind: 'tool', name: 'exec', args: { cmd: 'cd x && git status' } },
       { kind: 'text', text: '看过了。' },
     ],
@@ -437,17 +463,14 @@ async function sceneCompound(): Promise<void> {
 
   try {
     await typeLine(scene.session, '进 x 里把 y 删掉')
-    await scene.session.key('enter', { until: { text: '· 不可逆' }, timeoutMs: 40_000 })
+    await scene.session.key('enter', { until: { text: '那我改用 trash。' }, timeoutMs: 40_000 })
+    await scene.session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
 
-    const chained = await scene.session.capture({ label: '12-复合命令-里面那段rm照问' })
-    keep(chained, '12-复合命令-里面那段rm照问')
-    check(has(chained, '命令分解（2 段）'), '⑤ `cd x && rm -rf y`：卡照出，材料分成 2 段')
-    check(has(chained, 'cd x'), '⑤ 第一段（`cd x`）照列')
-    check(has(chained, 'rm -rf y —— 删除（不可逆）'), '⑤ **第二段那段 `rm` 看得出**（入名单的是它）')
-    check(has(chained, '判据：不可逆（收不回）'), '⑤ 判据那一条说得出来源')
-    check(!has(chained, '✓'), '⑤ 没答复之前**一步都没跑**')
-
-    await scene.session.send('n', { until: { text: '那我不删了。' }, timeoutMs: 40_000 })
+    const chained = await scene.session.capture({ label: '12-复合命令-里面那段rm照拒' })
+    keep(chained, '12-复合命令-里面那段rm照拒')
+    check(!has(chained, '· 不可逆'), '⑤ `cd x && rm -rf y`：**没有卡**（删除那一类直接拒）')
+    check(has(chained, '已拒绝'), '⑤ 整串照拒')
+    check(has(chained, 'trash'), '⑤ 回执指路')
 
     await said(scene.session, '进 x 里看看仓库状态', '看过了。')
     const plain = await scene.session.capture({ label: '13-复合命令-两段都不在名单里不问' })

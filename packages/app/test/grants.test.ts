@@ -47,7 +47,7 @@ const WEB_FETCH_TURN = {
   toolCalls: [{ name: 'web_fetch', args: { url: 'https://example.com/a', prompt: '看什么' } }],
 }
 /** 一条必闸命令——`rm` 归删除（不可逆），且工作区外／内都入必闸清单。 */
-const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
 
 /** 裸接控制面——订阅事件 ＋ 按需答复。 */
 function bareShell(assembly: Assembly) {

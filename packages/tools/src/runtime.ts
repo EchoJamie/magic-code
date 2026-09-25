@@ -73,4 +73,20 @@ export type ToolRuntimeOptions = {
    * （工具域不认识会话——它只把命令交出去）。
    */
   readonly background?: BackgroundRuns | undefined
+  /**
+   * **这台机器上有没有 `trash`**（U77）——删除那一类被内核拒时，回执据此指路
+   * （`messages.ts` 的 `refusalOutput`）。
+   *
+   * ## 为什么是注入的、为什么必填
+   *
+   * `trash` 是 **macOS 15 起**才自带的命令行（`/usr/bin/trash`）：**老系统上没有它**。
+   * 而工单把这一条钉死了——**不许假装它一定在**（「指一个跑不了的命令，比不指更坏」）。
+   * ⇒ 得有人**探一次**；**本域不碰文件系统、也不读环境**（那两件归执行域与装配），
+   * 故由装配探好递进来。
+   *
+   * **必填**（不是可选位）：漏接＝回执上那句话**说错了机器**，而它**不报错**
+   * （缺参静默退化成"没有"或"有"，两种都说错一半）——缺参应当在编译期就报
+   * （同 `callRef` · `grants` 之例）。
+   */
+  readonly trashAvailable: boolean
 }

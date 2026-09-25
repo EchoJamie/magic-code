@@ -463,7 +463,7 @@ describe('失败路径', () => {
         // **不弹卡**——这一条要的正是「卡 → 批准 → 内置件照跑」那一路；**新锚**：名单里的
         // 删除打头（必问），`内置照常` 那串输出原样留在第二段。
         turns: [
-          { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build && echo 内置照常' } }] },
+          { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 . && echo 内置照常' } }] },
           { text: '好' },
         ],
       })

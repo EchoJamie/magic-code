@@ -25,10 +25,11 @@ import type {
   Decision,
   DecisionWeight,
   PermissionGate as PermissionGatePort,
+  RefusalKind,
   ToolCall,
 } from '@magic/contracts'
 import { analyze, createPermissionGate } from '../src/index.ts'
-import { call, context, harness, ledger, type EventOf, type Harness } from './helpers.ts'
+import { call, context, harness, ledger, weighing, type EventOf, type Harness } from './helpers.ts'
 
 /** 走一次闸门：那两条事件（问没问 ＋ 裁决）与扇出记录。 */
 function through(
@@ -75,6 +76,39 @@ function passes(toolCall: ToolCall, roots: readonly string[] = ['/work/proj']): 
   return seq
 }
 
+/**
+ * **内核直接拒**那一笔——取它的结论（拒了 · 没问 · 理由是哪条 · 材料怎么写的）。
+ *
+ * 三件一起才叫"直接拒"：
+ * - **没发询问**（不是"卡住了"——卡住了也不会没有 `tool.decision.request`）；
+ * - **裁决是 `reject`**（返回给工具域的那个值）；
+ * - **裁者是 `auto`**（内核按规则自己定的，没人被问过）。
+ *
+ * ⚠️ 「这一笔**没被拒**」＝**用例前提不成立**，当场抛（同 `weigh` / `passes` 的姿势）：
+ * 静默地拿到一个「其实是要问的」调用，会让整条用例测的不是它以为自己测的那件事。
+ */
+async function refusedBy(
+  toolCall: ToolCall,
+  roots: readonly string[] = ['/work/proj'],
+): Promise<{ readonly refusal: RefusalKind; readonly material: string; readonly seq: Harness }> {
+  const h = harness()
+  const ctx = context(roots)
+  const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
+
+  const refusal = gate.refusalOf(toolCall, ctx)
+  if (refusal === undefined) throw new Error('这一笔**没被拒**（用例前提不成立）')
+
+  const decision = await gate.decide(toolCall, ctx, 1)
+  const made = h.eventsOf('tool.decision')[0]
+
+  expect(h.eventsOf('tool.decision.request'), '直接拒＝**不发询问**（屏上没有卡）').toEqual([])
+  expect(decision).toBe('reject')
+  expect(made?.data.decision).toBe('reject')
+  expect(made?.data.decider).toBe('auto')
+
+  return { refusal, material: analyze(toolCall, ctx).material, seq: h }
+}
+
 // ══ 参数键（技术方案 · 工具：参数键部分锚定）═════════════════════════
 
 describe('参数键', () => {
@@ -106,7 +140,7 @@ describe('判据 1 · 过闸（判重的才问）', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
-    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+    void gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
 
     const requests = h.eventsOf('tool.decision.request')
     expect(requests.length).toBe(1)
@@ -135,7 +169,7 @@ describe('判据 1 · 过闸（判重的才问）', () => {
 
     let verdict: Decision | undefined
     void gate
-      .decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+      .decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
       .then((decision) => void (verdict = decision))
 
     await Promise.resolve()
@@ -147,7 +181,7 @@ describe('判据 1 · 过闸（判重的才问）', () => {
     // 按**契约端口**取用（工具域的姿势）：`callRef` ＝ 该次 `tool.call` 事件的 id
     const gate: PermissionGatePort = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 42)
+    const verdict = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 42)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -161,26 +195,13 @@ describe('判据 1 · 过闸（判重的才问）', () => {
 
 // ══ 判据 2 · 呈现轻重 ════════════════════════════════════════════════
 
-describe('判据 2 · 名单里那两条 ⇒ **照问**（U76：名单只剩两条）', () => {
-  /**
-   * **名单第一类 · 删除**（`rm` 那类）——逐条对表的是「**这一段在不在名单里**」。
-   *
-   * ⚠️ `sudo rm -rf x` 也在表里：`sudo` 这一版是**包装词**（跳过它找真正的程序词），
-   * 否则一个前缀就把删除藏过去了。而 `sudo ls` 那类**不问**（见下一组）。
-   */
-  const DELETE: readonly { readonly why: string; readonly cmd: string }[] = [
-    { why: '删除', cmd: 'rm -rf build' },
-    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
-    { why: '删除（shred —— 回收站换不掉的）', cmd: 'shred secret.key' },
-    { why: '删除（srm —— 同上）', cmd: 'srm secret.key' },
-    { why: '删除（rmdir）', cmd: 'rmdir build' },
-    { why: '删除（unlink）', cmd: 'unlink build/a.o' },
-    { why: '删除（隔着 `sudo` 也认得出）', cmd: 'sudo rm -rf /tmp/x' },
-  ]
-
+describe('判据 2 · 要授权的**只剩一条**：改权限 / 属主 / 属性 / ACL（U77）', () => {
   /**
    * **名单第二类 · 改权限 / 属主 / 属性 / ACL**——判据**按类收，不按名字收**
    * （2026-09-25 用户定：同族将来多一件，照口径收进来即可，判据本身不动）。
+   *
+   * ⚠️ **U77 起，名单里只剩这一组**：删除那一类**从"要授权"整类移出**——
+   * 它归下一组（**直接拒**）。这里的每一条仍走「发卡 → 等答复」那条老路。
    */
   const PERMISSION: readonly { readonly why: string; readonly cmd: string }[] = [
     { why: '改权限（chmod）', cmd: 'chmod 777 secret.key' },
@@ -191,7 +212,7 @@ describe('判据 2 · 名单里那两条 ⇒ **照问**（U76：名单只剩两�
     { why: '改 ACL（setfacl）', cmd: 'setfacl -m u:echo:r secret.key' },
   ]
 
-  for (const { why, cmd } of [...DELETE, ...PERMISSION]) {
+  for (const { why, cmd } of PERMISSION) {
     test(`${why}：「${cmd}」照问`, () => {
       const { weight, material } = weigh(call('exec', { cmd }))
       expect(weight).toBe('heavy')
@@ -202,10 +223,84 @@ describe('判据 2 · 名单里那两条 ⇒ **照问**（U76：名单只剩两�
   }
 
   test('材料里说得出是**哪一类**入的名单（判据那一行）', () => {
-    expect(weigh(call('exec', { cmd: 'rm -rf build' })).material).toContain('判据：不可逆（收不回）')
     expect(weigh(call('exec', { cmd: 'chmod 600 secret.key' })).material).toContain(
       '判据：系统级（改权限 / 属主 / 属性 / ACL）',
     )
+  })
+
+  test('**删除那一类不再问**——它归下一组（直接拒，没有卡）', () => {
+    for (const cmd of ['rm -rf build', 'rmdir build', 'unlink build/a.o', 'shred secret.key']) {
+      expect(through(call('exec', { cmd })).request, `「${cmd}」不该发询问`).toBeUndefined()
+    }
+  })
+})
+
+/**
+ * **删除那一类 ⇒ 直接拒**（U77 · 设计 · 权限「`rm` 直接拒，指路 `trash`」）。
+ *
+ * ## 这一组钉住四件
+ *
+ * 1. **拒**（不是问）：**不发询问**（没有卡、没有 `y/a/n`）＋ 裁决是 `reject`；
+ * 2. **理由分两支**：`rm` 那族**不可逆但有替代**（回执指路 `trash`）；
+ *    `shred` / `srm` **要的就是不可逆**（回执不给替代）；
+ * 3. **识别面照旧**——包装词（`sudo`）· 越界落点 · 复合命令里那一段 · 命令替换里的，
+ *    **一个都漏不掉**（判据仍是 U76 那一套，本单没动它）；
+ * 4. **材料照旧给得出"为什么出格"**（`判据：不可逆（收不回）`）——虽然现在没有卡了，
+ *    那一份命令分解仍是审计与用例读得到的同一份结论。
+ *
+ * ⚠️ **全放行下照样拒**那一条在 `allow-all.test.ts` 里（它与那一档是同一件事的两面）。
+ */
+describe('判据 2 · 删除那一类 ⇒ **直接拒**（不问、也不放）', () => {
+  /** **不可逆但有替代**：这一族拒了之后要指路（`trash`）。 */
+  const IRREVERSIBLE: readonly { readonly why: string; readonly cmd: string }[] = [
+    { why: '删除（rm）', cmd: 'rm -rf build' },
+    { why: '删除（rm 一个文件）', cmd: 'rm -f a.txt' },
+    { why: '删除（rmdir）', cmd: 'rmdir build' },
+    { why: '删除（unlink）', cmd: 'unlink build/a.o' },
+    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
+    // 识别面照旧——下面这四条是 U76 咬过的那几个"藏得住的写法"，本单不许漏
+    { why: '删除（隔着 `sudo` 也认得出）', cmd: 'sudo rm -rf /tmp/x' },
+    { why: '删除（落在根外照拒）', cmd: 'rm -rf /etc/hosts' },
+    { why: '删除（复合命令里那一段）', cmd: 'cd x && rm -rf y' },
+    { why: '删除（命令替换那一段）', cmd: 'rm -rf $(cat targets.txt)' },
+  ]
+
+  for (const { why, cmd } of IRREVERSIBLE) {
+    test(`${why}：「${cmd}」⇒ 拒（理由＝不可逆，指路 trash）`, async () => {
+      const { refusal, material } = await refusedBy(call('exec', { cmd }))
+
+      expect(refusal).toBe('irreversible')
+      // **为什么出格**照旧说得出来（材料没因为"没有卡"就少算一格）
+      expect(material).toContain('删除（不可逆）')
+      expect(material).toContain('判据：不可逆（收不回）')
+    })
+  }
+
+  /** **要的就是不可逆**：拒，且**没有替代可指**（`shred` / `srm`）。 */
+  for (const cmd of ['shred secret.key', 'srm secret.key']) {
+    test(`删除（${cmd}）⇒ 拒（理由＝没有替代）`, async () => {
+      const { refusal, material } = await refusedBy(call('exec', { cmd }))
+
+      expect(refusal).toBe('no-substitute')
+      // 它仍在删除那一类里（照旧认得出、照旧拒）——只是拒的理由不同
+      expect(material).toContain('删除（不可逆）')
+    })
+  }
+
+  test('**一支里两样都有 ⇒ 取"不给替代"那一支**（指路在那种串里是错的）', async () => {
+    const { refusal } = await refusedBy(call('exec', { cmd: 'rm -f a.txt && shred -u k' }))
+
+    expect(refusal).toBe('no-substitute')
+  })
+
+  test('**不在删除那一类里的，一个字都不拒**（射程只到删除）', async () => {
+    for (const cmd of ['ls -la', 'git status', 'mv a b', 'chmod 600 x']) {
+      const h = harness()
+      const ctx = context(['/work/proj'])
+      const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
+
+      expect(gate.refusalOf(call('exec', { cmd }), ctx), `「${cmd}」不该被拒`).toBeUndefined()
+    }
   })
 })
 
@@ -250,6 +345,9 @@ describe('判据 2 · 其余一律默认通（不问、直接跑）', () => {
     { why: '判不出来（变量展开）', cmd: 'echo ${HOME}' },
     { why: '判不出来（整写 / 交互式程序）', cmd: 'vim a.ts' },
     { why: '判不出来（xargs 藏着的命令）', cmd: 'xargs rm' },
+    // —— U77 起多出来的一类：**删除的可逆替代**（它可逆 ⇒ 默认通、不必问）——
+    { why: '`trash`（删除的可逆替代）', cmd: 'trash build/old.txt' },
+    { why: '`trash`（带旗标）', cmd: 'trash -v -s build/old.txt' },
   ]
 
   for (const { why, cmd } of DEFAULT_PASS) {
@@ -257,6 +355,19 @@ describe('判据 2 · 其余一律默认通（不问、直接跑）', () => {
       passes(call('exec', { cmd }))
     })
   }
+
+  /**
+   * **`trash` 本身不拦**（U77）——**它可逆**（进废纸篓、能「放回原处」）⇒ 默认通。
+   *
+   * ⚠️ 这一条与上面那一圈是**两件事**：上面那圈是"不在名单里"（软防线）；
+   * 这一条是"**它就是那条正道**"——删除被拒之后，模型改用 `trash` 应当**一路畅通**
+   * （回执里的指路才不会是一句空话）。
+   */
+  test('`trash` 不在任何名单里——它可逆，不拦也不必问', () => {
+    for (const cmd of ['trash a.txt', 'trash -s build', 'trash -v a.txt build/old']) {
+      passes(call('exec', { cmd }))
+    }
+  })
 
   test('判不出来（取不到程序词）——空命令也不问', () => {
     passes(call('exec', { cmd: '   ' }))
@@ -282,10 +393,10 @@ describe('判据 2 · 其余一律默认通（不问、直接跑）', () => {
  * 看得出是哪一段）由 `weigh` 量——两面都要，否则「按段判」只落了一半。
  */
 describe('判据 2 · 复合命令按段判、取最严', () => {
-  test('`cd x && rm -rf y` —— 那段 `rm` **看得出**（照落名单）', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'cd x && rm -rf y' }))
+  test('`cd x && rm -rf y` —— 那段 `rm` **看得出**（整条照拒）', async () => {
+    const { refusal, material } = await refusedBy(call('exec', { cmd: 'cd x && rm -rf y' }))
 
-    expect(weight).toBe('heavy')
+    expect(refusal).toBe('irreversible')
     expect(material).toContain('命令分解（2 段）')
     expect(material).toContain('cd x')
     expect(material).toContain('rm -rf y —— 删除（不可逆）')
@@ -296,26 +407,33 @@ describe('判据 2 · 复合命令按段判、取最严', () => {
     passes(call('exec', { cmd: 'cd x && git status' }))
   })
 
-  test('`cd x && chmod 600 y` —— 权限那一段照落名单', () => {
+  test('`cd x && chmod 600 y` —— 权限那一段照落名单（整条照问）', () => {
     const { weight, material } = weigh(call('exec', { cmd: 'cd x && chmod 600 y' }))
     expect(weight).toBe('heavy')
     expect(material).toContain('chmod 600 y')
   })
 
-  test('取最严＝不取最宽：`ls && rm -rf build` 照问', () => {
-    weigh(call('exec', { cmd: 'ls && rm -rf build' }))
+  test('取最严＝不取最宽：`ls && chmod 600 x` 照问', () => {
+    weigh(call('exec', { cmd: 'ls && chmod 600 x' }))
   })
 
-  test('一段看得懂、一段判不出的：`rm -rf $(cat f)` 照问（看得懂的那段照报）', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
+  test('一段看得懂、一段判不出的：`rm -rf $(cat f)` 照拒（看得懂的那段照报）', async () => {
+    const { material } = await refusedBy(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
 
-    expect(weight).toBe('heavy')
     expect(material).toContain('删除') // 看得懂的那一段照报
     expect(material).toContain('命令替换') // 判不出的那一段照说——两条并列，不藏
   })
 
-  test('`find . -delete && ls` —— 删的那一段照问', () => {
-    weigh(call('exec', { cmd: 'find . -name "*.log" -delete && ls' }))
+  test('`find . -delete && ls` —— 删的那一段照拒', async () => {
+    const { refusal } = await refusedBy(call('exec', { cmd: 'find . -name "*.log" -delete && ls' }))
+    expect(refusal).toBe('irreversible')
+  })
+
+  test('**拒 ＞ 问**：一支里又有要问的、又有被拒的 ⇒ 整条拒（不会先弹一张卡）', async () => {
+    const { refusal, seq } = await refusedBy(call('exec', { cmd: 'chmod 600 x && rm -rf y' }))
+
+    expect(refusal).toBe('irreversible')
+    expect(seq.countOf('tool.decision.request'), '拒的那一段不该先弹卡').toBe(0)
   })
 })
 
@@ -329,20 +447,22 @@ describe('判据 2 · 复合命令按段判、取最严', () => {
  * ⚠️ **不是 `exec` 那两处照旧判重**（`edit` / `write` 落根外）——工单明写射程只到 `exec`。
  */
 describe('判据 2 · 越界（U76：不是必闸判据了）', () => {
-  test('删除在路上：`rm /etc/hosts` 照问（入名单与落在哪儿无关）', () => {
-    const { weight, material, seq } = weigh(call('exec', { cmd: 'rm /etc/hosts' }))
-    expect(weight).toBe('heavy')
+  test('删除在路上：`rm /etc/hosts` 照拒（入名单与落在哪儿无关）', async () => {
+    const { refusal, material, seq } = await refusedBy(call('exec', { cmd: 'rm /etc/hosts' }))
+
+    expect(refusal).toBe('irreversible')
     // 材料仍要说清落在哪、出没出界（那是判断材料，不是判据）
     expect(material).toContain('影响面：/etc/hosts（根外）')
-    expect(seq.countOf('tool.decision.request')).toBe(1)
+    expect(seq.countOf('tool.decision.request')).toBe(0)
   })
 
-  test('删除以 `..` 逃出根：照问', () => {
-    weigh(call('exec', { cmd: 'rm ../../etc/passwd' }))
+  test('删除以 `..` 逃出根：照拒', async () => {
+    const { refusal } = await refusedBy(call('exec', { cmd: 'rm ../../etc/passwd' }))
+    expect(refusal).toBe('irreversible')
   })
 
-  test('**撤掉的那一格不许加成判据**：材料里不再有「越界」那条判据', () => {
-    const { material } = weigh(call('exec', { cmd: 'rm /etc/hosts' }))
+  test('**撤掉的那一格不许加成判据**：材料里不再有「越界」那条判据', async () => {
+    const { material } = await refusedBy(call('exec', { cmd: 'rm /etc/hosts' }))
     expect(material).not.toContain('判据：越界')
     expect(material).toContain('判据：不可逆（收不回）')
   })
@@ -388,7 +508,7 @@ describe('命令分解 · 段文本（记号原样回写）', () => {
     ]
 
     for (const [name, args] of pathless) {
-      const analysis = analyze(call(name, args), context())
+      const analysis = weighing(analyze(call(name, args), context()))
 
       expect(analysis.weight, `${name} 没给路径时的呈现轻重`).toBe('light')
       expect(analysis.material, `${name} 的材料该说清落点`).toContain('/work/proj')
@@ -399,12 +519,12 @@ describe('命令分解 · 段文本（记号原样回写）', () => {
   test('描述符复制 `2>&1` —— 记号不吞，段文本原样', () => {
     expect(materialOf(call('exec', { cmd: 'ls -la 2>&1' }))).toContain('  1. ls -la 2>&1 —— 只读')
     // 复制描述符不是写入——归类不受影响
-    expect(analyze(call('exec', { cmd: 'ls -la 2>&1' }), context()).weight).toBe('light')
+    expect(weighing(analyze(call('exec', { cmd: 'ls -la 2>&1' }), context())).weight).toBe('light')
   })
 
   test('丢弃 `2>/dev/null` —— 段文本原样，且仍不算覆盖', () => {
     expect(materialOf(call('exec', { cmd: 'ls -la 2>/dev/null' }))).toContain('  1. ls -la 2>/dev/null —— 只读')
-    expect(analyze(call('exec', { cmd: 'ls -la 2>/dev/null' }), context()).weight).toBe('light')
+    expect(weighing(analyze(call('exec', { cmd: 'ls -la 2>/dev/null' }), context())).weight).toBe('light')
   })
 
   test('重定向 —— 记号与目标都留在段文本里', () => {
@@ -495,16 +615,17 @@ describe('判据 5 · 「读不懂的命令」按默认通（U76）', () => {
     })
   }
 
-  test('看得懂与看不懂**并列**的那一条（`rm -rf $(cat f)`）——删的意图照落名单', () => {
-    const { weight, material } = weigh(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
-    expect(weight).toBe('heavy')
+  test('看得懂与看不懂**并列**的那一条（`rm -rf $(cat f)`）——删的意图照落', async () => {
+    const { refusal, material } = await refusedBy(call('exec', { cmd: 'rm -rf $(cat targets.txt)' }))
+    expect(refusal).toBe('irreversible') // 判不出那半段**不许把删除冲淡**
     expect(material).toContain('删除') // 看得懂的部分照报
     expect(material).toContain('命令替换') // 判不出的部分照说——两条并列，不藏
   })
 
-  test('`~` 前缀判不出（域不读环境变量）——按根外处置；落名单的那条照问', () => {
-    // ⚠️ 这条的重点不是 `~`：`rm` **本身就是名单里的删除**——判不出不改变它入名单
-    weigh(call('exec', { cmd: 'rm -rf ~/.cache' }))
+  test('`~` 前缀判不出（域不读环境变量）——按根外处置；删除那条照拒', async () => {
+    // ⚠️ 这条的重点不是 `~`：`rm` **本身就是删除那一类**——判不出不改变它落拒
+    const { refusal } = await refusedBy(call('exec', { cmd: 'rm -rf ~/.cache' }))
+    expect(refusal).toBe('irreversible')
     // 而 `~` 那一段不再入名单之后，同样的判不出不再引起询问
     passes(call('exec', { cmd: 'ls ~/.cache' }))
   })
@@ -547,7 +668,7 @@ describe('U33 · 技能读取的归类', () => {
    * ——那个参数随「同名只留一条」一起收了（它的唯一由头是同名），落点也就没有来处。
    */
   test('`skill` 归**轻**——读的是只读来源，材料里说清是哪一份', () => {
-    const analysis = analyze(call('skill', { name: 'pdf' }), context())
+    const analysis = weighing(analyze(call('skill', { name: 'pdf' }), context()))
 
     expect(analysis.weight).toBe('light')
     expect(analysis.material).toContain('只读材料')
@@ -562,7 +683,7 @@ describe('U33 · 技能读取的归类', () => {
 
   test('多给一个 `source`（参数表里已没有这一格）**不改判**——照样轻', () => {
     // 读的边界不在这一层：能读哪些由 `Skills` 端口按已发现身份与来源内相对引用卡死
-    const analysis = analyze(call('skill', { name: 'pdf', source: '/elsewhere/skills/pdf' }), context())
+    const analysis = weighing(analyze(call('skill', { name: 'pdf', source: '/elsewhere/skills/pdf' }), context()))
 
     expect(analysis.weight).toBe('light')
   })
@@ -596,7 +717,7 @@ describe('判据 3 · 答复流转', () => {
     const clock = { value: 1_000 }
     const { gate, h } = timed(clock)
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 7)
+    const verdict = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 7)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -617,7 +738,7 @@ describe('判据 3 · 答复流转', () => {
   test('配对键是请求事件 id——拿调用链引用去答复＝配不上（不落定）', async () => {
     const { gate, h } = timed({ value: 0 })
     let verdict: Decision | undefined
-    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 7).then((d) => void (verdict = d))
+    void gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 7).then((d) => void (verdict = d))
 
     gate.resolve(7 as never, 'approve') // 7 ＝ `call`，不是请求事件 id
     await Promise.resolve()
@@ -628,7 +749,7 @@ describe('判据 3 · 答复流转', () => {
 
   test('陌生 id 的答复＝忽略（不抛、不发裁决事件）', () => {
     const { gate, h } = timed({ value: 0 })
-    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+    void gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
 
     expect(() => gate.resolve(9_999, 'approve')).not.toThrow()
     expect(h.countOf('tool.decision')).toBe(0)
@@ -636,7 +757,7 @@ describe('判据 3 · 答复流转', () => {
 
   test('重复答复＝只认第一次（第二次不覆盖、不重发事件）', async () => {
     const { gate, h } = timed({ value: 0 })
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+    const verdict = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -661,18 +782,18 @@ describe('判据 3 · 答复流转', () => {
 
     gate = createPermissionGate({ sink: answering, stamper: h.stamper, grants: ledger() })
 
-    expect(await gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)).toBe('approve')
+    expect(await gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)).toBe('approve')
     expect(h.countOf('tool.decision')).toBe(1)
   })
 
   test('调用链引用原样入事件——不加工、不冒充', () => {
     const { gate, h } = timed({ value: 0 })
-    void gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 7)
+    void gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 7)
 
     // 事件 `call` ＝ 调用方给的 `tool.call` 事件 id（串链依据）
     expect(h.eventsOf('tool.decision.request')[0]?.data.call).toBe(7)
 
-    void gate.decide(call('exec', { cmd: 'rm -rf dist' }), context(), 8_888)
+    void gate.decide(call('exec', { cmd: 'chmod 600 dist.key' }), context(), 8_888)
     expect(h.eventsOf('tool.decision.request')[1]?.data.call).toBe(8_888)
   })
 })
@@ -684,7 +805,7 @@ describe('判据 4 · 拒绝回填', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+    const verdict = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 
@@ -699,8 +820,8 @@ describe('判据 4 · 拒绝回填', () => {
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
     // 同轮三个调用（首站按序逐个：各自过闸 → 执行 → 回填）
-    const first = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
-    const second = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 2)
+    const first = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
+    const second = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 2)
     const third = gate.decide(call('exec', { cmd: 'chmod 600 b.ts' }), context(), 3)
 
     const requests = h.eventsOf('tool.decision.request')
@@ -729,9 +850,9 @@ describe('判据 4 · 拒绝回填', () => {
 
     let firstVerdict: Decision | undefined
     void gate
-      .decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+      .decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
       .then((decision) => void (firstVerdict = decision))
-    const second = gate.decide(call('exec', { cmd: 'rm -rf dist' }), context(), 1)
+    const second = gate.decide(call('exec', { cmd: 'chmod 600 dist.key' }), context(), 1)
 
     const requests = h.eventsOf('tool.decision.request')
     gate.resolve(requests[1]?.id ?? -1, 'approve') // 只答第二个
@@ -749,7 +870,7 @@ describe('判据 6 · 裁决不入记录', () => {
     const h = harness()
     const gate = createPermissionGate({ sink: h.sink, stamper: h.stamper, grants: ledger() })
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+    const verdict = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
     gate.resolve(request.id, 'approve')

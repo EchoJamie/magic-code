@@ -7,17 +7,22 @@
  *     ／否则发 `tool.decision.request`（带材料与呈现轻重）→ 等答复（`resolve`，配对＝请求事件 id）
  *     → 发 `tool.decision` → 返回裁决
  *
- * **默认是通；这一层控的是「禁止」**（2026-09-25 用户定 · 反向）——次序仍是这条链：
+ * **默认是通；这一层控的是「禁止」**（2026-09-25 用户定 · 反向）——次序是这条链：
  *
  * ```
- *   内置禁止名单（＝名单那两条） ＞ 项目规约（留缝·不实现） ＞ 用户手写规则 ＞ 点出来的授权 ＞ （其余一律默认通）
+ *   内核直接拒（删除那一类） ＞ 内置禁止名单（＝改权限那一类） ＞ 项目规约（留缝·不实现）
+ *     ＞ 用户手写规则 ＞ 点出来的授权 ＞ （其余一律默认通）
  * ```
  *
- * ⚠️ **链的底换了**（U76）：从前是「**默认问**」（阶段 1 全人工门——判轻的也要先配规则才通），
- * 现在是「**默认通**」——**不在名单里就不问**（设计 · 权限「默认是通；这一层控的是「禁止」」）。
- * 跟着来的三件事写在下面那一段判据里：判轻的不必配规则 · 全放行连名单那两条也放 ·
- * 判不出来的（`unknown`）按默认通。**名单只剩两条**（删除 · 改权限/属主/属性/ACL，
- * 见 `commands.ts`）——那是**产品的安全承诺**（设计明写），故它归 `analyze` 一处判。
+ * ⚠️ **链的底换过一次**（U76）：从前是「**默认问**」（阶段 1 全人工门——判轻的也要先配规则
+ * 才通），现在是「**默认通**」——**不在名单里就不问**（设计 · 权限「默认是通；这一层控的是
+ * 「禁止」」）。跟着来的是：判轻的不必配规则 · 全放行连名单也放 · 判不出来的（`unknown`）
+ * 按默认通。
+ *
+ * ⚠️ **链首换过一次**（U77）：**删除那一类**从"要授权"整类移出，改成**直接拒**
+ * （设计 · 权限「`rm` 直接拒，指路 `trash`」）——**不问、也不放**（连全放行也放不动它，
+ * 理由见 `decide` 里那一段）。⇒ **名单里只剩改权限那一类**（`commands.ts` 的 `PERMISSION`），
+ * 那是**产品的安全承诺**（设计明写），故它归 `analyze` 一处判。
  *
  * 而 **「全放行」**（U73 立 · **U76 改定**）**不是这条链上的一格，也不是一个「模式」**
  * ——它是**权限这一维的一个取值**，只动「该不该做」那一问的**默认答什么**：**一个布尔**
@@ -55,6 +60,7 @@ import type {
   PermissionContext,
   PermissionGate as PermissionGatePort,
   RecordId,
+  RefusalKind,
   ToolCall,
 } from '@magic/contracts'
 import { analyze } from './analyze.ts'
@@ -87,6 +93,13 @@ export interface PermissionGate extends PermissionGatePort {
   resolve(requestId: DecisionId, decision: Decision, options?: ResolveOptions): void
   /** **放行区那一笔账**（`B10` 口径的原料）——本实例走过的裁决分布，见 `GateTally`。 */
   tally(): GateTally
+  /**
+   * **内核直接拒的那一笔，理由是哪一条**（U77 · 见契约 `RefusalKind`）。
+   *
+   * 工具域据此给模型一句有用的话（「用 `trash` 删」那一句）——**它不解析命令**，
+   * 判据只在权限域这一处（与 `decide` 同一次机械分析）。
+   */
+  refusalOf(call: ToolCall, ctx: PermissionContext): RefusalKind | undefined
 }
 
 /**
@@ -238,7 +251,36 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   return {
     decide(call, ctx, callRef) {
       const started = now() // 度量起点：本域开始处理这次裁决（人工 / 自动同一把尺子）
-      const { weight, material, ops, landings, title, external, host } = analyze(call, ctx)
+      const analysis = analyze(call, ctx)
+
+      // ⓪ **删除那一类：内核直接拒**（U77）——**这一步必须排在最前**。
+      //
+      // ⚠️ **次序是这一段的全部内容**：拒的那一笔若落到下面任何一条支上，
+      // 「默认通」或「全放行」就会**把 `rm` 放过去**——而这一单要的恰恰是
+      // **全放行也照拒**（拒的理由是"这个命令不可逆"，不是"你该问我"；`--allow-all`
+      // 只动「问不问」那一维）。
+      //
+      // 结构上还有一道保险：`AnalysisRefused` 这一形**没有 `weight`**——
+      // 想读它就得先分支（`analyze.ts` 那两个型的注里写着），"忘了先判拒"编译期就报。
+      //
+      // **不发询问**（没有卡）：拒不是问，模型那边收到的是回执里那句话（工具域写的）。
+      // 落一条 `decision: 'reject'` 的裁决事件——**裁者是 `auto`**：内核按规则自己定的，
+      // 没人被问过（`DecisionHistory` 把 `auto` 读作"没问就放行"，这一笔会被算进去——
+      // 如实记在回报的限度里；事件上 `decision: 'reject'` 分得开两者）。
+      if (analysis.refusal !== undefined) {
+        sink.emit(
+          decisionMade(stamper, {
+            call: callRef,
+            decision: 'reject',
+            decider: 'auto',
+            elapsedMs: now() - started,
+          }),
+        )
+        tally.total += 1 // 只记总数（既没问、也没放行——`uncovered`/`vetoed` 两格都说不准它）
+        return Promise.resolve('reject')
+      }
+
+      const { weight, material, ops, landings, title, external, host } = analysis
 
       // 规则轴与判定轴读的是**同一份** `analyze` 结论——两条路径结构上无从分叉
       const face: CallFace = {
@@ -341,6 +383,19 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
     },
 
     tally: () => ({ ...tally }),
+
+    /**
+     * **这一笔是不是内核直接拒的、理由是哪一条**（U77 · 见契约 `PermissionGate.refusalOf`）。
+     *
+     * 与 `decide` **同一处产出**（同一次 `analyze`——纯机械分析，没有副作用，算两遍无妨）：
+     * 工具域据它挑那句话，**自己一个字都不解析**（域间不 import，它也不该会解析 shell）。
+     *
+     * ⚠️ **它只是"为什么"，不是"放不放"**：放不放由 `decide` 说了算，且那条路一律不放。
+     * 调用方**不该**拿这一位去替 `decide` 做判断（问了就是两次裁决）。
+     */
+    refusalOf(call, ctx) {
+      return analyze(call, ctx).refusal
+    },
   }
 }
 

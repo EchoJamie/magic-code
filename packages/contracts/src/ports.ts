@@ -135,6 +135,23 @@ export interface ToolRuntime {
 }
 
 /** 工具域 → 权限域。 */
+/**
+ * **内核直接拒的那一笔，为什么**（U77）——工具域据它给模型一句有用的话。
+ *
+ * `rm` 那类**不再"问"，而是直接拒**（设计 · 工具执行与权限「`rm` 直接拒，指路 `trash`」）：
+ * 拒的理由是**这一类不可逆**，不是"你该问我"——故**回执不能只说一句「已拒绝」**，
+ * 它得说出为什么、以及**该用什么**。理由分两支，两支的措辞不同：
+ *
+ * - `irreversible`——这一类**不可逆**，但有**可逆的替代**（`trash`：进废纸篓、能捞回）
+ *   ⇒ 回执**要指路**；
+ * - `no-substitute`——它**要的就是不可逆**（`shred` / `srm`：覆盖掉就收不回）
+ *   ⇒ 回执**不给替代**（换个更弱的做法糊过去，等于没照它办）。
+ *
+ * ⚠️ **只是"理由"，不是"要不要放行"**：放不放由闸门自己定，且**一律不放**
+ * （连 `--allow-all` 也放不动它——那一档只动「问不问」那一维）。
+ */
+export type RefusalKind = 'irreversible' | 'no-substitute'
+
 export interface PermissionGate {
   /**
    * 请裁决。
@@ -145,6 +162,17 @@ export interface PermissionGate {
    * 不设哨兵兜底：静默的 `-1` 比缺参更坏，接线漏了应当在**编译期**就报。
    */
   decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
+  /**
+   * **这一笔是不是内核直接拒的，理由是哪一条**（U77）——工具域据此措辞。
+   *
+   * 为什么单开一口：裁决只回 `approve` / `reject` 两字，而**「用户拒」与「内核拒」
+   * 要说的不是同一句话**——后者得告诉模型**该用什么**（见 `RefusalKind`）。
+   * 口径与 `decide` 同一处产出（同一次机械分析），**工具域不自己判**（它不解析命令）。
+   *
+   * **可选**：不给这一口（旧实现 / 只验裁决的替身）＝工具域只说那句泛泛的
+   * 「已拒绝——未执行」，与加它之前一字不差。
+   */
+  refusalOf?(call: ToolCall, ctx: PermissionContext): RefusalKind | undefined
   /**
    * 控制域答复路由至此。
    *

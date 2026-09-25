@@ -115,7 +115,7 @@ describe('U49 · 接回（真窗口）', () => {
     // ⇒ 下面「那一件工具真跑了一次（结果在屏上）」那条判据的锚一个字不用换。
     const fixture = startFixture({
       turns: [
-        { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build && echo u49-只跑一次' } },
+        { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 . && echo u49-只跑一次' } },
         { kind: 'text', text: '跑完了' },
       ],
     })

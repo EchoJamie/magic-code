@@ -52,17 +52,24 @@ import { commitGrants } from '../src/grants-file.ts'
 import { eventsOfKind, makeStage, type Stage } from './support.ts'
 
 /**
- * 一条**判重的**执行命令（名单第一类 · 删除）——U76 起只有它这一类还会弹卡。
+ * 一条**判重的**执行命令（**名单里剩下的那一条**：改权限 · `exec:system`）。
  *
  * ⚠️ **判轻的不能当 fixture**（`echo` / `ls` 从前是这么用的）：默认通之后它们**不问**，
  * 于是「等闸门问了一次」就成了等一个永远不来的东西——本文件改 fixture 时实打实踩过。
+ * ⚠️ **删除也不能当 fixture 了**（U77）：它**直接拒**（不给「总是允许」），
+ * 于是「等一张卡」同样成了等一个永远不来的东西。
  */
-const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'rm -rf build' } }] }
+const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
 /**
- * 另一条**判重的**——**名单第二类**（改权限）。**操作类型**与上一条不同，
- * 故两次「总是允许」凝出的授权**不是同一条**（「两条都留着」那句断言要的就是这个）。
+ * 另一条**判重的**——换**一件工具**（`write`：新建还是覆盖判不出 ⇒ 必闸）。
+ *
+ * ⚠️ **U77 换的**：从前这第二条是**删除**（`rm`），与改权限的**操作类型不同**
+ * ⇒ 两次「总是允许」凝出的是**两条不同的授权**（「两条都留着」那几句断言要的就是这个）。
+ * 如今删除那一类不给授权，而 `exec` 上判重的只剩改权限一族（操作类型都叫 `system`）
+ * ⇒ 改从**另一件工具**取第二条授权。这样两条授权**仍然不同**（`exec:system` /
+ * `write:overwrite`），那几句断言的劲儿一点没松。
  */
-const PERMISSION_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 600 f' } }] }
+const PERMISSION_TURN = { toolCalls: [{ name: 'write', args: { path: 'f.txt', content: 'x' } }] }
 /**
  * 一次**判重却带域名**的调用（取网页）——「撤销不得被复活」那一条的自动放行靠它。
  *
@@ -133,7 +140,7 @@ function stored(path: string): StoredFile {
  *
  * 为什么不用旧的 `grant.tool`：U76 之后判重的命令只剩删除 / 改权限两族，两条 fixture
  * **都是 `exec`** ——只看工具名，两条规则与一条规则长得一模一样（那就等于把断言放宽了）。
- * 操作类型那一格才是这两条的区别所在（`exec:delete` / `exec:system`）。
+ * 操作类型那一格才是这两条的区别所在（这一版里两条夹具**都落在** `exec:system` 上）。
  */
 function idsIn(path: string, section: string): string[] {
   return (stored(path).workspaces[section] ?? [])
@@ -224,13 +231,13 @@ describe('U47 · 授权文件：多个写入者不互相覆盖', () => {
       await until(() => eventsOfKind(first.shell.events, 'tool.result').length >= 1, '第一条跑完')
 
       const section = first.assembly.workspaceRoots[0] as string
-      expect(idsIn(path, section)).toEqual(['exec:delete'])
+      expect(idsIn(path, section)).toEqual(['exec:system'])
 
       second.shell.answer(second.shell.requests[0] as number, { remember: true })
       await until(() => eventsOfKind(second.shell.events, 'tool.result').length >= 1, '第二条跑完')
 
       // **两条都在**——旧实现（整份快照覆写）到这儿只剩后写的那一条
-      expect(idsIn(path, section)).toEqual(['exec:delete', 'exec:system'])
+      expect(idsIn(path, section)).toEqual(['exec:system', 'write:overwrite'])
 
       first.shell.dispose()
       second.shell.dispose()
@@ -305,7 +312,7 @@ describe('U47 · 授权文件：撤销不得被复活', () => {
 
       // 持旧账本的那一方**再写一次**（换一条规则）——它内存里那条 G1 不许跟着回来
       const again = await allowOnce(stage, [DELETE_TURN, { text: '好' }], path)
-      expect(idsIn(path, section)).toEqual(['exec:delete'])
+      expect(idsIn(path, section)).toEqual(['exec:system'])
 
       // 收尾（把攒着的命中记账补落）——旧实现到这儿会拿**整份快照**把 G1 写回来
       held.shell.dispose()
@@ -314,7 +321,7 @@ describe('U47 · 授权文件：撤销不得被复活', () => {
       again.assembly.close()
 
       // 那一笔补落的记账找的是**在册的** G1：它已经不在了，于是整条落空（不建节、不复活）
-      expect(idsIn(path, section)).toEqual(['exec:delete'])
+      expect(idsIn(path, section)).toEqual(['exec:system'])
     } finally {
       stage.dispose()
     }
@@ -485,7 +492,7 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
 
       // **第一轮那条也在**——没写成的攒到了下一次，不是丢了
       const section = assembly.workspaceRoots[0] as string
-      expect(idsIn(path, section)).toEqual(['exec:delete', 'exec:system'])
+      expect(idsIn(path, section)).toEqual(['exec:system', 'write:overwrite'])
 
       shell.dispose()
       assembly.close()

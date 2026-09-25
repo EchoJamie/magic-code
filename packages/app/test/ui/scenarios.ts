@@ -375,7 +375,7 @@ const modelStreamApproval: Scenario = {
     // 第二段把 `hello-magic` 那串输出原样留着，故下面「结果行」与「记录库」两条判据的锚
     // **一个字都不用换**（`echo hello-magic` 也仍在卡上的命令分解里，见「给了实际业务参数」）。
     const turns: readonly FixtureTurn[] = [
-      { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build && echo hello-magic' } },
+      { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 . && echo hello-magic' } },
       { kind: 'text', text: streamed, chunks: 4, chunkDelayMs: 220 },
     ]
     const session = await ui.open({
@@ -580,7 +580,7 @@ const mcpApproval: Scenario = {
         // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的不弹卡，
         // 「先等一张卡、再批准」那两步没有对象；**新锚**：名单里的删除打头，`内置照常`
         // 那串输出原样留在第二段 ⇒ 下面「结果行」那条判据的锚一个字不用换。
-        { kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build && echo 内置照常' } },
+        { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 . && echo 内置照常' } },
         { kind: 'text', text: '好' },
       ],
       config: {

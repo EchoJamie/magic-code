@@ -23,6 +23,16 @@
  * ⚠️ **没有一条判据被删掉**：路径模式、操作类型、工具名 `*`、声明原形那些匹配规则
  * 一条不少，只是**观察面**从"问没问"换成了"材料里那句话"。
  *
+ * ## ⚠️ U77 又换了一次观察面（2026-09-25 · 删除改成"直接拒"）
+ *
+ * 删除那一类**不问、直接拒**（设计 · 权限「`rm` 直接拒，指路 `trash`」）⇒ 判重的
+ * **只剩改权限那一族**。那件事把上面那条路也**堵死了**：改权限**不产出影响面词条**
+ * （`WRITE_OPS` 不含 `system`）⇒ `matchesPath` 没有对象可比。
+ *
+ * ⇒ **匹配判据改成直取 `matchRule`**（面由真 `analyze` 给，匹配本身单独判）——
+ * 测的就是匹配器，比借 gate 的旁证更准；而「名单即禁区」那一组**劈成两半**：
+ * 改权限那半照旧（问了、被否决），删除那半改成「**最宽的规则也没有卡可弹**」。
+ *
  * 一切经**契约面**：注入 `EventSink` / `EventStamper`，读回事件与返回值——
  * 除 `parseRules` / `analyze`（都是公开面本件）外，测试不碰域内部件。
  */
@@ -30,6 +40,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Decision, PermissionContext, ToolCall } from '@magic/contracts'
 import { analyze, createPermissionGate, parseRules, type PermissionRule } from '../src/index.ts'
+import { matchRule } from '../src/rules.ts'
 import type { GrantLedger } from '../src/grants.ts'
 import { call, context, harness, ledger, type EventOf, type Harness } from './helpers.ts'
 
@@ -148,18 +159,28 @@ function autoVerdicts(h: Harness): readonly EventOf<'tool.decision'>[] {
 const ANYTHING: readonly PermissionRule[] = [{ tool: '*' }]
 
 /**
- * **规则命中了吗**——判重的调用上只有**材料**看得出（命中即多一句「被名单否决」）。
+ * **规则命中了吗**——**直取匹配器**。
  *
- * `hit` 这件事在判轻的调用上已经不改变任何行为（默认通），故匹配判据**改从这里读**：
- * 拿一条**判重**的命令（`rm`）当探针，规则命中 ⇒ 材料里那句 `被必闸禁区否决`。
+ * ## 为什么不再借"判重探针"读（U77 换的）
+ *
+ * 从前这条靠旁证：拿一条**判重**的命令当探针，命中规则 ⇒ 卡的材料里多一句
+ * 「被必闸禁区否决」。U77 之后那条路**窄到走不通**——
+ *
+ * - 删除那一类**直接拒**（连卡都不出，材料没人读）；
+ * - 判重的只剩**改权限那一族**，而它**不产出影响面词条**（`WRITE_OPS` 不含 `system`）
+ *   ⇒ **路径模式那一格压根无从比对**（`matchesPath` 要 `landings`）。
+ *
+ * ⇒ 改成直取 `matchRule`：**面**（工具 / 操作 / 影响面 / 域名）由真 `analyze` 给，
+ * **匹配本身**单独判。这比借 gate 的旁证更准（测的就是匹配器），也少一层依赖。
+ * 面用 `mv` 那类**会动盘、产得出落点**的命令构造（本组不关心轻重——`matchRule` 也不看它）。
  */
 async function hitRule(
   cmd: string,
   rules: readonly PermissionRule[],
   ctx: PermissionContext = context(),
 ): Promise<boolean> {
-  const result = await pass(call('exec', { cmd }), rules, ctx)
-  return (result.request?.data.material ?? '').includes('被必闸禁区否决')
+  const analysis = analyze(call('exec', { cmd }), ctx)
+  return matchRule(rules, { tool: 'exec', ops: analysis.ops, landings: analysis.landings }, ctx) !== undefined
 }
 
 // ══ 判据 · 默认通（U76：链的底换了）══════════════════════════════════
@@ -193,7 +214,7 @@ describe('默认通——判轻的**不必配规则**也不问', () => {
   })
 
   test('判重的**照问**——那条路规则够不着（除"按域名"那一处，见 U72 的用例）', async () => {
-    const result = await pass(call('exec', { cmd: 'rm -rf build' }), [{ tool: 'exec', op: 'delete' }])
+    const result = await pass(call('exec', { cmd: 'chmod 600 build' }), [{ tool: 'exec', op: 'system' }])
 
     expect(result.asked).toBe(true)
     expect(result.request?.data.weight).toBe('heavy')
@@ -202,49 +223,49 @@ describe('默认通——判轻的**不必配规则**也不问', () => {
 
 // ══ 判据 · 规则匹配的判据（借"命中了没"来读）═════════════════════════
 
-describe('规则匹配——工具 × 路径模式 × 操作类型（借判重的探针读）', () => {
+describe('规则匹配——工具 × 路径模式 × 操作类型（直取匹配器）', () => {
   test('路径模式命中才算——模式之外的路径不命中', async () => {
-    const rules: readonly PermissionRule[] = [{ tool: 'exec', path: 'build/**', op: 'delete' }]
+    const rules: readonly PermissionRule[] = [{ tool: 'exec', path: 'build/**', op: 'move' }]
 
-    expect(await hitRule('rm -rf build/a.o', rules)).toBe(true)
-    expect(await hitRule('rm -rf dist/a.o', rules)).toBe(false)
+    expect(await hitRule('mv build/a.o /tmp/x', rules)).toBe(true)
+    expect(await hitRule('mv dist/a.o /tmp/x', rules)).toBe(false)
   })
 
   test('操作类型命中才算——同一工具的另一类操作不命中', async () => {
     const rules: readonly PermissionRule[] = [{ tool: 'exec', path: '**', op: 'read' }]
 
-    expect(await hitRule('rm -rf build', rules)).toBe(false) // 本次是删除，不是只读
-    expect(await hitRule('rm -rf build', [{ tool: 'exec', path: '**', op: 'delete' }])).toBe(true)
+    expect(await hitRule('mv a b', rules)).toBe(false) // 本次是移动，不是只读
+    expect(await hitRule('mv a b', [{ tool: 'exec', path: '**', op: 'move' }])).toBe(true)
   })
 
   test('工具名 `*` ＝任意工具；路径与操作类型缺省＝根内 · 任意', async () => {
-    expect(await hitRule('rm -rf build', ANYTHING)).toBe(true)
-    expect(await hitRule('rm -rf build', [{ tool: 'read' }])).toBe(false) // 别的工具名
+    expect(await hitRule('mv a b', ANYTHING)).toBe(true)
+    expect(await hitRule('mv a b', [{ tool: 'read' }])).toBe(false) // 别的工具名
   })
 
   test('路径缺省＝**根内**——根外那条规则够不着', async () => {
     // `/etc/hosts` 在根外：写明了 `/etc/**` 的规则才命中（用户写明的地方才是用户的意图）
-    expect(await hitRule('rm -f /etc/hosts', [{ tool: 'exec' }])).toBe(false)
-    expect(await hitRule('rm -f /etc/hosts', [{ tool: 'exec', path: '/etc/**' }])).toBe(true)
+    expect(await hitRule('mv /etc/hosts /tmp/x', [{ tool: 'exec' }])).toBe(false)
+    expect(await hitRule('mv /etc/hosts /tmp/x', [{ tool: 'exec', path: '/etc/**' }])).toBe(true)
   })
 
   test('规则声明的操作类型须**覆盖本次调用的全部**——复合命令的每一段都算数', async () => {
-    expect(await hitRule('cd x && rm -rf build', [{ tool: 'exec', op: 'delete' }])).toBe(false)
-    expect(await hitRule('cd x && rm -rf build', [{ tool: 'exec', op: ['delete', 'unknown'] }])).toBe(true)
+    expect(await hitRule('cd x && mv a b', [{ tool: 'exec', op: 'move' }])).toBe(false)
+    expect(await hitRule('cd x && mv a b', [{ tool: 'exec', op: ['move', 'unknown'] }])).toBe(true)
   })
 })
 
 // ══ 判据 · 名单即禁区（优先级：名单 ＞ 规则 ＞ 默认通）═══════════════
 
 describe('名单即禁区——任何规则不可放行（U76：名单只剩两条）', () => {
-  /** 名单那两条的一圈攻法：最宽的规则（任意工具 · 任意路径 · 任意操作）逐个碰。 */
+  /**
+   * 名单里那一条（**改权限 / 属主 / 属性 / ACL**）的一圈攻法：
+   * 最宽的规则（任意工具 · 任意路径 · 任意操作）逐个碰。
+   *
+   * ⚠️ **U77 起这一组只剩改权限那一族**：删除那一类**不再"问"**（直接拒），
+   * 故"规则命中也不放行"对它无从谈起——它归下面那一组。
+   */
   const GATED: readonly { readonly why: string; readonly cmd: string }[] = [
-    { why: '删除', cmd: 'rm -rf build' },
-    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
-    { why: '删除（shred）', cmd: 'shred secret.key' },
-    { why: '删除（隔着 `sudo`）', cmd: 'sudo rm -rf /tmp/x' },
-    { why: '删除（命令替换里的）', cmd: 'rm -rf $(cat targets.txt)' },
-    { why: '删除（越界）', cmd: 'rm /etc/hosts' },
     { why: '改权限（chmod）', cmd: 'chmod 777 secret.key' },
     { why: '改属主（chown）', cmd: 'chown root secret.key' },
     { why: '改 ACL（setfacl）', cmd: 'setfacl -m u:echo:r secret.key' },
@@ -260,6 +281,38 @@ describe('名单即禁区——任何规则不可放行（U76：名单只剩两�
     })
   }
 
+  /**
+   * **删除那一类：规则连"否决"的机会都没有**（U77）——它压根不走"问"那条路。
+   *
+   * 这是"名单即禁区"更强的一形：那一类**不是"规则够不着"**，是**根本没有卡可弹**
+   * ——最宽的规则（任意工具 · 任意路径 · 任意操作）碰上它，结果与没配规则时**一模一样**。
+   */
+  const REFUSED_ANYWAY: readonly { readonly why: string; readonly cmd: string }[] = [
+    { why: '删除', cmd: 'rm -rf build' },
+    { why: '删除（find -delete）', cmd: 'find . -name "*.log" -delete' },
+    { why: '删除（shred）', cmd: 'shred secret.key' },
+    { why: '删除（隔着 `sudo`）', cmd: 'sudo rm -rf /tmp/x' },
+    { why: '删除（命令替换里的）', cmd: 'rm -rf $(cat targets.txt)' },
+    { why: '删除（越界）', cmd: 'rm /etc/hosts' },
+  ]
+
+  for (const { why, cmd } of REFUSED_ANYWAY) {
+    test(`${why}：「${cmd}」——最宽的规则也**没有卡可弹**（照拒）`, async () => {
+      const result = await pass(call('exec', { cmd }), ANYTHING)
+
+      expect(result.asked, '不问').toBe(false)
+      expect(result.h.countOf('tool.decision.request')).toBe(0)
+      expect(result.verdict, '照拒').toBe('reject')
+
+      // ⚠️ 落的那一条裁决是 `reject` + `decider: 'auto'`——**这一笔在"自动放行"那本账上
+      // 会被算进去**（`DecisionHistory.auto` 的口径是「没问就……」）。账的失真如实记在
+      // 回报的限度里；事件上 `decision: 'reject'` 分得开，故库里仍读得回来。
+      const made = result.h.eventsOf('tool.decision')[0]
+      expect(made?.data.decision).toBe('reject')
+      expect(made?.data.decider).toBe('auto')
+    })
+  }
+
   test('工具侧的判重同理：write 恒重——规则放不了它', async () => {
     const result = await pass(call('write', { path: 'src/a.ts', content: 'x' }), ANYTHING)
 
@@ -268,9 +321,9 @@ describe('名单即禁区——任何规则不可放行（U76：名单只剩两�
   })
 
   test('两条路径不许分叉——规则说放、`analyze` 说入名单 ⇒ **必须问**', async () => {
-    // 同一个调用：规则三格全命中（工具 exec · 路径根内 · 操作不设限），`analyze` 判「删除（不可逆）」
-    const result = await pass(call('exec', { cmd: 'rm -rf build' }), [
-      { tool: 'exec', path: '**', op: ['read', 'create', 'delete'] },
+    // 同一个调用：规则三格全命中（工具 exec · 路径根内 · 操作不设限），`analyze` 判「系统级（改权限）」
+    const result = await pass(call('exec', { cmd: 'chmod 600 build' }), [
+      { tool: 'exec', path: '**', op: ['read', 'create', 'system'] },
     ])
 
     expect(result.asked).toBe(true)
@@ -353,10 +406,10 @@ describe('声明原形（U22）——落点认两张表', () => {
   })
 
   test('规则那一路也认两张表——写规范形的模式命中声明原形的落点', async () => {
-    const rules: readonly PermissionRule[] = [{ tool: 'exec', path: '/private/tmp/proj/**', op: 'delete' }]
+    const rules: readonly PermissionRule[] = [{ tool: 'exec', path: '/private/tmp/proj/**', op: 'move' }]
 
-    expect(await hitRule('rm -rf /tmp/proj/build', rules, MAC())).toBe(true)
-    expect(await hitRule('rm -rf /tmp/elsewhere/build', rules, MAC())).toBe(false)
+    expect(await hitRule('mv /tmp/proj/build /tmp/x', rules, MAC())).toBe(true)
+    expect(await hitRule('mv /tmp/elsewhere/build /tmp/x', rules, MAC())).toBe(false)
   })
 
   test('材料说得出「是按声明原形认的」——身份报规范形，写法报用户认得的那个', () => {
@@ -464,13 +517,21 @@ describe('「总是允许」——落点是工作区', () => {
     expect((await elsewhere.through(fetchTo('https://example.com/b'))).asked).toBe(true)
   })
 
-  test('授权**也是一种规则**——名单那两条照样被否决（在删除上选「总是允许」不生效）', async () => {
+  test('授权**也是一种规则**——名单里那一条照样被否决（在改权限上选「总是允许」不生效）', async () => {
     const s = session(here())
-    expect((await s.through(call('exec', { cmd: 'rm -rf build' }), 'approve', true)).asked).toBe(true)
+    expect((await s.through(call('exec', { cmd: 'chmod 600 secret.key' }), 'approve', true)).asked).toBe(true)
 
-    const again = await s.through(call('exec', { cmd: 'rm -rf dist' }))
+    const again = await s.through(call('exec', { cmd: 'chmod 400 secret.key' }))
     expect(again.asked).toBe(true)
     expect(again.material).toContain('禁区') // 而且说得出为什么还问
+  })
+
+  test('**授权在删除那一类上更无从谈起**（U77）——它连卡都不出，没有"总是允许"可点', async () => {
+    const s = session(here())
+    const again = await s.through(call('exec', { cmd: 'rm -rf build' }))
+
+    expect(again.asked).toBe(false)
+    expect(again.verdict).toBe('reject')
   })
 
   test('拒绝带 remember 位＝不记——规则的条目只有「允许」这一形', async () => {
@@ -559,7 +620,7 @@ describe('度量仍准——`elapsedMs` 的口径', () => {
   test('人工路径同一把尺子——本域开始处理 → 答复，人在闸门前停留的时间算在里面', async () => {
     const { gate, h, advance } = ticking(5, undefined)
 
-    const verdict = gate.decide(call('exec', { cmd: 'rm -rf build' }), context(), 1)
+    const verdict = gate.decide(call('exec', { cmd: 'chmod 600 secret.key' }), context(), 1)
     const request = h.eventsOf('tool.decision.request')[0]
     if (request === undefined) throw new Error('未发询问事件')
 

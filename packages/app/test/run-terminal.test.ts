@@ -240,7 +240,7 @@ describe('U48-S5 · 终端是客户端', () => {
     // ⚠️ **原锚**：`exec echo hi`（判轻）；**为何变**（U76）：判轻的调用**默认通、不弹卡**
     // ——这一条要的正是一张**悬着的卡**，夹具换成**名单里**的删除（必问，且没人答它）；
     // **新锚**：卡落在**重**那一档，右位键位是 `y / n`（见下）。
-    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'rm -rf build' } }] })
+    const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     let window: UiSession | undefined
 

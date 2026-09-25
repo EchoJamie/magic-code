@@ -10,7 +10,7 @@
  * （别再各写一份，两份迟早对不上）。
  */
 
-import type { BackgroundRuns, BlobStore, OutputDelta, WorkspaceService } from '@magic/contracts'
+import type { BackgroundRuns, BlobStore, OutputDelta, RefusalKind, WorkspaceService } from '@magic/contracts'
 import type {
   FauxDecider,
   FauxExecScript,
@@ -59,6 +59,13 @@ export type ToolDepsOptions = {
    * 而那正是「旧装配一字不动」要保的姿势——多数用例只管前台，不必为此拖一个桩进来。
    */
   readonly background?: BackgroundRuns
+  /** **这台机器上有没有 `trash`**（U77）——缺省 `false`（工单：不许假装它一定在）。 */
+  readonly trashAvailable?: boolean
+  /**
+   * **让替身闸门"内核直接拒"**（U77）——给了就 `decide` 答 `reject`、`refusalOf` 回这一条。
+   * 缺省不给＝照旧（`decider` 那一档说了算）。
+   */
+  readonly refusal?: RefusalKind
 }
 
 /** 一束现成的替身——多数用例照这样拼。铸造器**一束一份**（信封同源）。 */
@@ -80,7 +87,10 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
   const gate =
     options.decider === 'manual'
       ? makeFauxPermissionGate()
-      : makeFauxPermissionGate({ auto: options.decider ?? 'approve' })
+      : makeFauxPermissionGate({
+          ...(options.refusal === undefined ? {} : { refusal: options.refusal }),
+          ...(options.refusal === undefined ? { auto: options.decider ?? 'approve' } : {}),
+        })
   const sink = makeFauxSink()
   const records = makeFauxRecords()
   const workspace = makeFauxWorkspace({ root: ROOT })
@@ -94,6 +104,9 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
     blobs: options.blobs ?? records.blobs,
     ...(options.tools === undefined ? {} : { tools: options.tools }),
     ...(options.background === undefined ? {} : { background: options.background }),
+    // U77：这台机器上有没有 `trash`（真装配会探一次）——缺省按"没有"，
+    // 要判"指路 `trash`"那句话的用例显式给 `true`
+    trashAvailable: options.trashAvailable ?? false,
   })
 
   return { stamper, sandbox, gate, sink, records, workspace, runtime }

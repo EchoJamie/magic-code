@@ -490,6 +490,8 @@ describe('U33 · 模型自主选用：走真工具通路', () => {
         // 免得将来那一格真用上路径判据时，这里悄悄测的是一份空语境。
         { roots: [root], declaredRoots: [root], defaultRoot: root },
       )
+      // ⚠️ `Analysis` 是判别联合（U77）：先确认它不是"直接拒"那一形，才读得到 `weight`
+      if (skillFace.refusal !== undefined) throw new Error('技能读取不该被拒')
       expect(skillFace.weight).toBe('light')
       expect(skillFace.material).toContain('只读材料')
 
@@ -922,13 +924,14 @@ describe('U33 · 边界不越', () => {
       const target = join(stage.workspace, 'built.txt')
       const assembly = stage.assemble({
         turns: [
-          // 模型读了技能，然后照它说的跑一条**工作区外的删除**
+          // 模型读了技能，然后照它说的跑两条：一条**删除**（内核直接拒）、一条**改权限**（照问）
           { toolCalls: [{ name: 'skill', args: { name: 'risky' } }] },
           { toolCalls: [{ name: 'exec', args: { cmd: `rm -f ${target}` } }] },
+          { toolCalls: [{ name: 'exec', args: { cmd: `chmod 600 ${target}` } }] },
           { text: '好' },
         ],
       })
-      // 无人值守替人答复：**读技能放行、跑命令拒绝**——「allowed-tools 不改审批」的判据看它
+      // 无人值守替人答复：**改权限那一条拒绝**——「allowed-tools 不改审批」的判据看它
       const shell = attachShell(assembly.shell, {
         decide: (request) => (request.name === 'exec' ? 'reject' : 'approve'),
       })
@@ -937,19 +940,22 @@ describe('U33 · 边界不越', () => {
 
       // 技能主文确实进了上下文（模型读得到那句「跑 rm -rf」）
       expect(requestText(stage, 1)).toContain('收拾干净')
-      // 但那条 exec **照旧被问了**（技能里写着 `allowed-tools: Bash(rm:*)` 一点也不管用）
+      // 但技能里写着 `allowed-tools: Bash(rm:*)` **一点也不管用**：
       //
-      // ⚠️ **原锚**：`['skill', 'exec']`——读技能那一下也在问；**为何变**（U76）：`skill`
-      // 判轻 ⇒ 默认通、不过闸（并进「不留卡」那一档），名单里的删除**照问**；**新锚**：
-      // 问的只有 `exec` 那一条，且它落在**重**档——「allowed-tools 不改审批」这句话
-      // 一个字没变，变的只是「读技能本来就不该问」。
+      // ⚠️ **U77 换的锚**：删除那一条**内核直接拒**（连卡都不出——技能怎么写都改不了它），
+      // 而改权限那一条**照旧过闸**（落在**重**档）——两半一起看，才是「审批归内核」。
       const asked = eventsOfKind(shell.events, 'tool.decision.request')
       expect(asked.map((event) => event.data.name)).toEqual(['exec'])
       expect(asked.map((event) => event.data.weight)).toEqual(['heavy'])
-      // 而且被拒绝了 = 没执行（判据看的是「零副作用」与结果：文件不在，结果是失败）
+
+      // 三发各有着落：读技能成了；删的那条**被拒没跑**；改权限那条**被替身拒了也没跑**
       const results = eventsOfKind(shell.events, 'tool.result')
-      expect(results.map((event) => event.data.ok)).toEqual([true, false])
+      expect(results.map((event) => event.data.ok)).toEqual([true, false, false])
       expect(existsSync(target)).toBe(false)
+
+      // 被拒的那一条，回执里说得出**该用什么**（U77：只拒不说，模型只会换着花样再试）
+      const refused = (results[1]?.data.output as { text?: string } | undefined)?.text ?? ''
+      expect(refused).toContain('trash')
 
       assembly.close()
     } finally {
