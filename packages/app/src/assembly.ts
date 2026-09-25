@@ -65,6 +65,7 @@ import type {
   ProcessLedger,
   RecordsService,
   WebFetchConfig,
+  WebFetchSetRequest,
   WebSource,
   RulesLoad,
   RulesProblem,
@@ -140,7 +141,7 @@ import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { ConfigError, loadConfig } from './config.ts'
 import { saveAttachmentFile } from './attachment-file.ts'
-import { removeProvider, saveProvider, setModelDefault } from './config-save.ts'
+import { removeProvider, saveProvider, setModelDefault, setWebFetch } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
@@ -2052,6 +2053,9 @@ export function assemble(options: AssembleOptions): Assembly {
       // 不拿列表第一项当成「当前」（设计明文）
       ...(current === undefined ? {} : { current }),
       ...(currentBudget === undefined ? {} : { currentInputBudget: currentBudget }),
+      // 「取网页」用谁（U78）——**与 `current` 各说各的**：那是当前会话，这一位是那一件工具。
+      // 空着＝还没配（**不拿 `current` 顶上**——那正是这一格要消掉的静默回落）。
+      ...(webFetchConfig === undefined ? {} : { webFetch: webFetchConfig }),
     }
   }
 
@@ -2160,6 +2164,48 @@ export function assemble(options: AssembleOptions): Assembly {
 
     const rebuilt = rebuildRegistry()
     listModels(rebuilt.ok ? undefined : rebuilt.reason)
+  }
+
+  /**
+   * **取网页用的模型**（U78）——落盘 → 换内存真源；**会话的模型一个字都不动**。
+   *
+   * 与 `setDefaultModel` 同一条路（写失败保留原样、缘由交回答复），差别只有写哪一格：
+   * 那条写「新建会话的默认」（`defaultProvider` ＋ `providers.<id>.model`），这条写
+   * **取网页那一件工具**用谁。故这里**不重建注册表**——取网页那一侧读的是 `webFetchConfig`
+   * 这个变量（`distiller` 那个 thunk 每次调用现取），换了它下一趟就生效。
+   *
+   * 回话带一句 `note`：那一屏（`/config` 或 `/model`）据它留一行回执——
+   * 「保存是显式动作」，动作做了就得看得见（否则回车一下屏上什么都不动，是最难查的那一形）。
+   */
+  const setWebFetchModel = (request: WebFetchSetRequest): void => {
+    const outcome = setWebFetch({
+      path: loaded.path,
+      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      request,
+    })
+    if (!outcome.ok) {
+      listModels(outcome.reason)
+      return
+    }
+
+    configMtime = mtimeOf(loaded.path)
+    // **现读的那一方立刻对得上**（U72 那条注点名要在这儿同步）：下一趟 `web_fetch` 就通了，
+    // 不必重启——「配好之后接着说一句就能继续」那一步落在这里。
+    webFetchConfig = { provider: request.provider, model: request.model }
+
+    listModels(`取网页用的模型：${webFetchLabel(request)}`)
+  }
+
+  /**
+   * 回执里那一对怎么念——**与 `/config` 那一行同一个取法**（模型名取缓存里的显示名、
+   * 连接名取 `name ?? id`）：两处各取一套的话，屏上那一行会与刚做完的那一下对不上。
+   * 缓存里没有它（兼容接入 / 还没取过列表）⇒ **照实报精确 id**，不拿别的顶上。
+   */
+  const webFetchLabel = (pick: WebFetchSetRequest): string => {
+    const connection = providerBook[pick.provider]?.name ?? pick.provider
+    const info = knownModelOf(pick.provider, pick.model)
+
+    return `${info?.name ?? pick.model} · ${connection}`
   }
 
   /**
@@ -2300,6 +2346,8 @@ export function assemble(options: AssembleOptions): Assembly {
     // 后两条走 `model.catalog`（用户按一下就该看到那一屏的新样子）。
     onModelRefresh: (provider) => void refreshModels(provider),
     onModelDefaultSet: (request) => setDefaultModel(request),
+    // 「取网页」的提炼模型（U78）——同一条路（写盘归装配）——答复也走 `model.catalog`
+    onWebFetchSet: (request) => setWebFetchModel(request),
     onProviderList: () => listProviders(),
     onProviderSave: (request) => saveProviderCommand(request),
     onProviderRemove: (provider) => removeProviderCommand(provider),

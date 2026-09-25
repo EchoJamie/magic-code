@@ -155,6 +155,12 @@ export function createControlHub(): ControlHubFace {
         // 控制域只带话：校验与落盘都在装配（同 `decision.answer` 的站位）。
         target.onModelDefaultSet(command)
         return
+      case 'webfetch.set':
+        // 「取网页」的提炼模型（U78）——写配置里 `webFetch` 那一格。控制域只带话：
+        // 校验与落盘都在装配（同 `model.default.set` 的站位）。
+        // ⚠️ **它不动会话的模型**：换的是那一件工具用谁（设计 · 网页与搜索那条「两处不能混」）。
+        target.onWebFetchSet(command)
+        return
       case 'provider.list':
         // 管理面的连接一览（U41 读侧）——**归装配**（配置与凭据的读取都在它那一层，
         // 同 `grants.list` 之于授权文件）。答复走事件（`provider.catalog`，不落库）。

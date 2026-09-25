@@ -31,6 +31,7 @@ import type {
   ProviderSaveRequest,
   SessionCommand,
   UserInput,
+  WebFetchSetRequest,
 } from './control.ts'
 import type {
   Content,
@@ -1670,6 +1671,15 @@ export type CommandRoutes = {
    * 两条**不做同一件事**，也不互相代劳。
    */
   onModelDefaultSet(request: ModelDefaultRequest): void
+  /**
+   * **取网页的提炼模型**（U78）→ **装配**（配置的写落点在它那一层，域不碰文件系统）。
+   *
+   * 与 `onModelDefaultSet` 的分别：那条写的是**新建普通会话**的默认，这条写的是
+   * **取网页那一件工具**用谁——两条都写盘，但改的是配置里不同的两格，互不代劳。
+   * 答复照走 `model.catalog`（带新的 `webFetch` 与一句 `note`）——那一屏与 `/config`
+   * 那一行都读同一份读数，不必各自再问一次。
+   */
+  onWebFetchSet(request: WebFetchSetRequest): void
   /**
    * **管理面的连接一览**（U41）→ **装配**（它握着配置与凭据的读取）。
    *

@@ -328,6 +328,43 @@ export type ModelDefaultRequest = {
 }
 
 /**
+ * **取网页的提炼模型**（U78）——把「这一件工具用哪个模型」写进配置。
+ *
+ * 出处：设计 · 网页与搜索「提炼用哪个模型（2026-09-25 用户定：**在 `/config` 里挑**）」——
+ * `/config` 那一行选中 ⇒ 进模型选择器（复用 `/model` 那一套），选定即**保存**。
+ *
+ * ## 与 `model.switch` / `model.default.set` 都**不是**一件事
+ *
+ * 三条各改各的（三件的由头都写在各自那一行上，混成一条就会分不清「我刚才改的是哪一件」）：
+ *
+ * | 命令 | 改什么 | 写盘 |
+ * | --- | --- | --- |
+ * | `model.switch` | **当下这一轮**走谁 | 不写 |
+ * | `model.default.set` | **新建普通会话**的默认 | 写 |
+ * | `webfetch.set` | **取网页那一件工具**用一个模型提炼 | 写 |
+ *
+ * ⚠️ **不写回会话的模型**（工单要害之一）：作用范围就是这一件工具。用户在那儿挑一个
+ * 便宜的小模型，当前会话照旧走它原来那条——**两者混成一位**，「这一趟用了哪个模型」
+ * 就只靠猜了，那正是 `webFetch` 这一格要消掉的事。
+ *
+ * ⚠️ **它不碰 `providers` 与 `defaultProvider`**：只写 `webFetch` 那一格（见 `WebFetchConfig`）。
+ */
+export type WebFetchSet = { readonly type: 'webfetch.set' } & WebFetchSetRequest
+
+/**
+ * `webfetch.set` 的负载——命令负载与路由入参同一形态（同 `ModelDefaultRequest` 之例）。
+ *
+ * **两件都要**（连接 ＋ 精确模型 id）：只写型号不写连接，同名型号落在哪一家就说不清
+ * （供应商型号空间各不相干）——同 `WebFetchConfig` 那一条。
+ */
+export type WebFetchSetRequest = {
+  /** 连接 id（`providers` 的键）——须是已有的那一条（落盘时点名校验）。 */
+  readonly provider: string
+  /** **精确模型 id**（供应商原始 id）——不是型号族名。 */
+  readonly model: string
+}
+
+/**
  * `model.refresh`——**显式刷新意图**（U41）。
  *
  * 由头：自动检查走**有效期**（新鲜就用、过期先回旧缓存再后台刷），而用户有时明确要知道
@@ -494,7 +531,7 @@ export type McpReconnect = {
 
 /**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支）——外壳发往内核的全部消息。
+ * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set`）——外壳发往内核的全部消息。
  */
 export type Command =
   | InputSubmit
@@ -506,6 +543,7 @@ export type Command =
   | ModelList
   | ModelRefresh
   | ModelDefaultSet
+  | WebFetchSet
   | ProviderList
   | ProviderSave
   | ProviderRemove

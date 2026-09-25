@@ -27,6 +27,7 @@ const ENTER = { kind: 'enter' } as const
 const ESC = { kind: 'escape' } as const
 const DOWN = { kind: 'down' } as const
 const LEFT = { kind: 'left' } as const
+const RIGHT = { kind: 'right' } as const
 const BACKSPACE = { kind: 'backspace' } as const
 
 /** 起一台取景台——`/config` 第 4 行那三件（数据目录 · 家目录 · 工作区根）由入参给。 */
@@ -88,6 +89,8 @@ function open(
   over: {
     readonly entries?: readonly ModelCatalogRow[]
     readonly current?: ModelRef | null
+    /** 「取网页用的模型」那一格（U78）——不给＝**还没配**（答复上不给这一位）。 */
+    readonly webFetch?: ModelRef | null
     readonly grants?: EventDataOf['grants.catalog']
     readonly mcp?: EventDataOf['mcp.catalog']
   } = {},
@@ -102,6 +105,7 @@ function open(
         : over.current === null
           ? {}
           : { current: over.current }),
+      ...(over.webFetch === undefined || over.webFetch === null ? {} : { webFetch: over.webFetch }),
     }),
     event('grants.catalog', over.grants ?? GRANTS),
     event('mcp.catalog', over.mcp ?? MCP),
@@ -177,7 +181,13 @@ describe('`/config` · 开屏', () => {
 
     // 三份齐了才开
     stage.feed([event('grants.catalog', GRANTS), event('mcp.catalog', MCP)])
-    expect(labelsOf(stage)).toEqual(['模型与连接', '本工作区授权', '外部工具', '数据目录与工作区根'])
+    expect(labelsOf(stage)).toEqual([
+      '模型与连接',
+      '取网页用的模型', // U78 加的那一行（设计预留给它的就是这一格）
+      '本工作区授权',
+      '外部工具',
+      '数据目录与工作区根',
+    ])
     expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG)
   })
 
@@ -188,16 +198,22 @@ describe('`/config` · 开屏', () => {
     expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版')
     expect(valueOf(stage, '本工作区授权')).toBe('2 条')
     expect(valueOf(stage, '外部工具')).toBe('1 台')
-    // 第 4 行：家目录下那一截缩成 `~`（省那一格的地方），根只有一个就直接摆出来
+    // 末行：家目录下那一截缩成 `~`（省那一格的地方），根只有一个就直接摆出来
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · ~/ns/proj')
   })
 
-  test('**右列对齐**——四行的值在屏上起于同一列（布局那一关）', async () => {
+  test('**右列对齐**——五行的值在屏上起于同一列（布局那一关）', async () => {
     const stage = live()
-    open(stage)
+    open(stage, { webFetch: { provider: 'deepseek', model: 'deepseek-chat' } })
 
     const frame = await stage.screen({ columns: 100, rows: 30 })
-    const values = ['MiniMax-M3 · 个人版', '2 条', '1 台', '~/.magic · ~/ns/proj']
+    const values = [
+      'MiniMax-M3 · 个人版',
+      'DeepSeek Chat · 深度求索',
+      '2 条',
+      '1 台',
+      '~/.magic · ~/ns/proj',
+    ]
     const at = values.map((value) => {
       const line = frame.dock.find((one) => one.text.includes(value))
       return line === undefined ? -1 : line.text.indexOf(value)
@@ -265,7 +281,7 @@ describe('`/config` · 筛', () => {
     expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字')
     stage.press(BACKSPACE)
 
-    expect(labelsOf(stage)).toHaveLength(4)
+    expect(labelsOf(stage)).toHaveLength(5)
     expect(hintOf(stage)).toBe('回车＝进那一项')
     expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG) // 抽屉照旧开着
   })
@@ -293,7 +309,7 @@ describe('`/config` · 筛', () => {
 
     // 再开一次 ⇒ 全表（开一屏就是一屏新的，筛词不跟着活下来）
     open(stage)
-    expect(labelsOf(stage)).toHaveLength(4)
+    expect(labelsOf(stage)).toHaveLength(5)
     expect(hintOf(stage)).toBe('回车＝进那一项')
   })
 })
@@ -326,6 +342,8 @@ describe('`/config` · 选中即进那一屏', () => {
   test('「本工作区授权」⇒ `/grants` 那一屏；「外部工具」⇒ `/mcp` 那一屏（都是总览）', () => {
     const grants = live()
     open(grants)
+    // ⚠️ 两下：U78 起「取网页用的模型」排在第 1 行（「模型与连接」的下一行）
+    grants.press(DOWN)
     grants.press(DOWN)
     grants.press(ENTER)
     expect(grants.commands().at(-1)).toEqual({ type: 'grants.list' })
@@ -334,6 +352,7 @@ describe('`/config` · 选中即进那一屏', () => {
 
     const mcp = live()
     open(mcp)
+    mcp.press(DOWN)
     mcp.press(DOWN)
     mcp.press(DOWN)
     mcp.press(ENTER)
@@ -345,9 +364,7 @@ describe('`/config` · 选中即进那一屏', () => {
   test('「数据目录与工作区根」⇒ 自己那一屏：一块输出，报的是**没缩过的全路径**', () => {
     const stage = live()
     open(stage)
-    stage.press(DOWN)
-    stage.press(DOWN)
-    stage.press(DOWN)
+    for (let step = 0; step < 4; step += 1) stage.press(DOWN) // 末行（U78 起是第 5 行）
     stage.press(ENTER)
 
     // 收屏（回输入行），记录区里留一块
@@ -366,9 +383,7 @@ describe('`/config` · 选中即进那一屏', () => {
     // 列表那一格报个数（一格里摆不下两条全路径），它自己那一屏逐条写全
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根')
 
-    stage.press(DOWN)
-    stage.press(DOWN)
-    stage.press(DOWN)
+    for (let step = 0; step < 4; step += 1) stage.press(DOWN)
     stage.press(ENTER)
     expect(rowsOf(stage)).toEqual([
       '数据与工作区根',
@@ -387,7 +402,7 @@ describe('`/config` · 选中即进那一屏', () => {
 
     stage.press(LEFT)
     expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
-    expect(labelsOf(stage)).toHaveLength(4)
+    expect(labelsOf(stage)).toHaveLength(5)
   })
 })
 
@@ -395,20 +410,22 @@ describe('`/config` · 选中即进那一屏', () => {
 
 describe('`/config` · 那一格写什么（纯函数）', () => {
   const paths = { dataDir: '/d', home: '/home/echo', workspaceRoots: ['/home/echo/ws'] }
+  const base = {
+    paths,
+    models: ENTRIES,
+    current: CURRENT,
+    // 缺省＝**还没配**（U78 那一格；要验配上了的形就显式给一个）
+    webFetch: null,
+    grants: GRANTS,
+    mcp: MCP,
+    filter: '',
+  }
 
   const rowOf = (
     over: Partial<Parameters<typeof configRows>[0]> = {},
   ): Readonly<Record<string, string | undefined>> =>
     Object.fromEntries(
-      configRows({
-        paths,
-        models: ENTRIES,
-        current: CURRENT,
-        grants: GRANTS,
-        mcp: MCP,
-        filter: '',
-        ...over,
-      }).map((row) => [row.label.trim(), row.meta]),
+      configRows({ ...base, ...over }).map((row) => [row.label.trim(), row.meta]),
     )
 
   test('一条连接都没有 / 有连接却没选过模型——**两种「没有去向」分开说**', () => {
@@ -437,24 +454,196 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     ).toBe('/var/magic · /srv/ws')
   })
 
-  test('筛词空＝全表；筛不中＝空表（退到空就是全表）', () => {
-    expect(configRows({ paths, models: ENTRIES, current: CURRENT, grants: GRANTS, mcp: MCP, filter: '' })).toHaveLength(4)
-    expect(
-      configRows({ paths, models: ENTRIES, current: CURRENT, grants: GRANTS, mcp: MCP, filter: '没有这一项' }),
-    ).toEqual([])
+  test('筛词空＝全表（五行）；筛不中＝空表（退到空就是全表）', () => {
+    expect(configRows(base)).toHaveLength(5)
+    expect(configRows({ ...base, filter: '没有这一项' })).toEqual([])
   })
 
   test('每一行都**担保只占一行**（长值由渲染层截断——账与屏才不会分家）', () => {
-    for (const row of configRows({
-      paths,
-      models: ENTRIES,
-      current: CURRENT,
-      grants: GRANTS,
-      mcp: MCP,
-      filter: '',
-    })) {
-      expect(row.oneLine).toBe(true)
-    }
+    for (const row of configRows(base)) expect(row.oneLine).toBe(true)
+  })
+})
+
+// ══ 五 · 「取网页用的模型」那一行（U78）══════════════════════════════
+
+describe('`/config` · 取网页用的模型（U78）', () => {
+  const paths = { dataDir: '/d', home: '/home/echo', workspaceRoots: ['/home/echo/ws'] }
+  const CALL = { paths, models: ENTRIES, current: CURRENT, webFetch: null, grants: GRANTS, mcp: MCP, filter: '' }
+
+  const valueOf = (webFetch: ModelRef | null): string | undefined =>
+    configRows({ ...CALL, webFetch }).find((row) => row.label.trim() === '取网页用的模型')?.meta
+
+  test('**没配就写「还没配」**——不留空、不编一个默认（报错那句指的路就在这一行上）', () => {
+    expect(valueOf(null)).toBe('还没配')
+  })
+
+  test('配了就报那一对（形如 `模型名 · 连接名`）——与「模型与连接」同一套取法', () => {
+    expect(valueOf({ provider: 'deepseek', model: 'deepseek-chat' })).toBe('DeepSeek Chat · 深度求索')
+  })
+
+  test('那一对不在缓存里 ⇒ 照实报精确 id（不拿别的顶上）', () => {
+    expect(valueOf({ provider: 'minimax', model: '老的-01' })).toBe('老的-01 · 个人版')
+  })
+
+  test('⚠️ **它与「模型与连接」各是各的**——两格可以在不同的连接上', () => {
+    const rows = configRows({
+      ...CALL,
+      current: { provider: 'minimax', model: 'MiniMax-M3' },
+      webFetch: { provider: 'deepseek', model: 'deepseek-chat' },
+    })
+    const at = (name: string): string | undefined =>
+      rows.find((row) => row.label.trim() === name)?.meta
+
+    expect(at('模型与连接')).toBe('MiniMax-M3 · 个人版')
+    expect(at('取网页用的模型')).toBe('DeepSeek Chat · 深度求索')
+  })
+
+  test('筛「取网页」只筛得出它（名称与当前值两处都算数）', () => {
+    const rows = configRows({ ...CALL, filter: '取网页' })
+    expect(rows.map((row) => row.label.trim())).toEqual(['取网页用的模型'])
+
+    // 值那一格也参与筛（「还没配」这三个字打进去也找得到它）
+    expect(configRows({ ...CALL, filter: '还没配' }).map((row) => row.label.trim())).toEqual([
+      '取网页用的模型',
+    ])
+  })
+})
+
+// ══ 六 · 选中它 ⇒ 进模型选择器（**另一趟** · U78）═════════════════════
+
+describe('`/config` · 取网页那一趟的模型选择器（U78）', () => {
+  /** 走到那一行并按回车——末行项名是 `ANCHOR`，这里按**名称**找它那一行。 */
+  function openWebFetchPicker(
+    stage: Stage,
+    over: { readonly webFetch?: ModelRef | null } = {},
+  ): void {
+    open(stage, over.webFetch === undefined ? {} : { webFetch: over.webFetch })
+    stage.press(DOWN) // 第 1 行＝「取网页用的模型」（「模型与连接」的下一行）
+    stage.press(ENTER)
+    stage.feed([
+      event('model.catalog', {
+        entries: ENTRIES,
+        current: CURRENT,
+        ...(over.webFetch === undefined || over.webFetch === null ? {} : { webFetch: over.webFetch }),
+      }),
+    ])
+  }
+
+  test('进的是**模型那一屏**（与 `/model` 同一个 `source`）——不是另造一屏', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+
+    expect(stage.commands().at(-1)).toEqual({ type: 'model.list' })
+    expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'model' }))
+  })
+
+  test('**屏上说清作用对象**：取网页那一件，不动当前会话', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+
+    expect(hintOf(stage)).toContain('取网页用的模型')
+    expect(hintOf(stage)).toContain('当前会话的模型不受影响')
+    // ⚠️ `→` 在这一趟是空的 ⇒ 说明里**不提那个键**（报一个按下去没反应的键比不报更坏）
+    expect(hintOf(stage)).not.toContain('→ 看这条的详情')
+  })
+
+  test('「现在配的是谁」按**取网页那一格**找——不是当前会话那个', () => {
+    const stage = live()
+    openWebFetchPicker(stage, { webFetch: { provider: 'deepseek', model: 'deepseek-chat' } })
+
+    const rows = pickerOf(stage)?.rows ?? []
+    const marked = rows.filter((row) => row.current).map((row) => row.pick?.model)
+    expect(marked).toEqual(['deepseek-chat'])
+    // 光标落在它头上（不是从头起）
+    expect(rows[pickerOf(stage)?.selected ?? 0]?.pick?.model).toBe('deepseek-chat')
+  })
+
+  test('还没配 ⇒ 一行都不标「现在配的是它」，光标从头起', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+
+    const rows = pickerOf(stage)?.rows ?? []
+    expect(rows.some((row) => row.current)).toBe(false)
+    expect(pickerOf(stage)?.selected).toBe(0)
+  })
+
+  test('回车＝**保存**（`webfetch.set`）——不是 `model.switch`', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+    stage.press(ENTER)
+
+    expect(stage.commands().at(-1)).toEqual({
+      type: 'webfetch.set',
+      provider: 'minimax',
+      model: 'MiniMax-M3',
+    })
+    // 那一屏收起（保存是一次动作，不是换一屏）
+    expect(pickerOf(stage)).toBeUndefined()
+  })
+
+  test('保存的回话到了 ⇒ 一行回执（说清存了哪一对），**会话的模型一个字没动**', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+    stage.press(ENTER)
+    const before = stage.shell.getView().modelCurrent
+
+    stage.feed([
+      event('model.catalog', {
+        entries: ENTRIES,
+        current: CURRENT,
+        webFetch: { provider: 'minimax', model: 'MiniMax-M3' },
+        note: '取网页用的模型：MiniMax-M3 · 个人版',
+      }),
+    ])
+
+    expect(rowsOf(stage)).toContain('取网页用的模型：MiniMax-M3 · 个人版')
+    // 反面：状态行那个模型照旧（`modelCurrent` 与 `status.model` 都不是这一趟改的）
+    expect(stage.shell.getView().modelCurrent).toEqual(before)
+    expect(stage.shell.getView().webFetch).toEqual({ provider: 'minimax', model: 'MiniMax-M3' })
+  })
+
+  test('`→` 在取网页那一趟**什么都不做**（详情那两条动作都是当前会话的事）', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+    stage.press(RIGHT)
+
+    expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'model' }))
+  })
+
+  test('`←` 退回 `/config` 那一屏，且**下一次进 `/model` 是会话那一趟**（作用对象不残留）', () => {
+    const stage = live()
+    openWebFetchPicker(stage)
+    stage.press(LEFT)
+    expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
+
+    // 从输入行打 `/model` ⇒ 回到「当前会话」那一趟：说明里没有取网页那一句、回车发的是 model.switch
+    stage.press(ESC)
+    stage.type('/model')
+    stage.press(ENTER)
+    stage.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
+    expect(hintOf(stage)).not.toContain('取网页用的模型')
+
+    stage.press(ENTER)
+    expect(stage.commands().at(-1)).toEqual({
+      type: 'model.switch',
+      provider: 'minimax',
+      model: 'MiniMax-M3',
+    })
+  })
+
+  test('对照：`/config` 第 1 行「模型与连接」还是**会话那一趟**（回车＝切过去）', () => {
+    const stage = live()
+    open(stage)
+    stage.press(ENTER)
+    stage.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
+    expect(hintOf(stage)).not.toContain('取网页用的模型')
+
+    stage.press(ENTER)
+    expect(stage.commands().at(-1)).toEqual({
+      type: 'model.switch',
+      provider: 'minimax',
+      model: 'MiniMax-M3',
+    })
   })
 })
 

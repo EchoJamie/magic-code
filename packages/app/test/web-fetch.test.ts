@@ -22,6 +22,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import type { PageFetch, WebSource } from '@magic/contracts'
 import type { ShellHandle } from '../src/index.ts'
 import { attachShell } from '../src/index.ts'
@@ -266,7 +267,125 @@ describe('U72 · 没配的那一趟：这一轮停住', () => {
   }, 30_000)
 })
 
+describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通了', () => {
+  test('没配 ⇒ 报错指路；`webfetch.set` 之后 ⇒ 同一条会话再跑一次 `web_fetch` 就通（提炼用的是刚配的那个）', async () => {
+    const fixture = startFixture({
+      model: SESSION_MODEL,
+      turns: [
+        // 第一趟（没配）：主轮要取网页 ⇒ 这一步挂着，这一轮就地收束（只消耗这一个回合）
+        { kind: 'tool', name: 'web_fetch', args: { url: 'https://example.com/pricing', prompt: '多少钱？' } },
+        // 第二趟（配好了）：主轮再要一次 —— 这次走到底
+        { kind: 'tool', name: 'web_fetch', args: { url: 'https://example.com/pricing', prompt: '多少钱？' } },
+        { kind: 'text', text: ANSWER },
+        { kind: 'text', text: '看完了。' },
+      ],
+    })
+    const stage = stageOn(fixture, { configured: false })
+    const web = fakeWeb()
+
+    try {
+      const assembly = stage.assemble({ modelGateway: undefined, webSource: web })
+      const handle = attachShell(assembly.shell)
+
+      // —— ① 报错指路的那一句：去 `/config` 挑一个 ——
+      handle.send({ type: 'input.submit', text: '查一下它的定价' })
+      await waitFor(handle, '卡挂上', (events) => events.some((event) => event.kind === 'tool.decision.request'))
+      answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[0]?.id as number, 'approve')
+      await waitIdle(handle, 1)
+
+      const results = JSON.stringify(
+        eventsOfKind(handle.events, 'tool.result').map((event) => event.data.output),
+      )
+      expect(results).toContain('还没配提炼用的模型')
+      expect(results).toContain('/config')
+
+      // —— ② 那一屏读到的当前值：**还没配**（答复里根本没有 `webFetch` 这一位）——
+      handle.send({ type: 'model.list' })
+      await waitFor(handle, '第一份模型目录', () => catalogs(handle).length >= 1)
+      expect(catalogs(handle)[0]?.data.webFetch).toBeUndefined()
+
+      // —— ③ 挑一个（/config 那一行选中 ⇒ 回车＝保存 ⇒ 发出来的就是这条命令）——
+      handle.send({ type: 'webfetch.set', provider: 'local', model: DISTILL_MODEL })
+      await waitFor(handle, '保存的回话', () => catalogs(handle).length >= 2)
+
+      const saved = catalogs(handle)[1]
+      expect(saved?.data.webFetch).toEqual({ provider: 'local', model: DISTILL_MODEL })
+      // 回执那句话（屏上那一行）在答复里
+      expect(saved?.data.note).toContain(DISTILL_MODEL)
+      // 盘上真的写了那一格，且**没碰别的键**
+      const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as {
+        readonly webFetch?: unknown
+        readonly defaultProvider?: unknown
+        readonly providers: Record<string, Record<string, unknown>>
+      }
+      expect(onDisk.webFetch).toEqual({ provider: 'local', model: DISTILL_MODEL })
+      expect(onDisk.defaultProvider).toBe('local') // 原样
+      expect(onDisk.providers['local']?.['model']).toBe(SESSION_MODEL) // 连接的默认模型原样
+
+      // ④ 反面：**当前会话的模型没被改**（这一下没换过模型）
+      expect(eventsOfKind(handle.events, 'model.switched')).toHaveLength(0)
+
+      // —— ⑤ 配完接着说一句就能继续：**没有重启**，同一条会话再跑一次 ——
+      handle.send({ type: 'input.submit', text: '现在再查一次' })
+      await waitFor(
+        handle,
+        '第二张卡挂上',
+        () => eventsOfKind(handle.events, 'tool.decision.request').length >= 2,
+      )
+      answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[1]?.id as number, 'approve')
+      await waitIdle(handle, 2)
+
+      // **这一次不再报「还没配」**：它真取回了、真提炼了
+      const chats = chatsOf(fixture)
+      expect(chats.map((chat) => chat.model)).toEqual([
+        SESSION_MODEL, // 第一趟：主轮（然后就停住了）
+        SESSION_MODEL, // 第二趟：主轮
+        DISTILL_MODEL, // 提炼那一跳——**用的就是刚在 `/config` 里挑的那个**
+        SESSION_MODEL, // 第二趟：拿到答案接着走
+      ])
+      expect(web.asked).toEqual(['https://example.com/pricing'])
+      // 第二轮之后屏上那句就是答案（不是「还没配」）
+      expect(textOf(chats[3])).toContain(ANSWER)
+      const after = JSON.stringify(
+        eventsOfKind(handle.events, 'tool.result').map((event) => event.data.output),
+      )
+      expect(after).toContain(ANSWER)
+    } finally {
+      stage.dispose()
+      await fixture.stop()
+    }
+  }, 30_000)
+
+  test('认不出的连接 ⇒ 如实报缘由，盘上那一格**不动**（不半途写）', async () => {
+    const fixture = startFixture({ model: SESSION_MODEL, turns: [{ kind: 'text', text: '好。' }] })
+    const stage = stageOn(fixture, { configured: false })
+
+    try {
+      const handle = attachShell(
+        stage.assemble({ modelGateway: undefined, webSource: fakeWeb() }).shell,
+      )
+
+      handle.send({ type: 'webfetch.set', provider: 'ghost', model: 'whatever' })
+      await waitFor(handle, '那一条回话', () => catalogs(handle).length >= 1)
+
+      expect(catalogs(handle)[0]?.data.note).toContain('ghost')
+      expect(catalogs(handle)[0]?.data.webFetch).toBeUndefined()
+
+      const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as { readonly webFetch?: unknown }
+      expect(onDisk.webFetch).toBeUndefined()
+    } finally {
+      stage.dispose()
+      await fixture.stop()
+    }
+  }, 20_000)
+})
+
 // ══ 助手 ══════════════════════════════════════════════════════════════
+
+/** 收过的 `model.catalog` 答复（`/config` 那一行读的就是它上面那一格）。 */
+function catalogs(handle: ShellHandle): readonly { readonly data: { readonly webFetch?: unknown; readonly note?: string } }[] {
+  return eventsOfKind(handle.events, 'model.catalog')
+}
 
 /** 等一个条件在事件流上成立。 */
 async function waitFor(
