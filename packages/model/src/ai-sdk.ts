@@ -90,6 +90,45 @@ function toInstructions(messages: readonly ModelMessage[]): string | undefined {
   return systems.map((message) => message.content).join('\n\n')
 }
 
+/**
+ * **助手消息没有思考时，给「要求回传」的那一家补的那一位**（U95 · 缺陷 D45）。
+ *
+ * ## 为什么非得补，而不是「没有就没有」
+ *
+ * DeepSeek 的思考模式只认一条：**末尾那个助手回合**要带着 `reasoning_content` 出门
+ * （`echoesReasoning` 管的正是这件事）。但有两处会让末尾那一条**本来就没有**这一位：
+ *
+ * 1. **那一轮模型真没产出思考**——`reasoningTokens: 0`，于是载荷按契约整个键不写
+ *    （`AssistantPayload.reasoning` 是**必给的非空串**），回传时自然拿不出来（D45 那次）；
+ * 2. **压缩之后计划笔记再交付**——装配末尾补的那条**合成的**助手消息
+ *    （`conversation/src/plan.ts` 的 `planMaterialOf`，`role: 'assistant'`）同样不带思考。
+ *
+ * 两处都不是「丢了」，是「没有」；开关管不了「没有」，故在这里补上一位。
+ *
+ * ## 补什么
+ *
+ * **一句如实的短说明**——不是编一段思考（不能假装模型想过什么），读者是**模型自己**
+ * （这一位是它自己的历史思考位）。按「往上下文里塞的话一律写成事实陈述」那条口径
+ * （设计 · 提示词与指令 丙），写成**陈述**、不写成吩咐。
+ *
+ * ## 为什么必须非空
+ *
+ * `@ai-sdk/openai-compatible` 写这一格的条件是 `reasoning.length > 0`
+ * （`dist/internal/index.js:193`）——**空串会被整键丢掉**，等于没补（U92 实验 A ④）。
+ */
+export const ABSENT_REASONING_NOTE = '（这一轮没有产出思考。）'
+
+/**
+ * 这一条助手消息**要送出去**的思考：它自己有就用它自己的，没有就补上那位说明。
+ *
+ * 要求回传的那一家（`echoReasoning`）才有这一步；不要求的照旧**一位不发**
+ * （思考是那一家私有协议内容，设计明文：不转发给其它供应商）。
+ */
+function echoedReasoningOf(own: string | undefined, echoReasoning: boolean): string | undefined {
+  if (!echoReasoning) return undefined
+  return own === undefined || own.length === 0 ? ABSENT_REASONING_NOTE : own
+}
+
 function toAiSdkMessages(
   messages: readonly ModelMessage[],
   /** 该供应商要不要那份思考（U41）——见 `VendorAdapter.echoesReasoning`。 */
@@ -104,14 +143,16 @@ function toAiSdkMessages(
         case 'assistant': {
           const calls = message.toolCalls ?? []
           // **只回传给要求它的那一家**：思考是那一个模型的私有协议内容，
-          // 换个供应商照发等于把上家的东西递到别人那儿（设计：「不转发给其它供应商」）
-          const reasoning = echoReasoning ? message.reasoning : undefined
+          // 换个供应商照发等于把上家的东西递到别人那儿（设计：「不转发给其它供应商」）。
+          // ⚠️ 要求回传的那一家**缺了这一位要补上**——见 `ABSENT_REASONING_NOTE`
+          const reasoning = echoedReasoningOf(message.reasoning, echoReasoning)
 
           // **思考块排在正文之前**（供应商按序读它）。`@ai-sdk/openai-compatible` 会把
           // assistant 的 reasoning part 转回 `reasoning_content` —— DeepSeek 的工具往返
-          // 要的就是这个（U41）。没有那一位（绝大多数情形）时与加它之前逐字同形
+          // 要的就是这个（U41）。**不要求回传的那几家**照旧一个部件都不加
+          // （出站体与加这一条之前逐字同形）
           const content = [
-            ...(reasoning === undefined || reasoning.length === 0
+            ...(reasoning === undefined
               ? []
               : [{ type: 'reasoning' as const, text: reasoning }]),
             ...(message.content.length > 0
