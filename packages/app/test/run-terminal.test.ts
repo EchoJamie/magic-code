@@ -1,7 +1,7 @@
 /** 真 PTY 客户端经专用 stdin 测试宿主接入；关闭窗口不结束 App 所属核心。 */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPathsOf } from '../src/run/paths.ts'
@@ -42,6 +42,7 @@ async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executo
   await proc.exited
 
   const lines = text.split('\n').filter((line) => line.trim() !== '')
+    .map((line) => line.replace(/--token \S+/gu, '--token [test-token]'))
 
   return {
     managers: lines.filter((line) => line.includes('internal-manager')),
@@ -268,6 +269,60 @@ describe('U48-S5 · 终端是客户端', () => {
       if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 60_000)
+
+  for (const leave of ['PTY EOF', 'SIGHUP', 'SIGTERM'] as const) {
+    test(`${leave} 只脱离客户端——原模型请求在同代执行者完整完成`, async () => {
+      const runs = runArtifacts('magic-hangup-model-')
+      const answer = 'MODEL_BEFORE_DROP_A_MODEL_AFTER_DROP_B_'
+      // 关窗时请求仍在流式；完整尾段和 settled 必须在客户端退出后落库。
+      const fixture = startFixture({ turns: [{ kind: 'text', text: answer, chunks: 2, chunkDelayMs: 6_000 }] })
+      const sandbox = createSandbox({ baseURL: fixture.baseURL })
+      const host = await startResidentHost(sandbox, join(runs, 'host'))
+      let window: UiSession | undefined
+      const facts = () => {
+        const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+        try { return { sessions: db.sessions, entries: db.entries, events: db.events } }
+        finally { db.close() }
+      }
+
+      try {
+        window = await createUiSession({ label: leave, artifacts: runs, sandbox, fixture })
+        await window.send('关窗后继续这一轮')
+        await window.key('enter')
+        await window.wait({ text: 'MODEL_BEFORE_DROP_A_' }, { timeoutMs: 20_000 })
+        await window.capture({ label: '模型在途，尚未关窗' })
+        const before = { facts: facts(), processes: await straysIn(sandbox) }
+        expect(before.processes.executors).toHaveLength(1)
+        expect(before.facts.events.filter((event) => event.kind === 'turn.end')).toHaveLength(0)
+        const pid = window.pid
+        const at = Date.now()
+        if (leave === 'PTY EOF') window.dropTerminal()
+        else process.kill(pid, leave)
+        // 保留 8 秒观察窗；不允许 driver 的 TERM/KILL 替产品收尾。
+        const closed = await window.close({ graceMs: 8_000 })
+        window = undefined
+        const after = { facts: facts(), processes: await straysIn(sandbox) }
+        writeFileSync(join(runs, 'departure.json'), JSON.stringify({ leave, pid, elapsedMs: Date.now() - at, exit: closed.exit, before, after }, null, 2))
+        expect(closed.exit).toEqual({ code: 0, signal: null, by: 'app' })
+        expect(after.facts.events.filter((event) => event.kind === 'turn.end')).toHaveLength(0)
+        expect(after.processes.executors).toEqual(before.processes.executors)
+        expect(existsSync(pathsOf(sandbox).socket)).toBe(true)
+        await waitFor('关窗后原请求完整落账', () => facts().events.some((event) => event.kind === 'turn.end'), 20_000)
+        const completed = facts()
+        writeFileSync(join(runs, 'completed.json'), JSON.stringify({ facts: completed, requests: fixture.requests() }, null, 2))
+        expect(completed.events.filter((event) => event.kind === 'turn.end').map((event) => JSON.parse(event.data).reason)).toEqual(['settled'])
+        expect(completed.entries.filter((entry) => entry.kind === 'assistant').map((entry) => entry.content_text)).toEqual([answer])
+        expect(fixture.requests()).toHaveLength(1)
+        expect(completed.sessions).toHaveLength(1)
+      } finally {
+        await window?.close().catch(() => {})
+        await host.close()
+        await fixture.stop()
+        sandbox.dispose()
+        if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+      }
+    }, 60_000)
+  }
 })
 
 const SAID = '记一句短话'

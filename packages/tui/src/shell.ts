@@ -219,12 +219,7 @@ export type Shell = {
   subscribe(listener: () => void): () => void
   /** 一个按键。 */
   key(key: ShellKey): ShellEffect
-  /**
-   * **终端那头没人了**（断流 / 关窗信号）——同一条收尾语义，但**不设「按两次」那道门**
-   * （那是键盘那条路上的确认；此刻对面已经没人在按了）。
-   *
-   * 空闲＝当场放行 · 工作中／有待答＝替我们发中断。由头见 `shell.ts` 里那一处的注。
-   */
+  /** 终端离开只放行客户端退出，不中断或答复 App 持有的工作。 */
   hangUp(): ShellEffect
   /**
    * **放开输入**——`boot` 跑完那一下（技术方案 · 装配视图第 5 步：「以 `boot` 完成为界」）。
@@ -3199,14 +3194,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     options.stop?.(target, 'run')
   }
 
-  /**
-   * **终端那头没人了**（断流 / 关窗信号 · `run.ts` 的 `onTerminalGone`）——同一条收尾语义，
-   * 但**不设「按两次」那道门**：那是**键盘**那条路上的确认（设计：「按两次」只管键盘那条路），
-   * 而此刻对面已经没人在按了——让他再按一次，就是谁都不动。
-   *
-   * 空闲＝当场放行收摊 · 工作中／有待答＝替我们发中断（沿既有）。
-   */
-  const hangUp = (): ShellEffect => (interruptPending() ? NONE : EXIT)
+  const hangUp = (): ShellEffect => EXIT
 
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE

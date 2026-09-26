@@ -800,19 +800,34 @@ describe('/exit（停掉这条会话，然后退出界面）', () => {
 
 // ══ 终端没了（`hangUp`）═══════════════════════════════════════════════
 
-describe('hangUp（终端断了 / 收到收摊信号——**不设「按两次」那道门**）', () => {
+describe('hangUp（终端离开只脱离，工作归 App）', () => {
   test('空闲 ⇒ 当场放行（对面已经没人在按了）', () => {
     const idle = live()
     expect(idle.shell.hangUp().exit).toBe(true)
     expect(idle.view().exitArmed).toBe(false) // 也不留下那一行
   })
 
-  test('工作中 ⇒ 替我们发中断，不退（沿既有）', () => {
+  test('工作中 ⇒ 当场放行，不发中断、不改变工作状态', () => {
     const busy = live()
     busy.spy.emit(event('turn.start', {}))
+    const view = busy.view()
 
-    expect(busy.shell.hangUp().exit).toBe(false)
-    expect(busy.commands()).toEqual([{ type: 'turn.interrupt' }])
+    expect(busy.shell.hangUp().exit).toBe(true)
+    expect(busy.commands()).toEqual([])
+    expect(busy.view()).toBe(view)
+  })
+
+  test('待答 ⇒ 当场放行，重复挂断不中断、不答复、不停止运行', () => {
+    const stops: unknown[] = []
+    const pending = live({ stop: (...args) => stops.push(args) })
+    ask(pending)
+    const view = pending.view()
+
+    expect(pending.shell.hangUp().exit).toBe(true)
+    expect(pending.shell.hangUp().exit).toBe(true)
+    expect(pending.commands()).toEqual([])
+    expect(stops).toEqual([])
+    expect(pending.view()).toBe(view)
   })
 
   test('刚好挂上那一行时断了 ⇒ 照样当场放行（不是「第二次」）', () => {
