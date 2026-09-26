@@ -383,6 +383,14 @@ export type UiSessionOptions = {
   /** 起手就等到的「应用已经挂上」判据——缺省等**首帧出现**（见 `waitForFrame`）。 */
   readonly skipReady?: boolean
   /**
+   * **额外灌进子进程的环境**（U100）——盖在沙地那一份之上（`sandbox.env` 仍是底）。
+   *
+   * 由头：U100 有一条判据要造**非默认 `MAGIC_HOME`** 的那一形（转后台留的接回入口得
+   * 把那一格带上，否则复制到别的终端会接到**另一个库**）。沙地**故意**把 `MAGIC_HOME`
+   * 剔掉（见 `sandbox.ts` 那条注），故这一形只能由用例显式给回来。
+   */
+  readonly env?: Record<string, string>
+  /**
    * 等第一帧的上限（缺省 20 秒）。
    *
    * 给**自证**用：起手失败那条路（超时 → 清场 → 留档）要能在几秒内跑完，
@@ -524,7 +532,11 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
     },
   }))
 
-  const child = (owned.child = Bun.spawn(argv, { terminal: pty, cwd: sandbox.workspace, env: sandbox.env }))
+  const child = (owned.child = Bun.spawn(argv, {
+    terminal: pty,
+    cwd: sandbox.workspace,
+    env: { ...sandbox.env, ...options.env },
+  }))
   const startedAt = Bun.nanoseconds()
   artifacts.step('start', { argv, cwd: sandbox.workspace, home: sandbox.home, columns, rows })
 

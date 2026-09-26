@@ -288,6 +288,7 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   // 找得到它。什么时候摘由账自己判（组没了就摘，见 `groups.ts`）。
   options.ledger?.add({
     pgid: proc.pid,
+    kind: 'exec',
     what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
   })
 

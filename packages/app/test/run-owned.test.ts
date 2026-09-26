@@ -62,7 +62,7 @@ describe('U50 · 自有进程的账与收尾', () => {
     const group = spawnGroup('sleep 30')
 
     try {
-      ledger.add({ pgid: group.pid, what: 'exec:sleep 30' })
+      ledger.add({ pgid: group.pid, kind: 'exec', what: 'exec:sleep 30' })
       const [one] = ledger.list()
 
       expect(one?.pgid).toBe(group.pid)
@@ -109,6 +109,7 @@ describe('U50 · 自有进程的账与收尾', () => {
       const stale = {
         pgid: alive.pid,
         startedAt: (startTimeOf(alive.pid) as number) - 3_600_000,
+        kind: 'exec',
         what: 'exec:早就不在的那一条',
       }
 

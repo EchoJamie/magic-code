@@ -103,6 +103,15 @@ export type ComposerProps = {
   readonly placeholder?: string
 }
 
+/**
+ * **与管理者断了之后**那一行占位（U100）——单独一句，因为它**不是**「面孔」之一：
+ * 上面那几句说的是「现在能不能打字」，而这一句要说的是「**这一屏此刻发不出去**」。
+ *
+ * 由头（真帧上量到的）：失联之后输入行照旧写着「交代一件事，回车发送」——那是一个
+ * **兑现不了的承诺**（回车会被拒）。同一屏上状态行已经说了「状态待确认」，两者不能打架。
+ */
+export const PLACEHOLDER_LOST = '连接已断开——此刻发不出这一句'
+
 /** 占位文字（每个面孔一句实话）。 */
 export function placeholderOf(tone: ComposerTone): string {
   switch (tone) {

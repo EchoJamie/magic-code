@@ -128,6 +128,28 @@ type ClientConn = {
   readonly cwd: string
   /** 它此刻在跟哪个执行者说话（`undefined` ＝ 还没有目标）。 */
   target: Executor | undefined
+  /**
+   * **这个窗口此刻认的那条会话**（U100）——`target` 没了之后**它还在**。
+   *
+   * ## 为什么要有这一格
+   *
+   * 「整体停掉一条运行」那一档会把窗口的 `target` 清掉（`retire` 那一跳：「断的是执行者，
+   * 不是界面」）。而清掉之后，用户接着敲的那一句**本该是那条会话的下一轮**——工作停了、
+   * 会话还在（设计：「已停止 · 手动中断 ⇒ 看停点、检查未知效果、**明确继续**」；
+   * 「**明确继续**才建立下一次运行」）。
+   *
+   * 没有这一格时，`onCommand` 的兜底是 `spawnFresh`（`session: null`）——那会**开一条新
+   * 会话**，用户手上的上下文与记录当场断掉。这正是 U100 要拆的第二个耦合：
+   * **「停」不该等于「丢会话」**。
+   *
+   * ## 它怎么变
+   *
+   * - **挂上哪一代就记哪一代那条会话**（`bind`；那一代还没开张时为 `null`）；
+   * - **会话后来才开张**（`bound` 那条消息）时补记；
+   * - **`/clear`（`session.new`）之后清空**——那一下用户要的就是「另起一条」；
+   * - ⚠️ **停掉之后不清**（要留的就是它）；窗口退出去了，这一格跟它一起没。
+   */
+  selectedSession: string | null
   readonly label: string | undefined
   /** 开局那条换模型请求（`--provider` / `--model`）——为它起新的一代时带过去。 */
   readonly switch: ModelSwitchRequest | undefined
@@ -661,6 +683,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           gen: 0,
           cwd: message.cwd,
           target: undefined,
+          selectedSession: null,
           label: message.label,
           switch: message.switch,
           allowAll: message.allowAll,
@@ -1232,6 +1255,26 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
+    /**
+     * **没有目标、而这个窗口认着一条会话**（U100）——**接着那一条往下走**，不是开一条新的。
+     *
+     * 这一形就是「刚整体停完」：`retire` 把 `target` 清了（「断的是执行者，不是界面」），
+     * 而那条会话还在库里、`selectedSession` 也还记着。此刻用户敲的字是**那条会话的下一轮**
+     * ——设计那句「已停止 · 手动中断 ⇒ 看停点、检查未知效果、**明确继续**」说的正是它。
+     *
+     * 走的是与 `session.open` **同一条路**（`retarget` 的 open 那一支）：那条路自己会判
+     * 「上一次那一代还没证实结束 ⇒ 拒绝，不重复启动同会话」，也会把命令交给（或起）那一条
+     * 会话的那一代。**不另写一条「重新定位」的通路**——两处各写一遍，判据迟早分家。
+     */
+    if (conn.target === undefined && conn.selectedSession !== null) {
+      retarget(conn, { kind: 'open', session: conn.selectedSession })
+      // 没落上目标 ⇒ 它已经如实说过缘由（「上一次那条执行者还没有证实结束」一类）——
+      // **那条命令不发**（发给谁呢），也不假装送出去了
+      if (conn.target === undefined) return
+      deliver(conn.target, command)
+      return
+    }
+
     const target = conn.target ?? spawnFresh(conn)
     if (target === undefined) {
       conn.link.send({ t: 'line', text: '起不了执行者——这条命令没能送到' })
@@ -1353,6 +1396,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     conn.target = executor
     executor.watchers.add(conn.id)
     conn.gen = executor.gen
+    // **这个窗口认的是哪条会话**（U100）——那一代还没开张时为 `null`（开张之后由 `onEvent`
+    // 那一跳补记）。⚠️ 它**不随 `retire` 清**：清了就等于「停掉＝丢掉这条会话」
+    // （见 `ClientConn` 那一格）。
+    conn.selectedSession = executor.run.session
 
     conn.link.send({ t: 'target', gen: executor.gen, session: executor.run.session })
 
@@ -1516,6 +1563,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
       case 'bound':
         executor.run.session = message.session
+        // **窗口认的会话跟着开张的那一条走**（U100）——与 `onEvent` 那一处同一个口子
+        // （产品那条路是从事件里认的；这一条是登记那一层的补记）
+        rememberSession(executor, message.session)
         refresh(executor.run, now())
         saveRuns()
         pushRuns()
@@ -1615,6 +1665,21 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     for (const event of rest) conn.link.send({ t: 'ev', gen: executor.gen, event })
   }
 
+  /**
+   * **这一代此刻认的是哪条会话**（U100）——顺带告诉盯着它的每一个窗口。
+   *
+   * 由头：`retire`（整体停掉）会把窗口的 `target` 清掉，而**那条会话还在**——用户接着敲的
+   * 那一句本该是它的下一轮（`onCommand` 那条兜底就照 `conn.selectedSession` 走）。
+   * 故窗口手上得一直有一份「我认的是哪条会话」，它随**这一代学到的那一条**走。
+   */
+  function rememberSession(executor: Executor, session: string | null): void {
+    if (session === null) return
+    for (const id of executor.watchers) {
+      const conn = clients.get(id)
+      if (conn !== undefined && conn.target === executor) conn.selectedSession = session
+    }
+  }
+
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
     const run = executor.run
@@ -1631,6 +1696,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       const active = event.data.active
       if (typeof active === 'string' && active !== '') run.session = active
     }
+    // **这一代认下哪条会话 ⇒ 盯着它的窗口也认下**（U100）——「停掉之后接着敲的那一句是
+    // 这条会话的下一轮」全靠这一格（见 `ClientConn.selectedSession`）。会话是**从事件里认**
+    // 的（上面那一段），故补记也落在这一处：**一处认、一处记**，不另立第二份真源。
+    rememberSession(executor, run.session)
 
     // —— 运行事实那几格（U49）——**一处更新，判定在 `facts.ts` ——
     switch (event.kind) {
@@ -1758,7 +1827,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       // `detached`（作废旧号）与 `line`（说一句给人听）**两件都要**：前者是**机器**
       // 要的（不作废的话它下一条命令会被当成过期误操作挡下），后者是**人**要的。
       conn.link.send({ t: 'detached', why: reason })
-      conn.link.send({ t: 'line', text: `它那一代执行者收摊了（${reason}）` })
+      // ⚠️ **用户自己叫停的那一档不另说这句**（U100）：他刚按过「停止任务」，马上要看到的是
+      // **结果**（`stopped` 那条线拼的「「X」停了」，由 `afterEnd` 紧接着回那一拍）；
+      // 再插一句「它那一代执行者收摊了（连接断了）」是**实现细节**抢先说了话，而且
+      // 与「这个窗口与管理者断了」那句（另一件事）在屏上看起来是一回事（真帧上撞过）。
+      // 异常收（被杀 / 失联）那一档照旧说——那时用户没按过任何东西，得有人告诉他这台怎么了。
+      if (!executor.run.stopping) {
+        conn.link.send({ t: 'line', text: `它那一代执行者收摊了（${reason}）` })
+      }
     }
     executor.watchers.clear()
     executor.link?.close()
@@ -2120,9 +2196,13 @@ function ownedOf(raw: unknown): readonly OwnedProcess[] | undefined {
     const group = one as Partial<OwnedProcess>
     if (typeof group.pgid !== 'number' || !Number.isInteger(group.pgid) || group.pgid <= 0) continue
     if (typeof group.what !== 'string') continue
+    // `kind` 是三位里的一个——**认不出的整条丢**（拿不准的那一组不当数：它的用途是
+    // 「这条会话还有没有后台命令在跑」，猜一个只会让那句实话变成假话）
+    if (group.kind !== 'exec' && group.kind !== 'background' && group.kind !== 'mcp') continue
     kept.push({
       pgid: group.pgid,
       startedAt: typeof group.startedAt === 'number' ? group.startedAt : undefined,
+      kind: group.kind,
       what: group.what,
     })
   }

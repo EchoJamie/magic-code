@@ -116,7 +116,7 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
 
       // **记账**（U50）：这一组归我们的执行者——执行者要是被杀了，收尾这一段跑不到，
       // 那时只有账上这一笔能把它找回来（见 `OwnedStdioOptions.ledger`）。
-      options.ledger?.add({ pgid: spawned.pid, what: `mcp:${options.command}` })
+      options.ledger?.add({ pgid: spawned.pid, kind: 'mcp', what: `mcp:${options.command}` })
 
       void pump(spawned)
       void watchExit(spawned)

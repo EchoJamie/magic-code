@@ -166,13 +166,13 @@ describe('状态行 · 四格与降级', () => {
   })
 
   test('右位**独立**——出现 / 消失不推动左半', () => {
-    const withHint = line({ hint: 'ctrl+c 中断' }, 100)
+    const withHint = line({ hint: 'ctrl+c 停或离开' }, 100)
     const without = line({ hint: '' }, 100)
 
     // 左半那四格的相对次序与起手位置两处一致
     expect(withHint.indexOf('○ 空闲')).toBe(without.indexOf('○ 空闲'))
     expect(withHint.indexOf('时区修正')).toBe(without.indexOf('时区修正'))
-    expect(withHint).toContain('ctrl+c 中断')
+    expect(withHint).toContain('ctrl+c 停或离开')
   })
 
   test('还没有会话时 ② 报「新会话」（不空一格）', () => {

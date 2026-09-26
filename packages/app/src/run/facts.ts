@@ -209,7 +209,11 @@ export function runStateOf(record: RunRecord): RunState {
   if (record.decisions.size > 0) return 'waiting'
   // **还没起来也算在跑**：从起进程到 `ready` 那一段是在把这件活支起来——显示成「当前空闲」
   // 是错的（它此刻既不能收交代，也没有一份可以看的最近结果）
-  if (record.busy || record.turnActive || (record.ended === undefined && !record.ready)) {
+  //
+  // **只剩后台命令也算在跑**（U100）——后台那一形**不占着这一轮**（`busy` / `turnActive`
+  // 都是假），可它名下的进程还站着（`backgroundOf` 那一格）。设计：「后台命令仍在执行……
+  // 也属于有在途工作」——它是这一行「执行中」的事实依据，也是 `ctrl+c` 给不给三选的判据。
+  if (record.busy || record.turnActive || backgroundOf(record) > 0 || (record.ended === undefined && !record.ready)) {
     return 'running'
   }
 
@@ -426,6 +430,7 @@ export function blocksNewRun(state: RunState): boolean {
 export function runRowOf(record: RunRecord): RunRow {
   const reason = stopReasonOf(record)
   const lastTurnAt = record.lastTurnAt
+  const background = backgroundOf(record)
   return {
     session: record.session as string,
     state: record.state,
@@ -439,9 +444,26 @@ export function runRowOf(record: RunRecord): RunRow {
     // **上一轮怎么收的**（U50）——「当前空闲」那一行靠它说得出「上一轮被中断」：
     // 核销之前不叫「已停止」，而那件事不能就这么消失（用户得知道停点在哪）
     ...(record.lastTurn === undefined ? {} : { lastTurn: record.lastTurn }),
+    // **还有几条后台命令在跑**（U100）——缺席＝一条都没有（同本类型那条「缺席＝没有这一件」）
+    ...(background === 0 ? {} : { background }),
     workspace: record.workspace,
     holds: blocksNewRun(record.state),
   }
+}
+
+/**
+ * **这条会话还有几条后台命令在跑**（U100）——照**自有进程那一本账**现读。
+ *
+ * 判据落在账上那一位 `kind`（**产生处写位**：是谁起的，由起的那一方说），不切 `what`
+ * 的字符串前缀——「拿显示文案当状态」是这一族里最容易蒙混过去的一种。
+ *
+ * ⚠️ **核销之后不算**：那一代结束了，它名下的进程归「自有资源回收」那一笔账；
+ * 这一格答的是「这条会话此刻的活做完了没有」，不是「机器上还有没有我起的进程」。
+ */
+export function backgroundOf(record: RunRecord): number {
+  if (record.ended !== undefined) return 0
+
+  return record.owned.filter((one) => one.kind === 'background').length
 }
 
 /**

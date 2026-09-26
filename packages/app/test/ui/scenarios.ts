@@ -1430,8 +1430,8 @@ const exitCommand: Scenario = {
     })
 
     await busy.send('说一句长话', { until: { text: ' › 说一句长话' }, timeoutMs: 15_000 })
-    // 锚状态行那句「ctrl+c 中断」＝**这一轮真在跑**（它在工作中那一格才出现）
-    await busy.key('enter', { until: { text: 'ctrl+c 中断' }, timeoutMs: 25_000 })
+    // 锚状态行那句「ctrl+c 停或离开」＝**这一轮真在跑**（它在工作中那一格才出现）
+    await busy.key('enter', { until: { text: 'ctrl+c 停或离开' }, timeoutMs: 25_000 })
 
     await busy.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await busy.key('enter')

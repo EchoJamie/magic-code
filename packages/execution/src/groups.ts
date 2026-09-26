@@ -149,6 +149,20 @@ async function untilGroupGone(pgid: number, timeoutMs: number): Promise<void> {
 }
 
 /**
+ * **收一组进程要的那几件**——`OwnedProcess` 去掉 `kind`。
+ *
+ * 为什么收的人不看 `kind`：它答的是「这一组是哪一路起的」（给读状态的人用），而收尾要的
+ * 只有两件——**认得出它**（`pgid` ＋ 组长启动时刻）与**回执里说得出口**（`what`）。
+ * 于是这一跳也收得下**不来自那本账**的目标：执行者自己那一条（`what: '执行者'`）
+ * 就不是 `exec` / `background` / `mcp` 里的任何一路。
+ */
+export type ReapTarget = {
+  readonly pgid: number
+  readonly startedAt: number | undefined
+  readonly what: string
+}
+
+/**
  * **按组收命——只碰证明得了归属的那一组**（判据见文件头那张表）。
  *
  * 次序是设计那一句：**有界等待 → TERM → 等 → KILL → 等**。第一段「等」不给信号：
@@ -158,7 +172,7 @@ async function untilGroupGone(pgid: number, timeoutMs: number): Promise<void> {
  * ⚠️ **收没收到如实说**：`left` 那一支要带一句人话（回执与诊断都读它），不许拿一句
  * 空话冒充「已经收干净」。
  */
-export async function reapOwned(handle: OwnedProcess, times: ReapTimes = {}): Promise<ReapOutcome> {
+export async function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Promise<ReapOutcome> {
   const settleMs = times.settleMs ?? DEFAULT_SETTLE_MS
   const termMs = times.termMs ?? DEFAULT_TERM_MS
   const killMs = times.killMs ?? DEFAULT_KILL_MS
@@ -227,6 +241,7 @@ export function createProcessLedger(): ProcessLedger {
       open.set(input.pgid, {
         pgid: input.pgid,
         startedAt,
+        kind: input.kind,
         what: input.what,
       })
       announce()

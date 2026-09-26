@@ -55,6 +55,11 @@ export type RunTuiOptions = {
   /** **系统家目录**（U71 · 只用来把屏上的路径缩成 `~/…`）。见 `ShellOptions.home`。 */
   readonly home?: string | undefined
   /**
+   * **Magic 的落点**（U100 · `MagicHome.base`）——转后台留接回入口时按它决定带不带
+   * `MAGIC_HOME`。见 `ShellOptions.magicBase`。
+   */
+  readonly magicBase?: string | undefined
+  /**
    * **启动那几句要说的话**（U22 · 审计第 13 条）——装配把话备好（`Assembly.notices`：
    * 被拒的权限规则 / 授权文件读不懂），外壳开局落成记录区里的一行回执。
    *
@@ -62,14 +67,19 @@ export type RunTuiOptions = {
    */
   readonly receipts?: readonly string[] | undefined
   /**
-   * **外面那一头没了**（U48）——订阅它；回调一响，外壳**自己收摊**。
+   * **外面那一头（运行管理者）没了**（U48 · **U100 改判**）——订阅它；回调一响，把这件事
+   * **交给外壳如实说**。
    *
-   * 由头（设计 · 会话与运行管理）：「**终端**：呈现与输入客户端，**断流后自身应退出，
-   * 不能空转充当后台执行者**」。窗口的内核在管理者那一头——那条连接一断，界面就没有
-   * 任何可接的东西了，留着只是空转占着机器。它与 stdin 断开那条（D26）是**两条独立
-   * 的**「这一头没人了」：一条是终端没了，一条是内核没了。
+   * ⚠️ **不再「窗口自己退」**（原锚：「那条连接一断，界面就没有任何可接的东西了，留着
+   * 只是空转占着机器」）。规划裁决写着「控制连接丢失……**留在界面如实说明；不得自动退场**」，
+   * 设计那一行也是：「管理者不可达时**界面显示失联**，不把历史 `running` 当现况」。
+   * 空转的代价由此处认下：这一屏此刻**只负责说清与离开**（状态那一格改成「状态待确认」、
+   * 输入不受理、`ctrl+c` 两下走）。
+   *
+   * ⚠️ **与 stdin 断开那条（D26）是两条独立的**「这一头没人了」：一条是**终端**没了
+   * （那一头已经没人在看、也没人在按，收摊），一条是**内核**没了（这一头的人还在看）。
    */
-  readonly onGone?: ((listener: () => void) => void) | undefined
+  readonly onGone?: ((listener: (why?: string) => void) => void) | undefined
   /**
    * **运行事实的来路**（U49）——`/resume` 那一屏每一行的状态据它来。
    *
@@ -117,6 +127,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,
     home: options.home,
+    magicBase: options.magicBase,
     receipts: options.receipts,
     runs: options.runs,
     resumed: options.resumed,
@@ -215,9 +226,9 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   // **状态**判据：流已经读到过头 / 已经销毁，就等于刚收到那一下。
   if (stdin.readableEnded === true || stdin.destroyed === true) onTerminalGone()
 
-  // **外面那一头没了 ⇒ 收摊**——装在收摊那一套之前（`closeOut` 一立好就接上）
-  options.onGone?.(() => {
-    closeOut()
+  // **外面那一头没了 ⇒ 交给外壳说清（不退场）**——见 `RunTuiOptions.onGone` 那一段
+  options.onGone?.((why?: string) => {
+    shell.disconnected(why)
   })
 
   try {

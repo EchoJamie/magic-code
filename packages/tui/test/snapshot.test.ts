@@ -266,7 +266,10 @@ describe('场景 3 · 工作中（流式）', () => {
   //    - **新锚**：钟给得出就报**真耗时**（`差距 3` 那两条用例钉它），**给不出才回退**「运行中」
   //      ——这一条（`renderToString` 那条路，没有钟）钉的是后半句。**不编**这条规矩没变，
   //      变的是「真量得出来的时候，量出来的可以上屏」。
-  test('工具在跑——标记换 `⟳`；**没有钟**就回退「运行中」（不编秒数）；输入行说实话；右位报中断', () => {
+  // ⚠️ **U100 又改了一次右位那句话**（原锚 `ctrl+c 中断`）：有在途工作那一下现在开的是
+  //    三选（停止任务 / 转到后台 / 停止并退出），不再当场中断——新锚 `ctrl+c 停或离开`
+  //    （两件都可能，且都是真话）。快照随之更新，**只是那一格**。
+  test('工具在跑——标记换 `⟳`；**没有钟**就回退「运行中」（不编秒数）；输入行说实话；右位报「停或离开」', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
@@ -283,7 +286,7 @@ describe('场景 3 · 工作中（流式）', () => {
     const frame = app.screen()
     expect(frame).toContain('⟳')
     expect(frame).toContain('● 工作中')
-    expect(frame).toContain('ctrl+c 中断')
+    expect(frame).toContain('ctrl+c 停或离开')
     expect(frame).toMatchSnapshot()
   })
 })

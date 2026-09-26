@@ -20,7 +20,8 @@
  * 三选自己答（见 `openTaskMenu` / `taskAction`）。
  */
 
-import { apiKeyEnvVarOf } from '@magic/contracts'
+import { dirname, join } from 'node:path'
+import { MAGIC_DIR, apiKeyEnvVarOf } from '@magic/contracts'
 import type {
   Command,
   ControlTransport,
@@ -43,6 +44,7 @@ import {
   HINT_BOOTING,
   HINT_COMPLETION,
   HINT_IDLE,
+  HINT_LOST,
   HINT_WORKING,
   MAX_CANDIDATES,
   activeWordOf,
@@ -108,6 +110,8 @@ import {
   withContextWindow,
   // **运行事实收尾状态行那一格**（U54）——构造与推来那两跳都走它（见 `withRunFacts`）
   withRunFacts,
+  // **状态行那一格**（U100：失联那一档要改它）——`patchStatus` 是 view 那一侧的口子
+  patchStatus,
 } from './view.ts'
 import type { Dock, ModelScope, PageTurn, Picker, PickerRow, SessionScope } from './view.ts'
 import {
@@ -242,6 +246,19 @@ export type Shell = {
   releaseInput(): void
   /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
   readHistory(session?: SessionId): void
+  /**
+   * **与运行管理者的连接断了**（U100）——`why` 是连接那一头的说法（可省）。
+   *
+   * 三件事，一件都不能省（设计：「控制连接已失联……**如实留在界面说明**，不能伪报
+   * 转后台成功或已停止」）：
+   *
+   * - **留在界面**：不自动退场（旧写法是「外面那一头没了 ⇒ 窗口自己退」，U100 撤了）；
+   * - **如实说**：落一行回执说清「此后收不到实况、命令也发不出去」，状态行那一格改成
+   *   「■ 状态待确认」——**不把历史 `working` 当现况**（那一格不能再说「工作中」）；
+   * - **正等着走的那一趟**（`/exit` / 「停止并退出」）**不放行**：等的那一拍永远不会来了，
+   *   悄悄走出去就是「伪报已停止」。如实说一句，留下的那扇门是 `ctrl+c`。
+   */
+  disconnected(why?: string): void
   /** 收摊——退订传输、清订阅者。 */
   dispose(): void
 }
@@ -356,6 +373,17 @@ type Layer = {
 }
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
+/**
+ * **一个路径交给 shell 时要怎么包**（U100）——POSIX 写法：单引号包住，内部每个 `'` 写成
+ * `'\''`（收尾、接一个转义的引号、再开一个）。
+ *
+ * 由头：接回入口那一行是**要用户整行复制去敲的**——路径里带空格 / 引号时，裸着写就散成
+ * 两个词（敲下去接到别处，或者干脆报错）。它只处理这一层，**不做别的加工**。
+ */
+function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`
+}
+
 export type ShellOptions = {
   /**
    * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的**开机那一格**分母（`12.4k/200k`）。
@@ -391,8 +419,19 @@ export type ShellOptions = {
    * 别的字，一长串 `/Users/<谁>/…` 会把值那一格撑满）。
    *
    * **不给＝照原样写绝对路径**（缩不了就不缩，不编一个家目录出来）。
+   *
+   * ⚠️ **U100 起它还多一件差事**：判「这一摊的 Magic 落点是不是默认那一个」
+   * （见 `resumeCommandOf`——转后台留的接回入口要按它决定带不带 `MAGIC_HOME`）。
    */
   readonly home?: string | undefined
+  /**
+   * **Magic 的落点**（U100 · `MagicHome.base`，即 `~/.magic` 或 `$MAGIC_HOME/.magic`）。
+   *
+   * 只有一件差事：**转后台时那条接回入口要写得能真接回同一个库**（见 `resumeCommandOf`）。
+   * 不给＝不知道（用例 / 演示）⇒ 那条只写短的那一形（`magic --session <id>`，
+   * 那就是默认落在 `~/.magic` 的用户要敲的）。
+   */
+  readonly magicBase?: string | undefined
   /**
    * **受理输入了没有**——缺省 `true`（不设闸）。
    *
@@ -961,7 +1000,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 那一份事实就一定会到。真要半路不想走了，`ctrl+c` 那扇门一直开着（空闲时两下、有在途时
    * 三选里那一项）。**那一轮真收场了它自己撤**（同 `onEvent` 里 `turn.end` 那一跳）。
    */
-  let waitsForSession: 'exit' | 'stop' | null = null
+  let waitsForSession: 'exit' | 'stop' | 'background' | null = null
 
   /**
    * **技能名问过没有**（每个壳一次）——打 `/` 那一下问一遍（见 `askSkills`）。
@@ -1332,6 +1371,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         const waiting = waitsForSession
         waitsForSession = null
         if (waiting === 'exit') stopForExit(view.sessionId)
+        else if (waiting === 'background') leaveForBackground(view.sessionId)
         else options.stop?.(view.sessionId, 'run')
       }
     }
@@ -1349,7 +1389,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (waitsForSession !== null && event.kind === 'turn.end' && view.sessionId === null) {
       const waiting = waitsForSession
       waitsForSession = null
+      // **这一轮收场了、会话 id 始终没来**：`/exit` 与「转到后台」照旧走（没有可停 / 可接的
+      // 东西，如实说一句就是，**不假装留了接回入口**）；**「停止任务」什么都不做**（它本来就
+      // 是「停掉、留下」——没有可停的东西不是失败）
       if (waiting === 'exit') commit({ ...view, leaving: true })
+      if (waiting === 'background') {
+        commit({ ...view, leavingNote: '· 转到后台了 · 这一趟没有落成会话，没有可接的入口', leaving: true })
+      }
     }
 
     // 连接一览回来了 ⇒ 两件（U41）：
@@ -1773,20 +1819,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       }),
     )
 
-    // **`/exit` 正等着这一条**（U52）——两拍终局都放行，中间那拍（`accepted`）不放：
+    // **正等着走的那一趟**（`/exit` 与三选里的「停止并退出」）——**只有 `done` 放行**：
     //
     // - `done`——**资源确认退出了**，这才是「等了再退」等的那个事实；
-    // - `unconfirmed`——到点还没收完。**如实说过就放行**（上面那一行已经说了「没能停掉
-    //   『X』」＋ 缘由）。不把用户卡在一个他明确说了要走的界面上：要只离开，另一扇门
-    //   （Ctrl+C 两次）一直开着，而这一条该说的实话已经落进 scrollback 了。
-    //
-    // ⚠️ **`accepted` 那一拍绝不放行**——它只是「受理了」，此刻走出门就是「发出去就走」，
-    //    正是设计那句话防的事。
+    // - `unconfirmed`——到点还没收完。**不放行**（U100 改判，原锚：「如实说一句，也照样
+    //   放行」）：规划裁决写着「**停止未完成时留在界面如实说明；不得自动退场**」——那一步
+    //   没停下就走人，屏上留下的就是一句已经不作数的「正在停…」，而用户走出门时以为停了。
+    //   此刻该说的是实话（上面那一行已经落了「没能停掉…」＋ 缘由），要只离开另有一扇门：
+    //   三选里的「转到后台」（它不假装停过）。
+    // - `accepted`——更不放行：它只是「受理了」，此刻走出门就是「发出去就走」。
     const go =
-      exitWait !== null &&
-      report.session === exitWait &&
-      report.scope === 'run' &&
-      (report.phase === 'done' || report.phase === 'unconfirmed')
+      exitWait !== null && report.session === exitWait && report.scope === 'run' && report.phase === 'done'
 
     if (go) exitWait = null
     commit(go ? { ...said, leaving: true } : said)
@@ -3126,6 +3169,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * 后者归管理者（见 `taskAction` 那一跳）。
    */
   const inFlight = (): boolean => {
+    // **失联之后不答这一问**（U100）——设计：「不把历史 running 当现况」。此刻手上这份
+    // 运行事实是**断线前那一刻**的，拿它说「有在途工作」就是拿旧读数当现况；而说「没有」
+    // 是另一半谎。故这一格返回假，`ctrl+c` 回到**空闲那条路**（按两次离开）——那是这一屏
+    // 此刻唯一说得出、也做得到的事（「如实留在界面说明」见 `disconnected`）。
+    if (view.status.state === 'lost') return false
     if (working() || view.dock.kind === 'decision') return true
 
     const state = runStateNow()
@@ -3311,15 +3359,30 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
-   * **打开时绑定的那一条**（U100）——`null` ＝ 三选没开着。
+   * **打开时绑定的那一件工作**（U100）——`null` ＝ 三选没开着。
    *
-   * 两格各司其职：
-   * - `session`——**打开那一刻**的当前会话（可能是 `null`：首条消息正跑着、外壳还没认出
-   *   它是哪一条，同 `beginExit` 踩过的那个窗口）；
+   * 设计：「选项绑定打开时的**当前会话与运行**；执行前再核对，**目标已结束或更换则收起
+   * 菜单，不误停下一轮**」。三格加一个布尔，各认一件：
+   *
+   * - `session`——打开那一刻的当前会话（可能是 `null`：首条消息正跑着、外壳还没认出它是
+   *   哪一条，同 `beginExit` 踩过的那个窗口）；
+   * - `turnSeq`——打开那一刻是**第几轮**（本窗口的单调计数）。它管**同一条会话的下一轮**：
+   *   那一轮跑完了、新的一轮又起来了，菜单绝不能把那件新活当成旧活停掉；
+   * - `runStartedAt` / `lastTurnAt`——那**一代运行的身份**与**上一轮收束的时刻**
+   *   （管理者推来的运行事实）。它俩管**跨窗口**那一半：别的窗口把这一代收了又起了新的
+   *   一代（`startedAt` 变），或者这一代被停、被换了（那一行整条换了）。
    * - `asked`——打开那一刻**是不是待答**。只用于**标题**（「当前任务正在等待你」那一版）：
    *   菜单一开，`dock` 就从裁决卡换成了选择器，那件事于是不能再从 `view.dock` 读。
+   *
+   * ⚠️ **几格都要**：少 `turnSeq` 就漏「同一代里的下一轮」（那一代的 `startedAt` 没变）；
+   * 少运行事实两格就漏「别的窗口换了局面」而本窗口收不到内核事件的那些形。
    */
-  let taskMenu: { readonly session: SessionId | null; readonly asked: boolean } | null = null
+  let taskMenu: {
+    readonly session: SessionId | null
+    readonly taskEntry: RecordId | null
+    readonly runStartedAt: number | null
+    readonly asked: boolean
+  } | null = null
 
   /**
    * **开三选**（U100）——`ctrl+c` 在有在途工作时走的就是这一跳。
@@ -3340,7 +3403,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (view.dock.kind === 'picker' && view.dock.picker.source === 'task') return
 
     const asked = view.dock.kind === 'decision'
-    taskMenu = { session: view.sessionId, asked }
+    const row = view.runs.find((one) => one.session === view.sessionId)
+    taskMenu = {
+      session: view.sessionId,
+      taskEntry: view.taskEntry,
+      runStartedAt: row?.startedAt ?? null,
+      asked,
+    }
 
     if (asked) layers = [...layers, layerNow()]
     else enterLayer()
@@ -3368,22 +3437,102 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
+   * **打开那一刻绑的那件活还在不在**（U100）——设计：「选项绑定打开时的当前会话与运行；
+   * 执行前再核对，目标已结束或更换则收起菜单，不误停下一轮」。
+   *
+   * 三问，缺一问就漏一形（问的都是**事实**，不看任何一句文案）：
+   *
+   * | 问 | 挡住的形 |
+   * | --- | --- |
+   * | **手上还有没有事**（`inFlight`） | 原活自己收场了（办完了 / 被别的窗口停了） |
+   * | **还是不是原来那一条会话** | 别的窗口把它切走了、本窗 `/resume` 换了一条 |
+   * | **还是不是原来那一份交代**（`taskEntry`） | 用户（本窗口或别的窗口）**又交办了一件新事**——旧菜单不许停新活 |
+   * | **还是不是原来那一代运行**（`startedAt`） | 别的窗口把这一代收了又起了新的 |
+   *
+   * ⚠️ **判据是「一份交代」，不是「一轮」**：同一份交代里模型要跑好几轮（模型 → 工具 →
+   * 模型…，每轮都有 `turn.start` / `turn.end`），**那中间菜单照旧得管用**——用户按 `ctrl+c`
+   * 要停的就是这件事。拿「轮」当边界会把下一次模型请求当成「换了任务」（实测栽过：
+   * 菜单在工具跑完那一刻自己失效，用户按下去什么也没发生）。
+   * ⚠️ **会话 id 由 `null` 变成有不算换**：那是首条消息开张那一瞬——外壳刚认出它是哪一条
+   * （与 `beginExit` 踩过的是同一个窗口），要停的正是它。
+   */
+  const stillBound = (bound: typeof taskMenu): boolean => {
+    if (bound === null) return true // 手搭的视图 / 不是从菜单进来的——没绑过，不拦
+
+    if (!inFlight()) return false
+    if (bound.session !== null && view.sessionId !== bound.session) return false
+    if (bound.taskEntry !== null && view.taskEntry !== bound.taskEntry) return false
+
+    // **那一代运行换没换**——⚠️ **只在两边都读得到时比**：打开那一刻运行事实还没推到
+    // （首条消息刚发出去的那几百毫秒），格子里是 `null`；那一档**不拦**（拿不准的不拦，
+    // 真换了那一代，管理者那一头会照实回一句——它才是判「停的是谁」的人）。
+    const row = view.runs.find((one) => one.session === view.sessionId)
+    if (row === undefined || bound.runStartedAt === null) return true
+    return row.startedAt === bound.runStartedAt
+  }
+
+  /**
+   * **接回来该敲什么**（U100）——设计：「转后台成功离开时，留一条**可复制的接回入口**
+   * （沿用 `magic --session <id>`；**按实际配置保留必要启动参数**）」。
+   *
+   * ## 「必要启动参数」是什么
+   *
+   * 这一摊的**库在哪儿**由 Magic 的落点定（`MagicHome.base` ＝ `~/.magic` 或
+   * `$MAGIC_HOME/.magic`，配置与数据目录都从它推）。换了终端之后默认那一格会变回
+   * `~/.magic`——**非默认的那一形必须把 `MAGIC_HOME` 带上**，否则用户复制过去接到的是
+   * **另一个库**（会话不在、报「没有这条会话」）。
+   *
+   * - **默认那一形**（`base` ＝ `<家目录>/.magic`）⇒ 短的那一句，与设计原文一字不差；
+   * - **非默认那一形** ⇒ 前置 `MAGIC_HOME=<根>`：`resolveMagicHome` 的算式是
+   *   `base ＝ <根>/.magic`，故**根就是 `base` 的上一级**（`dirname`，不是拿字符串切）；
+   * - **落点不知道**（用例 / 演示没给 `magicBase`）⇒ 只写短的那一句（**不编一个 `MAGIC_HOME`**）。
+   *
+   * 🔒 **那一格是要整行复制去敲的**，故路径按 POSIX 写法**单引号包住**（内部的 `'` 用
+   * `'\''` 收尾再接回去）——路径里有空格或引号也照敲不误。
+   */
+  const resumeCommandOf = (session: SessionId): string => {
+    const base = options.magicBase
+    const home = options.home
+    if (base === undefined || home === undefined) return `magic --session ${session}`
+
+    // 默认那一形：与「换个终端也一样」的那一句一字不差
+    if (base === join(home, MAGIC_DIR)) return `magic --session ${session}`
+
+    return `MAGIC_HOME=${shellQuote(dirname(base))} magic --session ${session}`
+  }
+
+  /**
    * **三选里选定了一件**（U100）——`stop` / `background` / `stop-exit`。三支各走各的来路：
    *
    * | 选定 | 走哪条 |
    * | --- | --- |
-   * | 停止任务 | `options.stop(<这条>, 'turn')`——**U50 交付的那条停止通路**（局部那一档），界面留下 |
+   * | 停止任务 | `options.stop(<这条>, 'run')`——**U50 交付的那条停止通路**（整体那一档），界面留下 |
    * | 转到后台 | **一条命令都不发**：只置 `leaving`，界面退出、连接断开 |
-   * | 停止并退出 | `beginExit()`——`/exit` 那一条（整体那一档，停到核销之后才走） |
+   * | 停止并退出 | `beginExit()`——`/exit` 那一条（**同一档**，停到核销之后才走） |
+   *
+   * ## 两项停止**同一档**（2026-09-26 规划裁决）
+   *
+   * 设计那张表的「范围相同」是**工作范围**上的同一：两项都停**当前会话**的在途模型、工具
+   * **与后台命令**，也就是说都取**整体**那一档。差别只在**停完之后走不走**。
+   *
+   * ⚠️ **局部那一档（`turn`）不能拿来顶替**：它只往那一代送一句 `turn.interrupt` 就回
+   * 「done」——**那不是「资源确已停止」**，也收不走后台命令（那些进程不占着那一轮）。
+   * 拿它冒充「停掉了」，正是设计不许的那种报法。
+   *
+   * ⚠️ **「整体停下之后就接不回这条会话」曾经是真的**（`retire` 会把窗口的目标清掉，
+   * 下一条输入于是开了**一条新会话**）——**那是要修的那个毛病，不是将就它的理由**：
+   * 本单在管理者那一头改了（`ClientConn.selectedSession` ＋ `onCommand` 那条「认着会话就
+   * 接着它走」的兜底）。于是「停掉、留在界面、接着交代」是同一条记录往下走。
    *
    * ## 三处共同的纪律
    *
    * ① **先核对目标，再动手**（设计：「选项绑定打开时的当前会话与运行；执行前再核对，
-   *    目标已结束或更换则收起菜单，不误停下一轮」）——见下面那一段的两种核对。
+   *    目标已结束或更换则收起菜单，不误停下一轮」）——见下面那一段的三种核对。
    * ② **发出去就走 ≠ 有回执**：两支停止**都不在这里报「停了」**——回执归 `stopped` 那条线
    *    （U50：受理 / 已核销 / 没能证实三拍）。这一层多说一个字就是「同一条事实说两遍」。
-   * ③ **不过 `exitWait`**（那一格）：「停止任务」停在 `run` 那一档，而 `exitWait` 是
-   *    「等着走」的意思——挂错了那一格，用户选「留在 Magic」反而会退出界面。
+   * ③ **不过 `exitWait`**（那一格）：「停止任务」与「停止并退出」走同一档停止，可**只后者
+   *    等它停完再走**——`exitWait` 是「等着走」的意思，挂错了那一格，选「留在 Magic」
+   *    反而会退出界面。
    *
    * ## 「转到后台」为什么不发命令
    *
@@ -3398,40 +3547,29 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 无论走哪一支，这一屏都算答完了（下面两支停止的「话」由 `stopped` 那条线说）
     taskMenu = null
 
-    // **执行前再核对**（设计明文）——两件各答一个问题，缺一件都会误停：
+    // **执行前再核对**（设计明文）——三件各答一个问题，缺一件都会误停：
     //
     // - **手上还有没有事**：没有 ⇒ 那一轮自己跑完了（或别的窗口把它停了）。此刻再停就是
-    //   **停一个已经不在的东西**，更坏的一种是停到用户刚派出去的下一轮。菜单收起、
-    //   **一个字都不说**——那是「什么都没发生」，一句回执只会让人以为停过一次；
+    //   **停一个已经不在的东西**。菜单收起、**一个字都不说**——那是「什么都没发生」，
+    //   一句回执只会让人以为停过一次；
     // - **还是不是原来那一条会话**：别的窗口把它切走了 / 本窗 `/resume` 换了一条 ⇒ 停下一条
     //   是**停错人**。同样收起。⚠️ **会话 id 由 `null` 变成有不算换**：那是首条消息开张那一瞬
-    //   ——外壳刚认出它是哪一条（与 `beginExit` 踩过的是同一个窗口），要停的正是它。
-    if (!inFlight() || (bound !== null && bound.session !== null && view.sessionId !== bound.session)) {
+    //   ——外壳刚认出它是哪一条（与 `beginExit` 踩过的是同一个窗口），要停的正是它；
+    // - **还是不是原来那一件活**（U100 补）：`turnSeq`（本窗口那一轮）与运行事实那两格
+    //   （`startedAt` / `lastTurnAt`，跨窗口那一半）**都要一样**。这一格挡的是设计点名的
+    //   那件事：**菜单开着的时候原活收了、同一条会话又起了下一轮（或换了新的一代），
+    //   旧菜单不能停新工作**。
+    if (!stillBound(bound)) {
       closeTaskMenu()
       return NONE
     }
 
-    // ① **停止任务**——停**这一轮**（局部那一档），**界面留下**：记录与草稿一个字不动，
-    //    接着交代就是**同一条会话**往下走。
+    // ① **停止任务**——停**整体那一档**（在途模型、工具、后台命令），**界面留下**：
+    //    记录与草稿一个字不动，接着交代是**同一条会话**往下走（管理者那一头的
+    //    `selectedSession` 兜底，见 `taskAction` 上面那一段）。
     //
-    // ## 为什么是「这一轮」而不是「这条运行」（U100 定，留个话在这儿）
-    //
-    // 设计那张表的「执行结果」写的是「停止当前会话的**在途工作**并收回其自有资源；界面留下，
-    // 记录与草稿保留，**可继续交代**」。两档都说得通，判据落在最后那半句上——
-    // **「继续交代」只有这一档做得到**：
-    //
-    // 「这条运行」那一档（`'run'`，`/exit` 与 `/resume` 里的 `ctrl+x` 走的就是它）会
-    // **核销那一代执行者**，管理者随即把窗口的 `target` 清空（`manager.ts` 的 `retire`：
-    // 「窗口不是跟着死：它下一次发命令时管理者**按需要起新的那一代**」）。而新起那一代
-    // 带的是 `session: null`（`spawnFresh`）——**那是一条新会话**：用户接着打的字会开一条
-    // 新的记录，屏上却还挂着旧那条的上下文（`view.sessionId` 没变）。那不叫「继续交代」。
-    // 要从整体停止里回来，入口是 `/resume`：挑中那一条、`session.open` 把它接回来。
-    //
-    // 故「留在界面接着用」这一档取**局部**：执行者照旧活着、这条会话照旧是它，在途那一轮
-    // 被取消（它的工具进程组归执行域收——设计那句「收回其自有资源」落在那一档）。
-    // ⚠️ **「停止并退出」取的是另一个范围（整体）**——那不是这里前后不一致，是设计写死的：
-    // 那一项「**复用 `/exit` 的停止**与确认收尾」，而 `/exit` 一直是整体那一档
-    // （「这条我不做了」，资源确认退出之后才放行界面）。
+    //    ⚠️ **回执说得出「停到什么程度」**：整体那一档走 U50 那三拍
+    //    （「正在停」→「停了」/「没能停掉」）——与「停止并退出」逐字同形，因为**它就是同一件事**。
     if (value === 'stop') {
       closeTaskMenu()
       if (options.stop === undefined) {
@@ -3444,15 +3582,28 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         waitsForSession = 'stop'
         return NONE
       }
-      options.stop(view.sessionId, 'turn')
+      options.stop(view.sessionId, 'run')
       return NONE
     }
 
     // ② **转到后台**——退出界面，工作照跑。**这一支只改本地视图一格**（见上）。
+    //
+    //    ⚠️ **离开之前留一条接回入口**（设计明文：「转后台成功离开时，**留一条可复制的
+    //    接回入口**（沿用 `magic --session <id>`；按实际配置保留必要启动参数），不追加常驻
+    //    状态栏」）。它是**一行记录**（进 scrollback）：这一屏走后内容留在终端里，
+    //    用户想接回来时那串命令就在眼前、可以整行复制。
     //    ⚠️ 不关菜单再走：这一屏马上就要没了（`leaving` 一置，`app.ts` 那一处 `useEffect`
     //    当场收摊），先关它只是多画一帧。
     if (value === 'background') {
-      commit({ ...view, leaving: true })
+      if (view.sessionId === null) {
+        // **会话还没认出来**：此刻走掉就**留不出一条可复制的接回入口**（设计要的那一条），
+        // 而「转到后台了」也是一句没底的话。故**留在界面等**——活跃位一到就照常走
+        // （见 `waitsForSession`；它与 `/exit`、「停止任务」共用那一条等待）。
+        waitsForSession = 'background'
+        return NONE
+      }
+
+      leaveForBackground(view.sessionId)
       return NONE
     }
 
@@ -3516,6 +3667,22 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     stopForExit(target)
     return NONE
+  }
+
+  /**
+   * **转到后台：把接回入口写上，然后放行**（U100）——正等着会话认出来的那一路（见
+   * `waitsForSession`）与「会话已经认出来了」那一路共用这一处。
+   *
+   * ⚠️ 这一跳**只置两个格**：临走那一句（直接写字节，不进记录区——见 `ShellView.leavingNote`）
+   * 与 `leaving`（界面据此收摊）。**一个命令都不发**：断开就是客户端退出那一下，
+   * 管理者那一头撤的是观察者（见 `taskAction` 上那一段）。
+   */
+  const leaveForBackground = (session: SessionId): void => {
+    commit({
+      ...view,
+      leavingNote: `· 转到后台了 · 接回来：${resumeCommandOf(session)}`,
+      leaving: true,
+    })
   }
 
   /**
@@ -3897,6 +4064,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const submit = (): ShellEffect => {
     // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
     if (!ready) return bootRefusal()
+    // **连接断了也不收**（U100）——这一句发不出去。**草稿留着**（连接回来/重开还能接着用），
+    // 当场说一句：不静默吞掉（那是「按了没反应」里最坏的一种）
+    if (view.status.state === 'lost') {
+      // **草稿一个字不动**（那条判据是「草稿与记录必须实际保留」——回执只是说一句，
+      // 不碰草稿、不落记录）。不静默吞掉：那是「按了没反应」里最坏的一种
+      commit(appendReceipt(view, '连接已断开，暂时发不出这一句。'))
+      return NONE
+    }
     if (view.dock.kind === 'decision') return refuse('回车')
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
     if (view.dock.kind === 'prompt') return submitAsk()
@@ -4647,6 +4822,29 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (ready) return
       ready = true
       commit({ ...view, status: { ...view.status, hint: idleHintOf(view) } })
+    },
+
+    /**
+     * 与运行管理者的连接断了（U100）——见 `Shell.disconnected` 那一段的三件事。
+     *
+     * ⚠️ **它不 `dispose()`、也不退订**：连接那一头由 `cli.ts` 收（它收了连接窗口才活到
+     * 用户按离开）。这一跳只改屏上的话与状态那一格。
+     */
+    disconnected: (why?: string): void => {
+      if (disposed) return
+
+      // **一句话，说清此刻的处境**——不写协议、不提「管理者」这个内部词（判据：没用过的人
+      // 读得懂吗）。原因那一截只在连接那头给得出时带上（它说的是**为什么**，不是细节）
+      const note = why === undefined || why === '' ? '' : `（${why}）`
+      const said = appendReceipt(view, `连接已断开${note}，暂时无法确认任务状态。`)
+
+      // **正等着走的那一趟**：等的那一拍（`stopped` 的终局）永远不会来了——不悄悄放行，
+      // 也不留一句已经不作数的「正在停…」当结论。怎么离开归页脚（那行键位提示在状态行上）
+      const waiting = exitWait !== null
+      exitWait = null
+      const told = waiting ? appendReceipt(said, '停止尚未确认。') : said
+
+      commit(patchStatus(told, { state: 'lost', amount: null, hint: HINT_LOST }))
     },
 
     dispose: () => {

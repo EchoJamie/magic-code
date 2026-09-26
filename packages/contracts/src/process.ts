@@ -47,6 +47,24 @@ export type OwnedProcess = {
   /** 组长**自己**的启动时刻（毫秒）——身份核对的那一位；读不到就缺席。 */
   readonly startedAt: number | undefined
   /**
+   * 这一组**是哪一路起的**（U100）——**机器读的那一位**：
+   *
+   * | 值 | 谁写的 | 「还站着」意味着什么 |
+   * | --- | --- | --- |
+   * | `exec` | 在轮内的 `exec`（沙箱） | 这一轮还在跑一条命令 |
+   * | `background` | 后台那一形（`exec` 的 `background` 参数） | **有一条后台命令还在跑** |
+   * | `mcp` | 外部工具服务器的 stdio 传输 | 那台服务器连着 |
+   *
+   * 为什么要有它（**产生处写位**）：「这条会话还有没有后台命令在跑」是一个**在途事实**
+   * ——U100 起它决定 `ctrl+c` 给不给那三选、运行事实那一行读作「执行中」还是「当前空闲」。
+   * 而这件事**只有**起进程的那一方说得准；此前它只以 `what` 的**字符串前缀**
+   * （`exec(bg):…`）存在，让读的人去切字符串，正是「拿显示文案当状态」那条老病。
+   *
+   * ⚠️ **它与 `what` 分工不同**：`what` 给人看（收尾时说得出来「收的是谁」），
+   * 这一位给机器判。两者同源同一次写入，但**判据只许落在这位上**。
+   */
+  readonly kind: 'exec' | 'background' | 'mcp'
+  /**
    * 这一组是**什么**起的——`exec` 那条命令 / `mcp:<服务器名>`。
    *
    * 它是**诊断与回执**用的：收尾时说不出来「收的是谁」，那句「没能收掉」就没人能查。
@@ -66,12 +84,12 @@ export type OwnedProcess = {
  */
 export interface ProcessLedger {
   /**
-   * 记一笔——`pgid` ＝ 刚 spawn 出来的那个进程组，`what` ＝ 谁起的。
+   * 记一笔——`pgid` ＝ 刚 spawn 出来的那个进程组，`kind` ＋ `what` ＝ 谁起的。
    *
    * 读取组长的启动时刻是**记账的一部分**（不是可选的锦上添花）：这一位缺了，收尾那一跳
    * 就证明不了归属，只能不动它。故实现要在**组长还在的时候**读它——那一刻就在眼前。
    */
-  add(input: { readonly pgid: number; readonly what: string }): void
+  add(input: { readonly pgid: number; readonly kind: OwnedProcess['kind']; readonly what: string }): void
   /** 此刻还活着的那些（顺手摘掉已经没了的）。 */
   list(): readonly OwnedProcess[]
   /**

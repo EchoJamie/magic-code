@@ -16,12 +16,15 @@
  * | 一 · 常规宽度 | 流式时 `ctrl+c` ⇒ 三项 · 方向键 · `esc` 返回 · 再一次 `ctrl+c` 返回 | **打开不改变执行**（那一轮还在长）· 三行文案与默认项对得上 |
  * | 二 · 矮窗 | 40×10 里开同一屏 | 输入区不被挤破、没有一行超宽、字标之外的行数不为负 |
  * | 三 · 转到后台 | 流式时 ⇒ 转后台 | **客户端真退出**（`by=app`）· 原运行**继续产出** · 接回是同一条会话、**模型没被再问一遍** |
- * | 四 · 停止任务 | 流式时 ⇒ 停止任务 | 回执「只停了…这一轮」· **界面还在** · **接着交代是同一条会话** |
+ * | 四 · 停止任务 | 流式时 ⇒ 停止任务 | 先「正在停」后「停了」（**与停止并退出同一档**）· **界面还在** · **接着交代是同一条会话** |
  * | 五 · 停止并退出 | 流式时 ⇒ 停止并退出 | 先「正在停」后「停了」· 客户端自己退（`by=app`）· 零残留 |
  * | 六 · 关终端 | 流式中途把 PTY 主端摘掉 | **只离开**：执行者照跑、产出继续、可接回 |
  * | 七 · 待答 | 卡挂着时 ⇒ 三选（标题「正在等待你」）⇒ `esc` | **审批照原样回来**（没被答掉） |
  * | 八 · 另一条会话 | 两扇窗一块沙地；甲窗在跑，乙窗停自己那条 | **甲窗那一条不受影响**（请求数照涨） |
  * | 九 · 待答时离开 | 卡挂着 ⇒ 转后台 ⇒ 接回 | **还是原来那一张卡**（没自动批准、没丢）、答它才真跑 |
+ * | 十 · 只剩后台命令 | 那一轮早收了、只有后台命令在跑 | **照样给三选**；「停止任务」把它**连进程一起收回**（`pgrep` 为证） |
+ * | 十一 · 同一份交代跨轮 | 工具正在跑时开菜单 ⇒ 它跑完、下一轮起来 | 菜单**照旧在**、回车**停得掉**（不拿「轮」当任务边界） |
+ * | 十二 · 失联 | 杀掉管理者 | **留在界面**、如实说「连接已断开」、状态那一格「状态待确认」、ctrl+c 两下仍走得掉 |
  *
  * ## 两扇窗借同一块沙地
  *
@@ -141,7 +144,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
       rows,
     })
 
-    // **先让那一轮真跑起来**（状态行那句「ctrl+c 中断」就是物证），再按
+    // **先让那一轮真跑起来**（状态行那句「ctrl+c 停或离开」就是物证），再按
     await typeLine(window, '长话')
     await window.key('enter', { until: { text: SLOW_HEAD }, timeoutMs: 25_000 })
 
@@ -204,7 +207,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     const closed = await window.capture({ label: `${mark}-04-再按一次-ctrl+c-返回` })
     keep(closed)
     check(!has(closed, '停止任务'), '菜单收了（再按 ctrl+c 只返回）', '')
-    check(has(closed, '只停了') === false, '**没有**执行任何一项（没有停止的回执）', '')
+    check(!has(closed, '正在停') && !has(closed, '停了'), '**没有**执行任何一项（没有停止的回执）', '')
     check(has(closed, SLOW_HEAD), '那一轮照旧在（正文还在，工作没被打断）', '')
 
     // —— 四 · 再开一次，`esc` 返回 ——
@@ -214,7 +217,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     const escaped = await window.capture({ label: `${mark}-05-esc-返回` })
     keep(escaped)
     check(has(escaped, SLOW_HEAD), '`esc` 之后那一轮照旧在（取消不停止）', '')
-    check(!has(escaped, '只停了'), '取消也没有停止的回执', '')
+    check(!has(escaped, '正在停') && !has(escaped, '停了'), '取消也没有停止的回执', '')
 
     // 收尾：**等它自己跑完**，再空闲按两次退出（不借这一趟的菜单）
     //
@@ -273,6 +276,19 @@ async function background(): Promise<void> {
     // —— 选「转到后台」（默认在第一项，先按一下 ↓）——
     await first.key('down')
     await first.key('enter')
+    // **离开之前留一条可复制的接回入口**（设计明文）——它是那一屏临走前落的最后一行记录，
+    // 退出后内容留在终端里，用户想接回来时那串命令就在眼前。
+    // ⚠️ **先等它上屏再取帧**（`key()` 写完就返回，不等应用处理——抢在前面取到的是菜单那一帧）
+    await first.wait({ text: 'magic --session' }, { timeoutMs: 10_000 })
+    const leaving = await first.capture({ label: '06b-转后台时留的接回入口' })
+    keep(leaving)
+    check(has(leaving, '转到后台了'), '离开前说清这一下做了什么', '')
+    check(
+      /magic --session [0-9a-f-]{8,}/u.test(leaving.text),
+      '**留了一条可复制的接回入口**（`magic --session <id>`）',
+      leaving.lines.find((line) => line.includes('magic --session')) ?? '',
+    )
+
     const closed = await first.close({ graceMs: 8_000 })
     check(closed.exit.by === 'app', '客户端**自己退出了**（不是被杀的）', `by=${closed.exit.by}`)
     const atExit = fixture.requests().length
@@ -334,7 +350,15 @@ async function background(): Promise<void> {
   }
 }
 
-/** 四 · **停止任务**：停这一轮、**界面留下**、接着交代是同一条会话。 */
+/**
+ * 四 · **停止任务**：停**整体那一档**（这条会话在途的模型 / 工具 / 后台命令）、**界面留下**、
+ * 接着交代是**同一条会话**。
+ *
+ * ⚠️ **U100 复议后改判**（原锚：「只停了…这一轮」——那时两项停止取了不同档）：规划裁决
+ * 「两项停止**工作范围相同**，都必须收回这条会话的在途模型、工具和后台命令」，故现在两项
+ * 走的是**同一档**（整体），回执与「停止并退出」逐字同形（先「正在停」后「停了」）——
+ * 差别只在停完之后走不走。判据随之改判，**「界面留下、接着交代是同一条记录」一个字没松**。
+ */
 async function stopAndStay(): Promise<void> {
   const runs = tempDir('magic-u100-stop-runs-')
   const fixture = startFixture({
@@ -359,14 +383,23 @@ async function stopAndStay(): Promise<void> {
     await ask(window, '长话', SLOW_HEAD)
     const id = sessionIdOf(sandbox)
 
+    const requestsAtStop = fixture.requests().length
     await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
     await window.key('enter') // 默认第一项＝停止任务
-    await waitUntil(window, '停止的回执', (lines) => lines.some((line) => line.includes('只停了')))
+    // **先受理、再核销**：两拍各自看得见（`正在停` → `停了`）——这是「资源确已停止」那句的落点
+    await window.wait({ text: '正在停' }, { timeoutMs: 15_000 })
+    await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
     const stopped = await window.capture({ label: '09-停止任务之后（界面留下）' })
     keep(stopped)
-    check(has(stopped, '只停了'), '回执说清停的是**这一轮**（局部那一档）', '')
-    check(has(stopped, '那条运行还在'), '并且说得出**没停什么**（那条运行还在）', '')
+    check(has(stopped, '正在停'), '受理那一拍说「正在停」（不是「已停」）', '')
+    check(has(stopped, '停了'), '核销之后才说「停了」', '')
     check(has(stopped, '› ') || has(stopped, '交代一件事'), '**界面留下了**（输入行还在）', '')
+    await Bun.sleep(1_000)
+    check(
+      fixture.requests().length === requestsAtStop,
+      '**停之后没有再问模型**（请求数不涨）',
+      `${requestsAtStop} → ${fixture.requests().length} 趟`,
+    )
 
     // 接着交代——**同一条会话**往下走（这是「留在界面」的判据，不是「能打字」）
     await ask(window, '接着来', '第二句：接着来。')
@@ -678,10 +711,10 @@ async function otherSession(): Promise<void> {
     // 乙窗停**自己**那一条（它自己的在途工作）
     await other.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
     await other.key('enter')
-    await waitUntil(other, '乙窗停止的回执', (lines) => lines.some((line) => line.includes('只停了')))
+    await waitUntil(other, '乙窗停止的回执', (lines) => lines.some((line) => line.includes('停了')))
     const stopped = await other.capture({ label: '16-乙窗停自己那条' })
     keep(stopped)
-    check(has(stopped, '只停了'), '乙窗停的是自己那一条', '')
+    check(has(stopped, '正在停'), '乙窗停的是自己那一条（「正在停…」那一拍）', '')
 
     // 甲窗照旧：它那一轮的正文还在长，接续的产出照旧到
     await mine.wait({ text: '收在句号上。' }, { timeoutMs: 60_000 })
@@ -693,7 +726,7 @@ async function otherSession(): Promise<void> {
       '甲窗那一头的调用照旧',
       `${mineRequests} → ${fixture.requests().length} 趟`,
     )
-    check(!has(kept, '只停了'), '甲窗上没有任何「停」的回执（不是它的事）', '')
+    check(!has(kept, '停了'), '甲窗上没有任何「停」的回执（不是它的事）', '')
 
     for (const window of windows) await window.quit()
     windows.length = 0
@@ -704,6 +737,221 @@ async function otherSession(): Promise<void> {
     await fixture.stop()
     sandbox.dispose()
     removeDir(runs)
+  }
+}
+
+/**
+ * 十 · **只剩后台命令**——那一轮早收了，可后台那条命令还站着：`ctrl+c` 给的仍是**三选**。
+ *
+ * 设计：「后台命令仍在执行……也属于有在途工作」；判据落在**真进程**上（pgrep 找得到它），
+ * 而不是屏上的一句话。
+ */
+async function backgroundOnly(): Promise<void> {
+  const runs = tempDir('magic-u100-bgonly-runs-')
+  // ⚠️ 标记做进 **sleep 的时长**（小数位随机）：写成 shell 注释会被 sh 吃掉，而 `sh -c`
+  //    还会把自己 exec 成 `sleep` —— 那时进程表上只剩 `sleep 321`，标记一个字都不剩（实测栽过）
+  const MARK = `325.${Math.floor(Math.random() * 900_000) + 100_000}`
+  const fixture = startFixture({
+    turns: [
+      { kind: 'tool', name: 'exec', args: { cmd: `sleep ${MARK}`, background: true } },
+      { kind: 'text', text: '交出去了。' },
+    ],
+  })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  let window: UiSession | undefined
+
+  try {
+    window = await createUiSession({ label: '只剩后台', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+
+    await typeLine(window, '起一条后台命令')
+    await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 30_000 })
+    const up = await pidsOf(MARK)
+    check(up.length > 0, '那条后台命令**真站着**（按命令行找得到它）', `pids ${up.join(',')}`)
+
+    // 这一轮收完了（助手那句在屏上、没有工具在跑），而运行事实照旧说「执行中」
+    const settled = await window.capture({ label: '20-只剩后台命令（这一轮已收）' })
+    keep(settled)
+    check(!settled.lines.some((line) => line.trimStart().startsWith('⟳')), '没有工具在跑（⟳ 那行不在）', '')
+
+    await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
+    const menu = await window.capture({ label: '21-只剩后台命令时的三选' })
+    keep(menu)
+    check(has(menu, '当前任务仍在运行'), '**照样给三选**（不是「再按一次 ctrl+c 退出」）', '')
+    check(has(menu, '停止任务') && has(menu, '转到后台') && has(menu, '停止并退出'), '三项都在', '')
+    check(!has(menu, '再按一次 ctrl+c 退出'), '**没有**退回空闲那条路', '')
+
+    // **停止任务 ⇒ 连那条后台命令一起收回**（真进程）
+    await window.key('enter')
+    await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
+    const gone = await waitPidsGone(MARK)
+    const stopped = await window.capture({ label: '22-停掉之后（后台命令收回了）' })
+    keep(stopped)
+    check(gone, '**那条后台命令被收回了**（不在进程表上）', `pids ${(await pidsOf(MARK)).join(',')}`)
+
+    // 界面留下、接着交代照旧（这一步在 `run-terminal` 那一组里另有真窗口用例）
+    await window.quit()
+    const report = await window.close({ graceMs: 5_000 })
+    check(report.exit.by !== 'sigkill', '窗口自己走的', `by=${report.exit.by}`)
+    window = undefined
+  } finally {
+    await window?.close().catch(() => {})
+    for (const pid of await pidsOf(MARK)) {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // 已经没了
+      }
+    }
+    await fixture.stop()
+    sandbox.dispose()
+    removeDir(runs)
+  }
+}
+
+/**
+ * 十一 · **同一份交代里「模型 → 工具 → 模型」**——菜单在**轮与轮之间**照旧停得掉。
+ *
+ * 一轮 ＝ 一次模型调用 ＋ 它请求的工具；一份输入跑好几轮。故「工具跑完、下一轮又起来」
+ * 那一下**不许**把菜单作废——用户要停的就是这件事（规划裁决那一条的判据）。
+ */
+async function acrossRounds(): Promise<void> {
+  const runs = tempDir('magic-u100-rounds-runs-')
+  const fixture = startFixture({
+    turns: [
+      { kind: 'tool', name: 'exec', args: { cmd: 'sleep 1.2; echo 看完了' } },
+      { kind: 'text', text: '看完了，接着做。', chunks: 40, chunkDelayMs: 400 },
+    ],
+  })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  let window: UiSession | undefined
+
+  try {
+    window = await createUiSession({ label: '轮间菜单', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+
+    await typeLine(window, '看一眼')
+    await window.key('enter')
+    await window.wait({ text: '⟳' }, { timeoutMs: 20_000 }) // 工具正在跑
+    await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
+    const menu = await window.capture({ label: '23-工具正在跑时开的三选' })
+    keep(menu)
+    check(has(menu, '当前任务仍在运行'), '工具还在跑时菜单开得起来', '')
+
+    // 它跑完 → 这一轮收束 → **下一轮起来**（真事件），菜单照旧在
+    await window.wait({ text: '看完了，接着做。' }, { timeoutMs: 40_000 })
+    const mid = await window.capture({ label: '24-下一轮起来了，菜单照旧在' })
+    keep(mid)
+    check(has(mid, '停止任务'), '**下一轮的途中菜单还在**（没被「轮」的收束作废）', '')
+    // ⚠️ **页脚也得还是菜单的**（U100 真帧上撞过）：那一轮起止会把状态行右位写成
+    // 「工作中／空闲」那一句，而此刻那一格归这一屏
+    check(has(mid, '↑↓ 选 · 回车 定 · esc 返回'), '页脚照旧列**菜单的键位**（不被轮起止改写）', '')
+
+    // 回车 ⇒ 停得掉（这一下若被守护挡下，判据当场红）
+    const before = fixture.requests().length
+    await window.key('enter')
+    await window.wait({ text: '正在停' }, { timeoutMs: 20_000 })
+    const stopped = await window.capture({ label: '25-轮间停得掉' })
+    keep(stopped)
+    check(has(stopped, '正在停'), '**停得掉**（没停下一轮，也没被挡下）', '')
+
+    // **停完就不再往前跑了**（以 **HTTP 请求计数**为证，不看屏上有没有字）：
+    // 屏上那句「看完了，接着做。」是**停之前**就流完的（它连同这一轮一起落的账），
+    // 而「停之后有没有再问模型」只有夹具那一头的计数说得出来。
+    await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
+    await Bun.sleep(1_500)
+    const after = fixture.requests().length
+    check(after === before, '**停之后没有再问模型**（请求数不涨）', `${before} → ${after} 趟`)
+
+    await window.close({ graceMs: 5_000 })
+    window = undefined
+  } finally {
+    await window?.close().catch(() => {})
+    await fixture.stop()
+    sandbox.dispose()
+    removeDir(runs)
+  }
+}
+
+/**
+ * 十二 · **失联**——把管理者**杀**掉，这一屏要**留着**并如实说（不自动退场）。
+ *
+ * 规划裁决：「控制连接丢失……**留在界面如实说明；不得自动退场**」。故这里量三件：
+ * 那一行实话在、状态那一格改成「状态待确认」、`ctrl+c` 两下仍走得掉（离开那扇门留着）。
+ */
+async function disconnected(): Promise<void> {
+  const runs = tempDir('magic-u100-lost-runs-')
+  const fixture = startFixture({ turns: [{ kind: 'text', text: SLOW, chunks: 40, chunkDelayMs: 500 }] })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  let window: UiSession | undefined
+
+  try {
+    window = await createUiSession({ label: '失联', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+
+    await ask(window, '长话', SLOW_HEAD)
+
+    // **杀掉管理者**（按它自己的启动目录认它——不是模式匹配杀别的什么）
+    // ⚠️ 模式**不带前导 `--`**：`pgrep -f --internal-manager` 会被它当成自己的长选项报错
+    //     （实测：一个都数不到，还看成「没有管理者」）
+    const managers = await pidsOf('internal-manager', sandbox.root)
+    check(managers.length === 1, '这一摊只有一个管理者（按沙地路径认）', `pids ${managers.join(',')}`)
+    process.kill(managers[0] as number, 'SIGKILL')
+
+    await window.wait({ text: '连接已断开' }, { timeoutMs: 20_000 })
+    await Bun.sleep(1_500) // 给它几拍：**不该**自己退
+    const lost = await window.capture({ label: '26-失联之后（留在界面）' })
+    keep(lost)
+    check(has(lost, '连接已断开，暂时无法确认任务状态'), '**如实说**连接断了（一句话，不写协议细节）', '')
+    check(has(lost, '状态待确认'), '状态那一格改成「状态待确认」（不把历史 working 当现况）', '')
+    check(has(lost, '› '), '这一屏**留着**（输入行还在——没自动退场）', '')
+    check(
+      !has(lost, '交代一件事，回车发送'),
+      '输入行不再承诺「回车发送」（发不出去的事不许写在占位里）',
+      '',
+    )
+
+    // 离开那扇门还在：`ctrl+c` 两下
+    await window.key('ctrl+c')
+    await window.key('ctrl+c')
+    const report = await window.close({ graceMs: 8_000 })
+    check(report.exit.by === 'app', '要走的时候走得掉（ctrl+c 两下）', `by=${report.exit.by}`)
+    window = undefined
+  } finally {
+    await window?.close().catch(() => {})
+    await fixture.stop()
+    sandbox.dispose()
+    removeDir(runs)
+  }
+}
+
+/** 带那一段的进程号（`pgrep -f`）——`also` 给定时要求命令行里同时含它（认「哪一摊的」）。 */
+async function pidsOf(mark: string, also?: string): Promise<readonly number[]> {
+  const proc = Bun.spawn(['pgrep', '-f', mark], { stdout: 'pipe', stderr: 'ignore' })
+  const text = await new Response(proc.stdout as ReadableStream<Uint8Array>).text()
+  await proc.exited
+
+  const pids = text
+    .split('\n')
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0)
+
+  if (also === undefined) return pids
+  const kept: number[] = []
+  for (const pid of pids) {
+    const one = Bun.spawn(['ps', '-o', 'command=', '-p', String(pid)], { stdout: 'pipe', stderr: 'ignore' })
+    const line = await new Response(one.stdout as ReadableStream<Uint8Array>).text()
+    await one.exited
+    if (line.includes(also)) kept.push(pid)
+  }
+
+  return kept
+}
+
+/** 等那一组进程没了（有界）。 */
+async function waitPidsGone(mark: string, timeoutMs = 30_000): Promise<boolean> {
+  const until = Bun.nanoseconds() + timeoutMs * 1e6
+  for (;;) {
+    if ((await pidsOf(mark)).length === 0) return true
+    if (Bun.nanoseconds() > until) return false
+    await Bun.sleep(100)
   }
 }
 
@@ -732,6 +980,12 @@ if (import.meta.main) {
     await otherSession()
     console.log('· 九 · 待答时离开、再接回')
     await waitingAcrossBackground()
+    console.log('· 十 · 只剩后台命令（真进程）')
+    await backgroundOnly()
+    console.log('· 十一 · 同一份交代跨轮（模型 → 工具 → 模型）')
+    await acrossRounds()
+    console.log('· 十二 · 失联留在界面（真杀管理者）')
+    await disconnected()
 
     console.log(`\n全部判据通过。帧落在 ${out}`)
   } finally {

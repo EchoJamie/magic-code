@@ -283,6 +283,8 @@ export type StageOptions = {
   readonly dataDir?: string
   /** 系统家目录（U71 · 只用来把屏上的路径缩成 `~/…`）——不给＝照原样写绝对路径。 */
   readonly home?: string
+  /** **Magic 的落点**（U100 · `MagicHome.base`）——转后台那条接回入口按它决定带不带 `MAGIC_HOME`。 */
+  readonly magicBase?: string
   /** 受理输入了没有（U25 那道闸）——`false` ＝ 启动中（回车不受理、命令一律丢弃）。 */
   readonly inputReady?: boolean
   /**
@@ -347,6 +349,7 @@ export function createStage(options: StageOptions = {}): Stage {
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,
     home: options.home,
+    magicBase: options.magicBase,
     ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),
     ...(options.runsFeed !== undefined
       ? { runs: options.runsFeed }

@@ -70,6 +70,9 @@ export function StatusLine({ status, columns }: StatusLineProps) {
 function stateColor(state: ShellStatus['state']): string {
   if (state === 'idle') return PALETTE.ok
   if (state === 'error') return PALETTE.danger
+  // **失联**（U100）——不是出错（没有哪一步错了），也不是「在忙」：那一格是**放弃判断**，
+  // 故取最弱的那一档色（它该说的是「这边不知道」，不是「快看我」）
+  if (state === 'lost') return PALETTE.faint
 
   return PALETTE.warn
 }

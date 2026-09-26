@@ -404,8 +404,8 @@ async function wide(): Promise<void> {
     // —— 忙时按 `/clear`：内核挡回，那一跳得有话说 ——
     await typeLine(session, '这一条会跑一会儿')
     await session.key('enter')
-    // 状态行报「ctrl+c 中断」＝这一轮真跑起来了（`HINT_WORKING`；忙的判据取它）
-    await session.wait({ text: 'ctrl+c 中断' }, { timeoutMs: 15_000 })
+    // 状态行报「ctrl+c 停或离开」＝这一轮真跑起来了（`HINT_WORKING`；忙的判据取它）
+    await session.wait({ text: 'ctrl+c 停或离开' }, { timeoutMs: 15_000 })
 
     await typeLine(session, '/clear')
     await session.key('enter', { until: { text: '正在跑一轮' }, timeoutMs: 10_000 })

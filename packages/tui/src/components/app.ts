@@ -36,7 +36,7 @@ import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { HINT_EXIT_ARMED, hasRunningTool } from '../view.ts'
-import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './composer.ts'
+import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
@@ -533,6 +533,7 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
               caret: view.caret,
               refs: view.refs,
               tone: toneOf(view),
+              placeholder: placeholderFor(view),
               maxLines: maxDraftLines(rows),
               columns,
             }),
@@ -555,6 +556,7 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
       caret: view.caret,
       refs: view.refs,
       tone: toneOf(view),
+      placeholder: placeholderFor(view),
       maxLines: maxDraftLines(rows),
       columns,
     }),
@@ -609,6 +611,15 @@ function Completion({
  * **没有工具在跑**时球在模型那边——说的是「等模型回来」。两句话分开，三种状态就
  * 各自有各自的**屏上痕迹**，不用去看状态行才分得出。
  */
+/**
+ * **输入行那句占位**（U100）——失联时换成那句实话（见 `PLACEHOLDER_LOST`），其余照 `tone`。
+ *
+ * 一处算、两处用（`dockOf` 里两个 `Composer` 分支）——分了家就会有一支还在许一个兑现不了的诺。
+ */
+function placeholderFor(view: ShellView): string {
+  return view.status.state === 'lost' ? PLACEHOLDER_LOST : placeholderOf(toneOf(view))
+}
+
 function toneOf(view: ShellView): ComposerTone {
   if (view.status.state === 'retrying') return 'retrying'
   if (view.status.state === 'working') return hasRunningTool(view) ? 'working' : 'waiting'
@@ -804,16 +815,43 @@ function useFlipOnNewPage(shell: Shell, rows: number): void {
   }, [shell, write])
 }
 
+/**
+ * **临走那一句写出去**（U100）——见 `TuiApp` 里调用处那一段。
+ *
+ * 写成 hook 是为了**只写一次**（`view.leavingNote` 一旦置上就不会变，但 React 会重渲染）。
+ */
+function useLeavingNote(view: ShellView, write: (text: string) => void): void {
+  const done = useRef(false)
+
+  useEffect(() => {
+    if (done.current || view.leavingNote === null) return
+    done.current = true
+    write(`${view.leavingNote}\n`)
+  }, [view.leavingNote, write])
+}
+
 export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
   const { exit } = useApp()
+  const { write } = useStdout()
   // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
   // 清单翻页据它算「一页到哪」（见下）
   const { plan } = liveLayoutOf(view, columns, rows)
   const now = useLiveClock(hasRunningTool(view) || breathingOf(view, plan))
 
   useFlipOnNewPage(shell, rows)
+
+  /**
+   * **临走在终端上留的那一句**（U100 · 「转到后台」那一支）——**直接写字节**，不经 Ink 的
+   * 排版：记录区里的行会**按列数硬折行**（真换行），而这一句是要**整行复制去敲的命令**
+   * （见 `ShellView.leavingNote` 那一段）。交给**终端自己软折行**，整行选中复制才拿得到
+   * 完整的一条。
+   *
+   * ⚠️ **写的时机在 `exit()` 之前**（那一个 useEffect 排在下一条），且**只写一次**——
+   * 与翻页那一手同一个姿势（`useStdout().write` 是 Ink 给「在帧之外写东西」开的那道门）。
+   */
+  useLeavingNote(view, write)
 
   /**
    * **`/exit` 放行了 ⇒ 收摊**（U52）——**不在按键那一刻**（那一下只是把停止的意图发出去），

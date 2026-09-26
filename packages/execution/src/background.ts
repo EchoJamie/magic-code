@@ -219,6 +219,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
       // 执行者被杀时正是「没人认领的后台」最容易出现的那一形
       options.ledger?.add({
         pgid,
+        kind: 'background',
         what: `exec(bg):${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
       })
 

@@ -103,6 +103,9 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // 故是**转手**、不是新读一遍盘。家目录只用来把屏上的路径缩成 `~/…`——不参与任何解析。
     dataDir: loaded.config.dataDir,
     home: inputs.magic.home,
+    // **Magic 的落点**（U100）——转后台那一条接回入口靠它判「要不要带 MAGIC_HOME」
+    // （非默认落点不带的话，用户复制到别的终端会接到另一个库）
+    magicBase: inputs.magic.base,
     receipts: startupReceipts(inputs),
     // **运行事实**（U49）——管理者推来的那一份：`/resume` 每一行的状态据它，
     // 而开屏那张摘要也从它数（外壳自己在构造那一刻取一次初值，见 `ShellOptions.runs`）。
@@ -126,10 +129,11 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你；三类之外管理者一个都不发
     notices: (listener) => client.onNotice((notice) => listener(notice)),
     ...(inputs.session === undefined ? {} : { openingSession: inputs.session }),
-    // **管理者不在了 ⇒ 窗口自己退**（见 `run.ts` 的 `onGone`）：「断流后自身应退出，
-    // 不能空转充当后台执行者」。连接断的那一刻界面已经没有任何内核可接。
-    onGone: (listener: () => void) => {
-      client.onClose(() => listener())
+    // **管理者不在了 ⇒ 交给外壳如实说**（见 `run.ts` 的 `onGone`）：留在界面、说清失联，
+    // **不自动退场**（U100）。连接断的那一刻起，这一屏收不到实况、命令也发不出去——
+    // 那是用户要知道的一件事，不是「替他关掉」。
+    onGone: (listener: (why?: string) => void) => {
+      client.onClose((error?: Error) => listener(error?.message))
     },
   }
 }

@@ -742,13 +742,47 @@ function scoreOf(name: string, word: string): number {
 
 // ══ 状态行（左半四格次序恒定 ＋ 右位独立）════════════════════════════
 
-/** 五态固定词（原型 · 状态行规格）——**量挂在状态后面**。 */
-export type StatusState = 'idle' | 'working' | 'waiting' | 'retrying' | 'error'
+/**
+ * **这一跳之后右位该是什么**（U100）——**接管着的屏归它们自己**。
+ *
+ * 由头（真帧上量到的）：菜单开着的时候来了 `turn.end`／`turn.start`（同一份交代的下一轮），
+ * 那两跳原本无条件把右位写成「空闲／工作中」那一句——于是**菜单还在，页脚却说的是别的键** ✗。
+ * 那一格此刻归那一屏（`HINT_PICKER*` / `HINT_PROMPT` / `HINT_DECIDE*`），替它改了就是把
+ * 别人的提示抹掉（同 `foldRunState` 里那条「只换本状态那一句」）。
+ */
+function hintKeepingDock(from: ShellView, next: string): string {
+  return from.dock.kind === 'input' ? next : from.status.hint
+}
+
+/**
+ * 状态行左位那一个词——**六态固定词**（原型 · 状态行规格；`lost` 由 U100 补）。
+ *
+ * `lost`（**状态待确认**）是设计那张运行事实表里的一行（「状态待确认 · 已失联 | 控制连接
+ * 失效，尚未证实执行结束 | 重连、看最后进展，**不能重复启动同会话**」）。它进这一格是因为
+ * 「在不在跑」这一问**答不出来**：拿历史 `working` 当现况是设计明文不许的
+ * （「管理者不可达时界面显示失联，不把历史 running 当现况」），说「空闲」则是另一半谎。
+ */
+export type StatusState = 'idle' | 'working' | 'waiting' | 'retrying' | 'error' | 'lost'
 
 /** 空闲态右位提示。 */
 export const HINT_IDLE = '/ 命令 · ctrl+c 退出'
-/** 工作中右位提示。 */
-export const HINT_WORKING = 'ctrl+c 中断'
+/**
+ * **连接断开之后**的右位提示（U100）——只剩**怎么离开**这一件事。
+ *
+ * ⚠️ **不能沿用 `HINT_IDLE`**：那一句里的 `/ 命令` 在失联时是个**空承诺**（命令发不出去）。
+ * ⚠️ **也不再重复「连接已断开」**：同一屏上左位那格写着「状态待确认」、上面还落了那一行
+ * 回执——右位再说一遍就是同一件事的第三遍（设计：「一屏上的提示，各自说不同的东西」）。
+ */
+export const HINT_LOST = 'ctrl+c 退出'
+/**
+ * 工作中右位提示（**U100 改过它**）。
+ *
+ * - **原锚**：`ctrl+c 中断`——那阵子有在途工作那一下**就是中断**。
+ * - **为何变**：U100 起那一下开的是**三选**（停止任务 / 转到后台 / 停止并退出）——再写着
+ *   「中断」，用户按下去会以为「停这一轮」，而实际拿到的是三个选项（**说的与实际不是一件事**）。
+ * - **新锚**：`ctrl+c 停或离开`——两件都可能，且都是真话；具体选哪一件在那一屏上。
+ */
+export const HINT_WORKING = 'ctrl+c 停或离开'
 /** 退避中右位提示（后段动态：`1.6s 后重发 · 不用管`）。 */
 export const HINT_RETRYING_TAIL = '后重发 · 不用管'
 /** 裁决态右位提示（必闸类没有 `a`）。 */
@@ -1122,6 +1156,18 @@ export type ShellView = {
    * 这一格是 `/exit` 的**等**（等的是「资源真退了」那条事实，不是「再按一下」）。
    */
   readonly leaving: boolean
+  /**
+   * **临走在终端上留的那一句**（U100）——`null` ＝ 没有。
+   *
+   * ⚠️ **为什么不放记录区**：记录区里的行由 `log.ts` **按列数硬折行**（真换行）——
+   * 而这一句是**要用户整行复制去敲的命令**：硬折行之后复制到的东西里带着换行 ＋ 续行缩进，
+   * 粘进终端就断成两条（实测：路径被腰斩、后半截自成一行）。故它**直接写字节**出去，
+   * 由**终端自己软折行**（软折行在终端看来仍是**同一逻辑行**，整行选中复制拿到的就是完整的
+   * 那一条）——见 `components/app.ts` 的 `useLeavingNote`。
+   *
+   * 造它的地方只有一处：三选里的「转到后台」（那一支要留**可复制的接回入口**，设计明文）。
+   */
+  readonly leavingNote: string | null
   /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
   readonly expanded: boolean
   /** 当前会话 id（还没有会话＝`null`）。 */
@@ -1244,6 +1290,38 @@ export type ShellView = {
    * **子节点重复或丢失**——那正是「显示」这一摊的账，故记在视图里、随视图走。
    */
   readonly echoes: number
+  /**
+   * **第几轮了**（U100）——`turn.start` 一来 ＋1，**单调递增、只增不减**（换会话也不重置：
+   * 它答的是「是不是同一轮」，不是「这条会话跑过几轮」）。
+   *
+   * 由头：`ctrl+c` 那三选**绑定的是打开那一刻的那件工作**——用户选的是「停**它**」。
+   * 而这份菜单在屏上待着的时候，事情会变：那一轮跑完了、别的窗口又派了下一轮、
+   * 那一代收了又起了新的一代。设计明文：「选项绑定打开时的当前会话与运行；执行前再核对，
+   * **目标已结束或更换则收起菜单，不误停下一轮**」。
+   *
+   * 别的两格（`RunRow.startedAt` / `lastTurnAt`）管**跨窗口**那一半（那条运行换没换、
+   * 上一轮什么时候收的），这一格管**本窗口看得见的那一半**：一轮收束之后又与起来的
+   * 新的一轮，在事件流上立刻分得开——不必等运行事实那一趟推送（它带合并窗）。
+   */
+  /**
+   * **当前这份交代**（U100）——最近一条 `message.user` 的**条目 id**；还没有过就是 `null`。
+   *
+   * ## 为什么是「一份交代」而不是「一轮」
+   *
+   * 「轮」＝**一次模型调用 ＋ 它请求的工具**（`agent-loop.ts` 的图），而**一份用户输入会
+   * 跑好几轮**（模型 → 工具 → 模型 → …）。把「轮」当任务边界，会把同一份交代的下一次模型
+   * 请求误认成「换了任务」——而用户眼里那**还是同一件事**（他按 `ctrl+c` 要停的正是它）。
+   *
+   * 故这一格取**用户输入**那条边界，且取的是内核**自己发**的那一条：`message.user` 带
+   * `entry`（那份交代在记录里的条目 id）。于是：
+   * - 同一份交代里 `turn.start` / `turn.end` 来回多少趟，这一格**不动**；
+   * - 新的一份交代（本窗口或**别的窗口**提交的）一到，它当场换一个 id；
+   * - 重启 / 换会话也不怕：它是事件里给的，不是外壳自己数的。
+   *
+   * 谁读它：`ctrl+c` 那三选的**执行前核对**（见 `shell.ts` 的 `stillBound`）——
+   * 「选项绑的是打开那一刻那一件活，目标换了就不许停」。
+   */
+  readonly taskEntry: RecordId | null
 }
 
 /** 空视图。 */
@@ -1276,6 +1354,8 @@ export function createView(): ShellView {
     exitArmed: false,
     // `/exit` 还没喊过（U52）
     leaving: false,
+    // 还没有要走时留的那一句（U100）
+    leavingNote: null,
     expanded: false,
     sessionId: null,
     catalog: [],
@@ -1295,6 +1375,7 @@ export function createView(): ShellView {
     planCollapsed: false,
     planTop: 0,
     echoes: 0,
+    taskEntry: null,
   }
 }
 
@@ -1358,7 +1439,9 @@ export function reduce(
       return reduceVerdict(view, event.data, event.at)
 
     case 'message.user':
-      return reduceUserEntry(view)
+      // **一份新交代开始了**（U100）——记下它在记录里的条目 id，那是「当前这份交代」的身份
+      // （见 `ShellView.taskEntry`）。内核自己发的，本窗口与别的窗口都收得到。
+      return reduceUserEntry({ ...view, taskEntry: event.data.entry })
     case 'message.assistant':
       return view
 
@@ -1366,15 +1449,17 @@ export function reduce(
       return patchStatus({ ...clearFlash(view), turnTools: 0 }, {
         state: 'working',
         amount: null,
-        hint: HINT_WORKING,
+        hint: hintKeepingDock(view, HINT_WORKING),
       })
     case 'turn.end':
       // 轮收束 ⇒ ① 悬着的裁决作废（那件工具跑不成了）：**撤卡 ＋ 归还草稿**；
       //           ② 本轮的**行定局**——交给 `Static` 写一次，此后不再重绘（D11 护栏）
-      return patchStatus(settle(undock(view)), {
+      const settled = settle(undock(view))
+      return patchStatus(settled, {
         state: event.data.reason === 'error' ? 'error' : 'idle',
         amount: null,
-        hint: HINT_IDLE,
+        // ⚠️ `undock` 在前：卡收了之后 `dock` 回到输入行 ⇒ 这一格**才**归本状态
+        hint: hintKeepingDock(settled, HINT_IDLE),
       })
 
     case 'agent.state':
@@ -2585,6 +2670,8 @@ export function stateLabel(state: StatusState): string {
       return '● 正在重试'
     case 'error':
       return '▲ 出错'
+    case 'lost':
+      return '■ 状态待确认'
   }
 }
 
@@ -2662,6 +2749,24 @@ function factFaceOf(state: RunState): StatusState | undefined {
 /** 折一次：**当前那条会话**的运行事实说「在跑 / 没在跑」，那一格就照它收。 */
 function foldRunState(view: ShellView): ShellView {
   const run = view.sessionId === null ? undefined : view.runs.find((one) => one.session === view.sessionId)
+
+  /**
+   * **那一代已经核销了 ⇒ 悬着的那张卡作废**（U100）——设计：「轮收束 ⇒ 悬着的裁决作废」。
+   *
+   * 由头（真帧上撞到的死角）：整体停掉一条运行之后，那个执行者就没了——`turn.end` 不会再来，
+   * 于是**卡永远挂在屏上**（它等的那一声答复再也不会到）。而卡挂着时 `ctrl+c` 走的是
+   * 「有在途工作」那条路（开三选）——**用户想用「按两次 ctrl+c」离开都走不掉** ✗。
+   *
+   * 判据取**运行事实说的**（「已核销」是管理者给的事实）：`stopped` ⇒ 卡作废、草稿归还。
+   * （`.mine`：与状态那一格同源，不是第二处判断。）
+   */
+  if (run?.state === 'stopped' && view.dock.kind === 'decision') {
+    // **行也一起定局**：那一代没了，这一轮的行再也不会变——留着「⟳ 跑动中」的行会
+    // 让 `hasRunningTool` 一直为真（`ctrl+c` 于是永远走「有在途工作」那条路 ✗，
+    // 与卡那一半是同一个死角）
+    return patchStatus(settle(undock(view)), { state: 'idle', amount: null, hint: HINT_IDLE })
+  }
+
   const said = run === undefined ? undefined : factFaceOf(run.state)
   if (said === undefined || said === view.status.state) return view
 
@@ -2968,6 +3073,12 @@ export function runDetail(
    */
   if (row.state !== 'stopped' && row.lastTurn === 'aborted') said.push('上一轮被中断')
   if (row.state !== 'stopped' && row.lastTurn === 'error') said.push('上一轮出错了')
+  /**
+   * **还有后台命令在跑**（U100）——`action` 与 `progress` 都说不到它：后台那一形**不占着
+   * 那一轮**（发起它的轮早收了）。而这一句正是「执行中」那一行多出来的那点事，也是
+   * 「停止之后收干净了没有」的核对点。
+   */
+  if (row.background !== undefined) said.push(`还有 ${row.background} 条后台命令在跑`)
   if (row.action !== undefined && !active) said.push(row.action)
   said.push(`已持续 ${elapsedLabel(now - row.since)}`)
 
@@ -4317,7 +4428,7 @@ function replaceAt(view: ShellView, index: number, patch: (row: LogRow) => LogRo
   return { ...view, rows: view.rows.map((row, at) => (at === index ? patch(row) : row)) }
 }
 
-function patchStatus(view: ShellView, patch: Partial<ShellStatus>): ShellView {
+export function patchStatus(view: ShellView, patch: Partial<ShellStatus>): ShellView {
   return { ...view, status: { ...view.status, ...patch } }
 }
 

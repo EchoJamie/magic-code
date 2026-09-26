@@ -23,7 +23,7 @@ import type { Socket } from 'bun'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { KernelEvent, RunNotice, RunRow, StopPhase, StopScope } from '@magic/contracts'
+import type { KernelEvent, OwnedProcess, RunNotice, RunRow, StopPhase, StopScope } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { groupAlive, startTimeOf } from '@magic/execution'
 import { unreadSummaryOf } from '@magic/tui'
@@ -91,7 +91,7 @@ type Fake = {
   ready(session: string | null): void
   bound(session: string): void
   /** 报一份「我手上握着哪几组自有进程」。 */
-  owned(processes: readonly { pgid: number; startedAt: number | undefined; what: string }[]): void
+  owned(processes: readonly OwnedProcess[]): void
   stopping(why: string): void
   exit(reason: string): void
   close(): void
@@ -449,7 +449,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
       fake.ready('s-5')
       await waitFor('开张', () => rowOf(client, 's-5') !== undefined)
 
-      fake.owned([{ pgid: ours.pid, startedAt: startTimeOf(ours.pid), what: 'exec:sleep 30' }])
+      fake.owned([{ pgid: ours.pid, startedAt: startTimeOf(ours.pid), kind: 'exec', what: 'exec:sleep 30' }])
       // **等那笔账真落到管理者手上**——`owned` 那条消息是异步的，而落盘那一跳（合并写）
       // 是**它到了**的证据（读 `runs.json`）。⚠️ 不能拿 `sleep(50)` 当同步：并排跑满时
       // 那一下会把「账还没到、执行者已经没了」照进来（实测在整门上栽过一次）
@@ -496,7 +496,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
 
       // 一笔**故意对不上**的账：号是真的（这条进程真站着），时刻报成一小时前
       fake.owned([
-        { pgid: neighbour.pid, startedAt: (startTimeOf(neighbour.pid) as number) - 3_600_000, what: 'exec:早没了的那条' },
+        { pgid: neighbour.pid, startedAt: (startTimeOf(neighbour.pid) as number) - 3_600_000, kind: 'exec', what: 'exec:早没了的那条' },
       ])
       await waitFor('账到了管理者手上', () => {
         try {

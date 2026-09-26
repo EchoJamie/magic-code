@@ -18,13 +18,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPathsOf } from '../src/run/paths.ts'
 import { readDatabase } from './support.ts'
-import { createUiSession } from './ui/index.ts'
-import type { Sandbox, UiSession } from './ui/index.ts'
+import { REPO_ROOT, createUiSession } from './ui/index.ts'
+import type { Capture, Sandbox, UiSession } from './ui/index.ts'
 import { createSandbox, startFixture } from './ui/index.ts'
 import { removeDir, tempDir } from './tmp.ts'
 
@@ -266,9 +266,10 @@ describe('U48-S5 · 终端是客户端', () => {
       // 答复永远不会来（那正是这个用例要的那条边）
       await window.key('ctrl+c', { until: { text: '当前任务正在等待你' }, timeoutMs: 15_000 })
       await window.key('enter')
-      // 局部那一档的回执（「只停了…这一轮」）——**它就是「这一轮真收束了」的物证**：
-      // 核销那一条只在 `turn.end` 之后才回（悬着的卡随之作废，见 `view.ts` 的 `turn.end`）
-      await window.wait({ text: '只停了' }, { timeoutMs: 20_000 })
+      // **核销那一拍的回执**（「停了」）——它是「资源确认退出了」的物证：
+      // 悬着的那张卡随轮收束作废，而这一代执行者也就到此为止（卡若还钉着，收摊那两跳
+      // 根本走不完——见本用例的由头）
+      await window.wait({ text: '停了' }, { timeoutMs: 25_000 })
 
       const closed = await window.close()
       expect(closed.exit.by).not.toBe('sigkill')
@@ -410,3 +411,509 @@ describe('U53 · `--session` 接续（真窗口）', () => {
     }
   }, 120_000)
 })
+
+
+/**
+ * U100 · **停止与后台续跑**（真窗口 · 真管理者 · 真执行者 · 真进程）。
+ *
+ * 这一组量的三件，都是「只有真进程说得清」的：
+ *
+ * | 那一趟 | 要看见什么 |
+ * | --- | --- |
+ * | **停掉之后接着交代** | **还是同一条会话**：库里那条没变、下一轮请求带着**上一轮的上下文** |
+ * | **整体停掉** | 连那条**后台命令**一起收回（进程表上真没了） |
+ * | **只剩后台命令** | `ctrl+c` 给的是**三选**（不是「再按一次退出」）——设计：「后台命令仍在执行……也属于有在途工作」 |
+ */
+/**
+ * **把被折行的那一句接回一整行**（U100 取证用）——从含 `from` 的那一行起，把**续行**
+ * （缩进两格、不带标记）一路接上；色码一并剥掉。
+ *
+ * ⚠️ 它是**取证的尺子**，不是产品行为：产品那边折行是 Ink 按终端宽度做的（真换行）。
+ */
+function joinWrapped(raw: string, from: string): string {
+  const strip = (text: string): string => text.replace(/\u001b\[[0-9;]*m/gu, '')
+  const lines = raw.split(/\r?\n/u).map(strip)
+  const at = lines.findIndex((line) => line.includes(from))
+  if (at === -1) return ''
+
+  let said = lines[at] ?? ''
+  for (let next = at + 1; next < lines.length; next += 1) {
+    const line = lines[next] ?? ''
+    if (!/^ {2}\S/u.test(line)) break
+    said += line.trimStart()
+  }
+
+  return said
+}
+
+/**
+ * **剥掉 SGR 色码**（取证用）——`\u001b[…m` 那几段；其余字节原样。
+ *
+ * 为什么不直接比字符串：这一条要量的正是**字节里有没有换行**（见那一处判据的注）。
+ */
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/gu, '')
+}
+
+describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
+  /** 库里那一条会话（真会话才落账——首条消息提交之后）。 */
+  function sessionIdOf(sandbox: Sandbox): string {
+    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+    try {
+      return db.sessions[0]?.id ?? ''
+    } finally {
+      db.close()
+    }
+  }
+
+  /** 库里几条会话。 */
+  function sessionCount(sandbox: Sandbox): number {
+    const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+    try {
+      return db.sessions.length
+    } finally {
+      db.close()
+    }
+  }
+
+  /**
+   * **整体停掉那一条**（三选的默认项）。
+   *
+   * ⚠️ 等的是**回执「停了」**（核销那一拍）——不是「正在停」（受理）。两拍分得开是本单
+   * 那一条「不伪报已停止」的落点。
+   */
+  async function stopAndStay(window: UiSession): Promise<void> {
+    await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
+    await window.key('enter')
+    await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
+  }
+
+  test('整体停掉之后接着交代——**还是同一条会话**（记录与上下文都续着）', async () => {
+    const runs = tempDir('magic-u100-continue-runs-')
+    const fixture = startFixture({
+      turns: [
+        { kind: 'text', text: '第一句答复。' },
+        { kind: 'text', text: '第二句答复。' },
+      ],
+    })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '停后续聊', artifacts: runs, sandbox, fixture })
+
+      await window.send('第一句', { until: { text: '第一句' }, timeoutMs: 10_000 })
+      await window.key('enter', { until: { text: '第一句答复。' }, timeoutMs: 25_000 })
+      // ⚠️ **等那一轮真收完**（屏上回空闲）再停：话刚说完那一刻这一轮还没落账，停它会把
+      // 半截流式消息按设计丢掉（`agent-loop` 的中断语义）——那不是这一条要量的事
+      await window.wait({ text: '○ 空闲' }, { timeoutMs: 25_000 })
+      const first = sessionIdOf(sandbox)
+      expect(first).not.toBe('')
+
+      await stopAndStay(window)
+
+      // **界面留下**：输入行照旧，接着交代
+      await window.send('第二句', { until: { text: '第二句' }, timeoutMs: 10_000 })
+      await window.key('enter', { until: { text: '第二句答复。' }, timeoutMs: 30_000 })
+      const after = await window.capture({ label: '停完之后接着交代' })
+
+      // ① **同一条会话**（不是悄悄开了一条新的）
+      expect(sessionCount(sandbox)).toBe(1)
+      expect(sessionIdOf(sandbox)).toBe(first)
+      // ② 记录接着（两句都在屏上）
+      expect(after.lines.some((line) => line.includes('第一句答复。'))).toBe(true)
+      expect(after.lines.some((line) => line.includes('第二句答复。'))).toBe(true)
+      // ③ **上下文接着**：第二轮请求带着上一轮的对话（不是从空白重来）
+      const last = fixture.requests().at(-1)
+      expect(last?.messages ?? 0).toBeGreaterThanOrEqual(4)
+
+      await window.quit()
+      const closed = await window.close({ graceMs: 5_000 })
+      expect(closed.exit.by).not.toBe('sigkill')
+      window = undefined
+    } finally {
+      await window?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
+
+  test('整体停掉 —— 连那条**后台命令**一起收回（真进程）', async () => {
+    const runs = tempDir('magic-u100-bgstop-runs-')
+    // 一条**只有我们能认出来**的命令（号是唯一的，按它找进程）
+    // ⚠️ **标记要落在进程自己的命令行里**，故做成 sleep 的**时长**（小数位是随机的）：
+    // 写成 shell 注释（`sleep 321 # mark`）会被 sh 吃掉，而 `sh -c` 还会把自己 exec 成
+    // `sleep`——那时进程表上只剩 `sleep 321`，标记一个字都不剩（实测栽过）。
+    const MARK = `321.${Math.floor(Math.random() * 900_000) + 100_000}`
+    const fixture = startFixture({
+      turns: [
+        { kind: 'tool', name: 'exec', args: { cmd: `sleep ${MARK}`, background: true } },
+        { kind: 'text', text: '交出去了。' },
+      ],
+    })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '停后台', artifacts: runs, sandbox, fixture })
+
+      await window.send('起一条后台命令', { until: { text: '起一条后台命令' }, timeoutMs: 10_000 })
+      await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 30_000 })
+
+      // **那一组真站起来了**（先确认它起得来——否则「停掉了」是空判）
+      await waitFor('那条后台进程站起来', async () => (await pidsOf(MARK)).length > 0, 20_000)
+
+      await stopAndStay(window)
+
+      // **收回去了**（有界等——收尾那条路是 TERM → 等 → KILL → 等）
+      await waitFor('那条后台进程被收回', async () => (await pidsOf(MARK)).length === 0, 30_000)
+
+      const closed = await window.close({ graceMs: 5_000 })
+      expect(closed.exit.by).not.toBe('sigkill')
+      window = undefined
+    } finally {
+      await window?.close().catch(() => {})
+      // 兜底：万一没收回（判据已经红了），别把一条 `sleep 321` 留在机器上
+      for (const pid of await pidsOf(MARK)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // 已经没了
+        }
+      }
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **同一份交代里「模型 → 工具 → 模型」——菜单照旧停得掉**（U100 · 规划裁决）。
+   *
+   * 边界是**一份交代**，不是**一轮**：一轮 ＝ 一次模型调用 ＋ 它请求的工具（`agent-loop.ts`），
+   * 而一份输入要跑好几轮。故「工具跑完、下一轮又起来」那一刻菜单**绝不能失效**——那正是
+   * 用户按 `ctrl+c` 想停的那件事的中间。这一条走真链路（真轮次、真 `turn.end`）：
+   *
+   * ① 工具**正在跑**时开菜单 → ② 它跑完、这一轮收束、下一轮起来（真事件） →
+   * ③ 回车 ⇒ **停止照旧发出去**（回执「正在停」为证）。
+   */
+  test('同一份交代「模型 → 工具 → 模型」——菜单照旧停得掉（不把内部模型轮当任务边界）', async () => {
+    const runs = tempDir('magic-u100-rounds-runs-')
+    const fixture = startFixture({
+      turns: [
+        // ① 一件**要跑一会儿**的工具（好让菜单开在「它正跑着」那一刻）
+        { kind: 'tool', name: 'exec', args: { cmd: 'sleep 1.2; echo 看完了' } },
+        // ② 第二轮的正文**慢慢长**（这样还能看见「第二轮真起来了」）
+        { kind: 'text', text: '看完了，接着做。', chunks: 40, chunkDelayMs: 400 },
+      ],
+    })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '轮间菜单', artifacts: runs, sandbox, fixture })
+
+      await window.send('看一眼', { until: { text: '看一眼' }, timeoutMs: 10_000 })
+      await window.key('enter')
+      // ① 工具**正在跑**时开菜单：那一行一上屏就是 `⟳ …`（它跑 1.2 秒，这一段抓得住）
+      await window.wait({ text: '⟳' }, { timeoutMs: 20_000 })
+      await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
+
+      // ② 它跑完 → 这一轮收束 → 下一轮起来（真事件：`turn.end` 之后又 `turn.start`）
+      await window.wait({ text: '看完了，接着做。' }, { timeoutMs: 40_000 })
+
+      // ③ 回车 ⇒ **停得掉**（若拿「轮」当边界，这一下会被守护挡下——那正是本条的判据）
+      await window.key('enter')
+      await window.wait({ text: '正在停' }, { timeoutMs: 20_000 })
+      const stopped = await window.capture({ label: '轮间停掉' })
+      keepShot(stopped)
+      expect(stopped.lines.some((line) => line.includes('正在停'))).toBe(true)
+
+      await window.close({ graceMs: 5_000 })
+      window = undefined
+    } finally {
+      await window?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **接回入口要真敲得响**（U100 · 设计「按实际配置保留必要启动参数」）——
+   * **非默认落点**那一形：把屏上印的那一行**原样取下来、真敲一遍**，接回**同一个库**。
+   *
+   * 为什么非要用非默认落点走一遍：默认那一形（`magic --session <id>`）在换了终端之后
+   * 仍然落在 `~/.magic`，**看不出差别**；而 `MAGIC_HOME` 指向别处时，少了那个前缀就会
+   * 接到另一个库（会话不在）。故这一条：
+   *
+   * ① 起一扇窗，`MAGIC_HOME` 指向**沙地里的另一处**（配置抄一份过去）；
+   * ② 从「转到后台」那一刻的屏上**取出**那一行（`接回来：` 之后那一段就是用户要复制的）；
+   * ③ 造一个 `magic` 可执行（PATH 里的 shim，转真的 `cli.ts`），**`sh -c` 原样跑它**；
+   * ④ 判据：接回**同一条会话**（记录区铺着原来那一句）· 模型**没被再问一遍**。
+   */
+  test('转后台留的接回入口：**照那一行真敲一遍**，接回同一个库（非默认 `MAGIC_HOME`）', async () => {
+    const runs = tempDir('magic-u100-resume-runs-')
+    const fixture = startFixture({ turns: [{ kind: 'text', text: '第一句答复。' }] })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let first: UiSession | undefined
+    let second: UiSession | undefined
+
+    try {
+      // ① **非默认落点**——两处都要改，缺一条判据就是空的：
+      //    **`MAGIC_HOME` 指到别处**（`$MAGIC_HOME/.magic` ≠ 家目录下那一个），
+      //    而且那一份配置里的 **`dataDir` 也指到另一个库**。不换 dataDir 的话，
+      //    两处「同一个库」——那这一条就什么都证明不了（复制过去照样能接上）。
+      const alt = join(sandbox.root, 'alt-home')
+      const altData = join(sandbox.root, 'data-alt')
+      mkdirSync(join(alt, '.magic'), { recursive: true })
+      const config = JSON.parse(readFileSync(join(sandbox.home, '.magic', 'config.json'), 'utf8')) as Record<string, unknown>
+      writeFileSync(
+        join(alt, '.magic', 'config.json'),
+        JSON.stringify({ ...config, dataDir: altData }, null, 2),
+        'utf8',
+      )
+
+      first = await createUiSession({
+        label: '接回入口', artifacts: runs, sandbox, fixture, env: { MAGIC_HOME: alt },
+      })
+      await first.send('第一句', { until: { text: '第一句' }, timeoutMs: 10_000 })
+      await first.key('enter', { until: { text: '第一句答复。' }, timeoutMs: 25_000 })
+      await first.wait({ text: '○ 空闲' }, { timeoutMs: 25_000 })
+      const asked = fixture.requests().length
+
+      // ② 转后台 ⇒ 那一行上屏
+      await first.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
+      await first.key('down')
+      await first.key('enter')
+      await first.wait({ text: '接回来：' }, { timeoutMs: 10_000 })
+      const shown = await first.capture({ label: '转后台留的接回入口（非默认 MAGIC_HOME）' })
+
+      // ⚠️ **这一句超过终端宽度时 Ink 会折行**（真换行 ＋ 续行缩进两格）——照屏上那一行取，
+      //    取到的是**前 100 列**（实测：前半截看着对、路径被腰斩）。故先把折行接回去
+      //    （`joinWrapped`），拿到的就是**那一条逻辑行**。
+      //    ⚠️ 折行本身是**产品的一条限度**：路径长过终端宽度时，整段复制会把换行带进去
+      //    （短路径不受影响）——记在回报的「未验 / 限度」里。
+      const copy = joinWrapped(first.rawText(), '接回来：').split('接回来：')[1] ?? ''
+      expect(copy).toContain(`MAGIC_HOME='${alt}'`) // 非默认落点：**必须带上它**
+      expect(copy).toContain('magic --session ')
+
+      // ③ **它得是「屏上原样可复制」的一条**（规划裁决点名的那一条）——
+      //    判据**落在字节上**，不是靠测试把这行接回来：
+      //    这一句**不进记录区**（那里的行由 `log.ts` 按列数**硬折行**——真换行，复制到的东西
+      //    里带着换行 ＋ 续行缩进，粘进终端就断成两条），而是由 `app.ts` **直接写字节**出去、
+      //    交给**终端软折行**（软折行在终端看来仍是同一逻辑行 ⇒ 整行选中复制拿到的是完整的）。
+      //    故这里要证的是：**那一串字节里没有换行**（`\n` 之前就是整条命令）。
+      const stream = first.rawText()
+      const at = stream.lastIndexOf("MAGIC_HOME='")
+      const bytes = stream.slice(at, stream.indexOf('\n', at))
+      // **两个都要**：① 那一段字节里没有换行（真折行的话这里就有）；
+      // ② 剥掉色码之后**就是那整条命令**（末尾那格是 Ink 的收尾样式，`trimEnd` 掉）
+      expect(bytes).not.toContain('\n')
+      expect(stripAnsi(bytes).trimEnd()).toBe(copy)
+      expect(shown.text).toContain('转到后台了 · 接回来：') // 而屏上（可见的那些行）照旧有它
+
+      const gone = await first.close({ graceMs: 8_000 })
+      expect(gone.exit.by).toBe('app')
+      // **走了之后那一行还在屏上**（用户就是在这时候去复制它的）——它写在那一帧**之上**，
+      // Ink 收摊擦的是它自己那一帧，不碰已经写出去的那一行
+      const afterExit = await first.capture({ label: '退出之后那一行还在' })
+      expect(afterExit.lines.some((text) => text.includes('magic --session'))).toBe(true)
+      first = undefined
+
+      // ③ 造一个 `magic`（PATH 里的 shim ⇒ 真的那个 cli.ts），**把那一行原样交给 sh**
+      const bin = join(sandbox.root, 'bin')
+      mkdirSync(bin, { recursive: true })
+      const shim = join(bin, 'magic')
+      writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${join(REPO_ROOT, 'packages/app/src/cli.ts')} "$@"\n`, 'utf8')
+      chmodSync(shim, 0o755)
+
+      // ⚠️ **这一扇窗的底环境里没有 `MAGIC_HOME`**（「复制到另一个终端」的原样）：
+      //    它按默认落点走（家目录下那一份配置 ⇒ 另一个库）。**不带它，判据才成立**——
+      //    底环境里也塞一个 `MAGIC_HOME` 的话，命令里那一段前缀就算失效也照样接得上
+      //    （环境把它兜住了，实测被点出来过）。
+      //
+      // ④ **先确认那个默认库里没有这条会话**（否则「接上了」可能只是接上了别处的同一条）。
+      //    ⚠️ **库文件可能压根还没建**（这一趟默认落点从没被打开过）——那也是「没有」。
+      const defaultDb = join(sandbox.dataDir, 'records.db')
+      const before = existsSync(defaultDb) ? readDatabase(defaultDb) : undefined
+      try {
+        expect(before?.sessions.length ?? 0).toBe(0)
+      } finally {
+        before?.close()
+      }
+
+      second = await createUiSession({
+        label: '照那一行接回来',
+        artifacts: runs,
+        sandbox,
+        fixture,
+        command: ['sh', '-c', copy],
+        env: { PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+        skipReady: true,
+      })
+
+      // ④ **接回同一条会话**（记录区铺着原来那一句）
+      await second.wait({ text: '第一句答复。' }, { timeoutMs: 30_000 })
+      const back = await second.capture({ label: '照那一行接回来的那一屏' })
+      expect(back.lines.some((text) => text.includes('› 第一句'))).toBe(true)
+      // **查看不触发重新执行**：模型一次都没被再问（物证是调用数，不是屏）
+      expect(fixture.requests().length).toBe(asked)
+
+      await second.quit()
+      await second.close({ graceMs: 5_000 })
+      second = undefined
+
+      // ⑤ **反面**（同一条命令，**把前缀摘掉**）：在那个默认库上接不上——
+      //    这一条才说明④⑤两条的「接上了」是**那一段前缀**挣来的，不是环境碰巧对。
+      const naked = ['sh', '-c', copy.replace(/^MAGIC_HOME='[^']*' /u, '')]
+      const third = await createUiSession({
+        label: '摘掉前缀（反面）',
+        artifacts: runs,
+        sandbox,
+        fixture,
+        command: naked,
+        env: { PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+        skipReady: true,
+      })
+      const refused = await third.close({ graceMs: 8_000 })
+      expect(refused.exit.code).toBe(1)
+      expect(third.rawText()).toContain('没有这条会话')
+    } finally {
+      await first?.close().catch(() => {})
+      await second?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
+
+  /**
+   * **首条消息刚发出去就选「转到后台」**（U100 · 规划裁决点出的竞态）。
+   *
+   * 那一刻外壳手上**还没有会话 id**（`session.state` 那一声答复没到）。这一档**不许**
+   * 当场走掉、还留一句「没有可接的入口」：要**先等在界面上**，认出来再走、写**真命令**。
+   */
+  test('首条输入刚发出就选「转到后台」——**等会话认出来再走**，写的是真命令', async () => {
+    const runs = tempDir('magic-u100-earlybg-runs-')
+    // 第一轮**慢慢长**：会话一定在它收场之前就落成（判据才确定）
+    const fixture = startFixture({
+      turns: [{ kind: 'text', text: '这一句会慢慢长出来：先是一半，然后才是另一半。', chunks: 40, chunkDelayMs: 500 }],
+    })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '刚发出就转后台', artifacts: runs, sandbox, fixture })
+
+      // 发出去就按（**不等会话落成**）——但**要等那一轮真跑起来**：状态还没翻成「工作中」
+      // 之前，`ctrl+c` 走的是**空闲**那条路（挂「再按一次 ctrl+c 退出」），压根不开菜单。
+      // 实测过那一档（0/30/60/120ms 各按一次，四次都是空闲那条路；到 200ms 菜单才开，
+      // 而那时会话 id 也已经到了）——**「菜单开着而会话还没认出来」那一格比一帧还窄**，
+      // 真跑上按不出来，故它由 `spec.u100` 那两条**单元**判据钉着（同一段代码）。
+      await window.send('长话', { until: { text: '长话' }, timeoutMs: 10_000 })
+      await window.key('enter')
+      await window.wait({ text: 'ctrl+c 停或离开' }, { timeoutMs: 15_000 })
+      await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
+      await window.key('down')
+      await window.key('enter')
+
+      const closed = await window.close({ graceMs: 10_000 })
+      expect(closed.exit.by).toBe('app') // 自己走的
+      const raw = window.rawText()
+      window = undefined
+
+      // **写的是真命令**（带着那一条会话的 id），不是「没有可接的入口」那一句
+      const id = sessionIdOf(sandbox)
+      expect(id).not.toBe('')
+      expect(raw).toContain(`magic --session ${id}`)
+      expect(raw).not.toContain('没有可接的入口')
+    } finally {
+      await window?.close().catch(() => {})
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
+
+  test('只剩后台命令 ⇒ `ctrl+c` 给的是**三选**（不在跑模型、也不在跑工具）', async () => {
+    const runs = tempDir('magic-u100-bgmenu-runs-')
+    const MARK = `322.${Math.floor(Math.random() * 900_000) + 100_000}`
+    const fixture = startFixture({
+      turns: [
+        { kind: 'tool', name: 'exec', args: { cmd: `sleep ${MARK}`, background: true } },
+        { kind: 'text', text: '交出去了。' },
+      ],
+    })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    let window: UiSession | undefined
+
+    try {
+      window = await createUiSession({ label: '只剩后台', artifacts: runs, sandbox, fixture })
+
+      await window.send('起一条后台命令', { until: { text: '起一条后台命令' }, timeoutMs: 10_000 })
+      await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 30_000 })
+      await waitFor('那条后台进程站起来', async () => (await pidsOf(MARK)).length > 0, 20_000)
+
+      // ⚠️ **等不了「○ 空闲」**——U100 起，只剩后台命令那一形在运行事实里**就是「执行中」**
+      // （设计：「后台命令仍在执行……也属于有在途工作」）。故这一趟等的锚换成那两件**真事**：
+      // 这一轮收完了（助手那句答复在屏上）＋ **没有工具在跑**（结果行有 `✓`、没有 `⟳` 那行）。
+      const settled = await window.capture({ label: '只剩后台命令（这一轮已收）' })
+      keepShot(settled)
+      expect(settled.lines.some((line) => line.includes('交出去了。'))).toBe(true)
+      expect(settled.lines.some((line) => line.trimStart().startsWith('⟳'))).toBe(false)
+      expect(settled.lines.some((line) => line.includes('✓'))).toBe(true)
+
+      await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
+      const menu = await window.capture({ label: '只剩后台命令时的三选' })
+      keepShot(menu)
+      expect(menu.lines.some((line) => line.includes('当前任务仍在运行'))).toBe(true)
+      expect(menu.lines.some((line) => line.includes('停止任务'))).toBe(true)
+      expect(menu.lines.some((line) => line.includes('再按一次 ctrl+c 退出'))).toBe(false)
+      // 状态行**左位照旧报「工作中」**（运行事实说这条会话还有活在跑——它没在跑模型、
+      // 也没在跑工具，可那条后台命令还站着）；右位此刻归那一屏自己（键位提示）
+      const status = menu.lines.find((line) => line.includes('工作中')) ?? ''
+      expect(status).toContain('● 工作中')
+
+      // 收尾：**走「转到后台」那扇门**（不是 `quit()`——它等「○ 空闲」，而后台命令还在跑，
+      // 那条会话照旧是「执行中」）。这一支只离开界面，那条命令照旧留着（下面兜底收掉）
+      await window.key('down')
+      await window.key('enter')
+      const left = await window.close({ graceMs: 8_000 })
+      expect(left.exit.by).toBe('app')
+      window = undefined
+    } finally {
+      await window?.close().catch(() => {})
+      for (const pid of await pidsOf(MARK)) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch {
+          // 已经没了
+        }
+      }
+      await fixture.stop()
+      sandbox.dispose()
+      removeDir(runs)
+    }
+  }, 120_000)
+})
+
+/** 命令行里带那一段的进程号（`pgrep -f` 按整条命令行找——那一段是随机的，撞不上别人的）。 */
+async function pidsOf(mark: string): Promise<readonly number[]> {
+  const proc = Bun.spawn(['pgrep', '-f', mark], { stdout: 'pipe', stderr: 'ignore' })
+  const text = await new Response(proc.stdout as ReadableStream<Uint8Array>).text()
+  await proc.exited
+
+  return text
+    .split('\n')
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0)
+}
+
+/** 留一屏（这一支的帧与 `frames-u100-tui.ts` 同一形制）。 */
+function keepShot(shot: Capture): void {
+  const root = process.env['U100_SHOT_DIR']
+  if (root === undefined) return
+  writeFileSync(join(root, `${shot.label}.txt`), `${shot.text}\n`, 'utf8')
+}
