@@ -565,8 +565,8 @@ export function holdsPid(
  *   ⇒ 已停止 · 异常退出。这不是猜：设计写着「管理者异常退出 ⇒ 执行者收到断开后自行停止」，
  *   而我们**没有它的收场回执**，故按异常记，不冒充正常收束。
  *
- * 落盘里那条 `state` 只用于一件事：**它当时是不是已经结束了**。是（`idle` / `stopped`）
- * 就照原样留作「最近一次运行」——**已经结束的事实回不去**，重启不该把它翻成「待确认」。
+ * `state` 是读数，idle 也可能仍有活执行者。只有 `ended` 落下的 `why` / `kind`
+ * 才确认当时已经退出；缺少结束事实就核对 PID 身份，不能提前核销或放行后继。
  */
 export function reconcile(
   stored: StoredRun,
@@ -592,11 +592,11 @@ export function reconcile(
   // 同理：它当年走到了「能干活」那一跳（没走到的那些由 `everConnected` 那条收）
   record.ready = true
 
-  if (stored.state === 'stopped' || stored.state === 'idle') {
+  if (stored.why !== undefined && stored.kind !== undefined) {
     record.ended = {
       at: stored.since,
-      why: stored.why ?? '上一代已经收摊',
-      kind: stored.kind ?? 'normal',
+      why: stored.why,
+      kind: stored.kind,
     }
     record.state = stored.state
     record.since = stored.since
