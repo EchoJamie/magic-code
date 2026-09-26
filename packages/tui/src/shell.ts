@@ -13,6 +13,11 @@
  * ③ **接管**（裁决挂着）——看得见（占位换掉）· 草稿不丢（收起来、答完归还、**不自动发送**）·
  *    **不静默吞键**（只认 y/a/n ＋ 全局 ctrl+c，其余忽略但当场说一句；粘贴一律拒）；
  * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
+ *
+ * ⚠️ **`ctrl+c` 两种走法**（U100）——**这条按「这条会话手上有没有事」分，不按「屏上有没有字」**：
+ * **有**（在途工作或待答）⇒ 开「当前任务去向」那三选（**打开本身不停、不暂停、不退出**）；
+ * **没有** ⇒ 沿用 1 秒内按两次退出。故「按一下退不掉」不再等于「它在跑」——那个问题由
+ * 三选自己答（见 `openTaskMenu` / `taskAction`）。
  */
 
 import { apiKeyEnvVarOf } from '@magic/contracts'
@@ -68,6 +73,7 @@ import {
   grantsHint,
   grantsRows,
   hasPlan,
+  hasRunningTool,
   mcpHint,
   mcpRows,
   mcpToolRows,
@@ -98,11 +104,12 @@ import {
   STOP_KEYS_HINT,
   stopReceiptOf,
   withBanner,
+  withDecisionStatus,
   withContextWindow,
   // **运行事实收尾状态行那一格**（U54）——构造与推来那两跳都走它（见 `withRunFacts`）
   withRunFacts,
 } from './view.ts'
-import type { Dock, ModelScope, PageTurn, PickerRow, SessionScope } from './view.ts'
+import type { Dock, ModelScope, PageTurn, Picker, PickerRow, SessionScope } from './view.ts'
 import {
   backspaceRange,
   deleteRange,
@@ -150,6 +157,14 @@ export type ShellKey =
   | { readonly kind: 'escape' }
   | { readonly kind: 'up' }
   | { readonly kind: 'down' }
+  /**
+   * **`Ctrl+C`**——这一屏**唯一一个按「这条会话手上有没有事」分岔的键**（U100）：
+   * **有**（在途工作或待答）⇒ 开「当前任务去向」三选，**打开本身不停、不退出**；
+   * **没有** ⇒ 沿用 1 秒内按两次退出（U46 · U68）。
+   *
+   * ⚠️ 它是**全局键**：接管着（裁决卡占屏）、本地小输入开着、选择器开着，它都在外壳手上
+   * （见 `key()` 里那两道门）——「一条本地小输入不该把退出挡住」那条仍旧成立。
+   */
   | { readonly kind: 'ctrl+c' }
   | { readonly kind: 'ctrl+o' }
   /**
@@ -218,10 +233,11 @@ export type Shell = {
   /** 一个按键。 */
   key(key: ShellKey): ShellEffect
   /**
-   * **终端那头没人了**（断流 / 关窗信号）——同一条收尾语义，但**不设「按两次」那道门**
+   * **终端那头没人了**（断流 / 关窗信号）——**当场放行**，且**不设「按两次」那道门**
    * （那是键盘那条路上的确认；此刻对面已经没人在按了）。
    *
-   * 空闲＝当场放行 · 工作中／有待答＝替我们发中断。由头见 `shell.ts` 里那一处的注。
+   * ⚠️ **U100 起它也不再替用户中断**（那是本单拆掉的那个耦合）：关窗口只是离开界面，
+   * **不是取消工作**。由头见 `shell.ts` 里 `hangUp` 那一处的注。
    */
   hangUp(): ShellEffect
   /**
@@ -839,6 +855,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
     if (layer.dock.kind === 'prompt' && layer.asking !== null) {
       commit(openPrompt(view, promptViewOf(layer.asking)))
+      return
+    }
+    /**
+     * **裁决卡也能是一层**（U100）——有在途工作时按 `ctrl+c`，开的是「任务去向」那一屏，
+     * 而它底下**正压着一张裁决卡**（待答那一形）。`esc 返回` / `←` 得把那张卡照原样摆回来
+     * （设计：「Esc 后原有草稿、引用、光标与审批恢复」）。
+     *
+     * ⚠️ **不是「什么都收掉」**：卡不是用户打开的屏，是这个会话此刻的状态——收掉它等于
+     * 替用户拒了一次审批（「关闭窗口不自动批准」同理）。故它按**一层**对待，**由上面那一跳
+     * 摆回来**（压栈在 `openTaskMenu`）。
+     *
+     * ⚠️ **`withDecisionStatus` 不能省**：状态行那一格（`● 等你定夺` ＋ 件数 ＋ 键位）归它，
+     * 少了这一步，卡回来了而状态行还停在「○ 空闲」（同一屏两句话打架）。
+     * ⚠️ **不走 `takeOver`**：草稿早在卡第一次接管时就收进 `stashed` 了，这里只是把卡摆回来
+     * ——再收一次是空转（`stashed !== null` 时它本来也直接返回）。
+     */
+    if (layer.dock.kind === 'decision') {
+      commit(withDecisionStatus({ ...view, dock: layer.dock }))
     }
   }
 
@@ -915,20 +949,27 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   let exitWait: SessionId | null = null
 
   /**
-   * **`/exit` 敲在「这条会话还没认出来」的时候**（U52）——把意图挂上，等活跃位一到再办。
+   * **选了一件「要落到某条会话上」的动作，而这条会话还没认出来**（U52 · U100 加宽）
+   * ——把意图挂上，等活跃位一到再办。
    *
    * 撞见它的窗口（真 PTY 上量到）：窗口刚开张、**首条消息正跑着**的那几百毫秒里，
-   * 外壳手上还没有会话 id——`session.state`（活跃位那一条）还没到。而 `/exit` 要停的正是
-   * 「当前这条会话」：认不出是哪一条就停不了。
+   * 外壳手上还没有会话 id——`session.state`（活跃位那一条）还没到。而 `/exit` 与
+   * 「停止任务」要停的正是「当前这条会话」：认不出是哪一条就停不了。
+   *
+   * 两条来路各一档（`'exit'`＝`/exit` 与三选里的「停止并退出」· `'stop'`＝三选里的
+   * 「停止任务」），**办的事只差最后那一步**（停完走不走）：前一条停在 `stopForExit`，
+   * 后一条就停在 `options.stop` 那一跳。**机制只有一条**——两处各挂一个布尔迟早分家
+   * （一处记得清、一处忘了清，症状是「过了很久才突然停一条用户早就不打算停的会话」）。
    *
    * ⚠️ **此刻不能降级成「只离开」**（那正是这一单要补的那个缺：工作中退出＝真停），
    * 也不猜一条（猜错就是停错了别人的运行）。故只挂一个「等」——那一声答复一到，
    * 照常停、停了再走（见 `onEvent` 里 `session.state` 那一支的收尾）。
    *
    * 它**不带时限**：等的是「这一轮正在跑」这个事实所依附的那一条会话，而那一轮还在跑，
-   * 那一份事实就一定会到。真要半路不想走了，`ctrl+c` 两下仍是「只离开」那扇门。
+   * 那一份事实就一定会到。真要半路不想走了，`ctrl+c` 那扇门一直开着（空闲时两下、有在途时
+   * 三选里那一项）。**那一轮真收场了它自己撤**（同 `onEvent` 里 `turn.end` 那一跳）。
    */
-  let exitWaitsForSession = false
+  let waitsForSession: 'exit' | 'stop' | null = null
 
   /**
    * **技能名问过没有**（每个壳一次）——打 `/` 那一下问一遍（见 `askSkills`）。
@@ -1239,6 +1280,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    它管两格——「`null → 头一条` 也算换页」（由头见 `reduceSessionState`）与
     //    **这一页带不带字标**（U45：`'new'` 印 / `'open'` 不印）。
     //    给宽了，「问一次目录」开出来的空壳会话也会把屏翻掉。
+    if (parkDecision(event)) return
+
     commit(reduce(view, event, { turn: turn?.kind ?? null }), STREAMING.has(event.kind))
 
     // **`/config` 那三份读数**（U71）——三份都到齐了才开屏（由头见 `configPending` 那段注）。
@@ -1290,25 +1333,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         }
       }
 
-      // **`/exit` 正等着「这条会话是哪一条」**（U52）——活跃位一到，接着把它停掉
-      // （见 `exitWaitsForSession` 那一格的注）。**只在这一声答复真把活跃位带出来时**才办：
+      // **正等着「这条会话是哪一条」**（U52 · U100 加宽）——活跃位一到，接着把那一件办掉
+      // （见 `waitsForSession` 那一格的注）。**只在这一声答复真把活跃位带出来时**才办：
       // `note` 到了＝这一跳没成（活跃位没动），那不算认出来了。
-      if (exitWaitsForSession && view.sessionId !== null && event.data.note === undefined) {
-        exitWaitsForSession = false
-        stopForExit(view.sessionId)
+      if (waitsForSession !== null && view.sessionId !== null && event.data.note === undefined) {
+        const waiting = waitsForSession
+        waitsForSession = null
+        if (waiting === 'exit') stopForExit(view.sessionId)
+        else options.stop?.(view.sessionId, 'run')
       }
     }
 
     // **那一道闸跟着它等的那一轮走**（U52）——这一轮收场了、会话 id 始终没来 ⇒ 已经没有
-    // 可停的东西了，照「真·空手开机」办：直接走。
+    // 可停的东西了。两条来路各按自己的收法办：
+    // - **`/exit`（含「停止并退出」）**：照「真·空手开机」办，**直接走**；
+    // - **「停止任务」**：它本来就是「停掉、留下」——没有可停的东西就**什么都不做**
+    //   （屏上不留话：那是**没发生过**的事，印一句「没停成」反倒是在报一件没发生的事）。
     //
     // ⚠️ **不带这一条，那道闸就是个会活过头的东西**：用户不再等它（敲了别的、又回来做了
     // 点别的）时，它会在**下一次**活跃位到达时把一条**他不打算停的**会话停掉。带上它之后
     // 这道闸只在「那一轮还在跑」期间有效——而那一轮在跑时，这一屏**切不动会话**
     // （忙时 `/resume` / `/clear` 被内核挡回），故它等的那一条只可能是它原来那一条。
-    if (exitWaitsForSession && event.kind === 'turn.end' && view.sessionId === null) {
-      exitWaitsForSession = false
-      commit({ ...view, leaving: true })
+    if (waitsForSession !== null && event.kind === 'turn.end' && view.sessionId === null) {
+      const waiting = waitsForSession
+      waitsForSession = null
+      if (waiting === 'exit') commit({ ...view, leaving: true })
     }
 
     // 连接一览回来了 ⇒ 两件（U41）：
@@ -3049,18 +3098,46 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   // —— 键 ——
 
   /**
-   * **这一屏还在干活吗**（这一轮在跑，或在等你答复）——与 `hangUp` / `run.ts` 的
-   * `busy()` 同一套口径：一处定义，三处别各判各的。
+   * **这一轮还在跑吗**（模型在途 / 工具在跑）——**与左下开着哪一屏无关**。
+   *
+   * 「工具在跑」那一支也认**挂着卡那一笔**：卡占住屏的时候它的行状态照旧是 `running`
+   * （`reduceToolResult` 才落地）——「等你」不是「没在跑」，别把它漏出去。
    */
-  const busy = (): boolean =>
-    view.status.state === 'working' || view.status.state === 'retrying' || view.dock.kind === 'decision'
+  const working = (): boolean =>
+    view.status.state === 'working' ||
+    view.status.state === 'retrying' ||
+    hasRunningTool(view)
 
-  /** 工作中／有待答 ⇒ **替我们发中断**并返回 `true`（「这一下不是退出」）；否则 `false`。 */
-  const interruptPending = (): boolean => {
-    if (!busy()) return false
+  /** 在途那三档（运行事实里）——`stopped` / `idle` / `unknown` 不算「手上还有事」。 */
+  const ACTIVE_RUN_STATES: ReadonlySet<RunRow['state']> = new Set(['running', 'waiting', 'stopping'])
 
-    send({ type: 'turn.interrupt' })
-    return true
+  /** 本窗这条会话、运行事实说的那一格——还没有会话 / 表里没它 ⇒ `undefined`（不编）。 */
+  const runStateNow = (): RunRow['state'] | undefined => {
+    const id = view.sessionId
+    if (id === null) return undefined
+
+    return view.runs.find((one) => one.session === id)?.state
+  }
+
+  /**
+   * **这条会话手上还有没有事**（U100）——设计那一句「有在途工作或待答事项」的落点。
+   *
+   * 四条来路，缺一条就有一种「明明还在跑，`ctrl+c` 却只给『再按一次退出』」：
+   * - **这一轮在跑**（模型在途 / 工具在跑 · 含挂着卡那一笔，见 `working`）；
+   * - **审批还挂着**（接管着那一屏）——同上，它算在途；
+   * - **运行事实说它在跑**（`running` / `waiting` / `stopping`）——**这条兜的是外壳看不见的那些**：
+   *   别的窗口起的活、以及**只剩后台命令**那一形（后台命令「不占着这一轮」，故外壳自己的
+   *   状态行那会儿是空闲；可它确实是这条会话的工作，`/resume` 那一行也照实报着）。
+   *
+   * ⚠️ **只问这一条会话**（`view.sessionId`）——设计：「只有其他会话在跑时也只退出当前界面」。
+   * ⚠️ **只作判据，不作承诺**：它答的是「要不要给用户那三选」，不答「停得掉什么」——
+   * 后者归管理者（见 `taskAction` 那一跳）。
+   */
+  const inFlight = (): boolean => {
+    if (working() || view.dock.kind === 'decision') return true
+
+    const state = runStateNow()
+    return state !== undefined && ACTIVE_RUN_STATES.has(state)
   }
 
   /** 那道门的钟（`undefined` ＝ 没挂着）。挂上时起、撤下时清——**两处收口见下**。 */
@@ -3106,21 +3183,42 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
-   * 空闲按 Ctrl+C——**按两次才走**（U46 · U68 加了时限 · 设计「离开、停止与异常退出」）。
+   * Ctrl+C——**两种走法**（U100 · 设计「离开、停止与异常退出」那张表）。
    *
-   * 第一下**不退出**，只把那一行挂上（`HINT_EXIT_ARMED`）**并起 1.5 秒的钟**；
-   * 钟内再按一下才放行。两条清理由：
-   * - **到点**（`armExit` 里那支钟）——那一行自己撤，再按是**新的一次**；
-   * - **任何别的输入**（`key` 兜着，见那一处）——用户又不想走了。
+   * | 这一下的时候 | 走法 |
+   * | --- | --- |
+   * | **有在途工作或待答**（`inFlight`） | **开三选**（停止任务 / 转到后台 / 停止并退出）——**打开本身不停、不暂停、不退出** |
+   * | 手上没事 | **空闲**那条：按两次才走（U46 · U68 加了时限） |
    *
-   * 两者都收在 `disarmExit` 一处——「那一行还在不在」与「那一下算不算数」是**同一格**，
-   * 两处各清各的迟早分开（只撤了行、监听还挂着，就会「看不见那一行却一按就退」）。
+   * ## 空闲那条（一个字没改）
+   *
+   * 第一下**不退出**，只把那一行挂上（`HINT_EXIT_ARMED`）**并起 1 秒的钟**；钟内再按一下
+   * 才放行。两条清理由：**到点**（`armExit` 里那支钟，那一行自己撤、再按是新的一次）·
+   * **任何别的输入**（`key` 兜着，见那一处）。两者都收在 `disarmExit` 一处——「那一行还在
+   * 不在」与「那一下算不算数」是**同一格**，两处各清各的迟早分开（只撤了行、监听还挂着，
+   * 就会「看不见那一行却一按就退」）。
+   *
+   * ## 有在途那条为什么**不再当场发中断**（这一单拆掉的那个耦合）
+   *
+   * 旧写法是「工作中那一下＝替用户发 `turn.interrupt`」——**替用户做了决定**：那条路
+   * 「停掉这一轮」与「离开、让它继续跑」被压成了同一个键，而用户此刻要的往往正是后者
+   * （关个窗口去干别的）。而它们**是两件事**（设计的三个选项就是这么分的）。故这一跳
+   * 只把问题摆出来；**停与不停由用户在那一屏上明确选**（`taskAction`）。
+   *
+   * ⚠️ **那一道门也当场撤掉**（挂着的 `exitArmed` ＋ 它的钟）：它说的是「再按一次就退出」，
+   * 而这一下之后屏上换的是三选——留着它就是一句不再为真的话，再按一下还会退。
    */
   const exitOrInterrupt = (): ShellEffect => {
-    if (interruptPending()) {
-      // ⚠️ **中断不是「第二次按」**：它是另一件事（这一轮在跑），故那一道门当场撤掉——
-      //    不然「按一次挂上 → 干了点别的（比如提交了一句话）→ 再来一下」会直接退出。
+    // **菜单正中开着**（三选已经摆在那儿）——再按 `ctrl+c` 只**返回**，不隐式执行任何一项
+    // （设计明文：「菜单中再按 Ctrl+C 也只返回，不隐式执行任何一项；没有倒计时或自动确认」）。
+    if (view.dock.kind === 'picker' && view.dock.picker.source === 'task') {
+      closeTaskMenu()
+      return NONE
+    }
+
+    if (inFlight()) {
       disarmExit()
+      openTaskMenu()
       return NONE
     }
 
@@ -3132,6 +3230,244 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 第二下（在钟内）——放行。钟随这一下收掉：退出之后它再烧一次只是白叫醒一个没人看的屏。
     stopExitClock()
     return EXIT
+  }
+
+  /**
+   * **这一屏的三个选项**（U100）——顺序固定（设计那张表），**行不随运行事实重铺**：
+   * 它们说的是「接下来怎么办」，不是「此刻哪儿在跑」（那件事归状态行与 `/resume`）。
+   *
+   * ⚠️ **`value` 是动作名**（不是会话 id）：选定之后要落到哪条会话上，由 `taskMenu` 那一格
+   * 记着（**打开那一刻**绑定的那一条）——把会话 id 塞进行里，就等于让「停谁」跟着一行字走，
+   * 而用户按 `↑↓` 时它是不动的（两件东西混在一个字符串里，迟早分家）。
+   */
+  const TASK_ROWS: readonly PickerRow[] = [
+    {
+      label: '停止任务',
+      meta: '停止当前任务，留在 Magic',
+      current: false,
+      value: 'stop',
+      // **担保一行**（U100）——这三行的简述是**定长**的（设计写死的那几句），
+      // 而它们在窄窗里会折行：折一行就比高度账多占一行（U31 那一族的老账，界面上表现为
+      // 真光标高一行）。`oneLine` 正是为这个给的（超宽在渲染层截断加 `…`），
+      // 且它截的次序合设计那条「窄窗先保住名称、再截断简述」——动作名一个字都不动。
+      oneLine: true,
+    },
+    { label: '转到后台', meta: '退出界面，任务继续运行', current: false, value: 'background', oneLine: true },
+    { label: '停止并退出', meta: '停止当前任务并退出 Magic', current: false, value: 'stop-exit', oneLine: true },
+  ]
+
+  /**
+   * **这一屏要画的那份选择器**（U100）——开它、以及被卡顶掉之后**留在上面**两处共用。
+   *
+   * 标题按**此刻的事实**挑（设计：标题用「当前任务仍在运行」，待答时改「当前任务正在等待你」）。
+   * `selected` 由调用方给：菜单被顶掉又摆回来时，**焦点要留在用户原来那一格**上
+   * （那是他刚挪到的，不是这一屏新开的）。
+   */
+  const taskPickerOf = (asked: boolean, selected = 0): Picker => ({
+    source: 'task',
+    title: asked ? '当前任务正在等待你' : '当前任务仍在运行',
+    rows: TASK_ROWS,
+    selected,
+  })
+
+  /**
+   * **这一屏正开着吗**——`dock` 是唯一真源（`taskMenu` 只是「打开那一刻绑定的是哪条」）。
+   */
+  const taskMenuOpen = (): boolean =>
+    view.dock.kind === 'picker' && view.dock.picker.source === 'task'
+
+  /**
+   * **卡到了，而任务去向那一屏正开着 ⇒ 卡不顶掉它**（U100）——卡是**底下的那一层**，
+   * 菜单一收它就照原样出现（复用 U61 那个栈：栈的单位是「那一屏」）。
+   *
+   * ## 为什么要这一条
+   *
+   * 那一屏是**唯一能把在途工作停下来的入口**，而它一旦被顶掉，用户手上那点「停下」的意图
+   * 就没处落了——按下回车得到的是「先答复」（那张卡只认 `y` / `a` / `n`）。而这一刻偏偏
+   * 是最想按停的时候（模型正一个接一个地要工具）。
+   *
+   * 卡**不急着看**：它挂在那件工具上**不会过期**，这一轮也照旧卡着等答复
+   * （不自动批准、不重跑、不因无界面而放宽），晚几百毫秒看到它没有任何损失。
+   * 反过来，菜单被顶掉的那一下，用户丢掉的是**他刚要做的那个决定**。
+   *
+   * ## 落在哪几处
+   *
+   * - **卡照旧摆好**（`reduce` 那一条照走）：那一行该停表（U66 的 `awaitingDecision`），
+   *   草稿该收进 `stashed`（`takeOver`）——这些都与「画不画」无关；
+   * - **菜单留在上面**，标题换成「当前任务正在等待你」（此刻真有一张卡在等）；
+   * - **`esc` / `←` / 再按 `ctrl+c` / 选定之后**：收菜单那一处走 `popLayer`，卡照原样回来。
+   *
+   * ⚠️ **只管任务去向那一屏**：别的抽屉（`/resume` / `/model`…）照旧被卡顶掉——
+   * 它们丢了只是少看一屏，再打一次命令就回来；那一屏丢了，用户就没法停了。
+   *
+   * @returns 拦下了没有（拦下就不用再走常规那一条 `reduce`）
+   */
+  const parkDecision = (event: KernelEvent): boolean => {
+    if (event.kind !== 'tool.decision.request' || !taskMenuOpen()) return false
+
+    const picker = view.dock.kind === 'picker' && view.dock.picker.source === 'task' ? view.dock.picker : undefined
+    const withCard = reduce(view, event, { turn: null })
+    const card = withCard.dock
+    if (card.kind !== 'decision') return false // 卡没造出来（手搭的视图）——照常规走
+
+    layers = [...layers, { ...layerNow(), dock: card }]
+    commit(
+      openPicker(withCard, taskPickerOf(true, picker?.selected ?? 0)),
+      STREAMING.has(event.kind),
+    )
+    return true
+  }
+
+  /**
+   * **打开时绑定的那一条**（U100）——`null` ＝ 三选没开着。
+   *
+   * 两格各司其职：
+   * - `session`——**打开那一刻**的当前会话（可能是 `null`：首条消息正跑着、外壳还没认出
+   *   它是哪一条，同 `beginExit` 踩过的那个窗口）；
+   * - `asked`——打开那一刻**是不是待答**。只用于**标题**（「当前任务正在等待你」那一版）：
+   *   菜单一开，`dock` 就从裁决卡换成了选择器，那件事于是不能再从 `view.dock` 读。
+   */
+  let taskMenu: { readonly session: SessionId | null; readonly asked: boolean } | null = null
+
+  /**
+   * **开三选**（U100）——`ctrl+c` 在有在途工作时走的就是这一跳。
+   *
+   * 三件要分开说：
+   *
+   * ① **打开不改变执行**：这里只动 `dock` 与那行键位提示（`openPicker` 干的），
+   *    一个命令都不发、一个计时器都不挂——**没有倒计时、没有自动确认**。
+   * ② **把当前那一屏收进栈**（U61 的栈，单位是「那一屏」）：待答时它就是**上一层**，
+   *    `esc 返回` / `←` 要能照原样摆回来（设计：「Esc 后原有草稿、引用、光标与审批恢复」）。
+   *    从**输入行**开的没有上一层（栈底就是输入行）——不压，`esc` 那一下便是回输入行
+   *    （与 `enterLayer` 同一条规矩）。
+   * ③ **标题按打开那一刻的事实挑**（设计：标题用「当前任务仍在运行」，待答时改
+   *    「当前任务正在等待你」）：那一刻之后卡要是被别的窗口答了，这一屏**整个会被撤掉**
+   *    （答复那一跳走 `undock`，`dock` 回输入行、栈随之清空）——故它不会挂着一句过期的标题。
+   */
+  const openTaskMenu = (): void => {
+    if (view.dock.kind === 'picker' && view.dock.picker.source === 'task') return
+
+    const asked = view.dock.kind === 'decision'
+    taskMenu = { session: view.sessionId, asked }
+
+    if (asked) layers = [...layers, layerNow()]
+    else enterLayer()
+
+    commit(
+      openPicker(view, {
+        ...taskPickerOf(asked),
+        selected: view.dock.kind === 'picker' ? view.dock.picker.selected : 0,
+      }),
+    )
+  }
+
+  /**
+   * **收起三选、回到原处**（U100）——`esc` / `←` / 菜单里再按一下 `ctrl+c` 三条都走它。
+   *
+   * 「原处」＝**打开它之前那一屏**：待答那一张卡照原样摆回来（它一直在栈里，见 `openTaskMenu`），
+   * 否则回输入行。⚠️ **不是「什么都收掉」**：那一张卡不是用户打开的屏，是这个会话此刻的
+   * 状态——收掉它等于**替用户拒了一次审批**（设计：「关闭窗口不自动批准」，同理，返回也不批）。
+   *
+   * `popLayer` 就是这一件（有上一层摆回来、没有便收起），故这里不另写一套——**一处口径**。
+   */
+  const closeTaskMenu = (): void => {
+    taskMenu = null
+    popLayer()
+  }
+
+  /**
+   * **三选里选定了一件**（U100）——`stop` / `background` / `stop-exit`。三支各走各的来路：
+   *
+   * | 选定 | 走哪条 |
+   * | --- | --- |
+   * | 停止任务 | `options.stop(<这条>, 'turn')`——**U50 交付的那条停止通路**（局部那一档），界面留下 |
+   * | 转到后台 | **一条命令都不发**：只置 `leaving`，界面退出、连接断开 |
+   * | 停止并退出 | `beginExit()`——`/exit` 那一条（整体那一档，停到核销之后才走） |
+   *
+   * ## 三处共同的纪律
+   *
+   * ① **先核对目标，再动手**（设计：「选项绑定打开时的当前会话与运行；执行前再核对，
+   *    目标已结束或更换则收起菜单，不误停下一轮」）——见下面那一段的两种核对。
+   * ② **发出去就走 ≠ 有回执**：两支停止**都不在这里报「停了」**——回执归 `stopped` 那条线
+   *    （U50：受理 / 已核销 / 没能证实三拍）。这一层多说一个字就是「同一条事实说两遍」。
+   * ③ **不过 `exitWait`**（那一格）：「停止任务」停在 `run` 那一档，而 `exitWait` 是
+   *    「等着走」的意思——挂错了那一格，用户选「留在 Magic」反而会退出界面。
+   *
+   * ## 「转到后台」为什么不发命令
+   *
+   * 设计：「**只断开当前界面**；沿同一条运行继续模型、工具和结果记录，不重开、不重发用户输入」。
+   * 而「断开」这件事**已经发生在外壳退出那一刻**（`cli.ts` 收掉自己那条连接）——管理者那一头
+   * 收的是**观察者**（`manager.ts` 的 `dropClient`：最后一个看客走了**不是「停」**，执行者照跑）。
+   * 故这一支**一个命令都不发**：发一条「转后台」反倒要另立一种运行状态，那正是本单不许新造的
+   * 东西（设计：「不新增后台任务实体、第二套运行登记」）。
+   */
+  const taskAction = (value: string): ShellEffect => {
+    const bound = taskMenu
+    // 无论走哪一支，这一屏都算答完了（下面两支停止的「话」由 `stopped` 那条线说）
+    taskMenu = null
+
+    // **执行前再核对**（设计明文）——两件各答一个问题，缺一件都会误停：
+    //
+    // - **手上还有没有事**：没有 ⇒ 那一轮自己跑完了（或别的窗口把它停了）。此刻再停就是
+    //   **停一个已经不在的东西**，更坏的一种是停到用户刚派出去的下一轮。菜单收起、
+    //   **一个字都不说**——那是「什么都没发生」，一句回执只会让人以为停过一次；
+    // - **还是不是原来那一条会话**：别的窗口把它切走了 / 本窗 `/resume` 换了一条 ⇒ 停下一条
+    //   是**停错人**。同样收起。⚠️ **会话 id 由 `null` 变成有不算换**：那是首条消息开张那一瞬
+    //   ——外壳刚认出它是哪一条（与 `beginExit` 踩过的是同一个窗口），要停的正是它。
+    if (!inFlight() || (bound !== null && bound.session !== null && view.sessionId !== bound.session)) {
+      closeTaskMenu()
+      return NONE
+    }
+
+    // ① **停止任务**——停**这一轮**（局部那一档），**界面留下**：记录与草稿一个字不动，
+    //    接着交代就是**同一条会话**往下走。
+    //
+    // ## 为什么是「这一轮」而不是「这条运行」（U100 定，留个话在这儿）
+    //
+    // 设计那张表的「执行结果」写的是「停止当前会话的**在途工作**并收回其自有资源；界面留下，
+    // 记录与草稿保留，**可继续交代**」。两档都说得通，判据落在最后那半句上——
+    // **「继续交代」只有这一档做得到**：
+    //
+    // 「这条运行」那一档（`'run'`，`/exit` 与 `/resume` 里的 `ctrl+x` 走的就是它）会
+    // **核销那一代执行者**，管理者随即把窗口的 `target` 清空（`manager.ts` 的 `retire`：
+    // 「窗口不是跟着死：它下一次发命令时管理者**按需要起新的那一代**」）。而新起那一代
+    // 带的是 `session: null`（`spawnFresh`）——**那是一条新会话**：用户接着打的字会开一条
+    // 新的记录，屏上却还挂着旧那条的上下文（`view.sessionId` 没变）。那不叫「继续交代」。
+    // 要从整体停止里回来，入口是 `/resume`：挑中那一条、`session.open` 把它接回来。
+    //
+    // 故「留在界面接着用」这一档取**局部**：执行者照旧活着、这条会话照旧是它，在途那一轮
+    // 被取消（它的工具进程组归执行域收——设计那句「收回其自有资源」落在那一档）。
+    // ⚠️ **「停止并退出」取的是另一个范围（整体）**——那不是这里前后不一致，是设计写死的：
+    // 那一项「**复用 `/exit` 的停止**与确认收尾」，而 `/exit` 一直是整体那一档
+    // （「这条我不做了」，资源确认退出之后才放行界面）。
+    if (value === 'stop') {
+      closeTaskMenu()
+      if (options.stop === undefined) {
+        // 没有来路（用例 / 演示）——**如实说**，不留一个按下去没反应的选项
+        commit(appendReceipt(view, '这个窗口没有连着运行管理——停不了'))
+        return NONE
+      }
+      // 会话还没认出来（首条消息刚开张那几百毫秒）：挂上「等」，活跃位一到再停（见 `waitsForSession`）
+      if (view.sessionId === null) {
+        waitsForSession = 'stop'
+        return NONE
+      }
+      options.stop(view.sessionId, 'turn')
+      return NONE
+    }
+
+    // ② **转到后台**——退出界面，工作照跑。**这一支只改本地视图一格**（见上）。
+    //    ⚠️ 不关菜单再走：这一屏马上就要没了（`leaving` 一置，`app.ts` 那一处 `useEffect`
+    //    当场收摊），先关它只是多画一帧。
+    if (value === 'background') {
+      commit({ ...view, leaving: true })
+      return NONE
+    }
+
+    // ③ **停止并退出**——**复用 `/exit` 那一条**（U52：停到核销之后才走，停不掉如实说）。
+    //    这一支什么都不用另写：核销的判断、放行、`unconfirmed` 那一档的实话全在它里面。
+    closeTaskMenu()
+    return beginExit()
   }
 
   /**
@@ -3181,7 +3517,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //   那一跳踩过同一个窗口）。此刻**不能降级成「只离开」**：那正是这一单要补的那个缺
     //   （工作中退出＝真停）。故把意图挂上，那一声答复一到就接着办（见 `onEvent`）。
     if (target === null) {
-      if (busy()) exitWaitsForSession = true
+      if (inFlight()) waitsForSession = 'exit'
       else commit({ ...view, leaving: true })
       return NONE
     }
@@ -3202,13 +3538,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
-   * **终端那头没人了**（断流 / 关窗信号 · `run.ts` 的 `onTerminalGone`）——同一条收尾语义，
-   * 但**不设「按两次」那道门**：那是**键盘**那条路上的确认（设计：「按两次」只管键盘那条路），
-   * 而此刻对面已经没人在按了——让他再按一次，就是谁都不动。
+   * **终端那头没人了**（断流 / 关窗信号 · `run.ts` 的 `onTerminalGone`）——**只离开，不停**。
    *
-   * 空闲＝当场放行收摊 · 工作中／有待答＝替我们发中断（沿既有）。
+   * ## 这一跳就是本单拆掉的那个错误耦合（U100）
+   *
+   * 旧写法是「工作中／有待答 ⇒ 替我们发中断」，于是**关闭窗口＝取消工作**。而设计 2026-09-21
+   * 起定的是另一件事（用户裁的）：
+   *
+   * > **关闭窗口继续执行；停止是独立且明确的操作。切会话、关一个窗口或最后一个窗口都只是
+   * > 离开界面，不是取消工作。**
+   *
+   * 按旧写法，「关掉终端」与「按 `ctrl+c` 停」是**同一个后果**——用户没法用「关窗口」表示
+   * 「我先去干别的」。故这里只剩一件事：**收摊**。停止只有一条来路：**用户明确选了它**
+   * （三选里的两项 / `/exit` / `/resume` 里的停止键）——那是**动作**，不是「离开」的副作用。
+   *
+   * ⚠️ **不设「按两次」那道门**：那是**键盘**那条路上的确认（设计：「按两次」只管键盘那条路），
+   * 而此刻对面已经没人在按了——让他再按一次，就是谁都不动。
+   * ⚠️ **也不再等它收束**（`run.ts` 那一头配套改了）：断流时的工作**归管理者与执行者**，
+   * 客户端这一份只剩「退出」。故这一跳**当场**放行。
    */
-  const hangUp = (): ShellEffect => (interruptPending() ? NONE : EXIT)
+  const hangUp = (): ShellEffect => EXIT
 
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE
@@ -3293,6 +3642,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 这一支的语义一个字没改（U61 只是把「收起」那几步抽进了 `collapseDock`——
         // 「弹到空」那一跳要**与它同效**，两处各写一遍迟早分家）。
         if (view.dock.kind === 'picker') {
+          // **任务去向那一屏：`esc` ＝ 返回**（U100 · 设计：「↑↓ 移动，Enter 确认，Esc 返回」）
+          // ——回到**打开它之前那个地方**：待答那一张卡照原样摆回来（在栈里），否则回输入行。
+          // 它**不**与「一律全收」相抵：那一张卡不是用户打开的屏（收掉它＝替他拒一次审批），
+          // 栈里除了它也没有别的东西可收（这一屏只从「输入行 / 待答」两处开）。
+          if (view.dock.picker.source === 'task') {
+            closeTaskMenu()
+            return NONE
+          }
           collapseDock()
           return NONE
         }
@@ -3577,6 +3934,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (view.dock.kind === 'picker') {
       const row = picked(view)
       if (row === undefined) return NONE
+
+      // **当前任务去向**（U100）——三选选定了一件。摆在三处之前（它那三行的 `value`
+      // 不是任何一份读数的键，落到下面任何一支都是**按别人的规程**处置一件本地的事）。
+      if (view.dock.picker.source === 'task') return taskAction(row.value)
 
       // **配置一览**（U71）——选定＝**进那一项自己那一屏**。
       //

@@ -49,8 +49,21 @@ import type { Frame, ScreenOptions, Stage } from './screen.ts'
 
 const WIDE: ScreenOptions = { columns: 100, rows: 30 }
 const ARM = { kind: 'ctrl+c' } as const
+const ENTER = { kind: 'enter' } as const
 /** 输入行那句空闲占位——量「输入行 ↔ 状态行那一对没被打断」用它当锚。 */
 const IDLE_COMPOSER = `› ${placeholderOf('idle')}`
+
+/**
+ * 这一屏**认得出是哪条会话**（U100）——三选里那两件「要落到某条会话上」的选项靠它。
+ *
+ * 首条消息刚开张的那几百毫秒里 `view.sessionId` 还是 `null`（`session.state` 那一声答复
+ * 没到），那一档另有一条用例（`waitsForSession`）管着，这一节量的是**常态**。
+ */
+const withSession = (stage: Stage, id = 's1'): Stage => {
+  stage.feed([event('session.state', { active: id, sessions: [{ id, at: 0, title: '甲的事' }] })])
+
+  return stage
+}
 
 /** 睡过去——「时限」那两条判据真要等钟走完（`EXIT_ARM_MS` 是产品那一侧的数）。 */
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -254,12 +267,24 @@ describe('两次之间**任何别的输入** ⇒ 那一行没了、也不再退�
   })
 })
 
-// ══ 四 · 工作中那一半不许被改坏 ═══════════════════════════════════════
+// ══ 四 · 工作中那一半：**改判成三选**（U100）═══════════════════════════
 
-describe('工作中按 Ctrl+C ⇒ 仍是中断本轮（不退出、也不冒那一行）', () => {
+/**
+ * ⚠️ **U100 改判**（原锚 / 为何变 / 新锚）——这一节原先叫「工作中按 Ctrl+C ⇒ 仍是中断本轮
+ * （不退出、也不冒那一行）」，两条判据都锚在 `turn.interrupt` 上。
+ *
+ * - **原锚**：工作中那一下**替用户发一次中断**（不退出、不冒那一行）。
+ * - **为何变**：2026-09-26 用户以「Ctrl+C 三选」截图要求派发 U100——有在途工作时，那一下
+ *   **只把问题摆出来**：**停掉**（留在界面）· **转后台**（界面退出、它继续跑）· **停掉并退出**。
+ *   「替用户选中第一项」正是设计明文禁的（「没有倒计时或自动确认」），故旧锚钉的行为
+ *   恰恰是被撤掉的那一个。
+ * - **新锚**：那一下开三选那一屏；**打开本身不停、不暂停、不退出**（一个命令都不发）；
+ *   标题按打开那一刻的事实挑（在跑 / 待答两版）；菜单里再按一下只**返回**。
+ */
+describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本身不改变执行）', () => {
   /** 这一轮跑起来了（工具在跑 ⇒ 状态行报 `ctrl+c 中断`）。 */
   const working = (): Stage => {
-    const stage = createStage()
+    const stage = createStage({ stop: () => {} })
     stage.feed([
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('turn.start', {}),
@@ -268,16 +293,9 @@ describe('工作中按 Ctrl+C ⇒ 仍是中断本轮（不退出、也不冒那�
     return stage
   }
 
-  test('发 `turn.interrupt`，不退；那一行**不冒出来**（它不是退出的第一下）', async () => {
-    const stage = working()
-
-    expect(stage.press(ARM).exit).toBe(false)
-    expect((await stage.screen(WIDE)).has(HINT_EXIT_ARMED)).toBe(false)
-    expect(stage.commands()).toEqual([{ type: 'turn.interrupt' }])
-  })
-
-  test('接管中按 Ctrl+C 也照旧（全局键，接管不吞）', async () => {
-    const stage = createStage()
+  /** 一张挂着的裁决卡（工具在跑 ＋ 这一轮在等你答）。 */
+  const asked = (): Stage => {
+    const stage = createStage({ stop: () => {} })
     stage.feed([
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event(
@@ -287,8 +305,189 @@ describe('工作中按 Ctrl+C ⇒ 仍是中断本轮（不退出、也不冒那�
       ),
     ])
 
+    return stage
+  }
+
+  test('三项都在、顺序固定，**一个命令都不发**（那一行也不冒出来）', async () => {
+    const stage = working()
+
     expect(stage.press(ARM).exit).toBe(false)
-    expect(stage.commands()).toEqual([{ type: 'turn.interrupt' }])
+    const frame = await stage.screen(WIDE)
+
+    expect(frame.has('当前任务仍在运行')).toBe(true)
+    // 顺序即设计那张表：停止任务 → 转到后台 → 停止并退出
+    const rows = frame.dock.filter((line) => /\d\s/u.test(line.text))
+    expect(rows.map((line) => line.text.replace(/^\s*\d+\s*/u, '').split('　')[0])).toEqual([
+      '停止任务',
+      '转到后台',
+      '停止并退出',
+    ])
+    // **打开不改变执行**：不发中断、不退出；那一行（空闲那条路的门）也不冒出来
+    expect(stage.commands()).toEqual([])
+    expect(frame.has(HINT_EXIT_ARMED)).toBe(false)
+  })
+
+  test('待答时：标题改成「当前任务正在等待你」，且**照样不发中断**', async () => {
+    const stage = asked()
+
+    expect(stage.press(ARM).exit).toBe(false)
+    const frame = await stage.screen(WIDE)
+
+    expect(frame.has('当前任务正在等待你')).toBe(true)
+    expect(stage.commands()).toEqual([]) // **不替用户拒、也不替用户中断**
+    // 那张卡被这一屏压下去了（`←` / `esc` 返回时照原样摆回来，见下一条）。
+    // ⚠️ 锚用卡上那句键位（内置件是 `y 批准`）——**不是**标题或材料：那些是全屏都可能有的话
+    expect(frame.has('y 批准')).toBe(false)
+  })
+
+  test('菜单里再按 Ctrl+C ⇒ **只返回**，不隐式执行任何一项', async () => {
+    const stage = working()
+    stage.press(ARM)
+
+    expect(stage.press(ARM).exit).toBe(false)
+    const frame = await stage.screen(WIDE)
+
+    expect(frame.has('当前任务仍在运行')).toBe(false) // 屏收了
+    expect(frame.has('停止任务')).toBe(false)
+    expect(stage.stops()).toEqual([]) // 一个动作都没执行
+    expect(stage.commands()).toEqual([])
+    expect(stage.shell.getView().leaving).toBe(false)
+  })
+
+  test('`esc` 返回：待答那一屏**照原样摆回来**（审批不丢、也不被答掉）', async () => {
+    const stage = asked()
+    stage.press(ARM)
+
+    expect(stage.press({ kind: 'escape' }).exit).toBe(false)
+    const frame = await stage.screen(WIDE)
+
+    expect(frame.has('y 批准')).toBe(true) // 卡回来了
+    expect(frame.has('当前任务正在等待你')).toBe(false)
+    expect(stage.commands()).toEqual([]) // 一个字都没替用户答
+    // 状态行那一格也跟着回来（`● 等你定夺`）——两处不能各说各的
+    expect(frame.statusLine).toContain('等你定夺')
+  })
+
+  test('「停止任务」⇒ **走 U50 那条停止通路**（这条会话 · **这一轮**那一档），界面留下', () => {
+    const stage = withSession(working())
+    stage.press(ARM)
+    stage.press(ENTER) // 默认第一项就是「停止任务」
+
+    // ⚠️ **局部那一档**（`turn`）不是整体——由头见 `shell.ts` 里 `taskAction` 那一段：
+    // 「留在界面可继续交代」只有这一档做得到（整体那档会把执行者核销掉，接着打的字
+    // 会开一条**新会话**）。判据这边只管「发出去的是哪一档」。
+    expect(stage.stops()).toEqual([{ session: 's1', scope: 'turn' }])
+    expect(stage.commands()).toEqual([]) // 停止不经命令面（U50 起它止于管理者）
+    const view = stage.shell.getView()
+    expect(view.leaving).toBe(false) // 「留在 Magic」——不放行退出
+    expect(view.dock.kind).toBe('input') // 屏收了，接着能交代
+  })
+
+  test('「转到后台」⇒ **一条命令都不发**，只放行退出（同一运行照跑）', () => {
+    const stage = withSession(working())
+    stage.press(ARM)
+    stage.press({ kind: 'down' })
+    stage.press(ENTER)
+
+    expect(stage.shell.getView().leaving).toBe(true) // 界面这一头可以走了
+    expect(stage.stops()).toEqual([]) // **不停**——这正是「退出界面，任务继续运行」
+    expect(stage.commands()).toEqual([])
+  })
+
+  /**
+   * **没有停止来路时如实说**（用例 / 演示那种空壳：`options.stop` 没接上）——
+   * 不留一个按下去没反应的选项（同 `/resume` 那两个键那条先例）。
+   */
+  test('没有停止来路 ⇒ 如实回一句，**不假装停过**', async () => {
+    // ⚠️ 这一台**故意不给** `stop`（`createStage` 缺省就是没有）
+    const stage = createStage()
+    stage.feed([
+      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
+      event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
+      event('turn.start', {}),
+    ])
+    stage.press(ARM)
+    stage.press(ENTER)
+
+    const frame = await stage.screen(WIDE)
+    expect(frame.has('没有连着运行管理')).toBe(true)
+    expect(stage.stops()).toEqual([])
+  })
+
+  test('「停止并退出」⇒ 与 `/exit` 同一条路：**先停，核销之后才走**', () => {
+    const stage = withSession(working())
+    stage.press(ARM)
+    stage.press({ kind: 'down' })
+    stage.press({ kind: 'down' })
+    stage.press(ENTER)
+
+    expect(stage.stops()).toEqual([{ session: 's1', scope: 'run' }])
+    // 还没核销 ⇒ **不退**（`/exit` 那条「资源确认退出之后」一字不改）
+    expect(stage.shell.getView().leaving).toBe(false)
+  })
+
+  /**
+   * **菜单开着的时候那一轮自己收场了**（设计：「执行前再核对，目标已结束或更换则收起菜单，
+   * **不误停下一轮**」）。
+   *
+   * ⚠️ 这一条咬的是**真的**：菜单一开，屏上换的是三选，可事件照旧在流——
+   * 那一轮随时可能跑完。若不核对，用户按下的那一下就会停一条**已经不在的运行**
+   * （更坏的一种：停到他自己刚派出去的下一轮）。
+   */
+  test('菜单开着时任务自然结束 ⇒ 那一项**不执行**，菜单收起（不误停下一轮）', async () => {
+    const stage = withSession(working())
+    stage.press(ARM)
+
+    stage.feed([event('turn.end', { reason: 'settled' })]) // 这一轮自己收束了
+    stage.press(ENTER)
+
+    expect(stage.stops()).toEqual([]) // 一条停止都不发
+    expect(stage.commands()).toEqual([])
+    expect(stage.shell.getView().leaving).toBe(false)
+    expect((await stage.screen(WIDE)).has('停止任务')).toBe(false) // 菜单也收了
+  })
+
+  /**
+   * **菜单开着的时候新卡到了 ⇒ 卡不顶掉菜单**（U100 · `parkDecision`）。
+   *
+   * 由头：那一刻正是**最想按停**的时候（模型一个接一个地要工具），而这一屏是唯一能把
+   * 在途工作停下来的入口——它一被顶掉，用户手上那点意图就没处落了（回车只会换来
+   * 「先答复」）。卡本身不急着看：它挂在那件工具上不会过期、这一轮照旧卡着等答复。
+   *
+   * 判据三条：**菜单还在**（标题换成「正在等待你」）· 卡压在下层**没画出来** ·
+   * `esc` 之后**卡照原样回来**（审批不丢、也没被答掉）。
+   */
+  test('菜单开着时新卡到了 ⇒ 卡压在菜单之下，`esc` 之后照原样回来', async () => {
+    const stage = withSession(working())
+    stage.press(ARM)
+
+    stage.feed([
+      event(
+        'tool.decision.request',
+        { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' },
+        { id: 88 },
+      ),
+    ])
+
+    const held = await stage.screen(WIDE)
+    expect(held.has('当前任务正在等待你')).toBe(true) // 菜单还在，标题按此刻的事实换了
+    expect(held.has('停止任务')).toBe(true)
+    expect(held.has('y 批准')).toBe(false) // 卡压在下面（没画出来）
+    expect(stage.commands()).toEqual([]) // 也没替用户答
+
+    // `esc` 返回 ⇒ 卡照原样摆回来
+    stage.press({ kind: 'escape' })
+    const back = await stage.screen(WIDE)
+    expect(back.has('y 批准')).toBe(true)
+    expect(back.statusLine).toContain('等你定夺')
+    expect(stage.commands()).toEqual([])
+
+    // 而**此刻**（卡占着屏、模型不会再往前跑）再按一下 `ctrl+c`，这一屏就出来了——
+    // 这正是「按下回车得到的是先答复」那个死角被解开的地方
+    expect(stage.press(ARM).exit).toBe(false)
+    expect((await stage.screen(WIDE)).has('停止任务')).toBe(true)
+    stage.press(ENTER)
+    expect(stage.stops()).toEqual([{ session: 's1', scope: 'turn' }])
   })
 })
 

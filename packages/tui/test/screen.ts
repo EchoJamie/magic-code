@@ -24,7 +24,7 @@
 
 import chalk from 'chalk'
 import { createElement as h } from 'react'
-import type { Command, KernelEvent, RunRow, RunSnapshot } from '@magic/contracts'
+import type { Command, KernelEvent, RunRow, RunSnapshot, SessionId, StopScope } from '@magic/contracts'
 import { bannerOf } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
@@ -303,6 +303,14 @@ export type StageOptions = {
   readonly openingSession?: string
   /** **接回快照**（U49）——接上它之后喂一份进去，等于管理者刚把「此刻」推来了。 */
   readonly resumed?: (listener: (gen: number, snapshot: RunSnapshot) => void) => void
+  /**
+   * **接上「停止」那条线**（U100）——不给＝**这台壳背后没有服务**（`options.stop` 是 `undefined`，
+   * 只有「用例 / 演示」那种空壳才是这样）。给了才谈得上「选定 ⇒ 发一条停止」。
+   *
+   * ⚠️ **回执不回**：`stopped` 那一头由用例自己按拍子喂（真管理者是异步回的），
+   * 这一格只管**发出去的那一条**（`stops()`）。
+   */
+  readonly stop?: (session: SessionId, scope: StopScope) => void
 }
 
 export type Stage = {
@@ -320,6 +328,8 @@ export type Stage = {
   pushRuns(rows: readonly RunRow[]): void
   /** 发出去的命令（不含订阅动作）。 */
   commands(): readonly Command[]
+  /** **发出去的停止**（U100）——「停的是哪条、哪一档」，按发生序（见 `StageOptions.stop`）。 */
+  stops(): readonly { readonly session: SessionId; readonly scope: StopScope }[]
   /**
    * 给活壳一个「此刻」（毫秒）——跑动中的工具行据此报 `⟳ 0.6s`。
    * 不给就是**没有钟**（回退「运行中」，不编秒数）——帧因此是确定的。
@@ -331,6 +341,7 @@ export type Stage = {
 
 export function createStage(options: StageOptions = {}): Stage {
   const spy = createSpyTransport()
+  const stops: { readonly session: SessionId; readonly scope: StopScope }[] = []
   const shell = createShell(spy.transport, {
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
@@ -344,6 +355,14 @@ export function createStage(options: StageOptions = {}): Stage {
         : { runs: { current: () => options.runs as readonly RunRow[], subscribe: () => {} } }),
     ...(options.openingSession === undefined ? {} : { openingSession: options.openingSession }),
     ...(options.resumed === undefined ? {} : { resumed: { subscribe: options.resumed } }),
+    ...(options.stop === undefined
+      ? {}
+      : {
+          stop: (session: SessionId, scope: StopScope) => {
+            stops.push({ session, scope })
+            options.stop?.(session, scope)
+          },
+        }),
   })
   let now: number | null = null
 
@@ -359,6 +378,7 @@ export function createStage(options: StageOptions = {}): Stage {
     },
     pushRuns: (next) => options.runsFeed?.push(next),
     commands: () => spy.commands,
+    stops: () => stops,
     at: (value) => {
       now = value
     },

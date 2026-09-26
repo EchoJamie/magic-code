@@ -467,6 +467,26 @@ export type Picker = {
      * **下一层**的东西（连接一览 ＋ 授权名录 ＋ 外部工具 ＋ 装配给的那两条路径）。
      */
     | 'config'
+    /**
+     * **当前任务去向**（U100）——有在途工作或待答时按 `ctrl+c` 开的那三选。
+     *
+     * ⚠️ 它是**唯一**一个「取材不是任何一份读数」的抽屉：三行是**固定的动作**
+     * （停止任务 / 转到后台 / 停止并退出），行与当前那条会话的运行事实无关——
+     * 故它的行**不由 `reduce` 重铺**，开了就一直是那三行（设计：三项顺序固定）。
+     */
+    | 'task'
+  /**
+   * **这一屏在说什么**（U100 · 只有任务去向那一屏给）——画在候选**之上**的一行标题。
+   *
+   * 由头：那三行（停止任务 / 转到后台 / 停止并退出）**各自只有一个动词**，而这一屏要答的
+   * 第一个问题是「现在是什么状况」——没有标题就得让用户从三个选项倒推（设计明文：
+   * 标题用「当前任务仍在运行」，待答时改「当前任务正在等待你」）。
+   *
+   * ⚠️ **它不由行兼任**（不是为了省一行）：标题不是可选项，混进列表里就要跟着选中项走、
+   * 还能被 `↑↓` 挪到——那是另一个东西（分组头也不是它：分组头说的是「这几行属于哪一组」）。
+   * 其余抽屉不给这一格：它们的名字就写在命令上（`/resume` 那一屏是「回到之前某一条」）。
+   */
+  readonly title?: string
   readonly rows: readonly PickerRow[]
   readonly selected: number
   /** 列表下方那行说明（可选）。 */
@@ -786,6 +806,19 @@ export const HINT_PICKER_SESSION = '↑↓ 选 · 回车 定 · 打字筛 · tab
  * 照 `/resume` 的先例（那一句也只报「打字筛」）。
  */
 export const HINT_PICKER_CONFIG = '↑↓ 选 · 回车 定 · 打字筛 · ← 退 · esc 收起'
+
+/**
+ * **当前任务去向那一屏**的右位提示（U100）。
+ *
+ * 两处与通用那句不同，都是设计定的：
+ * - **`esc` ＝ 返回**（不是「收起」）——这一屏是**挡在路上的一个问题**，答「不看」就是回到
+ *   刚才那个地方（待答那一屏照旧挂着）。「收起」听着像把一件东西折起来，而这里收起来的是
+ *   **一个正在跑的活儿**的去向（设计：「↑↓ 移动，Enter 确认，Esc 返回」）；
+ * - **不报 `←`**——这一屏 `←` 与 `esc` 是**同一件事**（都回上一层），一排键位里说两遍
+ *   同一件事正是设计反复防的那种赘述（同 `HINT_PICKER_READ` 去掉「回车 定」那条由头）。
+ *   键盘上它照旧管用（走的是 `←` 弹一层那条既有路）。
+ */
+export const HINT_PICKER_TASK = '↑↓ 选 · 回车 定 · esc 返回'
 
 /**
  * **停止那两个键**（U50）——报在**选中那一条的详情那一行**，不挂在状态行右位。
@@ -4216,15 +4249,18 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
   }
 
   // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）、
-  // 能筛的那两屏要报「打字筛」（见 `HINT_PICKER_SESSION` / `HINT_PICKER_CONFIG`）
+  // 能筛的那两屏要报「打字筛」（见 `HINT_PICKER_SESSION` / `HINT_PICKER_CONFIG`）、
+  // 任务去向那一屏 `esc` 是「返回」（见 `HINT_PICKER_TASK`）
   const keys =
     picker.source === 'mcp'
       ? HINT_PICKER_READ
-      : picker.source === 'session'
-        ? HINT_PICKER_SESSION
-        : picker.source === 'config'
-          ? HINT_PICKER_CONFIG
-          : HINT_PICKER
+      : picker.source === 'task'
+        ? HINT_PICKER_TASK
+        : picker.source === 'session'
+          ? HINT_PICKER_SESSION
+          : picker.source === 'config'
+            ? HINT_PICKER_CONFIG
+            : HINT_PICKER
 
   return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: keys })
 }

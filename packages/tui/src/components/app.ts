@@ -40,7 +40,7 @@ import { Composer, clip, draftHeight, inkWidth, type ComposerTone } from './comp
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
-import { PickerList, pickerBudget, pickerLayout } from './picker.ts'
+import { PickerList, pickerBudget, pickerLayout, titleLines } from './picker.ts'
 import { PlanList } from './plan.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
@@ -679,6 +679,10 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         ? 0
         : wrap(view.dock.picker.hint, Math.max(8, columns - 4)).length
 
+    // **标题那一行同一条账**（U100）——与渲染、与 `pickerBudget` **同取一处**
+    // （`titleLines`）：分头各算一次就是 U31 那一族的老病（矮终端上真光标高一行）。
+    const title = titleLines(view.dock.picker, columns)
+
     // `@` 那一栏**多一行输入行**（U36：草稿照旧露着，见 `dockOf`）——与渲染**同取一处**
     // （`draftHeight`）。这一格漏了，账与屏当场分家（矮终端上真光标高一行，U31 那条老病）。
     const composer =
@@ -686,7 +690,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
         ? draftHeight(view.draft, view.caret, columns, maxDraftLines(rows))
         : 0
 
-    return candidates + hint + composer + flash
+    return candidates + hint + title + composer + flash
   }
 
   // 输入行那一片：草稿有几**视觉行**就占几行（多行草稿 —— 半屏封顶；见 `draftHeight`）。

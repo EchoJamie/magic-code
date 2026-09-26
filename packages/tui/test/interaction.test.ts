@@ -260,16 +260,29 @@ describe('Ctrl+C 语义', () => {
     app.unmount()
   })
 
-  test('工作中 —— 中断本轮，不退出', async () => {
+  /**
+   * ⚠️ **U100 改判**（原锚 / 为何变 / 新锚）——
+   *
+   * - **原锚**：「工作中 —— **中断本轮**，不退出」（本条原话就是这个标题）。
+   * - **为何变**：2026-09-26 用户以「Ctrl+C 三选」截图要求派发 U100（设计 · 会话与运行管理
+   *   「Ctrl+C：选择当前任务去向」）：有在途工作那一下**只把问题摆出来**，**不再替用户做
+   *   决定**——「停掉这一轮」与「离开、让它继续跑」是**两件事**，旧写法把它们压成了同一个键。
+   * - **新锚**：那一下开**「当前任务仍在运行」**那一屏（三项顺序即设计那张表），
+   *   **一个命令都不发**（不发中断、不退、也不暂停）——停与不停由用户在那一屏上选。
+   */
+  test('工作中 —— **开「当前任务去向」那三选**（不中断、不退出）', async () => {
     const { app, commands, push } = liveApp()
 
     await push([event('turn.start', {})], (frame) => frame.includes('● 工作中'))
     await app.type('\u0003')
 
-    expect(commands()).toEqual([{ type: 'turn.interrupt' }])
-    // 还活着（没退出）：再敲一个字仍在输入框
-    await app.type('a')
-    await app.waitForFrame((frame) => frame.includes('› a'))
+    await app.waitForFrame((frame) => frame.includes('当前任务仍在运行'))
+    const frame = app.frame()
+    expect(frame).toContain('停止任务')
+    expect(frame).toContain('转到后台')
+    expect(frame).toContain('停止并退出')
+    // **打开本身不改变执行**：一个命令都不发（旧写法这一下发的是 `turn.interrupt`）
+    expect(commands()).toEqual([])
 
     app.unmount()
   })

@@ -668,15 +668,13 @@ const mcpApproval: Scenario = {
     // 应用自己退场（收尾那一跳在 cli 的 finally 里）——空闲**按两次**才走（U46）。
     //
     // ⚠️ **先看它此刻闲不闲**：服务器崩了之后代理会**再试一次**，屏上往往又挂起一张卡
-    //    （或这一轮还在跑）。那种时候 `ctrl+c` 是**中断**，不是退出的第一下（外壳的既有语义）。
+    //    （或这一轮还在跑）。那种时候 `ctrl+c` 开的是**三选**（U100 起：有在途工作那一下
+    //    不再替用户中断），不是退出的第一下。
     //    ⚠️ 反过来，**闲着的时候千万别先按那一下**——它会挂上「再按一次」，而被 `quit()`
     //    当成第二次 ⇒ 当场退出、等不到那一行（这条实测栽过）。
     const beforeQuit = await descended.screen()
     const text = beforeQuit.lines.map((line) => line.text).join('\n')
-    if (!text.includes(HINT_IDLE)) {
-      await descended.key('ctrl+c') // 中断这一轮（卡随之作废）
-      await descended.wait({ absent: 'y 批准这一次' }, { timeoutMs: 15_000 }).catch(() => undefined)
-    }
+    if (!text.includes(HINT_IDLE)) await stopCurrentTask(descended)
 
     await descended.quit()
     await descended.close({ graceMs: 3_000 })
@@ -771,6 +769,33 @@ async function waitGone(pid: number, timeoutMs = 5_000): Promise<void> {
   while (isAlive(pid) && Date.now() < deadline) await Bun.sleep(50)
 }
 
+/**
+ * **停掉当前这一轮**（U100 · 两个场景共用）——有在途工作那一下按 `ctrl+c` 开的是**三选**，
+ * 选第一项「停止任务」（回车即达；**局部**那一档，这一轮收束、卡随之作废）。
+ *
+ * ⚠️ **不能背靠背按两下**：`ctrl+c` 与 `enter` 挤在同一拍里写下去，Ink 那一次读会把两下
+ * 并到一起，回车可能当场丢掉（驱动头注那两条「按键全丢的坑」记过同一跤：起手太快 ·
+ * 文本与回车同写）。故**等那一屏真上屏**再按回车。
+ *
+ * ⚠️ **等不到那一屏也照旧往下走**：那说明它在这中间自己闲下来了（没东西可停了）——
+ * 这一跳本来就是为了「让它能走空闲那条退出路」，不是为了非要停一次。
+ */
+async function stopCurrentTask(session: UiSession): Promise<void> {
+  await session.key('ctrl+c')
+
+  try {
+    // 两版标题都含这一截（在跑 / 待答的差别只在后半句）
+    await session.wait({ text: '当前任务' }, { timeoutMs: 8_000 })
+    await session.key('enter')
+  } catch {
+    return // 它自己闲下来了——没有可停的东西
+  }
+
+  // 回执是**推**来的（`stopped` 那条线）——不等它，下一步那两下 `ctrl+c` 会打在
+  // 「其实还在跑」上（本条原先的注记过同一跤）
+  await session.wait({ absent: 'y 批准这一次' }, { timeoutMs: 15_000 }).catch(() => undefined)
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 八 · 外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连
 // ═══════════════════════════════════════════════════════════════════════
@@ -858,7 +883,8 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ absent: 'y 批准这一次' }, { timeoutMs: 10_000 })
     await waitToolCalled(log, 'slow')
 
-    await session.send('\u0003') // ctrl+c：工作中＝中断
+    // U100：三选 ⇒ **停止任务**（局部那一档 = 取消这一轮，见 `stopCurrentTask`）
+    await stopCurrentTask(session)
     await session.wait({ text: '已取消' }, { timeoutMs: 10_000 })
     const canceled = await session.capture({ label: '取消之后' })
     ui.check(canceled.text.includes('已取消'), '取消那一笔说「已取消」', '')

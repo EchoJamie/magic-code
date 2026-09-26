@@ -522,7 +522,7 @@ describe('选择器（`/resume` · `/model`）', () => {
 
 // ══ Ctrl+C ═══════════════════════════════════════════════════════════
 
-describe('Ctrl+C（空闲按两次退出 · 工作中中断）', () => {
+describe('Ctrl+C（空闲按两次退出 · 有在途工作开三选）', () => {
   test('空闲第一下**不退出**——只把那一行挂上；第二下才走', () => {
     const idle = live()
 
@@ -557,7 +557,20 @@ describe('Ctrl+C（空闲按两次退出 · 工作中中断）', () => {
     expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(false) // 又从第一下起算
   })
 
-  test('挂上之后这一轮又跑起来了 ⇒ 那一下是**中断**，不是「第二次按」（门也当场撤掉）', () => {
+  /**
+   * ⚠️ **U100 改判**（原锚 / 为何变 / 新锚）——下面三条原先都锚在 `turn.interrupt` 上。
+   *
+   * - **原锚**：工作中／接管中那一下**替用户发一次中断**，且「门当场撤掉」。
+   * - **为何变**：有在途工作那一下从「替用户决定」改成「**把问题摆出来**」（设计 · 会话与
+   *   运行管理「Ctrl+C：选择当前任务去向」）：停掉 / 转后台 / 停掉并退出，由用户在那一屏上选。
+   * - **新锚**：那一下开三选（`dock.source === 'task'`），**一个命令都不发**；那一道空闲的
+   *   门（`exitArmed`）照旧当场撤掉——它说的是「再按一次就退出」，而屏上换的是三选，
+   *   留着它就是一句不再为真的话。
+   *
+   * ⚠️ 三选那一屏自己的键位（↑↓ / 回车 / esc / 再按 ctrl+c）归 `spec.u46.test.ts` 那一节，
+   * 这里只量「那一下把哪一条路挑起来了」。
+   */
+  test('挂上之后这一轮又跑起来了 ⇒ 开三选，**不是「第二次按」**（门也当场撤掉）', () => {
     // ⚠️ 常态下够不着（提交那一跳是按键，已经把门撤了）；够得着的情形是「恢复跑出在途
     //    那一轮」——第一下按在恢复跑完之前。这一条钉的是：真碰上了也**不许**直接退出。
     const app = live()
@@ -565,25 +578,30 @@ describe('Ctrl+C（空闲按两次退出 · 工作中中断）', () => {
     app.spy.emit(event('turn.start', {}))
     expect(app.view().exitArmed).toBe(true) // 起手挂上的那一下还在
 
-    expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false) // 中断，不退
+    expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false) // 不退
     expect(app.view().exitArmed).toBe(false)
-    expect(app.commands()).toEqual([{ type: 'turn.interrupt' }])
+    expect(app.view().dock).toMatchObject({ kind: 'picker', picker: { source: 'task' } })
+    expect(app.commands()).toEqual([]) // **不发中断**（旧锚钉的那一条）
   })
 
-  test('工作中按 Ctrl+C ⇒ 只发中断，不退（与改前一致）', () => {
+  test('工作中按 Ctrl+C ⇒ 开三选，一个命令都不发（不停、不退）', () => {
     const busy = live()
     busy.spy.emit(event('turn.start', {}))
 
     expect(busy.press({ kind: 'ctrl+c' }).exit).toBe(false)
-    expect(busy.commands()).toEqual([{ type: 'turn.interrupt' }])
+    expect(busy.view().dock).toMatchObject({ kind: 'picker', picker: { source: 'task' } })
+    expect(busy.commands()).toEqual([])
   })
 
-  test('接管中按 Ctrl+C ⇒ 中断本轮（全局键，接管不吞）', () => {
+  test('接管中按 Ctrl+C ⇒ 开三选（全局键，接管不吞），**不替用户答、也不替用户中断**', () => {
     const app = live()
     ask(app)
 
     expect(app.press({ kind: 'ctrl+c' }).exit).toBe(false)
-    expect(app.commands()).toEqual([{ type: 'turn.interrupt' }])
+    expect(app.view().dock).toMatchObject({ kind: 'picker', picker: { source: 'task' } })
+    expect(app.commands()).toEqual([])
+    // 草稿照旧收在 `stashed` 里（接管那一套没被动过）——答完/返回才归还
+    expect(app.view().stashed).not.toBeNull()
   })
 })
 
@@ -807,12 +825,25 @@ describe('hangUp（终端断了 / 收到收摊信号——**不设「按两次�
     expect(idle.view().exitArmed).toBe(false) // 也不留下那一行
   })
 
-  test('工作中 ⇒ 替我们发中断，不退（沿既有）', () => {
+  /**
+   * ⚠️ **U100 改判**（原锚 / 为何变 / 新锚）——
+   *
+   * - **原锚**：「工作中 ⇒ 替我们发一次 `turn.interrupt`，**不退**」——这是 2026-09-21 之前
+   *   「关闭窗口＝取消工作」那一版语义（U48 第五段照它写的 U46 口径）。
+   * - **为何变**：设计 2026-09-21 用户裁「**关闭窗口继续执行；停止是独立且明确的操作**」；
+   *   U100 把三选做出来之后，「离开」（关窗 / 断流 / 转后台）与「停止」**彻底分成两件事**
+   *   ——停止只由用户明确选择触发（三选里那两项 · `/exit` · 列表里那两个键）。
+   *   旧锚钉的正是本单要拆的那个耦合：离开界面顺手把工作砍了。
+   * - **新锚**：工作中那一形**照样当场放行、且一条命令都不发**——断流不再动那条运行。
+   *   真帧与真进程的印证另有两处：`frames-u100-tui.ts`（转后台后原运行继续出结果）
+   *   与 `run-terminal.test.ts`（断流那条用例）。
+   */
+  test('工作中 ⇒ **照样当场放行，且一条命令都不发**（离开不是取消——U100）', () => {
     const busy = live()
     busy.spy.emit(event('turn.start', {}))
 
-    expect(busy.shell.hangUp().exit).toBe(false)
-    expect(busy.commands()).toEqual([{ type: 'turn.interrupt' }])
+    expect(busy.shell.hangUp().exit).toBe(true)
+    expect(busy.commands()).toEqual([])
   })
 
   test('刚好挂上那一行时断了 ⇒ 照样当场放行（不是「第二次」）', () => {
