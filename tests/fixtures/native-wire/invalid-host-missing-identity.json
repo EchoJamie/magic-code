@@ -1,0 +1,10 @@
+{
+  "family": "HostResponse",
+  "valid": false,
+  "message": {
+    "t": "host.ready",
+    "socket": "/tmp/x",
+    "base": "/tmp/base",
+    "config": "/tmp/c"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.refresh"
+  }
+}

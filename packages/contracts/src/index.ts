@@ -32,3 +32,7 @@ export * from './runs.ts'
 export * from './web.ts'
 export * from './search.ts'
 export * from './ports.ts'
+
+export * from "./native.ts"
+export * from './run-wire.ts'
+export { decodeNativeMessage, decodeHostDiscovery } from './native-codec.ts'

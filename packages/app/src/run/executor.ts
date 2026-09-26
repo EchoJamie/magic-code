@@ -37,6 +37,8 @@
  * 连接——管理者一死，OS 把它那一头的 socket 收掉，这里当场读到断开。
  */
 
+import { createRecordsStore } from '@magic/records'
+
 import type {
   KernelEvent,
   MagicHome,
@@ -145,9 +147,21 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   let assembly: Assembly
   try {
     const magic = options.magic
-    const config = loadConfig({ magic })
+    let config = loadConfig({ magic })
+    let cwd = options.cwd
+    if (options.session !== null) {
+      const records = createRecordsStore({ dataDir: config.config.dataDir, workspace: [] })
+      try {
+        const session = (await records.listSessions()).find((one) => one.id === options.session)
+        if (session === undefined) throw new Error('会话已不可达')
+        if (session.workspace !== undefined && session.workspace.length > 0) {
+          cwd = session.workspace[0]!
+          config = { ...config, config: { ...config.config, workspaceRoots: session.workspace } }
+        }
+      } finally { records.close() }
+    }
     assembly = assemble({
-      cwd: options.cwd,
+      cwd,
       config,
       magic,
       // **显式接续**：给了 id 就是那条会话；不给＝一个会话都不开（D5）
@@ -186,26 +200,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     workspace: assembly.workspaceRoots,
   })
 
-  /**
-   * **收缩的两个判据**——「有没有人看」由管理者说（连接在它手上），「在不在干活」归这儿
-   * （内核的状态这儿看得见）。两半合起来才是设计那一句：
-   *
-   * > 运行已结束、**没有在途调用或待答项**、**也没有连接者** ⇒ 持久化状态后**释放该执行者**；
-   * > 历史与最后状态保留。笔记里还有待办**不阻止**释放。
-   *
-   * 两个数：
-   * - `watching`——还有几个窗口在看（管理者的 `watchers`）；
-   * - `busy`——手里有没有活。**从事件里认**，不另立一份状态：`agent.state` 说「在跑还是
-   *   在等你」，裁决的请求／答复配对说「有没有待答项」。
-   *
-   * ⚠️ **等待中的事不算「运行已结束」**：「等待用户或协作结果的有效工作**可保留**事件
-   * 阻塞的执行者，**CPU 不得忙轮询**」（设计 · 收缩）。故 `agent.state === 'waiting'`
-   * 之外，**待答的裁决也算在途**——那正是「等你」的一种。而「等」是**事件阻塞**的：
-   * 这个进程一个定时器都不转，只等着连接上送进来的那一条答复。
-   */
-  let watching = 0
-  /** 听过管理者说「有几个人看你」没有——没听过之前**不许**按「没人看」收缩。 */
-  let heardWatchers = false
+  // 收缩只认执行责任：在途轮次、待答裁决和后台命令；观察连接不保活。
   let busy = false
   /** 待答的裁决——按**那次工具调用**记（请求与答复两头都带 `call`，配对键就是它）。 */
   const pendingDecisions = new Set<number>()
@@ -410,15 +405,10 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   /** 收缩的等待器——只留一个（重新判一次就够，不必每个事件都排一个）。 */
   let shrinkTimer: ReturnType<typeof setTimeout> | undefined
 
-  /**
-   * 判一次「该收了吗」——**先等一歇再收**。
-   *
-   * 那一段余量是给「换看客」那一瞬的：窗口 A 走了、B 下一秒就来（`/resume` 那条路上
-   * 中间就隔着一次往返），当场收的话会白起一个进程。半秒是「人还没松开按键」的量级。
-   */
+  /** 合并相邻事件后再确认无责任，避免当前调用链尚未派完就释放进程。 */
   function considerShrink(): void {
-    if (closing || !heardWatchers) return
-    if (watching > 0 || busy || pendingDecisions.size > 0) {
+    if (closing) return
+    if (busy || live.turnOpen || pendingDecisions.size > 0 || (assembly.background?.running().length ?? 0) > 0) {
       if (shrinkTimer !== undefined) {
         clearTimeout(shrinkTimer)
         shrinkTimer = undefined
@@ -429,12 +419,12 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
     shrinkTimer = setTimeout(() => {
       shrinkTimer = undefined
-      if (closing || watching > 0 || busy || pendingDecisions.size > 0) return
+      if (closing || busy || live.turnOpen || pendingDecisions.size > 0 || (assembly.background?.running().length ?? 0) > 0) return
 
       // **持久化状态后释放**（设计 · 收缩）：收尾那两跳里就有「把没落完的落完」
       // ——故它是释放，不是丢下。
-      link.send({ t: 'done', why: '没有连接者、也没有在途调用或待答项' })
-      void closeOut('没人看了，手上也没有在跑的事').then(() => process.exit(0))
+      link.send({ t: 'done', why: '没有在途调用、后台命令或待答项' })
+      void closeOut('当前工作已结束').then(() => process.exit(0))
     }, SHRINK_SETTLE_MS)
   }
 
@@ -482,10 +472,11 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   const reportOwned = (): void => {
     if (closing) return
     const processes = assembly.ledger.list()
-    const serialized = JSON.stringify(processes)
+    const background = assembly.background?.running().length ?? 0
+    const serialized = JSON.stringify({ processes, background })
     if (serialized === ownedSent) return
     ownedSent = serialized
-    link.send({ t: 'owned', processes })
+    link.send({ t: 'owned', processes, background })
   }
   assembly.ledger.onChange(() => {
     if (ownedTimer !== undefined) return
@@ -505,11 +496,6 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         return
       case 'ping':
         link.send({ t: 'pong', seq: message.seq })
-        return
-      case 'watchers':
-        watching = message.count
-        heardWatchers = true
-        considerShrink()
         return
       /**
        * **接回快照**（U49）——**当场答，中间一步都不 await**。
@@ -557,6 +543,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   // **订阅架在恢复之前**：恢复要发事件（技术方案 · 控制域：无订阅方时事件丢）
   const off = assembly.shell.subscribe((event: KernelEvent) => {
     track(event)
+    reportOwned()
     link.send({ t: 'ev', event })
     considerShrink()
   })
@@ -572,6 +559,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
   // **放开输入**——到这一跳为止攒在管理者手里的命令，从这儿开始一条一条进来
   link.send({ t: 'ready' } satisfies ExecutorToManager)
+  considerShrink()
 
   await new Promise<void>((resolve) => {
     const done = (): void => resolve()

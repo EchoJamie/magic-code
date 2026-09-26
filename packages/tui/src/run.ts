@@ -23,6 +23,8 @@ import type { RunFeed, ResumeFeed, StopReport } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
+  readonly detached?: ((listener: (why: string) => void) => void) | undefined
+  readonly reopen?: (() => Promise<void>) | undefined
   readonly transport: ControlTransport
   /**
    * 启动流转（装配给）——恢复 / 重建要发事件，故**必须在订阅之后**跑
@@ -60,14 +62,7 @@ export type RunTuiOptions = {
    * 不给 / 空数组＝启动一句多余的话都不说（常态）。见 `ShellOptions.receipts`。
    */
   readonly receipts?: readonly string[] | undefined
-  /**
-   * **外面那一头没了**（U48）——订阅它；回调一响，外壳**自己收摊**。
-   *
-   * 由头（设计 · 会话与运行管理）：「**终端**：呈现与输入客户端，**断流后自身应退出，
-   * 不能空转充当后台执行者**」。窗口的内核在管理者那一头——那条连接一断，界面就没有
-   * 任何可接的东西了，留着只是空转占着机器。它与 stdin 断开那条（D26）是**两条独立
-   * 的**「这一头没人了」：一条是终端没了，一条是内核没了。
-   */
+  /** 核心失联后留屏与草稿，由用户明确重开；不自动唤起 App。 */
   readonly onGone?: ((listener: () => void) => void) | undefined
   /**
    * **运行事实的来路**（U49）——`/resume` 那一屏每一行的状态据它来。
@@ -131,6 +126,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     receipts: options.receipts,
     runs: options.runs,
     resumed: options.resumed,
+    detached: options.detached,
+    reopen: options.reopen,
     openingSession: options.openingSession,
     stop: options.stop,
     stopped: options.stopped,
@@ -265,7 +262,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
 
   // **外面那一头没了 ⇒ 收摊**——装在收摊那一套之前（`closeOut` 一立好就接上）
   options.onGone?.(() => {
-    closeOut()
+    shell.hostGone()
   })
 
   try {

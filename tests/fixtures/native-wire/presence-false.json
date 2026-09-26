@@ -1,0 +1,12 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.presence",
+    "session": "session-one",
+    "ids": [
+      "notice-one"
+    ],
+    "focused": false
+  }
+}

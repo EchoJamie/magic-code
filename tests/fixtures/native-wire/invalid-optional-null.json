@@ -1,0 +1,10 @@
+{
+  "family": "NativeRequest",
+  "valid": false,
+  "message": {
+    "t": "native.inspect",
+    "request": "r",
+    "session": "s",
+    "notice": null
+  }
+}

@@ -57,6 +57,27 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Prom
 }
 
 describe('U50 · 自有进程的账与收尾', () => {
+  test('同一真实进程：测试宿主与独立执行进程读取相同启动时刻', async () => {
+    const group = spawnGroup('sleep 30')
+    try {
+      const parent = startTimeOf(group.pid)
+      expect(parent).toBeDefined()
+      const source = new URL('../../execution/src/groups.ts', import.meta.url).pathname
+      const child = Bun.spawn([process.execPath, '-e',
+        `import { startTimeOf } from ${JSON.stringify(source)}; console.log(startTimeOf(${group.pid}))`,
+      ], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+      const output = new Response(child.stdout).text()
+      const errors = new Response(child.stderr).text()
+      expect(await child.exited).toBe(0)
+      expect(await errors).toBe('')
+      expect(Number((await output).trim())).toBe(parent!)
+      expect(groupAlive(group.pid)).toBe(true)
+    } finally {
+      group.kill()
+      await waitFor('自有组退出', () => !groupAlive(group.pid))
+    }
+  })
+
   test('记一笔：组长身份当场读下；组没了账自己摘掉', async () => {
     const ledger = createProcessLedger()
     const group = spawnGroup('sleep 30')

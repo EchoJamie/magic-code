@@ -1,0 +1,33 @@
+{
+  "family": "NativeResponse",
+  "valid": false,
+  "message": {
+    "t": "native.inspected",
+    "request": "r",
+    "work": {
+      "session": "session-one",
+      "title": "修复一个非常长的同名工作标题以验证截断与辅助功能",
+      "workspace": [
+        "/tmp/project-one"
+      ],
+      "state": "completed",
+      "action": "确认是否写入工作区外的文件",
+      "reason": "等待答复",
+      "since": 1790400000000,
+      "gen": 3,
+      "affected": true,
+      "notices": [
+        {
+          "id": "notice-one",
+          "session": "session-one",
+          "kind": "needs-you",
+          "at": 1790400000000,
+          "detail": "需要答复",
+          "unread": true,
+          "delivered": false,
+          "fact": "event:42"
+        }
+      ]
+    }
+  }
+}

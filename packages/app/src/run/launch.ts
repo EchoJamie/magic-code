@@ -19,7 +19,7 @@
  * `ui.ts` 同一条口径（见 `cli.ts` 里解析那一处的注）。
  */
 
-import { existsSync } from 'node:fs'
+import { runtimeLaunch } from './runtime-launch.ts'
 import type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './manager.ts'
 
 /** 开局选中走参数（JSON 一份）——它是**窗口的属性**，随发车那一跳递进去。 */
@@ -39,11 +39,6 @@ export type SpawnOptions = {
   readonly stderr?: 'inherit' | 'pipe' | 'ignore' | undefined
 }
 
-/** 本包入口——`src/run/launch.ts` 往上两级就是 `src/cli.ts`。 */
-function defaultEntry(): string {
-  return new URL('../cli.ts', import.meta.url).pathname
-}
-
 /**
  * 造一个真起进程的启动器。
  *
@@ -51,19 +46,14 @@ function defaultEntry(): string {
  * 静默返回一个死句柄会让窗口对着一个永远不来的答复发呆。
  */
 export function createProcessLauncher(options: SpawnOptions = {}): ExecutorLauncher {
-  const entry = options.entry ?? defaultEntry()
+  const launch = runtimeLaunch(options.entry)
   const stderr = options.stderr ?? 'inherit'
 
   return {
     spawn(request: ExecutorRequest): SpawnedExecutor {
-      if (!existsSync(entry)) {
-        throw new Error(`执行者入口不在：${entry}`)
-      }
-
       const child = Bun.spawn(
         [
-          process.execPath,
-          entry,
+          ...launch,
           '--internal-executor',
           request.socket,
           '--token',
@@ -82,12 +72,20 @@ export function createProcessLauncher(options: SpawnOptions = {}): ExecutorLaunc
         {
           // 子进程的**环境照传**（它要读用户的 `PATH` / 供应商的环境变量 key）。
           // 基础路径不走环境而是走参数——见文件头注。
-          env: process.env,
+          env: { ...process.env, ...request.environment },
           stdin: 'ignore',
-          stdout: 'ignore',
+          stdout: 'pipe',
           stderr,
         },
       )
+
+      // 进程输出一直有人收；不混入宿主 stdout 的控制协议。
+      const drain = async (stream: ReadableStream<Uint8Array>, label: string): Promise<void> => {
+        const decoder = new TextDecoder()
+        for await (const bytes of stream) process.stderr.write(`[run:${request.gen} ${label}] ${decoder.decode(bytes, { stream: true })}`)
+      }
+      void drain(child.stdout, 'stdout')
+      if (stderr === 'pipe' && child.stderr) void drain(child.stderr as ReadableStream<Uint8Array>, 'stderr')
 
       let exited: (reason: string) => void = () => {}
       const done = new Promise<string>((resolve) => {

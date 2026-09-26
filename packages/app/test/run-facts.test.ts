@@ -49,6 +49,30 @@ function record(over: Partial<RunRecord> = {}): RunRecord {
 }
 
 describe('U49 · 六行状态逐行对事实', () => {
+  test('模型轮已结束但后台命令仍在：保持 running；后台归零才 idle', () => {
+    const background = record({ busy: false, turnActive: false, background: 1 })
+    expect(runStateOf(background)).toBe('running')
+    expect(runRowOf(background)?.action).toContain('后台命令')
+    background.background = 0
+    expect(runStateOf(background)).toBe('idle')
+  })
+
+  test('执行者退出仍需核销：进行中 stopping，核销失败 unknown，确认后才 stopped', () => {
+    const ended = record({ ended: { at: 2_000, why: '异常退出', kind: 'crashed' }, reclaimPending: true })
+    expect(runStateOf(ended)).toBe('stopping')
+    refresh(ended, 2_001)
+    expect(runRowOf(ended)?.holds).toBe(true)
+    ended.reclaimPending = false
+    ended.reclaimNote = '资源归属尚未确认'
+    expect(runStateOf(ended)).toBe('unknown')
+    refresh(ended, 2_001)
+    expect(runRowOf(ended)?.holds).toBe(true)
+    ended.reclaimNote = undefined
+    expect(runStateOf(ended)).toBe('stopped')
+    refresh(ended, 2_002)
+    expect(runRowOf(ended)?.holds).toBe(false)
+  })
+
   test('执行中 · 正在跑测试——有在途的模型/工具调用', () => {
     const busy = record({ busy: true, turnActive: true, action: '正在跑 bash' })
     expect(runStateOf(busy)).toBe('running')

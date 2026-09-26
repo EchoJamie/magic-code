@@ -1,0 +1,72 @@
+import { fstatSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { createInterface } from 'node:readline'
+import { resolveMagicHome } from '@magic/contracts'
+import type { HostRequest, HostResponse } from '@magic/contracts'
+import { loadConfig, type LoadedConfig } from '../config.ts'
+import { normalizeDataDir, runPathsOf } from './paths.ts'
+import { createProcessLauncher } from './launch.ts'
+import { startManager } from './manager.ts'
+
+/** 仅 App / 明确的隔离测试宿主调用；专用继承管道 EOF 决定服务寿命。 */
+export async function runHostedManager(argv: readonly string[]): Promise<number> {
+  const value = (name: string): string | undefined => {
+    const at = argv.indexOf(name)
+    return at < 0 ? undefined : argv[at + 1]
+  }
+  const hostInstance = value('--host-instance')
+  const app = value('--app')
+  const send = (message: HostResponse): void => { process.stdout.write(`${JSON.stringify(message)}\n`) }
+  if (!hostInstance || !app || !(fstatSync(0).isFIFO() || fstatSync(0).isSocket())) {
+    send({ t: 'host.error', reason: '核心须由 App 的专用生命管道启动' })
+    return 1
+  }
+  const magic = resolveMagicHome(process.env, homedir())
+  let loaded: LoadedConfig
+  let dataDir: string
+  try {
+    loaded = loadConfig({ magic })
+    dataDir = normalizeDataDir(loaded.config.dataDir)
+  } catch (error) {
+    send({ t: 'host.error', reason: error instanceof Error ? error.message : String(error) })
+    return 1
+  }
+  const paths = runPathsOf(magic, dataDir, tmpdir())
+  let hostGone = false
+  let shutdown: (() => void) | undefined
+  let request: string | undefined
+  const input = createInterface({ input: process.stdin })
+  input.on('close', () => { hostGone = true; shutdown?.() })
+  input.on('line', (line) => {
+    try {
+      const message = JSON.parse(line) as HostRequest
+      if (message.t !== 'host.shutdown' || typeof message.request !== 'string') return
+      request = message.request
+      shutdown?.()
+    } catch { send({ t: 'host.error', reason: '宿主命令不可读' }) }
+  })
+  const started = await startManager({
+    paths, dataDir, magic, hostInstance,
+    launch: createProcessLauncher({ stderr: 'inherit' }),
+    mcp: loaded.config.mcp?.servers ?? {},
+    log: (line) => process.stderr.write(`[${hostInstance}] ${line}\n`),
+    onShutdownError: (reason) => send({ t: 'host.error', reason }),
+  })
+  if (started.role !== 'manager') {
+    input.close()
+    send({ t: 'host.error', reason: started.role === 'existing' ? '该数据位置已有服务，请先退出原 App' : started.reason })
+    return 1
+  }
+  const manager = started.manager
+  shutdown = () => manager.stop(hostGone ? 'App 生命连接已关闭' : '退出 Magic Code')
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, shutdown)
+  if (hostGone || request !== undefined) shutdown()
+  else {
+    await manager.ready()
+    if (!hostGone && request === undefined) send({ t: 'host.ready', identity: manager.identity, socket: paths.socket, base: magic.base, config: loaded.path })
+  }
+  await manager.waitUntilExit()
+  send({ t: 'host.stopped', ...(request === undefined ? {} : { request }) })
+  input.close()
+  return 0
+}

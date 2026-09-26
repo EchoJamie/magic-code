@@ -872,6 +872,7 @@ export function toShellKeys(
 ): readonly ShellKey[] {
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]
   if (key.ctrl === true && input === 'o') return [{ kind: 'ctrl+o' }]
+  if (key.ctrl === true && input === 'r') return [{ kind: 'ctrl+r' }]
   // `Ctrl T`——收起/展开当前清单（U34）。两条来路同形：裸控制码 `\x14`（Ink 解成
   // `ctrl＋字母 t`）与 kitty 协议下的 `CSI 116;5u`（`use-input` 那两支都归到 `input === 't'`）。
   if (key.ctrl === true && input === 't') return [{ kind: 'ctrl+t' }]

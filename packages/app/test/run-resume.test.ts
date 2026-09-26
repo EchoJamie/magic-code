@@ -14,7 +14,9 @@
 import { describe, expect, test } from 'bun:test'
 import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
 import type { Sandbox, UiSession } from './ui/index.ts'
-import { removeDir, tempDir } from './tmp.ts'
+import { tempDir } from './tmp.ts'
+import { join } from 'node:path'
+import { startResidentHost } from './resident-host-fixture.ts'
 
 /** 等一个条件成立（默认 15 秒）——轮询是用例的事，产品那几跳都是事件驱动的。 */
 async function waitFor(
@@ -29,14 +31,7 @@ async function waitFor(
   }
 }
 
-/**
- * 沙地里还有几个**执行者**——一个会话至多一个，正是这几条判据要数的东西。
- *
- * ⚠️ **只在「静下来之后」数**：一扇还没有目标的窗口按 `/resume`，目录那一条命令是要
- * 「有人答」才回得来的（记录域的事实握在执行者手里的内核上），故它会先起一代——
- * 那一代答完就收缩（没有连接者、手上也没事）。判据要的是**稳态**：那一条会话的执行者
- * 只有一个（接回**没有另起一个**），而不是「这一刻机器上恰好只有一个进程」。
- */
+/** 只统计本次隔离沙地的真实执行者；在途 1 个，完成后即便窗口开着也应为 0。 */
 async function executorsIn(sandbox: Sandbox): Promise<number> {
   const proc = Bun.spawn(['pgrep', '-fl', sandbox.root], { stdout: 'pipe', stderr: 'ignore' })
   const text = await new Response(proc.stdout as ReadableStream<Uint8Array>).text()
@@ -56,10 +51,12 @@ describe('U49 · 接回（真窗口）', () => {
     })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     const windows: UiSession[] = []
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
 
     try {
       const mine = await createUiSession({ label: '甲窗', artifacts: runs, sandbox, fixture })
       windows.push(mine)
+      expect(host.executorStarts()).toBe(0)
 
       // **先等字打进去再回车**（`send` 只写一次、不重放；不等的话回车可能抢在它前头）
       await mine.send('说一句长话', { until: { text: '说一句长话' }, timeoutMs: 10_000 })
@@ -85,6 +82,8 @@ describe('U49 · 接回（真窗口）', () => {
       await other.key('enter')
       // 接回来的那一份「此刻」：这一句的**头**（离开期间已经吐出去的那一段）就在屏上
       await other.wait({ text: '一二三' }, { timeoutMs: 20_000 })
+      expect(await executorsIn(sandbox)).toBe(1)
+      expect(host.executorStarts()).toBe(1)
 
       const resumed = await other.capture({ label: '02-接回之后' })
       expect(resumed.text).toContain('一二三')
@@ -95,24 +94,23 @@ describe('U49 · 接回（真窗口）', () => {
       const whole = await other.capture({ label: '03-补齐之后' })
       expect(whole.text).toContain('壬癸')
 
-      // **只有一个执行者**——接回不是「另起一个」，它就是那一条在跑的（稳态：目录那一代已收缩）
-      await waitFor('只剩一条执行者', async () => (await executorsIn(sandbox)) === 1)
+      // 完成即释放执行资源；两扇窗口仍可观察历史。
+      await waitFor('已完成执行者释放', async () => (await executorsIn(sandbox)) === 0)
       // 模型也只被问过**一次**（接回没有重新发起那一轮）
       expect(fixture.requests().length).toBe(1)
     } finally {
       for (const window of windows) await window.close().catch(() => {})
-      await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      try { await host.close() } finally {
+        await fixture.stop()
+        sandbox.dispose()
+      }
+      console.log(`接回证据保留：${runs}`)
     }
   }, 150_000)
 
   test('两个窗口看同一条会话：一张卡只答一次，答完另一处**当场撤掉**', async () => {
     const runs = tempDir('magic-u49-decide-runs-')
-    // ⚠️ **原锚**：`exec echo u49-只跑一次`（判轻）；**为何变**（U76）：判轻的调用
-    // **默认通、不弹卡**，而这一条要的正是「两个窗口各挂一张待答的卡」；**新锚**：
-    // 第一段换成**名单里**的删除（必问），第二段把 `u49-只跑一次` 那串输出原样留着
-    // ⇒ 下面「那一件工具真跑了一次（结果在屏上）」那条判据的锚一个字不用换。
+    // chmod 会要求审批；批准后仅修改隔离工作区权限并输出记号，验证跨窗只执行一次。
     const fixture = startFixture({
       turns: [
         { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 . && echo u49-只跑一次' } },
@@ -121,13 +119,14 @@ describe('U49 · 接回（真窗口）', () => {
     })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     const windows: UiSession[] = []
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
 
     try {
       const one = await createUiSession({ label: '甲窗', artifacts: runs, sandbox, fixture })
       windows.push(one)
 
       await one.send('跑一条命令', { until: { text: '跑一条命令' }, timeoutMs: 10_000 })
-      // 卡是**重**那一档（名单里的删除）⇒ 右位键位 `y / n`。⚠️ `HINT_DECIDE_HEAVY`
+      // 卡是**重**那一档 ⇒ 右位键位 `y / n`。⚠️ `HINT_DECIDE_HEAVY`
       // **没出包**，按**字面量**锚（同 `ui/scenarios.ts` 的 `COPY.decideHint` 先例）。
       await one.key('enter', { until: { text: 'y / n' }, timeoutMs: 20_000 })
 
@@ -145,6 +144,8 @@ describe('U49 · 接回（真窗口）', () => {
       await two.key('enter')
       await two.wait({ text: 'y / n' }, { timeoutMs: 20_000 })
 
+      expect(await executorsIn(sandbox)).toBe(1)
+      expect(host.executorStarts()).toBe(1)
       const both = await two.capture({ label: '01-两个窗口都挂着这张卡' })
       expect(both.text).toContain('y / n')
 
@@ -157,20 +158,24 @@ describe('U49 · 接回（真窗口）', () => {
       // 而那一件工具**真跑了一次**（结果在屏上）
       await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
 
-      await waitFor('只剩一条执行者', async () => (await executorsIn(sandbox)) === 1)
+      await waitFor('审批后的工作完成并释放', async () => (await executorsIn(sandbox)) === 0)
+      expect(fixture.requests().length).toBe(2)
     } finally {
       for (const window of windows) await window.close().catch(() => {})
-      await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      try { await host.close() } finally {
+        await fixture.stop()
+        sandbox.dispose()
+      }
+      console.log(`接回证据保留：${runs}`)
     }
   }, 150_000)
 
-  test('已停止（当前空闲）的会话：**查看不触发重新执行**——按实际调用数证', async () => {
+  test('已完成（当前空闲）的会话：**查看不触发重新执行**——按实际调用数证', async () => {
     const runs = tempDir('magic-u49-view-runs-')
     const fixture = startFixture({ turns: [{ kind: 'text', text: '这一句只说一次' }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     const windows: UiSession[] = []
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
 
     try {
       const first = await createUiSession({ label: '首见', artifacts: runs, sandbox, fixture })
@@ -182,6 +187,7 @@ describe('U49 · 接回（真窗口）', () => {
       await first.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
       expect(fixture.requests().length).toBe(1)
 
+      await waitFor('完成后零执行者', async () => (await executorsIn(sandbox)) === 0)
       await first.quit()
       await first.close({ graceMs: 5_000 })
       windows.length = 0
@@ -201,13 +207,16 @@ describe('U49 · 接回（真窗口）', () => {
       await looker.wait({ text: '这一句只说一次' }, { timeoutMs: 20_000 })
 
       // ……而**模型一次都没被再问过**——「查看不触发重新执行」的物证是调用数，不是屏
-      await Bun.sleep(1_000)
+      expect(await executorsIn(sandbox)).toBe(0)
+      expect(host.executorStarts()).toBe(1) // 不能等误起的空白执行者释放后假绿
       expect(fixture.requests().length).toBe(1)
     } finally {
       for (const window of windows) await window.close().catch(() => {})
-      await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      try { await host.close() } finally {
+        await fixture.stop()
+        sandbox.dispose()
+      }
+      console.log(`接回证据保留：${runs}`)
     }
   }, 150_000)
 })

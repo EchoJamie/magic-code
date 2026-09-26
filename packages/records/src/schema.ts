@@ -1,10 +1,11 @@
 /**
  * 库表与 schema 版本协议（判据 4）。
  *
- * 出处：技术方案 · 记录（存储 · schema 演进）。三表 ＋ 一表内务：
+ * 出处：技术方案 · 记录（存储 · schema 演进）：
  * - `sessions`——会话（`at` ＝首次写入的时间，不另取时钟；`title` ＝**改过的标题**，U16 加）；
  * - `entries`——条目（内容两列 ＋ 判别列：内联正文 / blob 引用只居其一）；
  * - `events`——事件（信封逐字段落列，`data` 一列 JSON）；
+ * - `attention_items`——注意事项、未读与投递事实，不要求已有会话行；
  * - `records_meta`——库内务（当前只有 id 空间的预留水位）。
  *
  * **`user_version` 自始写入**：建库即写 `RECORD_SCHEMA_VERSION`，此后只认这个版本号——
@@ -25,6 +26,7 @@ export const SESSIONS_TABLE = 'sessions'
 export const ENTRIES_TABLE = 'entries'
 export const EVENTS_TABLE = 'events'
 export const META_TABLE = 'records_meta'
+export const ATTENTION_TABLE = 'attention_items'
 
 /** 会话标题列（U16）——**改过的标题**存这儿；没改过的缺席（默认标题由对话域现算）。 */
 export const SESSION_TITLE_COLUMN = 'title'
@@ -71,6 +73,18 @@ CREATE TABLE IF NOT EXISTS ${EVENTS_TABLE} (
   data     TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_by_session ON ${EVENTS_TABLE} (session, id);
+
+CREATE TABLE IF NOT EXISTS ${ATTENTION_TABLE} (
+  id         TEXT    PRIMARY KEY NOT NULL,
+  session    TEXT    NOT NULL,
+  kind       TEXT    NOT NULL,
+  fact       TEXT    NOT NULL,
+  at         INTEGER NOT NULL,
+  detail     TEXT,
+  unread     INTEGER NOT NULL CHECK (unread IN (0, 1)),
+  delivered  INTEGER NOT NULL CHECK (delivered IN (0, 1))
+);
+CREATE INDEX IF NOT EXISTS attention_by_at ON ${ATTENTION_TABLE} (at, id);
 
 CREATE TABLE IF NOT EXISTS ${META_TABLE} (
   key    TEXT PRIMARY KEY,

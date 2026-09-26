@@ -1,0 +1,11 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.stop",
+    "request": "request-one",
+    "session": "session-one",
+    "serviceInstance": "service-one",
+    "gen": 3
+  }
+}

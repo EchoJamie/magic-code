@@ -47,6 +47,8 @@ import type { Sandbox } from './sandbox.ts'
 import { createVt } from './vt.ts'
 import type { Vt, VtCell, VtCursor, VtScreen } from './vt.ts'
 import { writeViewer } from './viewer.ts'
+import { startResidentHost } from '../resident-host-fixture.ts'
+import { hostDiscoveryPath } from '../../src/run/host-discovery.ts'
 
 /** 本仓根——被测 checkout 的缺省值（从本文件往上四层：ui → test → app → packages → 根）。 */
 export const REPO_ROOT = resolve(import.meta.dir, '../../../..')
@@ -420,6 +422,7 @@ async function writeOnce(
 type Owned = {
   fixture: Fixture | null
   sandbox: Sandbox | null
+  host: { readonly pid: number; close(): Promise<void> } | null
   artifacts: Artifacts | null
   vt: Vt | null
   pty: Bun.Terminal | null
@@ -427,7 +430,7 @@ type Owned = {
 }
 
 export async function createUiSession(options: UiSessionOptions = {}): Promise<UiSession> {
-  const owned: Owned = { fixture: null, sandbox: null, artifacts: null, vt: null, pty: null, child: null }
+  const owned: Owned = { fixture: null, sandbox: null, host: null, artifacts: null, vt: null, pty: null, child: null }
 
   try {
     return await bootSession(options, owned)
@@ -436,6 +439,33 @@ export async function createUiSession(options: UiSessionOptions = {}): Promise<U
     await salvage(owned, error)
     throw error
   }
+}
+
+// 仅登记本驱动创建的测试宿主及借用次数；最后一扇窗清理自己持有的 stdin 宿主。
+// 外部已发布的宿主由原 owner 管，不因文件存在就认定服务可用，身份/存活仍由真实 CLI 检查。
+const hosts = new Map<string, { ready: ReturnType<typeof startResidentHost>; users: number }>()
+
+async function useHost(sandbox: Sandbox, evidence: string, cli: string): Promise<Owned['host']> {
+  let shared = hosts.get(sandbox.home)
+  if (shared === undefined) {
+    if (existsSync(hostDiscoveryPath(sandbox.home, true))) return null
+    shared = { ready: startResidentHost(sandbox, evidence, cli), users: 0 }
+    hosts.set(sandbox.home, shared)
+  }
+  shared.users += 1
+  let host: Awaited<ReturnType<typeof startResidentHost>>
+  try { host = await shared.ready } catch (error) {
+    if (--shared.users === 0) hosts.delete(sandbox.home)
+    throw error
+  }
+  let released = false
+  return { pid: host.pid, async close() {
+    if (released) return
+    released = true
+    if (--shared.users !== 0) return
+    hosts.delete(sandbox.home)
+    await host.close()
+  } }
 }
 
 /** 起手正戏——**拿到一件记一件**（`owned` 就是失败时要清的那份清单，见 `Owned`）。 */
@@ -481,6 +511,10 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
     terminal: { columns, rows, scrollback, term: sandbox.env['TERM'] as string },
     fixture: fixture === null ? null : { baseURL: fixture.baseURL, port: fixture.port },
   }))
+
+  // 只为真实 CLI 场景准备专用测试宿主；自证探针不需要 App，外借宿主不进入清理清单。
+  if (options.command === undefined) owned.host = await useHost(sandbox, join(artifacts.runDir, 'host'), cli)
+  if (owned.host !== null) artifacts.step('host-acquired', { pid: owned.host.pid })
 
   const vt = (owned.vt = createVt({ columns, rows, scrollback }))
   const decoder = new TextDecoder()
@@ -801,13 +835,17 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
       // 先给它一点**自己走**的余地：刚敲过 ctrl+c 时那一跳还在路上，
       // 一上来就 SIGTERM 会把「用户让它退的」记成「我们杀的」（判据当场分不出来）
       const by = await shutDown(child, closeOptions.graceMs ?? 600)
-      await releaseTerminal(owned.fixture, vt, pty)
-
-      // 记录库与授权是**现场的一部分**（「记录不丢不重」这类判据要直读它）——
-      // 在删沙地之前抄进产物目录（子进程已退，文件不再被占）
-      snapshotSandbox(sandbox, artifacts)
-      // 自有沙地才删（外借的归借出方）——`owned.sandbox === null` ⇔ 外借
-      if (owned.sandbox !== null && closeOptions.keepSandbox !== true) owned.sandbox.dispose()
+      try {
+        await owned.host?.close()
+      } catch (error) {
+        artifacts.finish('failed', { failure: { step: '收尾', kind: 'host', detail: String(error) } })
+        throw error
+      } finally {
+        await releaseTerminal(owned.fixture, vt, pty)
+        // 宿主先核销，再留库快照；自有沙地才删，外借的归借出方。
+        snapshotSandbox(sandbox, artifacts)
+        if (owned.sandbox !== null && closeOptions.keepSandbox !== true) owned.sandbox.dispose()
+      }
 
       const exit = { code: child.exitCode, signal: child.signalCode, by }
       // 这一趟要是**失败过**（等超时等），结局照失败记——收摊不把失败擦成「跑完了」
@@ -848,7 +886,7 @@ async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiS
  * 抄库、删沙地才有意义。
  */
 async function salvage(owned: Owned, error: unknown): Promise<void> {
-  const { artifacts, vt, pty, fixture, sandbox, child } = owned
+  const { artifacts, vt, pty, fixture, sandbox, host, child } = owned
 
   if (artifacts !== null) {
     try {
@@ -872,10 +910,12 @@ async function salvage(owned: Owned, error: unknown): Promise<void> {
   }
 
   if (child !== null) await shutDown(child, 300)
-  await releaseTerminal(fixture, vt, pty)
-  if (sandbox !== null) {
-    if (artifacts !== null) snapshotSandbox(sandbox, artifacts)
-    sandbox.dispose()
+  try { await host?.close() } finally {
+    await releaseTerminal(fixture, vt, pty)
+    if (sandbox !== null) {
+      if (artifacts !== null) snapshotSandbox(sandbox, artifacts)
+      sandbox.dispose()
+    }
   }
 }
 

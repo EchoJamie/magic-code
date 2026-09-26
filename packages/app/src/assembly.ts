@@ -56,7 +56,6 @@ import type {
   McpConnectionState,
   McpToolRejection,
   ModelCacheAccess,
-  ModelCatalogRow,
   ModelInfo,
   ModelDefaultRequest,
   ModelGateway,
@@ -79,7 +78,6 @@ import type {
 import {
   GRANTS_FILE_NAME,
   TRANSIENT_EVENT_KINDS,
-  apiKeyEnvVarOf,
   expandHome,
   resolveMagicHome,
 } from '@magic/contracts'
@@ -98,7 +96,6 @@ import type {
 } from '@magic/conversation'
 import { createControlHub, createInProcessTransportPair } from '@magic/control'
 import {
-  DEFAULT_CANDIDATES,
   createBackgroundRuns,
   createMaterials,
   createProcessLedger,
@@ -106,7 +103,6 @@ import {
   createSandbox,
   createSkills,
   createWebSource,
-  createWorkspaceService,
 } from '@magic/execution'
 import type {
   FetchLike,
@@ -122,7 +118,6 @@ import {
   createModelRegistry,
   createPageDistiller,
   resolveConnection,
-  vendorCatalog,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
 import type { GrantEdit, GrantHit, PermissionRule, RuleProblem } from '@magic/permission'
@@ -140,13 +135,16 @@ import {
 } from '@magic/tools'
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
-import { ConfigError, loadConfig } from './config.ts'
+import { loadConfig } from './config.ts'
 import { saveAttachmentFile } from './attachment-file.ts'
 import { removeProvider, saveProvider, setModelDefault, setWebFetch } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { backgroundOutputDirOf, runPathsOf } from './run/paths.ts'
+import { grantsCatalog, grantsTrouble, mcpCatalog, modelCatalog, pathsCatalog, providerCatalog, skillsCatalog, workspaceOf } from './run/observation.ts'
+import type { ModelCatalogReader } from './run/observation.ts'
+export { workspaceOf } from './run/observation.ts'
 
 /** 瞬时类不落库（契约 `TRANSIENT_EVENT_KINDS`——记录 schema v0 规则 ①）。 */
 const TRANSIENT: ReadonlySet<EventKind> = new Set(TRANSIENT_EVENT_KINDS)
@@ -520,29 +518,6 @@ export function createStamper(input: {
     beginTurn: (value: TurnId | undefined): void => {
       turn = value ?? null
     },
-  }
-}
-
-/**
- * 开工作区（U18）——**根的校验错转成「配置事故」那一句话**（`ConfigError`）。
- *
- * 由头（本轮实测）：`workspaceRoots` 是**用户手写在配置文件里**的东西——路径打错一个字母、
- * 写成相对路径、两条重复，都是**配置事故**，不是程序异常。而执行域抛的是普通 `Error`
- * （它**不该**认识 `ConfigError`——那是本层的形态），裸抛出去就是「一句 `error:` ＋ 三段内部栈」，
- * 栈里还写着「技术方案 · 执行 · 工作区」这种给开发者看的话——**用户读完不知道该改哪儿**。
- *
- * 故这里转一道：**域只管判「合不合格」，报给人听的那句话归装配**——它手上正好有
- * 「是哪份配置」（`loaded.path`），于是用户拿到的是 `配置有问题：<缘由>（<哪份文件>）`
- * 一行话，与加载期那几条同形（「报错不降级」两条都守，只是把「报得有人看得懂」也补上）。
- *
- * ⚠️ **只包根注册这一步**——网关（缺 key）· 记录域那些构造期的抛各有各的处置，
- * 别顺手一起裹：那是另一件事，得单独议（本轮已随回报备案）。
- */
-export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService {
-  try {
-    return createWorkspaceService({ roots: loaded.config.workspaceRoots ?? [cwd] })
-  } catch (error) {
-    throw new ConfigError(loaded.path, error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -972,11 +947,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 是用户**主动去看**时才念的同一句——那不是「刷」，`/grants` 缺了它才是在骗人（一屏空名录
    * 看着就像「你本来就没有授权」）。
    */
-  const grantsTroubleNote = (): string | undefined =>
-    grantsUnreadable === undefined
-      ? undefined
-      : `授权文件读不懂——${grantsPath}：${grantsUnreadable}` +
-        '。本次一条都没加载，也不改动这个文件；改对之后，下次启动就恢复'
+  const grantsTroubleNote = (): string | undefined => grantsTrouble(grantsPath, grantsUnreadable)
 
   /**
    * **开机那几句里属于授权的那几句**——两件事分两句说（`noticesOf` 一条一句地贴进记录区）：
@@ -1799,20 +1770,7 @@ export function assemble(options: AssembleOptions): Assembly {
   const listPaths = async (query: string): Promise<void> => {
     if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
 
-    const found = await materials.candidates(query, DEFAULT_CANDIDATES)
-
-    sink.emit(
-      requireActiveStamper().stamp('paths.catalog', {
-        query,
-        rows: found.rows.map((row) => ({
-          path: row.path,
-          display: row.display,
-          kind: row.kind,
-          external: row.external,
-        })),
-        ...(found.note === undefined ? {} : { note: found.note }),
-      }),
-    )
+    sink.emit(requireActiveStamper().stamp('paths.catalog', await pathsCatalog(materials, query)))
   }
 
   /**
@@ -1869,25 +1827,7 @@ export function assemble(options: AssembleOptions): Assembly {
     )
   }
 
-  const skillCatalogOf = (): EventDataOf['skills.catalog'] => {
-    const found = skills.discover()
-
-    return {
-      skills: found.skills.map((one) => ({
-        name: one.name,
-        description: one.description,
-        path: one.path,
-        label: one.label,
-        source: one.source,
-        origin: one.origin,
-      })),
-      problems: found.problems.map((one) => ({
-        path: one.path,
-        message: one.message,
-        kind: one.kind,
-      })),
-    }
-  }
+  const skillCatalogOf = (): EventDataOf['skills.catalog'] => skillsCatalog(skills.discover())
 
   /**
    * 模型条目表 —— 注册表 → 契约载荷。
@@ -1946,23 +1886,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * 故它只答得了「这一趟」；「这个项目值不值得配规则」得看库里那些（见 `DecisionHistory`）。
    * **每次现读**（不在这儿攒）：裁决是随打随落的，攒一份就等于给「历史」另立一个真源。
    */
-  const grantsCatalogOf = (note?: string): EventDataOf['grants.catalog'] => {
-    const view = grantsView()
-    // 几句话合成一句：调用方给的那句 · **文件读不懂**（D31：那一屏缺了它就在骗人——一屏空名录
-    // 看着就像「你本来就没有授权」）· 落盘失败（见 `grantsWriteError`）——都没事时不给 `note`
-    const said = [note, grantsTroubleNote(), grantsWriteError].filter(
-      (line): line is string => line !== undefined,
-    )
-
-    return {
-      workspace: view.workspace,
-      grants: view.grants,
-      stale: view.stale,
-      decisions: active().gate.tally(),
-      history: recordsStore.decisionHistory(),
-      ...(said.length === 0 ? {} : { note: said.join('；') }),
-    }
-  }
+  const grantsCatalogOf = (note?: string): EventDataOf['grants.catalog'] =>
+    grantsCatalog(grantsView(), active().gate.tally(), recordsStore.decisionHistory(), note, grantsTroubleNote(), grantsWriteError)
 
   /**
    * **撤销**（U22）——`index` 给了撤一条（选定即撤）；不给＝**整节撤掉**（陈旧节那条路）。
@@ -2024,10 +1949,7 @@ export function assemble(options: AssembleOptions): Assembly {
     }))
 
   /** 那一屏 → 契约载荷（照列一排：端口形态到此为止，事件面只出现读得出来的那几格）。 */
-  const mcpCatalogOf = (note?: string): EventDataOf['mcp.catalog'] => ({
-    servers: mcpServers(),
-    ...(note === undefined ? {} : { note }),
-  })
+  const mcpCatalogOf = (note?: string): EventDataOf['mcp.catalog'] => mcpCatalog(mcpServers(), note)
 
   /**
    * **显式重连一台**（U39）——重走一趟起手与发现，**不重放任何业务调用**。
@@ -2061,107 +1983,23 @@ export function assemble(options: AssembleOptions): Assembly {
   /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
   const readSkills = (): SkillCatalog => skills.discover()
 
-  /**
-   * 连接一览 —— `model.catalog` 与 `provider.catalog` **共用的一份**（U41）。
-   *
-   * 两个读面说的是同一批连接，故只产出一次：选择器与「管理供应商」那一屏看到的
-   * 「这条连接叫什么、走哪家、默认用哪个模型」必须是同一份，不能两处各拼一遍。
-   *
-   * 一位一位地**有才给**（`name` / `vendor` / `region` / `baseURL` / `model` / `reasoning`
-   * / `contextWindow`）：缺的那一位＝**不知道或没设置**，外壳据此少显示一格，不显示空串。
-   */
-  /**
-   * 认证的**来处**（U41）——`config`（配置文件里写了 `apiKey`）｜ `env`（回退环境变量）。
-   *
-   * ⚠️ **给的是来处，不是凭据**：判据只看「有没有」与「从哪来」，值一个字符都不出这一层
-   *（管理页据它说「认证：配置文件 / 环境变量」，而不是含糊的「已设置」）。
-   */
-  const keySourceOf = (
-    id: string,
-    config: ProviderConfig | undefined,
-  ): 'config' | 'env' | undefined => {
-    if (config?.apiKey !== undefined && config.apiKey.trim().length > 0) return 'config'
-    const fromEnv = process.env[apiKeyEnvVarOf(id)]
-    return fromEnv !== undefined && fromEnv.trim().length > 0 ? 'env' : undefined
-  }
-
-  /** 某条连接某个模型的**有效输入预算**——读面那一格（与出站/用量/压缩同源）。 */
-  const inputBudgetOf = (provider: string, model: string | undefined): number | undefined => {
-    if (model === undefined || models === undefined) return undefined
-    return models.capacityOf(provider, model)?.inputBudget
-  }
-
-
-  const catalogRows = (registry: ModelRegistry | undefined): readonly ModelCatalogRow[] => {
-    // **读面之前先同步一次**（U41 返修）——`connections()` 里那一次太晚：这一屏的
-    // `keySource` 等几格在本函数里**先于** `modelInfo.read()` 求值，外部刚改过配置时
-    // 会拿旧资料拼出这一屏。
+  /** 纯目录投影与常驻观察面共用；活跃执行者仍提供真实内存选中与缓存。 */
+  const catalogReader = (registry: ModelRegistry | undefined): ModelCatalogReader => {
     syncProviderBook()
-
-    if (registry === undefined) return []
-
-    return registry.list().map((entry) => {
-      const config = providerBook[entry.id]
-
-      return {
-        provider: entry.id,
-        ...(config?.name === undefined ? {} : { name: config.name }),
-        ...(config?.vendor === undefined ? {} : { vendor: config.vendor }),
-        ...(config?.region === undefined ? {} : { region: config.region }),
-        ...(config?.baseURL === undefined ? {} : { baseURL: config.baseURL }),
-        ...(entry.model === undefined ? {} : { model: entry.model }),
-        ...(config?.reasoning === undefined ? {} : { reasoning: config.reasoning }),
-        ...(keySourceOf(entry.id, config) === undefined
-          ? {}
-          : { keySource: keySourceOf(entry.id, config) }),
-        // **该连接默认模型**的有效输入预算（U41 返修）——没有依据就不给这一位。
-        // ⚠️ 它**不是**「当前选择」的分母：当前选中可以是同连接下的另一个模型——
-        // 外壳要那个数请看 `model.catalog.currentInputBudget`（同一份解析）。
-        ...(inputBudgetOf(entry.id, entry.model) === undefined
-          ? {}
-          : { contextWindow: inputBudgetOf(entry.id, entry.model) }),
-        // 缓存读数（U41）——**有才给**：空对象（还没取过、兼容接入）就不给这一位
-        ...(Object.keys(modelInfo.read(entry.id)).length === 0 ? {} : { cache: modelInfo.read(entry.id) }),
-
-      }
-    })
-  }
-
-  const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] => {
-    if (registry === undefined) return { entries: [], note: NO_REGISTRY }
-
-    const current = registry.current()
-    // **当前选择**的有效输入预算（U41 返修）——别拿某一行的 `contextWindow` 顶替：
-    // 那一行说的是**该连接的默认模型**多长，而当前选中完全可以是同一条连接下的**另一个**
-    // 模型（`model.switch { model }`）。按 `current` 算，与出站、用量同源。
-    const currentBudget =
-      current === undefined ? undefined : registry.capacityOf(current.provider, current.model)?.inputBudget
-
+    const current = registry?.current()
     return {
-      entries: catalogRows(registry),
-      // 还没有去向（没配缺省连接 / 还没选过模型）⇒ **不给这一位**——外壳报「先选模型」，
-      // 不拿列表第一项当成「当前」（设计明文）
+      providers: providerBook,
+      entries: registry?.list() ?? [],
       ...(current === undefined ? {} : { current }),
-      ...(currentBudget === undefined ? {} : { currentInputBudget: currentBudget }),
-      // 「取网页」用谁（U78）——**与 `current` 各说各的**：那是当前会话，这一位是那一件工具。
-      // 空着＝还没配（**不拿 `current` 顶上**——那正是这一格要消掉的静默回落）。
-      ...(webFetchConfig === undefined ? {} : { webFetch: webFetchConfig }),
+      read: (provider) => modelInfo.read(provider),
+      inputBudget: (provider, model) => registry?.capacityOf(provider, model)?.inputBudget,
     }
   }
 
-  /**
-   * `provider.catalog` 的载荷——与 `model.catalog` 同一份行（见 `catalogRows`）
-   * ＋ **内置供应商与官方区域**（U41 返修）。
-   *
-   * 后者是**适配现取的**（`vendorCatalog()`），不是装配这一层另存的一张表：
-   * 官方信息只有一个出处，界面接入选供应商 / 区域时读的就是它。
-   */
-  const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => ({
-    entries: catalogRows(models),
-    vendors: vendorCatalog(),
+  const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] =>
+    registry === undefined ? { entries: [], note: NO_REGISTRY } : modelCatalog(catalogReader(registry), webFetchConfig)
 
-    ...(note === undefined ? {} : { note }),
-  })
+  const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => providerCatalog(catalogReader(models), note)
 
   /**
    * **管理面的连接一览**（U41）——`/model` 的「管理供应商」那一屏。

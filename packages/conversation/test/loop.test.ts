@@ -77,7 +77,10 @@ describe('主循环 · Faux 全链', () => {
       'turn.end',
     ])
 
-    expect(stage.sink.byKind('turn.end').map((e) => e.data.reason)).toEqual(['settled', 'settled'])
+    expect(stage.sink.byKind('turn.end').map((e) => e.data)).toEqual([
+      { reason: 'settled', continues: true },
+      { reason: 'settled' },
+    ])
 
     // —— 内容流：四类条目按序落账（工具条目成对，为重放真源）——
     expect(stage.records.entries.map((entry) => entry.kind)).toEqual([
@@ -325,7 +328,7 @@ describe('主循环 · 中断', () => {
     expect(stage.sink.byKind('model.delta').length).toBeLessThan(4)
 
     // 本轮以「中止」收束
-    expect(stage.sink.byKind('turn.end').map((e) => e.data.reason)).toEqual(['aborted'])
+    expect(stage.sink.byKind('turn.end').map((e) => e.data)).toEqual([{ reason: 'aborted' }])
 
     // 半截流式消息**丢弃**（技术方案 · 恢复：未完成流式消息丢弃、记中止）
     expect(stage.records.entries.map((e) => e.kind)).toEqual(['user'])
@@ -356,7 +359,7 @@ describe('主循环 · 中断', () => {
     controller.abort()
 
     expect(await running).toBe('aborted')
-    expect(stage.sink.byKind('turn.end').map((e) => e.data.reason)).toEqual(['aborted'])
+    expect(stage.sink.byKind('turn.end').map((e) => e.data)).toEqual([{ reason: 'aborted' }])
 
     // 中止的调用**照落账**（工具—结果成对）——记录不缺口；
     // 「有调用无结果」的在途标记留给「进程被杀」那一路（阶段 2 恢复的判据）
@@ -399,7 +402,7 @@ describe('主循环 · 收场与兜底', () => {
       'model.error', // 模型域铸（出错即终结，其后无 call.end）
       'turn.end',
     ])
-    expect(stage.sink.byKind('turn.end').map((e) => e.data.reason)).toEqual(['error'])
+    expect(stage.sink.byKind('turn.end').map((e) => e.data)).toEqual([{ reason: 'error' }])
     expect(stage.records.entries.map((e) => e.kind)).toEqual(['user'])
   })
 

@@ -16,7 +16,7 @@
  * 要验的那条路了（「用户技能从哪棵树上长出来」）。三块分开之后，露头即等于读错了树。
  *
  * 三条口径：
- * - **不设变量一字不变**——`cli.test.ts` 那一批既有用例就是它（那边一个字都没改）；
+ * - **不设变量沿既有解析**——`cli.test.ts` 覆盖缺省落点；
  * - **设了全落新树**——读写都是，且**老树一根毫毛都不动**（前后逐路径比）；
  * - **新树缺内容不回退老树**——沿既有缺失处理（报错点新树的路），不悄悄回老地方。
  *
@@ -26,9 +26,13 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { startFixture } from './ui/fixture.ts'
+import { MAGIC_ANCHORS } from './ui/anchors.ts'
+import { startResidentHost } from './resident-host-fixture.ts'
+import { readDatabase } from './support.ts'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
@@ -57,12 +61,7 @@ function makeRoom(): Room {
   return { root, ws, home, base, dispose: () => removeDir(root) }
 }
 
-/** 起一次真入口——`magic` 给了就设 `MAGIC_HOME`（U42 那一位）。 */
-async function runCli(options: {
-  readonly room: Room
-  readonly magic?: string
-  readonly args: readonly string[]
-}): Promise<Run> {
+function environment(room: Room, magic?: string, extra: Readonly<Record<string, string>> = {}): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue
@@ -70,14 +69,19 @@ async function runCli(options: {
     if (/^MAGIC_.*_API_KEY$/.test(key)) continue
     env[key] = value
   }
+  return { ...env, HOME: room.home, ...(magic === undefined ? {} : { MAGIC_HOME: magic }), ...extra }
+}
 
+/** 起一次真入口——`magic` 给了就设 `MAGIC_HOME`（U42 那一位）。 */
+async function runCli(options: {
+  readonly room: Room
+  readonly magic?: string
+  readonly args: readonly string[]
+  readonly env?: Readonly<Record<string, string>>
+}): Promise<Run> {
   const proc = Bun.spawn([process.execPath, CLI, ...options.args], {
     cwd: options.room.ws,
-    env: {
-      ...env,
-      HOME: options.room.home,
-      ...(options.magic === undefined ? {} : { MAGIC_HOME: options.magic }),
-    },
+    env: environment(options.room, options.magic, options.env),
     stdout: 'pipe',
     stderr: 'pipe',
   })
@@ -131,20 +135,20 @@ function plantTree(
 }
 
 /**
- * 一棵树里现有的全部路径（相对 `.magic`，排序）——「老树一根毫毛都没动」靠它比。
+ * 比对路径、mtime 与文件摘要；不把「未新增路径」冒充「字节未写」。
  *
  * 只数 `.magic` 那一棵：`bun` 子进程会往**换过的 `HOME`** 里写自己的编译缓存
  * （`Library/Caches/bun/…`），那是跑测试的系统账，不是 Magic 的落点——把它算进来，
  * 这条断言就变成了「Bun 别写缓存」（它做不到，也不是本项要管的事）。
  */
-function snapshot(root: string): readonly string[] {
-  const magicDir = join(root, '.magic')
+function snapshot(root: string, magicDir = join(root, '.magic')): readonly string[] {
   const found: string[] = []
 
   const walk = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name)
-      found.push(relative(magicDir, path))
+      const digest = entry.isDirectory() ? 'directory' : createHash('sha256').update(readFileSync(path)).digest('hex')
+      found.push(`${relative(magicDir, path)}:${statSync(path).mtimeMs}:${digest}`)
       if (entry.isDirectory()) walk(path)
     }
   }
@@ -169,11 +173,24 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
     const room = makeRoom()
     try {
       const oldConfig = plantTree(room.home, { provider: 'old', model: 'OLD-MODEL' })
-      const newConfig = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL' })
+      const dataDir = join(room.base, 'selected-data')
+      mkdirSync(dataDir)
+      // 只报告配置里的数据落点，不打开数据库；哨兵不是有效 SQLite。
+      writeFileSync(join(dataDir, 'records.db'), 'offline-check-must-not-open-this-database')
+      const newConfig = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', dataDir })
       plantSkill(room.home, 'old-skill', '老树里那一份')
       plantSkill(room.base, 'fresh-skill', '新树里那一份')
+      const workspace = realpathSync(room.ws)
+      writeFileSync(join(room.home, '.magic', 'grants.json'), JSON.stringify({ version: 1, workspaces: {
+        [workspace]: [{ tool: 'read', grantedAt: 1 }, { tool: 'write', grantedAt: 1 }],
+      } }))
+      writeFileSync(join(room.base, '.magic', 'grants.json'), JSON.stringify({ version: 1, workspaces: {
+        [workspace]: [{ tool: 'read', grantedAt: 1 }],
+      } }))
 
       const before = snapshot(room.home)
+      const newBefore = snapshot(room.base)
+      const dataBefore = snapshot(room.base, dataDir)
       const result = await runCli({ room, magic: room.base, args: ['--check'] })
 
       expect(result.exitCode).toBe(0)
@@ -181,40 +198,44 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       expect(result.stdout).toContain(newConfig)
       expect(result.stdout).not.toContain(oldConfig)
       // 数据 / 授权都从新基址派生
-      expect(result.stdout).toContain(join(room.base, '.magic', 'records.db'))
+      expect(result.stdout).toContain(`数据落点　${dataDir}`)
       expect(result.stdout).toContain(join(room.base, '.magic', 'grants.json'))
+      expect(result.stdout).toContain('授权　　　1 条（本工作区）')
       // 供应商与用户技能也取自新树（老树那两样一个字都不该露头）
       expect(result.stdout).toContain('NEW-MODEL')
       expect(result.stdout).not.toContain('OLD-MODEL')
       expect(result.stdout).toContain('fresh-skill')
       expect(result.stdout).not.toContain('old-skill')
 
-      // **老树一根毫毛都没动**（没被读、没被写、也没被搬走）
+      // 两棵配置树与独立数据目录均未写；旧内容没有被拿来展示。
       expect(snapshot(room.home)).toEqual(before)
+      expect(snapshot(room.base)).toEqual(newBefore)
+      expect(snapshot(room.base, dataDir)).toEqual(dataBefore)
     } finally {
       room.dispose()
     }
   })
 
-  test('dataDir 缺省＝基础目录——真写在新树里（老树那边不落库）', async () => {
+  test('dataDir 缺省＝基础目录——离线检查报告新落点，两棵树均不建库或blob', async () => {
     const room = makeRoom()
     try {
       plantTree(room.home, { provider: 'old', model: 'OLD-MODEL' })
       plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL' })
 
       const before = snapshot(room.home)
+      const newBefore = snapshot(room.base)
       const result = await runCli({ room, magic: room.base, args: ['--check'] })
 
       expect(result.exitCode).toBe(0)
-      // 自检报的是新树那一处，且**真建出来了**（自检这一步就开库）
       const database = join(room.base, '.magic', 'records.db')
-      expect(result.stdout).toContain(database)
-      expect(existsSync(database)).toBe(true)
-      expect(existsSync(join(room.base, '.magic', 'blobs'))).toBe(true)
+      expect(result.stdout).toContain(`数据落点　${join(room.base, '.magic')}`)
+      expect(existsSync(database)).toBe(false)
+      expect(existsSync(join(room.base, '.magic', 'blobs'))).toBe(false)
 
       // 老树：库与 blob 一个都不许出现
       expect(existsSync(join(room.home, '.magic', 'records.db'))).toBe(false)
       expect(snapshot(room.home)).toEqual(before)
+      expect(snapshot(room.base)).toEqual(newBefore)
     } finally {
       room.dispose()
     }
@@ -226,13 +247,18 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       plantTree(room.home, { provider: 'old', model: 'OLD-MODEL' })
       // 新树这一份是**旧形制**：数据目录写着老地方的那种字面写法
       plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', dataDir: '~/.magic' })
+      const before = snapshot(room.home)
+      const newBefore = snapshot(room.base)
 
       const result = await runCli({ room, magic: room.base, args: ['--check'] })
 
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain(join(room.base, '.magic', 'records.db'))
+      expect(result.stdout).toContain(`数据落点　${join(room.base, '.magic')}`)
       // 「写死了就绕得过」不是一条路：老地方不许因此冒出一个库来
       expect(existsSync(join(room.home, '.magic', 'records.db'))).toBe(false)
+      expect(existsSync(join(room.base, '.magic', 'records.db'))).toBe(false)
+      expect(snapshot(room.home)).toEqual(before)
+      expect(snapshot(room.base)).toEqual(newBefore)
     } finally {
       room.dispose()
     }
@@ -269,7 +295,7 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
     const room = makeRoom()
     try {
       plantTree(room.home, { provider: 'old', model: 'OLD-MODEL' })
-      // 新树这一份**没有 apiKey**（环境变量那条兜底也被统一剔掉了），造网关时当场报
+      // 新树缺 apiKey，离线调用域内纯解析即可诊断，不需要构造网关。
       plantTree(room.base, {
         provider: 'fresh',
         model: 'NEW-MODEL',
@@ -283,25 +309,63 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       expect(result.stderr).toContain(join(room.base, '.magic', 'config.json'))
       // 写死的那串老落点不许再出现在提示里（`MAGIC_HOME` 指到别处时它是指错地方）
       expect(result.stderr).not.toContain('~/.magic')
+      expect(result.stderr).toContain('MAGIC_FRESH_API_KEY')
+      expect(existsSync(join(room.base, '.magic', 'records.db'))).toBe(false)
+
+      const key = 'sk-fake-u42-environment-not-a-real-key'
+      const fromEnv = await runCli({ room, magic: room.base, args: ['--check'], env: { MAGIC_FRESH_API_KEY: key } })
+      expect(fromEnv.exitCode).toBe(0)
+      expect(fromEnv.stdout).toContain('环境变量 MAGIC_FRESH_API_KEY')
+      expect(fromEnv.stdout + fromEnv.stderr).not.toContain(key)
     } finally {
       room.dispose()
     }
   })
 
+  test('离线密钥诊断跟随本次供应商；未选备用条目不阻断，环境回退不泄露值', async () => {
+    const room = makeRoom()
+    try {
+      const config = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', config: {
+        providers: {
+          fresh: { baseURL: 'http://127.0.0.1:9/v1', model: 'NEW-MODEL', apiKey: 'sk-fake-u42-not-a-real-key' },
+          spare: { baseURL: 'http://127.0.0.1:9/v1', model: 'SPARE-MODEL' },
+        },
+      } })
+      const before = snapshot(room.base)
+      expect((await runCli({ room, magic: room.base, args: ['--check'] })).exitCode).toBe(0)
+      const missing = await runCli({ room, magic: room.base, args: ['--check', '--provider', 'spare'] })
+      expect(missing.exitCode).toBe(1)
+      expect(missing.stderr).toContain('供应商「spare」缺 apiKey')
+      expect(missing.stderr).toContain(config)
+      expect(missing.stderr).toContain('MAGIC_SPARE_API_KEY')
+      const key = 'sk-fake-u42-spare-not-a-real-key'
+      const available = await runCli({ room, magic: room.base, args: ['--check', '--provider', 'spare'], env: { MAGIC_SPARE_API_KEY: key } })
+      expect(available.exitCode).toBe(0)
+      expect(available.stdout).toContain('本次走 spare（SPARE-MODEL）')
+      expect(available.stdout + available.stderr).not.toContain(key)
+      expect(snapshot(room.base)).toEqual(before)
+    } finally { room.dispose() }
+  })
+
   test('真跑一段脚本——**写**落新树（老树一个字节都不多）', async () => {
     const fixture = startFixture({ turns: [{ kind: 'text', text: '收到，我在。' }] })
     const room = makeRoom()
+    let host: Awaited<ReturnType<typeof startResidentHost>> | undefined
     try {
       plantTree(room.home, { provider: 'old', model: 'OLD-MODEL', baseURL: fixture.baseURL })
-      plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', baseURL: fixture.baseURL })
+      const configPath = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', baseURL: fixture.baseURL })
 
       const scriptPath = join(room.root, 'script.json')
       writeFileSync(scriptPath, JSON.stringify({ inputs: ['说一句话'] }), 'utf8')
 
       const before = snapshot(room.home)
+      host = await startResidentHost({ root: room.root, home: room.home, workspace: room.ws,
+        dataDir: join(room.base, '.magic'), configPath, grantsPath: join(room.base, '.magic', 'grants.json'),
+        env: environment(room, room.base), anchors: MAGIC_ANCHORS, dispose: room.dispose,
+      }, process.env['MAGIC_CLI_EVIDENCE'] === undefined ? undefined : join(process.env['MAGIC_CLI_EVIDENCE'], `u42-host-${crypto.randomUUID()}`))
       const result = await runCli({ room, magic: room.base, args: ['--script', scriptPath] })
 
-      expect(result.exitCode).toBe(0)
+      expect(result.exitCode, result.stderr).toBe(0)
       // 请求真发出去了（链子走通，不是「什么都没跑所以没写」）
       expect(fixture.requests().length).toBeGreaterThan(0)
 
@@ -309,12 +373,20 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       const database = join(room.base, '.magic', 'records.db')
       expect(existsSync(database)).toBe(true)
       expect(existsSync(join(room.base, '.magic', 'blobs'))).toBe(true)
-      expect(result.stdout).toContain(database)
+      expect(result.stdout).toContain('条目 2 条')
+      const db = readDatabase(database)
+      try {
+        expect(db.sessions).toHaveLength(1)
+        expect(db.entries.filter((entry) => entry.kind === 'user').map((entry) => entry.content_text)).toEqual(['说一句话'])
+        expect(db.entries.some((entry) => entry.kind === 'assistant' && entry.content_text === '收到，我在。')).toBe(true)
+      } finally { db.close() }
+      expect(process.kill(host.pid, 0)).toBe(true)
 
       // 老树：一个字节都没多（也没少）
       expect(existsSync(join(room.home, '.magic', 'records.db'))).toBe(false)
       expect(snapshot(room.home)).toEqual(before)
     } finally {
+      await host?.close()
       await fixture.stop()
       room.dispose()
     }

@@ -295,6 +295,49 @@ export type ModelRegistryOptions = {
   readonly learnedTraits?: LearnedTraits | undefined
 }
 
+/** 纯选择判定；目录观察与注册表切换共用，网关构造仍只属于实际切换。 */
+export function selectModel(options: {
+  readonly providers: Readonly<Record<string, ProviderConfig>>
+  readonly defaultProvider?: string
+  readonly selected?: ModelSelection
+}, request: ModelSwitchRequest): ModelSwitchResult {
+  const { providers, defaultProvider, selected } = options
+  const askedProvider = request.provider?.trim()
+  const askedModel = request.model?.trim()
+  const requestedReasoning = request.reasoning
+
+  if (askedProvider === undefined && (askedModel === undefined || askedModel.length === 0)) {
+    return { ok: false, reason: '既没给 provider 也没给 model——不知道要换成什么' }
+  }
+
+  const providerId = askedProvider ?? selected?.provider ?? defaultProvider
+  if (providerId === undefined) {
+    return { ok: false, reason: '还没有可用的连接——先接入一个供应商' }
+  }
+
+  const entry = ownOf(providers, providerId)
+  if (entry === undefined) {
+    const known = Object.keys(providers).join(' / ') || '（一个都没有）'
+    return { ok: false, reason: `未知供应商「${providerId}」——已注册：${known}` }
+  }
+
+  const model = askedModel !== undefined && askedModel.length > 0 ? askedModel : entry.model
+  // 连接在、模型不在 —— 报「先选模型」，**不挑一个顶上**（设计：不取列表第一项）
+  if (model === undefined || model.length === 0) {
+    return { ok: false, reason: `连接「${providerId}」还没有默认模型——请指明用哪个模型` }
+  }
+
+  // **思考设置随同验证**（设计明文）——做不到就当场说清，**不静默减档**
+  const reasoning = checkReasoning(entry.vendor === undefined ? undefined : vendorOf(entry.vendor), requestedReasoning)
+  if ('reason' in reasoning) return { ok: false, reason: reasoning.reason }
+
+
+  return { ok: true, selection: {
+    provider: providerId, model,
+    ...(reasoning.setting === undefined ? {} : { reasoning: reasoning.setting }),
+  } }
+}
+
 // —— 装配 ——
 
 /**
@@ -444,35 +487,9 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     },
 
     use(request: ModelSwitchRequest): ModelSwitchResult {
-      const askedProvider = request.provider?.trim()
-      const askedModel = request.model?.trim()
-      const requestedReasoning = request.reasoning
-
-      if (askedProvider === undefined && (askedModel === undefined || askedModel.length === 0)) {
-        return { ok: false, reason: '既没给 provider 也没给 model——不知道要换成什么' }
-      }
-
-      const providerId = askedProvider ?? selected?.provider ?? defaultProvider
-      if (providerId === undefined) {
-        return { ok: false, reason: '还没有可用的连接——先接入一个供应商' }
-      }
-
-      const entry = ownOf(providers, providerId)
-      if (entry === undefined) {
-        const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
-        return { ok: false, reason: `未知供应商「${providerId}」——已注册：${known}` }
-      }
-
-      const model = askedModel !== undefined && askedModel.length > 0 ? askedModel : entry.model
-      // 连接在、模型不在 —— 报「先选模型」，**不挑一个顶上**（设计：不取列表第一项）
-      if (model === undefined || model.length === 0) {
-        return { ok: false, reason: `连接「${providerId}」还没有默认模型——请指明用哪个模型` }
-      }
-
-      // **思考设置随同验证**（设计明文）——做不到就当场说清，**不静默减档**
-      const reasoning = checkReasoning(adapterFor(providerId), requestedReasoning)
-      if ('reason' in reasoning) return { ok: false, reason: reasoning.reason }
-
+      const picked = selectModel({ providers, defaultProvider, selected }, request)
+      if (!picked.ok) return picked
+      const providerId = picked.selection.provider
 
       // **网关在这一步就造**（不是等下一轮调用）——切不过去就该在「切」这一下说清楚：
       // 缺 key 的缘由经 `use` 的返回值交回，而不是拖到下一轮炸在对话域里（那里只会报
@@ -484,11 +501,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
         throw error
       }
 
-      selected = {
-        provider: providerId,
-        model,
-        ...(reasoning.setting === undefined ? {} : { reasoning: reasoning.setting }),
-      }
+      selected = picked.selection
       return { ok: true, selection: selected }
     },
 

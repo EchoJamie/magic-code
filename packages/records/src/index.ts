@@ -26,6 +26,7 @@
 
 export { createRecordsStore, DATABASE_FILE } from './store.ts'
 export type { RecordsStore, RecordsStoreOptions } from './store.ts'
+export type { AttentionStore } from './attention.ts'
 
 export { isToolCallEntry, isToolResultEntry } from './entries.ts'
 export type { ToolCallEntry, ToolResultEntry } from './entries.ts'

@@ -169,7 +169,7 @@ describe('判据 3 · 不落库清单', () => {
 })
 
 describe('判据 4 · schema（版本 · 重开续写）', () => {
-  test('新建即认版本：三表在、文件在、版本号＝契约常量', () => {
+  test('新建即认版本：记录与事项表在、文件在、版本号＝契约常量', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -186,7 +186,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
           .map((row) => row.name)
           .filter((name) => !name.startsWith('sqlite_'))
 
-        expect(tables).toEqual(['entries', 'events', 'records_meta', 'sessions'])
+        expect(tables).toEqual(['attention_items', 'entries', 'events', 'records_meta', 'sessions'])
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: RECORD_SCHEMA_VERSION,
         })

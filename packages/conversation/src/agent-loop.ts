@@ -997,7 +997,7 @@ function close(
     )
   }
 
-  runtime.sink.emit(runtime.stamper.stamp('turn.end', { reason }))
+  runtime.sink.emit(runtime.stamper.stamp('turn.end', { reason, ...(continues ? { continues: true as const } : {}) }))
   return { reason, continues }
 }
 

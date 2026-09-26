@@ -1917,32 +1917,14 @@ const PAGE_NOTE_KEY = 'page:note'
  * 与 `appendReceipt` 只差 key：这样 `pageHeaderOf` 认得出它是页头（见 `PAGE_NOTE_KEY` 的注）。
  */
 export function appendPageNote(view: ShellView, text: string): ShellView {
-  return appendSettled(view, { kind: 'receipt', key: PAGE_NOTE_KEY, text })
+  return appendSettled(view, { kind: 'receipt', key: `${PAGE_NOTE_KEY}:${view.settled.length}`, text })
 }
 
-/**
- * 用历史铺一页时的**页头**——**这一页有页头就照用本尊（对象不变），没有就一行都不补**。
- *
- * 「有没有」看的是 `settled[0]`，两格都算页头：
- * - **字标**——**开机**那一页（`withBanner` 种的）与 **`/clear` 开的那一页**
- *   （U45；两处**都**得把它留在最前面，不然 `--session` 接续那条路开局就把它换没了）；
- * - **开页回执**（`PAGE_NOTE_KEY`）——**`/resume` 开的那一页**（U44）。
- * 两者都没有（真的一条都没有那一页）＝历史直接从头铺。
- *
- * ⚠️ **认 key 不认位置**（U44 起的第二格）：回执落在最前面**不等于**它是页头，
- * 见 `PAGE_NOTE_KEY` 那段注。
- * ⚠️ **页头与 `<Static>` 的游标是同一笔账**：页头那一行在「历史还没读回来」那一帧就已经
- * 写出去了（`Static` 的游标跟着往前走一格），`rebuild` 若不把它放回最前面，
- * 这一页的**第一行记录**就会被游标跳过——屏上凭空少一行（试跑当场现形：
- * 「甲：看看有什么」那一行没印出来）。
- *
- * ⚠️ **绝不在这儿补种一个**（U43 改）：这条路上补种＝又在**填**的时候**开**了一页——
- * 屏上多一份字标（D28 乙）。页开不开由 `page` 管，不归本函数。
+/** 历史到达前已印出的字标、开屏说明或切页回执，保留原位置与对象。
+ * Static 按条目数追加；删掉这些已印行会让它跳过后来的正文。
  */
 function pageHeaderOf(view: ShellView): readonly LogRow[] {
-  const first = view.settled[0]
-
-  return first !== undefined && (first.kind === 'banner' || first.key === PAGE_NOTE_KEY) ? [first] : []
+  return view.settled.filter((row) => row.kind === 'banner' || row.key.startsWith(`${PAGE_NOTE_KEY}:`))
 }
 
 /**
@@ -2179,6 +2161,22 @@ const RESUME_SOURCE = 0
  * ⚠️ **它写的是 `rows` 而不是 `settled`**：这三件都还在动（正文还会往下长、工具还会出
  * 结果），而后来的增量只往 `rows` 的末行上接（`appendText` / `addToolOutput`）。
  */
+/** 执行连接已核销：撤去失效裁决与在飞提示，保留记录和未发送草稿。 */
+export function finishExecution(view: ShellView): ShellView {
+  const awaiting = view.dock.kind === 'decision' ? view.dock.pending.call : undefined
+  const next = undock(view)
+  const rows = next.rows.map((row): LogRow => {
+    if (row.kind !== 'tool' || row.state !== 'running') return row
+    const { awaitingDecision, ...body } = row
+    const notExecuted = awaitingDecision === true || row.call === awaiting
+    return { ...body,
+      state: notExecuted ? 'unexecuted' : 'failed',
+      output: [...row.output, notExecuted ? '该询问已失效，未执行' : '执行中断，外部效果待确认'],
+    }
+  })
+  return patchStatus(settle({ ...next, rows }), { state: 'idle', amount: null, hint: HINT_IDLE })
+}
+
 export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
   let next = view
 

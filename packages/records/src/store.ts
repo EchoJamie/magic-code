@@ -46,6 +46,7 @@ import type {
   Timestamp,
 } from '@magic/contracts'
 import { BLOBS_DIR, createBlobStore } from './blobs.ts'
+import { createAttentionStore, type AttentionStore } from './attention.ts'
 import { assertEntryShape, entryOfRow, entryParamsOf, type EntryRow } from './entries.ts'
 import { eventOfRow, eventParamsOf, isTransientEvent, type EventRow } from './events.ts'
 import { scanForRecovery, type RecoveryScan } from './recovery.ts'
@@ -140,6 +141,8 @@ export type RecordsStoreOptions = {
  * 会话实例经 `serviceFor` 取（条目写入的会话来处，见文件头注）。
  */
 export type RecordsStore = {
+  /** 注意事项与记录共库；读取不标读，确认只作用于具体事项 id。 */
+  readonly attention: AttentionStore
   serviceFor(session: SessionId): RecordsService
   /**
    * **按会话读条目**——**不经会话实例**（第 19 轮补）。
@@ -183,7 +186,8 @@ export type RecordsStore = {
    * 它不是端口面（不随会话实例、也不进 `RecordsService`），跨进程那道缝日后要接
    * 另说——不先替它背一副异步壳。
    */
-  decisionHistory(): DecisionHistory
+  /** 不传沿用构造时的工作区；管理者纯观察时可指定所选工作区，同一 SQL 口径。 */
+  decisionHistory(workspace?: readonly string[]): DecisionHistory
   /**
    * **这条会话在不在库里**（U28）——入口 `--session <id>` 那道校验的取材。
    *
@@ -264,6 +268,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   const ids = createIdSpace(db)
   const blobs = createBlobStore(blobsDir)
+  const attention = createAttentionStore(db)
 
   // —— 语句（`query` 走缓存；参数一律具名，免得列序漂移悄悄错位）——
   //
@@ -435,12 +440,12 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
    * ⚠️ **`kernel` 与 `auto` 必须分开数**：这一本账的口径是「**没问**就怎样」——
    * 合成一格，那本账就把"拒"读成"放行"了（口径写在契约 `DecisionHistory` 那条注里）。
    */
-  function decisionHistory(): DecisionHistory {
+  function decisionHistory(workspace?: readonly string[]): DecisionHistory {
     let total = 0
     let auto = 0
     let kernel = 0
 
-    for (const row of selectDecisions.all(workspaceColumn)) {
+    for (const row of selectDecisions.all(workspace === undefined ? workspaceColumn : JSON.stringify(workspace))) {
       const data = JSON.parse(row.data) as EventDataOf['tool.decision']
       total += 1
       if (data.decider === 'auto') auto += 1
@@ -476,6 +481,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   return {
     paths: { database: databasePath, blobs: blobsDir },
+    attention,
 
     serviceFor(session: SessionId): RecordsService {
       assertSessionId(session)

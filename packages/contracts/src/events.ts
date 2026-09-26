@@ -423,7 +423,11 @@ export type EventDataOf = {
   'agent.end': EmptyPayload
   // turn——轮起止；end 带结束方式
   'turn.start': EmptyPayload
-  'turn.end': { readonly reason: TurnEndReason }
+  'turn.end': {
+    readonly reason: TurnEndReason
+    /** 工具轮已结束但同一次交代还将继续；不能作为结果可查看的通知边界。 */
+    readonly continues?: true
+  }
   // message——内容事件：正文归条目 / blob，事件只记「发生 + 引用」
   'message.user': { readonly entry: RecordId }
   'message.assistant': { readonly entry: RecordId }

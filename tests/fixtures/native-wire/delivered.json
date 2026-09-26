@@ -1,0 +1,10 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.delivered",
+    "ids": [
+      "notice-one"
+    ]
+  }
+}

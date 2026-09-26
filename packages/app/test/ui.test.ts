@@ -17,7 +17,10 @@ import { describe, expect, test } from 'bun:test'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf } from './ui/driver.ts'
+import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf, type UiSession } from './ui/driver.ts'
+import { startResidentHost } from './resident-host-fixture.ts'
+import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
+import type { HostResponse } from '@magic/contracts'
 import { createSandbox } from './ui/sandbox.ts'
 import { startFixture } from './ui/fixture.ts'
 import { createControl } from './ui/control.ts'
@@ -148,6 +151,7 @@ describe('U40 · 工具自证', () => {
       expect(screen.columns).toBe(72)
       expect(screen.rows).toBe(20)
       expect((await session.capture({ label: '改窗之后' })).lines.join('\n')).toContain('SIZE 72x20')
+      expect(existsSync(join(session.runDir, 'host'))).toBe(false)
     } finally {
       await session.close()
     }
@@ -278,6 +282,11 @@ describe('U40 · 工具自证', () => {
 
     // 应用：进程没了（`kill(pid, 0)` 抛 ＝ 确实不在了）
     expect(() => process.kill(session.pid, 0)).toThrow()
+    const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number; messages: HostResponse[] }
+    expect(host.code).toBe(0)
+    expect(host.messages.some((message) => message.t === 'host.stopped')).toBe(true)
+    expect(() => process.kill(host.pid, 0)).toThrow()
+    expect(existsSync(hostDiscoveryPath(session.facts().home, true))).toBe(false)
 
     // 端点：连不上了（端口真释放）
     const fixture = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as {
@@ -295,6 +304,93 @@ describe('U40 · 工具自证', () => {
     expect(existsSync(report.viewer)).toBe(true)
     expect(existsSync(join(runDir, 'sandbox', 'records.db'))).toBe(true)
   }, 30_000)
+})
+
+describe('常驻测试宿主的归属', () => {
+  test('同一外借沙地的并发窗口共用一个自有宿主，最后一窗才核销', async () => {
+    const runs = tempDir('magic-u40-host-share-')
+    const fixture = startFixture({ turns: HELLO })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const windows: UiSession[] = []
+    try {
+      const results = await Promise.allSettled([
+        createUiSession({ label: '宿主共享甲', artifacts: runs, sandbox, fixture }).then((window) => { windows.push(window); return window }),
+        createUiSession({ label: '宿主共享乙', artifacts: runs, sandbox, fixture }).then((window) => { windows.push(window); return window }),
+      ])
+      const failure = results.find((result) => result.status === 'rejected')
+      if (failure?.status === 'rejected') throw failure.reason
+      const opened = results.map((result) => (result as PromiseFulfilledResult<UiSession>).value)
+      const [first, second] = opened as [UiSession, UiSession]
+      const hostPid = stepsOf(first.runDir).find((step) => step['action'] === 'host-acquired')?.['pid'] as number
+      expect(Number.isInteger(hostPid)).toBe(true)
+      expect(stepsOf(second.runDir).find((step) => step['action'] === 'host-acquired')?.['pid']).toBe(hostPid)
+      expect(fixture.requests()).toHaveLength(0)
+      await first.close()
+      windows.splice(windows.indexOf(first), 1)
+      expect(() => process.kill(hostPid, 0)).not.toThrow()
+      await second.send('共享宿主仍可使用', { until: { text: '共享宿主仍可使用' } })
+      await second.key('enter', { until: { text: '收到，我在。' }, timeoutMs: 4_000 })
+      expect(fixture.requests()).toHaveLength(1)
+      await second.close()
+      windows.splice(windows.indexOf(second), 1)
+      expect(() => process.kill(hostPid, 0)).toThrow()
+      expect(existsSync(hostDiscoveryPath(sandbox.home, true))).toBe(false)
+      expect(opened.filter((window) => existsSync(join(window.runDir, 'host/host.json')))).toHaveLength(1)
+      expect(existsSync(sandbox.root)).toBe(true)
+    } finally {
+      for (const window of windows) await window.close()
+      await fixture.stop()
+      sandbox.dispose()
+      console.log(`共享宿主证据：${runs}`)
+    }
+  }, 30_000)
+
+  test('已有明确 owner 的宿主只连接，窗口关闭不替 owner 停宿主', async () => {
+    const runs = tempDir('magic-u40-host-borrow-')
+    const fixture = startFixture({ turns: HELLO })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'owner'))
+    let window: UiSession | undefined
+    try {
+      const discovery = readFileSync(hostDiscoveryPath(sandbox.home, true), 'utf8')
+      window = await createUiSession({ label: '借用明确宿主', artifacts: runs, sandbox, fixture })
+      expect(readFileSync(hostDiscoveryPath(sandbox.home, true), 'utf8')).toBe(discovery)
+      expect(stepsOf(window.runDir).some((step) => step['action'] === 'host-acquired')).toBe(false)
+      expect(existsSync(join(window.runDir, 'host'))).toBe(false)
+      expect(host.executorStarts()).toBe(0)
+      await window.close()
+      window = undefined
+      expect(() => process.kill(host.pid, 0)).not.toThrow()
+      expect(fixture.requests()).toHaveLength(0)
+      await host.close()
+      expect(() => process.kill(host.pid, 0)).toThrow()
+    } finally {
+      try { await window?.close() } finally {
+        try { await host.close() } finally { await fixture.stop(); sandbox.dispose() }
+      }
+      console.log(`外借宿主证据：${runs}`)
+    }
+  }, 30_000)
+
+  test('宿主起手失败也收回本轮资源，保留宿主错误证据', async () => {
+    const runs = tempDir('magic-u40-host-failure-')
+    const checkout = tempDir('magic-u40-missing-checkout-')
+    try {
+      await expect(createUiSession({ artifacts: runs, checkout, turns: HELLO })).rejects.toThrow('隔离宿主未就绪')
+      const runDir = join(runs, readdirSync(runs)[0]!)
+      const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { outcome: string; app: { home: string }; fixture: { port: number } }
+      const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number }
+      expect(info.outcome).toBe('failed')
+      expect(host.code).not.toBe(0)
+      expect(() => process.kill(host.pid, 0)).toThrow()
+      expect(existsSync(info.app.home)).toBe(false)
+      await expect(fetch(`http://127.0.0.1:${info.fixture.port}/v1/models`)).rejects.toBeDefined()
+      expect(existsSync(join(runDir, 'host/host.stderr.log'))).toBe(true)
+    } finally {
+      removeDir(checkout)
+      console.log(`宿主起手失败证据：${runs}`)
+    }
+  }, 15_000)
 })
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -90,6 +90,8 @@ export type RunRecord = {
    * 就得说出来，而不是让「已停止」三个字把没收拾完的事盖过去。
    */
   reclaimNote: string | undefined
+  /** 执行者已退出，登记资源仍在核销。 */
+  reclaimPending: boolean
   /** 它的控制连接**接上过**没有——「失联」的判据要它（没接上过就谈不上失去）。 */
   everConnected: boolean
   /** 控制连接此刻还在不在（认领之后、核销之前为真）。 */
@@ -98,6 +100,8 @@ export type RunRecord = {
   ready: boolean
   /** 手里有活吗——`agent.state` 那一格（与执行者收缩用**同一个判据**）。 */
   busy: boolean
+  /** 执行者实际持有的后台命令数；独立于模型轮。 */
+  background: number
   /** 这一轮开着（`turn.start` 之后、`turn.end` 之前）。 */
   turnActive: boolean
   /**
@@ -158,6 +162,7 @@ export function newRunRecord(input: {
     procStartedAt: input.procStartedAt,
     owned: [],
     reclaimNote: undefined,
+    reclaimPending: false,
     everConnected: false,
     connected: false,
     ready: false,
@@ -170,6 +175,7 @@ export function newRunRecord(input: {
      * 于是第二次 `session.open` 被挡回去，而其实什么都没在跑。
      */
     busy: false,
+    background: 0,
     turnActive: false,
     decisions: new Map(),
     resolvedDecisions: new Set(),
@@ -202,6 +208,8 @@ export function newRunRecord(input: {
  * 6. 其余（手上没活）⇒ 当前空闲——**运行还在的时候，上一轮被打断不叫「已停止」**。
  */
 export function runStateOf(record: RunRecord): RunState {
+  if (record.reclaimPending) return 'stopping'
+  if (record.reclaimNote !== undefined) return 'unknown'
   if (record.stopping && record.ended === undefined) return 'stopping'
 
   if (record.ended === undefined && record.everConnected && !record.connected) return 'unknown'
@@ -209,7 +217,7 @@ export function runStateOf(record: RunRecord): RunState {
   if (record.decisions.size > 0) return 'waiting'
   // **还没起来也算在跑**：从起进程到 `ready` 那一段是在把这件活支起来——显示成「当前空闲」
   // 是错的（它此刻既不能收交代，也没有一份可以看的最近结果）
-  if (record.busy || record.turnActive || (record.ended === undefined && !record.ready)) {
+  if (record.busy || record.turnActive || record.background > 0 || (record.ended === undefined && !record.ready)) {
     return 'running'
   }
 
@@ -258,6 +266,7 @@ export function refresh(record: RunRecord, at: number): RunState {
  * 不另存一句话。
  */
 export function stopReasonOf(record: RunRecord): string | undefined {
+  if (record.reclaimNote !== undefined) return record.reclaimNote
   // **现判一次**，不读 `record.state` 那一格：它是 `refresh` 维护的（写完 `ended` 而没
   // 来得及 `refresh` 的中间态很常见）——读它会让「缘由」比「状态」慢半拍，而两者本是同一件事
   if (runStateOf(record) !== 'stopped') return undefined
@@ -432,7 +441,7 @@ export function runRowOf(record: RunRecord): RunRow {
     since: record.since,
     startedAt: record.startedAt,
     ...(lastTurnAt === undefined ? {} : { lastTurnAt }),
-    ...(record.action === undefined ? {} : { action: record.action }),
+    ...(record.action !== undefined ? { action: record.action } : record.background > 0 ? { action: `仍有 ${record.background} 项后台命令在执行` } : {}),
     ...(record.progress === undefined ? {} : { progress: record.progress }),
     ...(record.output === undefined ? {} : { output: record.output }),
     ...(reason === undefined ? {} : { reason }),

@@ -77,6 +77,7 @@ import {
   reasoningRows,
   sessionRows,
   applyResume,
+  finishExecution,
   inActiveSection,
   runDetail,
   runSummary,
@@ -152,6 +153,7 @@ export type ShellKey =
   | { readonly kind: 'down' }
   | { readonly kind: 'ctrl+c' }
   | { readonly kind: 'ctrl+o' }
+  | { readonly kind: 'ctrl+r' }
   /**
    * **`Ctrl T`**——收起/展开当前清单（U34）。
    *
@@ -232,6 +234,8 @@ export type Shell = {
    * 恢复没跑完就提交，等于让循环与恢复抢同一条记录流（对话域会当场抛）。
    */
   releaseInput(): void
+  /** 管理者断开，留屏与草稿；只有明确重开动作可恢复连接。 */
+  hostGone(): void
   /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
   readHistory(session?: SessionId): void
   /** 收摊——退订传输、清订阅者。 */
@@ -349,6 +353,8 @@ type Layer = {
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
 export type ShellOptions = {
+  readonly detached?: ((listener: (why: string) => void) => void) | undefined
+  readonly reopen?: (() => Promise<void>) | undefined
   /**
    * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的**开机那一格**分母（`12.4k/200k`）。
    *
@@ -399,9 +405,7 @@ export type ShellOptions = {
    * 由头：解析从严（读不懂的规则 / 授权**不生效**）原先**只有 `--check` 会说**，
    * 走 TUI 这条路时**一声不响**。装配把话备好（`Assembly.notices`），外壳只负责说。
    *
-   * ⚠️ **等记录区重建完再贴**（见 `accumulate`）——开盘那一下 `readHistory` 会把
-   * 屏上痕迹连同这几行一起换掉（`rebuild` 只回会话内容）。不补这一手，回执在真外壳上
-   * **一句都留不下**（`run.ts` 的次序正是「boot → 放开输入 → 读历史」）。
+   * 开屏时只印一次，并作为当前页头保留到历史重建完成。
    */
   readonly receipts?: readonly string[] | undefined
   /**
@@ -584,16 +588,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   // 这里种的只有 ④ 的**开机那一格**（`contextWindow`）——此后的分母随事件来（见 `ShellOptions`）。
   let view = withBanner(withContextWindow(createView(), options.contextWindow ?? null))
 
-  /**
-   * **启动那几句**（见 `ShellOptions.receipts`）——开局先贴一遍，**重建之后再补一遍**。
-   *
-   * 两份是必要的：不先贴，没跑 `readHistory` 的调用方（测试 / 演示）永远看不到；
-   * 不在重建后补，真外壳上那几行会被 `rebuild` 换掉（它只回会话内容）。
-   * 补一次就够（`startupSaid`）——此后再换会话就不重复念叨了。
-   */
-  const startup: readonly string[] = options.receipts ?? []
-  let startupSaid = false
-  if (startup.length > 0) view = startup.reduce((acc, text) => appendReceipt(acc, text), view)
+  // 开屏说明属于这一页的页头。历史到达时保留原位置，避免 Static 跳过首条正文。
+  for (const text of options.receipts ?? []) view = appendPageNote(view, text)
 
   /**
    * 运行事实（U49）——接上那一份当下读数；此后由管理者推着走（下面那一段订阅）。
@@ -613,12 +609,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   //   用户正是为它来的。
   {
     const summary = runSummary(view.runs, options.openingSession)
-    if (summary !== undefined) view = appendReceipt(view, summary)
+    if (summary !== undefined) view = appendPageNote(view, summary)
   }
 
   let disposed = false
   /** 「放开输入」了没有——`boot` 完成那一下翻真（见 `Shell.releaseInput`）。 */
   let ready = !booting
+  let connected = true
+  let reopening = false
   // 启动中：右位说清楚「为什么回车没反应」（不然就是「按了没反应」——最难查的那种）
   if (booting) view = { ...view, status: { ...view.status, hint: HINT_BOOTING } }
 
@@ -1040,7 +1038,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 恢复自己发的那几条事件（`reduce` 把 `agent.state{waiting}` 翻成 `HINT_IDLE`）——
     // 任何一条都会把「启动中」抹掉，而**回车那时仍是不受理的** ⇒ 屏上就变成
     // 「看着闲着、按了却没反应」（原型 · 交互逻辑最不想要的那种）。
-    const next = ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
+    const next = !connected
+      ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : 'Magic Code 已退出 · ctrl+r 重新打开 · ctrl+c 离开' } }
+      : ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
     // **回了输入行 ⇒ 屏的栈清空**（U61）——栈里装的是「还在底下的那几屏」，而屏全收起来
     // 之后它们已经没有主语了。这是**唯一的收口**（视图的每一处改动都经这里），
     // 故 `esc` 那条路不必另写一句：它收起屏、dock 一回到 `input`，栈自然跟着空。
@@ -1209,7 +1209,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // **放开输入之前一律不受理**（见 `Shell.releaseInput`）——命令进内核＝让内核干活，
     // 而 `boot`（装载 ＋ 恢复）还没跑完。丢弃＋出声由调用方给（`submit` 那一处），
     // 这儿是兜底：别的路径（选择器 / 裁决）此刻本就不该有，有也一并拦下。
-    if (!ready) return
+    if (!ready || !connected) return
     transport.send(command)
   }
 
@@ -1470,16 +1470,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     rebuildEntries = [...rebuildEntries, ...data.entries]
     if (!data.done) return
 
-    let next = rebuild(view, rebuildEntries)
-
-    // 启动那几句**补一回**——`rebuild` 只回会话内容，屏上痕迹（含开局那几行回执）
-    // 会被它换掉；不补就真的一句都留不下（见 `ShellOptions.receipts`）
-    if (!startupSaid && startup.length > 0) {
-      startupSaid = true
-      next = startup.reduce((acc, text) => appendReceipt(acc, text), next)
-    }
-
-    commit(next)
+    commit(rebuild(view, rebuildEntries))
     rebuildFor = null
     rebuildEntries = []
     // **接回来的那一段画在历史之后**（U49）——早一步画会被这一跳的 `rebuild` 抹掉
@@ -1793,6 +1784,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (disposed) return
     holdResumed(snapshot)
   })
+  const finishCurrent = (): void => {
+    pendingResume = null
+    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
+    resumeTimer = undefined
+    commit(finishExecution(view))
+  }
+  options.detached?.(() => { if (!disposed) finishCurrent() })
 
   /**
    * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/resume` · `/model` 同位置同开合**
@@ -3212,6 +3210,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE
+    if (input.kind === 'ctrl+r') {
+      if (connected || reopening || options.reopen === undefined) return NONE
+      reopening = true
+      commit(view)
+      void options.reopen().then(() => {
+        if (disposed) return
+        connected = true
+        commit(appendReceipt({ ...view, status: { ...view.status, hint: idleHintOf(view) } }, 'Magic Code 已重新连接。草稿已保留，请明确发送。'))
+        readHistory()
+      }, (error) => {
+        if (!disposed) commit(appendReceipt(view, `重新打开失败：${String(error)}`))
+      }).finally(() => { reopening = false; if (!disposed) commit(view) })
+      return NONE
+    }
+    if (!connected && input.kind === 'enter') {
+      commit({ ...view, flash: 'Magic Code 已退出，草稿未发送。按 ctrl+r 重新打开。' })
+      return NONE
+    }
 
     // **别的输入把那一行收掉**（U46）——用户又不想走了。
     //
@@ -4306,6 +4322,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     key,
     hangUp,
     readHistory,
+    hostGone: () => {
+      if (disposed || !connected) return
+      connected = false
+      finishCurrent()
+      commit(appendReceipt(view, 'Magic Code 已退出，记录和草稿保留在当前窗口。'))
+    },
 
     /**
      * 放开输入——`boot` 完成那一下（真外壳在 `run.ts` 里按这个次序调）。

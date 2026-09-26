@@ -9,7 +9,7 @@
  * ## 为什么非要真进程
  *
  * 本单的根子正在**进程边界**上：管者那一层有个注入点（`notifySystem`），而
- * `packages/app/src/run/spawn-manager.ts` 起的那一具是**真子进程**——它没有注入点，
+ * 测试宿主通过 CLI 的 `--internal-manager` 起的是**真子进程**——它没有测试通知注入点，
  * 一律落到**缺省那一格**。故「缺省发不发」这件事，**进程内量不到**（进程内的用例把端口
  * 注掉了，量的是注入的那一个），只有真链路到屏为止这一趟算数。
  *
@@ -49,12 +49,12 @@
  * ```
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createSandbox, createUiSession, startFixture } from './ui/index.ts'
 import type { UiSession } from './ui/index.ts'
-import { runPathsOf } from '../src/run/paths.ts'
+import { attentionFacts } from './resident-attention-fixture.ts'
+import { startResidentHost } from './resident-host-fixture.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
 // 参数与记账
@@ -246,27 +246,8 @@ function pidOf(line: string): number {
 }
 
 /**
- * 那一条会话**出事**、而**没有任何窗口看着它**——整趟的现场与读数。
- *
- * ## 那一形怎么造出来（三条路，量过两条走不通）
- *
- * 判据那一句话是「**没有窗口正看着这条会话**」，而它在实现上是
- * `watchersOf(session) === 0`：**已经结束的那一代不算看客**（`manager.ts` 那条注——窗口的
- * 目标还停在一代收摊了的运行上时，他看的其实是那个窗口自己的屏）。真 PTY 里造这一形
- * 有三条路，前两条本单都量过：
- *
- * - ❌ **关掉唯一那扇窗**：执行者随即收摊，那一轮记 `aborted`（`runs.json` 里
- *   `why: "连接断了"`），而**中断不报通知**。造出来的不是「没人看着跑完」，是
- *   「没人看着被打断」——**它压根不经过那一跳**；
- * - ❌ **换页**（`/clear`）：界面**当场回绝**——「正在跑一轮——先 Ctrl+C 中断，再切会话」
- *   （帧在 `01-…txt` 里）。跑着的时候切不走，故窗口一直看着它；
- * - ✅ **杀那一代**（本趟用的）：那一轮**真出事了**（`crashed` → `failed` 那一类），
- *   而**结束的那一代按定义不算看客** ⇒ 那一跳照走。这正是用户报的那一形：
- *   他不在看那条会话的时候，桌面上蹦出一条「有一件工作出错了」。
- *
- * ⚠️ 这条路的反面也如实说：它量的是**「出错」那一类**。三类的判据同一把尺子
- * （U86），而「跑完了」那一类要真进程里造出「没人看着跑完」**今天没有干净的造法**
- * ——把这一点写进回报，不装作量过。
+ * 真执行者在途时按隔离进程记录终止，验证 failed 事项留存和默认通知端口静默。
+ * 窗口连接不构成焦点证明；此装置只证明失败通知路径，不冒充三类通知全面实测。
  */
 async function unwatchedTurn(): Promise<void> {
   const fixture = startFixture({
@@ -282,24 +263,8 @@ async function unwatchedTurn(): Promise<void> {
     if (witness !== undefined) console.log(`· 见证：${witness}（追加式，跑前那几行也在）`)
   }
 
-  const paths = runPathsOf(
-    { home: sandbox.home, base: join(sandbox.home, '.magic') },
-    sandbox.dataDir,
-    tmpdir(),
-  )
-  /**
-   * **未读那一份在哪儿**——先按三方共用的算法算，算出的那处不在时**在沙地里找一遍**。
-   *
-   * ⚠️ 不这么办的话，路径算法哪天挪一格，这一趟会**静默读成「什么都没发生」**，
-   * 而读数上分不出「没发生」与「找错地方了」。
-   */
-  const noticesAt = (): string => {
-    if (existsSync(paths.notices)) return paths.notices
-    for (const found of new Bun.Glob('**/notices.json').scanSync({ cwd: sandbox.root, absolute: true })) return found
-    return paths.notices
-  }
-
   const sampler = startSampler({ shadow, needle, owner: sandbox.root, everyMs: 25 })
+  const host = await startResidentHost(sandbox, join(out, 'host'))
   let session: UiSession | undefined
 
   try {
@@ -336,7 +301,7 @@ async function unwatchedTurn(): Promise<void> {
     // ④ 未读落盘就是「那一跳走到了」的信号（这一半 U98 一字未动）
     const landed = await waitFor(
       '未读落盘（那一跳走到了）',
-      () => readOr(noticesAt()).includes('"unread": true') || readOr(noticesAt()).includes('"unread":true'),
+      () => attentionFacts(sandbox.dataDir, sandbox.workspace).some((one) => one.unread && one.kind === 'failed'),
       30_000,
     )
     check(landed, '它出事之后，未读**落了盘**（这一半 U98 一字未动）')
@@ -344,8 +309,8 @@ async function unwatchedTurn(): Promise<void> {
     // 多留一歇：收尾那几跳（写盘、缩窗口）都落定之后再看读数
     await Bun.sleep(2_000)
 
-    const notices = readOr(noticesAt())
-    writeFileSync(join(out, '03-未读那一份.json'), `${notices}\n`, 'utf8')
+    const attention = attentionFacts(sandbox.dataDir, sandbox.workspace)
+    writeFileSync(join(out, '03-attention.json'), `${JSON.stringify({ attention }, null, 2)}\n`, 'utf8')
 
     const after = await win.capture({ label: '04-出事之后' })
     writeFileSync(join(out, '04-出事之后.txt'), `${after.text}\n`, 'utf8')
@@ -381,9 +346,11 @@ async function unwatchedTurn(): Promise<void> {
   } finally {
     if (session !== undefined) await session.close({ graceMs: 3_000 }).catch(() => undefined)
     sampler.stop()
-    await fixture.stop().catch(() => undefined)
-    if (keep) console.log(`· 现场留着：${sandbox.root}`)
-    else sandbox.dispose()
+    try { await host.close() } finally {
+      await fixture.stop()
+      if (keep) console.log(`· 现场留着：${sandbox.root}`)
+      else sandbox.dispose()
+    }
   }
 }
 
