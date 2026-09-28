@@ -23,7 +23,9 @@
 
 import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { dirname, resolve } from 'node:path'
 import type {
+  AgentRoleConfig,
   MagicConfig,
   MagicHome,
 
@@ -33,6 +35,7 @@ import type {
   ProviderConfig,
   ProviderModelOverride,
   ReasoningSetting,
+  ReasoningSupport,
   WebFetchConfig,
 } from '@magic/contracts'
 import {
@@ -172,6 +175,92 @@ function asReasoning(value: unknown, path: string, field: string): ReasoningSett
   }
 }
 
+function asTextList(value: unknown, path: string, field: string): string[] {
+  if (!Array.isArray(value)) throw new ConfigError(path, `${field} 须是字符串数组`)
+  return value.map((one, index) => asText(one, path, `${field}[${index}]`))
+}
+
+function asReasoningSupport(value: unknown, path: string, field: string): ReasoningSupport {
+  const raw = asObject(value, path, field)
+  const levels = raw['levels'] === undefined ? undefined : asTextList(raw['levels'], path, `${field}.levels`)
+  const disable = raw['disable']
+  if (disable !== undefined && typeof disable !== 'boolean') {
+    throw new ConfigError(path, `${field}.disable 须是布尔值`)
+  }
+  let budget: ReasoningSupport['budget']
+  if (raw['budget'] !== undefined) {
+    const given = asObject(raw['budget'], path, `${field}.budget`)
+    const minTokens = asContextWindow(given['minTokens'], path, `${field}.budget.minTokens`)
+    const maxTokens = asContextWindow(given['maxTokens'], path, `${field}.budget.maxTokens`)
+    if (minTokens !== undefined && maxTokens !== undefined && minTokens > maxTokens) {
+      throw new ConfigError(path, `${field}.budget 最小值不能大于最大值`)
+    }
+    budget = {
+      ...(minTokens === undefined ? {} : { minTokens }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+    }
+  }
+  return {
+    ...(levels === undefined ? {} : { levels }),
+    ...(disable === undefined ? {} : { disable }),
+    ...(budget === undefined ? {} : { budget }),
+  }
+}
+
+/** 角色只存引用与约束；这里不读指导文件，也不启动技能或模型。 */
+function asAgentRoles(
+  value: unknown,
+  path: string,
+  home: string,
+  providers: MagicConfig['providers'],
+): Readonly<Record<string, AgentRoleConfig>> {
+  const raw = asObject(value, path, 'agentRoles')
+  return Object.fromEntries(Object.entries(raw).map(([id, value]) => {
+    asText(id, path, 'agentRoles 的角色 id')
+    const field = `agentRoles.${id}`
+    const role = asObject(value, path, field)
+    const name = asText(role['name'], path, `${field}.name`)
+    const instructions = asText(role['instructions'], path, `${field}.instructions`)
+    const pick = (key: string) => role[key] === undefined ? undefined : asTextList(role[key], path, `${field}.${key}`)
+    const guidanceFiles = pick('guidanceFiles')?.map((file) => resolve(dirname(path), expandHome(file, home)))
+    const skills = pick('skills')
+    const tools = pick('tools')
+    let model: AgentRoleConfig['model']
+    if (role['model'] !== undefined) {
+      const given = asObject(role['model'], path, `${field}.model`)
+      for (const key of Object.keys(given)) {
+        if (!['provider', 'model', 'reasoning'].includes(key)) {
+          throw new ConfigError(path, `${field}.model.${key} 不是模型配置字段`)
+        }
+      }
+      const provider = asOptionalText(given['provider'], path, `${field}.model.provider`)
+      if (provider !== undefined && !Object.hasOwn(providers, provider)) {
+        throw new ConfigError(path, `${field}.model.provider 指向未知连接「${provider}」`)
+      }
+      const modelId = asOptionalText(given['model'], path, `${field}.model.model`)
+      const reasoning = given['reasoning'] === undefined ? undefined : asReasoning(given['reasoning'], path, `${field}.model.reasoning`)
+      model = {
+        ...(provider === undefined ? {} : { provider }),
+        ...(modelId === undefined ? {} : { model: modelId }),
+        ...(reasoning === undefined ? {} : { reasoning }),
+      }
+    }
+    for (const key of Object.keys(role)) {
+      if (!['name', 'instructions', 'guidanceFiles', 'skills', 'tools', 'model'].includes(key)) {
+        throw new ConfigError(path, `${field}.${key} 不是角色配置字段`)
+      }
+    }
+    return [id, {
+      name,
+      instructions,
+      ...(guidanceFiles === undefined ? {} : { guidanceFiles }),
+      ...(skills === undefined ? {} : { skills }),
+      ...(tools === undefined ? {} : { tools }),
+      ...(model === undefined ? {} : { model }),
+    }]
+  }))
+}
+
 /** 令牌规格（可选三位）——判据同 `contextWindow`：给了就须是正整数。 */
 function asLimits(value: unknown, path: string, field: string): ModelLimits {
   const raw = asObject(value, path, field)
@@ -211,11 +300,24 @@ function asModelOverrides(
       one['reasoning'] === undefined
         ? undefined
         : asReasoning(one['reasoning'], path, `${field}.${id}.reasoning`)
+    const reasoningSupport = one['reasoningSupport'] === undefined ? undefined : asReasoningSupport(one['reasoningSupport'], path, `${field}.${id}.reasoningSupport`)
+    let capabilities: ProviderModelOverride['capabilities']
+    if (one['capabilities'] !== undefined) {
+      const given = asObject(one['capabilities'], path, `${field}.${id}.capabilities`)
+      for (const key of Object.keys(given)) {
+        if (!['chat', 'image'].includes(key) || typeof given[key] !== 'boolean') {
+          throw new ConfigError(path, `${field}.${id}.capabilities.${key} 须是已知能力的布尔值`)
+        }
+      }
+      capabilities = given as ProviderModelOverride['capabilities']
+    }
 
     overrides[id] = {
       ...(limits === undefined ? {} : { limits }),
       ...(traits === undefined ? {} : { traits }),
       ...(reasoning === undefined ? {} : { reasoning }),
+      ...(reasoningSupport === undefined ? {} : { reasoningSupport }),
+      ...(capabilities === undefined ? {} : { capabilities }),
     }
   }
 
@@ -622,6 +724,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
    * （设计 · 命令行与配置：不要求用户登记型号）。
    */
   const webFetch = asWebFetch(raw['webFetch'], path, providers)
+  const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home, providers)
 
   // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）＋ 旧落点归位（U42，见 `asDataDir` 头注）
   const dataDir = asDataDir(
@@ -690,6 +793,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
       ...(skillSources === undefined ? {} : { skills: { sources: skillSources } }),
       ...(mcp === undefined ? {} : { mcp }),
       ...(webFetch === undefined ? {} : { webFetch }),
+      ...(agentRoles === undefined ? {} : { agentRoles }),
     },
     providerId,
     provider,

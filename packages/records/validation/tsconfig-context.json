@@ -1,0 +1,11 @@
+{
+  "extends": "../../../tsconfig.json",
+  "include": [
+    "../../contracts/src",
+    "../../records/src",
+    "../../faux/src",
+    "../../conversation/src/context.ts",
+    "../../conversation/test/context-collaboration.test.ts",
+    "../test/collaboration.test.ts"
+  ]
+}

@@ -125,6 +125,33 @@ describe('无执行者的真实只读目录', () => {
     expect(readFileSync(join(g.base, 'grants.json'), 'utf8')).toBe(before)
   })
 
+  test('观察面切换按目标缓存拒绝不支持档位，换供应商或型号不沿用旧思考；不联网或改原选择', async () => {
+    const g = ground()
+    const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'local-cache-test', model: 'same', reasoning: { mode: 'level', level: 'low' } }
+    g.configure({ ds: config, mm: { vendor: 'minimax', model: 'same' } }, { defaultProvider: 'ds' })
+    const cache = createFileModelInfoCache(g.dataDir)
+    const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
+    await cache.replace({ provider: 'ds', scope: `deepseek@${resolveConnection({ providerId: 'ds', config }).baseURL}`, fetchedAt: 1,
+      models: [{ id: 'same', reasoning: { levels: ['low'], disable: false } }],
+    }, access)
+    const selection = { provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'low' } }
+    const context = { ...g.context, selection }
+    const before = bytesUnder(g.root)
+    const fetch = spyOn(globalThis, 'fetch').mockImplementation((() => { throw new Error('观察切换不能联网') }) as unknown as typeof globalThis.fetch)
+    try {
+      await expect(query({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'level', level: 'high' } } })).rejects.toThrow('不支持思考档位')
+      await expect(query({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'off' } } })).rejects.toThrow('未声明支持关闭')
+      await expect(query({ type: 'model.list' }, { ...context, switch: { provider: 'mm', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'level', level: 'low' } } }, 'model.catalog')).current).toEqual(selection)
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { provider: 'mm' } }, 'model.catalog')).current).toEqual({ provider: 'mm', model: 'same' })
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { model: 'other' } }, 'model.catalog')).current).toEqual({ provider: 'ds', model: 'other' })
+      expect(selection).toEqual({ provider: 'ds', model: 'same', reasoning: { mode: 'level', level: 'low' } })
+      expect((await answer({ type: 'model.list' }, context, 'model.catalog')).current).toEqual(selection)
+      expect(bytesUnder(g.root)).toEqual(before)
+      expect(fetch).not.toHaveBeenCalled()
+    } finally { fetch.mockRestore() }
+  })
+
   test('所选会话附件与工作区授权历史真实可见，查询不分配记录id或改变未读', async () => {
     const g = ground()
     const writer = createRecordsStore({ dataDir: g.dataDir, workspace: [g.workspace] })

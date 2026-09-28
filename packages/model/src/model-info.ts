@@ -161,6 +161,8 @@ export type ModelInfoService = {
   /** 仅返回已加载缓存，不刷新、不连接、不写盘。 */
   peek(providerId: string): ModelInfoRead
   read(providerId: string): ModelInfoRead
+  /** 只读已预热的缓存，不触发发现或后台刷新；配置预检使用此入口。 */
+  peek(providerId: string): ModelInfoRead
   /** **显式刷新**——绕开时效与冷却；返回这次之后的读数（成败都在里面）。 */
   refresh(providerId: string): Promise<ModelInfoRead>
   /**

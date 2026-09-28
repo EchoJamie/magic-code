@@ -9,6 +9,7 @@
  * 段的**边界**＝标题行（`sectionHeading`）：装配产物里段以此为起点，段齐 / 段界断言据此定位。
  */
 
+import { COLLABORATION_HINT } from '../collaboration.ts'
 import { PROMPT_SECTIONS } from './structure.ts'
 import type { PromptSectionId } from './structure.ts'
 
@@ -53,6 +54,7 @@ const SECTION_BODIES: Readonly<Record<PromptSectionId, string>> = {
   // 它从**首次模型调用**就送达（系统提示词随每次请求），不等模型自己想起笔记工具。
   // 与既有条目的去重：原来的「先澄清后动手」并入「只问该问的」（同一件事，一句说清）。
   conduct: body(
+    `- ${COLLABORATION_HINT}`,
     '- 直接：先给结论与动作，再给必要说明；不复述用户已知的信息，不写客套话。',
     '- 先分清现状：用户要你回答、分析、规划还是实施——讨论不是动手授权；简单明确的事直接做，不为形式写计划。',
     '- 该计划时：工作跨多步、要求多容易漏、关键未知会改路线或失败代价高时，先理清要得到的结果、不能变的约束与怎么检查结果，再形成简短可调整的计划；可以先做必要的只读查证，未知的先安排调查，不编造确定方案，也不等细节全想完才开始。',

@@ -62,6 +62,7 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
   }
 
   const records: RecordsService = {
+    get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => 1,
     appendEntry: () => 1,
     appendEvent: () => undefined,
@@ -126,6 +127,8 @@ function makeInstance(session: SessionId): FakeInstance {
       beginTurn: () => undefined,
     },
     service: {
+      wake: () => undefined,
+      supplement: async () => undefined,
       submit: (input) => {
         calls.push(`submit:${input.text}`)
       },

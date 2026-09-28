@@ -561,7 +561,8 @@ describe('U49 · `/clear` 是这个窗口的', () => {
 
       // 第二个窗口 `/clear`（`session.new`）——**为它自己另起一代**
       two.send({ type: 'session.new' })
-      await waitFor('为它另起了一代', () => b.requests.length === 2)
+      // spawn 同步记账；窗口要等 socket 的 target 回执才知道新代。
+      await waitFor('另起一代且窗口收到目标', () => b.requests.length === 2 && two.gen() === b.requests[1]?.gen)
       expect(two.gen()).not.toBe(shared)
 
       // 第一个窗口**一步没动**：还认着原来那一代、还在看原来那条会话

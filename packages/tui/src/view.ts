@@ -15,6 +15,8 @@
  */
 
 import type {
+  AgentId,
+  CollaborationView,
   DecisionWeight,
   Entry,
   AttachmentRow,
@@ -322,6 +324,7 @@ export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
 
 /** 待答的裁决——**接管输入框**的那一件。 */
 export type PendingDecision = {
+  readonly member?: string
   /** **配对键**——`tool.decision.request` 事件的 id（答复原样带回）。 */
   readonly id: RecordId
   readonly call: RecordId
@@ -445,6 +448,10 @@ export type Picker = {
    * （U22 · B13）、`/skills` 读技能目录（U33）、**`@` 读路径候选**（U36）——**同位置同开合**。
    */
   readonly source:
+    | 'collaboration'
+    | 'collaboration-member'
+    | 'collaboration-stop'
+    | 'collaboration-records'
     | 'session'
     | 'model'
     | 'region'
@@ -469,6 +476,8 @@ export type Picker = {
     | 'config'
   readonly rows: readonly PickerRow[]
   readonly selected: number
+  /** 关联记录在原交互层内阅读，不换会话、不抄进原会话日志。 */
+  readonly reader?: { readonly key: string; readonly title: string; readonly rows: readonly LogRow[]; readonly top: number }
   /** 列表下方那行说明（可选）。 */
   readonly hint?: string
   /**
@@ -1002,6 +1011,8 @@ export type Stashed = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  readonly collaboration?: CollaborationView
+  readonly inputMember?: AgentId
   /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
   readonly rows: readonly LogRow[]
   /**
@@ -1319,8 +1330,13 @@ export function reduce(
       return reduceToolOutput(view, event.data)
     case 'tool.result':
       return reduceToolResult(view, event.data, event.at)
-    case 'tool.decision.request':
-      return reduceDecision(view, event.id, event.data)
+    case 'tool.decision.request': {
+      const next = reduceDecision(view, event.id, event.data)
+      const member = view.collaboration?.members.find((one) => one.agent.sessionId === event.session)?.agent.name
+      return member === undefined || next.dock.kind !== 'decision' ? next : {
+        ...next, dock: { kind: 'decision', pending: { ...next.dock.pending, member } },
+      }
+    }
     case 'tool.decision':
       return reduceVerdict(view, event.data, event.at)
 
@@ -1517,6 +1533,7 @@ export function reduce(
     // （`Image#N`）是**稿子**的事，由外壳自己按答复改（见 `shell.ts` 的 `identifyPicked`）。
     // 这里只是一条「收下了、别处处置」的出口，不是一个空壳分支。
     case 'paths.identified':
+    case 'collaboration.view':
       return view
 
     default:
@@ -2016,7 +2033,7 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 而这一跳是「往**已经开着的那一页**里填历史」——页号一动，`Static` 就重挂、这一页整批行
  * 又写一遍（甲→乙一次切换实测 4 份字标，就是这么来的）。**别在这一处动页号。**
  */
-export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
+export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean } = {}): ShellView {
   // **计划那一份也从这同一批条目里取**（U34）：切会话 / 重开之后清单要跟着回来，
   // 而它一直是会话记录的一部分（设计：读取、呈现与上下文同读这份来源）。
   const plan = planFromEntries(entries)
@@ -2024,7 +2041,7 @@ export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
 
   return {
     ...view,
-    settled: [...pageHeaderOf(view), ...rebuildRows(entries)],
+    settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools)],
     rows: [],
     // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
     // 已经上屏的新计划（或清空）盖回去（与 `withPlan` 同一把尺子）。
@@ -2040,7 +2057,7 @@ export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
  * 「末尾 `RECENT_GROUPS` 组展开」——最近那几组工具保持逐条行，更早的组并成摘要
  * （原型 · 场景 12；收的判据见 `collapseToolGroups`）。
  */
-function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
+function rebuildRows(entries: readonly Entry[], collapseTools = true): readonly LogRow[] {
   const rows: LogRow[] = []
   /** 待配对的那条工具行在 `rows` 里的下标（`-1` ＝ 没有）。 */
   let pendingAt = -1
@@ -2130,7 +2147,7 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
   // **一行都不摘**（返修）：安静的那几个工具行照旧铺进记录区——「默认不画」由渲染那一处
   // 按 `quiet` ＋ `expanded` 判（`components/log.ts`）。在这儿滤掉＝切一趟会话回来
   // 那一行就**永久不可查**了（`Static` 写一次就不再重绘）。
-  return collapseToolGroups(rows)
+  return collapseTools ? collapseToolGroups(rows) : rows
 }
 
 /**
@@ -4209,14 +4226,14 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
   const filtering =
     (picker.filter !== undefined && picker.filter !== '') || picker.source === 'paths'
 
-  if (picker.rows.length === 0 && !filtering) {
+  if (picker.rows.length === 0 && picker.reader === undefined && !filtering) {
     return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
   }
 
   // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）、
   // 能筛的那两屏要报「打字筛」（见 `HINT_PICKER_SESSION` / `HINT_PICKER_CONFIG`）
   const keys =
-    picker.source === 'mcp'
+    picker.reader !== undefined ? '' : picker.source === 'mcp'
       ? HINT_PICKER_READ
       : picker.source === 'session'
         ? HINT_PICKER_SESSION

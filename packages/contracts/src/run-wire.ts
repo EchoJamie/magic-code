@@ -1,3 +1,6 @@
+import type { AgentModelConfig } from './collaboration.ts'
+import type { CollaborationReply, CollaborationRequest } from './collaboration-control.ts'
+import type { UserInput } from './control.ts'
 import type { NativeRequest, NativeResponse, ServiceIdentity } from './native.ts'
 import type {
   Command,
@@ -198,6 +201,9 @@ export type ManagerToClient =
 
 /** 执行者 → 管理者。 */
 export type ExecutorToManager =
+  | { readonly t: 'collaboration.request'; readonly requestId: string; readonly request: CollaborationRequest }
+  | { readonly t: 'collaboration.changed' }
+  | { readonly t: 'collaboration.configured'; readonly requestId: string; readonly result: { readonly ok: true } | { readonly ok: false; readonly reason: string } }
   | {
       readonly t: 'hello'
       readonly role: 'executor'
@@ -258,6 +264,10 @@ export type ExecutorToManager =
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
+  | { readonly t: 'collaboration.reply'; readonly requestId: string; readonly reply: CollaborationReply }
+  | { readonly t: 'collaboration.wake' }
+  | { readonly t: 'collaboration.configure'; readonly requestId: string; readonly model: AgentModelConfig }
+  | { readonly t: 'collaboration.input'; readonly input: UserInput; readonly shared: boolean }
   | { readonly t: 'cmd'; readonly cmd: Command }
   | { readonly t: 'ping'; readonly seq: number }
   /** **要一份接回快照**——管理者在把某个窗口挂到这一代上时发（见 `ManagerToClient` 的 `resumed`）。 */

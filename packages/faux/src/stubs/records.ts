@@ -14,6 +14,7 @@
  */
 
 import type {
+  CollaborationRecords,
   BlobRef,
   BlobStore,
   Entry,
@@ -28,6 +29,8 @@ import type {
 } from '@magic/contracts'
 
 export type FauxRecordsOptions = {
+  /** 协作测试须明确注入真实端口或脚本桩，不在通用桩内复制状态机。 */
+  readonly collaboration?: CollaborationRecords
   /** 预置的会话摘要（`listSessions` 的返回）——缺省空。 */
   readonly sessions?: readonly SessionSummary[]
   /** 预置 blob——键即 `BlobRef`。 */
@@ -87,6 +90,7 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
   }
 
   return {
+    collaboration: options.collaboration ?? EMPTY_COLLABORATION,
     get entries(): readonly Entry[] {
       return entries
     },
@@ -157,4 +161,24 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
 
     blobs: blobStore,
   }
+}
+
+/** 普通单会话桩没有协作；写协作须注入脚本端口，避免另造内存状态机。 */
+function unscripted(): never { throw new Error('Faux records: collaboration mutation was not scripted') }
+const EMPTY_COLLABORATION: CollaborationRecords = {
+  getAgent: () => undefined, agentForSession: () => undefined,
+  getCollaboration: () => undefined, collaborationForSession: () => undefined,
+  getDelegation: () => undefined, readMessage: () => undefined, operation: () => undefined,
+  listMembers: () => [], listDelegations: () => [], listDiscussion: () => [], listMessages: () => [], inbox: () => [],
+  listConstraints: () => [], constraintStatus: () => [], listWaits: () => [], listExecutions: () => [],
+  checkAdmission: () => ({ allowed: false, reason: 'no collaboration in this fixture' }),
+  registerAgent: unscripted, updateAgent: unscripted, setReachability: unscripted,
+  openCollaboration: unscripted, updateDefaultModel: unscripted, spawn: unscripted,
+  delegate: unscripted, respondToDelegation: unscripted, deliver: unscripted,
+  receiveDelivery: unscripted, send: unscripted, consumeInbox: unscripted,
+  markIncluded: unscripted, editMessage: unscripted, withdrawMessage: unscripted,
+  publishConstraint: unscripted, registerWait: unscripted, expireWaits: unscripted,
+  consumeWaitOutcomes: unscripted, markWaitOutcomesIncluded: unscripted,
+  interruptWaits: unscripted, beginExecution: unscripted, finishExecution: unscripted,
+  stop: unscripted, resume: unscripted, beginClosing: unscripted, closeCollaboration: unscripted,
 }

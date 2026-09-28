@@ -1752,10 +1752,10 @@ describe('假端点回环 · 流式事件序列', () => {
       declared.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
     )
     expect(withWindow.events.filter((event) => event.kind === 'model.usage').map((event) => event.data)).toEqual([
-      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 195_904 },
+      { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, contextWindow: 195_904 },
     ])
     // 聚合结果**不动**——窗长是「这次调用之外」的东西，不是用量的一部分
-    expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0 })
+    expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440 })
 
     const silent = createModelGateway({
       providerId: 'minimax',
@@ -1774,7 +1774,7 @@ describe('假端点回环 · 流式事件序列', () => {
     // 用户声明 → 该家适配的缺项补充 → 未知（设计：「替换当前『内置表只供界面、事件容量
     // 只认配置』的分叉」「输入上限、预留输出与所显示分母须同口径」）。
     // MiniMax-M3 有官方窗长（该家适配的补充表），故**没声明也带着它**。
-    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, cacheReadTokens: 0, reasoningTokens: 0, contextWindow: 995_904 })
+    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, contextWindow: 995_904 })
 
     // **反例**（改了这处行为的对照）：**不在补充表里**的模型照旧**没有这一位**——
     // 「不知道就是不知道」那一半没松（app 的读数用例里那条「乙」是同一个反例）。
@@ -1833,7 +1833,7 @@ describe('假端点回环 · 流式事件序列', () => {
         modelDelta(stamper, 'thinking', '简短想'),
         modelUsage(
           stamper,
-          { inputTokens: 11, outputTokens: 5, totalTokens: 16, cacheReadTokens: 0, reasoningTokens: 0 },
+          { inputTokens: 11, outputTokens: 5, totalTokens: 16 },
           // **有效输入预算**（U41 返修）：M3 的联合窗口 1M 为本次输出（缺省 4096）预留后
           1_000_000 - MAX_COMPLETION_TOKENS,
         ),

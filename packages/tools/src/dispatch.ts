@@ -180,7 +180,10 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     if (call.invalid === true) return refused(OUTPUT_INVALID_ARGS)
     if (definition === undefined) return refused(unknownToolOutput(call.name))
 
+    let finish: (() => void) | undefined
     try {
+      if (opts.signal?.aborted) return refused(OUTPUT_CANCELED_BEFORE_RUN)
+      finish = options.beginExecution?.(call)
       return await definition.run(call.args, {
         sandbox: options.sandbox,
         signal: opts.signal,
@@ -191,6 +194,8 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       })
     } catch (error) {
       return refused(crashedOutput(reasonOf(error)))
+    } finally {
+      finish?.()
     }
   }
 

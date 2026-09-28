@@ -226,11 +226,16 @@ function toUsage(usage: LanguageModelUsage | undefined): ModelUsage | undefined 
   const cacheRead = usage.inputTokenDetails?.cacheReadTokens
   const cacheWrite = usage.inputTokenDetails?.cacheWriteTokens
   const reasoning = usage.outputTokenDetails?.reasoningTokens
+  // 兼容接口的供应商总量保留原定义；SDK 会将不完整的两项也相加，不能当作已知总量。
+  const total = usage.raw === undefined ? usage.totalTokens
+    : typeof usage.raw['total_tokens'] === 'number' ? usage.raw['total_tokens']
+    : usage.inputTokens !== undefined && usage.outputTokens !== undefined ? usage.inputTokens + usage.outputTokens
+    : undefined
 
   const mapped: ModelUsage = {
     ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
     ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
-    ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+    ...(total === undefined ? {} : { totalTokens: total }),
     ...(cacheRead === undefined ? {} : { cacheReadTokens: cacheRead }),
     ...(cacheWrite === undefined ? {} : { cacheWriteTokens: cacheWrite }),
     ...(reasoning === undefined ? {} : { reasoningTokens: reasoning }),
@@ -387,12 +392,12 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
 
     // —— 收束 ——
     case 'finish-step': {
-      // 单步调用下与 finish 同源；作为 finish 缺用量时的兜底
+      // 取件层单次调用只走一步；这里保留供应商原始用量（SDK 总计会丢失 raw）。
       state.usage = toUsage(part.usage) ?? state.usage
       return []
     }
     case 'finish': {
-      state.usage = toUsage(part.totalUsage) ?? state.usage
+      state.usage ??= toUsage(part.totalUsage)
       state.finishReason = toFinishReason(part.finishReason)
       // 收束前先吐残片——否则标签尾部的半截留在切分器里，正文截掉一截
       const events: KernelEvent[] = flushText(state)

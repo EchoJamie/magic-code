@@ -245,6 +245,7 @@ describe('ConversationService · 兜底', () => {
 /** 记录桩：写入即炸——验内核自身异常的就近兜底（库坏掉时不许静默）。 */
 function brokenRecords(base: FauxRecords): RecordsService {
   return {
+    get collaboration() { return base.collaboration },
     get blobs() {
       return base.blobs
     },

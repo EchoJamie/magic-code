@@ -44,6 +44,8 @@ import { PickerList, pickerBudget, pickerLayout } from './picker.ts'
 import { PlanList } from './plan.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
+import { collaborationHeader, collaborationStatus } from '../collaboration.ts'
+import { readerLayout, RecordReader } from './reader.ts'
 
 /**
  * `Static` 的**定型**视图——⚠️ 一次断言，理由同包装配的铸造器那处：
@@ -220,7 +222,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     //（线是划界用的，不是装帧）。高度的账**一分没动**：还是两条线 ＋ 状态行（见 `CHROME_LINES`），
     // 换的只是这两行谁在上谁在下。
     separatorOf(columns, 'rule:status'),
-    h(StatusLine, { key: 'status', status: view.status, columns }),
+    h(StatusLine, { key: 'status', status: collaborationStatus(view), columns }),
     // **待确认的那一行**（U46 · **U68 挪到这儿**）——**状态行之下**、**缩进对齐状态行**，
     // 仍是屏底（**不另加线**：线是划界用的，一屏恰好两条，见上面那一段）。
     //
@@ -490,6 +492,13 @@ function showsExitArmed(view: ShellView): boolean {
 
 /** 左下交互区的内容（四种用法）。 */
 function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
+  return [
+    ...collaborationHeader(view).map((line, index) => h(Text, { key: `collaboration:${index}`, color: index === 0 ? PALETTE.dim : PALETTE.user }, clip(line, Math.max(1, columns)))),
+    ...dockContentOf(view, columns, rows),
+  ]
+}
+
+function dockContentOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
   const flash =
     view.flash === null ? [] : [h(Text, { key: 'flash', color: PALETTE.warn }, `▲ ${view.flash}`)]
 
@@ -517,6 +526,7 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   }
 
   if (view.dock.kind === 'picker') {
+    if (view.dock.picker.reader !== undefined) return [h(RecordReader, { key: 'reader', reader: view.dock.picker.reader, columns, rows }), ...flash]
     // 候选列在**输入行之上**（与自动补全那一栏同一位置：先看候选，再看自己在打的那句话）。
     return [
       // `rows` 一路给到候选那一头：**半屏封顶**按它算（`maxPickerLines`），
@@ -631,6 +641,10 @@ function maxDraftLines(rows: number): number {
  * 交互区要几行——**按内容算**（原型：展开高度＝内容所需，最多半屏）。纯函数：布局与用例都拿它。
  */
 export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
+  return collaborationHeader(view).length + dockContentHeightOf(view, columns, rows)
+}
+
+function dockContentHeightOf(view: ShellView, columns: number, rows: number): number {
   const flash = view.flash === null ? 0 : 1
   // ⚠️ **待确认的那一行不在这一笔账里**（U68）：它画在**状态行之下**，已不属交互区
   //    ——它的那一行归 `chromeHeightOf`（那才是「活动区之外的全部固定行」那一笔）。
@@ -663,6 +677,7 @@ export function dockHeightOf(view: ShellView, columns: number, rows = Number.POS
   }
 
   if (view.dock.kind === 'picker') {
+    if (view.dock.picker.reader !== undefined) return readerLayout(view.dock.picker.reader, columns, rows).height + flash
     // 候选那一头**数的是窗口**（不是全量行数）——候选超过半屏时，`pickerLayout` 会折起来
     // 并画一条「… 上面/下面还有 N 条」，三者（行 ＋ 分组头 ＋ 提示）都在它交出来的 `items` 里。
     // ⚠️ **账与屏同取这一处**（`pickerLayout`）：分头算一次就会重演「账 N 行、屏 N+1 行」
@@ -830,6 +845,13 @@ export function TuiApp({ shell }: TuiAppProps) {
   }
 
   useInput((input, key) => {
+    if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined
+      && (key.upArrow || key.downArrow || key.pageUp || key.pageDown)) {
+      const reader = readerLayout(view.dock.picker.reader, columns, rows)
+      const step = key.pageUp || key.pageDown ? Math.max(1, reader.height - 2) : 1
+      feed({ kind: 'readerTop', top: Math.min(reader.maxTop, Math.max(0, reader.top + (key.upArrow || key.pageUp ? -step : step))) })
+      return
+    }
     // **清单翻页**（U34）——`PgUp` / `PgDn`。
     //
     // ⚠️ 这一跳**只有这一层做得了**：一页几行＝屏上放得下几行，而列数、终端高度、

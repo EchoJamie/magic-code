@@ -644,3 +644,38 @@ describe('外部工具服务器（U38 · `mcp` 段）', () => {
       .toBeDefined()
   })
 })
+
+describe('智能体角色配置', () => {
+  test('职责、规约文件、技能、工具和部分模型默认原样解析；路径相对配置声明位置', () => {
+    const dir = tempDir('magic-role-config-')
+    try {
+      const path = writeConfig(dir, { providers: { ds: { vendor: 'deepseek' } }, agentRoles: { reviewer: {
+        name: '审查', instructions: '只给有证据的发现', guidanceFiles: ['rules/review.md', '~/shared.md'], skills: ['code-review'], tools: ['read'], model: { provider: 'ds', reasoning: { mode: 'off' } },
+      } } })
+      const loaded = loadConfig({ path, magic: magicAt(HOME) })
+      expect(loaded.config.agentRoles?.['reviewer']).toEqual({ name: '审查', instructions: '只给有证据的发现', guidanceFiles: [join(dir, 'rules/review.md'), join(HOME, 'shared.md')], skills: ['code-review'], tools: ['read'], model: { provider: 'ds', reasoning: { mode: 'off' } } })
+    } finally { removeDir(dir) }
+  })
+
+  test('非法职责、引用形制、连接、参数、凭据或授权字段给出具体字段错误', () => {
+    const cases = [
+      [{ name: '审查' }, 'instructions'],
+      [{ name: '审查', instructions: '职责', skills: [1] }, 'skills[0]'],
+      [{ name: '审查', instructions: '职责', tools: 'read' }, 'tools'],
+      [{ name: '审查', instructions: '职责', model: { provider: 'missing' } }, 'model.provider'],
+      [{ name: '审查', instructions: '职责', model: { reasoning: { mode: 'budget', budgetTokens: -1 } } }, 'model.reasoning.budgetTokens'],
+      [{ name: '审查', instructions: '职责', model: { apiKey: 'secret-never-echo' } }, 'model.apiKey'],
+      [{ name: '审查', instructions: '职责', permissions: { allow: '*' } }, 'permissions'],
+    ] as const
+    for (const [role, field] of cases) {
+      expect(() => loadFrom({ providers: { ds: { vendor: 'deepseek' } }, agentRoles: { reviewer: role } })).toThrow(`agentRoles.reviewer.${field}`)
+    }
+  })
+
+  test('精确型号思考能力覆盖可表达关闭、档位和预算范围；错误范围拒绝', () => {
+    const override = { reasoningSupport: { disable: false, levels: ['high'], budget: { minTokens: 128, maxTokens: 512 } }, capabilities: { chat: true } }
+    const loaded = loadFrom({ providers: { ds: { vendor: 'deepseek', modelOverrides: { same: override } } } })
+    expect(loaded.config.providers['ds']?.modelOverrides?.['same']).toEqual(override)
+    expect(() => loadFrom({ providers: { ds: { vendor: 'deepseek', modelOverrides: { same: { reasoningSupport: { budget: { minTokens: 512, maxTokens: 128 } } } } } } })).toThrow('最小值不能大于最大值')
+  })
+})

@@ -142,3 +142,6 @@ export type {
   NotReplayedReason,
   RecoveryReport,
 } from './recover.ts'
+
+export { createCollaborationActions } from './collaboration.ts'
+export type { CollaborationActionsDeps } from './collaboration.ts'

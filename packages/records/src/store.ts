@@ -1,3 +1,6 @@
+import type { CollaborationRecords } from '@magic/contracts'
+import { initCollaborationSchema } from './collaboration-schema.ts'
+import { createCollaborationRecords } from './collaboration.ts'
 /**
  * 记录库——`RecordsService` 的实现（判据 1–6 的落点）。
  *
@@ -143,6 +146,7 @@ export type RecordsStoreOptions = {
 export type RecordsStore = {
   /** 注意事项与记录共库；读取不标读，确认只作用于具体事项 id。 */
   readonly attention: AttentionStore
+  readonly collaboration: CollaborationRecords
   serviceFor(session: SessionId): RecordsService
   /**
    * **按会话读条目**——**不经会话实例**（第 19 轮补）。
@@ -266,7 +270,9 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   db.exec('PRAGMA synchronous = NORMAL')
   initSchema(db, databasePath)
 
+  initCollaborationSchema(db)
   const ids = createIdSpace(db)
+  const collaboration = createCollaborationRecords(db, options.workspace, ids)
   const blobs = createBlobStore(blobsDir)
   const attention = createAttentionStore(db)
 
@@ -342,10 +348,9 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   })
 
   function appendEntry(session: SessionId, entry: NewEntry): RecordId {
+    if (entry.kind === 'agent-message') throw new Error('agent-message references must be appended through collaboration send/consume')
     assertEntryShape(entry) // 硬闸在取号之前——不合形态的条目连号都不吃
-    // **号在事务外取**：取号可能触发一次水位预留（写库）——若在事务内，写失败回滚会连
-    // 水位一起回滚，而内存窗口已经推进，重启 / 后续预留便会**重发已发过的号**。
-    // 代价只是失败时留个空档——单调性与唯一性都比「号连续」要紧。
+    // 独立条目先取号；协作收件引用在同一受理事务内取号，均沿唯一数据库水位。
     const id = ids.next()
     writeEntry(session, entry, id)
     return id
@@ -482,10 +487,12 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   return {
     paths: { database: databasePath, blobs: blobsDir },
     attention,
+    collaboration,
 
     serviceFor(session: SessionId): RecordsService {
       assertSessionId(session)
       return {
+        collaboration,
         nextId: () => ids.next(),
         appendEntry: (entry) => appendEntry(session, entry),
         appendEvent: (event) => appendEvent(session, event),

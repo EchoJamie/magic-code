@@ -47,7 +47,7 @@ export function DecisionCard({ pending }: DecisionCardProps) {
       Text,
       null,
       h(Text, { color: accent }, '│ '),
-      h(Text, { color: accent, bold: true }, pending.name),
+      h(Text, { color: accent, bold: true }, pending.member === undefined ? pending.name : `${pending.member} · ${pending.name}`),
       h(
         Text,
         { color: PALETTE.dim },

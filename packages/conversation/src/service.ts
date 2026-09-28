@@ -46,7 +46,8 @@ import type {
   UserInput,
 } from '@magic/contracts'
 import type { LoopRuntime } from './agent-loop.ts'
-import { agentLoop } from './agent-loop.ts'
+import type { CollaborationBoundary } from './collaboration.ts'
+import { agentLoop, prepareInput } from './agent-loop.ts'
 import { createCompactor } from './compact.ts'
 import { DEFAULT_CONTEXT_POLICY } from './policy.ts'
 import type { ContextPolicy } from './policy.ts'
@@ -61,6 +62,7 @@ import { createSkillsDelivery } from './skills.ts'
  * 模型域 / 工具域 / 记录域皆经契约端口）。
  */
 export type ConversationDeps = {
+  readonly collaboration?: CollaborationBoundary | undefined
   /** 会话——条目按会话读；信封的 `session` 由铸造器持（装配按会话实例构造，两处同源）。 */
   readonly session: SessionId
   /** 模型名——随每次调用送模型域。 */
@@ -174,6 +176,9 @@ export type SubmitRefusal = {
  * 它只是**读**一个内部位，不改变任何行为（域内件，不外承诺）。
  */
 export type ConversationSession = {
+  /** 收件唤起，不伪造用户消息。 */
+  wake(): void
+  supplement(input: UserInput, shared: boolean): Promise<void>
   submit(input: UserInput): void
   interrupt(): void
   /** 重建这条会话的现场——装载 ＋ 认下水位于开工位（见 `RebuildHandoff`）。 */
@@ -210,7 +215,22 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * 每一份都**固定着它自己绑的技能**：排着的时候不与别条共享任何可变状态
    * （没有「当前技能」那种东西可读），故忙时两条不同技能的交代出队后**各自身份不串**。
    */
-  const pending: UserInput[] = []
+  const pending: (UserInput | undefined)[] = []
+  // 在模型/工具边界读取补充，避免将 user 条目插入在途 tool-call/result 中间。
+  const supplements: { input: UserInput; shared: boolean; done: () => void }[] = []
+  const collaboration: CollaborationBoundary | undefined = deps.collaboration === undefined ? undefined : {
+    ...deps.collaboration,
+    async consume() {
+      let changed = false
+      for (const next of supplements.splice(0)) {
+        try {
+          const prepared = await prepareInput(runtime, next.input, entry => deps.collaboration?.userInput?.(entry, next.shared))
+          changed ||= prepared !== undefined
+        } finally { next.done() }
+      }
+      return (await deps.collaboration!.consume()) || changed
+    },
+  }
   /**
    * **停下那一刻从队里挪出来的那几条**（U50）——**未执行**、也**不会再被消费**。
    *
@@ -292,6 +312,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     acceptsImages: deps.acceptsImages,
     submitRefusal: deps.submitRefusal,
     background: deps.background,
+    collaboration,
   }
 
   /**
@@ -324,11 +345,12 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    */
   function holdQueued(): void {
     const stopped = pending.splice(0)
+    for (const next of supplements.splice(0)) { stopped.push(next.input); next.done() }
     if (stopped.length === 0) return
 
-    held.push(...stopped)
+    held.push(...stopped.filter((input): input is UserInput => input !== undefined))
     for (const input of stopped) {
-      if (input.ref === undefined) continue
+      if (input?.ref === undefined) continue
       sink.emit(
         stamper.stamp('input.settled', {
           ref: input.ref,
@@ -353,8 +375,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     try {
       for (;;) {
+        if (pending.length === 0) break
         const input = pending.shift()
-        if (input === undefined) break
+        if (input === undefined && !(await collaboration?.consume())) continue
 
         const outcome = await agentLoop(runtime, input, controller.signal)
         // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
@@ -379,7 +402,21 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     }
   }
 
+  function wake(): void {
+    if (collaboration === undefined || pending.includes(undefined)) return
+    pending.push(undefined)
+    if (!running) void drain()
+  }
   return {
+    supplement(input, shared) {
+      if (collaboration === undefined) return Promise.reject(new Error('当前会话没有协作入口'))
+      return new Promise(resolve => {
+        supplements.push({ input, shared, done: resolve })
+        wake()
+      })
+    },
+    wake,
+
     submit(input: UserInput): void {
       // **整份入队**（正文 ＋ 它绑的技能 ＋ 配对键）——不是只留正文：
       // 忙时两条交代各绑各的技能，出队后不能被串成同一条（U33 工单明写）

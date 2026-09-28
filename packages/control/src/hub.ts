@@ -28,6 +28,11 @@ import type {
 } from '@magic/contracts'
 import type { Unsubscribe } from './transport.ts'
 
+/** 协作命令仍由宿主编排；旧装配可以先只接原有路由。 */
+export type ControlRoutes = CommandRoutes & {
+  onCollaboration?(command: Extract<Command, { type: `collaboration.${string}` }>): void
+}
+
 /**
  * 控制域公开面——端口两动作 ＋ 广播入口。
  *
@@ -37,7 +42,7 @@ import type { Unsubscribe } from './transport.ts'
  */
 export type ControlHubFace = {
   /** 命令 → 各域（契约 `ControlHub.bind`）。 */
-  bind(routes: CommandRoutes): void
+  bind(routes: ControlRoutes): void
   /** 接**内核侧**一端（契约 `ControlHub.attach`）。 */
   attach(transport: KernelTransport): void
   /** 广播入口（契约 `EventSink`）——装配扇出把事件送到此处，再推给传输的对端。 */
@@ -51,7 +56,7 @@ export type ControlHubFace = {
  * 反了就是用户输入无声丢失（丢弃语义不排队，见文件头注）。
  */
 export function createControlHub(): ControlHubFace {
-  let routes: CommandRoutes | undefined
+  let routes: ControlRoutes | undefined
   let link: { readonly transport: KernelTransport; readonly off: Unsubscribe } | undefined
 
   /** 命令 → 路由——未装路由＝丢弃（与无订阅方同一条纪律：不排队、不假装收下）。 */
@@ -60,6 +65,13 @@ export function createControlHub(): ControlHubFace {
     if (target === undefined) return
 
     switch (command.type) {
+      case 'collaboration.read':
+      case 'collaboration.input':
+      case 'collaboration.stop':
+      case 'collaboration.resume':
+      case 'collaboration.configure':
+        target.onCollaboration?.(command)
+        return
       case 'input.submit':
         target.onInput(command)
         return
