@@ -1,0 +1,23 @@
+name: Native macOS
+on:
+  pull_request:
+    paths: ['apps/macos/**', 'scripts/macos/**', 'packages/**', 'tests/fixtures/native-wire/**', 'bun.lock', 'package.json', 'tsconfig.json', 'bunfig.toml', '.github/workflows/macos.yml']
+  workflow_dispatch:
+jobs:
+  native:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck && bun test
+      - run: bash scripts/macos/build.sh
+      - run: bash scripts/macos/check.sh
+      - run: bash scripts/macos/verify.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-native-evidence
+          path: .artifacts/macos/

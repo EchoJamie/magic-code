@@ -1,6 +1,25 @@
 # Magic Code
 
-软件工程智能体工具——TUI 起步、单机闭环（首站）。
+本机软件工程智能体。macOS App 持有运行服务，状态栏查看工作、接回终端和停止任务；TUI 负责交代、对话与审批。
+
+关闭终端或收起面板后，有责任的工作继续运行。退出 App 会关闭准入并收尾全部所属资源；未确认退出会保留故障界面供重试。App 退出后旧终端保留记录与草稿，按 `ctrl+r` 明确重新打开，随后仍须明确发送草稿。
+
+## macOS App
+
+开发目标为 macOS 26 / arm64、Xcode 与 Bun。同版 App、内置 helper、CLI 和协议一起构建：
+
+```sh
+bun install
+bun run build:macos
+open '.artifacts/macos/Magic Code Dev.app'
+'.artifacts/macos/Magic Code Dev.app/Contents/Helpers/magic-runtime'
+```
+
+开发版使用独立 bundle 身份、发现目录与隔离数据目录。源码 CLI 只连接同源测试宿主；日常使用 App 内置的命令，在设置里选择安装目录后安装 `magic` 链接。登录时打开与系统通知默认关闭，通知权限仅由设置里的明确启用动作申请。
+
+基础目录下使用 `.magic` 保存配置；已选数据实例由 App 发布。显式 `MAGIC_HOME` 与当前实例不一致会拒绝连接，切换须在 App 无在途责任时完成。握手、状态汇总与历史查看均不标读、不起执行者。
+
+`bun run check` 检查 TypeScript；`bun run check:macos` 重建签名开发包、运行 Swift 测试与隔离 App 联验；`bun run check:all` 执行两侧检查。默认测试不弹系统通知、不启用登录项、不安装用户命令链接。开发构建采用本机 ad-hoc 签名；公开 Release 需显式 Developer ID 与公证配置，参见 `scripts/macos/build.sh`。
 
 ## 开发
 
@@ -17,7 +36,7 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 
 | 包 | 职责 |
 | --- | --- |
-| `packages/contracts` | 共享语言（事件 · 条目 · 控制面 · 配置 · 标识）＋ 跨域端口；**纯类型、零运行时依赖** |
+| `packages/contracts` | 共享语言、跨域端口与原生 wire 编解码；零外部运行时依赖 |
 | `packages/records` | 记录域——库 · blob（**写权唯一**） |
 | `packages/model` | 模型域——供应商适配（AI SDK 封在域内） |
 | `packages/permission` | 权限域——闸门（裁决 · 询问流转 · 度量） |
@@ -28,6 +47,7 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 | `packages/faux` | **测试层 · 非域**——Faux Provider ＋ 共享测试替身（任何域的测试皆可安全取用） |
 | `packages/tui` | 外壳——显示组件自持；只认控制面 |
 | `packages/app` | 装配根 ＋ 入口——可执行名 `magic` |
+| `apps/macos` | SwiftUI/AppKit 宿主、状态栏、通知、Terminal 与设置 |
 
 ## 常用命令
 
@@ -35,14 +55,14 @@ Bun workspaces 分包：**一域一包**，外加契约包、外壳、装配根�
 bun install                     # 装依赖（prepare 顺带配置 git 钩子）
 
 # 产品路径
-bun run magic                   # 打开交互界面，用自然语言交代活
-bun run magic --session <id>    # 接着一条已有的会话干（id 见界面里的 /session 列表）
-bun run magic --provider <id>   # 开局用哪个供应商（配置里 providers 的条目名）
-bun run magic --model <名>      # 开局用哪个模型（也可以单独用，不带 --provider）
+magic                           # 连接所属 App，打开交互界面
+magic --session <id>            # 只读接回已有会话（id 见 /resume），明确输入后继续
+magic --provider <id>          # 开局用哪个供应商（配置里 providers 的条目名）
+magic --model <名>               # 开局用哪个模型（也可以单独用，不带 --provider）
 
 # 下面两条不是日常用法
-bun run magic --check           # 把配置、数据存哪、工作区、会话挨个查一遍，查完就退出（不打印 key）
-bun run magic --script <文件>   # 无人值守跑一段脚本，打印事件轨迹（JSONL）与摘要
+magic --check                   # 离线只读检查配置与路径，不启动 App、模型或工具
+magic --script <文件>           # 连接同一 App 跑脚本，打印事件轨迹（JSONL）与摘要
 
 # 开发
 bun run check                   # 质量闸：typecheck + test
@@ -104,8 +124,7 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 **启动＝新会话**（空手打开一个都不建——**首条消息按下回车才开张**）。**接着来是显式的**：
 
 ```text
-magic --session <id>       开局装载那条会话（**库里已有的** id），并**跑一次恢复**
-                           （处置崩溃留下的在途操作），恢复跑完才受理输入
+magic --session <id>       接回已有会话；已完成会话只读回放，下一次明确输入才装配执行者
 ```
 
 **打错 id 不静默**：库里没有这个 id 就报错退场——**不照 id 开一条新的**
@@ -123,8 +142,7 @@ magic --session <id>       开局装载那条会话（**库里已有的** id）�
 > 只会回一句认得的用法）；选会话靠 ↑↓ ＋ 回车。
 
 - **标题＝首条消息摘要**（首行 · 折叠空白 · 截到 20 字），**可改**；改过的存进库、没改过的现算。
-- **切换只是装载**：上下文每轮由条目重建，故切过去就接着聊——**与恢复是两条路径**
-  （恢复处置在途操作，只在 `--session` 那条启动流转上跑）。切到哪条，那条就只知道自己那件事。
+- **切换只读接回**：有在途执行者时订阅同一运行，否则从记录回放。下一次明确输入在该会话原工作区恢复执行；原路径不可达时明确报错。
 - **恢复处置的是在途**：崩溃时那一次「有调用、没结果」的操作，重起后**不自动重跑**
   （工具没有幂等声明位，无从判定重放安不安全），一律落一条账交你裁决——重跑就在会话里说一声。
 - **单活跃**：同一时刻一条活跃会话；**一轮在跑时切不动**（屏上出声，原样不动）。
@@ -157,8 +175,7 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 - **拒绝＝一次都不发出去**；超时或连接断了时说「未收到结果，远端可能已执行」，**不自动重试**；
   中断只报已停止等待，**不声称远端撤销**。
 - 退出时 Magic 收掉**自己拉起的**那些服务器进程——你自己起的服务不受影响。
-- `magic --check` 的「外部工具」那一行逐个报：连上了没有、各有几件工具；连不上的会说明缘由
-  （起手那一屏也会说一句）。
+- App 服务启动时预检配置的外部工具并释放探针；目录查询读取已有结果。`magic --check` 保持离线，不连接外部服务器。
 
 `env` 里的密钥只传给那个子进程——不进日志、不进记录、不进模型请求。需要登录（OAuth）的服务器
 与 HTTP 接入本版还不支持。
