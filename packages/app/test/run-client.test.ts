@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { KernelEvent, ManagerToClient } from '@magic/contracts'
+import type { KernelEvent, ManagerToClient, RunSnapshot } from '@magic/contracts'
 import { createShell } from '@magic/tui'
 import { connectManager, executionEnvironment } from '../src/run/client.ts'
 import { connectApp } from '../src/run/spawn-manager.ts'
@@ -252,4 +252,36 @@ test('显式重连在途关闭终端，会关闭迟到新client；不会留下�
     expect(next.closed).toBe(true)
     await expect(connection.reopen()).rejects.toThrow('终端已经关闭')
   } finally { first.close(); second.close(); a.close(); b.close() }
+})
+
+test('同gen真实target认领保留快照缓存、Shell历史与草稿；客户端不从任意事件猜目标', async () => {
+  const g = cliGround()
+  const server = fakeApp(g)
+  const client = (await connectManager(g.discovery.socket))!
+  const targets: (string | null)[] = []
+  const snapshot: RunSnapshot = { watermark: 10, turnOpen: true, text: '正在输出的正文', tools: [], decisions: [] }
+  const shell = createShell(clientTransport(client), { resumed: { subscribe: (listener) => client.onResumed(listener) } })
+  client.onTarget((session) => targets.push(session))
+  try {
+    const link = server.links[0]!
+    link.send({ t: 'target', gen: 1, session: null })
+    for (const event of initialEvents()) link.send({ t: 'ev', gen: 1, event })
+    link.send({ t: 'resumed', gen: 1, snapshot })
+    await waitFor(() => JSON.stringify(shell.getView()).includes(snapshot.text!))
+    expect(targets).toEqual([null]) // session.state 可呈现，但不能代替管理者 target。
+    shell.key({ kind: 'paste', text: '同代认领不丢的草稿' })
+    const before = shell.getView()
+    link.send({ t: 'target', gen: 1, session: 'real-session' })
+    await waitFor(() => targets.at(-1) === 'real-session')
+    expect(client.gen()).toBe(1)
+    expect(shell.getView()).toBe(before)
+    expect(shell.getView().draft).toBe('同代认领不丢的草稿')
+    expect(JSON.stringify(shell.getView())).toContain('初次历史内容不会丢失')
+    const late: RunSnapshot[] = []
+    client.onResumed((_gen, value) => late.push(value))
+    await waitFor(() => late.length === 1)
+    expect(late).toEqual([snapshot])
+    expect(server.messages.filter((message) => message.t === 'cmd')).toEqual([])
+    expect(server.messages.some((message) => message.t === 'read')).toBe(false)
+  } finally { shell.dispose(); client.close(); server.close(); g.close() }
 })

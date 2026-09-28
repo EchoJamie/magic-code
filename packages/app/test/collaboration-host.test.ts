@@ -2,12 +2,13 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { NativeResponse, NativeWork } from '@magic/contracts'
+import type { KernelEvent, NativeResponse, NativeWork } from '@magic/contracts'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
 import { startManager, type Manager } from '../src/run/manager.ts'
 import { createProcessLauncher } from '../src/run/launch.ts'
-import { connectManager, type ManagerClient } from '../src/run/client.ts'
+import { connectManager } from '../src/run/client.ts'
 import { runPathsOf } from '../src/run/paths.ts'
+import { terminalConnection } from '../src/run/terminal.ts'
 import { collaborationRuntime, latch, requestText, spawnMember } from './run-collaboration-fixture.ts'
 
 test('真实原生协作投影：入口释放仍一工作一行，成员审批归根，旧整体停止版本失效', async () => {
@@ -77,7 +78,7 @@ test('真实原生协作投影：入口释放仍一工作一行，成员审批�
   }
 }, 30000)
 
-test('真实宿主退出再开：持久等待保留停点，只读不执行；明确继续只接回入口', async () => {
+test('真实宿主退出再开：target 接回原工作，只读不执行；明确继续及新输入只归原入口', async () => {
   const lateMember = latch()
   const resumedText = 'REOPEN_ROOT：先核对停止事实，不重启旧成员，不重放未知效果。'
   const f = await collaborationRuntime('host-reopen', async call => {
@@ -91,7 +92,17 @@ test('真实宿主退出再开：持久等待保留停点，只读不执行；�
     return { text: 'OLD_HTTP：停止之后才返回，不能重新推进。' }
   })
   let reopened: Manager | undefined
-  let client: ManagerClient | undefined
+  const reconnectSessions: (string | undefined)[] = []
+  const connection = terminalConnection(f.client, async session => {
+    reconnectSessions.push(session)
+    if (reopened === undefined) throw new Error('新宿主尚未启动')
+    const next = await connectManager(reopened.socketPath, { session, expectedIdentity: reopened.identity, cwd: f.workspace })
+    if (next === undefined) throw new Error('无法只读接回')
+    return next
+  })
+  const client = connection.client
+  const targets: { session: string | null; gen: number | null }[] = []
+  client.onTarget(session => targets.push({ session, gen: client.gen() }))
   const exits: { pid: number | undefined; reason: string }[] = []
   try {
     f.shell.key({ kind: 'paste', text: '派出核对后等待成员结果。' }); f.shell.key({ kind: 'enter' })
@@ -100,8 +111,11 @@ test('真实宿主退出再开：持久等待保留停点，只读不执行；�
     const origin = f.session()!
     const work = f.collaboration()!
     const member = f.member()!
+    // 实际 HTTP 与持久 wait 已建立；不靠等 target 超时掩盖首次认领缺失。
+    expect(targets).toEqual([{ session: null, gen: expect.any(Number) }, { session: origin, gen: targets[0]!.gen }])
     f.manager.stop('用户退出宿主')
     await f.manager.waitUntilExit()
+    await f.wait('旧客户端收到宿主关闭', () => client.closed)
     expect(f.manager.executors()).toEqual([])
     expect(f.processExits).toHaveLength(2)
     expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
@@ -115,14 +129,15 @@ test('真实宿主退出再开：持久等待保留停点，只读不执行；�
     if (started.role !== 'manager') throw new Error('新宿主没有启动')
     reopened = started.manager
     expect(reopened.identity.serviceInstance).not.toBe(f.manager.identity.serviceInstance)
-    client = await connectManager(reopened.socketPath, { session: origin, expectedIdentity: reopened.identity, cwd: f.workspace })
-    if (client === undefined) throw new Error('无法只读接回')
-    const events: unknown[] = []
+    await connection.reopen()
+    expect(reconnectSessions).toEqual([origin])
+    const events: KernelEvent[] = []
     client.onEvent(event => events.push(event))
     client.send({ type: 'history.read', session: origin })
     client.send({ type: 'collaboration.read' })
     lateMember.release()
-    await Bun.sleep(350)
+    await f.wait('只读历史与协作停点经新连接返回', () => events.some(event => event.kind === 'session.history' && event.session === origin && event.data.done)
+      && events.some(event => event.kind === 'collaboration.view' && event.data.originSession === origin && event.data.collaboration?.state === 'stopped'))
     expect(reopened.executors()).toEqual([])
     expect(f.requests()).toHaveLength(2)
     expect(f.requests('member-model')).toHaveLength(1)
@@ -140,13 +155,29 @@ test('真实宿主退出再开：持久等待保留停点，只读不执行；�
     expect(f.requests('member-model')).toHaveLength(1)
     expect(reopened.executors()).toEqual([])
     expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('suspended')
+
+    const input = 'REOPEN_EXPLICIT_INPUT：继续原工作核对，不另开会话。'
+    client.send({ type: 'input.submit', text: input, ref: 'reopen-input' })
+    await f.wait('接回后的明确输入返回原窗口接收回执', () => events.some(event => event.kind === 'input.settled' && event.data.ref === 'reopen-input'))
+    const accepted = events.find(event => event.kind === 'input.settled' && event.data.ref === 'reopen-input')!
+    expect(accepted).toMatchObject({ session: origin, data: { ref: 'reopen-input', ok: true } })
+    await f.wait('原入口新一代请求完成并真实退出', () => f.requests().length === 4 && exits.length === 2 && reopened!.executors().length === 0)
+    expect(requestText(f.requests()[3])).toContain(input)
+    expect(requestText(f.requests()[3])).toContain('派出核对后等待成员结果。')
+    const entries = await Array.fromAsync(f.store.readEntries(origin))
+    expect(entries.filter(entry => entry.kind === 'user' && 'text' in entry.content && entry.content.text === input)).toHaveLength(1)
+    expect((await f.store.listSessions()).map(session => session.id).sort()).toEqual([origin, member.sessionId].sort())
+    expect(f.store.collaboration.collaborationForSession(origin)?.collaborationId).toBe(work.collaborationId)
+    expect(f.requests('member-model')).toHaveLength(1)
+    expect(new Set(exits.map(exit => exit.pid)).size).toBe(2)
+    expect(f.errors).toEqual([])
     const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
     if (evidence) { const dir = resolve(evidence); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'host-reopen-result.json'), JSON.stringify({
-      oldIdentity: f.manager.identity, newIdentity: reopened.identity, events, exits,
+      oldIdentity: f.manager.identity, newIdentity: reopened.identity, targets, reconnectSessions, events, exits, entries,
       collaboration: f.store.collaboration.getCollaboration(work.collaborationId), waits: f.store.collaboration.listWaits(work.collaborationId),
     }, null, 2)) }
   } finally {
-    lateMember.release(); client?.close()
+    lateMember.release(); client.close()
     reopened?.stop('重开验证结束'); if (reopened !== undefined) await reopened.waitUntilExit()
     await f.close()
   }

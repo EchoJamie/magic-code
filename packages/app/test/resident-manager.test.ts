@@ -2,12 +2,13 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { NativeResponse, Wire } from '@magic/contracts'
+import type { KernelEvent, NativeResponse, RunSnapshot, Wire } from '@magic/contracts'
 import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { startManager, type ManagerOptions, type ExecutorRequest } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { connectManager } from '../src/run/client.ts'
+import { terminalConnection } from '../src/run/terminal.ts'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
 
 async function waitFor(check: () => boolean) {
@@ -21,6 +22,143 @@ function ground() {
   const dataDir = join(root, 'data')
   return { root, magic, dataDir, paths: runPathsOf(magic, dataDir, tmpdir()) }
 }
+
+for (const recognition of ['bound', 'event.session', 'session.state.active'] as const) {
+  test(`空白首消息经 ${recognition} 认领真实 target；同代不重取快照，宿主重开仍提交原 Session`, async () => {
+    const g = ground()
+    const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.root] })
+    const launches: ExecutorRequest[] = []
+    const options: ManagerOptions = { ...g, stopGraceMs: 10, stopKillMs: 10,
+      launch: { spawn(request) {
+        launches.push(request)
+        let end = (_reason: string) => {}
+        return { pid: undefined, onExit(callback) { end = callback }, kill() { end('测试执行者核销') } }
+      } },
+    }
+    const started = await startManager(options)
+    if (started.role !== 'manager') throw new Error('启动失败')
+    let manager = started.manager
+    const initial = (await connectManager(g.paths.socket))!
+    const reconnectSessions: (string | undefined)[] = []
+    const connection = terminalConnection(initial, async (session) => {
+      reconnectSessions.push(session)
+      return (await connectManager(g.paths.socket, { session }))!
+    })
+    const targets: { session: string | null; gen: number | null }[] = []
+    const resumed: RunSnapshot[] = []
+    const received: KernelEvent[] = []
+    connection.client.onTarget((session) => targets.push({ session, gen: connection.client.gen() }))
+    connection.client.onResumed((_gen, snapshot) => resumed.push(snapshot))
+    connection.client.onEvent((event) => received.push(event))
+    let executor: ReturnType<typeof linkOf> | undefined
+    try {
+      expect(await store.listSessions()).toHaveLength(0)
+      expect(manager.executors()).toHaveLength(0)
+      connection.client.send({ type: 'input.submit', text: '空白页第一次明确输入' })
+      await waitFor(() => launches.length === 1 && targets.length === 1)
+      expect(launches[0]!.session).toBeNull()
+      const gen = launches[0]!.gen
+      expect(targets).toEqual([{ session: null, gen }])
+      executor = linkOf(await Bun.connect({ unix: g.paths.socket, socket: socketHandlers() }) as never)
+      const requests: Wire[] = []
+      executor.onMessage((message) => requests.push(message))
+      // bound 路也覆盖 hello 已认领 run.session、但窗口仍只知道 null 的次序。
+      executor.send({ t: 'hello', role: 'executor', token: launches[0]!.token,
+        session: recognition === 'bound' ? 'actual-session' : null, workspace: [g.root] })
+      executor.send({ t: 'ready' })
+      await waitFor(() => requests.some((message) => message.t === 'snapshot'))
+      store.setSessionTitle('actual-session', '首条交代创建的工作', 1)
+      const recognitionMessage: Wire = recognition === 'bound'
+        ? { t: 'bound', session: 'actual-session' }
+        : { t: 'ev', event: recognition === 'event.session'
+          ? { id: 1, session: 'actual-session', turn: null, at: 1, kind: 'agent.state', data: { state: 'waiting' } }
+          : { id: 1, session: 'stale-envelope-session', turn: null, at: 1, kind: 'session.state',
+            data: { active: 'actual-session', sessions: [] } } }
+      executor.send(recognitionMessage)
+      executor.send(recognitionMessage) // 重复认领不重复推 target。
+      const buffered: KernelEvent = { id: 2, session: 'actual-session', turn: null, at: 2,
+        kind: 'agent.state', data: { state: 'waiting' } }
+      executor.send({ t: 'ev', event: buffered })
+      const snapshotRequest = requests.find((message) => message.t === 'snapshot')!
+      const snapshot: RunSnapshot = { watermark: 1, turnOpen: false, tools: [], decisions: [] }
+      executor.send({ t: 'snapshot', seq: snapshotRequest.seq, snapshot })
+      await waitFor(() => resumed.length === 1 && received.some((event) => event.id === 2))
+      // 快照回执是处理屏障；旧实现红在实际 target 值，不靠等 target 超时。
+      expect(targets).toEqual([{ session: null, gen }, { session: 'actual-session', gen }])
+      expect(requests.filter((message) => message.t === 'snapshot')).toHaveLength(1)
+      expect(received).toEqual([buffered]) // 原水位和缓冲没有被通知重置。
+      expect(resumed).toEqual([snapshot])
+      expect(launches).toHaveLength(1)
+
+      manager.stop('受控宿主退出'); await manager.waitUntilExit()
+      await waitFor(() => connection.client.closed)
+      const restarted = await startManager(options)
+      if (restarted.role !== 'manager') throw new Error('重启失败')
+      manager = restarted.manager
+      await connection.reopen()
+      expect(reconnectSessions).toEqual(['actual-session'])
+      await waitFor(() => received.some((event) => event.kind === 'session.state' && event.data.active === 'actual-session'))
+      expect(manager.executors()).toHaveLength(0)
+      expect(launches).toHaveLength(1) // 重握手、历史接回均不执行。
+      connection.client.send({ type: 'input.submit', text: '明确 Enter 继续原工作' })
+      await waitFor(() => launches.length === 2)
+      expect(launches[1]!.session).toBe('actual-session')
+      expect((await store.listSessions()).map((session) => session.id)).toEqual(['actual-session'])
+    } finally {
+      connection.client.close(); executor?.close(); manager.stop('测试结束'); await manager.waitUntilExit()
+      store.close(); rmSync(g.root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，不误指新目标', async () => {
+  const g = ground()
+  const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.root] })
+  store.setSessionTitle('old', '原工作', 1)
+  store.setSessionTitle('chosen', '主动切到的工作', 2)
+  store.setSessionTitle('late-active', '原执行者后来认领的工作', 3)
+  const launches: ExecutorRequest[] = []
+  const started = await startManager({ ...g, stopGraceMs: 10, stopKillMs: 10,
+    launch: { spawn(request) {
+      launches.push(request)
+      let end = (_reason: string) => {}
+      return { pid: undefined, onExit(callback) { end = callback }, kill() { end('已核销') } }
+    } },
+  })
+  if (started.role !== 'manager') throw new Error('启动失败')
+  const manager = started.manager
+  const left = (await connectManager(g.paths.socket, { session: 'old' }))!
+  let right: Awaited<ReturnType<typeof connectManager>>
+  let executor: ReturnType<typeof linkOf> | undefined
+  try {
+    left.send({ type: 'input.submit', text: '开始' })
+    await waitFor(() => launches.length === 1)
+    executor = linkOf(await Bun.connect({ unix: g.paths.socket, socket: socketHandlers() }) as never)
+    executor.send({ t: 'hello', role: 'executor', token: launches[0]!.token, session: 'old', workspace: [g.root] })
+    executor.send({ t: 'ready' })
+    right = (await connectManager(g.paths.socket, { session: 'old' }))!
+    const leftTargets: (string | null)[] = [], rightTargets: (string | null)[] = []
+    left.onTarget((session) => leftTargets.push(session))
+    right.onTarget((session) => rightTargets.push(session))
+    left.send({ type: 'session.open', session: 'chosen' })
+    await waitFor(() => leftTargets.at(-1) === 'chosen' && rightTargets.at(-1) === 'old')
+    leftTargets.length = 0; rightTargets.length = 0
+    executor.send({ t: 'bound', session: 'late-bound' })
+    executor.send({ t: 'ev', event: { id: 1, turn: null, session: 'late-envelope', at: 1, kind: 'session.state',
+      data: { active: 'late-active', sessions: [] } } })
+    await waitFor(() => manager.executors()[0]?.session === 'late-active')
+    // runs 在 target 之后发送，用客户端读数作为 socket 处理屏障。
+    await waitFor(() => right!.runs().some((row) => row.session === 'late-active'))
+    expect(leftTargets).toEqual([])
+    expect(rightTargets).toEqual(['late-bound', 'late-active'])
+    left.send({ type: 'input.submit', text: '仍继续主动选中的工作' })
+    await waitFor(() => launches.length === 2)
+    expect(launches[1]!.session).toBe('chosen')
+  } finally {
+    left.close(); right?.close(); executor?.close(); manager.stop('测试结束'); await manager.waitUntilExit()
+    store.close(); rmSync(g.root, { recursive: true, force: true })
+  }
+})
 
 test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同一请求只执行一次', async () => {
   const g = ground()

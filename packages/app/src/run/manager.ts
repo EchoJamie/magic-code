@@ -1544,6 +1544,17 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   }
 
+  /** 同一代认领真实会话后同步窗口目标；不重新绑定或重置快照水位。 */
+  function syncTarget(executor: Executor): void {
+    const session = executor.run.session
+    for (const id of executor.watchers) {
+      const conn = clients.get(id)
+      if (conn === undefined || conn.selectedSession === session) continue
+      conn.selectedSession = session
+      conn.link.send({ t: 'target', gen: executor.gen, session })
+    }
+  }
+
   /** 向某一代要一份快照，回来的那一份给这个窗口。 */
   function askSnapshot(executor: Executor, conn: ClientConn): void {
     executor.snapSeq += 1
@@ -1718,7 +1729,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
       case 'bound':
         executor.run.session = message.session
-        for (const id of executor.watchers) { const conn = clients.get(id); if (conn) conn.selectedSession = message.session }
+        syncTarget(executor)
         refresh(executor.run, now())
         saveRuns(true)
         pushRuns()
@@ -1858,7 +1869,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
     if (run.session !== previousSession) saveRuns(true)
     // —— 运行事实那几格（U49）——**一处更新，判定在 `facts.ts` ——
-    for (const id of executor.watchers) { const conn = clients.get(id); if (conn) conn.selectedSession = run.session }
+    syncTarget(executor)
 
     switch (event.kind) {
       case 'agent.state':
