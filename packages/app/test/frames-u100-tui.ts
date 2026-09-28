@@ -25,6 +25,9 @@
  * | 十 · 只剩后台命令 | 那一轮早收了、只有后台命令在跑 | **照样给三选**；「停止任务」把它**连进程一起收回**（`pgrep` 为证） |
  * | 十一 · 同一份交代跨轮 | 工具正在跑时开菜单 ⇒ 它跑完、下一轮起来 | 菜单**照旧在**、回车**停得掉**（不拿「轮」当任务边界） |
  * | 十二 · 失联 | 杀掉管理者 | **留在界面**、如实说「连接已断开」、状态那一格「状态待确认」、ctrl+c 两下仍走得掉 |
+ * | 十三 · 别的列表之后开三选 | 先在 `/resume` 里挪到第 3 条，再按 `ctrl+c` | **新开的三选恒第一项**（按字格看高亮）· `↓` 挪得动 · `esc` 回去**原列表照原样** |
+ * | 十四 · 过期的卡（已核销） | 审批被三选罩住 ⇒ 另一窗口停掉同一运行 ⇒ `esc` | **卡不复活**、不代答、草稿归还、`ctrl+c` 回到**离开**那条路 |
+ * | 十五 · 过期的卡（失联） | 同上 ⇒ 杀掉管理者 ⇒ `esc` | **仍是失联**（那格不许被改成「等你定夺」或「空闲」）· 双按 ctrl+c 仍走得掉 |
  *
  * ## 两扇窗借同一块沙地
  *
@@ -68,9 +71,70 @@ function keep(shot: Capture, label = shot.label): void {
   )
 }
 
+/**
+ * **输入行那一行**（左下的输入框）——**取屏上最后一个 `› …`**：
+ * 记录区里的用户发言也长这样（`› 跑一条命令`），它在上面；输入行恒在交互区、在最后。
+ */
+function inputLineOf(shot: Capture): string {
+  for (const line of [...shot.lines].reverse()) {
+    if (line.trimStart().startsWith('› ')) return line
+  }
+
+  return ''
+}
+
 /** 一行在不在（按行找，与 `session.wait` 同一条尺子）。 */
 function has(capture: Capture, needle: string): boolean {
   return capture.lines.some((line) => line.includes(needle))
+}
+
+/**
+ * **一行是不是「选中那一行」**——按**字格**判，不按文字：那一屏三项的文字一直都在，
+ * 等文本等不到任何东西（U100 合前复核点出的：「原方向键帧仍是第一项亮色加粗」）。
+ *
+ * ⚠️ **不能只看「第一个加粗的行」**（复核又点出一次）：`components/picker.ts` 里
+ * **选中项与「正在用」那一项都加粗**（`bold: index === selected || row.current`），
+ * 两处只有**颜色**分得开——**选中是 `PALETTE.fg`（#d8dce4）**，「正在用」没被选中是
+ * `PALETTE.user`（#56b6c2，青）。故判据是**选中色 ＋ 加粗**两件一起。
+ *
+ * ⚠️ **`cellsOf` 要当场取**（它是活视图）——本函数就在取到帧的同一跳里读。
+ */
+function focusedRow(shot: Capture): string {
+  for (const [at, line] of shot.lines.entries()) {
+    const cells = shot.cellsOf(at)
+    if (cells.some((cell) => cell.bold && cell.fg === '#d8dce4')) return line
+  }
+
+  return ''
+}
+
+/**
+ * **等高亮真的挪到某一行为止**（有界）——取帧要等这一刻，不能紧跟着按键就取。
+ *
+ * ⚠️ **判据收一个函数**（也可以给一句文本）：有的等待根本没有稳定的文字可等——
+ * 「焦点从第一项挪到第二项」时三项的文字**一个字都没变**，只有字格变了
+ * （U100 合前复核点出的：原来那一步「只等文本」，于是永远等到的是同一帧）。
+ */
+async function waitFocusTo(
+  session: UiSession,
+  ok: (focused: string) => boolean,
+  what: string,
+  timeoutMs = 10_000,
+): Promise<Capture> {
+  const until = Bun.nanoseconds() + timeoutMs * 1e6
+  for (;;) {
+    const shot = await session.capture({ label: 'focus' })
+    if (ok(focusedRow(shot))) return shot
+    if (Bun.nanoseconds() > until) {
+      throw new Error(`等不到${what}（此刻高亮的是「${focusedRow(shot)}」）`)
+    }
+    await Bun.sleep(40)
+  }
+}
+
+/** 等高亮挪到含 `needle` 的那一行。 */
+async function waitFocus(session: UiSession, needle: string, timeoutMs = 10_000): Promise<Capture> {
+  return waitFocusTo(session, (focused) => focused.includes(needle), `高亮挪到「${needle}」`, timeoutMs)
 }
 
 /** 等一个条件在**可见屏**上成立（默认 25 秒）——轮询是用例的事。 */
@@ -195,11 +259,17 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     )
     check(fixture.requests().length === before, '也没有重发请求', `请求 ${fixture.requests().length} 趟`)
 
-    // —— 二 · 方向键：焦点动、三项还在 ——
+    // —— 二 · 方向键：**焦点真挪过去**（按字格判，不按文字——三项的文字一直都在）——
+    check(focusedRow(menu).includes('停止任务'), '开屏默认落在**第一项**（它是高亮那一行）', focusedRow(menu))
     await window.key('down')
-    const moved = await window.capture({ label: `${mark}-03-按下方向键` })
-    keep(moved)
-    check(has(moved, '转到后台'), '按 ↓ 之后三项照旧（焦点挪到第二项）', '')
+    const moved = await waitFocus(window, '转到后台') // **等高亮挪过去再取帧**
+    keep(moved, `${mark}-03-按下方向键`)
+    check(focusedRow(moved).includes('转到后台'), '按 ↓ 之后**第二项才是高亮那一行**', focusedRow(moved))
+    check(!focusedRow(moved).includes('停止任务'), '第一项**不再是**高亮那一行（焦点走了）', focusedRow(moved))
+    await window.key('up')
+    const backToTop = await waitFocus(window, '停止任务')
+    keep(backToTop, `${mark}-03b-再按上键回到第一项`)
+    check(focusedRow(backToTop).includes('停止任务'), '再按 ↑ 回到**第一项**（上下键都对得上）', focusedRow(backToTop))
 
     // —— 三 · 菜单里**再按一次 ctrl+c** ⇒ 只返回，不执行任何一项 ——
     await window.key('ctrl+c')
@@ -955,37 +1025,402 @@ async function waitPidsGone(mark: string, timeoutMs = 30_000): Promise<boolean> 
   }
 }
 
+/**
+ * 十三 · **别的列表 → 三选**（U100 合前复核 · 返修一）——两张列表的选中项是两回事。
+ *
+ * 真反例：先在 `/resume` 里挪到第 3 条，再按 `ctrl+c`；旧写法把那**另一张列表**的索引带了
+ * 进来 ⇒ 回车落在「停止并退出」上。判据：**新开的三选恒第一项**（按字格看高亮）、
+ * `↑↓` 照旧挪得动、`esc` 回去**原列表照原样**（还是第 3 条、没被筛过）。
+ */
+async function menuAfterList(): Promise<void> {
+  const runs = tempDir('magic-u100-list-runs-')
+  const fixture = startFixture({
+    turns: [
+      { kind: 'text', text: '答复丙' },
+      { kind: 'text', text: '答复乙' },
+      // 甲的事**慢慢长**（这一趟要在它跑着的时候走完「开列表 → 挪两项 → 开三选 → 返回」，
+      // 故这一轮得**比那几步加起来还长**：实测 16 秒那版会在中途收工，Ctrl+C 于是走了空闲那条路）
+      { kind: 'text', text: SLOW, chunks: 120, chunkDelayMs: 500 },
+    ],
+  })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  const windows: UiSession[] = []
+  let window: UiSession | undefined
+
+  try {
+    // **真准备三条会话**：列表里得有**具体的一项**可挪、可比——一条会话的列表里
+    // 「焦点在第一条」是必然的，拿它当判据什么也证明不了。
+    // ⚠️ 用**三扇窗**（同一块沙地）而不是 `/clear`：`/clear` 在 PTY 上会先弹补全候选，
+    // 紧跟着的回车可能被候选吃掉（实测栽过：命令带着多余的字提交，回一句「认得的用法」）。
+    const third = await createUiSession({ label: '丙的事', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+    windows.push(third)
+    await typeLine(third, '丙的事')
+    await third.key('enter', { until: { text: '答复丙' }, timeoutMs: 25_000 })
+
+    const second = await createUiSession({ label: '乙的事', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+    windows.push(second)
+    await typeLine(second, '乙的事')
+    await second.key('enter', { until: { text: '答复乙' }, timeoutMs: 25_000 })
+
+    window = await createUiSession({ label: '列表之后开三选', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+    windows.push(window)
+    await typeLine(window, '甲的事')
+    await window.key('enter', { until: { text: SLOW_HEAD }, timeoutMs: 25_000 }) // 这一条**在跑**
+
+    // 开 `/resume` 那张列表（先让目录回来），挪到**第三条**（具体的一项，不是首项）
+    await typeLine(window, '/resume')
+    await window.key('enter', { until: { text: '↑↓ 选 · 回车 定 · 打字筛' }, timeoutMs: 20_000 })
+    const list = await window.capture({ label: '27-列表（当前那一项）' })
+    keep(list)
+    const firstFocused = focusedRow(list)
+    check(firstFocused !== '', '列表那一屏**有高亮那一行**（探针要先看见它）', firstFocused)
+    const titles = list.lines.filter((line) => /^\s*\d+\s/u.test(line)).length
+    check(titles >= 3, '列表里**至少三项**（够挪、够比）', `${titles} 项`)
+
+    /** 列表里**第一行**（首项）那一行的文字——「非首项」按它判。 */
+    const firstRow = list.lines.find((line) => /^\s*\d+\s/u.test(line)) ?? ''
+
+    // ⚠️ **一下一下来**（连着按两下方向键会丢一下——U40 驱动那条老经验）：按一下、等它落地
+    await window.key('down')
+    const moved = await waitFocusTo(window, (focused) => focused !== '' && focused !== firstFocused, '焦点挪到另一项')
+    keep(moved, '27b-列表里挪到另一项')
+    const target = focusedRow(moved)
+    check(target !== '', '前置成立：**有具体那一项被选中**（不是空）', target)
+    check(target !== firstRow, '前置成立：选中的**不是首项**（列表里第 2 项之后）', `首项 ${firstRow} / 选中 ${target}`)
+
+    // **Ctrl+C ⇒ 三选**：高亮必须是**第一项**
+    await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
+    const menu = await waitFocus(window, '停止任务')
+    keep(menu, '28-列表之后开的三选（默认第一项）')
+    check(focusedRow(menu).includes('停止任务'), '**新开的三选恒选第一项**（高亮在「停止任务」）', focusedRow(menu))
+    check(!focusedRow(menu).includes('停止并退出'), '没有继承那张列表的选中项', focusedRow(menu))
+    check(focusedRow(menu) !== target, '而它**不是**刚才列表里那一项（两张列表各是各的）', `列表 ${target} / 三选 ${focusedRow(menu)}`)
+
+    // `↓` 照旧挪得动（焦点证据按字格判：三项文字一个字没变）
+    await window.key('down')
+    const stepped = await waitFocus(window, '转到后台')
+    keep(stepped, '29-三选里按-↓')
+    check(focusedRow(stepped).includes('转到后台'), '按 ↓ 之后高亮到第二项', focusedRow(stepped))
+
+    // `esc` ⇒ **原列表照原样回来**（比的是**同一项**）
+    await window.key('esc')
+    const back = await waitFocusTo(window, (focused) => focused === target, '列表回到刚才那一项')
+    keep(back, '30-esc-之后回到原列表那一项')
+    check(!has(back, '停止并退出'), '三选收了（回到原列表那一屏）', '')
+    check(focusedRow(back) === target, '**原列表的选中照旧**：还是刚才那一项', `刚才 ${target} / 现在 ${focusedRow(back)}`)
+
+    // 收尾：`esc` 收起列表 ⇒ **回输入屏**（等**那一屏自己的**东西不见了：
+    // 列表底下那句键位提示带「打字筛」；⚠️ **不等状态行那句**——它是按状态给的，
+    // 这一趟走到这儿时那一轮是「还在跑」还是「早跑完」都不一定）
+    await window.key('esc', { until: { text: '›' }, timeoutMs: 10_000 }) // **输入行回来了**
+    await window.wait({ absent: '打字筛' }, { timeoutMs: 10_000 }) // 列表页脚走了 ⇒ 那一屏收了
+
+    // **走到能开三选的那一档**：那一轮还在跑 ⇒ 直接按；早跑完了 ⇒ 先交代一句让它重新在跑
+    // （空闲时 `ctrl+c` 走的是「按两次退出」那条路——那不是这一趟要验的事）
+    const busy = async (): Promise<boolean> => {
+      const shot = await window?.capture({ label: 'cleanup-state' })
+      return shot?.lines.some((line) => line.includes('工作中')) === true
+    }
+
+    if (!(await busy())) {
+      await typeLine(window, '再来一件')
+      await window.key('enter', { until: { text: SLOW_HEAD }, timeoutMs: 25_000 })
+    }
+
+    await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
+    await window.key('enter')
+    await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
+    await window.quit()
+    const report = await window.close({ graceMs: 5_000 })
+    check(report.exit.by !== 'sigkill', '窗口自己走的', `by=${report.exit.by}`)
+    window = undefined
+  } finally {
+    for (const one of windows) await one.close().catch(() => {})
+    await window?.close().catch(() => {})
+    await fixture.stop()
+    sandbox.dispose()
+    removeDir(runs)
+  }
+}
+
+/**
+ * 十四 · **审批被三选遮住 → 另一窗口停掉这条运行**（U100 合前复核 · 返修二其一）。
+ *
+ * 判据：被罩住的那张卡是**过期快照**——不能从屏栈复活、不向内核代答、也不替用户取消；
+ * 草稿照旧；`ctrl+c` 回到**离开**那条路。
+ */
+async function staleCardAfterStop(): Promise<void> {
+  const runs = tempDir('magic-u100-stale-runs-')
+  const fixture = startFixture({
+    turns: [
+      // ⚠️ **受控返回**：**同一个 tool 回合先慢慢流一段正文再给工具**——那几百毫秒就是
+      //    「模型返回前」那一段，草稿才有地方录（卡一挂上就占着输入区了 ✗）。
+      // ⚠️ **不能拆成「先 text 回合、再 tool 回合」**：text 回合以 `finish_reason=stop` 收尾，
+      //    生产**不会再问第二轮**（那是这一轮正常结束）——等审批必然超时（复核指出的坑）。
+      { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' }, text: '我先看一眼再动手。', chunks: 40, chunkDelayMs: 400 },
+    ],
+  })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  let mine: UiSession | undefined
+  let other: UiSession | undefined
+
+  try {
+    mine = await createUiSession({ label: '被罩住的卡', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+    await typeLine(mine, '跑一条命令')
+    await mine.key('enter', { until: { text: '我先看一眼' }, timeoutMs: 25_000 })
+    // **模型返回之前**录一段**独立、未提交**的草稿（不能拿已经交代出去的文字算草稿）
+    await mine.send('打了一半的草稿', { until: { text: '› 打了一半的草稿' }, timeoutMs: 10_000 })
+    // 这一轮说完 ⇒ 卡片到（草稿被 `takeOver` 收进 `stashed`）
+    await mine.wait({ text: 'y / n' }, { timeoutMs: 30_000 })
+    await mine.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
+    const covered = await mine.capture({ label: '31-卡被三选罩住' })
+    keep(covered)
+    check(has(covered, '当前任务正在等待你'), '待答时标题是「正在等待你」那一版', '')
+    check(!has(covered, 'y / n'), '卡被这一屏压住（一屏不摆两套键）', '')
+
+    // —— 另一扇窗**停掉同一条运行**（整体那一档）——
+    other = await createUiSession({ label: '另一扇窗', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+    await typeLine(other, '/resume')
+    await other.key('enter', { until: { text: '跑一条命令' }, timeoutMs: 20_000 })
+    await other.key('ctrl+x')
+    await waitUntil(other, '那一行落定为「已停止」', (lines) =>
+      lines.some((line) => /^\s*\d+\s/u.test(line) && line.includes('已停止')),
+      30_000,
+    )
+    const stopped = await other.capture({ label: '32-另一扇窗把它停了' })
+    keep(stopped)
+    check(has(stopped, '已停止'), '另一扇窗那一行读作「已停止」', '')
+
+    // —— 回到被罩住那一扇窗 ——
+    // ⚠️ **只在菜单还开着时才按 `esc`**：那一轮被停掉之后 `turn.end` 一到，菜单会**自己收起**
+    //    （那张卡作废时连同它上面那一屏一并收），此时再按 `esc` 是**正常语义「清草稿」**
+    //    ——那就把要验的那一段草稿自己擦掉了 ✗
+    await Bun.sleep(800)
+    const mid = await mine.capture({ label: '33-另一扇窗停完之后（菜单可能已自己收起）' })
+    if (mid.lines.some((line) => line.includes('停止任务'))) await mine.key('esc')
+    await Bun.sleep(500)
+    const back = await mine.capture({ label: '33b-过期的卡没有复活' })
+    keep(mid, '33-停完之后那一屏')
+    keep(back)
+    check(!has(back, 'y 批准') && !has(back, 'y / n'), '**过期的卡没有复活**（那一代早没了）', '')
+    check(has(back, '› '), '回到输入行（界面照旧在）', '')
+    check(
+      inputLineOf(back).includes('打了一半的草稿'),
+      '**草稿原样归还**（卡接管时收起的那一段，回来时还在输入行上）',
+      inputLineOf(back),
+    )
+    // **那一行不再冒充「运行中」**（U100 合前复核 · 呈现补：核销之后那一件的结果不会再来）
+    check(
+      !back.lines.some((line) => line.includes('⟳') && line.includes('运行中')),
+      '那一代核销之后**没有**「⟳ 运行中」那一行（不再把没落定的说成在跑）',
+      back.lines.find((line) => line.includes('⟳')) ?? '（屏上没有 ⟳）',
+    )
+    check(
+      !back.lines.some((line) => line.includes('✓')),
+      '而它也没有被说成「跑成功了」（不冒充结果）',
+      back.lines.find((line) => line.includes('✓')) ?? '',
+    )
+    check(!has(back, '交代一件事，回车发送'), '而输入行没有占位语（草稿占着它）', '')
+
+    // `ctrl+c` 走**离开**那条路（不是又进三选）
+    await mine.key('ctrl+c', { until: { text: '再按一次 ctrl+c 退出' }, timeoutMs: 10_000 })
+    const leaving = await mine.capture({ label: '34-之后走的是离开那条路' })
+    keep(leaving)
+    check(has(leaving, '再按一次 ctrl+c 退出'), '`ctrl+c` 回到**离开**那条路（不是又进三选）', '')
+
+    await mine.key('ctrl+c')
+    const closed = await mine.close({ graceMs: 8_000 })
+    check(closed.exit.by === 'app', '窗口自己走的', `by=${closed.exit.by}`)
+    mine = undefined
+
+    await other.quit()
+    await other.close({ graceMs: 5_000 })
+    other = undefined
+  } finally {
+    await mine?.close().catch(() => {})
+    await other?.close().catch(() => {})
+    await fixture.stop()
+    sandbox.dispose()
+    removeDir(runs)
+  }
+}
+
+/**
+ * 十五 · **审批被三选遮住 → 控制连接断了**（返修二其二）——`esc` 回去**仍是失联**：
+ * 那一格不许被改回「等你定夺」（失联不是还能答），也不许被改成「空闲」（失联不是已停止）。
+ */
+async function staleCardAfterLost(): Promise<void> {
+  const runs = tempDir('magic-u100-stalelost-runs-')
+  const fixture = startFixture({
+    turns: [
+      // 同趟十四：**受控返回**——草稿要在卡片到来**之前**录进去（同一个 tool 回合先流正文）
+      { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' }, text: '我先看一眼再动手。', chunks: 40, chunkDelayMs: 400 },
+    ],
+  })
+  const sandbox = createSandbox({ baseURL: fixture.baseURL })
+  let window: UiSession | undefined
+
+  try {
+    window = await createUiSession({ label: '遮住之后失联', artifacts: runs, sandbox, fixture, columns: 100, rows: 30 })
+    await typeLine(window, '跑一条命令')
+    await window.key('enter', { until: { text: '我先看一眼' }, timeoutMs: 25_000 })
+    // **模型返回之前**录一段**独立、未提交**的草稿
+    await window.send('半截草稿', { until: { text: '› 半截草稿' }, timeoutMs: 10_000 })
+    await window.wait({ text: 'y / n' }, { timeoutMs: 30_000 })
+    await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
+
+    // **杀掉管理者**（与趟十二同一条路：按沙地路径认它）
+    const managers = await pidsOf('internal-manager', sandbox.root)
+    check(managers.length === 1, '这一摊只有一个管理者', `pids ${managers.join(',')}`)
+    process.kill(managers[0] as number, 'SIGKILL')
+    await window.wait({ text: '连接已断开' }, { timeoutMs: 20_000 })
+
+    // `esc` 回来 ⇒ **仍是失联**（失联时**没有事件**，菜单不会自己收——故这一下一定会按到菜单上）
+    await window.key('esc')
+    await Bun.sleep(500)
+    const back = await window.capture({ label: '35-失联之后返回（仍是失联）' })
+    keep(back)
+    check(has(back, '状态待确认'), '状态那格**仍是「状态待确认」**（没被改回等你定夺、也没改成空闲）', '')
+    check(
+      !has(back, '等你定夺'),
+      '**没有**把那张过期的卡摆回来（失联不是「还能答」）',
+      back.lines.find((line) => line.includes('状态')) ?? '',
+    )
+    check(!has(back, 'y 批准') && !has(back, 'y / n'), '**没有审批键位**（卡没回来）', '')
+    check(has(back, '› '), '界面还在（没自动退场）', '')
+
+    // ① **先看草稿**：收起的那一段原样回来（⚠️ 草稿非空时**看不到**占位语——两者互斥）
+    const withDraft = inputLineOf(back)
+    check(
+      withDraft.includes('半截草稿'),
+      '**草稿原样归还**（失联不吞草稿）',
+      withDraft,
+    )
+
+    // **失联那一档：那一行不再报秒数**（两次取帧比一比——秒数若在涨就是还在计时）
+    const tick1 = back.lines.filter((line) => line.includes('⟳'))
+    await Bun.sleep(1_200)
+    const later = await window.capture({ label: '35b-失联一秒多之后' })
+    const tick2 = later.lines.filter((line) => line.includes('⟳'))
+    check(
+      tick1.join('|') === tick2.join('|'),
+      '失联之后那一行**不再计时**（一秒多之后字面一字不变）',
+      `前 ${tick1.join('|')} / 后 ${tick2.join('|')}`,
+    )
+
+    // ② **再把草稿清空**，另取一帧看那行占位（别要求同一行同时显示两者）
+    for (let at = 0; at < 5; at += 1) await window.key('backspace')
+    await Bun.sleep(300)
+    const emptied = await window.capture({ label: '36-清空草稿之后（失联那句占位）' })
+    keep(emptied)
+    const emptyLine = inputLineOf(emptied)
+    check(
+      emptyLine.includes('连接已断开——此刻发不出这一句'),
+      '草稿清空之后，输入行**直接**就是失联那句占位（发不出去的事不许写在占位里）',
+      emptyLine,
+    )
+    check(!emptyLine.includes('回车发送'), '**不再**承诺「回车发送」', emptyLine)
+    check(has(emptied, '状态待确认'), '状态那格照旧「状态待确认」', '')
+
+    // 双按 `ctrl+c` 仍走得掉
+    await window.key('ctrl+c')
+    await window.key('ctrl+c')
+    const report = await window.close({ graceMs: 8_000 })
+    check(report.exit.by === 'app', '要走的时候走得掉', `by=${report.exit.by}`)
+    window = undefined
+  } finally {
+    await window?.close().catch(() => {})
+    await fixture.stop()
+    sandbox.dispose()
+    removeDir(runs)
+  }
+}
+
 if (import.meta.main) {
   const at = process.argv.indexOf('--out')
   const root = at === -1 ? tempDir('magic-frames-u100-') : (process.argv[at + 1] as string)
   mkdirSync(root, { recursive: true })
   out = root
 
+  /**
+   * **只跑指定的几趟**（`--only 13,14,15`）——调试装置时用。
+   *
+   * 由头（复核建议）：一到十二趟在同一生产补丁上已完整通过多次，**调装置不必每次从第一趟起**
+   * （一趟一趟加起来几分钟）；但**归档那一份必须是完整十五趟**（`--only` 不写就是全跑）。
+   */
+  const onlyAt = process.argv.indexOf('--only')
+  const only =
+    onlyAt === -1
+      ? null
+      : new Set(
+          (process.argv[onlyAt + 1] ?? '')
+            .split(',')
+            .map((one) => Number(one.trim()))
+            .filter((one) => Number.isInteger(one)),
+        )
+  const want = (trip: number): boolean => only === null || only.has(trip)
+
   try {
-    console.log('· 一 · 常规宽度 100×30')
-    await once('宽', 100, 30)
-    console.log('· 二 · 矮窗 40×10')
-    await once('矮', 40, 10)
-    console.log('· 三 · 转到后台（真进程）')
-    await background()
-    console.log('· 四 · 停止任务（留在界面）')
-    await stopAndStay()
-    console.log('· 五 · 停止并退出（先核销）')
-    await stopAndExit()
-    console.log('· 六 · 直接关终端')
-    await dropTerminal()
-    console.log('· 七 · 待答')
-    await waiting()
-    console.log('· 八 · 另一条会话不受影响')
-    await otherSession()
-    console.log('· 九 · 待答时离开、再接回')
-    await waitingAcrossBackground()
-    console.log('· 十 · 只剩后台命令（真进程）')
-    await backgroundOnly()
-    console.log('· 十一 · 同一份交代跨轮（模型 → 工具 → 模型）')
-    await acrossRounds()
-    console.log('· 十二 · 失联留在界面（真杀管理者）')
-    await disconnected()
+    if (want(1)) {
+      console.log('· 1 · ' + "await once('宽', 100, 30)")
+      await once('宽', 100, 30)
+    }
+    if (want(2)) {
+      console.log('· 2 · ' + "await once('矮', 40, 10)")
+      await once('矮', 40, 10)
+    }
+    if (want(3)) {
+      console.log('· 3 · ' + 'await background()')
+      await background()
+    }
+    if (want(4)) {
+      console.log('· 4 · ' + 'await stopAndStay()')
+      await stopAndStay()
+    }
+    if (want(5)) {
+      console.log('· 5 · ' + 'await stopAndExit()')
+      await stopAndExit()
+    }
+    if (want(6)) {
+      console.log('· 6 · ' + 'await dropTerminal()')
+      await dropTerminal()
+    }
+    if (want(7)) {
+      console.log('· 7 · ' + 'await waiting()')
+      await waiting()
+    }
+    if (want(8)) {
+      console.log('· 8 · ' + 'await otherSession()')
+      await otherSession()
+    }
+    if (want(9)) {
+      console.log('· 9 · ' + 'await waitingAcrossBackground()')
+      await waitingAcrossBackground()
+    }
+    if (want(10)) {
+      console.log('· 10 · ' + 'await backgroundOnly()')
+      await backgroundOnly()
+    }
+    if (want(11)) {
+      console.log('· 11 · ' + 'await acrossRounds()')
+      await acrossRounds()
+    }
+    if (want(12)) {
+      console.log('· 12 · ' + 'await disconnected()')
+      await disconnected()
+    }
+    if (want(13)) {
+      console.log('· 13 · ' + 'await menuAfterList()')
+      await menuAfterList()
+    }
+    if (want(14)) {
+      console.log('· 14 · ' + 'await staleCardAfterStop()')
+      await staleCardAfterStop()
+    }
+    if (want(15)) {
+      console.log('· 15 · ' + 'await staleCardAfterLost()')
+      await staleCardAfterLost()
+    }
 
     console.log(`\n全部判据通过。帧落在 ${out}`)
   } finally {

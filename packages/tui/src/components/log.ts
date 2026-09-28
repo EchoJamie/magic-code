@@ -27,7 +27,7 @@ import type { DiffKind, DiffRow } from '../diff.ts'
 import { markdownStream } from '../markdown.ts'
 import type { MdLine } from '../markdown.ts'
 import type { LogRow } from '../view.ts'
-import { nonEmptyLines, quietRowHidden, textOfLines } from '../view.ts'
+import { INTERRUPTED_TEXT, nonEmptyLines, quietRowHidden, textOfLines } from '../view.ts'
 import { PALETTE, displayWidth, durationLabel, expandTabs, wrap } from './lines.ts'
 
 /** 一行里的一段（同段一个颜色）。 */
@@ -59,6 +59,8 @@ export type LogRowProps = {
   readonly row: LogRow
   readonly columns: number
   readonly expanded: boolean
+  /** **与管理者断了**（U100）——见 `toolLines` 那一处注；缺省 `false`（常态）。 */
+  readonly lost?: boolean
   /** 这条行之前留不留一行分段（上一块与这一块不同＝留，见「分段」一节）。 */
   readonly spaced: boolean
   /**
@@ -91,8 +93,9 @@ export function LogRowView({
   spaced,
   skip = 0,
   now = null,
+  lost = false,
 }: LogRowProps): ReactElement {
-  const all = rowLines(row, { columns, expanded, spaced, now })
+  const all = rowLines(row, { columns, expanded, spaced, now, lost })
   // 头一条超预算时只画末尾那几行（`skip` 见 props；0 时**原样交那一份**——它是缓存里的数组）
   const lines = skip > 0 ? all.slice(skip) : all
 
@@ -144,6 +147,8 @@ export function rowLines(
     readonly expanded: boolean
     readonly spaced?: boolean
     readonly now?: number | null
+    /** **与管理者断了**（U100）——由 `view.status.state === 'lost'` 给（见 `toolLines` 的注）。 */
+    readonly lost?: boolean
   },
 ): readonly LogLine[] {
   const key = cacheKeyOf(options)
@@ -167,14 +172,21 @@ const BANNER_GAP_TOP: LogLine = { key: 'r:n:pad:top', segments: [], spacer: true
 /** 字标块**下面**那一行留白——「用户消息之前那一行分段」的活儿由它兼了（见 `needsSpacerAfter`）。 */
 const BANNER_GAP_BOTTOM: LogLine = { key: 'r:n:pad:bottom', segments: [], spacer: true }
 
-/** 显示行的四个参数合成一个键（`now` 参与——跑动中的那行每滴答一次就该重算一次）。 */
+/**
+ * 显示行的几个参数合成一个键（`now` 参与——跑动中的那行每滴答一次就该重算一次）。
+ *
+ * ⚠️ **`lost` 也必须进这个键**（U100 合前复核）：它换掉的是那一行的**行数**（失联时
+ * 不画活动/耗时那一条副行）——不进键的话，失联前后的两份算的是同一把钥匙，
+ * 会把失联前「⟳ 运行中」那一份**原样带回来**。
+ */
 function cacheKeyOf(options: {
   readonly columns: number
   readonly expanded: boolean
   readonly spaced?: boolean
   readonly now?: number | null
+  readonly lost?: boolean
 }): string {
-  return `${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}`
+  return `${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}:${options.lost === true ? 1 : 0}`
 }
 
 type RowCache = { readonly key: string; readonly lines: readonly LogLine[] }
@@ -516,7 +528,12 @@ export function needsSpacer(rows: readonly LogRow[], index: number, expanded: bo
 /** 一屏上的**全部**显示行（含分段）——快照取景与行数预算用。 */
 export function logLines(
   rows: readonly LogRow[],
-  options: { readonly columns: number; readonly expanded: boolean; readonly now?: number | null },
+  options: {
+    readonly columns: number
+    readonly expanded: boolean
+    readonly now?: number | null
+    readonly lost?: boolean
+  },
 ): readonly LogLine[] {
   const { flags } = spacerWalk(rows, options.expanded)
 
@@ -527,7 +544,13 @@ export function logLines(
 
 function rowBody(
   row: LogRow,
-  options: { readonly columns: number; readonly expanded: boolean; readonly now?: number | null },
+  options: {
+    readonly columns: number
+    readonly expanded: boolean
+    readonly now?: number | null
+    /** **与管理者断了**（U100）——见 `toolLines` 那一处注。 */
+    readonly lost?: boolean
+  },
 ): readonly LogLine[] {
   const { columns, expanded } = options
 
@@ -657,7 +680,7 @@ function rowBody(
       // 照旧可见；成功（含跑动中）收起时不画。
       if (quietRowHidden(row) && !expanded) return []
 
-      return toolLines(row, columns, expanded, options.now ?? null)
+      return toolLines(row, columns, expanded, options.now ?? null, options.lost === true)
 
     case 'toolgroup':
       // 收拢的组——`●` 起头 ＋ 次数与名字（原型 · 场景 13）
@@ -704,6 +727,15 @@ function toolLines(
   columns: number,
   expanded: boolean,
   now: number | null,
+  /**
+   * **与管理者断了**（U100 合前复核 · 呈现补）——由**现有的 `lost` 状态**驱动（不新增事实）。
+   *
+   * 那一档：那一行**不再画活动/耗时那一条副行**（既不报秒数，也不写「运行中」）——
+   * 此刻那一件**在不在跑、跑没跑完，我们一概不知道**；说「运行中」是冒充，说「已停止」
+   * 也是冒充（生命连接多半会让执行者收摊，可那是推断，不是我们知道的事）。
+   * 头一行与既有输出照旧画（内容不擦）。
+   */
+  lost = false,
 ): readonly LogLine[] {
   const running = row.state === 'running'
   const marker = running ? '⟳ ' : '● '
@@ -731,7 +763,8 @@ function toolLines(
    * 就是把卡片那句话再说一遍——一屏上的每条各说一件别处没说的。
    */
   if (running) {
-    if (row.awaitingDecision === true) return [...head, ...body]
+    // **等裁决**与**失联**都不报那一条读数：前者是「人在想」，后者是「不知道」
+    if (row.awaitingDecision === true || lost) return [...head, ...body]
 
     // **跑动中报真秒数**——起算时刻（`startedAt`：发起，或者**批准那一刻**——见
     // `view.ts` 的 `reduceVerdict`）到此刻，`now` 由活壳给 ⇒ 这一个是**量出来的**，
@@ -778,6 +811,18 @@ function verdictOf(
   if (row.state === 'unexecuted') {
     return { marker: '!', color: PALETTE.warn, text: firstLineOf(row.output) ?? '未执行' }
   }
+  /**
+   * **已停止 · 结果未确认**（U100 合前复核 · 呈现补）——那一代核销了，这一笔的 `tool.result`
+   * 不会再来；屏幕上那一行于是不能再冒充「运行中」。
+   *
+   * 标记取 `!`（warn）：说的是「**这一笔要你再看一眼**」，**不是**失败、也不是「未执行」
+   * ——那两句话都在替一件没落定的事下结论。**也没有耗时**（`elapsedMs` 本来就是 `null`）。
+   * 行上原有的输出照旧画（既有内容不擦）。
+   */
+  if (row.state === 'interrupted') {
+    return { marker: '!', color: PALETTE.warn, text: INTERRUPTED_TEXT }
+  }
+
   // **失败那一行保头也保尾**（U93）——它跟上面两支的**形状不同**：被拒 / 被扣下那两句
   // 把「为什么 ＋ 用什么」写在**头里**（`messages.ts` 的 `refusalOutput` 明写「第一行要能
   // 独立读」，`rules.ts` 那两句也是「未执行 · 由此往下读」），而失败这句的**收梢那一句**

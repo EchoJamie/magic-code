@@ -84,6 +84,8 @@ import {
   reasoningHint,
   reasoningRows,
   sessionRows,
+  settle,
+  undock,
   applyResume,
   inActiveSection,
   runDetail,
@@ -903,6 +905,36 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
      * ——再收一次是空转（`stashed !== null` 时它本来也直接返回）。
      */
     if (layer.dock.kind === 'decision') {
+      /**
+       * **过期的卡不许复活**（U100 合前复核 · 返修二）——两条都在探针上实测过：
+       *
+       * | 那一路 | 会出什么事 |
+       * | --- | --- |
+       * | **那一代已核销**（运行事实说 `stopped`） | 卡回来、状态还是「等你定夺」，而那件工具早没了；再按 `ctrl+c` 又进三选，**回不到空闲那条退出路** |
+       * | **连接断了**（`lost`） | 卡回来、状态从「状态待确认」被改回「等你定夺」——**失联被当成还能答**，而实际连接没恢复 |
+       *
+       * 两条的处置**同一处、同一法**：把这一层**丢掉**，并**归还草稿**（复用 `undock`
+       * 那条既有机制——草稿是卡接管时收进 `stashed` 的）；「已核销」那一档顺手把本轮的行
+       * 一起定局（那一代没了，行再也不会变）。
+       *
+       * ⚠️ **`lost` 那一档不动状态那一格**：它照旧是「状态待确认」——**失联不是已停止**，
+       * 也不是「还能答」。也不发任何命令：不向内核代答、不替用户取消那张可能还有效的审批。
+       */
+      const run = view.sessionId === null ? undefined : view.runs.find((one) => one.session === view.sessionId)
+      const gone = run?.state === 'stopped'
+      const lost = view.status.state === 'lost'
+
+      if (gone || lost) {
+        const back = undock({ ...view, dock: layer.dock })
+        // ⚠️ **失联优先**（U100 合前复核补）：两件同时为真时（那一代核销了、连接也断了），
+        // 走的是 `lost` 那一条——**状态那一格照旧「状态待确认」**，不许被改成空闲
+        // （「失联」不是「已停止」，更不是「能接着打字」；改回去会让输入行重新许一个
+        // 兑现不了的承诺）。行照旧定局：那一代没了，行再也不会变。
+        const settled = gone ? settle(back) : back
+        commit(lost ? settled : patchStatus(settled, { state: 'idle', amount: null, hint: HINT_IDLE }))
+        return
+      }
+
       commit(withDecisionStatus({ ...view, dock: layer.dock }))
     }
   }
@@ -1312,6 +1344,33 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    **这一页带不带字标**（U45：`'new'` 印 / `'open'` 不印）。
     //    给宽了，「问一次目录」开出来的空壳会话也会把屏翻掉。
     if (parkDecision(event)) return
+
+    /**
+     * **裁决落地 / 轮收束 ⇒ 屏栈里那张卡的快照作废**（U100 合前复核 · 返修二补）。
+     *
+     * 由头：菜单把卡罩住时，`undock`（`view.ts`）**只撤当前那一屏**——`dock` 不是 decision
+     * 就直接返回 ✗。于是这一份**快照没人撤**：裁决已经答过（甚至那一轮都收完了、运行都空闲了），
+     * `esc` 一返回还是把那张旧卡摆回来、状态改回「等你定夺」✗。
+     *
+     * 故**从产生处撤**：这两条事件正是设计点名的「悬着的裁决作废」那两拍——
+     * `tool.decision`（有人答了，可能是别的窗口）/ `turn.end`（轮收束）。
+     * 撤的是**屏栈里的卡快照**，不动别的层（同一份交代跨模型轮时菜单照旧在——它不由这里管）。
+     */
+    if (event.kind === 'tool.decision' || event.kind === 'turn.end') {
+      // **先把那一张摆回 `dock`**（若它正被菜单罩在下面）：下面那条常规 `reduce` 走的就是
+      // 它的老路——`undock` **归还草稿**、清掉「等你答」那一笔、按结果换状态行。
+      // 不先摆回去，`undock`（`view.ts`：`dock` 不是 decision 就直接返回）什么都不做 ✗
+      // ——草稿就留在 `stashed` 里、屏上那一格也不动（复核用探针直接量到过）。
+      const parked =
+        view.dock.kind === 'picker' && view.dock.picker.source === 'task'
+          ? layers.filter((layer) => layer.dock.kind === 'decision').at(-1)
+          : undefined
+
+      layers = layers.filter((layer) => layer.dock.kind !== 'decision')
+      // 照原设计：**已被别人答掉的卡，罩在它上面的那一屏一并收起**（那一屏问的是「这件事
+      // 往哪去」，而这件事已经往前走了）——`undock` 会把 dock 交回输入行。
+      if (parked !== undefined) view = { ...view, dock: parked.dock }
+    }
 
     commit(reduce(view, event, { turn: turn?.kind ?? null }), STREAMING.has(event.kind))
 
@@ -3414,12 +3473,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (asked) layers = [...layers, layerNow()]
     else enterLayer()
 
-    commit(
-      openPicker(view, {
-        ...taskPickerOf(asked),
-        selected: view.dock.kind === 'picker' ? view.dock.picker.selected : 0,
-      }),
-    )
+    // ⚠️ **恒选第一项**（U100 合前复核 · 返修一）：这里原先跟着 `view.dock.picker.selected`
+    // 走——那把**别的列表**（`/resume` 里挪到第 3 条）的索引带进了这张菜单，回车于是落在
+    // 第 3 项（「停止并退出」）上。**三选是新开的一屏，它自己的选中项从 0 起**
+    // （`taskPickerOf` 的缺省）；**菜单开着时**的刷新（`parkDecision`）才保留本屏的选中。
+    commit(openPicker(view, taskPickerOf(asked)))
   }
 
   /**
@@ -4019,6 +4077,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const answer = (char: string): ShellEffect => {
     const pending = view.dock.kind === 'decision' ? view.dock.pending : undefined
     if (pending === undefined) return NONE
+
+    // **连接断了 ⇒ 一个答复都不发**（U100 合前复核 · 返修二）：「失联」不是「还能答」——
+    // 送不出去的答复、也不该替用户把那张可能还有效的审批答掉。如实说一句，卡照旧挂着。
+    if (view.status.state === 'lost') {
+      commit(appendReceipt(view, '连接已断开——这一件答不了。'))
+      return NONE
+    }
 
     if (char === 'y') {
       send({ type: 'decision.answer', id: pending.id, decision: 'approve' })

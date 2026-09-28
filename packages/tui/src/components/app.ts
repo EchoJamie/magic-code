@@ -157,6 +157,8 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           row,
           columns,
           expanded: view.expanded,
+          // **失联**那一档由**这一格**驱动呈现（U100）：工具行不报活动/耗时（见 `toolLines`）
+          lost: view.status.state === 'lost',
           // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
           // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
           // （该有分段的地方时有时无）。`items === view.settled` 时不差分毫。
@@ -184,6 +186,9 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
         spaced: entry.spaced,
         // 头一条自己就超预算时它要跳过的那几行（记录里一行不少，屏上只画放得下的）
         skip: entry.skip,
+        // **失联那一档与账同取一处**（`liveAreaOf` 里那一格）——不然「少画一行」的那一档
+        // 账还按旧值算（矮窗上真光标高一行）
+        lost: view.status.state === 'lost',
         now,
       }),
     ),
@@ -368,6 +373,8 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
   // 不出行**（`components/log.ts` 按 `quiet` ＋ `expanded` 判）——故它们的显示行数是 0，
   // 也就自然不占预算（`heightOf` 走的是同一个 `rowLines`）。在这儿滤掉＝它们连
   // 「展开可查」都没了（`ctrl+o` 展开时得能看见）。
+  // **失联那一档**（U100）：工具行不画活动/耗时副行——**账与屏同取这一格**
+  const lost = view.status.state === 'lost'
   const rows = view.rows
 
   if (budget <= 0) return []
@@ -384,7 +391,7 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index] as LogRow
     const spaced = flags[index] === true
-    const size = heightOf(row, columns, view.expanded, spaced)
+    const size = heightOf(row, columns, view.expanded, spaced, lost)
     const room = budget - used
 
     if (size > room) {
@@ -401,9 +408,20 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
   return entries
 }
 
-/** 一行的显示行数（只数，不渲染——借记录区的纯函数）。 */
-function heightOf(row: LogRow, columns: number, expanded: boolean, spaced: boolean): number {
-  return rowLines(row, { columns, expanded, spaced }).length
+/**
+ * 一行的显示行数（只数，不渲染——借记录区的纯函数）。
+ *
+ * ⚠️ **`lost` 要一路传到这里**（U100 合前复核）：失联时工具行**少画一条副行**，
+ * 账少算这一行就分家——矮窗上真光标高一行（U31 那一族的老账）。
+ */
+function heightOf(
+  row: LogRow,
+  columns: number,
+  expanded: boolean,
+  spaced: boolean,
+  lost: boolean,
+): number {
+  return rowLines(row, { columns, expanded, spaced, lost }).length
 }
 
 /**
@@ -838,7 +856,14 @@ export function TuiApp({ shell }: TuiAppProps) {
   // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
   // 清单翻页据它算「一页到哪」（见下）
   const { plan } = liveLayoutOf(view, columns, rows)
-  const now = useLiveClock(hasRunningTool(view) || breathingOf(view, plan))
+  /**
+   * ⚠️ **失联之后不再滴答**（U100 合前复核 · 呈现补）：连接断了就收不到任何实况，
+   * 秒数继续涨就是把一件**无从确认**的调用说成正在执行（真帧上量到过：那一格从 600ms
+   * 一路涨到 1.0s）。⚠️ **而那一档也不再画那条副行**（`lost` 一路传到 `toolLines`）：
+   * 只说「不滴答」而不去掉那个词，屏上照旧留着「⟳ 运行中」——**那才是原来那句误导**。
+   */
+  const ticking = view.status.state !== 'lost' && (hasRunningTool(view) || breathingOf(view, plan))
+  const now = useLiveClock(ticking)
 
   useFlipOnNewPage(shell, rows)
 

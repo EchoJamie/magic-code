@@ -72,7 +72,24 @@ function toolNameOf(name: string): string {
  * 后者的判据是**结果自己带的那一位**（`notExecuted`）——谁拦下的谁写，外壳不猜（见
  * `reduceToolResult`）。
  */
-export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecuted'
+export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecuted' | 'interrupted'
+
+/**
+ * **那一笔没落定、而它所属的那一代已经核销**（U100 合前复核 · 呈现补）。
+ *
+ * 由头（真帧上量到的）：整体停掉 / 失联之后，执行者没了——那一件的 `tool.result` **不会再来**
+ * （事件流断了），于是那一行**永远停在「⟳ 运行中」**、秒数照旧往上涨 ✗：屏上一句话把一件
+ * **已经不可能在执行**的调用说成正在执行（33b 帧：状态行已是「空闲」，上面那行还在 `⟳`；
+ * 35/36 帧：失联之后 chmod 那件从 600ms 涨到 1.0s）。
+ *
+ * ⚠️ **它是「没落定」，不是结果**：不写成功、不写失败、也不写「未执行」（那一笔有没有跑过
+ * 我们并不知道）。
+ *
+ * ⚠️ **只用于「确知核销」那一档**（运行事实说 `stopped`）：**失联（`lost`）不许用它**
+ * ——那一条是「不知道」，不是「停了」；失联那一档只**停表**（不报秒数），行的字句与既有
+ * 输出照旧（2026-09-29 裁决）。措辞里也不出现内部说法（「核销」「代次」那类）。
+ */
+export const INTERRUPTED_TEXT = '已停止 · 结果未确认'
 
 /** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
 export type LogRow =
@@ -2747,6 +2764,20 @@ function factFaceOf(state: RunState): StatusState | undefined {
 }
 
 /** 折一次：**当前那条会话**的运行事实说「在跑 / 没在跑」，那一格就照它收。 */
+/**
+ * **把还在「运行中」的工具行改判成「已中断」**（U100 合前复核 · 呈现补）——见 `INTERRUPTED_TEXT`。
+ *
+ * 只动**本轮**（`rows`）里 `state === 'running'` 的那几行；别的行原样交回（同归约那条
+ * 「不改入参」的纪律）。
+ */
+function interruptedRows(view: ShellView): ShellView {
+  const rows = view.rows.map((row) =>
+    row.kind === 'tool' && row.state === 'running' ? { ...row, state: 'interrupted' as const } : row,
+  )
+
+  return rows === view.rows ? view : { ...view, rows }
+}
+
 function foldRunState(view: ShellView): ShellView {
   const run = view.sessionId === null ? undefined : view.runs.find((one) => one.session === view.sessionId)
 
@@ -2760,11 +2791,19 @@ function foldRunState(view: ShellView): ShellView {
    * 判据取**运行事实说的**（「已核销」是管理者给的事实）：`stopped` ⇒ 卡作废、草稿归还。
    * （`.mine`：与状态那一格同源，不是第二处判断。）
    */
+  // **那一代核销了 ⇒ 还在「运行中」的行改判成「已中断」**（见 `INTERRUPTED_TEXT`）：
+  // 这两条来路（挂着卡 / 没挂卡）都要走它——卡那一支另加「卡作废 ＋ 行定局」。
+  if (run?.state === 'stopped' && hasRunningTool(view)) view = interruptedRows(view)
+
   if (run?.state === 'stopped' && view.dock.kind === 'decision') {
     // **行也一起定局**：那一代没了，这一轮的行再也不会变——留着「⟳ 跑动中」的行会
     // 让 `hasRunningTool` 一直为真（`ctrl+c` 于是永远走「有在途工作」那条路 ✗，
     // 与卡那一半是同一个死角）
-    return patchStatus(settle(undock(view)), { state: 'idle', amount: null, hint: HINT_IDLE })
+    return patchStatus(settle(interruptedRows(undock(view))), {
+      state: 'idle',
+      amount: null,
+      hint: HINT_IDLE,
+    })
   }
 
   const said = run === undefined ? undefined : factFaceOf(run.state)
