@@ -108,7 +108,8 @@ if __name__ == '__main__':
                         if process.poll() is None: process.kill(); process.wait(timeout=5)
                     found = state(manifest)
                     assert found.get('notificationWritesAllowed') is False and found.get('loginWritesAllowed') is False
-                    assert found.get('notificationPreference') is False
+                    # 权限是系统的状态，App 不再存自己的「开没开」：只看系统读到的原始授权（新身份应为 0=未问过）。
+                    assert found.get('notificationAuthorizationStatus') == 0
                     assert not (root / 'system-notification-requests.json').exists()
                     write(output / 'read-only-state.json', found)
                 else:
@@ -124,8 +125,8 @@ if __name__ == '__main__':
         elif args.action == 'revoke':
             found = state(manifest)
             granted = json.loads(authorization.read_text()).get('allow', []) if authorization.exists() else []
-            if 'notifications' in granted:
-                assert found.get('notificationPreference') is False, 'restore authorized notification preference before revoking'
+            # 通知侧不再有「App 偏好」可核（权限是系统的状态，回收在系统设置里、只有用户能做）；
+            # 这里只保留登录项那条可核的恢复前置。
             if 'login' in granted:
                 assert found.get('loginStatus') in [0, 3], 'restore authorized login item before revoking'
             if authorization.exists(): authorization.unlink()

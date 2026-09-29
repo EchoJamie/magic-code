@@ -105,16 +105,19 @@ struct NoticeBatch {
         statusProvider = status; requester = request; super.init()
     }
 
-    /// 静默送达（provisional）与正常允许都会通过 `enabled` 检查，但只有后者弹横幅；
-    /// 状态文案必须分开，否则界面上看不出「会弹横幅」还是「只进通知中心」。
+    /// 权限是**系统的状态**：这里没有 App 自己的「开没开」，投递门直接由系统授权决定。
+    /// 静默送达（provisional）与正常允许都能投递，但只有后者弹横幅——两者必须分别显示。
     func refreshAuthorization() async {
         let status = await statusProvider()
         authorizationStatus = status
+        let allowed = status == .authorized || status == .provisional
+        if allowed, !enabled { enabledSince = Date().timeIntervalSince1970 * 1000 }
+        enabled = allowed
         switch status {
         case .authorized: authorization = "系统已允许"
         case .provisional: authorization = "系统静默送达：只进通知中心，不弹横幅"
         case .ephemeral: authorization = "系统临时允许（仅本次会话）"
-        case .denied: authorization = "系统已拒绝，可在系统设置中更改"
+        case .denied: authorization = "系统里还没允许"
         default: authorization = "尚未申请权限"
         }
     }

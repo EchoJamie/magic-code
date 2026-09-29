@@ -25,7 +25,6 @@ import OSLog
     @Published var configPath = ""
     @Published var runtimeBase = ""
     @Published var loginStatus: SMAppService.Status = .notRegistered
-    @Published var notificationsEnabled: Bool
     @Published var cliDirectory: String
     @Published var projectDirectory: URL?
     #if DEBUG
@@ -48,9 +47,6 @@ import OSLog
     private var hostStopped = false
     private var shutdownRequest: String?
     private var automaticRecoveryUsed = false
-    /// 用户在 App 内明确点过「开」、只因系统拒绝而未兑现的意图（只在本次运行内有效：
-    /// 不回写默认值，避免久后被一次无关的系统权限变化自动带开）。
-    private var pendingNotificationsIntent = false
     private var acquired = false
     private var panelVisible = false
     private var pendingInspections: [String: (session: String, open: Bool, notice: String?)] = [:]
@@ -91,13 +87,10 @@ import OSLog
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("MagicCode-Dev-\(UUID().uuidString)")
         } else { selectedBase = defaults.string(forKey: "baseDirectory").map { URL(fileURLWithPath: $0) } }
         cliDirectory = defaults.string(forKey: "cliDirectory") ?? userHome.appendingPathComponent(".local/bin").path
-        notificationsEnabled = validationRoot == nil && defaults.bool(forKey: "notificationsEnabled")
         let support = userHome.appendingPathComponent("Library/Application Support/\(isDevelopment ? "Magic Code Dev" : "Magic Code")/runtime")
         publication = HostPublication(directory: support)
         terminal = TerminalLauncher(directory: support.appendingPathComponent("terminal"))
         notifications = notificationPort ?? NotificationCoordinator()
-        notifications.enabled = notificationsEnabled
-        if let since = defaults.object(forKey: "notificationsEnabledSince") as? Double { notifications.enabledSince = since }
         notifications.delivered = { [weak self] ids in self?.observer?.send(.delivered(ids: ids)) }
         notifications.failure = { [weak self] text in self?.actionMessage = text }
         notifications.openRoutes = { [weak self] routes in
@@ -114,8 +107,6 @@ import OSLog
         }
         if let root = systemTestRoot {
             refreshSystemTestAuthorization()
-            notificationsEnabled = systemTestAuthorization.contains("notifications") && defaults.bool(forKey: "notificationsEnabled")
-            notifications.enabled = notificationsEnabled
             notifications.deliveryAudit = { [weak self] delivery in
                 guard let self else { return false }; self.refreshSystemTestAuthorization()
                 guard self.systemTestAuthorization.contains("notifications") else { return false }
@@ -171,13 +162,15 @@ import OSLog
                     Task { @MainActor in self?.presence(focused: false) }
                 })
             }
-            // 回到前台：核对系统授权，并在用户先前明确点过「开」而当时被系统拒绝时兑现它。
+            // 启动时就按系统实际状态对齐一次投递门（App 不再存自己的「开没开」）。
+            Task { @MainActor in await self.refreshNotifications() }
+            // 回到前台：重读系统授权——用户在系统设置里改了，这边自己就变，不用他回来再点一次。
             // 验收身份下也要跑（不在 !isValidation 里），否则验收环境无法覆盖这条路径。
             tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     if !self.isValidation { self.refreshLogin(); self.presence(focused: true) }
-                    await self.completePendingNotificationIntent()
+                    await self.refreshNotifications()
                 }
             })
         } catch { phase = .fault(error.localizedDescription) }
@@ -417,32 +410,18 @@ import OSLog
         guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换数据目录。"; return }
         switching = true; switchBase = base; confirmQuit()
     }
-    /// 只有「系统允许」与「系统静默送达」都算用户已选择启用通知；两者的区别在状态文案里。
-    func setNotifications(_ value: Bool) async {
+    /// 「打开通知」：这个动作本身就是那次系统请求（未问过时才有这个动作）。
+    /// 这里没有本地开关，也不留「待兑现意图」——系统怎么答，界面就怎么显示。
+    func requestNotifications() async {
         guard canChangeNotifications else { return }
-        if value {
-            notificationsEnabled = await notifications.enableExplicitly()
-            if notificationsEnabled {
-                notifications.enabledSince = Date().timeIntervalSince1970 * 1000
-                defaults.set(notifications.enabledSince, forKey: "notificationsEnabledSince")
-                pendingNotificationsIntent = false
-            } else {
-                // 用户在这里明确要开、只因系统拒绝而没兑现：记住这个意图，
-                // 等他去系统设置放行、回到 App 时补上，而不是让他再点一次。
-                pendingNotificationsIntent = true
-            }
-        }
-        else { notificationsEnabled = false; notifications.enabled = false; pendingNotificationsIntent = false }
-        defaults.set(notificationsEnabled, forKey: "notificationsEnabled")
+        _ = await notifications.enableExplicitly()
     }
-    /// 回到前台时兑现「上次明确要开、被系统拒了」的意图；系统权限自己变化不在此列。
-    func completePendingNotificationIntent() async {
-        guard canChangeNotifications, pendingNotificationsIntent else { return }
-        await notifications.refreshAuthorization()
-        let status = notifications.authorizationStatus
-        guard status == .authorized || status == .provisional else { return }
-        pendingNotificationsIntent = false
-        await setNotifications(true)
+    /// 回到前台／设置页出现时重读系统状态：用户在系统设置里改了，这边自己跟上。
+    func refreshNotifications() async { await notifications.refreshAuthorization() }
+    /// 「去系统设置允许」：把用户送到系统的通知设置面板。
+    func openNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
     }
     var canChangeNotifications: Bool {
         #if DEBUG
@@ -517,7 +496,6 @@ extension AppModel {
         let json = (try? JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("system-authorization.json")))) as? [String: Any]
         let allowed = json?["bundle"] as? String == Bundle(url: appURL)?.bundleIdentifier ? Set(json?["allow"] as? [String] ?? []) : []
         if systemTestAuthorization != allowed { systemTestAuthorization = allowed }
-        if !allowed.contains("notifications") { notifications.enabled = false; notificationsEnabled = false }
     }
     func writeSystemTestState() async {
         guard let root = systemTestRoot else { return }
@@ -528,14 +506,12 @@ extension AppModel {
             "revision": projection?.revision ?? -1, "selectedSession": selected ?? "", "selectedNotice": selectedNotice?.id ?? "",
             "loginStatus": loginStatus.rawValue, "loginWritesAllowed": canChangeLogin,
             "notificationAuthorization": notifications.authorization, "notificationWritesAllowed": canChangeNotifications,
-            "notificationPreference": notificationsEnabled,
-            "notificationAuthorizationStatus": String(describing: notifications.authorizationStatus),
-            "notificationsPendingIntent": pendingNotificationsIntent]
+            "notificationAuthorizationStatus": notifications.authorizationStatus.rawValue]
         try? PrivateFiles.write(JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), to: root.appendingPathComponent("system-state.json"))
     }
     func restoreSystemTestNotifications() async {
         guard let root = systemTestRoot, canChangeNotifications else { return }
-        await setNotifications(false)
+        // App 侧没有「偏好」可关：恢复只做一件事——把本轮发过的 request id 从系统里撤掉。
         let requests = (try? JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("system-notification-requests.json")))) as? [[String: Any]] ?? []
         notifications.removeNotifications(identifiers: requests.compactMap { $0["identifier"] as? String })
         await writeSystemTestState()

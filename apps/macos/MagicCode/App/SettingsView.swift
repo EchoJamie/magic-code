@@ -12,13 +12,9 @@ struct SettingsView: View {
                 if model.loginStatus == .requiresApproval {
                     Button("在系统设置中允许登录启动") { SMAppService.openSystemSettingsLoginItems() }
                 }
-                // 拨开关就是用户的意图本身：直接走生产权限入口，不再要求第二次确认。
-                // 用途说明留在下面那行常驻文案里，最后一道确认由系统框负责。
-                Toggle("启用系统通知", isOn: Binding(get: { model.notificationsEnabled }, set: { value in
-                    Task { await model.setNotifications(value) }
-                })).disabled(!model.canChangeNotifications)
+                // 权限是**系统的状态**，不是 App 的配置：这里只有「状态 ＋ 动作」，没有开关。
+                NotificationAuthorizationRow(model: model, notifications: model.notifications)
                 Text("只在需要你、失败或结果可查看时提醒。首次启动不会请求通知权限。").font(.caption).foregroundStyle(.secondary)
-                NotificationPermissionStatus(notifications: model.notifications)
             }
             Section("数据目录") {
                 LabeledContent("基础路径") { path(model.selectedBase?.path ?? model.userHome.path, label: "基础路径") }
@@ -54,7 +50,7 @@ struct SettingsView: View {
             }
             if let message = model.actionMessage { Text(message).foregroundStyle(.secondary).textSelection(.enabled) }
         }.formStyle(.grouped).frame(width: 580, height: 680)
-        .onAppear { model.refreshLogin(); Task { await model.completePendingNotificationIntent() } }
+        .onAppear { model.refreshLogin(); Task { await model.refreshNotifications() } }
         .confirmationDialog("移除系统集成并退出？", isPresented: $uninstall, titleVisibility: .visible) {
             Button("移除并退出", role: .destructive) { model.uninstallIntegration() }
             Button("取消", role: .cancel) {}
@@ -69,7 +65,32 @@ struct SettingsView: View {
         panel.begin { result in if result == .OK, let url = panel.url { action(url) } }
     }
 }
-struct NotificationPermissionStatus: View {
+/// 通知那一栏：只反映**系统**持有的状态，并按状态给对应动作；没有本地开关，也没有二次确认。
+/// 用户在系统设置里改了，界面回到前台／重新出现时自己就变，不需要他回来再点一次。
+struct NotificationAuthorizationRow: View {
+    @ObservedObject var model: AppModel
+    // 状态挂在嵌套的协调器上：只观察 model 不会跟着重绘，回来那一行就不会自己变。
     @ObservedObject var notifications: NotificationCoordinator
-    var body: some View { Text(notifications.authorization).font(.caption).foregroundStyle(.secondary) }
+    var body: some View {
+        LabeledContent("系统通知") {
+            switch notifications.authorizationStatus {
+            case .notDetermined:
+                Button("打开通知") { Task { await model.requestNotifications() } }
+                    .disabled(!model.canChangeNotifications)
+                    .accessibilityIdentifier("open-notifications")
+            case .denied:
+                HStack(spacing: 12) {
+                    Text("系统里还没允许").foregroundStyle(.secondary)
+                    Button("去系统设置允许") { model.openNotificationSettings() }
+                        .accessibilityIdentifier("open-notification-settings")
+                }
+            case .authorized:
+                Text("已允许").foregroundStyle(.secondary)
+            case .provisional:
+                Text("只静默送达：通知只进通知中心，不弹横幅").foregroundStyle(.secondary)
+            default:
+                Text("系统临时允许（仅本次会话）").foregroundStyle(.secondary)
+            }
+        }
+    }
 }

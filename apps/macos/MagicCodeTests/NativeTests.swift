@@ -551,12 +551,16 @@ final class NativeTests: XCTestCase {
     /// 系统验收身份下的模型：bundle 前缀/固定根/capability 都齐，两个开关才是可用的。
     @MainActor private func systemTestModel(allow: [String] = ["notifications", "login"],
                                             status: @escaping () async -> UNAuthorizationStatus,
-                                            request: @escaping () async throws -> Bool = { true }) throws -> (AppModel, URL) {
+                                            request: @escaping () async throws -> Bool = { true },
+                                            options: [String: Any] = [:], legacyPreference: Bool? = nil,
+                                            send: @escaping (NoticeDelivery) -> Void = { _ in }) throws -> (AppModel, URL) {
         let room = URL(fileURLWithPath: "/private/tmp/magic-system-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: room, withIntermediateDirectories: true)
         addTeardownBlock {
             try? FileManager.default.removeItem(at: room)
             UserDefaults().removePersistentDomain(forName: "MagicCode.Validation.\(room.lastPathComponent)")
+            try? FileManager.default.removeItem(at: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/MagicCode.Validation.\(room.lastPathComponent).plist"))
         }
         let bundle = "com.magiccode.validation." + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + ".dev"
         let app = room.appendingPathComponent("Magic Code 系统验收.app")
@@ -565,10 +569,20 @@ final class NativeTests: XCTestCase {
         let plist: [String: Any] = ["CFBundleIdentifier": bundle, "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "unused",
                                     "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1, "MagicSystemTestRoot": room.path]
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
-        try JSONSerialization.data(withJSONObject: ["systemTest": true, "source": helper.path, "works": []]).write(to: room.appendingPathComponent("control.json"))
+        var control: [String: Any] = ["systemTest": true, "source": helper.path, "works": []]
+        options.forEach { control[$0.key] = $0.value }
+        try JSONSerialization.data(withJSONObject: control).write(to: room.appendingPathComponent("control.json"))
         try JSONSerialization.data(withJSONObject: ["bundle": bundle, "allow": allow]).write(to: room.appendingPathComponent("system-authorization.json"))
-        let port = NotificationCoordinator(send: { _ in }, status: status, request: request)
+        // 旧版本才会存这份「App 自己的开没开」；本轮起 App 不许再读它。
+        if let legacyPreference { UserDefaults(suiteName: "MagicCode.Validation.\(room.lastPathComponent)")?.set(legacyPreference, forKey: "notificationsEnabled") }
+        let port = NotificationCoordinator(send: { delivery in send(delivery) }, status: status, request: request)
         return (AppModel(appURL: app, validationRoot: room, notificationPort: port, shutdownTimeout: 15), room)
+    }
+
+    @MainActor private func pushWorks(_ works: [NativeWork], to room: URL) throws {
+        let helper = room.appendingPathComponent("Magic Code 系统验收.app/Contents/Helpers/magic-runtime")
+        let raw = try works.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        try JSONSerialization.data(withJSONObject: ["systemTest": true, "source": helper.path, "works": raw]).write(to: room.appendingPathComponent("control.json"))
     }
 
     @MainActor private func hostView<V: View>(_ content: V, size: NSSize, appearance: NSAppearance.Name) async throws -> NSWindow {
@@ -608,56 +622,81 @@ final class NativeTests: XCTestCase {
         XCTAssertGreaterThan(png.count, 2000)
     }
 
-    /// 发现一：拨开关就是用户意图本身，不得再要求一次确认（修前：只置位 alert，生产入口不被调用）。
-    @MainActor func testSettingsNotificationToggleReachesProductionEntryWithoutConfirmation() async throws {
+    /// 根子：权限是系统的状态，不是 App 的配置——那一栏必须是「状态 ＋ 动作」，不能再是开关。
+    @MainActor func testNotificationSectionIsStatusAndActionInsteadOfSwitch() async throws {
         _ = NSApplication.shared
+        var status: UNAuthorizationStatus = .notDetermined
         var requested = 0
-        let (model, _) = try systemTestModel(status: { .notDetermined }, request: { requested += 1; return true })
+        let (model, _) = try systemTestModel(status: { status }, request: { requested += 1; return true })
         model.start(); try await eventually { model.isCurrent }
+        await model.notifications.refreshAuthorization()
         let window = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
         defer { window.close() }
-        try await saveFrame(window, name: "u102-settings-before-toggle")
-        let controls = switches(in: window)
-        XCTAssertEqual(controls.count, 2, "设置页应有两个开关：登录项与系统通知")
-        let notifications = controls[1]
-        XCTAssertTrue(notifications.isEnabled, "系统验收身份下通知开关必须可用")
-        notifications.accessibilityPerformPress()
-        try await eventually { model.notificationsEnabled }
-        XCTAssertEqual(requested, 1, "拨开关必须直接走生产权限入口")
-        XCTAssertTrue(model.notificationsEnabled)
-        // 离屏帧对 AppKit 控件的新状态不跟手（文字跟、开关不跟）：要出「启用后」那一张，
-        // 就用已置为启用的模型重新挂一次视图，按静态渲染取帧。
-        let enabledWindow = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
-        defer { enabledWindow.close() }
-        try await saveFrame(enabledWindow, name: "u102-settings-after-toggle")
+        try await saveFrame(window, name: "u102-notification-not-asked")
+        XCTAssertEqual(switches(in: window).count, 1, "通知那一栏不得再有开关：设置页只该剩登录项那一个")
+        // 「打开通知」这个动作本身就是那次请求：断言动作实现（SwiftUI 按钮在本 harness 里既不是
+        // AppKit 控件、进程内也取不到它的 AX 元素，点不到——见 U102 回报的 harness 边界）。
+        await model.requestNotifications()
+        try await eventually { requested == 1 }
+        XCTAssertEqual(requested, 1, "「打开通知」这个动作本身就是那次请求")
+        status = .denied; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
+        try await saveFrame(window, name: "u102-notification-denied")
+        status = .authorized; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
+        try await saveFrame(window, name: "u102-notification-authorized")
+        status = .provisional; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
+        try await saveFrame(window, name: "u102-notification-provisional")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
-    /// 发现二：用户明确点过「开」、只因系统拒绝未兑现 ⇒ 回到前台发现系统已允许时应补上；系统一变就自动跟不行。
-    @MainActor func testDeniedToggleRemembersIntentAndCompletesWhenSystemAllows() async throws {
+    /// 根子反面：旧版本存过「开」——系统现在说拒绝，App 不得照着自己那份配置继续发。
+    @MainActor func testStoredSwitchFromOlderBuildIsIgnored() async throws {
         _ = NSApplication.shared
-        var status: UNAuthorizationStatus = .denied
-        let (model, _) = try systemTestModel(status: { status }, request: { false })
+        var sent = 0
+        let (model, _) = try systemTestModel(status: { .denied }, legacyPreference: true, send: { _ in sent += 1 })
         model.start(); try await eventually { model.isCurrent }
-        await model.setNotifications(true)
-        XCTAssertFalse(model.notificationsEnabled, "系统拒绝时就该说没启用")
-        status = .authorized
-        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        try await eventually { model.notificationsEnabled }
-        XCTAssertTrue(model.notificationsEnabled, "回到前台发现系统已允许，应兑现用户先前的明确意图")
+        await model.notifications.refreshAuthorization()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(model.notifications.authorizationStatus, .denied)
+        XCTAssertFalse(model.notifications.enabled, "系统说没允许，就不许凭本地那份配置发通知")
+        XCTAssertEqual(sent, 0)
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
-    /// 发现二的反面：用户没点过开，系统权限后来变允许 —— 不得自动跟。
-    @MainActor func testSystemPermissionChangeAloneNeverTurnsPreferenceOn() async throws {
+    /// 用户在系统设置里改了：投递门与界面都该自己跟上，不需要他回来再点一次。
+    @MainActor func testForegroundRefreshFollowsSystemStatusWithoutAClick() async throws {
         _ = NSApplication.shared
         var status: UNAuthorizationStatus = .denied
-        let (model, _) = try systemTestModel(status: { status })
+        var sent: [NoticeDelivery] = []
+        let (model, room) = try systemTestModel(status: { status }, send: { sent.append($0) })
         model.start(); try await eventually { model.isCurrent }
         status = .authorized
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(400))
-        XCTAssertFalse(model.notificationsEnabled, "没有用户意图时，系统权限变化不得自动开启")
+        try await eventually { model.notifications.enabled }
+        let notice = AttentionItem(id: "after-allow", session: "s-after", kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: "event:after-allow")
+        let row = try changed(try work(), ["session": "s-after", "state": "idle", "affected": false,
+                                           "notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))]])
+        try pushWorks([row], to: room)
+        try await Task.sleep(for: .seconds(2.6))
+        XCTAssertEqual(sent.count, 1, "系统一允许，新事实就该能送达，不需要用户再点")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// 守门：系统权限变化不得把此前积压的旧未读补发一遍（不是「一变就自动跟」）。
+    @MainActor func testAllowingNotificationsNeverReplaysOlderUnreadNotices() async throws {
+        _ = NSApplication.shared
+        var status: UNAuthorizationStatus = .denied
+        var sent: [NoticeDelivery] = []
+        let old = AttentionItem(id: "before-allow", session: "s-old", kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: "event:before-allow")
+        let row = try changed(try work(), ["session": "s-old", "state": "idle", "affected": false,
+                                           "notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(old))]])
+        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(row)) as? [String: Any] ?? [:]
+        let (model, _) = try systemTestModel(status: { status }, options: ["works": [raw]], send: { sent.append($0) })
+        model.start(); try await eventually { model.isCurrent }
+        try await Task.sleep(for: .milliseconds(700))
+        status = .authorized
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        try await Task.sleep(for: .seconds(2.6))
+        XCTAssertTrue(sent.isEmpty, "系统允许那一刻之前的旧未读，不得被补发")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
