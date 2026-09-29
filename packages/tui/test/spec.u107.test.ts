@@ -182,4 +182,24 @@ describe('U107 · 剪贴板取图', () => {
     expect(asks(stage)).toBe(0)
     expect(stage.shell.getView().draft).toBe('看 @a')
   })
+
+  test('**答复回来时抽屉才打开**（按下去之后那一栏才开）⇒ 也不插，且明说', () => {
+    const stage = createStage()
+
+    stage.press(CTRL_V)
+    // 答复还在路上，用户先把 `@` 那一栏打开了
+    stage.type('看 @')
+    stage.press({ kind: 'char', char: 'a' })
+    expect(stage.shell.getView().dock.kind).toBe('picker')
+
+    feedPasted(stage, pasted('B1'))
+
+    // ① 草稿**没有被插脏**——那一栏记的查询区间因此不会偏
+    expect(stage.shell.getView().draft).toBe('看 @a')
+    expect(stage.shell.getView().refs).toEqual([])
+    // ② **明说**（图取到了、只是没收），不静默
+    expect(
+      receiptOf(stage, '剪贴板里那一张取到了，但这一栏开着没收——收起之后再按一次 ctrl+v。'),
+    ).toBe(true)
+  })
 })
