@@ -140,11 +140,6 @@ import OSLog
     var affected: [NativeWork] { projection?.works.filter(\.affected) ?? [] }
     var works: [NativeWork] { projection?.works ?? [] }
     var isCurrent: Bool { phase == .ready && projection != nil }
-    var symbol: String {
-        if case .fault = phase { return "exclamationmark.circle" }
-        if works.contains(where: { WorkGroup.of($0) == .needsYou || WorkGroup.of($0) == .uncertain }) { return "sparkles.rectangle.stack.fill" }
-        return works.contains(where: { $0.affected }) ? "sparkles.square.filled.on.square" : "sparkles"
-    }
     var summary: String {
         guard isCurrent else { return phase.text }
         if affected.isEmpty { return "当前没有进行中的工作" }

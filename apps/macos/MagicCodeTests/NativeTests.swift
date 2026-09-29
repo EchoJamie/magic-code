@@ -518,6 +518,64 @@ final class NativeTests: XCTestCase {
         }
         var idleFinished = false; idle.requestQuit { idleFinished = true }; try await eventually { idleFinished }
     }
+    /// 状态栏那一枚：三态判据只取投影事实与相位；深浅两张帧验品牌符号的 template 反色。
+    @MainActor func testMenuBarMarkThreeStatesAndBothAppearances() async throws {
+        _ = NSApplication.shared
+        let first = try work()
+        let (idle, _) = try controlledModel(options: [:])
+        idle.start(); try await eventually { idle.isCurrent }
+        XCTAssertEqual(idle.menuBarState, .idle, "没有工作就是空闲静态")
+
+        let running = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            try changed(first, ["session": "running", "state": "running", "action": "正在运行测试", "notices": []])))
+        let (active, _) = try controlledModel(options: ["works": [running]])
+        active.start(); try await eventually { active.isCurrent }
+        XCTAssertEqual(active.menuBarState, .active, "有受影响的工作就是执行中")
+
+        let waiting = try JSONSerialization.jsonObject(with: JSONEncoder().encode(try changed(first, ["notices": []])))
+        let (attention, _) = try controlledModel(options: ["works": [waiting]])
+        attention.start(); try await eventually { attention.isCurrent }
+        XCTAssertEqual(attention.menuBarState, .attention, "等答复就是需要你")
+        attention.phase = .fault("连接已断开，重试后核对当前状态。")
+        XCTAssertEqual(attention.menuBarState, .attention, "异常也是注意标记，不新增第四态")
+
+        let directory = root.appendingPathComponent(".artifacts/macos/frames")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let svg = root.appendingPathComponent("apps/macos/MagicCode/Resources/Assets.xcassets/BrandMark.imageset/brand-mark.svg")
+        let brand = try XCTUnwrap(NSImage(contentsOf: svg), "品牌符号文件必须可读")
+        let states: [(MenuBarState, String)] = [(.idle, "空闲静态"), (.active, "有执行"), (.attention, "需要你或异常")]
+        func row(_ appearance: NSAppearance.Name, name: String) async throws {
+            let dark = appearance == .darkAqua
+            let content = HStack(spacing: 30) {
+                ForEach(Array(states.enumerated()), id: \.offset) { _, entry in
+                    HStack(spacing: 6) {
+                        MenuBarMark(state: entry.0, mark: Image(nsImage: brand))
+                        Text(entry.1).font(.system(size: 12)).foregroundStyle(.primary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16).frame(height: 24)
+            .background(Color(white: dark ? 0.13 : 0.91))
+            .environment(\.colorScheme, dark ? .dark : .light)
+            let size = NSSize(width: 380, height: 24)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: appearance); window.isReleasedWhenClosed = false
+            let controller = NSHostingController(rootView: content)
+            controller.view.frame = NSRect(origin: .zero, size: size); window.contentViewController = controller
+            try await Task.sleep(for: .milliseconds(250))
+            XCTAssertFalse(window.isVisible, "原生帧必须离屏，不弹出真实窗口")
+            let view = try XCTUnwrap(window.contentView)
+            view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            try png.write(to: directory.appendingPathComponent(name + ".png"))
+            XCTAssertGreaterThan(png.count, 2000)
+            window.close()
+        }
+        try await row(.aqua, name: "u103-menu-bar-light")
+        try await row(.darkAqua, name: "u103-menu-bar-dark")
+    }
     @MainActor func testNotificationCollectorTwoSecondsAndReadCancellation() async throws {
         let first = try work()
         let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", dataDir: "/tmp/data")

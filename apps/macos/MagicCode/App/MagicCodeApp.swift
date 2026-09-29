@@ -24,7 +24,7 @@ import Combine
         MenuBarExtra {
             StatusPanel(model: model)
         } label: {
-            Image(systemName: model.symbol).accessibilityLabel("Magic Code，\(model.summary)")
+            MenuBarMark(state: model.menuBarState).accessibilityLabel("Magic Code，\(model.summary)")
         }.menuBarExtraStyle(.window)
         Settings { SettingsView(model: model) }
     }
