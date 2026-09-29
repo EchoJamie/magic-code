@@ -3,7 +3,6 @@ import ServiceManagement
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
-    @State private var explainNotifications = false
     @State private var uninstall = false
     var body: some View {
         Form {
@@ -13,8 +12,10 @@ struct SettingsView: View {
                 if model.loginStatus == .requiresApproval {
                     Button("在系统设置中允许登录启动") { SMAppService.openSystemSettingsLoginItems() }
                 }
+                // 拨开关就是用户的意图本身：直接走生产权限入口，不再要求第二次确认。
+                // 用途说明留在下面那行常驻文案里，最后一道确认由系统框负责。
                 Toggle("启用系统通知", isOn: Binding(get: { model.notificationsEnabled }, set: { value in
-                    if value { explainNotifications = true } else { Task { await model.setNotifications(false) } }
+                    Task { await model.setNotifications(value) }
                 })).disabled(!model.canChangeNotifications)
                 Text("只在需要你、失败或结果可查看时提醒。首次启动不会请求通知权限。").font(.caption).foregroundStyle(.secondary)
                 NotificationPermissionStatus(notifications: model.notifications)
@@ -53,11 +54,7 @@ struct SettingsView: View {
             }
             if let message = model.actionMessage { Text(message).foregroundStyle(.secondary).textSelection(.enabled) }
         }.formStyle(.grouped).frame(width: 580, height: 680)
-        .onAppear { model.refreshLogin(); Task { await model.notifications.refreshAuthorization() } }
-        .alert("启用系统通知？", isPresented: $explainNotifications) {
-            Button("取消", role: .cancel) {}
-            Button("继续并申请权限") { Task { await model.setNotifications(true) } }
-        } message: { Text("Magic Code 会提醒需要答复、失败和可查看的结果；通知不包含命令或正文。接下来由 macOS 确认权限。") }
+        .onAppear { model.refreshLogin(); Task { await model.completePendingNotificationIntent() } }
         .confirmationDialog("移除系统集成并退出？", isPresented: $uninstall, titleVisibility: .visible) {
             Button("移除并退出", role: .destructive) { model.uninstallIntegration() }
             Button("取消", role: .cancel) {}

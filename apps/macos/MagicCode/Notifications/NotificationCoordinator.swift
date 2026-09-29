@@ -53,6 +53,7 @@ struct NoticeBatch {
 
 @MainActor final class NotificationCoordinator: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @Published private(set) var authorization = "未启用"
+    @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
     var enabled = false
     var enabledSince = Date().timeIntervalSince1970 * 1000 - 2000
     var delivered: (([String]) -> Void)?
@@ -68,8 +69,14 @@ struct NoticeBatch {
     private let center: UNUserNotificationCenter?
     private let sendDelivery: (NoticeDelivery) async throws -> Void
     private let existingIDs: () async -> [String]
+    // The authorization surface is a pair of closures: production reads them from the system center,
+    // the collector port (no center) is driven by its caller.
+    private var statusProvider: () async -> UNAuthorizationStatus
+    private var requester: () async throws -> Bool
     init(center: UNUserNotificationCenter = .current()) {
         self.center = center
+        statusProvider = { await center.notificationSettings().authorizationStatus }
+        requester = { try await center.requestAuthorization(options: [.alert, .sound, .badge]) }
         sendDelivery = { delivery in
             let content = UNMutableNotificationContent()
             content.title = delivery.title; content.subtitle = delivery.subtitle; content.body = delivery.body
@@ -91,26 +98,31 @@ struct NoticeBatch {
         ], intentIdentifiers: [], options: [])])
     }
     // Collector used by native tests; it cannot reach the system notification center.
-    init(send: @escaping (NoticeDelivery) async throws -> Void, existing: @escaping () async -> [String] = { [] }) {
-        center = nil; sendDelivery = send; existingIDs = existing; super.init()
+    init(send: @escaping (NoticeDelivery) async throws -> Void, existing: @escaping () async -> [String] = { [] },
+         status: @escaping () async -> UNAuthorizationStatus = { .notDetermined },
+         request: @escaping () async throws -> Bool = { false }) {
+        center = nil; sendDelivery = send; existingIDs = existing
+        statusProvider = status; requester = request; super.init()
     }
 
+    /// 静默送达（provisional）与正常允许都会通过 `enabled` 检查，但只有后者弹横幅；
+    /// 状态文案必须分开，否则界面上看不出「会弹横幅」还是「只进通知中心」。
     func refreshAuthorization() async {
-        guard let center else { return }
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral: authorization = "系统已允许"
+        let status = await statusProvider()
+        authorizationStatus = status
+        switch status {
+        case .authorized: authorization = "系统已允许"
+        case .provisional: authorization = "系统静默送达：只进通知中心，不弹横幅"
+        case .ephemeral: authorization = "系统临时允许（仅本次会话）"
         case .denied: authorization = "系统已拒绝，可在系统设置中更改"
         default: authorization = "尚未申请权限"
         }
     }
     func enableExplicitly() async -> Bool {
-        guard let center else { return false }
-        let settings = await center.notificationSettings()
+        let status = await statusProvider()
         do {
-            if settings.authorizationStatus == .notDetermined {
-                enabled = try await center.requestAuthorization(options: [.alert, .sound, .badge])
-            } else { enabled = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional }
+            if status == .notDetermined { enabled = try await requester() }
+            else { enabled = status == .authorized || status == .provisional }
             if enabled { configureActions() }
             await refreshAuthorization()
             return enabled

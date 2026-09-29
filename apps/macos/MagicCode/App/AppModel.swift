@@ -48,6 +48,9 @@ import OSLog
     private var hostStopped = false
     private var shutdownRequest: String?
     private var automaticRecoveryUsed = false
+    /// 用户在 App 内明确点过「开」、只因系统拒绝而未兑现的意图（只在本次运行内有效：
+    /// 不回写默认值，避免久后被一次无关的系统权限变化自动带开）。
+    private var pendingNotificationsIntent = false
     private var acquired = false
     private var panelVisible = false
     private var pendingInspections: [String: (session: String, open: Bool, notice: String?)] = [:]
@@ -167,10 +170,16 @@ import OSLog
                 tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor in self?.presence(focused: false) }
                 })
-                tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-                    Task { @MainActor in self?.refreshLogin(); self?.presence(focused: true) }
-                })
             }
+            // 回到前台：核对系统授权，并在用户先前明确点过「开」而当时被系统拒绝时兑现它。
+            // 验收身份下也要跑（不在 !isValidation 里），否则验收环境无法覆盖这条路径。
+            tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if !self.isValidation { self.refreshLogin(); self.presence(focused: true) }
+                    await self.completePendingNotificationIntent()
+                }
+            })
         } catch { phase = .fault(error.localizedDescription) }
     }
     private func startHost() {
@@ -408,6 +417,7 @@ import OSLog
         guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换数据目录。"; return }
         switching = true; switchBase = base; confirmQuit()
     }
+    /// 只有「系统允许」与「系统静默送达」都算用户已选择启用通知；两者的区别在状态文案里。
     func setNotifications(_ value: Bool) async {
         guard canChangeNotifications else { return }
         if value {
@@ -415,10 +425,24 @@ import OSLog
             if notificationsEnabled {
                 notifications.enabledSince = Date().timeIntervalSince1970 * 1000
                 defaults.set(notifications.enabledSince, forKey: "notificationsEnabledSince")
+                pendingNotificationsIntent = false
+            } else {
+                // 用户在这里明确要开、只因系统拒绝而没兑现：记住这个意图，
+                // 等他去系统设置放行、回到 App 时补上，而不是让他再点一次。
+                pendingNotificationsIntent = true
             }
         }
-        else { notificationsEnabled = false; notifications.enabled = false }
+        else { notificationsEnabled = false; notifications.enabled = false; pendingNotificationsIntent = false }
         defaults.set(notificationsEnabled, forKey: "notificationsEnabled")
+    }
+    /// 回到前台时兑现「上次明确要开、被系统拒了」的意图；系统权限自己变化不在此列。
+    func completePendingNotificationIntent() async {
+        guard canChangeNotifications, pendingNotificationsIntent else { return }
+        await notifications.refreshAuthorization()
+        let status = notifications.authorizationStatus
+        guard status == .authorized || status == .provisional else { return }
+        pendingNotificationsIntent = false
+        await setNotifications(true)
     }
     var canChangeNotifications: Bool {
         #if DEBUG
@@ -504,7 +528,9 @@ extension AppModel {
             "revision": projection?.revision ?? -1, "selectedSession": selected ?? "", "selectedNotice": selectedNotice?.id ?? "",
             "loginStatus": loginStatus.rawValue, "loginWritesAllowed": canChangeLogin,
             "notificationAuthorization": notifications.authorization, "notificationWritesAllowed": canChangeNotifications,
-            "notificationPreference": notificationsEnabled]
+            "notificationPreference": notificationsEnabled,
+            "notificationAuthorizationStatus": String(describing: notifications.authorizationStatus),
+            "notificationsPendingIntent": pendingNotificationsIntent]
         try? PrivateFiles.write(JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), to: root.appendingPathComponent("system-state.json"))
     }
     func restoreSystemTestNotifications() async {

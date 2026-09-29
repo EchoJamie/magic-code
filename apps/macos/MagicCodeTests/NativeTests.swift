@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 import Combine
 import SwiftUI
+import UserNotifications
 
 final class NativeTests: XCTestCase {
     private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
@@ -544,6 +545,144 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(sent.count, 1, "投递事实去重，不调用业务已读")
     }
     @MainActor func testLifetimeEOFNotHeldByOtherChild() async throws { try await hostRoundTrip(eof: true) }
+
+    // MARK: U102 · 三条发现的判据（只调用修前已存在的 API，红必须是行为红）
+
+    /// 系统验收身份下的模型：bundle 前缀/固定根/capability 都齐，两个开关才是可用的。
+    @MainActor private func systemTestModel(allow: [String] = ["notifications", "login"],
+                                            status: @escaping () async -> UNAuthorizationStatus,
+                                            request: @escaping () async throws -> Bool = { true }) throws -> (AppModel, URL) {
+        let room = URL(fileURLWithPath: "/private/tmp/magic-system-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: room, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: room)
+            UserDefaults().removePersistentDomain(forName: "MagicCode.Validation.\(room.lastPathComponent)")
+        }
+        let bundle = "com.magiccode.validation." + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + ".dev"
+        let app = room.appendingPathComponent("Magic Code 系统验收.app")
+        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
+        try PrivateFiles.write(Data(contentsOf: root.appendingPathComponent("apps/macos/MagicCodeTests/Fixtures/controlled-helper.py")), to: helper, mode: 0o700)
+        let plist: [String: Any] = ["CFBundleIdentifier": bundle, "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "unused",
+                                    "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1, "MagicSystemTestRoot": room.path]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
+        try JSONSerialization.data(withJSONObject: ["systemTest": true, "source": helper.path, "works": []]).write(to: room.appendingPathComponent("control.json"))
+        try JSONSerialization.data(withJSONObject: ["bundle": bundle, "allow": allow]).write(to: room.appendingPathComponent("system-authorization.json"))
+        let port = NotificationCoordinator(send: { _ in }, status: status, request: request)
+        return (AppModel(appURL: app, validationRoot: room, notificationPort: port, shutdownTimeout: 15), room)
+    }
+
+    @MainActor private func hostView<V: View>(_ content: V, size: NSSize, appearance: NSAppearance.Name) async throws -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: appearance); window.isReleasedWhenClosed = false
+        let controller = NSHostingController(rootView: content)
+        controller.view.frame = NSRect(origin: .zero, size: size); window.contentViewController = controller
+        try await Task.sleep(for: .milliseconds(400))
+        return window
+    }
+
+    private func switches(in window: NSWindow) -> [NSControl] {
+        var found: [NSControl] = []
+        func walk(_ view: NSView) {
+            if let control = view as? NSControl, String(describing: type(of: control)).contains("Switch") { found.append(control) }
+            view.subviews.forEach(walk)
+        }
+        if let content = window.contentView { walk(content) }
+        return found
+    }
+
+    @MainActor private func saveFrame(_ window: NSWindow, name: String) async throws {
+        let directory = root.appendingPathComponent(".artifacts/macos/frames")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let view = try XCTUnwrap(window.contentView)
+        // 控件（开关）的新状态要等窗口被 order 进来才与平台视图同步；窗口始终停在屏幕外。
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderBack(nil)
+        defer { window.orderOut(nil) }
+        XCTAssertLessThan(window.frame.maxX, 0, "验收窗口不得移到用户桌面")
+        try await Task.sleep(for: .milliseconds(350))
+        view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: directory.appendingPathComponent(name + ".png"))
+        XCTAssertGreaterThan(png.count, 2000)
+    }
+
+    /// 发现一：拨开关就是用户意图本身，不得再要求一次确认（修前：只置位 alert，生产入口不被调用）。
+    @MainActor func testSettingsNotificationToggleReachesProductionEntryWithoutConfirmation() async throws {
+        _ = NSApplication.shared
+        var requested = 0
+        let (model, _) = try systemTestModel(status: { .notDetermined }, request: { requested += 1; return true })
+        model.start(); try await eventually { model.isCurrent }
+        let window = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
+        defer { window.close() }
+        try await saveFrame(window, name: "u102-settings-before-toggle")
+        let controls = switches(in: window)
+        XCTAssertEqual(controls.count, 2, "设置页应有两个开关：登录项与系统通知")
+        let notifications = controls[1]
+        XCTAssertTrue(notifications.isEnabled, "系统验收身份下通知开关必须可用")
+        notifications.accessibilityPerformPress()
+        try await eventually { model.notificationsEnabled }
+        XCTAssertEqual(requested, 1, "拨开关必须直接走生产权限入口")
+        XCTAssertTrue(model.notificationsEnabled)
+        // 离屏帧对 AppKit 控件的新状态不跟手（文字跟、开关不跟）：要出「启用后」那一张，
+        // 就用已置为启用的模型重新挂一次视图，按静态渲染取帧。
+        let enabledWindow = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
+        defer { enabledWindow.close() }
+        try await saveFrame(enabledWindow, name: "u102-settings-after-toggle")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// 发现二：用户明确点过「开」、只因系统拒绝未兑现 ⇒ 回到前台发现系统已允许时应补上；系统一变就自动跟不行。
+    @MainActor func testDeniedToggleRemembersIntentAndCompletesWhenSystemAllows() async throws {
+        _ = NSApplication.shared
+        var status: UNAuthorizationStatus = .denied
+        let (model, _) = try systemTestModel(status: { status }, request: { false })
+        model.start(); try await eventually { model.isCurrent }
+        await model.setNotifications(true)
+        XCTAssertFalse(model.notificationsEnabled, "系统拒绝时就该说没启用")
+        status = .authorized
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        try await eventually { model.notificationsEnabled }
+        XCTAssertTrue(model.notificationsEnabled, "回到前台发现系统已允许，应兑现用户先前的明确意图")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// 发现二的反面：用户没点过开，系统权限后来变允许 —— 不得自动跟。
+    @MainActor func testSystemPermissionChangeAloneNeverTurnsPreferenceOn() async throws {
+        _ = NSApplication.shared
+        var status: UNAuthorizationStatus = .denied
+        let (model, _) = try systemTestModel(status: { status })
+        model.start(); try await eventually { model.isCurrent }
+        status = .authorized
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(model.notificationsEnabled, "没有用户意图时，系统权限变化不得自动开启")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// 发现三：静默送达（provisional）与正常允许必须是两句不同的话——修前两者都是「系统已允许」。
+    @MainActor func testAuthorizationTextDistinguishesQuietDelivery() async throws {
+        _ = NSApplication.shared
+        var status: UNAuthorizationStatus = .authorized
+        let (model, _) = try systemTestModel(status: { status })
+        model.start(); try await eventually { model.isCurrent }
+        await model.notifications.refreshAuthorization()
+        XCTAssertEqual(model.notifications.authorizationStatus, .authorized)
+        let allowed = model.notifications.authorization
+        let window = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
+        try await saveFrame(window, name: "u102-authorization-authorized")
+        status = .provisional
+        await model.notifications.refreshAuthorization()
+        XCTAssertEqual(model.notifications.authorizationStatus, .provisional)
+        let quiet = model.notifications.authorization
+        XCTAssertNotEqual(quiet, allowed, "静默送达与正常允许不得显示成同一句")
+        XCTAssertTrue(quiet.contains("静默"), "静默送达要说明只进通知中心、不弹横幅")
+        try await saveFrame(window, name: "u102-authorization-provisional")
+        window.close()
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
     @MainActor private func hostRoundTrip(eof: Bool) async throws {
         let app = root.appendingPathComponent(".artifacts/macos/Magic Code Dev.app"); let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path), "先运行 scripts/macos/build.sh")
