@@ -95,6 +95,10 @@ export function commandSubjectOf(command: Command): string {
     case 'paths.identify':
       // U62 认出选定那一条——路径与「在不在工作区里」都原样递（判里外归实现那一侧）
       return `认这一条：${command.path}${command.external === true ? '（工作区外）' : ''}`
+    case 'input.paste':
+      // U107 剪贴板取图——无参：问的就是「剪贴板里有没有一张能用的图」
+      // （剪贴板里是什么归实现那一侧去看，外壳看不见它）
+      return '取剪贴板里的图'
     case 'attachments.list':
       // U37 图片附件读侧——无参：问的就是「这条会话送过哪些图」
       return '列图片附件'
@@ -199,6 +203,7 @@ export function hubFaceRealizesPort(): void {
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
+    onInputPaste: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -239,6 +244,7 @@ export function routesAreContractShape(): void {
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
+    onInputPaste: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -282,6 +288,7 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
+    onInputPaste: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,

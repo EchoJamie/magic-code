@@ -1654,6 +1654,13 @@ export function reduce(
     case 'paths.identified':
       return view
 
+    // **剪贴板取图的答复**（U107）——与上一条同一种处置：`reduce` 这一层**不改视图**。
+    // 取到了 ⇒ 那一处插入点要放什么（`Image#N`）是**稿子**的事，由外壳按答复改
+    // （见 `shell.ts` 的 `pastedClipboard`）；没取到 ⇒ 那一句回执也要带上稿子的账
+    // （编号表）才说得准，故同样归外壳，不在这里落一行。
+    case 'input.pasted':
+      return view
+
     default:
       return assertNever(event)
   }

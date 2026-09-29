@@ -78,6 +78,13 @@ const KEYS: Record<string, string> = {
   // （同上面那两件）。加它是因为这一对键的判据非真 PTY 说不了（见 `frames-u85-tui.ts`）。
   'ctrl+a': '\u0001',
   'ctrl+e': '\u0005',
+  /**
+   * U107：`ctrl+v`（取剪贴板里的图）——裸控制码 0x16（同上面那几件）。
+   *
+   * **非真 PTY 说不了**：这一条要能把字节真写进 PTY，再让内核那一跳去问剪贴板
+   * （见 `frames-u107-tui.ts` —— 那一趟拿 PATH 上的桩替掉系统命令，不碰真剪贴板）。
+   */
+  'ctrl+v': '\u0016',
   tab: '\t',
   backspace: '\u007f',
   up: '\u001b[A',

@@ -107,6 +107,8 @@ import {
   createSkills,
   createWebSource,
   createWorkspaceService,
+  imageBytesOf,
+  readClipboardImage,
 } from '@magic/execution'
 import type {
   FetchLike,
@@ -1869,6 +1871,79 @@ export function assemble(options: AssembleOptions): Assembly {
     )
   }
 
+  /**
+   * **剪贴板来的那一张叫什么**（U107）——`image` 那一支里 `name` / `label` 两格填的字。
+   *
+   * 设计明写「**不假装有文件名**」（设计 · 文件与图片：图不一定来自文件，剪贴板来的
+   * 就没有文件），故这里**不编** `clipboard.png` 那种像文件名的东西，写的是出处本身。
+   *
+   * 它不承担「一段输入里认得出是哪一张」那件事——那是 `Image#N` 的活（引用块上那一处）。
+   * 这一格只在 `/attachments` 那一屏当抬头用，而那一屏另有类型 · 大小 · 时间分开两张图。
+   */
+  const CLIPBOARD_IMAGE_NAME = '剪贴板'
+
+  /**
+   * **把剪贴板里的图取进来**（U107）——`input.paste` 的落点。
+   *
+   * ## 与 `identifyPath` 是同一条流水线，只换了取字节那一跳
+   *
+   * 那边：一条**路径** → `materials.load` 读它 → 是图就 `blobs.put` → 答复那一份身份。
+   * 这边：**系统剪贴板** → `readClipboardImage` 取回字节 → 过**同一把尺子**
+   * （`imageBytesOf`：认图 / 单张上限 / 完整性）→ `blobs.put` → 答复那一份身份。
+   *
+   * ⚠️ **尺子是同一把，路不是同一条**：剪贴板来的那一张**没有落位**（设计 · 文件与图片
+   * 「图不一定来自文件」），故它走不到 `materials.load` 那条要路径的门里去——硬编一个
+   * 临时文件再假装是工作区外的材料，读出来的 `label` / `external` 全是假的。
+   * 但**变成 blob 那一步完全一样**（内容身份＝字节的 sha256），这正是「身份与名字由
+   * Magic 自己定、与它从哪来无关」那句话的落点：同一张图从 `@` 来还是从剪贴板来，
+   * 落的是同一个 blob、取的是同一个号。
+   *
+   * ## 失败一律走 `problem`，不往上抛
+   *
+   * 取不到不是故障，是**这件事的结果**（剪贴板空 / 只有文本 / 这台机器取不了），
+   * 用户要的是「发生了什么」这一句。而这一条也和 `identifyPath` 一样是 `void` 出去的
+   * ——抛出去就是一次**没人接的 rejection**。
+   */
+  const pasteClipboardImage = async (): Promise<void> => {
+    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+
+    let image: EventDataOf['input.pasted']['image']
+    let problem: string | undefined
+    try {
+      const read = await readClipboardImage()
+      if (!read.ok) {
+        problem = read.reason
+      } else {
+        // **两把尺子在这里过**（与按路径取图同一处判据）——不过就说清是哪一条不过
+        const checked = imageBytesOf(read.bytes, '剪贴板里这一张')
+        if (!checked.ok) problem = checked.reason
+        else {
+          image = {
+            mime: checked.mime,
+            // ⚠️ **它没有文件名**（剪贴板来的那一张本来就没有落位）——这一格是
+            // `image` 支的必填，故给一个**说得出出处、不冒充文件**的名字。
+            // 一段输入里认它是靠 `Image#N`（那一处引用块），这一格只在
+            // `/attachments` 那一屏上作抬头用（那一屏还有类型 · 大小 · 时间分得开）。
+            name: CLIPBOARD_IMAGE_NAME,
+            bytes: read.bytes.length,
+            blob: await recordsStore.blobs.put(read.bytes),
+            label: CLIPBOARD_IMAGE_NAME,
+          }
+        }
+      }
+    } catch (error) {
+      // 落 blob 那一步炸了（写不进去）——**这一张没送成**，如实说
+      problem = `剪贴板里那一张没能存下来（${error instanceof Error ? error.message : String(error)}）。`
+    }
+
+    sink.emit(
+      requireActiveStamper().stamp('input.pasted', {
+        ...(image === undefined ? {} : { image }),
+        ...(problem === undefined ? {} : { problem }),
+      }),
+    )
+  }
+
   const skillCatalogOf = (): EventDataOf['skills.catalog'] => {
     const found = skills.discover()
 
@@ -2455,6 +2530,10 @@ export function assemble(options: AssembleOptions): Assembly {
     // 路径面在它手里），而落 blob 那一步经**记录域**的公开面（写权唯一归它）。
     // 答复走事件（`paths.identified`，不落库）。**异步**：它真要读一次内容。
     onPathIdentify: (path, external) => void identifyPath(path, external),
+    // 剪贴板取图（U107）——**归装配**（同 `onPathIdentify` 的站位：执行域那面在它手里），
+    // 而落 blob 那一步同样经**记录域**的公开面。答复走事件（`input.pasted`，不落库）。
+    // **异步**：它要 spawn 一条系统命令、还要读回一个临时文件。
+    onInputPaste: () => void pasteClipboardImage(),
     // 图片附件（U37）——**原样转手**给对话域（条目载荷里那份引用只有它认得，
     // 同 `history.read` 的站位）；答复走事件（`attachments.catalog`，不落库）
     onAttachmentList: () => void conversation.readAttachments(),
