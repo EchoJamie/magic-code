@@ -1890,10 +1890,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     await preflight
     if (saveTimer !== undefined) clearTimeout(saveTimer)
     saveRuns(true)
-    for (const conn of clients.values()) {
-      conn.link.send({ t: 'line', text: 'Magic Code 已退出' })
-      conn.link.close()
-    }
+    // 收摊只断连接。原先还给每个窗口补一句「Magic Code 已退出」——那一行没有别处没有的信息：
+    // 同一件事底栏已经说了（还多给 ctrl+r / ctrl+c 两个入口），留稿说明另说一件事。
+    for (const conn of clients.values()) conn.link.close()
     clients.clear()
     native.close()
     server.stop(true)

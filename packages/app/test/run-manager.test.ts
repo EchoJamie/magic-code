@@ -242,6 +242,31 @@ describe('U48-S1 · 收摊与尸首', () => {
     }
   })
 
+  test('宿主退出：只断开连接，不再往窗口发那条纯退出回执', async () => {
+    const g = ground('exit')
+    try {
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const manager = await standUp(g)
+      const client = await connectManager(paths.socket, { cwd: g.root, label: '窗口' })
+      if (client === undefined) throw new Error('连不上管理者')
+      const lines: string[] = []
+      client.onLine((text) => lines.push(text))
+      let closed = false
+      client.onClose(() => { closed = true })
+
+      manager.stop('用例收尾')
+      await manager.waitUntilExit()
+      await Bun.sleep(120)
+
+      // 那一行说的只有「退了」这一件事：底栏已经说了（还多给两个入口），留稿说明另说一件事。
+      // 于是收摊只需要「连上了 → 断了」这个事实，不必再补一句没有新增信息的话。
+      expect(lines.filter((text) => text.includes('Magic Code 已退出'))).toEqual([])
+      expect(closed).toBe(true)
+    } finally {
+      g.dispose()
+    }
+  })
+
   test('路径上是尸首（进程没了、socket 文件还在）时清得掉', async () => {
     const g = ground('stale')
     try {
