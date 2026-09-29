@@ -97,12 +97,30 @@ if __name__ == '__main__':
         authorization = root / 'system-authorization.json'
         if args.action in ['read-only', 'launch']:
             if args.action == 'read-only': assert not authorization.exists(), 'read-only run requires no capability grant'
-            flags = ['--validation-quit'] if args.action == 'read-only' else []
-            if args.show_status: flags.append('--validation-show-status')
-            with (output / (args.action + '.stdout.jsonl')).open('w') as stdout, (output / (args.action + '.stderr.log')).open('w') as stderr:
-                process = subprocess.Popen([str(Path(manifest['app']) / 'Contents/MacOS/MagicCode'), *flags],
-                    cwd=root, env={'HOME': str(root), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'zh_CN.UTF-8'}, stdout=stdout, stderr=stderr)
-                if args.action == 'read-only':
+            if args.action == 'launch':
+                # **必须让 LaunchServices 起**（`open`），不能直接 exec 二进制：
+                # U101 实测、U105 复现——直接 exec 拿不到通知能力，系统在弹框**之前**就返回
+                # `Notifications are not allowed for this application`（本单读到的正是这句）。
+                # 隔离不受影响：验证根固定在副本 Info.plist 的 `MagicSystemTestRoot`，Debug 启动
+                # 入口优先取它，所以 `open` 不带参也不会落到真实 HOME。
+                # 代价（已知、可清）：app 的 validation `UserDefaults` 套件会落到**真实**
+                # ~/Library/Preferences/MagicCode.Validation.<临时根名>.plist —— 收尾时要删本轮的。
+                subprocess.run(['open', '-n', str(Path(manifest['app']))], check=True)
+                write(output / 'launch.json', {'launchedVia': 'open', 'app': manifest['app']})
+                # 等它起完（open 不给我们进程句柄，就按可执行文件路径找）
+                executable = str(Path(manifest['app']) / 'Contents/MacOS/MagicCode')
+                for _ in range(120):
+                    time.sleep(0.5)
+                    if any(executable in line for line in subprocess.run(['ps', '-Ao', 'command'], capture_output=True, text=True).stdout.splitlines()): break
+                # 等到用户 quit（进程按路径消失）为止
+                while any(executable in line for line in subprocess.run(['ps', '-Ao', 'command'], capture_output=True, text=True).stdout.splitlines()):
+                    time.sleep(0.5)
+            else:
+                flags = ['--validation-quit']
+                if args.show_status: flags.append('--validation-show-status')
+                with (output / (args.action + '.stdout.jsonl')).open('w') as stdout, (output / (args.action + '.stderr.log')).open('w') as stderr:
+                    process = subprocess.Popen([str(Path(manifest['app']) / 'Contents/MacOS/MagicCode'), *flags],
+                        cwd=root, env={'HOME': str(root), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'zh_CN.UTF-8'}, stdout=stdout, stderr=stderr)
                     try: assert process.wait(timeout=20) == 0
                     finally:
                         if process.poll() is None: process.kill(); process.wait(timeout=5)
@@ -113,11 +131,6 @@ if __name__ == '__main__':
                     assert found.get('notificationPreference') is True
                     assert not (root / 'system-notification-requests.json').exists()
                     write(output / 'read-only-state.json', found)
-                else:
-                    write(output / 'launch.json', {'pid': process.pid})
-                    try: process.wait()
-                    finally:
-                        if process.poll() is None: process.kill(); process.wait(timeout=5)
         elif args.action == 'status': print(json.dumps(state(manifest), ensure_ascii=False, indent=2))
         elif args.action == 'grant':
             assert args.authorization and args.allow, 'requires explicit prior authorization reference and bounded capabilities'
