@@ -81,7 +81,11 @@ import OSLog
         isValidation = validationRoot != nil
         isDevelopment = (bundle.bundleIdentifier ?? "com.magiccode.app.dev").hasSuffix(".dev")
         userHome = validationRoot ?? FileManager.default.homeDirectoryForCurrentUser
-        defaults = validationRoot.map { UserDefaults(suiteName: "MagicCode.Validation.\($0.lastPathComponent)")! } ?? .standard
+        // **验证身份的偏好必须落在它自己的临时根里。** `UserDefaults(suiteName:)` 的名字里带路径时，
+        // plist 就落在那个路径下。原先只用房间名（`…magic-system-test-<UUID>`）⇒ 落到**真实**
+        // `~/Library/Preferences/`；而 cfprefsd 是**异步**刷盘的，测试 teardown 删完它还会再刷回来
+        // ——U106 实测：跑一次 `check.sh` 漏 3 条，两侧读数 0 → 3。
+        defaults = validationRoot.map { UserDefaults(suiteName: "\($0.path)/MagicCode.Validation")! } ?? .standard
         if let validationRoot { selectedBase = validationRoot }
         else if isDevelopment {
             // Development never silently reads the user's production Magic data.

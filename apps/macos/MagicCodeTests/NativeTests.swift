@@ -621,10 +621,11 @@ final class NativeTests: XCTestCase {
         let room = URL(fileURLWithPath: "/private/tmp/magic-system-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: room, withIntermediateDirectories: true)
         addTeardownBlock {
+            // 偏好现在落在 room 里（见 `AppModel` 里 `defaults` 的构造），随房间一起删。
+            // **这里不再去动真实 `~/Library/Preferences`**：U106 之前那两行是在跟 cfprefsd 的
+            // **异步刷盘**赛跑——`removePersistentDomain` 加删文件都做了，守护进程照样在进程退出后
+            // 把域名刷回来（实测跑一次 `check.sh` 仍漏 3 条）。改到根上：压根不在那儿建域。
             try? FileManager.default.removeItem(at: room)
-            UserDefaults().removePersistentDomain(forName: "MagicCode.Validation.\(room.lastPathComponent)")
-            try? FileManager.default.removeItem(at: FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Preferences/MagicCode.Validation.\(room.lastPathComponent).plist"))
         }
         let bundle = "com.magiccode.validation." + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + ".dev"
         let app = room.appendingPathComponent("Magic Code 系统验收.app")
@@ -751,6 +752,28 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(requested, 1, "拨开而系统没问过 ⇒ 就地请求一次")
         await model.setNotifications(true)
         XCTAssertEqual(requested, 1, "系统已经问过 ⇒ 不重复弹框")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// U106 守门：**验证身份的偏好不许落到真实 `~/Library/Preferences`。**
+    ///
+    /// 修前（suite 名只用房间名）这条会红：pref 写到真实偏好目录里的
+    /// `MagicCode.Validation.<房间名>.plist`，而读回用的新 suite 一个字也读不到。
+    /// 修后（suite 名是「房间路径/MagicCode.Validation」）两边都对上。
+    /// **两条断言要成对看**：只断言「真实偏好里没有文件」是**空过**（没写也会通过），
+    /// 所以必须同时断言「值确实写在房间里那个 suite 上」。
+    @MainActor func testValidationPreferencesStayInsideTheirRoom() async throws {
+        _ = NSApplication.shared
+        let (model, room) = try systemTestModel(status: { .authorized })
+        model.start(); try await eventually { model.isCurrent }
+        await model.setNotifications(false)          // 真写一次，别让这条断言空过
+        let inRoom = UserDefaults(suiteName: "\(room.path)/MagicCode.Validation")!
+        XCTAssertEqual(inRoom.object(forKey: "notificationsEnabled") as? Bool, false,
+                       "偏好必须写在「房间路径/MagicCode.Validation」这个 suite 上")
+        let leaked = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences/MagicCode.Validation.\(room.lastPathComponent).plist")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leaked.path),
+                       "验证身份不许往真实偏好目录落文件：\(leaked.lastPathComponent)")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
