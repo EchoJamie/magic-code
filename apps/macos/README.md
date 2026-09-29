@@ -27,6 +27,7 @@ bash scripts/macos/verify.sh
 - 普通状态观察只发送 observer hello 与 NativeRequest，不持有宿主权限。投影整份替换，按 serviceInstance/revision 核对；停止原样回传投影的 serviceInstance/gen，gen 是停止目标代次。
 - 请求退出后等待匹配的 `host.stopped` 与管理者成功退出，才向 AppKit 确认完成。失败/超时保留同一个 shutdown request，重试不会重启宿主或重开准入。无确认而进程已死时保留故障，不伪造成功。AppKit 模态等待期间的回执用对应主 RunLoop mode 投递。
 - 状态栏只展示投影。展开详情、终端接回、单项停止均有明确目标；面板交互期间分组顺序稳定，最近结果限制 10 项。退出确认列出 `affected` 影响工作，取消为回车默认动作。
+- 缺省是菜单栏形态（`LSUIElement` ＋ `.accessory`：没有 Dock 图标、不进 Cmd+Tab）。**长期窗口**（设置窗口、通知/事项定位窗口）在屏上时切 `.regular`——Dock 里有图标、Cmd+Tab 切得到、被盖住也找得回来；长期窗口全部关掉就回 `.accessory`。**点菜单栏展开的那块瞬时面板不算长期窗口**，不为它切策略。策略只在 `LongLivedWindows` 一处改，判定盯的是窗口的 `isVisible` 本身（AppKit 没有「被 order out」这条通知，而关掉设置窗口走的正是 order out——只盯 `didBecomeKey` 会让 Dock 图标留在那儿下不来）。
 - 终端启动通过私有 `.command` 文件和 NSWorkspace 打开 Terminal.app；现有会话传 `--session ID --open-request UUID`，新草稿只传 open request。应用打开回调只证明启动请求，匹配 `native.attached` 才确认接入。
 - 通知默认关闭。设置中显式启用才申请权限；两秒合并、按事项去重、送达/已读分离。未 ready 的点击意图保留到同一 App 就绪，之后核对 dataDir 并 inspect 实际事项。多个事项进入选择窗口。
 - 设置提供登录启动、通知授权状态、自定义基础目录、CLI 符号链接与卸载集成。基础路径下追加 `.magic`；切换数据目录必须无在途影响并先停止旧宿主。安装冲突不覆写，卸载只删除归本 App 所有的链接，用户记录保留。

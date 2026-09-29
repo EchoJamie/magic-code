@@ -878,4 +878,89 @@ final class NativeTests: XCTestCase {
         if eof { XCTAssertTrue(unrelated.isRunning, "另一个后代还活着，但不能持有宿主生命写端") }
         XCTAssertFalse(process.process.isRunning)
     }
+
+    /// 记录真实策略调用序列的替身：`current` 回放最后一次，`apply` 追加一次。
+    @MainActor private final class PolicySpy {
+        private(set) var log: [NSApplication.ActivationPolicy] = []
+        func install(_ policy: LongLivedWindows) {
+            policy.current = { [weak self] in self?.log.last ?? .accessory }
+            policy.apply = { [weak self] in self?.log.append($0) }
+        }
+    }
+    @MainActor private func offscreenWindow(titled: String) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 220, height: 120),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = titled; window.isReleasedWhenClosed = false
+        return window
+    }
+
+    /// 长期窗口在前台存在 ⇒ `.regular`（Dock 有图标、Cmd+Tab 切得到）；全部关掉 ⇒ 回 `.accessory`。
+    /// 策略没变就不该再调一次——重复结算不是一次切换。
+    @MainActor func testLongLivedWindowDrivesActivationPolicyBothWays() async throws {
+        _ = NSApplication.shared
+        let policy = LongLivedWindows(observing: false), spy = PolicySpy(); spy.install(policy)
+        let window = offscreenWindow(titled: "设置")
+        defer { window.orderOut(nil) }
+        policy.register(window)
+        XCTAssertTrue(spy.log.isEmpty, "只登记还不算「在前台存在」")
+        window.orderBack(nil)
+        policy.settle(reason: "appear")
+        XCTAssertEqual(spy.log, [.regular], "长期窗口出现 ⇒ Dock 图标与 Cmd+Tab")
+        policy.settle(reason: "again"); policy.settle(reason: "and-again")
+        XCTAssertEqual(spy.log.count, 1, "策略已经对了就不再切（幂等）")
+        window.close()
+        policy.settle(reason: "close")
+        XCTAssertEqual(spy.log, [.regular, .accessory], "长期窗口全部关掉 ⇒ 回菜单栏形态")
+        XCTAssertEqual(policy.presentCount, 0)
+    }
+
+    /// 关掉设置窗口走的是 **order out**，不是 close：AppKit 不为它发通知，只有 `isVisible` 会变。
+    /// 真出现、真 order out（台账里就该一条 regular、一条 accessory）。
+    @MainActor func testOrderingOutTheSettingsWindowReturnsToAccessory() async throws {
+        _ = NSApplication.shared
+        let policy = LongLivedWindows.shared, spy = PolicySpy()
+        let real = (policy.current, policy.apply); spy.install(policy)
+        addTeardownBlock { policy.current = real.0; policy.apply = real.1 }
+        let window = offscreenWindow(titled: "设置")
+        window.contentViewController = NSHostingController(rootView: Color.clear.frame(width: 10, height: 10).background(LongLivedWindowMarker()))
+        window.orderBack(nil)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(spy.log.last, .regular, "窗口出现 ⇒ Dock 图标与 Cmd+Tab")
+        window.orderOut(nil)          // SwiftUI 的 Settings 窗口「关掉」就是这个
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(spy.log.last, .accessory, "窗口不在了 ⇒ 回菜单栏形态：图标不能留在 Dock 里")
+        XCTAssertEqual(policy.presentCount, 0)
+    }
+
+    /// 反向判据：没有长期窗口时，一扇**没登记**的窗口出现（菜单栏那块瞬时面板就是这种口径）不该改策略。
+    /// 面板每点一次就切一次，正是「Dock 图标闪一下」的来源。
+    @MainActor func testUnregisteredTransientWindowLeavesPolicyAlone() async throws {
+        _ = NSApplication.shared
+        let policy = LongLivedWindows(observing: false), spy = PolicySpy(); spy.install(policy)
+        let panel = offscreenWindow(titled: "菜单栏面板")
+        defer { panel.orderOut(nil) }
+        panel.orderBack(nil)
+        for reason in ["didBecomeKeyNotification", "didBecomeMainNotification", "didChangeOcclusionStateNotification"] { policy.settle(reason: reason) }
+        XCTAssertTrue(spy.log.isEmpty, "瞬时面板不是长期窗口：不为它切策略")
+        XCTAssertEqual(policy.presentCount, 0)
+    }
+
+    /// 设置窗口那一侧的接线：内容里挂 `LongLivedWindowMarker` 的窗口，出现即登记 ⇒ 切 `.regular`。
+    /// 真窗口 ＋ 真托管视图；策略闭包换成替身，不动测试进程自己的策略。
+    @MainActor func testSettingsMarkerRegistersItsWindow() async throws {
+        _ = NSApplication.shared
+        let policy = LongLivedWindows.shared, spy = PolicySpy()
+        let real = (policy.current, policy.apply); spy.install(policy)
+        addTeardownBlock { policy.current = real.0; policy.apply = real.1 }
+        let window = offscreenWindow(titled: "设置")
+        window.contentViewController = NSHostingController(rootView: Color.clear.frame(width: 10, height: 10).background(LongLivedWindowMarker()))
+        XCTAssertEqual(policy.presentCount, 0, "窗口还没出现")
+        window.orderBack(nil)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(spy.log.last, .regular, "设置窗口出现 ⇒ Dock 图标与 Cmd+Tab")
+        window.close()
+        policy.settle(reason: "close")
+        XCTAssertEqual(spy.log.last, .accessory, "关掉设置窗口 ⇒ 回菜单栏形态")
+        window.orderOut(nil)
+    }
 }

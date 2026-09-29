@@ -515,7 +515,11 @@ extension AppModel {
             "notificationPreference": notificationsEnabled,
             // 判「横幅为什么没出来」的检查项之一：发送方 App 当时是否在前台
             //（macOS 前台默认不弹，须 willPresent 显式返回 .banner）。
-            "appActive": NSApp?.isActive == true]
+            "appActive": NSApp?.isActive == true,
+            // 长期窗口（设置/定位窗口）在 ⇒ regular：Dock 有图标、Cmd+Tab 切得到；关光 ⇒ accessory。
+            // `activationPolicyChanges` 只记**真的切过**的几次：展开菜单栏面板时它不该多出一条。
+            "activationPolicy": LongLivedWindows.shared.policyName,
+            "activationPolicyChanges": LongLivedWindows.shared.transitions]
         try? PrivateFiles.write(JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), to: root.appendingPathComponent("system-state.json"))
     }
     func restoreSystemTestNotifications() async {
