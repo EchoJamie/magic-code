@@ -43,10 +43,13 @@ struct MenuBarMark: View {
     /// 「菜单栏那一格画不出资源目录的图」藏了整整一轮。
     private final class ResourceBundle {}
 
+    /// 三态**同画布宽**：空闲那张把标记位留空也占着。菜单栏项宽跟着图宽走，
+    /// 一旦三态不同宽，状态一变整项就伸缩，把相邻的图标推来推去。
+    static let width = markSize.width + gap + badge
+
     /// 合成菜单栏那一枚：品牌符号 ＋ 右侧状态标记，落成一张 template 图。
     static func image(for state: MenuBarState) -> NSImage {
         let brand = Bundle(for: ResourceBundle.self).image(forResource: NSImage.Name("BrandMark"))
-        let width = state == .idle ? markSize.width : markSize.width + gap + badge
         let image = NSImage(size: NSSize(width: width, height: canvas), flipped: false) { _ in
             NSColor.black.setFill()
             brand?.draw(in: NSRect(x: 0, y: (canvas - markSize.height) / 2,

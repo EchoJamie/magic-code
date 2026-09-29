@@ -539,6 +539,14 @@ final class NativeTests: XCTestCase {
         attention.phase = .fault("连接已断开，重试后核对当前状态。")
         XCTAssertEqual(attention.menuBarState, .attention, "异常也是注意标记，不新增第四态")
 
+        // 硬要求：三态同画布宽。菜单栏项宽跟着图宽走，三态不同宽就会把相邻图标推来推去。
+        let widths = Set([MenuBarState.idle, .active, .attention].map { MenuBarMark.image(for: $0).size.width })
+        XCTAssertEqual(widths.count, 1, "三态必须同宽，实际 \(widths.sorted())")
+        XCTAssertEqual(MenuBarMark.image(for: .idle).size.width, MenuBarMark.width)
+
+        // 下面这套帧走的是跟产品同一条取图路径（`Bundle(for:)` 取的同一支 Assets.xcassets，
+        // 测试 target 也挂着它）。别改回「测试自己从仓库注入一支文件」——那跟产品不是同一条路，
+        // U103 那版「真机什么都不画」的缺陷就是这么被离屏帧放过去的。
         let directory = root.appendingPathComponent(".artifacts/macos/frames")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let states: [(MenuBarState, String)] = [(.idle, "空闲静态"), (.active, "有执行"), (.attention, "需要你或异常")]
