@@ -26,7 +26,8 @@ import Combine
         } label: {
             Image(systemName: model.symbol).accessibilityLabel("Magic Code，\(model.summary)")
         }.menuBarExtraStyle(.window)
-        Settings { SettingsView(model: model) }
+        // 设置窗口是**长期窗口**：它在 ⇒ App 是 `.regular`（Dock 有图标、Cmd+Tab 切得到）。标记不占位置。
+        Settings { SettingsView(model: model).background(LongLivedWindowMarker()) }
     }
 }
 
@@ -42,7 +43,9 @@ import Combine
     #endif
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        NSApp.setActivationPolicy(.accessory)
+        // 缺省是菜单栏形态（无 Dock 图标、不进 Cmd+Tab）。**策略只在 `LongLivedWindows` 一处改**：
+        // 这里只结算一次——长期窗口（设置窗口、通知/事项定位窗口）还没出现时它落的正是 `.accessory`。
+        LongLivedWindows.shared.settle(reason: "launch")
         Self.model?.onUnconfirmedShutdown = { [weak self] in
             guard let self, self.awaitingTerminationReply else { return }
             self.awaitingTerminationReply = false
@@ -55,6 +58,8 @@ import Combine
                 window.title = "Magic Code 通知事项"; window.isReleasedWhenClosed = false
                 window.contentViewController = NSHostingController(rootView: NoticeWindow(model: model))
                 window.center(); self.noticeWindow = window
+                // 定位窗口也是长期窗口：它在 ⇒ 有 Dock 图标、Cmd+Tab 切得到。
+                LongLivedWindows.shared.register(window)
             }
             self.noticeWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         }
@@ -77,6 +82,8 @@ import Combine
                         window.contentViewController = NSHostingController(rootView: StatusPanel(model: model).frame(height: 650))
                         window.center(); window.orderBack(nil); self?.noticeWindow = window
                     }
+                    // 策略台账跟着事件流出去（隔离验收时才有）：一闪而过的那一下也要留痕。
+                    LongLivedWindows.shared.record = { model.validationEvent("activation-policy", detail: $0) }
                     if let index = CommandLine.arguments.firstIndex(of: "--validation-open-session"), CommandLine.arguments.indices.contains(index + 1) {
                         let session = CommandLine.arguments[index + 1]
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -114,6 +121,12 @@ import Combine
                     model.validationEvent("system-test.command", detail: command["action"] ?? "status")
                 }
             }
+        } else if let model = Self.model, model.isValidation {
+            // 只有临时隔离根、没有系统验收身份的那一种（`--validation-root`）：把策略读数落在本轮根目录。
+            // 外部装置因此核得到「该切时切了、不该切时一条都没记」，不必为此再开一只鼠标。
+            systemTestTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                Task { @MainActor in AppDelegate.writePolicyReadout(to: model.userHome) }
+            }
         }
         #endif
         powerOff = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { [weak self] _ in
@@ -143,6 +156,18 @@ import Combine
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { true }
+}
+
+extension AppDelegate {
+    #if DEBUG
+    /// 隔离验收的策略读数：`policy` 是此刻真实的策略，`changes` 只记**真的切过**的那几次。
+    @MainActor static func writePolicyReadout(to root: URL) {
+        let value: [String: Any] = ["policy": LongLivedWindows.shared.policyName, "presentWindows": LongLivedWindows.shared.presentCount,
+                                    "changes": LongLivedWindows.shared.transitions]
+        try? PrivateFiles.write(JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
+                                to: root.appendingPathComponent("activation-policy.json"))
+    }
+    #endif
 }
 
 extension AppModel {

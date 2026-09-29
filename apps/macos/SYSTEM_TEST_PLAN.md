@@ -48,6 +48,21 @@
 
 证据包括：签名/bundle/临时根、权限前后状态、每次 add 的 request ID/合并事项、系统 delivered/pending 查询、业务 delivered/read 前后、受控点击回执、App/helper/Terminal 进程归属。真实横幅与权限框在授权时单独截图；只截本次测试界面，不采集其他应用内容。
 
+## 长期窗口的 Dock 与 Cmd+Tab（U104，2026-09-29）
+
+有长期窗口（设置窗口、通知/事项定位窗口）在屏上 ⇒ App 切 `.regular`（Dock 有图标、Cmd+Tab 切得到）；长期窗口全部关掉 ⇒ 回 `.accessory`；**菜单栏那块瞬时面板不算长期窗口**，不为它切策略。
+
+装置 `scripts/macos/dock-cmdtab-probe.swift`（需辅助功能授权，真点子项/真点按钮/真按 Cmd+Tab/真移鼠标让 Dock 浮出来）：
+
+```sh
+xcrun swiftc -O scripts/macos/dock-cmdtab-probe.swift -o /tmp/dock-cmdtab-probe
+/tmp/dock-cmdtab-probe --app ".artifacts/macos/Magic Code Dev.app" --root /private/tmp/u104-accept --out .artifacts/macos/u104
+```
+
+App 以 `--validation-root` 隔离启动，装置自己起、自己收（不给 `--pid` 时）。四态各留真帧：无窗口（Dock 无图标＋Cmd+Tab 走遍一圈都到不了它）、面板（Dock 无图标＋一条策略切换都没多）、设置窗口（Dock 有图标＋Cmd+Tab 走到它）、关掉（回 accessory，Dock 与 Cmd+Tab 里都没了）。读数 `<root>/activation-policy.json`（`policy`／`presentWindows`／**只记真切换的** `changes`）由 App 每 0.5 秒写一次，供装置核对；`system-state.json` 在系统验收身份下同样带这三项。
+
+两条读数口径（实测，别再踩）：`NSRunningApplication.activationPolicy` 是**启动时的快照**，切了策略它不变，不能拿它判；`NSWindow` 的「被 order out」没有通知，只能盯 `isVisible`（KVO）。
+
 ## Terminal：f017同版包已实测
 
 生产 TerminalLauncher 有 Debug 限定的隔离录制装置：NSWorkspace 仍打开实际私有 `.command`，CLI 始终是当前 App 的 `Contents/Helpers/magic-runtime`。validation root 来自参数或独立测试 bundle 的固定根，清空继承环境，设置相同临时 HOME/ZDOTDIR、MAGIC_HOME、最小 PATH；用系统 `script` 留本次 PTY 输出。不能只设 MAGIC_HOME，因为 CLI 的固定 host.json 发现根来自 `os.homedir()`。
