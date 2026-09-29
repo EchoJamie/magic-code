@@ -579,6 +579,15 @@ final class NativeTests: XCTestCase {
         return (AppModel(appURL: app, validationRoot: room, notificationPort: port, shutdownTimeout: 15), room)
     }
 
+    /// 一条「刚发生」的未读事实（`at` 取当前时刻，才过得了启用时刻那道门）。
+    @MainActor private func freshNoticeRow(_ id: String) throws -> [String: Any] {
+        let notice = AttentionItem(id: id, session: "s-\(id)", kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil,
+                                   unread: true, delivered: false, fact: "event:\(id)")
+        let work = try changed(try work(), ["session": "s-\(id)", "state": "idle", "affected": false,
+                                             "notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))]])
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(work)) as? [String: Any])
+    }
+
     @MainActor private func pushWorks(_ works: [NativeWork], to room: URL) throws {
         let helper = room.appendingPathComponent("Magic Code 系统验收.app/Contents/Helpers/magic-runtime")
         let raw = try works.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
@@ -622,43 +631,82 @@ final class NativeTests: XCTestCase {
         XCTAssertGreaterThan(png.count, 2000)
     }
 
-    /// 根子：权限是系统的状态，不是 App 的配置——那一栏必须是「状态 ＋ 动作」，不能再是开关。
-    @MainActor func testNotificationSectionIsStatusAndActionInsteadOfSwitch() async throws {
+    /// 五态表（设计正文·通知节）：偏好默认开；系统那一格**只在受阻时出现**，各带一条路。
+    /// 表里「那一行出不出」只能看帧（harness 数不出 SwiftUI 子视图）；这里钉住可程序化的那半边。
+    @MainActor func testPreferenceDefaultsOnAndSystemRowOnlyWhenBlocked() async throws {
         _ = NSApplication.shared
         var status: UNAuthorizationStatus = .notDetermined
-        var requested = 0
-        let (model, _) = try systemTestModel(status: { status }, request: { requested += 1; return true })
+        let (model, _) = try systemTestModel(status: { status })
         model.start(); try await eventually { model.isCurrent }
-        await model.notifications.refreshAuthorization()
+        XCTAssertTrue(model.notificationsEnabled, "「提醒我」默认开：没说不要就是要")
         let window = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
         defer { window.close() }
-        try await saveFrame(window, name: "u102-notification-not-asked")
-        XCTAssertEqual(switches(in: window).count, 1, "通知那一栏不得再有开关：设置页只该剩登录项那一个")
-        // 「打开通知」这个动作本身就是那次请求：断言动作实现（SwiftUI 按钮在本 harness 里既不是
-        // AppKit 控件、进程内也取不到它的 AX 元素，点不到——见 U102 回报的 harness 边界）。
-        await model.requestNotifications()
-        try await eventually { requested == 1 }
-        XCTAssertEqual(requested, 1, "「打开通知」这个动作本身就是那次请求")
-        status = .denied; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-notification-denied")
+        XCTAssertEqual(switches(in: window).count, 2, "两个开关：登录项与「提醒我」")
+        // 五态各留一帧（表的五行）
+        try await saveFrame(window, name: "u102-五态-开-未问过")
         status = .authorized; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-notification-authorized")
+        try await saveFrame(window, name: "u102-五态-开-已允许")
+        status = .denied; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
+        try await saveFrame(window, name: "u102-五态-开-已拒绝")
         status = .provisional; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-notification-provisional")
+        try await saveFrame(window, name: "u102-五态-开-静默送达")
+        await model.setNotifications(false); try await Task.sleep(for: .milliseconds(250))
+        try await saveFrame(window, name: "u102-五态-关-任意")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
-    /// 根子反面：旧版本存过「开」——系统现在说拒绝，App 不得照着自己那份配置继续发。
-    @MainActor func testStoredSwitchFromOlderBuildIsIgnored() async throws {
+    /// 请求时机：偏好开、系统未问过 ⇒ **第一次真要提醒时**才请求（不是首次启动、也不是拨开关时必弹）。
+    @MainActor func testFirstRealReminderAsksOnTheSpot() async throws {
         _ = NSApplication.shared
-        var sent = 0
-        let (model, _) = try systemTestModel(status: { .denied }, legacyPreference: true, send: { _ in sent += 1 })
+        var status: UNAuthorizationStatus = .notDetermined
+        var requested = 0
+        var sent: [NoticeDelivery] = []
+        let (model, _) = try systemTestModel(status: { status }, request: { requested += 1; status = .authorized; return true },
+                                             options: ["works": [try freshNoticeRow("first")]], send: { sent.append($0) })
         model.start(); try await eventually { model.isCurrent }
-        await model.notifications.refreshAuthorization()
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(model.notifications.authorizationStatus, .denied)
-        XCTAssertFalse(model.notifications.enabled, "系统说没允许，就不许凭本地那份配置发通知")
-        XCTAssertEqual(sent, 0)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(requested, 0, "首次打开不弹权限框")
+        try await Task.sleep(for: .seconds(2.4))
+        XCTAssertEqual(requested, 1, "第一次真要提醒时就地请求一次（系统框只在第一次调用时出现）")
+        XCTAssertEqual(sent.count, 1, "允许了就投出去")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// 现场那一层：你正在看 ⇒ 不打断，且**不记 seen**（等你不看了它还在候选里）。
+    @MainActor func testLookingAtTheAppSuppressesThenReleasesTheReminder() async throws {
+        _ = NSApplication.shared
+        var sent: [NoticeDelivery] = []
+        let (model, room) = try systemTestModel(status: { .authorized }, send: { sent.append($0) })
+        model.start(); try await eventually { model.isCurrent }
+        model.notifications.userLooking = { true }
+        try JSONSerialization.data(withJSONObject: ["systemTest": true, "works": [try freshNoticeRow("watched")]])
+            .write(to: room.appendingPathComponent("control.json"))
+        try await Task.sleep(for: .seconds(2.6))
+        XCTAssertTrue(sent.isEmpty, "你在看这一屏时不打断")
+        model.notifications.userLooking = { false }
+        try JSONSerialization.data(withJSONObject: ["systemTest": true, "works": [try freshNoticeRow("watched")]])
+            .write(to: room.appendingPathComponent("control.json"))
+        try await Task.sleep(for: .seconds(2.6))
+        XCTAssertEqual(sent.count, 1, "你不看了，它还在候选里")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    /// 偏好关 ⇒ 系统允许也不投（两个条件各归各的主）；拨开才开始投。
+    @MainActor func testOurPreferenceOffMeansNoDeliveryEvenWhenSystemAllows() async throws {
+        _ = NSApplication.shared
+        var sent: [NoticeDelivery] = []
+        let (model, room) = try systemTestModel(status: { .authorized }, send: { sent.append($0) })
+        model.start(); try await eventually { model.isCurrent }
+        await model.setNotifications(false)
+        try JSONSerialization.data(withJSONObject: ["systemTest": true, "works": [try freshNoticeRow("off")]])
+            .write(to: room.appendingPathComponent("control.json"))
+        try await Task.sleep(for: .seconds(2.6))
+        XCTAssertTrue(sent.isEmpty, "我们没打算提醒：系统允许也不投")
+        await model.setNotifications(true)
+        try JSONSerialization.data(withJSONObject: ["systemTest": true, "works": [try freshNoticeRow("on")]])
+            .write(to: room.appendingPathComponent("control.json"))
+        try await Task.sleep(for: .seconds(2.6))
+        XCTAssertEqual(sent.count, 1, "拨开才投")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
@@ -669,6 +717,7 @@ final class NativeTests: XCTestCase {
         var sent: [NoticeDelivery] = []
         let (model, room) = try systemTestModel(status: { status }, send: { sent.append($0) })
         model.start(); try await eventually { model.isCurrent }
+        await model.setNotifications(true)   // 我们这边是要提醒的（偏好开），只等系统放行
         status = .authorized
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
         try await eventually { model.notifications.enabled }

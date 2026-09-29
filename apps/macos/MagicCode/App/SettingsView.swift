@@ -12,9 +12,15 @@ struct SettingsView: View {
                 if model.loginStatus == .requiresApproval {
                     Button("在系统设置中允许登录启动") { SMAppService.openSystemSettingsLoginItems() }
                 }
-                // 权限是**系统的状态**，不是 App 的配置：这里只有「状态 ＋ 动作」，没有开关。
-                NotificationAuthorizationRow(model: model, notifications: model.notifications)
-                Text("只在需要你、失败或结果可查看时提醒。首次启动不会请求通知权限。").font(.caption).foregroundStyle(.secondary)
+                // 两格、两件事，各说各的：
+                // ① 「提醒我」＝**我们的偏好**：一个开关，默认开。关掉它＝让 Magic 闭嘴，系统那边不用动。
+                Toggle("提醒我", isOn: Binding(get: { model.notificationsEnabled }, set: { value in
+                    Task { await model.setNotifications(value) }
+                })).disabled(!model.canChangeNotifications)
+                Text("只在需要你、失败或结果可查看时提醒；你在看的时候不打扰。").font(.caption).foregroundStyle(.secondary)
+                // ② 系统那一格**不进常驻**：授权「已允许」是没有新增信息的一格；只在受阻时出现并带路。
+                //    偏好关着就不发，也就不会受阻 ⇒ 那一行不出现。
+                if model.notificationsEnabled { NotificationAuthorizationRow(notifications: model.notifications, openSettings: { model.openNotificationSettings() }) }
             }
             Section("数据目录") {
                 LabeledContent("基础路径") { path(model.selectedBase?.path ?? model.userHome.path, label: "基础路径") }
@@ -65,32 +71,25 @@ struct SettingsView: View {
         panel.begin { result in if result == .OK, let url = panel.url { action(url) } }
     }
 }
-/// 通知那一栏：只反映**系统**持有的状态，并按状态给对应动作；没有本地开关，也没有二次确认。
-/// 用户在系统设置里改了，界面回到前台／重新出现时自己就变，不需要他回来再点一次。
+/// ① 「系统里允许通知」这一格：**只反映系统持有的状态**（只读；被拒时给一条去系统设置的路）。
+/// 它不承担请求、也不存任何东西——请求由「提醒我」那一下发起；系统拒绝时那一格照旧是关不住的意图。
 struct NotificationAuthorizationRow: View {
-    @ObservedObject var model: AppModel
-    // 状态挂在嵌套的协调器上：只观察 model 不会跟着重绘，回来那一行就不会自己变。
+    // 状态挂在嵌套的协调器上：只观察上层对象不会跟着重绘，回来那一行就不会自己变。
     @ObservedObject var notifications: NotificationCoordinator
+    var openSettings: () -> Void
     var body: some View {
-        LabeledContent("系统通知") {
-            switch notifications.authorizationStatus {
-            case .notDetermined:
-                Button("打开通知") { Task { await model.requestNotifications() } }
-                    .disabled(!model.canChangeNotifications)
-                    .accessibilityIdentifier("open-notifications")
-            case .denied:
-                HStack(spacing: 12) {
-                    Text("系统里还没允许").foregroundStyle(.secondary)
-                    Button("去系统设置允许") { model.openNotificationSettings() }
-                        .accessibilityIdentifier("open-notification-settings")
-                }
-            case .authorized:
-                Text("已允许").foregroundStyle(.secondary)
-            case .provisional:
-                Text("只静默送达：通知只进通知中心，不弹横幅").foregroundStyle(.secondary)
-            default:
-                Text("系统临时允许（仅本次会话）").foregroundStyle(.secondary)
+        // 只有受阻两种状态才出现（「已允许」与「未问过」都不占地方）。
+        switch notifications.authorizationStatus {
+        case .denied:
+            LabeledContent("系统里还没允许通知") {
+                Button("去系统设置允许", action: openSettings).accessibilityIdentifier("open-notification-settings")
             }
+        case .provisional:
+            LabeledContent("只进通知中心，不弹横幅") {
+                Button("改提醒样式", action: openSettings).accessibilityIdentifier("open-notification-settings")
+            }
+        default:
+            EmptyView()
         }
     }
 }

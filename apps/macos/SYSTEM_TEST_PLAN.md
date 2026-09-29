@@ -4,6 +4,13 @@
 
 ## 系统通知：一次有界验收
 
+> **2026-09-29 改版（U102，按设计正文·通知节的收敛版）**：设置里是**两格、两件事**——
+> ① **「提醒我」＝我们的偏好**：一个开关，**默认开**；下面一行写死分寸（「只在需要你、失败或结果可查看时提醒；你在看的时候不打扰。」）。
+> ② **系统那一格不进常驻**：授权「已允许」是没有新增信息的一格；**只在受阻时出现**——被拒 →「系统里还没允许通知 → 去系统设置允许」；静默送达 →「只进通知中心，不弹横幅 → 改提醒样式」；偏好关着则那一行不出现。
+> 请求由 App **就地发起**：偏好开而系统未问过 ⇒ **第一次真要提醒时**才请求（**不是首次启动**）；系统框只在第一次调用时出现。
+> 装置读数：`system-state.json` 里 `notificationPreference`（我们的偏好，新身份为 true）、`notificationAuthorizationStatus`（系统原始枚举：0 未问过 / 1 拒绝 / 2 已允许 / 3 静默送达）、`notificationAuthorization`（人读文案）、`appActive`（判横幅时排「发送方在前台」这一条用）。
+> 另：**换签名（CDHash 变）会让已获授权作废**（实测同一身份从「已允许」变「已拒绝」），重签后按实际状态重新走授权。
+
 ### 对象和执行入口
 
 已经生成独立 Debug 验收 App 副本，名称 `Magic Code 系统验收`，bundle ID `com.magiccode.validation.1c90fc61d76d4e2a860e322ca83fcf2e.dev`，固定根 `/private/tmp/magic-system-test-lwdifnbs`，App 路径 `.artifacts/macos/system-test-ready/Magic Code 系统验收.app`。由命令级 Xcode 构建、重新签名，保留产物和原始日志；确切当前哈希见同目录 `current-identity.json`，历史实际 UI 对应 `native-seams-identity.json`。日常 App 的通知设置不更改。

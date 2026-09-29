@@ -25,6 +25,9 @@ import OSLog
     @Published var configPath = ""
     @Published var runtimeBase = ""
     @Published var loginStatus: SMAppService.Status = .notRegistered
+    /// **「提醒我」＝我们的偏好**（默认关）。与「系统里允许通知」那一格各说各的：
+    /// 系统拒绝时它仍可以是开——那是用户的意图本身，不是需要藏起来的第二个真相。
+    @Published var notificationsEnabled: Bool
     @Published var cliDirectory: String
     @Published var projectDirectory: URL?
     #if DEBUG
@@ -87,10 +90,14 @@ import OSLog
                 ?? FileManager.default.temporaryDirectory.appendingPathComponent("MagicCode-Dev-\(UUID().uuidString)")
         } else { selectedBase = defaults.string(forKey: "baseDirectory").map { URL(fileURLWithPath: $0) } }
         cliDirectory = defaults.string(forKey: "cliDirectory") ?? userHome.appendingPathComponent(".local/bin").path
+        // 「提醒我」默认开：没说不要，就是要（关掉它＝让 Magic 闭嘴）。
+        notificationsEnabled = defaults.object(forKey: "notificationsEnabled") as? Bool ?? true
         let support = userHome.appendingPathComponent("Library/Application Support/\(isDevelopment ? "Magic Code Dev" : "Magic Code")/runtime")
         publication = HostPublication(directory: support)
         terminal = TerminalLauncher(directory: support.appendingPathComponent("terminal"))
         notifications = notificationPort ?? NotificationCoordinator()
+        notifications.preference = notificationsEnabled
+        notifications.userLooking = { [weak self] in self?.panelVisible == true && NSApp?.isActive == true }
         notifications.delivered = { [weak self] ids in self?.observer?.send(.delivered(ids: ids)) }
         notifications.failure = { [weak self] text in self?.actionMessage = text }
         notifications.openRoutes = { [weak self] routes in
@@ -410,11 +417,14 @@ import OSLog
         guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换数据目录。"; return }
         switching = true; switchBase = base; confirmQuit()
     }
-    /// 「打开通知」：这个动作本身就是那次系统请求（未问过时才有这个动作）。
-    /// 这里没有本地开关，也不留「待兑现意图」——系统怎么答，界面就怎么显示。
-    func requestNotifications() async {
+    /// 「提醒我」这一下：存的**是我们的偏好**（系统拒绝也照存，那是用户的意图本身）。
+    /// 拨开而系统还没问过 ⇒ **就地请求**（Apple 也把「从功能开关里请求」列为正解）；首次打开不弹框。
+    func setNotifications(_ value: Bool) async {
         guard canChangeNotifications else { return }
-        _ = await notifications.enableExplicitly()
+        notificationsEnabled = value
+        notifications.preference = value
+        defaults.set(value, forKey: "notificationsEnabled")
+        await notifications.refreshAuthorization()
     }
     /// 回到前台／设置页出现时重读系统状态：用户在系统设置里改了，这边自己跟上。
     func refreshNotifications() async { await notifications.refreshAuthorization() }
@@ -506,7 +516,11 @@ extension AppModel {
             "revision": projection?.revision ?? -1, "selectedSession": selected ?? "", "selectedNotice": selectedNotice?.id ?? "",
             "loginStatus": loginStatus.rawValue, "loginWritesAllowed": canChangeLogin,
             "notificationAuthorization": notifications.authorization, "notificationWritesAllowed": canChangeNotifications,
-            "notificationAuthorizationStatus": notifications.authorizationStatus.rawValue]
+            "notificationAuthorizationStatus": notifications.authorizationStatus.rawValue,
+            "notificationPreference": notificationsEnabled,
+            // 判「横幅为什么没出来」的检查项之一：发送方 App 当时是否在前台
+            //（macOS 前台默认不弹，须 willPresent 显式返回 .banner）。
+            "appActive": NSApp?.isActive == true]
         try? PrivateFiles.write(JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), to: root.appendingPathComponent("system-state.json"))
     }
     func restoreSystemTestNotifications() async {

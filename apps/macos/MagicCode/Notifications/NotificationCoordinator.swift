@@ -99,7 +99,7 @@ struct NoticeBatch {
     }
     // Collector used by native tests; it cannot reach the system notification center.
     init(send: @escaping (NoticeDelivery) async throws -> Void, existing: @escaping () async -> [String] = { [] },
-         status: @escaping () async -> UNAuthorizationStatus = { .notDetermined },
+         status: @escaping () async -> UNAuthorizationStatus = { .authorized },
          request: @escaping () async throws -> Bool = { false }) {
         center = nil; sendDelivery = send; existingIDs = existing
         statusProvider = status; requester = request; super.init()
@@ -110,9 +110,9 @@ struct NoticeBatch {
     func refreshAuthorization() async {
         let status = await statusProvider()
         authorizationStatus = status
-        let allowed = status == .authorized || status == .provisional
-        if allowed, !enabled { enabledSince = Date().timeIntervalSince1970 * 1000 }
-        enabled = allowed
+        let now = deliverable
+        if now, !enabled { enabledSince = Date().timeIntervalSince1970 * 1000 }
+        enabled = now
         switch status {
         case .authorized: authorization = "系统已允许"
         case .provisional: authorization = "系统静默送达：只进通知中心，不弹横幅"
@@ -121,6 +121,17 @@ struct NoticeBatch {
         default: authorization = "尚未申请权限"
         }
     }
+    /// **「提醒我」＝我们持有的偏好**（默认开，落在 App 的设置里）。与系统那一格**各说各的**：
+    /// 系统拒绝时它仍可以是开——那是用户的意图本身，不必藏成什么「待兑现意图」。
+    var preference = true
+    /// **现场那一层**：你现在在看（App 的面板开着且它是前台）⇒ 不打断；拿不到证据时不据此压掉通知。
+    var userLooking: () -> Bool = { false }
+    /// 投递门 = **我们想提醒**（偏好）**且**系统允许。两个条件各归各的主，谁也冒充不了谁。
+    private var deliverable: Bool {
+        preference && (authorizationStatus == .authorized || authorizationStatus == .provisional)
+    }
+    /// 偏好开、系统还没问过：候选先攒着，**第一次真要提醒时**再就地请求（不是首次启动）。
+    private var awaitingRequest: Bool { preference && authorizationStatus == .notDetermined }
     func enableExplicitly() async -> Bool {
         let status = await statusProvider()
         do {
@@ -146,18 +157,22 @@ struct NoticeBatch {
         for work in projection.works {
             for notice in work.notices {
                 if notice.delivered || !notice.unread { seen.insert(notice.id); continue }
+                // 现场那一层：你正在看这一屏 ⇒ 不打断。**不记 seen**——等你不看了它还在候选里。
+                if userLooking() { continue }
                 guard seen.insert(notice.id).inserted else { continue }
                 // The enable date is a preference, not a second notice ledger. Persisted
                 // delivered facts and system requests cover restarts across the 2s window.
-                guard enabled, notice.at >= enabledSince else { continue }
+                guard enabled || awaitingRequest, notice.at >= enabledSince else { continue }
                 batch.add(work: work, notice: notice)
             }
         }
-        guard enabled, timer == nil, !batch.pending.isEmpty else { return }
+        guard enabled || awaitingRequest, timer == nil, !batch.pending.isEmpty else { return }
         timer = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             guard let self else { return }
             self.timer = nil
+            // 真有该告诉你的事、而系统还没问过 ⇒ 就在这一刻问（系统框只在第一次调用时出现）。
+            if self.awaitingRequest, !(await self.enableExplicitly()) { self.batch = NoticeBatch(); return }
             guard self.enabled else { self.batch = NoticeBatch(); return }
             for delivery in self.batch.take(dataDir: identity.dataDir) {
                 do {

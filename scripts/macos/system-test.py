@@ -108,8 +108,9 @@ if __name__ == '__main__':
                         if process.poll() is None: process.kill(); process.wait(timeout=5)
                     found = state(manifest)
                     assert found.get('notificationWritesAllowed') is False and found.get('loginWritesAllowed') is False
-                    # 权限是系统的状态，App 不再存自己的「开没开」：只看系统读到的原始授权（新身份应为 0=未问过）。
+                    # 两格各说各的：系统那格读原始授权（新身份 0=未问过）；偏好那格「提醒我」默认开。
                     assert found.get('notificationAuthorizationStatus') == 0
+                    assert found.get('notificationPreference') is True
                     assert not (root / 'system-notification-requests.json').exists()
                     write(output / 'read-only-state.json', found)
                 else:
