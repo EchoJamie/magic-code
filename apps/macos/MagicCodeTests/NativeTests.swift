@@ -541,15 +541,13 @@ final class NativeTests: XCTestCase {
 
         let directory = root.appendingPathComponent(".artifacts/macos/frames")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let svg = root.appendingPathComponent("apps/macos/MagicCode/Resources/Assets.xcassets/BrandMark.imageset/brand-mark.svg")
-        let brand = try XCTUnwrap(NSImage(contentsOf: svg), "品牌符号文件必须可读")
         let states: [(MenuBarState, String)] = [(.idle, "空闲静态"), (.active, "有执行"), (.attention, "需要你或异常")]
         func row(_ appearance: NSAppearance.Name, name: String) async throws {
             let dark = appearance == .darkAqua
             let content = HStack(spacing: 30) {
                 ForEach(Array(states.enumerated()), id: \.offset) { _, entry in
                     HStack(spacing: 6) {
-                        MenuBarMark(state: entry.0, mark: Image(nsImage: brand))
+                        MenuBarMark(state: entry.0)
                         Text(entry.1).font(.system(size: 12)).foregroundStyle(.primary)
                     }
                 }
