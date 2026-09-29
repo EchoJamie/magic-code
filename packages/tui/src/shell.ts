@@ -198,6 +198,27 @@ export type ShellKey =
    */
   | { readonly kind: 'ctrl+w' }
   /**
+   * **`Ctrl V`——把剪贴板里的图取进来**（U107）。
+   *
+   * ## 为什么图片要另有一个键，而文字粘贴不用
+   *
+   * 文字走的是**终端那条信道**（bracketed paste，见 `kind: 'paste'`）——终端把剪贴板的
+   * **文本**交过来。图像**没有这条通道**：paste 是文本通道，而 `Cmd+V` 那一下还被
+   * **终端自己**接走（ghostty 的默认配就是 `keybind = super+v=paste_from_clipboard`，
+   * 应用根本收不到那一次按键）。所以图像只能**进程自己去问系统剪贴板**
+   * （`execution/clipboard.ts`），而问的那一下得有个**应用收得到的按键**——就是这一个。
+   *
+   * ## 为什么是 `ctrl+v`
+   *
+   * 它是这个动作在别处的老面孔（Claude Code 的 footer 就写着 `Image in clipboard ·
+   * ctrl+v to paste`），而 `cmd+v` 那一支**拿不到**（被终端接走了，见上）。
+   * 这一屏此前没占它（`ctrl+v` 原先落到「没人接的键」那一支）。
+   *
+   * ⚠️ **它不发按键本身，发一条命令**（`input.paste`）——外壳看不见剪贴板，
+   * 也不该替内核猜一个（同 `paths.list` 那条「拿不到的不编」）。
+   */
+  | { readonly kind: 'ctrl+v' }
+  /**
    * **清单翻页**——把行视口挪到第 `top` 行（U34）。
    *
    * ⚠️ **收的是「到哪一行」而不是「翻几行」**：一页 ＝ 屏上放得下的那几行，而**列数、
@@ -1533,6 +1554,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     // 选定那一条认出来了（U62）⇒ **是图就把那一处改写成 `Image#N`**（见 `identifyPicked`）。
     if (event.kind === 'paths.identified') identifyPicked(event.data)
+
+    // 剪贴板那一张回来了（U107）⇒ **在插入点放一处 `Image#N`**，或者**落一句回执**
+    // 说清为什么没取到（见 `pastedClipboard`）。
+    if (event.kind === 'input.pasted') pastedClipboard(event.data)
 
     // 提交**没收下** ⇒ 按原 pairing 键认下那一份草稿（U33）。回执那半行由 `reduce` 落
     // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
@@ -3116,6 +3141,61 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
+   * **剪贴板那一张到了**（U107）——`input.paste` 的答复，两支各办各的。
+   *
+   * ## 取到了：在**插入点**放一处 `Image#N`
+   *
+   * 位置就是**当下那个插入点**——用户按那一下的时候字打在哪，这一处就落在哪
+   * （与 `attachImage` 的「不一律追加到末尾」同一条分寸；那边锚点是命令行留下的位置，
+   * 这边没有命令，锚点就是插入点本身）。
+   *
+   * 编号仍归**稿子那一侧**发（`imageNumberOf`，按**内容身份**）——这里一个字都不另算：
+   * 同一张图从剪贴板贴两次、或与 `@` 选进来的同一张并用，拿到的都是同一个号
+   * （身份是字节的 sha256，与它从哪来无关——设计 · 文件与图片 ·「图片的身份与名字」）。
+   *
+   * ⚠️ **一处**（不是一处加一条回执）：贴成功是**看得见**的——那一处 `Image#N` 就落在
+   * 插入点上。设计把回执留给「刚发生、屏上没别处说得出」的事（见 `appendReceipt`），
+   * 而这一件屏上正说着。
+   *
+   * ## 没取到：落一行**回执**，说明发生了什么
+   *
+   * 剪贴板空 / 只有文本 / 这台机器上取不了——**这一格必须说**：用户按下的就是
+   * 「把剪贴板里的图取进来」，取不到**就是这件事的结果本身**，一声不响他只会以为按漏了
+   * （设计明文「不许静默失败」）。话由内核备好（它才认得出剪贴板里是什么），这里只负责说。
+   *
+   * ⚠️ **既没图也没话 ⇒ 什么都不做**：那是契约上不该出现的一形，屏上不替它编一句
+   * （同「拿不到的不编」）。
+   */
+  const pastedClipboard = (data: Extract<KernelEvent, { kind: 'input.pasted' }>['data']): void => {
+    const image = data.image
+    if (image === undefined) {
+      if (data.problem !== undefined) commit(appendReceipt(view, data.problem))
+      return
+    }
+
+    const at = caretAt()
+    const next = replaceWith(
+      view.draft,
+      view.refs,
+      { from: at, to: at },
+      {
+        kind: 'image',
+        marker: markerOf({ kind: 'image', n: imageNumberOf(image.blob, view.refs) }),
+        // 剪贴板来的那一张**没有落位**（设计：图不一定来自文件），故「身份」那一格
+        // 写的是**出处**（内核给的 `label`），不编一个路径出来。
+        source: image.label,
+        label: image.label,
+        name: image.name,
+        mime: image.mime,
+        blob: image.blob,
+      },
+      at,
+    )
+
+    editAt(next.draft, next.caret, next.refs)
+  }
+
+  /**
    * **一次提交**（U33 起，U36 改形）——正文 ＋ 它里面的引用 ＋ 配对键，三件一起交给内核。
    *
    * 三条写在一处：
@@ -3829,6 +3909,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (view.dock.kind === 'picker') return NONE
         // **原文照收**：粘贴进来的那一串一个字不改（Tab、多行都留着——它们是正文）
         insertAt(input.text)
+        return NONE
+
+      // **`Ctrl V`——取剪贴板里的图**（U107）。分寸与上面那条文本 `paste` **逐条相同**
+      // （同一件事的两条信道，屏上的规矩不该分家）：接管着不收、抽屉开着不收。
+      // 差别只在最后一步——它发一条命令让**内核**去问系统剪贴板，然后等 `input.pasted`
+      // 回来（取不到就说一句，见 `pastedClipboard`）。**不发按键本身、也不自己读剪贴板**。
+      case 'ctrl+v':
+        if (view.dock.kind === 'decision') {
+          commit(said(view, '先答复——此刻贴不了图（这一轮在等你）。答完接着贴。'))
+          return NONE
+        }
+        if (view.dock.kind === 'picker') return NONE
+        send({ type: 'input.paste' })
         return NONE
 
       case 'escape':

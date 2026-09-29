@@ -573,6 +573,51 @@ async function readImage(
   return { ok: true, kind: 'image', mime: image.mime, bytes: whole.bytes }
 }
 
+/**
+ * **一份字节能不能当图送**（U107）——剪贴板那一条用（`clipboard.ts` 把字节取回来，
+ * 这里判它能不能送）。
+ *
+ * 与按路径取图**同一把尺子**：认图（`sniffImage`）· 单张上限（`DEFAULT_IMAGE_BYTES`）·
+ * 完整性底线（`checkImageIntact`）三件都是从上面 import 来的**同一份**——不复制。
+ * 哪天上限要改，改的仍是那个常量一处。
+ *
+ * ⚠️ **为什么不直接走 `readFileMaterial`**：那条路要一个**路径**，而剪贴板来的那一张
+ * **本来就没有落位**（设计 · 文件与图片：「图不一定来自文件」）。硬给它编一个临时文件、
+ * 再当成一份工作区外的材料去读，读出来的 `label` / `external` 全是假的——正是设计里
+ * 那条「不假装」不许的事。
+ *
+ * `subject` ＝**报话时怎么称呼这一份**（文件那一路是 `「名字」`，剪贴板这一路是
+ * 「剪贴板里这一张」）——判据相同，说的是**哪一份**不同。
+ */
+export function imageBytesOf(
+  bytes: Uint8Array,
+  subject: string,
+): { readonly ok: true; readonly mime: string } | { readonly ok: false; readonly reason: string } {
+  const image = sniffImage(bytes)
+  if (image === undefined) {
+    return { ok: false, reason: `${subject}认不出是张图（不是一个认得出来的图片格式）——换一张试试。` }
+  }
+
+  if (bytes.length > DEFAULT_IMAGE_BYTES) {
+    return {
+      ok: false,
+      reason:
+        `${subject}有 ${megabytesOf(bytes.length)}，超过单张图片的上限 ` +
+        `${Math.round(DEFAULT_IMAGE_BYTES / 1024 / 1024)} MiB——先压小一点再带（此刻一份都没送出去）。`,
+    }
+  }
+
+  const intact = checkImageIntact(bytes, image)
+  if (!intact.ok) {
+    return {
+      ok: false,
+      reason: `${subject}${intact.reason}——这一份送不出完整的图，换一张或重新导出它（此刻一份都没送出去）。`,
+    }
+  }
+
+  return { ok: true, mime: image.mime }
+}
+
 /** 读前缀（上限 ＋ 1 字节用来判「有没有更多」）——大文件不整份进内存。 */
 async function readPrefix(
   absolute: string,

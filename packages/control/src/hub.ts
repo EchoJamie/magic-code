@@ -118,6 +118,11 @@ export function createControlHub(): ControlHubFace {
         // 答复走事件（`paths.identified`，不落库）。
         target.onPathIdentify(command.path, command.external)
         return
+      case 'input.paste':
+        // 把剪贴板里的图取进来（U107）——同一条路（剪贴板那一跳在装配手里）。
+        // 本域不认识剪贴板，也不读字节：**原样转手**，答复走事件（`input.pasted`，不落库）。
+        target.onInputPaste()
+        return
       case 'attachments.list':
         // 本会话送出的图片（读侧 · U37）——**原样转手**给**对话域**（条目与那份载荷形态
         // 归它，同 `history.read` 的站位）。答复走事件（`attachments.catalog`，不落库）：

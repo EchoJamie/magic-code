@@ -458,6 +458,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
+    onInputPaste: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -482,6 +483,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
+    onInputPaste: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -562,6 +564,7 @@ export function routesCarryModelSwitch(): void {
     onSkillList: () => undefined,
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
+    onInputPaste: () => undefined,
     onAttachmentList: () => undefined,
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
@@ -664,7 +667,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 七条读面答复（D10 · U33 · U36 · U37 · U39 · U41）＋ 一条回执（U63）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 八条读面答复（D10 · U33 · U36 · U37 · U39 · U41 · U107）＋ 一条回执（U63）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -700,6 +703,11 @@ describe('事件契约', () => {
       // 且它只是「这一条是什么」的**当场答复**（问几次都不混，落库只会把这句答复存 N 遍）。
       // 那一处引用到底带了什么材料另有痕：`user` 条目的载荷 `refs`（含图片那份 blob）。
       'paths.identified',
+      // U107：剪贴板取图的答复同列——同 `paths.identified` 那一条（**一次动作的当场答复**，
+      // 成败两支都不是记录）。取到的那一份字节另有痕：`user` 条目的载荷 `refs`（含 blob）；
+      // 没取到那一句（`problem`）尤其不能落库——它是「当时按了一下、剪贴板里没图」的一刻，
+      // 重放到第二天还翻出来印一遍，说的是一件早就不是当下的事。
+      'input.pasted',
       // U37：图片附件同列——**同一条判据的第六处**（那份字节与名字 / 类型 / 出处本来就
       // 躺在 `user` 条目的载荷 `refs` 里，不在另一张表里），落库＝把同一件事存第二遍；
       // 且回执那一格（导出的临时文件路径）**一次性**——重放到第二天早就没人清了。
@@ -731,8 +739,6 @@ describe('事件契约', () => {
       // （`/model` 的主体 ＋ 管理那一屏）；**新锚**：同一判据多一格，字面规则一个没动。
       // 保存 / 移除**这个动作**也不落库：它的痕在配置文件里（少了一条 / 多了一条）。
       'provider.catalog',
-
-
     ])
   })
 

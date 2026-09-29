@@ -55,8 +55,18 @@ export type { RulesOptions } from './rules.ts'
 export { createSkills } from './skills.ts'
 export type { SkillsOptions } from './skills.ts'
 
-export { createMaterials, DEFAULT_CANDIDATES } from './materials.ts'
+export { createMaterials, imageBytesOf, DEFAULT_CANDIDATES } from './materials.ts'
 export type { MaterialsOptions } from './materials.ts'
+
+/**
+ * **读系统剪贴板里的图**（U107）——不是端口，是这一域给出去的一件本事（同 `groups.ts` 那几件）。
+ *
+ * 落在这里的理由与沙箱、材料来源同源：**问系统要东西**是边界动作（它 spawn 命令、
+ * 落一个临时文件、再读回来），域与外壳都不该自己去做这件。剪贴板这一跳与终端无关
+ * （终端递不了原始图像），故只能进程直接问系统——见 `clipboard.ts` 头注。
+ */
+export { readClipboardImage } from './clipboard.ts'
+export type { ClipboardImage } from './clipboard.ts'
 
 /**
  * **取回面**（`WebSource` · U72）——出网那一件原语（抓一个 URL）。

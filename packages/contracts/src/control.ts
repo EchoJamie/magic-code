@@ -530,8 +530,37 @@ export type McpReconnect = {
 }
 
 /**
+ * `input.paste`——**把剪贴板里的图取进来**（U107）。
+ *
+ * ## 由头
+ *
+ * 设计里那个位置一直是留着的：**图不一定来自文件**（设计 · 文件与图片「图片的身份与名字」），
+ * 而 `Image#N` 之所以是**编号**而不是路径，正是为了这一条——剪贴板来的那一张**没有落位、
+ * 没有文件名**。但「读剪贴板」那一跳此前**没人实现**（同一节里列为独立验证项）。
+ *
+ * ## 为什么是内核去读，而不是外壳
+ *
+ * 终端**没有标准通道**能递原始图像（paste 是文本通道，`Cmd+V` 被终端自己接走）——
+ * 所以读的是**进程自己**这条系统通道（macOS 上走 `pngpaste` / `osascript`，见
+ * `execution/clipboard.ts`）。而**外壳不碰系统**（它连盘都不碰，只经控制面说话），
+ * 故这一跳落在内核这一侧，与 `paths.identify` 同一处境：**读走命令面，答复走事件**。
+ *
+ * ## 无参
+ *
+ * 命令只表达「用户按了取图那一下」。**剪贴板是什么由内核当场去看**——外壳既看不见
+ * 剪贴板，也不该替它猜一个（同 `paths.list` 那条「拿不到的不编」）。
+ *
+ * ## 唯一如实标注的例外：SSH
+ *
+ * 剪贴板读的是**跑这条命令那台机器**的。magic 跑在远端时，读到的（或读不到的）是**远端**
+ * 的剪贴板——本机的那一份过不来。答复里的缘由按实际发生的事说，不假装成功。
+ */
+export type InputPaste = { readonly type: 'input.paste' }
+
+/**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set`）——外壳发往内核的全部消息。
+ * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set` ＋ U107 的剪贴板取图）
+ * ——外壳发往内核的全部消息。
  */
 export type Command =
   | InputSubmit
@@ -556,6 +585,7 @@ export type Command =
   | AttachmentExport
   | McpList
   | McpReconnect
+  | InputPaste
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

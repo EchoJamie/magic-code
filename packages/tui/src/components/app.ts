@@ -946,6 +946,10 @@ export function toShellKeys(
   // 只在 `/resume` 那一屏有意义（见 `shell.ts` 那两个键的注），别处按下去是无声的。
   if (key.ctrl === true && input === 'x') return [{ kind: 'ctrl+x' }]
   if (key.ctrl === true && input === 'w') return [{ kind: 'ctrl+w' }]
+  // `Ctrl V`——取剪贴板里的图（U107）。**这个键必须落在 `other` 那一支之前认下来**
+  // （同下面 `Ctrl A` / `Ctrl E` 那条注的由头：落到 `other` 就没人接了）。
+  // 两条来路同形（裸控制码 `\x16` 与 kitty 协议下的 `CSI 22;5u`）——与 `Ctrl T` 同一处置。
+  if (key.ctrl === true && input === 'v') return [{ kind: 'ctrl+v' }]
   // **`Ctrl A` / `Ctrl E`——行首 / 行末**（U85）。原型 · 键盘那一节没列这一对，可它是
   // **readline 的老面孔**（用户真跑时按下去发现没有）：与 `←` `→` 同一族的插入点移动，
   // 只是**一步跨到行首 / 行末**。语义与落点见 `shell.ts` 的 `lineStart` / `lineEnd`。
