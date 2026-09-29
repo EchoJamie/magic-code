@@ -736,6 +736,24 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
+    /// U105：**拨开「提醒我」而系统还没问过 ⇒ 就地请求**（设计正文·通知节总纲那一句）。
+    /// 修前 `setNotifications` 只 `refreshAuthorization()`（读状态），从没调 `requester()`——
+    /// 于是拨开关根本不请求。这条用例钉的就是这一下。
+    @MainActor func testTurningTheReminderOnAsksTheSystemWhenItHasNotAsked() async throws {
+        _ = NSApplication.shared
+        var status: UNAuthorizationStatus = .notDetermined
+        var requested = 0
+        let (model, _) = try systemTestModel(status: { status }, request: { requested += 1; status = .authorized; return true })
+        model.start(); try await eventually { model.isCurrent }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(requested, 0, "启动本身不许弹框（不是首次启动）")
+        await model.setNotifications(true)
+        XCTAssertEqual(requested, 1, "拨开而系统没问过 ⇒ 就地请求一次")
+        await model.setNotifications(true)
+        XCTAssertEqual(requested, 1, "系统已经问过 ⇒ 不重复弹框")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
     /// 现场那一层：你正在看 ⇒ 不打断，且**不记 seen**（等你不看了它还在候选里）。
     @MainActor func testLookingAtTheAppSuppressesThenReleasesTheReminder() async throws {
         _ = NSApplication.shared

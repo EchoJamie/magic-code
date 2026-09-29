@@ -414,11 +414,17 @@ import OSLog
     }
     /// 「提醒我」这一下：存的**是我们的偏好**（系统拒绝也照存，那是用户的意图本身）。
     /// 拨开而系统还没问过 ⇒ **就地请求**（Apple 也把「从功能开关里请求」列为正解）；首次打开不弹框。
+    ///
+    /// **U105 修**：上面这句原先只活在注释里——函数体只 `refreshAuthorization()`（读状态），
+    /// 从没调过 `requester()`，于是拨开关根本不请求；而设计正文·通知节总纲写死了
+    /// 「偏好开而系统未问过 ⇒ 第一次真要提醒时就地请求」。补上这一步。不改别处语义：
+    /// 系统已经问过时 `enableExplicitly` 只读状态、不会重复弹框。
     func setNotifications(_ value: Bool) async {
         guard canChangeNotifications else { return }
         notificationsEnabled = value
         notifications.preference = value
         defaults.set(value, forKey: "notificationsEnabled")
+        if value { _ = await notifications.enableExplicitly() }
         await notifications.refreshAuthorization()
     }
     /// 回到前台／设置页出现时重读系统状态：用户在系统设置里改了，这边自己跟上。
@@ -513,6 +519,9 @@ extension AppModel {
             "notificationAuthorization": notifications.authorization, "notificationWritesAllowed": canChangeNotifications,
             "notificationAuthorizationStatus": notifications.authorizationStatus.rawValue,
             "notificationPreference": notificationsEnabled,
+            // **U105 加**：把失败原因也交出来。原先 `actionMessage` 只进 UI，装置读不到 ——
+            // 请求没弹框时「为什么」是空白（本轮就卡在这）。空串＝此刻没有待报的失败。
+            "actionMessage": actionMessage ?? "",
             // 判「横幅为什么没出来」的检查项之一：发送方 App 当时是否在前台
             //（macOS 前台默认不弹，须 willPresent 显式返回 .banner）。
             "appActive": NSApp?.isActive == true,
