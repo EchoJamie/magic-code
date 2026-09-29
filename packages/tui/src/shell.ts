@@ -3141,7 +3141,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   }
 
   /**
-   * **剪贴板那一张到了**（U107）——`input.paste` 的答复，两支各办各的。
+   * **剪贴板那一张到了**（U107）——`input.paste` 的答复，三支各办各的：
+   * **抽屉开着**（答复在路上时那一栏才开）⇒ 不插、明说；**取到了** ⇒ 插一处 `Image#N`；
+   * **没取到** ⇒ 落一句回执。
    *
    * ## 取到了：在**插入点**放一处 `Image#N`
    *
@@ -3167,6 +3169,22 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * （同「拿不到的不编」）。
    */
   const pastedClipboard = (data: Extract<KernelEvent, { kind: 'input.pasted' }>['data']): void => {
+    // ⚠️ **抽屉开着时，答复也不收**（合前自查补的一档）。
+    //
+    // 按下去那一下不收是上面 `case 'ctrl+v'` 管的；可这一条**是异步答复**——用户完全
+    // 可能在答复回来之前把 `@` 那一栏打开。那一刻要是照插，两件坏事一起发生：
+    // ① 与「抽屉开着时粘贴一律不收」那条规矩自相矛盾（同一件事两条口径）；
+    // ② 更要害的是**锚点会错**：路径那一栏记着「打开它时草稿的哪一段」是自己的查询，
+    //    往草稿里插 7 个字之后那个区间就偏了——用户接着选定一条，替换掉的是**别处**的文字。
+    //
+    // 故这一档**明说**（不静默）：图取到了，但此刻那一栏占着，收起再按一次就行。
+    if (view.dock.kind === 'picker') {
+      if (data.image !== undefined || data.problem !== undefined) {
+        commit(appendReceipt(view, '剪贴板里那一张取到了，但这一栏开着没收——收起之后再按一次 ctrl+v。'))
+      }
+      return
+    }
+
     const image = data.image
     if (image === undefined) {
       if (data.problem !== undefined) commit(appendReceipt(view, data.problem))
