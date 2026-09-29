@@ -29,7 +29,11 @@ def prepare(output):
     assert native.exists() and helper.exists(), 'build the native Debug target and helper first'
     root = Path(tempfile.mkdtemp(prefix='magic-system-test-', dir='/tmp')).resolve(); root.chmod(0o700)
     bundle = 'com.magiccode.validation.' + uuid.uuid4().hex + '.dev'
-    app = output / 'Magic Code 系统验收.app'
+    # **显示名要可区分**：每轮都建一个新身份，全叫「Magic Code 系统验收」的话，
+    # 系统设置的通知列表里会排出一串同名条目，用户照名字点**必然点错**（U105 就撞上了）。
+    # 后缀取 bundle 里的短码：自证、不用人记轮次，而且各轮天然不重名。
+    display = 'Magic Code 系统验收 ' + bundle.split('.')[3][:4]
+    app = output / ('Magic Code 系统验收.app')
     subprocess.run(['ditto', str(native), str(app)], check=True)
     (app / 'Contents/Helpers').mkdir(exist_ok=True)
     shutil.copy2(helper, app / 'Contents/Helpers/magic-runtime')
@@ -37,8 +41,8 @@ def prepare(output):
     shutil.copy2('apps/macos/MagicCodeTests/Fixtures/controlled-helper.py', fixture); fixture.chmod(0o700)
     plist = app / 'Contents/Info.plist'
     info = plistlib.loads(plist.read_bytes())
-    info.update({'CFBundleIdentifier': bundle, 'CFBundleName': 'Magic Code 系统验收',
-                 'CFBundleDisplayName': 'Magic Code 系统验收', 'MagicSystemTestRoot': str(root)})
+    info.update({'CFBundleIdentifier': bundle, 'CFBundleName': display,
+                 'CFBundleDisplayName': display, 'MagicSystemTestRoot': str(root)})
     plist.write_bytes(plistlib.dumps(info))
     write(root / 'control.json', {'systemTest': True, 'source': str(app / 'Contents/Helpers/magic-runtime'), 'works': []})
     with (output / 'signature.log').open('w') as log:
