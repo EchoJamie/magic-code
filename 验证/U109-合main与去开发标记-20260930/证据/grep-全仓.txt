@@ -1,0 +1,19 @@
+# U109 · 去开发标记的全仓 grep（原始输出）
+# 时间：2026-09-30 19:52:49+0800  提交：8496c1990d4f323759d04b7103e08e2ff6bcbcb9
+# 范围：git ls-files（入库文件）——排除了 .artifacts/ 与本单自己的验证原件（它们按词面提到这些串）
+
+## pattern: Magic Code Dev
+命中：0
+
+## pattern: com.magiccode.app.dev
+命中：0
+
+## pattern: isDevelopment
+命中：0
+
+## pattern: 开发版
+命中：0
+
+## pattern: 正式版
+命中：0
+

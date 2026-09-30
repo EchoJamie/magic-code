@@ -1,0 +1,12 @@
+{"detail":"ready(identity: MagicCode.ServiceIdentity(protocol: 1, version: \"0.1.0\", source: \"\/Users\/echo\/namespace\/github\/EchoJamie\/magic-code-u109\/.artifacts\/macos\/Magic Code.app\/Contents\/Helpers\/magic-runtime\", hostInstance: \"6FD4FE8C-C594-4747-B18B-BC0DDFDF6C16\", serviceInstance: \"b4f691f9-8b98-4f42-9935-b6394e9640ef\", dataDir: \"\/private\/tmp\/magic-system-test-u109frame\/.magic\"), socket: \"\/private\/tmp\/magic-system-test-u109frame\/.magic\/run\/3978ae3c4b\/m.sock\", base: \"\/private\/tmp\/magic-system-test-u109frame\/.magic\", config: \"\/private\/tmp\/magic-system-test-u109frame\/.magic\/config.json\")","event":"host.response"}
+{"event":"app.ready","host":"\/private\/tmp\/magic-system-test-u109frame\/Library\/Application Support\/Magic Code\/runtime\/host.json"}
+{"detail":"1790769098.626 regular ← isVisible","event":"activation-policy"}
+{"detail":"1790769098.628 accessory ← isVisible","event":"activation-policy"}
+{"event":"activation-policy","detail":"1790769098.637 regular ← isVisible"}
+2026-09-30 19:51:38.654 MagicCode[51212:2408053] error messaging the mach port for IMKCFRunLoopWakeUpReliable
+{"detail":"terminating=false","event":"app.terminate-request"}
+{"detail":"CF62E4CB-E873-4A8E-97A3-7D0108804872","event":"stop.requested"}
+{"detail":"stopped(request: Optional(\"CF62E4CB-E873-4A8E-97A3-7D0108804872\"))","event":"host.response"}
+{"detail":"0, stopped=true, request=CF62E4CB-E873-4A8E-97A3-7D0108804872","event":"host.exited"}
+{"detail":"","event":"app.clean-exit"}
+{"detail":"1790769101.248 accessory ← isVisible","event":"activation-policy"}

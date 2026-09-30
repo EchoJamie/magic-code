@@ -1,0 +1,45 @@
+{
+  "axLines" : [
+    "登录时打开 Magic Code",
+    "提醒我",
+    "只在需要你、失败或结果可查看时提醒；你在看的时候不打扰。",
+    "基础路径",
+    "基础路径：/private/tmp/magic-system-test-u109frame",
+    "/private/tmp/magic-system-test-u109frame",
+    "基础路径下使用 .magic；请勿把 .magic 本身再选作基础路径。",
+    "配置",
+    "配置路径：/private/tmp/magic-system-test-u109frame/.magic/config.json",
+    "/private/tmp/magic-system-test-u109frame/.magic/config.json",
+    "数据",
+    "数据路径：/private/tmp/magic-system-test-u109frame/.magic",
+    "/private/tmp/magic-system-test-u109frame/.magic",
+    "命令安装目录",
+    "/private/tmp/magic-system-test-u109frame/.local/bin",
+    "安装为指向本 App 内置 CLI 的符号链接；移动 App 后需重新安装。已有文件不会被覆盖。",
+    "若终端 PATH 中没有此目录，添加：",
+    "export PATH='/private/tmp/magic-system-test-u109frame/.local/bin':\"$PATH\"",
+    "export PATH='/private/tmp/magic-system-test-u109frame/.local/bin':\"$PATH\"",
+    "新草稿项目",
+    "新草稿项目：/private/tmp/magic-system-test-u109frame",
+    "/private/tmp/magic-system-test-u109frame",
+    "版本",
+    "0.1.0",
+    "0.1.0",
+    "核心已就绪",
+    "撤销登录项并移除属于本 App 的终端链接；记录和配置保留。随后可在 Finder 删除 App。",
+    "Magic Code Settings"
+  ],
+  "bundle" : {
+    "identifier" : "com.magiccode.app",
+    "name" : "Magic Code",
+    "version" : "0.1.0"
+  },
+  "failures" : [
+
+  ],
+  "versionRow" : "版本 ｜ 0.1.0 ｜ 0.1.0 ｜ 核心已就绪",
+  "window" : {
+    "box" : "580x712",
+    "title" : "Magic Code Settings"
+  }
+}
