@@ -119,6 +119,18 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 10_000): Pro
   }
 }
 
+/** 拒收当场报红；接收成功后继续原判据，两条分支共用原来的等待时限。 */
+async function submitAndWait(client: ManagerClient, text: string, what: string, ok: () => boolean): Promise<void> {
+  const ref = crypto.randomUUID()
+  let settled: Extract<KernelEvent, { kind: 'input.settled' }> | undefined
+  client.onEvent(event => {
+    if (event.kind === 'input.settled' && event.data.ref === ref) settled = event
+  })
+  client.send({ type: 'input.submit', text, ref })
+  await waitFor(what, () => settled !== undefined && (!settled.data.ok || ok()))
+  expect(settled?.data.ok, JSON.stringify(settled)).toBe(true)
+}
+
 /** 这一条进程还在不在——`kill(pid, 0)` 是既有装置里那把尺子（`bench-pty.test.ts` 同此）。 */
 function alive(pid: number): boolean {
   try {
@@ -189,8 +201,7 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       records.setSessionTitle(session, '并发接回', Date.now())
       records.close()
       first.send({ type: 'session.open', session })
-      first.send({ type: 'input.submit', text: '受控待答' })
-      await waitFor('第一代待答', () => manager.runs().some((row) => row.session === session && row.state === 'waiting'))
+      await submitAndWait(first, '受控待答', '第一代待答', () => manager.runs().some((row) => row.session === session && row.state === 'waiting'))
       const original = manager.executors()[0]!
 
       // ——同时——（两个窗口在同一刻发同一条 open，不是「一个接一个看它接得上」）
@@ -236,9 +247,8 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       for (const session of sessions) records.setSessionTitle(session, session, Date.now())
       records.close()
       client.send({ type: 'session.open', session: sessions[0] })
-      client.send({ type: 'input.submit', text: '运行隔离后台命令' })
       // 工具调用和工具回填后的文本各有一条 turn.end；两轮都结束才是本次输入收束。
-      await waitFor('输入已收束而后台责任仍在', () => completed === 2 && manager.runs().some((row) => row.session === sessions[0] && row.lastTurn === 'settled' && row.state === 'running' && row.action?.includes('后台命令') === true))
+      await submitAndWait(client, '运行隔离后台命令', '输入已收束而后台责任仍在', () => completed === 2 && manager.runs().some((row) => row.session === sessions[0] && row.lastTurn === 'settled' && row.state === 'running' && row.action?.includes('后台命令') === true))
       const first = manager.executors()[0] as { readonly gen: number; readonly pid: number | undefined }
       expect(manager.runs().find((row) => row.session === sessions[0])?.action).toContain('后台命令')
 
@@ -362,8 +372,7 @@ describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () =>
     try {
       const client = await open(g, manager, 'a')
       client.send({ type: 'session.open', session: SESSION })
-      client.send({ type: 'input.submit', text: '受控待答' })
-      await waitFor('真执行者起来并接上那条会话', () =>
+      await submitAndWait(client, '受控待答', '真执行者起来并接上那条会话', () =>
         manager.runs().some((row) => row.session === SESSION && row.state === 'waiting'),
       )
 

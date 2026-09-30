@@ -326,3 +326,20 @@ describe('移除与设为默认', () => {
     }
   })
 })
+
+describe('保存默认型号与思考设置', () => {
+  test('换型号时清除旧思考设置；同型号的未指定字段保留；角色约束不变', () => {
+    const dir = tempDir('magic-role-default-')
+    try {
+      const role = { name: '审查', instructions: '只读审查', tools: ['read'], model: { reasoning: { mode: 'off' } } }
+      const path = writeConfig(dir, { providers: { ds: { vendor: 'deepseek', model: 'old', reasoning: { mode: 'level', level: 'high' } } }, agentRoles: { reviewer: role } })
+      expect(setModelDefault({ path, request: { provider: 'ds', model: 'old' } }).ok).toBe(true)
+      expect(PROVIDERS_OF(path)['ds']?.['reasoning']).toEqual({ mode: 'level', level: 'high' })
+      expect(setModelDefault({ path, request: { provider: 'ds', model: 'new' } }).ok).toBe(true)
+      expect(PROVIDERS_OF(path)['ds']?.['reasoning']).toBeUndefined()
+      expect(READ(path)['agentRoles']).toEqual({ reviewer: role })
+      expect(setModelDefault({ path, request: { provider: 'ds', model: 'next', reasoning: { mode: 'off' } } }).ok).toBe(true)
+      expect(PROVIDERS_OF(path)['ds']?.['reasoning']).toEqual({ mode: 'off' })
+    } finally { removeDir(dir) }
+  })
+})

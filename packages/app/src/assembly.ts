@@ -1,3 +1,4 @@
+import { createCollaborationBoundary } from './collaboration-boundary.ts'
 /**
  * 装配根 —— 全链的五步（技术方案 · 领域划分 · 装配视图）。
  *
@@ -41,6 +42,10 @@ import { accessSync, constants, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
+  AgentModelConfig,
+  AgentRoleConfig,
+  CollaborationReply,
+  CollaborationRequest,
   BackgroundFinish,
   BackgroundRunning,
   BackgroundRuns,
@@ -62,6 +67,8 @@ import type {
   ModelSwitchRequest,
   ProviderConfig,
   ProviderSaveRequest,
+  ProjectRule,
+  ProjectRules,
   ProcessLedger,
   RecordsService,
   WebFetchConfig,
@@ -72,7 +79,9 @@ import type {
   SessionId,
   SkillCatalog,
   Timestamp,
+  ToolRuntime,
   TurnId,
+  UserInput,
   WorkspaceService,
 } from '@magic/contracts'
 import {
@@ -103,6 +112,7 @@ import {
   createSandbox,
   createSkills,
   createWebSource,
+  createWorkspaceService,
 } from '@magic/execution'
 import type {
   FetchLike,
@@ -126,6 +136,7 @@ import type { RecordsStore } from '@magic/records'
 import { createMcpServers } from '@magic/mcp'
 import type { McpServers } from '@magic/mcp'
 import {
+  defineAgentTools,
   PLAN_TOOL_NAMES,
   createToolRuntime,
   defineMcpTools,
@@ -136,6 +147,7 @@ import {
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
+import { validateSelection } from './agent-models.ts'
 import { saveAttachmentFile } from './attachment-file.ts'
 import { removeProvider, saveProvider, setModelDefault, setWebFetch } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
@@ -159,6 +171,9 @@ export type EnvironmentVars = {
 
 /** 装配入参——一切「从外面拿的」都经此进来（测试与入口复用同一条路径）。 */
 export type AssembleOptions = {
+  readonly collaboration?: ((session: SessionId, request: CollaborationRequest) => Promise<CollaborationReply>) | undefined
+  readonly collaborationChanged?: (() => void) | undefined
+  readonly executionId?: string | undefined
   /** **启动目录**——首站单根＝默认根（技术方案 · 执行 · 工作区）。须是**已存在**的路径。 */
   readonly cwd: string
   /** 已加载的配置——缺省 `loadConfig({ magic })`（读 `<基础目录>/config.json`）。 */
@@ -287,6 +302,10 @@ export type McpServerView = {
 }
 
 export type Assembly = {
+  /** 只唤起已装配的同一身份，持久收件在主循环边界消费。 */
+  wakeCollaboration(): void
+  /** 原样保留输入引用，由会话读取、接收并发布共享约束。 */
+  supplementCollaboration(input: UserInput, shared: boolean): Promise<void>
   /**
    * **换模型**——装配侧的**唯一**切换入口：命令面（`model.switch`）与 `--script` 的
    * `{switch}` 都调它，**成败都发一条 `model.switched`（落库）**（缺陷 D16 收拢的产出路径）。
@@ -581,6 +600,14 @@ export function assemble(options: AssembleOptions): Assembly {
   const magic = options.magic ?? resolveMagicHome(process.env, homedir())
   const loaded = options.config ?? loadConfig({ magic })
   const now = options.now ?? Date.now
+  const startup = options.session
+  // 先读持久身份，再建立执行边界。此查询不创建会话，也不采信后来变更的全局根。
+  const savedAgent = (() => {
+    if (startup === undefined) return undefined
+    const lookup = createRecordsStore({ dataDir: loaded.config.dataDir, workspace: [options.cwd] })
+    try { return lookup.collaboration.agentForSession(startup) }
+    finally { lookup.close() }
+  })()
 
   // ── 2 构造各域实现 ────────────────────────────────────────────────
   // 执行域先立：**工作区是记录域构造入参的一半**（U26——会话归属工作区，见下），
@@ -588,7 +615,9 @@ export function assemble(options: AssembleOptions): Assembly {
   // **多根（U18）**——配置 `workspaceRoots` 在即**整组接管**；缺省 → 回落启动目录
   // （阶段 1 姿态：「启动目录＝默认根（唯一）」）。这条 `??` 正是「装配根只做选择」：
   // 判断（哪几条合格）归执行域，缺省值归装配，两侧各一处（见契约 `WorkspaceRoots`）。
-  const workspace = workspaceOf(loaded, options.cwd)
+  const workspace = savedAgent === undefined
+    ? workspaceOf(loaded, options.cwd)
+    : createWorkspaceService({ roots: savedAgent.workspace })
 
   /**
    * **自有进程的归属账**（U50）——这一个进程起的每一组进程都记在这儿，**两处共用**
@@ -982,7 +1011,6 @@ export function assemble(options: AssembleOptions): Assembly {
    * 与 D5（会话懒建立）同源：不给 id ⇒ **一个会话都不开**——不铸 id、不占存储、
    * 不把列表塞满空壳；首条消息按下回车才开张（`SessionHost.submit`）。
    */
-  const startup = options.session
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────
   // 扇出在代码里先立：它没有依赖，而各域都要它（编号是概念次序，见文件头注）
@@ -1184,11 +1212,10 @@ export function assemble(options: AssembleOptions): Assembly {
    * `limits` / `reasoning` / `traits` 时，它们要参与**这一次调用**的规格解析，
    * 而不是只躺在读面上。
    *
-   * **纯查的口径**：走 `read()` 的现成三道闸（在途共享 · 失败冷却 · 新鲜度），
-   * 故它不会因为「被多查几次」而多打接口。
+   * **纯查的口径**：只读已加载的 `peek()` 快照，不因校验配置触发模型发现。
    */
   const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
-    modelInfo.read(provider).snapshot?.models.find((one) => one.id === model)
+    modelInfo.peek(provider).snapshot?.models.find((one) => one.id === model)
 
   /**
    * **认下的内嵌思考**（U65）——造一份、**整个装配共用**。
@@ -1201,10 +1228,10 @@ export function assemble(options: AssembleOptions): Assembly {
 
   // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
   // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
-  const registryOf = (): ModelRegistry =>
-    createModelRegistry({
+  const registryOf = (selection?: AgentModelConfig): ModelRegistry => {
+    const registry = createModelRegistry({
       providers: providerBook,
-      ...(defaultProviderId === undefined ? {} : { defaultProvider: defaultProviderId }),
+      ...(selection !== undefined || defaultProviderId === undefined ? {} : { defaultProvider: defaultProviderId }),
       stamper: forwardStamper,
       fetch: options.modelFetch,
       // 缺 key 那句提示要**指对地方**（U42）：配置文件的落点随 `MAGIC_HOME` 走，
@@ -1216,9 +1243,15 @@ export function assemble(options: AssembleOptions): Assembly {
       learnedTraits,
 
     })
+    if (selection !== undefined) {
+      const result = registry.use(selection)
+      if (!result.ok) throw new Error(result.reason)
+    }
+    return registry
+  }
 
   let models: ModelRegistry | undefined
-  if (options.modelGateway === undefined) models = registryOf()
+  if (options.modelGateway === undefined) models = registryOf(savedAgent?.model)
 
   /**
    * **取网页那一件工具**（U72）——`options.tools` 追加集里的第四束（见 `open` 里那一行）。
@@ -1310,24 +1343,16 @@ export function assemble(options: AssembleOptions): Assembly {
     const kept = models?.current()
 
     try {
-      models = registryOf()
+      const candidate = registryOf()
+      if (kept !== undefined) {
+        const restored = candidate.use(kept)
+        const identity = chain === undefined ? savedAgent : recordsStore.collaboration.agentForSession(chain.session)
+        if (!restored.ok && identity !== undefined) return restored
+      }
+      models = candidate
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
-    }
-
-    if (kept !== undefined) {
-      // 把它**固化成显式选中**——重建完之后「此刻走谁」与重建之前是同一个。
-      // （没切过时这一步让 `selection()` 由空变有值，那是实情：从这一刻起，这个选择是
-      // 用户当时正在用的那一个，不该再被后来的「默认」改动带走。）
-      //
-      // 搬不回（那条连接被移除 / 新配置里缺 key）= **留新注册表的缺省**，不在这里报错：
-      // 用户那一次动作（保存 / 移除）的答复已经在说它自己的事，再叠一句只会让人分不清
-      models.use({
-        provider: kept.provider,
-        model: kept.model,
-        ...(kept.reasoning === undefined ? {} : { reasoning: kept.reasoning }),
-      })
     }
 
     return { ok: true }
@@ -1340,6 +1365,7 @@ export function assemble(options: AssembleOptions): Assembly {
     readonly gate: ReturnType<typeof createPermissionGate>
     readonly tools: ReturnType<typeof createToolRuntime>
     readonly service: ConversationSession
+    readonly roleRules: ProjectRules
     /** 铸造器（按会话实例构造）——**也在这里**：应用层的现场束要用同一个（见 `actionPorts`）。 */
     readonly stamper: EventStamper
   }
@@ -1358,6 +1384,13 @@ export function assemble(options: AssembleOptions): Assembly {
    * ⚠️ 网关（注册表）**不在此列**——见 `forwardStamper` 的注。
    */
   const open = (session: SessionId): SessionInstance => {
+    const identity = recordsStore.collaboration.agentForSession(session)
+    if (identity !== undefined) {
+      if (JSON.stringify(identity.workspace) !== JSON.stringify(workspace.roots())) {
+        throw new Error('成员工作区与本执行实例不同——须在成员持久工作区接回')
+      }
+      if (models !== undefined) models = registryOf(identity.model)
+    }
     const records = recordsStore.serviceFor(session)
     const stamper = createStamper({ records, session, now })
     // 闸门按会话各一份（裁决的账按会话分列），**账本却是工作区级的那一个**（跨会话共用）。
@@ -1392,11 +1425,42 @@ export function assemble(options: AssembleOptions): Assembly {
       nearEntries: options.context?.nearEntries,
     })
     const planTools = definePlanTools(planReader)
+    const currentRole = (): AgentRoleConfig | undefined => {
+      const actor = recordsStore.collaboration.agentForSession(session)
+      if (!actor?.role) return undefined
+      const role = Object.hasOwn(loaded.config.agentRoles ?? {}, actor.role) ? loaded.config.agentRoles?.[actor.role] : undefined
+      if (role === undefined) throw new Error(`未知角色「${actor.role}」`)
+      return role
+    }
+    const coordination = options.collaboration === undefined ? undefined : createCollaborationBoundary({
+      records: recordsStore.collaboration, session, runId: options.executionId ?? crypto.randomUUID(),
+      model: () => models?.current() as AgentModelConfig | undefined,
+      tools: () => currentRole()?.tools,
+      now, changed: () => options.collaborationChanged?.(),
+    })
+    const agentTools = options.collaboration === undefined ? [] : defineAgentTools({
+      request: (request) => {
+        coordination?.actor()
+        return options.collaboration!(session, request)
+      },
+    })
 
-    const tools = createToolRuntime({
+    const toolVisible = (name: string): boolean => {
+      const allowed = currentRole()?.tools
+      return allowed === undefined || allowed.includes(name) || agentTools.some(tool => tool.spec.name === name)
+    }
+    const rawTools = createToolRuntime({
+      beginExecution: (call) => {
+        if (!toolVisible(call.name)) throw new Error(`角色没有开放工具 ${call.name}`)
+        return coordination?.begin(call) ?? (() => undefined)
+      },
       sandbox,
       workspace,
-      gate,
+      gate: {
+        ...gate,
+        decide: (call, context, ref) => toolVisible(call.name)
+          ? gate.decide(call, context, ref) : Promise.resolve('reject'),
+      },
       sink,
       stamper,
       // 大块转存经记录域公开面（blob 写权唯一归它）
@@ -1415,7 +1479,7 @@ export function assemble(options: AssembleOptions): Assembly {
       //    绑的就是本条会话），与「现取」不冲突——这一束本来就是本条链自己的。
       // ④ **取网页**（U72）：出网与提炼两样都不在默认七件的射程里，故从这条出口进来
       //    （造一次、用一路——缓存挂在它身上，见那一件自己的注）。
-      tools: () => [skillTool, ...planTools, webFetchTool, ...mcpTools()],
+      tools: () => [skillTool, ...planTools, webFetchTool, ...mcpTools(), ...agentTools],
 
       // **这台机器上有没有 `trash`**（U77）——删除那一类被内核拒时，回执据此指路。
       //
@@ -1446,19 +1510,24 @@ export function assemble(options: AssembleOptions): Assembly {
         : {
             background: {
               start: async (cmd: string, opts?: { readonly cwd?: string }) => {
-                const started = await backgroundRuns.start(cmd, {
-                  ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
-                  onFinish: (finish) => {
-                    // **先忘后说**：那一块（下一次请求算）与那一声回执是两件事，
-                    // 顺序上先让实况对——即便下面那一跳因为「用户切走了」什么都不做
-                    forgetBackground(session, finish.id)
-                    deliverBackgroundDone(session, finish)
-                  },
-                })
-
-                // **交出去了才记**：发起不成立（进程没起来）时压根没有在跑的东西
-                if (started.ok) rememberBackground(session, started.id)
-                return started
+                // exec 回执不代表后台退出；沿同一本准入账持有到真实 onFinish。
+                const release = coordination?.begin({ id: crypto.randomUUID(), name: 'exec', args: { cmd, background: true, ...opts } })
+                try {
+                  const started = await backgroundRuns.start(cmd, {
+                    ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
+                    onFinish: (finish) => {
+                      release?.()
+                      forgetBackground(session, finish.id)
+                      deliverBackgroundDone(session, finish)
+                    },
+                  })
+                  if (started.ok) rememberBackground(session, started.id)
+                  else release?.()
+                  return started
+                } catch (error) {
+                  release?.()
+                  throw error
+                }
               },
               stop: (id: string) => backgroundRuns.stop(id),
               // **读面照转手**（U89）——一道门面就该与它包的那一件同形；这一条工具域今天
@@ -1466,6 +1535,51 @@ export function assemble(options: AssembleOptions): Assembly {
               running: () => backgroundRuns.running(),
             },
           }),    })
+    const validateRoleTools = (): void => {
+      const known = new Set(rawTools.definitions().map(tool => tool.name))
+      for (const name of currentRole()?.tools ?? []) {
+        if (!known.has(name)) throw new Error(`角色引用未知或不可用工具「${name}」`)
+      }
+    }
+    const tools: ToolRuntime = {
+      ...rawTools,
+      definitions: () => {
+        validateRoleTools()
+        return rawTools.definitions().filter(tool => toolVisible(tool.name))
+      },
+    }
+    // 复用规约读取与送达预查：每次请求、工具批次都读取当前材料，不建立内容快照。
+    const roleRules: ProjectRules = {
+      load(targets) {
+        validateRoleTools()
+        const role = currentRole()
+        const actor = recordsStore.collaboration.agentForSession(session)
+        const base = role?.guidanceFiles === undefined ? projectRules.load(targets) : createProjectRules({
+          workspace,
+          sources: [...(loaded.config.rules?.sources ?? []), ...role.guidanceFiles],
+          linkSources: loaded.config.rules?.linkSources ?? [],
+        }).load(targets)
+        if (role?.guidanceFiles?.length && (base.truncated || base.problems.some(problem => problem.kind === 'error'))) {
+          throw new Error(`角色指导文件未完整加载：${base.problems.map(problem => `${problem.path}：${problem.message}`).join('；')}`)
+        }
+        const documents: ProjectRule[] = []
+        const add = (path: string, name: string, text: string) => documents.push({
+          kind: 'source', path, name, text, root: null, scope: null, paths: [],
+        })
+        if (role !== undefined) add(`${loaded.path}#agentRoles.${actor!.role}`, `角色：${role.name}`, role.instructions)
+        if (actor?.responsibility) add(`agent:${actor.agentId}`, '本次职责', actor.responsibility)
+        const catalog = role?.skills?.length ? skills.discover().skills : []
+        for (const reference of role?.skills ?? []) {
+          const matches = catalog.filter(skill => skill.path === reference || skill.name === reference)
+          if (matches.length !== 1) throw new Error(`角色技能「${reference}」${matches.length === 0 ? '未知或不可达' : '有多个来源，请使用明确路径'}`)
+          const skill = matches[0]!
+          const read = skills.readMain(skill.name, skill.path)
+          if (!read.ok) throw new Error(`角色技能「${reference}」不可读：${read.reason}`)
+          add(join(skill.path, 'SKILL.md'), `角色技能：${skill.name}（${skill.label}）`, read.material.text)
+        }
+        return { ...base, documents: [...base.documents, ...documents] }
+      },
+    }
     // **转发**而不是取值：注册表会在保存配置之后重建（U41），而这一束链是会话级的——
     // 抓一份快照会让已开的会话一直用旧表（同 `forwardStamper` 那条理由）。
     //
@@ -1475,10 +1589,33 @@ export function assemble(options: AssembleOptions): Assembly {
     // 走不到头，用例挂死在等 `turn.end`）。
     const fixed = models ?? options.modelGateway?.(stamper) ?? missingGateway()
     const gateway: ModelGateway = {
-      stream: (request, streamOptions) => (models ?? fixed).stream(request, streamOptions),
+      stream: (request, streamOptions) => {
+        // 检查最终请求，覆盖经共享约束引入的其他会话图片，不能只检查本次输入 refs。
+        if (currentAcceptsImages() === false && request.messages.some(message => message.role === 'user'
+          && typeof message.content !== 'string' && message.content.some(part => part.type === 'image'))) {
+          throw new Error('当前成员模型明确不支持图片；请切换支持图片的模型或移除图片')
+        }
+        const finish = coordination?.begin()
+        const actor = recordsStore.collaboration.agentForSession(session)
+        const delegation = actor?.collaborationId === undefined ? undefined
+          : recordsStore.collaboration.listDelegations(actor.collaborationId)
+            .find(one => one.assigneeId === actor.agentId && one.state === 'accepted')
+        try {
+          const stream = (models ?? fixed).stream(request, streamOptions)
+          const events = (async function* () {
+            for await (const event of stream.events) {
+              yield event.kind === 'model.usage' && delegation !== undefined
+                ? { ...event, data: { ...event.data, delegationId: delegation.delegationId } }
+                : event
+            }
+          })()
+          return { ...stream, events, result: stream.result.finally(() => finish?.()) }
+        } catch (error) { finish?.(); throw error }
+      },
     }
 
     const service = createConversationSession({
+      collaboration: coordination?.boundary,
       session,
       // **开局的模型名**——缺省连接 ＋ 它默认的模型，随每次调用送模型域
       //（技术方案：模型名取自请求）。
@@ -1498,7 +1635,7 @@ export function assemble(options: AssembleOptions): Assembly {
       stamper,
       now,
       // 项目规约（U32）——域内那一半（送哪些、什么时候送）自己会造，此处只把来源递进去
-      rules: projectRules,
+      rules: roleRules,
       // 技能（U33）——同上，且**与工具域那一个入口共用同一个实例**（见 `skills` 的注）
       skills,
       // 材料（U36）——正文里的 `@文件` / `@目录` 由它按引用取（同一个实例也供 `paths.list`）
@@ -1538,7 +1675,7 @@ export function assemble(options: AssembleOptions): Assembly {
       // 对话域只出重建面（`ConversationService.rebuild`）。见下 `actions`。
     })
 
-    const opened: Chain = { session, records, gate, tools, service, stamper }
+    const opened: Chain = { session, records, gate, tools, service, stamper, roleRules }
     chain = opened
     activeStamper = stamper
     return opened
@@ -1582,7 +1719,14 @@ export function assemble(options: AssembleOptions): Assembly {
     session: startup,
     open,
     // 记录域**读面**（窄口）：会话未定时也要能读（目录 / 首条消息 / 重建展示）
-    records: recordsStore,
+    records: {
+      listSessions: async () => (await recordsStore.listSessions()).filter(row => {
+        const collaboration = recordsStore.collaboration.collaborationForSession(row.id)
+        return collaboration === undefined || collaboration.originSessionId === row.id
+      }),
+      readEntries: recordsStore.readEntries,
+      blobs: recordsStore.blobs,
+    },
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
     now,
@@ -1683,7 +1827,22 @@ export function assemble(options: AssembleOptions): Assembly {
       return missing
     }
 
-    const result = models.use(request)
+    let result: ModelSwitchResult
+    const checked = validateSelection({ models, config: request })
+    if (!checked.ok) result = checked
+    else {
+      try {
+        const candidate = registryOf(checked.selection)
+        const identity = recordsStore.collaboration.agentForSession(chain.session)
+        // 持久更新失败不发布新网关；入口与成员都只改自己的身份，不碰协作派生默认。
+        if (identity !== undefined) recordsStore.collaboration.updateAgent(identity.agentId, { model: checked.selection })
+        models = candidate
+        result = checked
+      } catch (error) {
+        result = { ok: false, reason: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
 
     // **结果落库**（技术方案 · 记录 · kind 族）：切换是会话的**可观测事实**——
     // `model.call.start` 只说「这次用了谁」，说不出「何时改的、为什么没改成」。
@@ -1707,6 +1866,10 @@ export function assemble(options: AssembleOptions): Assembly {
         : forwardStamper.stamp('model.switched', { ok: false, reason: result.reason }),
     )
 
+    if (result.ok) {
+      try { options.collaborationChanged?.() }
+      catch (error) { sink.emit(forwardStamper.stamp('error', { message: `模型已切换，但协作状态通知失败：${String(error)}` })) }
+    }
     return result
   }
 
@@ -1726,8 +1889,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * 读数（`providers` 可以一条都没有），两者混作一谈会让外壳把「没有注册表」显示成
    * 「一条都没有」。
    */
-  const listModels = (note?: string): void => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+  const listModels = async (note?: string): Promise<void> => {
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     const catalog = catalogOf(models)
     sink.emit(requireActiveStamper().stamp('model.catalog', note === undefined ? catalog : { ...catalog, note }))
   }
@@ -1743,8 +1906,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * ⚠️ **只搬元数据**（名称 / 简述 / 身份 / 来源标签）——**不搬正文**：外壳列个候选不该把
    * 仓库里所有技能的主文读一遍，主文到真实提交那一刻才取（见契约 `SkillCatalogRow`）。
    */
-  const listSkills = (): void => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+  const listSkills = async (): Promise<void> => {
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     sink.emit(requireActiveStamper().stamp('skills.catalog', skillCatalogOf()))
   }
 
@@ -1768,7 +1931,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 材料到提交那一刻才读（见契约 `PathList`）。
    */
   const listPaths = async (query: string): Promise<void> => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
 
     sink.emit(requireActiveStamper().stamp('paths.catalog', await pathsCatalog(materials, query)))
   }
@@ -1796,7 +1959,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * **没人接的 rejection**——一处读不了的图能把整台机器带下去。
    */
   const identifyPath = async (path: string, external?: true): Promise<void> => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
 
     let image: EventDataOf['paths.identified']['image']
     try {
@@ -1871,8 +2034,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * ⚠️ `handle` 的开壳与铸造器就位是**同步**的（`fresh` → 装配的 `open` 一路没有 await），
    * 故这里不必等它那条 `session.state` 答复就能盖章（同 `listModels` 那段注）。
    */
-  const listGrants = (note?: string): void => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+  const listGrants = async (note?: string): Promise<void> => {
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     sink.emit(requireActiveStamper().stamp('grants.catalog', grantsCatalogOf(note)))
   }
 
@@ -1927,8 +2090,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * 读的是连接自己的当下值（`state` / `tools()` / `rejected`）——**不另立一本账、不后台轮询**。
    * 地址与 `headers` 不上这一屏（见契约 `McpCatalogRow`）。
    */
-  const listMcp = (note?: string): void => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+  const listMcp = async (note?: string): Promise<void> => {
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     sink.emit(requireActiveStamper().stamp('mcp.catalog', mcpCatalogOf(note)))
   }
 
@@ -1956,9 +2119,9 @@ export function assemble(options: AssembleOptions): Assembly {
    *
    * 认不出的名字不当作错误：名录照给，缘由写在答复的 `note` 上（那一屏照旧说得出全部内容）。
    */
-  const reconnectMcp = (server: string): void => {
+  const reconnectMcp = async (server: string): Promise<void> => {
     // 重连本身是异步的（起手有界），故**先开壳、后重连**：那一份名录由重连落定之后再发
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
 
     void mcp.reconnect(server).then((connection) => {
       if (connection === undefined) {
@@ -1978,7 +2141,7 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
-  const readRules = (targets: readonly string[] = []): RulesLoad => projectRules.load(targets)
+  const readRules = (targets: readonly string[] = []): RulesLoad => (chain?.roleRules ?? projectRules).load(targets)
 
   /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
   const readSkills = (): SkillCatalog => skills.discover()
@@ -2007,8 +2170,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * 走法照 `listModels`：**空手打开也照答**（那一下开一张空壳；原因与姿势见它那段注）。
    * 读的是**配置**（连接的身份与设置）——已在手上，不必再问谁要。
    */
-  const listProviders = (note?: string): void => {
-    if (conversation.active() === undefined) void conversation.handle({ type: 'session.new' })
+  const listProviders = async (note?: string): Promise<void> => {
+    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     sink.emit(requireActiveStamper().stamp('provider.catalog', providerCatalogOf(note)))
   }
 
@@ -2308,6 +2471,11 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.attach(kernel)
 
   return {
+    wakeCollaboration: () => chain?.service.wake(),
+    supplementCollaboration: async (input, shared) => {
+      if (chain === undefined) throw new Error('当前没有已装配的成员会话')
+      await chain.service.supplement(input, shared)
+    },
     shell,
     // **活跃**那条（切换之后跟着变）——**`undefined` ＝ 还没有会话**（空手打开，
     // 首条消息才开张）。不是开局那条（`Assembly.session` 的旧义）。
@@ -2316,7 +2484,7 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     config: loaded,
     magic,
-    models,
+    get models() { return models },
     modelInfo,
     switchModel,
     records: recordsStore,
@@ -2349,6 +2517,11 @@ export function assemble(options: AssembleOptions): Assembly {
     // 缺文件 / 损坏都只是「还没有」，不是错。
     ready: async () => {
       await modelInfo.warmup()
+      const selection = models?.current()
+      if (models !== undefined && selection !== undefined) {
+        const checked = models.resolve({ defaults: selection })
+        if (!checked.ok) throw new Error(`成员模型配置不可用：${checked.reason}`)
+      }
       await mcp.ready()
     },
     // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍

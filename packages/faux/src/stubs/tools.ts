@@ -20,6 +20,7 @@ import type { OutputDelta, RecordId, ToolCall, ToolResult, ToolRuntime, ToolSpec
 export type FauxToolHandlerResult = {
   readonly ok: boolean
   readonly output: string
+  readonly halt?: true
 }
 
 /** 工具处理器——入参含透传的 `onOutput`（流式回吐）。 */
@@ -71,7 +72,7 @@ export function makeFauxToolRuntime(options: FauxToolRuntimeOptions = {}): FauxT
       }
 
       const result = await handler(call, { signal: opts.signal, onOutput: opts.onOutput })
-      return { ok: result.ok, output: result.output, content: { text: result.output }, callRef }
+      return { ...result, content: { text: result.output }, callRef }
     },
   }
 }

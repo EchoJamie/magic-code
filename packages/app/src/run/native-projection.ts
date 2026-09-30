@@ -10,8 +10,8 @@ export async function projectWorks(
 ): Promise<readonly NativeWork[]> {
   // 运行状态与停止代次同拍取值，异步目录读取不能把旧状态重新绑到后继代。
   const generations = new Map(runs.map((run) => [run.session, generation(run.session)]))
-  const sessions = await readSessionCatalog(store)
   const notices = store.attention.list()
+  const sessions = await readSessionCatalog(store)
   return Promise.all(sessions.map(async (session): Promise<NativeWork> => {
     const run = runs.find((row) => row.session === session.id)
     return {

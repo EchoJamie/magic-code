@@ -20,15 +20,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { attachShell } from '../src/index.ts'
 import { lastModel, makeStage } from './support.ts'
-
-async function until(test: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (!test()) {
-    if (Date.now() > deadline) throw new Error(`等不到：${what}`)
-    await Bun.sleep(10)
-  }
-}
 
 describe('U88 · 搜索不注册——模型看不见它', () => {
   test('真装配跑一轮：送给模型的那份请求里没有 web_search', async () => {
@@ -36,10 +29,11 @@ describe('U88 · 搜索不注册——模型看不见它', () => {
 
     try {
       const assembly = stage.assemble()
+      const shell = attachShell(assembly.shell, { timeoutMs: 10_000 })
 
       // 一句即可——本用例要看的是**这一轮发给模型的工具表**，不是它干了什么
-      assembly.shell.send({ type: 'input.submit', text: '随便说一句' })
-      await until(() => lastModel(stage).requests.length >= 1, '首轮模型请求')
+      // 请求已发不等于循环收束；等实际回到 waiting 后才能关库。
+      await shell.submit('随便说一句')
 
       const names = (lastModel(stage).requests[0]?.tools ?? []).map((tool) => tool.name)
 
@@ -54,6 +48,7 @@ describe('U88 · 搜索不注册——模型看不见它', () => {
       // 清单本身不是空的——不然上面两条是「什么都没看」的假绿
       expect(names.length).toBeGreaterThan(0)
 
+      shell.dispose()
       assembly.close()
     } finally {
       stage.dispose()

@@ -1,3 +1,5 @@
+import { createManagedCollaboration } from './collaboration.ts'
+import { captureCollaborationNative, mergeCollaborationNative, type CollaborationNativeGroup } from './collaboration-native.ts'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
  * 记录事实通过 records 端口读取；控制连接本身不创建会话或执行者。
  * 执行者退出与其自有资源核销分开确认，宿主生命管道负责最终收尾。
@@ -6,6 +8,9 @@
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import type { Socket } from 'bun'
 import type {
+  AgentIdentity,
+  CollaborationCommand,
+  CollaborationView,
   Command,
   KernelEvent,
   MagicHome,
@@ -71,6 +76,7 @@ const RECORD_VERSION = 1
 
 /** 一条挂着的客户端连接。 */
 type ClientConn = {
+  collaborationMember?: string | undefined
   readonly id: number
   readonly link: Link<ClientToManager>
   /** 它认的执行者代次（`0` ＝ 还没认过任何一代）。 */
@@ -460,7 +466,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (record.ended !== undefined && record.owned.length > 0) {
       record.reclaimPending = true
       refresh(record, now())
-      void reclaimRun(record)
+      // afterEnd 在初始化完成后统一接续该代核销。
     }
   }
 
@@ -498,6 +504,144 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 「最近一次运行」（**最近**）。同一条会话两头都有时**以活着的为准**（那才是现况）。
    * 还没开张的执行者（`session === null`）没有会话可挂，故不入表——**列表按会话说话**。
    */
+  const collaborationInputs = new Map<string, { conn: ClientConn; session: string; target: string; ref?: string }>()
+  const collaborationDecisions = new Map<number, Extract<KernelEvent, { kind: 'tool.decision.request' }>>()
+  const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
+  const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
+  const collaboration = createManagedCollaboration({
+    store, magic: options.magic, now, accepting: () => !stopped,
+    start: startMember,
+    wake: session => { const live = liveOf(session); if (live !== undefined) send(live, { t: 'collaboration.wake' }) },
+    cancel: cancelMembers,
+    input: (session, input, shared) => {
+      const live = liveOf(session)
+      if (live === undefined || live.link === undefined || live.link.closed) throw new Error('输入目标已失联')
+      stopGenerations.set(live.run, nextStopGeneration++)
+      send(live, { t: 'collaboration.input', input, shared })
+    },
+    configure: async (session, model) => {
+      const live = liveOf(session)
+      if (live?.run.busy) throw new Error('成员仍在执行，请在当前调用结束后切换模型')
+      if (live === undefined) return
+      await new Promise<void>((resolve, reject) => {
+        const requestId = crypto.randomUUID()
+        configurationWaiters.set(requestId, { executor: live, resolve, reject })
+        send(live, { t: 'collaboration.configure', requestId, model })
+      })
+    },
+    runs: () => [...executors].map(e => runRowOf(e.run)),
+    decisions: session => liveOf(session)?.run.decisions.size ?? 0,
+    changed: () => { native.changed(); for (const conn of clients.values()) void publishCollaboration(conn) },
+  })
+  void collaboration.recover()
+
+  async function startMember(agent: AgentIdentity): Promise<void> {
+    if (stopped) throw new Error('管理者正在退出')
+    let existing = liveOf(agent.sessionId)
+    if (existing?.run.stopping) { await cancelMembers([agent.sessionId]); existing = liveOf(agent.sessionId) }
+    const previous = lastRuns.get(agent.sessionId)
+    if (existing === undefined && previous !== undefined && (previous.ended === undefined || previous.reclaimPending || previous.reclaimNote !== undefined)) throw new Error('该成员上一代资源仍待核实')
+    if (stopped) throw new Error('管理者正在退出')
+    const executor = existing ?? spawn({ session: agent.sessionId, explicit: true,
+      cwd: agent.workspace[0] ?? '', switch: agent.model })
+    if (executor === undefined) throw new Error('无法启动成员执行者')
+    for (const conn of clients.values()) if (conn.selectedSession === agent.sessionId && conn.target !== executor) bind(conn, executor)
+    if (executor.run.ready) return
+    return new Promise((resolve, reject) => {
+      const previous = readyWaiters.get(executor.gen)
+      if (previous !== undefined) {
+        const done = previous.resolve; const failed = previous.reject
+        previous.resolve = () => { done(); resolve() }
+        previous.reject = reason => { failed(reason); reject(reason) }
+        return
+      }
+      const timer = setTimeout(() => {
+        readyWaiters.delete(executor.gen)
+        executor.run.stopping = true
+        send(executor, { t: 'bye', why: '成员启动超时' })
+        escalateStop(executor)
+        reject(new Error('成员启动未就绪，正在回收'))
+      }, 30_000)
+      readyWaiters.set(executor.gen, { resolve, reject, timer })
+    })
+  }
+  async function cancelMembers(sessions: readonly string[]): Promise<void> {
+    await Promise.all(sessions.map(session => new Promise<void>((resolve, reject) => {
+      const id = nextStopRequest--
+      const timer = setTimeout(() => {
+        stopReports.delete(id)
+        reject(new Error('成员资源退出尚未核实'))
+      }, 30_000)
+      stopReports.set(id, (phase, note) => {
+        if (phase === 'accepted') return
+        clearTimeout(timer)
+        stopReports.delete(id)
+        if (phase === 'done') resolve()
+        else reject(new Error(note ?? '成员资源退出尚未核实'))
+      })
+      // 与客户端和原生停止复用同一 RunRecord 等待及核销出口。
+      stopExecution({ id }, session, 'run')
+    })))
+  }
+  function collaborationEvent(conn: ClientConn, view: CollaborationView): boolean {
+    const selected = conn.selectedSession
+    if (conn.link.closed || selected == null ||
+      (store.collaboration.collaborationForSession(selected)?.originSessionId ?? selected) !== view.originSession) return false
+    return conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event: {
+      kind: 'collaboration.view', data: view, session: view.originSession,
+      id: 0, turn: null, at: now(),
+    } })
+  }
+  async function publishCollaboration(conn: ClientConn): Promise<void> {
+    if (stopped || storeClosed) return
+    const session = conn.selectedSession
+    if (session === undefined || session === null) return
+    try {
+      const member = conn.collaborationMember
+      const view = await collaboration.view(session, member)
+      if (member !== conn.collaborationMember) return
+      if (view.collaboration !== undefined && collaborationEvent(conn, view)) {
+        for (const event of collaborationDecisions.values()) if (view.members.some(m => m.agent.sessionId === event.session)) {
+          conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event })
+        }
+      }
+    } catch { /* 离开或停止过程中不启动新的执行。 */ }
+  }
+  async function collaborationCommand(conn: ClientConn, command: CollaborationCommand): Promise<void> {
+    const session = conn.selectedSession
+    if (session === undefined || session === null) return
+    if (command.type === 'collaboration.read') conn.collaborationMember = command.member
+    let submitted = command
+    let inputKey: string | undefined
+    if (command.type === 'collaboration.input') {
+      inputKey = crypto.randomUUID()
+      const work = store.collaboration.collaborationForSession(session)
+      const target = command.shared === true || command.member === undefined ? work?.originSessionId
+        : store.collaboration.getAgent(command.member)?.sessionId
+      collaborationInputs.set(inputKey, { conn, session, target: target ?? session, ...(command.input.ref === undefined ? {} : { ref: command.input.ref }) })
+      submitted = { ...command, input: { ...command.input, ref: inputKey } }
+    }
+    try {
+      const view = await collaboration.command(session, submitted)
+      if (command.type === 'collaboration.read' && command.member !== conn.collaborationMember) return
+      if (command.type === 'collaboration.resume') {
+        const live = liveOf(view.originSession)
+        if (live !== undefined && conn.target !== live) bind(conn, live)
+      }
+      collaborationEvent(conn, view)
+    }
+    catch (error) {
+      if (command.type === 'collaboration.input') {
+        if (inputKey !== undefined) collaborationInputs.delete(inputKey)
+        conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event: {
+          kind: 'input.settled', data: { ok: false, ...(command.input.ref === undefined ? {} : { ref: command.input.ref }), reason: String(error) },
+          session, id: store.serviceFor(session).nextId(), at: now(), turn: null,
+        } })
+      }
+      collaborationEvent(conn, await collaboration.view(session, conn.collaborationMember, String(error)))
+    }
+  }
+
   function rows(): readonly RunRow[] {
     const out: RunRow[] = []
     const live = new Set<string>()
@@ -588,18 +732,18 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
-    // **活着的排在后面**——同一条会话两头都有时，新的那一份盖住旧的（读的人按序 set）
-    const stored: StoredRun[] = []
+    // 最近历史有界；尚未核销的责任与活执行者必须全部保留。
+    const history: StoredRun[] = []
+    const outstanding: StoredRun[] = []
     for (const run of lastRuns.values()) {
       const one = storedRunOf(run)
-      if (one !== undefined) stored.push(one)
+      if (one !== undefined) (run.ended === undefined || run.reclaimPending || run.reclaimNote !== undefined ? outstanding : history).push(one)
     }
     for (const executor of executors) {
       const one = storedRunOf(executor.run)
-      if (one !== undefined) stored.push(one)
+      if (one !== undefined) outstanding.push(one)
     }
-
-    writeRuns(paths, stored.slice(-STORED_RUNS_LIMIT), now())
+    writeRuns(paths, [...history.slice(-STORED_RUNS_LIMIT), ...outstanding], now())
   }
 
   /** 一摊运行的那几件工具——`stop` 与各自的收尾都要它们，故在闭包里立。 */
@@ -788,8 +932,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * **留着的那些「刚刚发生的事」**——开头先读盘上那一份（上一次管理者离开时留下的未读）。
    */
   const notifySystem = options.notifySystem ?? silentNotifier
-  const nativeReports = new Map<number, (phase: StopPhase, note?: string) => void>()
-  let nextNativeStop = -1
+  const stopReports = new Map<number, (phase: StopPhase, note?: string) => void>()
+  let nextStopRequest = -1
   let nextStopGeneration = 1
   const stopGenerations = new WeakMap<RunRecord, number>()
   const stopGeneration = (run: RunRecord): number => {
@@ -797,26 +941,60 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (gen === undefined) { gen = nextStopGeneration++; stopGenerations.set(run, gen) }
     return gen
   }
+  const collaborationStopVersions = new Map<string, { signature: string; gen: number }>()
+  function workStopGeneration(session: string,
+    group = captureCollaborationNative(store.collaboration, [session]).groups[0] as CollaborationNativeGroup | undefined,
+  ): number | null {
+    if (group === undefined) {
+      const run = liveOf(session)?.run ?? lastRuns.get(session)
+      return run === undefined ? null : stopGeneration(run)
+    }
+    const work = group.collaboration
+    // 只是停止目标的版本，不另存工作状态；任何成员换代或新输入使旧菜单失效。
+    const signature = JSON.stringify([
+      work.state,
+      group.members.map(member => {
+        const run = liveOf(member.sessionId)?.run ?? lastRuns.get(member.sessionId)
+        return [member.agentId, member.reachability, run === undefined ? null : stopGeneration(run)]
+      }),
+      group.delegations.map(item => [item.delegationId, item.state]),
+      group.waits.map(item => [item.waitId, item.state]),
+    ])
+    const previous = collaborationStopVersions.get(work.collaborationId)
+    if (previous?.signature === signature) return previous.gen
+    const gen = nextStopGeneration++
+    collaborationStopVersions.set(work.collaborationId, { signature, gen })
+    return gen
+  }
   const native = createNativeServer({
     identity, store, accepting: () => !stopped,
-    works: async () => [
-      ...await projectWorks(store, rows(), (session) => {
-        const run = liveOf(session)?.run ?? lastRuns.get(session)
-        return run === undefined ? null : stopGeneration(run)
-      }),
-      ...await (options.lifecycle?.affected() ?? Promise.resolve([])),
-    ],
+    works: async () => {
+      const sessions = await store.listSessions()
+      const runs = rows()
+      const snapshot = captureCollaborationNative(store.collaboration, sessions.map(session => session.id))
+      const generations = new Map<string, number | null>()
+      for (const group of snapshot.groups) {
+        const gen = workStopGeneration(group.collaboration.originSessionId, group)
+        generations.set(group.collaboration.originSessionId, gen)
+        for (const member of group.members) generations.set(member.sessionId, gen)
+      }
+      for (const session of snapshot.sessions) if (!generations.has(session)) generations.set(session, workStopGeneration(session))
+      const works = await projectWorks(store, runs, session => generations.get(session) ?? null)
+      return [
+        ...mergeCollaborationNative(works, snapshot).map(work => ({ ...work, gen: generations.get(work.session) ?? null })),
+        ...await (options.lifecycle?.affected() ?? Promise.resolve([])),
+      ]
+    },
     stop(session, gen, report) {
-      const current = liveOf(session)?.run ?? lastRuns.get(session)
-      if (current === undefined || stopGeneration(current) !== gen) {
+      if (workStopGeneration(session) !== gen) {
         report('unconfirmed', '目标已经结束或换代，请刷新当前状态')
         native.changed()
         return
       }
-      const id = nextNativeStop--
-      nativeReports.set(id, (phase, note) => {
+      const id = nextStopRequest--
+      stopReports.set(id, (phase, note) => {
         report(phase, note)
-        if (phase !== 'accepted') nativeReports.delete(id)
+        if (phase !== 'accepted') stopReports.delete(id)
       })
       stopRun({ id }, session, 'run')
     },
@@ -824,6 +1002,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   })
 
   function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string): void {
+    const work = store.collaboration.collaborationForSession(session)
+    if (work !== undefined && session !== work.originSessionId) {
+      // 独立成员的结束/失败交给协调者；用户裁决仍是原工作下的一份具体事项。
+      if (kind !== 'needs-you') return
+      const member = store.collaboration.agentForSession(session)
+      detail = `${member?.name ?? '协作成员'}：${detail ?? '等待你定夺'}`
+      session = work.originSessionId
+    }
     const id = noticeKey(session, kind, fact)
     if (!store.attention.put({
       id, session, kind, fact: String(fact), at: now(), unread: true, delivered: false,
@@ -845,6 +1031,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
 
   /** 等待者绑定具体执行者代次，旧代异步核销不能兑现同会话的后继代。 */
+  const settledRuns = new WeakSet<RunRecord>()
   const stopWaiters = new Map<RunRecord, { readonly conns: Set<number>; readonly scope: StopScope }>()
 
   /** 回一句「停到哪一拍」——按会话 ＋ 范围，话由外壳按它自己的目录拼（见 `wire.ts`）。 */
@@ -855,7 +1042,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     phase: StopPhase,
     note?: string,
   ): void {
-    nativeReports.get(connId)?.(phase, note)
+    stopReports.get(connId)?.(phase, note)
     clients.get(connId)?.link.send({
       t: 'stopped',
       session,
@@ -867,6 +1054,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   /** 核销之后回「已完成」——**这一拍才算「已停」**（设计：「资源确认退出后才报已停止」）。 */
   function settleStop(run: RunRecord, note = run.reclaimNote): void {
+    if (note === undefined && run.ended !== undefined && !run.reclaimPending && run.reclaimNote === undefined &&
+      run.session !== null && run.executionId !== undefined && !storeClosed && !settledRuns.has(run)) {
+      collaboration.executorExited(run.session, run.executionId, run.ended.why,
+        run.ended.kind === 'crashed' && lastRuns.get(run.session) === run && liveOf(run.session) === undefined)
+      settledRuns.add(run)
+    }
     const waiting = stopWaiters.get(run)
     if (waiting === undefined || run.session === null) return
     stopWaiters.delete(run)
@@ -912,6 +1105,25 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * - **不冒充**：没证实停掉的说 `unconfirmed`，**不把局部成功显示为整体成功**。
    */
   function stopRun(conn: Pick<ClientConn, 'id'>, session: string, scope: StopScope): void {
+    const work = store.collaboration.collaborationForSession(session)
+    if (work !== undefined) {
+      const agent = store.collaboration.agentForSession(session)
+      const delegation = agent?.agentId === work.coordinatorId ? undefined : store.collaboration.listDelegations(work.collaborationId).find(d => d.assigneeId === agent?.agentId && d.state === 'accepted')?.delegationId
+      if (agent?.agentId !== work.coordinatorId && delegation === undefined) {
+        reportStop(conn.id, session, scope, 'unconfirmed', '此成员没有当前委派，无法推断停止范围')
+        return
+      }
+      reportStop(conn.id, session, scope, 'accepted')
+      void collaboration.command(work.originSessionId, { type: 'collaboration.stop', ...(delegation === undefined ? {} : { delegation }) }).then(
+        () => reportStop(conn.id, session, scope, 'done'),
+        error => reportStop(conn.id, session, scope, 'unconfirmed', String(error)),
+      )
+      return
+    }
+    stopExecution(conn, session, scope)
+  }
+
+  function stopExecution(conn: Pick<ClientConn, 'id'>, session: string, scope: StopScope): void {
     const live = liveOf(session)
     const stale = lastRuns.get(session)
 
@@ -1125,6 +1337,32 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
+    if (command.type.startsWith('collaboration.')) {
+      void collaborationCommand(conn, command as CollaborationCommand)
+      return
+    }
+    if (command.type === 'session.new') conn.collaborationMember = undefined
+
+    const originSession = conn.selectedSession
+    const activeCollaboration = originSession == null ? undefined : store.collaboration.collaborationForSession(originSession)
+    if (activeCollaboration !== undefined && command.type === 'input.submit') {
+      void collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
+      return
+    }
+    if (activeCollaboration !== undefined && command.type === 'turn.interrupt') {
+      void collaborationCommand(conn, { type: 'collaboration.stop' })
+      return
+    }
+    if (activeCollaboration !== undefined && command.type === 'decision.answer') {
+      const memberSessions = new Set(store.collaboration.listMembers(activeCollaboration.collaborationId).map(a => a.sessionId))
+      const owner = [...executors].find(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.decisions.has(command.id))
+      if (owner !== undefined) { deliver(owner, command); return }
+      if ([...executors].some(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.resolvedDecisions.has(command.id))) {
+        conn.link.send({ t: 'line', text: '这一件已经处理过了——答复只算第一次' })
+        return
+      }
+    }
+
     /**
      * **裁决答复**那一跳（U49 · 设计 ⑥）——「审批只有一份，第一条有效答复落账后其它窗口
      * 即时移除；**晚到答复明确已处理**」。
@@ -1248,7 +1486,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       conn.awaiting = null
       conn.buffered = []
       conn.link.send({ t: 'target', gen: null, session: how.session })
-      void catalog(conn).then(() => readHistory(conn, how.session))
+      void catalog(conn).then(() => readHistory(conn, how.session)).then(() => publishCollaboration(conn))
       return
     }
 
@@ -1385,6 +1623,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       explicit: input.explicit,
       run: newRunRecord({
         gen,
+        executionId: token,
         session: input.session,
         startedAt: now(),
         explicit: input.explicit,
@@ -1413,7 +1652,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     })
 
     options.log?.(`起了执行者 第 ${gen} 代 pid=${spawned.pid ?? '?'} 会话=${input.session ?? '（还没开张）'}`)
-    saveRuns()
+    saveRuns(true)
     pushRuns()
     return executor
   }
@@ -1448,10 +1687,31 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     executor.lastSeen = now()
 
     switch (message.t) {
+      case 'collaboration.request': {
+        const session = executor.run.session
+        if (session === null) { send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply: { ok: false, reason: '执行身份尚未绑定' } }); return }
+        void collaboration.request(session, message.request).then(reply => {
+          send(executor, { t: 'collaboration.reply', requestId: message.requestId, reply })
+        })
+        return
+      }
+      case 'collaboration.configured': {
+        const pending = configurationWaiters.get(message.requestId)
+        if (pending?.executor !== executor) return
+        configurationWaiters.delete(message.requestId)
+        if (message.result.ok) pending.resolve()
+        else pending.reject(new Error(message.result.reason))
+        return
+      }
+      case 'collaboration.changed':
+        collaboration.changed()
+        return
       case 'hello':
         // 认领在 `adopt` 里做了（那是**连接**那一跳的事）；这里只补一次登记
         return
       case 'ready': {
+        const waiting = readyWaiters.get(executor.gen)
+        if (waiting !== undefined) { clearTimeout(waiting.timer); readyWaiters.delete(executor.gen); waiting.resolve() }
         executor.run.ready = true
         // 起来那一刻「正在起执行者」这件事就完了（那一格由 `actionOf` 之外的一处写，
         // 故在这儿清）——`busy` 不动：它说的是**内核**手上有活没有，与本跳无关
@@ -1471,7 +1731,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         executor.run.session = message.session
         syncTarget(executor)
         refresh(executor.run, now())
-        saveRuns()
+        saveRuns(true)
         pushRuns()
         return
       /**
@@ -1580,7 +1840,19 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
+    if (event.kind === 'input.settled' && event.data.ref !== undefined) {
+      const owner = collaborationInputs.get(event.data.ref)
+      if (owner !== undefined) {
+        collaborationInputs.delete(event.data.ref)
+        const { ref: _transportRef, ...settled } = event.data
+        owner.conn.link.send({ t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
+          ...event, data: { ...settled, ...(owner.ref === undefined ? {} : { ref: owner.ref }) },
+        } })
+        return
+      }
+    }
     const run = executor.run
+    const previousSession = run.session
     const at = now()
 
     // 会话从事件里认（这就是 `bound` 那条路的日常形态：首条消息一按下回车，
@@ -1595,6 +1867,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       if (typeof active === 'string' && active !== '') run.session = active
     }
 
+    if (run.session !== previousSession) saveRuns(true)
     // —— 运行事实那几格（U49）——**一处更新，判定在 `facts.ts` ——
     syncTarget(executor)
 
@@ -1622,7 +1895,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
          * 弹一条「它停了」等于拿通知复述他本人。而设计那三类里本来也没有它。
          */
         if (run.session !== null) {
-          if (event.data.reason === 'settled' && !event.data.continues) notify(run.session, 'done', event.id)
+          if (event.data.reason === 'settled' && !event.data.continues && store.collaboration.collaborationForSession(run.session) === undefined) notify(run.session, 'done', event.id)
           if (event.data.reason === 'error') notify(run.session, 'failed', event.id, '这一轮出错了')
         }
         break
@@ -1669,6 +1942,33 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       conn.link.send({ t: 'ev', gen: executor.gen, event })
     }
 
+    if (event.kind === 'tool.decision.request') collaborationDecisions.set(event.id, event)
+    if (event.kind === 'tool.decision') for (const [id, pending] of collaborationDecisions) {
+      if (pending.session === event.session && pending.data.call === event.data.call) collaborationDecisions.delete(id)
+    }
+    if (event.kind === 'turn.end') for (const [id, pending] of collaborationDecisions) {
+      if (pending.session === event.session) collaborationDecisions.delete(id)
+    }
+
+    const shared = event.session === undefined ? undefined : store.collaboration.collaborationForSession(event.session)
+    if (shared !== undefined && (event.kind === 'tool.decision.request' || event.kind === 'tool.decision')) {
+      for (const conn of clients.values()) {
+        if (executor.watchers.has(conn.id)) continue
+        if ((conn.selectedSession) === shared.originSessionId) conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event })
+      }
+    }
+    if (shared !== undefined && ((event.kind === 'turn.end' && event.data.reason === 'error') || event.kind === 'error')) {
+      collaboration.failed(event.session!, event.kind === 'error' ? event.data.message : '成员本轮执行失败，需要核对停点')
+    }
+    if (shared !== undefined && ['agent.state', 'turn.start', 'turn.end', 'tool.decision.request', 'tool.decision', 'message.assistant', 'message.user', 'model.usage'].includes(event.kind)) {
+      collaboration.changed()
+      if (event.kind === 'agent.state' && event.data.state === 'waiting' && event.session === shared.originSessionId) {
+        void collaboration.idle(shared.originSessionId).then(closed => {
+          if (closed) notify(shared.originSessionId, 'done', event.id)
+        }).catch(error => options.log?.(`协作收尾尚未核实：${String(error)}`))
+      }
+    }
+
     saveRuns()
     pushRuns()
   }
@@ -1686,6 +1986,18 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    */
   function retire(executor: Executor, reason: string): void {
     if (executor.run.ended !== undefined) return
+    for (const [key, owner] of collaborationInputs) if (owner.target === executor.run.session) {
+      collaborationInputs.delete(key)
+      owner.conn.link.send({ t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
+        kind: 'input.settled', data: { ok: false, ...(owner.ref === undefined ? {} : { ref: owner.ref }), reason: '输入目标已退出，未确认接收；原稿保留' },
+        session: owner.session, id: store.serviceFor(owner.session).nextId(), at: now(), turn: null,
+      } })
+    }
+    for (const [id, pending] of configurationWaiters) if (pending.executor === executor) {
+      configurationWaiters.delete(id)
+      pending.reject(new Error('成员配置结果未确认，原持久配置保留'))
+    }
+
 
     const at = now()
     const kind = executor.run.stopping
@@ -1706,6 +2018,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     executor.run.action = undefined
     refresh(executor.run, at)
 
+    const ready = readyWaiters.get(executor.gen)
+    if (ready !== undefined) { clearTimeout(ready.timer); readyWaiters.delete(executor.gen); ready.reject(new Error(reason)) }
     executors.delete(executor)
     awaiting.delete(executor.token)
     executor.queued = []
@@ -1835,6 +2149,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     native.changed()
     if (!admissionClosed) {
       try {
+        collaboration.shutdown(why)
         options.lifecycle?.closeAdmission()
         admissionClosed = true
       } catch (error) {
@@ -1884,6 +2199,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
       if (run.owned.length > 0) await reclaimRun(run)
       if (run.reclaimNote !== undefined) throw new Error(run.reclaimNote)
+      settleStop(run)
     }
     const extensionError = await extensionResult
     if (extensionError !== undefined) throw new Error(extensionError)
@@ -1903,6 +2219,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     settle()
   }
 
+  for (const run of lastRuns.values()) if (run.ended !== undefined) afterEnd(run)
   options.log?.(`管理者就位 pid=${manager.record.pid} socket=${paths.socket}`)
   return manager
 }
@@ -1988,6 +2305,7 @@ export function readRuns(paths: RunPaths): readonly StoredRun[] {
     kept.push({
       session: run.session,
       gen: run.gen,
+      ...(typeof run.executionId === 'string' ? { executionId: run.executionId } : {}),
       ...(typeof run.pid === 'number' ? { pid: run.pid } : {}),
       ...(typeof run.procStartedAt === 'number' ? { procStartedAt: run.procStartedAt } : {}),
       startedAt: run.startedAt,

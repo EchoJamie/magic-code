@@ -316,6 +316,21 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
     apiKey: options.apiKey,
     // 流式用量——不置此则供应商不回 usage，`model.usage` 事件无从产生
     includeUsage: true,
+    // SDK 默认把未报告的用量补成 0；使用既有转换入口保留供应商的缺省事实。
+    convertUsage: usage => ({
+      inputTokens: {
+        total: usage?.prompt_tokens ?? undefined,
+        noCache: undefined,
+        cacheRead: usage?.prompt_tokens_details?.cached_tokens ?? undefined,
+        cacheWrite: undefined,
+      },
+      outputTokens: {
+        total: usage?.completion_tokens ?? undefined,
+        text: undefined,
+        reasoning: usage?.completion_tokens_details?.reasoning_tokens ?? undefined,
+      },
+      raw: (usage ?? undefined) as Record<string, JSONValue> | undefined,
+    }),
     // **请求体改写按适配分**：官方适配用它自己的（没定义＝**不改写**）；
     // **只有兼容接入**（没有适配）才走原来那条 MiniMax 改写。
     // ⚠️ 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody`——DeepSeek 没定义

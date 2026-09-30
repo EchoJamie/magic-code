@@ -466,3 +466,25 @@ describe('makeFauxSink', () => {
     expect(starts[0]?.data).toEqual({})
   })
 })
+
+describe('协作记录端口桩', () => {
+  test('普通会话查询返回无协作；没有脚本的协作写入明确失败', () => {
+    const records = makeFauxRecords()
+    expect(records.collaboration.agentForSession('plain')).toBeUndefined()
+    expect(records.collaboration.listMembers('none')).toEqual([])
+    expect(() => records.collaboration.stop({ kind: 'host' }, 'stop', 1)).toThrow('not scripted')
+    expect(() => records.collaboration.markWaitOutcomesIncluded('agent', [1], 2)).toThrow('not scripted')
+  })
+
+  test('协作端口由用例注入，不在通用桩里复制状态机', () => {
+    const included: { agent: string; ids: readonly number[]; at: number }[] = []
+    const scripted = { ...makeFauxRecords().collaboration, operation: () => ({ kind: 'message' as const, messageId: 17 }),
+      markWaitOutcomesIncluded: (agent: string, ids: readonly number[], at: number) => { included.push({ agent, ids, at }) },
+    }
+    const records = makeFauxRecords({ collaboration: scripted })
+    expect(records.collaboration).toBe(scripted)
+    expect(records.collaboration.operation('stable-operation')).toEqual({ kind: 'message', messageId: 17 })
+    records.collaboration.markWaitOutcomesIncluded('agent', [7, 9], 12)
+    expect(included).toEqual([{ agent: 'agent', ids: [7, 9], at: 12 }])
+  })
+})

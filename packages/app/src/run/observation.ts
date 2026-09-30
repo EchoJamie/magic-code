@@ -178,7 +178,9 @@ async function readModelCatalog(loaded: LoadedConfig, selection: ModelSelectionR
     ...(configured.reasoning === undefined ? {} : { reasoning: configured.reasoning }),
   })
   if (request !== undefined) {
-    const picked = selectModel({ providers, defaultProvider: loaded.providerId, selected: current }, request)
+    const picked = selectModel({ providers, defaultProvider: loaded.providerId, selected: current,
+      modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model),
+    }, request)
     if (!picked.ok) throw new Error(picked.reason)
     current = picked.selection
   }

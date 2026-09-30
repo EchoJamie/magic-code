@@ -12,9 +12,10 @@
  */
 
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
-import type { BlobRef, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
+import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
 import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
+import type { CollaborationView } from './collaboration-control.ts'
 
 // —— 标量与枚举 ——
 
@@ -134,6 +135,7 @@ export type EventKind =
   | 'provider.catalog'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
   | 'session.state'
+  | 'collaboration.view'
   // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
   | 'session.history'
   // 控制 · 权限——**授权名录**（U22）：`grants.list` 的答复 ＋ 撤销之后的回话；**不落库**
@@ -456,6 +458,8 @@ export type EventDataOf = {
   }
   'model.call.end': EmptyPayload
   'model.usage': {
+    /** 宿主在本次请求开始时绑定的委派；缺省表示当时没有已接受的委派。 */
+    readonly delegationId?: DelegationId
     /**
      * 本次**完整**输入消耗（**含**已计入输入的缓存部分）。
      * **未上报＝不给这一位**——不补零（服务端明说 0 才是 0，见 `ModelUsage`）。
@@ -861,6 +865,7 @@ export type EventDataOf = {
   // session——会话面（阶段 2 · U16）。**查询答复 ＋ 变更通报**两种时机共用一个 kind：
   // 外壳问一次（`session.list`）、内核切一条（`session.new` / `session.open`）都回这一条
   // ——三处各立一个 kind 只会让渲染侧写三遍同一段（列表 ＋ 当前）。
+  'collaboration.view': CollaborationView
   'session.state': {
     /** 当前活跃会话（**单活跃**——同一时刻只有一条）。 */
     readonly active: SessionId
@@ -1077,6 +1082,7 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 而重放要的从来不是快照——是过程（谁切到了哪条）。落库只会把同一张表存 N 遍，
   // 且重放时越读越乱（旧快照会把新快照盖回去）。
   'session.state',
+  'collaboration.view',
   // 读面答复同列的理由（第 19 轮）：它是**读出来的**——条目本来就在库里，
   // 落库＝把同一段内容存第二遍（长会话还会把库撑成两倍）。重放要的是「发生过什么」，
   // 不是「某人问过一次」。

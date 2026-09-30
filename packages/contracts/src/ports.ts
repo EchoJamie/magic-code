@@ -1,3 +1,4 @@
+import type { CollaborationRecords } from './collaboration.ts'
 /**
  * 跨域端口（九签名 ＋ 端口内类型）——已冻结 v0。
  * **阶段 3 加第十条**：`ProjectRules`（项目规约的来源面，U32）——源头是只读文件树，
@@ -208,6 +209,7 @@ export interface PermissionGate {
 
 /** 对话域 → 记录域。 */
 export interface RecordsService {
+  readonly collaboration: CollaborationRecords
   /**
    * 取下一个记录 id——**id 空间归记录域**（条目 / 事件共用）。
    * 装配据以构造 `EventStamper`（技术方案 · 领域划分 · 信封的归属）。
@@ -1530,7 +1532,7 @@ export type ToolResult = {
     readonly covers: 'exact' | 'subtree'
   }
   /**
-   * **这一轮停在这儿**（U72）——只有「取网页」那一件会带，且只在**没配提炼模型**时。
+   * **这一轮在工具结果处让出**。取网页缺少提炼模型时收束；协作登记有效等待时也沿此出口让出。
    *
    * ## 由头：这一种失败**不能**交给模型自己处置
    *

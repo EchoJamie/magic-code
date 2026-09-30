@@ -59,3 +59,5 @@ export type { ContextPolicy } from './policy.ts'
 // ⚠️ **恢复的编排不在这里**（U25 起）——本域只出**重建面**（`ConversationService.rebuild`：
 // 装载 ＋ 认下水位与开工位）。在途识别（记录域端口）与②③④的处置（重放 / 落账 / 记中止）
 // 归应用层 `@magic/actions`；出在这儿的是它拿去用的那几个形态（`RebuildReport` 等）。
+
+export type { CollaborationBoundary } from './collaboration.ts'

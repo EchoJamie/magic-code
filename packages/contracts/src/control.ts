@@ -13,6 +13,7 @@ import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId } from './ids.ts'
 import type { ReasoningSetting } from './model.ts'
+import type { CollaborationCommand } from './collaboration-control.ts'
 
 /**
  * **草稿里绑定的技能引用**（U33）——**只带身份，不带正文**。
@@ -534,6 +535,7 @@ export type McpReconnect = {
  * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set`）——外壳发往内核的全部消息。
  */
 export type Command =
+  | CollaborationCommand
   | InputSubmit
   | DecisionAnswer
   | TurnInterrupt

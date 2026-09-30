@@ -55,6 +55,8 @@ export type EndKind = 'normal' | 'aborted' | 'crashed'
 export type RunRecord = {
   /** 代次——管理者发的号（一条会话换一个执行者就换一代）。 */
   readonly gen: number
+  /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
+  readonly executionId?: string
   /** 这条会话（还没开张的空白执行者为 `null`）。 */
   session: string | null
   /** 这一代**发车**的时刻（执行详情「开始时间」的第一档）。 */
@@ -145,6 +147,8 @@ export type RunRecord = {
 /** 一个执行者刚发车时的记录（其余各格都是「还没有」）。 */
 export function newRunRecord(input: {
   readonly gen: number
+  /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
+  readonly executionId?: string
   readonly session: string | null
   readonly startedAt: number
   readonly explicit: boolean
@@ -154,6 +158,7 @@ export function newRunRecord(input: {
 }): RunRecord {
   return {
     gen: input.gen,
+    ...(input.executionId === undefined ? {} : { executionId: input.executionId }),
     session: input.session,
     startedAt: input.startedAt,
     explicit: input.explicit,
@@ -464,6 +469,8 @@ export function runRowOf(record: RunRecord): RunRow {
 export type StoredRun = {
   readonly session: string
   readonly gen: number
+  /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
+  readonly executionId?: string
   readonly pid?: number
   /**
    * 那个进程自己的启动时刻（U50）——重启核对拿它与 `pid` 一起判「还是不是当初那一代」。
@@ -576,6 +583,7 @@ export function reconcile(
 ): RunRecord {
   const record = newRunRecord({
     gen: stored.gen,
+    ...(stored.executionId === undefined ? {} : { executionId: stored.executionId }),
     session: stored.session,
     startedAt: stored.startedAt,
     explicit: false,
@@ -627,6 +635,7 @@ export function storedRunOf(record: RunRecord): StoredRun | undefined {
   return {
     session: record.session,
     gen: record.gen,
+    ...(record.executionId === undefined ? {} : { executionId: record.executionId }),
     ...(record.pid === undefined ? {} : { pid: record.pid }),
     ...(record.procStartedAt === undefined ? {} : { procStartedAt: record.procStartedAt }),
     startedAt: record.startedAt,

@@ -241,6 +241,7 @@ export function kernelTransportIsImplementable(): void {
 export function recordsServiceIsImplementable(): void {
   let next = 1
   const records: RecordsService = {
+    get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => next++,
     appendEntry: () => next++,
     appendEvent: () => {},
@@ -678,6 +679,7 @@ describe('事件契约', () => {
       // 重放读条目就说得清「当时跑过哪条后台命令、结局如何」，不必再存一遍屏上的话。
       'exec.background.done',
       'session.state',
+      'collaboration.view',
       // 第 19 轮：读面答复同列——它是**读出来的**（条目本就在库里），
       // 落库＝把同一段内容存第二遍；重放要的是「发生过什么」，不是「某人问过一次」
       'session.history',

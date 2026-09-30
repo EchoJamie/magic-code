@@ -40,6 +40,7 @@
 import { createRecordsStore } from '@magic/records'
 
 import type {
+  CollaborationReply,
   KernelEvent,
   MagicHome,
   ModelSwitchRequest,
@@ -144,6 +145,17 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   // 显式收成非空的那个类型——下面几处闭包（收缩、收摊）都要用它，而收窄进不去闭包
   const link: Link<ManagerToExecutor> = connected
 
+  const requests = new Map<string, (reply: CollaborationReply) => void>()
+  link.onMessage(message => {
+    if (message.t !== 'collaboration.reply') return
+    const done = requests.get(message.requestId)
+    requests.delete(message.requestId)
+    done?.(message.reply)
+  })
+  link.onClose(() => {
+    for (const done of requests.values()) done({ ok: false, reason: '管理者连接已断开；请求结果可按原 operationId 查询，不自动重做' })
+    requests.clear()
+  })
   let assembly: Assembly
   try {
     const magic = options.magic
@@ -161,6 +173,16 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       } finally { records.close() }
     }
     assembly = assemble({
+      executionId: options.token,
+      collaborationChanged: () => { link.send({ t: 'collaboration.changed' }) },
+      collaboration: (_session, request) => new Promise(resolve => {
+        const requestId = crypto.randomUUID()
+        requests.set(requestId, resolve)
+        if (!link.send({ t: 'collaboration.request', requestId, request })) {
+          requests.delete(requestId)
+          resolve({ ok: false, reason: '管理者连接不可用' })
+        }
+      }),
       cwd,
       config,
       magic,
@@ -491,6 +513,15 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
   link.onMessage((message: ManagerToExecutor) => {
     switch (message.t) {
+      case 'collaboration.configure':
+        link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.switchModel(message.model) })
+        return
+      case 'collaboration.input':
+        void assembly.supplementCollaboration(message.input, message.shared)
+        return
+      case 'collaboration.wake':
+        assembly.wakeCollaboration()
+        return
       case 'cmd':
         assembly.shell.send(message.cmd)
         return

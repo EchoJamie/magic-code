@@ -12,6 +12,7 @@
 import type { McpConfig } from './mcp.ts'
 import type { ProviderModelOverride, ReasoningSetting } from './model.ts'
 import type { ModelTraits } from './ports.ts'
+import type { AgentModelConfig } from './collaboration.ts'
 
 /**
  * **Magic 基础目录的末段名**（U42）——统一基础路径 ＝ `<MAGIC_HOME 或 $HOME>` ＋ 它。
@@ -264,6 +265,19 @@ export type SkillsConfig = {
   readonly sources?: readonly string[]
 }
 
+/** 角色只表达职责和约束，不授予权限；模型默认仅用于之后的创建。 */
+export type AgentRoleConfig = {
+  readonly name: string
+  readonly instructions: string
+  /** 引用当前文件；加载配置时相对配置文件目录解析，使用时仍须检查可达与读取权限。 */
+  readonly guidanceFiles?: readonly string[]
+  /** 既有技能发现结果中的引用。 */
+  readonly skills?: readonly string[]
+  /** 可用工具的收窄范围；缺省不另收窄，空数组表示不使用工具。 */
+  readonly tools?: readonly string[]
+  readonly model?: Partial<AgentModelConfig>
+}
+
 /**
  * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
  * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots` / `rules` / `skills`**；
@@ -271,6 +285,7 @@ export type SkillsConfig = {
  * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
  */
 export type MagicConfig = {
+  readonly agentRoles?: Readonly<Record<string, AgentRoleConfig>>
   /**
    * 新建普通会话采用**哪个连接的默认选择**（U41 起可缺省）。
    *
