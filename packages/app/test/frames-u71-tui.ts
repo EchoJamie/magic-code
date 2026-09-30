@@ -394,7 +394,7 @@ if (import.meta.main) {
         await close(second)
       } finally {
         // 外借的沙地**归借出方收拾**（驱动不动它）
-        sandbox.dispose()
+        await sandbox.dispose()
       }
     }
 

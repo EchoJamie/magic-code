@@ -573,7 +573,7 @@ async function sceneResume(): Promise<void> {
       await window.close({ graceMs: 3_000 })
     }
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 

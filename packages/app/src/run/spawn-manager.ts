@@ -1,93 +1,89 @@
-/**
- * **按需起管理者**（U48）——第一个窗口把它拉起来，之后按本机连接接上。
- *
- * 设计明文：「本轮方案采用一个**按需启动**的本机执行管理者，终端经本机连接接入」。
- * 「按需」这一条在这里是两个动作的合称：
- *
- * 1. **先连**——已经有一个（别的窗口拉起来的）就接上，**不另起**；
- * 2. 连不上才**拉一个**，而且是**脱离终端**地拉（`detached`）：管理者要活过拉它
- *    起来那个窗口——「关闭窗口继续执行」那条已定策略的前提正是它。挂在窗口底下的话，
- *    窗口一走管理者跟着走，后台能力当场不成立。
- *
- * ## 为什么不是「在本进程里当管理者」
- *
- * 那样窗口一关管理者就没了。「管理者是独立进程」不是为了对称好看：**它的寿命比窗口长**
- * 是设计要求（「没有执行者、客户端及待处理的投递 / 唤起责任时才退出」）——同进程做不到。
- *
- * ## 起来的信号是**连得上**，不是「子进程退出了没有」
- *
- * 子进程刚起来那一段（读配置、开库、bind）里它是活的但还接不了客。故这里不发「我好了」
- * 的消息，而是**反复试着连**——连上就是好了，连不上就再等一歇（有界）。不另立一条
- * 「就绪」的握手：连接本身就是那个信号。
- */
+/** CLI 只连接 App 所属服务；仅用户主动打开/重开时可以通过 LaunchServices 打开 App。 */
+import type { HostDiscovery, MagicHome } from '@magic/contracts'
+import type { LoadedConfig } from '../config.ts'
+import { connectManager, executionEnvironment, type ConnectOptions, type ManagerClient } from './client.ts'
+import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
 
-import { existsSync } from 'node:fs'
-import { connectManager } from './client.ts'
-import type { ManagerClient } from './client.ts'
-import type { ConnectOptions } from './client.ts'
-
-/** 等管理者起来的上限（毫秒）——本机这一跳实测在百毫秒量级，八秒已是两个数量级的余量。 */
-const READY_TIMEOUT_MS = 8_000
-/** 两次试着连之间隔多久（毫秒）。 */
-const RETRY_MS = 25
-
-export type SpawnManagerOptions = {
-  /** 入口脚本（`packages/app/src/cli.ts`）——缺省按本文件的位置推。 */
-  readonly entry?: string | undefined
-  /** 连上之后那几个入参（`cwd` / `session` / `switch`）。 */
-  readonly connect?: ConnectOptions | undefined
-  readonly timeoutMs?: number | undefined
+export type AppConnectionOptions = HostLocationOptions & {
+  /** 缺省是被动观察，绝不打开 App。 */
+  readonly intent?: 'observe' | 'open'
+  /** 留屏重连须仍属原数据实例；在发送 hello/session 之前核对。 */
+  readonly expectedInstance?: Pick<HostDiscovery, 'base' | 'dataDir'>
+  readonly connect?: ConnectOptions
+  readonly env?: Readonly<Record<string, string | undefined>>
+  readonly timeoutMs?: number
+  /** 隔离测试收集启动动作；生产使用 /usr/bin/open 的参数数组。 */
+  readonly openApplication?: (app: string) => Promise<void>
 }
 
-/**
- * **接上管理者**——在的就连，不在的就拉一个再连。
- *
- * 返回 `undefined` ＝ 起不来也连不上（**有界**：拉起来之后等了 `timeoutMs` 还没接上，
- * 就该如实退场，而不是无限等一个起不来的东西）。
- */
-export async function connectOrStartManager(
-  socketPath: string,
-  options: SpawnManagerOptions = {},
-): Promise<ManagerClient | undefined> {
-  // ① **在的就接上**——「启动竞争的一方连接已有实例，不另起」
-  //
-  // ⚠️ 回绝（`--session` 打错一个字母）在这一跳**照抛**，不进②：那不是「还没起来」，
-  // 是「起来了、有话要说」——接着拉第二个只会把同一句回绝再听一遍。
-  const existing = await connectManager(socketPath, options.connect ?? {})
-  if (existing !== undefined) return existing
+export type AppConnection = {
+  readonly client: ManagerClient
+  readonly discovery: HostDiscovery
+  readonly magic: MagicHome
+  readonly loaded: LoadedConfig
+}
 
-  // ② **不在才拉一个**（脱离终端，见文件头注）
-  startDetached(socketPath, options.entry)
+export async function openApplication(app: string): Promise<void> {
+  const child = Bun.spawn(['/usr/bin/open', app], {
+    stdin: 'ignore', stdout: 'ignore', stderr: 'pipe',
+  })
+  const errors = new Response(child.stderr).text()
+  const timer = setTimeout(() => child.kill(), 5_000)
+  try {
+    const code = await child.exited
+    if (code !== 0) throw new Error(`无法打开 App ${app}：${(await errors).trim() || `open 退出码 ${code}`}`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
-  // ③ 等它接得上（**有界**）——起来的信号就是「连得上」，不另立一条握手的消息
-  const deadline = Date.now() + (options.timeoutMs ?? READY_TIMEOUT_MS)
-  while (Date.now() < deadline) {
-    await Bun.sleep(RETRY_MS)
-    const client = await connectManager(socketPath, options.connect ?? {})
-    if (client !== undefined) return client
+export async function connectApp(options: AppConnectionOptions = {}): Promise<AppConnection> {
+  const location = locateHost(options)
+  const active = options.intent === 'open'
+  const env = options.env ?? process.env
+  const cwd = options.connect?.cwd ?? process.cwd()
+  const timeoutMs = options.timeoutMs ?? 8_000
+  const deadline = Date.now() + timeoutMs
+  let reason = `App 尚未发布就绪记录：${location.discoveryPath}`
+
+  const attempt = async (): Promise<AppConnection | undefined> => {
+    const discovery = readHostDiscovery(location)
+    if (discovery === undefined) return undefined
+    if (options.expectedInstance !== undefined &&
+      (discovery.base !== options.expectedInstance.base || discovery.dataDir !== options.expectedInstance.dataDir)) {
+      throw new Error(`App 数据实例已改变：原基础目录 ${options.expectedInstance.base}，数据 ${options.expectedInstance.dataDir}；当前基础目录 ${discovery.base}，数据 ${discovery.dataDir}。请在 App 设置切回原实例再重开`)
+    }
+    const selected = selectedHostConfig(discovery, { home: location.home, cwd, env })
+    const client = await connectManager(discovery.socket, {
+      ...options.connect,
+      expectedIdentity: discovery,
+      environment: active ? executionEnvironment(env) : undefined,
+      timeoutMs: Math.max(1, Math.min(options.connect?.timeoutMs ?? timeoutMs, deadline - Date.now())),
+    })
+    if (client === undefined) {
+      reason = `App 发现记录已过期或服务不可达：${discovery.socket}`
+      return undefined
+    }
+    return { client, discovery, ...selected }
   }
 
-  return undefined
+  const existing = await attempt()
+  if (existing !== undefined) return existing
+  if (!active) throw new Error(`${reason}；被动连接不会打开 Magic Code`)
+  if (location.app === undefined) {
+    throw new Error(`${reason}；源码模式请先显式启动同来源的原生 App 宿主`)
+  }
+
+  await (options.openApplication ?? openApplication)(location.app)
+  do {
+    const connected = await attempt()
+    if (connected !== undefined) return connected
+    await Bun.sleep(Math.min(25, Math.max(0, deadline - Date.now())))
+  } while (Date.now() < deadline)
+  throw new Error(`已请求打开 ${location.app}，但未能在 ${timeoutMs}ms 内连接就绪服务：${reason}`)
 }
 
-/** 拉一个**脱离终端**的管理者——见文件头注。 */
-function startDetached(socketPath: string, entry: string | undefined): void {
-  const target = entry ?? new URL('../cli.ts', import.meta.url).pathname
-  if (!existsSync(target)) throw new Error(`入口不在：${target}`)
-
-  const child = Bun.spawn(
-    [process.execPath, target, '--internal-manager', socketPath],
-    {
-      env: process.env,
-      // **脱离终端**：三个流都不接窗口那一份——窗口关了它照跑（「关闭窗口继续执行」），
-      // 而它要说什么也不该打进用户的屏（那是「无人负责的后台日志」，归诊断不归界面）
-      stdin: 'ignore',
-      stdout: 'ignore',
-      stderr: 'ignore',
-      detached: true,
-    },
-  )
-
-  // 不 `await child.exited`、也不留句柄：父进程该退就退（管理者自己活着）
-  child.unref()
+/** 供后续 TUI“重新打开 Magic Code”明确动作调用；自动重连仍调用 connectApp 的缺省观察模式。 */
+export function reopenApp(options: Omit<AppConnectionOptions, 'intent'> = {}): Promise<AppConnection> {
+  return connectApp({ ...options, intent: 'open' })
 }

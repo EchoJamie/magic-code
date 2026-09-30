@@ -304,7 +304,7 @@ async function unconfigured(mark: string, columns: number, rows: number): Promis
     )
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -399,7 +399,7 @@ async function removeTheOnlyOne(mark: string): Promise<void> {
     await Bun.sleep(300)
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -490,7 +490,7 @@ async function removeTheCurrentOneOf(mark: string): Promise<void> {
     )
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -575,7 +575,7 @@ async function connectedButUnselected(mark: string): Promise<void> {
     )
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -619,7 +619,7 @@ async function configured(mark: string, columns: number, rows: number): Promise<
     )
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 

@@ -1,0 +1,9 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.inspected",
+    "request": "request-one",
+    "error": "该事项或会话已不可达"
+  }
+}

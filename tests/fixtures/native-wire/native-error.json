@@ -1,0 +1,8 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.error",
+    "reason": "版本不一致"
+  }
+}

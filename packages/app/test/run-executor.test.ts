@@ -9,7 +9,7 @@
  * 1. **一个窗口一条执行者**——七项各自独立，停一项不影响其它（U48 完成出口第 2 句）；
  * 2. **同时重连同一会话只有一个执行者**（第 3 句）——且是**并发**重连；
  * 3. **过期代次的命令一律拒绝**（自行验收·代次）——用真连接伪造一条旧号命令；
- * 4. **收缩与异常**——没人看且手上没事 ⇒ 释放；管理者被杀 ⇒ 执行者自行停止（自行验收后两条）。
+ * 4. **收缩与异常**——无在途工作责任 ⇒ 释放（窗口仍连着也释放）；管理者被杀 ⇒ 执行者自行停止（自行验收后两条）。
  *
  * ⚠️ **执行者一律是真子进程**（`createProcessLauncher`）。「拆进程」是这一单要证的东西
  * 本身——拿进程内的替身跑出来的绿，证不了「失败隔离」。
@@ -20,6 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
+import type { KernelEvent } from '@magic/contracts'
 import { connectManager } from '../src/run/client.ts'
 import type { ManagerClient } from '../src/run/client.ts'
 import { createProcessLauncher } from '../src/run/launch.ts'
@@ -28,6 +29,8 @@ import type { Manager } from '../src/run/manager.ts'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { removeDir, tempDir } from './tmp.ts'
+import { startFixture, type Fixture, type FixtureTurn } from './ui/fixture.ts'
+import { attentionFacts } from './resident-attention-fixture.ts'
 
 /** 一块沙地——形制与 `run-manager.test.ts` 那一处同（两处各是一片独立沙地，不共用状态）。 */
 type Ground = {
@@ -36,10 +39,12 @@ type Ground = {
   readonly dataDir: string
   readonly tmp: string
   readonly ws: string
-  dispose(): void
+  readonly fixture: Fixture
+  readonly environment: Record<string, string>
+  dispose(): Promise<void>
 }
 
-function ground(name: string): Ground {
+function ground(name: string, mode: 'held' | 'settled' | 'background' | 'background-finish' = 'held', turns?: readonly FixtureTurn[]): Ground {
   const root = tempDir(`magic-exec-${name}-`)
   const home = join(root, 'home')
   const base = join(root, 'base')
@@ -47,19 +52,27 @@ function ground(name: string): Ground {
   const ws = join(root, 'ws')
   for (const dir of [home, base, dataDir, ws]) mkdirSync(dir, { recursive: true })
 
-  // 一份**读得动**的配置：执行者装配时要它。供应商指向一个必然连不上的地址——
-  // 这一组用例一条模型请求都不发（走的全是会话命令），故它是死是活无关紧要。
+  // 真执行者只连接本机受控模型；待答命令绝不批准，不产生工具副作用。
+  const complete = { kind: 'text' as const, text: '核心隔离回合完成', chunks: 1, chunkDelayMs: 0 }
+  const fixture = startFixture({ turns: turns ?? (mode.startsWith('background')
+    ? [{ kind: 'tool', name: 'exec', args: { cmd: mode === 'background-finish' ? 'sleep 1.5' : 'sleep 300', background: true } }, complete]
+    : [mode === 'settled' ? complete : { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }]),
+  })
+  const environment: Record<string, string> = { ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)), HOME: home, MAGIC_HOME: base }
+  for (const key of Object.keys(environment)) if (/^MAGIC_.*_API_KEY$/.test(key)) environment[key] = ''
   writeFileSync(
     join(base, 'config.json'),
     JSON.stringify({
       defaultProvider: 'x',
-      providers: { x: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test', model: 'm' } },
+      providers: { x: { baseURL: fixture.baseURL, apiKey: 'sk-test', model: 'm' } },
       dataDir,
     }),
   )
 
   return {
     root,
+    fixture,
+    environment,
     magic: { home, base },
     dataDir,
     // **系统临时目录当第二落点**（见 `paths.ts` 的 `runPathsOf`）：socket 路径有
@@ -67,7 +80,8 @@ function ground(name: string): Ground {
     // 拿沙地当那个「短路径」会当场撞上（第一版就是这么红的两条）。
     tmp: tmpdir(),
     ws,
-    dispose: () => {
+    dispose: async () => {
+      await fixture.stop()
       // 运行目录可能在沙地外那一支（上面那个 fallback），一并收掉
       removeDir(runPathsOf({ home, base }, dataDir, tmpdir()).dir)
       removeDir(root)
@@ -81,7 +95,7 @@ async function standUp(g: Ground, overrides: Record<string, unknown> = {}): Prom
     paths: runPathsOf(g.magic, g.dataDir, g.tmp),
     dataDir: g.dataDir,
     magic: g.magic,
-    launch: createProcessLauncher(),
+    launch: { spawn(request) { return createProcessLauncher().spawn({ ...request, environment: g.environment }) } },
     ...overrides,
   })
   if (started.role !== 'manager') throw new Error(`没立起来：${started.role}`)
@@ -105,6 +119,18 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 10_000): Pro
   }
 }
 
+/** 拒收当场报红；接收成功后继续原判据，两条分支共用原来的等待时限。 */
+async function submitAndWait(client: ManagerClient, text: string, what: string, ok: () => boolean): Promise<void> {
+  const ref = crypto.randomUUID()
+  let settled: Extract<KernelEvent, { kind: 'input.settled' }> | undefined
+  client.onEvent(event => {
+    if (event.kind === 'input.settled' && event.data.ref === ref) settled = event
+  })
+  client.send({ type: 'input.submit', text, ref })
+  await waitFor(what, () => settled !== undefined && (!settled.data.ok || ok()))
+  expect(settled?.data.ok, JSON.stringify(settled)).toBe(true)
+}
+
 /** 这一条进程还在不在——`kill(pid, 0)` 是既有装置里那把尺子（`bench-pty.test.ts` 同此）。 */
 function alive(pid: number): boolean {
   try {
@@ -125,13 +151,13 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       for (let i = 0; i < 7; i += 1) {
         const client = await open(g, manager, `w${i}`)
         clients.push(client)
-        client.send({ type: 'session.new' })
+        client.send({ type: 'input.submit', text: `受控待答 ${i}` })
       }
 
       await waitFor('七个执行者都起来', () => manager.executors().length === 7)
       // **等它们各自把会话认出来**再读——那一格是事件到达才填的，早读一步读到的是
       // 一排 `null`（它们是七个**还没开张**的执行者，各自等着自己那一条首条消息）
-      await waitFor('七条会话都认出来了', () => manager.executors().every((one) => one.session !== null))
+      await waitFor('七条都真在等待审批', () => manager.runs().filter((one) => one.state === 'waiting').length === 7)
 
       const live = manager.executors()
       // **七代各是各的**——号不重、进程不重、会话不重
@@ -157,7 +183,7 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       for (const client of clients) client.close()
       manager.stop('用例收尾')
       await manager.waitUntilExit()
-      g.dispose()
+      await g.dispose()
     }
   }, 60_000)
 
@@ -171,8 +197,12 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
 
       const first = await open(g, manager, 'a')
       clients.push(first)
+      const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+      records.setSessionTitle(session, '并发接回', Date.now())
+      records.close()
       first.send({ type: 'session.open', session })
-      await waitFor('第一代起来', () => manager.executors().length === 1)
+      await submitAndWait(first, '受控待答', '第一代待答', () => manager.runs().some((row) => row.session === session && row.state === 'waiting'))
+      const original = manager.executors()[0]!
 
       // ——同时——（两个窗口在同一刻发同一条 open，不是「一个接一个看它接得上」）
       const second = await open(g, manager, 'b')
@@ -187,7 +217,9 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       const live = manager.executors()
       expect(live.length).toBe(1)
       expect(live[0]?.session).toBe(session)
-      expect(live[0]?.gen).toBe(manager.executors()[0]?.gen)
+      expect(live[0]?.gen).toBe(original.gen)
+      expect(live[0]?.pid).toBe(original.pid)
+      expect(g.fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(1)
 
       // 三条连接都指着同一代（`target` 那一条说的就是它）
       for (const client of clients) expect(client.gen()).toBe(live[0]?.gen ?? null)
@@ -195,25 +227,38 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       for (const client of clients) client.close()
       manager.stop('用例收尾')
       await manager.waitUntilExit()
-      g.dispose()
+      await g.dispose()
     }
   }, 60_000)
 
   test('切到另一条会话＝换一代，而原来那一代照跑', async () => {
-    const g = ground('switch')
+    const g = ground('switch', 'background')
     const manager = await standUp(g)
     const clients: ManagerClient[] = []
 
     try {
       const client = await open(g, manager, 'a')
       clients.push(client)
+      let completed = 0
+      client.onEvent((event) => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed += 1 })
 
-      client.send({ type: 'session.open', session: 'aaaaaaaa-0000-0000-0000-000000000001' })
-      await waitFor('第一代起来', () => manager.executors().length === 1)
+      const sessions = ['aaaaaaaa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000002'] as const
+      const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+      for (const session of sessions) records.setSessionTitle(session, session, Date.now())
+      records.close()
+      client.send({ type: 'session.open', session: sessions[0] })
+      // 工具调用和工具回填后的文本各有一条 turn.end；两轮都结束才是本次输入收束。
+      await submitAndWait(client, '运行隔离后台命令', '输入已收束而后台责任仍在', () => completed === 2 && manager.runs().some((row) => row.session === sessions[0] && row.lastTurn === 'settled' && row.state === 'running' && row.background === 1))
       const first = manager.executors()[0] as { readonly gen: number; readonly pid: number | undefined }
+      // 原预期 → 新预期：原来是 action 那句文案里含「后台命令」（切字符串），现在是 row.background 那一格。
+      // 依据 U100；没变弱（从「字里有这三个字」换到「这一位是几」）。
+      expect(manager.runs().find((row) => row.session === sessions[0])?.background).toBe(1)
 
-      client.send({ type: 'session.open', session: 'aaaaaaaa-0000-0000-0000-000000000002' })
-      await waitFor('第二代起来', () => manager.executors().length === 2)
+      client.send({ type: 'session.open', session: sessions[1] })
+      await waitFor('只读切换到第二条', () => client.gen() === null)
+      expect(manager.executors()).toHaveLength(1)
+      client.send({ type: 'input.submit', text: '第二条明确开始' })
+      await waitFor('第二代起来', () => manager.executors().length === 2 && client.gen() !== null)
 
       // **两代并存**：切会话不是取消工作（设计：「切会话……当前工作继续」）
       expect(manager.executors().map((one) => one.gen)).toContain(first.gen)
@@ -224,7 +269,7 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       for (const client of clients) client.close()
       manager.stop('用例收尾')
       await manager.waitUntilExit()
-      g.dispose()
+      await g.dispose()
     }
   }, 60_000)
 })
@@ -248,10 +293,10 @@ describe('U48-S3 · 独占与代次', () => {
           lines.push((message as { text: string }).text)
         }
       })
-      link.send({ t: 'hello', role: 'client', cwd: g.ws, label: '旧窗口' })
+      link.send({ t: 'hello', role: 'client', protocol: manager.identity.protocol, version: manager.identity.version, source: manager.identity.source, cwd: g.ws, label: '旧窗口' })
 
       // ① 还没有目标时说一个号——那正是「旧窗口拿着上一代的号」的形态
-      link.send({ t: 'cmd', gen: 42, cmd: { type: 'session.list' } })
+      link.send({ t: 'cmd', gen: 42, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
       await waitFor('旧号的命令被拒', () => lines.length > 0)
       expect(lines[0]).toContain('已经不在了')
       // **没有为它起执行者**——拒绝是真拒绝，不是「收下了另说」
@@ -259,11 +304,12 @@ describe('U48-S3 · 独占与代次', () => {
 
       // ② 窗口正常接上之后再拿旧号发——同样被拒
       lines.length = 0
-      link.send({ t: 'cmd', gen: null, cmd: { type: 'session.new' } })
+      link.send({ t: 'cmd', gen: null, cmd: { type: 'input.submit', text: '受控待答' } })
       await waitFor('正常那条起了执行者', () => manager.executors().length === 1)
       const live = manager.executors()[0] as { readonly gen: number }
+      await waitFor('正常输入进入待答', () => manager.runs().some((row) => row.state === 'waiting'))
 
-      link.send({ t: 'cmd', gen: live.gen + 7, cmd: { type: 'session.list' } })
+      link.send({ t: 'cmd', gen: live.gen + 7, cmd: { type: 'input.submit', text: '旧代次不得执行' } })
       await waitFor('旧号又被拒', () => lines.length > 0)
       expect(lines[0]).toContain(`${live.gen + 7}`)
       // 执行者一代都没多
@@ -273,7 +319,7 @@ describe('U48-S3 · 独占与代次', () => {
     } finally {
       manager.stop('用例收尾')
       await manager.waitUntilExit()
-      g.dispose()
+      await g.dispose()
     }
   }, 60_000)
 
@@ -286,27 +332,33 @@ describe('U48-S3 · 独占与代次', () => {
       const lines: string[] = []
       client.onLine((text) => lines.push(text))
 
-      client.send({ type: 'session.new' })
-      await waitFor('执行者起来', () => manager.executors().length === 1)
+      client.send({ type: 'input.submit', text: '受控待答' })
+      await waitFor('执行者真在待答', () => manager.runs().some((row) => row.state === 'waiting'))
 
       const pid = manager.executors()[0]?.pid as number
       process.kill(pid, 'SIGKILL')
 
       await waitFor('核销', () => manager.executors().length === 0)
-      await waitFor('窗口收到那一句', () => lines.some((one) => one.includes('收摊')))
+      // 原预期 → 新预期：原来是组合线那句「工作意外中断：<reason>」，现在是 U100 的
+      // 「它那一代执行者收摊了（<reason>）」——同一件事，措辞按 main（U100 那条注释：
+      // **用户自己叫停那一档不另说这句**，异常收那一档照旧说）。
+      // 依据 U100；**没变弱**：判据仍是「窗口真收到那一句」，而且 U100 那版还多守了
+      // 「用户自己叫停时不重复说」这一条（见 run-executor 里那条停止用例）。
+      await waitFor('窗口收到那一句', () => lines.some((one) => one.includes('它那一代执行者收摊了')))
       // 旧号当场作废——不作废的话，它下一条命令会被当成「过期误操作」挡下来
       expect(client.gen()).toBeNull()
 
       // 而它接着敲是有回声的：管理者为它起新的一代
-      client.send({ type: 'session.new' })
+      client.send({ type: 'input.submit', text: '受控待答' })
       await waitFor('起了新的一代', () => manager.executors().length === 1)
+      await waitFor('新一代已就绪', () => manager.runs().some((row) => row.state === 'waiting'))
       expect(client.gen()).not.toBeNull()
 
       client.close()
     } finally {
       manager.stop('用例收尾')
       await manager.waitUntilExit()
-      g.dispose()
+      await g.dispose()
     }
   }, 60_000)
 })
@@ -327,8 +379,8 @@ describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () =>
     try {
       const client = await open(g, manager, 'a')
       client.send({ type: 'session.open', session: SESSION })
-      await waitFor('真执行者起来并接上那条会话', () =>
-        manager.runs().some((row) => row.session === SESSION && row.state === 'idle'),
+      await submitAndWait(client, '受控待答', '真执行者起来并接上那条会话', () =>
+        manager.runs().some((row) => row.session === SESSION && row.state === 'waiting'),
       )
 
       // **发起收摊**——`bye` 刚发出去，那一代还在（收尾两跳还没走完）
@@ -341,30 +393,104 @@ describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () =>
 
       await manager.waitUntilExit()
     } finally {
-      await manager.waitUntilExit().catch(() => {})
-      g.dispose()
+      manager.stop('用例收尾')
+      await manager.waitUntilExit()
+      await g.dispose()
     }
   }, 60_000)
 })
 
 describe('U48-S4 · 收缩与异常', () => {
-  test('没人看、手上也没事 ⇒ 执行者释放；管理者随即退出', async () => {
-    const g = ground('shrink')
+  test('真实模型与工具：中间工具轮不产生 done，最终可查看结果恰好一个 done 事项', async () => {
+    const evidence = tempDir('magic-continues-evidence-')
+    const marker = 'resident-continues-tool-output'
+    const g = ground('attention', 'settled', [
+      { kind: 'tool', name: 'exec', args: { cmd: `echo ${marker}` } },
+      // 保留真实流式阶段，第一轮结束时可直接检查持久事项，不能只在最终数总数。
+      { kind: 'text', text: '工具结果已收到，这才是本次交代的最终结果。', chunks: 10, chunkDelayMs: 100 },
+    ])
+    const notices: string[] = []
+    const manager = await standUp(g, { notifySystem: (text: string) => notices.push(text) })
+    const client = await open(g, manager, '完成事项观察')
+    const events: KernelEvent[] = []
+    const observations: { event: Extract<KernelEvent, { kind: 'turn.end' }>; attention: ReturnType<typeof attentionFacts> }[] = []
+    let pid: number | undefined
+    let passed = false
+    client.onEvent((event) => {
+      events.push(event)
+      if (event.kind === 'turn.end') observations.push({ event, attention: attentionFacts(g.dataDir, g.ws) })
+    })
+    try {
+      client.send({ type: 'input.submit', text: '执行受控 echo 后给出最终结果' })
+      await waitFor('工具轮结束事件已收到', () => observations.length > 0)
+      pid = manager.executors()[0]?.pid
+      expect(observations[0]?.event.data).toEqual({ reason: 'settled', continues: true })
+      expect(observations[0]?.attention).toEqual([])
+      expect(notices).toEqual([])
+      const tools = events.filter((event) => event.kind === 'tool.result')
+      expect(tools).toHaveLength(1)
+      expect(tools[0]?.data.ok).toBe(true)
+      expect(JSON.stringify(tools[0]?.data.output)).toContain(marker)
+      expect(pid).toBeDefined()
+      expect(alive(pid!)).toBe(true)
+
+      await waitFor('最终结果落地并释放执行者', () => observations.length === 2 && manager.executors().length === 0)
+      expect(observations.map((one) => one.event.data)).toEqual([
+        { reason: 'settled', continues: true }, { reason: 'settled' },
+      ])
+      const final = observations[1]!.event
+      const attention = attentionFacts(g.dataDir, g.ws)
+      expect(attention).toHaveLength(1)
+      expect(attention[0]).toMatchObject({ session: final.session, fact: String(final.id), kind: 'done', unread: true, delivered: false })
+      expect(notices).toEqual(['有一件工作跑完了一轮——打开看是哪条'])
+      const requests = g.fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[1]?.body.messages)).toContain(marker)
+      expect(alive(pid!)).toBe(false)
+      passed = true
+    } finally {
+      writeFileSync(join(evidence, 'trace.json'), JSON.stringify({ passed, sandbox: g.root, pid, events, observations, requests: g.fixture.requests(), notices, runs: manager.runs() }, null, 2))
+      client.close()
+      manager.stop('测试宿主退出')
+      await manager.waitUntilExit()
+      await g.dispose()
+      writeFileSync(join(evidence, 'cleanup.json'), JSON.stringify({ sandboxExists: existsSync(g.root), executorAlive: pid === undefined ? null : alive(pid), socketExists: existsSync(manager.socketPath) }, null, 2))
+      console.log(`完成事项证据保留：${evidence}`)
+    }
+  }, 60_000)
+
+  test('窗口仍连着但无工作责任 ⇒ 执行者释放；同 Session 下一次输入才起新代，管理者等宿主退出', async () => {
+    const g = ground('shrink', 'settled')
     const manager = await standUp(g)
 
     try {
       const client = await open(g, manager, 'a')
-      client.send({ type: 'session.list' })
+      client.send({ type: 'input.submit', text: '受控完成后释放' })
       await waitFor('执行者起来', () => manager.executors().length === 1)
       const pid = manager.executors()[0]?.pid as number
 
-      client.close()
+      await waitFor('回合完成', () => manager.runs().some((row) => row.state === 'idle'))
+      const session = manager.runs().find((row) => row.state === 'idle')!.session
 
-      // ① 执行者自己收摊（不是管理者去杀它）
+      // ① 窗口仍连接：执行者自己收摊（不是管理者去杀它）
       await waitFor('执行者被释放', () => manager.executors().length === 0, 8_000)
       await waitFor('那个进程真没了', () => !alive(pid), 8_000)
 
-      // ② 两手都空 ⇒ 管理者自己退（**不成为永远占机器的 daemon**）
+      expect(client.closed).toBe(false)
+      expect(client.gen()).toBeNull()
+      client.send({ type: 'input.submit', text: '沿原会话继续' })
+      await waitFor('原会话下一代开始', () => manager.executors().some((one) => one.session === session && one.pid !== pid))
+      await waitFor('第二轮也释放', () => manager.executors().length === 0, 8_000)
+      expect(manager.runs().map((row) => row.session)).toEqual([session])
+      expect(g.fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(2)
+      client.close()
+
+      // 空闲仍能接入，直到宿主显式退出。
+      const observer = await open(g, manager, '空闲观察')
+      expect(observer.closed).toBe(false)
+      expect(manager.executors()).toHaveLength(0)
+      observer.close()
+      manager.stop('宿主退出')
       await manager.waitUntilExit()
 
       // 退出是「收干净了」：socket 摘掉、自报那一份也清了
@@ -373,7 +499,38 @@ describe('U48-S4 · 收缩与异常', () => {
       expect(existsSync(paths.record)).toBe(false)
     } finally {
       manager.stop('用例收尾')
-      g.dispose()
+      await manager.waitUntilExit()
+      await g.dispose()
+    }
+  }, 60_000)
+
+  test('真实后台命令：模型轮收束后仍 running，命令退出才 idle 并释放执行者', async () => {
+    const g = ground('background-finish', 'background-finish')
+    const manager = await standUp(g)
+    const client = await open(g, manager, '后台命令观察')
+    let completed = 0
+    client.onEvent((event) => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed += 1 })
+    try {
+      client.send({ type: 'input.submit', text: '启动受控后台命令' })
+      await waitFor('两次模型轮均已收束而命令仍在', () => completed === 2 && manager.runs().some((row) => row.lastTurn === 'settled' && row.state === 'running' && row.background === 1))
+      const session = manager.runs()[0]!.session
+      expect(manager.runs()[0]?.background).toBe(1)
+      expect(g.fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(2)
+      const pid = manager.executors()[0]?.pid
+      expect(pid).toBeDefined()
+      await waitFor('后台责任归零', () => manager.runs().find((row) => row.session === session)?.state === 'idle')
+      await waitFor('无责任执行者真实退出', () => manager.executors().length === 0 && !alive(pid!))
+      expect(client.closed).toBe(false)
+      expect(manager.runs().find((row) => row.session === session)?.holds).toBe(false)
+      // 后台结束的 notice 按既有业务进入同一会话，额外一轮是结束回执，不是历史重跑。
+      const chats = g.fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))
+      expect(chats).toHaveLength(3)
+      expect(chats[2]?.lastUser).toContain('sleep 1.5')
+    } finally {
+      client.close()
+      manager.stop('测试宿主退出')
+      await manager.waitUntilExit()
+      await g.dispose()
     }
   }, 60_000)
 
@@ -394,7 +551,7 @@ describe('U48-S4 · 收缩与异常', () => {
         join(g.root, 'go'),
         join(g.root, 'result'),
       ],
-      { stdout: 'pipe', stderr: 'pipe' },
+      { stdout: 'pipe', stderr: 'pipe', env: g.environment },
     )
 
     try {
@@ -404,14 +561,18 @@ describe('U48-S4 · 收缩与异常', () => {
 
       const managerPid = (JSON.parse(readFileSync(join(g.root, 'result'), 'utf8')) as { pid: number }).pid
 
+      expect(managerPid).toBe(managerChild.pid)
+
       // 从**外面**连上去（这个用例自己就是那个窗口），要一个执行者
       const client = await connectManager(paths.socket, { cwd: g.ws })
       expect(client).toBeDefined()
-      client?.send({ type: 'session.list' })
+      client?.send({ type: 'input.submit', text: '受控待答' })
 
       // 执行者是管理者进程的孩子——用 `pgrep -P` 从外面看（不是问管理者要，
       // 那样问到的只是它自己说的；要证的是**真有一个子进程**）
-      const executorPid = await descendantOf(managerPid)
+      let executorPid: number | undefined
+      await waitFor('执行者有待答责任', () => client?.runs().some((row) => row.state === 'waiting') === true)
+      executorPid = await descendantOf(managerPid)
       expect(executorPid).toBeDefined()
       expect(alive(executorPid as number)).toBe(true)
 
@@ -421,6 +582,7 @@ describe('U48-S4 · 收缩与异常', () => {
       // 执行者自己停：不变成无人负责的后台
       await waitFor('执行者自行停止', () => !alive(executorPid as number), 15_000)
       await managerChild.exited
+      client?.close()
 
       // 路径上是尸首（没有收尾就没有清理）——**下一个随即能立起来**（第一段那条纪律）
       const again = await startManager({
@@ -437,7 +599,7 @@ describe('U48-S4 · 收缩与异常', () => {
     } finally {
       managerChild.kill('SIGKILL')
       await managerChild.exited
-      g.dispose()
+      await g.dispose()
     }
   }, 60_000)
 })

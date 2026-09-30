@@ -73,7 +73,7 @@ export type ReapOutcome =
  * 号 / `ps` 不可用 / 输出读不懂）一律 `undefined`——**读不到就是读不到**，调用方据此
  * 走保守那一支。
  *
- * `LC_ALL=C`：`lstart` 的月/星期名随 locale 变，钉住它这一句才稳定可解。
+ * 固定英文与 UTC：不同进程的时区设置不能改变同一进程身份。
  */
 export function startTimeOf(pid: number): number | undefined {
   if (!Number.isInteger(pid) || pid <= 0) return undefined
@@ -84,7 +84,7 @@ export function startTimeOf(pid: number): number | undefined {
       stdout: 'pipe',
       stderr: 'ignore',
       stdin: 'ignore',
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
     })
     if (done.exitCode !== 0) return undefined
     out = done.stdout
@@ -95,7 +95,7 @@ export function startTimeOf(pid: number): number | undefined {
 
   const text = new TextDecoder().decode(out).trim()
   if (text === '') return undefined
-  const at = Date.parse(text)
+  const at = Date.parse(`${text} UTC`)
   return Number.isFinite(at) ? at : undefined
 }
 

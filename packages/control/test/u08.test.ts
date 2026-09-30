@@ -35,6 +35,8 @@ import {
   createInProcessTransportPair,
   isSerializable,
 } from '../src/index.ts'
+import type { ControlRoutes } from '../src/index.ts'
+import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 
 // —— 类型层探针（tsc 校验；`bun test` 只剥类型，不做检查）——
 
@@ -57,6 +59,12 @@ export function commandNarrowsByType(): void {
 /** 命令目录穷尽——新增 kind 时此处缺返回，tsc 报错。 */
 export function commandSubjectOf(command: Command): string {
   switch (command.type) {
+    case 'collaboration.read':
+    case 'collaboration.input':
+    case 'collaboration.stop':
+    case 'collaboration.resume':
+    case 'collaboration.configure':
+      return `协作命令：${command.type}`
     case 'input.submit':
       return command.text
     case 'decision.answer':
@@ -268,7 +276,7 @@ function envelope<K extends EventKind>(
 }
 
 /** 空路由——只关心某一支时补齐其余（`CommandRoutes` 九路由皆必填）。 */
-function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
+function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
   return {
     onInput: () => undefined,
     onInterrupt: () => undefined,
@@ -300,6 +308,32 @@ function routesWith(overrides: Partial<CommandRoutes>): CommandRoutes {
 // —— 验收：通道回环 ——
 
 describe('通道回环——命令进 · 事件出', () => {
+  test('协作五支保留明确目标、共同补充与引用；查询快照瞬时广播', () => {
+    const hub = createControlHub()
+    const { kernel, shell } = createInProcessTransportPair()
+    const commands: Command[] = []
+    const events: KernelEvent[] = []
+    hub.bind(routesWith({ onCollaboration: (command) => commands.push(command) }))
+    hub.attach(kernel)
+    shell.subscribe((event) => events.push(event))
+    const requests: readonly Command[] = [
+      { type: 'collaboration.read', member: 'worker' },
+      { type: 'collaboration.input', member: 'worker', input: { text: '读 @api.ts', refs: [{ kind: 'file', at: 2, marker: '@api.ts', source: '/project/api.ts' }], ref: 'draft-1' } },
+      { type: 'collaboration.input', shared: true, input: { text: '接口保持兼容' } },
+      { type: 'collaboration.stop', delegation: 42 },
+      { type: 'collaboration.stop' },
+      { type: 'collaboration.resume' },
+      { type: 'collaboration.configure', member: 'worker', model: { provider: 'local', model: 'mini', reasoning: { mode: 'default' } } },
+      { type: 'collaboration.configure', model: { provider: 'local', model: 'mini' } },
+    ]
+    for (const command of requests) shell.send(command)
+    expect(commands).toEqual([...requests])
+    const snapshot: KernelEvent = { id: 1, session: 'origin', turn: null, at: 0, kind: 'collaboration.view', data: { originSession: 'origin', members: [], delegations: [], waits: [], constraints: [] } }
+    hub.emit(snapshot)
+    expect(events).toEqual([snapshot])
+    expect(JSON.parse(JSON.stringify(events))).toEqual(events)
+    expect(TRANSIENT_EVENT_KINDS).toContain('collaboration.view')
+  })
   test('桩主循环：input.submit 进 → 事件出 · 订阅方按序收到', () => {
     const hub = createControlHub()
     const { kernel, shell } = createInProcessTransportPair()

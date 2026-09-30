@@ -1,22 +1,76 @@
-/**
- * U11 · 入口 —— 判据：**`magic` 可调用**（`bun run magic`）。
- *
- * 「可调用」取实证：**真开子进程跑**（不是 import 了事）。三面：
- * ① `--help` 与坏参数；② 配置有问题时响亮退场；③ **装配自检真跑得通**——
- * 全链构造一遍（配置 → 记录库 → 工作区 → 沙箱 → 网关 → 各域 → 控制域），
- * 数据目录都建出来了，然后干净收尾。
- *
- * 家目录用 `HOME` 注入（`os.homedir()` 认它），故不碰真的 `~/.magic`。
- * 假 key 只用于**构造**——网关构造不发请求（缺 key 会在构造期抛，那也在本用例的射程内）。
- */
+/** CLI 真子进程：help/version/离线 check 不启动 App，不开库或运行外部工具。 */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
+import { parseArgs, connectTerminal } from '../src/cli.ts'
+import { cliGround, fakeApp } from './resident-cli-fixture.ts'
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
+
+describe('resident-cli 短路径与终端接回参数', () => {
+  test('help/version 无需可用配置或 App，离线 check 不执行 MCP 或创建库', async () => {
+    const g = cliGround()
+    try {
+      mkdirSync(join(g.home, '.magic'))
+      const config = join(g.home, '.magic/config.json')
+      writeFileSync(config, 'bad config')
+      g.publish({ invalid: true })
+      for (const flag of ['--help', '--version', '-v']) {
+        const result = await run(g.home, flag)
+        expect(result.exitCode).toBe(0)
+        expect(result.stderr).toBe('')
+      }
+      const marker = join(g.root, 'mcp-was-started')
+      const body = JSON.stringify({ providers: {}, dataDir: g.dataDir, mcp: { servers: {
+        forbidden: { command: process.execPath, args: ['-e', `await Bun.write(${JSON.stringify(marker)}, "started")`] },
+      } } })
+      writeFileSync(config, body)
+      expect((await run(g.home, '--check')).exitCode).toBe(0)
+      expect(existsSync(marker)).toBe(false)
+      expect(existsSync(join(g.dataDir, 'records.db'))).toBe(false)
+      expect(existsSync(join(g.home, '.magic/run'))).toBe(false)
+      expect(readFileSync(config, 'utf8')).toBe(body)
+    } finally { g.close() }
+  })
+
+  test('--open-request UUID 与 session/switch/allow-all 通过真实 hello 转交，不伪造 session', async () => {
+    const g = cliGround()
+    const server = fakeApp(g)
+    const request = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'
+    try {
+      g.publish()
+      const parsed = parseArgs(['--session', 'session-real', '--open-request', request, '--provider', 'p', '--model', 'm', '--allow-all'])
+      const connection = await connectTerminal(parsed, { home: g.home, env: { PATH: '/work/bin', API_KEY: 'do-not-send' } })
+      const hello = server.messages.find((message) => message.t === 'hello')!
+      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { provider: 'p', model: 'm' }, allowAll: true, environment: { PATH: '/work/bin' } })
+      expect(JSON.stringify(hello)).not.toContain('do-not-send')
+      connection.client.close()
+
+      const blank = await connectTerminal(parseArgs([]), { home: g.home, env: {} })
+      const last = server.messages.filter((message) => message.t === 'hello').at(-1)!
+      expect(last).not.toHaveProperty('session')
+      expect(last).not.toHaveProperty('openRequest')
+      blank.client.close()
+    } finally { server.close(); g.close() }
+  })
+
+  test('终端请求 UUID 缺失、非法或用于离线路径时直接拒绝', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      for (const argv of [
+        ['--open-request'], ['--open-request', 'not-a-uuid'],
+        ['--open-request', 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', '--check'],
+      ]) {
+        const result = await run(home, ...argv)
+        expect(result.exitCode).toBe(1)
+        expect(result.stderr).toContain('--open-request')
+      }
+    } finally { removeDir(home) }
+  })
+})
 
 type Run = { readonly stdout: string; readonly stderr: string; readonly exitCode: number }
 
@@ -24,13 +78,6 @@ async function run(home: string, ...args: readonly string[]): Promise<Run> {
   return runWith(home, {}, args)
 }
 
-/**
- * 起一次真入口——`extra` 用来**显式**给环境（U42 起用它指 `MAGIC_HOME`）。
- *
- * ⚠️ **`MAGIC_HOME` 从继承来的环境里剔掉**（同 `MAGIC_*_API_KEY` 的处置）：它一旦在
- * 跑测试那个 shell 里，子进程会绕过这块沙地去读开发者真那份——用例的落点就随环境漂
- * （U42 实测过：不剔的话 `--check` 报的是真配置的路径）。
- */
 async function runWith(
   home: string,
   extra: Record<string, string>,
@@ -58,18 +105,6 @@ async function runWith(
   return { stdout, stderr, exitCode }
 }
 
-/**
- * 装一块带配置的沙地（家目录＝`home`，配置文件在 `<home>/.magic/config.json`）。
- *
- * **数据落点也在这块沙地里**（`D24`——它只能在这儿）：早先这个夹具给的是**固定路径**
- * `/tmp/magic-cli-never`，**且不清理**——于是**新版本写过的库留在那儿，老版本的用例
- * 当场红**（库比程序新即拒开，`U26` 实测到 5 条，`rm -rf` 后全绿）。
- * 那 5 条红**是设计要的行为**，只是夹具踩在了它上面：**跑过什么版本，决定下一个人
- * 看到什么颜色**——红得没有信息量，只会训练人忽略红（与 `D17` 同族）。
- *
- * ⇒ **每次唯一**（`tempDir` 走 `mkdtemp`）＋ 收尾 `removeDir(home)`（库就埋在 home 里）。
- * 用例要另指落点就覆盖 `dataDir`——**但别指到固定路径去**。
- */
 function stageWithConfig(overrides: Record<string, unknown> = {}): { home: string; dataDir: string } {
   const home = tempDir('magic-cli-')
   mkdirSync(join(home, '.magic'), { recursive: true })
@@ -79,18 +114,7 @@ function stageWithConfig(overrides: Record<string, unknown> = {}): { home: strin
 }
 
 describe('入口 magic', () => {
-  /**
-   * ⚠️ **原锚**：`expect(stdout).toContain('人工门')`——它守的是「无人值守替人批准这件事
-   * 要在用法里说破」；`人工门` 是那时说破它用的**内部行话**（「阶段 1 一律人工门」）。
-   *
-   * **为何变**：`--help` 重写（2026-09-20 · 用户报「出现了奇奇怪怪的东西」）把它当
-   * **产品文案**来写（读者是用户，不是我们）——
-   * 行话与阶段号不许出现在输出里（同一条判据另见下一处守护）。说的那件事没变，
-   * 变的是话：**用用户的话说破**。
-   *
-   * **新锚**：`'不是产品行为'`——替人裁决这件事仍然说破，只是换了人话。
-   */
-  test('`--help`——说清用法（验收装置单列，且说破替人裁决不是产品行为）', async () => {
+    test('`--help`——说清用法（验收装置单列，且说破替人裁决不是产品行为）', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--help')
@@ -105,16 +129,7 @@ describe('入口 magic', () => {
     }
   })
 
-  /**
-   * **守护 · 产品文案的机器判据**（`--help` 重写 · 2026-09-20）——输出里不许有：
-   * Markdown 标记（抄文案漏剥）、内部包名、架构词、我们自己的目录。
-   *
-   * 为什么值得钉：这份文本**唯一的读者是用户**，而它最容易的退化方式就是
-   * 「从设计文档里抄一段过来」——上面那几样正是抄漏的痕迹（`**` 整段带进终端、
-   * `@magic/actions` 直接印出来）。判据能机器判的那几条在此钉死；
-   * 「每句话用户需不需要知道」那部分机器判不了，归人读。
-   */
-  test('`--help`——不出现 Markdown 标记 · 内部包名 · 架构词（守护）', async () => {
+    test('`--help`——不出现 Markdown 标记 · 内部包名 · 架构词（守护）', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--help')
@@ -140,22 +155,13 @@ describe('入口 magic', () => {
     }
   })
 
-  /**
-   * U41 补锚：**文件不在 ≠ 配置坏**（设计 · 命令行与配置：「首次无配置允许进入接入流程」
-   * ＋「损坏配置必须报告具体位置，不能当空配置覆盖」）。
-   *
-   * **原锚**：空家目录（没有 `config.json`）⇒ 退 1 ＋ 报「配置有问题」；
-   * **为何变**：新装用户手上就没有那份文件，照旧报错等于把人挡在门外——缺文件现在走
-   * 空配置（下一条用例钉它）；**新锚**：**坏内容**照旧点名报错退 1，
-   * 两件事分开，报错这一半一个字没松。
-   */
-  test('配置坏了——报「配置有问题」并退 1', async () => {
+    test('配置坏了——报「配置有问题」并退 1', async () => {
     const home = tempDir('magic-cli-')
     try {
       mkdirSync(join(home, '.magic'), { recursive: true })
       writeFileSync(join(home, '.magic', 'config.json'), '{ 这不是 JSON }', 'utf8')
 
-      const result = await run(home)
+      const result = await run(home, '--check')
 
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('配置有问题')
@@ -165,13 +171,7 @@ describe('入口 magic', () => {
     }
   })
 
-  /**
-   * 空配置要能起步（U41 验收：「空配置能进入接入/选择」「不在启动阶段以缺配置退出」）。
-   *
-   * 没有终端时它照样退场（外壳那一关），但**不是因为配置**——这一条钉的正是那个分别：
-   * 两个都退 1 的场面里，「为什么退」不能混。
-   */
-  test('还没有配置——不报「配置有问题」（首次运行要能进入接入流程）', async () => {
+    test('还没有配置——不报「配置有问题」（首次运行要能进入接入流程）', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home)
@@ -182,7 +182,7 @@ describe('入口 magic', () => {
     }
   })
 
-  test('装配自检——全链构造一遍，数据落点真建出来', async () => {
+  test('离线检查——配置如实报告，数据落点不创建', async () => {
     // dataDir 用**加载器展开得了的**写法的反面也用上：这里直接给绝对路径
     const { home, dataDir } = (() => {
       const home = tempDir('magic-cli-')
@@ -198,30 +198,30 @@ describe('入口 magic', () => {
 
       expect(result.stderr).toBe('')
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('装配自检')
+      expect(result.stdout).toContain('离线配置检查')
       expect(result.stdout).toContain(dataDir)
       // 模型名与「key 来处」都在自检里；key 本身不在（密钥纪律）
       expect(result.stdout).toContain('MiniMax-M3')
       expect(result.stdout).toContain('key 取自配置文件')
       expect(result.stdout).not.toContain('sk-test-not-a-real-key')
       // 外壳位如实交代（真外壳归 U09）
-      expect(result.stdout).toContain('U09')
+      expect(result.stdout).toContain('外部工具　未连接（离线检查）')
       // 权限规则：没配也要**明说**（U76 起那是常态——不在名单里的调用本来就不问，
       // 不是漏配；说清这件事，用户才不会以为自己少配了什么）
-      expect(result.stdout).toContain('权限规则　无（缺省＝不必配——不在名单里的调用本来就不问）')
+      expect(result.stdout).toContain('权限规则　0 条 · 被拒 0 条')
       // 工具集：**从契约的冻结行现取**（第 18 轮补锚——此行曾写死「exec（阶段 1 唯一工具）」，
       // 工具集 v1 到站后它成了假话）；七件按表的次序
-      expect(result.stdout).toContain('工具集　　exec / read / write / edit / grep / glob / ls（7 件')
+      expect(result.stdout).not.toContain('工具集')
 
       // 会话（U27 · 随批小修 6）：无会话是**常态**（D5：启动＝新会话，空手打开）——
       // 回执得说人话。**未处理的值不许印出来**：此前这里印的是字面 `undefined`（验收装置的瑕疵）。
       // 「整份回执里没有 `undefined`」是**跨行**的判据——将来哪一行再漏一个未处理值，这条也拦得住。
-      expect(result.stdout).toContain('会话　　　（还没有会话——首条消息按下回车才开张）')
+      expect(result.stdout).not.toContain('会话请求')
       expect(result.stdout).not.toContain('undefined')
 
-      // 全链真构造过：库与 blob 目录都在
-      expect(existsSync(join(dataDir, 'records.db'))).toBe(true)
-      expect(existsSync(join(dataDir, 'blobs'))).toBe(true)
+      // 离线只读：库与 blob 目录都不创建
+      expect(existsSync(join(dataDir, 'records.db'))).toBe(false)
+      expect(existsSync(join(dataDir, 'blobs'))).toBe(false)
     } finally {
       removeDir(home)
     }
@@ -243,7 +243,7 @@ describe('入口 magic', () => {
       const result = await run(home, '--check')
 
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('权限规则　1 条（名单里的那两条，规则也放不动） · ⚠️ 被拒 1 条')
+      expect(result.stdout).toContain('权限规则　1 条 · 被拒 1 条')
       expect(result.stdout).toContain('第 2 条')
       expect(result.stdout).toContain('pth')
     } finally {
@@ -294,15 +294,6 @@ describe('入口 magic', () => {
   })
 })
 
-/**
- * **`D24` · 夹具用固定路径且不清理**（U28）——判据锚的是「我要什么」：**跑两遍不互相污染**。
- *
- * 早先这个夹具拿固定路径 `/tmp/magic-cli-never` 当数据目录、且**不清理**：新版本写过的库
- * 留在那儿，老版本的用例当场红（**库比程序新即拒开**——那 5 条红本是设计要的行为，是夹具
- * 踩在了它上面）。**红得没有信息量**，只会训练人忽略红（同 `D17` 一族）。
- *
- * 两条正向判据：**每次唯一**（两次装出来的沙地不是一块）· **收尾不留库**。
- */
 describe('U28 · 夹具沙箱化（D24）', () => {
   test('数据落点**每次唯一**，两遍各自跑通，收尾**不留库**', async () => {
     const first = stageWithConfig()
@@ -315,7 +306,7 @@ describe('U28 · 夹具沙箱化（D24）', () => {
         const result = await run(sandbox.home, '--check')
 
         expect(result.exitCode).toBe(0)
-        expect(existsSync(join(sandbox.dataDir, 'records.db'))).toBe(true) // 库真落在这块沙地里
+        expect(existsSync(join(sandbox.dataDir, 'records.db'))).toBe(false) // 只读检查不创建库
       }
     } finally {
       removeDir(first.home)
@@ -332,7 +323,6 @@ describe('U28 · 夹具沙箱化（D24）', () => {
 // U17 · 运行时切换的**启动参数**入口（`--provider` / `--model`）
 // ═══════════════════════════════════════════════════════════════════════
 
-/** 一份两条目的配置覆盖——甲是缺省、乙是「另一种跑法」（落点由沙地给，见 `stageWithConfig`）。 */
 function twoProviders(): Record<string, unknown> {
   return {
     defaultProvider: 'alpha',
@@ -352,7 +342,7 @@ describe('入口 magic · 换模型的启动参数', () => {
 
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('供应商表　2 条——alpha（alpha-1） · beta（beta-1）')
-      expect(result.stdout).toContain('当前走 alpha（缺省 · 模型名取自请求）')
+      expect(result.stdout).toContain('当前走 alpha')
       expect(result.stdout).not.toContain('sk-alpha-key12')
       void dataDir
     } finally {
@@ -390,7 +380,7 @@ describe('入口 magic · 换模型的启动参数', () => {
     const { home } = stageWithConfig(twoProviders())
 
     try {
-      const result = await run(home, '--provider', 'betta')
+      const result = await run(home, '--check', '--provider', 'betta')
 
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('换模型不成功')
@@ -427,13 +417,6 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 })
 
-/**
- * **`--session`**（U25 · 恢复入口）——审计第 1 条那个悬案：恢复的入口没有归处。
- *
- * 判据锚的是「我要什么」：**给一个 id，装配就接上那条会话**（「接着来是显式的」那半句，
- * 技术方案 · 会话与多会话）。它**由应用层受理**（`@magic/actions`）——本文件只验
- * 「id 进得来、落到了会话位上」；装载 ＋ 恢复 ＋ 重建那三件在 `test/recovery.test.ts` 与真跑里验。
- */
 describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
   test('用法里写清了这条入口（新增入口选项须在设计里登记的那条规矩）', async () => {
     const home = tempDir('magic-cli-')
@@ -447,7 +430,7 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     }
   })
 
-  test('`--check --session <库里真有的 id>`——装配**开局就装载它**（自检里报出那条 id）', async () => {
+  test('`--check --session` 只展示请求，不装载会话', async () => {
     const { home, dataDir } = stageWithConfig()
 
     // 库里先**真**有一条会话（会话是**首写即建**的，D5——不写库＝不在库里）
@@ -468,25 +451,15 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     }
   })
 
-  /**
-   * **打错 id 不静默降级**（U28 · 台账随批小修 8）——今天的行为是：`--session s-typo`
-   * 照 id 装载一条**空的**，用户以为接上了，其实没有。
-   *
-   * 判据锚的是「我要什么」：**库里没有这条会话就说没有**（报错退场），
-   * 绝不「照 id 造一条新的」——那正是「以为接上了」的来处。
-   *
-   * ⚠️ **这条是守护**：倒回「照 id 装载」，它当场红（退 0 且印出那条 id 的自检）。
-   */
-  test('`--session <库里没有的 id>`——退 1 并点名，**不降级成新会话**', async () => {
+    test('离线检查不声称校验过会话，也不创建同名会话', async () => {
     const { home } = stageWithConfig()
 
     try {
       const result = await run(home, '--check', '--session', 's-typo')
 
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('没有这条会话')
-      expect(result.stderr).toContain('s-typo')
-      expect(result.stdout).toBe('') // 一步都不走——别印半份自检
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('s-typo（离线检查不连接或校验会话）')
+      expect(existsSync(join(home, 'data/records.db'))).toBe(false)
     } finally {
       removeDir(home)
     }
@@ -506,17 +479,6 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
   })
 })
 
-/**
- * **`--allow-all`**（U73 · 全放行）—— 审计的是**这一位有没有别的入口**。
- *
- * 判据锚的是「我要什么」：**它只从命令行来**。故这一份只管**参数面**——
- * 「敲得出来（不被当成坏参数）」「用法里写清了它」；至于它**落到哪儿**（闸门）
- * 在 `test/allow-all.test.ts`，**真 PTY 上长什么样**在真帧装置（`frames-u73-tui.ts`）。
- *
- * ⚠️ 全放行**只走终端那条路**：`--check` / `--script` 是**进程内装配**，收不到它
- * （下面第二条钉的就是这一条——同一个参数配 `--check` 照旧跑自检，而自检里那一步
- * 该不该问，闸门是**照旧问**的）。
- */
 describe('入口 magic · 全放行（`--allow-all` · U73）', () => {
   test('用法里写清了这条入口——**且写清了它只在起会话那一刻给**', async () => {
     const home = tempDir('magic-cli-')

@@ -481,11 +481,11 @@ async function main(): Promise<void> {
       `实际最大载荷 ${最大载荷} 字节`,
     )
 
-    sandbox.dispose()
+    await sandbox.dispose()
     console.log(`\n全部判据通过。帧落在 ${out}`)
   } catch (error) {
     await session.close({ graceMs: 1_000, keepSandbox: true })
-    sandbox.dispose()
+    await sandbox.dispose()
     throw error
   } finally {
     await fixture.stop()

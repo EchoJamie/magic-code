@@ -230,8 +230,11 @@ export function setModelDefault(input: {
       }
 
       const reasoning: ReasoningSetting | undefined = input.request.reasoning
+      const entry = entryOf(providers, input.request.provider)
+      // 思考属于模型组合；切换默认型号不能把上一个型号的档位留在磁盘上。
+      if (entry['model'] !== input.request.model && reasoning === undefined) delete entry['reasoning']
       providers[input.request.provider] = {
-        ...entryOf(providers, input.request.provider),
+        ...entry,
         model: input.request.model,
         ...(reasoning === undefined ? {} : { reasoning }),
       }

@@ -174,6 +174,7 @@ function stringLiteralsOf(fileName: string, source: string): string[] {
   const literals: string[] = []
 
   const visit = (node: ts.Node): void => {
+    if (ts.isLiteralTypeNode(node)) return
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literals.push(node.text)
     ts.forEachChild(node, visit)
   }

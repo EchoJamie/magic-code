@@ -1,0 +1,11 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.stopped",
+    "request": "request-one",
+    "session": "session-one",
+    "phase": "done",
+    "note": "当前事实"
+  }
+}

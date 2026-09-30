@@ -59,7 +59,12 @@ export type Sandbox = {
    * 驱动一行都不动。
    */
   readonly anchors: UiAnchors
-  dispose(): void
+  /**
+   * 收摊。**可能是异步的**（U109）：沙地被**外借**时，驱动会给它挂一层——主人收摊这一拍
+   * 顺手把挂在它上面的共享宿主核销掉（归属见 `driver.ts` 的 `useHost`）。故调用方要
+   * `await`，否则「主人收了 ⇒ 宿主没了」这条判据会读到还没落地的那一刻。
+   */
+  dispose(): void | Promise<void>
 }
 
 export type SandboxOptions = {

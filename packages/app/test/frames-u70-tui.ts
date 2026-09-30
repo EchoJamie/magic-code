@@ -348,7 +348,7 @@ async function startFrame(): Promise<void> {
     session = undefined
     await fixture.stop()
     // **外借的那两件归借出方收**（见 `UiSessionOptions.sandbox`）：驱动不删它
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -461,7 +461,7 @@ async function serverFrame(): Promise<void> {
   } finally {
     session = undefined
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 

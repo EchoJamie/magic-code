@@ -91,7 +91,7 @@ describe('全链冒烟（Faux 模型 ＋ 真沙箱 / 真闸门 / 真记录 / 真
       // 两轮（模型调了工具 → 回填后**再调一次**才收束），各自成轮
       expect(eventsOfKind(events, 'turn.start')).toHaveLength(2)
       expect(eventsOfKind(events, 'turn.end')).toEqual([
-        expect.objectContaining({ data: { reason: 'settled' } }),
+        expect.objectContaining({ data: { reason: 'settled', continues: true } }),
         expect.objectContaining({ data: { reason: 'settled' } }),
       ])
 

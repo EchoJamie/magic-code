@@ -1,0 +1,18 @@
+{
+  "family": "HostResponse",
+  "valid": true,
+  "message": {
+    "t": "host.ready",
+    "identity": {
+      "protocol": 1,
+      "version": "0.0.0",
+      "source": "/Applications/Magic Code.app/Contents/Helpers/magic-runtime",
+      "hostInstance": "host-one",
+      "serviceInstance": "service-one",
+      "dataDir": "/tmp/native-fixture/.magic/data"
+    },
+    "socket": "/tmp/native-fixture/m.sock",
+    "base": "/tmp/native-fixture/.magic",
+    "config": "/tmp/native-fixture/.magic/config.json"
+  }
+}

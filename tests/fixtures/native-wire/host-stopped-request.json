@@ -1,0 +1,8 @@
+{
+  "family": "HostResponse",
+  "valid": true,
+  "message": {
+    "t": "host.stopped",
+    "request": "request-one"
+  }
+}

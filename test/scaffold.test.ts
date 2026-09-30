@@ -389,6 +389,8 @@ function stringLiteralsOf(fileName: string, source: string): string[] {
   const literals: string[] = []
 
   const visit = (node: ts.Node): void => {
+    // 类型中的字段名不构造文件路径；运行时字符串仍完整扫描。
+    if (ts.isLiteralTypeNode(node)) return
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
       literals.push(node.text)
     } else if (ts.isTemplateExpression(node)) {
@@ -624,7 +626,7 @@ describe('blobs 落点（仓库级不变量 · U02 判据 2 并入）', () => {
       'const b = `${dir}/blobs/y`',
     ].join('\n')
 
-    expect(stringLiteralsOf('probe.ts', source)).toEqual(['blobs/x', '', '/blobs/y'])
+    expect(stringLiteralsOf('probe.ts', source + "\ntype Source = Pick<Port, 'blobs'>")).toEqual(['blobs/x', '', '/blobs/y'])
   })
 
   test('越界判定——认 `blobs/` 与 `~/.magic/blobs`，不误伤近形名', () => {

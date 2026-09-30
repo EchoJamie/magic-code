@@ -278,7 +278,7 @@ if (import.meta.main) {
   } finally {
     for (const window of windows) await window.close({ graceMs: 1_000 }).catch(() => undefined)
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     if (at === -1) removeDir(root)
   }
 }

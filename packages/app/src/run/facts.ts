@@ -55,6 +55,8 @@ export type EndKind = 'normal' | 'aborted' | 'crashed'
 export type RunRecord = {
   /** 代次——管理者发的号（一条会话换一个执行者就换一代）。 */
   readonly gen: number
+  /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
+  readonly executionId?: string
   /** 这条会话（还没开张的空白执行者为 `null`）。 */
   session: string | null
   /** 这一代**发车**的时刻（执行详情「开始时间」的第一档）。 */
@@ -90,6 +92,8 @@ export type RunRecord = {
    * 就得说出来，而不是让「已停止」三个字把没收拾完的事盖过去。
    */
   reclaimNote: string | undefined
+  /** 执行者已退出，登记资源仍在核销。 */
+  reclaimPending: boolean
   /** 它的控制连接**接上过**没有——「失联」的判据要它（没接上过就谈不上失去）。 */
   everConnected: boolean
   /** 控制连接此刻还在不在（认领之后、核销之前为真）。 */
@@ -98,6 +102,8 @@ export type RunRecord = {
   ready: boolean
   /** 手里有活吗——`agent.state` 那一格（与执行者收缩用**同一个判据**）。 */
   busy: boolean
+  /** 执行者实际持有的后台命令数；独立于模型轮。 */
+  background: number
   /** 这一轮开着（`turn.start` 之后、`turn.end` 之前）。 */
   turnActive: boolean
   /**
@@ -141,6 +147,8 @@ export type RunRecord = {
 /** 一个执行者刚发车时的记录（其余各格都是「还没有」）。 */
 export function newRunRecord(input: {
   readonly gen: number
+  /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
+  readonly executionId?: string
   readonly session: string | null
   readonly startedAt: number
   readonly explicit: boolean
@@ -150,6 +158,7 @@ export function newRunRecord(input: {
 }): RunRecord {
   return {
     gen: input.gen,
+    ...(input.executionId === undefined ? {} : { executionId: input.executionId }),
     session: input.session,
     startedAt: input.startedAt,
     explicit: input.explicit,
@@ -158,6 +167,7 @@ export function newRunRecord(input: {
     procStartedAt: input.procStartedAt,
     owned: [],
     reclaimNote: undefined,
+    reclaimPending: false,
     everConnected: false,
     connected: false,
     ready: false,
@@ -170,6 +180,7 @@ export function newRunRecord(input: {
      * 于是第二次 `session.open` 被挡回去，而其实什么都没在跑。
      */
     busy: false,
+    background: 0,
     turnActive: false,
     decisions: new Map(),
     resolvedDecisions: new Set(),
@@ -202,6 +213,8 @@ export function newRunRecord(input: {
  * 6. 其余（手上没活）⇒ 当前空闲——**运行还在的时候，上一轮被打断不叫「已停止」**。
  */
 export function runStateOf(record: RunRecord): RunState {
+  if (record.reclaimPending) return 'stopping'
+  if (record.reclaimNote !== undefined) return 'unknown'
   if (record.stopping && record.ended === undefined) return 'stopping'
 
   if (record.ended === undefined && record.everConnected && !record.connected) return 'unknown'
@@ -262,6 +275,7 @@ export function refresh(record: RunRecord, at: number): RunState {
  * 不另存一句话。
  */
 export function stopReasonOf(record: RunRecord): string | undefined {
+  if (record.reclaimNote !== undefined) return record.reclaimNote
   // **现判一次**，不读 `record.state` 那一格：它是 `refresh` 维护的（写完 `ended` 而没
   // 来得及 `refresh` 的中间态很常见）——读它会让「缘由」比「状态」慢半拍，而两者本是同一件事
   if (runStateOf(record) !== 'stopped') return undefined
@@ -437,6 +451,8 @@ export function runRowOf(record: RunRecord): RunRow {
     since: record.since,
     startedAt: record.startedAt,
     ...(lastTurnAt === undefined ? {} : { lastTurnAt }),
+    // **action 只认 `record.action`**（U100）：后台那件事由下面 `background` 那一格给出，
+    // 文案归 UI（`view.ts` 的 `还有 N 条后台命令在跑`）——判据不落在拼出来的句子上。
     ...(record.action === undefined ? {} : { action: record.action }),
     ...(record.progress === undefined ? {} : { progress: record.progress }),
     ...(record.output === undefined ? {} : { output: record.output }),
@@ -477,6 +493,8 @@ export function backgroundOf(record: RunRecord): number {
 export type StoredRun = {
   readonly session: string
   readonly gen: number
+  /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
+  readonly executionId?: string
   readonly pid?: number
   /**
    * 那个进程自己的启动时刻（U50）——重启核对拿它与 `pid` 一起判「还是不是当初那一代」。
@@ -578,8 +596,8 @@ export function holdsPid(
  *   ⇒ 已停止 · 异常退出。这不是猜：设计写着「管理者异常退出 ⇒ 执行者收到断开后自行停止」，
  *   而我们**没有它的收场回执**，故按异常记，不冒充正常收束。
  *
- * 落盘里那条 `state` 只用于一件事：**它当时是不是已经结束了**。是（`idle` / `stopped`）
- * 就照原样留作「最近一次运行」——**已经结束的事实回不去**，重启不该把它翻成「待确认」。
+ * `state` 是读数，idle 也可能仍有活执行者。只有 `ended` 落下的 `why` / `kind`
+ * 才确认当时已经退出；缺少结束事实就核对 PID 身份，不能提前核销或放行后继。
  */
 export function reconcile(
   stored: StoredRun,
@@ -589,6 +607,7 @@ export function reconcile(
 ): RunRecord {
   const record = newRunRecord({
     gen: stored.gen,
+    ...(stored.executionId === undefined ? {} : { executionId: stored.executionId }),
     session: stored.session,
     startedAt: stored.startedAt,
     explicit: false,
@@ -605,11 +624,11 @@ export function reconcile(
   // 同理：它当年走到了「能干活」那一跳（没走到的那些由 `everConnected` 那条收）
   record.ready = true
 
-  if (stored.state === 'stopped' || stored.state === 'idle') {
+  if (stored.why !== undefined && stored.kind !== undefined) {
     record.ended = {
       at: stored.since,
-      why: stored.why ?? '上一代已经收摊',
-      kind: stored.kind ?? 'normal',
+      why: stored.why,
+      kind: stored.kind,
     }
     record.state = stored.state
     record.since = stored.since
@@ -640,6 +659,7 @@ export function storedRunOf(record: RunRecord): StoredRun | undefined {
   return {
     session: record.session,
     gen: record.gen,
+    ...(record.executionId === undefined ? {} : { executionId: record.executionId }),
     ...(record.pid === undefined ? {} : { pid: record.pid }),
     ...(record.procStartedAt === undefined ? {} : { procStartedAt: record.procStartedAt }),
     startedAt: record.startedAt,

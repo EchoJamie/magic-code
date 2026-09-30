@@ -14,7 +14,7 @@
  */
 
 export { createControlHub } from './hub.ts'
-export type { ControlHubFace } from './hub.ts'
+export type { ControlHubFace, ControlRoutes } from './hub.ts'
 
 export { createInProcessTransportPair } from './transport.ts'
 export type { InProcessTransportPair, Unsubscribe } from './transport.ts'

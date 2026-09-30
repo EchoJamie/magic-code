@@ -78,6 +78,13 @@ export type ToolResultEntry = Entry & {
  * 变成每一行都要写一个空对象——空载荷与无载荷是两回事，落盘上多出一种毫无信息的形态。
  */
 export function assertEntryShape(entry: NewEntry): void {
+  if (entry.kind === 'agent-message') {
+    const p = entry.payload
+    if (!p || !('messageId' in p) || !Number.isSafeInteger(p.messageId) || typeof p.collaborationId !== 'string' || typeof p.senderId !== 'string' || !('text' in entry.content) || entry.content.text !== '' || !entry.source) {
+      throw new Error('agent-message requires a sourced message reference without copied body')
+    }
+    return
+  }
   if (entry.kind === 'tool-call') {
     if (!isToolCallPayload(entry.payload)) {
       throw new Error('tool-call 条目的载荷须为 { name, args }——它是重放真源，不可省')

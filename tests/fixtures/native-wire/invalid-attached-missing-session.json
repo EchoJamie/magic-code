@@ -1,0 +1,8 @@
+{
+  "family": "NativeResponse",
+  "valid": false,
+  "message": {
+    "t": "native.attached",
+    "request": "r"
+  }
+}

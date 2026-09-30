@@ -27,7 +27,7 @@ import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import type { Socket } from 'bun'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
-import type { Wire } from '../src/run/wire.ts'
+import type { Wire } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
 
 /** 等一个条件成立（默认 5 秒）——轮询是用例的事，产品那几跳都是事件驱动的。 */

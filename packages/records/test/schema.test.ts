@@ -149,6 +149,7 @@ describe('判据 3 · 不落库清单', () => {
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'attachments.catalog',
+      'collaboration.view',
       'exec.background.done',
       'grants.catalog',
       'input.pasted',
@@ -174,7 +175,7 @@ describe('判据 3 · 不落库清单', () => {
 })
 
 describe('判据 4 · schema（版本 · 重开续写）', () => {
-  test('新建即认版本：三表在、文件在、版本号＝契约常量', () => {
+  test('新建即认版本：记录、事项与协作表同库、文件在、版本号＝契约常量', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -191,7 +192,13 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
           .map((row) => row.name)
           .filter((name) => !name.startsWith('sqlite_'))
 
-        expect(tables).toEqual(['entries', 'events', 'records_meta', 'sessions'])
+        expect(tables).toEqual([
+          'attention_items',
+          'collaboration_agents', 'collaboration_constraints', 'collaboration_delegations',
+          'collaboration_executions', 'collaboration_inbox', 'collaboration_messages',
+          'collaboration_operations', 'collaboration_waits', 'collaborations',
+          'entries', 'events', 'records_meta', 'sessions',
+        ])
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: RECORD_SCHEMA_VERSION,
         })

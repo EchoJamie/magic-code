@@ -1,0 +1,12 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "hello",
+    "role": "observer",
+    "protocol": 1,
+    "version": "0.0.0",
+    "source": "/Applications/Magic Code.app/Contents/Helpers/magic-runtime",
+    "dataDir": "/tmp/native-fixture/.magic/data"
+  }
+}

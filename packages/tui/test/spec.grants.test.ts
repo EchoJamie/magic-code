@@ -379,7 +379,7 @@ describe('启动回执 —— 解析从严要让用户看得见', () => {
     ])
   })
 
-  test('**重建之后补一回**——`readHistory` 只回会话内容，不补这一手真外壳上一句都留不下', () => {
+  test('重建保留开屏说明的原位置，不追加第二份', () => {
     const app = live([NOTICE])
     app.shell.readHistory()
 
@@ -390,8 +390,9 @@ describe('启动回执 —— 解析从严要让用户看得见', () => {
     expect(app.rows().map((row) => (row.kind === 'receipt' ? row.text : row.kind))).toEqual([NOTICE])
   })
 
-  test('**只补一回**——再换一次会话不重复念叨', () => {
+  test('换一次会话不重复开屏说明', () => {
     const app = live([NOTICE])
+    app.spy.emit(event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0 }] }))
     app.spy.emit(event('session.history', { session: 's1', entries: [], done: true }))
     app.spy.emit(event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0 }] }))
     app.spy.emit(event('session.history', { session: 's2', entries: [], done: true }))

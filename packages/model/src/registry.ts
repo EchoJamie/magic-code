@@ -24,6 +24,7 @@
  */
 
 import type {
+  AgentModelConfig,
   EventStamper,
   KernelEvent,
   ModelCapabilities,
@@ -36,11 +37,12 @@ import type { FetchLike } from './ai-sdk.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
-import { MissingApiKeyError, createModelGateway, effectiveCapabilitiesOf, effectiveSpecOf } from './gateway.ts'
+import { createModelGateway, effectiveCapabilitiesOf, effectiveSpecOf } from './gateway.ts'
 import type { EffectiveSpec } from './gateway.ts'
 import { modelCallStart, modelErrorEvent } from './events.ts'
 import { vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
+import { resolveSelection } from './selection.ts'
 import type { LearnedTraits } from './traits.ts'
 import { ownOf, resolveContextWindow } from './capacity.ts'
 
@@ -117,31 +119,17 @@ export type ProviderEntry = {
 }
 
 /** 当前选中——供应商 ＋ 模型（两个都得定下来：换条目而留旧模型名多半打不通）。 */
-export type ModelSelection = {
-  readonly provider: string
-  readonly model: string
-  /**
-   * **这一次采用的思考设置**（U41）——缺省 ＝ 模型默认（不发送任何思考参数）。
-   *
-   * 它是**选中态的一部分**：换了模型而没显式指定时，取的是**目标模型**的默认，
-   * 不把原模型的档位 / 预算盲目带过去（设计 · 模型与上下文「解析、继承与修改」）。
-   */
-  readonly reasoning?: ReasoningSetting
-}
+export type ModelSelection = AgentModelConfig
 
 /**
  * 切换请求——两件都可缺，看要换什么：
  * - 只给 `provider`：换条目，模型取**该条目的默认**；
  * - 只给 `model`：留在这家，换模型（同一端点上跑另一个模型）；
  * - 都给：两件一起换。
- * - 都不给：不晓得更成什么——如实报「不知道要换成什么」，不猜。
+ * - 只给 reasoning：保留当前组合，验证新的思考设置。
+ * - 全不给：如实报「不知道要换成什么」。
  */
-export type ModelSwitchRequest = {
-  readonly provider?: string | undefined
-  readonly model?: string | undefined
-  /** 这次采用的思考设置——缺省＝模型默认（不把原模型那套带过来）。 */
-  readonly reasoning?: ReasoningSetting | undefined
-}
+export type ModelSwitchRequest = Partial<AgentModelConfig>
 
 /**
  * 切换结果——判别式。
@@ -195,6 +183,12 @@ export interface ModelRegistry extends ModelGateway {
   has(id: string): boolean
   /** 换模型——会话中途调用，下一轮起走新条目（见文件头注）。 */
   use(request: ModelSwitchRequest): ModelSwitchResult
+  /** 本次明确配置 > 角色默认 > 协作默认；只解析验证，不改当前选择或发送请求。 */
+  resolve(input: {
+    readonly config?: ModelSwitchRequest
+    readonly role?: ModelSwitchRequest
+    readonly defaults?: ModelSelection
+  }): ModelSwitchResult
 }
 
 /**
@@ -221,29 +215,6 @@ function withReasoning(
   if (streamOptions?.reasoning !== undefined) return streamOptions
   if (reasoning === undefined) return streamOptions
   return { ...streamOptions, reasoning }
-}
-
-/**
- * 思考设置能不能落——**做不到就说缘由**（设计 · 模型与上下文：校验失败保留原配置并
- * 说明原因，**不静默降档、不删参数**）。
- *
- * `default` 恒可（那正是「什么都不发」）；其余形态要**适配认得出**：
- * 兼容接入没有可配置的思考参数，官方适配按它自己的 `reasoningOf` 判——
- * 缺口的原话就是给用户看的那一句。
- */
-function checkReasoning(
-  adapter: VendorAdapter | undefined,
-  setting: ReasoningSetting | undefined,
-): { readonly setting?: ReasoningSetting | undefined } | { readonly reason: string } {
-  if (setting === undefined || setting.mode === 'default') return {}
-
-  if (adapter === undefined) {
-    return { reason: '这条连接是兼容接入——思考设置只能用它自己的默认' }
-  }
-
-  const mapped = adapter.reasoningOf(setting)
-  if (mapped !== undefined && 'gap' in mapped) return { reason: mapped.gap }
-  return { setting }
 }
 
 export type ModelRegistryOptions = {
@@ -293,6 +264,24 @@ export type ModelRegistryOptions = {
    * 缺省＝不记也不查（探针照旧切对，只是下一轮还得再认一遍）。
    */
   readonly learnedTraits?: LearnedTraits | undefined
+}
+
+/** 纯选择判定；目录观察与注册表切换共用，网关构造仍只属于实际切换。 */
+export function selectModel(options: {
+  readonly providers: Readonly<Record<string, ProviderConfig>>
+  readonly defaultProvider?: string
+  readonly selected?: ModelSelection
+  readonly modelInfoOf?: ModelRegistryOptions['modelInfoOf']
+}, request: ModelSwitchRequest): ModelSwitchResult {
+  const { providers, defaultProvider, selected } = options
+  if (request.provider === undefined && request.model === undefined && request.reasoning === undefined) {
+    return { ok: false, reason: '既没给 provider 也没给 model 或 reasoning——不知道要换成什么' }
+  }
+  const entry = defaultProvider === undefined ? undefined : ownOf(providers, defaultProvider)
+  const base = selected ?? (defaultProvider === undefined ? undefined : {
+    provider: defaultProvider, model: entry?.model, reasoning: entry?.reasoning,
+  })
+  return resolveSelection(providers, [base, request], options.modelInfoOf)
 }
 
 // —— 装配 ——
@@ -443,57 +432,37 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       return ownOf(providers, id) !== undefined
     },
 
+    resolve(input): ModelSwitchResult {
+      return resolveSelection(providers, [input.defaults, input.role, input.config], options.modelInfoOf)
+    },
+
     use(request: ModelSwitchRequest): ModelSwitchResult {
-      const askedProvider = request.provider?.trim()
-      const askedModel = request.model?.trim()
-      const requestedReasoning = request.reasoning
-
-      if (askedProvider === undefined && (askedModel === undefined || askedModel.length === 0)) {
-        return { ok: false, reason: '既没给 provider 也没给 model——不知道要换成什么' }
-      }
-
-      const providerId = askedProvider ?? selected?.provider ?? defaultProvider
-      if (providerId === undefined) {
-        return { ok: false, reason: '还没有可用的连接——先接入一个供应商' }
-      }
-
-      const entry = ownOf(providers, providerId)
-      if (entry === undefined) {
-        const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
-        return { ok: false, reason: `未知供应商「${providerId}」——已注册：${known}` }
-      }
-
-      const model = askedModel !== undefined && askedModel.length > 0 ? askedModel : entry.model
-      // 连接在、模型不在 —— 报「先选模型」，**不挑一个顶上**（设计：不取列表第一项）
-      if (model === undefined || model.length === 0) {
-        return { ok: false, reason: `连接「${providerId}」还没有默认模型——请指明用哪个模型` }
-      }
-
-      // **思考设置随同验证**（设计明文）——做不到就当场说清，**不静默减档**
-      const reasoning = checkReasoning(adapterFor(providerId), requestedReasoning)
-      if ('reason' in reasoning) return { ok: false, reason: reasoning.reason }
-
-
-      // **网关在这一步就造**（不是等下一轮调用）——切不过去就该在「切」这一下说清楚：
-      // 缺 key 的缘由经 `use` 的返回值交回，而不是拖到下一轮炸在对话域里（那里只会报
-      // 「对话域异常」，把人指去错地方）
+      const resolved = selectModel({ providers, defaultProvider, selected, modelInfoOf: options.modelInfoOf }, request)
+      if (!resolved.ok) return resolved
+      // 验证与网关构造全部成功之后才提交选择；失败保留原配置。
       try {
-        gatewayFor(providerId)
+        gatewayFor(resolved.selection.provider)
       } catch (error) {
-        if (error instanceof MissingApiKeyError) return { ok: false, reason: error.message }
-        throw error
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
       }
-
-      selected = {
-        provider: providerId,
-        model,
-        ...(reasoning.setting === undefined ? {} : { reasoning: reasoning.setting }),
-      }
-      return { ok: true, selection: selected }
+      selected = resolved.selection
+      return resolved
     },
 
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       const chosen = selected
+      const config = chosen === undefined
+        ? defaultProvider === undefined ? undefined : {
+          provider: defaultProvider, model: request.model,
+          reasoning: request.model === defaultEntry?.model ? defaultEntry.reasoning
+            : ownOf(defaultEntry?.modelOverrides ?? {}, request.model)?.reasoning,
+        }
+        : chosen
+      // 实际选择在出站前仍须成立（缓存能力可能已更新）；内务调用选项保留既有语义。
+      if (config !== undefined) {
+        const checked = resolveSelection(providers, [config], options.modelInfoOf)
+        if (!checked.ok) return errorStream(options.stamper, config.model, checked.reason)
+      }
       if (chosen !== undefined) {
         return gatewayFor(chosen.provider).stream(
           { ...request, model: chosen.model },
@@ -511,7 +480,9 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       }
       return gatewayFor(defaultProvider).stream(
         request,
-        withReasoning(streamOptions, defaultEntry?.reasoning),
+        withReasoning(streamOptions, request.model === defaultEntry?.model
+          ? defaultEntry.reasoning
+          : ownOf(defaultEntry?.modelOverrides ?? {}, request.model)?.reasoning),
       )
 
     },

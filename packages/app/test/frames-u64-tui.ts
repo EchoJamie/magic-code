@@ -212,7 +212,7 @@ async function askingTurn(mark: string, columns: number, rows: number): Promise<
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -259,7 +259,7 @@ async function withoutThinking(mark: string): Promise<void> {
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 

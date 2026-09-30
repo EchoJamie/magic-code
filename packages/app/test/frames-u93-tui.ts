@@ -190,7 +190,7 @@ async function closeScene(scene: {
   } finally {
     await scene.session.close({ graceMs: 3_000 })
     await scene.fixture.stop()
-    scene.sandbox.dispose()
+    await scene.sandbox.dispose()
   }
 }
 

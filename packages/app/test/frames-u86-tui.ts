@@ -1,68 +1,16 @@
 #!/usr/bin/env bun
 /**
- * U86 · **「出错了」那一档也按「还在看」判** —— 真 PTY 留帧与验收判据（D38 的最后一格）。
- *
- * `bun test` **不收它**（文件名不是 `*.test.ts`）。跑的是**真链路到屏为止**：
- * 真 `cli.ts`（真装配 · 真闸门 · 真记录 · 真 Ink 外壳）跑在**真 PTY** 里，
- * **三扇窗共一块沙地**（同一个管理者 —— 那正是「一件事落到哪一页」成立的前提）。
- * 模型那一头是本机夹具（`ui/fixture.ts`，环回地址、一个付费请求都不发）。
- *
- * ## 这一单那一格（设计 · 会话与运行管理「通知」）
- *
- * | 那一类 | 落点 |
- * | --- | --- |
- * | **出错了** | **你正看着** ⇒ 不印（**屏上已经有那一行**）· **没看着** ⇒ 系统通知 ＋ 下次打开汇总 |
- *
- * ⚠️ **判据是「这条会话有没有窗口正看着它」，不是「有没有窗口连着」**——两者差在
- * 「A 页开着、B 会话出错」这一形：按「有没有窗口」，B 那件事**两头都不说**
- * （系统通知不弹、回执又不该印），那一条就没人告诉用户了。这正是缺陷
- * [[缺陷/D38 通知回执的落点与次序]] 记的最后一格。
- *
- * ## 三张帧
- *
- * | 张 | 形态 | 该在屏上看见什么 |
- * | --- | --- | --- |
- * | ① | **A 页开着、B 会话出错**（**没人看着 B**） | A 那一页**一个字都没有**（不认得出 B 那件事） |
- * | ② | **新开一扇窗** | **屏上就是那一句汇总**：「你不在的时候：1 项出错」——**B 那件事有人告诉用户** |
- * | ③ | **你正看着它而它出错** | **那条回执没有了**，而**错本身照旧在屏上**（`模型错误（…）：…`） |
- *
- * ## ⚠️「B 出错而没人看着它」在真 PTY 里是**怎么造出来的**（要你知道）
- *
- * 直觉那一手（**把 B 那扇窗关掉，让它在后台出错**）**今天走不通**：最后一个看客一走，
- * 执行者就按收缩那条路收摊，那一轮记的是 `aborted / 连接断了`——**`aborted` 不说话**
- * （用户自己按的中断才不报，见 `manager.ts` 的 `notify` 注）。实测：把 B 那扇窗
- * `close()` 掉之后，屏上那一行读作「那一代执行者收摊了（连接断了）」，而**一条
- * `failed` 都没有**。（真产品今天不承诺「关掉窗口工作仍在」——那是**设计第三步**还没交付的
- * 那一格，见 [[设计/会话与运行管理]] 的落地次序。）
- *
- * ⇒ 本文件走的是**另一条真路**：**那一代异常退出**（`executor.ts` 的 `crashed` 那一档）——
- * 用一个 SIGKILL 打掉 B 那一代的执行者进程（**按 `runs.json` 里那一个 pid，只杀这一个**）。
- * 那正是 U50 里「异常退出也是一类转换 · 报的是 `failed`」那一格，而它与「这一轮出错了」
- * 在**这一条判据上完全同形**：`watchersOf(session)` 会跳过**已经收摊的那一代**
- * （「已经结束的那一代不算看客」——`manager.ts` 那条注），故**B 那件事落进「没人看着」那一档**，
- * 而 A 页开着（`clients.size = 2`）——**旧判据（有没有窗口连着）会把它广播给两扇窗**。
- *
- * ⚠️ **「B 那件事仍然有人告诉用户」的物证有三件**（工单明写「别只说通知弹了」）：
- * 1. **下次打开一句汇总** —— 见帧 ②：**新开的那扇窗屏上**就是那一句；
- * 2. **未读落盘** —— 那一份 `notices.json`（`kind: "failed"` / `unread: true`）原样归档进
- *    本趟的 `--out` 目录；
- * 3. **系统通知那一跳的入口** —— 它就在同一跳里（落盘之后紧接的那一声，见 `manager.ts`
- *    的 `notify`）。⚠️ **U98 起缺省不接**（真发的实现已删，见 `system-notify.ts` 的文件头）：
- *    这一格今天一个字都不发，故**物证就是上面那两条**。端口还在——**逐字**那一半归
- *    `bun test`：`run-stop.test.ts` 的「A 页开着、B 会话出错」那条用 `notifySystem`
- *    **端口记账**咬 `有一件工作出错了——打开看是哪条`。
- *
- * ## 跑法
- *
- * ```
- * bun packages/app/test/frames-u86-tui.ts --out <目录>
- * ```
+ * U86 常驻宿主修订：真 PTY 验证失败不串进其它会话正文，具体事项持久留存。
+ * A 完成后保持界面；B 用受控模型产生待答责任，再按本次登记 PID 制造异常退出。
+ * TUI 无可靠焦点证据；完成、待答、失败均留未读，hello 汇总不标读。
+ * attention.json 由 RecordsStore.attention 导出，宿主日志与帧保留在 --out。
+ * 测试宿主持有专用 stdin，全程只用本机模型夹具，不发系统通知。
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { MagicHome, RunNotice } from '@magic/contracts'
+import type { MagicHome } from '@magic/contracts'
 import {
   MAGIC_IDLE_MARK,
   createSandbox,
@@ -72,7 +20,9 @@ import {
 } from './ui/index.ts'
 import type { Capture, FixtureTurn, Sandbox, UiSession } from './ui/index.ts'
 import { runPathsOf } from '../src/run/paths.ts'
-import { removeDir, tempDir } from './tmp.ts'
+import { tempDir } from './tmp.ts'
+import { attentionFacts } from './resident-attention-fixture.ts'
+import { startResidentHost } from './resident-host-fixture.ts'
 
 /** 这一趟的产物根——入口解析 `--out` 之后填。 */
 let out = ''
@@ -113,8 +63,8 @@ function has(shot: Capture, needle: string): boolean {
   return shot.text.includes(needle) || shot.history.some((line) => line.includes(needle))
 }
 
-/** 那一摊的路径（`notices.json` / `runs.json`）——按产品自己那两件算，不照目录结构猜。 */
-function pathsOf(sandbox: Sandbox): MagicHome & { readonly notices: string; readonly runs: string } {
+/** 那一摊的路径（`runs.json`）——按产品自己那两件算，不照目录结构猜。 */
+function pathsOf(sandbox: Sandbox): MagicHome & { readonly runs: string } {
   const magic: MagicHome = { home: sandbox.home, base: join(sandbox.home, '.magic') }
   return Object.assign(magic, runPathsOf(magic, sandbox.dataDir, tmpdir()))
 }
@@ -160,13 +110,13 @@ if (import.meta.main) {
    * | 次 | 谁发的 | 用什么回合 |
    * | --- | --- | --- |
    * | 1 | 甲窗 | ① 一句普通回话（**A 页**的现场） |
-   * | 2 | 乙窗 | ① 一句普通回话（**B 会话**立起来——随后的「异常退出」落在它身上） |
+   * | 2 | 乙窗 | ① 要求工具审批（B 会话待答——随后制造该执行者异常退出） |
    * | 3 | 甲窗 | ② 甩一个错 ⇒ **③那一张**（正看着它） |
    * | 4 起 | 收尾 | ③ 普通回话（收尾那两步才落得回空闲） |
    */
   const turns: readonly FixtureTurn[] = [
     { kind: 'text', text: '甲窗那句答复。' },
-    { kind: 'text', text: '乙窗那句答复。' },
+    { kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' }, text: '乙窗那句答复。' },
     { kind: 'http', status: 400, message: '夹具按剧本报错' },
     { kind: 'text', text: '收尾一句。' },
   ]
@@ -175,6 +125,7 @@ if (import.meta.main) {
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
   const paths = pathsOf(sandbox)
   const windows: UiSession[] = []
+  const host = await startResidentHost(sandbox, join(out, 'host'))
 
   try {
     // —— 甲窗：**A 页**。把一句普通回话跑完，屏上定下 A 的现场 ——
@@ -191,7 +142,7 @@ if (import.meta.main) {
     await mine.key('enter', { until: { text: '甲窗那句答复。' }, timeoutMs: 30_000 })
     await settled(mine)
 
-    // —— 乙窗：**B 会话**。跑完一轮就停在那儿（它的那一代随后要被异常打掉）——
+    // —— 乙窗：**B 会话**。明确输入产生待答责任（不会被空闲回收，随后要被异常打掉）——
     const other = await createUiSession({
       label: 'u86-乙窗（B 会话）',
       artifacts: join(out, 'runs'),
@@ -203,10 +154,10 @@ if (import.meta.main) {
     windows.push(other)
     await typeLine(other, '乙窗那句')
     await other.key('enter', { until: { text: '乙窗那句答复。' }, timeoutMs: 30_000 })
-    await settled(other)
+    await other.wait({ text: 'y / n' }, { timeoutMs: 30_000 })
 
     /**
-     * —— **B 那一代异常退出**（见文件头注：这是「没人看着的 B」在真 PTY 里唯一的来路）——
+     * —— B 那一代异常退出；TUI 连接不提供可靠的焦点证据。——
      *
      * ⚠️ **只杀那一个 pid**（`runs.json` 里最晚起的那一代就是 B 的），**不按名字杀**
      * （这机器上还有别人的 `bun`）。
@@ -238,8 +189,13 @@ if (import.meta.main) {
         return false
       }
     })
-    // 核销之后那一跳（落盘 ＋ 弹系统通知）就在同一条路上，给它一拍
+    // 等核销后的记录与窗口投影到达；真宿主默认不发系统通知。
     await Bun.sleep(500)
+
+    await other.wait({ absent: 'y / n' }, { timeoutMs: 20_000 })
+    const detached = await other.capture({ label: '00-B异常退出撤销待答' })
+    keep(detached)
+    check(!detached.text.includes('y / n'), 'B 执行已结束，旧裁决卡不再接受答复', detached.text)
 
     // ① **A 页开着、B 出错 ⇒ A 那一页上不出现任何回执**
     //
@@ -267,22 +223,22 @@ if (import.meta.main) {
     /**
      * ① **B 那件事留了底**——`notify` 那一跳的物证：`kind: "failed"` ＋ **`unread: true`**。
      *
-     * ⚠️ **`unread` 这一格就是本单的另一半**：旧判据（有没有窗口连着）下它是 `false`
-     * （「A 页开着」被当成有人看）⇒ 系统通知不弹、汇总里也不提——**那一条就没人告诉用户**。
+     * 仅有窗口连接不抑制通知，也不确认具体事项已读。
      */
-    const stored = readFileSync(paths.notices, 'utf8')
-    writeFileSync(join(out, 'notices.json'), stored, 'utf8')
-    const failedNotice = (JSON.parse(stored) as { notices: RunNotice[] }).notices.find(
-      (one) => one.kind === 'failed',
-    )
+    const attention = attentionFacts(sandbox.dataDir, sandbox.workspace)
+    const stored = JSON.stringify({ attention }, null, 2)
+    writeFileSync(join(out, 'attention.json'), `${stored}\n`, 'utf8')
+    const failedNotice = attention.find((one) => one.kind === 'failed')
+    check(attention.length === 3, '完成、待答、失败各有一项，中间工具轮未多写 done', stored)
+    check(attention.every((one) => one.unread), 'TUI 无可靠焦点证据，三类事项均保持未读', stored)
     check(
       failedNotice !== undefined,
-      '① B 那一件事**留了底**（`notices.json` 里有一条 `failed`）',
+      '① B 那一件事**留了底**（`RecordsStore.attention` 里有一条 `failed`）',
       stored,
     )
     check(
       failedNotice?.unread === true,
-      '① 它标着**未读**（`unread: true`——「没人看着」那一档才走系统通知 ＋ 下次打开汇总）',
+      '① 它标着**未读**（`unread: true`——连接和汇总均不自动标读）',
       stored,
     )
 
@@ -301,10 +257,11 @@ if (import.meta.main) {
     const summary = await fresh.capture({ label: '02-下次打开一句汇总' })
     keep(summary)
     check(
-      has(summary, '你不在的时候：1 项出错 —— /resume 看是哪几条'),
-      '② 新开那一扇窗上**就是那句汇总**（`unreadSummaryOf`：1 项出错，不逐条念）',
+      has(summary, '1 项出错') && has(summary, '1 项跑完') && has(summary, '1 项等你'),
+      '② 汇总包括 A 已完成、B 待答与异常退出，连接不自动标读',
       summary.text,
     )
+    check(attentionFacts(sandbox.dataDir, sandbox.workspace).every((item) => item.unread), '新窗 hello 和汇总仍不消费三类未读')
     check(
       !has(summary, '乙窗那句'),
       '② 而它也**不认得出是哪一条**（汇总不逐条念——具体是哪一条归 `/resume`）',
@@ -366,8 +323,9 @@ if (import.meta.main) {
     console.log(`\n全部判据通过。帧落在 ${out}`)
   } finally {
     for (const window of [...windows]) await window.close({ graceMs: 1_000 }).catch(() => undefined)
-    await fixture.stop()
-    sandbox.dispose()
-    if (at === -1) removeDir(root)
+    try { await host.close() } finally {
+      await fixture.stop()
+      await sandbox.dispose()
+    }
   }
 }

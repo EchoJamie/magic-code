@@ -17,7 +17,10 @@ import { describe, expect, test } from 'bun:test'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf } from './ui/driver.ts'
+import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf, type UiSession } from './ui/driver.ts'
+import { startResidentHost } from './resident-host-fixture.ts'
+import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
+import type { HostResponse } from '@magic/contracts'
 import { createSandbox } from './ui/sandbox.ts'
 import { startFixture } from './ui/fixture.ts'
 import { createControl } from './ui/control.ts'
@@ -148,6 +151,7 @@ describe('U40 · 工具自证', () => {
       expect(screen.columns).toBe(72)
       expect(screen.rows).toBe(20)
       expect((await session.capture({ label: '改窗之后' })).lines.join('\n')).toContain('SIZE 72x20')
+      expect(existsSync(join(session.runDir, 'host'))).toBe(false)
     } finally {
       await session.close()
     }
@@ -278,6 +282,11 @@ describe('U40 · 工具自证', () => {
 
     // 应用：进程没了（`kill(pid, 0)` 抛 ＝ 确实不在了）
     expect(() => process.kill(session.pid, 0)).toThrow()
+    const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number; messages: HostResponse[] }
+    expect(host.code).toBe(0)
+    expect(host.messages.some((message) => message.t === 'host.stopped')).toBe(true)
+    expect(() => process.kill(host.pid, 0)).toThrow()
+    expect(existsSync(hostDiscoveryPath(session.facts().home))).toBe(false)
 
     // 端点：连不上了（端口真释放）
     const fixture = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as {
@@ -295,6 +304,110 @@ describe('U40 · 工具自证', () => {
     expect(existsSync(report.viewer)).toBe(true)
     expect(existsSync(join(runDir, 'sandbox', 'records.db'))).toBe(true)
   }, 30_000)
+})
+
+describe('常驻测试宿主的归属', () => {
+  // ⚠️ 标题原为「…最后一窗才核销」——那是**旧口径**（U109 按归属改判后不再是它）。
+  // 改成说清**谁**核销，免得标题与下面那段判据打架。
+  test('同一外借沙地的并发窗口共用一个自有宿主，核销落在沙地的主人收摊那一拍', async () => {
+    const runs = tempDir('magic-u40-host-share-')
+    const fixture = startFixture({ turns: HELLO })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const windows: UiSession[] = []
+    try {
+      const results = await Promise.allSettled([
+        createUiSession({ label: '宿主共享甲', artifacts: runs, sandbox, fixture }).then((window) => { windows.push(window); return window }),
+        createUiSession({ label: '宿主共享乙', artifacts: runs, sandbox, fixture }).then((window) => { windows.push(window); return window }),
+      ])
+      const failure = results.find((result) => result.status === 'rejected')
+      if (failure?.status === 'rejected') throw failure.reason
+      const opened = results.map((result) => (result as PromiseFulfilledResult<UiSession>).value)
+      const [first, second] = opened as [UiSession, UiSession]
+      const hostPid = stepsOf(first.runDir).find((step) => step['action'] === 'host-acquired')?.['pid'] as number
+      expect(Number.isInteger(hostPid)).toBe(true)
+      expect(stepsOf(second.runDir).find((step) => step['action'] === 'host-acquired')?.['pid']).toBe(hostPid)
+      expect(fixture.requests()).toHaveLength(0)
+      await first.close()
+      windows.splice(windows.indexOf(first), 1)
+      expect(() => process.kill(hostPid, 0)).not.toThrow()
+      await second.send('共享宿主仍可使用', { until: { text: '共享宿主仍可使用' } })
+      await second.key('enter', { until: { text: '收到，我在。' }, timeoutMs: 4_000 })
+      expect(fixture.requests()).toHaveLength(1)
+      await second.close()
+      windows.splice(windows.indexOf(second), 1)
+      // **原预期 → 新预期**（U109 · 断言点搬家，不是放宽）：原来是「最后一扇窗 `close()`
+      // ⇒ 共享宿主当场核销」（两条判据都量在**这一拍**上）；现在是**归属说了算**——
+      // 这块沙地是**用例自己造的**（外借给窗口），宿主便归**沙地的主人**，窗口收摊**只释放
+      // 自己那一份**，核销落在主人的 `dispose()` 上。依据：`设计/会话与运行管理`「选择转后台、
+      // 直接关终端或终端输入断流，**只释放该客户端**；明确的停止操作才中断工作」＋
+      // `driver.ts` 的 `useHost` 那段注（与 main 的 `run-terminal` 接回用例同一条）。
+      //
+      // **没变弱**：两条硬判据（真进程探活 `kill(pid,0)`、真文件探存 `host.json` 在不在）
+      // 一条没少，只是**各量两次**——主人收摊前量一次（不许提前核销），收摊后量一次
+      // （必须真核销）。两扇窗都关了宿主还活着，正是「转后台」（窗口走了、工作还在宿主里）
+      // 那条路要的形状。
+      expect(() => process.kill(hostPid, 0)).not.toThrow()
+      expect(existsSync(hostDiscoveryPath(sandbox.home))).toBe(true)
+      // 主人收摊 ⇒ **这一刻才核销**
+      await sandbox.dispose()
+      expect(() => process.kill(hostPid, 0)).toThrow()
+      expect(existsSync(hostDiscoveryPath(sandbox.home))).toBe(false)
+      expect(opened.filter((window) => existsSync(join(window.runDir, 'host/host.json')))).toHaveLength(1)
+      expect(existsSync(sandbox.root)).toBe(false)
+    } finally {
+      for (const window of windows) await window.close()
+      await fixture.stop()
+      await sandbox.dispose()
+      console.log(`共享宿主证据：${runs}`)
+    }
+  }, 30_000)
+
+  test('已有明确 owner 的宿主只连接，窗口关闭不替 owner 停宿主', async () => {
+    const runs = tempDir('magic-u40-host-borrow-')
+    const fixture = startFixture({ turns: HELLO })
+    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'owner'))
+    let window: UiSession | undefined
+    try {
+      const discovery = readFileSync(hostDiscoveryPath(sandbox.home), 'utf8')
+      window = await createUiSession({ label: '借用明确宿主', artifacts: runs, sandbox, fixture })
+      expect(readFileSync(hostDiscoveryPath(sandbox.home), 'utf8')).toBe(discovery)
+      expect(stepsOf(window.runDir).some((step) => step['action'] === 'host-acquired')).toBe(false)
+      expect(existsSync(join(window.runDir, 'host'))).toBe(false)
+      expect(host.executorStarts()).toBe(0)
+      await window.close()
+      window = undefined
+      expect(() => process.kill(host.pid, 0)).not.toThrow()
+      expect(fixture.requests()).toHaveLength(0)
+      await host.close()
+      expect(() => process.kill(host.pid, 0)).toThrow()
+    } finally {
+      try { await window?.close() } finally {
+        try { await host.close() } finally { await fixture.stop(); await sandbox.dispose() }
+      }
+      console.log(`外借宿主证据：${runs}`)
+    }
+  }, 30_000)
+
+  test('宿主起手失败也收回本轮资源，保留宿主错误证据', async () => {
+    const runs = tempDir('magic-u40-host-failure-')
+    const checkout = tempDir('magic-u40-missing-checkout-')
+    try {
+      await expect(createUiSession({ artifacts: runs, checkout, turns: HELLO })).rejects.toThrow('隔离宿主未就绪')
+      const runDir = join(runs, readdirSync(runs)[0]!)
+      const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { outcome: string; app: { home: string }; fixture: { port: number } }
+      const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number }
+      expect(info.outcome).toBe('failed')
+      expect(host.code).not.toBe(0)
+      expect(() => process.kill(host.pid, 0)).toThrow()
+      expect(existsSync(info.app.home)).toBe(false)
+      await expect(fetch(`http://127.0.0.1:${info.fixture.port}/v1/models`)).rejects.toBeDefined()
+      expect(existsSync(join(runDir, 'host/host.stderr.log'))).toBe(true)
+    } finally {
+      removeDir(checkout)
+      console.log(`宿主起手失败证据：${runs}`)
+    }
+  }, 15_000)
 })
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1259,7 +1372,7 @@ describe('U34 · 沙地外借：收摊不动别人的东西', () => {
     } finally {
       // 外借的**由借出方**收：夹具先停，再删沙地，最后清产物
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   })
@@ -1314,7 +1427,7 @@ describe('U34 · 沙地外借：收摊不动别人的东西', () => {
       expect(alive).toBe(true)
     } finally {
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
       removeDir(stash)
     }

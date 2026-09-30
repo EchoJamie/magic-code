@@ -1,24 +1,7 @@
-/**
- * U48 · 第五段 —— **终端是客户端**。
- *
- * 这一支量的是 U48 那条**完成出口的头一句**：
- *
- * > 连开七个空白窗口再关，**零 Session 零 Run**、无高 CPU 残留
- *
- * 以及两条同族的：`--session` 打错一个字母**经管理者那条路**照样报错退场（U28 那条
- * 「不静默开一条空的」不能在换底之后失效），与**终端断流**时窗口自己退场（不能空转
- * 充当后台执行者）。
- *
- * ⚠️ **走的是真窗口**（`createUiSession`：真 PTY · 真 `cli.ts` · 真 Ink），不是进程内的
- * 装配层用例——这一单要证的正是「终端与执行分开了」，进程内那一层证不了。
- *
- * ⚠️ **七个窗口借同一块沙地**（`sandbox` / `fixture` 外借）：它们要落在**同一摊运行**
- * 上（同一个 dataDir ⇒ 同一个管理者），各开一块沙地就变成七个互不相干的管理者了——
- * 而那正是这条判据要否掉的东西。
- */
+/** 真 PTY 客户端经专用 stdin 测试宿主接入；关闭窗口不结束 App 所属核心。 */
 
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPathsOf } from '../src/run/paths.ts'
@@ -27,17 +10,20 @@ import { REPO_ROOT, createUiSession } from './ui/index.ts'
 import type { Capture, Sandbox, UiSession } from './ui/index.ts'
 import { createSandbox, startFixture } from './ui/index.ts'
 import { removeDir, tempDir } from './tmp.ts'
+import { startResidentHost } from './resident-host-fixture.ts'
 
-/** 那一摊运行的落点（沙地的 HOME ＋ 沙地的 dataDir ⇒ 与子进程同一条算式）。 */
+function runArtifacts(prefix: string): string {
+  const evidence = process.env['MAGIC_CLI_EVIDENCE']
+  if (evidence === undefined) return tempDir(prefix)
+  const path = join(evidence, `${prefix}${crypto.randomUUID()}`)
+  mkdirSync(path, { recursive: true })
+  return path
+}
+
 function pathsOf(sandbox: Sandbox): ReturnType<typeof runPathsOf> {
   return runPathsOf({ home: sandbox.home, base: join(sandbox.home, '.magic') }, sandbox.dataDir, tmpdir())
 }
 
-/**
- * 等一个条件成立（默认 15 秒）——轮询是用例的事，产品那几跳都是事件驱动的。
- *
- * `ok` 可以是异步的（数进程那类要问一问系统）——与 `run-resume.test.ts` 那一份同形。
- */
 async function waitFor(
   what: string,
   ok: () => boolean | Promise<boolean>,
@@ -50,19 +36,13 @@ async function waitFor(
   }
 }
 
-/**
- * 沙地里还有没有**这一摊的进程**——按启动目录认（管理者与执行者都带着沙地里的路径）。
- *
- * ⚠️ **两类分开数**（U48 第六段）：`--internal-manager` 是**本机服务**，它「空白启动页」
- * 本来就有（设计明文：「管理者的存在不算『空白启动页有执行者』——它本来就在」）；
- * `--internal-executor` 才是**执行者**。判据要的是后者一个都没有，故分开交回。
- */
 async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executors: string[] }> {
   const proc = Bun.spawn(['pgrep', '-fl', sandbox.root], { stdout: 'pipe', stderr: 'ignore' })
   const text = await new Response(proc.stdout as ReadableStream<Uint8Array>).text()
   await proc.exited
 
   const lines = text.split('\n').filter((line) => line.trim() !== '')
+    .map((line) => line.replace(/--token \S+/gu, '--token [test-token]'))
 
   return {
     managers: lines.filter((line) => line.includes('internal-manager')),
@@ -72,9 +52,10 @@ async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executo
 
 describe('U48-S5 · 终端是客户端', () => {
   test('七个空白窗口连开再关——零 Session 零 Run、客户端退出、无残留', async () => {
-    const runs = tempDir('magic-u48-seven-runs-')
+    const runs = runArtifacts('magic-u48-seven-runs-')
     const fixture = startFixture({ turns: [{ kind: 'text', text: '没人会看到这句' }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
     const windows: UiSession[] = []
 
     try {
@@ -88,6 +69,8 @@ describe('U48-S5 · 终端是客户端', () => {
       const paths = pathsOf(sandbox)
       // **一个管理者**：七条窗口都落在同一条 socket 上（各自另起一个的话，这里会有七个）
       expect(existsSync(paths.socket)).toBe(true)
+
+      expect((await straysIn(sandbox)).executors).toEqual([])
 
       // —— 再关 ——
       for (const window of windows) {
@@ -106,8 +89,10 @@ describe('U48-S5 · 终端是客户端', () => {
         db.close()
       }
 
-      // **不留人**：两手空了 ⇒ 管理者自己收摊（收摊之后路径是干净的）
-      await waitFor('管理者自己退场', () => !existsSync(paths.socket), 20_000)
+      // 视图全部关闭，App 所属核心仍在；只有测试宿主明确退出才收尾。
+      expect(existsSync(paths.socket)).toBe(true)
+      await host.close()
+      await waitFor('宿主退出后核心收尾', () => !existsSync(paths.socket), 20_000)
       await Bun.sleep(500)
       expect(await straysIn(sandbox)).toEqual({ managers: [], executors: [] })
 
@@ -121,16 +106,18 @@ describe('U48-S5 · 终端是客户端', () => {
           // 已经关了
         }
       }
+      await host.close()
       await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 120_000)
 
   test('`--session` 打错一个字母——经管理者那条路照样报错退场（不静默开一条空的）', async () => {
-    const runs = tempDir('magic-u48-typo-runs-')
+    const runs = runArtifacts('magic-u48-typo-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
     let window: UiSession | undefined
 
     try {
@@ -162,29 +149,21 @@ describe('U48-S5 · 终端是客户端', () => {
       window = undefined
     } finally {
       await window?.close().catch(() => {})
+      await host.close()
       await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 60_000)
 
-  /**
-   * **U48 第六段的判据**（与上一支合起来才是：那句话回到开屏 **AND** 空窗口仍然没有
-   * 会话、没有执行者）。
-   *
-   * 两件一起咬：
-   * - 开屏那一句**由管理者给**（它的预检读数随 `welcome` 过来）——所以配了一台连不上的
-   *   服务器时，那句话必须在**第一帧**上；
-   * - 而这一帧**没有一个执行者**在跑——预检是**探针**（连接 → 报状态 → 断开），
-   *   不是「为它单起一个后台」。
-   */
-  test('配了连不上的外部工具：那句话在开屏上（管理者给的），而空窗口仍没有执行者', async () => {
-    const runs = tempDir('magic-u48-preflight-runs-')
+    test('配了连不上的外部工具：那句话在开屏上（管理者给的），而空窗口仍没有执行者', async () => {
+    const runs = runArtifacts('magic-u48-preflight-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({
       baseURL: fixture.baseURL,
       config: { mcp: { servers: { broken: { command: '/nonexistent/mcp-server-for-u48' } } } },
     })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
     let window: UiSession | undefined
 
     try {
@@ -212,13 +191,15 @@ describe('U48-S5 · 终端是客户端', () => {
       expect(closed.exit.by).not.toBe('sigkill')
       window = undefined
 
-      // 窗口走了、执行者一个没起 ⇒ 管理者也退（预检那一趟的连接早断了，不留人）
-      await waitFor('管理者自己退场', () => !existsSync(pathsOf(sandbox).socket), 20_000)
+      expect(existsSync(pathsOf(sandbox).socket)).toBe(true)
+      await host.close()
+      await waitFor('宿主退出后核心收尾', () => !existsSync(pathsOf(sandbox).socket), 20_000)
     } finally {
       await window?.close().catch(() => {})
+      await host.close()
       await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 90_000)
 
@@ -251,6 +232,7 @@ describe('U48-S5 · 终端是客户端', () => {
     // **新锚**：卡落在**重**那一档，右位键位是 `y / n`（见下）。
     const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
     let window: UiSession | undefined
 
     try {
@@ -275,22 +257,26 @@ describe('U48-S5 · 终端是客户端', () => {
       expect(closed.exit.by).not.toBe('sigkill')
       window = undefined
 
-      // **两手都空 ⇒ 执行者先收、管理者再退**（卡若还钉着，这两跳都不会发生）
-      await waitFor('管理者自己退场', () => !existsSync(pathsOf(sandbox).socket), 20_000)
+      await waitFor('无责任执行者释放', async () => (await straysIn(sandbox)).executors.length === 0, 20_000)
+      expect(existsSync(pathsOf(sandbox).socket)).toBe(true)
+      await host.close()
+      await waitFor('宿主退出后核心收尾', () => !existsSync(pathsOf(sandbox).socket), 20_000)
       await Bun.sleep(500)
       expect(await straysIn(sandbox)).toEqual({ managers: [], executors: [] })
     } finally {
       await window?.close().catch(() => {})
+      await host.close()
       await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 90_000)
 
   test('终端断流——窗口自己退场，不留一个空转的后台', async () => {
-    const runs = tempDir('magic-u48-drop-runs-')
+    const runs = runArtifacts('magic-u48-drop-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
     let window: UiSession | undefined
 
     try {
@@ -304,36 +290,73 @@ describe('U48-S5 · 终端是客户端', () => {
       window = undefined
     } finally {
       await window?.close().catch(() => {})
+      await host.close()
       await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 60_000)
+
+  for (const leave of ['PTY EOF', 'SIGHUP', 'SIGTERM'] as const) {
+    test(`${leave} 只脱离客户端——原模型请求在同代执行者完整完成`, async () => {
+      const runs = runArtifacts('magic-hangup-model-')
+      const answer = 'MODEL_BEFORE_DROP_A_MODEL_AFTER_DROP_B_'
+      // 关窗时请求仍在流式；完整尾段和 settled 必须在客户端退出后落库。
+      const fixture = startFixture({ turns: [{ kind: 'text', text: answer, chunks: 2, chunkDelayMs: 6_000 }] })
+      const sandbox = createSandbox({ baseURL: fixture.baseURL })
+      const host = await startResidentHost(sandbox, join(runs, 'host'))
+      let window: UiSession | undefined
+      const facts = () => {
+        const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+        try { return { sessions: db.sessions, entries: db.entries, events: db.events } }
+        finally { db.close() }
+      }
+
+      try {
+        window = await createUiSession({ label: leave, artifacts: runs, sandbox, fixture })
+        await window.send('关窗后继续这一轮')
+        await window.key('enter')
+        await window.wait({ text: 'MODEL_BEFORE_DROP_A_' }, { timeoutMs: 20_000 })
+        await window.capture({ label: '模型在途，尚未关窗' })
+        const before = { facts: facts(), processes: await straysIn(sandbox) }
+        expect(before.processes.executors).toHaveLength(1)
+        expect(before.facts.events.filter((event) => event.kind === 'turn.end')).toHaveLength(0)
+        const pid = window.pid
+        const at = Date.now()
+        if (leave === 'PTY EOF') window.dropTerminal()
+        else process.kill(pid, leave)
+        // 保留 8 秒观察窗；不允许 driver 的 TERM/KILL 替产品收尾。
+        const closed = await window.close({ graceMs: 8_000 })
+        window = undefined
+        const after = { facts: facts(), processes: await straysIn(sandbox) }
+        writeFileSync(join(runs, 'departure.json'), JSON.stringify({ leave, pid, elapsedMs: Date.now() - at, exit: closed.exit, before, after }, null, 2))
+        expect(closed.exit).toEqual({ code: 0, signal: null, by: 'app' })
+        expect(after.facts.events.filter((event) => event.kind === 'turn.end')).toHaveLength(0)
+        expect(after.processes.executors).toEqual(before.processes.executors)
+        expect(existsSync(pathsOf(sandbox).socket)).toBe(true)
+        await waitFor('关窗后原请求完整落账', () => facts().events.some((event) => event.kind === 'turn.end'), 20_000)
+        const completed = facts()
+        writeFileSync(join(runs, 'completed.json'), JSON.stringify({ facts: completed, requests: fixture.requests() }, null, 2))
+        expect(completed.events.filter((event) => event.kind === 'turn.end').map((event) => JSON.parse(event.data).reason)).toEqual(['settled'])
+        expect(completed.entries.filter((entry) => entry.kind === 'assistant').map((entry) => entry.content_text)).toEqual([answer])
+        expect(fixture.requests()).toHaveLength(1)
+        expect(completed.sessions).toHaveLength(1)
+      } finally {
+        await window?.close().catch(() => {})
+        await host.close()
+        await fixture.stop()
+        await sandbox.dispose()
+        if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
+      }
+    }, 60_000)
+  }
 })
 
-/** 那两句交代——**短**（判据按行找，长句会折成两行）。两处共用同一份，免得写岔。 */
 const SAID = '记一句短话'
 const REPLY = '好，记下了。'
 
-/**
- * U53 · **D33**——`--session <id>` 起来，**记录区一个字都不铺**。
- *
- * `cli.test.ts` 那两支验的是 `--check --session`（**非终端**：装配开局装载那条会话），
- * 而 U48 之后**终端那条路不再装配**——接续成了「窗口向管理者要那条会话的那一代」这件事。
- * 那一侧一直没人看着，D33 就是从这道缝里过去的（缺陷话：「这正是它漏掉的原因」）。
- *
- * 故这一支走**真终端那条路**（真 PTY · 真 `cli.ts` · 真管理者 · 真执行者），判三件：
- *
- * 1. **记录区铺出来**——那条会话现有的历史（原话 ＋ 回话）在屏上；
- * 2. **不是重跑**——模型一次都没被再问过（「查看不触发重新执行」的物证是调用数，不是屏）；
- * 3. **同一条会话只有一个执行者**——按实际进程数证（`pgrep`），不是看屏。
- *
- * ⚠️ **两扇窗借同一块沙地**（同一个 dataDir ⇒ 同一个管理者）：各开一块就成了两个互不
- * 相干的管理者，而「接的是**那一条**会话」这件事只有在同一摊上才成立。
- */
 describe('U53 · `--session` 接续（真窗口）', () => {
-  /** 一条有内容的会话，起起来（照产品的方式退出），再把它的 id 交回来。 */
-  async function withContent(sandbox: Sandbox, fixture: ReturnType<typeof startFixture>): Promise<string> {
+    async function withContent(sandbox: Sandbox, fixture: ReturnType<typeof startFixture>): Promise<string> {
     const window = await createUiSession({ label: '第一程', sandbox, fixture })
     // **收过摊没有**——`close()` 没有二次调用守卫，收两遍会把现场再翻一次
     let shut = false
@@ -362,11 +385,12 @@ describe('U53 · `--session` 接续（真窗口）', () => {
     }
   }
 
-  test('拿那条 id 起来——记录区铺出来，模型没被再问过，执行者只有一个', async () => {
-    const runs = tempDir('magic-u53-session-runs-')
+  test('拿那条 id 起来——记录区铺出来，模型没被再问过，观察不创建执行者', async () => {
+    const runs = runArtifacts('magic-u53-session-runs-')
     // ⚠️ **锚要短**（窄窗 / 折行都不至于把它断开）：判据按**行**找
     const fixture = startFixture({ turns: [{ kind: 'text', text: REPLY }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const host = await startResidentHost(sandbox, join(runs, 'host'))
     let window: UiSession | undefined
 
     try {
@@ -389,13 +413,13 @@ describe('U53 · `--session` 接续（真窗口）', () => {
       await window.wait({ text: REPLY }, { timeoutMs: 30_000 })
       // 而那条交代**铺在记录区里**（行首那个 `›`——状态行上没有它）
       const back = await window.capture({ label: '接续之后' })
-      expect(back.lines.some((line) => line.includes(`› ${SAID}`))).toBe(true)
+      expect(back.lines.some((line) => line.includes(`› ${SAID}`)), back.lines.join('\n')).toBe(true)
 
       // ② **不是重跑**：模型一次都没被再问过（物证是调用数，不是屏）
       expect(fixture.requests().length).toBe(1)
 
-      // ③ **同一条会话只有一个执行者**——按实际进程数证（不是看屏）
-      await waitFor('只剩一条执行者', async () => (await straysIn(sandbox)).executors.length === 1)
+      // ③ 完成会话的历史只读，接回不创建执行者。
+      expect((await straysIn(sandbox)).executors).toHaveLength(0)
 
       const closed = await window.close({ graceMs: 8_000 })
       expect(closed.exit.by).not.toBe('sigkill')
@@ -405,9 +429,10 @@ describe('U53 · `--session` 接续（真窗口）', () => {
       await waitFor('执行者收掉', async () => (await straysIn(sandbox)).executors.length === 0, 20_000)
     } finally {
       await window?.close().catch(() => {})
+      await host.close()
       await fixture.stop()
-      sandbox.dispose()
-      removeDir(runs)
+      await sandbox.dispose()
+      if (process.env['MAGIC_CLI_EVIDENCE'] === undefined) removeDir(runs)
     }
   }, 120_000)
 })
@@ -534,7 +559,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
     } finally {
       await window?.close().catch(() => {})
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   }, 120_000)
@@ -583,7 +608,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
         }
       }
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   }, 120_000)
@@ -635,7 +660,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
     } finally {
       await window?.close().catch(() => {})
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   }, 120_000)
@@ -661,17 +686,23 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
     let second: UiSession | undefined
 
     try {
-      // ① **非默认落点**——两处都要改，缺一条判据就是空的：
-      //    **`MAGIC_HOME` 指到别处**（`$MAGIC_HOME/.magic` ≠ 家目录下那一个），
-      //    而且那一份配置里的 **`dataDir` 也指到另一个库**。不换 dataDir 的话，
-      //    两处「同一个库」——那这一条就什么都证明不了（复制过去照样能接上）。
+      // ① **非默认落点，但同一个数据实例**（U109 按设计收窄后的口径）：
+      //    `MAGIC_HOME` 指到别处（`$MAGIC_HOME/.magic` ≠ 家目录下那一个），
+      //    而那一份配置里的 **`dataDir` 与 App 的一致** ⇒ 它就是**同一个数据实例**，
+      //    应当照常接回。
+      //
+      //    原预期 → 新预期：原来是「`MAGIC_HOME` 与 `dataDir` **两处都**换成别的、
+      //    仍然接得上」；现在是「**换了 `MAGIC_HOME`、但 `dataDir` 一致**才接得上」。
+      //    依据：`设计/会话与运行管理`「常驻方案的生产 App 同时承载一个选定数据实例；
+      //    **CLI 显式目录须与之匹配**」——守卫比的是**数据实例（`dataDir`）**，
+      //    **基础目录不在其列**（它管配置/授权/技能，不是那份数据）。
+      //    非法那一半（`dataDir` 不同 ⇒ 拒绝）另立一条用例，见下。
       const alt = join(sandbox.root, 'alt-home')
-      const altData = join(sandbox.root, 'data-alt')
       mkdirSync(join(alt, '.magic'), { recursive: true })
       const config = JSON.parse(readFileSync(join(sandbox.home, '.magic', 'config.json'), 'utf8')) as Record<string, unknown>
       writeFileSync(
         join(alt, '.magic', 'config.json'),
-        JSON.stringify({ ...config, dataDir: altData }, null, 2),
+        JSON.stringify(config, null, 2),
         'utf8',
       )
 
@@ -696,7 +727,12 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       //    ⚠️ 折行本身是**产品的一条限度**：路径长过终端宽度时，整段复制会把换行带进去
       //    （短路径不受影响）——记在回报的「未验 / 限度」里。
       const copy = joinWrapped(first.rawText(), '接回来：').split('接回来：')[1] ?? ''
-      expect(copy).toContain(`MAGIC_HOME='${alt}'`) // 非默认落点：**必须带上它**
+      // 原预期 → 新预期：原来比的是**字面**路径（测试给的 `/var/folders/…`），现在比**规范化后**
+      // 的路径（`/private/var/folders/…`）。依据：协作线的 `host-discovery`（`normalizeDataDir`）
+      // ——同一份代码里 socket 路径也按规范化取键（「两个写法必须落在同一把锁上」）。
+      // **没变弱**：判据仍是「那一行必须带上 `MAGIC_HOME` 且指向 alt」，
+      // 只是把「字面相同」换成「**指向同一个目录**」——后者更强（认的是目录，不是写法）。
+      expect(copy).toContain(`MAGIC_HOME='${realpathSync(alt)}'`) // 非默认落点：**必须带上它**
       expect(copy).toContain('magic --session ')
 
       // ③ **它得是「屏上原样可复制」的一条**（规划裁决点名的那一条）——
@@ -734,15 +770,11 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       //    底环境里也塞一个 `MAGIC_HOME` 的话，命令里那一段前缀就算失效也照样接得上
       //    （环境把它兜住了，实测被点出来过）。
       //
-      // ④ **先确认那个默认库里没有这条会话**（否则「接上了」可能只是接上了别处的同一条）。
-      //    ⚠️ **库文件可能压根还没建**（这一趟默认落点从没被打开过）——那也是「没有」。
-      const defaultDb = join(sandbox.dataDir, 'records.db')
-      const before = existsSync(defaultDb) ? readDatabase(defaultDb) : undefined
-      try {
-        expect(before?.sessions.length ?? 0).toBe(0)
-      } finally {
-        before?.close()
-      }
+      // ⚠️ **原先这里有一道「那个默认库里必须没有这条会话」的前置**（用来排除「接上的其实是
+      //    别处的同一条」）。U109 收窄守卫之后**它不再成立也不需要**：`alt` 与 App
+      //    **同一个 `dataDir`** ⇒ 本来就是**同一个数据实例**，谈不上「别处」。
+      //    它原来守的那件事（**不匹配的目录要拒绝**）现在由**守卫自己**承担，
+      //    并另立一条用例（见本文件「数据实例不匹配 ⇒ 拒绝」）。
 
       second = await createUiSession({
         label: '照那一行接回来',
@@ -765,26 +797,16 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await second.close({ graceMs: 5_000 })
       second = undefined
 
-      // ⑤ **反面**（同一条命令，**把前缀摘掉**）：在那个默认库上接不上——
-      //    这一条才说明④⑤两条的「接上了」是**那一段前缀**挣来的，不是环境碰巧对。
-      const naked = ['sh', '-c', copy.replace(/^MAGIC_HOME='[^']*' /u, '')]
-      const third = await createUiSession({
-        label: '摘掉前缀（反面）',
-        artifacts: runs,
-        sandbox,
-        fixture,
-        command: naked,
-        env: { PATH: `${bin}:${process.env['PATH'] ?? ''}` },
-        skipReady: true,
-      })
-      const refused = await third.close({ graceMs: 8_000 })
-      expect(refused.exit.code).toBe(1)
-      expect(third.rawText()).toContain('没有这条会话')
+      // ⚠️ **原先这里还有一条反面**：同一条命令**摘掉 `MAGIC_HOME=` 前缀**，在那个默认库上
+      //    接不上——它守的是「④接上了是**那一段前缀**挣来的」。收窄守卫之后这条**不成立**：
+      //    `alt` 与 App 同一个 `dataDir`，前缀摘掉接的也还是**同一个数据实例**。
+      //    它原先的「反面」角色由**新立的那条**（`dataDir` 不同 ⇒ 守卫拒绝，且带改前红）接过，
+      //    那条比它更直：不再靠「前缀在不在」间接证明，而是直接判「不匹配的目录一律拒绝」。
     } finally {
       await first?.close().catch(() => {})
       await second?.close().catch(() => {})
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   }, 120_000)
@@ -832,7 +854,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
     } finally {
       await window?.close().catch(() => {})
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   }, 120_000)
@@ -893,7 +915,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
         }
       }
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
       removeDir(runs)
     }
   }, 120_000)

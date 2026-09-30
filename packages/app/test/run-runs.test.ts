@@ -28,7 +28,7 @@ import { startManager } from '../src/run/manager.ts'
 import type { ExecutorLauncher, ExecutorRequest, Manager, SpawnedExecutor } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
-import type { ExecutorToManager, ManagerToExecutor } from '../src/run/wire.ts'
+import type { ExecutorToManager, ManagerToExecutor } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
 
 /** 一块沙地——形制与 `run-executor.test.ts` 那一处同（两处各是一片独立沙地，不共用状态）。 */
@@ -417,15 +417,19 @@ describe('U49 · 接回＝快照 ＋ 水位', () => {
       const resumed: RunSnapshot[] = []
       const seen: number[] = []
       client.onResumed((_gen, snapshot) => resumed.push(snapshot))
-      client.onEvent((event) => seen.push(event.id))
+      client.onEvent((event) => {
+        // manager 的目录/历史投影 id=0 不是执行者持久事件。
+        if (event.id !== 0) seen.push(event.id)
+      })
 
       client.send({ type: 'session.open', session: 's-live' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready('s-live')
       await waitFor('开张', () => rowOf(client, 's-live') !== undefined)
 
-      // 管理者在**挂上窗口的同一刻**就要了快照——它排在 `session.open` 那条命令前面
+      // 管理者在绑定执行者时先要快照，再递交明确输入。
       await waitFor('管理者要快照', () => fake.got.some((one) => one.t === 'snapshot'))
       const asked = fake.got.find((one) => one.t === 'snapshot')
       if (asked === undefined || asked.t !== 'snapshot') throw new Error('管理者没要快照')
@@ -464,15 +468,14 @@ describe('U49 · 接回＝快照 ＋ 水位', () => {
       await waitFor('快照到了', () => resumed.length === 1)
       expect(resumed[0]?.text).toBe('正在想……')
 
-      // 缓冲区里那两条（`turn.start` / `agent.state` / `tool.call`）按 id 放行，重复的只留一份
+      // 三条缓冲事件按水位放行，只有 tool.call 在水位之后，重放只留一份。
       await waitFor('缓冲放完', () => seen.includes(early))
-      const flushed = seen.filter((id) => id <= early)
-      expect(flushed).toEqual([...new Set(flushed)]) // 无重复
-      expect(seen.filter((id) => id === early).length).toBe(1)
+      expect(seen).toEqual([early]) // 水位之前不重复，之后不漏且同 id 只一份
 
       // 此后是**直接**来的
       const later = fake.emit('tool.result', { call: early, ok: true, output: { text: 'ok' } }, 's-live')
       await waitFor('后续照常', () => seen.includes(later))
+      expect(seen).toEqual([early, later])
 
       client.close()
     } finally {
@@ -491,6 +494,7 @@ describe('U49 · 裁决只有一份', () => {
 
     try {
       one.send({ type: 'session.open', session: 's-dec' })
+      one.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready('s-dec')
@@ -545,6 +549,7 @@ describe('U49 · `/clear` 是这个窗口的', () => {
 
     try {
       one.send({ type: 'session.open', session: 's-share' })
+      one.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready('s-share')
@@ -556,7 +561,8 @@ describe('U49 · `/clear` 是这个窗口的', () => {
 
       // 第二个窗口 `/clear`（`session.new`）——**为它自己另起一代**
       two.send({ type: 'session.new' })
-      await waitFor('为它另起了一代', () => b.requests.length === 2)
+      // spawn 同步记账；窗口要等 socket 的 target 回执才知道新代。
+      await waitFor('另起一代且窗口收到目标', () => b.requests.length === 2 && two.gen() === b.requests[1]?.gen)
       expect(two.gen()).not.toBe(shared)
 
       // 第一个窗口**一步没动**：还认着原来那一代、还在看原来那条会话
@@ -627,12 +633,23 @@ describe('U49 · 登记落盘与重启核对', () => {
       expect(rowOf(client, 's-alive')?.holds).toBe(true)
       expect(rowOf(client, 's-dead')?.state).toBe('stopped')
 
-      // **不能重复启动同会话**——这一条要如实拒绝，且说清缘由
+      // 失联时仍可只读历史；下一次明确输入才受独占门保护。
       const lines: string[] = []
       client.onLine((text) => lines.push(text))
       const before = b.requests.length
+      let historyDone = false
+      client.onEvent((event) => { if (event.kind === 'session.history' && event.data.done) historyDone = true })
       client.send({ type: 'session.open', session: 's-alive' })
-      await waitFor('被拒且有话说', () => lines.some((text) => text.includes('没有证实结束')))
+      await waitFor('失联历史只读完成', () => historyDone)
+      expect(lines).toEqual([])
+      expect(b.requests).toHaveLength(before)
+      client.send({ type: 'input.submit', text: '未核销期间不得重新执行' })
+      // 原预期 → 新预期：原来是组合线那句「上一次工作尚未核销，当前记录仍可查看……」，
+      // 现在是 U100 那句「……上一次那条执行者还没有证实结束（它可能正在收尾）……
+      // 同一个会话不能同时起两个」（同一件事：独占未核销 ⇒ 拒）。
+      // 依据 U100（`held` 那道守卫）；**没变弱**：这条只换措辞，
+      // 紧接着那条「一代都没多起」（`b.requests.length === before`）行为判据原样在。
+      await waitFor('执行被拒且有话说', () => lines.some((text) => text.includes('还没有证实结束')))
       expect(b.requests.length).toBe(before) // 一代都没多起
 
       // 那个进程走了 ⇒ 那一代真的结束了（生命探测那一跳核对出来的）
@@ -642,6 +659,7 @@ describe('U49 · 登记落盘与重启核对', () => {
 
       // 现在可以接着开了
       client.send({ type: 'session.open', session: 's-alive' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('这回起得来', () => b.requests.length === before + 1)
 
       client.close()
@@ -660,6 +678,7 @@ describe('U49 · 登记落盘与重启核对', () => {
 
     try {
       client.send({ type: 'session.open', session: 's-persist' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready('s-persist')

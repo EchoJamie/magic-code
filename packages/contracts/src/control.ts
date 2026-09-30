@@ -13,6 +13,7 @@ import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId } from './ids.ts'
 import type { ReasoningSetting } from './model.ts'
+import type { CollaborationCommand } from './collaboration-control.ts'
 
 /**
  * **草稿里绑定的技能引用**（U33）——**只带身份，不带正文**。
@@ -563,6 +564,7 @@ export type InputPaste = { readonly type: 'input.paste' }
  * ——外壳发往内核的全部消息。
  */
 export type Command =
+  | CollaborationCommand
   | InputSubmit
   | DecisionAnswer
   | TurnInterrupt

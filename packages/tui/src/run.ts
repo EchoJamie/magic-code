@@ -24,6 +24,8 @@ import type { RunFeed, ResumeFeed, StopReport } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
+  readonly detached?: ((listener: (why: string) => void) => void) | undefined
+  readonly reopen?: (() => Promise<void>) | undefined
   readonly transport: ControlTransport
   /**
    * 启动流转（装配给）——恢复 / 重建要发事件，故**必须在订阅之后**跑
@@ -131,6 +133,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     receipts: options.receipts,
     runs: options.runs,
     resumed: options.resumed,
+    detached: options.detached,
+    reopen: options.reopen,
     openingSession: options.openingSession,
     stop: options.stop,
     stopped: options.stopped,

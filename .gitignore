@@ -16,3 +16,6 @@ playground/*
 
 # JetBrains
 .idea/
+
+# 原生构建与隔离验收
+.artifacts/

@@ -17,11 +17,7 @@
  * 去拉外部服务器，才是「空白启动页也有执行」——所以这里只造**既不落盘也不起进程**的
  * 那几件。
  *
- * ## 命令这一条上那道闸
- *
- * `history.read` 在**还没有目标**时被丢掉：它问的是「我这条会话的条目」，而没有目标
- * 就没有「我这条会话」——那时把它转给管理者，只会平白为一次开机白起一个执行者
- * （而「空白启动页……没有会话和执行者」正是要免掉这件事）。有了目标之后照常放行。
+ * 历史与会话目录查询直接交管理者读取；没有执行代次也可观察，不创建执行者。
  */
 
 import type {
@@ -47,6 +43,8 @@ import type { LoadedConfig } from '../config.ts'
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */
 export type TerminalInputs = {
   readonly client: ManagerClient
+  /** 仅由失联屏的明确用户动作调用；保留同一个 Shell 与草稿。 */
+  readonly reopen?: () => Promise<void>
   /** 已加载的配置——窗口按它认工作区与当下那个模型的窗（**不重新加载一遍**）。 */
   readonly loaded: LoadedConfig
   readonly magic: MagicHome
@@ -91,6 +89,8 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
 
   return {
     transport: clientTransport(client),
+    detached: (listener) => client.onDetached(listener),
+    ...(inputs.reopen === undefined ? {} : { reopen: inputs.reopen }),
     // **没有 `boot`**：恢复是**执行者**那一头的事（它在装配之后、收第一条命令之前跑完）。
     // 窗口这一侧因此「一起来就放开输入」——而那不会让输入抢在恢复前面：管理者把命令
     // **攒到执行者报 `ready` 才放行**（见 `manager.ts` 的 `deliver`）。这道闸从
@@ -144,19 +144,17 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
  * 两件在这一跳上：
  * - **事件原样转手**（含瞬时增量——渲染要实时）；管理者的 `line` 是一句**给人看**的话，
  *   它不走事件面（不是内核事实），故这一跳不转。
- * - **没有目标时丢掉 `history.read`**（见文件头注）。
+ * - 查询不受执行代次约束；是否已有会话由管理者按真实身份判断。
  */
 export function clientTransport(client: ManagerClient): ControlTransport {
   return {
     send(command: Command): void {
-      if (command.type === 'history.read' && client.gen() === null) return
       client.send(command)
     },
     subscribe(listener: (event: KernelEvent) => void): () => void {
-      client.onEvent((event) => listener(event))
-      // 退订：这一条连接是整个窗口的，不退（窗口收摊时整条连接一起关）。
-      // 外壳的 `dispose` 因此是空转——它现在的寿命与连接**同一个**，不是两个东西。
-      return () => {}
+      let active = true
+      client.onEvent((event) => { if (active) listener(event) })
+      return () => { active = false }
     },
   }
 }
@@ -362,4 +360,71 @@ function startupReceipts(inputs: TerminalInputs): readonly string[] {
   }
 
   return said
+}
+
+/** 稳定的终端连接出口。换连接只换底层 client，所有 UI 订阅保留，旧连接迟到消息被隔离。 */
+export function terminalConnection(
+  initial: ManagerClient,
+  reconnect: (session: string | undefined) => Promise<ManagerClient>,
+  openingSession?: string,
+): { readonly client: ManagerClient; readonly reopen: () => Promise<void> } {
+  let current = initial
+  let selected = openingSession
+  let reopening: Promise<void> | undefined
+  let closed = false
+  const bindings: ((client: ManagerClient) => void)[] = []
+  const bindTarget = (client: ManagerClient): void => {
+    client.onTarget((session) => { if (client === current) selected = session ?? undefined })
+  }
+  bindTarget(initial)
+
+  // 首次订阅才连接 feed，底层 client 的初始事件缓存不会在 Shell 构造之前被空消费。
+  function feed<A extends unknown[]>(subscribe: (client: ManagerClient, listener: (...args: A) => void) => void) {
+    return (listener: (...args: A) => void): void => {
+      const bind = (client: ManagerClient): void => subscribe(client, (...args) => {
+        if (current === client) listener(...args)
+      })
+      bindings.push(bind)
+      bind(current)
+    }
+  }
+  const client: ManagerClient = {
+    get conn() { return current.conn },
+    get dataDir() { return current.dataDir },
+    get identity() { return current.identity },
+    get mcp() { return current.mcp },
+    get unread() { return current.unread },
+    get closed() { return current.closed },
+    gen: () => current.gen(),
+    runs: () => current.runs(),
+    onRuns: feed((client, listener) => client.onRuns(listener)),
+    onResumed: feed((client, listener) => client.onResumed(listener)),
+    onTarget: feed((client, listener) => client.onTarget(listener)),
+    onDetached: feed((client, listener) => client.onDetached(listener)),
+    onEvent: feed((client, listener) => client.onEvent(listener)),
+    onStopped: feed((client, listener) => client.onStopped(listener)),
+    onNotice: feed((client, listener) => client.onNotice(listener)),
+    onLine: feed((client, listener) => client.onLine(listener)),
+    onClose: feed((client, listener) => client.onClose(listener)),
+    send: (command) => current.send(command),
+    stop: (session, scope) => current.stop(session, scope),
+    markRead: (ids) => current.markRead(ids),
+    close: () => { closed = true; current.close() },
+  }
+  return {
+    client,
+    reopen() {
+      if (closed) return Promise.reject(new Error('终端已经关闭'))
+      if (reopening !== undefined) return reopening
+      if (!current.closed) return Promise.resolve()
+      reopening = (async () => {
+        const next = await reconnect(selected)
+        if (closed || next.closed) { next.close(); throw new Error(closed ? '终端已经关闭' : 'Magic Code 在重新连接时已退出') }
+        current = next
+        bindTarget(next)
+        for (const bind of bindings) bind(next)
+      })().finally(() => { reopening = undefined })
+      return reopening
+    },
+  }
 }

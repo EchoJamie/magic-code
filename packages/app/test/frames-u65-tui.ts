@@ -212,7 +212,7 @@ async function settle(input: {
     .catch((error: unknown) => console.log(`  · 收摊：它没按「按两次」那条路走（${String(error)}）`))
   await input.session.close({ graceMs: 5_000 }).catch(() => undefined)
   await input.fixture.stop()
-  input.sandbox.dispose()
+  await input.sandbox.dispose()
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -99,7 +99,7 @@ async function closeRoom(
 ): Promise<void> {
   if (session !== undefined) await session.close({ graceMs: 3_000 }).catch(() => undefined)
   if (fixture !== undefined) await fixture.stop().catch(() => undefined)
-  if (sandbox !== undefined) sandbox.dispose()
+  if (sandbox !== undefined) await sandbox.dispose()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -232,7 +232,7 @@ async function managerKilled(): Promise<void> {
       await closeRoom(undefined, undefined, undefined)
     }
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 
@@ -284,7 +284,7 @@ if (import.meta.main) {
   console.log('U50 真进程证据——四场')
 
   const sandbox = await executorKilled()
-  sandbox?.dispose()
+  await sandbox?.dispose()
   await managerKilled()
   await frozen()
 

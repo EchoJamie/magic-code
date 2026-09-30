@@ -268,7 +268,7 @@ async function sceneFailures(): Promise<void> {
     } finally {
       await session.close({ graceMs: 3_000 })
       await fixture.stop()
-      sandbox.dispose()
+      await sandbox.dispose()
     }
   }
 }

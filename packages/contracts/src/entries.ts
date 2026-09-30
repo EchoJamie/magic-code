@@ -5,6 +5,7 @@
  * **内容流**——对话、工具调用与结果的持久形态（append-only）；恢复＝由条目重建现场。
  */
 
+import type { AgentMessagePayload } from './collaboration.ts'
 import type { BlobRef, RecordId, SessionId, Timestamp } from './ids.ts'
 
 /** 内容承载——正文内联，或大负载转 blob 引用。 */
@@ -12,6 +13,7 @@ export type Content = { readonly text: string } | { readonly blob: BlobRef }
 
 /** 条目 kind。 */
 export type EntryKind =
+  | 'agent-message' // 协作消息引用；不冒充用户
   | 'user' // 用户输入
   | 'assistant' // 助手产出
   | 'tool-call' // 名 + 参数
@@ -363,6 +365,7 @@ export type AssistantPayload = {
  * `assistant` 条目自 U41 起有：供应商要求回传的那份思考，见 `AssistantPayload`）。
  */
 export type EntryPayload =
+  | AgentMessagePayload
   | ToolCallPayload
   | ToolResultPayload
   | UserPayload

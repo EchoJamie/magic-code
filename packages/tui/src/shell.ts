@@ -21,8 +21,10 @@
  */
 
 import { dirname, join } from 'node:path'
-import { MAGIC_DIR, apiKeyEnvVarOf } from '@magic/contracts'
+import { MAGIC_DIR, apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
 import type {
+  AgentId,
+  CollaborationView,
   Command,
   ControlTransport,
   Entry,
@@ -87,6 +89,7 @@ import {
   settle,
   undock,
   applyResume,
+  finishExecution,
   inActiveSection,
   runDetail,
   runSummary,
@@ -137,6 +140,7 @@ import type { PromptState, ShellView } from './view.ts'
 import type { AttachmentRow, RecordId, RunRow, RunSnapshot } from '@magic/contracts'
 import { leftSpan, lineSpan, rightSpan, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
+import { collaborationRow, memberRows, memberState, memberRecords, discussionRecords, delegationState } from './collaboration.ts'
 
 /** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
 export type ShellKey =
@@ -173,6 +177,7 @@ export type ShellKey =
    */
   | { readonly kind: 'ctrl+c' }
   | { readonly kind: 'ctrl+o' }
+  | { readonly kind: 'ctrl+r' }
   /**
    * **`Ctrl T`**——收起/展开当前清单（U34）。
    *
@@ -226,6 +231,7 @@ export type ShellKey =
    * （`plan.ts` 的 `planScrolled`：夹在两头之间），外壳只存不猜——同一条「拿不到的不编」。
    */
   | { readonly kind: 'planTop'; readonly top: number }
+  | { readonly kind: 'readerTop'; readonly top: number }
   | { readonly kind: 'paste'; readonly text: string }
   | { readonly kind: 'other'; readonly label: string }
 
@@ -267,6 +273,8 @@ export type Shell = {
    * 恢复没跑完就提交，等于让循环与恢复抢同一条记录流（对话域会当场抛）。
    */
   releaseInput(): void
+  /** 管理者断开，留屏与草稿；只有明确重开动作可恢复连接。 */
+  hostGone(): void
   /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
   readHistory(session?: SessionId): void
   /**
@@ -393,6 +401,8 @@ type Layer = {
   readonly detailAt: ModelRef
   readonly attachmentAt: RecordId | null
   readonly asking: Ask | null
+  readonly collaborationAt?: AgentId
+  readonly collaborationModel: { readonly member?: AgentId } | null
 }
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
@@ -408,6 +418,8 @@ function shellQuote(text: string): string {
 }
 
 export type ShellOptions = {
+  readonly detached?: ((listener: (why: string) => void) => void) | undefined
+  readonly reopen?: (() => Promise<void>) | undefined
   /**
    * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的**开机那一格**分母（`12.4k/200k`）。
    *
@@ -469,9 +481,7 @@ export type ShellOptions = {
    * 由头：解析从严（读不懂的规则 / 授权**不生效**）原先**只有 `--check` 会说**，
    * 走 TUI 这条路时**一声不响**。装配把话备好（`Assembly.notices`），外壳只负责说。
    *
-   * ⚠️ **等记录区重建完再贴**（见 `accumulate`）——开盘那一下 `readHistory` 会把
-   * 屏上痕迹连同这几行一起换掉（`rebuild` 只回会话内容）。不补这一手，回执在真外壳上
-   * **一句都留不下**（`run.ts` 的次序正是「boot → 放开输入 → 读历史」）。
+   * 开屏时只印一次，并作为当前页头保留到历史重建完成。
    */
   readonly receipts?: readonly string[] | undefined
   /**
@@ -654,16 +664,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   // 这里种的只有 ④ 的**开机那一格**（`contextWindow`）——此后的分母随事件来（见 `ShellOptions`）。
   let view = withBanner(withContextWindow(createView(), options.contextWindow ?? null))
 
-  /**
-   * **启动那几句**（见 `ShellOptions.receipts`）——开局先贴一遍，**重建之后再补一遍**。
-   *
-   * 两份是必要的：不先贴，没跑 `readHistory` 的调用方（测试 / 演示）永远看不到；
-   * 不在重建后补，真外壳上那几行会被 `rebuild` 换掉（它只回会话内容）。
-   * 补一次就够（`startupSaid`）——此后再换会话就不重复念叨了。
-   */
-  const startup: readonly string[] = options.receipts ?? []
-  let startupSaid = false
-  if (startup.length > 0) view = startup.reduce((acc, text) => appendReceipt(acc, text), view)
+  // 开屏说明属于这一页的页头。历史到达时保留原位置，避免 Static 跳过首条正文。
+  for (const text of options.receipts ?? []) view = appendPageNote(view, text)
 
   /**
    * 运行事实（U49）——接上那一份当下读数；此后由管理者推着走（下面那一段订阅）。
@@ -683,12 +685,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   //   用户正是为它来的。
   {
     const summary = runSummary(view.runs, options.openingSession)
-    if (summary !== undefined) view = appendReceipt(view, summary)
+    if (summary !== undefined) view = appendPageNote(view, summary)
   }
 
   let disposed = false
   /** 「放开输入」了没有——`boot` 完成那一下翻真（见 `Shell.releaseInput`）。 */
   let ready = !booting
+  let connected = true
+  let reopening = false
   // 启动中：右位说清楚「为什么回车没反应」（不然就是「按了没反应」——最难查的那种）
   if (booting) view = { ...view, status: { ...view.status, hint: HINT_BOOTING } }
 
@@ -704,7 +708,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    *   `agent-loop.ts`）。故历史里存的是**身份**，不是当初那份内容。
    */
   type HistoryEntry = { readonly text: string; readonly refs: readonly DraftRef[] }
-  const history: HistoryEntry[] = []
+  let history: HistoryEntry[] = []
   /** 翻到第几条（`-1` ＝**没在翻**，输入行里是用户自己那份草稿）。 */
   let historyAt = -1
 
@@ -818,6 +822,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * `session`），此后由重铺那一处读它——**出那一屏就把它还原**（`session` 是常态）。
    */
   let modelScope: ModelScope = 'session'
+  let collaborationModel: { readonly member?: AgentId } | null = null
+  let collaborationAt: AgentId | undefined
+  let collaborationQuery: { readonly member?: AgentId } | null = null
+  const memberViews = new Map<AgentId, CollaborationView>()
+  const reading = new Map<string, number>()
+  const decisions = new Map<RecordId, Extract<KernelEvent, { kind: 'tool.decision.request' }>>()
+  const answeredDecisions = new Set<RecordId>()
+  let decisionReturn: { readonly dock: Dock; readonly layers: readonly Layer[]; readonly status: ShellView['status'] } | null = null
 
   /**
    * 「此刻的当前那一条」——**按作用对象取**（U78）：会话那一趟取 `view.modelCurrent`，
@@ -827,7 +839,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * （各取一套的话，屏上标着 A、光标却落在 B 上）。
    */
   const scopeCurrent = (): ModelRef | null =>
-    modelScope === 'webFetch' ? view.webFetch : view.modelCurrent
+    collaborationModel !== null
+      ? (collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model) ?? null
+      : modelScope === 'webFetch' ? view.webFetch : view.modelCurrent
 
   /**
    * 本会话里用户**亲手选过**的思考设置——按「连接 ＋ 模型」那一对记着（U41）。
@@ -844,12 +858,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   } | null = null
 
   /** 这一条此刻的思考设置（**用户在这台壳上选过的才算**——没选过就是「没设过」）。 */
-  const reasoningOf = (pick: ModelRef): ReasoningSetting | undefined =>
-    chosenReasoning !== null &&
-    chosenReasoning.provider === pick.provider &&
-    chosenReasoning.model === pick.model
-      ? chosenReasoning.setting
-      : undefined
+  const reasoningOf = (pick: ModelRef): ReasoningSetting | undefined => {
+    if (collaborationModel !== null) {
+      const model = collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel
+        : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model
+      return model?.provider === pick.provider && model.model === pick.model ? model.reasoning : undefined
+    }
+    return chosenReasoning?.provider === pick.provider && chosenReasoning.model === pick.model ? chosenReasoning.setting : undefined
+  }
 
   /**
    * **正在问的一件小事**（U41）——改名 / 密钥那一类，`null` ＝ 没在问。
@@ -880,6 +896,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     detailAt,
     attachmentAt,
     asking,
+    collaborationAt,
+    collaborationModel,
   })
 
   /**
@@ -902,6 +920,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     detailAt = layer.detailAt
     attachmentAt = layer.attachmentAt
     asking = layer.asking
+    collaborationAt = layer.collaborationAt
+    collaborationModel = layer.collaborationModel
 
     if (layer.dock.kind === 'picker') {
       commit(openPicker(view, layer.dock.picker))
@@ -970,6 +990,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * - 图片详情那一屏收起来时把主语放下（「这一屏在说哪一张」不跨屏留着，同 `manageAt`）。
    */
   const collapseDock = (): void => {
+    collaborationQuery = null
+    collaborationModel = null
     if (view.dock.kind === 'picker') {
       const anchor = view.dock.picker.source === 'paths' ? view.dock.picker.anchor : undefined
       if (view.dock.picker.source === 'attachment-detail') attachmentAt = null
@@ -1165,11 +1187,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 恢复自己发的那几条事件（`reduce` 把 `agent.state{waiting}` 翻成 `HINT_IDLE`）——
     // 任何一条都会把「启动中」抹掉，而**回车那时仍是不受理的** ⇒ 屏上就变成
     // 「看着闲着、按了却没反应」（原型 · 交互逻辑最不想要的那种）。
-    const next = ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
+    const next = !connected
+      ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : 'Magic Code 已退出 · ctrl+r 重新打开 · ctrl+c 离开' } }
+      : ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
     // **回了输入行 ⇒ 屏的栈清空**（U61）——栈里装的是「还在底下的那几屏」，而屏全收起来
     // 之后它们已经没有主语了。这是**唯一的收口**（视图的每一处改动都经这里），
     // 故 `esc` 那条路不必另写一句：它收起屏、dock 一回到 `input`，栈自然跟着空。
     if (next.dock.kind === 'input') layers = []
+    if (next.dock.kind === 'picker' && next.dock.picker.reader !== undefined) {
+      reading.set(next.dock.picker.reader.key, next.dock.picker.reader.top)
+    }
     view = next
     if (streaming) notifyCoalesced()
     else {
@@ -1334,7 +1361,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // **放开输入之前一律不受理**（见 `Shell.releaseInput`）——命令进内核＝让内核干活，
     // 而 `boot`（装载 ＋ 恢复）还没跑完。丢弃＋出声由调用方给（`submit` 那一处），
     // 这儿是兜底：别的路径（选择器 / 裁决）此刻本就不该有，有也一并拦下。
-    if (!ready) return
+    if (!ready || !connected) return
+    if (command.type === 'decision.answer' && view.collaboration?.collaboration !== undefined) {
+      if (answeredDecisions.has(command.id)) return
+      answeredDecisions.add(command.id)
+    }
     transport.send(command)
   }
 
@@ -1352,12 +1383,58 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const onEvent = (event: KernelEvent): void => {
     if (disposed) return
 
+    if (event.kind === 'collaboration.view') {
+      const data = event.data
+      if (view.sessionId !== null && data.originSession !== view.sessionId) return
+      if (data.selectedMember !== undefined) memberViews.set(data.selectedMember, data)
+      commit({ ...view, collaboration: data })
+      if (data.note !== undefined) commit(appendReceipt(view, data.note))
+      const requested = collaborationQuery
+      if (requested !== null && requested.member === data.selectedMember) {
+        collaborationQuery = null
+        if (data.collaboration === undefined) {
+          commit(said(view, data.note ?? '这件工作尚未展开协作'))
+        } else if (requested.member === undefined) openCollaboration()
+        else openMember(requested.member)
+      } else if (view.dock.kind === 'picker') {
+        const picker = view.dock.picker
+        if (picker.source === 'collaboration') openCollaboration(picker.rows[picker.selected]?.value)
+        else if (picker.source === 'collaboration-member' && collaborationAt !== undefined) openMember(collaborationAt, picker.rows[picker.selected]?.value)
+        else if (picker.reader !== undefined && data.selectedMember !== undefined) {
+          const reader = picker.reader
+          const member = data.selectedMember
+          const rows = reader.key === `${member}:records` && data.entries !== undefined ? memberRecords(data, member)
+            : reader.key === `${member}:discussions` && data.messages !== undefined ? discussionRecords(data, data.messages) : undefined
+          if (rows !== undefined) commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...reader, rows } } } })
+        }
+      }
+      return
+    }
+
+    // 成员运行事件不混进原会话正文；审批与输入回执仍按唯一 id 接收。
+    if (view.collaboration?.members.some((one) => one.agent.sessionId === event.session && event.session !== view.collaboration?.originSession)
+      && event.kind !== 'tool.decision.request' && event.kind !== 'tool.decision' && event.kind !== 'input.settled') return
+
     if (event.kind === 'session.history') {
       accumulate(event.data)
       return
     }
 
+    if (view.collaboration?.collaboration !== undefined) {
+      if (event.kind === 'tool.decision.request') {
+        if (decisions.has(event.id) || answeredDecisions.has(event.id)) return
+        decisions.set(event.id, event)
+        if (view.dock.kind === 'decision') return
+        decisionReturn = { dock: view.dock, layers, status: view.status }
+      }
+      if (event.kind === 'tool.decision') {
+        const request = [...decisions.values()].find((one) => one.data.call === event.data.call)
+        if (request !== undefined) { decisions.delete(request.id); answeredDecisions.add(request.id) }
+        if (view.dock.kind === 'decision' && view.dock.pending.call !== event.data.call) return
+      }
+    }
     const before = view.sessionId
+    const prior = view
     // 流式增量按帧合批；其余一律当场（判据见 `STREAMING` 的注）
     //
     // ⚠️ `turn` **只在这一声答复是换页那一跳时**给（`turn` 是刚发出去、还没收场的那一次）：
@@ -1393,7 +1470,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (parked !== undefined) view = { ...view, dock: parked.dock }
     }
 
-    commit(reduce(view, event, { turn: turn?.kind ?? null }), STREAMING.has(event.kind))
+    let reduced = reduce(view, event, { turn: turn?.kind ?? null })
+    if (view.collaboration?.collaboration !== undefined && event.kind === 'turn.end' && prior.dock.kind === 'decision') {
+      if (event.session === view.sessionId && decisionReturn !== null) decisionReturn = { ...decisionReturn, status: reduced.status }
+      const request = decisions.get(prior.dock.pending.id)
+      if (request !== undefined && request.session !== event.session) reduced = { ...reduced, dock: prior.dock, stashed: prior.stashed, draft: prior.draft, refs: prior.refs, caret: prior.caret, status: prior.status }
+    }
+    commit(reduced, STREAMING.has(event.kind))
+    if (event.kind === 'tool.decision' && prior.dock.kind === 'decision' && prior.dock.pending.call === event.data.call) {
+      const next = decisions.values().next().value
+      if (next !== undefined) commit(reduce(view, next))
+      else if (decisionReturn !== null) {
+        const saved = decisionReturn
+        decisionReturn = null
+        commit({ ...view, dock: saved.dock, status: saved.status })
+        layers = saved.layers
+      }
+    }
 
     // **`/config` 那三份读数**（U71）——三份都到齐了才开屏（由头见 `configPending` 那段注）。
     //
@@ -1410,7 +1503,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     if (event.kind === 'session.state') {
       // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
-      if (before !== null && before !== event.data.active) readHistory(event.data.active)
+      if (before !== null && before !== event.data.active) {
+        collaborationQuery = null
+        collaborationAt = undefined
+        collaborationModel = null
+        memberViews.clear()
+        reading.clear()
+        inputContexts.clear()
+        decisions.clear()
+        answeredDecisions.clear()
+        decisionReturn = null
+        commit({ ...view, collaboration: undefined, inputMember: undefined })
+        readHistory(event.data.active)
+      }
       if (waiting === 'session') {
         waiting = null
         openSessionPicker()
@@ -1563,8 +1668,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
     // ⚠️ **不还回输入行的那一种也要走这一趟**：配对键得收掉，不然那一份永远等着认领的
     // 稿子会在用户改完草稿再回来时被认错（见 `settleDraft`）。
-    if (event.kind === 'input.settled' && !event.data.ok) {
-      settleDraft(event.data.ref, event.data.keepDraft !== false)
+    if (event.kind === 'input.settled') {
+      settleDraft(event.data.ref, !event.data.ok && event.data.keepDraft !== false)
     }
     /**
      * **首条交代开张之后，把目录取回来一次**（U50）。
@@ -1641,16 +1746,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     rebuildEntries = [...rebuildEntries, ...data.entries]
     if (!data.done) return
 
-    let next = rebuild(view, rebuildEntries)
-
-    // 启动那几句**补一回**——`rebuild` 只回会话内容，屏上痕迹（含开局那几行回执）
-    // 会被它换掉；不补就真的一句都留不下（见 `ShellOptions.receipts`）
-    if (!startupSaid && startup.length > 0) {
-      startupSaid = true
-      next = startup.reduce((acc, text) => appendReceipt(acc, text), next)
-    }
-
-    commit(next)
+    commit(rebuild(view, rebuildEntries))
     rebuildFor = null
     rebuildEntries = []
     // **接回来的那一段画在历史之后**（U49）——早一步画会被这一跳的 `rebuild` 抹掉
@@ -1715,10 +1811,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /** 那一屏的行（**一处算**——开、筛、运行事实变了这三条路都走它）。 */
   const sessionPickerRows = (): readonly PickerRow[] =>
     sessionRows({
-      catalog: view.catalog,
+      catalog: view.catalog.filter((session) => session.id === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === session.id)),
       active: view.sessionId,
       here: options.workspaceRoots,
-      runs: view.runs,
+      runs: view.runs.filter((run) => run.session === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === run.session)),
       scope: sessionScope,
       query: sessionQuery,
     })
@@ -1738,6 +1834,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const head = [
       sessionQuery === '' ? '' : `筛选「${sessionQuery}」`,
       sessionScope === 'here' ? '只看本工作区' : '',
+      view.collaboration?.collaboration !== undefined && selected?.value === view.sessionId ? '→ 查看本次协作' : '',
     ]
       .filter((piece) => piece !== '')
       .join(' · ')
@@ -1961,6 +2058,31 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (disposed) return
     holdResumed(snapshot)
   })
+  const finishCurrent = (hostGone = false): void => {
+    pendingResume = null
+    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
+    resumeTimer = undefined
+    let next = finishExecution(view)
+    // detached 只核销当前入口执行者；成员审批仍由各自的执行身份负责。
+    for (const [id, request] of decisions) {
+      if (hostGone || request.session === undefined || request.session === view.sessionId) {
+        decisions.delete(id)
+        answeredDecisions.add(id)
+      }
+    }
+    if (decisionReturn !== null) {
+      decisionReturn = { ...decisionReturn, status: next.status }
+      const pending = decisions.values().next().value
+      if (pending !== undefined) next = reduce(next, pending)
+      else {
+        next = { ...next, dock: decisionReturn.dock }
+        layers = decisionReturn.layers
+        decisionReturn = null
+      }
+    }
+    commit(next)
+  }
+  options.detached?.(() => { if (!disposed) finishCurrent() })
 
   /**
    * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/resume` · `/model` 同位置同开合**
@@ -2211,7 +2333,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         source: 'model-reasoning',
         selected: Math.max(0, rows.findIndex((row) => row.current)),
         rows,
-        hint: [reasoningHint(support), '回车＝把这一条用到当前模型上'].join('\n'),
+        hint: [reasoningHint(support), collaborationModel === null ? '回车＝把这一条用到当前模型上' : `回车＝保存到${collaborationModel.member === undefined ? '后续派生默认' : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'}`].join('\n'),
       }),
     )
   }
@@ -2662,6 +2784,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     })
   }
 
+  const modelPickerHint = (note: string): string => collaborationModel === null
+    ? modelHint(view.models, note === '' ? undefined : note, modelScope)
+    : `模型与思考设置 · ${collaborationModel.member === undefined ? '后续派生的默认配置' : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'} · 回车继续选择思考设置${note ? ` · ${note}` : ''}`
+
   const openModelPicker = (note: string): void => {
     // **取材＝连接一览 ＋ 各自的缓存读数**（U41）——不再是「配置条目」（那正是本项要拆掉的
     // 约束：型号得逐个登记才列得出来）。铺行的规矩全在 `modelRows` 一处（行主文案＝模型名 ·
@@ -2677,7 +2803,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 落在**此刻会走的那一条**上（没有去向就从头起——不拿首项冒充当前）
         selected: Math.max(0, rows.findIndex((row) => row.current)),
         rows,
-        hint: modelHint(view.models, note === '' ? undefined : note, modelScope),
+        hint: modelPickerHint(note),
       }),
     )
   }
@@ -2710,7 +2836,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const held = picked(view)?.pick
     // 重铺与铺**同一份读数、同一句话**（U78）——不然刷新一次那一屏就换了个人说话
     const rows = modelRows(view.models, scopeCurrent())
-    const hint = modelHint(view.models, note === '' ? undefined : note, modelScope)
+    const hint = modelPickerHint(note)
 
     if (rows.length === 0) {
       commit(closePicker(view))
@@ -3140,6 +3266,117 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     editAt(renamed.draft, renamed.caret, renamed.refs)
   }
 
+  type InputContext = {
+    readonly draft: string; readonly caret: number; readonly refs: readonly DraftRef[]
+    readonly history: HistoryEntry[]; readonly historyAt: number; readonly browsing: { readonly text: string; readonly refs: readonly DraftRef[]; readonly caret: number } | null
+    readonly lastSubmit: { readonly ref: string; readonly text: string; readonly refs: readonly DraftRef[] } | null
+  }
+  const inputContexts = new Map<AgentId | undefined, InputContext>()
+  const switchInput = (member?: AgentId): void => {
+    if (member === view.inputMember) { commit(closePicker(view)); return }
+    inputContexts.set(view.inputMember, {
+      draft: view.draft, caret: view.caret, refs: view.refs, history, historyAt, browsing, lastSubmit,
+    })
+    const saved = inputContexts.get(member)
+    history = saved?.history ?? []
+    historyAt = saved?.historyAt ?? -1
+    browsing = saved?.browsing ?? null
+    lastSubmit = saved?.lastSubmit ?? null
+    imageNames = new Map()
+    adoptImageNames(saved?.refs ?? [])
+    draft({ ...closePicker(view), inputMember: member, draft: saved?.draft ?? '', caret: saved?.caret ?? 0, refs: saved?.refs ?? [] })
+  }
+
+  const showCollaborationPicker = (source: 'collaboration' | 'collaboration-member' | 'collaboration-stop', rows: readonly PickerRow[], hint: string, selected?: string): void => {
+    commit(openPicker(view, { source, rows, hint: sanitizeForDisplay(hint), selected: Math.max(0, rows.findIndex((row) => row.value === selected)) }))
+  }
+  const openCollaboration = (selected?: string): void => {
+    const snapshot = view.collaboration
+    if (snapshot?.collaboration === undefined) return
+    collaborationAt = undefined
+    const rows = [
+      ...memberRows(snapshot),
+      collaborationRow('whole', '向整件工作补充', '恢复整体草稿；共同要求送达相关成员'),
+      collaborationRow('constraints', '共同补充的带入情况'),
+      collaborationRow('default-model', '后续派生的默认模型', '按需配置'),
+      collaborationRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派'),
+      ...(snapshot.collaboration.state === 'stopped' ? [collaborationRow('resume-work', '明确继续整件工作', '先核对停点')] : []),
+    ]
+    showCollaborationPicker('collaboration', rows, '查看记录不改变输入目标', selected)
+  }
+  const openMember = (member: AgentId, selected?: string): void => {
+    const snapshot = view.collaboration
+    const found = snapshot?.members.find((one) => one.agent.agentId === member)
+    if (found === undefined) return
+    collaborationAt = member
+    showCollaborationPicker('collaboration-member', [
+      collaborationRow('whole', '返回整体'),
+      collaborationRow('input', `向「${found.agent.name}」补充`, '仅本次委派；共同约束请给整件工作'),
+      collaborationRow('stop-member', '停止该份工作', '下一步点名具体委派'),
+      collaborationRow('records', '查看完整对话与工具'),
+      collaborationRow('discussions', '查看关联讨论与结果'),
+      collaborationRow('member-model', '模型与思考设置', '仅这个成员'),
+    ], `${found.agent.name} · ${found.agent.role} · ${memberState(found)} · ${found.delegation?.scope ?? '协调与整合'}`, selected)
+  }
+  const readCollaboration = (member?: AgentId): void => {
+    if (collaborationQuery !== null) return
+    enterLayer()
+    collaborationQuery = member === undefined ? {} : { member }
+    send({ type: 'collaboration.read', ...(member === undefined ? {} : { member }) })
+  }
+  const openRecords = (key: string, title: string, rows: readonly import('./view.ts').LogRow[]): void => {
+    enterLayer()
+    commit(openPicker(view, { source: 'collaboration-records', rows: [], selected: 0,
+      reader: { key, title, rows, top: reading.get(key) ?? 0 } }))
+  }
+  const configureCollaboration = (member?: AgentId): void => {
+    enterLayer()
+    collaborationModel = member === undefined ? {} : { member }
+    modelScope = 'session'
+    waiting = 'model'
+    send({ type: 'model.list' })
+  }
+  const collaborationAction = (row: PickerRow): void => {
+    const snapshot = view.collaboration
+    if (snapshot?.collaboration === undefined || view.dock.kind !== 'picker') return
+    const source = view.dock.picker.source
+    if (source === 'collaboration-stop') {
+      const delegation = snapshot.delegations.find((one) => String(one.delegationId) === row.value)
+      if (delegation !== undefined) { commit(closePicker(view)); send({ type: 'collaboration.stop', delegation: delegation.delegationId }) }
+      return
+    }
+    if (row.value === 'whole') { switchInput(); return }
+    if (source === 'collaboration') {
+      if (row.value === 'default-model') configureCollaboration()
+      else if (row.value === 'stop-work' || row.value === 'resume-work') {
+        commit(closePicker(view))
+        send({ type: row.value === 'stop-work' ? 'collaboration.stop' : 'collaboration.resume' })
+      } else if (row.value === 'constraints') {
+        openRecords('constraints', '共同补充 · 带入不代表已遵守', snapshot.constraints.map((constraint, index) => ({
+          kind: 'output', key: String(constraint.messageId), lines: [`共同补充 ${index + 1}`, ...constraint.states.map((state) =>
+            `${snapshot.members.find((one) => one.agent.agentId === state.agentId)?.agent.name ?? '成员'}：${state.state === 'included' ? '已带入后续请求' : '已接收 / 待带入'}`)],
+        })))
+      } else readCollaboration(row.value)
+      return
+    }
+    const member = collaborationAt
+    const found = snapshot.members.find((one) => one.agent.agentId === member)
+    if (member === undefined || found === undefined) return
+    if (row.value === 'input') switchInput(member)
+    else if (row.value === 'member-model') configureCollaboration(member)
+    else if (row.value === 'stop-member') {
+      enterLayer()
+      const delegations = snapshot.delegations.filter((one) => one.assigneeId === member && !['received', 'rejected', 'cancelled'].includes(one.state))
+      showCollaborationPicker('collaboration-stop', delegations.map((one) => collaborationRow(String(one.delegationId),
+        `停止「${one.scope}」`, delegationState[one.state])), `${found.agent.name}：只撤回选中委派及其继续分出的部分；其他委派保留`)
+    } else {
+      const detail = memberViews.get(member)
+      if (detail === undefined) { readCollaboration(member); return }
+      if (row.value === 'records') openRecords(`${member}:records`, `${found.agent.name} · 对话与工具`, memberRecords(detail, member))
+      if (row.value === 'discussions') openRecords(`${member}:discussions`, `${found.agent.name} · 关联讨论与结果`, discussionRecords(detail, detail.messages ?? []))
+    }
+  }
+
   /**
    * **剪贴板那一张到了**（U107）——`input.paste` 的答复，三支各办各的：
    * **抽屉开着**（答复在路上时那一栏才开）⇒ 不插、明说；**取到了** ⇒ 插一处 `Image#N`；
@@ -3245,13 +3482,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     // ⚠️ **先落地、后发命令**（D23 那条次序）——进程内传输是同步直连的，
     // 反过来的话这次 `draft()` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
-    draft(appendEcho(cleared, text))
-    send({
-      type: 'input.submit',
-      text,
-      ref,
-      ...(refs.length === 0 ? {} : { refs: wire(refs) }),
-    })
+    draft(view.inputMember === undefined ? appendEcho(cleared, text) : cleared)
+    const input = { text, ref, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
+    send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
+      : { type: 'collaboration.input', input, ...(view.inputMember === undefined ? { shared: true } : { member: view.inputMember }) })
 
     return NONE
   }
@@ -3271,6 +3505,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    */
   const settleDraft = (ref: string | undefined, keepDraft: boolean): void => {
     // 名字避开外面那个 `waiting`（等选择器的意图）——两件不相干的事，别撞名
+    for (const [target, context] of inputContexts) {
+      const held = context.lastSubmit
+      if (target === view.inputMember || held === null || held.ref !== ref) continue
+      inputContexts.set(target, { ...context, lastSubmit: null, ...(keepDraft ? { draft: held.text, refs: held.refs, caret: held.text.length } : {}) })
+      return
+    }
     const held = lastSubmit
     if (held === null || ref === undefined || held.ref !== ref) return
 
@@ -3854,6 +4094,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   const key = (input: ShellKey): ShellEffect => {
     if (disposed) return NONE
+    if (input.kind === 'ctrl+r') {
+      if (connected || reopening || options.reopen === undefined) return NONE
+      reopening = true
+      commit(view)
+      void options.reopen().then(() => {
+        if (disposed) return
+        connected = true
+        commit(appendReceipt({ ...view, status: { ...view.status, hint: idleHintOf(view) } }, 'Magic Code 已重新连接。草稿已保留，请明确发送。'))
+        readHistory()
+      }, (error) => {
+        if (!disposed) commit(appendReceipt(view, `重新打开失败：${String(error)}`))
+      }).finally(() => { reopening = false; if (!disposed) commit(view) })
+      return NONE
+    }
+    if (!connected && input.kind === 'enter') {
+      commit({ ...view, flash: 'Magic Code 已退出，草稿未发送。按 ctrl+r 重新打开。' })
+      return NONE
+    }
 
     // **别的输入把那一行收掉**（U46）——用户又不想走了。
     //
@@ -3867,6 +4125,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //
     // ⚠️ 先 `commit` 再往下走：`view` 是本闭包里的 `let`，下面各支读到的就是清过的那一份。
     if (input.kind !== 'ctrl+c') disarmExit()
+    if (input.kind === 'escape' && collaborationQuery !== null) {
+      collaborationQuery = null
+      collapseDock()
+      return NONE
+    }
+    if (input.kind === 'readerTop') {
+      if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined) {
+        const picker = view.dock.picker
+        commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!, top: Math.max(0, input.top) } } } })
+      }
+      return NONE
+    }
+    if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined
+      && !['left', 'escape', 'ctrl+c'].includes(input.kind)) return NONE
 
     // **`←` 弹一层**（U61）——接管屏（选择器 ／ 本地小输入）里 `←` 一律归屏，
     // **草稿那一头（没开屏）才照旧移插入点**（见下面 `case 'left'`）。与 `↑↓`
@@ -4006,6 +4278,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           return NONE
         }
         if (view.completion !== null) pickCompletion()
+        else if (view.collaboration?.collaboration !== undefined) readCollaboration()
         return NONE
 
       // —— 停止（U50）：`/resume` 那一屏的两个键，各对应设计里那两档「明确选择的」范围 ——
@@ -4030,13 +4303,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       case 'right':
         if (view.dock.kind === 'decision') return refuse('右移')
         if (view.dock.kind === 'picker') {
+          if (view.dock.picker.source === 'session' && picked(view)?.value === view.sessionId) { readCollaboration(); return NONE }
           // **`→` ＝ 看这一条的详情**（U41）——只有模型那一屏给了这个键（别的抽屉没有「详情」
           // 这回事，故它们的左右照旧什么都不做，见列表下方那行说明）
           //
           // ⚠️ **取网页那一趟不给**（U78）：详情那一屏的两条动作（思考设置 / 设为默认）
           // 都是**当前会话**那一摊的事，在这一趟里一个都不该做——摆着就是两条会走错的岔路。
           // 那一屏的说明里也**不报这个键**（按下去没反应比不报更坏，见 `modelHint`）。
-          if (view.dock.picker.source === 'model' && modelScope === 'session') {
+          if (view.dock.picker.source === 'model' && modelScope === 'session' && collaborationModel === null) {
             const pick = picked(view)?.pick
             // `→` 看详情＝**进一层**（U61：设计「进一层：打开选择器 · `→` 看详情 ·
             // 接入那种一步接一步的每一屏——都算」）——`←` 退回列表，焦点照旧那一格
@@ -4255,6 +4529,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (view.dock.kind === 'picker') {
       const row = picked(view)
       if (row === undefined) return NONE
+      if (['collaboration', 'collaboration-member', 'collaboration-stop'].includes(view.dock.picker.source)) {
+        collaborationAction(row)
+        return NONE
+      }
 
       // **当前任务去向**（U100）——三选选定了一件。摆在三处之前（它那三行的 `value`
       // 不是任何一份读数的键，落到下面任何一支都是**按别人的规程**处置一件本地的事）。
@@ -4438,6 +4716,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         const setting = row.reasoning
         if (setting === undefined) return NONE // 不该有这种行（行是 `reasoningRows` 铺的）
 
+        if (collaborationModel !== null) {
+          const target = collaborationModel
+          collaborationModel = null
+          commit(closePicker(view))
+          send({ type: 'collaboration.configure', ...target, model: { ...detailAt, reasoning: setting } })
+          return NONE
+        }
         chosenReasoning = { provider: detailAt.provider, model: detailAt.model, setting }
         send({
           type: 'model.switch',
@@ -4497,6 +4782,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //    可以有同名模型，只报模型名认不出是谁）。回执由内核的 `model.switched` 给。
       if (view.dock.picker.source === 'model') {
         if (row.pick === undefined) return modelAction(row.value)
+        if (collaborationModel !== null) {
+          detailAt = row.pick
+          enterLayer()
+          openReasoningPicker(row.pick)
+          return NONE
+        }
 
         // **取网页那一趟：回车＝保存**（U78）——同一个键、同一个位置，做的是另一件事
         // （写配置里 `webFetch` 那一格）。**保存是显式动作**：这一屏的全部意义就是它，
@@ -4803,6 +5094,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // （设计：「不再新增一组按内部能力命名的 slash 命令」——动作挂在同一个入口下，
     // 写法照 `/mcp reconnect` 的既有姿势）。
     if (word === '/model') {
+      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') collaborationModel = null
       // **这一趟挑的是谁**（U78）：在模型那一屏里按动作（「刷新模型」那一行）＝**留在同一趟**
       // ——它是那一屏的原地重铺，不该把作用对象换了；从输入行打 `/model` ＝**当前会话那一趟**
       // （不沿用上一屏留下的那个作用对象：那样 `/model` 会莫名其妙地开成「取网页」那一趟）。
@@ -4987,6 +5279,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     key,
     readHistory,
+    hostGone: () => {
+      if (disposed || !connected) return
+      connected = false
+      finishCurrent(true)
+      commit(appendReceipt(view, 'Magic Code 已退出，记录和草稿保留在当前窗口。'))
+    },
 
     /**
      * 放开输入——`boot` 完成那一下（真外壳在 `run.ts` 里按这个次序调）。

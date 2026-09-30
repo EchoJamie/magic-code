@@ -15,6 +15,8 @@
  */
 
 import type {
+  AgentId,
+  CollaborationView,
   DecisionWeight,
   Entry,
   AttachmentRow,
@@ -339,6 +341,7 @@ export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
 
 /** 待答的裁决——**接管输入框**的那一件。 */
 export type PendingDecision = {
+  readonly member?: string
   /** **配对键**——`tool.decision.request` 事件的 id（答复原样带回）。 */
   readonly id: RecordId
   readonly call: RecordId
@@ -462,6 +465,10 @@ export type Picker = {
    * （U22 · B13）、`/skills` 读技能目录（U33）、**`@` 读路径候选**（U36）——**同位置同开合**。
    */
   readonly source:
+    | 'collaboration'
+    | 'collaboration-member'
+    | 'collaboration-stop'
+    | 'collaboration-records'
     | 'session'
     | 'model'
     | 'region'
@@ -506,6 +513,8 @@ export type Picker = {
   readonly title?: string
   readonly rows: readonly PickerRow[]
   readonly selected: number
+  /** 关联记录在原交互层内阅读，不换会话、不抄进原会话日志。 */
+  readonly reader?: { readonly key: string; readonly title: string; readonly rows: readonly LogRow[]; readonly top: number }
   /** 列表下方那行说明（可选）。 */
   readonly hint?: string
   /**
@@ -1086,6 +1095,8 @@ export type Stashed = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  readonly collaboration?: CollaborationView
+  readonly inputMember?: AgentId
   /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
   readonly rows: readonly LogRow[]
   /**
@@ -1450,8 +1461,13 @@ export function reduce(
       return reduceToolOutput(view, event.data)
     case 'tool.result':
       return reduceToolResult(view, event.data, event.at)
-    case 'tool.decision.request':
-      return reduceDecision(view, event.id, event.data)
+    case 'tool.decision.request': {
+      const next = reduceDecision(view, event.id, event.data)
+      const member = view.collaboration?.members.find((one) => one.agent.sessionId === event.session)?.agent.name
+      return member === undefined || next.dock.kind !== 'decision' ? next : {
+        ...next, dock: { kind: 'decision', pending: { ...next.dock.pending, member } },
+      }
+    }
     case 'tool.decision':
       return reduceVerdict(view, event.data, event.at)
 
@@ -1652,6 +1668,7 @@ export function reduce(
     // （`Image#N`）是**稿子**的事，由外壳自己按答复改（见 `shell.ts` 的 `identifyPicked`）。
     // 这里只是一条「收下了、别处处置」的出口，不是一个空壳分支。
     case 'paths.identified':
+    case 'collaboration.view':
       return view
 
     // **剪贴板取图的答复**（U107）——与上一条同一种处置：`reduce` 这一层**不改视图**。
@@ -2059,32 +2076,14 @@ const PAGE_NOTE_KEY = 'page:note'
  * 与 `appendReceipt` 只差 key：这样 `pageHeaderOf` 认得出它是页头（见 `PAGE_NOTE_KEY` 的注）。
  */
 export function appendPageNote(view: ShellView, text: string): ShellView {
-  return appendSettled(view, { kind: 'receipt', key: PAGE_NOTE_KEY, text })
+  return appendSettled(view, { kind: 'receipt', key: `${PAGE_NOTE_KEY}:${view.settled.length}`, text })
 }
 
-/**
- * 用历史铺一页时的**页头**——**这一页有页头就照用本尊（对象不变），没有就一行都不补**。
- *
- * 「有没有」看的是 `settled[0]`，两格都算页头：
- * - **字标**——**开机**那一页（`withBanner` 种的）与 **`/clear` 开的那一页**
- *   （U45；两处**都**得把它留在最前面，不然 `--session` 接续那条路开局就把它换没了）；
- * - **开页回执**（`PAGE_NOTE_KEY`）——**`/resume` 开的那一页**（U44）。
- * 两者都没有（真的一条都没有那一页）＝历史直接从头铺。
- *
- * ⚠️ **认 key 不认位置**（U44 起的第二格）：回执落在最前面**不等于**它是页头，
- * 见 `PAGE_NOTE_KEY` 那段注。
- * ⚠️ **页头与 `<Static>` 的游标是同一笔账**：页头那一行在「历史还没读回来」那一帧就已经
- * 写出去了（`Static` 的游标跟着往前走一格），`rebuild` 若不把它放回最前面，
- * 这一页的**第一行记录**就会被游标跳过——屏上凭空少一行（试跑当场现形：
- * 「甲：看看有什么」那一行没印出来）。
- *
- * ⚠️ **绝不在这儿补种一个**（U43 改）：这条路上补种＝又在**填**的时候**开**了一页——
- * 屏上多一份字标（D28 乙）。页开不开由 `page` 管，不归本函数。
+/** 历史到达前已印出的字标、开屏说明或切页回执，保留原位置与对象。
+ * Static 按条目数追加；删掉这些已印行会让它跳过后来的正文。
  */
 function pageHeaderOf(view: ShellView): readonly LogRow[] {
-  const first = view.settled[0]
-
-  return first !== undefined && (first.kind === 'banner' || first.key === PAGE_NOTE_KEY) ? [first] : []
+  return view.settled.filter((row) => row.kind === 'banner' || row.key.startsWith(`${PAGE_NOTE_KEY}:`))
 }
 
 /**
@@ -2176,7 +2175,7 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 而这一跳是「往**已经开着的那一页**里填历史」——页号一动，`Static` 就重挂、这一页整批行
  * 又写一遍（甲→乙一次切换实测 4 份字标，就是这么来的）。**别在这一处动页号。**
  */
-export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
+export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean } = {}): ShellView {
   // **计划那一份也从这同一批条目里取**（U34）：切会话 / 重开之后清单要跟着回来，
   // 而它一直是会话记录的一部分（设计：读取、呈现与上下文同读这份来源）。
   const plan = planFromEntries(entries)
@@ -2184,7 +2183,7 @@ export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
 
   return {
     ...view,
-    settled: [...pageHeaderOf(view), ...rebuildRows(entries)],
+    settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools)],
     rows: [],
     // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
     // 已经上屏的新计划（或清空）盖回去（与 `withPlan` 同一把尺子）。
@@ -2200,7 +2199,7 @@ export function rebuild(view: ShellView, entries: readonly Entry[]): ShellView {
  * 「末尾 `RECENT_GROUPS` 组展开」——最近那几组工具保持逐条行，更早的组并成摘要
  * （原型 · 场景 12；收的判据见 `collapseToolGroups`）。
  */
-function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
+function rebuildRows(entries: readonly Entry[], collapseTools = true): readonly LogRow[] {
   const rows: LogRow[] = []
   /** 待配对的那条工具行在 `rows` 里的下标（`-1` ＝ 没有）。 */
   let pendingAt = -1
@@ -2290,7 +2289,7 @@ function rebuildRows(entries: readonly Entry[]): readonly LogRow[] {
   // **一行都不摘**（返修）：安静的那几个工具行照旧铺进记录区——「默认不画」由渲染那一处
   // 按 `quiet` ＋ `expanded` 判（`components/log.ts`）。在这儿滤掉＝切一趟会话回来
   // 那一行就**永久不可查**了（`Static` 写一次就不再重绘）。
-  return collapseToolGroups(rows)
+  return collapseTools ? collapseToolGroups(rows) : rows
 }
 
 /**
@@ -2321,6 +2320,22 @@ const RESUME_SOURCE = 0
  * ⚠️ **它写的是 `rows` 而不是 `settled`**：这三件都还在动（正文还会往下长、工具还会出
  * 结果），而后来的增量只往 `rows` 的末行上接（`appendText` / `addToolOutput`）。
  */
+/** 执行连接已核销：撤去失效裁决与在飞提示，保留记录和未发送草稿。 */
+export function finishExecution(view: ShellView): ShellView {
+  const awaiting = view.dock.kind === 'decision' ? view.dock.pending.call : undefined
+  const next = undock(view)
+  const rows = next.rows.map((row): LogRow => {
+    if (row.kind !== 'tool' || row.state !== 'running') return row
+    const { awaitingDecision, ...body } = row
+    const notExecuted = awaitingDecision === true || row.call === awaiting
+    return { ...body,
+      state: notExecuted ? 'unexecuted' : 'failed',
+      output: [...row.output, notExecuted ? '该询问已失效，未执行' : '执行中断，外部效果待确认'],
+    }
+  })
+  return patchStatus(settle({ ...next, rows }), { state: 'idle', amount: null, hint: HINT_IDLE })
+}
+
 export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
   let next = view
 
@@ -4401,7 +4416,7 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
   const filtering =
     (picker.filter !== undefined && picker.filter !== '') || picker.source === 'paths'
 
-  if (picker.rows.length === 0 && !filtering) {
+  if (picker.rows.length === 0 && picker.reader === undefined && !filtering) {
     return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
   }
 
@@ -4409,7 +4424,7 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
   // 能筛的那两屏要报「打字筛」（见 `HINT_PICKER_SESSION` / `HINT_PICKER_CONFIG`）、
   // 任务去向那一屏 `esc` 是「返回」（见 `HINT_PICKER_TASK`）
   const keys =
-    picker.source === 'mcp'
+    picker.reader !== undefined ? '' : picker.source === 'mcp'
       ? HINT_PICKER_READ
       : picker.source === 'task'
         ? HINT_PICKER_TASK

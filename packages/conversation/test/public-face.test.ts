@@ -15,15 +15,14 @@ import type { ContextPolicy, ConversationDeps, PromptVars } from '../src/index.t
 import * as face from '../src/index.ts'
 
 describe('公开面', () => {
-  test('值面三件——端口实现（会话主面 ＋ 计划与历史的读面）＋ 一条会话的实例（装配的 open 工厂造它）', () => {
-    // U34 补锚：**原锚**是「域包的 exports 只出端口实现 ＋ 装配期构造入参形态」那一句；
-    // **为何变**：本域多实现了一个契约端口（`PlanReader`——工具域那三件读协作笔记与
-    //   会话记录时用的那对只读回调），它也**只有本域能给**（判断在上下文那一侧）；
-    // **新锚**：同一句话多一件——值面三件都是「端口实现 / 一条会话的实例」，判据一个字没松。
+  test('值面精确枚举——会话与计划端口、实例工厂及常驻宿主的纯读目录入口', () => {
+    // 常驻宿主复用域内目录适配，纯读入口不创建会话实例；仍不公开循环与内部装配。
     expect(Object.keys(face).sort()).toEqual([
       'createConversationService',
       'createConversationSession',
       'createPlanReader',
+      'readAttachmentCatalog',
+      'readSessionCatalog',
     ])
   })
 

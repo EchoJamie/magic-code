@@ -49,6 +49,41 @@ function record(over: Partial<RunRecord> = {}): RunRecord {
 }
 
 describe('U49 · 六行状态逐行对事实', () => {
+  test('模型轮已结束但后台命令仍在：保持 running；后台归零才 idle', () => {
+    // **U100 起「还有没有后台命令在跑」不再看 `record.background`**（那一格是个计数），
+    // 改看**自有账上那一位 `kind`**（`backgroundOf`）——「产生处写位」，
+    // 判据不切 `what` 的字符串前缀（见 `facts.ts` 那段注）。
+    // 原预期 → 新预期：事实来源从旧字段换成自有账；**两条断言原样，没有变弱**。
+    const background = record({
+      busy: false,
+      turnActive: false,
+      owned: [{ pgid: 4_242, startedAt: 1_000, kind: 'background', what: 'exec(bg):sleep 1' }],
+    })
+    expect(runStateOf(background)).toBe('running')
+    // 原预期 → 新预期：原来是「`action` 那句文案里有『后台命令』」（切字符串），
+    // 现在是**那一格数值**（`row.background`）——文案由 UI 从这一格渲染（`view.ts`）。
+    // **没变弱**：判据从「字里有这三个字」换成「这一位是几」，更强（同 U100「不拿显示文案当状态」）。
+    expect(runRowOf(background)?.background).toBe(1)
+    background.owned = []
+    expect(runStateOf(background)).toBe('idle')
+  })
+
+  test('执行者退出仍需核销：进行中 stopping，核销失败 unknown，确认后才 stopped', () => {
+    const ended = record({ ended: { at: 2_000, why: '异常退出', kind: 'crashed' }, reclaimPending: true })
+    expect(runStateOf(ended)).toBe('stopping')
+    refresh(ended, 2_001)
+    expect(runRowOf(ended)?.holds).toBe(true)
+    ended.reclaimPending = false
+    ended.reclaimNote = '资源归属尚未确认'
+    expect(runStateOf(ended)).toBe('unknown')
+    refresh(ended, 2_001)
+    expect(runRowOf(ended)?.holds).toBe(true)
+    ended.reclaimNote = undefined
+    expect(runStateOf(ended)).toBe('stopped')
+    refresh(ended, 2_002)
+    expect(runRowOf(ended)?.holds).toBe(false)
+  })
+
   test('执行中 · 正在跑测试——有在途的模型/工具调用', () => {
     const busy = record({ busy: true, turnActive: true, action: '正在跑 bash' })
     expect(runStateOf(busy)).toBe('running')

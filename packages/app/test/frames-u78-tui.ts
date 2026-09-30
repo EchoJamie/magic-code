@@ -445,7 +445,7 @@ if (import.meta.main) {
   } finally {
     if (session !== undefined) await session.close().catch(() => {})
     await fixture.stop().catch(() => {})
-    sandbox.dispose()
+    await sandbox.dispose()
     if (at === -1) removeDir(root)
   }
 }

@@ -32,3 +32,11 @@ export type BlobRef = string
  * （请求 / 询问 / 裁决 / 结果四处同指 `tool.call` 事件），而配对用请求事件的 `id`。
  */
 export type DecisionId = RecordId
+
+/** 持久协作身份；名称、路径和 PID 均不充当地址。 */
+export type AgentId = string
+export type CollaborationId = string
+export type OperationId = string
+export type MessageId = RecordId
+export type DelegationId = MessageId
+export type WaitId = RecordId

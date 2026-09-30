@@ -1,0 +1,9 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.attached",
+    "request": "request-one",
+    "session": "session-one"
+  }
+}

@@ -88,6 +88,8 @@ import type { SkillsDelivery } from './skills.ts'
 // ⚠️ **只取类型**（`import type`）：入参那几件的形态住在 `./service.ts`（构造入参的落点），
 // 而本文件是它的一个**视图**——真值那条线是 `service.ts → agent-loop.ts`，这一条不回头。
 import type { SubmitRefusal } from './service.ts'
+import { collaborationPrompt } from './collaboration.ts'
+import type { CollaborationBoundary } from './collaboration.ts'
 
 /**
  * 一次交代的收场——三种**轮次收场**（`TurnEndReason`，会写进 `turn.end`）
@@ -102,19 +104,20 @@ export type InputOutcome = TurnEndReason | 'rejected'
  * **这一轮已停住**（U72）——本批余下的调用**一件都不跑**，回填这一句。
  *
  * 与 `needsReviewText` / `overflowText` 同族（都是「扣下一次调用、说清为什么」的那句话），
- * 只是缘由在这一件：它前头那件工具**交了 `halt`**（取网页没配提炼模型），这一轮到此为止。
+ * 只是缘由在这一件：它前头那件工具**交了 `halt`**（例如登记等待），这一轮到此为止。
  * 措辞按那两句的老口径——**没执行 · 为什么 · 下一步怎么办**，且不宣称任何副作用发生过。
  */
 const STOPPED_TEXT =
   '这一轮已停住——本次调用没有执行。\n' +
-  '原因：同一轮里前一件工具要求就地收束（取网页那一件没配提炼用的模型）。\n' +
-  '下一步：等用户配好之后，接着说一句重新开始这一轮。'
+  '原因：同一轮里前一件工具要求让出推进。\n' +
+  '下一步：按该工具回报的原因处理，再继续。'
 
 /**
  * 循环的构造入参（**域内形态**）——端口实现（`./service.ts`）按它装配。
  * 每个字段都是一件「不知道自己是谁的」依赖：模型 / 工具 / 记录皆经端口，实现在别处。
  */
 export type LoopRuntime = {
+  readonly collaboration?: CollaborationBoundary | undefined
   /** 会话——条目按会话读（信封的 `session` 由铸造器持，两处同源）。 */
   readonly session: SessionId
   /** 模型名——随每次调用送模型域（`ModelRequest.model`）。 */
@@ -239,28 +242,49 @@ export type TurnOutcome = {
  */
 export async function agentLoop(
   runtime: LoopRuntime,
-  input: UserInput,
+  input: UserInput | undefined,
   signal: AbortSignal,
 ): Promise<InputOutcome> {
-  const log = entryLogOf(runtime)
+  const prepared = await prepareInput(runtime, input)
+  if (prepared === undefined) return 'rejected'
+  const announce = createAnnouncer(runtime, prepared.skills)
+
+  // **这一轮引用了、却还没被读过的**（U63）——收束时报一声（见 `finish`）。
+  const watch = createMaterialWatch(prepared.refs)
+
+  for (;;) {
+    // 轮间中止——不再开新轮（「回到等待输入」）
+    if (signal.aborted) return finish(runtime, watch, 'aborted')
+
+    const turn = await runTurn(runtime, signal, announce, watch)
+    if (turn.reason !== 'settled' || !turn.continues) return finish(runtime, watch, turn.reason)
+  }
+}
+
+/** 普通交代与协作补充共用材料读取、图片能力检查、落账与原稿回执。 */
+export async function prepareInput(
+  runtime: LoopRuntime,
+  input: UserInput | undefined,
+  accepted?: (entry: RecordId) => void,
+): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[] } | undefined> {
 
   // **此刻发得出去吗**（U60）——拦在**头一件**上（见 `LoopRuntime.submitRefusal`：
   // 发不出去就不该先开一轮、也不该白读那几份材料）。
   const blocked = runtime.submitRefusal?.()
   if (blocked !== undefined) {
     refuse(runtime, input, blocked.reason, blocked.keepDraft)
-    return 'rejected'
+    return undefined
   }
 
   // **按引用取材料**（U36）——正文里的每一处引用各取各的那一份，取不到就停在这一条上
   // （见函数头注）。旧形（`skills`，无位置）走另一条老路：材料统一前置、照旧落旧键。
-  const refs = input.refs ?? []
-  const selected = input.skills ?? []
+  const refs = input?.refs ?? []
+  const selected = input?.skills ?? []
   const delivery = await loadRefs(runtime, refs)
   if (!delivery.ok) {
     // 材料取不到＝这一份输入**没进会话**：配对一次 false（说得出是哪一份、为什么）
     refuse(runtime, input, delivery.reason)
-    return 'rejected'
+    return undefined
   }
 
   // **图片与当前模型对不对得上**（U37）——拦在**落账之前**（见 `LoopRuntime.acceptsImages`）。
@@ -269,7 +293,7 @@ export async function agentLoop(
   const wrongModel = imageRefusal(runtime, delivery.refs)
   if (wrongModel !== undefined) {
     refuse(runtime, input, wrongModel)
-    return 'rejected'
+    return undefined
   }
 
   const legacy =
@@ -283,7 +307,7 @@ export async function agentLoop(
 
   if (!legacy.ok) {
     refuse(runtime, input, legacy.reason)
-    return 'rejected'
+    return undefined
   }
 
   try {
@@ -292,17 +316,28 @@ export async function agentLoop(
     // ⚠️ **内核自己投的那一条走的是同一条路**（U70：后台命令跑完了那一句）——它也是
     // 「一条要进上下文的话」，只是载荷记着说话人（`notice`）。它**不进** `refs` / `skills`
     // 那两格（那两格记的是材料），故只多带一个标记位。
-    const entryId = await appendUserEntry(log, input.text, {
-      refs: delivery.refs,
-      skills: legacy.used,
-      ...(input.notice === true ? { notice: true as const } : {}),
-    })
-    runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
+    if (input !== undefined) {
+      const refusal = runtime.collaboration?.admit()
+      if (refusal !== undefined) { refuse(runtime, input, refusal); return undefined }
+      const entryId = await appendUserEntry(entryLogOf(runtime), input.text, {
+        refs: delivery.refs,
+        skills: legacy.used,
+        ...(input.notice === true ? { notice: true as const } : {}),
+      })
+      runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
+      try { accepted?.(entryId) }
+      catch (error) {
+        refuse(runtime, input, `输入已保存，但共同补充未能发布（${messageOf(error)}）；未继续执行，原稿保留`)
+        reportError(runtime, error)
+        return undefined
+      }
+    }
   } catch (error) {
     // 落账失败＝同样**没进会话**——配对一次 false（不给的话，给了 ref 的那一份草稿
     // 就永远等不到终态）
     refuse(runtime, input, `这一条没能记下来（${messageOf(error)}）——请重新发送`)
-    return reportError(runtime, error)
+    reportError(runtime, error)
+    return undefined
   }
 
   // **收下了**（U33）——完整输入（正文 ＋ 技能正文）已经落进会话，**落账那一刻就成立**。
@@ -311,7 +346,7 @@ export async function agentLoop(
   // 那一条说的是「送进了模型」。故此后模型那边再怎么失败（SDK 参数错 / 网络断 / 被停止），
   // **照模型失败报**（`model.error` · `turn.end{reason:'error'}`），**不撤销这一条**、
   // 也不暗示用户重发——已经进了会话的话，重发就是把同一件事说两遍。
-  if (input.ref !== undefined) {
+  if (input?.ref !== undefined) {
     runtime.sink.emit(runtime.stamper.stamp('input.settled', { ref: input.ref, ok: true }))
   }
 
@@ -323,18 +358,7 @@ export async function agentLoop(
   // 它的送达方式改成了「模型按需自读」：引用了**不等于**看过了，只有模型真用 `skill` 工具
   // 取回来、那一份进了下一趟请求，才谈得上「本次使用技能」（与「没读也要有痕迹」那一半
   // 同源，见 `createMaterialWatch`）。
-  const announce = createAnnouncer(runtime, legacy.used)
-
-  // **这一轮引用了、却还没被读过的**（U63）——收束时报一声（见 `finish`）。
-  const watch = createMaterialWatch(delivery.refs)
-
-  for (;;) {
-    // 轮间中止——不再开新轮（「回到等待输入」）
-    if (signal.aborted) return finish(runtime, watch, 'aborted')
-
-    const turn = await runTurn(runtime, signal, announce, watch)
-    if (turn.reason !== 'settled' || !turn.continues) return finish(runtime, watch, turn.reason)
-  }
+  return { refs: delivery.refs, skills: legacy.used }
 }
 
 /**
@@ -644,10 +668,11 @@ function imageRefusal(
  */
 function refuse(
   runtime: LoopRuntime,
-  input: UserInput,
+  input: UserInput | undefined,
   reason: string,
   keepDraft?: boolean,
 ): void {
+  if (input === undefined) return
   runtime.sink.emit(
     runtime.stamper.stamp('input.settled', {
       ...(input.ref === undefined ? {} : { ref: input.ref }),
@@ -705,19 +730,24 @@ async function runTurn(
 
     // 一次调用 ＋ 消费（超限时整体重来：重装配 → 重发——这才是「压缩后重发」）
     for (;;) {
+      await runtime.collaboration?.consume()
+      if (runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
+      let included: readonly number[] = []
       const messages = await assembleContext({
         records: runtime.records,
+        onIncluded: ids => { included = ids },
         session: runtime.session,
         // **项目规约 ＋ 技能目录 ＋ 后台命令**在装配这一步接上（U32 · U33 · U89）——
         // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
         // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
-        systemPrompt: withBackground(runtime, withSkills(runtime, withRules(runtime))),
+        systemPrompt: await collaborationPrompt(withBackground(runtime, withSkills(runtime, withRules(runtime))), runtime.collaboration),
         blobTextLimit: runtime.blobTextLimit,
         // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
       })
 
+      if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       const stream = gateway.stream(
         { model: runtime.model, messages, tools: tools.definitions() },
         { signal },
@@ -755,6 +785,7 @@ async function runTurn(
         // 故逐条调都行，重发那一趟（超限重试）也照旧只报一次。
         if (owed && RESPONSE_EVENTS.has(event.kind)) {
           owed = false
+          runtime.collaboration?.requested(included)
           announce.flush()
         }
 
@@ -815,7 +846,10 @@ async function runTurn(
       sink.emit(stamper.stamp('message.assistant', { entry: assistantId }))
     }
 
-    if (calls.length === 0) return close(runtime, 'settled', false) // 收束——回到等待输入
+    if (calls.length === 0) {
+      const changed = await runtime.collaboration?.consume()
+      return close(runtime, 'settled', changed === true && runtime.collaboration?.admit() === undefined)
+    } // 收束——回到等待输入
 
     // **目标预查（U32）**——动手**之前**看这一批的目标上有没有**还没送达**的规约。
     // 有：这一批**一份都不执行**（全都还没执行，故全都回填「需重审」），让模型照新规约
@@ -836,9 +870,17 @@ async function runTurn(
     //
     // ⚠️ **有一件交了 `halt` ⇒ 这一轮就地收束**（U72）——见下面那两行与 `stopped`。
     let stopped = false
+    let rejudging = false
 
     for (const call of calls) {
       if (signal.aborted) return close(runtime, 'aborted', false)
+
+      rejudging = (await runtime.collaboration?.consume()) === true || rejudging
+      const refusal = runtime.collaboration?.admit(call)
+      if (refusal !== undefined || rejudging) {
+        withholds(runtime, call, refusal ?? '收到新的协作交代，本次尚未执行的调用已暂停；先重新判断。')
+        continue
+      }
 
       if (stopped) {
         // 本批余下的**一件都不跑**——理由与「材料超限整批停批」同一条（`preflight` 那一段）：
@@ -858,7 +900,7 @@ async function runTurn(
     }
 
     // `continues` 为假 ⇒ 回到等待输入（工单第 5 条：这一轮就地收束）
-    return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted && !stopped)
+    return close(runtime, signal.aborted ? 'aborted' : 'settled', !signal.aborted && !stopped && runtime.collaboration?.admit() === undefined)
   } catch (error) {
     // 兜底——内核自身异常（非模型 / 工具域）：产生方就近发 `error`，本轮以「错误」收束
     return close(runtime, 'error', false, error)
@@ -997,7 +1039,7 @@ function close(
     )
   }
 
-  runtime.sink.emit(runtime.stamper.stamp('turn.end', { reason }))
+  runtime.sink.emit(runtime.stamper.stamp('turn.end', { reason, ...(continues ? { continues: true as const } : {}) }))
   return { reason, continues }
 }
 

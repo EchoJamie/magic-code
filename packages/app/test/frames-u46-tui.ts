@@ -428,7 +428,7 @@ async function counterpart(mark: '有供应商' | '无供应商'): Promise<void>
     await session.close({ graceMs: 1_000 })
     throw error
   } finally {
-    sandbox?.dispose()
+    await sandbox?.dispose()
   }
 }
 

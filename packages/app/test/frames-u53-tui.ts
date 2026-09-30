@@ -184,7 +184,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
   } finally {
     for (const window of windows) await window.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }

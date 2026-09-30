@@ -298,6 +298,8 @@ export interface ModelInfoCache {
  * ⚠️ **不覆盖供应商原始缓存**——覆盖与原始信息**分开存**（不改写缓存来伪装供应商声明）。
  */
 export type ProviderModelOverride = {
+  /** 精确连接/模型的思考能力覆盖；空对象明确没有已知可配置能力。 */
+  readonly reasoningSupport?: ReasoningSupport
   /** 令牌规格覆盖——只覆盖给出的那几位。 */
   readonly limits?: ModelLimits
   /**

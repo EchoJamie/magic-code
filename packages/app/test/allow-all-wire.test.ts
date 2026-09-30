@@ -61,13 +61,14 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Prom
 async function spawnedWith(connect: { allowAll?: boolean; switch?: { model: string } }): Promise<readonly ExecutorRequest[]> {
   const g = ground('spawn')
   const requests: ExecutorRequest[] = []
+  let exit: ((reason: string) => void) | undefined
   const launcher: ExecutorLauncher = {
     spawn(request: ExecutorRequest): SpawnedExecutor {
       requests.push(request)
       return {
         pid: undefined,
-        onExit() {},
-        kill() {},
+        onExit(listener) { exit = listener },
+        kill() { exit?.('测试执行者收到终止') },
       }
     },
   }
@@ -82,7 +83,6 @@ async function spawnedWith(connect: { allowAll?: boolean; switch?: { model: stri
       dataDir: g.dataDir,
       magic: { home: g.home, base: g.base },
       launch: launcher,
-      // 假执行者不会连回来——把生命探测调快，用例收尾时它自己走干净
       probeIntervalMs: 60,
     })
     if (started.role !== 'manager') throw new Error(`没立起来：${started.role}`)
@@ -95,13 +95,17 @@ async function spawnedWith(connect: { allowAll?: boolean; switch?: { model: stri
     })
     if (client === undefined) throw new Error('连不上管理者')
 
-    // 一条会开张的命令——「窗口的第一条命令走它」（`manager.ts` 的 `spawnFresh`）
-    client.send({ type: 'session.new' })
-    await waitFor('管理者为这个窗口发了一趟车', () => requests.length >= 1)
+    expect(requests).toHaveLength(0)
+    // hello 只保存启动参数；明确输入才创建执行者。launcher 为替身，不会请求模型。
+    client.send({ type: 'input.submit', text: '验证启动参数，不运行真实模型' })
+    await waitFor('管理者为这个窗口发了一趟车', () => requests.length === 1)
+    expect(requests).toHaveLength(1)
 
     return requests
   } finally {
     client?.close()
+    // 假执行者也交回真实的结束回调，不能让宿主等待一个没有生命连接的假进程。
+    exit?.('测试执行者结束')
     manager?.stop('用例收尾')
     await manager?.waitUntilExit()
     removeDir(g.root)

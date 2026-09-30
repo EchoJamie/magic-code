@@ -209,44 +209,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
    * 它只在状态行的「当前」位上示人（`session.state.active`）。
    */
   async function catalog(): Promise<readonly SessionSummary[]> {
-    const rows = await deps.records.listSessions()
-
-    return Promise.all(rows.map(withTitle))
-  }
-
-  /** 标题：改过的取存值；没改过的按首条用户消息现算。 */
-  async function withTitle(row: SessionSummary): Promise<SessionSummary> {
-    if (row.title !== undefined) return row
-
-    const derived = await derivedTitle(row.id)
-    return derived === undefined ? row : { ...row, title: derived }
-  }
-
-  /**
-   * 首条**用户**消息的摘要——条目按序读，见着第一条就收（后面不必读）。
-   *
-   * ⚠️ **内核自己投的那一条不算首条用户消息**（U70）：后台命令跑完时内核会在会话里留
-   * 一条 `user` 条目（要进上下文给模型看），载荷带着 `notice` 标记。不跳过它的话，
-   * 一条**用户一个字还没说**的会话标题会变成「（后台命令跑完了）…」——标题是给用户认
-   * 会话用的（通知那一屏也靠它定位，见设计 · 会话与运行管理 · 通知），拿内核的话顶上
-   * 就等于这条会话在他眼里叫了个他没说过的名字。跳过去，标题仍是**他说的第一句**。
-   */
-  async function derivedTitle(session: SessionId): Promise<string | undefined> {
-    for await (const entry of deps.records.readEntries(session)) {
-      if (entry.kind !== 'user') continue
-      if (noticeOf(entry.payload)) continue
-
-      return summarize(await textOf(entry.content), limit)
-    }
-
-    return undefined
-  }
-
-  /** 条目内容 → 文本（blob 引用取回；记录只存引用，正文归取回方——同上下文装配的姿势）。 */
-  async function textOf(content: { readonly text: string } | { readonly blob: string }): Promise<string> {
-    if ('text' in content) return content.text
-
-    return new TextDecoder().decode(await deps.records.blobs.get(content.blob))
+    return readSessionCatalog(deps.records, limit)
   }
 
   // —— 三个动作（失败以 `note` 如实报，不静默）——
@@ -373,7 +336,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
       return
     }
 
-    deps.sink.emit(stamper.stamp('attachments.catalog', { rows: await attachmentRowsOf(target) }))
+    deps.sink.emit(stamper.stamp('attachments.catalog', { rows: await readAttachmentCatalog(deps.records, target) }))
   }
 
   /**
@@ -386,7 +349,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
   async function exportAttachment(entry: RecordId): Promise<void> {
     const target = active?.session
     const stamper = current().stamper
-    const rows = target === undefined ? [] : await attachmentRowsOf(target)
+    const rows = target === undefined ? [] : await readAttachmentCatalog(deps.records, target)
     const row = rows.find((one) => one.entry === entry)
     const note = await exportNoteOf(row)
 
@@ -407,49 +370,6 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     const saved = await deps.saveAttachment({ name: row.name, mime: row.mime, bytes })
 
     return saved.ok ? `原图已导出 → ${saved.path}` : `没能导出：${saved.reason}`
-  }
-
-  /** 一条会话里送过的图片——按**送出的先后**（记录序），每条 `user` 条目里的 image 引用各占一行。 */
-  async function attachmentRowsOf(session: SessionId): Promise<readonly AttachmentRow[]> {
-    const rows: AttachmentRow[] = []
-
-    for await (const entry of deps.records.readEntries(session)) {
-      if (entry.kind !== 'user') continue
-
-      for (const ref of refsPayloadOf(entry.payload)) {
-        if (ref.kind !== 'image') continue
-
-        rows.push({
-          entry: entry.id,
-          name: ref.name,
-          mime: ref.mime,
-          bytes: await sizeOfBlob(ref.blob),
-          at: entry.at,
-          source: ref.source,
-          label: ref.label,
-          blob: ref.blob,
-        })
-      }
-    }
-
-    return rows
-  }
-
-  /**
-   * 字节数——**读一次 blob 头**（`BlobStore` 只有整取与整存两面，故取回来量一下）。
-   *
-   * 为什么不把长度记进条目：那一栏是**给列表看的读数**，而条目载荷要的是「这份材料是什么」。
-   * 多存一格数字＝多一处会与字节对不上的地方（记录里每多一个可推导的字段，就多一次
-   * 「两处不一致时信谁」的问题）。取回的代价只有列一次 `/attachments`——一次性动作。
-   * 取不回（字节坏了）＝如实报 0，列表照列（那一行仍要看得见——它是「取回」的入口，
-   * 而不是「读数好不好看」）。
-   */
-  async function sizeOfBlob(blob: BlobRef): Promise<number> {
-    try {
-      return (await deps.records.blobs.get(blob)).length
-    } catch {
-      return 0
-    }
   }
 
   /**
@@ -537,4 +457,62 @@ export function summarize(text: string, limit: number = TITLE_LIMIT): string | u
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** 同一份只读目录供执行内核与常驻管理者使用，标题规则不在展示适配器重造。 */
+export async function readSessionCatalog(records: SessionRecordsFace, limit = TITLE_LIMIT): Promise<readonly SessionSummary[]> {
+  const rows = await records.listSessions()
+  return Promise.all(rows.map(async (row) => {
+    if (row.title !== undefined) return row
+    for await (const entry of records.readEntries(row.id)) {
+      if (entry.kind !== 'user' || noticeOf(entry.payload)) continue
+      const text = 'text' in entry.content ? entry.content.text : new TextDecoder().decode(await records.blobs.get(entry.content.blob))
+      const title = summarize(text, limit)
+      return title === undefined ? row : { ...row, title }
+    }
+    return row
+  }))
+}
+
+/** 一条会话里送过的图片——按**送出的先后**（记录序），每条 `user` 条目里的 image 引用各占一行。 */
+export async function readAttachmentCatalog(records: Pick<SessionRecordsFace, 'readEntries' | 'blobs'>, session: SessionId): Promise<readonly AttachmentRow[]> {
+  const rows: AttachmentRow[] = []
+
+  for await (const entry of records.readEntries(session)) {
+    if (entry.kind !== 'user') continue
+
+    for (const ref of refsPayloadOf(entry.payload)) {
+      if (ref.kind !== 'image') continue
+
+      rows.push({
+        entry: entry.id,
+        name: ref.name,
+        mime: ref.mime,
+        bytes: await sizeOfBlob(ref.blob),
+        at: entry.at,
+        source: ref.source,
+        label: ref.label,
+        blob: ref.blob,
+      })
+    }
+  }
+
+  return rows
+
+  /**
+   * 字节数——**读一次 blob 头**（`BlobStore` 只有整取与整存两面，故取回来量一下）。
+   *
+   * 为什么不把长度记进条目：那一栏是**给列表看的读数**，而条目载荷要的是「这份材料是什么」。
+   * 多存一格数字＝多一处会与字节对不上的地方（记录里每多一个可推导的字段，就多一次
+   * 「两处不一致时信谁」的问题）。取回的代价只有列一次 `/attachments`——一次性动作。
+   * 取不回（字节坏了）＝如实报 0，列表照列（那一行仍要看得见——它是「取回」的入口，
+   * 而不是「读数好不好看」）。
+   */
+  async function sizeOfBlob(blob: BlobRef): Promise<number> {
+    try {
+      return (await records.blobs.get(blob)).length
+    } catch {
+      return 0
+    }
+  }
 }

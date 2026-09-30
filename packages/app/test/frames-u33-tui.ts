@@ -720,7 +720,7 @@ async function restored(out: string, configured: string): Promise<void> {
   } finally {
     for (const window of windows) await window.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
   }
 }
 

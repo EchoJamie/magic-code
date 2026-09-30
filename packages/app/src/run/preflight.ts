@@ -25,7 +25,7 @@
  * 而两处迟早会分叉（一处认的「连上」另一处不认）。
  */
 
-import type { McpServerConfig } from '@magic/contracts'
+import type { McpCatalogRow, McpServerConfig } from '@magic/contracts'
 import { createMcpServers } from '@magic/mcp'
 import type { McpProbeRow } from './wire.ts'
 
@@ -38,6 +38,8 @@ export type PreflightOptions = {
   readonly callTimeoutMs?: number | undefined
   /** 诊断——缺省不打印。 */
   readonly log?: ((line: string) => void) | undefined
+  /** 预检时实际发现的目录，连接随后关闭；观察命令不再次连接。 */
+  readonly onCatalog?: (rows: readonly McpCatalogRow[]) => void
 }
 
 /**
@@ -61,6 +63,10 @@ export async function probeMcp(options: PreflightOptions): Promise<readonly McpP
 
   try {
     await probe.ready()
+    options.onCatalog?.(probe.connections.map((connection) => ({
+      server: connection.server, transport: connection.transport, state: connection.state,
+      tools: connection.tools().map((tool) => tool.name), rejected: connection.rejected,
+    })))
     for (const connection of probe.connections) {
       rows.push({
         server: connection.server,

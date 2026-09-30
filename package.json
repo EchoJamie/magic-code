@@ -1,6 +1,6 @@
 {
   "name": "magic-code",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "check": "bun run typecheck && bun run test",
+    "build:macos": "bash scripts/macos/build.sh",
+    "check:macos": "bash scripts/macos/build.sh && bash scripts/macos/check.sh && bash scripts/macos/verify.sh",
+    "check:all": "bun run check && bun run check:macos",
     "prepare": "git config core.hooksPath .githooks || true",
     "ui": "bun packages/app/scripts/ui.ts"
   },

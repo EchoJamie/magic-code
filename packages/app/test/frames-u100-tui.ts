@@ -302,7 +302,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -415,7 +415,7 @@ async function background(): Promise<void> {
     await first?.close().catch(() => {})
     await second?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -489,7 +489,7 @@ async function stopAndStay(): Promise<void> {
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -542,7 +542,7 @@ async function stopAndExit(): Promise<void> {
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -612,7 +612,7 @@ async function dropTerminal(): Promise<void> {
     await first?.close().catch(() => {})
     await second?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -672,7 +672,7 @@ async function waiting(): Promise<void> {
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -750,7 +750,7 @@ async function waitingAcrossBackground(): Promise<void> {
     await first?.close().catch(() => {})
     await second?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -805,7 +805,7 @@ async function otherSession(): Promise<void> {
   } finally {
     for (const window of windows) await window.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -873,7 +873,7 @@ async function backgroundOnly(): Promise<void> {
       }
     }
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -936,7 +936,7 @@ async function acrossRounds(): Promise<void> {
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -987,7 +987,7 @@ async function disconnected(): Promise<void> {
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -1138,7 +1138,7 @@ async function menuAfterList(): Promise<void> {
     for (const one of windows) await one.close().catch(() => {})
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -1240,7 +1240,7 @@ async function staleCardAfterStop(): Promise<void> {
     await mine?.close().catch(() => {})
     await other?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
@@ -1331,7 +1331,7 @@ async function staleCardAfterLost(): Promise<void> {
   } finally {
     await window?.close().catch(() => {})
     await fixture.stop()
-    sandbox.dispose()
+    await sandbox.dispose()
     removeDir(runs)
   }
 }
