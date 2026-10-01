@@ -301,7 +301,8 @@ export type Shell = {
    * 「那一行上的动作」，动作本身不变）：
    * - **复用记录里的字节**（`blob`）——**不回头找原路径**（源文件可能早删了）；
    * - **不发送**：放回输入行而已，发不发由用户回车决定；
-   * - **插回原位置**：落在它当年在这句话里的那个偏移上（新稿子比它短就夹到末尾）。
+   * - **插在插入点上**（设计 · 文件与图片：「在打开查询前的输入位置插入引用……不一律追加到
+     末尾」）——那一屏只读，故「进屏前那个插入点」就是此刻的 `view.caret`。
    *
    * 编号仍归稿子那一侧发（`imageNumberOf`，按内容身份）：同一张图放两次拿到同一个号。
    */
@@ -3408,12 +3409,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /**
    * **加入本次输入**（U110）——见 `Shell.attachMaterial` 那一段。
    *
-   * ⚠️ **位置那一格是「原位置」**（`material.at`，它当年在这句话里的起点）：
-   * 新稿子比它短就夹到末尾（`Math.min`）——夹是**如实**（没有更靠后的位置可放），
-   * 而「一律追加到末尾」是另一回事（那会把用户当年的语序改掉，设计明写不许）。
+   * ⚠️ **位置是「插入点」**（设计 · 文件与图片：「**在打开查询前的输入位置插入引用**……
+   * **不一律追加到末尾**」）——即**进那一屏之前输入行里那个插入点**。
+   *
+   * 那一趟里稿子与插入点**一动不动**（那一屏只读；`view.caret` 就是进屏前那一个），
+   * 故这里直接取当下的 `view.caret`：**插在它那儿，插入点落到新引用之后**（`replaceWith`
+   * 那一支的规矩，与 `@` / 剪贴板那两条同一条）。
+   *
+   * ⚠️ **不是那条引用当年在这句话里的偏移**（本单第一版这么读过——规划侧按设计原文纠正：
+   * 那句话说的是「**输入位置**」，不是「材料在原交代里的位置」）。
    */
   const attachMaterial = (material: UserImage): void => {
-    const at = Math.max(0, Math.min(material.at, view.draft.length))
+    const at = Math.max(0, Math.min(view.caret, view.draft.length))
 
     commit(
       withCompletion({

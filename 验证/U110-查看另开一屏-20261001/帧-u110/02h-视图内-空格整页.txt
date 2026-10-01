@@ -26,5 +26,5 @@
 › 第二件事：改个文件
 
 ● edit u110-diff.txt
-  ✓ 3ms · 已替换 1 处（u110-diff.txt）
+  ✓ 2ms · 已替换 1 处（u110-diff.txt）
 30–58 / 112 行  ·  / 搜 · n/N · j/k · g/G · ctrl+u/d 半页 · 空格/b · {/} [/] 交代/材料 · v · q 退出

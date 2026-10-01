@@ -57,14 +57,13 @@ const topOf = (one: ScreenState): string => textOfLines([one.top >= 0 ? line(Str
 const userRow = (at: number, text: string): LogRow => ({ kind: 'user', key: `u${at}`, text, echoed: false })
 
 /** 带图的那一条交代（U110 那两条动作的主语就是它）。 */
-const imageOf = (n: number, at = 0): UserImage => ({
+const imageOf = (n: number): UserImage => ({
   marker: `Image#${n}`,
   name: `第${n}张.png`,
   mime: 'image/png',
   blob: `blob-${n}`,
   source: `/tmp/第${n}张.png`,
   label: `第${n}张.png`,
-  at,
 })
 
 const userWithImages = (at: number, text: string, images: readonly UserImage[]): LogRow => ({
@@ -328,7 +327,7 @@ describe('U110 · 一帧长什么样', () => {
   test('选中一处材料：底下那行报出**是哪一条**与两条动作', () => {
     const withMaterials: ScreenLayout = {
       ...at,
-      materials: [{ line: 2, image: imageOf(1, 3) }],
+      materials: [{ line: 2, image: imageOf(1) }],
     }
     const status = screenFrame({ layout: withMaterials, state: state({ picked: 2 }), columns: 100, hits: [] })
       .split('\r\n')[6] as string
@@ -339,7 +338,7 @@ describe('U110 · 一帧长什么样', () => {
   })
 
   test('选中的那一行**反显**', () => {
-    const withMaterials: ScreenLayout = { ...at, materials: [{ line: 2, image: imageOf(1, 3) }] }
+    const withMaterials: ScreenLayout = { ...at, materials: [{ line: 2, image: imageOf(1) }] }
     const body = screenFrame({ layout: withMaterials, state: state({ picked: 2 }), columns: 100, hits: [] }).split('\r\n')
 
     expect(body[2]).toContain('\u001b[7m')
@@ -363,7 +362,7 @@ describe('U110 · 一帧长什么样', () => {
 describe('U110 · 材料那一行', () => {
   /** 两条交代，头一条带两张图、第二条不带——材料行落位与「哪一条是主语」都看它。 */
   const rows: readonly LogRow[] = [
-    userWithImages(1, '看下这两张', [imageOf(1, 3), imageOf(2, 6)]),
+    userWithImages(1, '看下这两张', [imageOf(1), imageOf(2)]),
     assistantRow(1, '看了。'),
     userRow(2, '再改一版'),
     assistantRow(2, '改好了。'),
