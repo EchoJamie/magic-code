@@ -80,7 +80,8 @@ describe('换过模型之后的分母', () => {
     expect(after.statusLine).toContain('3.1k/33k')
     expect(after.statusLine).not.toContain('1000k')
     // 回执照旧（「刚发生的事」进记录区）
-    expect(after.has('· 已换模型 → MiniMax-M2')).toBe(true)
+    // ⚠️ **回执不带记号了**（2026-10-01 用户裁定：`·` 只做分隔符）——靠缩进一级 ＋ 弱色
+    expect(after.has('已换模型 → MiniMax-M2')).toBe(true)
 
     land.shell.dispose()
   })
@@ -127,7 +128,7 @@ describe('换过模型之后的分母', () => {
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k/1000k')
-    expect(after.has('· 换模型未成：未知供应商「ghost」')).toBe(true)
+    expect(after.has('换模型未成：未知供应商「ghost」')).toBe(true)
     expect(land.shell.getView().status.model).toBe('MiniMax-M3')
 
     land.shell.dispose()

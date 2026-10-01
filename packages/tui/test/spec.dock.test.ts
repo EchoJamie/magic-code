@@ -214,7 +214,8 @@ describe('状态行 · 栏位固定', () => {
     // ⚠️ **U112 删掉的那一条**：旧锚＝`statusLine` 含新模型名（模型那格跟着换）。
     //    模型那一格不再在默认那一列里（`STATUS_LINE_DEFAULT`＝会话名 · 上下文占用），
     //    「换模型」这件事在屏上只剩记录区那一行回执——下面那条就是它的落点。
-    expect(frame.record.some((line) => line.text === '· 已换模型 → MiniMax-M2')).toBe(true)
+    // ⚠️ **U112 换形**：回执行不再以 `· ` 起头（那个字形只做行内分隔），改靠**缩进一级 ＋ 最弱色**
+    expect(frame.record.some((line) => line.text === '  已换模型 → MiniMax-M2')).toBe(true)
   })
 })
 
@@ -500,7 +501,7 @@ describe('slash 的两种走法', () => {
 
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）——
     //    这一句问的是「选定之后**留了几行回执**」，字标不是回执
-    expect(frame.content.map((line) => line.text)).toEqual(['· 已切到 修复时区处理']) // **一行**，不是一面
+    expect(frame.content.map((line) => line.text)).toEqual(['  已切到 修复时区处理']) // **一行**，不是一面（U112 起无记号）
   })
 
   test('`esc` 取消——**不留痕迹**（记录区与回执都没有）', async () => {

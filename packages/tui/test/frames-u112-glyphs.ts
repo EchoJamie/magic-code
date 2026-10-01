@@ -16,8 +16,8 @@
  *    那份表，与设计里「宽度是 unicodedata 实测」同一把）；
  * ② **三把尺子是否同宽**——我们折行用的 `displayWidth` · 输入行那支 `string-width` ·
  *    **真终端**（`@xterm/headless` 摆完一格一格数回来）。三把不一致＝对齐迟早散；
- * ③ **摆出来的位置**——`▸` 那一行里，行尾状态位落在**第 `columns-2` 格**（靠右那条判据），
- *    以及整行**没有溢出**（换行就是宽度算错的直接证据）。
+ * ③ **摆出来的位置**——`▸` 那一行里，状态位落在**第 4 格**（缩进 2 ＋ `▸ ` 2，
+ *    2026-10-01 改定：紧跟在身份记号右边，不再靠右），以及整行**没有溢出**。
  *
  * **不能**（如实记，不假装）：**某台终端上这个码位有没有被字库覆盖、会不会被渲染成
  * 彩色双宽 emoji**——那取决于终端与字体本身，这个进程里没有那台终端。
@@ -101,19 +101,19 @@ async function main(): Promise<void> {
   }
 
   await say('')
-  await say('## 靠右那一位摆在哪一格（整行的宽度账）')
+  await say('## 状态位摆在哪一格（整行的宽度账）')
 
+  // ⚠️ **2026-10-01 改定：状态位紧跟在身份记号 `▸` 右边**（原先靠右摆，那条已废掉——
+  //    一列行是沿**左边缘**竖着扫的，右端扫不动、且随参数长短左右飘）。
   const columns = 100
-  const probe = `${'  '}▸ exec(sleep 2 && chmod 755 .)`
-  const pad = columns - 1 - displayWidth(probe) - displayWidth(MARKS.ok)
-  const line = `${probe}${' '.repeat(pad)}${MARKS.ok}`
+  const line = `${'  '}${MARKS.tool} ${MARKS.ok} exec(sleep 2 && chmod 755 .)`
   const bytes = await record([h(Text, null, line)], { columns, rows: 4 })
   const cells = await screenCells(bytes, { columns, rows: 4 })
-  const at100 = cells.cellsOf(0).findIndex((cell) => cell.text === MARKS.ok)
+  const bitAt = cells.cellsOf(0).findIndex((cell) => cell.text === MARKS.ok)
 
   await say('')
   await say(`- 整行算出来 ${displayWidth(line)} 列（一屏 ${columns} 列）——**不溢出**：${displayWidth(line) <= columns ? '是' : '否'}`)
-  await say(`- 行尾那一位落在第 ${at100} 格（0 起）——**该是 ${columns - 2}**：${at100 === columns - 2 ? '是' : '否'}`)
+  await say(`- 状态位落在第 ${bitAt} 格（0 起）——**该是 4**（缩进 2 ＋ 身份记号 2）：${bitAt === 4 ? '是' : '否'}`)
 
   await say('')
   await say('## 未验的那一半（如实记）')

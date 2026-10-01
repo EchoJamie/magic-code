@@ -42,14 +42,17 @@ const withSession = (stage: Stage, id = 's1'): Stage => {
  * 工具行**头一行行尾那一位状态**（U112：`▸ 工具名(关键参数)` 靠右摆着的那一位）。
  *
  * 由头：旧那一版把「在跑」写成行首的 `⟳`，故拿 `frame.has('⟳')` 就分得出跑/不跑；
- * U112 起身份记号线首固定是 `▸`，跑/停**全在行尾那一位上**（`●` 进行中 · `✓` 成 ·
+ * U112 起身份记号线首固定是 `▸`，跑/停**全在紧挨着它的那一位上**（`●` 进行中 · `✓` 成 ·
  * `×` 败 · `!` 没跑成/已停止）。这一支只看那一行，**不受状态行上那颗 `●` 干扰**。
+ *
+ * ⚠️ **2026-10-01 改定**：那一位**从行尾挪到身份记号右边**（`▸ ● 名(参数)`）——
+ * 故取的是**下标 2**（trim 之后：`▸` 0 · 空格 1 · 状态位 2），不再是最后一格。
  */
 const toolBit = (frame: Frame): string | undefined =>
   frame.record
     .map((line) => line.text.trim())
     .find((text) => text.startsWith('▸ '))
-    ?.slice(-1)
+    ?.slice(2, 3)
 
 /** 一条运行事实行（三选绑定它）——只有用例关心的那几格。 */
 const runRow = (extra: Partial<RunRow> = {}): RunRow => ({
@@ -416,7 +419,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       const lost = await stage.screen(WIDE)
       expect(lost.has('1.6s')).toBe(false)
       expect(lost.has('运行中')).toBe(false)
-      expect(lost.has('▸ 跑测试')).toBe(true) // 头一行照画（**既有内容不擦**）
+      expect(lost.has('▸ ● 跑测试')).toBe(true) // 头一行照画（**既有内容不擦**）
       expect(toolBit(lost)).toBe('●') // 行尾那一位照旧不动
       expect(hasRunningTool(stage.shell.getView())).toBe(true) // 行本身照旧是「在跑」
 

@@ -2,8 +2,11 @@
  * 记录区（缺陷轮 III）——**内联渲染**下的纯日志。
  *
  * 三条规矩（原型 · 组件规格 ＋ 密度节）：
- * - **三类行各有其形**：会话内容（`›` 用户 · `⏺` 助手 · `●` 工具）· 命令输出（dim 块）·
- *   命令回执（`·` 最弱）；
+ * - **三类行各有其形**（U112 起 · 记号只在两处：**行首身份 · 行尾/行内状态**）：
+ *   会话内容（`›` 用户 · **助手正文无记号、顶格** · `▸ ● 工具(参数)`——身份 ＋ 状态位）·
+ *   命令输出（缩进一级 ＋ dim）· **命令回执（无记号：缩进一级 ＋ 最弱色）**；
+ *   ⚠️ **同一个字形不许兼两个角色**（`marks.ts` 那条规矩）：`·` 因此从「回执的记号」
+ *   退回**只做分隔符**；
  * - **密度**：**块内不插空行**（分层靠标记 / 缩进 / 明暗）· **相邻两块之间留一整行**
  *   （U67 补全：块＝一条用户发言 / 一条助手发言 / 一个工具组，见下面「分段」那一节
  *   ——早先只判「这一条是不是用户消息」，只留了**一半**）；
@@ -105,7 +108,7 @@ export type LogRowProps = {
    */
   readonly now?: number | null
   /**
-   * **减少动效**（U112）——`true` ＝ 行尾那一位**不呼吸**（画原色、定住）。
+   * **减少动效**（U112）——`true` ＝ 状态那一位**不呼吸**（画原色、定住）。
    *
    * ⚠️ **与 `now` 是两件事**：`now` 还兼着「跑到第几秒了」那个**读数**，减少动效**不停读数**
    * （停掉就是把屏上那句话弄成假的）。故由活壳另给这一格，不靠把 `now` 置空来表达。
@@ -740,10 +743,13 @@ function rowBody(
       return toolLines(row, columns, expanded, options.now ?? null, options.lost === true, options.still === true)
 
     case 'toolgroup':
-      // 收拢的组——`●` 起头 ＋ 次数与名字（原型 · 场景 13）
+      // 收拢的组——**也不带记号**（同一个字形不许兼两个角色：`●` 在这一套里只有一个语义位，
+      // 就是「进行中」，不能又拿它当「这一行是个工具组」的身份）。故与回执同一处置：
+      // **缩进一级 ＋ 弱色**，靠**文字自己**说清它是收拢的（「N 次工具调用（…）」）。
+      // ⚠️ 原型（场景 13）那一行起头是 `●`；这一处**有意偏离原型**，由头就是那条规矩。
       return wrapSegments(
         [
-          seg(`${MARKS.dot} `, PALETTE.ghost),
+          seg(INDENT),
           seg(`${row.names.length} 次工具调用`, PALETTE.faint, true),
           seg(`（${row.names.join(' · ')}）`, PALETTE.faint),
         ],
@@ -759,7 +765,9 @@ function rowBody(
         )
 
     case 'receipt':
-      return wrapSegments([seg(`${MARKS.receipt} `, PALETTE.ghost, true), seg(row.text, PALETTE.faint)], columns, {
+      // **回执不带记号**（2026-10-01 用户拆的混用）——靠**缩进一级 ＋ 弱色**与助手正文分开
+      // （正文顶格、无记号；回执缩一级、最弱那档色）。见文件头「一个字形只答一件事」。
+      return wrapSegments([seg(INDENT), seg(row.text, PALETTE.faint)], columns, {
         key: 'r:x',
         hang: INDENT,
       })
@@ -793,7 +801,7 @@ function toolLines(
    * 头一行与既有输出照旧画（内容不擦）。
    */
   lost = false,
-  /** **减少动效**（U112）——行尾那一位不呼吸（见 `LogRowProps.still`）。 */
+  /** **减少动效**（U112）——状态那一位不呼吸（见 `LogRowProps.still`）。 */
   still = false,
 ): readonly LogLine[] {
   const running = row.state === 'running'
@@ -801,11 +809,16 @@ function toolLines(
   const body = resultBody(row, expanded)
 
   /**
-   * **头一行**：`▸ 工具名(关键参数)` ＋ **行尾那一位状态**（U112）。
+   * **头一行**：`▸ ● 工具名(关键参数)`——**身份记号 ＋ 状态位 ＋ 名字**（U112）。
    *
-   * 记号的那一套骨架（设计 · 终端交互「符号 ＋ 动效：一套」）：**行首是身份、行尾是状态**，
-   * 身份**永不参与动效**。故 `▸`（身份，`▸` 静态不变）落在名字前面，而「跑到哪一步了」
-   * 那一位落在**行尾**——进行中在动、成/败**定住**（「动 → 静」就是完成信号）。
+   * 记号那一套骨架（设计 · 终端交互「符号 ＋ 动效：一套」）：**身份位不动，状态位在它右边**。
+   * `▸`（身份）**永不参与动效**；「跑到哪一步了」那一位紧挨着它落在**右边**——
+   * 进行中在动、成/败**定住**（「动 → 静」就是完成信号）。
+   *
+   * ⚠️ **状态位挂在行首、不挂行尾**（2026-10-01 用户改定，推翻了本单初稿的「靠右」）：
+   * 一列工具行是**沿左边缘竖着扫**的，状态挂右端**扫不动**（眼睛要横穿整行去找它），
+   * 而且那个位置**随参数长短左右飘**——同一屏上几个勾叉对不齐，列一乱就失去意义。
+   * 挂在身份记号右边，左边缘那一竖列读下来就是「谁 · 到哪一步了 · 干了什么」。
    */
   const head = toolHead(row.name, args, statusBit(row, expanded, running, still ? null : now), columns)
 
@@ -818,7 +831,7 @@ function toolLines(
    * 不成立的话。**那一屏的话由卡片说**（卡上写着「y 批准 / n 拒绝」，状态行写着「等你定夺」），
    * 这一行不重复、也不报一个不存在的数。
    *
-   * ⚠️ **只停钟、不换标记、也不加词**：行尾那一位照旧在动（这一笔**还没落定**——那正是它的
+   * ⚠️ **只停钟、不换标记、也不加词**：状态那一位照旧在动（这一笔**还没落定**——那正是它的
    * 语义），头一行的名字与参数照旧，只是**底下那行读数不画**。加一句什么（「等你定夺」
    * 「待裁决」）就是把卡片那句话再说一遍——一屏上的每条各说一件别处没说的。
    */
@@ -855,14 +868,14 @@ function toolLines(
   ]
 }
 
-/** 行尾那一位状态——形状 ＋ 该用什么色（U112 · 见 `toolHead` 与 `MARKS` 的注）。 */
+/** 状态位——形状 ＋ 该用什么色（U112 · 见 `toolHead` 与 `MARKS` 的注）。 */
 type StatusBit = {
   readonly mark: string
   readonly color: string
 }
 
 /**
- * **工具行头一行**——`▸ 工具名(关键参数)` ＋ **行尾那一位**。
+ * **工具行头一行**——`▸ ● 工具名(关键参数)`：身份记号、状态位、名字。
  *
  * 三条：
  * - **身份是 `▸`**（不是 `●`、更不是 `⟳`——`⟳` 的语义是刷新/循环，用在「一次调用」上错了）；
@@ -873,38 +886,25 @@ type StatusBit = {
  */
 function toolHead(name: string, args: string, bit: StatusBit, columns: number): readonly LogLine[] {
   // **参数按这一行还剩多少地方裁**（不是按一个死数）：行宽是**这一屏**给的，而
-  // 工具名有长有短（外部工具那串 `服务器 / 工具` 就比 `ls` 长十几列）。按死数裁，
-  // 长名字那一行照旧折成好几截、状态位被挤到最后一截的末尾——**靠右那一条当场失效**。
-  // 留的边距：`▸ ` 2 ＋ 名字 ＋ `()` 2 ＋ 空隙 2 ＋ 状态位 ＋ 右边 1。
-  const room = Math.max(8, columns - 8 - displayWidth(name) - INDENT.length)
+  // 工具名有长有短（外部工具那串 `服务器 / 工具` 就比 `ls` 长十几列）。
+  // 留的边距：缩进 2 ＋ `▸ ` 2 ＋ 状态位 1 ＋ 空隙 1 ＋ 名字 ＋ `()` 2。
+  const room = Math.max(8, columns - 10 - displayWidth(name))
   const parts: Segment[] = [
     // **缩进一级**（骨架：你/助手顶格 · 工具与结果缩进一级 · 卡片 `│`）
     seg(INDENT),
     seg(`${MARKS.tool} `, PALETTE.tool),
+    // **状态位紧挨着身份记号**（2026-10-01 用户改定）——见 `toolHead` 上面那段注
+    seg(bit.mark, bit.color, true),
+    seg(' '),
     seg(name, PALETTE.tool),
     seg(args === '' ? '' : `(${truncateLine(args, room)})`, PALETTE.dim),
   ]
-  const width = parts.reduce((sum, piece) => sum + displayWidth(piece.text), 0)
 
-  // 靠右：正文 ＋ 两格空隙 ＋ 状态位，落在 `columns - 1` 之内才这么摆
-  if (width + 2 + displayWidth(bit.mark) <= columns - 1) {
-    return [
-      {
-        key: 'r:h',
-        segments: [
-          ...parts,
-          seg(' '.repeat(columns - 1 - width - displayWidth(bit.mark))),
-          seg(bit.mark, bit.color, true),
-        ],
-      },
-    ]
-  }
-
-  return wrapSegments([...parts, seg(` ${bit.mark}`, bit.color, true)], columns, { key: 'r:h', hang: INDENT })
+  return wrapSegments(parts, columns, { key: 'r:h', hang: INDENT })
 }
 
 /**
- * **头一行行尾那一位**——进行中在动、成/败**定住**（U112 · 三条例的②）。
+ * **那一位状态**——进行中在动、成/败**定住**（U112 · 三条例的②）。
  *
  * | 处在哪一步 | 那一位 |
  * | --- | --- |
@@ -1124,7 +1124,7 @@ function diffStat(rows: readonly DiffRow[]): string {
  * - **`edit` / `write` 的参数里塞着整段正文**（JSON 化之后是一条长到没法读的行，多行正文
  *   全被转义成 `\n`）—— 这正是「像日志」最刺眼的那一处；表里给它们只留 `path`；
  * - **长了裁**（`toolHead` 按这一屏还剩多少地方裁，尾部省略号）：那一行宁可少读几个字，
- *   也要把**行尾那一位状态**留在看得见的地方；
+ *   也要把**那一位状态**留在看得见的地方；
  * - **流式那几帧 `args` 还是 `null`**（片段不全，解析不了）⇒ 回退到**原文片段**（同样裁）——
  *   照旧看得见「它正在收什么参数」，只是那几帧还没成形。
  */

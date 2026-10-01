@@ -34,6 +34,7 @@ import type { StatusLineCell } from '@magic/contracts'
 import { breathColor, breathOf, pulseOf } from '../motion.ts'
 import type { ShellStatus } from '../view.ts'
 import { stateMark, stateText } from '../view.ts'
+import { MARKS } from '../marks.ts'
 import { PALETTE, displayWidth, truncate, usageLabel } from './lines.ts'
 
 export type StatusLineProps = {
@@ -63,8 +64,11 @@ export type StatusLineProps = {
   readonly now?: number | null
 }
 
-/** 分隔点（`·`）——最弱色，只是分栏，不是内容。 */
-const SEP = ' · '
+/**
+ * 分隔点——**从 `MARKS` 取**（一处出处）。它**只做分隔符**、不做任何一行的身份
+ * （2026-10-01 那条「同一个字形不许兼两个角色」，见 `marks.ts`）。
+ */
+const SEP = ` ${MARKS.sep} `
 
 /**
  * 全放行那一格的字（U73）——**产品上就这三个字**。

@@ -30,7 +30,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { KernelEvent, StatusLineCell } from '@magic/contracts'
+import type { Entry, KernelEvent, StatusLineCell } from '@magic/contracts'
 import { createShell } from '../src/shell.ts'
 import type { Shell } from '../src/shell.ts'
 import type { ShellView } from '../src/view.ts'
@@ -217,6 +217,7 @@ async function main(): Promise<void> {
 
   // —— 四 · 配置那一屏（③ 的入口：`/config` 多两行 ＋ 状态行那一屏）——
 
+  const rebuiltSpy = createSpyTransport()
   const configSpy = createSpyTransport()
   const config = createShell(configSpy.transport, { workspaceRoots: ['/Users/who/code/magic-code'] })
   for (const char of '/config') config.key({ kind: 'char', char })
@@ -273,6 +274,44 @@ async function main(): Promise<void> {
     event('model.delta', { channel: 'text', text: '看过了：这一份是记录域的开库那一段。' }, { id: 22_001 }),
   ])
   await save(out, '14-思考-收梢定住', thought.getView(), AT + 40_000)
+
+  // —— 七 · **回执**（2026-10-01 裁定：`·` 只做分隔符 ⇒ 回执不带记号）——
+  //
+  // 回执与助手正文的分家靠**缩进 ＋ 弱色**：正文顶格、无记号；回执缩一级、最弱那档色。
+  const receipt = live('看看这个文件', [
+    ...ENOUGH,
+    event('model.switched', { ok: true, model: 'MiniMax-M2', provider: 'minimax' }, { id: 300 }),
+  ])
+  await save(out, '15-回执-无记号', receipt.getView())
+
+  // —— 八 · **收拢的工具组**（同一裁定：`●` 在这一套里只表示「进行中」，不做身份）——
+  //
+  // 走**重建**那一路（收拢发生在读历史铺屏时）：喂够 6 组工具往返，末尾 5 组照旧逐条、
+  // 更早的那一组并成一行。
+  const rebuilt = createShell(rebuiltSpy.transport)
+  rebuilt.key({ kind: 'enter' })
+  rebuiltSpy.emit(
+    event('session.history', {
+      session: 's1',
+      done: true,
+      entries: [
+        { id: 1, kind: 'user', content: { text: '跑几条命令看看' }, at: 0 },
+        // eslint-disable-next-line
+        // ⚠️ **一段一条**（收拢是按「段」算的：连着的一组工具调用才算一组）——
+        // 故每一轮之间夹一句助手正文，才凑得出 6 **组**（末尾 5 组不收 ⇒ 最早那一组并成一行）
+        // ⚠️ **一段里得 ≥2 条**（`单次调用不收`：收一行摘要却把参数丢了＝净损失），
+        // 且要有 **>5 段**（末尾 `RECENT_GROUPS` 段不收）——故每轮两条、共 6 轮。
+        ...Array.from({ length: 6 }, (_unused, at) => [
+          { id: 100 + at * 5, kind: 'assistant' as const, content: { text: `看一眼第 ${at} 组。` }, at: 100 + at * 5 },
+          { id: 101 + at * 5, kind: 'tool-call' as const, content: { text: '' }, payload: { name: 'ls', args: { path: `.` } }, at: 101 + at * 5 },
+          { id: 102 + at * 5, kind: 'tool-result' as const, content: { text: 'a.txt' }, payload: { ok: true, output: 'a.txt', callRef: 101 + at * 5 }, at: 102 + at * 5 },
+          { id: 103 + at * 5, kind: 'tool-call' as const, content: { text: '' }, payload: { name: 'read', args: { path: 'a.txt' } }, at: 103 + at * 5 },
+          { id: 104 + at * 5, kind: 'tool-result' as const, content: { text: '一行' }, payload: { ok: true, output: '一行', callRef: 103 + at * 5 }, at: 104 + at * 5 },
+        ]).flat(),
+      ] as unknown as Entry[],
+    }),
+  )
+  await save(out, '16-工具组-无记号', rebuilt.getView())
 
   console.log(`帧落在 ${out}`)
 }

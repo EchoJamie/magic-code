@@ -9,7 +9,7 @@
  * | --- | --- |
  * | **开机** | **印** |
  * | **`/clear`**（开一条新的） | **印** |
- * | **`/resume`**（翻回已有的一页） | **不印**——页头另有 `· 已切到 <名字>` 划界 |
+ * | **`/resume`**（翻回已有的一页） | **不印**——页头另有 `已切到 <名字>` 划界 |
  *
  * 三处里**开机**与 **`/resume`** 归 `spec.u43.test.ts` / `spec.banner.test.ts` 那两处量
  * （前者已把「换会话不重印」钉在该文件 ①，后者钉开机的份数）；本文件补的是**这一条改判之后
@@ -120,9 +120,17 @@ describe('之一 · `/clear`（开一条新的）⇒ 那一页印字标', () => 
 
     // 视图那一侧：这一页里**除字标之外一条不剩**（不是「铺了条回执顶着」）
     expect(view.settled.filter((row) => row.kind !== 'banner')).toHaveLength(0)
-    // 屏那一侧：整份缓冲里一条 `·` 回执都没有（U43 补条那句 `· 已开一条新会话` 之后
-    // `/clear` 就没再说过话——U45 也没给它补一句）
-    expect(frame.screen.lines.filter((line) => line.trimStart().startsWith('· '))).toHaveLength(0)
+    // 屏那一侧：**记录区里除字标（那两块）与空行之外一条内容都没有**
+    // （U43 撤掉 `· 已开一条新会话` 之后 `/clear` 就没再说过话——U45 也没给它补一句）。
+    // ⚠️ **U112 换锚**：原锚量「整份缓冲里有没有以 `· ` 起头的行」——回执的记号退场
+    //    （`·` 只做行内分隔）之后那条**恒真**（量不出东西）。同一条话换成量**记录区的杂行**
+    //    （空白与字标画幅之外的行）：一条回执真铺上来时它一定在这儿现形，比按字形扫更硬。
+    // ⚠️ 这一页字标**两块**（开机那块 ＋ 这一跳种的，见本文件 ①）——故剥字标要按**画幅逐行**认。
+    const art = new Set(bannerOf(WIDE.columns).map((line) => (line.text ?? '').replace(/\s+$/u, '')))
+    const strays = frame.record
+      .map((line) => line.text.replace(/\s+$/u, ''))
+      .filter((text) => text.trim() !== '' && !art.has(text))
+    expect(strays).toEqual([])
   })
 })
 

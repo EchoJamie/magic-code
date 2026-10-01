@@ -6,15 +6,15 @@
  *
  * ## 这一层量的是「屏」，不是「视图对象」
  *
- * 那两节写的全是**用户看得见的东西**：「助手正文去记号」「行尾 `✓` / `×`」「状态格分形状」
+ * 那两节写的全是**用户看得见的东西**：「助手正文去记号」「`▸ ✓ 名(参数)`」「状态格分形状」
  * 「进行中在动、成/败定住」——这些话在视图对象里一个字都读不出来。故走真链路真终端
  * （`createStage` → `AppView` → Ink → `@xterm/headless` → 屏幕矩阵 ＋ 每格的色），
  * 与 `spec.log.test.ts` / `sessions.test.ts` 同一套取景。
  *
  * ## 骨架（三条例 · 设计原文）
  *
- * ① **表示「正在发生」的那一行/那一位可以动**（2026-10-01 口径说准：工具行行尾那一位 ·
- * 思考行 · 状态格 · 计划步这四处；**身份符号 `›` `▸` `·` `│` 永不动**）；
+ * ① **表示「正在发生」的那一行/那一位可以动**（2026-10-01 口径说准：工具行那一位 ·
+ * 思考行 · 状态格 · 计划步这四处；**身份符号 `›` `▸` `⋯` `│` 永不动**）；
  * ② **「动 → 静」就是完成信号**；③ **一切动效
  * 可停**（减少动效 · 不可见/等答/错误/空闲 ⇒ 停），**不用闪烁**，**不为动效新增第二个
  * 常驻计时器**。
@@ -30,7 +30,7 @@ import type { Frame } from './screen.ts'
 
 const AT = 1_700_000_000_000
 
-/** 取景那一屏多大——靠右那一位的位置与它有关（`columns-2`）。 */
+/** 取景那一屏多大——工具行折行与状态行降级都跟它有关。 */
 const SCREEN = { columns: 100, rows: 30 } as const
 
 /** 起一个壳（空手——这一层多数用例只要一个能画的地方）。 */
@@ -74,25 +74,27 @@ describe('记号 · 身份与状态两维（U112）', () => {
     expect(frame.cellsOf(frame.rowOf('第二行的话'))[0]?.text).toBe('第')
   })
 
-  test('工具行＝`▸ 工具名(关键参数)`——**不贴原始 JSON**；行尾那一位**靠右**', async () => {
+  test('工具行＝`▸ ✓ 工具名(关键参数)`——身份、**状态位紧挨着它**、名字；**不贴原始 JSON**', async () => {
     const stage = live()
     stage.feed(toolCall('exec', { cmd: 'ls -la' }, { ok: true, text: '14 项' }))
 
     const frame = await stage.screen(SCREEN)
-    const row = frame.rowOf('▸ exec(ls -la)')
+    const row = frame.rowOf('▸ ✓ exec(ls -la)')
+    const cells = frame.cellsOf(row)
 
-    // **缩进一级**（头两格空白）＋ 身份是 `▸`（不是 `⟳`，也不是 `●`）
-    expect(frame.cellsOf(row)[0]?.text).toBe(' ')
-    expect(frame.cellsOf(row)[2]?.text).toBe('▸')
+    // **缩进一级**（头两格空白）→ 身份 `▸` → **状态位** → 空格 → 名字
+    expect(cells[0]?.text).toBe(' ')
+    expect(cells[2]?.text).toBe('▸') // 身份位（不是 `⟳`）
+    expect(cells[3]?.text).toBe(' ')
+    expect(cells[4]).toMatchObject({ text: MARKS.ok, fg: '#98c379' }) // **状态位在身份右边**
+    expect(cells[5]?.text).toBe(' ')
+    expect(cells[6]?.text).toBe('e') // 名字紧跟在后面
     // **不贴 JSON**：那个 `{` 一个都不许上屏
     expect(frame.has('{"')).toBe(false)
     expect(frame.has('"cmd"')).toBe(false)
-    // **行尾那一位靠右**——`columns-2` 那一格（右边留一格）
-    expect(fgAt(frame, row, SCREEN.columns - 2)).toBe('#98c379')
-    expect(frame.cellsOf(row).at(-1)?.text).toBe(MARKS.ok)
   })
 
-  test('行尾状态：成 `✓` · 败 `×`——`✘`(U+2718) 与 `✗`(U2717) **都不上屏**', async () => {
+  test('状态位：成 `✓` · 败 `×`——`✘`(U2718) 与 `✗`(U2717) **都不上屏**', async () => {
     const done = live()
     done.feed(toolCall('read', { path: 'notes.txt' }, { ok: true, text: '42 行' }))
     expect((await done.screen()).has(MARKS.ok)).toBe(true)
@@ -141,7 +143,8 @@ describe('记号 · 身份与状态两维（U112）', () => {
 
     // 白名单本身——**2026-10-01 裁定后那十三个**（`○` `▲` `■` `!` 按准则收进来，
     // `◉` 换成 `◊`）。改一个字都算跑偏。
-    expect(GLYPH_WHITELIST.join('')).toBe('›▸·⋯│●○◊▲■✓×!')
+    // （次序＝`marks.ts` 里「行首身份 → 分隔符 → 状态六形 → 收梢三态」那一段的次序）
+    expect(GLYPH_WHITELIST.join('')).toBe('›▸⋯│·●○◊▲■✓×!')
   })
 
   /**
@@ -195,12 +198,12 @@ describe('记号 · 身份与状态两维（U112）', () => {
 
 describe('动效 · 只挂状态位（U112）', () => {
   /**
-   * **进行中在动**——行尾那一位的色随「此刻」变（那是呼吸）。
+   * **进行中在动**——`▸` 右边那一位的色随「此刻」变（那是呼吸）。
    *
    * 三个「此刻」取一轮呼吸里的三档：0（暗端）· 一半（最亮）· 四分之一（中间）。
    * 亮度是纯函数给的（`breathOf`），故这里比的是**画出来那一格真正吃的色**。
    */
-  test('进行中：行尾那一位**在动**（三个「此刻」三个亮度）', async () => {
+  test('进行中：那一位**在动**（三个「此刻」三个亮度）', async () => {
     const stage = live()
     stage.feed(toolCall('exec', { cmd: 'sleep 9' }))
 
@@ -208,7 +211,7 @@ describe('动效 · 只挂状态位（U112）', () => {
     for (const phase of [0, BREATH_MS / 4, BREATH_MS / 2]) {
       stage.at(AT + 71 + phase)
       const frame = await stage.screen(SCREEN)
-      shades.push(fgAt(frame, frame.rowOf('▸ exec(sleep 9)'), SCREEN.columns - 2) ?? '')
+      shades.push(fgAt(frame, frame.rowOf('▸ ● exec(sleep 9)'), 4) ?? '')
     }
 
     expect(new Set(shades).size).toBe(3) // 三档各不相同 ⇒ 在动
@@ -224,7 +227,7 @@ describe('动效 · 只挂状态位（U112）', () => {
     for (const phase of [0, BREATH_MS / 4, BREATH_MS / 2]) {
       stage.at(AT + 72 + phase)
       const frame = await stage.screen(SCREEN)
-      shades.push(fgAt(frame, frame.rowOf('▸ exec(echo hi)'), SCREEN.columns - 2) ?? '')
+      shades.push(fgAt(frame, frame.rowOf('▸ ✓ exec(echo hi)'), 4) ?? '')
     }
 
     expect(new Set(shades).size).toBe(1) // 定住
@@ -320,7 +323,7 @@ describe('动效 · 只挂状态位（U112）', () => {
     for (const phase of [0, BREATH_MS / 2]) {
       stage.at(AT + 71 + phase)
       const frame = await stage.screen(SCREEN)
-      shades.push(fgAt(frame, frame.rowOf('▸ exec(sleep 9)'), SCREEN.columns - 2) ?? '')
+      shades.push(fgAt(frame, frame.rowOf('▸ ● exec(sleep 9)'), 4) ?? '')
     }
 
     expect(new Set(shades).size).toBe(1) // 不呼吸

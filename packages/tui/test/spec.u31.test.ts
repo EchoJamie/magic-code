@@ -663,8 +663,10 @@ describe('返工三 · 活动帧不撑满终端（流式增长 · 单条超预�
     //    数出来是 1 ⇒ 另外两组确实没画，不是「碰巧写着同一串字」）。
     expect(frame.has('10ms · 1 项')).toBe(true) // 最近那条的末行（`c.txt` 那一组的收尾；U112 起不带符号）
     expect(frame.screen.lines.filter((line) => line.includes('10ms · 1 项'))).toHaveLength(1)
-    expect(frame.has('▸ ls(c.txt)')).toBe(false) // 它自己那两行里，头一行让给了下沿那条线
-    expect(frame.has('▸ ls(a.txt)')).toBe(false) // 早的那几条让位（**整条**让——不切一半）
+    // ⚠️ **U112 换锚**：头一行的形状由 `▸ ls(c.txt)` 变成 `▸ ✓ ls(c.txt)`（状态位紧挨身份记号）
+    //    ——判据本身没变：那三条的头一行都让了位（`✓` ＝ 这三笔都落定成）
+    expect(frame.has('▸ ✓ ls(c.txt)')).toBe(false) // 它自己那两行里，头一行让给了下沿那条线
+    expect(frame.has('▸ ✓ ls(a.txt)')).toBe(false) // 早的那几条让位（**整条**让——不切一半）
     expect(stage.shell.getView().rows).toHaveLength(3) // 三条都在记录里
   })
 

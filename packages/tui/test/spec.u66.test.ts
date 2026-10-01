@@ -58,13 +58,13 @@ const clockLine = (frame: Frame): string | undefined =>
 /**
  * 那一行**头一行**的身份那半句（`▸ 工具名(关键参数)`）。
  *
- * U112 起行尾多了一位状态（靠右摆着）——取身份时把它连同前面的填空一起去掉，
- * 只回名字与参数那一段（这条判据问的正是「名字与参数还在不在」）。
+ * U112 起身份记号右边多了一位状态（2026-10-01 改定：紧挨 `▸`，不再靠右）——
+ * 取身份时把它去掉，只回名字与参数那一段（这条判据问的正是「名字与参数还在不在」）。
  */
 const headLine = (frame: Frame): string | undefined => {
   const text = frame.record.map((line) => line.text.trim()).find((one) => /^▸ \S/u.test(one))
 
-  return text?.replace(/\s+\S$/u, '')
+  return text?.replace(/^▸ \S /u, '▸ ')
 }
 
 /** 一屏的记录行（真归约那一侧）。 */

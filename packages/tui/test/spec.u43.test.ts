@@ -22,7 +22,7 @@
  * ## 走的是真路径
  *
  * 换会话经**真选择器**（`/resume` → 回车开 → ↑↓ 选 → 回车定），不是直接喂一个 `session.state`
- * ——回执 `· 已切到 <名字>` 只在那条路上发（`shell.ts` 的 `submit`），少了它就等于
+ * ——回执 `已切到 <名字>`（U112 起不带 `·` 记号，靠缩进一级）只在那条路上发（`shell.ts` 的 `submit`），少了它就等于
  * 把「回执每次都在」这条判据空转掉。`session.state` / `session.history` **分两帧**喂
  * （现实里它们隔着一趟控制面往返：外壳收到 `session.state` 才发 `history.read`）。
  */
@@ -109,7 +109,7 @@ function takes(stage: Stage, steps: readonly (() => void)[]): readonly ShellView
  * ① `/resume` 问出来的那一趟，`active` 还是**切之前**那条（问的是「有哪几条」，
  *    不是「换过去」）——照目标会话喂就成了「抽屉一开就换过去了」，后面的 ↑↓ 全落在别处；
  * ② 选定之后内核才报新会话（`session.open` 的答复）——**换会话那一帧是它**，
- *    回执 `· 已切到 <名字>` 也在这一帧上（U44 起：不再在选定那一刻发）。
+ *    回执 `已切到 <名字>`（U112 起不带 `·` 记号）也在这一帧上（U44 起：不再在选定那一刻发）。
  *
  * 每一拍**各记一帧**（命令那一屏、抽屉那一屏、选定那一帧都在帧序里）——
  * 「回执在不在」要在同一帧上判，跳帧就判空了。
@@ -186,10 +186,11 @@ describe('① 开机 → 切走 → 切回：屏上始终只有那一份字标',
     const frame = await show(views, WIDE)
 
     // 「字标没了、回执也没了」那种空屏——本单要防的正是它：**切几次就有几条**（精确值）
-    const receipts = frame.screen.lines.filter((line) => line.includes('· 已切到')).length
+    // ⚠️ **U112 换锚**：回执行不再以 `· ` 起头（那个字形只做行内分隔），故按**正文**数
+    const receipts = frame.screen.lines.filter((line) => line.includes('已切到')).length
     expect(receipts).toBe(2)
-    expect(countOf(frame, '· 已切到 乙的事')).toBe(1) // 甲 → 乙
-    expect(countOf(frame, '· 已切到 甲的事')).toBe(1) // 乙 → 甲
+    expect(countOf(frame, '已切到 乙的事')).toBe(1) // 甲 → 乙
+    expect(countOf(frame, '已切到 甲的事')).toBe(1) // 乙 → 甲
   })
 })
 
@@ -210,12 +211,12 @@ describe('② 切到一条还没有记录的会话', () => {
 
     // 视图那一侧：这一页里**只有界那一行**（回去读一条空的会话，一行记录都没铺回来）
     expect(view.settled.map((row) => row.kind)).toEqual(['receipt'])
-    // 视图里存的是正文（`· ` 那个记号是渲染层加的，见 `components/log.ts`）
+    // 视图里存的是正文（缩进那个形是渲染层加的，见 `components/log.ts`——U112 起回执**不带记号**）
     expect(view.settled[0]?.kind === 'receipt' ? view.settled[0].text : '').toBe('已切到 乙的事')
     // 屏那一侧：字标仍只一份；回执在；**它下面一条记录行都没有**
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
-    expect(countOf(frame, '· 已切到 乙的事')).toBe(1)
-    expect(frame.content.at(-1)?.text).toBe('· 已切到 乙的事')
+    expect(countOf(frame, '已切到 乙的事')).toBe(1)
+    expect(frame.content.at(-1)?.text).toBe('  已切到 乙的事') // 缩进一级（无记号）
   })
 })
 
@@ -268,8 +269,10 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
     const art = bannerOf(WIDE.columns).map((line) => line.text.replace(/\s+$/u, ''))
     expect(after.content.map((line) => line.text).slice(before.content.length)).toEqual(['', ...art, ''])
     // 而**文案一条都没有**：U43 补条那句作废之后，`/clear` 的收场就是「清屏 ＋ 字标」两样
-    expect(after.has('· 已开一条新会话')).toBe(false)
-    expect(after.content.filter((line) => line.text.trim().startsWith('·'))).toHaveLength(0)
+    // ⚠️ **U112 换锚**：回执行不再以 `· ` 起头（那个字形只做行内分隔）——原锚
+    //    「这一页里有没有 `· ` 开头的行」退场后**恒真**（量不出东西）。同一条话改按
+    //    **正文**（那句作废的文案本身）＋**整份缓冲**扫，一条回执真冒出来时照旧现形。
+    expect(after.screen.lines.some((line) => line.includes('已开一条新会话'))).toBe(false)
     // 视图那一侧：这一页**只有字标那一行**（不是「铺了条回执顶着」）
     expect(stage.shell.getView().settled.map((row) => row.kind)).toEqual(['banner'])
   })
@@ -287,11 +290,12 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
     const before = await show(views.slice(0, 3), WIDE)
     const after = await show(views, WIDE)
 
-    expect(after.has('· 已开一条新会话')).toBe(false)
+    expect(after.has('已开一条新会话')).toBe(false)
     // 「按了没反应」那一格被接上了：多出来的**正好**是内核那句
+    // ⚠️ **U112**：回执行不带记号了，只剩缩进一级（原文一字不差）
     expect(after.content.map((line) => line.text)).toEqual([
       ...before.content.map((line) => line.text),
-      `· ${BUSY_NOTE}`,
+      `  ${BUSY_NOTE}`,
     ])
     expect(countOf(after, BUSY_NOTE)).toBe(1) // 每件事只报一次
   })
