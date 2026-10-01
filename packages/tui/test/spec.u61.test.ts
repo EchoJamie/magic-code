@@ -15,9 +15,12 @@
  * 交替**（选供应商 → 选区域 → 问密钥），**它们都是层**。只给 picker 加栈的实现在
  * 「问密钥按 `←` 回到选区域」那一趟当场露馅——本文件把它钉在第一条。
  *
- * ⚠️ **② 不许只给某一个命令加层**：多级的不止 `/model`（`/attachments` 也是列表 → 详情），
- * 一级的（`/resume` · `/skills` · `@` · `/grants` · `/mcp`）**顺手统一**：按 `←` 也收起，
- * 不特殊对待。两套交互＝本单要防的那件事。
+ * ⚠️ **② 不许只给某一个命令加层**：多级的不止 `/model`（`/config` 也是门 → 那一项自己
+ * 那一屏），一级的（`/resume` · `/skills` · `@` · `/grants` · `/mcp`）**顺手统一**：
+ * 按 `←` 也收起，不特殊对待。两套交互＝本单要防的那件事。
+ *
+ * （U111 撤掉 `/attachments` 之前，走四那一格用的是它——列表 → 详情那一条；
+ * 它整条撤走之后，这一格改由 `/config` 承担：**同一条栈、同一个判据**。）
  *
  * 走的是**真按键 → 外壳**那条路（与真终端同形）；真 PTY 上逐屏留帧的那一趟在
  * `packages/app/test/frames-u61-tui.ts`（那边才有真终端与真字节）。
@@ -25,7 +28,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import type {
-  AttachmentRow,
   KernelEvent,
   ModelCatalogRow,
   ModelInfoRead,
@@ -373,38 +375,56 @@ describe('③ `/model manage`：一览 → 明细 → 问一件小事那一屏',
   })
 })
 
-// ══ 四 · `/attachments`：列表 → 详情（另一条多级的）══════════════════
+// ══ 四 · `/config`：门 → 那一项自己那一屏（另一条多级的）══════════════
 
-describe('④ `/attachments`：列表 → 详情两条动作', () => {
-  const rows: readonly AttachmentRow[] = [
+describe('④ `/config`：门 → 进那一项自己那一屏', () => {
+  /** 一条连接、一个模型——「模型与连接」那一格要的是**此刻走哪一条**。 */
+  const ENTRIES: readonly ModelCatalogRow[] = [
     {
-      entry: 7,
-      name: '截图.png',
-      mime: 'image/png',
-      bytes: 67,
-      at: 1_700_000_000_000,
-      source: '/ws/截图.png',
-      label: '截图.png',
-      blob: 'blob_7',
+      provider: 'minimax',
+      name: '个人版',
+      model: 'MiniMax-M3',
+      cache: {
+        snapshot: {
+          provider: 'x',
+          scope: 'minimax|cn',
+          fetchedAt: 1_700_000_000_000,
+          models: [{ id: 'MiniMax-M3', name: 'MiniMax-M3' }],
+        },
+      } satisfies ModelInfoRead,
     },
   ]
+  const CURRENT = { provider: 'minimax', model: 'MiniMax-M3' }
 
-  function openAttachments(stage: Stage): void {
-    stage.type('/attachments')
+  /** 开那一扇门：打 `/config` ＋ 回车 → 内核回三份读数（U71）。 */
+  function openConfig(stage: Stage): void {
+    stage.type('/config')
     stage.press(ENTER)
-    stage.feed([event('attachments.catalog', { rows })] as readonly KernelEvent[])
+    stage.feed([
+      event('model.catalog', { entries: ENTRIES, current: CURRENT }),
+      event('grants.catalog', {
+        workspace: '/ws',
+        grants: [],
+        stale: [],
+        decisions: { total: 0, uncovered: 0, vetoed: 0 },
+        history: { total: 0, auto: 0, kernel: 0 },
+      }),
+      event('mcp.catalog', { servers: [] }),
+    ] as readonly KernelEvent[])
   }
 
-  test('列表 → 回车进详情 →「←」回列表 →「←」收起', () => {
+  test('门 → 回车进「模型与连接」→「←」退回门 →「←」收起', () => {
     const stage = createStage()
-    openAttachments(stage)
+    openConfig(stage)
+    expect(pickerOf(stage)?.source).toBe('config')
 
-    expect(pickerOf(stage)?.source).toBe('attachments')
+    // 选定第一行（模型与连接）＝**进一层**——那一屏是 `/model` 那扇选择器本身
     stage.press(ENTER)
-    expect(pickerOf(stage)?.source).toBe('attachment-detail')
+    stage.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })] as readonly KernelEvent[])
+    expect(pickerOf(stage)?.source).toBe('model')
 
     stage.press(LEFT)
-    expect(pickerOf(stage)?.source).toBe('attachments')
+    expect(pickerOf(stage)?.source).toBe('config')
 
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('input')

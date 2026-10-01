@@ -1061,6 +1061,8 @@ describe('slash 候选（D12 · 纯函数级）', () => {
    * `s` 不是 `/mcp` 的子序列）。
    * ⚠️ **四变**（`U37`）：`/attachments` 进了命令表——全表由七条变八条，且 `/s` 那一列
    * 多了它（`s` 是它的**末位子串**，与 `/grants` 同类，按名字序排在它前面）。
+   * ⚠️ **再变**（`U111`）：`/attachments` **整条撤掉**（判据：「看」不该有名字）——
+   * 全表由十二条变**十一条**，且 `/s` 那一列**少了它**（那一列剩下四条）。
    * ⚠️ **六变**（`U52`）：`/exit` 进了命令表——全表由十条变**十一条**。
    * `/s` 那一列**不动**（`s` 不是 `/exit` 的子序列：`e` `x` `i` `t` 里没有它）。
    * ⚠️ **七变**（`U71`）：`/config` 进了命令表——全表由十一条变**十二条**。
@@ -1077,16 +1079,16 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     // ⚠️ **五变**（`U44`）：`/session` 撤掉、换 `/clear` · `/resume` · `/rename` 三条——
     // 全表还是十条（撤一条换三条）。`/s` 那一列里 `/session` 没了，`/resume` 进来
     // （`s` 是它的**子序列**，与 `/attachments` / `/grants` 同档，按名字序排在最后）。
+    // ⚠️ **再变**（`U111`）：`/attachments` 撤掉——`/s` 那一列只剩这四条。
     expect(matchCommands('/s').map((row) => row.name)).toEqual([
       '/skills',
       '/status',
-      '/attachments',
       '/grants',
       '/resume',
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(12) // 全列（真存在的十二条）
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(11) // 全列（真存在的十一条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

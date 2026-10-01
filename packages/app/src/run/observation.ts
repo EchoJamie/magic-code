@@ -7,7 +7,6 @@ import type {
   ModelSwitchRequest, ProviderConfig, SkillCatalog, WebFetchConfig, WorkspaceService,
 } from '@magic/contracts'
 import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
-import { readAttachmentCatalog } from '@magic/conversation'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
 import { createGrantLedger } from '@magic/permission'
 import { createModelInfoService, modelSpecOf, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
@@ -121,7 +120,7 @@ export type ObservationContext = {
 }
 
 const READ_COMMANDS = new Set<Command['type']>([
-  'model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list', 'attachments.list',
+  'model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list',
 ])
 
 /** undefined 只表示这不是本出口处理的只读命令；读取失败抛出具体错误，由管理者回报。 */
@@ -132,9 +131,6 @@ export async function query(command: Command, context: ObservationContext): Prom
     id: 0, session: context.session ?? '', turn: null, at: now(), kind, data,
   }) as KernelEvent
   if (command.type === 'mcp.list') return stamp('mcp.catalog', mcpCatalog(context.mcp))
-  if (command.type === 'attachments.list') return stamp('attachments.catalog', {
-    rows: context.session == null ? [] : await readAttachmentCatalog(context.store, context.session),
-  })
 
   const loaded = loadConfig({ magic: context.magic })
   if (command.type === 'model.list' || command.type === 'provider.list') {

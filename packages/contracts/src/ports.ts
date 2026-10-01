@@ -1888,22 +1888,6 @@ export type CommandRoutes = {
    */
   onInputPaste(): void
   /**
-   * **本会话已送出的图片**（`/attachments` 的读侧 · U37）→ **对话域**。
-   *
-   * 与 `onHistoryRead` 同一条分工：**会话与条目归它**（图片附件就是 `user` 条目载荷里的
-   * `refs`，那份形态只有本域认得），而装配够不着那一层。答复走事件
-   * （`attachments.catalog`，**不落库**）：命令面只发不收。
-   */
-  onAttachmentList(): void
-  /**
-   * **导出原图**（`/attachments` 的「查看原图」 · U37）→ **对话域**（记录里那份字节归它读）。
-   *
-   * 字节的读在对话域（它握着 `BlobStore`），**落到盘上那一步**由它经装配注入的写口完成
-   * （域不碰文件系统——见 `ConversationDeps.saveAttachment`）。答复走 `attachments.catalog`
-   * （`note` 给出落点或没成的缘由）。
-   */
-  onAttachmentExport(entry: RecordId): void
-  /**
    * **外部服务器的一屏**（`/mcp` 的读侧 · U39）→ **装配**（它编排着那一束连接的生命周期）。
    *
    * 控制域**原样转手**（同 `onModelList` / `onSkillList` 的姿势）——它不认识 MCP，也不知道
