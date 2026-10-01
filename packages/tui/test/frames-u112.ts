@@ -11,7 +11,7 @@
  * ## 这一单要看的那几件事
  *
  * - **四种状态各一张**：工具**进行中**（行尾那一位在动）· **成**（`✓` 定住）·
- *   **败**（`×` 定住）· **等你**（状态格 `◉`，出现时**脉冲一次**）；
+ *   **败**（`×` 定住）· **等你**（状态格 `◆`，出现时**脉冲一次**）；
  * - **脉冲是动效，静态帧看不出来** ⇒ 另附**逐帧**（同一个 `pulseAt`、四个「此刻」）
  *   ——那几帧连起来读，就是「一路变亮、走完定住」；
  * - **状态行三种**：**没配**（默认那条）· **配了**（挑格 ＋ 顺序）· **有格不可用**（整格省掉）；
@@ -36,22 +36,28 @@ import type { Shell } from '../src/shell.ts'
 import type { ShellView } from '../src/view.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
-import { rendered, show } from './screen.ts'
+import { rendered, show, showScreen } from './screen.ts'
 
 const SCREEN = { columns: 100, rows: 30 } as const
 
 /** 一个「此刻」的底（毫秒）——写死，好让帧可重放、可逐字比对。 */
 const AT = 1_700_000_000_000
 
-/** 一次工具调用（`result` 不给 ＝ 还在跑）。 */
+/**
+ * 一次工具调用（`result` 不给 ＝ 还在跑）。
+ *
+ * `id` 缺省 71——**同一屏上放两笔时各自给一个**（两笔同一个 id 会互相盖：第二笔的
+ * `tool.call` 把第一笔那条行按同一个配对键换掉，屏上就只剩一笔）。
+ */
 function call(
   name: string,
   args: Readonly<Record<string, unknown>>,
   result?: { ok: boolean; text: string },
+  id = 71,
 ): readonly KernelEvent[] {
-  const out: KernelEvent[] = [event('tool.call', { name, args }, { id: 71 })]
+  const out: KernelEvent[] = [event('tool.call', { name, args }, { id })]
   if (result !== undefined) {
-    out.push(event('tool.result', { call: 71, ok: result.ok, output: { text: result.text } }, { id: 72 }))
+    out.push(event('tool.result', { call: id, ok: result.ok, output: { text: result.text } }, { id: id + 1 }))
   }
 
   return out
@@ -81,6 +87,26 @@ async function save(
   )
 
   await Bun.write(Bun.stdout, `── ${name} ──\n${screen.screen.lines.join('\n')}\n\n`)
+}
+
+/**
+ * 落一帧**查看那一屏**（U110 起「展开」在那儿）——同一形（txt/ansi/json）。
+ *
+ * 这一支是给**裁定③那一格**用的：结果正文块与 `diff` 的缩进要**同一级**，
+ * 而两者都只在展开之后才画得出来（内联那一半恒折叠，见 `spec.log.test.ts` 那条注）。
+ */
+async function saveScreen(out: string, name: string, view: ShellView): Promise<void> {
+  const frame = await showScreen(view)
+  const lines = frame.screen.lines
+
+  writeFileSync(join(out, `${name}.txt`), `${lines.join('\n')}\n`, 'utf8')
+  writeFileSync(
+    join(out, `${name}.json`),
+    `${JSON.stringify({ lines, cells: lines.map((_line, row) => frame.cellsOf(row)) }, null, 1)}\n`,
+    'utf8',
+  )
+
+  await Bun.write(Bun.stdout, `── ${name} ──\n${lines.join('\n')}\n\n`)
 }
 
 /** 一屏的底子：会话已开、这一轮在跑、答复已经吐了一句。 */
@@ -217,6 +243,17 @@ async function main(): Promise<void> {
   for (let step = 0; step < 4; step += 1) config.key({ kind: 'down' })
   config.key({ kind: 'enter' })
   await save(out, '11-配置-状态行那一屏', config.getView())
+
+  // —— 五 · **结果缩进那一条**（裁定③）：正文块与 diff **同一级（4 列）** ——
+  //
+  // 两张放一起读：一样都是「某个工具的结果」，缩进深浅必须一样
+  // （改前是正文 2 列、diff 4 列——同一屏两级不一致）。
+  const indented = live('看看这个文件', [
+    ...ENOUGH,
+    ...call('read', { path: 'src/records/db.ts' }, { ok: true, text: '第一行\n第二行' }, 201),
+    ...call('edit', { path: 'src/records/db.ts', old: 'let a = 1', new: 'let a = 2' }, { ok: true, text: '改好了' }, 301),
+  ])
+  await saveScreen(out, '12-结果缩进-两级都在四列', indented.getView())
 
   console.log(`帧落在 ${out}`)
 }

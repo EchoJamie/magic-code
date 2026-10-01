@@ -20,6 +20,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import { GLYPH_WHITELIST, MARKS } from '../src/marks.ts'
+import { stateMark } from '../src/view.ts'
 import { BREATH_MS, PULSE_MS, breathColor, breathOf, pulseOf } from '../src/motion.ts'
 import { event } from './events.ts'
 import { createStage } from './screen.ts'
@@ -136,14 +137,55 @@ describe('记号 · 身份与状态两维（U112）', () => {
 
     for (const banned of ['⏺', '⟳', '✘', '⚙']) expect(frame.has(banned)).toBe(false)
 
-    // 白名单本身＝设计那一行原文那九个（改一个字都算跑偏）
-    expect(GLYPH_WHITELIST.join('')).toBe('›▸·⋯│●◉✓×')
+    // 白名单本身——**2026-10-01 裁定后那十三个**（`○` `▲` `■` `!` 按准则收进来，
+    // `◉` 换成 `◆`）。改一个字都算跑偏。
+    expect(GLYPH_WHITELIST.join('')).toBe('›▸·⋯│●○◆▲■✓×!')
   })
 
-  test('马甲一致：`MARKS` 里屏上用的那几个都在白名单内', () => {
-    for (const name of ['you', 'tool', 'receipt', 'thinking', 'card', 'dot', 'ring', 'ok', 'fail'] as const) {
-      expect(GLYPH_WHITELIST).toContain(MARKS[name])
+  /**
+   * **每一个记号都得有自己那一格语义位**（2026-10-01 用户裁定的后半句：
+   * 「每一形要有**明确的语义位**，不许随手用」）。
+   *
+   * 判据落在**不重样**上：白名单里没有重复的码位，且 `MARKS` 里每一个取值都在白名单内。
+   * 「谁出现在哪一处」那张表在 `marks.ts` 的注释里；这一条能咬住的是
+   * **一个形只领一个名字**——往 `MARKS` 里塞两个同形、或漏登记一个白名单形，都会红。
+   */
+  test('马甲一致：`MARKS` 全在白名单内，且白名单里**一个形只领一位**（不重样）', () => {
+    for (const value of Object.values(MARKS)) expect(GLYPH_WHITELIST).toContain(value)
+    expect(new Set(GLYPH_WHITELIST).size).toBe(GLYPH_WHITELIST.length)
+    expect(GLYPH_WHITELIST).toHaveLength(13)
+    // 登记表也是不重样的（没登记的白名单形＝没人用它，那是漏，不是错——故只判有值的那些）
+    const used = Object.values(MARKS)
+    expect(new Set(used).size).toBe(used.length)
+  })
+
+  /**
+   * **状态那一格的形状表**（2026-10-01 用户裁定，逐字）：
+   * 工作中 `●` · 等你在 `◆` · 空闲 `○` · 错误 `▲`。另两个状态沿用它们的形
+   * （重试＝进行中那一档 ⇒ `●`；失联＝放弃判断 ⇒ `■`）。**六个状态六个形，两两不同。**
+   */
+  test('状态格形状表：六态六形，两两不同（裁定逐字落成判据）', () => {
+    const shapes = {
+      working: stateMark('working'),
+      waiting: stateMark('waiting'),
+      idle: stateMark('idle'),
+      error: stateMark('error'),
+      retrying: stateMark('retrying'),
+      lost: stateMark('lost'),
     }
+
+    expect(shapes.working).toBe('●')
+    expect(shapes.waiting).toBe('◆')
+    expect(shapes.idle).toBe('○')
+    expect(shapes.error).toBe('▲')
+    expect(shapes.retrying).toBe('●') // 进行中那一档，与「工作中」同形（文案分得开）
+    expect(shapes.lost).toBe('■')
+
+    // **等你不是工作中那个形**（这是整套里最要紧的一处分别）
+    expect(shapes.waiting).not.toBe(shapes.working)
+    // 四个「主状态」两两不同（重试并入进行中那一档，故五形两两不同）
+    const main = [shapes.working, shapes.waiting, shapes.idle, shapes.error, shapes.lost]
+    expect(new Set(main).size).toBe(main.length)
   })
 })
 
@@ -192,7 +234,7 @@ describe('动效 · 只挂状态位（U112）', () => {
    *
    * 判据落在**第一格的字符**上——不是色：无色终端里那两位各有各的形。
    */
-  test('状态格**分形状**：工作中 `●` · 等你 `◉`（无色也分得出）', async () => {
+  test('状态格**分形状**：工作中 `●` · 等你 `◆`（无色也分得出）', async () => {
     const working = live()
     working.feed([event('turn.start', {}, { id: 90 })])
     const asked = await working.screen()

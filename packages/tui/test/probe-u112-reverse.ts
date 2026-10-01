@@ -84,7 +84,7 @@ console.log(has('×')) // 失败那个的新形（改前无，改后有）
 console.log(has('✘')) // 带 emoji 变体那个（两棵树都不该有）
 console.log(has('● 等你定夺')) // 等你与工作中同形（改前有，改后无）
 console.log(has('▸')) // 工具行身份（改前无，改后有）
-console.log(has('◉')) // 等你的形状（改前无，改后有）
+console.log(has('◆')) // 等你的形状（改前无，改后有）
 console.log(has('✓')) // 成（两棵树都有）
 console.log('── 工具行那一行的样子 ──')
 console.log(running.split('\n').find((one) => one.includes('exec')) ?? '（没找到工具行）')

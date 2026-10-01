@@ -152,10 +152,31 @@ describe('组件规格 · 行的标记与颜色', () => {
     //      ⚠️ **U112**：那条读数不再以 `✓` 起头（勾已经挪到头一行行尾去了），只剩 `  2 项`。
     expect(frame.rowOf('  2 项')).toBeGreaterThan(head)
 
-    // 结果内容：缩进一级（**2 列**——U112 把结果体与工具行收成同一级）＋ 整行 dim
-    const cells = frame.cellsOf(frame.rowOf('  README.md'))
-    expect(cells.slice(0, 2).every((cell) => cell.text === ' ')).toBe(true)
-    expect(cells.slice(2).every((cell) => cell.fg === '#8b93a1')).toBe(true)
+    // 结果内容：缩进**两级（4 列）**＋ 整行 dim
+    //
+    // ⚠️ **2026-10-01 裁定改过这一格**：U112 初稿把结果体收到与工具行同一级（2 列），
+    //    于是同一屏两级不一致（正文块 2 列、`diffLines` 那一支 4 列）——
+    //    那本身就是「层级没定」的症状。现在**两级都收在 4**：工具行 2 列、它的结果 4 列。
+    //
+    // ⚠️ 判据要**钉死列数**：`rowOf` 走的是 `includes`，写 `'  README.md'` 时
+    //    4 格缩进的那一行**照样命中**（needle 是它的子串）——那条会变成一条两可都过的句子。
+    const body = frame.cellsOf(frame.rowOf('README.md'))
+
+    expect(body.slice(0, 4).every((cell) => cell.text === ' ')).toBe(true)
+    expect(body[4]?.text).toBe('R')
+    expect(body.slice(4).every((cell) => cell.fg === '#8b93a1')).toBe(true)
+
+    // **与 `diff` 那一支同级**（这一条才是那次裁定的正题：同样是「工具的结果」，深浅要一致）
+    const diff = live()
+    diff.feed([
+      event('tool.call', { name: 'edit', args: { path: 'a.ts', old: 'let a = 1', new: 'let a = 2' } }, { id: 71 }),
+      event('tool.result', { call: 71, ok: true, output: { text: '改好了' } }, {}),
+    ])
+    const diffFrame = await showScreen(diff.shell.getView())
+    const added = diffFrame.cellsOf(diffFrame.rowOf('+let a = 2'))
+
+    expect(added.slice(0, 4).every((cell) => cell.text === ' ')).toBe(true)
+    expect(added[4]?.text).toBe('+')
   })
 
   test('扣下的调用——**没跑**那行不打失败的叉、也不报耗时（2026-09-20 二轮裁）', async () => {

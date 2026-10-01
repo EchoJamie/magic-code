@@ -86,7 +86,7 @@ describe('U66 · 卡片挂着时那一行不说「跑了多久」', () => {
     stage.at(TEST_AT + 88 + 2800)
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('◉ 等你定夺')).toBe(true) // 前提：这一段真是在等你
+    expect(frame.has('◆ 等你定夺')).toBe(true) // 前提：这一段真是在等你
     expect(headLine(frame)).toBe('▸ exec(sleep 9)')
     // **底下那行不画**——不报秒数，也不回退「运行中」（它没在跑，两个说法都不成立）
     expect(frame.has('2.8s')).toBe(false)
@@ -102,7 +102,7 @@ describe('U66 · 卡片挂着时那一行不说「跑了多久」', () => {
     const frame = await stage.screen(WIDE)
     const readings = frame.screen.lines.flatMap((line) => [...line.matchAll(/(\d+(?:\.\d+)?)(ms|s)(?![0-9a-zA-Z])/gu)])
 
-    expect(frame.has('◉ 等你定夺')).toBe(true)
+    expect(frame.has('◆ 等你定夺')).toBe(true)
     expect(readings).toEqual([]) // `ms` / `s` 一个都没有（卡上的材料与状态行也都不带）
   })
 })

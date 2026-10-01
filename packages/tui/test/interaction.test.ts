@@ -171,7 +171,7 @@ describe('审批答复（接管）', () => {
         ),
       ],
       // 等的锚是**接管到了**（状态行那三个字），不是输入行那句占位——接管态不再画输入行（D29）
-      (frame) => frame.includes('◉ 等你定夺'),
+      (frame) => frame.includes('◆ 等你定夺'),
     )
 
     await app.type('y')
@@ -213,7 +213,7 @@ describe('审批答复（接管）', () => {
         ),
       ],
       // 等的锚是**接管到了**（状态行那三个字），不是输入行那句占位——接管态不再画输入行（D29）
-      (frame) => frame.includes('◉ 等你定夺'),
+      (frame) => frame.includes('◆ 等你定夺'),
     )
 
     await app.type('a')
@@ -234,7 +234,7 @@ describe('审批答复（接管）', () => {
         event('tool.decision.request', { call: 71, name: 'exec', material: 'ls', weight: 'light' }, { id: 88 }),
       ],
       // 等的锚是**接管到了**（状态行那三个字），不是输入行那句占位——接管态不再画输入行（D29）
-      (frame) => frame.includes('◉ 等你定夺'),
+      (frame) => frame.includes('◆ 等你定夺'),
     )
 
     await app.type('x')
@@ -443,7 +443,7 @@ describe('挤进同一个读块的正文与回车', () => {
         event('tool.call', { name: 'exec', args: { cmd: 'ls' } }, { id: 71 }),
         event('tool.decision.request', { call: 71, name: 'exec', material: 'ls', weight: 'light' }, { id: 88 }),
       ],
-      (frame) => frame.includes('◉ 等你定夺'),
+      (frame) => frame.includes('◆ 等你定夺'),
     )
 
     await app.type('y\r')

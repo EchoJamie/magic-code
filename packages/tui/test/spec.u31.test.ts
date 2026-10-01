@@ -258,7 +258,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
 
     // 原锚＝`rowOf('等你的答复')` 不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
     // 新锚与上面那条**抽屉接管**同一姿势（两处都是「输入行让位」）：真光标送回帧下。
-    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◉ 等你定夺'))
+    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◆ 等你定夺'))
   })
 
   /**

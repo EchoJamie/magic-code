@@ -208,10 +208,10 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
     // 线还是**两条**（三种形态下都不许多出一条）
     expect(rows, `${where}：恰好两条线`).toHaveLength(2)
     const [top, bottom] = rows as [number, number]
-    // ⚠️ **U112 起状态那格分形状**：等你那一态是 `◉`（不再与工作中的 `●` 同一个字）。
-    //    裁决卡那一屏正是 `◉ 等你定夺` ⇒ 找状态行的锚得把它算进来（`○`/`●`/`◉` 三形）。
+    // ⚠️ **U112 起状态那格分形状**：等你那一态是 `◆`（不再与工作中的 `●` 同一个字）。
+    //    裁决卡那一屏正是 `◆ 等你定夺` ⇒ 找状态行的锚得把它算进来（`○`/`●`/`◆` 三形）。
     const status = frame.screen.lines.findLastIndex(
-      (line) => line.includes('○ ') || line.includes('● ') || line.includes('◉ '),
+      (line) => line.includes('○ ') || line.includes('● ') || line.includes('◆ '),
     )
 
     // 那一块整块夹在两条线**之间**（`Frame.dock` 切的就是这一段——「下界从状态行之下
