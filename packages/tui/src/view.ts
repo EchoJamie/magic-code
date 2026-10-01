@@ -101,12 +101,13 @@ export const INTERRUPTED_TEXT = '已停止 · 结果未确认'
 /**
  * **一条交代带过的一张图**（U110）——查看那一屏那两条动作的主语。
  *
- * 它就是载荷里那份 `InputRefEntry` 的 image 支，**一字不改地抬到行上**：
- * 四格身份（`blob` / `source` / `label` / `name`）＋ 那一处引用在正文里的位置（`at` /
- * `marker`）。字段一个不多一个不少——多一格就是**在两处各记一遍同一件事**。
+ * 它就是载荷里那份 `InputRefEntry` 的 image 支：四格身份（`blob` / `source` / `label` /
+ * `name`）＋ 正文里那一段是什么（`marker`）。字段一个不多一个不少——多一格就是
+ * **在两处各记一遍同一件事**。
  *
- * ⚠️ **`at` 是「加入本次输入」的落点**（设计那句「**插回原位置**」）：新稿子里那一处
- * 引用落在**它当年在这句话里的那个位置**上（空了就夹到 0）。
+ * ⚠️ **不带「它当年在正文里的位置」**：「加入本次输入」的落点是**输入行的插入点**
+ * （设计 · 文件与图片：「在打开查询前的输入位置插入引用……不一律追加到末尾」），
+ * 与那条引用在**历史里**的位置无关。带一格没人用的位置只会让人再去猜它算什么。
  */
 export type UserImage = {
   /** 正文里那一段是什么（`Image#1`）。 */
@@ -120,8 +121,6 @@ export type UserImage = {
   readonly source: string
   /** 来源的人读写法。 */
   readonly label: string
-  /** 那一处引用在**正文里**的起点（UTF-16）。 */
-  readonly at: number
 }
 
 export type LogRow =
@@ -2808,10 +2807,8 @@ function usedSkillsOf(payload: Entry['payload']): readonly UsedSkill[] {
  * 与 `imagesOf` 是同一件事的两头：那一头读**记录**（重建时），这一头读**手边这份稿子**
  * （当场发的那一下）。两处都做，是因为两个时刻**各有各的**：刚发完就按 `ctrl+o`，
  * 那一行也该有那两个动作；而切走再回来走的是记录那一头。
- *
- * ⚠️ **`at` 取的是引用在稿子里的起点**（`DraftRef.start`）——那正是「原位置」。
  */
-export function userImages(refs: readonly { readonly kind: string; readonly start: number; readonly marker: string; readonly source: string }[]): readonly UserImage[] {
+export function userImages(refs: readonly DraftRef[]): readonly UserImage[] {
   return refs
     .filter((one): one is Extract<DraftRef, { kind: 'image' }> => one.kind === 'image')
     .map((one) => ({
@@ -2821,7 +2818,6 @@ export function userImages(refs: readonly { readonly kind: string; readonly star
       blob: one.blob,
       source: one.source,
       label: one.label,
-      at: one.start,
     }))
 }
 
@@ -2848,7 +2844,6 @@ function imagesOf(payload: Entry['payload']): readonly UserImage[] {
       blob: one.blob,
       source: one.source,
       label: one.label,
-      at: one.at,
     }))
 }
 
