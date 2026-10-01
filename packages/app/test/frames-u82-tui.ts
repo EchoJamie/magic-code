@@ -87,6 +87,56 @@ function has(shot: Capture, needle: string): boolean {
   return shot.lines.some((line) => line.includes(needle))
 }
 
+/**
+ * 底下那行（那一屏自己的位置／提示都写在它上面）——活屏与定格帧同取这一格。
+ *
+ * ⚠️ **活屏的行是对象、定格帧的行是字符串**（两边的类型不同），故这一格按对象取；
+ * 帧那一边要用的判据都走 `has` / `lineIn`。
+ */
+type Screenish = { readonly lines: readonly { readonly text: string }[]; readonly rows: number }
+
+const statusLine = (shot: Screenish): string => (shot.lines[shot.rows - 1]?.text ?? '').trim()
+
+/** 底下那行报的「读到哪儿 / 共多少行」到底了没有。 */
+const showsBottomStatus = (line: string): boolean => {
+  const matched = /(\d+)–(\d+) \/ (\d+) 行/.exec(line)
+
+  return matched !== null && matched[2] === matched[3]
+}
+
+/** 等那一屏的某一处到位（轮询活屏，超时抛）——那一屏是另一个进程里的循环，写完就读会读早。 */
+/**
+ * **退出那一屏**（U110）——按 `q`，等屏上**不再是那一屏的样子**。
+ *
+ * ⚠️ **等的不是「○ 空闲」**：这一趟可能正**工作中**（后台命令还挂着），那时主屏上永远
+ * 等不到「空闲」——等它只会白等满超时（实测踩过）。判据取那一屏自己的键位提示：
+ * 它没了＝那一屏退了、主屏回来了。
+ */
+async function leaveView(session: UiSession): Promise<void> {
+  await session.send('q')
+  for (let at = 0; at < 150; at += 1) {
+    const screen = await session.screen()
+    if (!screen.lines.some((line) => line.text.includes('ctrl+u/d 半页'))) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error('那一屏没有退出（`q` 之后屏上还是它）')
+}
+
+async function waitOn(
+  session: UiSession,
+  read: (screen: Screenish) => string,
+  ok: (now: string) => boolean,
+  what: string,
+): Promise<void> {
+  for (let at = 0; at < 150; at += 1) {
+    if (ok(read(await session.screen()))) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error(`等了 3 秒，${what}——此刻底下那行是「${statusLine(await session.screen())}」`)
+}
+
 /** 整个缓冲（含滚进 scrollback 的）里有没有**正好是这一行**的行。 */
 function lineIn(shot: Capture, text: string): boolean {
   return shot.history.some((line) => line.trim() === text)
@@ -215,39 +265,48 @@ async function sceneScreen(): Promise<void> {
       '① 也没有「大块转存」这句旧话（引用本身一个字都不落屏）',
     )
 
-    // —— 02 展开：**在跑动中按**（见文件头注），结果落下来就是展开那一形 ——
-    await scene.session.key('ctrl+o')
-    await typeLine(scene.session, '再跑一次，这次展开着')
+    // —— 02 全量：**查看那一屏**（U110 起「展开」就是它；跑动中按 `ctrl+o` 那一路已撤）——
+    await typeLine(scene.session, '再跑一次，这次看全量')
     await scene.session.key('enter', { until: { text: '再跑完了。' }, timeoutMs: 60_000 })
     await scene.session.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
 
-    const expanded = await scene.session.capture({ label: '02-大结果展开' })
-    keep(expanded, '02-大结果展开')
+    await scene.session.key('ctrl+o', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+    const expanded = await scene.session.capture({ label: '02-大结果全量（查看那一屏）' })
+    keep(expanded, '02-大结果全量（查看那一屏）')
 
+    /**
+     * ⚠️ **这一条判据 U110 改了量法**（原锚：展开之后那一千多行都在**缓冲**里、
+     * `scrollback > 200`）。改的是**在哪儿看得见**——那一屏是个**分页器**：一屏装不下
+     * 一千多行，故判的不再是「整份都在缓冲里」，而是「**逐段都够得着**」：
+     * `/` 搜得到那一段、`G` 到底看得见尾巴。
+     */
+    await scene.session.send('/')
+    await scene.session.send('u82b-1')
+    await scene.session.key('enter', { until: { text: '第 1/' }, timeoutMs: 15_000 })
+    const head = await scene.session.capture({ label: '02-头段（搜得到）' })
+    keep(head, '02-头段（搜得到）')
+    check(has(head, 'u82b-1'), '② 正文**头段**够得着（`/` 搜到它、并滚进视野）', linesWith(head, 'u82b-1'))
+
+    await scene.session.send('/')
+    await scene.session.send('u82b-600')
+    await scene.session.key('enter', { until: { text: '第 1/' }, timeoutMs: 15_000 })
+    const middle = await scene.session.capture({ label: '02b-中段（搜得到）' })
+    keep(middle, '02b-中段（搜得到）')
+    check(has(middle, 'u82b-600'), '② 正文**中段**够得着（`u82b-600`）', linesWith(middle, 'u82b-600'))
+
+    await scene.session.send('G')
+    await waitOn(scene.session, statusLine, showsBottomStatus, '`G` 没有到底')
+    const tail = await scene.session.capture({ label: '02c-末段（G 到底）' })
+    keep(tail, '02c-末段（G 到底）')
+    check(lineIn(tail, 'u82b-1200'), '② 正文**末段**够得着（`G` 到底——结论就在这一头）')
     check(
-      lineIn(expanded, 'u82b-1'),
-      '② 正文**头段**到了屏上（`u82b-1` 在缓冲里）',
-    )
-    check(
-      lineIn(expanded, 'u82b-600'),
-      '② 正文**中段**到了屏上（`u82b-600` 在缓冲里）',
-    )
-    check(
-      lineIn(expanded, 'u82b-1200'),
-      '② 正文**末段**到了屏上（`u82b-1200` 在缓冲里——结论就在这一头）',
-    )
-    check(
-      expanded.scrollback > 200,
-      '② 那一千多行真写进了 scrollback（不是只画了屏上那几十行）',
-      `scrollback=${expanded.scrollback}`,
-    )
-    check(
-      !expanded.history.some((line) => SHA256.test(line)),
-      '② 展开之后照样一处都没有那串 sha256',
+      !tail.history.some((line) => SHA256.test(line)),
+      '② 那一屏上也照样一处都没有那串 sha256',
     )
 
-    // —— 03 反面：小结果照旧（先收起来，好照改前那一形看） ——
-    await scene.session.key('ctrl+o')
+    await leaveView(scene.session)
+
+    // —— 03 反面：小结果照旧 ——
     await typeLine(scene.session, '跑个小输出')
     await scene.session.key('enter', { until: { text: '小的也跑了。' }, timeoutMs: 60_000 })
     await scene.session.wait({ text: '○ 空闲' }, { timeoutMs: 30_000 })
@@ -260,10 +319,13 @@ async function sceneScreen(): Promise<void> {
       '③ 小结果照旧原样（`✓ … · 小结果`——那一改没碰到它）',
       linesWith(small, 'exec'),
     )
+    // ⚠️ **咬的是「小结果那一行」**（不是整屏）：这一趟之前屏上已经有两条「大块输出」
+    //    那一套说法了（① 与大结果那一趟），整屏找字必然撞上它们——那不是这条判据要问的事。
+    const smallLine = small.lines.find((line) => line.includes('小结果')) ?? ''
     check(
-      !has(small, '大块输出') && !has(small, '屏幕上没铺全'),
+      !smallLine.includes('大块输出') && !smallLine.includes('屏幕上没铺全'),
       '③ 小结果那一行**不出现**大块那套说法（不是所有结果都改口径）',
-      linesWith(small, '大块'),
+      smallLine.trim() || '（没有那一行）',
     )
   } finally {
     await closeScene(scene)

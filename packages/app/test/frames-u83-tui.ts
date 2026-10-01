@@ -126,6 +126,42 @@ function checkVerdictLine(shot: Capture, name: string, at: string): void {
   check(countIn(line as string, `${name}失败`) === 1, `${at} 那一行名分只说一遍`, line as string)
 }
 
+/**
+ * **取一帧「整句铺全」的**（U110）——进**查看那一屏**取，取完退回来。
+ *
+ * 由头：内联那一版的结果行折起来只铺 48 列（`truncateMid` 保头保尾），整句看不全；
+ * 而「展开」U110 起就是那一屏（那一屏**不折**，整句在一行上）。这一套判据要读的正是整句。
+ */
+/**
+ * **退出那一屏**（U110）——按 `q`，等屏上**不再是那一屏的样子**。
+ *
+ * ⚠️ **等的不是「○ 空闲」**：这一趟可能正**工作中**（后台命令还挂着），那时主屏上永远
+ * 等不到「空闲」——等它只会白等满超时（实测踩过）。判据取那一屏自己的键位提示：
+ * 它没了＝那一屏退了、主屏回来了。
+ */
+async function leaveView(session: UiSession): Promise<void> {
+  await session.send('q')
+  for (let at = 0; at < 150; at += 1) {
+    const screen = await session.screen()
+    if (!screen.lines.some((line) => line.text.includes('ctrl+u/d 半页'))) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error('那一屏没有退出（`q` 之后屏上还是它）')
+}
+
+async function expanded(session: UiSession, label: string): Promise<Capture> {
+  await session.key('ctrl+o', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+  // ⚠️ **先到底**（`G`）：那一屏从记录开头铺起，要读的是**这一趟**那一笔（在末尾）
+  await session.send('G')
+  await Bun.sleep(300)
+  const shot = await session.capture({ label })
+  keep(shot, label)
+  await leaveView(session)
+
+  return shot
+}
+
 /** 打一行字并**等它真出现在屏上**（文本与回车分两次写——挤在同一次写里按键会丢）。 */
 async function typeLine(session: UiSession, text: string): Promise<void> {
   await session.send(text, { until: { text }, timeoutMs: 10_000 })
@@ -197,15 +233,13 @@ async function sceneFailures(): Promise<void> {
   try {
     await session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
 
-    // **开局就把工具行展开**（`ctrl+o` 是切换）——那一行折起来只铺 48 列，看不全整句；
-    // 而展开要**赶在那一行落地之前**按（进了 scrollback 就不再重绘，见文件头注）。
-    await session.key('ctrl+o')
-
+    // ⚠️ **U110 起不在这里按 `ctrl+o`**：它开的是「查看那一屏」（就地展开撤了——那条路
+    //    本就是因为「进了 scrollback 就不再重绘」才走不通的）。要看整句，去那一屏：
+    //    见下面 `expanded()`。
     // —— ② 写：上级目录不存在（整写是必闸，照默认姿态过一道卡再跑）——
     await askApprove(session, '把那段说明写进 u83-no-dir/u83-new.txt', '上级目录不存在——那我先建目录。')
 
-    const write = await session.capture({ label: '01-写-上级目录不存在' })
-    keep(write, '01-写-上级目录不存在')
+    const write = await expanded(session, '01-写-上级目录不存在')
 
     checkVerdictLine(write, '写入', '② 写')
     checkNoStutter(write, '写入')
@@ -216,8 +250,7 @@ async function sceneFailures(): Promise<void> {
     // —— ③ 读：文件不存在 ——
     await ask(session, '读一下 u83-none.txt', '那个文件不在。')
 
-    const read = await session.capture({ label: '02-读-文件不存在' })
-    keep(read, '02-读-文件不存在')
+    const read = await expanded(session, '02-读-文件不存在')
 
     checkVerdictLine(read, '读取', '③ 读')
     checkNoStutter(read, '读取')
@@ -227,8 +260,7 @@ async function sceneFailures(): Promise<void> {
     // —— ③ 列目录：目录不存在 ——
     await ask(session, '看看 u83-no-such-dir 里有什么', '目录也不在。')
 
-    const ls = await session.capture({ label: '03-列目录-目录不存在' })
-    keep(ls, '03-列目录-目录不存在')
+    const ls = await expanded(session, '03-列目录-目录不存在')
 
     checkVerdictLine(ls, '列目录', '③ 列目录')
     checkNoStutter(ls, '列目录')
@@ -238,8 +270,7 @@ async function sceneFailures(): Promise<void> {
     // —— ④ 反面：编辑那一支 ——
     await ask(session, '把 u83-none.txt 里的「甲」改成「乙」', '总之先建目录。')
 
-    const edit = await session.capture({ label: '04-反面-编辑那一支' })
-    keep(edit, '04-反面-编辑那一支')
+    const edit = await expanded(session, '04-反面-编辑那一支')
 
     // 编辑就是「读 → 改 → 写回」：这里卡在**读**那一步，故名分是「读取失败」——
     // 而那正是这一支要齐的形制（原先它是「编辑失败：读取失败（…）：…」：名分两遍）。
@@ -257,8 +288,7 @@ async function sceneFailures(): Promise<void> {
     // 齐的是**沙箱抛的那一路**（原先它被缀成了「名分 ＋ 名分 ＋ 沙箱的话」）。
     await ask(session, '把 u83-here.txt 里的「乙」改成「丙」', '那段原文不在文件里。')
 
-    const miss = await session.capture({ label: '05-反面-编辑失配那一路未改' })
-    keep(miss, '05-反面-编辑失配那一路未改')
+    const miss = await expanded(session, '05-反面-编辑失配那一路未改')
 
     check(has(miss, '未找到待替换文本——文件未改'), '④ 失配那一路**逐字未改**（本单只去重、不改内容）')
     check(has(miss, '● edit'), '④ 它的回执头一行照旧（`● edit`）')

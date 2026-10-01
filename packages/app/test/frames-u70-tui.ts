@@ -115,13 +115,39 @@ function hasLine(shot: Capture, text: string): boolean {
 /**
  * **展开**（`ctrl+o`）——工具卡收起时只报「N 行」，展开了才看得见读了什么。
  *
- * ⚠️ **必须在这一行落进记录区之前拨**：`Static` 写一次就不再重绘（D11 的护栏），
- * 已经定局的行拨了也不动。故这一拨要走在「读」那一次执行**之前**——
- * 拨完它一直有效，后面几次读照旧是展开的。
+ * ⚠️ **U110 起「展开」＝进「查看那一屏」**（就地展开撤了——它当年非要走在落地之前拨，
+ * 正是因为 `Static` 写一次就不再重绘）。故这一个助手改成**进出那一屏取一帧**：
+ * 内容在那屏上铺全；拨完**立刻退回来**，后面几步照旧走得动。
  */
-async function expand(session: UiSession): Promise<void> {
-  await session.send('\u000f')
+/**
+ * **退出那一屏**（U110）——按 `q`，等屏上**不再是那一屏的样子**。
+ *
+ * ⚠️ **等的不是「○ 空闲」**：这一趟可能正**工作中**（后台命令还挂着），那时主屏上永远
+ * 等不到「空闲」——等它只会白等满超时（实测踩过）。判据取那一屏自己的键位提示：
+ * 它没了＝那一屏退了、主屏回来了。
+ */
+async function leaveView(session: UiSession): Promise<void> {
+  await session.send('q')
+  for (let at = 0; at < 150; at += 1) {
+    const screen = await session.screen()
+    if (!screen.lines.some((line) => line.text.includes('ctrl+u/d 半页'))) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error('那一屏没有退出（`q` 之后屏上还是它）')
+}
+
+async function expand(session: UiSession, label?: string): Promise<Capture> {
+  await session.send('\u000f', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+  // ⚠️ **先到底**（`G`）：那一屏从**记录的开头**铺起，要看的是**这一趟**读了什么——
+  // 它在这条记录的**末尾**（不按 `G` 的话屏上还是几十轮之前那几行）。
+  await session.send('G')
   await Bun.sleep(300)
+  const shot = await session.capture(label === undefined ? {} : { label })
+  if (label !== undefined) keep(shot)
+  await leaveView(session)
+
+  return shot
 }
 
 /**
@@ -333,14 +359,13 @@ async function startFrame(): Promise<void> {
 
     // 收起来那一行只报「几行」——**展开**才看得见读了什么（`ctrl+o`）。
     // 「贴出那条 read 的结果」要的就是展开后的这一屏。
-    await session.send('\u000f')
-    await Bun.sleep(400)
-    const read = await session.capture({ label: '05-读输出（既有 read 读到了工作区外那个文件）' })
-    keep(read)
+    const read = await expand(session, '05-读输出（既有 read 读到了工作区外那个文件）')
     check(has(read, 'bg-1.log'), '④ 读的就是那个工作区之外的文件（路径在参数里）', read.text)
     check(hasLine(read, '起手'), '④ **读到了内容**（命令吐的第一行）', read.text)
     check(hasLine(read, '收工'), '④ 读到的是完整那一段（末行也在）', read.text)
 
+    // ⚠️ 这一帧由 `expand()` 取（它自己进那一屏、取完退出）——故这里直接走产品的退出路；
+    // 若留在那一屏里，`ctrl+c` 那两下会落在那一屏上（第一下退那一屏、第二下成了主屏的「第一下」）。
     await session.quit()
     const closed = await session.close({ graceMs: 3_000 })
     check(closed.exit.by === 'app', '收摊：应用自己走的', String(closed.exit.by))
@@ -405,13 +430,9 @@ async function serverFrame(): Promise<void> {
     check(!has(alive, 'bg-1 跑完了'), '⑤ ⚠️ **没有**「跑完」那一声（它还在跑）', alive.text)
 
     // —— ⑤ 之一：read 那个文件，看得到此刻已有的输出 ——
-    // 同上：展开要走在读之前（这一拨之后一直有效，第二遍读照旧看得见）
+    // ⚠️ **U110 起这里不拨展开位了**：`ctrl+o` 开的是「查看那一屏」，拨了后面几步就没人
+    // 按得动（终端借出去了）。「读到了什么」下面**另取一帧**——那时才进那一屏。
     await typeLine(session, '读一眼它的输出')
-    // ⚠️ **展开位要赶在这一遍读渲染之前拨**（`expand` 的注：行一定局就重画不动了）：
-    // 从前拨在这张卡挂着的时候（卡挡在读前面，一定来得及），如今读**不问**（U76）——
-    // 而打字**不会**把这一格收回（`shell.ts` 里写 `expanded: false` 的只有「`esc` ＋ 空稿」
-    // 那一支，3240 行），故这一拨就落在**回车之前**；拨完一直有效，第二遍读照旧看得见
-    await expand(session)
     await session.key('enter')
     // ⚠️ 读不问（U76）——等工具真跑完（模型那一句答复）就够，没有卡可等
     await session.wait({ text: '读了一遍' }, { timeoutMs: 20_000 })
@@ -419,11 +440,8 @@ async function serverFrame(): Promise<void> {
     keep(readOnce)
     noCardHere(readOnce, '⑤ 读那一眼')
     await settled(session)
-    // 收起来那一行只报「几行」——展开才看得见读了什么（同 ④ 那一处）
-    await session.send('\u000f')
-    await Bun.sleep(400)
-    const first = await session.capture({ label: '09-第一次读（此刻已有的那一段）' })
-    keep(first)
+    // 收起来那一行只报「几行」——**展开才看得见读了什么**（同 ④ 那一处；U110 起展开是那一屏）
+    const first = await expand(session, '09-第一次读（此刻已有的那一段）')
     check(hasLine(first, '服务起来了'), '⑤ 读得到开头那一行', first.text)
     const tickAtFirstRead = tickNumberOf(first)
     check(tickAtFirstRead >= 1, '⑤ 读得到计数器在长', first.text)
@@ -432,22 +450,13 @@ async function serverFrame(): Promise<void> {
     await Bun.sleep(2_000)
     await typeLine(session, '再看看它长到哪儿了')
     await session.key('enter')
-    // ⚠️ **展开位要在这一遍读执行之前拨**（`expand` 的注：定局之后拨不动）——
-    // （原注说「打字会把展开位收回」：照 `shell.ts` 看**不成立**——写 `expanded: false` 的
-    // 只有「`esc` ＋ 空稿」那一支。位置照原样留着：它落在读执行之前，那才是要紧的。）
-    // 从前有一张卡挡在读前面，卡挂着的时候拨一定来得及；如今读**不问**（U76），
-    // 故这一拨紧跟着回车落下去（它只是个视图开关，不挡任何东西）。
-    await expand(session)
     // ⚠️ 读不问（U76）——等工具真跑完（模型那一句答复）就够
     await session.wait({ text: '又读了一遍' }, { timeoutMs: 20_000 })
     const readTwice = await session.capture({ label: '10-再读不弹卡（默认通）' })
     keep(readTwice)
     noCardHere(readTwice, '⑤ 第二遍读')
     await settled(session)
-    await session.send('\u000f')
-    await Bun.sleep(400)
-    const again = await session.capture({ label: '11-再读一遍（后面新增的那段）' })
-    keep(again)
+    const again = await expand(session, '11-再读一遍（后面新增的那段）')
     const tickAtSecondRead = tickNumberOf(again)
     check(
       tickAtSecondRead > tickAtFirstRead,

@@ -100,7 +100,7 @@ describe('交代（输入 → input.submit）', () => {
     expect(app.view().draft).toBe('')
   })
 
-  test('`↑` 取上一条交代；`ctrl+o` 切展开位', () => {
+  test('`↑` 取上一条交代；`ctrl+o` 只喊一声「开那一屏」（不在外壳里改任何状态）', () => {
     const app = live()
 
     app.type('第一条')
@@ -112,9 +112,11 @@ describe('交代（输入 → input.submit）', () => {
     app.press({ kind: 'up' })
     expect(app.view().draft).toBe('第一条')
 
-    expect(app.view().expanded).toBe(false)
-    app.press({ kind: 'ctrl+o' })
-    expect(app.view().expanded).toBe(true)
+    // U110：内联的「展开位」整条撤了——`ctrl+o` 只回一个「开查看那一屏」的信号
+    // （那一屏怎么开、怎么画全在组件那一侧，见 `components/app.ts`；备用屏与键在 `src/screen.ts`）。
+    const before = app.view()
+    expect(app.press({ kind: 'ctrl+o' })).toEqual({ exit: false, screen: true })
+    expect(app.view()).toBe(before)
   })
 })
 

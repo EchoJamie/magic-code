@@ -570,8 +570,35 @@ export type McpReconnect = {
 export type InputPaste = { readonly type: 'input.paste' }
 
 /**
+ * **导出原图**（U110）——把记录里那张图的字节落到一个本地文件上，并把路径交回用户。
+ *
+ * ## 为什么是一条命令（而不是界面那一层自己写盘）
+ *
+ * **字节在记录的 blob 库里**（内容身份是 sha256），而那份字节只有内核这一侧读得到
+ * ——外壳手上只有 `blob` 这一个不透明的引用（`BlobRef`）。故「写一个文件」这件事要
+ * 分两半：**取字节归内核**（记录就是真源，且「源文件删了也取得回」靠的正是它），
+ * **落点在哪儿、重名怎么办归装配**（域不碰文件系统，同配置 / 授权的读写）。
+ *
+ * ⚠️ **只带 `blob` ＋ 那两格人读的**（名字 / 类型）——不带记录 id：这一屏是**从记录里
+ * 读出来的**（`user` 条目载荷里那几处 `refs`），材料的位置本来就在手上；再让它回去
+ * 认一次「哪一条记录」等于把同一件事在两处各记一遍。
+ *
+ * 答复走事件（`image.exported`，**不落库**）：导出那一下的落点是一次性的。
+ */
+export type ImageExport = {
+  readonly type: 'image.export'
+  /** 字节所在（**对消费者不透明**——外壳原样带着它走）。 */
+  readonly blob: BlobRef
+  /** 文件名（人读）——导出文件的名字从它来（清洗过，见装配那一侧）。 */
+  readonly name: string
+  /** MIME——原名没有扩展名时按它补一个。 */
+  readonly mime: string
+}
+
+/**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set` ＋ U107 的剪贴板取图）
+ * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set` ＋ U107 的剪贴板取图
+ * ＋ U110 的导出原图）
  * ——外壳发往内核的全部消息。
  */
 export type Command =
@@ -597,6 +624,7 @@ export type Command =
   | McpList
   | McpReconnect
   | InputPaste
+  | ImageExport
   | PrefsSet
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */

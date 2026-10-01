@@ -145,14 +145,18 @@ describe('判据 3 · 不落库清单', () => {
     // 成败两种都不是记录：取到的那一份字节**另有痕**（`user` 条目的载荷 `refs` 里那个
     // blob），没取到那一句更是「当时按了一下、剪贴板里没图」的一刻）。
     // **新锚**：十八条，字面规则一个没动。
+    // U110 补锚：`image.exported`——同 `input.pasted` 那一条（一次动作的当场答复）。
     // U112 补锚：`prefs.state`——同 `provider.catalog` 那一条（界面偏好那两格的**写盘答复**，
     // 痕在配置文件的 `statusLine` / `motion` 里；落库＝把同一份读数存第二遍）。
-    // **当前**：U111 撤掉 U37 那条（`attachments.catalog`）之后 ＋ 本单这条。
+    // **当前**：U111 撤掉 U37 那条 ＋ U110 补回导出那条 ＋ 本单这条。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'collaboration.view',
       'exec.background.done',
       'grants.catalog',
+      // U110（本单追加）：导出原图的答复同列——同 `input.pasted` 那一条（一次动作的
+      // 当场答复；那份字节与名字本来就在 `user` 条目的载荷里，而路径是一次性的）。
+      'image.exported',
       'input.pasted',
       'input.settled',
       'input.unread',

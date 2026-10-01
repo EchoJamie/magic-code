@@ -27,6 +27,9 @@ import { createElement as h } from 'react'
 import type { Command, KernelEvent, RunRow, RunSnapshot, SessionId, StatusLineConfig, StopScope } from '@magic/contracts'
 import { bannerOf } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
+import { screenFrame } from '../src/screen.ts'
+import { matchesOf, screenLayout, screenOpened } from '../src/transcript.ts'
+import type { ScreenState } from '../src/transcript.ts'
 import { createShell } from '../src/shell.ts'
 import type { Shell, ShellEffect, ShellKey } from '../src/shell.ts'
 import type { ShellView } from '../src/view.ts'
@@ -150,6 +153,30 @@ export async function show(
   pulseAt: number | null = null,
 ): Promise<Frame> {
   const bytes = await rendered(views, options, now, pulseAt)
+
+  return frameOf(await screenCells(bytes, options), options.columns)
+}
+
+/**
+ * **查看那一屏**（U110）真画一遍，读回它的屏。
+ *
+ * 由头：内联那一半的「就地展开」已撤（`ctrl+o` 改成**另开一屏**），而当年一批判据
+ * （思考展开、工具正文、diff 全量）是**按展开态逐格量的**。它们要守的那句话没变
+ * ——「**看得见全量**」——变的是**在哪儿看得见**：现在是这一屏。故它们改判到这儿来，
+ * 而不是删掉。
+ *
+ * 走的是**产品那条路**：`src/screen.ts` 的 `screenFrame`（那一屏真写出去的字节）
+ * ＋ 本文件同一支 VT（`screenCells`）——色与重量因此照旧量得到。
+ */
+export async function showScreen(
+  view: ShellView,
+  options: ScreenOptions = DEFAULT_SCREEN,
+  /** 那一屏的**当下样子**（选中哪一处、搜的什么词）；不给＝刚开屏那一形。 */
+  state: ScreenState = screenOpened(),
+): Promise<Frame> {
+  const rows = [...view.settled, ...view.rows]
+  const layout = screenLayout(rows, { columns: options.columns, screenRows: options.rows })
+  const bytes = screenFrame({ layout, state, columns: options.columns, hits: matchesOf(layout.lines, state.term) })
 
   return frameOf(await screenCells(bytes, options), options.columns)
 }

@@ -164,11 +164,37 @@ async function settled(session: UiSession): Promise<void> {
 /**
  * **展开**（`ctrl+o`）——工具卡收起时只报「N 行」，展开了才看得见读了什么。
  *
- * ⚠️ **必须在这一行落进记录区之前拨**：`Static` 写一次就不再重绘，已经定局的行拨了也不动。
+ * ⚠️ **U110 起「展开」＝进「查看那一屏」**（就地展开撤了——它当年非要在落地前拨，正是因为
+ * `Static` 写一次就不再重绘）。故这一个助手改成**进出那一屏取一帧**：内容在那一屏上铺全。
  */
-async function expand(session: UiSession): Promise<void> {
-  await session.send('\u000f')
+/**
+ * **退出那一屏**（U110）——按 `q`，等屏上**不再是那一屏的样子**。
+ *
+ * ⚠️ **等的不是「○ 空闲」**：这一趟可能正**工作中**（后台命令还挂着），那时主屏上永远
+ * 等不到「空闲」——等它只会白等满超时（实测踩过）。判据取那一屏自己的键位提示：
+ * 它没了＝那一屏退了、主屏回来了。
+ */
+async function leaveView(session: UiSession): Promise<void> {
+  await session.send('q')
+  for (let at = 0; at < 150; at += 1) {
+    const screen = await session.screen()
+    if (!screen.lines.some((line) => line.text.includes('ctrl+u/d 半页'))) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error('那一屏没有退出（`q` 之后屏上还是它）')
+}
+
+async function expand(session: UiSession, label?: string): Promise<Capture> {
+  await session.send('\u000f', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+  // ⚠️ **先到底**（`G`）：那一屏从记录开头铺起，而要看的是**这一趟**读了什么（在末尾）
+  await session.send('G')
   await Bun.sleep(300)
+  const shot = await session.capture(label === undefined ? {} : { label })
+  if (label !== undefined) keep(shot)
+  await leaveView(session)
+
+  return shot
 }
 
 /** 敲一行字并**等它真出现在屏上**（文本与回车分两次写——挤在一次里会丢键）。 */
@@ -276,10 +302,9 @@ async function readingFrame(): Promise<void> {
 
     // —— ① 读那个输出文件：不弹卡 ＋ 读得到内容 ——
     //
-    // 展开位要**赶在那一行落进记录区之前**拨（`expand` 的注）：读是被「跑完」那一声
-    // 唤醒的，故这一拨落在那一句落地**之前**（命令还在 `sleep 1` 里，窗口够宽）。
+    // ⚠️ **U110 起这里不拨展开位了**：`ctrl+o` 开的是「查看那一屏」，拨了就没人按得动
+    // 后面那几步（终端借出去了）。「读到了什么」在下面另取一帧——那时才进那一屏。
     await settled(session)
-    await expand(session)
     await session.wait({ text: 'bg-1 跑完了' }, { timeoutMs: 20_000 })
     await session.wait({ text: '读到了，确实在文件里' }, { timeoutMs: 20_000 })
     const ownRead = await session.capture({ label: '02-读我们自己的产物不弹卡' })
@@ -287,10 +312,8 @@ async function readingFrame(): Promise<void> {
     noCardHere(ownRead, '① 读输出那一趟')
 
     await settled(session)
-    await session.send('\u000f') // 收起展开位（内容已经写进滚屏，仍在）
-    await Bun.sleep(400)
-    const content = await session.capture({ label: '03-读到了内容' })
-    keep(content)
+    // U110：整段内容在**查看那一屏**上（内联那一行只报「N 行」）
+    const content = await expand(session, '03-读到了内容')
     check(hasLine(content, '起手'), '① **读到了内容**（命令吐的第一行）', content.text)
     check(hasLine(content, '收工'), '① 读到的是完整那一段（末行也在）', content.text)
 

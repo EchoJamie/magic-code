@@ -1889,6 +1889,14 @@ export type CommandRoutes = {
    */
   onInputPaste(): void
   /**
+   * **导出原图**（U110）→ **对话域**（记录里那份字节归它读，同 `attachments.export` 当年的
+   * 站位——写盘那一步它经装配注入的写口完成）。
+   *
+   * 控制域**原样转手**——它不认识记录、也读不了字节；答复走事件（`image.exported`，
+   * **不落库**）：命令面只发不收。
+   */
+  onImageExport(blob: BlobRef, name: string, mime: string): void
+  /**
    * **外部服务器的一屏**（`/mcp` 的读侧 · U39）→ **装配**（它编排着那一束连接的生命周期）。
    *
    * 控制域**原样转手**（同 `onModelList` / `onSkillList` 的姿势）——它不认识 MCP，也不知道

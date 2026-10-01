@@ -1166,10 +1166,19 @@ function diffLines(rows: readonly DiffRow[], budget: number): readonly LogLine[]
     prefixLine(`${INDENT}${INDENT}`, row.text, DIFF_COLOR[row.kind], `r:d:${at}`),
   )
 
-  // 折住的那截**如实报行数**（不编、也不装作画全了）；`ctrl+o` 展开给全量
+  /**
+   * 折住的那截**如实报行数**（不编、也不装作画全了）——后面跟着的是「去哪儿看」。
+   *
+   * ⚠️ **这句话 2026-10-01 之前是跑不了的**（U110 改对）：原先印的是「（`ctrl+o` 展开）」，
+   * 而**就地展开对定局的行根本做不到**——画过的行进 `<Static>`、写一次就不再重绘，
+   * 按下去等于没按（就是 `AGENTS.md` 那句「指一个跑不了的入口，比不指更坏」）。
+   * 现在印的是「（`ctrl+o` 看全文）」：`ctrl+o` 开的是**查看那一屏**（`src/transcript.ts`），
+   * 那一屏上**不折**——`rowLines` 按展开态画，这一段 diff 的每一行都在那儿。
+   * **按了真有反应**，定没定局都一样（定局的行在那屏上照旧看得见）。
+   */
   return rest === 0
     ? out
-    : [...out, ...prefixLine(`${INDENT}${INDENT}`, `… 还有 ${rest} 行（ctrl+o 展开）`, PALETTE.faint, 'r:dfold')]
+    : [...out, ...prefixLine(`${INDENT}${INDENT}`, `… 还有 ${rest} 行（ctrl+o 看全文）`, PALETTE.faint, 'r:dfold')]
 }
 
 /** diff 各档的色（原型 · 裁决卡的 diff 就是这个分法：`-` 红 · `+` 绿）。 */

@@ -460,6 +460,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
     onInputPaste: () => undefined,
+    onImageExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
@@ -484,6 +485,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
     onInputPaste: () => undefined,
+    onImageExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
@@ -564,6 +566,7 @@ export function routesCarryModelSwitch(): void {
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
     onInputPaste: () => undefined,
+    onImageExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     onPrefsSet: () => undefined,
@@ -707,6 +710,10 @@ describe('事件契约', () => {
       // 没取到那一句（`problem`）尤其不能落库——它是「当时按了一下、剪贴板里没图」的一刻，
       // 重放到第二天还翻出来印一遍，说的是一件早就不是当下的事。
       'input.pasted',
+      // U110（本单追加）：导出原图的答复同列——**同一条判据的第八处**（那份字节与名字 / 类型
+      // 本来就躺在 `user` 条目的载荷里，读记录就有），而回执那一格（临时文件路径）更是
+      // **一次性的**：重放到第二天，那个路径早就没人清了。
+      'image.exported',
       // U33：技能使用回执同列——**同一条判据的第三个来源**（依据在**条目载荷**里：
       // `UserPayload.refs` / 旧形的 `skills` 的名字 / 来源 / 正文），落库＝把同一件事存第二遍。
       'skill.used',

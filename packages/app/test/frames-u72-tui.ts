@@ -208,22 +208,22 @@ async function configured(): Promise<void> {
     // 批准 → 真取回 → 真提炼 → 主轮接着走
     await session.send('y')
 
-    /**
-     * ⚠️ **`ctrl+o` 要在这一轮还在跑的时候按**——这是本单留帧时踩到的一处：
-     * 已定局的行走 `<Static>`，**写一次就不再重绘**（`components/app.ts` 头注第一条），
-     * 故那一轮收束之后再去展开**那一屏一个字都不会变**（实测：按了等于没按）。
-     * 在活动区按下去，`expanded` 就一直有效——结果行落下来时**当场就是展开的**那一形。
-     */
-    await session.key('ctrl+o')
-
-    // 等**回执正文**（那句「不是原文」）上屏——它就是「这一趟取回了什么」的收据
-    await waitFor(session, '结果行 ＋ 回执正文', ['不是原文'])
-    const finished = await session.capture({ label: '①-02-跑完那一屏（回执展开着）' })
-    keep(finished)
-
-    // ⚠️ **再等它真走完**：结果行出来得快，那一刻状态行还是「工作中」——
-    // 「这一轮收束了没有」问的是状态行，不是结果行
+    // ⚠️ **U110 起不在这里等「不是原文」了**：回执那几行在**内联**屏上是折着的（`ctrl+o`
+    //    开的是「查看那一屏」，不是就地展开），等它只会白等满超时。等到这一轮**收束**，
+    //    再进那一屏把收据读全（见下面 `finished`）。
     const idle = await waitFor(session, '这一轮收束', ['空闲'])
+
+    /**
+     * ⚠️ **U110 起「展开」是「查看那一屏」，不是就地展开**（那条路物理上做不到：定局的行
+     * 进了 `<Static>`，写一次就不再重绘——本处原先那句注记说的正是这件事）。故这一帧改成
+     * **进那一屏取**（`ctrl+o` 进、`q` 出）；判据那句「回执里有…」一个都没变。
+     */
+    await session.key('ctrl+o', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+    await session.send('G')
+    await Bun.sleep(300)
+    const finished = await session.capture({ label: '①-02-跑完那一屏（查看那一屏上铺全）' })
+    keep(finished)
+    await session.send('q', { until: { text: '○ 空闲' }, timeoutMs: 10_000 })
 
     // ③ 工具行与结果行——**同一形**：`● 名字 参数` ＋ `✓ 时长 · 结论`
     check(
@@ -502,15 +502,10 @@ async function refusals(): Promise<void> {
     await booted(session)
 
     /**
-     * 展开位——`ctrl+o` 是**切换**（不是「设为开」），故这里记着当下的状态：
-     * 每趟都无脑按一下的话，三趟下来是 开 / 关 / 开（第二趟那一屏就白按了）。
-     */
-    let expanded = false
-
-    /**
-     * 走一趟：弹卡 → 批准 → 展开回执 → 等这一轮收束 → 取帧。
+     * 走一趟：弹卡 → 批准 → 等这一轮收束 → **进查看那一屏取帧** → 退出那一屏。
      *
-     * 展开的时机见 `configured` 里那一段：**得在活动区按**（已定局的行不再重绘）。
+     * ⚠️ **U110 起「展开」是那一屏**（就地展开撤了，见 `configured` 那一处的注）：
+     * 拒的缘由在那 48 列之外，只有那一屏铺得全。
      *
      * ⚠️ **这里等「空闲」是准的**：进这一趟之前屏上是**那张卡**（不是空闲），
      * 故「空闲」只可能出现在这一轮跑完之后——与别处那条「提交之后一小会儿仍是上一轮
@@ -522,13 +517,16 @@ async function refusals(): Promise<void> {
       await live.key('enter', { until: { text: 'y 批准' }, timeoutMs: 20_000 })
       keep(await live.capture({ label: `${label}-卡` }))
       await live.send('y')
-      if (!expanded) {
-        await live.key('ctrl+o')
-        expanded = true
-      }
       await waitFor(live, `${label} 收束`, ['空闲'])
+
+      await live.key('ctrl+o', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+      // ⚠️ **先到底**（`G`）：那一屏从记录开头铺起，这一趟那笔失败的整句在末尾
+      await live.send('G')
+      await Bun.sleep(300)
       const shot = await live.capture({ label })
       keep(shot)
+      await live.send('q', { until: { text: '○ 空闲' }, timeoutMs: 10_000 })
+
       return shot.lines
     }
 

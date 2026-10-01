@@ -16,6 +16,7 @@
 
 import type {
   AgentId,
+  BlobRef,
   CollaborationView,
   DecisionWeight,
   Entry,
@@ -97,6 +98,32 @@ export type ToolRunState = 'running' | 'ok' | 'failed' | 'rejected' | 'unexecute
 export const INTERRUPTED_TEXT = '已停止 · 结果未确认'
 
 /** 记录区的一行。`session` 那三类是**会话内容**，其余是**屏上痕迹**。 */
+/**
+ * **一条交代带过的一张图**（U110）——查看那一屏那两条动作的主语。
+ *
+ * 它就是载荷里那份 `InputRefEntry` 的 image 支，**一字不改地抬到行上**：
+ * 四格身份（`blob` / `source` / `label` / `name`）＋ 那一处引用在正文里的位置（`at` /
+ * `marker`）。字段一个不多一个不少——多一格就是**在两处各记一遍同一件事**。
+ *
+ * ⚠️ **`at` 是「加入本次输入」的落点**（设计那句「**插回原位置**」）：新稿子里那一处
+ * 引用落在**它当年在这句话里的那个位置**上（空了就夹到 0）。
+ */
+export type UserImage = {
+  /** 正文里那一段是什么（`Image#1`）。 */
+  readonly marker: string
+  /** 人读的名字（元数据，不是身份）——「加入本次输入」之后那一行还报得出来。 */
+  readonly name: string
+  readonly mime: string
+  /** 字节所在（**不透明**，同 `BlobRef`）。 */
+  readonly blob: BlobRef
+  /** 来源真路径——可能已经不在了（取回不依赖它）。 */
+  readonly source: string
+  /** 来源的人读写法。 */
+  readonly label: string
+  /** 那一处引用在**正文里**的起点（UTF-16）。 */
+  readonly at: number
+}
+
 export type LogRow =
   // —— 会话内容（落库 · 可重建）——
   | {
@@ -104,6 +131,28 @@ export type LogRow =
       readonly key: string
       readonly text: string
       readonly echoed: boolean
+      /**
+       * **这条交代带过的图片材料**（U110）——查看那一屏据它给两个动作
+       * （加入本次输入 / 导出原图）。
+       *
+       * ## 为什么在行上
+       *
+       * `/attachments` 撤掉之后（U111），「把历史里那张图放回输入行 / 导出原图」
+       * 这两件事按裁定变成「**那一行上的动作**」。而那一行得先**知道**自己带了哪几张
+       * ——载荷里本来就有（`UserPayload.refs` 的 image 支），只是当年只喂给抽屉那一屏。
+       *
+       * ## 只挑图片那一支
+       *
+       * 文件 / 目录 / 技能**不进这一格**：它们的写法本来就写在正文里（`@src/login.ts` /
+       * `/review`），再列一遍是同一件事说两遍（同 `usedSkillsOf` 那条注的老话）；
+       * 而图片那一条**这两件事只有它做得了**（放回输入 / 导出原图）。
+       *
+       * ## 两处都给
+       *
+       * - **当场发的那一次**（`appendEcho`）——用户刚发完就按 `ctrl+o`，那一行也该有动作；
+       * - **重建那一趟**（`rebuildRows`）——从条目载荷里读回来（与 `skills` 同一姿势）。
+       */
+      readonly images?: readonly UserImage[]
       /**
        * **随这条交代送出去的技能**（U33）——**只有重建那一趟才有**（`rebuildRows` 从条目
        * 载荷里取），当场发的那一次不给：现场有草稿材料行与 `本次使用技能` 回执两处说着
@@ -1212,8 +1261,6 @@ export type ShellView = {
    * 造它的地方只有一处：三选里的「转到后台」（那一支要留**可复制的接回入口**，设计明文）。
    */
   readonly leavingNote: string | null
-  /** `ctrl+o` 展开（思考与老工具调用默认折一行）。 */
-  readonly expanded: boolean
   /** 当前会话 id（还没有会话＝`null`）。 */
   readonly sessionId: SessionId | null
   /** 会话目录（`session.list` 的答复）。 */
@@ -1434,7 +1481,6 @@ export function createView(input: CreateViewInput = {}): ShellView {
     leaving: false,
     // 还没有要走时留的那一句（U100）
     leavingNote: null,
-    expanded: false,
     sessionId: null,
     catalog: [],
     runs: [],
@@ -1820,6 +1866,18 @@ export function reduce(
     // （编号表）才说得准，故同样归外壳，不在这里落一行。
     case 'input.pasted':
       return view
+
+    /**
+     * **导出原图的答复**（U110）——落成**一行回执**（`· 原图已导出 → <路径>`）。
+     *
+     * 它**落记录区**（而不是只在那一屏上闪一下）：那一句里的路径是**用户要的东西**
+     * ——退出查看那一屏之后它还该在（自己去拿、发给别人）。而它在那一屏上**同时**看得见：
+     * 那一屏画的就是这条记录，记录一长它就跟着重画（`src/screen.ts` 的 `subscribe`）。
+     *
+     * 话由内核拼（`image.exported` 那两支），这里只把它摆成一行——**不另编一句**。
+     */
+    case 'image.exported':
+      return appendReceipt(view, event.data.path === undefined ? `原图没能导出：${event.data.problem ?? '（没说为什么）'}` : `原图已导出 → ${event.data.path}`)
 
     /**
      * **界面偏好那两格的回话**（U112）——`reduce` 这一层**不改视图**。
@@ -2256,11 +2314,18 @@ export function withBanner(view: ShellView): ShellView {
 }
 
 /** 本地回显一次用户输入（提交时立即显示——事件里没有正文）。 */
-export function appendEcho(view: ShellView, text: string): ShellView {
+export function appendEcho(view: ShellView, text: string, images: readonly UserImage[] = []): ShellView {
   // key 用**单调计数**而不是 `rows.length`——后者在收束清空之后会**撞回同一个数**
   // （同一个列表里两个同 key ⇒ React 说「子节点可能重复或丢失」）。见 `ShellView.echoes`。
   return {
-    ...appendRow(view, { kind: 'user', key: `user.echo:${view.echoes}`, text, echoed: true }),
+    ...appendRow(view, {
+      kind: 'user',
+      key: `user.echo:${view.echoes}`,
+      text,
+      echoed: true,
+      // 没带图就不给这一格（空数组与「这一格不在」在渲染上同义，少一格少一处可对不上的地方）
+      ...(images.length === 0 ? {} : { images }),
+    }),
     echoes: view.echoes + 1,
   }
 }
@@ -2425,11 +2490,15 @@ function rebuildRows(entries: readonly Entry[], collapseTools = true): readonly 
       rows.push({ kind: 'receipt', key: `rb:x:${entry.id}`, text })
     } else if (entry.kind === 'user') {
       const skills = usedSkillsOf(entry.payload)
+      const images = imagesOf(entry.payload)
       rows.push({
         kind: 'user',
         key: `rb:u:${entry.id}`,
         text,
         echoed: false,
+        // **这条交代带过的那几张图**（U110）——读的是记录里那一份（不重新读盘：
+        // 源文件可能早没了，而「当时送的是哪一张」正是要靠这份记录答的）
+        ...(images.length === 0 ? {} : { images }),
         // **随这条交代送出去的技能**（U33 · 独立验收退回③）——恢复时它是这条消息唯一的
         // 材料依据。**读的是记录里存的那一份**（当时送出去的名字与来源标签），
         // 不重新读盘：材料是动态的，重读会拿到今天的、冒充当时那一份。
@@ -2731,6 +2800,56 @@ function usedSkillsOf(payload: Entry['payload']): readonly UsedSkill[] {
     : []
 
   return [...legacy, ...positional]
+}
+
+/**
+ * **刚发出去的那一份草稿里的图**（U110）——把稿子上的引用（`DraftRef`）抬成行上那一格。
+ *
+ * 与 `imagesOf` 是同一件事的两头：那一头读**记录**（重建时），这一头读**手边这份稿子**
+ * （当场发的那一下）。两处都做，是因为两个时刻**各有各的**：刚发完就按 `ctrl+o`，
+ * 那一行也该有那两个动作；而切走再回来走的是记录那一头。
+ *
+ * ⚠️ **`at` 取的是引用在稿子里的起点**（`DraftRef.start`）——那正是「原位置」。
+ */
+export function userImages(refs: readonly { readonly kind: string; readonly start: number; readonly marker: string; readonly source: string }[]): readonly UserImage[] {
+  return refs
+    .filter((one): one is Extract<DraftRef, { kind: 'image' }> => one.kind === 'image')
+    .map((one) => ({
+      marker: one.marker,
+      name: one.name,
+      mime: one.mime,
+      blob: one.blob,
+      source: one.source,
+      label: one.label,
+      at: one.start,
+    }))
+}
+
+/**
+ * **这条交代带过的图片**（U110）——从条目载荷的 `refs` 里挑 image 那一支。
+ *
+ * 与 `usedSkillsOf` 同一姿势（同一份载荷、同一条读法），只是挑的支不同：那个挑技能，
+ * 这个挑图片。**载荷里没有＝空数组**（纯文本交代是常态，不是问题）。
+ *
+ * ⚠️ **旧记录照读**：U36 之前那一版没有 `refs`（材料在 `skills` 那个旧形里，且只有技能）
+ * ——那时本来就存不下图片的位置，这一格空着就是**如实**（不替它编一个位置出来）。
+ */
+function imagesOf(payload: Entry['payload']): readonly UserImage[] {
+  const source = payload as { readonly refs?: readonly InputRefEntry[] } | undefined
+  const refs = source?.['refs']
+  if (!Array.isArray(refs)) return []
+
+  return refs
+    .filter((one): one is Extract<InputRefEntry, { kind: 'image' }> => one.kind === 'image')
+    .map((one) => ({
+      marker: one.marker,
+      name: one.name,
+      mime: one.mime,
+      blob: one.blob,
+      source: one.source,
+      label: one.label,
+      at: one.at,
+    }))
 }
 
 /**

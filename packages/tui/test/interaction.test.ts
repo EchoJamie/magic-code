@@ -24,7 +24,7 @@ import { createShell } from '../src/shell.ts'
 import { HINT_EXIT_ARMED } from '../src/view.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
-import { plain } from './screen.ts'
+import { plain, showScreen } from './screen.ts'
 
 const POLL_MS = 5
 const TIMEOUT_MS = 2000
@@ -289,16 +289,22 @@ describe('Ctrl+C 语义', () => {
 })
 
 describe('展开 / 折叠', () => {
-  test('`ctrl+o` 展开——思考从一行变成全文', async () => {
-    const { app, push } = liveApp()
+  test('思考在内联恒折一行；全文在**查看那一屏**上（U110）', async () => {
+    const { app, shell, push } = liveApp()
 
     await push([
       event('model.delta', { channel: 'thinking', text: '第一行想法\n第二行想法' }),
     ])
     await app.waitForFrame((frame) => frame.includes('（思考）'))
 
-    await app.type('\u000f') // ctrl+o
-    await app.waitForFrame((frame) => frame.includes('第二行想法'))
+    // **内联这一半**：折一行就是折一行——全文**不在**主屏上（U110：`ctrl+o` 不再就地展开）
+    const inline = app.frame()
+    expect(inline).toContain('（思考）第一行想法')
+    expect(inline).not.toContain('第二行想法')
+
+    // **那一屏**：同一份记录，按展开态画——全文在那儿
+    const opened = await showScreen(shell.getView())
+    expect(opened.screen.lines.some((line) => line.includes('第二行想法'))).toBe(true)
 
     app.unmount()
   })

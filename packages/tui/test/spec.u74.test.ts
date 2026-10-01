@@ -23,7 +23,7 @@ import { describe, expect, test } from 'bun:test'
 import type { RunNotice } from '@magic/contracts'
 import { noticeReceiptOf } from '../src/view.ts'
 import { event } from './events.ts'
-import { createStage } from './screen.ts'
+import { createStage, showScreen } from './screen.ts'
 
 /** 起一个壳，并投一条会话状态（与 `spec.log.test.ts` 同一份底子）。 */
 function live() {
@@ -107,11 +107,16 @@ describe('思考自成一块', () => {
       event('model.delta', { channel: 'thinking', text: '第一行\n第二行' }),
       event('model.delta', { channel: 'text', text: '好。' }),
     ])
-    stage.press({ kind: 'ctrl+o' })
+    // ⚠️ **U110 起「展开」在查看那一屏上**（内联那一半恒折一行）——故这一条去那一屏量
+    const frame = await showScreen(stage.shell.getView())
 
-    const frame = await stage.screen()
+    // ⚠️ 用 `screen.lines` ＋ **按锚点切片**（不是 `content`）：`content` 切的是**内联那一版**
+    //    的记录区（字标之下、上沿那条线之上），而那一屏没有那两条线——切法不适用。
+    //    切片**保留那两行空行**（这条判据量的是「几行紧贴 ＋ 上下各留一整行」，空行正是它）。
+    const rows = frame.screen.lines.map((line) => line.trim())
+    const at = rows.indexOf('› 看看工作区')
 
-    expect(frame.content.map((line) => line.text)).toEqual([
+    expect(rows.slice(at, at + 6)).toEqual([
       '› 看看工作区',
       '',
       '（思考）第一行',
