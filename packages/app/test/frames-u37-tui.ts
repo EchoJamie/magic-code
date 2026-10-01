@@ -7,11 +7,10 @@
  * 并补了一条「认不出图的那一处不编号」（坏图那一屏）。
  *
  * `bun test` **不收它**（文件名不是 `*.test.ts`）。按键 → 视图 → 命令那一半在
- * `packages/tui/test/spec.u37.test.ts`（命名那一半在 `spec.u62.test.ts`）；
+ * `spec.u62.test.ts`（那一处在正文里的编号；`spec.u37.test.ts` 随 U111 撤 `/attachments` 一并撤了）；
  * 这里补的是**只有真终端才说得清的那几件**：
  * - 屏上**长什么样**（引用那一段怎么写、有没有多出一行附件清单——`AGENTS.md` 的看帧四项）；
  * - **图真到了端点上吗**（夹具按出站请求体里的 `image_url` 数张数，不是看内核侧）；
- * - **删掉源文件之后**从 `/attachments` 取回、再送一次，端点**又收到一张**；
  * - 坏图那一下**说得出为什么**、原稿保住；
  * - 应用与夹具**由监督者收干净**（`close()` 的 `exit.by`：它自己走的 / 我们杀的）。
  *
@@ -27,11 +26,14 @@
  * bun packages/app/test/frames-u37-tui.ts --out <目录>
  * ```
  *
- * 出六屏：`01-选入图片` · `02-提交之后` · `03-坏图拒绝` · `04-送过的图片` ·
- * `05-详情两条` · `06-取回再送`。
+ * 出三屏：`01-选入图片` · `02-提交之后` · `03-坏图拒绝`。
+ *
+ * ⚠️ **U111 撤掉 `/attachments`**（判据：「看」不该有名字）之后，原来那三屏
+ * （`04-送过的图片` / `05-详情两条` / `06-取回再送`）连同它们的取回链路一并撤了——
+ * 这条命令整条不在了，装置里不该留一条走不通的路。
  */
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readDatabase } from './support.ts'
 import { tempDir } from './tmp.ts'
@@ -226,110 +228,6 @@ async function broken(out: string): Promise<void> {
   }
 }
 
-// ══ ⑤～⑥ 送过的图片：取回、再送一次（源文件已删）═══════════════════════
-
-async function retrieving(out: string): Promise<void> {
-  const session = await createUiSession({
-    label: 'u37-取回',
-    artifacts: join(out, 'runs'),
-    turns: [
-      { kind: 'text', text: '看到了。', chunks: 2, chunkDelayMs: 40 },
-      { kind: 'text', text: '还是空指针。', chunks: 2, chunkDelayMs: 40 },
-    ],
-  })
-
-  try {
-    const { workspace } = session.facts()
-    const path = putBytes(workspace, '截图.png', PNG)
-
-    // 先送一次（走 `@` 选入）
-    await typeLine(session, '看 ')
-    await session.send('@', { until: { text: '@' }, timeoutMs: 10_000 })
-    await session.send('截图', { until: { text: '@截图' }, timeoutMs: 10_000 })
-    await session.wait({ text: '截图.png　文件' }, { timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { text: '› 看 Image#1' }, timeoutMs: 10_000 })
-    await pressKey(session, 'enter', { until: { text: '看到了。' }, timeoutMs: 15_000 })
-
-    check(session.requests().at(-1)?.images === 1, '第一次：端点上收到一张图')
-
-    // **把源文件删掉**（「源文件已删除」那一档）
-    rmSync(path)
-
-    // —— ⑤ `/attachments`：列出送过的那张 ——
-    // ⚠️ **两次回车**：第一次是**补全候选**（`/attachments` 打在草稿里就出候选，那一下
-    // 只是把它补全），第二次才真的跑这条命令——真终端上栽过一次（只按一次的时候
-    // 屏上还停在候选那一栏，用例却因为记录区那条 `看 @截图.png` 也在屏上而误绿）
-    await typeLine(session, '/attachments')
-    await pressKey(session, 'enter')
-    await pressKey(session, 'enter')
-    // 等**只有抽屉才有**的那句话（不拿记录区里也可能有的名字当判据）
-    await session.wait({ text: '选定一张看能做什么' }, { timeoutMs: 10_000 })
-    const listed = await session.capture({ label: '04-送过的图片' })
-    keep(out, listed, '04-送过的图片')
-
-    check(has(listed, '截图.png'), '送过的那张列得出来（源文件已经删了）')
-    check(has(listed, 'png ·'), '一行里说得出类型 / 大小')
-    check(has(listed, '选定一张看能做什么'), '抽屉真开着（这一句只有它那一屏有）')
-
-    // —— 进详情 ——
-    await pressKey(session, 'enter', { until: { text: '查看原图' }, timeoutMs: 10_000 })
-    const detail = await session.capture({ label: '05-详情两条' })
-    keep(out, detail, '05-详情两条')
-
-    check(has(detail, '查看原图'), '详情有「查看原图」')
-    check(has(detail, '加入本次输入'), '详情有「加入本次输入」')
-
-    // —— ⑤b 「查看原图」⇒ 落一个本地文件并给出路径（不自动打开外部应用）——
-    await pressKey(session, 'enter', { until: { text: '原图已导出' }, timeoutMs: 10_000 })
-    const exported = await session.capture({ label: '05b-查看原图' })
-    keep(out, exported, '05b-查看原图')
-
-    check(has(exported, '原图已导出 → '), '给出**一条本地路径**（用户下一步要的就是它）')
-    // 那句话里那一条路径**真在盘上**，且字节与当初交上去的那一份逐字节相同。
-    // ⚠️ 路径**会折行**（系统临时目录本来就长）——把后续几行接起来再切（`─` 之后的都不算，
-    // 而路径里不可能有那个字符：导出时清洗过）
-    const at = exported.lines.findIndex((line) => line.includes('原图已导出 → '))
-    const head = exported.lines[at] ?? ''
-    // 续行带**悬挂缩进**（记录区那种对齐）——接起来之前先剥掉行首那几格
-    const tail = exported.lines
-      .slice(at + 1)
-      .map((line) => line.trimStart())
-      .join('')
-    const where = (head.slice(head.indexOf('→ ') + 2) + tail).replace(/─[\s\S]*$/, '').trim()
-    const onDisk = readFileSync(where)
-    check(onDisk.equals(PNG), `导出的文件与交上去的那一份**逐字节相同**（${where}）`)
-    rmSync(where, { force: true })
-    // ⚠️ 导出**不关抽屉**（结果是一条回执）——接着还能按「加入本次输入」
-    await pressKey(session, 'down')
-
-    // —— ⑥ 「加入本次输入」⇒ 引用回到输入行，再送一次 ——
-    // ⚠️ 判据钉在**输入行那一格**（`› ` 开头）：记录区里那条 `看 Image#1` 也叫这个名字，
-    // 拿裸的 `Image#1` 当判据会**立刻为真**（用例误绿、真动作还没发生）
-    await pressKey(session, 'enter', { until: { text: '› Image#1' }, timeoutMs: 10_000 })
-    const back = await session.capture({ label: '06a-加入本次输入' })
-    keep(out, back, '06a-加入本次输入')
-
-    check(has(back, '› Image#1'), '那一张**放回了输入行**（复用保存的字节，不依赖原路径）')
-
-    await typeLine(session, '还是这个错')
-    const before = session.requests().length
-    await pressKey(session, 'enter', { until: { text: '还是空指针。' }, timeoutMs: 15_000 })
-    const again = await session.capture({ label: '06-取回再送' })
-    keep(out, again, '06-取回再送')
-
-    const requests = session.requests()
-    check(requests.length === before + 1, '又发了一次请求')
-    check(requests.at(-1)?.images === 1, `源文件删了**照样送得出那张图**（实测 ${requests.at(-1)?.images ?? 0} 张）`)
-    check(
-      (requests.at(-1)?.lastUser ?? '').includes('还是这个错'),
-      '正文与引用一起送出去',
-      requests.at(-1)?.lastUser ?? '',
-    )
-  } finally {
-    await close(session)
-  }
-}
-
 // ══ 入口 ═════════════════════════════════════════════════════════════
 
 if (import.meta.main) {
@@ -339,6 +237,5 @@ if (import.meta.main) {
 
   await sending(out)
   await broken(out)
-  await retrieving(out)
   console.log(`\n全部判据通过。帧落在 ${out}`)
 }

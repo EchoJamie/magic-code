@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { AttachmentRow, KernelEvent, PathCatalogRow } from '@magic/contracts'
+import type { KernelEvent, PathCatalogRow } from '@magic/contracts'
 import { composerLayout } from '../src/components/composer.ts'
 import type { DraftRef } from '../src/components/inline.ts'
 import { createStage } from './screen.ts'
@@ -24,7 +24,6 @@ import type { Stage } from './screen.ts'
 import { event } from './events.ts'
 
 const ENTER = { kind: 'enter' } as const
-const DOWN = { kind: 'down' } as const
 const LEFT = { kind: 'left' } as const
 const BACKSPACE = { kind: 'backspace' } as const
 
@@ -52,20 +51,6 @@ function feedIdentified(
   stage.feed([
     event('paths.identified', { path, ...(image === undefined ? {} : { image }) }),
   ] as readonly KernelEvent[])
-}
-
-/** 喂一行「送过的图片」（`/attachments` 的答复）。 */
-function attachmentRow(entry: number, name: string, blob: string): AttachmentRow {
-  return {
-    entry,
-    name,
-    mime: 'image/png',
-    bytes: 67,
-    at: 1_700_000_000_000,
-    source: `/ws/${name}`,
-    label: name,
-    blob,
-  }
 }
 
 /**
@@ -242,22 +227,18 @@ describe('U62 · 一段输入里的图片名字：`Image#N`', () => {
   })
 })
 
-describe('U62 · 两个入口，一个落地态（`@` 与 `/attachments`）', () => {
-  test('同一张图：`/attachments` 放回来 ＋ `@` 选进来 ⇒ 同一个名字', () => {
+describe('U62 · 两条路径，一个落地态（同一份内容 ⇒ 同一个名字）', () => {
+  // ⚠️ U111 撤掉 `/attachments` 之前，这一条考的是「两个入口（`@` 与 `/attachments`）
+  // 落到同一个名字」；那一条命令整条撤走之后，只剩 `@` 一个入口——**判据本身没变**：
+  // 名字按**内容身份**（字节的 sha256）取号，与它从哪条路径来无关。
+  test('同一张图，两条路径（`@报错.png` 与 `@备份/报错.png`）⇒ 同一个名字', () => {
     const stage = createStage()
 
-    // ① 先从 `/attachments` 把那张图放回输入行（那一行给的身份就是内容身份）
-    stage.type('/attachments')
-    stage.press(ENTER)
-    stage.feed([
-      event('attachments.catalog', { rows: [attachmentRow(1, '报错.png', 'H1')] }),
-    ] as readonly KernelEvent[])
-    stage.press(ENTER) // 进详情
-    stage.press(DOWN)
-    stage.press(ENTER) // 加入本次输入
+    // ① 先 `@` 选进来一张（那一处给的身份就是内容身份）
+    pickImage(stage, '报错.png', 'H1')
     expect(stage.shell.getView().draft).toBe('Image#1')
 
-    // ② 再用 `@` 把**同一张**选进来（另一条路径、内容一样）
+    // ② 再把**同一张**（另一条路径、内容一样）选进来
     stage.type(' 再看 ')
     pickImage(stage, '备份/报错.png', 'H1')
 

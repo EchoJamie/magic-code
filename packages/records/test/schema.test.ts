@@ -103,7 +103,7 @@ describe('判据 3 · 不落库清单', () => {
     }
   })
 
-  test('不落库清单＝契约常量（十九个 kind，一字不差）', () => {
+  test('不落库清单＝契约常量（一字不差）', () => {
     // 第 17 轮补锚：`model.retry` 与两个实时增量同列——退避期间那个「正在等」是实时信号、
     // 不是重放事实；重试次数另落 `ModelCallResult.attempts`，故不落库不丢信息。
     // U16 补锚：`session.state` 同列；第 19 轮：`session.history` 同列（读出来的，不是过程事实）——它是**快照**（此刻有哪些会话、当前在哪条），
@@ -128,10 +128,9 @@ describe('判据 3 · 不落库清单', () => {
     // U41 补锚：`provider.catalog`——同 `model.catalog` 那条（配置本来就在盘上，
     // 管理页看的就是它）；保存 / 移除这个动作也不落库（痕在配置文件里）。
     // **新锚**：十四条（两单各加一条，各自那条判据都没松）。
-    // U37 补锚：`attachments.catalog`——同 `session.history` 那条（读出来的不落库 ＋ 反复看）：
-    // 那份字节与名字 / 类型 / 出处本来就躺在 `user` 条目的载荷里；且回执那一格（导出的
-    // 临时文件路径）是一次性的，留下只会变成一串早就没用的路径。
-    // **新锚**：十五条，字面规则一个没动。
+    // U111 撤锚：U37 补的那一条 `attachments.catalog` 随 `/attachments` 整条撤掉——
+    // **判据一个字没动**（它当年也是「读出来的不落库」），撤的是那条命令面自己。
+    // 下面各条补锚的**序数照当时记**（都是「那一条加进来时是第几条」的写法）。
     // U63 补锚：`input.unread`——同 `skill.used` 那条（依据在**条目**里：引用了哪几份在
     // `UserPayload.refs`，读没读在工具条目里；落库＝把同一件事存第二遍）。
     // U62 补锚：`paths.identified`——同 `paths.catalog` 那一条（**读出来的**不落库：
@@ -148,10 +147,9 @@ describe('判据 3 · 不落库清单', () => {
     // **新锚**：十八条，字面规则一个没动。
     // U112 补锚：`prefs.state`——同 `provider.catalog` 那一条（界面偏好那两格的**写盘答复**，
     // 痕在配置文件的 `statusLine` / `motion` 里；落库＝把同一份读数存第二遍）。
-    // **新锚**：十九条，字面规则一个没动。
+    // **当前**：U111 撤掉 U37 那条（`attachments.catalog`）之后 ＋ 本单这条。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
-      'attachments.catalog',
       'collaboration.view',
       'exec.background.done',
       'grants.catalog',

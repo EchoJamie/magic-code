@@ -13,7 +13,7 @@
 
 import type { StatusLineConfig } from './config.ts'
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
-import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
+import type { DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
 import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
 import type { CollaborationView } from './collaboration-control.ts'
@@ -149,8 +149,6 @@ export type EventKind =
   | 'paths.identified'
   // 控制 · 输入——**剪贴板取图那一下的答复**（U107）：`input.paste` 的答复；**不落库**
   | 'input.pasted'
-  // 控制 · 附件——**本会话送出的图片**（U37）：`attachments.list` / `attachments.export` 的答复；**不落库**
-  | 'attachments.catalog'
   // 控制 · 外部工具——**外部服务器的一屏**（U39）：`mcp.list` / `mcp.reconnect` 的答复；**不落库**
   | 'mcp.catalog'
   // 控制 · 界面偏好——**`prefs.set` 的回话**（U112）：那一趟写成了没有、写成了什么；**不落库**
@@ -338,38 +336,6 @@ export type PathCatalogRow = {
    * ——本格照旧由实现判，外壳只标出来。
    */
   readonly external: boolean
-}
-
-/**
- * **本会话送出的一张图片**——`attachments.catalog` 的载荷一行（U37）。
- *
- * 三件是**读出来的**（条目载荷里那份 `InputRefEntry` 的 image 支）：名字 / 类型 / 大小
- * 与出处。它不是一本独立账——**记录就是真源**，这一行只是把那份记录读成人看得懂的样子。
- *
- * ⚠️ **`blob` 是给「加入本次输入」用的那件**（对消费者不透明，同 `BlobRef` 的定义：
- * 外壳只原样把它放进下一份 `InputRef`，**不解析**）。由头是那条硬要求：
- * 「源文件已删除后仍能取回」——字节必须从记录来，不能回头去找原路径。
- *
- * ⚠️ **不含字节内容**：这一行会经控制面、落进外壳的视图；几十 KB 的 base64 铺在事件里，
- * 只会让「有哪几张」这件事本身看不清（要看内容有「查看原图」那一条出口）。
- */
-export type AttachmentRow = {
-  /** 那一张落在**哪条记录**上——导出与取回的身份（记录位置就是身份，不另编 id）。 */
-  readonly entry: RecordId
-  /** 文件名（人读）。 */
-  readonly name: string
-  /** MIME（按字节认出来的那一种）。 */
-  readonly mime: string
-  /** 字节数——**不取内容**，只报得出「多大」。 */
-  readonly bytes: number
-  /** 送出去的时刻。 */
-  readonly at: Timestamp
-  /** 来源真路径——**可能已经不在了**（取回不依赖它，但「从哪儿来的」要答得上）。 */
-  readonly source: string
-  /** 来源的人读写法（相对默认根 / 绝对）。 */
-  readonly label: string
-  /** 字节所在（**对消费者不透明**——外壳原样带着它走，见上注）。 */
-  readonly blob: BlobRef
 }
 
 /**
@@ -1020,7 +986,7 @@ export type EventDataOf = {
    * ——用户按下的就是「把剪贴板里的图取进来」，取不到**就是这件事的结果本身**；
    * 一声不响会让他以为按漏了（「不许静默失败」，设计 · 文件与图片 · 剪贴板那一条）。
    *
-   * ⚠️ **话在内核这一侧拼**（与 `attachments.catalog.note` 同一条）：缘由里那些字
+   * ⚠️ **话在内核这一侧拼**（与 `paths.identified` 同一条）：缘由里那些字
    * （「剪贴板里只有文字」这种判据）来自**系统剪贴板的知识**，而外壳既不认 NSPasteboard，
    * 也不该去认——把它拆成错误码让外壳再拼一遍，等于同一件系统事实在两处各写一套。
    *
@@ -1049,16 +1015,6 @@ export type EventDataOf = {
     }
     /** **没取到**——一句给人看的话（说明发生了什么）。与 `image` 互斥。 */
     readonly problem?: string
-  }
-  // 控制 · 附件——**本会话送出的图片**（U37）。`attachments.list` / `attachments.export` 的答复。
-  // **不落库**：与 `session.history` 同一条——它是**读出来的**（那份字节与那几格本来就
-  // 躺在 `user` 条目的载荷里），落库＝把同一件事存两遍；且导出那一下的落点（临时文件路径）
-  // 是一次性的，留下只会变成一串早就没用的路径。
-  'attachments.catalog': {
-    /** 这一条会话送过的图片（**按送出的先后**，最近的在最后——与记录序同向）。 */
-    readonly rows: readonly AttachmentRow[]
-    /** 一句话说明——**只在有事要说时给**（导出到哪儿 / 为什么没导成）。不给＝表自明。 */
-    readonly note?: string
   }
   // 控制 · 外部工具——**外部服务器的一屏**（U39）。`mcp.list` / `mcp.reconnect` 的答复。
   // **不落库**：同 `model.catalog` / `grants.catalog` / `skills.catalog`——它是**读出来的**
@@ -1187,11 +1143,6 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 失败那一次（`problem`）尤其不能落库：它是「当时按了一下、剪贴板里没图」的一刻，
   // 重放到第二天还把它翻出来印一遍，说的是一件早就不是当下的事。
   'input.pasted',
-  // 图片附件同列的理由（U37）：与 `session.history` 同一条——它是**读出来的**
-  // （那份字节与名字 / 类型 / 出处本来就躺在 `user` 条目的载荷 `refs` 里），
-  // 落库＝把同一件事存第二遍。回执那一格（导出的临时文件路径）更是**一次性的**：
-  // 重放到第二天，那个路径早就没人清了。
-  'attachments.catalog',
   // 技能使用回执同列的理由（U33）：它是**读出来的**——依据本来就在条目载荷里
   // （`UserPayload.refs` / 旧形的 `skills`：名字 · 来源 · 正文），落库＝把同一件事存第二遍。
   // 重放要的是「当时用了哪一份材料」（读条目就有），不是「当时屏上闪了一句什么」。

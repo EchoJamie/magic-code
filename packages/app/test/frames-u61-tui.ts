@@ -29,7 +29,7 @@
  * | **B** | `/model` →（入口行）连接供应商 → 选供应商 → 问密钥 →`←`×3 | **本单的要害**：选错家想重选 |
  * | **C** | `/model manage` → 明细 → 更新认证（问密钥）→`←`×2 | **选择器 → 本地小输入**交替的另一条 |
  * | **D** | 问密钥那一屏按 `Esc` | **一律全收**：与按之前逐字相同（对照走 B） |
- * | **E** | `/attachments` → 详情 →`←`×2 | **另一条多级的**（不能只给 `/model` 加层） |
+ * | **E** | `/config` → 进「模型与连接」→`←`×2 | **另一条多级的**（不能只给 `/model` 加层） |
  * | **F** | `/resume` → `←` | **一级的顺手统一**：`←` 也收起，不特殊对待 |
  *
  * ## 跑法
@@ -49,16 +49,12 @@ import { tempDir } from './tmp.ts'
 /** 写一次并等一个条件（驱动那个 `WriteUntil` 没有出包，按它那份形写一份）。 */
 type WriteUntil = { readonly until: WaitCondition; readonly timeoutMs?: number }
 
-/** 1×1 真 PNG（67 字节）——走 E 要一张**送过的图**。 */
-const PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-  'base64',
-)
-
 /** 本趟要问的那几屏上**只在那一屏才有**的一句字（各自都是「抽屉真开了」的锚）。 */
 const ANCHOR = {
   /** `/model` 列表：末尾那三条入口行（U41 起常驻）。 */
   list: '连接供应商',
+  /** `/config` 那一扇门：列表下方那句（U71——`configHint` 空筛词时给的那句）。 */
+  config: '回车＝进那一项',
   /** 挑一家那一屏：内置供应商的名字。 */
   vendor: 'DeepSeek',
   /** 问密钥那一屏：那行说明里的一句（`askKeyFor` 给）。 */
@@ -153,10 +149,10 @@ if (import.meta.main) {
     })
 
   /**
-   * 起一个**接在 loopback 夹具上**的会话（缺省配置）——**要真送出去一条**才用得上它。
+   * 起一个**接在 loopback 夹具上**的会话（缺省配置）——**要真发一条交代**才用得上它。
    *
-   * 上面那一支的 `baseURL` 指的是一台没人听的 `127.0.0.1:9`：走 A～D 只按键、不发请求，
-   * 那一格无所谓；走 E 要**真送一张图**（`/attachments` 那一屏才有东西可列），故走缺省
+   * 上面那一支的 `baseURL` 指的是一台没人听的 `127.0.0.1:9`：走 A～E 只按键、不发请求，
+   * 那一格无所谓；下面走 F（`/resume`）要**真发一条**才有第二条会话可列，故走缺省
    * （`createUiSession` 自己起的夹具，合成假 key、一个付费请求都不发）。
    */
   const openOnFixture = (label: string) =>
@@ -320,49 +316,35 @@ if (import.meta.main) {
       await close(session)
     }
 
-    // ══ 走 E · `/attachments`：列表 → 详情（**另一条多级的**）═════════
+    // ══ 走 E · `/config`：门 → 进那一项自己那一屏（**另一条多级的**）═════
     {
-      const session = await openOnFixture('u61-图片那两屏')
+      // ⚠️ U111 撤掉 `/attachments` 之前，这一格走的是它（列表 → 详情）。它整条撤走之后
+      //    由 `/config` 承担——**同一条栈、同一个判据**：多级的不止 `/model`。
+      const session = await open('u61-配置那一门')
       sessions.push(session)
       await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })
 
-      // 先真送一张图（`@` 选入 → 提交）——`/attachments` 那一屏才有东西可列
-      const { workspace } = session.facts()
-      mkdirSync(workspace, { recursive: true })
-      writeFileSync(join(workspace, '报错.png'), PNG)
+      await typeLine(session, '/config')
+      await pressKey(session, 'enter', { until: { text: ANCHOR.config }, timeoutMs: 15_000 })
+      const list = await session.capture({ label: 'E1-配置那一扇门' })
+      keep(list, 'E1-配置那一扇门')
+      check(has(list, ANCHOR.config), 'E1：门开着（这一句只有那一屏有）')
+      check(has(list, '模型与连接'), 'E1：可配项那一行在')
 
-      // ⚠️ 等的是**输入行上那一行**（`› 看`）——行尾那个空格会被抹掉，
-      //    拿 `'看 '` 当锚是等不到的（实测超时）。
-      await session.send('看 ', { until: { text: '› 看' }, timeoutMs: 10_000 })
-      await session.send('@', { until: { text: '@' }, timeoutMs: 10_000 })
-      await session.send('报错', { until: { text: '@报错' }, timeoutMs: 10_000 })
-      await pressKey(session, 'enter', { until: { text: '报错.png' }, timeoutMs: 10_000 })
-      await typeLine(session, '这张')
-      await pressKey(session, 'enter', { until: { text: '看了，是空指针。' }, timeoutMs: 20_000 })
-      await session.wait({ text: HINT_IDLE }, { timeoutMs: 15_000 })
+      await pressKey(session, 'enter', { until: { text: ANCHOR.list }, timeoutMs: 15_000 })
+      const inner = await session.capture({ label: 'E2-进「模型与连接」那一屏' })
+      keep(inner, 'E2-进「模型与连接」那一屏')
+      check(has(inner, ANCHOR.list), 'E2：进了那一项自己那一屏（`/model` 那扇选择器本身）')
 
-      // ⚠️ 锚要挑**只有那一屏才有**的那一句：`加入本次输入` 也是命令候选那一行的字
-      //    （`/attachments　送过的图片：查看原图 · 加入本次输入`），拿它当锚等于没等。
-      await typeLine(session, '/attachments')
-      await pressKey(session, 'enter', { until: { text: '选定一张看能做什么' }, timeoutMs: 15_000 })
-      const list = await session.capture({ label: 'E1-图片列表那一屏' })
-      keep(list, 'E1-图片列表那一屏')
-      check(has(list, '报错.png'), 'E1：列表列着那张图')
-
-      await pressKey(session, 'enter', { until: { text: '两条都只做那一件事' }, timeoutMs: 10_000 })
-      const detail = await session.capture({ label: 'E2-详情那一屏（两条动作）' })
-      keep(detail, 'E2-详情那一屏（两条动作）')
-      check(has(detail, '查看原图') && has(detail, '加入本次输入'), 'E2：详情两条动作都在')
-
-      await pressKey(session, 'left', { until: { text: '选定一张看能做什么' }, timeoutMs: 10_000 })
-      const back = await session.capture({ label: 'E3-按 ← 退回列表' })
-      keep(back, 'E3-按 ← 退回列表')
-      check(has(back, '报错.png'), 'E3：退回了列表那一屏（**不是只给 `/model` 加层**）')
+      await pressKey(session, 'left', { until: { text: ANCHOR.config }, timeoutMs: 10_000 })
+      const back = await session.capture({ label: 'E3-按 ← 退回门' })
+      keep(back, 'E3-按 ← 退回门')
+      check(has(back, ANCHOR.config), 'E3：退回了门那一屏（**不是只给 `/model` 加层**）')
 
       await pressKey(session, 'left', { until: { text: HINT_IDLE }, timeoutMs: 10_000 })
       const home = await session.capture({ label: 'E4-再按 ← 收起' })
       keep(home, 'E4-再按 ← 收起')
-      check(!has(home, '报错.png　'), 'E4：弹到空＝收起')
+      check(!has(home, ANCHOR.config), 'E4：弹到空＝收起')
       await close(session)
     }
 

@@ -152,7 +152,6 @@ import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
 import { validateSelection } from './agent-models.ts'
-import { saveAttachmentFile } from './attachment-file.ts'
 import { removeProvider, saveProvider, setModelDefault, setPrefs, setWebFetch } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
@@ -1744,9 +1743,6 @@ export function assemble(options: AssembleOptions): Assembly {
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
     now,
-    // 导出原图（U37）——**落盘那一步在这儿**（域不碰文件系统，同配置 / 授权的读写）；
-    // 取字节那一半在对话域（它握着记录里那份 blob）
-    saveAttachment: (file) => saveAttachmentFile(file),
   })
 
   /**
@@ -2011,7 +2007,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 就没有文件），故这里**不编** `clipboard.png` 那种像文件名的东西，写的是出处本身。
    *
    * 它不承担「一段输入里认得出是哪一张」那件事——那是 `Image#N` 的活（引用块上那一处）。
-   * 这一格只在 `/attachments` 那一屏当抬头用，而那一屏另有类型 · 大小 · 时间分开两张图。
+   * 这一格是**出处**（记录与引用块都要它），不是文件名。
    */
   const CLIPBOARD_IMAGE_NAME = '剪贴板'
 
@@ -2055,8 +2051,7 @@ export function assemble(options: AssembleOptions): Assembly {
             mime: checked.mime,
             // ⚠️ **它没有文件名**（剪贴板来的那一张本来就没有落位）——这一格是
             // `image` 支的必填，故给一个**说得出出处、不冒充文件**的名字。
-            // 一段输入里认它是靠 `Image#N`（那一处引用块），这一格只在
-            // `/attachments` 那一屏上作抬头用（那一屏还有类型 · 大小 · 时间分得开）。
+            // 一段输入里认它是靠 `Image#N`（那一处引用块），这一格只是出处。
             name: CLIPBOARD_IMAGE_NAME,
             bytes: read.bytes.length,
             blob: await recordsStore.blobs.put(read.bytes),
@@ -2591,10 +2586,6 @@ export function assemble(options: AssembleOptions): Assembly {
     // 而落 blob 那一步同样经**记录域**的公开面。答复走事件（`input.pasted`，不落库）。
     // **异步**：它要 spawn 一条系统命令、还要读回一个临时文件。
     onInputPaste: () => void pasteClipboardImage(),
-    // 图片附件（U37）——**原样转手**给对话域（条目载荷里那份引用只有它认得，
-    // 同 `history.read` 的站位）；答复走事件（`attachments.catalog`，不落库）
-    onAttachmentList: () => void conversation.readAttachments(),
-    onAttachmentExport: (entry) => void conversation.exportAttachment(entry),
     // 外部服务器（读侧 ＋ 显式重连 · U39）——**归装配**（那一束连接是它编排的，同
     // `model.list` 之于注册表）；答复走事件（`mcp.catalog`，不落库）
     onMcpList: () => listMcp(),

@@ -36,7 +36,7 @@
  * 两件的名与实一一对应（U04 时 `createConversationService` 就是单会话实例，U16 起
  * 那个位置归主面——端口名跟着端口走）。
  */
-export { createConversationService, readSessionCatalog, readAttachmentCatalog } from './sessions.ts'
+export { createConversationService, readSessionCatalog } from './sessions.ts'
 export type { SessionHost, SessionHostDeps, SessionInstance } from './sessions.ts'
 
 export { createConversationSession } from './service.ts'

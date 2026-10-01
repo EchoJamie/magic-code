@@ -1337,7 +1337,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
     if (command.type === 'session.list') { void catalog(conn); return }
-    if (conn.target === undefined && ['model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list', 'attachments.list'].includes(command.type)) {
+    if (conn.target === undefined && ['model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list'].includes(command.type)) {
       const session = conn.selectedSession
       void observe(command, {
         magic: options.magic, cwd: conn.cwd, store, session, mcp: mcpCatalog, now,

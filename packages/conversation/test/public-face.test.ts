@@ -21,7 +21,6 @@ describe('公开面', () => {
       'createConversationService',
       'createConversationSession',
       'createPlanReader',
-      'readAttachmentCatalog',
       'readSessionCatalog',
     ])
   })

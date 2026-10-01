@@ -73,7 +73,6 @@ describe('无执行者的真实只读目录', () => {
       expect(grants.stale).toEqual([stale])
       const servers: ObservationContext['mcp'] = [{ server: 'real-probe', transport: 'stdio', state: { status: 'available' }, tools: ['echo'], rejected: [{ tool: 'bad name', reason: '真实拒收原因' }] }]
       expect(await answer({ type: 'mcp.list' }, { ...g.context, mcp: servers }, 'mcp.catalog')).toEqual({ servers })
-      expect(await answer({ type: 'attachments.list' }, g.context, 'attachments.catalog')).toEqual({ rows: [] })
       await Bun.sleep(0)
       expect(fetch).not.toHaveBeenCalled()
       expect(spawn).not.toHaveBeenCalled()
@@ -152,7 +151,7 @@ describe('无执行者的真实只读目录', () => {
     } finally { fetch.mockRestore() }
   })
 
-  test('所选会话附件与工作区授权历史真实可见，查询不分配记录id或改变未读', async () => {
+  test('所选会话的工作区授权历史真实可见，查询不分配记录id或改变未读', async () => {
     const g = ground()
     const writer = createRecordsStore({ dataDir: g.dataDir, workspace: [g.workspace] })
     cleanups.push(() => writer.close())
@@ -166,11 +165,8 @@ describe('无执行者的真实只读目录', () => {
     expect(g.store.decisionHistory([g.workspace])).toEqual({ total: 1, auto: 1, kernel: 0 })
     const selected = { ...g.context, session: 'existing', cwd: g.root }
     const before = bytesUnder(g.root)
-    const event = await query({ type: 'attachments.list' }, selected)
-    expect(event?.session).toBe('existing')
-    const attachments = await answer({ type: 'attachments.list' }, selected, 'attachments.catalog')
-    expect(attachments.rows).toHaveLength(1)
-    expect(attachments.rows[0]).toMatchObject({ name: 'saved.png', bytes: 3, blob, source: '/gone/saved.png' })
+    // ⚠️ 这条会话里那条带图片引用的交代（`blob` 是它那份字节）**照旧躺着**——U111 撤掉
+    // `/attachments` 撤的是那条命令与它的读面，材料本身仍在记录里（看它在 `ctrl+o` 那一屏）。
     const grants = await answer({ type: 'grants.list' }, selected, 'grants.catalog')
     expect(grants.workspace).toBe(g.workspace)
     expect(grants.history).toEqual({ total: 1, auto: 1, kernel: 0 })
@@ -178,13 +174,13 @@ describe('无执行者的真实只读目录', () => {
     expect(await g.store.listSessions()).toHaveLength(1)
   })
 
-  test('设置、执行、导出和独立session/history命令不冒充目录；坏配置不被吞成空表', async () => {
+  test('设置、执行和独立session/history命令不冒充目录；坏配置不被吞成空表', async () => {
     const g = ground()
     writeFileSync(join(g.base, 'config.json'), '{broken')
     for (const command of [
       { type: 'session.list' }, { type: 'history.read' }, { type: 'model.switch', provider: 'ds' },
       { type: 'mcp.reconnect', server: 'real' }, { type: 'input.submit', text: '明确输入' },
-      { type: 'attachments.export', entry: 1 }, { type: 'grants.revoke', index: 0 },
+      { type: 'grants.revoke', index: 0 },
     ] satisfies Command[]) expect(await query(command, g.context)).toBeUndefined()
     await expect(query({ type: 'model.list' }, g.context)).rejects.toThrow('config.json')
     expect(await g.store.listSessions()).toEqual([])

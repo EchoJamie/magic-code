@@ -12,7 +12,7 @@
 import type { StatusLineConfig } from './config.ts'
 import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
-import type { BlobRef, DecisionId, RecordId, SessionId } from './ids.ts'
+import type { BlobRef, DecisionId, SessionId } from './ids.ts'
 import type { ReasoningSetting } from './model.ts'
 import type { CollaborationCommand } from './collaboration-control.ts'
 
@@ -49,7 +49,7 @@ export type InputRef = InputRefPlace &
     | { readonly kind: 'file'; readonly source: string; readonly external?: true }
     | { readonly kind: 'dir'; readonly source: string; readonly external?: true }
     /**
-     * **从历史里取回的那一张图**（U37）——`/attachments` 的「加入本次输入」给的引用。
+     * **一张图**（`@` 选入 / 剪贴板取来）——引用带的是**字节所在**，不是一条要现读的路径。
      *
      * ⚠️ **与上面三支不同：它不按 `source` 现读**。那一份字节早随当时的条目落库了，
      * 而它恰恰可能是「源文件已经删掉」的那一张——设计明写「复用保存字节，**不依赖原路径**」。
@@ -513,35 +513,6 @@ export type PathIdentify = {
 }
 
 /**
- * `attachments.list`——**本会话已送出的图片**（U37 · `/attachments` 的读侧）。
- *
- * **由头**：源文件删掉、会话重开之后仍要取得回那一张图（设计 · 文件与图片：
- * 「删掉原文件、重开会话后仍能取回并继续使用」），而取回的依据是**记录里那份字节**，
- * 不是盘上那个路径。外壳够不着记录（域与外壳都只经控制面说话），故与
- * `history.read` / `skills.list` 同一处境：读走命令面，答复走事件（`attachments.catalog`，
- * **不落库** —— 条目本来就在库里，再存一遍读数只是多一张会过期的表）。
- *
- * **无参**——问的就是「这一条会话送过哪些图片」。会话由内核按**当下活跃**那条绑
- * （同一族命令的既定姿势：不让外壳指定别的会话）。
- */
-export type AttachmentList = { readonly type: 'attachments.list' }
-
-/**
- * `attachments.export`——**把那一张的原图导出成本地文件**（U37 · 「查看原图」）。
- *
- * 与 `attachments.list` 分开的理由：那一条是**读**（不改变任何东西），这一条
- * **真的在盘上落一个文件**——用户的动作（按下「查看原图」），答复照走 `attachments.catalog`
- * （`note` 说导出到哪儿 / 为什么没成），与 `mcp.reconnect` 之后照走 `mcp.catalog` 同一条姿势。
- *
- * `entry` ＝那一张**落在哪条记录上**（`AttachmentRow.entry`）——记录位置就是身份，
- * 不另编一串 id。**导出不碰原路径**：字节从记录里取（源文件没了照样导得出）。
- *
- * **只写新文件**：落点是唯一命名的临时文件，**不覆盖已有文件**、**不自动打开外部应用**
- * （设计明文）；「自动用看图软件打开」不在内核的射程里。
- */
-export type AttachmentExport = { readonly type: 'attachments.export'; readonly entry: RecordId }
-
-/**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
  * ＋ U33 的技能目录一支 ＋ U36 的路径候选一支 ＋ U62 的认出选定那一条）——外壳发往内核的全部消息。
  * `mcp.list`——**外部服务器的一屏**（U39）。
@@ -623,8 +594,6 @@ export type Command =
   | SkillList
   | PathList
   | PathIdentify
-  | AttachmentList
-  | AttachmentExport
   | McpList
   | McpReconnect
   | InputPaste
