@@ -282,7 +282,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
         { id: 88 },
       ),
     ])
-    expect((await stage.screen(WIDE)).statusLine).toContain('◆ 等你定夺')
+    expect((await stage.screen(WIDE)).statusLine).toContain('◊ 等你定夺')
 
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })])
 

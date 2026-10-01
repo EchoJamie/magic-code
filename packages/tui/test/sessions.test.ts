@@ -168,11 +168,11 @@ describe('状态行 · 可配与降级（U112）', () => {
    * - **锚之后**：用户挑的那几格（挑哪几格、什么顺序、上不上色）。
    *
    * 这一条钉的是**形状那一维**：设计 ·「状态行可配置」那一行明写
-   * 「圆点没问题；问题是「工作中／等你」**同形只靠颜色分** ⇒ 工作中 `●`、等你 `◆`」。
+   * 「圆点没问题；问题是「工作中／等你」**同形只靠颜色分** ⇒ 工作中 `●`、等你 `◊`」。
    */
   test('① 状态打头、量挂在它后面——**工作中与等你分形状**（不靠颜色也分得出）', () => {
     expect(line({ state: 'working', amount: '0.6s' })).toContain('● 工作中 0.6s')
-    expect(line({ state: 'waiting', amount: '2/3' })).toContain('◆ 等你定夺 2/3')
+    expect(line({ state: 'waiting', amount: '2/3' })).toContain('◊ 等你定夺 2/3')
     expect(line({ state: 'retrying', amount: '2/3' })).toContain('● 正在重试 2/3')
     expect(line({ state: 'error' })).toContain('▲ 出错')
 

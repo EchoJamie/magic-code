@@ -140,8 +140,8 @@ describe('记号 · 身份与状态两维（U112）', () => {
     for (const banned of ['⏺', '⟳', '✘', '⚙']) expect(frame.has(banned)).toBe(false)
 
     // 白名单本身——**2026-10-01 裁定后那十三个**（`○` `▲` `■` `!` 按准则收进来，
-    // `◉` 换成 `◆`）。改一个字都算跑偏。
-    expect(GLYPH_WHITELIST.join('')).toBe('›▸·⋯│●○◆▲■✓×!')
+    // `◉` 换成 `◊`）。改一个字都算跑偏。
+    expect(GLYPH_WHITELIST.join('')).toBe('›▸·⋯│●○◊▲■✓×!')
   })
 
   /**
@@ -163,7 +163,7 @@ describe('记号 · 身份与状态两维（U112）', () => {
 
   /**
    * **状态那一格的形状表**（2026-10-01 用户裁定，逐字）：
-   * 工作中 `●` · 等你在 `◆` · 空闲 `○` · 错误 `▲`。另两个状态沿用它们的形
+   * 工作中 `●` · 等你在 `◊` · 空闲 `○` · 错误 `▲`。另两个状态沿用它们的形
    * （重试＝进行中那一档 ⇒ `●`；失联＝放弃判断 ⇒ `■`）。**六个状态六个形，两两不同。**
    */
   test('状态格形状表：六态六形，两两不同（裁定逐字落成判据）', () => {
@@ -177,7 +177,7 @@ describe('记号 · 身份与状态两维（U112）', () => {
     }
 
     expect(shapes.working).toBe('●')
-    expect(shapes.waiting).toBe('◆')
+    expect(shapes.waiting).toBe('◊')
     expect(shapes.idle).toBe('○')
     expect(shapes.error).toBe('▲')
     expect(shapes.retrying).toBe('●') // 进行中那一档，与「工作中」同形（文案分得开）
@@ -236,7 +236,7 @@ describe('动效 · 只挂状态位（U112）', () => {
    *
    * 判据落在**第一格的字符**上——不是色：无色终端里那两位各有各的形。
    */
-  test('状态格**分形状**：工作中 `●` · 等你 `◆`（无色也分得出）', async () => {
+  test('状态格**分形状**：工作中 `●` · 等你 `◊`（无色也分得出）', async () => {
     const working = live()
     working.feed([event('turn.start', {}, { id: 90 })])
     const asked = await working.screen()

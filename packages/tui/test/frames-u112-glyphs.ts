@@ -46,7 +46,7 @@ const GLYPHS: readonly { readonly mark: string; readonly note: string }[] = [
   { mark: '▲', note: '状态格 · 出错（裁定后正式入白名单）' },
   { mark: '■', note: '状态格 · 状态待确认（裁定后正式入白名单）' },
   { mark: '!', note: '工具行行尾 · 没跑成（裁定后正式入白名单）' },
-  { mark: '◆', note: '状态格 · 在等你（本单新分出来的形状 · 2026-10-01 裁定后）' },
+  { mark: '◊', note: '状态格 · 在等你（裁定后 · 三档字体都覆盖的那一个）' },
   { mark: '✓', note: '行尾 · 成（本单新加的）' },
   { mark: '×', note: '行尾 · 败（本单新加的，换掉 ✗）' },
   { mark: '⏺', note: '（换掉）助手那个记号' },
@@ -54,7 +54,8 @@ const GLYPHS: readonly { readonly mark: string; readonly note: string }[] = [
   { mark: '✗', note: '（换掉）失败那个' },
   { mark: '✘', note: '（设计点名禁）带 emoji 变体的那个' },
   // **换掉的那个也量**：它红在哪（`☑` 那一列会说「三把尺子对不上」），是「为什么换」那一半
-  { mark: '◉', note: '（换掉）U+25C9——SF Mono / Monaco 不覆盖，改用 ◆' },
+  { mark: '◉', note: '（换掉）U+25C9——SF Mono / Monaco 不覆盖' },
+  { mark: '◆', note: '（换掉）U+25C6——SF Mono 同样不覆盖，故再换成 ◊' },
 ]
 
 const COLUMNS = 40
@@ -142,6 +143,7 @@ function unicodeName(mark: string): string {
     '▲': 'BLACK UP-POINTING TRIANGLE',
     '■': 'BLACK SQUARE',
     '!': 'EXCLAMATION MARK',
+    '◊': 'LOZENGE',
     '◆': 'BLACK DIAMOND',
     '◉': 'FISHEYE',
     '✓': 'CHECK MARK',

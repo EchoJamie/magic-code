@@ -145,7 +145,7 @@ describe('状态行 · 栏位固定', () => {
     expect((await working.screen(WIDE)).statusLine).toContain('● 工作中')
 
     const waiting = asked()
-    expect((await waiting.screen(WIDE)).statusLine).toContain('◆ 等你定夺') // U112：等你与工作中**分形状**
+    expect((await waiting.screen(WIDE)).statusLine).toContain('◊ 等你定夺') // U112：等你与工作中**分形状**
 
     const retrying = createStage()
     retrying.feed([
@@ -311,7 +311,7 @@ describe('输入接管', () => {
     // 改由**卡本身**背书：材料 ＋ 键位 ＋ 状态行都在屏上。
     expect(frame.has('│ 跑测试 · 可逆')).toBe(true)
     expect(frame.has('y 批准')).toBe(true)
-    expect(frame.statusLine).toContain('◆ 等你定夺')
+    expect(frame.statusLine).toContain('◊ 等你定夺')
     expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
     expect(frame.has('打了一半')).toBe(false) // 收起来了，不是丢了（下一条把它要回来）
   })
@@ -351,7 +351,7 @@ describe('输入接管', () => {
     const after = await stage.screen(WIDE)
 
     expect(after.screen.lines).toEqual(before.screen.lines)
-    expect(after.statusLine).toContain('◆ 等你定夺') // 还在接管里
+    expect(after.statusLine).toContain('◊ 等你定夺') // 还在接管里
   })
 
   test('**多件逐件问**——件数报两处（卡上 · 底行），且**只有一张卡**', async () => {
@@ -366,7 +366,7 @@ describe('输入接管', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('│ 整写文件 · 可逆 · 2 / 3')).toBe(true) // 报数之一：卡的标题
-    expect(frame.statusLine).toContain('◆ 等你定夺 2/3') // 报数之二：底行
+    expect(frame.statusLine).toContain('◊ 等你定夺 2/3') // 报数之二：底行
     expect(count(frame, 'y 批准')).toBe(1) // 不并列、不堆积——你永远只面对一件
   })
 })
@@ -577,6 +577,6 @@ describe('输入行 · 光标落在哪', () => {
     // 原锚＝`rowOf('等你的答复')` 那一行不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
     // 新锚与**抽屉接管**同一姿势（见下一节「抽屉开着」那条）：输入行不在 ⇒ 真光标送回帧下。
     expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
-    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◆ 等你定夺'))
+    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◊ 等你定夺'))
   })
 })

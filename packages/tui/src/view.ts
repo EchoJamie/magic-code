@@ -3061,7 +3061,7 @@ export function withDecisionStatus(view: ShellView): ShellView {
  * 出处：设计 · 终端交互「符号 ＋ 动效：一套」那张表的第一列（身份，静态，永不参与动效）
  * 与「取字准则」的白名单（`marks.ts` 一处出处）。
  *
- * ⚠️ **工作中 `●` 与在等你 `◆` 必须分形状**（设计明写）——不能只靠颜色：无色终端里
+ * ⚠️ **工作中 `●` 与在等你 `◊` 必须分形状**（设计明写）——不能只靠颜色：无色终端里
  * 「需要你」与「在忙」就会同形，而那正是这一格最要紧的一处分别。
  */
 export function stateMark(state: StatusState): string {
