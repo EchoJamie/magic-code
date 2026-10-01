@@ -184,7 +184,7 @@ function checkScreen(shot: Capture, where: string, laidOut: string, want: number
   //    不由这一处猜：这一条问的是「**这一跳多印了没有**」，而各屏的正确答案不同。
   check(bannerCopies(shot) === want, `${where}：字标份数对得上（${want} 份）`, `实际 ${bannerCopies(shot)} 份`)
   check(first.replace(/\s+$/u, '') === art, `${where}：它就在最前面（整份缓冲的顶行）`, `顶行＝「${first}」`)
-  check(countOn(shot.history, '· 已切到') >= 1, `${where}：回执在——这一屏的界由它承担`)
+  check(countOn(shot.history, '已切到') >= 1, `${where}：回执在——这一屏的界由它承担`)
   check(countOn(shot.history, laidOut) >= 1, `${where}：目标会话的记录铺出来了（${laidOut}）`)
 }
 
@@ -202,7 +202,7 @@ async function waitLaidOut(session: UiSession, label: string, row: string, timeo
   await waitUntil(
     session,
     `新页铺好（回执 ＋「${row}」同时在屏上）`,
-    (lines) => countOn(lines, `· 已切到 ${label}`) >= 1 && countOn(lines, row) >= 1,
+    (lines) => countOn(lines, `已切到 ${label}`) >= 1 && countOn(lines, row) >= 1,
     timeoutMs,
   )
 }
@@ -348,9 +348,9 @@ async function switching(): Promise<void> {
     checkScreen(again, '再切到乙那一屏', '› 第二条会话的交代', 2)
 
     check(
-      countOn(again.history, '· 已切到') >= 2,
+      countOn(again.history, '已切到') >= 2,
       '连切两次：**回执两次都在**（没有「字标没了、回执也没了」的空屏）',
-      `实际 ${countOn(again.history, '· 已切到')} 条`,
+      `实际 ${countOn(again.history, '已切到')} 条`,
     )
 
     // 空闲**按两次**才走（U46）
@@ -428,7 +428,7 @@ async function narrow(): Promise<void> {
       back.history.every((line) => line.includes('█') === false),
       '窄窗下不印块字版——换会话那一屏（含 scrollback）也**没有残块**',
     )
-    check(countOn(back.history, '· 已切到') >= 1, '窄窗下回执照常在')
+    check(countOn(back.history, '已切到') >= 1, '窄窗下回执照常在')
     check(
       countOn(back.history, '第一条会话的交代') >= 2,
       '窄窗下目标会话的记录照常铺出来',

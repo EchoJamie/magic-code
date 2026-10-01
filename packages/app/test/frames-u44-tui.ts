@@ -379,7 +379,7 @@ async function wide(): Promise<void> {
 
     checkPage(back, '05', {
       // 换会话那一页的界由回执承担 ⇒ 它就在顶行（字标不在换会话时重印）
-      top: '· 已切到',
+      top: '已切到',
       gone: [乙说, 乙答],
       kept: [乙说, 乙答],
       before: yi,
@@ -417,9 +417,9 @@ async function wide(): Promise<void> {
     )
     // 挡回那一跳**没有**再冒一句「已切到」（说的是真发生过的：这一跳什么都没切）
     check(
-      countOn(busy.lines, '· 已切到') === countOn(rename.lines, '· 已切到'),
+      countOn(busy.lines, '已切到') === countOn(rename.lines, '已切到'),
       '挡回那一跳**没有**再冒「已切到」（说的都是真发生过的）',
-      `拒之前 ${countOn(rename.lines, '· 已切到')} 条 → 拒之后 ${countOn(busy.lines, '· 已切到')} 条`,
+      `拒之前 ${countOn(rename.lines, '已切到')} 条 → 拒之后 ${countOn(busy.lines, '已切到')} 条`,
     )
     check(
       countOn(busy.lines, 甲说) >= 1,
@@ -581,7 +581,7 @@ async function narrow(): Promise<void> {
     keep(back)
 
     checkPage(back, '11', {
-      top: '· 已切到',
+      top: '已切到',
       gone: [乙说],
       kept: [乙说],
       before: yi,

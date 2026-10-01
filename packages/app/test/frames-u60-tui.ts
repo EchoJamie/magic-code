@@ -68,9 +68,28 @@ function keep(shot: Capture): void {
 /** 折行的判据要**接起来读**（窄窗上长句会被劈成两截）。 */
 const flat = (lines: readonly string[]): string => lines.map((line) => line.trim()).join('')
 
-/** 屏上**记录区那一行**（`· ` 开头）——回执都长这样。 */
+/**
+ * 本文件涉及的那几**句回执**——U112 起回执**不带记号**了（`· ` 只做分隔符），
+ * 故不能再按「以 `· ` 开头」认（那会**恒空**，判据当场变空转）。
+ *
+ * ⚠️ **也不能改按「缩进两格」认**：字标那一块也是两格起头（一行版字标就是 `  Magic Code`），
+ * 那样认会把字标当回执（实测踩到：「有供应商时一条回执都没有」当场假红）。
+ * 故按**这几句文案**认——本文件每一处回执都是其中之一。
+ */
+const RECEIPT_TEXTS: readonly string[] = [
+  '还没有接上供应商',
+  '还没有选好走哪个模型',
+  '没送出',
+  '已断开',
+  '已切到',
+  '已开一条新会话',
+]
+
+/** 屏上**那几句回执**（按文案认，见 `RECEIPT_TEXTS`）。 */
 const receipts = (lines: readonly string[]): readonly string[] =>
-  lines.map((line) => line.trim()).filter((line) => line.startsWith('· '))
+  lines
+    .map((line) => line.trim())
+    .filter((line) => RECEIPT_TEXTS.some((one) => line.includes(one)))
 
 /** 等一个条件在**可见屏**上成立（默认 20 秒）。 */
 async function waitUntil(
@@ -283,7 +302,8 @@ async function unconfigured(mark: string, columns: number, rows: number): Promis
     await waitUntil(
       session,
       '第二条也拦下了（两条「没送出」）',
-      (lines) => lines.filter((line) => line.trim().startsWith('· 没送出')).length >= 2,
+      // ⚠️ **U112 起回执不带记号了**——按文案认，不再按 `· ` 认
+      (lines) => lines.filter((line) => line.trim().startsWith('没送出')).length >= 2,
     )
     const beforeUp = await session.capture({ label: `${mark}-11-翻之前` })
     // 「空着」＝**它回到了那句占位提示**（空闲态那一句，产品自己的常量）

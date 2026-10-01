@@ -118,11 +118,17 @@ function checkNoStutter(shot: Capture, name: string): void {
   check(stuttered.length === 0, `不是「${name}失败：${name}失败（…）」那一形（D41 的原样）`, stuttered[0] ?? '')
 }
 
-/** 结果那一行（`✗ …`）——名分在那儿**只说一遍**。 */
+/**
+ * 结果那一行（`<耗时> · <名分>…`）——名分在那儿**只说一遍**。
+ *
+ * ⚠️ **U112 换过这一条的锚**：败那个记号由 `✗` 改成 `×`，而 `×` **挪到工具行那一行上**
+ * （`▸ × write(…)`），结果行本身不再带记号（它是 `  1ms · 写入失败（…）`）。
+ * 故认法改成「**带 ` · ` 且含那半句名分**」——那两件都在结果行上，工具行上都没有。
+ */
 function checkVerdictLine(shot: Capture, name: string, at: string): void {
-  const line = linesWith(shot, '✗').find((one) => one.includes(`${name}失败`))
+  const line = linesWith(shot, ' · ').find((one) => one.includes(`${name}失败`))
 
-  check(line !== undefined, `${at} 结果那一行在（✗ … ${name}失败（path）：…）`)
+  check(line !== undefined, `${at} 结果那一行在（<耗时> · ${name}失败（path）：…）`)
   check(countIn(line as string, `${name}失败`) === 1, `${at} 那一行名分只说一遍`, line as string)
 }
 
@@ -276,8 +282,8 @@ async function sceneFailures(): Promise<void> {
     // 而那正是这一支要齐的形制（原先它是「编辑失败：读取失败（…）：…」：名分两遍）。
     checkVerdictLine(edit, '读取', '④ 编辑那一支（卡在读）')
     checkNoStutter(edit, '读取')
-    check(!has(edit, '编辑失败'), '④ **不再缀 `编辑失败：`**——那是第三个名分（回执上一行已经写着 `● edit`）')
-    check(has(edit, '● edit'), '④ 而「哪件工具失败了」在回执那一行上（`● edit`）')
+    check(!has(edit, '编辑失败'), '④ **不再缀 `编辑失败：`**——那是第三个名分（工具那一行已经写着 `▸ × edit`）')
+    check(has(edit, '▸ × edit'), '④ 而「哪件工具失败了」在工具那一行上（`▸ × edit`）')
     check(has(edit, '文件不存在'), '④ 缘由照旧在')
 
     // —— ④ 反面 · 编辑那一支的**别几条**（失配那一路）——
@@ -291,7 +297,7 @@ async function sceneFailures(): Promise<void> {
     const miss = await expanded(session, '05-反面-编辑失配那一路未改')
 
     check(has(miss, '未找到待替换文本——文件未改'), '④ 失配那一路**逐字未改**（本单只去重、不改内容）')
-    check(has(miss, '● edit'), '④ 它的回执头一行照旧（`● edit`）')
+    check(has(miss, '▸ × edit'), '④ 它的工具那一行照旧（`▸ × edit`）')
   } finally {
     try {
       await session.quit()

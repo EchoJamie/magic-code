@@ -121,7 +121,13 @@ async function waitUntil(
 }
 
 /** 这一页**通读**时认定的「界」——换会话那一行回执（设计：那一页的界由它承担）。 */
-const TURN_MARK = '· 已切到 '
+/**
+ * 工具行那一行的**认法**（U112 起：`▸ <状态位> 名(参数)`——状态位在身份记号**右边**）。
+ * 故不能再拿 `▸ read(` 当子串：中间还夹着一位状态（● 跑动 / ✓ 成 / × 败 / ! 没跑成）。
+ */
+const TOOL_ROW = /▸ [●✓×!] read\(/
+
+const TURN_MARK = '已切到 '
 
 /**
  * 一屏「这一页铺好了没有」——四件，每一跳都过一遍。
@@ -360,7 +366,7 @@ async function main(): Promise<void> {
       await waitUntil(
         session,
         '那一趟读跑完 或 裁决卡',
-        (lines) => countOn(lines, '▸ read(') >= 1 || countOn(lines, 'y 批准') >= 1,
+        (lines) => lines.some((line) => TOOL_ROW.test(line)) || countOn(lines, 'y 批准') >= 1,
       )
     } catch (error) {
       console.log(`  ⚠ ${(error as Error).message.split('\n')[0]}`)
@@ -368,7 +374,7 @@ async function main(): Promise<void> {
 
     const 读那一趟 = await session.capture({ label: '00-那一趟读（不弹卡）' })
     keep(读那一趟)
-    check(countOn(读那一趟.lines, '▸ read(') >= 1, '那一趟 `read` **真跑下去了**（那一行在——不是被卡在裁决上）')
+    check(读那一趟.lines.filter((line) => TOOL_ROW.test(line)).length >= 1, '那一趟 `read` **真跑下去了**（那一行在——不是被卡在裁决上）')
     check(countOn(读那一趟.lines, 'y 批准') === 0, '**没有裁决卡**（U76：读判轻、默认通、不问）')
     await session.wait({ text: `甲答第1句` }, { timeoutMs: 30_000 })
     for (let i = 2; i <= 甲轮数; i += 1) {
@@ -412,7 +418,7 @@ async function main(): Promise<void> {
       '03：甲那条**几十轮记录都在**（不是只铺出最后几条）',
     )
     check(
-      countOn(回甲.history, '▸ read(') >= 1 && countOn(回甲.history, '大材料') >= 1,
+      countOn(回甲.history, '大材料') >= 1 && 回甲.history.some((line) => TOOL_ROW.test(line)),
       '03：**工具那一行**也在（那一次 `read` 连同它的关键参数——U112 起参数写在括号里）',
     )
 
@@ -452,7 +458,7 @@ async function main(): Promise<void> {
       kept: [乙说, 乙答],
       before: 回乙,
     })
-    check(countOn(再回甲.history.slice(再回甲.history.findLastIndex((l) => l.includes(TURN_MARK))), '▸ read(') >= 1, '05：这一趟**工具行也在**')
+    check(再回甲.history.slice(再回甲.history.findLastIndex((l) => l.includes(TURN_MARK))).filter((line) => TOOL_ROW.test(line)).length >= 1, '05：这一趟**工具行也在**')
 
     await session.quit()
     const report = await session.close({ graceMs: 3_000, keepSandbox: true })

@@ -251,12 +251,16 @@ async function wide(): Promise<void> {
     )
     check(countOn(cleared.lines, 甲说) === 0, '② `/clear`：切走那条的记录一行都不在可见屏上')
     check(countOn(cleared.history, 甲说) >= 1, '② `/clear`：切走那条还在整份缓冲里（推走，不是抹掉）')
-    // **回执就是清屏 ＋ 字标，不加第三样**（工单硬约束 2）：这一页上一条 `·` 开头的回执都没有
-    const receipts = cleared.lines.filter((line) => line.trimStart().startsWith('· '))
+    // **回执就是清屏 ＋ 字标，不加第三样**（工单硬约束 2）：这一页一条回执都没有。
+    //
+    // ⚠️ **U112 起回执不带记号了**（`· ` 撤掉、只做分隔符），故「以 `· ` 开头」这条滤网
+    //    已经**认不出任何东西**（恒空＝判据变空转）。改成按**它若发会是哪两句文案**认——
+    //    那两句在这条路上各只可能出自一处（`/clear` 那一跳与 `/resume` 那一跳）。
+    const strays = ['已开一条新会话', '已切到'].filter((one) => countOn(cleared.lines, one) > 0)
     check(
-      receipts.length === 0,
+      strays.length === 0,
       '② `/clear`：**不另发文案**（这一页只有字标与帧，一条回执都没有）',
-      `实际 ${receipts.length} 条：${receipts.join(' / ')}`,
+      `实际出现：${strays.join(' / ')}`,
     )
     checkFrame(cleared, '03 clear 之后')
 
@@ -274,14 +278,14 @@ async function wide(): Promise<void> {
     await waitUntil(
       session,
       '切回甲：回执与新页的记录同时在屏上',
-      (lines) => countOn(lines, '· 已切到') >= 1 && countOn(lines, 甲说) >= 1,
+      (lines) => countOn(lines, '已切到') >= 1 && countOn(lines, 甲说) >= 1,
     )
     const back = await session.capture({ label: '04-切回甲' })
     keep(back)
 
     check(bannerCopies(back) === 2, '③ `/resume`：**不印**（仍是那两块——切回这一跳一块都没添）', `实际 ${bannerCopies(back)} 块`)
     check(
-      (back.lines.find((line) => line.trim() !== '') ?? '').includes('· 已切到'),
+      (back.lines.find((line) => line.trim() !== '') ?? '').includes('已切到'),
       '③ `/resume`：这一页的界由回执承担（顶行是 `· 已切到 <名字>`）',
       `实际顶行＝「${back.lines.find((line) => line.trim() !== '')}」`,
     )
@@ -367,7 +371,7 @@ async function firstMessage(): Promise<void> {
       '④ 开局 `/clear`：开张那句话**没被抹掉**（还在整份缓冲里）',
     )
     check(
-      cleared.lines.filter((line) => line.trimStart().startsWith('· ')).length === 0,
+      ['已开一条新会话', '已切到'].every((one) => countOn(cleared.lines, one) === 0),
       '④ 开局 `/clear`：一样不另发文案',
     )
     checkFrame(cleared, '07 开局 clear 之后')
@@ -438,13 +442,13 @@ async function narrow(): Promise<void> {
     await waitUntil(
       session,
       '窄窗切回甲：回执与新页的记录同时在屏上',
-      (lines) => countOn(lines, '· 已切到') >= 1 && countOn(lines, 甲说) >= 1,
+      (lines) => countOn(lines, '已切到') >= 1 && countOn(lines, 甲说) >= 1,
     )
     const back = await session.capture({ label: '09-窄窗切回甲' })
     keep(back)
 
     check(bannerCopies(back) === 2, '窄窗 `/resume`：不印（仍是那两块）', `实际 ${bannerCopies(back)} 块`)
-    check((back.lines.find((line) => line.trim() !== '') ?? '').includes('· 已切到'), '窄窗 `/resume`：界由回执承担')
+    check((back.lines.find((line) => line.trim() !== '') ?? '').includes('已切到'), '窄窗 `/resume`：界由回执承担')
     checkFrame(back, '09 窄窗切回甲')
 
     // 空闲**按两次**才走（U46）——`quit()` 就是那一套
