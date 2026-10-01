@@ -71,7 +71,7 @@ function count(frame: Frame, needle: string): number {
 // ══ 五 · 状态行（栏位固定，不随状态漂）═══════════════════════════════
 
 describe('状态行 · 栏位固定', () => {
-  test('左半四格**次序恒定**——① 状态 · ② 会话 · ③ 模型 · ④ 用量', async () => {
+  test('左半各格**次序恒定**——① 状态 · ② 会话 · 上下文占用', async () => {
     const stage = createStage()
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
@@ -81,10 +81,12 @@ describe('状态行 · 栏位固定', () => {
 
     const line = (await stage.screen(WIDE)).statusLine
 
+    // ⚠️ **U112 改的那一格**：默认那一条（`STATUS_LINE_DEFAULT`）＝「会话名 · 上下文占用」，
+    //    **模型那一格不再默认摆出来**（设计：默认那条不放配置回显，用户自己勾才算）。故
+    //    ② 之后是上下文占用——「次序恒定」这条规格不变，只是那一列里少了一格。
     expect(line.startsWith(' ○ 空闲')).toBe(true) // ① 永远在第 ① 位（它是视觉锚）
     expect(line.indexOf('○ 空闲')).toBeLessThan(line.indexOf('记录查询优化'))
-    expect(line.indexOf('记录查询优化')).toBeLessThan(line.indexOf('MiniMax-M3'))
-    expect(line.indexOf('MiniMax-M3')).toBeLessThan(line.indexOf('3.1k'))
+    expect(line.indexOf('记录查询优化')).toBeLessThan(line.indexOf('3.1k'))
   })
 
   /**
@@ -143,7 +145,7 @@ describe('状态行 · 栏位固定', () => {
     expect((await working.screen(WIDE)).statusLine).toContain('● 工作中')
 
     const waiting = asked()
-    expect((await waiting.screen(WIDE)).statusLine).toContain('● 等你定夺')
+    expect((await waiting.screen(WIDE)).statusLine).toContain('◉ 等你定夺') // U112：等你与工作中**分形状**
 
     const retrying = createStage()
     retrying.feed([
@@ -176,7 +178,7 @@ describe('状态行 · 栏位固定', () => {
     expect(narrow.indexOf('记录查询优化')).toBe(wide.indexOf('记录查询优化'))
   })
 
-  test('窄窗口**从右往左省**：用量 → 模型 → 标题截断；**① 永不省**', async () => {
+  test('窄窗口**从右往左省**：上下文占用 → 标题截断；**① 永不省**', async () => {
     const stage = createStage()
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
@@ -184,14 +186,16 @@ describe('状态行 · 栏位固定', () => {
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
+    // ⚠️ **U112 起的默认那一列**＝「会话名 · 上下文占用」（模型那格不再默认摆出来）。
+    //   故让位次序照旧是「从右往左」，只是那一列短了一格 ⇒ 挤下 ④ 的宽度随之下移：
+    //   60 列时两格还都放得下，50 列才轮到 ④ 让位（旧那一列到 60 列就挤掉了）。
     const wide = (await stage.screen({ columns: 80, rows: 24 })).statusLine
-    const mid = (await stage.screen({ columns: 60, rows: 24 })).statusLine
+    const mid = (await stage.screen({ columns: 50, rows: 24 })).statusLine
     const tight = (await stage.screen({ columns: 30, rows: 24 })).statusLine
 
-    expect(wide).toContain('3.1k') // ④ 在
-    expect(wide).toContain('MiniMax-M3') // ③ 在
+    expect(wide).toContain('3.1k') // 上下文占用在
+    expect(wide).toContain('记录查询优化') // 会话名在
     expect(mid).not.toContain('3.1k') // ④ 先让位
-    expect(mid).not.toContain('MiniMax-M3') // ③ 也跟着让位
     expect(mid).toContain('记录查询优化') // ② 还在
     expect(tight).toContain('记录查询…') // 再窄：标题**截断**（不是消失）
     expect(tight).not.toContain('记录查询优化')
@@ -207,7 +211,9 @@ describe('状态行 · 栏位固定', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.statusLine).not.toContain('已换模型') // 状态行只放「此刻」
-    expect(frame.statusLine).toContain('MiniMax-M2') // ③ 跟着换成新的
+    // ⚠️ **U112 删掉的那一条**：旧锚＝`statusLine` 含新模型名（模型那格跟着换）。
+    //    模型那一格不再在默认那一列里（`STATUS_LINE_DEFAULT`＝会话名 · 上下文占用），
+    //    「换模型」这件事在屏上只剩记录区那一行回执——下面那条就是它的落点。
     expect(frame.record.some((line) => line.text === '· 已换模型 → MiniMax-M2')).toBe(true)
   })
 })
@@ -305,7 +311,7 @@ describe('输入接管', () => {
     // 改由**卡本身**背书：材料 ＋ 键位 ＋ 状态行都在屏上。
     expect(frame.has('│ 跑测试 · 可逆')).toBe(true)
     expect(frame.has('y 批准')).toBe(true)
-    expect(frame.statusLine).toContain('● 等你定夺')
+    expect(frame.statusLine).toContain('◉ 等你定夺')
     expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
     expect(frame.has('打了一半')).toBe(false) // 收起来了，不是丢了（下一条把它要回来）
   })
@@ -345,7 +351,7 @@ describe('输入接管', () => {
     const after = await stage.screen(WIDE)
 
     expect(after.screen.lines).toEqual(before.screen.lines)
-    expect(after.statusLine).toContain('● 等你定夺') // 还在接管里
+    expect(after.statusLine).toContain('◉ 等你定夺') // 还在接管里
   })
 
   test('**多件逐件问**——件数报两处（卡上 · 底行），且**只有一张卡**', async () => {
@@ -360,7 +366,7 @@ describe('输入接管', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('│ 整写文件 · 可逆 · 2 / 3')).toBe(true) // 报数之一：卡的标题
-    expect(frame.statusLine).toContain('● 等你定夺 2/3') // 报数之二：底行
+    expect(frame.statusLine).toContain('◉ 等你定夺 2/3') // 报数之二：底行
     expect(count(frame, 'y 批准')).toBe(1) // 不并列、不堆积——你永远只面对一件
   })
 })
@@ -571,6 +577,6 @@ describe('输入行 · 光标落在哪', () => {
     // 原锚＝`rowOf('等你的答复')` 那一行不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
     // 新锚与**抽屉接管**同一姿势（见下一节「抽屉开着」那条）：输入行不在 ⇒ 真光标送回帧下。
     expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
-    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('● 等你定夺'))
+    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◉ 等你定夺'))
   })
 })

@@ -38,6 +38,8 @@ import type {
   RunNotice,
   SessionId,
   SkillCatalogRow,
+  StatusLineCell,
+  StatusLineConfig,
   StopPhase,
   StopScope,
 } from '@magic/contracts'
@@ -55,6 +57,7 @@ import {
   appendPageNote,
   appendReceipt,
   closePicker,
+  configReasoningOf,
   createView,
   matchCommands,
   movePicker,
@@ -85,6 +88,13 @@ import {
   modelRows,
   reasoningHint,
   reasoningRows,
+  reasoningText,
+  STATUS_LINE_DEFAULT,
+  statusLineColorOf,
+  statusLineHint,
+  statusLineRows,
+  STATUSLINE_COLOR_ACTION,
+  workspaceLabelOf,
   sessionRows,
   settle,
   undock,
@@ -321,6 +331,14 @@ function statusLines(view: ShellView): readonly string[] {
 const STATUS_TITLE = '此刻'
 
 /**
+ * **状态行配置那一屏的抬头**（U112）——画在候选**之上**那一行（同 `/task` 那一屏的姿势）。
+ *
+ * 它答的是这一屏的第一个问题：**你在配什么**。「状态行」三个字不够——用户要的是
+ * 「这一行放哪几格」，而那几格在下面列着（`statusLineRows`）。
+ */
+const STATUSLINE_TITLE = '状态行放哪几格'
+
+/**
  * 一次「等内核回话再开选择器」的意图——`/resume` · `/model` · `/grants` · `/skills` 各一种。
  *
  * ⚠️ **`'config'` 是唯一一个等三份答复的**（见 `configPending`）：那一屏的四行里三行的
@@ -467,6 +485,19 @@ export type ShellOptions = {
    * 那就是默认落在 `~/.magic` 的用户要敲的）。
    */
   readonly magicBase?: string | undefined
+  /**
+   * **状态行放哪几格**（U112 · `MagicConfig.statusLine` 原样带进来）。
+   *
+   * 与 `dataDir` / `workspaceRoots` 同一条姿势：**启动那一刻定下的那几格**由外面递
+   * ——窗口这一侧读配置只为呈现（见 `packages/app/src/run/terminal.ts` 那张表）。
+   * **不给＝还没配过** ⇒ 屏上走默认那条（`STATUS_LINE_DEFAULT`）。
+   *
+   * ⚠️ 此后**由外壳自己改**（`/config` 里那两格 → `prefs.set` → 回话到了落进视图）：
+   * 这一格只是**开机那一份**，不是唯一的真源。
+   */
+  readonly statusLine?: StatusLineConfig | undefined
+  /** **减少动效**（U112 · `MagicConfig.motion.reduced`）——不给＝没开。同上：开机那一份。 */
+  readonly reducedMotion?: boolean | undefined
   /**
    * **受理输入了没有**——缺省 `true`（不设闸）。
    *
@@ -662,7 +693,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   //
   // ⚠️ **画哪一版由渲染层按列数定**（视图这层不知道列数）——见 `LogRow` 里 `banner` 那一支。
   // 这里种的只有 ④ 的**开机那一格**（`contextWindow`）——此后的分母随事件来（见 `ShellOptions`）。
-  let view = withBanner(withContextWindow(createView(), options.contextWindow ?? null))
+  let view = withBanner(
+    withContextWindow(
+      createView({
+        // **那三格开机就定**（U112）——配置里读到什么就是什么；没读到＝缺省
+        // （默认那条 / 照常动 / 不知道自己在哪个工作区），不在这里猜
+        statusLine: options.statusLine,
+        reducedMotion: options.reducedMotion,
+        workspace: workspaceLabelOf(options.workspaceRoots),
+      }),
+      options.contextWindow ?? null,
+    ),
+  )
 
   // 开屏说明属于这一页的页头。历史到达时保留原位置，避免 Static 跳过首条正文。
   for (const text of options.receipts ?? []) view = appendPageNote(view, text)
@@ -865,6 +907,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return model?.provider === pick.provider && model.model === pick.model ? model.reasoning : undefined
     }
     return chosenReasoning?.provider === pick.provider && chosenReasoning.model === pick.model ? chosenReasoning.setting : undefined
+  }
+
+  /**
+   * **把状态行「思考档」那一格刷成此刻的样子**（U112）。
+   *
+   * 那一档的真源有两处，先后由这里定：
+   * ① **用户在这一台壳上亲手选过的**（`chosenReasoning`——那次动作只在壳手上）；
+   * ② 否则看**配置里声明的那一条**（`configReasoningOf`，从视图读）。
+   * 两处都没有 ⇒ `null` ⇒ 状态行那一格**整格省掉**（不写「未知」——那是编一个词）。
+   *
+   * ⚠️ **只在真的变了才 commit**（时刻比较）：它挂在 `onEvent` 的常规路上，每一条事件都过
+   * ——不带这一句就是每来一条事件白提交一次重绘。
+   */
+  const syncReasoning = (): void => {
+    const pick = view.modelCurrent
+    const setting = pick === null ? undefined : reasoningOf(pick) ?? configReasoningOf(view)
+    const text = setting === undefined ? null : reasoningText(setting)
+
+    if (text !== view.status.reasoning) commit(patchStatus(view, { reasoning: text }))
   }
 
   /**
@@ -1477,6 +1538,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (request !== undefined && request.session !== event.session) reduced = { ...reduced, dock: prior.dock, stashed: prior.stashed, draft: prior.draft, refs: prior.refs, caret: prior.caret, status: prior.status }
     }
     commit(reduced, STREAMING.has(event.kind))
+    // **思考档那一格跟着走**（U112）——`model.catalog` 一改 `modelCurrent`，它就得重算
+    // （换模型换了档位／新模型没有这一档），见 `syncReasoning` 的注。
+    syncReasoning()
     if (event.kind === 'tool.decision' && prior.dock.kind === 'decision' && prior.dock.pending.call === event.data.call) {
       const next = decisions.values().next().value
       if (next !== undefined) commit(reduce(view, next))
@@ -1499,6 +1563,28 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         waiting = null
         openConfigPicker()
       }
+    }
+
+    /**
+     * **界面那两格的回话**（U112）——`prefs.set` 写盘的结果。
+     *
+     * 三件：
+     * - **回话是权威的**（报的是落定之后那一份）：写不成时（配置文件被外面改过 · 坏 JSON）
+     *   把屏上那两格**摆回真的样子**——不是把用户刚才点的那个当成成了；
+     * - **那一屏照旧开着**：连勾几格是常态，回一次话就收起来会把人赶出去。故就地重铺
+     *   （状态行那一屏 / `/config` 那一屏各按各的重铺）；
+     * - **`note` 落一行回执**（成了说改了哪几格、没成说为什么）——静默吞掉是最难查的那一形。
+     */
+    if (event.kind === 'prefs.state') {
+      const held = view.dock.kind === 'picker' ? view.dock.picker.source : null
+      commit({
+        ...view,
+        statusLine: event.data.statusLine,
+        reducedMotion: event.data.reducedMotion === true,
+      })
+      if (held === 'statusline') openStatusLinePicker(picked(view)?.value === undefined ? 0 : view.dock.kind === 'picker' ? view.dock.picker.selected : 0)
+      if (held === 'config') refreshConfigPicker()
+      if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
     }
 
     if (event.kind === 'session.state') {
@@ -2217,6 +2303,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     webFetch: view.webFetch,
     grants: view.grants,
     mcp: view.mcp,
+    // 这一屏长什么样（U112）——两格都在视图里（开机那份配置 ＋ 改过之后那份）
+    statusLine: view.statusLine,
+    reducedMotion: view.reducedMotion,
     filter: configQuery,
   })
 
@@ -2250,6 +2339,78 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * ——0 行在筛的时候**是一个回答**（「没有这一项」），而用户手上那几个动作一个不少
    * （接着打、退格、`esc`）。那一句回答由 `configHint` 写在列表下方。
    */
+  /**
+   * **「状态行」那一屏**（U112）——`/config` 里那一行进得来的**下一层**。
+   *
+   * 行怎么铺、说明怎么写都在 `view.ts` 一处（`statusLineRows` / `statusLineHint`）；
+   * 这一层只管开屏、重铺、以及「选定之后发什么」。
+   */
+  const openStatusLinePicker = (selected = 0): void => {
+    const rows = statusLineRows({ config: view.statusLine })
+
+    commit(
+      openPicker(view, {
+        source: 'statusline',
+        selected: Math.min(Math.max(selected, 0), rows.length - 1),
+        rows,
+        title: STATUSLINE_TITLE,
+        hint: statusLineHint(),
+      }),
+    )
+  }
+
+  /** 此刻那一份（没配过＝默认那条）——改一格时以它为底。 */
+  const statusLineNow = (): StatusLineConfig => view.statusLine ?? { cells: [...STATUS_LINE_DEFAULT] }
+
+  /**
+   * **改一格就发一趟**（U112）——就地摆上屏、同一刻把 `prefs.set` 发出去。
+   *
+   * 两件事各归各的：
+   * - **屏上立刻变**（不等人）：勾一下要当场看见它进了那一行——等一个来回再动，
+   *   手感就是「按了没反应」；
+   * - **写盘的结果由 `prefs.state` 回来说**（见 `onEvent` 那一支）：没写成（配置文件
+   *   被外面改过 · 坏 JSON…）时，那一声会把这两格**摆回真的样子**并留一句回执。
+   *   故这里的「立刻变」**不是把用户点的那个当成成了**，是「先按他要的摆，成了就定住」。
+   */
+  const changeStatusLine = (next: StatusLineConfig): void => {
+    const held = picked(view)?.value
+    commit({ ...view, statusLine: next })
+
+    if (view.dock.kind === 'picker' && view.dock.picker.source === 'statusline') {
+      const rows = statusLineRows({ config: next })
+      const at = held === undefined ? 0 : rows.findIndex((row) => row.value === held)
+      openStatusLinePicker(at === -1 ? 0 : at)
+    }
+
+    send({ type: 'prefs.set', statusLine: next })
+  }
+
+  /** 选定那一行＝**放上 / 拿下**（`颜色` 那一行是切换上色开关——见 `statusLineRows`）。 */
+  const toggleStatusLine = (value: string): void => {
+    const config = statusLineNow()
+
+    if (value === STATUSLINE_COLOR_ACTION) {
+      changeStatusLine({ ...config, color: !statusLineColorOf(config) })
+      return
+    }
+
+    const key = value as StatusLineCell
+    // **顺序＝挑的先后**：放上就接在末尾（它显示在状态行最右边），拿下就从表里摘掉
+    const cells = config.cells.includes(key)
+      ? config.cells.filter((one) => one !== key)
+      : [...config.cells, key]
+
+    changeStatusLine({ ...config, cells })
+  }
+
+  /** **减少动效**开关（U112）——回车即切（两态的东西不另开一屏）。 */
+  const toggleReducedMotion = (): void => {
+    const next = !view.reducedMotion
+    commit({ ...view, reducedMotion: next })
+    if (view.dock.kind === 'picker' && view.dock.picker.source === 'config') refreshConfigPicker()
+    send({ type: 'prefs.set', reducedMotion: next })
+  }
+
   const refreshConfigPicker = (): void => {
     if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'config') return
 
@@ -4571,6 +4732,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           return NONE
         }
 
+        // **状态行**（U112）——**进它自己那一屏**（挑哪几格、什么顺序、上不上色）。
+        // 那一屏读的就是**视图里那两格**（开机那份配置 ＋ 改过之后那份），不另问读数
+        // （没有一条命令答得出来——那两格是**这一屏长什么样**，不是会话的什么事实）。
+        if (row.value === 'statusLine') {
+          enterLayer()
+          openStatusLinePicker()
+          return NONE
+        }
+
+        // **减少动效**（U112）——两态的东西**回车即切**，不另开一屏（「给一个设定」）
+        if (row.value === 'motion') {
+          if (view.dock.kind === 'picker' && view.dock.picker.source === 'config') {
+            enterLayer()
+          }
+          toggleReducedMotion()
+          return NONE
+        }
+
         if (row.value === 'grants') {
           enterLayer()
           waiting = 'grants'
@@ -4602,6 +4781,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
             ? appendReceipt(closePicker(view), '这一趟没拿到数据目录与工作区根')
             : appendOutput(closePicker(view), CONFIG_PATHS_TITLE, lines),
         )
+        return NONE
+      }
+
+      // **状态行那一屏**（U112）：选定＝放上 / 拿下**这一格**（`颜色` 那一行是切换上色）。
+      // ⚠️ **不关抽屉**：连勾几格是常态，关掉就得从头开一遍（同 `/grants` 那条姿势）。
+      if (view.dock.picker.source === 'statusline') {
+        toggleStatusLine(row.value)
         return NONE
       }
 
@@ -4724,6 +4910,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           return NONE
         }
         chosenReasoning = { provider: detailAt.provider, model: detailAt.model, setting }
+        // 亲手选过 ⇒ 状态行那一格立刻跟上（U112）
+        syncReasoning()
         send({
           type: 'model.switch',
           provider: detailAt.provider,

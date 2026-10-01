@@ -52,14 +52,34 @@ const COPY = {
 } as const
 
 /**
- * 工具**跑完**那行的完成标记（`tui` 的 `verdictOf`：成功走 `✓`）。
+ * 工具**跑完**那一位状态标记（`tui` 的 `verdictOf`／`statusBit`：成功走 `✓`）。
  *
  * ⚠️ 为什么单拎出来当锚：审批卡上就写着要执行的命令（`1. echo hello-magic —— 只读`），
  * 拿**参数里的那串字**当「跑完了」的条件＝**空转**——首轮验收就是这么栽的
- * （`frames/0002-工具跑完.txt` 抓到的其实还是审批卡）。`✓` 只在**结果行**上，
- * 而结果行只在工具真跑完之后才有。
+ * （`frames/0002-工具跑完.txt` 抓到的其实还是审批卡）。
+ *
+ * ⚠️ **U112 起它在工具行头一行的行尾**（`▸ 名(关键参数) … ✓`），跑完那一刻才落定
+ * ——原先「结果行」那一整行（`✓ <耗时> · <摘要>`）拆成了两行：`✓` 上头一行的行尾，
+ * `<耗时> · <摘要>` 落到**紧接的下一行**。判据跟着拆（见 `hasToolDone`），
+ * 「完成标记 ＋ 那串输出都看得见」这件事一字未变。
  */
 const TOOL_DONE = '✓'
+
+/**
+ * 工具**真跑完了**——头一行的行尾带着 `✓`，而**紧接的下一行**带着那串输出（U112）。
+ *
+ * 为什么必须钉住「紧接的下一行」：头一行里本来就印着**参数**（`▸ exec(echo hello-magic) … ✓`），
+ * 输出串往往与参数串是同一段字——不钉下一行，判据就退化成「参数在屏上」，
+ * 正是 `TOOL_DONE` 那段注点名的**空转**。U112 之前这一条是**一行**上判
+ * （`✓ … · <输出>`），现在同一个判断落在两行上，强度不变。
+ */
+function hasToolDone(lines: readonly string[], output: string): boolean {
+  return lines.some((line, at) => {
+    const next = lines[at + 1]
+
+    return line.includes(TOOL_DONE) && next !== undefined && next.includes(output)
+  })
+}
 
 /**
  * 状态行左半**第一格**的词（空闲）——「它又闲下来了」那条判据的锚。
@@ -191,7 +211,14 @@ const bootInputResizeExit: Scenario = {
     await session.key('enter', { until: { text: '收到，我在。' }, timeoutMs: 4_000 })
     const answered = await session.capture({ label: '回话之后' })
     ui.check(answered.text.includes('› 你好'), '记录区留下了这次交代', '')
-    ui.check(answered.text.includes('⏺ 收到，我在。'), '记录区留下了模型的答复', '锚＝助手标记 `⏺`')
+    // ⚠️ **U112**：助手那一行的 `⏺ ` 记号没了、正文**顶格**（设计 ·「符号 ＋ 动效：一套」
+    //    那张表：助手在说话那一行的身份是「（无记号）」）。判的那件事一字未变——
+    //    **答复那一行在记录区里、且就是它那几个字**：故仍钉住**整行**（顶格、无前导记号）。
+    ui.check(
+      answered.lines.some((line) => line.startsWith('收到，我在。')),
+      '记录区留下了模型的答复',
+      '锚＝助手正文（U112 起无记号、顶格）',
+    )
 
     // —— 窄窗 resize：判据是**应用自己按新宽度画出过一帧**（D27）——
     //
@@ -232,9 +259,9 @@ const bootInputResizeExit: Scenario = {
       `整份缓冲实际 ${countExact(cleared.history, '› 你好')} 条`,
     )
     ui.check(
-      countExact(cleared.history, '⏺ 收到，我在。') === 1,
+      countExact(cleared.history, '收到，我在。') === 1,
       '改窗之后答复只有一条',
-      `整份缓冲实际 ${countExact(cleared.history, '⏺ 收到，我在。')} 条`,
+      `整份缓冲实际 ${countExact(cleared.history, '收到，我在。')} 条`,
     )
 
     // —— 退出：空闲**按两次**走人（U46：第一下只印那一行、不退出）——
@@ -410,13 +437,13 @@ const modelStreamApproval: Scenario = {
     // 敲的是 `y` 这个**字符**——PTY 上一次按键本来就是它，故走 `send`（`key` 只收功能键）。
     // ⚠️ 这一下**绝不能重发**：批准不幂等，重放下去就是**误批下一条**（首轮验收点名的坑）。
     // ⚠️ 等的**不是** `hello-magic` 那串字（审批卡上就有它，见 `TOOL_DONE` 的注）——
-    // 等的是**结果行**：`✓ <耗时> · <输出末行>`，它只在工具跑完之后才上屏。
+    // 等的是那一位落定：`✓`（U112 起在头一行行尾），它只在工具跑完之后才上屏。
     await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await session.capture({ label: '工具跑完' })
     ui.check(
-      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('hello-magic')),
-      '工具真跑了：结果行＝完成标记 ＋ 那条输出',
-      `锚＝结果行「${TOOL_DONE} … · hello-magic」（审批卡里那串参数不算）`,
+      hasToolDone(ran.lines, 'hello-magic'),
+      '工具真跑了：头一行行尾＝完成标记，紧接的下一行＝那条输出',
+      `锚＝头一行「▸ … ✓」＋ 下一行「<耗时> · hello-magic」（审批卡里那串参数不算）`,
     )
 
     // —— 独立核：**不看屏**，直读应用自己写的记录库 ——
@@ -529,9 +556,9 @@ const mcpApproval: Scenario = {
     await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
     const approved = await session.capture({ label: '第一次批准后' })
     ui.check(
-      approved.lines.some((line) => line.includes(TOOL_DONE) && line.includes('第一次外部调用')),
-      '结果行＝完成标记 ＋ 服务器回的那串字',
-      `锚＝结果行「${TOOL_DONE} … · 第一次外部调用」（审批卡里那串参数不算）`,
+      hasToolDone(approved.lines, '第一次外部调用'),
+      '头一行行尾＝完成标记，紧接的下一行＝服务器回的那串字',
+      `锚＝头一行「▸ … ✓」＋ 下一行「<耗时> · 第一次外部调用」（审批卡里那串参数不算）`,
     )
     ui.check(mcpCalls(log).length === 1, '服务器自己数到了那一次调用', `日志 ${mcpCalls(log).length} 行`)
 
@@ -604,9 +631,9 @@ const mcpApproval: Scenario = {
     await broken.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await broken.capture({ label: '内置工具照常' })
     ui.check(
-      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('内置照常')),
+      hasToolDone(ran.lines, '内置照常'),
       '单连接失败不拖垮内置工具（内置那件照跑）',
-      `锚＝结果行「${TOOL_DONE} … · 内置照常」`,
+      `锚＝头一行「▸ … ✓」＋ 下一行「<耗时> · 内置照常」`,
     )
     await broken.close()
 
@@ -859,9 +886,9 @@ const mcpApprovalEdge: Scenario = {
     await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
     const ran = await session.capture({ label: '长参数跑完' })
     ui.check(
-      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('第')),
-      '长参数那件真跑完了（结果行）',
-      `锚＝结果行「${TOOL_DONE} …」`,
+      hasToolDone(ran.lines, '第'),
+      '长参数那件真跑完了（头一行行尾落定 ＋ 下一行有它那段输出）',
+      `锚＝头一行「▸ … ✓」＋ 下一行「<耗时> · …第…」`,
     )
 
     // —— 三 · 取消：拖住的那件，批准之后按中断 ——
@@ -970,9 +997,9 @@ const mcpUnderscoreName: Scenario = {
 
     const ran = await session.capture({ label: '下划线工具跑完' })
     ui.check(
-      ran.lines.some((line) => line.includes(TOOL_DONE) && line.includes('下划线也调得到')),
-      '结果行＝完成标记 ＋ 服务器回的那串字（真调到了）',
-      `锚＝结果行「${TOOL_DONE} … · 下划线也调得到」`,
+      hasToolDone(ran.lines, '下划线也调得到'),
+      '头一行行尾＝完成标记，紧接的下一行＝服务器回的那串字（真调到了）',
+      `锚＝头一行「▸ … ✓」＋ 下一行「<耗时> · 下划线也调得到」`,
     )
     // 服务器自己数的数：这一件真的被调了一次（不是「未注册的工具」那种答复）
     ui.check(mcpCalls(log).length === 1, '服务器自己数到了这一件', `日志 ${mcpCalls(log).length} 行`)

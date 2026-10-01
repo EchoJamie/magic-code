@@ -530,6 +530,42 @@ async function until(tty: CaptureTty, needle: string, timeoutMs = 3_000): Promis
   throw new Error(`等不到「${needle}」——此刻屏上是：\n${visible(tty.bytes())}`)
 }
 
+/**
+ * 此刻屏上**最后一条非空行**——内联渲染里它就是最底下那一格（状态行）。
+ *
+ * ⚠️ **不能拿 `visible(tty.bytes())` 整份去找**：那是**追加**的字节流水，不是终端模拟
+ * （本文件的 `until` 正靠这一点「出现过就算数」）。过去的帧**一直留着**——旧分母
+ * （`3.1k/201k`）在历史里永远在，扫全量就永远「没下去」。要判「现在那一格」，
+ * 只能看**最新写出来的那一行**。
+ */
+function lastLine(tty: CaptureTty): string {
+  const lines = visible(tty.bytes()).split('\n')
+
+  for (let at = lines.length - 1; at >= 0; at -= 1) {
+    const line = (lines[at] ?? '').trimEnd()
+    if (line.trim() !== '') return line
+  }
+
+  return ''
+}
+
+/** 等**最后一条非空行**满足条件（不是「历史里出现过」——那量的是过去）。 */
+async function untilLastLine(
+  tty: CaptureTty,
+  ok: (line: string) => boolean,
+  what: string,
+  timeoutMs = 3_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (ok(lastLine(tty))) return
+    await Bun.sleep(10)
+  }
+
+  throw new Error(`等不到「${what}」——此刻最后一行是：${lastLine(tty)}`)
+}
+
 describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
   test('换模型之后 **屏上那个分母**当场跟着换——经产品那一路走出来的', async () => {
     const land = stage()
@@ -560,9 +596,17 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       // `mm-same` 那条是内置表的 M2（204_800 − 4_096 ⇒ `201k`）
       await until(tty, '3.1k/201k')
 
-      // 再换到未知模型 ⇒ 分母从屏上下去（只剩分子，没有那个斜杠）
+      // 再换到未知模型 ⇒ 分母从屏上下去（只剩分子，没有那个斜杠）。
+      // ⚠️ **U112**：状态行默认不再显示模型名（「会话名 · 上下文占用」，型号改成了
+      //    可选的一格），原先那句锚在型号上（`my-local-llama · 3.1k`）——现在判
+      //    **最底下那一格本身**：分母（斜杠后面那个数）下去、分子（`3.1k`）还在。
+      //    判的那件事一字未变。
       expect(assembly.switchModel({ provider: 'local' }).ok).toBe(true)
-      await until(tty, 'my-local-llama · 3.1k')
+      await untilLastLine(
+        tty,
+        (line) => line.includes('· 3.1k') && !line.includes('3.1k/'),
+        '状态行只剩分子（`· 3.1k`、没有 `3.1k/`）',
+      )
 
       // 收摊：**空闲要按两次**才走（U46 —— 与手打一致，键经 Ink 那条路真走一遍）。
       // 第一下只挂上那一行：先等它在屏上，第二下才是**真的第二次**。

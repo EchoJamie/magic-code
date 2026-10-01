@@ -186,6 +186,8 @@ describe('`/config` · 开屏', () => {
       '取网页用的模型', // U78 加的那一行（设计预留给它的就是这一格）
       '本工作区授权',
       '外部工具',
+      '状态行', // U112 加的两行（状态行可配 · 减少动效）——都排在末行那份账之前
+      '减少动效',
       '数据目录与工作区根',
     ])
     expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG)
@@ -281,7 +283,7 @@ describe('`/config` · 筛', () => {
     expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字')
     stage.press(BACKSPACE)
 
-    expect(labelsOf(stage)).toHaveLength(5)
+    expect(labelsOf(stage)).toHaveLength(7)
     expect(hintOf(stage)).toBe('回车＝进那一项')
     expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG) // 抽屉照旧开着
   })
@@ -309,7 +311,7 @@ describe('`/config` · 筛', () => {
 
     // 再开一次 ⇒ 全表（开一屏就是一屏新的，筛词不跟着活下来）
     open(stage)
-    expect(labelsOf(stage)).toHaveLength(5)
+    expect(labelsOf(stage)).toHaveLength(7)
     expect(hintOf(stage)).toBe('回车＝进那一项')
   })
 })
@@ -364,7 +366,7 @@ describe('`/config` · 选中即进那一屏', () => {
   test('「数据目录与工作区根」⇒ 自己那一屏：一块输出，报的是**没缩过的全路径**', () => {
     const stage = live()
     open(stage)
-    for (let step = 0; step < 4; step += 1) stage.press(DOWN) // 末行（U78 起是第 5 行）
+    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
     stage.press(ENTER)
 
     // 收屏（回输入行），记录区里留一块
@@ -383,7 +385,7 @@ describe('`/config` · 选中即进那一屏', () => {
     // 列表那一格报个数（一格里摆不下两条全路径），它自己那一屏逐条写全
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根')
 
-    for (let step = 0; step < 4; step += 1) stage.press(DOWN)
+    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
     stage.press(ENTER)
     expect(rowsOf(stage)).toEqual([
       '数据与工作区根',
@@ -402,7 +404,7 @@ describe('`/config` · 选中即进那一屏', () => {
 
     stage.press(LEFT)
     expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
-    expect(labelsOf(stage)).toHaveLength(5)
+    expect(labelsOf(stage)).toHaveLength(7)
   })
 })
 
@@ -418,6 +420,9 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     webFetch: null,
     grants: GRANTS,
     mcp: MCP,
+    // U112 新增的两项：状态行**没配过**（`undefined` ＝ 走默认那条）＋ 动效照常（没开「减少动效」）。
+    statusLine: undefined,
+    reducedMotion: false,
     filter: '',
   }
 
@@ -454,8 +459,8 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     ).toBe('/var/magic · /srv/ws')
   })
 
-  test('筛词空＝全表（五行）；筛不中＝空表（退到空就是全表）', () => {
-    expect(configRows(base)).toHaveLength(5)
+  test('筛词空＝全表（七行）；筛不中＝空表（退到空就是全表）', () => {
+    expect(configRows(base)).toHaveLength(7)
     expect(configRows({ ...base, filter: '没有这一项' })).toEqual([])
   })
 
@@ -468,7 +473,17 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
 
 describe('`/config` · 取网页用的模型（U78）', () => {
   const paths = { dataDir: '/d', home: '/home/echo', workspaceRoots: ['/home/echo/ws'] }
-  const CALL = { paths, models: ENTRIES, current: CURRENT, webFetch: null, grants: GRANTS, mcp: MCP, filter: '' }
+  const CALL = {
+    paths,
+    models: ENTRIES,
+    current: CURRENT,
+    webFetch: null,
+    grants: GRANTS,
+    mcp: MCP,
+    statusLine: undefined, // U112：没配过 ⇒ 走默认那条
+    reducedMotion: false, // U112：没开「减少动效」
+    filter: '',
+  }
 
   const valueOf = (webFetch: ModelRef | null): string | undefined =>
     configRows({ ...CALL, webFetch }).find((row) => row.label.trim() === '取网页用的模型')?.meta

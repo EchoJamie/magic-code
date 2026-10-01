@@ -236,8 +236,10 @@ describe('不夹空行 · 咬得住的证据（本轮的验收重头）', () => 
     expect(entryBlocks(screen, entries)).toHaveLength(entries.length)
     expect(found.length).toBeGreaterThan(0)
 
-    // **指名道姓**：正文那一条——原文一个段落分隔都没有，屏上却每行夹一个空行
-    const body = found.find((block) => block.marker === '⏺ ')
+    // **指名道姓**：正文那一条——原文一个段落分隔都没有，屏上却每行夹一个空行。
+    // ⚠️ **按它自己那句话认，不按记号认**（U112）：助手那一行的 `⏺ ` 已经去了，
+    // 而这一份标本是改前录的（旧写法在 `EntrySpec.legacy` 里）——拿记号找它，改一次就断一次。
+    const body = found.find((block) => block.text.startsWith('工作区基本为空'))
     expect(body).toBeDefined()
     expect(body?.allowed).toBe(0)
     expect(body?.blanks).toBeGreaterThanOrEqual(3)

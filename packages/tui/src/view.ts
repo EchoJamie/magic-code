@@ -43,6 +43,8 @@ import type {
   SkillCatalogRow,
   SnapshotDecision,
   SnapshotTool,
+  StatusLineCell,
+  StatusLineConfig,
   StopPhase,
   StopScope,
   UsedSkill,
@@ -51,6 +53,8 @@ import type {
 import { apiKeyEnvVarOf, mcpToolLabel, parseMcpToolName, sanitizeForDisplay } from '@magic/contracts'
 // 草稿里那几处引用的形态（外壳侧）——纯编辑规则在 `./components/inline.ts`
 import type { DraftRef } from './components/inline.ts'
+import { MARKS } from './marks.ts'
+import { tokenLabel } from './components/lines.ts'
 
 /**
  * 工具行上那个名字（U38）——**外部工具的注册名不照抄**。
@@ -499,6 +503,13 @@ export type Picker = {
      * 故它的行**不由 `reduce` 重铺**，开了就一直是那三行（设计：三项顺序固定）。
      */
     | 'task'
+    /**
+     * **状态行可配的那一屏**（U112）——`/config` 里那一行进得来的**下一层**。
+     *
+     * ⚠️ 与 `'config'` 那条注同理：它也是「行不是从读数铺出来的」——那五格在 `view.ts`
+     * 一张常量表里（`STATUS_LINE_CELLS`），此刻的样子取自**视图那两格**（`ShellView.statusLine`）。
+     */
+    | 'statusline'
   /**
    * **这一屏在说什么**（U100 · 只有任务去向那一屏给）——画在候选**之上**的一行标题。
    *
@@ -1055,6 +1066,18 @@ export type ShellStatus = {
    */
   readonly window: number | null
   /**
+   * **「思考档」那一格的字**（U112）——当前那个模型此刻的思考设置（`思考·高` / `不思考`）。
+   *
+   * ⚠️ **由外壳合成，不由 `reduce` 算**：那一档的真源有两处——**用户在这一台壳上亲手选过的**
+   * （`shell.ts` 的 `chosenReasoning`，只在壳手上）与**配置里声明的那一条**
+   * （`configReasoningOf`，从视图读得到）。两处的先后由壳定，故这一格归它刷
+   * （`syncReasoning`：几处动作之后各叫一次）。
+   *
+   * `null` ＝**不知道**（还没问过模型列表 / 那个模型没法挑这一档）⇒ 状态行那一格
+   * **整格省掉**（不占位、不显示空值）。
+   */
+  readonly reasoning: string | null
+  /**
    * **这一代在执行全放行**（U73）——命令行 `--allow-all` 起的那一代。**一个布尔**，
    * 没有第二档（设计明文：它不是「模式」，只是权限这一维的一个取值）。
    *
@@ -1350,10 +1373,50 @@ export type ShellView = {
    * 「选项绑的是打开那一刻那一件活，目标换了就不许停」。
    */
   readonly taskEntry: RecordId | null
+
+  /**
+   * **状态行放哪几格 ＋ 上不上色**（U112）——`MagicConfig.statusLine` 原样带进来。
+   *
+   * `undefined` ＝ **还没配过** ⇒ 屏上走**默认那条**（`STATUS_LINE_DEFAULT`）——
+   * 「不给＝按缺省办」，与 `ShellOptions` 那些口同一条姿势（不在这里猜、也不在渲染层再判一次）。
+   *
+   * ⚠️ **`cells: []` 与 `undefined` 不是一回事**：前者是「用户明确不要那几格」（合法值，
+   * 屏上只剩锚那两格），后者是「没配过」。故这一位**不能**在读取时归一成 `undefined`。
+   */
+  readonly statusLine: StatusLineConfig | undefined
+  /**
+   * **减少动效**（U112）——开了就**停转动与亮度变化**（见 `motion.ts`）。
+   *
+   * ⚠️ **只管动效、不管读数**：秒数照旧走（那是一个**读数**，停掉就是把屏上那句话弄成假的）。
+   * 缺省 `false`（照常动）。
+   */
+  readonly reducedMotion: boolean
+  /**
+   * **这一摊在哪个工作区**（U112）——状态行「工作区」那一格的字。
+   *
+   * 来处＝装配认出来的那组根（`ShellOptions.workspaceRoots`，`realpath` 后的规范形）：
+   * 单根写它的末段名（`magic-code`），多根写「N 个根」——**屏上那一格放不下一串绝对路径**，
+   * 而完整的那一份在 `/config` 第 4 项那一屏里（既有）。
+   *
+   * `null` ＝**不知道自己在哪儿** ⇒ 那一格**整格省掉**（「拿不到的不编」，同 `contextWindow`）。
+   */
+  readonly workspace: string | null
 }
 
 /** 空视图。 */
-export function createView(): ShellView {
+/**
+ * 开一屏（**可注入那三格开机就定的东西**）——U112 起多了状态行与动效那两格。
+ *
+ * 参数都是「**外面拿来的值**」（配置里读的 / 装配认出来的），与 `ShellOptions` 同一姿势：
+ * **不给＝按缺省办**（状态行走默认那条、动效照常、工作区不知道），不在这里猜。
+ */
+export type CreateViewInput = {
+  readonly statusLine?: StatusLineConfig | undefined
+  readonly reducedMotion?: boolean | undefined
+  readonly workspace?: string | null | undefined
+}
+
+export function createView(input: CreateViewInput = {}): ShellView {
   return {
     rows: [],
     settled: [],
@@ -1367,6 +1430,8 @@ export function createView(): ShellView {
       model: null,
       usage: null,
       window: null,
+      // 思考档：起手什么都不知道（还没问过模型列表）——那一格整格省掉
+      reasoning: null,
       // 起手先按「不是」——**报它由执行者给**（见 `ShellStatus.allowAll`），
       // 而执行者还没起来时本来也就没有闸门，没有哪一次放行是「全放行放的」
       allowAll: false,
@@ -1404,7 +1469,110 @@ export function createView(): ShellView {
     planTop: 0,
     echoes: 0,
     taskEntry: null,
+    // **开机那三格**（U112）——配置里读到什么就是什么；没读到＝缺省（默认那条 / 照常动 / 不知道）
+    statusLine: input.statusLine,
+    reducedMotion: input.reducedMotion === true,
+    workspace: input.workspace ?? null,
   }
+}
+
+// ══ 状态行可配的那几格（U112）══════════════════════════════════════════
+
+/**
+ * **能挑的那几格**——顺序即那一屏上的顺序（不改：用户挑的是**放不放**与**摆哪儿**，
+ * 不是「清单本身怎么排」）。
+ *
+ * 名字（`name`）就是屏上写的字，与 `PickerRow.label` 同一姿态：**不从键反推文案**。
+ * `hint` 是「这一格拿不到时」那句——不摆在选择器里（那一屏只挑放不放），只写在回报与
+ * 这一处，供人读懂「为什么有时候它不见了」。
+ *
+ * ⚠️ **锚那两格不在这张表里**（运行状态 · 全放行）——设计 · 终端交互「状态行可配置」
+ * 只列了**可挑**的那几格，而「① 状态永不省」与「看不见的裸奔是最坏的一形」是既有的
+ * 两条硬规矩（规划侧 2026-10-01 裁定：状态是这一行的锚，永远第一位、不可去）。
+ */
+export const STATUS_LINE_CELLS: readonly {
+  readonly key: StatusLineCell
+  readonly name: string
+  /** 这一格「暂时不可用」时屏上怎么省（整格省掉，不占位、不显示空值）。 */
+  readonly hint: string
+}[] = [
+  { key: 'session', name: '会话名', hint: '总有（还没有会话时写「新会话」）' },
+  { key: 'model', name: '模型', hint: '还没跑过任何一次调用就省掉' },
+  { key: 'reasoning', name: '思考档', hint: '那个模型没声明推理能力就省掉' },
+  { key: 'context', name: '上下文占用', hint: '还没有用量读数就省掉' },
+  { key: 'workspace', name: '工作区', hint: '不知道自己在哪个工作区就省掉' },
+]
+
+/**
+ * **没配过时那一条**（设计：「默认给一条（不配也能用）」）。
+ *
+ * 两格：**会话名 ＋ 上下文占用**。⛔ **默认不放「用哪个模型」**——那是**配置回显**
+ * （设计那条边界：默认那条不放配置回显，用户**自己勾**才算他要的）；用量那一格也不是
+ * 回显，它是**此刻的实况**（这一问花了多少上下文）。
+ */
+export const STATUS_LINE_DEFAULT: readonly StatusLineCell[] = ['session', 'context']
+
+/** 那一行要摆哪几格——**没配过就是默认那条**（`cells: []` 是合法值，会**原样保留**）。 */
+export function statusLineCellsOf(config: StatusLineConfig | undefined): readonly StatusLineCell[] {
+  return config?.cells ?? STATUS_LINE_DEFAULT
+}
+
+/** 上色开关——**缺省照常上色**（只有明确写了 `false` 才是关）。 */
+export function statusLineColorOf(config: StatusLineConfig | undefined): boolean {
+  return config?.color !== false
+}
+
+/**
+ * `ReasoningSetting` → 屏上那几个字（U112）——**一处措辞**：`/model` 那一屏的某一档
+ * 与状态行「思考档」那一格说的是同一件事，两处各写一套迟早各说各的。
+ */
+export function reasoningText(setting: ReasoningSetting): string {
+  if (setting.mode === 'off') return '不思考'
+  if (setting.mode === 'default') return '思考·默认'
+  if (setting.mode === 'budget') return `思考·${tokenLabel(setting.budgetTokens)}`
+
+  return `思考·${setting.level === 'low' ? '低' : setting.level === 'medium' ? '中' : '高'}`
+}
+
+/**
+ * **配置里声明的那一档**（U112）——`providers.<id>.reasoning`，**当它绑的就是当前那个模型**。
+ *
+ * ⚠️ 与「用户在这一台壳上亲手选过的档位」（`shell.ts` 的 `chosenReasoning`）**不是同一份**：
+ * 那个只在壳手上，故状态行那一格由**外壳**合成（先看亲手选的、再看配置里声明的），
+ * 这一支只答「配置里有没有」。
+ *
+ * 三条：
+ * - **`entry.reasoning` 与 `entry.model` 绑着**（契约明文：换了模型而没显式改设置时取目标
+ *   模型的默认）——故只有 `entry.model === 当前模型` 时它才说得通；
+ * - **拿不到就不给**（`undefined`）：还没问过模型列表 / 当前那个模型不是这一条连接的默认 /
+ *   配置里压根没写 ⇒ 那一格**整格省掉**（设计：某项当时不可用就整格省掉，不占位）；
+ * - **`mode: 'default'` 也照报**——「默认」是**明确写下的一档**，与「不知道」是两件事。
+ */
+/**
+ * **「工作区」那一格的字**（U112）——从装配认出来的那组根算出来。
+ *
+ * 一条根写它的**末段名**（`/Users/谁/code/magic-code` → `magic-code`）：状态行那一格只有
+ * 十几列，一串绝对路径会把整行挤没；而**完整的那一份**在 `/config` 第 4 项那一屏里
+ * （既有——「细节有地方看」）。多根写「N 个根」——屏上说不清是哪几个，数目至少是真的。
+ *
+ * **不知道就不给**（`null`）：这一格与 `contextWindow` / 用量同一条——拿不到的不编。
+ */
+export function workspaceLabelOf(roots: readonly string[] | undefined): string | null {
+  if (roots === undefined || roots.length === 0) return null
+  if (roots.length > 1) return `${roots.length} 个根`
+
+  const parts = (roots[0] ?? '').split('/').filter((piece) => piece !== '')
+
+  return parts[parts.length - 1] ?? '/'
+}
+
+export function configReasoningOf(view: ShellView): ReasoningSetting | undefined {
+  const current = view.modelCurrent
+  if (current === null) return undefined
+
+  const entry = view.models.find((one) => one.provider === current.provider)
+
+  return entry !== undefined && entry.model === current.model ? entry.reasoning : undefined
 }
 
 /** 授权名录（`grants.catalog` 的载荷 · U22）——抽屉与那一行度量都读它。 */
@@ -1676,6 +1844,16 @@ export function reduce(
     // （见 `shell.ts` 的 `pastedClipboard`）；没取到 ⇒ 那一句回执也要带上稿子的账
     // （编号表）才说得准，故同样归外壳，不在这里落一行。
     case 'input.pasted':
+      return view
+
+    /**
+     * **界面偏好那两格的回话**（U112）——`reduce` 这一层**不改视图**。
+     *
+     * 由头：那一趟写盘是**外壳发起**的（`/config` 的那一屏），去回都在它手上——归约器
+     * 只认「事件流告诉我的世界变了什么」，而这一条**什么都没变**（盘上那两格变了，
+     * 屏上那两格由外壳按同一条回话摆）。落在这儿就是同一件事判两遍。
+     */
+    case 'prefs.state':
       return view
 
     default:
@@ -2696,22 +2874,59 @@ export function withDecisionStatus(view: ShellView): ShellView {
   })
 }
 
-/** 状态词（五态固定词——原型 · 状态行规格）。 */
-export function stateLabel(state: StatusState): string {
+/**
+ * 状态那一格的**形状**（U112）——**身份那一维**：这一格是什么状态，**不随时间变**。
+ *
+ * 出处：设计 · 终端交互「符号 ＋ 动效：一套」那张表的第一列（身份，静态，永不参与动效）
+ * 与「取字准则」的白名单（`marks.ts` 一处出处）。
+ *
+ * ⚠️ **工作中 `●` 与在等你 `◉` 必须分形状**（设计明写）——不能只靠颜色：无色终端里
+ * 「需要你」与「在忙」就会同形，而那正是这一格最要紧的一处分别。
+ */
+export function stateMark(state: StatusState): string {
   switch (state) {
     case 'idle':
-      return '○ 空闲'
+      return MARKS.idle
     case 'working':
-      return '● 工作中'
-    case 'waiting':
-      return '● 等你定夺'
     case 'retrying':
-      return '● 正在重试'
+      // 重试与工作中**同形**（都是「这一轮还在跑」）——分别靠**文案**（「正在重试」）与
+      // 颜色（同为 warn）。它不该与「在等你」混形，那才是这一格要分开的那一对。
+      return MARKS.dot
+    case 'waiting':
+      return MARKS.ring
     case 'error':
-      return '▲ 出错'
+      return MARKS.error
     case 'lost':
-      return '■ 状态待确认'
+      return MARKS.unknown
   }
+}
+
+/** 状态词（五态固定词——原型 · 状态行规格）。 */
+export function stateText(state: StatusState): string {
+  switch (state) {
+    case 'idle':
+      return '空闲'
+    case 'working':
+      return '工作中'
+    case 'waiting':
+      return '等你定夺'
+    case 'retrying':
+      return '正在重试'
+    case 'error':
+      return '出错'
+    case 'lost':
+      return '状态待确认'
+  }
+}
+
+/**
+ * 状态那一格的整句（形状 ＋ 词）——`● 工作中`。
+ *
+ * ⚠️ **屏上那一格不这么拼**（它要把形状那一位单独拿出来上色/呼吸，见 `components/status.ts`）；
+ * 这一支是给**纯文本的读法**用的（用例、`/status` 那种一句话，以及本层别的文案拼串）。
+ */
+export function stateLabel(state: StatusState): string {
+  return `${stateMark(state)} ${stateText(state)}`
 }
 
 /**
@@ -3764,7 +3979,7 @@ export type ConfigPaths = {
 /** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
 export type ConfigItem = {
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
-  readonly key: 'model' | 'webFetch' | 'grants' | 'mcp' | 'paths'
+  readonly key: 'model' | 'webFetch' | 'grants' | 'mcp' | 'paths' | 'statusLine' | 'motion'
   readonly name: string
 }
 
@@ -3787,6 +4002,12 @@ export const CONFIG_ITEMS: readonly ConfigItem[] = [
   { key: 'webFetch', name: '取网页用的模型' },
   { key: 'grants', name: '本工作区授权' },
   { key: 'mcp', name: '外部工具' },
+  // ↓ U112 加的两行（设计 · 终端交互「状态行可配置：给一列可选项，不给脚本」与「符号 ＋
+  //   动效：一套」第三条）——两行都是**这一屏长什么样**（与上面那几行改的东西不是一类）。
+  //   摆在一起：竖着扫一眼时挨着看最省事。末行那个「数据目录与工作区根」是一份纯读出来的账
+  //   （没有可进的入口），仍旧垫底。
+  { key: 'statusLine', name: '状态行' },
+  { key: 'motion', name: '减少动效' },
   { key: 'paths', name: '数据目录与工作区根' },
 ]
 
@@ -3929,6 +4150,9 @@ export function configRows(input: {
   readonly webFetch: ModelRef | null
   readonly grants: GrantsCatalog | null
   readonly mcp: McpCatalog | null
+  /** 状态行那两格（U112）——`undefined` ＝ 还没配过（默认那条）。 */
+  readonly statusLine: StatusLineConfig | undefined
+  readonly reducedMotion: boolean
   /** 正在筛的词——空串＝全表。 */
   readonly filter: string
 }): readonly PickerRow[] {
@@ -3938,6 +4162,8 @@ export function configRows(input: {
     grants: configGrantsValue(input.grants),
     mcp: configMcpValue(input.mcp),
     paths: configPathsValue(input.paths),
+    statusLine: configStatusLineValue(input.statusLine),
+    motion: input.reducedMotion ? '已开' : '已关',
   }
 
   const needle = input.filter.trim().toLowerCase()
@@ -3999,6 +4225,73 @@ export const CONFIG_PATHS_TITLE = '数据与工作区根'
  * 新文件落它——「平等平铺 ＋ 一个默认」里那个「默认」是**看得见**的一条。单根时不标
  * （没得比，标了是废话）。
  */
+/**
+ * **「状态行」那一行右边写什么**（U112）——它此刻放的是哪几格。
+ *
+ * 没配过时**明写「默认」**（不是把默认那条抄一遍当「配过的」）：两件事——「你没配，走的是
+ * 默认」与「你配的正好等于默认」——在这一格上分得开，用户才知道自己动没动过它。
+ * 一格都没有（`cells: []`，合法值）写「只要状态那一格」——比一个空值说得清。
+ */
+function configStatusLineValue(config: StatusLineConfig | undefined): string {
+  const cells = statusLineCellsOf(config)
+  if (cells.length === 0) return config === undefined ? '默认 · 只要状态那一格' : '只要状态那一格'
+
+  const names = cells.map((key) => STATUS_LINE_CELLS.find((cell) => cell.key === key)?.name ?? key)
+
+  return `${config === undefined ? '默认 · ' : ''}${names.join(' · ')}`
+}
+
+/**
+ * **「状态行」那一屏**（U112）——一列**具名项**，用户挑哪几格、什么顺序。
+ *
+ * 形态照参照面（设计：「形态照 Codex：一条具名项的清单——用户挑哪几格、什么顺序，另有
+ * 一个上色开关」）：
+ *
+ * - **前五行＝那五格**：`current` 标「在不在这一行上」，`meta` 报它是**第几格**
+ *   ——顺序就是**挑的先后**（先放上的排前面），故「第 1 格」＝它显示在状态行最左边；
+ * - **末一行＝上色开关**（`pinned`：它**不参与折叠**——那五格被折起来时它照旧在，
+ *   否则入口就被挤没了，同 `/model` 那三条入口的由头）；
+ * - **不可用的格照旧列在这儿**（它们只是「此刻没值」）——这一屏挑的是**放不放**，
+ *   而「此刻有没有值」是运行期的事（`STATUS_LINE_CELLS.hint` 各写了一句）。
+ *
+ * ⚠️ **锚那两格（运行状态 · 全放行）不在这一屏**——它们不可配（见 `STATUS_LINE_CELLS`
+ * 头注）；挑不了的东西摆进「可选项」清单里就是骗人。
+ */
+export const STATUSLINE_COLOR_ACTION = 'color'
+
+export function statusLineRows(input: { readonly config: StatusLineConfig | undefined }): readonly PickerRow[] {
+  const cells = statusLineCellsOf(input.config)
+
+  return [
+    ...STATUS_LINE_CELLS.map((cell) => {
+      const at = cells.indexOf(cell.key)
+
+      return {
+        label: cell.name,
+        // **顺序＝挑的先后**（先放上的排前面）——故这一格就是它显示在状态行里的位次
+        meta: at === -1 ? '未放上' : `已放上 · 第 ${at + 1} 格`,
+        current: at !== -1,
+        value: cell.key as string,
+        oneLine: true,
+      }
+    }),
+    // **上色开关**——常驻末行（见头注）。`pinned` 那一格的语义是「这一行是入口，不是候选」。
+    {
+      label: '颜色',
+      meta: statusLineColorOf(input.config) ? '已开' : '已关',
+      current: statusLineColorOf(input.config),
+      value: STATUSLINE_COLOR_ACTION,
+      pinned: true,
+      oneLine: true,
+    },
+  ]
+}
+
+/** 「状态行」那一屏下方那句话——**两件，谁说谁**（照 `/config` 那一屏的先例）。 */
+export function statusLineHint(): string {
+  return '回车＝放上或拿下 · 顺序就是放上的先后 · ← 退'
+}
+
 export function configPathLines(paths: ConfigPaths): readonly string[] {
   const lines: string[] = []
   if (paths.dataDir !== undefined) lines.push(`  数据目录　${paths.dataDir}`)

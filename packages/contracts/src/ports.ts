@@ -31,6 +31,7 @@ import type {
   Command,
   ModelDefaultRequest,
   ModelSwitchRequest,
+  PrefsSetRequest,
   ProviderSaveRequest,
   SessionCommand,
   UserInput,
@@ -1920,6 +1921,15 @@ export type CommandRoutes = {
    * 任何一次业务调用**；答复走 `mcp.catalog`（那一屏据以说清新状态）。
    */
   onMcpReconnect(server: string): void
+  /**
+   * **界面的两格偏好**（U112）→ **装配**（配置的写落点在它那一层，域不碰文件系统）。
+   *
+   * 与 `onWebFetchSet` 同一条站位（写盘归装配、校验归装配），差别只在**改的是哪两格**：
+   * 那一条改「取网页用哪个模型」，这一条改「这一屏长什么样」（状态行那几格 · 动不动效）。
+   * 答复照走 `prefs.state`（带上**落定之后**那两份 ＋ 一句 `note`）——外壳据它把屏上那两格
+   * 摆成真的样子（写不成时不把用户刚点的那个当成成了）。
+   */
+  onPrefsSet(request: PrefsSetRequest): void
 }
 
 /**

@@ -891,7 +891,8 @@ describe('返修⑤ · 看不见的进行中项不动（共享时钟也在）', 
     const light = await stage.screen({ columns: 60, rows: 16 })
 
     expect(planCells(dark)).toBe(planCells(light)) // 逐格相同＝一动不动
-    expect(dark.screen.lines.some((line) => line.includes('⟳'))).toBe(true) // 对照：工具那行确实在动
+    // 对照：工具那行确实在（U112 起身份记号是 `▸`——跑动那一位挪到行尾、且在呼吸）
+    expect(dark.screen.lines.some((line) => line.includes('▸ exec(sleep 9)'))).toBe(true)
   })
 
   test('等待 / 出错时也不动（同一条：状态不对就不呼吸）', async () => {

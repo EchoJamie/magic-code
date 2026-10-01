@@ -112,9 +112,24 @@ function streaming(body: string, thinking: string): Painted {
     entries: [
       { marker: '› ', text: UTTERANCE },
       { marker: '（思考）', text: thinking },
-      { marker: '⏺ ', text: body },
+      { marker: headOf(body), text: body, legacy: ['⏺ '] },
     ],
   }
+}
+
+/**
+ * **助手那一行在屏上的认法**（U112）——它**没有记号**了（设计 ·「符号 ＋ 动效：一套」
+ * 那张表：助手在说话那一行的身份是「（无记号）」，靠**缩进**与它自己那句话认）。
+ *
+ * 故这一格给的是**正文开头那几个字**——判据从「认那个记号」改成「认那句话」，
+ * 量的还是同一件事：**这一条在屏上真的占了一段**（`entryBlocks` 找不着就少一条，
+ * 而「找到的条数＝声明的条数」正是防空转的那一条）。
+ *
+ * ⚠️ **不能图省事给空串**：`startsWith('')` 恒真，`entryBlocks` 会从第一行起就认领，
+ * 那条判据当场变成一个永远成立的句子。
+ */
+function headOf(body: string): string {
+  return body.replace(/^\s+/, '').slice(0, 4)
 }
 
 /** 空态起、长出两行内容——`mismatch` 用它，够画出一条分隔线与一行状态行就行。 */
@@ -127,7 +142,15 @@ function shortTurn(): Painted {
   view = reduce(view, stamper.stamp('model.call.start', { model: 'u23-model' }))
   view = reduce(view, stamper.stamp('model.delta', { channel: 'text', text: body }))
 
-  return { frames: [createView(), view], entries: [{ marker: '› ', text: UTTERANCE }, { marker: '⏺ ', text: body }] }
+  return {
+    frames: [createView(), view],
+    entries: [
+      { marker: '› ', text: UTTERANCE },
+      // 助手那一行**没有记号**了（U112）——按正文开头认（见 `headOf` 的注）；
+      // `legacy` 是给改前录的那几份标本留的旧写法（见 `EntrySpec.legacy`）
+      { marker: headOf(body), text: body, legacy: ['⏺ '] },
+    ],
+  }
 }
 
 /** 正文（原文）——`stream` 那一形：**单换行折行**，一个段落分隔都没有。 */

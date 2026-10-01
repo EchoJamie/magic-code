@@ -464,6 +464,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
+    onPrefsSet: () => undefined,
   }
   const widened: CommandRoutes = {
     onInput: () => undefined,
@@ -489,6 +490,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
+    onPrefsSet: () => undefined,
   }
 
   // 端口面持有 → 三参调用成立（这正是装配把位递给权限域的那一跳）
@@ -570,6 +572,7 @@ export function routesCarryModelSwitch(): void {
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
+    onPrefsSet: () => undefined,
   }
   void routes
 }
@@ -668,7 +671,7 @@ export function sessionFaceShape(service: ConversationService, routes: CommandRo
 // ══ 运行时断言 ════════════════════════════════════════════════════════
 
 describe('事件契约', () => {
-  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 八条读面答复（D10 · U33 · U36 · U37 · U39 · U41 · U107）＋ 一条回执（U63）', () => {
+  test('不落库清单含三个实时增量 ＋ 会话状态（U16）＋ 八条读面答复（D10 · U33 · U36 · U37 · U39 · U41 · U107）＋ 一条回执（U63）＋ 界面偏好的答复（U112）', () => {
     // `model.retry` 是**退避期间那个「正在等」**——实时信号、不是重放事实（重放只看终局）；
     // 重试次数另落 `ModelCallResult.attempts`（可断），故不落库不丢信息。
     // `session.state` 同列：它是快照，不是过程事实（见 events.ts 该处注）。
@@ -741,6 +744,10 @@ describe('事件契约', () => {
       // （`/model` 的主体 ＋ 管理那一屏）；**新锚**：同一判据多一格，字面规则一个没动。
       // 保存 / 移除**这个动作**也不落库：它的痕在配置文件里（少了一条 / 多了一条）。
       'provider.catalog',
+      // U112：界面偏好同列——它是**写盘的答复**（痕在配置文件的 `statusLine` / `motion`
+      // 两格里），落库＝把同一份读数存第二遍。重放要的是「当时配成什么样」（读配置就有），
+      // 不是「某人在哪一屏上点过一下」。
+      'prefs.state',
     ])
   })
 

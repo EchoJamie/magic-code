@@ -43,17 +43,21 @@ function bodyOf(frame: Frame, needle: string) {
 }
 
 /**
- * 结果行的**摘要**那半句（`✓ 328ms · 3 项` → `3 项`）。
+ * 结果行的**摘要**那半句（`  328ms · 3 项` → `3 项`）。
+ *
+ * U112 起工具行是两行：**头一行** `▸ 工具名(关键参数)` ＋ 行尾那一位状态（`✓` / `×` / `●`…），
+ * **第二行**才是 `  耗时 · 摘要`（不带符号——状态位已上了头一行行尾）。故这一支先找头一行
+ * （`▸ ` 起头），再取它**下面那一条**，摘掉耗时那截。
  *
  * 为什么要把耗时那截摘掉：它是**真量出来的**、随事件的 `at` 走（本地钟的差），
  * 拿它进断言就把「摘要成形」这条判据绑死在夹具的时刻上了。耗时本身另有用例
  * （`差距 3` 那两条）。
  */
 function resultSummary(frame: Frame): string {
-  const line = frame.record.find((row) => row.text.includes('✓ ') || row.text.includes('✗ '))
-  const text = line?.text.trim() ?? ''
+  const head = frame.record.findIndex((row) => row.text.trimStart().startsWith('▸ '))
+  const text = (frame.record[head + 1]?.text ?? '').trim()
 
-  return text.replace(/^[✓✗] (?:\d+(?:\.\d+)?(?:ms|s) · )?/, '')
+  return text.replace(/^\d+(?:\.\d+)?(?:ms|s) · /, '')
 }
 
 /** 一次 `edit` 的现场：模型说了要改什么，工具把它做成了（或没做成）。 */
@@ -94,7 +98,7 @@ describe('差距 1 · diff 审阅——改了文件，看得见改了什么', ()
     const frame = await stage.screen(WIDE)
 
     // 工具行报的是**哪个文件**（不是一坨 JSON——参数里塞着整段正文）
-    expect(frame.has('● edit src/utils/date.ts')).toBe(true)
+    expect(frame.has('▸ edit(src/utils/date.ts)')).toBe(true)
 
     // 三档都在屏上：删（红）· 增（绿）· 上下文（dim）
     expect(bodyOf(frame, '-  const v = 0').every((cell) => cell.fg === '#e06c75')).toBe(true)
@@ -209,7 +213,10 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
     const frame = await table.screen(WIDE)
     // 首站**不渲染表格**（B8 的已知限度）——原样铺，且不上任何语义色
     expect(frame.has('| a | b |')).toBe(true)
-    expect(bodyOf(frame, '| a | b |').every((cell) => cell.fg === null || cell.fg === '#8b93a1')).toBe(true)
+    // 工具结果正文**缩进 2 列**（U112；diff 块另走 4 列，不在此处）
+    expect(
+      frame.cellsOf(frame.rowOf('| a | b |')).slice(2).every((cell) => cell.fg === null || cell.fg === '#8b93a1'),
+    ).toBe(true)
   })
 
   test('空目录 / 无命中——内核的**注**比计数要紧（说的是「结果为空」）', async () => {
@@ -226,7 +233,7 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
 // ══ 差距 3 · 进度感 ═════════════════════════════════════════════════
 
 describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试，屏上分得出', () => {
-  test('工具跑动——报**真耗时**（`⟳ 1.4s`）：钟给的，不是编的', async () => {
+  test('工具跑动——报**真耗时**（`1.4s`）：钟给的，不是编的', async () => {
     const stage = live()
     stage.feed([
       event('turn.start', {}),
@@ -236,18 +243,20 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
     stage.at(TEST_AT + 71 + 1400) // 发起（`tool.call` 的 at）之后 1400ms
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('⟳ exec {"cmd":"sleep 9"}')).toBe(true) // 还在跑：标记是转圈那个
-    expect(frame.has('⟳ 1.4s')).toBe(true)
+    expect(frame.has('▸ exec(sleep 9)')).toBe(true) // 还在跑：头一行照旧看得见
+    expect(frame.has('1.4s')).toBe(true) // 那一行读数报的是真秒数
   })
 
-  test('**没有钟就不报秒数**——回退「运行中」（拿不到的不编）', async () => {
+  test('**没有钟就不报秒数**——那一条读数整条不画（拿不到的不编）', async () => {
     const stage = live()
     stage.feed([event('tool.call', { name: 'exec', args: { cmd: 'sleep 9' } }, { id: 71 })])
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('⟳ 运行中')).toBe(true)
-    expect(frame.has('⟳ 0')).toBe(false)
+    expect(frame.has('▸ exec(sleep 9)')).toBe(true) // 这一笔照旧看得见
+    expect(frame.has('●')).toBe(true) // 「还在跑」由头一行行尾那一位说
+    // 没有钟 ⇒ 一个秒数都不编（连那条读数都不画）
+    expect(frame.record.some((line) => /\d+(?:\.\d+)?(?:ms|s)\b/.test(line.text))).toBe(false)
   })
 
   /**
@@ -266,7 +275,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
         { id: 88 },
       ),
     ])
-    expect((await stage.screen(WIDE)).statusLine).toContain('● 等你定夺')
+    expect((await stage.screen(WIDE)).statusLine).toContain('◉ 等你定夺')
 
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })])
 
@@ -403,9 +412,9 @@ describe('顺带 · 笨重参数的成形', () => {
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('write README.md')).toBe(true)
+    expect(frame.has('▸ write(README.md)')).toBe(true) // 报的是路径，不是整段正文
     expect(frame.has('x'.repeat(200))).toBe(false) // 整段正文不再铺上屏
-    expect(frame.has('ls {"path":"src"}')).toBe(true) // 短参数原样
+    expect(frame.has('▸ ls(src)')).toBe(true) // 关键参数（ls 报 path），不再是原始 JSON
   })
 
   test('流式那几帧参数还不全——照旧看得见（回退到原文片段）', async () => {
@@ -415,7 +424,8 @@ describe('顺带 · 笨重参数的成形', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('{"path":"a')).toBe(true)
-    // `⟳ edit ` 之后才是参数（标记 1 格 ＋ 空格 ＋ 名字 4 格 ＋ 空格 ⇒ 下标 7 起）
-    expect(cellAt(frame, '{"path":"a', 7)).toMatchObject({ fg: '#8b93a1' }) // 参数仍是 dim
+    // `▸ edit(` 之后才是参数（**缩进 2 格**（工具行与结果缩进一级）＋ 记号 1 格 ＋ 空格 ＋
+    // 名字 4 格 ＋ `(` 1 格 ⇒ 下标 9 起）
+    expect(cellAt(frame, '{"path":"a', 9)).toMatchObject({ fg: '#8b93a1' }) // 参数仍是 dim
   })
 })

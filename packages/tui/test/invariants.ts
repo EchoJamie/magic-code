@@ -193,6 +193,14 @@ export function blankRuns(screen: Screen): readonly BlankRun[] {
 export type EntrySpec = {
   readonly marker: string
   readonly text: string
+  /**
+   * **这一条在改版之前的标本里长什么样**（U112 加）——**只给 `@head` 之前的冻结字节用**。
+   *
+   * 由头：助手那一行的记号换过一次（`⏺ ` ⇒ 无记号，改按它自己那句话认）。
+   * 而 `fixtures/` 里那几份**跨版本**的标本是这一层的锚点（改前的要红、改后的要绿），
+   * 它们**不许重录**——重录就等于把「它曾经咬得住」这件事抹掉。故认法留一条旧写法。
+   */
+  readonly legacy?: readonly string[]
 }
 
 export type EntryBlock = {
@@ -249,7 +257,13 @@ export function entryBlocks(screen: Screen, entries: readonly EntrySpec[]): read
   let cursor = 0
 
   for (const spec of entries) {
-    const at = rows.findIndex((row, index) => index >= cursor && row.text.trim().startsWith(spec.marker))
+    // **认法可以有好几种**（`legacy`）：标本是**跨版本**的冻结字节，同一面行的记号改过一次
+    // （U112：助手那一行的 `⏺ ` 去了，改按它自己那句话认）——只认新写法的话，
+    // 改前录的那几份标本当场一条都认不出来，而它们是这一层**要一直红/一直绿**的锚点。
+    const heads = [spec.marker, ...(spec.legacy ?? [])]
+    const at = rows.findIndex(
+      (row, index) => index >= cursor && heads.some((head) => row.text.trim().startsWith(head)),
+    )
     if (at === -1) continue
 
     located.push({ spec, at })

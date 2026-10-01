@@ -74,7 +74,9 @@ describe('换过模型之后的分母', () => {
     land.feed([event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 32_768 })])
 
     const after = await land.screen()
-    expect(after.statusLine).toContain('MiniMax-M2')
+    // ③ 那一格（模型名）自 U112 起**不在默认状态行里**（可配，默认只有 `session` 与
+    // `context`），故「③ 换了没有」按视图那一格核——与同文件那两条它处用例同一个读法。
+    expect(land.shell.getView().status.model).toBe('MiniMax-M2')
     expect(after.statusLine).toContain('3.1k/33k')
     expect(after.statusLine).not.toContain('1000k')
     // 回执照旧（「刚发生的事」进记录区）

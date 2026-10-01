@@ -258,7 +258,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
 
     // 原锚＝`rowOf('等你的答复')` 不是光标所在行（D29 那一行整个没了，`rowOf` 会当场抛）。
     // 新锚与上面那条**抽屉接管**同一姿势（两处都是「输入行让位」）：真光标送回帧下。
-    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('● 等你定夺'))
+    expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('◉ 等你定夺'))
   })
 
   /**
@@ -661,10 +661,10 @@ describe('返工三 · 活动帧不撑满终端（流式增长 · 单条超预�
     //    原锚问的是「最近那条在不在」——如今它只剩末行，故锚换到**末行**上；
     //    并补一条「早的那几条一行都不在」的**计数**（三组渲染出的末行是同一句话，
     //    数出来是 1 ⇒ 另外两组确实没画，不是「碰巧写着同一串字」）。
-    expect(frame.has('✓ 10ms · 1 项')).toBe(true) // 最近那条的末行（`c.txt` 那一组的收尾）
-    expect(frame.screen.lines.filter((line) => line.includes('✓ 10ms · 1 项'))).toHaveLength(1)
-    expect(frame.has('ls {"path":"c.txt"}')).toBe(false) // 它自己那两行里，头一行让给了下沿那条线
-    expect(frame.has('ls {"path":"a.txt"}')).toBe(false) // 早的那几条让位（**整条**让——不切一半）
+    expect(frame.has('10ms · 1 项')).toBe(true) // 最近那条的末行（`c.txt` 那一组的收尾；U112 起不带符号）
+    expect(frame.screen.lines.filter((line) => line.includes('10ms · 1 项'))).toHaveLength(1)
+    expect(frame.has('▸ ls(c.txt)')).toBe(false) // 它自己那两行里，头一行让给了下沿那条线
+    expect(frame.has('▸ ls(a.txt)')).toBe(false) // 早的那几条让位（**整条**让——不切一半）
     expect(stage.shell.getView().rows).toHaveLength(3) // 三条都在记录里
   })
 

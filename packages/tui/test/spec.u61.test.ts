@@ -618,7 +618,9 @@ describe('⑧ 键位提示里报出 `←`', () => {
     // 提示长了一截之后，若还照老口径算，被挤掉的恰恰是**提示自己**（它整段不出现）——
     // 那就成了「加了 `←` 反而看不见任何键位」。
     //
-    // 摆一屏**放不下**的：标题（11 字）＋ 模型 ＋ 用量三格齐全，80 列上怎么都塞不下。
+    // 摆一屏**放不下**的：标题（11 字）＋ 用量 ＋ 长提示。
+    // ⚠️ **U112 起模型那一格不在默认那几格里了**（默认只有「会话名 · 上下文占用」两格）——
+    // 故 80 列上这一屏**放得下**了，得把窗收窄到 76 列才逼得出「塞不下」那一形。
     const stage = createStage()
     stage.feed([
       event('session.state', {
@@ -631,11 +633,11 @@ describe('⑧ 键位提示里报出 `←`', () => {
     atKeyPrompt(stage)
     stage.press(LEFT)
 
-    const frame = await stage.screen({ columns: 80, rows: 30 })
+    const frame = await stage.screen({ columns: 76, rows: 30 })
 
     expect(frame.statusLine).toContain('← 退') // 提示照旧在
-    expect(frame.statusLine).not.toContain('MiniMax-M3') // ③ 先让位
-    expect(frame.statusLine).not.toContain('3.1k') // ④ 也一样
+    expect(frame.statusLine).not.toContain('MiniMax-M3') // 模型那一格本就不在默认里
+    expect(frame.statusLine).not.toContain('3.1k') // ③ 用量那格**先让位**
     expect(frame.statusLine).toContain('记录查询优化与缓存重做') // ② 还在（它只截断、不消失）
   })
 })

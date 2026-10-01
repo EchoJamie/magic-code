@@ -66,11 +66,13 @@ import type {
   ModelGateway,
   ModelSwitchRequest,
   ProviderConfig,
+  PrefsSetRequest,
   ProviderSaveRequest,
   ProjectRule,
   ProjectRules,
   ProcessLedger,
   RecordsService,
+  StatusLineConfig,
   WebFetchConfig,
   WebFetchSetRequest,
   WebSource,
@@ -151,7 +153,7 @@ import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
 import { validateSelection } from './agent-models.ts'
 import { saveAttachmentFile } from './attachment-file.ts'
-import { removeProvider, saveProvider, setModelDefault, setWebFetch } from './config-save.ts'
+import { removeProvider, saveProvider, setModelDefault, setPrefs, setWebFetch } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
@@ -1080,6 +1082,16 @@ export function assemble(options: AssembleOptions): Assembly {
    * 对 `providerBook` 的那一句）。
    */
   let webFetchConfig: WebFetchConfig | undefined = loaded.config.webFetch
+  /**
+   * **界面那两格**（U112）——状态行放哪几格、动不动效。
+   *
+   * 与 `webFetchConfig` 同一处境、同一姿势：开局取自配置，写完之后换掉它。**读的那一方
+   * 是外壳**（启动时经 `Assembly.prefs` 探一次），故这一份是「写完之后，下一次开壳看得见
+   * 的那一份」——本进程里屏上那两格由外壳自己按 `prefs.state` 的回话摆，
+   * 不必从这里再推一遍（两条路各走各的才是「一处判断」）。
+   */
+  let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
+  let reducedMotion = loaded.config.motion?.reduced === true
   /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
   let configMtime: number | undefined = loaded.mtimeMs
 
@@ -2363,6 +2375,47 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /**
+   * **界面那两格**（U112）——写配置里的 `statusLine` / `motion`，再把**落定之后**那一份
+   * 报回去（`prefs.state`）。
+   *
+   * 三条：
+   * - **报的是落定之后那一份**，不是用户递进来那一份：写不成（配置文件被外面改过 · 坏 JSON…）
+   *   就把**当下这份**照实报回去——外壳据此把屏上那两格摆回真的样子，**不把用户刚点的
+   *   那个当成成了**（「按了没反应」与「按了但没成」是两件事，这一位分得开）；
+   * - **`note` 两种都给**：成了报改了哪几格、没成报为什么（静默吞掉是最难查的那一形）；
+   * - **不重建任何东西**：这一格连一条会话、一件工具都不碰（同 `setWebFetchModel` 那条
+   *   「不重建注册表」的姿势——改动只在屏上）。
+   */
+  const setPrefsCommand = (request: PrefsSetRequest): void => {
+    const outcome = setPrefs({
+      path: loaded.path,
+      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      request,
+    })
+
+    if (outcome.ok) {
+      configMtime = mtimeOf(loaded.path)
+      // **现读的那一方立刻对得上**：下一次 `writeFileSync` 读的还是这两格（同 webFetch 那一条）
+      if (request.statusLine !== undefined) statusLineConfig = request.statusLine
+      if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
+    }
+
+    const changed: string[] = []
+    if (request.statusLine !== undefined) changed.push('状态行')
+    if (request.reducedMotion !== undefined) changed.push('动效')
+
+    sink.emit(
+      requireActiveStamper().stamp('prefs.state', {
+        ...(statusLineConfig === undefined ? {} : { statusLine: statusLineConfig }),
+        reducedMotion,
+        note: outcome.ok
+          ? `已更新：${changed.join(' · ')}`
+          : `${changed.join(' · ')}没改成——${outcome.reason}`,
+      }),
+    )
+  }
+
+  /**
    * 回执里那一对怎么念——**与 `/config` 那一行同一个取法**（模型名取缓存里的显示名、
    * 连接名取 `name ?? id`）：两处各取一套的话，屏上那一行会与刚做完的那一下对不上。
    * 缓存里没有它（兼容接入 / 还没取过列表）⇒ **照实报精确 id**，不拿别的顶上。
@@ -2514,6 +2567,9 @@ export function assemble(options: AssembleOptions): Assembly {
     onModelDefaultSet: (request) => setDefaultModel(request),
     // 「取网页」的提炼模型（U78）——同一条路（写盘归装配）——答复也走 `model.catalog`
     onWebFetchSet: (request) => setWebFetchModel(request),
+    // 界面那两格（U112）——同一条路（写盘归装配）——答复走 `prefs.state`
+    // （带上**落定之后**那两份，外壳据它把屏上那两格摆成真的样子）
+    onPrefsSet: (request) => setPrefsCommand(request),
     onProviderList: () => listProviders(),
     onProviderSave: (request) => saveProviderCommand(request),
     onProviderRemove: (provider) => removeProviderCommand(provider),

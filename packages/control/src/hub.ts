@@ -178,6 +178,12 @@ export function createControlHub(): ControlHubFace {
         // ⚠️ **它不动会话的模型**：换的是那一件工具用谁（设计 · 网页与搜索那条「两处不能混」）。
         target.onWebFetchSet(command)
         return
+      case 'prefs.set':
+        // 界面的两格偏好（U112）——写配置里 `statusLine` / `motion` 那两格。控制域只带话：
+        // 校验与落盘都在装配（同 `webfetch.set` 的站位）。
+        // ⚠️ **它连一条会话、一件工具都不碰**：改的只是「这一屏长什么样」。
+        target.onPrefsSet(command)
+        return
       case 'provider.list':
         // 管理面的连接一览（U41 读侧）——**归装配**（配置与凭据的读取都在它那一层，
         // 同 `grants.list` 之于授权文件）。答复走事件（`provider.catalog`，不落库）。

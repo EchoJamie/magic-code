@@ -391,67 +391,12 @@ export function planBlockOf(input: {
 }
 
 // ══ 呼吸：进行中那一格的亮度 ══════════════════════════════════════════
+//
+// ⚠️ **U112 起这三件挪到 `motion.ts`**（呼吸与脉冲是**一套**动效，三处共用；见那文件头注）。
+//    这里**原样再导出**——既有调用方（`components/plan.ts` · `components/app.ts` · 用例）
+//    一个字都不用改。
 
-/**
- * 一轮呼吸多久（毫秒）——设计：「约两秒一轮轻微亮度呼吸」。
- *
- * ⚠️ 时钟**复用既有的按需 200ms 那一支**（`components/app.ts` 的 `useLiveClock`），
- * 不另开常驻计时器、不用终端 ANSI 闪烁——故 2000 正好是 10 跳一轮，亮度一格一格变。
- */
-export const BREATH_MS = 2000
+export { BREATH_MS, breathOf, breathColor } from './motion.ts'
 
-/**
- * **此刻的亮度**（0 暗 → 1 亮，三角波：中点最亮）——给进行中那个方块上色用。
- *
- * 三角波而不是方波：方波是「闪」，设计要的是「**轻微**亮度呼吸」。两端各停一拍
- * （0 与 2000 都取 0），看着才是吸气—呼气，而不是开关。
- *
- * ⚠️ 纯函数：给一个「此刻」（毫秒）就有一个确定的亮度——屏可重放、快照可确定
- * （同 `AppView` 那条「给视图与尺寸就画一屏」）。
- */
-export function breathOf(now: number): number {
-  const phase = ((now % BREATH_MS) + BREATH_MS) % BREATH_MS / BREATH_MS
-
-  return 1 - Math.abs(2 * phase - 1)
-}
-
-/**
- * 呼吸的暗端占主题色的几成——**「轻微」的落点**：不熄灭、不闪，只是亮一档暗一档。
- *
- * 0.45 是量出来的观感：再亮（如 0.7）在深底上看不出在动，再暗（如 0.2）就从「呼吸」
- * 变成了「闪烁」——那是设计明写不要的（「不用终端 ANSI 闪烁」）。
- */
-const BREATH_FLOOR = 0.45
-
-/**
- * **主题色按亮度取值**——亮度 1 ＝**原色本身**（不是「差不多」：不呼吸的那些状态用的
- * 就是原色，取不到原色，进行中与已完成在色上就对不齐了）。
- *
- * 输入不是 `#rrggbb` 时**原样返回**：色板就那几个字面量，认不出的色不猜也不编
- * （改一个色板不该让屏上出现一个拼出来的颜色）。
- */
-export function breathColor(base: string, brightness: number): string {
-  const rgb = parseHex(base)
-  if (rgb === null) return base
-
-  const t = Math.max(0, Math.min(brightness, 1))
-  const scale = BREATH_FLOOR + (1 - BREATH_FLOOR) * t
-
-  return (
-    '#' +
-    rgb
-      .map((channel) => Math.round(channel * scale).toString(16).padStart(2, '0'))
-      .join('')
-  )
-}
-
-/** `#rrggbb` → 三个通道；别的写法一律 `null`（见 `breathColor`）。 */
-function parseHex(color: string): readonly [number, number, number] | null {
-  if (!/^#[0-9a-fA-F]{6}$/.test(color)) return null
-
-  return [
-    Number.parseInt(color.slice(1, 3), 16),
-    Number.parseInt(color.slice(3, 5), 16),
-    Number.parseInt(color.slice(5, 7), 16),
-  ]
-}
+// 本文件自己也要用（`planStyleOf` 给进行中那一格取值）——故另外 import 一份进来。
+import { breathColor } from './motion.ts'

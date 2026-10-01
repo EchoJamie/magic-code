@@ -26,6 +26,8 @@ import { diffRowsOf, looksLikeDiff, replaceDiff } from '../diff.ts'
 import type { DiffKind, DiffRow } from '../diff.ts'
 import { markdownStream } from '../markdown.ts'
 import type { MdLine } from '../markdown.ts'
+import { MARKS } from '../marks.ts'
+import { breathColor, breathOf } from '../motion.ts'
 import type { LogRow } from '../view.ts'
 import { INTERRUPTED_TEXT, nonEmptyLines, quietRowHidden, textOfLines } from '../view.ts'
 import { PALETTE, displayWidth, durationLabel, expandTabs, wrap } from './lines.ts'
@@ -49,8 +51,25 @@ export type LogLine = {
 
 const seg = (text: string, color?: string, bold?: boolean): Segment => ({ text, color, bold })
 
-/** 缩进（工具结果与工具行同组，缩进一行）。 */
+/**
+ * 缩进（工具结果与工具行同组，缩进一行）。
+ *
+ * 一套骨架（设计 · 终端交互「符号 ＋ 动效：一套」那条）：**你/助手顶格 · 工具与结果缩进
+ * 一级 · 卡片 `│`**。二级（两个 `INDENT`）此后只留给**卡片里那些更深的层级**。
+ */
 const INDENT = '  '
+
+/**
+ * 工具**结果**那一块的缩进——**与工具行同一级**（U112）。
+ *
+ * 设计那张表写的是「工具结果 / 多行正文：缩进一级 ＋ 弱色，**不加符号**」；那一节末尾那条
+ * 骨架把它与工具行并成一档（「工具与结果缩进一级」）。界面原型里也是同一个数
+ * （`.entry.result` / `.entry.output` 都是 `padding-left:2ch`）——两处对得上，故取 `INDENT`。
+ *
+ * ⚠️ **与 `diffLines` 之间暂时差着一级**（那一支今天还是 `INDENT × 2`）：那一段归 U110，
+ * 本单**一个字不碰**（防撞车）。两处对齐留给它落地时一并收口——如实记在回报里。
+ */
+const RESULT_INDENT = INDENT
 
 /** 用户行背景——淡青（原型 `--userbg` 在深底上的实色近似）。 */
 const USER_BG = '#131d23'
@@ -79,6 +98,13 @@ export type LogRowProps = {
    * 钟由活壳（`TuiApp`）给；取景与快照不给 ⇒ 帧是确定的。
    */
   readonly now?: number | null
+  /**
+   * **减少动效**（U112）——`true` ＝ 行尾那一位**不呼吸**（画原色、定住）。
+   *
+   * ⚠️ **与 `now` 是两件事**：`now` 还兼着「跑到第几秒了」那个**读数**，减少动效**不停读数**
+   * （停掉就是把屏上那句话弄成假的）。故由活壳另给这一格，不靠把 `now` 置空来表达。
+   */
+  readonly still?: boolean
 }
 
 /**
@@ -94,8 +120,9 @@ export function LogRowView({
   skip = 0,
   now = null,
   lost = false,
+  still = false,
 }: LogRowProps): ReactElement {
-  const all = rowLines(row, { columns, expanded, spaced, now, lost })
+  const all = rowLines(row, { columns, expanded, spaced, now, lost, still })
   // 头一条超预算时只画末尾那几行（`skip` 见 props；0 时**原样交那一份**——它是缓存里的数组）
   const lines = skip > 0 ? all.slice(skip) : all
 
@@ -149,6 +176,8 @@ export function rowLines(
     readonly now?: number | null
     /** **与管理者断了**（U100）——由 `view.status.state === 'lost'` 给（见 `toolLines` 的注）。 */
     readonly lost?: boolean
+    /** **减少动效**（U112）——见 `LogRowProps.still`。 */
+    readonly still?: boolean
   },
 ): readonly LogLine[] {
   const key = cacheKeyOf(options)
@@ -185,8 +214,9 @@ function cacheKeyOf(options: {
   readonly spaced?: boolean
   readonly now?: number | null
   readonly lost?: boolean
+  readonly still?: boolean
 }): string {
-  return `${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}:${options.lost === true ? 1 : 0}`
+  return `${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}:${options.lost === true ? 1 : 0}:${options.still === true ? 1 : 0}`
 }
 
 type RowCache = { readonly key: string; readonly lines: readonly LogLine[] }
@@ -287,9 +317,16 @@ function appendLines(into: LogLine[], lines: readonly LogLine[]): void {
 /**
  * 助手正文的 `[from, to)` 那几条 `MdLine` → 显示行。
  *
- * ⚠️ **`at` 是 `MdLine` 里的绝对下标**（不是切片下标）——首行标记（`⏺ `）与
- * 续行缩进（两格）按它分，显示行的 `key` 也按它编（`r:a:${at}`）。用相对下标会让
- * 增量之后**同一个 `key` 指到不同的行**，React 那侧就要错位。
+ * ⚠️ **`at` 是 `MdLine` 里的绝对下标**（不是切片下标）——悬挂缩进按它分，显示行的 `key`
+ * 也按它编（`r:a:${at}`）。用相对下标会让增量之后**同一个 `key` 指到不同的行**，
+ * React 那侧就要错位。
+ *
+ * ⚠️ **U112 起正文没有记号、也顶格**（设计 ·「符号 ＋ 动效：一套」那张表：助手在说话
+ * 那一行的身份是「（无记号）」）：原先首行挂 `⏺ `、续行缩两格，都是在衬那个记号；记号一去，
+ * 那两格就得**一起**去掉——不然首行顶格、续行缩两格，同一句话读着像两段。
+ *
+ * 靠什么与「你的交代」分开：**`›` 那个记号**在用户那一行上（顶格）＋ 用户行整行淡青底。
+ * 两条都在，故正文这一侧不用再带任何东西。
  */
 function wrapAssistant(
   lines: readonly MdLine[],
@@ -303,11 +340,11 @@ function wrapAssistant(
     const line = lines[at] as MdLine
     appendLines(
       out,
-      wrapSegments(
-        at === 0 ? [seg('⏺ ', PALETTE.ok, true), ...line.segments] : [seg(INDENT), ...line.segments],
-        columns,
-        { key: `r:a:${at}`, hang: `${INDENT}${line.hang ?? ''}`, bodyColor: PALETTE.fg },
-      ),
+      wrapSegments(line.segments, columns, {
+        key: `r:a:${at}`,
+        hang: line.hang ?? '',
+        bodyColor: PALETTE.fg,
+      }),
     )
   }
 
@@ -533,6 +570,8 @@ export function logLines(
     readonly expanded: boolean
     readonly now?: number | null
     readonly lost?: boolean
+    /** **减少动效**（U112）——见 `LogRowProps.still`。 */
+    readonly still?: boolean
   },
 ): readonly LogLine[] {
   const { flags } = spacerWalk(rows, options.expanded)
@@ -550,6 +589,8 @@ function rowBody(
     readonly now?: number | null
     /** **与管理者断了**（U100）——见 `toolLines` 那一处注。 */
     readonly lost?: boolean
+    /** **减少动效**（U112）——见 `LogRowProps.still`。 */
+    readonly still?: boolean
   },
 ): readonly LogLine[] {
   const { columns, expanded } = options
@@ -604,7 +645,7 @@ function rowBody(
 
     case 'user': {
       // **整行淡青背景**（一眼看出「这句是我说的」）——正文原色、标记青
-      const body = wrapSegments([seg('› ', PALETTE.user, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
+      const body = wrapSegments([seg(`${MARKS.you} `, PALETTE.user, true), seg(trimBlank(row.text), PALETTE.fg)], columns, {
         key: 'r:u',
         background: USER_BG,
         hang: INDENT,
@@ -680,13 +721,13 @@ function rowBody(
       // 照旧可见；成功（含跑动中）收起时不画。
       if (quietRowHidden(row) && !expanded) return []
 
-      return toolLines(row, columns, expanded, options.now ?? null, options.lost === true)
+      return toolLines(row, columns, expanded, options.now ?? null, options.lost === true, options.still === true)
 
     case 'toolgroup':
       // 收拢的组——`●` 起头 ＋ 次数与名字（原型 · 场景 13）
       return wrapSegments(
         [
-          seg('● ', PALETTE.ghost),
+          seg(`${MARKS.dot} `, PALETTE.ghost),
           seg(`${row.names.length} 次工具调用`, PALETTE.faint, true),
           seg(`（${row.names.join(' · ')}）`, PALETTE.faint),
         ],
@@ -702,7 +743,7 @@ function rowBody(
         )
 
     case 'receipt':
-      return wrapSegments([seg('· ', PALETTE.ghost, true), seg(row.text, PALETTE.faint)], columns, {
+      return wrapSegments([seg(`${MARKS.receipt} `, PALETTE.ghost, true), seg(row.text, PALETTE.faint)], columns, {
         key: 'r:x',
         hang: INDENT,
       })
@@ -736,18 +777,21 @@ function toolLines(
    * 头一行与既有输出照旧画（内容不擦）。
    */
   lost = false,
+  /** **减少动效**（U112）——行尾那一位不呼吸（见 `LogRowProps.still`）。 */
+  still = false,
 ): readonly LogLine[] {
   const running = row.state === 'running'
-  const marker = running ? '⟳ ' : '● '
-  const markerColor = running ? PALETTE.warn : PALETTE.tool
   const args = argTextOf(row)
   const body = resultBody(row, expanded)
 
-  const head = wrapSegments(
-    [seg(marker, markerColor), seg(row.name, PALETTE.tool), seg(args === '' ? '' : ` ${args}`, PALETTE.dim)],
-    columns,
-    { key: 'r:h', hang: INDENT },
-  )
+  /**
+   * **头一行**：`▸ 工具名(关键参数)` ＋ **行尾那一位状态**（U112）。
+   *
+   * 记号的那一套骨架（设计 · 终端交互「符号 ＋ 动效：一套」）：**行首是身份、行尾是状态**，
+   * 身份**永不参与动效**。故 `▸`（身份，`▸` 静态不变）落在名字前面，而「跑到哪一步了」
+   * 那一位落在**行尾**——进行中在动、成/败**定住**（「动 → 静」就是完成信号）。
+   */
+  const head = toolHead(row.name, args, statusBit(row, expanded, running, still ? null : now), columns)
 
   /**
    * **在等裁决的那一笔：那一行不说「跑了多久」**（U66 · 设计 · 终端交互「工具那行的计时
@@ -758,9 +802,9 @@ function toolLines(
    * 不成立的话。**那一屏的话由卡片说**（卡上写着「y 批准 / n 拒绝」，状态行写着「等你定夺」），
    * 这一行不重复、也不报一个不存在的数。
    *
-   * ⚠️ **只停钟、不换标记、也不加词**：`⟳` 照旧（这一笔**还没落定**——那正是它的语义），
-   * 头一行的名字与参数照旧，只是**底下那行读数不画**。加一句什么（「等你定夺」「待裁决」）
-   * 就是把卡片那句话再说一遍——一屏上的每条各说一件别处没说的。
+   * ⚠️ **只停钟、不换标记、也不加词**：行尾那一位照旧在动（这一笔**还没落定**——那正是它的
+   * 语义），头一行的名字与参数照旧，只是**底下那行读数不画**。加一句什么（「等你定夺」
+   * 「待裁决」）就是把卡片那句话再说一遍——一屏上的每条各说一件别处没说的。
    */
   if (running) {
     // **等裁决**与**失联**都不报那一条读数：前者是「人在想」，后者是「不知道」
@@ -772,44 +816,128 @@ function toolLines(
     // 且当时没有钟。见行上 `elapsedMs` 的注。）
     const clock = liveClock(row, now)
 
-    return [
-      ...head,
-      ...prefixLine(INDENT, clock === null ? '⟳ 运行中' : `⟳ ${clock}`, PALETTE.warn, 'r:run'),
-      ...body,
-    ]
+    return clock === null ? [...head, ...body] : [...head, ...prefixLine(INDENT, clock, PALETTE.faint, 'r:run'), ...body]
   }
 
   const verdict = verdictOf(row, expanded)
-  const meta = [
-    seg(`${INDENT}${verdict.marker} `, verdict.color, true),
-    seg(
-      row.elapsedMs === null ? verdict.text : `${durationLabel(row.elapsedMs)} · ${verdict.text}`,
-      PALETTE.faint,
-    ),
-  ]
 
-  return [...head, ...wrapSegments(meta, columns, { key: 'r:m', hang: '' }), ...body]
+  // **耗时 · 摘要**那一行（U112 起**不带符号**：状态位已经上了头一行的行尾）——
+  // 缩进一级 ＋ 弱色（设计那张表「工具结果 / 多行正文」那一格）。
+  return [
+    ...head,
+    ...wrapSegments(
+      [
+        seg(
+          `${INDENT}${row.elapsedMs === null ? verdict.text : `${durationLabel(row.elapsedMs)} · ${verdict.text}`}`,
+          PALETTE.faint,
+        ),
+      ],
+      columns,
+      { key: 'r:m', hang: INDENT },
+    ),
+    ...body,
+  ]
 }
 
-/** 结果行那半句——按**形态**出（见 `toolLines` 的头注）。 */
+/** 行尾那一位状态——形状 ＋ 该用什么色（U112 · 见 `toolHead` 与 `MARKS` 的注）。 */
+type StatusBit = {
+  readonly mark: string
+  readonly color: string
+}
+
+/**
+ * **工具行头一行**——`▸ 工具名(关键参数)` ＋ **行尾那一位**。
+ *
+ * 三条：
+ * - **身份是 `▸`**（不是 `●`、更不是 `⟳`——`⟳` 的语义是刷新/循环，用在「一次调用」上错了）；
+ * - **参数写成括号里那一段**（不是原始 JSON 贴在行上——那是日志的面孔，不是动作的面孔）；
+ * - **状态位靠右**（`columns - 1` 那一列）——同一栏里那一列竖着扫下来，一眼看得出
+ *   哪几件还在动、哪几件定住了。⚠️ **放不下就不靠右**（名字＋参数太长时照常折行，状态位
+ *   跟在**最后一行**的末尾）——那时强行靠右会把它挤到屏幕外，比不齐更坏。
+ */
+function toolHead(name: string, args: string, bit: StatusBit, columns: number): readonly LogLine[] {
+  // **参数按这一行还剩多少地方裁**（不是按一个死数）：行宽是**这一屏**给的，而
+  // 工具名有长有短（外部工具那串 `服务器 / 工具` 就比 `ls` 长十几列）。按死数裁，
+  // 长名字那一行照旧折成好几截、状态位被挤到最后一截的末尾——**靠右那一条当场失效**。
+  // 留的边距：`▸ ` 2 ＋ 名字 ＋ `()` 2 ＋ 空隙 2 ＋ 状态位 ＋ 右边 1。
+  const room = Math.max(8, columns - 8 - displayWidth(name) - INDENT.length)
+  const parts: Segment[] = [
+    // **缩进一级**（骨架：你/助手顶格 · 工具与结果缩进一级 · 卡片 `│`）
+    seg(INDENT),
+    seg(`${MARKS.tool} `, PALETTE.tool),
+    seg(name, PALETTE.tool),
+    seg(args === '' ? '' : `(${truncateLine(args, room)})`, PALETTE.dim),
+  ]
+  const width = parts.reduce((sum, piece) => sum + displayWidth(piece.text), 0)
+
+  // 靠右：正文 ＋ 两格空隙 ＋ 状态位，落在 `columns - 1` 之内才这么摆
+  if (width + 2 + displayWidth(bit.mark) <= columns - 1) {
+    return [
+      {
+        key: 'r:h',
+        segments: [
+          ...parts,
+          seg(' '.repeat(columns - 1 - width - displayWidth(bit.mark))),
+          seg(bit.mark, bit.color, true),
+        ],
+      },
+    ]
+  }
+
+  return wrapSegments([...parts, seg(` ${bit.mark}`, bit.color, true)], columns, { key: 'r:h', hang: INDENT })
+}
+
+/**
+ * **头一行行尾那一位**——进行中在动、成/败**定住**（U112 · 三条例的②）。
+ *
+ * | 处在哪一步 | 那一位 |
+ * | --- | --- |
+ * | 进行中 | `●` **弱色、呼吸**（活壳那支按需 200ms 的钟给「此刻」；没钟＝不呼吸、画原色） |
+ * | 成 | `✓`（定住） |
+ * | 败 | `×`（定住） |
+ * | 没跑成（要你再看一眼） | `!` |
+ *
+ * ⚠️ **进行中那一位是弱色**（设计那张表的原文）：它比 `✓` / `×` **暗**——故「动 → 静」在
+ * 屏上同时是**亮度那一跳**（弱 → 亮）与**形状那一跳**（圆点 → 勾/叉），两个信号叠着说同一句
+ * 话：**这一笔落定了**。只靠一动一静，在**无色终端**里是看不出来的（那儿没有亮度）。
+ */
+function statusBit(
+  row: Extract<LogRow, { kind: 'tool' }>,
+  expanded: boolean,
+  running: boolean,
+  now: number | null,
+): StatusBit {
+  if (running) {
+    return {
+      mark: MARKS.dot,
+      color: now === null ? PALETTE.dim : breathColor(PALETTE.dim, breathOf(now)),
+    }
+  }
+
+  const verdict = verdictOf(row, expanded)
+
+  return { mark: verdict.mark, color: verdict.color }
+}
+
+/** 结果行那半句——按**形态**出（见 `toolLines` 的头注）。`mark` 上**头一行的行尾**。 */
 function verdictOf(
   row: Extract<LogRow, { kind: 'tool' }>,
   expanded: boolean,
 ): {
-  readonly marker: string
+  readonly mark: string
   readonly color: string
   readonly text: string
 } {
   // 没跑成：报**为什么**（首行缘由就是那句「为什么」；输出为空才回退到一句话）
   if (row.state === 'rejected') {
-    return { marker: '✗', color: PALETTE.danger, text: firstLineOf(row.output) ?? '未执行' }
+    return { mark: MARKS.fail, color: PALETTE.danger, text: firstLineOf(row.output) ?? '未执行' }
   }
   // **规约扣下 / 材料超限停批**：也是「压根没跑」，故与失败分开画——不上失败那个叉
   // （`!` ＋ warn 要说的是「这一笔要你再看一眼」），也没有耗时（归约那一步就落了 `null`，
   // 依据是结果上的 `notExecuted`，见 `view.ts`·`reduceToolResult`）。那句 `未执行 · …`
   // 是结果正文的首行，本行照抄——正文后头还有一条「为什么、怎么办」，`ctrl+o` 展开可见。
   if (row.state === 'unexecuted') {
-    return { marker: '!', color: PALETTE.warn, text: firstLineOf(row.output) ?? '未执行' }
+    return { mark: MARKS.warn, color: PALETTE.warn, text: firstLineOf(row.output) ?? '未执行' }
   }
   /**
    * **已停止 · 结果未确认**（U100 合前复核 · 呈现补）——那一代核销了，这一笔的 `tool.result`
@@ -820,7 +948,7 @@ function verdictOf(
    * 行上原有的输出照旧画（既有内容不擦）。
    */
   if (row.state === 'interrupted') {
-    return { marker: '!', color: PALETTE.warn, text: INTERRUPTED_TEXT }
+    return { mark: MARKS.warn, color: PALETTE.warn, text: INTERRUPTED_TEXT }
   }
 
   // **失败那一行保头也保尾**（U93）——它跟上面两支的**形状不同**：被拒 / 被扣下那两句
@@ -829,13 +957,13 @@ function verdictOf(
   // （「该怎么办」）落在最后那几个字上——`D41` 那一半只解决到「名分一次」，指引要展开才
   // 看得见。故这一支另给一把尺子（头也留、尾也留，见 `truncateMid`）。
   if (row.state === 'failed') {
-    return { marker: '✗', color: PALETTE.danger, text: failedLineOf(row.output) }
+    return { mark: MARKS.fail, color: PALETTE.danger, text: failedLineOf(row.output) }
   }
 
   // **大块结果另有一句话要说**（U82）——有多大、屏上有没有铺全、正文去哪儿看
   const bulk = bulkSummaryOf(row, expanded)
 
-  return { marker: '✓', color: PALETTE.ok, text: bulk ?? summaryOf(row) }
+  return { mark: MARKS.ok, color: PALETTE.ok, text: bulk ?? summaryOf(row) }
 }
 
 /**
@@ -914,22 +1042,76 @@ function diffStat(rows: readonly DiffRow[]): string {
 }
 
 /**
- * 工具行的**参数**那一格——已知的笨重形态就地成形。
+ * 工具行的**参数**那一格——**关键参数，不是原始 JSON**（U112）。
  *
- * `edit` / `write` 的参数里塞着**整段正文**（JSON 化之后是一条长到没法读的行，多行正文
- * 全被转义成 `\n`），而上屏要的是「改了哪个文件」。其余工具的参数本就短小，原样铺
- * （「表格保持原文」同一条取向：**不追全量**，B8）。
+ * 设计那句原文：「照参照面应是「**动作名＋括号里的关键参数**」（长参数裁），现在这一行
+ * 读起来像**日志**，不像**动作**」。故这一格只答一件事：**这一次动手用的是哪一把**——
+ * `exec` 的命令、`read` 的路径、`grep` 的模式与范围（表在 `KEY_ARGS`）。
  *
- * 流式那几帧 `args` 还是 `null`（片段不全）⇒ 回退到原文片段，照旧看得见。
+ * 三条：
+ * - **`edit` / `write` 的参数里塞着整段正文**（JSON 化之后是一条长到没法读的行，多行正文
+ *   全被转义成 `\n`）—— 这正是「像日志」最刺眼的那一处；表里给它们只留 `path`；
+ * - **长了裁**（`toolHead` 按这一屏还剩多少地方裁，尾部省略号）：那一行宁可少读几个字，
+ *   也要把**行尾那一位状态**留在看得见的地方；
+ * - **流式那几帧 `args` 还是 `null`**（片段不全，解析不了）⇒ 回退到**原文片段**（同样裁）——
+ *   照旧看得见「它正在收什么参数」，只是那几帧还没成形。
  */
 function argTextOf(row: Extract<LogRow, { kind: 'tool' }>): string {
-  if (row.args !== null && (row.name === 'edit' || row.name === 'write')) {
-    const path = row.args['path']
-    if (typeof path === 'string') return path
-  }
+  const args = row.args
+  if (args === null) return row.argsText
 
-  return row.argsText
+  // **键参数**：每件工具挑它真正要紧的那几个（表在下面），值按序串起来。
+  const keys = KEY_ARGS[row.name]
+  const picked = (keys ?? fallbackKeys(args))
+    .map((key) => args[key])
+    .filter((value): value is string | number | boolean => isScalar(value))
+    .map((value) => String(value))
+
+  return picked.length === 0 ? '' : picked.join(' · ')
 }
+
+const isScalar = (value: unknown): value is string | number | boolean =>
+  typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+
+/**
+ * **每件工具的关键参数**（U112）——行上要的是「这一次动手用的是哪一把」，不是整份 JSON。
+ *
+ * 名字取自工具集 v1 的冻结行（`TOOLSET_V1`）＋本仓另几件（计划读写、技能、取网页、检索）。
+ * 挑的是**参数里那一个说得清「这一次干的是什么」**的：`exec` 的命令、`read` 的路径、
+ * `grep` 的模式（再看一眼范围）。**不追全量**——多出来的键在 `ctrl+o` 展开的结果里照旧看得到。
+ *
+ * 值之间用 `·`（与状态行分栏同一个记号）：它是**并列的几段**，不是一句话里的标点。
+ */
+const KEY_ARGS: Readonly<Record<string, readonly string[]>> = {
+  exec: ['cmd'],
+  read: ['path'],
+  write: ['path'],
+  edit: ['path'],
+  grep: ['pattern', 'path'],
+  glob: ['pattern', 'path'],
+  ls: ['path'],
+  plan_update: ['goal'],
+  skill: ['name'],
+  web_fetch: ['url'],
+  web_search: ['query'],
+  history_read: ['entry', 'before'],
+}
+
+/**
+ * 表外的工具（外部工具服务器那些，名字是 `mcp__<服务器>__<工具>`）——**按序取头几个标量**。
+ *
+ * 拿不到「哪个键要紧」时，**不编一个语义**：照键在原对象里的次序取前几个值，够读出行上
+ * 那件事是什么就行。取不着一个标量（参数是空对象／全是嵌套结构）就**一个都不写**——
+ * 屏上是 `▸ 工具名()`，比贴一坨 JSON 干净，也比编一串好。
+ */
+function fallbackKeys(args: Readonly<Record<string, unknown>>): readonly string[] {
+  return Object.keys(args).filter((key) => isScalar(args[key])).slice(0, FALLBACK_ARG_KEYS)
+}
+
+/** 表外工具报几个值（头几个）。 */
+const FALLBACK_ARG_KEYS = 2
+
+
 
 /**
  * 工具结果的**正文块**。
@@ -954,7 +1136,7 @@ function resultBody(row: Extract<LogRow, { kind: 'tool' }>, expanded: boolean): 
 
   return looksLikeDiff(lines)
     ? diffLines(diffRowsOf(lines), Number.POSITIVE_INFINITY)
-    : lines.flatMap((line, at) => prefixLine(`${INDENT}${INDENT}`, line, PALETTE.dim, `r:out:${at}`))
+    : lines.flatMap((line, at) => prefixLine(RESULT_INDENT, line, PALETTE.dim, `r:out:${at}`))
 }
 
 /**

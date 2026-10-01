@@ -138,6 +138,20 @@ const ROWS = 30
  *   ⚠️ **记录区的字一个没改**（只有空行变多）；**高度的账**照旧按实算的行数走
  *   （`heightOf` 走同一个 `rowLines`，分段行本来就在里面）。
  *
+ * **⑫ 符号与布局换了一整套（U112）** —— 规格出处：设计 · 终端交互「符号 ＋ 动效：一套」。
+ *   - **助手正文**：`⏺ ` 标记**退场**，正文**顶格**（连折行一起；原来首行 `⏺ `、续行缩 2 列）。
+ *     故每张有助手发言的快照**每一行都少了**那个标记（或那两格基线）。
+ *   - **工具行**：原来的行首标记（`⟳` 在跑 / `●` 落定）＋ 原样 JSON 的参数，换成
+ *     **`▸ 名(关键参数)`**（身份在行首、静态）＋ **行尾一位状态**（进行中弱色 `●` 呼吸 /
+ *     成 `✓` / 败 `×` / 没跑成 `!`）——那一位**靠右**摆在 `columns - 1` 那一格。
+ *   - **工具底下那条读数**：原来带前缀勾（`  ✓ 0.2s · 14 项`），现在只剩 `  0.2s · 14 项`；
+ *     跑动中只报钟（`  0.6s`）；**拿不到钟 / 在等裁决 / 失联**则**整条不画**
+ *     （旧的 `⟳ 运行中` 那句退场——它是在替一个量不出来的数说话）。
+ *   - **状态行**：等裁决那一格 `●` → **`◉`**（与「工作中」分家）；默认那几格由
+ *     「模型 · 会话名 · 上下文」收成 **`会话名 · 上下文占用`**（模型不再默认上屏）。
+ *   - **工具结果正文**的缩进由 4 列改 **2 列**。⚠️ **例外**：`diffLines`（`+`/`-` 那块 diff）
+ *     **不在本单元范围内**，仍是 4 列——涉及 diff 的行快照**不该按上面那条读**。
+ *
  * ⚠️ **先归一化**（`plain`——剥掉 ANSI）：这一层量的是**文字与布局**，而色是**环境**给的
  * （Ink 经 `chalk`，档位看 `FORCE_COLOR` / TTY）。不剥就是**缺陷 D17**：同一个仓、同一份代码，
  * 换个 shell（设了 `FORCE_COLOR` 的工具链 / CI / IDE 集成终端）**21 例当场全红**——
@@ -248,9 +262,12 @@ describe('场景 2 · 空闲（有历史）', () => {
 
     const frame = app.screen()
     expect(frame).toContain('› 看看这个工作区里有什么')
-    expect(frame).toContain('⏺ 我先列一下。')
-    // 工具标记＝`●`（与助手同族 · 只换颜色 · 视觉重量比助手轻——原型 · 组件规格）
-    expect(frame).toContain('●')
+    // ⚠️ **U112 换锚**：助手正文的 `⏺ ` 标记整个退场（正文**顶格**，见 `log.ts` 的 `wrapAssistant`）。
+    //    判据本身没变——**这条正文在屏幕上**，只是不再靠一个标记认它。
+    expect(frame).toContain('我先列一下。')
+    // ⚠️ **U112 换锚**：工具行改成 `▸ 名(关键参数)` ＋ **行尾一位状态**（原锚＝行首那枚 `●`）。
+    //    判据本身没变：**这一条工具行在屏幕上，且带着它的身份**。
+    expect(frame).toContain('▸ ls(.)')
     expect(frame).toContain('ls')
     expect(frame).toContain('3.1k')
     expect(frame).toContain('记录查询优化')
@@ -264,12 +281,21 @@ describe('场景 3 · 工作中（流式）', () => {
   //      而 `⟳ 0.6s` 正是原型场景 3 画的那一形（`● read src/utils/date.ts` / `⟳ 0.6s`）；
   //    - **规格为什么变**：U20 把钟补上了（`TuiApp` 按需滴答 → `AppView` 的 `now`）；
   //    - **新锚**：钟给得出就报**真耗时**（`差距 3` 那两条用例钉它），**给不出才回退**「运行中」
-  //      ——这一条（`renderToString` 那条路，没有钟）钉的是后半句。**不编**这条规矩没变，
-  //      变的是「真量得出来的时候，量出来的可以上屏」。
+  //      ——U112 之前这一条（`renderToString` 那条路，没有钟）钉的是后半句。
+  //
+  // ⚠️ **U112 又换了一次锚**（设计 · 终端交互「符号 ＋ 动效：一套」）：
+  //    - **原锚**：行首 `⟳ name {json}`，底下回退一行 `⟳ 运行中`；
+  //    - **为何变**：工具行的记号**行首是身份、行尾是状态**——身份是 `▸ 名(关键参数)`（静态），
+  //      「跑到哪一步」那一**位**靠右摆；**底下那条读数只在真量得出钟时画**（`  0.6s`），
+  //      **拿不到就整条不画**——「运行中」那句是拿不到钟时推的话，按新规格**退场**
+  //      （旧的 `⟳ 运行中` 不再出现，这条用例也不再拿它当锚）；
+  //    - **新锚**：头一行 `▸ read(src/utils/date.ts)` ＋ 行尾「进行中」那一位。
+  //      ⚠️ 「**不编秒数**」这条规矩没变、也**没有被放宽**：这一条钉的还是**没有钟就不许
+  //      报秒数**（下面直接量「一屏上没有秒数读数」），只是「拿不到就不画」取代了「回退一句话」。
   // ⚠️ **U100 又改了一次右位那句话**（原锚 `ctrl+c 中断`）：有在途工作那一下现在开的是
   //    三选（停止任务 / 转到后台 / 停止并退出），不再当场中断——新锚 `ctrl+c 停或离开`
   //    （两件都可能，且都是真话）。快照随之更新，**只是那一格**。
-  test('工具在跑——标记换 `⟳`；**没有钟**就回退「运行中」（不编秒数）；输入行说实话；右位报「停或离开」', () => {
+  test('工具在跑——头一行 `▸ 名(参数)` ＋ 行尾那一位；**没有钟就不画那条读数**（不编秒数）；输入行说实话；右位报「停或离开」', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
@@ -284,7 +310,11 @@ describe('场景 3 · 工作中（流式）', () => {
     ])
 
     const frame = app.screen()
-    expect(frame).toContain('⟳')
+    // 那一条工具行在屏上（头一行＝身份），**且行尾那一位在**（进行中＝`●`，弱色、呼吸）
+    expect(frame).toContain('▸ read(src/utils/date.ts)')
+    expect(frame.split('\n').some((line) => line.trimEnd().endsWith('●'))).toBe(true)
+    // **没有钟 ⇒ 一条秒数读数都不许有**（这一条走的是 `renderToString`，没有 ticker 那条路）
+    expect(frame.split('\n').some((line) => /^\s*\d+(?:\.\d+)?(?:ms|s)$/u.test(line))).toBe(false)
     expect(frame).toContain('● 工作中')
     expect(frame).toContain('ctrl+c 停或离开')
     expect(frame).toMatchSnapshot()
@@ -321,7 +351,9 @@ describe('场景 4 · 待裁决（轻）', () => {
     const dock = rows.slice(rows.findLastIndex((line) => /^─{8,}$/u.test(line.trim())) + 1)
     expect(frame).not.toContain('等你的答复')
     expect(dock.some((line) => line.trimStart().startsWith('›'))).toBe(false)
-    expect(frame).toContain('● 等你定夺')
+    // ⚠️ **U112 换锚**：等裁决那一格由 `●`（工作中同一个点）改成 **`◉`**——「等你定夺」是与
+    //    「工作中」并列的一档，不该共用同一个记号（`marks.ts` · `MARKS.ring`）。
+    expect(frame).toContain('◉ 等你定夺')
     expect(frame).toContain('y / a / n')
     expect(frame).toMatchSnapshot()
   })
@@ -392,7 +424,8 @@ describe('场景 7 · 多件裁决', () => {
 
     const frame = app.screen()
     expect(frame).toContain('2 / 3')
-    expect(frame).toContain('● 等你定夺 2/3')
+    // ⚠️ **U112 换锚**：等裁决那一格 `●` → `◉`（同场景 4）。
+    expect(frame).toContain('◉ 等你定夺 2/3')
     // ⚠️ **U66 改了这张帧**：被问的那一件（`write b`）**不再画底下那行读数**
     // （`⟳ 运行中` 那条没了）——在等裁决 ≠ 在执行，那一行不说「跑了多久」。
     // 同一屏上没被问的那两件（`a` / `c`）照旧，它们在那一格里的身份是「还没落定」。
@@ -553,7 +586,9 @@ describe('场景 12 · 切换 / 恢复后——重建，且是收拢的', () => 
 
     const frame = app.screen()
     expect(frame).toContain('看看这个工作区里有什么')
-    expect(frame).toContain('●') // 工具标记（第 21 轮起＝`●`）
+    // ⚠️ **U112 换锚**：工具标记原在**行首**（第 21 轮起＝`●`），现在行首是**身份** `▸ 名(参数)`、
+    //    状态位挪到**行尾**（见 `log.ts` 的 `toolHead`）。判据本身没变：这条工具行在屏上。
+    expect(frame).toContain('▸ ls(.)')
     expect(frame).toContain('14 项')
     expect(frame).not.toContain('可用命令') // 屏上痕迹不回
     expect(frame).toMatchSnapshot()
@@ -646,8 +681,11 @@ describe('规格细节（渲染层）', () => {
     // **单次调用不收**（D18①）——`● 1 次工具调用（ls）` 那种行不该出现
     expect(frame).not.toContain('1 次工具调用')
     // 末尾五组逐条展开（含最后那组单发的 `cat`）
-    expect(frame).toContain('● ls {}')
-    expect(frame).toContain('● cat {}')
+    // ⚠️ **U112 换锚**：原锚 `● ls {}` 钉的是「行首标记 ＋ **原样 JSON** 的参数」；
+    //    新形是 `▸ 名(关键参数)`——这几件工具的 `args` 是空对象，没有关键参数可挑
+    //    ⇒ 参数那半截不画（`argTextOf`）。判据本身没变：**这两条工具行各自在屏上**。
+    expect(frame).toContain('▸ ls')
+    expect(frame).toContain('▸ cat')
     expect(frame).toMatchSnapshot()
   })
 
@@ -677,7 +715,7 @@ describe('规格细节（渲染层）', () => {
     expect(view.rows).toHaveLength(0)
   })
 
-  test('行标记与着色——用户行整行背景、工具跑起来换 `⟳`', () => {
+  test('行标记与着色——用户行整行背景、工具行以 `▸ 名(参数)` 起头', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
     app.type('跑一下')
@@ -687,7 +725,9 @@ describe('规格细节（渲染层）', () => {
     const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
     const user = lines.find((line) => line.segments.some((piece) => piece.text.includes('跑一下')))
     expect(user?.background).toBe('#131d23') // 整行淡青背景
-    expect(lines.some((line) => line.segments.some((piece) => piece.text.startsWith('⟳')))).toBe(true)
+    // ⚠️ **U112 换锚**：原来跑起来那一行以 `⟳` 起头（旧：行首那枚标记随状态换形）。
+    //    新形**行首恒是身份** `▸ 名(参数)`——「在跑」由**行尾那一位**说（这支用例只钉行首那一格）。
+    expect(lines.some((line) => line.segments.some((piece) => piece.text.startsWith('▸')))).toBe(true)
   })
 
   test('`ctrl+o` 展开——思考从一行变全文，工具结果行跟着出来', () => {
@@ -778,7 +818,7 @@ describe('密度（原型 · 密度节）', () => {
 
     // ⚠️ **U67 改**——**原锚** `toBe(0)`（「首条用户消息之前不必分段：顶上没有东西」）。
     //    **为何变**：那一格判的是「顶上有没有东西」，而这一列里**顶上没有字标**（本轮的行）；
-    //    真正的正题是**块与块之间**：这一列是 `› 跑一下` / `⏺ 好。` / `● ls` 三块，
+    //    真正的正题是**块与块之间**：这一列是 `› 跑一下` / `好。` / `▸ ls(.)` 三块，
     //    交界两处 ⇒ 两行。**新锚** `toBe(2)`。
     expect(spacers).toBe(2)
 
@@ -808,12 +848,22 @@ describe('密度（原型 · 密度节）', () => {
 
     // 回执贴在前一块的尾巴上（`blockOf` 不长块），故它不把这一组切成两半
     expect(tight.filter((line) => line.spacer === true)).toHaveLength(0)
-    expect(tight.map((line) => line.segments.map((piece) => piece.text).join(''))).toEqual([
-      '● ls',
-      '  ✓ 完成',
+    // ⚠️ **U112 换锚**：工具行头一行的形状变了——原锚 `● ls`（行首标记 ＋ 名字）＋
+    //    `  ✓ 完成`（底下那条读数带勾）；新形是 `▸ ls` ＋ **行尾一位**（`✓`）＋ `  完成`。
+    //    行尾那一位是**靠右摆**的（`columns - 1` 处），故中段是填充空白——量内容时把它压成
+    //    一格（下面这个 `shapeOf`，行首那一格缩进也一并压成一格），判据本身一字未变：
+    //    **两行工具（各自缩进一级 ＋ 各自的完成态）、中间夹一条回执**。
+    const shapeOf = (line: LogLine): string =>
+      line.segments
+        .map((piece) => piece.text)
+        .join('')
+        .replace(/\s+/gu, ' ')
+    expect(tight.map(shapeOf)).toEqual([
+      ' ▸ ls ✓',
+      ' 完成',
       '· 本次使用技能：pdf',
-      '● read',
-      '  ✓ 完成',
+      ' ▸ read ✓',
+      ' 完成',
     ])
   })
 
@@ -826,7 +876,14 @@ describe('密度（原型 · 密度节）', () => {
     ])
 
     const lines = logLines(app.shell.getView().rows, { columns: 100, expanded: false })
-    expect(lines.some((line) => line.segments.some((piece) => piece.text.includes('⏺')))).toBe(false)
+
+    // ⚠️ **U112 换锚**：原锚量的是「正文行上有没有 `⏺ ` 那个标记」——标记整个退场之后
+    //    那条断言**恒真**（量不出任何东西）。判据本身没变：**那一轮不产生正文行**——
+    //    改成量「有没有一条**内容为空白**的非分段行」（真多出一行正文时它一定带着那些空格，
+    //    或者干脆是空串），并顺手确认那一条工具行**在**（不然「没有正文行」是空集好话）。
+    const body = lines.filter((line) => line.spacer !== true)
+    expect(body.some((line) => line.segments.every((piece) => piece.text.trim() === ''))).toBe(false)
+    expect(body.some((line) => line.segments.some((piece) => piece.text.startsWith('▸ ')))).toBe(true)
   })
 })
 
@@ -848,7 +905,8 @@ describe('D14 · 记录区渲染 Markdown', () => {
     const lines = bodyOf('这是 **Magic Code** 的 `验收脚本`')
     const texts = textsOf(lines)
 
-    expect(texts).toEqual(['⏺ 这是 Magic Code 的 验收脚本'])
+    // ⚠️ **U112 换锚**：助手正文的 `⏺ ` 标记退场 ⇒ 正文**顶格**（原锚首行以 `⏺ ` 起头）。
+    expect(texts).toEqual(['这是 Magic Code 的 验收脚本'])
     expect(texts.join('')).not.toContain('**')
     expect(texts.join('')).not.toContain('`')
 
@@ -864,30 +922,34 @@ describe('D14 · 记录区渲染 Markdown', () => {
     const texts = textsOf(bodyOf('## 这一段在说什么\n\n```ts\nconst a = 1\n```\n\n- 第一条\n1. 有序'))
 
     // 钉的规格＝**D14 五样**（围栏与 `#` 不见、列表符号原样留着）
-    // ＋ **D20 统一悬挂**（正文与所有折行都从第 3 列起 ⇒ 非首行前面那两格基线；
-    //    markdown 自己的缩进——代码块 2 列、列表符号——**叠在基线上**）。
-    expect(texts).toEqual(['⏺ 这一段在说什么', '  ', '    const a = 1', '  ', '  - 第一条', '  1. 有序'])
+    // ＋ **D20 统一悬挂**。⚠️ **U112 换锚**：助手正文的 `⏺ ` 标记退场，那**两格基线跟着没了**
+    //    （原锚：正文与所有折行从第 3 列起，markdown 自己的缩进叠在那 2 列基线上）——
+    //    现在**正文从第 1 列起**，hang 只剩 markdown 自己那份（代码块 2 列、列表符号照原样）。
+    //    **一致悬挂这条规格本身没变**（首行与续行同一起点），变的是那个起点。
+    expect(texts).toEqual(['这一段在说什么', '', '  const a = 1', '', '- 第一条', '1. 有序'])
     expect(texts.join('\n')).not.toContain('```')
     expect(texts.join('\n')).not.toContain('#')
   })
 
-  test('`⏺ ` **只挂首行**；续行按各行的悬挂缩进挂（列表挂到符号之后）', () => {
+  test('正文**不带标记前缀**（顶格起）；续行按各行的悬挂缩进挂（列表挂到符号之后）', () => {
     const texts = textsOf(bodyOf(`1. ${'甲'.repeat(20)}`, 30))
 
-    expect(texts.filter((line) => line.includes('⏺'))).toHaveLength(1) // 只有首行有标记
+    // ⚠️ **U112 换锚**：原锚是「`⏺ ` **只挂首行**」（第 1 行有标记、续行没有）。
+    //    标记整个退场之后那条断言恒真（量不出东西）⇒ 改成量**它原来想问的那件事**：
+    //    正文行**顶格起**（不带任何前缀格），而续行只按**这一行自己的**悬挂缩进挂。
     expect(texts).toHaveLength(2)
-    expect(texts[0]?.startsWith('⏺ 1. 甲')).toBe(true)
-    // D20：助手基线 2 列 ＋ 列表「按标记宽度」（`1. ` ＝ 3 列）⇒ 续行从第 6 列起。
-    expect(texts[1]?.startsWith('     ')).toBe(true)
-    expect(texts[1]?.startsWith('      ')).toBe(false)
+    expect(texts[0]?.startsWith('1. 甲')).toBe(true) // 第 1 列就是正文（没有标记那两格）
+    // D20：助手基线 0 列 ＋ 列表「按标记宽度」（`1. ` ＝ 3 列）⇒ 续行从第 4 列起。
+    expect(texts[1]?.startsWith('   ')).toBe(true)
+    expect(texts[1]?.startsWith('    ')).toBe(false)
   })
 
   test('**流式中间帧**——未闭合的 `**` / 反引号 / 围栏**先按字面**（不闪不跳）', () => {
     // 「未闭合的先按字面」是 D14 定死的那条细节（**现在还钉它**）；
-    // 非首行的两格基线归 D20。
-    expect(textsOf(bodyOf('这是 **Magic Co'))).toEqual(['⏺ 这是 **Magic Co'])
-    expect(textsOf(bodyOf('跑 `m02-real'))).toEqual(['⏺ 跑 `m02-real'])
-    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['⏺ ```ts', '  const a = 1'])
+    // 非首行的悬挂归 D20（U112 后基线是 0 列，hang 只剩 markdown 自己那份）。
+    expect(textsOf(bodyOf('这是 **Magic Co'))).toEqual(['这是 **Magic Co'])
+    expect(textsOf(bodyOf('跑 `m02-real'))).toEqual(['跑 `m02-real'])
+    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['```ts', 'const a = 1'])
   })
 
   test('**整屏取景**——帧上见不到 `**` 与反引号（D14 的现象本身）', () => {
@@ -951,11 +1013,16 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
 
     const frame = app.screen()
     expect(frame).not.toContain('次工具调用') // 两组都是单次 ⇒ **一组都不收**
-    expect(frame).toContain('● grep') // 参数留在屏上
+    // ⚠️ **U112 换锚**：原锚 `● grep`（行首标记 ＋ 名字，后面还跟着原样 JSON）。
+    //    新形 `▸ 名(关键参数)`——这两件工具给的键（`q`）不在 `grep` 的关键参数表里
+    //    ⇒ 参数那半截不画（`argTextOf`）。判据本身没变：**这一条工具行没被收进摘要**。
+    expect(frame).toContain('▸ grep')
   })
 
-  test('D20 · 助手正文**每一个非首行**都从第 3 列起', () => {
-    expect(textsOf(bodyOf('第一行\n第二行\n第三行'))).toEqual(['⏺ 第一行', '  第二行', '  第三行'])
+  // ⚠️ **U112 换锚**：助手正文基线由 2 列改成 **0 列**（`⏺ ` 标记退场，正文**顶格**）。
+  //    D20 那条规格本身（**首行与所有折行同一起点、一致悬挂**）一字未改——变的是起点。
+  test('D20 · 助手正文**每一行都从第 1 列起**（一致悬挂）', () => {
+    expect(textsOf(bodyOf('第一行\n第二行\n第三行'))).toEqual(['第一行', '第二行', '第三行'])
   })
 
   test('D20 · 用户消息的折行同样悬挂（`› ` 也占 2 列）', () => {
@@ -967,12 +1034,12 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     expect(textsOf(lines)).toEqual(['› 第一行', '  第二行'])
   })
 
-  test('D20 · 代码块挂在基线上（基线 2 ＋ 它自己的缩进 2）', () => {
-    expect(textsOf(bodyOf('看：\n\n```\nx\n```'))).toEqual(['⏺ 看：', '  ', '    x'])
+  test('D20 · 代码块挂在基线上（U112 后基线 0 ＋ 它自己的缩进 2）', () => {
+    expect(textsOf(bodyOf('看：\n\n```\nx\n```'))).toEqual(['看：', '', '  x'])
   })
 
   test('D19 · 正文**内部**的段落空行一条不删（「首尾裁、中间留」）', () => {
-    expect(textsOf(bodyOf('甲\n\n乙\n\n丙'))).toEqual(['⏺ 甲', '  ', '  乙', '  ', '  丙'])
+    expect(textsOf(bodyOf('甲\n\n乙\n\n丙'))).toEqual(['甲', '', '乙', '', '丙'])
   })
 
   test('D19 · 段落空行**在屏上真的占一行**（走真 Ink，不是纯函数）', () => {
@@ -984,10 +1051,12 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     // ⚠️ **原锚**：`lines[0]` / `lines[1]` / `lines[2]`——那时记录区第一行就是正文。
     //    **为何变**：启动字标占了记录区最前面那几行（见 `screen()` 的注）。
     //    **新锚**：**从正文那一行起**往下数——不数死偏移，字标占几行（随宽度变）都不影响这条。
-    const at = lines.indexOf('⏺ 甲')
+    // ⚠️ **U112 换锚**：正文顶格了（`⏺ ` 退场）⇒ 锚由 `⏺ 甲` 变 `甲`、续行由 `  乙` 变 `乙`。
+    //    这一条钉的东西（**段落空行在屏上真的占一行**）一字未变。
+    const at = lines.indexOf('甲')
     expect(at).toBeGreaterThanOrEqual(0)
     expect(lines[at + 1]?.trim()).toBe('') // 空行**在**
-    expect(lines[at + 2]).toBe('  乙')
+    expect(lines[at + 2]).toBe('乙')
   })
 
   test('**分段行**（用户消息之前那一行）真的占一行——空段那条路的哨兵（原型 · 密度）', () => {
@@ -1016,13 +1085,13 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     //    ⚠️ 字标画幅那 5 行不在此列（那不是空行）。
     //
     // ⚠️ **U67 再改（⑪）**——**原锚** `toHaveLength(3)`。**为何变**：这一屏上的块多了一道
-    //    交界——`› 甲` 与 `⏺ 嗯` **之间**（早先只做「用户消息之前」那一半，故它没有）。
-    //    **新锚** 4 条＝前留白 ＋ `› 甲` 那条（＝字标后留白）＋ `⏺ 嗯` 之前 ＋ `› 乙` 之前。
+    //    交界——`› 甲` 与 `嗯` **之间**（早先只做「用户消息之前」那一半，故它没有）。
+    //    **新锚** 4 条＝前留白 ＋ `› 甲` 那条（＝字标后留白）＋ `嗯` 之前 ＋ `› 乙` 之前。
     expect(lines.filter((line) => line.trim() === '')).toHaveLength(4)
   })
 
   test('D19 · 首尾的空行仍然不渲染（那是模型的格式噪声）', () => {
-    expect(textsOf(bodyOf('\n\n甲乙\n\n'))).toEqual(['⏺ 甲乙'])
+    expect(textsOf(bodyOf('\n\n甲乙\n\n'))).toEqual(['甲乙'])
   })
 })
 
@@ -1145,9 +1214,9 @@ describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', ()
     const lines = logLines(app.shell.getView().rows, { columns: 96, expanded: false })
     const reply = lines.filter((line) => line.segments.some((piece) => piece.text.includes('甲乙丙丁')))
 
-    // 只有一条显示行带正文；且它同时带标记（首行＝`⏺ ` ＋ 正文）
+    // 只有一条显示行带正文；且它**就是正文本身**（U112 后正文顶格，不再带 `⏺ ` 标记）
     expect(reply).toHaveLength(1)
-    expect(reply[0]?.segments.map((piece) => piece.text).join('')).toBe('⏺ 甲乙丙丁')
+    expect(reply[0]?.segments.map((piece) => piece.text).join('')).toBe('甲乙丙丁')
     // 首尾的空行**不渲染**（密度）
     // ⚠️ **U67 补一句「不是分段那一行」**（`line.spacer !== true`）：这一句问的是**正文里**
     //    有没有空行（D13 的形），而**分段行**（块与块之间那一行）本来就是一条空行、且
@@ -1166,7 +1235,7 @@ describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', ()
     const lines = logLines(app.shell.getView().rows, { columns: 96, expanded: false })
     const texts = lines.map((line) => line.segments.map((piece) => piece.text).join(''))
 
-    expect(texts[0]).toBe('⏺ 第一段')
+    expect(texts[0]).toBe('第一段')
     expect(texts.some((line) => line.includes('第二段'))).toBe(true)
   })
 })

@@ -30,12 +30,13 @@ import { createElement as h } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import { useSyncExternalStore } from 'react'
+import { PULSE_MS } from '../motion.ts'
 import { bannerOf } from '../banner.ts'
 import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
 import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { HINT_EXIT_ARMED, hasRunningTool } from '../view.ts'
+import { HINT_EXIT_ARMED, hasRunningTool, statusLineCellsOf, statusLineColorOf } from '../view.ts'
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
@@ -71,9 +72,23 @@ export type AppViewProps = {
    * 「运行中」——**不编一个秒数**（取景与快照因此是确定的）。
    */
   readonly now?: number | null
+  /**
+   * **「在等你」那一次脉冲的起算时刻**（毫秒 · U112）——`null` ＝ 不动（常态）。
+   *
+   * 与 `now` 同一处境：钟与「那一刻」都归活壳（`TuiApp`），这里是纯的
+   * ——不给 ⇒ 状态行画**原色**（取景与快照因此是确定的）。
+   */
+  readonly pulseAt?: number | null
 }
 
-export function AppView({ view, columns, rows, now = null }: AppViewProps) {
+export function AppView({ view, columns, rows, now = null, pulseAt = null }: AppViewProps) {
+  /**
+   * **减少动效**（U112）——开了就**停转动与亮度变化**：呼吸用的那个「此刻」一律不给
+   * （工具行的状态位 · 计划步骤的方块 · 状态行那一位），而**秒数照旧走**（那是一个读数，
+   * 停掉就是把屏上那句话弄成假的——见 `motion.ts` 那条）。
+   */
+  const motionNow = view.reducedMotion ? null : now
+
   // 活动区的预算：减去交互区与状态行，**再留一格**（**不填满窗口**——内联模式下内容跟内容走）。
   //
   // ⚠️ 这里的 `dock` 是**账**，`dockOf` 画出来的是**屏**——两者必须相等（U31 二轮退回）：
@@ -161,6 +176,8 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           expanded: view.expanded,
           // **失联**那一档由**这一格**驱动呈现（U100）：工具行不报活动/耗时（见 `toolLines`）
           lost: view.status.state === 'lost',
+          // **减少动效**（U112）——行尾那一位不呼吸（读数照走，见 `LogRowProps.still`）
+          still: view.reducedMotion,
           // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
           // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
           // （该有分段的地方时有时无）。`items === view.settled` 时不差分毫。
@@ -192,6 +209,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
         // 账还按旧值算（矮窗上真光标高一行）
         lost: view.status.state === 'lost',
         now,
+        still: view.reducedMotion,
       }),
     ),
     // **上面这一条**——记录区与交互区之间的界。
@@ -214,7 +232,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     // 无条件递给清单的话，该静止的时候那格方块照样会跟着暗一档亮一档。
     ...(plan.height === 0
       ? []
-      : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? now : null })]),
+      : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? motionNow : null })]),
     h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, rows)),
     // **下面这一条**（U45 加 · **U59 挪**）——**输入区与状态行之间**的界。状态行之下**不再有线**。
     //
@@ -227,7 +245,18 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
     //（线是划界用的，不是装帧）。高度的账**一分没动**：还是两条线 ＋ 状态行（见 `CHROME_LINES`），
     // 换的只是这两行谁在上谁在下。
     separatorOf(columns, 'rule:status'),
-    h(StatusLine, { key: 'status', status: collaborationStatus(view), columns }),
+    h(StatusLine, {
+      key: 'status',
+      status: collaborationStatus(view),
+      columns,
+      // 锚之后那几格与上色开关——**从视图那一份配置取**（没配过＝默认那条）
+      cells: statusLineCellsOf(view.statusLine),
+      color: statusLineColorOf(view.statusLine),
+      workspace: view.workspace,
+      // **在等你那一次脉冲**：起算时刻由活壳给；减少动效时它一并停（`TuiApp` 不给）
+      pulseAt,
+      now: motionNow,
+    }),
     // **待确认的那一行**（U46 · **U68 挪到这儿**）——**状态行之下**、**缩进对齐状态行**，
     // 仍是屏底（**不另加线**：线是划界用的，一屏恰好两条，见上面那一段）。
     //
@@ -786,6 +815,34 @@ const TICK_MS = 200
  * 为什么钟归这一层（而不是视图或外壳）：它是**渲染**的事（同一条视图，此刻画出来与
  * 半秒后画出来不同），而视图要可重放、外壳要可测——两者都不该带一个走着的钟。
  */
+/**
+ * **「在等你」那一次脉冲的起算时刻**（U112）——状态**切到** `waiting` 那一刻记下。
+ *
+ * 三条：
+ * - **只在真的进 waiting 那一下记一次**（依赖是 `state`）：此后每一帧重渲染都拿同一个时刻，
+ *   故亮度沿同一条曲线走完就停（`pulseOf` 走完之后恒为 1）——「脉冲一次」就是这么来的；
+ * - **离开 waiting（或减少动效开着）⇒ 撤回**（`null`）：下一次再进 waiting 是**新的一次**
+ *   （重新脉冲），而减少动效时它压根不该出现；
+ * - ⚠️ **`Date.now()` 只在这一处**：视图是纯的（`reduce` 里不取时钟），钟与「那一刻」
+ *   都归活壳——同 `useLiveClock` 那条由头（屏要可重放、快照要确定）。
+ */
+function useWaitingPulse(state: ShellView['status']['state'], reduced: boolean): number | null {
+  const [at, setAt] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (reduced || state !== 'waiting') {
+      setAt(null)
+      return
+    }
+
+    setAt(Date.now())
+    // ⚠️ **依赖只有 `state` / `reduced`**：这一刻是「什么时候进的 waiting」，不是一个走着的钟
+    //    ——跟着 `now` 走的话每一跳都重置一次起算，脉冲就永远走不完（那正是「持续动」）。
+  }, [state, reduced])
+
+  return at
+}
+
 function useLiveClock(active: boolean): number | null {
   const [now, setNow] = useState<number | null>(null)
 
@@ -877,7 +934,21 @@ export function TuiApp({ shell }: TuiAppProps) {
    * 一路涨到 1.0s）。⚠️ **而那一档也不再画那条副行**（`lost` 一路传到 `toolLines`）：
    * 只说「不滴答」而不去掉那个词，屏上照旧留着「⟳ 运行中」——**那才是原来那句误导**。
    */
-  const ticking = view.status.state !== 'lost' && (hasRunningTool(view) || breathingOf(view, plan))
+  /**
+   * **「在等你」那一次脉冲**（U112）——状态切到 `waiting` 那一刻记下起算时刻，此后
+   * **亮一次就定住**（设计：「动效用来说明『正在发生』，不用来证明『还活着』」）。
+   *
+   * ⚠️ **减少动效时不给**（`null`）：停转动与亮度变化那一条落在这一格上，
+   * 渲染层不必再判一次（`StatusLine` 拿到的就是一个「不动」的时刻）。
+   *
+   * ⚠️ **它不另开计时器**：那一次脉冲也走 `useLiveClock` 那支按需 200ms 的钟——
+   * 「此刻」是共享的，脉冲只是让钟**多醒 600ms**（见下面 `ticking` 那一格）。
+   */
+  const pulseAt = useWaitingPulse(view.status.state, view.reducedMotion)
+  const pulsing = pulseAt !== null && Date.now() - pulseAt < PULSE_MS
+
+  const ticking =
+    view.status.state !== 'lost' && (hasRunningTool(view) || breathingOf(view, plan) || pulsing)
   const now = useLiveClock(ticking)
 
   useFlipOnNewPage(shell, rows)
@@ -938,7 +1009,7 @@ export function TuiApp({ shell }: TuiAppProps) {
   // 粘贴走**另一条信道**（bracketed paste）——接管期间一律拒并提示
   usePaste((text) => feed({ kind: 'paste', text }))
 
-  return h(AppView, { view, columns, rows, now })
+  return h(AppView, { view, columns, rows, now, pulseAt: view.reducedMotion ? null : pulseAt })
 }
 
 /** Ink 的 `(input, key)` → 外壳认得的按键（0 到多条——一次回调可能带一串正文）。 */

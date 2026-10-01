@@ -128,6 +128,10 @@ export function commandSubjectOf(command: Command): string {
     case 'webfetch.set':
       // U78 取网页用的模型——写**配置里那一格**（与「当前会话说谁」「新建会话的默认」三件分开）
       return `取网页用的模型：${command.provider} / ${command.model}`
+    case 'prefs.set':
+      // U112 界面那两格——写**配置里 `statusLine` / `motion`**（与上面两条都不同一件事：
+      // 它改的是「这一屏长什么样」，连一条会话、一件工具都不碰）
+      return `界面偏好：${command.statusLine === undefined ? '' : '状态行'}${command.reducedMotion === undefined ? '' : '动效'}`
     case 'provider.list':
       // U41 管理面读侧——无参：问的就是「配了哪些连接」
       return '列供应商连接'
@@ -216,6 +220,7 @@ export function hubFaceRealizesPort(): void {
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
+    onPrefsSet: () => undefined,
   })
   port.attach({ send: () => undefined, subscribe: () => () => undefined })
 
@@ -257,6 +262,7 @@ export function routesAreContractShape(): void {
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
+    onPrefsSet: () => undefined,
   }
   void routes
 }
@@ -301,6 +307,7 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
     onAttachmentExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
+    onPrefsSet: () => undefined,
     ...overrides,
   }
 }

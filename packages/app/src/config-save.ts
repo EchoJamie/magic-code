@@ -7,7 +7,8 @@
  * ① **原子替换**——写临时文件再 `rename`；权限 600（与首次创建一致）；
  * ② **保存前重新读取**——改的是**盘上当下那一份**，不是加载时那份陈旧快照；
  *    且**保留无关字段**（权限 · MCP · 工作区根…原样带过）：本文件只碰
- *    `providers` / `defaultProvider` / `webFetch`（U78）三格，别的一律不动。
+ *    `providers` / `defaultProvider` / `webFetch`（U78）/ `statusLine` / `motion`（U112）
+ *    那几格，别的一律不动。
  * ③ **外部改过就提示重载**——加载时记下的 `mtime` 与当下不符 ⇒ 拒绝这次写入，
  *    把「先重新载入」交给用户（**不拿陈旧整份文件覆盖**别人的改动）。
  *
@@ -19,6 +20,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } 
 import { dirname } from 'node:path'
 import type {
   ModelDefaultRequest,
+  PrefsSetRequest,
   ProviderSaveRequest,
   ReasoningSetting,
   WebFetchSetRequest,
@@ -280,6 +282,54 @@ export function setWebFetch(input: {
           webFetch: { provider: input.request.provider, model: input.request.model },
         },
       }
+    },
+  })
+}
+
+/**
+ * **界面的两格偏好**（U112）——写配置里 `statusLine` / `motion` 那两格。
+ *
+ * ## 三条规矩，逐条对着本文件的头注
+ *
+ * - **只碰这两格**（「保留无关字段」那条）：`providers` / `defaultProvider` / `webFetch` /
+ *   `permissions` / `mcp` / 工作区根…一律原样带过。这两格与上面那些**互不代劳**：
+ *   一条会话走谁、取网页用谁、这一屏长什么样，是三件不同的事；
+ * - **原子替换 ＋ 保存前比 `mtime`**（照 `editConfigFile` 那一趟，不必再写一遍）；
+ * - **写的是「给什么改什么」**：不带的键**原样留着**——勾一次格子不该顺手把动效开关翻过去。
+ *
+ * ⚠️ **`statusLine` 整份替换**（同 `PrefsSetRequest` 那条：有序清单上说不清「加在哪儿」）。
+ * ⚠️ **`cells: []` 是合法值**（＝只要锚那两格），故判空**不能**写成「空就不写」——
+ *    `undefined` 才是「这一趟没带这一格」。
+ */
+export function setPrefs(input: {
+  readonly path: string
+  readonly loadedAt?: number | undefined
+  readonly request: PrefsSetRequest
+}): SaveOutcome {
+  const { statusLine, reducedMotion } = input.request
+
+  return editConfigFile({
+    path: input.path,
+    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
+    update(raw) {
+      const next: Record<string, unknown> = { ...raw }
+
+      if (statusLine !== undefined) {
+        next['statusLine'] = {
+          cells: [...statusLine.cells],
+          ...(statusLine.color === undefined ? {} : { color: statusLine.color }),
+        }
+      }
+
+      // 动效那一段**只留它自己那一格**：`reduced: false` 是「没开」，与「没配过」同义
+      // ⇒ 那一格**不留**（写一个 `false` 进去，配置里就多一句从来不生效的话）。
+      // 整段因此空了就**把这一段摘掉**（同上：不留空壳）。
+      if (reducedMotion !== undefined) {
+        if (reducedMotion) next['motion'] = { reduced: true }
+        else delete next['motion']
+      }
+
+      return { ok: true, raw: next }
     },
   })
 }

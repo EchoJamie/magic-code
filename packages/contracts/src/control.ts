@@ -9,6 +9,7 @@
  * `events.ts` 的判别联合视图 `KernelEvent`。
  */
 
+import type { StatusLineConfig } from './config.ts'
 import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { BlobRef, DecisionId, RecordId, SessionId } from './ids.ts'
@@ -366,6 +367,45 @@ export type WebFetchSetRequest = {
 }
 
 /**
+ * **界面的两格偏好**（U112）——状态行放哪几格、动不动效。
+ *
+ * 出处：设计 · 终端交互「状态行可配置：给一列可选项，不给脚本」与「符号 ＋ 动效：一套」
+ * 那三条例的③（「给一个「减少动效」设定」）。
+ *
+ * ## 为什么要走命令，而不是外壳自己写盘
+ *
+ * 那两格的落点是 `config.json`（`MagicConfig.statusLine` / `MagicConfig.motion`），
+ * 而**窗口这一侧一个字都不往盘上写**（U48 那张表：窗口是「呈现与输入客户端」，
+ * 「读配置只为呈现」）。写盘归装配——同 `webfetch.set` / `model.default.set` 的站位。
+ *
+ * ## 与那两条都**不是**一件事
+ *
+ * | 命令 | 改什么 |
+ * | --- | --- |
+ * | `webfetch.set` | **取网页那一件工具**用哪个模型提炼 |
+ * | `model.default.set` | **新建普通会话**的默认 |
+ * | `prefs.set` | **此刻这一屏长什么样**（状态行那几格 · 动不动效） |
+ *
+ * ⚠️ **它是「此刻」的**：改完**当场生效**（不必重开），这与前两条一样，但**作用面**不同
+ * ——它连一条会话、一件工具都不碰。
+ */
+export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
+
+/**
+ * `prefs.set` 的负载——**给什么改什么**（不带的键原样不动）。
+ *
+ * `statusLine` 与 `reducedMotion` 两件各自独立：勾一次格子不该顺手把动效的开关翻过去，
+ * 反之亦然。**两件都不带**＝什么都不改（合法，但没意义——外壳那一侧不会发）。
+ *
+ * ⚠️ **`statusLine` 是整份替换**（不是「加一格 / 去一格」）：用户在这一屏上挑的是一个
+ * **有序清单**（顺序即屏上顺序），增量语义在有序表上说不清（「加在哪儿」）。
+ */
+export type PrefsSetRequest = {
+  readonly statusLine?: StatusLineConfig
+  readonly reducedMotion?: boolean
+}
+
+/**
  * `model.refresh`——**显式刷新意图**（U41）。
  *
  * 由头：自动检查走**有效期**（新鲜就用、过期先回旧缓存再后台刷），而用户有时明确要知道
@@ -588,6 +628,7 @@ export type Command =
   | McpList
   | McpReconnect
   | InputPaste
+  | PrefsSet
 
 /** 裁决配对的事件侧——内核发此事件（带呈现材料），外壳以 `decision.answer` 答复。 */
 export const DECISION_REQUEST_KIND = 'tool.decision.request'

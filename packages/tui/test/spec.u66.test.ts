@@ -49,15 +49,23 @@ const ASKED = [
   ),
 ] as const
 
-/** 屏上那一行的**钟**（`⟳ 1.4s` / `⟳ 运行中`）——工具行的第二行。 */
+/** 屏上那一行的**钟**（U112：`1.4s`）——工具行的第二行（**无记号**，只有读数）。 */
 const clockLine = (frame: Frame): string | undefined =>
   frame.record
     .map((line) => line.text.trim())
-    .find((text) => /^⟳ (?:\d|运行中)/u.test(text))
+    .find((text) => /^\d+(?:\.\d+)?(?:ms|s)$/u.test(text))
 
-/** 那一行**头一行**（名字与参数）。 */
-const headLine = (frame: Frame): string | undefined =>
-  frame.record.map((line) => line.text.trim()).find((text) => /^⟳ \S/u.test(text))
+/**
+ * 那一行**头一行**的身份那半句（`▸ 工具名(关键参数)`）。
+ *
+ * U112 起行尾多了一位状态（靠右摆着）——取身份时把它连同前面的填空一起去掉，
+ * 只回名字与参数那一段（这条判据问的正是「名字与参数还在不在」）。
+ */
+const headLine = (frame: Frame): string | undefined => {
+  const text = frame.record.map((line) => line.text.trim()).find((one) => /^▸ \S/u.test(one))
+
+  return text?.replace(/\s+\S$/u, '')
+}
 
 /** 一屏的记录行（真归约那一侧）。 */
 const rowsOf = (view: ShellView): readonly Extract<ShellView['rows'][number], { kind: 'tool' }>[] =>
@@ -78,11 +86,11 @@ describe('U66 · 卡片挂着时那一行不说「跑了多久」', () => {
     stage.at(TEST_AT + 88 + 2800)
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('● 等你定夺')).toBe(true) // 前提：这一段真是在等你
-    expect(headLine(frame)).toBe('⟳ exec {"cmd":"sleep 9"}')
+    expect(frame.has('◉ 等你定夺')).toBe(true) // 前提：这一段真是在等你
+    expect(headLine(frame)).toBe('▸ exec(sleep 9)')
     // **底下那行不画**——不报秒数，也不回退「运行中」（它没在跑，两个说法都不成立）
-    expect(frame.has('⟳ 2.8s')).toBe(false)
-    expect(frame.has('⟳ 运行中')).toBe(false)
+    expect(frame.has('2.8s')).toBe(false)
+    expect(frame.has('运行中')).toBe(false)
     expect(clockLine(frame)).toBeUndefined()
   })
 
@@ -94,7 +102,7 @@ describe('U66 · 卡片挂着时那一行不说「跑了多久」', () => {
     const frame = await stage.screen(WIDE)
     const readings = frame.screen.lines.flatMap((line) => [...line.matchAll(/(\d+(?:\.\d+)?)(ms|s)(?![0-9a-zA-Z])/gu)])
 
-    expect(frame.has('● 等你定夺')).toBe(true)
+    expect(frame.has('◉ 等你定夺')).toBe(true)
     expect(readings).toEqual([]) // `ms` / `s` 一个都没有（卡上的材料与状态行也都不带）
   })
 })
@@ -113,7 +121,7 @@ describe('U66 · 批准之后从那刻重新起算', () => {
     { id: 2900 },
   )
 
-  test('屏上：批准之后 1.4 秒 ⇒ 报 `⟳ 1.4s`（不是「发起 → 此刻」的 `⟳ 4.2s`）', async () => {
+  test('屏上：批准之后 1.4 秒 ⇒ 报 `1.4s`（不是「发起 → 此刻」的 `4.2s`）', async () => {
     const stage = live()
     stage.feed(ASKED)
 
@@ -123,9 +131,9 @@ describe('U66 · 批准之后从那刻重新起算', () => {
     const frame = await stage.screen(WIDE)
 
     expect(frame.has('● 工作中')).toBe(true)
-    expect(frame.has('⟳ 1.4s')).toBe(true)
-    // 挂卡那 2.8 秒**不算**进去：改前这一格是 `⟳ 4.2s`（发起 → 此刻）
-    expect(frame.has('⟳ 4.2s')).toBe(false)
+    expect(frame.has('1.4s')).toBe(true)
+    // 挂卡那 2.8 秒**不算**进去：改前这一格是 `4.2s`（发起 → 此刻）
+    expect(frame.has('4.2s')).toBe(false)
   })
 
   test('视图上：起算点挪到**答复那一刻**（`startedAt` ＝ 裁决事件的 `at`）', () => {
@@ -182,7 +190,7 @@ describe('U66 · 反面：没弹卡的（自动放行）照旧从发起算', () 
     expect(rowsOf(view)[0]).toMatchObject({ state: 'ok', elapsedMs: 200 }) // 271 − 71
   })
 
-  test('跑动中照旧报数——`⟳ 1.4s`（与既有的「差距 3」同形）', async () => {
+  test('跑动中照旧报数——`1.4s`（与既有的「差距 3」同形）', async () => {
     const stage = live()
     stage.feed([
       event('turn.start', {}),
@@ -193,7 +201,7 @@ describe('U66 · 反面：没弹卡的（自动放行）照旧从发起算', () 
     stage.at(TEST_AT + 71 + 1400)
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('⟳ 1.4s')).toBe(true)
+    expect(frame.has('1.4s')).toBe(true)
   })
 })
 

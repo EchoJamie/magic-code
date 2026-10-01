@@ -24,7 +24,7 @@
 
 import chalk from 'chalk'
 import { createElement as h } from 'react'
-import type { Command, KernelEvent, RunRow, RunSnapshot, SessionId, StopScope } from '@magic/contracts'
+import type { Command, KernelEvent, RunRow, RunSnapshot, SessionId, StatusLineConfig, StopScope } from '@magic/contracts'
 import { bannerOf } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
 import { createShell } from '../src/shell.ts'
@@ -139,10 +139,17 @@ const DEFAULT_SCREEN: ScreenOptions = { columns: 80, rows: 24 }
 export async function show(
   views: readonly ShellView[],
   options: ScreenOptions = DEFAULT_SCREEN,
-  /** 「此刻」（毫秒）——跑动中的工具行报 `⟳ 0.6s` 要用；不给＝没有钟（回退「运行中」）。 */
+  /** 「此刻」（毫秒）——跑动中的工具行报秒数、呼吸那几位算亮度要用；不给＝没有钟。 */
   now: number | null = null,
+  /**
+   * **「在等你」那一次脉冲的起算时刻**（毫秒 · U112）——给一起算亮度用。
+   *
+   * 与 `now` 一起喂才看得出**那一次脉冲**：同一个 `pulseAt`、几个不同的 `now`，
+   * 状态格那一位的色**一路变亮、走完定住**（「动 → 静」）；不给＝不动（常态）。
+   */
+  pulseAt: number | null = null,
 ): Promise<Frame> {
-  const bytes = await rendered(views, options, now)
+  const bytes = await rendered(views, options, now, pulseAt)
 
   return frameOf(await screenCells(bytes, options), options.columns)
 }
@@ -152,9 +159,10 @@ export async function rendered(
   views: readonly ShellView[],
   options: ScreenOptions,
   now: number | null = null,
+  pulseAt: number | null = null,
 ): Promise<string> {
   const frames = views.map((view) =>
-    h(AppView, { key: 'screen', view, columns: options.columns, rows: options.rows, now }),
+    h(AppView, { key: 'screen', view, columns: options.columns, rows: options.rows, now, pulseAt }),
   )
 
   const restore = chalk.level
@@ -313,6 +321,12 @@ export type StageOptions = {
    * 这一格只管**发出去的那一条**（`stops()`）。
    */
   readonly stop?: (session: SessionId, scope: StopScope) => void
+  /**
+   * **状态行放哪几格 ＋ 上不上色**（U112 · `MagicConfig.statusLine`）——不给＝没配过（默认那条）。
+   */
+  readonly statusLine?: StatusLineConfig | undefined
+  /** **减少动效**（U112 · `MagicConfig.motion.reduced`）——不给＝没开。 */
+  readonly reducedMotion?: boolean
 }
 
 export type Stage = {
@@ -337,6 +351,11 @@ export type Stage = {
    * 不给就是**没有钟**（回退「运行中」，不编秒数）——帧因此是确定的。
    */
   at(now: number | null): void
+  /**
+   * 给活壳一个「**在等你那一次脉冲的起算时刻**」（毫秒 · U112）——与 `at()` 配着用：
+   * 同一个起算、几个「此刻」，就看得出那一位一路变亮。
+   */
+  pulseAt(at: number | null): void
   /** 此刻的一屏（可换尺寸——窄窗口那条规格要用）。 */
   screen(options?: ScreenOptions): Promise<Frame>
 }
@@ -350,6 +369,8 @@ export function createStage(options: StageOptions = {}): Stage {
     dataDir: options.dataDir,
     home: options.home,
     magicBase: options.magicBase,
+    statusLine: options.statusLine,
+    reducedMotion: options.reducedMotion,
     ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),
     ...(options.runsFeed !== undefined
       ? { runs: options.runsFeed }
@@ -368,6 +389,7 @@ export function createStage(options: StageOptions = {}): Stage {
         }),
   })
   let now: number | null = null
+  let pulse: number | null = null
 
   return {
     shell,
@@ -385,6 +407,9 @@ export function createStage(options: StageOptions = {}): Stage {
     at: (value) => {
       now = value
     },
-    screen: (screenOptions = DEFAULT_SCREEN) => show([shell.getView()], screenOptions, now),
+    pulseAt: (value) => {
+      pulse = value
+    },
+    screen: (screenOptions = DEFAULT_SCREEN) => show([shell.getView()], screenOptions, now, pulse),
   }
 }

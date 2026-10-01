@@ -641,8 +641,23 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
 
       await window.send('看一眼', { until: { text: '看一眼' }, timeoutMs: 10_000 })
       await window.key('enter')
-      // ① 工具**正在跑**时开菜单：那一行一上屏就是 `⟳ …`（它跑 1.2 秒，这一段抓得住）
-      await window.wait({ text: '⟳' }, { timeoutMs: 20_000 })
+      // ① 工具**正在跑**时开菜单：那一行一上屏就是「跑着」那一态（它跑 1.2 秒，这一段抓得住）。
+      //    ⚠️ **U112**：工具行的记号换成 `▸`（身份在行首），「跑到哪一步」那一位挪到了
+      //    **行尾**（跑着＝弱色 `●`，落定＝`✓` / `×` / `!`）——原先那个 `⟳`（运行中记号）
+      //    没有了。故锚仍**钉住「跑着」这一态**（不是只钉「那一行在」）：`▸` 起头
+      //    且行尾是运行位 `●`。判的那件事一字未变——菜单开在**它还在跑**的那一刻。
+      await waitFor(
+        '工具那一行上了屏、且正跑着（`▸` 起头、行尾是运行位 `●`）',
+        async () => {
+          if (window === undefined) return false
+          const shot = await window.screen()
+
+          return shot.lines.some(
+            (line) => line.text.trimStart().startsWith('▸') && line.text.trimEnd().endsWith('●'),
+          )
+        },
+        20_000,
+      )
       await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
 
       // ② 它跑完 → 这一轮收束 → 下一轮起来（真事件：`turn.end` 之后又 `turn.start`）
@@ -880,11 +895,16 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
 
       // ⚠️ **等不了「○ 空闲」**——U100 起，只剩后台命令那一形在运行事实里**就是「执行中」**
       // （设计：「后台命令仍在执行……也属于有在途工作」）。故这一趟等的锚换成那两件**真事**：
-      // 这一轮收完了（助手那句答复在屏上）＋ **没有工具在跑**（结果行有 `✓`、没有 `⟳` 那行）。
+      // 这一轮收完了（助手那句答复在屏上）＋ **没有工具在跑**。
+      // ⚠️ **U112**：「没有工具在跑」原先看的是「没有 `⟳` 那行」；那个记号随 U112 消失，
+      // 行尾那一位接手（跑着＝`●`、落定＝`✓`）——故改看「没有哪条 `▸` 行的行尾还挂着 `●`」。
+      // 「这一轮收完了」原先看「结果行有 `✓`」，那一半照旧（`✓` 现在在头一行行尾）。
       const settled = await window.capture({ label: '只剩后台命令（这一轮已收）' })
       keepShot(settled)
       expect(settled.lines.some((line) => line.includes('交出去了。'))).toBe(true)
-      expect(settled.lines.some((line) => line.trimStart().startsWith('⟳'))).toBe(false)
+      expect(
+        settled.lines.some((line) => line.trimStart().startsWith('▸') && line.trimEnd().endsWith('●')),
+      ).toBe(false)
       expect(settled.lines.some((line) => line.includes('✓'))).toBe(true)
 
       await window.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })

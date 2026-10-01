@@ -11,6 +11,7 @@
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
+import type { StatusLineConfig } from './config.ts'
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
 import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
@@ -152,6 +153,8 @@ export type EventKind =
   | 'attachments.catalog'
   // 控制 · 外部工具——**外部服务器的一屏**（U39）：`mcp.list` / `mcp.reconnect` 的答复；**不落库**
   | 'mcp.catalog'
+  // 控制 · 界面偏好——**`prefs.set` 的回话**（U112）：那一趟写成了没有、写成了什么；**不落库**
+  | 'prefs.state'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
   | 'error'
   // 预留——压缩（阶段 3 留位）
@@ -1073,6 +1076,23 @@ export type EventDataOf = {
     /** 一句话说明——只在有事要说时给（重连的结果 / 认不出的服务器名）。 */
     readonly note?: string
   }
+  /**
+   * **界面偏好那两格**（U112）——`prefs.set` 的回话：**这一趟写成了什么**。
+   *
+   * 两条：
+   * - **报的是落定之后那一份**（不是用户递进来的那一份）：写不成时（配置文件被外面改过、
+   *   坏 JSON…）这一位仍是**盘上当下那份**，外壳据此把屏上那两格**摆回真的样子**
+   *   ——不是把用户刚才点的那个当成成了；
+   * - **`note` 是那一句话**（成了：改了哪几格；没成：为什么）。**没成也说清**，不静默吞掉。
+   */
+  'prefs.state': {
+    /** 状态行那一行怎么摆（`MagicConfig.statusLine`）——缺省＝还没配过（默认那条）。 */
+    readonly statusLine?: StatusLineConfig
+    /** 减少动效（`MagicConfig.motion.reduced`）——缺省＝没开。 */
+    readonly reducedMotion?: boolean
+    /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
+    readonly note?: string
+  }
   // 兜底——内核自身异常（非模型 / 工具域）
   error: { readonly message: string }
   // 预留——压缩（阶段 3 留位）
@@ -1200,6 +1220,10 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 它们的痕在配置文件里（少了一条 / 多了一条），重放要的是「发生过什么」，
   // 不是「某人看过一次管理页」。
   'provider.catalog',
+  // 界面偏好同列的理由（U112）：与 `provider.catalog` 同一条——它是**写盘的答复**
+  // （痕在配置文件里：`statusLine` / `motion` 那两格），落库＝把同一条读数存第二遍。
+  // 重放要的是「当时配成什么样」（读配置就有），不是「某人在哪一屏上点过一下」。
+  'prefs.state',
 ]
 
 /**

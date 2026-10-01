@@ -103,7 +103,7 @@ describe('判据 3 · 不落库清单', () => {
     }
   })
 
-  test('不落库清单＝契约常量（十八个 kind，一字不差）', () => {
+  test('不落库清单＝契约常量（十九个 kind，一字不差）', () => {
     // 第 17 轮补锚：`model.retry` 与两个实时增量同列——退避期间那个「正在等」是实时信号、
     // 不是重放事实；重试次数另落 `ModelCallResult.attempts`，故不落库不丢信息。
     // U16 补锚：`session.state` 同列；第 19 轮：`session.history` 同列（读出来的，不是过程事实）——它是**快照**（此刻有哪些会话、当前在哪条），
@@ -146,6 +146,9 @@ describe('判据 3 · 不落库清单', () => {
     // 成败两种都不是记录：取到的那一份字节**另有痕**（`user` 条目的载荷 `refs` 里那个
     // blob），没取到那一句更是「当时按了一下、剪贴板里没图」的一刻）。
     // **新锚**：十八条，字面规则一个没动。
+    // U112 补锚：`prefs.state`——同 `provider.catalog` 那一条（界面偏好那两格的**写盘答复**，
+    // 痕在配置文件的 `statusLine` / `motion` 里；落库＝把同一份读数存第二遍）。
+    // **新锚**：十九条，字面规则一个没动。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
       'attachments.catalog',
@@ -162,9 +165,8 @@ describe('判据 3 · 不落库清单', () => {
       'paths.catalog',
       'paths.identified',
       'plan.changed',
+      'prefs.state',
       'provider.catalog',
-
-
       'session.history',
       'session.state',
       'skill.used',

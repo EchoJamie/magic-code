@@ -20,7 +20,7 @@ import { HINT_EXIT_ARMED, hasRunningTool } from '../src/view.ts'
 import { TEST_AT, event } from './events.ts'
 import { createRunsFeed, createStage } from './screen.ts'
 import type { RunRow } from '@magic/contracts'
-import type { ScreenOptions, Stage } from './screen.ts'
+import type { Frame, ScreenOptions, Stage } from './screen.ts'
 
 const WIDE: ScreenOptions = { columns: 100, rows: 30 }
 const ARM = { kind: 'ctrl+c' } as const
@@ -37,6 +37,19 @@ const withSession = (stage: Stage, id = 's1'): Stage => {
 
   return stage
 }
+
+/**
+ * 工具行**头一行行尾那一位状态**（U112：`▸ 工具名(关键参数)` 靠右摆着的那一位）。
+ *
+ * 由头：旧那一版把「在跑」写成行首的 `⟳`，故拿 `frame.has('⟳')` 就分得出跑/不跑；
+ * U112 起身份记号线首固定是 `▸`，跑/停**全在行尾那一位上**（`●` 进行中 · `✓` 成 ·
+ * `×` 败 · `!` 没跑成/已停止）。这一支只看那一行，**不受状态行上那颗 `●` 干扰**。
+ */
+const toolBit = (frame: Frame): string | undefined =>
+  frame.record
+    .map((line) => line.text.trim())
+    .find((text) => text.startsWith('▸ '))
+    ?.slice(-1)
 
 /** 一条运行事实行（三选绑定它）——只有用例关心的那几格。 */
 const runRow = (extra: Partial<RunRow> = {}): RunRow => ({
@@ -355,14 +368,14 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       return { stage, push: (rows) => stage.pushRuns(rows) }
     }
 
-    test('**正常在跑**那一档照旧：`⟳` ＋ 真秒数（别的档不许把这一档也改了）', async () => {
+    test('**正常在跑**那一档照旧：行尾 `●` ＋ 真秒数（别的档不许把这一档也改了）', async () => {
       const { stage } = withRunningTool()
       // ⚠️ 事件的 `at` 由工厂给（`TEST_AT + id`）——钟要按它算：发起于 `TEST_AT + 71` ⇒ 0.6s
       stage.at(TEST_AT + 71 + 1_600)
 
       const frame = await stage.screen(WIDE)
       expect(frame.has('1.6s')).toBe(true) // 真秒数照旧
-      expect(frame.has('⟳')).toBe(true) // 标记照旧是「在跑」
+      expect(toolBit(frame)).toBe('●') // 行尾那一位照旧是「在跑」
     })
 
     test('那一代**核销了** ⇒ 那一行改判「已停止 · 结果未确认」：不再是在跑、也不报秒数', async () => {
@@ -377,7 +390,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
 
       const frame = await stage.screen(WIDE)
       expect(frame.has('已停止 · 结果未确认')).toBe(true) // 那句话照实说
-      expect(frame.has('⟳')).toBe(false) // **不再冒充在跑**
+      expect(toolBit(frame)).toBe('!') // 行尾那一位改判（**不再冒充在跑**——不是 `●`）
       expect(frame.has('1.6s')).toBe(false) // 也不报秒数
       // **不冒充结果**：没有成功/失败/未执行那一套话
       expect(frame.has('✓')).toBe(false)
@@ -396,14 +409,15 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       stage.at(TEST_AT + 71 + 1_600)
       const live = await stage.screen(WIDE)
       expect(live.has('1.6s')).toBe(true)
-      expect(live.has('⟳')).toBe(true)
+      expect(toolBit(live)).toBe('●') // 连着的时候：行尾那一位是「在跑」
 
       // ② **失联**：同一个钟下，秒数与「运行中」**都消失**（那一行只剩头一行）
       stage.shell.disconnected()
       const lost = await stage.screen(WIDE)
       expect(lost.has('1.6s')).toBe(false)
       expect(lost.has('运行中')).toBe(false)
-      expect(lost.has('⟳')).toBe(true) // 头一行照画（**既有内容不擦**）
+      expect(lost.has('▸ 跑测试')).toBe(true) // 头一行照画（**既有内容不擦**）
+      expect(toolBit(lost)).toBe('●') // 行尾那一位照旧不动
       expect(hasRunningTool(stage.shell.getView())).toBe(true) // 行本身照旧是「在跑」
 
       // ③ 钟再往前推 ⇒ **也不许冒出秒数**（这一条把「缓存换脸」一起咬住：失联前那一份
