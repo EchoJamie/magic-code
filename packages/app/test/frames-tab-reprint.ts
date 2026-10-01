@@ -272,12 +272,13 @@ async function scenario(options: {
 
     // —— **样式不动制表位**（独立复核 `b25b9ff`）：同一段可见文字，加粗/行内代码那几行要一样 ——
     if (options.alike !== undefined) {
-      // 去掉行首那两格标记（`⏺ ` / 悬挂缩进 `  `）再比：那两格是**行首标记**，不是正文
-      const hit = idle.lines.filter((line) => line.includes(options.alike?.needle ?? '')).map((line) => line.slice(2))
+      // ⚠️ **U112 起不再剥行首那两格**：助手正文**顶格**了（`⏺ ` 与那两格悬挂缩进一并撤掉），
+      //    行首就是正文本身——原先的 `.slice(2)` 会把正文头两个字剪掉（实测：`alpha` → `pha`）。
+      const hit = idle.lines.filter((line) => line.includes(options.alike?.needle ?? ''))
       check(hit.length === options.alike.count, `答复里含「${options.alike.needle}」的显示行有 ${options.alike.count} 条（实测 ${hit.length}）`, JSON.stringify(idle.lines))
       check(
         hit.every((line) => line === hit[0]),
-        '那几行**去掉行首标记后逐字相同**（加粗不改变 Tab 间距）',
+        '那几行**逐字相同**（加粗不改变 Tab 间距）',
         JSON.stringify(hit),
       )
       check(
@@ -366,14 +367,16 @@ if (import.meta.main) {
     { label: 'combined-emoji-tab', text: `${COMBINED}\tXY`, tabs: true, caretSteps: { steps: 2, x: 9 } },
 
     // —— 样式分段不改变 Tab 间距（独立复核 `b25b9ff`）——
-    // 答复两行是**同一段可见文字**（第二行只是加粗）：屏上两行去掉行首标记后必须**逐字相同**，
-    // 且都等于 `alpha omega`（`⏺ `/悬挂缩进 2 格 ＋ `alpha` 5 列 ＝ 7 列 ⇒ Tab 到第 8 列 ⇒ 1 格）
+    // 答复两行是**同一段可见文字**（第二行只是加粗）：屏上两行必须**逐字相同**，且都等于
+    // `alpha   omega`——⚠️ **U112 改了这一格的算法**：正文顶格、行首不再有那两格标记，
+    // 故 `alpha` 占第 1–5 列（0 起数是 0–4），Tab 落到第 9 列（0 起数 8）⇒ **3 格**空白
+    // （原先是 2 格标记 ＋ `alpha` ＝ 7 列 ⇒ Tab 到第 8 列 ⇒ 1 格）。
     {
       label: 'styled-segments',
       text: 'left\tright',
       tabs: true,
       reply: 'alpha\tomega\n**alpha**\tomega',
-      alike: { needle: 'alpha', count: 2, shown: 'alpha omega' },
+      alike: { needle: 'alpha', count: 2, shown: 'alpha   omega' },
     },
   ]
 

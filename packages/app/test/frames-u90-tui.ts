@@ -193,7 +193,8 @@ const GOAL = '把登录失败提示改清楚'
 /**
  * 方块那几格（`plan.ts` 的 `GLYPHS`）——**屏上认步骤那一行必须带上它**。
  *
- * ⚠️ 只按步骤的文字找会撞上记录区（`⏺ …正在改提示。` 那一行里也有「改提示」）。
+ * ⚠️ 只按步骤的文字找会撞上记录区（助手那一行 `…正在改提示。` 里也有「改提示」——
+ *    U112 起助手正文**顶格、没有记号**，认它只能按那句话本身）。
  */
 const GLYPHS: Record<string, string> = { completed: '■', in_progress: '▪', pending: '□' }
 
@@ -280,7 +281,7 @@ async function sceneGoal(): Promise<void> {
       `行号 ${stepRows.join(' · ')}`,
     )
     // ⚠️ 认**步骤那一行**必须带上缩进与方块：只按文字找会撞上记录区
-    //    （`⏺ …正在改提示。` 那一行里也有「改提示」——U85 在同一个坑里栽过）
+    //    （助手那一行 `…正在改提示。` 里也有「改提示」——U85 在同一个坑里栽过）
     check(
       STEPS.every((one) => (shot.lines[stepRowOf(shot, one)] ?? '').startsWith(`${' '.repeat(INDENT)}${GLYPHS[one.status]} `)),
       '① ⚠️ **步骤退一级**（方块在第 2 列，文字在第 4 列）',

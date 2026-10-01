@@ -16,8 +16,14 @@
  * | ② **外部工具**（MCP `slow`，永不返回） | 卡挂着停三秒 → 批准 → 隔 250ms / 再隔 1.5s 各取一帧 | 挂在卡上时不报数；**批准之后从 0 起**，且**接着往下走**（不是冻在 0），**也没把那三秒算进去** |
  * | ③ **反面**（没弹卡的工具） | 两笔都是**判轻的** `exec`（`echo` · `sleep`） | **一个卡都没有**（U76 起默认通，**不必先授权**），而那一行**照旧报耗时**（从发起到此刻——与改动前同形） |
  *
- * ⚠️ **读数靠屏上的字**（`⟳ 1.4s` / `✓ 3ms`），不是读内部状态：这一单要验的正是
- * **屏上那句话**。判「不报数」时扫的是**整屏每一行**——漏掉一处就等于放行。
+ * ⚠️ **读数靠屏上的字**，不是读内部状态：这一单要验的正是**屏上那句话**。判「不报数」时
+ * 扫的是**整屏每一行**——漏掉一处就等于放行。
+ *
+ * ⚠️ **U112 换过工具行的面孔**（判的还是原来那两件事）：头一行是 `▸ 名字(关键参数)`，
+ * **状态位挪到行尾**（在跑是弱色 `●`、定住是 `✓`）；「跑了多久」那一条读数是**头一行底下
+ * 那一行**——在跑时是**光一个 `1.4s`**（U112 前写作 `⟳ 1.4s`），跑完时是
+ * `3ms · <摘要>`（U112 前写作 `✓ 3ms …`）。两个记号 `⟳` 与 `✗` **都不再出现**，
+ * 故下面认行的那几处一律按**新的形状**认。
  *
  * ⚠️ 这一支**跑完再一起报**（同 `u50-evidence.ts` 的姿势，不是 `frames-u60` 那种当场抛）：
  * 它要能**在改动前后各跑一遍**做对照——当场抛就只拿得到头一条判据之前的那几帧，
@@ -63,7 +69,7 @@ function keep(shot: Capture): void {
   )
 }
 
-/** 一行里所有**读数**（毫秒）——`⟳ 1.4s` / `✓ 3ms` 里的那个数。 */
+/** 一行里所有**读数**（毫秒）——跑动中那行的 `1.4s` / 结论那行的 `3ms · …` 里的那个数。 */
 function readLine(line: string): readonly number[] {
   const found: number[] = []
 
@@ -86,27 +92,42 @@ function readings(lines: readonly string[]): readonly number[] {
   return lines.flatMap((line) => readLine(line))
 }
 
-/** 屏上**跑动中工具那一行**（`⟳ ` 起头——头一行是名字与参数）。 */
-function runningRow(lines: readonly string[]): string | undefined {
-  return lines.map((line) => line.trim()).find((line) => line.startsWith('⟳ '))
+/**
+ * 屏上**工具那一行的头一行**（`▸ ` 起头——名字与关键参数，状态位在行尾）。
+ *
+ * ⚠️ **U112 起认的是 `▸ `**（原先认 `⟳ `）：那一行**跑着与跑完都在**、不换记号，
+ * 换的只是**行尾那一位**（`●` → `✓`）。
+ */
+function toolHeadRow(lines: readonly string[], contains = ''): string | undefined {
+  return lines
+    .map((line) => line.trim())
+    .find((line) => line.startsWith('▸ ') && line.includes(contains))
 }
 
 /**
- * 屏上**那行钟**（`  ⟳ 1.4s` / `  ⟳ 运行中`）——工具行是**两行**：头一行名字与参数，
+ * 屏上**那行钟**（`  1.4s`）——工具行是**两行**：头一行名字与关键参数 ＋ 行尾状态位，
  * 第二行才是读数（见 `components/log.ts` 的 `toolLines`）。
  *
- * ⚠️ 别看头一行：`⟳ write 产物.txt` 上**没有**读数，判据会当场读成 undefined
+ * ⚠️ 别看头一行：`▸ write(产物.txt)  ●` 上**没有**读数，判据会当场读成 undefined
  * （第一版就是这么错的——「没读数」与「读错了行」在断言里长得一模一样）。
+ * ⚠️ **U112 起这一行只有那个读数**（`⟳` 那个记号没了、「运行中」那三个字也不再写）：
+ * 故这一条**认整行**——光一个时长才算数（`3ms · 已写入 …` 那一行是**结论行**，另有其名）。
  */
 function clockRow(lines: readonly string[]): string | undefined {
-  return lines.map((line) => line.trim()).find((line) => /^⟳\s*(?:\d|运行中)/u.test(line))
+  return lines.map((line) => line.trim()).find((line) => /^\d+(?:\.\d+)?(?:ms|s)$/u.test(line))
 }
 
-/** 屏上**结论行**（`✓ ` 起头）——`contains` 给出时取含它的那条（一轮里可能有好几条）。 */
+/**
+ * 屏上**结论那一行**（`3ms · 已写入 …`：耗时 ＋ 摘要，**不带行首记号**）——`contains`
+ * 给出时取含它的那条（一轮里可能有好几条）。
+ *
+ * ⚠️ **U112 起认的是「耗时 `·` 摘要」那个形状**（原先认行首的 `✓ `）：完成标记挪到了
+ * **头一行的行尾**（`✓`），这一行只剩弱色的那半句——故它自带一个时长才算数。
+ */
 function verdictRow(lines: readonly string[], contains = ''): string | undefined {
   return lines
     .map((line) => line.trim())
-    .filter((line) => line.startsWith('✓ ') && line.includes(contains))
+    .filter((line) => /^\d+(?:\.\d+)?(?:ms|s) · /u.test(line) && line.includes(contains))
     .at(-1)
 }
 
@@ -156,8 +177,10 @@ async function booted(session: UiSession): Promise<void> {
  * 卡上另有一格 `a`（本工作区总是允许）——它在**必闸类上是划掉的**（`decision.ts`），
  * U76 起 `a` 只在**取网**那件上按域名给（U72）；本趟答的是 `y`。
  *
- * 两帧：**卡片挂着那一刻**与**挂满三秒之后**。后者是这一单的现场——改之前它写着
- * `⟳ 3.4s`（那是「他还没答」的那一段），改之后它一个字都不报。
+ * 两帧：**卡片挂着那一刻**与**挂满三秒之后**。后者是这一单的现场——这一单改之前它写着
+ * `⟳ 3.4s`（那是「他还没答」的那一段），改之后它一个字都不报。⚠️ **U112 起那一行长这样**：
+ * `▸ write(产物.txt)` ＋ **行尾那颗弱色 `●`**，且**底下不出现读数那一行**——「不报数」
+ * 今天量的是「**整屏一个读数都没有**」（那颗 `●` 是状态位、不是读数）。
  */
 async function builtinCard(mark: string): Promise<void> {
   let session: UiSession | undefined
@@ -188,9 +211,9 @@ async function builtinCard(mark: string): Promise<void> {
       statusLineOf(hung.lines),
     )
     check(
-      runningRow(hung.lines) !== undefined,
+      toolHeadRow(hung.lines) !== undefined,
       `【${mark}】① 工具那行**还在**（不是把整行拿掉了）`,
-      runningRow(hung.lines) ?? '（屏上没有 `⟳` 那一行）',
+      toolHeadRow(hung.lines) ?? '（屏上没有 `▸` 那一行）',
     )
     check(
       hungReadings.length === 0,
@@ -203,11 +226,14 @@ async function builtinCard(mark: string): Promise<void> {
     const ran = await session.capture({ label: `${mark}-03-批准之后跑完` })
     keep(ran)
 
+    // ⚠️ **U112 起那两半各在一行上**（判的还是原来那两半）：**完成标记**是**头一行行尾**
+    //    那颗 `✓`（U112 前写作行首的 `✓ `），**那句「已写入 …」**在它**底下那一行**上。
     const verdict = verdictRow(ran.lines, '已写入')
+    const doneHead = toolHeadRow(ran.lines)
     check(
-      verdict !== undefined,
-      `【${mark}】③ 批完真跑完，那一行的**结论照旧**（完成标记 ＋ 那句「已写入 …」）`,
-      verdict ?? '（屏上没有结论行）',
+      verdict !== undefined && doneHead?.endsWith('✓') === true,
+      `【${mark}】③ 批完真跑完，那一行的**结论照旧**（头一行行尾的完成标记「✓」＋ 底下那句「已写入 …」）`,
+      `${doneHead ?? '（屏上没有工具那一行）'} ／ ${verdict ?? '（屏上没有结论行）'}`,
     )
 
     // ② 结论行上那个耗时＝**真跑的那一段**（写下一个小文件），不是卡片挂着的那三秒
@@ -228,7 +254,9 @@ async function builtinCard(mark: string): Promise<void> {
 
 /**
  * MCP 的 `slow` **永不返回**——故批准之后那行会一直跑下去，正好用来读「它从哪儿起算」：
- * 改之前是 `⟳ 3.7s`（含挂卡的 3 秒），改之后是 `⟳ 0.2s` 并接着走。
+ * 这一单改之前是 `⟳ 3.7s`（含挂卡的 3 秒），改之后是 `⟳ 0.2s` 并接着走。
+ * ⚠️ **U112 起那个读数是头一行底下那一行、光一个时长**（`0.2s`；`⟳` 那个记号没了），
+ * 头一行是 `▸ mcp__fake__slow()` ＋ 行尾那颗在动的 `●`。
  *
  * 收尾按既有的取消那一套（`ctrl+c`）——顺带确认这一单没把「中断」那一路弄坏。
  */
@@ -289,7 +317,7 @@ async function externalCard(mark: string): Promise<void> {
     check(
       !justAfter.text.includes('y 批准这一次'),
       `【${mark}】批准之后卡收了（那一下真答了）`,
-      runningRow(justAfter.lines) ?? '（屏上没有跑动中的那一行）',
+      toolHeadRow(justAfter.lines) ?? '（屏上没有那一行）',
     )
     check(
       first !== undefined && first < 1_000,
@@ -303,6 +331,12 @@ async function externalCard(mark: string): Promise<void> {
     )
 
     // 收尾：中断这一笔（`slow` 永不返回），顺手判中断那一路照旧
+    //
+    // ⚠️ **这一块与 U112 无关，且在本单动手之前就已经红了**（U112 只换记号，一个字没碰
+    //    中断那一路）：U100 起「工作中按 ctrl+c」不再直接中断，而是弹**三向菜单**
+    //    （停止任务／转到后台／停止并退出）。本单实测：那一下之后屏上是那张菜单
+    //    （`当前任务仍在运行`），`已取消` 那句**等不到**（15 秒超时，如实红）。
+    //    这一条**没动**——不拿它当本单的事，也不替它改判。
     await session.send('\u0003')  // ctrl+c（工作中＝中断）
     const canceled = await waitUntil(
       session,
@@ -364,13 +398,13 @@ async function noCard(mark: string): Promise<void> {
 
     // —— 第一笔：**不弹卡**（判轻的默认通）——留一帧为证，再去等第二笔 ——
     await typeLine(session, '先跑一笔')
-    // 锚在**工具那一行**上（`● exec {"cmd":"echo 先来一笔"}`——参数原样印在行里）：
-    // 它上屏＝这一笔真发出去了（不是被谁扣住了）
-    await session.key('enter', { until: { text: '{"cmd":"echo 先来一笔"}' }, timeoutMs: 20_000 })
+    // 锚在**工具那一行**上（U112 起是 `▸ exec(echo 先来一笔)`——**关键参数**印在括号里，
+    // 不再是那串原始 JSON）：它上屏＝这一笔真发出去了（不是被谁扣住了）
+    await session.key('enter', { until: { text: '▸ exec(echo 先来一笔)' }, timeoutMs: 20_000 })
     const first = await session.capture({ label: `${mark}-07-第一笔不弹卡` })
     keep(first)
     check(
-      first.text.includes('{"cmd":"echo 先来一笔"}'),
+      first.text.includes('▸ exec(echo 先来一笔)'),
       `【${mark}】前提：第一笔**真发出去了**（工具行在屏上）`,
       first.text,
     )
@@ -394,7 +428,9 @@ async function noCard(mark: string): Promise<void> {
     const running = await waitUntil(
       session,
       '第二笔（sleep 2.5）跑起来',
-      (lines) => runningRow(lines)?.includes('sleep') === true,
+      // ⚠️ **按工具名认那一行**（U112 起 `▸ ` 每一件工具都挂着——光认记号会取到**第一笔**
+      //    `echo` 那一行，第二笔永远等不到：本单实测栽过）
+      (lines) => toolHeadRow(lines, 'sleep') !== undefined,
       20_000,
     )
     await Bun.sleep(1_500)
@@ -411,7 +447,7 @@ async function noCard(mark: string): Promise<void> {
       `【${mark}】反面：它跑着的时候屏上也没有卡`,
       mid.lines
         .map((line) => line.trim())
-        .filter((line) => line.startsWith('● ') || line.startsWith('⟳ '))
+        .filter((line) => line.startsWith('▸ '))
         .join(' ⏎ '),
     )
 

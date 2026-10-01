@@ -89,6 +89,17 @@ function has(capture: Capture, needle: string): boolean {
 }
 
 /**
+ * **那一行是不是「工具在跑」才有的那行读数**——U112 起**在跑**的唯一凭据。
+ *
+ * 工具行是两行（`components/log.ts`）：头一行 `▸ 名字(关键参数)` ＋ 行尾状态位
+ * （在跑弱色 `●`、定住 `✓`），**在跑时**底下才有第二行、且**光一个时长**（`0ms` / `1.2s`）。
+ * 故「在跑」不再能拿行首那个记号认（`⟳` 撤了，`▸` 跑着与跑完都在），认的是**这一行**。
+ */
+function isClockOnly(line: string): boolean {
+  return /^\d+(?:\.\d+)?(?:ms|s)$/u.test(line.trim())
+}
+
+/**
  * **一行是不是「选中那一行」**——按**字格**判，不按文字：那一屏三项的文字一直都在，
  * 等文本等不到任何东西（U100 合前复核点出的：「原方向键帧仍是第一项亮色加粗」）。
  *
@@ -841,7 +852,20 @@ async function backgroundOnly(): Promise<void> {
     // 这一轮收完了（助手那句在屏上、没有工具在跑），而运行事实照旧说「执行中」
     const settled = await window.capture({ label: '20-只剩后台命令（这一轮已收）' })
     keep(settled)
-    check(!settled.lines.some((line) => line.trimStart().startsWith('⟳')), '没有工具在跑（⟳ 那行不在）', '')
+    // ⚠️ **U112 换过「在跑」认什么**（这一条要证的那件事一个字没变：**这会儿没有工具在跑**）：
+    //    `⟳` 撤了，工具那一行的身份 `▸` **跑着与跑完都在**（状态在行尾：跑着 `●`、定住 `✓`），
+    //    故今天认**两件**——① 那一行**在**、且行尾已**定住**（`✓`）② **在跑才有的那行读数不在**。
+    //    （只判「不在」是不够的：屏上什么都没有时它照样绿——故先钉住那一行在。）
+    check(
+      settled.lines.some((line) => line.trimStart().startsWith('▸ exec(sleep') && line.trimEnd().endsWith('✓')),
+      '工具那一行**在**、而且**已定住**（U112：定住写作行尾那颗 `✓`）',
+      settled.lines.find((line) => line.includes('▸ ')) ?? '（屏上没有 `▸` 那一行）',
+    )
+    check(
+      !settled.lines.some(isClockOnly),
+      '没有工具在跑（**在跑才有的那行读数不在**）',
+      settled.lines.find(isClockOnly) ?? '（屏上没有那一行——对的）',
+    )
 
     await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
     const menu = await window.capture({ label: '21-只剩后台命令时的三选' })
@@ -900,7 +924,9 @@ async function acrossRounds(): Promise<void> {
 
     await typeLine(window, '看一眼')
     await window.key('enter')
-    await window.wait({ text: '⟳' }, { timeoutMs: 20_000 }) // 工具正在跑
+    // 工具正在跑——⚠️ **U112 起认的是「在跑才有的那行读数」**（`⟳` 那个记号撤了；那一行的
+    // 身份 `▸` 跑着与跑完都在，认不出这件事），见 `isClockOnly` 的注。
+    await waitUntil(window, '工具正在跑（底下那行读数）', (lines) => lines.some(isClockOnly), 20_000)
     await window.key('ctrl+c', { until: MENU_UP, timeoutMs: 15_000 })
     const menu = await window.capture({ label: '23-工具正在跑时开的三选' })
     keep(menu)
@@ -1210,10 +1236,21 @@ async function staleCardAfterStop(): Promise<void> {
       inputLineOf(back),
     )
     // **那一行不再冒充「运行中」**（U100 合前复核 · 呈现补：核销之后那一件的结果不会再来）
+    //
+    // ⚠️ **U112 换过这一条认什么**（这一条要证的那件事一个字没变）：`⟳` 撤了、`⟳ 运行中`
+    //    那句自述也整个撤了；核销之后那一件在屏上长这样——头一行 `▸ 工具(参数)` ＋ 行尾
+    //    那颗 `●`，**底下什么都没有**（`log.ts`：lost ⇒ 只有头一行，不摆那行读数）。
+    //    故今天认两件：① 那一行**在**（判「它报不报数」得先有那一行）② **底下没有读数那一行**。
+    const lostRowAt = back.lines.findIndex((line) => line.trimStart().startsWith('▸ '))
     check(
-      !back.lines.some((line) => line.includes('⟳') && line.includes('运行中')),
-      '那一代核销之后**没有**「⟳ 运行中」那一行（不再把没落定的说成在跑）',
-      back.lines.find((line) => line.includes('⟳')) ?? '（屏上没有 ⟳）',
+      lostRowAt !== -1,
+      '失联那一条工具行**还在屏上**（判「它还报不报数」得先有那一行）',
+      back.lines.filter((line) => line.includes('▸ ')).join(' ⏎ ') || '（屏上没有 `▸` 那一行）',
+    )
+    check(
+      !isClockOnly(back.lines[lostRowAt + 1] ?? '') && !back.lines.some(isClockOnly),
+      '那一代核销之后**底下没有读数那一行**（不再把没落定的说成在跑、也不给它计时）',
+      back.lines.find(isClockOnly) ?? '（屏上没有读数那一行——对的）',
     )
     check(
       !back.lines.some((line) => line.includes('✓')),
@@ -1298,12 +1335,17 @@ async function staleCardAfterLost(): Promise<void> {
     )
 
     // **失联那一档：那一行不再报秒数**（两次取帧比一比——秒数若在涨就是还在计时）
-    const tick1 = back.lines.filter((line) => line.includes('⟳'))
+    // ⚠️ **U112 起这一块是「头一行 ＋ 它底下那一行」**（`⟳` 撤了，不能只按那个记号取行）：
+    //    取**整块**（`▸ …` 那一行 ＋ 在跑才有的读数那一行）比字面——秒数若在涨，块就变；
+    //    且**块非空才算数**（两边都空时「字面相同」是白给的，什么也没量到）。
+    const rowBlock = (lines: readonly string[]): readonly string[] =>
+      lines.filter((line) => line.trimStart().startsWith('▸ ') || isClockOnly(line))
+    const tick1 = rowBlock(back.lines)
     await Bun.sleep(1_200)
     const later = await window.capture({ label: '35b-失联一秒多之后' })
-    const tick2 = later.lines.filter((line) => line.includes('⟳'))
+    const tick2 = rowBlock(later.lines)
     check(
-      tick1.join('|') === tick2.join('|'),
+      tick1.length > 0 && tick1.join('|') === tick2.join('|'),
       '失联之后那一行**不再计时**（一秒多之后字面一字不变）',
       `前 ${tick1.join('|')} / 后 ${tick2.join('|')}`,
     )

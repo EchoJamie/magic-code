@@ -34,8 +34,9 @@
  * - **回执是新那一页的头一行**——`· 已切到 <名字>` 紧接着就是目标那条的**第一条记录**，
  *   且这一页**通篇没有**切走那条的字（`通读`那一项：一屏从上读到下，认得出是哪条会话的）。
  *
- * 外加两件：**`›` / `⏺` / 工具行都在**（三种行各有其一）与**小记录那一趟逐字不变**
- * （可见屏顶行就是回执——U44 原判据）。
+ * 外加两件：**`›` 我的交代 / 它那句回复 / `▸` 工具行都在**（三种行各有其一——⚠️ U112 起
+ * 助手正文顶格、不带行首记号，故那一行按**它那句话本身**认，见 `checkPage` 的注）与
+ * **小记录那一趟逐字不变**（可见屏顶行就是回执——U44 原判据）。
  *
  * ## 跑法
  *
@@ -145,6 +146,11 @@ function checkPage(
      * 屏上一条记录都没有，那两条判据照样绿。带上记号，屏上那些行就没有一行对得上。
      */
     readonly first: string
+    /**
+     * **助手那一行**认的字（U112）——助手正文顶格、没有行首记号，故按**它那句话**认
+     * （见 ⑤ 那一处的注）。
+     */
+    readonly reply: string
     /** 可见屏上**不许**再有这些字（切走那条的残留）。 */
     readonly gone: readonly string[]
     /** 切走那条的东西——翻过页之后**必须在整份缓冲里还找得到**。 */
@@ -214,9 +220,15 @@ function checkPage(
     )
   }
 
-  // ⑤ 三种行都在（`›` 我的交代 · `⏺` 它的回复 · `●` 工具）
+  // ⑤ 三种行都在（`›` 我的交代 · 它那句回复 · `▸` 工具）
   check(countOn(records, '› ') >= 1, `${where}：**用户那一行**（\`› \`）在记录里`)
-  check(countOn(records, '⏺ ') >= 1, `${where}：**助手那一行**（\`⏺ \`）在记录里`)
+  // ⚠️ **U112 换过这一条的问法**：助手正文**顶格、不再带行首记号**（`⏺` 撤掉了），
+  //    故这里认的不再是那一个记号，而是**它那句话本身**（`options.reply`，由调用方给）。
+  //    判的还是同一件事：**它那句话在这一页的记录里**。
+  check(
+    countOn(records, options.reply) >= 1,
+    `${where}：**助手那一行**（\`${options.reply}\`）在记录里`,
+  )
 }
 
 /** 本条会话那几句交代／回复——用来认「屏上这一条是谁」。 */
@@ -336,8 +348,9 @@ async function main(): Promise<void> {
     //
     //   **它要证的那件事一个字没变：那一趟读**确实发生了**（不是被闸挡住、也没有静默跳过）
     //   ——**否则这一单要造的那条大记录根本造不出来**。今天这件事的证据换成了工具自己：
-    //   **跑完了那一行（`● read …`）在屏上**——`⟳` 是「刚开跑」，`●` 是「跑完了」，
-    //   被卡在裁决上时停在 `⟳`（旧那一版实测如此）。
+    //   **那一趟读的那一行（`▸ read(大材料.txt)`）在屏上**——⚠️ **U112 起「在跑／跑完」不再
+    //   换记号**（身份那一位统一是 `▸`，状态挪到**行尾**：在跑是一颗弱色 `●`、跑完定住成 `✓`），
+    //   被卡在裁决上时那一行也照旧在（行尾还是在跑那颗 `●`，底下不报读数）。
     //
     //   ⚠️ **等的是「两者之一先出现」，超时在这儿不判**（同本文件 `switchTo` 那条的由头）：
     //   这一步等的是「那一趟读跑起来了没有」，而**没跑起来、卡在裁决上**正是旧那一版的样子
@@ -347,7 +360,7 @@ async function main(): Promise<void> {
       await waitUntil(
         session,
         '那一趟读跑完 或 裁决卡',
-        (lines) => countOn(lines, '● read') >= 1 || countOn(lines, 'y 批准') >= 1,
+        (lines) => countOn(lines, '▸ read(') >= 1 || countOn(lines, 'y 批准') >= 1,
       )
     } catch (error) {
       console.log(`  ⚠ ${(error as Error).message.split('\n')[0]}`)
@@ -355,7 +368,7 @@ async function main(): Promise<void> {
 
     const 读那一趟 = await session.capture({ label: '00-那一趟读（不弹卡）' })
     keep(读那一趟)
-    check(countOn(读那一趟.lines, '● read') >= 1, '那一趟 `read` **真跑下去了**（跑完了那一行在——不是被卡在裁决上）')
+    check(countOn(读那一趟.lines, '▸ read(') >= 1, '那一趟 `read` **真跑下去了**（那一行在——不是被卡在裁决上）')
     check(countOn(读那一趟.lines, 'y 批准') === 0, '**没有裁决卡**（U76：读判轻、默认通、不问）')
     await session.wait({ text: `甲答第1句` }, { timeoutMs: 30_000 })
     for (let i = 2; i <= 甲轮数; i += 1) {
@@ -389,6 +402,7 @@ async function main(): Promise<void> {
     checkPage(回甲, '03', {
       label: 甲说,
       first: `› ${甲头}`,
+      reply: '甲答第1句',
       gone: [乙说, 乙答],
       kept: [乙说, 乙答],
       before: 乙页,
@@ -398,8 +412,8 @@ async function main(): Promise<void> {
       '03：甲那条**几十轮记录都在**（不是只铺出最后几条）',
     )
     check(
-      countOn(回甲.history, '● read') >= 1 && countOn(回甲.history, '大材料') >= 1,
-      '03：**工具那一行**也在（那一次 `read` 连同它的参数）',
+      countOn(回甲.history, '▸ read(') >= 1 && countOn(回甲.history, '大材料') >= 1,
+      '03：**工具那一行**也在（那一次 `read` 连同它的关键参数——U112 起参数写在括号里）',
     )
 
     // —— ③ `/resume` 切回乙：小记录那一趟，逐字不变（U44 原判据）——
@@ -411,6 +425,7 @@ async function main(): Promise<void> {
     checkPage(回乙, '04', {
       label: 乙说,
       first: `› ${乙说}`,
+      reply: 乙答,
       gone: [甲说, '甲答第1句'],
       kept: [甲说],
       before: 回甲,
@@ -432,11 +447,12 @@ async function main(): Promise<void> {
     checkPage(再回甲, '05', {
       label: 甲说,
       first: `› ${甲头}`,
+      reply: '甲答第1句',
       gone: [乙说, 乙答],
       kept: [乙说, 乙答],
       before: 回乙,
     })
-    check(countOn(再回甲.history.slice(再回甲.history.findLastIndex((l) => l.includes(TURN_MARK))), '● read') >= 1, '05：这一趟**工具行也在**')
+    check(countOn(再回甲.history.slice(再回甲.history.findLastIndex((l) => l.includes(TURN_MARK))), '▸ read(') >= 1, '05：这一趟**工具行也在**')
 
     await session.quit()
     const report = await session.close({ graceMs: 3_000, keepSandbox: true })
