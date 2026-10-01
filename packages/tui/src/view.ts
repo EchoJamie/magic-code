@@ -167,7 +167,36 @@ export type LogRow =
       readonly skills?: readonly UsedSkill[]
     }
   | { readonly kind: 'assistant'; readonly key: string; readonly text: string }
-  | { readonly kind: 'thinking'; readonly key: string; readonly text: string }
+  /**
+   * **思考段**——一行（`（思考 12s）…`），带它自己那一段的**计时**（U112 追加）。
+   *
+   * ## 计时口径：**只算那一段真的在流的时间**
+   *
+   * 三格把这件事说死（两个时刻都是**事件自己的 `at`**，不是外壳现取的钟）：
+   * - `startedAt`——**第一条**思考增量的 `at`（起算）；
+   * - `lastAt`——**最后一条**思考增量的 `at`（一路跟着更新）；
+   * - `flowing`——这一段的**动词**：`true` ＝ 此刻还在流（那一行在动、计时跟着走），
+   *   `false` ＝ **已经收梢**（定住，计时停在 `lastAt`）。
+   *
+   * ⇒ 报出来的数是 `(flowing ? now : lastAt) - startedAt`（见 `components/log.ts`）。
+   * 「真的在流的那一段」正是这么量的：**在它之前等模型的那几秒不算**（那是上一件事的账），
+   * **它之后不再吐字的那段也不算**（同一份由头：`toolLines` 那条「工具那行的计时只算执行本身」）。
+   *
+   * ⚠️ **不用「`endedAt === null` 就当还在流」那种写法**：**接回**（`applyResume`）重放出来的
+   * 那一段是**已经发生过**的，它既没有起点、也不是「正在流」——那两件事得分开说，
+   * 否则接回来的思考行会**永远转下去**。
+   */
+  | {
+      readonly kind: 'thinking'
+      readonly key: string
+      readonly text: string
+      /** 起算时刻（第一条思考增量的 `at`）；**接回那一路没有它**（`null` ⇒ 那一行不报计时）。 */
+      readonly startedAt: number | null
+      /** 最后一条思考增量的 `at`——收梢之后计时就钉在它上面。 */
+      readonly lastAt: number | null
+      /** **还在流**（此刻正吐字）——`false` ＝ 那一段已经收梢（定住）。 */
+      readonly flowing: boolean
+    }
   | {
       readonly kind: 'tool'
       readonly key: string
@@ -1647,7 +1676,8 @@ export function reduce(
 ): ShellView {
   switch (event.kind) {
     case 'model.delta':
-      return reduceDelta(view, event.id, event.data)
+      return reduceDelta(view, event.id, event.data, event.at)
+
 
     case 'tool.call':
       return reduceToolCall(view, event.id, event.data, event.at)
@@ -1903,19 +1933,76 @@ const RETRY_MAX = 3
 
 type DeltaData = Extract<KernelEvent, { kind: 'model.delta' }>['data']
 
-function reduceDelta(view: ShellView, id: RecordId, data: DeltaData): ShellView {
-  if (data.channel === 'text') return appendText(view, id, 'assistant', data.text)
-  if (data.channel === 'thinking') return appendText(view, id, 'thinking', data.text)
+function reduceDelta(view: ShellView, id: RecordId, data: DeltaData, at: number): ShellView {
+  if (data.channel === 'text') {
+    // **正文一来，思考那一段就收梢了**（U112 追加）——计时停在它自己最后吐字那一刻
+    return appendText(closeThinking(view), id, 'assistant', data.text, at)
+  }
+  if (data.channel === 'thinking') return appendText(view, id, 'thinking', data.text, at)
 
-  return appendToolFragment(view, id, data.name, data.id, data.text)
+  return appendToolFragment(closeThinking(view), id, data.name, data.id, data.text)
 }
 
-/** 正文 / 思考——落到末尾同类行上（交替出现即分块）。 */
-function appendText(view: ShellView, id: RecordId, kind: 'assistant' | 'thinking', text: string): ShellView {
+/**
+ * 正文 / 思考——落到末尾同类行上（交替出现即分块）。
+ *
+ * ⚠️ **思考段多挂三个时刻**（U112 追加）——它那一行要报「这段流了多久」，见 `LogRow` 那几格的注。
+ * 正文那一路不看它们（`at` 传了也不用）。
+ */
+function appendText(
+  view: ShellView,
+  id: RecordId,
+  kind: 'assistant' | 'thinking',
+  text: string,
+  /** 这一片增量的时刻（事件自己的 `at`）；**接回那一路没有它**（`null` ⇒ 那一行不报计时）。 */
+  at: number | null,
+): ShellView {
   const last = view.rows[view.rows.length - 1]
-  if (last?.kind === kind) return replaceLast(view, { ...last, text: last.text + text })
 
-  return appendRow(view, { kind, key: `${kind}:${id}`, text })
+  if (last?.kind === kind) {
+    // **还在流**：起算不动，只把「最后吐字那一刻」往前推（收梢时拿它当终点）
+    return replaceLast(
+      view,
+      last.kind === 'thinking'
+        ? { ...last, text: last.text + text, lastAt: at ?? last.lastAt, startedAt: last.startedAt ?? at }
+        : { ...last, text: last.text + text },
+    )
+  }
+
+  return appendRow(
+    view,
+    kind === 'thinking'
+      ? { kind, key: `${kind}:${id}`, text, startedAt: at, lastAt: at, flowing: true }
+      : { kind, key: `${kind}:${id}`, text },
+  )
+}
+
+/**
+ * **给还开着的那一段思考收梢**（U112 追加）——终点取**它自己最后吐字那一刻**
+ * （`lastAt`），不是「收梢这件事发生的时刻」。
+ *
+ * 由头就是那条计时口径「只算那一段真的在流的时间」：模型吐完最后一行思考、隔一会儿才开口说
+ * 正文，中间那几个毫秒（或几秒）**不是思考在流**，不该算进去。故计时钉在 `lastAt` 上
+ * （收梢只把 `flowing` 翻成 `false`，那个时刻不动）。
+ *
+ * 不在流的（没有思考行 / 已经收过梢了）**原样返回**（不新建对象——`reduce` 的既有纪律）。
+ */
+function closeThinking(view: ShellView): ShellView {
+  const last = view.rows[view.rows.length - 1]
+  if (last?.kind !== 'thinking' || !last.flowing) return view
+
+  return replaceLast(view, { ...last, flowing: false })
+}
+
+/**
+ * 屏上**有没有一段正在流的思考**（U112）——两个用处，与 `hasRunningTool` 那条一模一样：
+ * ① 活壳那支按需的钟要不要醒着（计时在走）；② 那一段要不要动。
+ *
+ * ⚠️ **只看 `rows`**（还在变的那些）——已定局的行进了 `<Static>`，写一次就不再重绘，
+ * 拿它去驱动动效等于对着空气画（同 `breathingOf` 那条「只看真画出来的那几行」）。
+ */
+export function hasRunningThinking(view: ShellView): boolean {
+  return view.rows.some((row) => row.kind === 'thinking' && row.flowing)
 }
 
 /** 工具调用增量——按供应商侧调用 id 分组；无 id 时并进最老的未配对工具行。 */
@@ -2561,11 +2648,15 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
   let next = view
 
   if (snapshot.thinking !== undefined) {
-    next = appendText(
-      next,
-      RESUME_SOURCE,
-      'thinking',
-      snapshot.thinkingTruncated === true ? `（接回只带了末尾）\n${snapshot.thinking}` : snapshot.thinking,
+    next = closeThinking(
+      appendText(
+        next,
+        RESUME_SOURCE,
+        'thinking',
+        snapshot.thinkingTruncated === true ? `（接回只带了末尾）\n${snapshot.thinking}` : snapshot.thinking,
+        // **接回没有起点**（那是另一个进程里发生的事）⇒ 不报计时（「拿不到的不编」）
+        null,
+      ),
     )
   }
   if (snapshot.text !== undefined) {
@@ -2574,6 +2665,7 @@ export function applyResume(view: ShellView, snapshot: RunSnapshot): ShellView {
       RESUME_SOURCE,
       'assistant',
       snapshot.textTruncated === true ? `（这一段太长，接回只带了末尾）\n${snapshot.text}` : snapshot.text,
+      null,
     )
   }
 

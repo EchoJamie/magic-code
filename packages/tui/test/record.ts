@@ -111,7 +111,9 @@ function streaming(body: string, thinking: string): Painted {
     frames,
     entries: [
       { marker: '› ', text: UTTERANCE },
-      { marker: '（思考）', text: thinking },
+      // 思考那一行 **U112 起带计时**（`（思考 12s）…`）——故认它要认**前半截**：
+      // 写全 `（思考）` 的话，带上计时那一形一个都认不出来（而旧标本里写的正是全的）。
+      { marker: '（思考', text: thinking },
       { marker: headOf(body), text: body, legacy: ['⏺ '] },
     ],
   }

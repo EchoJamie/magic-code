@@ -255,6 +255,25 @@ async function main(): Promise<void> {
   ])
   await saveScreen(out, '12-结果缩进-两级都在四列', indented.getView())
 
+  // —— 六 · **思考那一行**（追加那一条）：动效 ＋ 计时 ——
+  //
+  // 两张一对：**进行中**（`（思考 12s）`，那一行在呼吸）对 **收梢**（定住、计时留着）。
+  // 计时口径是「只算那一段真的在流的时间」，故这里把两条增量摆在 0 与 12 秒上。
+  const thinking = live('看看这个文件', [
+    ...ENOUGH,
+    event('model.delta', { channel: 'thinking', text: '先想一下这个问题。' }, { id: 10_000 }),
+    event('model.delta', { channel: 'thinking', text: '还得再看一眼记录域那边。' }, { id: 22_000 }),
+  ])
+  await save(out, '13-思考-进行中', thinking.getView(), AT + 22_000)
+
+  const thought = live('看看这个文件', [
+    ...ENOUGH,
+    event('model.delta', { channel: 'thinking', text: '先想一下这个问题。' }, { id: 10_000 }),
+    event('model.delta', { channel: 'thinking', text: '还得再看一眼记录域那边。' }, { id: 22_000 }),
+    event('model.delta', { channel: 'text', text: '看过了：这一份是记录域的开库那一段。' }, { id: 22_001 }),
+  ])
+  await save(out, '14-思考-收梢定住', thought.getView(), AT + 40_000)
+
   console.log(`帧落在 ${out}`)
 }
 

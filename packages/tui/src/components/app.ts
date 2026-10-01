@@ -36,7 +36,7 @@ import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
 import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { HINT_EXIT_ARMED, hasRunningTool, statusLineCellsOf, statusLineColorOf } from '../view.ts'
+import { HINT_EXIT_ARMED, hasRunningThinking, hasRunningTool, statusLineCellsOf, statusLineColorOf } from '../view.ts'
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
 import { DecisionCard } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
@@ -966,8 +966,14 @@ export function TuiApp({ shell }: TuiAppProps) {
   const pulseAt = useWaitingPulse(view.status.state, view.reducedMotion)
   const pulsing = pulseAt !== null && Date.now() - pulseAt < PULSE_MS
 
+  /**
+   * **在流的那段思考也要钟**（U112 追加）——两个用处，缺一不可：
+   * - **计时**（`（思考 12s）`）要一个走着的「此刻」——这是**事实**，**减少动效也照走**；
+   * - **动效**（那一行在呼吸）——这一条才看减少动效（由 `still` 传给渲染层，见 `AppView`）。
+   */
   const ticking =
-    view.status.state !== 'lost' && (hasRunningTool(view) || breathingOf(view, plan) || pulsing)
+    view.status.state !== 'lost' &&
+    (hasRunningTool(view) || hasRunningThinking(view) || breathingOf(view, plan) || pulsing)
   const now = useLiveClock(ticking)
 
   /**

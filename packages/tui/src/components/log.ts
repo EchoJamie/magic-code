@@ -698,6 +698,8 @@ function rowBody(
       const lines = textOfLines(trimBlank(row.text)).filter((line) => line.trim() !== '')
       if (lines.length === 0) return [] // 空思考不渲染
 
+      // **展开那一支不动**（U112 追加 · ④「全文不丢」）：进查看那一屏仍是整段铺开。
+      // 计时那三格只管折叠态那一行（那一行才是「此刻」的一部分）。
       if (expanded) {
         return lines.flatMap((line, at) =>
           wrapSegments([seg(at === 0 ? '（思考）' : '', PALETTE.faint), seg(line, PALETTE.faint)], columns, {
@@ -707,10 +709,18 @@ function rowBody(
         )
       }
 
-      return wrapSegments([seg('（思考）', PALETTE.faint), seg(collapse(lines), PALETTE.faint)], columns, {
-        key: 'r:t',
-        hang: INDENT,
-      })
+      // —— 折叠态：`（思考 12s）` 那一行 ＋ 它的动效（U112 追加）——
+      //
+      // 那一行本来就只有一行，这一单给它补两件：**计时**与**动效**（用户 2026-10-01 定，
+      // 照参照面）。两件各说各的：**计时是事实**（这一段流了多久），**动效是「正在发生」**
+      // （还在吐字）。故两者的存活条件不同——见 `thinkingLabel`。
+      const label = thinkingLabel(row, options.now ?? null, options.still === true)
+
+      return wrapSegments(
+        [seg(label.text, label.color), seg(collapse(lines), PALETTE.faint)],
+        columns,
+        { key: 'r:t', hang: INDENT },
+      )
     }
 
     case 'tool':
@@ -923,6 +933,62 @@ function statusBit(
   const verdict = verdictOf(row, expanded)
 
   return { mark: verdict.mark, color: verdict.color }
+}
+
+/**
+ * **思考那一行为首那一段**（U112 追加）——`（思考 12s）`，**形如**用户给的那一形。
+ *
+ * 三件事各自的条件（用户 2026-10-01 的三条）：
+ *
+ * | 那一格 | 条件 | 由头 |
+ * | --- | --- | --- |
+ * | **计时**（`12s`） | 有起点、且**有一个「此刻」**（`now` 非空）——**不看动不动** | **时间是事实，不是动画**（用户原话）⇒ 减少动效照走 |
+ * | **动**（呼吸） | **还在流**（`row.flowing`）**且**没有开减少动效**（`still === false`）**且**有钟 | 「表示『正在发生』的那一行可以动」；**成/收梢 ⇒ 定住** |
+ * | 词「思考」 | 总是 | 身份那一维（设计：留文字最保真） |
+ *
+ * ⚠️ **拿不到的不编**（项目那条老规矩）：没有起点（**接回**重放的那一段）就**不报数**，
+ * 只写「（思考）」；没有钟（取景与快照不给）同样不报数——那一行不会因为「此刻不知道」
+ * 就编一个 0s 出来。
+ *
+ * ⚠️ **动效挂在整段标签上**（「动效就挂在那一行上」），且用的是**这一套里唯一的那个动**
+ * （弱 → 亮 → 弱的呼吸，见 `motion.ts`）：设计给思考段写的「`⋯` 可逐点滚动」是**另一回事**
+ * （那是**窄窗**那一档的**身份**写法，本单没动它）。一处动效一套——这是本单立的规矩。
+ */
+function thinkingLabel(
+  row: Extract<LogRow, { kind: 'thinking' }>,
+  now: number | null,
+  still: boolean,
+): { readonly text: string; readonly color: string } {
+  const clock = thinkingClock(row, now)
+
+  if (clock === null) return { text: '（思考）', color: PALETTE.faint }
+
+  const moving = row.flowing && !still && now !== null
+
+  return {
+    text: `（思考 ${clock}）`,
+    color: moving ? breathColor(PALETTE.faint, breathOf(now)) : PALETTE.faint,
+  }
+}
+
+/**
+ * 那一段思考**流了多久**——`(还在流 ? 此刻 : 最后吐字那一刻) − 起算那一刻`。
+ *
+ * **只算那一段真的在流的时间**（用户 2026-10-01 的口径，与工具行那条同一个精神）：
+ * 起算是**第一条**思考增量，终点是**最后一条**——中间在等模型的那几秒不算。
+ *
+ * 拿不到就跑不出数（`null`）：没有起点（接回）、没有终点（一条增量都没记下）、
+ * 或者没有钟（`now` 为空而它还在流）——**不编**。
+ */
+function thinkingClock(row: Extract<LogRow, { kind: 'thinking' }>, now: number | null): string | null {
+  const from = row.startedAt
+  const to = row.flowing ? now : row.lastAt
+
+  if (from === null || to === null) return null
+
+  const elapsed = to - from
+
+  return elapsed < 0 ? null : durationLabel(elapsed)
 }
 
 /** 结果行那半句——按**形态**出（见 `toolLines` 的头注）。`mark` 上**头一行的行尾**。 */

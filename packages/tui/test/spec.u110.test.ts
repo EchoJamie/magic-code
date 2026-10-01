@@ -74,7 +74,16 @@ const userWithImages = (at: number, text: string, images: readonly UserImage[]):
   images,
 })
 const assistantRow = (at: number, text: string): LogRow => ({ kind: 'assistant', key: `a${at}`, text })
-const thinkingRow = (at: number, text: string): LogRow => ({ kind: 'thinking', key: `t${at}`, text })
+// 思考行 U112 起带它自己那一段的计时三格——这一层（查看那一屏）不看它们，
+// 给一个「已经收梢、没有起点」的形就够（与 `applyResume` 重放出来那一段同形）
+const thinkingRow = (at: number, text: string): LogRow => ({
+  kind: 'thinking',
+  key: `t${at}`,
+  text,
+  startedAt: null,
+  lastAt: null,
+  flowing: false,
+})
 
 // ══ ① 键表：设计那一节列的键，一个不少 ═══════════════════════════════
 
