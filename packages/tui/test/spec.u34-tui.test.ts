@@ -29,7 +29,7 @@ import { createStage } from './screen.ts'
 import { blankRuns, duplicates, overflows } from './invariants.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
-import { plain, rendered } from './screen.ts'
+import { plain, rendered, showScreen } from './screen.ts'
 
 // —— 计划那一份的夹具 ——
 
@@ -720,8 +720,8 @@ describe('返修① · 辅助工具详情可查', () => {
     expect(quiet.has('plan_update')).toBe(false)
     expect(quiet.has('UPDATE_DETAIL_ABC')).toBe(false)
 
-    stage.press({ kind: 'ctrl+o' })
-    const shown = await stage.screen({ columns: 100, rows: 30 })
+    // ⚠️ **U110 起「详情可查」在查看那一屏上**（内联恒折：`ctrl+o` 是开那一屏）
+    const shown = await showScreen(stage.shell.getView(), { columns: 100, rows: 30 })
 
     expect(shown.has('plan_update')).toBe(true)
     expect(shown.has('UPDATE_DETAIL_ABC')).toBe(true)

@@ -146,6 +146,37 @@ function rowLineOf(lines: readonly string[], name: string): string {
  * ⚠️ **别拿「空闲」当「这一轮跑完了」**（U72 那条注）：提交之后到状态行翻过去之间有那么
  * 一小会儿，屏上还写着上一轮的空闲。判据锚在**这一轮才会出现的那句话**上。
  */
+/**
+ * **退出那一屏**（U110）——按 `q`，等屏上**不再是那一屏的样子**。
+ *
+ * ⚠️ **等的不是「○ 空闲」**：这一趟可能正**工作中**（后台还在跑），那时主屏上等不到
+ * 「空闲」——等它只会白等满超时。判据取那一屏自己的键位提示：它没了＝那一屏退了。
+ */
+/**
+ * **进那一屏取一帧、再退回来**（U110）——「同一面数两遍」那类判据用它。
+ *
+ * ⚠️ 与 `leaveView` 不同：这一趟**要那一帧**（不是靠它收尾），故进出都在这儿走完。
+ */
+async function expandedView(session: UiSession, label: string): Promise<Capture> {
+  await session.key('ctrl+o', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+  const shot = await session.capture({ label })
+  keep(shot)
+  await leaveView(session)
+
+  return shot
+}
+
+async function leaveView(session: UiSession): Promise<void> {
+  await session.send('q')
+  for (let at = 0; at < 150; at += 1) {
+    const screen = await session.screen()
+    if (!screen.lines.some((line) => line.text.includes('ctrl+u/d 半页'))) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error('那一屏没有退出（`q` 之后屏上还是它）')
+}
+
 async function waitFor(
   session: UiSession,
   what: string,
@@ -368,9 +399,16 @@ if (import.meta.main) {
     // ══ ③ 回来接着跑：**同一条会话**再跑一次，不再报「还没配」 ═════════
     console.log('· ③ 配完接着说一句：同一趟会话再跑 web_fetch，不再报「还没配」')
 
-    // ⚠️ 记下**这一趟之前**屏幕上那几句「还没配」有几条：记录区里 ① 那一条**一直还在**，
-    //    故「这一趟没再报」只能拿**多没多出一条**来判（整屏找字会撞上旧那一条）
-    const before = countOf(after.lines, '还没配提炼用的模型')
+    /**
+     * ⚠️ **记下「这一趟之前」有几条「还没配」**：记录区里 ① 那一条**一直还在**，故
+     * 「这一趟没再报」只能拿**多没多出一条**来判（整屏找字会撞上旧那一条）。
+     *
+     * ⚠️ **两次数的是同一面**（U110 改）：展开态现在在**查看那一屏**上，而那一屏画的是
+     * **整条记录**——`after` 是内联那一屏（`/config` 开着），两边不是一回事。
+     * 故这一趟的「前」也去那一屏数（进出各一趟），与下面 `done` 同一个尺子。
+     */
+    const beforeShot = await expandedView(session, '②-05-这一趟之前（那一屏上数一遍）')
+    const before = countOf(beforeShot.lines, '还没配提炼用的模型')
 
     // 收起 `/config` 那一屏——**等它真收起来**（右位提示回到空闲那一句）再接着打字：
     // 不等的话，正文会赶在这一下还没落地时进来（`pressKey` 那一条注里的坑）
@@ -378,17 +416,20 @@ if (import.meta.main) {
     await typeLine(session, '现在再查一次 example.com')
     await pressKey(session, 'enter', { until: { text: 'y 批准' }, timeoutMs: 20_000 })
     await session.send('y')
-    /**
-     * ⚠️ **`ctrl+o` 要在这一轮还在跑的时候按**（U72 那条注）：已定局的行写进 `<Static>`、
-     * 写一次就不再重绘——那一轮收束之后再去展开，那一屏一个字都不会变。
-     *
-     * 为什么要展开：回执那几行（`提炼 …模型 …` 与那句「不是原文」）在这条目**折着**的时候
-     * 不在屏上——屏上只有那半句结论。判据要读的是整段。
-     */
-    await session.key('ctrl+o')
     await waitFor(session, '这一趟的结论', ['这一页说的是', '取不得这一页', '取回失败'])
+
+    /**
+     * ⚠️ **U110 起「展开」是「查看那一屏」**（就地展开撤了——本处原先那句注记说的正是
+     * 「定局的行写一次就不再重绘」那件事）。回执那几行（`提炼 …模型 …` 与那句「不是原文」）
+     * 在这条目折着的时候不在**内联**屏上；那一屏上整段都在。故这一帧改成**进那一屏取**。
+     */
+    await session.key('ctrl+o', { until: { text: 'ctrl+u/d 半页' }, timeoutMs: 15_000 })
+    // ⚠️ **先到底**（`G`）：那一屏从记录开头铺起，这一趟那几行在末尾
+    await session.send('G')
+    await Bun.sleep(300)
     const done = await session.capture({ label: '③-01-配完之后再跑（通了）' })
     keep(done)
+    await leaveView(session)
 
     check(
       countOf(done.lines, '还没配提炼用的模型') === before,

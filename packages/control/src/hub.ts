@@ -135,6 +135,12 @@ export function createControlHub(): ControlHubFace {
         // 本域不认识剪贴板，也不读字节：**原样转手**，答复走事件（`input.pasted`，不落库）。
         target.onInputPaste()
         return
+      case 'image.export':
+        // 导出原图（U110）——**原样转手**给**对话域**（记录里那份字节归它读，落盘那一步
+        // 经装配注入的写口完成；同 `attachments.export` 当年的站位）。本域不认识记录、
+        // 也读不了字节，答复走事件（`image.exported`，不落库）。
+        target.onImageExport(command.blob, command.name, command.mime)
+        return
       case 'mcp.list':
         // 外部服务器的一屏（读侧 · U39）——**原样转手**给**装配**（那一束连接是它编排的，
         // 同 `model.list` 之于注册表）。本域不认识 MCP，答复走事件（`mcp.catalog`，不落库）。

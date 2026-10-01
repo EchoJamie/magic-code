@@ -27,7 +27,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Entry } from '@magic/contracts'
 import { event } from './events.ts'
-import { createStage } from './screen.ts'
+import { createStage, showScreen } from './screen.ts'
 import type { Cell, Frame } from './screen.ts'
 
 /** 起一个壳，并投一条会话状态（② 有标题、目录非空——多数用例的底子）。 */
@@ -128,9 +128,10 @@ describe('组件规格 · 行的标记与颜色', () => {
       event('tool.call', { name: 'ls', args: {} }, { id: 71 }),
       event('tool.result', { call: 71, ok: true, output: { text: 'README.md\npackages' } }, {}),
     ])
-    stage.press({ kind: 'ctrl+o' }) // 结果块展开才有内容行
-
-    const frame = await stage.screen()
+    // ⚠️ **U110 起这一屏的「展开」在查看那一屏上**（内联那一半恒折叠：`ctrl+o` 是开那一屏）。
+    //    故这条「结果另起一行 · 缩进两格 ×2 · 整行 dim」的判据改判到**那一屏**上量
+    //    ——走的是产品那条路（`showScreen` = `screenFrame` ＋ 同一支 VT），色照旧量得到。
+    const frame = await showScreen(stage.shell.getView())
     const head = frame.rowOf('● ls {}')
 
     // 结果**不在工具那一行**上（另起一行），且在它下面
@@ -184,9 +185,9 @@ describe('组件规格 · 行的标记与颜色', () => {
     expect(said).not.toContain('✗')
     // ③ 标记用 warn（要说的是「这一笔要你再看一眼」）——`  ! ` 的 `!` 在第 3 列
     expect(cellAt(frame, '! 未执行', 2)).toMatchObject({ text: '!', fg: '#e5c07b', bold: true })
-    // ④ 展开（`ctrl+o`）之后，正文那句「为什么、怎么办」还在——屏上只是**首行**那一句
-    stage.press({ kind: 'ctrl+o' })
-    const opened = await stage.screen()
+    // ④ **展开之后**，正文那句「为什么、怎么办」还在——内联屏上只是**首行**那一句。
+    //    ⚠️ **U110 起展开在查看那一屏上**：故这一条去那一屏量（同一句话、同一份行）。
+    const opened = await showScreen(stage.shell.getView())
     expect(opened.has('已送入上下文')).toBe(true)
   })
 
@@ -383,9 +384,15 @@ describe('密度（记录区不靠空行分层）', () => {
     const folded = await stage.screen()
     expect(folded.content.map((line) => line.text)).toEqual(['（思考）第一行'])
 
-    stage.press({ kind: 'ctrl+o' })
-    const opened = await stage.screen()
-    expect(opened.content.map((line) => line.text)).toEqual(['（思考）第一行', '第二行', '第三行'])
+    // ⚠️ **U110 起「展开」在查看那一屏上**（内联那一半恒折一行）——那三行去那一屏看。
+    //    这一屏的排法与内联那一条**同一支**（`rowLines` 的展开态），故「几行、哪几行」
+    //    在这里量得一样准；而骨架（字标那两行留白）不在这条判据里，用 `content` 那一格。
+    const opened = await showScreen(stage.shell.getView())
+    // 用 `screen.lines` ＋ 按锚点切片（不是 `content`——那一屏没有那两条线，切法不适用）
+    const rows = opened.screen.lines.map((line) => line.trim())
+    const at = rows.indexOf('（思考）第一行')
+
+    expect(rows.slice(at, at + 3)).toEqual(['（思考）第一行', '第二行', '第三行'])
   })
 
   test('**空内容不渲染**——只发工具调用、不吐正文的那一轮不出一行', async () => {

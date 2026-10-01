@@ -25,10 +25,10 @@
  * `TuiApp` 是**活**的（订阅外壳、把 Ink 的键喂进外壳、按 `ShellEffect` 退场）。
  */
 
-import { Box, Static, Text, useApp, useInput, usePaste, useStdout, useWindowSize } from 'ink'
+import { Box, Static, Text, useApp, useInput, usePaste, useStdin, useStdout, useWindowSize } from 'ink'
 import { createElement as h } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { ReactElement, RefObject } from 'react'
 import { useSyncExternalStore } from 'react'
 import { bannerOf } from '../banner.ts'
 import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
@@ -45,6 +45,7 @@ import { PlanList } from './plan.ts'
 import { PromptLine } from './prompt.ts'
 import { StatusLine } from './status.ts'
 import { collaborationHeader, collaborationStatus } from '../collaboration.ts'
+import { runScreen } from '../screen.ts'
 import { readerLayout, RecordReader } from './reader.ts'
 
 /**
@@ -57,6 +58,19 @@ const StaticList = Static as unknown as (props: {
   readonly items: readonly LogRow[]
   readonly children: (item: LogRow, index: number) => ReactElement
 }) => ReactElement
+
+/**
+ * **内联这一半恒是折叠态**（U110）——「展开」整条搬进了 `ctrl+o` 那一屏。
+ *
+ * 由头（设计 · 终端交互「查看：另开一屏」：「明确不做的三件」第 ① 条）：**就地展开历史
+ * 物理上做不到**——画过的行进了 `<Static>`，写一次就不再重绘，定局之后按 `ctrl+o`
+ * 等于没按。故内联只报摘要（工具卡一行、diff 铺 16 行 ＋「还有 N 行」那一句），
+ * **要看全量去那一屏**（`src/transcript.ts` 那一半按展开态画）。
+ *
+ * ⚠️ **这个常量就是那条「一处出处」**：`rowLines` 的 `expanded` 参数还在（那一屏要它），
+ * 而**内联这一侧一律传它**——将来真要再分支，改这一处。
+ */
+const INLINE_EXPANDED = false
 
 // —— 纯呈现 ——
 
@@ -158,13 +172,13 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
           key: row.key,
           row,
           columns,
-          expanded: view.expanded,
+          expanded: INLINE_EXPANDED,
           // **失联**那一档由**这一格**驱动呈现（U100）：工具行不报活动/耗时（见 `toolLines`）
           lost: view.status.state === 'lost',
           // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
           // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
           // （该有分段的地方时有时无）。`items === view.settled` 时不差分毫。
-          spaced: needsSpacer(items, index, view.expanded),
+          spaced: needsSpacer(items, index, INLINE_EXPANDED),
         }),
     }),
     // ⚠️ **空态那一块已删**（用户 2026-09-20 定：启动屏上「会话在你按下第一次回车时才建立」
@@ -182,7 +196,7 @@ export function AppView({ view, columns, rows, now = null }: AppViewProps) {
         key: entry.row.key,
         row: entry.row,
         columns,
-        expanded: view.expanded,
+        expanded: INLINE_EXPANDED,
         // 交界那一条的「上一条」在 `settled` 里——同一条规矩（`needsSpacerAfter`），
         // 免得「用户消息之前留一行」在交界处换一副面孔（字标自带的后留白也在这条规矩里）
         spaced: entry.spaced,
@@ -385,7 +399,7 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
   // ——两段合成一列，故「上一块是谁」跨得过接缝（收尾那个回执贴的是**它前面那块**，
   // 不是「已定局的末条」这一格）。分两处各判一套的话，同一个交界在账与屏上会有两种行为
   // （U31 三轮退回那笔老账，见上面那一段注）。
-  const { flags } = spacerWalk(rows, view.expanded, spacerEnd(view.settled, view.expanded))
+  const { flags } = spacerWalk(rows, INLINE_EXPANDED, spacerEnd(view.settled, INLINE_EXPANDED))
 
   const entries: LiveEntry[] = []
   let used = 0
@@ -393,7 +407,7 @@ function liveAreaOf(view: ShellView, columns: number, budget: number): readonly 
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index] as LogRow
     const spaced = flags[index] === true
-    const size = heightOf(row, columns, view.expanded, spaced, lost)
+    const size = heightOf(row, columns, INLINE_EXPANDED, spaced, lost)
     const room = budget - used
 
     if (size > room) {
@@ -825,7 +839,7 @@ function useLiveClock(active: boolean): number | null {
  * ⚠️ 屏高**从 ref 里取**：订阅那一趟跑在重绘之外，闭包里直接抓 `rows` 会一直用挂载时那个数
  * （窗口改过大小之后，清屏就会少推几行）。ref 每次重绘跟着更新，读到的就是当下这一屏。
  */
-function useFlipOnNewPage(shell: Shell, rows: number): void {
+function useFlipOnNewPage(shell: Shell, rows: number, inScreen: RefObject<boolean>): void {
   const { write } = useStdout()
   const flipped = useRef<number | null>(null)
   const height = useRef(rows)
@@ -843,9 +857,13 @@ function useFlipOnNewPage(shell: Shell, rows: number): void {
       if (next.page === flipped.current) return
 
       flipped.current = next.page
+      // ⚠️ **查看那一屏开着的时候不清**（U110）：这一串字节是往**当前那一屏**写的，
+      //    而此刻当前那一屏是**备用屏**（我们自己的地盘）——推它等于把那一屏搅了。
+      //    主屏那边**本来就没动过**（`CSI ?1049h` 存着），退出时照旧是原来那一屏。
+      if (inScreen.current) return
       write(flipBytes(height.current))
     })
-  }, [shell, write])
+  }, [shell, write, inScreen])
 }
 
 /**
@@ -866,8 +884,9 @@ function useLeavingNote(view: ShellView, write: (text: string) => void): void {
 export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
-  const { exit } = useApp()
-  const { write } = useStdout()
+  const { exit, suspendTerminal } = useApp()
+  const { write, stdout } = useStdout()
+  const { stdin } = useStdin()
   // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
   // 清单翻页据它算「一页到哪」（见下）
   const { plan } = liveLayoutOf(view, columns, rows)
@@ -880,7 +899,76 @@ export function TuiApp({ shell }: TuiAppProps) {
   const ticking = view.status.state !== 'lost' && (hasRunningTool(view) || breathingOf(view, plan))
   const now = useLiveClock(ticking)
 
-  useFlipOnNewPage(shell, rows)
+  /**
+   * **查看那一屏开着**（U110）——给下面几处「别往终端上写」的判据用（翻页那一手）。
+   *
+   * 开屏期间终端**借给了那一屏**（备用屏），外壳这一侧的一切原样写出去都落在**别人那一屏**上。
+   */
+  const inScreen = useRef(false)
+  /**
+   * **上一趟退出时读到第几行**（设计：「退出保留原来的阅读位置」）——下次开屏从这儿起。
+   *
+   * ⚠️ 它是**这次会话**里的阅读位置，不是会话记录的一部分：不与记录同生共死，退出程序即忘。
+   */
+  const reading = useRef(0)
+
+  useFlipOnNewPage(shell, rows, inScreen)
+
+  /**
+   * **开查看那一屏**（U110 · `ctrl+o`）——借终端、铺满一整屏、回来。
+   *
+   * ## 借终端走 Ink 那道门
+   *
+   * `suspendTerminal` 是 Ink 给「把终端交给子程序」开的那道门（文档里点的例子就是
+   * `$EDITOR` / `less` / `fzf`）：进去时它**擦掉自己那一帧、关掉 raw mode、摘掉收键的监听**，
+   * 出来时**强制整帧重画**（`lastOutput` 清空）。故那一屏在备用屏上怎么画都行，
+   * 回来之后 Ink 的帧账目与屏**又对得上**——**不用我们复制一套帧状态**（那正是 D27 那条
+   * 禁止的事）。
+   *
+   * ## 主缓冲一个字都没动
+   *
+   * 那一屏的每一个字节都写在**备用缓冲**里（`CSI ? 1 0 4 9 h`）：退出时换回主缓冲，
+   * 对话原样在那儿（验收的反向判据就是这一条）。
+   *
+   * ## 一次只借一趟
+   *
+   * `opening` 守门——`ctrl+o` 按两下不至于叠两趟（第二下落在那一屏里，由 `src/screen.ts`
+   * 当「退出」认，到不了这儿）。
+   */
+  const opening = useRef(false)
+  const openScreen = (): void => {
+    if (opening.current) return
+    opening.current = true
+    inScreen.current = true
+
+    void suspendTerminal(async () => {
+      try {
+        reading.current = await runScreen({
+          stdin,
+          stdout,
+          // **每次重画问一次**（不是开屏时抓一份）：流式进来的新行据此上屏
+          read: () => {
+            const latest = shell.getView()
+            return {
+              rows: [...latest.settled, ...latest.rows],
+              columns: stdout.columns ?? columns,
+              screenRows: stdout.rows ?? rows,
+            }
+          },
+          subscribe: shell.subscribe,
+          startTop: reading.current,
+          // **加入本次输入**（U110）——放回稿子是外壳的事（编号、引用表、插入点都在它手上）；
+          // 那一屏自己就此退出（`screen.ts` 那一支），回来就是接着打字
+          attach: (material) => shell.attachMaterial(material),
+          // **导出原图**（U110）——外壳只发一条命令：字节在内核那一侧、落点归装配
+          exportImage: (material) => shell.exportMaterial(material),
+        })
+      } finally {
+        inScreen.current = false
+        opening.current = false
+      }
+    })
+  }
 
   /**
    * **临走在终端上留的那一句**（U100 · 「转到后台」那一支）——**直接写字节**，不经 Ink 的
@@ -908,7 +996,11 @@ export function TuiApp({ shell }: TuiAppProps) {
   }, [view.leaving, exit])
 
   const feed = (key: ShellKey): void => {
-    if (shell.key(key).exit) exit()
+    const effect = shell.key(key)
+    if (effect.exit) exit()
+    // **`ctrl+o`** ——外壳只说「开那一屏」（见 `ShellEffect.screen`），
+    // 借终端与画那一屏归这一层（外壳够不着终端）。
+    if (effect.screen === true) openScreen()
   }
 
   useInput((input, key) => {

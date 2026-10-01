@@ -107,6 +107,9 @@ export function commandSubjectOf(command: Command): string {
       // U107 剪贴板取图——无参：问的就是「剪贴板里有没有一张能用的图」
       // （剪贴板里是什么归实现那一侧去看，外壳看不见它）
       return '取剪贴板里的图'
+    case 'image.export':
+      // U110 导出原图——带的是「哪一张」（字节所在 ＋ 人读那两格）
+      return `导出原图：${command.name}`
     case 'mcp.list':
       // U39 外部服务器读侧——无参：问的就是「配了哪些、各是什么状态」
       return '列外部服务器'
@@ -206,6 +209,7 @@ export function hubFaceRealizesPort(): void {
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
     onInputPaste: () => undefined,
+    onImageExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   })
@@ -245,6 +249,7 @@ export function routesAreContractShape(): void {
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
     onInputPaste: () => undefined,
+    onImageExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
   }
@@ -287,6 +292,7 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
     onPathList: () => undefined,
     onPathIdentify: () => undefined,
     onInputPaste: () => undefined,
+    onImageExport: () => undefined,
     onMcpList: () => undefined,
     onMcpReconnect: () => undefined,
     ...overrides,

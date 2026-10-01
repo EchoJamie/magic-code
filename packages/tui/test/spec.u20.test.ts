@@ -18,8 +18,9 @@
 
 import { describe, expect, test } from 'bun:test'
 import { logLines } from '../src/components/log.ts'
+import { screenLayout, screenOpened } from '../src/transcript.ts'
 import { TEST_AT, event } from './events.ts'
-import { createStage } from './screen.ts'
+import { createStage, showScreen } from './screen.ts'
 import type { Frame, Stage } from './screen.ts'
 
 const WIDE = { columns: 80, rows: 24 } as const
@@ -128,11 +129,13 @@ describe('差距 1 · diff 审阅——改了文件，看得见改了什么', ()
     ])
 
     const folded = await stage.screen(WIDE)
-    expect(folded.has('… 还有 24 行（ctrl+o 展开）')).toBe(true) // 40 行里画了 16
+    // ⚠️ 那句的**文案 U110 改过**（`（ctrl+o 展开）` → `（ctrl+o 看全文）`）：原先印的那个
+    //    入口对**定局的行根本按不动**（就地展开做不到），故改成指那一屏——按了真有反应。
+    expect(folded.has('… 还有 24 行（ctrl+o 看全文）')).toBe(true) // 40 行里画了 16
     expect(folded.has('old 19')).toBe(false)
 
-    stage.press({ kind: 'ctrl+o' })
-    const opened = await stage.screen(WIDE)
+    // ⚠️ **U110 起「全量」在查看那一屏上**（内联恒折：`ctrl+o` 是开那一屏，不是就地展开）
+    const opened = await showScreen(stage.shell.getView(), WIDE)
 
     // ⚠️ **三条断言的锚**（U31 三轮返工改过一头，另两条没变）：
     //
@@ -149,7 +152,12 @@ describe('差距 1 · diff 审阅——改了文件，看得见改了什么', ()
     expect(opened.has('… 还有')).toBe(false) // 展开 ⇒ 折的提示**不再出现**（原来那条，没变）
     expect(lines.length).toBe(42) // 40 行 diff ＋ 标题行 ＋ 结果行
     expect(lines.some((line) => line.segments.some((piece) => piece.text.includes('old 19')))).toBe(true)
-    expect(opened.has('new 19')).toBe(true) // 屏上是这一条的**末尾**那几行（活动区是尾窗口）
+    // 那一屏**滚到底**看得见这一条的末尾（内联那一版是尾窗口，那一屏是从顶上铺的）
+    const rows = [...stage.shell.getView().settled, ...stage.shell.getView().rows]
+    const laid = screenLayout(rows, { columns: WIDE.columns, screenRows: WIDE.rows })
+    const tail = await showScreen(stage.shell.getView(), WIDE, screenOpened(laid.maxTop))
+
+    expect(tail.has('new 19')).toBe(true) // 屏上是这一条的**末尾**那几行
   })
 })
 
@@ -185,8 +193,8 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
     const folded = await stage.screen(WIDE)
     expect(resultSummary(folded)).toBe('+1 −1') // 认出来了：一增一删
 
-    stage.press({ kind: 'ctrl+o' })
-    const opened = await stage.screen(WIDE)
+    // ⚠️ **U110 起「全量」在查看那一屏上**（内联恒折：`ctrl+o` 是开那一屏，不是就地展开）
+    const opened = await showScreen(stage.shell.getView(), WIDE)
     expect(bodyOf(opened, '-old').every((cell) => cell.fg === '#e06c75')).toBe(true)
     expect(bodyOf(opened, '+new').every((cell) => cell.fg === '#98c379')).toBe(true)
   })
@@ -204,9 +212,8 @@ describe('差距 2 · 工具输出渲染——就近渲染已知形态', () => {
       event('tool.call', { name: 'exec', args: { cmd: 'cat t.md' } }, { id: 72 }),
       event('tool.result', { call: 72, ok: true, output: { text: '| a | b |\n| --- | --- |\n| 1 | 2 |' } }, { id: 73 }),
     ])
-    table.press({ kind: 'ctrl+o' })
-
-    const frame = await table.screen(WIDE)
+    // ⚠️ U110：正文那一形去**查看那一屏**量（内联恒折）
+    const frame = await showScreen(table.shell.getView(), WIDE)
     // 首站**不渲染表格**（B8 的已知限度）——原样铺，且不上任何语义色
     expect(frame.has('| a | b |')).toBe(true)
     expect(bodyOf(frame, '| a | b |').every((cell) => cell.fg === null || cell.fg === '#8b93a1')).toBe(true)

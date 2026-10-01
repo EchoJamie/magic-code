@@ -151,6 +151,7 @@ import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
 import { validateSelection } from './agent-models.ts'
 import { removeProvider, saveProvider, setModelDefault, setWebFetch } from './config-save.ts'
+import { saveImageFile } from './image-file.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
@@ -1731,6 +1732,9 @@ export function assemble(options: AssembleOptions): Assembly {
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
     sink,
     now,
+    // 导出原图（U110）——**落盘那一步在这儿**（域不碰文件系统，同配置 / 授权 / 材料的读写）；
+    // 取字节那一半在对话域（它握着记录里那份 blob）
+    saveImage: (file) => saveImageFile(file),
   })
 
   /**
@@ -2530,6 +2534,9 @@ export function assemble(options: AssembleOptions): Assembly {
     // 而落 blob 那一步同样经**记录域**的公开面。答复走事件（`input.pasted`，不落库）。
     // **异步**：它要 spawn 一条系统命令、还要读回一个临时文件。
     onInputPaste: () => void pasteClipboardImage(),
+    // 导出原图（U110）——**归对话域**（记录里那份字节归它读，落盘那一步经上面那个写口完成）；
+    // 答复走事件（`image.exported`，不落库）。本域不认识记录，原样转手。
+    onImageExport: (blob, name, mime) => void conversation.exportImage(blob, name, mime),
     // 外部服务器（读侧 ＋ 显式重连 · U39）——**归装配**（那一束连接是它编排的，同
     // `model.list` 之于注册表）；答复走事件（`mcp.catalog`，不落库）
     onMcpList: () => listMcp(),

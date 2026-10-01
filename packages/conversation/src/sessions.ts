@@ -31,6 +31,7 @@
  */
 
 import type {
+  BlobRef,
   BlobStore,
   ConversationService,
   Entry,
@@ -79,7 +80,26 @@ export type SessionInstance = {
 }
 
 /** 会话主面的构造入参——一切「谁来实现」的选择由装配根给出。 */
+/**
+ * **把一份图片字节落到盘上**（U110）——查看那一屏的「导出原图」那一步。
+ *
+ * 由装配实现（**域不碰文件系统**，同配置 / 授权 / 材料那几处的姿势）。分工：
+ * - 本域**取字节**（从记录里那份 blob）并说清这是哪一张（名字 / 类型）；
+ * - 装配管**落点与唯一性**（唯一命名 · 不覆盖已有文件 · 不自动打开 · 不进工作区）。
+ *
+ * 缺省＝这一条命令不可用（照实回一句，不假装导出了）。
+ */
+export type SaveImage = (file: {
+  readonly name: string
+  readonly mime: string
+  readonly bytes: Uint8Array
+}) => Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly reason: string }>
+
 export type SessionHostDeps = {
+  /**
+   * **导出原图的落点**（U110）——见 `SaveImage`。缺省＝这一条命令照实回「导不了」。
+   */
+  readonly saveImage?: SaveImage | undefined
   /**
    * **开局会话**——**不给＝还没有会话**（技术方案 · 会话与多会话：「会话在首条消息
    * 按下回车时才建立」；空手打开不占存储、不浪费 id、不把列表塞满空壳）。
@@ -134,6 +154,14 @@ export type SessionHost = Omit<ConversationService, 'rebuild'> & {
    * `session.history`（**不落库**）。`session` 不给＝当下这条。
    */
   readHistory(session?: SessionId): Promise<void>
+  /**
+   * **导出原图**（`image.export` 的落点 · U110）——字节**从记录里取**（不碰原路径），
+   * 落盘经装配注入的 `saveImage`；答复走事件（`image.exported`，**不落库**）。
+   *
+   * ⚠️ **三种失败各说各的话**（那份字节取不回来 / 这次装配没接落点 / 写盘没成），
+   * 都不假装成功——与它当年 `/attachments` 那条「查看原图」逐条相同。
+   */
+  exportImage(blob: BlobRef, name: string, mime: string): Promise<void>
 }
 
 /** 一次动作的收场——`undefined` ＝**无事可说**（不发事件）。 */
@@ -282,6 +310,49 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
   }
 
   /**
+   * **导出原图**（「查看原图」· U110）——字节**从记录里取**（不碰原路径），落盘那一步交给装配。
+   *
+   * 三种失败各说各的话，且都不假装成功：这份字节取不回来（blob 读不出）、这次装配没接
+   * 落点、落盘没成（装配给的原因）。成的时候给出**路径**——那是用户下一步要的东西
+   * （自己拿去看 / 发给别人）。
+   *
+   * ⚠️ **`blob` 是内容身份**（sha256），不是哪一条记录的位置：材料那几处引用本来就躺在
+   * `user` 条目的载荷里，外壳读得到它们（那一屏显示的就是那份记录），故这一条**不必**
+   * 再回记录里认一次「是哪一条」——取字节只需要那一个身份。
+   */
+  async function exportImage(blob: BlobRef, name: string, mime: string): Promise<void> {
+    const stamper = current().stamper
+    const answer = await exportNoteOf({ blob, name, mime })
+
+    deps.sink.emit(
+      stamper.stamp(
+        'image.exported',
+        'path' in answer ? { blob, path: answer.path } : { blob, problem: answer.problem },
+      ),
+    )
+  }
+
+  /** 导出那一下的收场——成给路径、不成给一句话（**都不假装**）。 */
+  async function exportNoteOf(file: {
+    readonly blob: BlobRef
+    readonly name: string
+    readonly mime: string
+  }): Promise<{ readonly path: string } | { readonly problem: string }> {
+    if (deps.saveImage === undefined) return { problem: '这次装配没有接导出落点——取不出来的图导不到盘上' }
+
+    let bytes: Uint8Array
+    try {
+      bytes = await deps.records.blobs.get(file.blob)
+    } catch (error) {
+      return { problem: `这份字节取不回来了（${messageOf(error)}）——记录里那一份可能坏了` }
+    }
+
+    const saved = await deps.saveImage({ name: file.name, mime: file.mime, bytes })
+
+    return saved.ok ? { path: saved.path } : { problem: `没能导出：${saved.reason}` }
+  }
+
+  /**
    * 重建面（恢复 ⑤ · U25）——**装载 ＋ 认下水位与开工位 ＋ 让外壳知道自己在哪条会话上**。
    *
    * 三件事各有着落：
@@ -314,6 +385,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     interrupt: () => active?.service.interrupt(),
     rebuild,
     readHistory,
+    exportImage,
 
     listSessions: () => catalog(),
 

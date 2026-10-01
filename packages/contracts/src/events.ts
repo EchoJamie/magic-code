@@ -12,7 +12,7 @@
  */
 
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
-import type { DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
+import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
 // 模型面的两格（U41）——连线与缓存读数自 `model.ts`（两边都是 `import type`，编译期擦除）
 import type { ModelInfoRead, ReasoningSetting, VendorInfo } from './model.ts'
 import type { CollaborationView } from './collaboration-control.ts'
@@ -148,6 +148,8 @@ export type EventKind =
   | 'paths.identified'
   // 控制 · 输入——**剪贴板取图那一下的答复**（U107）：`input.paste` 的答复；**不落库**
   | 'input.pasted'
+  // 控制 · 输入——**导出原图那一下的答复**（U110）：`image.export` 的答复；**不落库**
+  | 'image.exported'
   // 控制 · 外部工具——**外部服务器的一屏**（U39）：`mcp.list` / `mcp.reconnect` 的答复；**不落库**
   | 'mcp.catalog'
   // 兜底——内核自身异常（非模型 / 工具域；产生方就近）
@@ -1013,6 +1015,27 @@ export type EventDataOf = {
     /** **没取到**——一句给人看的话（说明发生了什么）。与 `image` 互斥。 */
     readonly problem?: string
   }
+  /**
+   * **导出原图那一下的答复**（U110）——`image.export` 的结果。
+   *
+   * 两支互斥，且**必须给一支**（与 `input.pasted` 同一条分寸）：
+   * - **`path`**——导到哪儿了（用户下一步要的就是它：自己拿去看 / 发给别人）；
+   * - **`problem`**——没导成，且这一格是**一句给人看的话**（那份字节取不回来 / 写盘没成）。
+   *   一声不响会让他以为按漏了。
+   *
+   * **话在内核这一侧拼**（与 `input.pasted.problem` 同一条）：缘由里那些字来自记录与
+   * 文件系统的知识，而外壳既不读库也不碰盘。
+   *
+   * **不落库**：那一格路径是**一次性的**——重放到第二天，那个临时文件早没人清了。
+   */
+  'image.exported': {
+    /** 导的是哪一张（**原样回声**）——外壳据它认领自己那一次。 */
+    readonly blob: BlobRef
+    /** **导出到了哪儿**——本地路径。与 `problem` 互斥。 */
+    readonly path?: string
+    /** **没导成**——一句给人看的话。与 `path` 互斥。 */
+    readonly problem?: string
+  }
   // 控制 · 外部工具——**外部服务器的一屏**（U39）。`mcp.list` / `mcp.reconnect` 的答复。
   // **不落库**：同 `model.catalog` / `grants.catalog` / `skills.catalog`——它是**读出来的**
   // （状态挂在连接上、工具表是发现的结果），落库＝把同一份读数存 N 遍；且 `/mcp` 是
@@ -1123,6 +1146,10 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 失败那一次（`problem`）尤其不能落库：它是「当时按了一下、剪贴板里没图」的一刻，
   // 重放到第二天还把它翻出来印一遍，说的是一件早就不是当下的事。
   'input.pasted',
+  // 导出原图同列的理由（U110）：那份字节与名字 / 类型本来就躺在 `user` 条目的载荷里
+  // （读记录就有），而回执那一格（临时文件路径）是**一次性的**——重放到第二天，
+  // 那个路径早就没人清了。
+  'image.exported',
   // 技能使用回执同列的理由（U33）：它是**读出来的**——依据本来就在条目载荷里
   // （`UserPayload.refs` / 旧形的 `skills`：名字 · 来源 · 正文），落库＝把同一件事存第二遍。
   // 重放要的是「当时用了哪一份材料」（读条目就有），不是「当时屏上闪了一句什么」。

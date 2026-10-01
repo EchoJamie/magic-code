@@ -54,6 +54,7 @@ import {
   appendOutput,
   appendPageNote,
   appendReceipt,
+  userImages,
   closePicker,
   createView,
   matchCommands,
@@ -131,7 +132,7 @@ import {
   wire,
 } from './components/inline.ts'
 import type { DraftRef } from './components/inline.ts'
-import type { PromptState, ShellView } from './view.ts'
+import type { PromptState, ShellView, UserImage } from './view.ts'
 import type { RecordId, RunRow, RunSnapshot } from '@magic/contracts'
 import { leftSpan, lineSpan, rightSpan, stepRight } from './components/composer.ts'
 import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
@@ -247,11 +248,19 @@ export type ShellKey =
  */
 export const EXIT_ARM_MS = 1_000
 
-/** 按键的结果——`exit` 由组件去真退出（外壳不碰终端）。 */
-export type ShellEffect = { readonly exit: boolean }
+/**
+ * 按键的结果——**都由组件去做**（外壳不碰终端，也不碰那一屏怎么画）。
+ *
+ * - `exit`：真退出；
+ * - `screen`：**开查看那一屏**（U110）——那是 `ctrl+o` 的事，而备用屏、raw mode、键
+ *   全归 `components/app.ts` ＋ `src/screen.ts` 那一半（外壳这一层够不着终端）。
+ */
+export type ShellEffect = { readonly exit: boolean; readonly screen?: boolean }
 
 const NONE: ShellEffect = { exit: false }
 const EXIT: ShellEffect = { exit: true }
+/** `ctrl+o`——开那一屏（同一格还管退出：那一屏里 `ctrl+o` 也退出，见 `src/screen.ts`）。 */
+const OPEN_SCREEN: ShellEffect = { exit: false, screen: true }
 
 export type Shell = {
   /** 当前视图（引用稳定——只在事件 / 按键之后才换对象）。 */
@@ -285,6 +294,26 @@ export type Shell = {
    *   悄悄走出去就是「伪报已停止」。如实说一句，留下的那扇门是 `ctrl+c`。
    */
   disconnected(why?: string): void
+  /**
+   * **加入本次输入**（U110 · 查看那一屏的 `Enter`）——把历史里那一张图**放回输入行**。
+   *
+   * 三条与当年 `/attachments` 那条「加入本次输入」逐条相同（裁定：这两件事变成
+   * 「那一行上的动作」，动作本身不变）：
+   * - **复用记录里的字节**（`blob`）——**不回头找原路径**（源文件可能早删了）；
+   * - **不发送**：放回输入行而已，发不发由用户回车决定；
+   * - **插回原位置**：落在它当年在这句话里的那个偏移上（新稿子比它短就夹到末尾）。
+   *
+   * 编号仍归稿子那一侧发（`imageNumberOf`，按内容身份）：同一张图放两次拿到同一个号。
+   */
+  attachMaterial(material: UserImage): void
+  /**
+   * **导出原图**（U110 · 查看那一屏的 `e`）——发一条命令，字节与落点都不归外壳。
+   *
+   * 外壳只把「哪一张」交出去（`blob` ＋ 人读那两格）：**字节在内核那一侧**
+   * （记录里那份 blob），**落点归装配**（唯一命名 · 不覆盖 · 不自动打开）。答复走事件
+   * （`image.exported`），落成记录区里的一行回执——那一屏画的正是那条记录，故它也看得见。
+   */
+  exportMaterial(material: UserImage): void
   /** 收摊——退订传输、清订阅者。 */
   dispose(): void
 }
@@ -3368,12 +3397,50 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     // ⚠️ **先落地、后发命令**（D23 那条次序）——进程内传输是同步直连的，
     // 反过来的话这次 `draft()` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
-    draft(view.inputMember === undefined ? appendEcho(cleared, text) : cleared)
+    draft(view.inputMember === undefined ? appendEcho(cleared, text, userImages(refs)) : cleared)
     const input = { text, ref, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
     send(view.collaboration?.collaboration === undefined ? { type: 'input.submit', ...input }
       : { type: 'collaboration.input', input, ...(view.inputMember === undefined ? { shared: true } : { member: view.inputMember }) })
 
     return NONE
+  }
+
+  /**
+   * **加入本次输入**（U110）——见 `Shell.attachMaterial` 那一段。
+   *
+   * ⚠️ **位置那一格是「原位置」**（`material.at`，它当年在这句话里的起点）：
+   * 新稿子比它短就夹到末尾（`Math.min`）——夹是**如实**（没有更靠后的位置可放），
+   * 而「一律追加到末尾」是另一回事（那会把用户当年的语序改掉，设计明写不许）。
+   */
+  const attachMaterial = (material: UserImage): void => {
+    const at = Math.max(0, Math.min(material.at, view.draft.length))
+
+    commit(
+      withCompletion({
+        ...view,
+        ...replaceWith(
+          view.draft,
+          view.refs,
+          { from: at, to: at },
+          {
+            kind: 'image',
+            // 编号按**内容身份**发：同一张图（同一个 blob）放两次拿到同一个号
+            marker: markerOf({ kind: 'image', n: imageNumberOf(material.blob, view.refs) }),
+            name: material.name,
+            mime: material.mime,
+            blob: material.blob,
+            label: material.label,
+            source: material.source,
+          },
+          view.caret,
+        ),
+      }),
+    )
+  }
+
+  /** **导出原图**（U110）——见 `Shell.exportMaterial` 那一段。只发一条命令，不碰字节。 */
+  const exportMaterial = (material: UserImage): void => {
+    send({ type: 'image.export', blob: material.blob, name: material.name, mime: material.mime })
   }
 
   /**
@@ -4050,9 +4117,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       case 'ctrl+c':
         return exitOrInterrupt()
 
+      // `ctrl+o`——**开查看那一屏**（U110 · 设计 · 终端交互「查看：另开一屏」）。
+      //
+      // ⚠️ **它不再是「就地展开」那个切换**（内联那一半已撤）：那条路**物理上做不到**——
+      // 画过的行落在 `<Static>` 里、写一次就不再重绘，定局之后按下去等于没按（设计
+      // 「明确不做的三件」第 ① 条）。要看全量，去那一屏（`src/transcript.ts`）。
       case 'ctrl+o':
-        commit({ ...view, expanded: !view.expanded })
-        return NONE
+        return OPEN_SCREEN
 
       // `Ctrl T`——收起/展开当前清单（U34）。**只改本地视图**：不发送、不碰草稿。
       // 没有清单时不切（切了也没人看得见，而「默认展开」是设计明写的——别让它悄悄
@@ -4126,10 +4197,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         // 技能现在**长在正文里**，摘它就在那一处按退格——再挂一个全局「摘当前技能」，
         // 等于同一件事两个入口，而全局那个说不出「摘的是哪一处」。故 `esc` 只剩两层：
         // 收起候选 → 清正文（清正文自然把引用一起带走，那是同一份草稿）。
-        if (view.draft === '') {
-          edit({ ...view, expanded: false })
-          return NONE
-        }
+        //
+        // ⚠️ **空稿这一档 U110 起什么都不做**：原先它还兼着「收起展开」——展开那一档
+        // 已经整条搬进 `ctrl+o` 那一屏（见上面那处的注），故这一格没有第三层可退了。
+        if (view.draft === '') return NONE
         edit({ ...view, draft: '', caret: 0, refs: [] })
         return NONE
 
@@ -5125,6 +5196,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     key,
     readHistory,
+    attachMaterial,
+    exportMaterial,
     hostGone: () => {
       if (disposed || !connected) return
       connected = false
