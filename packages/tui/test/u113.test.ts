@@ -6,7 +6,7 @@ const aliases = { default: pair, cantrip: pair, spell: pair, arcane: pair }
 const entries = [{ provider: 'local', vendor: 'deepseek', cache: { snapshot: { provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: pair.model, reasoning: { levels: ['low', 'high'], disable: true } }] } } }]
 function settings(configured = true) {
   const stage = createStage()
-  stage.type('/model'); stage.press({ kind: 'enter' })
+  stage.type('/model '); stage.press({ kind: 'enter' })
   stage.feed([event('model.catalog', { entries, aliases: configured ? aliases : {}, ...(configured ? { current: { alias: 'default', ...pair } as const } : {}) })])
   return stage
 }

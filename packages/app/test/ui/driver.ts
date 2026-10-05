@@ -59,6 +59,12 @@ export const DEFAULT_ARTIFACTS_ROOT = join(REPO_ROOT, '.ui-runs')
 /** 闭集：认得的键。**不在表内即报错**（绝不猜——猜错＝判据验的不是那件事）。 */
 const KEYS: Record<string, string> = {
   enter: '\r',
+  'alt+enter':'\x1b\r',
+  'ctrl+p':'\x10',
+  'ctrl+n':'\x0e',
+  'ctrl+g':'\x07',
+  pageUp:'\x1b[5~',
+  pageDown:'\x1b[6~',
   // 裸 LF ＝ 外壳判的「换行」（`toShellKeys` 里 `input === '\n'` 那一支）
   'shift+enter': '\n',
   esc: '\u001b',

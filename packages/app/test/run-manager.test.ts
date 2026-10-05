@@ -14,6 +14,8 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { Database } from 'bun:sqlite'
+import type { KernelEvent } from '@magic/contracts'
 import type { PathLike } from 'node:fs'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -70,6 +72,49 @@ async function standUp(g: Ground, launch: ExecutorLauncher = UNUSED_LAUNCHER): P
 
   return started.manager
 }
+
+test('U114 空态界面设置由管理者实际保存；不建执行者或会话，坏配置不被提前回显覆盖', async () => {
+  const g = ground('u114-prefs')
+  const config = join(g.base, 'config.json')
+  writeFileSync(config, JSON.stringify({ motion: { reduced: false }, workspaces: [g.root] }))
+  const manager = await standUp(g)
+  const client = await connectManager(manager.socketPath, { cwd: g.root })
+  if (client === undefined) throw new Error('连不上管理者')
+  const events: KernelEvent[] = [], lines: string[] = []
+  client.onEvent(event => events.push(event))
+  client.onLine(line => lines.push(line))
+  const wait = async (done: () => boolean): Promise<void> => {
+    const until = Date.now() + 2000
+    while (!done() && Date.now() < until) await Bun.sleep(10)
+    expect(done()).toBe(true)
+  }
+  try {
+    client.send({ type: 'prefs.set', reducedMotion: true, statusLine: { cells: ['workspace'], color: false } })
+    await wait(() => events.some(event => event.kind === 'prefs.state'))
+    const state = events.find(event => event.kind === 'prefs.state')!
+    if (state.kind !== 'prefs.state') throw new Error('缺少设置结果')
+    expect(state.data.reducedMotion).toBe(true)
+    expect(state.data.statusLine).toEqual({ cells: ['workspace'], color: false })
+    expect(state.data.note).toBe('已更新：状态行 · 动效')
+    const saved = JSON.parse(readFileSync(config, 'utf8'))
+    expect(saved.motion.reduced).toBe(true)
+    expect(saved.statusLine).toEqual(state.data.statusLine)
+    expect(saved.workspaces).toEqual([g.root])
+    expect(statSync(config).mode & 0o777).toBe(0o600)
+    const broken = '{ U114_BAD_CONFIG'
+    writeFileSync(config, broken)
+    client.send({ type: 'prefs.set', reducedMotion: false })
+    await wait(() => lines.some(line => line.startsWith('界面设置没改成：')))
+    expect(events.filter(event => event.kind === 'prefs.state')).toHaveLength(1)
+    expect(readFileSync(config, 'utf8')).toBe(broken)
+    expect(manager.executors()).toEqual([])
+    expect(manager.runs()).toEqual([])
+    const db = new Database(join(g.dataDir, 'records.db'), { readonly: true })
+    try { expect(db.query('SELECT * FROM sessions').all()).toEqual([]) } finally { db.close() }
+  } finally {
+    client.close(); manager.stop('用例收尾'); await manager.waitUntilExit(); g.dispose()
+  }
+})
 
 describe('U48-S1 · 一个数据目录只有一个管理者', () => {
   test('七个真进程同时抢——正好一个当上，其余六个认出现有的那一个', async () => {

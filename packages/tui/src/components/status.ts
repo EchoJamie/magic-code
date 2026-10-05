@@ -92,7 +92,11 @@ export function StatusLine({
 
   // 全放行那一格——挂在 ① 之后、**不参与降级**（见文件头注）。不在全放行时它整格不存在。
   const fixed = status.allowAll ? [ALLOW_ALL_LABEL] : []
-  const left = degrade(cellTexts(status, cells, workspace), columns, status.hint, fixed)
+  const stateWidth = displayWidth(`${stateMark(status.state)} ${stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)
+  const base = columns - 2 - stateWidth
+  const texts = cellTexts(status, cells, workspace)
+  const hint = fits([...fixed, ...texts.slice(0, 1)], base, status.hint) ? status.hint : ''
+  const left = degrade(texts, base, hint, fixed)
 
   return h(
     Box,
@@ -111,7 +115,7 @@ export function StatusLine({
     ),
     // 右位——独立一栏；放不下就整段不出现（**不推动左半**）。
     // ⚠️ 算宽度时**带上 ① 与全放行那一格**：否则右位会以为自己放得下，把左半挤着折行
-    h(Text, { color: tint(PALETTE.ghost) }, fitting(status.hint, columns, [...fixed, ...left])),
+    h(Text, { color: tint(PALETTE.ghost) }, fitting(hint, base, [...fixed, ...left])),
   )
 }
 
@@ -200,7 +204,7 @@ function degrade(
 
   const last = kept[0] ?? ''
   if (!fits([...fixed, ...[last]], columns, hint)) {
-    kept = [truncate(last, Math.max(4, columns - 20 - fixedWidth))]
+    kept = [truncate(last, Math.max(4, columns - fixedWidth - SEP.length - rightCost(hint)))]
   }
 
   return kept.filter((cell) => cell !== '')
@@ -215,7 +219,7 @@ function degrade(
  * ——它整段不出现，而设计要的是「左半那几格让位」（工单 U61：「别为它挤掉更要紧的」）。
  */
 function rightCost(hint: string): number {
-  return Math.max(24, displayWidth(hint) + 8)
+  return hint === '' ? 0 : displayWidth(hint) + 2
 }
 
 /** 左段（含状态那格）连同右位放不放得下——粗算即可（留 2 列余量）。 */
@@ -224,12 +228,12 @@ function fits(cells: readonly (string | null)[], columns: number, hint: string):
     .filter((cell): cell is string => cell !== null && cell !== '')
     .reduce((sum, cell) => sum + displayWidth(cell) + SEP.length, 0)
 
-  return width + rightCost(hint) <= columns - 4
+  return width + rightCost(hint) <= columns
 }
 
 /** 右位放不下就整段不出现。 */
 function fitting(hint: string, columns: number, left: readonly string[]): string {
   const used = left.reduce((sum, cell) => sum + displayWidth(cell) + SEP.length, 0)
 
-  return used + rightCost(hint) <= columns - 2 ? hint : ''
+  return used + rightCost(hint) <= columns ? hint : ''
 }

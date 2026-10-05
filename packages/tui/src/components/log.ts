@@ -1,3 +1,4 @@
+import { clip, inkWidth } from './composer.ts'
 /**
  * 记录区（缺陷轮 III）——**内联渲染**下的纯日志。
  *
@@ -137,7 +138,7 @@ export function LogRowView({
 
   return h(
     'ink-box',
-    { key: `row:${row.key}`, style: { flexDirection: 'column' } },
+    { key: `row:${row.key}`, style: { flexDirection: 'column', width:columns } },
     ...lines.map((line) => {
       // ⚠️ **空行得给一个「有东西」的孩子**——Ink 7 会把内容为空串的 `<Text>` 整行丢掉
       // ⇒ 正文里的段落空行被**静默吃掉**（缺陷 D19。**根因在这里，不在 `markdown.ts`**：
@@ -720,7 +721,7 @@ function rowBody(
       const label = thinkingLabel(row, options.now ?? null, options.still === true)
 
       return wrapSegments(
-        [seg(label.text, label.color), seg(collapse(lines), PALETTE.faint)],
+        [seg(label.text, label.color), seg(clip(lines[0] ?? '', Math.max(0, columns - displayWidth(label.text))), PALETTE.faint)],
         columns,
         { key: 'r:t', hang: INDENT },
       )
@@ -848,7 +849,10 @@ function toolLines(
     return clock === null ? [...head, ...body] : [...head, ...prefixLine(INDENT, clock, PALETTE.faint, 'r:run'), ...body]
   }
 
-  const verdict = verdictOf(row, expanded)
+  const rawVerdict = verdictOf(row, expanded)
+  const prefix = `${INDENT}${row.elapsedMs === null ? '' : `${durationLabel(row.elapsedMs)} · `}`
+  const room = Math.max(0, columns - displayWidth(prefix))
+  const verdict = { ...rawVerdict, text: row.state === 'failed' ? truncateMid(rawVerdict.text, room) : clip(rawVerdict.text, room) }
 
   // **耗时 · 摘要**那一行（U112 起**不带符号**：状态位已经上了头一行的行尾）——
   // 缩进一级 ＋ 弱色（设计那张表「工具结果 / 多行正文」那一格）。
@@ -888,7 +892,7 @@ function toolHead(name: string, args: string, bit: StatusBit, columns: number): 
   // **参数按这一行还剩多少地方裁**（不是按一个死数）：行宽是**这一屏**给的，而
   // 工具名有长有短（外部工具那串 `服务器 / 工具` 就比 `ls` 长十几列）。
   // 留的边距：缩进 2 ＋ `▸ ` 2 ＋ 状态位 1 ＋ 空隙 1 ＋ 名字 ＋ `()` 2。
-  const room = Math.max(8, columns - 10 - displayWidth(name))
+  const room = Math.max(8, columns - 8 - displayWidth(name))
   const parts: Segment[] = [
     // **缩进一级**（骨架：你/助手顶格 · 工具与结果缩进一级 · 卡片 `│`）
     seg(INDENT),
@@ -926,7 +930,7 @@ function statusBit(
   if (running) {
     return {
       mark: MARKS.dot,
-      color: now === null ? PALETTE.dim : breathColor(PALETTE.dim, breathOf(now)),
+      color: now === null || row.awaitingDecision === true ? PALETTE.dim : breathColor(PALETTE.dim, breathOf(now)),
     }
   }
 
@@ -1095,14 +1099,14 @@ function summaryOf(row: Extract<LogRow, { kind: 'tool' }>): string {
   // 与「读到了什么」没关系）。`skill` 是 U33 加的读取入口，与 `read` 同一处境，故同一处置。
   if (row.name === 'read' || row.name === 'skill') return `${lines.length} 行`
 
-  return truncateLine(lines[lines.length - 1] as string, 48)
+  return lines[lines.length - 1] as string
 }
 
 /** 末行是整行方括号的**注**吗（`[空目录]` 那类）。 */
 function listNoteOf(lines: readonly string[]): string | null {
   const last = lines[lines.length - 1] ?? ''
 
-  return /^\[[^\]]*\]$/.test(last.trim()) ? truncateLine(last, 48) : null
+  return /^\[[^\]]*\]$/.test(last.trim()) ? last : null
 }
 
 /** diff 的增减计数（`+3 −2`）——`−` 用减号（U+2212）与 `-` 行首分开，省得读串行。 */
@@ -1298,29 +1302,11 @@ function liveClock(row: Extract<LogRow, { kind: 'tool' }>, now: number | null): 
 function firstLineOf(output: readonly string[]): string | null {
   const line = nonEmptyLines(output)[0]
 
-  return line === undefined ? null : truncateLine(line, 48)
+  return line === undefined ? null : line
 }
 
-function truncateLine(text: string, width: number): string {
-  const clean = text.trim()
-  return displayWidth(clean) <= width ? clean : `${clean.slice(0, width)}…`
-}
-
-/** 失败那一行铺几列（实现级常量；**折叠态只有一行**是这一格的硬约束——见 `truncateMid`）。 */
-const FAILED_LINE_COLUMNS = 48
-
-/**
- * 中段省掉时，**尾巴保几个字**（其余全给头）——**量出来的数**，推导见 `truncateMid`：
- * 13 是收梢那一句（`上级目录不存在——先建目录` / `用 exec ＋ curl`）要的量。
- */
-const FAILED_TAIL_CHARS = 13
-
-/** 失败那一行的整句话——首行口径照旧（取输出的首行），**变的是它被裁到几列、裁哪一头**。 */
-function failedLineOf(output: readonly string[]): string {
-  const line = nonEmptyLines(output)[0]
-
-  return line === undefined ? '失败' : truncateMid(line, FAILED_LINE_COLUMNS)
-}
+function truncateLine(text: string, width: number): string { return clip(text, width) }
+function failedLineOf(output: readonly string[]): string { return nonEmptyLines(output)[0] ?? '失败' }
 
 /**
  * 截到宽度——**保头也保尾**，中段省掉（U93 · `D41` 的「另一半」）。
@@ -1372,17 +1358,14 @@ function failedLineOf(output: readonly string[]): string {
  *   预算各随各的格。
  */
 function truncateMid(text: string, width: number): string {
-  const clean = text.trim()
-  if (displayWidth(clean) <= width) return clean
-
-  const chars = [...clean]
-  const budget = Math.max(width - 1, 0) // 中间那个 `…` 占一个字
-  if (chars.length <= budget) return clean
-
-  const tail = Math.min(FAILED_TAIL_CHARS, budget)
-  const head = budget - tail
-
-  return `${chars.slice(0, head).join('')}…${chars.slice(chars.length - tail).join('')}`
+  if (inkWidth(text) <= width) return text
+  const pieces = [...new Intl.Segmenter(undefined, {granularity:'grapheme'}).segment(text)].map(one => one.segment)
+  let tail = '', used = 0
+  for (const piece of pieces.slice().reverse()) {
+    if (used + inkWidth(piece) > Math.min(26, Math.floor((width - 1) / 2))) break
+    tail = piece + tail; used += inkWidth(piece)
+  }
+  return clip(text, width - used) + tail
 }
 
 /**
@@ -1415,10 +1398,8 @@ function wrapSegments(
   //    ⇒ 首行把裸 `\t`（甚至下一行的换行）吞了进来，屏上那一行又自己折一次 ⇒ 重印。
   const display = displaySegments(segments)
   const text = display.map((piece) => piece.text).join('')
-  // 折行宽度按**悬得最远的那一条**算（首行前缀 2 列 / 续行的 `hang`）——否则续行会
-  // 比首行宽出 `hang - 2` 列，终端再折一次 ⇒ Ink 的行数账目就错了（D11/D13 那族的老病）。
-  const width = Math.max(8, columns - Math.max(2, displayWidth(options.hang)))
-  const wrapped = wrap(text, width)
+  // 首行的前缀已在色段内；只在续行扣除悬挂缩进。
+  const wrapped = wrap(text, Math.max(1,columns), Math.max(1,columns-displayWidth(options.hang)))
 
   return wrapped.map((line, at) =>
     at === 0
@@ -1505,6 +1486,3 @@ function trimBlank(text: string): string {
 }
 
 /** 折叠一行：取首个非空行，太长的截断。 */
-function collapse(lines: readonly string[]): string {
-  return truncateLine(lines[0] ?? '', 60)
-}

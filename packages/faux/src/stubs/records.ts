@@ -1,3 +1,4 @@
+import type { StoredInput } from '@magic/contracts'
 /**
  * 记录域桩 —— `RecordsService` 的内存实现（**测试替身**，不是记录域）。
  *
@@ -89,7 +90,18 @@ export function makeFauxRecords(options: FauxRecordsOptions = {}): FauxRecords {
     },
   }
 
+  const pendingInputs = new Map<string, StoredInput>()
   return {
+    inputs:{
+      accept(input,at){const old=pendingInputs.get(input.ref); if(old)return old; const row:StoredInput={ref:input.ref,input,purpose:input.purpose??'current',at,revision:0,state:'pending'};pendingInputs.set(input.ref,row);return row},
+      get:ref=>pendingInputs.get(ref),list:()=>[...pendingInputs.values()],
+      edit(ref,revision,input){const row=pendingInputs.get(ref);if(row?.state!=='pending'||row.revision!==revision)return false;pendingInputs.set(ref,{...row,input:{...input,ref,purpose:row.purpose},revision:revision+1});return true},
+      withdraw(ref,revision){const row=pendingInputs.get(ref);if(row?.state!=='pending'||row.revision!==revision)return false;pendingInputs.set(ref,{...row,state:'withdrawn',revision:revision+1});return true},
+      consume(ref,revision,entry){const row=pendingInputs.get(ref);if(row?.state!=='pending'||row.revision!==revision)return undefined;const id=next++; pendingInputs.set(ref,{...row,state:'consumed',entry:id,revision:revision+1});entries.push({...entry,id});return id},
+      hold(ref,reason){const row=pendingInputs.get(ref);if(row?.state==='pending')pendingInputs.set(ref,{...row,reason})},
+      fail(ref,reason){const row=pendingInputs.get(ref);if(row?.state==='pending')pendingInputs.set(ref,{...row,state:'failed',reason,revision:row.revision+1})},
+      included(entries){const rows=[...pendingInputs.values()].filter(row=>row.state==='consumed'&&row.entry!==undefined&&entries.includes(row.entry));for(const row of rows)pendingInputs.set(row.ref,{...row,state:'included'});return rows},
+    },
     collaboration: options.collaboration ?? EMPTY_COLLABORATION,
     get entries(): readonly Entry[] {
       return entries

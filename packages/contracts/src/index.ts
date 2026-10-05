@@ -37,3 +37,5 @@ export * from './run-wire.ts'
 export { decodeNativeMessage, decodeHostDiscovery } from './native-codec.ts'
 export * from './collaboration.ts'
 export type * from './collaboration-control.ts'
+
+export * from './input.ts'

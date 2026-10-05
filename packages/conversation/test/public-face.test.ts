@@ -22,6 +22,7 @@ describe('公开面', () => {
       'createConversationSession',
       'createPlanReader',
       'readSessionCatalog',
+      'readSessionDisplayHistory',
     ])
   })
 

@@ -129,7 +129,7 @@ function switchThroughPicker(
   to: string,
 ): readonly (() => void)[] {
   const steps: (() => void)[] = [
-    () => stage.type('/resume'),
+    () => stage.type('/resume '),
     () => stage.press(ENTER),
     // 目录答复回来了 ⇒ 抽屉真开（`openSessionPicker` 认的是「刚问过」那一趟）
     () => stage.feed([catalog(from)]),
@@ -240,7 +240,7 @@ describe('② 切到一条还没有记录的会话', () => {
 describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
   /** 敲一句 `/clear`——命令出去之后，记录区添不添字由**答复**定。 */
   const clear = (stage: Stage): readonly (() => void)[] => [
-    () => stage.type('/clear'),
+    () => stage.type('/clear '),
     () => stage.press(ENTER),
   ]
 
@@ -267,7 +267,7 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
 
     // 多出来的**正好**是这一页的启动区：留白 ＋ 画幅 ＋ 留白（与 `contentOf` 剥的是同一块）
     const art = bannerOf(WIDE.columns).map((line) => line.text.replace(/\s+$/u, ''))
-    expect(after.content.map((line) => line.text).slice(before.content.length)).toEqual(['', ...art, ''])
+    expect(after.content.map((line) => line.text).slice(before.content.length)).toEqual(['', '› /clear', '', ...art, ''])
     // 而**文案一条都没有**：U43 补条那句作废之后，`/clear` 的收场就是「清屏 ＋ 字标」两样
     // ⚠️ **U112 换锚**：回执行不再以 `· ` 起头（那个字形只做行内分隔）——原锚
     //    「这一页里有没有 `· ` 开头的行」退场后**恒真**（量不出东西）。同一条话改按
@@ -295,6 +295,7 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
     // ⚠️ **U112**：回执行不带记号了，只剩缩进一级（原文一字不差）
     expect(after.content.map((line) => line.text)).toEqual([
       ...before.content.map((line) => line.text),
+      '', '› /clear',
       `  ${BUSY_NOTE}`,
     ])
     expect(countOf(after, BUSY_NOTE)).toBe(1) // 每件事只报一次

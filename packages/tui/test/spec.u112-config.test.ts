@@ -27,7 +27,7 @@ function openConfig(over: { readonly statusLine?: { cells: readonly string[]; co
     workspaceRoots: [ROOT],
     statusLine: over.statusLine as never,
   })
-  stage.type('/config')
+  stage.type('/config ')
   stage.press({ kind: 'enter' })
   stage.feed([
     event('model.catalog', {
@@ -104,8 +104,8 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
       '数据目录与工作区根',
     ])
     // **明写「默认」**：「你没配」与「你配的正好等于默认」在这一格上分得开
-    expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('默认 · 会话名 · 上下文占用')
-    expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已关')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('默认 · 会话名 · 上下文占用 · Enter 进入')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已关 · Enter 切换')
   })
 
   test('选定「状态行」⇒ 进它自己那一屏：五格 ＋ 上色开关；**锚不在这张表里**', () => {
@@ -130,10 +130,13 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
 
     enter(stage, '工作区')
     expect(sent(stage)?.statusLine?.cells).toEqual(['session', 'context', 'workspace'])
+    expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).not.toBe('已放上 · 第 3 格')
+    stage.feed([event('prefs.state', { statusLine: sent(stage)!.statusLine!, reducedMotion: false })])
     expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).toBe('已放上 · 第 3 格')
 
     enter(stage, '上下文占用')
     expect(sent(stage)?.statusLine?.cells).toEqual(['session', 'workspace'])
+    stage.feed([event('prefs.state', { statusLine: sent(stage)!.statusLine!, reducedMotion: false })])
     // 拿掉一格 ⇒ 后面那几格**跟着前移**
     expect(rowsOf(stage).find((row) => row.label.trim() === '工作区')?.meta).toBe('已放上 · 第 2 格')
     // **抽屉不关**（连勾几格是常态）
@@ -147,6 +150,8 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
     enter(stage, '颜色')
 
     expect(sent(stage)?.statusLine?.color).toBe(false)
+    expect(rowsOf(stage).find((row) => row.label.trim() === '颜色')?.meta).toBe('已开')
+    stage.feed([event('prefs.state', { statusLine: sent(stage)!.statusLine!, reducedMotion: false })])
     expect(rowsOf(stage).find((row) => row.label.trim() === '颜色')?.meta).toBe('已关')
   })
 
@@ -155,9 +160,11 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
     enter(stage, '减少动效')
 
     expect(sent(stage)?.reducedMotion).toBe(true)
+    expect(prefsOf(stage).reduced).toBe(false)
+    stage.feed([event('prefs.state', { reducedMotion: true })])
     expect(prefsOf(stage).reduced).toBe(true)
     // 那一行当场跟着换（还留在 `/config` 这一屏上）
-    expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已开')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已开 · Enter 切换')
   })
 
   /**
@@ -172,14 +179,14 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
     stage.feed([event('prefs.state', { reducedMotion: false, note: '动效没改成——配置文件在这一趟之后被改过' })])
 
     expect(prefsOf(stage).reduced).toBe(false) // 摆回真的样子（用户点的是「开」）
-    expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已关')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '减少动效')?.meta).toBe('已关 · Enter 切换')
     expect(stage.shell.getView().settled.at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
   test('配过之后再开 `/config`：那一行报的是**配的那一份**（不再写「默认」）', () => {
     const stage = openConfig({ statusLine: { cells: ['model', 'session'] } })
 
-    expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('模型 · 会话名')
+    expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('模型 · 会话名 · Enter 进入')
   })
 
   /**
@@ -198,7 +205,7 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
     expect(wide.statusLine.indexOf('Default')).toBeLessThan(wide.statusLine.indexOf('改时区'))
 
     // 窄窗：排在前面的「模型」保住，排在后面的「会话名」先让位
-    const narrow = await stage.screen({ columns: 30, rows: 20 })
+    const narrow = await stage.screen({ columns: 18, rows: 20 })
     expect(narrow.statusLine).toContain('Default')
     expect(narrow.statusLine).not.toContain('改时区')
   })

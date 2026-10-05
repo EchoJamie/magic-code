@@ -38,8 +38,8 @@ function feedPaths(stage: Stage, query: string, rows: readonly PathCatalogRow[],
 }
 
 /** 提交过的交代（`input.submit` 那几条，按序）。 */
-function submitted(stage: Stage): readonly Command[] {
-  return stage.commands().filter((one) => one.type === 'input.submit')
+function submitted(stage: Stage): readonly Extract<Command,{type:'input.submit'}>[] {
+  return stage.commands().filter((one):one is Extract<Command,{type:'input.submit'}> => one.type === 'input.submit' && one.local!==true)
 }
 
 /** 草稿上的引用（视图那一份）。 */
@@ -262,7 +262,7 @@ describe('U36 · `@` 开候选：只在词边界，边上边问', () => {
     stage.type('\\')
     stage.press({ kind: 'char', char: '@' })
     expect(stage.shell.getView().dock.kind).toBe('input')
-    expect(stage.shell.getView().draft).toBe('\\@')
+    expect(stage.shell.getView().draft).toBe('a@ b\\@')
   })
 
   test('**边打边问**：抽屉里打的字同时写进草稿（它就是那句话的一部分）', () => {
@@ -606,8 +606,8 @@ describe('U36 · 编辑：引用是一个可定位的单位', () => {
 
     stage.press(ESC)
 
-    expect(stage.shell.getView().draft).toBe('')
-    expect(refs(stage)).toEqual([])
+    expect(stage.shell.getView().draft).toBe('先看 @a.txt 再说')
+    expect(refs(stage)).toEqual([{ start: 3, end: 9, kind: 'file', marker: '@a.txt', source: '/ws/a.txt' }])
   })
 })
 
@@ -657,7 +657,7 @@ describe('U36 · 提交：位置与身份一起走', () => {
           },
           { kind: 'file', at: 24, marker: '@src/login.ts', source: '/ws/src/login.ts' },
         ],
-        ref: 'draft-1',
+        purpose: 'current', ref: expect.any(String),
       },
     ])
     // 交出去之后草稿清空、引用也清空（下一次从零开始）
@@ -676,7 +676,7 @@ describe('U36 · 提交：位置与身份一起走', () => {
         type: 'input.submit',
         text: '@a.txt',
         refs: [{ kind: 'file', at: 0, marker: '@a.txt', source: '/ws/a.txt' }],
-        ref: 'draft-1',
+        purpose: 'current', ref: expect.any(String),
       },
     ])
   })
@@ -734,7 +734,7 @@ describe('U36 · 提交：位置与身份一起走', () => {
     stage.press(ENTER)
 
     stage.feed([
-      event('input.settled', { ref: 'draft-1', ok: false, reason: '「a.txt」现在不在了' }),
+      event('input.settled', { ref: submitted(stage)[0]!.ref!, ok: false, reason: '「a.txt」现在不在了' }),
     ])
 
     const view = stage.shell.getView()

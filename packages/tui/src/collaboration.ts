@@ -89,7 +89,7 @@ export function discussionRecords(snapshot: CollaborationView, messages: readonl
     kind: 'output', key: String(message.messageId),
     lines: [
       `${message.userSource === undefined ? snapshot.members.find((one) => one.agent.agentId === message.senderId)?.agent.name ?? '协作成员' : '用户'} · ${purpose[message.purpose]}${message.withdrawn ? '（已撤回）' : ''}`,
-      ...message.body.flatMap((part) => part.kind === 'text' ? sanitizeForDisplay(part.text).split('\n')
+      ...message.body.flatMap((part) => part.kind === 'text' ? part.text.split('\n').map(sanitizeForDisplay)
         : part.kind === 'entry' ? [`记录引用：${part.label ?? part.ref.sessionId} #${part.ref.entryId}`] : ['附件引用（正文未展开）']),
     ],
   }))

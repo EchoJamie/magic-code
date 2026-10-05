@@ -675,3 +675,21 @@ describe('智能体角色配置', () => {
     expect(() => loadFrom({ providers: { ds: { vendor: 'deepseek', modelOverrides: { same: { reasoningSupport: { budget: { minTokens: 512, maxTokens: 128 } } } } } } })).toThrow('最小值不能大于最大值')
   })
 })
+
+
+describe('界面配置从文件重开', () => {
+  test('保留状态行字段顺序、无色与减少动效；缺省不凭空添加', () => {
+    const loaded = loadFrom(validConfig({ statusLine: { cells: ['workspace', 'session'], color: false }, motion: { reduced: true } }))
+    expect(loaded.config.statusLine).toEqual({ cells: ['workspace', 'session'], color: false })
+    expect(loaded.config.motion).toEqual({ reduced: true })
+    expect(loadFrom(validConfig({ statusLine: { cells: [] }, motion: {} })).config.statusLine).toEqual({ cells: [] })
+    expect(loadFrom(validConfig()).config.statusLine).toBeUndefined()
+    expect(loadFrom(validConfig()).config.motion).toBeUndefined()
+  })
+
+  test('配置坏值点名字段，不默默降级为开启动效', () => {
+    expect(() => loadFrom(validConfig({ motion: { reduced: 'false' } }))).toThrow('motion.reduced')
+    expect(() => loadFrom(validConfig({ statusLine: { cells: ['bad'] } }))).toThrow('statusLine.cells')
+    expect(() => loadFrom(validConfig({ statusLine: { cells: [], color: 'false' } }))).toThrow('statusLine.color')
+  })
+})

@@ -306,6 +306,8 @@ export type McpServerView = {
 }
 
 export type Assembly = {
+  /** 当前执行实例仍有明确输入消费意图；遗留持久输入不算自动继续授权。 */
+  hasPendingInput(): boolean
   /** 只唤起已装配的同一身份，持久收件在主循环边界消费。 */
   wakeCollaboration(): void
   /** 原样保留输入引用，由会话读取、接收并发布共享约束。 */
@@ -1721,6 +1723,7 @@ export function assemble(options: AssembleOptions): Assembly {
         return collaboration === undefined || collaboration.originSessionId === row.id
       }),
       readEntries: recordsStore.readEntries,
+      readEvents: session => recordsStore.serviceFor(session).readEvents(session),
       blobs: recordsStore.blobs,
     },
     setTitle: (session, title, at) => recordsStore.setSessionTitle(session, title, at),
@@ -2478,6 +2481,7 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.bind({
     // 提交输入前也同步一次（裁决：「配置变更时**重取实际连接资料**」——用户改完配置
     // 直接发消息、不看 `/model` 的那条路也要用上新资料）
+    onInputManage: command => conversation.manage(command),
     onInput: (input) => {
       syncProviderBook()
       conversation.submit(input)
@@ -2540,6 +2544,7 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.attach(kernel)
 
   return {
+    hasPendingInput: () => chain?.service.busy() === true,
     wakeCollaboration: () => chain?.service.wake(),
     supplementCollaboration: async (input, shared) => {
       if (chain === undefined) throw new Error('当前没有已装配的成员会话')

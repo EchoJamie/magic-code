@@ -271,7 +271,7 @@ export function createMaterials(options: MaterialsOptions): Materials {
 
     const matched = dirents
       .filter((entry) => entry.name.startsWith(prefix))
-      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+      .sort((left,right)=>Number(left.name.startsWith('.'))-Number(right.name.startsWith('.'))||(left.name<right.name?-1:left.name>right.name?1:0))
 
     const rows: PathCandidate[] = []
     for (const entry of matched.slice(0, limit)) {
@@ -345,10 +345,12 @@ export function createMaterials(options: MaterialsOptions): Materials {
       }
 
       try {
-        const { rows, more } = await listCandidates(dir, prefix, limit)
+        const parent=isDir&&prefix===''?candidateOf(resolvePath(dir,'..'),'directory'):undefined
+        const canReturn=parent!==undefined&&insideOf(parent.path)&&parent.path!==realOf(dir)
+        const { rows, more } = await listCandidates(dir, prefix, limit-(canReturn?1:0))
 
         return {
-          rows,
+          rows:[...(canReturn?[parent]:[]),...rows],
           ...(more === 0 ? {} : { note: `还有 ${more} 条没列出来——接着打几个字收窄` }),
         }
       } catch (error) {

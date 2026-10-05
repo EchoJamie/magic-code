@@ -72,6 +72,9 @@ export function createControlHub(): ControlHubFace {
       case 'collaboration.configure':
         target.onCollaboration?.(command)
         return
+      case 'input.manage':
+        target.onInputManage?.(command)
+        return
       case 'input.submit':
         target.onInput(command)
         return

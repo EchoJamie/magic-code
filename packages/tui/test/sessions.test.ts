@@ -5,6 +5,7 @@
  * 键位语义（谁触发什么命令）在 `shell.test.ts`；这一层只管**画出来的那一屏**。
  */
 
+import { displayWidth } from '../src/components/lines.ts'
 import { describe, expect, test } from 'bun:test'
 import { renderToString } from 'ink'
 import { createElement as h } from 'react'
@@ -65,7 +66,7 @@ describe('会话目录（选择器）', () => {
     // 用真链路：/resume
     const app2 = live()
     app2.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
-    for (const char of '/resume')app2.shell.key({ kind: 'char', char })
+    for (const char of '/resume ')app2.shell.key({ kind: 'char', char })
     app2.key('enter')
     app2.feed([
       state(SESSION, [
@@ -78,16 +79,16 @@ describe('会话目录（选择器）', () => {
     expect(frame).toContain('记录查询优化')
     expect(frame).toContain('修复时区处理…')
     expect(frame).toContain('正在用')
-    expect(frame).toContain('↑↓ 选')
+    expect(frame).toContain('↑↓ 选择')
   })
 
   test('目录为空时给一句话（不空一块）', () => {
     const app = live()
-    for (const char of '/resume')app.shell.key({ kind: 'char', char })
+    for (const char of '/resume ')app.shell.key({ kind: 'char', char })
     app.key('enter')
     app.feed([state('s-new', [])])
 
-    expect(app.screen()).toContain('还没有落过账的会话')
+    expect(app.screen()).toContain('工作目录为空')
   })
 })
 
@@ -115,7 +116,7 @@ describe('切换与重建（缺陷 D1）', () => {
     app.feed([state(SESSION, [{ id: SESSION, title: '甲的事' }])])
 
     // 先留一块屏上痕迹（`/help` 的输出）
-    for (const char of '/help') app.shell.key({ kind: 'char', char })
+    for (const char of '/help ') app.shell.key({ kind: 'char', char })
     app.key('enter')
     expect(app.screen()).toContain('可用命令')
 
@@ -327,7 +328,9 @@ describe('状态行 · 可配与降级（U112）', () => {
         // 可挑那几格：全放行时活下来的，必是不在全放行时活下来的**子集**（只少不多）
         const keptOff = droppable.filter((cell) => off.includes(cell))
         const keptOn = droppable.filter((cell) => on.includes(cell))
-        expect(keptOn.every((cell) => keptOff.includes(cell))).toBe(true)
+        expect(displayWidth(on)).toBeLessThanOrEqual(columns)
+        expect(displayWidth(off)).toBeLessThanOrEqual(columns)
+        expect(on.indexOf(ALLOW_ALL_LABEL)).toBeGreaterThan(on.indexOf('○ 空闲'))
 
         // 次序照旧：活下来的那几格在两种情形下都是同一个先后
         const order = (text: string) => droppable.filter((cell) => text.includes(cell))

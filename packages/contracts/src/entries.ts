@@ -318,6 +318,8 @@ export type InputRefPlace = {
  *   **不编一个 `at: 0` 出来**（那是替旧输入伪造原插入点，设计明写不许）。
  */
 export type UserPayload = {
+  readonly inputRefs?: readonly import('./control.ts').InputRef[]
+  readonly local?: true
   readonly refs?: readonly InputRefEntry[]
   readonly skills?: readonly UsedSkillEntry[]
   /**
@@ -411,6 +413,8 @@ export type EntryRange = {
  * （技术方案 · 会话与多会话：标题＝首条消息摘要、可改）。
  */
 export type SessionSummary = {
+  readonly recentInput?: string
+  readonly recentProgress?: string
   readonly id: SessionId
   readonly title?: string
   readonly at: Timestamp

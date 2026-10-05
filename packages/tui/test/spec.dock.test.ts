@@ -38,6 +38,7 @@ function asked(weight: 'light' | 'heavy' = 'light', draft = ''): Stage {
       { id: 88 },
     ),
   ])
+  stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
   return stage
 }
@@ -191,7 +192,7 @@ describe('状态行 · 栏位固定', () => {
     //   60 列时两格还都放得下，50 列才轮到 ④ 让位（旧那一列到 60 列就挤掉了）。
     const wide = (await stage.screen({ columns: 80, rows: 24 })).statusLine
     const mid = (await stage.screen({ columns: 50, rows: 24 })).statusLine
-    const tight = (await stage.screen({ columns: 30, rows: 24 })).statusLine
+    const tight = (await stage.screen({ columns: 20, rows: 24 })).statusLine
 
     expect(wide).toContain('3.1k') // 上下文占用在
     expect(wide).toContain('记录查询优化') // 会话名在
@@ -267,6 +268,7 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
       event('tool.call', { name: 'write', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: 'write', material, weight: 'heavy' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     const view = stage.shell.getView()
 
     for (const columns of [100, 44]) {
@@ -351,8 +353,11 @@ describe('输入接管', () => {
     stage.press({ kind: 'escape' })
     const after = await stage.screen(WIDE)
 
-    expect(after.screen.lines).toEqual(before.screen.lines)
-    expect(after.statusLine).toContain('◊ 等你定夺') // 还在接管里
+    expect(after.screen.lines).not.toEqual(before.screen.lines)
+    expect(stage.shell.getView().dock.kind).toBe('input')
+    expect(stage.commands().filter(command => command.type === 'decision.answer')).toEqual([])
+    stage.press({ kind: 'ctrl+g' })
+    expect((await stage.screen(WIDE)).dock.map(line => line.text)).toEqual(before.dock.map(line => line.text))
   })
 
   test('**多件逐件问**——件数报两处（卡上 · 底行），且**只有一张卡**', async () => {
@@ -363,6 +368,7 @@ describe('输入接管', () => {
       event('tool.call', { name: 'write', args: {} }, { id: 73 }),
       event('tool.decision.request', { call: 72, name: '整写文件', material: '目标 README.md', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = await stage.screen(WIDE)
 
@@ -377,14 +383,14 @@ describe('输入接管', () => {
 describe('slash 的两种走法', () => {
   test('纯输出型（`/help`）——输出进记录区 · **命令本身不回显**', async () => {
     const stage = createStage()
-    stage.type('/help')
+    stage.type('/help ')
     stage.press({ kind: 'enter' })
 
     const frame = await stage.screen(WIDE)
 
     expect(frame.record.some((line) => line.text === '可用命令')).toBe(true) // 输出进去了
     // 记录区里**没有 `› /help` 那一行**——命令是你对**工具**下的指令，不是对 Agent 说的话
-    expect(frame.record.some((line) => line.text.startsWith('› '))).toBe(false)
+    expect(frame.record.filter(line => line.text.startsWith('› ')).map(line => line.text)).toEqual(['› /help'])
     expect(frame.record.some((line) => line.text.includes('/help'))).toBe(true) // 只有输出块里那一条目录
   })
 
@@ -400,7 +406,7 @@ describe('slash 的两种走法', () => {
       }),
     ])
 
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed([
       event('session.state', {
@@ -419,14 +425,15 @@ describe('slash 的两种走法', () => {
     //    **为何变**：启动字标（TUI Banner）现在恒在记录区最前面，`record` 的头几行是它。
     //    **新锚** `frame.content`——本句问的是「开选择器**往记录区里进了什么**」，
     //    而字标是**开局就在那儿**的装帧，不是「进了」；有没有它这话都成立。
-    expect(frame.content).toEqual([]) // 记录区**一行都不进**
-    expect(frame.has('1 记录查询优化')).toBe(true) // 选择器开在左下
+    expect(frame.content.map(line => line.text)).toEqual(['› /resume']) // 记录区**一行都不进**
+    expect(frame.dock.some(line => line.text.includes('›  记录查询优化'))).toBe(true) // 选择器开在左下
     expect(frame.has('正在用')).toBe(true) // 当前那条有标记
     // **键位提示对得上键位**（U49 加了两个键）：「名称搜索」与「当前工作区 / 全部」的筛选
     // 落在这一屏上（设计明文），抽屉一开就接管输入——不报出来用户只能自己撞，撞不出回声
     // ⚠️ U61（选择器的「层」与一套栈）在这一句里加了 `← 退`——与 `esc 收起` 成对报出
     //    （设计：`←` 弹一层、`esc` 全收，两个动作两个键）。
-    expect(frame.statusLine).toContain('↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · ← 退 · esc 收起')
+    expect(frame.dock.map(line => line.text).join('\n')).toContain('↑↓ 选择 · Enter 接回 · 打字筛选 · Tab 换范围 · Esc 返回')
+    expect(frame.statusLine).not.toContain('Esc 返回')
   })
 
   /**
@@ -444,6 +451,7 @@ describe('slash 的两种走法', () => {
     // 先确认候选**真的开着**——不然「提交后没有」可能是假绿（它本来就没开过）
     expect((await stage.screen(WIDE)).has('看这一趟用了多少、模型是谁')).toBe(true)
 
+    stage.type(' ')
     stage.press({ kind: 'enter' })
 
     const frame = await stage.screen(WIDE)
@@ -474,7 +482,7 @@ describe('slash 的两种走法', () => {
       }),
     ]
     stage.feed(catalog)
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
     stage.press({ kind: 'down' })
@@ -483,7 +491,7 @@ describe('slash 的两种走法', () => {
     // 还没答复：这一跳只发了命令、收起了抽屉——记录区**一个字都没有**
     const before = await stage.screen(WIDE)
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）
-    expect(before.content).toEqual([])
+    expect(before.content.map(line => line.text)).toEqual(['› /resume'])
     expect(saysInComposer(before, '交代一件事，回车发送')).toBe(true) // 收起了
 
     // 答复（活跃位真换了）⇒ 那**一行**回执落进记录区
@@ -510,7 +518,7 @@ describe('slash 的两种走法', () => {
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
     ]
     stage.feed(catalog)
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
 
@@ -518,8 +526,8 @@ describe('slash 的两种走法', () => {
     const frame = await stage.screen(WIDE)
 
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见本节第一处）
-    expect(frame.content).toEqual([]) // 没有回执
-    expect(frame.has('1 记录查询优化')).toBe(false) // 选择器收起
+    expect(frame.content.map(line => line.text)).toEqual(['› /resume']) // 没有回执
+    expect(frame.dock.some(line => line.text.includes('›  记录查询优化'))).toBe(false) // 选择器收起
     expect(saysInComposer(frame, '交代一件事，回车发送')).toBe(true)
   })
 })

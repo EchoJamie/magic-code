@@ -109,7 +109,7 @@ function feedProviders(
 
 /** 开 `/model` 那一屏（打字 → 回车 → 喂答复）。 */
 function openModel(stage: Stage, entries: readonly ModelCatalogRow[], at = 0): void {
-  stage.type('/model')
+  stage.type('/model ')
   stage.press(ENTER)
   stage.feed([event('model.catalog', { entries })])
   stage.press(ENTER) // Default 映射编辑层
@@ -140,7 +140,7 @@ describe('① 接入那一趟：「问密钥 →「←」→ 选区域 →「←
     expect(dockOf(stage).kind).toBe('prompt')
     expect(promptLabelOf(stage)).toContain('密钥')
 
-    stage.press(LEFT)
+    stage.press(ESC)
     expect(pickerOf(stage)?.source).toBe('region')
     expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['中国大陆', '国际'])
 
@@ -153,7 +153,7 @@ describe('① 接入那一趟：「问密钥 →「←」→ 选区域 →「←
     const stage = createStage()
     atKeyPrompt(stage)
 
-    stage.press(LEFT)
+    stage.press(ESC)
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('picker') // 还在选供应商那一屏
 
@@ -173,7 +173,7 @@ describe('① 接入那一趟：「问密钥 →「←」→ 选区域 →「←
     expect(dockOf(stage).kind).toBe('prompt')
     const paper = paperOf(stage)
 
-    stage.press(LEFT)
+    stage.press(ESC)
     // 区域那一屏的焦点**还在原来那一项**（不是重开一次回到第一项）
     expect(pickerOf(stage)?.source).toBe('region')
     expect(pickerOf(stage)?.selected).toBe(1)
@@ -197,7 +197,7 @@ describe('① 接入那一趟：「问密钥 →「←」→ 选区域 →「←
 
     expect(dockOf(stage).kind).toBe('prompt') // 直接到密钥那一屏
 
-    stage.press(LEFT)
+    stage.press(ESC)
     expect(pickerOf(stage)?.source).toBe('vendor')
     expect(pickerOf(stage)?.selected).toBe(1)
   })
@@ -206,7 +206,7 @@ describe('① 接入那一趟：「问密钥 →「←」→ 选区域 →「←
     const stage = createStage()
     atKeyPrompt(stage)
 
-    stage.press(LEFT) // 回选区域
+    stage.press(ESC) // 回选区域
     stage.press(LEFT) // 回选供应商
     stage.press(ENTER) // 再挑 MiniMax
 
@@ -323,7 +323,10 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
     expect(pickerOf(stage)?.source).toBe('vendor')
 
     stage.press(ESC)
-
+    expect(pickerOf(stage)?.source).toBe('model')
+    stage.press(ESC)
+    expect(pickerOf(stage)?.source).toBe('model')
+    stage.press(ESC)
     expect(dockOf(stage).kind).toBe('input')
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('input') // 列表没被翻回来
@@ -349,7 +352,7 @@ describe('③ `/model manage`：一览 → 明细 → 问一件小事那一屏',
     atManagePrompt(stage, 0)
     expect(promptLabelOf(stage)).toBe('新名字')
 
-    stage.press(LEFT)
+    stage.press(ESC)
     expect(pickerOf(stage)?.source).toBe('provider-detail')
 
     stage.press(LEFT)
@@ -364,7 +367,7 @@ describe('③ `/model manage`：一览 → 明细 → 问一件小事那一屏',
     atManagePrompt(stage, 1)
     expect(promptLabelOf(stage)).toContain('密钥')
 
-    stage.press(LEFT)
+    stage.press(ESC)
     expect(pickerOf(stage)?.source).toBe('provider-detail')
   })
 
@@ -373,7 +376,7 @@ describe('③ `/model manage`：一览 → 明细 → 问一件小事那一屏',
     atManagePrompt(stage, 2)
     expect(promptLabelOf(stage)).toBe('高级地址')
 
-    stage.press(LEFT)
+    stage.press(ESC)
     expect(pickerOf(stage)?.source).toBe('provider-detail')
   })
 })
@@ -401,7 +404,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
 
   /** 开那一扇门：打 `/config` ＋ 回车 → 内核回三份读数（U71）。 */
   function openConfig(stage: Stage): void {
-    stage.type('/config')
+    stage.type('/config ')
     stage.press(ENTER)
     stage.feed([
       event('model.catalog', { entries: ENTRIES, current: CURRENT }),
@@ -429,7 +432,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('config')
 
-    stage.press(LEFT)
+    stage.press(ESC)
     expect(dockOf(stage).kind).toBe('input')
   })
 })
@@ -439,7 +442,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
 describe('⑤ 一级的选择器：`←` 就是收起', () => {
   test('`/resume`', () => {
     const stage = createStage()
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press(ENTER)
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] }),
@@ -447,12 +450,14 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
 
     expect(pickerOf(stage)?.source).toBe('session')
     stage.press(LEFT)
+    expect(dockOf(stage).kind).toBe('picker')
+    stage.press(ESC)
     expect(dockOf(stage).kind).toBe('input')
   })
 
   test('`/skills`', () => {
     const stage = createStage()
-    stage.type('/skills')
+    stage.type('/skills ')
     stage.press(ENTER)
     stage.feed([
       event('skills.catalog', {
@@ -472,12 +477,14 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
 
     expect(pickerOf(stage)?.source).toBe('skills')
     stage.press(LEFT)
+    expect(dockOf(stage).kind).toBe('picker')
+    stage.press(ESC)
     expect(dockOf(stage).kind).toBe('input')
   })
 
   test('`/grants`', () => {
     const stage = createStage()
-    stage.type('/grants')
+    stage.type('/grants ')
     stage.press(ENTER)
     stage.feed([
       event('grants.catalog', {
@@ -498,7 +505,7 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
 
   test('`/mcp`（纯读那一屏——没有「回车 定」，但 `←` 照旧收起）', () => {
     const stage = createStage()
-    stage.type('/mcp')
+    stage.type('/mcp ')
     stage.press(ENTER)
     stage.feed([
       event('mcp.catalog', {
@@ -528,7 +535,8 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
     expect(pickerOf(stage)?.source).toBe('paths')
 
     stage.press(LEFT)
-
+    expect(dockOf(stage).kind).toBe('picker')
+    stage.press(ESC)
     expect(dockOf(stage).kind).toBe('input')
     expect(stage.shell.getView().draft).toBe('看下 ') // `@a` 那一段撤走了
   })
@@ -536,43 +544,21 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
 
 // ══ 六 · `esc` 一律全收（两个动作、两个键，不混）══════════════════════
 
-describe('⑥ `Esc` 一律全收——与 `←` 是两个动作', () => {
-  test('任一深度按一次 `esc` ⇒ **当场回到原稿**（不是退一层）', () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
-    expect(dockOf(stage).kind).toBe('prompt') // 第三层
-
+describe('⑥ Esc 逐层返回，正文 Esc 保留原稿', () => {
+  test('密钥 → 区域 → 供应商 → 正文，原稿与引用逐字归还', () => {
+    const stage = createStage(); atKeyPrompt(stage)
     const paper = paperOf(stage)
-    stage.press(ESC)
-
-    expect(dockOf(stage).kind).toBe('input') // 一按到底
-    expect(paperOf(stage)).toEqual(paper) // 与按之前逐字相同
-  })
-
-  test('`esc` 之后**栈也一起空掉**——再按 `←` 是移插入点，不是把哪一屏翻回来', () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
-    stage.press(ESC)
-    expect(dockOf(stage).kind).toBe('input')
-
-    type(stage, '甲')
-    expect(stage.shell.getView().caret).toBe(1)
-    stage.press(LEFT)
-
-    expect(dockOf(stage).kind).toBe('input') // 没有屏被翻回来
-    expect(stage.shell.getView().caret).toBe(0) // 草稿那一头：真移插入点
-  })
-
-  test('`esc` 在小输入里也是全收——**typed 的那一串不再挂在屏上**', () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
     type(stage, 'sk-secret')
-
-    stage.press(ESC)
-
-    expect(dockOf(stage).kind).toBe('input')
     stage.press(LEFT)
-    expect(dockOf(stage).kind).toBe('input') // 栈已清
+    expect(dockOf(stage).kind).toBe('prompt')
+    stage.press(ESC); expect(pickerOf(stage)?.source).toBe('region')
+    stage.press(ESC); expect(pickerOf(stage)?.source).toBe('vendor')
+    stage.press(ESC); expect(dockOf(stage).kind).toBe('input')
+    expect(paperOf(stage)).toEqual(paper)
+    expect(stage.commands().some(command => command.type === 'provider.save')).toBe(false)
+    type(stage, '甲'); stage.press(ESC)
+    expect(stage.shell.getView().draft).toBe('甲')
+    stage.press(LEFT); expect(stage.shell.getView().caret).toBe(0)
   })
 })
 
@@ -605,62 +591,25 @@ describe('⑦ 没开屏的时候，`←` 与 `↑↓` 照旧干它们的老本�
 
 // ══ 八 · 提示要报（那一屏的键位提示带上 `←`）═════════════════════════
 
-describe('⑧ 键位提示里报出 `←`', () => {
-  test('三句选择器提示各带 `← 退`（与 `esc 收起` 分开报——两个动作两个键）', () => {
-    expect(HINT_PICKER).toContain('← 退')
-    expect(HINT_PICKER_READ).toContain('← 退')
-    expect(HINT_PICKER_SESSION).toContain('← 退')
-    for (const hint of [HINT_PICKER, HINT_PICKER_READ, HINT_PICKER_SESSION]) {
-      expect(hint).toContain('esc 收起') // 全收那一半一个字没丢
-    }
+describe('⑧ 提示只在对应交互区出现，字段左右编辑', () => {
+  test('纯列表与可编辑筛选分别给可用键', () => {
+    expect(HINT_PICKER).toContain('← / Esc 返回')
+    expect(HINT_PICKER_READ).toContain('← / Esc 返回')
+    expect(HINT_PICKER_SESSION).toContain('Esc 返回')
+    expect(HINT_PICKER_SESSION).not.toContain('←')
+    expect(HINT_PROMPT).toBe('Enter 确定 · ←/→ 编辑 · Esc 取消')
   })
-
-  test('本地小输入那一屏也报（问密钥那一屏就是它）', () => {
-    expect(HINT_PROMPT).toContain('← 退')
-    expect(HINT_PROMPT).toContain('esc 取消')
-
-    const stage = createStage()
-    atKeyPrompt(stage)
-
-    expect(stage.shell.getView().status.hint).toBe(HINT_PROMPT)
-  })
-
-  test('屏上真报得出来（不是只在常量里）——选择器那一屏的右位', async () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
-    stage.press(LEFT) // 回选区域那一屏
-
-    const frame = await stage.screen({ columns: 100, rows: 30 })
-
-    expect(frame.statusLine).toContain('← 退')
-    expect(frame.statusLine).toContain('esc 收起')
-  })
-
-  test('窄窗下**让位的是左半那几格**，不是整段提示（U61 动的那条口径）', async () => {
-    // 由头（工单·最小闭环第 6 条）：「放不下就按『从右往左省』那条，**别为它挤掉更要紧的**」。
-    // 提示长了一截之后，若还照老口径算，被挤掉的恰恰是**提示自己**（它整段不出现）——
-    // 那就成了「加了 `←` 反而看不见任何键位」。
-    //
-    // 摆一屏**放不下**的：标题（11 字）＋ 用量 ＋ 长提示。
-    // ⚠️ **U112 起模型那一格不在默认那几格里了**（默认只有「会话名 · 上下文占用」两格）——
-    // 故 80 列上这一屏**放得下**了，得把窗收窄到 76 列才逼得出「塞不下」那一形。
-    const stage = createStage()
-    stage.feed([
-      event('session.state', {
-        active: 's1',
-        sessions: [{ id: 's1', at: 0, title: '记录查询优化与缓存重做' }],
-      }),
-      event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M3', provider: 'minimax' }),
-      event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
-    ])
-    atKeyPrompt(stage)
-    stage.press(LEFT)
-
+  test('菜单按键在菜单内，状态行不再重复；密钥不回显', async () => {
+    const stage = createStage(); atKeyPrompt(stage)
+    type(stage, 'sk-secret'); stage.press(LEFT); type(stage, 'X')
+    expect(dockOf(stage).kind).toBe('prompt')
+    const secret = await stage.screen({ columns: 100, rows: 30 })
+    expect(secret.screen.lines.join('\n')).not.toContain('sk-secret')
+    expect(secret.screen.lines.join('\n')).not.toContain('sk-secreXt')
+    stage.press(ESC)
     const frame = await stage.screen({ columns: 76, rows: 30 })
-
-    expect(frame.statusLine).toContain('← 退') // 提示照旧在
-    expect(frame.statusLine).not.toContain('MiniMax-M3') // 模型那一格本就不在默认里
-    expect(frame.statusLine).not.toContain('3.1k') // ③ 用量那格**先让位**
-    expect(frame.statusLine).toContain('记录查询优化与缓存重做') // ② 还在（它只截断、不消失）
+    expect(frame.dock.map(line => line.text).join('\n')).toContain('Esc 返回')
+    expect(frame.statusLine).not.toContain('Esc 返回')
+    expect(stage.shell.getView().status.hint).toBe('')
   })
 })

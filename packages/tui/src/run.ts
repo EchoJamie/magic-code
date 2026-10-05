@@ -17,7 +17,7 @@
 
 import { render } from 'ink'
 import { createElement as h } from 'react'
-import { createShell } from './shell.ts'
+import { createShell, type ShellOptions } from './shell.ts'
 import { TuiApp } from './components/app.ts'
 import type { ControlTransport, RunNotice, SessionId, StopScope } from '@magic/contracts'
 import type { RunFeed, ResumeFeed, StopReport } from './shell.ts'
@@ -42,6 +42,8 @@ export type RunTuiOptions = {
    * 不给 / 条目没声明 ⇒ `null` ⇒ 只报已用量——**不编一个总量**（`D10` 那条判据）。
    * 另有一条来路：`/model` 跑过一次之后由 `model.catalog` 定（那一路要**换过模型**才对得上）。
    */
+  readonly statusLine?: ShellOptions['statusLine']
+  readonly reducedMotion?: boolean | undefined
   readonly contextWindow?: number | null | undefined
   /**
    * **本进程的工作区**（U26）——`/resume` 那一屏据它认「别的项目」（分组头 ＋ 压暗）。
@@ -125,6 +127,8 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
 
   // ④ 的分母（装配给）——没给就是「拿不到」，屏上回退成只报已用量（见 `RunTuiOptions`）
   const shell = createShell(options.transport, {
+    statusLine: options.statusLine,
+    reducedMotion: options.reducedMotion,
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,

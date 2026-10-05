@@ -63,6 +63,7 @@ function ask(shell: ReturnType<typeof live>, weight: 'light' | 'heavy' = 'light'
   shell.spy.emit(
     event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight }, { id: 88 }),
   )
+  shell.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 }
 
 // ══ 交代 ═════════════════════════════════════════════════════════════
@@ -76,7 +77,7 @@ describe('交代（输入 → input.submit）', () => {
 
     app.press(ENTER)
     // `ref` ＝ 提交的配对键（U33）：`input.settled` 按它认回这份草稿（失败时原样还回来）
-    expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录', ref: 'draft-1' }])
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '看下目录', purpose: 'current', ref: expect.any(String) }])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '看下目录' })
     expect(app.view().draft).toBe('')
   })
@@ -97,7 +98,7 @@ describe('交代（输入 → input.submit）', () => {
     expect(app.view().draft).toBe('ab')
 
     app.press({ kind: 'escape' })
-    expect(app.view().draft).toBe('')
+    expect(app.view().draft).toBe('ab')
   })
 
   test('`↑` 取上一条交代；`ctrl+o` 只喊一声「开那一屏」（不在外壳里改任何状态）', () => {
@@ -126,25 +127,24 @@ describe('slash（纯输出型 / 交互配置型）', () => {
   test('`/help`——输出进记录区，**命令本身不回显**、不发命令', () => {
     const app = live()
 
-    app.type('/help')
+    app.type('/help ')
     app.press(ENTER)
 
     // **`/help` 本身一条都不发**——列里那一条是打 `/` 时那次目录查询（见 `ASK_SKILLS`）
-    expect(app.commands()).toEqual([ASK_SKILLS])
-    expect(app.rows()).toHaveLength(1)
-    expect(app.rows()[0]).toMatchObject({ kind: 'output' })
-    // 记录区里**没有** `› /help` 那一行（操作不混进对话）
-    expect(app.rows().some((row) => row.kind === 'user')).toBe(false)
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/help ","type":"input.submit"}])
+    expect(app.rows()).toHaveLength(2)
+    expect(app.rows()[0]).toMatchObject({ kind: 'user', text: '/help ' })
+    expect(app.rows()[1]).toMatchObject({ kind: 'output' })
   })
 
   test('`/resume`——记录区什么都不进，只发 `session.list`', () => {
     const app = live()
 
-    app.type('/resume')
+    app.type('/resume ')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.list' }])
-    expect(app.rows()).toEqual([])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/resume ","type":"input.submit"}, { type: 'session.list' }])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/resume "}])
   })
 
   test('`/model refresh [连接]`——刷新意图，不进记录区', () => {
@@ -159,8 +159,8 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/model refresh')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'model.refresh' }])
-    expect(app.rows()).toEqual([])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/model refresh","type":"input.submit"}, { type: 'model.refresh' }])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/model refresh"}])
   })
 
   test('`/model <不认得的词>`——如实说一句（不猜、不当交代发出去）', () => {
@@ -169,7 +169,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/model minimax-m2')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/model minimax-m2","type":"input.submit"}])
     expect(app.rows().some((row) => row.kind === 'receipt')).toBe(true)
   })
 
@@ -186,9 +186,8 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     app.type('/nope')
     app.press(ENTER)
 
-    // 目录查询那一条不算它发的（见 `ASK_SKILLS`）；`/nope` 自身一条都不发
-    expect(app.commands()).toEqual([ASK_SKILLS])
-    expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
+    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'input.submit', text: '/nope', ref: expect.any(String), purpose: 'current' }])
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '/nope' })
   })
 
   /**
@@ -204,7 +203,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
 
     for (const command of COMMANDS) {
       const app = live()
-      app.type(command.name)
+      app.type(command.name + ' ')
       app.press(ENTER)
 
       const last = app.rows().at(-1)
@@ -253,6 +252,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
         { id: 88 },
       ),
     )
+    app.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     app.press({ kind: 'char', char: 'a' })
     expect(app.commands()).toEqual([])
@@ -305,7 +305,10 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(app.view().flash).toContain('粘不了')
 
     app.press({ kind: 'escape' })
-    expect(app.view().dock.kind).toBe('decision') // 还在接管里
+    expect(app.view().dock.kind).toBe('input')
+    expect(app.commands()).toEqual([])
+    app.press({ kind: 'ctrl+g' })
+    expect(app.view().dock.kind).toBe('decision')
   })
 
   test('多件逐件问——答完一件接着下一件，草稿一直收着', () => {
@@ -319,6 +322,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     app.spy.emit(
       event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
     )
+    app.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(app.view().dock.kind).toBe('decision')
     expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2, refs: [] }) // 只收一次
 
@@ -340,12 +344,12 @@ describe('选择器（`/resume` · `/model`）', () => {
   test('`/resume` 回车后：目录到手才开选择器，记录区仍不进东西', () => {
     const app = live()
 
-    app.type('/resume')
+    app.type('/resume ')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
 
     expect(app.view().dock.kind).toBe('picker')
-    expect(app.rows()).toEqual([])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/resume "}])
   })
 
   /**
@@ -358,7 +362,7 @@ describe('选择器（`/resume` · `/model`）', () => {
   test('上下选 ＋ 回车选定 —— 发 `session.open`；**回执等答复到了才留**', () => {
     const app = live()
 
-    app.type('/resume')
+    app.type('/resume ')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
     app.press({ kind: 'down' })
@@ -377,7 +381,7 @@ describe('选择器（`/resume` · `/model`）', () => {
   test('选的是**当下这条**——当场回执，不发命令（内核那一侧本就不发事件）', () => {
     const app = live()
 
-    app.type('/resume')
+    app.type('/resume ')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
     app.press(ENTER) // 光标起点就是当下这条
@@ -390,7 +394,7 @@ describe('选择器（`/resume` · `/model`）', () => {
   test('答复带 `note`（切不动）——留的是那句 note，不冒「已切到」', () => {
     const app = live()
 
-    app.type('/resume')
+    app.type('/resume ')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1', title: '甲的事' }, { id: 's2', title: '乙的事' }]))
     app.press({ kind: 'down' })
@@ -413,13 +417,13 @@ describe('选择器（`/resume` · `/model`）', () => {
   test('`esc` 取消 —— **不留痕迹**（记录区与回执都没有）', () => {
     const app = live()
 
-    app.type('/resume')
+    app.type('/resume ')
     app.press(ENTER)
     app.spy.emit(state('s1', [{ id: 's1' }]))
     app.press({ kind: 'escape' })
 
     expect(app.view().dock.kind).toBe('input')
-    expect(app.rows()).toEqual([])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/resume "}])
   })
 
   /**
@@ -436,7 +440,7 @@ describe('选择器（`/resume` · `/model`）', () => {
   test('`/model` 不带参数 —— **问一次条目表**（读侧命令），答复开选择器', () => {
     const app = live()
 
-    app.type('/model')
+    app.type('/model ')
     app.press(ENTER)
     expect(app.commands()).toContainEqual({ type: 'model.list' })
     // **不是**换模型：读面以「换失败了」作答是旧形状（见上）
@@ -508,14 +512,14 @@ describe('选择器（`/resume` · `/model`）', () => {
     }
 
     const shell = createShell(transport as never)
-    for (const char of '/model') shell.key({ kind: 'char', char })
+    for (const char of '/model ') shell.key({ kind: 'char', char })
     shell.key({ kind: 'enter' })
 
     const view = shell.getView()
 
     // 头一条是打 `/` 时那次目录查询（见 `ASK_SKILLS`）；被测的是**它的答复与 `model.list`
     // 的答复都在 `send` 之内同步回来**时，视图有没有被盖回去
-    expect(commands.map((command) => command.type)).toEqual(['skills.list', 'model.list'])
+    expect(commands.map((command) => command.type)).toEqual(['skills.list', 'input.submit', 'model.list'])
     expect(view.dock.kind).toBe('picker') // **没被盖回输入区**
     expect(view.models).toHaveLength(2) // 条目表留住了
     // ④ 的分母也留住了——**数值来自答复那一格**（U41 返修：按 `current` 算，不从默认行推算）
@@ -625,7 +629,7 @@ describe('Ctrl+C（空闲按两次退出 · 有在途工作开三选）', () => 
 describe('/exit（停掉这条会话，然后退出界面）', () => {
   /** 打一整条 slash 并回车——回的是**回车那一下**的效果。 */
   function run(app: ReturnType<typeof live>, text: string) {
-    app.type(text)
+    app.type(text.endsWith(' ') ? text : text + ' ')
     return app.press(ENTER)
   }
 
@@ -675,7 +679,7 @@ describe('/exit（停掉这条会话，然后退出界面）', () => {
     // **整体那一档**（「停这件事」）——不是 `turn`：`/exit` 说的是「这条我不做了」
     expect(wire.asked).toEqual([{ session: 's1', scope: 'run' }])
     // 这一条**不发** `turn.interrupt`（那是局部那一档的事），目录查询那一条是打 `/` 发的
-    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.commands()).toEqual([{ type: 'history.read', session: 's1' }, ASK_SKILLS, { type: 'input.submit', local: true, text: '/exit ', refs: [], ref: expect.any(String) }])
   })
 
   test('**受理了还不走**——`done` 到了才放行（「资源确认退出之后」）', () => {
@@ -881,12 +885,13 @@ describe('会话命令的其余分支', () => {
   test('`/clear`——发 `session.new`；记录区**一行都不添**', () => {
     const app = live()
 
-    app.type('/clear')
+    app.type('/clear ')
     const before = app.rows().length
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS, { type: 'session.new' }])
-    expect(app.rows().length).toBe(before)
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/clear ","type":"input.submit"}, { type: 'session.new' }])
+    expect(app.rows().length).toBe(before + 1)
+    expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '/clear ' })
     expect(app.rows().some((row) => row.kind === 'receipt')).toBe(false)
   })
 
@@ -897,7 +902,7 @@ describe('会话命令的其余分支', () => {
     app.type('/clear 别的')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/clear 别的","type":"input.submit"}])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
@@ -911,7 +916,8 @@ describe('会话命令的其余分支', () => {
     app.press(ENTER)
 
     expect(app.commands()).toEqual([
-      ASK_SKILLS,
+      { type: 'history.read', session: 's1' }, ASK_SKILLS,
+      { type: 'input.submit', local: true, text: '/rename 换个名字', refs: [], ref: expect.any(String) },
       { type: 'session.rename', session: 's1', title: '换个名字' },
     ])
   })
@@ -919,10 +925,10 @@ describe('会话命令的其余分支', () => {
   test('`/rename` 不带文本——只提示用法，不发命令', () => {
     const app = live()
 
-    app.type('/rename')
+    app.type('/rename ')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/rename ","type":"input.submit"}])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
@@ -932,7 +938,7 @@ describe('会话命令的其余分支', () => {
     app.type('/rename 叫个名字')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/rename 叫个名字","type":"input.submit"}])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'receipt' })
   })
 
@@ -942,7 +948,7 @@ describe('会话命令的其余分支', () => {
     app.type('/resume 乱写的')
     app.press(ENTER)
 
-    expect(app.commands()).toEqual([ASK_SKILLS])
+    expect(app.commands()).toEqual([ASK_SKILLS, {"local":true,ref:expect.any(String),"refs":[],"text":"/resume 乱写的","type":"input.submit"}])
     expect(app.rows().at(-1)?.kind === 'receipt').toBe(true)
   })
 })
@@ -955,7 +961,7 @@ describe('粘贴（非接管）', () => {
     expect(app.view().draft).toBe('粘一段')
 
     app.press(ENTER)
-    expect(app.commands()).toEqual([{ type: 'input.submit', text: '粘一段', ref: 'draft-1' }])
+    expect(app.commands()).toEqual([{ type: 'input.submit', text: '粘一段', purpose: 'current', ref: expect.any(String) }])
   })
 })
 
@@ -964,7 +970,7 @@ describe('选择器选定模型', () => {
     const app = live()
     app.spy.emit(event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }))
 
-    app.type('/model')
+    app.type('/model ')
     app.press(ENTER)
     // 条目表回来了才开选择器（D10 的读侧答复）——选定那一步与入口无关，故这条判据不变
     app.spy.emit(

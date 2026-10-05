@@ -600,7 +600,7 @@ describe('预查不妨碍既有的控制流', () => {
 
     expect(await agentLoop(runtime, { text: '动手' }, controller.signal)).toBe('aborted')
     expect(written).toEqual([])
-    expect(kindsOf(stage)).toEqual(['user'])
+    expect(kindsOf(stage)).toEqual([]) // 已中止的执行不再消费输入。
   })
 
   test('**历史**作用域有上界（先进先出）——长会话不会把碰过的每一个目录都攒着', () => {

@@ -23,7 +23,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { Command, ModelCatalogRow, ModelInfoRead, ModelRef, VendorInfo } from '@magic/contracts'
-import { HINT_PICKER } from '../src/view.ts'
 import type { Dock, PickerRow } from '../src/view.ts'
 import { dockHeightOf } from '../src/components/app.ts'
 import { createStage } from './screen.ts'
@@ -102,7 +101,7 @@ function conn(
 
 /** 打开 `/model` 那一屏：打字 → 回车 → 喂答复（真会话里答复是内核给的，用例里得有人代发）。 */
 function open(stage: Stage, entries: readonly ModelCatalogRow[], current?: ModelRef): void {
-  stage.type('/model')
+  stage.type('/model ')
   stage.press({ kind: 'enter' })
   stage.feed([event('model.catalog', { entries, aliases: current === undefined ? {} : { default: current }, ...(current === undefined ? {} : { current: { alias: 'default', ...current } }) })])
   stage.press({ kind: 'enter' }) // Default 映射编辑：实际型号只在配置层展示
@@ -276,7 +275,7 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
     expect(frame.has('连接供应商')).toBe(true)
     expect(frame.has('管理连接')).toBe(true)
     expect(frame.has('刷新模型')).toBe(true)
-    expect(frame.has('… 下面还有')).toBe(true) // 候选那一头确实折了
+    expect(frame.dock.some(line => /… 上面 \d+ 条 · 下面 [1-9]\d* 条/.test(line.text))).toBe(true) // 候选那一头确实折了
   })
 })
 
@@ -323,7 +322,7 @@ describe('③ 选定＝换模型，**不是发送**', () => {
       { type: 'model.list' },
       { type: 'model.alias.set', alias: 'default', provider: 'personal', model: 'MiniMax-Text-01', initialize: true },
     ])
-    expect(stage.commands().some((one) => one.type === 'input.submit')).toBe(false)
+    expect(stage.commands().some((one) => one.type === 'input.submit' && one.local !== true)).toBe(false)
     expect(stage.shell.getView().dock.kind).toBe('input')
   })
 
@@ -346,7 +345,9 @@ describe('④ 取消**不留痕迹**、不动任何东西', () => {
     open(stage, [conn('personal', { cache: cacheOf({ models: ['MiniMax-M3'] }) })])
 
     stage.press({ kind: 'escape' })
-
+    expect(pickerOf(stage)?.source).toBe('model')
+    stage.press({ kind: 'escape' })
+    expect(stage.shell.getView().dock.kind).toBe('input')
     expect(sent(stage)).toEqual([{ type: 'model.list' }]) // 只有那次读面——没有别的
     expect(stage.shell.getView().dock.kind).toBe('input')
     expect(stage.shell.getView().settled.some((row) => row.kind === 'receipt')).toBe(false)
@@ -386,7 +387,8 @@ describe('⑤ 刷新：只更新信息，**不动你的焦点与草稿**', () =>
     stage.feed([event('model.catalog', { entries: listed(['MiniMax-M4']) })])
 
     expect(stage.shell.getView().dock.kind).toBe('picker')
-    expect(stage.shell.getView().status.hint).toBe(HINT_PICKER)
+    expect(stage.shell.getView().status.hint).toBe('')
+    expect(pickerOf(stage)?.hint).toContain('使用此模型开始')
   })
 
   test('新增的那条**当场可选**，而**选中那条没被抢走**', () => {
@@ -410,7 +412,7 @@ describe('⑤ 刷新：只更新信息，**不动你的焦点与草稿**', () =>
     // 先打一句话、发出去，再开列表——两条路的次序与真会话一致
     stage.type('看一眼')
     stage.press({ kind: 'enter' })
-    stage.type('/model')
+    stage.type('/model ')
     stage.press({ kind: 'enter' })
     stage.feed([event('model.catalog', { entries: listed() })])
     stage.feed([event('model.catalog', { entries: listed(['MiniMax-M4']) })])
@@ -466,8 +468,10 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
     stage.press({ kind: 'enter' })
     feedProviders(stage, [], [])
 
+    expect(pickerOf(stage)?.rows).toEqual([])
+    expect(pickerOf(stage)?.hint).toContain('Esc 返回')
+    stage.press({kind:'escape'})
     expect(stage.shell.getView().dock.kind).toBe('input')
-    expect(stage.shell.getView().settled.some((row) => row.kind === 'receipt')).toBe(true)
   })
 
   test('一家**有多个区域**⇒ 中间多一屏「挑区域」（区域名 ＋ 官方地址）', () => {
@@ -584,7 +588,10 @@ describe('⑩ 接入：挑一家 → 输密钥（隐藏）→ 保存', () => {
     stage.type('sk-abc')
 
     stage.press({ kind: 'escape' })
-
+    expect(pickerOf(stage)?.source).toBe('region')
+    stage.press({kind:'escape'})
+    expect(pickerOf(stage)?.source).toBe('vendor')
+    stage.press({kind:'escape'})
     expect(sent(stage)).toEqual([{ type: 'provider.list' }])
     expect(stage.shell.getView().dock.kind).toBe('input')
     expect(stage.shell.getView().settled.some((row) => row.kind === 'receipt')).toBe(false)
@@ -966,7 +973,10 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     //    （与草稿那一片同一条规矩；不这么算，说明一长就把记录区挤没——真跑量到过）
     // 额度 ＝ 半屏 12 − 说明 1 行 ＝ 11；**常驻行先占 3**（入口那三条）⇒ 折得动的那一段 8 格：
     // 画 7 条 ＋ 1 行折叠提示 ⇒ 余 23
-    expect(frame.has('… 下面还有 24 条')).toBe(true)
+    const counts = frame.dock.map(line => line.text).join('\n').match(/… 上面 (\d+) 条 · 下面 (\d+) 条/)
+    expect(counts).not.toBeNull()
+    const visible = pickerOf(stage)!.rows.filter(row => !row.pinned && frame.dock.some(line => line.text.includes(row.label))).length
+    expect(Number(counts![1]) + Number(counts![2]) + visible).toBe(30)
   })
 
   test('**焦点可见**：`↓` 挪出这一窗之后窗口跟着平移，选中那条仍在屏上', async () => {
@@ -977,7 +987,11 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     const frame = await stage.screen({ columns: 60, rows: 24 })
 
     expect(frame.has('model-15')).toBe(true) // 选中那条（第 16 行）
-    expect(frame.has('… 上面还有 11 条')).toBe(true) // 上头折起来的如实报
+    const counts = frame.dock.map(line => line.text).join('\n').match(/… 上面 (\d+) 条 · 下面 (\d+) 条/)
+    expect(counts).not.toBeNull()
+    expect(Number(counts![1])).toBeGreaterThan(0)
+    const visible = pickerOf(stage)!.rows.filter(row => !row.pinned && frame.dock.some(line => line.text.includes(row.label + '　'))).length
+    expect(Number(counts![1]) + Number(counts![2]) + visible).toBe(30) // 上头折起来的如实报
     expect(frame.has('model-0　')).toBe(false) // 折起来的那几条确实没画
   })
 
@@ -998,7 +1012,7 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     // 分组头是**多出来的一行**——窗口按「项」算（行 ＋ 头 ＋ 提示），故它一并计入预算；
     // 不这么算的话，带分组的列表会正好多画一行（账少、屏多）。
     const stage = createStage()
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed([
       event('session.state', {
@@ -1044,7 +1058,7 @@ describe('⑨ 换模型**不动用户默认**（两件事分开）', () => {
   test('选定只发那两条（读面 ＋ 切换）——没有「保存默认」那一类', () => {
     // 设计（模型与上下文 · 4）：选模型只改当前 Agent；保存默认是**另一次明确动作**。
     const stage = createStage()
-    stage.type('/model')
+    stage.type('/model ')
     stage.press({ kind: 'enter' })
     stage.feed([event('model.catalog', { entries: [], aliases: { default: { provider: 'personal', model: 'MiniMax-M3' } } })])
     for (let i = 0; i < 4; i++) stage.press({ kind: 'down' })

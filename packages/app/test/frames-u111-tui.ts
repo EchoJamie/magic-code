@@ -81,7 +81,7 @@ if (import.meta.main) {
     await session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
 
     // —— ① `/help`：命令表那一屏（正文由 `COMMANDS` 一处出）——
-    await session.send('/help', { until: { text: '/help' }, timeoutMs: 10_000 })
+    await session.send('/help ', { until: { text: '/help' }, timeoutMs: 10_000 })
     await Bun.sleep(150)
     await session.key('enter', { until: { text: '可用命令' }, timeoutMs: 10_000 })
     const help = await session.capture({ label: '01-help' })

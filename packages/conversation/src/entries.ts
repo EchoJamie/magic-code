@@ -165,8 +165,11 @@ export async function appendUserEntry(
      * 会话标题与屏上那一行因此都不会把它当成用户的话（见契约 `UserPayload.notice`）。
      */
     readonly notice?: true
+    readonly ref?: string
+    readonly revision?: number
+    readonly admit?: () => string | undefined
   },
-): Promise<RecordId> {
+): Promise<RecordId | undefined> {
   const refs = input.refs ?? []
   const skills = input.skills ?? []
   const payload =
@@ -178,12 +181,14 @@ export async function appendUserEntry(
           ...(input.notice === true ? { notice: true as const } : {}),
         }
 
-  return log.records.appendEntry({
-    kind: 'user',
+  const entry = {
+    kind: 'user' as const,
     content: await contentOf(text, log),
     ...(payload === undefined ? {} : { payload }),
     at: log.now(),
-  })
+  }
+  if(input.admit?.()!==undefined)return undefined
+  return input.ref === undefined ? log.records.appendEntry(entry) : log.records.inputs.consume(input.ref, input.revision!, entry)
 }
 
 /**

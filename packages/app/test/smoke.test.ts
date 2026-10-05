@@ -20,7 +20,8 @@ import type { FauxTurn } from '@magic/faux'
 import { eventsOfKind, kindTrail, lastModel, makeStage, readDatabase } from './support.ts'
 
 /** 瞬时类——实时订阅专用，**不落库**（记录 schema v0 规则 ①）。 */
-const TRANSIENT = ['model.delta', 'tool.output.delta'] as const
+const TRANSIENT = ['model.delta', 'tool.output.delta', 'input.settled', 'input.pending',
+] as const
 
 /**
  * 冒烟剧本（U76 起**本文件自带一份**，不再用 `support.ts` 的 `SMOKE_TURNS`）。

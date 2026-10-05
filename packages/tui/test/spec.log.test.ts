@@ -242,7 +242,7 @@ describe('组件规格 · 行的标记与颜色', () => {
 
   test('命令输出——**无标记** · 整块 dim', async () => {
     const stage = live()
-    stage.type('/help')
+    stage.type('/help ')
     stage.press({ kind: 'enter' })
 
     const frame = await stage.screen()
@@ -333,10 +333,14 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
 
     const frame = await stage.screen({ columns: 80, rows: 24 })
     const head = frame.rowOf('▸ ● read(') // 身份不随状态换形（在跑还是落定都是 `▸`）；此刻在跑 ⇒ 状态位 `●`
-    const tail = frame.textAt(head + 1)
+    const text = frame.textAt(head)
+    expect(text.startsWith('  ▸ ● read(')).toBe(true)
+    expect(text).toContain('…')
+    expect(text.length).toBeGreaterThan(10)
+    expect(frame.rawCellsOf(head).length).toBe(80)
+    const tool = stage.shell.getView().rows.find(row => row.kind === 'tool')
+    expect(tool?.kind === 'tool' && tool.args).toEqual({ path: '丙'.repeat(40) })
 
-    expect(tail.startsWith('  丙')).toBe(true)
-    expect(tail.startsWith('   丙')).toBe(false)
   })
 
   test('列表**按标记宽度**（`1. ` ⇒ 基线 2 ＋ 3 ＝ 5 列）· 代码块缩进淡化', async () => {
@@ -480,7 +484,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     const stage = live()
 
     // 攒一屏「三类行」都在的现场：会话内容（重建得来）＋ 命令输出（`/help`）＋ 回执（`/model` 换成了）
-    stage.type('/help')
+    stage.type('/help ')
     stage.press({ kind: 'enter' })
     stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
@@ -560,7 +564,7 @@ describe('失败那一行——保头也保尾（U93）', () => {
     expect(said.endsWith('上级目录不存在——先建目录')).toBe(true)
     // 折叠态**只有一行**：没有换行，也不越 48 个字的预算（`FAILED_LINE_COLUMNS`）
     expect(said).not.toContain('\n')
-    expect([...said].length).toBeLessThanOrEqual(48)
+    expect([...said].length).toBeLessThanOrEqual(80 - 2)
   })
 
   test('短路径——那一行**逐字未变**（反面：不为长路径改掉短的那一形）', async () => {

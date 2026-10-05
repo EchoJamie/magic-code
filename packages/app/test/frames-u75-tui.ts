@@ -264,7 +264,7 @@ async function switchTo(
   query: string,
   settled: (lines: readonly string[]) => boolean,
 ): Promise<void> {
-  await session.send('/resume')
+  await session.send('/resume ')
   await session.key('enter', { until: { text: '正在用' }, timeoutMs: 10_000 })
   await session.send(query)
   await Bun.sleep(400)

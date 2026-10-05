@@ -146,6 +146,9 @@ describe('resident-cli 客户端握手与纯观察', () => {
       const passive = await connectApp({ home: g.home, env, connect: { environment: env } })
       const options = terminalOptions({ client: passive.client, loaded: passive.loaded, magic: passive.magic, cwd: g.root })
       expect(options.receipts?.join(' ')).toContain('1')
+      const configured = terminalOptions({ client: passive.client, loaded: { ...passive.loaded, config: { ...passive.loaded.config, motion: { reduced: true }, statusLine: { cells: [], color: false } } }, magic: passive.magic, cwd: g.root })
+      expect(configured.reducedMotion).toBe(true)
+      expect(configured.statusLine).toEqual({ cells: [], color: false })
       expect(server.messages[0]).not.toHaveProperty('environment')
       expect(server.messages.some((message) => message.t === 'read')).toBe(false)
       passive.client.markRead(['unread'])
@@ -281,7 +284,7 @@ test('同gen真实target认领保留快照缓存、Shell历史与草稿；客户
     client.onResumed((_gen, value) => late.push(value))
     await waitFor(() => late.length === 1)
     expect(late).toEqual([snapshot])
-    expect(server.messages.filter((message) => message.t === 'cmd')).toEqual([])
+    expect(server.messages.filter((message) => message.t === 'cmd').map(message=>message.cmd)).toEqual([{type:'history.read',session:'real-session'}])
     expect(server.messages.some((message) => message.t === 'read')).toBe(false)
   } finally { shell.dispose(); client.close(); server.close(); g.close() }
 })

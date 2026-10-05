@@ -124,6 +124,8 @@ test('成员工具审批在根 TUI 只有同一份，根窗口答复回成员并
   writeFileSync(path, '#!/bin/sh\nexit 0\n', { mode: 0o600 })
   try {
     f.shell.key({ kind: 'paste', text: '分出检查并确认成员操作。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('成员 exec 待答到根窗口',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
+    f.shell.key({kind:'ctrl+g'})
     await f.wait('成员 exec 审批到根窗口', () => {
       const dock = f.shell.getView().dock
       return dock.kind === 'decision' && dock.pending.name === 'exec'
@@ -187,6 +189,8 @@ test('真实入口 detached 后根窗口保留成员审批、目标及草稿，�
     const draft = f.shell.getView().draft
     const refs = f.shell.getView().refs
     memberReply.release()
+    await f.wait('成员 chmod 待答提示',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
+    f.shell.key({kind:'ctrl+g'})
     await f.wait('成员 chmod 待审批', () => { const dock = f.shell.getView().dock; return dock.kind === 'decision' && dock.pending.name === 'exec' })
     const dock = f.shell.getView().dock
     if (dock.kind !== 'decision') throw new Error('成员审批没有展示')
@@ -235,6 +239,8 @@ test('审批等待期间发布共同约束：批准旧 chmod 后仍须重审，�
   writeFileSync(path, '#!/bin/sh\nexit 0\n', { mode: 0o600 })
   try {
     f.shell.key({ kind: 'paste', text: '分出检查并确认成员操作。' }); f.shell.key({ kind: 'enter' })
+    await f.wait('旧 chmod 待答',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
+    f.shell.key({kind:'ctrl+g'})
     await f.wait('旧 chmod 已弹审批卡', () => {
       const dock = f.shell.getView().dock
       return dock.kind === 'decision' && dock.pending.name === 'exec'
@@ -351,7 +357,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
   } finally { memberReply.release(); finalReply.release(); await f.close() }
 }, 30000)
 
-test('两个根 TUI 同时发送 draft-1：成员材料拒收只回原窗口，草稿与引用不串', async () => {
+test('两个根 TUI 使用独立提交身份：成员材料拒收只回原窗口，草稿与引用不串', async () => {
   const f = await collaborationRuntime('member-input-ref', call => call.model === 'entry-model' && call.index === 0 ? spawnMember : { text: '本轮已停在可补充处。' })
   try {
     // 开场经真实 socket 发，不占用任一 TUI 的本地提交序号。
@@ -380,14 +386,15 @@ test('两个根 TUI 同时发送 draft-1：成员材料拒收只回原窗口，�
     // 不在两次发送之间 await：制造两个 socket 上同名 ref 都在途的窗口。
     for (const window of windows) window.shell.key({ kind: 'enter' })
     for (const [index, window] of windows.entries()) {
-      const command = window.commands.at(-1)
+      const command = window.commands.findLast(one => one.type === 'collaboration.input')
       if (command?.type !== 'collaboration.input') throw new Error('没有发送成员输入')
-      expect(command.input.ref).toBe('draft-1')
-      await f.wait('原窗口的 draft-1 失败回执', () => window.events.some(one => one.kind === 'input.settled' && !one.data.ok && one.data.ref === 'draft-1'))
-      const settled = window.events.filter(one => one.kind === 'input.settled')
+      expect(command.input.ref).toBeString()
+      const submittedRef=command.input.ref!
+      await f.wait('原窗口的 draft-1 失败回执', () => window.events.some(one => one.kind === 'input.settled' && !one.data.ok && one.data.ref === submittedRef))
+      const settled = window.events.filter(one => one.kind === 'input.settled').filter(one=>one.data.ref===submittedRef&&!one.data.ok)
       expect(settled).toHaveLength(1)
       const result = settled[0]!.data
-      expect(result.ref).toBe('draft-1')
+      expect(result.ref).toBe(submittedRef)
       expect(result.ok).toBe(false)
       if (!result.ok) expect(result.reason).toContain(held[index]!.file)
       expect(window.shell.getView().draft).toBe(held[index]!.draft)
@@ -402,7 +409,9 @@ test('两个根 TUI 同时发送 draft-1：成员材料拒收只回原窗口，�
     // 接收后再做一趟真实查询，确保没有迟到的另一窗口回执广播过来。
     f.client.send({ type: 'collaboration.read' })
     await Bun.sleep(100)
-    for (const window of windows) expect(window.events.filter(one => one.kind === 'input.settled')).toHaveLength(1)
+    for (const window of windows) expect(window.events.filter(one => one.kind === 'input.settled'&&!one.data.ok)).toHaveLength(1)
+    const refs=windows.map(window=>window.commands.findLast(one=>one.type==='collaboration.input')).map(one=>one?.type==='collaboration.input'?one.input.ref:undefined)
+    expect(new Set(refs).size).toBe(2)
   } finally { await f.close() }
 }, 30000)
 

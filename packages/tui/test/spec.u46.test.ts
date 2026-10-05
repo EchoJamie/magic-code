@@ -118,7 +118,7 @@ describe('空闲按一次 Ctrl+C ⇒ 不退出，那一行在**状态行之下**
   test('左下开着**选择器**时也照说（「空闲按一次不退出」不随右下开着什么而变）', async () => {
     const stage = createStage()
     // `/model` 那一屏：选择器接管了交互区——此刻按 ctrl+c 仍是**空闲**那一下，不是一个新岔口
-    stage.type('/model')
+    stage.type('/model ')
     stage.press({ kind: 'enter' })
     stage.feed([
       event('model.catalog', {

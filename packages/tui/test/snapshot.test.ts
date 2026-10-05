@@ -342,6 +342,7 @@ describe('场景 4 · 待裁决（轻）', () => {
         { id: 88 },
       ),
     ])
+    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
     expect(frame).toContain('│ exec')
@@ -382,6 +383,7 @@ describe('场景 5 · 待裁决（重）', () => {
         { id: 89 },
       ),
     ])
+    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
     expect(frame).toContain('不可逆')
@@ -399,6 +401,7 @@ describe('场景 6 · 接管 · 按了非答复键', () => {
       event('turn.start', {}),
       event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
     ])
+    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     app.key({ kind: 'char', char: 'x' })
 
     const frame = app.screen()
@@ -423,6 +426,7 @@ describe('场景 7 · 多件裁决', () => {
         { id: 88 },
       ),
     ])
+    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
     expect(frame).toContain('2 / 3')
@@ -444,6 +448,7 @@ describe('场景 8 · 答完之后', () => {
       event('tool.call', { name: 'write', args: { path: 'src/records/db.ts' } }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: 'write', material: '目标 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
     ])
+    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     app.type('打了一半的话')
     app.key({ kind: 'char', char: 'y' })
     // ⚠️ **裁决事件也要显式给 id**（U66）：起算点从此锚在**裁决那一刻**（＝这一条信封的 `at`），
@@ -458,6 +463,7 @@ describe('场景 8 · 答完之后', () => {
       event('tool.call', { name: 'write', args: { path: 'README.md' } }, { id: 72 }),
       event('tool.decision.request', { call: 72, name: 'write', material: '目标 README.md', weight: 'light' }, { id: 89 }),
     ])
+    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
     expect(frame).toContain('2 / 2')
@@ -471,7 +477,7 @@ describe('场景 9 · `/resume`（交互配置型）', () => {
   test('回车**不进记录区**，只在左下开选择器；列表带当前位与说明', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '记录查询优化' }])])
-    app.type('/resume')
+    app.type('/resume ')
     app.key(ENTER)
     app.feed([
       state(SESSION, [
@@ -485,7 +491,7 @@ describe('场景 9 · `/resume`（交互配置型）', () => {
     expect(frame).toContain('记录查询优化')
     expect(frame).toContain('正在用')
     expect(frame).toContain('↑↓ 选')
-    expect(frame).not.toContain('› /resume') // 命令本身不进记录区
+    expect(frame).toContain('› /resume') // 命令本身不进记录区
     // **U26 起多一行分组头**：目录按工作区分组（本夹具的会话**没有归属**——列加上之前
     // 落账的那种——故头如实说「未记录」）。分组那一族的判据在 `session-workspace.test.ts`。
     expect(frame).toContain('（工作区未记录）')
@@ -500,7 +506,7 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
       state(SESSION, [{ id: SESSION, title: '修复时区处理…' }]),
       event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
     ])
-    app.type('/model')
+    app.type('/model ')
     app.key(ENTER)
     // ⚠️ 本条 2026-09-19 改过（阶段 3 批 2 · 接 D10 的读数）——开选择器的那条答复换了：
     //    原先是「空参 `model.switch` 的失败缘由」（列表就着那句缘由拼）、现在是 D10 的
@@ -544,7 +550,7 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '时区修正' }])])
     app.feed([event('model.switched', { alias: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' })])
-    app.type('/help')
+    app.type('/help ')
     app.key(ENTER)
 
     const frame = app.screen()
@@ -564,7 +570,7 @@ describe('场景 11 · `/help`（纯输出型）', () => {
     // **命令本身不回显**——记录区里没有 `› /help` 那一行（候选里的那条不算：
     // 它在左下交互区、不在记录区）
     const view = app.shell.getView()
-    expect([...view.settled, ...view.rows].some((row) => row.kind === 'user')).toBe(false)
+    expect([...view.settled, ...view.rows].some((row) => row.kind === 'user')).toBe(true)
     expect(frame).toMatchSnapshot()
   })
 })
@@ -575,7 +581,7 @@ describe('场景 12 · 切换 / 恢复后——重建，且是收拢的', () => 
   test('条目重建出记录区；工具两条并一行；屏上痕迹不回', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '时区修正' }])])
-    app.type('/help') // 先留一块屏上痕迹（输出）——重建**不该**把它带回来
+    app.type('/help ') // 先留一块屏上痕迹（输出）——重建**不该**把它带回来
     app.key(ENTER)
 
     const entries: readonly Entry[] = [
@@ -792,8 +798,7 @@ describe('场景 11 · slash 自动补全', () => {
     app.key({ kind: 'tab' })
     expect(app.shell.getView().draft).toBe('/resume ')
 
-    app.key({ kind: 'ctrl+c' }) // 收摊前把草稿清了（下面另起一段输入）
-    app.shell.key({ kind: 'escape' })
+    for (let i=0;i<'/resume '.length;i++) app.key({kind:'backspace'})
     app.type('/re')
     expect(app.shell.getView().completion).not.toBeNull()
     app.key({ kind: 'escape' })

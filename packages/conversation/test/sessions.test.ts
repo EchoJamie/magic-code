@@ -1,3 +1,4 @@
+import { makeFauxRecords } from '@magic/faux'
 /**
  * U16 · **会话主面**（`createConversationService`）——列表 / 新建 / 切换 / 改名 · 单活跃。
  *
@@ -62,6 +63,7 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
   }
 
   const records: RecordsService = {
+    get inputs() { return makeFauxRecords().inputs },
     get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => 1,
     appendEntry: () => 1,
@@ -127,6 +129,7 @@ function makeInstance(session: SessionId): FakeInstance {
       beginTurn: () => undefined,
     },
     service: {
+      manage: () => {},
       wake: () => undefined,
       supplement: async () => undefined,
       submit: (input) => {
@@ -572,6 +575,7 @@ describe('读面（history.read）——重建展示的条目块', () => {
       open: (session) => makeInstance(session),
       records: {
         listSessions: async () => [],
+        readEvents: async function* () {},
         readEntries: (): AsyncIterable<Entry> =>
           (async function* (): AsyncIterable<Entry> {
             for (let index = 1; index <= total; index += 1) {

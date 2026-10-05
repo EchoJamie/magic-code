@@ -11,7 +11,7 @@ test('首条已落账输入确认会话；清空不保留空 ID，也不读取�
     spy.emit(event('message.user', { entry: 1 }, { session: 'persisted' }))
     expect(shell.getView().sessionId).toBe('persisted')
     const page = shell.getView().page
-    shell.key({ kind: 'char', char: '/clear' })
+    shell.key({ kind: 'char', char: '/clear ' })
     shell.key({ kind: 'enter' })
     expect(spy.commands.at(-1)).toEqual({ type: 'session.new' })
     spy.emit(event('session.state', { active: '', sessions: [] }, { session: '' }))

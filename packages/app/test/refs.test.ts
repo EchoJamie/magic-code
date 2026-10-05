@@ -386,7 +386,7 @@ describe('U36 · 边界：目录 / 超限 / 二进制 / 工作区外', () => {
       expect(userRows(assembly)).toHaveLength(0)
 
       // 配对一次失败，并把缘由说清
-      const settled = shell.events.filter((event) => event.kind === 'input.settled')
+      const settled = shell.events.filter((event) => event.kind === 'input.settled').filter(event=>event.data.stage!=='accepted')
       expect(settled).toHaveLength(1)
       expect(settled[0]?.data.ok).toBe(false)
       expect(settled[0]?.data.reason).toContain('二进制')
@@ -412,7 +412,7 @@ describe('U36 · 边界：目录 / 超限 / 二进制 / 工作区外', () => {
       shell.dispose()
 
       expect(lastModel(stage).requests).toHaveLength(0)
-      const refused = shell.events.filter((event) => event.kind === 'input.settled')
+      const refused = shell.events.filter((event) => event.kind === 'input.settled').filter(event=>!event.data.ok)
       expect(refused[0]?.data.ok).toBe(false)
       expect(refused[0]?.data.reason).toContain('工作区外')
 

@@ -100,7 +100,7 @@ function drawerOpen(over: Partial<EventDataOf['grants.catalog']> = {}): {
   return {
     stage,
     views: takes(stage, [
-      () => stage.type('/grants'),
+      () => stage.type('/grants '),
       () => stage.press(ENTER),
       () => stage.feed([event('grants.catalog', catalog(over))]),
     ]),
@@ -263,14 +263,15 @@ describe('③ 空抽屉（名录一条都没有）', () => {
   test('**不开抽屉**：那句回执落进记录区（只一份），接着打字照常进草稿', async () => {
     const stage = createStage()
     const views = takes(stage, [
-      () => stage.type('/grants'),
+      () => stage.type('/grants '),
       () => stage.press(ENTER),
       () => stage.feed([event('grants.catalog', catalog({ grants: [], stale: [] }))]),
+      () => stage.press(ESC),
       () => stage.type(DRAFT),
     ])
     const frame = await show(views, WIDE)
 
-    expect(countOf(frame, '还没有授权')).toBe(1) // 记录区里只一份（不重复、不丢）
+    expect(countOf(frame, '› /grants')).toBe(1) // 记录区里只一份（不重复、不丢）
     expect(canType(frame)).toBe(true)
     expect(frame.dock.some((line) => line.text.includes(DRAFT))).toBe(true) // 草稿真进了作曲家
   })
@@ -278,10 +279,11 @@ describe('③ 空抽屉（名录一条都没有）', () => {
   test('**回执之后开有项的抽屉、再收起**：回执还在且只一份 · 字标一份', async () => {
     const stage = createStage()
     const views = takes(stage, [
-      () => stage.type('/grants'),
+      () => stage.type('/grants '),
       () => stage.press(ENTER),
-      () => stage.feed([event('grants.catalog', catalog({ grants: [], stale: [] }))]), // 回执一条
-      () => stage.type('/grants'),
+      () => stage.feed([event('grants.catalog', catalog({ grants: [], stale: [] }))]),
+      () => stage.press(ESC),
+      () => stage.type('/grants '),
       () => stage.press(ENTER),
       () => stage.feed([event('grants.catalog', catalog())]), // 这一次有项 ⇒ 抽屉开
       () => stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })]),
@@ -289,7 +291,7 @@ describe('③ 空抽屉（名录一条都没有）', () => {
     ])
     const frame = await show(views, WIDE)
 
-    expect(countOf(frame, '还没有授权')).toBe(1) // 「记录保留」：回执仍在，且没被重印
+    expect(countOf(frame, '› /grants')).toBe(2) // 「记录保留」：回执仍在，且没被重印
     expect(bannerCopies(frame, WIDE.columns)).toBe(1)
     expect(frame.has('工具 exec × 路径 根内 × 操作 read')).toBe(false) // 收起不留痕
   })

@@ -1,3 +1,4 @@
+import {initInputSchema,createInputRecords} from './inputs.ts'
 import type { CollaborationRecords } from '@magic/contracts'
 import { initCollaborationSchema } from './collaboration-schema.ts'
 import { createCollaborationRecords } from './collaboration.ts'
@@ -222,6 +223,7 @@ export type RecordsStore = {
    * 与 `serviceFor(session).appendEvent` 的关系：后者多一道**实例绑定校验**
    * （跨会话串线即拒）——域内调用者用那条更严；扇出这条按信封走，天然不会串。
    */
+  readEvents(session: SessionId): AsyncIterable<KernelEvent>
   appendEvent(event: KernelEvent): void
   /**
    * **写会话标题**（U16 · 技术方案 · 会话与多会话：标题可改）——
@@ -270,6 +272,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   db.exec('PRAGMA synchronous = NORMAL')
   initSchema(db, databasePath)
 
+  initInputSchema(db)
   initCollaborationSchema(db)
   const ids = createIdSpace(db)
   const collaboration = createCollaborationRecords(db, options.workspace, ids)
@@ -492,6 +495,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     serviceFor(session: SessionId): RecordsService {
       assertSessionId(session)
       return {
+        inputs:createInputRecords(db,session,entry=>appendEntry(session,entry),at=>ensureSession.run(session,at,workspaceColumn)),
         collaboration,
         nextId: () => ids.next(),
         appendEntry: (entry) => appendEntry(session, entry),
@@ -508,6 +512,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     },
 
     readEntries,
+    readEvents,
     readEntriesBack,
     blobs,
 

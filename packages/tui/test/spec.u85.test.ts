@@ -70,7 +70,7 @@ const viewportOf = (frame: Frame, bufferRow: number): number =>
 
 /** **输入行**那一行（`› ` 开头的最后一条——记录区里也有 `›` 的用户行，故取最后一条）。 */
 const composerRow = (frame: Frame): number => {
-  const at = frame.screen.lines.reduce((last, text, row) => (text.trimStart().startsWith('› ') ? row : last), -1)
+  const at = frame.screen.lines.reduce((last, text, row) => (/^ ›(?: |$)/.test(text) ? row : last), -1)
 
   return at
 }
@@ -358,6 +358,7 @@ describe('U85 · 乙 · 草稿那一头（真按键 → 外壳）', () => {
     stage.feed([
       event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const before = stage.shell.getView()
     stage.press(LINE_START)

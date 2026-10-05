@@ -161,7 +161,7 @@ describe('首行带 Tab（独立复核退回①：首行与续行必须取自同
     // 正是那 7 格空白的头一格上（切在**一段显示文字里**，不是切在段与段之间）
     const rows = rowsOf(`${'x'.repeat(95)}\tY`)
 
-    expect(rows).toEqual([`› ${'x'.repeat(95)} `, `  ${' '.repeat(6)}Y`])
+    expect(rows).toEqual([`› ${'x'.repeat(95)}${' '.repeat(3)}`, `  ${' '.repeat(4)}Y`])
     expect(rows.some((line) => line.includes('\t') || line.includes('\n'))).toBe(false)
     const head2 = (rows[0] ?? '').slice(2)
     const tail2 = (rows[1] ?? '').replace(/^ {2}/, '')

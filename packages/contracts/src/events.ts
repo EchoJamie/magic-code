@@ -1,3 +1,4 @@
+import type { StoredInput } from './input.ts'
 /**
  * 共享语言 · 事件（kind 族与载荷 · 信封 · 不落库清单）——已冻结 v0。
  *
@@ -127,6 +128,8 @@ export type EventKind =
   // skill——**技能材料真的送进了模型**（U33）；**不落库**（依据在条目载荷里）
   | 'skill.used'
   // 控制 · 输入——**完整输入已被会话收下**（或没成，U33）；**不落库**
+  | 'input.local'
+  | 'input.pending'
   | 'input.settled'
   // 控制 · 输入——**本次交代里引用了、却没被读过的材料**（U63）；**不落库**
   | 'input.unread'
@@ -625,6 +628,8 @@ export type EventDataOf = {
     readonly session: SessionId
     /** 这一块（按条目序；块与块之间拼起来即全日志）。 */
     readonly entries: readonly Entry[]
+    /** 本地命令的持久事件，仅供历史显示与召回。 */
+    readonly inputs?: readonly Extract<KernelEvent, { kind: 'input.local' }>[]
     /** **末块**为 `true`——外壳据此知道重建收尾了。 */
     readonly done: boolean
   }
@@ -690,7 +695,10 @@ export type EventDataOf = {
   //   `ok:false` 照发（**失败不静默**）。
   //
   // ⚠️ **给了 `ref` 就必须有终态**：白名单式的「成了才回」会让外壳永等一份草稿。
+  'input.local': { readonly text: string; readonly refs: readonly import('./control.ts').InputRef[]; readonly ref: string }
+  'input.pending': { readonly inputs: readonly StoredInput[]; readonly note?: string }
   'input.settled': {
+    readonly stage?: 'accepted' | 'included'
     /** 配对键——外壳在 `UserInput.ref` 上给的那一个；没给就不在此带键（不编）。 */
     readonly ref?: string
     /** 收下了没有。`false` ＝ 这一份输入**没进会话**（材料取不到 / 落账失败 / 停下时被清掉）。 */
@@ -1161,6 +1169,7 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 落库之后，恢复时读到的旧回执会与当下的草稿状态对不上（它的配对键是外壳给的，
   // 跨进程重开就没人认领了）。
   'input.settled',
+  'input.pending',
   // 未读材料回执同列的理由（U63）：与 `skill.used` 同一条——它是**读出来的**
   // （引用了哪几份在 `UserPayload.refs` 里，读没读在工具条目里），落库＝把同一件事存第二遍。
   // 重放要的是「当时到底读了什么」（读条目就有），不是「屏上闪过一句什么」。

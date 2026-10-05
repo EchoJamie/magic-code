@@ -339,7 +339,7 @@ describe('U34 · 清单那一块', () => {
     // ② **真光标**：落在输入行上（清单多占的那几行把它顶下去就不对了）
     const frame = await stage.screen(short)
     expect(frame.has('PgUp/PgDn 翻页')).toBe(true)
-    expect(frame.screen.cursor.y).toBe(viewportOf(frame, frame.rowOf('› ')))
+    expect(frame.screen.cursor.y).toBe(viewportOf(frame, frame.screen.lines.findIndex(line => /^ ›(?: |$)/.test(line))))
   })
 
   test('屏上没有重影、没有成片空行、没有溢出', async () => {
@@ -448,6 +448,7 @@ describe('U34 · `Ctrl T` 与翻页', () => {
     stage.feed([
       event('tool.decision.request', { call: 9, name: 'exec', material: 'rm -rf /tmp/x', weight: 'light' }, { id: 90 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(stage.shell.getView().dock.kind).toBe('decision')
 
     stage.press({ kind: 'planTop', top: 9 })

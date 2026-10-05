@@ -52,6 +52,8 @@ export type FixtureTurn =
       readonly kind: 'tool'
       readonly name: string
       readonly args: Record<string, unknown>
+      readonly reasoning?: string
+      readonly following?: readonly {readonly name:string;readonly args:Record<string,unknown>}[]
       /**
        * **这一回合先说的那句**（缺省＝一个字都不说）。
        *
@@ -316,7 +318,11 @@ async function streamText(
   // 思考在前（真端点就是这个序：`reasoning_content` 先流完，正文才开始 · U64）。
   // **没给思考时一个字节都不多**——既有那些回合的帧与加它之前逐帧同形。
   if (reasoning !== undefined && reasoning.length > 0) {
-    push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: reasoning } }] }))
+    const thinkingSize=Math.max(1,Math.ceil(reasoning.length/Math.max(1,chunks)))
+    for(let at=0;at<reasoning.length;at+=thinkingSize){
+      push(frame(model,{choices:[{index:0,delta:{role:'assistant',reasoning_content:reasoning.slice(at,at+thinkingSize)}}]}))
+      if(delayMs>0)await Bun.sleep(delayMs)
+    }
   }
   push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
   for (let at = 0; at < text.length; at += size) {
@@ -341,7 +347,7 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
       if (turn.kind === 'tool') {
         // **先说那句**（给了才说）——真供应商就是这样：正文分块流完，紧跟着 `tool_calls`
         if (turn.text !== undefined && turn.text !== '') {
-          await streamText(push, model, turn.text, turn.chunks ?? 3, turn.chunkDelayMs ?? 120)
+          await streamText(push, model, turn.text, turn.chunks ?? 3, turn.chunkDelayMs ?? 120,turn.reasoning)
         }
         push(
           frame(model, {
@@ -350,14 +356,9 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
                 index: 0,
                 delta: {
                   role: 'assistant',
-                  tool_calls: [
-                    {
-                      index: 0,
-                      id: `call_u40_${callIndex}`,
-                      type: 'function',
-                      function: { name: turn.name, arguments: JSON.stringify(turn.args) },
-                    },
-                  ],
+                  tool_calls: [{name:turn.name,args:turn.args},...(turn.following??[])].map((call,index)=>({
+                    index,id:`call_u40_${callIndex}_${index}`,type:'function',function:{name:call.name,arguments:JSON.stringify(call.args)}
+                  })),
                 },
               },
             ],

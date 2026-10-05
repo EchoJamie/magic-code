@@ -71,7 +71,7 @@ function live() {
 }
 
 /** 开那一屏：打 `/mcp` ＋ 回车 → 内核回一份读数。 */
-function open(app: ReturnType<typeof live>, over: Partial<EventDataOf['mcp.catalog']> = {}, text = '/mcp') {
+function open(app: ReturnType<typeof live>, over: Partial<EventDataOf['mcp.catalog']> = {}, text = '/mcp ') {
   app.type(text)
   app.press(ENTER)
   app.spy.emit(event('mcp.catalog', catalog(over)))
@@ -80,12 +80,12 @@ function open(app: ReturnType<typeof live>, over: Partial<EventDataOf['mcp.catal
 describe('`/mcp` · 查询那一屏', () => {
   test('发一次 `mcp.list`，**记录区什么都不进**；答复没回来之前不开抽屉', () => {
     const app = live()
-    app.type('/mcp')
+    app.type('/mcp ')
     app.press(ENTER)
 
     // 头一条是打 `/` 那一下的技能目录查询（U33：每屏只发一次）——被测的是后面那条
-    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, { type: 'mcp.list' }])
-    expect(app.rows()).toEqual([])
+    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/mcp ","type":"input.submit"}, { type: 'mcp.list' }])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/mcp "}])
     expect(app.picker()).toBeUndefined() // 读数没回来之前不开（「拿不到的不编」）
   })
 
@@ -132,7 +132,8 @@ describe('`/mcp` · 查询那一屏', () => {
 
     // ⚠️ U61 起这一句多了 `← 退`（接管屏里 `←` 弹一层、`esc` 全收——两个动作两个键）；
     //    本句问的那半句（**不说「回车 定」**）一个字没变。
-    expect(app.view().status.hint).toBe('↑↓ 选 · ← 退 · esc 收起')
+    expect(app.view().status.hint).toBe('')
+    expect(app.picker()?.hint).toContain('Esc 返回')
     expect(app.view().status.hint).not.toContain('回车')
   })
 
@@ -142,7 +143,7 @@ describe('`/mcp` · 查询那一屏', () => {
     app.press(ESC)
 
     expect(app.picker()).toBeUndefined()
-    expect(app.rows()).toEqual([])
+    expect(app.rows()).toEqual([{echoed:true,key:'user.echo:0',kind:'user',text:'/mcp '}])
   })
 })
 
@@ -191,8 +192,8 @@ describe('`/mcp <服务器>` · 那一台的明细', () => {
     )
 
     // 0 行（这一台没工具）时那行说明落成记录区一行——**缘由在里面**
-    expect(app.said()).toContain('locked（http）· 不可用')
-    expect(app.said()).toContain('服务器要认证（HTTP 401）')
+    expect(app.picker()?.hint).toContain('locked（http）· 不可用')
+    expect(app.picker()?.hint).toContain('服务器要认证（HTTP 401）')
   })
 
   test('点了名却没有这一台：不开抽屉，内核那一句缘由落成记录区一行', () => {
@@ -212,9 +213,10 @@ describe('`/mcp <服务器>` · 那一台的明细', () => {
     const app = live()
     open(app, { servers: [] })
 
-    expect(app.picker()).toBeUndefined()
-    expect(app.said()).toContain('配置里写 mcp.servers 才连')
-    expect(app.said()).toContain('.mcp.json 不算授权')
+    expect(app.picker()?.rows).toEqual([])
+    expect(app.picker()?.hint).toContain('配置里写 mcp.servers 才连')
+    expect(app.picker()?.hint).toContain('.mcp.json 不算授权')
+    app.press(ESC); expect(app.view().dock.kind).toBe('input')
   })
 })
 
@@ -224,10 +226,7 @@ describe('`/mcp reconnect <服务器>` · 显式重连', () => {
     app.type('/mcp reconnect remote')
     app.press(ENTER)
 
-    expect(app.spy.commands).toEqual([
-      { type: 'skills.list' },
-      { type: 'mcp.reconnect', server: 'remote' },
-    ])
+    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/mcp reconnect remote","type":"input.submit"}, { type: 'mcp.reconnect', server: 'remote' }])
 
     // 重连的答复：新读数 ＋ 一句结果
     app.spy.emit(
@@ -246,10 +245,7 @@ describe('`/mcp reconnect <服务器>` · 显式重连', () => {
     const app = live()
     open(app, { servers: [server({ server: 'reconnect-db', tools: ['echo'] })] }, '/mcp reconnect-db')
 
-    expect(app.spy.commands).toEqual([
-      { type: 'skills.list' },
-      { type: 'mcp.list' }, // **不是** `mcp.reconnect`
-    ])
+    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/mcp reconnect-db","type":"input.submit"}, { type: 'mcp.list' }])
     expect(app.picker()?.rows.map((row) => row.label)).toEqual(['echo']) // 开的是它的明细
   })
 
@@ -258,7 +254,7 @@ describe('`/mcp reconnect <服务器>` · 显式重连', () => {
     app.type('/mcp reconnect')
     app.press(ENTER)
 
-    expect(app.spy.commands).toEqual([{ type: 'skills.list' }])
+    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/mcp reconnect","type":"input.submit"}])
     expect(app.said()).toContain('/mcp reconnect <名字>')
   })
 })
@@ -266,7 +262,7 @@ describe('`/mcp reconnect <服务器>` · 显式重连', () => {
 describe('屏上（真外壳 ＋ 真帧）', () => {
   test('那一屏画在左下、字面读得懂；收起之后输入行还在', async () => {
     const stage = createStage()
-    stage.type('/mcp')
+    stage.type('/mcp ')
     stage.press(ENTER)
     stage.feed([
       event('mcp.catalog', {
@@ -284,8 +280,9 @@ describe('屏上（真外壳 ＋ 真帧）', () => {
     expect(frame.has('不可用')).toBe(true)
     // 失联那一台的缘由**说得出是为什么**（不必去猜）
     expect(frame.has('本版不支持登录授权')).toBe(true)
-    expect(frame.dock.some((line) => line.text.includes('›'))).toBe(false) // 抽屉接管着
-    expect(frame.statusLine).toContain('esc 收起')
+    expect(stage.shell.getView().dock.kind).toBe('picker') // 抽屉接管着
+    expect(frame.dock.map(line => line.text).join('\n')).toContain('Esc 返回')
+    expect(frame.statusLine).not.toContain('Esc 返回')
 
     stage.press(ESC)
     const after = await stage.screen(WIDE)

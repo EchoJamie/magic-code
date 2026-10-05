@@ -1,4 +1,6 @@
 import { createManagedCollaboration } from './collaboration.ts'
+import { loadConfig } from '../config.ts'
+import { setPrefs } from '../config-save.ts'
 import { captureCollaborationNative, mergeCollaborationNative, type CollaborationNativeGroup } from './collaboration-native.ts'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
  * 记录事实通过 records 端口读取；控制连接本身不创建会话或执行者。
@@ -55,7 +57,7 @@ import { softwareSource } from './runtime-launch.ts'
 import { createNativeServer } from './native-server.ts'
 import { projectWorks } from './native-projection.ts'
 import { query as observe } from './observation.ts'
-import { readSessionCatalog } from '@magic/conversation'
+import { readSessionCatalog, readSessionDisplayHistory } from '@magic/conversation'
 import type { Entry } from '@magic/contracts'
 import { silentNotifier } from './system-notify.ts'
 import type { SystemNotifier } from './system-notify.ts'
@@ -551,7 +553,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     },
     runs: () => [...executors].map(e => runRowOf(e.run)),
     decisions: session => liveOf(session)?.run.decisions.size ?? 0,
-    changed: () => { native.changed(); for (const conn of clients.values()) void publishCollaboration(conn) },
+    changed: () => {
+      native.changed();for(const conn of clients.values())void publishCollaboration(conn)
+      for(const executor of executors){const session=executor.run.session;if(session!==null&&store.serviceFor(session).inputs.list().some(one=>one.state==='pending'&&one.purpose==='next'))send(executor,{t:'collaboration.wake'})}
+    },
   })
   void collaboration.recover()
 
@@ -634,7 +639,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     let submitted = command
     let inputKey: string | undefined
     if (command.type === 'collaboration.input') {
-      inputKey = crypto.randomUUID()
+      inputKey = command.input.ref ?? crypto.randomUUID()
       const work = store.collaboration.collaborationForSession(session)
       const target = command.shared === true || command.member === undefined ? work?.originSessionId
         : store.collaboration.getAgent(command.member)?.sessionId
@@ -1303,6 +1308,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.state',
       data: { active: conn.selectedSession ?? '', sessions },
     } })
+    if (conn.selectedSession !== null) conn.link.send({t:'ev',gen:null,event:{id:0,turn:null,at:now(),session:conn.selectedSession,kind:'input.pending',data:{inputs:store.serviceFor(conn.selectedSession).inputs.list()}}})
     } catch { if (!conn.link.closed) conn.link.send({ t: 'line', text: '无法读取会话目录' }) }
   }
 
@@ -1313,13 +1319,15 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     const revision = ++conn.readRevision
     try {
     let entries: Entry[] = []
+    const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
+    for await (const event of store.serviceFor(session).readEvents(session)) if(event.kind==='input.local') inputs.push(event)
     const send = (done: boolean): void => {
       conn.link.send({ t: 'ev', gen: null, event: {
-        id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done },
+        id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done?{inputs}:{}) },
       } })
       entries = []
     }
-    for await (const entry of store.readEntries(session)) {
+    for await (const entry of readSessionDisplayHistory(store,session)) {
       if (conn.link.closed || revision !== conn.readRevision || session !== conn.selectedSession) return
       entries.push(entry)
       if (entries.length === 50) send(false)
@@ -1336,6 +1344,22 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
     if (command.type === 'session.list') { void catalog(conn); return }
+    // 界面偏好只写配置，不依附一代任务执行者，也不创建会话。
+    if (command.type === 'prefs.set') {
+      try {
+        const loaded = loadConfig({ magic: options.magic })
+        const outcome = setPrefs({ path: loaded.path, loadedAt: loaded.mtimeMs, request: command })
+        const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
+        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效'].filter(Boolean).join(' · ')
+        conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
+          ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }),
+          reducedMotion: config.motion?.reduced === true,
+          note: outcome.ok ? `已更新：${changed}` : `${changed}没改成——${outcome.reason}`,
+        } } })
+      } catch (error) { conn.link.send({ t: 'line', text: `界面设置没改成：${error instanceof Error ? error.message : String(error)}` }) }
+      return
+    }
+
     if (conn.target === undefined && ['model.list', 'provider.list', 'skills.list', 'paths.list', 'grants.list', 'mcp.list'].includes(command.type)) {
       const session = conn.selectedSession
       void observe(command, {
@@ -1346,6 +1370,20 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }).catch((error) => { if (!conn.link.closed) conn.link.send({ t: 'line', text: `读取失败：${String(error)}` }) })
       return
     }
+    const originSession = conn.selectedSession
+    const activeCollaboration = originSession == null ? undefined : store.collaboration.collaborationForSession(originSession)
+    // 有效成员卡归持卡执行者；入口退代不能让这张仍有效的卡答不进去。
+    if (activeCollaboration !== undefined && command.type === 'decision.answer') {
+      const memberSessions = new Set(store.collaboration.listMembers(activeCollaboration.collaborationId).map(a => a.sessionId))
+      const owner = [...executors].find(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.decisions.has(command.id))
+      if (owner !== undefined) { deliver(owner, command); return }
+      if ([...executors].some(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.resolvedDecisions.has(command.id))) {
+        conn.link.send({ t: 'line', text: '这一件已经处理过了——答复只算第一次' })
+        return
+      }
+    }
+
+
     if (gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
       conn.link.send({
         t: 'line',
@@ -1357,14 +1395,49 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       return
     }
 
+    const localInput=command.type==='input.submit'&&command.local===true?command:command.type==='collaboration.input'&&command.input.local===true?command.input:undefined
+    if(localInput!==undefined){
+      const origin=conn.selectedSession
+      const work=origin===null?undefined:store.collaboration.collaborationForSession(origin)
+      const member=command.type==='collaboration.input'?command.member:undefined
+      const session=member===undefined?origin:work===undefined?undefined:store.collaboration.listMembers(work.collaborationId).find(one=>one.agentId===member)?.sessionId
+      if(session!=null){const records=store.serviceFor(session);records.appendEvent({session,id:records.nextId(),turn:null,at:now(),kind:'input.local',data:{text:localInput.text,refs:localInput.refs??[],ref:localInput.ref??crypto.randomUUID()}})}
+      return
+    }
+
     if (command.type.startsWith('collaboration.')) {
       void collaborationCommand(conn, command as CollaborationCommand)
       return
     }
     if (command.type === 'session.new') conn.collaborationMember = undefined
 
-    const originSession = conn.selectedSession
-    const activeCollaboration = originSession == null ? undefined : store.collaboration.collaborationForSession(originSession)
+    if (command.type === 'input.manage') {
+      const origin=conn.selectedSession
+      const work=origin===null?undefined:store.collaboration.collaborationForSession(origin)
+      const member=command.member===undefined?undefined:work===undefined?undefined:store.collaboration.listMembers(work.collaborationId).find(one=>one.agentId===command.member)
+      const session=command.member===undefined?origin:member?.sessionId
+      if(session==null){conn.link.send({t:'line',text:'当前输入目标不存在，未修改'});return}
+      const inputs=store.serviceFor(session).inputs
+      let note:string|undefined
+      if(command.action==='edit')note=inputs.edit(command.ref,command.revision,command.input)?'已保存未消费输入':'输入已消费或已改变，未修改'
+      if(command.action==='withdraw')note=inputs.withdraw(command.ref,command.revision)?'已撤回未消费输入':'输入已消费或已改变，未撤回'
+      if(command.action==='continue'){
+        const row=inputs.get(command.ref)
+        if(row?.state!=='pending'||row.revision!==command.revision)note='输入已消费或已改变，未继续'
+        else if(work?.state==='stopped')note='这份工作已停止，请先明确继续工作'
+        else {
+          const executor=liveOf(session)??spawn({session,explicit:true,cwd:member?.workspace[0]??conn.cwd})
+          if(executor===undefined)note='当前执行者不可用，输入保留'
+          else {
+            if (member === undefined) bind(conn, executor)
+            else collaborationInputs.set(row.ref, {conn, session:origin!, target:session, ref:row.ref})
+            deliver(executor,command)
+          }
+        }
+      }
+      conn.link.send({t:'ev',gen:null,event:{id:0,turn:null,at:now(),session,kind:'input.pending',data:{inputs:inputs.list(),...(note===undefined?{}:{note})}}})
+      return
+    }
     if (activeCollaboration !== undefined && command.type === 'input.submit') {
       void collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
       return
@@ -1372,15 +1445,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (activeCollaboration !== undefined && command.type === 'turn.interrupt') {
       void collaborationCommand(conn, { type: 'collaboration.stop' })
       return
-    }
-    if (activeCollaboration !== undefined && command.type === 'decision.answer') {
-      const memberSessions = new Set(store.collaboration.listMembers(activeCollaboration.collaborationId).map(a => a.sessionId))
-      const owner = [...executors].find(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.decisions.has(command.id))
-      if (owner !== undefined) { deliver(owner, command); return }
-      if ([...executors].some(e => e.run.session !== null && memberSessions.has(e.run.session) && e.run.resolvedDecisions.has(command.id))) {
-        conn.link.send({ t: 'line', text: '这一件已经处理过了——答复只算第一次' })
-        return
-      }
     }
 
     /**
@@ -1889,11 +1953,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (event.kind === 'input.settled' && event.data.ref !== undefined) {
       const owner = collaborationInputs.get(event.data.ref)
       if (owner !== undefined) {
-        collaborationInputs.delete(event.data.ref)
+        if(event.data.stage!=='accepted')collaborationInputs.delete(event.data.ref)
         const { ref: _transportRef, ...settled } = event.data
         owner.conn.link.send({ t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
           ...event, data: { ...settled, ...(owner.ref === undefined ? {} : { ref: owner.ref }) },
         } })
+        owner.conn.link.send({t:'ev',gen:null,event:{session:owner.target,id:0,at:now(),turn:null,kind:'input.pending',data:{inputs:store.serviceFor(owner.target).inputs.list()}}})
         return
       }
     }

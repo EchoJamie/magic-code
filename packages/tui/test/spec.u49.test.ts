@@ -227,7 +227,7 @@ describe('U49 · 列表那一屏（真按键）', () => {
   /** 开到 `/resume` 那一屏（走真按键）。 */
   async function opened(runs0 = runs) {
     const stage = createStage({ workspaceRoots: HERE, runs: runs0 })
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed([stateEvent('s-idle', catalog)])
     return stage
@@ -263,12 +263,12 @@ describe('U49 · 列表那一屏（真按键）', () => {
     stage.type('那条')
     stage.press({ kind: 'tab' })
     const here = await stage.screen(WIDE)
-    expect(docked(here, '只看本工作区')).toBe(true)
+    expect(docked(here, '本工作区')).toBe(true)
     expect(docked(here, '筛选「那条」')).toBe(true)
 
     stage.press({ kind: 'tab' })
     const all = await stage.screen(WIDE)
-    expect(docked(all, '只看本工作区')).toBe(false)
+    expect(docked(all, '范围：本工作区')).toBe(false)
     expect(docked(all, '筛选「那条」')).toBe(true)
   })
 })

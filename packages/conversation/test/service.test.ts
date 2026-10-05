@@ -81,18 +81,23 @@ describe('ConversationService · 状态转场', () => {
     service.submit({ text: '你好' })
 
     // 端口是 `void`——工作异步跑，但状态转场**当场**发生（外壳据此立刻改界面）
-    expect(kindsOf(stage).slice(0, 2)).toEqual(['agent.start', 'agent.state'])
+    expect(kindsOf(stage).slice(0, 4)).toEqual(['input.settled','input.pending','agent.start','agent.state'])
     expect(statesOf(stage)).toEqual(['resumed'])
 
     await waitUntilIdle(stage.sink)
 
     expect(kindsOf(stage)).toEqual([
+      'input.settled', // 持久受理在开工前。
+      'input.pending',
       'agent.start',
       'agent.state', // resumed
       'message.user',
+      'input.pending', // 原子消费后刷新。
       'turn.start',
       'model.call.start',
       'model.delta',
+      'input.settled', // 请求带入有实际响应事实后才确认。
+      'input.pending',
       'model.call.end',
       'message.assistant',
       'turn.end',
@@ -124,7 +129,7 @@ describe('ConversationService · 排队', () => {
     const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '第一件' })
-    service.submit({ text: '第二件' }) // 第一件还没跑完
+    service.submit({ text: '第二件', purpose:'next' }) // 明确下一件不混在当前补充。
 
     await waitUntilIdle(stage.sink)
 
@@ -165,7 +170,7 @@ describe('ConversationService · 中断', () => {
     const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '头一件' })
-    service.submit({ text: '还没轮到的那件', ref: 'draft-2' })
+    service.submit({ text: '还没轮到的那件', ref: 'draft-2', purpose:'next' })
     await waitFor(
       () => (stage.sink.byKind('model.delta').length >= 1 ? true : undefined),
       '第一条正文增量',
@@ -180,7 +185,10 @@ describe('ConversationService · 中断', () => {
 
     // ② **标为未执行 ＋ 保留**：逐条配对一条终态，且那句话说得出它是什么
     //    （从前那句是「请重新发送」——把一份留着的交代说成了一次丢失，用户得重打一遍）
-    const settled = stage.sink.byKind('input.settled')
+    const receipts = stage.sink.byKind('input.settled')
+    expect(receipts.filter(event=>event.data.ref==='draft-2'&&event.data.stage==='accepted')).toHaveLength(1)
+    expect(stage.records.inputs.get('draft-2')).toMatchObject({state:'pending',purpose:'next'})
+    const settled = receipts.filter(event=>event.data.ref==='draft-2'&&event.data.ok===false)
     expect(settled).toHaveLength(1)
     expect(settled[0]?.data.ok).toBe(false)
     expect(settled[0]?.data.reason).toContain('未执行')
@@ -196,7 +204,7 @@ describe('ConversationService · 中断', () => {
     const service = createConversationSession(depsOf(stage))
 
     service.submit({ text: '头一件' })
-    service.submit({ text: '还没轮到的那件', ref: 'draft-2' })
+    service.submit({ text: '还没轮到的那件', ref: 'draft-2', purpose:'next' })
     await waitFor(
       () => (stage.sink.byKind('model.delta').length >= 1 ? true : undefined),
       '第一条正文增量',
@@ -245,6 +253,7 @@ describe('ConversationService · 兜底', () => {
 /** 记录桩：写入即炸——验内核自身异常的就近兜底（库坏掉时不许静默）。 */
 function brokenRecords(base: FauxRecords): RecordsService {
   return {
+    get inputs() { return base.inputs },
     get collaboration() { return base.collaboration },
     get blobs() {
       return base.blobs

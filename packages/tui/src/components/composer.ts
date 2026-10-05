@@ -118,14 +118,9 @@ export function placeholderOf(tone: ComposerTone): string {
     case 'idle':
       return '交代一件事，回车发送'
     case 'working':
-      // 工具在跑——「想插话可以打」是原型场景 3 的原话
-      return '（工作中——想插话可以打，发不出去就排队）'
     case 'waiting':
-      // **等模型回来**（U20 · 差距 3「进度感」）——与「工具在跑」分开：那一刻屏上
-      // 没有转圈的行，只有这句话说明「球在它那边」。措辞借原型场景 14 的原话「等模型回来」。
-      return '（等模型回来——想插话可以打，发不出去就排队）'
     case 'retrying':
-      return '（等模型回来——不用管，退避重试会自动重发）'
+      return ''
   }
 }
 

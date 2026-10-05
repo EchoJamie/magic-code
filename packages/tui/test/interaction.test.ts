@@ -114,6 +114,7 @@ function liveApp() {
     /** 投事件并等画面跟上。 */
     async push(events: readonly KernelEvent[], expectFrame?: (frame: string) => boolean) {
       for (const item of events) spy.emit(item)
+      if (events.some(item => item.kind === 'tool.decision.request')) shell.key({ kind: 'ctrl+g' })
       if (expectFrame !== undefined) await app.waitForFrame(expectFrame)
     },
   }
@@ -131,7 +132,7 @@ describe('输入行', () => {
     await app.waitForFrame((frame) => frame.includes('交代一件事'))
 
     // `ref` ＝ 提交的配对键（U33）——`input.settled` 按它认回这份草稿
-    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区', ref: 'draft-1' }])
+    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区', purpose: 'current', ref: expect.any(String) }])
 
     app.unmount()
   })
@@ -190,8 +191,8 @@ describe('审批答复（接管）', () => {
     //    - **2026-09-22 再收一次锚**（D29）：接管态不画输入行了 ⇒「不再说『等你的答复』」已**恒真**，
     //      换成它的正题：**输入行回来了**，且卡不在。
     await push([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })],
-      (frame) => frame.includes('想插话可以打'))
-    expect(app.frame()).toContain('› ')
+      (frame) => frame.includes('● 工作中'))
+    expect(app.frame()).toMatch(/›(?: |\n)/)
     expect(app.frame()).not.toContain('等你的答复')
     expect(app.frame()).not.toContain('y 批准')
     expect(app.frame()).toContain('● 工作中')
@@ -409,7 +410,7 @@ describe('挤进同一个读块的正文与回车', () => {
     await app.type('看下工作区\r')
 
     await app.waitForFrame((frame) => frame.includes('交代一件事'))
-    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区', ref: 'draft-1' }])
+    expect(commands()).toEqual([{ type: 'input.submit', text: '看下工作区', purpose: 'current', ref: expect.any(String) }])
 
     app.unmount()
   })

@@ -382,7 +382,7 @@ describe('主循环 · 中断', () => {
     expect(await run(makeLoopRuntime(stage), '你好', controller.signal)).toBe('aborted')
 
     expect(stage.gateway.requests).toHaveLength(0)
-    expect(kindsOf(stage)).toEqual(['message.user'])
+    expect(kindsOf(stage)).toEqual([]) // 执行前中止，不消费、不请求。
   })
 })
 

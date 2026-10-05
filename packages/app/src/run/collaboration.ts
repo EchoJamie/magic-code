@@ -1,3 +1,4 @@
+import {readSessionDisplayHistory} from '@magic/conversation'
 import type {
   AgentIdentity, AgentModelConfig, CollaborationCommand, CollaborationReply, CollaborationRequest,
   CollaborationView, CollaborationUsage, Entry, MagicHome, ModelUsage, RunRow, StopResult, UserInput,
@@ -128,7 +129,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
     const selected = member === undefined ? undefined : members.find(a => a.agentId === member)
     if (member !== undefined && selected === undefined) throw new Error('成员不属于这份工作')
     const entries: Entry[] = []
-    if (selected !== undefined) for await (const entry of host.store.readEntries(selected.sessionId)) entries.push(entry)
+    if (selected !== undefined) for await (const entry of readSessionDisplayHistory(host.store,selected.sessionId)) entries.push(entry)
     const messages = selected === undefined ? [] : records.listMessages(selected.agentId)
     return {
       originSession: collaboration.originSessionId, collaboration, usage: sumUsage(usage),

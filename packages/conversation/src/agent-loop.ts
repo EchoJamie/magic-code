@@ -244,8 +244,10 @@ export async function agentLoop(
   runtime: LoopRuntime,
   input: UserInput | undefined,
   signal: AbortSignal,
+  accepted?: (entry:RecordId)=>void|Promise<void>,
 ): Promise<InputOutcome> {
-  const prepared = await prepareInput(runtime, input)
+  if(signal.aborted)return 'aborted'
+  const prepared = await prepareInput(runtime, input, accepted)
   if (prepared === undefined) return 'rejected'
   const announce = createAnnouncer(runtime, prepared.skills)
 
@@ -265,8 +267,12 @@ export async function agentLoop(
 export async function prepareInput(
   runtime: LoopRuntime,
   input: UserInput | undefined,
-  accepted?: (entry: RecordId) => void,
+  accepted?: (entry: RecordId) => void|Promise<void>,
 ): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[] } | undefined> {
+  const stored = input?.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
+  if (input?.ref !== undefined && stored?.state !== 'pending') return undefined
+  if (stored !== undefined) input = stored.input
+
 
   // **此刻发得出去吗**（U60）——拦在**头一件**上（见 `LoopRuntime.submitRefusal`：
   // 发不出去就不该先开一轮、也不该白读那几份材料）。
@@ -320,12 +326,20 @@ export async function prepareInput(
       const refusal = runtime.collaboration?.admit()
       if (refusal !== undefined) { refuse(runtime, input, refusal); return undefined }
       const entryId = await appendUserEntry(entryLogOf(runtime), input.text, {
+        ...(input.ref === undefined ? {} : {ref:input.ref, revision:stored!.revision}),
+        admit: () => runtime.collaboration?.admit(),
         refs: delivery.refs,
         skills: legacy.used,
         ...(input.notice === true ? { notice: true as const } : {}),
       })
+      if (entryId === undefined) {
+        const latest = input.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
+        return latest?.state === 'pending' && latest.revision !== stored?.revision
+          ? prepareInput(runtime, latest.input, accepted) : undefined
+      }
       runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
-      try { accepted?.(entryId) }
+      if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:runtime.records.inputs.list()}))
+      try { await accepted?.(entryId) }
       catch (error) {
         refuse(runtime, input, `输入已保存，但共同补充未能发布（${messageOf(error)}）；未继续执行，原稿保留`)
         reportError(runtime, error)
@@ -346,9 +360,7 @@ export async function prepareInput(
   // 那一条说的是「送进了模型」。故此后模型那边再怎么失败（SDK 参数错 / 网络断 / 被停止），
   // **照模型失败报**（`model.error` · `turn.end{reason:'error'}`），**不撤销这一条**、
   // 也不暗示用户重发——已经进了会话的话，重发就是把同一件事说两遍。
-  if (input?.ref !== undefined) {
-    runtime.sink.emit(runtime.stamper.stamp('input.settled', { ref: input.ref, ok: true }))
-  }
+
 
   // **回执的兑现点**（收下 ＋ **真读到的**技能）——**按「这一次交代」记一份账，跨轮不重来**
   // （见 `createAnnouncer`：首轮报过一次就不再报，工具轮再多也只有那一次）。
@@ -673,6 +685,7 @@ function refuse(
   keepDraft?: boolean,
 ): void {
   if (input === undefined) return
+  if(input.ref!==undefined)runtime.records.inputs.fail(input.ref,reason)
   runtime.sink.emit(
     runtime.stamper.stamp('input.settled', {
       ...(input.ref === undefined ? {} : { ref: input.ref }),
@@ -733,9 +746,11 @@ async function runTurn(
       await runtime.collaboration?.consume()
       if (runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       let included: readonly number[] = []
+      let userEntries: readonly RecordId[] = []
       const messages = await assembleContext({
         records: runtime.records,
         onIncluded: ids => { included = ids },
+        onUserEntries: ids => { userEntries = ids },
         session: runtime.session,
         // **项目规约 ＋ 技能目录 ＋ 后台命令**在装配这一步接上（U32 · U33 · U89）——
         // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
@@ -785,6 +800,9 @@ async function runTurn(
         // 故逐条调都行，重发那一趟（超限重试）也照旧只报一次。
         if (owed && RESPONSE_EVENTS.has(event.kind)) {
           owed = false
+          const acceptedInputs = runtime.records.inputs.included(userEntries)
+          for (const input of acceptedInputs) runtime.sink.emit(runtime.stamper.stamp('input.settled', {ref:input.ref,ok:true,stage:'included'}))
+          if(acceptedInputs.length>0)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:runtime.records.inputs.list()}))
           runtime.collaboration?.requested(included)
           announce.flush()
         }

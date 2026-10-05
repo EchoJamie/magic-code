@@ -130,6 +130,7 @@ export type AssembleContextInput = {
    * 任一正文/引用/图片读取失败时不调用；成功的普通会话调用时传空数组。
    */
   readonly onIncluded?: (messageIds: readonly MessageId[]) => void
+  readonly onUserEntries?: (entryIds: readonly RecordId[]) => void
 }
 
 /**
@@ -200,6 +201,7 @@ export async function assembleContext(
    * 配对被丢弃的也不进（落单的 `tool-call` 那一路根本不展开，见文件头注 2）。
    */
   const delivered = new Set<RecordId>()
+  const users: RecordId[] = []
 
   // 压缩过就先摆摘要头，再展开「近段 ＋ 摘要之后的条目」（见文件头注 · 边界由摘要位置定）
   const plan = planContext({ entries: all, nearEntries: input.nearEntries ?? DEFAULT_NEAR_ENTRIES })
@@ -232,6 +234,7 @@ export async function assembleContext(
       const skills = userPayloadOf(payload)
 
       messages.push({ role: 'user', content: await userBodyOf(text, refs, skills, input.records) })
+      users.push(entry.id)
       index += 1
       continue
     }
@@ -338,6 +341,7 @@ export async function assembleContext(
   if (material !== undefined) messages.push(material)
 
   input.onIncluded?.(projected)
+  input.onUserEntries?.(users)
   return messages
 }
 

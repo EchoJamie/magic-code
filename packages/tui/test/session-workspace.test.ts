@@ -62,7 +62,7 @@ function live(workspace: readonly string[] | null = [HERE]) {
      */
     open: (catalog: readonly KernelEvent[]) => {
       stage.feed(catalog)
-      stage.type('/resume')
+      stage.type('/resume ')
       stage.press({ kind: 'enter' })
       stage.feed(catalog)
     },
@@ -112,7 +112,7 @@ describe('分组头 ＋ 全部列出', () => {
     ])
 
     const frame = await app.stage.screen()
-    const headers = frame.dock.filter((line) => line.text.includes(HERE))
+    const headers = frame.dock.filter((line) => line.text.trim() === HERE)
 
     expect(headers).toHaveLength(1)
     expect(frame.has('甲之一')).toBe(true)
@@ -303,7 +303,7 @@ describe('列表下方那句说明——报「这儿是哪儿」（U27）', () =
     app.open([state('shell', [])])
 
     const frame = await app.stage.screen()
-    expect(frame.has('还没有落过账的会话')).toBe(true)
+    expect(frame.has('工作目录为空')).toBe(true)
     expect(frame.has('本工作区：')).toBe(false)
   })
 

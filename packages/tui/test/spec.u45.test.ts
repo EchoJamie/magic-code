@@ -88,7 +88,7 @@ function bannerCopies(frame: Frame, columns: number): number {
 describe('之一 · `/clear`（开一条新的）⇒ 那一页印字标', () => {
   /** 敲一句 `/clear` ＋ 它那一跳的答复（开成了：活跃位换了）。 */
   const cleared = (stage: Stage, to: string): readonly (() => void)[] => [
-    () => stage.type('/clear'),
+    () => stage.type('/clear '),
     () => stage.press(ENTER),
     () => stage.feed([state(to)]),
   ]
@@ -130,7 +130,7 @@ describe('之一 · `/clear`（开一条新的）⇒ 那一页印字标', () => 
     const strays = frame.record
       .map((line) => line.text.replace(/\s+$/u, ''))
       .filter((text) => text.trim() !== '' && !art.has(text))
-    expect(strays).toEqual([])
+    expect(strays).toEqual(['› 先交代一句', '› /clear'])
   })
 })
 
@@ -146,7 +146,7 @@ describe('之一 · 内核挡回（`note` 在）⇒ 不翻页、不种字标', (
     const stage = createStage()
     // 空手开机（没有会话）⇒ `/clear` ⇒ 内核忙，活跃位没动、带一句 `note` 挡回
     takes(stage, [
-      () => stage.type('/clear'),
+      () => stage.type('/clear '),
       () => stage.press(ENTER),
       () => stage.feed([state('s1', '正在跑一轮——先 Ctrl+C 中断')]),
     ])
@@ -154,14 +154,14 @@ describe('之一 · 内核挡回（`note` 在）⇒ 不翻页、不种字标', (
 
     expect(view.sessionId).toBe('s1') // 活跃位照实记下（那是内核说的真话）
     expect(view.page).toBe(0) // 但**没有翻页**（什么都没发生，屏不该动）
-    expect(view.settled.map((row) => row.kind)).toEqual(['banner', 'receipt']) // 种的是那行 note，不是新字标
+    expect(view.settled.map((row) => row.kind)).toEqual(['banner', 'user', 'receipt']) // 种的是那行 note，不是新字标
     expect(stage.spy.commands.some((command) => command.type === 'session.new')).toBe(true) // 防空转：命令真发出去过
   })
 
   test('**同一条判据的正面**：没被挡回的那一跳照常翻页 ＋ 种字标（不然上面那条等于没判）', async () => {
     const stage = createStage()
     takes(stage, [
-      () => stage.type('/clear'),
+      () => stage.type('/clear '),
       () => stage.press(ENTER),
       () => stage.feed([state('s1')]), // 没有 `note` ＝ 成了
     ])
@@ -237,7 +237,7 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
 
   test('**选择器开着**：候选整块在下线之上，状态行仍在下线之下', async () => {
     const stage = createStage()
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press(ENTER)
     stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
 
@@ -251,6 +251,7 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
       event('tool.call', { name: 'write', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/a.ts', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     expect(stage.shell.getView().dock.kind).toBe('decision') // 防空转
     三块分得开(await stage.screen(WIDE), '裁决卡', 'y 批准')

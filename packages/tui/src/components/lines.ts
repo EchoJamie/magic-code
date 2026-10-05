@@ -1,3 +1,4 @@
+import stringWidth from 'string-width'
 /**
  * 显示小工具（缺陷轮 II 重画）——外壳自持显示组件的公共部件。
  *
@@ -28,28 +29,10 @@ export const PALETTE = {
  * 只求「折行与截断数得对」，不求 Unicode 全覆盖（emoji / 组合字符按 1 算，
  * 顶多让某行多一列——不会串行）。
  */
-export function charWidth(char: string): number {
-  const code = char.codePointAt(0) ?? 0
+export function charWidth(char: string): number { return stringWidth(char) }
 
-  // 常见全角区：CJK 统一表意 · 全角标点 · 假名 · 谚文 · 全角形式
-  if (code >= 0x1100 && code <= 0x115f) return 2
-  if (code >= 0x2e80 && code <= 0xa4cf) return 2
-  if (code >= 0xac00 && code <= 0xd7a3) return 2
-  if (code >= 0xf900 && code <= 0xfaff) return 2
-  if (code >= 0xfe30 && code <= 0xfe6f) return 2
-  if (code >= 0xff00 && code <= 0xff60) return 2
-  if (code >= 0xffe0 && code <= 0xffe6) return 2
-
-  return 1
-}
-
-/** 文本占几列。 */
-export function displayWidth(text: string): number {
-  let width = 0
-  for (const char of text) width += charWidth(char)
-
-  return width
-}
+/** 与 Ink 同源，按完整字素计算列宽。 */
+export function displayWidth(text: string): number { return stringWidth(text) }
 
 /**
  * **一张制表位几列**——终端把 `\t` 渲染成「走到下一个 8 列的整数倍」的那一段空白
@@ -120,7 +103,7 @@ export function expandTabs(
 }
 
 /** 折行——按显示宽度切（不切在字符中间；超长单词硬切）。Tab 按终端规矩展开后再折。 */
-export function wrap(text: string, width: number): readonly string[] {
+export function wrap(text: string, width: number, followingWidth = width): readonly string[] {
   if (width <= 0) return [text]
 
   const lines: string[] = []
@@ -134,9 +117,9 @@ export function wrap(text: string, width: number): readonly string[] {
      * 一样参与折行（不这样，展开出来的空白会一列不数地冲过行宽）。
      */
     const put = (piece: string): void => {
-      for (const char of piece) {
+      for (const {segment:char} of GRAPHEMES.segment(piece)) {
         const size = charWidth(char)
-        if (used + size > width && line !== '') {
+        if (used + size > (lines.length===0?width:followingWidth) && line !== '') {
           lines.push(line)
           line = ''
           used = 0
@@ -146,7 +129,7 @@ export function wrap(text: string, width: number): readonly string[] {
       }
     }
 
-    for (const char of raw) {
+    for (const {segment:char} of GRAPHEMES.segment(raw)) {
       // ⚠️ **量的列是「放之前」的列**（制表位按当前光标位置算）——`put` 的实参先算好
       put(char === '\t' ? ' '.repeat(tabWidth(used)) : char)
     }
@@ -164,7 +147,7 @@ export function truncate(text: string, width: number): string {
 
   let kept = ''
   let used = 0
-  for (const char of text) {
+  for (const {segment:char} of GRAPHEMES.segment(text)) {
     const size = charWidth(char)
     if (used + size > width - 1) break
     kept += char

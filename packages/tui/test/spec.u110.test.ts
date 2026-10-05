@@ -148,8 +148,8 @@ describe('U110 · 键怎么认', () => {
     expect(parseScreenKeys('\r')).toEqual([{ kind: 'accept' }])
   })
 
-  test('认不出来的转义序列当 `Esc`（丢掉它就是「按了没反应」）', () => {
-    expect(parseScreenKeys('\u001b[Z')).toEqual([{ kind: 'cancel' }, { kind: 'text', text: '[Z' }])
+  test('未知控制序列不退出，也不泄漏残片进搜索', () => {
+    expect(parseScreenKeys('\u001b[Z')).toEqual([])
   })
 })
 
@@ -310,8 +310,8 @@ describe('U110 · 一帧长什么样', () => {
   test('状态行报得出「读到哪儿 / 共多少行」与键位提示', () => {
     const status = frame(state({ top: 20 }), 100).split('\r\n')[6] as string
     expect(status).toContain('21–26 / 100 行')
-    expect(status).toContain('ctrl+u/d 半页')
-    expect(status).toContain('q 退出')
+    expect(status).toContain('PgUp/PgDn 翻页')
+    expect(status).toContain('Esc 返回')
   })
 
   test('搜过的词报「第几处 / 共几处」；打字那一档报「搜索：…」', () => {

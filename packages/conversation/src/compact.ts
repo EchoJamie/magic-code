@@ -212,7 +212,9 @@ export function createCompactor(deps: CompactorDeps): Compactor {
 
   async function readAll(): Promise<Entry[]> {
     const entries: Entry[] = []
-    for await (const entry of deps.records.readEntries(deps.session)) entries.push(entry)
+    for await (const entry of deps.records.readEntries(deps.session)) {
+      entries.push(entry)
+    }
     return entries
   }
 

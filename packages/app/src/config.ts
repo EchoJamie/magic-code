@@ -7,6 +7,9 @@ import type {
   AgentRoleConfig,
   MagicConfig,
   MagicHome,
+  StatusLineConfig,
+  StatusLineCell,
+  MotionConfig,
 
   McpConfig,
   McpServerConfig,
@@ -565,6 +568,27 @@ function asModelAliases(value: unknown, path: string, providers: MagicConfig['pr
   }))
 }
 
+/** 读取已保存的界面配置；缺省保持默认，坏值沿用配置加载错误出口。 */
+function asStatusLine(value: unknown, path: string): StatusLineConfig {
+  const raw = asObject(value, path, 'statusLine')
+  const cells = raw['cells']
+  if (!Array.isArray(cells) || cells.some(cell => !['session', 'model', 'reasoning', 'context', 'workspace'].includes(cell))) {
+    throw new ConfigError(path, 'statusLine.cells 须是状态行字段数组')
+  }
+  if (raw['color'] !== undefined && typeof raw['color'] !== 'boolean') {
+    throw new ConfigError(path, 'statusLine.color 须是布尔值')
+  }
+  return { cells: cells as StatusLineCell[], ...(raw['color'] === undefined ? {} : { color: raw['color'] as boolean }) }
+}
+
+function asMotion(value: unknown, path: string): MotionConfig {
+  const raw = asObject(value, path, 'motion')
+  if (raw['reduced'] !== undefined && typeof raw['reduced'] !== 'boolean') {
+    throw new ConfigError(path, 'motion.reduced 须是布尔值')
+  }
+  return raw['reduced'] === undefined ? {} : { reduced: raw['reduced'] as boolean }
+}
+
 /**
  * 读并校验配置文件。
  *
@@ -682,6 +706,8 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   // ⚠️ **漏带＝静默失效**（同上面三条的教训）：配置里写了服务器而这里不接，
   // 外部工具一件都出不来、也不报错——用户对着「明明配了却没有」发呆。
   const mcp = raw['mcp'] === undefined ? undefined : asMcpConfig(raw['mcp'], path)
+  const statusLine = raw['statusLine'] === undefined ? undefined : asStatusLine(raw['statusLine'], path)
+  const motion = raw['motion'] === undefined ? undefined : asMotion(raw['motion'], path)
 
   return {
     path,
@@ -702,6 +728,8 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
       ...(skillSources === undefined ? {} : { skills: { sources: skillSources } }),
       ...(mcp === undefined ? {} : { mcp }),
       ...(agentRoles === undefined ? {} : { agentRoles }),
+      ...(statusLine === undefined ? {} : { statusLine }),
+      ...(motion === undefined ? {} : { motion }),
     },
     providerId,
     provider,

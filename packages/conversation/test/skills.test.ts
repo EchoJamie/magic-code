@@ -212,6 +212,7 @@ describe('U33 · 回执只在请求真发出去之后', () => {
       skills: createSkillsDelivery(stubSkills()),
     })
 
+    stage.records.inputs.accept({text:'照它做',skills:selected,ref:'r-boom'},AT)
     return agentLoop(
       runtime,
       { text: '照它做', skills: selected, ref: 'r-boom' },
@@ -226,7 +227,8 @@ describe('U33 · 回执只在请求真发出去之后', () => {
         stage.sink.events
           .filter((event) => event.kind === 'input.settled')
           .map((event) => event.data),
-      ).toEqual([{ ref: 'r-boom', ok: true }])
+      ).toEqual([])
+      expect(stage.records.inputs.get('r-boom')?.state).toBe('consumed')
     })
   })
 
@@ -245,6 +247,7 @@ describe('U33 · 回执只在请求真发出去之后', () => {
       skills: createSkillsDelivery(stubSkills()),
     })
 
+    stage.records.inputs.accept({text:'照它做',skills:selected,ref:'r-silent'},AT)
     await agentLoop(
       runtime,
       { text: '照它做', skills: selected, ref: 'r-silent' },
@@ -254,13 +257,15 @@ describe('U33 · 回执只在请求真发出去之后', () => {
     expect(stage.sink.events.filter((event) => event.kind === 'skill.used')).toEqual([])
     expect(
       stage.sink.events.filter((event) => event.kind === 'input.settled').map((event) => event.data),
-    ).toEqual([{ ref: 'r-silent', ok: true }])
+    ).toEqual([])
+    expect(stage.records.inputs.get('r-silent')?.state).toBe('consumed')
   })
 
   test('正常发出去的（第一条事件到手）——照报，且**只报一次**', async () => {
     const stage = makeStage({ turns: [{ text: '做完了' }] })
     const runtime = makeLoopRuntime(stage, { skills: createSkillsDelivery(stubSkills()) })
 
+    stage.records.inputs.accept({text:'照它做',skills:selected,ref:'r-ok'},AT)
     await agentLoop(
       runtime,
       { text: '照它做', skills: selected, ref: 'r-ok' },

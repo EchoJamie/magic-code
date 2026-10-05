@@ -75,7 +75,7 @@ function live(receipts?: readonly string[]) {
 
 /** 开抽屉：打 `/grants` ＋ 回车 → 内核回一份名录。 */
 function openDrawer(app: ReturnType<typeof live>, over: Partial<EventDataOf['grants.catalog']> = {}) {
-  app.type('/grants')
+  app.type('/grants ')
   app.press(ENTER)
   app.spy.emit(event('grants.catalog', catalog(over)))
 }
@@ -86,12 +86,12 @@ describe('`/grants` —— 左下抽屉', () => {
   test('发一次 `grants.list`，**记录区什么都不进**（交互配置型）', () => {
     const app = live()
 
-    app.type('/grants')
+    app.type('/grants ')
     app.press(ENTER)
 
     // 头一条是打 `/` 时那次技能目录查询（U33：每屏只发一次）——被测的是后面那条 `grants.list`
-    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, { type: 'grants.list' }])
-    expect(app.rows()).toEqual([])
+    expect(app.spy.commands).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/grants ","type":"input.submit"}, { type: 'grants.list' }])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/grants "}])
     expect(app.picker()).toBeUndefined() // 名录没回来之前不开（「拿不到的不编」）
   })
 
@@ -110,7 +110,7 @@ describe('`/grants` —— 左下抽屉', () => {
     expect(picker?.rows.at(-1)?.faint).toBe(true)
     expect(picker?.rows.at(-1)?.revoke).toEqual({ workspace: '/work/gone' })
     // 记录区照旧什么都不进
-    expect(app.rows()).toEqual([])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/grants "}])
   })
 
   test('meta 栏＝**用过的证据**：用过几次、最近什么时候；没用过就说没用过', () => {
@@ -130,21 +130,26 @@ describe('`/grants` —— 左下抽屉', () => {
     app.press(ESC)
 
     expect(app.picker()).toBeUndefined()
-    expect(app.rows()).toEqual([])
+    expect(app.rows()).toEqual([{"echoed":true,"key":"user.echo:0","kind":"user","text":"/grants "}])
   })
 })
 
-// ══ 选定即撤（B13 的下半句）═══════════════════════════════════════════
+// ══ 查看详情后明确撤销（U114）═══════════════════════════════════════════
 
-describe('撤销 —— 选定即撤 ＋ 一行回执', () => {
+describe('撤销 —— 默认返回，明确选择撤销才修改', () => {
   test('回车撤**本工作区那一条**——发它的序号（不是路径、不是措辞）', () => {
     const app = live()
     openDrawer(app)
 
+    app.press(ENTER)
+    expect(app.picker()?.source).toBe('grants-detail')
+    expect(app.spy.commands.some(command => command.type === 'grants.revoke')).toBe(false)
+    app.press({ kind: 'down' })
     app.press(ENTER) // 选中项＝第一条
 
     expect(app.spy.commands).toEqual([
-      { type: 'skills.list' }, // 打 `/` 那一下顺带问的（见上）
+      { type: 'skills.list' },
+      { type: 'input.submit', local: true, text: '/grants ', refs: [], ref: expect.any(String) },
       { type: 'grants.list' },
       { type: 'grants.revoke', index: 0 },
     ])
@@ -154,6 +159,10 @@ describe('撤销 —— 选定即撤 ＋ 一行回执', () => {
     const app = live()
     openDrawer(app)
 
+    app.press(ENTER)
+    expect(app.picker()?.source).toBe('grants-detail')
+    expect(app.spy.commands.some(command => command.type === 'grants.revoke')).toBe(false)
+    app.press({ kind: 'down' })
     app.press(ENTER)
     app.spy.emit(event('grants.catalog', catalog({ grants: [], note: '已撤销：工具 exec × 根内 × 操作 read' })))
 
@@ -165,6 +174,10 @@ describe('撤销 —— 选定即撤 ＋ 一行回执', () => {
     const app = live()
     openDrawer(app)
 
+    app.press(ENTER)
+    expect(app.picker()?.source).toBe('grants-detail')
+    expect(app.spy.commands.some(command => command.type === 'grants.revoke')).toBe(false)
+    app.press({ kind: 'down' })
     app.press(ENTER)
     app.spy.emit(event('grants.catalog', catalog({ grants: [], note: '已撤销：工具 exec × 根内 × 操作 read' })))
 
@@ -180,6 +193,10 @@ describe('撤销 —— 选定即撤 ＋ 一行回执', () => {
 
     app.press({ kind: 'down' })
     app.press({ kind: 'down' }) // 走到第三行＝陈旧的那一节
+    app.press(ENTER)
+    expect(app.picker()?.source).toBe('grants-detail')
+    expect(app.spy.commands.some(command => command.type === 'grants.revoke')).toBe(false)
+    app.press({ kind: 'down' })
     app.press(ENTER)
 
     expect(app.spy.commands.at(-1)).toEqual({ type: 'grants.revoke', workspace: '/work/gone' })
@@ -207,99 +224,35 @@ describe('放行区那笔账 —— 未配规则的调用占比', () => {
     expect(app.picker()?.hint ?? '').toContain('还没走过裁决')
   })
 
-  /**
-   * ⚠️ **本条 2026-09-20 改过**（P0 · 用户真跑报的「`/grants` 让 TUI 卡死」）——三条照规矩写。
-   *
-   * - **原锚**：`openDrawer(app, {grants: [], stale: []})` 之后 `picker()` **开着一个 0 行的抽屉**，
-   *   那句话（「本工作区（X）还没有授权——批准时按 a 就是记一条」）落在 `picker.hint` 上。
-   * - **为何变**：0 行的抽屉**接管输入却不给东西可点**——接管＝作曲家让位（屏上没输入行了），
-   *   而 `key()` 那边选择器开着时**字符一律吞掉** ⇒ 用户**打不了字、也没得选**，
-   *   屏上只剩一行暗提示，`esc` 那句还在状态行最右 ⇒ **看着就是卡死**。
-   *   而 `/grants` **默认就是这个形态**（没按过 `a` 就没有 `grants.json`，名录必空）。
-   * - **新锚**：**不开抽屉**——那句话改落**记录区一行回执**（话一句不少、还更显眼），
-   *   而**输入照常**（`picker()` 为 `undefined`、`dock` 仍是输入）。
-   */
-  test('一条授权都没有时，那行**先说你此刻在哪儿**——但**不接管输入**（P0）', () => {
-    const app = live()
-    openDrawer(app, { grants: [], stale: [] })
-
-    expect(app.picker()).toBeUndefined()
-    expect(app.shell.getView().dock.kind).toBe('input')
-
-    const said = app.rows().at(-1)
-    expect(said?.kind).toBe('receipt')
-    expect(said?.kind === 'receipt' ? said.text : '').toContain(HERE)
-    expect(said?.kind === 'receipt' ? said.text : '').toContain('按 a')
+  test('空名录仍给工作区事实和返回入口，返回后输入正常', () => {
+    const app = live(); openDrawer(app, { grants: [], stale: [] })
+    expect(app.picker()?.rows).toEqual([])
+    expect(app.picker()?.hint).toContain(HERE)
+    expect(app.picker()?.hint).toContain('Esc 返回')
+    app.press(ESC); expect(app.view().dock.kind).toBe('input')
+    app.type('还能打字吗'); app.press(ENTER)
+    expect(app.spy.commands.at(-1)).toEqual({ type: 'input.submit', text: '还能打字吗', purpose: 'current', ref: expect.any(String) })
   })
-})
-
-// ══ P0 —— `/grants` 不许把输入吃掉（2026-09-20 用户真跑报的）════════════
-
-/**
- * 用户原话：**「grants 的slash 似乎会导致TUI交互卡住 无法再进行任何输入」**。
- *
- * 真跑复现到的形态：`/grants` 之后**屏上输入行没了**、**打什么键都不产生一个字节**
- * （pty 原始字节实测：连打 `abc` 增量 0），而名录是空的 ⇒ 屏上没有列表可看。
- * 根因＝**0 行的抽屉接管了输入**（见 `view.ts` 的 `openPicker`）。
- *
- * 下面三条各钉一头：空名录**不接管** · 有行**照旧接管**（设计要的用法）· 撤空了**还回去**。
- */
-describe('P0 —— `/grants` 不许把输入吃掉', () => {
-  test('**空名录**：抽屉不开 —— 打字照常进草稿、回车照常发得出去', () => {
-    const app = live()
-    openDrawer(app, { grants: [], stale: [] })
-
-    app.type('还能打字吗')
-    expect(app.shell.getView().draft).toBe('还能打字吗')
-
-    app.press(ENTER)
-    expect(app.spy.commands.at(-1)).toEqual({
-      type: 'input.submit',
-      text: '还能打字吗',
-      ref: 'draft-1', // 提交的配对键（U33）
-    })
-  })
-
-  test('**屏上**：那条路走完，输入行还在（不是「只剩一行暗提示、像卡死」）', async () => {
-    const stage = createStage()
-    stage.type('/grants')
-    stage.press({ kind: 'enter' })
+  test('空态屏上事实与 Esc 入口可见，不在状态行重复菜单键', async () => {
+    const stage = createStage(); stage.type('/grants '); stage.press(ENTER)
     stage.feed([event('grants.catalog', catalog({ grants: [], stale: [] }))])
-
     const frame = await stage.screen(WIDE)
-
-    // 作曲家还在屏上（「› 」那一行就是输入行）
-    expect(frame.dock.some((line) => line.text.includes('›'))).toBe(true)
-    // 右位报的是**空闲态**键位，不是选择器那套（报「esc 收起」就等于说还在抽屉里）
-    expect(frame.statusLine).toContain('/ 命令 · ctrl+c 退出')
-    // 那句话**照旧说**（改的是接管，不是措辞）
     expect(frame.has('还没有授权')).toBe(true)
+    expect(frame.dock.map(line => line.text).join('\n')).toContain('Esc 返回')
+    expect(frame.statusLine).not.toContain('Esc 返回')
+    stage.press(ESC)
+    expect((await stage.screen(WIDE)).dock.some(line => line.text.includes('›'))).toBe(true)
   })
-
-  test('**有行**时照旧接管（选择器是设计要的用法）——`esc` 之后输入照常', () => {
-    const app = live()
-    openDrawer(app) // 默认名录：两条授权 ＋ 一个陈旧的节
-
-    expect(app.picker()).toBeDefined()
-    expect(app.shell.getView().dock.kind).toBe('picker')
-
-    app.press(ESC)
-    expect(app.picker()).toBeUndefined()
-    app.type('回来了')
-    expect(app.shell.getView().draft).toBe('回来了')
-  })
-
-  test('**撤空了**⇒ 抽屉收起（0 行的抽屉同样会吃掉输入）', () => {
-    const app = live()
-    openDrawer(app, { grants: [{ describe: '就这一条', grantedAt: 1, stale: false }], stale: [] })
-
-    app.press(ENTER) // 撤掉唯一那一条
-    app.spy.emit(event('grants.catalog', catalog({ grants: [], stale: [], note: '已撤销：就这一条' })))
-
-    expect(app.picker()).toBeUndefined()
-    expect(app.shell.getView().dock.kind).toBe('input')
-    app.type('还能打')
-    expect(app.shell.getView().draft).toBe('还能打')
+  test('看详情及默认返回零撤销；刷新后下一条也默认返回', () => {
+    const app = live(); openDrawer(app)
+    app.press(ENTER); expect(app.picker()?.rows[0]?.value).toBe('back')
+    app.press(ENTER); expect(app.spy.commands.some(command => command.type === 'grants.revoke')).toBe(false)
+    app.press(ENTER); app.press({kind:'down'}); app.press(ENTER)
+    expect(app.spy.commands.at(-1)).toEqual({type:'grants.revoke',index:0})
+    app.spy.emit(event('grants.catalog',catalog({grants:[{describe:'剩余授权',grantedAt:1,stale:false}]})))
+    app.press(ENTER); expect(app.picker()?.rows[0]?.value).toBe('back')
+    app.press(ENTER)
+    expect(app.spy.commands.filter(command => command.type === 'grants.revoke')).toHaveLength(1)
   })
 })
 

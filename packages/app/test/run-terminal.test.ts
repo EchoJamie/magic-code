@@ -242,7 +242,7 @@ describe('U48-S5 · 终端是客户端', () => {
       // 内置件走的是**名单里**的删除 ⇒ 重档键位（`y / n`）。⚠️ `HINT_DECIDE_HEAVY` **没出包**
       // （`@magic/tui` 只出去包的常量），故这里按**字面量**锚——与 `ui/scenarios.ts`
       // 里 `COPY.decideHint` 同一条先例：真要改那处文案，判据会红，那正是该有的反应。
-      await window.key('enter', { until: { text: 'y / n' }, timeoutMs: 20_000 })
+      await window.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
 
       // **卡还挂着的时候停这一轮**（U100 起这条路是「三选 → 停止任务」）——
       // 答复永远不会来（那正是这个用例要的那条边）

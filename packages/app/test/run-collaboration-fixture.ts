@@ -123,7 +123,9 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       target.key({ kind: 'tab' })
       await wait('协作列表', () => { const dock = target.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration' })
       pick(member()!.agentId, target)
-      await wait('成员详情', () => { const dock = target.getView().dock; return dock.kind === 'picker' && dock.picker.source === 'collaboration-member' })
+      await wait('成员完整阅读', () => { const dock = target.getView().dock; return dock.kind === 'picker' && dock.picker.reader?.key === `${member()!.agentId}:records` })
+      target.key({kind:'memberMenu'})
+      await wait('成员操作', () => { const dock=target.getView().dock;return dock.kind==='picker'&&dock.picker.source==='collaboration-member' })
     },
     async openWindow() {
       const another = await connectManager(manager.socketPath, { cwd: workspace, session: session()!, label: `${name}-second`,
@@ -152,7 +154,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
         const dir = resolve(evidence); mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, events, commands, errors, lines, processExits, closedViews,
           windows: windows.map(window => ({ conn: window.client.conn, events: window.events, commands: window.commands })),
-          remainingExecutors: manager.executors(), socket: manager.socketPath }, null, 2))
+          inputFacts:members().map(member=>({session:member.sessionId,inputs:store.serviceFor(member.sessionId).inputs.list()})), remainingExecutors: manager.executors(), socket: manager.socketPath }, null, 2))
       }
       store.close(); server.stop(true)
       removeDir(paths.dir); removeDir(root)

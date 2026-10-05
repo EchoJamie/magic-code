@@ -54,7 +54,7 @@ const viewportOf = (frame: Frame, bufferRow: number): number =>
 
 /** **输入行**那一行（`› ` 开头的最后一条）。 */
 const composerRow = (frame: Frame): number =>
-  frame.screen.lines.reduce((last, text, row) => (text.trimStart().startsWith('› ') ? row : last), -1)
+  frame.screen.lines.reduce((last, text, row) => (/^ ›(?: |$)/.test(text) ? row : last), -1)
 
 /** 清单那一带里含某串的那一行（原样，不 trim——列的判据要看前导空格）。 */
 const dockLineOf = (frame: Frame, needle: string): string =>
@@ -233,7 +233,7 @@ describe('U90 · 矮窗里账与屏不分家', () => {
     const block = liveLayoutOf(stage.shell.getView(), 60, 24).plan
     // 清单那几行 ＝ 交互区里除了输入行之外的非空行（这一屏上没有别的）
     const planRows = frame.dock.filter(
-      (line) => line.text.trim() !== '' && !line.text.trimStart().startsWith('› '),
+      (line) => line.text.trim() !== '' && !/^ ›(?: |$)/.test(line.text),
     )
 
     expect(planRows.length).toBe(block.height) // **账与屏同一个数**

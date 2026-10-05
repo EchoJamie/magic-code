@@ -65,6 +65,7 @@ export function commandSubjectOf(command: Command): string {
     case 'collaboration.resume':
     case 'collaboration.configure':
       return `协作命令：${command.type}`
+    case 'input.manage': return { kind: 'input.manage', command } as never
     case 'input.submit':
       return command.text
     case 'decision.answer':

@@ -158,6 +158,7 @@ describe('判据 3 · 不落库清单', () => {
       // 当场答复；那份字节与名字本来就在 `user` 条目的载荷里，而路径是一次性的）。
       'image.exported',
       'input.pasted',
+      'input.pending',
       'input.settled',
       'input.unread',
       'mcp.catalog',
@@ -201,7 +202,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
           'collaboration_agents', 'collaboration_constraints', 'collaboration_delegations',
           'collaboration_executions', 'collaboration_inbox', 'collaboration_messages',
           'collaboration_operations', 'collaboration_waits', 'collaborations',
-          'entries', 'events', 'records_meta', 'sessions',
+          'entries', 'events', 'inputs', 'records_meta', 'sessions',
         ])
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
           user_version: RECORD_SCHEMA_VERSION,

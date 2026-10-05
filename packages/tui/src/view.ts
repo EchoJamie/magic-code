@@ -1,3 +1,4 @@
+import type {StoredInput,InputPurpose} from '@magic/contracts'
 /**
  * 外壳 · 视图模型与归约（缺陷轮 II 重画）——**事件 → 一屏**。
  *
@@ -131,6 +132,8 @@ export type LogRow =
       readonly kind: 'user'
       readonly key: string
       readonly text: string
+      readonly inputRef?: string
+      readonly inputState?: string
       readonly echoed: boolean
       /**
        * **这条交代带过的图片材料**（U110）——查看那一屏据它给两个动作
@@ -462,6 +465,7 @@ export type PendingDecision = {
 
 /** 选择器的一行。 */
 export type PickerRow = {
+  readonly detail?: readonly string[]
   readonly label: string
   readonly meta: string
   /** 当前那一条（原型 · 场景 9：`正在用`）。 */
@@ -504,7 +508,7 @@ export type PickerRow = {
    */
   readonly faint?: boolean
   /**
-   * **选定即撤**（`/grants`）——这一行要发的撤销负载（`grants.revoke` 的两件）。
+   * **明确撤销**（`/grants`）——这一行要发的撤销负载（`grants.revoke` 的两件）。
    *
    * 只有授权那个抽屉给：别的选择器「选定」是**切过去**，授权这里「选定」是**撤掉它**
    * （B13 的一句规格）。故这一位存在＝回车之后要发一条撤销，而不是打开什么。
@@ -551,10 +555,16 @@ export type Picker = {
     | 'collaboration-member'
     | 'collaboration-stop'
     | 'collaboration-records'
+    | 'collaboration-discussions'
     | 'session'
     | 'model'
     | 'region'
     | 'grants'
+    | 'input-purpose'
+    | 'input-pending'
+    | 'input-detail'
+    | 'grants-detail'
+    | 'paths-info'
     | 'skills'
     | 'paths'
     | 'mcp'
@@ -614,6 +624,10 @@ export type Picker = {
    * ⚠️ `@` 那一门另有不同：**筛词同时写进草稿**（就写在 `@` 之后）——它是用户那句交代的
    * 一部分，不是抽屉里的一个临时输入框（见 `Picker.anchor`）。
    */
+  readonly detail?: readonly string[]
+  /** 当前焦点详情的折行位置；原始正文始终保留。 */
+  readonly detailTop?: number
+  readonly filterCaret?: number
   readonly filter?: string
   /**
    * **选定之后，引用插回正文的哪一段**（U36 · 只有 `@` 与 `/skills` 给）。
@@ -687,7 +701,7 @@ export type CommandSpec = {
  * 「会话」这个词不废（它是内核层的记录，运行管理里站得住），要改的是**别从这个词进**。
  *
  * ⚠️ `/grants` **原先不在这张表上**，理由正是上一条自律（「内核还没有，故不列」）——
- * `U22` 到站后它有了：名录从 `grants.json` 来（走 `grants.list`），选定即撤。
+ * `U22` 到站后它有了：名录从 `grants.json` 来（走 `grants.list`），先查看详情，明确选择撤销才改写。
  * `/skills` 同理（`U33` 到站后它有了：目录走 `skills.list`，选定只绑草稿）。
  *
  * ⚠️ **这张表也是「同名技能让位」的判据**（`matchCommands` / `shell.ts` 的 `submit`）：
@@ -905,51 +919,25 @@ export const HINT_DECIDE_HEAVY = 'y / n'
  * 「用户能在恢复跑完前打字」。打字照旧进草稿（本地的事），**回车不受理**。
  */
 export const HINT_BOOTING = '启动中——恢复跑完才受理输入'
-/**
- * 选择器右位提示。
- *
- * ⚠️ **`←` 那一格是 U61 加的**（设计 · 终端交互「选择器是「层」，一套栈管所有」）：
- * 接管屏（选择器与本地小输入）里 `←` ＝**弹一层**、`esc` ＝**全收**——两个动作两个键。
- * 不报出来，用户手上那个「选错家想重选」的动作就没有落点（`esc` 全收重来正是原先的痛）。
- *
- * ⚠️ **它写得这么短（`← 退`）是被宽度逼的**：这一串挂在状态行右位，而右位**放不下就
- * 整段不出现**（见 `components/status.ts` 的 `fitting`）。80 列的窗口、左半再挂一个
- * 十来字的会话标题，`/resume` 那一句的余量**只剩 55 列**——`← 退一层`（多两列）当场就把
- * 整句顶掉（实测：`spec.dock` / `spec.u49` 两条既有用例齐红）。故取最省的那个说法：
- * **`←` ＝ 退**（与 `esc 收起` 并排，两个键各说一件事）。**要加字先量那 55 列。**
- */
-export const HINT_PICKER = '↑↓ 选 · 回车 定 · ← 退 · esc 收起'
+/** 临时层提示留在菜单；纯列表支持 ← 返回，字段保留光标编辑。 */
+export const HINT_PICKER = '↑↓ 选择 · Enter 选定 · ← / Esc 返回'
 /**
  * **纯读那一屏**的右位提示（`/mcp`）——没有「选定」这回事，故不报「回车 定」。
  *
  * 由头：键位提示得**对得上键位**。`/mcp` 的抽屉里回车什么都不做（重连是另一条命令，
  * 明写 `/mcp reconnect <名字>`），照抄 `HINT_PICKER` 就是教用户按一个没有用的键。
  */
-export const HINT_PICKER_READ = '↑↓ 选 · ← 退 · esc 收起'
+export const HINT_PICKER_READ = '↑↓ 选择 · ← / Esc 返回'
 /**
  * **`/resume` 那一屏**的右位提示（U49）——它比别的抽屉多两个键：**打字筛**与**`tab` 换范围**。
  *
  * 由头与上一条同：键位提示得**对得上键位**。这一屏收了「名称搜索」与「当前工作区/全部」
  * 两件（设计明文），不报出来用户就只能自己撞——而抽屉一开就把输入接管了，撞也撞不出回声。
  */
-export const HINT_PICKER_SESSION = '↑↓ 选 · 回车 定 · 打字筛 · tab 换范围 · ← 退 · esc 收起'
+export const HINT_PICKER_SESSION = '↑↓ 选择 · Enter 接回 · 打字筛选 · Tab 换范围 · Esc 返回'
 
-/**
- * **`/config` 那一屏**的右位提示（U71）——与通用的那句只差**打字筛**。
- *
- * 由头同 `HINT_PICKER_SESSION`：这一屏的输入被接管去当筛词（设计「**打字即过滤**（不设
- * 专门的搜索模式）· 退格清过滤」），不报出来，用户打进去的字就去了一个看不见的地方。
- *
- * ⚠️ **`esc` 那半句一字都不能变**：设计明文——`esc` 在这一屏**不负责清过滤**（清过滤归
- * 退格），**不许造「先清过滤、再全收」的两段 `esc`**（同一个键有时一次有时两次，用户
- * 没法预期）。提示跟着写「收起」，就是那一条在屏上的落点。
- *
- * ⚠️ **退格那半句没写进这一串，是量过宽的**：挂在状态行右位，**放不下就整段不出现**
- * （见 `components/status.ts` 的 `fitting`），而 `/resume` 那句（比这句只多`tab 换范围`）
- * 在 80 列窗口上余量已经不多——再加 `· 退格清` 就是拿整句去换半句。清过滤是打字的对面，
- * 照 `/resume` 的先例（那一句也只报「打字筛」）。
- */
-export const HINT_PICKER_CONFIG = '↑↓ 选 · 回车 定 · 打字筛 · ← 退 · esc 收起'
+/** 设置筛词原位编辑；Esc 退当前层。 */
+export const HINT_PICKER_CONFIG = '↑↓ 选择 · 输入筛词 · Esc 返回'
 
 /**
  * **当前任务去向那一屏**的右位提示（U100）。
@@ -1094,7 +1082,7 @@ export function unreadSummaryOf(notices: readonly RunNotice[]): string | undefin
  * 「选供应商 → 选区域 → 问密钥」，用户在这个小输入里想换一家，原先只能 `esc` 全收重来
  * （设计 · 终端交互：栈的单位是**那一屏**，不是那个选择器——本地小输入也是层）。
  */
-export const HINT_PROMPT = '回车 确定 · ← 退 · esc 取消'
+export const HINT_PROMPT = 'Enter 确定 · ←/→ 编辑 · Esc 取消'
 
 /**
  * **待确认的那一行**（U46 · 落哪与时限 U68 改定）——空闲按 Ctrl+C 的**第一下**印的那一句。
@@ -1181,6 +1169,8 @@ export type Stashed = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  readonly pendingInputs: readonly StoredInput[]
+  readonly inputPurpose: InputPurpose
   readonly collaboration?: CollaborationView
   readonly inputMember?: AgentId
   /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
@@ -1483,6 +1473,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
       hint: HINT_IDLE,
     },
     dock: { kind: 'input' },
+    pendingInputs: [], inputPurpose:'current',
     draft: '',
     caret: 0,
     refs: [],
@@ -1824,7 +1815,11 @@ export function reduce(
     // 提交的收场（U33）——**只有「没跑」那一格进记录区**：收下了的那一条不必报
     // （同一件事 `turn.start` 的「正在干活」已经在说，再补一句就是每提交一次添一行噪声）。
     // 没跑的那一条**必须出声**：这一条交代一个字都没发出去，用户得知道为什么。
+    case 'input.pending':
+      return event.data.note === undefined ? {...view,pendingInputs:event.data.inputs} : appendReceipt({...view,pendingInputs:event.data.inputs},event.data.note)
     case 'input.settled':
+      { const inputState = event.data.ok ? (event.data.stage === 'included' ? undefined : view.pendingInputs.find(one=>one.ref===event.data.ref)?.purpose==='next'?'下一件排队中':'待带入') : `失败：${event.data.reason ?? '未说缘由'}`
+        if(event.data.ref!==undefined){const update=(row:LogRow)=>row.kind==='user'&&row.inputRef===event.data.ref?{...row,inputState}:row;view={...view,rows:view.rows.map(update),settled:view.settled.map(update)}} }
       return event.data.ok ? view : appendReceipt(view, `没送出：${event.data.reason ?? '未说缘由'}`)
 
     // **后台命令结束了**（U70）——留在屏上那一行回执。
@@ -1886,6 +1881,7 @@ export function reduce(
      * 只认「事件流告诉我的世界变了什么」，而这一条**什么都没变**（盘上那两格变了，
      * 屏上那两格由外壳按同一条回话摆）。落在这儿就是同一件事判两遍。
      */
+    case 'input.local':
     case 'prefs.state':
       return view
 
@@ -2140,19 +2136,19 @@ function reduceVerdict(view: ShellView, data: VerdictData, at: number): ShellVie
   const rows =
     target === -1
       ? view.rows
-      : view.rows.map((row, index) =>
-          index === target && row.kind === 'tool'
-            ? {
-                ...row,
+      : view.rows.map((row, index) => {
+          if (index !== target || row.kind !== 'tool') return row
+          const { awaitingDecision, ...rest } = row
+          return {
+                ...rest,
                 // 裁决的耗时（提示 → 答复）**不进工具行**——那是裁决的账（见行上 `elapsedMs` 的注）
                 ...(data.decision === 'reject' ? { state: 'rejected' as const } : {}),
                 // **批准 ⇒ 起算点挪到这一刻**（见上注：批准在执行之前，故是「从零开始」）
-                ...(data.decision === 'approve' && row.awaitingDecision === true
+                ...(data.decision === 'approve' && awaitingDecision === true
                   ? { startedAt: at }
                   : {}),
               }
-            : row,
-        )
+        })
 
   // 裁决落定 ⇒ 接管解除、**草稿归还**（多件时下一件会重新接管，草稿再收一次）
   const answered = undock({ ...view, rows })
@@ -2799,7 +2795,7 @@ function backgroundDoneText(data: EventDataOf['exec.background.done']): string {
 /** 一条命令的第一行——回执里点名用（整条多行命令铺上去只会把那行撑成一堵墙）。 */
 function firstLine(command: string): string {
   const line = command.split('\n', 1)[0]?.trim() ?? ''
-  return line.length > 60 ? `${line.slice(0, 60)}…` : line
+  return line
 }
 
 /**
@@ -3356,6 +3352,8 @@ function metaOf(row: RunRow | undefined, options: { readonly grouped: boolean; r
   return runStateLabel(row.state)
 }
 
+function sessionDetails(session:SessionSummary):readonly string[]{return [`工作区：${session.workspace?.join(' · ')??'未记录'}`,`最近交代：${session.recentInput??'未记录'}`,`进展：${session.recentProgress??'未记录'}`]}
+
 export function sessionRows(input: SessionListInput): readonly PickerRow[] {
   const { catalog, active, here, runs, scope, query } = input
   const mine = here === undefined ? null : identityOf(here)
@@ -3392,6 +3390,7 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
           .join(' · '),
         current: session.id === active,
         value: session.id,
+        detail:sessionDetails(session),
         group: ACTIVE_HEAD[state],
         // **一项一行**（设计 · 终端交互：「候选每项一行，名称/简述同排；窄窗先保住名称、
         // 再截断简述」）——窄窗下让**名称**活着，状态/动作被截
@@ -3430,6 +3429,7 @@ export function sessionRows(input: SessionListInput): readonly PickerRow[] {
         .join(' · '),
       current: session.id === active,
       value: session.id,
+      detail:sessionDetails(session),
       oneLine: true,
     })
   }
@@ -3978,7 +3978,7 @@ export function grantsHint(catalog: GrantsCatalog): string {
   const head =
     catalog.grants.length === 0 && catalog.stale.length === 0
       ? `本工作区（${catalog.workspace}）还没有授权——批准时按 a 就是记一条`
-      : '回车＝撤销选定那条'
+      : '↑↓ 选择 · Enter 查看详情 · Esc 返回'
 
   return [`${head} · ${frictionLabel(catalog.decisions)}`, historyLabel(catalog.history)]
     .filter((line) => line !== undefined)
@@ -4110,7 +4110,8 @@ export type ConfigPaths = {
 /** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
 export type ConfigItem = {
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
-  readonly key: 'model' | 'grants' | 'mcp' | 'paths' | 'statusLine' | 'motion'
+  readonly key: 'model' | 'grants'
+     | 'mcp' | 'paths' | 'statusLine' | 'motion'
   readonly name: string
 }
 
@@ -4272,7 +4273,7 @@ export function configRows(input: {
 
   return CONFIG_ITEMS.filter((item) => hits(needle, item.name, values[item.key])).map((item) => ({
     label: paddedLabel(item.name),
-    meta: values[item.key],
+    meta: `${values[item.key]} · ${item.key==='motion'?'Enter 切换':item.key==='paths'?'Enter 查看路径':'Enter 进入'}`,
     // 这一屏没有「当前那一条」这回事（四行都是入口，不是候选项）
     current: false,
     value: item.key,
@@ -4305,7 +4306,7 @@ export function configHint(input: {
   /** 筛过之后还剩几行。 */
   readonly shown: number
 }): string {
-  if (input.filter === '') return '回车＝进那一项'
+  if (input.filter === '') return ''
 
   return input.shown === 0
     ? `没有匹配「${input.filter}」的项——退格删一个字`
@@ -4560,6 +4561,7 @@ export function skillRows(
       meta: skill.description,
       current: false,
       value: skill.path,
+      detail:[`来源：${skill.path}`,`用途：${skill.description}`],
       oneLine: true,
     })
   }
@@ -4583,6 +4585,7 @@ export function pathRows(rows: readonly PathCatalogRow[]): readonly PickerRow[] 
     meta: row.kind === 'directory' ? '目录' : '文件',
     current: false,
     value: row.path,
+    detail: [`路径：${row.path}`],
     oneLine: true,
   }))
 }
@@ -4640,7 +4643,7 @@ export function pathHint(input: {
 export function skillHint(input: {
   readonly catalog: SkillsCatalog | null
   readonly filter: string
-  /** 筛过之后还剩几行——0 行时这句会落成记录区的一行回执（抽屉不开，见 `openPicker`）。 */
+  /** 筛选后的候选数。 */
   readonly shown: number
 }): string {
   const { catalog, filter, shown } = input
@@ -4649,19 +4652,14 @@ export function skillHint(input: {
   // ⚠️ 这里原有一条「「x」有 N 份同名的——按来源挑一份」：它是「同名 ⇒ 展开候选」那一手
   // 的说明，随 2026-09-25 的裁定去掉（同名在发现那一层只剩一条，那一屏再也开不出来）。
   if (shown === 0 && filter !== '') {
-    // 筛空了 ⇒ 抽屉收起、这句话落成回执——得说清「怎么办」，不然就是「打了几个字，抽屉没了」
+    // 零命中仍允许修改筛词或返回。
     lines.push(`没有匹配「${filter}」的技能——退格删一个字，或换个词再打 /skills`)
   } else if (filter !== '') {
     lines.push(`筛选「${filter}」——接着打收窄，退格删一个字`)
   } else if ((catalog?.skills.length ?? 0) === 0) {
     lines.push('还没有技能——放一份 .magic/skills/<名称>/SKILL.md 就来')
   } else {
-    lines.push('直接打字可筛选')
-  }
-
-  if (shown > 0 && filter === '') {
-    // U36：选定＝**把 `/<名字>` 放进这句话里**（放进你打开列表的那个位置），不是发送
-    lines.push('选一份就放进这句话里（原位）——选中不等于发送')
+    lines.push('直接打字可筛选 · ↑↓ 候选 · Enter 引用 · Esc 返回')
   }
 
   const broken = catalog?.problems.filter((one) => one.kind === 'error').length ?? 0
@@ -4692,54 +4690,13 @@ export function groupHeads(rows: readonly PickerRow[]): readonly boolean[] {
   return rows.map((row, index) => row.group !== undefined && row.group !== rows[index - 1]?.group)
 }
 
-/**
- * 开选择器——**记录区什么都不进**（原型：回车不进记录区）。
- *
- * ## ⚠️ 0 行**不许接管输入**（P0 · 用户真跑报的「`/grants` 卡死」）
- *
- * 抽屉是**接管输入**的三种用法之一（`Dock` 同一位置）。接管的代价是**作曲家让位**——
- * 屏幕上一个字都打不进去了（`dockOf` 收选择器时不给 `Composer`），而 `key()` 那边
- * 选择器开着时**字符一律吞掉**（`case 'char': if picker → NONE`，这是接管该有的样子）。
- *
- * 那代价**只有在「有东西可点」时才付得起**。0 行时接管过来，用户：**打不了字**、
- * **没得选**、屏上只剩一行暗提示 ⇒ **看着就是卡死**——而 `esc` 那句提示在状态行最右，
- * 不特意看根本注意不到。
- *
- * 而 `/grants` **默认就是这个形态**：没按过 `a` 的工作区没有 `grants.json`，
- * 名录**必空**（`dataDir` 缺省 `~/.magic`）⇒ 头一次打 `/grants` 必落这个坑。
- * `/resume` 那一屏一条会话都没有时、`/model` 一条条目都没有时、`/skills` 一个技能都没有
- * （或筛词一个都不中）时，同理。
- *
- * 故 0 行时**不开抽屉**：把 `hint`（抽屉下方那句话）落成**记录区一行回执**——
- * 话一句不少、还更显眼，而**输入照常**。`hint` 没给就什么都不说（「拿不到的不编」）。
- *
- * ⚠️ 这是**共用的一处**：四条抽屉（`/resume` · `/model` · `/grants` · `/skills`）都经这里，
- * 别在某个调用点另加判断（那样五条路就有五种口径）。
- *
- * ## 一条例外：**正在筛的时候**（U33 · `/skills`）
- *
- * 「0 行不开抽屉」要防的是**没得选的死胡同**。而筛选是另一回事：0 行时用户手上仍有动作
- * ——接着打字、退格删一个字、`esc` 收起——那正是搜索该有的样子（何况筛词本身还写在
- * 列表下方，屏上不是一片空白）。故**有筛词就照开**（行数为 0 也开）：此时零行是
- * **一个回答**（「没有这条」），不是一个空归档。
- *
- * 判据挂在 `picker.filter` 上（「这一屏在筛」是它自己的一位），不是某个调用点另加判断。
- */
+/** 打开临时层；空列表也保留查询、原因与返回入口。 */
 export function openPicker(view: ShellView, picker: Picker): ShellView {
-  // 「这一屏在筛」——有筛词，或**是 `@` 那一栏**（它一开就带着一段查询：空表的意思是
-  // 「还在看 / 这一条对不上」，不是死胡同——用户手上的动作一个不少：打字、退格、`esc`）。
-  const filtering =
-    (picker.filter !== undefined && picker.filter !== '') || picker.source === 'paths'
-
-  if (picker.rows.length === 0 && picker.reader === undefined && !filtering) {
-    return picker.hint === undefined ? view : appendReceipt(view, picker.hint)
-  }
-
   // 键位提示按**这一屏能做什么**给：纯读那一屏没有「选定」（见 `HINT_PICKER_READ`）、
   // 能筛的那两屏要报「打字筛」（见 `HINT_PICKER_SESSION` / `HINT_PICKER_CONFIG`）、
   // 任务去向那一屏 `esc` 是「返回」（见 `HINT_PICKER_TASK`）
   const keys =
-    picker.reader !== undefined ? '' : picker.source === 'mcp'
+    picker.reader !== undefined ? '' : picker.source==='paths'?'↑↓ 候选 · Tab 补全 · Enter 引用 · Esc 返回':picker.source==='skills'?'↑↓ 候选 · Enter 引用 · Esc 返回':picker.source === 'mcp'
       ? HINT_PICKER_READ
       : picker.source === 'task'
         ? HINT_PICKER_TASK
@@ -4749,7 +4706,9 @@ export function openPicker(view: ShellView, picker: Picker): ShellView {
             ? HINT_PICKER_CONFIG
             : HINT_PICKER
 
-  return patchStatus({ ...view, dock: { kind: 'picker', picker } }, { hint: keys })
+  const supplied=picker.hint??''
+  const hint = /↑↓|Enter|Esc|esc|回车/.test(supplied) ? supplied : [supplied,keys].filter(Boolean).join('\n')
+  return patchStatus({ ...view, dock: { kind: 'picker', picker:{...picker,...(hint===''?{}:{hint})} } }, { hint: '' })
 }
 
 /** 上下移动选择。 */

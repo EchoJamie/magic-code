@@ -283,6 +283,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
         { id: 88 },
       ),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect((await stage.screen(WIDE)).statusLine).toContain('◊ 等你定夺')
 
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 })])
@@ -290,13 +291,14 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
     const frame = await stage.screen(WIDE)
     expect(frame.statusLine).toContain('● 工作中')
     expect(frame.statusLine).not.toContain('等你定夺')
-    expect(frame.has('（工作中——想插话可以打，发不出去就排队）')).toBe(true) // 输入行与它同口径
+    expect(frame.has('想插话可以打')).toBe(false) // 输入行与它同口径
   })
 
   test('**等模型**与**工具在跑**——输入行两句话分开（不必看状态行才分得出）', async () => {
     const waiting = live()
     waiting.feed([event('turn.start', {})])
-    expect((await waiting.screen(WIDE)).has('（等模型回来——想插话可以打，发不出去就排队）')).toBe(true)
+    expect((await waiting.screen(WIDE)).statusLine).toContain('● 工作中')
+    expect((await waiting.screen(WIDE)).has('等模型回来')).toBe(false)
 
     const running = live()
     running.feed([
@@ -305,7 +307,7 @@ describe('差距 3 · 进度感——工具跑动 / 等待模型 / 退避重试�
     ])
     const frame = await running.screen(WIDE)
 
-    expect(frame.has('（工作中——想插话可以打，发不出去就排队）')).toBe(true)
+    expect(frame.has('想插话可以打')).toBe(false)
     expect(frame.has('等模型回来')).toBe(false)
   })
 })

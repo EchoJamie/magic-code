@@ -37,7 +37,7 @@ import { readDatabase } from '../support.ts'
 const COPY = {
   // ⚠️ U61 改过这一句（多了 `← 退`）——按上面注 3 那条，字面量锚跟着改，
   //    它红的正是时候：这一句是「抽屉真开了」的判据，提示一变就得有人来看一眼。
-  pickerHint: '↑↓ 选 · 回车 定 · ← 退 · esc 收起',
+  pickerHint: '↑↓ 选择 · Enter 选定 · ← / Esc 返回',
   /**
    * 裁决卡的右位键位（**重的那一档**）。
    *
@@ -338,74 +338,35 @@ const drawerOpenClose: Scenario = {
     // 也不能拿整个缓冲比——抽屉就在分隔线**以下**，那是**该**变的
     const recordBefore = recordHistoryOf(before)
 
-    // —— 空名录：给原因，不开选择器 ——
-    await session.send('/grants')
-    // 先等草稿真的上了屏，再敲回车（「先等草稿上屏再回车」是早先几轮 pty 实测留下的姿势）
-    await session.wait({ text: '› /grants' })
-    // ⚠️ 判据是**逐行**匹配的（见 `driver.ts`·`wait` 的注）——故这一句要挑**一行装得下**的：
-    // 「还没有授权」那半截会被折行劈开（实测），而这一截在第二行里是完整的
+    // U114：空列表仍可返回；已提交命令按用户输入记下，查看不触发模型。
+    await session.send('/grants ')
     await session.key('enter', { until: { text: '批准时按 a 就是记一条' } })
     const empty = await session.capture({ label: '空名录' })
-    ui.check(empty.text.includes('批准时按 a 就是记一条'), '空名录给了原因（不是一片空白）', '锚＝那行原因')
-    ui.check(
-      !empty.text.includes(COPY.pickerHint),
-      '空名录没有开选择器',
-      `锚＝提示「${COPY.pickerHint}」不在屏上`,
-    )
-
-    // —— 有项：开选择器，列条目 ——
-    await session.send('/model')
-    await session.wait({ text: '› /model' })
-    await session.key('enter', { until: { text: COPY.pickerHint } })
+    ui.check(empty.text.includes('批准时按 a 就是记一条'), '空名录给了原因（不是一片空白）', '')
+    ui.check(empty.text.includes(COPY.pickerHint), '空名录有明确返回入口', '')
+    ui.check(countExact(recordHistoryOf(empty), '› /grants') === 1, '已提交授权命令仅回显一次', '')
+    await session.key('esc', {until:{absent:COPY.pickerHint}})
+    for (let i = 0; i < 8; i++) await session.key('backspace')
+    await session.send('/model manage ',{until:{text:'› /model manage'}})
+    await session.key('enter', { until: { text: 'backup' } })
     const opened = await session.capture({ label: '有项抽屉' })
-    ui.check(opened.text.includes('local'), '抽屉列出了第一条目', '')
-    ui.check(opened.text.includes('backup'), '抽屉列出了第二条目', '')
-    ui.check(
-      recordHistoryOf(opened).length === recordHistoryOf(empty).length,
-      '开抽屉没有往记录区添行（抽屉在分隔线以下）',
-      `空名录后 ${recordHistoryOf(empty).length} 行 · 开抽屉后 ${recordHistoryOf(opened).length} 行`,
-    )
-
-    // —— 收起 ——
+    ui.check(opened.text.includes('local') && opened.text.includes('backup'), '连接列表列出两份真实配置', '')
+    const recordOpened = recordHistoryOf(opened)
+    ui.check(countExact(recordOpened, '› /model manage') === 1, '已提交管理命令仅回显一次', '')
     await session.key('esc')
-    await session.wait({ absent: COPY.pickerHint })
+    await session.wait({ absent: '回车＝管理这一条' })
     const closed = await session.capture({ label: '收起之后' })
-    ui.check(!closed.text.includes(COPY.pickerHint), 'esc 收起了抽屉', '')
-
-    // —— 「不丢不重」怎么判 ——
-    //
-    // 口径是**开合一圈之后，记录区一字不差**：拿「空名录那句回执落下之后」那一份当基准
-    // （`recordEmpty`），开抽屉、收起之后再取一份（`recordClosed`），两份必须**逐行相同**。
-    //
-    // ⚠️ 别拿「抽屉之前」那一份当基准：空名录**会**留一行回执（「空列表给原因」是规格），
-    // 而回执落地时会把起手那句提示顶掉——那是**该**发生的（回执不是多出来的脏东西）；
-    // 拿它当基准，判的就不再是「抽屉弄没弄坏记录」了（实测栽过一版）
-    const emptyRecord = recordHistoryOf(empty)
     const closedRecord = recordHistoryOf(closed)
-    ui.check(
-      closedRecord.length === emptyRecord.length &&
-        closedRecord.every((line, at) => line === emptyRecord[at]),
-      '记录不丢不重（开合一圈之后与开之前逐行相同）',
-      `开抽屉前 ${emptyRecord.length} 行 · 合上后 ${closedRecord.length} 行`,
-    )
-    const doubled = closedRecord.filter((line) => countOf(line, closedRecord) > 1)
-    ui.check(doubled.length === 0, '没有哪一行被重画成两遍（不重影）', `重影 ${JSON.stringify(doubled)}`)
-    ui.check(
-      recordHistoryOf(opened).length === emptyRecord.length,
-      '抽屉开着时记录也没变（抽屉在分隔线以下）',
-      `空名录后 ${emptyRecord.length} 行 · 抽屉开着 ${recordHistoryOf(opened).length} 行`,
-    )
-    ui.check(
-      recordBefore.every((line, at) => closedRecord[at] === line || at === recordBefore.length - 1),
-      '开合没动到上头那些行（字标与回执都在）',
-      `比对了前 ${recordBefore.length - 1} 行`,
-    )
-
-    // —— 操作后仍能输入 ——
+    ui.check(closedRecord.length === recordOpened.length && closedRecord.every((line, at) => line === recordOpened[at]),
+      '记录不丢不重（开合前后逐行相同）', '')
+    ui.check(recordBefore.every((line, at) => closedRecord[at] === line), '开合没动到上头那些行', '')
+    ui.check(closedRecord.filter((line) => countOf(line, closedRecord) > 1).length === 0, '没有哪一行被重画成两遍（不重影）', '')
+    for (let i = 0; i < 14; i++) await session.key('backspace')
     await session.send('接着干')
     await session.wait({ text: '› 接着干' })
     const typable = await session.capture({ label: '抽屉之后还能敲' })
     ui.check(typable.text.includes('接着干'), '抽屉开合之后草稿照收', '')
+
   },
 }
 
@@ -440,7 +401,8 @@ const modelStreamApproval: Scenario = {
 
     await session.send('跑一下')
     await session.wait({ text: '› 跑一下' })
-    await session.key('enter', { until: { text: COPY.decideHint } })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' } })
+    await session.key('ctrl+g', {until:{text:COPY.decideHint}})
     const deciding = await session.capture({ label: '裁决接管' })
     ui.check(deciding.text.includes('exec'), '裁决卡点名了要调用的工具', '')
     ui.check(deciding.text.includes('echo hello-magic'), '裁决卡给了实际业务参数', '')
@@ -556,7 +518,8 @@ const mcpApproval: Scenario = {
     // —— 交代 → 第一张审批卡 ——
     await session.send('用外部工具回显一句')
     await session.wait({ text: '› 用外部工具回显一句' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'y 批准这一次' } })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' } })
+    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
     const card = await session.capture({ label: '外部审批卡' })
 
     ui.check(card.text.includes('fake / echo'), '审批卡点名「服务器 / 工具」', '原锚＝注册表的身份（名字含服务器）')
@@ -588,7 +551,8 @@ const mcpApproval: Scenario = {
     ui.check(mcpCalls(log).length === 1, '服务器自己数到了那一次调用', `日志 ${mcpCalls(log).length} 行`)
 
     // —— 第二件：**拒绝** ——
-    await session.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
+    await session.wait({text:'Ctrl+G 审阅'}, {timeoutMs:15_000})
+    await session.key('ctrl+g',{until:{text:'y 批准这一次'}})
     const second = await session.capture({ label: '第二张审批卡' })
     ui.check(second.text.includes('第二次外部调用'), '第二张卡给的是第二次的参数', '')
 
@@ -652,7 +616,8 @@ const mcpApproval: Scenario = {
 
     await broken.send('跑个内置的')
     // 内置那件走的是**名单里**的删除 ⇒ 重档键位（`y / n`，见 `COPY.decideHint` 那一段）
-    await broken.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 10_000 })
+    await broken.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 10_000 })
+    await broken.key('ctrl+g', {until:{text:COPY.decideHint}})
     await broken.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await broken.capture({ label: '内置工具照常' })
     ui.check(
@@ -707,7 +672,8 @@ const mcpApproval: Scenario = {
     //
     // 这是独立复验退回的那一条的组合：崩过之后再 close，SDK 那侧已经没有 pid 可数了，
     // 故「数后代」必须发生在**它还活着的时候**（起手与每次调用之前），不能等收尾那一刻。
-    await descended.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
+    await descended.wait({text:'Ctrl+G 审阅'}, {timeoutMs:15_000})
+    await descended.key('ctrl+g',{until:{text:'y 批准这一次'}})
     await descended.send('y', { until: { text: '未收到结果' }, timeoutMs: 15_000 })
 
     await waitGone(grand as number)
@@ -896,14 +862,15 @@ const mcpApprovalEdge: Scenario = {
     // ⚠️ **等草稿上屏再回车**（驱动的坑：`send` 只打字，回车抢在前面就会提交一个空草稿，
     // 后面的字全留在输入框里，卡永远不来）
     await session.wait({ text: '› 来件参数长的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 15_000 })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 15_000 })
+    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
     const longCard = await session.capture({ label: '长参数卡' })
     ui.check(longCard.text.includes('甲乙丙丁戊己庚辛壬癸'), '长参数在卡上（头一段在）', '')
     ui.check(longCard.text.includes('①②③④⑤⑥⑦⑧⑨⑩'), '长参数在卡上（末一段也在，没被截掉）', '')
 
     // —— 二 · 窄窗：同一张卡，窗宽收到 44 列 ——
     await session.resize(44, 24)
-    await session.wait({ text: 'y 批准这一次' }, { timeoutMs: 15_000 })
+    await session.wait({writtenFrame:44}, {timeoutMs:15_000})
     const narrow = await session.capture({ label: '窄窗里的卡' })
     ui.check(narrow.columns === 44, 'VT 认了 44 列', `实际 ${narrow.columns}`)
 
@@ -927,7 +894,8 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ text: IDLE_STATE })
     await session.send('再来件拖住的')
     await session.wait({ text: '› 再来件拖住的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
+    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
     await session.send('y')
     // 中断之前等两件**真发生过**的事：
     // ① **卡收了**（键位那一行不在）——那一下 `ctrl+c` 才是「中断」，不是「在卡上按了个键」；
@@ -940,26 +908,35 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ text: '已取消' }, { timeoutMs: 10_000 })
     const canceled = await session.capture({ label: '取消之后' })
     ui.check(canceled.text.includes('已取消'), '取消那一笔说「已取消」', '')
+    await session.key('ctrl+o')
+    await session.wait({text:'已取消——已停止等待并发出取消请求'})
+    const completeCancellation = await session.capture({label:'取消的完整记录'})
     ui.check(
-      canceled.text.includes('取消不等于远端撤销'),
+      completeCancellation.text.replace(/\s/g,'').includes('取消不等于远端撤销'),
       '取消不声称远端撤销（只报已停止等待/已发取消请求）',
       '',
     )
+
+    await session.key('esc')
 
     // —— 四 · 断连：服务器在途没了 ——
     await session.wait({ text: IDLE_STATE })
     await session.send('来件会崩的')
     await session.wait({ text: '› 来件会崩的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
+    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
     await session.send('y')
     // 等**只此一处有**的那一整句：取消那一行的正文里也含「未收到结果」三个字
     // （「取消不等于远端撤销，未收到结果」），拿它当条件会**抓到前一张卡**
-    await session.wait({ text: '未收到结果，远端可能已执行' }, { timeoutMs: 10_000 })
+    await session.wait({ text: '收工' }, { timeoutMs: 10_000 })
+    await session.key('ctrl+o')
+    await session.wait({text:'PgUp/PgDn'})
+    await session.send('G')
+    await session.wait({text:'请求发出之后连接断了'})
     const lost = await session.capture({ label: '断连之后' })
     // ⚠️ 逐**行**判（不判整段文本）：40 来列的窄窗里这句话会折行，`includes` 一折就断
     ui.check(
-      lost.lines.some((line) => line.includes('未收到结果')) &&
-        lost.lines.some((line) => line.includes('远端可能已执行')),
+      lost.text.replace(/\s/g,'').includes('未收到结果，远端可能已执行'),
       '断连说「未收到结果，远端可能已执行」（效果未知）',
       '',
     )
@@ -969,6 +946,7 @@ const mcpApprovalEdge: Scenario = {
       '',
     )
 
+    await session.key('esc',{until:{text:IDLE_STATE}})
     // —— 收尾：空闲再取一帧（键位与状态行都回到常态）——
     await session.wait({ text: IDLE_STATE }, { timeoutMs: 20_000 })
     await session.capture({ label: '收尾' })
@@ -1014,7 +992,8 @@ const mcpUnderscoreName: Scenario = {
 
     await session.send('调那个下划线开头的')
     await session.wait({ text: '› 调那个下划线开头的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'y 批准这一次' }, timeoutMs: 20_000 })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
+    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
     const card = await session.capture({ label: '下划线工具的审批卡' })
 
     ui.check(card.text.includes('fake / _echo'), '卡上点名 `服务器 / 工具`（名字带下划线）', '')
@@ -1330,7 +1309,8 @@ const stopNotRollback: Scenario = {
     await session.send('改点东西')
     // 锚**状态行那句「等你定夺」**，不锚键位提示——`write` 必闸那一档的键位是
     // 「y / n」（轻的那一档才是 `y / a / n`），拿 `decideHint` 当条件会白等到超时（实测栽过）
-    await session.key('enter', { until: { text: '等你定夺' }, timeoutMs: 15_000 })
+    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 15_000 })
+    await session.key('ctrl+g',{until:{text:'批准'}})
     const card = await session.capture({ label: '裁决卡' })
     ui.check(card.text.includes('write'), '裁决卡点名了要调用的工具', card.text.slice(0, 400))
 
@@ -1344,7 +1324,7 @@ const stopNotRollback: Scenario = {
     // 从列表里停：`/resume` 开抽屉 → `ctrl+x` 停选中的那一条
     // ⚠️ 锚**那一行上的停止键**（它只在「抽屉开着 ＋ 选中那一条真能停」时才有）——
     //    拿别处的字当条件容易当场恒真（`/resume` 三个字本来就该打上去）
-    await session.send('/resume')
+    await session.send('/resume ')
     await session.key('enter', { until: { text: 'ctrl+x 停' }, timeoutMs: 15_000 })
     await session.key('ctrl+x')
     await session.wait({ text: '停了' }, { timeoutMs: 25_000 })
@@ -1432,7 +1412,7 @@ const exitCommand: Scenario = {
     //    正面那一形改由本文件的 `packed-enter` 钉着。）
     //    锚 `› /exit`（**前导空格**：那是输入行那一格）——候选那一行是
     //    `› /exit　停掉…`，**不带前导空格**，故这个锚只认输入行。
-    await session.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
+    await session.send('/exit ', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await session.key('enter')
 
     // **两拍都得在**：先「正在停」（受理），后「停了」（核销）
@@ -1485,7 +1465,7 @@ const exitCommand: Scenario = {
     // 锚状态行那句「ctrl+c 停或离开」＝**这一轮真在跑**（它在工作中那一格才出现）
     await busy.key('enter', { until: { text: 'ctrl+c 停或离开' }, timeoutMs: 25_000 })
 
-    await busy.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
+    await busy.send('/exit ', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await busy.key('enter')
     await busy.wait({ text: '停了' }, { timeoutMs: 30_000 })
 
@@ -1566,7 +1546,7 @@ const packedEnter: Scenario = {
     )
 
     // 同一形再走一遍产品里最要紧的那条命令：`/exit` ——**一次写**，那一按要作数
-    await session.send('/exit\r', { until: { text: '停了' }, timeoutMs: 30_000 })
+    await session.send('/exit \r', { until: { text: '停了' }, timeoutMs: 30_000 })
     const leaving = await session.capture({ label: '一次写 /exit\\r 之后' })
     const report = await session.close({ graceMs: 3_000 })
 
@@ -1642,7 +1622,7 @@ const packedEnter: Scenario = {
     const pasted = paste.requests()
     ui.check(pasted.length === 1, '粘贴之后敲回车：提交了一次', `实际 ${pasted.length} 条`)
     ui.check(
-      pasted[0]?.lastUser === '粘贴的第一行\n粘贴的第二行',
+      pasted[0]?.lastUser === '粘贴的第一行\n粘贴的第二行\n',
       '**粘贴的多行原样交给了模型**（换行还在、一个字没切）',
       `实际 ${JSON.stringify(pasted[0]?.lastUser)}`,
     )

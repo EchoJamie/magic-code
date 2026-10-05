@@ -416,8 +416,8 @@ describe('U33 · 显式选定：随交代一并送达', () => {
       expect(used[0]?.data.skills.map((one) => one.name)).toEqual(['pdf'])
       expect(used[0]?.data.skills[0]?.label).toBe('项目 .magic/skills')
       const settled = eventsOfKind(shell.events, 'input.settled')
-      expect(settled).toHaveLength(1)
-      expect(settled[0]?.data).toMatchObject({ ref: 'draft-1', ok: true })
+      expect(settled.map(event=>event.data.stage)).toEqual(['accepted','included'])
+      expect(settled[0]?.data).toMatchObject({ ref: 'draft-1', ok: true, stage:'accepted' })
 
       // 回执在**这一次请求真发出去之后**（第一条模型事件到手）：判据不是「装好了」，
       // 是「发出去了」——同步抛错 / 未发就中止的那些一条事件都不会来，回执因此不假报
@@ -579,7 +579,7 @@ describe('U33 · 回执只报一次（返工）', () => {
       expect(lastModel(stage).requests.length).toBeGreaterThanOrEqual(3)
       expect(eventsOfKind(shell.events, 'skill.used')).toHaveLength(1)
       expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
-        { ref: 'one-ref', ok: true },
+        { ref:'one-ref',ok:true,stage:'accepted' }, { ref:'one-ref',ok:true,stage:'included' },
       ])
 
       assembly.close()
@@ -683,17 +683,17 @@ describe('U33 · 失效与排队', () => {
       const shell = attachShell(assembly.shell)
 
       shell.send({
-        type: 'input.submit',
+        type: 'input.submit', purpose:'next',
         text: '照 alpha 做',
         skills: [{ name: 'alpha', path: projectSkill(stage, 'alpha') }],
       })
       shell.send({
-        type: 'input.submit',
+        type: 'input.submit', purpose:'next',
         text: '照 doomed 做',
         skills: [{ name: 'doomed', path: doomed }],
         ref: 'draft-bad',
       })
-      shell.send({ type: 'input.submit', text: '第三件' })
+      shell.send({ type: 'input.submit', purpose:'next', text: '第三件' })
 
       await waitDrain(shell, 2)
       shell.dispose()
@@ -742,8 +742,8 @@ describe('U33 · 失效与排队', () => {
       const assembly = stage.assemble({ turns: [{ text: '甲做完了' }, { text: '乙也做完了' }] })
       const shell = attachShell(assembly.shell)
 
-      shell.send({ type: 'input.submit', text: '做甲', skills: [{ name: 'alpha', path: alpha }] })
-      shell.send({ type: 'input.submit', text: '做乙', skills: [{ name: 'beta', path: beta }] })
+      shell.send({ type: 'input.submit', purpose:'next', text: '做甲', skills: [{ name: 'alpha', path: alpha }] })
+      shell.send({ type: 'input.submit', purpose:'next', text: '做乙', skills: [{ name: 'beta', path: beta }] })
       await waitDrain(shell, 2)
       shell.dispose()
 
@@ -811,7 +811,7 @@ describe('U33 · 停下时清掉的排队输入', () => {
       shell.dispose()
 
       // **没进会话的排队项：一条 `ok:false`**（不是「没有终态」）
-      expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
+      expect(eventsOfKind(shell.events, 'input.settled').filter(event=>!event.data.ok).map((event) => event.data)).toEqual([
         { ref: 'queued-ref', ok: false, reason: '停下了——这一条还没轮到，标着「未执行」留着（没有接着跑）' },
       ])
       // 它确实没进会话：库里没有它那条用户条目
@@ -1097,7 +1097,7 @@ describe('U33 · `--script` 的结构化步骤', () => {
       const used = eventsOfKind(handle.events, 'skill.used')
       expect(used.map((event) => event.data.skills.map((one) => one.name))).toEqual([['pdf']])
       const settled = eventsOfKind(handle.events, 'input.settled')
-      expect(settled.map((event) => event.data)).toEqual([{ ref: 'draft-1', ok: true }])
+      expect(settled.map((event) => event.data)).toEqual([{ ref: 'draft-1', ok: true, stage:'accepted' }, { ref:'draft-1',ok:true,stage:'included' }])
 
       handle.dispose()
       assembly.close()
@@ -1124,9 +1124,9 @@ describe('U33 · 纯文本不退化', () => {
       expect(rows[0]?.payload).toBeNull()
       expect(rows[0]?.content_text).toBe('普通一句')
 
-      // 没有技能，就没有使用回执；没给配对键，也没有收下回执（旧路径一字不动）
+      // 没有技能使用回执；持久受理与真正请求带入仍各报一次。
       expect(eventsOfKind(shell.events, 'skill.used')).toEqual([])
-      expect(eventsOfKind(shell.events, 'input.settled')).toEqual([])
+      expect(eventsOfKind(shell.events, 'input.settled').map(event=>event.data.stage)).toEqual(['accepted','included'])
       // 目录块在（有技能就报给模型），但正文不在
       expect(requestText(stage, 0)).not.toContain('正文。')
 
@@ -1250,7 +1250,7 @@ describe('U33 · 回执只在**真回来**之后（真实网关）', () => {
       // **材料确实在那份发出去的请求体里**
       expect(gateway.state.bodies.some((body) => body.includes('ACTUAL_MATERIAL_MARKER'))).toBe(true)
       expect(eventsOfKind(shell.events, 'skill.used')).toHaveLength(1)
-      expect(eventsOfKind(shell.events, 'input.settled')).toHaveLength(1)
+      expect(eventsOfKind(shell.events, 'input.settled').map(event=>event.data.stage)).toEqual(['accepted','included'])
 
       assembly.close()
     } finally {
@@ -1276,7 +1276,7 @@ describe('U33 · 回执只在**真回来**之后（真实网关）', () => {
       expect(eventsOfKind(shell.events, 'skill.used')).toEqual([])
       // **收下归收下**（输入确实进了会话）——模型那边的失败不撤销它，也不诱导用户重发
       expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
-        { ref: 'local-ref', ok: true },
+        { ref: 'local-ref', ok: true, stage:'accepted' },
       ])
 
       assembly.close()
@@ -1306,7 +1306,7 @@ describe('U33 · 回执只在**真回来**之后（真实网关）', () => {
       expect(eventsOfKind(shell.events, 'skill.used')).toEqual([])
       // 但输入已被会话收下（落账过了）——这一条不该被模型那边的中止抹掉
       expect(eventsOfKind(shell.events, 'input.settled').map((event) => event.data)).toEqual([
-        { ref: 'stop-ref', ok: true },
+        { ref: 'stop-ref', ok: true, stage:'accepted' },
       ])
 
       assembly.close()

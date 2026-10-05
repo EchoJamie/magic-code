@@ -222,7 +222,7 @@ export function createScriptedKernel(options: ScriptedKernelOptions = {}): Scrip
   return {
     shell: {
       send: (command: Command) => {
-        if (command.type === 'input.submit') onInput(command.text)
+        if (command.type === 'input.submit') { if(command.local!==true)onInput(command.text) }
         else if (command.type === 'decision.answer') onAnswer(command.decision === 'approve')
         else onInterrupt()
       },

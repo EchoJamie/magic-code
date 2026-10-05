@@ -78,7 +78,7 @@ test('共同补充发布失败如实保留已落账原文，归还原ref且不�
   await waitUntilIdle(stage.sink)
   expect(stage.records.entries.filter(entry => entry.kind === 'user').map(entry => entry.content)).toEqual([{ text: '新的共同要求' }])
   expect(stage.sink.byKind('message.user')).toHaveLength(1)
-  expect(stage.sink.byKind('input.settled').map(event => event.data)).toEqual([{
+  expect(stage.sink.byKind('input.settled').map(event => event.data)).toEqual([{ref:'draft-original',ok:true,stage:'accepted'}, {
     ref: 'draft-original', ok: false,
     reason: '输入已保存，但共同补充未能发布（宿主已关闭准入）；未继续执行，原稿保留',
   }])

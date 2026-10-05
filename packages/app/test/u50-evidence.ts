@@ -208,7 +208,7 @@ async function managerKilled(): Promise<void> {
     reused = true
 
     try {
-      await again.send('/resume', { until: { text: '/resume' }, timeoutMs: 15_000 })
+      await again.send('/resume ', { until: { text: '/resume' }, timeoutMs: 15_000 })
       await again.key('enter')
       const listed = await waitFor('列表里那一行', () => screenHas(again, '长话'), 20_000)
       check(listed, '重启之后那一条会话还在列表里')

@@ -1,3 +1,4 @@
+import type { InputManage, InputPurpose } from './input.ts'
 /**
  * 共享语言 · 控制面（命令面 · 配对）——已冻结。
  *
@@ -82,6 +83,8 @@ export type InputRef = InputRefPlace &
  * 而正文一个字都不剥（`/review` 留在原处，不再被抽成一个独立参数）。
  */
 export type UserInput = {
+  readonly purpose?: InputPurpose
+  readonly local?: true
   readonly text: string
   /**
    * 本次交代带上的材料——**有序**（按各自在正文里的位置），可为空。
@@ -533,6 +536,7 @@ export type ImageExport = {
 export type Command =
   | CollaborationCommand
   | InputSubmit
+  | InputManage
   | DecisionAnswer
   | TurnInterrupt
   | ModelSwitch

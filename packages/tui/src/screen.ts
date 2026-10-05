@@ -24,6 +24,9 @@
  * （Ink 的解键那一支没导出，见下面 `parseScreenKeys` 的注）、**画**（整帧自己拼字节）。
  */
 
+import { emitKeypressEvents, type Key } from 'node:readline'
+import { PassThrough } from 'node:stream'
+import { clip } from './components/composer.ts'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { unlinkSync, writeFileSync } from 'node:fs'
@@ -41,87 +44,44 @@ const EXIT_ALT = '\u001b[?1049l'
 const HIDE_CURSOR = '\u001b[?25l'
 const SHOW_CURSOR = '\u001b[?25h'
 
-/** 这一屏要的那几个键（借出终端期间由本文件从字节里认）。 */
+/** 复用 Node 的流式解键器；未知控制序列丢弃，Esc 由解键器判定。 */
+export function createScreenKeyParser(onKey: (key: ScreenKey) => void) {
+  const stream = new PassThrough()
+  emitKeypressEvents(stream)
+  stream.on('keypress', (text: string | undefined, key: Key) => {
+    const mapped = screenKeyOf(text, key)
+    if (mapped !== null) onKey(mapped)
+  })
+  return { push: (chunk: string | Buffer) => { stream.write(chunk) }, close: () => stream.destroy() }
+}
+function screenKeyOf(text: string | undefined, key: Key): ScreenKey | null {
+  if (key.ctrl) {
+    if (key.name === 'o' || key.name === 'c') return {kind:'close'}
+    if (key.name === 'u') return {kind:'halfUp'}
+    if (key.name === 'd') return {kind:'halfDown'}
+    return null
+  }
+  const mapped: Record<string, ScreenKey> = {
+    up:{kind:'lineUp'}, down:{kind:'lineDown'}, pageup:{kind:'pageUp'}, pagedown:{kind:'pageDown'},
+    escape:{kind:'cancel'}, return:{kind:'accept'}, enter:{kind:'accept'}, backspace:{kind:'backspace'},
+  }
+  if (key.name !== undefined && mapped[key.name] !== undefined) return mapped[key.name]!
+  if (key.meta || key.sequence?.includes('\x1b') || text === undefined || /[\x00-\x1f\x7f]/.test(text)) return null
+  return {kind:'text',text}
+}
+/** 完整输入的便捷入口；实际阅读始终使用持续 parser。 */
 export function parseScreenKeys(text: string): readonly ScreenKey[] {
+  if (text === '\x1b') return [{kind:'cancel'}]
   const keys: ScreenKey[] = []
-  let at = 0
-  let typed = ''
-
-  /** 手上攒着的可见字符——遇到功能键先把它们整段交出去（粘贴进来的整句算一段）。 */
-  const flush = (): void => {
-    if (typed !== '') keys.push({ kind: 'text', text: typed })
-    typed = ''
-  }
-
-  while (at < text.length) {
-    const rest = text.slice(at)
-
-    // ⚠️ **认不出来的转义序列当 `Esc`**（不是丢掉）：`Esc` 是这一屏的退出键之一，
-    //    丢掉它就是「按了没反应」。同一个字节序列在真终端上恒等于「用户按了 Esc」
-    //    （方向键的 `\u001b[A` 那几支在上面先认走了）。
-    const sequence = SCREEN_SEQUENCES.find(([bytes]) => rest.startsWith(bytes))
-    if (sequence !== undefined) {
-      flush()
-      keys.push(sequence[1])
-      at += sequence[0].length
-      continue
-    }
-
-    const char = rest[0] as string
-    if (char === '\u001b') {
-      flush()
-      keys.push({ kind: 'cancel' })
-      at += 1
-      continue
-    }
-    if (char === '\r' || char === '\n') {
-      flush()
-      keys.push({ kind: 'accept' })
-      at += 1
-      continue
-    }
-    if (char === '\u007f' || char === '\b') {
-      flush()
-      keys.push({ kind: 'backspace' })
-      at += 1
-      continue
-    }
-
-    typed += char
-    at += 1
-  }
-
-  flush()
-
+  const parser = createScreenKeyParser(key => {
+    const previous = keys.at(-1)
+    if (key.kind === 'text' && previous?.kind === 'text') {
+      keys[keys.length - 1] = { kind: 'text', text: previous.text + key.text }
+    } else keys.push(key)
+  })
+  parser.push(text); parser.close()
   return keys
 }
-
-/**
- * 认得的**控制码与转义序列**。
- *
- * ⚠️ **只认这一屏要的那几个**（设计 · 查看那一节列的键位就是这一张表）——不引 Ink 的
- * `parse-keypress`（那是它内部的文件，包的 `exports` 里没有这一条路），也不自己发明一套
- * 通用解键（那才是「另造一套 VT」）。
- *
- * ⚠️ **借出终端期间 kitty 键盘协议是关着的**（Ink 的 `beginSuspend` 会把它弹掉、
- * `endSuspend` 再推回来）——故这里按**经典序列**认。限度记在回报里：终端若把一条序列
- * 拆成两笔写（极少见），半截那一笔会被当成 `Esc`。
- *
- * ⚠️ **可见字符（`j` `k` `/` `q` `{` `}`…）不在这张表里**——它们一律走「攒成一段 `text`」
- * 那一支，**由 `transcript.ts` 的 `screenKey` 认**（见那一处的注：为什么那些键必须
- * 在状态机那一层认，而不是在这一层）。
- */
-const SCREEN_SEQUENCES: readonly (readonly [string, ScreenKey])[] = [
-  ['\u001b[A', { kind: 'lineUp' }],
-  ['\u001b[B', { kind: 'lineDown' }],
-  ['\u001bOA', { kind: 'lineUp' }],
-  ['\u001bOB', { kind: 'lineDown' }],
-  // ——控制码（都是「字母 ＋ ctrl」的裸码）——
-  ['\u000f', { kind: 'close' }], // ctrl+o：与开屏同一个键（设计：`ctrl+o` 是切换）
-  ['\u0003', { kind: 'close' }], // ctrl+c：这一屏不接「按两次退出」那套（那是主屏的），退出这一屏
-  ['\u0015', { kind: 'halfUp' }], // ctrl+u
-  ['\u0004', { kind: 'halfDown' }], // ctrl+d
-]
 
 export type ScreenHost = {
   readonly stdin: NodeJS.ReadStream
@@ -131,6 +91,8 @@ export type ScreenHost = {
   /** 底下那些变了就叫一声（可省）——**叫不叫只影响新内容几时上屏**，不影响键。 */
   readonly subscribe?: ((listener: () => void) => () => void) | undefined
   /** 开屏时从第几行起（阅读位置记着——设计：「退出保留原来的阅读位置」）。 */
+  readonly title?: string
+  readonly memberAction?: ((kind: 'input' | 'menu', top:number) => void) | undefined
   readonly startTop?: number | undefined
   /**
    * **加入本次输入**（U110）——把选中的那一处材料放回输入行。
@@ -168,10 +130,8 @@ export async function runScreen(host: ScreenHost): Promise<number> {
     go?.()
   }
 
-  const onData = (chunk: Buffer | string): void => {
-    queued = [...queued, ...parseScreenKeys(typeof chunk === 'string' ? chunk : chunk.toString('utf8'))]
-    nudge()
-  }
+  const parser = createScreenKeyParser(key => { queued.push(key); nudge() })
+  const onData = (chunk: Buffer | string): void => { parser.push(chunk) }
 
   const raw = (on: boolean): void => {
     if (typeof stdin.setRawMode === 'function') stdin.setRawMode(on)
@@ -194,12 +154,14 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       dirty = false
 
       const { rows, columns, screenRows } = host.read()
-      const layout = screenLayout(rows, { columns, screenRows })
+      const body = screenLayout(rows, { columns, screenRows: screenRows - (host.title === undefined ? 0 : 1) })
+      const layout = body
 
       const keys = queued
       queued = []
 
       for (const key of keys) {
+        if (host.memberAction !== undefined && state.asking === null && state.picked === null && key.kind === 'text' && (key.text === 'i' || key.text === 'm')) { host.memberAction(key.text === 'i' ? 'input' : 'menu', state.top); closing = true; break }
         const step = screenKey(state, key, layout)
         if (step.kind === 'state') state = step.state
         if (step.kind === 'close') closing = true
@@ -219,7 +181,8 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       }
       if (closing) break
 
-      stdout.write(screenFrame({ layout, state, columns, hits: matchesOf(layout.lines, state.term) }))
+      const frame = screenFrame({ layout, state, columns, hits: matchesOf(layout.lines, state.term),...(host.memberAction===undefined?{}:{hint:'↑↓ / PgUp PgDn · / 搜索 · i 补充 · m 操作 · Esc 返回'}) })
+      stdout.write(host.title === undefined ? frame : `\x1b[H\x1b[0m${clip(host.title, columns)}\x1b[K\r\n` + frame.slice(3) )
 
       // 按过键（或按键那会儿底下又变了）⇒ 立刻再走一圈；否则等下一个动静
       if (dirty || queued.length > 0) continue
@@ -227,6 +190,7 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       await new Promise<void>((resolve) => { awake = resolve })
     }
   } finally {
+    parser.close()
     stdin.off('data', onData)
     stdout.off('resize', nudge)
     unsubscribe?.()
@@ -278,7 +242,7 @@ async function handToEditor(
     })
     await child.exited
   } catch (error) {
-    return { ...state, note: `起不了编辑器：${String(error).slice(0, 60)}` }
+    return { ...state, note: `起不了编辑器：${String(error)}` }
   } finally {
     try {
       unlinkSync(path)
@@ -306,6 +270,7 @@ export function screenFrame(input: {
   readonly state: ScreenState
   readonly columns: number
   readonly hits: readonly number[]
+  readonly hint?: string
 }): string {
   const { layout, state, columns, hits } = input
   const rows: string[] = []
@@ -317,7 +282,7 @@ export function screenFrame(input: {
     const lit = (state.term !== '' && hits.includes(row)) || state.picked === row
     rows.push(line === undefined ? '' : paintLine(line, columns, lit))
   }
-  rows.push(paintStatus(layout, state, columns, hits.length))
+  rows.push(paintStatus(layout, state, columns, hits.length,input.hint))
 
   return `\u001b[H${rows.map((row) => `${row}\u001b[0m\u001b[K`).join('\r\n')}`
 }
@@ -339,7 +304,7 @@ function paintLine(line: LogLine, columns: number, highlight: boolean): string {
 }
 
 /** 底下一那条状态行——位置 · 命中 · `note` · 键位提示（窄窗从右往左省）。 */
-function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, found: number): string {
+function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, found: number,hint=SCREEN_HINT): string {
   const total = layout.lines.length
   const place = total === 0
     ? '（还没有记录）'
@@ -365,7 +330,7 @@ function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, 
 
   const tail = state.note !== null
     ? `  ·  ${state.note}`
-    : `${searched}${actions}  ·  ${SCREEN_HINT}`
+    : `${searched}${actions}  ·  ${hint}`
 
   return faint(clip(`${place}${tail}`, columns))
 }
@@ -378,7 +343,7 @@ function paintStatus(layout: ScreenLayout, state: ScreenState, columns: number, 
  * 早先那版（每一项都带全称）到 `{/}` 就被裁掉，`q 退出` 干脆看不见（而它是**退出**键，
  * 最不该被省的那个）。故只在认不出意思的那几个后面留一句短的，其余只报键。
  */
-const SCREEN_HINT = '/ 搜 · n/N · j/k · g/G · ctrl+u/d 半页 · 空格/b · {/} [/] 交代/材料 · v · q 退出'
+const SCREEN_HINT = '↑↓ 移动 · PgUp/PgDn 翻页 · / 搜索 · n/N · Esc 返回'
 
 function paintSegment(text: string, color?: string, bold?: boolean): string {
   const head = `${bold === true ? '\u001b[1m' : ''}${color === undefined ? '' : foreground(color)}`
@@ -411,20 +376,4 @@ function rgbOf(color: string): string | null {
   const value = Number.parseInt(matched[1] as string, 16)
 
   return `${(value >> 16) & 255};${(value >> 8) & 255};${value & 255}`
-}
-
-/** 裁到列数（窄窗先把右边那些省掉——同状态行那条老规矩）。 */
-function clip(text: string, columns: number): string {
-  if (displayWidth(text) <= columns) return text
-
-  let kept = ''
-  let used = 0
-  for (const char of text) {
-    const size = displayWidth(char)
-    if (used + size > columns - 1) break
-    kept += char
-    used += size
-  }
-
-  return `${kept}…`
 }

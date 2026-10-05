@@ -304,7 +304,7 @@ async function once(mark: string, columns: number, rows: number): Promise<void> 
     await other.wait({ text: '第三句慢慢长' }, { timeoutMs: 25_000 })
     await waitStatus(other, '在跑那一档（/exit 之前）', (line) => line.includes('● 工作中'))
 
-    await other.send('/exit', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
+    await other.send('/exit ', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await other.key('enter')
     await other.wait({ text: '停了' }, { timeoutMs: 30_000 })
     // ⚠️ **标签里不能有 `/`**（它是文件名的一半，会被当成路径分隔符——本套实测栽过一次）

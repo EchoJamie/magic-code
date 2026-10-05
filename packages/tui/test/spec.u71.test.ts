@@ -93,7 +93,7 @@ function open(
     readonly mcp?: EventDataOf['mcp.catalog']
   } = {},
 ): void {
-  stage.type('/config')
+  stage.type('/config ')
   stage.press(ENTER)
   stage.feed([
     event('model.catalog', {
@@ -159,22 +159,17 @@ const statusHintOf = (stage: Stage): string => stage.shell.getView().status.hint
 describe('`/config` · 开屏', () => {
   test('一次问三份读数（连接 · 授权 · 外部工具）；**齐了才开屏**', () => {
     const stage = live()
-    stage.type('/config')
+    stage.type('/config ')
     stage.press(ENTER)
 
     // ⚠️ 头一条是打 `/` 那一下的技能目录查询（U33：输入行候选要它）——与这一屏无关
-    expect(stage.commands()).toEqual([
-      { type: 'skills.list' },
-      { type: 'model.list' },
-      { type: 'grants.list' },
-      { type: 'mcp.list' },
-    ])
+    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/config ","type":"input.submit"}, { type: 'model.list' }, { type: 'grants.list' }, { type: 'mcp.list' }])
 
     // 来一份：还差两份 ⇒ **不开**（少问一份，那一格就只能写「还没问到」，而「一眼看全」
     // 正是这一屏存在的理由），记录区也一个字都不进
     stage.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
     expect(pickerOf(stage)).toBeUndefined()
-    expect(rowsOf(stage)).toEqual([])
+    expect(rowsOf(stage)).toEqual(['/config '])
 
     // 三份齐了才开
     stage.feed([event('grants.catalog', GRANTS), event('mcp.catalog', MCP)])
@@ -186,18 +181,18 @@ describe('`/config` · 开屏', () => {
       '减少动效',
       '数据目录与工作区根',
     ])
-    expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG)
+    expect(statusHintOf(stage)).toBe('')
   })
 
   test('每行都看得到当前值，且与那三份读数对得上', () => {
     const stage = live()
     open(stage)
 
-    expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版')
-    expect(valueOf(stage, '本工作区授权')).toBe('2 条')
-    expect(valueOf(stage, '外部工具')).toBe('1 台')
+    expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版 · Enter 进入')
+    expect(valueOf(stage, '本工作区授权')).toBe('2 条 · Enter 进入')
+    expect(valueOf(stage, '外部工具')).toBe('1 台 · Enter 进入')
     // 末行：家目录下那一截缩成 `~`（省那一格的地方），根只有一个就直接摆出来
-    expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · ~/ns/proj')
+    expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · ~/ns/proj · Enter 查看路径')
   })
 
   test('**右列对齐**——五行的值在屏上起于同一列（布局那一关）', async () => {
@@ -206,10 +201,10 @@ describe('`/config` · 开屏', () => {
 
     const frame = await stage.screen({ columns: 100, rows: 30 })
     const values = [
-      'MiniMax-M3 · 个人版',
-      '2 条',
-      '1 台',
-      '~/.magic · ~/ns/proj',
+      'MiniMax-M3 · 个人版 · Enter 进入',
+      '2 条 · Enter 进入',
+      '1 台 · Enter 进入',
+      '~/.magic · ~/ns/proj · Enter 查看路径',
     ]
     const at = values.map((value) => {
       const line = frame.dock.find((one) => one.text.includes(value))
@@ -224,13 +219,13 @@ describe('`/config` · 开屏', () => {
   test('值随实际状态变——换过模型之后再看一遍，那一格跟着变', () => {
     const stage = live()
     open(stage)
-    expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版')
+    expect(valueOf(stage, '模型与连接')).toBe('MiniMax-M3 · 个人版 · Enter 进入')
 
     stage.press(ESC)
     // 「此刻走哪一条」是内核的读数（`model.catalog` 的 `current`）——换过之后它变了，
     // 而 `/config` 每次开屏**现问一次**，故那一格跟着变（不是开局那一份的陈账）
     open(stage, { current: { alias: 'default', provider: 'deepseek', model: 'deepseek-chat' } })
-    expect(valueOf(stage, '模型与连接')).toBe('DeepSeek Chat · 深度求索')
+    expect(valueOf(stage, '模型与连接')).toBe('DeepSeek Chat · 深度求索 · Enter 进入')
   })
 
   test('`/config` 不带参数——多写的词如实回一句，不当交代发出去', () => {
@@ -238,8 +233,8 @@ describe('`/config` · 开屏', () => {
     stage.type('/config 模型')
     stage.press(ENTER)
 
-    expect(stage.commands()).toEqual([{ type: 'skills.list' }])
-    expect(rowsOf(stage)).toEqual(['认得的用法：/config（不带参数）'])
+    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/config 模型","type":"input.submit"}])
+    expect(rowsOf(stage)).toEqual(['/config 模型', '认得的用法：/config（不带参数）'])
   })
 })
 
@@ -255,7 +250,7 @@ describe('`/config` · 筛', () => {
     // ⚠️ 「不设专门的搜索模式」：打进去的字**一个都不进草稿**（草稿照旧空着——这一屏接管了
     // 输入，而它没有另开一个输入框），筛词报在列表下方那行说明里（用户看得见自己在筛什么）
     expect(draftOf(stage)).toBe('')
-    expect(hintOf(stage)).toBe('筛选「授权」——接着打收窄，退格删一个字')
+    expect(hintOf(stage)).toBe('筛选「授权」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
   })
 
   test('筛按**屏上看得见的字**（名称 ＋ 当前值那一格）——打值里的字也找得到', () => {
@@ -275,12 +270,12 @@ describe('`/config` · 筛', () => {
 
     stage.press(BACKSPACE)
     // 「授」还在筛（一个字也是筛词）
-    expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字')
+    expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
     stage.press(BACKSPACE)
 
     expect(labelsOf(stage)).toHaveLength(6)
-    expect(hintOf(stage)).toBe('回车＝进那一项')
-    expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG) // 抽屉照旧开着
+    expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
+    expect(statusHintOf(stage)).toBe('') // 抽屉照旧开着
   })
 
   test('筛空了**照开**（0 行是一个回答，不是死胡同）——说得出「没有这一项」', () => {
@@ -289,9 +284,9 @@ describe('`/config` · 筛', () => {
 
     stage.type('zzz')
     expect(labelsOf(stage)).toEqual([])
-    expect(hintOf(stage)).toBe('没有匹配「zzz」的项——退格删一个字')
+    expect(hintOf(stage)).toBe('没有匹配「zzz」的项——退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
     // 抽屉没被收起：接着退格、或 `esc` 走人——两个动作都还在
-    expect(statusHintOf(stage)).toBe(HINT_PICKER_CONFIG)
+    expect(statusHintOf(stage)).toBe('')
   })
 
   test('`esc` **不负责清过滤**（清过滤归退格）——筛词只活在这一屏里', () => {
@@ -307,7 +302,7 @@ describe('`/config` · 筛', () => {
     // 再开一次 ⇒ 全表（开一屏就是一屏新的，筛词不跟着活下来）
     open(stage)
     expect(labelsOf(stage)).toHaveLength(6)
-    expect(hintOf(stage)).toBe('回车＝进那一项')
+    expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
   })
 })
 
@@ -316,7 +311,7 @@ describe('`/config` · 筛', () => {
 describe('`/config` · 选中即进那一屏', () => {
   test('「模型与连接」⇒ 与**直接敲 `/model`** 逐字同形（两趟对着看）', async () => {
     const direct = live()
-    direct.type('/model')
+    direct.type('/model ')
     direct.press(ENTER)
     direct.feed([event('model.catalog', { entries: ENTRIES, current: CURRENT })])
 
@@ -333,7 +328,8 @@ describe('`/config` · 选中即进那一屏', () => {
     const b = await viaConfig.screen({ columns: 100, rows: 30 })
     expect(b.dock.map((one) => one.text)).toEqual(a.dock.map((one) => one.text))
     expect(b.statusLine).toBe(a.statusLine)
-    expect(b.record.map((one) => one.text)).toEqual(a.record.map((one) => one.text))
+    expect(b.content.map(one => one.text)).toEqual(['› /config'])
+    expect(a.content.map(one => one.text)).toEqual(['› /model'])
   })
 
   test('「本工作区授权」⇒ `/grants` 那一屏；「外部工具」⇒ `/mcp` 那一屏（都是总览）', () => {
@@ -363,9 +359,8 @@ describe('`/config` · 选中即进那一屏', () => {
     stage.press(ENTER)
 
     // 收屏（回输入行），记录区里留一块
-    expect(pickerOf(stage)).toBeUndefined()
-    expect(rowsOf(stage)).toEqual([
-      '数据与工作区根',
+    expect(pickerOf(stage)?.source).toBe('paths-info')
+    expect(pickerOf(stage)?.detail).toEqual([
       `  数据目录　${DATA_DIR}`,
       `  工作区根　${ROOT}`,
     ])
@@ -376,12 +371,11 @@ describe('`/config` · 选中即进那一屏', () => {
     open(stage)
 
     // 列表那一格报个数（一格里摆不下两条全路径），它自己那一屏逐条写全
-    expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根')
+    expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根 · Enter 查看路径')
 
     for (let step = 0; step < 5; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
     stage.press(ENTER)
-    expect(rowsOf(stage)).toEqual([
-      '数据与工作区根',
+    expect(pickerOf(stage)?.detail).toEqual([
       `  数据目录　${DATA_DIR}`,
       `  工作区根　${ROOT}（默认根）`,
       `  工作区根　${HOME}/ns/sub`,
@@ -427,21 +421,21 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
     )
 
   test('一条连接都没有 / 有连接却没选过模型——**两种「没有去向」分开说**', () => {
-    expect(rowOf({ models: [], current: null })['模型与连接']).toBe('还没接入')
-    expect(rowOf({ current: null })['模型与连接']).toBe('还没选模型')
+    expect(rowOf({ models: [], current: null })['模型与连接']).toBe('还没接入 · Enter 进入')
+    expect(rowOf({ current: null })['模型与连接']).toBe('还没选模型 · Enter 进入')
   })
 
   test('当前那个模型不在缓存里（换过、又被移除了）⇒ 照实报精确 id，不拿别的顶上', () => {
     expect(rowOf({ current: { provider: 'minimax', model: '老的-01' } })['模型与连接']).toBe(
-      '老的-01 · 个人版',
+      '老的-01 · 个人版 · Enter 进入',
     )
   })
 
   test('授权与外部工具报的是**数量**（来源 / 连接状态 / 工具数留在各自那一屏）', () => {
-    expect(rowOf()['本工作区授权']).toBe('2 条')
-    expect(rowOf({ grants: { ...GRANTS, grants: [] } })['本工作区授权']).toBe('还没有')
-    expect(rowOf()['外部工具']).toBe('1 台')
-    expect(rowOf({ mcp: { servers: [] } })['外部工具']).toBe('还没配')
+    expect(rowOf()['本工作区授权']).toBe('2 条 · Enter 进入')
+    expect(rowOf({ grants: { ...GRANTS, grants: [] } })['本工作区授权']).toBe('还没有 · Enter 进入')
+    expect(rowOf()['外部工具']).toBe('1 台 · Enter 进入')
+    expect(rowOf({ mcp: { servers: [] } })['外部工具']).toBe('还没配 · Enter 进入')
   })
 
   test('路径那一格：不在家目录下的照旧写绝对路径（缩不了就不缩）', () => {
@@ -449,7 +443,7 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
       rowOf({ paths: { dataDir: '/var/magic', home: '/home/echo', workspaceRoots: ['/srv/ws'] } })[
         '数据目录与工作区根'
       ],
-    ).toBe('/var/magic · /srv/ws')
+    ).toBe('/var/magic · /srv/ws · Enter 查看路径')
   })
 
   test('筛词空＝全表（七行）；筛不中＝空表（退到空就是全表）', () => {
@@ -464,7 +458,7 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
 
 describe('`/config` · 键位提示', () => {
   test('右位那句是**这一屏能做的**：比通用那句多一个「打字筛」', () => {
-    expect(HINT_PICKER_CONFIG).toBe('↑↓ 选 · 回车 定 · 打字筛 · ← 退 · esc 收起')
+    expect(HINT_PICKER_CONFIG).toBe('↑↓ 选择 · 输入筛词 · Esc 返回')
     expect(HINT_PICKER).not.toContain('打字筛')
   })
 })

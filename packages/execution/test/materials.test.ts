@@ -475,8 +475,9 @@ describe('U36 · 路径候选：只列一层，工作区外不做目录浏览', 
       const materials = materialsAt(sand.at)
 
       const all = await materials.candidates('src/', 30)
-      expect(all.rows.map((row) => row.display)).toEqual(['src/a.ts', 'src/login.ts', 'src/sub'])
-      expect(all.rows.map((row) => row.kind)).toEqual(['file', 'file', 'directory'])
+      expect(all.rows.map((row) => row.display)).toEqual(['', 'src/a.ts', 'src/login.ts', 'src/sub'])
+      expect(all.rows.map((row) => row.kind)).toEqual(['directory', 'file', 'file', 'directory'])
+      expect(all.rows[0]?.path).toBe(realpathSync(sand.at))
       expect(all.rows.every((row) => row.external === false)).toBe(true)
 
       const filtered = await materials.candidates('src/log', 30)
@@ -494,7 +495,10 @@ describe('U36 · 路径候选：只列一层，工作区外不做目录浏览', 
 
       const capped = await materials.candidates('many/', 30)
       expect(capped.rows).toHaveLength(30)
-      expect(capped.note).toContain('还有 10 条')
+      expect(capped.rows[0]?.path).toBe(realpathSync(sand.at))
+      expect(capped.rows[0]?.kind).toBe('directory')
+      expect(capped.rows.slice(1).map(row => row.display)).toEqual(Array.from({ length: 29 }, (_, at) => `many/f${String(at).padStart(3, '0')}.txt`))
+      expect(capped.note).toContain('还有 11 条')
 
       const exact = await materials.candidates('many/f001.txt', 30)
       expect(exact.rows.map((row) => row.display)).toEqual(['many/f001.txt'])

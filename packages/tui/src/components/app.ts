@@ -552,9 +552,17 @@ function showsExitArmed(view: ShellView): boolean {
 }
 
 /** 左下交互区的内容（四种用法）。 */
+function inputNotices(view:ShellView,columns:number):readonly string[]{
+  const known=new Set(view.pendingInputs.map(one=>one.ref))
+  const sending=[...view.settled,...view.rows].filter(row=>row.kind==='user'&&row.inputRef!==undefined&&!known.has(row.inputRef)&&row.inputState!==undefined).map(row=>row.kind==='user'?`${view.status.state==='lost'?'受理未确认':'提交中'}：${row.text}`:'')
+  const pending=view.pendingInputs.filter(one=>one.state==='pending'||one.state==='consumed').map(one=>`${one.reason??(one.purpose==='next'?'下一件排队中':one.state==='consumed'?'待请求带入':'待带入')}：${one.input.text}`)
+  return [...sending,...pending].map(line=>clip(line,columns))
+}
+
 function dockOf(view: ShellView, columns: number, rows: number): readonly ReactElement[] {
   return [
     ...collaborationHeader(view).map((line, index) => h(Text, { key: `collaboration:${index}`, color: index === 0 ? PALETTE.dim : PALETTE.user }, clip(line, Math.max(1, columns)))),
+    ...inputNotices(view,columns).map((line,index)=>h(Text,{key:`input-state:${index}`,color:PALETTE.faint},line)),
     ...dockContentOf(view, columns, rows),
   ]
 }
@@ -621,6 +629,7 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
     // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删）：材料就写在正文里
     // （`@src/login.ts` / `/review`），**原位**那一段自己就是凭据——旁边再列一行「待发送」，
     // 等于同一件事说两遍，而删了正文那处材料还在（暗带）。见 `ShellView.refs` 那条注。
+    ...(view.inputPurpose==='next'?[h(Text,{key:'purpose',color:PALETTE.dim},'本条：下一件 · Alt+Enter 更改用途')]:[]),
     h(Composer, {
       key: 'composer',
       draft: view.draft,
@@ -713,7 +722,7 @@ function maxDraftLines(rows: number): number {
  * 交互区要几行——**按内容算**（原型：展开高度＝内容所需，最多半屏）。纯函数：布局与用例都拿它。
  */
 export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
-  return collaborationHeader(view).length + dockContentHeightOf(view, columns, rows)
+  return collaborationHeader(view).length + inputNotices(view,columns).length + dockContentHeightOf(view, columns, rows)
 }
 
 function dockContentHeightOf(view: ShellView, columns: number, rows: number): number {
@@ -725,7 +734,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
   if (view.dock.kind === 'decision') {
     const material = view.dock.pending.material
       .split('\n')
-      .reduce((sum, line) => sum + Math.max(1, wrap(line, Math.max(8, columns - 4)).length), 0)
+      .reduce((sum, line) => sum + Math.max(1, wrap(line, Math.max(1, columns - 5)).length), 0)
 
     // `+ 3` ＝ 卡自己那三行：标题前那一行 `marginTop` · 标题 · 键位行。
     // ⚠️ 账与屏同源：这里比屏上多算一行，活动区就少一行，矮窗上**真光标高一行**
@@ -738,7 +747,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
     const note =
       view.dock.prompt.note === undefined
         ? 0
-        : wrap(view.dock.prompt.note, Math.max(8, columns - 4)).length
+        : wrap(view.dock.prompt.note, Math.max(1, columns - 5)).length
 
     return (
       1 +
@@ -757,14 +766,15 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
     const candidates = pickerLayout(
       view.dock.picker,
       pickerBudget(view.dock.picker, columns, rows),
-    ).items.length
+      columns,
+    ).height
     // 那行说明**按实际占几行算**（U22）：`/grants` 的说明比 `/resume` 的长得多
     // （怎么用 ＋ 那笔账），超宽会由 Ink 折行——照 1 行算，交互区就少算了一行
     // （D11 那条「行高与实际不符」的老账，正是这么来的）
     const hint =
       view.dock.picker.hint === undefined
         ? 0
-        : wrap(view.dock.picker.hint, Math.max(8, columns - 4)).length
+        : wrap(view.dock.picker.hint, Math.max(1, columns - 5)).length
 
     // **标题那一行同一条账**（U100）——与渲染、与 `pickerBudget` **同取一处**
     // （`titleLines`）：分头各算一次就是 U31 那一族的老病（矮终端上真光标高一行）。
@@ -785,7 +795,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
   //    那两行都算在内；各算一套迟早对不上（D11 那条「行高与实际不符」就是这么来的）。
   // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删，账里那一格随之去掉）：
   //    引用就长在草稿那几行里，不另占一行。
-  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash
+  return draftHeight(view.draft, view.caret, columns, maxDraftLines(rows)) + completing + flash + (view.inputPurpose==='next'?1:0)
 }
 
 /**
@@ -973,7 +983,7 @@ export function TuiApp({ shell }: TuiAppProps) {
    */
   const ticking =
     view.status.state !== 'lost' &&
-    (hasRunningTool(view) || hasRunningThinking(view) || breathingOf(view, plan) || pulsing)
+    (view.rows.some(row=>row.kind==='tool'&&row.state==='running'&&row.awaitingDecision!==true) || hasRunningThinking(view) || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) || pulsing)
   const now = useLiveClock(ticking)
 
   /**
@@ -987,7 +997,7 @@ export function TuiApp({ shell }: TuiAppProps) {
    *
    * ⚠️ 它是**这次会话**里的阅读位置，不是会话记录的一部分：不与记录同生共死，退出程序即忘。
    */
-  const reading = useRef(0)
+  const reading = useRef(new Map<string,number>())
 
   useFlipOnNewPage(shell, rows, inScreen)
 
@@ -1018,22 +1028,28 @@ export function TuiApp({ shell }: TuiAppProps) {
     opening.current = true
     inScreen.current = true
 
+    const reader = shell.getView().dock.kind === 'picker' ? (shell.getView().dock as Extract<ShellView['dock'], {kind:'picker'}>).picker.reader : undefined
+    const key=reader?.key??`main:${shell.getView().sessionId??'new'}`
+    let top=reader?.top??reading.current.get(key)??0
+    let action = false
     void suspendTerminal(async () => {
       try {
-        reading.current = await runScreen({
+        top = await runScreen({
           stdin,
           stdout,
           // **每次重画问一次**（不是开屏时抓一份）：流式进来的新行据此上屏
           read: () => {
             const latest = shell.getView()
             return {
-              rows: [...latest.settled, ...latest.rows],
+              rows: reader === undefined ? [...latest.settled, ...latest.rows] : latest.dock.kind === 'picker' ? latest.dock.picker.reader?.rows ?? reader.rows : reader.rows,
               columns: stdout.columns ?? columns,
               screenRows: stdout.rows ?? rows,
             }
           },
           subscribe: shell.subscribe,
-          startTop: reading.current,
+          startTop: top,
+          title: reader?.title ?? shell.getView().status.session ?? '当前工作',
+          memberAction: reader?.key.endsWith(':records') === true ? (kind, top) => { action = true; shell.key({kind:'readerTop',top}); shell.key({kind:kind === 'input' ? 'memberInput' : 'memberMenu'}) } : undefined,
           // **加入本次输入**（U110）——放回稿子是外壳的事（编号、引用表、插入点都在它手上）；
           // 那一屏自己就此退出（`screen.ts` 那一支），回来就是接着打字
           attach: (material) => shell.attachMaterial(material),
@@ -1041,9 +1057,15 @@ export function TuiApp({ shell }: TuiAppProps) {
           exportImage: (material) => shell.exportMaterial(material),
         })
       } finally {
-        inScreen.current = false
-        opening.current = false
+        reading.current.set(key,top)
+        if (reader !== undefined && !action) { shell.key({kind:'readerTop',top}); shell.key({kind:'escape'}) }
       }
+    }).finally(() => {
+      inScreen.current = false
+      opening.current = false
+      // 返回到另一份阅读层时，须等上一趟终端借用真正结束再打开它。
+      const dock = shell.getView().dock
+      if (dock.kind === 'picker' && dock.picker.reader !== undefined) openScreen()
     })
   }
 
@@ -1056,6 +1078,9 @@ export function TuiApp({ shell }: TuiAppProps) {
    * ⚠️ **写的时机在 `exit()` 之前**（那一个 useEffect 排在下一条），且**只写一次**——
    * 与翻页那一手同一个姿势（`useStdout().write` 是 Ink 给「在帧之外写东西」开的那道门）。
    */
+  const readerKey = view.dock.kind === 'picker' ? view.dock.picker.reader?.key : undefined
+  useEffect(() => { if (readerKey !== undefined) openScreen() }, [readerKey])
+
   useLeavingNote(view, write)
 
   /**
@@ -1073,7 +1098,7 @@ export function TuiApp({ shell }: TuiAppProps) {
   }, [view.leaving, exit])
 
   const feed = (key: ShellKey): void => {
-    const effect = shell.key(key)
+    const effect = shell.key(key.kind === 'up' || key.kind === 'down' ? { ...key, columns: stdout.columns ?? columns } : key)
     if (effect.exit) exit()
     // **`ctrl+o`** ——外壳只说「开那一屏」（见 `ShellEffect.screen`），
     // 借终端与画那一屏归这一层（外壳够不着终端）。
@@ -1095,6 +1120,12 @@ export function TuiApp({ shell }: TuiAppProps) {
     // 故这里算**目标位置**，外壳只存；「没有选择器/审批接管时才生效」那条规矩归外壳判
     // （它才知道此刻左下开着什么）。
     if (key.pageUp === true || key.pageDown === true) {
+      if (view.dock.kind === 'picker') {
+        const picker = view.dock.picker
+        const layout = pickerLayout(picker,pickerBudget(picker,columns,rows),columns)
+        feed({kind:'pickerDetailTop',top:Math.max(0,Math.min(layout.detailTotal-layout.detailSize,layout.detailTop+(key.pageDown?1:-1)*Math.max(1,layout.detailSize)))})
+        return
+      }
       if (plan.window !== null) {
         feed({ kind: 'planTop', top: planScrolled(plan.window, key.pageDown === true ? 1 : -1) })
       }
@@ -1128,6 +1159,10 @@ export function toShellKeys(
     readonly tab?: boolean
   },
 ): readonly ShellKey[] {
+  if (key.return === true && key.meta === true) return [{kind:'alt+enter'}]
+  if (key.ctrl === true && input === 'p') return [{ kind: 'ctrl+p' }]
+  if (key.ctrl === true && input === 'n') return [{ kind: 'ctrl+n' }]
+  if (key.ctrl === true && input === 'g') return [{ kind: 'ctrl+g' }]
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]
   if (key.ctrl === true && input === 'o') return [{ kind: 'ctrl+o' }]
   if (key.ctrl === true && input === 'r') return [{ kind: 'ctrl+r' }]

@@ -19,7 +19,7 @@ import { describe, expect, test } from 'bun:test'
 import { HINT_EXIT_ARMED, hasRunningTool } from '../src/view.ts'
 import { TEST_AT, event } from './events.ts'
 import { createRunsFeed, createStage } from './screen.ts'
-import type { RunRow } from '@magic/contracts'
+import type { Command, RunRow } from '@magic/contracts'
 import type { Frame, ScreenOptions, Stage } from './screen.ts'
 
 const WIDE: ScreenOptions = { columns: 100, rows: 30 }
@@ -34,6 +34,7 @@ const ENTER = { kind: 'enter' } as const
  */
 const withSession = (stage: Stage, id = 's1'): Stage => {
   stage.feed([event('session.state', { active: id, sessions: [{ id, at: 0, title: '甲的事' }] })])
+  ;(stage.spy.commands as Command[]).splice(0)
 
   return stage
 }
@@ -100,6 +101,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
         { id: 88 },
       ),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     return stage
   }
@@ -112,8 +114,8 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
 
     expect(frame.has('当前任务仍在运行')).toBe(true)
     // 顺序即设计那张表：停止任务 → 转到后台 → 停止并退出
-    const rows = frame.dock.filter((line) => /\d\s/u.test(line.text))
-    expect(rows.map((line) => line.text.replace(/^\s*\d+\s*/u, '').split('　')[0])).toEqual([
+    const dock = stage.shell.getView().dock
+    expect(dock.kind === 'picker' ? dock.picker.rows.map(row => row.label) : []).toEqual([
       '停止任务',
       '转到后台',
       '停止并退出',
@@ -295,7 +297,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow()]) })
       stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
       // 开 `/resume` 那张列表，把选中挪到第 N 条
-      stage.type('/resume')
+      stage.type('/resume ')
       stage.press(ENTER)
       stage.feed([
         event('session.state', {
@@ -368,6 +370,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
         event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       ])
 
+      ;(stage.spy.commands as Command[]).splice(0)
       return { stage, push: (rows) => stage.pushRuns(rows) }
     }
 
@@ -455,8 +458,10 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
         event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
         event('tool.decision.request', { call: 71, name: '跑测试', material: '命令', weight: 'light' }, { id: 88 }),
       ])
+      stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
       stage.press(ARM) // 卡被三选罩住
 
+      ;(stage.spy.commands as Command[]).splice(0)
       return { stage, push: (rows) => stage.pushRuns(rows) }
     }
 
@@ -649,7 +654,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     ])
 
     const held = await stage.screen(WIDE)
-    expect(held.has('当前任务正在等待你')).toBe(true) // 菜单还在，标题按此刻的事实换了
+    expect(held.has('当前任务仍在运行')).toBe(true) // 菜单还在，标题按此刻的事实换了
     expect(held.has('停止任务')).toBe(true)
     expect(held.has('y 批准')).toBe(false) // 卡压在下面（没画出来）
     expect(stage.commands()).toEqual([]) // 也没替用户答
@@ -657,7 +662,10 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     // `esc` 返回 ⇒ 卡照原样摆回来
     stage.press({ kind: 'escape' })
     const back = await stage.screen(WIDE)
-    expect(back.has('y 批准')).toBe(true)
+    expect(back.has('y 批准')).toBe(false)
+    expect(stage.shell.getView().dock.kind).toBe('input')
+    stage.press({kind:'ctrl+g'})
+    expect((await stage.screen(WIDE)).has('y 批准')).toBe(true)
     expect(back.statusLine).toContain('等你定夺')
     expect(stage.commands()).toEqual([])
 
@@ -858,7 +866,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
     stage.press(ENTER)
 
     expect(stage.shell.getView().draft).toBe('写了一半') // **草稿一个字没动**
-    expect(stage.commands()).toEqual([])
+    expect(stage.commands()).toEqual([{ type:'history.read',session:'s1' }])
     expect((await stage.screen(WIDE)).has('暂时发不出这一句')).toBe(true)
   })
 
@@ -877,6 +885,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(stage.shell.getView().dock.kind).toBe('decision')
 
     stage.pushRuns([runRow({ state: 'stopped' })]) // 那一代核销了
@@ -899,7 +908,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
   test('正等着走的那一趟（`/exit`）**不放行**，如实说「停止尚未确认」', async () => {
     const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow()]) })
     stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
-    stage.type('/exit')
+    stage.type('/exit ')
     stage.press(ENTER)
     expect(stage.shell.getView().leaving).toBe(false)
 

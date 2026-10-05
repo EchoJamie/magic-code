@@ -1,3 +1,4 @@
+import type { InputManage } from '@magic/contracts'
 /**
  * **一条会话的实例**（`ConversationSession`）——`ConversationService` 的**单会话那一半**。
  *
@@ -180,6 +181,7 @@ export type ConversationSession = {
   /** 收件唤起，不伪造用户消息。 */
   wake(): void
   supplement(input: UserInput, shared: boolean): Promise<void>
+  manage(command: InputManage): void
   submit(input: UserInput): void
   interrupt(): void
   /** 重建这条会话的现场——装载 ＋ 认下水位于开工位（见 `RebuildHandoff`）。 */
@@ -216,11 +218,14 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
    * 每一份都**固定着它自己绑的技能**：排着的时候不与别条共享任何可变状态
    * （没有「当前技能」那种东西可读），故忙时两条不同技能的交代出队后**各自身份不串**。
    */
-  const pending: (UserInput | undefined)[] = []
+  const pending: {input:UserInput|undefined;shared:boolean;done?:()=>void}[] = []
   // 在模型/工具边界读取补充，避免将 user 条目插入在途 tool-call/result 中间。
   const supplements: { input: UserInput; shared: boolean; done: () => void }[] = []
-  const collaboration: CollaborationBoundary | undefined = deps.collaboration === undefined ? undefined : {
+  const collaboration: CollaborationBoundary = {
+    context: () => Promise.resolve(undefined),
+    requested: () => {},
     ...deps.collaboration,
+    admit: call => current?.signal.aborted === true ? '已停止，未消费输入' : deps.collaboration?.admit(call),
     async consume() {
       let changed = false
       for (const next of supplements.splice(0)) {
@@ -229,17 +234,9 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
           changed ||= prepared !== undefined
         } finally { next.done() }
       }
-      return (await deps.collaboration!.consume()) || changed
+      return (await deps.collaboration?.consume()) || changed
     },
   }
-  /**
-   * **停下那一刻从队里挪出来的那几条**（U50）——**未执行**、也**不会再被消费**。
-   *
-   * 与 `pending` 分开是有由头的：`pending` 是**要跑的**（`drain` 一趟接一趟地取），
-   * 而这几条**不跑**——它们只是留着，等用户重新交代（`submit` 一到就清掉，见 `holdQueued`）。
-   * 混在一个队里，下一次 `submit` 就会把它们一并送出——那正是设计不许的「停止后继续消费」。
-   */
-  const held: UserInput[] = []
 
   /**
    * **压缩器**（阶段 3 · U19）——按会话实例各一份，故它记得的用量读数**随会话走**
@@ -317,42 +314,16 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     collaboration,
   }
 
-  /**
-   * **停下那一刻，排队里的交代**（U50）——**保留并标为未执行**。
-   *
-   * 设计（会话与运行管理 · 离开、停止与异常退出）：
-   *
-   * > 停止时还有已接收输入 ｜ **保留并标为未执行，不在停止后继续消费**；用户以后
-   * > **明确继续/取消**。
-   *
-   * 三条各落一处：
-   * - **不在停止后继续消费**——它们从 `pending` 挪进 `held`，而 `drain` 只读 `pending`
-   *   ⇒ 停止之后没有任何一条路会把它们送出去（**要跑只有一条路：用户重新交代**）；
-   * - **保留**——`held` 留着它们（正文 ＋ 它绑的那几件原样），外壳那一侧另有把正文还给
-   *   草稿的那一条（`restoreDraft`），用户手上那份交代因此**不丢**；
-   * - **标为未执行**——逐条配对 `input.settled{ok:false}`（给了 `ref` 的才发），话里
-   *   **明写着「未执行」**：这不是失败，是**还没轮到**。
-   *
-   * 由头（2026-09-21 规划裁，一字不改）：`input.settled` 的契约是「给了 `ref` 必有终态」
-   * ——白名单式的「成了才回」会让外壳永等一份草稿。故终态照给，只是**话变了**：
-   * 从前那句「请重新发送」把它说成一次**丢失**（用户得重打一遍），而现在它是**留着的**。
-   *
-   * ⚠️ 发的事件用的是**当下活跃那条会话**的信封（它们本来就没能进任何会话——
-   * 说得出「这一条没成」就够，不编一条会话出来）。
-   *
-   * **限度（如实记）**：完整的「未执行交代」界面（列出来、逐条继续或撤销、入队即保存
-   * 到重启不丢）归 [[设计/运行中输入]]，**那一块未授权实施**。本处只做到设计这一行要的
-   * 那三件：不丢、不接着跑、说得出来；`held` 在一次新的交代到来时清掉（用户已经用行动
-   * 说了「那几件我不等了」）。
-   */
+  /** 停止只撤销本次消费意图；未消费正文和停点继续由记录域保存。 */
   function holdQueued(): void {
     const stopped = pending.splice(0)
-    for (const next of supplements.splice(0)) { stopped.push(next.input); next.done() }
+    for (const next of supplements.splice(0)) { stopped.push({input:next.input,shared:next.shared}); next.done() }
     if (stopped.length === 0) return
 
-    held.push(...stopped.filter((input): input is UserInput => input !== undefined))
-    for (const input of stopped) {
+    for (const {input,done} of stopped) {
+      done?.()
       if (input?.ref === undefined) continue
+      deps.records.inputs.hold(input.ref,'未执行，等待明确继续')
       sink.emit(
         stamper.stamp('input.settled', {
           ref: input.ref,
@@ -361,6 +332,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         }),
       )
     }
+    sink.emit(stamper.stamp('input.pending',{inputs:deps.records.inputs.list()}))
   }
 
   async function drain(): Promise<void> {
@@ -378,10 +350,23 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     try {
       for (;;) {
         if (pending.length === 0) break
-        const input = pending.shift()
+        const first=pending[0]?.input
+        if (waitingForDelegations(first)) break
+        const queued = pending.shift()!
+        let input = queued.input
+        if (input?.ref !== undefined) {
+          const stored = deps.records.inputs.get(input.ref)
+          if (stored?.state !== 'pending') { queued.done?.(); continue }
+          input = stored.input
+        }
         if (input === undefined && !(await collaboration?.consume())) continue
 
-        const outcome = await agentLoop(runtime, input, controller.signal)
+        const outcome = await agentLoop(runtime, input, controller.signal, async entry => {
+          try { await deps.collaboration?.userInput?.(entry,queued.shared) } finally { queued.done?.() }
+        })
+        queued.done?.()
+        // 收束边界之后才到达的当前补充，仍在下一件之前消费；不留在已结束的循环里。
+        if (outcome === 'settled' || outcome === 'rejected') pending.unshift(...supplements.splice(0))
         // **这一条没跑**（显式选定的技能取不到，U33）——停下的是**它**，不是这一队：
         // 后面那几条没做错任何事，清掉＝静默吞了用户的交代（见 `InputOutcome` 的注）
         if (outcome === 'rejected') continue
@@ -404,29 +389,61 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     }
   }
 
+  function enqueue(input:UserInput,shared:boolean,done:()=>void=()=>{}):void {
+      const durable = {...input,ref:input.ref??crypto.randomUUID()}
+      try {
+        const existing = deps.records.inputs.get(durable.ref)
+        const row = deps.records.inputs.accept(durable,(deps.now??Date.now)())
+        sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted'}))
+        sink.emit(stamper.stamp('input.pending',{inputs:deps.records.inputs.list()}))
+        if (existing !== undefined) { done(); return }
+        if (running && row.purpose==='current') supplements.push({input:row.input,shared,done})
+        else pending.push({input:row.input,shared,done})
+        if (!running) void drain()
+      } catch(error) {
+        sink.emit(stamper.stamp('input.settled',{ref:durable.ref,ok:false,reason:`受理失败：${messageOf(error)}`}))
+        done()
+      }
+  }
+
   function wake(): void {
-    if (collaboration === undefined || pending.includes(undefined)) return
-    pending.push(undefined)
+    if (deps.collaboration === undefined || pending.some(one=>one.input===undefined) || current?.signal.aborted===true) return
+    if (!running && waitingForDelegations(pending[0]?.input)) return
+    pending.unshift({input:undefined,shared:false})
     if (!running) void drain()
+  }
+  function waitingForDelegations(input:UserInput|undefined):boolean {
+    if(input?.purpose!=='next')return false
+    const work=deps.records.collaboration.collaborationForSession(deps.session)
+    if(work===undefined)return false
+    const member=deps.records.collaboration.agentForSession(deps.session)
+    return deps.records.collaboration.listDelegations(work.collaborationId).some(one=>
+      (member?.agentId===work.coordinatorId || one.assigneeId===member?.agentId) && !['received','rejected','cancelled'].includes(one.state))
   }
   return {
     supplement(input, shared) {
-      if (collaboration === undefined) return Promise.reject(new Error('当前会话没有协作入口'))
-      return new Promise(resolve => {
-        supplements.push({ input, shared, done: resolve })
-        wake()
-      })
+      return new Promise(resolve => enqueue(input,shared,resolve))
     },
     wake,
 
+    manage(command) {
+      const inputs = deps.records.inputs
+      let note: string | undefined
+      if (command.action === 'edit') note = inputs.edit(command.ref, command.revision, command.input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
+      if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
+      if (command.action === 'continue') {
+        const row = inputs.get(command.ref)
+        if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running) void drain() }
+        else note = '输入已消费或已改变，未继续'
+      }
+      sink.emit(stamper.stamp('input.pending', {inputs:inputs.list(),...(note===undefined?{}:{note})}))
+    },
     submit(input: UserInput): void {
-      // **整份入队**（正文 ＋ 它绑的技能 ＋ 配对键）——不是只留正文：
-      // 忙时两条交代各绑各的技能，出队后不能被串成同一条（U33 工单明写）
-      // 用户又交代了一句 ⇒ **那几件他不要了**（留着的未执行交代到此为止——完整语义见
-      // `holdQueued` 的限度那一句）。摆在入队之前：这一句是新的开始，不是上一次的续。
-      held.length = 0
-      pending.push(input)
-      if (!running) void drain()
+      if (input.local === true) {
+        sink.emit(stamper.stamp('input.local',{text:input.text,refs:input.refs??[],ref:input.ref??crypto.randomUUID()}))
+        return
+      }
+      enqueue(input,false)
     },
 
     interrupt(): void {
@@ -436,7 +453,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       holdQueued()
     },
 
-    busy: () => running,
+    busy: () => running || pending.length > 0,
 
     /**
      * 重建（恢复 ⑤）——**认下应用层算好的两件**，其余什么都不做。

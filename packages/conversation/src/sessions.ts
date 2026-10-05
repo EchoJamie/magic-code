@@ -1,3 +1,4 @@
+import type { InputManage } from '@magic/contracts'
 /**
  * **会话主面** —— `ConversationService` 的落地（技术方案 · 会话与多会话）。
  *
@@ -36,6 +37,8 @@ import type {
   ConversationService,
   Entry,
   EntryRange,
+  ToolResultPayload,
+  KernelEvent,
   EventSink,
   EventStamper,
   RebuildHandoff,
@@ -61,6 +64,7 @@ export const TITLE_LIMIT = 20
 export type SessionRecordsFace = {
   listSessions(): Promise<readonly SessionSummary[]>
   readEntries(session: SessionId, range?: EntryRange): AsyncIterable<Entry>
+  readEvents(session: SessionId): AsyncIterable<KernelEvent>
   readonly blobs: BlobStore
 }
 
@@ -139,6 +143,7 @@ export type SessionHostDeps = {
  * 返回值协变，结构上仍满足 `ConversationService`。
  */
 export type SessionHost = Omit<ConversationService, 'rebuild'> & {
+  manage(command:InputManage):void
   rebuild(session: SessionId, handoff: RebuildHandoff): Promise<RebuildReport>
   /**
    * 控制面的会话命令入口（`CommandRoutes.onSession` 的落点）。
@@ -294,7 +299,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     let batch: Entry[] = []
     let seen = 0
 
-    for await (const entry of deps.records.readEntries(target)) {
+    for await (const entry of readSessionDisplayHistory(deps.records,target)) {
       batch.push(entry)
       seen += 1
       if (batch.length >= HISTORY_CHUNK) {
@@ -303,9 +308,12 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
       }
     }
 
+    const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
+    for await (const event of deps.records.readEvents(target)) if(event.kind==='input.local')inputs.push(event)
+
     // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
     // 否则外壳等不到收尾，屏上永远停在「正在重建」）
-    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true }))
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs }))
     void seen
   }
 
@@ -380,7 +388,8 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
 
   return {
     // **首条消息在这里开张**（懒建立）：装配不在启动时铸 id
-    submit: (input) => current().service.submit(input),
+    manage: command => active?.service.manage(command),
+    submit: (input) => { if(input.local===true){active?.service.submit(input);return} current().service.submit(input) },
     // 没有会话＝没有在跑的一轮，没什么可中断
     interrupt: () => active?.service.interrupt(),
     rebuild,
@@ -442,13 +451,24 @@ function messageOf(error: unknown): string {
 export async function readSessionCatalog(records: SessionRecordsFace, limit = TITLE_LIMIT): Promise<readonly SessionSummary[]> {
   const rows = await records.listSessions()
   return Promise.all(rows.map(async (row) => {
-    if (row.title !== undefined) return row
-    for await (const entry of records.readEntries(row.id)) {
-      if (entry.kind !== 'user' || noticeOf(entry.payload)) continue
-      const text = 'text' in entry.content ? entry.content.text : new TextDecoder().decode(await records.blobs.get(entry.content.blob))
-      const title = summarize(text, limit)
-      return title === undefined ? row : { ...row, title }
+    let title=row.title,recentInput:string|undefined,recentProgress:string|undefined
+    for await(const entry of records.readEntries(row.id)){
+      if(entry.kind==='user'&&(noticeOf(entry.payload)||(entry.payload as {local?:true}|undefined)?.local===true))continue
+      if(!['user','assistant','tool-result'].includes(entry.kind))continue
+      const text='text' in entry.content?entry.content.text:new TextDecoder().decode(await records.blobs.get(entry.content.blob))
+      if(entry.kind==='user'){title??=summarize(text,limit);recentInput=text}
+      else if(text.trim()!=='')recentProgress=text
     }
-    return row
+    return {...row,...(title===undefined?{}:{title}),...(recentInput===undefined?{}:{recentInput}),...(recentProgress===undefined?{}:{recentProgress})}
   }))
+}
+
+/** 显式历史阅读展开记录正文和完整工具输出，不改变模型装配的有界读取。 */
+export async function* readSessionDisplayHistory(records:Pick<SessionRecordsFace,'readEntries'|'blobs'>,session:SessionId):AsyncIterable<Entry> {
+  const text=async(content:import('@magic/contracts').Content)=>'text' in content?content:{text:new TextDecoder().decode(await records.blobs.get(content.blob))}
+  for await(const entry of records.readEntries(session)) {
+    const content=await text(entry.content)
+    const payload=entry.kind==='tool-result'?entry.payload as ToolResultPayload|undefined:undefined
+    yield {...entry,content,...(payload===undefined?{}:{payload:{...payload,output:await text(payload.output)}})}
+  }
 }

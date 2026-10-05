@@ -63,7 +63,7 @@ test('无可靠焦点证据：真实渲染/历史/汇总均保留三类未读，
     save('live-done-unread')
     await window.send('第四条：等我批准')
     await window.key('enter')
-    await window.wait({ text: 'y / n' })
+    await window.wait({ text: 'Ctrl+G 审阅' })
     await until(() => facts().some((one) => one.kind === 'needs-you'))
     expect(facts().filter((one) => one.kind === 'needs-you').every((one) => one.unread)).toBe(true)
     await window.capture({ label: '待答保持未读且未批准' })

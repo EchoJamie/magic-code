@@ -220,14 +220,15 @@ describe('真光标 · 抽屉接管与关闭', () => {
   test('抽屉开着——输入行不在屏上，真光标**不留在输入处**', async () => {
     const stage = createStage()
     stage.feed(catalog)
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
 
     const frame = await stage.screen({ columns: 80, rows: 24 })
 
     expect(frame.has('修复时区处理')).toBe(true) // 抽屉开着（有行可点）
-    expect(frame.has('›')).toBe(false) // 输入行让位了
+    expect(stage.shell.getView().dock.kind).toBe('picker')
+    expect(stage.shell.getView().draft).toBe('') // 主输入行让位了
     // 真光标被送回帧下（不是停在某一格上冒充输入落点）
     expect(frame.screen.cursor.y).toBeGreaterThan(frame.rowOf('○ 空闲'))
   })
@@ -235,7 +236,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
   test('抽屉 `esc` 收起——输入行回来，真光标**回到插入点**', async () => {
     const stage = createStage()
     stage.feed(catalog)
-    stage.type('/resume')
+    stage.type('/resume ')
     stage.press({ kind: 'enter' })
     stage.feed(catalog)
     stage.press({ kind: 'escape' })
@@ -253,6 +254,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = await stage.screen({ columns: 80, rows: 24 })
 
@@ -282,6 +284,7 @@ describe('真光标 · 抽屉接管与关闭', () => {
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     stage.press({ kind: 'char', char: 'y' }) // 答「批准」
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 }, { id: 88 })])
 
@@ -305,8 +308,8 @@ describe('插入点 · 复位（清空 / 提交 / 历史 / 补全）', () => {
     stage.type('半句话')
     stage.press({ kind: 'escape' })
 
-    expect(draftOf(stage)).toBe('')
-    expect(at(stage)).toBe(0)
+    expect(draftOf(stage)).toBe('半句话')
+    expect(at(stage)).toBe(3)
   })
 
   test('回车提交——草稿清空，插入点归零', () => {
@@ -576,7 +579,7 @@ describe('返工三 · 活动帧不撑满终端（流式增长 · 单条超预�
     stage.press({ kind: 'left' })
     stage.press({ kind: 'left' }) // ab|cd
     stage.feed(TAKEOVER)
-
+    stage.press({kind:'ctrl+g'})
     return stage
   }
 

@@ -229,6 +229,7 @@ export function createArtifacts(options: ArtifactsOptions): Artifacts {
 
     raw: (chunk) => {
       if (info.truncated) return
+      appendFileSync(join(runDir,'output.ndjson'),`${JSON.stringify({at:round(now()),offset:written+pendingBytes,length:Buffer.byteLength(chunk,'utf8')})}\n`,'utf8')
       pending.push(chunk)
       pendingBytes += Buffer.byteLength(chunk, 'utf8')
 

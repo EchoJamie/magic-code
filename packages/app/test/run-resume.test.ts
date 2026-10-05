@@ -68,7 +68,7 @@ describe('U49 · 接回（真窗口）', () => {
       const other = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture })
       windows.push(other)
 
-      await other.send('/resume', { until: { text: '/resume' }, timeoutMs: 10_000 })
+      await other.send('/resume ', { until: { text: '/resume' }, timeoutMs: 10_000 })
       // 等**抽屉真开出来**（锚它自己的键位提示——屏上别处没有这串字）
       await other.key('enter', { until: { text: '打字筛' }, timeoutMs: 20_000 })
 
@@ -128,13 +128,14 @@ describe('U49 · 接回（真窗口）', () => {
       await one.send('跑一条命令', { until: { text: '跑一条命令' }, timeoutMs: 10_000 })
       // 卡是**重**那一档 ⇒ 右位键位 `y / n`。⚠️ `HINT_DECIDE_HEAVY`
       // **没出包**，按**字面量**锚（同 `ui/scenarios.ts` 的 `COPY.decideHint` 先例）。
-      await one.key('enter', { until: { text: 'y / n' }, timeoutMs: 20_000 })
+      await one.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
+      await one.key('ctrl+g',{until:{text:'y / n'}})
 
       // 第二扇窗接回同一条会话——那一张卡**也在它屏上**（快照带回来的「待答项」）
       const two = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture })
       windows.push(two)
 
-      await two.send('/resume', { until: { text: '/resume' }, timeoutMs: 10_000 })
+      await two.send('/resume ', { until: { text: '/resume' }, timeoutMs: 10_000 })
       await two.key('enter', { until: { text: '打字筛' }, timeoutMs: 20_000 })
 
       // 列表上那一条写着「需要你」（U49 的第一段）
@@ -142,7 +143,8 @@ describe('U49 · 接回（真窗口）', () => {
       expect(asking.text).toContain('需要你')
 
       await two.key('enter')
-      await two.wait({ text: 'y / n' }, { timeoutMs: 20_000 })
+      await two.wait({ text: 'Ctrl+G 审阅' }, { timeoutMs: 20_000 })
+      await two.key('ctrl+g',{until:{text:'y / n'}})
 
       expect(await executorsIn(sandbox)).toBe(1)
       expect(host.executorStarts()).toBe(1)
@@ -196,7 +198,7 @@ describe('U49 · 接回（真窗口）', () => {
       const looker = await createUiSession({ label: '回头看', artifacts: runs, sandbox, fixture })
       windows.push(looker)
 
-      await looker.send('/resume', { until: { text: '/resume' }, timeoutMs: 10_000 })
+      await looker.send('/resume ', { until: { text: '/resume' }, timeoutMs: 10_000 })
       await looker.key('enter', { until: { text: '打字筛' }, timeoutMs: 20_000 })
 
       const list = await looker.capture({ label: '01-列表上那一条' })

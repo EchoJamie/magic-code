@@ -241,6 +241,7 @@ export function kernelTransportIsImplementable(): void {
 export function recordsServiceIsImplementable(): void {
   let next = 1
   const records: RecordsService = {
+    get inputs(): RecordsService['inputs'] { throw new Error('inputs not scripted') },
     get collaboration(): RecordsService['collaboration'] { throw new Error('collaboration not scripted') },
     nextId: () => next++,
     appendEntry: () => next++,
@@ -718,6 +719,7 @@ describe('事件契约', () => {
       // 且它的配对键是**外壳给的**（`UserInput.ref`）：跨进程重开就没人认领了，
       // 落库只会让恢复时读到一堆对不上任何草稿的旧回执。
       'input.settled',
+      'input.pending',
       // U63：未读材料回执同列——与 `skill.used` 同一条（依据在**条目**里：
       // 引用了哪几份在 `UserPayload.refs`，读没读在工具条目里），落库＝把同一件事存第二遍。
       // 重放要的是「当时到底读了什么」（读条目就有），不是「屏上闪过一句什么」。

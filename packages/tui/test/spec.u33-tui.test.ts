@@ -83,7 +83,7 @@ function directHit(stage: Stage, line: string, rows: readonly SkillCatalogRow[])
 
 /** **开 `/skills`**：打那条命令、回车、等目录答复（抽屉由答复那一下开）。 */
 function openSkills(stage: Stage, word: string, rows: readonly SkillCatalogRow[]): void {
-  stage.type(word)
+  stage.type(word === '/skills' ? word + ' ' : word)
   stage.press(ENTER)
   feedCatalog(stage, rows)
 }
@@ -97,8 +97,8 @@ function pickerOf(stage: Stage) {
 }
 
 /** 提交过的交代（`input.submit` 那几条，按序）。 */
-function submitted(stage: Stage): readonly Command[] {
-  return stage.commands().filter((one) => one.type === 'input.submit')
+function submitted(stage: Stage): readonly Extract<Command,{type:'input.submit'}>[] {
+  return stage.commands().filter((one):one is Extract<Command,{type:'input.submit'}> => one.type === 'input.submit' && one.local!==true)
 }
 
 /** 记录区（定局 ＋ 本轮）里人看得见的那几行字。 */
@@ -146,7 +146,7 @@ describe('U33 · 打 `/` 那一下问一次目录（输入行的候选取材）'
     stage.type('看下目录')
     expect(stage.commands()).toEqual([])
 
-    stage.type('/skills')
+    stage.type('/skills ')
     expect(stage.commands()).toEqual([]) // 启动中：一个命令都不发
   })
 })
@@ -155,11 +155,11 @@ describe('U33 · `/skills` 的抽屉', () => {
   test('发一次 `skills.list`，记录区什么都不进；答复回来才开', () => {
     const stage = createStage()
 
-    stage.type('/skills')
+    stage.type('/skills ')
     stage.press(ENTER)
 
     // 打 `/` 那一下已经问过一次（每屏一次）；这里再问一次是**浏览面**该有的现况
-    expect(stage.commands()).toEqual([{ type: 'skills.list' }, { type: 'skills.list' }])
+    expect(stage.commands()).toEqual([{ type: 'skills.list' }, {"local":true,ref:expect.any(String),"refs":[],"text":"/skills ","type":"input.submit"}, { type: 'skills.list' }])
     expect(stage.shell.getView().dock.kind).toBe('input') // 没回来之前不开（拿不到的不编）
 
     feedCatalog(stage, [skill('pdf'), skill('debug')])
@@ -279,8 +279,8 @@ describe('U33 · `/skills` 的抽屉', () => {
     expect(stage.shell.getView().refs).toEqual([])
     expect(stage.shell.getView().draft.trim()).toBe('帮我看看')
 
-    stage.press(ESC) // 再按一下才是「清草稿」那条老规矩
-    expect(stage.shell.getView().draft).toBe('')
+    stage.press(ESC) // 正文 Esc 保留整稿
+    expect(stage.shell.getView().draft).toBe(' 帮我看看')
   })
 })
 
@@ -325,13 +325,15 @@ describe('U33 · `/skills` 的搜索', () => {
     const stage = createStage()
     openSkills(stage, '/skills', [])
 
-    expect(stage.shell.getView().dock.kind).toBe('input') // 抽屉不开
-    expect(said(stage)).toContain('.magic/skills/<名称>/SKILL.md')
+    expect(pickerOf(stage).rows).toEqual([])
+    expect(pickerOf(stage).hint).toContain('.magic/skills/<名称>/SKILL.md')
+    stage.press(ESC)
+    expect(stage.shell.getView().dock.kind).toBe('input')
   })
 
   test('目录里没读进来的那些：只报**份数** ＋ 指路（逐条的话在 `magic --check` 里）', () => {
     const stage = createStage()
-    stage.type('/skills')
+    stage.type('/skills ')
     stage.press(ENTER)
     stage.feed([
       event('skills.catalog', {
@@ -372,7 +374,7 @@ describe('U33 · `/<技能名>` 直达', () => {
       type: 'input.submit',
       text: '/pdf 帮我看看',
       refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
-      ref: 'draft-1',
+      purpose: 'current', ref: expect.any(String),
     })
     // 草稿清空、无残留引用、本地回显的是**交代本身**（原样，一字不剥）
     expect(stage.shell.getView().draft).toBe('')
@@ -431,7 +433,7 @@ describe('U33 · `/<技能名>` 直达', () => {
 
   test('**内置命令保留**：`/model` 仍是换模型；同名技能从 `/skills` 里选', () => {
     const stage = createStage()
-    stage.type('/model')
+    stage.type('/model ')
     stage.press(ENTER)
 
     expect(stage.commands().at(-1)).toEqual({ type: 'model.list' })
@@ -446,8 +448,8 @@ describe('U33 · `/<技能名>` 直达', () => {
     const stage = createStage()
     directHit(stage, '/nope', [skill('pdf')])
 
-    expect(submitted(stage)).toEqual([])
-    expect(said(stage)).toContain('不认得的命令')
+    expect(submitted(stage)).toEqual([{ type: 'input.submit', text: '/nope', purpose: 'current', ref: expect.any(String) }])
+    expect(said(stage)).not.toContain('不认得的命令')
   })
 })
 
@@ -459,7 +461,7 @@ describe('U33 · 提交与失败保稿', () => {
 
     stage.feed([
       event('input.settled', {
-        ref: 'draft-1',
+        ref: submitted(stage)[0]!.ref!,
         ok: false,
         reason: '技能「pdf」在 /ws/project/pdf 上不再成立',
       }),
@@ -508,7 +510,7 @@ describe('U33 · 提交与失败保稿', () => {
     stage.press(ENTER)
     stage.type('第二份') // 用户已经在打新的了
 
-    stage.feed([event('input.settled', { ref: 'draft-1', ok: false, reason: '没轮到' })])
+    stage.feed([event('input.settled', { ref: submitted(stage)[0]!.ref!, ok: false, reason: '没轮到' })])
 
     expect(stage.shell.getView().draft).toBe('第二份')
     // 回执照留（失败不静默），只是不往回搬
@@ -521,7 +523,7 @@ describe('U33 · 提交与失败保稿', () => {
     stage.press(ENTER)
     stage.type('新的')
 
-    stage.feed([event('input.settled', { ref: 'draft-1', ok: true })])
+    stage.feed([event('input.settled', { ref: submitted(stage)[0]!.ref!, ok: true })])
 
     expect(stage.shell.getView().draft).toBe('新的')
     expect(stage.shell.getView().settled.filter((row) => row.kind === 'receipt')).toEqual([])
@@ -539,13 +541,13 @@ describe('U33 · 提交与失败保稿', () => {
         type: 'input.submit',
         text: '/pdf 第一件',
         refs: [{ kind: 'skill', at: 0, marker: '/pdf', name: 'pdf', source: '/ws/project/pdf' }],
-        ref: 'draft-1',
+        purpose: 'current', ref: expect.any(String),
       },
       {
         type: 'input.submit',
         text: '/debug 第二件',
         refs: [{ kind: 'skill', at: 0, marker: '/debug', name: 'debug', source: '/ws/project/debug' }],
-        ref: 'draft-2',
+        purpose: 'current', ref: expect.any(String),
       },
     ])
   })
@@ -557,12 +559,12 @@ describe('U33 · 提交与失败保稿', () => {
     stage.type('第二条')
     stage.press(ENTER)
 
-    stage.feed([event('input.settled', { ref: 'draft-1', ok: false, reason: '第一条没成' })])
+    stage.feed([event('input.settled', { ref: submitted(stage)[0]!.ref!, ok: false, reason: '第一条没成' })])
 
     // 第二条已经交出去了，草稿是空的——第一条那份不往回搬（`ref` 对不上就不是这一次）
     expect(stage.shell.getView().draft).toBe('')
 
-    stage.feed([event('input.settled', { ref: 'draft-2', ok: false, reason: '第二条没成' })])
+    stage.feed([event('input.settled', { ref: submitted(stage)[1]!.ref!, ok: false, reason: '第二条没成' })])
     expect(stage.shell.getView().draft).toBe('第二条')
   })
 
@@ -571,7 +573,7 @@ describe('U33 · 提交与失败保稿', () => {
     directHit(stage, '/pdf 排着的那条', [skill('pdf')])
 
     stage.feed([
-      event('input.settled', { ref: 'draft-1', ok: false, reason: '停下了——这一条还没轮到' }),
+      event('input.settled', { ref: submitted(stage)[0]!.ref!, ok: false, reason: '停下了——这一条还没轮到' }),
     ])
 
     expect(stage.shell.getView().draft).toBe('/pdf 排着的那条')
@@ -592,6 +594,7 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
         { id: 88 },
       ),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     // 三件一起收：正文 · 插入点 · 它里面的引用（U36——引用是那份草稿的一部分）
     expect(stage.shell.getView().stashed).toEqual({
@@ -614,6 +617,7 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
     stage.feed([
       event('tool.decision.request', { call: 71, name: 'exec', material: 'm', weight: 'light' }, { id: 88 }),
     ])
+    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     stage.press({ kind: 'char', char: 'x' })
 
@@ -740,7 +744,7 @@ describe('U57 · 已经绑好的引用：回车＝提交（D32 第 4 步留下�
         refs: [
           { kind: 'skill', at: 0, marker: '/twins', name: 'twins', source: '/ws/.magic/skills/twins' },
         ],
-        ref: 'draft-1',
+        purpose: 'current', ref: expect.any(String),
       },
     ])
   })
@@ -776,22 +780,12 @@ describe('U57 · 已经绑好的引用：回车＝提交（D32 第 4 步留下�
    * U57 时这一条走的是「同名 ⇒ 展开那一屏 → 选定」；同名不再并存，改由**直达那一支**钉
    * ——`head` 那段换算在 `one` 那一支里照旧是活的。
    */
-  test('草稿以空格开头：绑定的引用仍落在那个词上（切不掉正文第一格）', () => {
-    const stage = createStage()
-    stage.type(' /twins 帮我看看')
+  test('带前导空格的未绑定技能名是原始正文，Enter 不隐式绑引用', () => {
+    const stage = createStage(); stage.type(' /twins 帮我看看')
     feedCatalog(stage, [skill('twins', { path: '/ws/.magic/skills/twins' })])
     stage.press(ENTER)
+    expect(submitted(stage)).toEqual([{type:'input.submit',text:' /twins 帮我看看',purpose:'current',ref:expect.any(String)}])
 
-    expect(submitted(stage)).toEqual([
-      {
-        type: 'input.submit',
-        text: '/twins 帮我看看', // 掐掉的那个空格不进正文
-        refs: [
-          { kind: 'skill', at: 0, marker: '/twins', name: 'twins', source: '/ws/.magic/skills/twins' },
-        ],
-        ref: 'draft-1',
-      },
-    ])
   })
 })
 
