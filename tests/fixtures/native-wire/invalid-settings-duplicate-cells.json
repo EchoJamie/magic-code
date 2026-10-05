@@ -1,0 +1,20 @@
+{
+  "family": "NativeRequest",
+  "valid": false,
+  "message": {
+    "t": "native.settings.apply",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "stamp": null,
+    "action": {
+      "type": "prefs.set",
+      "statusLine": {
+        "cells": [
+          "model",
+          "model"
+        ]
+      }
+    }
+  }
+}

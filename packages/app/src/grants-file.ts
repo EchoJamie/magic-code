@@ -160,15 +160,15 @@ export type GrantCommit =
  * @param edits 这一次要落的改动，**按序**应用（攒下的命中记账可以好几笔合成一次锁）。
  *   ⚠️ 空数组＝什么都不做（不发锁、不写盘）——「没有改动」不该产生一次写入。
  */
-export function commitGrants(path: string, edits: readonly GrantEdit[]): GrantCommit {
+export function commitGrants(path: string, edits: readonly GrantEdit[], expected?: () => boolean): GrantCommit {
   if (edits.length === 0) return { ok: true }
 
   // 规范化**只用于锁键**：读写仍走调用方给的那个路径（那是「用户指的文件」，
   // 文件本身是符号链接时也该照原样写它，而不是悄悄改去写它指向的那个）。
-  const lockPath = `${canonicalPath(path)}${LOCK_SUFFIX}`
-  const lock = acquireLock(lockPath, path)
+  const lock = acquireFileLock(path)
 
   try {
+    if (expected !== undefined && !expected()) return { ok: false, reason: '授权已改变，请重新读取后再撤销' }
     const current = loadGrants(path) // ② 读**当前**内容（不是启动时那一份）
     if (current.unreadable !== undefined) {
       // **到此为止**——不应用、不保存，原文件一个字都不动
@@ -182,6 +182,11 @@ export function commitGrants(path: string, edits: readonly GrantEdit[]): GrantCo
   } finally {
     lock.release()
   }
+}
+
+/** 授权与配置的短文件写入共用同一锁机制。 */
+export function acquireFileLock(path: string): { readonly release: () => void } {
+  return acquireLock(`${canonicalPath(path)}${LOCK_SUFFIX}`, path)
 }
 
 // ══ 独占锁 ════════════════════════════════════════════════════════════
@@ -268,7 +273,7 @@ function acquireLock(lockPath: string, path: string): HeldLock {
       }
       if (Date.now() - started >= LOCK_WAIT_MS) {
         throw new Error(
-          `授权文件正被另一个进程写着，等了 ${LOCK_WAIT_MS} 毫秒仍拿不到独占锁` +
+          `文件正被另一个进程写着，等了 ${LOCK_WAIT_MS} 毫秒仍拿不到独占锁` +
             `（${lockPath}；${holderOf(lockPath)}）——${path} 本次没有写。`,
         )
       }

@@ -138,7 +138,7 @@ describe('拒写的两种情形', () => {
     }
   })
 
-  test('外部改过（`mtime` 变了）⇒ 拒写，提示重新载入（不拿陈旧整份覆盖）', () => {
+  test('外部改过（文件指纹变了）⇒ 拒写，提示重新载入（不拿陈旧整份覆盖）', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } } })
@@ -149,11 +149,11 @@ describe('拒写的两种情形', () => {
 
       const outcome = saveProvider({
         path,
-        loadedAt: loaded.mtimeMs,
+        expectedStamp: loaded.stamp,
         request: { provider: 'b', vendor: 'deepseek' },
       })
       expect(outcome.ok).toBe(false)
-      expect(outcome.ok === false && outcome.reason).toMatch(/被改过/)
+      expect(outcome.ok === false && outcome.reason).toMatch(/已被修改/)
     } finally {
       removeDir(dir)
     }
@@ -168,7 +168,7 @@ describe('拒写的两种情形', () => {
       expect(
         saveProvider({
           path,
-          loadedAt: loaded.mtimeMs,
+          expectedStamp: loaded.stamp,
           request: { provider: 'a', name: '改个名' },
         }),
       ).toEqual({ ok: true })
@@ -179,36 +179,18 @@ describe('拒写的两种情形', () => {
 })
 
 describe('移除与设为默认', () => {
-  /**
-   * U60 · **任何时候都删得掉**（含当前那条）。
-   *
-   * 原先默认指着它时拒绝——那条把新用户关在门外（只有一条连接时没别的可切 ⇒ 永远删不掉）。
-   * 删掉之后的状态本来就存在（0 供应商就是它），故**收拾引用**即可，不必禁止。
-   */
-  test('删除连接时仅清掉引用该连接的映射，不替换为剩余连接', () => {
+  test('仍被映射引用时拒绝移除；显式清除后可删，其他映射不变', () => {
     const dir = tempDir('magic-save-')
     try {
-      const path = writeConfig(dir, {
-        modelAliases: { default: { provider: 'a', model: 'm1' }, cantrip: { provider: 'a', model: 'm1' }, spell: { provider: 'b', model: 'm2' } },
-        providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } },
-      })
-
+      const path = writeConfig(dir, { modelAliases: { default: { provider: 'a', model: 'm1' }, spell: { provider: 'b', model: 'm2' } }, providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } } })
+      const before = readFileSync(path, 'utf8')
+      expect(removeProvider({ path, provider: 'a' }).ok).toBe(false)
+      expect(readFileSync(path, 'utf8')).toBe(before)
+      writeFileSync(path, JSON.stringify({ ...READ(path), modelAliases: { spell: { provider: 'b', model: 'm2' } } }))
       expect(removeProvider({ path, provider: 'a' })).toEqual({ ok: true })
-      // 那条没了，默认**也不留一个指向已删对象的死引用**
       expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
-      expect((READ(path)['modelAliases'] as Record<string, unknown>)['default']).toBeUndefined()
       expect(READ(path)['modelAliases']).toEqual({ spell: { provider: 'b', model: 'm2' } })
-      // 同一把尺子读回来：一次配置加载应当接受它（死引用会让它当场报错）
-      expect(loadConfig({ path, magic: magicAt(dir) }).providerId).toBeUndefined()
-      // ⚠️ **没悄悄换到 b**——剩下的那条原样在，但**没被扶正**
-      expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
-
-      // 不是默认的那条照旧删得掉
-      expect(removeProvider({ path, provider: 'b' })).toEqual({ ok: true })
-      expect(Object.keys(PROVIDERS_OF(path))).toEqual([])
-    } finally {
-      removeDir(dir)
-    }
+    } finally { removeDir(dir) }
   })
 
   test('删**最后一条**（它同时是默认）：删得掉——删到空是一条正经状态', () => {

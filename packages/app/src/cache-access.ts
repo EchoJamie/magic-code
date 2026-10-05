@@ -28,7 +28,7 @@
  */
 
 import { realpathSync, statSync } from 'node:fs'
-import type { ModelCacheAccess } from '@magic/contracts'
+import type { ModelCacheAccess, ProviderConfig } from '@magic/contracts'
 
 /**
  * 配置文件的可观察指纹——**六件**（见文件头注的由头）。
@@ -64,6 +64,12 @@ export function configFingerprintOf(path: string): ConfigFingerprint | undefined
   } catch {
     return undefined
   }
+}
+
+/** 原生与终端共用文件比较依据；复用配置指纹，不包含内容或凭据摘要。 */
+export function configStamp(path: string): string | null {
+  const f = configFingerprintOf(path)
+  return f === undefined ? null : `${f.path}:${f.dev}:${f.ino}:${f.mtimeNs}:${f.ctimeNs}:${f.size}`
 }
 
 /**
@@ -126,4 +132,9 @@ export function modelCacheAccessOf(input: {
   }
 
   return { id: `env:${input.provider}:${input.processToken}`, persistent: false }
+}
+
+/** 修改非接入字段时可复用原缓存；认证/供应商/地址/区域改变必须失效。 */
+export function connectionScopeChanged(before: ProviderConfig | undefined, after: ProviderConfig | undefined): boolean {
+  return before === undefined || after === undefined || before.vendor !== after.vendor || before.baseURL !== after.baseURL || before.region !== after.region || before.apiKey !== after.apiKey
 }

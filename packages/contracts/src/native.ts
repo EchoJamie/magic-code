@@ -1,3 +1,4 @@
+import type { SettingsAction, SettingsSnapshot, SettingsPreview } from './settings.ts'
 import type { RunNotice, RunState, StopPhase } from './runs.ts'
 
 /** App、CLI、内核同版发布。只认这一版，不协商或保留旧解码器。 */
@@ -43,6 +44,8 @@ export type NativeProjection = {
 export type NativeRequest =
   | { readonly t: 'hello'; readonly role: 'observer'; readonly protocol: number; readonly version: string; readonly source: string; readonly dataDir: string }
   | { readonly t: 'native.refresh' }
+  | { readonly t: 'native.settings.read'; readonly request: string; readonly serviceInstance: string; readonly dataDir: string; readonly preview?: SettingsPreview }
+  | { readonly t: 'native.settings.apply'; readonly request: string; readonly serviceInstance: string; readonly dataDir: string; readonly stamp: string | null; readonly action: SettingsAction }
   | { readonly t: 'native.inspect'; readonly request: string; readonly session: string; readonly notice?: string }
   | { readonly t: 'native.stop'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly gen: number }
   | { readonly t: 'native.read'; readonly ids: readonly string[] }
@@ -55,6 +58,7 @@ export type NativeResponse =
   | { readonly t: 'native.inspected'; readonly request: string; readonly work?: NativeWork; readonly error?: string }
   | { readonly t: 'native.stopped'; readonly request: string; readonly session: string; readonly phase: StopPhase; readonly note?: string }
   | { readonly t: 'native.attached'; readonly request: string; readonly session: string | null }
+  | { readonly t: 'native.settings.result'; readonly request: string; readonly serviceInstance: string; readonly dataDir: string; readonly snapshot?: SettingsSnapshot; readonly error?: string; readonly note?: string }
   | { readonly t: 'native.error'; readonly reason: string }
 
 /** 仅继承的宿主 stdin/stdout 使用；普通 socket 无宿主提权入口。 */

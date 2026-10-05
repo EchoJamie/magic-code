@@ -1,3 +1,4 @@
+import { settingsAction, settingsSnapshot } from './settings-codec.ts'
 import type { HostDiscovery, HostRequest, HostResponse, NativeRequest, NativeResponse } from './native.ts'
 
 type ObjectValue = Record<string, unknown>
@@ -36,6 +37,9 @@ export function decodeNativeMessage(value: unknown): NativeRequest | NativeRespo
   let valid = false
   switch (value.t) {
     case 'hello': valid = value.role === 'observer' && integer(value.protocol) && string(value.version) && string(value.source) && string(value.dataDir); break
+    case 'native.settings.read': valid = string(value.request) && string(value.serviceInstance) && string(value.dataDir) && optional(value.preview, v => object(v) && typeof v.columns === 'number' && Number.isInteger(v.columns) && v.columns >= 20 && v.columns <= 300 && typeof v.reducedMotion === 'boolean' && settingsAction({ type: 'prefs.set', statusLine: v.statusLine })); break
+    case 'native.settings.apply': valid = string(value.request) && string(value.serviceInstance) && string(value.dataDir) && (value.stamp === null || string(value.stamp)) && settingsAction(value.action); break
+    case 'native.settings.result': valid = string(value.request) && string(value.serviceInstance) && string(value.dataDir) && optional(value.snapshot, settingsSnapshot) && optional(value.error, string) && optional(value.note, string) && ((value.snapshot === undefined) !== (value.error === undefined)); break
     case 'native.refresh': valid = true; break
     case 'native.inspect': valid = string(value.request) && string(value.session) && optional(value.notice, string); break
     case 'native.stop': valid = string(value.request) && string(value.serviceInstance) && string(value.session) && integer(value.gen); break

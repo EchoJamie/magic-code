@@ -156,7 +156,7 @@ import { resolveModelChoice, validateSelection } from './agent-models.ts'
 import { removeProvider, saveProvider, setModelAlias, setPrefs } from './config-save.ts'
 import { saveImageFile } from './image-file.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
-import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
+import { cacheAccessFor, configStamp as configStampOf, connectionScopeChanged } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { backgroundOutputDirOf, runPathsOf } from './run/paths.ts'
 import { grantsCatalog, grantsTrouble, mcpCatalog, modelCatalog, pathsCatalog, providerCatalog, skillsCatalog, workspaceOf } from './run/observation.ts'
@@ -307,6 +307,8 @@ export type McpServerView = {
 }
 
 export type Assembly = {
+  refreshSettings(): void
+  reconnectMcp(server: string): Promise<string>
   /** 当前执行实例仍有明确输入消费意图；遗留持久输入不算自动继续授权。 */
   hasPendingInput(): boolean
   /** 只唤起已装配的同一身份，持久收件在主循环边界消费。 */
@@ -1088,8 +1090,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
   let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
   let reducedMotion = loaded.config.motion?.reduced === true
-  /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
-  let configMtime: number | undefined = loaded.mtimeMs
+
 
   /**
    * **模型信息面**（U41）——连接资料现取（改完配置立刻对得上）、缓存落盘走 app 的实现。
@@ -1109,10 +1110,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 配置指纹的**水位**（同一个文件**本身**的六件里挑出的比对串）——`syncProviderBook`
    * 据它判「外部改过没有」。开局那一刻先取一次（此后只有变才动）。
    */
-  let configStamp: string | undefined = ((): string | undefined => {
-    const f = configFingerprintOf(loaded.path)
-    return f === undefined ? undefined : `${f.dev}:${f.ino}:${f.mtimeNs}:${f.ctimeNs}:${f.size}`
-  })()
+  let configStamp = loaded.stamp === undefined ? configStampOf(loaded.path) : loaded.stamp
 
   /**
    * 某条连接**此刻**的接入身份（U41 返修 · 缓存接口裁决）——缓存按它隔离存储。
@@ -1171,17 +1169,12 @@ export function assemble(options: AssembleOptions): Assembly {
    * 坏配置阻止后续解析；已开始的请求继续使用其快照。仅连接变化重建注册表。
    */
   const syncProviderBook = (): void => {
-    const fingerprint = configFingerprintOf(loaded.path)
-    const stamp =
-      fingerprint === undefined
-        ? undefined
-        : `${fingerprint.dev}:${fingerprint.ino}:${fingerprint.mtimeNs}:${fingerprint.ctimeNs}:${fingerprint.size}`
+    const stamp = configStampOf(loaded.path)
     if (stamp === configStamp) return
     const reloaded = loadConfig({ path: loaded.path, magic })
     const connectionsChanged = JSON.stringify(providerBook) !== JSON.stringify(reloaded.config.providers)
     providerBook = reloaded.config.providers
     modelAliases = reloaded.config.modelAliases
-    configMtime = reloaded.mtimeMs
     configStamp = stamp
     if (connectionsChanged) rebuildRegistry()
   }
@@ -2224,25 +2217,10 @@ export function assemble(options: AssembleOptions): Assembly {
    *
    * 认不出的名字不当作错误：名录照给，缘由写在答复的 `note` 上（那一屏照旧说得出全部内容）。
    */
-  const reconnectMcp = async (server: string): Promise<void> => {
-    // 重连本身是异步的（起手有界），故**先开壳、后重连**：那一份名录由重连落定之后再发
-    if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-
-    void mcp.reconnect(server).then((connection) => {
-      if (connection === undefined) {
-        listMcp(`没有配这一台：「${server}」——配置里 mcp.servers 的条目名才是身份`)
-        return
-      }
-
-      // ⚠️ **回执按最终状态说**，不按「找到了这一台」：重连真的走了一趟，而它落到
-      // 「可用」还是「不可用」是两件事——要认证的对端连完照样不可用，那却说「已重连」
-      // 就是这一屏自己跟自己打架（那一句缘由就在同一屏的明细里）。
-      // 只报**这一趟的结果**，不复述状态：那一台可不可用就在同一屏的读数里
-      // （窄窗下再写一遍「仍不可用」是多占两行、说同一件事）
-      listMcp(
-        connection.state.status === 'available' ? `已重连「${server}」` : `重连没成：「${server}」`,
-      )
-    })
+  const reconnectMcp = async (server: string): Promise<string> => {
+    const connection = await mcp.reconnect(server)
+    if (connection === undefined) return `没有配这一台：「${server}」——配置里 mcp.servers 的条目名才是身份`
+    return connection.state.status === 'available' ? `已重连「${server}」` : `重连没成：「${server}」`
   }
 
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
@@ -2280,14 +2258,7 @@ export function assemble(options: AssembleOptions): Assembly {
     sink.emit(requireActiveStamper().stamp('provider.catalog', providerCatalogOf(note)))
   }
 
-  /** 取文件的 `mtimeMs`（拿不到＝`undefined`——保存前那次比对据此跳过）。 */
-  const mtimeOf = (path: string): number | undefined => {
-    try {
-      return statSync(path).mtimeMs
-    } catch {
-      return undefined
-    }
-  }
+
 
   /**
    * **接入范围变了吗**——变了就该废弃那条连接的模型信息缓存（设计明文）。
@@ -2295,20 +2266,6 @@ export function assemble(options: AssembleOptions): Assembly {
    * 比四件：供应商适配 · 地址 · 区域 · 认证。⚠️ 认证只在此处**比较相等性**，
    * 不进任何文案、不入快照、不落日志（「凭据只进不出」）。
    */
-  const scopeChanged = (
-    before: ProviderConfig | undefined,
-    after: ProviderConfig | undefined,
-  ): boolean => {
-    // 新建 / 移除：一律作废（那是另一条连接的缓存，留着没有用）
-    if (before === undefined || after === undefined) return true
-
-    return (
-      before.vendor !== after.vendor ||
-      before.baseURL !== after.baseURL ||
-      before.region !== after.region ||
-      before.apiKey !== after.apiKey
-    )
-  }
 
   /**
    * **显式刷新模型信息**（U41）——绕开有效期与失败冷却（那是用户明确的要求，不是自动重试）。
@@ -2341,14 +2298,14 @@ export function assemble(options: AssembleOptions): Assembly {
       syncProviderBook()
       const snapshots = Object.entries(providerBook).map(([provider, config]) => ({ provider, config, snapshot: modelInfo.peek(provider).snapshot }))
       const outcome = setModelAlias({ path: loaded.path,
-        ...(configMtime === undefined ? {} : { loadedAt: configMtime }), request })
+        expectedStamp: configStamp, request })
       if (!outcome.ok) { void listModels(outcome.reason); return }
       const reloaded = loadConfig({ path: loaded.path, magic })
-      configMtime = reloaded.mtimeMs
+      configStamp = reloaded.stamp ?? null
       modelAliases = reloaded.config.modelAliases
       // 映射编辑不改变认证；仅将相同接入身份的已有资料移到保存后的缓存范围。
       for (const { provider, config, snapshot } of snapshots) {
-        if (snapshot !== undefined && !scopeChanged(config, reloaded.config.providers[provider])) {
+        if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
           await modelCache.replace(snapshot, cacheAccessOf(provider, reloaded.config.providers[provider]))
         }
       }
@@ -2363,12 +2320,12 @@ export function assemble(options: AssembleOptions): Assembly {
   const setPrefsCommand = (request: PrefsSetRequest): void => {
     const outcome = setPrefs({
       path: loaded.path,
-      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      expectedStamp: configStamp,
       request,
     })
 
     if (outcome.ok) {
-      configMtime = mtimeOf(loaded.path)
+      configStamp = configStampOf(loaded.path)
       // 保存成功后更新这两项读数。
       if (request.statusLine !== undefined) statusLineConfig = request.statusLine
       if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
@@ -2407,7 +2364,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
     const outcome = saveProvider({
       path: loaded.path,
-      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      expectedStamp: configStamp,
       request,
     })
     if (!outcome.ok) {
@@ -2415,7 +2372,7 @@ export function assemble(options: AssembleOptions): Assembly {
       return
     }
 
-    configMtime = mtimeOf(loaded.path)
+    configStamp = configStampOf(loaded.path)
 
     let reloaded: LoadedConfig
     try {
@@ -2432,7 +2389,7 @@ export function assemble(options: AssembleOptions): Assembly {
     modelAliases = reloaded.config.modelAliases
 
     // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
-    if (scopeChanged(before, providerBook[request.provider])) {
+    if (connectionScopeChanged(before, providerBook[request.provider])) {
       modelInfo.drop(request.provider)
       // **清除旧范围那一份**（裁决：`drop` 明确指定身份，碰不到别的范围）。
       // ⚠️ **失败要可见**：不 `void` 掉——接住它，写进这次答复（清除失败不吞）
@@ -2468,7 +2425,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
     const outcome = removeProvider({
       path: loaded.path,
-      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
+      expectedStamp: configStamp,
       provider,
     })
     if (!outcome.ok) {
@@ -2476,7 +2433,7 @@ export function assemble(options: AssembleOptions): Assembly {
       return
     }
 
-    configMtime = mtimeOf(loaded.path)
+    configStamp = configStampOf(loaded.path)
 
     const next = { ...providerBook }
     delete next[provider]
@@ -2557,7 +2514,7 @@ export function assemble(options: AssembleOptions): Assembly {
     // 外部服务器（读侧 ＋ 显式重连 · U39）——**归装配**（那一束连接是它编排的，同
     // `model.list` 之于注册表）；答复走事件（`mcp.catalog`，不落库）
     onMcpList: () => listMcp(),
-    onMcpReconnect: (server) => reconnectMcp(server),
+    onMcpReconnect: async (server) => { const note = await reconnectMcp(server); await listMcp(note) },
   })
 
   // ── 5 接传输（内核侧一端）——外壳侧一端随返回值交出去 ────────────────
@@ -2565,6 +2522,14 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.attach(kernel)
 
   return {
+    refreshSettings() {
+      const current = loadConfig({ path: loaded.path, magic })
+      statusLineConfig = current.config.statusLine
+      reducedMotion = current.config.motion?.reduced === true
+      grants.replace(loadGrants(grantsPath).file)
+      pendingHits.clear()
+    },
+    reconnectMcp,
     hasPendingInput: () => chain?.service.busy() === true,
     wakeCollaboration: () => chain?.service.wake(),
     supplementCollaboration: async (input, shared) => {

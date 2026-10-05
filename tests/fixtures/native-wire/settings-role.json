@@ -1,0 +1,26 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.settings.apply",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "stamp": null,
+    "action": {
+      "type": "role.save",
+      "id": "reviewer",
+      "role": {
+        "name": "审查",
+        "instructions": "只读查证",
+        "tools": [],
+        "model": {
+          "alias": "arcane",
+          "reasoning": {
+            "mode": "off"
+          }
+        }
+      }
+    }
+  }
+}

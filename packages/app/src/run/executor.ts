@@ -522,6 +522,16 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
 
   link.onMessage((message: ManagerToExecutor) => {
     switch (message.t) {
+      case 'settings.inspect':
+        link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }); return
+      case 'settings.sync':
+        try { assembly.refreshSettings(); link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }) }
+        catch { link.send({ t: 'settings.synced', request: message.request, error: '无法受理当前设置，请重新读取', mcp: assembly.mcpServers() }) }
+        return
+      case 'settings.reconnect':
+        void assembly.reconnectMcp(message.server).then(note => link.send({ t: 'settings.synced', request: message.request, note, mcp: assembly.mcpServers() }))
+          .catch(() => link.send({ t: 'settings.synced', request: message.request, error: '重连失败', mcp: assembly.mcpServers() }))
+        return
       case 'collaboration.configure':
         link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.applyModel(message.model) })
         return

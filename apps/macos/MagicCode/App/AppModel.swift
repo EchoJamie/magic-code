@@ -11,6 +11,14 @@ import OSLog
             case .stopping: return "正在停止工作…"; case .fault(let reason): return reason }
         }
     }
+    @Published private(set) var settingsSnapshot: SettingsSnapshot?
+    @Published private(set) var settingsBusy = false
+    @Published private(set) var settingsError: String?
+    @Published private(set) var settingsNote: String?
+    @Published private(set) var settingsSavedKey: String?
+    @Published var settingsCategory = "models"
+    private var queuedSettingsPreview: SettingsValue?
+    private var settingsRequests: [String: (identity: ServiceIdentity, key: String?)] = [:]
     @Published var phase: Phase = .starting
     @Published private(set) var identity: ServiceIdentity?
     @Published private(set) var projection: NativeProjection?
@@ -89,6 +97,7 @@ import OSLog
         // 旧身份。U109 起只有一个身份（`com.magiccode.app`），没有那套单独落点，故这里不再分叉。
         if let validationRoot { selectedBase = validationRoot }
         else { selectedBase = defaults.string(forKey: "baseDirectory").map { URL(fileURLWithPath: $0) } }
+        settingsCategory = defaults.string(forKey: "settingsCategory") ?? "models"
         cliDirectory = defaults.string(forKey: "cliDirectory") ?? userHome.appendingPathComponent(".local/bin").path
         // 「提醒我」默认开：没说不要，就是要（关掉它＝让 Magic 闭嘴）。
         notificationsEnabled = defaults.object(forKey: "notificationsEnabled") as? Bool ?? true
@@ -140,6 +149,7 @@ import OSLog
     var affected: [NativeWork] { projection?.works.filter(\.affected) ?? [] }
     var works: [NativeWork] { projection?.works ?? [] }
     var isCurrent: Bool { phase == .ready && projection != nil }
+    var appVersion: String { expectedVersion }
     var summary: String {
         guard isCurrent else { return phase.text }
         if affected.isEmpty { return "当前没有进行中的工作" }
@@ -230,6 +240,7 @@ import OSLog
         }
     }
     private func connectObserver(socket: String, identity: ServiceIdentity) {
+        disconnectSettings()
         observer?.close()
         let connection = ObserverConnection(); observer = connection
         connection.receive = { [weak self, weak connection] response in
@@ -237,6 +248,7 @@ import OSLog
         }
         connection.disconnected = { [weak self, weak connection] reason in
             guard let self, self.observer === connection, self.shutdownRequest == nil else { return }
+            self.disconnectSettings()
             self.phase = .fault(reason)
             guard self.reconnectAttempts < 3, self.host?.process.isRunning == true else { return }
             self.reconnectAttempts += 1
@@ -268,6 +280,14 @@ import OSLog
                 else if !deferredNoticeRoutes.isEmpty { notificationRoutes = deferredNoticeRoutes; showNotificationWindow?() }
                 deferredNoticeRoutes = []
             }
+        case .settingsResult(let request, let service, let dataDir, let snapshot, let error, let note):
+            guard let pending = settingsRequests[request], pending.identity == identity,
+                  service == pending.identity.serviceInstance, dataDir == pending.identity.dataDir else { return }
+            settingsRequests.removeValue(forKey: request)
+            settingsBusy = !settingsRequests.isEmpty
+            settingsError = error; settingsNote = note
+            if let snapshot { settingsSnapshot = snapshot; if let key = pending.key { settingsSavedKey = key } }
+            if let preview = queuedSettingsPreview { queuedSettingsPreview = nil; readSettings(preview: preview) }
         case .projection(let projection): apply(projection)
         case .inspected(let request, let work, let error):
             guard let intent = pendingInspections.removeValue(forKey: request) else { return }
@@ -290,6 +310,33 @@ import OSLog
             }
         case .error(let reason): phase = .fault(reason)
         }
+    }
+    func rememberSettingsCategory(_ category: String) { settingsCategory = category; defaults.set(category, forKey: "settingsCategory") }
+    func readSettings(preview: SettingsValue? = nil) {
+        if settingsBusy { if let preview { queuedSettingsPreview = preview }; return }
+        guard isCurrent, let identity else { return }
+        let request = UUID().uuidString
+        settingsRequests[request] = (identity, nil); settingsBusy = true; settingsError = nil
+        observer?.send(.settingsRead(request: request, serviceInstance: identity.serviceInstance, dataDir: identity.dataDir, preview: preview))
+        expireSettings(request)
+    }
+    func applySettings(_ action: SettingsValue, stamp: String?, key: String) {
+        guard isCurrent, let identity, !settingsBusy else { settingsError = "服务未就绪，请重新读取"; return }
+        let request = UUID().uuidString
+        settingsRequests[request] = (identity, key); settingsBusy = true; settingsError = nil; settingsNote = nil; settingsSavedKey = nil
+        observer?.send(.settingsApply(request: request, serviceInstance: identity.serviceInstance, dataDir: identity.dataDir, stamp: stamp, action: action))
+        expireSettings(request)
+    }
+    private func expireSettings(_ request: String) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(40))
+            guard let self else { return }
+            if settingsRequests.removeValue(forKey: request) != nil { settingsBusy = !settingsRequests.isEmpty; settingsError = "结果未确认，请重新读取；未提交输入已保留" }
+        }
+    }
+    private func disconnectSettings() {
+        if !settingsRequests.isEmpty { settingsError = "连接已断开，结果未确认；请重新读取，未提交输入已保留" }
+        settingsRequests.removeAll(); queuedSettingsPreview = nil; settingsBusy = false
     }
     private func apply(_ value: NativeProjection) {
         guard value.serviceInstance == identity?.serviceInstance else { return }

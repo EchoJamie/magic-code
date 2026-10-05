@@ -1,3 +1,4 @@
+import type { McpCatalogRow } from './events.ts'
 import type { AgentModelConfig } from './collaboration.ts'
 import type { CollaborationReply, CollaborationRequest } from './collaboration-control.ts'
 import type { UserInput } from './control.ts'
@@ -201,6 +202,7 @@ export type ManagerToClient =
 
 /** 执行者 → 管理者。 */
 export type ExecutorToManager =
+  | { readonly t: 'settings.synced'; readonly request: string; readonly note?: string; readonly error?: string; readonly mcp: readonly McpCatalogRow[] }
   | { readonly t: 'collaboration.request'; readonly requestId: string; readonly request: CollaborationRequest }
   | { readonly t: 'collaboration.changed' }
   | { readonly t: 'collaboration.configured'; readonly requestId: string; readonly result: { readonly ok: true } | { readonly ok: false; readonly reason: string } }
@@ -264,6 +266,9 @@ export type ExecutorToManager =
 
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
+  | { readonly t: 'settings.inspect'; readonly request: string }
+  | { readonly t: 'settings.sync'; readonly request: string }
+  | { readonly t: 'settings.reconnect'; readonly request: string; readonly server: string }
   | { readonly t: 'collaboration.reply'; readonly requestId: string; readonly reply: CollaborationReply }
   | { readonly t: 'collaboration.wake' }
   | { readonly t: 'collaboration.configure'; readonly requestId: string; readonly model: AgentModelConfig }

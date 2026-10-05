@@ -33,7 +33,7 @@ import { createElement as h } from 'react'
 import type { StatusLineCell } from '@magic/contracts'
 import { breathColor, breathOf, pulseOf } from '../motion.ts'
 import type { ShellStatus } from '../view.ts'
-import { stateMark, stateText } from '../view.ts'
+import { reasoningText, stateMark, stateText } from '../view.ts'
 import { MARKS } from '../marks.ts'
 import { PALETTE, displayWidth, truncate, usageLabel } from './lines.ts'
 
@@ -90,13 +90,7 @@ export function StatusLine({
   // **上色开关**那一处出口——关掉时不传色（`undefined` ＝ 继承终端前景色）。
   const tint = (value: string | undefined): string | undefined => (color ? value : undefined)
 
-  // 全放行那一格——挂在 ① 之后、**不参与降级**（见文件头注）。不在全放行时它整格不存在。
-  const fixed = status.allowAll ? [ALLOW_ALL_LABEL] : []
-  const stateWidth = displayWidth(`${stateMark(status.state)} ${stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)
-  const base = columns - 2 - stateWidth
-  const texts = cellTexts(status, cells, workspace)
-  const hint = fits([...fixed, ...texts.slice(0, 1)], base, status.hint) ? status.hint : ''
-  const left = degrade(texts, base, hint, fixed)
+  const { fixed, left, hint, base } = statusLineLayout({ status, columns, cells, workspace })
 
   return h(
     Box,
@@ -117,6 +111,32 @@ export function StatusLine({
     // ⚠️ 算宽度时**带上 ① 与全放行那一格**：否则右位会以为自己放得下，把左半挤着折行
     h(Text, { color: tint(PALETTE.ghost) }, fitting(hint, base, [...fixed, ...left])),
   )
+}
+
+/** 原生示例与真正终端共享字段、省略及列宽规则。 */
+export function statusLineLayout({ status, columns, cells, workspace }: Pick<StatusLineProps, 'status' | 'columns' | 'cells' | 'workspace'>) {
+  // 全放行那一格——挂在 ① 之后、**不参与降级**（见文件头注）。不在全放行时它整格不存在。
+  const fixed = status.allowAll ? [ALLOW_ALL_LABEL] : []
+  const stateWidth = displayWidth(`${stateMark(status.state)} ${stateText(status.state)}${status.amount === null ? '' : ` ${status.amount}`}`)
+  const base = columns - 2 - stateWidth
+  const texts = cellTexts(status, cells, workspace)
+  const hint = fits([...fixed, ...texts.slice(0, 1)], base, status.hint) ? status.hint : ''
+  const left = degrade(texts, base, hint, fixed)
+
+  return { fixed, left, hint, base }
+}
+export function statusLinePreview(config: { cells: readonly StatusLineCell[]; color?: boolean }, columns: number, reduced: boolean) {
+  const status: ShellStatus = { state: 'working', amount: '8s', session: '设置示例', model: 'Spell', reasoning: reasoningText({ mode: 'default' }), usage: 12400, window: 200000, allowAll: true, hint: '' }
+  const layout = statusLineLayout({ status, columns, cells: config.cells, workspace: '/示例/项目' })
+  const text = `${stateMark(status.state)} ${stateText(status.state)} ${status.amount}${[...layout.fixed, ...layout.left].map(value => `${SEP}${value}`).join('')}`
+  const color = (value: string) => config.color === false ? null : value
+  const segments = [
+    { text: stateMark(status.state), dynamic: true },
+    { text: ` ${stateText(status.state)} ${status.amount}`, color: color(stateColor(status, null, null)) },
+    ...layout.fixed.map(value => ({ text: `${SEP}${value}`, color: color(PALETTE.warn) })),
+    ...layout.left.map(value => ({ text: `${SEP}${value}`, color: color(PALETTE.faint) })),
+  ]
+  return { text, columns, segments, colors: Array.from({ length: 10 }, (_, i) => config.color === false ? null : stateColor(status, reduced ? null : i * 200, null)), separator: SEP, fixed: ALLOW_ALL_LABEL }
 }
 
 /**

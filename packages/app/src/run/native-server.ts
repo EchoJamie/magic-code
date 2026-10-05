@@ -1,4 +1,5 @@
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
+import type { SettingsAction, SettingsSnapshot, SettingsPreview } from '@magic/contracts'
 import type { RecordsStore } from '@magic/records'
 import type { Link } from './wire.ts'
 
@@ -8,6 +9,7 @@ export type NativeServerOptions = {
   readonly accepting: () => boolean
   readonly works: () => Promise<readonly NativeWork[]>
   readonly stop: (session: string, gen: number, report: (phase: StopPhase, note?: string) => void) => void
+  readonly settings?: { read(preview?: SettingsPreview): Promise<SettingsSnapshot>; apply(action: SettingsAction, stamp: string | null): Promise<string> }
   readonly log?: (message: string) => void
 }
 
@@ -20,6 +22,8 @@ export function createNativeServer(options: NativeServerOptions) {
   let dirty = false
   let closed = false
   let snapshots: Promise<unknown> = Promise.resolve()
+  let settingsQueue: Promise<void> = Promise.resolve()
+  const settingsRequests = new Map<Link, Map<string, { signature: string; result: Promise<NativeResponse> }>>()
   const stops = new Map<string, {
     readonly session: string; readonly gen: number; readonly service: string; readonly links: Set<Link>
     response?: Extract<NativeResponse, { t: 'native.stopped' }>
@@ -77,7 +81,7 @@ export function createNativeServer(options: NativeServerOptions) {
         }
         observers.add(link)
         link.onClose(() => {
-          observers.delete(link); presence.delete(link)
+          observers.delete(link); presence.delete(link); settingsRequests.delete(link)
           for (const stop of stops.values()) stop.links.delete(link)
         })
         void snapshot().then((projection) => {
@@ -88,6 +92,36 @@ export function createNativeServer(options: NativeServerOptions) {
       if (!observers.has(link)) return false
       const message = raw as NativeRequest
       switch (message.t) {
+        case 'native.settings.read': case 'native.settings.apply': {
+          const target = { request: message.request, serviceInstance: options.identity.serviceInstance, dataDir: options.identity.dataDir }
+          const failure = (error: string): NativeResponse => ({ t: 'native.settings.result', ...target, error })
+          if (closed || !options.accepting() || message.serviceInstance !== options.identity.serviceInstance || message.dataDir !== options.identity.dataDir) {
+            link.send(failure('服务身份已改变或正在退出，请重新读取')); break
+          }
+          const owned = settingsRequests.get(link) ?? new Map<string, { signature: string; result: Promise<NativeResponse> }>()
+          settingsRequests.set(link, owned)
+          const signature = JSON.stringify(message)
+          const previous = owned.get(message.request)
+          if (previous !== undefined) {
+            if (previous.signature !== signature) link.send(failure('请求标识已用于另一设置动作，请重新读取'))
+            else void previous.result.then(result => { if (!link.closed) link.send(result) })
+            break
+          }
+          const result = settingsQueue.then(async (): Promise<NativeResponse> => {
+            if (closed || link.closed || !options.accepting()) return failure('连接已断开或服务正在退出，请重新读取')
+            if (options.settings === undefined) return failure('设置服务不可用')
+            try {
+              const note = message.t === 'native.settings.apply' ? await options.settings.apply(message.action, message.stamp) : undefined
+              const snapshot = await options.settings.read(message.t === 'native.settings.read' ? message.preview : undefined)
+              if (closed || link.closed || !options.accepting()) return failure('保存结果尚未确认，请重新读取')
+              return { t: 'native.settings.result', ...target, snapshot, ...(note === undefined ? {} : { note }) }
+            } catch (error) { return failure(error instanceof Error ? error.message : '设置操作失败，请重新读取后重试') }
+          })
+          settingsQueue = result.then(() => {})
+          owned.set(message.request, { signature, result })
+          void result.then(response => { if (!link.closed) link.send(response) })
+          break
+        }
         case 'native.refresh': changed(); break
         case 'native.read':
           if (Array.isArray(message.ids)) options.store.attention.markRead(idsOf(message.ids))

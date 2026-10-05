@@ -9,6 +9,7 @@ import type {
 import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
 import { createGrantLedger } from '@magic/permission'
+import type { ModelInfoService } from '@magic/model'
 import { createModelInfoService, modelSpecOf, resolveConnection, vendorCatalog } from '@magic/model'
 import type { RecordsStore } from '@magic/records'
 import { cacheAccessFor } from '../cache-access.ts'
@@ -157,10 +158,10 @@ export async function query(command: Command, context: ObservationContext): Prom
   return undefined
 }
 
-async function readModelCatalog(loaded: LoadedConfig, selection: ModelSelectionRef | undefined, request: ModelSwitchRequest | undefined, now: () => number): Promise<ModelCatalogReader> {
+export async function readModelCatalog(loaded: LoadedConfig, selection: ModelSelectionRef | undefined, request: ModelSwitchRequest | undefined, now: () => number, providedInfo?: ModelInfoService): Promise<ModelCatalogReader> {
   const providers = loaded.config.providers
   const processToken = crypto.randomUUID()
-  const info = createModelInfoService({
+  const info = providedInfo ?? createModelInfoService({
     connections: () => Object.entries(providers).map(([providerId, config]) => ({
       ...resolveConnection({ providerId, config }),
       access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),

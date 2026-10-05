@@ -537,9 +537,10 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; model.confirmQuit(); try await eventually { finished }
         let (idle, _) = try controlledModel(options: [:]); idle.start(); try await eventually { idle.isCurrent }
         try await capture(StatusPanel(model: idle).environment(\.colorScheme, .light), name: "idle", size: NSSize(width: 360, height: 260), appearance: .aqua)
+        idle.rememberSettingsCategory("app")
         idle.cliDirectory = idle.userHome.appendingPathComponent("这是一个用于验证完整显示与复制的很长命令安装目录/还有一层中文目录/bin").path
-        try await capture(SettingsView(model: idle).environment(\.colorScheme, .dark), name: "settings-dark", size: NSSize(width: 580, height: 680), appearance: .darkAqua)
-        try await capture(SettingsView(model: idle).environment(\.colorScheme, .dark), name: "settings-bottom-dark", size: NSSize(width: 580, height: 680), appearance: .darkAqua) { window in
+        try await capture(SettingsView(model: idle).environment(\.colorScheme, .dark), name: "settings-dark", size: NSSize(width: 800, height: 680), appearance: .darkAqua)
+        try await capture(SettingsView(model: idle).environment(\.colorScheme, .dark), name: "settings-bottom-dark", size: NSSize(width: 800, height: 680), appearance: .darkAqua) { window in
             let scroll = try scrollBottom(window)
             try await Task.sleep(for: .milliseconds(100))
             let document = try XCTUnwrap(scroll.documentView)
@@ -721,10 +722,17 @@ final class NativeTests: XCTestCase {
         XCTAssertLessThan(window.frame.maxX, 0, "验收窗口不得移到用户桌面")
         try await Task.sleep(for: .milliseconds(350))
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
+        let capturedAt = Date().timeIntervalSince1970
+        let capturedAppearance = window.effectiveAppearance.name.rawValue
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: directory.appendingPathComponent(name + ".png"))
+        if name.hasPrefix("u116-") {
+            let app = Bundle(url: root.appendingPathComponent(".artifacts/macos/Magic Code.app"))
+            let facts: [String: Any] = ["at": capturedAt, "appearance": capturedAppearance, "width": view.bounds.width, "height": view.bounds.height, "version": app?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知", "source": "offscreen native NSHostingController"]
+            try JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent(name + ".metadata.json"))
+        }
         XCTAssertGreaterThan(png.count, 2000)
     }
 
@@ -736,7 +744,8 @@ final class NativeTests: XCTestCase {
         let (model, _) = try systemTestModel(status: { status })
         model.start(); try await eventually { model.isCurrent }
         XCTAssertTrue(model.notificationsEnabled, "「提醒我」默认开：没说不要就是要")
-        let window = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
+        model.rememberSettingsCategory("app")
+        let window = try await hostView(SettingsView(model: model), size: NSSize(width: 800, height: 680), appearance: .aqua)
         defer { window.close() }
         XCTAssertEqual(switches(in: window).count, 2, "两个开关：登录项与「提醒我」")
         // 五态各留一帧（表的五行）
@@ -895,7 +904,8 @@ final class NativeTests: XCTestCase {
         await model.notifications.refreshAuthorization()
         XCTAssertEqual(model.notifications.authorizationStatus, .authorized)
         let allowed = model.notifications.authorization
-        let window = try await hostView(SettingsView(model: model), size: NSSize(width: 580, height: 680), appearance: .aqua)
+        model.rememberSettingsCategory("app")
+        let window = try await hostView(SettingsView(model: model), size: NSSize(width: 800, height: 680), appearance: .aqua)
         try await saveFrame(window, name: "u102-authorization-authorized")
         status = .provisional
         await model.notifications.refreshAuthorization()
@@ -905,6 +915,111 @@ final class NativeTests: XCTestCase {
         XCTAssertTrue(quiet.contains("静默"), "静默送达要说明只进通知中心、不弹横幅")
         try await saveFrame(window, name: "u102-authorization-provisional")
         window.close()
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
+    @MainActor func testU116RealHelperSettingsAndSevenNativePages() async throws {
+        _ = NSApplication.shared
+        let app = root.appendingPathComponent(".artifacts/macos/Magic Code.app")
+        let room = try temp()
+        let model = AppModel(appURL: app, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("设置不得发送通知") }))
+        model.start(); try await eventually { model.isCurrent }
+        defer { model.requestQuit {} }
+        model.readSettings(); try await eventually { model.settingsSnapshot != nil && !model.settingsBusy }
+        let first = try XCTUnwrap(model.settingsSnapshot)
+        XCTAssertNil(first.stamp); XCTAssertTrue(model.works.isEmpty)
+        XCTAssertTrue(first.configuration["providers"].object.isEmpty)
+        let empty = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+        try await saveFrame(empty, name: "u116-models-empty-light"); empty.close()
+        for category in SettingsCategory.all where category.id != "models" {
+            model.rememberSettingsCategory(category.id)
+            let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+            try await saveFrame(window, name: "u116-\(category.id)-empty-light"); window.close()
+        }
+        func save(_ action: SettingsValue, key: String) async throws {
+            model.applySettings(action, stamp: model.settingsSnapshot?.stamp, key: key)
+            try await eventually { !model.settingsBusy }
+            XCTAssertNil(model.settingsError, model.settingsError ?? "")
+            XCTAssertEqual(model.settingsSavedKey, key)
+        }
+        try await save(.object(["type": .string("provider.save"), "provider": .string("local"), "vendor": .string("deepseek"), "name": .string("本地受控连接 · 很长的中文名称用于核对设置布局"), "baseURL": .string("http://127.0.0.1:1/v1"), "apiKey": .string("SENTINEL_U116_SWIFT")]), key: "provider-local")
+        try await save(.object(["type": .string("model.alias.set"), "alias": .string("default"), "provider": .string("local"), "model": .string("deepseek-chat"), "initialize": .bool(true)]), key: "alias-default")
+        try await save(.object(["type": .string("mcp.save"), "name": .string("local-tools"), "server": .object(["command": .string("/SENTINEL_NEVER_RUN"), "args": .strings(["很长的独立参数，用于核对原生列表保留完整内容", "--next"])]), "secrets": .object(["API_TOKEN": .string("SENTINEL_U116_MCP")])]), key: "mcp-local")
+        try await save(.object(["type": .string("role.save"), "id": .string("review"), "role": .object(["name": .string("独立审查成员"), "instructions": .string("只根据可核对的依据给出结果。很长的中文职责用于核对换行和层级。"), "tools": .array([]), "model": .object(["alias": .string("default"), "reasoning": .object(["mode": .string("off")])])])]), key: "role-review")
+        for source in ["rules.sources", "rules.linkSources", "skills.sources"] {
+            try await save(.object(["type": .string("sources.set"), "source": .string(source), "paths": .strings([room.appendingPathComponent("中文材料目录/用于核对完整路径/不存在的原始材料").path])]), key: source)
+        }
+        try await save(.object(["type": .string("prefs.set"), "statusLine": .object(["cells": .strings(["workspace", "model", "reasoning", "context", "session"]), "color": .bool(true)])]), key: "terminal")
+        let snapshot = try XCTUnwrap(model.settingsSnapshot)
+        let encoded = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("SENTINEL_U116_SWIFT")); XCTAssertFalse(encoded.contains("SENTINEL_U116_MCP"))
+        XCTAssertTrue(model.works.isEmpty)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: snapshot.configPath)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        var geometry: [[String: Any]] = []
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for category in SettingsCategory.all {
+                model.rememberSettingsCategory(category.id)
+                let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: appearance)
+                try await saveFrame(window, name: "u116-\(category.id)-\(appearance == .aqua ? "light" : "dark")")
+                geometry.append(["category": category.id, "appearance": window.effectiveAppearance.name.rawValue, "width": window.contentView!.bounds.width, "height": window.contentView!.bounds.height, "at": Date().timeIntervalSince1970])
+                window.close()
+            }
+        }
+        model.rememberSettingsCategory("advanced")
+        let small = try await hostView(SettingsView(model: model), size: NSSize(width: 650, height: 400), appearance: .darkAqua)
+        try await saveFrame(small, name: "u116-advanced-small-dark")
+        func scrolls(_ view: NSView) -> [NSScrollView] { (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls) }
+        let scroll = try XCTUnwrap(scrolls(small.contentView!).filter { $0.bounds.width > 300 && ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height }.first)
+        let bottom = try XCTUnwrap(scroll.documentView).bounds.height
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom - scroll.contentView.bounds.height)); scroll.reflectScrolledClipView(scroll.contentView)
+        try await saveFrame(small, name: "u116-advanced-small-bottom-dark")
+        XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); small.close()
+        let natural = NSHostingController(rootView: SettingsView(model: model))
+        let fitting = natural.view.fittingSize
+        XCTAssertGreaterThanOrEqual(fitting.width, 650); XCTAssertGreaterThanOrEqual(fitting.height, 400)
+        XCTAssertLessThanOrEqual(fitting.width, 1200); XCTAssertLessThanOrEqual(fitting.height, 900)
+        let before = snapshot.stamp
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: snapshot.configPath))) as? [String: Any])
+        raw["motion"] = ["reduced": true]
+        try JSONSerialization.data(withJSONObject: raw).write(to: URL(fileURLWithPath: snapshot.configPath))
+        model.applySettings(.object(["type": .string("prefs.set"), "reducedMotion": .bool(false)]), stamp: before, key: "stale")
+        try await eventually { !model.settingsBusy }; XCTAssertNotNil(model.settingsError); XCTAssertNil(model.settingsSavedKey)
+        let error = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+        // onAppear重新读取，错误另由同一原生动作生成。
+        try await eventually { !model.settingsBusy }
+        model.applySettings(.object(["type": .string("workspace.set"), "roots": .strings(["/SENTINEL_MISSING_ROOT"])]), stamp: model.settingsSnapshot?.stamp, key: "invalid")
+        try await eventually { !model.settingsBusy }; XCTAssertNotNil(model.settingsError)
+        try await saveFrame(error, name: "u116-advanced-field-error-light"); error.close()
+        let drafts = SettingsDrafts()
+        let long = "很长的中文职责与完整路径用于核对原生编辑器换行。" + String(repeating: "实际编辑输入仍应可见可取消。", count: 10)
+        let mcpDraft = SettingsDraft(.object(["name": .string("local-tools"), "transport": .string("stdio"), "command": .string(room.appendingPathComponent(long).path), "args": .strings(Array(repeating: long, count: 4)), "secretRows": .array([.object(["name": .string("API_TOKEN"), "mode": .string("keep"), "value": .string("")])])]), stamp: snapshot.stamp)
+        let roleDraft = SettingsDraft(.object(["id": .string("review"), "name": .string(long), "instructions": .string(long), "guidanceFiles": .strings([room.appendingPathComponent(long).path]), "skills": .strings(["review"]), "tools": .array([])]), stamp: snapshot.stamp)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let editors = [AnyView(McpEditor(model: model, snapshot: snapshot, drafts: drafts, draft: mcpDraft, name: "local-tools", close: {})), AnyView(RoleEditor(model: model, snapshot: snapshot, drafts: drafts, draft: roleDraft, id: "review", close: {}))]
+            for (index, editor) in editors.enumerated() {
+                let window = try await hostView(ScrollView { editor.padding(24) }.frame(width: 650, height: 400).background(Color(nsColor: .controlBackgroundColor)).tint(.blue), size: NSSize(width: 650, height: 400), appearance: appearance)
+                let name = "u116-\(index == 0 ? "tools" : "roles")-long-editor-\(appearance == .aqua ? "light" : "dark")"
+                try await saveFrame(window, name: name)
+                let scroll = try XCTUnwrap(scrolls(window.contentView!).first { ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height })
+                let bottom = try XCTUnwrap(scroll.documentView).bounds.height
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom - scroll.contentView.bounds.height)); scroll.reflectScrolledClipView(scroll.contentView)
+                try await saveFrame(window, name: name + "-bottom"); XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); window.close()
+            }
+        }
+        let saved = try Data(contentsOf: URL(fileURLWithPath: snapshot.configPath))
+        let broken = Data("{\"apiKey\":\"SENTINEL_U116_BROKEN\",".utf8)
+        try broken.write(to: URL(fileURLWithPath: snapshot.configPath))
+        for category in SettingsCategory.all {
+            model.rememberSettingsCategory(category.id)
+            let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+            try await eventually { !model.settingsBusy && model.settingsError != nil }
+            XCTAssertFalse(model.settingsError!.contains("SENTINEL_U116_BROKEN"))
+            try await saveFrame(window, name: "u116-\(category.id)-read-error-light"); window.close()
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: snapshot.configPath)), broken)
+        }
+        try saved.write(to: URL(fileURLWithPath: snapshot.configPath))
+        let evidence: [String: Any] = ["source": "signed embedded helper + native SettingsView", "works": model.works.count, "sensitiveRead": false, "naturalWidth": fitting.width, "naturalHeight": fitting.height, "frames": geometry]
+        try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/u116-settings-native.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 

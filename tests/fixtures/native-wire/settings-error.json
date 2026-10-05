@@ -1,0 +1,11 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.settings.result",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "error": "配置已改变，请重新读取"
+  }
+}

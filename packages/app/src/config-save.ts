@@ -9,15 +9,17 @@
  *    且**保留无关字段**（权限 · MCP · 工作区根…原样带过）：本文件只碰
  *    `providers` / `modelAliases`/ `statusLine` / `motion`（U112）
  *    那几格，别的一律不动。
- * ③ **外部改过就提示重载**——加载时记下的 `mtime` 与当下不符 ⇒ 拒绝这次写入，
+ * ③ **外部改过就提示重载**——加载时记下的文件指纹与当下不符 ⇒ 拒绝这次写入，
  *    把「先重新载入」交给用户（**不拿陈旧整份文件覆盖**别人的改动）。
  *
  * ⚠️ **凭据只进不出**：`apiKey` 写进文件（那是它的落点），但本文件产出的任何**文案**
  * 都不含它——报错只说字段名。
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { configStamp } from './cache-access.ts'
+import { acquireFileLock } from './grants-file.ts'
 import type {
   ModelAliasRequest,
   PrefsSetRequest,
@@ -35,11 +37,8 @@ type Edit =
 export type EditConfigInput = {
   /** 配置文件路径（**已展开**的绝对路径）。 */
   readonly path: string
-  /**
-   * 加载那一刻这个文件的 `mtimeMs`（没有文件时＝`undefined`）。
-   * 给了就比对：不一致 ⇒ 拒绝这次写入（设计：不拿陈旧整份文件覆盖）。
-   */
-  readonly loadedAt?: number | undefined
+  readonly expectedStamp?: string | null
+  readonly validate?: (raw: Record<string, unknown>) => void
   /** 读到的**盘上原文**交给他改——返回值即要写回去的内容。 */
   readonly update: (raw: Record<string, unknown>) => Edit
 }
@@ -75,30 +74,29 @@ function readRaw(path: string): Edit {
  * 写用**临时文件 ＋ rename**：读到的要么是旧的完整内容、要么是新的完整内容。
  */
 export function editConfigFile(input: EditConfigInput): SaveOutcome {
-  // ③ 外部改过 —— 先比一次（文件此刻不在 ⇒ 与「加载时也不在」相符才算没变）
-  if (input.loadedAt !== undefined) {
-    let current: number | undefined
-    try {
-      current = statSync(input.path).mtimeMs
-    } catch {
-      current = undefined
-    }
-    if (current !== input.loadedAt) {
-      return { ok: false, reason: '配置文件在这一趟之后被改过——请重新载入再改' }
-    }
-  }
+  let lock: ReturnType<typeof acquireFileLock>
+  try { lock = acquireFileLock(input.path) } catch { return { ok: false, reason: '配置文件正在写入或不可写，请稍后重试' } }
+  try { return editLocked(input) } catch { return { ok: false, reason: '配置文件无法读取或写入，请检查路径与权限后重试' } } finally { lock.release() }
+}
 
+function editLocked(input: EditConfigInput): SaveOutcome {
+  const before = configStamp(input.path)
+  if (input.expectedStamp !== undefined && input.expectedStamp !== before) {
+    return { ok: false, reason: '配置已被修改，请重新读取后再保存；未提交输入已保留' }
+  }
   const read = readRaw(input.path)
   if (!read.ok) return { ok: false, reason: read.reason }
 
   const edited = input.update(read.raw)
   if (!edited.ok) return { ok: false, reason: edited.reason }
+  try { input.validate?.(edited.raw) } catch (error) { return { ok: false, reason: error instanceof Error ? error.message : '配置字段无效' } }
 
   try {
     mkdirSync(dirname(input.path), { recursive: true, mode: 0o700 })
-    const temp = `${input.path}.tmp-${process.pid}`
+    const temp = `${input.path}.tmp-${process.pid}-${crypto.randomUUID()}`
     try {
-      writeFileSync(temp, `${JSON.stringify(edited.raw, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+      writeFileSync(temp, `${JSON.stringify(edited.raw, null, 2)}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      if (configStamp(input.path) !== before) { rmSync(temp, { force: true }); return { ok: false, reason: '配置已被外部修改，请重新读取后再保存' } }
       renameSync(temp, input.path)
     } catch (error) {
       rmSync(temp, { force: true })
@@ -115,8 +113,7 @@ export function editConfigFile(input: EditConfigInput): SaveOutcome {
 /** `providers` 那一段（缺省 / 不是对象 ⇒ 空表——**不静默丢掉**别人的东西：只在本键坏时如此）。 */
 function providersOf(raw: Record<string, unknown>): Record<string, unknown> {
   const providers = raw['providers']
-  if (typeof providers !== 'object' || providers === null || Array.isArray(providers)) return {}
-  return { ...(providers as Record<string, unknown>) }
+  return Object.assign(Object.create(null), typeof providers === 'object' && providers !== null && !Array.isArray(providers) ? providers : {})
 }
 
 function entryOf(providers: Record<string, unknown>, id: string): Record<string, unknown> {
@@ -136,12 +133,14 @@ function entryOf(providers: Record<string, unknown>, id: string): Record<string,
  */
 export function saveProvider(input: {
   readonly path: string
-  readonly loadedAt?: number | undefined
+  readonly expectedStamp?: string | null
+  readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: ProviderSaveRequest
 }): SaveOutcome {
   return editConfigFile({
     path: input.path,
-    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
+    ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
+    ...(input.validate === undefined ? {} : { validate: input.validate }),
     update(raw) {
       const providers = providersOf(raw)
       const entry = entryOf(providers, input.request.provider)
@@ -169,23 +168,26 @@ export function saveProvider(input: {
 
 export function removeProvider(input: {
   readonly path: string
-  readonly loadedAt?: number | undefined
+  readonly expectedStamp?: string | null
+  readonly validate?: (raw: Record<string, unknown>) => void
   readonly provider: string
 }): SaveOutcome {
   return editConfigFile({
     path: input.path,
-    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
+    ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
+    ...(input.validate === undefined ? {} : { validate: input.validate }),
     update(raw) {
       const providers = providersOf(raw)
       if (!Object.hasOwn(providers, input.provider)) {
         return { ok: false, reason: `没有「${input.provider}」这条连接` }
       }
 
+      const aliases = raw['modelAliases'] as Record<string, { provider: string }> | undefined
+      if (Object.values(aliases ?? {}).some(mapping => mapping.provider === input.provider)) {
+        return { ok: false, reason: '连接仍被 Default 或档位引用，请先更换或清除映射' }
+      }
       delete providers[input.provider]
-
-      const aliases = { ...(raw['modelAliases'] as Record<string, { provider: string; model: string }> | undefined) }
-      for (const [alias, mapping] of Object.entries(aliases)) if (mapping.provider === input.provider) delete aliases[alias]
-      return { ok: true, raw: { ...raw, providers, modelAliases: aliases } }
+      return { ok: true, raw: { ...raw, providers } }
     },
   })
 }
@@ -193,7 +195,8 @@ export function removeProvider(input: {
 /** 保存独立映射；首次初始化只填尚未设置的三档。 */
 export function setModelAlias(input: {
   readonly path: string
-  readonly loadedAt?: number | undefined
+  readonly expectedStamp?: string | null
+  readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: ModelAliasRequest
 }): SaveOutcome {
   const { alias, provider, model, initialize } = input.request
@@ -202,7 +205,8 @@ export function setModelAlias(input: {
   if (initialize === true && alias !== 'default') return { ok: false, reason: '首次初始化只能保存 Default' }
   return editConfigFile({
     path: input.path,
-    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
+    ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
+    ...(input.validate === undefined ? {} : { validate: input.validate }),
     update(raw) {
       if (!Object.hasOwn(providersOf(raw), provider)) return { ok: false, reason: `没有「${provider}」这条连接——先接入它` }
       const value = raw['modelAliases']
@@ -224,14 +228,16 @@ export function setModelAlias(input: {
 
 export function setPrefs(input: {
   readonly path: string
-  readonly loadedAt?: number | undefined
+  readonly expectedStamp?: string | null
+  readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: PrefsSetRequest
 }): SaveOutcome {
   const { statusLine, reducedMotion } = input.request
 
   return editConfigFile({
     path: input.path,
-    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
+    ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
+    ...(input.validate === undefined ? {} : { validate: input.validate }),
     update(raw) {
       const next: Record<string, unknown> = { ...raw }
 

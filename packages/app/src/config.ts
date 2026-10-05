@@ -1,7 +1,8 @@
 
 
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { configStamp } from './cache-access.ts'
 import { dirname, resolve } from 'node:path'
 import type {
   AgentRoleConfig,
@@ -52,13 +53,9 @@ export type LoadedConfig = {
   readonly providerId?: string
   /** `providers[providerId]` 原样——含 `traits` 覆盖位（模型域按「键在即接管」裁定）。 */
   readonly provider?: ProviderConfig
-  /**
-   * 加载那一刻配置文件的 `mtimeMs`（文件不在时＝`undefined`）。
-   *
-   * 它只有一个用处：**保存前比对**——中途被外面改过就提示重新载入，
-   * 不拿加载时那份陈旧内容整份覆盖（设计 · 命令行与配置「旧配置兼容与保存」）。
-   */
-  readonly mtimeMs?: number | undefined
+  /** 加载时的文件指纹；null 明确表示文件不存在。 */
+  readonly stamp?: string | null
+
 
 }
 
@@ -261,7 +258,7 @@ function asModelOverrides(
   field: string,
 ): Readonly<Record<string, ProviderModelOverride>> {
   const raw = asObject(value, path, field)
-  const overrides: Record<string, ProviderModelOverride> = {}
+  const overrides: Record<string, ProviderModelOverride> = Object.create(null)
 
   for (const [id, entry] of Object.entries(raw)) {
     const one = asObject(entry, path, `${field}.${id}`)
@@ -606,6 +603,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   const home = magic.home
   const path = expandHome(options.path ?? `${magic.base}/${CONFIG_FILE_NAME}`, home)
 
+  const stamp = configStamp(path)
   let text: string
   try {
     text = readFileSync(path, 'utf8')
@@ -616,7 +614,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     // 别的读失败（权限 / 是个目录…）照旧报——那不是「还没配」，那是真有问题。
     if ((error as { code?: string }).code === 'ENOENT') {
       // 数据目录按**基础目录**给（U42：不再是那个字面量常量——空配置也落得了账）
-      return { path, config: { providers: {}, dataDir: magic.base } }
+      return { path, config: { providers: {}, dataDir: magic.base }, stamp: null }
 
     }
     const reason = error instanceof Error ? error.message : String(error)
@@ -626,22 +624,20 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     )
   }
 
-  // 记下这一刻的 mtime——保存前比对用（见 `LoadedConfig.mtimeMs`）
-  let mtimeMs: number | undefined
-  try {
-    mtimeMs = statSync(path).mtimeMs
-  } catch {
-    mtimeMs = undefined
-  }
-
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    throw new ConfigError(path, `配置不是合法 JSON（${reason}）`)
+  } catch {
+    throw new ConfigError(path, "配置不是合法 JSON，请修复文件后重新读取")
   }
 
+  if (configStamp(path) !== stamp) throw new ConfigError(path, '配置在读取期间已改变，请重新读取')
+  return { ...parseConfig(parsed, path, magic), stamp }
+}
+
+/** 读盘和局部保存共用的形制校验，不触发模型或 MCP。 */
+export function parseConfig(parsed: unknown, path: string, magic: MagicHome): LoadedConfig {
+  const home = magic.home
   const raw = asObject(parsed, path, '配置根')
 
   for (const key of ['defaultProvider', 'webFetch']) {
@@ -733,7 +729,6 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     },
     providerId,
     provider,
-    ...(mtimeMs === undefined ? {} : { mtimeMs }),
   }
 }
 

@@ -101,16 +101,20 @@ struct NativeProjection: Codable, Equatable {
 enum NativeRequest: Codable, Equatable {
     case hello(role: String, protocol: Int, version: String, source: String, dataDir: String)
     case refresh
+    case settingsRead(request: String, serviceInstance: String, dataDir: String, preview: SettingsValue?)
+    case settingsApply(request: String, serviceInstance: String, dataDir: String, stamp: String?, action: SettingsValue)
     case inspect(request: String, session: String, notice: String?)
     case stop(request: String, serviceInstance: String, session: String, gen: Int)
     case read(ids: [String])
     case delivered(ids: [String])
     case presence(session: String, ids: [String], focused: Bool)
-    private enum Keys: String, CodingKey { case t, role, `protocol`, version, source, dataDir, request, session, notice, serviceInstance, gen, ids, focused }
+    private enum Keys: String, CodingKey { case t, role, `protocol`, version, source, dataDir, request, session, notice, serviceInstance, gen, ids, focused, stamp, action, preview }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
         case "hello": self = .hello(role: try c.decode(String.self, forKey: .role), protocol: try c.decode(Int.self, forKey: .protocol), version: try c.decode(String.self, forKey: .version), source: try c.decode(String.self, forKey: .source), dataDir: try c.decode(String.self, forKey: .dataDir))
+        case "native.settings.read": self = .settingsRead(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), dataDir: try c.decode(String.self, forKey: .dataDir), preview: try c.decodeOptional(SettingsValue.self, forKey: .preview))
+        case "native.settings.apply": self = .settingsApply(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), dataDir: try c.decode(String.self, forKey: .dataDir), stamp: try c.decode(String?.self, forKey: .stamp), action: try c.decode(SettingsValue.self, forKey: .action))
         case "native.refresh": self = .refresh
         case "native.inspect": self = .inspect(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), notice: try c.decodeOptional(String.self, forKey: .notice))
         case "native.stop": self = .stop(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), session: try c.decode(String.self, forKey: .session), gen: try c.decode(Int.self, forKey: .gen))
@@ -119,6 +123,8 @@ enum NativeRequest: Codable, Equatable {
         case "native.presence": self = .presence(session: try c.decode(String.self, forKey: .session), ids: try c.decode([String].self, forKey: .ids), focused: try c.decode(Bool.self, forKey: .focused))
         default: throw DecodingError.dataCorruptedError(forKey: .t, in: c, debugDescription: "不支持的协议消息")
         }
+        if case .settingsApply(_, _, _, _, let action) = self, !action.validSettingsAction { throw WireError.invalid("非法设置动作") }
+        if case .settingsRead(_, _, _, let preview) = self, let preview, !preview.validSettingsPreview { throw WireError.invalid("非法设置预览") }
         if case .hello(let role, _, _, _, _) = self, role != "observer" { throw WireError.invalid("观察连接用途必须为 observer") }
     }
     func encode(to encoder: Encoder) throws {
@@ -131,6 +137,13 @@ enum NativeRequest: Codable, Equatable {
             try c.encode(version, forKey: .version)
             try c.encode(source, forKey: .source)
             try c.encode(dataDir, forKey: .dataDir)
+        case let .settingsRead(request, serviceInstance, dataDir, preview):
+            try c.encode("native.settings.read", forKey: .t); try c.encode(request, forKey: .request); try c.encodeIfPresent(preview, forKey: .preview)
+            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(dataDir, forKey: .dataDir)
+        case let .settingsApply(request, serviceInstance, dataDir, stamp, action):
+            try c.encode("native.settings.apply", forKey: .t); try c.encode(request, forKey: .request)
+            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(dataDir, forKey: .dataDir)
+            try c.encode(stamp, forKey: .stamp); try c.encode(action, forKey: .action)
         case .refresh:
             try c.encode("native.refresh", forKey: .t)
         case let .inspect(request, session, notice):
@@ -165,8 +178,9 @@ enum NativeResponse: Codable, Equatable {
     case inspected(request: String, work: NativeWork?, error: String?)
     case stopped(request: String, session: String, phase: StopPhase, note: String?)
     case attached(request: String, session: String?)
+    case settingsResult(request: String, serviceInstance: String, dataDir: String, snapshot: SettingsSnapshot?, error: String?, note: String?)
     case error(reason: String)
-    private enum Keys: String, CodingKey { case t, identity, projection, request, work, error, session, phase, note, reason }
+    private enum Keys: String, CodingKey { case t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, dataDir, snapshot }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
@@ -175,9 +189,11 @@ enum NativeResponse: Codable, Equatable {
         case "native.inspected": self = .inspected(request: try c.decode(String.self, forKey: .request), work: try c.decodeOptional(NativeWork.self, forKey: .work), error: try c.decodeOptional(String.self, forKey: .error))
         case "native.stopped": self = .stopped(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), phase: try c.decode(StopPhase.self, forKey: .phase), note: try c.decodeOptional(String.self, forKey: .note))
         case "native.attached": self = .attached(request: try c.decode(String.self, forKey: .request), session: try c.decode(String?.self, forKey: .session))
+        case "native.settings.result": self = .settingsResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), dataDir: try c.decode(String.self, forKey: .dataDir), snapshot: try c.decodeOptional(SettingsSnapshot.self, forKey: .snapshot), error: try c.decodeOptional(String.self, forKey: .error), note: try c.decodeOptional(String.self, forKey: .note))
         case "native.error": self = .error(reason: try c.decode(String.self, forKey: .reason))
         default: throw DecodingError.dataCorruptedError(forKey: .t, in: c, debugDescription: "不支持的协议消息")
         }
+        if case .settingsResult(_, _, _, let snapshot, let error, _) = self, (snapshot == nil) == (error == nil) { throw WireError.invalid("设置结果必须给出 snapshot 或 error 其中一项") }
         if case .inspected(_, let work, let error) = self, (work == nil) == (error == nil) {
             throw WireError.invalid("事项查询必须给出 work 或 error 其中一项")
         }
@@ -207,6 +223,10 @@ enum NativeResponse: Codable, Equatable {
             try c.encode("native.attached", forKey: .t)
             try c.encode(request, forKey: .request)
             try c.encode(session, forKey: .session)
+        case let .settingsResult(request, serviceInstance, dataDir, snapshot, error, note):
+            try c.encode("native.settings.result", forKey: .t); try c.encode(request, forKey: .request)
+            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(dataDir, forKey: .dataDir)
+            try c.encodeIfPresent(snapshot, forKey: .snapshot); try c.encodeIfPresent(error, forKey: .error); try c.encodeIfPresent(note, forKey: .note)
         case let .error(reason):
             try c.encode("native.error", forKey: .t)
             try c.encode(reason, forKey: .reason)

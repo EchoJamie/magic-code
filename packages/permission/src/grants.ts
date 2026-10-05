@@ -394,6 +394,8 @@ export type GrantLedger = {
   readonly workspace: string
   /** 本工作区生效的授权**规则**（匹配用，声明序）——未经 `parseGrants` 的那些不影响它。 */
   rules(): readonly PermissionRule[]
+  /** 从已解析的当前文件受理授权事实；不触发写回。 */
+  replace(file: GrantsFile): void
   /** 记一条（`a` 批准）——已有同形的**不重复入册**（用户的话说过了，不必说两遍）。 */
   remember(rule: PermissionRule): void
   /** 命中一次——记上次数与时刻（**久未命中**那条判据的原料）。 */
@@ -451,6 +453,7 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
   return {
     workspace,
     rules: () => mine(),
+    replace(file) { sections.clear(); for (const [key, entries] of Object.entries(file.workspaces)) sections.set(key, [...entries]) },
     sections: () => [...sections.keys()],
 
     remember(rule) {

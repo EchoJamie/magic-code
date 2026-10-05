@@ -1,0 +1,10 @@
+{
+  "family": "NativeResponse",
+  "valid": false,
+  "message": {
+    "t": "native.settings.result",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data"
+  }
+}

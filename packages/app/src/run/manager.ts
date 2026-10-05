@@ -1,5 +1,6 @@
 import { createManagedCollaboration } from './collaboration.ts'
 import { loadConfig } from '../config.ts'
+import { createSettings } from '../settings.ts'
 import { setPrefs } from '../config-save.ts'
 import { captureCollaborationNative, mergeCollaborationNative, type CollaborationNativeGroup } from './collaboration-native.ts'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
@@ -991,9 +992,23 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     collaborationStopVersions.set(work.collaborationId, { signature, gen })
     return gen
   }
-  const native = createNativeServer({
-    identity, store, accepting: () => !stopped,
-    works: async () => {
+  const executorSettings = new Map<Executor, readonly McpCatalogRow[]>()
+  const settingsReplies = new Map<string, { executor: Executor; resolve: (note: string) => void; reject: (error: Error) => void }>()
+  function settingsToExecutor(executor: Executor, server?: string, inspect = false): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const request = crypto.randomUUID()
+      const timeout = setTimeout(() => { settingsReplies.delete(request); reject(new Error('执行者未确认设置受理，请重新读取当前事实')) }, 30_000)
+      settingsReplies.set(request, { executor, resolve: note => { clearTimeout(timeout); resolve(note) }, reject: error => { clearTimeout(timeout); reject(error) } })
+      send(executor, inspect ? { t: 'settings.inspect', request } : server === undefined ? { t: 'settings.sync', request } : { t: 'settings.reconnect', request, server })
+    })
+  }
+  function publishPreferences(except?: ClientConn): void {
+    const config = loadConfig({ magic: options.magic }).config
+    for (const conn of clients.values()) if (conn !== except) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
+      ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), reducedMotion: config.motion?.reduced === true,
+    } } })
+  }
+  async function nativeWorks(): Promise<readonly NativeWork[]> {
       const sessions = await store.listSessions()
       const runs = rows()
       const snapshot = captureCollaborationNative(store.collaboration, sessions.map(session => session.id))
@@ -1009,7 +1024,28 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         ...mergeCollaborationNative(works, snapshot).map(work => ({ ...work, gen: generations.get(work.session) ?? null })),
         ...await (options.lifecycle?.affected() ?? Promise.resolve([])),
       ]
+  }
+  const settings = createSettings({
+    magic: options.magic, cwd: options.magic.home, store, mcp: [], now,
+    canChangeData: async () => !(await nativeWorks()).some(work => work.affected) && executors.size === 0,
+    mcpWorks: async () => {
+      const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
+      await Promise.all(current.map(executor => settingsToExecutor(executor, undefined, true)))
+      return current.flatMap(executor => executor.run.session === null ? [] : [{
+      session: executor.run.session, gen: workStopGeneration(executor.run.session), servers: executorSettings.get(executor) ?? [],
+    }])
     },
+    preferencesChanged: async () => { await Promise.all([...executors].map(executor => settingsToExecutor(executor))); publishPreferences() },
+    grantsChanged: async () => { await Promise.all([...executors].map(executor => settingsToExecutor(executor))) },
+    reconnect: async (session, gen, name) => {
+      const executor = liveOf(session)
+      if (executor === undefined || workStopGeneration(session) !== gen || executor.run.stopping) throw new Error('该工作已结束或换代，未重连')
+      return settingsToExecutor(executor, name)
+    },
+  })
+  const native = createNativeServer({
+    identity, store, accepting: () => !stopped, settings,
+    works: nativeWorks,
     stop(session, gen, report) {
       if (workStopGeneration(session) !== gen) {
         report('unconfirmed', '目标已经结束或换代，请刷新当前状态')
@@ -1348,7 +1384,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (command.type === 'prefs.set') {
       try {
         const loaded = loadConfig({ magic: options.magic })
-        const outcome = setPrefs({ path: loaded.path, loadedAt: loaded.mtimeMs, request: command })
+        const outcome = setPrefs({ path: loaded.path, expectedStamp: loaded.stamp, request: command })
+        if (outcome.ok) publishPreferences(conn)
         const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
         const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效'].filter(Boolean).join(' · ')
         conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
@@ -1733,6 +1770,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
     spawned.onExit((reason) => {
       executor.exited = true
+      for (const [request, pending] of settingsReplies) if (pending.executor === executor) {
+        settingsReplies.delete(request); pending.reject(new Error('执行者已退出，设置受理未确认；请重新读取'))
+      }
       retire(executor, reason)
     })
 
@@ -1840,6 +1880,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         saveRuns()
         pushRuns()
         return
+      case 'settings.synced': {
+        executorSettings.set(executor, message.mcp)
+        const pending = settingsReplies.get(message.request)
+        if (pending?.executor === executor) { settingsReplies.delete(message.request); if (message.error !== undefined) pending.reject(new Error(message.error)); else pending.resolve(message.note ?? '已受理设置') }
+        return
+      }
       case 'ev':
         onEvent(executor, message.event)
         return
@@ -1951,6 +1997,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
+    if (event.kind === 'mcp.catalog') executorSettings.set(executor, event.data.servers)
     if (event.kind === 'input.settled' && event.data.ref !== undefined) {
       const owner = collaborationInputs.get(event.data.ref)
       if (owner !== undefined) {

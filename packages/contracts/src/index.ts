@@ -39,3 +39,5 @@ export * from './collaboration.ts'
 export type * from './collaboration-control.ts'
 
 export * from './input.ts'
+
+export * from "./settings.ts"

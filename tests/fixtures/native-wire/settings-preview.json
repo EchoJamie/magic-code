@@ -1,0 +1,21 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.settings.read",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "preview": {
+      "statusLine": {
+        "cells": [
+          "model",
+          "context"
+        ],
+        "color": false
+      },
+      "columns": 80,
+      "reducedMotion": true
+    }
+  }
+}

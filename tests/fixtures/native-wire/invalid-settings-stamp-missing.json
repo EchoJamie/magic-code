@@ -1,0 +1,15 @@
+{
+  "family": "NativeRequest",
+  "valid": false,
+  "message": {
+    "t": "native.settings.apply",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "action": {
+      "type": "sources.set",
+      "source": "skills.sources",
+      "paths": []
+    }
+  }
+}

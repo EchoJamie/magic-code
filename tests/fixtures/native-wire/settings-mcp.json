@@ -1,0 +1,26 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.settings.apply",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "stamp": null,
+    "action": {
+      "type": "mcp.save",
+      "name": "local",
+      "server": {
+        "command": "/synthetic/command",
+        "args": [
+          "one",
+          "two"
+        ]
+      },
+      "secrets": {
+        "OLD": null,
+        "NEW": "synthetic-new-input"
+      }
+    }
+  }
+}

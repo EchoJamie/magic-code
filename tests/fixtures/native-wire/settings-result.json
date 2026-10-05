@@ -1,0 +1,26 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.settings.result",
+    "request": "settings-one",
+    "serviceInstance": "service-one",
+    "dataDir": "/tmp/synthetic/data",
+    "snapshot": {
+      "preview": {},
+      "configPath": "/tmp/synthetic/config.json",
+      "dataDir": "/tmp/synthetic/data",
+      "base": "/tmp/synthetic",
+      "stamp": null,
+      "configuration": {},
+      "catalog": [],
+      "vendors": [],
+      "sources": [],
+      "grants": [],
+      "grantStamp": null,
+      "mcp": [],
+      "canChangeData": true
+    },
+    "note": "已保存"
+  }
+}
