@@ -92,3 +92,28 @@ test('U114 入口已退代，仍有效成员卡按持卡者裁决，旧入口代
   expect(f.manager.executors().some(e=>e.session===f.session())).toBe(false)
  } finally {socket?.end();rootReply.release();memberReply.release();await f.close()}
 },30000)
+
+
+test('U114 与咨询集成：真实 socket 的待处理操作不越过只读顾问边界', async()=>{
+ const pending=latch()
+ const f=await collaborationRuntime('u114-consultation-pending-readonly',async call=>{
+  if(call.model==='entry-model')return call.index===0?{tool:'consult_arcane',args:{operationId:'readonly-input',question:'只读查证'}}:{text:'原工作保持责任'}
+  await pending.promise;return {text:'只读建议'}
+ },{allowAll:true})
+ try{
+  f.shell.key({kind:'paste',text:'请只读顾问查证'});f.shell.key({kind:'enter'})
+  await f.wait('顾问在途',()=>f.requests('descendant-model').length===1 && f.requests().length===2)
+  const member=f.member()!,inputs=f.store.serviceFor(member.sessionId).inputs
+  const row=inputs.accept({ref:'readonly-pending',text:'顾问不可消费的受控待处理夹具',purpose:'next'},Date.now())
+  f.client.send({type:'input.manage',action:'list',member:member.agentId})
+  await f.wait('只读列举已回传',()=>f.events.some(event=>event.kind==='input.pending'&&event.session===member.sessionId&&event.data.inputs.some(one=>one.ref===row.ref)))
+  for(const action of ['edit','withdraw','continue'] as const){
+   const before=f.lines.filter(line=>line.includes('咨询详情只供查看')).length
+   f.client.send({type:'input.manage',member:member.agentId,ref:row.ref,revision:row.revision,...(action==='edit'?{action,input:{text:'不应保存'}}:{action})})
+   await f.wait(action+'明确拒绝',()=>f.lines.filter(line=>line.includes('咨询详情只供查看')).length>before)
+   expect(inputs.get(row.ref)).toEqual(row)
+   expect(f.requests()).toHaveLength(2)
+  }
+  expect(f.errors).toEqual([])
+ }finally{pending.release();await f.close()}
+},20000)

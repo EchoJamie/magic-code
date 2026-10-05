@@ -160,13 +160,13 @@ export function renderEnvironment(vars: PromptVars): PromptBlock {
 // —— 装配 / 边界读取 ——
 
 /** 装配全部块——段结构四段（`PROMPT_SECTIONS` 顺序）+ 环境注入块（殿后）。 */
-export function buildPromptBlocks(vars: PromptVars): readonly PromptBlock[] {
-  return [...renderSections(), renderEnvironment(vars)]
+export function buildPromptBlocks(vars: PromptVars, purpose?: 'consultation', consultationAvailable = false): readonly PromptBlock[] {
+  return [...renderSections(purpose, consultationAvailable), renderEnvironment(vars)]
 }
 
 /** 装配系统提示词——消费面（U04 · 主循环 · 提示词装配）。 */
-export function buildSystemPrompt(vars: PromptVars): string {
-  return buildPromptBlocks(vars)
+export function buildSystemPrompt(vars: PromptVars, purpose?: 'consultation', consultationAvailable = false): string {
+  return buildPromptBlocks(vars, purpose, consultationAvailable)
     .map((block) => block.text)
     .join(BLOCK_SEPARATOR)
 }
@@ -189,7 +189,7 @@ const BLOCK_ID_BY_HEADING: ReadonlyMap<string, PromptBlockId> = new Map<string, 
  * 产物 → 块（**段边界读取**）——`buildSystemPrompt` 之逆：按已知标题切分。
  *
  * 首块标题之前的散行被丢弃（正常装配下不存在——产物以首段标题开头）；
- * 块正文去掉尾随空行，故 `splitSystemPrompt(buildSystemPrompt(vars))` 与 `buildPromptBlocks(vars)` 逐块相符。
+ * 块正文去掉尾随空行，故 `splitSystemPrompt(buildSystemPrompt(vars))` 与 `buildPromptBlocks(vars, purpose, consultationAvailable)` 逐块相符。
  */
 export function splitSystemPrompt(prompt: string): readonly PromptBlock[] {
   const blocks: PromptBlock[] = []

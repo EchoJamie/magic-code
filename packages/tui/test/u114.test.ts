@@ -84,9 +84,10 @@ import {pickerLayout,pickerBudget} from '../src/components/picker.ts'
 import {createShell} from '../src/shell.ts'
 import {createSpyTransport} from './fakes.ts'
 import {collaborationDetail,collaborationFixture} from './collaboration-fixture.ts'
-function collaborationStage(){
- const spy=createSpyTransport(); const shell=createShell({...spy.transport,send(command){spy.transport.send(command);if(command.type==='collaboration.read')spy.emit(event('collaboration.view',collaborationDetail(command.member)))}})
- spy.emit(event('session.state',{active:'origin',sessions:[{id:'origin',at:0},{id:'member',at:0}]}));spy.emit(event('collaboration.view',collaborationFixture))
+function collaborationStage(consultation=false){
+ const view=(data:typeof collaborationFixture)=>({...data,members:data.members.map(one=>one.agent.agentId==='worker'&&consultation?{...one,agent:{...one.agent,purpose:'consultation' as const}}:one)})
+ const spy=createSpyTransport(); const shell=createShell({...spy.transport,send(command){spy.transport.send(command);if(command.type==='collaboration.read')spy.emit(event('collaboration.view',view(collaborationDetail(command.member))))}})
+ spy.emit(event('session.state',{active:'origin',sessions:[{id:'origin',at:0},{id:'member',at:0}]}));spy.emit(event('collaboration.view',view(collaborationFixture)))
  const key=(kind:'tab'|'enter'|'down'|'escape')=>shell.key({kind})
  const pick=(value:string)=>{const dock=shell.getView().dock;if(dock.kind!=='picker')throw Error('没有选择器');const index=dock.picker.rows.findIndex(row=>row.value===value);if(index<0)throw Error(`没有 ${value}`);for(let i=0;i<(index-dock.picker.selected+dock.picker.rows.length)%dock.picker.rows.length;i++)key('down');key('enter')}
  return {spy,shell,key,pick,member:()=>{key('tab');pick('worker')},text:(text:string)=>shell.key({kind:'paste',text})}
@@ -160,4 +161,30 @@ test('U114 延迟受理与拒绝如实还稿，已受理也保留配对身份且
  s.feed([event('input.settled',{ref:second.ref,ok:false,reason:'受控断线，未确认接收'})])
  expect(s.shell.getView().draft).toBe('new draft')
  expect([...s.shell.getView().settled,...s.shell.getView().rows].some(r=>r.kind==='receipt'&&r.text.includes('未确认接收'))).toBe(true)
+})
+
+
+test('U114 与咨询集成：Enter 仍阅读，i 不切只读顾问，m 只保留只读动作',()=>{
+ const s=collaborationStage(true);s.text('原工作稿');s.member()
+ const before=s.shell.getView();expect(before.dock.kind==='picker'&&before.dock.picker.reader?.title).toBe('实现 · 对话与工具')
+ s.shell.key({kind:'memberInput'});expect(s.shell.getView()).toEqual(before)
+ s.shell.key({kind:'memberMenu'});const dock=s.shell.getView().dock
+ expect(dock.kind).toBe('picker')
+ if(dock.kind!=='picker')throw Error('没有操作页')
+ expect(dock.picker.rows.map(row=>row.value)).not.toContain('input')
+ expect(dock.picker.rows.map(row=>row.value)).not.toContain('member-model')
+ expect(dock.picker.rows[dock.picker.selected]?.value).toBe('records')
+ s.key('escape');s.key('escape');expect(s.shell.getView().draft).toBe('原工作稿')
+ expect(s.shell.getView().inputMember).toBeUndefined()
+ expect(s.spy.commands.some(command=>command.type==='collaboration.input'||command.type==='model.switch')).toBe(false)
+})
+
+
+test('U114 成员阅读取消只退真实层，成员列表不重复压栈，原稿光标保持',()=>{
+ const s=collaborationStage();s.text('整体完整草稿');s.shell.key({kind:'left'});const original=s.shell.getView()
+ s.member();s.key('escape');let dock=s.shell.getView().dock
+ expect(dock.kind==='picker'&&dock.picker.source).toBe('collaboration')
+ s.key('escape');expect(s.shell.getView().dock.kind).toBe('input')
+ expect(s.shell.getView().draft).toBe(original.draft);expect(s.shell.getView().caret).toBe(original.caret)
+ expect(s.shell.getView().refs).toEqual(original.refs);expect(s.shell.getView().inputMember).toBeUndefined()
 })

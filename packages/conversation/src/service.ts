@@ -64,6 +64,8 @@ import { createSkillsDelivery } from './skills.ts'
  */
 export type ConversationDeps = {
   readonly collaboration?: CollaborationBoundary | undefined
+  readonly purpose?: 'consultation' | undefined
+  readonly consultationAvailable?: boolean | undefined
   /** 会话——条目按会话读；信封的 `session` 由铸造器持（装配按会话实例构造，两处同源）。 */
   readonly session: SessionId
   /** 模型名——随每次调用送模型域。 */
@@ -292,7 +294,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   const runtime: LoopRuntime = {
     session: deps.session,
     model: deps.model,
-    systemPrompt: buildSystemPrompt(deps.prompt),
+    systemPrompt: buildSystemPrompt(deps.prompt, deps.purpose, deps.consultationAvailable),
     gateway: deps.gateway,
     tools: deps.tools,
     records: deps.records,

@@ -68,7 +68,7 @@ import { tokenLabel } from './components/lines.ts'
  */
 function toolNameOf(name: string): string {
   const external = parseMcpToolName(name)
-  return external === undefined ? name : mcpToolLabel(external)
+  return external === undefined ? name === 'consult_arcane' ? '咨询 Arcane' : name : mcpToolLabel(external)
 }
 
 // ══ 记录区（三类行）══════════════════════════════════════════════════

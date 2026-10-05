@@ -1081,8 +1081,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   function settleStop(run: RunRecord, note = run.reclaimNote): void {
     if (note === undefined && run.ended !== undefined && !run.reclaimPending && run.reclaimNote === undefined &&
       run.session !== null && run.executionId !== undefined && !storeClosed && !settledRuns.has(run)) {
-      collaboration.executorExited(run.session, run.executionId, run.ended.why,
-        run.ended.kind === 'crashed' && lastRuns.get(run.session) === run && liveOf(run.session) === undefined)
+      void collaboration.executorExited(run.session, run.executionId, run.ended.why,
+        run.ended.kind === 'crashed' && lastRuns.get(run.session) === run && liveOf(run.session) === undefined).catch(error => options.log?.(`中断回报尚未核实：${String(error)}`))
       settledRuns.add(run)
     }
     const waiting = stopWaiters.get(run)
@@ -1417,6 +1417,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       const member=command.member===undefined?undefined:work===undefined?undefined:store.collaboration.listMembers(work.collaborationId).find(one=>one.agentId===command.member)
       const session=command.member===undefined?origin:member?.sessionId
       if(session==null){conn.link.send({t:'line',text:'当前输入目标不存在，未修改'});return}
+      if(member?.purpose==='consultation' && command.action!=='list'){conn.link.send({t:'line',text:'咨询详情只供查看；相关纠正请补充给原工作'});return}
       const inputs=store.serviceFor(session).inputs
       let note:string|undefined
       if(command.action==='edit')note=inputs.edit(command.ref,command.revision,command.input)?'已保存未消费输入':'输入已消费或已改变，未修改'
@@ -2073,8 +2074,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         if ((conn.selectedSession) === shared.originSessionId) conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event })
       }
     }
+    if (shared !== undefined && event.kind === 'turn.end' && event.data.reason === 'settled' && !event.data.continues) {
+      void collaboration.settled(event.session!, event.turn).catch(error => options.log?.(`咨询回报尚未核实：${String(error)}`))
+    }
     if (shared !== undefined && ((event.kind === 'turn.end' && event.data.reason === 'error') || event.kind === 'error')) {
-      collaboration.failed(event.session!, event.kind === 'error' ? event.data.message : '成员本轮执行失败，需要核对停点')
+      void collaboration.failed(event.session!, event.kind === 'error' ? event.data.message : '成员本轮执行失败，需要核对停点').catch(error => options.log?.(`失败回报尚未核实：${String(error)}`))
     }
     if (shared !== undefined && ['agent.state', 'turn.start', 'turn.end', 'tool.decision.request', 'tool.decision', 'message.assistant', 'message.user', 'model.usage'].includes(event.kind)) {
       collaboration.changed()

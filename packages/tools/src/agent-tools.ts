@@ -1,7 +1,7 @@
 import type { CollaborationClient, CollaborationRequest, MessagePart } from '@magic/contracts'
 import type { ToolDefinition } from './registry.ts'
 
-export const AGENT_TOOL_NAMES = ['agent_list', 'agent_spawn', 'agent_message', 'agent_wait', 'agent_control'] as const
+export const AGENT_TOOL_NAMES = ['agent_list', 'agent_spawn', 'agent_message', 'agent_wait', 'agent_control', 'consult_arcane'] as const
 const text = { type: 'string', minLength: 1 } as const
 const strings = { type: 'array', items: text } as const
 const bodySchema = { type: 'array', minItems: 1, items: {
@@ -16,6 +16,12 @@ const modelSchema = { type: 'object', properties: { alias: { enum: ['default', '
 /** 工具只呈现模型入口；sender、工作区、授权与当前委派由宿主绑定。 */
 export function defineAgentTools(client: CollaborationClient): readonly ToolDefinition[] {
   return [
+    tool('consult_arcane', '就具体问题请 Arcane 在后台只读查证并给建议。仅提交相关材料或原始引用；立即返回受理标识，可继续独立步骤，依赖意见时用 agent_wait，撤回复用 agent_control。重试复用 operationId。',
+      { operationId: text, question: text, body: bodySchema, reasoning: modelSchema.properties.reasoning }, ['operationId', 'question'], args => ({
+        action: 'consult', operationId: required(args, 'operationId'), question: required(args, 'question'),
+        ...(args.body === undefined ? {} : { body: body(args.body) }),
+        ...(args.reasoning === undefined ? {} : { reasoning: reasoning(args.reasoning) }),
+      })),
     tool('agent_list', '查看本次协作的成员、明确委派和等待；不创建成员、不启动查看对象。', {}, [], () => ({ action: 'list' })),
     tool('agent_spawn', '分出需要独立上下文的一份工作。说明职责、修改范围、结果和约束；成员继承本工作区，先接受再执行。重试复用 operationId。',
       { operationId: text, name: text, role: text, responsibility: text, scope: text, body: bodySchema, model: modelSchema, modelReason: text },
@@ -53,10 +59,10 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
     return { spec: { name, summary, parameters: { type: 'object', properties, required: requiredFields, additionalProperties: false }, danger: { level: 'light' } },
       async run(args) {
         try {
-          if (Object.keys(args).some(key => !(key in properties))) throw new Error('包含未声明参数；身份、授权和工作区不能由消息指定')
+          if (Object.keys(args).some(key => !Object.hasOwn(properties, key))) throw new Error('包含未声明参数；身份、授权和工作区不能由消息指定')
           const request = parse(args)
           const reply = await client.request(request)
-          return reply.ok ? { ok: true, output: JSON.stringify(reply.value),
+          return reply.ok ? { ok: true, output: (request.action === 'consult' ? '咨询受理回执（不表示顾问已完成）：\n' : '') + JSON.stringify(reply.value),
             ...(request.action === 'wait' && object(reply.value) && reply.value.ok === true
               && object(reply.value.wait) && reply.value.wait.state === 'waiting' ? { halt: true as const } : {}),
           } : { ok: false, output: reply.reason }
@@ -112,10 +118,24 @@ function body(value: unknown): readonly MessagePart[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error('body 须是有序正文数组')
   return value.map(part => {
     if (!object(part)) throw new Error('正文项须是对象')
+    if (Object.keys(part).some(key => !['kind', 'text', 'ref', 'label'].includes(key))) throw new Error('正文项包含未声明字段')
     if (part.kind === 'text') return { kind: 'text', text: required(part, 'text') }
-    if (part.kind === 'entry' && object(part.ref)) return { kind: 'entry', ref: { sessionId: required(part.ref, 'sessionId'), entryId: number(part.ref, 'entryId') },
-      ...(optional(part, 'label') === undefined ? {} : { label: optional(part, 'label')! }),
+    if (part.kind === 'entry' && object(part.ref)) {
+      if (Object.keys(part.ref).some(key => !['sessionId', 'entryId'].includes(key))) throw new Error('记录引用包含未声明字段')
+      return { kind: 'entry', ref: { sessionId: required(part.ref, 'sessionId'), entryId: number(part.ref, 'entryId') },
+        ...(optional(part, 'label') === undefined ? {} : { label: optional(part, 'label')! }),
+      }
     }
     throw new Error('正文项只接受 text 或可回查记录引用 entry')
   })
+}
+
+function reasoning(value: unknown): NonNullable<Extract<CollaborationRequest, { action: 'consult' }>['reasoning']> {
+  if (!object(value) || Object.keys(value).some(key => !['mode', 'level', 'budgetTokens'].includes(key))) throw new Error('reasoning 只接受独立思考设置')
+  switch (value.mode) {
+    case 'default': case 'off': return { mode: value.mode }
+    case 'level': return { mode: 'level', level: required(value, 'level') }
+    case 'budget': return { mode: 'budget', budgetTokens: number(value, 'budgetTokens') }
+    default: throw new Error('reasoning.mode 无效')
+  }
 }
