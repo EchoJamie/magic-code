@@ -13,7 +13,7 @@ import { terminalOptions } from '../src/run/terminal.ts'
 import { loadConfig } from '../src/config.ts'
 import { magicAt, removeDir, tempDir } from './tmp.ts'
 
-export type ModelReply = { readonly text: string } | { readonly tool: string; readonly args: Record<string, unknown> }
+export type ModelReply = ({ readonly text: string } | { readonly tool: string; readonly args: Record<string, unknown> } | { readonly tools: readonly { readonly tool: string; readonly args: Record<string, unknown> }[] }) & { readonly finish?: string; readonly usage?: Record<string, number>; readonly httpStatus?: number; readonly malformed?: true }
 export type HttpCall = { readonly at: number; readonly model: string; readonly index: number; readonly body: Record<string, unknown> }
 export function latch() {
   let release!: () => void
@@ -32,6 +32,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const events: KernelEvent[] = []
   const commands: Command[] = []
   const lines: string[] = []
+  const processStarts: { pid: number | undefined; session: string | null; at: number; identity: string }[] = []
   const processExits: { pid: number | undefined; at: number; reason: string }[] = []
   const closedViews: { at: number; livePids: (number | undefined)[]; exitedPids: (number | undefined)[] }[] = []
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
@@ -42,12 +43,15 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       const call = { at: Date.now(), body, model, index: calls.filter(one => one.model === model).length }
       calls.push(call)
       const reply = await respond(call)
+      if (reply.httpStatus !== undefined) return Response.json({ error: { message: 'controlled upstream failure', type: 'controlled' } }, { status: reply.httpStatus })
+      if (reply.malformed) return new Response('data: {invalid-json}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      const toolCalls = 'tools' in reply ? reply.tools : 'tool' in reply ? [reply] : []
       const delta = 'text' in reply ? { content: reply.text } : {
-        tool_calls: [{ index: 0, id: `controlled-${model}-${call.index}`, type: 'function', function: { name: reply.tool, arguments: JSON.stringify(reply.args) } }],
+        tool_calls: toolCalls.map((one, index) => ({ index, id: `controlled-${model}-${call.index}-${index}`, type: 'function', function: { name: one.tool, arguments: JSON.stringify(one.args) } })),
       }
       const chunk = (delta: unknown, finish?: string) => `data: ${JSON.stringify({ id: `response-${model}-${call.index}`, object: 'chat.completion.chunk', created: 1, model,
-        choices: [{ index: 0, delta, ...(finish === undefined ? {} : { finish_reason: finish }) }] })}\n\n`
-      return new Response(chunk(delta) + chunk({}, 'text' in reply ? 'stop' : 'tool_calls') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+        ...(reply.usage === undefined ? {} : { usage: reply.usage }), choices: [{ index: 0, delta, ...(finish === undefined ? {} : { finish_reason: finish }) }] })}\n\n`
+      return new Response(chunk(delta) + chunk({}, reply.finish ?? ('text' in reply ? 'stop' : 'tool_calls')) + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
     } catch (error) {
       errors.push(String(error))
       return new Response(String(error), { status: 500 })
@@ -61,6 +65,10 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const launcher = createProcessLauncher()
   const started = await startManager({ paths, dataDir, magic, launch: { spawn(request) {
     const child = launcher.spawn({ ...request, ...(options.allowAll === true ? { allowAll: true } : {}) })
+    if (process.env['MAGIC_COLLAB_RUN_EVIDENCE']) {
+      const identity = Bun.spawnSync(['/bin/ps', '-p', String(child.pid), '-o', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().replace(/--token \S+/g, '--token [redacted]')
+      processStarts.push({ pid: child.pid, session: request.session, at: Date.now(), identity })
+    }
     child.onExit(reason => processExits.push({ pid: child.pid, at: Date.now(), reason }))
     return child
   } },
@@ -152,6 +160,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
         const dir = resolve(evidence); mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, events, commands, errors, lines, processExits, closedViews,
           windows: windows.map(window => ({ conn: window.client.conn, events: window.events, commands: window.commands })),
+          processStarts, globalRemainingForSandbox: Bun.spawnSync(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().split('\n').filter(line => line.includes(root)).map(line => line.replace(/--token \S+/g, '--token [redacted]')),
           remainingExecutors: manager.executors(), socket: manager.socketPath }, null, 2))
       }
       store.close(); server.stop(true)

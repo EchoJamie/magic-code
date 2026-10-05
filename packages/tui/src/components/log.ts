@@ -1079,6 +1079,7 @@ const LIST_TOOLS: readonly string[] = ['ls', 'grep', 'glob']
 function summaryOf(row: Extract<LogRow, { kind: 'tool' }>): string {
   const lines = nonEmptyLines(row.output)
   if (lines.length === 0) return '完成'
+  if (row.name === '咨询 Arcane') return lines[0]!
 
   // 输出本来就是 diff（`exec` 跑 `git diff` 那类）——报增删行数比报末行有用
   if (looksLikeDiff(lines)) return diffStat(diffRowsOf(lines))
@@ -1155,6 +1156,7 @@ const isScalar = (value: unknown): value is string | number | boolean =>
  * 值之间用 `·`（与状态行分栏同一个记号）：它是**并列的几段**，不是一句话里的标点。
  */
 const KEY_ARGS: Readonly<Record<string, readonly string[]>> = {
+  '咨询 Arcane': ['question'],
   exec: ['cmd'],
   read: ['path'],
   write: ['path'],

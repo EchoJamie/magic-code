@@ -10,6 +10,8 @@ export type AgentIdentity = {
   readonly sessionId: SessionId
   readonly name: string
   readonly role: string
+  /** 宿主绑定的用途，普通角色与模型参数不能改变。 */
+  readonly purpose?: 'consultation'
   readonly responsibility?: string
   readonly model: AgentModelConfig
   readonly workspace: readonly string[]
@@ -157,7 +159,10 @@ export type DelegateInput = OperationInput & {
   readonly authorization: readonly EntryReference[]
   readonly parentDelegationId?: DelegationId
 }
+export const CONSULTATION_TOOL_NAMES: readonly string[] = ['read', 'grep', 'glob', 'ls', 'history_read', 'plan_read', 'web_fetch']
+
 export type SpawnAgentInput = Omit<DelegateInput, 'assigneeId'> & {
+  readonly purpose?: 'consultation'
   readonly sessionId: SessionId
   readonly name: string
   readonly role: string
@@ -187,7 +192,7 @@ export interface CollaborationRecords {
   getDelegation(delegationId: DelegationId): Delegation | undefined
   listDelegations(collaborationId: CollaborationId): readonly Delegation[]
   respondToDelegation(actor: AgentId, input: OperationInput & { readonly delegationId: DelegationId; readonly response: 'accept' | 'reject' | 'clarify'; readonly body?: readonly MessagePart[]; readonly reason?: string }): { readonly delegation: Delegation; readonly accepted: boolean; readonly reason?: string }
-  deliver(actor: AgentId, input: OperationInput & { readonly delegationId: DelegationId; readonly body: readonly MessagePart[] }): AgentMessage
+  deliver(actor: AgentId, input: OperationInput & { readonly delegationId: DelegationId; readonly body: readonly MessagePart[]; readonly reason?: string }): AgentMessage
   receiveDelivery(actor: AgentId, delegationId: DelegationId, at: Timestamp): Delegation
   send(actor: AgentId, input: SendMessageInput): AgentMessage
   readMessage(actor: AgentId, messageId: MessageId): AgentMessage | undefined

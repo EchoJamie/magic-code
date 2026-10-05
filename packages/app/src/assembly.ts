@@ -1,3 +1,4 @@
+import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import { createCollaborationBoundary } from './collaboration-boundary.ts'
 /**
  * 装配根 —— 全链的五步（技术方案 · 领域划分 · 装配视图）。
@@ -732,7 +733,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 它是实现级常量的装配期覆盖，同 `context` 那个先例）。
    */
   const mcp: McpServers = createMcpServers({
-    servers: loaded.config.mcp?.servers ?? {},
+    servers: savedAgent?.purpose === 'consultation' ? {} : loaded.config.mcp?.servers ?? {},
     // **同一本账**（U50）——stdio 那几条服务器的进程组也记进去（见 `ledger` 的注）
     ledger,
     ...(options.mcpTimeouts?.connectTimeoutMs === undefined
@@ -1386,6 +1387,7 @@ export function assemble(options: AssembleOptions): Assembly {
       }
       if (models !== undefined) models = registryOf(identity.model)
     }
+    const consulting = identity?.purpose === 'consultation'
     const records = recordsStore.serviceFor(session)
     const stamper = createStamper({ records, session, now })
     // 闸门按会话各一份（裁决的账按会话分列），**账本却是工作区级的那一个**（跨会话共用）。
@@ -1419,10 +1421,17 @@ export function assemble(options: AssembleOptions): Assembly {
       session,
       nearEntries: options.context?.nearEntries,
     })
-    const planTools = definePlanTools(planReader)
+    const origin = consulting && identity.createdBy !== undefined ? recordsStore.collaboration.getAgent(identity.createdBy) : undefined
+    if (consulting && origin === undefined) throw new Error('咨询缺少可信的发起会话')
+    const originRole = origin?.role ? loaded.config.agentRoles?.[origin.role] : undefined
+    if (origin?.role && originRole === undefined) throw new Error(`未知发起角色「${origin.role}」`)
+    const sourceReader = origin === undefined ? planReader : createPlanReader({
+      records: recordsStore.serviceFor(origin.sessionId), session: origin.sessionId, nearEntries: options.context?.nearEntries,
+    })
+    const planTools = definePlanTools(sourceReader)
     const currentRole = (): AgentRoleConfig | undefined => {
       const actor = recordsStore.collaboration.agentForSession(session)
-      if (!actor?.role) return undefined
+      if (actor?.purpose === 'consultation' || !actor?.role) return undefined
       const role = Object.hasOwn(loaded.config.agentRoles ?? {}, actor.role) ? loaded.config.agentRoles?.[actor.role] : undefined
       if (role === undefined) throw new Error(`未知角色「${actor.role}」`)
       return role
@@ -1433,7 +1442,7 @@ export function assemble(options: AssembleOptions): Assembly {
       tools: () => currentRole()?.tools,
       now, changed: () => options.collaborationChanged?.(),
     })
-    const agentTools = options.collaboration === undefined ? [] : defineAgentTools({
+    const agentTools = consulting || options.collaboration === undefined ? [] : defineAgentTools({
       request: (request) => {
         coordination?.actor()
         return options.collaboration!(session, request)
@@ -1441,19 +1450,20 @@ export function assemble(options: AssembleOptions): Assembly {
     })
 
     const toolVisible = (name: string): boolean => {
+      if (consulting) return CONSULTATION_TOOL_NAMES.includes(name) && (originRole?.tools === undefined || originRole.tools.includes(name))
       const allowed = currentRole()?.tools
-      return allowed === undefined || allowed.includes(name) || agentTools.some(tool => tool.spec.name === name)
+      return allowed === undefined || allowed.includes(name) || (name.startsWith('agent_') && agentTools.some(tool => tool.spec.name === name))
     }
     const rawTools = createToolRuntime({
       beginExecution: (call) => {
-        if (!toolVisible(call.name)) throw new Error(`角色没有开放工具 ${call.name}`)
+        if (!toolVisible(call.name) || (consulting && call.external !== undefined)) throw new Error(`当前执行者没有开放工具 ${call.name}`)
         return coordination?.begin(call) ?? (() => undefined)
       },
       sandbox,
       workspace,
       gate: {
         ...gate,
-        decide: (call, context, ref) => toolVisible(call.name)
+        decide: (call, context, ref) => toolVisible(call.name) && (!consulting || call.external === undefined)
           ? gate.decide(call, context, ref) : Promise.resolve('reject'),
       },
       sink,
@@ -1474,7 +1484,8 @@ export function assemble(options: AssembleOptions): Assembly {
       //    绑的就是本条会话），与「现取」不冲突——这一束本来就是本条链自己的。
       // ④ **取网页**（U72）：出网与提炼两样都不在默认七件的射程里，故从这条出口进来
       //    （造一次、用一路——缓存挂在它身上，见那一件自己的注）。
-      tools: () => [skillTool, ...planTools, webFetchTool, ...mcpTools(), ...agentTools],
+      tools: () => consulting ? [...planTools.filter(tool => CONSULTATION_TOOL_NAMES.includes(tool.spec.name)), webFetchTool]
+        : [skillTool, ...planTools, webFetchTool, ...mcpTools(), ...agentTools],
 
       // **这台机器上有没有 `trash`**（U77）——删除那一类被内核拒时，回执据此指路。
       //
@@ -1547,7 +1558,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const roleRules: ProjectRules = {
       load(targets) {
         validateRoleTools()
-        const role = currentRole()
+        const role = consulting ? originRole : currentRole()
         const actor = recordsStore.collaboration.agentForSession(session)
         const base = role?.guidanceFiles === undefined ? projectRules.load(targets) : createProjectRules({
           workspace,
@@ -1561,7 +1572,7 @@ export function assemble(options: AssembleOptions): Assembly {
         const add = (path: string, name: string, text: string) => documents.push({
           kind: 'source', path, name, text, root: null, scope: null, paths: [],
         })
-        if (role !== undefined) add(`${loaded.path}#agentRoles.${actor!.role}`, `角色：${role.name}`, role.instructions)
+        if (role !== undefined) add(`${loaded.path}#agentRoles.${consulting ? origin!.role : actor!.role}`, `角色：${role.name}`, role.instructions)
         if (actor?.responsibility) add(`agent:${actor.agentId}`, '本次职责', actor.responsibility)
         const catalog = role?.skills?.length ? skills.discover().skills : []
         for (const reference of role?.skills ?? []) {
@@ -1597,20 +1608,29 @@ export function assemble(options: AssembleOptions): Assembly {
             .find(one => one.assigneeId === actor.agentId && one.state === 'accepted')
         try {
           const stream = (models ?? fixed).stream(request, streamOptions)
+          let responseText = ''
           const events = (async function* () {
             for await (const event of stream.events) {
+              if (event.kind === 'model.delta' && event.data.channel === 'text') responseText += event.data.text
               yield event.kind === 'model.usage' && delegation !== undefined
                 ? { ...event, data: { ...event.data, delegationId: delegation.delegationId } }
                 : event
             }
           })()
-          return { ...stream, events, result: stream.result.finally(() => finish?.()) }
+          const result = stream.result.then(value => {
+            if (consulting && (!value.complete || value.finishReason === 'length' || value.finishReason === 'content-filter' || value.finishReason === 'error' || value.finishReason === 'other')) throw new Error(`咨询回复未完整结束（${value.finishReason ?? '流中断'}）`)
+            if (consulting && !value.toolCalls?.length && responseText.trim() === '') throw new Error('咨询返回空正文，未形成建议')
+            return value
+          }).finally(() => finish?.())
+          return { ...stream, events, result }
         } catch (error) { finish?.(); throw error }
       },
     }
 
     const service = createConversationSession({
       collaboration: coordination?.boundary,
+      purpose: identity?.purpose,
+      consultationAvailable: agentTools.length > 0 && toolVisible('consult_arcane'),
       session,
       // **开局的模型名**——缺省连接 ＋ 它默认的模型，随每次调用送模型域
       //（技术方案：模型名取自请求）。
@@ -1825,7 +1845,8 @@ export function assemble(options: AssembleOptions): Assembly {
     }
 
     let result: ModelSwitchResult
-    if (!checked.ok) result = checked
+    if (recordsStore.collaboration.agentForSession(chain.session)?.purpose === 'consultation') result = { ok: false, reason: '咨询固定使用启动时解析的 Arcane，不开放成员换模' }
+    else if (!checked.ok) result = checked
     else {
       try {
         const candidate = registryOf(checked.selection)

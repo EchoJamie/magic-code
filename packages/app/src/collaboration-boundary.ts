@@ -1,3 +1,4 @@
+import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import type { AgentIdentity, AgentModelConfig, CollaborationRecords, ToolCall } from '@magic/contracts'
 import type { CollaborationBoundary } from '@magic/conversation'
 
@@ -62,6 +63,7 @@ export function createCollaborationBoundary(input: {
     admit(call) {
       const state = binding()
       if (state === undefined) return undefined
+      if (call !== undefined && state.self.purpose === 'consultation' && (!CONSULTATION_TOOL_NAMES.includes(call.name) || call.external !== undefined)) return `咨询只允许受限只读工具：${call.name}`
       if (call !== undefined && !call.name.startsWith('agent_')) {
         const allowed = input.tools()
         if (allowed !== undefined && !allowed.includes(call.name)) return `角色没有开放工具 ${call.name}`

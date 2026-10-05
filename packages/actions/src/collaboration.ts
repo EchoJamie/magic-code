@@ -24,6 +24,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
       try {
         const actor = records.getAgent(actorId)
         if (actor === undefined) throw new Error('执行身份不存在')
+        if (actor.purpose === 'consultation') throw new Error('咨询执行者不能调用协作或再次咨询')
         if ('operationId' in request) request = { ...request, operationId: `${actorId}:${request.operationId}` }
         const at = deps.now()
         let collaboration = actor.collaborationId === undefined ? undefined : records.getCollaboration(actor.collaborationId)
@@ -39,11 +40,13 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
           } }
         }
         if (collaboration === undefined) {
-          if (request.action !== 'spawn') throw new Error('这条会话尚未展开协作')
+          if (request.action !== 'spawn' && request.action !== 'consult') throw new Error('这条会话尚未展开协作')
           // 配置未通过时尚无实际派生，原会话仍保持普通工作。
           initialModel = await deps.resolveModel({ defaults: actor.model,
-            ...(request.role === undefined ? {} : { role: request.role }),
-            ...(request.model === undefined ? {} : { model: request.model }),
+            ...(request.action === 'consult' ? { model: { alias: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
+              ...(request.role === undefined ? {} : { role: request.role }),
+              ...(request.model === undefined ? {} : { model: request.model }),
+            }),
           })
           collaboration = records.openCollaboration(actorId, {
             operationId: `collaboration:${actorId}`, at, origin: await deps.origin(actor),
@@ -54,41 +57,60 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         const authorized = records.checkAdmission(actorId, accepted?.delegationId, 'coordination')
         // 停止后仍允许保存原委派结果与只读，不借迟到结果恢复执行。
         if (!authorized.allowed && !['deliver', 'read'].includes(request.action)) throw new Error(authorized.reason)
-        if (actorId !== collaboration.coordinatorId && accepted === undefined && ['spawn', 'delegate', 'close'].includes(request.action)) throw new Error('先明确接受本次委派，再执行工作或继续派生')
+        if (actorId !== collaboration.coordinatorId && accepted === undefined && ['spawn', 'consult', 'delegate', 'close'].includes(request.action)) throw new Error('先明确接受本次委派，再执行工作或继续派生')
         const source = accepted === undefined ? collaboration.origin : { messageId: accepted.delegationId }
         const authorization = accepted?.authorization ?? [collaboration.origin]
         const scope = accepted === undefined ? {} : { parentDelegationId: accepted.delegationId }
         let value: unknown
         switch (request.action) {
+          case 'consult':
           case 'spawn': {
+            const consulting = request.action === 'consult'
             const existing = records.operation(request.operationId)
             if (existing?.kind === 'spawn') {
-              value = { agent: records.getAgent(existing.agentId), delegation: records.getDelegation(existing.delegationId) }
+              const agent = records.getAgent(existing.agentId)!
+              const delegation = records.getDelegation(existing.delegationId)!
+              if ((agent.purpose === 'consultation') !== consulting) throw new Error('operationId 已用于另一种派生用途')
+              value = consulting ? { consultationId: delegation.delegationId, advisorAgentId: agent.agentId, state: delegation.state } : { agent, delegation }
               break
             }
             const model = initialModel ?? await deps.resolveModel({ defaults: collaboration.defaultModel,
-              ...(request.role === undefined ? {} : { role: request.role }),
-              ...(request.model === undefined ? {} : { model: request.model }),
+              ...(request.action === 'consult' ? { model: { alias: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
+                ...(request.role === undefined ? {} : { role: request.role }),
+                ...(request.model === undefined ? {} : { model: request.model }),
+              }),
             })
             const spawned = records.spawn(actorId, {
               operationId: request.operationId, at, sessionId: crypto.randomUUID(),
-              name: request.name, role: request.role ?? '', responsibility: request.responsibility,
-              model, scope: request.scope, body: request.modelReason === undefined ? request.body : [...request.body,
-                { kind: 'text', text: `模型选择：${model.alias[0]!.toUpperCase() + model.alias.slice(1)}；任务理由：${request.modelReason}` }], source, authorization, ...scope,
+              ...(request.action === 'consult' ? {
+                name: '咨询 Arcane', role: '', purpose: 'consultation' as const, responsibility: '只读查证并提供建议，原执行者负责核验和实施',
+                scope: request.question, body: [{ kind: 'text' as const, text: request.question }, ...(request.body ?? [])],
+              } : { name: request.name, role: request.role ?? '', responsibility: request.responsibility, scope: request.scope,
+                body: request.modelReason === undefined ? request.body : [...request.body, { kind: 'text' as const, text: `模型选择：${model.alias[0]!.toUpperCase() + model.alias.slice(1)}；任务理由：${request.modelReason}` }],
+              }), model, source, authorization, ...scope,
             })
+            if (consulting) {
+              const response = records.respondToDelegation(spawned.agent.agentId, { operationId: `${request.operationId}:accept`,
+                at, delegationId: spawned.delegation.delegationId, response: 'accept' })
+              if (!response.accepted) throw new Error(response.reason ?? '咨询未能受理')
+            }
             try {
               await deps.start(spawned.agent)
               deps.wake(spawned.agent.agentId)
             } catch (error) {
               const reason = `成员启动失败：${messageOf(error)}`
-              records.respondToDelegation(spawned.agent.agentId, {
+              if (consulting) {
+                const message = records.deliver(spawned.agent.agentId, { operationId: `${request.operationId}:failed`, at: deps.now(),
+                  delegationId: spawned.delegation.delegationId, reason: `咨询未完成：${reason}`, body: [{ kind: 'text', text: `咨询未完成：${reason}` }] })
+                for (const recipient of message.recipients) deps.wake(recipient)
+              } else records.respondToDelegation(spawned.agent.agentId, {
                 operationId: `${request.operationId}:failed`, at: deps.now(),
                 delegationId: spawned.delegation.delegationId, response: 'reject', reason,
               })
               records.setReachability(spawned.agent.agentId, 'suspended')
               throw new Error(reason)
             }
-            value = spawned
+            value = consulting ? { consultationId: spawned.delegation.delegationId, advisorAgentId: spawned.agent.agentId, state: 'started' } : spawned
             break
           }
           case 'delegate': {

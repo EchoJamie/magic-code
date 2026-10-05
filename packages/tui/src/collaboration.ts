@@ -12,7 +12,13 @@ export const delegationState: Record<Delegation['state'], string> = {
   delivered: '已回报，待核验', received: '结果已收下', cancelled: '已撤回',
 }
 
+const consultationEnded = (member: CollaborationMemberView): boolean => member.agent.purpose === 'consultation' && member.delegation !== undefined && ['delivered', 'received', 'cancelled'].includes(member.delegation.state)
+
 export function memberState(member: CollaborationMemberView): string {
+  if (consultationEnded(member) && member.delegation !== undefined) {
+    return member.delegation.state === 'cancelled' ? `已撤回${member.delegation.reason ? `：${member.delegation.reason}` : ''}`
+      : member.delegation.reason ?? (member.delegation.state === 'received' ? '建议已收下，采纳需核验' : '已完成，建议待核验')
+  }
   if (member.pendingDecisions > 0) return `需要你：${member.runtime?.action ?? `${member.pendingDecisions} 项操作待审批`}`
   if (member.runtime?.state === 'stopping') return '正在停止，收尾待确认'
   if (member.agent.reachability === 'suspended') return '执行中断，待处理'
@@ -30,9 +36,11 @@ export function memberState(member: CollaborationMemberView): string {
 export function collaborationSummary(snapshot: CollaborationView | undefined): string | undefined {
   if (snapshot?.collaboration === undefined) return undefined
   if (snapshot.members.length <= 1 && snapshot.delegations.length === 0) return undefined
+  const consultationOnly = snapshot.members.filter(one => one.agent.agentId !== snapshot.collaboration?.coordinatorId).every(one => one.agent.purpose === 'consultation')
+  const label = consultationOnly ? '咨询 Arcane' : '协作'
   const state = snapshot.collaboration.state
-  if (state === 'closed') return '协作 · 已收尾，结果可查看'
-  const members = snapshot.members
+  if (state === 'closed') return `${label} · 已收尾，结果可查看`
+  const members = snapshot.members.filter(one => !consultationEnded(one))
   const running = members.filter((one) => one.runtime?.state === 'running').length
   const needs = members.filter((one) => one.pendingDecisions > 0 || one.delegation?.state === 'clarification')
   const waiting = members.filter((one) => one.waiting?.state === 'waiting').length
@@ -49,20 +57,20 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
     stopping ? '停止收尾中' : '',
     state === 'stopped' ? '已请求停止，查看停点' : state === 'closing' ? '正在核对收尾' : '',
   ].filter(Boolean)
-  return clean(`协作 · ${facts.join(' · ') || '暂无执行，结果待整合'}`)
+  return clean(`${label} · ${facts.join(' · ') || '暂无执行，结果待整合'}`)
 }
 
 export function collaborationHeader(view: ShellView): readonly string[] {
   const summary = collaborationSummary(view.collaboration)
   if (summary === undefined) return []
   const target = view.collaboration?.members.find((one) => one.agent.agentId === view.inputMember)
-  return [summary, clean(`输入给：${view.inputMember === undefined ? '整件工作（共同补充）' : target?.agent.name ?? '成员已不可用'}${view.dock.kind === 'input' ? ' · Tab 查看协作' : ''}`)]
+  return [summary, clean(`输入给：${view.inputMember === undefined ? '整件工作（共同补充）' : target?.agent.name ?? '成员已不可用'}${view.dock.kind === 'input' ? ' · Tab 查看工作详情' : ''}`)]
 }
 
 /** 仅投影屏上的整体状态；控制范围仍由明确命令决定。 */
 export function collaborationStatus(view: ShellView): ShellStatus {
   if (view.collaboration?.collaboration === undefined || view.dock.kind === 'decision') return view.status
-  const members = view.collaboration.members
+  const members = view.collaboration.members.filter(one => !consultationEnded(one))
   const needs = members.reduce((sum, member) => sum + member.pendingDecisions, 0)
   if (needs > 0) return { ...view.status, state: 'waiting', amount: `${needs} 项` }
   if (members.some((member) => member.runtime?.state === 'running' || member.runtime?.state === 'stopping' || member.waiting?.state === 'waiting')) {

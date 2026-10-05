@@ -45,6 +45,35 @@ export function createManagedCollaboration(host: CollaborationHost) {
     changed,
   })
 
+  const completing = new Set<string>()
+  async function completeConsultation(session: string, reason?: string, turn?: number): Promise<void> {
+    const agent = records.agentForSession(session)
+    if (agent?.purpose !== 'consultation' || agent.collaborationId === undefined || completing.has(session)) return
+    const delegation = records.listDelegations(agent.collaborationId).find(d => d.assigneeId === agent.agentId && d.acceptedAt !== undefined)
+    if (delegation === undefined || delegation.deliveryMessageId !== undefined) return
+    completing.add(session)
+    try {
+      let entryId: number | undefined
+      if (reason === undefined) {
+        for await (const event of host.store.serviceFor(session).readEvents(session)) {
+          if (event.kind === 'message.assistant' && event.turn === turn) entryId = event.data.entry
+        }
+        if (entryId === undefined) reason = '未形成完整的顾问正文'
+      }
+      const result = records.deliver(agent.agentId, { operationId: `consultation:${delegation.delegationId}:terminal`,
+        at: host.now(), delegationId: delegation.delegationId,
+        ...(reason === undefined ? {} : { reason: `咨询未完成：${reason}` }),
+        body: reason === undefined ? [{ kind: 'text', text: '咨询 Arcane 已完成；这是顾问建议，采纳前请核对最新现场。' },
+          { kind: 'entry', ref: { sessionId: session, entryId: entryId! }, label: '顾问最终建议' }]
+          : [{ kind: 'text', text: `咨询 Arcane 未完成：${reason}。不能将半截内容当成建议或绕过依赖要求。` }],
+      })
+      records.setReachability(agent.agentId, 'historical')
+      changed()
+      if (delegation.state !== 'cancelled') for (const recipient of result.recipients) wake(recipient)
+      await host.cancel([session])
+    } finally { completing.delete(session) }
+  }
+
   function admission(agent: AgentIdentity): boolean {
     if (closing || !host.accepting() || agent.collaborationId === undefined) return false
     const active = records.listDelegations(agent.collaborationId).find(d => d.assigneeId === agent.agentId && d.state === 'accepted')
@@ -86,7 +115,13 @@ export function createManagedCollaboration(host: CollaborationHost) {
     const outcomes = ids.flatMap(id => records.listWaits(id))
     for (const wait of outcomes) if (wait.state !== 'waiting' && wait.handledAt === undefined) wake(wait.agentId)
     for (const id of ids) for (const member of records.listMembers(id)) {
-      if (records.inbox(member.agentId).some(i => i.state === 'pending' && records.readMessage(member.agentId, i.messageId)?.purpose !== 'receipt')) wake(member.agentId)
+      if (records.inbox(member.agentId).some(i => {
+        if (i.state !== 'pending') return false
+        const message = records.readMessage(member.agentId, i.messageId)
+        if (message === undefined || message.purpose === 'receipt') return false
+        return message.purpose !== 'delivery' || records.getAgent(message.senderId)?.purpose !== 'consultation'
+          || message.delegationId === undefined || records.getDelegation(message.delegationId)?.state !== 'cancelled'
+      })) wake(member.agentId)
     }
     const waits = outcomes.filter(w => w.state === 'waiting')
     const live = new Set(waits.map(w => w.waitId))
@@ -145,9 +180,11 @@ export function createManagedCollaboration(host: CollaborationHost) {
   }
   return {
     view, changed,
-    failed(session: string, reason: string) {
+    settled(session: string, turn: number | null) { return completeConsultation(session, undefined, turn ?? undefined) },
+    async failed(session: string, reason: string) {
       const agent = records.agentForSession(session)
       if (agent?.collaborationId === undefined) return
+      if (agent.purpose === 'consultation') { await completeConsultation(session, reason); return }
       for (const wait of records.interruptWaits(agent.agentId, reason)) if (wait.agentId !== agent.agentId) wake(wait.agentId)
       changed()
     },
@@ -183,6 +220,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
           const target = command.member === undefined ? records.getAgent(collaboration.coordinatorId)
             : records.listMembers(collaboration.collaborationId).find(a => a.agentId === command.member)
           if (target === undefined) throw new Error('成员不属于当前工作')
+          if (target.purpose === 'consultation') throw new Error('咨询详情只供查看；相关纠正请补充给原工作')
           if (!admission(target)) throw new Error('这份工作已停止；请先明确继续')
           const shared = command.shared === true || command.member === undefined
           const receiver = shared ? records.getAgent(collaboration.coordinatorId)! : target
@@ -206,6 +244,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
         case 'collaboration.configure': {
           const actor = command.member === undefined ? undefined : records.listMembers(collaboration.collaborationId).find(a => a.agentId === command.member)
           if (command.member !== undefined && actor === undefined) throw new Error('成员不属于当前工作')
+          if (actor?.purpose === 'consultation') throw new Error('咨询固定使用启动时解析的 Arcane，不开放成员换模')
           const selection = await resolveManagedModel({ magic: host.magic, defaults: actor?.model ?? collaboration.defaultModel, model: command.model })
           if (actor === undefined) records.updateDefaultModel(collaboration.collaborationId, selection)
           else { await host.configure(actor.sessionId, selection); records.updateAgent(actor.agentId, { model: selection }) }
@@ -224,10 +263,20 @@ export function createManagedCollaboration(host: CollaborationHost) {
     },
     async recover() {
       // 新宿主先留下旧执行停点，再开放宿主本身；旧协作仍为 stopped。
-      records.stop({ kind: 'host' }, '宿主中断，等待用户明确继续', host.now())
+      const interruption = '宿主中断，等待用户明确继续'
+      records.stop({ kind: 'host' }, interruption, host.now())
+      const unfinished: AgentIdentity[] = []
+      for (const id of await collaborations()) for (const agent of records.listMembers(id)) {
+        if (agent.purpose === 'consultation' && records.listDelegations(id).some(d => d.assigneeId === agent.agentId && d.state === 'cancelled' && d.acceptedAt !== undefined && d.reason === interruption && d.deliveryMessageId === undefined)) unfinished.push(agent)
+      }
       records.resume({ kind: 'host' }, host.now())
+      for (const agent of unfinished) {
+        let terminal: Extract<import('@magic/contracts').KernelEvent, { kind: 'turn.end' }> | undefined
+        for await (const event of host.store.serviceFor(agent.sessionId).readEvents(agent.sessionId)) if (event.kind === 'turn.end') terminal = event
+        await completeConsultation(agent.sessionId, terminal?.data.reason === 'settled' && !terminal.data.continues ? undefined : '宿主中断，咨询未完成；不会自动重发', terminal?.turn ?? undefined)
+      }
     },
-    executorExited(session: string, runId: string, reason: string, abnormal = false) {
+    async executorExited(session: string, runId: string, reason: string, abnormal = false) {
       const agent = records.agentForSession(session)
       if (agent?.collaborationId === undefined) return
       if (abnormal) {
@@ -238,6 +287,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
         if (execution.agentId === agent.agentId && execution.runId === runId && execution.state !== 'finished') records.finishExecution(execution.operationId, reason)
       }
       changed()
+      if (abnormal && agent.purpose === 'consultation') await completeConsultation(session, reason)
     },
   }
 }

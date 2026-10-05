@@ -52,7 +52,8 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
     try {
       const reply = await respond(call)
       mark('http-response-released', { model, index: call.index, reply })
-      const delta = 'text' in reply ? { content: reply.text } : { tool_calls: [{ index: 0, id: `stop-${model}-${call.index}`, type: 'function', function: { name: reply.tool, arguments: JSON.stringify(reply.args) } }] }
+      const toolCalls = 'tools' in reply ? reply.tools : 'tool' in reply ? [reply] : []
+      const delta = 'text' in reply ? { content: reply.text } : { tool_calls: toolCalls.map((one, index) => ({ index, id: `stop-${model}-${call.index}-${index}`, type: 'function', function: { name: one.tool, arguments: JSON.stringify(one.args) } })) }
       const chunk = (delta: unknown, finish?: string) => `data: ${JSON.stringify({ id: `stop-${model}-${call.index}`, object: 'chat.completion.chunk', created: 1, model, choices: [{ index: 0, delta, ...(finish ? { finish_reason: finish } : {}) }] })}\n\n`
       return new Response(chunk(delta) + chunk({}, 'text' in reply ? 'stop' : 'tool_calls') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
     } catch (error) { errors.push(String(error)); return new Response(String(error), { status: 500 }) }

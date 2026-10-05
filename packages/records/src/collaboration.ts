@@ -94,7 +94,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       else throw new Error('invalid message part')
     }
   }
-  function addAgent(input: { sessionId: string; name: string; role: string; responsibility?: string; model: AgentIdentity['model']; at: number }, roots: readonly string[], c?: string, createdBy?: string): AgentIdentity {
+  function addAgent(input: { sessionId: string; name: string; role: string; purpose?: 'consultation'; responsibility?: string; model: AgentIdentity['model']; at: number }, roots: readonly string[], c?: string, createdBy?: string): AgentIdentity {
     nonempty(input.sessionId, 'sessionId'); nonempty(input.model.provider, 'provider'); nonempty(input.model.model, 'model')
     run('INSERT INTO sessions(id,at,workspace) VALUES (?,?,?) ON CONFLICT(id) DO NOTHING', input.sessionId, input.at, JSON.stringify(roots))
     const a: AgentIdentity = { agentId: randomUUID(), ...input, workspace: [...roots], reachability: 'active', ...(c ? { collaborationId: c } : {}), ...(createdBy ? { createdBy } : {}) }
@@ -248,7 +248,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       if (old?.kind === 'spawn') return { agent: agent(old.agentId), delegation: delegation(old.delegationId) }
       const c = scopeFor(actor); canAct(actor, c)
       if (api.agentForSession(input.sessionId) || get('SELECT id FROM sessions WHERE id=?', input.sessionId)) throw new Error('spawn requires a new member session')
-      const a = addAgent({ sessionId: input.sessionId, name: input.name, role: input.role, ...(input.responsibility === undefined ? {} : { responsibility: input.responsibility }), model: input.model, at: input.at }, agent(c.coordinatorId).workspace, c.collaborationId, actor)
+      const a = addAgent({ sessionId: input.sessionId, name: input.name, role: input.role, ...(input.purpose === undefined ? {} : { purpose: input.purpose }), ...(input.responsibility === undefined ? {} : { responsibility: input.responsibility }), model: input.model, at: input.at }, agent(c.coordinatorId).workspace, c.collaborationId, actor)
       const d = createDelegation(actor, { ...input, assigneeId: a.agentId })
       // 当前约束按引用带入新成员；原消息发送时的 recipients 保持原值。
       enqueueConstraints(a)
@@ -297,7 +297,7 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
       if (d.assigneeId !== actor || d.acceptedAt === undefined || !['accepted', 'cancelled'].includes(d.state)) throw new Error('delegation not accepted by sender')
       if (d.deliveryMessageId !== undefined) throw new Error('delegation already delivered')
       const m = createMessage(actor, { recipients: [d.delegatorId], purpose: 'delivery', body: input.body, replyTo: d.delegationId, delegationId: d.delegationId, at: input.at }, true)
-      saveDelegation({ ...d, state: d.state === 'cancelled' ? 'cancelled' : 'delivered', deliveryMessageId: m.messageId, deliveredAt: input.at })
+      saveDelegation({ ...d, state: d.state === 'cancelled' ? 'cancelled' : 'delivered', deliveryMessageId: m.messageId, deliveredAt: input.at, ...(input.reason === undefined ? {} : { reason: input.reason }) })
       remember(input.operationId, actor, { kind: 'delivery', messageId: m.messageId }); return m
     }) },
     receiveDelivery(actor, id, at) { return tx(() => {

@@ -1421,7 +1421,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       const data = event.data
       if (view.sessionId !== null && data.originSession !== view.sessionId) return
       if (data.selectedMember !== undefined) memberViews.set(data.selectedMember, data)
+      const previous = view.collaboration
       commit({ ...view, collaboration: data })
+      for (const member of data.members) {
+        if (member.agent.purpose !== 'consultation' || member.delegation?.deliveryMessageId === undefined) continue
+        if (previous?.members.some(one => one.delegation?.deliveryMessageId === member.delegation?.deliveryMessageId)) continue
+        commit(appendReceipt(view, `咨询 Arcane · 来自顾问 · ${memberState(member)} · Tab 查看原始建议与查证过程`))
+      }
       if (data.note !== undefined) commit(appendReceipt(view, data.note))
       const requested = collaborationQuery
       if (requested !== null && requested.member === data.selectedMember) {
@@ -3366,12 +3372,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     collaborationAt = member
     showCollaborationPicker('collaboration-member', [
       collaborationRow('whole', '返回整体'),
-      collaborationRow('input', `向「${found.agent.name}」补充`, '仅本次委派；共同约束请给整件工作'),
+      ...(found.agent.purpose === 'consultation' ? [] : [collaborationRow('input', `向「${found.agent.name}」补充`, '仅本次委派；共同约束请给整件工作')]),
       collaborationRow('stop-member', '停止该份工作', '下一步点名具体委派'),
       collaborationRow('records', '查看完整对话与工具'),
       collaborationRow('discussions', '查看关联讨论与结果'),
-      collaborationRow('member-model', '模型与思考设置', '仅这个成员'),
-    ], `${found.agent.name} · ${found.agent.role} · ${memberState(found)} · ${found.delegation?.scope ?? '协调与整合'}`, selected)
+      ...(found.agent.purpose === 'consultation' ? [] : [collaborationRow('member-model', '模型与思考设置', '仅这个成员')]),
+    ], `${found.agent.name} · ${found.agent.purpose === 'consultation' ? '只读咨询' : found.agent.role} · ${memberState(found)} · ${found.delegation?.scope ?? '协调与整合'}`, selected)
   }
   const readCollaboration = (member?: AgentId): void => {
     if (collaborationQuery !== null) return
@@ -3417,8 +3423,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     const member = collaborationAt
     const found = snapshot.members.find((one) => one.agent.agentId === member)
     if (member === undefined || found === undefined) return
-    if (row.value === 'input') switchInput(member)
-    else if (row.value === 'member-model') configureCollaboration(member)
+    if (row.value === 'input' && found.agent.purpose !== 'consultation') switchInput(member)
+    else if (row.value === 'member-model' && found.agent.purpose !== 'consultation') configureCollaboration(member)
     else if (row.value === 'stop-member') {
       enterLayer()
       const delegations = snapshot.delegations.filter((one) => one.assigneeId === member && !['received', 'rejected', 'cancelled'].includes(one.state))
