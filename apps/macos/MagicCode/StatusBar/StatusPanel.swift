@@ -37,7 +37,8 @@ struct StatusPanel: View {
                         Text("在终端使用 /resume 查看全部会话").font(.caption).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(maxHeight: min(520, (NSScreen.main?.visibleFrame.height ?? 720) - 230))
+            // 菜单栏按自然尺寸开窗；只有上限会把非空滚动区压到零高。
+            }.frame(minHeight: rows.isEmpty ? 0 : 160, maxHeight: min(520, (NSScreen.main?.visibleFrame.height ?? 720) - 230))
                 .onChange(of: focused) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
             }
             if let message = model.actionMessage { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }

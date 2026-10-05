@@ -427,6 +427,38 @@ final class NativeTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(2100))
         XCTAssertEqual(sent, 0); XCTAssertEqual(delivered, [notice.id])
     }
+    @MainActor func testStatusPanelNaturalWindowKeepsRecentWorkVisible() async throws {
+        _ = NSApplication.shared
+        let (model, _) = try controlledModel(options: ["notice": true])
+        defer { model.systemQuit {} }
+        model.start(); try await eventually { model.isCurrent }
+        XCTAssertEqual(model.works.count, 1)
+        XCTAssertEqual(model.list.rows(.recent, works: model.works).count, 1)
+        let controller = NSHostingController(rootView: StatusPanel(model: model))
+        // 菜单栏按内容的自然尺寸开窗；固定 650 高的截图会掩盖滚动区塌陷。
+        let size = controller.view.fittingSize
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(250))
+        controller.view.layoutSubtreeIfNeeded()
+        func scrollViews(_ view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
+        }
+        let scroll = try XCTUnwrap(scrollViews(controller.view).first)
+        let evidence: [String: Any] = ["windowHeight": window.contentLayoutRect.height,
+            "listViewportHeight": scroll.contentView.bounds.height, "recentCount": model.list.rows(.recent, works: model.works).count]
+        try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
+            .write(to: root.appendingPathComponent(".artifacts/macos/panel-natural-size.json"))
+        let bitmap = try XCTUnwrap(controller.view.bitmapImageRepForCachingDisplay(in: controller.view.bounds))
+        controller.view.cacheDisplay(in: controller.view.bounds, to: bitmap)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            .write(to: root.appendingPathComponent(".artifacts/macos/panel-natural-size.png"))
+        XCTAssertGreaterThan(scroll.contentView.bounds.height, 100, "菜单栏自然尺寸必须给已存在的工作列表留可见空间")
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
     @MainActor func testNativeFramesLightDarkBusyIdleAndFailure() async throws {
         _ = NSApplication.shared
         let first = try work()

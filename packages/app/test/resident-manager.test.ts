@@ -67,6 +67,13 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
         session: recognition === 'bound' ? 'actual-session' : null, workspace: [g.root] })
       executor.send({ t: 'ready' })
       await waitFor(() => requests.some((message) => message.t === 'snapshot'))
+      // 查询/配置产生的临时身份尚未落账，三种认领路径都不能把它交给终端恢复。
+      executor.send(recognition === 'bound'
+        ? { t: 'bound', session: 'empty-session' }
+        : { t: 'ev', event: recognition === 'event.session'
+          ? { id: 0, session: 'empty-session', turn: null, at: 0, kind: 'agent.state', data: { state: 'waiting' } }
+          : { id: 0, session: 'empty-session', turn: null, at: 0, kind: 'session.state',
+            data: { active: 'empty-session', sessions: [] } } })
       store.setSessionTitle('actual-session', '首条交代创建的工作', 1)
       const recognitionMessage: Wire = recognition === 'bound'
         ? { t: 'bound', session: 'actual-session' }
@@ -116,6 +123,7 @@ test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，�
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.root] })
   store.setSessionTitle('old', '原工作', 1)
   store.setSessionTitle('chosen', '主动切到的工作', 2)
+  store.setSessionTitle('late-bound', '原执行者认领的持久工作', 3)
   store.setSessionTitle('late-active', '原执行者后来认领的工作', 3)
   const launches: ExecutorRequest[] = []
   const started = await startManager({ ...g, stopGraceMs: 10, stopKillMs: 10,

@@ -237,6 +237,18 @@ test('第二个窗口先收到协作快照时，随后入口 session.state 不�
   expect(shell.getView().rows).toEqual([])
 })
 
+test('入口退出只恢复入口的未接收输入，不提前恢复成员仍在途的输入', () => {
+  let detached: (why: string) => void = () => {}
+  const app = collaborationStage({ detached: listener => { detached = listener } })
+  app.text('入口未接收输入'); app.key('enter')
+  app.member(); app.pick('input'); app.text('成员在途输入'); app.key('enter')
+  expect(app.shell.getView().draft).toBe('')
+  detached('入口启动失败')
+  expect(app.shell.getView().draft).toBe('')
+  app.key('tab'); app.pick('whole')
+  expect(app.shell.getView().draft).toBe('入口未接收输入')
+})
+
 test('入口 detached 不撤成员审批，答完仍回原阅读位置与各自草稿', () => {
   let detached: (why: string) => void = () => {}
   const app = collaborationStage({ detached: listener => { detached = listener } })

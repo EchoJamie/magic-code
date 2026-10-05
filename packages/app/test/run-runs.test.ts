@@ -244,7 +244,7 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
     const client = await open(g, b.manager)
 
     try {
-      client.send({ type: 'session.new' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
 
@@ -254,6 +254,7 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
       expect(client.runs().some((row) => row.state === 'running')).toBe(false) // 还没会话可挂
 
       fake.send({ t: 'bound', session: 's-1' })
+      fake.emit('agent.state', { state: 'waiting' }, 's-1')
       await waitFor('开张', () => rowOf(client, 's-1') !== undefined)
 
       // ② **当前空闲**——起来了、手上没事
@@ -314,7 +315,7 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
     const client = await open(g, b.manager)
 
     try {
-      client.send({ type: 'session.new' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready(null)
@@ -349,7 +350,7 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
     const client = await open(g, b.manager)
 
     try {
-      client.send({ type: 'session.new' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready(null)
@@ -376,7 +377,7 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
     const client = await open(g, b.manager)
 
     try {
-      client.send({ type: 'session.new' })
+      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
       await waitFor('发车', () => b.requests.length === 1)
       const one = await b.attach(0)
       one.ready(null)
@@ -387,11 +388,12 @@ describe('U49 · 那六行在真管理者上逐行走一遍', () => {
 
       // **另一个窗口**开一条新的（它那条空闲）
       const other = await open(g, b.manager)
-      other.send({ type: 'session.new' })
+      other.send({ type: 'input.submit', text: '另一个窗口的明确输入' })
       await waitFor('第二代发车', () => b.requests.length === 2)
       const two = await b.attach(1)
       two.ready(null)
       two.send({ t: 'bound', session: 's-b' })
+      two.emit('agent.state', { state: 'waiting' }, 's-b')
       await waitFor('s-b 空闲', () => rowOf(other, 's-b')?.state === 'idle')
 
       // 这一头空闲，而那一条仍在跑——**两行都在**
@@ -559,11 +561,12 @@ describe('U49 · `/clear` 是这个窗口的', () => {
       await waitFor('两个窗口同一代', () => two.gen() === one.gen() && two.gen() !== null)
       const shared = one.gen() as number
 
-      // 第二个窗口 `/clear`（`session.new`）——**为它自己另起一代**
+      fake.emit('agent.state', { state: 'waiting' }, 's-share')
+      await waitFor('原工作空闲', () => rowOf(two, 's-share')?.state === 'idle')
+      // 第二个窗口清空自己的目标；明确输入之前不产生空执行者或空会话。
       two.send({ type: 'session.new' })
-      // spawn 同步记账；窗口要等 socket 的 target 回执才知道新代。
-      await waitFor('另起一代且窗口收到目标', () => b.requests.length === 2 && two.gen() === b.requests[1]?.gen)
-      expect(two.gen()).not.toBe(shared)
+      await waitFor('第二窗口清空目标', () => two.gen() === null)
+      expect(b.requests).toHaveLength(1)
 
       // 第一个窗口**一步没动**：还认着原来那一代、还在看原来那条会话
       expect(one.gen()).toBe(shared)
@@ -571,6 +574,10 @@ describe('U49 · `/clear` 是这个窗口的', () => {
 
       // 而它那一代照旧活着（切走不是取消工作）
       expect(b.manager.executors().map((row) => row.gen)).toContain(shared)
+      two.send({ type: 'input.submit', text: '新对话的首次输入' })
+      await waitFor('明确输入才另起一代', () => b.requests.length === 2 && two.gen() === b.requests[1]?.gen)
+      expect(b.requests[1]?.session).toBeNull()
+      expect(one.gen()).toBe(shared)
 
       one.close()
       two.close()

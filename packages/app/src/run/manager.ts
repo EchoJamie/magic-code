@@ -878,7 +878,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
         // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
         if (message.session !== undefined) {
-          retarget(conn, { kind: 'open', session: message.session })
+          retarget(conn, message.session)
         }
         return
       }
@@ -918,7 +918,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
       awaiting.delete(message.token)
       found.link = link as unknown as Link<ExecutorToManager>
-      if (message.session !== null && message.session !== undefined) {
+      if (message.session != null && store.hasSession(message.session)) {
         found.run.session = message.session
       }
       found.run.workspace = message.workspace
@@ -1421,27 +1421,21 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
 
       if (command.type === 'session.open') {
-        retarget(conn, { kind: 'open', session: command.session })
+        retarget(conn, command.session)
         return
       }
 
-      // **`/clear` ＝ 这个窗口开一条新的**（U49 改判 · 由头见 `retarget` 里 `new` 那一段）。
-      // 两条例外：还没开张的那个执行者直接用它（空白启动页按一下不必白起一个进程），
-      // 以及忙时（上面已经挡回了）。
-      const current = conn.target
-      if (reusable(current, conn)) {
-        const reused = current as Executor
-        bind(conn, reused)
-        deliver(reused, command)
-        return
-      }
-
-      const fresh = spawnFresh(conn)
-      if (fresh === undefined) {
-        conn.link.send({ t: 'line', text: '起不了执行者——没开成新的那条' })
-        return
-      }
-      deliver(fresh, command)
+      // 新对话只是清空连接目标；首条明确输入才启动执行者并创建持久会话。
+      conn.target?.watchers.delete(conn.id)
+      conn.target = undefined
+      conn.selectedSession = null
+      conn.gen = 0
+      conn.awaiting = null
+      conn.buffered = []
+      conn.readRevision += 1
+      conn.readingSession = null
+      conn.link.send({ t: 'target', gen: null, session: null })
+      void catalog(conn)
       return
     }
 
@@ -1503,73 +1497,38 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     deliver(target, command)
   }
 
-  /**
-   * 换目标——`session` 给了就是「切到那一条」，不给就是「开一条新的」。
-   *
-   * 复用那一条规矩：**当下这个执行者还没开张、而且只有这一个看客**时就用它
-   * （免得起一个只用几毫秒的进程）；否则按会话找已经活着的那一个，再没有才起新的。
-   */
-  function retarget(
-    conn: ClientConn,
-    how: { readonly kind: 'open'; readonly session: string } | { readonly kind: 'new' },
-  ): void {
+  /** 接回已有会话；查看历史不触发执行，明确输入才启动下一代。 */
+  function retarget(conn: ClientConn, session: string): void {
     const current = conn.target
+    if (!store.hasSession(session)) {
+      conn.link.send({ t: 'line', text: '该会话已不可达，未切换当前工作。' })
+      return
+    }
+    const command: Command = { type: 'session.open', session }
 
-    if (how.kind === 'open') {
-      if (!store.hasSession(how.session)) {
-        conn.link.send({ t: 'line', text: '该会话已不可达，未切换当前工作。' })
-        return
-      }
-      const command: Command = { type: 'session.open', session: how.session }
-
-      const live = liveOf(how.session)
-      if (live !== undefined) {
-        bind(conn, live)
-        // 它已经在那条会话上——`session.open` 过去是**无事**（内核不报）。
-        // 故这里补一条 `session.list`：那一条**一定会**报一次状态，窗口据此重画、
-        // 选择器据以合上。两句都发，是为了「换到了」这件事在屏上**有回声**。
-        deliver(live, command)
-        deliver(live, { type: 'session.list' })
-        return
-      }
-
-      // **查看不触发重新执行**（设计 · 会话与运行管理：「选择已经停止的会话：先看历史和
-      // 停点，**查看不触发重新执行**；用户明确继续才建立下一次运行」）——`session.open` 到
-      // 这一支只把那一页接上来看：置空目标、报同 gen 的 null、读目录与历史。
-      // **起一代留给真交代那一路**（`onCommand` 里「没有目标而认着一条会话」那一支）。
-      current?.watchers.delete(conn.id)
-      conn.target = undefined
-      conn.selectedSession = how.session
-      conn.gen = 0
-      conn.awaiting = null
-      conn.buffered = []
-      conn.link.send({ t: 'target', gen: null, session: how.session })
-      void catalog(conn).then(() => readHistory(conn, how.session)).then(() => publishCollaboration(conn))
+    const live = liveOf(session)
+    if (live !== undefined) {
+      bind(conn, live)
+      // 它已经在那条会话上——`session.open` 过去是**无事**（内核不报）。
+      // 故这里补一条 `session.list`：那一条**一定会**报一次状态，窗口据此重画、
+      // 选择器据以合上。两句都发，是为了「换到了」这件事在屏上**有回声**。
+      deliver(live, command)
+      deliver(live, { type: 'session.list' })
       return
     }
 
-    const command: Command = { type: 'session.new' }
-
-    if (reusable(current, conn)) {
-      const reused = current as Executor
-      bind(conn, reused)
-      deliver(reused, command)
-      return
-    }
-
-    const spawned = spawnFresh(conn)
-    if (spawned === undefined) {
-      conn.link.send({ t: 'line', text: '起不了执行者——没开成新的那条' })
-      return
-    }
-    deliver(spawned, command)
-  }
-
-  /** 「当下这个执行者还有用吗」——**没开张 ＋ 只有这一个看客**才敢往上叠新目标。 */
-  function reusable(current: Executor | undefined, conn: ClientConn): boolean {
-    if (current === undefined || current.run.ended !== undefined) return false
-    if (current.run.session !== null) return false
-    return current.watchers.size <= 1 && (current.watchers.size === 0 || current.watchers.has(conn.id))
+    // **查看不触发重新执行**（设计 · 会话与运行管理：「选择已经停止的会话：先看历史和
+    // 停点，**查看不触发重新执行**；用户明确继续才建立下一次运行」）——`session.open` 到
+    // 这一支只把那一页接上来看：置空目标、报同 gen 的 null、读目录与历史。
+    // **起一代留给真交代那一路**（`onCommand` 里「没有目标而认着一条会话」那一支）。
+    current?.watchers.delete(conn.id)
+    conn.target = undefined
+    conn.selectedSession = session
+    conn.gen = 0
+    conn.awaiting = null
+    conn.buffered = []
+    conn.link.send({ t: 'target', gen: null, session })
+    void catalog(conn).then(() => readHistory(conn, session)).then(() => publishCollaboration(conn))
   }
 
   /**
@@ -1790,6 +1749,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         return
       }
       case 'bound':
+        if (!store.hasSession(message.session)) return
         executor.run.session = message.session
         // ⚠️ **顺序**：`syncTarget` 的判据是「这个窗口认的会话变了没有」，而 `rememberSession`
         // 正是把那一格写掉的那一个 ⇒ 它必须**先**跑，否则永远判「没变」、第二个 `target` 不发。
@@ -1822,6 +1782,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       case 'pong':
         return
       case 'done':
+        if (!executor.run.ready) {
+          for (const id of executor.watchers) clients.get(id)?.link.send({ t: 'line', text: message.why })
+        }
         // **自己受理了收摊**——记成「停止中」，核销等进程真退（见 `retire`）
         markStopping(executor, message.why)
         return
@@ -1941,14 +1904,13 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
     // 会话从事件里认（这就是 `bound` 那条路的日常形态：首条消息一按下回车，
     // 事件就带上了真会话号）——**不另立一份「它现在在哪条会话」的真源**。
-    if (event.session !== '' && event.session !== undefined) {
-      if (run.session === null || event.kind === 'session.state') {
-        run.session = event.session
-      }
-    }
     if (event.kind === 'session.state') {
       const active = event.data.active
-      if (typeof active === 'string' && active !== '') run.session = active
+      run.session = active !== '' && store.hasSession(active) ? active : null
+      // 查询/配置动作可能产生临时信封；它不是可恢复的持久会话。
+      event = { ...event, session: run.session ?? '', data: { ...event.data, active: run.session ?? '' } }
+    } else if (run.session === null && event.session !== '' && store.hasSession(event.session)) {
+      run.session = event.session
     }
     // **这一代认下哪条会话 ⇒ 盯着它的窗口也认下**（U100）——「停掉之后接着敲的那一句是
     // 这条会话的下一轮」全靠这一格（见 `ClientConn.selectedSession`）。会话是**从事件里认**

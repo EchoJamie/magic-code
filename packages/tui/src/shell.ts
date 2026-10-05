@@ -1610,7 +1610,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         answeredDecisions.clear()
         decisionReturn = null
         commit({ ...view, collaboration: undefined, inputMember: undefined })
-        readHistory(event.data.active)
+        if (event.data.active !== '') readHistory(event.data.active)
       }
       if (waiting === 'session') {
         waiting = null
@@ -2164,7 +2164,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     }
     commit(next)
   }
-  options.detached?.(() => { if (!disposed) finishCurrent() })
+  options.detached?.(() => {
+    if (disposed) return
+    finishCurrent()
+    // 尚未收到服务端接收回执的输入仍是草稿，执行者退出不能把它丢掉。
+    const held = view.inputMember === undefined ? lastSubmit : inputContexts.get(undefined)?.lastSubmit
+    settleDraft(held?.ref, true)
+  })
 
   /**
    * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/resume` · `/model` 同位置同开合**

@@ -1698,7 +1698,8 @@ export function reduce(
     case 'message.user':
       // **一份新交代开始了**（U100）——记下它在记录里的条目 id，那是「当前这份交代」的身份
       // （见 `ShellView.taskEntry`）。内核自己发的，本窗口与别的窗口都收得到。
-      return reduceUserEntry({ ...view, taskEntry: event.data.entry })
+      return reduceUserEntry({ ...view, taskEntry: event.data.entry,
+        sessionId: view.sessionId ?? (event.session || null) })
     case 'message.assistant':
       return view
 
@@ -2234,37 +2235,18 @@ function reduceDecision(view: ShellView, id: RecordId, data: DecisionRequestData
 type SessionStateData = Extract<KernelEvent, { kind: 'session.state' }>['data']
 
 /**
- * `session.state`——目录 ＋ 当前会话。**换了会话＝记录区交给重建**（缺陷 D1）。
- *
- * `turn`（U44 起）＝**这一声答复是「换页那一跳」的**（外壳发过 `/clear` 或 `/resume`
- * 的选定，见 `shell.ts` 的 `turn`），且**是哪一种**（U45 起带上了种类，见 `PageTurn`）。
- * 给 `null`（默认）只管「会话身份真的换了没换」——而换页那一跳多一条：
- * **从「还没有会话」换到「头一条」也算换了一页**。
- *
- * ⚠️ **为什么要多这一条**：外壳**不会**在首条消息开张时收到 `session.state`（那时没有
- * 会话命令要回答），故 `view.sessionId` 一直是 `null`——用户开局敲一句、再敲 `/clear`
- * 时，那一跳在默认判据下「没换会话」⇒ 屏不翻、`/clear` 看着像没按（真 PTY 上就是这么现形的）。
- * 而那一跳**确实是**「清屏 ＋ 另起一条」：记录区该整块换掉。
- *
- * ⚠️ **不能把 `null → 头一条` 一律当成换页**：`/resume` 问一次目录、`/model` 这类读侧动作
- * 都会在装配那边开一张**空壳**会话（信封必带会话），那一下 id 也是从无到有——屏上却什么都
- * 不该动。故只有当**外壳真发过换页那一跳**时才算（由头同 D25：别拿会话 id 当页号）。
- *
- * ⚠️ **`note` 在＝这一跳没成**（U45 补）：内核忙的时候 `fresh()` / `switchTo()` 会把它挡回，
- * 活跃位**不动**（`session.state` 的 `note` 那一格，形制见 `shell.ts` 的 `onEvent`）。
- * 那一跳什么都没发生——**不许翻页、不许种字标、不许清屏**（真 PTY 上现形过：空手开机、
- * 首条消息正跑着时按 `/clear`，`view.sessionId` 还是 `null` ⇒ `null → 活跃位` 落在「换页」
- * 那一格里，屏被清掉、字标凭空多印一块，而内核其实一个字都没答应）。
- * 判据与那一行回执同一把尺子：**这一跳真成了才说话／才翻页**。
+ * 目录回执确认当前会话。普通查询只在已知身份变更时换页；
+ * 成功的 /clear 总是清屏，包括尚未创建会话的空白页；忙时拒绝不换页。
  */
 function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageTurn | null): ShellView {
-  const switched = view.sessionId !== null && view.sessionId !== data.active
-  const turned = turn !== null && data.note === undefined ? view.sessionId !== data.active : switched
+  const active = data.active || null
+  const switched = view.sessionId !== null && view.sessionId !== active
+  const turned = data.note === undefined && (turn === 'new' || (turn === 'open' ? view.sessionId !== active : switched))
   const title = data.sessions.find((row) => row.id === data.active)?.title ?? null
 
   const base: ShellView = {
     ...view,
-    sessionId: data.active,
+    sessionId: active,
     catalog: data.sessions,
     status: { ...view.status, session: title },
   }

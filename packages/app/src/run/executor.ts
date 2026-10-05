@@ -193,6 +193,9 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    // 失败也先用启动令牌登记，管理者才能把具体原因回传给所属终端。
+    link.send({ t: 'hello', role: 'executor', token: options.token,
+      session: options.session, workspace: [] })
     link.send({ t: 'done', why: `装配没成：${reason}` })
     link.close()
     return { kind: 'failed', reason }

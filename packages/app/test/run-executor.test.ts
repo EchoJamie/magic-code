@@ -141,6 +141,74 @@ function alive(pid: number): boolean {
   }
 }
 
+describe('会话身份与启动失败回归', () => {
+  test('清空只解除目标；首次输入落账，空闲重启接续同一会话，清空后输入另建会话', async () => {
+    const complete = { kind: 'text' as const, text: '完成', chunks: 1, chunkDelayMs: 0 }
+    const g = ground('identity', 'settled', [complete, complete, complete])
+    const manager = await standUp(g)
+    const client = await open(g, manager, 'identity')
+    const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+    const states: string[] = []
+    const targets: (string | null)[] = []
+    let completed = 0
+    client.onTarget(session => targets.push(session))
+    client.onEvent(event => {
+      if (event.kind === 'session.state') states.push(event.data.active)
+      if (event.kind === 'turn.end' && event.data.reason === 'settled') completed++
+    })
+    try {
+      client.send({ type: 'session.new' })
+      await waitFor('新对话回执', () => states.at(-1) === '')
+      expect(manager.executors()).toHaveLength(0)
+      expect(await records.listSessions()).toHaveLength(0)
+      expect(g.fixture.requests()).toHaveLength(0)
+      await submitAndWait(client, '第一条', '首轮完成并退出', () => completed === 1 && manager.executors().length === 0)
+      const first = targets.at(-1)
+      expect(first).toBeString()
+      expect((await records.listSessions()).map(session => session.id)).toEqual([first!])
+      await submitAndWait(client, '继续原会话', '第二轮完成并退出', () => completed === 2 && manager.executors().length === 0)
+      expect(targets.at(-1)).toBe(first)
+      expect(await records.listSessions()).toHaveLength(1)
+      states.length = 0
+      client.send({ type: 'session.new' })
+      await waitFor('清空回执', () => states.at(-1) === '')
+      expect(targets.at(-1)).toBeNull()
+      expect(manager.executors()).toHaveLength(0)
+      expect(await records.listSessions()).toHaveLength(1)
+      await submitAndWait(client, '新对话首条', '新对话完成并退出', () => completed === 3 && manager.executors().length === 0)
+      expect(targets.at(-1)).not.toBe(first)
+      expect(await records.listSessions()).toHaveLength(2)
+      expect(g.fixture.requests().filter(request => request.path.endsWith('/chat/completions'))).toHaveLength(3)
+    } finally {
+      client.close(); manager.stop('测试结束'); await manager.waitUntilExit()
+      records.close(); await g.dispose()
+    }
+  }, 30_000)
+
+  test('装配失败向所属窗口返回具体原因，不创建不可恢复的会话', async () => {
+    const g = ground('assembly-failure', 'settled')
+    const manager = await standUp(g)
+    const client = await open(g, manager, 'failure')
+    const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
+    const lines: string[] = []
+    let detached = false
+    client.onLine(line => lines.push(line))
+    client.onDetached(() => { detached = true })
+    try {
+      writeFileSync(join(g.magic.base, 'config.json'), '{ invalid config')
+      client.send({ type: 'input.submit', text: '不能丢掉的输入', ref: 'first' })
+      await waitFor('失败原因与退出回执', () => detached && lines.some(line => line.includes('装配没成：')))
+      expect(lines.find(line => line.includes('装配没成：'))).not.toBe('装配没成：')
+      expect(manager.executors()).toHaveLength(0)
+      expect(await records.listSessions()).toHaveLength(0)
+      expect(g.fixture.requests()).toHaveLength(0)
+    } finally {
+      client.close(); manager.stop('测试结束'); await manager.waitUntilExit()
+      records.close(); await g.dispose()
+    }
+  }, 15_000)
+})
+
 describe('U48-S2 · 一个窗口一条执行者', () => {
   test('七个窗口各开一条新的——七代各自独立，停一项不影响其它', async () => {
     const g = ground('seven')

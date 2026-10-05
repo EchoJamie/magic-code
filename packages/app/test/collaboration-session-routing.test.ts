@@ -18,7 +18,7 @@ test('读取旧协作与clear并发：迟到快照不能把新工作接回旧协
     const targets: (string | null)[] = []
     const staleViews: string[] = []
     f.client.onTarget(session => targets.push(session))
-    // 订阅会立即回放当前 target；之后的新 target(null) 已表示转入尚未绑定会话的新代。
+    // 订阅会立即回放当前 target；之后的 target(null) 表示已清空当前目标。
     targets.length = 0
     const switched = () => targets.some(session => session !== oldSession)
     f.client.onEvent(event => {
@@ -27,13 +27,13 @@ test('读取旧协作与clear并发：迟到快照不能把新工作接回旧协
     // 两条命令连续发出：第一条只读尚在装配结果，第二条已经切换目标。
     f.client.send({ type: 'collaboration.read', member: member.agentId })
     f.client.send({ type: 'session.new' })
-    await f.wait('已切到另一份工作', () => f.session() !== null && f.session() !== oldSession)
+    await f.wait('已清空当前工作', () => targets.at(-1) === null && f.shell.getView().sessionId === null)
     expect(switched()).toBe(true)
     expect(staleViews).toEqual([])
     expect(f.shell.getView().collaboration).toBeUndefined()
 
     f.client.send({ type: 'input.submit', text: 'NEW_WORK_ONLY：独立的新交代', ref: 'new-input' })
-    await f.wait('新交代进入独立请求', () => f.requests().length === 3)
+    await f.wait('新交代进入独立请求并确认新会话', () => f.requests().length === 3 && f.session() !== null && f.session() !== oldSession)
     expect(requestText(f.requests()[2])).toContain('NEW_WORK_ONLY')
     expect(requestText(f.requests()[2])).not.toContain('OLD_WORK_ORIGIN')
     expect(f.store.collaboration.collaborationForSession(f.session()!)).toBeUndefined()

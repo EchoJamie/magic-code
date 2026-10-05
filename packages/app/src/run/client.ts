@@ -149,24 +149,6 @@ export async function connectManager(socketPath: string, options: ConnectOptions
           })
         }
         return
-      case 'target':
-        gen = message.gen
-        for (const listener of [...targetListeners]) listener(message.session)
-        return
-      case 'detached':
-        // 那一代收了——**当下就作废旧号**（不作废的话，下一条命令会被当成过期误操作
-        // 挡下来，而这个窗口其实只是想接着干，见 `manager.ts` 的 `retire`）。
-        //
-        // ⚠️ **`why` 不再当一句话印出去**（U100）：管理者紧跟着就发一条**说全了**的 `line`
-        // （`它那一代执行者收摊了（<why>）`）——两行说的是同一件事，而光秃秃一句
-        // 「连接断了」还容易与「**本窗口**与管理者断了」（那一句是另一件完全不同的事）
-        // 看混。机器要的那半（作废旧号）照旧在这一跳办。
-        gen = null
-        for (const listener of [...targetListeners]) listener(null)
-        return
-      case 'ev':
-        for (const listener of [...eventListeners]) listener(message.event, message.gen)
-        return
       case 'line':
         for (const listener of [...lineListeners]) listener(message.text)
         return
