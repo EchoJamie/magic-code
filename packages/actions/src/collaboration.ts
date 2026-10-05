@@ -1,13 +1,14 @@
 import type {
   AgentId, AgentIdentity, AgentModelConfig, CollaborationRecords, CollaborationReply,
-  CollaborationRequest, EntryReference, MessagePart, StopResult,
+  CollaborationRequest, ModelSwitchRequest, EntryReference, MessagePart, StopResult,
 } from '@magic/contracts'
 
 export type CollaborationActionsDeps = {
+  readonly modelChoices?: () => Promise<unknown>
   readonly records: CollaborationRecords
   readonly now: () => number
   readonly origin: (agent: AgentIdentity) => Promise<EntryReference>
-  readonly resolveModel: (input: { readonly defaults: AgentModelConfig; readonly role?: string; readonly model?: Partial<AgentModelConfig> }) => Promise<AgentModelConfig>
+  readonly resolveModel: (input: { readonly defaults: AgentModelConfig; readonly role?: string; readonly model?: ModelSwitchRequest }) => Promise<AgentModelConfig>
   /** 已登记身份后才启动，启动失败必须可查。 */
   readonly start: (agent: AgentIdentity) => Promise<void>
   readonly wake: (agentId: AgentId) => void
@@ -28,8 +29,9 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         let collaboration = actor.collaborationId === undefined ? undefined : records.getCollaboration(actor.collaborationId)
         let initialModel: AgentModelConfig | undefined
         if (request.action === 'list') {
-          return { ok: true, value: collaboration === undefined ? { self: actor, members: [] } : {
-            self: actor,
+          const choices = await deps.modelChoices?.()
+          return { ok: true, value: collaboration === undefined ? { self: actor, members: [], choices } : {
+            self: actor, choices,
             collaboration,
             members: records.listMembers(collaboration.collaborationId),
             delegations: records.listDelegations(collaboration.collaborationId),
@@ -71,7 +73,8 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
             const spawned = records.spawn(actorId, {
               operationId: request.operationId, at, sessionId: crypto.randomUUID(),
               name: request.name, role: request.role ?? '', responsibility: request.responsibility,
-              model, scope: request.scope, body: request.body, source, authorization, ...scope,
+              model, scope: request.scope, body: request.modelReason === undefined ? request.body : [...request.body,
+                { kind: 'text', text: `模型选择：${model.alias[0]!.toUpperCase() + model.alias.slice(1)}；任务理由：${request.modelReason}` }], source, authorization, ...scope,
             })
             try {
               await deps.start(spawned.agent)

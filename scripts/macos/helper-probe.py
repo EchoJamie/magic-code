@@ -47,9 +47,9 @@ def probe(helper):
             base = Path(root)
             (base / '.magic').mkdir(mode=0o700)
             (base / '.magic/config.json').write_text(json.dumps({
-                'dataDir': str(base / 'data'), 'workspaceRoots': [root], 'defaultProvider': 'local',
+                'dataDir': str(base / 'data'), 'workspaceRoots': [root], 'modelAliases': {alias: {'provider': 'local', 'model': 'probe'} for alias in ['default', 'cantrip', 'spell', 'arcane']},
                 'providers': {'local': {'baseURL': f'http://127.0.0.1:{server.server_port}/v1',
-                    'apiKey': 'synthetic-probe-key', 'model': 'probe'}}}))
+                    'apiKey': 'synthetic-probe-key', 'vendor': 'deepseek'}}}))
             script = base / 'probe.json'
             script.write_text(json.dumps({'inputs': ['Run the controlled native helper probe.'], 'decisions': []}))
             env = {'HOME': root, 'MAGIC_HOME': root, 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}

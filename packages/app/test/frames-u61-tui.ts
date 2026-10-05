@@ -142,8 +142,8 @@ if (import.meta.main) {
       turns,
       config: {
         providers: {
-          local: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u61', model: 'MiniMax-M3' },
-          backup: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u61', model: 'MiniMax-M2' },
+          local: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u61' },
+          backup: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u61' },
         },
       },
     })

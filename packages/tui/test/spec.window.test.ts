@@ -52,7 +52,7 @@ const used = (inputTokens = 3_100) => event('model.usage', { inputTokens, output
 
 /** 一次**真跑**（分母随之落定）——`inputBudget` 就是那一刻的有效输入预算。 */
 const ran = (model: string, provider: string, inputBudget?: number) =>
-  event('model.call.start', {
+  event('model.call.start', { alias: 'default',
     model,
     provider,
     ...(inputBudget === undefined ? {} : { inputBudget }),
@@ -71,17 +71,17 @@ describe('换过模型之后的分母', () => {
     expect((await land.screen()).statusLine).toContain('3.1k/1000k')
 
     // 切到另一个模型——**切换事件自己带着那个模型的预算**（32_768 ⇒ `33k`）
-    land.feed([event('model.switched', { ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 32_768 })])
+    land.feed([event('model.switched', { alias: 'default', ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 32_768 })])
 
     const after = await land.screen()
     // ③ 那一格（模型名）自 U112 起**不在默认状态行里**（可配，默认只有 `session` 与
     // `context`），故「③ 换了没有」按视图那一格核——与同文件那两条它处用例同一个读法。
-    expect(land.shell.getView().status.model).toBe('MiniMax-M2')
+    expect(land.shell.getView().status.model).toBe('Default')
     expect(after.statusLine).toContain('3.1k/33k')
     expect(after.statusLine).not.toContain('1000k')
     // 回执照旧（「刚发生的事」进记录区）
     // ⚠️ **回执不带记号了**（2026-10-01 用户裁定：`·` 只做分隔符）——靠缩进一级 ＋ 弱色
-    expect(after.has('已换模型 → MiniMax-M2')).toBe(true)
+    expect(after.has('已选择 Default')).toBe(true)
 
     land.shell.dispose()
   })
@@ -91,7 +91,7 @@ describe('换过模型之后的分母', () => {
     land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
     // **内核没给这一位**＝那条模型没有窗长依据（不是「和上一个一样」）
-    land.feed([event('model.switched', { ok: true, provider: 'local', model: 'my-local-llama' })])
+    land.feed([event('model.switched', { alias: 'default', ok: true, provider: 'local', model: 'my-local-llama' })])
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k')
@@ -109,7 +109,7 @@ describe('换过模型之后的分母', () => {
     land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
     for (const name of ['toString', 'constructor', '__proto__', 'MiniMax-M9']) {
-      land.feed([event('model.switched', { ok: true, provider: 'mm', model: name })])
+      land.feed([event('model.switched', { alias: 'default', ok: true, provider: 'mm', model: name })])
       expect(land.shell.getView().status.window).toBeNull()
     }
 
@@ -124,12 +124,12 @@ describe('换过模型之后的分母', () => {
     const land = stage({ contextWindow: 1_000_000 })
     land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
-    land.feed([event('model.switched', { ok: false, reason: '未知供应商「ghost」' })])
+    land.feed([event('model.switched', { alias: 'default', ok: false, reason: '未知供应商「ghost」' })])
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k/1000k')
     expect(after.has('换模型未成：未知供应商「ghost」')).toBe(true)
-    expect(land.shell.getView().status.model).toBe('MiniMax-M3')
+    expect(land.shell.getView().status.model).toBe('Default')
 
     land.shell.dispose()
   })
@@ -141,7 +141,7 @@ describe('换过模型之后的分母', () => {
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k/205k')
-    expect(land.shell.getView().status.model).toBe('MiniMax-M2')
+    expect(land.shell.getView().status.model).toBe('Default')
 
     land.shell.dispose()
   })
@@ -189,12 +189,12 @@ describe('`model.catalog` 那一格', () => {
         {
           provider: 'ds',
           vendor: 'deepseek',
-          model: 'deepseek-chat',
+          cache: { snapshot: { provider: 'ds', scope: 'fixture', fetchedAt: 1, models: [{ id: 'deepseek-chat' }] } },
           // ⚠️ 这一格是**该连接默认模型**的数——当前选中是另一个模型时**不许**拿它顶上
-          contextWindow: 999_000,
+
         },
       ],
-      current: { provider: 'ds', model: 'deepseek-reasoner' },
+      current: { alias: 'default' as const, provider: 'ds', model: 'deepseek-reasoner' },
       ...(currentInputBudget === undefined ? {} : { currentInputBudget }),
     })
 

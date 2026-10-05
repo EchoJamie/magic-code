@@ -58,8 +58,8 @@ function ground(name: string): Ground {
   writeFileSync(
     join(base, 'config.json'),
     JSON.stringify({
-      defaultProvider: 'x',
-      providers: { x: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test', model: 'm' } },
+      modelAliases: {default: {provider: "x", model: 'm'}, cantrip: {provider: "x", model: 'm'}, spell: {provider: "x", model: 'm'}, arcane: {provider: "x", model: 'm'}},
+      providers: { x: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' } },
       dataDir,
     }),
   )

@@ -170,12 +170,7 @@ async function boot(input: {
       : {
           config: {
             providers: {
-              local: {
-                baseURL: fixture.baseURL,
-                apiKey: FAKE_API_KEY,
-                model: input.model,
-                ...input.connection,
-              },
+              local: { vendor: 'minimax', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY, ...input.connection },
             },
           },
         }),

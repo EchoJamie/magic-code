@@ -40,7 +40,7 @@ describe('形制照读（字面冻结）', () => {
     expect(loaded.providerId).toBe('minimax')
     // `provider` 可缺（U41：还没配过缺省连接的配置就是这样）——本用例的配置里它该在，
     // 故 `!` 是断言本身的一部分，不是绕过检查
-    expect(loaded.provider!.model).toBe('MiniMax-M3')
+    expect(loaded.config.modelAliases?.default?.model).toBe('MiniMax-M3')
     expect(loaded.provider!.baseURL).toBe('https://api.minimaxi.com/v1')
     expect(Object.keys(loaded.config.providers)).toEqual(['minimax'])
   })
@@ -49,8 +49,8 @@ describe('形制照读（字面冻结）', () => {
     const loaded = loadFrom(
       validConfig({
         providers: {
-          minimax: { baseURL: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' },
-          local: { baseURL: 'http://127.0.0.1:11434/v1', model: 'qwen' },
+          minimax: { vendor: 'minimax', baseURL: 'https://api.minimaxi.com/v1' },
+          local: { vendor: 'minimax', baseURL: 'http://127.0.0.1:11434/v1' },
         },
       }),
     )
@@ -63,28 +63,24 @@ describe('形制照读（字面冻结）', () => {
     const withTraits = loadFrom(
       validConfig({
         providers: {
-          minimax: {
-            baseURL: 'https://x/v1',
-            model: 'some-model',
-            traits: { inlineThinking: { tag: 'think' } },
-          },
+          minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['some-model']: {traits: { inlineThinking: { tag: 'think' } }} } },
         },
       }),
     )
-    expect(withTraits.provider!.traits).toEqual({ inlineThinking: { tag: 'think' } })
+    expect(withTraits.provider!.modelOverrides?.['some-model']?.traits).toEqual({ inlineThinking: { tag: 'think' } })
 
     const empty = loadFrom(
       validConfig({
-        providers: { minimax: { baseURL: 'https://x/v1', model: 'm', traits: {} } },
+        providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['m']: {traits: {}} } } },
       }),
     )
     // `{}` ＝**显式声明无特征**——不是「按常规处理」，故必须存在且为空对象
-    expect(empty.provider!.traits).toEqual({})
+    expect(empty.provider!.modelOverrides?.['m']?.traits).toEqual({})
 
     const none = loadFrom(
-      validConfig({ providers: { minimax: { baseURL: 'https://x/v1', model: 'm' } } }),
+      validConfig({ providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1' } } }),
     )
-    expect(none.provider!.traits).toBeUndefined()
+    expect(none.provider!.modelOverrides?.['m']?.traits).toBeUndefined()
   })
 
   /**
@@ -94,16 +90,16 @@ describe('形制照读（字面冻结）', () => {
   test('`contextWindow` 覆盖位——声明了才带出（正整数；不写＝不声明窗长）', () => {
     const declared = loadFrom(
       validConfig({
-        providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: 200_000 } },
+        providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['m']: {limits: {maxContextTokens: 200_000}} } } },
       }),
     )
-    expect(declared.provider!.contextWindow).toBe(200_000)
+    expect(declared.provider!.modelOverrides?.['m']?.limits?.maxContextTokens).toBe(200_000)
 
     const none = loadFrom(
-      validConfig({ providers: { minimax: { baseURL: 'https://x/v1', model: 'm' } } }),
+      validConfig({ providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1' } } }),
     )
     // 不写就没有这一位——**不是 0、不是 NaN**（拿不到就说拿不到）
-    expect(none.provider!.contextWindow).toBeUndefined()
+    expect(none.provider!.modelOverrides?.['m']?.limits?.maxContextTokens).toBeUndefined()
     expect('contextWindow' in none.provider!).toBe(false)
   })
 
@@ -310,61 +306,61 @@ describe('报错取「一声响」（不静默兜底）', () => {
     expect(() => loadFrom('{ 这不是 JSON }')).toThrow(/不是合法 JSON/)
   })
 
-  test('defaultProvider 不在 providers 里——点名已有的', () => {
+  test('旧 defaultProvider 字段明确拒绝', () => {
     expect(() => loadFrom(validConfig({ defaultProvider: 'ghost' }))).toThrow(
-      /defaultProvider「ghost」不在 providers 里——已配：minimax/,
+      /defaultProvider 已移除/,
     )
   })
 
   test('字段缺 / 空 / 类型不对——逐条点名到字段', () => {
     const cases: readonly [unknown, RegExp][] = [
-      [validConfig({ defaultProvider: '' }), /defaultProvider 须是非空字符串/],
-      [validConfig({ providers: {} }), /defaultProvider「minimax」不在 providers 里/],
+      [validConfig({ defaultProvider: '' }), /defaultProvider 已移除/],
+      [validConfig({ providers: {} }), /modelAliases.default.provider 指向未知连接/],
       // U41 改判这两条的期望文案——**原锚**：「缺 `baseURL` / 缺 `model` ⇒ 各报一句
       // 『须是非空字符串』」；**为何变**：两条接入路径的必填项不同了——有 `vendor` 的连接
       // 由适配给地址、型号来自接口，两者都可省；没有 `vendor` 的兼容接入两者仍必给，
       // 但缺的是「接入方式没说清」而不是「这个字段类型不对」；**新锚**：兼容接入缺哪一件
       // 就报哪一件缺（并指出两条路怎么走），报错仍**点名到字段**、仍**不降级**。
       [
-        validConfig({ providers: { minimax: { model: 'MiniMax-M3' } } }),
-        /providers\.minimax 两样都没有/,
+        validConfig({ providers: { minimax: { vendor: '' } } }),
+        /providers\.minimax\.vendor/,
       ],
       [
         validConfig({ providers: { minimax: { baseURL: 'https://x/v1' } } }),
-        /providers\.minimax\.model 没写/,
+        /providers\.minimax\.vendor/,
       ],
       [
         validConfig({
-          providers: { minimax: { baseURL: 'https://x/v1', model: 'm', apiKey: 42 } },
+          providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1', apiKey: 42 } },
         }),
         /providers\.minimax\.apiKey 须是字符串/,
       ],
       [
         validConfig({
-          providers: { minimax: { baseURL: 'https://x/v1', model: 'm', traits: [] } },
+          providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['m']: {traits: []} } } },
         }),
-        /providers\.minimax\.traits 须是对象/,
+        /providers\.minimax\.modelOverrides\.m\.traits 须是对象/,
       ],
       [
         validConfig({
           providers: {
-            minimax: { baseURL: 'https://x/v1', model: 'm', traits: { inlineThinking: {} } },
+            minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['m']: {traits: { inlineThinking: {} }} } },
           },
         }),
-        /providers\.minimax\.traits\.inlineThinking\.tag 须是非空字符串/,
+        /providers\.minimax\.modelOverrides\.m\.traits\.inlineThinking\.tag 须是非空字符串/,
       ],
       // 窗长写坏了**报错不降级**——宁可启动期一声响，也别拿一个假分母去画进度（D10）
       [
         validConfig({
-          providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: '200k' } },
+          providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['m']: {limits: {maxContextTokens: '200k'}} } } },
         }),
-        /providers\.minimax\.contextWindow 须是正整数/,
+        /providers\.minimax\.modelOverrides\.m\.limits\.maxContextTokens 须是正整数/,
       ],
       [
         validConfig({
-          providers: { minimax: { baseURL: 'https://x/v1', model: 'm', contextWindow: 0 } },
+          providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1', modelOverrides: { ['m']: {limits: {maxContextTokens: 0}} } } },
         }),
-        /providers\.minimax\.contextWindow 须是正整数/,
+        /providers\.minimax\.modelOverrides\.m\.limits\.maxContextTokens 须是正整数/,
       ],
       [validConfig({ dataDir: 7 }), /dataDir 须是非空字符串/],
       [[1, 2, 3], /配置根 须是对象/],
@@ -387,7 +383,7 @@ describe('密钥纪律', () => {
 
   test('配置里没有 key——自检报环境变量那名（且仍不吐任何值）', () => {
     const loaded = loadFrom(
-      validConfig({ providers: { minimax: { baseURL: 'https://x/v1', model: 'm' } } }),
+      validConfig({ providers: { minimax: { vendor: 'minimax', baseURL: 'https://x/v1' } } }),
     )
     const text = describeConfig(loaded)
 
@@ -650,10 +646,10 @@ describe('智能体角色配置', () => {
     const dir = tempDir('magic-role-config-')
     try {
       const path = writeConfig(dir, { providers: { ds: { vendor: 'deepseek' } }, agentRoles: { reviewer: {
-        name: '审查', instructions: '只给有证据的发现', guidanceFiles: ['rules/review.md', '~/shared.md'], skills: ['code-review'], tools: ['read'], model: { provider: 'ds', reasoning: { mode: 'off' } },
+        name: '审查', instructions: '只给有证据的发现', guidanceFiles: ['rules/review.md', '~/shared.md'], skills: ['code-review'], tools: ['read'], model: { alias: 'cantrip', reasoning: { mode: 'off' } },
       } } })
       const loaded = loadConfig({ path, magic: magicAt(HOME) })
-      expect(loaded.config.agentRoles?.['reviewer']).toEqual({ name: '审查', instructions: '只给有证据的发现', guidanceFiles: [join(dir, 'rules/review.md'), join(HOME, 'shared.md')], skills: ['code-review'], tools: ['read'], model: { provider: 'ds', reasoning: { mode: 'off' } } })
+      expect(loaded.config.agentRoles?.['reviewer']).toEqual({ name: '审查', instructions: '只给有证据的发现', guidanceFiles: [join(dir, 'rules/review.md'), join(HOME, 'shared.md')], skills: ['code-review'], tools: ['read'], model: { alias: 'cantrip', reasoning: { mode: 'off' } } })
     } finally { removeDir(dir) }
   })
 

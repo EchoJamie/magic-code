@@ -158,8 +158,6 @@ export type ModelInfoService = {
    * 副作用有一条，且是设计要求的：**过期或无缓存**时在这里发起一次**后台**获取
    * （不 await、不阻塞答复）。在途共享与失败冷却会挡住重复请求。
    */
-  /** 仅返回已加载缓存，不刷新、不连接、不写盘。 */
-  peek(providerId: string): ModelInfoRead
   read(providerId: string): ModelInfoRead
   /** 只读已预热的缓存，不触发发现或后台刷新；配置预检使用此入口。 */
   peek(providerId: string): ModelInfoRead

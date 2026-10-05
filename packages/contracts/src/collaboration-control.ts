@@ -1,5 +1,5 @@
 import type { AgentId, DelegationId, MessageId, SessionId } from './ids.ts'
-import type { AgentIdentity, AgentMessage, AgentModelConfig, Collaboration, CollaborationWait, Delegation, MessagePart } from './collaboration.ts'
+import type { AgentIdentity, AgentMessage, Collaboration, CollaborationWait, Delegation, MessagePart } from './collaboration.ts'
 import type { ModelSwitchRequest, UserInput } from './control.ts'
 import type { Entry } from './entries.ts'
 import type { RunRow } from './runs.ts'
@@ -8,7 +8,7 @@ import type { ModelUsage } from './ports.ts'
 /** 模型入口不接受 sender、工作区、授权来源或当前委派覆盖值。它们由宿主绑定。 */
 export type CollaborationRequest =
   | { readonly action: 'list' }
-  | { readonly action: 'spawn'; readonly operationId: string; readonly name: string; readonly role?: string; readonly responsibility: string; readonly scope: string; readonly body: readonly MessagePart[]; readonly model?: Partial<AgentModelConfig> }
+  | { readonly action: 'spawn'; readonly operationId: string; readonly name: string; readonly role?: string; readonly responsibility: string; readonly scope: string; readonly body: readonly MessagePart[]; readonly model?: ModelSwitchRequest; readonly modelReason?: string }
   | { readonly action: 'delegate'; readonly operationId: string; readonly recipient: AgentId; readonly scope: string; readonly body: readonly MessagePart[] }
   | { readonly action: 'send'; readonly operationId: string; readonly recipients: readonly AgentId[]; readonly purpose: 'inform' | 'question' | 'reply' | 'decision'; readonly body: readonly MessagePart[]; readonly replyTo?: MessageId; readonly discussionRoot?: MessageId; readonly startDiscussion?: boolean }
   | { readonly action: 'respond'; readonly operationId: string; readonly delegation: DelegationId; readonly response: 'accept' | 'reject' | 'clarify'; readonly reason?: string }

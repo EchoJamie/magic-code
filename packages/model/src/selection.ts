@@ -45,7 +45,7 @@ export function reasoningFailure(
   return 'gap' in mapped ? mapped.gap : undefined
 }
 
-/** 组合变更即切断旧思考设置继承；只改连接取该连接用户默认模型。 */
+/** 已解析组合变更切断旧思考设置；连接不提供默认型号。 */
 export function resolveSelection(
   providers: Readonly<Record<string, ProviderConfig>>,
   layers: readonly (ModelSwitchRequest | undefined)[],
@@ -61,14 +61,10 @@ export function resolveSelection(
     }
     const provider = layer.provider ?? selected.provider
     const changedProvider = provider !== selected.provider
-    const model = layer.model ?? (changedProvider
-      ? (provider === undefined ? undefined : ownOf(providers, provider)?.model)
-      : selected.model)
+    const model = layer.model ?? selected.model
     const changed = changedProvider || model !== selected.model
-    const targetDefault = provider === undefined || model === undefined ? undefined
-      : ownOf(ownOf(providers, provider)?.modelOverrides ?? {}, model)?.reasoning
-    const reasoning = layer.reasoning !== undefined ? layer.reasoning : (changed ? targetDefault : selected.reasoning)
-    selected = { provider, model, reasoning }
+    const reasoning = layer.reasoning !== undefined ? layer.reasoning : (changed ? undefined : selected.reasoning)
+    selected = { alias: layer.alias ?? selected.alias, provider, model, reasoning }
   }
   const { provider, model, reasoning } = selected
   if (provider === undefined) return { ok: false, reason: '还没有可用的连接——先接入一个供应商' }
@@ -78,13 +74,14 @@ export function resolveSelection(
     return { ok: false, reason: `未知供应商适配「${config.vendor}」` }
   }
   if (model === undefined || model.trim() === '') return { ok: false, reason: `连接「${provider}」还没有默认模型——请指明用哪个模型` }
+  if (selected.alias === undefined || !['default', 'cantrip', 'spell', 'arcane'].includes(selected.alias)) return { ok: false, reason: '有效选择缺少来源；请在 /model 明确选择 Default 或模型档位' }
   const known = modelInfoOf?.(provider, model)
   const chat = ownOf(config.modelOverrides ?? {}, model)?.capabilities?.chat ?? (known?.id === model ? known.capabilities?.chat : undefined)
   if (chat === false) return { ok: false, reason: `模型「${model}」不支持对话` }
   const failure = reasoningFailure(config, model, reasoning, known)
   if (failure !== undefined) return { ok: false, reason: failure }
   // 显式 default 必须保留，不能被配置里的精确型号覆盖重新替换。
-  const selection: ModelSelection = Object.freeze({ provider, model,
+  const selection: ModelSelection = Object.freeze({ alias: selected.alias, provider, model,
     ...(reasoning === undefined ? {} : { reasoning: Object.freeze({ ...reasoning }) }) })
   return { ok: true, selection }
 }

@@ -58,7 +58,7 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Prom
  * 立一摊（真管理者 ＋ **记下发车参数的假执行者**），连一个带 `hello` 入参的窗口，
  * 再让它发一条会开张的命令——**交回管理者收到的那几条发车参数**。
  */
-async function spawnedWith(connect: { allowAll?: boolean; switch?: { model: string } }): Promise<readonly ExecutorRequest[]> {
+async function spawnedWith(connect: { allowAll?: boolean; switch?: { alias: 'default' } }): Promise<readonly ExecutorRequest[]> {
   const g = ground('spawn')
   const requests: ExecutorRequest[] = []
   let exit: ((reason: string) => void) | undefined
@@ -131,8 +131,8 @@ describe('U73 · 全放行走的是「窗口 hello → 发车参数」那条线'
    * 免得将来有人只删掉 `switch` 那一行的转交而毫无察觉（那是**静默**的那种坏）。
    */
   test('同一条线上的 `switch`（`--provider` / `--model`）也到得了', async () => {
-    const requests = await spawnedWith({ switch: { model: 'MiniMax-M3' } })
+    const requests = await spawnedWith({ switch: { alias: 'default' } })
 
-    expect(requests[0]?.switch).toEqual({ model: 'MiniMax-M3' })
+    expect(requests[0]?.switch).toEqual({ alias: 'default' })
   })
 })

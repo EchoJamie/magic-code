@@ -36,6 +36,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const closedViews: { at: number; livePids: (number | undefined)[]; exitedPids: (number | undefined)[] }[] = []
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     try {
+      if (request.method === 'GET') return Response.json({ data: [{ id: 'entry-model' }, { id: 'member-model' }, { id: 'descendant-model' }] })
       const body = await request.json() as Record<string, unknown>
       const model = String(body['model'])
       const call = { at: Date.now(), body, model, index: calls.filter(one => one.model === model).length }
@@ -53,8 +54,8 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     }
   } })
   const configPath = join(magic.base, 'config.json')
-  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], defaultProvider: 'controlled',
-    providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only', model: 'entry-model' } },
+  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], modelAliases: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
+    providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' } },
   }))
   const paths = runPathsOf(magic, dataDir, tmpdir())
   const launcher = createProcessLauncher()
@@ -160,5 +161,5 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
 }
 
 export const spawnMember: ModelReply = { tool: 'agent_spawn', args: { operationId: 'spawn-member', name: '实现', responsibility: '独立检查回调', scope: '回调兼容',
-  body: [{ kind: 'text', text: '核对回调兼容；先判断是否接受，问题明确回报入口。' }], model: { provider: 'controlled', model: 'member-model' } } }
+  body: [{ kind: 'text', text: '核对回调兼容；先判断是否接受，问题明确回报入口。' }], model: { alias: 'spell' }, modelReason: '独立执行回调兼容检查' } }
 export const requestText = (call: HttpCall | undefined): string => JSON.stringify(call?.body['messages'])

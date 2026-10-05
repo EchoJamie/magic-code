@@ -92,11 +92,10 @@ function fakeWeb(): WebSource & { readonly asked: string[] } {
 function stageOn(fixture: Fixture, options: { readonly rules?: readonly unknown[] } = {}) {
   return makeStage({
     config: {
-      defaultProvider: 'local',
+      modelAliases: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: "local", model: DISTILL_MODEL}, spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
-        local: { baseURL: fixture.baseURL, apiKey: FAKE_API_KEY, model: SESSION_MODEL },
+        local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
-      webFetch: { provider: 'local', model: DISTILL_MODEL },
       ...(options.rules === undefined ? {} : { permissions: { rules: options.rules } }),
     },
   })

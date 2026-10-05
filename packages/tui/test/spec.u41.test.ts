@@ -104,7 +104,8 @@ function conn(
 function open(stage: Stage, entries: readonly ModelCatalogRow[], current?: ModelRef): void {
   stage.type('/model')
   stage.press({ kind: 'enter' })
-  stage.feed([event('model.catalog', { entries, ...(current === undefined ? {} : { current }) })])
+  stage.feed([event('model.catalog', { entries, aliases: current === undefined ? {} : { default: current }, ...(current === undefined ? {} : { current: { alias: 'default', ...current } }) })])
+  stage.press({ kind: 'enter' }) // Default 映射编辑：实际型号只在配置层展示
 }
 
 /**
@@ -216,8 +217,8 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
     // 设计：「模型不在最新列表时，已有选择仍明确保留并提示此事实」。
     const stage = createStage()
     open(stage, [
-      conn('personal', { model: 'retired-model', cache: cacheOf({ models: ['MiniMax-M3'] }) }),
-    ])
+      conn('personal', { cache: cacheOf({ models: ['MiniMax-M3'] }) }),
+    ], { provider: 'personal', model: 'retired-model' })
 
     const rows = modelOnly(stage)
     expect(rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'retired-model'])
@@ -245,12 +246,12 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
     expect(stage.shell.getView().dock.kind).toBe('picker')
     const rows = pickerOf(stage)?.rows ?? []
     expect(rows.some((row) => /连接|接入/.test(row.label))).toBe(true)
-    expect(pickerOf(stage)?.hint).toContain('还没有接上任何供应商')
+    expect(pickerOf(stage)?.hint).toContain('使用此模型开始')
   })
 
   test('一条连接、但**还没取过模型**：模型行照列（连接默认），入口行也在', () => {
     const stage = createStage()
-    open(stage, [conn('personal', { vendor: 'minimax', model: 'MiniMax-M3' })])
+    open(stage, [conn('personal', { vendor: 'minimax' })], { provider: 'personal', model: 'MiniMax-M3' })
 
     expect(modelOnly(stage).map((row) => row.label)).toEqual(['MiniMax-M3'])
     expect(pickerOf(stage)?.rows.some((row) => row.label === '连接供应商')).toBe(true)
@@ -320,7 +321,7 @@ describe('③ 选定＝换模型，**不是发送**', () => {
 
     expect(sent(stage)).toEqual([
       { type: 'model.list' },
-      { type: 'model.switch', provider: 'personal', model: 'MiniMax-Text-01' },
+      { type: 'model.alias.set', alias: 'default', provider: 'personal', model: 'MiniMax-Text-01', initialize: true },
     ])
     expect(stage.commands().some((one) => one.type === 'input.submit')).toBe(false)
     expect(stage.shell.getView().dock.kind).toBe('input')
@@ -332,10 +333,10 @@ describe('③ 选定＝换模型，**不是发送**', () => {
     stage.press({ kind: 'enter' })
 
     const before = stage.shell.getView().settled.length
-    stage.feed([event('model.switched', { ok: true, provider: 'personal', model: 'MiniMax-M3' })])
+    stage.feed([event('model.switched', { alias: 'default', ok: true, provider: 'personal', model: 'MiniMax-M3' })])
 
     expect(stage.shell.getView().settled.length).toBe(before + 1)
-    expect(stage.shell.getView().status.model).toBe('MiniMax-M3')
+    expect(stage.shell.getView().status.model).toBe('Default')
   })
 })
 
@@ -866,7 +867,7 @@ describe('⑫ 详情：`→` 进这一条，看规格、改思考、设为默认
     atDetail(stage)
 
     expect(pickerOf(stage)?.source).toBe('model-detail')
-    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['reasoning', 'default'])
+    expect(pickerOf(stage)?.rows.map((row) => row.value)).toEqual(['back'])
     const hint = pickerOf(stage)?.hint ?? ''
     expect(hint).toContain('规格：')
     expect(hint).toContain('缓存：')
@@ -877,99 +878,6 @@ describe('⑫ 详情：`→` 进这一条，看规格、改思考、设为默认
     atDetail(stage, 1) // 第二条（那条没有 limits）
 
     expect(pickerOf(stage)?.hint).toContain('规格：供应商没给')
-  })
-
-  test('思考那一屏的**行由能力描述长出来**：模型默认 ＋ 明确关闭 ＋ 两个档位', () => {
-    const stage = createStage()
-    atDetail(stage)
-    stage.press({ kind: 'enter' }) // 第一行＝思考设置
-
-    expect(pickerOf(stage)?.source).toBe('model-reasoning')
-    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['模型默认', '明确关闭', 'low', 'high'])
-    expect(pickerOf(stage)?.rows[0]?.current).toBe(true) // 没设过＝模型默认
-  })
-
-  test('没声明思考能力 ⇒ **只有「模型默认」**，说明如实说（不编档位）', () => {
-    const stage = createStage()
-    atDetail(stage, 1) // 第二条：没有 reasoning 声明
-    stage.press({ kind: 'enter' })
-
-    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['模型默认'])
-    expect(pickerOf(stage)?.hint).toContain('没有声明思考档位')
-  })
-
-  test('选定一个档位 ⇒ `model.switch` 带上它（思考随同验证）', () => {
-    const stage = createStage()
-    atDetail(stage)
-    stage.press({ kind: 'enter' })
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'down' }) // 「low」
-    stage.press({ kind: 'enter' })
-
-    expect(sent(stage).at(-1)).toEqual({
-      type: 'model.switch',
-      provider: 'personal',
-      model: 'MiniMax-M3',
-      reasoning: { mode: 'level', level: 'low' },
-    })
-  })
-
-  test('设为默认 ⇒ `model.default.set`（没选过思考设置就**不带**那一位）', () => {
-    // 设计：换当前模型与保存默认**分开**；默认那一笔不替用户编思考设置（缺省＝模型默认）。
-    const stage = createStage()
-    atDetail(stage)
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'enter' })
-
-    expect(sent(stage).at(-1)).toEqual({
-      type: 'model.default.set',
-      provider: 'personal',
-      model: 'MiniMax-M3',
-    })
-  })
-
-  test('选过思考设置之后设为默认 ⇒ 把它一并存下来', () => {
-    const stage = createStage()
-    atDetail(stage)
-    stage.press({ kind: 'enter' }) // 思考设置
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'down' }) // 「high」
-    stage.press({ kind: 'enter' })
-
-    atDetail(stage) // 回列表再进详情
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'enter' }) // 设为默认
-
-    expect(sent(stage).at(-1)).toEqual({
-      type: 'model.default.set',
-      provider: 'personal',
-      model: 'MiniMax-M3',
-      reasoning: { mode: 'level', level: 'high' },
-    })
-  })
-
-  test('**换了模型就不带过去**——思考设置按「连接 ＋ 模型」那一对记着', () => {
-    // 设计：「组合改变而未显式指定思考设置时取目标模型默认，**不把原模型的档位或预算
-    // 盲目带过去**」。
-    const stage = createStage()
-    atDetail(stage)
-    stage.press({ kind: 'enter' })
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'enter' }) // 给 MiniMax-M3 选了 high
-
-    // 换到另一条模型，再进它的详情
-    atDetail(stage, 1) // 第二条：MiniMax-Text-01
-    stage.press({ kind: 'down' })
-    stage.press({ kind: 'enter' }) // 设为默认
-
-    expect(sent(stage).at(-1)).toEqual({
-      type: 'model.default.set',
-      provider: 'personal',
-      model: 'MiniMax-Text-01',
-    })
   })
 })
 
@@ -1058,7 +966,7 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     //    （与草稿那一片同一条规矩；不这么算，说明一长就把记录区挤没——真跑量到过）
     // 额度 ＝ 半屏 12 − 说明 1 行 ＝ 11；**常驻行先占 3**（入口那三条）⇒ 折得动的那一段 8 格：
     // 画 7 条 ＋ 1 行折叠提示 ⇒ 余 23
-    expect(frame.has('… 下面还有 23 条')).toBe(true)
+    expect(frame.has('… 下面还有 24 条')).toBe(true)
   })
 
   test('**焦点可见**：`↓` 挪出这一窗之后窗口跟着平移，选中那条仍在屏上', async () => {
@@ -1069,7 +977,7 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     const frame = await stage.screen({ columns: 60, rows: 24 })
 
     expect(frame.has('model-15')).toBe(true) // 选中那条（第 16 行）
-    expect(frame.has('… 上面还有 10 条')).toBe(true) // 上头折起来的如实报
+    expect(frame.has('… 上面还有 11 条')).toBe(true) // 上头折起来的如实报
     expect(frame.has('model-0　')).toBe(false) // 折起来的那几条确实没画
   })
 
@@ -1136,9 +1044,12 @@ describe('⑨ 换模型**不动用户默认**（两件事分开）', () => {
   test('选定只发那两条（读面 ＋ 切换）——没有「保存默认」那一类', () => {
     // 设计（模型与上下文 · 4）：选模型只改当前 Agent；保存默认是**另一次明确动作**。
     const stage = createStage()
-    open(stage, [conn('personal', { cache: cacheOf({ models: ['MiniMax-M3'] }) })])
+    stage.type('/model')
     stage.press({ kind: 'enter' })
-
-    expect(sent(stage).map((one) => one.type)).toEqual(['model.list', 'model.switch'])
+    stage.feed([event('model.catalog', { entries: [], aliases: { default: { provider: 'personal', model: 'MiniMax-M3' } } })])
+    for (let i = 0; i < 4; i++) stage.press({ kind: 'down' })
+    stage.press({ kind: 'enter' })
+    stage.press({ kind: 'enter' })
+    expect(sent(stage)).toEqual([{ type: 'model.list' }, { type: 'model.switch', alias: 'default' }])
   })
 })

@@ -110,7 +110,7 @@ export type ExecutorOptions = {
    * 环境自己解析一遍，读到的是开发者**真那份**配置（`launch.ts` 头注同此）。
    */
   readonly magic: MagicHome
-  /** **开局的换模型请求**（`--provider` / `--model`）——装配之后、开工之前落地。 */
+  /** **开局的换模型请求**（`--model`）——装配之后、开工之前落地。 */
   readonly switch?: ModelSwitchRequest | undefined
   /**
    * **全放行**（U73）——命令行 `--allow-all` 在这一个窗口上定下的那个布尔。
@@ -210,9 +210,15 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
    */
   if (options.switch !== undefined) {
     const result = assembly.switchModel(options.switch)
-    // 成没成都**如实记**：失败是一句给人看的回执（`--script` 那条路会当场停，
-    // 而这里是**带在路上的窗口**——停不得，故报一句、接着开工）
-    options.log?.(result.ok ? `开局选中 → ${result.selection.model}` : `开局选中没成：${result.reason}`)
+    if (!result.ok) {
+      link.send({ t: 'hello', role: 'executor', token: options.token, session: options.session, workspace: [] })
+      link.send({ t: 'done', why: result.reason })
+      await assembly.shutdown()
+      assembly.close()
+      link.close()
+      return { kind: 'failed', reason: result.reason }
+    }
+    options.log?.(`开局选中 → ${result.selection.alias}`)
   }
 
   // **登记**（`hello`）在装配之后发：工作区整组根是装配才算得出来的
@@ -517,7 +523,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   link.onMessage((message: ManagerToExecutor) => {
     switch (message.t) {
       case 'collaboration.configure':
-        link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.switchModel(message.model) })
+        link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.applyModel(message.model) })
         return
       case 'collaboration.input':
         void assembly.supplementCollaboration(message.input, message.shared)

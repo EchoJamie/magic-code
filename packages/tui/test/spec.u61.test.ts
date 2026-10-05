@@ -94,7 +94,7 @@ function conn(
   return {
     provider,
     ...(options.name === undefined ? {} : { name: options.name }),
-    ...(options.model === undefined ? {} : { model: options.model }),
+    ...(options.model === undefined || options.cache !== undefined ? {} : { cache: { snapshot: { provider, scope: 'test', fetchedAt: 1, models: [{ id: options.model }] } } }),
     ...(options.cache === undefined ? {} : { cache: options.cache }),
   }
 }
@@ -112,6 +112,7 @@ function openModel(stage: Stage, entries: readonly ModelCatalogRow[], at = 0): v
   stage.type('/model')
   stage.press(ENTER)
   stage.feed([event('model.catalog', { entries })])
+  stage.press(ENTER) // Default 映射编辑层
   for (let step = 0; step < at; step += 1) stage.press(DOWN)
 }
 
@@ -230,15 +231,13 @@ describe('② `/model`：`→` 看详情 · 详情里进思考那一屏', () => 
     stage.press(RIGHT)
     expect(pickerOf(stage)?.source).toBe('model-detail')
 
-    stage.press(ENTER) // 第一行＝思考设置
-    expect(pickerOf(stage)?.source).toBe('model-reasoning')
-
-    stage.press(LEFT)
-    expect(pickerOf(stage)?.source).toBe('model-detail')
+    expect(pickerOf(stage)?.rows.map(row => row.value)).toEqual(['back'])
 
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model')
 
+    stage.press(LEFT)
+    expect(pickerOf(stage)?.source).toBe('model')
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('input')
   })
@@ -276,6 +275,8 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
     expect(pickerOf(stage)?.selected).toBe(1) // 焦点照旧
 
     stage.press(LEFT)
+    expect(pickerOf(stage)?.source).toBe('model')
+    stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('input')
   })
 
@@ -300,7 +301,9 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
     expect(pickerOf(stage)?.source).toBe('model')
 
     stage.press(LEFT)
-    expect(dockOf(stage).kind).toBe('input') // 一次就收到底（底下没有「上一屏」）
+    expect(pickerOf(stage)?.source).toBe('model') // 回设置层
+    stage.press(LEFT)
+    expect(dockOf(stage).kind).toBe('input')
   })
 
   test('**入口行那一跳不闪输入行**——等答复那几毫秒里，屏上留的是刚才那一屏', () => {
@@ -383,7 +386,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
     {
       provider: 'minimax',
       name: '个人版',
-      model: 'MiniMax-M3',
+
       cache: {
         snapshot: {
           provider: 'x',
@@ -394,7 +397,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
       } satisfies ModelInfoRead,
     },
   ]
-  const CURRENT = { provider: 'minimax', model: 'MiniMax-M3' }
+  const CURRENT = { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' }
 
   /** 开那一扇门：打 `/config` ＋ 回车 → 内核回三份读数（U71）。 */
   function openConfig(stage: Stage): void {
@@ -647,7 +650,7 @@ describe('⑧ 键位提示里报出 `←`', () => {
         active: 's1',
         sessions: [{ id: 's1', at: 0, title: '记录查询优化与缓存重做' }],
       }),
-      event('model.switched', { ok: true, model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
     atKeyPrompt(stage)

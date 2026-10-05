@@ -42,7 +42,7 @@ function bytesUnder(path: string): Record<string, string> {
 describe('无执行者的真实只读目录', () => {
   test('七类查询不联网/不派生进程/不写文件、不建session、不消耗未读；缺key仍能展示配置', async () => {
     const g = ground()
-    g.configure({ ds: { vendor: 'deepseek', model: 'deepseek-chat' } }, { defaultProvider: 'ds' })
+    g.configure({ ds: { vendor: 'deepseek' } }, { modelAliases: { default: { provider: 'ds', model: 'deepseek-chat' } } })
     const skillDir = join(g.workspace, '.magic/skills/local')
     mkdirSync(skillDir, { recursive: true })
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: local\ndescription: 本地真实技能\n---\n正文不进入目录\n')
@@ -59,7 +59,7 @@ describe('无执行者的真实只读目录', () => {
     try {
       const models = await answer({ type: 'model.list' }, g.context, 'model.catalog')
       expect(models.entries.map((row) => row.provider)).toEqual(['ds'])
-      expect(models.current).toEqual({ provider: 'ds', model: 'deepseek-chat' })
+      expect(models.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-chat' })
       const providers = await answer({ type: 'provider.list' }, g.context, 'provider.catalog')
       expect(providers.vendors.length).toBeGreaterThan(0)
       expect(providers.entries).toEqual(models.entries)
@@ -84,8 +84,8 @@ describe('无执行者的真实只读目录', () => {
 
   test('缓存按原接入身份与scope读取，过期照实标记；pure peek不隐式refresh，预算同域判定', async () => {
     const g = ground()
-    const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'test-secret', model: 'catalog-only' }
-    g.configure({ ds: config }, { defaultProvider: 'ds' })
+    const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'test-secret' }
+    g.configure({ ds: config }, { modelAliases: { default: { provider: 'ds', model: 'catalog-only' } } })
     const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
     const cache = createFileModelInfoCache(g.dataDir)
     const snapshot = { provider: 'ds', scope: `deepseek@${resolveConnection({ providerId: 'ds', config }).baseURL}`, fetchedAt: 1,
@@ -107,13 +107,13 @@ describe('无执行者的真实只读目录', () => {
 
   test('只给provider/只给model复用域内选择，缺默认与非法选择具体失败；配置与技能每次现读', async () => {
     const g = ground()
-    g.configure({ a: { baseURL: 'http://unreachable', model: 'first' }, b: { baseURL: 'http://unreachable', model: 'second' } }, { defaultProvider: 'a' })
-    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { provider: 'b' } }, 'model.catalog')).current).toEqual({ provider: 'b', model: 'second' })
-    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { model: 'alternate' } }, 'model.catalog')).current).toEqual({ provider: 'a', model: 'alternate' })
-    await expect(query({ type: 'model.list' }, { ...g.context, switch: { provider: 'absent' } })).rejects.toThrow('未知供应商')
+    g.configure({ a: { vendor: 'minimax', baseURL: 'http://unreachable' }, b: { vendor: 'minimax', baseURL: 'http://unreachable' } }, { modelAliases: { default: { provider: 'a', model: 'first' }, cantrip: { provider: 'b', model: 'second' }, spell: { provider: 'a', model: 'alternate' } } })
+    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { alias: 'cantrip' } }, 'model.catalog')).current).toEqual({ alias: 'cantrip' as const, provider: 'b', model: 'second' })
+    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { alias: 'spell' } }, 'model.catalog')).current).toEqual({ alias: 'spell' as const, provider: 'a', model: 'alternate' })
+    await expect(query({ type: 'model.list' }, { ...g.context, switch: { alias: 'arcane' } })).rejects.toThrow('尚未配置')
     g.configure({ b: { vendor: 'deepseek' } })
     expect((await answer({ type: 'model.list' }, g.context, 'model.catalog')).current).toBeUndefined()
-    await expect(query({ type: 'model.list' }, { ...g.context, switch: { provider: 'b' } })).rejects.toThrow('还没有默认模型')
+    await expect(query({ type: 'model.list' }, { ...g.context, switch: { alias: 'cantrip' } })).rejects.toThrow('尚未配置')
     expect((await answer({ type: 'skills.list' }, g.context, 'skills.catalog')).skills).toEqual([])
     const path = join(g.workspace, '.magic/skills/late')
     mkdirSync(path, { recursive: true }); writeFileSync(join(path, 'SKILL.md'), '---\nname: late\ndescription: 后到的技能\n---\n')
@@ -126,25 +126,25 @@ describe('无执行者的真实只读目录', () => {
 
   test('观察面切换按目标缓存拒绝不支持档位，换供应商或型号不沿用旧思考；不联网或改原选择', async () => {
     const g = ground()
-    const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'local-cache-test', model: 'same', reasoning: { mode: 'level', level: 'low' } }
-    g.configure({ ds: config, mm: { vendor: 'minimax', model: 'same' } }, { defaultProvider: 'ds' })
+    const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'local-cache-test' }
+    g.configure({ ds: config, mm: { vendor: 'minimax' } }, { modelAliases: { default: { provider: 'ds', model: 'same' }, cantrip: { provider: 'mm', model: 'same' }, spell: { provider: 'ds', model: 'other' } } })
     const cache = createFileModelInfoCache(g.dataDir)
     const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
     await cache.replace({ provider: 'ds', scope: `deepseek@${resolveConnection({ providerId: 'ds', config }).baseURL}`, fetchedAt: 1,
       models: [{ id: 'same', reasoning: { levels: ['low'], disable: false } }],
     }, access)
-    const selection = { provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'low' } }
+    const selection = { alias: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'low' } }
     const context = { ...g.context, selection }
     const before = bytesUnder(g.root)
     const fetch = spyOn(globalThis, 'fetch').mockImplementation((() => { throw new Error('观察切换不能联网') }) as unknown as typeof globalThis.fetch)
     try {
       await expect(query({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'level', level: 'high' } } })).rejects.toThrow('不支持思考档位')
       await expect(query({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'off' } } })).rejects.toThrow('未声明支持关闭')
-      await expect(query({ type: 'model.list' }, { ...context, switch: { provider: 'mm', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
+      await expect(query({ type: 'model.list' }, { ...context, switch: { alias: 'cantrip', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
       expect((await answer({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'level', level: 'low' } } }, 'model.catalog')).current).toEqual(selection)
-      expect((await answer({ type: 'model.list' }, { ...context, switch: { provider: 'mm' } }, 'model.catalog')).current).toEqual({ provider: 'mm', model: 'same' })
-      expect((await answer({ type: 'model.list' }, { ...context, switch: { model: 'other' } }, 'model.catalog')).current).toEqual({ provider: 'ds', model: 'other' })
-      expect(selection).toEqual({ provider: 'ds', model: 'same', reasoning: { mode: 'level', level: 'low' } })
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { alias: 'cantrip' } }, 'model.catalog')).current).toEqual({ alias: 'cantrip' as const, provider: 'mm', model: 'same' })
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { alias: 'spell' } }, 'model.catalog')).current).toEqual({ alias: 'spell' as const, provider: 'ds', model: 'other' })
+      expect(selection).toEqual({ alias: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level', level: 'low' } })
       expect((await answer({ type: 'model.list' }, context, 'model.catalog')).current).toEqual(selection)
       expect(bytesUnder(g.root)).toEqual(before)
       expect(fetch).not.toHaveBeenCalled()
@@ -178,7 +178,7 @@ describe('无执行者的真实只读目录', () => {
     const g = ground()
     writeFileSync(join(g.base, 'config.json'), '{broken')
     for (const command of [
-      { type: 'session.list' }, { type: 'history.read' }, { type: 'model.switch', provider: 'ds' },
+      { type: 'session.list' }, { type: 'history.read' }, { type: 'model.switch', alias: 'default' },
       { type: 'mcp.reconnect', server: 'real' }, { type: 'input.submit', text: '明确输入' },
       { type: 'grants.revoke', index: 0 },
     ] satisfies Command[]) expect(await query(command, g.context)).toBeUndefined()

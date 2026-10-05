@@ -10,9 +10,8 @@
  */
 
 import type { McpConfig } from './mcp.ts'
-import type { ProviderModelOverride, ReasoningSetting } from './model.ts'
-import type { ModelTraits } from './ports.ts'
-import type { AgentModelConfig } from './collaboration.ts'
+import type { ModelAliases, ProviderModelOverride } from './model.ts'
+import type { ModelSwitchRequest } from './control.ts'
 
 /**
  * **Magic 基础目录的末段名**（U42）——统一基础路径 ＝ `<MAGIC_HOME 或 $HOME>` ＋ 它。
@@ -128,38 +127,13 @@ export type ProviderConfig = {
   /** 空 / 缺省 → 回退环境变量（见 `apiKeyEnvVarOf`）；**永不入记录 / 事件**。 */
   readonly apiKey?: string
   /**
-   * 此连接的**用户默认选择**——可省略。
-   *
-   * **省略 ＝ 还没选过**（新接入的连接就是这样）：不取列表第一项、不偷偷设默认，
-   * 首次运行由用户选一次（设计：「没有保存默认时，不把列表首项/最新项偷偷设为默认」）。
-   * 默认型号变更后未明确指定思考设置时，采用**目标模型**的默认。
-   */
-  readonly model?: string
-  /** 该模型的思考设置——可省略（缺省＝模型默认）。形态见 `model.ts` · `ReasoningSetting`。 */
-  readonly reasoning?: ReasoningSetting
-  /**
    * 按**精确模型 id** 的少量必要覆盖——不作为模型注册要求。
    *
    * 与缓存**分开存**（不改写缓存来伪装供应商声明）；消费时优先级最高。
    * 形态见 `model.ts` · `ProviderModelOverride`。
    */
   readonly modelOverrides?: Readonly<Record<string, ProviderModelOverride>>
-  /**
-   * **模型特征标记的覆盖位**（旧形制）——U41 起读作「该连接 `model` 那一个」的精确覆盖。
-   * 判据「**键在即接管**」——本键存在即**整组覆盖**内置表（含 `{}` ＝显式声明无特征）；
-   * 键缺省 → 常规行为（不猜、不切）。形态见 `ports.ts` · `ModelTraits`。
-   */
-  readonly traits?: ModelTraits
-  /**
-   * **上下文窗口总量**（token，旧形制）——状态行 `12.4k/200k` 的**分母**。
-   *
-   * U41 起与 `traits` 同一条读法：**只映射为该连接 `model` 那一个模型的精确覆盖**
-   * （声明属于「这一条目 ＋ 它的模型」两件）——同条目换到别的模型时这份声明不跟过去，
-   * 那个模型多长查模型信息缓存与缺项补充，查不到就是不知道（分母不给）。
-   *
-   * **缺省 ＝ 不给分母**——外壳显示不出 `12.4k/200k` 就不显示（拿不到就说拿不到）。
-   */
-  readonly contextWindow?: number
+
 }
 
 /**
@@ -275,25 +249,13 @@ export type AgentRoleConfig = {
   readonly skills?: readonly string[]
   /** 可用工具的收窄范围；缺省不另收窄，空数组表示不使用工具。 */
   readonly tools?: readonly string[]
-  readonly model?: Partial<AgentModelConfig>
+  readonly model?: ModelSwitchRequest
 }
 
-/**
- * 配置形制（首站 · 字面冻结）——`{ defaultProvider, providers, dataDir }`；
- * **阶段 2 加键 `permissions`**；**阶段 3 加键 `workspaceRoots` / `rules` / `skills`**；
- * **首批功能加键 `mcp`**（U38）。
- * **「参数」暂不入首站形制**——供应商差异封接缝（取件层常量），需要时按生长加键。
- */
+
 export type MagicConfig = {
   readonly agentRoles?: Readonly<Record<string, AgentRoleConfig>>
-  /**
-   * 新建普通会话采用**哪个连接的默认选择**（U41 起可缺省）。
-   *
-   * 缺省 ＝ 还没有默认（新装 / 还没接过）：**进入接入或选择流程，不取列表第一项**，
-   * 也不在启动阶段以「缺配置」退出（设计 · 命令行与配置：「首次无配置/空连接允许进入
-   * 接入流程」）。用户选定后才由「设为默认」写回这里与对应连接的 `model`。
-   */
-  readonly defaultProvider?: string
+  readonly modelAliases?: ModelAliases
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly dataDir: string
   /** 权限段（阶段 2）——见 `PermissionsConfig`。 */
@@ -315,21 +277,6 @@ export type MagicConfig = {
    * 外部工具就一件都出不来，且不报错。
    */
   readonly mcp?: McpConfig
-  /**
-   * **「取网页」的提炼模型**（U72）——这一件**自己那一条**，`/config` 里那一行将来写的就是它。
-   *
-   * ⚠️ **不跟当前会话的模型走**（2026-09-25 用户定）：取网页省的是**上下文**，
-   * 而用哪个模型来提炼**是可以另外挑的**（想省钱就挑个小的）。两者混成一位，
-   * 「这一趟用了哪个模型」就只能靠猜——那正是本条要消掉的那件事。
-   *
-   * ⚠️ **缺省 ＝ 还没配**（与 `defaultProvider` 同一姿势，见其注）：**不取列表第一项顶上、
-   * 也不回落到当前会话那个模型**。没配时「取网页」这一件**明说取不到**
-   * （工单第 5 条：这一轮就地收束），并指路去 `/config` 挑一个。
-   *
-   * ⚠️ **`/config` 那一行不在 U72**（那一屏归 U71）：本单元只做「读这一条 ＋ 没配时明说」，
-   * 键先落在这里，供那一行将来写。
-   */
-  readonly webFetch?: WebFetchConfig
   /**
    * **状态行放哪几格**（U112）——见 `StatusLineConfig`。**键缺省＝默认那条**（不配也能用）。
    */
@@ -390,20 +337,8 @@ export type MotionConfig = {
   readonly reduced?: boolean
 }
 
-/**
- * 「取网页」用哪个模型（`MagicConfig.webFetch`）——**供应商 ＋ 型号**两件都要。
- *
- * 两件都要的理由与 `ModelSelection` 同一条：只写型号不写连接，同名型号落在哪一家就说不清
- * （供应商型号空间各不相干）；只写连接不写型号，那个连接的默认选择未必是用户这一件事想要的。
- *
- * **不含密钥**：凭据沿该连接既有的 `apiKey` / 环境变量机制取（`apiKeyEnvVarOf`）。
- */
-export type WebFetchConfig = {
-  /** 连接 id——须是 `providers` 里已有的那一个（加载时校验，缺了点名报错）。 */
-  readonly provider: string
-  /** 型号名。 */
-  readonly model: string
-}
+
+
 
 /**
  * 密钥的环境变量回退名——`apiKey` 空 / 缺省时读 `MAGIC_<PROVIDER>_API_KEY`：

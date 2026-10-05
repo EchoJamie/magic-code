@@ -299,22 +299,22 @@ describe('U72 · web_fetch ④ 没配提炼模型：这一轮停住', () => {
     expect(got.halt).toBe(true)
   })
 
-  test('两句话都在：模型看得到「还没配、取不到」；用户看得到「去 /config 挑一个」', async () => {
+  test('两句话都在：模型看得到「还没配、取不到」；用户看得到「去 /model 挑一个」', async () => {
     const web = fakeWeb((url) => okPage(url))
     const { deps } = toolWith({ web })
 
     const got = await callWebFetch(deps, { url: 'https://example.com/pricing', prompt: '多少钱？' })
 
-    expect(got.output).toContain('还没配提炼用的模型')
-    expect(got.output).toContain('/config')
+    expect(got.output).toContain('Cantrip 尚未配置')
+    expect(got.output).toContain('/model')
     // **首行**就是屏上工具行报的那一句（外壳取结果首行作结论）——它得自己说完整
-    expect(got.output.split('\n')[0]).toContain('还没配提炼用的模型')
+    expect(got.output.split('\n')[0]).toContain('Cantrip 尚未配置')
     // 点明两条都不做：不顶替模型、不绕道抓原文
     expect(got.output).toContain('不拿别的模型顶上')
     expect(got.output).toContain('绕道')
   })
 
-  test('首行**在 48 列以内说全**「去 /config 挑一个」——用户不必展开就看得见', async () => {
+  test('首行**在 48 列以内说全**「去 /model 挑一个」——用户不必展开就看得见', async () => {
     const web = fakeWeb((url) => okPage(url))
     const { deps } = toolWith({ web })
 
@@ -325,11 +325,11 @@ describe('U72 · web_fetch ④ 没配提炼模型：这一轮停住', () => {
      * 48 是**屏上那半句结论的宽度**（`@magic/tui` · `log.ts` 的 `firstLineOf`：
      * `truncateLine(line, 48)`）——它是**截断**不是折行，超出的部分不上屏。
      *
-     * ⚠️ 工单⑦要的是「**用户看得到「去 /config 挑一个」**」：那一句要是落在第 48 列之后，
+     * ⚠️ 工单⑦要的是「**用户看得到「去 /model 挑一个」**」：那一句要是落在第 48 列之后，
      * 用户就得先按 `ctrl+o` 才读得到——那不叫看得到。故这一条钉的是**排版**：
      * 改这句文案时，改到 48 列之外就是红的（不是「看着还行」）。
      */
-    expect(first).toContain('/config')
+    expect(first).toContain('/model')
     expect(displayWidth(first)).toBeLessThanOrEqual(48)
   })
 

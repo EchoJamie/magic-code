@@ -89,7 +89,7 @@ function streaming(body: string, thinking: string): Painted {
   frames.push(view)
 
   view = reduce(view, stamper.stamp('turn.start', {}))
-  view = reduce(view, stamper.stamp('model.call.start', { model: 'u23-model' }))
+  view = reduce(view, stamper.stamp('model.call.start', { alias: 'default', model: 'u23-model' }))
   frames.push(view)
 
   // 思考与正文都按小块流（真模型就是这么吐的）——**一帧就是一帧**，不合并。
@@ -141,7 +141,7 @@ function shortTurn(): Painted {
 
   let view = appendEcho(createView(), UTTERANCE)
   view = reduce(view, stamper.stamp('turn.start', {}))
-  view = reduce(view, stamper.stamp('model.call.start', { model: 'u23-model' }))
+  view = reduce(view, stamper.stamp('model.call.start', { alias: 'default', model: 'u23-model' }))
   view = reduce(view, stamper.stamp('model.delta', { channel: 'text', text: body }))
 
   return {

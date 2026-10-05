@@ -1,25 +1,4 @@
-/**
- * 配置加载 —— 装配视图第 1 步（技术方案 · 配置与密钥）。
- *
- * 读**基础目录**下的 `config.json`（默认 `~/.magic/config.json`；`MAGIC_HOME` 指到别处时
- * 跟着走——见契约 `resolveMagicHome`）；形制**字面冻结**：`{ defaultProvider, providers{<id>{baseURL,
- * apiKey, model, traits?, contextWindow?}}, dataDir }` → 校验 → 落地成 `LoadedConfig`。
- *
- * **三处规矩落在这里**：
- * - **`dataDir` 前导 `~` 在加载时展开**（契约 `expandHome`）——记录域**不展开**且对 `~`
- *   即拒（`assertPlainDataDir`）。字面 `~` 直通运行时库会在 cwd 下造一个名为 `~` 的目录，
- *   不报错；故展开**必须发生在交给记录域之前**，本文件是那一步。
- *   **工作区根同此**（U27）——同一个展开器、同一个落点（见 `asWorkspaceRoots` 头注）。
- * - **`dataDir` 的旧落点归位**（U42）——写着 `~/.magic` 及其子目录的，改走基础目录
- *   （见 `asDataDir` 头注）：旧配置不构成绕过 `MAGIC_HOME` 的例外。
- * - **key 不在这里解析**——解析归模型域的装配面（`resolveApiKey` / `createModelGateway`
- *   构造期抛 `MissingApiKeyError` 即启动期报错），**装配根是它唯一的调用者**；
- *   次序＝显式 → 配置 `apiKey` → `MAGIC_<ID>_API_KEY`。本文件只把 `ProviderConfig`
- *   原样交出去——**key 文本不落日志、不入事件、不入记录**（技术方案 · 配置与密钥）。
- *
- * 报错取「一声响」而非静默兜底：配置文件缺失 / JSON 坏 / 字段缺**都在启动期抛**——
- * 与记录域拒收 `~` 同一条口径（能靠设计兜底的，别靠自觉）。
- */
+
 
 import { readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -36,7 +15,9 @@ import type {
   ProviderModelOverride,
   ReasoningSetting,
   ReasoningSupport,
-  WebFetchConfig,
+  ModelTraits,
+  ModelAliases,
+  ModelAlias,
 } from '@magic/contracts'
 import {
   apiKeyEnvVarOf,
@@ -58,20 +39,13 @@ export class ConfigError extends Error {
   }
 }
 
-/**
- * 加载结果——**已校验 ＋ 已展开**的配置，外加「用哪个供应商」的落地。
- *
- * `config.dataDir` 已是字面路径（可直接交记录域）；`provider` 是 `providers[defaultProvider]`。
- */
+
 export type LoadedConfig = {
   /** 实际读的配置文件（已展开的绝对路径）——自检报告与报错都用它。 */
   readonly path: string
   /** 形制原样（`dataDir` 已展开）。 */
   readonly config: MagicConfig
-  /**
-   * `defaultProvider` 的落地——**没配过就不给**（U41 起可缺：首次接入 / 还没选过默认）。
-   * 它也是环境变量回退名（`apiKeyEnvVarOf`）的来源，故缺省时没有那一路回退可言。
-   */
+
   readonly providerId?: string
   /** `providers[providerId]` 原样——含 `traits` 覆盖位（模型域按「键在即接管」裁定）。 */
   readonly provider?: ProviderConfig
@@ -115,7 +89,7 @@ function asText(value: unknown, path: string, field: string): string {
 }
 
 /** `traits` 覆盖位——可选；形态照契约 `ModelTraits`（**键在即接管**，`{}` 是合法值）。 */
-function asTraits(value: unknown, path: string, field: string): ProviderConfig['traits'] {
+function asTraits(value: unknown, path: string, field: string): ModelTraits {
   const traits = asObject(value, path, field)
   const inline = traits['inlineThinking']
   if (inline === undefined) return {}
@@ -212,7 +186,6 @@ function asAgentRoles(
   value: unknown,
   path: string,
   home: string,
-  providers: MagicConfig['providers'],
 ): Readonly<Record<string, AgentRoleConfig>> {
   const raw = asObject(value, path, 'agentRoles')
   return Object.fromEntries(Object.entries(raw).map(([id, value]) => {
@@ -229,19 +202,14 @@ function asAgentRoles(
     if (role['model'] !== undefined) {
       const given = asObject(role['model'], path, `${field}.model`)
       for (const key of Object.keys(given)) {
-        if (!['provider', 'model', 'reasoning'].includes(key)) {
+        if (!['alias', 'reasoning'].includes(key)) {
           throw new ConfigError(path, `${field}.model.${key} 不是模型配置字段`)
         }
       }
-      const provider = asOptionalText(given['provider'], path, `${field}.model.provider`)
-      if (provider !== undefined && !Object.hasOwn(providers, provider)) {
-        throw new ConfigError(path, `${field}.model.provider 指向未知连接「${provider}」`)
-      }
-      const modelId = asOptionalText(given['model'], path, `${field}.model.model`)
+      const alias = given['alias'] === undefined ? undefined : asAlias(given['alias'], path, `${field}.model.alias`)
       const reasoning = given['reasoning'] === undefined ? undefined : asReasoning(given['reasoning'], path, `${field}.model.reasoning`)
       model = {
-        ...(provider === undefined ? {} : { provider }),
-        ...(modelId === undefined ? {} : { model: modelId }),
+        ...(alias === undefined ? {} : { alias }),
         ...(reasoning === undefined ? {} : { reasoning }),
       }
     }
@@ -279,7 +247,7 @@ function asLimits(value: unknown, path: string, field: string): ModelLimits {
 }
 
 /**
- * 按精确模型 id 的覆盖表（U41）——`{ limits?, traits?, reasoning? }`。
+ * 按精确模型 id 的规格与能力覆盖；思考设置归 Agent/角色。
  *
  * ⚠️ **漏带＝静默失效**（同权限段那几条教训）：配置里写了覆盖而这里不接，
  * 用户的明确声明就悄悄不起作用——且不报错。故这一行有测试钉着。
@@ -294,12 +262,9 @@ function asModelOverrides(
 
   for (const [id, entry] of Object.entries(raw)) {
     const one = asObject(entry, path, `${field}.${id}`)
+    if (Object.hasOwn(one, 'reasoning')) throw new ConfigError(path, `${field}.${id}.reasoning 已移除；思考设置请用于 Agent 或角色选择`)
     const limits = one['limits'] === undefined ? undefined : asLimits(one['limits'], path, `${field}.${id}.limits`)
     const traits = one['traits'] === undefined ? undefined : asTraits(one['traits'], path, `${field}.${id}.traits`)
-    const reasoning =
-      one['reasoning'] === undefined
-        ? undefined
-        : asReasoning(one['reasoning'], path, `${field}.${id}.reasoning`)
     const reasoningSupport = one['reasoningSupport'] === undefined ? undefined : asReasoningSupport(one['reasoningSupport'], path, `${field}.${id}.reasoningSupport`)
     let capabilities: ProviderModelOverride['capabilities']
     if (one['capabilities'] !== undefined) {
@@ -315,7 +280,6 @@ function asModelOverrides(
     overrides[id] = {
       ...(limits === undefined ? {} : { limits }),
       ...(traits === undefined ? {} : { traits }),
-      ...(reasoning === undefined ? {} : { reasoning }),
       ...(reasoningSupport === undefined ? {} : { reasoningSupport }),
       ...(capabilities === undefined ? {} : { capabilities }),
     }
@@ -324,19 +288,7 @@ function asModelOverrides(
   return overrides
 }
 
-/**
- * 一个供应商条目（U41 形制）——`{ vendor?, name?, region?, baseURL?, apiKey?, model?,
- * reasoning?, modelOverrides?, traits?, contextWindow? }`。
- *
- * **两条接入路径的必填项不同**（设计 · 命令行与配置「旧配置兼容与保存」）：
- * - **官方适配**（有 `vendor`）——地址由适配提供、型号来自接口缓存，故 `baseURL` 与
- *   `model` 都可省。写错 `vendor`（认不出）**不在这一层拒**：这一层只判形制，
- *   「这个 vendor 认不认识」归模型域的适配注册表——两处各判一遍就是两处各说一套。
- * - **兼容接入**（无 `vendor`）——走原协议、原地址与原默认模型，故两者**必给**：
- *   没有型号来源（无接口发现）、也没有地址可退。
- *
- * `model` 缺省 ＝ **还没选过默认**（不是错）：不取列表第一项，由用户选一次。
- */
+/** 接入身份与精确型号规格；连接本身不保存模型或思考默认。 */
 function asProvider(value: unknown, path: string, field: string): ProviderConfig {
   const raw = asObject(value, path, field)
   const apiKey = raw['apiKey']
@@ -345,30 +297,13 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
     throw new ConfigError(path, `${field}.apiKey 须是字符串（缺省 / 空串 → 回退环境变量）`)
   }
 
-  const contextWindow = asContextWindow(raw['contextWindow'], path, `${field}.contextWindow`)
-  const vendor = asOptionalText(raw['vendor'], path, `${field}.vendor`)
+  for (const key of ['model', 'reasoning', 'traits', 'contextWindow']) {
+    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${field}.${key} 已移除；模型选择请配置 modelAliases，规格请配置 modelOverrides`)
+  }
+  const vendor = asText(raw['vendor'], path, `${field}.vendor`)
   const baseURL = asOptionalText(raw['baseURL'], path, `${field}.baseURL`)
-  const model = asOptionalText(raw['model'], path, `${field}.model`)
-
-  if (vendor === undefined && baseURL === undefined) {
-    throw new ConfigError(
-      path,
-      `${field} 两样都没有——给 vendor（内置供应商：minimax / deepseek）走官方接入，` +
-        '或给 baseURL ＋ model 走原有的兼容接入',
-    )
-  }
-  if (vendor === undefined && model === undefined) {
-    throw new ConfigError(
-      path,
-      `${field}.model 没写——兼容接入（没有 vendor）没有型号来源，` +
-        '请写出这条连接默认用哪个模型',
-    )
-  }
-
   const name = asOptionalText(raw['name'], path, `${field}.name`)
   const region = asOptionalText(raw['region'], path, `${field}.region`)
-  const reasoning =
-    raw['reasoning'] === undefined ? undefined : asReasoning(raw['reasoning'], path, `${field}.reasoning`)
   const modelOverrides =
     raw['modelOverrides'] === undefined
       ? undefined
@@ -380,11 +315,7 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
     ...(region === undefined ? {} : { region }),
     ...(baseURL === undefined ? {} : { baseURL }),
     apiKey: apiKey as string | undefined,
-    ...(model === undefined ? {} : { model }),
-    ...(reasoning === undefined ? {} : { reasoning }),
     ...(modelOverrides === undefined ? {} : { modelOverrides }),
-    ...(raw['traits'] === undefined ? {} : { traits: asTraits(raw['traits'], path, `${field}.traits`) }),
-    ...(contextWindow === undefined ? {} : { contextWindow }),
   }
 }
 
@@ -612,30 +543,26 @@ function asMcpConfig(value: unknown, path: string): McpConfig {
   return { servers }
 }
 
-/**
- * `webFetch` 那一格（U72）——「取网页」的提炼模型：**供应商 ＋ 型号**两件都要。
- *
- * 两件都要的理由与 `ModelSelection` 同一条（只写型号说不清是哪一家）——见契约 `WebFetchConfig`。
- * 缺 / 空 / 类型不对一律点名报错（`asText` 的老口径：报错一律点到字段），
- * **不静默回落**到默认连接或当前会话那个模型（那正是这一格要消掉的那件事）。
- */
-function asWebFetch(
-  raw: unknown,
-  path: string,
-  providers: Readonly<Record<string, ProviderConfig>>,
-): WebFetchConfig | undefined {
-  if (raw === undefined) return undefined
 
-  const fields = asObject(raw, path, 'webFetch')
-  const provider = asText(fields['provider'], path, 'webFetch.provider')
-  const model = asText(fields['model'], path, 'webFetch.model')
-
-  if (providers[provider] === undefined) {
-    const known = Object.keys(providers).join(' / ') || '（一个都没有）'
-    throw new ConfigError(path, `webFetch.provider「${provider}」不在 providers 里——已配：${known}`)
+function asAlias(value: unknown, path: string, field: string): ModelAlias {
+  if (typeof value !== 'string' || !['default', 'cantrip', 'spell', 'arcane'].includes(value)) {
+    throw new ConfigError(path, `${field} 只能选择 default / cantrip / spell / arcane`)
   }
+  return value as ModelAlias
+}
 
-  return { provider, model }
+function asModelAliases(value: unknown, path: string, providers: MagicConfig['providers']): ModelAliases {
+  const raw = asObject(value, path, 'modelAliases')
+  return Object.fromEntries(Object.entries(raw).map(([key, value]) => {
+    const alias = asAlias(key, path, `modelAliases.${key}`)
+    const field = `modelAliases.${alias}`
+    const item = asObject(value, path, field)
+    for (const key of Object.keys(item)) if (!['provider', 'model'].includes(key)) throw new ConfigError(path, `${field}.${key} 不是模型映射字段`)
+    const provider = asText(item['provider'], path, `${field}.provider`)
+    const model = asText(item['model'], path, `${field}.model`)
+    if (!Object.hasOwn(providers, provider)) throw new ConfigError(path, `${field}.provider 指向未知连接「${provider}」`)
+    return [alias, { provider, model }]
+  }))
 }
 
 /**
@@ -693,11 +620,9 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
 
   const raw = asObject(parsed, path, '配置根')
 
-  // `defaultProvider` 与 `providers` 都**可缺**（U41）：还没接过东西的配置就是这样。
-  // 变宽松的只有「缺」这一种：写了但**指不到**照样报错（拼错名字是最常见的一种，
-  // 静默回落会让用户对着一条不生效的配置发呆）。
-  const providerId =
-    raw['defaultProvider'] === undefined ? undefined : asText(raw['defaultProvider'], path, 'defaultProvider')
+  for (const key of ['defaultProvider', 'webFetch']) {
+    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${key} 已移除；请在 modelAliases 配置 Default 与模型档位`)
+  }
 
   const providersRaw = raw['providers'] === undefined ? {} : asObject(raw['providers'], path, 'providers')
   const providers: Record<string, ProviderConfig> = {}
@@ -705,26 +630,10 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     providers[id] = asProvider(entry, path, `providers.${id}`)
   }
 
+  const modelAliases = raw['modelAliases'] === undefined ? undefined : asModelAliases(raw['modelAliases'], path, providers)
+  const providerId = modelAliases?.default?.provider
   const provider = providerId === undefined ? undefined : providers[providerId]
-  if (providerId !== undefined && provider === undefined) {
-    const known = Object.keys(providers).join(' / ') || '（一个都没有）'
-    throw new ConfigError(
-      path,
-      `defaultProvider「${providerId}」不在 providers 里——已配：${known}`,
-    )
-  }
-
-  /**
-   * `webFetch` 那一格的校验（U72）——与 `defaultProvider` 同一条姿势：
-   * 写了就要**指得到**。
-   *
-   * 两处都从严，理由同源：拼错连接名是最常见的一种，而**静默回落**会让人对着一条
-   * 不生效的配置发呆——在这一格上尤其闷（报出来的还是「还没配提炼用的模型」，
-   * 而用户明明配了）。型号那一格不校验有没有：型号清单来自供应商缓存，不在配置里
-   * （设计 · 命令行与配置：不要求用户登记型号）。
-   */
-  const webFetch = asWebFetch(raw['webFetch'], path, providers)
-  const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home, providers)
+  const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home)
 
   // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）＋ 旧落点归位（U42，见 `asDataDir` 头注）
   const dataDir = asDataDir(
@@ -777,7 +686,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
   return {
     path,
     config: {
-      defaultProvider: providerId,
+      ...(modelAliases === undefined ? {} : { modelAliases }),
       providers,
       dataDir,
       ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
@@ -792,7 +701,6 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
           }),
       ...(skillSources === undefined ? {} : { skills: { sources: skillSources } }),
       ...(mcp === undefined ? {} : { mcp }),
-      ...(webFetch === undefined ? {} : { webFetch }),
       ...(agentRoles === undefined ? {} : { agentRoles }),
     },
     providerId,
@@ -818,7 +726,7 @@ export function describeConfig(loaded: LoadedConfig): string {
     ? '配置文件'
     : `环境变量 ${apiKeyEnvVarOf(loaded.providerId)}`
   // 型号可能还没选过（新接入的连接）——那就不印那一格，不写「（undefined）」
-  const model = loaded.provider.model === undefined ? '' : `（${loaded.provider.model}）`
+  const model = loaded.config.modelAliases?.default?.model === undefined ? '' : `（${loaded.config.modelAliases?.default?.model}）`
 
   return (
     `配置 ${loaded.path} · 供应商 ${loaded.providerId}${model}` +

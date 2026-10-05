@@ -812,6 +812,8 @@ async function runTurn(
         retried = true
         const outcome = await compact.run({ trigger: 'context-limit', signal })
         if (outcome.ok) continue
+        if (signal.aborted) return close(runtime, 'aborted', false)
+        sink.emit(stamper.stamp('error', { message: '原上下文已超限，压缩未完成，本轮暂不能继续；原始记录已保留，请在 /model → 模型档位中调整 Cantrip 后再试' }))
       }
 
       return close(runtime, 'error', false)

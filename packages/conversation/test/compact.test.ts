@@ -321,9 +321,9 @@ describe('压缩 · 失败不降级（B5）', () => {
     }
 
     const errors = stage.sink.byKind('error')
-    expect(errors).toHaveLength(1)
+    expect(errors).toHaveLength(3)
     expect(errors[0]?.data.message).toContain('压缩')
-    expect(errors[0]?.data.message).toContain('原文一条未动')
+    expect(errors.every(event => event.data.message.includes('原始记录已保留'))).toBe(true)
 
     // 报归报，三轮**都照常收束**（不降级）
     expect(stage.sink.byKind('turn.end').map((event) => event.data.reason)).toEqual([

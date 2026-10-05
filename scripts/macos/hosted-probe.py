@@ -43,7 +43,7 @@ def probe(app, output):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         (room / '.magic').mkdir()
         (room / '.magic/config.json').write_text(json.dumps({'dataDir': str(room / 'data'), 'workspaceRoots': [str(room)],
-            'defaultProvider': 'local', 'providers': {'local': {'model': 'probe', 'apiKey': 'synthetic-only',
+            'modelAliases': {alias: {'provider': 'local', 'model': 'probe'} for alias in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
             'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}}))
         env = {'HOME': str(room), 'MAGIC_HOME': str(room), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}
         manager_pid = None; tool_pid = None; client = None; reader = None; owned_pids = []

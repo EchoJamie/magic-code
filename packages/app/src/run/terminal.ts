@@ -27,6 +27,7 @@ import type {
   MagicHome,
   ModelInfo,
   ModelInfoSnapshot,
+  ModelSwitchRequest,
 } from '@magic/contracts'
 import { parseRules } from '@magic/permission'
 import { createProjectRules } from '@magic/execution'
@@ -38,6 +39,7 @@ import { unreadSummaryOf } from '@magic/tui'
 import { mcpNoticesOf, noModelNotice, workspaceOf } from '../assembly.ts'
 import { cacheAccessFor } from '../cache-access.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
+import { resolveModelChoice } from '../agent-models.ts'
 import type { LoadedConfig } from '../config.ts'
 
 /** 这一层要的那几件——**都是「从外面拿的值」**，判断一件都不在这儿。 */
@@ -51,12 +53,12 @@ export type TerminalInputs = {
   /** 启动目录——配置没写 `workspaceRoots` 时它就是默认根。 */
   readonly cwd: string
   /**
-   * 开局的换模型请求（`--provider` / `--model`）。
+   * 开局的换模型请求（`--model`）。
    *
    * 它在这一层的用途**只有一个**：开屏那一格的分母要按**开局就落地**的那个选中算
    * （`cli.ts` 在起外壳之前先跑一次切换）。真正的切换发生在**执行者**那一头。
    */
-  readonly switch?: { readonly provider?: string; readonly model?: string } | undefined
+  readonly switch?: ModelSwitchRequest | undefined
   /**
    * **开局就接的那条会话**（`--session <id>`）——只给开屏那张摘要当**排除项**
    * （U49：摘要说的是**其他**活跃工作）。
@@ -166,7 +168,7 @@ export function clientTransport(client: ManagerClient): ControlTransport {
  * 是同一份判定：窗口这一侧不另写一套「窗长怎么算 / 条目认不认」。
  *
  * 它做两件事，都是**呈现与开门**上的：
- * 1. **验一验开局那个选中**（`--provider` / `--model`）——认不得的条目**当场退场**
+ * 1. **验一验开局那个选中**（`--model`）——认不得的条目**当场退场**
  *    （与今天同一条路、同一句话：今天那一次验发生在装配的注册表上）。⚠️ 真正**落地**
  *    的是执行者那一头（选中是**按 Agent 独立装配**的），这里验过之后请求才递进去；
  * 2. **开屏那一格的分母**（状态行 ④）。
@@ -180,18 +182,10 @@ export function clientTransport(client: ManagerClient): ControlTransport {
  */
 export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefined {
   const { loaded, switch: request } = inputs
-  // **按配置的缺省条目造**（不是按请求里那个）——认不认得**请求**里那一条，交给
-  // `use()` 去判：它报得出「已注册的有哪些」（今天那句话正是这么来的）。
-  // 拿请求里那个当缺省是个**会把错话吞掉**的捷径：条目压根不存在时，连注册表都造不出来，
-  // 于是「认不得」变成一声不响。
-  const provider = loaded.providerId
-  if (provider === undefined || loaded.config.providers[provider] === undefined) return undefined
-
   let registry: ModelRegistry
   try {
     registry = createModelRegistry({
       providers: loaded.config.providers,
-      defaultProvider: provider,
       // 造注册表要一个铸造器（`use()` 盖章用）——窗口这一侧**一次都不会调它**
       // （换模型走命令面，盖章的是执行者那一头）。给一个空的，不假装它能盖章。
       stamper: {
@@ -212,14 +206,15 @@ export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefin
 
   // 开局那个选中**就在这一份上落地**（验不过＝这一次不跑，由调用方报错退场——
   // 而 `use` 失败时注册表**原样不动**，故它不会把分母带偏）
-  if (request !== undefined) registry.use(request)
+  const selected = resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: request, modelInfoOf: inputs.modelInfo })
+  if (selected.ok) registry.use(selected.selection)
   return registry
 }
 
 /** `startupRegistry` 要的那几件——`TerminalInputs` 的一个子集（开屏那一格只需要它们）。 */
 export type RegistryInputs = {
   readonly loaded: LoadedConfig
-  readonly switch?: { readonly provider?: string; readonly model?: string } | undefined
+  readonly switch?: ModelSwitchRequest | undefined
   /** 模型信息缓存的读数（见 `TerminalInputs.modelInfo`）。 */
   readonly modelInfo?: ModelInfoLookup | undefined
 }
@@ -311,7 +306,7 @@ function startupReceipts(inputs: TerminalInputs): readonly string[] {
    *
    * 两句分开是因为**缺的东西不一样、下一步也不一样**（合成一句就得含糊）：
    * - 一条连接都没有（新机器 · 刚把最后一条删了）⇒ 先去接；
-   * - 有连接但没有缺省（删掉了原来那条默认的 · 手写的配置没写 `defaultProvider`）
+   * - 有连接但没有缺省（删掉了原来那条默认的 · 手写的配置没配置 Default）
    *   ⇒ 去挑一个。
    *
    * ⚠️ **「有连接」看的是配置**（`providers` 非空），**不是** `providerId`：后者说的是

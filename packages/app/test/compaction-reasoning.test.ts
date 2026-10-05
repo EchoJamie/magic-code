@@ -1,41 +1,4 @@
-/**
- * U97 · **压缩那一次调用：走统一契约、显式不要思考**。
- *
- * ## 本单的要害（工单原话）
- *
- * 「`summarize` 只传 `{ model, messages }`，**绕过了思考设置那一套契约**——对 DeepSeek
- * 就落到它的官方默认（**开 ＋ high**）」，修法是**给 `{ mode: 'off' }`**：
- *
- * | `reasoningOf` 返回 | 本单怎么处置 |
- * | --- | --- |
- * | `{ params }`（DeepSeek） | 照发 ⇒ `thinking.type = 'disabled'` |
- * | `undefined`（这家没有对应参数） | 什么都不发，照旧 |
- * | `{ gap }`（MiniMax：思考内嵌在正文里，官方没给开关） | 照**既有形制**办——不静默、也不硬塞一个它不认的参数 |
- *
- * ⚠️ **不许在压缩这一处判供应商**：给一套设置，各家适配自己翻（`vendors.ts` 的
- * `reasoningOf`）——故这里咬的是**真出站请求体**，不是「我们记得传了没有」。
- *
- * ## 走的是整条真路
- *
- * 真装配（真配置 · 真记录库 · 真对话域 · 真模型域 · 真适配）→ 真
- * `@ai-sdk/openai-compatible` → **环回 HTTP 端点**（`startFixture`，真 `Bun.serve`）：
- * 整条链上**只有端点地址是假的**（环回 ＋ 合成假 key，一个付费请求都不发）。
- * 判据读的是夹具留下的**请求体原文**（`FixtureRequest.body`）——那正是「真发出去的是什么」。
- *
- * ## 五条判据（正反两面）
- *
- * | 用例 | 咬什么 |
- * | --- | --- |
- * | ① | 压缩那一次带着 `thinking.type = disabled`；**循环那几次一个字都没有**（会话没设档 ⇒ 模型默认） |
- * | ② | 反面 · MiniMax / 兼容接入 ⇒ **一位都不发**（`{ gap }` 那条既有形制），压缩照常成 |
- * | ③ | 反面 · **循环那条路一个字没动**：会话里设的档位照旧生效，而压缩那次仍不思考 |
- * | ④ | 反面 · 压缩用的是**当前那个模型**：中途换过模型时，它跟的是**换过之后**那个（与循环那几次同一个名字） |
- * | ⑤ | 反面 · **关思考失败不把压缩整死**：那一跳报错 ⇒ 本轮不压缩、照常收束（失败不降级） |
- *
- * ⚠️ **改前这条是红的**：压缩那一次的请求体里**一个思考参数都没有**（DeepSeek 落到它
- * 自己的默认：开 ＋ high）。物证（改前 / 改后两份出站请求体并排）见
- * `验证/U97-压缩不思考-20260926/`。
- */
+/** U113：辅助调用固定 Cantrip，关闭思考且与主选择隔离。 */
 
 import { describe, expect, test } from 'bun:test'
 import { attachShell } from '../src/index.ts'
@@ -74,19 +37,13 @@ function chatsOf(fixture: Fixture): readonly FixtureRequest[] {
  */
 function stageOn(
   fixture: Fixture,
-  options: { readonly vendor?: string; readonly reasoning?: Record<string, unknown> } = {},
+  options: { readonly vendor?: string } = {},
 ): Stage {
   return makeStage({
     config: {
-      defaultProvider: 'local',
+      modelAliases: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: MODEL}},
       providers: {
-        local: {
-          ...(options.vendor === undefined ? {} : { vendor: options.vendor }),
-          baseURL: fixture.baseURL,
-          apiKey: FAKE_API_KEY,
-          model: MODEL,
-          ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
-        },
+        local: { vendor: options.vendor ?? 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })
@@ -150,7 +107,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
     }
   })
 
-  test('④ 反面·中途换过模型 ⇒ 压缩用的是**当前那个**（不是开局那个）', async () => {
+  test('④ 反面·中途切换主模型 ⇒ 压缩仍用 Cantrip', async () => {
     const fixture = startFixture({ model: MODEL, turns: turnsOf() })
     const stage = stageOn(fixture, { vendor: 'deepseek' })
     let assembly: ReturnType<Stage['assemble']> | undefined
@@ -161,7 +118,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
 
       await handle.submit('第一件事')
       // 中途换模型（换的是接缝下游，对话域不知道发生过切换——照旧把开局那个名字送出去）
-      expect(assembly.switchModel({ provider: 'local', model: 'deepseek-v4-pro' }).ok).toBe(true)
+      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
       await handle.submit('第二件事')
 
       const chats = chatsOf(fixture)
@@ -172,7 +129,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       // **当前那个**：压缩那次送的就是换过之后的模型名（与它后面那几次循环同一个）
       const current = loop.at(-1)?.body['model']
       expect(current).toBe('deepseek-v4-pro')
-      for (const one of compact) expect(one.body['model']).toBe(current)
+      for (const one of compact) expect(one.body['model']).toBe(MODEL)
     } finally {
       assembly?.close()
       await fixture.stop()
@@ -183,11 +140,12 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
   test('③ 反面·循环那条路一个字没动：会话里设的档位照旧生效，压缩那次仍不思考', async () => {
     const fixture = startFixture({ model: MODEL, turns: turnsOf() })
     // 会话里那一档（配置里的默认思考设置 ⇒ 注册表按选中态补齐，与用户 `/model` 选的是同一条路）
-    const stage = stageOn(fixture, { vendor: 'deepseek', reasoning: { mode: 'level', level: 'high' } })
+    const stage = stageOn(fixture, { vendor: 'deepseek' })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
     try {
       assembly = stage.assemble({ modelGateway: undefined, context: COMPACT_AT })
+      expect(assembly.switchModel({ reasoning: { mode: 'level', level: 'high' } }).ok).toBe(true)
       const handle = attachShell(assembly.shell)
 
       await handle.submit('第一件事')
@@ -215,7 +173,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
     }
   })
 
-  test('② 反面·MiniMax：官方没有关思考的开关 ⇒ 一位都不发（`{ gap }` 那条既有形制），压缩照常成', async () => {
+  test('② 反面·MiniMax：未支持关闭思考 ⇒ 本次压缩明确失败、不发摘要请求', async () => {
     const fixture = startFixture({ model: MODEL, turns: turnsOf() })
     const stage = stageOn(fixture, { vendor: 'minimax' })
     let assembly: ReturnType<Stage['assemble']> | undefined
@@ -227,47 +185,15 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       await handle.submit('第一件事')
       await handle.submit('第二件事')
 
-      const compact = chatsOf(fixture).filter(isCompaction)
-      expect(compact.length).toBeGreaterThan(0)
-
-      // **不硬塞一个它不认的参数**：出站体里一个思考参数都没有（`thinking` / `reasoning_effort` 皆无）
-      for (const one of compact) {
-        expect('thinking' in one.body).toBe(false)
-        expect('reasoning_effort' in one.body).toBe(false)
-      }
-
-      // **也没静默成「不压缩」**：摘要条目照落、压缩事件照发（用它自己的默认接着干）
-      expect(eventsOfKind(handle.events, 'context.compacted').length).toBeGreaterThan(0)
+      expect(chatsOf(fixture).filter(isCompaction)).toEqual([])
+      expect(eventsOfKind(handle.events, 'context.compacted')).toEqual([])
+      const errors = eventsOfKind(handle.events, 'error').map(event => event.data.message).join('\n')
+      expect(errors).toContain('思考能力未知，只能使用模型默认')
+      expect(errors).toContain('原始记录已保留')
       const db = readDatabase(assembly.paths.database)
-      const summaries = db.entries.filter((entry) => entry.kind === 'summary')
+      expect(db.entries.filter(entry => entry.kind === 'summary')).toEqual([])
+      expect(db.entries.filter(entry => entry.kind === 'user')).toHaveLength(2)
       db.close()
-      expect(summaries.length).toBeGreaterThan(0)
-    } finally {
-      assembly?.close()
-      await fixture.stop()
-      stage.dispose()
-    }
-  })
-
-  test('② 反面·兼容接入（没有适配）：同一条口径——一位都不发，压缩照常成', async () => {
-    const fixture = startFixture({ model: MODEL, turns: turnsOf() })
-    const stage = stageOn(fixture) // 不给 vendor ＝兼容接入
-    let assembly: ReturnType<Stage['assemble']> | undefined
-
-    try {
-      assembly = stage.assemble({ modelGateway: undefined, context: COMPACT_AT })
-      const handle = attachShell(assembly.shell)
-
-      await handle.submit('第一件事')
-      await handle.submit('第二件事')
-
-      const compact = chatsOf(fixture).filter(isCompaction)
-      expect(compact.length).toBeGreaterThan(0)
-      for (const one of compact) {
-        expect('thinking' in one.body).toBe(false)
-        expect('reasoning_effort' in one.body).toBe(false)
-      }
-      expect(eventsOfKind(handle.events, 'context.compacted').length).toBeGreaterThan(0)
     } finally {
       assembly?.close()
       await fixture.stop()
@@ -301,7 +227,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       expect(endings.every((reason) => reason === 'settled')).toBe(true)
 
       // 一次失败**够不着**连败上限（缺省 3）——不报 error，也不写坏摘要
-      expect(eventsOfKind(handle.events, 'error')).toEqual([])
+      expect(eventsOfKind(handle.events, 'error').map(event => event.data.message).join('\n')).toContain("Unsupported parameter: 'thinking'")
       expect(eventsOfKind(handle.events, 'context.compacted')).toEqual([])
 
       const db = readDatabase(assembly.paths.database)

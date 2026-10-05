@@ -62,7 +62,8 @@ import type {
   McpToolRejection,
   ModelCacheAccess,
   ModelInfo,
-  ModelDefaultRequest,
+  ModelAliasRequest,
+  ModelAliases,
   ModelGateway,
   ModelSwitchRequest,
   ProviderConfig,
@@ -73,8 +74,6 @@ import type {
   ProcessLedger,
   RecordsService,
   StatusLineConfig,
-  WebFetchConfig,
-  WebFetchSetRequest,
   WebSource,
   RulesLoad,
   RulesProblem,
@@ -131,6 +130,7 @@ import {
   createModelInfoService,
   createModelRegistry,
   createPageDistiller,
+  modelSpecOf,
   resolveConnection,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
@@ -151,8 +151,8 @@ import {
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
-import { validateSelection } from './agent-models.ts'
-import { removeProvider, saveProvider, setModelDefault, setPrefs, setWebFetch } from './config-save.ts'
+import { resolveModelChoice, validateSelection } from './agent-models.ts'
+import { removeProvider, saveProvider, setModelAlias, setPrefs } from './config-save.ts'
 import { saveImageFile } from './image-file.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configFingerprintOf } from './cache-access.ts'
@@ -315,6 +315,7 @@ export type Assembly = {
    * `{switch}` 都调它，**成败都发一条 `model.switched`（落库）**（缺陷 D16 收拢的产出路径）。
    * 结果原样交回调用方（脚本据以决定继续还是当场停）。
    */
+  readonly applyModel: (selection: AgentModelConfig) => ModelSwitchResult
   readonly switchModel: (request: ModelSwitchRequest) => ModelSwitchResult
   /**
    * **模型信息面**（U41）——`model.catalog` 里那份缓存读数的出处。
@@ -1070,7 +1071,6 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   let providerBook: Readonly<Record<string, ProviderConfig>> = loaded.config.providers
   /** 默认连接 id——「设为默认」会换它（同上，与 `loaded` 分开）。 */
-  let defaultProviderId: string | undefined = loaded.providerId
   /**
    * **「取网页」的提炼模型**（U72）——配置里它自己那一条；**空着 ＝ 还没配**。
    *
@@ -1081,15 +1081,8 @@ export function assemble(options: AssembleOptions): Assembly {
    * 递到取网页那一件手上。写的那一步落地时，记得在这一处同步（同 `saveProviderCommand`
    * 对 `providerBook` 的那一句）。
    */
-  let webFetchConfig: WebFetchConfig | undefined = loaded.config.webFetch
-  /**
-   * **界面那两格**（U112）——状态行放哪几格、动不动效。
-   *
-   * 与 `webFetchConfig` 同一处境、同一姿势：开局取自配置，写完之后换掉它。**读的那一方
-   * 是外壳**（启动时经 `Assembly.prefs` 探一次），故这一份是「写完之后，下一次开壳看得见
-   * 的那一份」——本进程里屏上那两格由外壳自己按 `prefs.state` 的回话摆，
-   * 不必从这里再推一遍（两条路各走各的才是「一处判断」）。
-   */
+  let modelAliases: ModelAliases | undefined = loaded.config.modelAliases
+
   let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
   let reducedMotion = loaded.config.motion?.reduced === true
   /** 配置文件当下的 `mtimeMs`——每次保存成功后更新（保存前比它，见 `config-save.ts`）。 */
@@ -1172,7 +1165,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * **新文件**算了 ⇒ 拿旧凭据的请求贴上新范围。
    *
    * 判据用**同一份配置指纹**（与接入身份同源）：变了才重读，没变就一次 `statSync` 走人。
-   * 读不回来（坏内容 / 半截写）⇒ **保留手上这份**——不因一次坏读把正在飞的请求带崩。
+   * 坏配置阻止后续解析；已开始的请求继续使用其快照。仅连接变化重建注册表。
    */
   const syncProviderBook = (): void => {
     const fingerprint = configFingerprintOf(loaded.path)
@@ -1181,19 +1174,13 @@ export function assemble(options: AssembleOptions): Assembly {
         ? undefined
         : `${fingerprint.dev}:${fingerprint.ino}:${fingerprint.mtimeNs}:${fingerprint.ctimeNs}:${fingerprint.size}`
     if (stamp === configStamp) return
+    const reloaded = loadConfig({ path: loaded.path, magic })
+    const connectionsChanged = JSON.stringify(providerBook) !== JSON.stringify(reloaded.config.providers)
+    providerBook = reloaded.config.providers
+    modelAliases = reloaded.config.modelAliases
+    configMtime = reloaded.mtimeMs
     configStamp = stamp
-
-    try {
-      // 重读用的还是**同一个基础路径**（U42：`magic` 在这一处已解析好，不另拼家目录）
-      const reloaded = loadConfig({ path: loaded.path, magic })
-      providerBook = reloaded.config.providers
-      defaultProviderId = reloaded.providerId
-      configMtime = reloaded.mtimeMs
-      // 注册表跟着换（它保留当前选择——见 `rebuildRegistry` 的注）
-      rebuildRegistry()
-    } catch {
-      // 读不回来：**保留手上这份**（下一次读面再试）
-    }
+    if (connectionsChanged) rebuildRegistry()
   }
 
   const modelInfo: ModelInfoService = createModelInfoService({
@@ -1245,7 +1232,6 @@ export function assemble(options: AssembleOptions): Assembly {
   const registryOf = (selection?: AgentModelConfig): ModelRegistry => {
     const registry = createModelRegistry({
       providers: providerBook,
-      ...(selection !== undefined || defaultProviderId === undefined ? {} : { defaultProvider: defaultProviderId }),
       stamper: forwardStamper,
       fetch: options.modelFetch,
       // 缺 key 那句提示要**指对地方**（U42）：配置文件的落点随 `MAGIC_HOME` 走，
@@ -1265,37 +1251,37 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   let models: ModelRegistry | undefined
-  if (options.modelGateway === undefined) models = registryOf(savedAgent?.model)
+  if (options.modelGateway === undefined) {
+    const initial = savedAgent === undefined ? resolveModelChoice({ providers: providerBook, aliases: modelAliases, modelInfoOf: knownModelOf }) : { ok: true as const, selection: savedAgent.model }
+    models = registryOf(initial.ok ? initial.selection : undefined)
+  }
 
-  /**
-   * **取网页那一件工具**（U72）——`options.tools` 追加集里的第四束（见 `open` 里那一行）。
-   *
-   * ## 为什么在这里造、造一次
-   *
-   * **缓存挂在它身上**（`web-fetch-tool.ts` 的 `pageOf`：15 分钟内取过的页面不再取），
-   * 每轮重造就等于没有缓存。⇒ 造**一次**，把会变的那两件（配置里的提炼模型）做成
-   * **现取的函数**递进去（同 `forwardStamper` / `tools` 那个 thunk 的老姿势）。
-   *
-   * ## 提炼那一条模型怎么来的：**不走注册表**
-   *
-   * 注册表的 `stream` 会把**当前选中**盖在 `request.model` 上（`registry.ts`），
-   * 而这一件要的恰恰是**配置里它自己那一条**（工单第 5 条：不跟当前会话的模型走）。
-   * 故这里按 `webFetch` 指名的那条连接**单造一个网关**——它不参与会话的模型切换，
-   * 也就不会跟着漂。
-   *
-   * ⚠️ **缺 key 在这一步抛**（`createModelGateway` 的既有口径）。这里接住它、把它变成
-   * 一件**每次都如实报同一个缘由**的提炼面：那仍然是「配置这一件事没配全」，
-   * 但它**不是**「还没配提炼用的模型」（那一位是空的）——故**不 `halt`**，
-   * 让模型把这句话如实告诉用户（halt 只留给空着那一种，见 `WebFetchDeps`）。
-   */
+  /** 两类辅助调用各自捕获 Cantrip 配置，不经过主工作注册表。 */
+  const compressionModel = () => {
+    syncProviderBook()
+    const resolved = resolveModelChoice({ providers: providerBook, aliases: modelAliases, config: { alias: 'cantrip', reasoning: { mode: 'off' } }, modelInfoOf: knownModelOf })
+    if (!resolved.ok) throw new Error(resolved.reason)
+    const chosen = resolved.selection
+    const config = providerBook[chosen.provider]!
+    const known = knownModelOf(chosen.provider, chosen.model)
+    const gateway = createModelGateway({ providerId: chosen.provider, config, stamper: forwardStamper,
+      fetch: options.modelFetch, configPath: loaded.path, modelInfoOf: () => known, learnedTraits })
+    const spec = modelSpecOf(config, chosen.model, known)
+    return { gateway, model: chosen.model, inputBudget: spec?.inputBudget,
+      location: `${loaded.path} → providers.${chosen.provider}.modelOverrides.${chosen.model}.limits` }
+  }
+
   const webFetchTool = defineWebFetchTool({
     web: options.webSource ?? createWebSource(),
     distiller: () => {
-      const chosen = webFetchConfig
-      if (chosen === undefined) return undefined
-
-      const entry = providerBook[chosen.provider]
-      if (entry === undefined) return undefined
+      syncProviderBook()
+      if (modelAliases?.cantrip === undefined) return undefined
+      const resolved = resolveModelChoice({ providers: providerBook, aliases: modelAliases,
+        config: { alias: 'cantrip', reasoning: { mode: 'off' } }, modelInfoOf: knownModelOf })
+      if (!resolved.ok) return { distill: () => Promise.resolve({ ok: false as const, kind: 'failed' as const, reason: resolved.reason }) }
+      const chosen = resolved.selection
+      const entry = providerBook[chosen.provider]!
+      const known = knownModelOf(chosen.provider, chosen.model)
 
       // 造网关**每次调用现造**：它内部要解析 key（可能缺），而「缺 key」在构造期抛——
       // 现造才能把那一句接住、变成一次失败的提炼（而不是把装配整个带崩）。
@@ -1307,7 +1293,7 @@ export function assemble(options: AssembleOptions): Assembly {
           stamper: forwardStamper,
           fetch: options.modelFetch,
           configPath: loaded.path,
-          modelInfoOf: (model) => knownModelOf(chosen.provider, model),
+          modelInfoOf: () => known,
           learnedTraits,
         })
       } catch (error) {
@@ -1357,12 +1343,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const kept = models?.current()
 
     try {
-      const candidate = registryOf()
-      if (kept !== undefined) {
-        const restored = candidate.use(kept)
-        const identity = chain === undefined ? savedAgent : recordsStore.collaboration.agentForSession(chain.session)
-        if (!restored.ok && identity !== undefined) return restored
-      }
+      const candidate = registryOf(kept)
       models = candidate
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
@@ -1640,7 +1621,8 @@ export function assemble(options: AssembleOptions): Assembly {
       // 空串在这里是「还没定」的占位，**不是**一个可用的模型名：真送出去会被供应商拒。
       // 「没定就拒绝提交并提示先选模型」的拦截归**后端接线那一笔**（本笔先落契约与读面，
       // 见回报）；在那之前，这条路径只保证装配不因缺模型名而崩。
-      model: models?.current()?.model ?? loaded.provider?.model ?? '',
+      model: models === undefined ? modelAliases?.default?.model ?? '' : models.current()?.model ?? '',
+      ...(options.modelGateway === undefined ? { compression: compressionModel } : {}),
       prompt: promptVarsOf(workspace, options, now),
       gateway,
       tools,
@@ -1666,7 +1648,7 @@ export function assemble(options: AssembleOptions): Assembly {
       // 由头：新用户在 0 供应商时发一句，今天会先把那一轮**装模作样地开起来**
       // （状态行「● 工作中」、消息已上屏），再报一句模型错——「装作在跑」比不报更坏。
       //
-      // ⚠️ **读的是 `models?.current()`**（此刻真会走的那个），**不是** `defaultProviderId`：
+      // ⚠️ **读的是 `models?.current()`**（此刻真会走的那个），**不是** Default 映射：
       // 用户在会话里切换过模型时后者还是配置里那条旧的——照它判会把**发得出去**的那一条
       // 也拦下来。`models === undefined`（替身网关 / 用例）⇒ `hasModel` 真 ⇒ **不拦**
       // （那一头压根没有供应商可查，与 `acceptsImages` 的「不知道就照发」同一条口径）。
@@ -1822,7 +1804,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * `model.switched`。收拢的是**产出**，不是入口——入口仍两条（一个是产品路径、一个是
    * 验收装置的方便），但那不再是「留不留痕」的分叉。
    */
-  const switchModel = (request: ModelSwitchRequest): ModelSwitchResult => {
+  const commitModel = (checked: ModelSwitchResult): ModelSwitchResult => {
     // **还没有会话**（空手打开就 `/model`，第 19 轮起这是常态）——选中**照换**：
     // 注册表是**进程级**的（选中的供应商不该随会话漂），换完第一条消息就用新条目。
     //
@@ -1831,7 +1813,8 @@ export function assemble(options: AssembleOptions): Assembly {
     // 真相不会丢：第一次调用时 `model.call.start` 带上真选中，状态行随之更正。
     // ⚠️ 代价如实记：这一下（含「条目名写错」）在屏上**没有回声**——见回报「待决」。
     if (chain === undefined) {
-      return models?.use(request) ?? { ok: false, reason: NO_REGISTRY }
+      if (models === undefined) return { ok: false, reason: NO_REGISTRY }
+      return checked.ok ? models.use(checked.selection) : checked
     }
 
     // 注册表缺席（注入了替身网关）＝如实报「这批装配换不了模型」——同样是一条**切换结果**
@@ -1842,7 +1825,6 @@ export function assemble(options: AssembleOptions): Assembly {
     }
 
     let result: ModelSwitchResult
-    const checked = validateSelection({ models, config: request })
     if (!checked.ok) result = checked
     else {
       try {
@@ -1873,6 +1855,8 @@ export function assemble(options: AssembleOptions): Assembly {
       result.ok
         ? forwardStamper.stamp('model.switched', {
             ok: true,
+            alias: result.selection.alias,
+            ...(result.selection.reasoning === undefined ? {} : { reasoning: result.selection.reasoning }),
             provider: result.selection.provider,
             model: result.selection.model,
             ...(budget === undefined ? {} : { inputBudget: budget }),
@@ -1886,6 +1870,17 @@ export function assemble(options: AssembleOptions): Assembly {
     }
     return result
   }
+
+  const switchModel = (request: ModelSwitchRequest): ModelSwitchResult => {
+    syncProviderBook()
+    const checked = models === undefined ? { ok: false as const, reason: NO_REGISTRY }
+      : validateSelection({ models, aliases: modelAliases, providers: providerBook, config: request, modelInfoOf: knownModelOf })
+    return commitModel(checked)
+  }
+
+  // 仅受信任的宿主内部配置消息使用已解析组合，不重新读取可变映射。
+  const applyModel = (selection: AgentModelConfig): ModelSwitchResult =>
+    commitModel(models?.resolve({ config: selection }) ?? { ok: false, reason: NO_REGISTRY })
 
   /**
    * 模型条目表 —— 读面的**产出路径**（缺陷 D10 · 第 3 样）。
@@ -2091,7 +2086,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 判定全在模型域（`ModelRegistry.capacityOf`：一次解析出有效规格）；本函数只做
    * **取当下那一次选中**这件事。
    *
-   * 取 `current()` 而不是 `defaultProviderId()`：`--provider` / `--model` 是**开局就落地**
+   * 取 `current()` 而不是 Default 映射：`--model` 是**开局就落地**
    * 的选中（见 `cli.ts` 那段注），故开屏那一刻要报的是**它**的窗，不是缺省条目的。
    *
    * ⚠️ 选中是**两件**（条目 ＋ 模型）——`--model` 换到同条目的另一个模型时，
@@ -2246,7 +2241,7 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] =>
-    registry === undefined ? { entries: [], note: NO_REGISTRY } : modelCatalog(catalogReader(registry), webFetchConfig)
+    registry === undefined ? { entries: [], note: NO_REGISTRY } : modelCatalog(catalogReader(registry), modelAliases)
 
   const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => providerCatalog(catalogReader(models), note)
 
@@ -2298,7 +2293,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * `onChange` 发一屏（成或不成都有话说）。**不硬闯**：`refresh` 自己会等冷却。
    */
   const refreshModels = async (provider?: string): Promise<void> => {
-    const target = provider ?? models?.current()?.provider ?? defaultProviderId
+    const target = provider ?? models?.current()?.provider ?? modelAliases?.default?.provider
     if (target === undefined) {
       listModels('还没有可刷新的连接——先接入一个供应商')
       return
@@ -2313,78 +2308,34 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /**
-   * **设为默认**（U41）——写**配置里的默认选择**，与 `model.switch` 改当下那一件分开。
+   * 保存 Default 或能力档位映射，与 `model.switch` 的当前工作选择分开。
    *
-   * 写盘成功才动内存真源（失败保留原样，缘由交回答复）；重建注册表让新默认立刻生效。
+   * 写盘成功才更新映射；当前 Agent 的有效选择不随保存改变。
    */
-  const setDefaultModel = (request: ModelDefaultRequest): void => {
-    const outcome = setModelDefault({
-      path: loaded.path,
-      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
-      request,
-    })
-    if (!outcome.ok) {
-      listModels(outcome.reason)
-      return
+  const setAliasModel = async (request: ModelAliasRequest): Promise<void> => {
+    try {
+      syncProviderBook()
+      const snapshots = Object.entries(providerBook).map(([provider, config]) => ({ provider, config, snapshot: modelInfo.peek(provider).snapshot }))
+      const outcome = setModelAlias({ path: loaded.path,
+        ...(configMtime === undefined ? {} : { loadedAt: configMtime }), request })
+      if (!outcome.ok) { void listModels(outcome.reason); return }
+      const reloaded = loadConfig({ path: loaded.path, magic })
+      configMtime = reloaded.mtimeMs
+      modelAliases = reloaded.config.modelAliases
+      // 映射编辑不改变认证；仅将相同接入身份的已有资料移到保存后的缓存范围。
+      for (const { provider, config, snapshot } of snapshots) {
+        if (snapshot !== undefined && !scopeChanged(config, reloaded.config.providers[provider])) {
+          await modelCache.replace(snapshot, cacheAccessOf(provider, reloaded.config.providers[provider]))
+        }
+      }
+      await modelInfo.warmup()
+      // 保存映射不切换当前 Agent；没有有效选择的首次设置仍等明确应用动作。
+      void listModels(`已保存 ${request.alias[0]!.toUpperCase() + request.alias.slice(1)}`)
+    } catch (error) {
+      void listModels(`模型设置未完成：${error instanceof Error ? error.message : String(error)}`)
     }
-
-    configMtime = mtimeOf(loaded.path)
-    providerBook = {
-      ...providerBook,
-      [request.provider]: {
-        ...providerBook[request.provider],
-        model: request.model,
-        ...(request.reasoning === undefined ? {} : { reasoning: request.reasoning }),
-      },
-    }
-    defaultProviderId = request.provider
-
-    const rebuilt = rebuildRegistry()
-    listModels(rebuilt.ok ? undefined : rebuilt.reason)
   }
 
-  /**
-   * **取网页用的模型**（U78）——落盘 → 换内存真源；**会话的模型一个字都不动**。
-   *
-   * 与 `setDefaultModel` 同一条路（写失败保留原样、缘由交回答复），差别只有写哪一格：
-   * 那条写「新建会话的默认」（`defaultProvider` ＋ `providers.<id>.model`），这条写
-   * **取网页那一件工具**用谁。故这里**不重建注册表**——取网页那一侧读的是 `webFetchConfig`
-   * 这个变量（`distiller` 那个 thunk 每次调用现取），换了它下一趟就生效。
-   *
-   * 回话带一句 `note`：那一屏（`/config` 或 `/model`）据它留一行回执——
-   * 「保存是显式动作」，动作做了就得看得见（否则回车一下屏上什么都不动，是最难查的那一形）。
-   */
-  const setWebFetchModel = (request: WebFetchSetRequest): void => {
-    const outcome = setWebFetch({
-      path: loaded.path,
-      ...(configMtime === undefined ? {} : { loadedAt: configMtime }),
-      request,
-    })
-    if (!outcome.ok) {
-      listModels(outcome.reason)
-      return
-    }
-
-    configMtime = mtimeOf(loaded.path)
-    // **现读的那一方立刻对得上**（U72 那条注点名要在这儿同步）：下一趟 `web_fetch` 就通了，
-    // 不必重启——「配好之后接着说一句就能继续」那一步落在这里。
-    webFetchConfig = { provider: request.provider, model: request.model }
-
-    listModels(`取网页用的模型：${webFetchLabel(request)}`)
-  }
-
-  /**
-   * **界面那两格**（U112）——写配置里的 `statusLine` / `motion`，再把**落定之后**那一份
-   * 报回去（`prefs.state`）。
-   *
-   * 三条：
-   * - **报的是落定之后那一份**，不是用户递进来那一份：写不成（配置文件被外面改过 · 坏 JSON…）
-   *   就把**当下这份**照实报回去——外壳据此把屏上那两格摆回真的样子，**不把用户刚点的
-   *   那个当成成了**（「按了没反应」与「按了但没成」是两件事，这一位分得开）；
-   * - **`note` 两种都给**：成了报改了哪几格、没成报为什么（静默吞掉是最难查的那一形）；
-   * - **不重建任何东西**：这一格连一条会话、一件工具都不碰（同 `setWebFetchModel` 那条
-   *   「不重建注册表」的姿势——改动只在屏上）。
-   */
   const setPrefsCommand = (request: PrefsSetRequest): void => {
     const outcome = setPrefs({
       path: loaded.path,
@@ -2394,7 +2345,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
     if (outcome.ok) {
       configMtime = mtimeOf(loaded.path)
-      // **现读的那一方立刻对得上**：下一次 `writeFileSync` 读的还是这两格（同 webFetch 那一条）
+      // 保存成功后更新这两项读数。
       if (request.statusLine !== undefined) statusLineConfig = request.statusLine
       if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
     }
@@ -2418,19 +2369,6 @@ export function assemble(options: AssembleOptions): Assembly {
    * 回执里那一对怎么念——**与 `/config` 那一行同一个取法**（模型名取缓存里的显示名、
    * 连接名取 `name ?? id`）：两处各取一套的话，屏上那一行会与刚做完的那一下对不上。
    * 缓存里没有它（兼容接入 / 还没取过列表）⇒ **照实报精确 id**，不拿别的顶上。
-   */
-  const webFetchLabel = (pick: WebFetchSetRequest): string => {
-    const connection = providerBook[pick.provider]?.name ?? pick.provider
-    const info = knownModelOf(pick.provider, pick.model)
-
-    return `${info?.name ?? pick.model} · ${connection}`
-  }
-
-  /**
-   * **保存一条连接**（接入 / 改名 / 更新认证 / 改地址）——落盘 → 读回来 → 换内存真源。
-   *
-   * 「读回来」这一步不是多余：它用的是**加载器同一把尺子**（形制 · `~` 展开 · 必填项），
-   * 写进去的东西必须读得回来才算成了。
    */
   const saveProviderCommand = async (request: ProviderSaveRequest): Promise<void> => {
     const before = providerBook[request.provider]
@@ -2466,9 +2404,8 @@ export function assemble(options: AssembleOptions): Assembly {
     }
 
     providerBook = reloaded.config.providers
-    defaultProviderId = reloaded.providerId
     // 「取网页」的提炼模型同理（U72）——保存之后立刻对得上，不必重启
-    webFetchConfig = reloaded.config.webFetch
+    modelAliases = reloaded.config.modelAliases
 
     // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
     if (scopeChanged(before, providerBook[request.provider])) {
@@ -2520,7 +2457,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const next = { ...providerBook }
     delete next[provider]
     providerBook = next
-    if (defaultProviderId === provider) defaultProviderId = undefined
+    modelAliases = loadConfig({ path: loaded.path, magic }).config.modelAliases
 
     modelInfo.drop(provider)
     const cleared = await dropCacheQuietly(removedTarget)
@@ -2563,9 +2500,8 @@ export function assemble(options: AssembleOptions): Assembly {
     // 域不碰文件系统；同 `grants.list` 之于授权文件）。前三条答复走 `provider.catalog`、
     // 后两条走 `model.catalog`（用户按一下就该看到那一屏的新样子）。
     onModelRefresh: (provider) => void refreshModels(provider),
-    onModelDefaultSet: (request) => setDefaultModel(request),
+    onModelAliasSet: (request) => void setAliasModel(request),
     // 「取网页」的提炼模型（U78）——同一条路（写盘归装配）——答复也走 `model.catalog`
-    onWebFetchSet: (request) => setWebFetchModel(request),
     // 界面那两格（U112）——同一条路（写盘归装配）——答复走 `prefs.state`
     // （带上**落定之后**那两份，外壳据它把屏上那两格摆成真的样子）
     onPrefsSet: (request) => setPrefsCommand(request),
@@ -2620,6 +2556,7 @@ export function assemble(options: AssembleOptions): Assembly {
     get models() { return models },
     modelInfo,
     switchModel,
+    applyModel,
     records: recordsStore,
     paths: recordsStore.paths,
     permissionRules: parsedRules.rules,
@@ -2665,7 +2602,7 @@ export function assemble(options: AssembleOptions): Assembly {
     // （`/ps` 那一屏另开一单），验它、以及将来的 `/ps`，都从这一个把手进
     background: backgroundRuns,
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
-    // `--provider` / `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
+    // `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），
     // 快照会把缺省条目的数报成选中条目的——**报错一个数比不报更坏**。
     get contextWindow(): number | null {
       return contextWindowOf(models)
@@ -2688,6 +2625,7 @@ export function assemble(options: AssembleOptions): Assembly {
       // ⚠️ 补落的仍是**改动**（一项记账），不是账本快照（U47）：这一趟里别的执行者若撤销过
       // 某条授权，这一跳只找得到在册的那些、找不到就跳过——不会把它写回来。
       persistGrants(drainHits())
+      chain = undefined
       recordsStore.close()
       // **发起**外部服务器的释放（不等：收尾这一跳是同步的，等它要 `await shutdown()`）。
       // 放在最后：先落自己的账，再去收子进程。忘了 await 也不至于把它们留下——
@@ -2781,21 +2719,9 @@ export function noModelAdvice(input: {
   return '还没有选好走哪个模型——敲 /model 挑一个'
 }
 
-/**
- * **起手那一句**（U60）——开局第一次贴进记录区。
- *
- * 比 `noModelAdvice` 多一件：**在哪儿**（工单要的三件是「缺什么 · 怎么接 · 在哪儿」）。
- * 报的是 `/model` 那一屏里**真有的那一行**（`连接供应商`——`view.ts` 的 `modelActionRows`
- * 钉死的第一行）：用户照这句敲下去，看见的就是它，一个字都不必猜。
- */
-export function noModelNotice(input: {
-  readonly connections: number
-  readonly hasModel: boolean
-}): string | undefined {
-  const advice = noModelAdvice(input)
-  if (advice === undefined) return undefined
-
-  return input.connections === 0 ? `${advice}（/model 那一屏第一条就是它）` : advice
+/** 启动说明沿当前缺配提示；不声明设置列表中已过时的位置。 */
+export function noModelNotice(input: { readonly connections: number; readonly hasModel: boolean }): string | undefined {
+  return noModelAdvice(input)
 }
 
 /**

@@ -111,19 +111,7 @@ export function resolveApiKey(input: {
  * - 其余一切 → `undefined`（**不知道就是不知道**，不按型号名猜）。
  */
 function overrideOf(config: ProviderConfig, model: string): ProviderModelOverride | undefined {
-  const explicit =
-    config.modelOverrides === undefined ? undefined : ownOf(config.modelOverrides, model)
-  if (explicit !== undefined) return explicit
-
-  if (config.model !== model) return undefined
-
-  const legacy: ProviderModelOverride = {
-    ...(config.traits === undefined ? {} : { traits: config.traits }),
-    ...(config.contextWindow === undefined
-      ? {}
-      : { limits: { maxContextTokens: config.contextWindow } }),
-  }
-  return Object.keys(legacy).length === 0 ? undefined : legacy
+  return config.modelOverrides === undefined ? undefined : ownOf(config.modelOverrides, model)
 }
 
 /**

@@ -4,14 +4,15 @@ import { join } from 'node:path'
 import type {
   Command, DecisionHistory, EventDataOf, EventKind, KernelEvent, MagicHome,
   Materials, McpCatalogRow, ModelCatalogRow, ModelInfoRead, ModelSelectionRef,
-  ModelSwitchRequest, ProviderConfig, SkillCatalog, WebFetchConfig, WorkspaceService,
+  ModelSwitchRequest, ProviderConfig, SkillCatalog, ModelAliases, WorkspaceService,
 } from '@magic/contracts'
 import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
 import { createGrantLedger } from '@magic/permission'
-import { createModelInfoService, modelSpecOf, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
+import { createModelInfoService, modelSpecOf, resolveConnection, vendorCatalog } from '@magic/model'
 import type { RecordsStore } from '@magic/records'
 import { cacheAccessFor } from '../cache-access.ts'
+import { resolveModelChoice } from '../agent-models.ts'
 import { ConfigError, loadConfig, type LoadedConfig } from '../config.ts'
 import { loadGrants } from '../grants-file.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
@@ -48,7 +49,6 @@ export function modelCatalogRows(reader: ModelCatalogReader): readonly ModelCata
       ...(config?.region === undefined ? {} : { region: config.region }),
       ...(config?.baseURL === undefined ? {} : { baseURL: config.baseURL }),
       ...(entry.model === undefined ? {} : { model: entry.model }),
-      ...(config?.reasoning === undefined ? {} : { reasoning: config.reasoning }),
       ...(keySource === undefined ? {} : { keySource }),
       ...(budget === undefined ? {} : { contextWindow: budget }),
       ...(Object.keys(cache).length === 0 ? {} : { cache }),
@@ -56,14 +56,14 @@ export function modelCatalogRows(reader: ModelCatalogReader): readonly ModelCata
   })
 }
 
-export function modelCatalog(reader: ModelCatalogReader, webFetch?: WebFetchConfig): EventDataOf['model.catalog'] {
+export function modelCatalog(reader: ModelCatalogReader, aliases?: ModelAliases): EventDataOf['model.catalog'] {
   const current = reader.current
   const budget = current === undefined ? undefined : reader.inputBudget(current.provider, current.model)
   return {
     entries: modelCatalogRows(reader),
     ...(current === undefined ? {} : { current }),
     ...(budget === undefined ? {} : { currentInputBudget: budget }),
-    ...(webFetch === undefined ? {} : { webFetch }),
+    ...(aliases === undefined ? {} : { aliases }),
   }
 }
 
@@ -136,7 +136,7 @@ export async function query(command: Command, context: ObservationContext): Prom
   if (command.type === 'model.list' || command.type === 'provider.list') {
     const reader = await readModelCatalog(loaded, context.selection, context.switch, now)
     return command.type === 'model.list'
-      ? stamp('model.catalog', modelCatalog(reader, loaded.config.webFetch))
+      ? stamp('model.catalog', modelCatalog(reader, loaded.config.modelAliases))
       : stamp('provider.catalog', providerCatalog(reader))
   }
 
@@ -168,21 +168,13 @@ async function readModelCatalog(loaded: LoadedConfig, selection: ModelSelectionR
     cache: createFileModelInfoCache(loaded.config.dataDir), now, fetch: globalThis.fetch,
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
-  const configured = loaded.providerId === undefined ? undefined : providers[loaded.providerId]
-  let current = selection ?? (loaded.providerId === undefined || configured?.model === undefined ? undefined : {
-    provider: loaded.providerId, model: configured.model,
-    ...(configured.reasoning === undefined ? {} : { reasoning: configured.reasoning }),
-  })
-  if (request !== undefined) {
-    const picked = selectModel({ providers, defaultProvider: loaded.providerId, selected: current,
-      modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model),
-    }, request)
-    if (!picked.ok) throw new Error(picked.reason)
-    current = picked.selection
-  }
+  const picked = resolveModelChoice({ providers, aliases: loaded.config.modelAliases, defaults: selection,
+    config: request, modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model) })
+  if (request !== undefined && !picked.ok) throw new Error(picked.reason)
+  const current = picked.ok ? picked.selection : undefined
   return {
     providers,
-    entries: Object.entries(providers).map(([id, config]) => ({ id, ...(config.model === undefined ? {} : { model: config.model }) })),
+    entries: Object.keys(providers).map(id => ({ id })),
     ...(current === undefined ? {} : { current }),
     read: (provider) => info.peek(provider),
     inputBudget: (provider, model) => {

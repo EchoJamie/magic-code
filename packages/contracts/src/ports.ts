@@ -29,13 +29,12 @@ import type { CollaborationRecords } from './collaboration.ts'
 
 import type {
   Command,
-  ModelDefaultRequest,
+  ModelAliasRequest,
   ModelSwitchRequest,
   PrefsSetRequest,
   ProviderSaveRequest,
   SessionCommand,
   UserInput,
-  WebFetchSetRequest,
 } from './control.ts'
 import type {
   Content,
@@ -128,22 +127,7 @@ export type RebuildHandoff = {
 
 /** 对话域 → 模型域。 */
 export interface ModelGateway {
-  /**
-   * 起一次调用。
-   *
-   * ⚠️ **`reasoning` 是 U97 加的**（**只增不改**：既有调用方一个字不动）——理由：
-   * 思考设置那一套契约（`ReasoningSetting` → 各家适配自己翻）此前**只走注册表的选中态**，
-   * 于是**内核自己的内务调用够不着它**：压缩那次 `stream()` 只给了 `{ model, messages }`，
-   * 对 DeepSeek 就落到它的官方默认（**开 ＋ high**）。
-   *
-   * 缺省 ＝ 不动（由实现侧按「当前选中 / 模型默认」自行补齐）——故这一位**不是必填**，
-   * 只有「这一跳的思考设置与当前选中无关」的调用方才给：
-   * **压缩**（`compact.ts` 的 `summarize`）与**提炼**（`distill.ts`）——两处都是固定不思考。
-   *
-   * ⚠️ **这一位是「给适配层的」**，两条路都到得了（U99 查清）：压缩那一跳经注册表
-   * （`registry.ts` 的 `withReasoning` 让调用方明说的那一份不被覆盖），提炼那一跳**不经注册表**
-   * （装配按 `webFetch.provider` 单造网关，见 `distill.ts` 那一段注）——由调用方直给。
-   */
+
   stream(
     req: ModelRequest,
     opts: { signal?: AbortSignal; reasoning?: ReasoningSetting },
@@ -1089,14 +1073,7 @@ export interface PageDistiller {
   ): Promise<DistillOutcome>
 }
 
-/**
- * 提炼的结果——成了 / 没成。
- *
- * ⚠️ **「还没配提炼用的模型」不在这里**：那是**有没有这一条端口**的事——工具拿到
- * `undefined`（配置里 `webFetch` 空着）就是没配，那一步根本走不到 `distill`。
- * 拿一个 outcome 分支去表达「这一件压根没有」，会让同一件事有两个说法
- * （一个空对象 / 一句布尔标记只是把同一件事换个地方讲，还多出「有一位但用不了」的中间态）。
- */
+
 export type DistillOutcome =
   | {
       readonly ok: true
@@ -1109,42 +1086,7 @@ export type DistillOutcome =
 
 // —— 搜索（U88）——
 
-/**
- * **搜索服务**（U88）——把一次搜索的**全部内部编排**包在里头的那台小服务。
- *
- * 出处：设计 · 网页与搜索「搜索这条链由谁做：**一个独立的小服务**」那一节。用户原话：
- * 「我们自己单独做一个小服务去处理，这种适合用一个独立小模型服务去处理。」
- *
- * ## 它管什么：**一次调用进、一根字符串出**
- *
- * `跑查询 → 读若干页 → 用小模型综合 → 出那一根回执`全在这一面之内；**主循环看见的
- * 仍然只是一次工具调用**。回来的那一根就是主模型读到的东西——它的形状由
- * `searchReceiptOf`（`search.ts`）一处定，本面**不另说一遍**（同一件事两个产地，
- * 迟早分叉）。
- *
- * ⚠️ **为什么它必须「独立」：这条链不能长在模型的工具深度里**
- *
- * 护栏（设计 · 工具执行与权限「工具可以调模型——但只到『终点』为止」）写着：工具为
- * 「把大块内容按一个问题提炼掉」可以调一次模型，**但那次调用不带工具、深度恒为 1**
- * ——由头正是**不长成多叉树**。而「搜 N 次、读 N 页」**本身就是一个循环**；把它塞进
- * 工具的调用结构里，那就是那棵多叉树。
- *
- * ⇒ **把循环放到服务那一侧，深度留在 1**：主循环给的是一次调用，**服务内部转多少圈
- * 是它自己的事**。这也正是参照面的形状（它「一次调用内部最多发 8 次后端搜索」，
- * **那台机器在它服务端，不在模型手里**）。
- *
- * ## 模型从哪一格来：**与「取网页」共用那一格**
- *
- * `MagicConfig.webFetch`（`/config` 的「取网页用的模型」）——**不跟会话模型走**
- * （设计：「这一格两件工具共用」）。故**本单元不加配置格**：加一格就是给「这一趟用了
- * 哪个模型」多开一个说法，而用户定的是两件共用一格。
- *
- * ## ⚠️ 本单元只到这儿（U88 的边界）
- *
- * **只落接口**：没有实现、**不接任何搜索源**（不发网络请求 · 不读 key）、**也不注册**
- * （不在给模型的工具集里——模型看不见它）。源还没定（设计「卡在哪一件上」：规划侧
- * 主张 Tavily，用户未表态）⇒ **接线等源定了再做**。
- */
+
 export interface WebSearchService {
   /**
    * 跑一次搜索——**一次调用进、一根字符串出**（见本节头注）。
@@ -1806,16 +1748,8 @@ export type CommandRoutes = {
    * 与 `onModelSwitch` 的分别：那条改**当下**走谁（不写盘），这条写**配置里的默认**；
    * 两条**不做同一件事**，也不互相代劳。
    */
-  onModelDefaultSet(request: ModelDefaultRequest): void
-  /**
-   * **取网页的提炼模型**（U78）→ **装配**（配置的写落点在它那一层，域不碰文件系统）。
-   *
-   * 与 `onModelDefaultSet` 的分别：那条写的是**新建普通会话**的默认，这条写的是
-   * **取网页那一件工具**用谁——两条都写盘，但改的是配置里不同的两格，互不代劳。
-   * 答复照走 `model.catalog`（带新的 `webFetch` 与一句 `note`）——那一屏与 `/config`
-   * 那一行都读同一份读数，不必各自再问一次。
-   */
-  onWebFetchSet(request: WebFetchSetRequest): void
+  onModelAliasSet(request: ModelAliasRequest): void
+
   /**
    * **管理面的连接一览**（U41）→ **装配**（它握着配置与凭据的读取）。
    *
@@ -2050,3 +1984,11 @@ export const TOOLSET_V1 = [
   { name: 'glob', summary: '文件名匹配', danger: { level: 'light' } },
   { name: 'ls', summary: '列目录', danger: { level: 'light' } },
 ] as const satisfies readonly ToolSetRow[]
+
+/** 压缩调用在开始时取得的独立模型；容量与配置来处都属于这次解析。 */
+export type CompressionModel = {
+  readonly gateway: ModelGateway
+  readonly model: string
+  readonly inputBudget?: number
+  readonly location?: string
+}

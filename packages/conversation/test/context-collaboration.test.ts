@@ -7,7 +7,7 @@ import { assembleContext, pairingKeyOf } from '../src/context.ts'
 
 const self: AgentIdentity = {
   agentId: 'receiver', sessionId: 'receiving-session', name: 'Receiver', role: '',
-  model: { provider: 'test', model: 'test' }, workspace: ['/work'],
+  model: { alias: 'default', provider: 'test', model: 'test' }, workspace: ['/work'],
   collaborationId: 'collaboration', reachability: 'active', at: 1,
 }
 function message(id: number, body: readonly MessagePart[]): AgentMessage {

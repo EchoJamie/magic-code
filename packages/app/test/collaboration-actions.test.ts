@@ -10,7 +10,7 @@ test('首次派生模型预检失败不展开协作；修正后重试只登记�
   const records = store.collaboration
   const sessionId = 'origin'
   const entryId = store.serviceFor(sessionId).appendEntry({ kind: 'user', content: { text: '检查同一份工作' }, at: 1 })
-  const model = { provider: 'test', model: 'entry' }
+  const model = { alias: 'default' as const, provider: 'test', model: 'entry' }
   const actor = records.registerAgent({ operationId: 'identity', sessionId, name: '入口', role: '', model, at: 2 })
   let available = false
   const starts: string[] = []

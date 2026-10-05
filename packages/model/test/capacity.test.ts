@@ -108,13 +108,12 @@ describe('容量裁定 · 声明 → 内置表 → 未知', () => {
 // 二 · 出口：同一条判定，两处取材（条目表 · 窗长表）
 // ═══════════════════════════════════════════════════════════════════════
 
-const CONFIG = (model: string): ProviderConfig => ({ baseURL: 'https://alpha.example/v1', model })
+const CONFIG = (_model: string): ProviderConfig => ({ vendor: 'minimax', baseURL: 'https://alpha.example/v1' })
 
 /** 造一张注册表：缺省条目＝**第一格**，各行按 id 给一把假 key（构造期要解析缺省那条的 key）。 */
 function registryOf(providers: Record<string, ProviderConfig>) {
   return createModelRegistry({
     providers,
-    defaultProvider: Object.keys(providers)[0] ?? '',
     stamper: makeTestStamper(),
     env: {},
     apiKeys: Object.fromEntries(Object.keys(providers).map((id) => [id, 'test-key'])),
@@ -125,22 +124,24 @@ describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）',
   test('条目没声明、模型在内置表里 ⇒ 条目**带出内置那个数**（不必让用户自己补）', () => {
     const registry = registryOf({ alpha: CONFIG('MiniMax-M2') })
 
-    expect(registry.list()).toEqual([{ id: 'alpha', model: 'MiniMax-M2', contextWindow: 204_800 }])
+    expect(registry.list()).toEqual([{ id: 'alpha' }])
+    expect(registry.capacityOf('alpha', 'MiniMax-M2')?.contextWindow).toBe(204_800)
   })
 
   test('条目声明了 ⇒ 声明优先（覆盖内置），哪怕模型就在表里', () => {
     const registry = registryOf({
-      alpha: { ...CONFIG('MiniMax-M2'), contextWindow: 32_768 },
+      alpha: { ...CONFIG('MiniMax-M2'), modelOverrides: { 'MiniMax-M2': { limits: { maxContextTokens: 32_768 } } } },
     })
 
-    expect(registry.list()).toEqual([{ id: 'alpha', model: 'MiniMax-M2', contextWindow: 32_768 }])
+    expect(registry.list()).toEqual([{ id: 'alpha' }])
+    expect(registry.capacityOf('alpha', 'MiniMax-M2')?.contextWindow).toBe(32_768)
   })
 
   test('表外模型又没声明 ⇒ **不给这一位**（不是 0、也不是占位符——外壳据「在不在」判）', () => {
     const registry = registryOf({ alpha: CONFIG('my-local-llama') })
 
     const first = registry.list()[0]
-    expect(first).toEqual({ id: 'alpha', model: 'my-local-llama' })
+    expect(first).toEqual({ id: 'alpha' })
     expect('contextWindow' in (first ?? {})).toBe(false)
   })
 
@@ -152,7 +153,7 @@ describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）',
     expect(spec?.maxOutputTokens).toBe(4_096)
     expect(spec?.inputBudget).toBeUndefined() // 这份配置里没有窗长依据
 
-    const declared = registryOf({ alpha: { ...CONFIG('MiniMax-M2'), contextWindow: 10_000 } })
+    const declared = registryOf({ alpha: { ...CONFIG('MiniMax-M2'), modelOverrides: { 'MiniMax-M2': { limits: { maxContextTokens: 10_000 } } } } })
     expect(declared.capacityOf('alpha', 'MiniMax-M2')?.inputBudget).toBe(10_000 - 4_096)
   })
 
@@ -176,7 +177,7 @@ describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）',
 
   test('新出口：同名模型两条目**各查各的**（旧表那条口径的延续）', () => {
     const registry = registryOf({
-      'alpha-gw': { ...CONFIG('MiniMax-M2'), contextWindow: 32_768 },
+      'alpha-gw': { ...CONFIG('MiniMax-M2'), modelOverrides: { 'MiniMax-M2': { limits: { maxContextTokens: 32_768 } } } },
       'beta-direct': CONFIG('MiniMax-M2'),
     })
 
@@ -201,11 +202,11 @@ describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）',
     for (const id of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
       expect(registry.has(id)).toBe(false)
 
-      const switched = registry.use({ provider: id })
+      const switched = registry.use({ alias: 'default', provider: id })
       expect(switched.ok).toBe(false)
       expect(switched.ok === false ? switched.reason : '').toContain('未知供应商')
       // 切不动就不动——选中没被这一下带偏
-      expect(registry.current()).toEqual({ provider: 'alpha', model: 'MiniMax-M2' })
+      expect(registry.current()).toBeUndefined()
     }
   })
 })

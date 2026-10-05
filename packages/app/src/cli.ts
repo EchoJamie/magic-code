@@ -2,11 +2,12 @@
 /** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接所属 App。 */
 
 import { homedir } from 'node:os'
-import type { KernelEvent, RulesLoad } from '@magic/contracts'
+import type { KernelEvent, RulesLoad, ModelAlias, ModelSwitchRequest } from '@magic/contracts'
 import { resolveMagicHome, SOFTWARE_VERSION } from '@magic/contracts'
-import type { ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
+import type { ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { Assembly } from './assembly.ts'
+import { resolveModelChoice } from './agent-models.ts'
 import { ConfigError, describeConfig } from './config.ts'
 import { workspaceOf } from './assembly.ts'
 import type { AppConnection, AppConnectionOptions } from './run/spawn-manager.ts'
@@ -18,8 +19,7 @@ const USAGE = `magic —— 软件工程智能体
 用法：
   magic                        打开交互界面，用自然语言交代活
   magic --session <id>         接着一条已有的会话干
-  magic --provider <id>        开局用哪个供应商（配置里 providers 的条目名）
-  magic --model <名>           开局用哪个模型（也可以单独用，不带 --provider）
+  magic --model <选择>         选择 default / cantrip / spell / arcane
   magic --allow-all            这一次起会话不问常规的调用（只给这一次；见下）
   magic -h, --help             显示这份帮助
   magic -v, --version          显示软件版本
@@ -28,7 +28,7 @@ const USAGE = `magic —— 软件工程智能体
 首条消息按下回车才开张）。--session 要的是 /resume 那张列表里那串 id，且必须已经存在：
 打错一个字母会报错退场，不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。
 接上后只展示已有记录；下一次明确输入才继续执行并处理恢复。
-开局没给 --provider / --model 就用配置里的缺省条目；中途换模型在界面里打 /model。
+开局没有明确选择就用 Default；中途选择与配置模型在界面里打 /model。
 
 --allow-all 是让这一次会话什么都不问：真的什么都不问，连要问的那两条（删除 ·
 改权限/改属主）也放。它只在这儿给——界面里换不来，想看它有没有生效就看状态行
@@ -68,7 +68,7 @@ export type Args = {
    * 打错一个字母**报错退场**，不静默开一条空的（见 `main` 里那段注）。
    */
   readonly session?: string | undefined
-  /** 开局的换模型请求（`--provider` / `--model` 的落地）——两件都没给即 `undefined`。 */
+  /** 开局的换模型请求（`--model` 的落地）——两件都没给即 `undefined`。 */
   readonly switch?: ModelSwitchRequest | undefined
   /**
    * **全放行**（U73）——`--allow-all` 带没带。
@@ -84,13 +84,12 @@ export type Args = {
 export function parseArgs(argv: readonly string[]): Args {
   let script: string | undefined
   let check = false
-  let provider: string | undefined
-  let model: string | undefined
+  let model: ModelAlias | undefined
   let session: string | undefined
   let allowAll = false
   let openRequest: string | undefined
 
-  /** 取值——缺值 / 撞上另一个选项即报（`--provider --check` 这类笔误不该被当成名字）。 */
+  /** 取值——缺值 / 撞上另一个选项即报（`--model --check` 这类笔误不该被当成名字）。 */
   const valueOf = (flag: string, index: number): string => {
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) {
@@ -120,13 +119,10 @@ export function parseArgs(argv: readonly string[]): Args {
       i += 1
       continue
     }
-    if (arg === '--provider') {
-      provider = valueOf('--provider', i)
-      i += 1
-      continue
-    }
     if (arg === '--model') {
-      model = valueOf('--model', i)
+      const value = valueOf('--model', i)
+      if (!['default', 'cantrip', 'spell', 'arcane'].includes(value)) throw new Error('--model 只能选择 default / cantrip / spell / arcane；请在 /model 配置实际型号')
+      model = value as ModelAlias
       i += 1
       continue
     }
@@ -151,7 +147,7 @@ export function parseArgs(argv: readonly string[]): Args {
     script,
     session,
     ...(allowAll ? { allowAll: true } : {}),
-    ...(provider === undefined && model === undefined ? {} : { switch: { provider, model } }),
+    ...(model === undefined ? {} : { switch: { alias: model } }),
   }
 }
 
@@ -189,7 +185,7 @@ function isStep(value: unknown): boolean {
 
 async function offlineCheck(args: Args): Promise<number> {
   const { loadConfig } = await import('./config.ts')
-  const { selectModel, resolveApiKey } = await import('@magic/model')
+  const { resolveApiKey } = await import('@magic/model')
   const { createSkills, createProjectRules } = await import('@magic/execution')
   const { skillsCatalog, readGrantView } = await import('./run/observation.ts')
   const { parseRules } = await import('@magic/permission')
@@ -197,7 +193,7 @@ async function offlineCheck(args: Args): Promise<number> {
   const loaded = loadConfig({ magic })
   const workspace = workspaceOf(loaded, process.cwd())
   const roots = workspace.roots()
-  const chosen = args.switch === undefined ? undefined : selectModel({ providers: loaded.config.providers, defaultProvider: loaded.providerId }, args.switch)
+  const chosen = args.switch === undefined ? undefined : resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: args.switch })
   if (args.switch !== undefined && (chosen === undefined || !chosen.ok)) {
     console.error(`换模型不成功：${chosen === undefined ? '尚未配置可用的供应商' : chosen.reason}`)
     return 1
@@ -211,7 +207,7 @@ async function offlineCheck(args: Args): Promise<number> {
   console.log(`  ${describeConfig(loaded)}`)
   console.log(`  数据落点　${loaded.config.dataDir}`)
   console.log(`  工作区根　${roots.join(' · ')}`)
-  const providers = Object.entries(loaded.config.providers).map(([id, provider]) => `${id}（${provider.model ?? '未选模型'}）`)
+  const providers = Object.entries(loaded.config.providers).map(([id, provider]) => `${id}（${provider.name ?? id}）`)
   const current = chosen?.ok ? `${chosen.selection.provider}（${chosen.selection.model}）` : (loaded.providerId ?? '未选供应商')
   if (chosen?.ok) console.log(`—— 本次走 ${current}`)
   console.log(`  供应商表　${providers.length} 条——${providers.join(' · ')} · 当前走 ${current}`)
@@ -505,10 +501,10 @@ async function runTerminal(args: Args): Promise<number> {
   const { client, loaded, magic } = await connectTerminal(args)
   let closingClient = client
   try {
-    const { readModelInfo, startupRegistry, terminalOptions, terminalConnection } = await import('./run/terminal.ts')
+    const { readModelInfo, terminalOptions, terminalConnection } = await import('./run/terminal.ts')
     workspaceOf(loaded, process.cwd())
     if (args.switch !== undefined) {
-      const applied = startupRegistry({ loaded })?.use(args.switch)
+      const applied = resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: args.switch })
       if (applied === undefined || !applied.ok) {
         console.error(`换模型不成功：${applied === undefined ? '尚未配置可用的供应商' : applied.reason}`)
         return 1

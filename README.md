@@ -57,8 +57,7 @@ bun install                     # 装依赖（prepare 顺带配置 git 钩子）
 # 产品路径
 magic                           # 连接所属 App，打开交互界面
 magic --session <id>            # 只读接回已有会话（id 见 /resume），明确输入后继续
-magic --provider <id>          # 开局用哪个供应商（配置里 providers 的条目名）
-magic --model <名>               # 开局用哪个模型（也可以单独用，不带 --provider）
+magic --model <选择>             # default / cantrip / spell / arcane
 
 # 下面两条不是日常用法
 magic --check                   # 离线只读检查配置与路径，不启动 App、模型或工具
@@ -103,20 +102,27 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 
 ### 换模型（阶段 2）
 
-**开局**——`--provider <id>` / `--model <名>`（两件可单用；都不给＝走缺省条目）。
+**开局**——`--model default|cantrip|spell|arcane` 选择已配置来源，缺省使用 Default。
 
-**会话中途**——外壳里打 **`/model <供应商> [模型]`**：
+**工作中**——`/model` 分别显示默认模型 Default、模型档位 Cantrip / Spell / Arcane、当前对象的模型选择和独立思考等级。实际供应商与型号只在映射编辑层选择。首次“使用此模型开始”设置 Default 并填充尚未配置的三档；日后修改各项互不连改，保存配置不切换已有 Agent。
 
-```text
-/model minimax-m2          换到另一个条目（模型取该条目的默认）
-/model minimax MiniMax-M3  条目与模型一起换
-/model                     不带参数——内核回一句「不知道要换成什么」并列出已注册的条目
+配置示例（密钥也可来自 `MAGIC_DEEPSEEK_API_KEY`）：
+
+```json
+{
+  "providers": { "deepseek": { "vendor": "deepseek" } },
+  "modelAliases": {
+    "default": { "provider": "deepseek", "model": "deepseek-chat" },
+    "cantrip": { "provider": "deepseek", "model": "deepseek-chat" },
+    "spell": { "provider": "deepseek", "model": "deepseek-reasoner" },
+    "arcane": { "provider": "deepseek", "model": "deepseek-reasoner" }
+  }
+}
 ```
 
-**换模型＝换接缝下游**：上下文由内核构造，对话域 / 记录域不知道发生过切换——**上下文不丢**。
-**切不动就不动**：条目名写错 / 缺 key 时原选原样保留，屏上报一句缘由（不半途改）。
-状态行显示 `模型 <供应商>/<名称>`，**取自真跑过的那次调用**（不是命令的自我报告）。
+执行选择只接受小写标识；`--provider`、原始型号、旧 `defaultProvider` 和网页专用 `webFetch` 配置均拒绝。思考偏好仅归 Agent/角色选择，型号覆盖不再保存 `reasoning` 默认。型号的容量/能力覆盖位于 `providers.<连接>.modelOverrides.<型号>`。网页提炼与压缩独立使用 Cantrip，关闭思考且无工具；失败保留原始记录并报告实际原因。
 
+换档在下一请求生效，在途使用原组合；等待或接回的成员保留已解析的组合。失败保留选择与上下文，组合改变不盲目继承旧思考设置。状态行可选显示 Default 或英文档位，容量来自实际模型。
 不认得的斜杠文字**不抢**——`/usr/bin 里有什么` 这类人话照旧发给模型。
 
 ### 多会话（阶段 2）
@@ -186,7 +192,7 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 {
   "inputs": [
     "看一下工作区",
-    { "switch": { "provider": "minimax-m2" } },
+    { "switch": { "alias": "spell" } },
     "刚才那个文件还在吗"
   ],
   "decisions": ["approve", { "decision": "approve", "remember": true }]
@@ -194,7 +200,7 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 ```
 
 - `inputs`：按序走的步骤——**裸字符串**＝一条交代（等它收束再走下一步）；
-  **`{ "switch": { "provider"?, "model"?, } }`** ＝会话中途换模型（与 `/model` 同一条链）；
+  **`{ "switch": { "alias"?, "reasoning"? } }`** ＝会话中途换模型（与 `/model` 同一条链）；
   **`{ "input": { "text", "skills"?, "ref"? } }`** ＝一整份结构化交代（U33：技能随这次交代
   绑定、`ref` 是提交的配对键——回执按它配对）。
 - `decisions`：裁决答复按询问次序取（用尽＝批准）；对象形带 `remember` ＝**「总是允许」**

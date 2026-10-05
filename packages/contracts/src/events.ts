@@ -11,6 +11,8 @@
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
+import type { ModelAlias, ModelAliases } from './model.ts'
+
 import type { StatusLineConfig } from './config.ts'
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
 import type { BlobRef, DelegationId, RecordId, SessionId, Timestamp, TurnId } from './ids.ts'
@@ -195,17 +197,6 @@ export type ModelCatalogRow = {
    */
   readonly vendor?: string
   /**
-   * 该连接的**用户默认选择**（`providers.<id>.model`）——**没选过就不给这一位**。
-   *
-   * 不给不等于「一个模型都没有」：它说的只是「这个连接还没有默认」。
-   */
-  readonly model?: string
-  /**
-   * 该模型的思考设置（`providers.<id>.reasoning`）——没设过就不给这一位。
-   * 意义与 `model` 绑定：换了模型而没显式改设置时，取**目标模型**的默认。
-   */
-  readonly reasoning?: ReasoningSetting
-  /**
    * 该连接**管理面**的几格（U41；与模型选择面共用这一行——管理页与选择器说的是
    * 同一批连接，分成两种行只会让两处各写一套「这条连接长什么样」）。
    */
@@ -221,13 +212,7 @@ export type ModelCatalogRow = {
   readonly keySource?: 'config' | 'env'
   /** 该连接**模型信息缓存**的读数——见 `ModelInfoRead`。 */
   readonly cache?: ModelInfoRead
-  /**
-   * 该连接**当前默认模型**的上下文窗总量（token）——状态行 `12.4k/200k` 的分母。
-   *
-   * 两处皆无（既没有用户覆盖、也没有缓存与缺项补充的依据）就**不给这一位**：
-   * 外壳显示不出分母就不显示，不拿假数占位。
-   */
-  readonly contextWindow?: number
+
 }
 
 /**
@@ -380,6 +365,8 @@ export type McpCatalogRow = {
  * 可以在同一格上换成本格默认之外的模型，那时选中仍成立，但表里那一行的 `model` 不变。
  */
 export type ModelSelectionRef = {
+  readonly reasoning?: ReasoningSetting
+  readonly alias: ModelAlias
   readonly provider: string
   readonly model: string
 }
@@ -408,6 +395,7 @@ export type EventDataOf = {
   'message.assistant': { readonly entry: RecordId }
   // model——调用级
   'model.call.start': {
+    readonly alias?: ModelAlias
     readonly model: string
     /**
      * 这条条目叫什么（`providers` 的键）——**只增不改**（技术方案 · 代码治理 · 契约生长受控）。
@@ -645,6 +633,8 @@ export type EventDataOf = {
   // 说不出「何时改的、为什么没改成」；而用户命令不成立**不是内核异常**，
   // 混进 `error` 会污染观测（那一条的语义专留给「内核自身异常」）。
   'model.switched': {
+    readonly alias?: ModelAlias
+    readonly reasoning?: ReasoningSetting
     /** 换成了没有。`false` 时**原选原样保留**（切不动就不动）——`reason` 说为什么。 */
     readonly ok: boolean
     /** 落地后的选中（`ok: true` 时有 —— 也是「现在走的哪一格」）。 */
@@ -799,16 +789,8 @@ export type EventDataOf = {
      * 缺省＝不知道（当前选择没有窗长依据，或压根没有当前选择）——外壳据此**不给分母**。
      */
     readonly currentInputBudget?: number
-    /**
-     * **「取网页」那一件工具用哪个模型**（U78）——配置里 `webFetch` 那一格，**读出来的**。
-     *
-     * 与 `current` 分开：那是**当前会话**走谁，这一位是**取网页那一件**用谁
-     * （设计 · 网页与搜索：两处不能混）。`/config` 那一行「取网页用的模型」据它填值。
-     *
-     * ⚠️ **缺省 ＝ 还没配**（同 `WebFetchConfig` 那一条）——**不取 `current` 顶上**：
-     * 那是「静默回落」，而这一格明确要消掉的正是它。
-     */
-    readonly webFetch?: ModelSelectionRef
+
+    readonly aliases?: ModelAliases
     /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
     readonly note?: string
   }

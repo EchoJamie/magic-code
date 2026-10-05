@@ -87,7 +87,7 @@ export function createControlHub(): ControlHubFace {
       case 'model.switch':
         // 换模型——原样转手给装配（它握着注册表）。本域**不知道换得成换不成**：
         // 「切不动就不动」的判别式处置归装配，路由只负责把话带到（同 `onDecision` 的姿势）。
-        target.onModelSwitch({ provider: command.provider, model: command.model })
+        { const { type, ...request } = command; target.onModelSwitch(request) }
         return
       case 'session.list':
       case 'session.new':
@@ -162,16 +162,8 @@ export function createControlHub(): ControlHubFace {
         // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
         target.onModelRefresh(command.provider)
         return
-      case 'model.default.set':
-        // 设为默认（U41）——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）。
-        // 控制域只带话：校验与落盘都在装配（同 `decision.answer` 的站位）。
-        target.onModelDefaultSet(command)
-        return
-      case 'webfetch.set':
-        // 「取网页」的提炼模型（U78）——写配置里 `webFetch` 那一格。控制域只带话：
-        // 校验与落盘都在装配（同 `model.default.set` 的站位）。
-        // ⚠️ **它不动会话的模型**：换的是那一件工具用谁（设计 · 网页与搜索那条「两处不能混」）。
-        target.onWebFetchSet(command)
+      case 'model.alias.set':
+        target.onModelAliasSet(command)
         return
       case 'prefs.set':
         // 界面的两格偏好（U112）——写配置里 `statusLine` / `motion` 那两格。控制域只带话：

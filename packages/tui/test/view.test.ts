@@ -380,11 +380,11 @@ describe('状态行（五态固定词）', () => {
 
   test('模型名与用量随事件更新——③ 与 ④ 各自到位', () => {
     const view = viewed([
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
-    expect(view.status.model).toBe('MiniMax-M3')
+    expect(view.status.model).toBe('Default')
     expect(view.status.usage).toBe(3100)
   })
 
@@ -399,13 +399,13 @@ describe('状态行（五态固定词）', () => {
   test('**一次性的事进记录区**——换模型成功＝一行回执，不进状态行', () => {
     const view = reduce(
       createView(),
-      event('model.switched', { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
+      event('model.switched', { alias: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
     )
 
     expect(rowAt(view, onScreen(view).length - 1)).toMatchObject({ kind: 'receipt' })
     const last = onScreen(view).at(-1)
-    expect(last?.kind === 'receipt' ? last.text : '').toContain('MiniMax-M2')
-    expect(view.status.model).toBe('MiniMax-M2')
+    expect(last?.kind === 'receipt' ? last.text : '').toContain('Default')
+    expect(view.status.model).toBe('Default')
   })
 })
 

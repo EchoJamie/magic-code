@@ -1,30 +1,8 @@
-/**
- * U72 · 取网页 —— 从一次工具调用到**真出站请求体**（整条真路，只有两跳出网是假的）。
- *
- * ## 为什么在装配层再跑一遍
- *
- * 域内那几支已经钉住了「取回 → 转 markdown → 提炼 → 回执」。这里补的是**只有整条链
- * 才说得清的那三件**：
- *
- * 1. **那次提炼调用不带任何工具**——不看实现，看**发出去的那一份请求体**
- *    （`'tools' in body === false`）。域内用例能看到模型域的入参，看不到真出网的字节；
- *    这里补上那一跳。
- * 2. **主模型那一轮看到的是答案，不是原文**——判据落在**主轮第二次请求的正文**上：
- *    里面有答案，没有页面原文。
- * 3. **停住那一趟真的停住了**——没配提炼模型时只有**一次**请求；而剧本里紧跟着
- *    就摆着一发 `exec curl`（**反证**：不拦的话它会跑出去）。
- *
- * ## 假在哪儿
- *
- * 端点＝环回夹具（真 `Bun.serve`，剧本 SSE）；取回面＝注入的替身（`webSource`）。
- * 其余全真：真配置加载 · 真装配 · 真闸门（**卡是真弹的**，用例按 `y`/`a` 答）·
- * 真工具分发 · 真记录。
- */
-
+/** U113：网页提炼使用 Cantrip，缺配置不取回，保存不切主模型。 */
 import { describe, expect, test } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import type { PageFetch, WebSource } from '@magic/contracts'
-import type { ShellHandle } from '../src/index.ts'
+import type { Assembly, ShellHandle } from '../src/index.ts'
 import { attachShell } from '../src/index.ts'
 import { eventsOfKind, makeStage } from './support.ts'
 import { FAKE_API_KEY } from './ui/sandbox.ts'
@@ -64,15 +42,14 @@ function fakeWeb(body = PAGE_HTML): WebSource & { readonly asked: string[] } {
   }
 }
 
-/** 一块接在受控端点上的沙地——`webFetch` 那一格给不给就是本文件两组用例的差别。 */
+/** 一块接在受控端点上的沙地——Cantrip 映射给不给就是本文件两组用例的差别。 */
 function stageOn(fixture: Fixture, options: { readonly configured: boolean }) {
   return makeStage({
     config: {
-      defaultProvider: 'local',
+      modelAliases: {default: {provider: "local", model: SESSION_MODEL}, ...(options.configured ? { cantrip: {provider: 'local', model: DISTILL_MODEL} } : {}), spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
-        local: { baseURL: fixture.baseURL, apiKey: FAKE_API_KEY, model: SESSION_MODEL },
+        local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
-      ...(options.configured ? { webFetch: { provider: 'local', model: DISTILL_MODEL } } : {}),
     },
   })
 }
@@ -127,8 +104,9 @@ describe('U72 · 配好了的那一趟：取回 → 提炼 → 只交答案', ()
     const web = fakeWeb()
     const stage = stageOn(fixture, { configured: true })
 
+    let assembly: Assembly | undefined
     try {
-      const assembly = stage.assemble({ modelGateway: undefined, webSource: web })
+      assembly = stage.assemble({ modelGateway: undefined, webSource: web })
       const handle = attachShell(assembly.shell)
 
       handle.send({ type: 'input.submit', text: '查一下它的定价' })
@@ -163,7 +141,11 @@ describe('U72 · 配好了的那一趟：取回 → 提炼 → 只交答案', ()
 
       // 取回面被叫了一次，取的是归一之后那个地址
       expect(web.asked).toEqual(['https://example.com/pricing'])
+      const evidence = process.env['MAGIC_U113_EVIDENCE']
+      if (evidence) writeFileSync(`${evidence}/web-cantrip.json`, JSON.stringify({ proof: 'controlled-sdk-assembly',
+        requests: chats, current: assembly.models?.current(), pages: web.asked }, null, 2))
     } finally {
+      assembly?.close()
       stage.dispose()
       await fixture.stop()
     }
@@ -184,6 +166,7 @@ describe('U72 · 配好了的那一趟：取回 → 提炼 → 只交答案', ()
     })
     const stage = stageOn(fixture, { configured: true })
 
+    let assembly: Assembly | undefined
     try {
       const handle = attachShell(stage.assemble({ modelGateway: undefined, webSource: fakeWeb() }).shell)
 
@@ -215,6 +198,7 @@ describe('U72 · 配好了的那一趟：取回 → 提炼 → 只交答案', ()
       expect(textOf(mains[1])).toContain('每月 12 元。')
       expect(textOf(mains[3])).toContain('页面没提退款。')
     } finally {
+      assembly?.close()
       stage.dispose()
       await fixture.stop()
     }
@@ -236,8 +220,10 @@ describe('U72 · 没配的那一趟：这一轮停住', () => {
     const stage = stageOn(fixture, { configured: false })
     const web = fakeWeb()
 
+    let assembly: Assembly | undefined
     try {
-      const handle = attachShell(stage.assemble({ modelGateway: undefined, webSource: web }).shell)
+      assembly = stage.assemble({ modelGateway: undefined, webSource: web })
+      const handle = attachShell(assembly.shell)
 
       handle.send({ type: 'input.submit', text: '查一下它的定价' })
       await waitFor(handle, '卡挂上', (events) => events.some((event) => event.kind === 'tool.decision.request'))
@@ -256,11 +242,12 @@ describe('U72 · 没配的那一趟：这一轮停住', () => {
       // ① 模型看得到「还没配、取不到」（工具结果落进了记录与会话）
       const results = eventsOfKind(handle.events, 'tool.result')
       const text = JSON.stringify(results.map((event) => event.data.output))
-      expect(text).toContain('还没配提炼用的模型')
-      expect(text).toContain('/config')
+      expect(text).toContain('Cantrip 尚未配置')
+      expect(text).toContain('/model')
       // 那一轮是**正常收束**的（不是出错收的尾），也没有第二轮
       expect(eventsOfKind(handle.events, 'turn.end').map((event) => event.data.reason)).toEqual(['settled'])
     } finally {
+      assembly?.close()
       stage.dispose()
       await fixture.stop()
     }
@@ -268,7 +255,7 @@ describe('U72 · 没配的那一趟：这一轮停住', () => {
 })
 
 describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通了', () => {
-  test('没配 ⇒ 报错指路；`webfetch.set` 之后 ⇒ 同一条会话再跑一次 `web_fetch` 就通（提炼用的是刚配的那个）', async () => {
+  test('没配 ⇒ 报错指路；`model.alias.set` 之后 ⇒ 同一条会话再跑一次 `web_fetch` 就通（提炼用的是刚配的那个）', async () => {
     const fixture = startFixture({
       model: SESSION_MODEL,
       turns: [
@@ -283,11 +270,12 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
     const stage = stageOn(fixture, { configured: false })
     const web = fakeWeb()
 
+    let assembly: Assembly | undefined
     try {
-      const assembly = stage.assemble({ modelGateway: undefined, webSource: web })
+      assembly = stage.assemble({ modelGateway: undefined, webSource: web })
       const handle = attachShell(assembly.shell)
 
-      // —— ① 报错指路的那一句：去 `/config` 挑一个 ——
+      // —— ① 报错指路的那一句：去 `/model` 挑一个 ——
       handle.send({ type: 'input.submit', text: '查一下它的定价' })
       await waitFor(handle, '卡挂上', (events) => events.some((event) => event.kind === 'tool.decision.request'))
       answer(handle, eventsOfKind(handle.events, 'tool.decision.request')[0]?.id as number, 'approve')
@@ -296,31 +284,31 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
       const results = JSON.stringify(
         eventsOfKind(handle.events, 'tool.result').map((event) => event.data.output),
       )
-      expect(results).toContain('还没配提炼用的模型')
-      expect(results).toContain('/config')
+      expect(results).toContain('Cantrip 尚未配置')
+      expect(results).toContain('/model')
 
-      // —— ② 那一屏读到的当前值：**还没配**（答复里根本没有 `webFetch` 这一位）——
+      // —— ② 那一屏读到的当前值：**还没配**（答复里根本没有 Cantrip 映射）——
       handle.send({ type: 'model.list' })
       await waitFor(handle, '第一份模型目录', () => catalogs(handle).length >= 1)
-      expect(catalogs(handle)[0]?.data.webFetch).toBeUndefined()
+      expect(catalogs(handle)[0]?.data.aliases?.cantrip).toBeUndefined()
 
-      // —— ③ 挑一个（/config 那一行选中 ⇒ 回车＝保存 ⇒ 发出来的就是这条命令）——
-      handle.send({ type: 'webfetch.set', provider: 'local', model: DISTILL_MODEL })
+      // —— ③ 挑一个（/model 那一行选中 ⇒ 回车＝保存 ⇒ 发出来的就是这条命令）——
+      handle.send({ type: 'model.alias.set', alias: 'cantrip', provider: 'local', model: DISTILL_MODEL })
       await waitFor(handle, '保存的回话', () => catalogs(handle).length >= 2)
 
       const saved = catalogs(handle)[1]
-      expect(saved?.data.webFetch).toEqual({ provider: 'local', model: DISTILL_MODEL })
+      expect(saved?.data.aliases?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
       // 回执那句话（屏上那一行）在答复里
-      expect(saved?.data.note).toContain(DISTILL_MODEL)
+      expect(saved?.data.note).toBe('已保存 Cantrip')
       // 盘上真的写了那一格，且**没碰别的键**
       const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as {
-        readonly webFetch?: unknown
+        readonly modelAliases?: { readonly cantrip?: unknown; readonly default?: unknown }
         readonly defaultProvider?: unknown
         readonly providers: Record<string, Record<string, unknown>>
       }
-      expect(onDisk.webFetch).toEqual({ provider: 'local', model: DISTILL_MODEL })
-      expect(onDisk.defaultProvider).toBe('local') // 原样
-      expect(onDisk.providers['local']?.['model']).toBe(SESSION_MODEL) // 连接的默认模型原样
+      expect(onDisk.modelAliases?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
+      expect(onDisk.modelAliases?.default).toEqual({ provider: 'local', model: SESSION_MODEL }) // 原样
+      expect(onDisk.providers['local']?.['model']).toBeUndefined() // 连接的默认模型原样
 
       // ④ 反面：**当前会话的模型没被改**（这一下没换过模型）
       expect(eventsOfKind(handle.events, 'model.switched')).toHaveLength(0)
@@ -340,7 +328,7 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
       expect(chats.map((chat) => chat.model)).toEqual([
         SESSION_MODEL, // 第一趟：主轮（然后就停住了）
         SESSION_MODEL, // 第二趟：主轮
-        DISTILL_MODEL, // 提炼那一跳——**用的就是刚在 `/config` 里挑的那个**
+        DISTILL_MODEL, // 提炼那一跳——**用的就是刚在 `/model` 里挑的那个**
         SESSION_MODEL, // 第二趟：拿到答案接着走
       ])
       expect(web.asked).toEqual(['https://example.com/pricing'])
@@ -351,6 +339,7 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
       )
       expect(after).toContain(ANSWER)
     } finally {
+      assembly?.close()
       stage.dispose()
       await fixture.stop()
     }
@@ -360,20 +349,21 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
     const fixture = startFixture({ model: SESSION_MODEL, turns: [{ kind: 'text', text: '好。' }] })
     const stage = stageOn(fixture, { configured: false })
 
+    let assembly: Assembly | undefined
     try {
-      const handle = attachShell(
-        stage.assemble({ modelGateway: undefined, webSource: fakeWeb() }).shell,
-      )
+      assembly = stage.assemble({ modelGateway: undefined, webSource: fakeWeb() })
+      const handle = attachShell(assembly.shell)
 
-      handle.send({ type: 'webfetch.set', provider: 'ghost', model: 'whatever' })
+      handle.send({ type: 'model.alias.set', alias: 'cantrip', provider: 'ghost', model: 'whatever' })
       await waitFor(handle, '那一条回话', () => catalogs(handle).length >= 1)
 
       expect(catalogs(handle)[0]?.data.note).toContain('ghost')
-      expect(catalogs(handle)[0]?.data.webFetch).toBeUndefined()
+      expect(catalogs(handle)[0]?.data.aliases?.cantrip).toBeUndefined()
 
-      const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as { readonly webFetch?: unknown }
-      expect(onDisk.webFetch).toBeUndefined()
+      const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as { readonly modelAliases?: { readonly cantrip?: unknown; readonly default?: unknown } }
+      expect(onDisk.modelAliases?.cantrip).toBeUndefined()
     } finally {
+      assembly?.close()
       stage.dispose()
       await fixture.stop()
     }
@@ -382,8 +372,8 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
 
 // ══ 助手 ══════════════════════════════════════════════════════════════
 
-/** 收过的 `model.catalog` 答复（`/config` 那一行读的就是它上面那一格）。 */
-function catalogs(handle: ShellHandle): readonly { readonly data: { readonly webFetch?: unknown; readonly note?: string } }[] {
+/** 收过的 `model.catalog` 答复（`/model` 那一行读的就是它上面那一格）。 */
+function catalogs(handle: ShellHandle): readonly { readonly data: { readonly aliases?: { readonly cantrip?: unknown }; readonly note?: string } }[] {
   return eventsOfKind(handle.events, 'model.catalog')
 }
 

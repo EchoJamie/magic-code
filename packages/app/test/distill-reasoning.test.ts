@@ -1,50 +1,4 @@
-/**
- * U99 · **提炼那一次调用：照压缩同一条口径，显式不要思考**。
- *
- * ## 本单的要害（工单原话）
- *
- * `distill.ts` 起那一次调用**同样只传 `{ model, messages }`**——同一形制的**内核内务调用**
- * （文件头注第 2 条自己写着「同 `compact.ts` 的 `summarize`」）。压缩那一处 U97 已经办了，
- * 本单照同一条口径给 `{ mode: 'off' }`。
- *
- * ## ⚠️ 这一处与压缩那边**不一样**：设置从哪儿补齐，先查清楚
- *
- * 压缩那一跳走的是**注册表**（`withReasoning` 曾无条件覆盖，U97 因此在注册表上补了一处）。
- * **提炼这一跳不走注册表**——装配处按 `webFetch.provider` **单造一个 `createModelGateway`**
- * （`assembly.ts` 那一段注写明了理由：注册表会把当前选中盖在 `request.model` 之上，
- * 而这一件要的恰恰是配置里它自己那一条）。故这条路上：
- *
- * ```
- * distill.ts 的调用方 → createModelGateway.stream → 取件层 reasoningOption ⇒ 出站体
- * ```
- *
- * **中间没有任何补齐者**（`gateway.ts` 里一个字没提 `reasoning`）——设置**由调用方直给**。
- * 这就是本单只改 `distill.ts` 那一行、**不碰注册表**的实测依据。
- *
- * ## 走的是整条真路
- *
- * 真装配（真配置 · 真记录库 · 真对话域 · 真工具域 · **真闸门**）→ 真模型域（真适配）→
- * 真 `@ai-sdk/openai-compatible` → **环回 HTTP 端点**（`startFixture`，真 `Bun.serve`）。
- * 整条链上只有两处是假的：端点地址（环回 ＋ 合成假 key）与取回面（注入的 `webSource`）。
- * 判据读的是夹具留下的**出站请求体原文**（`FixtureRequest.body`），不是「我们记得传了没有」。
- *
- * ## 判据（正反两面）
- *
- * | 用例 | 咬什么 |
- * | --- | --- |
- * | ① | 提炼那一跳带着 `thinking.type = disabled`；**循环那几次一个字都没有**（会话没设档） |
- * | ② | 反面 · MiniMax（官方没有关思考的开关）⇒ **一位都不发**（`{ gap }` 那条既有形制），提炼照常成 |
- * | ② | 反面 · 兼容接入（没有适配）⇒ 同一条口径：一位都不发 |
- * | ④ | 反面 · 提炼用的是**它自己那一条模型**（会话中途换过模型也不跟过去——头注第 3 条护栏） |
- * | ⑤ | 反面 · 关思考那一跳被拒 ⇒ 提炼报「没成」、**这一轮照常收束**（失败不降级） |
- *
- * 判据 ③（压缩那一跳与循环那条路一个字没动）由**两头的既有用例**钉：
- * `compaction-reasoning.test.ts`（压缩）与 `compaction.test.ts` / 循环那几支（循环）照旧绿。
- *
- * ⚠️ **改前 ① 这条是红的**：提炼那一次的请求体里**一个思考参数都没有**（DeepSeek 落到它
- * 自己的默认：开 ＋ high）。物证（改前 / 改后两份出站请求体并排）见
- * `验证/U99-提炼不思考-20260926/`。
- */
+/** U113：辅助调用固定 Cantrip，关闭思考且与主选择隔离。 */
 
 import { describe, expect, test } from 'bun:test'
 import type { PageFetch, WebSource } from '@magic/contracts'
@@ -99,36 +53,24 @@ function stageOn(
     readonly vendor?: string
     /** 提炼那条连接的适配（给了就另起一条连接）。 */
     readonly distillVendor?: string
-    /** 会话那条连接上的默认思考设置（配置里的那一格 ⇒ 注册表按选中态补齐）。 */
-    readonly reasoning?: Record<string, unknown>
   } = {},
 ) {
   const providers: Record<string, Record<string, unknown>> = {
-    local: {
-      ...(options.vendor === undefined ? {} : { vendor: options.vendor }),
-      baseURL: fixture.baseURL,
-      apiKey: FAKE_API_KEY,
-      model: SESSION_MODEL,
-      ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
-    },
+    local: { vendor: options.vendor ?? 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
   }
   if (options.distillVendor !== undefined) {
     providers['distill'] = {
       vendor: options.distillVendor,
       baseURL: fixture.baseURL,
       apiKey: FAKE_API_KEY,
-      model: DISTILL_MODEL,
     }
   }
 
   return makeStage({
     config: {
-      defaultProvider: 'local',
+      modelAliases: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: DISTILL_MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers,
-      webFetch: {
-        provider: options.distillVendor === undefined ? 'local' : 'distill',
-        model: DISTILL_MODEL,
-      },
+
     },
   })
 }
@@ -240,7 +182,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
 
       await runOneFetch(handle, 1, '查一下它的定价')
       // 中途换模型（换的是接缝下游，对话域不知道发生过切换）
-      expect(assembly.switchModel({ provider: 'local', model: 'deepseek-v4-pro' }).ok).toBe(true)
+      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
       await runOneFetch(handle, 2, '再查一次')
 
       const chats = chatsOf(fixture)
@@ -260,7 +202,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
     }
   }, 30_000)
 
-  test('② 反面·MiniMax：官方没有关思考的开关 ⇒ 一位都不发（`{ gap }` 那条既有形制），提炼照常成', async () => {
+  test('② 反面·MiniMax：未支持关闭思考 ⇒ 明确报失败、不发提炼请求', async () => {
     const fixture = startFixture({ model: SESSION_MODEL, turns: turnsOf() })
     // 会话走 DeepSeek、**提炼走它自己那一条（MiniMax）**——顺手把「走的是哪条连接」也钉住
     const stage = stageOn(fixture, { vendor: 'deepseek', distillVendor: 'minimax' })
@@ -271,46 +213,11 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
       await runOneFetch(handle, 1, '查一下它的定价')
 
-      const distill = distillOf(fixture)
-      expect(distill).toBeDefined()
-
-      // **不硬塞一个它不认的参数**：出站体里一个思考参数都没有
-      expect(distill === undefined ? undefined : 'thinking' in distill.body).toBe(false)
-      expect(distill === undefined ? undefined : 'reasoning_effort' in distill.body).toBe(false)
-
-      // **也没静默成「没提炼」**：答案照旧回到主模型那儿（用它自己的默认接着干）
-      const results = JSON.stringify(
-        eventsOfKind(handle.events, 'tool.result').map((event) => event.data.output),
-      )
-      expect(results).toContain(ANSWER)
-      expect(results).not.toContain('提炼没成')
-    } finally {
-      assembly?.close()
-      await fixture.stop()
-      stage.dispose()
-    }
-  }, 30_000)
-
-  test('② 反面·兼容接入（没有适配）：同一条口径——一位都不发，提炼照常成', async () => {
-    const fixture = startFixture({ model: SESSION_MODEL, turns: turnsOf() })
-    // 不给 vendor ＝兼容接入（会话那条也一并不给，故这一趟两跳都是兼容接入）
-    const stage = stageOn(fixture)
-    let assembly: Assembly | undefined
-
-    try {
-      assembly = stage.assemble({ modelGateway: undefined, webSource: fakeWeb() })
-      const handle = attachShell(assembly.shell)
-      await runOneFetch(handle, 1, '查一下它的定价')
-
-      const distill = distillOf(fixture)
-      expect(distill).toBeDefined()
-      expect(distill === undefined ? undefined : 'thinking' in distill.body).toBe(false)
-      expect(distill === undefined ? undefined : 'reasoning_effort' in distill.body).toBe(false)
-
-      const results = JSON.stringify(
-        eventsOfKind(handle.events, 'tool.result').map((event) => event.data.output),
-      )
-      expect(results).toContain(ANSWER)
+      expect(distillOf(fixture)).toBeUndefined()
+      const results = JSON.stringify(eventsOfKind(handle.events, 'tool.result').map(event => event.data.output))
+      expect(results).toContain('思考能力未知，只能使用模型默认')
+      expect(results).toContain('提炼没成')
+      expect(chatsOf(fixture).every(one => one.body['model'] === SESSION_MODEL)).toBe(true)
     } finally {
       assembly?.close()
       await fixture.stop()

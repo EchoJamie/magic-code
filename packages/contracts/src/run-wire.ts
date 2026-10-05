@@ -53,7 +53,7 @@ export type ClientToManager =
        */
       readonly session?: string
       /**
-       * **开局的换模型请求**（`--provider` / `--model`）。
+       * **开局的换模型请求**（`--model`）。
        *
        * 为什么由窗口在这一跳说、而不是随后发一条 `model.switch`：选中要**落在第一轮之前**
        * ——「开局就落地」那条（`cli.ts` 的注）说的正是这件事。晚一步发，第一轮已经带着

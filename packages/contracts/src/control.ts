@@ -13,7 +13,7 @@ import type { StatusLineConfig } from './config.ts'
 import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { BlobRef, DecisionId, SessionId } from './ids.ts'
-import type { ReasoningSetting } from './model.ts'
+import type { ModelAlias, ReasoningSetting } from './model.ts'
 import type { CollaborationCommand } from './collaboration-control.ts'
 
 /**
@@ -168,16 +168,7 @@ export type TurnInterrupt = {
  * ＝留在这家换模型 · 都给＝一起换 · **都不给＝不晓得更成什么**（如实报，不猜）。
  */
 export type ModelSwitchRequest = {
-  /** `providers` 的键（**连接 id**）。 */
-  readonly provider?: string
-  /** **精确模型 id**（供应商原始 id）——不是型号族名。 */
-  readonly model?: string
-  /**
-   * **这次采用的思考设置**（U41）——合法值由该模型的能力给出（见 `ReasoningSupport`）。
-   *
-   * 缺省 ＝ **模型默认**（不发送任何思考参数）。不把原模型的档位 / 预算盲目带过去：
-   * 换了模型而没显式指定时，取**目标模型**的默认。
-   */
+  readonly alias?: ModelAlias
   readonly reasoning?: ReasoningSetting
 }
 
@@ -318,77 +309,15 @@ export type ProviderRemove = {
  * 走谁、**不写配置**；这一条写配置、**不改当前**。两个动作各有各的时机与后果，
  * 混成一条会让人分不清「我刚才改的是这次还是以后」。
  */
-export type ModelDefaultSet = { readonly type: 'model.default.set' } & ModelDefaultRequest
-
-/** `model.default.set` 的负载——命令负载与路由入参同一形态。 */
-export type ModelDefaultRequest = {
+export type ModelAliasSet = { readonly type: 'model.alias.set' } & ModelAliasRequest
+export type ModelAliasRequest = {
+  readonly alias: ModelAlias
   readonly provider: string
-  /** **精确模型 id**。 */
   readonly model: string
-  /** 该模型的思考设置——缺省 ＝ 不写这一位（模型默认）。 */
-  readonly reasoning?: ReasoningSetting
+  /** 首次明确保存 Default 时初始化尚未配置的档位。 */
+  readonly initialize?: boolean
 }
 
-/**
- * **取网页的提炼模型**（U78）——把「这一件工具用哪个模型」写进配置。
- *
- * 出处：设计 · 网页与搜索「提炼用哪个模型（2026-09-25 用户定：**在 `/config` 里挑**）」——
- * `/config` 那一行选中 ⇒ 进模型选择器（复用 `/model` 那一套），选定即**保存**。
- *
- * ## 与 `model.switch` / `model.default.set` 都**不是**一件事
- *
- * 三条各改各的（三件的由头都写在各自那一行上，混成一条就会分不清「我刚才改的是哪一件」）：
- *
- * | 命令 | 改什么 | 写盘 |
- * | --- | --- | --- |
- * | `model.switch` | **当下这一轮**走谁 | 不写 |
- * | `model.default.set` | **新建普通会话**的默认 | 写 |
- * | `webfetch.set` | **取网页那一件工具**用一个模型提炼 | 写 |
- *
- * ⚠️ **不写回会话的模型**（工单要害之一）：作用范围就是这一件工具。用户在那儿挑一个
- * 便宜的小模型，当前会话照旧走它原来那条——**两者混成一位**，「这一趟用了哪个模型」
- * 就只靠猜了，那正是 `webFetch` 这一格要消掉的事。
- *
- * ⚠️ **它不碰 `providers` 与 `defaultProvider`**：只写 `webFetch` 那一格（见 `WebFetchConfig`）。
- */
-export type WebFetchSet = { readonly type: 'webfetch.set' } & WebFetchSetRequest
-
-/**
- * `webfetch.set` 的负载——命令负载与路由入参同一形态（同 `ModelDefaultRequest` 之例）。
- *
- * **两件都要**（连接 ＋ 精确模型 id）：只写型号不写连接，同名型号落在哪一家就说不清
- * （供应商型号空间各不相干）——同 `WebFetchConfig` 那一条。
- */
-export type WebFetchSetRequest = {
-  /** 连接 id（`providers` 的键）——须是已有的那一条（落盘时点名校验）。 */
-  readonly provider: string
-  /** **精确模型 id**（供应商原始 id）——不是型号族名。 */
-  readonly model: string
-}
-
-/**
- * **界面的两格偏好**（U112）——状态行放哪几格、动不动效。
- *
- * 出处：设计 · 终端交互「状态行可配置：给一列可选项，不给脚本」与「符号 ＋ 动效：一套」
- * 那三条例的③（「给一个「减少动效」设定」）。
- *
- * ## 为什么要走命令，而不是外壳自己写盘
- *
- * 那两格的落点是 `config.json`（`MagicConfig.statusLine` / `MagicConfig.motion`），
- * 而**窗口这一侧一个字都不往盘上写**（U48 那张表：窗口是「呈现与输入客户端」，
- * 「读配置只为呈现」）。写盘归装配——同 `webfetch.set` / `model.default.set` 的站位。
- *
- * ## 与那两条都**不是**一件事
- *
- * | 命令 | 改什么 |
- * | --- | --- |
- * | `webfetch.set` | **取网页那一件工具**用哪个模型提炼 |
- * | `model.default.set` | **新建普通会话**的默认 |
- * | `prefs.set` | **此刻这一屏长什么样**（状态行那几格 · 动不动效） |
- *
- * ⚠️ **它是「此刻」的**：改完**当场生效**（不必重开），这与前两条一样，但**作用面**不同
- * ——它连一条会话、一件工具都不碰。
- */
 export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
 
 /**
@@ -597,7 +526,7 @@ export type ImageExport = {
 
 /**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U78 的 `webfetch.set` ＋ U107 的剪贴板取图
+ * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U113 的 `model.alias.set` ＋ U107 的剪贴板取图
  * ＋ U110 的导出原图）
  * ——外壳发往内核的全部消息。
  */
@@ -611,8 +540,7 @@ export type Command =
   | HistoryRead
   | ModelList
   | ModelRefresh
-  | ModelDefaultSet
-  | WebFetchSet
+  | ModelAliasSet
   | ProviderList
   | ProviderSave
   | ProviderRemove

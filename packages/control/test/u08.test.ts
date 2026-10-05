@@ -73,7 +73,7 @@ export function commandSubjectOf(command: Command): string {
       return '中断'
     case 'model.switch':
       // 第 17 轮第四支——两件都可缺，缺了就说「缺什么」
-      return `换模型：${command.provider ?? '（不换条目）'} / ${command.model ?? '（不换模型）'}`
+      return `换模型：${command.alias ?? '（只改思考）'}`
     case 'session.list':
     case 'session.new':
     case 'session.open':
@@ -119,12 +119,9 @@ export function commandSubjectOf(command: Command): string {
     case 'model.refresh':
       // U41 显式刷新——绕开有效期，明确要求现在就取一趟
       return `刷新模型信息：${command.provider ?? '（当前那条）'}`
-    case 'model.default.set':
+    case 'model.alias.set':
       // U41 设为默认——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）
       return `设为默认：${command.provider} / ${command.model}`
-    case 'webfetch.set':
-      // U78 取网页用的模型——写**配置里那一格**（与「当前会话说谁」「新建会话的默认」三件分开）
-      return `取网页用的模型：${command.provider} / ${command.model}`
     case 'prefs.set':
       // U112 界面那两格——写**配置里 `statusLine` / `motion`**（与上面两条都不同一件事：
       // 它改的是「这一屏长什么样」，连一条会话、一件工具都不碰）
@@ -202,8 +199,7 @@ export function hubFaceRealizesPort(): void {
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
-    onModelDefaultSet: () => undefined,
-    onWebFetchSet: () => undefined,
+    onModelAliasSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -238,13 +234,12 @@ export function routesAreContractShape(): void {
     onInput: (input) => void input.text,
     onInterrupt: () => undefined,
     onDecision: (id, decision) => void [id, decision],
-    onModelSwitch: (request) => void [request.provider, request.model],
+    onModelSwitch: (request) => void [request.alias, request.reasoning],
     onSession: (command) => void command.type,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
-    onModelDefaultSet: () => undefined,
-    onWebFetchSet: () => undefined,
+    onModelAliasSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -287,8 +282,7 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
-    onModelDefaultSet: () => undefined,
-    onWebFetchSet: () => undefined,
+    onModelAliasSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -324,8 +318,8 @@ describe('通道回环——命令进 · 事件出', () => {
       { type: 'collaboration.stop', delegation: 42 },
       { type: 'collaboration.stop' },
       { type: 'collaboration.resume' },
-      { type: 'collaboration.configure', member: 'worker', model: { provider: 'local', model: 'mini', reasoning: { mode: 'default' } } },
-      { type: 'collaboration.configure', model: { provider: 'local', model: 'mini' } },
+      { type: 'collaboration.configure', member: 'worker', model: { alias: 'default', reasoning: { mode: 'default' } } },
+      { type: 'collaboration.configure', model: { alias: 'default' } },
     ]
     for (const command of requests) shell.send(command)
     expect(commands).toEqual([...requests])
@@ -450,24 +444,24 @@ describe('命令进——外壳 → 内核', () => {
   test('换模型**原样转手**——控制域不认识注册表，也不知道换得成换不成', () => {
     const hub = createControlHub()
     const { kernel, shell } = createInProcessTransportPair()
-    const seen: { readonly provider: string | undefined; readonly model: string | undefined }[] = []
+    const seen: { readonly alias: string | undefined }[] = []
 
     hub.bind(
       routesWith({
-        onModelSwitch: (request) => seen.push({ provider: request.provider, model: request.model }),
+        onModelSwitch: (request) => seen.push({ alias: request.alias }),
       }),
     )
     hub.attach(kernel)
 
-    shell.send({ type: 'model.switch', provider: 'minimax-m2' })
-    shell.send({ type: 'model.switch', model: 'glm-4.6' })
+    shell.send({ type: 'model.switch', alias: 'cantrip' })
+    shell.send({ type: 'model.switch', alias: 'spell' })
     shell.send({ type: 'model.switch' })
 
     // 缺的那一件是 `undefined`（**不替用户补空串**——空串是个合法名字，补了就分不清「没给」）
     expect(seen).toEqual([
-      { provider: 'minimax-m2', model: undefined },
-      { provider: undefined, model: 'glm-4.6' },
-      { provider: undefined, model: undefined },
+      { alias: 'cantrip' },
+      { alias: 'spell' },
+      { alias: undefined },
     ])
   })
 

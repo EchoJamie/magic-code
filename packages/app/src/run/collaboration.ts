@@ -4,7 +4,7 @@ import type {
 } from '@magic/contracts'
 import { createCollaborationActions } from '@magic/actions'
 import type { RecordsStore } from '@magic/records'
-import { resolveManagedModel } from '../agent-models.ts'
+import { managedModelChoices, resolveManagedModel } from '../agent-models.ts'
 
 export type CollaborationHost = {
   readonly store: RecordsStore
@@ -30,6 +30,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
   const finishing = new Set<string>()
   const actions = createCollaborationActions({
     records, now: host.now,
+    modelChoices: () => managedModelChoices(host.magic),
     origin: async actor => {
       for await (const entry of host.store.readEntries(actor.sessionId)) if (entry.kind === 'user') return { sessionId: actor.sessionId, entryId: entry.id }
       throw new Error('找不到这份工作的原始用户交代')

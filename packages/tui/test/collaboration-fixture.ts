@@ -8,11 +8,11 @@ export const collaborationEntries: readonly Entry[] = [
 ]
 export const collaborationFixture: CollaborationView = {
   originSession: 'origin',
-  collaboration: { collaborationId: 'work', originSessionId: 'origin', origin: { sessionId: 'origin', entryId: 1 }, coordinatorId: 'coordinator', defaultModel: { provider: 'local', model: 'mini' }, state: 'open', at: 0 },
+  collaboration: { collaborationId: 'work', originSessionId: 'origin', origin: { sessionId: 'origin', entryId: 1 }, coordinatorId: 'coordinator', defaultModel: { alias: 'default', provider: 'local', model: 'mini' }, state: 'open', at: 0 },
   members: [
-    { agent: { agentId: 'coordinator', sessionId: 'origin', name: '协调', role: '整合结果', model: { provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
+    { agent: { agentId: 'coordinator', sessionId: 'origin', name: '协调', role: '整合结果', model: { alias: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
       runtime: { session: 'origin', state: 'idle', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0 },
-    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
+    { agent: { agentId: 'worker', sessionId: 'member', name: '实现', role: '调整校验', model: { alias: 'default', provider: 'local', model: 'mini' }, workspace: ['/project'], reachability: 'active', collaborationId: 'work', at: 0 },
       runtime: { session: 'member', state: 'running', action: '检查回调兼容', since: 0, startedAt: 0, workspace: ['/project'], holds: true }, pendingDecisions: 0,
       delegation: { delegationId: 10, collaborationId: 'work', delegatorId: 'coordinator', assigneeId: 'worker', source: { messageId: 10 }, authorization: [], scope: '回调校验', state: 'accepted', at: 0 } },
   ],

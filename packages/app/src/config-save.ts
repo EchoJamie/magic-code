@@ -7,7 +7,7 @@
  * ① **原子替换**——写临时文件再 `rename`；权限 600（与首次创建一致）；
  * ② **保存前重新读取**——改的是**盘上当下那一份**，不是加载时那份陈旧快照；
  *    且**保留无关字段**（权限 · MCP · 工作区根…原样带过）：本文件只碰
- *    `providers` / `defaultProvider` / `webFetch`（U78）/ `statusLine` / `motion`（U112）
+ *    `providers` / `modelAliases`/ `statusLine` / `motion`（U112）
  *    那几格，别的一律不动。
  * ③ **外部改过就提示重载**——加载时记下的 `mtime` 与当下不符 ⇒ 拒绝这次写入，
  *    把「先重新载入」交给用户（**不拿陈旧整份文件覆盖**别人的改动）。
@@ -19,11 +19,9 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type {
-  ModelDefaultRequest,
+  ModelAliasRequest,
   PrefsSetRequest,
   ProviderSaveRequest,
-  ReasoningSetting,
-  WebFetchSetRequest,
 } from '@magic/contracts'
 
 /** 保存的结果——判别式（**不抛**：写不成是用户要读的一句话，不是异常）。 */
@@ -168,22 +166,7 @@ export function saveProvider(input: {
   })
 }
 
-/**
- * 移除一条连接——**任何时候都允许**（U60 起）。
- *
- * ## 为什么不拦「它还是默认」了
- *
- * 原先这里拒绝、装配那一层再拦「它正在用」（设计：「有引用先替换或取消」）。那条**不需要
- * 靠禁止来满足**，而且它有个硬死锁：**只有一条连接时没别的可切 ⇒ 永远删不掉**——新用户
- * 第一次接错 key、接错家，正撞在这里出不去。
- *
- * **删除之后的状态本来就存在**：删掉当前那条 ⇒「当前」变成**没有** ⇒ 外壳当场报「先选
- * 模型」（0 供应商时正是这个状态）。**不静默、不级联、用户看得见**（U60 工单原话）。
- *
- * 故这里只做**收拾引用**这一件：`defaultProvider` 指着被删的那条就**一并清掉**——那是
- * 一个指向已删对象的死引用，不是「顺手改用户的别的选择」，更不是级联（级联＝替用户把
- * 另一个选择按下，那正是设计要防的**静默级联**）。
- */
+
 export function removeProvider(input: {
   readonly path: string
   readonly loadedAt?: number | undefined
@@ -200,107 +183,45 @@ export function removeProvider(input: {
 
       delete providers[input.provider]
 
-      // 默认指着它 ⇒ 一并清掉（**不留一条指向已删连接的默认**——那是下一趟加载会当场
-      // 报「defaultProvider 不在 providers 里」的坏配置）。别的键一律不动。
-      if (raw['defaultProvider'] !== input.provider) return { ok: true, raw: { ...raw, providers } }
-
-      const next: Record<string, unknown> = { ...raw, providers }
-      delete next['defaultProvider']
-      return { ok: true, raw: next }
+      const aliases = { ...(raw['modelAliases'] as Record<string, { provider: string; model: string }> | undefined) }
+      for (const [alias, mapping] of Object.entries(aliases)) if (mapping.provider === input.provider) delete aliases[alias]
+      return { ok: true, raw: { ...raw, providers, modelAliases: aliases } }
     },
   })
 }
 
-/**
- * 设为默认——**写配置**（与 `model.switch` 改当下那一件分开）。
- *
- * 同时落两处（设计 · 命令行与配置：「选定默认后才保存 `defaultProvider` 与对应 `model`」）：
- * `defaultProvider` 换成这条连接，`providers.<id>.model` 换成这个模型。
- */
-export function setModelDefault(input: {
+/** 保存独立映射；首次初始化只填尚未设置的三档。 */
+export function setModelAlias(input: {
   readonly path: string
   readonly loadedAt?: number | undefined
-  readonly request: ModelDefaultRequest
+  readonly request: ModelAliasRequest
 }): SaveOutcome {
+  const { alias, provider, model, initialize } = input.request
+  if (!['default', 'cantrip', 'spell', 'arcane'].includes(alias)) return { ok: false, reason: '未知模型选择' }
+  if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: '请选择实际型号' }
+  if (initialize === true && alias !== 'default') return { ok: false, reason: '首次初始化只能保存 Default' }
   return editConfigFile({
     path: input.path,
     ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
     update(raw) {
-      const providers = providersOf(raw)
-      if (!Object.hasOwn(providers, input.request.provider)) {
-        return { ok: false, reason: `没有「${input.request.provider}」这条连接——先接入它` }
+      if (!Object.hasOwn(providersOf(raw), provider)) return { ok: false, reason: `没有「${provider}」这条连接——先接入它` }
+      const value = raw['modelAliases']
+      if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) return { ok: false, reason: 'modelAliases 须是对象，请先修复配置' }
+      for (const [key, mapping] of Object.entries(value ?? {})) {
+        if (!['default', 'cantrip', 'spell', 'arcane'].includes(key) || typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)
+          || Object.keys(mapping).some(field => !['provider', 'model'].includes(field))
+          || typeof mapping.provider !== 'string' || !Object.hasOwn(providersOf(raw), mapping.provider)
+          || typeof mapping.model !== 'string' || mapping.model.trim() === '') return { ok: false, reason: 'modelAliases 内容无效，请先修复配置' }
       }
-
-      const reasoning: ReasoningSetting | undefined = input.request.reasoning
-      const entry = entryOf(providers, input.request.provider)
-      // 思考属于模型组合；切换默认型号不能把上一个型号的档位留在磁盘上。
-      if (entry['model'] !== input.request.model && reasoning === undefined) delete entry['reasoning']
-      providers[input.request.provider] = {
-        ...entry,
-        model: input.request.model,
-        ...(reasoning === undefined ? {} : { reasoning }),
-      }
-
-      return { ok: true, raw: { ...raw, providers, defaultProvider: input.request.provider } }
+      const aliases = { ...(value as Record<string, unknown> | undefined) }
+      const mapping = { provider, model }
+      aliases[alias] = mapping
+      if (initialize === true) for (const tier of ['cantrip', 'spell', 'arcane']) if (!Object.hasOwn(aliases, tier)) aliases[tier] = mapping
+      return { ok: true, raw: { ...raw, modelAliases: aliases } }
     },
   })
 }
 
-/**
- * **取网页用的模型**（U78）——写配置里 `webFetch` 那一格（设计 · 网页与搜索：
- * 「在 `/config` 里挑」，保存是显式动作）。
- *
- * ## 为什么只写这一格
- *
- * 它与「当前会话走谁」（`model.switch`，不写盘）和「新建会话的默认」（`defaultProvider`
- * ＋ `providers.<id>.model`）是**三件不同的事**：取网页省的是上下文，提炼那一步用哪个模型
- * 可以另外挑（想省钱就挑个小的）。故这里**一个别的键都不碰**——`providers` /
- * `defaultProvider` 原样带过（同 `saveProvider` 那条「保留无关字段」的姿势）。
- *
- * ⚠️ **不校验型号在不在缓存里**：选择的键是「连接 ＋ 精确模型 id」两件（同 `WebFetchConfig`），
- * 而型号清单一头来自供应商接口、随时在变——拿一份可能过期的列表拦用户的明确选择，
- * 是拿我们的缓存去否他的决定。**认不出的连接**才拦（那个是配置内部的死引用）。
- */
-export function setWebFetch(input: {
-  readonly path: string
-  readonly loadedAt?: number | undefined
-  readonly request: WebFetchSetRequest
-}): SaveOutcome {
-  return editConfigFile({
-    path: input.path,
-    ...(input.loadedAt === undefined ? {} : { loadedAt: input.loadedAt }),
-    update(raw) {
-      const providers = providersOf(raw)
-      if (!Object.hasOwn(providers, input.request.provider)) {
-        return { ok: false, reason: `没有「${input.request.provider}」这条连接——先接入它` }
-      }
-
-      return {
-        ok: true,
-        raw: {
-          ...raw,
-          webFetch: { provider: input.request.provider, model: input.request.model },
-        },
-      }
-    },
-  })
-}
-
-/**
- * **界面的两格偏好**（U112）——写配置里 `statusLine` / `motion` 那两格。
- *
- * ## 三条规矩，逐条对着本文件的头注
- *
- * - **只碰这两格**（「保留无关字段」那条）：`providers` / `defaultProvider` / `webFetch` /
- *   `permissions` / `mcp` / 工作区根…一律原样带过。这两格与上面那些**互不代劳**：
- *   一条会话走谁、取网页用谁、这一屏长什么样，是三件不同的事；
- * - **原子替换 ＋ 保存前比 `mtime`**（照 `editConfigFile` 那一趟，不必再写一遍）；
- * - **写的是「给什么改什么」**：不带的键**原样留着**——勾一次格子不该顺手把动效开关翻过去。
- *
- * ⚠️ **`statusLine` 整份替换**（同 `PrefsSetRequest` 那条：有序清单上说不清「加在哪儿」）。
- * ⚠️ **`cells: []` 是合法值**（＝只要锚那两格），故判空**不能**写成「空就不写」——
- *    `undefined` 才是「这一趟没带这一格」。
- */
 export function setPrefs(input: {
   readonly path: string
   readonly loadedAt?: number | undefined

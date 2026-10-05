@@ -1,3 +1,4 @@
+import type { ModelSwitchRequest } from '@magic/contracts'
 /**
  * **外壳位** —— 装配视图第 5 步「接外壳」的落点（技术方案 · 领域划分 · 装配视图 5）。
  *
@@ -22,7 +23,7 @@
  * 在真 TTY 里按得出来、无人值守验不了（本轮的端到端真跑正是靠它）。
  *
  * **换模型的加宽位**（U17 补）——脚本的交代位收两形：裸字符串（一字不改的老写法）或
- * `{ switch: { provider?, model? } }`（**会话中途换模型**）。落点是 `onSwitch`：装配把
+ * `{ switch: { alias?, reasoning? } }`（**会话中途换模型**）。落点是 `onSwitch`：装配把
  * **换模型那一条产出路径**接在那儿，本文件只负责「按脚本的次序喊一声」，不认识注册表——
  * 也**因此与命令面同产 `model.switched`**（缺陷 D16：收拢的是产出，不是入口）。
  *
@@ -33,7 +34,7 @@
  */
 
 import type { Command, ControlTransport, Decision, InputSubmit, KernelEvent, UserInput } from '@magic/contracts'
-import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from '@magic/model'
+import type { ModelSelection, ModelSwitchResult } from '@magic/model'
 
 /** 一次裁决询问（`tool.decision.request` 的几件）。 */
 export type ShellDecisionRequest = {
@@ -153,10 +154,7 @@ function normalizeAnswer(answer: ShellAnswer): {
 
 /** 换模型请求的一行话（报错里说清楚「想换成什么」）。 */
 function describeSwitchRequest(request: ModelSwitchRequest): string {
-  const parts: string[] = []
-  if (request.provider !== undefined) parts.push(`provider=${request.provider}`)
-  if (request.model !== undefined) parts.push(`model=${request.model}`)
-  return parts.length === 0 ? '什么都没给' : parts.join(' · ')
+  return request.alias ?? '思考设置'
 }
 
 /** 一个「`timeoutMs` 后无论如何都拒绝」的 promise——挂死比慢更坏（无订阅方＝丢命令，不报错）。 */

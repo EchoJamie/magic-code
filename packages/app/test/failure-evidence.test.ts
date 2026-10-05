@@ -32,13 +32,9 @@ import { makeStage, readDatabase, type RawDatabase, type Stage } from './support
  * 记录里那句「哪个模型」就成了两个来源拼出来的东西，判据立不住。
  */
 const STAND: Record<string, unknown> = {
-  defaultProvider: 'deepseek',
+  modelAliases: {default: {provider: "deepseek", model: 'deepseek-flash'}, cantrip: {provider: "deepseek", model: 'deepseek-flash'}, spell: {provider: "deepseek", model: 'deepseek-flash'}, arcane: {provider: "deepseek", model: 'deepseek-flash'}},
   providers: {
-    deepseek: {
-      baseURL: 'http://test.invalid/v1',
-      apiKey: 'sk-test-not-a-real-key',
-      model: 'deepseek-flash',
-    },
+    deepseek: { vendor: 'minimax', baseURL: 'http://test.invalid/v1', apiKey: 'sk-test-not-a-real-key' },
   },
 }
 
@@ -69,7 +65,7 @@ function probeGateway(): {
   const make = (stamper: EventStamper): ModelGateway =>
     createModelGateway({
       providerId: 'deepseek',
-      config: { baseURL: 'http://test.invalid/v1', model: 'deepseek-flash', apiKey: PROBE_KEY },
+      config: { baseURL: 'http://test.invalid/v1', vendor: 'deepseek', apiKey: PROBE_KEY },
       env: {},
       stamper,
       retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },

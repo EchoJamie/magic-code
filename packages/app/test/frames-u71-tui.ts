@@ -144,10 +144,10 @@ if (import.meta.main) {
       rows,
       artifacts: join(out, 'runs'),
       config: {
-        defaultProvider: 'local',
+        modelAliases: {default: {provider: "local", model: 'MiniMax-M3'}, cantrip: {provider: "backup", model: 'MiniMax-M2'}, spell: {provider: "local", model: 'MiniMax-M3'}, arcane: {provider: "local", model: 'MiniMax-M3'}},
         providers: {
-          local: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u71', model: 'MiniMax-M3' },
-          backup: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u71', model: 'MiniMax-M2' },
+          local: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u71' },
+          backup: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u71' },
         },
         mcp: {
           servers: {

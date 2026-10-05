@@ -58,8 +58,8 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
     } catch (error) { errors.push(String(error)); return new Response(String(error), { status: 500 }) }
   } })
   const configPath = join(magic.base, 'config.json')
-  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], defaultProvider: 'controlled',
-    providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-stop-only', model: 'entry-model' } },
+  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], modelAliases: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
+    providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-stop-only' } },
   }))
   const paths = runPathsOf(magic, dataDir, tmpdir())
   const proxyPath = join(paths.dir, 's.sock')

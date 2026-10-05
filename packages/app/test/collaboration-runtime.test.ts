@@ -13,7 +13,7 @@ function fixture() {
   const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
   const records = store.collaboration
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '同一件工作' }, at: 1 }) }
-  const model = { provider: 'controlled', model: 'test' }
+  const model = { alias: 'default' as const, provider: 'controlled', model: 'test' }
   const coordinator = records.registerAgent({ operationId: 'identity', sessionId: 'origin', name: '入口', role: '', model, at: 2 })
   const collaboration = records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
   return { dir, store, records, coordinator, collaboration,
@@ -141,9 +141,9 @@ test('协作汇总实际模型用量：成员未报告的调用不补零、不�
   const f = fixture()
   const child = f.spawn('usage-child')
   const stamper = makeTestStamper()
-  f.store.appendEvent({ ...stamper.stamp('model.call.start', { model: 'entry-model' }), session: 'origin' })
+  f.store.appendEvent({ ...stamper.stamp('model.call.start', { alias: 'default', model: 'entry-model' }), session: 'origin' })
   f.store.appendEvent({ ...stamper.stamp('model.usage', { inputTokens: 12, outputTokens: 4, totalTokens: 16 }), session: 'origin' })
-  f.store.appendEvent({ ...stamper.stamp('model.call.start', { model: 'member-model' }), session: child.agent.sessionId })
+  f.store.appendEvent({ ...stamper.stamp('model.call.start', { alias: 'default', model: 'member-model' }), session: child.agent.sessionId })
   const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: () => undefined, cancel: async () => undefined,
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,

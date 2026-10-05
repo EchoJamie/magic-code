@@ -120,12 +120,12 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
       writeConfig(
         join(home, MAGIC_DIR),
         validConfig({
-          defaultProvider: 'local',
+          modelAliases: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(alias => [alias, { provider: 'local', model: options.model ?? 'MiniMax-M3' }])),
           providers: {
             local: {
               baseURL: options.baseURL ?? DEAD_BASE_URL,
               apiKey: FAKE_API_KEY,
-              model: options.model ?? 'MiniMax-M3',
+              vendor: 'minimax',
             },
           },
           // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿

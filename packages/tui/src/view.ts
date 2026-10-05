@@ -14,6 +14,8 @@
  * **状态行只放「此刻」**——一次性的事（「已切到 #2」）进记录区当回执。
  */
 
+import type { ModelAlias, ModelAliases, ModelSelectionRef } from '@magic/contracts'
+
 import type {
   AgentId,
   BlobRef,
@@ -559,6 +561,7 @@ export type Picker = {
     | 'vendor'
     | 'provider'
     | 'provider-detail'
+    | 'model-choice'
     | 'model-detail'
     | 'model-reasoning'
     /**
@@ -711,7 +714,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   // U71——**配置的总入口**：一屏看见「现在配成什么样」，选定进那一项自己那一屏。
   // 它排在 `/model` / `/grants` / `/mcp` 之前：那三条是**它通向的那几屏**，这一条是门。
   { name: '/config', summary: '看现在配成什么样（选定进那一项）' },
-  { name: '/model', summary: '换模型（列出可用条目，选定即切）' },
+  { name: '/model', summary: '设置默认模型与档位 · 选择工作模型与思考' },
   { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
   // U33——**它是内置命令**（不是技能）：故在表上、名字不许被技能顶掉。
   // 选定只说「挂到这条草稿上」，不说「发送」——那是两件事（选定不发送，那里另有提示）。
@@ -1135,17 +1138,7 @@ export type ShellStatus = {
    * 出口合入后，`createShell` 的 `contextWindow` 一接即上屏（渲染那半已经写好并有用例）。
    */
   readonly window: number | null
-  /**
-   * **「思考档」那一格的字**（U112）——当前那个模型此刻的思考设置（`思考·高` / `不思考`）。
-   *
-   * ⚠️ **由外壳合成，不由 `reduce` 算**：那一档的真源有两处——**用户在这一台壳上亲手选过的**
-   * （`shell.ts` 的 `chosenReasoning`，只在壳手上）与**配置里声明的那一条**
-   * （`configReasoningOf`，从视图读得到）。两处的先后由壳定，故这一格归它刷
-   * （`syncReasoning`：几处动作之后各叫一次）。
-   *
-   * `null` ＝**不知道**（还没问过模型列表 / 那个模型没法挑这一档）⇒ 状态行那一格
-   * **整格省掉**（不占位、不显示空值）。
-   */
+
   readonly reasoning: string | null
   /**
    * **这一代在执行全放行**（U73）——命令行 `--allow-all` 起的那一代。**一个布尔**，
@@ -1356,17 +1349,9 @@ export type ShellView = {
    * `status.model`（真跑过才有的那一格），U41 起改读答复里的 `current`：它说的是
    * 「**此刻**会走哪一条」，包含「换过但还没调用过」那种（那才是选择器该标的）。
    */
-  readonly modelCurrent: ModelRef | null
-  /**
-   * **「取网页」那一件工具用哪个模型**（U78 · `model.catalog` 的 `webFetch`）——
-   * `/config` 那一行「取网页用的模型」的当前值，也是那一屏选择器标「现在配的是谁」的依据。
-   *
-   * ⚠️ **与 `modelCurrent` 是两件事**（设计 · 网页与搜索：「两处不能混」）：那是**当前会话**
-   * 走谁，这一位是**取网页那一件**用谁。取网页省的是上下文，提炼那一步用哪个模型可以另外挑。
-   *
-   * `null` ＝ **还没配**（不是「回落到当前会话那个」）——那一行照实写「还没配」。
-   */
-  readonly webFetch: ModelRef | null
+  readonly modelCurrent: ModelSelectionRef | null
+
+  readonly aliases: ModelAliases
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
@@ -1518,7 +1503,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     models: [],
     vendors: [],
     modelCurrent: null,
-    webFetch: null,
+    aliases: {},
     grants: null,
     turnTools: 0,
     // **没有计划**（不占位）· 默认展开（设计）· 视口从头开始
@@ -1592,20 +1577,7 @@ export function reasoningText(setting: ReasoningSetting): string {
   return `思考·${setting.level === 'low' ? '低' : setting.level === 'medium' ? '中' : '高'}`
 }
 
-/**
- * **配置里声明的那一档**（U112）——`providers.<id>.reasoning`，**当它绑的就是当前那个模型**。
- *
- * ⚠️ 与「用户在这一台壳上亲手选过的档位」（`shell.ts` 的 `chosenReasoning`）**不是同一份**：
- * 那个只在壳手上，故状态行那一格由**外壳**合成（先看亲手选的、再看配置里声明的），
- * 这一支只答「配置里有没有」。
- *
- * 三条：
- * - **`entry.reasoning` 与 `entry.model` 绑着**（契约明文：换了模型而没显式改设置时取目标
- *   模型的默认）——故只有 `entry.model === 当前模型` 时它才说得通；
- * - **拿不到就不给**（`undefined`）：还没问过模型列表 / 当前那个模型不是这一条连接的默认 /
- *   配置里压根没写 ⇒ 那一格**整格省掉**（设计：某项当时不可用就整格省掉，不占位）；
- * - **`mode: 'default'` 也照报**——「默认」是**明确写下的一档**，与「不知道」是两件事。
- */
+
 /**
  * **「工作区」那一格的字**（U112）——从装配认出来的那组根算出来。
  *
@@ -1628,9 +1600,7 @@ export function configReasoningOf(view: ShellView): ReasoningSetting | undefined
   const current = view.modelCurrent
   if (current === null) return undefined
 
-  const entry = view.models.find((one) => one.provider === current.provider)
-
-  return entry !== undefined && entry.model === current.model ? entry.reasoning : undefined
+  return 'reasoning' in current ? current.reasoning as ReasoningSetting | undefined : undefined
 }
 
 /** 授权名录（`grants.catalog` 的载荷 · U22）——抽屉与那一行度量都读它。 */
@@ -1729,7 +1699,7 @@ export function reduce(
       // 「这次**真用了**谁」＋ **这一次的有效输入预算**（U41 返修：分母改由**产生处**给，
       // 外壳不再拿一张窗长表自己查）。⚠️ **未知时清空**——沿用上一个模型的容量就是报错一个数。
       return patchStatus(view, {
-        model: event.data.model,
+        model: event.data.alias === undefined ? view.status.model : modelLabel(event.data.alias),
         window: event.data.inputBudget ?? null,
       })
     case 'model.usage':
@@ -1755,13 +1725,13 @@ export function reduce(
       // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动）。
       return appendReceipt(
         event.data.ok && event.data.model !== undefined
-          ? patchStatus(view, {
-              model: event.data.model,
+          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.alias === undefined ? view.modelCurrent : { alias: event.data.alias, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
+              model: event.data.alias === undefined ? view.status.model : modelLabel(event.data.alias),
               window: event.data.inputBudget ?? null,
             })
           : view,
         event.data.ok
-          ? `已换模型 → ${event.data.model ?? '？'}`
+          ? `已选择 ${event.data.alias === undefined ? '模型' : modelLabel(event.data.alias)}`
           : `换模型未成：${event.data.reason ?? '未说缘由'}`,
       )
 
@@ -1777,8 +1747,8 @@ export function reduce(
         modelCurrent: event.data.current ?? null,
         // **取网页用谁**（U78）——同一条注：答复说没有＝**还没配**，落回 `null`。
         // ⚠️ 不回落到 `modelCurrent`：那正是这一格明确要消掉的静默回落。
-        webFetch: event.data.webFetch ?? null,
-        status: { ...view.status, window: windowOfCatalog(view, event.data) },
+        aliases: event.data.aliases ?? {},
+        status: { ...view.status, model: event.data.current === undefined ? view.status.model : modelLabel(event.data.current.alias), window: windowOfCatalog(view, event.data) },
       }
 
     // 供应商管理面的一屏（U41）——**收进视图**：与 `model.catalog` **同一份行**
@@ -3606,6 +3576,29 @@ export function regionRows(vendor: VendorInfo): readonly PickerRow[] {
  *   （设计：「模型不在最新列表时，已有选择仍明确保留并提示此事实」）；
  * - **副文案是连接名**（缺省＝id）：合法的两条连接可以有同名模型，认谁就看这一格。
  */
+export const modelLabel = (alias: ModelAlias): string => alias[0]!.toUpperCase() + alias.slice(1)
+
+export function modelSettingsRows(entries: readonly ModelCatalogRow[], aliases: ModelAliases, current: ModelSelectionRef | ModelRef | null = null, target = '当前工作'): readonly PickerRow[] {
+  return [
+    ...(['default', 'cantrip', 'spell', 'arcane'] as const).map(alias => ({
+      label: `${alias === 'default' ? '默认模型' : '模型档位'} · ${modelLabel(alias)}`,
+      meta: aliases[alias] === undefined ? '尚未配置' : `${aliases[alias]!.provider} · ${aliases[alias]!.model}`,
+      value: `edit:${alias}`, current: false, oneLine: true,
+    })),
+    { label: `${target} · 选择模型`, meta: current !== null && 'alias' in current ? `当前 ${modelLabel(current.alias as ModelAlias)}；选择只影响此对象` : '尚未选择；Default 或三个能力档位', value: 'choose', current: false, oneLine: true },
+    { label: '思考等级', meta: '独立设置当前模型的推理投入', value: 'reasoning', current: false, oneLine: true },
+    ...modelActionRows(entries),
+  ]
+}
+
+export function modelChoiceRows(aliases: ModelAliases, current: ModelRef | null): readonly PickerRow[] {
+  return (['default', 'cantrip', 'spell', 'arcane'] as const).map(alias => ({
+    label: modelLabel(alias), value: alias, current: current !== null && 'alias' in current && current.alias === alias,
+    meta: aliases[alias] === undefined ? '尚未配置；请返回模型设置' : `${aliases[alias]!.provider} · ${aliases[alias]!.model}`,
+    oneLine: true,
+  }))
+}
+
 export function modelRows(
   entries: readonly ModelCatalogRow[],
   current: ModelRef | null,
@@ -3693,11 +3686,6 @@ function modelsOf(
   const out = cached.map((info) => ({ info, cached: true }))
   const has = (id: string): boolean => out.some((one) => one.info.id === id)
 
-  // ① 配置默认——缓存里没有也**留着**（且标明它不在最近一次列表里）
-  if (entry.model !== undefined && !has(entry.model)) {
-    out.push({ info: { id: entry.model }, cached: false })
-  }
-
   // ② **实际当前那条**——同上，一条都不能丢（设计：「模型不在最新列表时，已有选择仍明确
   //    保留并提示此事实」；这里连「它是不是默认」都不假设）
   if (current !== null && current.provider === entry.provider && !has(current.model)) {
@@ -3761,18 +3749,7 @@ export function cacheLabelOf(entry: ModelCatalogRow): string {
  * 两件都是「对**这一条**模型做的事」，故与「选定＝切过去」分开：列表上回车是切换，
  * 要看详情得明确按 `→` 进这一屏（同 `enter` 与「详情」两个动作在别处的分寸）。
  */
-export function modelDetailRows(): readonly PickerRow[] {
-  return [
-    { label: '思考设置', meta: '', current: false, value: 'reasoning', oneLine: true },
-    {
-      label: '设为默认',
-      meta: '新建会话就用它',
-      current: false,
-      value: 'default',
-      oneLine: true,
-    },
-  ]
-}
+
 
 /**
  * **思考那一屏的行**（U41）——只列**这个模型声明支持**的那几形。
@@ -3874,15 +3851,8 @@ export function reasoningHint(support: ReasoningSupport | undefined): string {
  */
 const MAX_MODEL_NOTES = 3
 
-/**
- * 这一屏选的是**哪一件东西用的模型**（U78）——`/model` 自己的那一屏是「当前会话」，
- * `/config` 那一行进来的是「取网页」。
- *
- * ⚠️ **作用对象必须说清**（设计 · 命令行与配置那条「选择要显示作用对象」）：同一扇选择器
- * 被两处用，若一个字不差地长一个样，用户就没法知道这一次回车改的是哪一件——而这两件
- * **后果完全不同**（一件改当前会话、一件只改取网页那一件工具）。
- */
-export type ModelScope = 'session' | 'webFetch'
+/** 默认模型或档位映射编辑，与工作选择分开。 */
+export type ModelScope = 'session' | ModelAlias
 
 export function modelHint(
   entries: readonly ModelCatalogRow[],
@@ -3932,16 +3902,14 @@ export function modelHint(
   // ⚠️ **取网页那一趟不报「→ 详情」**（U78）：那儿 `→` 是空的（详情那一屏的动作是
   //    「思考设置 / 设为默认」，两件都是**当前会话**的事，在这一趟里一个都不该做）。
   //    报一个按下去没反应的键，比不报更坏——那正是本单要消掉的那一类。
-  else if (scope === 'session') heads.push('→ 看这条的详情')
+
 
   if (note !== undefined && note !== '') heads.push(note)
 
   // **作用对象那一句摆在最前**（U78）：它是「这一屏在做什么」的回答，别的几行都是
   // 细节（缓存新不新、内核有没有话说）。取网页那一趟把「回车＝用它提炼」也一并说了——
   // 那一屏的 `→` 是空的，`↑↓` 之外只剩这一个键有事做。
-  if (scope === 'webFetch') {
-    heads.unshift('取网页用的模型：选一条回车＝用它提炼；当前会话的模型不受影响')
-  }
+  if (scope !== 'session') heads.unshift(`配置 ${modelLabel(scope)}：选定实际型号后保存；当前工作不受影响`)
 
   return heads.join('\n')
 }
@@ -4142,7 +4110,7 @@ export type ConfigPaths = {
 /** `/config` 那一屏的一项——**顺序即屏上的顺序**（设计里就是这么排的）。 */
 export type ConfigItem = {
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
-  readonly key: 'model' | 'webFetch' | 'grants' | 'mcp' | 'paths' | 'statusLine' | 'motion'
+  readonly key: 'model' | 'grants' | 'mcp' | 'paths' | 'statusLine' | 'motion'
   readonly name: string
 }
 
@@ -4162,7 +4130,6 @@ export const CONFIG_ITEMS: readonly ConfigItem[] = [
   // ↓ U78 加的那一行（设计 · 命令行与配置：「取网页用的模型」那一项随该功能落地再加）。
   //   摆在「模型与连接」紧后面：两行都是「挑一个模型」，竖着扫一眼时挨着看最省事；
   //   末行那个「数据目录与工作区根」是一份纯读出来的账（没有可进的入口），仍旧垫底。
-  { key: 'webFetch', name: '取网页用的模型' },
   { key: 'grants', name: '本工作区授权' },
   { key: 'mcp', name: '外部工具' },
   // ↓ U112 加的两行（设计 · 终端交互「状态行可配置：给一列可选项，不给脚本」与「符号 ＋
@@ -4242,19 +4209,7 @@ function configModelValue(entries: readonly ModelCatalogRow[], current: ModelRef
  * 名字取法与 `configModelValue` **同一条**（模型名取 `info.name ?? id`、连接名取
  * `entry.name ?? id`）——两处各取一套的话，屏上这一格会与它通向的那一屏对不上。
  */
-function configWebFetchValue(
-  entries: readonly ModelCatalogRow[],
-  webFetch: ModelRef | null,
-): string {
-  if (webFetch === null) return '还没配'
 
-  const entry = entries.find((one) => one.provider === webFetch.provider)
-  const connection = entry?.name ?? webFetch.provider
-  // 缓存里没有它（那条模型从最近一次列表里没了）⇒ 照实报精确 id——不拿别的顶上
-  const info = entry?.cache?.snapshot?.models.find((one) => one.id === webFetch.model)
-
-  return `${info?.name ?? webFetch.model} · ${connection}`
-}
 
 /**
  * ② **本工作区授权**的当前值——**几条**（少了／多了跟着变）。
@@ -4290,27 +4245,12 @@ function configPathsValue(paths: ConfigPaths): string {
   return parts.join(' · ')
 }
 
-/**
- * **`/config` 的行**——一行一项：**名称 ＋ 它的当前值**（右列对齐，见 `paddedLabel`）。
- *
- * 三件事写在这一处：
- * - **值从哪来**：四行来自各自的读数（`models` / `grants` / `mcp`，都是**开屏之前刚问回来的**
- *   那一份；「取网页用的模型」是 `webFetch` 那一格——它落在 `model.catalog` 同一条答复上），
- *   末行来自装配递进来的两条路径（见 `ConfigPaths`）；
- * - **`value` 是动作键**（`ConfigItem['key']`）——选定之后进哪一项由它说了算（`shell.ts`
- *   的 `submit` 那一支），**不从行文案反推**（同 `PickerRow.pick` / `revoke` 那条由头）；
- * - **`oneLine`**：这一屏的每一行**担保只占一行**（超宽由渲染层截断加 `…`）。
- *   ⚠️ 这一位**不能省**：路径与模型名都可能很长，折行了就是「账 N 行、屏 N+1 行」，
- *   矮终端上真光标当场高一行（U31 那个老账）。**长值怎么收＝截断**（不是折行）——
- *   折行会把「右列对齐」这件事整个毁掉，而**完整那一份在它自己那一屏里**（第 4 项那一屏
- *   报的就是全路径）。
- */
+
 export function configRows(input: {
   readonly paths: ConfigPaths
   readonly models: readonly ModelCatalogRow[]
   readonly current: ModelRef | null
   /** 「取网页用的模型」那一格（U78）——`null` ＝ 还没配。 */
-  readonly webFetch: ModelRef | null
   readonly grants: GrantsCatalog | null
   readonly mcp: McpCatalog | null
   /** 状态行那两格（U112）——`undefined` ＝ 还没配过（默认那条）。 */
@@ -4321,7 +4261,6 @@ export function configRows(input: {
 }): readonly PickerRow[] {
   const values: Readonly<Record<ConfigItem['key'], string>> = {
     model: configModelValue(input.models, input.current),
-    webFetch: configWebFetchValue(input.models, input.webFetch),
     grants: configGrantsValue(input.grants),
     mcp: configMcpValue(input.mcp),
     paths: configPathsValue(input.paths),

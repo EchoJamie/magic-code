@@ -22,6 +22,8 @@
 
 import { dirname, join } from 'node:path'
 import { MAGIC_DIR, apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
+import type { ModelAlias } from '@magic/contracts'
+
 import type {
   AgentId,
   CollaborationView,
@@ -82,6 +84,9 @@ import {
   mcpToolRows,
   modelHint,
   modelRows,
+  modelSettingsRows,
+  modelChoiceRows,
+  modelLabel,
   reasoningHint,
   reasoningRows,
   reasoningText,
@@ -103,7 +108,6 @@ import {
   skillRows,
   authLabelOf,
   cacheLabelOf,
-  modelDetailRows,
   regionRows,
   vendorRows,
   closePrompt,
@@ -382,7 +386,7 @@ type PendingPicker =
    * **等「取网页用的模型」那一次保存的回话**（U78）——与 `'model'` 分开：那一样是等
    * 一屏新读数（回去铺列表），这一样是等**一次动作的结果**（收起抽屉、留一行回执）。
    */
-  | 'webFetchSave'
+  | 'aliasSave'
 
 /**
  * `/config` 开屏要问的那三份读数——**一份都不能少**（少一份，那一格就成了「还没问到」）。
@@ -444,6 +448,7 @@ type Layer = {
   readonly asking: Ask | null
   readonly collaborationAt?: AgentId
   readonly collaborationModel: { readonly member?: AgentId } | null
+  readonly modelScope: ModelScope
 }
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
@@ -874,19 +879,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   /** **详情那一屏正说着哪一条模型**（U41）——与 `manageAt` 同一条由头（明细得有主语）。 */
   let detailAt: ModelRef = { provider: '', model: '' }
 
-  /**
-   * **模型那一屏这一次是替谁挑**（U78）——`session` ＝「当前会话走谁」（`/model` 那一趟，
-   * 选一条就切过去）；`webFetch` ＝「取网页用哪个模型」（`/config` 那一行进来的那一趟，
-   * 选一条是**写配置**）。
-   *
-   * ⚠️ **这一位必须存在，不能拿行文案或来源反推**（同 `manageAt` / `detailAt` 那条由头）：
-   * 两趟开的是**同一扇抽屉**（`source: 'model'`），行也是同一个函数铺的——差别只在
-   * 「怎么读当前那一条」「那行说明怎么说」「回车之后干什么」这三处，而它们都归这一位管。
-   *
-   * 由 `submit` 进那一屏之前写下（`/config` 那一行写 `webFetch`、`/model` 那一支写回
-   * `session`），此后由重铺那一处读它——**出那一屏就把它还原**（`session` 是常态）。
-   */
+
   let modelScope: ModelScope = 'session'
+  let startOnAliasSave = false
   let collaborationModel: { readonly member?: AgentId } | null = null
   let collaborationAt: AgentId | undefined
   let collaborationQuery: { readonly member?: AgentId } | null = null
@@ -896,53 +891,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const answeredDecisions = new Set<RecordId>()
   let decisionReturn: { readonly dock: Dock; readonly layers: readonly Layer[]; readonly status: ShellView['status'] } | null = null
 
-  /**
-   * 「此刻的当前那一条」——**按作用对象取**（U78）：会话那一趟取 `view.modelCurrent`，
-   * 取网页那一趟取 `view.webFetch`（`null` ＝ 还没配，那一屏一行都不标「现在配的是它」）。
-   *
-   * 两处都用这**一个**函数：列表标「当前」与 `selected` 落在谁头上必须是同一份读数
-   * （各取一套的话，屏上标着 A、光标却落在 B 上）。
-   */
+  /** 映射编辑取全局配置；工作选择与思考取对应 Agent 的有效组合。 */
   const scopeCurrent = (): ModelRef | null =>
-    collaborationModel !== null
-      ? (collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model) ?? null
-      : modelScope === 'webFetch' ? view.webFetch : view.modelCurrent
+    modelScope !== 'session' ? view.aliases[modelScope] ?? null
+      : collaborationModel !== null
+        ? (collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model) ?? null
+        : view.modelCurrent
 
-  /**
-   * 本会话里用户**亲手选过**的思考设置——按「连接 ＋ 模型」那一对记着（U41）。
-   *
-   * 由头：思考设置是**当前选择的一部分**（`model.switch` 的 `reasoning`），而「设为默认」
-   * 也接受它。可外壳手上没有「此刻的思考设置」这份读数（契约的 `current` 只给两件）。
-   * 这一格记的是**外壳自己那一下动作**（用户在这台壳上选过什么），不是从别处推的——
-   * 换了模型就不带过去（设计明文：不把原模型的档位或预算盲目带过另一个模型）。
-   */
-  let chosenReasoning: {
-    readonly provider: string
-    readonly model: string
-    readonly setting: ReasoningSetting
-  } | null = null
-
-  /** 这一条此刻的思考设置（**用户在这台壳上选过的才算**——没选过就是「没设过」）。 */
   const reasoningOf = (pick: ModelRef): ReasoningSetting | undefined => {
-    if (collaborationModel !== null) {
-      const model = collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel
-        : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model
-      return model?.provider === pick.provider && model.model === pick.model ? model.reasoning : undefined
-    }
-    return chosenReasoning?.provider === pick.provider && chosenReasoning.model === pick.model ? chosenReasoning.setting : undefined
+    const current = scopeCurrent()
+    return current?.provider === pick.provider && current.model === pick.model && 'reasoning' in current ? current.reasoning as ReasoningSetting : undefined
   }
 
-  /**
-   * **把状态行「思考档」那一格刷成此刻的样子**（U112）。
-   *
-   * 那一档的真源有两处，先后由这里定：
-   * ① **用户在这一台壳上亲手选过的**（`chosenReasoning`——那次动作只在壳手上）；
-   * ② 否则看**配置里声明的那一条**（`configReasoningOf`，从视图读）。
-   * 两处都没有 ⇒ `null` ⇒ 状态行那一格**整格省掉**（不写「未知」——那是编一个词）。
-   *
-   * ⚠️ **只在真的变了才 commit**（时刻比较）：它挂在 `onEvent` 的常规路上，每一条事件都过
-   * ——不带这一句就是每来一条事件白提交一次重绘。
-   */
+  /** 状态行沿有效选择更新思考读数；未声明时整格省掉。 */
   const syncReasoning = (): void => {
     const pick = view.modelCurrent
     const setting = pick === null ? undefined : reasoningOf(pick) ?? configReasoningOf(view)
@@ -981,6 +942,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     asking,
     collaborationAt,
     collaborationModel,
+    modelScope,
   })
 
   /**
@@ -1004,6 +966,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     asking = layer.asking
     collaborationAt = layer.collaborationAt
     collaborationModel = layer.collaborationModel
+    modelScope = layer.modelScope
 
     if (layer.dock.kind === 'picker') {
       commit(openPicker(view, layer.dock.picker))
@@ -1685,15 +1648,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    ——设计：「刷新只更新信息，**不抢走列表当前焦点**、不清草稿、不写回默认」。
     //    故重铺要保住当前选中那一行（`refreshModelPicker` 里做），且**不关抽屉**。
     if (event.kind === 'model.catalog') {
-      if (waiting === 'webFetchSave') {
-        // **「取网页用的模型」保存的回话**（U78）——那一屏在回车上就收了（见 `submit`），
-        // 这里只留一行回执：装配在 `note` 里说清「成了是存了哪一对 / 没成是为什么」。
-        //
-        // ⚠️ **它不改会话的模型**：这一位是那一件工具用谁（设计 · 网页与搜索那条
-        //    「两处不能混」）——故这里不碰状态行、也不动 `view.modelCurrent`
-        //    （两者都来自答复里各自的格子，`reduce` 那一处已经落地了）。
+      if (waiting === 'aliasSave') {
+        // 映射保存只给回执；首次明确开始在成功回执后应用 Default。
         waiting = null
         modelScope = 'session'
+        if (startOnAliasSave && event.data.note?.startsWith('已保存') === true) send({ type: 'model.switch', alias: 'default' })
+        startOnAliasSave = false
         if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
       } else if (waiting === 'model') {
         waiting = null
@@ -2302,7 +2262,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     current: view.modelCurrent,
     // 「取网页用的模型」那一格（U78）——与 `current` 同一个来处（`model.catalog`），
     // 但**各是各的**：那是当前会话走谁，这一位是那一件工具用谁（空着＝还没配）
-    webFetch: view.webFetch,
     grants: view.grants,
     mcp: view.mcp,
     // 这一屏长什么样（U112）——两格都在视图里（开机那份配置 ＋ 改过之后那份）
@@ -2480,7 +2439,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       openPicker(view, {
         source: 'model-detail',
         selected: 0,
-        rows: modelDetailRows(),
+        rows: [{ label: '返回型号列表', meta: '', value: 'back', current: false, oneLine: true }],
         hint: lines.join('\n'),
       }),
     )
@@ -2648,7 +2607,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 说明只放**行上没说过的**：连接 id（行上给的是**名字**，id 才是身份）与默认模型。
     // ⚠️ 缓存状态与地址**不在这儿重复**——「刷新这一条」「高级地址」那两行的副文案就是它们
     //（一屏上的每一格都得说别处没说的；这条第一版两处各报了一遍）。
-    const lines = [`连接 ${entry.provider}`, `默认模型 ${entry.model ?? '还没选过'}`]
+    const lines = [`连接 ${entry.provider}`]
 
     commit(
       openPicker(view, {
@@ -2947,18 +2906,26 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     })
   }
 
-  const modelPickerHint = (note: string): string => collaborationModel === null
-    ? modelHint(view.models, note === '' ? undefined : note, modelScope)
-    : `模型与思考设置 · ${collaborationModel.member === undefined ? '后续派生的默认配置' : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'} · 回车继续选择思考设置${note ? ` · ${note}` : ''}`
+  const modelTarget = (): string => collaborationModel === null ? '当前工作'
+    : collaborationModel.member === undefined ? '后续派生默认'
+    : view.collaboration?.members.find(one => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'
+
+  const modelPickerHint = (note: string): string => {
+    if (modelScope === 'default' && view.aliases.default === undefined) return [
+      '使用此模型开始：设为默认，并先用于尚未配置的三个能力档位，之后可分别调整', note,
+    ].filter(Boolean).join('\n')
+    const same = modelScope === 'session' && view.aliases.cantrip !== undefined
+      && view.aliases.spell?.provider === view.aliases.cantrip.provider && view.aliases.spell?.model === view.aliases.cantrip.model
+      && view.aliases.arcane?.provider === view.aliases.cantrip.provider && view.aliases.arcane?.model === view.aliases.cantrip.model
+    return [modelHint(view.models, note || undefined, modelScope),
+      modelScope === 'session' ? `模型选择与思考设置作用于：${modelTarget()}；映射编辑是全局配置` : '',
+      same ? '当前三个档位使用同一模型' : '',
+    ].filter(Boolean).join('\n')
+  }
 
   const openModelPicker = (note: string): void => {
-    // **取材＝连接一览 ＋ 各自的缓存读数**（U41）——不再是「配置条目」（那正是本项要拆掉的
-    // 约束：型号得逐个登记才列得出来）。铺行的规矩全在 `modelRows` 一处（行主文案＝模型名 ·
-    // 副文案＝连接名 · 只列适用于对话的 · 已有选择照留）。
-    //
-    // ⚠️ **两趟共用这一屏、行的铺法一字不差**（U78）：差的只有「谁算当前那一条」与那行说明
-    //    ——`/model` 那一趟是**当前会话**走谁，`/config` 那一趟是**取网页**用谁（见 `modelScope`）。
-    const rows = modelRows(view.models, scopeCurrent())
+    // 设置与工作选择共用读数；实际型号只在映射编辑层出现。
+    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.aliases, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
 
     commit(
       openPicker(view, {
@@ -2993,12 +2960,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       openReasoningPicker(detailAt)
       return
     }
+    if (view.dock.picker.source === 'model-choice') {
+      const rows = modelChoiceRows(view.aliases, scopeCurrent())
+      commit({ ...view, dock: { ...view.dock, picker: { ...view.dock.picker, rows } } })
+      return
+    }
 
     if (view.dock.picker.source !== 'model') return
 
     const held = picked(view)?.pick
     // 重铺与铺**同一份读数、同一句话**（U78）——不然刷新一次那一屏就换了个人说话
-    const rows = modelRows(view.models, scopeCurrent())
+    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.aliases, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
     const hint = modelPickerHint(note)
 
     if (rows.length === 0) {
@@ -4441,7 +4413,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           // ⚠️ **取网页那一趟不给**（U78）：详情那一屏的两条动作（思考设置 / 设为默认）
           // 都是**当前会话**那一摊的事，在这一趟里一个都不该做——摆着就是两条会走错的岔路。
           // 那一屏的说明里也**不报这个键**（按下去没反应比不报更坏，见 `modelHint`）。
-          if (view.dock.picker.source === 'model' && modelScope === 'session' && collaborationModel === null) {
+          if (view.dock.picker.source === 'model' && modelScope !== 'session') {
             const pick = picked(view)?.pick
             // `→` 看详情＝**进一层**（U61：设计「进一层：打开选择器 · `→` 看详情 ·
             // 接入那种一步接一步的每一屏——都算」）——`←` 退回列表，焦点照旧那一格
@@ -4681,21 +4653,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //    地方不一样**，那一屏本身一个字都不差。
       if (view.dock.picker.source === 'config') {
         if (row.value === 'model') {
-          // `/model` 那一趟：换**当前会话**走谁（不写配置）
+          // 共用 /model 设置入口，工作选择的作用对象为当前会话。
           modelScope = 'session'
-          enterLayer()
-          waiting = 'model'
-          send({ type: 'model.list' })
-          return NONE
-        }
-
-        // **取网页用的模型**（U78）——**同一扇选择器、另一件事**：选一条是**写配置里那一格**
-        // （`webfetch.set`），**不换当前会话的模型**（设计 · 网页与搜索：两处不能混）。
-        // ⚠️ **读的还是那条读侧命令**（`model.list`）：那一屏要的连接一览 ＋ 缓存读数 ＋
-        //    「现在配的是哪一对」都在同一条答复上（`model.catalog` 的 `webFetch`），
-        //    不另立一条只问一格的命令。
-        if (row.value === 'webFetch') {
-          modelScope = 'webFetch'
           enterLayer()
           waiting = 'model'
           send({ type: 'model.list' })
@@ -4815,23 +4774,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       // 明写 `/mcp reconnect <名字>`）。留着这一支是**必须**的：不然它会落到下面的换模型上。
       if (view.dock.picker.source === 'mcp') return NONE
 
-      // 模型详情那一屏（U41）：两件动作
+      // 实际型号详情只读；思考从当前工作/成员设置入口调整。
       if (view.dock.picker.source === 'model-detail') {
-        // 思考那一屏是**从详情那一屏进的一层**（U61）——用 `←` 退回来时详情照旧在
-        if (row.value === 'reasoning') {
-          enterLayer()
-          openReasoningPicker(detailAt)
-        }
-        if (row.value === 'default') {
-          const setting = reasoningOf(detailAt)
-          send({
-            type: 'model.default.set',
-            provider: detailAt.provider,
-            model: detailAt.model,
-            // 用户在这台壳上给这一条选过思考设置就一并存下来；没选过＝不写这一位（模型默认）
-            ...(setting === undefined ? {} : { reasoning: setting }),
-          })
-        }
+        if (row.value === 'back') { popLayer(); return NONE }
         return NONE
       }
 
@@ -4844,16 +4789,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           const target = collaborationModel
           collaborationModel = null
           commit(closePicker(view))
-          send({ type: 'collaboration.configure', ...target, model: { ...detailAt, reasoning: setting } })
+          send({ type: 'collaboration.configure', ...target, model: { reasoning: setting } })
           return NONE
         }
-        chosenReasoning = { provider: detailAt.provider, model: detailAt.model, setting }
-        // 亲手选过 ⇒ 状态行那一格立刻跟上（U112）
-        syncReasoning()
         send({
           type: 'model.switch',
-          provider: detailAt.provider,
-          model: detailAt.model,
           reasoning: setting,
         })
         commit(closePicker(view))
@@ -4902,32 +4842,49 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
       }
 
-      // 模型那一屏（U41）：两类行。
-      // ① **入口行**（列表末尾那几条，`modelRows` 铺的）——动作就在这一屏里做，不必另打命令；
-      // ② **模型行**——选定＝切到这条连接的这个精确模型（两件一起给——合法的两条连接
-      //    可以有同名模型，只报模型名认不出是谁）。回执由内核的 `model.switched` 给。
-      if (view.dock.picker.source === 'model') {
-        if (row.pick === undefined) return modelAction(row.value)
-        if (collaborationModel !== null) {
-          detailAt = row.pick
-          enterLayer()
-          openReasoningPicker(row.pick)
-          return NONE
-        }
-
-        // **取网页那一趟：回车＝保存**（U78）——同一个键、同一个位置，做的是另一件事
-        // （写配置里 `webFetch` 那一格）。**保存是显式动作**：这一屏的全部意义就是它，
-        // 故回车上不多加一道确认（同 `/model` 的回车不多问一句）。
-        // 回执由答复那一侧落（见 `waiting` 的 `'webFetchSave'`）——成了说一句、没成说缘由。
-        if (modelScope === 'webFetch') {
-          send({ type: 'webfetch.set', provider: row.pick.provider, model: row.pick.model })
-          waiting = 'webFetchSave'
-          commit(closePicker(view))
-          return NONE
-        }
-
-        send({ type: 'model.switch', provider: row.pick.provider, model: row.pick.model })
+      // 工作选择只发档位；实际组合由执行侧读取配置解析。
+      if (view.dock.picker.source === 'model-choice') {
+        const alias = row.value as ModelAlias
+        if (view.aliases[alias] === undefined) { commit(appendReceipt(view, `${modelLabel(alias)} 尚未配置；请在 /model 的模型档位或默认模型中设置`)); return NONE }
+        if (collaborationModel !== null) send({ type: 'collaboration.configure', ...collaborationModel, model: { alias } })
+        else send({ type: 'model.switch', alias })
+        collaborationModel = null
+        modelScope = 'session'
         commit(closePicker(view))
+        return NONE
+      }
+
+      if (view.dock.picker.source === 'model') {
+        if (row.value.startsWith('edit:')) {
+          enterLayer()
+          modelScope = row.value.slice(5) as ModelAlias
+          openModelPicker('')
+          return NONE
+        }
+        if (row.value === 'choose') {
+          enterLayer()
+          commit(openPicker(view, { source: 'model-choice', selected: 0, rows: modelChoiceRows(view.aliases, scopeCurrent()), hint: `作用对象：${modelTarget()}；选定只影响此对象，思考等级独立。` }))
+          return NONE
+        }
+        if (row.value === 'reasoning') {
+          const chosen = scopeCurrent()
+          if (chosen === null) { commit(appendReceipt(view, '请先配置并选择默认模型或模型档位')); return NONE }
+          detailAt = chosen
+          enterLayer()
+          openReasoningPicker(chosen)
+          return NONE
+        }
+        if (row.pick === undefined) return modelAction(row.value)
+
+        // 保存配置与应用工作选择是两个动作；首次明确开始才同时应用 Default。
+        if (modelScope !== 'session') {
+          const alias = modelScope
+          const first = alias === 'default' && view.aliases.default === undefined
+          startOnAliasSave = first
+          send({ type: 'model.alias.set', alias, provider: row.pick.provider, model: row.pick.model, ...(first ? { initialize: true } : {}) })
+          waiting = 'aliasSave'
+          commit(closePicker(view))
+        }
         return NONE
       }
 
@@ -5223,7 +5180,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') collaborationModel = null
       // **这一趟挑的是谁**（U78）：在模型那一屏里按动作（「刷新模型」那一行）＝**留在同一趟**
       // ——它是那一屏的原地重铺，不该把作用对象换了；从输入行打 `/model` ＝**当前会话那一趟**
-      // （不沿用上一屏留下的那个作用对象：那样 `/model` 会莫名其妙地开成「取网页」那一趟）。
+      // 从输入行进入时不沿用上一屏留下的设置作用对象。
       modelScope =
         from.dock.kind === 'picker' && from.dock.picker.source === 'model' ? modelScope : 'session'
 

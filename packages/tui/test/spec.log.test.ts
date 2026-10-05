@@ -228,10 +228,10 @@ describe('组件规格 · 行的标记与颜色', () => {
 
   test('记录 / 回执行——**不带记号**（缩进一级）· **最弱**一档', async () => {
     const stage = live()
-    stage.feed([event('model.switched', { ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
+    stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const frame = await stage.screen()
-    const cells = frame.cellsOf(frame.rowOf('已换模型 → MiniMax-M2'))
+    const cells = frame.cellsOf(frame.rowOf('已选择 Default'))
 
     // ⚠️ **U112 拆的混用**：回执行**不再以 `·` 起头**（那个字形只做行内分隔符）——
     //    靠**缩进一级 ＋ 最弱色**与助手正文分开（正文顶格、无记号）
@@ -482,11 +482,11 @@ describe('记录区的三类行（后两类不重建）', () => {
     // 攒一屏「三类行」都在的现场：会话内容（重建得来）＋ 命令输出（`/help`）＋ 回执（`/model` 换成了）
     stage.type('/help')
     stage.press({ kind: 'enter' })
-    stage.feed([event('model.switched', { ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
+    stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const before = await stage.screen()
     expect(before.has('可用命令')).toBe(true) // 命令输出（第二类）
-    expect(before.has('已换模型')).toBe(true) // 命令回执（第三类）
+    expect(before.has('已选择')).toBe(true) // 命令回执（第三类）
 
     // 切走再切回：重建由 `session.history` 铺（会话内容那三类才落库）
     const entries: readonly Entry[] = [
@@ -505,7 +505,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     // U112：助手那条正文不再带 `⏺ `（正文顶格）
     expect(after.content.map((line) => line.text)).toEqual(['› 看看有什么', '', '好。']) // 会话内容回来了
     expect(after.has('可用命令')).toBe(false) // 命令输出：屏上痕迹，不重建
-    expect(after.has('已换模型')).toBe(false) // 命令回执：屏上痕迹，不重建
+    expect(after.has('已选择')).toBe(false) // 命令回执：屏上痕迹，不重建
   })
 })
 

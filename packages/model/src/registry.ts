@@ -1,38 +1,5 @@
-/**
- * 供应商注册表 —— 多供应商 ＋ **运行时切换**（技术方案 · 模型策略 · 切换）。
- *
- * 技术方案的原文：「registry 动态注册多供应商；运行时切换（会话中途换模型：上下文由内核
- * 构造，**换模型＝换接缝下游**）；注册表存于配置文件」。
- *
- * **归属**——选实现仍归装配：本文件只把配置里那张 `providers` 表变成「**条目 → 网关**」的
- * 查表（每条目一个 `createModelGateway`，key 各自解析一次），不读配置文件、不碰文件系统。
- * 「加一条目即多一个可用」由此成立：`providers` 加键，注册表就多一格，形制不变。
- *
- * **换模型＝换接缝下游**——注册表**就是**那个接缝：对话域只拿到一个 `ModelGateway`，
- * 全程不变；切换只改注册表内部的「当前选中」，于是下一次 `stream()` 走到另一个条目的
- * 网关上。对话域 / 记录域**不知道发生过切换**（上下文照旧由条目重建，一条不丢）。
- *
- * **模型名怎么定**（锚定：技术方案 · 配置与密钥「模型名取自请求」）——
- * - **未切换**：走缺省条目，模型名**取自请求**（`req.model`）——与接入时逐字同义；
- * - **切换之后**：走选中的条目 ＋ 选中的模型——`use({ provider })` 不带模型时取
- *   **该条目的默认**（`providers.<id>.model`）：换了条目还用上家的模型名，等于拿一个
- *   对方多半不认的名字去问。
- *
- * **域内零散件**：`use()` 返回判别式（成功 / 不成功 ＋ 缘由），**不抛**——与权限域
- * `parseRules` 同一姿态（读不懂的**不生效**，缘由交回调用方去说给人听）；且**切不动就不动**：
- * 校验全过才落选中，失败时原选中原样保留（缺省＝安全姿态）。
- */
-
-import type {
-  AgentModelConfig,
-  EventStamper,
-  KernelEvent,
-  ModelCapabilities,
-  ModelInfo,
-  ModelRequest,
-  ProviderConfig,
-  ReasoningSetting,
-} from '@magic/contracts'
+/** 每个 Agent 独立持有已解析的模型组合；连接网关按需构造。 */
+import type { AgentModelConfig, EventStamper, KernelEvent, ModelCapabilities, ModelInfo, ModelRequest, ProviderConfig, ReasoningSetting } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import type { ModelGateway, ModelStream, ModelStreamOptions } from './call.ts'
 import type { ModelMiddleware } from './middleware.ts'
@@ -44,23 +11,24 @@ import { vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
 import { resolveSelection } from './selection.ts'
 import type { LearnedTraits } from './traits.ts'
-import { ownOf, resolveContextWindow } from './capacity.ts'
+import { ownOf } from './capacity.ts'
 
-// —— 形态 ——
+export type ProviderEntry = { readonly id: string }
+export type ModelSelection = AgentModelConfig
+/** 仅用于模型域内的实际组合，工作请求使用 contracts.ModelSwitchRequest。 */
+export type ModelSwitchRequest = Partial<AgentModelConfig>
+export type ModelSwitchResult = { readonly ok: true; readonly selection: ModelSelection } | { readonly ok: false; readonly reason: string }
+export interface ModelRegistry extends ModelGateway {
+  list(): readonly ProviderEntry[]
+  capacityOf(provider: string, model: string): EffectiveSpec | undefined
+  capabilityOf(provider: string, model: string): ModelCapabilities | undefined
+  selection(): ModelSelection | undefined
+  current(): ModelSelection | undefined
+  has(id: string): boolean
+  use(request: ModelSwitchRequest): ModelSwitchResult
+  resolve(input: { readonly config?: ModelSwitchRequest; readonly defaults?: ModelSelection }): ModelSwitchResult
+}
 
-/** 还没有可用选择时，那一轮调用报的那句话（说给人听：下一步该做什么）。 */
-const NO_SELECTION = '还没有可用的供应商连接——先接入一个供应商并选一个模型'
-
-/**
- * **一轮立刻失败**的调用流——用在「还没定下走谁」这唯一一种情形。
- *
- * 为什么不抛异常：对话域只该看见模型域的事件（`model.error` 是它的终局信号之一），
- * 异常穿层会让上层报「对话域异常」——把人指去错地方（`MissingApiKeyError` 那条注同理，
- * 区别在它是**构造期**的、还能在启动时报）。
- *
- * 形态与归一出来的流一致：`call.start` → `error`（**没有** `call.end`——
- * 与归一的不变式 ④ 一致：出错即以 `model.error` 终结）。
- */
 function errorStream(stamper: EventStamper, model: string, message: string): ModelStream {
   const detail = { tier: 'terminal' as const, message }
   const events = (async function* (): AsyncGenerator<KernelEvent> {
@@ -87,126 +55,6 @@ function errorStream(stamper: EventStamper, model: string, message: string): Mod
   }
 }
 
-/** 注册表里的一格——**供应商细节不出域**：只给「叫什么、默认用哪个模型、窗多长」。 */
-export type ProviderEntry = {
-  readonly id: string
-  /**
-   * 该连接的**用户默认模型**（`providers.<id>.model`）——**没选过就不给这一位**。
-   *
-   * U41 起型号来自供应商接口的缓存，配置里的 `model` 只是「这个连接默认用哪个」，
-   * 新接上的连接可以还没有它（用户第一次选完才会有）。
-   */
-  readonly model?: string
-  /**
-   * 该连接**默认选择的思考设置**（`providers.<id>.reasoning`）——没设过就不给这一位。
-   *
-   * 它随默认选中一起出去（返修：此前只读了 `model`，于是「保存了默认思考设置」在
-   * **开局那条路径**上根本不生效——设置存进了配置，请求里却一个参数都没有）。
-   */
-  readonly reasoning?: ReasoningSetting
-
-  /**
-   * 该条目的**上下文窗口总量**（token）——**声明了就用它，否则查内置表**（U30）。
-   *
-   * 它是**元数据**（供应商 / 模型规格），不是供应商细节（端点 / key / 参数）：出得来。
-   * 两处**都没有**才不给这个位——外壳拿不到分母就不显示分母，不编（缺陷 D10 · 第 1 样）。
-   *
-   * 判据在 `resolveContextWindow`（`capacity.ts`）：配置声明（`providers.<id>.contextWindow`）
-   * 是**覆盖位**（本地端点 / 私有部署只有用户知道），内置表是**已知模型的客观属性**
-   * ——用户不该为它去翻官方文档。
-   */
-  readonly contextWindow?: number
-}
-
-/** 当前选中——供应商 ＋ 模型（两个都得定下来：换条目而留旧模型名多半打不通）。 */
-export type ModelSelection = AgentModelConfig
-
-/**
- * 切换请求——两件都可缺，看要换什么：
- * - 只给 `provider`：换条目，模型取**该条目的默认**；
- * - 只给 `model`：留在这家，换模型（同一端点上跑另一个模型）；
- * - 都给：两件一起换。
- * - 只给 reasoning：保留当前组合，验证新的思考设置。
- * - 全不给：如实报「不知道要换成什么」。
- */
-export type ModelSwitchRequest = Partial<AgentModelConfig>
-
-/**
- * 切换结果——判别式。
- * 不成功时选中**原样不动**（切不动就不动），`reason` 是**说给人听**的一句话
- * （含已注册的条目名——用户打错字时当场看得见有哪些可选）。
- */
-export type ModelSwitchResult =
-  | { readonly ok: true; readonly selection: ModelSelection }
-  | { readonly ok: false; readonly reason: string }
-
-/** 模型域 → 装配的注册表面（`ModelGateway` 的扩展——消费者按契约端口取用即可）。 */
-export interface ModelRegistry extends ModelGateway {
-  /** 已注册的条目（配置顺序）——「加一条目即多一个」的读数面。 */
-  list(): readonly ProviderEntry[]
-  /**
-  /**
-   * **某个模型的有效规格**（U41 返修 · 新出口）——显示、出站、压缩**同一份解析**。
-   *
-   * 由头（设计 · 模型与上下文「统一消费」）：「模型域解析一次有效选择与令牌规格，
-   * 为当前请求形成不可变读数，贯穿调用、事件和容量消费」。
-   *
-   * ✅ **旧链已删**（U41 返修）：`registry.windowTable → 装配 → 外壳` 那条链连同
-   * `windowTable()` / `windowOfSelection` 一并撤了——外壳不再自己拿表算分母，
-   * 改由**事件**带这一位数（`model.switched` / `model.call.start` 的 `inputBudget`）。
-   */
-  capacityOf(provider: string, model: string): EffectiveSpec | undefined
-  /**
-   * **某个模型的能力读数**（U37）——`chat` / `image` 那几位，**没依据就不给这一位**。
-   *
-   * 与 `capacityOf` 并列的第二处读数，值取「用户明确覆盖 → 供应商 API 当前有效信息」，
-   * **未知不给位**（不冒充「不支持」）。今天的用处只有一个但很硬：带图的那一条交代据此
-   * 在**发出去之前**拦下来（设计：「模型明确不支持图像时保留输入，提示换模型或移除图片」）。
-   */
-  capabilityOf(provider: string, model: string): ModelCapabilities | undefined
-  /** 配置里的缺省连接 id（`defaultProvider`）——**没配过就不给**（U41 起可缺）。 */
-  defaultProviderId(): string | undefined
-  /** 当前**选中**；**未切换过即 `undefined`**（＝走缺省条目、模型名取自请求）。 */
-  selection(): ModelSelection | undefined
-  /**
-   * **此刻会走哪一条**——`selection()` 的「没有就补缺省」版：未切换过＝缺省连接 ＋
-   * 该连接的默认模型（`stream` 的实际去向）。
-   *
-   * 两个读法并存各有其用：`selection()` 回答「**换过没有**」（`undefined` 本身就是信息），
-   * 本方法回答「**现在是谁**」——外壳的模型选择器要标「当前」，问的是后者
-   * （缺陷 D10 · 第 3 样）。
-   *
-   * ⚠️ **U41 起可能 `undefined`**——还没选过模型（或一条连接都没有）时就**没有去向**：
-   * 那时由调用方报「先选模型」，**不取列表第一项顶上**（设计明文）。
-   */
-  current(): ModelSelection | undefined
-  has(id: string): boolean
-  /** 换模型——会话中途调用，下一轮起走新条目（见文件头注）。 */
-  use(request: ModelSwitchRequest): ModelSwitchResult
-  /** 本次明确配置 > 角色默认 > 协作默认；只解析验证，不改当前选择或发送请求。 */
-  resolve(input: {
-    readonly config?: ModelSwitchRequest
-    readonly role?: ModelSwitchRequest
-    readonly defaults?: ModelSelection
-  }): ModelSwitchResult
-}
-
-/**
- * 把**这次要用的思考设置**并进流选项——缺省＝不动（模型默认）。
- *
- * 已切换走选中态那份、未切换走配置里缺省连接那份；两处同一条拼装，
- * 免得再出现「一处带了、一处没带」（返修的根因）。
- *
- * ⚠️ **本表只管「调用方没说时替它补齐」，不覆盖调用方明说的那一份**（U97 更正）。
- * 由头：注册表存在的意义是「**别处不知道走哪条连接**」——思考设置那一格由此推出来；
- * 而**调用方自己给了设置**的场合（压缩那一跳：内务调用，固定不思考），它说的就是它要的。
- * 此前这里是无条件覆盖，后果实测可见：用户把 DeepSeek 的档位设成 high，压缩那次请求
- * 照样带着 `reasoning_effort: high` 出门——**「固定不思考」成了一纸空文**（U97 物证：
- * 改前 / 改后两份出站请求体**逐字相同**）。
- *
- * ⚠️ **循环那条路一个字没动**：它本来就不传这一位（`agentLoop` 里没有 `reasoning`），
- * 走的仍是「注册表补齐」这一支——用户设的档位照旧生效（U97 用例与探针都咬着这一条）。
- */
 function withReasoning(
   streamOptions: ModelStreamOptions | undefined,
   reasoning: ReasoningSetting | undefined,
@@ -220,13 +68,6 @@ function withReasoning(
 export type ModelRegistryOptions = {
   /** 配置里的 `providers` 原样（形制见共享语言 · 配置形制）。 */
   readonly providers: Readonly<Record<string, ProviderConfig>>
-  /**
-   * 配置里的 `defaultProvider`——开局走它；**没配过就不给**（U41 起可缺）。
-   *
-   * 缺省时**不预造任何网关**，也不挑一条顶上：`current()` 为空、`stream()` 报「先选模型」，
-   * 直到用户选一次（设计：「无默认时进入选择流程，不取列表第一项」）。
-   */
-  readonly defaultProvider?: string
   /** 信封铸造器——**按会话实例构造**，各条目的网关共用同一个（见 `createModelGateway`）。 */
   readonly stamper: EventStamper
   /** 中间件链——逐条目的网关共用（横切逻辑与「走哪家」无关）。 */
@@ -266,46 +107,18 @@ export type ModelRegistryOptions = {
   readonly learnedTraits?: LearnedTraits | undefined
 }
 
-/** 纯选择判定；目录观察与注册表切换共用，网关构造仍只属于实际切换。 */
+/** 域内实际组合校验；工作选择由 app 解析，不接执行输入。 */
 export function selectModel(options: {
   readonly providers: Readonly<Record<string, ProviderConfig>>
-  readonly defaultProvider?: string
   readonly selected?: ModelSelection
   readonly modelInfoOf?: ModelRegistryOptions['modelInfoOf']
 }, request: ModelSwitchRequest): ModelSwitchResult {
-  const { providers, defaultProvider, selected } = options
-  if (request.provider === undefined && request.model === undefined && request.reasoning === undefined) {
-    return { ok: false, reason: '既没给 provider 也没给 model 或 reasoning——不知道要换成什么' }
-  }
-  const entry = defaultProvider === undefined ? undefined : ownOf(providers, defaultProvider)
-  const base = selected ?? (defaultProvider === undefined ? undefined : {
-    provider: defaultProvider, model: entry?.model, reasoning: entry?.reasoning,
-  })
-  return resolveSelection(providers, [base, request], options.modelInfoOf)
+  return resolveSelection(options.providers, [options.selected, request], options.modelInfoOf)
 }
 
-// —— 装配 ——
-
-/**
- * 造一个供应商注册表。
- *
- * **缺省条目在构造期就位**（＝造它的网关）——于是「开局要用的那条缺 key」照旧**启动期即报**
- * （与单供应商时代逐字同义：`MissingApiKeyError` 一声响，不留到第一次调用）。
- * **其余条目按需构造**（第一次切过去时才造）——理由：配置里可以有**当下还用不上**的条目
- * （本地端点 / 备用供应商），为一个永远不用的条目把启动卡死，是拿别人的错惩罚用户；
- * 而「切过去才发现没配好」也不难受：`use()` 当场把缘由说清楚（key 的来处在消息里）。
- */
 export function createModelRegistry(options: ModelRegistryOptions): ModelRegistry {
-  const { providers, defaultProvider, stamper } = options
+  const { providers, stamper } = options
   const entries = Object.entries(providers)
-
-  // ⚠️ 查表一律走 `ownOf`（只认自有键）——条目名是用户给的字符串，普通索引会从
-  // `Object.prototype` 上摸到东西（见 `capacity.ts` 的 `ownOf` 注）
-  const defaultEntry = defaultProvider === undefined ? undefined : ownOf(providers, defaultProvider)
-  if (defaultProvider !== undefined && defaultEntry === undefined) {
-    const known = entries.map(([id]) => id).join(' / ') || '（一个都没有）'
-    throw new Error(`缺省供应商「${defaultProvider}」不在 providers 里——已配：${known}`)
-  }
 
   /** 条目 → 网关（按需构造、造完即留）——同一个条目只解析一次 key。 */
   const built = new Map<string, ModelGateway>()
@@ -349,44 +162,11 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     return gateway
   }
 
-  /** 开局那条——**构造期就造**（缺 key 当场报；见函数头注）。**没配缺省就不预造**。 */
-  if (defaultProvider !== undefined) gatewayFor(defaultProvider)
-
-  /** 当前选中；`undefined` ＝未切换（走缺省条目、模型名取自请求）。 */
   let selected: ModelSelection | undefined
-
-  /**
-   * **缺省那一条的选中**（未切换时走它）——**带上配置里的思考设置**（返修）。
-   *
-   * 两处共用一份（`current()` 的读数与 `stream()` 的实际去向）：读面说「现在是谁」、
-   * 调用真走谁，两者必须是同一份，否则又会出现「设置存了、请求里没有」。
-   */
-  const defaultSelection = (): ModelSelection | undefined => {
-    if (defaultProvider === undefined || defaultEntry?.model === undefined) return undefined
-    return {
-      provider: defaultProvider,
-      model: defaultEntry.model,
-      ...(defaultEntry.reasoning === undefined ? {} : { reasoning: defaultEntry.reasoning }),
-    }
-  }
 
   return {
     list(): readonly ProviderEntry[] {
-      return entries.map(([id, config]) => {
-        // 没选过默认模型 —— 窗长无从谈起（那份声明属于「这一条 ＋ 它的模型」两件）
-        const window =
-          config.model === undefined
-            ? undefined
-            : resolveContextWindow(config.model, config.contextWindow)
-        return {
-          id,
-          ...(config.model === undefined ? {} : { model: config.model }),
-          ...(config.reasoning === undefined ? {} : { reasoning: config.reasoning }),
-
-          // 两处皆无就不给这个位（不拿 0 / 占位符冒充「不知道」）
-          ...(window === undefined ? {} : { contextWindow: window }),
-        }
-      })
+      return entries.map(([id]) => ({ id }))
     },
 
     capacityOf(provider: string, model: string): EffectiveSpec | undefined {
@@ -411,20 +191,12 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       return effectiveCapabilitiesOf(model, config, options.modelInfoOf?.(provider, model))
     },
 
-    defaultProviderId(): string | undefined {
-      return defaultProvider
-    },
-
     selection(): ModelSelection | undefined {
       return selected
     },
 
     current(): ModelSelection | undefined {
-      // 未切换过——缺省连接 ＋ **它的**默认模型（`stream` 那时正是这么走的：请求给的模型名
-      // 由装配按缺省连接填）。
-      // ⚠️ 缺省连接没配、或它还没选过模型 ⇒ **没有去向**（`undefined`）——那时如实报
-      // 「先选模型」，**不取列表第一项顶上**。
-      return selected ?? defaultSelection()
+      return selected
 
     },
 
@@ -433,11 +205,12 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     },
 
     resolve(input): ModelSwitchResult {
-      return resolveSelection(providers, [input.defaults, input.role, input.config], options.modelInfoOf)
+      return resolveSelection(providers, [input.defaults, input.config], options.modelInfoOf)
     },
 
     use(request: ModelSwitchRequest): ModelSwitchResult {
-      const resolved = selectModel({ providers, defaultProvider, selected, modelInfoOf: options.modelInfoOf }, request)
+      if (Object.keys(request).length === 0) return { ok: false, reason: '请选择模型或设置思考等级' }
+      const resolved = selectModel({ providers, selected, modelInfoOf: options.modelInfoOf }, request)
       if (!resolved.ok) return resolved
       // 验证与网关构造全部成功之后才提交选择；失败保留原配置。
       try {
@@ -451,40 +224,14 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
 
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       const chosen = selected
-      const config = chosen === undefined
-        ? defaultProvider === undefined ? undefined : {
-          provider: defaultProvider, model: request.model,
-          reasoning: request.model === defaultEntry?.model ? defaultEntry.reasoning
-            : ownOf(defaultEntry?.modelOverrides ?? {}, request.model)?.reasoning,
-        }
-        : chosen
-      // 实际选择在出站前仍须成立（缓存能力可能已更新）；内务调用选项保留既有语义。
-      if (config !== undefined) {
-        const checked = resolveSelection(providers, [config], options.modelInfoOf)
-        if (!checked.ok) return errorStream(options.stamper, config.model, checked.reason)
-      }
-      if (chosen !== undefined) {
-        return gatewayFor(chosen.provider).stream(
-          { ...request, model: chosen.model },
-          withReasoning(streamOptions, chosen.reasoning),
-        )
-      }
-
-      // 未切换——缺省连接 ＋ **请求给的模型名**（技术方案 · 配置与密钥：「模型名取自请求」）
-      // ＋ **配置里那条默认的思考设置**（返修：此前这一路完全没带设置）。
-      // ⚠️ 没配缺省 ⇒ **无处可去**：如实回一轮「这次调用不成立」的流（见 `errorStream`），
-      // **不退回某一条看上去顺眼的连接**——那会把「我没选」变成「它替我选了」；
-      // 也不抛异常穿层：对话域只该看见模型域的事件。
-      if (defaultProvider === undefined) {
-        return errorStream(options.stamper, request.model, NO_SELECTION)
-      }
-      return gatewayFor(defaultProvider).stream(
-        request,
-        withReasoning(streamOptions, request.model === defaultEntry?.model
-          ? defaultEntry.reasoning
-          : ownOf(defaultEntry?.modelOverrides ?? {}, request.model)?.reasoning),
-      )
-
+      if (chosen === undefined) return errorStream(stamper, request.model, '还没有有效模型选择——请在 /model 配置 Default 或模型档位')
+      const checked = resolveSelection(providers, [chosen], options.modelInfoOf)
+      if (!checked.ok) return errorStream(stamper, chosen.model, checked.reason)
+      const stream = gatewayFor(chosen.provider).stream({ ...request, model: chosen.model }, withReasoning(streamOptions, chosen.reasoning))
+      return { ...stream, events: (async function* () {
+        for await (const event of stream.events) yield event.kind === 'model.call.start'
+          ? { ...event, data: { ...event.data, alias: chosen.alias } } : event
+      })() }
     },
   }
 }

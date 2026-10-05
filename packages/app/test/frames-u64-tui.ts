@@ -121,14 +121,9 @@ function land(turns: readonly FixtureTurn[]): { readonly fixture: Fixture; reado
     baseURL: fixture.baseURL,
     model: 'deepseek-flash',
     config: {
-      defaultProvider: 'local',
+      modelAliases: {default: {provider: "local", model: 'deepseek-flash'}, cantrip: {provider: "local", model: 'deepseek-flash'}, spell: {provider: "local", model: 'deepseek-flash'}, arcane: {provider: "local", model: 'deepseek-flash'}},
       providers: {
-        local: {
-          vendor: 'deepseek',
-          baseURL: fixture.baseURL,
-          apiKey: FAKE_API_KEY,
-          model: 'deepseek-flash',
-        },
+        local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })

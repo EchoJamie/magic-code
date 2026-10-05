@@ -103,7 +103,7 @@ function stage(): {
   mkdirSync(workspace, { recursive: true })
 
   const configPath = writeConfig(root, {
-    defaultProvider: 'ds',
+    modelAliases: {},
     providers: { ds: { vendor: 'deepseek', apiKey: 'sk-not-a-real-key' } },
     dataDir,
   })
@@ -161,12 +161,12 @@ describe('一条连接的闭环', () => {
       expect(vendor.calls[0]?.url).toBe('https://api.deepseek.com/models')
       expect(vendor.calls[0]?.authorization).toBe('Bearer sk-not-a-real-key')
       // 还没有默认选择（配置里没写、也没选过）
-      expect(row?.model).toBeUndefined()
+      expect(Object.hasOwn(row ?? {}, 'model')).toBe(false)
 
       // —— ② 选择：**实际出站的 model 与选择一致** ——
       expect(
-        assembly.switchModel({ provider: 'ds', model: 'deepseek-v4-pro' }),
-      ).toEqual({ ok: true, selection: { provider: 'ds', model: 'deepseek-v4-pro' } })
+        await chooseModel(assembly, 'deepseek-v4-pro'),
+      ).toEqual({ ok: true, selection: { alias: 'default', provider: 'ds', model: 'deepseek-v4-pro' } })
 
       await shell.submit('嗨')
 
@@ -191,18 +191,17 @@ describe('一条连接的闭环', () => {
 
       // —— ⑤ 保存默认：这一下**才**写配置（与换当前分开） ——
       const saved = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.default.set', provider: 'ds', model: 'deepseek-v4-pro' })
+      shell.send({ type: 'model.alias.set', alias: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
       await saved
 
       const after = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
-        defaultProvider: string
+        modelAliases: { default?: { provider: string; model: string } }
         providers: Record<string, Record<string, unknown>>
       }
-      expect(after.defaultProvider).toBe('ds')
+      expect(after.modelAliases.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
       expect(after.providers['ds']).toEqual({
         vendor: 'deepseek',
         apiKey: 'sk-not-a-real-key',
-        model: 'deepseek-v4-pro',
       })
       // 仍然**只有那一条连接**、没有型号清单
       expect(Object.keys(after.providers)).toEqual(['ds'])
@@ -279,7 +278,7 @@ describe('一条连接的闭环', () => {
       await assembly.ready()
 
       // 当前选 pro（配置里的默认是 flash）
-      expect(assembly.switchModel({ provider: 'ds', model: 'deepseek-v4-pro' }).ok).toBe(true)
+      expect((await chooseModel(assembly, 'deepseek-v4-pro')).ok).toBe(true)
 
       // ① 只改显示名——那是**管理**动作，不是换模型
       const afterRename = waitFor(shell, 'provider.catalog')
@@ -293,19 +292,19 @@ describe('一条连接的闭环', () => {
       })()
       expect(renamed.data.entries[0]?.name).toBe('我的 DeepSeek')
       // **当前仍是 pro**——重建注册表不该把用户的当前选择切回默认
-      expect(renamed.data.current).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(renamed.data.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
 
       // ② 把 flash 保存为**默认**——那是「以后用哪个」，不是「现在换到哪个」
       const saved = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.default.set', provider: 'ds', model: 'deepseek-flash' })
+      shell.send({ type: 'model.alias.set', alias: 'default', provider: 'ds', model: 'deepseek-flash' })
       const afterDefault = await saved
 
-      expect(afterDefault.data.current).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(afterDefault.data.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
       // 而配置里确实换成了 flash（两件事分开，各自都做对了）
       const onDisk = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
-        providers: Record<string, { model?: string }>
+        modelAliases: { default?: { model: string } }
       }
-      expect(onDisk.providers['ds']?.model).toBe('deepseek-flash')
+      expect(onDisk.modelAliases.default?.model).toBe('deepseek-flash')
 
       shell.dispose()
       assembly.close()
@@ -314,21 +313,16 @@ describe('一条连接的闭环', () => {
     }
   })
 
-  test('**已保存的默认思考设置**在开局请求里生效（U41 返修）', async () => {
+  test('Agent 明确关闭思考在首个请求里生效', async () => {
     const land = stage()
     const vendor = fakeVendor()
 
     try {
       // 配置里存着「明确关闭」——返修前这一位只读了 `model`，请求里一个参数都没有
       const configPath = writeConfig(land.root, {
-        defaultProvider: 'ds',
+        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
         providers: {
-          ds: {
-            vendor: 'deepseek',
-            apiKey: 'sk-not-a-real-key',
-            model: 'deepseek-flash',
-            reasoning: { mode: 'off' },
-          },
+          ds: { vendor: 'deepseek', apiKey: 'sk-not-a-real-key',  },
         },
         dataDir: land.dataDir,
       })
@@ -344,6 +338,7 @@ describe('一条连接的闭环', () => {
       const shell = attachShell(assembly.shell)
       await assembly.ready()
 
+      expect(assembly.switchModel({ reasoning: { mode: 'off' } }).ok).toBe(true)
       await shell.submit('嗨')
 
       const chat = vendor.calls.find((call) => call.url.endsWith('/chat/completions'))
@@ -352,7 +347,7 @@ describe('一条连接的闭环', () => {
       // 读面也照给（界面据它标「当前设置」）
       const armed = waitFor(shell, 'model.catalog')
       shell.send({ type: 'model.list' })
-      expect((await armed).data.entries[0]?.reasoning).toEqual({ mode: 'off' })
+      expect((await armed).data.current?.reasoning).toEqual({ mode: 'off' })
 
       shell.dispose()
       assembly.close()
@@ -388,8 +383,8 @@ describe('一条连接的闭环', () => {
 
       // **外部**把配置文件改了（模拟另一个进程 / 手改）——去掉 `apiKey`
       writeConfig(land.root, {
-        defaultProvider: 'ds',
-        providers: { ds: { vendor: 'deepseek', model: 'deepseek-flash' } },
+        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
+        providers: { ds: { vendor: 'deepseek' } },
         dataDir: land.dataDir,
       })
 
@@ -412,16 +407,11 @@ describe('一条连接的闭环', () => {
       // 只给**非默认**的那个型号一条覆盖——这样「拿默认行推算」会当场露馅：
       // 默认行（deepseek-flash）**没有**窗长依据，而当前选中（deepseek-v4-pro）有
       const configPath = writeConfig(land.root, {
-        defaultProvider: 'ds',
+        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
         providers: {
-          ds: {
-            vendor: 'deepseek',
-            apiKey: 'sk-not-a-real-key',
-            model: 'deepseek-flash',
-            modelOverrides: {
+          ds: { vendor: 'deepseek', apiKey: 'sk-not-a-real-key', modelOverrides: {
               'deepseek-v4-pro': { limits: { maxContextTokens: 30_000, maxOutputTokens: 1_000 } },
-            },
-          },
+            } },
         },
         dataDir: land.dataDir,
       })
@@ -448,7 +438,7 @@ describe('一条连接的闭环', () => {
 
       // ① **切换当下**：`model.switched` 就把新分母带上（不必等一次调用）
       const switched = waitFor(shell, 'model.switched')
-      expect(assembly.switchModel({ provider: 'ds', model: 'deepseek-v4-pro' }).ok).toBe(true)
+      expect((await chooseModel(assembly, 'deepseek-v4-pro')).ok).toBe(true)
       const switchedEvent = await switched
       expect(switchedEvent.data.inputBudget).toBe(30_000 - 1_000)
 
@@ -460,9 +450,9 @@ describe('一条连接的闭环', () => {
         shell.send({ type: 'model.list' })
         return armed
       })()
-      expect(catalog.data.current).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(catalog.data.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
       expect(catalog.data.currentInputBudget).toBe(30_000 - 1_000)
-      expect(catalog.data.entries[0]?.contextWindow).toBeUndefined()
+      expect(Object.hasOwn(catalog.data.entries[0] ?? {}, 'contextWindow')).toBe(false)
 
       // ③ **调用开始**：`model.call.start` 与后面的 `model.usage` 是同一个数
       await shell.submit('换过之后再走一轮')
@@ -489,10 +479,10 @@ describe('一条连接的闭环', () => {
     // 缺省那条**不写** `apiKey`（走环境变量回退）；另一条两处都没有——
     // 它**不是缺省**，故不会在构造期被预造网关（那条路缺 key 才抛）。
     const configPath = writeConfig(land.root, {
-      defaultProvider: 'ds',
+      modelAliases: {default: {provider: "ds", model: 'm'}, cantrip: {provider: "other", model: 'm'}, spell: {provider: "other", model: 'm'}, arcane: {provider: "other", model: 'm'}},
       providers: {
         ds: { vendor: 'deepseek' },
-        other: { baseURL: 'https://x/v1', model: 'm' },
+        other: { vendor: 'minimax', baseURL: 'https://x/v1' },
       },
       dataDir: land.dataDir,
     })
@@ -529,55 +519,16 @@ describe('一条连接的闭环', () => {
     }
   })
 
-  test('兼容接入的连接（没 `vendor`）照旧能用：**不自动列表**，但调用照走原协议', async () => {
+  test('没有供应商的旧连接配置明确拒绝，零模型调用', () => {
     const land = stage()
     const vendor = fakeVendor()
-
     try {
-      const configPath = writeConfig(land.root, {
-        defaultProvider: 'mm',
-        providers: {
-          mm: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'sk-old', model: 'MiniMax-M3' },
-        },
-        dataDir: land.dataDir,
-      })
-
-      const assembly = assemble({
-        cwd: land.workspace,
-        config: loadConfig({ path: configPath, magic: magicAt(land.root) }),
-        modelFetch: vendor.fetch,
-        grantsFile: join(land.root, 'magic', 'grants.json'),
-        magic: magicAt(land.root),
-        prompt: { platform: 'darwin', date: '2026-09-23' },
-      })
-      const shell = attachShell(assembly.shell)
-      await assembly.ready()
-
-      const armed = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.list' })
-      const listing = await armed
-
-      const row = listing.data.entries[0]
-      expect(row?.vendor).toBeUndefined() // 兼容接入：界面据此标明
-      expect(row?.cache).toBeUndefined() // 没有自动获取能力，也就没有缓存读数
-
-      // 调用照走原地址与原模型（**旧能力不删**）
-      await shell.submit('嗨')
-      const chat = vendor.calls.find((call) => call.url.endsWith('/chat/completions'))
-      expect(chat?.url).toBe('https://api.minimaxi.com/v1/chat/completions')
-      expect(chat?.body?.['model']).toBe('MiniMax-M3')
-      // 没打过列表接口
-      expect(vendor.calls.filter((call) => call.url.endsWith('/models'))).toHaveLength(0)
-      // U91 **反面**：这条路没有模型信息可取（连列表都不打）⇒ 输出上限落回
-      // 取件层那个**权宜**兜底——**不许**因此多出别的参数来
-      expect(chat?.body?.['max_completion_tokens']).toBe(MAX_COMPLETION_TOKENS)
-
-      shell.dispose()
-      assembly.close()
-    } finally {
-      land.dispose()
-    }
+      const configPath = writeConfig(land.root, { providers: { mm: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'sk-old' } } })
+      expect(() => loadConfig({ path: configPath, magic: magicAt(land.root) })).toThrow('vendor')
+      expect(vendor.calls).toEqual([])
+    } finally { land.dispose() }
   })
+
 })
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -649,7 +600,7 @@ async function outboundBodyOf(
       await Bun.sleep(10)
     }
 
-    expect(assembly.switchModel({ provider: 'ds', model }).ok).toBe(true)
+    expect((await chooseModel(assembly, model)).ok).toBe(true)
     await shell.submit('嗨')
 
     const chat = vendor.calls.find((call) => call.url.endsWith('/chat/completions'))
@@ -713,3 +664,13 @@ describe('U91 · 输出上限取自模型信息', () => {
     expect(strip(withIt)).toBe(strip(without))
   })
 })
+
+async function chooseModel(app: ReturnType<typeof assemble>, model: string) {
+  const shell = attachShell(app.shell)
+  try {
+    const saved = waitFor(shell, 'model.catalog')
+    shell.send({ type: 'model.alias.set', alias: 'default', provider: 'ds', model })
+    expect((await saved).data.note).toBe('已保存 Default')
+    return app.switchModel({ alias: 'default' })
+  } finally { shell.dispose() }
+}

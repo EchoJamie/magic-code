@@ -1444,7 +1444,6 @@ describe('调用设置与容量（U41 返修）', () => {
     const spec = { id: 'known', limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } }
     const registry = createModelRegistry({
       providers: { ds: { vendor: 'deepseek', apiKey: 'test-key' } },
-      defaultProvider: 'ds',
       stamper: testStamper(),
       env: {},
       apiKeys: { ds: 'test-key' },
@@ -1454,6 +1453,7 @@ describe('调用设置与容量（U41 返修）', () => {
 
     // 注册表那一格：**它本来就对**（漏的是往网关那一跳）
     expect(registry.capacityOf('ds', 'known')?.inputBudget).toBe(8_000)
+    expect(registry.use({ alias: 'default', provider: 'ds', model: 'known' }).ok).toBe(true)
 
     const { events } = await drain(
       registry.stream({ model: 'known', messages: [{ role: 'user', content: '嗨' }] }),
@@ -1479,7 +1479,7 @@ describe('调用设置与容量（U41 返修）', () => {
 
     // **反例**：兼容接入（没有适配）仍走原来那条 MiniMax 改写——旧能力不删
     const compatible = await callOnce(
-      { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M3' },
+      { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       'MiniMax-M3',
     )
     expect(compatible.body['max_completion_tokens']).toBe(MAX_COMPLETION_TOKENS)
@@ -1553,7 +1553,7 @@ describe('思考的工具往返（U41）', () => {
     const gateway = createModelGateway({
       providerId: 'mm',
       stamper: testStamper(),
-      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M3' },
+      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       apiKey: 'test-key',
       fetch,
       env: {},
@@ -1696,7 +1696,7 @@ describe('思考的工具往返（U41）', () => {
     const gateway = createModelGateway({
       providerId: 'mm',
       stamper: testStamper(),
-      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key', model: 'MiniMax-M3' },
+      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       apiKey: 'test-key',
       fetch,
       env: {},
@@ -1742,7 +1742,7 @@ describe('假端点回环 · 流式事件序列', () => {
       providerId: 'minimax',
       stamper: testStamper(),
       // 条目声明了窗长（配置加键——窗长的真来处，见 `ProviderConfig.contextWindow`）
-      config: { ...CONFIG, contextWindow: 200_000 },
+      config: { ...CONFIG, modelOverrides: { [MINIMAX_MODEL]: { limits: { maxContextTokens: 200_000 } } } },
       apiKey: 'test-key',
       fetch: capture(sseReply).fetch,
       env: {},

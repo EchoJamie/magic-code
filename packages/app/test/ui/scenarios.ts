@@ -325,8 +325,8 @@ const drawerOpenClose: Scenario = {
       // 两条目——`/model` 的抽屉才有「有项」可言
       config: {
         providers: {
-          local: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40', model: 'MiniMax-M3' },
-          backup: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40', model: 'MiniMax-M2' },
+          local: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40' },
+          backup: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40' },
         },
       },
       ...where(options),

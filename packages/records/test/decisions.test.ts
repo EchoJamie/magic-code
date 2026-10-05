@@ -96,7 +96,7 @@ describe('裁决的历史累计（跨会话的那笔账）', () => {
         turn: null,
         at: T0 + 4,
         kind: 'model.call.start',
-        data: { model: 'alpha-1', provider: 'alpha' },
+        data: { alias: 'default', model: 'alpha-1', provider: 'alpha' },
       }
       a.appendEvent(noise)
 

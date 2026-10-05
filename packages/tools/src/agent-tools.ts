@@ -9,7 +9,7 @@ const bodySchema = { type: 'array', minItems: 1, items: {
     ref: { type: 'object', properties: { sessionId: text, entryId: { type: 'integer', minimum: 1 } }, required: ['sessionId', 'entryId'], additionalProperties: false }, label: text },
   required: ['kind'], additionalProperties: false,
 } } as const
-const modelSchema = { type: 'object', properties: { provider: text, model: text,
+const modelSchema = { type: 'object', properties: { alias: { enum: ['default', 'cantrip', 'spell', 'arcane'] },
   reasoning: { type: 'object', properties: { mode: { enum: ['default', 'off', 'level', 'budget'] }, level: text, budgetTokens: { type: 'integer', minimum: 1 } }, required: ['mode'], additionalProperties: false },
 }, additionalProperties: false } as const
 
@@ -18,12 +18,14 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
   return [
     tool('agent_list', '查看本次协作的成员、明确委派和等待；不创建成员、不启动查看对象。', {}, [], () => ({ action: 'list' })),
     tool('agent_spawn', '分出需要独立上下文的一份工作。说明职责、修改范围、结果和约束；成员继承本工作区，先接受再执行。重试复用 operationId。',
-      { operationId: text, name: text, role: text, responsibility: text, scope: text, body: bodySchema, model: modelSchema },
+      { operationId: text, name: text, role: text, responsibility: text, scope: text, body: bodySchema, model: modelSchema, modelReason: text },
       ['operationId', 'name', 'responsibility', 'scope', 'body'], args => {
         const model = args.model
-        if (model !== undefined && (!object(model) || (model.provider !== undefined && typeof model.provider !== 'string') || (model.model !== undefined && typeof model.model !== 'string'))) throw new Error('model 须是供应商、模型、思考配置对象')
+        if (model !== undefined && (!object(model) || Object.keys(model).some(key => !['alias', 'reasoning'].includes(key)) || (model.alias !== undefined && !['default', 'cantrip', 'spell', 'arcane'].includes(String(model.alias))))) throw new Error('model 只接受配置的默认模型或模型档位，以及独立思考设置')
+        if (object(model) && model.alias !== undefined && optional(args, 'modelReason') === undefined) throw new Error('选择模型档位须说明与任务相关的 modelReason')
         return { action: 'spawn', operationId: required(args, 'operationId'), name: required(args, 'name'), responsibility: required(args, 'responsibility'), scope: required(args, 'scope'), body: body(args.body),
           ...(optional(args, 'role') === undefined ? {} : { role: optional(args, 'role')! }),
+          ...(optional(args, 'modelReason') === undefined ? {} : { modelReason: optional(args, 'modelReason') }),
           ...(model === undefined ? {} : { model: model as Extract<CollaborationRequest, { action: 'spawn' }>['model'] }),
         } as CollaborationRequest
       }),

@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig } from '../src/index.ts'
-import { removeProvider, saveProvider, setModelDefault, setWebFetch } from '../src/config-save.ts'
+import { removeProvider, saveProvider, setModelAlias } from '../src/config-save.ts'
 import { magicAt, removeDir, tempDir, writeConfig } from './tmp.ts'
 
 const READ = (path: string): Record<string, unknown> =>
@@ -41,10 +41,10 @@ describe('保存一条连接', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
-        defaultProvider: 'a',
+        modelAliases: {default: {provider: "a", model: 'm1'}, cantrip: {provider: "b", model: 'm2'}, spell: {provider: "a", model: 'm1'}, arcane: {provider: "a", model: 'm1'}},
         providers: {
-          a: { baseURL: 'https://a/v1', apiKey: 'sk-secret-a', model: 'm1' },
-          b: { baseURL: 'https://b/v1', apiKey: 'sk-secret-b', model: 'm2' },
+          a: { vendor: 'minimax', baseURL: 'https://a/v1', apiKey: 'sk-secret-a' },
+          b: { vendor: 'minimax', baseURL: 'https://b/v1', apiKey: 'sk-secret-b' },
         },
         dataDir: '~/.magic',
       })
@@ -57,10 +57,10 @@ describe('保存一条连接', () => {
       expect(providers['a']).toEqual({
         baseURL: 'https://a/v1',
         apiKey: 'sk-secret-a', // **没被抹掉**（缺省＝不改）
-        model: 'm1',
+        vendor: 'minimax',
         name: '我的那条',
       })
-      expect(providers['b']).toEqual({ baseURL: 'https://b/v1', apiKey: 'sk-secret-b', model: 'm2' })
+      expect(providers['b']).toEqual({ baseURL: 'https://b/v1', apiKey: 'sk-secret-b', vendor: 'minimax' })
     } finally {
       removeDir(dir)
     }
@@ -185,18 +185,19 @@ describe('移除与设为默认', () => {
    * 原先默认指着它时拒绝——那条把新用户关在门外（只有一条连接时没别的可切 ⇒ 永远删不掉）。
    * 删掉之后的状态本来就存在（0 供应商就是它），故**收拾引用**即可，不必禁止。
    */
-  test('删**当前默认**那条：删得掉，且 `defaultProvider` 一并清掉', () => {
+  test('删除连接时仅清掉引用该连接的映射，不替换为剩余连接', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
-        defaultProvider: 'a',
+        modelAliases: { default: { provider: 'a', model: 'm1' }, cantrip: { provider: 'a', model: 'm1' }, spell: { provider: 'b', model: 'm2' } },
         providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } },
       })
 
       expect(removeProvider({ path, provider: 'a' })).toEqual({ ok: true })
       // 那条没了，默认**也不留一个指向已删对象的死引用**
       expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
-      expect(READ(path)['defaultProvider']).toBeUndefined()
+      expect((READ(path)['modelAliases'] as Record<string, unknown>)['default']).toBeUndefined()
+      expect(READ(path)['modelAliases']).toEqual({ spell: { provider: 'b', model: 'm2' } })
       // 同一把尺子读回来：一次配置加载应当接受它（死引用会让它当场报错）
       expect(loadConfig({ path, magic: magicAt(dir) }).providerId).toBeUndefined()
       // ⚠️ **没悄悄换到 b**——剩下的那条原样在，但**没被扶正**
@@ -214,12 +215,12 @@ describe('移除与设为默认', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
-        defaultProvider: 'only',
+        modelAliases: {},
         providers: { only: { vendor: 'deepseek' } },
       })
 
       expect(removeProvider({ path, provider: 'only' })).toEqual({ ok: true })
-      expect(READ(path)).toEqual({ providers: {} })
+      expect(READ(path)).toEqual({ providers: {}, modelAliases: {} })
       // 空配置**读得回来**（U41 起 `providers` / `defaultProvider` 都可缺）
       const loaded = loadConfig({ path, magic: magicAt(dir) })
       expect(loaded.providerId).toBeUndefined()
@@ -243,103 +244,35 @@ describe('移除与设为默认', () => {
     }
   })
 
-  test('设为默认：**同时**落 `defaultProvider` 与那条连接的 `model`（＋思考设置）', () => {
+  test('保存 Default 只改映射；接入、覆盖和其他档位保持原样', () => {
     const dir = tempDir('magic-save-')
     try {
-      const path = writeConfig(dir, {
-        providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax', model: 'old' } },
-      })
-
-      expect(
-        setModelDefault({
-          path,
-          request: { provider: 'a', model: 'deepseek-flash', reasoning: { mode: 'level', level: 'high' } },
-        }),
-      ).toEqual({ ok: true })
-
-      const raw = READ(path)
-      expect(raw['defaultProvider']).toBe('a')
-      expect(PROVIDERS_OF(path)['a']).toEqual({
-        vendor: 'deepseek',
-        model: 'deepseek-flash',
-        reasoning: { mode: 'level', level: 'high' },
-      })
-      // 别的连接一个字段没动
-      expect(PROVIDERS_OF(path)['b']).toEqual({ vendor: 'minimax', model: 'old' })
-    } finally {
-      removeDir(dir)
-    }
+      const provider = { vendor: 'deepseek', modelOverrides: { old: { limits: { maxInputTokens: 128 } } } }
+      const path = writeConfig(dir, { providers: { a: provider }, modelAliases: { cantrip: { provider: 'a', model: 'old' } } })
+      expect(setModelAlias({ path, request: { alias: 'default', provider: 'a', model: 'new' } })).toEqual({ ok: true })
+      expect(PROVIDERS_OF(path)['a']).toEqual(provider)
+      expect(READ(path)['modelAliases']).toEqual({ default: { provider: 'a', model: 'new' }, cantrip: { provider: 'a', model: 'old' } })
+    } finally { removeDir(dir) }
   })
 
-  test('设为默认指向一条不存在的连接 ⇒ 拒（先接入它）', () => {
+  test('保存 Cantrip 不改 Default；不在连接上写型号或思考设置', () => {
     const dir = tempDir('magic-save-')
     try {
-      const path = writeConfig(dir, { providers: {} })
-
-      const outcome = setModelDefault({ path, request: { provider: 'ghost', model: 'm' } })
-      expect(outcome.ok).toBe(false)
-      expect(outcome.ok === false && outcome.reason).toMatch(/先接入它/)
-    } finally {
-      removeDir(dir)
-    }
-  })
-
-  // —— 「取网页用的模型」（U78）——
-
-  test('取网页用的模型：**只写 `webFetch` 那一格**（连接与默认一个字不动）', () => {
-    const dir = tempDir('magic-save-')
-    try {
-      const path = writeConfig(dir, {
-        defaultProvider: 'a',
-        providers: {
-          a: { vendor: 'deepseek', model: 'deepseek-flash' },
-          b: { vendor: 'minimax', model: 'MiniMax-M3' },
-        },
-      })
-
-      expect(
-        setWebFetch({ path, request: { provider: 'b', model: 'MiniMax-M2.5-highspeed' } }),
-      ).toEqual({ ok: true })
-
-      // 写的是它自己那一条（**换一条连接**——「不与当前会话混」正是这一格的意义）
-      expect(READ(path)['webFetch']).toEqual({ provider: 'b', model: 'MiniMax-M2.5-highspeed' })
-      // 三处原样：默认连接 · 各连接的默认模型 · 连接条目本身
-      expect(READ(path)['defaultProvider']).toBe('a')
-      expect(PROVIDERS_OF(path)['a']).toEqual({ vendor: 'deepseek', model: 'deepseek-flash' })
-      expect(PROVIDERS_OF(path)['b']).toEqual({ vendor: 'minimax', model: 'MiniMax-M3' })
-    } finally {
-      removeDir(dir)
-    }
-  })
-
-  test('取网页用的模型指向一条不存在的连接 ⇒ 拒（先接入它），且**不写盘**', () => {
-    const dir = tempDir('magic-save-')
-    try {
-      const path = writeConfig(dir, { providers: {} })
-
-      const outcome = setWebFetch({ path, request: { provider: 'ghost', model: 'm' } })
-      expect(outcome.ok).toBe(false)
-      expect(outcome.ok === false && outcome.reason).toMatch(/先接入它/)
+      const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } }, modelAliases: { default: { provider: 'a', model: 'main' } } })
+      expect(setModelAlias({ path, request: { alias: 'cantrip', provider: 'a', model: 'aux' } })).toEqual({ ok: true })
+      expect(READ(path)['modelAliases']).toEqual({ default: { provider: 'a', model: 'main' }, cantrip: { provider: 'a', model: 'aux' } })
+      expect(PROVIDERS_OF(path)['a']).toEqual({ vendor: 'deepseek' })
       expect(READ(path)['webFetch']).toBeUndefined()
-    } finally {
-      removeDir(dir)
-    }
+    } finally { removeDir(dir) }
   })
-})
 
-describe('保存默认型号与思考设置', () => {
-  test('换型号时清除旧思考设置；同型号的未指定字段保留；角色约束不变', () => {
-    const dir = tempDir('magic-role-default-')
+  test('不存在的接入不能保存为档位，原文件不变', () => {
+    const dir = tempDir('magic-save-')
     try {
-      const role = { name: '审查', instructions: '只读审查', tools: ['read'], model: { reasoning: { mode: 'off' } } }
-      const path = writeConfig(dir, { providers: { ds: { vendor: 'deepseek', model: 'old', reasoning: { mode: 'level', level: 'high' } } }, agentRoles: { reviewer: role } })
-      expect(setModelDefault({ path, request: { provider: 'ds', model: 'old' } }).ok).toBe(true)
-      expect(PROVIDERS_OF(path)['ds']?.['reasoning']).toEqual({ mode: 'level', level: 'high' })
-      expect(setModelDefault({ path, request: { provider: 'ds', model: 'new' } }).ok).toBe(true)
-      expect(PROVIDERS_OF(path)['ds']?.['reasoning']).toBeUndefined()
-      expect(READ(path)['agentRoles']).toEqual({ reviewer: role })
-      expect(setModelDefault({ path, request: { provider: 'ds', model: 'next', reasoning: { mode: 'off' } } }).ok).toBe(true)
-      expect(PROVIDERS_OF(path)['ds']?.['reasoning']).toEqual({ mode: 'off' })
+      const path = writeConfig(dir, { providers: {} })
+      const before = readFileSync(path, 'utf8')
+      expect(setModelAlias({ path, request: { alias: 'spell', provider: 'ghost', model: 'raw' } }).ok).toBe(false)
+      expect(readFileSync(path, 'utf8')).toBe(before)
     } finally { removeDir(dir) }
   })
 })

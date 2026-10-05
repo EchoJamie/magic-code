@@ -56,7 +56,7 @@ describe('装置 · 沙地能造空配置的实例', () => {
     try {
       expect(existsSync(sandbox.configPath)).toBe(true)
       const raw = JSON.parse(readFileSync(sandbox.configPath, 'utf8')) as Record<string, unknown>
-      expect(raw['defaultProvider']).toBe('local')
+      expect(raw['modelAliases']).toEqual(Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(alias => [alias, { provider: 'local', model: 'MiniMax-M3' }])))
       expect(Object.keys(raw['providers'] as Record<string, unknown>)).toEqual(['local'])
 
       const loaded = loadConfig({ path: sandbox.configPath, magic: magicAt(sandbox.home) })
@@ -91,9 +91,9 @@ describe('那几句话', () => {
     expect(noModelAdvice(UNSELECTED)).not.toContain('还没有接上供应商')
   })
 
-  test('**起手那一句**多一件「在哪儿」——报的是 `/model` 那一屏里真有的那一行', () => {
+  test('启动提示使用可直接执行的接入命令，不引用旧列表顺序', () => {
     expect(noModelNotice(UNCONFIGURED)).toBe(
-      '还没有接上供应商——敲 /model connect 接一条（/model 那一屏第一条就是它）',
+      '还没有接上供应商——敲 /model connect 接一条',
     )
     // 另一形没有「第一条就是它」那半（那一屏铺的是连接本身，不是接供应商那一行）
     expect(noModelNotice(UNSELECTED)).toBe('还没有选好走哪个模型——敲 /model 挑一个')

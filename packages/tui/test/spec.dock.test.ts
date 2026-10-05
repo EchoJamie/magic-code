@@ -75,7 +75,7 @@ describe('状态行 · 栏位固定', () => {
     const stage = createStage()
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
@@ -107,10 +107,10 @@ describe('状态行 · 栏位固定', () => {
     stage.feed([
       event('model.catalog', {
         entries: [
-          { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 999_000 },
-          { provider: 'local', model: 'qwen3' },
+          { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } },  },
+          { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, },
         ],
-        current: { provider: 'minimax', model: 'deepseek-reasoner' },
+        current: { alias: 'default' as const, provider: 'minimax', model: 'deepseek-reasoner' },
         currentInputBudget: 200_000,
       }),
     ])
@@ -125,8 +125,8 @@ describe('状态行 · 栏位固定', () => {
     stage.feed([event('model.usage', { inputTokens: 3100, outputTokens: 40 })])
     stage.feed([
       event('model.catalog', {
-        entries: [{ provider: 'local', model: 'qwen3' }],
-        current: { provider: 'local', model: 'qwen3' },
+        entries: [{ provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, }],
+        current: { alias: 'default' as const, provider: 'local', model: 'qwen3' },
       }),
     ])
 
@@ -163,7 +163,7 @@ describe('状态行 · 栏位固定', () => {
     const stage = createStage()
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
@@ -182,7 +182,7 @@ describe('状态行 · 栏位固定', () => {
     const stage = createStage()
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
@@ -206,16 +206,16 @@ describe('状态行 · 栏位固定', () => {
 
   test('**一次性的事不进状态行**——「已换模型」去记录区当回执', async () => {
     const stage = createStage()
-    stage.feed([event('model.switched', { ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
+    stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.statusLine).not.toContain('已换模型') // 状态行只放「此刻」
+    expect(frame.statusLine).not.toContain('已选择') // 状态行只放「此刻」
     // ⚠️ **U112 删掉的那一条**：旧锚＝`statusLine` 含新模型名（模型那格跟着换）。
     //    模型那一格不再在默认那一列里（`STATUS_LINE_DEFAULT`＝会话名 · 上下文占用），
     //    「换模型」这件事在屏上只剩记录区那一行回执——下面那条就是它的落点。
     // ⚠️ **U112 换形**：回执行不再以 `· ` 起头（那个字形只做行内分隔），改靠**缩进一级 ＋ 最弱色**
-    expect(frame.record.some((line) => line.text === '  已换模型 → MiniMax-M2')).toBe(true)
+    expect(frame.record.some((line) => line.text === '  已选择 Default')).toBe(true)
   })
 })
 

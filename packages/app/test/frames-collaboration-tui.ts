@@ -13,7 +13,7 @@ if (process.argv.includes('--fixture')) {
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     send(command: Command) {
       if (command.type === 'collaboration.read') emit(event('collaboration.view', collaborationDetail(command.member)))
-      if (command.type === 'model.list') emit(event('model.catalog', { entries: [{ provider: 'local', model: 'mini' }], current: { provider: 'local', model: 'mini' } }))
+      if (command.type === 'model.list') emit(event('model.catalog', { entries: [{ provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'mini' }] } }, }], current: { alias: 'default' as const, provider: 'local', model: 'mini' } }))
       if (command.type === 'collaboration.configure') emit(event('collaboration.view', { ...collaborationFixture, note: `夹具已接收配置：${command.member ?? '后续派生默认'}` }))
       if (command.type === 'collaboration.stop') emit(event('collaboration.view', { ...collaborationFixture, note: command.delegation === undefined ? '夹具已接收整体停止' : `夹具已接收局部停止：委派 ${command.delegation}` }))
       if (command.type === 'collaboration.input') {

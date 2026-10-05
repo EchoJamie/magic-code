@@ -111,7 +111,7 @@ type ClientConn = {
    */
   selectedSession: string | null
   readonly label: string | undefined
-  /** 开局那条换模型请求（`--provider` / `--model`）——为它起新的一代时带过去。 */
+  /** 开局那条换模型请求（`--model`）——为它起新的一代时带过去。 */
   readonly switch: ModelSwitchRequest | undefined
   /**
    * **全放行**（U73）——这个窗口起手带没带 `--allow-all`；为它起新的一代时带过去。
@@ -542,7 +542,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     },
     configure: async (session, model) => {
       const live = liveOf(session)
-      if (live?.run.busy) throw new Error('成员仍在执行，请在当前调用结束后切换模型')
       if (live === undefined) return
       await new Promise<void>((resolve, reject) => {
         const requestId = crypto.randomUUID()
@@ -564,7 +563,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (existing === undefined && previous !== undefined && (previous.ended === undefined || previous.reclaimPending || previous.reclaimNote !== undefined)) throw new Error('该成员上一代资源仍待核实')
     if (stopped) throw new Error('管理者正在退出')
     const executor = existing ?? spawn({ session: agent.sessionId, explicit: true,
-      cwd: agent.workspace[0] ?? '', switch: agent.model })
+      cwd: agent.workspace[0] ?? '' })
     if (executor === undefined) throw new Error('无法启动成员执行者')
     for (const conn of clients.values()) if (conn.selectedSession === agent.sessionId && conn.target !== executor) bind(conn, executor)
     if (executor.run.ready) return

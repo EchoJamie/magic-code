@@ -307,8 +307,6 @@ export type ProviderModelOverride = {
    * （含 `{}` ＝显式声明无特征）。形态见 `ports.ts` · `ModelTraits`。
    */
   readonly traits?: ModelTraits
-  /** 该模型的思考设置覆盖——合法值由模型能力给出。 */
-  readonly reasoning?: ReasoningSetting
   /**
    * **模型能力覆盖**（U37）——用户对该连接与精确模型的明确声明。
    *
@@ -323,3 +321,8 @@ export type ProviderModelOverride = {
    */
   readonly capabilities?: ModelCapabilities
 }
+
+/** 工作选择标识；实际连接与型号只在配置和运行事实中出现。 */
+export type ModelAlias = 'default' | 'cantrip' | 'spell' | 'arcane'
+export type ModelMapping = { readonly provider: string; readonly model: string }
+export type ModelAliases = Readonly<Partial<Record<ModelAlias, ModelMapping>>>

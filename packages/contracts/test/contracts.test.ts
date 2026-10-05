@@ -360,11 +360,11 @@ export function threeIdSpacesAreDistinct(): void {
 export function traitsIsOptionalOverride(): void {
   const none: ModelTraits = {}
   const one: ModelTraits = { inlineThinking: { tag: 'think' } }
-  const providerPlain: ProviderConfig = { baseURL: 'https://api.example/v1', model: 'm' }
+  const providerPlain: ProviderConfig = { vendor: 'deepseek', baseURL: 'https://api.example/v1' }
   const providerWithTraits: ProviderConfig = {
     baseURL: 'https://api.example/v1',
-    model: 'm',
-    traits: one,
+    vendor: 'deepseek',
+    modelOverrides: { m: { traits: one } },
   }
 
   void none
@@ -449,8 +449,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
-    onModelDefaultSet: () => undefined,
-    onWebFetchSet: () => undefined,
+    onModelAliasSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -474,8 +473,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
-    onModelDefaultSet: () => undefined,
-    onWebFetchSet: () => undefined,
+    onModelAliasSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -511,9 +509,9 @@ export function rememberTravelsThroughBothPorts(): void {
 
 /** 权限段——`MagicConfig.permissions.rules` 是阶段 2 的加键（缺省＝无规则＝一律问）。 */
 export function configCarriesPermissionRules(): void {
-  const bare: MagicConfig = { defaultProvider: 'p', providers: {}, dataDir: '/tmp' }
+  const bare: MagicConfig = { modelAliases: {}, providers: {}, dataDir: '/tmp' }
   const withRules: MagicConfig = {
-    defaultProvider: 'p',
+    modelAliases: {},
     providers: {},
     dataDir: '/tmp',
     // 条目形态**不在这里复述**——权威是权限域的 `parseRules`（故此处是原值，交它解析）
@@ -528,9 +526,9 @@ export function configCarriesPermissionRules(): void {
 
 /** `model.switch` ＝**第四支命令**——两件可选、都不给也合法（内核对空请求报「不知道换什么」）。 */
 export function modelSwitchIsFourthCommand(): void {
-  const byProvider: Command = { type: 'model.switch', provider: 'minimax-m2' }
-  const byModel: Command = { type: 'model.switch', model: 'glm-4.6' }
-  const both: Command = { type: 'model.switch', provider: 'zhipu', model: 'glm-4.6' }
+  const byProvider: Command = { type: 'model.switch', alias: 'cantrip' }
+  const byModel: Command = { type: 'model.switch', alias: 'spell' }
+  const both: Command = { type: 'model.switch', alias: 'arcane' }
   const bare: Command = { type: 'model.switch' } // 都不给——内核据以报「不知道要换成什么」
 
   void byProvider
@@ -550,13 +548,12 @@ export function routesCarryModelSwitch(): void {
     onInput: () => undefined,
     onInterrupt: () => undefined,
     onDecision: () => undefined,
-    onModelSwitch: (request: ModelSwitchRequest) => void [request.provider, request.model],
+    onModelSwitch: (request: ModelSwitchRequest) => void [request.alias, request.reasoning],
     onSession: () => undefined,
     onHistoryRead: () => undefined,
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
-    onModelDefaultSet: () => undefined,
-    onWebFetchSet: () => undefined,
+    onModelAliasSet: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -579,8 +576,8 @@ export function routesCarryModelSwitch(): void {
  * 成了带选中、没成只带缘由；两件的可选性把这件事说清楚。
  */
 export function modelSwitchedPayloadShape(): void {
-  const done: EventDataOf['model.switched'] = { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }
-  const refused: EventDataOf['model.switched'] = { ok: false, reason: '未知条目「nowhere」' }
+  const done: EventDataOf['model.switched'] = { alias: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }
+  const refused: EventDataOf['model.switched'] = { alias: 'default', ok: false, reason: '未知条目「nowhere」' }
   void done
   void refused
 }
@@ -625,10 +622,10 @@ export function readoutsShape(): void {
   // ③ 条目表 ＋ 当前那条（表按配置顺序；`current` 未必是表里的某一行——见其注）
   const catalog: EventDataOf['model.catalog'] = {
     entries: [
-      { provider: 'minimax', model: 'MiniMax-M3', contextWindow: 200_000 },
-      { provider: 'local', model: 'qwen3', contextWindow: 32_768 },
+      { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } },  },
+      { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } },  },
     ],
-    current: { provider: 'local', model: 'qwen3' },
+    current: { alias: 'default' as const, provider: 'local', model: 'qwen3' },
   }
   // 没有注册表的那一次装配——空表 ＋ 一句说明（空表本身合法，两者不混作一谈）
   const empty: EventDataOf['model.catalog'] = { entries: [], note: '本次装配没有供应商注册表' }

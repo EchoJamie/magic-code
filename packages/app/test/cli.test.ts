@@ -42,10 +42,10 @@ describe('resident-cli 短路径与终端接回参数', () => {
     const request = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'
     try {
       g.publish()
-      const parsed = parseArgs(['--session', 'session-real', '--open-request', request, '--provider', 'p', '--model', 'm', '--allow-all'])
+      const parsed = parseArgs(['--session', 'session-real', '--open-request', request, '--model', 'spell', '--allow-all'])
       const connection = await connectTerminal(parsed, { home: g.home, env: { PATH: '/work/bin', API_KEY: 'do-not-send' } })
       const hello = server.messages.find((message) => message.t === 'hello')!
-      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { provider: 'p', model: 'm' }, allowAll: true, environment: { PATH: '/work/bin' } })
+      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { alias: 'spell' }, allowAll: true, environment: { PATH: '/work/bin' } })
       expect(JSON.stringify(hello)).not.toContain('do-not-send')
       connection.client.close()
 
@@ -325,10 +325,10 @@ describe('U28 · 夹具沙箱化（D24）', () => {
 
 function twoProviders(): Record<string, unknown> {
   return {
-    defaultProvider: 'alpha',
+    modelAliases: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}},
     providers: {
-      alpha: { baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12', model: 'alpha-1' },
-      beta: { baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12', model: 'beta-1' },
+      alpha: { vendor: 'minimax', baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12' },
+      beta: { vendor: 'minimax', baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12' },
     },
   }
 }
@@ -341,7 +341,7 @@ describe('入口 magic · 换模型的启动参数', () => {
       const result = await run(home, '--check')
 
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('供应商表　2 条——alpha（alpha-1） · beta（beta-1）')
+      expect(result.stdout).toContain('供应商表　2 条——alpha（alpha） · beta（beta）')
       expect(result.stdout).toContain('当前走 alpha')
       expect(result.stdout).not.toContain('sk-alpha-key12')
       void dataDir
@@ -354,7 +354,7 @@ describe('入口 magic · 换模型的启动参数', () => {
     const { home } = stageWithConfig(twoProviders())
 
     try {
-      const result = await run(home, '--check', '--provider', 'beta')
+      const result = await run(home, '--check', '--model', 'cantrip')
 
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('—— 本次走 beta（beta-1）')
@@ -368,9 +368,9 @@ describe('入口 magic · 换模型的启动参数', () => {
     const { home } = stageWithConfig(twoProviders())
 
     try {
-      const byModel = await run(home, '--check', '--model', 'alpha-experimental')
+      const byModel = await run(home, '--check', '--model', 'spell')
       expect(byModel.exitCode).toBe(0)
-      expect(byModel.stdout).toContain('—— 本次走 alpha（alpha-experimental）')
+      expect(byModel.stdout).toContain('—— 本次走 alpha（alpha-1）')
     } finally {
       removeDir(home)
     }
@@ -380,11 +380,10 @@ describe('入口 magic · 换模型的启动参数', () => {
     const { home } = stageWithConfig(twoProviders())
 
     try {
-      const result = await run(home, '--check', '--provider', 'betta')
+      const result = await run(home, '--check', '--model', 'betta')
 
       expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('换模型不成功')
-      expect(result.stderr).toContain('未知供应商「betta」——已注册：alpha / beta')
+      expect(result.stderr).toContain('--model 只能选择 default / cantrip / spell / arcane')
     } finally {
       removeDir(home)
     }
@@ -394,10 +393,10 @@ describe('入口 magic · 换模型的启动参数', () => {
     const { home } = stageWithConfig(twoProviders())
 
     try {
-      const result = await run(home, '--provider', '--check')
+      const result = await run(home, '--model', '--check')
 
       expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('--provider 缺值')
+      expect(result.stderr).toContain('--model 缺值')
     } finally {
       removeDir(home)
     }
@@ -408,8 +407,8 @@ describe('入口 magic · 换模型的启动参数', () => {
     try {
       const result = await run(home, '--help')
 
-      expect(result.stdout).toContain('--provider <id>')
-      expect(result.stdout).toContain('--model <名>')
+      expect(result.stdout).not.toContain('--provider')
+      expect(result.stdout).toContain('--model <选择>')
       expect(result.stdout).toContain('"switch"')
     } finally {
       removeDir(home)

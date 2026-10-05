@@ -217,7 +217,7 @@ const LS_OUTPUT = [
 function historyShown(app: ReturnType<typeof live>): void {
   app.feed([
     state(SESSION, [{ id: SESSION, title: '记录查询优化' }]),
-    event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+    event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
     event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
   ])
   app.type('看看这个工作区里有什么')
@@ -300,7 +300,7 @@ describe('场景 3 · 工作中（流式）', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('turn.start', {}),
     ])
     app.type('把 src/utils/date.ts 的时区处理改成本地时区')
@@ -498,7 +498,7 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '修复时区处理…' }]),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
     ])
     app.type('/model')
     app.key(ENTER)
@@ -509,13 +509,14 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
     app.feed([
       event('model.catalog', {
         entries: [
-          { provider: 'minimax', model: 'MiniMax-M3' },
-          { provider: 'minimax-m2', model: 'MiniMax-M2' },
+          { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
+          { provider: 'minimax-m2', cache: { snapshot: { provider: 'minimax-m2', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M2' }] } }, },
         ],
-        current: { provider: 'minimax', model: 'MiniMax-M3' },
+        current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     ])
 
+    app.shell.key({ kind: 'enter' }) // 配置映射中的实际型号列表
     const settled = [...app.shell.getView().settled, ...app.shell.getView().rows]
 
     // **开的这一刻什么都不进记录区**（原型 · slash 两种走法：交互配置型「回车什么都不进」；
@@ -542,7 +543,7 @@ describe('场景 11 · `/help`（纯输出型）', () => {
   test('输出进记录区（dim 块）；**命令本身不回显**', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '时区修正' }])])
-    app.feed([event('model.switched', { ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' })])
+    app.feed([event('model.switched', { alias: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' })])
     app.type('/help')
     app.key(ENTER)
 

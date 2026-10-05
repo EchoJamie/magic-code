@@ -212,8 +212,8 @@ async function unconfigured(mark: string, columns: number, rows: number): Promis
       receipts(boot.lines).join(' / '),
     )
     check(
-      bootText.includes('/model 那一屏第一条就是它'),
-      '【形①】说了**在哪儿**（/model 那一屏第一条就是它）',
+      bootText.includes('/model connect'),
+      '【形①】直接接入命令可用，不依赖列表位置',
       receipts(boot.lines).join(' / '),
     )
     check(
@@ -278,7 +278,7 @@ async function unconfigured(mark: string, columns: number, rows: number): Promis
     const divider = model.lines.findIndex((line) => /^─{8,}$/u.test(line.trim()))
     const dock = flat(divider === -1 ? [] : model.lines.slice(divider + 1))
 
-    check(dock.includes('连接供应商'), '【形③】`/model` 那一屏第一条就是「连接供应商」', dock)
+    check(dock.includes('连接供应商'), '【形③】`/model` 设置中包含「连接供应商」', dock)
     check(
       dock.includes('还没有接上任何供应商'),
       '【形③】`/model` 那一屏照旧说了那句（它是好的，本单一个字都不动）',
@@ -450,8 +450,8 @@ async function removeTheCurrentOneOf(mark: string): Promise<void> {
   const sandbox = createSandbox({
     config: {
       providers: {
-        local: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40-not-a-real-key', model: 'MiniMax-M3' },
-        spare: { baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40-not-a-real-key', model: 'MiniMax-M3' },
+        local: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40-not-a-real-key' },
+        spare: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40-not-a-real-key' },
       },
     },
   })

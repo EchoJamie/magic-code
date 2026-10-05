@@ -445,13 +445,14 @@ describe('选择器（`/resume` · `/model`）', () => {
     app.spy.emit(
       event('model.catalog', {
         entries: [
-          { provider: 'minimax', model: 'MiniMax-M3' },
-          { provider: 'local', model: 'qwen3' },
+          { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
+          { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, },
         ],
-        current: { provider: 'minimax', model: 'MiniMax-M3' },
+        current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     )
 
+    app.press(ENTER) // 进入 Default 的映射编辑，工作选择不列实际型号
     expect(app.view().dock.kind).toBe('picker')
     const dock = app.view().dock
     // **全量**——两条都列出来，哪怕这趟会话一条都没调用过。
@@ -490,10 +491,10 @@ describe('选择器（`/resume` · `/model`）', () => {
         if (command.type === 'model.list') {
           const reply = event('model.catalog', {
             entries: [
-              { provider: 'minimax', model: 'MiniMax-M3' },
-              { provider: 'minimax-m2', model: 'MiniMax-M2' },
+              { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
+              { provider: 'minimax-m2', cache: { snapshot: { provider: 'minimax-m2', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M2' }] } }, },
             ],
-            current: { provider: 'minimax', model: 'MiniMax-M3' },
+            current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
             // 分母随答复来（U41 返修：按 `current` 算的那一格，不从默认行推算）
             currentInputBudget: 200_000,
           })
@@ -961,18 +962,21 @@ describe('粘贴（非接管）', () => {
 describe('选择器选定模型', () => {
   test('选定 ⇒ 发 `model.switch`（回执由内核的 `model.switched` 给）', () => {
     const app = live()
-    app.spy.emit(event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }))
+    app.spy.emit(event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }))
 
     app.type('/model')
     app.press(ENTER)
     // 条目表回来了才开选择器（D10 的读侧答复）——选定那一步与入口无关，故这条判据不变
     app.spy.emit(
       event('model.catalog', {
-        entries: [{ provider: 'minimax', model: 'MiniMax-M3' }],
-        current: { provider: 'minimax', model: 'MiniMax-M3' },
+        entries: [{ provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'test', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } } }],
+        aliases: { default: { provider: 'minimax', model: 'MiniMax-M3' } },
+        current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     )
-    app.press(ENTER) // 选定当前那一条
+    for (let i = 0; i < 4; i++) app.press({ kind: 'down' })
+    app.press(ENTER) // 工作选择只列配置来源
+    app.press(ENTER)
 
     // **原锚**：`{ type: 'model.switch', provider: 'minimax' }`（选择键＝条目名一件）。
     // **为何变**（U41）：选择键是**连接 id ＋ 精确模型 id** 两件（设计明文——合法的两条
@@ -981,8 +985,7 @@ describe('选择器选定模型', () => {
     // **新锚**：两件一起给。
     expect(app.commands()).toContainEqual({
       type: 'model.switch',
-      provider: 'minimax',
-      model: 'MiniMax-M3',
+      alias: 'default',
     })
     expect(app.view().dock.kind).toBe('input')
   })

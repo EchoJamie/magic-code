@@ -31,8 +31,8 @@ function openConfig(over: { readonly statusLine?: { cells: readonly string[]; co
   stage.press({ kind: 'enter' })
   stage.feed([
     event('model.catalog', {
-      entries: [{ provider: 'minimax', name: '个人版', model: 'MiniMax-M3' }],
-      current: { provider: 'minimax', model: 'MiniMax-M3' },
+      entries: [{ provider: 'minimax', name: '个人版', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, }],
+      current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
     }),
     event('grants.catalog', {
       workspace: ROOT,
@@ -97,7 +97,6 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
 
     expect(rowsOf(stage).map((row) => row.label.trim())).toEqual([
       '模型与连接',
-      '取网页用的模型',
       '本工作区授权',
       '外部工具',
       '状态行',
@@ -191,16 +190,16 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
     const stage = createStage({ statusLine: { cells: ['model', 'session'] }, workspaceRoots: [ROOT] })
     stage.feed([
       event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '改时区' }] }),
-      event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax' }, { id: 50 }),
+      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }, { id: 50 }),
     ])
 
     // 宽窗：两格都在，且**按配的顺序**（模型在前、会话名在后）
     const wide = await stage.screen({ columns: 100, rows: 20 })
-    expect(wide.statusLine.indexOf('MiniMax-M3')).toBeLessThan(wide.statusLine.indexOf('改时区'))
+    expect(wide.statusLine.indexOf('Default')).toBeLessThan(wide.statusLine.indexOf('改时区'))
 
     // 窄窗：排在前面的「模型」保住，排在后面的「会话名」先让位
     const narrow = await stage.screen({ columns: 30, rows: 20 })
-    expect(narrow.statusLine).toContain('MiniMax-M3')
+    expect(narrow.statusLine).toContain('Default')
     expect(narrow.statusLine).not.toContain('改时区')
   })
 })

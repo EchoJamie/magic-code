@@ -69,6 +69,7 @@ export type ConversationDeps = {
   readonly model: string
   /** 提示词运行时注入值（`cwd` / `platform` / `date`）——**缺项在构造期就报错**。 */
   readonly prompt: PromptVars
+  readonly compression?: () => import('@magic/contracts').CompressionModel
   readonly gateway: ModelGateway
   readonly tools: ToolRuntime
   readonly records: RecordsService
@@ -252,6 +253,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     session: deps.session,
     gateway: deps.gateway,
     model: deps.model,
+    ...(deps.compression === undefined ? {} : { compression: deps.compression }),
     sink,
     stamper,
     now: deps.now ?? Date.now,

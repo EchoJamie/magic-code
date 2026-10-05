@@ -42,7 +42,7 @@ describe('骨架 · 记录', () => {
 
     // 域这一侧：铸一条、发一条（真装配里 `sink` 就是扇出点：落库 ＋ 推送）
     sink.emit(stamper.stamp('turn.start', {}))
-    sink.emit(stamper.stamp('model.call.start', { model: 'faux-1' }))
+    sink.emit(stamper.stamp('model.call.start', { alias: 'default', model: 'faux-1' }))
     sink.emit(stamper.stamp('turn.end', { reason: 'settled' }))
 
     // 扇出点这一侧：持久类落库（瞬时类不落——契约 · 规则 ① 的清单）

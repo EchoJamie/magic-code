@@ -26,6 +26,7 @@ import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { tuiOptions } from '../src/cli.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
+import { setModelAlias } from '../src/config-save.ts'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -36,13 +37,8 @@ const ALPHA_KEY = 'sk-alpha-abcdefghijklmnop'
 const BETA_KEY = 'sk-beta-abcdefghijklmnop'
 
 const PROVIDERS = {
-  alpha: {
-    baseURL: 'https://alpha.example/v1',
-    apiKey: ALPHA_KEY,
-    model: 'alpha-1',
-    contextWindow: 200_000,
-  },
-  beta: { baseURL: 'https://beta.example/v1', apiKey: BETA_KEY, model: 'beta-1' },
+  alpha: { vendor: 'minimax', baseURL: 'https://alpha.example/v1', apiKey: ALPHA_KEY, modelOverrides: { ['alpha-1']: {limits: {maxContextTokens: 200_000}} } },
+  beta: { vendor: 'minimax', baseURL: 'https://beta.example/v1', apiKey: BETA_KEY },
 }
 
 /** 一次回复的帧（OpenAI 兼容片；`usage` 那一帧只在收尾发——SDK 的 `include_usage`）。 */
@@ -60,7 +56,8 @@ function frame(model: string, payload: Record<string, unknown>): string {
 function endpoint(): typeof globalThis.fetch {
   let calls = 0
 
-  return (async () => {
+  return (async (input: unknown) => {
+    if (String(input).endsWith('/models')) return Response.json({ data: [{ id: 'alpha-1' }, { id: 'beta-1' }] })
     calls += 1
     const model = calls === 1 ? 'alpha-1' : 'beta-1'
 
@@ -115,7 +112,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), defaultProvider: 'alpha', providers: PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), modelAliases: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: PROVIDERS }),
   )
 
   return {
@@ -202,9 +199,9 @@ describe('读数 1 · 上下文窗口总量', () => {
 
       await handle.submit('嗨')
       // 换到乙——配置里**没有** `contextWindow`
-      expect(assembly.switchModel({ provider: 'beta' })).toEqual({
+      expect(assembly.switchModel({ alias: 'cantrip' })).toEqual({
         ok: true,
-        selection: { provider: 'beta', model: 'beta-1' },
+        selection: { alias: 'cantrip', provider: 'beta', model: 'beta-1' },
       })
       await handle.submit('再来一句')
 
@@ -279,20 +276,20 @@ describe('读数 3 · 模型条目表', () => {
       // **原锚**是「条目名 ＋ 默认模型 ＋ 窗长」；**为何变**：读面从「配置条目表」
       // 扩成「连接一览」（选择器与管理页共用一行）；**新锚**：多一位用户自己写的地址，
       // 判据没松（凭据仍不进这一行）。
-      expect(catalog.data.entries).toEqual([
+      expect(catalog.data.entries.map(({ provider, baseURL, keySource }) => ({ provider, baseURL, keySource }))).toEqual([
         // `keySource`（U41 补）：认证的**来处**——两条都在配置里写了 `apiKey`。
         // ⚠️ 给的是来处不是凭据：值一个字符都不出这一层
-        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', keySource: 'config', contextWindow: 195_904 },
-        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1', keySource: 'config' },
+        { provider: 'alpha', baseURL: 'https://alpha.example/v1', keySource: 'config' },
+        { provider: 'beta', baseURL: 'https://beta.example/v1', keySource: 'config' },
 
       ])
-      expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'alpha-1' })
+      expect(catalog.data.current).toEqual({ alias: 'default' as const, provider: 'alpha', model: 'alpha-1' })
       expect(catalog.data.note).toBeUndefined()
 
       // 换过之后，「当前」跟着走
-      expect(assembly.switchModel({ provider: 'beta' }).ok).toBe(true)
+      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
       const afterSwitch = await askCatalog(handle)
-      expect(afterSwitch.data.current).toEqual({ provider: 'beta', model: 'beta-1' })
+      expect(afterSwitch.data.current).toEqual({ alias: 'cantrip' as const, provider: 'beta', model: 'beta-1' })
       expect(afterSwitch.data.entries).toEqual(catalog.data.entries)
 
       handle.dispose()
@@ -309,17 +306,17 @@ describe('读数 3 · 模型条目表', () => {
       const assembly = land.assemble({ modelFetch: endpoint() })
       const handle = attachShell(assembly.shell)
 
-      expect(assembly.switchModel({ model: 'beta-x' }).ok).toBe(true)
+      expect(chooseConfiguredModel(assembly, 'beta-x').ok).toBe(true)
 
       const catalog = await askCatalog(handle)
       // 选中**未必是表里的某一行**——表说的是「每条连接默认用谁」，选中说的是「此刻用谁」
-      expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'beta-x' })
+      expect(catalog.data.current).toEqual({ alias: 'spell' as const, provider: 'alpha', model: 'beta-x' })
       // （U41 起行里多一位 `baseURL`——见上一条用例的补锚说明）
-      expect(catalog.data.entries).toEqual([
+      expect(catalog.data.entries.map(({ provider, baseURL, keySource }) => ({ provider, baseURL, keySource }))).toEqual([
         // `keySource`（U41 补）：认证的**来处**——两条都在配置里写了 `apiKey`。
         // ⚠️ 给的是来处不是凭据：值一个字符都不出这一层
-        { provider: 'alpha', baseURL: 'https://alpha.example/v1', model: 'alpha-1', keySource: 'config', contextWindow: 195_904 },
-        { provider: 'beta', baseURL: 'https://beta.example/v1', model: 'beta-1', keySource: 'config' },
+        { provider: 'alpha', baseURL: 'https://alpha.example/v1', keySource: 'config' },
+        { provider: 'beta', baseURL: 'https://beta.example/v1', keySource: 'config' },
 
       ])
 
@@ -342,7 +339,7 @@ describe('读数 3 · 模型条目表', () => {
       const catalog = await askCatalog(handle)
 
       expect(catalog.data.entries).toHaveLength(2)
-      expect(catalog.data.current).toEqual({ provider: 'alpha', model: 'alpha-1' })
+      expect(catalog.data.current).toEqual({ alias: 'default' as const, provider: 'alpha', model: 'alpha-1' })
 
       handle.dispose()
       assembly.close()
@@ -393,7 +390,7 @@ describe('读数 3 · 模型条目表', () => {
       const handle = attachShell(assembly.shell)
 
       const catalog = await askCatalog(handle)
-      expect(catalog.data.entries).toEqual([])
+      expect(catalog.data.entries.map(({ provider, baseURL, keySource }) => ({ provider, baseURL, keySource }))).toEqual([])
       expect(catalog.data.note).toContain('注册表')
       expect(catalog.data.current).toBeUndefined()
 
@@ -452,7 +449,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
 
     try {
       const assembly = land.assemble({ modelFetch: endpoint() })
-      const switched = assembly.switchModel({ provider: 'beta' })
+      const switched = assembly.switchModel({ alias: 'cantrip' })
       expect(switched.ok).toBe(true)
 
       expect(tuiOptions(assembly).contextWindow).toBeNull()
@@ -479,3 +476,12 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
     }
   })
 })
+
+/** 能力回归通过真实配置编辑后明确选择；原始型号不进入执行请求。 */
+function chooseConfiguredModel(assembly: Assembly, model: string) {
+  const provider = assembly.models?.current()?.provider
+  if (provider === undefined) throw new Error('没有当前连接')
+  const saved = setModelAlias({ path: assembly.config.path, request: { alias: 'spell', provider, model } })
+  if (!saved.ok) throw new Error(saved.reason)
+  return assembly.switchModel({ alias: 'spell' })
+}

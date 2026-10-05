@@ -35,6 +35,7 @@
  */
 
 import type {
+  CompressionModel,
   Entry,
   EventSink,
   EventStamper,
@@ -63,7 +64,6 @@ import { appendSummaryEntry } from './entries.ts'
  * 原样喂给模型会把「压缩」这一步自己先撑爆。取 4 万字符（中文约合几万 token）——
  * 够装下一条长会话的骨架，又不至于让摘要请求本身撞超限。
  */
-const SUMMARY_INPUT_LIMIT = 40_000
 
 /** 单条工具调用参数的字符上限——参数串是给摘要看「干了什么」，不是给人复现命令。 */
 const SUMMARY_ARGS_LIMIT = 500
@@ -154,6 +154,7 @@ export type CompactorDeps = {
   readonly records: RecordsService
   readonly session: SessionId
   /** 摘要由**同一个网关**生成（同一个模型）——不另开一条接缝，也不引第二个供应商。 */
+  readonly compression?: () => CompressionModel
   readonly gateway: ModelGateway
   /** 模型名——随摘要请求送模型域（与循环同源）。 */
   readonly model: string
@@ -189,6 +190,9 @@ export function createCompactor(deps: CompactorDeps): Compactor {
 
   /** 失败的统一出口——计数、够数就报 `error`（见文件头注）。 */
   function fail(reason: string, counted: boolean): CompactOutcome {
+    deps.sink.emit(deps.stamper.stamp('error', { message: counted
+      ? `上下文压缩未完成：${reason}。原始记录已保留；请检查 /model → 模型档位中的 Cantrip。`
+      : '上下文压缩已取消，原始记录已保留' }))
     if (!counted) return { ok: false, reason, counted: false }
 
     failures += 1
@@ -197,7 +201,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
         deps.stamper.stamp('error', {
           message:
             `上下文压缩连续失败 ${failures} 次：${reason}` +
-            '——本轮不压缩、照常推进（原文一条未动；这条会话迟早会撞上上下文超限）',
+            '。原始记录已保留；原上下文超限时本轮暂不能继续，请调整 Cantrip 后再试。',
         }),
       )
       failures = 0
@@ -239,6 +243,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
       const why = trigger === 'threshold' ? '用量达阈值' : '上下文超限'
 
       try {
+        const selected = deps.compression?.() ?? { gateway: deps.gateway, model: deps.model }
         const all = await readAll()
 
         // 近段＝最后 `nearEntries` 条——**与 `planContext` 同一算术**（那边按「摘要前 K 条」
@@ -249,7 +254,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
           return fail(`${why}，但近段之外没有可压的旧段（共 ${all.length} 条 ≤ 近段边界）`, true)
         }
 
-        const text = await summarize(deps, old, signal)
+        const text = await summarize(deps, old, selected, signal)
         // **拿到正文才落条目**——失败路径上一条都不写（不删原文、不写坏摘要）
         const summary = await appendSummaryEntry(log, text)
 
@@ -278,6 +283,7 @@ export function createCompactor(deps: CompactorDeps): Compactor {
 async function summarize(
   deps: CompactorDeps,
   old: readonly Entry[],
+  selected: CompressionModel,
   signal?: AbortSignal,
 ): Promise<string> {
   const messages: ModelMessage[] = [
@@ -295,8 +301,12 @@ async function summarize(
   //
   // ⚠️ 这一位**不是必给**的：缺省照旧——注册表按「当前选中 / 模型默认」补齐（U41）。
   // 给了它，就等于说「这一跳的思考设置**由本调用方说了算**」。
-  const stream = deps.gateway.stream(
-    { model: deps.model, messages },
+  const estimatedTokens = Math.ceil(new TextEncoder().encode(messages.map(message => 'content' in message ? message.content : message.output).join('\n')).length / 4)
+  if (selected.inputBudget !== undefined && estimatedTokens > selected.inputBudget) {
+    throw new Error(`Cantrip 当前设置的上下文窗口不足以容纳待压缩内容（估算输入 ${estimatedTokens} token，有效上限 ${selected.inputBudget}）${selected.location === undefined ? '' : `；容量配置：${selected.location}`}；请检查该模型容量设置或选择更大窗口的模型，不要超出模型真实能力调大设置`)
+  }
+  const stream = selected.gateway.stream(
+    { model: selected.model, messages },
     { reasoning: { mode: 'off' }, ...(signal === undefined ? {} : { signal }) },
   )
 
@@ -312,8 +322,10 @@ async function summarize(
   const settled = await stream.result
 
   if (signal?.aborted === true) throw new Error('压缩期间被中断')
-  if (failure !== undefined) throw new Error(`摘要生成失败（${failure.tier}）：${failure.message}`)
-  if (settled.complete !== true) throw new Error('摘要生成未走完（流被掐断）')
+  if (failure !== undefined) throw new Error(failure.tier === 'context-limit'
+    ? `Cantrip 所用模型拒绝了这次请求：待压缩内容超过其上下文限制${selected.location === undefined ? '' : `；容量配置：${selected.location}`}；请检查该模型容量设置或选择更大窗口的模型`
+    : text.trim() !== '' && settled.finishReason !== 'stop' ? `摘要生成未走完（流中断）：${failure.message}` : `摘要生成失败（${failure.tier}）：${failure.message}`)
+  if (settled.complete !== true || settled.finishReason !== 'stop') throw new Error('摘要生成未走完（流中断或未正常结束）')
 
   const trimmed = text.trim()
   // 空摘要＝坏摘要：落一条空条目，下一轮装配出来的上下文就是「什么都没有」
@@ -332,24 +344,7 @@ async function summarize(
 async function renderSegment(entries: readonly Entry[], deps: CompactorDeps): Promise<string> {
   const rendered = await Promise.all(entries.map((entry) => renderEntry(entry, deps)))
 
-  // 从**近到远**收，直到篇幅上限——近的比远的要紧（远的那一头，摘要本来也糊）
-  const picked: string[] = []
-  let used = 0
-  let dropped = 0
-
-  for (let index = rendered.length - 1; index >= 0; index -= 1) {
-    const piece = rendered[index] ?? ''
-    if (used + piece.length > SUMMARY_INPUT_LIMIT && picked.length > 0) {
-      dropped = index + 1
-      break
-    }
-    picked.push(piece)
-    used += piece.length
-  }
-
-  picked.reverse()
-  const head = dropped === 0 ? '' : `（更早的 ${dropped} 条未展开——按篇幅上限截取）\n\n`
-  return head + picked.join('\n\n')
+  return rendered.join('\n\n')
 }
 
 /**

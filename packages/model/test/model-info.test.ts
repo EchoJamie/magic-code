@@ -240,7 +240,7 @@ describe('一趟在途 · 失败与冷却', () => {
   test('兼容接入（没 `vendor`）⇒ 没有自动列表能力，不请求也不报错', async () => {
     const counter = { calls: 0 }
     const { service } = stage({
-      connections: [connectionOf({ config: { baseURL: 'https://x/v1', model: 'm' } })],
+      connections: [connectionOf({ config: { baseURL: 'https://x/v1' } })],
       fetch: listFetch(['a'], counter),
     })
 

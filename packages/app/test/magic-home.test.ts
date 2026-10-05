@@ -116,13 +116,9 @@ function plantTree(
   },
 ): string {
   const body = validConfig({
-    defaultProvider: over.provider,
+    modelAliases: {default: {provider: over.provider, model: over.model}, cantrip: {provider: over.provider, model: over.model}, spell: {provider: over.provider, model: over.model}, arcane: {provider: over.provider, model: over.model}},
     providers: {
-      [over.provider]: {
-        baseURL: over.baseURL ?? 'http://127.0.0.1:9/v1',
-        apiKey: 'sk-fake-u42-not-a-real-key',
-        model: over.model,
-      },
+      [over.provider]: { vendor: 'minimax', baseURL: over.baseURL ?? 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
     },
     ...(over.dataDir === undefined ? {} : { dataDir: over.dataDir }),
     ...over.config,
@@ -299,7 +295,7 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       plantTree(room.base, {
         provider: 'fresh',
         model: 'NEW-MODEL',
-        config: { providers: { fresh: { baseURL: 'http://127.0.0.1:9/v1', model: 'NEW-MODEL' } } },
+        config: { providers: { fresh: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1' } } },
       })
 
       const result = await runCli({ room, magic: room.base, args: ['--check'] })
@@ -326,20 +322,21 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
     const room = makeRoom()
     try {
       const config = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', config: {
+        modelAliases: { default: { provider: 'fresh', model: 'NEW-MODEL' }, cantrip: { provider: 'spare', model: 'SPARE-MODEL' } },
         providers: {
-          fresh: { baseURL: 'http://127.0.0.1:9/v1', model: 'NEW-MODEL', apiKey: 'sk-fake-u42-not-a-real-key' },
-          spare: { baseURL: 'http://127.0.0.1:9/v1', model: 'SPARE-MODEL' },
+          fresh: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
+          spare: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1' },
         },
       } })
       const before = snapshot(room.base)
       expect((await runCli({ room, magic: room.base, args: ['--check'] })).exitCode).toBe(0)
-      const missing = await runCli({ room, magic: room.base, args: ['--check', '--provider', 'spare'] })
+      const missing = await runCli({ room, magic: room.base, args: ['--check', '--model', 'cantrip'] })
       expect(missing.exitCode).toBe(1)
       expect(missing.stderr).toContain('供应商「spare」缺 apiKey')
       expect(missing.stderr).toContain(config)
       expect(missing.stderr).toContain('MAGIC_SPARE_API_KEY')
       const key = 'sk-fake-u42-spare-not-a-real-key'
-      const available = await runCli({ room, magic: room.base, args: ['--check', '--provider', 'spare'], env: { MAGIC_SPARE_API_KEY: key } })
+      const available = await runCli({ room, magic: room.base, args: ['--check', '--model', 'cantrip'], env: { MAGIC_SPARE_API_KEY: key } })
       expect(available.exitCode).toBe(0)
       expect(available.stdout).toContain('本次走 spare（SPARE-MODEL）')
       expect(available.stdout + available.stderr).not.toContain(key)

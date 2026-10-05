@@ -82,7 +82,7 @@ export function createPageDistiller(options: PageDistillerOptions): PageDistille
       // 与压缩那一处**同一形制**（见 `compact.ts` 那一段注）。
       //
       // ⚠️ **设置由这里直给，中途没有补齐者**（U99 查清的那一件，与压缩那边不同）：
-      // 本件走的网关是装配按 `webFetch.provider` **单造的** `createModelGateway`
+      // 本件走的网关是装配按 Cantrip 配置 **单造的** `createModelGateway`
       //（`assembly.ts`：不经注册表——那边的 `stream` 会把当前选中盖在 `request.model` 上，
       // 而这件要的恰恰是配置里它自己那一条）。故注册表 `withReasoning` 那条路**一步都不到**，
       // 这一位从 `gateway.ts` 的 `stream` **原样递到取件层**（`ai-sdk.ts` 的 `reasoningOption`

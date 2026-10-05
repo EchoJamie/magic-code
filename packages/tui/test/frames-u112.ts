@@ -136,7 +136,7 @@ function live(
 
 /** 状态行那三张的真源——会话名 / 模型 / 上下文占用 / 工作区都摆上值。 */
 const MODEL_KNOWN: readonly KernelEvent[] = [
-  event('model.call.start', { model: 'MiniMax-M3', provider: 'minimax', inputBudget: 996_000 }, { id: 50 }),
+  event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax', inputBudget: 996_000 }, { id: 50 }),
   event('model.usage', { inputTokens: 3_100, outputTokens: 6 }, { id: 51 }),
 ]
 
@@ -224,8 +224,8 @@ async function main(): Promise<void> {
   config.key({ kind: 'enter' })
   for (const item of [
     event('model.catalog', {
-      entries: [{ provider: 'minimax', name: '个人版', model: 'MiniMax-M3' }],
-      current: { provider: 'minimax', model: 'MiniMax-M3' },
+      entries: [{ provider: 'minimax', name: '个人版', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, }],
+      current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
     }),
     event('grants.catalog', {
       workspace: '/Users/who/code/magic-code',
@@ -280,7 +280,7 @@ async function main(): Promise<void> {
   // 回执与助手正文的分家靠**缩进 ＋ 弱色**：正文顶格、无记号；回执缩一级、最弱那档色。
   const receipt = live('看看这个文件', [
     ...ENOUGH,
-    event('model.switched', { ok: true, model: 'MiniMax-M2', provider: 'minimax' }, { id: 300 }),
+    event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' }, { id: 300 }),
   ])
   await save(out, '15-回执-无记号', receipt.getView())
 
