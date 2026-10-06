@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
-import type { KernelEvent } from '@magic/contracts'
+import type { KernelEvent, RunNotice } from '@magic/contracts'
 import { connectManager } from '../src/run/client.ts'
 import type { ManagerClient } from '../src/run/client.ts'
 import { createProcessLauncher } from '../src/run/launch.ts'
@@ -469,7 +469,7 @@ describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () =>
 })
 
 describe('U48-S4 · 收缩与异常', () => {
-  test('真实模型与工具：中间工具轮不产生 done，最终可查看结果恰好一个 done 事项', async () => {
+  test('真实模型与工具：中间轮无 done，最终事项只交给绑定终端，执行者释放不重复系统通知', async () => {
     const evidence = tempDir('magic-continues-evidence-')
     const marker = 'resident-continues-tool-output'
     const g = ground('attention', 'settled', [
@@ -480,6 +480,8 @@ describe('U48-S4 · 收缩与异常', () => {
     const notices: string[] = []
     const manager = await standUp(g, { notifySystem: (text: string) => notices.push(text) })
     const client = await open(g, manager, '完成事项观察')
+    const terminalNotices: RunNotice[] = []
+    client.onNotice(notice => terminalNotices.push(notice))
     const events: KernelEvent[] = []
     const observations: { event: Extract<KernelEvent, { kind: 'turn.end' }>; attention: ReturnType<typeof attentionFacts> }[] = []
     let pid: number | undefined
@@ -494,6 +496,7 @@ describe('U48-S4 · 收缩与异常', () => {
       pid = manager.executors()[0]?.pid
       expect(observations[0]?.event.data).toEqual({ reason: 'settled', continues: true })
       expect(observations[0]?.attention).toEqual([])
+      expect(terminalNotices).toEqual([])
       expect(notices).toEqual([])
       const tools = events.filter((event) => event.kind === 'tool.result')
       expect(tools).toHaveLength(1)
@@ -502,7 +505,7 @@ describe('U48-S4 · 收缩与异常', () => {
       expect(pid).toBeDefined()
       expect(alive(pid!)).toBe(true)
 
-      await waitFor('最终结果落地并释放执行者', () => observations.length === 2 && manager.executors().length === 0)
+      await waitFor('最终事项送达绑定终端并释放执行者', () => observations.length === 2 && terminalNotices.length === 1 && manager.executors().length === 0 && client.gen() === null)
       expect(observations.map((one) => one.event.data)).toEqual([
         { reason: 'settled', continues: true }, { reason: 'settled' },
       ])
@@ -510,14 +513,17 @@ describe('U48-S4 · 收缩与异常', () => {
       const attention = attentionFacts(g.dataDir, g.ws)
       expect(attention).toHaveLength(1)
       expect(attention[0]).toMatchObject({ session: final.session, fact: String(final.id), kind: 'done', unread: true, delivered: false })
-      expect(notices).toEqual(['有一件工作跑完了一轮——打开看是哪条'])
+      expect(terminalNotices).toEqual([...attention])
+      expect(notices).toEqual([])
+      expect(client.closed).toBe(false)
+      expect(client.gen()).toBeNull()
       const requests = g.fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))
       expect(requests).toHaveLength(2)
       expect(JSON.stringify(requests[1]?.body.messages)).toContain(marker)
       expect(alive(pid!)).toBe(false)
       passed = true
     } finally {
-      writeFileSync(join(evidence, 'trace.json'), JSON.stringify({ passed, sandbox: g.root, pid, events, observations, requests: g.fixture.requests(), notices, runs: manager.runs() }, null, 2))
+      writeFileSync(join(evidence, 'trace.json'), JSON.stringify({ passed, sandbox: g.root, pid, events, observations, requests: g.fixture.requests(), notices, terminalNotices, runs: manager.runs() }, null, 2))
       client.close()
       manager.stop('测试宿主退出')
       await manager.waitUntilExit()

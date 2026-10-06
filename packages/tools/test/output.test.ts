@@ -142,7 +142,7 @@ describe('U06 · 流式与终值', () => {
 
 describe('U06 · 没跑成（错误＝返回值）', () => {
   test('cwd 越界 / 启动失败 → 同样归返回值，reason 原样带出', async () => {
-    for (const reason of ['out-of-bounds', 'spawn'] as const) {
+    for (const reason of ['spawn'] as const) {
       const deps = makeToolDeps({
         exec: { x: { ok: false, reason, message: `沙箱侧报文（${reason}）` } },
       })

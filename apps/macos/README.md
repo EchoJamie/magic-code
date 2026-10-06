@@ -28,7 +28,7 @@ bash scripts/macos/verify.sh
 - 请求退出后等待匹配的 `host.stopped` 与管理者成功退出，才向 AppKit 确认完成。失败/超时保留同一个 shutdown request，重试不会重启宿主或重开准入。无确认而进程已死时保留故障，不伪造成功。AppKit 模态等待期间的回执用对应主 RunLoop mode 投递。
 - 状态栏只展示投影。展开详情、终端接回、单项停止均有明确目标；面板交互期间分组顺序稳定，最近结果限制 10 项。退出确认列出 `affected` 影响工作，取消为回车默认动作。
 - 缺省是菜单栏形态（`LSUIElement` ＋ `.accessory`：没有 Dock 图标、不进 Cmd+Tab）。**长期窗口**（设置窗口、通知/事项定位窗口）在屏上时切 `.regular`——Dock 里有图标、Cmd+Tab 切得到、被盖住也找得回来；长期窗口全部关掉就回 `.accessory`。**点菜单栏展开的那块瞬时面板不算长期窗口**，不为它切策略。策略只在 `LongLivedWindows` 一处改，判定盯的是窗口的 `isVisible` 本身（AppKit 没有「被 order out」这条通知，而关掉设置窗口走的正是 order out——只盯 `didBecomeKey` 会让 Dock 图标留在那儿下不来）。
-- 终端启动通过私有 `.command` 文件和 NSWorkspace 打开 Terminal.app；现有会话传 `--session ID --open-request UUID`，新草稿只传 open request。应用打开回调只证明启动请求，匹配 `native.attached` 才确认接入。
+- 已有工作在列表、详情和通知工作页展示／复制 `magic resume ID` 接回命令，复制只反馈“已复制”，不启动终端。命令固定原工作区与数据实例，使用本 App 安装的 magic 链接；未安装时使用包内 helper 的绝对路径。新草稿仍通过私有 `.command` 文件和 NSWorkspace 打开 Terminal.app，只传 open request；匹配 `native.attached` 才确认新草稿终端接入。
 - 通知默认关闭。设置中显式启用才申请权限；两秒合并、按事项去重、送达/已读分离。未 ready 的点击意图保留到同一 App 就绪，之后核对 dataDir 并 inspect 实际事项。多个事项进入选择窗口。
 - 设置提供登录启动、通知授权状态、自定义基础目录、CLI 符号链接与卸载集成。基础路径下追加 `.magic`；切换数据目录必须无在途影响并先停止旧宿主。安装冲突不覆写，卸载只删除归本 App 所有的链接，用户记录保留。
 
@@ -56,4 +56,4 @@ Release 脚本执行 helper/App 签名、公证装订、DMG 公证装订与 Gate
 
 ## 独立系统验收装置
 
-`verify-terminal.py --prepare/--run` 独立执行真实 Terminal.app 接入；默认 build/check/verify 不开终端。`system-test.py prepare/read-only` 创建独立签名 Debug bundle、包内固定隔离根、默认禁止通知/登录写操作。系统权限/发送/注册只能在独立授权后通过 capability 门启用生产设置入口；具体有界步骤与恢复见 [SYSTEM_TEST_PLAN.md](SYSTEM_TEST_PLAN.md)。真实系统动作不纳入默认检查。
+`verify-terminal.py --prepare/--run` 独立检查新草稿的真实 Terminal.app 接入与已有工作的命令展示（不打开终端）；默认 build/check/verify 不开终端。`system-test.py prepare/read-only` 创建独立签名 Debug bundle、包内固定隔离根、默认禁止通知/登录写操作。系统权限/发送/注册只能在独立授权后通过 capability 门启用生产设置入口；具体有界步骤与恢复见 [SYSTEM_TEST_PLAN.md](SYSTEM_TEST_PLAN.md)。真实系统动作不纳入默认检查。

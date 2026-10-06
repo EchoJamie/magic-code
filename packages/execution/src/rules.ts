@@ -1072,6 +1072,7 @@ function placeTarget(
   try {
     const resolved = workspace.resolve(raw)
     absolute = resolved.absolute
+    if (resolved.root === undefined) return undefined
     root = resolved.root
   } catch {
     return undefined

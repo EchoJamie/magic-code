@@ -13,9 +13,8 @@
  * 4. **执行者不理会**——有界等待 → TERM → KILL → 等退出；
  * 5. **崩溃后收回自有进程组**——只碰证明得了归属的（同族的外人不碰、PID 重用不误杀）；
  * 6. **通知**——三类转换 · 跨窗口去重 · 不播报还在跑 · 无人连接时系统通知 ＋ 未读汇总；
- *    另加 **U79**：`needs-you` 不回执、不广播；TUI 连接不证明焦点，
- *    三类均留事项。另加 **U86**：`failed` 这一档**同一把尺子**
- *    （U74 → U79 → U86 三类走齐，D38 的最后一格）。
+ *    2026-10-07 第 4 项：按具体会话连接路由，三类事项发给绑定终端并抑制系统通知；
+ *    其它会话与无人连接的工作仍通知。连接和事项送达不代替明确的已读确认。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -550,16 +549,16 @@ describe('U50 · 崩溃与收回自有进程组', () => {
 })
 
 describe('U50 · 通知', () => {
-  test('TUI 连接不证明焦点：三类留未读且各通知一次，进展不通知，同事实重放不重复', async () => {
+  test('同会话两窗口各收三类事项一次，系统不重复通知；进展不通知，重放不重复落账', async () => {
     const g = ground('notice')
     seed(g, ['s-7'])
     const said: string[] = []
     const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
     const one = await open(g, b.manager)
     const two = await open(g, b.manager)
-    const got: RunNotice[] = []
-    one.onNotice((notice) => got.push(notice))
-    two.onNotice((notice) => got.push(notice))
+    const got: [RunNotice[], RunNotice[]] = [[], []]
+    one.onNotice((notice) => got[0].push(notice))
+    two.onNotice((notice) => got[1].push(notice))
     try {
       one.send({ type: 'session.open', session: 's-7' })
       one.send({ type: 'input.submit', text: '受控执行者测试输入' })
@@ -579,7 +578,7 @@ describe('U50 · 通知', () => {
       expect(attentionFacts(g.dataDir, g.ws)).toEqual([])
 
       fake.emit('tool.decision.request', { call, name: 'bash', material: '受控待答', weight: 'heavy' }, 's-7')
-      await waitFor('需要你通知', () => said.length === 1)
+      await waitFor('两个绑定窗口均收到待答事项', () => got.every(notices => notices.length === 1))
       await waitFor('待答投影已推送', () => rowOf(one, 's-7')?.action === '等你定夺：bash')
       fake.emit('tool.decision', { call, decision: 'approve', decider: 'user', elapsedMs: 5 }, 's-7')
       fake.emit('tool.result', { call, ok: true, output: { text: 'ok' } }, 's-7')
@@ -587,7 +586,8 @@ describe('U50 · 通知', () => {
       fake.emit('turn.end', { reason: 'settled', continues: true }, 's-7', intermediateAt)
       await waitFor('中间工具轮已消费', () => rowOf(one, 's-7')?.lastTurnAt === intermediateAt)
       expect(attentionFacts(g.dataDir, g.ws).map((item) => item.kind)).toEqual(['needs-you'])
-      expect(said).toEqual(['有一件工作正等着你——打开看是哪条'])
+      expect(said).toEqual([])
+      expect(got.map(notices => notices.map(notice => notice.kind))).toEqual([['needs-you'], ['needs-you']])
       fake.emit('turn.start', {}, 's-7')
       const done = fake.emit('turn.end', { reason: 'settled' }, 's-7')
       // 重放同一 id 才是同一记录事实；不同 id 是另一事项，不能用它冒充去重证据。
@@ -595,12 +595,16 @@ describe('U50 · 通知', () => {
       fake.emit('turn.start', {}, 's-7')
       fake.emit('turn.end', { reason: 'error' }, 's-7')
       await waitFor('三类都落地', () => attentionFacts(g.dataDir, g.ws).length === 3)
-      expect(said).toEqual([
-        '有一件工作正等着你——打开看是哪条',
-        '有一件工作跑完了一轮——打开看是哪条',
-        '有一件工作出错了——打开看是哪条',
-      ])
-      expect(got).toEqual([]) // 通知不广播进对话正文。
+      await waitFor('两个绑定窗口均收到三类事项', () => got.every(notices => notices.length === 3))
+      expect(said).toEqual([])
+      const facts = attentionFacts(g.dataDir, g.ws)
+      expect(facts.every(item => item.delivered === false)).toBe(true)
+      for (const notices of got) {
+        expect(notices.map(notice => notice.kind)).toEqual(['needs-you', 'done', 'failed'])
+        expect(new Set(notices.map(notice => notice.id)).size).toBe(3)
+        expect(notices.every(notice => notice.session === 's-7' && notice.unread)).toBe(true)
+        expect(notices).toEqual(expect.arrayContaining([...facts]))
+      }
       const back = await open(g, b.manager)
       expect(back.unread.map((one) => one.kind).sort()).toEqual(['done', 'failed', 'needs-you'])
       back.close()
@@ -639,7 +643,7 @@ describe('U50 · 通知', () => {
       fakeB.ready('s-b')
       await waitFor('B 开张', () => rowOf(aPage, 's-b') !== undefined)
       bPage.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 1)
 
       // 跑完那一轮——**A 页开着，可没人看着 s-b**
       fakeB.emit('turn.start', {}, 's-b')
@@ -679,7 +683,7 @@ describe('U50 · 通知', () => {
       fake.ready('s-8')
       await waitFor('开张', () => rowOf(first, 's-8') !== undefined)
       first.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 0)
 
       // 跑完那一轮——**没有任何窗口在场**
       fake.emit('turn.start', {}, 's-8')
@@ -716,9 +720,9 @@ describe('U50 · 通知', () => {
   }, 30_000)
 })
 
-/** U79：待答留在会话中，连接不抑制系统通知、不隐式确认事项。 */
-describe('U79 · 通知：「需要你」不回执、不广播', () => {
-  test('TUI 连着待答会话：不广播回执，仍发通知并保留未读', async () => {
+/** 待答事项只送给绑定的终端；连接抑制系统提醒，但不隐式确认已读。 */
+describe('U79 · 通知：「需要你」按会话路由', () => {
+  test('TUI 连着待答会话：收到具体事项，抑制系统通知并保留未读', async () => {
     const g = ground('u79-watched')
     seed(g, ['s-w'])
     const said: string[] = []
@@ -744,11 +748,12 @@ describe('U79 · 通知：「需要你」不回执、不广播', () => {
 
       // 那件事**没丢**——它落在**这条会话自己**那一行上（卡就在正看着它的那一页上）
       await waitFor('那一行写着「等你定夺」', () => rowOf(page, 's-w')?.action === '等你定夺：bash')
-      await Bun.sleep(150)
-
-      expect(got).toEqual([]) // ① 回执：一条都没有（更不广播给别的窗口）
-      expect(said).toEqual(['有一件工作正等着你——打开看是哪条'])
-      // ③ 仅连接不证明焦点，后来的窗口仍读到同一待答事项。
+      await waitFor('绑定终端收到具体待答事项', () => got.length === 1)
+      expect(got[0]).toMatchObject({ session: 's-w', kind: 'needs-you', detail: 'bash', unread: true })
+      expect(attentionFacts(g.dataDir, g.ws)[0]?.delivered).toBe(false)
+      expect(got).toEqual([...attentionFacts(g.dataDir, g.ws)])
+      expect(said).toEqual([])
+      // 终端连接和收到事项不等于已展示；后来的握手仍取得同一未读事项。
       const back = await open(g, b.manager)
       expect(back.unread.map((one) => one.kind)).toEqual(['needs-you'])
       expect(back.unread[0]?.unread).toBe(true)
@@ -790,7 +795,7 @@ describe('U79 · 通知：「需要你」不回执、不广播', () => {
       fakeB.ready('s-b')
       await waitFor('B 开张', () => rowOf(aPage, 's-b') !== undefined)
       bPage.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 1)
 
       fakeB.emit(
         'tool.decision.request',
@@ -845,7 +850,7 @@ describe('U79 · 通知：「需要你」不回执、不广播', () => {
       fake.ready('s-n')
       await waitFor('开张', () => rowOf(first, 's-n') !== undefined)
       first.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 0)
 
       fake.emit(
         'tool.decision.request',
@@ -903,7 +908,7 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       fakeB.ready('s-b')
       await waitFor('B 开张', () => rowOf(aPage, 's-b') !== undefined)
       bPage.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 1)
 
       // 那一轮出错了——**A 页开着，可没人看着 s-b**
       fakeB.emit('turn.start', {}, 's-b')
@@ -947,14 +952,14 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
    * 病是**还有一档偷偷按旧尺子**：下面两张小表一正一反，**逐类写死**——
    * 谁把某一档退回「有没有窗口连着」，当场红。
    */
-  test('三类同一把尺子：有 TUI 连接或无连接，均按具体事项各通知一次', async () => {
+  test('三类同一把尺子：绑定终端收事项，无连接时才发系统通知，两者均保留未读', async () => {
     const g = ground('u86-same-ruler')
     seed(g, ['s-w', 's-n'])
     const said: string[] = []
     const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
 
     try {
-      // 有 TUI 连接：缺少可靠焦点证据，三类均留事项并通知。
+      // 绑定终端接收三类事项，系统端口不重复提醒，收到事项不自动标读。
       const page = await open(g, b.manager)
       const got: RunNotice[] = []
       page.onNotice((notice) => got.push(notice))
@@ -975,21 +980,20 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       fake.emit('turn.end', { reason: 'settled' }, 's-w')
       fake.emit('turn.start', {}, 's-w')
       fake.emit('turn.end', { reason: 'error' }, 's-w')
-      await Bun.sleep(200)
-
-      expect(got).toEqual([]) // 三类一条都没落到窗口上
-      expect(said).toEqual([
-        '有一件工作正等着你——打开看是哪条',
-        '有一件工作跑完了一轮——打开看是哪条',
-        '有一件工作出错了——打开看是哪条',
-      ])
+      await waitFor('绑定终端收齐三类事项', () => got.length === 3)
+      expect(got.map(notice => notice.kind)).toEqual(['needs-you', 'done', 'failed'])
+      expect(got.every(notice => notice.session === 's-w' && notice.unread)).toBe(true)
+      expect(attentionFacts(g.dataDir, g.ws)).toHaveLength(3)
+      expect(attentionFacts(g.dataDir, g.ws).every(item => item.delivered === false)).toBe(true)
+      expect(got).toEqual(expect.arrayContaining([...attentionFacts(g.dataDir, g.ws)]))
+      expect(said).toEqual([])
       const back = await open(g, b.manager)
       expect(back.unread.map((one) => one.kind).sort()).toEqual(['done', 'failed', 'needs-you'])
       back.close()
 
       // —— **反**：一个人都没看着 s-n ⇒ 三类各弹一条、**逐字**（词表三类不能互借）——
       page.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 0)
 
       const fresh = await open(g, b.manager)
       fresh.send({ type: 'session.open', session: 's-n' })
@@ -999,10 +1003,12 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       fakeN.ready('s-n')
       await waitFor('s-n 开张', () => rowOf(fresh, 's-n') !== undefined)
       fresh.close()
-      await Bun.sleep(80)
+      await waitFor('管理者已移除关闭的终端连接', () => b.manager.clients() === 0)
 
       fakeN.emit('turn.start', {}, 's-n')
-      fakeN.emit('turn.end', { reason: 'settled' }, 's-n')
+      const doneN = fakeN.emit('turn.end', { reason: 'settled' }, 's-n')
+      // 无连接时同一事实重放也不能重复系统通知或落账。
+      fakeN.send({ t: 'ev', event: { id: doneN, session: 's-n', turn: null, at: Date.now(), kind: 'turn.end', data: { reason: 'settled' } } as KernelEvent })
       fakeN.emit(
         'tool.decision.request',
         { call: 2, name: 'bash', material: 'rm -rf build', weight: 'heavy' },
@@ -1010,10 +1016,10 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       )
       fakeN.emit('turn.start', {}, 's-n')
       fakeN.emit('turn.end', { reason: 'error' }, 's-n')
-      await waitFor('两会话六条都弹了', () => said.length === 6)
+      await waitFor('无连接会话三类系统通知已送出', () => said.length === 3)
 
       // **逐类写死**（不排序、不概括：一改就得当场看见是哪一类变了）
-      expect(said.slice(3)).toEqual([
+      expect(said).toEqual([
         '有一件工作跑完了一轮——打开看是哪条',
         '有一件工作正等着你——打开看是哪条',
         '有一件工作出错了——打开看是哪条',

@@ -323,7 +323,7 @@ describe('U36 · 链接绕出去：候选不列、load 不给当「里头的」�
       // 也不许列——那一支专门挡「借工作区里的链接往外浏览」
       const borrowed = await materials.candidates('link/nothing-here', 30)
       expect(borrowed.rows).toEqual([])
-      expect(borrowed.note).toContain('符号链接')
+      expect(borrowed.note).toContain('工作区外')
     } finally {
       sand.dispose()
     }

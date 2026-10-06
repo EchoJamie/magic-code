@@ -65,8 +65,9 @@ struct NativeWork: Codable, Equatable, Identifiable {
     let gen: Int?
     let affected: Bool
     let notices: [AttentionItem]
+    let terminalNoticeIds: [String]?
     let members: [NativeMember]?
-    private enum Keys: String, CodingKey { case session, title, workspace, state, action, reason, since, gen, affected, notices, members }
+    private enum Keys: String, CodingKey { case session, title, workspace, state, action, reason, since, gen, affected, notices, terminalNoticeIds, members }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         session = try c.decode(String.self, forKey: .session)
@@ -79,6 +80,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
         gen = try c.decode(Int?.self, forKey: .gen)
         affected = try c.decode(Bool.self, forKey: .affected)
         notices = try c.decode([AttentionItem].self, forKey: .notices)
+        terminalNoticeIds = try c.decodeOptional([String].self, forKey: .terminalNoticeIds)
         members = try c.decodeOptional([NativeMember].self, forKey: .members)
     }
     func encode(to encoder: Encoder) throws {
@@ -93,6 +95,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
         try c.encode(gen, forKey: .gen)
         try c.encode(affected, forKey: .affected)
         try c.encode(notices, forKey: .notices)
+        try c.encodeIfPresent(terminalNoticeIds, forKey: .terminalNoticeIds)
         try c.encodeIfPresent(members, forKey: .members)
     }
     var id: String { session }

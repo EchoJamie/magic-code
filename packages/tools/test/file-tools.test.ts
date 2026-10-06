@@ -29,21 +29,21 @@ function row(name: string): (typeof TOOLSET_V1)[number] {
 describe('U13 · read', () => {
   test('走通：调沙箱 read(path)，内容原样回给模型', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'src/a.ts': 'export const a = 1\n' } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/src/a.ts': 'export const a = 1\n' } }),
     })
 
-    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: 'src/a.ts' } }, {})
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/src/a.ts' } }, {})
 
     // 不带上限——缺省由沙箱定（`opts` 原样记：没给就是没给，桩不改写成缺省值）
-    expect(sandbox.reads).toEqual([{ path: 'src/a.ts', opts: undefined }])
+    expect(sandbox.reads).toEqual([{ path: '/work/proj/src/a.ts', opts: undefined }])
     expect(result.ok).toBe(true)
     expect(result.output).toBe('export const a = 1\n')
   })
 
   test('空文件明说（空输出会被当成失败）', async () => {
-    const { runtime } = makeToolDeps({ sandbox: makeFauxSandbox({ files: { 'empty.txt': '' } }) })
+    const { runtime } = makeToolDeps({ sandbox: makeFauxSandbox({ files: { '/work/proj/empty.txt': '' } }) })
 
-    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: 'empty.txt' } }, {})
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/empty.txt' } }, {})
 
     expect(result.ok).toBe(true)
     expect(result.output).toBe('[文件为空]')
@@ -56,7 +56,7 @@ describe('U13 · read', () => {
     }
     const { runtime } = makeToolDeps({ sandbox: truncated })
 
-    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: 'big.txt' } }, {})
+    const result = await runtime.invoke({ id: 'c1', name: 'read', args: { path: '/work/proj/big.txt' } }, {})
 
     expect(result.output).toBe('abc\n[已截断——文件超长，只读到前一段]')
   })
@@ -110,25 +110,25 @@ describe('U13 · write', () => {
     const { runtime, sandbox } = makeToolDeps()
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'write', args: { path: 'out.txt', content: '内容\n' } },
+      { id: 'c1', name: 'write', args: { path: '/work/proj/out.txt', content: '内容\n' } },
       {},
     )
 
-    expect(sandbox.writes).toEqual([{ path: 'out.txt', data: { text: '内容\n' } }])
+    expect(sandbox.writes).toEqual([{ path: '/work/proj/out.txt', data: { text: '内容\n' } }])
     expect(result.ok).toBe(true)
-    expect(result.output).toBe('已写入 out.txt（7 字节）') // 3 + 3 + 1
+    expect(result.output).toBe('已写入 /work/proj/out.txt（7 字节）') // 3 + 3 + 1
   })
 
   test('空串内容合法——写一个空文件（判据是「是不是串」，不是「非空」）', async () => {
     const { runtime, sandbox } = makeToolDeps()
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'write', args: { path: 'blank.txt', content: '' } },
+      { id: 'c1', name: 'write', args: { path: '/work/proj/blank.txt', content: '' } },
       {},
     )
 
     expect(result.ok).toBe(true)
-    expect(sandbox.writes).toEqual([{ path: 'blank.txt', data: { text: '' } }])
+    expect(sandbox.writes).toEqual([{ path: '/work/proj/blank.txt', data: { text: '' } }])
   })
 
   test('沙箱失败（如上级目录不存在）→ ok:false ＋ 那一句原样带出（指引一个字不少）', async () => {
@@ -190,28 +190,28 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
 
   test('唯一定位：读 → 改 → 写回，只动那一处', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': ORIGINAL } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': ORIGINAL } }),
     })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'const b = 2', new: 'const b = 22' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: 'const b = 2', new: 'const b = 22' } },
       {},
     )
 
     expect(result.ok).toBe(true)
-    expect(result.output).toBe('已替换 1 处（a.ts）')
+    expect(result.output).toBe('已替换 1 处（/work/proj/a.ts）')
     expect(sandbox.writes).toEqual([
-      { path: 'a.ts', data: { text: 'const a = 1\nconst b = 22\nconst c = 3\n' } },
+      { path: '/work/proj/a.ts', data: { text: 'const a = 1\nconst b = 22\nconst c = 3\n' } },
     ])
   })
 
   test('失配即报：old 不在文件里 → ok:false，**一个字都不写**', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': ORIGINAL } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': ORIGINAL } }),
     })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'const z = 9', new: 'x' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: 'const z = 9', new: 'x' } },
       {},
     )
 
@@ -222,11 +222,11 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
 
   test('多处出现 → ok:false（报出几处），**一个字都不写**', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': 'const a = 1\nconst a = 1\nconst a = 1\n' } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': 'const a = 1\nconst a = 1\nconst a = 1\n' } }),
     })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'const a = 1', new: 'const a = 2' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: 'const a = 1', new: 'const a = 2' } },
       {},
     )
 
@@ -237,15 +237,15 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
 
   test('读时**放大上限**（1 MiB）——`edit` 的「读 → 改 → 写回」靠它，别按缺省 64 KiB 读', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': ORIGINAL } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': ORIGINAL } }),
     })
 
     await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'const c = 3', new: 'const c = 33' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: 'const c = 3', new: 'const c = 33' } },
       {},
     )
 
-    expect(sandbox.reads).toEqual([{ path: 'a.ts', opts: { maxBytes: EDIT_MAX_READ_BYTES } }])
+    expect(sandbox.reads).toEqual([{ path: '/work/proj/a.ts', opts: { maxBytes: EDIT_MAX_READ_BYTES } }])
   })
 
   test('放大后**仍**超限 → 拒绝编辑并指出出口（否则写回即抹掉尾巴）', async () => {
@@ -269,38 +269,38 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
 
   test('替换串里的 $& / $\' 是字面量，不是替换模式（`String.replace` 的坑）', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': 'const a = 1\n' } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': 'const a = 1\n' } }),
     })
 
     await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: '1', new: '$&$&' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: '1', new: '$&$&' } },
       {},
     )
 
-    expect(sandbox.writes).toEqual([{ path: 'a.ts', data: { text: 'const a = $&$&\n' } }])
+    expect(sandbox.writes).toEqual([{ path: '/work/proj/a.ts', data: { text: 'const a = $&$&\n' } }])
   })
 
   test('new 为空串＝删除该段（合法）', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': 'keep\n删掉这行\nkeep\n' } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': 'keep\n删掉这行\nkeep\n' } }),
     })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: '删掉这行\n', new: '' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: '删掉这行\n', new: '' } },
       {},
     )
 
     expect(result.ok).toBe(true)
-    expect(sandbox.writes).toEqual([{ path: 'a.ts', data: { text: 'keep\nkeep\n' } }])
+    expect(sandbox.writes).toEqual([{ path: '/work/proj/a.ts', data: { text: 'keep\nkeep\n' } }])
   })
 
   test('old 与 new 相同 → 无可改，不写一遍骗一次「已替换」', async () => {
     const { runtime, sandbox } = makeToolDeps({
-      sandbox: makeFauxSandbox({ files: { 'a.ts': ORIGINAL } }),
+      sandbox: makeFauxSandbox({ files: { '/work/proj/a.ts': ORIGINAL } }),
     })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'const a = 1', new: 'const a = 1' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: 'const a = 1', new: 'const a = 1' } },
       {},
     )
 
@@ -321,7 +321,7 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
     const { runtime } = makeToolDeps({ sandbox: failing })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: 'x', new: 'y' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: 'x', new: 'y' } },
       {},
     )
 
@@ -334,13 +334,13 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
     const { runtime, sandbox } = makeToolDeps()
 
     const noOld = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'a.ts', old: '', new: 'y' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/a.ts', old: '', new: 'y' } },
       {},
     )
     expect(noOld.output).toBe('参数错误：old 须为非空字符串')
 
     const noNew = await runtime.invoke(
-      { id: 'c2', name: 'edit', args: { path: 'a.ts', old: 'x' } },
+      { id: 'c2', name: 'edit', args: { path: '/work/proj/a.ts', old: 'x' } },
       {},
     )
     expect(noNew.output).toBe('参数错误：new 须为字符串')
@@ -359,10 +359,10 @@ describe('U13 · edit —— 唯一定位 · 失配即报', () => {
 
   test('大文件不因阈值而分叉：写回走沙箱，与转存阈值无关', async () => {
     const big = `head\n${'x'.repeat(BLOB_THRESHOLD_BYTES)}\ntail\n`
-    const { runtime, sandbox } = makeToolDeps({ sandbox: makeFauxSandbox({ files: { 'big.txt': big } }) })
+    const { runtime, sandbox } = makeToolDeps({ sandbox: makeFauxSandbox({ files: { '/work/proj/big.txt': big } }) })
 
     const result = await runtime.invoke(
-      { id: 'c1', name: 'edit', args: { path: 'big.txt', old: 'tail', new: 'TAIL' } },
+      { id: 'c1', name: 'edit', args: { path: '/work/proj/big.txt', old: 'tail', new: 'TAIL' } },
       {},
     )
 

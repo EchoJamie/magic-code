@@ -38,16 +38,8 @@ const COPY = {
   // ⚠️ U61 改过这一句（多了 `← 退`）——按上面注 3 那条，字面量锚跟着改，
   //    它红的正是时候：这一句是「抽屉真开了」的判据，提示一变就得有人来看一眼。
   pickerHint: '↑↓ 选择 · Enter 选定 · ← / Esc 返回',
-  /**
-   * 裁决卡的右位键位（**重的那一档**）。
-   *
-   * ⚠️ **原锚**：`y / a / n`（轻件那一档）；**为何变**（U76）：判轻的调用**默认通**、
-   * 根本不弹卡——**屏上再没有一张轻卡可等**（`HINT_DECIDE_LIGHT` 那一档就此无从出现），
-   * 而这两个场景要的正是「有卡」那一形，夹具只能换成**名单里**的命令（删除），
-   * 于是卡落在**重**那一档；**新锚**：`y / n`（＝`HINT_DECIDE_HEAVY`，与
-   * `HINT_DECIDE_LIGHT` 一样**没出包**，按字面量锚，先例见文件头注 3）。
-   */
-  decideHint: 'y / n',
+  // 到达直接显示，无预选；方向键选定后 Enter 答复。
+  decideHint: '↑↓ 选择 · Enter 确认',
   approval: '批准',
 } as const
 
@@ -351,31 +343,30 @@ const modelStreamApproval: Scenario = {
 
     await session.send('跑一下')
     await session.wait({ text: '› 跑一下' })
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' } })
-    await session.key('ctrl+g', {until:{text:COPY.decideHint}})
+    await session.key('enter', { until: { text: COPY.decideHint } })
     const deciding = await session.capture({ label: '裁决接管' })
     ui.check(deciding.text.includes('exec'), '裁决卡点名了要调用的工具', '')
     ui.check(deciding.text.includes('echo hello-magic'), '裁决卡给了实际业务参数', '')
     ui.check(deciding.text.includes(COPY.approval), '裁决卡给了键位与后果', `锚＝「${COPY.approval}」`)
     // ⚠️ **卡的口径跟着夹具变**（U76）：问的由头是名单里那一条 ⇒ 这一张落在**重**档——
-    // 副题说「不可逆」，键位那行三格俱全（`a` 划掉＝必闸类不给「总是允许」）。
+    // 材料说清不可逆影响，动作只提供本次批准和拒绝。
     ui.check(
-      deciding.text.includes('exec · 不可逆'),
+      deciding.text.includes('不可逆') && deciding.text.includes('此操作需要你明确授权'),
       '裁决卡说的是重档口径（不可逆）',
-      '锚＝卡的副题「│ exec · 不可逆」',
+      '材料给出不可逆影响，卡片要求明确授权',
     )
     ui.check(
-      deciding.text.includes('本工作区总是允许'),
-      '键位那行给全了三格（`a` 那一格划掉——必闸类不给「总是允许」）',
-      '锚＝键位行「y 批准　a 本工作区总是允许　n 拒绝」',
+      !deciding.text.includes('本工作区总是允许') && deciding.text.includes('○ 批准这一次') && deciding.text.includes('○ 拒绝这一次'),
+      '必闸类只提供本次批准和拒绝，不提供总是允许',
+      '动作无预选，方向键选择后 Enter 确认',
     )
 
     // —— 批准 → 真执行 → 再回模型 ——
-    // 敲的是 `y` 这个**字符**——PTY 上一次按键本来就是它，故走 `send`（`key` 只收功能键）。
+    // 明确选中批准，再按 Enter；不重放答复。
     // ⚠️ 这一下**绝不能重发**：批准不幂等，重放下去就是**误批下一条**（首轮验收点名的坑）。
     // ⚠️ 等的**不是** `hello-magic` 那串字（审批卡上就有它，见 `TOOL_DONE` 的注）——
     // 等的是那一位落定：`✓`（U112 起在头一行行尾），它只在工具跑完之后才上屏。
-    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
+    await session.key('down'); await session.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await session.capture({ label: '工具跑完' })
     ui.check(
       hasToolDone(ran.lines, 'hello-magic'),
@@ -468,21 +459,20 @@ const mcpApproval: Scenario = {
     // —— 交代 → 第一张审批卡 ——
     await session.send('用外部工具回显一句')
     await session.wait({ text: '› 用外部工具回显一句' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' } })
-    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
+    await session.key('enter', { until: { text: COPY.decideHint } })
     const card = await session.capture({ label: '外部审批卡' })
 
     ui.check(card.text.includes('fake / echo'), '审批卡点名「服务器 / 工具」', '原锚＝注册表的身份（名字含服务器）')
     ui.check(
-      card.text.includes('外部操作 · 效果由服务器决定'),
+      card.text.includes('外部操作，效果由服务器决定'),
       '审批卡说的是外部口径（不说可逆 / 不可逆）',
       '锚＝交互约束给的那一句原话',
     )
     ui.check(card.text.includes('第一次外部调用'), '审批卡给了实际业务参数', '')
-    ui.check(card.text.includes('y 批准这一次'), '只给「批准这一次」', '')
-    ui.check(card.text.includes('n 拒绝'), '给了「拒绝」', '')
+    ui.check(card.text.includes('○ 批准这一次'), '只给「批准这一次」', '')
+    ui.check(card.text.includes('○ 拒绝这一次'), '给了「拒绝」', '')
     ui.check(
-      !/(^|\s)y 批准(\s|　|$)/u.test(card.text.replace('y 批准这一次', '')),
+      !card.text.includes('总是允许'),
       '没有「总是允许」以外的宽放行（外部件只有这一次）',
       '锚＝卡片正文里不再出现另一处「批准」',
     )
@@ -490,8 +480,8 @@ const mcpApproval: Scenario = {
     ui.check(mcpCalls(log).length === 0, '卡还挂着时服务器零调用', `日志 ${mcpCalls(log).length} 行`)
 
     // —— 批准第一件 ——
-    // 敲的是 `y` 这个**字符**（PTY 上按键本来就是它）；⚠️ 绝不能重发：批准不幂等。
-    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    // 明确选中本次批准后 Enter，答复不重放。
+    await session.key('down'); await session.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
     const approved = await session.capture({ label: '第一次批准后' })
     ui.check(
       hasToolDone(approved.lines, '第一次外部调用'),
@@ -501,15 +491,14 @@ const mcpApproval: Scenario = {
     ui.check(mcpCalls(log).length === 1, '服务器自己数到了那一次调用', `日志 ${mcpCalls(log).length} 行`)
 
     // —— 第二件：**拒绝** ——
-    await session.wait({text:'Ctrl+G 审阅'}, {timeoutMs:15_000})
-    await session.key('ctrl+g',{until:{text:'y 批准这一次'}})
+    await session.wait({text:COPY.decideHint}, {timeoutMs:15_000})
     const second = await session.capture({ label: '第二张审批卡' })
     ui.check(second.text.includes('第二次外部调用'), '第二张卡给的是第二次的参数', '')
 
     // 等的是**末尾那句答复**，不是 `HINT_IDLE`——拒绝之后那一小段里，状态行会先回一次
     // 「空闲」（卡收了、下一趟模型还没回来），拿它当条件会**抓到半路**（实测栽过一次：
     // 取到的帧里没有最后那句答复）。等答复本身，条件与判据才是同一件事。
-    await session.send('n', { until: { text: '外部那两件处理完了' }, timeoutMs: 15_000 })
+    await session.key('up'); await session.key('enter', { until: { text: '外部那两件处理完了' }, timeoutMs: 15_000 })
     const rejected = await session.capture({ label: '拒绝之后' })
     ui.check(
       mcpCalls(log).length === 1,
@@ -565,10 +554,9 @@ const mcpApproval: Scenario = {
     )
 
     await broken.send('跑个内置的')
-    // 内置那件走的是**名单里**的删除 ⇒ 重档键位（`y / n`，见 `COPY.decideHint` 那一段）
-    await broken.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 10_000 })
-    await broken.key('ctrl+g', {until:{text:COPY.decideHint}})
-    await broken.send('y', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
+    // 内置 chmod 走重档审批，等待无预选面板。
+    await broken.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 10_000 })
+    await broken.key('down'); await broken.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await broken.capture({ label: '内置工具照常' })
     ui.check(
       hasToolDone(ran.lines, '内置照常'),
@@ -622,9 +610,8 @@ const mcpApproval: Scenario = {
     //
     // 这是独立复验退回的那一条的组合：崩过之后再 close，SDK 那侧已经没有 pid 可数了，
     // 故「数后代」必须发生在**它还活着的时候**（起手与每次调用之前），不能等收尾那一刻。
-    await descended.wait({text:'Ctrl+G 审阅'}, {timeoutMs:15_000})
-    await descended.key('ctrl+g',{until:{text:'y 批准这一次'}})
-    await descended.send('y', { until: { text: '未收到结果' }, timeoutMs: 15_000 })
+    await descended.wait({text:COPY.decideHint}, {timeoutMs:15_000})
+    await descended.key('down'); await descended.key('enter', { until: { text: '未收到结果' }, timeoutMs: 15_000 })
 
     await waitGone(grand as number)
     ui.check(
@@ -633,16 +620,16 @@ const mcpApproval: Scenario = {
       `pid ${grand}`,
     )
 
-    // 应用自己退场（收尾那一跳在 cli 的 finally 里）——空闲**按两次**才走（U46）。
-    //
-    // ⚠️ **先看它此刻闲不闲**：服务器崩了之后代理会**再试一次**，屏上往往又挂起一张卡
-    //    （或这一轮还在跑）。那种时候 `ctrl+c` 开的是**三选**（U100 起：有在途工作那一下
-    //    不再替用户中断），不是退出的第一下。
-    //    ⚠️ 反过来，**闲着的时候千万别先按那一下**——它会挂上「再按一次」，而被 `quit()`
-    //    当成第二次 ⇒ 当场退出、等不到那一行（这条实测栽过）。
-    const beforeQuit = await descended.screen()
-    const text = beforeQuit.lines.map((line) => line.text).join('\n')
-    if (!text.includes(HINT_IDLE)) await stopCurrentTask(descended)
+    // 单回合夹具会在工具失败后再次请求同一调用。先等第二张未选中的卡到达，
+    // 再打开停止菜单，避免新卡恰好接走菜单的 Enter；不批准这次重试。
+    await descended.wait({ text: COPY.decideHint }, { timeoutMs: 15_000 })
+    const retry = await descended.capture({ label: '远端崩溃后的第二张审批未选择' })
+    ui.check(descended.requests().filter(request => request.path.endsWith('/chat/completions')).length === 2,
+      '失败后恰好进入第二次模型请求', '')
+    ui.check(retry.text.includes('○ 批准这一次') && retry.text.includes('○ 拒绝这一次'),
+      '第二张审批仍无预选，停止不批准重试', retry.text)
+    await stopCurrentTask(descended)
+    await descended.capture({ label: '第二张审批后明确停止并确认空闲' })
 
     await descended.quit()
     await descended.close({ graceMs: 3_000 })
@@ -737,31 +724,12 @@ async function waitGone(pid: number, timeoutMs = 5_000): Promise<void> {
   while (isAlive(pid) && Date.now() < deadline) await Bun.sleep(50)
 }
 
-/**
- * **停掉当前这一轮**（U100 · 两个场景共用）——有在途工作那一下按 `ctrl+c` 开的是**三选**，
- * 选第一项「停止任务」（回车即达；**局部**那一档，这一轮收束、卡随之作废）。
- *
- * ⚠️ **不能背靠背按两下**：`ctrl+c` 与 `enter` 挤在同一拍里写下去，Ink 那一次读会把两下
- * 并到一起，回车可能当场丢掉（驱动头注那两条「按键全丢的坑」记过同一跤：起手太快 ·
- * 文本与回车同写）。故**等那一屏真上屏**再按回车。
- *
- * ⚠️ **等不到那一屏也照旧往下走**：那说明它在这中间自己闲下来了（没东西可停了）——
- * 这一跳本来就是为了「让它能走空闲那条退出路」，不是为了非要停一次。
- */
+/** 两个调用点均已确认有在途工具或待答卡；停整体任务，等真实核销回执再走退出路径。 */
 async function stopCurrentTask(session: UiSession): Promise<void> {
-  await session.key('ctrl+c')
-
-  try {
-    // 两版标题都含这一截（在跑 / 待答的差别只在后半句）
-    await session.wait({ text: '当前任务' }, { timeoutMs: 8_000 })
-    await session.key('enter')
-  } catch {
-    return // 它自己闲下来了——没有可停的东西
-  }
-
-  // 回执是**推**来的（`stopped` 那条线）——不等它，下一步那两下 `ctrl+c` 会打在
-  // 「其实还在跑」上（本条原先的注记过同一跤）
-  await session.wait({ absent: 'y 批准这一次' }, { timeoutMs: 15_000 }).catch(() => undefined)
+  await session.key('ctrl+c', { until: { text: '›  停止任务' }, timeoutMs: 8_000 })
+  await session.key('enter', { until: { text: '停了' }, timeoutMs: 15_000 })
+  await session.wait({ absent: '○ 批准这一次' }, { timeoutMs: 15_000 })
+  await session.wait({ text: IDLE_STATE }, { timeoutMs: 15_000 })
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -812,13 +780,12 @@ const mcpApprovalEdge: Scenario = {
     // ⚠️ **等草稿上屏再回车**（驱动的坑：`send` 只打字，回车抢在前面就会提交一个空草稿，
     // 后面的字全留在输入框里，卡永远不来）
     await session.wait({ text: '› 来件参数长的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 15_000 })
-    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
+    await session.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 15_000 })
     const longCard = await session.capture({ label: '长参数卡' })
     ui.check(longCard.text.includes('甲乙丙丁戊己庚辛壬癸'), '长参数在卡上（头一段在）', '')
     ui.check(longCard.text.includes('①②③④⑤⑥⑦⑧⑨⑩'), '长参数在卡上（末一段也在，没被截掉）', '')
 
-    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    await session.key('down'); await session.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
     const ran = await session.capture({ label: '长参数跑完' })
     ui.check(
       hasToolDone(ran.lines, '第'),
@@ -837,13 +804,12 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ text: IDLE_STATE })
     await session.send('再来件拖住的')
     await session.wait({ text: '› 再来件拖住的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
-    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
-    await session.send('y')
+    await session.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 20_000 })
+    await session.key('down'); await session.key('enter')
     // 中断之前等两件**真发生过**的事：
     // ① **卡收了**（键位那一行不在）——那一下 `ctrl+c` 才是「中断」，不是「在卡上按了个键」；
     // ② **服务器自己收到了这一笔**（`waitToolCalled`；屏上那句「运行中」证明不了，注见它）。
-    await session.wait({ absent: 'y 批准这一次' }, { timeoutMs: 10_000 })
+    await session.wait({ absent: '○ 批准这一次' }, { timeoutMs: 10_000 })
     await waitToolCalled(log, 'slow')
 
     // U100：三选 ⇒ **停止任务**（局部那一档 = 取消这一轮，见 `stopCurrentTask`）
@@ -866,9 +832,8 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ text: IDLE_STATE })
     await session.send('来件会崩的')
     await session.wait({ text: '› 来件会崩的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
-    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
-    await session.send('y')
+    await session.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 20_000 })
+    await session.key('down'); await session.key('enter')
     // 等**只此一处有**的那一整句：取消那一行的正文里也含「未收到结果」三个字
     // （「取消不等于远端撤销，未收到结果」），拿它当条件会**抓到前一张卡**
     await session.wait({ text: '收工' }, { timeoutMs: 10_000 })
@@ -935,12 +900,11 @@ const mcpUnderscoreName: Scenario = {
 
     await session.send('调那个下划线开头的')
     await session.wait({ text: '› 调那个下划线开头的' }, { timeoutMs: 10_000 })
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
-    await session.key('ctrl+g', {until:{text:'y 批准这一次'}})
+    await session.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 20_000 })
     const card = await session.capture({ label: '下划线工具的审批卡' })
 
     ui.check(card.text.includes('fake / _echo'), '卡上点名 `服务器 / 工具`（名字带下划线）', '')
-    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 20_000 })
+    await session.key('down'); await session.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 20_000 })
 
     const ran = await session.capture({ label: '下划线工具跑完' })
     ui.check(
@@ -1250,14 +1214,12 @@ const stopNotRollback: Scenario = {
 
     // —— 真改一次东西 ——
     await session.send('改点东西')
-    // 锚**状态行那句「等你定夺」**，不锚键位提示——`write` 必闸那一档的键位是
-    // 「y / n」（轻的那一档才是 `y / a / n`），拿 `decideHint` 当条件会白等到超时（实测栽过）
-    await session.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 15_000 })
-    await session.key('ctrl+g',{until:{text:'批准'}})
+    // write 的审批到达后直接显示，等待动作提示再显式选择。
+    await session.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 15_000 })
     const card = await session.capture({ label: '裁决卡' })
     ui.check(card.text.includes('write'), '裁决卡点名了要调用的工具', card.text.slice(0, 400))
 
-    await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
+    await session.key('down'); await session.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
     const artifact = join(session.facts().workspace, '产物.txt')
     ui.check(existsSync(artifact), '那一笔真写下去了（停止之前，文件已经在）', artifact)
 

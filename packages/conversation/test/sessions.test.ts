@@ -531,7 +531,7 @@ describe('懒建立（D5）——首条消息才开张', () => {
       now: () => T0,
     })
 
-    // 与「首条消息才开张」不冲突：这条路是**用户点名**了要哪条会话（`--session` / 接续），
+    // 与「首条消息才开张」不冲突：这条路是**用户点名**了要哪条会话（`magic resume` / 接续），
     // 不是空手打开（D5 免的是后者：不开张、不占存储、不把列表塞满空壳）
     const report = await host.rebuild('s-picked', { lastTurn: null, announced: false })
 

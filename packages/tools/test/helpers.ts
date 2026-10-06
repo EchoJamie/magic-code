@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 /**
  * 本包用例的共用夹具——一束替身（全部取自 `@magic/faux`）。
  *
@@ -25,7 +26,6 @@ import {
   makeFauxRecords,
   makeFauxSandbox,
   makeFauxSink,
-  makeFauxWorkspace,
   makeTestStamper,
 } from '@magic/faux'
 import type { ToolDefinition } from '../src/index.ts'
@@ -93,7 +93,13 @@ export function makeToolDeps(options: ToolDepsOptions = {}): ToolDeps {
         })
   const sink = makeFauxSink()
   const records = makeFauxRecords()
-  const workspace = makeFauxWorkspace({ root: ROOT })
+  const workspace: WorkspaceService = {
+    roots: () => [ROOT], declaredRoots: () => [ROOT], defaultRoot: () => ROOT,
+    resolve(path) {
+      const absolute = resolve(ROOT, path)
+      return { absolute, ...(absolute === ROOT || absolute.startsWith(`${ROOT}/`) ? { root: ROOT } : {}) }
+    },
+  }
 
   const runtime = createToolRuntime({
     sandbox,

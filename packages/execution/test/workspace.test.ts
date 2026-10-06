@@ -1,32 +1,7 @@
-/**
- * U05 · 工作区解析——验收判据 6：**边界**（相对按默认根；绝对须落根内——越界拒绝）。
- *
- * 说明（技术方案 · 执行 · 工作区）：
- * - 阶段 1 单根——**启动目录＝默认根（唯一）**；多根（U18）＝**平等平铺 ＋ 一个默认**。
- * - 路径解析——「相对按默认根、绝对须落于某根内；越界＝所有根之外」。
- *
- * **U18 多根（本轮扩展）** ——两节：
- * - **根注册**：`roots()` 是**声明序的规范化形**（逐条 `realpath`）；`defaultRoot()` ＝
- *   **列表第一项**——「平等平铺 ＋ 一个默认，不引入『主根』概念」（技术方案 · 执行 · 工作区）。
- * - **根校验**（加载时报错不降级，照 `dataDir` 的先例）：不存在 / 不是目录 / 重复 /
- *   相对路径 → 一律**抛**。四项皆在**规范化之后**判——尤其「重复」：`/tmp/x` 与
- *   `/private/tmp/x` 在 macOS 上是**同一个目录**，词法比较漏得掉（下有用例钉着）。
- *
- * ⚠️ **边界是「全根之并」，不是「默认根」**——相对路径先按默认根拼、**归一之后对全根比对**，
- * 故 `..` 拱出默认根却落进另一条根者**通过**（有用例钉着）。这与权限域 `landPath` **同源**
- * （它那条注写得更直白：「相对路径逃出默认根后仍可能落进**另一个**根（多根平铺）——
- * 故一律对全根比对」）。两域若在此分叉，闸门放行的路径沙箱会拒。
- *
- * 判定法：临时目录当真工作区（测试用 fs 不受守护拦——守护面收窄至各包 `src/`），
- * 每例断言**解析结果**（绝对路径 ＋ **承载它的那条根**），越界则断言**拒**。
- *
- * 另一条隐线（判据 4 的前半）：`exec` 的 cwd 越界必须「进程不启动」——
- * 其判据即本文件的同一套规则，故这里把边界规则钉死；多根下 `exec` 的 cwd 同源
- * 由 `exec.test.ts` 的「多根」一节实测咬住。
- */
+/** 工作区注册校验与真实目标解析；路径准入归权限闸门。 */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { WorkspaceService } from '@magic/contracts'
@@ -185,265 +160,44 @@ describe('根校验——报错不降级（照 `dataDir` 的先例）', () => {
   })
 })
 
-describe('相对路径——按默认根', () => {
-  test('普通相对路径落在默认根下', () => {
+describe('目标解析只产出事实，权限由工具入口裁决', () => {
+  test('相对路径按默认根归一；不存在目标带 null 身份', () => {
     const { ws, root } = workspaceOn(freshRoot())
-
-    const resolved = ws.resolve('a.txt')
-    expect(resolved.absolute).toBe(join(root, 'a.txt'))
-    expect(resolved.root).toBe(root)
+    expect(ws.resolve('sub/../new').absolute).toBe(join(root, 'new'))
+    expect(ws.resolve('new').identity).toBeNull()
+    expect(ws.resolve('new').parentIdentity).toBeDefined()
+    expect(ws.resolve('.').root).toBe(root)
+    expect(ws.resolve('a/../../outside').root).toBeUndefined()
   })
 
-  test('多级相对路径', () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    expect(ws.resolve('sub/dir/b.txt').absolute).toBe(join(root, 'sub/dir/b.txt'))
-  })
-
-  test('`..` 归一化后仍在根内＝通过（作差不出界）', () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    expect(ws.resolve('sub/../b.txt').absolute).toBe(join(root, 'b.txt'))
-    expect(ws.resolve('./a/./b').absolute).toBe(join(root, 'a/b'))
-  })
-
-  test("`.` 与空串＝根自身", () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    expect(ws.resolve('.').absolute).toBe(root)
-    expect(ws.resolve('').absolute).toBe(root)
-  })
-
-  test('`..` 逃出根＝拒（相对也受边界约束——否则工作区形同虚设）', () => {
-    const { ws } = workspaceOn(freshRoot())
-
-    expect(() => ws.resolve('../x.txt')).toThrow()
-    expect(() => ws.resolve('a/../../x.txt')).toThrow()
-  })
-
-  test('**多根下相对路径仍走默认根**——不落第二根（「新文件落点」认默认根）', () => {
-    const [first, second] = [freshRoot(), freshRoot()]
-    const { ws, roots: real } = workspaceOnAll([first, second])
-
-    const resolved = ws.resolve('new.txt')
-    expect(resolved.absolute).toBe(join(nth(real, 0), 'new.txt'))
-    expect(resolved.root).toBe(nth(real, 0))
-    // 第二根虽在册，但不承载相对路径——那正是「一个默认」的意思
-    expect(resolved.absolute.startsWith(nth(real, 1))).toBe(false)
-  })
-
-  test('`..` 拱出默认根、**落进另一条根＝通过**——边界是**全根之并**，不是默认根', () => {
-    // ⚠️ 这条不是「多根也照样锁在默认根里」——**边界一律按全根判**（归一之后看落点），
-    // 与权限域 `landPath` 同源（它那条注：「相对路径逃出默认根后仍可能落进**另一个**根
-    // （多根平铺）——故一律对全根比对」）。两域若在此分叉，闸门放行的路径沙箱会拒。
-    const [b1, b2] = [freshRoot(), freshRoot()]
-    const { ws, roots: real } = workspaceOnAll([b1, b2])
-
-    // 两根是兄弟（同在 tmpdir 下），故 `../<b2 的名字>/x.txt` 从默认根出去正好落在 b2 里
-    const resolved = ws.resolve(`../${basename(nth(real, 1))}/x.txt`)
-    expect(resolved.absolute).toBe(join(nth(real, 1), 'x.txt'))
-    expect(resolved.root).toBe(nth(real, 1))
-    expect(resolved.root).not.toBe(ws.defaultRoot())
-  })
-
-  test('嵌套根下 `..` 落进外层根＝通过（同一条规则的直白形态）', () => {
-    const outer = freshRoot()
-    const inner = join(outer, 'inner')
-    mkdirSync(inner)
-
-    const ws = createWorkspaceService({ roots: [inner, outer] })
-    const resolved = ws.resolve('..')
-
-    expect(resolved.absolute).toBe(realpathSync(outer))
-    expect(resolved.root).toBe(realpathSync(outer))
-    expect(resolved.root).not.toBe(ws.defaultRoot())
-  })
-
-  test('`..` 拱到**所有根之外**＝拒（夹具两根是兄弟，`../x.txt` 落在共同父级，谁都不接）', () => {
-    const { ws } = workspaceOnAll([freshRoot(), freshRoot()])
-
-    expect(() => ws.resolve('../x.txt')).toThrow(/越界/)
-  })
-})
-
-describe('绝对路径——须落于某根内', () => {
-  test('根内的绝对路径＝通过', () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    const resolved = ws.resolve(join(root, 'sub', 'c.txt'))
-    expect(resolved.absolute).toBe(join(root, 'sub', 'c.txt'))
-    expect(resolved.root).toBe(root)
-  })
-
-  test('绝对路径恰为根＝通过', () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    expect(ws.resolve(root).absolute).toBe(root)
-  })
-
-  test('根外的绝对路径＝拒', () => {
-    const { ws } = workspaceOn(freshRoot())
-
-    expect(() => ws.resolve('/etc/passwd')).toThrow()
-    expect(() => ws.resolve(join(tmpdir(), 'outside.txt'))).toThrow()
-  })
-
-  test('前缀相邻不算在根内（`/root-other` 不是 `/root` 之内）', () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    // 段边界判定——字符串前缀相邻（`<root>-x`）不得误判为根内
-    expect(() => ws.resolve(`${root}-sibling/f.txt`)).toThrow()
-    expect(() => ws.resolve(`${root}x/f.txt`)).toThrow()
-  })
-
-  test('根外绝对路径再 `..` 拱回根内＝拒（先归一再看落点，不因归一而放行）', () => {
-    const { ws, root } = workspaceOn(freshRoot())
-
-    // `/etc/../<root>/f` 归一后落在根内——是否放行取决于判定次序；
-    // 本实现取「**先规范化、再看落点**」：归一后确在根内者放行（路径即事实）。
-    expect(ws.resolve(`/etc/../${root.slice(1)}/f.txt`).absolute).toBe(join(root, 'f.txt'))
-  })
-})
-
-describe('多根——绝对路径落于**任一根**内即通过', () => {
-  test('落第二根＝通过，且 `root` 报**承载它的那条根**（不是默认根）', () => {
-    const [first, second] = [freshRoot(), freshRoot()]
-    const { ws, roots: real } = workspaceOnAll([first, second])
-
-    const resolved = ws.resolve(join(nth(real, 1), 'b.txt'))
-    expect(resolved.absolute).toBe(join(nth(real, 1), 'b.txt'))
-    expect(resolved.root).toBe(nth(real, 1))
-    // 这一位是多根才有的信息：同一条绝对路径，承载根可 ≠ 默认根
-    expect(resolved.root).not.toBe(ws.defaultRoot())
-  })
-
-  test('落第一根＝通过，`root` 报第一根（defaultRoot 同时是承载根）', () => {
-    const [first, second] = [freshRoot(), freshRoot()]
-    const { ws, roots: real } = workspaceOnAll([first, second])
-
-    const resolved = ws.resolve(join(nth(real, 0), 'a.txt'))
-    expect(resolved.root).toBe(nth(real, 0))
-    expect(resolved.root).toBe(ws.defaultRoot())
-  })
-
-  test('各根的第 N 级子路径皆通过（边界按段判，不是只看第一层）', () => {
-    const [a, b, c] = [freshRoot(), freshRoot(), freshRoot()]
-    const { ws, roots: real } = workspaceOnAll([a, b, c])
-
-    for (const root of real) {
-      expect(ws.resolve(join(root, 'x', 'y', 'z.txt')).root).toBe(root)
-    }
-  })
-
-  test('**越界＝所有根之外**——两根皆不接者拒', () => {
+  test('多根中的落点返回所属根，根外与相邻前缀不抛、不伪造所属根', () => {
     const { ws, roots: real } = workspaceOnAll([freshRoot(), freshRoot()])
-
-    expect(() => ws.resolve('/etc/passwd')).toThrow(/越界/)
-    // 前缀相邻也接不住：`<root>-sibling` 不在任何根内
-    expect(() => ws.resolve(`${nth(real, 0)}-sibling/f.txt`)).toThrow(/越界/)
+    expect(ws.resolve(`../${basename(nth(real, 1))}/x`).root).toBe(nth(real, 1))
+    expect(ws.resolve('/outside-file').root).toBeUndefined()
+    expect(ws.resolve(`${nth(real, 0)}-sibling/x`).root).toBeUndefined()
+    expect(ws.resolve('..').root).toBeUndefined()
   })
 
-  test('越界报文**列出所有根**（多根下只说一条，用户无从知道还注册了什么）', () => {
-    const { ws, roots: real } = workspaceOnAll([freshRoot(), freshRoot()])
-
-    let message = ''
-    try {
-      ws.resolve('/etc/passwd')
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error)
-    }
-
-    expect(message).toContain('/etc/passwd')
-    for (const root of real) expect(message).toContain(root)
-  })
-})
-
-/**
- * U27 · **非规范形落点**（`U18` 待决 4）——判据：**声明原形也作数**。
- *
- * 由头（单根时代用户**写不出**非规范形，多根把这个坑激活了）：用户手写 `/tmp/proj` 注册成
- * `/private/tmp/proj`（macOS 上 `/tmp` 是符号链接），而模型给 `/tmp/proj/src`——按**规范形**
- * 词法比对够不着 ⇒ 被判越界 ✗。收法（设计裁）：注册时**同时记两张表**（`realpath` 与
- * **声明原形**），按**声明原形**做纯词法前缀匹配；**真路径那一张照旧**（U18 的行为一条不丢）。
- *
- * ⚠️ 两张表都只做**词法**比对（一个 `realpath` 都不再取）——故**报出来的承载根恒是规范形**：
- * 一条根一个身份（记录里那一列 / 列表分组认的都是它），不因写法不同裂成两条。
- */
-describe('非规范形落点——声明原形也作数（U27）', () => {
-  /**
-   * 造一条「声明原形 ≠ 真路径」的根（照 macOS 的 `/tmp` → `/private/tmp`）：返回两张表。
-   *
-   * ⚠️ `real` 取的是 `realpathSync` 的**规范形**——`mkdtemp` 给的路径自己就可能非规范
-   * （macOS 上在 `/var` → `/private/var` 之下），拿它当「真路径那一张」会量错地方。
-   */
-  function aliasedRoot(): { readonly real: string; readonly alias: string } {
-    const target = freshRoot()
-    const alias = join(freshRoot(), 'proj')
-    symlinkSync(target, alias)
-    return { real: realpathSync(target), alias }
-  }
-
-  test('模型给**声明原形**下的绝对路径 ⇒ 通过（本轮收的就是这个）', () => {
-    const { real, alias } = aliasedRoot()
-    const ws = createWorkspaceService({ roots: [alias] })
-
-    expect(realpathSync(alias)).toBe(real) // 前提：这条根确实非规范——不成立就无从谈这条判据
-
-    const resolved = ws.resolve(join(alias, 'src'))
-    expect(resolved.absolute).toBe(join(alias, 'src'))
-    // 承载根报**规范形**——一条根一个身份，不因写法不同裂成两条
-    expect(resolved.root).toBe(real)
-    expect(ws.roots()).toEqual([real])
+  test('根声明链接与文件链接都解析到真实落点；根内链接不能冒充根内目标', () => {
+    const inside = freshRoot(), outside = freshRoot(), alias = join(freshRoot(), 'alias')
+    symlinkSync(inside, alias)
+    const { ws, root } = workspaceOn(alias)
+    writeFileSync(join(outside, 'file'), 'content')
+    symlinkSync(join(outside, 'file'), join(inside, 'link'))
+    expect(ws.resolve(join(alias, 'new')).absolute).toBe(join(root, 'new'))
+    const target = ws.resolve('link')
+    expect(target.absolute).toBe(realpathSync(join(outside, 'file')))
+    expect(target.root).toBeUndefined()
+    expect(target.identity).toBeDefined()
   })
 
-  test('**真路径**下的绝对路径照旧通过（两张表都在用，不是换了一张）', () => {
-    const { real, alias } = aliasedRoot()
-    const ws = createWorkspaceService({ roots: [alias] })
-
-    const resolved = ws.resolve(join(real, 'src'))
-    expect(resolved.absolute).toBe(join(real, 'src'))
-    expect(resolved.root).toBe(real)
-  })
-
-  test('声明原形**先归一**再进表——`/proj/./` 一类写法同指一条', () => {
-    const { real, alias } = aliasedRoot()
-    const ws = createWorkspaceService({ roots: [alias + '/./'] })
-
-    // 用户手写的那串归一后＝alias；模型给的是简洁形——同一条根，照样接得住
-    expect(ws.resolve(join(alias, 'a.txt')).root).toBe(real)
-  })
-
-  test('声明原形也守**段边界**——前缀相邻（`<alias>-sibling`）不算在根内', () => {
-    const { alias } = aliasedRoot()
-    const ws = createWorkspaceService({ roots: [alias] })
-
-    expect(() => ws.resolve(`${alias}-sibling/f.txt`)).toThrow(/越界/)
-    expect(() => ws.resolve(`${alias}x/f.txt`)).toThrow(/越界/)
-  })
-
-  test('越界＝**两张表之外**——`..` 从声明原形拱出去照样拒', () => {
-    const { alias } = aliasedRoot()
-    const ws = createWorkspaceService({ roots: [alias] })
-
-    // 声明原形的父级是夹具自己的临时目录，两条表都不接它
-    expect(() => ws.resolve(join(alias, '..', 'x.txt'))).toThrow(/越界/)
-  })
-
-  test('多根下两表**按声明序**比——承载根报声明序在前的那条', () => {
-    const { real, alias } = aliasedRoot()
-    const other = freshRoot()
-    const ws = createWorkspaceService({ roots: [alias, other] })
-
-    expect(ws.resolve(join(real, 'x')).root).toBe(real) // 经真路径那一张匹配到第一根
-    expect(ws.resolve(join(other, 'x')).root).toBe(realpathSync(other))
-  })
-})
-
-describe('拒绝的可诊断性', () => {
-  test('拒时点名越界路径与根（装配 / 工具层据此回填）', () => {
+  test('悬空链接与尚不存在的后代按已有祖先解析', () => {
     const { ws, root } = workspaceOn(freshRoot())
-
-    expect(() => ws.resolve('/etc/passwd')).toThrow(/\/etc\/passwd/)
-    expect(() => ws.resolve('../escaped.txt')).toThrow(new RegExp(root.replace(/[/\\]/g, '\\$&')))
+    const outside = realpathSync(freshRoot())
+    symlinkSync(join(outside, 'new'), join(root, 'dangling'))
+    symlinkSync(outside, join(root, 'dir'))
+    expect(ws.resolve('dangling').absolute).toBe(join(outside, 'new'))
+    expect(ws.resolve('dir/missing/file').absolute).toBe(join(outside, 'missing/file'))
+    expect(ws.resolve('dangling').root).toBeUndefined()
   })
 })

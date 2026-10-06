@@ -94,7 +94,7 @@ export type RunTuiOptions = {
   /** **接回快照的来路**（U49）——挂到某一代上之后取来那一代的「此刻」。见 `ShellOptions.resumed`。 */
   readonly resumed?: ResumeFeed | undefined
   /**
-   * **这一趟开局就接的那条会话**（`--session <id>`）——只用于**开屏那张摘要**：
+   * **这一趟开局就接的那条会话**（`resume <id>`）——只用于**开屏那张摘要**：
    * 它是「为它来的那条」，不算「别的活跃工作」（设计：摘要说的是**其他**活跃工作）。
    *
    * 拿不到就不给 ⇒ 摘要照常数全部——**不猜**（那一位本来就是可省的开局参数）。
@@ -107,6 +107,7 @@ export type RunTuiOptions = {
   /** **管理者说的那句话**（U50 接上）——见 `ShellOptions.lines`。 */
   readonly lines?: ((listener: (text: string) => void) => void) | undefined
   /** **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你。见 `ShellOptions.notices`。 */
+  readonly markRead?: ((ids: readonly string[]) => void) | undefined
   readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
 }
 
@@ -144,6 +145,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     stopped: options.stopped,
     lines: options.lines,
     notices: options.notices,
+    markRead: options.markRead,
     // **「放开输入」以 `boot` 完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）——
     // 没有 `boot` 可等的调用方（测试 / 演示）照旧一挂载就能提交。
     inputReady: options.boot === undefined,
@@ -247,8 +249,9 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     // 下一轮派出去了」，两条流当场抢同一条记录。`releaseInput` 就是那道闸。
     await options.boot?.()
     shell.releaseInput()
-    // 接续 / 恢复之后读一次历史：记录区按条目**重建**（缺陷 D1）
-    shell.readHistory()
+    // 同进程 boot 期间输入闸门拦住了历史查询，启动完成后补读。
+    // 常驻连接由首次 session.state 读取；重复重建会抹掉已呈现的接回流式快照。
+    if (options.boot !== undefined) shell.readHistory()
   } catch (error) {
     // 监听现在装在整个挂载周期上（见上），这条出口**也得把它们摘掉**——
     // 否则 `boot` 抛错之后，那些监听还挂在一根已经没人管的流上

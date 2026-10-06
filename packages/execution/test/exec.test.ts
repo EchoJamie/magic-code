@@ -25,7 +25,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, symlinkSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { ExecResult, OutputDelta, Sandbox } from '@magic/contracts'
@@ -199,15 +199,10 @@ describe('多根——cwd 与 `resolve` 同源', () => {
       .toContain('also-here.txt')
   })
 
-  test('cwd 落**所有根之外** → `out-of-bounds`，且进程不启动', async () => {
-    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
-    const marker = join(nth(real, 0), 'oops.txt')
-
-    // `tmpdir()` 是两根的**共同父级**——不在任何一根内（「越界＝所有根之外」）
-    const result = await box.exec(`touch ${marker}`, { cwd: tmpdir() })
-
-    expect(failureOf(result).reason).toBe('out-of-bounds')
-    expect(existsSync(marker)).toBe(false) // 命令有副作用也没发生＝确实没启动
+  test('已裁决的根外 cwd 可以启动，执行原语不再判断根内外', async () => {
+    const { box } = sandboxOnAll([freshRoot(), freshRoot()])
+    const outside = realpathSync(freshRoot())
+    expect(streamsOf(await box.exec('pwd', { cwd: outside })).stdout.trim()).toBe(outside)
   })
 
   test('cwd 给**声明原形**（非规范形）＝通过，且真在该根里跑（U27）', async () => {
@@ -239,10 +234,9 @@ describe('多根——cwd 与 `resolve` 同源', () => {
     expect(streamsOf(result).stdout.trim()).toBe(nth(real, 1))
   })
 
-  test('cwd 经 `..` 拱到**所有根之外** → `out-of-bounds`（夹具两根是兄弟，落在共同父级）', async () => {
-    const { box } = sandboxOnAll([freshRoot(), freshRoot()])
-
-    expect(failureOf(await box.exec('echo hi', { cwd: '..' })).reason).toBe('out-of-bounds')
+  test('已裁决的相对 cwd 可以落在根外', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    expect(streamsOf(await box.exec('pwd', { cwd: '..' })).stdout.trim()).toBe(join(nth(real, 0), '..'))
   })
 })
 
@@ -538,20 +532,14 @@ describe('判据 4 · 失败三例——各归 `reason`', () => {
     expect(existsSync(marker)).toBe(false)
   })
 
-  test('cwd 越界 → `reason: out-of-bounds`——**进程不启动**', async () => {
-    const { box, root } = freshSandbox()
-    const marker = join(root, 'oops.txt')
-
-    const result = await box.exec(`touch ${marker}`, { cwd: tmpdir() }) // tmpdir 在根之外
-
-    expect(failureOf(result).reason).toBe('out-of-bounds')
-    expect(existsSync(marker)).toBe(false) // 命令有副作用也没发生＝确实没启动
+  test('根外 cwd 的实际启动错误归 spawn，不生成第二次权限拒绝', async () => {
+    const { box } = freshSandbox()
+    expect(failureOf(await box.exec('pwd', { cwd: join(freshRoot(), 'missing') })).reason).toBe('spawn')
   })
 
-  test('cwd 经 `..` 拱出根 → 同样归 `out-of-bounds`', async () => {
+  test('cwd 经 .. 返回实际命令结果', async () => {
     const { box } = freshSandbox()
-
-    expect(failureOf(await box.exec('echo hi', { cwd: '..' })).reason).toBe('out-of-bounds')
+    expect(streamsOf(await box.exec('echo hi', { cwd: '..' })).stdout.trim()).toBe('hi')
   })
 
   test('启动失败（cwd 在根内但不存在）→ `reason: spawn`，且点出 cwd', async () => {
@@ -565,16 +553,15 @@ describe('判据 4 · 失败三例——各归 `reason`', () => {
     expect(failureOf(result).message).toContain(join(root, 'no-such-dir'))
   })
 
-  test('三例**互不串门**——各归各的 `reason`', async () => {
+  test('超时与启动失败各归其 reason', async () => {
     const { box } = freshSandbox()
 
     const reasons = [
       failureOf(await box.exec('sleep 5', { timeoutMs: 200 })).reason,
-      failureOf(await box.exec('echo hi', { cwd: '/etc' })).reason,
       failureOf(await box.exec('echo hi', { cwd: 'no-such-dir' })).reason,
     ]
 
-    expect(reasons).toEqual(['timeout', 'out-of-bounds', 'spawn'])
+    expect(reasons).toEqual(['timeout', 'spawn'])
   })
 })
 

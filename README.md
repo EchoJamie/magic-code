@@ -70,7 +70,7 @@ bun install                     # 装依赖（prepare 顺带配置 git 钩子）
 # 产品路径
 magic                           # 连接所属 App，打开交互界面
 magic -h                        # 显示帮助（也可用 magic --help 或 magic help）
-magic --session <id>            # 只读接回已有会话（id 见 /resume），明确输入后继续
+magic resume <id>            # 只读接回已有会话（id 见 /resume），明确输入后继续
 magic --model <选择>             # default / cantrip / spell / arcane
 
 # 下面两条不是日常用法
@@ -146,7 +146,7 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 **启动＝新会话**（空手打开一个都不建——**首条消息按下回车才开张**）。**接着来是显式的**：
 
 ```text
-magic --session <id>       接回已有会话；已完成会话只读回放，下一次明确输入才装配执行者
+magic resume <id>       接回已有会话；已完成会话只读回放，下一次明确输入才装配执行者
 ```
 
 **打错 id 不静默**：库里没有这个 id 就报错退场——**不照 id 开一条新的**

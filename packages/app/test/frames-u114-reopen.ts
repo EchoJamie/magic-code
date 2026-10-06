@@ -30,7 +30,7 @@ try {
   await ui.close({ keepSandbox: true }); await host.close()
   host = await startResidentHost(sandbox, join(root, 'reopen-host-2'))
   assert.notEqual(host.pid, firstPid)
-  ui = await createUiSession({ fixture, sandbox, argv: ['--session', pending.session], columns: 200, rows: 40, label: 'U114-重开明确继续', artifacts: root })
+  ui = await createUiSession({ fixture, sandbox, argv: ['resume', pending.session], columns: 200, rows: 40, label: 'U114-重开明确继续', artifacts: root })
   await ui.wait({ text: '未执行，等待明确继续：PENDING_AFTER_REOPEN' }); await Bun.sleep(700)
   assert.equal(fixture.requests().filter(r => r.path.endsWith('/chat/completions')).length, 1, '接回与等待不得自动消费旧输入')
   await ui.capture({ label: '200-重开仅可查不自动消费' })

@@ -162,7 +162,7 @@ export type LogRow =
        * 载荷里取），当场发的那一次不给：现场有草稿材料行与 `本次使用技能` 回执两处说着
        * 这件事，再挂一条就是同一句话第三遍。
        *
-       * 为什么重建要补：切走一条会话再切回来 / `--session` 接续之后，屏上只剩用户那句
+       * 为什么重建要补：切走一条会话再切回来 / `resume` 接续之后，屏上只剩用户那句
        * 话——「这条交代当时带了哪份技能」在屏上**一处都没有了**（依据在条目载荷里、
        * 没丢，缺的是显示）。设计：「恢复后来源可辨」。
        *
@@ -306,7 +306,7 @@ export type LogRow =
    * 但它与其余痕迹有两点不同，两点都有由头：
    *
    * - **它比其余痕迹优先**——`rebuild` 把 `settled` 整个换掉时，它得**留在最前面**
-   *   （见 `bannerFirst`）。不保这一手，`--session` 接续那条路开局就把它换没了
+   *   （见 `bannerFirst`）。不保这一手，`resume` 接续那条路开局就把它换没了
    *   （同一笔账，`ShellOptions.receipts` 已经吃过一次）。
    * - **它不带宽度**——画哪一版由**渲染层按当时的列数**挑（`components/log.ts` 的
    *   `case 'banner'` → `bannerOf`）。列数只有渲染层知道（`useWindowSize`），
@@ -314,7 +314,7 @@ export type LogRow =
    */
   | { readonly kind: 'banner'; readonly key: string }
   | { readonly kind: 'output'; readonly key: string; readonly lines: readonly string[] }
-  | { readonly kind: 'receipt'; readonly key: string; readonly text: string }
+  | { readonly kind: 'receipt'; readonly key: string; readonly text: string; readonly noticeId?: string }
 
 /**
  * **有没有工具正在跑**（那类行标记是 `⟳`）——两处据它：
@@ -426,6 +426,9 @@ export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
 
 /** 待答的裁决——**接管输入框**的那一件。 */
 export type PendingDecision = {
+  readonly submitted?: boolean
+  readonly selected?: number
+  readonly top?: number
   readonly member?: string
   /** **配对键**——`tool.decision.request` 事件的 id（答复原样带回）。 */
   readonly id: RecordId
@@ -708,6 +711,7 @@ export type CommandSpec = {
  * 表上的名字归内置命令，同名技能不抢它的含义（仍能从 `/skills` 里明确选出来）。
  */
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: '/connect', summary: '重连当前会话并刷新，保留草稿' },
   { name: '/clear', summary: '新建会话并清屏，保留历史记录' },
   { name: '/resume', summary: '查看记录或接回工作' },
   { name: '/rename', summary: '修改当前会话名称' },
@@ -894,7 +898,7 @@ export const HINT_IDLE = '/ 命令 · ctrl+c 退出'
  * ⚠️ **也不再重复「连接已断开」**：同一屏上左位那格写着「状态待确认」、上面还落了那一行
  * 回执——右位再说一遍就是同一件事的第三遍（设计：「一屏上的提示，各自说不同的东西」）。
  */
-export const HINT_LOST = 'ctrl+c 退出'
+export const HINT_LOST = '/connect 重连 · ctrl+r 刷新 · ctrl+c 退出'
 /**
  * 工作中右位提示（**U100 改过它**）。
  *
@@ -903,12 +907,12 @@ export const HINT_LOST = 'ctrl+c 退出'
  *   「中断」，用户按下去会以为「停这一轮」，而实际拿到的是三个选项（**说的与实际不是一件事**）。
  * - **新锚**：`ctrl+c 停或离开`——两件都可能，且都是真话；具体选哪一件在那一屏上。
  */
-export const HINT_WORKING = 'ctrl+c 停或离开'
+export const HINT_WORKING = 'Esc 停止 · ctrl+c 停或离开'
 /** 退避中右位提示（后段动态：`1.6s 后重发 · 不用管`）。 */
 export const HINT_RETRYING_TAIL = '后重发 · 不用管'
 /** 裁决态右位提示（必闸类没有 `a`）。 */
-export const HINT_DECIDE_LIGHT = 'y / a / n'
-export const HINT_DECIDE_HEAVY = 'y / n'
+export const HINT_DECIDE_LIGHT = '↑↓ 选择 · Enter 确认 · Esc 返回'
+export const HINT_DECIDE_HEAVY = HINT_DECIDE_LIGHT
 /**
  * **启动中**右位提示（U25 · 技术方案 · 装配视图第 5 步：「以 `boot` 完成为界」）。
  *
@@ -1166,6 +1170,8 @@ export type Stashed = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  /** 从现有审批队列投影；Esc 返回后仍可见。 */
+  readonly pendingDecision?: PendingDecision | undefined
   readonly pendingInputs: readonly StoredInput[]
   readonly inputPurpose: InputPurpose
   readonly collaboration?: CollaborationView
@@ -2416,7 +2422,7 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 屏上痕迹（输出 / 回执）**不回**；**收拢**：老工具调用并成一行，最近一组展开。
  *
  * ⚠️ **页头在这一页上有就留在最前面**（`pageHeaderOf`：**照用本尊、不补种**）——
- * 这一跳把 `settled` 整个换掉，不保它 `--session` 接续那条路（开局 `boot` 跑完读一次历史
+ * 这一跳把 `settled` 整个换掉，不保它 `resume` 接续那条路（开局 `boot` 跑完读一次历史
  * ⇒ 走到这儿）当场就没有字标了。两格都走这条规矩：**开机与 `/clear` 开的那一页**留的是
  * 字标（U45）、**`/resume` 开的那一页**留的是 `· 已切到 <名字>`（U44）。
  *

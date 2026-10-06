@@ -207,7 +207,6 @@ describe('真光标 · 抽屉接管与关闭', () => {
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = await stage.screen({ columns: 200, rows: 40 })
 
@@ -237,7 +236,6 @@ describe('真光标 · 抽屉接管与关闭', () => {
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令 bun test', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     stage.press({ kind: 'char', char: 'y' }) // 答「批准」
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 300 }, { id: 88 })])
 

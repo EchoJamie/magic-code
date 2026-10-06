@@ -42,19 +42,19 @@ describe('U13 · grep', () => {
     expect(sandbox.matches).toHaveLength(1)
     expect(sandbox.matches[0]?.pattern).toBe('const')
     expect(sandbox.matches[0]?.opts.mode).toBe('grep')
-    expect(sandbox.matches[0]?.opts.path).toBe('src')
+    expect(sandbox.matches[0]?.opts.path).toBe('/work/proj/src')
     expect(sandbox.matches[0]?.opts.maxResults).toBe(SEARCH_MAX_RESULTS)
 
     expect(result.ok).toBe(true)
     expect(result.output).toBe('/work/proj/src/a.ts:3: const a = 1\n/work/proj/b.md:9: # a')
   })
 
-  test('起点缺省＝工作区根（不传 path 键，不猜「.」）', async () => {
+  test('起点缺省在裁决前固定为工作区根', async () => {
     const { runtime, sandbox } = makeToolDeps()
 
     await runtime.invoke({ id: 'c1', name: 'grep', args: { pattern: 'x' } }, {})
 
-    expect(sandbox.matches[0]?.opts.path).toBeUndefined()
+    expect(sandbox.matches[0]?.opts.path).toBe('/work/proj')
   })
 
   test('取消面透传（长搜索可被 Ctrl-C 收掉）', async () => {
@@ -179,7 +179,7 @@ describe('U13 · ls', () => {
     const { runtime, sandbox } = makeToolDeps({
       sandbox: makeFauxSandbox({
         dirs: {
-          src: [
+          '/work/proj/src': [
             { name: 'a.ts', kind: 'file', size: 12 },
             { name: 'nested', kind: 'directory' },
           ],
@@ -189,17 +189,17 @@ describe('U13 · ls', () => {
 
     const result = await runtime.invoke({ id: 'c1', name: 'ls', args: { path: 'src' } }, {})
 
-    expect(sandbox.lists).toEqual(['src'])
+    expect(sandbox.lists).toEqual(['/work/proj/src'])
     expect(result.ok).toBe(true)
     expect(result.output).toBe('a.ts  (12 字节)\nnested/')
   })
 
-  test('起点缺省＝工作区根（沙箱按「.」相对默认根解析）', async () => {
+  test('起点缺省在裁决前固定为工作区根', async () => {
     const { runtime, sandbox } = makeToolDeps()
 
     await runtime.invoke({ id: 'c1', name: 'ls', args: {} }, {})
 
-    expect(sandbox.lists).toEqual(['.'])
+    expect(sandbox.lists).toEqual(['/work/proj'])
   })
 
   test('空目录 → 明说', async () => {

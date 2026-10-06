@@ -102,7 +102,8 @@ import Combine
                             guard let work = model.works.first(where: { $0.session == session }) else {
                                 model.validationEvent("terminal.error", detail: "隔离目标不存在：\(session)"); return
                             }
-                            model.inspect(work, open: true)
+                            model.inspect(work)
+                            model.validationEvent("resume.command", detail: model.resumeCommand(work))
                         }
                     }
                     self?.validation?.cancel()

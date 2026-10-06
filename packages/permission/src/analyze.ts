@@ -233,24 +233,6 @@ function parameterLines(args: Readonly<Record<string, unknown>>): readonly strin
 const COMMAND_KEY = 'cmd'
 
 /** 路径字段的候选键——`path` / `file` / `dir` 系的常见拼法（去分隔符后比对）。 */
-function isPathKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[_-]/g, '')
-  return (
-    normalized === 'path' ||
-    normalized === 'filepath' ||
-    normalized === 'file' ||
-    normalized === 'filename' ||
-    normalized === 'dir' ||
-    normalized === 'dirname' ||
-    normalized === 'directory' ||
-    normalized === 'target' ||
-    normalized === 'cwd' ||
-    normalized === 'root' ||
-    normalized.endsWith('path') ||
-    normalized.endsWith('dir') ||
-    normalized.endsWith('file')
-  )
-}
 
 function firstString(
   args: Readonly<Record<string, unknown>>,
@@ -515,118 +497,70 @@ const PATH_REQUIRED_TOOLS: readonly string[] = ['read']
  */
 const DEFAULT_ROOT = '.'
 
-/**
- * 读与搜索（`read` · `grep` · `glob` · `ls`）——**放行区方向，一律轻**。
- *
- * 读的**越界不闸**：必闸清单的越界条目限「**工作区外的写 / 删 / 移**」，
- * 而放行区明列「读与搜索」（技术方案 · 权限：放行区）。
- *
- * **没给路径**的形态（缺陷 D15）按**参数键全表**分两种——「可选键缺席即取缺省」是通则：
- * - `ls` / `grep` / `glob` 的 `path` **是可选键**，而缺省就是**默认根**
- *   （工具 schema 的说明一字不差：「缺省＝工作区根」）⇒ `ls {}`（列当前目录）是
- *   **合法且常见**的形态，仍归**轻**；
- * - `read` 的 `path` **是必填**——缺了就是模式不符的调用（工具那边回 `OUTPUT_PATH_REQUIRED`），
- *   此处**不假装知道落点** ⇒ 归「判不出」。
- *
- * ⇒「判不出」只留给**真正看不懂**的形态，不再兜住「没给参数」这种合法写法。
- *
- * ## 内核自己的只读落点（U80）——**只有这一支**接那位
- *
- * 读类调用的落点除各根之外**另认几处**（`readOnlyDirs`，当前一处：`exec` 后台那一形的
- * 输出目录）——那是**我们自己的产物**、不是用户的东西 ⇒ **不算越界**。
- * 由头与三条分寸见 `paths.ts` · `landPath` 的头注；**「哪几处」不在这儿拼**，由闸门给。
- *
- * ⚠️ **只有读与搜索这一支接**：本支出的操作类型恒为 `read`，而这四件也正是「读材料」那一类
- * （设计 · 权限：「读材料不在此列」）。`edit` / `write` / `exec` 那三支**不接**——
- * 往那处**写 / 删 / 移照旧判根外**（「认一处」不等于「放一片」，那是本单的要害）。
- *
- * ⚠️ **与沙箱那一半的分寸不完全对称**（如实记）：执行域那处只认 `read` 一件
- * （`SandboxOptions.readOnlyDirs`：`list` / `match` 都不认），而这一支是**读与搜索一类四件**。
- * 于是 `ls` / `grep` / `glob` 点名那处时，**判据上算根内、执行上仍够不着**（沙箱照旧回越界）。
- * 这一格**不是本单的射程**（工单明写「不动 U70 已经落的那半」）——此处不按工具名分两路，
- * 正是因为「判据落在一处，别散」：**归类的边界是「读材料」这一类，不是某几个工具名**。
- */
+/** 内置文件读取与目录查询：真实根外目标在同一次闸门中明确申请。 */
 function analyzeSearch(
   call: ToolCall,
   ctx: PermissionContext,
   readOnlyDirs?: readonly string[],
 ): Analysis {
-  const path = firstString(call.args, isPathKey)
+  const path = firstString(call.args, (key) => key === 'path')
 
   if (path === undefined && PATH_REQUIRED_TOOLS.includes(call.name)) {
     return unclassifiable(call.name, `参数里缺必填的路径字段（参数键全表：${call.name} 的 path 必填）`)
   }
 
-  const landing = landPath(path?.value ?? DEFAULT_ROOT, ctx, readOnlyDirs)
+  const landing = landPath(path?.value ?? DEFAULT_ROOT, ctx, call.name === 'read' ? readOnlyDirs : undefined)
   const material =
     path === undefined
       ? `影响面：${describeLanding(landing)}（调用没给路径——参数键全表：缺省＝默认根）`
       : `影响面：${describeLanding(landing)}`
 
-  return { weight: 'light', material, ops: ['read'], landings: [landing] }
+  return {
+    weight: landing.inside ? 'light' : 'heavy',
+    ...(landing.inside ? {} : { reason: 'out-of-bounds' as const }),
+    material: `${material}\n范围：只读${call.name === 'read' ? '该文件' : '该目录'}；本次批准不包含父目录或写入权限。`,
+    ops: ['read'], landings: [landing],
+  }
 }
 
-/** 增量编辑（`edit`）——放行区方向（diff 可审）；**但工作区外的写＝必闸**。 */
+/** 材料只取本次参数，不读文件；正文不截断，终端负责分页。 */
+function reviewText(label: string, value: unknown): string {
+  if (typeof value !== 'string') return `${label}：参数不是字符串，工具将拒绝执行。`
+  return `${label}（完整，${value.length} 字符）：\n${value === '' ? '（空字符串）' : value}`
+}
+
+/** 根内增量编辑沿用默认允许；根外编辑展示目标与完整 old/new 后申请。 */
 function analyzeEdit(call: ToolCall, ctx: PermissionContext): Analysis {
-  const path = firstString(call.args, isPathKey)
-  if (path === undefined) {
-    return unclassifiable(call.name, '参数里找不到可判的路径字段（键名未锚定——见回报待决）')
-  }
-
+  const path = firstString(call.args, (key) => key === 'path')
+  if (path === undefined) return unclassifiable(call.name, '缺少 path 参数')
   const landing = landPath(path.value, ctx)
-  if (landing.inside) {
-    return { weight: 'light', material: `影响面：${describeLanding(landing)}`, ops: ['edit'], landings: [landing] }
-  }
-
   return {
-    weight: 'heavy',
-    reason: 'out-of-bounds',
-    material: impact([landing], '工作区外的写——**工具侧的**必闸：越界（技术方案 · 权限：必闸清单 · 越界）。'
-        + '⚠️ `exec` 那一路的名单收缩（U76）**只到命令那一层**——这两处是工具自己的判定，不在那次收缩的射程里。'),
-    ops: ['edit'],
-    landings: [landing],
-  }
-}
-
-/**
- * 整写（`write`）——静态归类 `by-call`：**新建＝轻；覆盖＝必闸**。
- *
- * ⚠️ 判不出：权限域**不碰文件系统**（域间只经契约、fs 边界归执行域），问不到「文件在不在」。
- * 故一律按**覆盖**假定——即「看不懂从严」（技术方案 · 权限：危险分级 v0 末条）。
- * 存在性若由调用方带进来（参数模式补 `overwrite` 之类），此处即可分流——见回报「待决」。
- */
-function analyzeWrite(call: ToolCall, ctx: PermissionContext): Analysis {
-  const path = firstString(call.args, isPathKey)
-  if (path === undefined) {
-    return unclassifiable(call.name, '参数里找不到可判的路径字段（键名未锚定——见回报待决）')
-  }
-
-  const landing = landPath(path.value, ctx)
-  // 操作类型记 `overwrite`：按**覆盖**假定（判不出新建还是覆盖＝从严那一侧），
-  // 故本格的显示与规则都按「整写」认它——待存在性进得来（见回报「待决」）再分流 `create`。
-  const ops: readonly RuleOp[] = ['overwrite']
-
-  if (!landing.inside) {
-    return {
-      weight: 'heavy',
-      reason: 'out-of-bounds',
-      material: impact([landing], '工作区外的写——**工具侧的**必闸：越界（技术方案 · 权限：必闸清单 · 越界）。'
-        + '⚠️ `exec` 那一路的名单收缩（U76）**只到命令那一层**——这两处是工具自己的判定，不在那次收缩的射程里。'),
-      ops,
-      landings: [landing],
-    }
-  }
-
-  return {
-    weight: 'heavy',
-    reason: 'unknown',
+    weight: landing.inside ? 'light' : 'heavy',
+    ...(landing.inside ? {} : { reason: 'out-of-bounds' as const }),
     material: [
       `影响面：${describeLanding(landing)}`,
-      '判不出：新建还是覆盖——本域不碰文件系统，问不到存在性。',
-      `处置：按不可逆假定问（覆盖＝必闸——工具集 v1：write 新建＝轻、覆盖＝必闸）。`,
+      ...(landing.inside ? [] : ['工作区外的编辑：本次批准仅作用于该文件。']),
+      reviewText('替换前 old', call.args['old']),
+      reviewText('替换后 new', call.args['new']),
     ].join('\n'),
-    ops,
-    landings: [landing],
+    ops: ['edit'], landings: [landing],
+  }
+}
+
+/** 整写沿用需确认的政策；审批材料完整展示即将写入的本次参数。 */
+function analyzeWrite(call: ToolCall, ctx: PermissionContext): Analysis {
+  const path = firstString(call.args, (key) => key === 'path')
+  if (path === undefined) return unclassifiable(call.name, '缺少 path 参数')
+  const landing = landPath(path.value, ctx)
+  return {
+    weight: 'heavy',
+    reason: landing.inside ? 'unknown' : 'out-of-bounds',
+    material: [
+      `影响面：${describeLanding(landing)}`,
+      '整写文件：可能覆盖已有内容，需要确认。本次批准仅作用于该文件。',
+      reviewText('待写入内容', call.args['content']),
+    ].join('\n'),
+    ops: ['overwrite'], landings: [landing],
   }
 }
 
@@ -643,8 +577,13 @@ function analyzeExec(call: ToolCall, ctx: PermissionContext): Analysis {
     return unclassifiable('exec', `参数里找不到命令字段（该字段名锚定为「${COMMAND_KEY}」）`)
   }
 
-  const segments = decompose(command.value, ctx)
-  return judge(segments)
+  const cwd = typeof call.args['cwd'] === 'string' ? landPath(call.args['cwd'], ctx) : undefined
+  const analysis = judge(decompose(command.value, cwd?.absolute === undefined ? ctx : { ...ctx, defaultRoot: cwd.absolute }))
+  if (cwd === undefined) return analysis
+  const placed = { ...analysis, material: `工作目录：${describeLanding(cwd)}\n${analysis.material}`, landings: [cwd, ...analysis.landings] }
+  if (analysis.refusal !== undefined || cwd.inside) return placed
+  return { ...analysis, material: placed.material, landings: placed.landings, refusal: undefined, weight: 'heavy', reason: 'out-of-bounds' }
+
 }
 
 /**
@@ -710,9 +649,4 @@ function renderDecomposition(
   }
 
   return lines.join('\n')
-}
-
-/** 单路径工具的影响面材料。 */
-function impact(landings: readonly Landing[], why: string): string {
-  return [`影响面：${landings.map(describeLanding).join('；')}`, `判据：${why}`].join('\n')
 }

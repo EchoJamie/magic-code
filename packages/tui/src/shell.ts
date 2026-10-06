@@ -8,7 +8,7 @@
  * 四条纪律（原型 · 交互逻辑）：
  * ① **先接订阅、后放开输入**（构造即订阅）；
  * ② **slash 原稿**——已提交命令进入输入记录与召回；本地执行结果不进模型上下文；
- * ③ **审批主动进入**——到达只提示；Ctrl+G 进入后保存草稿，答完归还、**不自动发送**·
+ * ③ **审批直接展开**——保留草稿；明确选择后 Enter 作答，Esc 返回原处·
  *    **不静默吞键**（只认 y/a/n ＋ 全局 ctrl+c，其余忽略但当场说一句；粘贴一律拒）；
  * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
  *
@@ -18,6 +18,7 @@
  * 三选自己答（见 `openTaskMenu` / `taskAction`）。
  */
 
+import { decisionActions } from './components/decision.ts'
 import { composerLayout } from './components/composer.ts'
 import { dirname, join } from 'node:path'
 import { MAGIC_DIR, apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
@@ -174,7 +175,6 @@ export type ShellKey =
   | { readonly kind: 'escape' }
   | { readonly kind: 'ctrl+p' }
   | { readonly kind: 'ctrl+n' }
-  | { readonly kind: 'ctrl+g' }
   | { readonly kind: 'pickerDetailTop'; readonly top: number }
   | { readonly kind: 'memberInput' }
   | { readonly kind: 'memberMenu' }
@@ -244,6 +244,7 @@ export type ShellKey =
    * 终端高度、交互区的高度账只有渲染那一层有**。故目标位置由渲染层按手里那一窗算好
    * （`plan.ts` 的 `planScrolled`：夹在两头之间），外壳只存不猜——同一条「拿不到的不编」。
    */
+  | { readonly kind: 'decisionTop'; readonly top: number }
   | { readonly kind: 'planTop'; readonly top: number }
   | { readonly kind: 'readerTop'; readonly top: number }
   | { readonly kind: 'paste'; readonly text: string }
@@ -311,6 +312,7 @@ export type Shell = {
    * - **正等着走的那一趟**（`/exit` / 「停止并退出」）**不放行**：等的那一拍永远不会来了，
    *   悄悄走出去就是「伪报已停止」。如实说一句，留下的那扇门是 `ctrl+c`。
    */
+  presented(ids: readonly string[]): void
   disconnected(why?: string): void
   /**
    * **加入本次输入**（U110 · 查看那一屏的 `Enter`）——把历史里那一张图**放回输入行**。
@@ -356,9 +358,10 @@ const HELP_LINES: readonly string[] = [
   '  Shift+Enter          换行',
   '  Tab                  补全',
   '  ↑ / ↓                选择候选',
-  '  Esc                  返回，保留草稿',
+  '  Esc                  临时层返回；主输入运行中停止，保留草稿',
+  '  Ctrl+R / /connect    重连当前会话并刷新',
+  '  待决策面板           ↑↓ 选择，Enter 确认；返回输入后 Tab 再进入',
   '  Ctrl+P / Ctrl+N      召回上一条 / 下一条输入',
-  '  Ctrl+G               查看待答事项',
   '  Ctrl+O               查看记录',
   '  Ctrl+T               展开或收起计划',
   '  Alt+Enter            选择本条输入用途',
@@ -538,7 +541,7 @@ export type ShellOptions = {
    * **Magic 的落点**（U100 · `MagicHome.base`，即 `~/.magic` 或 `$MAGIC_HOME/.magic`）。
    *
    * 只有一件差事：**转后台时那条接回入口要写得能真接回同一个库**（见 `resumeCommandOf`）。
-   * 不给＝不知道（用例 / 演示）⇒ 那条只写短的那一形（`magic --session <id>`，
+   * 不给＝不知道（用例 / 演示）⇒ 那条只写短的那一形（`magic resume <id>`，
    * 那就是默认落在 `~/.magic` 的用户要敲的）。
    */
   readonly magicBase?: string | undefined
@@ -589,7 +592,7 @@ export type ShellOptions = {
    */
   readonly resumed?: ResumeFeed | undefined
   /**
-   * **这一趟开局就接的那条会话**（`--session <id>`）——只作开屏那张摘要的排除项
+   * **这一趟开局就接的那条会话**（`resume <id>`）——只作开屏那张摘要的排除项
    * （设计：摘要说的是**其他**活跃工作，而这条正是用户为它来的）。
    */
   readonly openingSession?: string | undefined
@@ -620,6 +623,7 @@ export type ShellOptions = {
    * 与 `stopped` 分开：那一条是**用户自己按的**那一下的回执，这一条是**他没看着的时候**
    * 发生的事——两件事的读者心情都不一样（一个在等结果，一个刚回来）。
    */
+  readonly markRead?: ((ids: readonly string[]) => void) | undefined
   readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
 }
 
@@ -780,7 +784,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   // 三处分寸都在这一跳上：
   // - **一次**——它是一条回执（落进记录区、此后随页面走），不是状态行那种常驻读数；
   // - **确有**——一条活跃的都没有就一个字都不说（空白开一条新的时屏上不该多一行）；
-  // - **其他**——这一趟开局就接的那条会话（`--session`）不算「别的活跃工作」：
+  // - **其他**——这一趟开局就接的那条会话（`resume`）不算「别的活跃工作」：
   //   用户正是为它来的。
   {
     const summary = runSummary(view.runs, options.openingSession)
@@ -1230,7 +1234,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 任何一条都会把「启动中」抹掉，而**回车那时仍是不受理的** ⇒ 屏上就变成
     // 「看着闲着、按了却没反应」（原型 · 交互逻辑最不想要的那种）。
     const next = !connected
-      ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : 'Magic Code 已退出 · ctrl+r 重新打开 · ctrl+c 离开' } }
+      ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : HINT_LOST } }
       : ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
     // **回了输入行 ⇒ 屏的栈清空**（U61）——栈里装的是「还在底下的那几屏」，而屏全收起来
     // 之后它们已经没有主语了。这是**唯一的收口**（视图的每一处改动都经这里），
@@ -1239,7 +1243,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (next.dock.kind === 'picker' && next.dock.picker.reader !== undefined) {
       reading.set(next.dock.picker.reader.key, next.dock.picker.reader.top)
     }
-    view = decisions.size>0&&next.dock.kind!=='decision'?{...next,status:{...next.status,hint:'Ctrl+G 审阅'}}:next
+    const request = decisions.values().next().value
+    const member = view.collaboration?.members.find(one => one.agent.sessionId === request?.session && request?.session !== view.sessionId)?.agent.name
+    const pendingDecision = request === undefined ? undefined : { ...request.data, id: request.id, ...(member === undefined ? {} : { member }), submitted: answeredDecisions.has(request.id), position: { index: 1, total: decisions.size } }
+    view = { ...next, pendingDecision }
+    if (view.dock.kind === 'decision') view = withDecisionStatus({ ...view, dock: { ...view.dock, pending: { ...view.dock.pending, submitted: answeredDecisions.has(view.dock.pending.id), position: { index: 1, total: decisions.size } } } })
     if (streaming) notifyCoalesced()
     else {
       if (pending !== undefined) {
@@ -1404,10 +1412,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 而 `boot`（装载 ＋ 恢复）还没跑完。丢弃＋出声由调用方给（`submit` 那一处），
     // 这儿是兜底：别的路径（选择器 / 裁决）此刻本就不该有，有也一并拦下。
     if (!ready || !connected) return
-    if (command.type === 'decision.answer' && view.collaboration?.collaboration !== undefined) {
-      if (answeredDecisions.has(command.id)) return
-      answeredDecisions.add(command.id)
-    }
     transport.send(command.type==='input.manage'&&view.inputMember!==undefined?{...command,member:view.inputMember}:command)
   }
 
@@ -1423,7 +1427,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   // —— 事件 ——
 
   const onEvent = (event: KernelEvent): void => {
-    if (disposed) return
+    if (disposed || (!connected && !reopening)) return
 
     if(lastSubmit?.local===true && (('ok' in event.data&&event.data.ok===false)||(event.kind==='session.state'&&event.data.note!==undefined)))settleDraft(lastSubmit.ref,true)
 
@@ -1480,10 +1484,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (event.kind === 'tool.decision.request') {
       if (decisions.has(event.id) || answeredDecisions.has(event.id)) return
       decisions.set(event.id, event)
-      const held = view
-      const requested = reduce(view, event)
-      commit({ ...requested, dock: held.dock, draft: held.draft, refs: held.refs, caret: held.caret, stashed: held.stashed,
-        status: { ...requested.status, hint: 'Ctrl+G 审阅' } })
+      if (view.dock.kind !== 'decision') openDecision()
+      else commit(view)
       return
     }
     if(event.kind==='turn.end'){for(const [id,request] of decisions)if(request.session===event.session){decisions.delete(id);answeredDecisions.add(id)}}
@@ -1540,7 +1542,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // **思考档那一格跟着走**（U112）——`model.catalog` 一改 `modelCurrent`，它就得重算
     // （换模型换了档位／新模型没有这一档），见 `syncReasoning` 的注。
     syncReasoning()
-    if(prior.dock.kind==='decision'&&((event.kind==='tool.decision'&&prior.dock.pending.call===event.data.call)||(event.kind==='turn.end'&&!decisions.has(prior.dock.pending.id))))returnDecision()
+    if(prior.dock.kind==='decision'&&((event.kind==='tool.decision'&&prior.dock.pending.call===event.data.call)||(event.kind==='turn.end'&&!decisions.has(prior.dock.pending.id)))){ returnDecision(); openDecision() }
 
     // **`/config` 那三份读数**（U71）——三份都到齐了才开屏（由头见 `configPending` 那段注）。
     //
@@ -1855,7 +1857,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     for(const one of snapshot.decisions){
       if(!answeredDecisions.has(one.id))decisions.set(one.id,{kind:'tool.decision.request',id:one.id,session:view.sessionId??'',turn:null,at:Date.now(),data:one})
     }
-    commit({...resumed,dock:held.dock,draft:held.draft,refs:held.refs,caret:held.caret,stashed:held.stashed,status:{...resumed.status,hint:decisions.size?'Ctrl+G 审阅':resumed.status.hint}})
+    commit({...resumed,dock:held.dock,draft:held.draft,refs:held.refs,caret:held.caret,stashed:held.stashed,status:resumed.status})
+    openDecision()
   }
 
   /**
@@ -2045,7 +2048,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 「这条会话此刻在不在跑」，而**只有管理者说得出来**（停这个动作从它那一头发起，
     // 执行者退场之后没人再报 `turn.end`——外壳那一头于是没有下文，那一格就永远停在
     // 「● 工作中」，与回执那句「停了」在同一屏上打架）。
+    const prior = view.dock
+    for (const [id, request] of decisions) {
+      if (rows.some(row => row.session === (view.collaboration?.members.some(member => member.agent.sessionId === request.session) ? request.session : view.sessionId) && row.state === 'stopped')) {
+        decisions.delete(id)
+        answeredDecisions.add(id)
+      }
+    }
     commit(withRunFacts(view, rows))
+    if (prior.kind === 'decision' && !decisions.has(prior.pending.id)) { returnDecision(); openDecision() }
     refreshSessionPicker()
   })
 
@@ -2098,26 +2109,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     commit(appendReceipt(view, text))
   })
 
-  /**
-   * **刚刚发生了一件事**（U50）——⚠️ **今天一条都不来**（见下）。
-   *
-   * ⚠️ **三类之外一个都不来**（谁在什么时候说，判据在管理者那一头：设计「不持续播报
-   * 『还在跑』」）；同一条事实也只来一次（跨窗口去重按那条事实的号）。
-   *
-   * ⚠️ **而「三类之内」今天也是一个都不来**（U86，最后一格落地之后）：三类**同一把尺子**
-   * ——**有人正看着这条会话 ⇒ 一个字都不说**、**没看着 ⇒ 系统通知 ＋ 未读**（都在管理者
-   * 那一头），故 `manager.ts` 的 `notify` **不再往窗口送任何一条运行通知**。
-   * 这一支（连同 `noticeReceiptOf`）是**第二道**，留着但**不会被叫到**——清掉它是一笔
-   * 独立的活（不属于任何一格判据）。
-   */
+  // 具体事项进入记录，呈现完成后才回传其 id；欢迎摘要不走这里。
   options.notices?.((notice) => {
-    if (disposed) return
-    const line = noticeReceiptOf(notice, nameOfSession(notice.session))
-    // ⚠️ **没有那一句就不落行**（U74 / U79 落的姿势）：那两类各自撤了「落到行上」的
-    // 那句话——不是「换了个落点」也不是「往后挪一挪」，是**不要了**；`failed` 那一格还
-    // 拼得出一行字，可**它今天走不到这儿**（上面那条注）。故这一跳**一条都落不了**。
-    if (line === undefined) return
-    commit(appendReceipt(view, line))
+    if (disposed || !notice.unread) return
+    const key = `notice:${notice.id}`
+    if ([...view.settled, ...view.rows].some(row => row.key === key)) return
+    const who = nameOfSession(notice.session)
+    const text = noticeReceiptOf(notice, who) ?? `「${who}」${notice.kind === 'done' ? '本轮已完成' : '需要你决定'}${notice.detail === undefined ? '' : `：${notice.detail}`}`
+    commit({ ...view, settled: [...view.settled, { kind: 'receipt', key, text, noticeId: notice.id }] })
   })
 
   /**
@@ -2129,14 +2128,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     if (disposed) return
     holdResumed(snapshot)
   })
-  const finishCurrent = (hostGone = false): void => {
+  const finishCurrent = (): void => {
     pendingResume = null
     if (resumeTimer !== undefined) clearTimeout(resumeTimer)
     resumeTimer = undefined
     let next = finishExecution(view)
     // detached 只核销当前入口执行者；成员审批仍由各自的执行身份负责。
     for (const [id, request] of decisions) {
-      if (hostGone || request.session === undefined || request.session === view.sessionId) {
+      if (!view.collaboration?.members.some(member => member.agent.sessionId === request.session && request.session !== view.sessionId)) {
         decisions.delete(id)
         answeredDecisions.add(id)
       }
@@ -2153,6 +2152,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       }
     }
     commit(next)
+    openDecision()
   }
   options.detached?.(() => {
     if (disposed) return
@@ -3687,7 +3687,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // 是另一半谎。故这一格返回假，`ctrl+c` 回到**空闲那条路**（按两次离开）——那是这一屏
     // 此刻唯一说得出、也做得到的事（「如实留在界面说明」见 `disconnected`）。
     if (view.status.state === 'lost') return false
-    if (working() || view.dock.kind === 'decision') return true
+    if (working() || decisions.size > 0 || view.dock.kind === 'decision') return true
 
     const state = runStateNow()
     return state !== undefined && ACTIVE_RUN_STATES.has(state)
@@ -3941,7 +3941,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /**
    * **接回来该敲什么**（U100）——设计：「转后台成功离开时，留一条**可复制的接回入口**
-   * （沿用 `magic --session <id>`；**按实际配置保留必要启动参数**）」。
+   * （沿用 `magic resume <id>`；**按实际配置保留必要启动参数**）」。
    *
    * ## 「必要启动参数」是什么
    *
@@ -3950,7 +3950,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
    * `~/.magic`——**非默认的那一形必须把 `MAGIC_HOME` 带上**，否则用户复制过去接到的是
    * **另一个库**（会话不在、报「没有这条会话」）。
    *
-   * - **默认那一形**（`base` ＝ `<家目录>/.magic`）⇒ 短的那一句，与设计原文一字不差；
+   * - **默认那一形**（`base` ＝ `<家目录>/.magic`）⇒ 清除目标终端可能设置的 `MAGIC_HOME`；
    * - **非默认那一形** ⇒ 前置 `MAGIC_HOME=<根>`：`resolveMagicHome` 的算式是
    *   `base ＝ <根>/.magic`，故**根就是 `base` 的上一级**（`dirname`，不是拿字符串切）；
    * - **落点不知道**（用例 / 演示没给 `magicBase`）⇒ 只写短的那一句（**不编一个 `MAGIC_HOME`**）。
@@ -3961,12 +3961,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
   const resumeCommandOf = (session: SessionId): string => {
     const base = options.magicBase
     const home = options.home
-    if (base === undefined || home === undefined) return `magic --session ${session}`
-
-    // 默认那一形：与「换个终端也一样」的那一句一字不差
-    if (base === join(home, MAGIC_DIR)) return `magic --session ${session}`
-
-    return `MAGIC_HOME=${shellQuote(dirname(base))} magic --session ${session}`
+    const instance = base === undefined ? '' : home !== undefined && base === join(home, MAGIC_DIR)
+      ? '/usr/bin/env -u MAGIC_HOME ' : `MAGIC_HOME=${shellQuote(dirname(base))} `
+    const workspace = view.catalog.find(one => one.id === session)?.workspace?.[0] ?? options.workspaceRoots?.[0]
+    const cwd = workspace === undefined ? '' : `cd -- ${shellQuote(workspace)} && `
+    return `${cwd}${instance}magic resume ${shellQuote(session)}`
   }
 
   /**
@@ -4057,7 +4056,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     // ② **转到后台**——退出界面，工作照跑。**这一支只改本地视图一格**（见上）。
     //
     //    ⚠️ **离开之前留一条接回入口**（设计明文：「转后台成功离开时，**留一条可复制的
-    //    接回入口**（沿用 `magic --session <id>`；按实际配置保留必要启动参数），不追加常驻
+    //    接回入口**（沿用 `magic resume <id>`；按实际配置保留必要启动参数），不追加常驻
     //    状态栏」）。它是**一行记录**（进 scrollback）：这一屏走后内容留在终端里，
     //    用户想接回来时那串命令就在眼前、可以整行复制。
     //    ⚠️ 不关菜单再走：这一屏马上就要没了（`leaving` 一置，`app.ts` 那一处 `useEffect`
@@ -4164,26 +4163,50 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     options.stop?.(target, 'run')
   }
 
+  const reconnect = (): ShellEffect => {
+    if (reopening || options.reopen === undefined) return NONE
+    reopening = true
+    commit(view)
+    void options.reopen().then(() => {
+      if (disposed) return
+      connected = true
+      commit(appendReceipt(withRunFacts(patchStatus({ ...view, flash: null }, { state: 'idle', amount: null, hint: HINT_IDLE }), options.runs?.current() ?? view.runs), 'Magic Code 已连接，正在刷新当前会话。草稿未发送。'))
+      readHistory()
+      openDecision()
+    }, error => {
+      if (!disposed) commit(appendReceipt(view, `重新连接失败：${String(error)}`))
+    }).finally(() => { reopening = false; if (!disposed) commit(view) })
+    return NONE
+  }
+
+  const disconnect = (why?: string): void => {
+    if (disposed || !connected) return
+    connected = false
+    const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
+    if (lastSubmit !== null && unconfirmed.has(lastSubmit.ref)) settleDraft(lastSubmit.ref, true)
+    const mark = (row: import('./view.ts').LogRow) => row.kind === 'user' && unconfirmed.has(row.inputRef) ? { ...row, inputState: '未确认接收（连接已断开）' } : row
+    for (const id of decisions.keys()) answeredDecisions.delete(id)
+    decisions.clear()
+    returnDecision()
+    pendingResume = null
+    if (resumeTimer !== undefined) clearTimeout(resumeTimer)
+    resumeTimer = undefined
+    const waiting = exitWait !== null
+    exitWait = null
+    commit(patchStatus(appendReceipt({ ...view, settled: view.settled.map(mark), rows: view.rows.map(mark) }, `连接已断开${why ? `（${why}）` : ''}，暂时无法确认任务状态。${waiting ? '停止尚未确认。' : ''}`), { state: 'lost', amount: null, hint: HINT_LOST }))
+  }
+
   let verticalColumn:number|null=null
   const key = (input: ShellKey): ShellEffect => {
     if(input.kind!=='up'&&input.kind!=='down')verticalColumn=null
     if (disposed) return NONE
-    if (input.kind === 'ctrl+r') {
-      if (connected || reopening || options.reopen === undefined) return NONE
-      reopening = true
-      commit(view)
-      void options.reopen().then(() => {
-        if (disposed) return
-        connected = true
-        commit(appendReceipt({ ...view, status: { ...view.status, hint: idleHintOf(view) } }, 'Magic Code 已重新连接。草稿已保留，请明确发送。'))
-        readHistory()
-      }, (error) => {
-        if (!disposed) commit(appendReceipt(view, `重新打开失败：${String(error)}`))
-      }).finally(() => { reopening = false; if (!disposed) commit(view) })
-      return NONE
+    if (input.kind === 'ctrl+r') return reconnect()
+    if (input.kind === 'enter' && view.dock.kind === 'input' && view.draft.trim() === '/connect') {
+      commit({ ...view, draft: '', caret: 0, refs: [], completion: null })
+      return reconnect()
     }
     if (!connected && input.kind === 'enter') {
-      commit({ ...view, flash: 'Magic Code 已退出，草稿未发送。按 ctrl+r 重新打开。' })
+      commit({ ...view, flash: '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。' })
       return NONE
     }
 
@@ -4209,6 +4232,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
     if (input.kind === 'readerTop') {
+      if (view.dock.kind === 'decision' && decisionReturn?.dock.kind === 'picker' && decisionReturn.dock.picker.reader !== undefined) {
+        const picker = decisionReturn.dock.picker
+        decisionReturn = { ...decisionReturn, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!, top: Math.max(0, input.top) } } } }
+        return NONE
+      }
       if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined) {
         const picker = view.dock.picker
         commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!, top: Math.max(0, input.top) } } } })
@@ -4216,7 +4244,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return NONE
     }
     if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined
-      && !['left', 'escape', 'ctrl+c', 'memberInput', 'memberMenu', 'ctrl+g', 'ctrl+o'].includes(input.kind)) return NONE
+      && !['left', 'escape', 'ctrl+c', 'memberInput', 'memberMenu', 'ctrl+o', 'tab'].includes(input.kind)) return NONE
 
     if (view.dock.kind === 'picker' && ['paths','skills','session','config'].includes(view.dock.picker.source)) {
       const picker=view.dock.picker, query=picker.filter??''
@@ -4281,14 +4309,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (collaborationAt !== undefined) { enterLayer(); openMember(collaborationAt, 'records') }
         return NONE
 
-      case 'ctrl+g': {
-        const request = decisions.values().next().value
-        if (request === undefined || view.dock.kind === 'decision' || !connected) return NONE
-        decisionReturn = { dock: view.dock, layers, status: view.status }
-        commit(reduce(view, request))
-        return NONE
-      }
-
       case 'ctrl+o':
         return OPEN_SCREEN
 
@@ -4308,6 +4328,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       //    「溢出」那一半不必再判：没溢出时渲染层给的 `top` 就是当前值（`planWindow`
       //    夹住了），存下去等于没动。
       // 夹一道下界：手搭的视图可能给过负数（同 `caretAt` 那种防御）。
+      case 'decisionTop':
+        if (view.dock.kind === 'decision') commit({ ...view, dock: { ...view.dock, pending: { ...view.dock.pending, top: input.top } } })
+        return NONE
+
       case 'planTop':
         if (view.dock.kind !== 'input') return NONE
         commit({ ...view, planTop: Math.max(0, Math.trunc(input.top) || 0) })
@@ -4355,7 +4379,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         if (view.dock.kind === 'decision') { returnDecision(); return NONE }
         // 候选开着 ⇒ 先**收起候选**（原型：`esc` 收起；草稿留着）
         if (view.completion !== null) return (commit({ ...view, completion: null }), NONE)
-        // 正文没有临时层，Esc 保持原稿。
+        // 主输入复用菜单的停止动作及其身份校验。
+        if (inFlight()) { openTaskMenu(); return taskAction('stop') }
         return NONE
 
       case 'up':
@@ -4367,11 +4392,17 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
           return NONE
         }
         // 候选开着 ⇒ 在候选里选（原型 · 场景 11）；否则才是输入历史
-        if (view.completion !== null) {
+        if (view.dock.kind !== 'decision' && view.completion !== null) {
           commit(moveCompletion(view, delta))
           return NONE
         }
-        if (view.dock.kind === 'decision') return NONE
+        if (view.dock.kind === 'decision') {
+          const pending = view.dock.pending
+          const count = decisionActions(pending).length
+          const selected = pending.selected === undefined ? (delta > 0 ? 0 : count - 1) : (pending.selected + delta + count) % count
+          commit({ ...view, dock: { ...view.dock, pending: { ...pending, selected } } })
+          return NONE
+        }
         const columns = input.columns ?? 160
         const layout = composerLayout(view.draft, view.caret, columns)
         if (layout.rows.length > 1) {
@@ -4394,6 +4425,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       }
 
       case 'tab':
+        if (decisions.size > 0 && ((view.dock.kind === 'input' && view.completion === null) || (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined))) { openDecision(); return NONE }
         // `Tab` 补全（原型 · 场景 11）；没有候选时什么也不做（Tab 不当正文）
         if (view.dock.kind === 'picker') {
           // 路径那一栏里 `Tab` ＝ **把选中的那一条补进查询**（目录则再往里看一层）
@@ -4488,7 +4520,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
         return NONE
 
       case 'char':
-        if (view.dock.kind === 'decision') return answer(input.char)
+        if (view.dock.kind === 'decision') return refuse(input.char)
         if (view.dock.kind === 'picker') return NONE
         const previous=layerNow()
         insertAt(input.char)
@@ -4518,49 +4550,23 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     layers = saved.layers
   }
 
-  /** 接管期间的作答键——只认 `y` / `a` / `n`（必闸类没有 `a`）。 */
-  const answer = (char: string): ShellEffect => {
+  const openDecision = (): void => {
+    const request = decisions.values().next().value
+    if (request === undefined || !connected || view.dock.kind === 'decision') return
+    decisionReturn = { dock: view.dock, layers, status: view.status }
+    commit(reduce(view, request))
+  }
+
+  const answer = (): ShellEffect => {
     const pending = view.dock.kind === 'decision' ? view.dock.pending : undefined
-    if (pending === undefined) return NONE
-
-    // **连接断了 ⇒ 一个答复都不发**（U100 合前复核 · 返修二）：「失联」不是「还能答」——
-    // 送不出去的答复、也不该替用户把那张可能还有效的审批答掉。如实说一句，卡照旧挂着。
-    if (view.status.state === 'lost') {
-      commit(appendReceipt(view, '连接已断开——这一件答不了。'))
-      return NONE
-    }
-
-    if (char === 'y') {
-      send({ type: 'decision.answer', id: pending.id, decision: 'approve' })
-      return NONE
-    }
-    if (char === 'n') {
-      send({ type: 'decision.answer', id: pending.id, decision: 'reject' })
-      return NONE
-    }
-    if (char === 'a') {
-      // **必闸类不给 `a`——外发那一件是例外**（U72）：它带域名时按域名记
-      //（卡上那一格也照实画成活的、措辞「总是允许这个域名」，见 `decision.ts`）。
-      // 两处判据同一位（`pending.host`）：一处改一处漏，屏上就会出现「画得出来、
-      // 按下去说不行」那种卡。
-      if (pending.weight === 'heavy' && pending.host === undefined) {
-        // 外部操作说不出「可逆 / 不可逆」那套词——按它自己的缘由说（U38）；
-        // 键位也不在这儿再列一遍（卡上就写着，返工 B：一屏只说一次）
-        commit(
-          said(
-            view,
-            pending.external === true
-              ? '外部操作不可「总是允许」——效果由服务器决定，只能批准这一次。'
-              : '必闸类不可「总是允许」——按 y 批准这一次，或 n 拒绝。',
-          ),
-        )
-        return NONE
-      }
-      send({ type: 'decision.answer', id: pending.id, decision: 'approve', remember: true })
-      return NONE
-    }
-
-    return refuse(char)
+    if (pending === undefined || !connected || !decisions.has(pending.id) || answeredDecisions.has(pending.id)) return NONE
+    const action = pending.selected === undefined ? undefined : decisionActions(pending)[pending.selected]
+    if (action === undefined) return refuse('回车；请先用 ↑↓ 选择')
+    // 回执前保留卡与草稿暂存，连续 Enter 既不能重复作答，也不能发送原稿。
+    answeredDecisions.add(pending.id)
+    send({ type: 'decision.answer', id: pending.id, decision: action.decision, ...(action.remember ? { remember: true } : {}) })
+    commit(view)
+    return NONE
   }
 
   /** 接管期间的非答复键——忽略，但**当场说一句**（「不静默吞键」）。 */
@@ -4582,7 +4588,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       commit(appendReceipt(view, '连接已断开，暂时发不出这一句。'))
       return NONE
     }
-    if (view.dock.kind === 'decision') return refuse('回车')
+    if (view.dock.kind === 'decision') return answer()
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
     if (view.dock.kind === 'prompt') return submitAsk()
 
@@ -5319,19 +5325,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     },
 
     key,
+    presented: (ids) => { if (!disposed && connected) options.markRead?.(ids) },
     readHistory,
     attachMaterial,
     exportMaterial,
-    hostGone: () => {
-      if (disposed || !connected) return
-      connected = false
-      const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
-      if (lastSubmit !== null && unconfirmed.has(lastSubmit.ref)) settleDraft(lastSubmit.ref, true)
-      const markUnconfirmed = (row: import('./view.ts').LogRow) => row.kind === 'user' && unconfirmed.has(row.inputRef) ? { ...row, inputState: '未确认接收（连接已断开）' } : row
-      commit({ ...view, settled: view.settled.map(markUnconfirmed), rows: view.rows.map(markUnconfirmed) })
-      finishCurrent(true)
-      commit(appendReceipt(view, 'Magic Code 已退出，记录和草稿保留在当前窗口。'))
-    },
+    hostGone: () => disconnect('Magic Code 已退出'),
 
     /**
      * 放开输入——`boot` 完成那一下（真外壳在 `run.ts` 里按这个次序调）。
@@ -5351,22 +5349,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
      * ⚠️ **它不 `dispose()`、也不退订**：连接那一头由 `cli.ts` 收（它收了连接窗口才活到
      * 用户按离开）。这一跳只改屏上的话与状态那一格。
      */
-    disconnected: (why?: string): void => {
-      if (disposed) return
-
-      // **一句话，说清此刻的处境**——不写协议、不提「管理者」这个内部词（判据：没用过的人
-      // 读得懂吗）。原因那一截只在连接那头给得出时带上（它说的是**为什么**，不是细节）
-      const note = why === undefined || why === '' ? '' : `（${why}）`
-      const said = appendReceipt(view, `连接已断开${note}，暂时无法确认任务状态。`)
-
-      // **正等着走的那一趟**：等的那一拍（`stopped` 的终局）永远不会来了——不悄悄放行，
-      // 也不留一句已经不作数的「正在停…」当结论。怎么离开归页脚（那行键位提示在状态行上）
-      const waiting = exitWait !== null
-      exitWait = null
-      const told = waiting ? appendReceipt(said, '停止尚未确认。') : said
-
-      commit(patchStatus(told, { state: 'lost', amount: null, hint: HINT_LOST }))
-    },
+    disconnected: disconnect,
 
     dispose: () => {
       disposed = true

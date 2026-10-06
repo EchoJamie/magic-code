@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Explicit real Terminal test. --prepare does not launch apps or build TS.
 
---run opens two NEW Terminal instances through the production native launcher.
+--run opens one NEW Terminal for a new draft; existing work only displays a resume command.
 Only its request-matched CLI receives SIGHUP. Existing windows are never addressed.
 """
 import argparse
@@ -72,6 +72,17 @@ def run_case(app, room, output, session):
             assert Path(ready['host']).is_relative_to(room), 'discovery escaped validation home'
             assert discovery['app'] == str(app) and discovery['dataDir'].startswith(str(room) + '/')
             manager = json.loads((Path(discovery['socket']).parent / 'manager.json').read_text())['pid']
+            if session:
+                command = wait_for(lambda: next((e for e in events if e.get('event') == 'resume.command'), None))['detail']
+                assert " resume " in command and session in command
+                assert '--open-request' not in command
+                assert not any(e.get('event') == 'terminal.opened' for e in events)
+                assert not list((room / 'terminal-evidence').glob('*/context.json'))
+                result = {'appPID': process.pid, 'managerPID': manager, 'realTerminal': False,
+                          'session': session, 'command': command, 'home': str(room),
+                          'systemNotification': False, 'existingWindowsControlled': False}
+                write(output / 'result.json', result)
+                return result
             context_path = wait_for(lambda: next(iter((room / 'terminal-evidence').glob('*/context.json')), None))
             context = json.loads(context_path.read_text()); request = context['request']
             assert context['home'] == str(room) and context['session'] == session and context['helper'] == str(helper)

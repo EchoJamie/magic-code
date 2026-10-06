@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ListEntry, Sandbox } from '@magic/contracts'
@@ -154,11 +154,10 @@ describe('U13 · read —— 读文件（超长截断）', () => {
     await expect(box.read('adir')).rejects.toThrow(/是目录/)
   })
 
-  test('越界 → 抛（相对逃逸与根外绝对路径都拒）', async () => {
+  test('执行原语读取根外文件，不再重复作工作区准入', async () => {
     const { box } = freshSandbox()
-
-    await expect(box.read('../escape.txt')).rejects.toThrow(/工作区越界/)
-    await expect(box.read('/etc/hosts')).rejects.toThrow(/工作区越界/)
+    const path = seed(realpathSync(freshRoot()), 'outside', 'approved')
+    expect((await box.read(path)).content).toBe('approved')
   })
 
   test('opts.maxBytes 可**放大**上限（`edit` 的「读 → 改 → 写回」靠它）', async () => {
@@ -239,11 +238,11 @@ describe('U13 · write —— 新建 / 整写文件', () => {
     expect([...readFileSync(join(root, 'raw.bin'))]).toEqual([0xff, 0x00, 0x41, 0xfe])
   })
 
-  test('越界 → 抛，且副作用不发生', async () => {
-    const { box, root } = freshSandbox()
-
-    await expect(box.write('../escape.txt', { text: 'X' })).rejects.toThrow(/工作区越界/)
-    expect(existsSync(join(root, '..', 'escape.txt'))).toBe(false)
+  test('执行原语写入根外目标，权限由上游闸门裁决', async () => {
+    const { box } = freshSandbox()
+    const path = join(realpathSync(freshRoot()), 'outside')
+    await box.write(path, { text: 'X' })
+    expect(readFileSync(path, 'utf8')).toBe('X')
   })
 })
 
@@ -302,11 +301,11 @@ describe('U13 · list —— 列目录', () => {
     await expect(box.list('file.txt')).rejects.toThrow(/不是目录/)
   })
 
-  test('越界 → 抛', async () => {
+  test('执行原语可列根外目录', async () => {
     const { box } = freshSandbox()
-
-    await expect(box.list('/etc')).rejects.toThrow(/工作区越界/)
-    await expect(box.list('../..')).rejects.toThrow(/工作区越界/)
+    const outside = realpathSync(freshRoot())
+    seed(outside, 'file', 'X')
+    expect((await box.list(outside))[0]?.name).toBe('file')
   })
 })
 

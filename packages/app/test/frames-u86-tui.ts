@@ -2,7 +2,7 @@
 /**
  * U86 常驻宿主修订：真 PTY 验证失败不串进其它会话正文，具体事项持久留存。
  * A 完成后保持界面；B 用受控模型产生待答责任，再按本次登记 PID 制造异常退出。
- * TUI 无可靠焦点证据；完成、待答、失败均留未读，hello 汇总不标读。
+ * 绑定会话收到具体事项，实际呈现后已读；hello、汇总与历史读取不标读。
  * attention.json 由 RecordsStore.attention 导出，宿主日志与帧保留在 --out。
  * 测试宿主持有专用 stdin，全程只用本机模型夹具，不发系统通知。
  */
@@ -154,10 +154,10 @@ if (import.meta.main) {
     windows.push(other)
     await typeLine(other, '乙窗那句')
     await other.key('enter', { until: { text: '乙窗那句答复。' }, timeoutMs: 30_000 })
-    await other.wait({ text: 'y / n' }, { timeoutMs: 30_000 })
+    await other.wait({ text: '批准这一次' }, { timeoutMs: 30_000 })
 
     /**
-     * —— B 那一代异常退出；TUI 连接不提供可靠的焦点证据。——
+     * —— B 那一代异常退出；具体失败事项只交给绑定 B 的终端。——
      *
      * ⚠️ **只杀那一个 pid**（`runs.json` 里最晚起的那一代就是 B 的），**不按名字杀**
      * （这机器上还有别人的 `bun`）。
@@ -192,10 +192,10 @@ if (import.meta.main) {
     // 等核销后的记录与窗口投影到达；真宿主默认不发系统通知。
     await Bun.sleep(500)
 
-    await other.wait({ absent: 'y / n' }, { timeoutMs: 20_000 })
+    await other.wait({ absent: '批准这一次' }, { timeoutMs: 20_000 })
     const detached = await other.capture({ label: '00-B异常退出撤销待答' })
     keep(detached)
-    check(!detached.text.includes('y / n'), 'B 执行已结束，旧裁决卡不再接受答复', detached.text)
+    check(!detached.text.includes('批准这一次'), 'B 执行已结束，旧裁决卡不再接受答复', detached.text)
 
     // ① **A 页开着、B 出错 ⇒ A 那一页上不出现任何回执**
     //
@@ -220,29 +220,24 @@ if (import.meta.main) {
       aPage.text,
     )
 
-    /**
-     * ① **B 那件事留了底**——`notify` 那一跳的物证：`kind: "failed"` ＋ **`unread: true`**。
-     *
-     * 仅有窗口连接不抑制通知，也不确认具体事项已读。
-     */
+    // ① B 的失败只在 B 窗呈现；三类事项均持久留存并在呈现后已读。
+    await other.wait({ text: '出错了' }, { timeoutMs: 20_000 })
+    await waitFor('完成、待答、失败三类具体事项已呈现并标读', () => {
+      const items = attentionFacts(sandbox.dataDir, sandbox.workspace)
+      return items.length === 3 && items.every(item => !item.unread)
+    })
     const attention = attentionFacts(sandbox.dataDir, sandbox.workspace)
     const stored = JSON.stringify({ attention }, null, 2)
     writeFileSync(join(out, 'attention.json'), `${stored}\n`, 'utf8')
-    const failedNotice = attention.find((one) => one.kind === 'failed')
     check(attention.length === 3, '完成、待答、失败各有一项，中间工具轮未多写 done', stored)
-    check(attention.every((one) => one.unread), 'TUI 无可靠焦点证据，三类事项均保持未读', stored)
-    check(
-      failedNotice !== undefined,
-      '① B 那一件事**留了底**（`RecordsStore.attention` 里有一条 `failed`）',
-      stored,
-    )
-    check(
-      failedNotice?.unread === true,
-      '① 它标着**未读**（`unread: true`——连接和汇总均不自动标读）',
-      stored,
-    )
+    for (const kind of ['done', 'needs-you', 'failed']) {
+      check(attention.filter(item => item.kind === kind).length === 1, `${kind} 具体事项恰好一项`, stored)
+    }
+    check(attention.every(item => !item.unread), '三类具体事项呈现后均已读', stored)
+    check(attention.every(item => !item.delivered), '绑定终端承接事项，不投递系统通知', stored)
+    check(fixture.requests().length === 2, '自动展开审批未误批，未产生工具后续模型调用')
 
-    // —— **B 那件事仍然有人告诉用户**：新开一扇窗，看那句汇总真的上屏 ——
+    // —— ② 新窗口不会再次汇总已经实际呈现的事项 ——
     const fresh = await createUiSession({
       label: 'u86-丙窗（事后新开）',
       artifacts: join(out, 'runs'),
@@ -252,39 +247,30 @@ if (import.meta.main) {
       rows: 40,
     })
     windows.push(fresh)
-    await fresh.wait({ text: '你不在的时候' }, { timeoutMs: 20_000 })
-
-    const summary = await fresh.capture({ label: '02-下次打开一句汇总' })
+    await settled(fresh)
+    const summary = await fresh.capture({ label: '02-已呈现事项不再汇总' })
     keep(summary)
-    check(
-      has(summary, '1 项出错') && has(summary, '1 项跑完') && has(summary, '1 项等你'),
-      '② 汇总包括 A 已完成、B 待答与异常退出，连接不自动标读',
-      summary.text,
-    )
-    check(attentionFacts(sandbox.dataDir, sandbox.workspace).every((item) => item.unread), '新窗 hello 和汇总仍不消费三类未读')
-    check(
-      !has(summary, '乙窗那句'),
-      '② 而它也**不认得出是哪一条**（汇总不逐条念——具体是哪一条归 `/resume`）',
-      summary.text,
-    )
+    check(!has(summary, '你不在的时候'), '② 新窗不重复汇总三类已读事项', summary.text)
+    check(attentionFacts(sandbox.dataDir, sandbox.workspace).every(item => !item.unread), '新窗 hello 不改变既有已读状态')
+    check(!has(summary, '乙窗那句'), '② 新窗不广播其它会话正文', summary.text)
 
-    // —— ③ **你正看着它而它出错**：那一条回执没有了，错本身照旧在屏上 ——
+    // —— ③ 当前会话失败：错误正文与具体事项回执均呈现，随后才标读 ——
     await typeLine(mine, '再问一句')
     await mine.key('enter')
     await mine.wait({ text: '夹具按剧本报错' }, { timeoutMs: 30_000 })
+    await mine.wait({ text: '「甲窗那句」出错了' }, { timeoutMs: 20_000 })
 
     const watched = await mine.capture({ label: '03-正看着它出错' })
     keep(watched)
     check(
-      !has(watched, '「甲窗那句」出错了'),
-      '③ **不另印那条回执**（`· 「甲窗那句」出错了：这一轮出错了` 一处都没有）',
+      has(watched, '「甲窗那句」出错了'),
+      '③ 当前会话的具体失败事项回执可见',
       watched.text,
     )
-    check(
-      !has(watched, '这一轮出错了'),
-      '③ 那条回执的**尾巴**也不在（不是换了个说法印）',
-      watched.text,
-    )
+    await waitFor('当前会话失败事项呈现后已读', () => {
+      const failed = attentionFacts(sandbox.dataDir, sandbox.workspace).filter(item => item.kind === 'failed')
+      return failed.length === 2 && failed.every(item => !item.unread)
+    })
     check(
       has(watched, '模型错误'),
       '③ 而**错本身照旧在屏上**（`模型错误（…）：夹具按剧本报错`）——那才是「屏上已经有那一行」',
@@ -296,17 +282,9 @@ if (import.meta.main) {
       statusLineOf(watched.lines),
     )
 
-    // —— ④ **反面**：U74（跑完了）与 U79（需要你）两档在这次改动里**一个字没动** ——
-    check(
-      !has(watched, '那一轮跑完了'),
-      '④ `done` 那一档照旧**一个字都不印**（U74 的口径未动）',
-      watched.text,
-    )
-    check(
-      !has(watched, '· 「甲窗那句」等你定夺'),
-      '④ `needs-you` 那一档照旧**不产出**（U79 的口径未动）',
-      watched.text,
-    )
+    // —— ④ 已完成具体事项仍可见，B 的待答与失败没有串进 A ——
+    check(has(watched, '本轮已完成'), '④ A 的完成事项已实际呈现', watched.text)
+    check(!has(watched, '乙窗那句'), '④ B 的待答与失败不进入 A 的正文', watched.text)
 
     // —— 收尾：把状态行从「出错」带回空闲，再各走各的那条路 ——
     await typeLine(mine, '收尾')

@@ -530,7 +530,7 @@ async function main(): Promise<void> {
 // 产物档案（`runs/`，含 `raw.bin` / 逐帧 / `steps.ndjson` / `viewer.html`）· 收摊时
 // 子进程**退出确认**（`exit.by`）与终端释放。
 //
-// **「关闭重开」是真关掉那个进程、再拿 `--session <id>` 另起一个**——两趟要落在**同一个家**
+// **「关闭重开」是真关掉那个进程、再拿 `resume <id>` 另起一个**——两趟要落在**同一个家**
 // （同一份配置 / 数据库 / 工作区），故用共用驱动新加的那个最小口子：`sandbox` ＋ `fixture`
 // **外借**（借出方＝本函数：收尾由它停夹具、删沙地）。外借的两件不进驱动的清理清单，
 // 本趟自己的进程与终端照旧归驱动。
@@ -582,7 +582,7 @@ function planEntriesOf(sandbox: Sandbox): readonly (PlanNote | null)[] {
 /** 一条计划的步骤文字（比对「屏上那一份」与「记录里那一份」用）。 */
 const stepTextsOf = (plan: PlanNote | null): readonly string[] => plan?.steps.map((one) => one.text) ?? []
 
-/** 会话 id（`--session` 接着开要它）——从记录里的目录读，不从屏上猜。 */
+/** 会话 id（`resume` 接着开要它）——从记录里的目录读，不从屏上猜。 */
 function lastSessionId(sandbox: Sandbox): string {
   const db = readDatabase(join(sandbox.dataDir, 'records.db'))
   try {
@@ -667,11 +667,11 @@ async function live(out: string): Promise<void> {
       await first.close({ graceMs: 1_500 }).catch(() => {})
     }
 
-    // —— 二 · 关闭重开（`--session`）：清单该**保留**，改路线、再清空 ——
+    // —— 二 · 关闭重开（`resume`）：清单该**保留**，改路线、再清空 ——
     const sessionId = lastSessionId(sandbox)
     check(sessionId !== '', '拿到那条会话的 id（重开要它）')
 
-    const second = await createUiSession({ ...shared, label: '联调-2-重开', argv: ['--session', sessionId] })
+    const second = await createUiSession({ ...shared, label: '联调-2-重开', argv: ['resume', sessionId] })
     try {
       // **等的是「清单从记录里回来了」那一跳**——不是「开起来了」那一下
       await second.wait({ text: '▪ 改提示文案' }, { timeoutMs: 15_000 })
@@ -720,7 +720,7 @@ async function live(out: string): Promise<void> {
     }
 
     // —— 三 · 再关闭重开：清空过了 ⇒ 清单**不复活**，记录仍在 ——
-    const third = await createUiSession({ ...shared, label: '联调-3-再重开', argv: ['--session', sessionId] })
+    const third = await createUiSession({ ...shared, label: '联调-3-再重开', argv: ['resume', sessionId] })
     try {
       // 等**重建落地**那一跳（上一趟最后那句回话与那条交代从记录里回来），再判「有没有清单」
       await third.wait({ text: '这件事到这儿。' }, { timeoutMs: 15_000 })

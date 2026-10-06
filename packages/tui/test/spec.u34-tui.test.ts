@@ -358,7 +358,6 @@ describe('U34 · `Ctrl T` 与翻页', () => {
     stage.feed([
       event('tool.decision.request', { call: 9, name: 'exec', material: 'rm -rf /tmp/x', weight: 'light' }, { id: 90 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(stage.shell.getView().dock.kind).toBe('decision')
 
     stage.press({ kind: 'planTop', top: 9 })

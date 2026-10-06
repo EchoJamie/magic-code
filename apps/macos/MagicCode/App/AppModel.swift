@@ -67,7 +67,8 @@ import ServiceManagement
     private var automaticRecoveryUsed = false
     private var acquired = false
     private var panelVisible = false
-    @Published private var pendingInspection: (request: String, session: String, open: Bool, notice: String?, identity: ServiceIdentity)?
+    private var noticeInspections: [String: (session: String, identity: ServiceIdentity, continuation: CheckedContinuation<NativeWork?, Never>)] = [:]
+    @Published private var pendingInspection: (request: String, session: String, notice: String?, identity: ServiceIdentity)?
     private var stoppingRequests: [String: String] = [:]
     private var switchBase: URL?
     private var switching = false
@@ -117,6 +118,7 @@ import ServiceManagement
         notifications.userLooking = { [weak self] session, id in
             self?.panelVisible == true && NSApp?.isActive == true && self?.selected == session && self?.selectedNotice?.id == id && self?.visibleNoticeID == id
         }
+        notifications.currentWorks = { [weak self] sessions in await self?.currentNoticeWorks(sessions) ?? [] }
         notifications.delivered = { [weak self] ids in self?.observer?.send(.delivered(ids: ids)) }
         notifications.failure = { [weak self] text in self?.actionMessage = text }
         notifications.openRoutes = { [weak self] routes in
@@ -160,8 +162,7 @@ import ServiceManagement
     var works: [NativeWork] { projection?.works ?? [] }
     var isCurrent: Bool { phase == .ready && projection != nil }
     var inspectionMessage: String? {
-        guard let intent = pendingInspection else { return nil }
-        return intent.open ? "正在核对终端目标…" : "正在读取事项…"
+        pendingInspection == nil ? nil : "正在读取事项…"
     }
     var appVersion: String { expectedVersion }
     var summary: String {
@@ -318,7 +319,7 @@ import ServiceManagement
         switch response {
         case .welcome(let received, let projection):
             guard received == identity, projection.serviceInstance == received.serviceInstance else {
-                phase = .fault("连接的核心身份已改变"); observer?.close(); return
+                cancelNoticeInspections(); phase = .fault("连接的核心身份已改变"); observer?.close(); return
             }
             startupTimeout?.cancel(); reconnectAttempts = 0
             apply(projection)
@@ -344,17 +345,20 @@ import ServiceManagement
             if let preview = queuedSettingsPreview { queuedSettingsPreview = nil; readSettings(preview: preview) }
         case .projection(let projection): apply(projection)
         case .inspected(let request, let work, let error):
+            if let pending = noticeInspections.removeValue(forKey: request) {
+                pending.continuation.resume(returning: isCurrent && pending.identity == identity && work?.session == pending.session ? work : nil)
+                return
+            }
             guard let intent = pendingInspection, intent.request == request,
                   intent.identity == identity, isCurrent else { return }
             pendingInspection = nil
-            guard intent.open || selected == intent.session else { return }
+            guard selected == intent.session else { return }
             guard let work, work.session == intent.session, works.contains(where: { $0.id == work.id }) else {
                 actionMessage = error ?? "这项工作已不可达，请返回列表。"; return
             }
             let notice = intent.notice.flatMap { id in work.notices.first { $0.id == id && $0.session == intent.session } }
             guard intent.notice == nil || notice != nil else { actionMessage = "这条事项已不可达，请刷新后查看。"; return }
-            if intent.open { launch(work) }
-            else { selectedNotice = notice }
+            selectedNotice = notice
         case .stopped(let request, let session, let phase, let note):
             guard stoppingRequests[request] == session else { return }
             actionMessage = note ?? (phase == .accepted ? "正在停止任务…" : phase == .done ? "任务已停止" : "尚未确认停止，请查看当前状态")
@@ -411,6 +415,7 @@ import ServiceManagement
         if let identity, notificationGeneration == identity.serviceInstance { notifications.observe(value, identity: identity) }
     }
     private func hostExited(_ code: Int32) {
+        cancelNoticeInspections()
         validationEvent("host.exited", detail: "\(code), stopped=\(hostStopped), request=\(shutdownRequest ?? "none")")
         // Once host is nil this flag proves both the acknowledgement and successful exit.
         hostStopped = hostStopped && code == 0
@@ -457,6 +462,7 @@ import ServiceManagement
             onUnconfirmedShutdown?()
             return
         }
+        cancelNoticeInspections()
         phase = .stopping; presence(focused: false)
         // Retrying is the same stop responsibility. Never reopen admission or start a host.
         let request = shutdownRequest ?? UUID().uuidString; shutdownRequest = request
@@ -514,25 +520,49 @@ import ServiceManagement
         presence(focused: false)
         pendingInspection = nil; selected = nil; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil; stopTarget = nil
     }
+    private func cancelNoticeInspections() {
+        let pending = noticeInspections.values
+        noticeInspections.removeAll()
+        for request in pending { request.continuation.resume(returning: nil) }
+    }
+    private func currentNoticeWorks(_ sessions: [String]) async -> [NativeWork] {
+        guard isCurrent, let identity, let connection = observer else { return [] }
+        var works: [NativeWork] = []
+        for session in Set(sessions) {
+            guard isCurrent, self.identity == identity, observer === connection else { return [] }
+            let work: NativeWork? = await withCheckedContinuation { continuation in
+                let request = UUID().uuidString
+                noticeInspections[request] = (session, identity, continuation)
+                connection.send(.inspect(request: request, session: session, notice: nil))
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(3))
+                    self?.noticeInspections.removeValue(forKey: request)?.continuation.resume(returning: nil)
+                }
+            }
+            guard let work, isCurrent, self.identity == identity, observer === connection else { return [] }
+            works.append(work)
+        }
+        return works
+    }
     private func disconnectInspection() {
+        cancelNoticeInspections()
         presence(focused: false)
         pendingInspection = nil; selectedNotice = nil; visibleNoticeID = nil; stopTarget = nil
     }
-    func inspect(_ work: NativeWork, open: Bool = false, notice: String? = nil) {
-        fileLog.write(.debug, open ? "work.terminal.requested" : "work.inspected")
+    func inspect(_ work: NativeWork, notice: String? = nil) {
+        fileLog.write(.debug, "work.inspected")
         // The current projection already contains the detail summary. Navigation needs no request.
-        if !open, notice == nil {
+        if notice == nil {
             presence(focused: false); pendingInspection = nil
             selected = work.id; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil
             return
         }
         guard isCurrent, let identity else { actionMessage = "状态尚未核对，请重试连接。"; return }
-        if open, terminal.pending[work.session] != nil { return }
-        if let pending = pendingInspection, pending.session == work.session, pending.open == open, pending.notice == notice { return }
+        if let pending = pendingInspection, pending.session == work.session, pending.notice == notice { return }
         presence(focused: false); selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil
-        if !open { selected = work.id }
+        selected = work.id
         let request = UUID().uuidString
-        pendingInspection = (request, work.session, open, notice, identity)
+        pendingInspection = (request, work.session, notice, identity)
         observer?.send(.inspect(request: request, session: work.session, notice: notice))
     }
     /// Selection is an intent; only content inside the scroll viewport counts as presented.
@@ -553,16 +583,19 @@ import ServiceManagement
         let ids = selectedNotice?.id == visibleNoticeID ? visibleNoticeID.map { [$0] } ?? [] : []
         observer?.send(.presence(session: selected, ids: ids, focused: focused && panelVisible))
     }
-    private func launch(_ work: NativeWork) {
-        terminal.open(helper: helperURL, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome, base: selectedBase, session: work.session)
-    }
     func newTerminal() {
         guard isCurrent else { actionMessage = "核心尚未就绪"; return }
-        terminal.open(helper: helperURL, workspace: projectDirectory ?? userHome, base: selectedBase, session: nil)
+        terminal.open(helper: helperURL, workspace: projectDirectory ?? userHome, base: selectedBase)
+    }
+    func resumeCommand(_ work: NativeWork) -> String {
+        let link = URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic")
+        let executable = (try? CLIInstallation.belongs(link, helper: helperURL)) == true ? link : helperURL
+        return TerminalCommand.make(helper: executable, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome,
+                                    base: selectedBase, session: work.session, request: nil)
     }
     func copyCommand(_ work: NativeWork) {
-        terminal.copy(TerminalCommand.make(helper: helperURL, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome,
-                                          base: selectedBase, session: work.session, request: nil))
+        terminal.copy(resumeCommand(work))
+        actionMessage = "已复制"
     }
     func openNotification(_ route: NoticeRoute) {
         guard isCurrent else { deferredNoticeRoutes.append(route); return }
@@ -570,8 +603,8 @@ import ServiceManagement
             actionMessage = "此通知属于另一数据位置：\(route.dataDir)。请在设置中明确切换后查看。"; showNotificationWindow?(); return
         }
         guard let work = works.first(where: { $0.id == route.session }) else { actionMessage = "此通知的工作已不可达。"; return }
-        inspect(work)
-        inspect(work, open: true, notice: route.ids.first)
+        inspect(work, notice: route.ids.first)
+        showNotificationWindow?()
     }
     func changeBase(_ base: URL?) {
         guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换数据目录。"; return }

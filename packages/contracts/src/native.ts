@@ -42,6 +42,8 @@ export type NativeWork = {
   readonly gen: number | null
   readonly affected: boolean
   readonly notices: readonly AttentionItem[]
+  /** 由当前有效终端绑定派生；只决定提醒去向，不表示已读或已投递。 */
+  readonly terminalNoticeIds?: readonly string[]
   readonly members?: readonly NativeMember[]
 }
 

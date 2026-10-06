@@ -367,7 +367,7 @@ export type UiSessionOptions = {
   /** 模型夹具的剧本——**不给就不起夹具**（`baseURL` 指向丢弃端口，一个请求都发不出去）。 */
   readonly turns?: readonly FixtureTurn[]
   readonly model?: string
-  /** 额外的 CLI 参数（如 `['--session','s-1']`）。 */
+  /** 额外的 CLI 参数（如 `['resume','s-1']`）。 */
   readonly argv?: readonly string[]
   /**
    * **外借的沙地**——给了就用它，**收摊不删它**（它归借出方管）。

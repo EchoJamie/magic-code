@@ -190,11 +190,11 @@ describe("U13 · match(grep) —— 内容搜索", () => {
     expect(hits.length).toBeLessThan(3) // 已中止：至多给到中止前那一点
   })
 
-  test('越界 → 抛（起点与相对逃逸都拒）', async () => {
+  test('执行原语可搜索根外目录，权限由上游裁决', async () => {
     const { box } = freshSandbox()
-
-    await expect(box.match('x', { mode: 'grep', path: '/etc' })).rejects.toThrow(/工作区越界/)
-    await expect(box.match('x', { mode: 'grep', path: '..' })).rejects.toThrow(/工作区越界/)
+    const { root: outside } = freshSandbox()
+    writeFileSync(join(outside, 'a.txt'), 'needle')
+    expect((await box.match('needle', { mode: 'grep', path: outside }))[0]?.path).toBe(join(outside, 'a.txt'))
   })
 })
 
@@ -254,12 +254,11 @@ describe("U13 · match(glob) —— 文件名匹配", () => {
     expect(hits).toEqual([])
   })
 
-  test('起点不存在 / 越界 → 抛', async () => {
+  test('起点不存在作为实际 I/O 失败返回', async () => {
     const { box } = freshSandbox()
 
     await expect(box.match('**/*.ts', { mode: 'glob', path: 'no-such' })).rejects.toThrow(
       /目录不存在/,
     )
-    await expect(box.match('**/*.ts', { mode: 'glob', path: '/etc' })).rejects.toThrow(/工作区越界/)
   })
 })

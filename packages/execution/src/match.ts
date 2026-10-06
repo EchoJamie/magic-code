@@ -16,8 +16,10 @@
 
 import type { MatchHit, MatchOptions } from '@magic/contracts'
 import type { Dirent } from 'node:fs'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { readText } from './files.ts'
+import { assertIdentity, assertTarget, inspectTarget } from './workspace.ts'
 
 /** 命中上限缺省——条（实现级常量；`grep` 的「输出截断」按它）。 */
 export const DEFAULT_MAX_RESULTS = 200
@@ -119,7 +121,9 @@ async function* walkFiles(dir: string, signal: AbortSignal | undefined): AsyncGe
   let dirents: Dirent[]
 
   try {
+    const target = inspectTarget(assertTarget(dir))
     dirents = await readdir(dir, { withFileTypes: true })
+    assertIdentity(target)
   } catch {
     return // 子目录读不动（权限一类）——跳过，不毁整趟
   }
@@ -147,7 +151,9 @@ async function candidateText(file: string): Promise<string | undefined> {
     const info = await stat(file)
     if (info.size > MAX_GREP_FILE_BYTES) return undefined
 
-    const text = await readFile(file, 'utf8')
+    const result = await readText(inspectTarget(file), info.size)
+    if (result.truncated) return undefined
+    const text = result.content
     // 含 NUL ＝ 二进制（`grep -I` 的老判据）——按行匹配二进制只会吐一堆乱码
     return text.includes('\0') ? undefined : text
   } catch {
@@ -180,18 +186,14 @@ async function globIn(
 
   const hits: MatchHit[] = []
 
-  for await (const relative of glob.scan({ cwd: start, dot: false, onlyFiles: true })) {
-    if (signal?.aborted === true) break // 只此一处判——此后不再读该标志（TS 收窄，见 `walkFiles` 注）
-    if (hasSkippedSegment(relative)) continue
-
-    hits.push({ path: join(start, relative) })
+  for await (const file of walkFiles(start, signal)) {
+    const relative = file.slice(start.length + 1)
+    if (relative.split('/').some((segment) => segment.startsWith('.'))) continue
+    if (!glob.match(relative)) continue
+    hits.push({ path: file })
     if (hits.length >= limit) break
   }
 
   // 名字序——扫描序不作保证（超上限时选出哪一批属实现级，见备案）
   return hits.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
-}
-
-function hasSkippedSegment(relative: string): boolean {
-  return relative.split('/').some((segment) => SKIPPED_DIRS.has(segment))
 }

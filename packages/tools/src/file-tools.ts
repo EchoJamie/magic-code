@@ -7,9 +7,9 @@
  * 三件共同的形态（与 `exec-tool.ts` 同一姿势）：
  * - **规格的静态三件取自契约 `TOOLSET_V1` 的冻结行**（经 `rowOf`——本域不另抄一份），
  *   只有**参数模式**与**执行体**在本文件；
- * - **执行一律经沙箱**（内核不直碰文件系统），路径解析与越界拒绝归执行域；
+ * - **执行一律经沙箱**（内核不直碰文件系统），目标解析归执行域，权限由工具执行前唯一闸门裁决；
  * - **失败形态分两路**（技术方案 · 执行 · 原语形态；契约 `Sandbox` 头注）——正常结果的失败
- *   （读到上限＝`truncated`）是**判别式**；**调用不成立**（越界 / 不存在 / 是否目录 / 无权限 /
+ *   （读到上限＝`truncated`）是**判别式**；**调用不成立**（目标改变 / 不存在 / 是否目录 / 无权限 /
  *   参数无效）沙箱侧**抛**，捕在**这里**、收敛成 `ToolResult` 的判别式（`ok:false` ＋ 一句话）。
  *
  * 一处刻意的**不猜**：`edit` 的「唯一」是全部语义——找不到、找到多处，都**不动文件**并照实报。
@@ -62,7 +62,7 @@ export const READ_PARAMETERS = {
        * 「这条路径能不能读」这一件。
        */
       description:
-        '文件路径——相对按工作区默认根；绝对路径须落在工作区内' +
+        '文件路径——相对按工作区默认根；工作区外目标需明确授权' +
         '（后台命令的输出文件除外——那种路径直接给，读得到）',
     },
   },
@@ -110,7 +110,7 @@ export const WRITE_PARAMETERS = {
   properties: {
     path: {
       type: 'string',
-      description: '文件路径——相对按工作区默认根；绝对路径须落在工作区内',
+      description: '文件路径——相对按工作区默认根；工作区外目标需明确授权',
     },
     content: {
       type: 'string',
@@ -163,7 +163,7 @@ export const EDIT_PARAMETERS = {
   properties: {
     path: {
       type: 'string',
-      description: '文件路径——相对按工作区默认根；绝对路径须落在工作区内',
+      description: '文件路径——相对按工作区默认根；工作区外目标需明确授权',
     },
     old: {
       type: 'string',
@@ -238,7 +238,8 @@ export function defineEditTool(): ToolDefinition {
         if (count > 1) return refused(`${OUTPUT_EDIT_AMBIGUOUS}（出现 ${count} 处）`)
 
         const index = current.content.indexOf(old)
-        await ctx.sandbox.write(path, { text: replaceOnce(current.content, old, replacement, index) })
+        if (ctx.signal?.aborted) return refused('已取消——文件未改')
+        await ctx.sandbox.write(path, { text: replaceOnce(current.content, old, replacement, index) }, { expectedContent: current.content })
 
         return { ok: true, output: editDoneOutput(path) }
       } catch (error) {

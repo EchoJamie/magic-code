@@ -47,7 +47,7 @@ export type ClientToManager =
       readonly environment?: Readonly<Record<string, string>>
       readonly label?: string
       /**
-       * **显式接续**那条会话（`--session <id>`，U25 的恢复入口）。
+       * **显式接续**那条会话（`magic resume <id>`，U25 的恢复入口）。
        *
        * 由窗口在这一跳说，而不是等它后来发 `session.open`：接续是**开局就定下**的目标
        * ——界面一起来就该落在那条会话上（开屏、读历史、恢复都在它上面）。晚一步说，
@@ -118,7 +118,7 @@ export type ManagerToClient =
        */
       readonly mcp: readonly McpProbeRow[]
       /**
-       * **这条窗口服务不了**（`--session` 打错一个字母是唯一一条）。
+       * **这条窗口服务不了**（`magic resume` 打错一个字母是唯一一条）。
        *
        * 为什么由管理者在这一跳回绝：它手上才有库（那条会话在不在**只有库说了算**），
        * 而窗口那一侧按设计**不开库**。回绝之后连接当场关——窗口拿不到一个可用的

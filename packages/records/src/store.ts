@@ -194,13 +194,13 @@ export type RecordsStore = {
   /** 不传沿用构造时的工作区；管理者纯观察时可指定所选工作区，同一 SQL 口径。 */
   decisionHistory(workspace?: readonly string[]): DecisionHistory
   /**
-   * **这条会话在不在库里**（U28）——入口 `--session <id>` 那道校验的取材。
+   * **这条会话在不在库里**（U28）——入口 `magic resume <id>` 那道校验的取材。
    *
    * 判据就是**库里有没有这一行**：会话**首写即建**（`D5`：首条消息按下回车才落库），
    * 故「不在库里」就是「**没有这条会话**」——打错的 id、从没落过账的 id 都在此列
    * （`/clear` 之后没写过话的那条空壳也**不在**：它还没有可接的东西）。
    *
-   * 由头：`--session s-typo` 原先照 id 装载一条**空的**——用户以为接上了，其实没有。
+   * 由头：`magic resume s-typo` 原先照 id 装载一条**空的**——用户以为接上了，其实没有。
    * 校验放在**入口**（报错不降级），此处只答「在不在」，**不判该不该**。
    */
   hasSession(session: SessionId): boolean

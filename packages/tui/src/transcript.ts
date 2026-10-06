@@ -143,6 +143,7 @@ export function screenOpened(top = 0): ScreenState {
 
 /** 这一屏认的键（终端那半边把字节翻成这些，见 `./screen.ts` 的 `parseScreenKeys`）。 */
 export type ScreenKey =
+  | { readonly kind: 'tab' }
   | { readonly kind: 'lineUp' }
   | { readonly kind: 'lineDown' }
   | { readonly kind: 'halfUp' }

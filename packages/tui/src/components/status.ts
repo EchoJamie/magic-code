@@ -100,7 +100,7 @@ export function StatusLine({
       null,
       // ① **状态**——形状 ＋ 词 ＋ 量（**量挂状态后面**）。它**永不省**（视觉锚）。
       h(Text, { color: tint(stateColor(status, now, pulseAt)) }, stateMark(status.state)),
-      h(Text, { color: tint(stateColor(status, null, null)) }, ` ${stateText(status.state)}`),
+      h(Text, { color: tint(stateColor(status, now, pulseAt)) }, ` ${stateText(status.state)}`),
       status.amount === null ? '' : h(Text, { color: tint(stateColor(status, null, null)) }, ` ${status.amount}`),
       // ② **全放行**——`warn` 色：它与那几格不是一类（那几格是**在报什么**，这一格是
       // **在报此刻有多放得开**），故不吃 `faint`；也不必吃 `danger`（那不是出错）

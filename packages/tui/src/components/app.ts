@@ -14,8 +14,8 @@
  *   （U45 起是**两条**线：上面那条分开记录区与交互区，下面那条分开交互区与状态行。
  *   **U59 把下面那条挪到这儿**——U45 原先加在状态行**之下**，那是把「输入行 ＋ 状态行」
  *   框起来，不是划界，见 `separatorOf`。**U68 把「待确认的那一行」放到状态行之下**——
- *   它是**那一刻回执**，不是交互区的一格，见 `exitArmedLine`。**U85 把步骤清单挪进这一带**
- *   ——它原先画在上面那条线**之上**，读起来像滚动记录的一部分，见 `AppView` 里那一处注）。
+ *   它是**那一刻回执**，不是交互区的一格，见 `exitArmedLine`）。
+ * - **计划步骤**使用原来的高度预算，位于第一条分隔线正上方。
  *
  * ⚠️ **要防的那个 bug**（原型 · 交互逻辑）：内联下重绘擦不干净＝同一段重复堆进 scrollback。
  * 两条护栏：① 已定局的行走 `Static`（不重绘）；② **一行一个 `<Text>`、行内不写换行**
@@ -38,7 +38,7 @@ import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import { HINT_EXIT_ARMED, hasRunningThinking, hasRunningTool, statusLineCellsOf, statusLineColorOf } from '../view.ts'
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
-import { DecisionCard } from './decision.ts'
+import { DecisionCard, decisionLayout } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
 import { PALETTE, wrap } from './lines.ts'
 import { PickerList, pickerBudget, pickerLayout, titleLines } from './picker.ts'
@@ -226,27 +226,11 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
         still: view.reducedMotion,
       }),
     ),
-    // **上面这一条**——记录区与交互区之间的界。
-    separatorOf(columns, 'rule:record'),
-    // **步骤清单**（U34 · **U85 挪到这条线之下**）——**输入区上方**、**与输入区同侧**；
-    // 默认展开、就地刷新。没有清单时一行都不占（`height === 0`）。
-    //
-    // ⚠️ **它原先画在这条线之上**（U34 起 → U85 改）：线的那一侧仍属「这一屏正在发生什么」，
-    //    于是清单读起来就是**上面那些滚动记录的一部分**——用户原话「**看不出与上面滚动信息
-    //    之间的分隔**」（缺陷 D43）。而它的归属**本来就是交互区那一侧**：`Ctrl T` 管它、
-    //    让它位的次序与输入区同一条（见 `liveLayoutOf`）。挪到线的这一侧，**现成的那条线**
-    //    就把它与滚动记录划开了——**不另加第三条线**（线是划界用的，一屏恰好两条，见上）。
-    //
-    // ⚠️ **高度的账一分没动**：它占的还是 `plan.height` 那几行（`liveLayoutOf` 那一笔给的），
-    //    换的只是它落在线的哪一侧——动态帧 ＝ 活动区 ＋ 清单 ＋ `chromeHeightOf` ＋ 交互区，
-    //    与改前逐行相同。**别在这儿把账漏了**：账与屏同取一处才谈得上「不差分毫」
-    //    （U31 那一族的老账，见上面 `liveBudget` 那一段注）。
-    //
-    // ⚠️ **`now` 只在呼吸为真时才交出去**（返修⑤）：钟是**共享**的（工具在跑它也走），
-    // 无条件递给清单的话，该静止的时候那格方块照样会跟着暗一档亮一档。
+    // 计划仍使用原高度预算，只移到记录与输入的分隔线上方。
     ...(plan.height === 0
       ? []
       : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? motionNow : null })]),
+    separatorOf(columns, 'rule:record'),
     h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, rows)),
     // **下面这一条**（U45 加 · **U59 挪**）——**输入区与状态行之间**的界。状态行之下**不再有线**。
     //
@@ -563,6 +547,7 @@ function dockOf(view: ShellView, columns: number, rows: number): readonly ReactE
   return [
     ...collaborationHeader(view).map((line, index) => h(Text, { key: `collaboration:${index}`, color: index === 0 ? PALETTE.dim : PALETTE.user }, clip(line, Math.max(1, columns)))),
     ...inputNotices(view,columns).map((line,index)=>h(Text,{key:`input-state:${index}`,color:PALETTE.faint},line)),
+    ...(view.dock.kind !== 'decision' && view.pendingDecision !== undefined ? [h(DecisionCard, { key: 'pending', pending: view.pendingDecision, columns, rows, active: false })] : []),
     ...dockContentOf(view, columns, rows),
   ]
 }
@@ -579,7 +564,7 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
     // 说的是同一件事。材料与键位在卡上、状态与件数在状态行，该说的都在。
     // ⚠️ 真光标不会因此留在屏上：`Composer` 卸载时 Ink 的 `useCursor` 清理把它藏回去；
     //    草稿与插入点归 `view.stashed`（`takeOver` / `undock`），与画不画这一行无关。
-    return [h(DecisionCard, { key: 'card', pending: view.dock.pending }), ...flash]
+    return [h(DecisionCard, { key: 'card', pending: view.dock.pending, columns, rows }), ...flash]
   }
 
   if (view.dock.kind === 'prompt') {
@@ -722,7 +707,7 @@ function maxDraftLines(rows: number): number {
  * 交互区要几行——**按内容算**（原型：展开高度＝内容所需，最多半屏）。纯函数：布局与用例都拿它。
  */
 export function dockHeightOf(view: ShellView, columns: number, rows = Number.POSITIVE_INFINITY): number {
-  return collaborationHeader(view).length + inputNotices(view,columns).length + dockContentHeightOf(view, columns, rows)
+  return collaborationHeader(view).length + inputNotices(view,columns).length + (view.dock.kind !== 'decision' && view.pendingDecision !== undefined ? decisionLayout(view.pendingDecision, columns, rows, false).lines.length : 0) + dockContentHeightOf(view, columns, rows)
 }
 
 function dockContentHeightOf(view: ShellView, columns: number, rows: number): number {
@@ -732,14 +717,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
   const completing = completionLines(view)
 
   if (view.dock.kind === 'decision') {
-    const material = view.dock.pending.material
-      .split('\n')
-      .reduce((sum, line) => sum + Math.max(1, wrap(line, Math.max(1, columns - 5)).length), 0)
-
-    // `+ 3` ＝ 卡自己那三行：标题前那一行 `marginTop` · 标题 · 键位行。
-    // ⚠️ 账与屏同源：这里比屏上多算一行，活动区就少一行，矮窗上**真光标高一行**
-    //    （见本文件 `dock` 那一段注）。
-    return material + 3 + flash
+    return decisionLayout(view.dock.pending, columns, rows).lines.length + flash
   }
 
   if (view.dock.kind === 'prompt') {
@@ -951,7 +929,7 @@ function useLeavingNote(view: ShellView, write: (text: string) => void): void {
 export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
-  const { exit, suspendTerminal } = useApp()
+  const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
   const { write, stdout } = useStdout()
   const { stdin } = useStdin()
   // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
@@ -983,7 +961,7 @@ export function TuiApp({ shell }: TuiAppProps) {
    */
   const ticking =
     view.status.state !== 'lost' &&
-    (view.rows.some(row=>row.kind==='tool'&&row.state==='running'&&row.awaitingDecision!==true) || hasRunningThinking(view) || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) || pulsing)
+    ((view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running'&&row.awaitingDecision!==true) || hasRunningThinking(view) || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) )) || pulsing)
   const now = useLiveClock(ticking)
 
   /**
@@ -992,6 +970,20 @@ export function TuiApp({ shell }: TuiAppProps) {
    * 开屏期间终端**借给了那一屏**（备用屏），外壳这一侧的一切原样写出去都落在**别人那一屏**上。
    */
   const inScreen = useRef(false)
+  const presented = useRef(new Set<string>())
+  useEffect(() => {
+    if (inScreen.current) return
+    const ids = view.settled.flatMap(row => row.kind === 'receipt' && row.noticeId !== undefined && !presented.current.has(row.noticeId) ? [row.noticeId] : [])
+    if (ids.length === 0) return
+    let cancelled = false
+    void waitUntilRenderFlush().then(() => {
+      if (cancelled || inScreen.current) return
+      shell.presented(ids)
+      for (const id of ids) presented.current.add(id)
+    })
+    return () => { cancelled = true }
+  }, [view, shell, waitUntilRenderFlush])
+
   /**
    * **上一趟退出时读到第几行**（设计：「退出保留原来的阅读位置」）——下次开屏从这儿起。
    *
@@ -1022,16 +1014,17 @@ export function TuiApp({ shell }: TuiAppProps) {
    * `opening` 守门——`ctrl+o` 按两下不至于叠两趟（第二下落在那一屏里，由 `src/screen.ts`
    * 当「退出」认，到不了这儿）。
    */
-  const opening = useRef(false)
+  const opening = useRef<ShellView['dock'] | null>(null)
   const openScreen = (): void => {
-    if (opening.current) return
-    opening.current = true
+    if (opening.current !== null) return
+    opening.current = shell.getView().dock
     inScreen.current = true
 
     const reader = shell.getView().dock.kind === 'picker' ? (shell.getView().dock as Extract<ShellView['dock'], {kind:'picker'}>).picker.reader : undefined
     const key=reader?.key??`main:${shell.getView().sessionId??'new'}`
     let top=reader?.top??reading.current.get(key)??0
     let action = false
+    let interrupted = false
     void suspendTerminal(async () => {
       try {
         top = await runScreen({
@@ -1044,9 +1037,12 @@ export function TuiApp({ shell }: TuiAppProps) {
               rows: reader === undefined ? [...latest.settled, ...latest.rows] : latest.dock.kind === 'picker' ? latest.dock.picker.reader?.rows ?? reader.rows : reader.rows,
               columns: stdout.columns ?? columns,
               screenRows: stdout.rows ?? rows,
+              pending: latest.pendingDecision,
             }
           },
           subscribe: shell.subscribe,
+          interrupted: () => (interrupted = shell.getView().dock.kind === 'decision'),
+          decide: () => { shell.key({kind:'tab'}) },
           startTop: top,
           title: reader?.title ?? shell.getView().status.session ?? '当前工作',
           memberAction: reader?.key.endsWith(':records') === true ? (kind, top) => { action = true; shell.key({kind:'readerTop',top}); shell.key({kind:kind === 'input' ? 'memberInput' : 'memberMenu'}) } : undefined,
@@ -1058,11 +1054,11 @@ export function TuiApp({ shell }: TuiAppProps) {
         })
       } finally {
         reading.current.set(key,top)
-        if (reader !== undefined && !action) { shell.key({kind:'readerTop',top}); shell.key({kind:'escape'}) }
+        if (reader !== undefined && !action) { shell.key({kind:'readerTop',top}); if (!interrupted) shell.key({kind:'escape'}) }
       }
     }).finally(() => {
       inScreen.current = false
-      opening.current = false
+      if (!interrupted) opening.current = null
       // 返回到另一份阅读层时，须等上一趟终端借用真正结束再打开它。
       const dock = shell.getView().dock
       if (dock.kind === 'picker' && dock.picker.reader !== undefined) openScreen()
@@ -1079,7 +1075,17 @@ export function TuiApp({ shell }: TuiAppProps) {
    * 与翻页那一手同一个姿势（`useStdout().write` 是 Ink 给「在帧之外写东西」开的那道门）。
    */
   const readerKey = view.dock.kind === 'picker' ? view.dock.picker.reader?.key : undefined
-  useEffect(() => { if (readerKey !== undefined) openScreen() }, [readerKey])
+  useEffect(() => {
+    if (inScreen.current) return
+    const previous = opening.current
+    if (previous !== null) {
+      // 原阅读层已归还：沿原位置重开；菜单仍在上面时不抢占它。
+      const restored = previous === view.dock || (previous.kind === 'picker' && view.dock.kind === 'picker' && previous.picker.reader?.key !== undefined && previous.picker.reader.key === readerKey)
+      if (!restored) return
+      opening.current = null
+      openScreen()
+    } else if (readerKey !== undefined) openScreen()
+  }, [view.dock, readerKey])
 
   useLeavingNote(view, write)
 
@@ -1120,6 +1126,11 @@ export function TuiApp({ shell }: TuiAppProps) {
     // 故这里算**目标位置**，外壳只存；「没有选择器/审批接管时才生效」那条规矩归外壳判
     // （它才知道此刻左下开着什么）。
     if (key.pageUp === true || key.pageDown === true) {
+      if (view.dock.kind === 'decision') {
+        const layout = decisionLayout(view.dock.pending, columns, rows)
+        feed({ kind: 'decisionTop', top: Math.max(0, Math.min(layout.maxTop, layout.top + (key.pageDown ? 1 : -1) * layout.size)) })
+        return
+      }
       if (view.dock.kind === 'picker') {
         const picker = view.dock.picker
         const layout = pickerLayout(picker,pickerBudget(picker,columns,rows),columns)
@@ -1162,7 +1173,6 @@ export function toShellKeys(
   if (key.return === true && key.meta === true) return [{kind:'alt+enter'}]
   if (key.ctrl === true && input === 'p') return [{ kind: 'ctrl+p' }]
   if (key.ctrl === true && input === 'n') return [{ kind: 'ctrl+n' }]
-  if (key.ctrl === true && input === 'g') return [{ kind: 'ctrl+g' }]
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]
   if (key.ctrl === true && input === 'o') return [{ kind: 'ctrl+o' }]
   if (key.ctrl === true && input === 'r') return [{ kind: 'ctrl+r' }]

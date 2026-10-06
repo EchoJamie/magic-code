@@ -7,7 +7,7 @@
  * 一条链路，四步各留其痕：
  * ① **请求**——铸 `tool.call` 并发出。这一步**无条件**：模型请求过什么是事实，
  *    且链引用（`callRef`）就在这里拿到，后面三步都靠它；
- * ② **闸门**——`decide(call, ctx, callRef)`。**批准才可能执行**——没有第二条路能走到
+ * ② **闸门**——`decide(call, ctx, callRef, signal)`。**批准才可能执行**——没有第二条路能走到
  *    执行体（这是「不可绕过」的全部内容：不是文档里的承诺，而是代码里唯一的入口）；
  * ③ **执行**——注册表查定义、交沙箱。执行体**不碰**闸门与事件面（职责单一）；
  * ④ **回填**——终值定记录侧形态（大块转存经记录域），发 `tool.result`，再返回给调用方。
@@ -26,16 +26,16 @@
  *
  * **外部工具的身份在这儿附上**（U38）：注册表查到定义之后，定义里写着的 `external`
  * （服务器 ＋ 工具名）随调用交给闸门——**权限域只认这一份来源**，模型参数里的自报不作数。
- * 这也是「请求 → 闸门」之间唯一被加过料的一件，且加的是**注册表的事实**，不是猜测。
+ * 真实目标与注册身份都在裁决前固定，执行沿用同一份事实。
  */
 
 import type {
   OutputDelta,
+  ResolvedPath,
   RecordId,
   ToolCall,
   ToolResult,
   ToolRuntime,
-  WorkspaceService,
 } from '@magic/contracts'
 import { toContent } from './blobs.ts'
 import { toolCallEvent, toolOutputDeltaEvent, toolResultEvent } from './events.ts'
@@ -77,35 +77,15 @@ const READ_TOOLS: ReadonlyMap<string, 'exact' | 'subtree'> = new Map([
   ['grep', 'subtree'],
 ])
 
-/**
- * 这一趟落到哪一处（见契约 `ToolResult.read`）——**只在那几件读与搜索成功时才给**。
- *
- * 落点走 `WorkspaceService.resolve`（**与沙箱同一把尺子**）：模型给的是相对写法
- * （`src/login.ts`），材料记的是真路径——中间那一步归位只有这一处做得对。
- * 归不了位（越界）时不给：那一次调用本来也会被沙箱拒（成功才走到这儿，故这是兜底）。
- */
-function readPlaceOf(call: ToolCall, workspace: WorkspaceService): ToolResult['read'] {
+/** 读取回执沿用本次已裁定目标，不再按可能变化的路径重新解析。 */
+function readPlaceOf(call: ToolCall, target?: ResolvedPath): ToolResult['read'] {
   const covers = READ_TOOLS.get(call.name)
-  if (covers === undefined) return undefined
-
-  const given = call.args['path']
-  const path = typeof given === 'string' && given !== '' ? given : '.'
-
-  try {
-    return { path: workspace.resolve(path).absolute, covers }
-  } catch {
-    return undefined
-  }
+  return covers === undefined || target === undefined ? undefined : { path: target.absolute, covers }
 }
 
 /**
- * 让一个 Promise 与信号竞速：信号先到即以 `ABORTED` 落定（**不抛**——调用方要的是
- * 「不等了」，不是「出错了」）。
- *
- * 用途专一：**在途裁决**。闸门的 `decide` 是「等一个人答复」，可能等很久；
- * 而 U07 的 `PermissionGate` **没有取消面**（在途裁决表由它自己持有），故只能在这里
- * 竞速——中止后那次询问在权限域那边仍悬着，这是首站的已知限度（阶段 2 恢复期处置
- * 「未答复裁决＝按拒绝落账」，见技术方案 · 恢复 ④）。
+ * 取消时立即结束本次等待。真实闸门同时用 signal 完成原 pending 的拒绝并移除；
+ * 这里的竞速保证工具层不会因替身或自定义闸门未响应取消而继续等待或执行。
  */
 async function raceAbort<T>(
   promise: Promise<T>,
@@ -176,26 +156,31 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     definition: ToolDefinition | undefined,
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
+    target?: ResolvedPath,
   ): Promise<ToolRunResult> => {
     if (call.invalid === true) return refused(OUTPUT_INVALID_ARGS)
     if (definition === undefined) return refused(unknownToolOutput(call.name))
 
     let finish: (() => void) | undefined
+    const binding = target === undefined ? undefined : options.sandbox.bindTarget?.(target, call.name)
     try {
       if (opts.signal?.aborted) return refused(OUTPUT_CANCELED_BEFORE_RUN)
       finish = options.beginExecution?.(call)
       return await definition.run(call.args, {
-        sandbox: options.sandbox,
+        sandbox: binding?.sandbox ?? options.sandbox,
         signal: opts.signal,
         onOutput,
         // **后台那一形**（U70）——这一位不给就是不给（`exec` 照实回一句「没接」，见
         // `messages.ts`）；这一跳只转手，不认识会话说不上「跑完说给谁听」
-        background: options.background,
+        background: target === undefined || options.background === undefined ? options.background : {
+          ...options.background,
+          start: (cmd, startOptions) => options.background!.start(cmd, { ...startOptions, target }),
+        },
       })
     } catch (error) {
       return refused(crashedOutput(reasonOf(error)))
     } finally {
-      finish?.()
+      try { await binding?.release() } finally { finish?.() }
     }
   }
 
@@ -206,6 +191,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     callRef: RecordId,
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
+    target?: ResolvedPath,
   ): Promise<ToolRunResult> => {
     // 入口即中止——不问、不跑（理由见文件头注）
     if (opts.signal?.aborted === true) return refused(OUTPUT_CANCELED_BEFORE_RUN)
@@ -216,7 +202,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     const asked: ToolCall =
       definition?.external === undefined ? call : { ...call, external: definition.external }
 
-    const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef), opts.signal)
+    const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef, opts.signal), opts.signal)
     if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)
 
     // **被拒**分两种，说的不是同一句话（U77）：
@@ -233,7 +219,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       )
     }
 
-    return execute(call, definition, opts, onOutput)
+    return execute(call, definition, opts, onOutput, target)
   }
 
   return {
@@ -253,7 +239,27 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       }
 
       const registry = registryOf()
-      const outcome = await settle(call, registry.get(call.name), callRef, opts, onOutput)
+      const definition = registry.get(call.name)
+      let outcome: ToolRunResult
+      let target: ResolvedPath | undefined
+      try {
+        // 先固定本次参数和真实目标；审批期间调用方或符号链接变化不能换掉执行目标。
+        call = { ...call, args: structuredClone(call.args) }
+        if (definition?.external === undefined && call.invalid !== true) {
+          const key = call.name === 'exec' ? 'cwd'
+            : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
+          if (key !== undefined) {
+            const given = call.args[key]
+            if ((typeof given === 'string' && given.trim() !== '') || (given === undefined && !['read', 'write', 'edit'].includes(call.name))) {
+              target = options.workspace.resolve((given as string | undefined) ?? '.')
+              call = { ...call, args: { ...call.args, [key]: target.absolute } }
+            }
+          }
+        }
+        outcome = await settle(call, definition, callRef, opts, onOutput, target)
+      } catch (error) {
+        outcome = refused(crashedOutput(reasonOf(error)))
+      }
 
       // ④ 回填——终值定形（大块转存经记录域），先落事件、再交调用方
       const content = await toContent(outcome.output, options.blobs)
@@ -261,7 +267,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
 
       // **读到哪儿了**（U63）——只读那三件**成了**才报（没成＝没读到，报它会把
       // 「读失败」说成「读过」）。落点归位在这一层做（见 `readPlaceOf`）：沙箱就在这儿。
-      const read = outcome.ok ? readPlaceOf(call, options.workspace) : undefined
+      const read = outcome.ok ? readPlaceOf(call, target) : undefined
 
       return {
         ok: outcome.ok,

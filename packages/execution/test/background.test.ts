@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BackgroundFinish, BackgroundRuns, BackgroundStart } from '@magic/contracts'
@@ -140,14 +140,14 @@ describe('判据 1 · 发起——交出去就回', () => {
     expect(readFileSync(started.outputPath, 'utf8')).toBe('第一行\n到 stderr\n第三行\n')
   })
 
-  test('cwd 越界＝发起不成立（与沙箱同一条解析规则）', async () => {
+  test('cwd 不存在＝实际启动失败', async () => {
     const land = freshLand()
     const { runs } = runsOn(land)
 
     const result = await runs.start('pwd', { cwd: '/definitely-outside' })
     expect(result.ok).toBe(false)
     if (result.ok) throw new Error('不该成立')
-    expect(result.reason).toContain('工作区越界')
+    expect(result.reason).toContain('启动失败')
   })
 
   test('记进归属账（U50）——后台进程比发起它的那一轮活得久，尤其要记', async () => {
@@ -404,7 +404,7 @@ describe('判据 4 · 取输出——既有 `read` 读得到，写 / 列 / 匹�
   test('`read` 读得到输出文件（它在工作区之外）', async () => {
     const land = freshLand()
     const workspace = createWorkspaceService({ roots: [land.workspace] })
-    const box = createSandbox({ workspace, readOnlyDirs: [land.outputDir] })
+    const box = createSandbox({ workspace })
     const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
 
     const done: BackgroundFinish[] = []
@@ -418,29 +418,24 @@ describe('判据 4 · 取输出——既有 `read` 读得到，写 / 列 / 匹�
     expect(read.truncated).toBeUndefined()
   })
 
-  test('**只有 `read`** 认它——`write` / `list` / `match` 一个都不认', async () => {
-    const land = freshLand()
-    const workspace = createWorkspaceService({ roots: [land.workspace] })
-    const box = createSandbox({ workspace, readOnlyDirs: [land.outputDir] })
-    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
-
-    const started = startedOf(await runs.start('true', {}))
-
-    await expect(box.write(started.outputPath, { text: 'x' })).rejects.toThrow('工作区越界')
-    await expect(box.list(land.outputDir)).rejects.toThrow('工作区越界')
-    await expect(box.match('x', { mode: 'grep', path: started.outputPath })).rejects.toThrow(
-      '工作区越界',
-    )
-  })
-
-  test('不接那处落点（旧装配）＝ 越界照旧——一次都不多地认', async () => {
+  test('根外产物不再由执行层重复准入；写操作权限在上游判断', async () => {
     const land = freshLand()
     const workspace = createWorkspaceService({ roots: [land.workspace] })
     const box = createSandbox({ workspace })
-    const runs = createBackgroundRuns({ dir: land.outputDir, workspace })
+    mkdirSync(land.outputDir, { recursive: true })
+    const path = join(land.outputDir, 'test.log')
+    await box.write(path, { text: 'x' })
+    expect((await box.list(land.outputDir))[0]?.name).toBe('test.log')
+    expect((await box.match('x', { mode: 'grep', path: land.outputDir }))).toHaveLength(1)
+  })
 
-    const started = startedOf(await runs.start('true', {}))
-
-    await expect(box.read(started.outputPath)).rejects.toThrow('工作区越界')
+  test('执行层不需要只读目录白名单也能读取已批准的输出', async () => {
+    const land = freshLand()
+    const workspace = createWorkspaceService({ roots: [land.workspace] })
+    const box = createSandbox({ workspace })
+    mkdirSync(land.outputDir, { recursive: true })
+    const path = join(land.outputDir, 'test.log')
+    writeFileSync(path, 'output')
+    expect((await box.read(path)).content).toBe('output')
   })
 })

@@ -37,10 +37,18 @@ test('设置保存的根与三类材料由下次真实装配消费，旧根与�
     expect(next.readRules([join(root, 'src', 'note.txt')]).documents.map(d => d.text).join('\n')).toContain('LINK_SOURCE_U116')
     expect(next.readSkills().skills.find(s => s.name === 'demo')?.description).toBe('项目优先')
     expect(next.readSkills().skills.find(s => s.name === 'extra')?.description).toBe('配置补充')
-    const shell = attachShell(next.shell); await shell.submit('读取新的根，再尝试来源原文'); shell.dispose()
+    // 脚本外壳默认自动批准；这里明确拒绝，验证来源配置本身不授予执行权限。
+    const shell = attachShell(next.shell, { decide: () => 'reject' }); await shell.submit('读取新的根，再尝试来源原文'); shell.dispose()
     const results = shell.events.filter((e): e is Extract<KernelEvent, { kind: 'tool.result' }> => e.kind === 'tool.result')
     expect(results[0]?.data).toMatchObject({ ok: true, output: { text: expect.stringContaining('NEW_ROOT_CONTENT') } })
     expect(results[1]?.data.ok).toBe(false) // 允许规则来源不等于授予工具访问该目录。
+    const requests = shell.events.filter(e => e.kind === 'tool.decision.request')
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.data.material).toContain('只读该文件')
+    expect(requests[0]?.data.material).toContain(realpathSync(team))
+    expect(requests[0]?.data).toMatchObject({ name: 'read', weight: 'heavy' })
+    expect(shell.decisions).toMatchObject([{ name: 'read', decision: 'reject' }])
+    expect(shell.events.find(e => e.kind === 'tool.decision' && e.data.call === requests[0]?.data.call)?.data).toMatchObject({ decision: 'reject', decider: 'user' })
     expect(JSON.stringify(stage.models[1]!.requests[0]?.messages)).toContain('EXPLICIT_SOURCE_U116')
     expect(JSON.stringify(stage.models[0]!.requests)).toBe(oldRequest)
     const evidence = process.env['MAGIC_SETTINGS_EXECUTION_EVIDENCE']

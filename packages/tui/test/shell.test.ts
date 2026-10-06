@@ -63,7 +63,6 @@ function ask(shell: ReturnType<typeof live>, weight: 'light' | 'heavy' = 'light'
   shell.spy.emit(
     event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight }, { id: 88 }),
   )
-  shell.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 }
 
 // ══ 交代 ═════════════════════════════════════════════════════════════
@@ -220,7 +219,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     const app = live()
     ask(app)
 
-    app.press({ kind: 'char', char: 'y' })
+    app.press({ kind: 'down' }); app.press({ kind: 'enter' })
     expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
   })
 
@@ -228,7 +227,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     const app = live()
     ask(app, 'light')
 
-    app.press({ kind: 'char', char: 'a' })
+    app.press({ kind: 'down' }); app.press({ kind: 'down' }); app.press({ kind: 'enter' })
     expect(app.commands()).toEqual([
       { type: 'decision.answer', id: 88, decision: 'approve', remember: true },
     ])
@@ -240,7 +239,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
 
     app.press({ kind: 'char', char: 'a' })
     expect(app.commands()).toEqual([])
-    expect(app.view().flash).toContain('必闸类不可')
+    expect(app.view().flash).toContain('先答复')
   })
 
   test('外部操作按 `a`（U38）——**不发命令**，缘由按它自己的说法（效果由服务器决定）', () => {
@@ -252,15 +251,14 @@ describe('接管（裁决挂着时占住输入框）', () => {
         { id: 88 },
       ),
     )
-    app.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     app.press({ kind: 'char', char: 'a' })
     expect(app.commands()).toEqual([])
-    expect(app.view().flash).toContain('外部操作不可「总是允许」')
+    expect(app.view().flash).toContain('先答复')
     // 说清「这次批的是哪一件」：`y` 在外部件上答的是**这一次**，不是本机的一条长期授权。
-    // **原锚**「按 y 批准这一次」（带键位写法）；**为何变**（返工 B）：一屏键位只说一次，
+    // **原锚**「按 ○ 批准这一次」（带键位写法）；**为何变**（返工 B）：一屏键位只说一次，
     // 卡上已经写着键位，回执里就不再列一遍；**新锚**只说「只能批准这一次」这件事本身。
-    expect(app.view().flash).toContain('只能批准这一次')
+    expect(app.view().flash).toContain('此刻不管用')
   })
 
   test('**草稿不丢**——接管时收起来、答完原样归还、不自动发送', () => {
@@ -273,7 +271,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     // U36：引用也是那份草稿的一部分——归还时少一件就是把用户的草稿改掉了一半，见 `Stashed`）
     expect(app.view().stashed).toEqual({ draft: '打了一半', caret: 4, refs: [] })
 
-    app.press({ kind: 'char', char: 'y' })
+    app.press({ kind: 'down' }); app.press({ kind: 'enter' })
     // 答复发出去；**裁决落定那一刻**（内核回 `tool.decision`）才归还草稿
     expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
     expect(app.view().dock.kind).toBe('decision')
@@ -307,7 +305,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     app.press({ kind: 'escape' })
     expect(app.view().dock.kind).toBe('input')
     expect(app.commands()).toEqual([])
-    app.press({ kind: 'ctrl+g' })
+    app.press({ kind: 'tab' })
     expect(app.view().dock.kind).toBe('decision')
   })
 
@@ -316,13 +314,12 @@ describe('接管（裁决挂着时占住输入框）', () => {
 
     app.type('草稿')
     ask(app)
-    app.press({ kind: 'char', char: 'y' })
+    app.press({ kind: 'down' }); app.press({ kind: 'enter' })
 
     // 第二件到（内核接着问）
     app.spy.emit(
       event('tool.decision.request', { call: 72, name: 'write', material: 'm', weight: 'light' }, { id: 89 }),
     )
-    app.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(app.view().dock.kind).toBe('decision')
     expect(app.view().stashed).toEqual({ draft: '草稿', caret: 2, refs: [] }) // 只收一次
 

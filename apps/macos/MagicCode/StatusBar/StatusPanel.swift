@@ -151,8 +151,8 @@ struct StatusPanel: View {
             }.padding(.vertical, 8).padding(.horizontal, 6).contentShape(Rectangle())
         }.buttonStyle(WorkRowStyle(focused: focused == work.id)).focused($focused, equals: work.id)
             .accessibilityLabel("\(work.title)，\(work.project)，\(stale ? "上次状态：" : "")\(status)")
-            .accessibilityIdentifier("work-\(work.id)").accessibilityHint("查看详情；按 Enter 在终端打开")
-            .onKeyPress(.return) { model.inspect(work, open: true); return .handled }
+            .accessibilityIdentifier("work-\(work.id)").accessibilityHint("查看详情和接回命令")
+            .onKeyPress(.return) { model.inspect(work); return .handled }
             .onChange(of: focused) { _, id in if id == work.id { listFocus = id } }
     }
 }
@@ -214,8 +214,14 @@ private struct WorkDetail: View {
                         Text(reason).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
                 }
-                Button("在终端打开") { model.inspect(work, open: true) }.disabled(!model.isCurrent)
-                    .accessibilityIdentifier("open-work-terminal")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("在你的终端执行以下命令接回对话").font(.caption).foregroundStyle(.secondary)
+                    Text(model.resumeCommand(work)).font(.system(.caption, design: .monospaced))
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                        .accessibilityIdentifier("work-resume-command")
+                    Button("复制接回命令") { model.copyCommand(work) }
+                        .accessibilityIdentifier("copy-work-resume-command")
+                }
                 if !work.notices.isEmpty || !work.workspace.isEmpty || work.members != nil {
                     VStack(alignment: .leading, spacing: 16) {
                         if !work.notices.isEmpty {
@@ -292,9 +298,14 @@ struct TerminalStatus: View {
 struct NoticeWindow: View {
     @ObservedObject var model: AppModel
     var body: some View {
+        if model.selected != nil {
+            StatusPanel(model: model)
+        } else { routes }
+    }
+    private var routes: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("通知事项").font(.title2)
-            Text("选择一项，在终端查看当前状态").font(.subheadline).foregroundStyle(.secondary)
+            Text("选择一项，查看工作详情和接回命令").font(.subheadline).foregroundStyle(.secondary)
             if let message = model.actionMessage { Text(message).textSelection(.enabled) }
             ScrollView {
                 VStack(spacing: 10) {

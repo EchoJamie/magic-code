@@ -125,7 +125,6 @@ test('成员工具审批在根 TUI 只有同一份，根窗口答复回成员并
   try {
     f.shell.key({ kind: 'paste', text: '分出检查并确认成员操作。' }); f.shell.key({ kind: 'enter' })
     await f.wait('成员 exec 待答到根窗口',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
-    f.shell.key({kind:'ctrl+g'})
     await f.wait('成员 exec 审批到根窗口', () => {
       const dock = f.shell.getView().dock
       return dock.kind === 'decision' && dock.pending.name === 'exec'
@@ -140,7 +139,7 @@ test('成员工具审批在根 TUI 只有同一份，根窗口答复回成员并
     const requests = f.events.filter(one => one.kind === 'tool.decision.request' && one.data.name === 'exec')
     expect(new Set(requests.map(one => one.id)).size).toBe(1)
     expect(requests.every(one => one.session === f.member()!.sessionId)).toBe(true)
-    f.shell.key({ kind: 'char', char: 'y' }); f.shell.key({ kind: 'char', char: 'y' })
+    f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' }); f.shell.key({ kind: 'enter' })
     await f.wait('成员实际改完权限', () => (statSync(path).mode & 0o777) === 0o700)
     await f.wait('成员操作后的 HTTP 请求', () => f.requests('member-model').length >= 3)
     expect(f.commands.filter(one => one.type === 'decision.answer' && one.id === dock.pending.id)).toHaveLength(1)
@@ -190,7 +189,6 @@ test('真实入口 detached 后根窗口保留成员审批、目标及草稿，�
     const refs = f.shell.getView().refs
     memberReply.release()
     await f.wait('成员 chmod 待答提示',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
-    f.shell.key({kind:'ctrl+g'})
     await f.wait('成员 chmod 待审批', () => { const dock = f.shell.getView().dock; return dock.kind === 'decision' && dock.pending.name === 'exec' })
     const dock = f.shell.getView().dock
     if (dock.kind !== 'decision') throw new Error('成员审批没有展示')
@@ -207,7 +205,7 @@ test('真实入口 detached 后根窗口保留成员审批、目标及草稿，�
     f.client.send({ type: 'collaboration.read', member: member.agentId })
     await f.wait('只读重发仍为原审批', () => f.events.filter(one => one.kind === 'tool.decision.request' && one.id === dock.pending.id).length >= 2)
     expect(f.manager.executors().some(one => one.session === origin)).toBe(false)
-    f.shell.key({ kind: 'char', char: 'y' }); f.shell.key({ kind: 'char', char: 'y' })
+    f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' }); f.shell.key({ kind: 'enter' })
     await f.wait('无入口 executor 时答复仍交成员执行', () => (statSync(path).mode & 0o777) === 0o700 && f.requests('member-model').length === 3)
     expect(f.commands.filter(one => one.type === 'decision.answer' && one.id === dock.pending.id)).toHaveLength(1)
     expect(f.events.filter(one => one.kind === 'tool.decision' && one.session === member.sessionId && one.data.call === dock.pending.call)).toHaveLength(1)
@@ -240,7 +238,6 @@ test('审批等待期间发布共同约束：批准旧 chmod 后仍须重审，�
   try {
     f.shell.key({ kind: 'paste', text: '分出检查并确认成员操作。' }); f.shell.key({ kind: 'enter' })
     await f.wait('旧 chmod 待答',()=>f.events.some(one=>one.kind==='tool.decision.request'&&one.data.name==='exec'))
-    f.shell.key({kind:'ctrl+g'})
     await f.wait('旧 chmod 已弹审批卡', () => {
       const dock = f.shell.getView().dock
       return dock.kind === 'decision' && dock.pending.name === 'exec'
@@ -263,7 +260,7 @@ test('审批等待期间发布共同约束：批准旧 chmod 后仍须重审，�
     const pending = f.shell.getView().dock
     expect(pending.kind === 'decision' && pending.pending.id).toBe(dock.pending.id)
 
-    f.shell.key({ kind: 'char', char: 'y' })
+    f.shell.key({ kind: 'down' }); f.shell.key({ kind: 'enter' })
     await f.wait('批准旧工具后的下一成员 HTTP 请求', () => f.requests('member-model').length >= 3)
     const nextRequest = requestText(f.requests('member-model')[2])
     expect(nextRequest).toContain(constraintText)

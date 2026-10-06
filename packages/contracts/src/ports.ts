@@ -98,7 +98,7 @@ export interface ConversationService {
    * 与记录对齐。
    *
    * **它不是什么**——① 在途识别（记录域的查询面）· ②③④ 处置（重放 / 落账 / 记中止）
-   * 都由**应用层**（`@magic/actions`）编排，不在本面。恢复的**入口**（启动参数 `--session`）
+   * 都由**应用层**（`@magic/actions`）编排，不在本面。恢复的**入口**（启动参数 `magic resume`）
    * 也归应用层受理——那是这一层立起来的意义（审计第 1 条：恢复入口没有归处）。
    *
    * 返回 `Promise<unknown>`——报告是**对话域的域内形态**，不进契约（U15 的分寸：没出，
@@ -171,7 +171,7 @@ export interface PermissionGate {
    * 权限域自己拿不到（那是工具域发的事件），故由调用方传入；**必填**——
    * 不设哨兵兜底：静默的 `-1` 比缺参更坏，接线漏了应当在**编译期**就报。
    */
-  decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
+  decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId, signal?: AbortSignal): Promise<Decision>
   /**
    * **这一笔是不是内核直接拒的，理由是哪一条**（U77）——工具域据此措辞。
    *
@@ -302,7 +302,7 @@ export type RecoveryScan = {
  * **失败形态分两路**（技术方案 · 执行 · 原语形态）——**正常结果用判别式 · 调用不成立用抛**：
  * - **判别式**载正常结果里的失败——命令跑了但 `exit` 非 0、超时（`ExecResult` 的 `ok` /
  *   `reason`）、读到上限（`ReadResult.truncated`）。这些是「做成了，结果如此」。
- * - **调用不成立＝抛**——越界 · 不存在 · 是否目录 · 无权限 · 参数无效：沙箱侧抛**精确报文**，
+ * - **调用不成立＝抛**——目标改变 · 不存在 · 是否目录 · 无权限 · 参数无效：沙箱侧抛**精确报文**，
  *   由**工具边界**捕之、收敛为 `ToolResult` 的判别式。故对模型与其余消费者，
  *   「错误＝返回值」照旧成立；抛只发生在原语这一层。
  *
@@ -310,6 +310,8 @@ export type RecoveryScan = {
  * 兜一个哨兵值比抛更坏（静默的空数组会被当成「这个目录就是空的」）。
  */
 export interface Sandbox {
+  /** 绑定本次已解析目标；只核对身份，不作权限决断。文件读改写共用句柄，调用结束须释放。 */
+  bindTarget?(target: ResolvedPath, tool: string): { sandbox: Sandbox; release(): Promise<void> }
   exec(cmd: string, opts: ExecOptions): Promise<ExecResult>
   /**
    * 读文件——`opts.maxBytes` 缺省＝**实现常量**（64 KiB）。
@@ -318,12 +320,10 @@ export interface Sandbox {
    * 是**截断文本**——原样写回即**抹掉尾巴**（数据安全件）。故 `edit` 显式放大上限
    * （实现常量 1 MiB），仍超限则**即拒并指出出口**（走 `exec`）。
    *
-   * **落点不止工作区**（U70）：除各根之外，实现另认**内核自己的一处只读落点**
-   * （后台命令的输出目录，在工作区之外）——「取输出用既有的 `read`」那一格的落点。
-   * 它是**只读**的：`write` / `list` / `match` 一个都不认那一处（见 `SandboxOptions`）。
+   * 目标已由上游闸门批准；执行层不另设工作区或产物目录准入名单。
    */
   read(path: string, opts?: { maxBytes?: number }): Promise<ReadResult>
-  write(path: string, data: WriteData): Promise<void>
+  write(path: string, data: WriteData, opts?: { expectedContent?: string }): Promise<void>
   list(path: string): Promise<readonly ListEntry[]>
   match(pattern: string, opts: MatchOptions): Promise<readonly MatchHit[]>
 }
@@ -426,10 +426,10 @@ export interface BackgroundRuns {
 
 /** `BackgroundRuns.start` 的入参。 */
 export type BackgroundStartOptions = {
+  /** 宿主工具入口固定的 cwd 身份；后台启动只验证一致性。 */
+  readonly target?: ResolvedPath
   /**
-   * 在哪里跑——**与沙箱同一条解析规则**（相对按默认根 · 绝对须落根内）；缺省＝默认根。
-   *
-   * 越界即拒（进程不启动）——判据与沙箱原语同源，执行域一处判。
+   * 在哪里跑——相对按默认根；工具入口解析并裁决后传入真实 cwd。
    */
   readonly cwd?: string
   /**
@@ -475,14 +475,14 @@ export interface WorkspaceService {
    *
    * 由头（U27）：`/tmp/proj` 在 macOS 上实为 `/private/tmp/proj`，注册成真路径，
    * 而模型照**用户写的**那一串给 `/tmp/proj/src`——只比规范形的话它被判越界。
-   * **两张表都认**是执行域的落点判据（`workspace.ts`），权限域要与它**同源**
+   * 声明写法供规则与展示使用；工具实际目标须先解析真实路径，再交权限域
    * （`PermissionContext` 一并带上这一张，见其注）。
    */
   declaredRoots(): readonly string[]
   defaultRoot(): string
   /**
-   * 解析路径——**越界即拒：抛**（沙箱侧捕之、归 `reason: 'out-of-bounds'`）。
-   * 越界判据与执行域**同源**：相对按默认根 · 绝对须落根内。
+   * 解析真实目标（新文件解析已有祖先）；只产出事实，根外不拒绝。
+   * 产品路径准入只归执行前的 PermissionGate。
    */
   resolve(path: string): ResolvedPath
 }
@@ -1498,20 +1498,8 @@ export type ToolResult = {
 // —— 权限域 ——
 
 /**
- * 裁决上下文——**纯数据**（技术方案 · 领域划分 · 端口内类型）。
- *
- * 越界判定所需的根视图由**调用方（工具域）给出**：**不传端口进端口**。
- * 越界判据与执行域**同源**（相对按默认根 · 绝对须落根内）——两处须一致。
- *
- * **两张表**（U22 · 技术方案 · 权限「权限域的根表要与执行域同源」）——`roots` 是**规范形**
- * （`realpath` 之后），`declaredRoots` 是**声明原形**（用户手写的那一串），**同序等长**。
- *
- * 由头：`U27` 把**执行域**的落点判定改成两张表之后，闸门这一侧还只有规范形
- * ⇒ **声明原形下的读类每次都要人点一下**（沙箱认了、闸门不认 ✗）。
- * 故这张表跟着一起过来：**落点判两张 · 规则也认两张**（见 `@magic/permission` · `paths.ts`）。
- *
- * **必填**（不是可选位）：漏接线＝退回「每次读都弹卡」那个坑，而它**不报错**——
- * 那正是本轮要收掉的东西。缺参应当在编译期就报（照 `PermissionGate.decide` 的 `callRef` 之例）。
+ * 裁决上下文只携带工作区事实，不传端口。调用方先把文件目标解析为真实路径。
+ * roots 与 declaredRoots 同序等长；声明写法继续供已有配置规则识别，路径准入只在闸门。
  */
 export type PermissionContext = {
   /** **规范形**（根的身份）——`[0]` ＝默认根。 */
@@ -1545,9 +1533,9 @@ export type BlobStore = {
  * 命令跑了 ＝ `ok: true`（`exit` 非 0 ＝**命令失败**，不是沙箱失败）；
  * 沙箱级失败 ＝ `ok: false` + `reason`。**错误＝返回值**（不抛）。
  *
- * ⚠️ **超时那一支与另两支不同形**（U69）：超时 =「**命令跑过了、被掐断**」，不是
+ * ⚠️ **超时与启动失败不同形**（U69）：超时 =「**命令跑过了、被掐断**」，不是
  * 「压根没执行」——故它**照 `ok:true` 那一支带上两道流**（收尸时已经排空，只是原先没带出来）。
- * 另两支（cwd 越界／启动失败）是**进程没起来**，没有输出可言，故不带。
+ * 启动失败（含目标改变）是**进程没起来**，没有输出可言，故不带。
  */
 export type ExecResult =
   | {
@@ -1579,10 +1567,9 @@ export type ExecResult =
       readonly message: string
     }
 
-/** 沙箱级失败三例（技术方案 · 执行 · 原语形态）。 */
+/** 执行失败：超时或启动失败；工作区范围只在权限闸门裁决。 */
 export type ExecFailureReason =
   | 'timeout' // 超时
-  | 'out-of-bounds' // cwd 越界（进程不启动）
   | 'spawn' // 启动失败
 
 /**
@@ -1675,19 +1662,17 @@ export type MatchOptions = {
   readonly signal?: AbortSignal
 }
 
-/**
- * 已解析的工作区路径。
- *
- * `absolute` 已归一化（**词法**——同步纯词法判定，见 `WorkspaceService.resolve` 的限度）；
- * `root` ＝承载它的那条根。
- *
- * **越界即拒＝抛**（端口注释）——沙箱各原语捕之：`exec` 归 `reason: 'out-of-bounds'`；
- * 余四者的「正常结果 vs 调用不成立」两路之分见 `Sandbox` 头注（失败形态分两路）。
- */
+/** 本次解析的真实目标与身份快照；是否允许该操作由 PermissionGate 决定。 */
 export type ResolvedPath = {
   readonly absolute: string
-  readonly root: string
+  /** 根外目标没有所属工作区根；不代表拒绝。 */
+  readonly root?: string
+  /** 真文件系统实现提供：null 表示解析时不存在；不是授权状态。 */
+  readonly identity?: FileIdentity | null
+  readonly parentIdentity?: FileIdentity
 }
+
+export type FileIdentity = { readonly dev: string; readonly ino: string }
 
 // —— 控制域 ——
 

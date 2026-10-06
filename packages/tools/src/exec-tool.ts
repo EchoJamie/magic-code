@@ -20,10 +20,7 @@
  *    机械分析在 `@magic/permission`。**不替它判、也不猜**；
  * ④ 大块转存 —— 归分发（机制层，对所有工具一视同仁）。
  *
- * **工作目录**：不传 `cwd`。沙箱的缺省就是工作区默认根——「工作目录约束」由此而来；
- * 模型要换目录就在命令里自己 `cd`（命令里的 `cd` 归权限域分析，不归本文件）。
- * 本阶段**不给模型 `cwd` 参数**：参数键锚了 `cmd` · `timeoutMs` · `background` 三把
- * （技术方案 · 工具 · 参数键），**未锚的键不发明**（U13 若需要再谈）。
+ * **工作目录**：cwd 缺省为默认根；工具入口在裁决前解析真实目录，执行时核对目标。
  *
  * **超时那一把**（U69）——`timeoutMs` 是**唯一**一处「模型自己定系统量」的参数：它知道手上
  * 这件事是 `ls` 还是一次构建，别人替不了它（见 `EXEC_PARAMETERS` 里那一项的描述）。
@@ -77,6 +74,7 @@ export const EXEC_MAX_OUTPUT_BYTES = 64 * 1024
 export const EXEC_PARAMETERS = {
   type: 'object',
   properties: {
+    cwd: { type: 'string', description: '工作目录；缺省为工作区默认根，工作区外须授权。' },
     cmd: {
       type: 'string',
       description: '要执行的命令（经 shell 解释；工作目录＝工作区默认根）',
@@ -146,7 +144,7 @@ const EXEC_PARAMETERS_WITH_BACKGROUND = {
  * - **失败与成功同一形状**——`ok` 是独立字段，文本里不重复判断，只补齐「为什么非 0」。
  *
  * `ok` 的口径：**命令跑到头且 exit 0** 才算成功。exit 非 0 = 命令失败；
- * 被信号收掉（137）= 命令失败；**超时**（跑过了、被掐断）= 失败；没跑成（cwd 越界 ·
+ * 被信号收掉（137）= 命令失败；**超时**（跑过了、被掐断）= 失败；没跑成（目标改变 ·
  * 启动失败）= 失败。**条条都不是「成功」**——回填一个 ok:true 会让模型以为事情办成了。
  *
  * ⚠️ 但**「失败」不止一种**：`ok:false` 只说明「这一趟没有一次成功的执行」，
@@ -154,8 +152,8 @@ const EXEC_PARAMETERS_WITH_BACKGROUND = {
  * （见下面的注释）。把两者合成一句话，就是 D39 那个坑。
  */
 function composeOutcome(result: ExecResult, signal: AbortSignal | undefined): ToolRunResult {
-  // **没跑成**只有两例（cwd 越界 · 启动失败）——进程压根没起来，故没有输出、也没有耗时可言。
-  // 超时**不在其列**：它跑了、被掐断了（见下），与这两例不是一回事（「命令跑过的结果与
+  // **没跑成**是启动失败（含目标改变）——进程压根没起来，故没有输出、也没有耗时可言。
+  // 超时**不在其列**：它跑了、被掐断了（见下），与启动失败不是一回事（「命令跑过的结果与
   // 调用不成立分开」）——原先它跟着这一支走，于是被说成「未能执行」，D39 就是这儿来的。
   if (!result.ok && result.reason !== 'timeout') {
     return { ok: false, output: `exec 未能执行（${result.reason}）：${result.message}` }
@@ -216,11 +214,11 @@ function composeOutcome(result: ExecResult, signal: AbortSignal | undefined): To
  *
  * 没接后台能力时**不静默退回前台**——那是改了这一条调用的意思（见 `OUTPUT_BACKGROUND_UNSUPPORTED`）。
  */
-async function startBackground(cmd: string, ctx: ToolRunContext): Promise<ToolRunResult> {
+async function startBackground(cmd: string, ctx: ToolRunContext, cwd: string | undefined): Promise<ToolRunResult> {
   const runs = ctx.background
   if (runs === undefined) return refused(OUTPUT_BACKGROUND_UNSUPPORTED)
 
-  const started = await runs.start(cmd)
+  const started = await runs.start(cmd, { cwd })
   if (!started.ok) return refused(backgroundStartFailed(started.reason))
 
   // `ok: true`——**交出去这件事做成了**（命令后来跑成什么样是另一件事，由那一声回执说）。
@@ -275,10 +273,11 @@ export function defineExecTool(): ToolDefinition {
       // 一起给＝参数错，**不静默丢**（U69 集成时定）。
       if (args['background'] === true) {
         if (timeout.ms !== null) return { ok: false, output: OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT }
-        return startBackground(cmd, ctx)
+        return startBackground(cmd, ctx, typeof args['cwd'] === 'string' ? args['cwd'] : undefined)
       }
 
       const result = await ctx.sandbox.exec(cmd, {
+        ...(typeof args['cwd'] === 'string' ? { cwd: args['cwd'] } : {}),
         // **不填就是 null**——不是「让沙箱自己看着办」：沙箱那一侧缺省也是无上界，
         // 但把话说明白，读的人不必再翻一层才知道这一趟到底设没设上界。
         timeoutMs: timeout.ms,

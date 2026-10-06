@@ -111,7 +111,7 @@ function formsOf(primary: string, alternate: string): readonly string[] {
  * ## `readOnlyDirs`：内核自己的只读落点（U80）
  *
  * **除各根之外，读类调用另认的几处**——由调用方点名（本域**不自己拼、不自己猜**：
- * 名单归装配，与执行域那份 `SandboxOptions.readOnlyDirs` **同一个来源**）。
+ * 名单只归权限闸门；执行域不再持有路径准入名单）。
  * 当前只有一处：`exec` 后台那一形的**输出目录**（设计明写它落在工作区之外）。
  *
  * 它是**我们自己的产物**，不是用户的东西 ⇒ **不算越界**（这一步就是本条的全部：

@@ -36,7 +36,7 @@ const PATTERN_KEY = {
 
 const SCOPE_KEY = {
   type: 'string',
-  description: '搜索起点——相对按工作区默认根；绝对路径须落在工作区内；缺省＝工作区根',
+  description: '搜索起点——相对按工作区默认根；工作区外目标需明确授权；缺省＝工作区根',
 } as const
 
 export const GREP_PARAMETERS = {
@@ -69,7 +69,7 @@ export const LS_PARAMETERS = {
   properties: {
     path: {
       type: 'string',
-      description: '目录路径——相对按工作区默认根；绝对路径须落在工作区内；缺省＝工作区根',
+      description: '目录路径——相对按工作区默认根；工作区外目标需明确授权；缺省＝工作区根',
     },
   },
   required: [],

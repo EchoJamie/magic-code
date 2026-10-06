@@ -161,7 +161,6 @@ describe('U107 · 剪贴板取图', () => {
     stage.feed([
       event('tool.decision.request', { call: 71, name: 'exec', material: 'ls -la', weight: 'light' }, { id: 88 }),
     ] as readonly KernelEvent[])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(stage.shell.getView().dock.kind).toBe('decision')
 
     stage.press(CTRL_V)

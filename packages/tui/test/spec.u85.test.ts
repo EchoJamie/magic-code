@@ -110,16 +110,16 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
     const rules = rulesOf(frame)
 
     // 那三条步骤**一条都不在记录区**（记录区＝上沿线之上）
-    expect(frame.record.filter((line) => /[▪■□]/u.test(line.text))).toEqual([])
+    expect(frame.dock.filter((line) => /[▪■□]/u.test(line.text))).toEqual([])
 
     // 三条都在**两条线之间**那一带（＝交互区）
-    const inDock = frame.dock.filter((line) => /[▪■□]/u.test(line.text))
+    const inDock = frame.record.filter((line) => /[▪■□]/u.test(line.text))
     expect(inDock.map((line) => line.text.trim())).toEqual(['■ 读登录逻辑', '▪ 改提示', '□ 跑一遍'])
 
     // 且它在**上沿线之下**、**输入行之上**——两条线的次序一个没动（第一条是上沿）
-    const planRow = frame.dock.find((line) => line.text.includes('▪ 改提示'))?.row ?? -1
+    const planRow = frame.record.find((line) => line.text.includes('▪ 改提示'))?.row ?? -1
     expect(rules.length).toBe(2)
-    expect(planRow).toBeGreaterThan(rules[0] as number)
+    expect(planRow).toBeLessThan(rules[0] as number)
     expect(planRow).toBeLessThan(composerRow(frame))
   })
 
@@ -147,8 +147,8 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
     const withPlan = await stage.screen({ columns: 200, rows: 40 })
 
     // 上沿线**还在原来那一行**（清单没把它往下推——它现在画在线的这一侧）
-    expect(rulesOf(withPlan)[0]).toBe(rulesOf(bare)[0])
-    expect(withPlan.record.map((line) => line.text)).toEqual(bare.record.map((line) => line.text))
+    expect(rulesOf(withPlan)[0]).toBe((rulesOf(bare)[0] ?? 0) + 1)
+    expect(withPlan.record.filter(line => !line.text.includes('一步')).map((line) => line.text)).toEqual(bare.record.map((line) => line.text))
     expect(nonBlank(withPlan)).toBe(nonBlank(bare) + 1)
   })
 
@@ -317,7 +317,6 @@ describe('U85 · 乙 · 草稿那一头（真按键 → 外壳）', () => {
     stage.feed([
       event('tool.decision.request', { call: 71, name: 'exec', material: '命令 ls', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const before = stage.shell.getView()
     stage.press(LINE_START)

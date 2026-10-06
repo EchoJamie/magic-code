@@ -125,12 +125,11 @@ describe('参数键', () => {
     expect(weigh(call('exec', { shell: 'ls' })).weight).toBe('heavy')
   })
 
-  test('路径类工具的键名**仍是候选集**——其余工具键名随 U13 定（未定处不得依赖）', () => {
-    // 参数键读得出 ⇒ 这一笔读得懂 ⇒ 默认通（读类与根内增量编辑都不在名单里）
+  test('路径分析只读执行工具实际使用的 path 键，不让候选键遮蔽真实目标', () => {
     passes(call('read', { path: 'src/a.ts' }))
-    passes(call('read', { filePath: 'src/a.ts' }))
-    passes(call('edit', { file_path: 'src/a.ts' }))
-    passes(call('ls', { dir: 'src' }))
+    expect(weigh(call('read', { filePath: 'src/a.ts' })).weight).toBe('heavy')
+    expect(weigh(call('edit', { file_path: 'src/a.ts' })).weight).toBe('heavy')
+    expect(weigh(call('read', { filePath: 'src/a.ts', path: '/outside/secret' })).weight).toBe('heavy')
   })
 })
 
@@ -524,9 +523,10 @@ describe('U80 · 内核自己的只读落点（那处不算越界）', () => {
     expect(landing?.root).toBe(BG_DIR)
   })
 
-  test('① 读与搜索**同一类**：四件都认（不是只给 `read` 开的小口）', () => {
-    for (const tool of ['read', 'grep', 'glob', 'ls']) {
-      expect(analyzed(tool, BG_DIR, [BG_DIR]).landings[0]?.inside, tool).toBe(true)
+  test('① 自有产物的例外只覆盖 read；目录枚举与搜索仍申请', () => {
+    expect(weighing(analyzed('read', BG_DIR, [BG_DIR])).weight).toBe('light')
+    for (const tool of ['grep', 'glob', 'ls']) {
+      expect(weighing(analyzed(tool, BG_DIR, [BG_DIR])).weight, tool).toBe('heavy')
     }
   })
 
@@ -1052,3 +1052,26 @@ export function chainRefIsRequired(): void {
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
 }
+
+describe('完整写入与编辑审批材料', () => {
+  test.each(['target.txt', '/outside/target.txt'])('write %s 展示完整正文，长内容尾部与换行不截断', (path) => {
+    const content = '首行\n' + '内容\t'.repeat(6000) + '\n末尾确认标记\n'
+    const { material, seq } = weigh(call('write', { path, content }))
+    expect(material).toContain(path)
+    expect(material).toContain(`待写入内容（完整，${content.length} 字符）：\n${content}`)
+    expect(material.endsWith(content)).toBe(true)
+    expect(seq.countOf('tool.decision.request')).toBe(1)
+  })
+
+  test('edit 审批只展示本次完整 old/new，保留空白与空 new 的删除语义', () => {
+    const old = '\told line\n' + 'old\n'.repeat(3000) + 'old-tail\n'
+    const replacement = '\tnew line\n' + 'new\n'.repeat(3000) + 'new-tail\n'
+    const { material } = weigh(call('edit', { path: '/outside/a', old, new: replacement }))
+    expect(material).toContain(`替换前 old（完整，${old.length} 字符）：\n${old}`)
+    expect(material).toContain(`替换后 new（完整，${replacement.length} 字符）：\n${replacement}`)
+    expect(material.endsWith(replacement)).toBe(true)
+    const empty = weigh(call('edit', { path: '/outside/a', old: 'erase', new: '' })).material
+    expect(empty).toContain('替换后 new（完整，0 字符）：\n（空字符串）')
+    expect(weigh(call('write', { path: 'empty', content: '' })).material).toContain('待写入内容（完整，0 字符）：\n（空字符串）')
+  })
+})

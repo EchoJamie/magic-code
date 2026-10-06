@@ -101,7 +101,7 @@ async function seedSession(stage: Stage, text: string): Promise<SessionId> {
   return session
 }
 
-describe('接续（`--session` 那条路）——装载 ＋ 恢复 ＋ 重建展示', () => {
+describe('接续（`resume` 那条路）——装载 ＋ 恢复 ＋ 重建展示', () => {
   test('崩溃现场 → 重起接续：补记结果与中止，**一次都不重跑**', async () => {
     const stage = makeStage()
     try {

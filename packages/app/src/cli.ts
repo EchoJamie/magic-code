@@ -20,12 +20,12 @@ const USAGE = `magic —— 软件工程智能体
 
 用法：
   magic [选项]
+  magic resume <id> [选项]
   magic help
 
 选项：
   -h, --help          显示帮助
   -v, --version       显示版本
-  --session <id>      接回已有会话，输入后继续执行
   --model <tier>      选择模型（默认 default）
   --allow-all         本次会话跳过所有操作确认
   --debug             保存并开启调试模式
@@ -38,13 +38,14 @@ const USAGE = `magic —— 软件工程智能体
 
 说明：
   magic 打开交互界面，首次发送消息时创建会话。
-  会话 id 可在 /resume 中查看；接回时只展示已有记录。
-  --allow-all 仅启动时可用，包括删除、改权限和改属主操作。
-  不使用 --allow-all 时，上述操作仍需确认。
+  会话 id 可在 /resume 中查看；接回时只展示已有记录，输入后继续执行。
+  --allow-all 仅启动时可用，可跳过改权限和改属主等操作的确认。
+  不使用 --allow-all 时，改权限和改属主仍需确认。
+  删除规则仍直接拒绝，不受 --allow-all 影响。
 
 示例：
   magic --model spell
-  magic --session <id>
+  magic resume <id>
 
 界面内帮助：/help；模型设置：/model。
 脚本格式与示例：README.md「脚本（--script）」。
@@ -59,7 +60,7 @@ export type Args = {
   readonly check: boolean
   readonly script?: string | undefined
   /**
-   * **显式接续**那条会话（`--session <id>`）——不给＝新会话（D4：启动不接续）。
+   * **显式接续**那条会话（`magic resume <id>`）——不给＝新会话（D4：启动不接续）。
    *
    * 它是**恢复入口**（`U25`）：给了 id ⇒ 装配开局装载它、`boot` 跑一次恢复
    * （处置在途、重建现场）。**由应用层受理**（`@magic/actions`）——受理在这里，
@@ -131,8 +132,9 @@ export function parseArgs(argv: readonly string[]): Args {
       i += 1
       continue
     }
-    if (arg === '--session') {
-      session = valueOf('--session', i)
+    if (arg === 'resume' && session === undefined) {
+      session = valueOf('resume', i)
+      if (session.trim() === '' || session.startsWith('-')) throw new Error('resume 缺少有效会话 id（见 magic --help）')
       i += 1
       continue
     }
@@ -329,7 +331,7 @@ export function scriptOptions(
 } {
   return {
     onEvent,
-    // **启动流转也接上**（U25）：给了 `--session` 就走恢复那一趟。不接的话
+    // **启动流转也接上**（U25）：给了 `resume <id>` 就走恢复那一趟。不接的话
     // 「接续 + 恢复」这条链在无人值守里静默缺席——正是本单元要收掉的那种空白。
     boot: () => assembly.boot(),
     onSwitch: (request) => {
@@ -450,6 +452,7 @@ async function runExecutorMode(argv: readonly string[]): Promise<number | undefi
 
   const socket = argv[1]
   const token = valueOf('--token')
+  // 管理者—执行者私约；普通 CLI 的 parseArgs 不接受这个选项。
   const session = valueOf('--session')
   const cwd = valueOf('--cwd')
   const magicHome = valueOf('--magic-home')

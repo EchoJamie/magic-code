@@ -38,7 +38,6 @@ function asked(weight: 'light' | 'heavy' = 'light', draft = ''): Stage {
       { id: 88 },
     ),
   ])
-  stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
   return stage
 }
@@ -192,11 +191,11 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
     }
 
     // 竖线**着色**（这就是「不套框但仍有轻重之分」的落法）
-    expect(cellAt(light, '│ 跑测试 · 可逆', 1)).toMatchObject({ text: '│', fg: '#e5c07b' })
-    expect(cellAt(heavy, '│ 覆盖写 · 不可逆', 1)).toMatchObject({ text: '│', fg: '#e06c75' })
+    expect(cellAt(light, '│ 跑测试 · 待决策', 1)).toMatchObject({ text: '│', fg: '#e5c07b' })
+    expect(cellAt(heavy, '│ 覆盖写 · 待决策', 1)).toMatchObject({ text: '│', fg: '#e06c75' })
     // 标题也吃这个色（轻 / 重一眼可分）——第 0 格是左内边距、第 1 格是竖线、第 2 格是它后面的空格
-    expect(cellAt(light, '│ 跑测试 · 可逆', 3)).toMatchObject({ text: '跑', fg: '#e5c07b' })
-    expect(cellAt(heavy, '│ 覆盖写 · 不可逆', 3)).toMatchObject({ text: '覆', fg: '#e06c75' })
+    expect(cellAt(light, '│ 跑测试 · 待决策', 3)).toMatchObject({ text: '跑', fg: '#e5c07b' })
+    expect(cellAt(heavy, '│ 覆盖写 · 待决策', 3)).toMatchObject({ text: '覆', fg: '#e06c75' })
   })
 
   test('**键位只出现一次**（在卡上）——接管态**不画输入提示行**（D29）', async () => {
@@ -223,7 +222,6 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
       event('tool.call', { name: 'write', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: 'write', material, weight: 'heavy' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     const view = stage.shell.getView()
 
     for (const columns of [200, 100]) {
@@ -239,21 +237,10 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
     const heavy = await asked('heavy').screen(WIDE)
     const light = await asked('light').screen(WIDE)
 
-    const heavyBar = heavy.cellsOf(heavy.rowOf('y 批准'))
-    const struck = heavyBar.find((cell) => cell.text === 'a')
-    // 那个 `a` **还在屏上**（划掉≠藏起来：让你看见「这里本该有它、但这件不给」）
-    expect(struck).toBeDefined()
-    expect(struck?.strikethrough).toBe(true)
-    expect(struck?.fg).toBe('#49505e') // 连同它的说明一起退到最弱
-
-    expect(light.cellsOf(light.rowOf('y 批准')).find((cell) => cell.text === 'a')?.strikethrough).toBe(
-      false,
-    )
-
-    // 右位跟着少一个键（`y / a / n` → `y / n`）
-    expect(light.statusLine).toContain('y / a / n')
-    expect(heavy.statusLine).toContain('y / n')
-    expect(heavy.statusLine).not.toContain('y / a / n')
+    expect(heavy.has('总是允许')).toBe(false)
+    expect(light.has('本工作区总是允许此类操作')).toBe(true)
+    expect(heavy.has('○ 批准这一次')).toBe(true)
+    expect(heavy.has('○ 拒绝这一次')).toBe(true)
   })
 })
 
@@ -267,8 +254,8 @@ describe('输入接管', () => {
 
     // 原锚＝那句占位（接管**看得见**这条兜底靠它，D29 整行收走）；**看得见**这条规格不变，
     // 改由**卡本身**背书：材料 ＋ 键位 ＋ 状态行都在屏上。
-    expect(frame.has('│ 跑测试 · 可逆')).toBe(true)
-    expect(frame.has('y 批准')).toBe(true)
+    expect(frame.has('│ 跑测试 · 待决策')).toBe(true)
+    expect(frame.has('○ 批准这一次')).toBe(true)
     expect(frame.statusLine).toContain('◊ 等你定夺')
     expect(frame.dock.some((line) => line.text.trimStart().startsWith('›'))).toBe(false)
     expect(frame.has('打了一半')).toBe(false) // 收起来了，不是丢了（下一条把它要回来）
@@ -277,7 +264,7 @@ describe('输入接管', () => {
   test('**草稿不丢**——答完原样归还、**不自动发送**', async () => {
     const stage = asked('light', '打了一半')
 
-    stage.press({ kind: 'char', char: 'y' })
+    stage.press({ kind: 'down' }); stage.press({ kind: 'enter' })
     stage.feed([event('tool.decision', { call: 71, decision: 'approve', decider: 'user', elapsedMs: 900 })])
 
     const frame = await stage.screen(WIDE)
@@ -311,7 +298,7 @@ describe('输入接管', () => {
     expect(after.screen.lines).not.toEqual(before.screen.lines)
     expect(stage.shell.getView().dock.kind).toBe('input')
     expect(stage.commands().filter(command => command.type === 'decision.answer')).toEqual([])
-    stage.press({ kind: 'ctrl+g' })
+    stage.press({ kind: 'tab' })
     expect((await stage.screen(WIDE)).dock.map(line => line.text)).toEqual(before.dock.map(line => line.text))
   })
 
@@ -323,13 +310,12 @@ describe('输入接管', () => {
       event('tool.call', { name: 'write', args: {} }, { id: 73 }),
       event('tool.decision.request', { call: 72, name: '整写文件', material: '目标 README.md', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('│ 整写文件 · 可逆 · 2 / 3')).toBe(true) // 报数之一：卡的标题
-    expect(frame.statusLine).toContain('◊ 等你定夺 2/3') // 报数之二：底行
-    expect(count(frame, 'y 批准')).toBe(1) // 不并列、不堆积——你永远只面对一件
+    expect(frame.has('│ 整写文件 · 待决策 · 1/1')).toBe(true) // 报数之一：卡的标题
+    expect(frame.statusLine).toContain('◊ 等你定夺 1/1') // 报数之二：底行
+    expect(count(frame, '○ 批准这一次')).toBe(1) // 不并列、不堆积——你永远只面对一件
   })
 })
 

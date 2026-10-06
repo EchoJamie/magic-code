@@ -250,10 +250,9 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
       event('tool.call', { name: 'write', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/a.ts', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     expect(stage.shell.getView().dock.kind).toBe('decision') // 防空转
-    三块分得开(await stage.screen(WIDE), '裁决卡', 'y 批准')
+    三块分得开(await stage.screen(WIDE), '裁决卡', '○ 批准这一次')
   })
 
   /**

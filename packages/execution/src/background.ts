@@ -1,3 +1,4 @@
+import { assertIdentity } from './workspace.ts'
 /**
  * **后台运行登记**（U70）——`exec` 的「后台」那一形的实现体。
  *
@@ -10,7 +11,7 @@
  * | 发起 | `start` —— 起进程组、开输出文件、回 id ＋ 路径，**当场返回** |
  * | 还在跑的那些 | `running()` —— 读面（U89）：照 `live` 现读，**只列真没退出的** |
  * | 交接 | `onFinish` —— 它**真退出了**才响一次（dev server 一直挂着就一直不响） |
- * | 取输出 | **不在本文件**：模型用既有的 `read` 读那个文件（沙箱认这处只读落点） |
+ * | 取输出 | **不在本文件**：模型用既有的 `read` 读那个文件（权限闸门认这处只读落点） |
  * | 停 | `stop(id)` —— 按**进程组**收，走 U50 那套收尾 |
  *
  * ## 三件与在轮内的 `exec` **同源**（不是另写一套）
@@ -85,7 +86,7 @@ export type BackgroundOptions = {
    * 目录不存在时本域建（`0700`）。
    */
   readonly dir: string
-  /** 工作区端口——cwd 的解析规则**与沙箱同源**（相对按默认根 · 绝对须落根内）。 */
+  /** 工作区端口——cwd 的解析规则**与沙箱同源**（相对按默认根，真实 cwd 由工具入口裁决）。 */
   readonly workspace: WorkspaceService
   /** 归属账（U50）——与沙箱、MCP 传输共用同一本（「哪些进程是我们起的」只该有一本账）。 */
   readonly ledger?: ProcessLedger | undefined
@@ -160,10 +161,13 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
 
   return {
     async start(cmd, opts): Promise<BackgroundStart> {
-      // **cwd 与沙箱同源**（相对按默认根 · 绝对须落根内）——越界即拒，进程不启动
+      // **cwd 与沙箱同源**（相对按默认根，真实 cwd 由工具入口裁决）——只核对本次目标身份，失败时进程不启动
       let cwd: string
       try {
-        cwd = opts?.cwd === undefined ? workspace.defaultRoot() : workspace.resolve(opts.cwd).absolute
+        const target = opts?.target ?? workspace.resolve(opts?.cwd ?? '.')
+        if (opts?.target !== undefined && resolvePath(workspace.defaultRoot(), opts?.cwd ?? '.') !== target.absolute) throw new Error('操作目标与裁决不一致')
+        assertIdentity(target)
+        cwd = target.absolute
       } catch (error) {
         return { ok: false, reason: error instanceof Error ? error.message : String(error) }
       }

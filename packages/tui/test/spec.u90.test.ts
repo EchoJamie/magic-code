@@ -50,7 +50,7 @@ const nonBlank = (frame: Frame): number => frame.screen.lines.filter((text) => t
 
 /** 清单那一带里含某串的那一行（原样，不 trim——列的判据要看前导空格）。 */
 const dockLineOf = (frame: Frame, needle: string): string =>
-  frame.dock.find((line) => line.text.includes(needle))?.text ?? ''
+  frame.record.find((line) => line.text.includes(needle))?.text ?? ''
 
 /** 喂一条 `plan.changed`（清单由此上屏）。 */
 function feedPlan(stage: ReturnType<typeof createStage>, plan: PlanNote | null, entry = 1): void {
@@ -75,8 +75,8 @@ describe('U90 · 目标顶格 ＋ 步骤退一级', () => {
     expect(PLAN_INDENT).toBe(2)
 
     // **次序**：目标在步骤**之上**（这一块读起来才是「这件事 → 它的步骤」）
-    const goalRow = frame.dock.findIndex((line) => line.text.startsWith('修好登录失败提示'))
-    const firstStep = frame.dock.findIndex((line) => line.text.includes('■ 读登录逻辑'))
+    const goalRow = frame.record.findIndex((line) => line.text.startsWith('修好登录失败提示'))
+    const firstStep = frame.record.findIndex((line) => line.text.includes('■ 读登录逻辑'))
     expect(goalRow).toBeGreaterThan(-1)
     expect(goalRow).toBeLessThan(firstStep)
   })
@@ -90,18 +90,18 @@ describe('U90 · 目标顶格 ＋ 步骤退一级', () => {
     expect(rules.length).toBe(2)
 
     const rows = [
-      frame.dock.find((line) => line.text.startsWith('修好登录失败提示'))?.row,
-      frame.dock.find((line) => line.text.includes('■ 读登录逻辑'))?.row,
-      frame.dock.find((line) => line.text.includes('▪ 改提示'))?.row,
+      frame.record.find((line) => line.text.startsWith('修好登录失败提示'))?.row,
+      frame.record.find((line) => line.text.includes('■ 读登录逻辑'))?.row,
+      frame.record.find((line) => line.text.includes('▪ 改提示'))?.row,
     ]
 
     for (const row of rows) {
       expect(row).toBeDefined()
-      expect(row as number).toBeGreaterThan(rules[0] as number)
+      expect(row as number).toBeLessThan(rules[0] as number)
       expect(row as number).toBeLessThan(rules[1] as number)
     }
     // 记录区一条都不许沾（目标那几行也不进记录那一侧）
-    expect(frame.record.every((line) => !line.text.includes('修好登录失败提示'))).toBe(true)
+    expect(frame.dock.every((line) => !line.text.includes('修好登录失败提示'))).toBe(true)
   })
 
   test('⚠️ 反面：**没有目标那一行就不出现**——不是留一个空表头', async () => {
@@ -125,7 +125,7 @@ describe('U90 · 目标顶格 ＋ 步骤退一级', () => {
     feedPlan(stage, withGoal('修好登录失败提示', step('第一步'), step('第二步'), step('第三步')))
 
     const frame = await stage.screen({ columns: 200, rows: 40 })
-    const at = frame.dock
+    const at = frame.record
       .filter((line) => /[□▪■]/u.test(line.text))
       .map((line) => line.text.indexOf(line.text.trim().charAt(0)))
 

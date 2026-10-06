@@ -56,7 +56,7 @@ describe('协作 Native 整项工作投影', () => {
       plain, work('origin', { gen: 7 }), work(another.agent.sessionId),
     ], snapshot)
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toEqual(work('origin', { state: 'running', action: '实现成员：运行测试', affected: true, gen: 7, since: 12, members: [
+    expect(rows[0]).toEqual(work('origin', { state: 'running', action: '实现成员：运行测试', affected: true, gen: 7, since: 12, terminalNoticeIds: [], members: [
       { session: 'origin', name: '协调', state: 'idle' },
       { session: child.agent.sessionId, name: '实现成员', state: 'running', action: '运行测试' },
       { session: another.agent.sessionId, name: '审查', state: 'idle' },

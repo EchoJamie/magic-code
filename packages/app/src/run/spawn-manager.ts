@@ -5,6 +5,7 @@ import type { HostDiscovery, MagicHome } from '@magic/contracts'
 import type { LoadedConfig } from '../config.ts'
 import { connectManager, executionEnvironment, type ConnectOptions, type ManagerClient } from './client.ts'
 import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
+import { normalizeDataDir } from './paths.ts'
 
 export type AppConnectionOptions = HostLocationOptions & {
   readonly diagnostics?: DiagnosticsChange
@@ -54,7 +55,8 @@ export async function connectApp(options: AppConnectionOptions = {}): Promise<Ap
     const discovery = readHostDiscovery(location)
     if (discovery === undefined) return undefined
     if (options.expectedInstance !== undefined &&
-      (discovery.base !== options.expectedInstance.base || discovery.dataDir !== options.expectedInstance.dataDir)) {
+      (normalizeDataDir(discovery.base) !== normalizeDataDir(options.expectedInstance.base) ||
+        normalizeDataDir(discovery.dataDir) !== normalizeDataDir(options.expectedInstance.dataDir))) {
       throw new Error(`App 数据实例已改变：原基础目录 ${options.expectedInstance.base}，数据 ${options.expectedInstance.dataDir}；当前基础目录 ${discovery.base}，数据 ${discovery.dataDir}。请在 App 设置切回原实例再重开`)
     }
     const selected = selectedHostConfig(discovery, { home: location.home, cwd, env })

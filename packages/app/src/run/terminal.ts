@@ -60,7 +60,7 @@ export type TerminalInputs = {
    */
   readonly switch?: ModelSwitchRequest | undefined
   /**
-   * **开局就接的那条会话**（`--session <id>`）——只给开屏那张摘要当**排除项**
+   * **开局就接的那条会话**（`magic resume <id>`）——只给开屏那张摘要当**排除项**
    * （U49：摘要说的是**其他**活跃工作）。
    */
   readonly session?: string | undefined
@@ -131,6 +131,7 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // （「这一代已经过去了」「起不了执行者」那些话全落在空气里）。
     lines: (listener) => client.onLine((text) => listener(text)),
     // **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你；三类之外管理者一个都不发
+    markRead: (ids) => client.markRead(ids),
     notices: (listener) => client.onNotice((notice) => listener(notice)),
     ...(inputs.session === undefined ? {} : { openingSession: inputs.session }),
     // **管理者不在了 ⇒ 交给外壳如实说**（见 `run.ts` 的 `onGone`）：留在界面、说清失联，
@@ -376,10 +377,10 @@ export function terminalConnection(
   bindTarget(initial)
 
   // 首次订阅才连接 feed，底层 client 的初始事件缓存不会在 Shell 构造之前被空消费。
-  function feed<A extends unknown[]>(subscribe: (client: ManagerClient, listener: (...args: A) => void) => void) {
+  function feed<A extends unknown[]>(subscribe: (client: ManagerClient, listener: (...args: A) => void) => void, allowClosed = false) {
     return (listener: (...args: A) => void): void => {
       const bind = (client: ManagerClient): void => subscribe(client, (...args) => {
-        if (current === client) listener(...args)
+        if (current === client && (allowClosed || !client.closed)) listener(...args)
       })
       bindings.push(bind)
       bind(current)
@@ -402,7 +403,7 @@ export function terminalConnection(
     onStopped: feed((client, listener) => client.onStopped(listener)),
     onNotice: feed((client, listener) => client.onNotice(listener)),
     onLine: feed((client, listener) => client.onLine(listener)),
-    onClose: feed((client, listener) => client.onClose(listener)),
+    onClose: feed((client, listener) => client.onClose(listener), true),
     send: (command) => current.send(command),
     stop: (session, scope) => current.stop(session, scope),
     markRead: (ids) => current.markRead(ids),
@@ -413,7 +414,11 @@ export function terminalConnection(
     reopen() {
       if (closed) return Promise.reject(new Error('终端已经关闭'))
       if (reopening !== undefined) return reopening
-      if (!current.closed) return Promise.resolve()
+      if (!current.closed) {
+        if (selected !== undefined) current.send({ type: 'session.open', session: selected })
+        else current.send({ type: 'session.list' })
+        return Promise.resolve()
+      }
       reopening = (async () => {
         const next = await reconnect(selected)
         if (closed || next.closed) { next.close(); throw new Error(closed ? '终端已经关闭' : 'Magic Code 在重新连接时已退出') }

@@ -215,7 +215,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
  * 让几条会话**真在库里**——列表按目录说话（`rows()` 只对点得出名的会话说状态）。
  *
  * 真跑时那是执行者写出来的；这一支里假执行者不发条目，故由用例自己把它们落进库
- * （改一次名就是「这一行在」，判据与 `--session` 那道校验同一把尺子）。
+ * （改一次名就是「这一行在」，判据与 `resume` 那道校验同一把尺子）。
  */
 function seed(g: Ground, sessions: readonly string[]): void {
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
@@ -708,4 +708,40 @@ describe('U49 · 登记落盘与重启核对', () => {
       await b.dispose()
     }
   }, 30_000)
+})
+
+test('同会话终端接收具体事项，不重复系统提醒；其他会话与最后连接离开后照常提醒', async () => {
+  const g = ground('notification-routing')
+  seed(g, ['a', 'b'])
+  const sent: string[] = []
+  const b = await bench(g, { notifySystem: (text: string) => sent.push(text) })
+  const a = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'a' }))!
+  const other = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'b' }))!
+  const notices: string[] = []
+  a.onNotice(notice => notices.push(notice.id))
+  try {
+    a.send({ type: 'input.submit', text: '启动 A' })
+    other.send({ type: 'input.submit', text: '启动 B' })
+    await waitFor('两个执行者', () => b.requests.length === 2)
+    const first = await b.attach(b.requests.findIndex(request => request.session === 'a'))
+    const second = await b.attach(b.requests.findIndex(request => request.session === 'b'))
+    first.ready('a'); second.ready('b')
+    first.emit('turn.end', { reason: 'settled' }, 'a')
+    await waitFor('终端显示结果事项', () => notices.length === 1)
+    expect(sent).toHaveLength(0)
+    other.close()
+    await Bun.sleep(20)
+    second.emit('turn.end', { reason: 'error' }, 'b')
+    await waitFor('B 无连接仍提醒', () => sent.length === 1)
+    const twin = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'a' }))!
+    twin.close()
+    await Bun.sleep(20)
+    first.emit('tool.decision.request', { call: 3, name: 'write', material: '写文件', weight: 'heavy' }, 'a')
+    await waitFor('剩余窗口显示待答', () => notices.length === 2)
+    expect(sent).toHaveLength(1)
+    a.close()
+    await Bun.sleep(20)
+    first.emit('turn.end', { reason: 'error' }, 'a')
+    await waitFor('最后一条连接离开后提醒', () => sent.length === 2)
+  } finally { a.close(); other.close(); await b.dispose() }
 })

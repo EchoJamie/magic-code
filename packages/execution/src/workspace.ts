@@ -1,78 +1,13 @@
 /**
- * `WorkspaceService` —— 工作区解析（技术方案 · 执行 · 工作区）。
- *
- * **多根（U18）**——根列表**平等平铺**，**默认根＝列表第一项**（平等平铺 ＋ 一个默认，
- * **不引入「主根」概念**——多一个概念就多一处解释）。单根＝一项的特例，走同一条路。
- * 各根记**两张表**：`realpath` 之后的规范形与**声明原形**（见下「两张表」）。
- *
- * **根校验（加载时报错不降级——照 `dataDir` 的先例）**——四项，皆在**规范化之后**判：
- * - **不存在** / **不是目录** → 拒（工作区机器锚定在真路径上，根是沙箱唯一的承重假设）；
- * - **重复** → 拒：判在 `realpath` 之后，故 `/tmp/x` 与 `/private/tmp/x`（macOS 上实为
- *   同一目录）这类**写法不同而实为一条**的重复也拦得住——词法比较漏得掉。
- *   ⚠️ **限度**：这只保证 `realpath` 自己抹平的那几样（符号链接 · `.` · `..` · 尾斜杠）。
- *   **大小写不在其列**——「大小写不敏感卷上 `CaseDir` 与 `casedir` 是同一条」这件事，
- *   得靠运行时的 `realpath` 顺手规范化大小写，而这**不是它的普遍性质**：
- *   实测同一台机器上 bun 的 `realpathSync('/users')` 给 `/Users`、node 的给 `/users`。
- *   本程序跑 bun，故今天不漏；换成不做这一步的运行时，这类重复会漏过去（不误伤，只是漏拦）。
- *   故**别把它当 realpath 的普遍保证**——它是「本运行时替我们多做的这一点」。
- * - **相对路径** → 拒（根是绝对路径）。前导 `~` **不算绝对路径**，本域不展开它
- *   ——展开归配置加载器（`dataDir` 与根同源，U27 起根这一条也长了该行为：
- *   `~/work` 到不了这里；径直把 `~/work` 交给本域仍按相对路径拒）。
- * - 空列表 → 拒（工作区是「**≥ 1 条**」的联合作用域——零根无默认根可言）。
- *
- * 拒＝**抛**（不是静默丢弃一条继续跑）：一条根不合格即整份注册不成立——
- * 「跳过那条」会让用户对着一个少了一半的作用域发呆，而边界判定已按错的集合在跑。
- *
- * **边界规则**（技术方案 · 执行：相对按默认根、绝对须落于某根内；越界＝所有根之外）——
- * - 相对路径 → 按**默认根**拼出绝对路径（多根下亦只认默认根——「默认根承载相对路径
- *   与新文件」）；
- * - 绝对路径 → 必须落在**某一条**根内；`ResolvedPath.root` 报**承载它的那条**
- *   （多根才有的信息：同一条绝对路径，承载根可 ≠ 默认根）；
- * - **两者归一化之后**再判落点：`a/../b` 与 `/etc/../<root>/f` 一律先作差，
- *   归一后确在根内者放行（路径即事实，不按写法猜意图）；`../` 拱出根者＝拒。
- * - **落点按两张表**（U27 · `U18` 待决 4）：落点在**任一条根**的**任一张表**内即通过
- *   （见下「两张表」）。
- * - **段边界判定**——`<root>-sibling` 是**字符串**前缀相邻、不是路径在根内，
- *   故按分隔符切段比对（`<root>/` 前缀），不接受裸 `startsWith`。
- * - 落点同时落在两条根内（根**嵌套**）时取**声明序在前**的那条；词典已声明根
- *   「不嵌套」，故这是兜底而非语义（不为此长校验——不在四项之列）。
- *
- * **规范化**——根在构造时取 `realpath`（不存在 / 不可达即抛——宁可在装配期响亮失败，
- * 也不要一个边界永远判错的沙箱）。落点不作 realpath（`resolve` 是**同步纯词法**判定：
- * 待建的新文件尚不存在，且端口签名无异步位）——故**符号链接可绕过词法边界**，
- * 这是首站「薄隔离」的已知限度（隔离的承重墙是权限闸门；加厚归托管 / 多设备时
- * ——技术方案 · 执行 · 隔离姿态）。
- *
- * **两张表**（U27 · `U18` 待决 4）——每条根记两样，落点对**两张都按纯词法前缀**比：
- * - **规范形**（`realpath`）＝根**身份**：`roots()` / `defaultRoot()` / `ResolvedPath.root`
- *   / 越界报文都用它——一条根一个身份，不因写法不同裂成两条（记录那一列 · 列表分组
- *   认的都是它）。
- *   ⚠️ **一张表判不完整**（U22）：权限域原先只拿到这一张（`tools` 把 `roots()` 递给闸门）
- *   ⇒ 声明原形下的读类每次弹卡（沙箱认了、闸门不认）——故 `declaredRoots()` 把它也**露出去**
- *   （契约那一条），闸门那一侧照两张表判。
- * - **声明原形**（用户手写的那串，`resolvePath` 归一、**不** realpath）＝用户**认得的那个写法**。
- *   由头：单根时代根＝启动目录（`getcwd()` 给的是物理路径），**用户写不出非规范形**；
- *   **多根之后用户在配置里手写** `/tmp/proj`（macOS 上 `/tmp` 实为 `/private/tmp`），
- *   注册成真路径，而模型照用户写的给 `/tmp/proj/src`——只比规范形的话它被判越界 ✗
- *   （词法比对够不着）。**多根把这个坑激活了，就在激活它的同时收掉。**
- *   ——「按声明原形做纯词法前缀匹配」即此；真路径那一张**照旧**（U18 的行为一条不丢）。
- *
- * ⚠️ **限度**（两条，都是词法判定的固有面）：
- * ① 两张表都**一个 `realpath` 都不再取**（`resolve` 是同步纯词法判定，见上）——故
- *    「用户写规范形、模型给某个别名」这一向**接不住**（反过来的那一向才是本轮的坑，
- *    因为**声明**那一侧是用户手写的、模型照着它说）；别名链再深也照样绕得过边界（同上）。
- * ② 声明原形取的是**归一后**的写法（`/proj/./` 与 `/proj` 是同一条）——只归一，不解析
- *    符号链接，故它仍可能本身就是个非规范形（那正是它要接住的那一类）。
- *
- * **越界即拒**——拒＝抛（端口注释「越界即拒」）。`ResolvedPath` 占位形态
- * `{ absolute, root }` 无失败位，本单元**不动契约包**（本轮只读），故以抛表达拒绝；
- * 「错误＝返回值」是**沙箱原语**（`exec` 等）的通则——`exec` 捕此抛并将其归为
- * `reason: 'out-of-bounds'`（见 `sandbox.ts`），故对面向沙箱的调用方仍是返回值。
+ * 工作区注册与路径事实解析。根必须存在、为目录且互不重复；相对目标按默认根解析。
+ * resolve 跟随符号链接（待建文件解析已有祖先），返回真实路径、所属根及文件身份快照。
+ * 根外目标没有 root，不因此抛错。唯一权限决断在工具执行前的 PermissionGate。
+ * 身份快照用于发现审批后的目标变更，不是通用操作系统文件系统隔离。
  */
 
-import type { ResolvedPath, WorkspaceService } from '@magic/contracts'
-import { realpathSync, statSync } from 'node:fs'
-import { isAbsolute, resolve as resolvePath, sep } from 'node:path'
+import type { FileIdentity, ResolvedPath, WorkspaceService } from '@magic/contracts'
+import { lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs'
+import { dirname, isAbsolute, resolve as resolvePath, sep } from 'node:path'
 
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type WorkspaceOptions = {
@@ -180,28 +115,70 @@ export function createWorkspaceService(options: WorkspaceOptions): WorkspaceServ
 
   return {
     roots: () => view,
-    // 声明原形露出去（U22）——权限域要与执行域**同源**：模型照用户写的那串给路径时，
-    // 闸门那一侧也得认得出它在根内（原先只认规范形 ⇒ 声明原形下的读类每次弹卡 ✗）。
+    // 声明写法仍供配置与规则展示；工具目标以 realpath 结果为准。
     declaredRoots: () => declared,
     defaultRoot: () => defaultRoot,
 
     resolve(path) {
-      const absolute = resolvePath(defaultRoot, path) // 相对按默认根；绝对原样（其后归一化）
-      // 落点对**两张表**都比（声明序在前者胜出）：规范形那一张是 U18 的行为，
-      // 声明原形那一张是 U27 收的坑（见文件头注「两张表」）
-      const hit = roots.find(
-        (root) => isInside(absolute, root.real) || isInside(absolute, root.declared),
-      )
-
-      if (hit === undefined) {
-        throw new Error(
-          `工作区越界：${path}（落在所有根之外——已注册：${view.join(' · ')}）`,
-        )
-      }
-
-      // `root` 报**规范形**——同一个落点，承载它的那条根恒是同一个身份（见文件头注）
-      const resolved: ResolvedPath = { absolute, root: hit.real }
-      return resolved
+      const absolute = resolveTarget(resolvePath(defaultRoot, path))
+      const hit = roots.find((root) => isInside(absolute, root.real))
+      return { ...inspectTarget(absolute), ...(hit === undefined ? {} : { root: hit.real }) }
     },
   }
+}
+
+/** 解析目标与已有祖先，包括尚未创建的文件；不作权限决断。 */
+export function resolveTarget(absolute: string, links = 0): string {
+  if (links > 40) throw new Error(`符号链接循环：${absolute}`)
+  try {
+    return realpathSync(absolute)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOTDIR') return absolute
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  // 悬空链接仍须跟到它指向的新文件，不能把链接本身当成新建目标。
+  try {
+    if (lstatSync(absolute).isSymbolicLink()) {
+      return resolveTarget(resolvePath(dirname(absolute), readlinkSync(absolute)), links + 1)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const parent = dirname(absolute)
+  if (parent === absolute) return absolute
+  return resolvePath(resolveTarget(parent, links), absolute.slice(parent.length + (parent === sep ? 0 : 1)))
+}
+
+/** 执行一致性检查：目标不能在裁决后被链接重定向；不是路径准入。 */
+export function assertTarget(absolute: string): string {
+  if (resolveTarget(absolute) !== absolute) throw new Error(`操作目标已改变：${absolute}`)
+  return absolute
+}
+
+/** 文件身份用于核对本次目标，不能用它推导权限。 */
+export function identityOf(info: { dev: bigint; ino: bigint }): FileIdentity {
+  return { dev: String(info.dev), ino: String(info.ino) }
+}
+
+export function sameIdentity(a: FileIdentity, b: FileIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino
+}
+
+export function inspectTarget(absolute: string): ResolvedPath {
+  const identity = (path: string): FileIdentity | undefined => {
+    try { return identityOf(statSync(path, { bigint: true })) }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return undefined
+      throw error
+    }
+  }
+  const parentIdentity = identity(dirname(absolute))
+  return { absolute, identity: identity(absolute) ?? null, ...(parentIdentity === undefined ? {} : { parentIdentity }) }
+}
+
+export function assertIdentity(target: ResolvedPath): void {
+  assertTarget(target.absolute)
+  if (target.identity == null) return
+  const actual = identityOf(statSync(target.absolute, { bigint: true }))
+  if (!sameIdentity(actual, target.identity)) throw new Error(`操作目标已改变：${target.absolute}`)
 }

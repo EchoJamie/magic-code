@@ -66,6 +66,7 @@ struct NoticeBatch {
     private var batch = NoticeBatch()
     private var timer: Task<Void, Never>?
     private var dataDir: String?
+    private var serviceInstance: String?
     private let center: UNUserNotificationCenter?
     private let sendDelivery: (NoticeDelivery) async throws -> Void
     private let existingIDs: () async -> [String]
@@ -126,6 +127,8 @@ struct NoticeBatch {
     var preference = true
     /// 仅正在查看对应工作里的具体事项时不打断；列表或其他事项不抑制它。
     var userLooking: (String, String) -> Bool = { _, _ in false }
+    /// 投递前通过现有 inspect 读取实际绑定；失败或服务换代返回空候选。
+    var currentWorks: (([String]) async -> [NativeWork])?
     /// 投递门 = **我们想提醒**（偏好）**且**系统允许。两个条件各归各的主，谁也冒充不了谁。
     private var deliverable: Bool {
         preference && (authorizationStatus == .authorized || authorizationStatus == .provisional)
@@ -153,10 +156,15 @@ struct NoticeBatch {
     }
     func observe(_ projection: NativeProjection, identity: ServiceIdentity) {
         prepare(dataDir: identity.dataDir)
-        batch.retain(Set(projection.works.flatMap(\.notices).filter { $0.unread && !$0.delivered }.map(\.id)))
+        if serviceInstance != nil, serviceInstance != identity.serviceInstance {
+            timer?.cancel(); timer = nil; batch = NoticeBatch(); seen = []
+        }
+        serviceInstance = identity.serviceInstance
+        retainCandidates(projection.works)
         for work in projection.works {
             for notice in work.notices {
                 if notice.delivered || !notice.unread { seen.insert(notice.id); continue }
+                if work.terminalNoticeIds?.contains(notice.id) == true { continue }
                 // 仅抑制正在查看的具体事项。不记 seen，离开后仍可提醒。
                 if userLooking(work.session, notice.id) { continue }
                 guard seen.insert(notice.id).inserted else { continue }
@@ -166,15 +174,36 @@ struct NoticeBatch {
                 batch.add(work: work, notice: notice)
             }
         }
+        schedule(identity)
+    }
+    private func schedule(_ identity: ServiceIdentity) {
         guard enabled || awaitingRequest, timer == nil, !batch.pending.isEmpty else { return }
         timer = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             guard let self else { return }
-            self.timer = nil
+            defer {
+                if self.serviceInstance == identity.serviceInstance {
+                    self.timer = nil
+                    self.schedule(identity)
+                }
+            }
             // 真有该告诉你的事、而系统还没问过 ⇒ 就在这一刻问（系统框只在第一次调用时出现）。
-            if self.awaitingRequest, !(await self.enableExplicitly()) { self.batch = NoticeBatch(); return }
+            if self.awaitingRequest { _ = await self.enableExplicitly() }
+            guard !Task.isCancelled, self.serviceInstance == identity.serviceInstance else { return }
             guard self.enabled else { self.batch = NoticeBatch(); return }
-            for delivery in self.batch.take(dataDir: identity.dataDir) {
+            // 刷新期间到达的新事项留给下一批，不被这次查询的会话集合吞掉。
+            var candidates = self.batch
+            self.batch = NoticeBatch()
+            if let currentWorks = self.currentWorks {
+                let sessions = Array(Set(candidates.pending.values.map { $0.0.session }))
+                let works = await currentWorks(sessions)
+                guard !Task.isCancelled, self.dataDir == identity.dataDir,
+                      self.serviceInstance == identity.serviceInstance else { return }
+                let eligible = self.candidateIDs(works)
+                self.seen.subtract(Set(candidates.pending.keys).subtracting(eligible))
+                candidates.retain(eligible)
+            }
+            for delivery in candidates.take(dataDir: identity.dataDir) {
                 do {
                     #if DEBUG
                     if self.deliveryAudit?(delivery) == false { self.failure?("系统验收尚未授权或已达到本轮次数上限"); continue }
@@ -184,6 +213,19 @@ struct NoticeBatch {
                 } catch { self.failure?("通知未送达：\(error.localizedDescription)") }
             }
         }
+    }
+    private func candidateIDs(_ works: [NativeWork]) -> Set<String> {
+        Set(works.flatMap { work in
+            work.notices.filter { $0.unread && !$0.delivered &&
+                work.terminalNoticeIds?.contains($0.id) != true && !userLooking(work.session, $0.id)
+            }.map(\.id)
+        })
+    }
+    private func retainCandidates(_ works: [NativeWork]) {
+        let eligible = candidateIDs(works)
+        // 连接只决定提醒去向；尚未呈现的事项离开终端后仍可提醒。
+        seen.subtract(Set(batch.pending.keys).subtracting(eligible))
+        batch.retain(eligible)
     }
     func removeNotifications(identifiers: [String]) {
         center?.removePendingNotificationRequests(withIdentifiers: identifiers)

@@ -98,7 +98,7 @@ describe('U06 · 定义与注册', () => {
     // ⚠️ 两单各改过一次这条判据，改的都是**判据**、口径没动：原先「键只有一个」在新行为下
     // 不再成立；收窄后的判据是「命令键仍是 `cmd`，另外两把逐个有名有型」。放宽的部分
     // 如实写在这儿，没有偷偷松掉。
-    expect(Object.keys(properties ?? {})).toEqual(['cmd', 'timeoutMs', 'background'])
+    expect(Object.keys(properties ?? {})).toEqual(['cwd', 'cmd', 'timeoutMs', 'background'])
     expect(properties?.background?.type).toBe('boolean')
 
     // 「不设上界」那个写法**得在模式里看得见**：`null` 是正当的一档，不是「忘了填」。

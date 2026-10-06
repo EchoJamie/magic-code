@@ -22,7 +22,7 @@ import { createCollaborationBoundary } from './collaboration-boundary.ts'
  *
  * **应用层（U25）在哪儿**——第 3 / 4 步之间多绑一处：`createActions`（对话域端口 ＋
  * 扇出 ＋ 时钟）；会话级的那几件按调用给（`actionPorts`，取的是 `open` 造出来的**同一束**）。
- * 起步唯一那个用例是**恢复**，`boot()` 就是它的入口——启动参数 `--session` 从此进得来
+ * 起步唯一那个用例是**恢复**，`boot()` 就是它的入口——启动参数 `magic resume` 从此进得来
  * （审计第 1 条：恢复入口没有归处）。
  *
  * **本文件只做「选择 ＋ 绑定」**——不承载逻辑：判断归各域，呈现归外壳，机制归域内件。
@@ -50,6 +50,7 @@ import type {
   BackgroundFinish,
   BackgroundRunning,
   BackgroundRuns,
+  BackgroundStartOptions,
   ControlTransport,
   EventDataOf,
   EventKind,
@@ -358,7 +359,7 @@ export type Assembly = {
    * 「这次装配不谈切换」。
    */
   readonly models: ModelRegistry | undefined
-  /** 库把手——收尾（`close`）· 入口那道 `--session` 校验（U28）· 验收脚本用。 */
+  /** 库把手——收尾（`close`）· 入口那道 `magic resume` 校验（U28）· 验收脚本用。 */
   readonly records: RecordsStore
   /** 数据落点（`records.db` 与 `blobs/` 的绝对路径）。 */
   readonly paths: { readonly database: string; readonly blobs: string }
@@ -719,9 +720,6 @@ export function assemble(options: AssembleOptions): Assembly {
   const sandbox = createSandbox({
     workspace,
     ledger,
-    // **取输出那一格的落点**（U70）——「用既有的 `read` 读那个文件」要落得下来，
-    // 边界就得在这儿让开一条**只读**的口子（见 `SandboxOptions.readOnlyDirs`）
-    ...(backgroundDir === undefined ? {} : { readOnlyDirs: [backgroundDir] }),
   })
 
   /**
@@ -1011,7 +1009,7 @@ export function assemble(options: AssembleOptions): Assembly {
   })
   /**
    * **启动＝新会话（不接续）**——第 19 轮按 D4 改回来：给的是「显式接续」的那条路
-   * （启动参数 `--session` 的同义物），**不给就是「还没有会话」**。
+   * （启动参数 `magic resume` 的同义物），**不给就是「还没有会话」**。
    *
    * 一度取过「启动＝接着最近一条」（U16 · 以产品方案 功能 8 与阶段 2 验证句为据），
    * 用户亲跑后推翻：**一个字都没输入却接上了上次的会话**，每次空手打开都落在旧会话上。
@@ -1396,9 +1394,8 @@ export function assemble(options: AssembleOptions): Assembly {
       grants,
       // **内核自己那处**（U80）——读类调用认它作「不算越界」，于是「本工作区总是允许 read」
       // 那一类规则（缺省路径＝根内）盖得住那个输出文件（见 `PermissionGateOptions.readOnlyDirs`）。
-      // ⚠️ **与沙箱那一份同源**：同一个 `backgroundDir` 给两处（沙箱那半 U70 已落）——
-      // 名单一处算，两处用；两处各拼一份迟早对不上。
-      ...(backgroundDir === undefined ? {} : { readOnlyDirs: [backgroundDir] }),
+      // 只读产物目录的准入仅由闸门持有，按真实路径匹配。
+      ...(backgroundDir === undefined ? {} : { readOnlyDirs: [workspace.resolve(backgroundDir).absolute] }),
       // 全放行（U73）——**每一代闸门都照这一个布尔造**（换会话时新开的闸门同样带着它：
       // 它是**这一代执行者**的属性，不是某一条会话的）。缺省不给＝照旧问
       ...(options.allowAll === true ? { allowAll: true } : {}),
@@ -1472,7 +1469,7 @@ export function assemble(options: AssembleOptions): Assembly {
       // ③ **外部工具**（U38）：连上就有、断开就没有，跟着连接的实况走。
       //
       // ⚠️ **给函数、不给数组**（U38 返工 A）：外部连接是**进程级**的一束，会话链却
-      // **按条建**——`--session` 那条路上链在装配期就建好了，而发现要等 `ready()`。
+      // **按条建**——`magic resume` 那条路上链在装配期就建好了，而发现要等 `ready()`。
       // 快照会让那一条链的工具表永远停在「还没连上」的那一刻。给函数＝**每次现取**。
       //
       // ③ **三个内置辅助工具**（U34）：计划笔记与历史回查。它们按会话造（上面那一份读面
@@ -1510,12 +1507,13 @@ export function assemble(options: AssembleOptions): Assembly {
         ? {}
         : {
             background: {
-              start: async (cmd: string, opts?: { readonly cwd?: string }) => {
+              start: async (cmd: string, opts?: BackgroundStartOptions) => {
                 // exec 回执不代表后台退出；沿同一本准入账持有到真实 onFinish。
-                const release = coordination?.begin({ id: crypto.randomUUID(), name: 'exec', args: { cmd, background: true, ...opts } })
+                const release = coordination?.begin({ id: crypto.randomUUID(), name: 'exec', args: { cmd, background: true, ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }) } })
                 try {
                   const started = await backgroundRuns.start(cmd, {
                     ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
+                    ...(opts?.target === undefined ? {} : { target: opts.target }),
                     onFinish: (finish) => {
                       release?.()
                       forgetBackground(session, finish.id)

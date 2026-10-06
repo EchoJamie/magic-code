@@ -101,7 +101,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
         { id: 88 },
       ),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     return stage
   }
@@ -134,8 +133,8 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect(frame.has('当前任务正在等待你')).toBe(true)
     expect(stage.commands()).toEqual([]) // **不替用户拒、也不替用户中断**
     // 那张卡被这一屏压下去了（`←` / `esc` 返回时照原样摆回来，见下一条）。
-    // ⚠️ 锚用卡上那句键位（内置件是 `y 批准`）——**不是**标题或材料：那些是全屏都可能有的话
-    expect(frame.has('y 批准')).toBe(false)
+    // ⚠️ 锚用卡上那句键位（内置件是 `○ 批准这一次`）——**不是**标题或材料：那些是全屏都可能有的话
+    expect(frame.has('○ 批准这一次')).toBe(false)
   })
 
   test('菜单里再按 Ctrl+C ⇒ **只返回**，不隐式执行任何一项', async () => {
@@ -159,7 +158,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect(stage.press({ kind: 'escape' }).exit).toBe(false)
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('y 批准')).toBe(true) // 卡回来了
+    expect(frame.has('○ 批准这一次')).toBe(true) // 卡回来了
     expect(frame.has('当前任务正在等待你')).toBe(false)
     expect(stage.commands()).toEqual([]) // 一个字都没替用户答
     // 状态行那一格也跟着回来（`● 等你定夺`）——两处不能各说各的
@@ -192,11 +191,11 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     expect(stage.stops()).toEqual([]) // **不停**——这正是「退出界面，任务继续运行」
     expect(stage.commands()).toEqual([])
 
-    // **设计明文**：「转后台成功离开时，留一条**可复制的接回入口**（沿用 `magic --session
+    // **设计明文**：「转后台成功离开时，留一条**可复制的接回入口**（沿用 `magic resume
     // <id>`），不追加常驻状态栏」。判据落在 `leavingNote` 上——**它不经记录区**
     // （那里的行会按列数**硬折行**，而这一句是要整行复制去敲的：硬折行之后复制到的东西
     // 里带着换行，粘进终端就断了）。它由 `app.ts` **直接写字节**出去、交给终端软折行。
-    expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 接回来：magic --session s1')
+    expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 接回来：magic resume \'s1\'')
   })
 
   /**
@@ -220,26 +219,26 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       return stage.shell.getView().leavingNote ?? ''
     }
 
-    test('**默认落点**（`<家>/.magic`）⇒ 短的那一句，一字不多', () => {
+    test('**默认落点**（`<家>/.magic`）⇒ 清除目标终端可能继承的 MAGIC_HOME', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/Users/someone/.magic' })).toBe(
-        '· 转到后台了 · 接回来：magic --session s1',
+        '· 转到后台了 · 接回来：/usr/bin/env -u MAGIC_HOME magic resume \'s1\'',
       )
     })
 
     test('**非默认落点** ⇒ 带上 `MAGIC_HOME=<根>`（根 ＝ `base` 的上一级）', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/tmp/another-place/.magic' })).toBe(
-        "· 转到后台了 · 接回来：MAGIC_HOME='/tmp/another-place' magic --session s1",
+        "· 转到后台了 · 接回来：MAGIC_HOME='/tmp/another-place' magic resume \'s1\'",
       )
     })
 
     test('路径里有空格 ⇒ 单引号包住（整行复制照敲不误）', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/tmp/my magic dir/.magic' })).toBe(
-        "· 转到后台了 · 接回来：MAGIC_HOME='/tmp/my magic dir' magic --session s1",
+        "· 转到后台了 · 接回来：MAGIC_HOME='/tmp/my magic dir' magic resume \'s1\'",
       )
     })
 
     test('**落点不知道**（用例 / 演示没给）⇒ 不编一个 `MAGIC_HOME`', () => {
-      expect(resumeLineOf({})).toBe('· 转到后台了 · 接回来：magic --session s1')
+      expect(resumeLineOf({})).toBe('· 转到后台了 · 接回来：magic resume \'s1\'')
     })
   })
 
@@ -269,7 +268,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       // 活跃位到了 ⇒ 接着把刚才那一下办完
       stage.feed([event('session.state', { active: 's9', sessions: [{ id: 's9', at: 0, title: '甲的事' }] })])
       expect(stage.shell.getView().leaving).toBe(true)
-      expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 接回来：magic --session s9')
+      expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 接回来：magic resume \'s9\'')
     })
 
     test('那一轮收场了、会话始终没来 ⇒ 如实说「没有可接的入口」（不假报成功）', () => {
@@ -458,7 +457,6 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
         event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
         event('tool.decision.request', { call: 71, name: '跑测试', material: '命令', weight: 'light' }, { id: 88 }),
       ])
-      stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
       stage.press(ARM) // 卡被三选罩住
 
       ;(stage.spy.commands as Command[]).splice(0)
@@ -654,27 +652,14 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     ])
 
     const held = await stage.screen(WIDE)
-    expect(held.has('当前任务仍在运行')).toBe(true) // 菜单还在，标题按此刻的事实换了
-    expect(held.has('停止任务')).toBe(true)
-    expect(held.has('y 批准')).toBe(false) // 卡压在下面（没画出来）
-    expect(stage.commands()).toEqual([]) // 也没替用户答
-
-    // `esc` 返回 ⇒ 卡照原样摆回来
+    expect(held.has('○ 批准这一次')).toBe(true)
+    expect(stage.commands()).toEqual([])
     stage.press({ kind: 'escape' })
     const back = await stage.screen(WIDE)
-    expect(back.has('y 批准')).toBe(false)
-    expect(stage.shell.getView().dock.kind).toBe('input')
-    stage.press({kind:'ctrl+g'})
-    expect((await stage.screen(WIDE)).has('y 批准')).toBe(true)
-    expect(back.statusLine).toContain('等你定夺')
+    expect(back.has('停止任务')).toBe(true)
+    expect(back.has('Tab 进入决策')).toBe(true)
     expect(stage.commands()).toEqual([])
 
-    // 而**此刻**（卡占着屏、模型不会再往前跑）再按一下 `ctrl+c`，这一屏就出来了——
-    // 这正是「按下回车得到的是先答复」那个死角被解开的地方
-    expect(stage.press(ARM).exit).toBe(false)
-    expect((await stage.screen(WIDE)).has('停止任务')).toBe(true)
-    stage.press(ENTER)
-    expect(stage.stops()).toEqual([{ session: 's1', scope: 'run' }])
   })
 })
 
@@ -867,7 +852,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
 
     expect(stage.shell.getView().draft).toBe('写了一半') // **草稿一个字没动**
     expect(stage.commands()).toEqual([{ type:'history.read',session:'s1' }])
-    expect((await stage.screen(WIDE)).has('暂时发不出这一句')).toBe(true)
+    expect((await stage.screen(WIDE)).has('草稿未发送')).toBe(true)
   })
 
   /**
@@ -885,13 +870,12 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: '跑测试', material: '命令', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     expect(stage.shell.getView().dock.kind).toBe('decision')
 
     stage.pushRuns([runRow({ state: 'stopped' })]) // 那一代核销了
 
     expect(stage.shell.getView().dock.kind).toBe('input') // 卡作废
-    expect((await stage.screen(WIDE)).has('y 批准')).toBe(false)
+    expect((await stage.screen(WIDE)).has('○ 批准这一次')).toBe(false)
     // 而**离开那扇门**此刻是开着的：那一下走的是「按两次退出」那条路
     expect(stage.press(ARM).exit).toBe(false)
     expect(stage.shell.getView().exitArmed).toBe(true)

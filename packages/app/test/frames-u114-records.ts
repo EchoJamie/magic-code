@@ -31,7 +31,7 @@ store.collaboration.send(coordinator.agentId,{operationId:'u114-discussion-2',re
 mkdirSync(join(sandbox.workspace,'.magic','skills','record-skill'),{recursive:true})
 writeFileSync(join(sandbox.workspace,'.magic','skills','record-skill','SKILL.md'),'---\nname: record-skill\ndescription: 验证真实技能来源与按需自读请求\n---\nU114_SKILL_ACTUAL_SOURCE_BODY\n')
 const host=await startResidentHost(sandbox,evidence+'/records-host-'+Date.now())
-const ui=await createUiSession({fixture,sandbox,argv:['--session',root],columns:200,rows:40,label:'U114-完整记录材料讨论与接回',artifacts:evidence})
+const ui=await createUiSession({fixture,sandbox,argv:['resume',root],columns:200,rows:40,label:'U114-完整记录材料讨论与接回',artifacts:evidence})
 const key=async(k:Parameters<typeof ui.key>[0])=>{await ui.key(k);await Bun.sleep(100)}
 const frame=async(label:string)=>{await Bun.sleep(100);return ui.capture({label})}
 const calls=()=>ui.requests().filter(r=>r.path.endsWith('/chat/completions'))

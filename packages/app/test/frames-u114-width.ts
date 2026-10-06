@@ -16,11 +16,12 @@ function expectedRows(text: string, width: number): string[] {
  return [...rows,row]
 }
 const description = Array.from({length:55}, (_,i) => `完整用途中文🙂é〔${String(i).padStart(3,'0')}〕`).join(' ')
+const overflowingDescription = '完整用途中文🙂é ' + '核对候选说明的完整内容'.repeat(85)
 const paging: unknown[] = []
 const probe = 'WIDTH_PROBE_' + 'a'.repeat(110)
 const mixed = '中文🙂é\t' + 'LONG_TOKEN_'.repeat(27)
 const content = `相同原始正文\n${mixed}\n\n\`\`\`ts\n\tconst value = '${mixed}'\n\`\`\`\n\n\`\`\`diff\n- old ${mixed}\n+ new ${mixed}\n\`\`\``
-const ui = await createUiSession({ columns: 200, rows: 40, label: 'U114-最终宽度与矮菜单', artifacts: REPO_ROOT + '/.ui-runs/u114', turns: [
+const ui = await createUiSession({ columns: 200, rows: 40, label: 'U114-标准尺寸宽度与详情翻页', artifacts: REPO_ROOT + '/.ui-runs/u114', turns: [
  { kind: 'text', reasoning: probe, text: content, chunks: 1, chunkDelayMs: 1500 },
  { kind: 'tool', name: 'exec', args: { cmd: `printf '${probe}'` } },
  { kind: 'tool', name: 'exec', args: { cmd: `printf '${probe}' >&2; exit 1` } },
@@ -34,16 +35,19 @@ try {
  for (let i = 0; i < 12; i++) {
   const dir = join(ui.facts().workspace, '.magic', 'skills', `width-skill-${String(i).padStart(2, '0')}`)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'SKILL.md'), `---\nname: width-skill-${String(i).padStart(2, '0')}\ndescription: 用途${i} ${description} 说明结尾${i}\n---\nU114_SKILL_BODY_${i}\n`)
+  const purpose = `用途${i} ${i === 1 ? overflowingDescription : description} 说明结尾${i}`
+  assert(purpose.length <= 1024, '夹具描述保持在技能规范上限内')
+  writeFileSync(join(dir, 'SKILL.md'), `---\nname: width-skill-${String(i).padStart(2, '0')}\ndescription: ${purpose}\n---\nU114_SKILL_BODY_${i}\n`)
  }
  await ui.send('实际宽度验收'); await ui.key('enter'); await ui.wait({ text: probe }); await frame('200-122列思考无省略')
  await resize(200); const thinking = await frame('200-122列思考无省略'); assert(thinking.text.includes(probe))
  await ui.wait({ text: '○ 空闲' }); await resize(200); await frame('200-混合正文代码与diff')
  await resize(100); await frame('100-相同正文代码与diff'); await resize(200); await frame('200-相同正文代码与diff')
- await ui.send('运行成功失败与拒绝'); await ui.key('enter'); await ui.wait({ text: 'Ctrl+G 审阅' })
+ await ui.send('运行成功失败与拒绝'); await ui.key('enter'); await ui.wait({ text: '↑↓ 选择' })
  // 前两项为真实 printf/exit 执行；第三项 chmod 等待用户主动拒绝。
  await resize(200); const tools160 = await frame('200-122列成功失败与真实待答')
  assert(tools160.text.includes(probe)); await resize(200); const tools220 = await frame('200-122列成功失败与真实待答'); assert(tools220.text.includes(probe))
+ await ui.key('esc');await ui.wait({text:'Tab 进入决策'});
  await ui.send('/skills '); await ui.key('enter'); await ui.wait({ text: 'width-skill-00' })
  const data = (f: Capture) => JSON.parse(readFileSync(join(ui.runDir, f.files.data), 'utf8'))
  const selected = '›  width-skill-00'
@@ -56,7 +60,8 @@ try {
   const first = f.lines.findIndex(line => line.includes(selected))
   const last = f.lines.findIndex((line,i) => i>first && (line.includes('PgUp/PgDn 详情') || line.includes('… 上面') || line.includes('直接打字可筛选') || line.includes('width-skill-01')))
   assert(first>=0 && last>first)
-  const body=f.lines.slice(first+1,last).map(line=>line.trimStart())
+  // 字格产物保留有样式的行尾空格；纯文本快照会裁掉它们。
+  const body=data(f).lines.slice(first+1,last).map((line:{runs:[number,string,number,number][]})=>{assert.equal(line.runs[0]?.[0],4);return line.runs.map(run=>run[1]).join('')})
   return {from:from!,to:match===null?body.length:to!,total:match===null?body.length:total!,body}
  }
  const traverse = async (columns:number, rows:number) => {
@@ -64,7 +69,6 @@ try {
   let current = await frame(`${label}-技能来源用途首屏`), start = details(current)
   const expected = ['来源：'+realpathSync(join(ui.facts().workspace,'.magic/skills/width-skill-00')),`用途：用途0 ${description} 说明结尾0`].flatMap(text=>expectedRows(text,columns-5))
   assert.equal(start.from,1);assert.equal(start.total,expected.length)
-  if(rows===14) assert(current.text.includes('PgUp/PgDn'),'矮菜单长详情必须可翻页')
   const seen = new Map<number,string>()
   const check = (f:Capture) => {
    const page=details(f);assert.deepEqual(page.body,expected.slice(page.from-1,page.to),'真实详情正文须与完整来源/用途的相应位置一致')
@@ -95,13 +99,13 @@ try {
  await resize(200);await traverse(200,40)
  await resize(100);await traverse(100,40)
  await resize(200);await traverse(200,40)
- // 上下候选切换归零，再按真实PgDn验证另一条详情，不继承上一条的位置。
- await ui.key('down');await ui.wait({text:'›  width-skill-01'});const other=await frame('200x40-另一技能首屏')
- assert(other.text.includes('详情 1–'));await ui.key('pageDown');const otherPage=await frame('200x40-另一技能真实PgDn')
+ // 只用标准 100×40；第二候选的更长描述真实溢出，验证切换归零与真实 PgDn。
+ await resize(100);await ui.key('down');await ui.wait({text:'›  width-skill-01'});const other=await frame('100x40-另一技能首屏')
+ assert(other.text.includes('详情 1–'));await ui.key('pageDown');const otherPage=await frame('100x40-另一技能真实PgDn')
  assert(!otherPage.text.includes('详情 1–'));assert(otherPage.text.includes('›  width-skill-01'));assert(data(otherPage).bytes>data(other).bytes)
- await ui.key('esc');await ui.wait({text:'Ctrl+G 审阅'});assert.equal(ui.requests().length,4,'本地浏览不能产生模型请求')
+ await ui.key('esc');await ui.wait({text:'Tab 进入决策'});assert.equal(ui.requests().length,4,'本地浏览不能产生模型请求')
  await resize(200);
- await ui.key('ctrl+g'); await ui.wait({ text: '本工作区总是允许' }); await ui.send('n'); await ui.wait({ text: 'WIDTH_ALL_DONE' }); await ui.wait({ text: '○ 空闲' })
+ await ui.key('tab'); await ui.wait({ text: '○ 拒绝这一次' }); await ui.key('up'); await ui.key('enter'); await ui.wait({ text: 'WIDTH_ALL_DONE' }); await ui.wait({ text: '○ 空闲' })
  await frame('200-真实拒绝后静止'); await resize(200); await frame('200-真实拒绝后静止')
  writeFileSync(join(ui.runDir, 'u114-width-facts.json'), JSON.stringify({ probe, content, facts: ui.facts(), calls: ui.requests(), paging }, null, 2))
  console.log(ui.runDir)

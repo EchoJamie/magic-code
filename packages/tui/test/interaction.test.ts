@@ -114,7 +114,6 @@ function liveApp() {
     /** 投事件并等画面跟上。 */
     async push(events: readonly KernelEvent[], expectFrame?: (frame: string) => boolean) {
       for (const item of events) spy.emit(item)
-      if (events.some(item => item.kind === 'tool.decision.request')) shell.key({ kind: 'ctrl+g' })
       if (expectFrame !== undefined) await app.waitForFrame(expectFrame)
     },
   }
@@ -175,7 +174,7 @@ describe('审批答复（接管）', () => {
       (frame) => frame.includes('◊ 等你定夺'),
     )
 
-    await app.type('y')
+    await app.type('\x1b[B'); await app.type('\r')
     expect(commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
 
     // 裁决落定（内核回 `tool.decision`）才解除接管——输入行回到**此刻**那张脸。
@@ -218,7 +217,7 @@ describe('审批答复（接管）', () => {
     )
 
     await app.type('a')
-    await app.waitForFrame((frame) => frame.includes('必闸类不可'))
+    await app.waitForFrame((frame) => frame.includes('先答复'))
 
     expect(commands()).toEqual([])
 
@@ -449,9 +448,7 @@ describe('挤进同一个读块的正文与回车', () => {
 
     await app.type('y\r')
     await app.waitForFrame((frame) => frame.includes('先答复'))
-
-    // **只有答复那一条**——没有 `input.submit`
-    expect(commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
+    expect(commands()).toEqual([])
 
     app.unmount()
   })

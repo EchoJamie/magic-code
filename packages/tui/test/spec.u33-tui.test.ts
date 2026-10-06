@@ -594,7 +594,6 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
         { id: 88 },
       ),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     // 三件一起收：正文 · 插入点 · 它里面的引用（U36——引用是那份草稿的一部分）
     expect(stage.shell.getView().stashed).toEqual({
@@ -617,7 +616,6 @@ describe('U33 · 接管（裁决）保护整份草稿', () => {
     stage.feed([
       event('tool.decision.request', { call: 71, name: 'exec', material: 'm', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     stage.press({ kind: 'char', char: 'x' })
 

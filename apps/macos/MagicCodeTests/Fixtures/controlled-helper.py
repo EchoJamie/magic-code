@@ -72,6 +72,7 @@ def observe(client):
                         options['works'] = [target if row['session'] == message['session'] else row for row in options['works']]
                         temporary = base / 'control-inspect.json'
                         temporary.write_text(json.dumps(options)); os.replace(temporary, base / 'control.json')
+                target = options.get('inspectWork', target)
                 if target and (options.get('uncheckedInspect') or message.get('notice') is None or any(n['id'] == message['notice'] for n in target['notices'])):
                     send(client, {'t': 'native.inspected', 'request': message['request'], 'work': target})
                     trace('inspected-sent', request=message['request'])

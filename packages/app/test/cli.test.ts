@@ -1,12 +1,13 @@
 /** CLI 真子进程：help/version/离线 check 不启动 App，不开库或运行外部工具。 */
 
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
 import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 import { parseArgs, connectTerminal } from '../src/cli.ts'
 import { cliGround, fakeApp } from './resident-cli-fixture.ts'
+import { reopenApp } from '../src/run/spawn-manager.ts'
 
 const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
 
@@ -42,7 +43,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
     const request = 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'
     try {
       g.publish()
-      const parsed = parseArgs(['--session', 'session-real', '--open-request', request, '--model', 'spell', '--allow-all'])
+      const parsed = parseArgs(['resume', 'session-real', '--open-request', request, '--model', 'spell', '--allow-all'])
       const connection = await connectTerminal(parsed, { home: g.home, env: { PATH: '/work/bin', API_KEY: 'do-not-send' } })
       const hello = server.messages.find((message) => message.t === 'hello')!
       expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { alias: 'spell' }, allowAll: true, environment: { PATH: '/work/bin' } })
@@ -54,6 +55,70 @@ describe('resident-cli 短路径与终端接回参数', () => {
       expect(last).not.toHaveProperty('session')
       expect(last).not.toHaveProperty('openRequest')
       blank.client.close()
+    } finally { server.close(); g.close() }
+  })
+
+  test('重连按规范路径识别原实例：发现记录与原连接的软链接写法均不产生新工作', async () => {
+    const g = cliGround()
+    const server = fakeApp(g)
+    const alias = join(g.root, 'alias')
+    symlinkSync(g.root, alias, 'dir')
+    const aliasBase = join(alias, 'selected/.magic')
+    const aliasData = join(alias, 'data')
+    const opened: string[] = []
+    try {
+      // 首连规范化 base，发现文件仍保留声明写法，复现真实 /var 与 /private/var 差异。
+      g.publish({ ...g.discovery, base: aliasBase })
+      const first = await connectTerminal(parseArgs(['resume', 'session-existing']), { home: g.home, env: {} })
+      expect(first.magic.base).toBe(g.base)
+      first.client.close()
+      const again = await reopenApp({
+        home: g.home, env: {}, appPath: g.app,
+        expectedInstance: { base: first.magic.base, dataDir: first.client.dataDir },
+        connect: { session: 'session-existing' },
+        openApplication: async app => { opened.push(app) },
+      })
+      again.client.close()
+      // 反向写法与数据目录软链接也按相同规则归一，不维护另一套比较分支。
+      g.publish()
+      const canonical = await reopenApp({
+        home: g.home, env: {}, appPath: g.app,
+        expectedInstance: { base: aliasBase, dataDir: aliasData },
+        connect: { session: 'session-existing' },
+        openApplication: async app => { opened.push(app) },
+      })
+      canonical.client.close()
+      const requests = server.messages.filter(message => message.t !== 'bye')
+      expect(requests).toHaveLength(3)
+      expect(requests.every(message => message.t === 'hello' && message.session === 'session-existing')).toBe(true)
+      expect(opened).toEqual([])
+      expect(existsSync(join(g.dataDir, 'records.db'))).toBe(false)
+    } finally { server.close(); g.close() }
+  })
+
+  test('重连仍拒绝真正不同的基础目录或数据目录，hello 前终止且不创建目录或工作', async () => {
+    const g = cliGround()
+    const server = fakeApp(g)
+    const opened: string[] = []
+    const otherBase = join(g.root, 'other-base')
+    const otherData = join(g.root, 'other-data')
+    try {
+      g.publish()
+      for (const expectedInstance of [
+        { base: otherBase, dataDir: g.dataDir },
+        { base: g.base, dataDir: otherData },
+      ]) {
+        await expect(reopenApp({
+          home: g.home, env: {}, appPath: g.app, expectedInstance,
+          connect: { session: 'session-existing' },
+          openApplication: async app => { opened.push(app) },
+        })).rejects.toThrow('App 数据实例已改变')
+      }
+      expect(server.messages).toEqual([])
+      expect(opened).toEqual([])
+      expect(existsSync(otherBase)).toBe(false)
+      expect(existsSync(otherData)).toBe(false)
+      expect(existsSync(join(g.dataDir, 'records.db'))).toBe(false)
     } finally { server.close(); g.close() }
   })
 
@@ -419,20 +484,40 @@ describe('入口 magic · 换模型的启动参数', () => {
   })
 })
 
-describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
+describe('入口 magic · 接续（`resume` · U25 恢复入口）', () => {
+  test('旧选项、缺少 id、重复 resume 和多余位置参数明确拒绝', () => {
+    for (const argv of [
+      ['--session', 's-old'], ['resume'], ['resume', ''], ['resume', '   '],
+      ['resume', '-v'], ['resume', '--model', 'spell'],
+      ['resume', 'one', 'resume', 'two'], ['resume', 'one', 'two'],
+    ]) expect(() => parseArgs(argv)).toThrow()
+    expect(parseArgs(['resume', "会话 ' 中文", '--model', 'spell']).session).toBe("会话 ' 中文")
+    expect(parseArgs(['--model', 'spell', 'resume', 's-one']).session).toBe('s-one')
+  })
+  test('旧选项通过真实 CLI 退出，不连接 App', async () => {
+    const home = tempDir('magic-cli-')
+    try {
+      const result = await run(home, '--session', 's-old')
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('不认得的参数「--session」')
+      expect(existsSync(join(home, '.magic'))).toBe(false)
+    } finally { removeDir(home) }
+  })
+
   test('用法里写清了这条入口（新增入口选项须在设计里登记的那条规矩）', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--help')
 
-      expect(result.stdout).toContain('--session <id>')
+      expect(result.stdout).toContain('magic resume <id>')
+      expect(result.stdout).not.toContain('--session')
       expect(result.stdout).toContain('输入后继续执行')
     } finally {
       removeDir(home)
     }
   })
 
-  test('`--check --session` 只展示请求，不装载会话', async () => {
+  test('`--check resume` 只展示请求，不装载会话', async () => {
     const { home, dataDir } = stageWithConfig()
 
     // 库里先**真**有一条会话（会话是**首写即建**的，D5——不写库＝不在库里）
@@ -441,7 +526,7 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     store.close()
 
     try {
-      const result = await run(home, '--check', '--session', 's-picked-by-user')
+      const result = await run(home, '--check', 'resume', 's-picked-by-user')
 
       expect(result.stderr).toBe('')
       expect(result.exitCode).toBe(0)
@@ -457,7 +542,7 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     const { home } = stageWithConfig()
 
     try {
-      const result = await run(home, '--check', '--session', 's-typo')
+      const result = await run(home, '--check', 'resume', 's-typo')
 
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('s-typo（离线检查不连接或校验会话）')
@@ -467,14 +552,14 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
     }
   })
 
-  test('选项缺值——退 1（`--session --check` 这类笔误不被当成 id）', async () => {
+  test('选项缺值——退 1（`resume --check` 这类笔误不被当成 id）', async () => {
     const { home } = stageWithConfig()
 
     try {
-      const result = await run(home, '--session', '--check')
+      const result = await run(home, 'resume', '--check')
 
       expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('--session 缺值')
+      expect(result.stderr).toContain('resume 缺值')
     } finally {
       removeDir(home)
     }
@@ -490,8 +575,10 @@ describe('入口 magic · 全放行（`--allow-all` · U73）', () => {
       expect(result.stdout).toContain('--allow-all')
       expect(result.stdout).toContain('本次会话跳过所有操作确认')
       expect(result.stdout).toContain('仅启动时可用')
-      expect(result.stdout).toContain('删除、改权限和改属主')
-      expect(result.stdout).toContain('仍需确认')
+      expect(result.stdout).toContain('可跳过改权限和改属主等操作的确认')
+      expect(result.stdout).toContain('不使用 --allow-all 时，改权限和改属主仍需确认')
+      expect(result.stdout).toContain('删除规则仍直接拒绝，不受 --allow-all 影响')
+      expect(result.stdout).not.toContain('包括删除')
       // ⚠️ **不叫 `mode`**（设计明文：「mode」这个词留给别的用途）——判的是**参数名**，
       // 故按**词**比、不按子串比：`--model` 那个词里本来就有 `--mode` 这四个字母加两个。
       expect(result.stdout.split(/\s+/u)).not.toContain('--mode')

@@ -192,15 +192,15 @@ test('不同成员审批逐份排队；重复通知与重复按键不重复裁�
   const ask = event('tool.decision.request', { call: 50, name: 'exec', material: '修改回调', weight: 'light' }, { id: 100, session: 'member' })
   app.spy.emit(ask); app.spy.emit(ask)
   app.spy.emit(event('tool.decision.request', { call: 51, name: 'write', material: '更新说明', weight: 'light' }, { id: 101, session: 'origin' }))
-  app.shell.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
   expect(app.screen()).toContain('实现 · exec')
+  app.key('escape'); expect(app.shell.getView().dock.kind).toBe('picker')
+  app.key('tab'); expect(app.shell.getView().dock.kind).toBe('decision')
   app.spy.emit(event('turn.end', { reason: 'settled' }, { session: 'origin' }))
   expect(app.shell.getView().dock.kind).toBe('decision')
-  app.shell.key({ kind: 'char', char: 'y' }); app.shell.key({ kind: 'char', char: 'y' })
+  app.shell.key({kind:'down'}); app.shell.key({kind:'enter'}); app.shell.key({kind:'enter'})
   expect(app.spy.commands.filter((one) => one.type === 'decision.answer')).toHaveLength(1)
   app.spy.emit(event('tool.decision', { call: 50, decision: 'approve', decider: 'user', elapsedMs: 1 }, { session: 'member' }))
   expect(app.shell.getView().dock.kind).toBe('picker')
-  app.shell.key({ kind: 'ctrl+g' })
   expect(app.shell.getView().dock.kind).toBe('picker') // root turn.end 使该卡失效
   app.spy.emit(event('tool.decision', { call: 51, decision: 'reject', decider: 'user', elapsedMs: 1 }, { session: 'origin' }))
   const dock = app.shell.getView().dock
@@ -283,13 +283,12 @@ test('入口 detached 不撤成员审批，答完仍回原阅读位置与各自�
   const rootAsk = event('tool.decision.request', { call: 51, name: 'write', material: '入口修改', weight: 'light' }, { id: 101, session: 'origin' })
   app.spy.emit(ask); app.spy.emit(rootAsk)
   detached('入口这一代执行者已退出')
-  app.shell.key({kind:'ctrl+g'})
   const dock = app.shell.getView().dock
   expect(dock.kind === 'decision' && dock.pending.id).toBe(100)
   expect(app.shell.getView().sessionId).toBe('origin')
   expect(app.shell.getView().inputMember).toBe('worker')
   app.spy.emit(ask); app.spy.emit(rootAsk)
-  app.shell.key({ kind: 'char', char: 'y' }); app.shell.key({ kind: 'char', char: 'y' })
+  app.shell.key({kind:'down'}); app.shell.key({kind:'enter'}); app.shell.key({kind:'enter'})
   expect(app.spy.commands.filter(one => one.type === 'decision.answer')).toEqual([{ type: 'decision.answer', id: 100, decision: 'approve' }])
   app.spy.emit(event('tool.decision', { call: 50, decision: 'approve', decider: 'user', elapsedMs: 1 }, { session: 'member' }))
   const reader = app.shell.getView().dock
@@ -304,17 +303,14 @@ test('入口审批失效后接续成员审批，selectedSession 只读重发不�
   const app = collaborationStage({ detached: listener => { detached = listener } })
   app.member(); app.pick('input'); app.text('成员待发送')
   app.spy.emit(event('tool.decision.request', { call: 60, name: 'write', material: '入口修改', weight: 'light' }, { id: 110, session: 'origin' }))
-  app.shell.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
   app.spy.emit(event('tool.decision.request', { call: 61, name: 'exec', material: '成员校验', weight: 'light' }, { id: 111, session: 'member' }))
-  app.shell.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
   detached('入口已核销，当前选择仍在')
-  app.shell.key({kind:'ctrl+g'})
   app.spy.emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', at: 0 }] }, { session: 'origin' }))
   app.spy.emit(event('collaboration.view', collaborationFixture))
   const dock = app.shell.getView().dock
   expect(dock.kind === 'decision' && dock.pending.id).toBe(111)
   expect(app.shell.getView().inputMember).toBe('worker')
-  app.shell.key({ kind: 'char', char: 'y' })
+  app.shell.key({kind:'down'}); app.shell.key({kind:'enter'})
   expect(app.spy.commands.filter(one => one.type === 'decision.answer')).toEqual([{ type: 'decision.answer', id: 111, decision: 'approve' }])
   expect(app.spy.commands.some(one => one.type === 'input.submit' || one.type === 'collaboration.input' || one.type === 'session.open')).toBe(false)
 })
@@ -339,7 +335,6 @@ test('宿主退出清掉协作失效审批，明确重开保留目标草稿且�
   expect(app.spy.commands.some(one => one.type === 'input.submit' || one.type === 'collaboration.input' || one.type === 'decision.answer')).toBe(false)
   app.member(); app.pick('input')
   app.spy.emit(event('tool.decision.request', { call: 71, name: 'exec', material: '新成员操作', weight: 'light' }, { id: 121, session: 'member' }))
-  app.shell.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
   expect(app.screen()).toContain('新成员操作')
   app.spy.emit(event('tool.decision', { call: 71, decision: 'reject', decider: 'user', elapsedMs: 1 }, { session: 'member' }))
   expect(app.shell.getView().draft).toBe('成员保留稿')

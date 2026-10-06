@@ -113,7 +113,7 @@ describe('U48-S5 · 终端是客户端', () => {
     }
   }, 120_000)
 
-  test('`--session` 打错一个字母——经管理者那条路照样报错退场（不静默开一条空的）', async () => {
+  test('`resume` 打错一个字母——经管理者那条路照样报错退场（不静默开一条空的）', async () => {
     const runs = runArtifacts('magic-u48-typo-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -126,7 +126,7 @@ describe('U48-S5 · 终端是客户端', () => {
         artifacts: runs,
         sandbox,
         fixture,
-        argv: ['--session', 's-typo'],
+        argv: ['resume', 's-typo'],
         // 这一趟**画不出一帧**（没接上就退了）——故不等首帧
         skipReady: true,
       })
@@ -229,7 +229,7 @@ describe('U48-S5 · 终端是客户端', () => {
     const runs = tempDir('magic-u48-cancel-runs-')
     // ⚠️ **原锚**：`exec echo hi`（判轻）；**为何变**（U76）：判轻的调用**默认通、不弹卡**
     // ——这一条要的正是一张**悬着的卡**，夹具换成**名单里**的删除（必问，且没人答它）；
-    // **新锚**：卡落在**重**那一档，右位键位是 `y / n`（见下）。
+    // **新锚**：卡落在**重**那一档，到达直接显示无预选动作（见下）。
     const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     const host = await startResidentHost(sandbox, join(runs, 'host'))
@@ -239,10 +239,10 @@ describe('U48-S5 · 终端是客户端', () => {
       window = await createUiSession({ label: '中断卡', artifacts: runs, sandbox, fixture })
 
       await window.send('跑一条命令')
-      // 内置件走的是**名单里**的删除 ⇒ 重档键位（`y / n`）。⚠️ `HINT_DECIDE_HEAVY` **没出包**
+      // 内置 chmod 走重档审批，等待选择提示。⚠️ `HINT_DECIDE_HEAVY` **没出包**
       // （`@magic/tui` 只出去包的常量），故这里按**字面量**锚——与 `ui/scenarios.ts`
       // 里 `COPY.decideHint` 同一条先例：真要改那处文案，判据会红，那正是该有的反应。
-      await window.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
+      await window.key('enter', { until: { text: '↑↓ 选择 · Enter 确认' }, timeoutMs: 20_000 })
 
       // **卡还挂着的时候停这一轮**（U100 起这条路是「三选 → 停止任务」）——
       // 答复永远不会来（那正是这个用例要的那条边）
@@ -355,7 +355,7 @@ describe('U48-S5 · 终端是客户端', () => {
 const SAID = '记一句短话'
 const REPLY = '好，记下了。'
 
-describe('U53 · `--session` 接续（真窗口）', () => {
+describe('U53 · `resume` 接续（真窗口）', () => {
     async function withContent(sandbox: Sandbox, fixture: ReturnType<typeof startFixture>): Promise<string> {
     const window = await createUiSession({ label: '第一程', sandbox, fixture })
     // **收过摊没有**——`close()` 没有二次调用守卫，收两遍会把现场再翻一次
@@ -403,7 +403,7 @@ describe('U53 · `--session` 接续（真窗口）', () => {
         artifacts: runs,
         sandbox,
         fixture,
-        argv: ['--session', id],
+        argv: ['resume', id],
       })
 
       // ① **记录区铺出来了**——那条会话现有的历史在屏上（D33 要的正是这一条）。
@@ -682,7 +682,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
    * **接回入口要真敲得响**（U100 · 设计「按实际配置保留必要启动参数」）——
    * **非默认落点**那一形：把屏上印的那一行**原样取下来、真敲一遍**，接回**同一个库**。
    *
-   * 为什么非要用非默认落点走一遍：默认那一形（`magic --session <id>`）在换了终端之后
+   * 为什么非要用非默认落点走一遍：默认那一形（`magic resume <id>`）在换了终端之后
    * 仍然落在 `~/.magic`，**看不出差别**；而 `MAGIC_HOME` 指向别处时，少了那个前缀就会
    * 接到另一个库（会话不在）。故这一条：
    *
@@ -745,8 +745,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // ——同一份代码里 socket 路径也按规范化取键（「两个写法必须落在同一把锁上」）。
       // **没变弱**：判据仍是「那一行必须带上 `MAGIC_HOME` 且指向 alt」，
       // 只是把「字面相同」换成「**指向同一个目录**」——后者更强（认的是目录，不是写法）。
-      expect(copy).toContain(`MAGIC_HOME='${realpathSync(alt)}'`) // 非默认落点：**必须带上它**
-      expect(copy).toContain('magic --session ')
+      expect(copy).toBe(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${realpathSync(alt)}' magic resume '${sessionIdOf(sandbox)}'`)
 
       // ③ **它得是「屏上原样可复制」的一条**（规划裁决点名的那一条）——
       //    判据**落在字节上**，不是靠测试把这行接回来：
@@ -755,7 +754,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       //    交给**终端软折行**（软折行在终端看来仍是同一逻辑行 ⇒ 整行选中复制拿到的是完整的）。
       //    故这里要证的是：**那一串字节里没有换行**（`\n` 之前就是整条命令）。
       const stream = first.rawText()
-      const at = stream.lastIndexOf("MAGIC_HOME='")
+      const at = stream.lastIndexOf('接回来：') + '接回来：'.length
       const bytes = stream.slice(at, stream.indexOf('\n', at))
       // **两个都要**：① 那一段字节里没有换行（真折行的话这里就有）；
       // ② 剥掉色码之后**就是那整条命令**（末尾那格是 Ink 的收尾样式，`trimEnd` 掉）
@@ -768,7 +767,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // **走了之后那一行还在屏上**（用户就是在这时候去复制它的）——它写在那一帧**之上**，
       // Ink 收摊擦的是它自己那一帧，不碰已经写出去的那一行
       const afterExit = await first.capture({ label: '退出之后那一行还在' })
-      expect(afterExit.lines.some((text) => text.includes('magic --session'))).toBe(true)
+      expect(afterExit.lines.some((text) => text.includes('magic resume'))).toBe(true)
       first = undefined
 
       // ③ 造一个 `magic`（PATH 里的 shim ⇒ 真的那个 cli.ts），**把那一行原样交给 sh**
@@ -862,7 +861,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // **写的是真命令**（带着那一条会话的 id），不是「没有可接的入口」那一句
       const id = sessionIdOf(sandbox)
       expect(id).not.toBe('')
-      expect(raw).toContain(`magic --session ${id}`)
+      expect(stripAnsi(raw)).toContain(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${realpathSync(sandbox.home)}' magic resume '${id}'`)
       expect(raw).not.toContain('没有可接的入口')
     } finally {
       await window?.close().catch(() => {})

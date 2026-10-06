@@ -1,55 +1,10 @@
 /**
- * `PermissionGate` —— 权限域端口（技术方案 · 领域划分：工具域 → 权限域，闸门在 `invoke` 路径内）。
- *
- * 一次裁决的全流程：
- *
- *   机械分析（工具名 ＋ 参数）→ 危险分级 → **在不在名单里 ／ 规则命中？** → 自动放行（`decider: 'auto'`）
- *     ／否则发 `tool.decision.request`（带材料与呈现轻重）→ 等答复（`resolve`，配对＝请求事件 id）
- *     → 发 `tool.decision` → 返回裁决
- *
- * **默认是通；这一层控的是「禁止」**（2026-09-25 用户定 · 反向）——次序是这条链：
- *
- * ```
- *   内核直接拒（删除那一类） ＞ 内置禁止名单（＝改权限那一类） ＞ 项目规约（留缝·不实现）
- *     ＞ 用户手写规则 ＞ 点出来的授权 ＞ （其余一律默认通）
- * ```
- *
- * ⚠️ **链的底换过一次**（U76）：从前是「**默认问**」（阶段 1 全人工门——判轻的也要先配规则
- * 才通），现在是「**默认通**」——**不在名单里就不问**（设计 · 权限「默认是通；这一层控的是
- * 「禁止」」）。跟着来的是：判轻的不必配规则 · 全放行连名单也放 · 判不出来的（`unknown`）
- * 按默认通。
- *
- * ⚠️ **链首换过一次**（U77）：**删除那一类**从"要授权"整类移出，改成**直接拒**
- * （设计 · 权限「`rm` 直接拒，指路 `trash`」）——**不问、也不放**（连全放行也放不动它，
- * 理由见 `decide` 里那一段）。⇒ **名单里只剩改权限那一类**（`commands.ts` 的 `PERMISSION`），
- * 那是**产品的安全承诺**（设计明写），故它归 `analyze` 一处判。
- *
- * 而 **「全放行」**（U73 立 · **U76 改定**）**不是这条链上的一格，也不是一个「模式」**
- * ——它是**权限这一维的一个取值**，只动「该不该做」那一问的**默认答什么**：**一个布尔**
- * （全放行 ／ 不全放行），**不给它加档、不留扩展位**（设计明文）。它落在本域的效果只有一件：
- * **什么都不问**（连名单那两条也放）。⚠️ **产品在这一档下不再作「漏拦」那个承诺**
- * ——必闸本来是产品的安全承诺；**危险模式是用户显式要的一次性决定**（设计明文）。
- *
- * 本文件是这条链的**唯一落定处**；括号里标出每一格住在哪儿：
- * - **名单**（判重的那两类）——`analyze` 每次当场重判（判据不押规则作者的自觉）；
- * - **项目规约**——**留缝不实现**（设计明文：采纳它要配「首次确认 ＋ 只许收窄」）；
- * - **用户手写规则**——`options.rules`（装配从配置读来、经 `parseRules` 校验）；
- * - **点出来的授权**——`options.grants`（**工作区级**账本，见 `grants.ts`）；
- * - **默认通**——链的底：不在名单里就是它。
- *
- * 规则如今只在一处还够得着判重的调用：**判重却带域名**的那一件（外发按域名，U72 · `byHost`）
- * ——那是规则作者明确点过的去向。除此之外判重一律问（名单即禁区，任何规则不可放行）。
- *
- * 纪律（技术方案 · 领域划分 · 权限域）：**裁决独立**（不自证、不押模型自述）·
- * **只走事件、不入条目**——故本域注入面只有 `EventSink`（`emit` 一件）与 `EventStamper`，
- * **结构上拿不到条目面**（`RecordsService` 才是条目面，本域不注入）。
- * ⚠️ **不碰文件系统**——授权账本（`grants`）是**纯内存**的：读盘落盘都归装配，
- * 本域只把「变了」报给账本的回调（见 `GrantLedgerOptions.onChange`）。
- *
- * **调用链引用（`callRef`）必填**（第 2 轮契约对齐 · `PermissionGate.decide` 三参）——
- * 它是「请求 → 询问 → 裁决 → 结果」四事件**串链**的依据（审计与阶段 2 恢复的在途识别
- * 都按它找）；而它产生在本域之外（工具域铸 `tool.call` 时才有），故只能由调用方传入。
- * **不设哨兵兜底**：静默的 `-1` 比缺参更坏——接线漏了应当在**编译期**就报。
+ * 工具执行前唯一权限闸门。调用方先解析本次参数与真实目标，本域统一处理直接禁止、
+ * 自动放行、已有规则和人工审批。等待答复属于原决断，不发起第二轮裁决。
+ * 删除族直接拒绝优先于 allowAll；其余轻调用默认允许，重调用仅既有域名授权或
+ * allowAll 自动放行。工作区外文件/目录操作须明确批准，且不由一次批准扩成宽授权。
+ * 取消在原 pending 表中完成拒绝并移除，迟到/重复答复不得再次裁决或记授权。
+ * 路径和文件身份由执行域提供；本域不读取文件系统。
  */
 
 import type {
@@ -70,20 +25,9 @@ import { grantOf } from './grants.ts'
 import type { PermissionRule } from './rules.ts'
 import { describeRule, matchRule, type CallFace } from './rules.ts'
 
-/**
- * 权限域公开面——**即契约端口**（`decide` 三参 · `resolve` 两件）＋ 放行区那一笔账。
- *
- * 第 2 轮契约对齐：`callRef` 由可选注入位**升为必填参数**（见 `decide` 头注）。
- *
- * 三处**结构超集**（契约零改动 · 两参照常工作）：
- * - `decide` 的第三参 `callRef`——第四轮由契约补锚（已是端口形态本身）；
- * - `resolve` 的第三参 `options`——「总是允许」的答复位（契约词表里已有，
- *   见控制面 `DecisionAnswer.remember`）；
- * - `tally()`——**度量读面**（U22），契约端口没有它：它说的是本域自己的账，
- *   不是跨域语言（读它的是装配，用于 `/grants` 那一屏，见 `GateTally`）。
- */
+/** 契约权限端口加上本实例裁决统计；取消信号沿用原 pending，不增加决断状态。 */
 export interface PermissionGate extends PermissionGatePort {
-  decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId): Promise<Decision>
+  decide(call: ToolCall, ctx: PermissionContext, callRef: RecordId, signal?: AbortSignal): Promise<Decision>
   /**
    * 控制域答复路由至此——配对键＝**请求事件** `id`。
    *
@@ -174,54 +118,9 @@ export type PermissionGateOptions = {
    * 这正是「授权跨会话存活」这句话在本进程内的形态）。
    */
   readonly grants: GrantLedger
-  /**
-   * **全放行**（U73 立 · **U76 改定**）——**权限这一维的一个取值**（不是「模式」、不是新的一层）：
-   * **一个布尔**，**只在起会话那一刻**由命令行给；会话活着的时候**没有任何入口改它**
-   * （它是构造入参，本域不提供 setter——「对话期间切不进去」在代码里就是这个形状）。
-   *
-   * 落了什么：**连必闸也放——真的什么都不问**（删除 · 改权限族 · 以及一切判重的调用），
-   * 全都走**同一条**自动放行路（`decider: 'auto'`、耗时照测、事件照发）。
-   *
-   * ⚠️ **这条改过一次**（2026-09-25 用户定）：U73 落的是「放轻的、必闸照样挡」——**那是旧版**。
-   * 由头：默认已经是「通」，只剩名单那两条要问；**若全放行也不放它，两者一模一样 ⇒ 这一档
-   * 就是个空开关**。**它必须比默认更放，才有存在理由。**
-   *
-   * ⚠️ **产品在这一档下不再作「漏拦」那个承诺**——名单本来是**产品的安全承诺**；
-   * **危险模式是用户显式要的一次性决定**，不是产品偷偷松的（设计明文）。
-   * 护栏是**过程上的三条**，不是判据上的：**入口只在启动那一刻 · 状态行常驻报着 ·
-   * 要改得先退出去**——前两条在装配与外壳，后一条就是"没有 setter"这件事本身。
-   *
-   * 由头与边界见 `设计/工具执行与权限`·「全放行：**只在起会话那一刻给**」。
-   */
+  /** 启动时固定的全放行选项：省去人工询问，但不覆盖内核直接禁止。 */
   readonly allowAll?: boolean | undefined
-  /**
-   * **内核自己的只读落点**（U80）——**读类调用**除各根之外另认的几处。
-   *
-   * 当前只有一处：`exec` 后台那一形的**输出目录**（设计明写它落在工作区之外）。
-   * 设计又说那一格的送达方式就是「**用既有的 `read` 读那个文件**」——而权限域那条
-   * 「**按路径的规则只认根内**」（`rules.ts` · `matchesPath`：缺省路径＝根内，
-   * 判据是 `landings.every(inside)`）之下，**「本工作区总是允许 read」那一类规则
-   * 盖不住它**（U70 记下的那条摩擦：每次读我们自己的产物都要问一次）。
-   * 它是**我们自己的产物**、**不是用户的东西** ⇒ **不算越界**。这一位就是把那个判据补给权限域。
-   *
-   * ⚠️ **那条摩擦今天已不复现**——U76 把链的底翻成「**默认通**」之后，读那一类
-   * （判轻）**一律不问**，配不配规则都一样。⇒ **本单落的是判据，不是一处可见的行为变化**：
-   * 规则那一格（缺省路径＝根内）从此盖得住它，落点判据也不再把它当「用户的东西」。
-   * 如实记：这一位今天**没有一条屏幕可见的差别**（真帧与「没有差别」都在 `验证/` 那一份里）。
-   *
-   * ## ⚠️ **「认一处」不是「放一片」**——本单的要害
-   *
-   * - **认的是点过名的这几处**：工作区外「用户的东西」照旧判根外，规则照旧盖不住
-   *   （那一条**一个字没松**）；
-   * - **只认读那一类**：`edit` / `write` / `exec` 不接这一位（见 `analyze` 第三参）——
-   *   往那处**写 / 删 / 移照旧判根外**；
-   * - **不是第二条根**：不参与相对路径解析、不进 `WorkspaceService.roots()`——
-   *   「根有几条」那件事在装配与提示词两处都不变。
-   *
-   * 名单由**装配一处**给出，与执行域那份（`SandboxOptions.readOnlyDirs`）**同一个来源**
-   * （同一处 `backgroundDir` 给两处）——两处各拼一份迟早对不上。
-   * **缺省不给＝一处都不认**：既有装配与用例因此一字不动。
-   */
+  /** 内核产物的只读目录，仅 read 可免询问；此名单只由闸门持有。路径须由装配规范化。 */
   readonly readOnlyDirs?: readonly string[] | undefined
   /**
    * 时钟（毫秒）——**度量**用：裁决耗时 ＝ 本域开始处理这次裁决 → 裁决落定
@@ -248,6 +147,7 @@ type Pending = {
    */
   readonly rememberable: boolean
   readonly settle: (decision: Decision) => void
+  readonly cleanup: () => void
 }
 
 /** 造一个权限闸门——内核的裁决者（契约端口 `PermissionGate` 的落地）。 */
@@ -283,7 +183,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
   }
 
   return {
-    decide(call, ctx, callRef) {
+    decide(call, ctx, callRef, signal) {
       const started = now() // 度量起点：本域开始处理这次裁决（人工 / 自动同一把尺子）
       const analysis = analyze(call, ctx, readOnlyDirs)
 
@@ -304,7 +204,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       // ⚠️ **不能写成 `auto`**（U77 补的那一格）：`DecisionHistory` 那本账的口径是
       // 「**没问**就怎样」，而 `auto` 那一格说的是「没问就**放行**」——写成它，
       // 这一笔"拒"会被读成"放行"（**正好反着**）。`Decider.kernel` 就是为这一笔加的。
-      if (analysis.refusal !== undefined) {
+      if (analysis.refusal !== undefined || signal?.aborted === true) {
         sink.emit(
           decisionMade(stamper, {
             call: callRef,
@@ -334,19 +234,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
 
       tally.total += 1
 
-      // **默认通；这一层控的是「禁止」**（2026-09-25 用户定 · 反向）——放行判据只有三条来路：
-      //
-      // 1. **不在名单里 ⇒ 通**（`weight === 'light'`）：**不必先配一条规则**。
-      //    名单只剩两条（删除 · 改权限/属主/属性/ACL，见 `commands.ts`），判重的一律问。
-      //    ⚠️ 判据不押规则作者的自觉——`weight` 那一刀归 `analyze`，本行**不另立判据**。
-      // 2. **规则命中**：判**轻**时本就通（见上），故规则在这里只剩**一个**用处——
-      //    **外发那一件按域名**（U72 · `byHost`）：那是规则作者明确点过的域名，
-      //    与"轻重"无关，故它与 `weight` 是**或**的关系。
-      //    ⚠️ **别把它顺手删掉**：那是 U72 的「取网页」，判重（外发），全靠这一条放行。
-      // 3. **全放行**（U73 立 · **U76 改定**）：**连必闸也放——真的什么都不问**。
-      //    ⚠️ **它替的是「那一问的默认答什么」**，不是"绕过"：入口只在起会话那一刻
-      //    （`options.allowAll` 是构造入参，本域没有改它的口），状态行常驻报着。
-      //    由头：默认已经是「通」，只剩名单那两条要问；若全放行也不放它，这一档就是个空开关。
+      // 轻调用默认允许；重调用只由既有域名授权或启动时 allowAll 自动放行。
+      // 普通路径规则不覆盖根外目标询问，也不因单次批准扩成目录授权。
       if (weight === 'light' || (hit !== undefined && byHost(hit, face)) || allowAll) {
         // 授权**真省了一次点击**才记账（`hit` 的语义见 `grants.ts`）——命中却被否决的不记：
         // 那条授权并没有替用户挡下什么。
@@ -374,6 +263,17 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
         ...(host === undefined ? {} : { host }),
       })
 
+      const cancel = (): void => {
+        const question = pending.get(request.id)
+        if (question === undefined) return
+        pending.delete(request.id)
+        question.cleanup()
+        sink.emit(decisionMade(stamper, {
+          call: callRef, decision: 'reject', decider: 'kernel', elapsedMs: now() - started,
+        }))
+        question.settle('reject')
+      }
+
       // **先登记、后扇出**——外壳可能在同一调用栈里答复（答复不必等一轮事件循环），
       // 顺序反了这条答复就落在空表上（丢答复＝永久挂起）。
       const answered = new Promise<Decision>((settle) => {
@@ -382,12 +282,15 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
           at: started,
           grant: grantOf(face),
           // 外部操作不给「总是允许」——连记都不记（见 `Pending.rememberable`）
-          rememberable: external !== true,
+          rememberable: external !== true && landings.every((landing) => landing.inside),
+          cleanup: () => signal?.removeEventListener('abort', cancel),
           settle,
         })
       })
 
-      sink.emit(request)
+      signal?.addEventListener('abort', cancel, { once: true })
+      if (signal?.aborted) cancel()
+      else sink.emit(request)
 
       return answered
     },
@@ -397,6 +300,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       // 陌生 id（迟到 / 重复 / 伪造）＝忽略——不抛、不猜、不改写
       if (question === undefined) return
       pending.delete(requestId)
+      question.cleanup()
 
       // 「总是允许」——只认批准（规则只有「允许」这一形）；同形的已在册＝账本自己不去重，
       // 不重复入册这件事归账本（`remember` 的注）。

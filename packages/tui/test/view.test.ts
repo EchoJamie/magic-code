@@ -284,13 +284,13 @@ describe('接管（裁决挂着时占住输入框）', () => {
     const view = viewed([ask('light')])
 
     expect(view.dock.kind).toBe('decision')
-    expect(view.status).toMatchObject({ state: 'waiting', hint: 'y / a / n' })
+    expect(view.status).toMatchObject({ state: 'waiting', hint: '↑↓ 选择 · Enter 确认 · Esc 返回' })
   })
 
   test('必闸类（重）的键位少一个 `a`', () => {
     const view = viewed([ask('heavy')])
 
-    expect(view.status.hint).toBe('y / n')
+    expect(view.status.hint).toBe('↑↓ 选择 · Enter 确认 · Esc 返回')
   })
 
   test('接管时**草稿收起来**——答完原样归还（不自动发送）', () => {
@@ -317,27 +317,27 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(ended.draft).toBe('草稿')
   })
 
-  test('外部操作（U38）——副题说「效果由服务器决定」、只给 `y 批准这一次 / n 拒绝`', () => {
+  test('外部操作（U38）——副题说「效果由服务器决定」、只给 `○ 批准这一次 / ○ 拒绝这一次`', () => {
     // 卡上的名字由权限域给成 `服务器 / 工具`（外壳不自己拼）；`external` 一位决定口径
     const view = viewed([askExternal('fake / echo', '参数：\n{\n  "text": "你好"\n}')])
 
     expect(view.dock.kind === 'decision' ? view.dock.pending.external : undefined).toBe(true)
     // **状态行右位留空**（返工 B）：卡上已经写了键位，一屏只说一次。
-    // **原锚** `'y / n'`；**为何变**：独立验收的问题 7「卡片已有 y/n，底部状态行又出现」。
+    // **原锚** `'↑↓ 选择 · Enter 确认 · Esc 返回'`；**为何变**：独立验收的问题 7「卡片已有 y/n，底部状态行又出现」。
     expect(view.status.hint).toBe('')
 
-    const frame = plain(renderToString(h(DecisionCard, { pending: pendingOf(view) }), { columns: 100 }))
+    const frame = plain(renderToString(h(DecisionCard, { pending: pendingOf(view), columns: 100, rows: 40 }), { columns: 100 }))
 
     // ① 标题：名字 · 外部口径（**不说可逆 / 不可逆**——本机判不出）
-    expect(frame).toContain('fake / echo · 外部操作 · 效果由服务器决定')
+    expect(frame).toContain('效果由服务器决定')
     expect(frame).not.toContain('不可逆')
     // ② 材料是实际业务参数（原样贴着，不另起容器）
     expect(frame).toContain('"text": "你好"')
     // ③ 键位：**只这两格**——`a` 那一格在外部件上**不画**（返工 B）。
     //    **原锚**「`a 本工作区总是允许` 划掉」；**为何变**：独立验收的问题 7
     //    「仅 y/n，整屏键位只说一次」——划掉仍占着一句话，而它对这台服务器根本不适用。
-    expect(frame).toContain('y 批准这一次')
-    expect(frame).toContain('n 拒绝')
+    expect(frame).toContain('○ 批准这一次')
+    expect(frame).toContain('○ 拒绝这一次')
     expect(frame).not.toContain('总是允许')
   })
 

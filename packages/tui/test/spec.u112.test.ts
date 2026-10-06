@@ -250,7 +250,6 @@ describe('动效 · 只挂状态位（U112）', () => {
       ...toolCall('exec', { cmd: 'sleep 9' }),
       event('tool.decision.request', { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' }, { id: 88 }),
     ])
-    waiting.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     const held = await waiting.screen()
     expect(held.statusLine).toContain(`${MARKS.ring} 等你定夺`)
     expect(held.statusLine).not.toContain(`${MARKS.dot} 等你定夺`)
@@ -274,7 +273,6 @@ describe('动效 · 只挂状态位（U112）', () => {
       ...toolCall('exec', { cmd: 'sleep 9' }),
       event('tool.decision.request', { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' }, { id: 88 }),
     ])
-    waiting.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     waiting.pulseAt(AT)
     waiting.at(AT + PULSE_MS + 400)
     const settled = await waiting.screen(SCREEN)
@@ -295,7 +293,6 @@ describe('动效 · 只挂状态位（U112）', () => {
       ...toolCall('exec', { cmd: 'sleep 9' }),
       event('tool.decision.request', { call: 71, name: 'exec', material: '命令 sleep 9', weight: 'light' }, { id: 88 }),
     ])
-    stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     stage.pulseAt(AT)
 
     const shades: string[] = []

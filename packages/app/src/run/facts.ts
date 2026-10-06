@@ -61,7 +61,7 @@ export type RunRecord = {
   session: string | null
   /** 这一代**发车**的时刻（执行详情「开始时间」的第一档）。 */
   readonly startedAt: number
-  /** 显式接续起的一代（`--session` / `/resume` 选定）——普通开一条新的为 `false`。 */
+  /** 显式接续起的一代（`magic resume` / `/resume` 选定）——普通开一条新的为 `false`。 */
   readonly explicit: boolean
   /** 工作区整组根（执行者报的；还没报＝空数组）。 */
   workspace: readonly string[]

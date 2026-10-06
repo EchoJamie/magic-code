@@ -3,12 +3,11 @@ import AppKit
 struct TerminalCommand {
     static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     static func make(helper: URL, workspace: URL, base: URL?, session: String?, request: String?) -> String {
-        var args = ["/usr/bin/env", "-u", "MAGIC_HOME"]
-        if let base { args += ["MAGIC_HOME=\(base.path)"] }
-        args += [helper.path]
-        if let session { args += ["--session", session] }
-        if let request { args += ["--open-request", request] }
-        return "cd -- \(quote(workspace.path)) && " + args.map(quote).joined(separator: " ")
+        let instance = base.map { "MAGIC_HOME=\(quote($0.path))" } ?? "/usr/bin/env -u MAGIC_HOME"
+        var command = "cd -- \(quote(workspace.path)) && \(instance) \(quote(helper.path))"
+        if let session { command += " resume \(quote(session))" }
+        if let request { command += " --open-request \(quote(request))" }
+        return command
     }
 }
 
@@ -64,8 +63,9 @@ struct TerminalCommand {
             }
         }
     }
-    func open(helper: URL, workspace: URL, base: URL?, session: String?) {
-        let key = session ?? "new-draft"
+    func open(helper: URL, workspace: URL, base: URL?) {
+        let session: String? = nil
+        let key = "new-draft"
         guard pending[key] == nil else { return }
         let request = UUID().uuidString
         let command = TerminalCommand.make(helper: helper, workspace: workspace, base: base, session: session, request: request)

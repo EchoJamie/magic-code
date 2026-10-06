@@ -30,7 +30,7 @@ function work(v: unknown): boolean {
   return object(v) && string(v.session) && string(v.title) && strings(v.workspace) &&
     ['running', 'waiting', 'stopping', 'stopped', 'idle', 'unknown'].includes(String(v.state)) &&
     optional(v.action, string) && optional(v.reason, string) && number(v.since) && (v.gen === null || integer(v.gen)) &&
-    typeof v.affected === 'boolean' && Array.isArray(v.notices) && v.notices.every(attention) && optional(v.members, v => Array.isArray(v) && v.every(member))
+    typeof v.affected === 'boolean' && Array.isArray(v.notices) && v.notices.every(attention) && optional(v.terminalNoticeIds, strings) && optional(v.members, v => Array.isArray(v) && v.every(member))
 }
 function projection(v: unknown): boolean {
   return object(v) && string(v.serviceInstance) && integer(v.revision) && typeof v.accepting === 'boolean' &&

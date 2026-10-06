@@ -146,6 +146,7 @@ describe('U110 · 键怎么认', () => {
     expect(parseScreenKeys('a b')).toEqual([{ kind: 'text', text: 'a b' }])
     expect(parseScreenKeys('\u007f')).toEqual([{ kind: 'backspace' }])
     expect(parseScreenKeys('\r')).toEqual([{ kind: 'accept' }])
+    expect(parseScreenKeys('\t')).toEqual([{ kind: 'tab' }])
   })
 
   test('未知控制序列不退出，也不泄漏残片进搜索', () => {

@@ -1,6 +1,32 @@
 # 常驻宿主运行核心验证
 
-日期：2026-09-26。分支：`feat/resident-macos-app`。权威：Magic Code/设计/常驻App与状态栏.md 及本次冻结契约。
+当前通知判据更新：2026-10-07，按本次缺陷清单第 4 项及主线责任划分收口。原 2026-09-26 的分支、权限范围、执行记录和归档说明保留为历史证据；不作为本轮现行规则，也不改写历史归档。
+
+## 当前通知与 CLI 接回验收（2026-10-07）
+
+- 路由以 `ClientConn.selectedSession` 的具体会话绑定为准；绑定终端收到 `notice`，系统通知被抑制。执行者释放不解绑终端；A 窗不接收 B 的事项。
+- 收到事项、握手、欢迎摘要和读取历史均不自动已读。具体事项携带原始 id，终端实际输出后才确认已读；待答已读与用户批准彼此独立。
+- 审批自动展开，无默认批准；方向键选择后 Enter 答复。同一事项只执行一次，另一窗口撤卡；完成后执行者为 0，历史查看不增加执行者或模型调用。
+- `RunNotice` 无 `delivered` 字段；系统投递状态从 `RecordsStore.attention` 断言，不扩传输契约。CLI 帮助明确 `--allow-all` 可跳过改权限/属主确认，但删除规则仍直接拒绝。
+
+本轮只验证受影响文件，未重跑全量：
+
+| 范围 | 结果 | 日志 / 现场 |
+| --- | --- | --- |
+| run-stop 全文件与 cli 全文件 | 44 pass / 0 fail / 237 断言 | `/tmp/magic-defects-stop-cli-final.log` |
+| run-executor 通知、执行者释放、真实后台命令 | 3 pass / 0 fail / 34 断言，其他 10 项未运行 | `/tmp/magic-defects-executor-final.log` |
+| run-resume 全文件，真实 PTY | 3 pass / 0 fail / 19 断言 | `/tmp/magic-defects-resume-final.log` |
+| resident-cli-presentation 真实 PTY | 1 pass / 0 fail / 13 断言 | `/tmp/magic-defects-cli-presentation-final.log` |
+| frames-u86-tui 当前场景 | 全部判据通过，3 个窗口自主退出 | `/tmp/magic-defects-u86-current-final.log`；`.artifacts/defects-20261007/u86-current-final/` |
+| 全仓类型检查 | `bun run typecheck` 退出 0 | `/tmp/magic-defects-notification-final-typecheck.log` |
+
+`resident-cli-presentation` 同时保存 2 条历史未读与 3 条新事项已读的数据库事实；握手摘要、历史呈现、未选择 Enter、旧字母键、停止后零 tool.decision 及实际模型请求数均有断言。U86 保留跨会话不串正文、三类事项去重、中间工具轮不生成 done、异常退出撤卡，并验证已呈现事项不在新窗再次汇总。
+
+本轮初次迁移失败记录仍保留：PTY 在审批层内直接按 Ctrl+C 未进入任务菜单，改为 Esc 返回输入层后停止；U86 先看到错误正文时具体 notice 还未到，改为显式等待该回执再截帧。均只修测试操作和等待条件，没有改生产实现。上述本地模型/PTY 证据不代表已安装 App、正式系统通知或发行验收。
+
+## 以下为 2026-09-26 历史记录
+
+历史分支：`feat/resident-macos-app`；历史权威：Magic Code/设计/常驻App与状态栏.md 及当时冻结契约。
 
 范围：run-manager / executor / resume / stop / owned / facts / wire / runs，必要夹具及 U86/U98 证据装置。保留他人已修改的 run-executor hello 身份和 manager 常驻判据。不改生产、run-terminal、root 新测试、records、Swift、contracts；不提交或合并。
 
@@ -12,7 +38,7 @@
 | run-executor | 空闲 watcher 保持执行者；随后 manager 空闲退出 | 空闲执行资源释放，逻辑 Session 保留；manager 等宿主退出；下一次明确输入沿同 Session 起新代 |
 | run-executor | 以 session.list 验旧代次拒绝 | 用实际执行输入验旧代次拒绝，不把只读目录当作执行指令 |
 | run-resume | 完成后窗口开着仍保留 1 个执行者 | 在途时恰好 1 个；完成后 0 个；历史查看不重跑，模型调用数不增 |
-| run-stop | 窗口连接即抑制通知且不留未读 | TUI 无可靠焦点证据默认不抑制；保留不向对话广播通知、每事实去重、默认静默 |
+| run-stop | 窗口连接即抑制通知且不留未读 | 当前按具体会话绑定抑制系统通知，收到事项仍未读，实际呈现后才确认；保留跨会话隔离、每事实去重与无人连接时系统通知 |
 | run-stop | hello 汇总一次即标已读 | 重连和汇总仍有相同未读；仅具体事项确认标读，投递与已读独立 |
 | run-stop / frames-u86-tui / u98-evidence | 读 notices.json 与 RunPaths.notices | 通过 RecordsStore.attention.list 导出事实；不扫描/迁移旧 JSON |
 | run-wire / mocks | wire types 从实现模块取 | 类型权威使用 @magic/contracts；连接器提供 hello 身份 |
@@ -81,7 +107,7 @@
 
 正向现场例：`magic-continues-evidence-hAIOOK/trace.json` 中工具轮 id=19、continues=true、attention=[]；最终 id=33、无 continues、唯一 done 的 fact=33。相反现场 `magic-continues-evidence-P7g7IM/trace.json` 工具轮 id=19 就出现 done。目录的绝对路径均在对应原始日志，cleanup.json 记录沙地/socket/PID 均已清理。
 
-### U86 自动已读反向证据
+### 历史：U86 自动已读反向证据（已由 2026-10-07 判据取代）
 
 并行主线曾临时接入 render 自动 ack，`continues-u86/attention.json` 实测 done/needs-you/failed 的 unread 为 **false / false / true**，原三类汇总强断言失败，见 `continues-u86.log`。依规划纠正撤销自动 ack 后，本装置恢复并加强原判据：完成/待答/失败精确三项且全部 unread=true，新窗 hello/汇总后仍全未读；不广播正文、不跨会话收事项、异常后撤卡和正常退出保护保留。`continues-u86-no-ack.log` 与同名目录复验通过。本责任没有把 render 回调当可靠焦点证据，也未将这一真实失败直接改绿。
 

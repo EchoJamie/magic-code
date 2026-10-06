@@ -8,7 +8,7 @@ import {startFixture} from './ui/fixture.ts'
 import {createSandbox} from './ui/sandbox.ts'
 import {commitGrants} from '../src/grants-file.ts'
 const root=REPO_ROOT
-for(const before of [true,false]){
+for(const before of (process.argv.includes('--current-only') ? [false] : [true,false])){
  const fixture=startFixture({turns:[{kind:'text',text:'BASELINE_HISTORY_REPLY',chunks:1,chunkDelayMs:10},{kind:'tool',name:'exec',args:{cmd:'chmod 700 approved.sh'}},{kind:'text',text:'AFTER_APPROVAL',chunks:1,chunkDelayMs:10}]})
  const sandbox=createSandbox({baseURL:fixture.baseURL});writeFileSync(join(sandbox.workspace,'approved.sh'),'#!/bin/sh\n')
  commitGrants(sandbox.grantsPath,[{kind:'grant',workspace:realpathSync(sandbox.workspace),grant:{tool:'exec',path:'**',op:'read',grantedAt:Date.now()}}])
@@ -20,7 +20,7 @@ for(const before of [true,false]){
  try{
   await ui.send('ESC_KEEP_DRAFT');await key('esc');const esc=await frame('200-正文Esc');findings.push({rule:'正文Esc保持完整稿',pass:esc.text.includes('ESC_KEEP_DRAFT')})
   if(!before){for(let i=0;i<14;i++)await key('backspace')}
-  await ui.send('/help ');await key('enter');await ui.wait({text:'可用命令'});const command=await frame('200-slash输入记录');findings.push({rule:'slash原文按用户输入回显',pass:command.text.includes('› /help')})
+  await ui.send('/help ');await key('enter');await ui.wait({text:before?'可用命令':'输入任务描述开始工作'});const command=await frame('200-slash输入记录');findings.push({rule:'slash原文按用户输入回显',pass:before?command.text.includes('› /help'):(await ui.screen()).history.some(line=>line.startsWith('› /help'))})
   await key('ctrl+p');const history=await frame('200-slash召回');findings.push({rule:'CtrlP召回完整slash稿',pass:history.text.split('\n').some(l=>l.startsWith(' › /help'))})
   if(!before)for(let i=0;i<6;i++)await key('backspace')
   await ui.send('OLD_HISTORY');await key('enter');await ui.wait({text:'BASELINE_HISTORY_REPLY'});await ui.wait({text:'○ 空闲'})
@@ -29,12 +29,12 @@ for(const before of [true,false]){
   // 回到正文并清掉测试草稿；Esc 在新版不负责删除。
   await key('ctrl+n');await key('esc')
   await key('down');await key('down');await key('ctrl+e');for(let i=0;i<40;i++)await key('backspace')
-  await ui.send('APPROVAL_PROMPT');await key('enter');await ui.wait({text:before?'本工作区总是允许':'Ctrl+G 审阅'})
+  await ui.send('APPROVAL_PROMPT');await key('enter');await ui.wait({text:before?'本工作区总是允许':'↑↓ 选择'})
   const db=new Database(join(ui.facts().dataDir,'records.db'),{readonly:true})
   await ui.send('y');await Bun.sleep(300);const approval=await frame('200-普通y与审批')
   const decisions=db.query("SELECT kind,data FROM events WHERE kind='tool.decision'").all()
-  findings.push({rule:'未主动进入时y不裁决',pass:decisions.length===0,decisions,screen:approval.text})
-  if(before)await ui.wait({text:'AFTER_APPROVAL'});else {await key('ctrl+g');await ui.send('n');await ui.wait({text:'AFTER_APPROVAL'})}
+  findings.push({rule:'普通y不裁决',pass:decisions.length===0,decisions,screen:approval.text})
+  if(before)await ui.wait({text:'AFTER_APPROVAL'});else {await key('up');await key('enter');await ui.wait({text:'AFTER_APPROVAL'})}
   await ui.wait({text:'○ 空闲'})
   if(!before)await key('backspace')
   await ui.send('/grants ');await key('enter');await ui.wait({text:before?'回车＝撤销选定那条':'授权'})

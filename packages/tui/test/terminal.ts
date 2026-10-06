@@ -249,7 +249,7 @@ function colorOf(cell: IBufferCell, which: 'fg' | 'bg'): string | null {
 // —— 录：Ink → 字节 ——
 
 /** 假 stdout——Ink 只用 `write` / `columns` / `rows` / `isTTY`。⚠️ `isTTY` 必须为真（见文件头注 1）。 */
-class FakeTty extends EventEmitter {
+export class FakeTty extends EventEmitter {
   readonly columns: number
   readonly rows: number
   readonly isTTY = true
@@ -276,7 +276,7 @@ class FakeTty extends EventEmitter {
 }
 
 /** 假 stdin——录制不按键，但 Ink 要一个流才肯挂起来。 */
-class FakeStdin extends EventEmitter {
+export class FakeStdin extends EventEmitter {
   readonly isTTY = true
 
   setEncoding(): void {}

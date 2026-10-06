@@ -16,6 +16,7 @@ import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
 import type { Sandbox, UiSession } from './ui/index.ts'
 import { tempDir } from './tmp.ts'
 import { join } from 'node:path'
+import { readDatabase } from './support.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 
 /** 等一个条件成立（默认 15 秒）——轮询是用例的事，产品那几跳都是事件驱动的。 */
@@ -64,22 +65,15 @@ describe('U49 · 接回（真窗口）', () => {
       // 等到这一句**真开始长**（头两块已经在屏上）
       await mine.wait({ text: '一二三' }, { timeoutMs: 20_000 })
 
-      // —— 另一扇窗**接回来** ——
-      const other = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture })
+      // CLI resume 接回同一条工作；恢复不再经过另一套选项语法。
+      const db = readDatabase(join(sandbox.dataDir, 'records.db'))
+      let session: string
+      try { session = db.sessions[0]!.id } finally { db.close() }
+      const other = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture, argv: ['resume', session] })
       windows.push(other)
+      expect(host.executorStarts()).toBe(1)
+      expect(fixture.requests().length).toBe(1)
 
-      await other.send('/resume ', { until: { text: '/resume' }, timeoutMs: 10_000 })
-      // 等**抽屉真开出来**（锚它自己的键位提示——屏上别处没有这串字）
-      await other.key('enter', { until: { text: '打字筛' }, timeoutMs: 20_000 })
-
-      // 列表上那一条正跑着（U49 的那一行状态与动作）
-      const list = await other.capture({ label: '01-接回前那张列表' })
-      expect(list.text).toContain('执行中')
-      expect(list.text).toContain('正在等')
-      expect(list.text).toContain('说一句长话')
-
-      // 选定它——接回同一条会话
-      await other.key('enter')
       // 接回来的那一份「此刻」：这一句的**头**（离开期间已经吐出去的那一段）就在屏上
       await other.wait({ text: '一二三' }, { timeoutMs: 20_000 })
       expect(await executorsIn(sandbox)).toBe(1)
@@ -126,10 +120,8 @@ describe('U49 · 接回（真窗口）', () => {
       windows.push(one)
 
       await one.send('跑一条命令', { until: { text: '跑一条命令' }, timeoutMs: 10_000 })
-      // 卡是**重**那一档 ⇒ 右位键位 `y / n`。⚠️ `HINT_DECIDE_HEAVY`
-      // **没出包**，按**字面量**锚（同 `ui/scenarios.ts` 的 `COPY.decideHint` 先例）。
-      await one.key('enter', { until: { text: 'Ctrl+G 审阅' }, timeoutMs: 20_000 })
-      await one.key('ctrl+g',{until:{text:'y / n'}})
+      // 审批自动展开，无默认批准；两个窗口都应呈现同一待答事项。
+      await one.key('enter', { until: { text: '批准这一次' }, timeoutMs: 20_000 })
 
       // 第二扇窗接回同一条会话——那一张卡**也在它屏上**（快照带回来的「待答项」）
       const two = await createUiSession({ label: '乙窗', artifacts: runs, sandbox, fixture })
@@ -143,20 +135,20 @@ describe('U49 · 接回（真窗口）', () => {
       expect(asking.text).toContain('需要你')
 
       await two.key('enter')
-      await two.wait({ text: 'Ctrl+G 审阅' }, { timeoutMs: 20_000 })
-      await two.key('ctrl+g',{until:{text:'y / n'}})
+      await two.wait({ text: '批准这一次' }, { timeoutMs: 20_000 })
 
       expect(await executorsIn(sandbox)).toBe(1)
       expect(host.executorStarts()).toBe(1)
       const both = await two.capture({ label: '01-两个窗口都挂着这张卡' })
-      expect(both.text).toContain('y / n')
+      expect(both.text).toContain('批准这一次')
 
       // **甲窗答复**——乙窗那张卡应当**当场撤掉**（同一件事实，两个窗口各画一份）
-      await one.send('y')
-      await two.wait({ absent: 'y / n' }, { timeoutMs: 20_000 })
+      await one.key('down', { until: { text: '› 批准这一次' } })
+      await one.key('enter')
+      await two.wait({ absent: '批准这一次' }, { timeoutMs: 20_000 })
 
       const gone = await two.capture({ label: '02-另一处已撤掉' })
-      expect(gone.text).not.toContain('y / n')
+      expect(gone.text).not.toContain('批准这一次')
       // 而那一件工具**真跑了一次**（结果在屏上）
       await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
 

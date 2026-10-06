@@ -100,7 +100,7 @@ export type ExecutorOptions = {
   readonly socket: string
   /** 管理者发车时给的令牌——认它是「我叫起来的那一个」。 */
   readonly token: string
-  /** **显式接续**那条会话（`--session` 同义物）；`null` ＝ 还没开张（D5）。 */
+  /** **显式接续**那条会话（`magic resume` 同义物）；`null` ＝ 还没开张（D5）。 */
   readonly session: string | null
   /** **启动目录**——窗口在哪儿起的（配置没写 `workspaceRoots` 时它就是默认根）。 */
   readonly cwd: string
@@ -596,7 +596,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     })
   }
 
-  // **发现那一跳**（配置里的外部服务器）＋ **启动流转**（恢复：给了 `--session` 才跑）。
+  // **发现那一跳**（配置里的外部服务器）＋ **启动流转**（恢复：给了 `magic resume` 才跑）。
   // 两者都在「放开输入」之前——设计明文：「首轮模型请求前完成发现」；
   // 恢复要发事件，而订阅在下面才架上，故 `boot` 排在订阅之后。
   try {

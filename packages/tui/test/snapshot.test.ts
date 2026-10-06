@@ -342,11 +342,10 @@ describe('场景 4 · 待裁决（轻）', () => {
         { id: 88 },
       ),
     ])
-    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
     expect(frame).toContain('│ exec')
-    expect(frame).toContain('可逆')
+    expect(frame).toContain('此操作尚未获得授权')
     expect(frame).toContain('本工作区总是允许')
     // 原锚＝`toContain('等你的答复')`（D29 那句占位整个没了，规格改由**卡 ＋ 状态行**背书）。
     // ⚠️ 只数**分隔线之下**那几行——`› ` 在**记录区**是用户消息的标记，整帧里它本来就有。
@@ -357,13 +356,13 @@ describe('场景 4 · 待裁决（轻）', () => {
     // ⚠️ **U112 换锚**：等裁决那一格由 `●`（工作中同一个点）改成 **`◊`**——「等你定夺」是与
     //    「工作中」并列的一档，不该共用同一个记号（`marks.ts` · `MARKS.ring`）。
     expect(frame).toContain('◊ 等你定夺')
-    expect(frame).toContain('y / a / n')
+    expect(frame).toContain('↑↓ 选择 · Enter 确认 · Esc 返回')
     expect(frame).toMatchSnapshot()
   })
 })
 
 describe('场景 5 · 待裁决（重）', () => {
-  test('红线 ＋ **`a` 划掉**（不是藏起来）；右位只剩 `y / n`', () => {
+  test('红线 ＋ **`a` 划掉**（不是藏起来）；右位只剩 `↑↓ 选择 · Enter 确认 · Esc 返回`', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
@@ -383,12 +382,11 @@ describe('场景 5 · 待裁决（重）', () => {
         { id: 89 },
       ),
     ])
-    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
-    expect(frame).toContain('不可逆')
-    expect(frame).toContain('本工作区总是允许') // **还在**（划掉而非藏起来）
-    expect(frame).toContain('y / n')
+    expect(frame).toContain('此操作需要你明确授权')
+    expect(frame).not.toContain('本工作区总是允许') // 政策不允许的动作不列出（划掉而非藏起来）
+    expect(frame).toContain('↑↓ 选择 · Enter 确认 · Esc 返回')
     expect(frame).toMatchSnapshot()
   })
 })
@@ -401,7 +399,6 @@ describe('场景 6 · 接管 · 按了非答复键', () => {
       event('turn.start', {}),
       event('tool.decision.request', { call: 71, name: 'write', material: '覆盖 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
     ])
-    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     app.key({ kind: 'char', char: 'x' })
 
     const frame = app.screen()
@@ -426,12 +423,11 @@ describe('场景 7 · 多件裁决', () => {
         { id: 88 },
       ),
     ])
-    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
-    expect(frame).toContain('2 / 3')
+    expect(frame).toContain('1/1')
     // ⚠️ **U112 换锚**：等裁决那一格 `●` → `◊`（同场景 4）。
-    expect(frame).toContain('◊ 等你定夺 2/3')
+    expect(frame).toContain('◊ 等你定夺 1/1')
     // ⚠️ **U66 改了这张帧**：被问的那一件（`write b`）**不再画底下那行读数**
     // （`⟳ 运行中` 那条没了）——在等裁决 ≠ 在执行，那一行不说「跑了多久」。
     // 同一屏上没被问的那两件（`a` / `c`）照旧，它们在那一格里的身份是「还没落定」。
@@ -448,7 +444,6 @@ describe('场景 8 · 答完之后', () => {
       event('tool.call', { name: 'write', args: { path: 'src/records/db.ts' } }, { id: 71 }),
       event('tool.decision.request', { call: 71, name: 'write', material: '目标 src/records/db.ts', weight: 'heavy' }, { id: 88 }),
     ])
-    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     app.type('打了一半的话')
     app.key({ kind: 'char', char: 'y' })
     // ⚠️ **裁决事件也要显式给 id**（U66）：起算点从此锚在**裁决那一刻**（＝这一条信封的 `at`），
@@ -463,10 +458,9 @@ describe('场景 8 · 答完之后', () => {
       event('tool.call', { name: 'write', args: { path: 'README.md' } }, { id: 72 }),
       event('tool.decision.request', { call: 72, name: 'write', material: '目标 README.md', weight: 'light' }, { id: 89 }),
     ])
-    app.key({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
 
     const frame = app.screen()
-    expect(frame).toContain('2 / 2')
+    expect(frame).toContain('1/1')
     expect(frame).toMatchSnapshot()
   })
 })
@@ -1156,7 +1150,7 @@ describe('slash 候选（D12 · 纯函数级）', () => {
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(11) // 全列（真存在的十一条）
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(12) // 全列（真存在的十一条）
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

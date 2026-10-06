@@ -1,25 +1,15 @@
 /**
- * 文件三原语 —— `read` · `write` · `list`（技术方案 · 执行「原语形态（决策级）」）。
- *
- * 与 `sandbox.ts` 的分工：那里管**路径与工作区**（解析 / 越界），本文件只看**文件**
- * ——进来时已是绝对路径（且已落根内）。
- *
- * 三件形态选择：
- * - **失败形态分两路**（技术方案 · 执行 · 原语形态；契约 `Sandbox` 头注）——
- *   **正常结果用判别式**（读到上限＝`ReadResult.truncated`），**调用不成立用抛**
- *   （越界 / 不存在 / 是否目录 / 无权限）：本文件抛**精确报文**，「名分」摆前面、
- *   原委接在后面，由**工具边界**捕之、收敛为 `ToolResult` 的判别式——模型据此改法
- *   （换路径 / 先建目录）而不是重试同一件事。
- * - **上限是字节**——`read` 的截断按 **UTF-8 字节**算（字符数在阈值内、字节数已超的中文串
- *   照样会撑爆调用方的上下文预算）。
- * - **列目录不跟链接**——`readdir` 的类型位对符号链接既非目录也非文件，归 `'other'`：
- *   不跟链接是薄隔离的既有姿态（技术方案 · 执行 · 隔离姿态），也顺手绕开目录环。
+ * 文件原语只处理已裁定目标。文件打开后核对身份，读写使用同一句柄；写前检查内容冲突。
+ * O_NOFOLLOW 阻止末端链接跟随，真实路径及父目录身份检查发现可观察到的重定向。
+ * 这些检查不代替 openat 等 OS 原子目录绑定；不重判权限、不发起审批。
+ * 实际 I/O 错误保留动作、路径与原因，由工具层原样回填。
  */
 
-import type { ListEntry, ReadResult, WriteData } from '@magic/contracts'
-import type { Dirent } from 'node:fs'
-import { open, readFile, readdir, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import type { ListEntry, ReadResult, ResolvedPath, WriteData } from '@magic/contracts'
+import { constants, type Dirent } from 'node:fs'
+import { open, readdir, stat, type FileHandle } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { assertTarget, identityOf, sameIdentity } from './workspace.ts'
 
 /**
  * 读取上限——**字节**（实现级常量）。
@@ -81,64 +71,91 @@ function failureOf(op: Op, absolute: string, error: unknown): Error {
   return namedFailure(op, absolute, named ?? cause)
 }
 
-/**
- * 读文件——超 `cap` 字节即截断（`truncated`；**字段缺席＝没截**）。
- *
- * 超长时只读**前 `cap` 字节**，并按**流式**解码且**不冲尾**：截断处可能正劈在多字节字符
- * 中间，冲尾会把那半片编成一个替换符（U+FFFD）——**丢掉比编造诚实**，也保住「产出的字节数
- * ≤ 上限」这条不变量（同 `exec.ts` 的 drain 口径）。
- */
-export async function readText(absolute: string, cap: number): Promise<ReadResult> {
-  let info: Awaited<ReturnType<typeof stat>>
-
-  try {
-    info = await stat(absolute)
-  } catch (error) {
-    throw failureOf('读取', absolute, error)
+/** 打开后校验身份；不会在校验之前截断既有文件。调用者持有并负责关闭句柄。 */
+export async function openTarget(target: ResolvedPath, mode: 'read' | 'write' | 'edit'): Promise<FileHandle> {
+  const absolute = target.absolute
+  assertTarget(absolute)
+  const verifyParent = async (): Promise<void> => {
+    if (target.parentIdentity === undefined) return
+    const actual = identityOf(await stat(dirname(absolute), { bigint: true }))
+    if (!sameIdentity(actual, target.parentIdentity)) throw new Error(`操作目标已改变：${absolute}`)
   }
-
-  if (info.isDirectory()) throw namedFailure('读取', absolute, '是目录，不是文件')
-
-  if (info.size <= cap) {
-    try {
-      return { content: await readFile(absolute, 'utf8') }
-    } catch (error) {
-      throw failureOf('读取', absolute, error)
-    }
-  }
-
-  const handle = await open(absolute, 'r').catch((error: unknown) => {
-    throw failureOf('读取', absolute, error)
+  await verifyParent()
+  const access = mode === 'read' ? constants.O_RDONLY : mode === 'edit' ? constants.O_RDWR : constants.O_WRONLY
+  const creation = mode === 'write' && target.identity === null ? constants.O_CREAT | constants.O_EXCL : 0
+  const op = mode === 'read' ? '读取' : '写入'
+  const handle = await open(absolute, access | creation | constants.O_NOFOLLOW).catch((error: unknown) => {
+    throw failureOf(op, absolute, error)
   })
-
   try {
-    const buffer = new Uint8Array(cap)
-    const { bytesRead } = await handle.read(buffer, 0, cap, 0)
-    const decoder = new TextDecoder()
-    return {
-      content: decoder.decode(buffer.subarray(0, bytesRead), { stream: true }),
-      truncated: true,
-    }
-  } finally {
+    await verifyParent()
+    await verifyHandle(target, handle)
+    return handle
+  } catch (error) {
     await handle.close()
+    throw error
   }
 }
 
-/**
- * 整写文件——**覆盖**（不是追加）；不建上级目录；**两选一都收**。
- *
- * - **文本支**——按 UTF-8 落；
- * - **字节支**——原样落（不经文本往返：给 `Uint8Array` 就是要那些字节）。
- *
- * 为什么不顺手 `mkdir -p`：那是**目录层的副作用**，模型没要（要就先 `exec mkdir` 或写全路径）。
- * 悄悄建目录 = 把「一次文件写」扩张成「动了两层结构」——闸门与审计都只看见前者。
- */
-export async function writeInto(absolute: string, data: WriteData): Promise<void> {
-  try {
-    await writeFile(absolute, 'text' in data ? data.text : data.bytes)
-  } catch (error) {
-    throw failureOf('写入', absolute, error)
+/** 路径仍指向打开的那一个文件；文件身份与裁决前快照一致。 */
+export async function verifyHandle(target: ResolvedPath, handle: FileHandle): Promise<void> {
+  assertTarget(target.absolute)
+  const opened = identityOf(await handle.stat({ bigint: true }))
+  const current = identityOf(await stat(target.absolute, { bigint: true }))
+  if (!sameIdentity(opened, current) || (target.identity != null && !sameIdentity(opened, target.identity))) {
+    throw new Error(`操作目标已改变：${target.absolute}`)
   }
+}
+
+/** 所有读取从句柄的零偏移开始，编辑随后仍使用此句柄。 */
+export async function readOpened(handle: FileHandle, absolute: string, cap: number): Promise<ReadResult> {
+  try {
+    const info = await handle.stat()
+    if (info.isDirectory()) throw new Error('是目录，不是文件')
+    const buffer = new Uint8Array(cap + 1)
+    let length = 0
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length)
+      if (bytesRead === 0) break
+      length += bytesRead
+    }
+    const truncated = length > cap || info.size > cap
+    return {
+      content: new TextDecoder().decode(buffer.subarray(0, Math.min(length, cap)), { stream: truncated }),
+      ...(truncated ? { truncated: true } : {}),
+    }
+  } catch (error) { throw failureOf('读取', absolute, error) }
+}
+
+/** 写入与编辑在已校验句柄上完成；内容冲突作为执行失败，不触发审批。 */
+export async function writeOpened(
+  handle: FileHandle, target: ResolvedPath, data: WriteData, expectedContent?: string,
+): Promise<void> {
+  try {
+    await verifyHandle(target, handle)
+    if (expectedContent !== undefined) {
+      const current = await readOpened(handle, target.absolute, Buffer.byteLength(expectedContent) + 1)
+      if (current.truncated || current.content !== expectedContent) throw new Error('内容已改变——文件未改，请重新读取')
+    }
+    await handle.truncate(0)
+    const bytes = 'text' in data ? Buffer.from(data.text) : data.bytes
+    let offset = 0
+    while (offset < bytes.length) {
+      const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset)
+      if (bytesWritten === 0) throw new Error('文件写入没有进展')
+      offset += bytesWritten
+    }
+  } catch (error) { throw failureOf('写入', target.absolute, error) }
+}
+
+export async function readText(target: ResolvedPath, cap: number): Promise<ReadResult> {
+  const handle = await openTarget(target, 'read')
+  try { return await readOpened(handle, target.absolute, cap) } finally { await handle.close() }
+}
+
+export async function writeInto(target: ResolvedPath, data: WriteData, expectedContent?: string): Promise<void> {
+  const handle = await openTarget(target, expectedContent === undefined ? 'write' : 'edit')
+  try { await writeOpened(handle, target, data, expectedContent) } finally { await handle.close() }
 }
 
 /** 列目录——名（必给）＋ 类型 / 尺寸；**按名字序**（不靠文件系统序：同一目录两次列结果稳定）。 */

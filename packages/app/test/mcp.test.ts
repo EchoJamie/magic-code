@@ -654,7 +654,7 @@ describe('失败路径', () => {
 })
 
 describe('接续与切换（返工 A · 独立验收问题 1）', () => {
-  test('显式接续（`--session`）：恢复后**第一轮**就带着完整外部工具', async () => {
+  test('显式接续（`resume`）：恢复后**第一轮**就带着完整外部工具', async () => {
     const dir = scrapDir()
     const stage = stageWith({ fake: serverEntry(dir, 'fake') })
 

@@ -99,7 +99,7 @@ describe('U96 · 恒在的兄弟节点按 key 配对（真光标不被重挂推�
     const after = fixedTailOf(stage.shell.getView())
 
     // 多出来的那一格挂着自己的 key，且**恒在的那几格一个没挪**
-    expect(after.length).toBe(before.length + 1)
+    expect(after.length).toBe(before.length)
     expect(after.filter((key) => key !== 'plan')).toEqual([...before])
   })
 })

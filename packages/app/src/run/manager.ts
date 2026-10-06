@@ -684,7 +684,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
      * 挡的是那一格**空壳**：内核为「要点一次会话面的命令」（`session.list`）开的临时会话
      * （`conversation` 那一处的 `current()`），它还没有任何条目、**目录里也没有它**。
      * 让它进这张表，用户会在 `/resume` 里看见一条点不出来、也切不过去的行。
-     * 判据就是「库里有没有这一行」（`hasSession`）——与 `--session` 那道校验同一把尺子。
+     * 判据就是「库里有没有这一行」（`hasSession`）——与 `magic resume` 那道校验同一把尺子。
      *
      * ⚠️ 首条消息一按下回车它就落账 ⇒ 那一格当场归位（不必等下一次推送）。
      */
@@ -844,7 +844,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         nextConn += 1
         client = conn
 
-        // **`--session` 那道校验**（U28 · 台账随批小修 8）——库里没有这条就**回绝**，
+        // **`magic resume` 那道校验**（U28 · 台账随批小修 8）——库里没有这条就**回绝**，
         // 不静默开一条空的。由管理者做，因为**只有它手上开着库**（窗口那一侧按设计
         // 不开库）；报的那句话与今天逐字同形，故「打错一个字母」这条路一处未变。
         if (message.session !== undefined && !store.hasSession(message.session)) {
@@ -860,7 +860,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             notices: [],
             refuse:
               `没有这条会话：${message.session}——` +
-              `--session 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
+              `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
           })
           link.close()
           return
@@ -953,6 +953,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     conn.awaiting = null
     conn.buffered = []
     conn.link.close()
+    native.changed()
     // 最后一个看客走了——**不是「停」**：执行者照跑。收不收它归收缩那条路：
     // 它自己按「没有连接者 ＋ 没有在途调用或待答项」判（见 `executor.ts` 的收缩那一跳）。
     options.log?.(`窗口 ${id} 断开（挂着的客户端 ${clients.size}）`)
@@ -1014,6 +1015,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), reducedMotion: config.motion?.reduced === true,
     } } })
   }
+  /** 连接真源仍是 clients；执行者结束不影响正在查看该会话的终端。 */
+  function terminalClients(session: string): ClientConn[] {
+    const origin = store.collaboration.collaborationForSession(session)?.originSessionId ?? session
+    return [...clients.values()].filter(conn => !conn.link.closed &&
+      (conn.selectedSession === session || conn.selectedSession === origin))
+  }
   async function nativeWorks(): Promise<readonly NativeWork[]> {
       const sessions = await store.listSessions()
       const runs = rows()
@@ -1026,9 +1033,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
       for (const session of snapshot.sessions) if (!generations.has(session)) generations.set(session, workStopGeneration(session))
       const works = await projectWorks(store, runs, session => generations.get(session) ?? null)
+      const affected = await (options.lifecycle?.affected() ?? Promise.resolve([]))
+      // 异步读取完成后才取实际连接，成员的具体事项在合并前按原会话判断。
+      const routed = works.map(work => ({ ...work,
+        terminalNoticeIds: work.notices.filter(notice => terminalClients(notice.session).length > 0).map(notice => notice.id),
+      }))
       return [
-        ...mergeCollaborationNative(works, snapshot).map(work => ({ ...work, gen: generations.get(work.session) ?? null })),
-        ...await (options.lifecycle?.affected() ?? Promise.resolve([])),
+        ...mergeCollaborationNative(routed, snapshot).map(work => ({ ...work, gen: generations.get(work.session) ?? null })),
+        ...affected,
       ]
   }
   let appliedDiagnostics: Diagnostics | undefined
@@ -1087,20 +1099,20 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string): void {
     const work = store.collaboration.collaborationForSession(session)
-    if (work !== undefined && session !== work.originSessionId) {
-      // 独立成员的结束/失败交给协调者；用户裁决仍是原工作下的一份具体事项。
-      if (kind !== 'needs-you') return
-      const member = store.collaboration.agentForSession(session)
-      detail = `${member?.name ?? '协作成员'}：${detail ?? '等待你定夺'}`
-      session = work.originSessionId
-    }
+    // 成员结束由协调者汇总；待裁决保留原始会话身份，原生投影负责归入原工作。
+    if (work !== undefined && session !== work.originSessionId && kind !== 'needs-you') return
     const id = noticeKey(session, kind, fact)
-    if (!store.attention.put({
+    const notice = {
       id, session, kind, fact: String(fact), at: now(), unread: true, delivered: false,
       ...(detail === undefined ? {} : { detail }),
-    })) return
+    }
+    if (!store.attention.put(notice)) return
+    const terminals = terminalClients(session)
+    for (const conn of terminals) conn.link.send({ t: 'notice', notice })
     native.changed()
-    if (!native.isPresent(session, id)) notifySystem(`${noticeWord(kind)}——打开看是哪条`)
+    if (terminals.length === 0 && !native.isPresent(work?.originSessionId ?? session, id)) {
+      notifySystem(`${noticeWord(kind)}——打开看是哪条`)
+    }
   }
 
   function noticeWord(kind: NoticeKind): string {
@@ -1553,6 +1565,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       conn.target?.watchers.delete(conn.id)
       conn.target = undefined
       conn.selectedSession = null
+      native.changed()
       conn.gen = 0
       conn.awaiting = null
       conn.buffered = []
@@ -1648,6 +1661,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     current?.watchers.delete(conn.id)
     conn.target = undefined
     conn.selectedSession = session
+    native.changed()
     conn.gen = 0
     conn.awaiting = null
     conn.buffered = []
@@ -1672,13 +1686,13 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     from?.watchers.delete(conn.id)
 
     conn.target = executor
-    conn.selectedSession = executor.run.session
     executor.watchers.add(conn.id)
     conn.gen = executor.gen
     // **这个窗口认的是哪条会话**（U100）——那一代还没开张时为 `null`（开张之后由 `onEvent`
     // 那一跳补记）。⚠️ 它**不随 `retire` 清**：清了就等于「停掉＝丢掉这条会话」
     // （见 `ClientConn` 那一格）。
     conn.selectedSession = executor.run.session
+    native.changed()
 
     conn.link.send({ t: 'target', gen: executor.gen, session: executor.run.session })
 
@@ -1696,6 +1710,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       const conn = clients.get(id)
       if (conn === undefined || conn.selectedSession === session) continue
       conn.selectedSession = session
+      native.changed()
       conn.link.send({ t: 'target', gen: executor.gen, session })
     }
   }
@@ -2016,7 +2031,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (session === null) return
     for (const id of executor.watchers) {
       const conn = clients.get(id)
-      if (conn !== undefined && conn.target === executor) conn.selectedSession = session
+      if (conn !== undefined && conn.target === executor && conn.selectedSession !== session) {
+        conn.selectedSession = session
+        native.changed()
+      }
     }
   }
 

@@ -18,7 +18,7 @@ async function until(check: () => boolean): Promise<void> {
   }
 }
 
-test('无可靠焦点证据：真实渲染/历史/汇总均保留三类未读，显示待答不代表批准', async () => {
+test('具体事项实际呈现才已读，握手/历史/汇总不消费未读，三类事项与审批答复独立', async () => {
   const evidence = join(tmpdir(), 'magic-resident-cli-evidence', `presentation-${crypto.randomUUID()}`)
   mkdirSync(evidence, { recursive: true })
   const fixture = startFixture({ turns: [
@@ -47,7 +47,8 @@ test('无可靠焦点证据：真实渲染/历史/汇总均保留三类未读，
     expect(facts().every((one) => one.unread)).toBe(true)
     save('headless-unread')
     headless.close()
-    window = await createUiSession({ label: '具体事项呈现', sandbox, fixture, artifacts: evidence, argv: ['--session', session] })
+    window = await createUiSession({ label: '具体事项呈现', sandbox, fixture, artifacts: evidence, argv: ['resume', session] })
+    await window.wait({ text: '你不在的时候' })
     await window.wait({ text: '历史第一条结果' })
     await window.capture({ label: '历史接回仍未读' })
     expect(facts().filter((one) => one.kind === 'done').map((one) => one.unread)).toEqual([true, true])
@@ -58,42 +59,44 @@ test('无可靠焦点证据：真实渲染/历史/汇总均保留三类未读，
     await until(() => facts().filter((one) => one.kind === 'done').length === 3)
     const done = facts().filter((one) => one.kind === 'done')
     expect(done).toHaveLength(3)
-    expect(done.every((one) => one.unread)).toBe(true)
-    await window.capture({ label: '实时结果仍未读' })
-    save('live-done-unread')
+    const liveDone = done.find(one => !original.some(old => old.id === one.id))!
+    await window.wait({ text: '本轮已完成' })
+    await until(() => facts().find(one => one.id === liveDone.id)?.unread === false)
+    expect(facts().filter(one => original.some(old => old.id === one.id)).map(one => one.unread)).toEqual([true, true])
+    await window.capture({ label: '具体完成事项呈现后已读，历史仍未读' })
+    save('live-done-read-history-unread')
     await window.send('第四条：等我批准')
     await window.key('enter')
-    await window.wait({ text: 'Ctrl+G 审阅' })
-    await until(() => facts().some((one) => one.kind === 'needs-you'))
-    expect(facts().filter((one) => one.kind === 'needs-you').every((one) => one.unread)).toBe(true)
-    await window.capture({ label: '待答保持未读且未批准' })
+    await window.wait({ text: '批准这一次' })
+    await window.wait({ text: '需要你决定' })
+    await until(() => facts().some(one => one.kind === 'needs-you' && !one.unread))
+    // 自动展开与未选择时按 Enter/旧字母均不能批准。
+    await window.key('enter')
+    await window.send('yan')
+    await window.capture({ label: '待答呈现后已读，未选择和旧快捷键均未批准' })
     expect(fixture.requests()).toHaveLength(4)
     const db = readDatabase(join(sandbox.dataDir, 'records.db'))
     try { expect(db.events.filter((event) => event.kind === 'tool.decision')).toHaveLength(0) } finally { db.close() }
     expect(facts().filter((one) => one.kind === 'needs-you')).toHaveLength(1)
-    save('pending-unread-not-answered')
-    // **原预期 → 新预期**（U109 · 合并 U100 之后）：
-    //
-    // - 原预期：卡挂着时一下 `ctrl+c` ⇒ 「替用户中断本轮」，等屏上回到 `○ 空闲`。
-    // - 为何变：U100 起有在途工作时那一下**只把问题摆出来**（三选：停止任务／转到后台／
-    //   停止并退出），**不再替用户中断**；此刻停这一轮的入口是**三选第一项「停止任务」**
-    //   （默认高亮，回车即达），回执是**「停了」**（核销那一拍）。
-    // - 新预期：`ctrl+c` ⇒ 三选（标题「当前任务正在等待你」）⇒ 回车 ⇒ 「停了」。
-    // - 依据：`main` 自己的用例 `run-terminal.test.ts` 那段「U100 改判（原锚 / 为何变 /
-    //   新锚）」（`:219-226`）与 `stopAndStay`（`:508-514`）。
-    // - **判据没变弱**：这一下要证的仍是「那张卡**没被答复**、这一轮就此打住」——卡未批准
-    //   那两条断言（`tool.decision` 为 0、`needs-you` 仍是未读）原样留在下面。
+    save('pending-read-not-answered')
+    // 已读只确认呈现；先退出审批层，再走任务菜单停止，不产生工具批准。
+    await window.key('esc', { until: { text: 'Tab 进入决策' } })
     await window.key('ctrl+c', { until: { text: '当前任务正在等待你' }, timeoutMs: 15_000 })
     await window.key('enter')
     await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
+    const stopped = readDatabase(join(sandbox.dataDir, 'records.db'))
+    try { expect(stopped.events.filter(event => event.kind === 'tool.decision')).toHaveLength(0) } finally { stopped.close() }
     await window.send('第五条：展示失败')
     await window.key('enter')
     await window.wait({ text: '模型错误' })
-    await until(() => facts().some((one) => one.kind === 'failed'))
-    await window.capture({ label: '失败真实显示仍未读' })
-    expect(facts().every((one) => one.unread)).toBe(true)
+    await window.wait({ text: '出错了' })
+    await until(() => facts().some(one => one.kind === 'failed' && !one.unread))
+    await window.capture({ label: '三类具体事项均已读，历史两项仍未读' })
+    expect(facts().filter(one => original.some(old => old.id === one.id)).map(one => one.unread)).toEqual([true, true])
+    expect(facts().filter(one => !original.some(old => old.id === one.id)).map(one => one.unread)).toEqual([false, false, false])
     expect(new Set(facts().map((one) => one.kind))).toEqual(new Set(['done', 'needs-you', 'failed']))
-    save('all-three-remain-unread')
+    expect(fixture.requests()).toHaveLength(5)
+    save('all-three-presented-history-unread')
   } finally {
     headless.close()
     await window?.close()
