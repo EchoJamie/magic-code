@@ -1,0 +1,34 @@
+{
+  "family": "NativeResponse",
+  "valid": false,
+  "message": {
+    "t": "native.projection",
+    "projection": {
+      "serviceInstance": "service-one",
+      "revision": 1,
+      "accepting": true,
+      "works": [
+        {
+          "session": "session-one",
+          "title": "修复一个非常长的同名工作标题以验证截断与辅助功能",
+          "workspace": [
+            "/tmp/project-one"
+          ],
+          "state": "running",
+          "since": 1790400000000,
+          "gen": 3,
+          "affected": true,
+          "notices": [],
+          "members": [
+            {
+              "session": "member",
+              "name": "成员",
+              "state": "idle",
+              "action": null
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

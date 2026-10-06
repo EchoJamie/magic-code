@@ -28,6 +28,73 @@ final class NativeTests: XCTestCase {
         changes.forEach { object[$0.key] = $0.value }
         return try JSONDecoder().decode(NativeWork.self, from: JSONSerialization.data(withJSONObject: object))
     }
+    func testWorkPresentationKeepsIdleHistorySeparateAndDisambiguatesPaths() throws {
+        let base = try work()
+        let idle = try changed(base, ["state": "idle", "action": "", "reason": "", "affected": false, "notices": []])
+        XCTAssertEqual(idle.statusText, "当前空闲")
+        let historic = try changed(base, ["state": "running", "notices": [["id": "old", "session": base.session, "kind": "failed", "at": 1, "unread": true, "delivered": false, "fact": "old"]]])
+        XCTAssertEqual(WorkGroup.of(historic), .running, "历史未读失败不能取代当前运行事实")
+        let paths = ["/Users/甲/客户/project", "/Users/乙/客户/project"]
+        XCTAssertEqual(WorkList.shortPath(paths[0], among: paths), "…/甲/客户/project")
+        XCTAssertEqual(WorkList.shortPath(paths[1], among: paths), "…/乙/客户/project")
+    }
+    @MainActor func testInspectionReturnAndLatestIntentRejectLateReplies() async throws {
+        let base = try work()
+        let other = try changed(base, ["session": "other", "notices": [], "title": "另一项工作"])
+        let raw = try [base, other].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        let (model, room) = try controlledModel(options: ["works": raw, "inspectGate": true, "observerControl": true])
+        defer { model.systemQuit {} }
+        model.start(); try await eventually { model.isCurrent }
+        model.panelVisibility(true)
+        model.inspect(base, notice: base.notices.first!.id)
+        try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
+        let request = try XCTUnwrap(traces(room).compactMap { $0["message"] as? [String: Any] }.first { $0["t"] as? String == "native.inspect" }?["request"] as? String)
+        model.inspect(other)
+        let service = try XCTUnwrap(model.identity).serviceInstance
+        try observerCommand(room, ["messages": [
+            ["t": "native.inspected", "request": request, "work": raw[0]],
+            ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 20, "accepting": true, "works": raw]],
+        ]])
+        try await eventually { model.projection?.revision == 20 }
+        XCTAssertEqual(model.selected, other.id); XCTAssertNil(model.selectedNotice)
+        model.leaveDetail()
+        try Data().write(to: room.appendingPathComponent("allow-inspect"))
+        // Same-connection attached is a receive barrier behind the delayed inspection.
+        model.terminal.openFile = { _, completion in completion(nil) }
+        model.terminal.open(helper: model.helperURL, workspace: room, base: room, session: "late-reply-barrier")
+        let pending = try XCTUnwrap(model.terminal.pending["late-reply-barrier"])
+        try await eventually { self.traces(room).filter { $0["event"] as? String == "inspected-sent" }.count == 1 }
+        try observerCommand(room, ["message": ["t": "native.attached", "request": pending.request, "session": "late-reply-barrier"]])
+        try await eventually { model.terminal.pending["late-reply-barrier"] == nil }
+        XCTAssertNil(model.selected); XCTAssertNil(model.selectedNotice)
+        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
+        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/u117-late-inspections.json"))
+        var finished = false; model.requestQuit { finished = true }; if model.showQuitConfirmation { model.confirmQuit() }; try await eventually { finished }
+    }
+    @MainActor func testRemovedTargetAndStaleStopDoNotChangeWorkIdentity() async throws {
+        let base = try work()
+        let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(base))], "observerControl": true])
+        defer { model.systemQuit {} }
+        model.start(); try await eventually { model.isCurrent }
+        model.panelVisibility(true); model.inspect(base)
+        model.prepareStop(base)
+        let newer = try changed(base, ["gen": (base.gen ?? 1) + 1])
+        let service = try XCTUnwrap(model.identity).serviceInstance
+        try observerCommand(room, ["message": ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 10, "accepting": true, "works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(newer))]]]])
+        try await eventually { model.projection?.revision == 10 }
+        model.confirmStop()
+        XCTAssertNotNil(model.actionMessage)
+        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.stop" })
+        try observerCommand(room, ["message": ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 11, "accepting": true, "works": []]]])
+        try await eventually { model.projection?.revision == 11 }
+        XCTAssertEqual(model.selected, base.id, "移除时不能暗换另一项工作")
+        XCTAssertNil(model.selectedNotice)
+        XCTAssertTrue(model.actionMessage?.contains("不可达") == true)
+        model.leaveDetail(); XCTAssertNil(model.selected)
+        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/u117-stale-stop-removal.json"))
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+
     func testSharedFixturesDecodeAndRoundTrip() throws {
         let files = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("tests/fixtures/native-wire"), includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
         XCTAssertGreaterThanOrEqual(files.count, 37)
@@ -236,26 +303,27 @@ final class NativeTests: XCTestCase {
             AttentionItem(id: id, session: base.session, kind: kind, at: 1, detail: nil, unread: true, delivered: false, fact: "event:\(id)")
         }
         let historical = [item("historic-empty-answer", kind: .done), item("historic-failure", kind: .failed)]
-        let arrived = item("arrived-after-inspect", kind: .done)
         let initial = try changed(base, ["state": "idle", "affected": false, "gen": NSNull(), "notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(historical))])
+        let arrived = item("arrived-after-inspect", kind: .done)
         let returned = try changed(initial, ["notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(historical + [arrived]))])
-        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(initial))
-        let response = try JSONSerialization.jsonObject(with: JSONEncoder().encode(returned))
-        let (model, room) = try controlledModel(options: ["works": [raw], "inspectGate": true, "inspectWork": response])
+        let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(initial))], "observerControl": true])
+        defer { model.systemQuit {} }
         model.terminal.openFile = { _, completion in completion(nil) }
         model.start(); try await eventually { model.isCurrent }
-        model.inspect(initial)
-        try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
-        XCTAssertEqual(model.works.first?.notices.count, 2)
-        try Data().write(to: room.appendingPathComponent("allow-inspect"))
-        try await eventually { model.selected == initial.id }
-        try await Task.sleep(for: .milliseconds(100))
+        model.panelVisibility(true); model.inspect(initial)
+        XCTAssertEqual(model.selected, initial.id)
+        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" }, "详情摘要直接使用现有投影，不再发多余的普通 inspect")
+        let service = try XCTUnwrap(model.identity).serviceInstance
+        try observerCommand(room, ["message": ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 10, "accepting": true, "works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(returned))]]]])
+        try await eventually { model.projection?.revision == 10 }
+        XCTAssertEqual(model.works.first?.notices.count, 3)
+        XCTAssertNil(model.selectedNotice)
         let reads = traces(room).compactMap { $0["message"] as? [String: Any] }.filter { $0["t"] as? String == "native.read" }
-        try JSONSerialization.data(withJSONObject: ["trace": traces(room), "readRequests": reads], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/plain-inspect-read.json"))
-        XCTAssertTrue(reads.isEmpty, "普通详情没有逐项呈现历史事项，不能批量确认旧事项或回复前竞入事项")
+        XCTAssertTrue(reads.isEmpty, "查询和动态投影都不能批量确认未展开的事项")
         model.inspect(initial, open: true)
         try await eventually { model.terminal.pending[initial.session] != nil }
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" }, "终端尚未 attached 不能批量已读")
+        try JSONSerialization.data(withJSONObject: ["trace": traces(room), "readRequests": reads], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/plain-inspect-read.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
     @MainActor func testSpecificNoticeAcknowledgesOnlyRequestedIDAcrossRace() async throws {
@@ -280,11 +348,17 @@ final class NativeTests: XCTestCase {
         model.inspect(initial, notice: chosen.id)
         try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
         try Data().write(to: room.appendingPathComponent("allow-inspect"))
+        try await eventually { model.selectedNotice?.id == chosen.id }
+        model.noticePresented(chosen.id, visible: false)
+        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" }, "查询返回尚未展示具体事项，不能确认已读")
+        model.noticePresented(chosen.id)
         try await eventually { model.works.first?.notices.first?.unread == false }
         XCTAssertEqual(model.selectedNotice?.id, chosen.id)
         XCTAssertEqual(Set(model.works.flatMap(\.notices).filter(\.unread).map(\.id)), [old.id, arrived.id, "other-work-unread"])
         let reads = traces(room).compactMap { $0["message"] as? [String: Any] }.filter { $0["t"] as? String == "native.read" }
         XCTAssertEqual(reads.count, 1); XCTAssertEqual(reads.first?["ids"] as? [String], [chosen.id])
+        model.noticePresented(chosen.id, visible: false)
+        try await eventually { self.traces(room).compactMap { $0["message"] as? [String: Any] }.last { $0["t"] as? String == "native.presence" }?["focused"] as? Bool == false }
         try JSONSerialization.data(withJSONObject: ["trace": traces(room), "persistentControl": JSONSerialization.jsonObject(with: Data(contentsOf: room.appendingPathComponent("control.json")))], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/specific-notice-race.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
@@ -389,6 +463,7 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(model.selected, "session-completed"); XCTAssertEqual(model.works.first?.state, .idle)
         let inspect = traces(room).filter { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" }
         XCTAssertEqual(inspect.count, 1)
+        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" }, "通知接回没有展示事项正文，不能确认已读")
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.stop" })
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
         try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/appmodel-notice-processed.json"))
@@ -455,13 +530,17 @@ final class NativeTests: XCTestCase {
         controller.view.cacheDisplay(in: controller.view.bounds, to: bitmap)
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
             .write(to: root.appendingPathComponent(".artifacts/macos/panel-natural-size.png"))
-        XCTAssertGreaterThan(scroll.contentView.bounds.height, 100, "菜单栏自然尺寸必须给已存在的工作列表留可见空间")
+        XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.height, 44, "自然尺寸必须保留可操作的完整工作行")
+        XCTAssertEqual(scroll.contentView.bounds.height, try XCTUnwrap(scroll.documentView).bounds.height, accuracy: 1,
+                       "单行列表按内容自然取高，不留旧的固定最小高度，也不截断行内容")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
     @MainActor func testNativeFramesLightDarkBusyIdleAndFailure() async throws {
         _ = NSApplication.shared
-        let first = try work()
+        let base = try work()
+        let first = try changed(base, ["notices": [["id": "notice-one", "session": base.session, "kind": "needs-you", "at": 1, "unread": true, "delivered": false, "fact": "event:42",
+            "detail": String(repeating: "需要确认写入工作区外的完整路径，以及此次操作的影响范围。长说明必须能完整查看，不能把主要接回动作挤出面板。\n\n", count: 12)]]])
         let busy = try [first,
             changed(first, ["session": "running", "state": "running", "action": "正在运行测试", "workspace": ["/tmp/另一个同名项目/项目"], "notices": []]),
             changed(first, ["session": "unknown", "state": "unknown", "action": "等待核对实际状态", "gen": NSNull(), "notices": []]),
@@ -471,6 +550,7 @@ final class NativeTests: XCTestCase {
         model.start(); try await eventually { model.isCurrent }
         let directory = root.appendingPathComponent(".artifacts/macos/frames")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var frameMetadata: [[String: Any]] = []
         func save(_ window: NSWindow, name: String) async throws {
             XCTAssertFalse(window.isVisible, "原生帧必须离屏，不弹出真实窗口")
             let view = try XCTUnwrap(window.contentView)
@@ -480,14 +560,24 @@ final class NativeTests: XCTestCase {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
             try png.write(to: directory.appendingPathComponent(name + ".png"))
+            frameMetadata.append(["name": name, "width": view.bounds.width, "height": view.bounds.height,
+                                  "appearance": window.appearance?.name.rawValue ?? "system", "selected": model.selected ?? "",
+                                  "capturedAt": ISO8601DateFormatter().string(from: Date()), "offscreen": true,
+                                  "screenVisibleWidth": NSScreen.main?.visibleFrame.width ?? 0,
+                                  "screenVisibleHeight": NSScreen.main?.visibleFrame.height ?? 0])
+            try JSONSerialization.data(withJSONObject: frameMetadata, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.deletingLastPathComponent().appendingPathComponent("native-frames.json"))
             XCTAssertGreaterThan(png.count, 2000)
             window.close()
+            // Let the old panel unmount before the next explicit navigation intent.
+            try await Task.sleep(for: .milliseconds(100))
         }
-        func capture<V: View>(_ content: V, name: String, size: NSSize, appearance: NSAppearance.Name, exercise: ((NSWindow) async throws -> Void)? = nil) async throws {
-            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
-            window.appearance = NSAppearance(named: appearance); window.isReleasedWhenClosed = false
+        func capture<V: View>(_ content: V, name: String, size: NSSize? = nil, appearance: NSAppearance.Name, exercise: ((NSWindow) async throws -> Void)? = nil) async throws {
             let controller = NSHostingController(rootView: content)
-            controller.view.frame = NSRect(origin: .zero, size: size); window.contentViewController = controller
+            let frame = size ?? controller.view.fittingSize
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: frame), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: appearance); window.isReleasedWhenClosed = false
+            controller.view.frame = NSRect(origin: .zero, size: frame); window.contentViewController = controller
             try await Task.sleep(for: .milliseconds(250))
             if let exercise {
                 window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
@@ -509,15 +599,17 @@ final class NativeTests: XCTestCase {
             scroll.reflectScrolledClipView(scroll.contentView)
             return scroll
         }
-        try await capture(StatusPanel(model: model).environment(\.colorScheme, .light), name: "busy-light", size: NSSize(width: 360, height: 650), appearance: .aqua)
-        model.selected = first.id
-        try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "detail-dark", size: NSSize(width: 360, height: 650), appearance: .darkAqua)
-        try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "detail-bottom-dark", size: NSSize(width: 360, height: 650), appearance: .darkAqua) { window in
+        try await capture(StatusPanel(model: model).environment(\.colorScheme, .light), name: "busy-light", appearance: .aqua)
+        try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "busy-dark", appearance: .darkAqua)
+        model.inspect(first, notice: "notice-one"); try await eventually { model.selectedNotice?.id == "notice-one" }
+        try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "detail-dark", appearance: .darkAqua)
+        model.inspect(first, notice: "notice-one"); try await eventually { model.selectedNotice?.id == "notice-one" }
+        try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "detail-bottom-dark", appearance: .darkAqua) { window in
             let scroll = try scrollBottom(window)
             try await Task.sleep(for: .milliseconds(100))
             let document = try XCTUnwrap(scroll.documentView)
             XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
-            try JSONSerialization.data(withJSONObject: ["scrollY": scroll.contentView.bounds.origin.y, "viewportBottom": scroll.contentView.bounds.maxY, "documentBottom": document.bounds.maxY, "evidence": "offscreen geometry only; real App AX and keyboard recorded separately"], options: [.prettyPrinted, .sortedKeys]).write(to: directory.deletingLastPathComponent().appendingPathComponent("scroll-status.json"))
+            try JSONSerialization.data(withJSONObject: ["scrollY": scroll.contentView.bounds.origin.y, "viewportBottom": scroll.contentView.bounds.maxY, "documentBottom": document.bounds.maxY, "evidence": "offscreen geometry only; real menu-bar and keyboard operation remains unverified"], options: [.prettyPrinted, .sortedKeys]).write(to: directory.deletingLastPathComponent().appendingPathComponent("scroll-status.json"))
         }
         let quitAlert = model.makeQuitAlert()
         XCTAssertEqual(quitAlert.buttons.map(\.title), ["取消", "停止并退出"])
@@ -531,12 +623,12 @@ final class NativeTests: XCTestCase {
         }
         try await capture(NoticeWindow(model: model).environment(\.colorScheme, .light), name: "notice-selection", size: NSSize(width: 420, height: 470), appearance: .aqua)
         model.phase = .fault("连接已断开，重试后核对当前状态。")
-        try await capture(StatusPanel(model: model).environment(\.colorScheme, .light), name: "failure", size: NSSize(width: 360, height: 540), appearance: .aqua)
+        try await capture(StatusPanel(model: model).environment(\.colorScheme, .light), name: "failure", appearance: .aqua)
         model.phase = .ready
         // The controlled helper owns no real work; use the normal stop responsibility.
         var finished = false; model.requestQuit { finished = true }; model.confirmQuit(); try await eventually { finished }
         let (idle, _) = try controlledModel(options: [:]); idle.start(); try await eventually { idle.isCurrent }
-        try await capture(StatusPanel(model: idle).environment(\.colorScheme, .light), name: "idle", size: NSSize(width: 360, height: 260), appearance: .aqua)
+        try await capture(StatusPanel(model: idle).environment(\.colorScheme, .light), name: "idle", appearance: .aqua)
         idle.rememberSettingsCategory("app")
         idle.cliDirectory = idle.userHome.appendingPathComponent("这是一个用于验证完整显示与复制的很长命令安装目录/还有一层中文目录/bin").path
         try await capture(SettingsView(model: idle).environment(\.colorScheme, .dark), name: "settings-dark", size: NSSize(width: 800, height: 680), appearance: .darkAqua)
@@ -824,12 +916,12 @@ final class NativeTests: XCTestCase {
         var sent: [NoticeDelivery] = []
         let (model, room) = try systemTestModel(status: { .authorized }, send: { sent.append($0) })
         model.start(); try await eventually { model.isCurrent }
-        model.notifications.userLooking = { true }
+        model.notifications.userLooking = { _, _ in true }
         try JSONSerialization.data(withJSONObject: ["systemTest": true, "works": [try freshNoticeRow("watched")]])
             .write(to: room.appendingPathComponent("control.json"))
         try await Task.sleep(for: .seconds(2.6))
         XCTAssertTrue(sent.isEmpty, "你在看这一屏时不打断")
-        model.notifications.userLooking = { false }
+        model.notifications.userLooking = { _, _ in false }
         try JSONSerialization.data(withJSONObject: ["systemTest": true, "works": [try freshNoticeRow("watched")]])
             .write(to: room.appendingPathComponent("control.json"))
         try await Task.sleep(for: .seconds(2.6))

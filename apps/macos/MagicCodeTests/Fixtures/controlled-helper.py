@@ -74,8 +74,10 @@ def observe(client):
                         temporary.write_text(json.dumps(options)); os.replace(temporary, base / 'control.json')
                 if target and (options.get('uncheckedInspect') or message.get('notice') is None or any(n['id'] == message['notice'] for n in target['notices'])):
                     send(client, {'t': 'native.inspected', 'request': message['request'], 'work': target})
+                    trace('inspected-sent', request=message['request'])
                 else:
                     send(client, {'t': 'native.inspected', 'request': message['request'], 'error': '事项已不可达'})
+                    trace('inspected-sent', request=message['request'])
             elif message['t'] in ['native.read', 'native.delivered'] and options.get('systemTest'):
                 key = 'unread' if message['t'] == 'native.read' else 'delivered'
                 for row in options.get('works', []):
@@ -114,6 +116,8 @@ def watch_control():
                 if command.get('disconnect'):
                     try: observer.shutdown(socket.SHUT_RDWR)
                     except OSError: pass
+                elif 'messages' in command:
+                    for message in command['messages']: send(observer, message)
                 elif 'message' in command: send(observer, command['message'])
         try: latest = json.loads((base / 'control.json').read_text())
         except (OSError, ValueError): continue

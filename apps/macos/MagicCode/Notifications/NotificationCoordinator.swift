@@ -124,8 +124,8 @@ struct NoticeBatch {
     /// **「提醒我」＝我们持有的偏好**（默认开，落在 App 的设置里）。与系统那一格**各说各的**：
     /// 系统拒绝时它仍可以是开——那是用户的意图本身，不必藏成什么「待兑现意图」。
     var preference = true
-    /// **现场那一层**：你现在在看（App 的面板开着且它是前台）⇒ 不打断；拿不到证据时不据此压掉通知。
-    var userLooking: () -> Bool = { false }
+    /// 仅正在查看对应工作里的具体事项时不打断；列表或其他事项不抑制它。
+    var userLooking: (String, String) -> Bool = { _, _ in false }
     /// 投递门 = **我们想提醒**（偏好）**且**系统允许。两个条件各归各的主，谁也冒充不了谁。
     private var deliverable: Bool {
         preference && (authorizationStatus == .authorized || authorizationStatus == .provisional)
@@ -157,8 +157,8 @@ struct NoticeBatch {
         for work in projection.works {
             for notice in work.notices {
                 if notice.delivered || !notice.unread { seen.insert(notice.id); continue }
-                // 现场那一层：你正在看这一屏 ⇒ 不打断。**不记 seen**——等你不看了它还在候选里。
-                if userLooking() { continue }
+                // 仅抑制正在查看的具体事项。不记 seen，离开后仍可提醒。
+                if userLooking(work.session, notice.id) { continue }
                 guard seen.insert(notice.id).inserted else { continue }
                 // The enable date is a preference, not a second notice ledger. Persisted
                 // delivered facts and system requests cover restarts across the 2s window.

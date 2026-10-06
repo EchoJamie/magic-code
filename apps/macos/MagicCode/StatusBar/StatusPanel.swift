@@ -5,139 +5,274 @@ struct StatusPanel: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openSettings) private var openSettings
     @FocusState private var focused: String?
+    @State private var listFocus: String?
+    @State private var listPosition = ScrollPosition(idType: String.self)
     private var rows: [NativeWork] { WorkGroup.allCases.flatMap { model.list.rows($0, works: model.works) } }
-    private var stale: Bool { !model.isCurrent && model.projection != nil }
+    private var stale: Bool {
+        guard model.projection != nil else { return false }
+        switch model.phase { case .starting, .fault: return true; default: return false }
+    }
+    private var connectionSummary: String {
+        guard stale else { return model.summary }
+        if case .starting = model.phase { return "正在连接 · 以下为上次快照" }
+        return "连接中断 · 以下为上次快照"
+    }
+    private var width: CGFloat { min(380, (NSScreen.main?.visibleFrame.width ?? 1024) - 32) }
+    private var scrollLimit: CGFloat { max(120, min(520, (NSScreen.main?.visibleFrame.height ?? 720) - 240)) }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Magic Code").font(.headline)
-                Spacer()
-                Button("设置", systemImage: "gearshape") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
-                    .labelStyle(.iconOnly).help("打开设置").accessibilityLabel("打开 Magic Code 设置")
+            if let selected = model.selected {
+                HStack {
+                    Button("所有工作", systemImage: "chevron.left") { model.leaveDetail() }
+                        .accessibilityIdentifier("back-to-works")
+                    Spacer()
+                    if let work = model.works.first(where: { $0.id == selected }) { workMenu(work) }
+                }
+                if let work = model.works.first(where: { $0.id == selected }) {
+                    WorkDetail(model: model, work: work, stale: stale, limit: scrollLimit).id(work.id)
+                } else {
+                    Text("这项工作已不可达").font(.headline)
+                    Text("返回列表查看其他工作。").foregroundStyle(.secondary)
+                }
+            } else {
+                HStack {
+                    Text("Magic Code").font(.headline)
+                    Spacer()
+                    Button("设置", systemImage: "gearshape") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
+                        .labelStyle(.iconOnly).help("打开设置").accessibilityLabel("打开 Magic Code 设置")
+                }
+                Text(connectionSummary)
+                    .font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("status-summary")
+                if !rows.isEmpty {
+                    PanelScroll(limit: scrollLimit, initialHeight: CGFloat(rows.count) * 90 + 80, position: $listPosition) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(WorkGroup.allCases) { group in
+                                let works = model.list.rows(group, works: model.works)
+                                if !works.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(group.title).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                                        ForEach(works) { work in row(work).id(work.id) }
+                                    }
+                                }
+                            }
+                            if model.works.count > rows.count {
+                                Button("在终端查看全部") { model.newTerminal() }.buttonStyle(.link).disabled(!model.isCurrent)
+                                    .help("在终端使用 /resume 查看全部工作")
+                            }
+                        }.scrollTargetLayout()
+                    }
+                    .onAppear { focused = listFocus ?? rows.first?.id }
+                }
+                if case .fault(let reason) = model.phase {
+                    if stale { Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Button("重试连接") { model.retry() }
+                }
             }
-            Text(model.summary).font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("status-summary")
-            if case .fault = model.phase {
-                Button("重试连接") { model.retry() }
+            if let message = model.inspectionMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
+            if let message = model.actionMessage { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            TerminalStatus(terminal: model.terminal)
+            if model.selected == nil {
+                if !rows.isEmpty { Divider() }
+                HStack {
+                    Button("打开终端") { model.newTerminal() }.disabled(!model.isCurrent)
+                    Spacer()
+                    Menu { Button("退出 Magic Code…") { NSApp.terminate(nil) } } label: { Image(systemName: "ellipsis") }
+                        .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多操作")
+                }
             }
-            Divider()
-            ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(WorkGroup.allCases) { group in
-                        let works = model.list.rows(group, works: model.works)
-                        if !works.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(stale ? "上次连接时 · \(group.title)" : group.title).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-                                ForEach(works) { work in row(work).id(work.id) }
+        }
+        .padding(16).frame(width: width).background(.background)
+        .onAppear { model.panelVisibility(true) }
+        .onDisappear { model.panelVisibility(false) }
+        .onChange(of: model.selected) { old, selected in
+            if old == nil, let selected { listFocus = selected; focused = nil }
+            if selected == nil { focused = listFocus }
+        }
+        .onChange(of: rows.map(\.id)) { old, ids in
+            guard let focus = listFocus ?? focused, !ids.contains(focus) else { return }
+            let index = old.firstIndex(of: focus) ?? 0
+            listFocus = ids.isEmpty ? nil : ids[min(index, ids.count - 1)]
+            if model.selected == nil { focused = listFocus }
+        }
+        .onExitCommand {
+            if model.stopTarget != nil { model.stopTarget = nil }
+            else if model.selected != nil { model.leaveDetail() }
+            else { dismiss() }
+        }
+        .onMoveCommand { direction in
+            guard model.selected == nil, model.stopTarget == nil, !rows.isEmpty,
+                  direction == .down || direction == .up else { return }
+            let index = rows.firstIndex { $0.id == focused } ?? -1
+            let next = direction == .down ? min(index + 1, rows.count - 1) : max(index - 1, 0)
+            focused = rows[next].id; listFocus = focused
+            listPosition.scrollTo(id: rows[next].id)
+        }
+        .confirmationDialog(model.stopTarget.map { "停止“\($0.work.title)”？" } ?? "停止任务？",
+                            isPresented: Binding(get: { model.stopTarget != nil }, set: { if !$0 { model.stopTarget = nil } }), titleVisibility: .visible) {
+            Button("停止任务", role: .destructive) { model.confirmStop() }
+            Button("取消", role: .cancel) { model.stopTarget = nil }
+        } message: {
+            if let work = model.stopTarget?.work {
+                Text("\(work.project) · \(work.statusText)\n\(work.members == nil ? "只停止这项工作。" : "停止整件工作，包括其成员与在途执行。")")
+            }
+        }
+    }
+    private func workMenu(_ work: NativeWork) -> some View {
+        Menu {
+            Button("复制接回命令") { model.copyCommand(work) }
+            if work.affected {
+                Button("停止任务…", role: .destructive) { model.prepareStop(work) }.disabled(!model.isCurrent || work.gen == nil)
+            }
+        } label: { Image(systemName: "ellipsis") }
+            .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("\(work.title) 更多操作")
+    }
+    private func row(_ work: NativeWork) -> some View {
+        let explanation = work.statusText
+        let status = work.state == .unknown && explanation != work.state.title ? "状态待确认 · \(explanation)" : work.statusText
+        return Button { model.inspect(work) } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Text(work.state.mark).foregroundStyle(work.state == .waiting ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(work.title.isEmpty ? "未命名工作" : work.title).fontWeight(.medium).lineLimit(3)
+                    Text("\(work.project) · \(stale ? "上次状态：" : "")\(status)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    if work.notices.contains(where: { $0.kind == .failed && $0.unread }) {
+                        Text("▲ 有未读的问题事项").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if model.works.contains(where: { $0.id != work.id && $0.title == work.title && $0.project == work.project }),
+                       let path = work.workspace.first {
+                        Text(WorkList.shortPath(path, among: model.works.filter { $0.title == work.title && $0.project == work.project }.compactMap { $0.workspace.first }))
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+            }.padding(.vertical, 8).padding(.horizontal, 6).contentShape(Rectangle())
+        }.buttonStyle(WorkRowStyle(focused: focused == work.id)).focused($focused, equals: work.id)
+            .accessibilityLabel("\(work.title)，\(work.project)，\(stale ? "上次状态：" : "")\(status)")
+            .accessibilityIdentifier("work-\(work.id)").accessibilityHint("查看详情；按 Enter 在终端打开")
+            .onKeyPress(.return) { model.inspect(work, open: true); return .handled }
+            .onChange(of: focused) { _, id in if id == work.id { listFocus = id } }
+    }
+}
+
+private struct WorkRowStyle: ButtonStyle {
+    let focused: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        WorkRowFeedback(content: configuration.label, focused: focused || configuration.isPressed)
+    }
+}
+private struct WorkRowFeedback<Content: View>: View {
+    let content: Content
+    let focused: Bool
+    @State private var hovered = false
+    var body: some View {
+        content.background(focused ? Color.accentColor.opacity(0.12) : hovered ? Color.primary.opacity(0.05) : .clear,
+                           in: RoundedRectangle(cornerRadius: 6)).onHover { hovered = $0 }
+    }
+}
+
+/// Measure content rather than reserving a minimum height for every list.
+private struct PanelScroll<Content: View>: View {
+    let limit: CGFloat
+    let initialHeight: CGFloat
+    var position: Binding<ScrollPosition>?
+    @ViewBuilder var content: () -> Content
+    @State private var contentHeight: CGFloat?
+    var body: some View {
+        scroll.frame(height: min(contentHeight ?? initialHeight, limit))
+    }
+    @ViewBuilder private var scroll: some View {
+        if let position { base.scrollPosition(position) } else { base }
+    }
+    private var base: some View {
+        ScrollView {
+            content().frame(maxWidth: .infinity, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        }.defaultScrollAnchor(.top)
+    }
+}
+
+private struct WorkDetail: View {
+    @ObservedObject var model: AppModel
+    let work: NativeWork
+    let stale: Bool
+    let limit: CGFloat
+    @State private var pathsExpanded = false
+    @State private var membersExpanded = false
+    var body: some View {
+        PanelScroll(limit: limit, initialHeight: 300) {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(work.title.isEmpty ? "未命名工作" : work.title).font(.headline).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    Text(work.project).font(.subheadline).foregroundStyle(.secondary)
+                    Text("\(work.state.mark) \(stale ? "上次状态：" : "")\(work.state.title)").font(.subheadline)
+                    if work.statusText != work.state.title { Text(work.statusText).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
+                    if [.unknown, .stopping, .stopped].contains(work.state), let reason = work.reason,
+                       !reason.isEmpty, reason != work.statusText, reason != work.state.title {
+                        Text(reason).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                }
+                Button("在终端打开") { model.inspect(work, open: true) }.disabled(!model.isCurrent)
+                    .accessibilityIdentifier("open-work-terminal")
+                if !work.notices.isEmpty || !work.workspace.isEmpty || work.members != nil {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if !work.notices.isEmpty {
+                            Text("相关事项").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                            ForEach(work.notices) { notice in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Button { model.inspect(work, notice: notice.id) } label: {
+                                        HStack {
+                                            Text(notice.kind.title).fontWeight(.medium)
+                                            Spacer()
+                                            Text(notice.unread ? "未读" : "已读").foregroundStyle(.secondary)
+                                            Image(systemName: model.selectedNotice?.id == notice.id ? "chevron.down" : "chevron.right")
+                                        }.font(.callout).contentShape(Rectangle())
+                                    }.buttonStyle(.plain).disabled(!model.isCurrent)
+                                        .accessibilityIdentifier("notice-\(notice.id)")
+                                        .accessibilityHint("查看这条事项；仅确认这一条已读")
+                                    if model.selectedNotice?.id == notice.id, let shown = model.selectedNotice {
+                                        Text(shown.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "这条事项没有附加说明。")
+                                            .font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                                            .accessibilityIdentifier("notice-content-\(notice.id)")
+                                            .onScrollVisibilityChange(threshold: 0.01) { visible in model.noticePresented(shown.id, visible: visible) }
+                                    }
+                                }
+                            }
+                        }
+                        if let members = work.members, !members.isEmpty {
+                            DisclosureGroup("协作成员（\(members.count)）", isExpanded: $membersExpanded) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(members) { member in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(member.name).fontWeight(.medium)
+                                            Text("\(member.state.mark) \(member.state.title)").foregroundStyle(.secondary)
+                                            if let action = member.action, action != member.state.title { Text(action) }
+                                            if let reason = member.reason, reason != member.action, reason != member.state.title { Text(reason) }
+                                        }.font(.callout).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }.padding(.top, 8)
+                            }.accessibilityIdentifier("work-members")
+                        }
+                        if !work.workspace.isEmpty {
+                            DisclosureGroup("工作区路径", isExpanded: $pathsExpanded) {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(work.workspace, id: \.self) { path in FullPath(label: "工作区路径", path: path) { model.terminal.copy(path) } }
+                                }.padding(.top, 8)
                             }
                         }
                     }
-                    if model.works.count > 10 {
-                        Button("在终端查看全部") { model.newTerminal() }.buttonStyle(.link)
-                        Text("在终端使用 /resume 查看全部会话").font(.caption).foregroundStyle(.secondary)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            // 菜单栏按自然尺寸开窗；只有上限会把非空滚动区压到零高。
-            }.frame(minHeight: rows.isEmpty ? 0 : 160, maxHeight: min(520, (NSScreen.main?.visibleFrame.height ?? 720) - 230))
-                .onChange(of: focused) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
-            }
-            if let message = model.actionMessage { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-            TerminalStatus(terminal: model.terminal)
-            Divider()
-            HStack {
-                Button("打开终端") { model.newTerminal() }.disabled(!model.isCurrent)
-                Spacer()
-                Button("退出 Magic Code…") { NSApp.terminate(nil) }
-            }
-        }
-        .padding(16).frame(width: 360).background(.background)
-        .onAppear {
-            model.panelVisibility(true)
-            focused = rows.first?.id
-        }
-        .onDisappear { model.panelVisibility(false) }
-        .onExitCommand { dismiss() }
-        .onMoveCommand { direction in
-            guard !rows.isEmpty else { return }
-            let index = rows.firstIndex { $0.id == focused } ?? -1
-            if direction == .down { focused = rows[min(index + 1, rows.count - 1)].id }
-            if direction == .up { focused = rows[max(index - 1, 0)].id }
-        }
-        .confirmationDialog(model.stopTarget.map { "停止“\($0.title)”？" } ?? "停止任务？", isPresented: Binding(get: { model.stopTarget != nil }, set: { if !$0 { model.stopTarget = nil } }), titleVisibility: .visible) {
-            Button("停止任务", role: .destructive) { if let work = model.stopTarget { model.stop(work) }; model.stopTarget = nil }
-            Button("取消", role: .cancel) { model.stopTarget = nil }
-        } message: {
-            if let work = model.stopTarget { Text("\(work.project) · \(work.statusText)\n只停止这项工作。") }
-        }
-    }
-    @ViewBuilder private func row(_ work: NativeWork) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Button { model.inspect(work) } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(work.title.isEmpty ? "未命名工作" : work.title).fontWeight(.medium).lineLimit(2)
-                        Spacer(minLength: 8)
-                        Text(work.project).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).frame(maxWidth: 95)
-                    }
-                    Text(stale ? "上次状态：\(work.statusText)" : work.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    if model.selected != work.id, model.works.contains(where: { $0.id != work.id && $0.title == work.title }), let path = work.workspace.first {
-                        Text(path).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    }
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain).focused($focused, equals: work.id)
-                .accessibilityLabel("\(work.title)，\(work.project)，\(stale ? "上次状态：" : "")\(work.statusText)")
-                .accessibilityIdentifier("work-\(work.id)")
-                .accessibilityHint("展开详情；在终端打开以接回工作")
-                .onKeyPress(.return) { model.inspect(work, open: true); return .handled }
-            if model.selected == work.id {
-                if let reason = work.reason, reason != work.statusText {
-                    Text(reason).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-                if let path = work.workspace.first { FullPath(label: "项目路径", path: path) { model.terminal.copy(path) } }
-                HStack {
-                    Button("在终端打开") { model.inspect(work, open: true) }.disabled(!model.isCurrent)
-                    Spacer()
-                    Text(Date(timeIntervalSince1970: work.since / 1000), style: .relative)
-                        .environment(\.locale, Locale(identifier: "zh_CN"))
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Menu {
-                        Button("复制接回命令") { model.copyCommand(work) }
-                        if work.affected {
-                            Button("停止任务…", role: .destructive) { model.stopTarget = work }.disabled(!model.isCurrent || work.gen == nil)
-                        }
-                    } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("\(work.title) 更多操作")
-                }
-                if !work.notices.isEmpty {
-                    Text("事项").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-                    ForEach(work.notices) { notice in
-                        Button { model.inspect(work, notice: notice.id) } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(noticeTitle(notice.kind)).fontWeight(.medium)
-                                    Spacer()
-                                    Text(notice.unread ? "未读" : "已读").foregroundStyle(.secondary)
-                                }
-                                Text(Date(timeIntervalSince1970: notice.at / 1000), format: .dateTime.month().day().hour().minute().second())
-                                    .environment(\.locale, Locale(identifier: "zh_CN")).foregroundStyle(.secondary)
-                            }.font(.caption).padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 6))
-                            .accessibilityIdentifier("notice-\(notice.id)")
-                            .accessibilityHint("打开这条事项；仅确认这一条已读")
-                            .disabled(!model.isCurrent)
-                        if model.selectedNotice?.id == notice.id, let shown = model.selectedNotice {
-                            Text(shown.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "这条事项没有附加说明。")
-                                .font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                                .accessibilityIdentifier("notice-content-\(notice.id)")
-                        }
-                    }
                 }
             }
-        }.padding(10).background(model.selected == work.id ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        }
     }
-    private func noticeTitle(_ kind: NoticeKind) -> String {
-        switch kind { case .done: return "结果可查看"; case .failed: return "工作遇到问题"; case .needsYou: return "需要你的答复" }
-    }
+}
+
+private extension NoticeKind {
+    var title: String { switch self { case .done: "结果可查看"; case .failed: "工作遇到问题"; case .needsYou: "答复事项" } }
+}
+private extension RunState {
+    var title: String { switch self { case .running: "正在执行"; case .waiting: "等待你的答复"; case .stopping: "正在停止"; case .stopped: "已停止"; case .idle: "当前空闲"; case .unknown: "状态待确认" } }
+    var mark: String { switch self { case .running: "●"; case .waiting: "◊"; case .stopping: "●"; case .stopped, .idle: "○"; case .unknown: "■" } }
 }
 
 struct TerminalStatus: View {

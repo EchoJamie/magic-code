@@ -23,11 +23,13 @@ import OSLog
     @Published private(set) var identity: ServiceIdentity?
     @Published private(set) var projection: NativeProjection?
     @Published private(set) var list = WorkList()
-    @Published var selected: String?
+    @Published private(set) var selected: String?
     @Published private(set) var selectedNotice: AttentionItem?
+    private var visibleNoticeID: String?
     @Published var actionMessage: String?
     @Published var showQuitConfirmation = false
-    @Published var stopTarget: NativeWork?
+    struct StopTarget { let work: NativeWork; let identity: ServiceIdentity }
+    @Published var stopTarget: StopTarget?
     @Published var notificationRoutes: [NoticeRoute] = []
     @Published var diagnosticsText = ""
     @Published var configPath = ""
@@ -59,7 +61,7 @@ import OSLog
     private var automaticRecoveryUsed = false
     private var acquired = false
     private var panelVisible = false
-    private var pendingInspections: [String: (session: String, open: Bool, notice: String?)] = [:]
+    @Published private var pendingInspection: (request: String, session: String, open: Bool, notice: String?, identity: ServiceIdentity)?
     private var stoppingRequests: [String: String] = [:]
     private var switchBase: URL?
     private var switching = false
@@ -106,7 +108,9 @@ import OSLog
         terminal = TerminalLauncher(directory: support.appendingPathComponent("terminal"))
         notifications = notificationPort ?? NotificationCoordinator()
         notifications.preference = notificationsEnabled
-        notifications.userLooking = { [weak self] in self?.panelVisible == true && NSApp?.isActive == true }
+        notifications.userLooking = { [weak self] session, id in
+            self?.panelVisible == true && NSApp?.isActive == true && self?.selected == session && self?.selectedNotice?.id == id && self?.visibleNoticeID == id
+        }
         notifications.delivered = { [weak self] ids in self?.observer?.send(.delivered(ids: ids)) }
         notifications.failure = { [weak self] text in self?.actionMessage = text }
         notifications.openRoutes = { [weak self] routes in
@@ -149,13 +153,22 @@ import OSLog
     var affected: [NativeWork] { projection?.works.filter(\.affected) ?? [] }
     var works: [NativeWork] { projection?.works ?? [] }
     var isCurrent: Bool { phase == .ready && projection != nil }
+    var inspectionMessage: String? {
+        guard let intent = pendingInspection else { return nil }
+        return intent.open ? "正在核对终端目标…" : "正在读取事项…"
+    }
     var appVersion: String { expectedVersion }
     var summary: String {
         guard isCurrent else { return phase.text }
         if affected.isEmpty { return "当前没有进行中的工作" }
-        let running = works.filter { $0.state == .running || $0.state == .stopping }.count
-        let waiting = works.filter { $0.state == .waiting }.count
-        return "\(running) 项执行中，\(waiting) 项需要你"
+        let waiting = affected.filter { $0.state == .waiting }.count
+        let unknown = affected.filter { $0.state == .unknown }.count
+        let active = affected.count - waiting - unknown
+        var parts: [String] = []
+        if waiting > 0 { parts.append("\(waiting) 项需要你") }
+        if unknown > 0 { parts.append("\(unknown) 项状态待确认") }
+        if active > 0 { parts.append("\(active) 项进行中") }
+        return parts.joined(separator: "，")
     }
 
     func start() {
@@ -188,7 +201,7 @@ import OSLog
         } catch { phase = .fault(error.localizedDescription) }
     }
     private func startHost() {
-        phase = .starting; identity = nil; notificationGeneration = nil; hostStopped = false; shutdownRequest = nil
+        disconnectInspection(); phase = .starting; identity = nil; notificationGeneration = nil; hostStopped = false; shutdownRequest = nil
         reconnectTask?.cancel(); reconnectAttempts = 0
         hostInstance = UUID().uuidString
         let instance = hostInstance
@@ -240,7 +253,7 @@ import OSLog
         }
     }
     private func connectObserver(socket: String, identity: ServiceIdentity) {
-        disconnectSettings()
+        disconnectSettings(); disconnectInspection()
         observer?.close()
         let connection = ObserverConnection(); observer = connection
         connection.receive = { [weak self, weak connection] response in
@@ -248,7 +261,7 @@ import OSLog
         }
         connection.disconnected = { [weak self, weak connection] reason in
             guard let self, self.observer === connection, self.shutdownRequest == nil else { return }
-            self.disconnectSettings()
+            self.disconnectSettings(); self.disconnectInspection()
             self.phase = .fault(reason)
             guard self.reconnectAttempts < 3, self.host?.process.isRunning == true else { return }
             self.reconnectAttempts += 1
@@ -290,15 +303,17 @@ import OSLog
             if let preview = queuedSettingsPreview { queuedSettingsPreview = nil; readSettings(preview: preview) }
         case .projection(let projection): apply(projection)
         case .inspected(let request, let work, let error):
-            guard let intent = pendingInspections.removeValue(forKey: request) else { return }
-            guard let work, work.session == intent.session else { actionMessage = error ?? "该会话已不可达"; return }
+            guard let intent = pendingInspection, intent.request == request,
+                  intent.identity == identity, isCurrent else { return }
+            pendingInspection = nil
+            guard intent.open || selected == intent.session else { return }
+            guard let work, work.session == intent.session, works.contains(where: { $0.id == work.id }) else {
+                actionMessage = error ?? "这项工作已不可达，请返回列表。"; return
+            }
             let notice = intent.notice.flatMap { id in work.notices.first { $0.id == id && $0.session == intent.session } }
             guard intent.notice == nil || notice != nil else { actionMessage = "这条事项已不可达，请刷新后查看。"; return }
-            selected = work.id
-            selectedNotice = notice
-            if let notice, notice.unread { observer?.send(.read(ids: [notice.id])) }
-            presence(focused: panelVisible && NSApp?.isActive == true)
             if intent.open { launch(work) }
+            else { selectedNotice = notice }
         case .stopped(let request, let session, let phase, let note):
             guard stoppingRequests[request] == session else { return }
             actionMessage = note ?? (phase == .accepted ? "正在停止任务…" : phase == .done ? "任务已停止" : "尚未确认停止，请查看当前状态")
@@ -308,7 +323,7 @@ import OSLog
             if terminal.attached(request: request, session: session) {
                 validationEvent("terminal.attached", detail: "request=\(request), session=\(session ?? "null")")
             }
-        case .error(let reason): phase = .fault(reason)
+        case .error(let reason): disconnectInspection(); phase = .fault(reason)
         }
     }
     func rememberSettingsCategory(_ category: String) { settingsCategory = category; defaults.set(category, forKey: "settingsCategory") }
@@ -341,6 +356,13 @@ import OSLog
     private func apply(_ value: NativeProjection) {
         guard value.serviceInstance == identity?.serviceInstance else { return }
         if let old = projection, old.serviceInstance == value.serviceInstance, old.revision >= value.revision { return }
+        if let selected, !value.works.contains(where: { $0.id == selected }) {
+            presence(focused: false); pendingInspection = nil; selectedNotice = nil
+            actionMessage = "这项工作已不可达，请返回列表。"
+        }
+        if let notice = selectedNotice, let work = value.works.first(where: { $0.id == selected }) {
+            selectedNotice = work.notices.first { $0.id == notice.id }
+        }
         projection = value
         list.update(value.works, interacting: panelVisible)
         if shutdownRequest == nil { phase = value.accepting ? .ready : .stopping }
@@ -415,25 +437,69 @@ import OSLog
         cleanExit = onClean
         if host == nil && shutdownRequest == nil { finishQuit() } else { confirmQuit() }
     }
+    func prepareStop(_ work: NativeWork) {
+        guard isCurrent, let identity, work.affected, work.gen != nil else { return }
+        stopTarget = StopTarget(work: work, identity: identity)
+    }
+    func confirmStop() {
+        guard let target = stopTarget else { return }
+        stopTarget = nil
+        guard target.identity == identity else { actionMessage = "服务已改变，请重新核对工作。"; return }
+        stop(target.work)
+    }
     func stop(_ work: NativeWork) {
-        guard isCurrent, let gen = work.gen, let service = identity?.serviceInstance else { return }
+        guard isCurrent, let gen = work.gen, let service = identity?.serviceInstance,
+              let current = works.first(where: { $0.id == work.id }), current.gen == gen, current.affected else {
+            actionMessage = "工作已结束或状态已改变，请重新核对。"; return
+        }
         let request = UUID().uuidString; stoppingRequests[request] = work.session
         observer?.send(.stop(request: request, serviceInstance: service, session: work.session, gen: gen))
     }
     func panelVisibility(_ visible: Bool) {
         panelVisible = visible; list.update(works, interacting: visible)
-        presence(focused: visible && NSApp?.isActive == true)
+        if !visible { leaveDetail() } else { presence(focused: NSApp?.isActive == true) }
+    }
+    func leaveDetail() {
+        presence(focused: false)
+        pendingInspection = nil; selected = nil; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil; stopTarget = nil
+    }
+    private func disconnectInspection() {
+        presence(focused: false)
+        pendingInspection = nil; selectedNotice = nil; visibleNoticeID = nil; stopTarget = nil
     }
     func inspect(_ work: NativeWork, open: Bool = false, notice: String? = nil) {
-        guard isCurrent else { actionMessage = "状态尚未核对，请重试连接。"; return }
-        presence(focused: false)
+        // The current projection already contains the detail summary. Navigation needs no request.
+        if !open, notice == nil {
+            presence(focused: false); pendingInspection = nil
+            selected = work.id; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil
+            return
+        }
+        guard isCurrent, let identity else { actionMessage = "状态尚未核对，请重试连接。"; return }
+        if open, terminal.pending[work.session] != nil { return }
+        if let pending = pendingInspection, pending.session == work.session, pending.open == open, pending.notice == notice { return }
+        presence(focused: false); selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil
+        if !open { selected = work.id }
         let request = UUID().uuidString
-        pendingInspections[request] = (work.session, open, notice)
+        pendingInspection = (request, work.session, open, notice, identity)
         observer?.send(.inspect(request: request, session: work.session, notice: notice))
     }
+    /// Selection is an intent; only content inside the scroll viewport counts as presented.
+    func noticePresented(_ id: String, visible: Bool = true) {
+        if !visible {
+            guard visibleNoticeID == id else { return }
+            presence(focused: false); visibleNoticeID = nil
+            return
+        }
+        guard panelVisible, isCurrent, let notice = selectedNotice, notice.id == id,
+              notice.session == selected else { return }
+        visibleNoticeID = id
+        if notice.unread { observer?.send(.read(ids: [notice.id])) }
+        presence(focused: NSApp?.isActive == true)
+    }
     private func presence(focused: Bool) {
-        guard let selected, let work = works.first(where: { $0.id == selected }) else { return }
-        observer?.send(.presence(session: selected, ids: work.notices.map(\.id), focused: focused && panelVisible))
+        guard let selected else { return }
+        let ids = selectedNotice?.id == visibleNoticeID ? visibleNoticeID.map { [$0] } ?? [] : []
+        observer?.send(.presence(session: selected, ids: ids, focused: focused && panelVisible))
     }
     private func launch(_ work: NativeWork) {
         terminal.open(helper: helperURL, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome, base: selectedBase, session: work.session)
@@ -451,9 +517,9 @@ import OSLog
         guard route.dataDir == identity?.dataDir else {
             actionMessage = "此通知属于另一数据位置：\(route.dataDir)。请在设置中明确切换后查看。"; showNotificationWindow?(); return
         }
-        let request = UUID().uuidString
-        pendingInspections[request] = (route.session, true, route.ids.first)
-        observer?.send(.inspect(request: request, session: route.session, notice: route.ids.first))
+        guard let work = works.first(where: { $0.id == route.session }) else { actionMessage = "此通知的工作已不可达。"; return }
+        inspect(work)
+        inspect(work, open: true, notice: route.ids.first)
     }
     func changeBase(_ base: URL?) {
         guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换数据目录。"; return }
