@@ -36,7 +36,7 @@ export type ModelError = {
  */
 export type ModelCallResult = ModelResult & {
   readonly model: string
-  /** 正文全量（`model.delta` 的 text 通道拼合；已切分——不含内嵌思考的标签与内容）。 */
+  /** 正文全量（`model.delta` 的 text 通道拼合；只有显式内嵌协议才切分标签）。 */
   readonly text: string
   /** 思考全量（`model.delta` 的 thinking 通道拼合；含切开的内嵌思考）。 */
   readonly thinking: string

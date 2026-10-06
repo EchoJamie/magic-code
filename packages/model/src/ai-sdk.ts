@@ -131,8 +131,9 @@ function echoedReasoningOf(own: string | undefined, echoReasoning: boolean): str
 
 function toAiSdkMessages(
   messages: readonly ModelMessage[],
-  /** 该供应商要不要那份思考（U41）——见 `VendorAdapter.echoesReasoning`。 */
-  echoReasoning: boolean,
+  provider: string,
+  model: string,
+  adapter: VendorAdapter | undefined,
 ): AiSdkMessage[] {
   return messages
     .filter((message) => message.role !== 'system')
@@ -144,8 +145,19 @@ function toAiSdkMessages(
           const calls = message.toolCalls ?? []
           // **只回传给要求它的那一家**：思考是那一个模型的私有协议内容，
           // 换个供应商照发等于把上家的东西递到别人那儿（设计：「不转发给其它供应商」）。
-          // ⚠️ 要求回传的那一家**缺了这一位要补上**——见 `ABSENT_REASONING_NOTE`
-          const reasoning = echoedReasoningOf(message.reasoning, echoReasoning)
+          // DeepSeek 缺思考时保留既有的说明文本；MiniMax 只回传实际收到的字段。
+          const source = message.reasoningState
+          const sameSource = source?.provider === provider && source.model === model
+          // 新记录必须同源；DeepSeek 旧记录沿用原回传规则。
+          // MiniMax 旧记录可能已经误切，不能把无来源的旧 payload 当成协议数据。
+          const own = sameSource || (source === undefined && adapter?.echoesReasoning === true)
+            ? message.reasoning : undefined
+          const reasoning = adapter?.echoesReasoning === 'available'
+            ? own : echoedReasoningOf(own, adapter?.echoesReasoning === true)
+          const details = sameSource && adapter?.echoesReasoning !== undefined ? source?.details : undefined
+          const providerOptions = details === undefined ? {} : {
+            providerOptions: { openaiCompatible: { reasoning_details: details as JSONValue[] } },
+          }
 
           // **思考块排在正文之前**（供应商按序读它）。`@ai-sdk/openai-compatible` 会把
           // assistant 的 reasoning part 转回 `reasoning_content` —— DeepSeek 的工具往返
@@ -166,11 +178,11 @@ function toAiSdkMessages(
             })),
           ]
 
-          if (content.length === 0) return { role: 'assistant', content: message.content }
+          if (content.length === 0) return { role: 'assistant', content: message.content, ...providerOptions }
           if (content.length === 1 && content[0]?.type === 'text') {
-            return { role: 'assistant', content: message.content }
+            return { role: 'assistant', content: message.content, ...providerOptions }
           }
-          return { role: 'assistant', content }
+          return { role: 'assistant', content, ...providerOptions }
         }
         case 'tool':
           return {
@@ -337,6 +349,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
     // 就**回退**到了 MiniMax 的改写，`max_tokens` 被改成了 `max_completion_tokens`（首验反例）。
     transformRequestBody:
       options.adapter === undefined ? requestBody : options.adapter.transformRequestBody,
+    metadataExtractor: options.adapter?.metadataExtractor,
     ...(options.fetch === undefined
       ? {}
       : { fetch: options.fetch as unknown as typeof globalThis.fetch }),
@@ -353,7 +366,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
     const result = streamText({
       model,
       ...(instructions === undefined ? {} : { instructions }),
-      messages: toAiSdkMessages(request.messages, options.adapter?.echoesReasoning === true),
+      messages: toAiSdkMessages(request.messages, options.providerId, request.model, options.adapter),
       ...(request.tools === undefined || request.tools.length === 0
         ? {}
         : { tools: toAiSdkTools(request.tools) }),

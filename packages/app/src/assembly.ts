@@ -121,13 +121,11 @@ import {
 } from '@magic/execution'
 import type {
   FetchLike,
-  LearnedTraits,
   ModelInfoService,
   ModelRegistry,
   ModelSwitchResult,
 } from '@magic/model'
 import {
-  createLearnedTraits,
   createModelGateway,
   createModelInfoService,
   createModelRegistry,
@@ -1212,15 +1210,6 @@ export function assemble(options: AssembleOptions): Assembly {
   const knownModelOf = (provider: string, model: string): ModelInfo | undefined =>
     modelInfo.peek(provider).snapshot?.models.find((one) => one.id === model)
 
-  /**
-   * **认下的内嵌思考**（U65）——造一份、**整个装配共用**。
-   *
-   * ⚠️ **必须在 `registryOf` 之外造**：它就是被重建的那一个（保存配置 / 换连接之后
-   * `rebuildRegistry` 会再叫一次 `registryOf`），而「认下的那些」是**这一次用下来学到的
-   * 东西**——它属于这个进程，不该被一次配置保存抹掉。认的是模型的行为，与走哪条连接无关。
-   */
-  const learnedTraits: LearnedTraits = createLearnedTraits()
-
   // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
   // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
   const registryOf = (selection?: AgentModelConfig): ModelRegistry => {
@@ -1233,9 +1222,6 @@ export function assemble(options: AssembleOptions): Assembly {
       configPath: loaded.path,
       // 有效规格要看得见缓存里那份资料（见 `knownModelOf`）
       modelInfoOf: knownModelOf,
-      // 以及「认下的那些」（见上）
-      learnedTraits,
-
     })
     if (selection !== undefined) {
       const result = registry.use(selection)
@@ -1259,7 +1245,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const config = providerBook[chosen.provider]!
     const known = knownModelOf(chosen.provider, chosen.model)
     const gateway = createModelGateway({ providerId: chosen.provider, config, stamper: forwardStamper,
-      fetch: options.modelFetch, configPath: loaded.path, modelInfoOf: () => known, learnedTraits })
+      fetch: options.modelFetch, configPath: loaded.path, modelInfoOf: () => known })
     const spec = modelSpecOf(config, chosen.model, known)
     return { gateway, model: chosen.model, inputBudget: spec?.inputBudget,
       location: `${loaded.path} → providers.${chosen.provider}.modelOverrides.${chosen.model}.limits` }
@@ -1288,7 +1274,6 @@ export function assemble(options: AssembleOptions): Assembly {
           fetch: options.modelFetch,
           configPath: loaded.path,
           modelInfoOf: () => known,
-          learnedTraits,
         })
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)

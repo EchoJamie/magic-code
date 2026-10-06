@@ -60,7 +60,7 @@ export type ToolResultEntry = Entry & {
  * | `tool-call` | **必须有** `{ name, args }` |
  * | `tool-result` | **必须有** `{ ok, output }` |
  * | `user` | **可有**（U33 起：随这次交代送出去的技能材料；U36 起：带位置的引用；U70 起：说话人的标记 `notice`）；不带＝纯文本交代 |
- * | `assistant` | **可有**（U41 起：供应商要求回传的那份思考）——**核准形状只有 `{ reasoning: string }`** |
+ * | `assistant` | **可有**（U41 起：供应商要求回传的那份思考）——`{ reasoning, reasoningState? }` |
  * | 其余（`summary`） | **必须没有** |
  *
  * ⚠️ **`assistant` 那一格是 U64 补的**：U41 落了「思考进载荷」这条写入路径，而这张表
@@ -120,10 +120,7 @@ export function assertEntryShape(entry: NewEntry): void {
   if (entry.kind === 'assistant') {
     if (entry.payload !== undefined && !isAssistantPayload(entry.payload)) {
       throw new Error(
-        'assistant 条目的载荷只装**供应商要求回传的那份思考**——核准形状只有 `{ reasoning: ' +
-          'string }` 这一形（U41：DeepSeek 带 tools 时要求历史轮的 `reasoning_content` 原样' +
-          '回传，不回则 400——故它是重放真源）。没有思考就**不写这个键**（不是写个空对象）：' +
-          '载荷是重放真源，不是杂物抽屉',
+        'assistant 载荷只接受 reasoning 字符串和可选 reasoningState（provider、model、details）；没有思考就不写载荷',
       )
     }
     return
@@ -227,23 +224,17 @@ export function isPlanStepStatus(value: unknown): boolean {
   return value === 'pending' || value === 'in_progress' || value === 'completed'
 }
 
-/**
- * `assistant` 条目的载荷（U64 · U41 那一份思考）——**只认 `{ reasoning: string }` 这一形**。
- *
- * 两条判据，缺一不可（与 `isUserPayload` 同一姿势）：
- * - **只许这一个键**——多一个键当场拒。这正是「kind 与载荷强对应」这道硬闸在
- *   `assistant` 这一格上的形态：**放行一种形状，不是放行一切形状**；
- * - **`reasoning` 必在且是字符串**——空对象（`{}`）不算「带了点东西」，它是
- *   「没有载荷」写错了地方（同 `isUserPayload` 末尾那条注）。
- *
- * **不查内容**：不查字数、不查有没有换行、不查是不是「像思考」——那一份是模型的原话，
- * 记录域只如实留痕（「留痕」这条纪律见 `AssistantPayload` 那条注）。
- */
+/** 思考文本及来源明确的协议数据；保留旧记录，拒绝无关字段和错误形状。 */
 export function isAssistantPayload(payload: unknown): payload is AssistantPayload {
   if (!isRecord(payload)) return false
-  if (Object.keys(payload).some((key) => key !== 'reasoning')) return false
-
-  return typeof payload['reasoning'] === 'string'
+  if (Object.keys(payload).some((key) => key !== 'reasoning' && key !== 'reasoningState')) return false
+  if (typeof payload['reasoning'] !== 'string') return false
+  const state = payload['reasoningState']
+  if (state === undefined) return true // 旧记录
+  if (!isRecord(state) || Object.keys(state).some(key => !['provider', 'model', 'details'].includes(key))) return false
+  return typeof state['provider'] === 'string' && state['provider'].length > 0
+    && typeof state['model'] === 'string' && state['model'].length > 0
+    && (state['details'] === undefined || (Array.isArray(state['details']) && state['details'].every(isRecord)))
 }
 
 export function isContent(value: unknown): value is Content {

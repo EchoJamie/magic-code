@@ -21,6 +21,7 @@
  */
 
 import type { JSONValue } from 'ai'
+import type { MetadataExtractor } from '@ai-sdk/openai-compatible'
 import type {
   ModelInfo,
   ProviderConfig,
@@ -31,7 +32,7 @@ import type {
 } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import { MODEL_CONTEXT_BUILTIN } from './capacity.ts'
-import { matchBuiltinTraits } from './traits.ts'
+import { MINIMAX_REASONING_METADATA } from './reasoning-metadata.ts'
 
 /** 发一次请求要的东西——地址与凭据由**连接**给定（适配不猜、不存）。 */
 export type VendorRequestContext = {
@@ -110,10 +111,15 @@ export type VendorAdapter = {
   ): Promise<Pick<ModelInfo, 'id' | 'name' | 'description' | 'capabilities' | 'limits' | 'reasoning'> | undefined>
   /**
    * **助手消息里的思考要回传**——该供应商的协议要求（DeepSeek 的思考模式在带 tools 时
-   * 不回传历史轮的 `reasoning_content` 就 400）。**没有这一位＝不带**：
+   * 不回传历史轮的 `reasoning_content` 就 400）。true 保留缺失说明，available 只回传实有字段。
+   * **没有这一位＝不带**：
    * 思考是**这一家这一个模型**的私有协议内容，不转发给其它供应商（设计明文）。
    */
-  readonly echoesReasoning?: boolean | undefined
+  readonly echoesReasoning?: true | 'available' | undefined
+  /** 请求明确采用分离格式，content 不再经过内嵌标签切分。 */
+  readonly separatesReasoning?: boolean
+  /** SDK 未直接承载的供应商回传数据。 */
+  readonly metadataExtractor?: MetadataExtractor
   /**
    * **请求体改写**（该供应商已知的参数名差异）——没有这一位就原样发。
    *
@@ -221,6 +227,9 @@ async function getJson(ctx: VendorRequestContext, path: string): Promise<unknown
 export const MINIMAX_VENDOR: VendorAdapter = {
   id: 'minimax',
   label: 'MiniMax',
+  separatesReasoning: true,
+  echoesReasoning: 'available',
+  metadataExtractor: MINIMAX_REASONING_METADATA,
   // ⚠️ 这是**新建官方连接**的地址（文档给的 `api.minimax.cn`）；旧兼容连接用的
   // `api.minimaxi.com` 一个字不动——那是另一条路，不因域名变化自动迁移凭据
   regions: [{ id: 'cn', label: '中国大陆', baseURL: 'https://api.minimax.cn/v1' }],
@@ -243,32 +252,25 @@ export const MINIMAX_VENDOR: VendorAdapter = {
   /**
    * MiniMax 的已知差异：`max_tokens` 已弃用，改用 `max_completion_tokens`。
    *
-   * 与 `ai-sdk.ts` 的 `requestBody` 是同一件事——那条管**兼容接入**的老路径
+   * 另请求 reasoning_split，正文与思考按字段区分。
+   * `ai-sdk.ts` 的 `requestBody` 只管**兼容接入**的老路径
    * （无 `vendor` 的连接），这条管官方适配。两处各写一份是**故意的**：
    * 让 `ai-sdk.ts` 只依赖类型、不反向 import 本文件，域内不出现运行时循环。
    */
   transformRequestBody(args) {
     const { max_tokens: maxTokens, ...rest } = args
-    if (maxTokens === undefined) return rest
-    return { ...rest, max_completion_tokens: maxTokens }
+    return {
+      ...rest,
+      ...(maxTokens === undefined ? {} : { max_completion_tokens: maxTokens }),
+      reasoning_split: true,
+    }
   },
 
-  /**
-   * 缺项补充——MiniMax 的官方模型表（窗长）与实测行为（内嵌思考）。
-   *
-   * 两张表（与 `capacity.ts` / `traits.ts` 是**同一份**常量：官方资料只有一个出处，
-   * 兼容接入那条路按模型名查它、官方适配这条路按适配补它，内容因此不会分叉）。
-   *
-   * ⚠️ **U65 起两样的查法不一样**：特征标记按**家族**查（`matchBuiltinTraits`——
-   * `MiniMax-M2.7-highspeed` 落 M2 那一条），窗长仍按**精确 id** 查。不是漏改：
-   * 内嵌思考有「同一线不同版本号行为相同」的实测依据（见 `traits.ts` 那条注），
-   * 而窗长是**逐型号的规格**，没有依据说小改款的窗口跟着走——不按型号名猜。
-   */
+  /** 只补精确型号的已知容量；通道格式由适配的请求参数决定。 */
   supplement(info) {
     const window = Object.hasOwn(MODEL_CONTEXT_BUILTIN, info.id)
       ? MODEL_CONTEXT_BUILTIN[info.id]
       : undefined
-    const traits = matchBuiltinTraits(info.id)
 
     return {
       ...info,
@@ -276,18 +278,15 @@ export const MINIMAX_VENDOR: VendorAdapter = {
       ...(info.limits === undefined && window === undefined
         ? {}
         : { limits: { ...(window === undefined ? {} : { maxContextTokens: window }), ...info.limits } }),
-      ...(traits === undefined ? {} : { traits }),
     }
   },
 
   /**
-   * 思考设置——**官方文档未给出可配置的思考参数**（M3 / M2 的思考内嵌在正文里，
-   * 由 `traits.inlineThinking` 切开）。故只认「模型默认」：
-   * 其余形态**如实报缺口**，不发送一个我们没依据的参数。
+   * 当前适配只支持模型默认思考设置；reasoning_split 只决定响应字段，不改变思考开关。
    */
   reasoningOf(setting): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
     if (setting.mode === 'default') return undefined
-    return { gap: 'MiniMax 官方文档没有可配置的思考参数——只能用它自己的默认' }
+    return { gap: '当前 MiniMax 适配只支持模型默认思考设置' }
   },
 }
 
@@ -316,6 +315,7 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
   regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
   // 思考模式的工具往返要求把历史轮的 `reasoning_content` 原样回传（官方文档明文）
   echoesReasoning: true,
+  separatesReasoning: true,
 
   baseURLOf(config) {
     return resolveBaseURL(this.regions, config)

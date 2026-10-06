@@ -734,7 +734,7 @@ async function runTurn(
     }
 
     let text = ''
-    /** 思考通道的正文——**只为 D6 的判据攒着**（不落条目，条目只载正文）。 */
+    /** 思考通道的正文——随助手载荷保存，供同源模型回传。 */
     let thinking = ''
     /** 本轮的聚合结果——超限重发时会被下一次调用覆盖（上一次的结论已作废）。 */
     let result: ModelResult
@@ -849,7 +849,7 @@ async function runTurn(
     // 装配自 `assistant` 条目往后扫「`tool-call` ＋ 紧随的 `tool-result`」对
     // （见 `context.ts`）；锚没了，这一轮的工具往返**整段进不了上下文**
     // （实测：第 2 次模型调用的 messages 里连 `role:'tool'` 都没有）。
-    const blank = text.trim() === '' && thinking.trim() === '' && calls.length === 0
+    const blank = text.trim() === '' && thinking.trim() === '' && calls.length === 0 && result.reasoningState === undefined
     // 思考**落进载荷**（U41）：DeepSeek 的思考模式在带 tools 时要求历史轮的
     // `reasoning_content` 原样回传（不回则 400）。它**不进屏**（屏上那份走 `thinking`
     // 通道的展示），只在下一次请求装配时回到 assistant 消息上——带不带由适配决定
@@ -860,7 +860,10 @@ async function runTurn(
           entryLogOf(runtime),
           'assistant',
           text,
-          thinking.length === 0 ? undefined : { reasoning: thinking },
+          thinking.length === 0 && result.reasoningState === undefined ? undefined : {
+            reasoning: thinking,
+            ...(result.reasoningState === undefined ? {} : { reasoningState: result.reasoningState }),
+          },
         )
     if (assistantId !== undefined) {
       sink.emit(stamper.stamp('message.assistant', { entry: assistantId }))

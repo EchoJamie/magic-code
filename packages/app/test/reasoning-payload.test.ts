@@ -15,7 +15,7 @@
  * | 用例 | 咬什么 |
  * | --- | --- |
  * | ① 思考那一轮 | **落得进去**（那一轮不炸）· **读得回来**（条目里就是那份思考）· **下一轮回传**（出站请求体里 `reasoning_content`） |
- * | ② 反面 · 兼容接入 | 同一份构造换成**没有 `vendor`** 的连接 ⇒ **一个字都不回传**（U41：思考是那一家私有协议，不转发给别家） |
+ * | ② MiniMax | 同源思考按实际字段回传；没有思考时不补说明 |
  *
  * ①里那三条**缺一不可**：只验「跑通了」的话，条目里那份思考丢在取件层也照样绿——
  * 而那正是 U41 存在的理由（不回传则 400）。
@@ -63,16 +63,14 @@ function sendAndWait(shell: ShellHandle, text: string): Promise<void> {
 /**
  * 一块**接在受控端点上的**沙地——配置里那一条连接指环回夹具。
  *
- * `vendor` 给不给就是本文件那两条用例的全部差别：
- * - 给 `deepseek`（官方适配，`echoesReasoning`）＝①；
- * - 不给（兼容接入，原协议原样）＝②。
+ * 使用当前产品支持的两种官方适配：DeepSeek 与 MiniMax。
  */
-function stageOn(fixture: Fixture, options: { readonly vendor?: string } = {}): Stage {
+function stageOn(fixture: Fixture, options: { readonly vendor: string }): Stage {
   return makeStage({
     config: {
       modelAliases: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: MODEL}, arcane: {provider: "local", model: MODEL}},
       providers: {
-        local: { vendor: 'minimax', ...(options.vendor === undefined ? {} : { vendor: options.vendor }), baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+        local: { vendor: options.vendor, baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })
@@ -128,7 +126,7 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
       // ② **读得回来**：条目里那份思考就是端点回的那份（逐字），正文另存（载荷不重复它）
       const landed = assistantRows(assembly.paths.database)
       expect(landed).toHaveLength(1)
-      expect(landed[0]?.payload).toEqual({ reasoning: REASONING })
+      expect(landed[0]?.payload).toEqual({ reasoning: REASONING, reasoningState: { provider: 'local', model: MODEL } })
       expect(landed[0]?.text).toBe(REPLY)
 
       // —— 第二轮：那一份要随历史轮回传 ——
@@ -145,7 +143,7 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
     }
   })
 
-  test('**反面**·兼容接入：同一份思考**一个字都不回传**（不转发给别的供应商）', async () => {
+  test('MiniMax：同源的实际思考经记录后原样回传', async () => {
     const fixture = startFixture({
       model: MODEL,
       turns: [
@@ -153,8 +151,7 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
         { kind: 'text', text: '好，接着来。' },
       ],
     })
-    // 没有 `vendor` ＝ 兼容接入（原协议原样）——思考是**那一家私有**的协议内容
-    const stage = stageOn(fixture)
+    const stage = stageOn(fixture, { vendor: 'minimax' })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
     try {
@@ -165,12 +162,12 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
       await sendAndWait(handle, '接着做')
 
       // 条目里**照旧留着**那份思考（记录域与供应商无关：如实留痕）
-      expect(assistantRows(assembly.paths.database)[0]?.payload).toEqual({ reasoning: REASONING })
+      expect(assistantRows(assembly.paths.database)[0]?.payload).toEqual({ reasoning: REASONING, reasoningState: { provider: 'local', model: MODEL } })
 
-      // 而**出站请求体里没有它**——「不转发给其它供应商」这条口径本单没动
+      // 同源且实际收到的思考进入下一次请求；跨来源隔离由模型域反例覆盖
       const chats = chatsOf(fixture)
       expect(chats).toHaveLength(2)
-      expect(chats[1]?.assistantReasoning).toBeUndefined()
+      expect(chats[1]?.assistantReasoning).toBe(REASONING)
     } finally {
       assembly?.close()
       await fixture.stop()
@@ -236,7 +233,7 @@ describe('U95 · 没有思考的那一轮：要求回传的那家补上一句说
     }
   })
 
-  test('**反面**·兼容接入：同一形**一位都不补**（不给不要求的那家塞）', async () => {
+  test('MiniMax：没有思考时不补说明字段', async () => {
     const fixture = startFixture({
       model: MODEL,
       turns: [
@@ -244,8 +241,7 @@ describe('U95 · 没有思考的那一轮：要求回传的那家补上一句说
         { kind: 'text', text: '好，接着来。' },
       ],
     })
-    // 没有 `vendor` ＝ 兼容接入（不要求回传）⇒ 补这一位的那条路整个不走
-    const stage = stageOn(fixture)
+    const stage = stageOn(fixture, { vendor: 'minimax' })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
     try {

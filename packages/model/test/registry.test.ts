@@ -20,10 +20,7 @@ import type { ProviderConfig } from '@magic/contracts'
 import { drainStream, makeTestStamper } from '@magic/faux'
 import type { ModelRegistry } from '../src/index.ts'
 import {
-  createLearnedTraits,
   createModelRegistry,
-  matchBuiltinTraits,
-  resolveModelTraits,
 } from '../src/index.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -325,7 +322,7 @@ describe('注册表 · 每条目各归其位', () => {
 
     // 乙家是个表外模型（内置表不认），靠**条目自己的覆盖位**声明「思考内嵌在正文里」
     const registry = registryOf(
-      { alpha: ALPHA, local: { ...BETA, modelOverrides: { 'my-local-llama': { traits: { inlineThinking: { tag: 'think' } } } } } },
+      { alpha: ALPHA, local: { baseURL: BETA.baseURL, modelOverrides: { 'my-local-llama': { traits: { inlineThinking: { tag: 'think' } } } } } },
       { fetch: scripted, apiKeys: { alpha: 'ka', local: 'kl' } },
     )
 
@@ -348,14 +345,7 @@ describe('注册表 · 每条目各归其位', () => {
     void fetch
   })
 
-  /**
-   * U65 的**接线**判据——「认下的那些」由**装配根造、注册表传给每一个网关**。
-   *
-   * 由头：这条正是漏传过一次的那种地方（注册表那一跳不传，网关就永远查不到——
-   * 而每一件单独看都对）。故这里量的是**跨两轮**：第一轮认下，第二轮**同一个注册表**
-   * 直接按它办，且**痕迹读得出来**（`entries()`）。
-   */
-  test('认下的那些随注册表进网关——第一轮认出、第二轮直接按它办', async () => {
+  test('同一个注册表连续调用也不从输出学习内嵌协议', async () => {
     const body = JSON.stringify({
       id: 'c1',
       object: 'chat.completion.chunk',
@@ -377,31 +367,20 @@ describe('注册表 · 每条目各归其位', () => {
         { status: 200, headers: { 'content-type': 'text/event-stream' } },
       )) as unknown as typeof globalThis.fetch
 
-    const learned = createLearnedTraits()
     const registry = registryOf(
-      { alpha: { ...ALPHA } },
-      { fetch: scripted, apiKeys: { alpha: 'ka' }, learnedTraits: learned },
+      { alpha: { baseURL: ALPHA.baseURL } },
+      { fetch: scripted, apiKeys: { alpha: 'ka' } },
     )
 
     expect(registry.use({ alias: 'default', provider: 'alpha', model: 'acme-reasoner-v9' }).ok).toBe(true)
     const first = await drainStream(
       registry.stream({ model: 'acme-reasoner-v9', messages: [{ role: 'user', content: '嗨' }] }),
     )
-    expect(first.result).toMatchObject({ thinking: '想', text: '正文' })
-    // **痕迹**（可查）：认下了哪一个模型名、认成了什么
-    expect(learned.entries()).toEqual([
-      ['acme-reasoner-v9', { inlineThinking: { tag: 'think' } }],
-    ])
-
-    // 第二轮：**同一个模型名**——走的是认下的那一份（表里并没有它）
-    expect(matchBuiltinTraits('acme-reasoner-v9')).toBeUndefined()
-    expect(resolveModelTraits('acme-reasoner-v9', undefined, learned)).toEqual({
-      inlineThinking: { tag: 'think' },
-    })
+    expect(first.result).toMatchObject({ thinking: '', text: '<think>想</think>正文' })
     const second = await drainStream(
       registry.stream({ model: 'acme-reasoner-v9', messages: [{ role: 'user', content: '嗨' }] }),
     )
-    expect(second.result).toMatchObject({ thinking: '想', text: '正文' })
+    expect(second.result).toMatchObject({ thinking: '', text: '<think>想</think>正文' })
   })
 })
 

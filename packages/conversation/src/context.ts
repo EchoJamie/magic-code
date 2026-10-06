@@ -286,7 +286,7 @@ export async function assembleContext(
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
         // **该次答复的思考**（U41）——载荷里留着就带回去（供应商要求回传时用得上，
         // 送不送由模型域的适配决定）。不在条目里就一个字不加（旧记录照读）
-        ...(reasoningOf(entry) === undefined ? {} : { reasoning: reasoningOf(entry) }),
+        ...(reasoningPayloadOf(entry) ?? {}),
       })
       messages.push(...toolMessages)
       index = cursor
@@ -891,11 +891,10 @@ function skillsBlockOf(skills: readonly UsedSkillEntry[]): string {
 }
 
 /**
- * `assistant` 条目载荷里那份思考（U41）——**只有字符串非空时才认**。
+ * `assistant` 条目里非空的思考文本或供应商协议数据。
  */
-function reasoningOf(entry: Entry): string | undefined {
+function reasoningPayloadOf(entry: Entry) {
   const payload = entry.payload
   if (payload === undefined || !('reasoning' in payload)) return undefined
-  const reasoning = (payload as { reasoning?: unknown }).reasoning
-  return typeof reasoning === 'string' && reasoning.length > 0 ? reasoning : undefined
+  return payload.reasoning.length > 0 || payload.reasoningState !== undefined ? payload : undefined
 }

@@ -22,6 +22,7 @@ import type {
   ModelFinishReason,
   ModelTraits,
   ModelUsage,
+  ReasoningState,
   ToolCall,
 } from '@magic/contracts'
 import type { ModelCallResult, ModelStream } from './call.ts'
@@ -35,8 +36,7 @@ import {
   modelUsage,
 } from './events.ts'
 import type { InlineDelta, TextSplitter } from './inline-thinking.ts'
-import { inlineThinkingSplitter, passthroughSplitter, probingSplitter } from './inline-thinking.ts'
-import { knownInlineTags } from './traits.ts'
+import { inlineThinkingSplitter, passthroughSplitter } from './inline-thinking.ts'
 
 /** 取件层的流形态——**接缝内部**。AI SDK 的 `TextStreamPart` 不越过接缝。 */
 /**
@@ -73,21 +73,8 @@ export type NormalizeOptions = {
   readonly provider?: string | undefined
   /** 用于错误消息脱敏（key 永不入记录 / 事件）。 */
   readonly secret?: string | undefined
-  /**
-   * **生效的**模型特征标记——由 `resolveModelTraits` 裁定后传入（见 `traits.ts`）。
-   * 无 `inlineThinking` ＝ 常规行为：正文原样走 `text`，**不猜、不切**。
-   *
-   * 缺省（`undefined`）＝**不知道这个模型是哪一类**——那时才装探针：
-   * 模型输出**以某个已知标签开头**才认、认下并留存（见 `learnInlineThinking`）。
-   */
+  /** 显式通道声明；未声明就保留正文，不从模型名或内容推断。 */
   readonly traits?: ModelTraits | undefined
-  /**
-   * **认下内嵌思考**时的回调（U65 第二层）——探针认出来的那一刻调一次，带标签名。
-   *
-   * 由**网关**接：记进 `LearnedTraits`（这个模型名下一次直接按它办）。不接也行——
-   * 这一次照样切对，只是下一轮还得再认一遍。归一本身**不持有**那份记忆（本文件仍是纯的）。
-   */
-  readonly learnInlineThinking?: ((tag: string) => void) | undefined
   /**
    * **上下文窗口总量**（token）——`model.usage` 上那个分母（缺陷 D10 · 第 1 样）。
    * 由网关从条目配置传入（`ProviderConfig.contextWindow`）。**缺省 ＝ 不给分母**——
@@ -134,6 +121,7 @@ type NormalizeState = {
   readonly splitter: TextSplitter
   text: string
   thinking: string
+  reasoningDetails?: ReasoningState['details']
   readonly pending: Map<string, PendingToolCall>
   /** 实际用量——**各字段分别可缺**（未上报＝不知道，不补零）。 */
   usage: ModelUsage | undefined
@@ -146,24 +134,10 @@ type NormalizeState = {
   closed: boolean
 }
 
-/**
- * 正文切分位——**标记驱动**（技术方案 · 模型策略：不当通例处理）。三处出口，判据只有一条：
- * 这个模型**知不知道**是哪一类。
- *
- * - 知道，且标了 `inlineThinking` ⇒ 按它切；
- * - 知道，且**明说无特征**（`{}`）⇒ 原样走 `text`（**不探**——那是用户的出口，见 `traits.ts`）；
- * - **不知道** ⇒ 探针：模型输出以已知标签开头才认（探针本身不含「无条件切分」，见
- *   `probingSplitter` 的判据）。
- */
+/** 官方分离格式与未知格式都直接保留正文；只有显式内嵌协议启用标签切分。 */
 function createSplitter(options: NormalizeOptions): TextSplitter {
   const tag = options.traits?.inlineThinking?.tag
-  if (tag !== undefined && tag.length > 0) return inlineThinkingSplitter(tag)
-  if (options.traits !== undefined) return passthroughSplitter()
-
-  return probingSplitter({
-    tags: knownInlineTags(),
-    learn: options.learnInlineThinking,
-  })
+  return tag ? inlineThinkingSplitter(tag) : passthroughSplitter()
 }
 
 function createState(options: NormalizeOptions): NormalizeState {
@@ -394,6 +368,8 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
     case 'finish-step': {
       // 取件层单次调用只走一步；这里保留供应商原始用量（SDK 总计会丢失 raw）。
       state.usage = toUsage(part.usage) ?? state.usage
+      const details = part.providerMetadata?.['magicReasoning']?.['details']
+      if (Array.isArray(details)) state.reasoningDetails = details as NonNullable<ReasoningState['details']>
       return []
     }
     case 'finish': {
@@ -525,6 +501,13 @@ function snapshot(state: NormalizeState): ModelCallResult {
     model: state.model,
     text: state.text,
     thinking: state.thinking,
+    ...(state.provider !== undefined && (state.thinking.length > 0 || state.reasoningDetails !== undefined)
+      ? { reasoningState: {
+          provider: state.provider,
+          model: state.model,
+          ...(state.reasoningDetails === undefined ? {} : { details: state.reasoningDetails }),
+        } }
+      : {}),
     toolCalls: settleToolCalls(state),
     usage: state.usage,
     finishReason: state.finishReason,

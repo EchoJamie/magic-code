@@ -348,18 +348,20 @@ export type UserPayload = {
  * ⚠️ 它是**这一家这一个模型**的私有协议内容：换供应商时由适配决定带不带
  * （设计：「不转发给其它供应商」）。
  *
- * ## 核准的**只有这一形**（U64 · 记录域跟上）
- *
- * `reasoning` **必给且是字符串**——不是可选位。理由与 `UserPayload` 那条同法：
- * 载荷在这里是**重放真源**，不是杂物抽屉；**空载荷（`{}`）＝「没有载荷」写错了地方**，
- * 不是一种合法的「带了点东西」。故「这一轮没有思考」的表达方式是**整个 `payload` 缺席**
- * （`Entry.payload?` 本来就是可选的），而不是写一个空对象。
- *
- * ⚠️ **U41 那一段（模型侧的原样回传）本单一个字没动**：错的是记录域那张表没跟上
- * （`assistant` 落在「其余必须没有」那一格里），不是由头不成立。
+ * reasoning 保存思考文本；reasoningState 保存来源及供应商要求的回传数据。
+ * 旧的仅含 reasoning 的记录继续可读；无思考时整个载荷缺席。
  */
 export type AssistantPayload = {
   readonly reasoning: string
+  /** 思考的来源及供应商要求回传的协议数据；旧记录可缺。 */
+  readonly reasoningState?: ReasoningState
+}
+
+/** 仅回传给同一连接、同一模型；details 原样存储，不参与正文显示。 */
+export type ReasoningState = {
+  readonly provider: string
+  readonly model: string
+  readonly details?: readonly Readonly<Record<string, unknown>>[]
 }
 
 /**

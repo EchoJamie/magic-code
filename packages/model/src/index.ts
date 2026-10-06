@@ -92,17 +92,7 @@ export {
 
 export { classifyModelError, describeModelError, isAbortError, redactSecrets } from './errors.ts'
 
-// 特征标记（U65 起按**家族**匹配；另有「认下的那些」——随用生长的那一份，见 `traits.ts`）
-export {
-  MODEL_TRAITS_BUILTIN,
-  createLearnedTraits,
-  knownInlineTags,
-  matchBuiltinTraits,
-  resolveModelTraits,
-} from './traits.ts'
-export type { LearnedTraits } from './traits.ts'
-
-// 容量（上下文窗总量 · U30）——与 `traits` 同族的内置表 ＋ 覆盖判定。
+// 容量（上下文窗总量 · U30）——按精确型号的内置表 ＋ 覆盖判定。
 // ⚠️ **旧的「窗长表」出口已撤**（U41 返修）：分母改由 `ModelRegistry.capacityOf` 一次解析，
 // 经事件给外壳（`model.switched` / `model.call.start` 的 `inputBudget`）。这两件留着——
 // 它们是域内的容量资料与**兼容接入**那条路的判定（别按「没人调」删掉）。

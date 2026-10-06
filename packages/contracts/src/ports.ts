@@ -45,6 +45,7 @@ import type {
   NewEntry,
   PlanNote,
   PlanSnapshot,
+  ReasoningState,
   SessionSummary,
   UsedSkill,
 } from './entries.ts'
@@ -1267,6 +1268,7 @@ export type ModelMessage =
        * 缺省＝不带（不带思考的答复、或这家不需要）。
        */
       readonly reasoning?: string
+      readonly reasoningState?: ReasoningState
     }
   | {
       readonly role: 'tool'
@@ -1319,6 +1321,8 @@ export type ModelResult = {
   readonly finishReason?: ModelFinishReason
   readonly usage?: ModelUsage
   readonly complete: boolean
+  /** 供应商思考协议的回传数据，随助手记录持久化。 */
+  readonly reasoningState?: ReasoningState
   /**
    * 模型本轮请求的工具调用——**循环据以回填**（面向端口者不解析事件流拼装）。
    * 注：`model.delta(toolcall)` 是**流式片段**，事件流拼不出归属——故聚合结果必须载它
@@ -1328,17 +1332,9 @@ export type ModelResult = {
 }
 
 /**
- * 模型特征标记——**覆盖位**（技术方案 · 领域划分 · 端口内类型 · 模型策略）。
- *
- * **内置表**（模型域持有 · **不入契约**）给默认；判据取「**键在即接管**」——
- * `traits` 存在就**整组覆盖**（含 `{}` ＝**显式声明无特征**）；两处皆无 → 常规行为（不猜、不切）。
- *
- * 理由——一条规则胜过一个二级判据，且**内置表判错时用户关得掉**：若 `{}` 回落内置表，
- * 错的模型就没有出口。
- *
- * 首站一条：`inlineThinking`——思考**内嵌在正文**（`<think>…</think>` 是少数模型的行为，
- * 不当通例处理）；`tag` 给出包裹标签，归一据它把标签内容切出到 `thinking` 通道
- * （`text` 通道不带标签）。
+ * 兼容接口的显式通道声明。未声明时保留正文，不按模型名或标签内容自动推断。
+ * 官方适配已经选择分离格式时以接口协议为准，不再切分 content。
+ * inlineThinking 仅供必须使用内嵌协议的兼容接口；字面标签与控制标记仍可能歧义。
  */
 export type ModelTraits = {
   readonly inlineThinking?: { readonly tag: string }

@@ -357,6 +357,10 @@ describe('判据 1 · 落取回环', () => {
         { foo: 1 }, // 别的东西——载荷不是杂物抽屉
         {}, // 空载荷＝「没有载荷」写错了地方（与 `user` 那条同一姿势）
         { reasoning: 3 }, // 形状不对：那一格是**文字**
+        { reasoning: '想过了', reasoningState: {} },
+        { reasoning: '想过了', reasoningState: { provider: 'mm', model: '', details: [] } },
+        { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', details: ['bad'] } },
+        { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', extra: 1 } },
         { reasoning: '想过了', extra: 1 }, // 多带一位：只许 `reasoning` 这一个键
       ]) {
         expect(() =>
