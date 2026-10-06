@@ -19,6 +19,15 @@ export type AttentionItem = RunNotice & {
   readonly fact: string
 }
 
+/** 同拍捕获的只读成员摘要；不含全文、模型配置或执行入口。 */
+export type NativeMember = {
+  readonly session: string
+  readonly name: string
+  readonly state: RunState
+  readonly action?: string
+  readonly reason?: string
+}
+
 /** 服务生成完整投影；UI 只按身份呈现，不从事件重建领域状态。 */
 export type NativeWork = {
   readonly session: string
@@ -32,6 +41,7 @@ export type NativeWork = {
   readonly gen: number | null
   readonly affected: boolean
   readonly notices: readonly AttentionItem[]
+  readonly members?: readonly NativeMember[]
 }
 
 export type NativeProjection = {

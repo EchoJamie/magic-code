@@ -56,8 +56,31 @@ describe('协作 Native 整项工作投影', () => {
       plain, work('origin', { gen: 7 }), work(another.agent.sessionId),
     ], snapshot)
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toEqual(work('origin', { state: 'running', action: '实现成员：运行测试', affected: true, gen: 7, since: 12 }))
+    expect(rows[0]).toEqual(work('origin', { state: 'running', action: '实现成员：运行测试', affected: true, gen: 7, since: 12, members: [
+      { session: 'origin', name: '协调', state: 'idle' },
+      { session: child.agent.sessionId, name: '实现成员', state: 'running', action: '运行测试' },
+      { session: another.agent.sessionId, name: '审查', state: 'idle' },
+    ] }))
     expect(rows[1]).toBe(plain)
+  })
+
+  test('成员摘要使用同拍真实名称与运行事实；缺席或未核销成员不补成空闲', () => {
+    const child = f.spawn('child', '真实实现成员')
+    const missing = f.spawn('missing', '尚未取得运行状态')
+    const snapshot = f.snapshot()
+    f.records.updateAgent(child.agent.agentId, { name: '下一拍才改名' })
+    const row = mergeCollaborationNative([work('origin'), work('child', {
+      state: 'waiting', action: '确认是否写入外部路径', affected: true,
+    })], snapshot)[0]!
+    expect(row.members).toEqual([
+      { session: 'origin', name: '协调', state: 'idle' },
+      { session: 'child', name: '真实实现成员', state: 'waiting', action: '确认是否写入外部路径' },
+      { session: missing.agent.sessionId, name: '尚未取得运行状态', state: 'unknown', reason: '成员状态待核实' },
+    ])
+    f.respond(child, 'accept')
+    f.records.beginExecution(child.agent.agentId, { operationId: 'unsettled', runId: 'run', kind: 'model', delegationId: child.delegation.delegationId, at: 8 })
+    expect(mergeCollaborationNative([work('origin'), work('child')], f.snapshot())[0]?.members?.find(one => one.session === 'child'))
+      .toMatchObject({ state: 'unknown', reason: '成员状态待核实' })
   })
 
   test('旧成员事项归根保留名字、原因和事实；新归根事项不重复加成员标签，读取不改持久标记', () => {

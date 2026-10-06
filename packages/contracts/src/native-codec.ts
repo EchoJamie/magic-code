@@ -20,11 +20,16 @@ function attention(v: unknown): boolean {
   return object(v) && string(v.id) && string(v.session) && ['done', 'failed', 'needs-you'].includes(String(v.kind)) &&
     number(v.at) && optional(v.detail, string) && typeof v.unread === 'boolean' && typeof v.delivered === 'boolean' && string(v.fact)
 }
+function member(v: unknown): boolean {
+  return object(v) && string(v.session) && string(v.name) &&
+    ['running', 'waiting', 'stopping', 'stopped', 'idle', 'unknown'].includes(String(v.state)) &&
+    optional(v.action, string) && optional(v.reason, string)
+}
 function work(v: unknown): boolean {
   return object(v) && string(v.session) && string(v.title) && strings(v.workspace) &&
     ['running', 'waiting', 'stopping', 'stopped', 'idle', 'unknown'].includes(String(v.state)) &&
     optional(v.action, string) && optional(v.reason, string) && number(v.since) && (v.gen === null || integer(v.gen)) &&
-    typeof v.affected === 'boolean' && Array.isArray(v.notices) && v.notices.every(attention)
+    typeof v.affected === 'boolean' && Array.isArray(v.notices) && v.notices.every(attention) && optional(v.members, v => Array.isArray(v) && v.every(member))
 }
 function projection(v: unknown): boolean {
   return object(v) && string(v.serviceInstance) && integer(v.revision) && typeof v.accepting === 'boolean' &&

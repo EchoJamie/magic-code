@@ -128,6 +128,21 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
     workspace: rootWork?.workspace ?? coordinator?.workspace ?? [],
     // 成员代次从不冒充整项工作；manager 用此前同拍捕获的整项版本覆盖这一格。
     gen: rootWork?.gen ?? null, ...status,
+    members: members.map(member => {
+      const row = bySession.get(member.sessionId)
+      const execution = active.find(one => one.agentId === member.agentId)
+      const wait = waits.find(one => one.agentId === member.agentId && one.state === 'waiting')
+      const unknown = row === undefined || member.reachability === 'suspended'
+        || (execution !== undefined && ['idle', 'stopped'].includes(row.state))
+      return {
+        session: member.sessionId, name: member.name,
+        state: unknown ? 'unknown' : row.state,
+        ...(unknown ? { reason: execution?.reason ?? (member.reachability === 'suspended' ? '成员连接待核实' : '成员状态待核实') } : {
+          ...(row.action === undefined ? (wait === undefined ? {} : { action: `等待：${wait.expectation}` }) : { action: row.action }),
+          ...(row.reason === undefined ? {} : { reason: row.reason }),
+        }),
+      }
+    }),
     notices: rows.flatMap(row => row.notices.map(notice => notice.session === root ? notice : {
       ...notice, session: root, detail: memberDetail(notice.session, notice.detail ?? ''),
     })).sort((left, right) => left.at - right.at || left.id.localeCompare(right.id)),

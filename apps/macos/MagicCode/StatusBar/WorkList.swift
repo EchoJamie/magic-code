@@ -3,11 +3,12 @@ import Foundation
 enum WorkGroup: Int, CaseIterable, Identifiable {
     case needsYou, uncertain, running, recent
     var id: Int { rawValue }
-    var title: String { ["需要你", "异常 / 状态待确认", "执行中", "最近结果"][rawValue] }
+    var title: String { ["需要你", "异常 / 状态待确认", "进行中", "最近工作"][rawValue] }
     static func of(_ work: NativeWork) -> WorkGroup {
         if work.state == .waiting { return .needsYou }
-        if work.state == .unknown || work.notices.contains(where: { $0.kind == .failed && $0.unread }) { return .uncertain }
+        if work.state == .unknown { return .uncertain }
         if work.affected || work.state == .running || work.state == .stopping { return .running }
+        if work.notices.contains(where: { $0.kind == .failed && $0.unread }) { return .uncertain }
         return .recent
     }
 }
@@ -24,6 +25,16 @@ struct WorkList {
         for work in works.sorted(by: { $0.since > $1.since }) where !order.contains(work.id) {
             order.append(work.id); groups[work.id] = WorkGroup.of(work)
         }
+    }
+    static func shortPath(_ path: String, among paths: [String]) -> String {
+        let parts = path.split(separator: "/")
+        for count in 2...max(2, parts.count) {
+            let suffix = parts.suffix(count).joined(separator: "/")
+            if !paths.contains(where: { $0 != path && $0.split(separator: "/").suffix(count).joined(separator: "/") == suffix }) {
+                return parts.count > count ? "…/" + suffix : path
+            }
+        }
+        return path
     }
     func rows(_ group: WorkGroup, works: [NativeWork]) -> [NativeWork] {
         let byID = Dictionary(works.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })

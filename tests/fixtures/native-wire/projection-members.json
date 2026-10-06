@@ -1,0 +1,45 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.projection",
+    "projection": {
+      "serviceInstance": "service-one",
+      "revision": 1,
+      "accepting": true,
+      "works": [
+        {
+          "session": "session-one",
+          "title": "修复一个非常长的同名工作标题以验证截断与辅助功能",
+          "workspace": [
+            "/tmp/project-one"
+          ],
+          "state": "running",
+          "since": 1790400000000,
+          "gen": 3,
+          "affected": true,
+          "notices": [],
+          "members": [
+            {
+              "session": "session-one",
+              "name": "协调者",
+              "state": "idle"
+            },
+            {
+              "session": "member-one",
+              "name": "实现成员",
+              "state": "waiting",
+              "action": "确认测试影响范围"
+            },
+            {
+              "session": "member-two",
+              "name": "审阅成员",
+              "state": "unknown",
+              "reason": "成员连接待核实"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

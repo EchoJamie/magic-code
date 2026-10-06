@@ -38,6 +38,22 @@ struct AttentionItem: Codable, Equatable, Identifiable {
     let delivered: Bool
     let fact: String
 }
+struct NativeMember: Codable, Equatable, Identifiable {
+    let session: String
+    let name: String
+    let state: RunState
+    let action: String?
+    let reason: String?
+    var id: String { session }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        session = try c.decode(String.self, forKey: .session)
+        name = try c.decode(String.self, forKey: .name)
+        state = try c.decode(RunState.self, forKey: .state)
+        action = try c.decodeOptional(String.self, forKey: .action)
+        reason = try c.decodeOptional(String.self, forKey: .reason)
+    }
+}
 struct NativeWork: Codable, Equatable, Identifiable {
     let session: String
     let title: String
@@ -49,7 +65,8 @@ struct NativeWork: Codable, Equatable, Identifiable {
     let gen: Int?
     let affected: Bool
     let notices: [AttentionItem]
-    private enum Keys: String, CodingKey { case session, title, workspace, state, action, reason, since, gen, affected, notices }
+    let members: [NativeMember]?
+    private enum Keys: String, CodingKey { case session, title, workspace, state, action, reason, since, gen, affected, notices, members }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         session = try c.decode(String.self, forKey: .session)
@@ -62,6 +79,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
         gen = try c.decode(Int?.self, forKey: .gen)
         affected = try c.decode(Bool.self, forKey: .affected)
         notices = try c.decode([AttentionItem].self, forKey: .notices)
+        members = try c.decodeOptional([NativeMember].self, forKey: .members)
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
@@ -75,6 +93,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
         try c.encode(gen, forKey: .gen)
         try c.encode(affected, forKey: .affected)
         try c.encode(notices, forKey: .notices)
+        try c.encodeIfPresent(members, forKey: .members)
     }
     var id: String { session }
     var project: String { workspace.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "未选项目" }
@@ -86,7 +105,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
         case .waiting: return "等待你的答复"
         case .stopping: return "正在停止"
         case .stopped: return "已停止"
-        case .idle: return "结果可查看"
+        case .idle: return "当前空闲"
         case .unknown: return "状态待确认"
         }
     }
