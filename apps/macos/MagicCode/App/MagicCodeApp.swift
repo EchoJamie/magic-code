@@ -28,6 +28,7 @@ import Combine
         }.menuBarExtraStyle(.window)
         // 设置窗口是**长期窗口**：它在 ⇒ App 是 `.regular`（Dock 有图标、Cmd+Tab 切得到）。标记不占位置。
         Settings { SettingsView(model: model).background(LongLivedWindowMarker()) }
+            .defaultSize(SettingsView.defaultSize)
     }
 }
 

@@ -929,11 +929,11 @@ final class NativeTests: XCTestCase {
         let first = try XCTUnwrap(model.settingsSnapshot)
         XCTAssertNil(first.stamp); XCTAssertTrue(model.works.isEmpty)
         XCTAssertTrue(first.configuration["providers"].object.isEmpty)
-        let empty = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+        let empty = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
         try await saveFrame(empty, name: "u116-models-empty-light"); empty.close()
         for category in SettingsCategory.all where category.id != "models" {
             model.rememberSettingsCategory(category.id)
-            let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+            let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
             try await saveFrame(window, name: "u116-\(category.id)-empty-light"); window.close()
         }
         func save(_ action: SettingsValue, key: String) async throws {
@@ -959,14 +959,14 @@ final class NativeTests: XCTestCase {
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for category in SettingsCategory.all {
                 model.rememberSettingsCategory(category.id)
-                let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: appearance)
+                let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: appearance)
                 try await saveFrame(window, name: "u116-\(category.id)-\(appearance == .aqua ? "light" : "dark")")
                 geometry.append(["category": category.id, "appearance": window.effectiveAppearance.name.rawValue, "width": window.contentView!.bounds.width, "height": window.contentView!.bounds.height, "at": Date().timeIntervalSince1970])
                 window.close()
             }
         }
         model.rememberSettingsCategory("advanced")
-        let small = try await hostView(SettingsView(model: model), size: NSSize(width: 650, height: 400), appearance: .darkAqua)
+        let small = try await hostView(SettingsView(model: model), size: NSSize(width: 650, height: 600), appearance: .darkAqua)
         try await saveFrame(small, name: "u116-advanced-small-dark")
         func scrolls(_ view: NSView) -> [NSScrollView] { (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls) }
         let scroll = try XCTUnwrap(scrolls(small.contentView!).filter { $0.bounds.width > 300 && ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height }.first)
@@ -976,7 +976,7 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); small.close()
         let natural = NSHostingController(rootView: SettingsView(model: model))
         let fitting = natural.view.fittingSize
-        XCTAssertGreaterThanOrEqual(fitting.width, 650); XCTAssertGreaterThanOrEqual(fitting.height, 400)
+        XCTAssertGreaterThanOrEqual(fitting.width, 650); XCTAssertGreaterThanOrEqual(fitting.height, 600)
         XCTAssertLessThanOrEqual(fitting.width, 1200); XCTAssertLessThanOrEqual(fitting.height, 900)
         let before = snapshot.stamp
         var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: snapshot.configPath))) as? [String: Any])
@@ -984,7 +984,7 @@ final class NativeTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: raw).write(to: URL(fileURLWithPath: snapshot.configPath))
         model.applySettings(.object(["type": .string("prefs.set"), "reducedMotion": .bool(false)]), stamp: before, key: "stale")
         try await eventually { !model.settingsBusy }; XCTAssertNotNil(model.settingsError); XCTAssertNil(model.settingsSavedKey)
-        let error = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+        let error = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
         // onAppear重新读取，错误另由同一原生动作生成。
         try await eventually { !model.settingsBusy }
         model.applySettings(.object(["type": .string("workspace.set"), "roots": .strings(["/SENTINEL_MISSING_ROOT"])]), stamp: model.settingsSnapshot?.stamp, key: "invalid")
@@ -1011,7 +1011,7 @@ final class NativeTests: XCTestCase {
         try broken.write(to: URL(fileURLWithPath: snapshot.configPath))
         for category in SettingsCategory.all {
             model.rememberSettingsCategory(category.id)
-            let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 740), appearance: .aqua)
+            let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
             try await eventually { !model.settingsBusy && model.settingsError != nil }
             XCTAssertFalse(model.settingsError!.contains("SENTINEL_U116_BROKEN"))
             try await saveFrame(window, name: "u116-\(category.id)-read-error-light"); window.close()

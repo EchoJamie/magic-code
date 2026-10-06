@@ -33,6 +33,7 @@ struct SettingsSearchItem: Identifiable {
     ]
 }
 struct SettingsView: View {
+    static let defaultSize = CGSize(width: 1000, height: 860)
     @ObservedObject var model: AppModel
     @StateObject private var drafts = SettingsDrafts()
     @State private var search = ""
@@ -107,7 +108,8 @@ struct SettingsView: View {
                     .onChange(of: model.settingsError) { _, value in if value != nil { proxy.scrollTo("settings-feedback", anchor: .top) } }
                 }
             }
-        }.background(Color(nsColor: .windowBackgroundColor)).tint(.blue).frame(minWidth: 650, idealWidth: 1000, minHeight: 400, idealHeight: 740)
+        }.background(Color(nsColor: .windowBackgroundColor)).tint(.blue)
+            .frame(minWidth: 650, idealWidth: Self.defaultSize.width, minHeight: 600, idealHeight: Self.defaultSize.height)
         .onAppear { model.refreshLogin(); Task { await model.refreshNotifications() }; model.readSettings() }
         .onChange(of: model.isCurrent) { _, current in if current { model.readSettings() } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.readSettings() }
