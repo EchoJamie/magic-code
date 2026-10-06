@@ -332,7 +332,7 @@ async function main(): Promise<void> {
   const session = await createUiSession({
     label: 'u75-resume铺记录',
     columns: 100,
-    rows: 30,
+    rows: 40,
     artifacts: join(out, 'runs'),
     sandbox,
     fixture,

@@ -130,7 +130,7 @@ export type Frame = {
 
 export type Line = { readonly row: number; readonly text: string }
 
-const DEFAULT_SCREEN: ScreenOptions = { columns: 80, rows: 24 }
+const DEFAULT_SCREEN: ScreenOptions = { columns: 200, rows: 40 }
 
 /**
  * 把一串视图**真画一遍**，读回最后一帧之后的屏。

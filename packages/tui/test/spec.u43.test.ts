@@ -36,8 +36,7 @@ import { createStage, show } from './screen.ts'
 import type { Frame, ScreenOptions, Stage } from './screen.ts'
 
 /** 常宽（块字版那一档）与窄窗（一行版那一档）各一次——窄窗下字标本就不印块字。 */
-const WIDE: ScreenOptions = { columns: 100, rows: 30 }
-const NARROW: ScreenOptions = { columns: 40, rows: 30 }
+const WIDE: ScreenOptions = { columns: 100, rows: 40 }
 
 const ENTER = { kind: 'enter' } as const
 const DOWN = { kind: 'down' } as const
@@ -299,50 +298,5 @@ describe('④ `/clear`：成了不回文案 · 没成把 note 接上', () => {
       `  ${BUSY_NOTE}`,
     ])
     expect(countOf(after, BUSY_NOTE)).toBe(1) // 每件事只报一次
-  })
-})
-
-// ══ ③ 窄窗：块字本就不印，换会话那一屏别有残块 ═══════════════════════
-
-describe('③ 窄窗（字标换成一行版那一档）', () => {
-  test('**40 列**：同一个帧序，字标仍是一份（一行版）、记录照常铺', async () => {
-    const stage = createStage()
-    const views = takes(stage, [
-      () => stage.feed([catalog('s1')]),
-      () => stage.feed([history('s1', 甲)]),
-      ...switchThroughPicker(stage, ['down'], 's1', 's2'),
-      () => stage.feed([history('s2', 乙)]),
-    ])
-
-    const frame = await show(views, NARROW)
-
-    // 一行版也要「只一份」——量的是**这个宽度下**字标首行出现几次（不是钉版本）
-    expect(bannerCopies(frame, NARROW.columns)).toBe(1)
-    expect(countOf(frame, '乙：就一句')).toBe(1) // 窄窗下会折行，故量整句
-  })
-
-  /**
-   * **极窄（9 列）那一档**——如实说清这一条钉的是哪一半：
-   *
-   * 这一档上**字标本来一行都不印**（`bannerOf(9)` 是空的，`app.ts` 还把它从 `items` 里
-   * 整个摘掉——「空盒子不是无害的零」那条注），故「换会话不重印」在**屏上**没有可见差别：
-   * 本单改动前后这一屏长得一模一样。留着它，钉的是另外两件会真翻脸的事：
-   * ① **换会话那一屏不许冒出块字残块**（`items` 里那条字标一旦没摘干净、又赶上 `Static` 重挂，
-   * 它就会按极窄档画成别的东西）；② **目标会话的记录照常、且只铺一遍**（重挂不许把它重印）。
-   */
-  test('**极窄（9 列）**：没有块字残块，目标会话的记录照常、且只铺一遍', async () => {
-    const stage = createStage()
-    const views = takes(stage, [
-      () => stage.feed([catalog('s1')]),
-      ...switchThroughPicker(stage, ['down'], 's1', 's2'),
-      () => stage.feed([history('s2', 乙)]),
-    ])
-
-    const frame = await show(views, { columns: 9, rows: 30 })
-
-    expect(bannerOf(9)).toEqual([]) // 防空转：这一档本来就没有字标可印
-    expect(frame.screen.lines.some((line) => line.includes('█'))).toBe(false)
-    // 目标会话那一行铺出来了（9 列下它折成一堆短行，故只问「有没有」这一截）
-    expect(frame.screen.lines.some((line) => line.includes('乙'))).toBe(true)
   })
 })

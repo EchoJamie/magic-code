@@ -32,7 +32,7 @@ sandbox.env['U113_FIXTURE_URL'] = wire.baseURL
 const host = await startResidentHost(sandbox, resolve(out, 'host'))
 let ui: UiSession | undefined
 try {
-  ui = await createUiSession({ label: 'U113-无配置接入与设置', artifacts: out, fixture: wire, sandbox, columns: 100, rows: 32 })
+  ui = await createUiSession({ label: 'U113-无配置接入与设置', artifacts: out, fixture: wire, sandbox, columns: 100, rows: 40 })
   // 按键节奏只模拟逐次输入；保存/请求/运行完成由下面的可见状态等待判定。
   const key = async (name: Parameters<UiSession['key']>[0]) => { await ui!.key(name); await Bun.sleep(60) }
   let savedDefaults = 0
@@ -82,9 +82,7 @@ try {
   for (let n = 0; n < 4; n++) await key('down'); await key('enter')
   await ui.wait({ text: '作用对象：当前工作' }, { timeoutMs: 5000 })
   console.log((await ui.capture({ label: '08-当前工作选档' })).text)
-  await ui.resize(46, 18); await ui.wait({ text: '作用对象：当前工作' }, { timeoutMs: 5000 })
-  console.log((await ui.capture({ label: '09-窄窗工作选档' })).text)
-  await ui.resize(100, 32); await key('esc')
+  await key('esc')
   await ui.send('U113委派示例'); await key('enter')
   await ui.wait({ text: 'agent_spawn' }, { timeoutMs: 5000 }); await ui.send('y')
   await ui.wait({ text: '执行成员' }, { timeoutMs: 5000 }); await ui.wait({ text: '暂无执行' }, { timeoutMs: 5000 })

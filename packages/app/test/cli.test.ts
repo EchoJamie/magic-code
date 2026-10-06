@@ -18,7 +18,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
       const config = join(g.home, '.magic/config.json')
       writeFileSync(config, 'bad config')
       g.publish({ invalid: true })
-      for (const flag of ['--help', '--version', '-v']) {
+      for (const flag of ['--help', '-h', 'help', '--version', '-v']) {
         const result = await run(g.home, flag)
         expect(result.exitCode).toBe(0)
         expect(result.stderr).toBe('')
@@ -114,16 +114,19 @@ function stageWithConfig(overrides: Record<string, unknown> = {}): { home: strin
 }
 
 describe('入口 magic', () => {
-    test('`--help`——说清用法（验收装置单列，且说破替人裁决不是产品行为）', async () => {
+  test('三种帮助入口输出一致，包含常用选项与示例', async () => {
     const home = tempDir('magic-cli-')
     try {
-      const result = await run(home, '--help')
-
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('magic —— 软件工程智能体')
-      expect(result.stdout).toContain('--script')
-      // 无人值守替人裁决这件事要在用法里说破——别让它看着像产品行为
-      expect(result.stdout).toContain('不是产品行为')
+      const results = await Promise.all(['--help', '-h', 'help'].map(flag => run(home, flag)))
+      for (const result of results) {
+        expect(result.exitCode).toBe(0)
+        expect(result.stderr).toBe('')
+        expect(result.stdout).toBe(results[0]!.stdout)
+        expect(result.stdout).toContain('magic —— 软件工程智能体')
+        expect(result.stdout).toContain('magic [选项]')
+        expect(result.stdout).toContain('--script <file>')
+        expect(result.stdout).toContain('示例：')
+      }
     } finally {
       removeDir(home)
     }
@@ -402,14 +405,14 @@ describe('入口 magic · 换模型的启动参数', () => {
     }
   })
 
-  test('用法里写清了两个入口（启动参数 · 脚本步骤）', async () => {
+  test('帮助列出启动选项，脚本格式指向 README', async () => {
     const home = tempDir('magic-cli-')
     try {
       const result = await run(home, '--help')
 
       expect(result.stdout).not.toContain('--provider')
-      expect(result.stdout).toContain('--model <选择>')
-      expect(result.stdout).toContain('"switch"')
+      expect(result.stdout).toContain('--model <tier>')
+      expect(result.stdout).toContain('README.md「脚本（--script）」')
     } finally {
       removeDir(home)
     }
@@ -423,7 +426,7 @@ describe('入口 magic · 接续（`--session` · U25 恢复入口）', () => {
       const result = await run(home, '--help')
 
       expect(result.stdout).toContain('--session <id>')
-      expect(result.stdout).toContain('恢复')
+      expect(result.stdout).toContain('输入后继续执行')
     } finally {
       removeDir(home)
     }
@@ -485,14 +488,10 @@ describe('入口 magic · 全放行（`--allow-all` · U73）', () => {
       const result = await run(home, '--help')
 
       expect(result.stdout).toContain('--allow-all')
-      // 三件事各说一次：**只给这一次** · **界面上换不来**（看状态行） · **真的什么都不问**。
-      // ⚠️ 第三条 U76 改过（原锚是「必闸照问」——那是 U73 的旧版）：这一档现在连名单
-      // 那两条也放，故用法里要说的正是这件事，否则用户按旧印象以为它兜得住。
-      expect(result.stdout).toContain('只在这儿给')
-      expect(result.stdout).toContain('状态行')
-      expect(result.stdout).toContain('真的什么都不问')
-      // 反面同时写上：不带它时那两条照问（不然「什么都不问」会被读成默认也这样）
-      expect(result.stdout).toContain('删除与改权限/改属主那两条照问')
+      expect(result.stdout).toContain('本次会话跳过所有操作确认')
+      expect(result.stdout).toContain('仅启动时可用')
+      expect(result.stdout).toContain('删除、改权限和改属主')
+      expect(result.stdout).toContain('仍需确认')
       // ⚠️ **不叫 `mode`**（设计明文：「mode」这个词留给别的用途）——判的是**参数名**，
       // 故按**词**比、不按子串比：`--model` 那个词里本来就有 `--mode` 这四个字母加两个。
       expect(result.stdout.split(/\s+/u)).not.toContain('--mode')

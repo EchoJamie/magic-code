@@ -249,7 +249,7 @@ describe('② 流式节流', () => {
 describe('③ 历史区静态化', () => {
   test('`Static` 拿到的就是 `view.settled` 那一份——每帧不再重建阵列', () => {
     const view = createView()
-    const frame = AppView({ view, columns: 80, rows: 24 })
+    const frame = AppView({ view, columns: 200, rows: 40 })
     const children = (frame.props as { children: readonly { props: { items: unknown } }[] }).children
 
     // 第一个孩子就是 `<Static>`——它的 `items` 该**原样**是 `view.settled`

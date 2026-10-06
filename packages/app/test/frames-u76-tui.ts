@@ -590,7 +590,7 @@ async function sceneStdinProof(): Promise<void> {
     checkout: patched.root,
     artifacts: join(out, 'runs'),
     columns: 100,
-    rows: 30,
+    rows: 40,
     fixture,
   })
 

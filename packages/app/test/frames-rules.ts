@@ -61,7 +61,7 @@ class CaptureTty extends EventEmitter {
   readonly destroyed = false
   readonly writableEnded = false
   readonly columns = 100
-  readonly rows = 30
+  readonly rows = 40
   private readonly chunks: string[] = []
 
   write = (chunk: string): boolean => {

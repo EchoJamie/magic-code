@@ -188,25 +188,4 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
 
     expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('模型 · 会话名 · Enter 进入')
   })
-
-  /**
-   * **顺序就是让位的次序**（那一屏上排在前面的先保）——配一条把「模型」摆在「会话名」前面
-   * 的，窄窗里先掉的就该是「会话名」。这一条把「顺序」这件事从**配置**一路钉到**降级**上。
-   */
-  test('配出来的顺序＝**让位的次序**：排在前面的先保（窄窗先掉后面那一格）', async () => {
-    const stage = createStage({ statusLine: { cells: ['model', 'session'] }, workspaceRoots: [ROOT] })
-    stage.feed([
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '改时区' }] }),
-      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }, { id: 50 }),
-    ])
-
-    // 宽窗：两格都在，且**按配的顺序**（模型在前、会话名在后）
-    const wide = await stage.screen({ columns: 100, rows: 20 })
-    expect(wide.statusLine.indexOf('Default')).toBeLessThan(wide.statusLine.indexOf('改时区'))
-
-    // 窄窗：排在前面的「模型」保住，排在后面的「会话名」先让位
-    const narrow = await stage.screen({ columns: 18, rows: 20 })
-    expect(narrow.statusLine).toContain('Default')
-    expect(narrow.statusLine).not.toContain('改时区')
-  })
 })

@@ -175,7 +175,7 @@ if (import.meta.main) {
     { kind: 'text', text: '收尾一句。' },
   ]
 
-  const session = await createUiSession({ label: 'u74-回执与思考分块', columns: 100, rows: 30, artifacts: join(out, 'runs'), turns })
+  const session = await createUiSession({ label: 'u74-回执与思考分块', columns: 100, rows: 40, artifacts: join(out, 'runs'), turns })
 
   try {
     await session.wait({ text: HINT_IDLE }, { timeoutMs: 20_000 })

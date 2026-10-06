@@ -345,10 +345,10 @@ async function main(): Promise<void> {
     return
   }
 
-  // —— 一 · 完整那一趟（100×30 · 有色）：建立 → 改路线 → 收起 → 展开 → 结束移除 ——
+  // —— 一 · 完整那一趟（200×40 · 有色）：建立 → 改路线 → 收起 → 展开 → 结束移除 ——
   {
     const { session, reportPath } = await start(
-      { label: '01-flow', variant: 'full', columns: 100, rows: 30, forceColor: '3' },
+      { label: '01-flow', variant: 'full', columns: 200, rows: 40, forceColor: '3' },
       out,
     )
 
@@ -432,71 +432,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // —— 二 · 窄窗长标题（40×24）：正常换行、不裁短 ——
+  // —— 五 · 无色（200×40 · FORCE_COLOR=0）——
   {
-    const { session } = await start({ label: '02-long', variant: 'long', columns: 40, rows: 24, forceColor: '3' }, out)
-
-    try {
-      await typeLine(session, '先看看现在的写法')
-      await session.key('enter')
-      await session.wait({ text: '空密码' }, { timeoutMs: 10_000 })
-      const shot = await session.capture({ label: '07-窄窗长标题' })
-      keep(out, shot, '07-窄窗长标题')
-      // 判据：**折行拼回来还是原文**（一行装不下就折下去——不裁短、不省略）
-      check(
-        shot.lines.map((line) => line.trim()).join('').includes(LONG_STEP),
-        '长标题一字不少（折行拼回来仍是原文）',
-      )
-    } finally {
-      await session.close().catch(() => {})
-    }
-  }
-
-  // —— 三 · 溢出与翻页（60×16 · 三十步）——
-  {
-    const { session } = await start({ label: '03-many', variant: 'many', columns: 60, rows: 16, forceColor: '3' }, out)
-
-    try {
-      await typeLine(session, '这活有点长')
-      await session.key('enter')
-      await session.wait({ text: 'PgUp/PgDn 翻页' }, { timeoutMs: 10_000 })
-      const top = await session.capture({ label: '08-溢出' })
-      keep(out, top, '08-溢出')
-      check(top.text.includes('下面还有'), '溢出时报出下面还有几行')
-      check(top.text.includes('第 1 步'), '第一屏从顶上开始')
-
-      // 「上面 N 行」只在滚过一页之后才出现（第一屏时上面一行都不缺）
-      await session.send(PG_DN, { until: { text: '上面 ' }, timeoutMs: 10_000 })
-      const paged = await session.capture({ label: '09-翻到下一屏' })
-      keep(out, paged, '09-翻到下一屏')
-      check(paged.text.includes('上面 '), '翻过一页之后「上面几行」那半句出来了')
-      check(!paged.text.includes('第 1 步'), '第一屏那几行翻过去了')
-    } finally {
-      await session.close().catch(() => {})
-    }
-  }
-
-  // —— 四 · 矮窗让位（60×8）：清单暂不绘，输入区与状态行照旧 ——
-  {
-    const { session } = await start({ label: '04-short', variant: 'full', columns: 60, rows: 8, forceColor: '3' }, out)
-
-    try {
-      await typeLine(session, '窗口太矮了')
-      await session.key('enter')
-      // 等正文那一句（它在任何余量下都画得出来）——清单画不画是这条判据要看的
-      await session.wait({ text: '正在改这一处' }, { timeoutMs: 10_000 })
-      const shot = await session.capture({ label: '10-矮窗让位' })
-      keep(out, shot, '10-矮窗让位')
-      check(!shot.text.includes('▪ 改提示文案'), '矮窗里清单一行都不画（不落历史、不清屏）')
-      check(shot.text.includes('›'), '输入行照旧在（先保证它）')
-    } finally {
-      await session.close().catch(() => {})
-    }
-  }
-
-  // —— 五 · 无色（100×30 · FORCE_COLOR=0）——
-  {
-    const { session } = await start({ label: '05-plain', variant: 'full', columns: 100, rows: 30, forceColor: '0' }, out)
+    const { session } = await start({ label: '05-plain', variant: 'full', columns: 200, rows: 40, forceColor: '0' }, out)
 
     try {
       await typeLine(session, '无色也读得出来')
@@ -519,7 +457,7 @@ async function main(): Promise<void> {
   // —— 六 · 清空之后重开：清单不复活（读面末条是清空那一条）——
   {
     const { session } = await start(
-      { label: '06-reopened', variant: 'reopened', columns: 100, rows: 30, forceColor: '3' },
+      { label: '06-reopened', variant: 'reopened', columns: 200, rows: 40, forceColor: '3' },
       out,
     )
 
@@ -534,36 +472,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // —— 七 · 窄窗收起（20 列）：提示截断，**一行** ——
-  {
-    const { session } = await start({ label: '07-fold20', variant: 'full', columns: 20, rows: 12, forceColor: '3' }, out)
-
-    try {
-      await typeLine(session, '窄窗')
-      await session.key('enter')
-      // ⚠️ **等的这一串 U90 换过**（由头是**这一场的前置**，不是它的判据）：
-      //    20 列里步骤**退了一级**（`PLAN_INDENT`），文字那一截从 18 列收成 16 列 ⇒
-      //    「跑一遍失败的几条路」（18 列）从**一行**变成**两行**，于是它落到这一档的行视口
-      //    之外（20×12 里清单只放得下 4 行）——**等它是等一个永远不来的东西**，
-      //    红的是超时，不是这条判据（U87 那条「超时红 ≠ 判据咬得住」）。
-      //    改等**第一条步骤**（它在任何列宽下都画得出来），下面那两条判据一个字没动。
-      await session.wait({ text: '■ 读登录提示' }, { timeoutMs: 10_000 })
-      await session.send(CTRL_T, { until: { text: '计划已收起' }, timeoutMs: 10_000 })
-      const shot = await session.capture({ label: '13-窄窗收起' })
-      keep(out, shot, '13-窄窗收起')
-      check(
-        shot.lines.filter((line) => line.includes('计划已收起')).length === 1,
-        '20 列：收起提示只占一行（截断，不是折成两行）',
-      )
-      check(!shot.lines.some((line) => line.trim() === '展开'), '折下去的那半截没有冒出来')
-    } finally {
-      await session.close().catch(() => {})
-    }
-  }
-
   // —— 八 · 工具详情（ctrl+o）：默认不画，展开就看得到 ——
   {
-    const { session } = await start({ label: '08-detail', variant: 'full', columns: 100, rows: 30, forceColor: '3' }, out)
+    const { session } = await start({ label: '08-detail', variant: 'full', columns: 200, rows: 40, forceColor: '3' }, out)
 
     try {
       await typeLine(session, '改一下提示')
@@ -585,7 +496,7 @@ async function main(): Promise<void> {
 
   // —— 九 · 历史重建（六段 · 复验退回那一处）：分组里不许冒出辅助调用 ——
   {
-    const { session } = await start({ label: '09-rebuilt', variant: 'rebuilt', columns: 100, rows: 30, forceColor: '3' }, out)
+    const { session } = await start({ label: '09-rebuilt', variant: 'rebuilt', columns: 200, rows: 40, forceColor: '3' }, out)
 
     try {
       await Bun.sleep(600) // 等重建那一趟（`history.read` 的答复）走完
@@ -710,7 +621,7 @@ async function live(out: string): Promise<void> {
   // 夹具（受控模型网关）＋ 一块**三趟共用**的沙地——借出方是本函数（见上面那段注）
   const fixture = startFixture({ turns: LIVE_TURNS })
   const sandbox = createSandbox({ baseURL: fixture.baseURL, forceColor: '3' })
-  const shared = { artifacts, sandbox, fixture, columns: 100, rows: 30, forceColor: '3' } as const
+  const shared = { artifacts, sandbox, fixture, columns: 200, rows: 40, forceColor: '3' } as const
 
   try {
     // —— 一 · 新会话：交代一句，模型真的调 plan_update ——

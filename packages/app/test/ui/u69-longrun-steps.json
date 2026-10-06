@@ -4,8 +4,8 @@
     {
       "cmd": "start",
       "as": "乙",
-      "cols": 100,
-      "rows": 30,
+      "cols": 200,
+      "rows": 40,
       "turns": [
         {
           "kind": "tool",

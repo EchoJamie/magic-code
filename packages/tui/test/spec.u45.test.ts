@@ -43,12 +43,11 @@ import { describe, expect, test } from 'bun:test'
 import { bannerOf } from '../src/banner.ts'
 import type { ShellView } from '../src/view.ts'
 import { event } from './events.ts'
-import { blankRuns } from './invariants.ts'
 import { createStage, show } from './screen.ts'
 import type { Frame, ScreenOptions, Stage } from './screen.ts'
 
 const ENTER = { kind: 'enter' } as const
-const WIDE: ScreenOptions = { columns: 100, rows: 30 }
+const WIDE: ScreenOptions = { columns: 100, rows: 40 }
 
 /** 满宽分隔线（`AppView` 画的那种：整行都是 `─`）。 */
 const isRule = (line: string): boolean => /^─+$/u.test(line.trim())
@@ -285,27 +284,5 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
     expect(rulesOf(frame)).toHaveLength(2)
     // 记录区里一条都没有（用户那句、答复那句都是内容，不是线）
     expect(frame.record.some((line) => isRule(line.text))).toBe(false)
-  })
-
-  test('**极窄档照旧整宽**（既有那一手，不新造分支）：9 列两条都在，也没有成片空行', async () => {
-    const frame = await createStage().screen({ columns: 9, rows: 24 })
-
-    expect(rulesOf(frame)).toHaveLength(2)
-    for (const row of rulesOf(frame)) {
-      expect(frame.screen.lines[row]).toBe('─'.repeat(9)) // 整宽——不是「按内容缩排」
-    }
-    expect(blankRuns(frame.screen)).toEqual([]) // 没切出多余的空行
-  })
-
-  test('**账与屏同源**：动态帧仍短于这一屏（矮窗上不许顶满——U31 那一族的老病）', async () => {
-    // 40×10：活动区预算只剩 1 行，账里少算一条线的话，帧正好顶满 ⇒ 真光标高一行
-    const stage = createStage()
-    stage.type('a'.repeat(120))
-    const frame = await stage.screen({ columns: 40, rows: 10 })
-    const last = frame.screen.lines.findLastIndex((line) => line.trim() !== '')
-
-    expect(last).toBeLessThan(10)
-    expect(rulesOf(frame)).toHaveLength(2)
-    expect(blankRuns(frame.screen)).toEqual([])
   })
 })

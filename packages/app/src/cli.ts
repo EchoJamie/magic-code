@@ -17,38 +17,32 @@ import type { ShellScript } from './shell.ts'
 const USAGE = `magic —— 软件工程智能体
 
 用法：
-  magic                        打开交互界面，用自然语言交代活
-  magic --session <id>         接着一条已有的会话干
-  magic --model <选择>         选择 default / cantrip / spell / arcane
-  magic --allow-all            这一次起会话不问常规的调用（只给这一次；见下）
-  magic -h, --help             显示这份帮助
-  magic -v, --version          显示软件版本
+  magic [选项]
+  magic help
 
-接着上次的活，得说一声：不给 --session 就是新会话（直接敲 magic 也不会先建一条——
-首条消息按下回车才开张）。--session 要的是 /resume 那张列表里那串 id，且必须已经存在：
-打错一个字母会报错退场，不会照 id 悄悄开一条空的（那样你会以为接上了，其实没有）。
-接上后只展示已有记录；下一次明确输入才继续执行并处理恢复。
-开局没有明确选择就用 Default；中途选择与配置模型在界面里打 /model。
+选项：
+  -h, --help          显示帮助
+  -v, --version       显示版本
+  --session <id>      接回已有会话，输入后继续执行
+  --model <tier>      选择模型档位（默认 default）
+  --allow-all         本次会话跳过所有操作确认
+  --check             离线检查配置与工作区，不连接 App
+  --script <file>     运行 JSON 脚本，输出 JSONL 事件与摘要
 
---allow-all 是让这一次会话什么都不问：真的什么都不问，连要问的那两条（删除 ·
-改权限/改属主）也放。它只在这儿给——界面里换不来，想看它有没有生效就看状态行
-（那一格写着「全放行」）。
-⚠️ 这一档下产品不再替你兜底：那两条本来是产品的安全承诺，危险模式是你自己显式要的
-一次性决定。
-不带它时：判轻的（读、搜索、新建、移动、破坏性 git、外发…）本来就不问，
-删除与改权限/改属主那两条照问。
-要接着上次那条会话继续（magic --session <id> --allow-all），带不带它都行：带＝接上后是全放行，
-不带＝接上后照上面那两行办。
+模型档位：default / cantrip / spell / arcane
 
-下面两条不是日常用法：
-  magic --check                离线检查配置与工作区，不连接 App 或外部工具
-  magic --script <文件>        连接 App 跑脚本，打印事件轨迹（JSONL）与摘要
+说明：
+  magic 打开交互界面，首次发送消息时创建会话。
+  会话 id 可在 /resume 中查看；接回时只展示已有记录。
+  --allow-all 仅启动时可用，包括删除、改权限和改属主操作。
+  不使用 --allow-all 时，上述操作仍需确认。
 
-脚本与交互界面使用同一 App 服务；源码模式须先显式启动原生宿主。
-脚本是一份 JSON：inputs 按序给交代（其中一步写成 {"switch": …} 就是中途换模型，
-写成 {"input": {…}} 就是带结构化信息的交代——如随这次交代绑定一个技能），
-decisions 是替你给的答复。写法与实例见 README 的「脚本（--script）」一节。
-脚本替你答复只是图个方便，不是产品行为——平时该定夺的仍是你。
+示例：
+  magic --model spell
+  magic --session <id>
+
+界面内帮助：/help；模型设置：/model。
+脚本格式与示例：README.md「脚本（--script）」。
 `
 
 export type Args = {
@@ -100,7 +94,7 @@ export function parseArgs(argv: readonly string[]): Args {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--help' || arg === '-h') return { help: true, check: false }
+    if (arg === '--help' || arg === '-h' || (i === 0 && arg === 'help')) return { help: true, check: false }
     if (arg === '--version' || arg === '-v') return { help: false, version: true, check: false }
     if (arg === '--open-request') {
       openRequest = valueOf(arg, i)

@@ -28,7 +28,7 @@ import { rowLines } from '../src/components/log.ts'
 import { AppView } from '../src/components/app.ts'
 import { createView } from '../src/view.ts'
 
-const COLUMNS = 110
+const COLUMNS = 200
 const ROWS = 40
 
 /** 一次量到的最小耗时（毫秒）——`Bun.nanoseconds()` 是整数纳秒，够细。 */

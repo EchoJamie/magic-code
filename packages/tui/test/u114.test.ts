@@ -59,9 +59,9 @@ test('U114 PgUp/PgDn 是翻页，未知序列不污染搜索或退出', () => {
  expect(parseScreenKeys('\x1b[6~')).toEqual([{kind:'pageDown'}])
  expect(parseScreenKeys('\x1b[99~')).toEqual([])
 })
-test('U114 放得下的 122 列思考和摘要不省略',()=>{
- const text='WIDTH_PROBE_'+ 'a'.repeat(110)
- for(const columns of [160,220]) {
+test('U114 放得下的思考和摘要不省略',()=>{
+ for(const columns of [200,100]) {
+ const text='WIDTH_PROBE_'+ 'a'.repeat(columns - 50)
  const thinking={kind:'thinking',key:'t',text,flowing:false,startedAt:null,lastAt:null} as const
  const tool={kind:'tool',key:'x',call:1,name:'exec',argsText:'',args:null,elapsedMs:1,startedAt:null,output:[text]} as const
  for(const row of [thinking,...(['ok','failed','rejected'] as const).map(state=>({...tool,state}))]) {
@@ -110,10 +110,10 @@ test('U114 成员 Enter 阅读，m 默认阅读并保存位置；i 仅切目标�
  s.member();s.shell.key({kind:'memberInput'});expect(s.shell.getView().draft).toBe('成员稿')
  expect(s.spy.commands.some(c=>c.type==='input.submit'||c.type==='collaboration.input')).toBe(false)
 })
-test('U114 矮菜单按真实行高，长详情逐页可读且不挤掉焦点',()=>{
+test('U114 菜单按真实行高，长详情逐页可读且不挤掉焦点',()=>{
  const text=Array.from({length:40},(_,i)=>`详情${i} 中文🙂é ${'a'.repeat(150)}`)
  const picker={source:'skills',selected:2,title:'技能名称与来源',rows:Array.from({length:6},(_,i)=>({current:false,label:`技能${i}`,value:String(i),meta:'用途说明',detail:i===2?text:[]})),hint:'Enter 选定 · Esc 返回'} as const
- for(const columns of [120,160,220]) {
+ for(const columns of [200,100]) {
   const budget=pickerBudget(picker,columns,14),read:string[]=[]
   let top=0,total=Infinity
   while(top<total){const layout=pickerLayout({...picker,detailTop:top},budget,columns)
@@ -130,7 +130,7 @@ test('U114 矮菜单按真实行高，长详情逐页可读且不挤掉焦点',(
 test('U114 同宽缓存与不同宽字素折行守住真实列宽',()=>{
  const text=('中文🙂é\t'+'x'.repeat(260)+'\n').repeat(5)
  const row={kind:'assistant',key:'width',text,flowing:false} as const
- for(const columns of [160,120,220,160]){
+ for(const columns of [200,100,200]){
   const lines=rowLines(row,{columns,expanded:true,spaced:false})
   expect(lines.length).toBeGreaterThan(5)
   for(const line of lines)expect(displayWidth(line.segments.map(s=>s.text).join(''))).toBeLessThanOrEqual(columns)

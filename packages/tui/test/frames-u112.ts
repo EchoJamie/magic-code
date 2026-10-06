@@ -38,7 +38,7 @@ import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { rendered, show, showScreen } from './screen.ts'
 
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 
 /** 一个「此刻」的底（毫秒）——写死，好让帧可重放、可逐字比对。 */
 const AT = 1_700_000_000_000

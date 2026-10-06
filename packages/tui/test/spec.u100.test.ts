@@ -22,7 +22,7 @@ import { createRunsFeed, createStage } from './screen.ts'
 import type { Command, RunRow } from '@magic/contracts'
 import type { Frame, ScreenOptions, Stage } from './screen.ts'
 
-const WIDE: ScreenOptions = { columns: 100, rows: 30 }
+const WIDE: ScreenOptions = { columns: 100, rows: 40 }
 const ARM = { kind: 'ctrl+c' } as const
 const ENTER = { kind: 'enter' } as const
 

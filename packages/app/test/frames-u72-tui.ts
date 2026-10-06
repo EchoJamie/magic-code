@@ -175,7 +175,7 @@ async function configured(): Promise<void> {
     session = await createUiSession({
       label: 'u72-配好了',
       columns: 100,
-      rows: 34,
+      rows: 40,
       model: SESSION_MODEL,
       // 「取网页用的模型」**它自己那一条**——与会话那个 model 是两个
       config: { webFetch: { provider: 'local', model: DISTILL_MODEL } },
@@ -322,7 +322,7 @@ async function alwaysAllow(): Promise<void> {
     session = await createUiSession({
       label: 'u72-总是允许',
       columns: 100,
-      rows: 34,
+      rows: 40,
       model: SESSION_MODEL,
       config: { webFetch: { provider: 'local', model: DISTILL_MODEL } },
       turns: [
@@ -402,7 +402,7 @@ async function unconfigured(): Promise<void> {
     session = await createUiSession({
       label: 'u72-没配',
       columns: 100,
-      rows: 34,
+      rows: 40,
       model: SESSION_MODEL,
       // **不给 `webFetch`**——配置里那一格空着
       turns: [
@@ -485,7 +485,7 @@ async function refusals(): Promise<void> {
     session = await createUiSession({
       label: 'u72-反面',
       columns: 100,
-      rows: 34,
+      rows: 40,
       model: SESSION_MODEL,
       config: { webFetch: { provider: 'local', model: DISTILL_MODEL } },
       turns: [

@@ -38,7 +38,7 @@ import { TEST_SESSION, event } from './events.ts'
 import { createRunsFeed, createStage } from './screen.ts'
 
 /** 取景的尺寸——与别的 spec 同一档（80×24）。 */
-const WIDE = { columns: 80, rows: 24 } as const
+const WIDE = { columns: 200, rows: 40 } as const
 
 const HERE = ['/w/mine']
 

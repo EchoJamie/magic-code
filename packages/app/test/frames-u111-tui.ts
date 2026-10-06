@@ -72,7 +72,7 @@ if (import.meta.main) {
   const session: UiSession = await createUiSession({
     label: 'u111-命令面',
     columns: 100,
-    rows: 30,
+    rows: 40,
     artifacts: join(out, 'runs'),
   })
 

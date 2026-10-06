@@ -47,7 +47,7 @@ if (process.argv.includes('--terminal')) {
   try {
     f.shell.key({ kind: 'paste', text: '准备原工作' }); f.shell.key({ kind: 'enter' })
     await f.wait('原工作空闲', () => f.requests().length === 1 && f.events.some(one => one.kind === 'turn.end'))
-    ui = await createUiSession({ columns: 110, rows: 36, artifacts: out, label: 'U115-真实终端', skipReady: true,
+    ui = await createUiSession({ columns: 200, rows: 40, artifacts: out, label: 'U115-真实终端', skipReady: true,
       command: [process.execPath, import.meta.path, '--terminal', JSON.stringify({ socket: f.manager.socketPath, identity: f.manager.identity, session: f.session(), cwd: f.workspace, magic: f.magic })] })
     await ui.wait({ text: '原工作已准备' })
     const capture = async (label: string) => { const frame = await ui!.capture({ label }); captures.push(frame.files.data); return frame }

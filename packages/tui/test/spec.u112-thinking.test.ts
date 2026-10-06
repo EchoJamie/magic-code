@@ -23,7 +23,7 @@ import { createStage, showScreen } from './screen.ts'
 import type { Frame } from './screen.ts'
 
 const AT = 1_700_000_000_000
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 
 /** 一段思考增量——`id` 决定它的 `at`（见文件头那条注）。 */
 const think = (id: number, text: string) => event('model.delta', { channel: 'thinking', text }, { id })

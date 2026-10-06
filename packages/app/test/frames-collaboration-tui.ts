@@ -33,8 +33,7 @@ if (process.argv.includes('--fixture')) {
   // --out 缺席时不把脚本路径认成输出目录。
   const artifacts = process.argv.includes('--out') ? out : resolve('.ui-runs/collaboration-tui/local')
   mkdirSync(artifacts, { recursive: true })
-  const narrow = process.argv.includes('--narrow')
-  const ui = await createUiSession({ label: narrow ? '协作-TUI-窄窗夹具' : '协作-TUI-契约夹具', columns: narrow ? 46 : 100, rows: narrow ? 18 : 30, artifacts,
+  const ui = await createUiSession({ label: '协作-TUI-契约夹具', columns: 200, rows: 40, artifacts,
     command: [process.execPath, import.meta.path, '--fixture'], skipReady: true })
   const key = async (...args: Parameters<typeof ui.key>): Promise<void> => { await ui.key(...args); await Bun.sleep(40) }
   const captures: string[] = []
@@ -53,13 +52,6 @@ if (process.argv.includes('--fixture')) {
   try {
     await ui.wait({ text: '1 位执行中' }, { timeoutMs: 5000 })
     await ui.wait({ absent: '启动中' })
-    if (narrow) {
-      await member(); await down(2); await key('enter')
-      await capture('01-窄窗点名委派', '停止「补充复核」')
-      await key('left'); await down(1); await key('enter')
-      await capture('02-窄窗阅读工具', '回调兼容测试通过')
-      await key('esc'); await key('ctrl+c'); await key('ctrl+c')
-    } else {
     await capture('01-入口空闲成员执行', '1 位执行中')
     await ui.send('整体保留的草稿', { until: { text: '整体保留的草稿' } })
     await member()
@@ -80,9 +72,8 @@ if (process.argv.includes('--fixture')) {
     await capture('08-返回整体原稿', '整体保留的草稿')
     await member(); await down(2); await key('enter')
     await capture('09-点名局部委派', '停止「补充复核」')
-    await ui.resize(46, 18)
     await Bun.sleep(100)
-    await capture('10-窄窗局部停止', '停止「回调校验」')
+    await capture('10-局部停止', '停止「回调校验」')
     await key('down'); await key('enter')
     await capture('11-局部停止回执', '委派 11')
     await key('tab'); await down(4); await key('enter')
@@ -92,7 +83,6 @@ if (process.argv.includes('--fixture')) {
     await key('esc')
     // 当前夹具入口空闲，既有 Ctrl+C 仅退出窗口；本脚本不声明 U100 验收。
     await key('ctrl+c'); await key('ctrl+c')
-    }
   } finally {
     const report = await ui.close()
     writeFileSync(resolve(artifacts, 'result.json'), JSON.stringify({ proof: 'local-contract-PTY-only', captures, report }, null, 2))

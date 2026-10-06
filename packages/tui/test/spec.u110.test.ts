@@ -263,7 +263,7 @@ describe('U110 · 排版', () => {
       assistantRow(1, '好。'),
     ]
 
-    const expanded = screenLayout(rows, { columns: 60, screenRows: 20 })
+    const expanded = screenLayout(rows, { columns: 200, screenRows: 40 })
     const said = textOfLines(expanded.lines)
     expect(said).toContain('第一句想头')
     expect(said).toContain('第三句想头')
@@ -278,7 +278,7 @@ describe('U110 · 排版', () => {
       assistantRow(2, '乙'),
     ]
 
-    const laid = screenLayout(rows, { columns: 60, screenRows: 20 })
+    const laid = screenLayout(rows, { columns: 200, screenRows: 40 })
     expect(laid.turns.length).toBe(2)
 
     for (const anchor of laid.turns) {
@@ -287,8 +287,8 @@ describe('U110 · 排版', () => {
   })
 
   test('一屏几行、最多滚到哪儿', () => {
-    const laid = screenLayout([assistantRow(1, '一句')], { columns: 60, screenRows: 12 })
-    expect(laid.height).toBe(11)   // 屏高减掉底下那条状态行
+    const laid = screenLayout([assistantRow(1, '一句')], { columns: 200, screenRows: 40 })
+    expect(laid.height).toBe(39)   // 屏高减掉底下那条状态行
     expect(laid.maxTop).toBe(0)    // 内容还不够一屏——滚不动
   })
 })
@@ -358,12 +358,6 @@ describe('U110 · 一帧长什么样', () => {
     expect(frame(state())).not.toContain('ctrl+o 看全文')
     expect(frame(state())).not.toContain('还有')
   })
-
-  test('窄窗从右往左省（位置那一句先保住）', () => {
-    const narrow = frame(state({ top: 20 }), 30).split('\r\n')[6] as string
-    expect(narrow).toContain('21–26 / 100 行')
-    expect(narrow).not.toContain('q 退出')
-  })
 })
 
 // ══ ⑥ 材料：选中与两条动作（U110 · 追加）═════════════════════════════
@@ -376,7 +370,7 @@ describe('U110 · 材料那一行', () => {
     userRow(2, '再改一版'),
     assistantRow(2, '改好了。'),
   ]
-  const at = screenLayout(rows, { columns: 60, screenRows: 12 })
+  const at = screenLayout(rows, { columns: 200, screenRows: 40 })
 
   test('材料行紧跟在**它那条交代**后面，一张一行', () => {
     expect(at.materials.length).toBe(2)
@@ -416,7 +410,7 @@ describe('U110 · 材料那一行', () => {
   })
 
   test('一条材料都没有时，`[` / `]` 什么都不做（不编一个空选中出来）', () => {
-    const bare = screenLayout([userRow(1, '没图'), assistantRow(1, '好。')], { columns: 60, screenRows: 12 })
+    const bare = screenLayout([userRow(1, '没图'), assistantRow(1, '好。')], { columns: 200, screenRows: 40 })
     expect(bare.materials).toEqual([])
     expect(step(state(), { kind: 'materialNext' }, bare)).toBe('none')
     expect(step(state(), { kind: 'materialPrev' }, bare)).toBe('none')

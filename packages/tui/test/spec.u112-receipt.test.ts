@@ -18,7 +18,7 @@ import { MARKS } from '../src/marks.ts'
 import { event } from './events.ts'
 import { createStage } from './screen.ts'
 
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 
 /** 一条行 → 显示行（纯函数——收拢那个形只在重建时出现，故直接喂一条）。 */
 function linesOf(row: Parameters<typeof rowLines>[0]): readonly string[] {

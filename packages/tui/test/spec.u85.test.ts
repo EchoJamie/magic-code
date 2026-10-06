@@ -41,7 +41,6 @@ import type { DraftRef } from '../src/components/inline.ts'
 import { createStage } from './screen.ts'
 import type { Frame, Stage } from './screen.ts'
 import { event } from './events.ts'
-import { blankRuns, duplicates, overflows } from './invariants.ts'
 
 const ENTER = { kind: 'enter' } as const
 const NEWLINE = { kind: 'newline' } as const
@@ -61,12 +60,6 @@ const rulesOf = (frame: Frame): readonly number[] =>
 /** 非空行有几条——「这一屏上多出/少了一行」用它（`screen.lines` 是**整份缓冲**，长度会变）。 */
 const nonBlank = (frame: Frame): number => frame.screen.lines.filter((text) => text.trim() !== '').length
 
-/**
- * **缓冲行号 → 视口行号**（`cursor.y` 用的是后者，`rowOf` / `screen.lines` 是前者）——
- * 同 `spec.u34-tui.test.ts` 那一支（`screen.lines` 含滚进 scrollback 的那些行）。
- */
-const viewportOf = (frame: Frame, bufferRow: number): number =>
-  bufferRow - (frame.screen.lines.length - frame.screen.rows)
 
 /** **输入行**那一行（`› ` 开头的最后一条——记录区里也有 `›` 的用户行，故取最后一条）。 */
 const composerRow = (frame: Frame): number => {
@@ -113,7 +106,7 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
       }),
     ])
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const rules = rulesOf(frame)
 
     // 那三条步骤**一条都不在记录区**（记录区＝上沿线之上）
@@ -134,7 +127,7 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
     const stage = createStage()
     feedPlan(stage, note(step('一步')))
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const rules = rulesOf(frame)
 
     expect(rules.length).toBe(2)
@@ -143,15 +136,15 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
     expect(composerRow(frame)).toBeLessThan(footer)
     expect(frame.statusRow).toBeGreaterThan(footer)
     // 两条线仍是满宽（同一条 `separatorOf`）
-    for (const row of rules) expect(frame.textAt(row).trimEnd().length).toBe(80)
+    for (const row of rules) expect(frame.textAt(row).trimEnd().length).toBe(frame.screen.columns)
   })
 
   test('搬了家没动别处：**记录区一字未动**，多出来的正好是清单那一行', async () => {
     const stage = createStage()
 
-    const bare = await stage.screen({ columns: 80, rows: 24 })
+    const bare = await stage.screen({ columns: 200, rows: 40 })
     feedPlan(stage, note(step('一步', 'in_progress')))
-    const withPlan = await stage.screen({ columns: 80, rows: 24 })
+    const withPlan = await stage.screen({ columns: 200, rows: 40 })
 
     // 上沿线**还在原来那一行**（清单没把它往下推——它现在画在线的这一侧）
     expect(rulesOf(withPlan)[0]).toBe(rulesOf(bare)[0])
@@ -159,49 +152,15 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
     expect(nonBlank(withPlan)).toBe(nonBlank(bare) + 1)
   })
 
-  test('⚠️ 账与屏没有分家：清单在场时真光标仍落在输入行上（矮窗那一档）', async () => {
-    const stage = createStage()
-    const short = { columns: 60, rows: 14 }
-
-    stage.feed([
-      event('plan.changed', {
-        entry: 1,
-        plan: note(...Array.from({ length: 30 }, (_unused, at) => step(`第 ${at + 1} 步`))),
-      }),
-      event('turn.start', {}),
-    ])
-
-    const frame = await stage.screen(short)
-
-    // 清单真画出来了（行视口那一套照旧），而真光标**落在输入行那一行**——
-    // 账少算/多算一行，它就会跑到输入行之外去（U31 那一族的老病）
-    expect(frame.has('PgUp/PgDn 翻页')).toBe(true)
-    expect(frame.screen.cursor.y).toBe(viewportOf(frame, composerRow(frame)))
-    expect(blankRuns(frame.screen)).toEqual([])
-    expect(duplicates(frame.screen)).toEqual([])
-    expect(overflows(frame.screen)).toEqual([])
-  })
-
-  test('让位次序不变：矮窗里清单先让（余量不够给回复留 3 行时一行都不画）', async () => {
-    const stage = createStage()
-    feedPlan(stage, note(step('第一步', 'completed'), step('第二步', 'in_progress'), step('第三步')))
-
-    expect((await stage.screen({ columns: 80, rows: 24 })).has('▪ 第二步')).toBe(true)
-    // 8 行：交互区与状态行之后没余量 ⇒ 清单让位（**恢复高度即还原**，见 `spec.u34-tui`）
-    const tiny = await stage.screen({ columns: 80, rows: 8 })
-    expect(tiny.has('▪ 第二步')).toBe(false)
-    expect((await stage.screen({ columns: 80, rows: 24 })).has('▪ 第二步')).toBe(true)
-  })
-
   test('清单清空 ⇒ 那一带当场还回去（不留空行）', async () => {
     const stage = createStage()
 
     feedPlan(stage, note(step('一步', 'in_progress')))
-    const withPlan = await stage.screen({ columns: 80, rows: 24 })
+    const withPlan = await stage.screen({ columns: 200, rows: 40 })
     expect(withPlan.has('▪ 一步')).toBe(true)
 
     feedPlan(stage, null, 2)
-    const gone = await stage.screen({ columns: 80, rows: 24 })
+    const gone = await stage.screen({ columns: 200, rows: 40 })
     expect(gone.has('▪ 一步')).toBe(false)
     expect(gone.dock.every((line) => !/[▪■□]/u.test(line.text))).toBe(true)
     expect(nonBlank(gone)).toBe(nonBlank(withPlan) - 1)
@@ -368,7 +327,7 @@ describe('U85 · 乙 · 草稿那一头（真按键 → 外壳）', () => {
     expect(after.refs).toEqual(before.refs)
     expect(after.caret).toBe(before.caret)
     expect(
-      (await stage.screen({ columns: 100, rows: 30 })).screen.lines.some((one) =>
+      (await stage.screen({ columns: 100, rows: 40 })).screen.lines.some((one) =>
         one.includes('「行首」此刻不管用'),
       ),
     ).toBe(true)

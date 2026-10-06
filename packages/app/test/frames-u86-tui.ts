@@ -135,7 +135,7 @@ if (import.meta.main) {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
     windows.push(mine)
     await typeLine(mine, '甲窗那句')
@@ -149,7 +149,7 @@ if (import.meta.main) {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
     windows.push(other)
     await typeLine(other, '乙窗那句')
@@ -249,7 +249,7 @@ if (import.meta.main) {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
     windows.push(fresh)
     await fresh.wait({ text: '你不在的时候' }, { timeoutMs: 20_000 })

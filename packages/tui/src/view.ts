@@ -708,9 +708,9 @@ export type CommandSpec = {
  * 表上的名字归内置命令，同名技能不抢它的含义（仍能从 `/skills` 里明确选出来）。
  */
 export const COMMANDS: readonly CommandSpec[] = [
-  { name: '/clear', summary: '清屏，另起一条' },
-  { name: '/resume', summary: '回到之前某一条' },
-  { name: '/rename', summary: '改当前这条的名字' },
+  { name: '/clear', summary: '新建会话并清屏，保留历史记录' },
+  { name: '/resume', summary: '查看记录或接回工作' },
+  { name: '/rename', summary: '修改当前会话名称' },
   // U52——**停掉当前这条会话，然后退出界面**。与上面三条**同属「按动作命名」那一族**
   // （设计 · 命令行与配置的会话入口表里就排在 `/rename` 之后），故挨着摆。
   //
@@ -719,23 +719,20 @@ export const COMMANDS: readonly CommandSpec[] = [
   // 本来就已经是「有意的」，再要两下只是白费。故它**不挂 `exitArmed`**——那一格是给
   // Ctrl+C 的。
   //
-  // ⚠️ **它停的是「这条」，Ctrl+C 两次是「只离开」**（2026-09-24 用户裁）——两个动作各管
-  // 各的：`/exit` 是明确说出口的「这条我不做了」（停掉当前会话再退），Ctrl+C 两次是
-  // 「我走开一下」（只离开，工作继续）。**窗口被关**那一头不归这两条管（拔线、断流，
-  // 我们拦不住）。分工写进 `summary` 那一句里——那是**唯一**该说它的地方（不塞常驻提示）。
-  { name: '/exit', summary: '停掉这条会话再退出（只离开＝ctrl+c 两次）' },
-  { name: '/status', summary: '看这一趟用了多少、模型是谁' },
+  // Ctrl+C 有在途工作或待答时打开任务去向菜单；空闲时连续两次离开。
+  { name: '/exit', summary: '停止当前工作并退出界面' },
+  { name: '/status', summary: '查看会话、模型、用量与调用状态' },
   // U71——**配置的总入口**：一屏看见「现在配成什么样」，选定进那一项自己那一屏。
   // 它排在 `/model` / `/grants` / `/mcp` 之前：那三条是**它通向的那几屏**，这一条是门。
-  { name: '/config', summary: '看现在配成什么样（选定进那一项）' },
-  { name: '/model', summary: '设置默认模型与档位 · 选择工作模型与思考' },
-  { name: '/grants', summary: '本工作区的授权：查看 · 撤销' },
+  { name: '/config', summary: '调整终端、模型、授权与工具设置' },
+  { name: '/model', summary: '选择工作模型与思考等级' },
+  { name: '/grants', summary: '查看或撤销工作区授权' },
   // U33——**它是内置命令**（不是技能）：故在表上、名字不许被技能顶掉。
   // 选定只说「挂到这条草稿上」，不说「发送」——那是两件事（选定不发送，那里另有提示）。
-  { name: '/skills', summary: '技能：浏览 · 搜索 · 选定' },
+  { name: '/skills', summary: '浏览或搜索技能，选定后加入草稿' },
   // U39——**纯查询型**（选项＝读一眼，回车不改变任何东西）；`/mcp <名字>` 看那一台的明细。
-  { name: '/mcp', summary: '外部工具服务器：状态 · 工具 · 重连' },
-  { name: '/help', summary: '这张表' },
+  { name: '/mcp', summary: '查看外部工具服务器和工具' },
+  { name: '/help', summary: '显示帮助' },
 ]
 
 /** 候选状态——`selected` 是**筛过之后**的次序。 */

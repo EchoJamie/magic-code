@@ -337,11 +337,34 @@ export type Shell = {
   dispose(): void
 }
 
-/** `/help` 的正文（纯输出型）——**从命令表出**（一处权威：候选与帮助不会分叉）。 */
-const HELP_TITLE = '可用命令'
-const HELP_LINES: readonly string[] = COMMANDS.map(
-  (command) => `${command.name}　${command.summary}`,
-)
+/** `/help` 沿用记录区输出；命令用法与候选共用登记表。 */
+const HELP_TITLE = '使用帮助'
+const HELP_COMMAND_WIDTH = Math.max(...COMMANDS.map(command => command.name.length))
+const HELP_LINES: readonly string[] = [
+  '输入任务描述开始工作；/ 查找命令，@ 引用文件。',
+  '命令：',
+  ...COMMANDS.map(command => `  ${command.name.padEnd(HELP_COMMAND_WIDTH + 2)}${command.summary}`),
+  '参数用法：',
+  '  /rename <名称> · /skills [关键词]',
+  '  /model connect              接入模型连接',
+  '  /model manage               管理连接与档位',
+  '  /model refresh [连接]       刷新模型列表',
+  '  /mcp [服务器]               查看服务器详情',
+  '  /mcp reconnect <服务器>     重连服务器',
+  '快捷键：',
+  '  Enter                发送',
+  '  Shift+Enter          换行',
+  '  Tab                  补全',
+  '  ↑ / ↓                选择候选',
+  '  Esc                  返回，保留草稿',
+  '  Ctrl+P / Ctrl+N      召回上一条 / 下一条输入',
+  '  Ctrl+G               查看待答事项',
+  '  Ctrl+O               查看记录',
+  '  Ctrl+T               展开或收起计划',
+  '  Alt+Enter            选择本条输入用途',
+  'Ctrl+C：工作中或有待答时选择停止、转后台或退出。',
+  '空闲时 1 秒内连按两次 Ctrl+C 退出界面，App 继续运行。',
+]
 
 /**
  * `/status` 的正文——**本地就能答**（模型 / 用量 / 会话都在外壳手上，不必问内核）。

@@ -189,7 +189,7 @@ async function builtinCard(mark: string): Promise<void> {
     session = await createUiSession({
       label: `u66-内置卡片-${mark}`,
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'tool', name: 'write', args: { path: '产物.txt', content: 'U66 写下的' } }],
       artifacts: join(out, 'runs'),
     })
@@ -270,7 +270,7 @@ async function externalCard(mark: string): Promise<void> {
     session = await createUiSession({
       label: `u66-外部卡片-${mark}`,
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'tool', name: 'mcp__fake__slow', args: {} }],
       // **显式配置**才连（只有配置里写了才拉起那条服务器进程）
       config: {
@@ -386,7 +386,7 @@ async function noCard(mark: string): Promise<void> {
     session = await createUiSession({
       label: `u66-没弹卡-${mark}`,
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [
         { kind: 'tool', name: 'exec', args: { cmd: 'echo 先来一笔' } },
         { kind: 'tool', name: 'exec', args: { cmd: 'sleep 2.5' } },

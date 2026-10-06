@@ -21,7 +21,7 @@ import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { createStage } from './screen.ts'
 
-const WIDE = { columns: 80, rows: 24 } as const
+const WIDE = { columns: 200, rows: 40 } as const
 const ENTER: ShellKey = { kind: 'enter' }
 const ESC: ShellKey = { kind: 'escape' }
 

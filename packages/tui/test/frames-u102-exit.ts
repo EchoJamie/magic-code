@@ -30,7 +30,7 @@ import type { Shell } from '../src/shell.ts'
 import { createSpyTransport } from './fakes.ts'
 import { rendered, show } from './screen.ts'
 
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 
 /** 落一帧：屏上的字（读屏）＋ 原始字节（带色），并印一份给人看。 */
 async function save(out: string, name: string, shell: Shell): Promise<void> {

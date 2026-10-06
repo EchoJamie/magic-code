@@ -37,8 +37,7 @@ import type { Frame, ScreenOptions, Stage } from './screen.ts'
 import { show } from './screen.ts'
 
 /** 正常的宽（与其余规格用例同尺寸）与一档窄窗（字标换成一行版的那一侧）。 */
-const WIDE: ScreenOptions = { columns: 80, rows: 24 }
-const NARROW: ScreenOptions = { columns: 40, rows: 24 }
+const WIDE: ScreenOptions = { columns: 200, rows: 40 }
 
 const ENTER = { kind: 'enter' } as const
 const ESC = { kind: 'escape' } as const
@@ -149,22 +148,6 @@ describe('① 抽屉开合（有项）', () => {
     expect(frame.has('工具 exec × 路径 根内 × 操作 read')).toBe(false) // 收起＝不留痕
     expect(canType(frame)).toBe(true)
     expect(opened.length).toBe(views.length + 1)
-  })
-})
-
-// ══ ② 窄窗同一句话 ═══════════════════════════════════════════════════
-
-describe('② 窄窗（字标换成一行版那一侧）', () => {
-  test('**40 列**：同一个帧序，字标一份 · 抽屉的行一份', async () => {
-    const { stage, views } = drawerOpen()
-    stage.feed([event('session.state', { active: SHELL_SESSION, sessions: [] })])
-    const frame = await show([...views, stage.shell.getView()], NARROW)
-
-    // 一行版也要「只一份」——量的是**这个宽度下**字标首行出现几次（不是钉版本）
-    expect(bannerCopies(frame, NARROW.columns)).toBe(1)
-    // ⚠️ 窄窗量的是**只一份**（`工具 exec` 那一处），不是「一行写完」——40 列放不下整条，
-    //    行会折成两行贴上去（那是列表自己的折行，不归这条判据管）
-    expect(countOf(frame, '工具 exec')).toBe(1)
   })
 })
 

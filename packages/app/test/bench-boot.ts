@@ -50,7 +50,7 @@ class FakeTty extends EventEmitter {
   readonly isTTY = true
   readonly destroyed = false
   readonly writableEnded = false
-  readonly columns = 110
+  readonly columns = 200
   readonly rows = 40
   /** 第一次写出的时刻（纳秒）——**首帧就在这一刻**。 */
   firstWriteAt: number | null = null

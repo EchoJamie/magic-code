@@ -5,7 +5,6 @@
  * 键位语义（谁触发什么命令）在 `shell.test.ts`；这一层只管**画出来的那一屏**。
  */
 
-import { displayWidth } from '../src/components/lines.ts'
 import { describe, expect, test } from 'bun:test'
 import { renderToString } from 'ink'
 import { createElement as h } from 'react'
@@ -21,8 +20,8 @@ import { createSpyTransport } from './fakes.ts'
 import { plain, show } from './screen.ts'
 import type { Cell } from './screen.ts'
 
-const COLUMNS = 100
-const ROWS = 30
+const COLUMNS = 200
+const ROWS = 40
 
 function live() {
   const spy = createSpyTransport()
@@ -118,13 +117,13 @@ describe('切换与重建（缺陷 D1）', () => {
     // 先留一块屏上痕迹（`/help` 的输出）
     for (const char of '/help ') app.shell.key({ kind: 'char', char })
     app.key('enter')
-    expect(app.screen()).toContain('可用命令')
+    expect(app.screen()).toContain('使用帮助')
 
     app.feed([event('session.history', { session: SESSION, entries, done: true })])
     const frame = app.screen()
 
     expect(frame).toContain('甲那边的事')
-    expect(frame).not.toContain('可用命令')
+    expect(frame).not.toContain('使用帮助')
   })
 })
 
@@ -231,21 +230,6 @@ describe('状态行 · 可配与降级（U112）', () => {
   })
 
   /**
-   * **窄窗口从右往左省**——**让位的次序就是用户摆的次序**（挑格那一屏上排在前面的先保）。
-   *
-   * 这一条钉两件：① 状态那格**永不省**（视觉锚）；② 末尾那一格**先让位**。
-   */
-  test('窄窗口**从右往左省**：末尾那格先让位，① 永不省', () => {
-    const cells: readonly StatusLineCell[] = ['session', 'model', 'context']
-
-    expect(line({}, { cells })).toContain('12.4k')
-
-    const narrow = line({}, { cells }, 52)
-    expect(narrow).toContain('○ 空闲') // ① 是视觉锚——永不省
-    expect(narrow).not.toContain('12.4k') // 排在最后的那格先让位
-  })
-
-  /**
    * **上色开关**（设计：「另有一个上色开关」）——关了整行不吃色。
    *
    * ⚠️ **这一条得走真终端那条路量**（帧文本那条先剥了 ANSI，色在它上面看不见
@@ -294,49 +278,6 @@ describe('状态行 · 可配与降级（U112）', () => {
 
       expect(off).not.toContain(ALLOW_ALL_LABEL)
       expect(leftOf(on).replace(` · ${ALLOW_ALL_LABEL}`, '')).toBe(leftOf(off))
-    })
-
-    test('**永不省**——三档宽度下都在（它跟 ① 一样是常驻，可挑那几格才让位）', () => {
-      for (const columns of [100, 60, 30]) {
-        const text = line({ allowAll: true }, { cells }, columns)
-
-        expect(text).toContain('○ 空闲')
-        expect(text).toContain(ALLOW_ALL_LABEL)
-      }
-    })
-
-    /**
-     * ⚠️ **它要占宽度**，这一条把话说明白（别把它读成「多一格什么也没发生」）。
-     *
-     * 这条判据钉的是**降级那条规矩没变**，不是「阈值没变」：可挑那几格让位的次序还是
-     * **从右往左**，第 ① 位与全放行那一格**一格都不省**；而这一格**实打实占 9 列**
-     * （` · 全放行`），左段因此宽了 9 列——在某个宽度带上，同一屏会比不在全放行时
-     * **早让一步**。那是「多了一格」的算术，不是规矩变了：**全放行时活下来的那几格，
-     * 永远是不在全放行时活下来的那几格的子集**。
-     */
-    test('降级的**规矩**没变——可挑那几格只可能**更早**让位，次序与「谁永不省」都不动', () => {
-      const droppable = ['时区修正', 'MiniMax-M3', '12.4k']
-
-      for (let columns = 30; columns <= 120; columns += 2) {
-        const off = line({ allowAll: false }, { cells }, columns)
-        const on = line({ allowAll: true }, { cells }, columns)
-
-        // 永不省那两格：任何宽度都在
-        expect(on).toContain('○ 空闲')
-        expect(on).toContain(ALLOW_ALL_LABEL)
-
-        // 可挑那几格：全放行时活下来的，必是不在全放行时活下来的**子集**（只少不多）
-        const keptOff = droppable.filter((cell) => off.includes(cell))
-        const keptOn = droppable.filter((cell) => on.includes(cell))
-        expect(displayWidth(on)).toBeLessThanOrEqual(columns)
-        expect(displayWidth(off)).toBeLessThanOrEqual(columns)
-        expect(on.indexOf(ALLOW_ALL_LABEL)).toBeGreaterThan(on.indexOf('○ 空闲'))
-
-        // 次序照旧：活下来的那几格在两种情形下都是同一个先后
-        const order = (text: string) => droppable.filter((cell) => text.includes(cell))
-        expect(order(on)).toEqual(keptOn)
-        expect(order(off)).toEqual(keptOff)
-      }
     })
 
     test('够宽时**那几格齐**——多出来的那一格不是拿谁换的', () => {

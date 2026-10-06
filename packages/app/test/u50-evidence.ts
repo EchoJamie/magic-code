@@ -87,7 +87,7 @@ async function openRoom(
 ): Promise<{ session: UiSession; sandbox: Sandbox; fixture: ReturnType<typeof startFixture> }> {
   const fixture = startFixture({ turns })
   const sandbox = createSandbox({ baseURL: fixture.baseURL })
-  const session = await createUiSession({ label, sandbox, fixture, columns: 100, rows: 30 })
+  const session = await createUiSession({ label, sandbox, fixture, columns: 100, rows: 40 })
   return { session, sandbox, fixture }
 }
 
@@ -203,7 +203,7 @@ async function managerKilled(): Promise<void> {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
     reused = true
 

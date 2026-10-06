@@ -57,7 +57,7 @@ test('协调执行者退出后只有 suspended 身份事实，摘要仍明确中
   expect(collaborationSummary(snapshot)).toContain('1 位执行中')
   const app = collaborationStage()
   app.spy.emit(event('collaboration.view', snapshot))
-  expect(app.screen(46, 18)).toContain('执行中断')
+  expect(app.screen()).toContain('执行中断')
 })
 
 test('成员无 runtime 但 suspended 时不能显示当前空闲或仅已接下', () => {

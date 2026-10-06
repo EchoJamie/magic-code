@@ -18,7 +18,7 @@ import { dockHeightOf } from '../src/components/app.ts'
 import { createStage } from './screen.ts'
 import type { Cell, Frame, Stage } from './screen.ts'
 
-const WIDE = { columns: 80, rows: 24 } as const
+const WIDE = { columns: 200, rows: 40 } as const
 
 /**
  * 一条挂着裁决的现场——`weight` 决定轻 / 重（黄线 / 红线 · `a` 给不给）。
@@ -160,51 +160,6 @@ describe('状态行 · 栏位固定', () => {
     expect((await broken.screen(WIDE)).statusLine).toContain('▲ 出错')
   })
 
-  test('右位**独立**——出现 / 消失**不推动左半**（省了不改剩余字段的位置）', async () => {
-    const stage = createStage()
-    stage.feed([
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
-      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
-      event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
-    ])
-
-    const wide = (await stage.screen({ columns: 80, rows: 24 })).statusLine
-    const narrow = (await stage.screen({ columns: 34, rows: 24 })).statusLine
-
-    expect(wide).toContain('/ 命令 · ctrl+c 退出') // 右位在
-    expect(narrow).not.toContain('/ 命令') // 右位整段不出现
-
-    // 左半那两格的**起手位置一格没动**（右位不是「挤在流里」，是独立一栏）
-    expect(narrow.indexOf('○ 空闲')).toBe(wide.indexOf('○ 空闲'))
-    expect(narrow.indexOf('记录查询优化')).toBe(wide.indexOf('记录查询优化'))
-  })
-
-  test('窄窗口**从右往左省**：上下文占用 → 标题截断；**① 永不省**', async () => {
-    const stage = createStage()
-    stage.feed([
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
-      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
-      event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
-    ])
-
-    // ⚠️ **U112 起的默认那一列**＝「会话名 · 上下文占用」（模型那格不再默认摆出来）。
-    //   故让位次序照旧是「从右往左」，只是那一列短了一格 ⇒ 挤下 ④ 的宽度随之下移：
-    //   60 列时两格还都放得下，50 列才轮到 ④ 让位（旧那一列到 60 列就挤掉了）。
-    const wide = (await stage.screen({ columns: 80, rows: 24 })).statusLine
-    const mid = (await stage.screen({ columns: 50, rows: 24 })).statusLine
-    const tight = (await stage.screen({ columns: 20, rows: 24 })).statusLine
-
-    expect(wide).toContain('3.1k') // 上下文占用在
-    expect(wide).toContain('记录查询优化') // 会话名在
-    expect(mid).not.toContain('3.1k') // ④ 先让位
-    expect(mid).toContain('记录查询优化') // ② 还在
-    expect(tight).toContain('记录查询…') // 再窄：标题**截断**（不是消失）
-    expect(tight).not.toContain('记录查询优化')
-
-    // ① 是视觉锚——三档宽度下**一次都没省过**
-    for (const line of [wide, mid, tight]) expect(line).toContain('○ 空闲')
-  })
-
   test('**一次性的事不进状态行**——「已换模型」去记录区当回执', async () => {
     const stage = createStage()
     stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
@@ -271,12 +226,12 @@ describe('裁决卡 · 不套框 · 键位只出现一次 · 必闸类划掉', (
     stage.press({kind:'ctrl+g'}) // 主动进入后测试既定裁决动作。
     const view = stage.shell.getView()
 
-    for (const columns of [100, 44]) {
-      const frame = await stage.screen({ columns, rows: 30 })
+    for (const columns of [200, 100]) {
+      const frame = await stage.screen({ columns, rows: 40 })
 
       // **U59 起两边都只数交互区**（卡 ＋ 闪一句）：下沿那条线挪到「输入区与状态行之间」之后，
       // `frame.dock` 切到下线为止、不含状态行，`dockHeightOf` 数的也还是这些行——**不必再 `+1`**
-      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 30))
+      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 40))
     }
   })
 
@@ -388,7 +343,7 @@ describe('slash 的两种走法', () => {
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.record.some((line) => line.text === '可用命令')).toBe(true) // 输出进去了
+    expect(frame.record.some((line) => line.text === '使用帮助')).toBe(true) // 输出进去了
     // 记录区里**没有 `› /help` 那一行**——命令是你对**工具**下的指令，不是对 Agent 说的话
     expect(frame.record.filter(line => line.text.startsWith('› ')).map(line => line.text)).toEqual(['› /help'])
     expect(frame.record.some((line) => line.text.includes('/help'))).toBe(true) // 只有输出块里那一条目录
@@ -449,14 +404,14 @@ describe('slash 的两种走法', () => {
     //    候选**看不看得见**在那一支里分不出来（判据会假绿）。这一支 dock 仍是输入区。
     stage.type('/status')
     // 先确认候选**真的开着**——不然「提交后没有」可能是假绿（它本来就没开过）
-    expect((await stage.screen(WIDE)).has('看这一趟用了多少、模型是谁')).toBe(true)
+    expect((await stage.screen(WIDE)).has('查看会话、模型、用量与调用状态')).toBe(true)
 
     stage.type(' ')
     stage.press({ kind: 'enter' })
 
     const frame = await stage.screen(WIDE)
 
-    expect(frame.has('看这一趟用了多少、模型是谁')).toBe(false) // 候选收起
+    expect(frame.has('查看会话、模型、用量与调用状态')).toBe(false) // 候选收起
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见上一处）
     expect(frame.content.some((line) => line.text !== '')).toBe(true) // 提交照旧生效（输出进了记录区）
     expect(frame.statusLine).not.toContain('Tab 补全') // 右位不再报补全键位

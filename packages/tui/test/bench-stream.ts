@@ -309,7 +309,7 @@ function word(index: number): string {
 // ── 档位 ──────────────────────────────────────────────────────────────
 
 /** 一屏的尺寸——与 `terminal.ts` 的 TERMINAL 同（110 × 40，原型那台）。 */
-const COLUMNS = 110
+const COLUMNS = 200
 const ROWS = 40
 
 export const SPECS: readonly StreamSpec[] = [

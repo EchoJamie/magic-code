@@ -51,7 +51,7 @@ import { event } from './events.ts'
 import { createStage } from './screen.ts'
 import type { Frame, ScreenOptions } from './screen.ts'
 
-const WIDE: ScreenOptions = { columns: 100, rows: 30 }
+const WIDE: ScreenOptions = { columns: 100, rows: 40 }
 const ARM = { kind: 'ctrl+c' } as const
 /** 输入行那句空闲占位——量「输入行 ↔ 状态行那一对没被打断」用它当锚。 */
 const IDLE_COMPOSER = `› ${placeholderOf('idle')}`

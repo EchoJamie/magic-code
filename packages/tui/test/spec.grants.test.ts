@@ -25,7 +25,7 @@ import { createStage } from './screen.ts'
 
 const HERE = '/work/proj'
 /** 屏级判据用的尺寸（与 `spec.dock.test.ts` 同形）。 */
-const WIDE = { columns: 80, rows: 24 } as const
+const WIDE = { columns: 200, rows: 40 } as const
 
 const ENTER: ShellKey = { kind: 'enter' }
 const ESC: ShellKey = { kind: 'escape' }

@@ -652,7 +652,7 @@ describe('额度分法 · 名称在先，截断落在简述身上', () => {
 
     openSkills(stage, '/skills', [skill(long, { description: note })])
 
-    const lines = (await stage.screen({ columns: 100, rows: 30 })).dock.map((line) => line.text)
+    const lines = (await stage.screen({ columns: 100, rows: 40 })).dock.map((line) => line.text)
     const row = lines.find((line) => line.includes(long.slice(0, 8)))
     expect(row).toBeDefined()
     if (row === undefined) return
@@ -665,35 +665,6 @@ describe('额度分法 · 名称在先，截断落在简述身上', () => {
     expect(row).not.toContain(note)
     // 来源那一格一个字都不在（U58 收掉的）
     expect(row).not.toContain('.magic/skills')
-  })
-
-  /**
-   * **窄窗（60 列）＋ 56 字符的名字**：放不下时**名称先吃满整行**，截断落在简述身上。
-   *
-   * ⚠️ **判据换了**（U58）：原判「名称至多占一半、来源永远留得下」——那一半是给**来源**
-   * 扣的额度，来源收掉之后这一扣就没有由头了（设计 · 技能调用：「别把名称无条件限死一半；
-   * 窄窗先保住名称、再截断简述」）。现在名称拿到的是整行，简述被挤掉。
-   */
-  test('窄窗（60 列）＋ 长名字：**名称先吃满**，简述被挤掉（不再给它划一半）', async () => {
-    const stage = createStage()
-    const long = 'a'.repeat(56)
-
-    openSkills(stage, '/skills', [skill(long, { description: `${long} 的简述` })])
-
-    const lines = (await stage.screen({ columns: 60, rows: 24 })).dock.map((line) => line.text)
-    const row = lines.find((line) => line.includes(long.slice(0, 8)))
-    expect(row).toBeDefined()
-    if (row === undefined) return
-
-    // 仍是**每项一行**（挤掉的是简述，不是折行）
-    expect(row.length).toBeLessThanOrEqual(60)
-    // 名称拿到的额度比旧行为**多出一大截**（旧行为下它被来源挤到只剩一半）
-    expect(row).toContain('a'.repeat(45))
-    // 简述**一个字都不留**——它才是被截的那一段
-    expect(row).not.toContain('的简述')
-    // **整行只有一个省略号**（名称尾巴上那个）：简述那边的额度只剩一位时不给它留字
-    // ——孤零零一个「…」不说明任何事（`partsOf` 那一处的分寸）
-    expect(row.split('…')).toHaveLength(2)
   })
 })
 

@@ -188,7 +188,7 @@ async function openScene(options: {
     sandbox,
     fixture,
     columns: 100,
-    rows: 30,
+    rows: 40,
   })
   await session.wait({ text: MAGIC_IDLE_MARK }, { timeoutMs: 20_000 })
 
@@ -242,7 +242,7 @@ async function sceneBackground(options: { readonly assert: boolean }): Promise<v
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
     await session.wait({ text: MAGIC_IDLE_MARK }, { timeoutMs: 20_000 })
 

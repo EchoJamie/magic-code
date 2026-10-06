@@ -33,7 +33,7 @@ import { createStage } from './screen.ts'
 import { event } from './events.ts'
 
 /** 一屏上的那几个孩子（`AppView` 是纯函数、没有钩子，故可以直接叫它拿元素树）。 */
-function childrenOf(view: ShellView, columns = 80, rows = 24): readonly ReactElement[] {
+function childrenOf(view: ShellView, columns = 200, rows = 40): readonly ReactElement[] {
   const element = AppView({ view, columns, rows, now: null }) as ReactElement<{
     readonly children: ReactElement[]
   }>

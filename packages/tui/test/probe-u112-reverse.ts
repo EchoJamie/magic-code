@@ -19,7 +19,7 @@ import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { show } from './screen.ts'
 
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 const AT = 1_700_000_000_000
 
 const spy = createSpyTransport()

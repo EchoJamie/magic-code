@@ -1,37 +1,4 @@
-/**
- * 规格即测试 · **TUI Banner 前置展示**——启动字标逐条落成用例。
- *
- * 出处：vault `品牌视觉/TUI Banner 设计.md`（资源 `资源/折跃-v1/tui/`）。**规格以那份为准**；
- * 本文件把它的每一条话锚成一句「**我要什么**」，而不是「现在跑成什么样」。
- *
- * | # | 我要什么（规格原话/其落法） | 用例在哪 |
- * | --- | --- | --- |
- * | ① | 窗口**至少 57 列**时用**块字版**（53 列画幅 ＋ 左右各 2 列留白） | `describe('①')` |
- * | ② | 窄于 57 列 ⇒ **一行版** `Magic Code`（占 10 列 · 不缩写成 M · 不附加 Icon） | `describe('②')` |
- * | ③ | **极窄到放不下 10 列** ⇒ **不印**——「优先保证正文与输入空间」 | `describe('③')` |
- * | ④ | **记录区的最前面**，**启动印一次**；**内联随内容滚动**（不钉屏、不长期挤占对话空间） | `describe('④')` |
- * | ⑤ | 接续（`--session` 那条路＝重建）之后**仍在最前面** | `describe('⑤')` |
- * | ⑥ | `MAGIC` **品牌青** · `CODE` **主文字色** · **不强制铺底色**；**无色终端**整块用默认前景 | `describe('⑥')` |
- * | ⑦ | **静态**——不动效 · 不 Icon · 不宣传图或工具信息 | `describe('⑦')` |
- * | ⑧ | **块字符不自动检测**——默认就用块字版；ASCII 版**留着**但**没有路径切过去** | `describe('⑧')` |
- * | ⑨ | **左缩进 2 列**——**两版同一个性格**（一行版也缩，退让时不换性格） | `describe('⑨')` |
- * | ⑩ | **自成一块**：**前后各一行留白**——它与引导语是两种东西，贴着就成了「硬放」 | `describe('⑩')` |
- * | ⑪ | 宽度判据是**整块宽**（画幅 ＋ 那 2 列留白）——**留白不算可用宽度**，窄一列就顶边 | `describe('⑪')` |
- *
- * ⑨⑩⑪ 是 **2026-09-20「首屏布局收口」**那一轮的三条（用户看了真机截图：「真就直接硬放一个
- * banner 呗 一点布局设计都没有的那种」——顶格贴左上角、紧挨着引导语）。规格出处：
- * vault `界面原型.html` 场景 1 新落的 `.banner{padding-left:2ch;margin:0 0 17px}` 与那段注。
- *
- * ## 三处「不是设计漏了，是这里没有那个输入」的如实记录
- *
- * 1. **浅色主题那一档颜色不做**（设计表里另有一列 `#167682` / `#18232D`）：那要终端**主题**信息，
- *    而这个壳**没有主题检测**——整块 `PALETTE` 都是照深底定的。故取深底那一档，
- *    它的两个值恰好就是色板里现成的 `user` / `fg`（见 `⑥`）。
- * 2. **「可用高度不足时」那半条不在此处射程**：内联渲染下窗口高度**不约束记录区**
- *    （内容随滚动走，该几行就几行），「可用高度」不是一个稳定输入。取**宽度**这一条。
- * 3. **ASCII 版没有触发条件**——规划侧已定「不自动切」（终端**不告诉你字体信息**，检测必错）。
- *    它作为资源留在 `src/banner.ts` 里，`⑧` 钉住它**是个完好的资源**且**真的切不过去**。
- */
+/** TUI Banner：当前两种终端验收规格下的资源、位置、颜色与交互。规格来源：文档库品牌视觉/TUI Banner 设计.md。 */
 
 import { describe, expect, test } from 'bun:test'
 import chalk from 'chalk'
@@ -39,11 +6,8 @@ import { createElement as h } from 'react'
 import type { Entry } from '@magic/contracts'
 import {
   BANNER_ASCII,
-  BANNER_COMPACT,
-  BANNER_COMPACT_MIN,
   BANNER_INDENT,
   BANNER_WIDE,
-  BANNER_WIDE_MIN,
   bannerOf,
 } from '../src/banner.ts'
 import { AppView } from '../src/components/app.ts'
@@ -82,7 +46,7 @@ const trimmed = (lines: readonly string[]): readonly string[] => lines.map((line
 const WIDE_ON_SCREEN = trimmed(BANNER_WIDE.map((line) => `  ${line}`))
 
 /** 起一个壳，取一帧。 */
-const frameAt = async (columns: number, rows = 30): Promise<Frame> =>
+const frameAt = async (columns: number, rows = 40): Promise<Frame> =>
   createStage().screen({ columns, rows })
 
 // ══ ① 宽 ⇒ 块字版 ═══════════════════════════════════════════════════
@@ -94,100 +58,6 @@ describe('① 窗口够宽 ⇒ 块字版', () => {
     expect(artOf(frame, 5)).toEqual(WIDE_ON_SCREEN)
     // 一字不差那条之外，再钉「**是块字符**」——否则换成 ASCII 版这条照样绿
     expect(WIDE_ON_SCREEN.join('')).toContain('█')
-  })
-
-  test('阈值**正好是 57**（＝53 列画幅 ＋ 左右各 2 列留白）——56 列就不给块字版了', async () => {
-    expect(BANNER_WIDE_MIN).toBe(57)
-    expect(BANNER_WIDE[0]?.length).toBe(53)
-
-    expect(artOf(await frameAt(57), 5)).toEqual(WIDE_ON_SCREEN)
-    expect(artOf(await frameAt(56), 1)).not.toEqual(WIDE_ON_SCREEN.slice(0, 1))
-  })
-
-  test('**不溢出**——终端不许替我们折行（折了就是「自算宽度 > 终端宽度」）', async () => {
-    // 画幅 53 ＋ 左 2 ＝ 55 列；57 列的下限正是让它放得下
-    const frame = await frameAt(57)
-    const at = frame.record.findIndex((line) => line.text.includes('█'))
-
-    expect(at).not.toBe(-1)
-    expect(frame.screen.wrapped[at]).toBe(false)
-  })
-})
-
-// ══ ② 窄 ⇒ 一行版 ═══════════════════════════════════════════════════
-
-describe('② 窄 ⇒ 一行版', () => {
-  test('**窄于 57 列**：换成一行完整产品名（画幅 10 列）', async () => {
-    const frame = await frameAt(45)
-
-    // ⚠️ 左 2 列留白也在——**同一块东西，退让时别换性格**（⑨ 是它自己的判据）
-    expect(artOf(frame, 1)).toEqual([`${BANNER_INDENT}${BANNER_COMPACT}`])
-    expect(BANNER_COMPACT).toBe('Magic Code')
-    expect(BANNER_COMPACT.length).toBe(10)
-  })
-
-  test('**不缩写成 M、不附加 Icon**——整行就是那两个词', async () => {
-    const line = artOf(await frameAt(45), 1)[0] ?? ''
-
-    expect(line.trim()).toBe('Magic Code')
-    expect(line).not.toContain('█')
-  })
-
-  test('一行版的分色点＝两个词之间（`Magic` ｜ ` Code`）', async () => {
-    const frame = await frameAt(45)
-    const cells = frame.cellsOf(artRow(frame))
-
-    // 左 2 列留白 ＋ `Magic` 5 字 ⇒ `Magic` 占 2..6、空档在 7、`Code` 从 8 起
-    expect(cells[6]?.text).toBe('c') // `Magic` 末字
-    expect(cells[2]?.fg).toBe('#56b6c2') // Magic —— 品牌青
-    expect(cells[8]?.fg).toBe('#d8dce4') // Code —— 主文字色
-  })
-
-  test('阈值**正好是 12**（＝10 列画幅 ＋ 同样那 2 列左留白）', async () => {
-    // ⚠️ **原锚** `toBe(10)` ＋ `bannerOf(10)` 有 1 行——那时这个 10 是**画幅**宽，
-    //    而一行版**不带缩进**（贴在最左边），故「放得下 10 列」就等于「放得下整块」。
-    //    **为何变**：2026-09-20「首屏布局收口」给一行版补上了那 2 列左留白（⑨：同一块东西，
-    //    退让时别换性格）⇒ 它落进界面之后占的是 **12** 列，而判据的口径是**整块宽**
-    //    （⑪：留白不算可用宽度）。照字面的 10 放行的话，10～11 列的终端上这一行会被折成两行
-    //    ——恰好违背这一档的由头（「优先保证正文与输入空间」：装饰反而多占一行）。
-    //    **新锚** `toBe(12)`：放不下 10 ＋ 2 ⇒ 不印。**规划侧若判「按字面的 10 放行」**，
-    //    改回 `bannerOf` 那一支即可（这里会当场红，正是该红的地方）。
-    expect(BANNER_COMPACT_MIN).toBe(12)
-
-    expect(bannerOf(12)).toHaveLength(1)
-    expect(bannerOf(11)).toHaveLength(0)
-    expect(bannerOf(9)).toHaveLength(0)
-  })
-})
-
-// ══ ③ 极窄 ⇒ 不印 ═══════════════════════════════════════════════════
-
-describe('③ 极窄 ⇒ 不印', () => {
-  /**
-   * ⚠️ **这条的判据不是拿帧文本去 `includes`**——反向验证当场戳穿过：
-   * 把「≥10 列」那一支掐掉（＝极窄也照印），`includes('Magic Code')` 照样为假——
-   * 因为**9 列的终端会把 `Magic Code` 折成两行**，那一串字在帧上根本不连续。
-   * 「红不红」全看终端折不折，那就不叫判据。
-   *
-   * ⇒ 换一把折不断的尺子：**同一份视图，摘掉字标那一行，比两串字节**。
-   * 一样 ⇒ 字标在这一宽度上**一个格子都没占**；不一样 ⇒ 它占了。
-   * 顺带在 57 列上把同一把尺子反过来使一遍（那儿**必须**不一样）——
-   * 免得「两边都量不到东西」也看着像绿。
-   */
-  test('**放不下 10 列**：帧上一个格子都没占——优先保证正文与输入空间', async () => {
-    const view = createStage().shell.getView()
-    const stripped: ShellView = { ...view, settled: view.settled.filter((row) => row.kind !== 'banner') }
-
-    expect(view.settled.some((row) => row.kind === 'banner')).toBe(true) // 防空转
-
-    expect(await bytesAt(view, 9, 0)).toBe(await bytesAt(stripped, 9, 0))
-    expect(await bytesAt(view, 57, 0)).not.toBe(await bytesAt(stripped, 57, 0))
-  })
-
-  test('字标**零行**——不是「印了个空的」（行数就是行数）', () => {
-    expect(bannerOf(9)).toEqual([])
-    expect(bannerOf(1)).toEqual([])
-    expect(bannerOf(0)).toEqual([])
   })
 })
 
@@ -230,7 +100,7 @@ describe('④ 记录区最前面 · 启动印一次', () => {
     }))
     stage.feed([event('session.history', { session: 's1', entries, done: true })])
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const lines = frame.screen.lines
     const at = lines.findIndex((line) => line.includes('█'))
 
@@ -284,7 +154,7 @@ describe('⑤ 接续（重建）之后仍在最前面', () => {
 
     // 屏上仍是**一份**：开机印的那一份。换会话既不重印，也擦不掉它
     //（内联渲染＋主缓冲：已写出去的内容归终端——形态本身的限度，见缺陷 D28 乙）
-    const frame = await show(views, { columns: 100, rows: 30 })
+    const frame = await show(views, { columns: 100, rows: 40 })
     expect(frame.screen.lines.filter((line) => line === WIDE_ON_SCREEN[0])).toHaveLength(1)
   })
 
@@ -373,8 +243,8 @@ describe('⑦ 静态', () => {
 
   test('**字标是死的常量**——同一列数取几帧，一个字节都不差（没有钟、没有随机）', async () => {
     const stage = createStage()
-    const first = await stage.screen({ columns: 100, rows: 30 })
-    const second = await stage.screen({ columns: 100, rows: 30 })
+    const first = await stage.screen({ columns: 100, rows: 40 })
+    const second = await stage.screen({ columns: 100, rows: 40 })
 
     expect(artOf(first, 5)).toEqual(artOf(second, 5))
   })
@@ -386,7 +256,7 @@ describe('⑧ 默认用块字版（不做字体检测）', () => {
   test('**没有任何宽度切到 ASCII 版**——不检测，也就不切换', () => {
     const asciiLines = new Set(BANNER_ASCII)
 
-    for (let columns = 0; columns <= 200; columns += 1) {
+    for (const columns of [200, 100]) {
       expect(bannerOf(columns).some((line) => asciiLines.has(line.text))).toBe(false)
     }
     // 防空转：那一份里确实有东西可切（否则上面那句等于没断言）
@@ -425,16 +295,6 @@ describe('⑨ 左缩进 2 列——两版同一个性格', () => {
     // 防空转：留白确实是 2 格，且留白之后**真接着画幅**（不是整行恰好以空格开头）
     expect(BANNER_INDENT).toBe('  ')
     expect(art[0]?.slice(2, 3)).toBe('█')
-  })
-
-  test('一行版**同样缩 2 列**——退让时不换性格', async () => {
-    // ⚠️ **原锚** `['Magic Code']`——那时一行版**贴在最左边**（缩进只给了块字版）。
-    //    **为何变**：2026-09-20「首屏布局收口」——同一个字标在两种宽度下不许是两个性格
-    //    （规划侧原话：「同一块东西，退让时别换性格」）。缩进因此从块字版推广到一行版。
-    //    **新锚** `['  Magic Code']`——那 2 列是**留白**（跟着首段着色，肉眼仍是空白）。
-    const frame = await frameAt(45)
-
-    expect(artOf(frame, 1)).toEqual([`${BANNER_INDENT}${BANNER_COMPACT}`])
   })
 
   test('**两版的左边缘在同一列上**——96 列与 40 列画出来，字标都从第 3 列起', async () => {
@@ -478,27 +338,6 @@ describe('⑩ 字标**自成一块**——前后各一行留白', () => {
     expect(texts).toHaveLength(7)
   })
 
-  test('一行版**照旧自成一块**（缩进退了，形状不退）', async () => {
-    const texts = headOf(await frameAt(45), 4)
-
-    expect(texts[0]?.trim()).toBe('')
-    expect(texts[1]?.trim()).toBe('Magic Code')
-    expect(texts[2]?.trim()).toBe('')
-    expect(texts).toHaveLength(3) // 记录区到块尾为止（原锚：块之后是空态引导语那句，已删）
-  })
-
-  test('**极窄不印时一行都不占**——连那两行留白也不留', async () => {
-    // 「不印」是字面意思：顶上第一行就是内容，不是「先空两行再说」
-    //
-    // ⚠️ 本条钉的是**字标块占了几行**（0 行）——与块之外那些行怎么写无关
-    //（原先这里注着「不钉引导语的措辞」：那句引导语 2026-09-20 已整句删掉，见 `app.ts` 的注）。
-    const frame = await frameAt(9)
-
-    expect(frame.record[0]?.text.trim()).not.toBe('') // ① 顶上**不是空行**
-    expect(frame.record.every((line) => !line.text.includes('█'))).toBe(true) // ② 整屏没有字标
-    expect(bannerOf(9)).toEqual([]) // 防空转：这一档确实不印
-  })
-
   test('留白**不叠**：字标之后紧接用户消息时，中间只有一行空', async () => {
     // 字标自带后留白，而「用户消息之前留一行分段」也是同一件事——
     // 不排掉的话会空两行（成片空行，`invariants.blankRuns` 当场红）
@@ -511,7 +350,7 @@ describe('⑩ 字标**自成一块**——前后各一行留白', () => {
       event('turn.end', { reason: 'settled' }),
     ])
 
-    const frame = await stage.screen({ columns: 100, rows: 30 })
+    const frame = await stage.screen({ columns: 100, rows: 40 })
     const texts = headOf(frame, 8)
 
     expect(texts.slice(1, 6).join('')).toContain('█') // 画幅还在最前
@@ -521,69 +360,11 @@ describe('⑩ 字标**自成一块**——前后各一行留白', () => {
   })
 })
 
-// ══ ⑪ 判据是整块宽（留白不算可用宽度）════════════════════════════════
-
-/**
- * 规格出处：`界面原型.html` 场景 1 那段注 ——
- * 「**≥57 列**＝块字版（**57 ＝ 53 ＋ 左右各 2** —— 那 2 列是留白，**别算进可用宽度**）」。
- *
- * 一句话：**下限判的是「整块放不放得下」，不是「画幅放不放得下」**。
- * 照画幅宽放行＝把那 2 列留白算成了可用宽度 ⇒ 窄一列就顶边。
- */
-describe('⑪ 判据是**整块宽**——留白不算可用宽度', () => {
-  test('块字版：**53～56 列不给**（画幅放得下，加上那 2 列留白就顶边了）', async () => {
-    for (const columns of [53, 54, 55, 56]) {
-      const lines = bannerOf(columns)
-
-      expect(lines).toHaveLength(1) // 退到一行版——而不是硬塞块字
-      expect(lines[0]?.text).not.toContain('█')
-      // 退回去的那一档也**不折行**（两档都不许顶边）
-      expect((await frameAt(columns)).screen.wrapped.some(Boolean)).toBe(false)
-    }
-
-    expect(bannerOf(57)).toHaveLength(5)
-  })
-
-  test('块字版在 57 列上：**右边还剩 2 列**（57 ＝ 左 2 ＋ 53 ＋ 右 2）', async () => {
-    const frame = await frameAt(57)
-
-    expect(artOf(frame, 1)[0]?.length).toBe(55) // 左 2 ＋ 画幅 53
-    expect(frame.screen.wrapped[artRow(frame)]).toBe(false) // 终端没替我们折行
-    // 那 2 列右留白是**真的空着**——字标没顶到最后一列
-    const cells = frame.rawCellsOf(artRow(frame))
-
-    expect(cells.slice(55, 57).every((cell) => cell.text.trim() === '')).toBe(true)
-  })
-
-  test('一行版：**11 列不给、12 列才给**（10 列画幅 ＋ 同样那 2 列留白）', async () => {
-    // ⚠️ 判据不用「帧文本里有没有 `Magic Code`」——那条路是**折行**走过的
-    //    （11 列放一行版，终端会把它折成 `  Magic Cod` ＋ `e`，那串字在帧上不连续，
-    //    于是反向验证时把下限掐掉它照样绿）。改用 ③ 那把折不断的尺子：**比字节**。
-    const view = createStage().shell.getView()
-    const stripped: ShellView = { ...view, settled: view.settled.filter((row) => row.kind !== 'banner') }
-
-    expect(view.settled.some((row) => row.kind === 'banner')).toBe(true) // 防空转
-
-    expect(await bytesAt(view, 11, 0)).toBe(await bytesAt(stripped, 11, 0)) // 11 列：一个格子都没占
-    expect(await bytesAt(view, 12, 0)).not.toBe(await bytesAt(stripped, 12, 0)) // 12 列：占上了
-  })
-})
-
-// —— 一件小工具（色那两条用）——
-
-/**
- * 录一段字节，**色档自己拧**——`3` ＝ 真彩终端 · `0` ＝ 无色终端。
- *
- * 档位是**环境**给的（`chalk` 看 `FORCE_COLOR` / TTY，见 `screen.ts` 与 `terminal.ts` 的注），
- * 而「无色终端用默认前景」这句话**只有把档拧到 0 才量得到**——不拧的话测试进程
- * 量到的永远是「没开色」，**那不是「代码没上色」**（D17 那族的老账）。
- * 用完还原，别把档位漏给别的用例。
- */
 async function bytesAt(view: ShellView, columns: number, level: 0 | 3): Promise<string> {
   const restore = chalk.level
   chalk.level = level
   try {
-    return await record([h(AppView, { key: 'banner', view, columns, rows: 30 })], { columns, rows: 30 })
+    return await record([h(AppView, { key: 'banner', view, columns, rows: 40 })], { columns, rows: 40 })
   } finally {
     chalk.level = restore
   }

@@ -273,7 +273,7 @@ async function unwatchedTurn(): Promise<void> {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
       artifacts: join(out, 'runs'),
     })
     session = win

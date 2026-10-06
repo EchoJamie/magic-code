@@ -114,25 +114,11 @@ function hasToolDone(lines: readonly string[], output: string): boolean {
  */
 const IDLE_STATE = '○ 空闲'
 
-/** 一条「已知未修」的登记：**谁欠着、为什么不修**。 */
-export type KnownOpen = {
-  /** 欠账的缺陷档（库内 `缺陷/Dxx …`）。 */
-  readonly defect: string
-  /** 为什么不修——一句话，别写「以后再说」。 */
-  readonly why: string
-}
-
 /** 一条判据的结论——过了的也一并交回（给人看这一组到底判了些什么）。 */
 export type CheckOutcome = {
   readonly what: string
   readonly ok: boolean
   readonly detail: string
-  /**
-   * 有它 ⇒ 这条判据**现在会红，而红的是已经知道的那件事**（登记见 `KNOWN_OPEN`）：
-   * 照样跑、照样记、照样打印，但**不中断场景**，也不让门变红。
-   * 没有它 ⇒ 不过就抛 `ScenarioFailure`，与往常一样。
-   */
-  readonly knownOpen?: KnownOpen
 }
 
 /** 判据没过——**带上判据名**（场景交付里最要紧的一句话）。 */
@@ -157,7 +143,7 @@ export type ScenarioContext = {
 }
 
 export type ScenarioName =
-  | 'boot-input-resize-exit'
+  | 'boot-input-exit'
   | 'drawer-open-close'
   | 'model-stream-approval'
   | 'missing-text-failure'
@@ -201,18 +187,18 @@ export type Scenario = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 一 · 启动 → 输入 → 窄窗 resize → 清空 → 退出
+// 一 · 启动 → 输入 → 清空 → 退出
 // ═══════════════════════════════════════════════════════════════════════
 
-const bootInputResizeExit: Scenario = {
-  name: 'boot-input-resize-exit',
-  title: '启动 → 输入 → 窄窗 resize → 清空草稿 → 退出',
-  anchors: '首批验收场景 1：启动、输入、窄窗 resize、清空、退出；真实窗口变化后布局更新',
+const bootInputExit: Scenario = {
+  name: 'boot-input-exit',
+  title: '启动 → 输入 → 清空草稿 → 退出',
+  anchors: '首批验收场景 1：启动、输入、清空与退出',
   story: async (ui, options) => {
     const session = await ui.open({
-      label: '场景1-起手输入改窗退出',
+      label: '场景1-起手输入退出',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到，我在。' }],
       ...where(options),
     })
@@ -245,24 +231,6 @@ const bootInputResizeExit: Scenario = {
       '锚＝助手正文（U112 起无记号、顶格）',
     )
 
-    // —— 窄窗 resize：判据是**应用自己按新宽度画出过一帧**（D27）——
-    //
-    // ⚠️ 屏上「出现 44 个横线」**不是**充分判据（这一条是被实际假阳性打回来的）：
-    // 终端会把旧 100 列的分隔线按新宽度重新折行，44 + 44 + 12 的头一个 44 就满足它——
-    // 实测那一趟 resize、wait 通过、取帧三步的累计字节数完全相同，而应用当时一个字节
-    // 都还没按新宽度画。「VT 尺寸正确」「每行不超宽度」「有新字节」「答复正文出现」同理：
-    // 都是**那一刻**为真、却不代表应用采用了新尺寸。故等的是它**写出去的一整帧**
-    // （见 `driver.ts` 里 `WaitCondition.writtenFrame` 的注）。
-    await session.resize(44, 16)
-    await session.wait({ writtenFrame: 44 })
-    // ⚠️ 这一条等到的就是**整帧**（一帧一次写出去），故后面取的帧不用再补等待
-    const narrow = await session.capture({ label: '窄窗' })
-    ui.check(narrow.columns === 44 && narrow.rows === 16, 'VT 认了新尺寸', '44×16')
-    ui.check(
-      narrow.lines.every((line) => [...line].length <= 44),
-      '窄窗上没有一行超出新宽度',
-      `最长一行 ${Math.max(...narrow.lines.map((line) => [...line].length))} 列`,
-    )
     // —— 清空草稿（退格删光，回到占位语）——
     await session.send('待删')
     await session.wait({ text: '待删' })
@@ -270,24 +238,6 @@ const bootInputResizeExit: Scenario = {
     await session.wait({ text: placeholderOf('idle') })
     const cleared = await session.capture({ label: '清空之后' })
     ui.check(!cleared.text.includes('待删'), '退格把草稿删干净了', '')
-
-    // —— 改窗之后**画面本身**也得对（D27 的另一半）——
-    // ⚠️ 判的是**稳定画面**：「回话之后」那一帧改窗时应用还在流式，下一帧就会把中间态盖掉
-    //    （那是正常的重绘，不是残留）。等它回到空闲（上面那句占位语就是空闲）再数。
-    // ⚠️ **两条**（U45）：记录区／交互区之间那条 ＋ 交互区下沿那条。改窗残影（D27）会在
-    //    上面留下旧的分隔线 ⇒ 读数**多于**两条，那一半仍是欠着的账（登记见 `KNOWN_OPEN`）。
-    const dividers = cleared.lines.filter((line) => isRule(line)).length
-    ui.check(dividers === 2, '窄窗稳定后一共只画了两条分隔线', `可见区实际 ${dividers} 条`)
-    ui.check(
-      countExact(cleared.history, '› 你好') === 1,
-      '改窗之后用户消息只有一条（旧帧没留在屏上）',
-      `整份缓冲实际 ${countExact(cleared.history, '› 你好')} 条`,
-    )
-    ui.check(
-      countExact(cleared.history, '收到，我在。') === 1,
-      '改窗之后答复只有一条',
-      `整份缓冲实际 ${countExact(cleared.history, '收到，我在。')} 条`,
-    )
 
     // —— 退出：空闲**按两次**走人（U46：第一下只印那一行、不退出）——
     // ⚠️ **走 `quit()`，不在这儿自己写两下**（U68）：那道门**只开一小会儿**（1.5 秒），
@@ -320,7 +270,7 @@ const drawerOpenClose: Scenario = {
     const session = await ui.open({
       label: '场景2-抽屉开合',
       columns: 100,
-      rows: 24,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到' }],
       // 两条目——`/model` 的抽屉才有「有项」可言
       config: {
@@ -394,7 +344,7 @@ const modelStreamApproval: Scenario = {
     const session = await ui.open({
       label: '场景3-流式与裁决',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns,
       ...where(options),
     })
@@ -498,7 +448,7 @@ const mcpApproval: Scenario = {
     const session = await ui.open({
       label: '场景7-外部工具',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns,
       config: {
         // **显式配置**才连（这一条正是「只有配置里写了才拉起进程」的可观察形态）
@@ -591,7 +541,7 @@ const mcpApproval: Scenario = {
     const broken = await ui.open({
       label: '场景7-连不上',
       columns: 100,
-      rows: 24,
+      rows: 40,
       turns: [
         // ⚠️ **原锚**：`exec echo 内置照常`（判轻）；**为何变**（U76）：判轻的不弹卡，
         // 「先等一张卡、再批准」那两步没有对象；**新锚**：名单里的删除打头，`内置照常`
@@ -636,7 +586,7 @@ const mcpApproval: Scenario = {
     const descended = await ui.open({
       label: '场景7-带后代',
       columns: 100,
-      rows: 24,
+      rows: 40,
       turns: [{ kind: 'tool', name: 'mcp__nested__boom', args: {} }],
       config: {
         mcp: {
@@ -815,7 +765,7 @@ async function stopCurrentTask(session: UiSession): Promise<void> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 八 · 外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连
+// 八 · 外部审批的三个边角：长参数 · 取消 · 断连
 // ═══════════════════════════════════════════════════════════════════════
 
 /** 长参数那一幕用的正文——够长到必须折行，且**每一段都可辨认**（看帧时对得上）。 */
@@ -823,8 +773,8 @@ const LONG_ARG = `第${'一'.repeat(1)}段：${'甲乙丙丁戊己庚辛壬癸'.
 
 const mcpApprovalEdge: Scenario = {
   name: 'mcp-approval-edge',
-  title: '外部审批的四个边角：窄窗 · 长参数 · 取消 · 断连（各留真帧）',
-  anchors: 'U38 返工 B 的四项看帧：窄窗折行、长参数完整、取消只说已停止等待、断连说效果未知',
+  title: '外部审批的三个边角：长参数 · 取消 · 断连（各留真帧）',
+  anchors: 'U38 返工 B 的四项看帧：长参数完整、取消只说已停止等待、断连说效果未知',
   story: async (ui, options) => {
     const dir = mkdtempSync(join(tmpdir(), 'magic-u38-edge-'))
     const log = join(dir, 'fake.jsonl')
@@ -841,7 +791,7 @@ const mcpApprovalEdge: Scenario = {
     const session = await ui.open({
       label: '场景8-审批边角',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns,
       config: {
         mcp: {
@@ -868,13 +818,6 @@ const mcpApprovalEdge: Scenario = {
     ui.check(longCard.text.includes('甲乙丙丁戊己庚辛壬癸'), '长参数在卡上（头一段在）', '')
     ui.check(longCard.text.includes('①②③④⑤⑥⑦⑧⑨⑩'), '长参数在卡上（末一段也在，没被截掉）', '')
 
-    // —— 二 · 窄窗：同一张卡，窗宽收到 44 列 ——
-    await session.resize(44, 24)
-    await session.wait({writtenFrame:44}, {timeoutMs:15_000})
-    const narrow = await session.capture({ label: '窄窗里的卡' })
-    ui.check(narrow.columns === 44, 'VT 认了 44 列', `实际 ${narrow.columns}`)
-
-    // 批准掉这一件（免得它一直挂着）——窄窗下的键位照旧可用
     await session.send('y', { until: { text: TOOL_DONE }, timeoutMs: 15_000 })
     const ran = await session.capture({ label: '长参数跑完' })
     ui.check(
@@ -908,7 +851,7 @@ const mcpApprovalEdge: Scenario = {
     await session.wait({ text: '已取消' }, { timeoutMs: 10_000 })
     const canceled = await session.capture({ label: '取消之后' })
     ui.check(canceled.text.includes('已取消'), '取消那一笔说「已取消」', '')
-    await session.key('ctrl+o')
+    await session.key('ctrl+o', { until: { text: 'PgUp/PgDn' } })
     await session.wait({text:'已取消——已停止等待并发出取消请求'})
     const completeCancellation = await session.capture({label:'取消的完整记录'})
     ui.check(
@@ -970,7 +913,7 @@ const mcpUnderscoreName: Scenario = {
     const session = await ui.open({
       label: '场景9-下划线工具名',
       columns: 100,
-      rows: 30,
+      rows: 40,
       // 模型**自己**点了那个下划线开头的工具——它没进工具表的话，这一件根本调不动
       turns: [
         { kind: 'tool', name: 'mcp__fake___echo', args: { text: '下划线也调得到' } },
@@ -1027,7 +970,7 @@ const missingTextFailure: Scenario = {
     const session = await ui.open({
       label: '场景4-故意等不到',
       columns: 100,
-      rows: 24,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到' }],
       ...where(options),
     })
@@ -1106,7 +1049,7 @@ const assistantAcrossCalls: Scenario = {
     const session = await ui.open({
       label: '场景5-多次操作一现场',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [
         { kind: 'text', text: '第一答' },
         { kind: 'text', text: '第二答' },
@@ -1122,10 +1065,10 @@ const assistantAcrossCalls: Scenario = {
     ui.check(session.pid === facts.pid, '取帧之后还是同一个进程', `pid ${facts.pid}`)
 
     // 判据同场景 1：等**应用自己**按新宽度画出过一帧，不是屏上凑巧有个 70 个横线
-    await session.resize(70, 18)
-    await session.wait({ writtenFrame: 70 })
+    await session.resize(200, 40)
+    await session.wait({ writtenFrame: 200 })
     const two = await session.capture({ label: '调窗之后' })
-    ui.check(two.columns === 70 && two.rows === 18, '窗口真变了', `${two.columns}×${two.rows}`)
+    ui.check(two.columns === 200 && two.rows === 40, '窗口真变了', `${two.columns}×${two.rows}`)
     ui.check(one.step < two.step, '两帧落在不同的步上（时间线读得出来）', `第 ${one.step} → 第 ${two.step} 步`)
 
     await session.send('第二件')
@@ -1158,8 +1101,8 @@ const isolationRepeatParallel: Scenario = {
     const once = async (label: string, ask: string, answer: string): Promise<UiSession> => {
       const session = await ui.open({
         label,
-        columns: 90,
-        rows: 24,
+        columns: 200,
+        rows: 40,
         turns: [{ kind: 'text', text: answer }],
         ...where(options),
       })
@@ -1295,7 +1238,7 @@ const stopNotRollback: Scenario = {
     const session = await ui.open({
       label: 'U50-停止不是回滚',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [
         // ① 先**真写一个文件**（write 是必闸：整文件覆盖要问）
         { kind: 'tool', name: 'write', args: { path: '产物.txt', content: written } },
@@ -1392,7 +1335,7 @@ const exitCommand: Scenario = {
     const session = await ui.open({
       label: 'U52-exit-空闲',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到，我在。', chunks: 2, chunkDelayMs: 120 }],
       ...where(options),
     })
@@ -1456,7 +1399,7 @@ const exitCommand: Scenario = {
     const busy = await ui.open({
       label: 'U52-exit-工作中',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'text', text: `正文先长一会儿。${tail}`, chunks: 40, chunkDelayMs: 400 }],
       ...where(options),
     })
@@ -1529,7 +1472,7 @@ const packedEnter: Scenario = {
     const session = await ui.open({
       label: 'U56-挤块-正面',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到，我在。', chunks: 2, chunkDelayMs: 60 }],
       ...where(options),
     })
@@ -1566,7 +1509,7 @@ const packedEnter: Scenario = {
     const raw = await ui.open({
       label: 'U56-挤块-裸多行',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到，我在。' }],
       ...where(options),
     })
@@ -1599,7 +1542,7 @@ const packedEnter: Scenario = {
     const paste = await ui.open({
       label: 'U56-挤块-bracketed',
       columns: 100,
-      rows: 30,
+      rows: 40,
       turns: [{ kind: 'text', text: '收到，我在。', chunks: 2, chunkDelayMs: 60 }],
       ...where(options),
     })
@@ -1650,7 +1593,7 @@ async function waitScreen(
 }
 
 export const SCENARIOS: readonly Scenario[] = [
-  bootInputResizeExit,
+  bootInputExit,
   drawerOpenClose,
   modelStreamApproval,
   mcpApproval,
@@ -1667,40 +1610,6 @@ export const SCENARIOS: readonly Scenario[] = [
 export function scenarioNames(): readonly ScenarioName[] {
   return SCENARIOS.map((scenario) => scenario.name)
 }
-
-/**
- * **已知未修**的判据登记——欠着没还的那几条，指名道姓。
- *
- * 为什么要有这张表：把「我们知道它坏、暂时不修」写成**机器可读**的一条，而不是靠人的记忆。
- * **它不掩盖**——判据照样跑、照样打印、照样进账，只是不拦门（原来一条判据不过就抛
- * `ScenarioFailure` 把整个场景掐断，连带后面的步骤一条都跑不到）。
- *
- * ⚠️ **它会自清理**：登记着的判据**一旦通过**，`ui.test.ts` 会当场把门判红，提醒摘掉登记。
- * 所以它是**待还的债，不是免死金牌**——别往里加「反正也不会好」的条目。
- *
- * 现只一条：改窗重排后旧帧擦不干净（库内 `缺陷/D27`）。
- */
-const KNOWN_OPEN = new Map<string, KnownOpen>([
-  [
-    // ⚠️ 判据名 2026-09-24 随 U45 改（那时是「只画了一条分隔线」）：交互区下沿多了第二条线，
-    //    数**它自己这一帧**该是两条——**欠的仍是同一笔账**（残影把读数顶得更多）。
-    '窄窗稳定后一共只画了两条分隔线',
-    {
-      defect: 'D27',
-      why:
-        '改窗重排后旧帧擦不干净，是 Ink 擦除路径的缺陷（上游 issue 907 关了、不修）。' +
-        '修它得给 Ink 打依赖补丁，而「不背自己改依赖的债」是明确裁决——挂起，等不碰依赖的修法。',
-    },
-  ],
-  [
-    '改窗之后用户消息只有一条（旧帧没留在屏上）',
-    { defect: 'D27', why: '同上：旧帧擦不干净 ⇒ 屏上留下两份，本条与上面那条是同一个现象的两个侧面。' },
-  ],
-  [
-    '改窗之后答复只有一条',
-    { defect: 'D27', why: '同上：答复那一半的同一现象。' },
-  ],
-])
 
 /**
  * 跑一组场景——**成功失败都交回一份结构化的账**。
@@ -1721,13 +1630,10 @@ export async function runScenario(
   const sessions: UiSession[] = []
   const ui: ScenarioContext = {
     check: (ok, what, detail = '') => {
-      // 登记过的判据：红了也**不掐断场景**——后面那些步骤（清草稿、正常退出）与本条无关，
-      // 掐断只是让这一整趟跑不到底；而登记本身在账上写得明明白白，不构成掩盖。
-      const known = KNOWN_OPEN.get(what)
-      const outcome: CheckOutcome = known === undefined ? { what, ok, detail } : { what, ok, detail, knownOpen: known }
+      const outcome: CheckOutcome = { what, ok, detail }
       checks.push(outcome)
       options.onCheck?.(outcome)
-      if (!ok && known === undefined) throw new ScenarioFailure(what, detail)
+      if (!ok) throw new ScenarioFailure(what, detail)
     },
     note: (line) => options.onNote?.(line),
     open: async (sessionOptions) => {

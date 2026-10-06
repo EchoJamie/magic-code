@@ -233,7 +233,7 @@ async function sceneFailures(): Promise<void> {
     sandbox,
     fixture,
     columns: 100,
-    rows: 32,
+    rows: 40,
   })
 
   try {

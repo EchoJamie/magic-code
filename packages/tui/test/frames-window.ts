@@ -34,7 +34,7 @@ import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { rendered, show } from './screen.ts'
 
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 
 /** 一句已用量（原型状态行 ④ 的样例数）。 */
 const used = () => event('model.usage', { inputTokens: 3_100, outputTokens: 6 })

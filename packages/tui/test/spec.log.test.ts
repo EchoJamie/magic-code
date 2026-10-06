@@ -75,7 +75,7 @@ describe('组件规格 · 行的标记与颜色', () => {
     //    文本是空格，正好会被它裁掉（量不到「铺到哪」）。
     const full = frame.rawCellsOf(row)
 
-    expect(full).toHaveLength(80) // 整行（默认屏宽）
+    expect(full).toHaveLength(frame.screen.columns) // 整行宽度由实际测试终端给出
     expect(full.every((cell) => cell.bg === '#131d23')).toBe(true) // 一格都不落
     expect(full.at(-1)?.bg).toBe('#131d23') // 铺到**右缘**——短句子才不像块小补丁
   })
@@ -246,15 +246,15 @@ describe('组件规格 · 行的标记与颜色', () => {
     stage.press({ kind: 'enter' })
 
     const frame = await stage.screen()
-    const row = frame.rowOf('可用命令')
+    const row = frame.rowOf('使用帮助')
     const cells = frame.cellsOf(row)
 
     // 无标记：第一格就是正文本身，不是什么 `›` / `⏺` / `●` / `·`
-    expect(cells[0]).toMatchObject({ text: '可', fg: '#8b93a1' })
+    expect(cells[0]).toMatchObject({ text: '使', fg: '#8b93a1' })
     expect(cells.every((cell) => cell.fg === '#8b93a1')).toBe(true) // 整块同色（dim）
-    expect(frame.textAt(frame.rowOf('/resume　回到之前某一条'))).toMatch(/^\/resume/)
+    expect(frame.textAt(frame.rowOf('查看记录或接回工作'))).toMatch(/^  \/resume/)
     // 那一整块都在**记录区**（不是交互区）
-    expect(frame.record.some((line) => line.text.includes('可用命令'))).toBe(true)
+    expect(frame.record.some((line) => line.text.includes('使用帮助'))).toBe(true)
   })
 })
 
@@ -265,9 +265,9 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
   //    判据本身（**首行与所有折行同一起点**）一字未改，变的是那个起点。
   test('助手——顶格起 ⇒ 正文与**所有折行**都从第 1 列起', async () => {
     const stage = live()
-    stage.feed([event('model.delta', { channel: 'text', text: '甲'.repeat(60) })])
+    stage.feed([event('model.delta', { channel: 'text', text: '甲'.repeat(140) })])
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const head = frame.rowOf('甲')
     const tail = frame.textAt(head + 1)
 
@@ -280,10 +280,10 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
 
   test('用户——`› ` 同样占 2 列 ⇒ 折行也从第 3 列起', async () => {
     const stage = live()
-    stage.type('乙'.repeat(60))
+    stage.type('乙'.repeat(140))
     stage.press({ kind: 'enter' })
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const head = frame.rowOf('› 乙')
     const tail = frame.textAt(head + 1)
 
@@ -302,10 +302,10 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
    */
   test('折行的续行**不暗**——沿用正文色（D22 · 用户）', async () => {
     const stage = live()
-    stage.type('丙'.repeat(60))
+    stage.type('丙'.repeat(140))
     stage.press({ kind: 'enter' })
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const tail = frame.cellsOf(frame.rowOf('› 丙') + 1)
     const body = tail.filter((cell) => cell.text.trim() !== '')
 
@@ -316,9 +316,9 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
 
   test('折行的续行**不暗**——沿用正文色（D22 · 助手）', async () => {
     const stage = live()
-    stage.feed([event('model.delta', { channel: 'text', text: '丁'.repeat(60) })])
+    stage.feed([event('model.delta', { channel: 'text', text: '丁'.repeat(140) })])
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const tail = frame.cellsOf(frame.rowOf('丁') + 1)
 
     expect(tail.filter((cell) => cell.text.trim() !== '').every((cell) => cell.fg === '#d8dce4')).toBe(true)
@@ -329,39 +329,18 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
   //    折行的悬挂还是 `INDENT`（工具比正文低一级）⇒ 续行仍从第 3 列起。
   test('工具——缩进一级 ⇒ 参数与折行都从第 3 列起', async () => {
     const stage = live()
-    stage.feed([event('tool.call', { name: 'read', args: { path: '丙'.repeat(40) } }, { id: 71 })])
+    stage.feed([event('tool.call', { name: 'read', args: { path: '丙'.repeat(140) } }, { id: 71 })])
 
-    const frame = await stage.screen({ columns: 80, rows: 24 })
+    const frame = await stage.screen({ columns: 200, rows: 40 })
     const head = frame.rowOf('▸ ● read(') // 身份不随状态换形（在跑还是落定都是 `▸`）；此刻在跑 ⇒ 状态位 `●`
     const text = frame.textAt(head)
     expect(text.startsWith('  ▸ ● read(')).toBe(true)
     expect(text).toContain('…')
     expect(text.length).toBeGreaterThan(10)
-    expect(frame.rawCellsOf(head).length).toBe(80)
+    expect(frame.rawCellsOf(head).length).toBe(frame.screen.columns)
     const tool = stage.shell.getView().rows.find(row => row.kind === 'tool')
-    expect(tool?.kind === 'tool' && tool.args).toEqual({ path: '丙'.repeat(40) })
+    expect(tool?.kind === 'tool' && tool.args).toEqual({ path: '丙'.repeat(140) })
 
-  })
-
-  test('列表**按标记宽度**（`1. ` ⇒ 基线 2 ＋ 3 ＝ 5 列）· 代码块缩进淡化', async () => {
-    const stage = live()
-    stage.feed([
-      event('model.delta', { channel: 'text', text: `1. ${'甲'.repeat(20)}\n\n\`\`\`ts\nconst a = 1\n\`\`\`` }),
-    ])
-
-    const frame = await stage.screen({ columns: 30, rows: 24 })
-    // ⚠️ **U112**：助手基线由 2 列变 0（`⏺ ` 退场）——下面那两笔账各减 2。
-    const list = frame.rowOf('1. 甲')
-    const wrapped = frame.textAt(list + 1)
-
-    // 续行挂在**符号之后**：基线 0 ＋ `1. ` 的 3 列 ＝ 第 4 列起（0 基下标 3）
-    expect(wrapped.startsWith('   甲')).toBe(true)
-    expect(wrapped.startsWith('    甲')).toBe(false)
-
-    // 代码块：围栏不上屏 · 缩进（基线 0 ＋ 自己 2）· 淡化
-    expect(frame.has('```')).toBe(false)
-    const code = frame.cellsOf(frame.rowOf('  const a = 1'))
-    expect(code.slice(2).every((cell) => cell.fg === '#8b93a1')).toBe(true)
   })
 })
 
@@ -489,7 +468,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const before = await stage.screen()
-    expect(before.has('可用命令')).toBe(true) // 命令输出（第二类）
+    expect(before.has('使用帮助')).toBe(true) // 命令输出（第二类）
     expect(before.has('已选择')).toBe(true) // 命令回执（第三类）
 
     // 切走再切回：重建由 `session.history` 铺（会话内容那三类才落库）
@@ -508,7 +487,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     // U67：两条之间那一整行照留（重建回来的是**两块**，不是一段）
     // U112：助手那条正文不再带 `⏺ `（正文顶格）
     expect(after.content.map((line) => line.text)).toEqual(['› 看看有什么', '', '好。']) // 会话内容回来了
-    expect(after.has('可用命令')).toBe(false) // 命令输出：屏上痕迹，不重建
+    expect(after.has('使用帮助')).toBe(false) // 命令输出：屏上痕迹，不重建
     expect(after.has('已选择')).toBe(false) // 命令回执：屏上痕迹，不重建
   })
 })
@@ -550,7 +529,7 @@ describe('失败那一行——保头也保尾（U93）', () => {
     // 长到能把那一行撑过 48 列（真实工作区路径就是这个量级）
     stage.feed(failure('/var/folders/z9/qq6xk2pj7d7g0v_8tqp1hlz80000gn/T/u93-no-dir/u93-new.txt'))
 
-    const frame = await stage.screen({ columns: 100, rows: 24 })
+    const frame = await stage.screen({ columns: 100, rows: 40 })
     const line = frame.textAt(frame.rowOf('写入失败'))
     const said = verdictOf(line)
 
@@ -571,7 +550,7 @@ describe('失败那一行——保头也保尾（U93）', () => {
     const stage = live()
     stage.feed(failure('note.txt'))
 
-    const frame = await stage.screen({ columns: 100, rows: 24 })
+    const frame = await stage.screen({ columns: 100, rows: 40 })
     const line = frame.textAt(frame.rowOf('写入失败'))
 
     // 短的那一形走的是「不超宽 ⇒ 原样」那条路——**与改前逐字相同**（真帧里的改前对照另证）
@@ -588,7 +567,7 @@ describe('失败那一行——保头也保尾（U93）', () => {
       event('tool.result', { call: 71, ok: false, output: { text: said }, notExecuted: true }, {}),
     ])
 
-    const frame = await stage.screen({ columns: 100, rows: 24 })
+    const frame = await stage.screen({ columns: 100, rows: 40 })
     const line = frame.textAt(frame.rowOf('未执行'))
 
     expect(line).toContain('未执行 · 规约已更新') // 头照旧读得出

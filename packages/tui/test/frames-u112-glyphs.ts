@@ -58,12 +58,12 @@ const GLYPHS: readonly { readonly mark: string; readonly note: string }[] = [
   { mark: '◆', note: '（换掉）U+25C6——SF Mono 同样不覆盖，故再换成 ◊' },
 ]
 
-const COLUMNS = 40
+const COLUMNS = 200
 
 /** 把一行字真画一遍，读回每一格——量「终端把每一个记号摆成了几格」。 */
 async function cellsOf(text: string): Promise<readonly { text: string; width: number }[]> {
-  const bytes = await record([h(Text, null, text)], { columns: COLUMNS, rows: 4 })
-  const cells = await screenCells(bytes, { columns: COLUMNS, rows: 4 })
+  const bytes = await record([h(Text, null, text)], { columns: COLUMNS, rows: 40 })
+  const cells = await screenCells(bytes, { columns: COLUMNS, rows: 40 })
 
   return cells.cellsOf(0).map((cell) => ({ text: cell.text, width: cell.width }))
 }
@@ -107,8 +107,8 @@ async function main(): Promise<void> {
   //    一列行是沿**左边缘**竖着扫的，右端扫不动、且随参数长短左右飘）。
   const columns = 100
   const line = `${'  '}${MARKS.tool} ${MARKS.ok} exec(sleep 2 && chmod 755 .)`
-  const bytes = await record([h(Text, null, line)], { columns, rows: 4 })
-  const cells = await screenCells(bytes, { columns, rows: 4 })
+  const bytes = await record([h(Text, null, line)], { columns, rows: 40 })
+  const cells = await screenCells(bytes, { columns, rows: 40 })
   const bitAt = cells.cellsOf(0).findIndex((cell) => cell.text === MARKS.ok)
 
   await say('')

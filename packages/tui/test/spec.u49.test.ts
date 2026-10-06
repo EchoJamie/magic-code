@@ -17,7 +17,7 @@ import { createStage } from './screen.ts'
 import type { Frame } from './screen.ts'
 
 /** 取景用的尺寸——与别的 spec 同一档（80×24，`spec.dock.test.ts` 同此）。 */
-const WIDE = { columns: 80, rows: 24 } as const
+const WIDE = { columns: 200, rows: 40 } as const
 
 /** 屏上有没有这一行——断言读起来就是「屏上说了这句话 / 没有这句」。 */
 const says = (frame: Frame, needle: string): boolean => frame.has(needle)

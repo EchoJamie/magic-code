@@ -31,7 +31,7 @@ import type { Frame } from './screen.ts'
 const AT = 1_700_000_000_000
 
 /** 取景那一屏多大——工具行折行与状态行降级都跟它有关。 */
-const SCREEN = { columns: 100, rows: 30 } as const
+const SCREEN = { columns: 100, rows: 40 } as const
 
 /** 起一个壳（空手——这一层多数用例只要一个能画的地方）。 */
 function live() {

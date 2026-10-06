@@ -137,7 +137,7 @@ if (import.meta.main) {
     createUiSession({
       label,
       columns: 100,
-      rows: 30,
+      rows: 40,
       artifacts: join(out, 'runs'),
       turns,
       config: {
@@ -159,7 +159,7 @@ if (import.meta.main) {
     createUiSession({
       label,
       columns: 100,
-      rows: 30,
+      rows: 40,
       artifacts: join(out, 'runs'),
       turns: [{ kind: 'text' as const, text: '看了，是空指针。', chunks: 3, chunkDelayMs: 40 }],
     })

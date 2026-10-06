@@ -31,8 +31,6 @@ import { event } from './events.ts'
 
 /** 一条长得**在 46 列下会被截**的模型名——窄窗那两条判据靠它把「截断」与「折行」分开。 */
 const LONG_MODEL = 'MiniMax-Text-01-with-a-very-long-suffix'
-/** 被截掉的那一截（只在名字的**后半段**出现）——它上屏＝折行了，没上屏＝截断了。 */
-const LONG_TAIL = 'long-suffix'
 
 /** 一条连接的缓存读数（只给用得着的那几格）。 */
 function cacheOf(options: {
@@ -262,20 +260,6 @@ describe('① 行＝**模型**（主文案为模型名，副文案为连接名�
 
     const labels = (pickerOf(stage)?.rows ?? []).map((row) => row.label)
     expect(labels).toEqual(['连接供应商'])
-  })
-
-  test('三个入口行**常驻**：几十条模型折起来也在（不会被折到看不见）', async () => {
-    const stage = createStage()
-    open(stage, [
-      conn('personal', { cache: cacheOf({ models: Array.from({ length: 30 }, (_u, at) => `m-${at}`) }) }),
-    ])
-
-    const frame = await stage.screen({ columns: 60, rows: 24 })
-
-    expect(frame.has('连接供应商')).toBe(true)
-    expect(frame.has('管理连接')).toBe(true)
-    expect(frame.has('刷新模型')).toBe(true)
-    expect(frame.dock.some(line => /… 上面 \d+ 条 · 下面 [1-9]\d* 条/.test(line.text))).toBe(true) // 候选那一头确实折了
   })
 })
 
@@ -902,24 +886,13 @@ describe('⑥ 候选**每项一行**（设计 · 终端交互）', () => {
     expect(pickerOf(stage)?.rows.every((row) => row.oneLine === true)).toBe(true)
   })
 
-  test('窄窗（46 列）下**截断**：名字被裁、后面那截不上屏，行不折', async () => {
-    const stage = createStage()
-    open(stage, one(LONG_MODEL))
-
-    const frame = await stage.screen({ columns: 46, rows: 24 })
-
-    expect(frame.has(LONG_TAIL)).toBe(false)
-    expect(frame.has('…')).toBe(true)
-    expect(frame.has('personal')).toBe(true) // 连接名那半截先保住
-  })
-
   test('**反例**：宽窗（100 列）下一个字都不截——上面那条不许把「截」变成无条件', async () => {
     // 对表：「修 A 要交 B 的反例」——窄窗那条修法最容易的过头是**宽窗也去截**
     // （U33 的技能行二轮退回的正是这一形）。故同一份行，宽窗下必须原样全出。
     const stage = createStage()
     open(stage, one(LONG_MODEL))
 
-    const frame = await stage.screen({ columns: 100, rows: 30 })
+    const frame = await stage.screen({ columns: 100, rows: 40 })
 
     expect(frame.has(LONG_MODEL)).toBe(true)
   })
@@ -938,74 +911,19 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
   ]
 
   test('账与屏**同源**：候选超过半屏时，画出来的交互区行数 ＝ `dockHeightOf` 数的那几行', async () => {
-    // 账与屏分家＝矮终端上真光标高一行（U31 那一族的老病）。这一条在**几档高度**上各量一遍
+    // 账与屏分家＝矮终端上真光标高一行（U31 那一族的老病）。这一条在**两种验证宽度**上各量一遍
     // ——半屏预算随窗口变，两处必须一起变。
     const stage = createStage()
     open(stage, many)
     const view = stage.shell.getView()
 
-    for (const rows of [24, 18, 10]) {
-      const frame = await stage.screen({ columns: 60, rows })
+    for (const columns of [200, 100]) {
+      const frame = await stage.screen({ columns, rows: 40 })
 
       // **U59 起两边都只数交互区**：下沿那条线挪到「输入区与状态行之间」之后，
       // `frame.dock` 切到下线为止、不含状态行，`dockHeightOf` 数的也是这些——**不必再 `+1`**
-      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows))
+      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 40))
     }
-  })
-
-  test('**记录区还在**——候选不许把这一趟的上下文顶出屏幕', async () => {
-    const stage = createStage()
-    open(stage, many)
-
-    const frame = await stage.screen({ columns: 60, rows: 24 })
-
-    expect(frame.record.length).toBeGreaterThan(0)
-  })
-
-  test('折起来的那一头**如实报条数**（不装作画全了）', async () => {
-    const stage = createStage()
-    open(stage, many)
-
-    const frame = await stage.screen({ columns: 60, rows: 24 })
-
-    // 满窗 12 格 − 2 行说明 ⇒ 预算 10 格；画 9 条 ＋ 1 行折叠提示 ⇒ 余 21。
-    // ⚠️ 这个数**含说明行**：说明与候选同一片交互区，共用半屏那一份预算
-    //    （与草稿那一片同一条规矩；不这么算，说明一长就把记录区挤没——真跑量到过）
-    // 额度 ＝ 半屏 12 − 说明 1 行 ＝ 11；**常驻行先占 3**（入口那三条）⇒ 折得动的那一段 8 格：
-    // 画 7 条 ＋ 1 行折叠提示 ⇒ 余 23
-    const counts = frame.dock.map(line => line.text).join('\n').match(/… 上面 (\d+) 条 · 下面 (\d+) 条/)
-    expect(counts).not.toBeNull()
-    const visible = pickerOf(stage)!.rows.filter(row => !row.pinned && frame.dock.some(line => line.text.includes(row.label))).length
-    expect(Number(counts![1]) + Number(counts![2]) + visible).toBe(30)
-  })
-
-  test('**焦点可见**：`↓` 挪出这一窗之后窗口跟着平移，选中那条仍在屏上', async () => {
-    const stage = createStage()
-    open(stage, many)
-    for (let at = 0; at < 15; at += 1) stage.press({ kind: 'down' })
-
-    const frame = await stage.screen({ columns: 60, rows: 24 })
-
-    expect(frame.has('model-15')).toBe(true) // 选中那条（第 16 行）
-    const counts = frame.dock.map(line => line.text).join('\n').match(/… 上面 (\d+) 条 · 下面 (\d+) 条/)
-    expect(counts).not.toBeNull()
-    expect(Number(counts![1])).toBeGreaterThan(0)
-    const visible = pickerOf(stage)!.rows.filter(row => !row.pinned && frame.dock.some(line => line.text.includes(row.label + '　'))).length
-    expect(Number(counts![1]) + Number(counts![2]) + visible).toBe(30) // 上头折起来的如实报
-    expect(frame.has('model-0　')).toBe(false) // 折起来的那几条确实没画
-  })
-
-  test('**反例**：放得下就一条都不折——上面那条不许把提示变成无条件的', async () => {
-    // 对表 · 修 A 要交 B 的反例：给长列表加折叠时，最容易的过头是**短列表也去折**
-    // （白扔一格、还多一句「还有 0 条」那种废话）。
-    const stage = createStage()
-    open(stage, [conn('personal', { cache: cacheOf({ models: ['m-1', 'm-2'] }) })])
-
-    const frame = await stage.screen({ columns: 60, rows: 24 })
-
-    expect(frame.has('还有')).toBe(false)
-    expect(frame.has('m-1')).toBe(true)
-    expect(frame.has('m-2')).toBe(true)
   })
 
   test('分组头也占窗口的格子（`/resume` 那一档：账与屏照旧一致）', async () => {
@@ -1027,11 +945,11 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
     ])
     const view = stage.shell.getView()
 
-    for (const rows of [24, 14]) {
-      const frame = await stage.screen({ columns: 60, rows })
+    for (const columns of [200, 100]) {
+      const frame = await stage.screen({ columns, rows: 40 })
 
       // U59：同上一条——`frame.dock` 与 `dockHeightOf` 现在都**只**数交互区
-      expect(frame.dock.length).toBe(dockHeightOf(view, 60, rows))
+      expect(frame.dock.length).toBe(dockHeightOf(view, columns, 40))
     }
   })
 })

@@ -28,7 +28,7 @@ import { TEST_AT, event } from './events.ts'
 import { createStage } from './screen.ts'
 import type { Frame, Stage } from './screen.ts'
 
-const WIDE = { columns: 80, rows: 24 } as const
+const WIDE = { columns: 200, rows: 40 } as const
 
 /** 起一个壳（带会话标题——多数用例的底子，同 `spec.u20` 的 `live`）。 */
 function live(): Stage {

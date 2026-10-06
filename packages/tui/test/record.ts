@@ -37,8 +37,8 @@ import { AppView } from '../src/components/app.ts'
 import type { EntrySpec } from './invariants.ts'
 import { escapeBytes, record, unescapeBytes } from './terminal.ts'
 
-const COLUMNS = 80
-const ROWS = 24
+const COLUMNS = 100
+const ROWS = 40
 
 /** 标本的录制尺寸——回放要按同一个终端大小，否则量到的不是同一块屏。 */
 export const TERMINAL = { columns: COLUMNS, rows: ROWS } as const
@@ -173,9 +173,9 @@ export const SCENARIOS: readonly Scenario[] = [
   },
   {
     name: 'mismatch',
-    // 渲染层被告知 120 列，终端只有 80——**两个宽度分家**（resize 那一瞬就是这个形状）
-    viewColumns: 120,
-    about: '渲染层宽度(120) ≠ 终端宽度(80)——分隔线与状态行会被终端折行（不溢出的形态）',
+    // 渲染层被告知 200 列，终端只有 100——**两个宽度分家**（resize 那一瞬就是这个形状）
+    viewColumns: 200,
+    about: '渲染层宽度(200) ≠ 终端宽度(100)——分隔线与状态行会被终端折行（不溢出的形态）',
     ...shortTurn(),
   },
 ]

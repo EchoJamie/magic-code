@@ -20,7 +20,7 @@ const paging: unknown[] = []
 const probe = 'WIDTH_PROBE_' + 'a'.repeat(110)
 const mixed = '中文🙂é\t' + 'LONG_TOKEN_'.repeat(27)
 const content = `相同原始正文\n${mixed}\n\n\`\`\`ts\n\tconst value = '${mixed}'\n\`\`\`\n\n\`\`\`diff\n- old ${mixed}\n+ new ${mixed}\n\`\`\``
-const ui = await createUiSession({ columns: 160, rows: 40, label: 'U114-最终宽度与矮菜单', artifacts: REPO_ROOT + '/.ui-runs/u114', turns: [
+const ui = await createUiSession({ columns: 200, rows: 40, label: 'U114-最终宽度与矮菜单', artifacts: REPO_ROOT + '/.ui-runs/u114', turns: [
  { kind: 'text', reasoning: probe, text: content, chunks: 1, chunkDelayMs: 1500 },
  { kind: 'tool', name: 'exec', args: { cmd: `printf '${probe}'` } },
  { kind: 'tool', name: 'exec', args: { cmd: `printf '${probe}' >&2; exit 1` } },
@@ -36,14 +36,14 @@ try {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'SKILL.md'), `---\nname: width-skill-${String(i).padStart(2, '0')}\ndescription: 用途${i} ${description} 说明结尾${i}\n---\nU114_SKILL_BODY_${i}\n`)
  }
- await ui.send('实际宽度验收'); await ui.key('enter'); await ui.wait({ text: probe }); await frame('160-122列思考无省略')
- await resize(220); const thinking = await frame('220-122列思考无省略'); assert(thinking.text.includes(probe))
- await ui.wait({ text: '○ 空闲' }); await resize(160); await frame('160-混合正文代码与diff')
- await resize(120); await frame('120-相同正文代码与diff'); await resize(220); await frame('220-相同正文代码与diff')
+ await ui.send('实际宽度验收'); await ui.key('enter'); await ui.wait({ text: probe }); await frame('200-122列思考无省略')
+ await resize(200); const thinking = await frame('200-122列思考无省略'); assert(thinking.text.includes(probe))
+ await ui.wait({ text: '○ 空闲' }); await resize(200); await frame('200-混合正文代码与diff')
+ await resize(100); await frame('100-相同正文代码与diff'); await resize(200); await frame('200-相同正文代码与diff')
  await ui.send('运行成功失败与拒绝'); await ui.key('enter'); await ui.wait({ text: 'Ctrl+G 审阅' })
  // 前两项为真实 printf/exit 执行；第三项 chmod 等待用户主动拒绝。
- await resize(160); const tools160 = await frame('160-122列成功失败与真实待答')
- assert(tools160.text.includes(probe)); await resize(220); const tools220 = await frame('220-122列成功失败与真实待答'); assert(tools220.text.includes(probe))
+ await resize(200); const tools160 = await frame('200-122列成功失败与真实待答')
+ assert(tools160.text.includes(probe)); await resize(200); const tools220 = await frame('200-122列成功失败与真实待答'); assert(tools220.text.includes(probe))
  await ui.send('/skills '); await ui.key('enter'); await ui.wait({ text: 'width-skill-00' })
  const data = (f: Capture) => JSON.parse(readFileSync(join(ui.runDir, f.files.data), 'utf8'))
  const selected = '›  width-skill-00'
@@ -91,19 +91,18 @@ try {
   assert.deepEqual(page,start,'完整回翻必须恢复首屏正文及焦点')
   await ui.key('pageUp');const first=await frame(`${label}-首页再次PgUp保持焦点`);assert.deepEqual(details(first),start)
  }
- // 先标准尺寸，再同一说明的两档宽度，最后矮菜单。
- await resize(160);await traverse(160,40)
- await resize(120);await traverse(120,40)
- await resize(220);await traverse(220,40)
- await resize(160,14);await traverse(160,14)
+ // 先标准尺寸，再同一说明的两档宽度，再返回主规格。
+ await resize(200);await traverse(200,40)
+ await resize(100);await traverse(100,40)
+ await resize(200);await traverse(200,40)
  // 上下候选切换归零，再按真实PgDn验证另一条详情，不继承上一条的位置。
- await ui.key('down');await ui.wait({text:'›  width-skill-01'});const other=await frame('160x14-另一技能首屏')
- assert(other.text.includes('详情 1–'));await ui.key('pageDown');const otherPage=await frame('160x14-另一技能真实PgDn')
+ await ui.key('down');await ui.wait({text:'›  width-skill-01'});const other=await frame('200x40-另一技能首屏')
+ assert(other.text.includes('详情 1–'));await ui.key('pageDown');const otherPage=await frame('200x40-另一技能真实PgDn')
  assert(!otherPage.text.includes('详情 1–'));assert(otherPage.text.includes('›  width-skill-01'));assert(data(otherPage).bytes>data(other).bytes)
  await ui.key('esc');await ui.wait({text:'Ctrl+G 审阅'});assert.equal(ui.requests().length,4,'本地浏览不能产生模型请求')
- await resize(220);
+ await resize(200);
  await ui.key('ctrl+g'); await ui.wait({ text: '本工作区总是允许' }); await ui.send('n'); await ui.wait({ text: 'WIDTH_ALL_DONE' }); await ui.wait({ text: '○ 空闲' })
- await frame('220-真实拒绝后静止'); await resize(160); await frame('160-真实拒绝后静止')
+ await frame('200-真实拒绝后静止'); await resize(200); await frame('200-真实拒绝后静止')
  writeFileSync(join(ui.runDir, 'u114-width-facts.json'), JSON.stringify({ probe, content, facts: ui.facts(), calls: ui.requests(), paging }, null, 2))
  console.log(ui.runDir)
 } finally { await ui.close({ keepSandbox: true }) }

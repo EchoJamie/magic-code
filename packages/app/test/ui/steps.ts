@@ -19,14 +19,14 @@
  *   "out": "/tmp/看看",               // 可选：产物根（缺省 <仓库>/.ui-runs）
  *   "checkout": "/path/to/repo",       // 可选：被测 checkout
  *   "steps": [
- *     { "cmd": "start", "as": "甲", "cols": 100, "rows": 30,
+ *     { "cmd": "start", "as": "甲", "cols": 200, "rows": 40,
  *       "turns": [{ "kind": "text", "text": "说一句长话" }],
  *       "files": { ".magic/skills/twins/SKILL.md": "---\nname: twins\n---\n\n正文\n" } },
  *     { "cmd": "send", "session": "甲", "text": "说一句长话" },
  *     { "cmd": "key", "session": "甲", "key": "enter",
  *       "wait": { "text": "说一句长话" }, "timeoutMs": 20000 },
  *     { "cmd": "capture", "session": "甲", "label": "01-提交之后" },
- *     { "cmd": "resize", "session": "甲", "columns": 46, "rows": 30 },
+ *     { "cmd": "resize", "session": "甲", "columns": 100, "rows": 40 },
  *     { "cmd": "capture", "session": "甲", "label": "02-窄窗" },
  *     { "cmd": "quit", "session": "甲" },
  *     { "cmd": "close", "session": "甲" }

@@ -535,8 +535,8 @@ async function useHost(sandbox: Sandbox, evidence: string, cli: string, ownedByD
 async function bootSession(options: UiSessionOptions, owned: Owned): Promise<UiSession> {
   const checkout = options.checkout ?? REPO_ROOT
   const cli = join(checkout, 'packages/app/src/cli.ts')
-  const columns = options.columns ?? 100
-  const rows = options.rows ?? 30
+  const columns = options.columns ?? 200
+  const rows = options.rows ?? 40
   const scrollback = options.scrollback ?? 2_000
 
   // **外借的**（`options.fixture` / `options.sandbox`）**不进 `owned`**——收摊那两条路

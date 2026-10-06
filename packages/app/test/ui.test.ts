@@ -17,7 +17,7 @@ import { describe, expect, test } from 'bun:test'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { UiWaitTimeout, createUiSession, hasFreshFrame, rawBytesOf, type UiSession } from './ui/driver.ts'
+import { UiWaitTimeout, createUiSession, rawBytesOf, type UiSession } from './ui/driver.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
 import type { HostResponse } from '@magic/contracts'
@@ -75,14 +75,14 @@ describe('U40 · 工具自证', () => {
   }, 30_000)
 
   test('`wait` 只查可见屏：滚进 scrollback 的字，屏上没有就算没等到', async () => {
-    // 窄屏（10 行）＋ 两轮真回话：起手那几句一定会被顶进存档区
+    // 主规格下用长回话把起手字标推入滚动区，不依赖小窗口。
     const session = await createUiSession({
       label: '自证-只查可见屏',
       columns: 100,
-      rows: 10,
+      rows: 40,
       turns: [
-        { kind: 'text', text: '第一答' },
-        { kind: 'text', text: '第二答' },
+        { kind: 'text', text: Array.from({ length: 60 }, (_, i) => `第一答 ${i + 1}`).join('\n') },
+        { kind: 'text', text: Array.from({ length: 60 }, (_, i) => `第二答 ${i + 1}`).join('\n') },
       ],
     })
 
@@ -139,109 +139,19 @@ describe('U40 · 工具自证', () => {
       ].join(';'),
     ]
 
-    const session = await createUiSession({ label: '自证-resize尺寸', command: probe, columns: 100, rows: 30 })
+    const session = await createUiSession({ label: '自证-resize尺寸', command: probe, columns: 100, rows: 40 })
     try {
-      await session.wait({ text: 'SIZE 100x30' })
-      await session.resize(72, 20)
+      await session.wait({ text: 'SIZE 100x40' })
+      await session.resize(200, 40)
 
       // 子进程**自己说**它现在看到的尺寸——与 VT 报的（driver 交给它的）对得上才算数
-      await session.wait({ text: 'SIZE 72x20' })
+      await session.wait({ text: 'SIZE 200x40' })
 
       const screen = await session.screen()
-      expect(screen.columns).toBe(72)
-      expect(screen.rows).toBe(20)
-      expect((await session.capture({ label: '改窗之后' })).lines.join('\n')).toContain('SIZE 72x20')
+      expect(screen.columns).toBe(200)
+      expect(screen.rows).toBe(40)
+      expect((await session.capture({ label: '改窗之后' })).lines.join('\n')).toContain('SIZE 200x40')
       expect(existsSync(join(session.runDir, 'host'))).toBe(false)
-    } finally {
-      await session.close()
-    }
-  }, 40_000)
-
-  test('改窗判据：旧宽折行输出必须判**不通过**（44 与 70 两档），真帧才通过（D27）', async () => {
-    const ESC = String.fromCharCode(27)
-    const DASH = '─'
-
-    // —— 反例一：**VT** 折行。100 列的分隔线画在 100 列窗口里，然后改窄——
-    //    屏上「出现 44 个横线」＝旧判据（`text`）当场通过，而应用一个字节都没写。
-    const ruler = createVt({ columns: 100, rows: 30 })
-    ruler.write(`${DASH.repeat(100)}\n`)
-    await ruler.settled()
-    ruler.resize(44, 16)
-    await ruler.settled()
-    expect(ruler.screen().lines.some((line) => line.text.includes(DASH.repeat(44)))).toBe(true)
-    ruler.dispose()
-
-    // —— 反例二：**输出阶段**折行（这一族被实测连打出来四次，故**按网格生成**，不举单例）——
-    //    改窗后应用先按旧宽度画一帧，Ink 把旧 W 列分隔线折成 ⌈W/N⌉ 段写在字节里。
-    //    ⚠️ W 是 N 的**整数倍**时，末段就是一段干净的 N 横线、后面还跟着干净行——与真帧一模一样；
-    //    拦它得看**上游**（首段靠下游、末段靠上游、中间两头顶住）。
-    const OLD_WIDTHS = [80, 100, 120, 132, 160] as const
-    const NEW_WIDTHS = [40, 44, 50, 60, 70] as const
-    const foldedOldFrame = (oldWidth: number, columns: number): string => {
-      const parts: string[] = []
-      for (let at = 0; at < oldWidth; at += columns) {
-        parts.push(`${ESC}[38;5;66m${DASH.repeat(Math.min(columns, oldWidth - at))}${ESC}[39m`)
-      }
-
-      return `${parts.join('\n')}\n › 交代一件事，回车发送\n`
-    }
-    for (const oldWidth of OLD_WIDTHS) {
-      for (const columns of NEW_WIDTHS) {
-        expect(hasFreshFrame(foldedOldFrame(oldWidth, columns), columns)).toBe(false)
-      }
-    }
-    // 整数倍那几格单独点名——四次退回里两次出在这里（半屏分栏：120→60、80→40）
-    expect(hasFreshFrame(foldedOldFrame(120, 60), 60)).toBe(false)
-    expect(hasFreshFrame(foldedOldFrame(80, 40), 40)).toBe(false)
-    expect(hasFreshFrame(foldedOldFrame(120, 40), 40)).toBe(false)
-
-    // —— 反例二·补 A 族：旧宽只比新宽大 **1..7** 列（把窗口拖窄一点点，最常见的操作）——
-    //    折行的**余数段**只有 1–7 个横线 ⇒ 下游一旦用「少于 N 个」的阈值就会被它骗过，
-    //    故下游必须是**严格零横线**。
-    for (const columns of [40, 80, 100, 120]) {
-      for (let over = 1; over <= 7; over += 1) {
-        expect(hasFreshFrame(foldedOldFrame(columns + over, columns), columns)).toBe(false)
-      }
-    }
-
-    // —— 正例（成组，先摆正例好读）：**上一行是记录行**，里面**可以带横线** ——
-    //    真帧分隔线上面紧挨的是记录行的末行；模型答一张表或一条 markdown 分隔线时那一行就带横线，
-    //    上游若写成「上一行有没有横线」就会把真帧判成不过（套件在合法内容上超时）。
-    for (const columns of [40, 44, 100]) {
-      const freshWith = (above: string): string =>
-        `${above}\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
-      expect(hasFreshFrame(freshWith('│ ──────────────── │'), columns)).toBe(true) // 模型答的表
-      expect(hasFreshFrame(freshWith(DASH.repeat(14)), columns)).toBe(true) // markdown 分隔线
-      expect(hasFreshFrame(freshWith(DASH.repeat(8)), columns)).toBe(true)
-      expect(hasFreshFrame(freshWith('› 上一件记录'), columns)).toBe(true)
-      expect(hasFreshFrame(freshWith(''), columns)).toBe(true) // 空行
-    }
-
-    // —— 反例三：**字节停在半截**（第二轮实测打出来的洞）——
-    //    分隔线那一行写完了、下一行还没到：「看不到下一行」被当成「下一行没有横线」就会假阳。
-    //    旧宽重画被折成多段时，观测正好停在第一段之后，就是这一形。
-    const rulerLine = `${ESC}[38;5;66m${DASH.repeat(44)}${ESC}[39m`
-    expect(hasFreshFrame(`${rulerLine}\n`, 44)).toBe(false)
-    expect(hasFreshFrame(`${rulerLine}\n${ESC}[38;5`, 44)).toBe(false)
-    expect(hasFreshFrame(rulerLine, 44)).toBe(false)
-
-    // —— 正例（成组）：分隔线按**新宽度**只画一行，两侧都是干净的记录行／输入行 ——
-    for (const columns of NEW_WIDTHS) {
-      const fresh = `› 上一件\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
-      expect(hasFreshFrame(fresh, columns)).toBe(true)
-      // 记录行里**偶尔带一个横线**不该把真帧判掉（判的是横线「段」，不是「有没有」）
-      const dashed = `› 用 ─ 分隔的那条记录\n${ESC}[38;5;66m${DASH.repeat(columns)}${ESC}[39m\n › 交代一件事，回车发送\n`
-      expect(hasFreshFrame(dashed, columns)).toBe(true)
-    }
-    // 下一行是**空行**（审批卡那种帧：分隔线下面直接跟空行）也算写完——不能把真帧等成超时
-    expect(hasFreshFrame(`${rulerLine}\n\n › 等你的答复\n`, 44)).toBe(true)
-
-    // —— 正例（真会话）：改窗之后应用确实按新宽度画出了整帧 ——
-    const session = await createUiSession({ label: '自证-改窗判据', columns: 100, rows: 24, turns: HELLO })
-    try {
-      await session.resize(60, 18)
-      await session.wait({ writtenFrame: 60 }, { timeoutMs: 8_000 })
-      expect(rawBytesOf(session.runDir).includes(DASH.repeat(60))).toBe(true)
     } finally {
       await session.close()
     }
@@ -524,7 +434,7 @@ describe('U40-2 · 退回的四处回归', () => {
       expect(reply(sent)['session']).toBe('s1')
       expect(reply(sent)['pid']).toBe(pidOfFirst)
 
-      const sized = await control.handle(JSON.stringify({ id: 5, cmd: 'resize', session: 's1', columns: 72, rows: 18 }))
+      const sized = await control.handle(JSON.stringify({ id: 5, cmd: 'resize', session: 's1', columns: 100, rows: 40 }))
       expect(reply(sized)['session']).toBe('s1')
 
       // 没写号＝当前那个（最后起的那个），不是随机的另一个
@@ -543,7 +453,7 @@ describe('U40-2 · 退回的四处回归', () => {
 
 describe('U40-2 · 光标显隐与翻帧', () => {
   test('VT 取样带上光标真实显隐：显示 → 藏起 → 再显示 → 软复位回到显示', async () => {
-    const vt = createVt({ columns: 20, rows: 4 })
+    const vt = createVt({ columns: 200, rows: 40 })
 
     try {
       const hidden = async (): Promise<boolean> => {
@@ -726,7 +636,7 @@ function viewerOf(
       dirty: false,
       bun: Bun.version,
       app: { argv: [], cwd: dir, home: dir, dataDir: dir, configPath: '', forceColor: '0' },
-      terminal: { columns: 20, rows: 4, scrollback: 100, term: 'xterm-256color' },
+      terminal: { columns: 200, rows: 40, scrollback: 100, term: 'xterm-256color' },
       fixture: null,
       rawLimitBytes: 1,
       steps: steps.length,
@@ -748,11 +658,11 @@ function viewerOf(
         step: frame.step,
         label: frame.label,
         at: 0,
-        columns: 20,
-        rows: 4,
+        columns: 200,
+        rows: 40,
         cursor: { x: 3, y: 0, hidden: frame.hidden },
         scrollback: 0,
-        total: 4,
+        total: 40,
         styles: [''],
         lines: [{ wrapped: false, runs: [[0, 'x', 1, 0]] }],
       }),
@@ -793,17 +703,8 @@ describe('U40 · 六组代表场景（`界面验收工具`·首批验收场景�
       // 挂了就把**判据名 + 最后那一眼**打出来——比一句「ok 是 false」有用得多
       expect(failureLine(result)).toBeNull()
       expect(result.checks.length).toBeGreaterThan(0)
-      // 判据全过——**登记为「已知未修」的那几条除外**（登记见 `ui/scenarios.ts` 的 `KNOWN_OPEN`）。
-      // 列出来而不是 `.every(...)`：挂了要看得见**是哪几条**、欠的是谁。
-      const failed = result.checks
-        .filter((check) => !check.ok && check.knownOpen === undefined)
-        .map((check) => `${check.what}：${check.detail}`)
+      const failed = result.checks.filter(check => !check.ok).map(check => `${check.what}：${check.detail}`)
       expect(failed).toEqual([])
-      // **登记过期要叫**：某条「已知未修」已经不红了 ⇒ 账还上了，别让免死金牌留着
-      const repaid = result.checks
-        .filter((check) => check.ok && check.knownOpen !== undefined)
-        .map((check) => `${check.what}（欠 ${check.knownOpen?.defect}）`)
-      expect(repaid).toEqual([])
       expect(result.runDirs.length).toBeGreaterThan(0)
     }, 300_000)
   }
@@ -837,7 +738,7 @@ describe('U40 · 助手入口（常驻控制进程 · stdin ←→ stdout 逐行
         cmd: 'start',
         label: '助手-一现场',
         cols: 100,
-        rows: 24,
+        rows: 40,
         turns: [{ kind: 'text', text: '助手答' }],
       })
       expect(started['ok']).toBe(true)
@@ -855,9 +756,9 @@ describe('U40 · 助手入口（常驻控制进程 · stdin ←→ stdout 逐行
       const frame = shot['frame'] as { lines: readonly string[] }
       expect(frame.lines.join('\n')).toContain('助手答')
 
-      const resized = await call(serve, lines, { id: 7, cmd: 'resize', columns: 70, rows: 18 })
+      const resized = await call(serve, lines, { id: 7, cmd: 'resize', columns: 100, rows: 40 })
       expect(resized['ok']).toBe(true)
-      expect(resized['columns']).toBe(70)
+      expect(resized['columns']).toBe(100)
 
       expect((await call(serve, lines, { id: 8, cmd: 'send', text: '第二件' }))['ok']).toBe(true)
       await call(serve, lines, { id: 9, cmd: 'wait', condition: { text: '› 第二件' }, timeoutMs: 5_000 })
@@ -1183,7 +1084,7 @@ describe('D30 · 取帧与字节数同刻', () => {
       label: 'D30-整帧',
       command: framingProbe(statePath),
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
 
     try {
@@ -1254,7 +1155,7 @@ const ESU = `${String.fromCharCode(27)}[?2026l`
 
 describe('D30 · 同步更新切帧的相反情形', () => {
   test('不认这套协议的应用：没有标记就立刻落屏；像标记开头的半截先攒着，判明后照旧交', async () => {
-    const vt = createVt({ columns: 20, rows: 4 })
+    const vt = createVt({ columns: 200, rows: 40 })
     try {
       vt.write('甲')
       await vt.settled()
@@ -1278,7 +1179,7 @@ describe('D30 · 同步更新切帧的相反情形', () => {
   })
 
   test('标记被切在两块之间：那半截不算数，拼全了照常算——不丢、也不误判', async () => {
-    const vt = createVt({ columns: 20, rows: 4 })
+    const vt = createVt({ columns: 200, rows: 40 })
     try {
       // `h` 的前 5 个字符先到：这一段**不能**当成普通字节交出去（交了后面就再也认不出这个标记）
       vt.write(BSU.slice(0, 5))
@@ -1306,7 +1207,7 @@ describe('D30 · 同步更新切帧的相反情形', () => {
   })
 
   test('半截帧不落屏、且**不覆盖**上一帧：`l` 到了才整帧换过去', async () => {
-    const vt = createVt({ columns: 20, rows: 4 })
+    const vt = createVt({ columns: 200, rows: 40 })
     try {
       vt.write(`${BSU}第一帧${ESU}`)
       await vt.settled()

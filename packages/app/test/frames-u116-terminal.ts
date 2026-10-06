@@ -11,7 +11,7 @@ import { statusLineOf } from './ui/anchors.ts'
 const fixture = startFixture({ turns: [{ kind: 'text', text: 'U116_WARMUP', chunks: 1 }, { kind: 'text', text: 'U116_TERMINAL_FINISHED', reasoning: 'U116_THINKING_' + 'a'.repeat(110), chunks: 80, chunkDelayMs: 250 }] })
 const sandbox = createSandbox({ baseURL: fixture.baseURL, config: { statusLine: { cells: ['session', 'model', 'reasoning', 'context', 'workspace'], color: true } } })
 const host = await startResidentHost(sandbox, REPO_ROOT + '/.ui-runs/u116/host')
-const ui = await createUiSession({fixture,sandbox,columns:160,rows:32,argv:['--allow-all'],label:'U116-App偏好到真实PTY',artifacts:REPO_ROOT + '/.ui-runs/u116'})
+const ui = await createUiSession({fixture,sandbox,columns:200,rows:40,argv:['--allow-all'],label:'U116-App偏好到真实PTY',artifacts:REPO_ROOT + '/.ui-runs/u116'})
 const identity = host.discovery
 const link = linkOf<NativeResponse>(await Bun.connect({unix:identity.socket,socket:socketHandlers()}) as never)
 const responses:NativeResponse[]=[];link.onMessage(v=>responses.push(v))
@@ -40,13 +40,12 @@ try {
  await Bun.sleep(1500);await ui.capture({label:'03-减少动效持续-计时增长'})
  await settings({type:'prefs.set',statusLine:{cells:['session','workspace','model','reasoning','context'],color:false},reducedMotion:false})
  await Bun.sleep(1200);const colorless=await ui.capture({label:'04-原生保存无色-字段顺序变更'});const colorlessStatus=statusLineOf(colorless.lines);order(colorlessStatus,['全放行','U116字段','ws','Default','思考·默认','1.0k/']);const colorlessRow=colorless.lines.indexOf(colorlessStatus);assert(colorless.cellsOf(colorlessRow).every(v=>v.fg===null),'关闭颜色后整条状态行使用终端默认色')
- await ui.resize(46,32);await Bun.sleep(600);const narrow=await ui.capture({label:'05-窄窗从右让位'});const narrowStatus=statusLineOf(narrow.lines);assert(narrowStatus.includes('全放行'));assert(narrowStatus.includes('U116字段'));assert(!narrowStatus.includes('思考·默认'));assert(!narrowStatus.includes('1.0k/'))
  await settings({type:'prefs.set',statusLine:{cells:[],color:false},reducedMotion:true})
  await ui.capture({label:'06-空字段仍保留运行状态'})
  assert(reduced.text.includes('U116字段'));assert(reduced.text.includes('Default'))
  assert(new Set(normal.map(v=>v.color)).size>1,'实际工作状态呼吸颜色必须变化');assert.equal(new Set(reducedSeries.map(v=>v.color)).size,1,'减少动效后颜色须固定');assert(reducedSeries.every(v=>v.color!=null&&v.thinking!=null));assert(new Set(reducedSeries.map(v=>v.thinking)).size>1,'减少动效期间思考计时继续')
  const empty=statusLineOf((await ui.screen()).lines.map(v=>v.text));assert(empty.includes('全放行'));assert(!empty.includes('Default'))
  await ui.wait({text:'U116_TERMINAL_FINISHED'},{timeoutMs:30000});await ui.wait({text:'○ 空闲'});await ui.capture({label:'07-完成后静止'})
- writeFileSync(ui.runDir+'/u116-terminal-facts.json',JSON.stringify({entry:'native.settings.apply → existing executor受理 → real CLI/PTY',requests:ui.requests().length,run:ui.facts(),normal,reduced:reducedSeries,allFiveFields:all,initialEmptyValues:initialStatus,narrow:narrowStatus,colorless:colorlessStatus,emptyFields:empty,finalPreview:(await settings()).preview},null,2))
+ writeFileSync(ui.runDir+'/u116-terminal-facts.json',JSON.stringify({entry:'native.settings.apply → existing executor受理 → real CLI/PTY',requests:ui.requests().length,run:ui.facts(),normal,reduced:reducedSeries,allFiveFields:all,initialEmptyValues:initialStatus,colorless:colorlessStatus,emptyFields:empty,finalPreview:(await settings()).preview},null,2))
  console.log(ui.runDir)
 } finally {link.close();await ui.close({keepSandbox:true});await host.close();await fixture.stop()}

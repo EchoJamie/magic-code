@@ -21,23 +21,23 @@ for (const empty of [true, false]) {
     foreignStore.close()
   }
   const host=await startResidentHost(sandbox,REPO_ROOT + '/.ui-runs/u114/resume-host-'+Date.now())
-  const ui = await createUiSession({ fixture, sandbox, columns: 160, rows: 40,
+  const ui = await createUiSession({ fixture, sandbox, columns: 200, rows: 40,
     label: `U114-接回${empty ? '目录空态' : '范围与筛词空态'}`,
     artifacts: REPO_ROOT + '/.ui-runs/u114' })
   try {
     await ui.send('/resume ')
     await ui.key('enter')
     await ui.wait({ text: empty ? '工作目录为空' : '另一工作区的真实记录' })
-    await ui.capture({ label: '160-目录或全范围' })
+    await ui.capture({ label: '200-目录或全范围' })
     if (!empty) {
       await ui.key('tab')
       await ui.wait({ text: '本范围没有工作' })
-      await ui.capture({ label: '160-本工作区范围为空仍可返回' })
+      await ui.capture({ label: '200-本工作区范围为空仍可返回' })
       await ui.key('tab')
       await ui.wait({ text: '另一工作区的真实记录' })
       await ui.send('NO_MATCH_U114')
       await ui.wait({ text: '没有名称匹配' })
-      await ui.capture({ label: '160-名称无匹配与范围独立' })
+      await ui.capture({ label: '200-名称无匹配与范围独立' })
     }
     await ui.key('esc')
     await ui.wait({ absent: '找工作并接回' })

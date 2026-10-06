@@ -185,7 +185,7 @@ async function openScene(options: {
     sandbox,
     fixture,
     columns: 100,
-    rows: 32,
+    rows: 40,
     ...(options.argv === undefined ? {} : { argv: options.argv }),
   })
   await session.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })

@@ -259,7 +259,7 @@ if (import.meta.main) {
     session = await createUiSession({
       label: 'u78-照报错走一遍',
       columns: 100,
-      rows: 34,
+      rows: 40,
       sandbox,
       fixture,
       artifacts: join(out, 'runs'),

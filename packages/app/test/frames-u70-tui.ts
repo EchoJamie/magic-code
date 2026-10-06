@@ -298,7 +298,7 @@ async function startFrame(): Promise<void> {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
 
     await typeLine(session, '把这条构建交出去')
@@ -407,7 +407,7 @@ async function serverFrame(): Promise<void> {
       sandbox,
       fixture,
       columns: 100,
-      rows: 30,
+      rows: 40,
     })
 
     await typeLine(session, '起一个一直跑的服务')

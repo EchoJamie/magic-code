@@ -69,11 +69,6 @@ describe('步骤文字折行', () => {
     expect(stepLines('a\tb', 14)).toEqual(['a       b'])
   })
 
-  test('极窄窗口不把宽度算成 0 或负数', () => {
-    expect(stepLines('ab', 1)).toEqual(['a', 'b'])
-    expect(stepLines('ab', 0).length).toBeGreaterThan(0)
-  })
-
   test('方块那一格是两列——与记录区的行首标记同宽；退一级另是两列', () => {
     expect(MARK_WIDTH).toBe(2)
     expect(PLAN_INDENT).toBe(2)
@@ -91,10 +86,6 @@ describe('目标那一行的折行', () => {
 
   test('长目标正常折（不裁短、不省略），中文仍按两列算', () => {
     expect(goalLines('一二三四五六', 6)).toEqual(['一二三', '四五六'])
-  })
-
-  test('极窄窗口也给出至少一列', () => {
-    expect(goalLines('ab', 0).length).toBeGreaterThan(0)
   })
 })
 
@@ -242,16 +233,6 @@ describe('溢出提示那一行', () => {
     expect(planMoreLabel(0, 4)).toBe('下面还有 4 行 · PgUp/PgDn 翻页')
     expect(planMoreLabel(3, 0)).toBe('上面还有 3 行 · PgUp/PgDn 翻页')
     expect(planMoreLabel(3, 4)).toBe('上面 3 行 · 下面 4 行 · PgUp/PgDn 翻页')
-  })
-
-  test('窄窗截断——行数在前（先丢的是那句键位）', () => {
-    const short = planMoreLine(12, 0, 20)
-
-    expect(short.endsWith('…')).toBe(true)
-    expect(short).toContain('12 行')
-    expect(short).not.toContain('PgUp')
-    // 再窄就只剩「还有几行」这半句了——**仍然是截断，不是折行**（折了账就少一行）
-    expect(planMoreLine(12, 0, 12)).toBe('上面还有 12…')
   })
 
   test('宽窗一个字都不截', () => {

@@ -199,7 +199,7 @@ describe('`/config` · 开屏', () => {
     const stage = live()
     open(stage)
 
-    const frame = await stage.screen({ columns: 100, rows: 30 })
+    const frame = await stage.screen({ columns: 100, rows: 40 })
     const values = [
       'MiniMax-M3 · 个人版 · Enter 进入',
       '2 条 · Enter 进入',
@@ -324,8 +324,8 @@ describe('`/config` · 选中即进那一屏', () => {
 
     // 抽屉那一份**逐字段相同**，屏上那一块**逐字相同**（连同右位提示）
     expect(pickerOf(viaConfig)).toEqual(pickerOf(direct))
-    const a = await direct.screen({ columns: 100, rows: 30 })
-    const b = await viaConfig.screen({ columns: 100, rows: 30 })
+    const a = await direct.screen({ columns: 100, rows: 40 })
+    const b = await viaConfig.screen({ columns: 100, rows: 40 })
     expect(b.dock.map((one) => one.text)).toEqual(a.dock.map((one) => one.text))
     expect(b.statusLine).toBe(a.statusLine)
     expect(b.content.map(one => one.text)).toEqual(['› /config'])
