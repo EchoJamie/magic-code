@@ -4,6 +4,7 @@ import type { RecordsStore } from '@magic/records'
 import type { Link } from './wire.ts'
 
 export type NativeServerOptions = {
+  readonly record?: (level: 'debug' | 'warn', event: string, request: string) => void
   readonly identity: ServiceIdentity
   readonly store: RecordsStore
   readonly accepting: () => boolean
@@ -93,8 +94,9 @@ export function createNativeServer(options: NativeServerOptions) {
       const message = raw as NativeRequest
       switch (message.t) {
         case 'native.settings.read': case 'native.settings.apply': {
+          options.record?.('debug', message.t, message.request)
           const target = { request: message.request, serviceInstance: options.identity.serviceInstance, dataDir: options.identity.dataDir }
-          const failure = (error: string): NativeResponse => ({ t: 'native.settings.result', ...target, error })
+          const failure = (error: string): NativeResponse => { options.record?.('warn', 'native.settings.failed', message.request); return { t: 'native.settings.result', ...target, error } }
           if (closed || !options.accepting() || message.serviceInstance !== options.identity.serviceInstance || message.dataDir !== options.identity.dataDir) {
             link.send(failure('服务身份已改变或正在退出，请重新读取')); break
           }
@@ -110,12 +112,14 @@ export function createNativeServer(options: NativeServerOptions) {
           const result = settingsQueue.then(async (): Promise<NativeResponse> => {
             if (closed || link.closed || !options.accepting()) return failure('连接已断开或服务正在退出，请重新读取')
             if (options.settings === undefined) return failure('设置服务不可用')
+            let note: string | undefined
             try {
-              const note = message.t === 'native.settings.apply' ? await options.settings.apply(message.action, message.stamp) : undefined
+              note = message.t === 'native.settings.apply' ? await options.settings.apply(message.action, message.stamp) : undefined
               const snapshot = await options.settings.read(message.t === 'native.settings.read' ? message.preview : undefined)
               if (closed || link.closed || !options.accepting()) return failure('保存结果尚未确认，请重新读取')
+              options.record?.('debug', 'native.settings.result', message.request)
               return { t: 'native.settings.result', ...target, snapshot, ...(note === undefined ? {} : { note }) }
-            } catch (error) { return failure(error instanceof Error ? error.message : '设置操作失败，请重新读取后重试') }
+            } catch (error) { return failure(note !== undefined ? `${note}；设置快照未能读取，请重新读取` : error instanceof Error ? error.message : '设置操作失败，请重新读取后重试') }
           })
           settingsQueue = result.then(() => {})
           owned.set(message.request, { signature, result })

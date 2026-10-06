@@ -1,3 +1,5 @@
+import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
+import { DiagnosticLog } from '../diagnostic-log.ts'
 import { createManagedCollaboration } from './collaboration.ts'
 import { loadConfig } from '../config.ts'
 import { createSettings } from '../settings.ts'
@@ -168,6 +170,8 @@ type Executor = {
 }
 
 export type ManagerOptions = {
+  readonly diagnosticsChanged?: (value: Diagnostics) => Promise<void>
+
   readonly hostInstance?: string
   readonly lifecycle?: {
     /** 同步持久关闭协作准入；先于任何执行收尾。 */
@@ -465,6 +469,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     hostInstance: options.hostInstance ?? crypto.randomUUID(),
     serviceInstance: crypto.randomUUID(), dataDir: options.dataDir,
   }
+  const diagnosticLog = new DiagnosticLog('manager', options.dataDir, diagnosticsOf(loadConfig({ magic: options.magic }).config).logLevel)
+  diagnosticLog.write('info', 'manager.started', identity)
   const record: ManagerRecord = {
     pid: process.pid,
     at: now(),
@@ -994,12 +1000,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
   const executorSettings = new Map<Executor, readonly McpCatalogRow[]>()
   const settingsReplies = new Map<string, { executor: Executor; resolve: (note: string) => void; reject: (error: Error) => void }>()
-  function settingsToExecutor(executor: Executor, server?: string, inspect = false): Promise<string> {
+  function settingsToExecutor(executor: Executor, server?: string, inspect = false, diagnostics?: Diagnostics): Promise<string> {
     return new Promise((resolve, reject) => {
       const request = crypto.randomUUID()
-      const timeout = setTimeout(() => { settingsReplies.delete(request); reject(new Error('执行者未确认设置受理，请重新读取当前事实')) }, 30_000)
+      const timeout = setTimeout(() => { settingsReplies.delete(request); reject(new Error('执行者未确认设置受理，请重新读取当前事实')) }, diagnostics ? 5_000 : 30_000)
       settingsReplies.set(request, { executor, resolve: note => { clearTimeout(timeout); resolve(note) }, reject: error => { clearTimeout(timeout); reject(error) } })
-      send(executor, inspect ? { t: 'settings.inspect', request } : server === undefined ? { t: 'settings.sync', request } : { t: 'settings.reconnect', request, server })
+      send(executor, diagnostics ? { t: 'diagnostics.sync', request, value: diagnostics } : inspect ? { t: 'settings.inspect', request } : server === undefined ? { t: 'settings.sync', request } : { t: 'settings.reconnect', request, server })
     })
   }
   function publishPreferences(except?: ClientConn): void {
@@ -1025,7 +1031,23 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         ...await (options.lifecycle?.affected() ?? Promise.resolve([])),
       ]
   }
+  let appliedDiagnostics: Diagnostics | undefined
+  let diagnosticsNote = ''
   const settings = createSettings({
+    diagnosticsChanged: async (value, source) => {
+      if (appliedDiagnostics?.debugMode === value.debugMode && appliedDiagnostics.logLevel === value.logLevel) return diagnosticsNote
+      diagnosticLog.setLevel(value.logLevel)
+      diagnosticLog.write('info', 'diagnostics.applied', { ...identity, ...value, ...(source ? { settingSource: source } : {}), ...(appliedDiagnostics ? { previousDebugMode: appliedDiagnostics.debugMode, previousLogLevel: appliedDiagnostics.logLevel } : {}) })
+      const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
+      const targets = ['App', ...current.map(executor => `执行者第 ${executor.gen} 代`)]
+      const replies = await Promise.allSettled([options.diagnosticsChanged?.(value) ?? Promise.resolve(), ...current.map(executor => settingsToExecutor(executor, undefined, false, value))])
+      await diagnosticLog.flush()
+      const pending = replies.flatMap((reply, i) => reply.status === 'rejected' ? [targets[i]!] : [])
+      if (diagnosticLog.problem) pending.push('管理者日志写入')
+      appliedDiagnostics = pending.length ? undefined : value
+      diagnosticsNote = pending.length ? `已保存，部分运行进程尚未确认生效：${pending.join('、')}` : '诊断设置已保存并生效'
+      return diagnosticsNote
+    },
     magic: options.magic, cwd: options.magic.home, store, mcp: [], now,
     canChangeData: async () => !(await nativeWorks()).some(work => work.affected) && executors.size === 0,
     mcpWorks: async () => {
@@ -1045,6 +1067,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   })
   const native = createNativeServer({
     identity, store, accepting: () => !stopped, settings,
+    record: (level, event, request) => diagnosticLog.write(level, event, { ...identity, request }),
     works: nativeWorks,
     stop(session, gen, report) {
       if (workStopGeneration(session) !== gen) {
@@ -1776,6 +1799,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       retire(executor, reason)
     })
 
+    diagnosticLog.write('info', 'executor.started', { ...identity, run: String(gen), ...(input.session === null ? {} : { session: input.session }) })
     options.log?.(`起了执行者 第 ${gen} 代 pid=${spawned.pid ?? '?'} 会话=${input.session ?? '（还没开张）'}`)
     saveRuns(true)
     pushRuns()
@@ -1881,6 +1905,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         pushRuns()
         return
       case 'settings.synced': {
+        diagnosticLog.write(message.error ? 'warn' : 'debug', 'settings.ack', { ...identity, request: message.request, run: String(executor.gen) })
         executorSettings.set(executor, message.mcp)
         const pending = settingsReplies.get(message.request)
         if (pending?.executor === executor) { settingsReplies.delete(message.request); if (message.error !== undefined) pending.reject(new Error(message.error)); else pending.resolve(message.note ?? '已受理设置') }
@@ -1997,6 +2022,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
+    diagnosticLog.write(event.kind === 'error' ? 'error' : 'trace', `kernel.${event.kind}`, { ...identity, run: String(executor.gen), ...(event.session ? { session: event.session } : {}) })
     if (event.kind === 'mcp.catalog') executorSettings.set(executor, event.data.servers)
     if (event.kind === 'input.settled' && event.data.ref !== undefined) {
       const owner = collaborationInputs.get(event.data.ref)
@@ -2334,6 +2360,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     shutdownInFlight = shutdown(why).catch((error) => {
       const reason = `未能确认全部工作已停止：${String(error)}`
       options.log?.(reason)
+      diagnosticLog.write('error', 'manager.shutdown.failed', identity)
       options.onShutdownError?.(reason)
     }).finally(() => { shutdownInFlight = undefined })
   }
@@ -2390,6 +2417,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     storeClosed = true
     store.close()
     options.log?.(`管理者收摊（${why}）`)
+    diagnosticLog.write('info', 'manager.stopped', identity)
+    await diagnosticLog.close()
     settle()
   }
 

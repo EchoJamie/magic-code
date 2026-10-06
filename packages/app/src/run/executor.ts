@@ -1,3 +1,5 @@
+import { diagnosticsOf, validDiagnosticsChange } from '@magic/contracts'
+import { DiagnosticLog } from '../diagnostic-log.ts'
 /**
  * **执行者**（U48）——一条会话的推进由它一个进程独扛。
  *
@@ -156,10 +158,13 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     for (const done of requests.values()) done({ ok: false, reason: '管理者连接已断开；请求结果可按原 operationId 查询，不自动重做' })
     requests.clear()
   })
+  let diagnosticLog: DiagnosticLog | undefined
   let assembly: Assembly
   try {
     const magic = options.magic
     let config = loadConfig({ magic })
+    diagnosticLog = new DiagnosticLog('executor', config.config.dataDir, diagnosticsOf(config.config).logLevel)
+    diagnosticLog.write('info', 'executor.started', options.session === null ? {} : { session: options.session })
     let cwd = options.cwd
     if (options.session !== null) {
       const records = createRecordsStore({ dataDir: config.config.dataDir, workspace: [] })
@@ -198,6 +203,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       session: options.session, workspace: [] })
     link.send({ t: 'done', why: `装配没成：${reason}` })
     link.close()
+    diagnosticLog?.write('error', 'executor.failed')
+    await diagnosticLog?.close()
     return { kind: 'failed', reason }
   }
 
@@ -324,6 +331,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
    * ② 快照的取材（`live`）。分两个 switch 写同一件事，迟早有一处只更新了一半。
    */
   function track(event: KernelEvent): void {
+    diagnosticLog?.write(event.kind === 'error' ? 'error' : event.kind === 'turn.start' || event.kind === 'turn.end' ? 'info' : 'trace', `kernel.${event.kind}`, { ...(event.session ? { session: event.session } : {}) })
     // 水位跟着事件走——快照停在「这一条上」，水位之后的都还没发生
     live.lastId = event.id
 
@@ -482,6 +490,8 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       await assembly.shutdown()
     } finally {
       assembly.close()
+      diagnosticLog?.write('info', 'executor.stopped')
+      await diagnosticLog?.close()
     }
     link.close()
   }
@@ -521,9 +531,16 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   reportOwned()
 
   link.onMessage((message: ManagerToExecutor) => {
+    diagnosticLog?.write('trace', `control.${message.t}`)
     switch (message.t) {
       case 'settings.inspect':
         link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }); return
+      case 'diagnostics.sync':
+        if (!validDiagnosticsChange(message.value)) { link.send({ t: 'settings.synced', request: message.request, error: '诊断设置无效', mcp: assembly.mcpServers() }); return }
+        diagnosticLog?.setLevel(message.value.logLevel)
+        diagnosticLog?.write('info', 'diagnostics.applied', { request: message.request })
+        void diagnosticLog?.flush().then(() => link.send({ t: 'settings.synced', request: message.request, ...(diagnosticLog?.problem ? { error: diagnosticLog.problem } : {}), mcp: assembly.mcpServers() }))
+        return
       case 'settings.sync':
         try { assembly.refreshSettings(); link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }) }
         catch { link.send({ t: 'settings.synced', request: message.request, error: '无法受理当前设置，请重新读取', mcp: assembly.mcpServers() }) }
@@ -586,6 +603,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     await assembly.ready()
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    diagnosticLog?.write('error', 'executor.discovery.failed')
     await closeOut(`发现那一跳没成：${reason}`)
     return { kind: 'failed', reason }
   }
@@ -603,6 +621,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   } catch (error) {
     off()
     const reason = error instanceof Error ? error.message : String(error)
+    diagnosticLog?.write('error', 'executor.recovery.failed')
     await closeOut(`恢复没跑完：${reason}`)
     return { kind: 'failed', reason }
   }

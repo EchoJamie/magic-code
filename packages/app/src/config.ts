@@ -1,3 +1,4 @@
+import { isLogLevel } from '@magic/contracts'
 
 
 import { readFileSync } from 'node:fs'
@@ -703,6 +704,8 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   // 外部工具一件都出不来、也不报错——用户对着「明明配了却没有」发呆。
   const mcp = raw['mcp'] === undefined ? undefined : asMcpConfig(raw['mcp'], path)
   const statusLine = raw['statusLine'] === undefined ? undefined : asStatusLine(raw['statusLine'], path)
+  if (raw.debugMode !== undefined && typeof raw.debugMode !== 'boolean') throw new ConfigError(path, 'debugMode 须是布尔值')
+  if (raw.logLevel !== undefined && !isLogLevel(raw.logLevel)) throw new ConfigError(path, 'logLevel 须是 error / warn / info / debug / trace')
   const motion = raw['motion'] === undefined ? undefined : asMotion(raw['motion'], path)
 
   return {
@@ -725,6 +728,8 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
       ...(mcp === undefined ? {} : { mcp }),
       ...(agentRoles === undefined ? {} : { agentRoles }),
       ...(statusLine === undefined ? {} : { statusLine }),
+      ...(raw.debugMode === undefined ? {} : { debugMode: raw.debugMode as boolean }),
+      ...(raw.logLevel === undefined ? {} : { logLevel: raw.logLevel as import('@magic/contracts').LogLevel }),
       ...(motion === undefined ? {} : { motion }),
     },
     providerId,

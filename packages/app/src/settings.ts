@@ -1,3 +1,5 @@
+import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
+import { saveDiagnostics } from './diagnostics.ts'
 import { statusLinePreview } from '@magic/tui'
 /** 原生设置的应用动作；复用配置解析、保存、缓存和授权，不装配工作。 */
 import { readFileSync, realpathSync, statSync } from 'node:fs'
@@ -18,6 +20,8 @@ import { providerCatalog, readModelCatalog } from './run/observation.ts'
 import type { ObservationContext } from './run/observation.ts'
 
 export type SettingsContext = ObservationContext & {
+  readonly diagnosticsChanged?: (value: Diagnostics, source?: 'app' | 'cli' | 'config') => Promise<string>
+
   readonly canChangeData: () => boolean | Promise<boolean>
   readonly mcpWorks: () => Promise<SettingsSnapshot['mcp']>
   readonly preferencesChanged: () => Promise<void>
@@ -50,6 +54,7 @@ export function createSettings(context: SettingsContext) {
     const stamp = configStamp(configPath)
     const loaded = loadConfig({ magic: context.magic })
     const config = loaded.config
+    const diagnosticsNote = await context.diagnosticsChanged?.(diagnosticsOf(config), 'config')
     const providers = Object.fromEntries(Object.entries(config.providers).map(([id, { apiKey, ...entry }]) => [id, {
       ...entry, keyConfigured: !!apiKey?.trim(), keySource: apiKey?.trim() ? 'config' : process.env[apiKeyEnvVarOf(id)]?.trim() ? 'env' : 'missing',
     }]))
@@ -59,6 +64,7 @@ export function createSettings(context: SettingsContext) {
     }))
     const raw = stamp === null ? {} : book(JSON.parse(readFileSync(configPath, 'utf8')))
     const configuration = {
+      ...diagnosticsOf(config), diagnosticsNote,
       providers, modelAliases: config.modelAliases ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
@@ -96,6 +102,11 @@ export function createSettings(context: SettingsContext) {
   async function apply(action: SettingsAction, stamp: string | null): Promise<string> {
     if (configStamp(configPath) !== stamp) throw new Error('配置已被修改，请重新读取后再保存；输入已保留')
     const loaded = loadConfig({ magic: context.magic })
+    if (action.type === 'diagnostics.set') {
+      const { type, source, ...change } = action
+      const value = saveDiagnostics(context.magic, change, stamp)
+      return await context.diagnosticsChanged?.(value, source ?? 'app') ?? '诊断设置已保存'
+    }
     const currentInfo = modelInfo(loaded)
     await currentInfo.warmup()
     const snapshots = Object.entries(loaded.config.providers).map(([provider, config]) => ({ provider, config, snapshot: currentInfo.peek(provider).snapshot }))

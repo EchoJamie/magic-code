@@ -7,6 +7,10 @@ import Combine
     @StateObject private var model: AppModel
     init() {
         let args = CommandLine.arguments
+        if args.contains("--help") || args.contains("-h") {
+            print("Magic Code\n选项：--debug / --no-debug；--log-level <error|warn|info|debug|trace>\n显式设置保存到 config.json；无参数采用已保存设置。")
+            exit(0)
+        }
         #if DEBUG
         let fixedRoot = AppModel.systemTestRoot(bundle: .main)
         if Bundle.main.bundleIdentifier?.hasPrefix("com.magiccode.validation.") == true, fixedRoot == nil {
@@ -16,13 +20,19 @@ import Combine
         #else
         let root: URL? = nil
         #endif
+        let diagnosticArgs: [String]
+        do { diagnosticArgs = try Diagnostics.arguments(args) }
+        catch { FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8)); exit(64) }
         let model = AppModel(validationRoot: root)
+        model.diagnosticsArguments = diagnosticArgs
         _model = StateObject(wrappedValue: model)
         AppDelegate.model = model
     }
     var body: some Scene {
         MenuBarExtra {
-            StatusPanel(model: model)
+            if model.debugWindowVisible {
+                Button("打开调试窗口") { model.showDebugWindow?() }.padding()
+            } else { StatusPanel(model: model) }
         } label: {
             MenuBarMark(state: model.menuBarState).accessibilityLabel("Magic Code，\(model.summary)")
         }.menuBarExtraStyle(.window)
@@ -39,6 +49,7 @@ import Combine
     private var powerOff: NSObjectProtocol?
     private var validation: AnyCancellable?
     private var noticeWindow: NSWindow?
+    private var debugWindow: DebugWorkWindow?
     #if DEBUG
     private var systemTestTimer: Timer?
     #endif
@@ -102,6 +113,11 @@ import Combine
             }
         }
         #endif
+        if let model = Self.model {
+            let window = DebugWorkWindow(model: model); debugWindow = window
+            model.showDebugWindow = { [weak window] in window?.show() }
+            model.hideDebugWindow = { [weak window] in window?.close() }
+        }
         Self.model?.start()
         #if DEBUG
         if let model = Self.model, let root = model.systemTestRoot {
@@ -187,4 +203,30 @@ extension AppModel {
         if response == .alertSecondButtonReturn { confirmQuit(); return true }
         cancelQuit(); return false
     }
+}
+
+
+@MainActor private final class DebugWorkWindow: NSObject, NSWindowDelegate {
+    private let model: AppModel
+    private var window: NSWindow?
+    init(model: AppModel) { self.model = model }
+    func show() {
+        guard model.diagnostics.debugMode else { return }
+        model.setDebugWindowVisible(true)
+        if window == nil {
+            let controller = NSHostingController(rootView: StatusPanel(model: model, surface: .debug))
+            let window = NSWindow(contentViewController: controller)
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.title = "Magic Code · 调试"; window.isReleasedWhenClosed = false
+            window.delegate = self; window.center(); self.window = window
+            LongLivedWindows.shared.register(window)
+        }
+        window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
+        model.panelVisibility(true, surface: .debug)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func close() { window?.close() }
+    func windowWillClose(_ notification: Notification) { model.panelVisibility(false, surface: .debug); model.setDebugWindowVisible(false) }
+    func windowDidMiniaturize(_ notification: Notification) { model.panelVisibility(false, surface: .debug) }
+    func windowDidDeminiaturize(_ notification: Notification) { model.panelVisibility(true, surface: .debug) }
 }

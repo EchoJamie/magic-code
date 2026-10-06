@@ -681,3 +681,26 @@ async function descendantOf(pid: number): Promise<number | undefined> {
   const first = text.trim().split('\n').filter((line) => line !== '')[0]
   return first === undefined ? undefined : Number(first)
 }
+
+test('在途执行者动态调整诊断等级，PID、代次与审批保持；错误等级不继续记 trace', async () => {
+  const { applyHostDiagnostics } = await import('../src/run/diagnostics-client.ts')
+  const { readdirSync } = await import('node:fs')
+  const g = ground('live-diagnostics'), manager = await standUp(g), client = await open(g, manager, 'diagnostics')
+  const discovery = { ...manager.identity, app: '/test.app', base: g.magic.base, socket: manager.socketPath }
+  try {
+    client.send({ type: 'input.submit', text: 'PRIVATE_DIAGNOSTICS_INPUT' })
+    await waitFor('真实执行者待答', () => manager.runs().some(row => row.state === 'waiting'))
+    const before = manager.executors()
+    expect(await applyHostDiagnostics(discovery, { debugMode: true, logLevel: 'trace' })).toContain('保存并生效')
+    expect(manager.executors()).toEqual(before); expect(manager.runs().some(row => row.state === 'waiting')).toBe(true)
+    const readLogs = () => readdirSync(join(g.dataDir, 'logs')).filter(n => n.startsWith(`executor-${before[0]!.pid}-`)).map(n => readFileSync(join(g.dataDir, 'logs', n), 'utf8')).join('')
+    await waitFor('trace 消息已落盘', () => readLogs().includes('control.settings.inspect'))
+    expect(await applyHostDiagnostics(discovery, { debugMode: false, logLevel: 'error' })).toContain('保存并生效')
+    const filtered = readLogs()
+    expect(manager.executors()).toEqual(before)
+    expect(manager.runs().some(row => row.state === 'waiting')).toBe(true)
+    await applyHostDiagnostics(discovery, { logLevel: 'error' })
+    expect(readLogs()).toBe(filtered)
+    expect(filtered).not.toContain('PRIVATE_DIAGNOSTICS_INPUT'); expect(filtered).not.toContain('sk-test')
+  } finally { client.close(); manager.stop('诊断实操收尾'); await manager.waitUntilExit(); await g.dispose() }
+}, 20_000)

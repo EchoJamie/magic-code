@@ -1,8 +1,10 @@
+import { diagnosticsOf, decodeNativeMessage, type Diagnostics } from '@magic/contracts'
+import { parseDiagnosticsArgs, saveDiagnostics } from '../diagnostics.ts'
 import { fstatSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { resolveMagicHome } from '@magic/contracts'
-import type { HostRequest, HostResponse } from '@magic/contracts'
+import type { HostResponse } from '@magic/contracts'
 import { loadConfig, type LoadedConfig } from '../config.ts'
 import { normalizeDataDir, runPathsOf } from './paths.ts'
 import { createProcessLauncher } from './launch.ts'
@@ -26,6 +28,8 @@ export async function runHostedManager(argv: readonly string[]): Promise<number>
   let dataDir: string
   try {
     loaded = loadConfig({ magic })
+    const change = parseDiagnosticsArgs(argv)
+    if (change) { saveDiagnostics(magic, change, loaded.stamp ?? null); loaded = loadConfig({ magic }) }
     dataDir = normalizeDataDir(loaded.config.dataDir)
   } catch (error) {
     send({ t: 'host.error', reason: error instanceof Error ? error.message : String(error) })
@@ -36,16 +40,27 @@ export async function runHostedManager(argv: readonly string[]): Promise<number>
   let shutdown: (() => void) | undefined
   let request: string | undefined
   const input = createInterface({ input: process.stdin })
-  input.on('close', () => { hostGone = true; shutdown?.() })
+  const pending = new Map<string, { resolve(): void; reject(): void }>()
+  const diagnosticsChanged = (value: Diagnostics): Promise<void> => new Promise((resolve, reject) => {
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('App 未确认')) }, 5_000)
+    pending.set(id, { resolve: () => { clearTimeout(timer); resolve() }, reject: () => { clearTimeout(timer); reject(new Error('App 未确认')) } })
+    send({ t: 'host.diagnostics', request: id, value, dataDir })
+  })
+  input.on('close', () => { hostGone = true; for (const reply of pending.values()) reply.reject(); pending.clear(); shutdown?.() })
   input.on('line', (line) => {
     try {
-      const message = JSON.parse(line) as HostRequest
+      const message = decodeNativeMessage(JSON.parse(line))
+      if (message?.t === 'host.diagnostics.applied') { const reply = pending.get(message.request); pending.delete(message.request); if (message.error) reply?.reject(); else reply?.resolve(); return }
+      if (!message) return
       if (message.t !== 'host.shutdown' || typeof message.request !== 'string') return
       request = message.request
       shutdown?.()
     } catch { send({ t: 'host.error', reason: '宿主命令不可读' }) }
   })
+  void diagnosticsChanged(diagnosticsOf(loaded.config)).catch(() => {})
   const started = await startManager({
+    diagnosticsChanged,
     paths, dataDir, magic, hostInstance,
     launch: createProcessLauncher({ stderr: 'inherit' }),
     mcp: loaded.config.mcp?.servers ?? {},

@@ -21,6 +21,19 @@ open '.artifacts/macos/Magic Code.app'
 
 `bun run check` 检查 TypeScript；`bun run check:macos` 重建签名开发包、运行 Swift 测试与隔离 App 联验；`bun run check:all` 执行两侧检查。默认测试不弹系统通知、不启用登录项、不安装用户命令链接。开发构建采用本机 ad-hoc 签名；公开 Release 需显式 Developer ID 与公证配置，参见 `scripts/macos/build.sh`。
 
+## 调试模式与日志
+
+设置 → 高级 → 诊断与系统集成可调整调试开关和日志等级，保存后立即应用于当前 App、管理者和在途执行者。两项独立：调试默认关闭，日志默认 `info`；开启调试显示可找回的独立工作窗口，关闭窗口不关闭调试模式。
+
+```sh
+magic --debug --log-level debug
+magic --no-debug --log-level info
+```
+
+App 可执行文件同样接受这些参数。显式参数保存当前实例 `config.json` 的 `debugMode` / `logLevel`，无参数沿用保存值；与 `--check` 不能组合。调试模式不改变数据、凭据、工作区或操作权限，Release 同样支持。
+
+日志写入当前实际数据目录的 `logs/`，设置中可复制路径或在 Finder 打开。App、管理者和执行者各写 JSONL 文件，等级为 `error / warn / info / debug / trace`。只记录结构化事件和已有标识，不复制凭据、对话或工具正文。单文件 10 MiB，目录保留目标 100 MiB，活动文件优先保留；退出排空最多等待两秒。
+
 ## 开发
 
 - **规划材料**（外部）：Obsidian「Magic」工作区 · `Magic Code/交接/`——材料清单（读什么）· 进度台账（当前开发项）· 回报（完成或卡住写回 `<单元号>.md`）；开工第一动作＝对表。

@@ -15,9 +15,9 @@ final class HostProcess {
     var exited: ((Int32) -> Void)?
     var diagnostic: ((String) -> Void)?
 
-    func start(helper: URL, app: URL, instance: String, base: URL?, home: URL, environment: [String: String]) throws {
+    func start(helper: URL, app: URL, instance: String, base: URL?, home: URL, environment: [String: String], diagnosticsArguments: [String] = []) throws {
         process.executableURL = helper
-        process.arguments = ["--internal-manager", "--host-instance", instance, "--app", app.path]
+        process.arguments = ["--internal-manager", "--host-instance", instance, "--app", app.path] + diagnosticsArguments
         process.currentDirectoryURL = home
         var env = environment
         env.removeValue(forKey: "MAGIC_HOME")
@@ -67,11 +67,12 @@ final class HostProcess {
             return count == 0 ? nil : Data(bytes.prefix(count))
         }
     }
-    func shutdown(request: String) {
+    func shutdown(request: String) { send(.shutdown(request: request)) }
+    func send(_ message: HostRequest) {
         writeQueue.async { [weak self] in
             guard let self else { return }
             do {
-                var data = try JSONEncoder().encode(HostRequest.shutdown(request: request)); data.append(10)
+                var data = try JSONEncoder().encode(message); data.append(10)
                 try self.input.fileHandleForWriting.write(contentsOf: data)
             } catch { MainRunLoop.deliver { [weak self] in self?.received?(.error(reason: "停止请求未送达：\(error.localizedDescription)")) } }
         }

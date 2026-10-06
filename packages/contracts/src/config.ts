@@ -1,3 +1,4 @@
+import type { LogLevel } from './diagnostics.ts'
 /**
  * 共享语言 · 配置形制（已冻结 · 字面冻结字段名）。
  *
@@ -254,6 +255,8 @@ export type AgentRoleConfig = {
 
 
 export type MagicConfig = {
+  readonly debugMode?: boolean
+  readonly logLevel?: LogLevel
   readonly agentRoles?: Readonly<Record<string, AgentRoleConfig>>
   readonly modelAliases?: ModelAliases
   readonly providers: Readonly<Record<string, ProviderConfig>>

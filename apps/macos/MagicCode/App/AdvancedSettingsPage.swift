@@ -55,7 +55,22 @@ struct AdvancedSettingsPage: View {
             }
             SettingsCard(title: "诊断与系统集成") {
                 Text(model.phase.text).foregroundStyle(.secondary)
-                DisclosureGroup("查看诊断") { Text(model.diagnosticsText.isEmpty ? "当前无诊断" : model.diagnosticsText).font(.system(.caption, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+                Toggle("调试模式", isOn: Binding(get: { model.diagnostics.debugMode }, set: {
+                    model.applySettings(.object(["type": .string("diagnostics.set"), "debugMode": .bool($0)]), stamp: snapshot.stamp, key: "diagnostics")
+                })).disabled(model.settingsBusy).accessibilityIdentifier("debug-mode")
+                Text("开启后显示独立工作窗口，便于自动化操作与问题排查。关闭窗口不关闭调试模式。").font(.caption).foregroundStyle(.secondary)
+                Picker("日志等级", selection: Binding(get: { model.diagnostics.logLevel.rawValue }, set: {
+                    model.applySettings(.object(["type": .string("diagnostics.set"), "logLevel": .string($0)]), stamp: snapshot.stamp, key: "diagnostics")
+                })) { ForEach(LogLevel.allCases, id: \.rawValue) { Text($0.rawValue).tag($0.rawValue) } }
+                    .disabled(model.settingsBusy).accessibilityIdentifier("log-level")
+                Text("日志等级独立生效，保存后立即应用于运行进程。").font(.caption).foregroundStyle(.secondary)
+                SettingsPath(label: "日志目录", path: model.logDirectory) { model.terminal.copy(model.logDirectory) }
+                HStack {
+                    Button("在 Finder 中打开日志目录") { NSWorkspace.shared.open(URL(fileURLWithPath: model.logDirectory)) }.disabled(model.logDirectory.isEmpty)
+                    if model.diagnostics.debugMode { Button("打开调试窗口") { model.showDebugWindow?() } }
+                }
+                Text(model.logProblem ?? "App 日志写入正常").foregroundStyle(model.logProblem == nil ? Color.secondary : .red)
+                if !snapshot.configuration["diagnosticsNote"].text.isEmpty { Text(snapshot.configuration["diagnosticsNote"].text).font(.caption).foregroundStyle(.secondary) }
                 Button("移除系统集成并退出…", role: .destructive) { uninstall = true }.accessibilityIdentifier("remove-integration")
                 Text("撤销登录项并移除属于本 App 的终端链接；记录和配置保留。随后可在 Finder 删除 App。").font(.caption).foregroundStyle(.secondary)
                 if let message = model.actionMessage { Text(message).foregroundStyle(.secondary).textSelection(.enabled) }

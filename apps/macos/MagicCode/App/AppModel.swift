@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import ServiceManagement
-import OSLog
 
 @MainActor final class AppModel: ObservableObject {
     enum Phase: Equatable {
@@ -31,7 +30,14 @@ import OSLog
     struct StopTarget { let work: NativeWork; let identity: ServiceIdentity }
     @Published var stopTarget: StopTarget?
     @Published var notificationRoutes: [NoticeRoute] = []
-    @Published var diagnosticsText = ""
+    @Published private(set) var diagnostics = Diagnostics.defaults
+    @Published private(set) var logDirectory = ""
+    @Published private(set) var logProblem: String?
+    @Published private(set) var debugWindowVisible = false
+    var diagnosticsArguments: [String] = []
+    var showDebugWindow: (() -> Void)?
+    var hideDebugWindow: (() -> Void)?
+    private let fileLog = DiagnosticFileLog()
     @Published var configPath = ""
     @Published var runtimeBase = ""
     @Published var loginStatus: SMAppService.Status = .notRegistered
@@ -77,7 +83,6 @@ import OSLog
     private let expectedVersion: String
     private let expectedProtocol: Int
     private var tokens: [NSObjectProtocol] = []
-    private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.magic-code", category: "runtime")
 
     init(appURL: URL = Bundle.main.bundleURL, validationRoot: URL? = nil,
          notificationPort: NotificationCoordinator? = nil, shutdownTimeout: TimeInterval = 15) {
@@ -107,6 +112,7 @@ import OSLog
         publication = HostPublication(directory: support)
         terminal = TerminalLauncher(directory: support.appendingPathComponent("terminal"))
         notifications = notificationPort ?? NotificationCoordinator()
+        fileLog.changed = { [weak self] problem in self?.logProblem = problem }
         notifications.preference = notificationsEnabled
         notifications.userLooking = { [weak self] session, id in
             self?.panelVisible == true && NSApp?.isActive == true && self?.selected == session && self?.selectedNotice?.id == id && self?.visibleNoticeID == id
@@ -174,7 +180,25 @@ import OSLog
     func start() {
         guard host == nil else { return }
         do {
-            if !acquired { try publication.acquire(); acquired = true }
+            if !acquired {
+                do { try publication.acquire(); acquired = true }
+                catch {
+                    guard !diagnosticsArguments.isEmpty else { throw error }
+                    // Another copy owns the instance. Forward through its settings service.
+                    let process = Process(); let errors = Pipe()
+                    process.executableURL = helperURL
+                    process.arguments = ["--internal-diagnostics", "--home", userHome.path] + diagnosticsArguments
+                    process.standardOutput = FileHandle.nullDevice; process.standardError = errors
+                    process.terminationHandler = { child in
+                        let data = errors.fileHandleForReading.readDataToEndOfFile()
+                        Task { @MainActor [weak self] in
+                            if child.terminationStatus == 0 { NSApp.terminate(nil) }
+                            else { self?.phase = .fault(String(decoding: data, as: UTF8.self)) }
+                        }
+                    }
+                    try process.run(); return
+                }
+            }
             if let selectedBase { try FileManager.default.createDirectory(at: selectedBase, withIntermediateDirectories: true) }
             terminal.cleanupExpired()
             startHost()
@@ -221,7 +245,8 @@ import OSLog
             let fixture = appURL.appendingPathComponent("Contents/Resources/controlled-helper.py")
             if systemTestRoot != nil, FileManager.default.fileExists(atPath: fixture.path) { manager = fixture }
             #endif
-            try process.start(helper: manager, app: appURL, instance: instance, base: selectedBase, home: userHome, environment: environment)
+            try process.start(helper: manager, app: appURL, instance: instance, base: selectedBase, home: userHome, environment: environment, diagnosticsArguments: diagnosticsArguments)
+            diagnosticsArguments = []
             startupTimeout = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(20)) } catch { return }
                 guard let self, self.phase == .starting else { return }
@@ -233,6 +258,19 @@ import OSLog
     private func receiveHost(_ response: HostResponse) {
         validationEvent("host.response", detail: String(describing: response))
         switch response {
+        case .diagnostics(let request, let value, let dataDir):
+            let changed = diagnostics.debugMode != value.debugMode
+            diagnostics = value
+            logDirectory = URL(fileURLWithPath: dataDir).appendingPathComponent("logs").path
+            if changed { if value.debugMode { showDebugWindow?() } else { hideDebugWindow?() } }
+            let owner = host
+            fileLog.identify(host: hostInstance, service: identity?.serviceInstance)
+            fileLog.configure(dataDir: dataDir, level: value.logLevel) { [weak self, weak owner] problem in
+                guard let self, self.host === owner else { return }
+                self.logProblem = problem
+                owner?.send(.diagnosticsApplied(request: request, error: problem))
+                if self.isCurrent && !self.settingsBusy { self.readSettings() }
+            }
         case .ready(let identity, let socket, let base, let config):
             guard identity.hostInstance == hostInstance,
                   identity.protocol == expectedProtocol,
@@ -241,6 +279,8 @@ import OSLog
                 phase = .fault("内置核心与 App 的身份或版本不匹配"); host?.closeLifetime(); return
             }
             self.identity = identity; runtimeBase = base; configPath = config
+            fileLog.identify(host: identity.hostInstance, service: identity.serviceInstance)
+            fileLog.write(.info, "host.ready")
             do {
                 try publication.publish(HostDiscovery(identity: identity, socket: socket, base: base, app: appURL.path))
                 connectObserver(socket: socket, identity: identity)
@@ -248,7 +288,7 @@ import OSLog
         case .stopped(let request):
             if shutdownRequest == nil || request == shutdownRequest { hostStopped = true }
         case .error(let reason):
-            phase = .fault(reason); recordDiagnostic(reason)
+            phase = .fault(reason); fileLog.write(.error, "host.failed")
             if shutdownRequest != nil { onUnconfirmedShutdown?() }
         }
     }
@@ -274,6 +314,7 @@ import OSLog
         connection.connect(path: socket, identity: identity)
     }
     private func receive(_ response: NativeResponse) {
+        fileLog.write(.trace, "native.received")
         switch response {
         case .welcome(let received, let projection):
             guard received == identity, projection.serviceInstance == received.serviceInstance else {
@@ -339,6 +380,7 @@ import OSLog
         guard isCurrent, let identity, !settingsBusy else { settingsError = "服务未就绪，请重新读取"; return }
         let request = UUID().uuidString
         settingsRequests[request] = (identity, key); settingsBusy = true; settingsError = nil; settingsNote = nil; settingsSavedKey = nil
+        fileLog.write(.debug, "settings.apply", request: request)
         observer?.send(.settingsApply(request: request, serviceInstance: identity.serviceInstance, dataDir: identity.dataDir, stamp: stamp, action: action))
         expireSettings(request)
     }
@@ -455,11 +497,20 @@ import OSLog
         let request = UUID().uuidString; stoppingRequests[request] = work.session
         observer?.send(.stop(request: request, serviceInstance: service, session: work.session, gen: gen))
     }
-    func panelVisibility(_ visible: Bool) {
+    enum PanelSurface { case menu, debug }
+    func setDebugWindowVisible(_ visible: Bool) {
+        guard debugWindowVisible != visible else { return }
+        presence(focused: false); panelVisible = false; leaveDetail()
+        debugWindowVisible = visible
+        fileLog.write(.debug, visible ? "window.debug.opened" : "window.debug.closed")
+    }
+    func panelVisibility(_ visible: Bool, surface: PanelSurface = .menu) {
+        guard surface == (debugWindowVisible ? .debug : .menu) else { return }
         panelVisible = visible; list.update(works, interacting: visible)
         if !visible { leaveDetail() } else { presence(focused: NSApp?.isActive == true) }
     }
     func leaveDetail() {
+        fileLog.write(.debug, "work.detail.closed")
         presence(focused: false)
         pendingInspection = nil; selected = nil; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil; stopTarget = nil
     }
@@ -468,6 +519,7 @@ import OSLog
         pendingInspection = nil; selectedNotice = nil; visibleNoticeID = nil; stopTarget = nil
     }
     func inspect(_ work: NativeWork, open: Bool = false, notice: String? = nil) {
+        fileLog.write(.debug, open ? "work.terminal.requested" : "work.inspected")
         // The current projection already contains the detail summary. Navigation needs no request.
         if !open, notice == nil {
             presence(focused: false); pendingInspection = nil
@@ -587,14 +639,16 @@ import OSLog
                 try removeCLILink(URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic"), helperURL)
             }
             validationEvent("app.clean-exit", detail: "")
-            cleanExit?()
+            fileLog.write(.info, "app.stopped")
+            fileLog.close { [weak self] in self?.cleanExit?() }
         } catch { phase = .fault("工作已停止，但系统集成移除失败：\(error.localizedDescription)"); onUnconfirmedShutdown?() }
     }
     private func recordDiagnostic(_ text: String) {
-        diagnosticsText = String((diagnosticsText + text + "\n").suffix(32768))
-        log.error("\(text, privacy: .private)")
+        // stderr may be routine output and may contain credentials. Keep only its occurrence.
+        fileLog.write(.debug, "host.stderr")
     }
     func validationEvent(_ event: String, detail: String) {
+        fileLog.write(.debug, event)
         #if DEBUG
         guard isValidation else { return }
         if let data = try? JSONSerialization.data(withJSONObject: ["event": event, "detail": detail]) {

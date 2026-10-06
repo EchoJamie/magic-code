@@ -1,3 +1,4 @@
+import { isLogLevel } from './diagnostics.ts'
 import { settingsAction, settingsSnapshot } from './settings-codec.ts'
 import type { HostDiscovery, HostRequest, HostResponse, NativeRequest, NativeResponse } from './native.ts'
 
@@ -56,6 +57,8 @@ export function decodeNativeMessage(value: unknown): NativeRequest | NativeRespo
     case 'native.stopped': valid = string(value.request) && string(value.session) && ['accepted', 'done', 'unconfirmed'].includes(String(value.phase)) && optional(value.note, string); break
     case 'native.attached': valid = string(value.request) && (value.session === null || string(value.session)); break
     case 'native.error': case 'host.error': valid = string(value.reason); break
+    case 'host.diagnostics': valid = string(value.request) && string(value.dataDir) && object(value.value) && typeof value.value.debugMode === 'boolean' && isLogLevel(value.value.logLevel); break
+    case 'host.diagnostics.applied': valid = string(value.request) && optional(value.error, string); break
     case 'host.shutdown': valid = string(value.request); break
     case 'host.ready': valid = identity(value.identity) && string(value.socket) && string(value.base) && string(value.config); break
     case 'host.stopped': valid = optional(value.request, string); break

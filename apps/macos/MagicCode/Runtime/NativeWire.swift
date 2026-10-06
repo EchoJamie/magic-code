@@ -255,10 +255,12 @@ enum NativeResponse: Codable, Equatable {
 
 enum HostRequest: Codable, Equatable {
     case shutdown(request: String)
-    private enum Keys: String, CodingKey { case t, request }
+    case diagnosticsApplied(request: String, error: String?)
+    private enum Keys: String, CodingKey { case t, request, error }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
+        case "host.diagnostics.applied": self = .diagnosticsApplied(request: try c.decode(String.self, forKey: .request), error: try c.decodeIfPresent(String.self, forKey: .error))
         case "host.shutdown": self = .shutdown(request: try c.decode(String.self, forKey: .request))
         default: throw DecodingError.dataCorruptedError(forKey: .t, in: c, debugDescription: "不支持的协议消息")
         }
@@ -266,6 +268,8 @@ enum HostRequest: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         switch self {
+        case let .diagnosticsApplied(request, error):
+            try c.encode("host.diagnostics.applied", forKey: .t); try c.encode(request, forKey: .request); try c.encodeIfPresent(error, forKey: .error)
         case let .shutdown(request):
             try c.encode("host.shutdown", forKey: .t)
             try c.encode(request, forKey: .request)
@@ -274,13 +278,15 @@ enum HostRequest: Codable, Equatable {
 }
 
 enum HostResponse: Codable, Equatable {
+    case diagnostics(request: String, value: Diagnostics, dataDir: String)
     case ready(identity: ServiceIdentity, socket: String, base: String, config: String)
     case stopped(request: String?)
     case error(reason: String)
-    private enum Keys: String, CodingKey { case t, identity, socket, base, config, request, reason }
+    private enum Keys: String, CodingKey { case t, identity, socket, base, config, request, reason, value, dataDir }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
+        case "host.diagnostics": self = .diagnostics(request: try c.decode(String.self, forKey: .request), value: try c.decode(Diagnostics.self, forKey: .value), dataDir: try c.decode(String.self, forKey: .dataDir))
         case "host.ready": self = .ready(identity: try c.decode(ServiceIdentity.self, forKey: .identity), socket: try c.decode(String.self, forKey: .socket), base: try c.decode(String.self, forKey: .base), config: try c.decode(String.self, forKey: .config))
         case "host.stopped": self = .stopped(request: try c.decodeOptional(String.self, forKey: .request))
         case "host.error": self = .error(reason: try c.decode(String.self, forKey: .reason))
@@ -290,6 +296,8 @@ enum HostResponse: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         switch self {
+        case let .diagnostics(request, value, dataDir):
+            try c.encode("host.diagnostics", forKey: .t); try c.encode(request, forKey: .request); try c.encode(value, forKey: .value); try c.encode(dataDir, forKey: .dataDir)
         case let .ready(identity, socket, base, config):
             try c.encode("host.ready", forKey: .t)
             try c.encode(identity, forKey: .identity)

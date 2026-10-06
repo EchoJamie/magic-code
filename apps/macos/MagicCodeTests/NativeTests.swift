@@ -5,6 +5,46 @@ import SwiftUI
 import UserNotifications
 
 final class NativeTests: XCTestCase {
+    func testDiagnosticsArgumentsAndWireAreIndependentOfBuildMode() throws {
+        XCTAssertEqual(try Diagnostics.arguments(["--debug", "--log-level", "trace"]), ["--debug", "--log-level", "trace"])
+        XCTAssertThrowsError(try Diagnostics.arguments(["--debug", "--no-debug"]))
+        XCTAssertThrowsError(try Diagnostics.arguments(["--log-level"]))
+        XCTAssertThrowsError(try Diagnostics.arguments(["--log-level", "verbose"]))
+        let message = HostResponse.diagnostics(request: "one", value: Diagnostics(debugMode: false, logLevel: .trace), dataDir: "/instance")
+        XCTAssertEqual(try JSONDecoder().decode(HostResponse.self, from: JSONEncoder().encode(message)), message)
+        let ack = HostRequest.diagnosticsApplied(request: "one", error: nil)
+        XCTAssertEqual(try JSONDecoder().decode(HostRequest.self, from: JSONEncoder().encode(ack)), ack)
+    }
+    @MainActor func testDebugSurfaceIgnoresLateMenuDisappearance() throws {
+        let (model, _) = try controlledModel(options: [:])
+        model.setDebugWindowVisible(true)
+        model.inspect(try work())
+        let selected = model.selected
+        model.panelVisibility(false, surface: .menu)
+        XCTAssertEqual(model.selected, selected)
+        model.panelVisibility(false, surface: .debug)
+        XCTAssertNil(model.selected)
+        model.setDebugWindowVisible(false)
+        XCTAssertFalse(model.debugWindowVisible)
+    }
+    func testDiagnosticFileThresholdAndPrivatePermissions() throws {
+        let room = try temp(), log = DiagnosticFileLog()
+        let configured = expectation(description: "configure"), closed = expectation(description: "close")
+        log.configure(dataDir: room.path, level: .error) { problem in XCTAssertNil(problem); configured.fulfill() }
+        wait(for: [configured], timeout: 5)
+        log.write(.debug, "hidden.event"); log.write(.error, "host.failed")
+        log.close { closed.fulfill() }; wait(for: [closed], timeout: 5)
+        let closedAgain = expectation(description: "close again")
+        log.write(.error, "after.close")
+        log.close { closedAgain.fulfill() }; wait(for: [closedAgain], timeout: 5)
+        let directory = room.appendingPathComponent("logs")
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        XCTAssertEqual(files.count, 1)
+        let text = try String(contentsOf: files[0], encoding: .utf8)
+        XCTAssertTrue(text.contains("host.failed")); XCTAssertFalse(text.contains("hidden.event")); XCTAssertFalse(text.contains("after.close"))
+        let attributes = try FileManager.default.attributesOfItem(atPath: files[0].path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
     private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
     override func setUpWithError() throws {
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".artifacts/macos/seams"), withIntermediateDirectories: true)
@@ -398,7 +438,7 @@ final class NativeTests: XCTestCase {
         model.uninstallIntegration(onQuitRequest: { model.requestQuit { finished += 1 } })
         try await eventually { if case .fault(let text) = model.phase { return text.contains("系统集成移除失败") }; return false }
         XCTAssertEqual(attempts, 1); XCTAssertEqual(finished, 0); XCTAssertTrue(try CLIInstallation.belongs(link, helper: model.helperURL))
-        model.retry(); XCTAssertEqual(attempts, 2); XCTAssertEqual(finished, 1)
+        model.retry(); try await eventually { finished == 1 }; XCTAssertEqual(attempts, 2); XCTAssertEqual(finished, 1)
         XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "shutdown" }.count, 1)
@@ -1125,6 +1165,7 @@ final class NativeTests: XCTestCase {
         var receivedReady = false; var receivedStopped = false
         process.received = { response in
             switch response {
+            case .diagnostics(let request, _, _): process.send(.diagnosticsApplied(request: request, error: nil))
             case .ready(let identity, let socket, let base, let config):
                 XCTAssertEqual(identity.hostInstance, instance)
                 XCTAssertEqual(URL(fileURLWithPath: identity.source).resolvingSymlinksInPath(), helper.resolvingSymlinksInPath())

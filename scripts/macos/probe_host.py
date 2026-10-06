@@ -22,7 +22,12 @@ def isolated_host(helper, room, env):
             cwd=room, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error, text=True)
         def collect():
             for line in process.stdout:
-                events.put(json.loads(line))
+                message = json.loads(line)
+                if message['t'] == 'host.diagnostics':
+                    process.stdin.write(json.dumps({'t': 'host.diagnostics.applied', 'request': message['request']}) + '\n')
+                    process.stdin.flush()
+                else:
+                    events.put(message)
         reader = threading.Thread(target=collect, daemon=True); reader.start()
         try:
             ready = events.get(timeout=20)

@@ -1,3 +1,4 @@
+import { validDiagnosticsChange } from './diagnostics.ts'
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
 const strings = (v: unknown) => Array.isArray(v) && v.every(text)
@@ -5,6 +6,7 @@ const optional = (v: unknown, check: (v: unknown) => boolean) => v === undefined
 export function settingsAction(v: unknown): boolean {
   if (!object(v)) return false
   switch (v.type) {
+    case 'diagnostics.set': return optional(v.source, x => x === 'app' || x === 'cli') && validDiagnosticsChange(v)
     case 'provider.save': return text(v.provider) && ['vendor', 'name', 'region', 'baseURL', 'apiKey'].every(k => optional(v[k], x => typeof x === 'string'))
     case 'provider.remove': case 'model.refresh': return text(v.provider)
     case 'model.alias.set': return ['default', 'cantrip', 'spell', 'arcane'].includes(String(v.alias)) && text(v.provider) && text(v.model) && optional(v.initialize, x => typeof x === 'boolean')

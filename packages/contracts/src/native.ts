@@ -1,3 +1,4 @@
+import type { Diagnostics } from './diagnostics.ts'
 import type { SettingsAction, SettingsSnapshot, SettingsPreview } from './settings.ts'
 import type { RunNotice, RunState, StopPhase } from './runs.ts'
 
@@ -73,7 +74,9 @@ export type NativeResponse =
 
 /** 仅继承的宿主 stdin/stdout 使用；普通 socket 无宿主提权入口。 */
 export type HostRequest = { readonly t: 'host.shutdown'; readonly request: string }
+  | { readonly t: 'host.diagnostics.applied'; readonly request: string; readonly error?: string }
 export type HostResponse =
+  | { readonly t: 'host.diagnostics'; readonly request: string; readonly value: Diagnostics; readonly dataDir: string }
   | { readonly t: 'host.ready'; readonly identity: ServiceIdentity; readonly socket: string; readonly base: string; readonly config: string }
   | { readonly t: 'host.stopped'; readonly request?: string }
   | { readonly t: 'host.error'; readonly reason: string }

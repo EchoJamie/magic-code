@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { parseDiagnosticsArgs } from './diagnostics.ts'
+import type { DiagnosticsChange } from '@magic/contracts'
 /** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接所属 App。 */
 
 import { homedir } from 'node:os'
@@ -24,12 +26,15 @@ const USAGE = `magic —— 软件工程智能体
   -h, --help          显示帮助
   -v, --version       显示版本
   --session <id>      接回已有会话，输入后继续执行
-  --model <tier>      选择模型档位（默认 default）
+  --model <tier>      选择模型（默认 default）
   --allow-all         本次会话跳过所有操作确认
+  --debug             保存并开启调试模式
+  --no-debug          保存并关闭调试模式
+  --log-level <level> 保存日志等级：error / warn / info / debug / trace
   --check             离线检查配置与工作区，不连接 App
   --script <file>     运行 JSON 脚本，输出 JSONL 事件与摘要
 
-模型档位：default / cantrip / spell / arcane
+模型选择：default / cantrip / spell / arcane
 
 说明：
   magic 打开交互界面，首次发送消息时创建会话。
@@ -46,6 +51,8 @@ const USAGE = `magic —— 软件工程智能体
 `
 
 export type Args = {
+  readonly diagnostics?: DiagnosticsChange
+
   readonly version?: boolean
   readonly openRequest?: string
   readonly help: boolean
@@ -76,6 +83,8 @@ export type Args = {
 }
 
 export function parseArgs(argv: readonly string[]): Args {
+  if (argv.some(arg => arg === '--help' || arg === '-h') || argv[0] === 'help') return { help: true, check: false }
+  const diagnostics = parseDiagnosticsArgs(argv)
   let script: string | undefined
   let check = false
   let model: ModelAlias | undefined
@@ -94,6 +103,8 @@ export function parseArgs(argv: readonly string[]): Args {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
+    if (arg === '--debug' || arg === '--no-debug') continue
+    if (arg === '--log-level') { i++; continue }
     if (arg === '--help' || arg === '-h' || (i === 0 && arg === 'help')) return { help: true, check: false }
     if (arg === '--version' || arg === '-v') return { help: false, version: true, check: false }
     if (arg === '--open-request') {
@@ -132,9 +143,11 @@ export function parseArgs(argv: readonly string[]): Args {
     throw new Error(`不认得的参数「${arg}」（见 magic --help）`)
   }
 
+  if (check && diagnostics) throw new Error('--check 是只读检查，不能与诊断修改参数同时使用')
   if (openRequest !== undefined && (check || script !== undefined)) throw new Error('--open-request 仅用于终端接回')
 
   return {
+    ...(diagnostics === undefined ? {} : { diagnostics }),
     ...(openRequest === undefined ? {} : { openRequest }),
     help: false,
     check,
@@ -477,6 +490,7 @@ export async function connectTerminal(args: Args, options: AppConnectionOptions 
   return connectApp({
     ...options,
     intent: 'open',
+    ...(args.diagnostics === undefined ? {} : { diagnostics: args.diagnostics }),
     connect: {
       cwd: process.cwd(), label: 'terminal',
       ...(args.session === undefined ? {} : { session: args.session }),
@@ -539,6 +553,21 @@ async function runManagerMode(argv: readonly string[]): Promise<number | undefin
 }
 
 async function main(): Promise<number> {
+  if (process.argv[2] === '--internal-diagnostics') {
+    try {
+      const argv = process.argv.slice(3)
+      const change = parseDiagnosticsArgs(argv)
+      if (!change) throw new Error('缺少诊断设置')
+      const at = argv.indexOf('--home')
+      const home = at < 0 ? undefined : argv[at + 1]
+      const { locateHost, readHostDiscovery } = await import('./run/host-discovery.ts')
+      const { applyHostDiagnostics } = await import('./run/diagnostics-client.ts')
+      const found = readHostDiscovery(locateHost(home === undefined ? {} : { home }))
+      if (!found) throw new Error('所属 App 尚未就绪，未修改设置')
+      console.error(await applyHostDiagnostics(found, change, 'app'))
+      return 0
+    } catch (error) { console.error(error instanceof Error ? error.message : '诊断设置未确认'); return 1 }
+  }
   // **内部那两支先走**（U48）——它们不认 `--help` 那一族，也不该被 `parseArgs` 拦下
   const asManager = await runManagerMode(process.argv.slice(2))
   if (asManager !== undefined) return asManager

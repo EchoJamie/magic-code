@@ -1,3 +1,5 @@
+import type { DiagnosticsChange } from '@magic/contracts'
+import { applyHostDiagnostics } from './diagnostics-client.ts'
 /** CLI 只连接 App 所属服务；仅用户主动打开/重开时可以通过 LaunchServices 打开 App。 */
 import type { HostDiscovery, MagicHome } from '@magic/contracts'
 import type { LoadedConfig } from '../config.ts'
@@ -5,6 +7,8 @@ import { connectManager, executionEnvironment, type ConnectOptions, type Manager
 import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
 
 export type AppConnectionOptions = HostLocationOptions & {
+  readonly diagnostics?: DiagnosticsChange
+
   /** 缺省是被动观察，绝不打开 App。 */
   readonly intent?: 'observe' | 'open'
   /** 留屏重连须仍属原数据实例；在发送 hello/session 之前核对。 */
@@ -63,6 +67,9 @@ export async function connectApp(options: AppConnectionOptions = {}): Promise<Ap
     if (client === undefined) {
       reason = `App 发现记录已过期或服务不可达：${discovery.socket}`
       return undefined
+    }
+    if (options.diagnostics) {
+      try { const note = await applyHostDiagnostics(discovery, options.diagnostics); process.stderr.write(`${note}\n`) } catch (error) { client.close(); throw error }
     }
     return { client, discovery, ...selected }
   }

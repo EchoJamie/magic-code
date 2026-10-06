@@ -42,6 +42,7 @@ export async function startResidentHost(sandbox: Sandbox, evidence = tempDir('re
         buffered = buffered.slice(at + 1)
         const message = JSON.parse(line) as HostResponse
         messages.push(message)
+        if (message.t === 'host.diagnostics') child.stdin.write(JSON.stringify({ t: 'host.diagnostics.applied', request: message.request }) + '\n')
         if (message.t === 'host.ready') ready = message
       }
     }

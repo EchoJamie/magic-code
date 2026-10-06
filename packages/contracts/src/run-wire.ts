@@ -1,3 +1,4 @@
+import type { Diagnostics } from './diagnostics.ts'
 import type { McpCatalogRow } from './events.ts'
 import type { AgentModelConfig } from './collaboration.ts'
 import type { CollaborationReply, CollaborationRequest } from './collaboration-control.ts'
@@ -267,6 +268,7 @@ export type ExecutorToManager =
 /** 管理者 → 执行者。 */
 export type ManagerToExecutor =
   | { readonly t: 'settings.inspect'; readonly request: string }
+  | { readonly t: 'diagnostics.sync'; readonly request: string; readonly value: Diagnostics }
   | { readonly t: 'settings.sync'; readonly request: string }
   | { readonly t: 'settings.reconnect'; readonly request: string; readonly server: string }
   | { readonly t: 'collaboration.reply'; readonly requestId: string; readonly reply: CollaborationReply }

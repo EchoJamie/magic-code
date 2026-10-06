@@ -32,9 +32,11 @@ struct SettingsCard<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) { content }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
-        } label: { Text(title).font(.headline) }
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+            content
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 struct SettingText: View {

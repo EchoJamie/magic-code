@@ -2,6 +2,7 @@ import SwiftUI
 
 struct StatusPanel: View {
     @ObservedObject var model: AppModel
+    var surface: AppModel.PanelSurface = .menu
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openSettings) private var openSettings
     @FocusState private var focused: String?
@@ -73,6 +74,7 @@ struct StatusPanel: View {
             TerminalStatus(terminal: model.terminal)
             if model.selected == nil {
                 if !rows.isEmpty { Divider() }
+                if model.diagnostics.debugMode && surface == .menu { Button("打开调试窗口") { model.showDebugWindow?() } }
                 HStack {
                     Button("打开终端") { model.newTerminal() }.disabled(!model.isCurrent)
                     Spacer()
@@ -82,8 +84,8 @@ struct StatusPanel: View {
             }
         }
         .padding(16).frame(width: width).background(.background)
-        .onAppear { model.panelVisibility(true) }
-        .onDisappear { model.panelVisibility(false) }
+        .onAppear { model.panelVisibility(true, surface: surface) }
+        .onDisappear { model.panelVisibility(false, surface: surface) }
         .onChange(of: model.selected) { old, selected in
             if old == nil, let selected { listFocus = selected; focused = nil }
             if selected == nil { focused = listFocus }

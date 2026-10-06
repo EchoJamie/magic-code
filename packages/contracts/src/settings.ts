@@ -1,3 +1,4 @@
+import type { DiagnosticsChange } from './diagnostics.ts'
 import type { AgentRoleConfig, StatusLineConfig } from './config.ts'
 import type { ProviderSaveRequest, ModelAliasRequest } from './control.ts'
 import type { McpServerConfig } from './mcp.ts'
@@ -5,6 +6,7 @@ import type { ProviderModelOverride } from './model.ts'
 
 /** 窄设置动作；不接收任意命令、路径补丁或整份配置覆写。 */
 export type SettingsAction =
+  | ({ readonly type: 'diagnostics.set'; readonly source?: 'app' | 'cli' } & DiagnosticsChange)
   | ({ readonly type: 'provider.save' } & ProviderSaveRequest)
   | { readonly type: 'provider.remove'; readonly provider: string }
   | ({ readonly type: 'model.alias.set' } & ModelAliasRequest)

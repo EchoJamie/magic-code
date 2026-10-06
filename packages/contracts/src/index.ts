@@ -41,3 +41,5 @@ export type * from './collaboration-control.ts'
 export * from './input.ts'
 
 export * from "./settings.ts"
+
+export * from './diagnostics.ts'
