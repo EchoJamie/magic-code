@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadConfig } from '../src/index.ts'
-import { removeProvider, saveProvider, setModelAlias } from '../src/config-save.ts'
+import { removeProvider, saveProvider, configureModel } from '../src/config-save.ts'
 import { magicAt, removeDir, tempDir, writeConfig } from './tmp.ts'
 
 const READ = (path: string): Record<string, unknown> =>
@@ -41,7 +41,7 @@ describe('保存一条连接', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
-        modelAliases: {default: {provider: "a", model: 'm1'}, cantrip: {provider: "b", model: 'm2'}, spell: {provider: "a", model: 'm1'}, arcane: {provider: "a", model: 'm1'}},
+        models: {default: {provider: "a", model: 'm1'}, cantrip: {provider: "b", model: 'm2'}, spell: {provider: "a", model: 'm1'}, arcane: {provider: "a", model: 'm1'}},
         providers: {
           a: { vendor: 'minimax', baseURL: 'https://a/v1', apiKey: 'sk-secret-a' },
           b: { vendor: 'minimax', baseURL: 'https://b/v1', apiKey: 'sk-secret-b' },
@@ -182,14 +182,14 @@ describe('移除与设为默认', () => {
   test('仍被映射引用时拒绝移除；显式清除后可删，其他映射不变', () => {
     const dir = tempDir('magic-save-')
     try {
-      const path = writeConfig(dir, { modelAliases: { default: { provider: 'a', model: 'm1' }, spell: { provider: 'b', model: 'm2' } }, providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } } })
+      const path = writeConfig(dir, { models: { default: { provider: 'a', model: 'm1' }, spell: { provider: 'b', model: 'm2' } }, providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } } })
       const before = readFileSync(path, 'utf8')
       expect(removeProvider({ path, provider: 'a' }).ok).toBe(false)
       expect(readFileSync(path, 'utf8')).toBe(before)
-      writeFileSync(path, JSON.stringify({ ...READ(path), modelAliases: { spell: { provider: 'b', model: 'm2' } } }))
+      writeFileSync(path, JSON.stringify({ ...READ(path), models: { spell: { provider: 'b', model: 'm2' } } }))
       expect(removeProvider({ path, provider: 'a' })).toEqual({ ok: true })
       expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
-      expect(READ(path)['modelAliases']).toEqual({ spell: { provider: 'b', model: 'm2' } })
+      expect(READ(path)['models']).toEqual({ spell: { provider: 'b', model: 'm2' } })
     } finally { removeDir(dir) }
   })
 
@@ -197,12 +197,12 @@ describe('移除与设为默认', () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
-        modelAliases: {},
+        models: {},
         providers: { only: { vendor: 'deepseek' } },
       })
 
       expect(removeProvider({ path, provider: 'only' })).toEqual({ ok: true })
-      expect(READ(path)).toEqual({ providers: {}, modelAliases: {} })
+      expect(READ(path)).toEqual({ providers: {}, models: {} })
       // 空配置**读得回来**（U41 起 `providers` / `defaultProvider` 都可缺）
       const loaded = loadConfig({ path, magic: magicAt(dir) })
       expect(loaded.providerId).toBeUndefined()
@@ -230,19 +230,19 @@ describe('移除与设为默认', () => {
     const dir = tempDir('magic-save-')
     try {
       const provider = { vendor: 'deepseek', modelOverrides: { old: { limits: { maxInputTokens: 128 } } } }
-      const path = writeConfig(dir, { providers: { a: provider }, modelAliases: { cantrip: { provider: 'a', model: 'old' } } })
-      expect(setModelAlias({ path, request: { alias: 'default', provider: 'a', model: 'new' } })).toEqual({ ok: true })
+      const path = writeConfig(dir, { providers: { a: provider }, models: { cantrip: { provider: 'a', model: 'old' } } })
+      expect(configureModel({ path, request: { choice: 'default', provider: 'a', model: 'new' } })).toEqual({ ok: true })
       expect(PROVIDERS_OF(path)['a']).toEqual(provider)
-      expect(READ(path)['modelAliases']).toEqual({ default: { provider: 'a', model: 'new' }, cantrip: { provider: 'a', model: 'old' } })
+      expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'new' }, cantrip: { provider: 'a', model: 'old' } })
     } finally { removeDir(dir) }
   })
 
   test('保存 Cantrip 不改 Default；不在连接上写型号或思考设置', () => {
     const dir = tempDir('magic-save-')
     try {
-      const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } }, modelAliases: { default: { provider: 'a', model: 'main' } } })
-      expect(setModelAlias({ path, request: { alias: 'cantrip', provider: 'a', model: 'aux' } })).toEqual({ ok: true })
-      expect(READ(path)['modelAliases']).toEqual({ default: { provider: 'a', model: 'main' }, cantrip: { provider: 'a', model: 'aux' } })
+      const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } }, models: { default: { provider: 'a', model: 'main' } } })
+      expect(configureModel({ path, request: { choice: 'cantrip', provider: 'a', model: 'aux' } })).toEqual({ ok: true })
+      expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'main' }, cantrip: { provider: 'a', model: 'aux' } })
       expect(PROVIDERS_OF(path)['a']).toEqual({ vendor: 'deepseek' })
       expect(READ(path)['webFetch']).toBeUndefined()
     } finally { removeDir(dir) }
@@ -253,7 +253,7 @@ describe('移除与设为默认', () => {
     try {
       const path = writeConfig(dir, { providers: {} })
       const before = readFileSync(path, 'utf8')
-      expect(setModelAlias({ path, request: { alias: 'spell', provider: 'ghost', model: 'raw' } }).ok).toBe(false)
+      expect(configureModel({ path, request: { choice: 'spell', provider: 'ghost', model: 'raw' } }).ok).toBe(false)
       expect(readFileSync(path, 'utf8')).toBe(before)
     } finally { removeDir(dir) }
   })

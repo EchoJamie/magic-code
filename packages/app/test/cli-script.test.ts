@@ -27,7 +27,7 @@ describe('App 连接上的脚本入口', () => {
       const empty = readDatabase(join(sandbox.dataDir, 'records.db'))
       try { expect(empty.sessions).toHaveLength(0) } finally { empty.close() }
       expect(fixture.requests()).toHaveLength(0)
-      const executed = await run(['第一条', { switch: { alias: 'spell' } }, { input: { text: '第二条' } }])
+      const executed = await run(['第一条', { switch: { choice: 'spell' } }, { input: { text: '第二条' } }])
       expect(executed, executed.stderr).toMatchObject({ code: 0, stderr: '' })
       expect(executed.stdout).toContain('换模型 1 次')
       expect(executed.stdout).toContain('条目 4 条')

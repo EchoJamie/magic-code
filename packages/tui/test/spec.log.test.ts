@@ -228,7 +228,7 @@ describe('组件规格 · 行的标记与颜色', () => {
 
   test('记录 / 回执行——**不带记号**（缩进一级）· **最弱**一档', async () => {
     const stage = live()
-    stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
+    stage.feed([event('model.switched', { choice: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const frame = await stage.screen()
     const cells = frame.cellsOf(frame.rowOf('已选择 Default'))
@@ -465,7 +465,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     // 攒一屏「三类行」都在的现场：会话内容（重建得来）＋ 命令输出（`/help`）＋ 回执（`/model` 换成了）
     stage.type('/help ')
     stage.press({ kind: 'enter' })
-    stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
+    stage.feed([event('model.switched', { choice: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const before = await stage.screen()
     expect(before.has('使用帮助')).toBe(true) // 命令输出（第二类）

@@ -35,9 +35,10 @@ function depsOf(stage: Stage, overrides: Partial<ConversationDeps> = {}): Conver
 
   return {
     session: runtime.session,
-    model: runtime.model,
+
     prompt: stage.promptVars,
     gateway: stage.gateway,
+    compression: () => ({ gateway: stage.gateway }),
     tools: stage.toolDomain,
     records: stage.records,
     sink: stage.sink,

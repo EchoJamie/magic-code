@@ -26,7 +26,7 @@ import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { tuiOptions } from '../src/cli.ts'
 import type { Assembly } from '../src/index.ts'
 import { readDatabase } from './support.ts'
-import { setModelAlias } from '../src/config-save.ts'
+import { configureModel } from '../src/config-save.ts'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -112,7 +112,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), modelAliases: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: PROVIDERS }),
   )
 
   return {
@@ -199,9 +199,9 @@ describe('读数 1 · 上下文窗口总量', () => {
 
       await handle.submit('嗨')
       // 换到乙——配置里**没有** `contextWindow`
-      expect(assembly.switchModel({ alias: 'cantrip' })).toEqual({
+      expect(assembly.switchModel({ choice: 'cantrip' })).toEqual({
         ok: true,
-        selection: { alias: 'cantrip', provider: 'beta', model: 'beta-1' },
+        selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1' },
       })
       await handle.submit('再来一句')
 
@@ -283,13 +283,13 @@ describe('读数 3 · 模型条目表', () => {
         { provider: 'beta', baseURL: 'https://beta.example/v1', keySource: 'config' },
 
       ])
-      expect(catalog.data.current).toEqual({ alias: 'default' as const, provider: 'alpha', model: 'alpha-1' })
+      expect(catalog.data.current).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1' })
       expect(catalog.data.note).toBeUndefined()
 
       // 换过之后，「当前」跟着走
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       const afterSwitch = await askCatalog(handle)
-      expect(afterSwitch.data.current).toEqual({ alias: 'cantrip' as const, provider: 'beta', model: 'beta-1' })
+      expect(afterSwitch.data.current).toEqual({ choice: 'cantrip' as const, provider: 'beta', model: 'beta-1' })
       expect(afterSwitch.data.entries).toEqual(catalog.data.entries)
 
       handle.dispose()
@@ -310,7 +310,7 @@ describe('读数 3 · 模型条目表', () => {
 
       const catalog = await askCatalog(handle)
       // 选中**未必是表里的某一行**——表说的是「每条连接默认用谁」，选中说的是「此刻用谁」
-      expect(catalog.data.current).toEqual({ alias: 'spell' as const, provider: 'alpha', model: 'beta-x' })
+      expect(catalog.data.current).toEqual({ choice: 'spell' as const, provider: 'alpha', model: 'beta-x' })
       // （U41 起行里多一位 `baseURL`——见上一条用例的补锚说明）
       expect(catalog.data.entries.map(({ provider, baseURL, keySource }) => ({ provider, baseURL, keySource }))).toEqual([
         // `keySource`（U41 补）：认证的**来处**——两条都在配置里写了 `apiKey`。
@@ -339,7 +339,7 @@ describe('读数 3 · 模型条目表', () => {
       const catalog = await askCatalog(handle)
 
       expect(catalog.data.entries).toHaveLength(2)
-      expect(catalog.data.current).toEqual({ alias: 'default' as const, provider: 'alpha', model: 'alpha-1' })
+      expect(catalog.data.current).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1' })
 
       handle.dispose()
       assembly.close()
@@ -449,7 +449,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
 
     try {
       const assembly = land.assemble({ modelFetch: endpoint() })
-      const switched = assembly.switchModel({ alias: 'cantrip' })
+      const switched = assembly.switchModel({ choice: 'cantrip' })
       expect(switched.ok).toBe(true)
 
       expect(tuiOptions(assembly).contextWindow).toBeNull()
@@ -481,7 +481,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
 function chooseConfiguredModel(assembly: Assembly, model: string) {
   const provider = assembly.models?.current()?.provider
   if (provider === undefined) throw new Error('没有当前连接')
-  const saved = setModelAlias({ path: assembly.config.path, request: { alias: 'spell', provider, model } })
+  const saved = configureModel({ path: assembly.config.path, request: { choice: 'spell', provider, model } })
   if (!saved.ok) throw new Error(saved.reason)
-  return assembly.switchModel({ alias: 'spell' })
+  return assembly.switchModel({ choice: 'spell' })
 }

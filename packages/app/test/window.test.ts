@@ -36,7 +36,7 @@ import type { Assembly } from '../src/index.ts'
 // 接线取件（照 `readouts.test.ts` 的先例）——不是写着同样内容的字面量
 import { tuiOptions } from '../src/cli.ts'
 import { readDatabase } from './support.ts'
-import { setModelAlias } from '../src/config-save.ts'
+import { configureModel } from '../src/config-save.ts'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -97,7 +97,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), modelAliases: {default: {provider: "mm", model: 'MiniMax-M3'}, cantrip: {provider: "mm2", model: 'MiniMax-M2'}, spell: {provider: "local", model: 'my-local-llama'}, arcane: {provider: 'mm-same', model: 'MiniMax-M2'}}, providers: PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), models: {default: {provider: "mm", model: 'MiniMax-M3'}, cantrip: {provider: "mm2", model: 'MiniMax-M2'}, spell: {provider: "local", model: 'my-local-llama'}, arcane: {provider: 'mm-same', model: 'MiniMax-M2'}}, providers: PROVIDERS }),
   )
 
   return {
@@ -173,7 +173,7 @@ describe('U30 · 开机那一格的分母', () => {
 
     try {
       const assembly = land.assemble()
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
 
       expect(tuiOptions(assembly).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
@@ -188,7 +188,7 @@ describe('U30 · 开机那一格的分母', () => {
 
     try {
       const assembly = land.assemble()
-      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
 
       expect(tuiOptions(assembly).contextWindow).toBeNull()
 
@@ -215,10 +215,10 @@ describe('U30 · 开机那一格的分母', () => {
       const assembly = land.assemble()
 
       // 声明的那条：用它声明的数；同名模型的另一条：内置表那个数
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       expect(tuiOptions(assembly).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
-      expect(assembly.switchModel({ alias: 'arcane' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
       expect(tuiOptions(assembly).contextWindow).toBe(204_800 - RESERVED_OUTPUT)
 
       assembly.close()
@@ -263,7 +263,7 @@ describe('U30 · 换过模型之后的分母', () => {
       expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
 
       // 真换：经装配那一条产出路径（命令面同一条），事件当场到壳（进程内直连）
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('Cantrip')
       expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
@@ -287,12 +287,12 @@ describe('U30 · 换过模型之后的分母', () => {
       await warm(assembly)
 
       // 声明的那条（32768）
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('Cantrip')
       expect(shell.getView().status.window).toBe(32_768 - RESERVED_OUTPUT)
 
       // **同名模型**的另一条：内置表那个数（不是上一步的 32768）
-      expect(assembly.switchModel({ alias: 'arcane' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
       expect(shell.getView().status.model).toBe('Arcane')
       expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
@@ -311,7 +311,7 @@ describe('U30 · 换过模型之后的分母', () => {
       const shell = shellOf(assembly)
       await warm(assembly)
 
-      expect(assembly.switchModel({ alias: 'ghost' as never }).ok).toBe(false)
+      expect(assembly.switchModel({ choice: 'ghost' as never }).ok).toBe(false)
 
       expect(shell.getView().status.model).toBe('Default')
       // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
@@ -332,7 +332,7 @@ describe('U30 · 换过模型之后的分母', () => {
       const shell = shellOf(assembly)
       await warm(assembly)
 
-      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
 
       expect(shell.getView().status.window).toBeNull()
       // 分子还在（用量是既成事实），只是没有分母可配
@@ -377,7 +377,7 @@ describe('U30 · 换过模型之后的分母', () => {
       const shell = shellOf(assembly)
 
       // 还没有会话就换——注册表照换，但**没有可落账之处 ⇒ 不发事件**（内核的明写规矩）
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       // 壳上还是开机那一格（M3 的 1M）——没人告诉过它换了
       expect(shell.getView().status.window).toBe(995_904)
 
@@ -408,7 +408,7 @@ describe('U30 · 换过模型之后的分母', () => {
       await warm(assembly)
 
       // 条目名落在原型上：如实报未知，读数原样
-      const bogus = assembly.switchModel({ alias: 'toString' as never })
+      const bogus = assembly.switchModel({ choice: 'toString' as never })
       expect(bogus.ok).toBe(false)
       expect(bogus.ok === false ? bogus.reason : '').toContain('未知模型选择')
       // 分母是**有效输入预算**（窗长 − 本次预留输出）：1_000_000 − 4_096
@@ -593,7 +593,7 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       await until(tty, '3.1k/996k')
 
       // 真换（经装配那条产出路径）⇒ 屏上换成新模型那个数
-      expect(assembly.switchModel({ alias: 'arcane' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
       // `mm-same` 那条是内置表的 M2（204_800 − 4_096 ⇒ `201k`）
       await until(tty, '3.1k/201k')
 
@@ -602,7 +602,7 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       //    可选的一格），原先那句锚在型号上（`my-local-llama · 3.1k`）——现在判
       //    **最底下那一格本身**：分母（斜杠后面那个数）下去、分子（`3.1k`）还在。
       //    判的那件事一字未变。
-      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
       await untilLastLine(
         tty,
         (line) => line.includes('· 3.1k') && !line.includes('3.1k/'),
@@ -639,7 +639,7 @@ describe('U30 · 事件面（不顺带扩张）', () => {
 
       const handle = attachShell(assembly.shell)
       const before = handle.events.length
-      expect(assembly.switchModel({ alias: 'cantrip' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
       const fresh = handle.events.slice(before)
 
       expect(kinds(fresh)).toEqual(['model.switched'])
@@ -663,7 +663,7 @@ describe('U30 · 事件面（不顺带扩张）', () => {
 function chooseConfiguredModel(assembly: Assembly, model: string) {
   const provider = assembly.models?.current()?.provider
   if (provider === undefined) throw new Error('没有当前连接')
-  const saved = setModelAlias({ path: assembly.config.path, request: { alias: 'spell', provider, model } })
+  const saved = configureModel({ path: assembly.config.path, request: { choice: 'spell', provider, model } })
   if (!saved.ok) throw new Error(saved.reason)
-  return assembly.switchModel({ alias: 'spell' })
+  return assembly.switchModel({ choice: 'spell' })
 }

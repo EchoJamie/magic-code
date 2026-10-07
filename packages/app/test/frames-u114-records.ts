@@ -21,7 +21,7 @@ store.serviceFor(other).appendEntry({kind:'user',at:at+2,content:{text:'近似�
 store.serviceFor(other).appendEntry({kind:'assistant',at:at+3,content:{text:'另一件工作的最新进展乙'}})
 store.setSessionTitle(root,'近似工作摘要：核对阅读路径',at)
 store.setSessionTitle(other,'近似工作摘要：核对阅读路径',at+2)
-const model={alias:'default' as const,provider:'local',model:'MiniMax-M3'}
+const model={choice:'default' as const,provider:'local',model:'MiniMax-M3'}
 const coordinator=store.collaboration.registerAgent({operationId:'u114-root-register',sessionId:root,name:'入口',role:'协调',model,at})
 store.collaboration.openCollaboration(coordinator.agentId,{operationId:'u114-open',origin:{sessionId:root,entryId:first},at})
 const spawned=store.collaboration.spawn(coordinator.agentId,{operationId:'u114-spawn-read',sessionId:member,name:'材料成员',role:'阅读',model,body:[{kind:'text',text:'初始受控委派'}],scope:'仅阅读',source:{sessionId:root,entryId:first},authorization:[{sessionId:root,entryId:first}],at})

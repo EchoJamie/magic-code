@@ -139,7 +139,7 @@ export function retryAfterMsOf(error: unknown): number | undefined {
 // —— 装配 ——
 
 /** 策略归一——给了就用（`undefined` ＝缺省）；不合法即当场报（配置错的策略不该等到半夜才现形）。 */
-function normalizePolicy(policy: RetryPolicy | undefined): RetryPolicy {
+export function normalizeRetryPolicy(policy: RetryPolicy | undefined): RetryPolicy {
   if (policy === undefined) return DEFAULT_RETRY_POLICY
   if (!Number.isInteger(policy.maxAttempts) || policy.maxAttempts < 1) {
     throw new Error(`重试策略的 maxAttempts 须是 ≥1 的整数（现给 ${policy.maxAttempts}）`)
@@ -171,7 +171,7 @@ export function withTransientRetry(
   streamer: VendorStreamer,
   options: RetryOptions = {},
 ): VendorStreamer {
-  const policy = normalizePolicy(options.policy)
+  const policy = normalizeRetryPolicy(options.policy)
   const sleep = options.sleep ?? realSleep
 
   return function retrying(request, streamOptions, maxOutputTokens) {

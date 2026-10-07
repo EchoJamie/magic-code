@@ -103,7 +103,7 @@ function stage(): {
   mkdirSync(workspace, { recursive: true })
 
   const configPath = writeConfig(root, {
-    modelAliases: {},
+    models: {},
     providers: { ds: { vendor: 'deepseek', apiKey: 'sk-not-a-real-key' } },
     dataDir,
   })
@@ -166,7 +166,7 @@ describe('一条连接的闭环', () => {
       // —— ② 选择：**实际出站的 model 与选择一致** ——
       expect(
         await chooseModel(assembly, 'deepseek-v4-pro'),
-      ).toEqual({ ok: true, selection: { alias: 'default', provider: 'ds', model: 'deepseek-v4-pro' } })
+      ).toEqual({ ok: true, selection: { choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' } })
 
       await shell.submit('嗨')
 
@@ -191,14 +191,14 @@ describe('一条连接的闭环', () => {
 
       // —— ⑤ 保存默认：这一下**才**写配置（与换当前分开） ——
       const saved = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.alias.set', alias: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
+      shell.send({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
       await saved
 
       const after = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
-        modelAliases: { default?: { provider: string; model: string } }
+        models: { default?: { provider: string; model: string } }
         providers: Record<string, Record<string, unknown>>
       }
-      expect(after.modelAliases.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(after.models.default).toEqual({ provider: 'ds', model: 'deepseek-v4-pro' })
       expect(after.providers['ds']).toEqual({
         vendor: 'deepseek',
         apiKey: 'sk-not-a-real-key',
@@ -292,19 +292,19 @@ describe('一条连接的闭环', () => {
       })()
       expect(renamed.data.entries[0]?.name).toBe('我的 DeepSeek')
       // **当前仍是 pro**——重建注册表不该把用户的当前选择切回默认
-      expect(renamed.data.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(renamed.data.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
 
       // ② 把 flash 保存为**默认**——那是「以后用哪个」，不是「现在换到哪个」
       const saved = waitFor(shell, 'model.catalog')
-      shell.send({ type: 'model.alias.set', alias: 'default', provider: 'ds', model: 'deepseek-flash' })
+      shell.send({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-flash' })
       const afterDefault = await saved
 
-      expect(afterDefault.data.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(afterDefault.data.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
       // 而配置里确实换成了 flash（两件事分开，各自都做对了）
       const onDisk = JSON.parse(readFileSync(land.configPath, 'utf8')) as {
-        modelAliases: { default?: { model: string } }
+        models: { default?: { model: string } }
       }
-      expect(onDisk.modelAliases.default?.model).toBe('deepseek-flash')
+      expect(onDisk.models.default?.model).toBe('deepseek-flash')
 
       shell.dispose()
       assembly.close()
@@ -320,7 +320,7 @@ describe('一条连接的闭环', () => {
     try {
       // 配置里存着「明确关闭」——返修前这一位只读了 `model`，请求里一个参数都没有
       const configPath = writeConfig(land.root, {
-        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
+        models: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
         providers: {
           ds: { vendor: 'deepseek', apiKey: 'sk-not-a-real-key',  },
         },
@@ -383,7 +383,7 @@ describe('一条连接的闭环', () => {
 
       // **外部**把配置文件改了（模拟另一个进程 / 手改）——去掉 `apiKey`
       writeConfig(land.root, {
-        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
+        models: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
         providers: { ds: { vendor: 'deepseek' } },
         dataDir: land.dataDir,
       })
@@ -407,7 +407,7 @@ describe('一条连接的闭环', () => {
       // 只给**非默认**的那个型号一条覆盖——这样「拿默认行推算」会当场露馅：
       // 默认行（deepseek-flash）**没有**窗长依据，而当前选中（deepseek-v4-pro）有
       const configPath = writeConfig(land.root, {
-        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
+        models: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
         providers: {
           ds: { vendor: 'deepseek', apiKey: 'sk-not-a-real-key', modelOverrides: {
               'deepseek-v4-pro': { limits: { maxContextTokens: 30_000, maxOutputTokens: 1_000 } },
@@ -450,7 +450,7 @@ describe('一条连接的闭环', () => {
         shell.send({ type: 'model.list' })
         return armed
       })()
-      expect(catalog.data.current).toEqual({ alias: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
+      expect(catalog.data.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-v4-pro' })
       expect(catalog.data.currentInputBudget).toBe(30_000 - 1_000)
       expect(Object.hasOwn(catalog.data.entries[0] ?? {}, 'contextWindow')).toBe(false)
 
@@ -479,7 +479,7 @@ describe('一条连接的闭环', () => {
     // 缺省那条**不写** `apiKey`（走环境变量回退）；另一条两处都没有——
     // 它**不是缺省**，故不会在构造期被预造网关（那条路缺 key 才抛）。
     const configPath = writeConfig(land.root, {
-      modelAliases: {default: {provider: "ds", model: 'm'}, cantrip: {provider: "other", model: 'm'}, spell: {provider: "other", model: 'm'}, arcane: {provider: "other", model: 'm'}},
+      models: {default: {provider: "ds", model: 'm'}, cantrip: {provider: "other", model: 'm'}, spell: {provider: "other", model: 'm'}, arcane: {provider: "other", model: 'm'}},
       providers: {
         ds: { vendor: 'deepseek' },
         other: { vendor: 'minimax', baseURL: 'https://x/v1' },
@@ -669,8 +669,8 @@ async function chooseModel(app: ReturnType<typeof assemble>, model: string) {
   const shell = attachShell(app.shell)
   try {
     const saved = waitFor(shell, 'model.catalog')
-    shell.send({ type: 'model.alias.set', alias: 'default', provider: 'ds', model })
+    shell.send({ type: 'model.configure', choice: 'default', provider: 'ds', model })
     expect((await saved).data.note).toBe('已保存 Default')
-    return app.switchModel({ alias: 'default' })
+    return app.switchModel({ choice: 'default' })
   } finally { shell.dispose() }
 }

@@ -150,7 +150,7 @@ def run(plan, output):
             room = root / case; room.mkdir(mode=0o700)
             evidence = output / case; evidence.mkdir(parents=True, exist_ok=True)
             write(room / '.magic/config.json', {'dataDir': str(room / 'data'), 'workspaceRoots': [str(room)],
-                  'modelAliases': {alias: {'provider': 'local', 'model': 'probe'} for alias in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
+                  'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
                   'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}})
             session = None
             if case == 'resume':

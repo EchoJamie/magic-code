@@ -9,7 +9,7 @@ function fixture() {
   const dir = tempDir('magic-collaboration-native-')
   const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
   const records = store.collaboration
-  const model = { alias: 'default' as const, provider: 'test', model: 'test' }
+  const model = { choice: 'default' as const, provider: 'test', model: 'test' }
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '整项工作' }, at: 1 }) }
   const coordinator = records.registerAgent({ operationId: 'register', sessionId: 'origin', name: '协调', role: '', model, at: 2 })
   const collaboration = records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })

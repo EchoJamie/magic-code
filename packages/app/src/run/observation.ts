@@ -1,10 +1,11 @@
+import type { MagicConfig } from '@magic/contracts'
 /** 常驻核心的只读控制面：只取配置、目录、缓存和记录，不装配执行者或连接外部服务。 */
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   Command, DecisionHistory, EventDataOf, EventKind, KernelEvent, MagicHome,
   Materials, McpCatalogRow, ModelCatalogRow, ModelInfoRead, ModelSelectionRef,
-  ModelSwitchRequest, ProviderConfig, SkillCatalog, ModelAliases, WorkspaceService,
+  ModelSwitchRequest, ProviderConfig, SkillCatalog, WorkspaceService,
 } from '@magic/contracts'
 import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
@@ -57,14 +58,14 @@ export function modelCatalogRows(reader: ModelCatalogReader): readonly ModelCata
   })
 }
 
-export function modelCatalog(reader: ModelCatalogReader, aliases?: ModelAliases): EventDataOf['model.catalog'] {
+export function modelCatalog(reader: ModelCatalogReader, configuredModels?: NonNullable<MagicConfig['models']>): EventDataOf['model.catalog'] {
   const current = reader.current
   const budget = current === undefined ? undefined : reader.inputBudget(current.provider, current.model)
   return {
     entries: modelCatalogRows(reader),
     ...(current === undefined ? {} : { current }),
     ...(budget === undefined ? {} : { currentInputBudget: budget }),
-    ...(aliases === undefined ? {} : { aliases }),
+    ...(configuredModels === undefined ? {} : { configuredModels }),
   }
 }
 
@@ -137,7 +138,7 @@ export async function query(command: Command, context: ObservationContext): Prom
   if (command.type === 'model.list' || command.type === 'provider.list') {
     const reader = await readModelCatalog(loaded, context.selection, context.switch, now)
     return command.type === 'model.list'
-      ? stamp('model.catalog', modelCatalog(reader, loaded.config.modelAliases))
+      ? stamp('model.catalog', modelCatalog(reader, loaded.config.models))
       : stamp('provider.catalog', providerCatalog(reader))
   }
 
@@ -169,7 +170,7 @@ export async function readModelCatalog(loaded: LoadedConfig, selection: ModelSel
     cache: createFileModelInfoCache(loaded.config.dataDir), now, fetch: globalThis.fetch,
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
-  const picked = resolveModelChoice({ providers, aliases: loaded.config.modelAliases, defaults: selection,
+  const picked = resolveModelChoice({ providers, configuredModels: loaded.config.models, defaults: selection,
     config: request, modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model) })
   if (request !== undefined && !picked.ok) throw new Error(picked.reason)
   const current = picked.ok ? picked.selection : undefined

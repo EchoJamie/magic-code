@@ -16,7 +16,7 @@ struct SettingsCategory: Identifiable {
 struct SettingsSearchItem: Identifiable {
     let id: String, category: String, title: String, words: String
     static let all: [Self] = [
-        .init(id: "aliases", category: "models", title: "Default 与能力档位", words: "默认模型 Cantrip Spell Arcane 型号 映射"),
+        .init(id: "configuredModels", category: "models", title: "Default 与能力档位", words: "默认模型 Cantrip Spell Arcane 型号 映射"),
         .init(id: "providers", category: "models", title: "供应商连接与模型规格", words: "密钥 API key DeepSeek MiniMax 地址 缓存 刷新 容量 思考 覆盖"),
         .init(id: "servers", category: "tools", title: "MCP 服务器", words: "工具 stdio HTTP 命令 参数 环境变量 请求头 连接 重连"),
         .init(id: "rules.sources", category: "materials", title: "主动加载的补充规约", words: "规则 文件 AGENTS CLAUDE sources"),
@@ -115,7 +115,7 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.readSettings() }
         .onChange(of: scenePhase) { _, value in if value == .active { model.readSettings() } }
         .onChange(of: model.settingsSnapshot) { _, value in
-            if !initialized, let value { if value.configuration["modelAliases"]["default"] == .null { model.rememberSettingsCategory("models") }; initialized = true }
+            if !initialized, let value { if value.configuration["models"]["default"] == .null { model.rememberSettingsCategory("models") }; initialized = true }
         }
         .onChange(of: model.settingsSavedKey) { _, key in if let key { drafts.discard(key) } }
     }
@@ -145,7 +145,7 @@ struct SettingsView: View {
     private func safeSearchValue(_ item: SettingsSearchItem) -> String {
         guard let config = model.settingsSnapshot?.configuration else { return "尚未读取配置" }
         switch item.id {
-        case "aliases": return ["default", "cantrip", "spell", "arcane"].map { "\($0.capitalized)：\(config["modelAliases"][$0]["model"].text.isEmpty ? "未配置" : config["modelAliases"][$0]["model"].text)" }.joined(separator: " · ")
+        case "configuredModels": return ["default", "cantrip", "spell", "arcane"].map { "\($0.capitalized)：\(config["models"][$0]["model"].text.isEmpty ? "未配置" : config["models"][$0]["model"].text)" }.joined(separator: " · ")
         case "providers": return config["providers"].object.keys.sorted().map { config["providers"][$0]["name"].text.isEmpty ? $0 : config["providers"][$0]["name"].text }.joined(separator: " · ")
         case "servers": return config["mcp"]["servers"].object.keys.sorted().joined(separator: " · ")
         case "roles": return config["agentRoles"].object.keys.sorted().joined(separator: " · ")

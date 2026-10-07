@@ -41,7 +41,6 @@ import type {
   EventStamper,
   InputRefEntry,
   ModelErrorTier,
-  ModelGateway,
   ModelMessage,
   RecordId,
   RecordsService,
@@ -153,11 +152,8 @@ export type Compactor = {
 export type CompactorDeps = {
   readonly records: RecordsService
   readonly session: SessionId
-  /** 摘要由**同一个网关**生成（同一个模型）——不另开一条接缝，也不引第二个供应商。 */
+  /** 宿主按 Cantrip 配置提供独立调用端口。 */
   readonly compression?: () => CompressionModel
-  readonly gateway: ModelGateway
-  /** 模型名——随摘要请求送模型域（与循环同源）。 */
-  readonly model: string
   readonly sink: EventSink
   readonly stamper: EventStamper
   readonly now: () => Timestamp
@@ -245,7 +241,8 @@ export function createCompactor(deps: CompactorDeps): Compactor {
       const why = trigger === 'threshold' ? '用量达阈值' : '上下文超限'
 
       try {
-        const selected = deps.compression?.() ?? { gateway: deps.gateway, model: deps.model }
+        const selected = deps.compression?.()
+        if (selected === undefined) throw new Error('Cantrip 尚未配置；请在 /model → 模型档位 中设置')
         const all = await readAll()
 
         // 近段＝最后 `nearEntries` 条——**与 `planContext` 同一算术**（那边按「摘要前 K 条」
@@ -308,7 +305,7 @@ async function summarize(
     throw new Error(`Cantrip 当前设置的上下文窗口不足以容纳待压缩内容（估算输入 ${estimatedTokens} token，有效上限 ${selected.inputBudget}）${selected.location === undefined ? '' : `；容量配置：${selected.location}`}；请检查该模型容量设置或选择更大窗口的模型，不要超出模型真实能力调大设置`)
   }
   const stream = selected.gateway.stream(
-    { model: selected.model, messages },
+    { messages },
     { reasoning: { mode: 'off' }, ...(signal === undefined ? {} : { signal }) },
   )
 

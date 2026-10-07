@@ -1,3 +1,4 @@
+import type { MagicConfig } from '@magic/contracts'
 import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import { createCollaborationBoundary } from './collaboration-boundary.ts'
 /**
@@ -64,8 +65,7 @@ import type {
   McpToolRejection,
   ModelCacheAccess,
   ModelInfo,
-  ModelAliasRequest,
-  ModelAliases,
+  ModelConfigureRequest,
   ModelGateway,
   ModelSwitchRequest,
   ProviderConfig,
@@ -126,11 +126,10 @@ import type {
   ModelSwitchResult,
 } from '@magic/model'
 import {
-  createModelGateway,
   createModelInfoService,
   createModelRegistry,
   createPageDistiller,
-  modelSpecOf,
+  selectModel,
   resolveConnection,
 } from '@magic/model'
 import { createGrantLedger, createPermissionGate, parseRules } from '@magic/permission'
@@ -151,8 +150,8 @@ import {
 import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
-import { resolveModelChoice, validateSelection } from './agent-models.ts'
-import { removeProvider, saveProvider, setModelAlias, setPrefs } from './config-save.ts'
+import { bindModelChoice, resolveModelChoice, validateSelection } from './agent-models.ts'
+import { removeProvider, saveProvider, configureModel, setPrefs } from './config-save.ts'
 import { saveImageFile } from './image-file.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { cacheAccessFor, configStamp as configStampOf, connectionScopeChanged } from './cache-access.ts'
@@ -1082,7 +1081,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 递到取网页那一件手上。写的那一步落地时，记得在这一处同步（同 `saveProviderCommand`
    * 对 `providerBook` 的那一句）。
    */
-  let modelAliases: ModelAliases | undefined = loaded.config.modelAliases
+  let configuredModels: MagicConfig['models'] = loaded.config.models
 
   let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
   let reducedMotion = loaded.config.motion?.reduced === true
@@ -1170,7 +1169,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const reloaded = loadConfig({ path: loaded.path, magic })
     const connectionsChanged = JSON.stringify(providerBook) !== JSON.stringify(reloaded.config.providers)
     providerBook = reloaded.config.providers
-    modelAliases = reloaded.config.modelAliases
+    configuredModels = reloaded.config.models
     configStamp = stamp
     if (connectionsChanged) rebuildRegistry()
   }
@@ -1232,55 +1231,27 @@ export function assemble(options: AssembleOptions): Assembly {
 
   let models: ModelRegistry | undefined
   if (options.modelGateway === undefined) {
-    const initial = savedAgent === undefined ? resolveModelChoice({ providers: providerBook, aliases: modelAliases, modelInfoOf: knownModelOf }) : { ok: true as const, selection: savedAgent.model }
+    const initial = savedAgent === undefined ? resolveModelChoice({ providers: providerBook, configuredModels: configuredModels, modelInfoOf: knownModelOf }) : { ok: true as const, selection: savedAgent.model }
     models = registryOf(initial.ok ? initial.selection : undefined)
   }
 
-  /** 两类辅助调用各自捕获 Cantrip 配置，不经过主工作注册表。 */
-  const compressionModel = () => {
+  const cantrip = () => {
     syncProviderBook()
-    const resolved = resolveModelChoice({ providers: providerBook, aliases: modelAliases, config: { alias: 'cantrip', reasoning: { mode: 'off' } }, modelInfoOf: knownModelOf })
-    if (!resolved.ok) throw new Error(resolved.reason)
-    const chosen = resolved.selection
-    const config = providerBook[chosen.provider]!
-    const known = knownModelOf(chosen.provider, chosen.model)
-    const gateway = createModelGateway({ providerId: chosen.provider, config, stamper: forwardStamper,
-      fetch: options.modelFetch, configPath: loaded.path, modelInfoOf: () => known })
-    const spec = modelSpecOf(config, chosen.model, known)
-    return { gateway, model: chosen.model, inputBudget: spec?.inputBudget,
-      location: `${loaded.path} → providers.${chosen.provider}.modelOverrides.${chosen.model}.limits` }
+    return bindModelChoice({ configuredModels, request: { choice: 'cantrip', reasoning: { mode: 'off' } },
+      options: { providers: providerBook, stamper: forwardStamper, fetch: options.modelFetch,
+        configPath: loaded.path, modelInfoOf: knownModelOf } })
   }
 
   const webFetchTool = defineWebFetchTool({
     web: options.webSource ?? createWebSource(),
     distiller: () => {
       syncProviderBook()
-      if (modelAliases?.cantrip === undefined) return undefined
-      const resolved = resolveModelChoice({ providers: providerBook, aliases: modelAliases,
-        config: { alias: 'cantrip', reasoning: { mode: 'off' } }, modelInfoOf: knownModelOf })
-      if (!resolved.ok) return { distill: () => Promise.resolve({ ok: false as const, kind: 'failed' as const, reason: resolved.reason }) }
-      const chosen = resolved.selection
-      const entry = providerBook[chosen.provider]!
-      const known = knownModelOf(chosen.provider, chosen.model)
-
-      // 造网关**每次调用现造**：它内部要解析 key（可能缺），而「缺 key」在构造期抛——
-      // 现造才能把那一句接住、变成一次失败的提炼（而不是把装配整个带崩）。
-      let gateway: ModelGateway
-      try {
-        gateway = createModelGateway({
-          providerId: chosen.provider,
-          config: entry,
-          stamper: forwardStamper,
-          fetch: options.modelFetch,
-          configPath: loaded.path,
-          modelInfoOf: () => known,
-        })
-      } catch (error) {
+      if (configuredModels?.cantrip === undefined) return undefined
+      try { return createPageDistiller(cantrip()) }
+      catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         return { distill: () => Promise.resolve({ ok: false as const, kind: 'failed' as const, reason }) }
       }
-
-      return createPageDistiller({ gateway, model: chosen.model })
     },
   })
 
@@ -1610,17 +1581,7 @@ export function assemble(options: AssembleOptions): Assembly {
       purpose: identity?.purpose,
       consultationAvailable: agentTools.length > 0 && toolVisible('consult_arcane'),
       session,
-      // **开局的模型名**——缺省连接 ＋ 它默认的模型，随每次调用送模型域
-      //（技术方案：模型名取自请求）。
-      // 会话中途换模型**不经过这里**：注册表的选中会在这个名字之上接管（换模型＝换接缝下游，
-      // 对话域不知道发生过切换——它照旧把这一行送出去，接缝按选中改道）。
-      //
-      // ⚠️ **U41：可能一个都拿不到**（注册表缺席的替身网关 / 还没选过默认模型）——
-      // 空串在这里是「还没定」的占位，**不是**一个可用的模型名：真送出去会被供应商拒。
-      // 「没定就拒绝提交并提示先选模型」的拦截归**后端接线那一笔**（本笔先落契约与读面，
-      // 见回报）；在那之前，这条路径只保证装配不因缺模型名而崩。
-      model: models === undefined ? modelAliases?.default?.model ?? '' : models.current()?.model ?? '',
-      ...(options.modelGateway === undefined ? { compression: compressionModel } : {}),
+      compression: options.modelGateway === undefined ? cantrip : () => ({ gateway: fixed }),
       prompt: promptVarsOf(workspace, options, now),
       gateway,
       tools,
@@ -1855,7 +1816,7 @@ export function assemble(options: AssembleOptions): Assembly {
       result.ok
         ? forwardStamper.stamp('model.switched', {
             ok: true,
-            alias: result.selection.alias,
+            choice: result.selection.choice,
             ...(result.selection.reasoning === undefined ? {} : { reasoning: result.selection.reasoning }),
             provider: result.selection.provider,
             model: result.selection.model,
@@ -1874,13 +1835,13 @@ export function assemble(options: AssembleOptions): Assembly {
   const switchModel = (request: ModelSwitchRequest): ModelSwitchResult => {
     syncProviderBook()
     const checked = models === undefined ? { ok: false as const, reason: NO_REGISTRY }
-      : validateSelection({ models, aliases: modelAliases, providers: providerBook, config: request, modelInfoOf: knownModelOf })
+      : validateSelection({ models, configuredModels: configuredModels, providers: providerBook, config: request, modelInfoOf: knownModelOf })
     return commitModel(checked)
   }
 
   // 仅受信任的宿主内部配置消息使用已解析组合，不重新读取可变映射。
   const applyModel = (selection: AgentModelConfig): ModelSwitchResult =>
-    commitModel(models?.resolve({ config: selection }) ?? { ok: false, reason: NO_REGISTRY })
+    commitModel((models === undefined ? undefined : selectModel({ providers: providerBook, modelInfoOf: knownModelOf }, selection)) ?? { ok: false, reason: NO_REGISTRY })
 
   /**
    * 模型条目表 —— 读面的**产出路径**（缺陷 D10 · 第 3 样）。
@@ -2226,7 +2187,7 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   const catalogOf = (registry: ModelRegistry | undefined): EventDataOf['model.catalog'] =>
-    registry === undefined ? { entries: [], note: NO_REGISTRY } : modelCatalog(catalogReader(registry), modelAliases)
+    registry === undefined ? { entries: [], note: NO_REGISTRY } : modelCatalog(catalogReader(registry), configuredModels)
 
   const providerCatalogOf = (note?: string): EventDataOf['provider.catalog'] => providerCatalog(catalogReader(models), note)
 
@@ -2257,7 +2218,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * `onChange` 发一屏（成或不成都有话说）。**不硬闯**：`refresh` 自己会等冷却。
    */
   const refreshModels = async (provider?: string): Promise<void> => {
-    const target = provider ?? models?.current()?.provider ?? modelAliases?.default?.provider
+    const target = provider ?? models?.current()?.provider ?? configuredModels?.default?.provider
     if (target === undefined) {
       listModels('还没有可刷新的连接——先接入一个供应商')
       return
@@ -2276,16 +2237,16 @@ export function assemble(options: AssembleOptions): Assembly {
    *
    * 写盘成功才更新映射；当前 Agent 的有效选择不随保存改变。
    */
-  const setAliasModel = async (request: ModelAliasRequest): Promise<void> => {
+  const setAliasModel = async (request: ModelConfigureRequest): Promise<void> => {
     try {
       syncProviderBook()
       const snapshots = Object.entries(providerBook).map(([provider, config]) => ({ provider, config, snapshot: modelInfo.peek(provider).snapshot }))
-      const outcome = setModelAlias({ path: loaded.path,
+      const outcome = configureModel({ path: loaded.path,
         expectedStamp: configStamp, request })
       if (!outcome.ok) { void listModels(outcome.reason); return }
       const reloaded = loadConfig({ path: loaded.path, magic })
       configStamp = reloaded.stamp ?? null
-      modelAliases = reloaded.config.modelAliases
+      configuredModels = reloaded.config.models
       // 映射编辑不改变认证；仅将相同接入身份的已有资料移到保存后的缓存范围。
       for (const { provider, config, snapshot } of snapshots) {
         if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
@@ -2294,7 +2255,7 @@ export function assemble(options: AssembleOptions): Assembly {
       }
       await modelInfo.warmup()
       // 保存映射不切换当前 Agent；没有有效选择的首次设置仍等明确应用动作。
-      void listModels(`已保存 ${request.alias[0]!.toUpperCase() + request.alias.slice(1)}`)
+      void listModels(`已保存 ${request.choice[0]!.toUpperCase() + request.choice.slice(1)}`)
     } catch (error) {
       void listModels(`模型设置未完成：${error instanceof Error ? error.message : String(error)}`)
     }
@@ -2369,7 +2330,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
     providerBook = reloaded.config.providers
     // 「取网页」的提炼模型同理（U72）——保存之后立刻对得上，不必重启
-    modelAliases = reloaded.config.modelAliases
+    configuredModels = reloaded.config.models
 
     // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
     if (connectionScopeChanged(before, providerBook[request.provider])) {
@@ -2421,7 +2382,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const next = { ...providerBook }
     delete next[provider]
     providerBook = next
-    modelAliases = loadConfig({ path: loaded.path, magic }).config.modelAliases
+    configuredModels = loadConfig({ path: loaded.path, magic }).config.models
 
     modelInfo.drop(provider)
     const cleared = await dropCacheQuietly(removedTarget)
@@ -2465,7 +2426,7 @@ export function assemble(options: AssembleOptions): Assembly {
     // 域不碰文件系统；同 `grants.list` 之于授权文件）。前三条答复走 `provider.catalog`、
     // 后两条走 `model.catalog`（用户按一下就该看到那一屏的新样子）。
     onModelRefresh: (provider) => void refreshModels(provider),
-    onModelAliasSet: (request) => void setAliasModel(request),
+    onModelConfigure: (request) => void setAliasModel(request),
     // 「取网页」的提炼模型（U78）——同一条路（写盘归装配）——答复也走 `model.catalog`
     // 界面那两格（U112）——同一条路（写盘归装配）——答复走 `prefs.state`
     // （带上**落定之后**那两份，外壳据它把屏上那两格摆成真的样子）
@@ -2563,7 +2524,7 @@ export function assemble(options: AssembleOptions): Assembly {
       await modelInfo.warmup()
       const selection = models?.current()
       if (models !== undefined && selection !== undefined) {
-        const checked = models.resolve({ defaults: selection })
+        const checked = selectModel({ providers: providerBook, modelInfoOf: knownModelOf }, selection)
         if (!checked.ok) throw new Error(`成员模型配置不可用：${checked.reason}`)
       }
       await mcp.ready()

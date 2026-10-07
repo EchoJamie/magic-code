@@ -120,7 +120,7 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
       writeConfig(
         join(home, MAGIC_DIR),
         validConfig({
-          modelAliases: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(alias => [alias, { provider: 'local', model: options.model ?? 'MiniMax-M3' }])),
+          models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(choice => [choice, { provider: 'local', model: options.model ?? 'MiniMax-M3' }])),
           providers: {
             local: {
               baseURL: options.baseURL ?? DEAD_BASE_URL,

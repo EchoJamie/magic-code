@@ -36,7 +36,6 @@ import type {
 } from '@magic/faux'
 import {
   DEFAULT_TEST_SESSION,
-  FAUX_MODEL,
   FIXED_AT,
   createFauxGateway,
   makeFauxPermissionGate,
@@ -235,7 +234,7 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
 
   return {
     session: DEFAULT_TEST_SESSION,
-    model: FAUX_MODEL,
+
     systemPrompt: buildSystemPrompt(stage.promptVars),
     gateway: stage.gateway,
     tools: stage.toolDomain,
@@ -258,15 +257,14 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
  */
 export function makeCompactor(
   stage: Stage,
-  options: { readonly model?: string; readonly policy?: Partial<ContextPolicy> } = {},
+  options: { readonly policy?: Partial<ContextPolicy> } = {},
 ): Compactor {
   const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...options.policy }
 
   return createCompactor({
     records: stage.records,
     session: DEFAULT_TEST_SESSION,
-    gateway: stage.gateway,
-    model: options.model ?? FAUX_MODEL,
+    compression: () => ({ gateway: stage.gateway }),
     sink: stage.sink,
     stamper: stage.stamper,
     now: () => FIXED_AT,

@@ -144,11 +144,11 @@ describe('真实权限 → 工具 → 文件执行：一次决断', () => {
 
   test('根内链接指向根外须问；审批期间换原链接仍只读所批真实目标', async () => {
     const f = fixture()
-    const first = join(f.outside, 'a'), second = join(f.outside, 'b'), alias = join(f.root, 'link')
-    writeFileSync(first, 'approved'); writeFileSync(second, 'unreviewed'); symlinkSync(first, alias)
-    const run = f.runtime.invoke(call('read', { path: alias }), {})
+    const first = join(f.outside, 'a'), second = join(f.outside, 'b'), choice = join(f.root, 'link')
+    writeFileSync(first, 'approved'); writeFileSync(second, 'unreviewed'); symlinkSync(first, choice)
+    const run = f.runtime.invoke(call('read', { path: choice }), {})
     expect((await f.request()).data.material).toContain(first)
-    unlinkSync(alias); symlinkSync(second, alias)
+    unlinkSync(choice); symlinkSync(second, choice)
     f.gate.resolve((await f.request()).id, 'approve')
     const result = await run
     expect(result.output).toBe('approved')
@@ -184,9 +184,9 @@ describe('真实权限 → 工具 → 文件执行：一次决断', () => {
 
   test('悬空链接的新建写，审批显示真实落点且写入该落点', async () => {
     const f = fixture()
-    const target = join(f.outside, 'new'), alias = join(f.root, 'link')
-    symlinkSync(target, alias)
-    const run = f.runtime.invoke(call('write', { path: alias, content: 'created' }), {})
+    const target = join(f.outside, 'new'), choice = join(f.root, 'link')
+    symlinkSync(target, choice)
+    const run = f.runtime.invoke(call('write', { path: choice, content: 'created' }), {})
     expect((await f.request()).data.material).toContain(target)
     f.gate.resolve((await f.request()).id, 'approve')
     expect((await run).ok).toBe(true)

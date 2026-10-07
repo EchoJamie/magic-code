@@ -52,7 +52,7 @@ const used = (inputTokens = 3_100) => event('model.usage', { inputTokens, output
 
 /** 一次**真跑**（分母随之落定）——`inputBudget` 就是那一刻的有效输入预算。 */
 const ran = (model: string, provider: string, inputBudget?: number) =>
-  event('model.call.start', { alias: 'default',
+  event('model.call.start', { choice: 'default',
     model,
     provider,
     ...(inputBudget === undefined ? {} : { inputBudget }),
@@ -71,7 +71,7 @@ describe('换过模型之后的分母', () => {
     expect((await land.screen()).statusLine).toContain('3.1k/1000k')
 
     // 切到另一个模型——**切换事件自己带着那个模型的预算**（32_768 ⇒ `33k`）
-    land.feed([event('model.switched', { alias: 'default', ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 32_768 })])
+    land.feed([event('model.switched', { choice: 'default', ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 32_768 })])
 
     const after = await land.screen()
     // ③ 那一格（模型名）自 U112 起**不在默认状态行里**（可配，默认只有 `session` 与
@@ -91,7 +91,7 @@ describe('换过模型之后的分母', () => {
     land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
     // **内核没给这一位**＝那条模型没有窗长依据（不是「和上一个一样」）
-    land.feed([event('model.switched', { alias: 'default', ok: true, provider: 'local', model: 'my-local-llama' })])
+    land.feed([event('model.switched', { choice: 'default', ok: true, provider: 'local', model: 'my-local-llama' })])
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k')
@@ -109,7 +109,7 @@ describe('换过模型之后的分母', () => {
     land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
     for (const name of ['toString', 'constructor', '__proto__', 'MiniMax-M9']) {
-      land.feed([event('model.switched', { alias: 'default', ok: true, provider: 'mm', model: name })])
+      land.feed([event('model.switched', { choice: 'default', ok: true, provider: 'mm', model: name })])
       expect(land.shell.getView().status.window).toBeNull()
     }
 
@@ -124,7 +124,7 @@ describe('换过模型之后的分母', () => {
     const land = stage({ contextWindow: 1_000_000 })
     land.feed([ran('MiniMax-M3', 'mm', 1_000_000), used()])
 
-    land.feed([event('model.switched', { alias: 'default', ok: false, reason: '未知供应商「ghost」' })])
+    land.feed([event('model.switched', { choice: 'default', ok: false, reason: '未知供应商「ghost」' })])
 
     const after = await land.screen()
     expect(after.statusLine).toContain('3.1k/1000k')
@@ -194,7 +194,7 @@ describe('`model.catalog` 那一格', () => {
 
         },
       ],
-      current: { alias: 'default' as const, provider: 'ds', model: 'deepseek-reasoner' },
+      current: { choice: 'default' as const, provider: 'ds', model: 'deepseek-reasoner' },
       ...(currentInputBudget === undefined ? {} : { currentInputBudget }),
     })
 

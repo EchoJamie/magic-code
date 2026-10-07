@@ -82,7 +82,7 @@ describe('工具行 · 状态位在身份记号右边（2026-10-01 裁定）', (
 describe('回执与工具组 · 不带记号（2026-10-01 裁定）', () => {
   test('回执：**无记号**，靠缩进一级 ＋ 弱色（`·` 不再做身份）', async () => {
     const stage = createStage()
-    stage.feed([event('model.switched', { alias: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
+    stage.feed([event('model.switched', { choice: 'default', ok: true, model: 'MiniMax-M2', provider: 'minimax' })])
 
     const frame = await stage.screen(SCREEN)
     const row = frame.rowOf('已选择 Default')

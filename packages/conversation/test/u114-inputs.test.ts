@@ -2,7 +2,7 @@ import {expect,test} from 'bun:test'
 import {createConversationSession} from '../src/service.ts'
 import {makeStage,makeLoopRuntime,waitFor,waitUntilIdle} from './support/harness.ts'
 
-function open(stage:ReturnType<typeof makeStage>){const runtime=makeLoopRuntime(stage);return createConversationSession({session:runtime.session,model:runtime.model,prompt:stage.promptVars,gateway:stage.gateway,tools:stage.toolDomain,records:stage.records,sink:stage.sink,stamper:stage.stamper,now:runtime.now})}
+function open(stage:ReturnType<typeof makeStage>){const runtime=makeLoopRuntime(stage);return createConversationSession({session:runtime.session,prompt:stage.promptVars,gateway:stage.gateway,tools:stage.toolDomain,records:stage.records,sink:stage.sink,stamper:stage.stamper,now:runtime.now})}
 test('U114 工具结束先带入当前补充，旧下一工具不执行；下一件不混当前请求',async()=>{
  let release:()=>void=()=>{}
  const latch=new Promise<void>(resolve=>{release=resolve})

@@ -46,7 +46,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
       const parsed = parseArgs(['resume', 'session-real', '--open-request', request, '--model', 'spell', '--allow-all'])
       const connection = await connectTerminal(parsed, { home: g.home, env: { PATH: '/work/bin', API_KEY: 'do-not-send' } })
       const hello = server.messages.find((message) => message.t === 'hello')!
-      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { alias: 'spell' }, allowAll: true, environment: { PATH: '/work/bin' } })
+      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { choice: 'spell' }, allowAll: true, environment: { PATH: '/work/bin' } })
       expect(JSON.stringify(hello)).not.toContain('do-not-send')
       connection.client.close()
 
@@ -61,10 +61,10 @@ describe('resident-cli 短路径与终端接回参数', () => {
   test('重连按规范路径识别原实例：发现记录与原连接的软链接写法均不产生新工作', async () => {
     const g = cliGround()
     const server = fakeApp(g)
-    const alias = join(g.root, 'alias')
-    symlinkSync(g.root, alias, 'dir')
-    const aliasBase = join(alias, 'selected/.magic')
-    const aliasData = join(alias, 'data')
+    const choice = join(g.root, 'choice')
+    symlinkSync(g.root, choice, 'dir')
+    const aliasBase = join(choice, 'selected/.magic')
+    const aliasData = join(choice, 'data')
     const opened: string[] = []
     try {
       // 首连规范化 base，发现文件仍保留声明写法，复现真实 /var 与 /private/var 差异。
@@ -393,7 +393,7 @@ describe('U28 · 夹具沙箱化（D24）', () => {
 
 function twoProviders(): Record<string, unknown> {
   return {
-    modelAliases: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}},
+    models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}},
     providers: {
       alpha: { vendor: 'minimax', baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12' },
       beta: { vendor: 'minimax', baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12' },

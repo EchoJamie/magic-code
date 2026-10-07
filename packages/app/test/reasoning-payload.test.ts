@@ -68,7 +68,7 @@ function sendAndWait(shell: ShellHandle, text: string): Promise<void> {
 function stageOn(fixture: Fixture, options: { readonly vendor: string }): Stage {
   return makeStage({
     config: {
-      modelAliases: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: MODEL}, arcane: {provider: "local", model: MODEL}},
+      models: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: MODEL}, arcane: {provider: "local", model: MODEL}},
       providers: {
         local: { vendor: options.vendor, baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },

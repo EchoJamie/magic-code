@@ -7,7 +7,7 @@
  * ① **原子替换**——写临时文件再 `rename`；权限 600（与首次创建一致）；
  * ② **保存前重新读取**——改的是**盘上当下那一份**，不是加载时那份陈旧快照；
  *    且**保留无关字段**（权限 · MCP · 工作区根…原样带过）：本文件只碰
- *    `providers` / `modelAliases`/ `statusLine` / `motion`（U112）
+ *    `providers` / `models`/ `statusLine` / `motion`（U112）
  *    那几格，别的一律不动。
  * ③ **外部改过就提示重载**——加载时记下的文件指纹与当下不符 ⇒ 拒绝这次写入，
  *    把「先重新载入」交给用户（**不拿陈旧整份文件覆盖**别人的改动）。
@@ -21,7 +21,7 @@ import { dirname } from 'node:path'
 import { configStamp } from './cache-access.ts'
 import { acquireFileLock } from './grants-file.ts'
 import type {
-  ModelAliasRequest,
+  ModelConfigureRequest,
   PrefsSetRequest,
   ProviderSaveRequest,
 } from '@magic/contracts'
@@ -182,8 +182,8 @@ export function removeProvider(input: {
         return { ok: false, reason: `没有「${input.provider}」这条连接` }
       }
 
-      const aliases = raw['modelAliases'] as Record<string, { provider: string }> | undefined
-      if (Object.values(aliases ?? {}).some(mapping => mapping.provider === input.provider)) {
+      const configuredModels = raw['models'] as Record<string, { provider: string }> | undefined
+      if (Object.values(configuredModels ?? {}).some(mapping => mapping.provider === input.provider)) {
         return { ok: false, reason: '连接仍被 Default 或档位引用，请先更换或清除映射' }
       }
       delete providers[input.provider]
@@ -193,35 +193,35 @@ export function removeProvider(input: {
 }
 
 /** 保存独立映射；首次初始化只填尚未设置的三档。 */
-export function setModelAlias(input: {
+export function configureModel(input: {
   readonly path: string
   readonly expectedStamp?: string | null
   readonly validate?: (raw: Record<string, unknown>) => void
-  readonly request: ModelAliasRequest
+  readonly request: ModelConfigureRequest
 }): SaveOutcome {
-  const { alias, provider, model, initialize } = input.request
-  if (!['default', 'cantrip', 'spell', 'arcane'].includes(alias)) return { ok: false, reason: '未知模型选择' }
+  const { choice, provider, model, initialize } = input.request
+  if (!['default', 'cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '未知模型选择' }
   if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: '请选择实际型号' }
-  if (initialize === true && alias !== 'default') return { ok: false, reason: '首次初始化只能保存 Default' }
+  if (initialize === true && choice !== 'default') return { ok: false, reason: '首次初始化只能保存 Default' }
   return editConfigFile({
     path: input.path,
     ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
     ...(input.validate === undefined ? {} : { validate: input.validate }),
     update(raw) {
       if (!Object.hasOwn(providersOf(raw), provider)) return { ok: false, reason: `没有「${provider}」这条连接——先接入它` }
-      const value = raw['modelAliases']
-      if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) return { ok: false, reason: 'modelAliases 须是对象，请先修复配置' }
+      const value = raw['models']
+      if (value !== undefined && (typeof value !== 'object' || value === null || Array.isArray(value))) return { ok: false, reason: 'models 须是对象，请先修复配置' }
       for (const [key, mapping] of Object.entries(value ?? {})) {
         if (!['default', 'cantrip', 'spell', 'arcane'].includes(key) || typeof mapping !== 'object' || mapping === null || Array.isArray(mapping)
           || Object.keys(mapping).some(field => !['provider', 'model'].includes(field))
           || typeof mapping.provider !== 'string' || !Object.hasOwn(providersOf(raw), mapping.provider)
-          || typeof mapping.model !== 'string' || mapping.model.trim() === '') return { ok: false, reason: 'modelAliases 内容无效，请先修复配置' }
+          || typeof mapping.model !== 'string' || mapping.model.trim() === '') return { ok: false, reason: 'models 内容无效，请先修复配置' }
       }
-      const aliases = { ...(value as Record<string, unknown> | undefined) }
+      const configuredModels = { ...(value as Record<string, unknown> | undefined) }
       const mapping = { provider, model }
-      aliases[alias] = mapping
-      if (initialize === true) for (const tier of ['cantrip', 'spell', 'arcane']) if (!Object.hasOwn(aliases, tier)) aliases[tier] = mapping
-      return { ok: true, raw: { ...raw, modelAliases: aliases } }
+      configuredModels[choice] = mapping
+      if (initialize === true) for (const tier of ['cantrip', 'spell', 'arcane']) if (!Object.hasOwn(configuredModels, tier)) configuredModels[tier] = mapping
+      return { ok: true, raw: { ...raw, models: configuredModels } }
     },
   })
 }

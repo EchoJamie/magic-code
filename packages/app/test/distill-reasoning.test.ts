@@ -68,7 +68,7 @@ function stageOn(
 
   return makeStage({
     config: {
-      modelAliases: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: DISTILL_MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: SESSION_MODEL}},
+      models: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: DISTILL_MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers,
 
     },
@@ -182,7 +182,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
 
       await runOneFetch(handle, 1, '查一下它的定价')
       // 中途换模型（换的是接缝下游，对话域不知道发生过切换）
-      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
       await runOneFetch(handle, 2, '再查一次')
 
       const chats = chatsOf(fixture)

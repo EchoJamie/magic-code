@@ -10,7 +10,7 @@ for (const completed of [false, true]) test(`U115：宿主恢复 ${completed ? '
   const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
   const r = store.collaboration
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '原工作' }, at: 1 }) }
-  const model = { alias: 'arcane' as const, provider: 'controlled', model: 'test', reasoning: { mode: 'default' as const } }
+  const model = { choice: 'arcane' as const, provider: 'controlled', model: 'test', reasoning: { mode: 'default' as const } }
   const root = r.registerAgent({ operationId: 'root', sessionId: 'origin', name: '原工作', role: '', model, at: 1 })
   const work = r.openCollaboration(root.agentId, { operationId: 'open', origin, at: 1 })
   const spawned = r.spawn(root.agentId, { operationId: 'spawn', sessionId: 'advisor', name: '咨询 Arcane', role: '', purpose: 'consultation', model,

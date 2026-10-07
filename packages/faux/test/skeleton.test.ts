@@ -42,7 +42,7 @@ describe('骨架 · 记录', () => {
 
     // 域这一侧：铸一条、发一条（真装配里 `sink` 就是扇出点：落库 ＋ 推送）
     sink.emit(stamper.stamp('turn.start', {}))
-    sink.emit(stamper.stamp('model.call.start', { alias: 'default', model: 'faux-1' }))
+    sink.emit(stamper.stamp('model.call.start', { choice: 'default', model: 'faux-1' }))
     sink.emit(stamper.stamp('turn.end', { reason: 'settled' }))
 
     // 扇出点这一侧：持久类落库（瞬时类不落——契约 · 规则 ① 的清单）
@@ -104,7 +104,7 @@ async function toyLoop(deps: ToyDeps, input: string): Promise<void> {
   const messages: ModelMessage[] = [{ role: 'user', content: input }]
 
   for (;;) {
-    const stream = deps.gateway.stream({ model: 'faux-1', messages, tools: deps.tools.definitions() })
+    const stream = deps.gateway.stream({  messages, tools: deps.tools.definitions() })
     const { events, result } = await drainStream(stream)
     for (const event of events) deps.sink.emit(event)
 
@@ -248,7 +248,7 @@ describe('骨架 · 循环', () => {
     const controller = new AbortController()
 
     const stream = gateway.stream(
-      { model: 'faux-1', messages: [] },
+      {  messages: [] },
       { signal: controller.signal },
     )
     const seen: KernelEvent[] = []

@@ -18,7 +18,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) 
   const text = JSON.stringify(body.messages)
   if (!spawned && text.includes('U113委派示例')) {
     spawned = true
-    const args = { operationId: 'u113-frame-member', name: '执行成员', responsibility: '核对未完成范围', scope: '受控执行检查', body: [{ kind: 'text', text: '仅核对未完成范围；不给工具效果。' }], model: { alias: 'spell' }, modelReason: '明确方案的常规执行任务' }
+    const args = { operationId: 'u113-frame-member', name: '执行成员', responsibility: '核对未完成范围', scope: '受控执行检查', body: [{ kind: 'text', text: '仅核对未完成范围；不给工具效果。' }], model: { choice: 'spell' }, modelReason: '明确方案的常规执行任务' }
     return new Response(frame([{ index: 0, delta: { tool_calls: [{ index: 0, id: 'u113-spawn', type: 'function', function: { name: 'agent_spawn', arguments: JSON.stringify(args) } }] } }]) + frame([{ index: 0, delta: {}, finish_reason: 'tool_calls' }]) + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
   }
   const round = [...text.matchAll(/受控上下文第(\d+)轮/g)].at(-1)?.[1]

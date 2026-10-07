@@ -128,7 +128,7 @@ function gatewayWith(
   endpointFetch: typeof globalThis.fetch,
   extra: Partial<ModelGatewayOptions> = {},
 ): ReturnType<typeof createModelGateway> {
-  return createModelGateway({
+  return createModelGateway({ model: CONFIG.model,
     providerId: 'minimax',
     config: CONFIG,
     apiKey: 'test-key',
@@ -323,7 +323,7 @@ describe('退避重试 · 假端点回环', () => {
 
     const { events, result } = await drainStream(
       gatewayWith(fetch, { sleep: slept.sleep }).stream({
-        model: CONFIG.model,
+
         messages: [{ role: 'user', content: '嗨' }],
       }),
     )
@@ -349,7 +349,7 @@ describe('退避重试 · 假端点回环', () => {
 
     const { events } = await drainStream(
       gatewayWith(fetch, { sleep: slept.sleep }).stream({
-        model: CONFIG.model,
+
         messages: [{ role: 'user', content: '嗨' }],
       }),
     )
@@ -378,7 +378,7 @@ describe('退避重试 · 假端点回环', () => {
     // 换一个**不是 3** 的策略：外壳若自钉常量，这里当场对不上
     const { events } = await drainStream(
       gatewayWith(fetch, { sleep: slept.sleep, retry: { maxAttempts: 5, baseDelayMs: 10, maxDelayMs: 100 } }).stream({
-        model: CONFIG.model,
+
         messages: [{ role: 'user', content: '嗨' }],
       }),
     )
@@ -397,7 +397,7 @@ describe('退避重试 · 假端点回环', () => {
 
     const { events } = await drainStream(
       gatewayWith(fetch, { sleep: slept.sleep }).stream({
-        model: CONFIG.model,
+
         messages: [{ role: 'user', content: '嗨' }],
       }),
     )
@@ -410,7 +410,7 @@ describe('退避重试 · 假端点回环', () => {
     const { fetch } = endpoint([okResponse('一次就好')])
 
     const { events } = await drainStream(
-      gatewayWith(fetch).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     const started = events[0]
@@ -421,7 +421,7 @@ describe('退避重试 · 假端点回环', () => {
   test('一路顺风时 attempts 为 1（计数如实，不虚报重试）', async () => {
     const { fetch, requests } = endpoint([okResponse('一次就好')])
     const { result } = await drainStream(
-      gatewayWith(fetch).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(requests).toHaveLength(1)
@@ -433,7 +433,7 @@ describe('退避重试 · 假端点回环', () => {
     const { fetch, requests } = endpoint([tooManyRequests(), tooManyRequests(), tooManyRequests()])
 
     const { events, result } = await drainStream(
-      gatewayWith(fetch, { sleep: slept.sleep }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(requests).toHaveLength(DEFAULT_RETRY_POLICY.maxAttempts)
@@ -456,7 +456,7 @@ describe('退避重试 · 假端点回环', () => {
     ])
 
     const { events, result } = await drainStream(
-      gatewayWith(fetch, { sleep: slept.sleep }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(requests).toHaveLength(1)
@@ -478,7 +478,7 @@ describe('退避重试 · 假端点回环', () => {
     ])
 
     const { events, result } = await drainStream(
-      gatewayWith(fetch, { sleep: slept.sleep }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(requests).toHaveLength(1)
@@ -492,7 +492,7 @@ describe('退避重试 · 假端点回环', () => {
     const { fetch, requests } = endpoint([breaksMidway(), okResponse('不该走到这里')])
 
     const { events, result } = await drainStream(
-      gatewayWith(fetch, { sleep: slept.sleep }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(requests).toHaveLength(1)
@@ -513,7 +513,7 @@ describe('退避重试 · 假端点回环', () => {
     }) as unknown as typeof globalThis.fetch
 
     const { result } = await drainStream(
-      gatewayWith(flaky, { sleep: slept.sleep }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(flaky, { sleep: slept.sleep }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(call).toBe(2)
@@ -528,7 +528,7 @@ describe('退避重试 · 假端点回环', () => {
 
     const { result } = await drainStream(
       gatewayWith(fetch, { retry: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }).stream({
-        model: CONFIG.model,
+
         messages: [{ role: 'user', content: '嗨' }],
       }),
     )
@@ -553,7 +553,7 @@ describe('退避重试 · 假端点回环', () => {
 
     const { events, result } = await drainStream(
       gatewayWith(fetch, { sleep: abortingSleep }).stream(
-        { model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] },
+        {  messages: [{ role: 'user', content: '嗨' }] },
         { signal: controller.signal },
       ),
     )
@@ -571,7 +571,7 @@ describe('退避重试 · 假端点回环', () => {
     const { fetch, requests } = endpoint([tooManyRequests(2), okResponse('等够了')])
 
     const { result } = await drainStream(
-      gatewayWith(fetch, { sleep: slept.sleep }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      gatewayWith(fetch, { sleep: slept.sleep }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(requests).toHaveLength(2)
@@ -587,7 +587,7 @@ describe('退避重试 · 假端点回环', () => {
       gatewayWith(fetch, {
         sleep: slept.sleep,
         retry: { maxAttempts: 2, baseDelayMs: 100, maxDelayMs: 1_500 },
-      }).stream({ model: CONFIG.model, messages: [{ role: 'user', content: '嗨' }] }),
+      }).stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(slept.delays).toEqual([1_500])
@@ -596,7 +596,7 @@ describe('退避重试 · 假端点回环', () => {
 
   test('不通就抛——策略不合法在**构造期**报（不等到半夜重试时才现形）', () => {
     expect(() =>
-      createModelGateway({
+      createModelGateway({ model: CONFIG.model,
         providerId: 'minimax',
         config: CONFIG,
         apiKey: 'k',

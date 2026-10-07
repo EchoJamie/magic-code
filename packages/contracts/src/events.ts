@@ -1,3 +1,4 @@
+import type { MagicConfig } from './config.ts'
 import type { StoredInput } from './input.ts'
 /**
  * 共享语言 · 事件（kind 族与载荷 · 信封 · 不落库清单）——已冻结 v0。
@@ -12,7 +13,7 @@ import type { StoredInput } from './input.ts'
  * - `KernelEvent`——**消费面**：判别联合视图，按 `kind` 自动收窄。
  */
 
-import type { ModelAlias, ModelAliases } from './model.ts'
+import type { ModelChoice } from './model.ts'
 
 import type { StatusLineConfig } from './config.ts'
 import type { Content, Entry, PlanNote, SessionSummary, UsedSkill } from './entries.ts'
@@ -369,7 +370,7 @@ export type McpCatalogRow = {
  */
 export type ModelSelectionRef = {
   readonly reasoning?: ReasoningSetting
-  readonly alias: ModelAlias
+  readonly choice: ModelChoice
   readonly provider: string
   readonly model: string
 }
@@ -398,7 +399,7 @@ export type EventDataOf = {
   'message.assistant': { readonly entry: RecordId }
   // model——调用级
   'model.call.start': {
-    readonly alias?: ModelAlias
+    readonly choice?: ModelChoice
     readonly model: string
     /**
      * 这条条目叫什么（`providers` 的键）——**只增不改**（技术方案 · 代码治理 · 契约生长受控）。
@@ -638,7 +639,7 @@ export type EventDataOf = {
   // 说不出「何时改的、为什么没改成」；而用户命令不成立**不是内核异常**，
   // 混进 `error` 会污染观测（那一条的语义专留给「内核自身异常」）。
   'model.switched': {
-    readonly alias?: ModelAlias
+    readonly choice?: ModelChoice
     readonly reasoning?: ReasoningSetting
     /** 换成了没有。`false` 时**原选原样保留**（切不动就不动）——`reason` 说为什么。 */
     readonly ok: boolean
@@ -798,7 +799,7 @@ export type EventDataOf = {
      */
     readonly currentInputBudget?: number
 
-    readonly aliases?: ModelAliases
+    readonly configuredModels?: NonNullable<MagicConfig['models']>
     /** 一句话说明——只在有事要说时给（如「本次装配没有供应商注册表」）。不给＝表自明。 */
     readonly note?: string
   }

@@ -68,8 +68,6 @@ export type ConversationDeps = {
   readonly consultationAvailable?: boolean | undefined
   /** 会话——条目按会话读；信封的 `session` 由铸造器持（装配按会话实例构造，两处同源）。 */
   readonly session: SessionId
-  /** 模型名——随每次调用送模型域。 */
-  readonly model: string
   /** 提示词运行时注入值（`cwd` / `platform` / `date`）——**缺项在构造期就报错**。 */
   readonly prompt: PromptVars
   readonly compression?: () => import('@magic/contracts').CompressionModel
@@ -250,8 +248,6 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   const compactor = createCompactor({
     records: deps.records,
     session: deps.session,
-    gateway: deps.gateway,
-    model: deps.model,
     ...(deps.compression === undefined ? {} : { compression: deps.compression }),
     sink,
     stamper,
@@ -293,7 +289,6 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
   const runtime: LoopRuntime = {
     session: deps.session,
-    model: deps.model,
     systemPrompt: buildSystemPrompt(deps.prompt, deps.purpose, deps.consultationAvailable),
     gateway: deps.gateway,
     tools: deps.tools,

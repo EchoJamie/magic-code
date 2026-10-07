@@ -95,7 +95,7 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
     expect((await inspect('b')).terminalNoticeIds).toEqual(['b:done:1'])
 
     const records = store.collaboration
-    const model = { alias: 'default' as const, provider: 'test', model: 'test' }
+    const model = { choice: 'default' as const, provider: 'test', model: 'test' }
     const origin = { sessionId: 'a', entryId: store.serviceFor('a').appendEntry({ kind: 'user', content: { text: '原工作' }, at: 2 }) }
     const coordinator = records.registerAgent({ operationId: 'register', sessionId: 'a', name: '协调', role: '', model, at: 3 })
     records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 4 })

@@ -54,12 +54,12 @@ export type { FetchLike } from './ai-sdk.ts'
 
 // —— ①之二 多条目的注册表 ＋ 运行时切换（技术方案 · 模型策略 · 切换）——
 
-export { createModelRegistry, selectModel } from './registry.ts'
+export { createModelRegistry } from './registry.ts'
+export { selectModel } from './selection.ts'
 export type {
   ModelRegistry,
   ModelRegistryOptions,
   ModelSelection,
-  ModelSwitchRequest,
   ModelSwitchResult,
   ProviderEntry,
 } from './registry.ts'

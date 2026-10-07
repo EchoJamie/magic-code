@@ -63,7 +63,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
   writeFileSync(
     join(base, 'config.json'),
     JSON.stringify({
-      modelAliases: {default: {provider: "x", model: 'm'}, cantrip: {provider: "x", model: 'm'}, spell: {provider: "x", model: 'm'}, arcane: {provider: "x", model: 'm'}},
+      models: {default: {provider: "x", model: 'm'}, cantrip: {provider: "x", model: 'm'}, spell: {provider: "x", model: 'm'}, arcane: {provider: "x", model: 'm'}},
       providers: { x: { vendor: 'minimax', baseURL: fixture.baseURL, apiKey: 'sk-test' } },
       dataDir,
     }),

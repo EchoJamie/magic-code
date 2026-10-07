@@ -1,3 +1,4 @@
+import type { MagicConfig } from '@magic/contracts'
 import type {StoredInput,InputPurpose} from '@magic/contracts'
 /**
  * 外壳 · 视图模型与归约（缺陷轮 II 重画）——**事件 → 一屏**。
@@ -15,7 +16,7 @@ import type {StoredInput,InputPurpose} from '@magic/contracts'
  * **状态行只放「此刻」**——一次性的事（「已切到 #2」）进记录区当回执。
  */
 
-import type { ModelAlias, ModelAliases, ModelSelectionRef } from '@magic/contracts'
+import type { ModelChoice, ModelSelectionRef } from '@magic/contracts'
 
 import type {
   AgentId,
@@ -1344,7 +1345,7 @@ export type ShellView = {
    */
   readonly modelCurrent: ModelSelectionRef | null
 
-  readonly aliases: ModelAliases
+  readonly configuredModels: NonNullable<MagicConfig['models']>
   /** 本轮已出现的工具调用数（多件裁决报 `n/m` 的取材——只数本轮）。 */
   readonly turnTools: number
   /**
@@ -1497,7 +1498,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     models: [],
     vendors: [],
     modelCurrent: null,
-    aliases: {},
+    configuredModels: {},
     grants: null,
     turnTools: 0,
     // **没有计划**（不占位）· 默认展开（设计）· 视口从头开始
@@ -1693,7 +1694,7 @@ export function reduce(
       // 「这次**真用了**谁」＋ **这一次的有效输入预算**（U41 返修：分母改由**产生处**给，
       // 外壳不再拿一张窗长表自己查）。⚠️ **未知时清空**——沿用上一个模型的容量就是报错一个数。
       return patchStatus(view, {
-        model: event.data.alias === undefined ? view.status.model : modelLabel(event.data.alias),
+        model: event.data.choice === undefined ? view.status.model : modelLabel(event.data.choice),
         window: event.data.inputBudget ?? null,
       })
     case 'model.usage':
@@ -1719,13 +1720,13 @@ export function reduce(
       // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动）。
       return appendReceipt(
         event.data.ok && event.data.model !== undefined
-          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.alias === undefined ? view.modelCurrent : { alias: event.data.alias, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
-              model: event.data.alias === undefined ? view.status.model : modelLabel(event.data.alias),
+          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.choice === undefined ? view.modelCurrent : { choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
+              model: event.data.choice === undefined ? view.status.model : modelLabel(event.data.choice),
               window: event.data.inputBudget ?? null,
             })
           : view,
         event.data.ok
-          ? `已选择 ${event.data.alias === undefined ? '模型' : modelLabel(event.data.alias)}`
+          ? `已选择 ${event.data.choice === undefined ? '模型' : modelLabel(event.data.choice)}`
           : `换模型未成：${event.data.reason ?? '未说缘由'}`,
       )
 
@@ -1741,8 +1742,8 @@ export function reduce(
         modelCurrent: event.data.current ?? null,
         // **取网页用谁**（U78）——同一条注：答复说没有＝**还没配**，落回 `null`。
         // ⚠️ 不回落到 `modelCurrent`：那正是这一格明确要消掉的静默回落。
-        aliases: event.data.aliases ?? {},
-        status: { ...view.status, model: event.data.current === undefined ? view.status.model : modelLabel(event.data.current.alias), window: windowOfCatalog(view, event.data) },
+        configuredModels: event.data.configuredModels ?? {},
+        status: { ...view.status, model: event.data.current === undefined ? view.status.model : modelLabel(event.data.current.choice), window: windowOfCatalog(view, event.data) },
       }
 
     // 供应商管理面的一屏（U41）——**收进视图**：与 `model.catalog` **同一份行**
@@ -3579,25 +3580,25 @@ export function regionRows(vendor: VendorInfo): readonly PickerRow[] {
  *   （设计：「模型不在最新列表时，已有选择仍明确保留并提示此事实」）；
  * - **副文案是连接名**（缺省＝id）：合法的两条连接可以有同名模型，认谁就看这一格。
  */
-export const modelLabel = (alias: ModelAlias): string => alias[0]!.toUpperCase() + alias.slice(1)
+export const modelLabel = (choice: ModelChoice): string => choice[0]!.toUpperCase() + choice.slice(1)
 
-export function modelSettingsRows(entries: readonly ModelCatalogRow[], aliases: ModelAliases, current: ModelSelectionRef | ModelRef | null = null, target = '当前工作'): readonly PickerRow[] {
+export function modelSettingsRows(entries: readonly ModelCatalogRow[], configuredModels: NonNullable<MagicConfig['models']>, current: ModelSelectionRef | ModelRef | null = null, target = '当前工作'): readonly PickerRow[] {
   return [
-    ...(['default', 'cantrip', 'spell', 'arcane'] as const).map(alias => ({
-      label: `${alias === 'default' ? '默认模型' : '模型档位'} · ${modelLabel(alias)}`,
-      meta: aliases[alias] === undefined ? '尚未配置' : `${aliases[alias]!.provider} · ${aliases[alias]!.model}`,
-      value: `edit:${alias}`, current: false, oneLine: true,
+    ...(['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => ({
+      label: `${choice === 'default' ? '默认模型' : '模型档位'} · ${modelLabel(choice)}`,
+      meta: configuredModels[choice] === undefined ? '尚未配置' : `${configuredModels[choice]!.provider} · ${configuredModels[choice]!.model}`,
+      value: `edit:${choice}`, current: false, oneLine: true,
     })),
-    { label: `${target} · 选择模型`, meta: current !== null && 'alias' in current ? `当前 ${modelLabel(current.alias as ModelAlias)}；选择只影响此对象` : '尚未选择；Default 或三个能力档位', value: 'choose', current: false, oneLine: true },
+    { label: `${target} · 选择模型`, meta: current !== null && 'choice' in current ? `当前 ${modelLabel(current.choice as ModelChoice)}；选择只影响此对象` : '尚未选择；Default 或三个能力档位', value: 'choose', current: false, oneLine: true },
     { label: '思考等级', meta: '独立设置当前模型的推理投入', value: 'reasoning', current: false, oneLine: true },
     ...modelActionRows(entries),
   ]
 }
 
-export function modelChoiceRows(aliases: ModelAliases, current: ModelRef | null): readonly PickerRow[] {
-  return (['default', 'cantrip', 'spell', 'arcane'] as const).map(alias => ({
-    label: modelLabel(alias), value: alias, current: current !== null && 'alias' in current && current.alias === alias,
-    meta: aliases[alias] === undefined ? '尚未配置；请返回模型设置' : `${aliases[alias]!.provider} · ${aliases[alias]!.model}`,
+export function modelChoiceRows(configuredModels: NonNullable<MagicConfig['models']>, current: ModelRef | null): readonly PickerRow[] {
+  return (['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => ({
+    label: modelLabel(choice), value: choice, current: current !== null && 'choice' in current && current.choice === choice,
+    meta: configuredModels[choice] === undefined ? '尚未配置；请返回模型设置' : `${configuredModels[choice]!.provider} · ${configuredModels[choice]!.model}`,
     oneLine: true,
   }))
 }
@@ -3855,7 +3856,7 @@ export function reasoningHint(support: ReasoningSupport | undefined): string {
 const MAX_MODEL_NOTES = 3
 
 /** 默认模型或档位映射编辑，与工作选择分开。 */
-export type ModelScope = 'session' | ModelAlias
+export type ModelScope = 'session' | ModelChoice
 
 export function modelHint(
   entries: readonly ModelCatalogRow[],

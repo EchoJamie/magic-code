@@ -209,7 +209,7 @@ export function startupRegistry(inputs: RegistryInputs): ModelRegistry | undefin
 
   // 开局那个选中**就在这一份上落地**（验不过＝这一次不跑，由调用方报错退场——
   // 而 `use` 失败时注册表**原样不动**，故它不会把分母带偏）
-  const selected = resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: request, modelInfoOf: inputs.modelInfo })
+  const selected = resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: request, modelInfoOf: inputs.modelInfo })
   if (selected.ok) registry.use(selected.selection)
   return registry
 }

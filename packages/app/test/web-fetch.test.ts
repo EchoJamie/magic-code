@@ -46,7 +46,7 @@ function fakeWeb(body = PAGE_HTML): WebSource & { readonly asked: string[] } {
 function stageOn(fixture: Fixture, options: { readonly configured: boolean }) {
   return makeStage({
     config: {
-      modelAliases: {default: {provider: "local", model: SESSION_MODEL}, ...(options.configured ? { cantrip: {provider: 'local', model: DISTILL_MODEL} } : {}), spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
+      models: {default: {provider: "local", model: SESSION_MODEL}, ...(options.configured ? { cantrip: {provider: 'local', model: DISTILL_MODEL} } : {}), spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
         local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
@@ -255,7 +255,7 @@ describe('U72 · 没配的那一趟：这一轮停住', () => {
 })
 
 describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通了', () => {
-  test('没配 ⇒ 报错指路；`model.alias.set` 之后 ⇒ 同一条会话再跑一次 `web_fetch` 就通（提炼用的是刚配的那个）', async () => {
+  test('没配 ⇒ 报错指路；`model.configure` 之后 ⇒ 同一条会话再跑一次 `web_fetch` 就通（提炼用的是刚配的那个）', async () => {
     const fixture = startFixture({
       model: SESSION_MODEL,
       turns: [
@@ -290,24 +290,24 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
       // —— ② 那一屏读到的当前值：**还没配**（答复里根本没有 Cantrip 映射）——
       handle.send({ type: 'model.list' })
       await waitFor(handle, '第一份模型目录', () => catalogs(handle).length >= 1)
-      expect(catalogs(handle)[0]?.data.aliases?.cantrip).toBeUndefined()
+      expect(catalogs(handle)[0]?.data.configuredModels?.cantrip).toBeUndefined()
 
       // —— ③ 挑一个（/model 那一行选中 ⇒ 回车＝保存 ⇒ 发出来的就是这条命令）——
-      handle.send({ type: 'model.alias.set', alias: 'cantrip', provider: 'local', model: DISTILL_MODEL })
+      handle.send({ type: 'model.configure', choice: 'cantrip', provider: 'local', model: DISTILL_MODEL })
       await waitFor(handle, '保存的回话', () => catalogs(handle).length >= 2)
 
       const saved = catalogs(handle)[1]
-      expect(saved?.data.aliases?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
+      expect(saved?.data.configuredModels?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
       // 回执那句话（屏上那一行）在答复里
       expect(saved?.data.note).toBe('已保存 Cantrip')
       // 盘上真的写了那一格，且**没碰别的键**
       const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as {
-        readonly modelAliases?: { readonly cantrip?: unknown; readonly default?: unknown }
+        readonly models?: { readonly cantrip?: unknown; readonly default?: unknown }
         readonly defaultProvider?: unknown
         readonly providers: Record<string, Record<string, unknown>>
       }
-      expect(onDisk.modelAliases?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
-      expect(onDisk.modelAliases?.default).toEqual({ provider: 'local', model: SESSION_MODEL }) // 原样
+      expect(onDisk.models?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
+      expect(onDisk.models?.default).toEqual({ provider: 'local', model: SESSION_MODEL }) // 原样
       expect(onDisk.providers['local']?.['model']).toBeUndefined() // 连接的默认模型原样
 
       // ④ 反面：**当前会话的模型没被改**（这一下没换过模型）
@@ -354,14 +354,14 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
       assembly = stage.assemble({ modelGateway: undefined, webSource: fakeWeb() })
       const handle = attachShell(assembly.shell)
 
-      handle.send({ type: 'model.alias.set', alias: 'cantrip', provider: 'ghost', model: 'whatever' })
+      handle.send({ type: 'model.configure', choice: 'cantrip', provider: 'ghost', model: 'whatever' })
       await waitFor(handle, '那一条回话', () => catalogs(handle).length >= 1)
 
       expect(catalogs(handle)[0]?.data.note).toContain('ghost')
-      expect(catalogs(handle)[0]?.data.aliases?.cantrip).toBeUndefined()
+      expect(catalogs(handle)[0]?.data.configuredModels?.cantrip).toBeUndefined()
 
-      const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as { readonly modelAliases?: { readonly cantrip?: unknown; readonly default?: unknown } }
-      expect(onDisk.modelAliases?.cantrip).toBeUndefined()
+      const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as { readonly models?: { readonly cantrip?: unknown; readonly default?: unknown } }
+      expect(onDisk.models?.cantrip).toBeUndefined()
     } finally {
       assembly?.close()
       stage.dispose()
@@ -373,7 +373,7 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
 // ══ 助手 ══════════════════════════════════════════════════════════════
 
 /** 收过的 `model.catalog` 答复（`/model` 那一行读的就是它上面那一格）。 */
-function catalogs(handle: ShellHandle): readonly { readonly data: { readonly aliases?: { readonly cantrip?: unknown }; readonly note?: string } }[] {
+function catalogs(handle: ShellHandle): readonly { readonly data: { readonly configuredModels?: { readonly cantrip?: unknown }; readonly note?: string } }[] {
   return eventsOfKind(handle.events, 'model.catalog')
 }
 

@@ -11,7 +11,7 @@ import { parseRules } from '@magic/permission'
 import type { ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, vendorCatalog } from '@magic/model'
 import { loadConfig, parseConfig, type LoadedConfig } from './config.ts'
-import { editConfigFile, saveProvider, removeProvider, setModelAlias, setPrefs } from './config-save.ts'
+import { editConfigFile, saveProvider, removeProvider, configureModel, setPrefs } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { cacheAccessFor, connectionScopeChanged, configStamp } from './cache-access.ts'
@@ -65,7 +65,7 @@ export function createSettings(context: SettingsContext) {
     const raw = stamp === null ? {} : book(JSON.parse(readFileSync(configPath, 'utf8')))
     const configuration = {
       ...diagnosticsOf(config), diagnosticsNote,
-      providers, modelAliases: config.modelAliases ?? {}, agentRoles: raw.agentRoles ?? {},
+      providers, models: config.models ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
       permissions: config.permissions ?? {}, ...(raw.dataDir === undefined ? {} : { dataDir: raw.dataDir }),
@@ -112,7 +112,7 @@ export function createSettings(context: SettingsContext) {
     const snapshots = Object.entries(loaded.config.providers).map(([provider, config]) => ({ provider, config, snapshot: currentInfo.peek(provider).snapshot }))
     if (action.type === 'role.save' && action.role.model !== undefined) {
       const reader = await readModelCatalog(loaded, undefined, undefined, context.now ?? Date.now, currentInfo)
-      const choice = resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: action.role.model,
+      const choice = resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: action.role.model,
         modelInfoOf: (provider, model) => reader.read(provider).snapshot?.models.find(info => info.id === model) })
       if (!choice.ok) throw new Error(`角色模型设置：${choice.reason}`)
     }
@@ -131,7 +131,7 @@ export function createSettings(context: SettingsContext) {
     switch (action.type) {
       case 'provider.save': outcome = saveProvider({ ...input, request: action }); break
       case 'provider.remove': outcome = removeProvider({ ...input, provider: action.provider }); break
-      case 'model.alias.set': outcome = setModelAlias({ ...input, request: action }); break
+      case 'model.configure': outcome = configureModel({ ...input, request: action }); break
       case 'prefs.set': outcome = setPrefs({ ...input, request: action }); break
       case 'model.refresh': {
         const providers = loaded.config.providers
@@ -157,7 +157,7 @@ export function createSettings(context: SettingsContext) {
         outcome = editConfigFile({ ...input, update(raw) {
           const next = { ...raw }
           switch (action.type) {
-            case 'model.alias.clear': { const aliases = book(raw.modelAliases); delete aliases[action.alias]; next.modelAliases = aliases; break }
+            case 'model.clear': { const configuredModels = book(raw.models); delete configuredModels[action.choice]; next.models = configuredModels; break }
             case 'model.override': {
               const providers = book(raw.providers), entry = book(providers[action.provider]), overrides = book(entry.modelOverrides)
               if (!Object.hasOwn(providers, action.provider)) return { ok: false, reason: '连接已不存在' }

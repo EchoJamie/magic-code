@@ -177,7 +177,7 @@ struct RoleEditor: View {
             Toggle("收窄可用工具", isOn: Binding(get: { draft.value["tools"] != .null }, set: { draft.put("tools", $0 ? .array([]) : .null) }))
             if draft.value["tools"] != .null { StringListEditor(title: "工具名（空列表不使用普通工具）", values: draft.strings("tools")) }
             Text("未收窄时沿既有工具范围；角色不能授予权限。").font(.caption).foregroundStyle(.secondary)
-            Picker("后续创建的默认模型", selection: nestedField("alias")) {
+            Picker("后续创建的默认模型", selection: nestedField("choice")) {
                 Text("继承创建入口").tag("")
                 ForEach(["default", "cantrip", "spell", "arcane"], id: \.self) { Text($0.capitalized).tag($0) }
             }

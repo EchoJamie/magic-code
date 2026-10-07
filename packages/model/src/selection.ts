@@ -1,7 +1,7 @@
 import type { ModelInfo, ProviderConfig, ReasoningSetting } from '@magic/contracts'
 import { ownOf } from './capacity.ts'
 import { vendorOf } from './vendors.ts'
-import type { ModelSelection, ModelSwitchRequest, ModelSwitchResult } from './registry.ts'
+import type { ModelSelection, ModelSwitchResult } from './registry.ts'
 
 /** 只使用目标连接、精确模型的信息；能力允许之后仍须由实际适配映射参数。 */
 export function reasoningFailure(
@@ -40,48 +40,30 @@ export function reasoningFailure(
       return '思考设置 mode 无效'
   }
   if (adapter === undefined) return '这条连接没有可用的思考参数适配，只能使用模型默认'
-  const mapped = adapter.reasoningOf(setting)
+  const mapped = adapter.reasoningOf(setting, model)
   if (mapped === undefined) return '该思考设置没有可用的请求参数映射'
   return 'gap' in mapped ? mapped.gap : undefined
 }
 
-/** 已解析组合变更切断旧思考设置；连接不提供默认型号。 */
-export function resolveSelection(
-  providers: Readonly<Record<string, ProviderConfig>>,
-  layers: readonly (ModelSwitchRequest | undefined)[],
-  modelInfoOf?: (provider: string, model: string) => ModelInfo | undefined,
-): ModelSwitchResult {
-  let selected: ModelSwitchRequest = {}
-  for (const layer of layers) {
-    if (layer === undefined) continue
-    for (const key of ['provider', 'model'] as const) {
-      if (layer[key] !== undefined && (typeof layer[key] !== 'string' || layer[key].trim() === '')) {
-        return { ok: false, reason: `${key} 须是非空字符串` }
-      }
-    }
-    const provider = layer.provider ?? selected.provider
-    const changedProvider = provider !== selected.provider
-    const model = layer.model ?? selected.model
-    const changed = changedProvider || model !== selected.model
-    const reasoning = layer.reasoning !== undefined ? layer.reasoning : (changed ? undefined : selected.reasoning)
-    selected = { alias: layer.alias ?? selected.alias, provider, model, reasoning }
-  }
-  const { provider, model, reasoning } = selected
-  if (provider === undefined) return { ok: false, reason: '还没有可用的连接——先接入一个供应商' }
+/** 校验完整的运行选择；档位解析与继承只在宿主入口完成。 */
+export function selectModel(options: {
+  readonly providers: Readonly<Record<string, ProviderConfig>>
+  readonly modelInfoOf?: (provider: string, model: string) => ModelInfo | undefined
+}, selected: ModelSelection): ModelSwitchResult {
+  const { providers, modelInfoOf } = options
+  const { provider, model, reasoning, choice } = selected
+  if (typeof provider !== 'string' || provider.trim() === '') return { ok: false, reason: 'provider 须是非空字符串' }
+  if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: 'model 须是非空字符串' }
+  if (!['default', 'cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '有效选择缺少来源；请在 /model 明确选择 Default 或模型档位' }
   const config = ownOf(providers, provider)
   if (config === undefined) return { ok: false, reason: `未知供应商「${provider}」——已注册：${Object.keys(providers).join(' / ') || '（一个都没有）'}` }
-  if (config.vendor !== undefined && vendorOf(config.vendor) === undefined) {
-    return { ok: false, reason: `未知供应商适配「${config.vendor}」` }
-  }
-  if (model === undefined || model.trim() === '') return { ok: false, reason: `连接「${provider}」还没有默认模型——请指明用哪个模型` }
-  if (selected.alias === undefined || !['default', 'cantrip', 'spell', 'arcane'].includes(selected.alias)) return { ok: false, reason: '有效选择缺少来源；请在 /model 明确选择 Default 或模型档位' }
+  if (config.vendor !== undefined && vendorOf(config.vendor) === undefined) return { ok: false, reason: `未知供应商适配「${config.vendor}」` }
   const known = modelInfoOf?.(provider, model)
   const chat = ownOf(config.modelOverrides ?? {}, model)?.capabilities?.chat ?? (known?.id === model ? known.capabilities?.chat : undefined)
   if (chat === false) return { ok: false, reason: `模型「${model}」不支持对话` }
   const failure = reasoningFailure(config, model, reasoning, known)
   if (failure !== undefined) return { ok: false, reason: failure }
-  // 显式 default 必须保留，不能被配置里的精确型号覆盖重新替换。
-  const selection: ModelSelection = Object.freeze({ alias: selected.alias, provider, model,
+  const selection: ModelSelection = Object.freeze({ choice, provider, model,
     ...(reasoning === undefined ? {} : { reasoning: Object.freeze({ ...reasoning }) }) })
   return { ok: true, selection }
 }

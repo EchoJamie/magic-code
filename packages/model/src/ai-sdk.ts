@@ -3,7 +3,7 @@
  *
  * 这一层是**接缝的里侧**：SDK 与供应商细节到此为止。
  * - 走 AI SDK 的 **OpenAI 兼容通道**（`@ai-sdk/openai-compatible`）接首接供应商 MiniMax；
- * - 已知差异**封在这里**（底下 `requestBody` 的参数改写——取件层常量，不入配置形制）；
+ * - 已知差异由显式选择的供应商适配提供，通用兼容路径不隐式套用供应商参数；
  * - 关掉 SDK 的自动重试——分档与回退归内核（技术方案：回退逻辑放内核、不依赖 SDK 自动机制）。
  *
  * 本文件不 import `node:fs`（内核 fs 纪律），**也拿不到记录的写入口**——
@@ -58,20 +58,9 @@ export const MINIMAX_MODEL = 'MiniMax-M3'
  * 其中 `reasoningTokens: 3480`，留给正文的空间不够 ⇒ 工具调用参数被截在半路，
  * 落成「参数解析不出——未执行」）。凡**取得到**模型信息那一格的模型，走的都不是它。
  *
- * 由 SDK 的 `maxOutputTokens` 落到 `max_tokens`，再经下方改写成为 `max_completion_tokens`。
+ * 由 SDK 的 `maxOutputTokens` 落到 `max_tokens`，MiniMax 适配再改写为 `max_completion_tokens`。
  */
 export const MAX_COMPLETION_TOKENS = 4096
-
-/**
- * MiniMax 的已知差异：`max_tokens` 已弃用，改用 `max_completion_tokens`。
- * 挂 `transformRequestBody`（取件层官方挂点）而非 `providerOptions`——
- * 后者要按 provider id 拼键，而 id 是用户自由命名的（`providers.<id>`）；这里改的是**参数名**，与 id 无关。
- */
-export function requestBody(args: Record<string, unknown>): Record<string, unknown> {
-  const { max_tokens: maxTokens, ...rest } = args
-  if (maxTokens === undefined) return rest
-  return { ...rest, max_completion_tokens: maxTokens }
-}
 
 // —— 请求形态转换（内核侧 → 取件层）——
 
@@ -281,8 +270,11 @@ export type VendorStreamerOptions = {
  * 模型名取自**请求**（`request.model`）——契约 `ModelRequest` 载之；
  * 配置条目的 `model` 是「这个供应商默认用哪个」，请求可覆盖（运行时切换的落点，U17）。
  */
+/** 仅取件层携带实际型号；业务端口不接受该字段。 */
+export type VendorRequest = ModelRequest & { readonly model: string }
+
 export type VendorStreamer = (
-  request: ModelRequest,
+  request: VendorRequest,
   options?: ModelStreamOptions,
   /**
    * **这一次要送的输出上限**——由**网关一次解析后捕获着传**（U41 返修）。
@@ -305,17 +297,19 @@ export type VendorStreamer = (
  *
  * 没有适配（兼容接入）或设置是「模型默认」⇒ **一位都不发**（不猜）。
  * 适配报了缺口（`{ gap }`）也**不发**——那意味着这条设置在这家没有对应参数，
- * 缺口的说明由更早的一步（`registry.use`）交还给用户。
+ * 选择校验与网关出站前校验均拒绝缺口，适配仍不静默丢弃无法表达的设置。
  */
 function reasoningOption(
   adapter: VendorAdapter | undefined,
   setting: ModelStreamOptions['reasoning'],
   providerId: string,
+  model: string,
 ): Record<string, Record<string, JSONValue>> | undefined {
   if (adapter === undefined || setting === undefined) return undefined
 
-  const mapped = adapter.reasoningOf(setting)
-  if (mapped === undefined || 'gap' in mapped) return undefined
+  const mapped = adapter.reasoningOf(setting, model)
+  if (mapped === undefined) return undefined
+  if ('gap' in mapped) throw new Error(mapped.gap)
 
   return { [providerId]: mapped.params }
 }
@@ -343,12 +337,8 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       },
       raw: (usage ?? undefined) as Record<string, JSONValue> | undefined,
     }),
-    // **请求体改写按适配分**：官方适配用它自己的（没定义＝**不改写**）；
-    // **只有兼容接入**（没有适配）才走原来那条 MiniMax 改写。
-    // ⚠️ 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody`——DeepSeek 没定义
-    // 就**回退**到了 MiniMax 的改写，`max_tokens` 被改成了 `max_completion_tokens`（首验反例）。
-    transformRequestBody:
-      options.adapter === undefined ? requestBody : options.adapter.transformRequestBody,
+    // 通用协议不隐式采用任何供应商的参数转换。
+    transformRequestBody: options.adapter?.transformRequestBody,
     metadataExtractor: options.adapter?.metadataExtractor,
     ...(options.fetch === undefined
       ? {}
@@ -362,6 +352,7 @@ export function createVendorStreamer(options: VendorStreamerOptions): VendorStre
       options.adapter,
       streamOptions?.reasoning,
       options.providerId,
+      request.model,
     )
     const result = streamText({
       model,

@@ -13,7 +13,7 @@ function fixture() {
   const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
   const records = store.collaboration
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '同一件工作' }, at: 1 }) }
-  const model = { alias: 'default' as const, provider: 'controlled', model: 'test' }
+  const model = { choice: 'default' as const, provider: 'controlled', model: 'test' }
   const coordinator = records.registerAgent({ operationId: 'identity', sessionId: 'origin', name: '入口', role: '', model, at: 2 })
   const collaboration = records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
   return { dir, store, records, coordinator, collaboration,
@@ -60,7 +60,7 @@ for (const response of ['clarify', 'reject'] as const) test(`入口已让出且�
   } } })
   const boundary = createCollaborationBoundary({ records: f.records, session: 'origin', runId: 'root-run', model: () => f.coordinator.model,
     tools: () => undefined, now: Date.now, changed: managed.changed }).boundary
-  root = createConversationSession({ session: 'origin', model: 'controlled', prompt: stage.promptVars,
+  root = createConversationSession({ session: 'origin',  prompt: stage.promptVars,
     gateway: { stream(req, opts) { requests++; return stage.gateway.stream(req, opts) } }, tools: stage.toolDomain,
     records: f.store.serviceFor('origin'), sink: stage.sink, stamper: stage.stamper, collaboration: boundary,
   })
@@ -109,7 +109,7 @@ test('未登记wait的空闲入口也处理拒绝决定；普通accept和重复�
   const stage = makeStage({ turns: [{ text: '入口已经交代完毕' }, { text: '处理无法交付的原因' }], handlers: {} })
   const boundary = createCollaborationBoundary({ records: f.records, session: 'origin', runId: 'root-run', model: () => f.coordinator.model,
     tools: () => undefined, now: Date.now, changed: managed.changed }).boundary
-  root = createConversationSession({ session: 'origin', model: 'controlled', prompt: stage.promptVars,
+  root = createConversationSession({ session: 'origin',  prompt: stage.promptVars,
     gateway: stage.gateway, tools: stage.toolDomain, records: f.store.serviceFor('origin'), sink: stage.sink,
     stamper: stage.stamper, collaboration: boundary,
   })
@@ -141,9 +141,9 @@ test('协作汇总实际模型用量：成员未报告的调用不补零、不�
   const f = fixture()
   const child = f.spawn('usage-child')
   const stamper = makeTestStamper()
-  f.store.appendEvent({ ...stamper.stamp('model.call.start', { alias: 'default', model: 'entry-model' }), session: 'origin' })
+  f.store.appendEvent({ ...stamper.stamp('model.call.start', { choice: 'default', model: 'entry-model' }), session: 'origin' })
   f.store.appendEvent({ ...stamper.stamp('model.usage', { inputTokens: 12, outputTokens: 4, totalTokens: 16 }), session: 'origin' })
-  f.store.appendEvent({ ...stamper.stamp('model.call.start', { alias: 'default', model: 'member-model' }), session: child.agent.sessionId })
+  f.store.appendEvent({ ...stamper.stamp('model.call.start', { choice: 'default', model: 'member-model' }), session: child.agent.sessionId })
   const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: () => undefined, cancel: async () => undefined,
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
@@ -186,7 +186,7 @@ for (const kind of ['message', 'wait'] as const) test(`已领取${kind}在请求
   }
   const stage = makeStage({ turns: [{ text: '已处理此前未能发出的事实' }], handlers: {} })
   let attempts = 0
-  const build = () => createConversationSession({ session: 'origin', model: 'controlled', prompt: stage.promptVars,
+  const build = () => createConversationSession({ session: 'origin',  prompt: stage.promptVars,
     gateway: { stream(request, options) { if (++attempts === 1) throw new Error('HTTP前的本地配置失败'); return stage.gateway.stream(request, options) } },
     tools: stage.toolDomain, records: f.store.serviceFor('origin'), sink: stage.sink, stamper: stage.stamper,
     collaboration: createCollaborationBoundary({ records: f.records, session: 'origin', runId: 'retry-run',
@@ -224,7 +224,7 @@ test('有效等待期间收到新交代，协调者仍可执行点名停止', as
   let stops = 0
   const stage = makeStage({ turns: [{ toolCalls: [{ name: 'agent_control', args: { action: 'stop', delegation: child.delegation.delegationId, reason: '依赖变更' } }] }, { text: '已撤回并保留结果' }],
     handlers: { agent_control: () => { stops++; f.records.stop({ kind: 'delegation', delegationId: child.delegation.delegationId }, '依赖变更', 7); return { ok: true, output: '停止已受理' } } } })
-  const root = createConversationSession({ session: 'origin', model: 'controlled', prompt: stage.promptVars,
+  const root = createConversationSession({ session: 'origin',  prompt: stage.promptVars,
     gateway: stage.gateway, tools: stage.toolDomain, records: f.store.serviceFor('origin'), sink: stage.sink, stamper: stage.stamper,
     collaboration: createCollaborationBoundary({ records: f.records, session: 'origin', runId: 'control-run',
       model: () => f.coordinator.model, tools: () => undefined, now: Date.now, changed: () => undefined }).boundary,

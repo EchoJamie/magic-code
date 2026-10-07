@@ -56,7 +56,7 @@ describe('装置 · 沙地能造空配置的实例', () => {
     try {
       expect(existsSync(sandbox.configPath)).toBe(true)
       const raw = JSON.parse(readFileSync(sandbox.configPath, 'utf8')) as Record<string, unknown>
-      expect(raw['modelAliases']).toEqual(Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(alias => [alias, { provider: 'local', model: 'MiniMax-M3' }])))
+      expect(raw['models']).toEqual(Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(choice => [choice, { provider: 'local', model: 'MiniMax-M3' }])))
       expect(Object.keys(raw['providers'] as Record<string, unknown>)).toEqual(['local'])
 
       const loaded = loadConfig({ path: sandbox.configPath, magic: magicAt(sandbox.home) })

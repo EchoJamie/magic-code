@@ -1216,9 +1216,9 @@ final class NativeTests: XCTestCase {
             XCTAssertEqual(model.settingsSavedKey, key)
         }
         try await save(.object(["type": .string("provider.save"), "provider": .string("local"), "vendor": .string("deepseek"), "name": .string("本地受控连接 · 很长的中文名称用于核对设置布局"), "baseURL": .string("http://127.0.0.1:1/v1"), "apiKey": .string("SENTINEL_U116_SWIFT")]), key: "provider-local")
-        try await save(.object(["type": .string("model.alias.set"), "alias": .string("default"), "provider": .string("local"), "model": .string("deepseek-chat"), "initialize": .bool(true)]), key: "alias-default")
+        try await save(.object(["type": .string("model.configure"), "choice": .string("default"), "provider": .string("local"), "model": .string("deepseek-chat"), "initialize": .bool(true)]), key: "choice-default")
         try await save(.object(["type": .string("mcp.save"), "name": .string("local-tools"), "server": .object(["command": .string("/SENTINEL_NEVER_RUN"), "args": .strings(["很长的独立参数，用于核对原生列表保留完整内容", "--next"])]), "secrets": .object(["API_TOKEN": .string("SENTINEL_U116_MCP")])]), key: "mcp-local")
-        try await save(.object(["type": .string("role.save"), "id": .string("review"), "role": .object(["name": .string("独立审查成员"), "instructions": .string("只根据可核对的依据给出结果。很长的中文职责用于核对换行和层级。"), "tools": .array([]), "model": .object(["alias": .string("default"), "reasoning": .object(["mode": .string("off")])])])]), key: "role-review")
+        try await save(.object(["type": .string("role.save"), "id": .string("review"), "role": .object(["name": .string("独立审查成员"), "instructions": .string("只根据可核对的依据给出结果。很长的中文职责用于核对换行和层级。"), "tools": .array([]), "model": .object(["choice": .string("default"), "reasoning": .object(["mode": .string("off")])])])]), key: "role-review")
         for source in ["rules.sources", "rules.linkSources", "skills.sources"] {
             try await save(.object(["type": .string("sources.set"), "source": .string(source), "paths": .strings([room.appendingPathComponent("中文材料目录/用于核对完整路径/不存在的原始材料").path])]), key: source)
         }

@@ -126,7 +126,7 @@ describe('空闲按一次 Ctrl+C ⇒ 不退出，那一行在**状态行之下**
           { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
           { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, },
         ],
-        current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+        current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     ])
 

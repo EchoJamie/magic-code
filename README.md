@@ -127,7 +127,7 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 ```json
 {
   "providers": { "deepseek": { "vendor": "deepseek" } },
-  "modelAliases": {
+  "models": {
     "default": { "provider": "deepseek", "model": "deepseek-chat" },
     "cantrip": { "provider": "deepseek", "model": "deepseek-chat" },
     "spell": { "provider": "deepseek", "model": "deepseek-reasoner" },
@@ -136,7 +136,7 @@ bun run ui script <步骤文件>     # **要有一段自己的交互、想看屏
 }
 ```
 
-执行选择只接受小写标识；`--provider`、原始型号、旧 `defaultProvider` 和网页专用 `webFetch` 配置均拒绝。思考偏好仅归 Agent/角色选择，型号覆盖不再保存 `reasoning` 默认。型号的容量/能力覆盖位于 `providers.<连接>.modelOverrides.<型号>`。网页提炼与压缩独立使用 Cantrip，关闭思考且无工具；失败保留原始记录并报告实际原因。
+执行选择只接受小写标识；`--provider`、原始型号、旧 `modelAliases`、`defaultProvider` 和网页专用 `webFetch` 配置均拒绝。思考偏好仅归 Agent/角色选择，型号覆盖不再保存 `reasoning` 默认。型号的容量/能力覆盖位于 `providers.<连接>.modelOverrides.<型号>`。网页提炼与压缩独立使用 Cantrip，关闭思考且无工具；失败保留原始记录并报告实际原因。
 
 换档在下一请求生效，在途使用原组合；等待或接回的成员保留已解析的组合。失败保留选择与上下文，组合改变不盲目继承旧思考设置。状态行可选显示 Default 或英文档位，容量来自实际模型。
 不认得的斜杠文字**不抢**——`/usr/bin 里有什么` 这类人话照旧发给模型。
@@ -208,7 +208,7 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 {
   "inputs": [
     "看一下工作区",
-    { "switch": { "alias": "spell" } },
+    { "switch": { "choice": "spell" } },
     "刚才那个文件还在吗"
   ],
   "decisions": ["approve", { "decision": "approve", "remember": true }]
@@ -216,7 +216,7 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 ```
 
 - `inputs`：按序走的步骤——**裸字符串**＝一条交代（等它收束再走下一步）；
-  **`{ "switch": { "alias"?, "reasoning"? } }`** ＝会话中途换模型（与 `/model` 同一条链）；
+  **`{ "switch": { "choice"?, "reasoning"? } }`** ＝会话中途换模型（与 `/model` 同一条链）；
   **`{ "input": { "text", "skills"?, "ref"? } }`** ＝一整份结构化交代（U33：技能随这次交代
   绑定、`ref` 是提交的配对键——回执按它配对）。
 - `decisions`：裁决答复按询问次序取（用尽＝批准）；对象形带 `remember` ＝**「总是允许」**

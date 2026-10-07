@@ -202,7 +202,7 @@ describe('条目出口 · `list()` 与**有效规格出口**（`capacityOf`）',
     for (const id of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
       expect(registry.has(id)).toBe(false)
 
-      const switched = registry.use({ alias: 'default', provider: id })
+      const switched = registry.use({ choice: 'default', provider: id, model: 'MiniMax-M2' })
       expect(switched.ok).toBe(false)
       expect(switched.ok === false ? switched.reason : '').toContain('未知供应商')
       // 切不动就不动——选中没被这一下带偏

@@ -58,8 +58,8 @@ extension SettingsValue {
         switch type {
         case "provider.save": return text("provider") && ["vendor", "name", "region", "baseURL", "apiKey"].allSatisfy { key in if v[key] == nil { return true }; if case .string = self[key] { return true }; return false }
         case "provider.remove", "model.refresh": return text("provider")
-        case "model.alias.set": return ["default", "cantrip", "spell", "arcane"].contains(self["alias"].text) && text("provider") && text("model") && (v["initialize"] == nil || self["initialize"] == .bool(true) || self["initialize"] == .bool(false))
-        case "model.alias.clear": return ["default", "cantrip", "spell", "arcane"].contains(self["alias"].text)
+        case "model.configure": return ["default", "cantrip", "spell", "arcane"].contains(self["choice"].text) && text("provider") && text("model") && (v["initialize"] == nil || self["initialize"] == .bool(true) || self["initialize"] == .bool(false))
+        case "model.clear": return ["default", "cantrip", "spell", "arcane"].contains(self["choice"].text)
         case "model.override": return text("provider") && text("model") && (self["override"] == .null || object("override"))
         case "diagnostics.set":
             return (v["source"] == nil || ["app", "cli"].contains(self["source"].text)) && (v["debugMode"] != nil || v["logLevel"] != nil) && (v["debugMode"] == nil || self["debugMode"] == .bool(true) || self["debugMode"] == .bool(false)) && (v["logLevel"] == nil || LogLevel(rawValue: self["logLevel"].text) != nil)

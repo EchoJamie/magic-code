@@ -338,38 +338,38 @@ describe('缺项补充', () => {
 
 describe('思考设置映射', () => {
   test('DeepSeek：默认什么都不发（官方默认就是开启 ＋ high）', () => {
-    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'default' })).toBeUndefined()
+    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'default' }, 'deepseek-chat')).toBeUndefined()
   })
 
   test('DeepSeek：明确关闭 ⇒ `thinking.type = disabled`', () => {
-    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'off' })).toEqual({
+    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'off' }, 'deepseek-chat')).toEqual({
       params: { thinking: { type: 'disabled' } },
     })
   })
 
   test('DeepSeek：官方三档 low / high / max ⇒ `reasoning_effort`', () => {
-    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'high' })).toEqual({
+    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, 'deepseek-chat')).toEqual({
       params: { reasoningEffort: 'high' },
     })
     for (const level of ['low', 'high', 'max']) {
-      expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level })).toEqual({
+      expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level }, 'deepseek-chat')).toEqual({
         params: { reasoningEffort: level },
       })
     }
   })
 
   test('DeepSeek：不认识的档位 / 预算 ⇒ **报缺口**（不发假参数）', () => {
-    const level = DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'ultra' })
+    const level = DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'ultra' }, 'deepseek-chat')
     expect(level !== undefined && 'gap' in level && level.gap).toMatch(/low \/ high \/ max/)
 
-    const budget = DEEPSEEK_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 4096 })
+    const budget = DEEPSEEK_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 4096 }, 'deepseek-chat')
     expect(budget !== undefined && 'gap' in budget && budget.gap).toMatch(/没有思考预算/)
   })
 
-  test('MiniMax：当前适配仅支持默认思考设置，其余如实报缺口', () => {
-    expect(MINIMAX_VENDOR.reasoningOf({ mode: 'default' })).toBeUndefined()
+  test('MiniMax：未知型号仅支持默认思考设置，其余如实报缺口', () => {
+    expect(MINIMAX_VENDOR.reasoningOf({ mode: 'default' }, 'unknown')).toBeUndefined()
 
-    const off = MINIMAX_VENDOR.reasoningOf({ mode: 'off' })
-    expect(off !== undefined && 'gap' in off && off.gap).toMatch(/只支持模型默认思考设置/)
+    const off = MINIMAX_VENDOR.reasoningOf({ mode: 'off' }, 'unknown')
+    expect(off !== undefined && 'gap' in off && off.gap).toMatch(/不支持该思考设置/)
   })
 })

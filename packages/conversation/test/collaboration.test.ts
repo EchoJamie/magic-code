@@ -46,7 +46,7 @@ test('持久等待让出推进，不执行同批次后续动作或忙轮询', as
 test('收件唤起不伪造用户消息，重复无新信息的唤起不请求模型', async () => {
   let pending = true
   const stage = makeStage({ turns: [{ text: '核验成员结果' }] })
-  const service = createConversationSession({ session: 's', model: 'faux', prompt: stage.promptVars,
+  const service = createConversationSession({ session: 's',  prompt: stage.promptVars,
     gateway: stage.gateway, tools: stage.toolDomain, records: stage.records, sink: stage.sink, stamper: stage.stamper,
     collaboration: boundary({ consume: async () => { const result = pending; pending = false; return result } }),
   })
@@ -70,7 +70,7 @@ test('单会话只给一句提示，真正展开才注完整协作指导', async
 
 test('共同补充发布失败如实保留已落账原文，归还原ref且不请求模型', async () => {
   const stage = makeStage({ turns: [{ text: '不应请求模型' }] })
-  const service = createConversationSession({ session: 's', model: 'faux', prompt: stage.promptVars,
+  const service = createConversationSession({ session: 's',  prompt: stage.promptVars,
     gateway: stage.gateway, tools: stage.toolDomain, records: stage.records, sink: stage.sink, stamper: stage.stamper,
     collaboration: boundary({ userInput: () => { throw new Error('宿主已关闭准入') } }),
   })

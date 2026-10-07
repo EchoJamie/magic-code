@@ -21,8 +21,7 @@ import type {
   ReasoningSetting,
   ReasoningSupport,
   ModelTraits,
-  ModelAliases,
-  ModelAlias,
+  ModelChoice,
 } from '@magic/contracts'
 import {
   apiKeyEnvVarOf,
@@ -203,14 +202,14 @@ function asAgentRoles(
     if (role['model'] !== undefined) {
       const given = asObject(role['model'], path, `${field}.model`)
       for (const key of Object.keys(given)) {
-        if (!['alias', 'reasoning'].includes(key)) {
+        if (!['choice', 'reasoning'].includes(key)) {
           throw new ConfigError(path, `${field}.model.${key} 不是模型配置字段`)
         }
       }
-      const alias = given['alias'] === undefined ? undefined : asAlias(given['alias'], path, `${field}.model.alias`)
+      const choice = given['choice'] === undefined ? undefined : asModelChoice(given['choice'], path, `${field}.model.choice`)
       const reasoning = given['reasoning'] === undefined ? undefined : asReasoning(given['reasoning'], path, `${field}.model.reasoning`)
       model = {
-        ...(alias === undefined ? {} : { alias }),
+        ...(choice === undefined ? {} : { choice }),
         ...(reasoning === undefined ? {} : { reasoning }),
       }
     }
@@ -299,7 +298,7 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
   }
 
   for (const key of ['model', 'reasoning', 'traits', 'contextWindow']) {
-    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${field}.${key} 已移除；模型选择请配置 modelAliases，规格请配置 modelOverrides`)
+    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${field}.${key} 已移除；模型选择请配置 models，规格请配置 modelOverrides`)
   }
   const vendor = asText(raw['vendor'], path, `${field}.vendor`)
   const baseURL = asOptionalText(raw['baseURL'], path, `${field}.baseURL`)
@@ -545,24 +544,24 @@ function asMcpConfig(value: unknown, path: string): McpConfig {
 }
 
 
-function asAlias(value: unknown, path: string, field: string): ModelAlias {
+function asModelChoice(value: unknown, path: string, field: string): ModelChoice {
   if (typeof value !== 'string' || !['default', 'cantrip', 'spell', 'arcane'].includes(value)) {
     throw new ConfigError(path, `${field} 只能选择 default / cantrip / spell / arcane`)
   }
-  return value as ModelAlias
+  return value as ModelChoice
 }
 
-function asModelAliases(value: unknown, path: string, providers: MagicConfig['providers']): ModelAliases {
-  const raw = asObject(value, path, 'modelAliases')
+function asModels(value: unknown, path: string, providers: MagicConfig['providers']): NonNullable<MagicConfig['models']> {
+  const raw = asObject(value, path, 'models')
   return Object.fromEntries(Object.entries(raw).map(([key, value]) => {
-    const alias = asAlias(key, path, `modelAliases.${key}`)
-    const field = `modelAliases.${alias}`
+    const choice = asModelChoice(key, path, `models.${key}`)
+    const field = `models.${choice}`
     const item = asObject(value, path, field)
     for (const key of Object.keys(item)) if (!['provider', 'model'].includes(key)) throw new ConfigError(path, `${field}.${key} 不是模型映射字段`)
     const provider = asText(item['provider'], path, `${field}.provider`)
     const model = asText(item['model'], path, `${field}.model`)
     if (!Object.hasOwn(providers, provider)) throw new ConfigError(path, `${field}.provider 指向未知连接「${provider}」`)
-    return [alias, { provider, model }]
+    return [choice, { provider, model }]
   }))
 }
 
@@ -641,8 +640,8 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   const home = magic.home
   const raw = asObject(parsed, path, '配置根')
 
-  for (const key of ['defaultProvider', 'webFetch']) {
-    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${key} 已移除；请在 modelAliases 配置 Default 与模型档位`)
+  for (const key of ['defaultProvider', 'webFetch', 'modelAliases']) {
+    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${key} 已移除；请在 models 配置 Default 与模型档位`)
   }
 
   const providersRaw = raw['providers'] === undefined ? {} : asObject(raw['providers'], path, 'providers')
@@ -651,8 +650,8 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
     providers[id] = asProvider(entry, path, `providers.${id}`)
   }
 
-  const modelAliases = raw['modelAliases'] === undefined ? undefined : asModelAliases(raw['modelAliases'], path, providers)
-  const providerId = modelAliases?.default?.provider
+  const configuredModels = raw['models'] === undefined ? undefined : asModels(raw['models'], path, providers)
+  const providerId = configuredModels?.default?.provider
   const provider = providerId === undefined ? undefined : providers[providerId]
   const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home)
 
@@ -711,7 +710,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   return {
     path,
     config: {
-      ...(modelAliases === undefined ? {} : { modelAliases }),
+      ...(configuredModels === undefined ? {} : { models: configuredModels }),
       providers,
       dataDir,
       ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
@@ -754,7 +753,7 @@ export function describeConfig(loaded: LoadedConfig): string {
     ? '配置文件'
     : `环境变量 ${apiKeyEnvVarOf(loaded.providerId)}`
   // 型号可能还没选过（新接入的连接）——那就不印那一格，不写「（undefined）」
-  const model = loaded.config.modelAliases?.default?.model === undefined ? '' : `（${loaded.config.modelAliases?.default?.model}）`
+  const model = loaded.config.models?.default?.model === undefined ? '' : `（${loaded.config.models?.default?.model}）`
 
   return (
     `配置 ${loaded.path} · 供应商 ${loaded.providerId}${model}` +

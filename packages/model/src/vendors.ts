@@ -147,6 +147,7 @@ export type VendorAdapter = {
    */
   reasoningOf(
     setting: ReasoningSetting,
+    model: string,
   ): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined
 }
 
@@ -253,9 +254,7 @@ export const MINIMAX_VENDOR: VendorAdapter = {
    * MiniMax 的已知差异：`max_tokens` 已弃用，改用 `max_completion_tokens`。
    *
    * 另请求 reasoning_split，正文与思考按字段区分。
-   * `ai-sdk.ts` 的 `requestBody` 只管**兼容接入**的老路径
-   * （无 `vendor` 的连接），这条管官方适配。两处各写一份是**故意的**：
-   * 让 `ai-sdk.ts` 只依赖类型、不反向 import 本文件，域内不出现运行时循环。
+   * 通用兼容接入不做这项改写。
    */
   transformRequestBody(args) {
     const { max_tokens: maxTokens, ...rest } = args
@@ -274,6 +273,10 @@ export const MINIMAX_VENDOR: VendorAdapter = {
 
     return {
       ...info,
+      ...(info.reasoning !== undefined ? {} : info.id === 'MiniMax-M3' ? { reasoning: { disable: true } }
+        : info.id === 'MiniMax-M3.1-Flash-Preview' ? { reasoning: { disable: false, levels: ['low', 'medium', 'high', 'xhigh', 'max'] } }
+        : ['MiniMax-M2', 'MiniMax-M2.1', 'MiniMax-M2.1-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'].includes(info.id)
+          ? { reasoning: { disable: false } } : {}),
       // API 给了的字段一律不覆盖（补充排在它之后）
       ...(info.limits === undefined && window === undefined
         ? {}
@@ -281,12 +284,13 @@ export const MINIMAX_VENDOR: VendorAdapter = {
     }
   },
 
-  /**
-   * 当前适配只支持模型默认思考设置；reasoning_split 只决定响应字段，不改变思考开关。
-   */
-  reasoningOf(setting): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
+  /** 格式分离不等于关闭思考；按实际型号支持的控制参数映射。 */
+  reasoningOf(setting, model): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
     if (setting.mode === 'default') return undefined
-    return { gap: '当前 MiniMax 适配只支持模型默认思考设置' }
+    if (model === 'MiniMax-M3' && setting.mode === 'off') return { params: { thinking: { type: 'disabled' } } }
+    if (model === 'MiniMax-M3.1-Flash-Preview' && setting.mode === 'level'
+      && ['low', 'medium', 'high', 'xhigh', 'max'].includes(setting.level)) return { params: { reasoningEffort: setting.level } }
+    return { gap: `当前 MiniMax 模型「${model}」不支持该思考设置` }
   },
 }
 

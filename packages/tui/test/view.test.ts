@@ -380,7 +380,7 @@ describe('状态行（五态固定词）', () => {
 
   test('模型名与用量随事件更新——③ 与 ④ 各自到位', () => {
     const view = viewed([
-      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { choice: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
 
@@ -399,7 +399,7 @@ describe('状态行（五态固定词）', () => {
   test('**一次性的事进记录区**——换模型成功＝一行回执，不进状态行', () => {
     const view = reduce(
       createView(),
-      event('model.switched', { alias: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
+      event('model.switched', { choice: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' }),
     )
 
     expect(rowAt(view, onScreen(view).length - 1)).toMatchObject({ kind: 'receipt' })

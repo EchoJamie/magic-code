@@ -26,7 +26,7 @@ const T0 = 1_700_000_000_000
 function sessionOf(stage: Stage) {
   return createConversationSession({
     session: SESSION,
-    model: 'faux-1',
+
     prompt: { cwd: '/w', platform: 'darwin', date: '2026-09-18' },
     gateway: stage.gateway,
     tools: stage.toolDomain,

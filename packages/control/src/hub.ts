@@ -165,8 +165,8 @@ export function createControlHub(): ControlHubFace {
         // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
         target.onModelRefresh(command.provider)
         return
-      case 'model.alias.set':
-        target.onModelAliasSet(command)
+      case 'model.configure':
+        target.onModelConfigure(command)
         return
       case 'prefs.set':
         // 界面的两格偏好（U112）——写配置里 `statusLine` / `motion` 那两格。控制域只带话：

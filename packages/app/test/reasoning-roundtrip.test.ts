@@ -17,7 +17,7 @@ test('分离思考经真实记录库、工具回填和会话重建后逐字段�
   const build = () => {
     const sink = makeFauxSink()
     const stamper = makeTestStamper({ session: 's1' })
-    const gateway = createModelGateway({ providerId: 'minimax', config: { vendor: 'minimax' }, apiKey: 'test', stamper,
+    const gateway = createModelGateway({ model: 'MiniMax-M3', providerId: 'minimax', config: { vendor: 'minimax' }, apiKey: 'test', stamper,
       fetch: async (_url, init) => {
         const body = JSON.parse(String(init?.body))
         requests.push(body)
@@ -32,7 +32,7 @@ test('分离思考经真实记录库、工具回填和会话重建后逐字段�
         return new Response(raw, { headers: { 'content-type': 'text/event-stream' } })
       },
     })
-    const session = createConversationSession({ session: 's1', model,
+    const session = createConversationSession({ session: 's1',
       prompt: { cwd: dir, platform: 'test', date: '2026-10-07' },
       gateway, stamper, sink, records: store.serviceFor('s1'),
       tools: makeFauxToolRuntime({ handlers: { read: async () => ({ ok: true, output: '文件内容' }) },

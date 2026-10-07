@@ -12,10 +12,8 @@
  * 2. **不是主会话的一轮**——本流的事件**一条都不 `sink.emit`**（同 `compact.ts` 的 `summarize`，
  *    那边写了理由：这是内核自己的一次内务调用；转发了外壳会把提炼出来的那段字当成
  *    **助手的答复**渲染出来，用量也会记成「用户这一轮花的」）。
- * 3. **用哪一条模型——由构造者定死**（`options.model` ＋ `options.gateway`）：
- *    本文件不认「当前会话的模型」，也不去问注册表——**「取网页用的模型」是配置里它自己那一条**
- *    （2026-09-25 用户定）。注册表那条路走不通也**不能走**：它会把选中项盖在 `request.model`
- *    之上（`registry.ts` 的 `stream`），于是「不跟当前会话的模型走」当场失效。
+ * 3. 宿主按 Cantrip 配置独立绑定 `options.gateway`；本文件只发送提炼材料，
+ *    不读取主工作的选择、不重复传递实际型号。结果身份来自本次调用事件。
  */
 
 import type { DistillOutcome, ModelGateway, ModelMessage, PageDistiller } from '@magic/contracts'
@@ -46,8 +44,6 @@ export type PageDistillerOptions = {
    * （见文件头注第 3 条：本文件不自己解析配置、不问注册表）。
    */
   readonly gateway: ModelGateway
-  /** 型号名——随本次请求发给那一条连接（`request.model`）。 */
-  readonly model: string
 }
 
 export function createPageDistiller(options: PageDistillerOptions): PageDistiller {
@@ -70,25 +66,9 @@ export function createPageDistiller(options: PageDistillerOptions): PageDistille
       // ⚠️ **这里就是护栏 1**：请求里没有 `tools` 这一格，且**也不许有**
       //（契约 `PageDistiller` 的入参里根本没有来处）。加参数时先读那一段。
       //
-      // **这一次的思考设置：明确不要思考**（U99，照压缩那一条口径）。
-      // 由头同 `compact.ts` 的 `summarize`，逐条同构：提炼是**信息搬运**（照着问题把页面
-      // 正文里那几段摘出来），**不是解题**——思考在这里只烧钱、只拖时间，改不了答案。
-      // 且它同属**内核的内务调用**（头注第 2 条：一条都不 `sink.emit`）。
-      //
-      // ⚠️ **这里一个字不判供应商**：给的是**一套设置**，翻由适配层做（`vendors.ts` 的
-      // `reasoningOf`）——翻得出来照发（DeepSeek ⇒ `thinking.type = 'disabled'`）；
-      // 这家没有对应参数（MiniMax / 兼容接入）⇒ **什么都不发**，既不静默、也不硬塞一个
-      // 没依据的参数；`{ gap }` 那条缺口的说明本就没有听众（内务调用，无用户可报）——
-      // 与压缩那一处**同一形制**（见 `compact.ts` 那一段注）。
-      //
-      // ⚠️ **设置由这里直给，中途没有补齐者**（U99 查清的那一件，与压缩那边不同）：
-      // 本件走的网关是装配按 Cantrip 配置 **单造的** `createModelGateway`
-      //（`assembly.ts`：不经注册表——那边的 `stream` 会把当前选中盖在 `request.model` 上，
-      // 而这件要的恰恰是配置里它自己那一条）。故注册表 `withReasoning` 那条路**一步都不到**，
-      // 这一位从 `gateway.ts` 的 `stream` **原样递到取件层**（`ai-sdk.ts` 的 `reasoningOption`
-      // 是唯一的读点）——**只改这一行就够**，注册表一个字不用动。
+      // 提炼固定关闭思考；宿主选档与模型网关均验证实际能力，不支持时如实失败。
       const stream = options.gateway.stream(
-        { model: options.model, messages },
+        { messages },
         {
           reasoning: { mode: 'off' },
           ...(opts?.signal === undefined ? {} : { signal: opts.signal }),
@@ -96,10 +76,12 @@ export function createPageDistiller(options: PageDistillerOptions): PageDistille
       )
 
       let text = ''
+      let model: string | undefined
       let failure: { readonly tier: string; readonly message: string } | undefined
 
       // 事件流要**拉到底**（`ModelStream` 的约定：不拉完，聚合结果不落定）
       for await (const event of stream.events) {
+        if (event.kind === 'model.call.start') model = event.data.model
         if (event.kind === 'model.delta' && event.data.channel === 'text') text += event.data.text
         // `model.error` 是本流的定论信号——看的是**事件**（域内形态不出口，见 `compact.ts` 同法）
         if (event.kind === 'model.error') failure = event.data
@@ -120,7 +102,8 @@ export function createPageDistiller(options: PageDistillerOptions): PageDistille
         return { ok: false, kind: 'failed', reason: '模型没有给出答案正文' }
       }
 
-      return { ok: true, answer, model: options.model }
+      if (model === undefined) return { ok: false, kind: 'failed', reason: '提炼请求缺少实际模型身份' }
+      return { ok: true, answer, model }
     },
   }
 }

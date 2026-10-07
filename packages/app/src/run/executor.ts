@@ -225,7 +225,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       link.close()
       return { kind: 'failed', reason: result.reason }
     }
-    options.log?.(`开局选中 → ${result.selection.alias}`)
+    options.log?.(`开局选中 → ${result.selection.choice}`)
   }
 
   // **登记**（`hello`）在装配之后发：工作区整组根是装配才算得出来的

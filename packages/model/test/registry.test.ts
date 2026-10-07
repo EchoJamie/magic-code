@@ -3,9 +3,9 @@
  *
  * 判据三层：
  * 1. **加一条目即多一个**——`providers` 加键即多一格（`list()` 读得出），各有各的
- *    端点 / key / 默认模型；
+ *    端点 / key；
  * 2. **换模型＝换接缝下游**——`use()` 之后下一次 `stream()` 打到**另一个端点**上，
- *    且模型名按锚定走（切换前取自请求、切换后取选中）；**域外看不见任何切换动作**
+ *    且模型名始终取自已提交的完整选择；**域外看不见任何切换动作**
  *    （调用方只反复 `stream()`，对话域 / 记录域一个字都不必改）；
  * 3. **切不动就不动**——未知条目 / 空请求 / 缺 key：`ok: false` ＋ 缘由，选中原样保留。
  *
@@ -80,17 +80,17 @@ function registryOf(
     env: {},
     ...options,
   })
-  registry.use({ alias: 'default', provider: 'alpha', model: 'alpha-1' })
+  registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
   return registry
 }
 
 /** 发一次请求并取回结果（调用方视角：它只会 `stream()`）。 */
 async function ask(
   registry: ModelRegistry,
-  model: string,
+  ignoredModel: string,
 ): Promise<{ readonly text: string; readonly model: string }> {
   const { result } = await drainStream(
-    registry.stream({ model, messages: [{ role: 'user', content: '嗨' }] }),
+    registry.stream({ model: ignoredModel, messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
   )
   return { text: result.text, model: result.model }
 }
@@ -106,7 +106,7 @@ describe('注册表 · 注册', () => {
     expect(registry.has('beta')).toBe(true)
     expect(registry.has('gamma')).toBe(false)
     expect(registry.current()).toBeUndefined()
-    expect(registry.selection()).toBeUndefined()
+    expect(registry.current()).toBeUndefined()
   })
   test('能力和容量属于精确组合，未选中也能查询', () => {
     const registry = createModelRegistry({ providers: { alpha: { ...ALPHA, modelOverrides: { 'alpha-1': { limits: { maxContextTokens: 200_000 } } } }, beta: BETA }, stamper: makeTestStamper() })
@@ -117,7 +117,7 @@ describe('注册表 · 注册', () => {
   test('构造只读注册表不解析 key；提交实际组合时缺 key 才拒绝', () => {
     const registry = createModelRegistry({ providers: { alpha: ALPHA }, stamper: makeTestStamper(), env: {} })
     expect(registry.current()).toBeUndefined()
-    expect(registry.use({ alias: 'default', provider: 'alpha', model: 'alpha-1' }).ok).toBe(false)
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' }).ok).toBe(false)
     expect(registry.current()).toBeUndefined()
   })
 })
@@ -134,15 +134,15 @@ describe('注册表 · 切换', () => {
     expect(seen.every((request) => request.url.startsWith('https://alpha.example'))).toBe(true)
   })
 
-  test('`use({ provider })` → 换条目，模型取**该条目的默认**（下一位客人不认上家的名字）', async () => {
+  test('提交完整组合后换连接，业务调用端不携带型号', async () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
     expect(await ask(registry, 'alpha-1')).toEqual({ text: '甲', model: 'alpha-1' })
 
-    const switched = registry.use({ alias: 'default', provider: 'beta', model: 'beta-1' })
-    expect(switched).toEqual({ ok: true, selection: { alias: 'default', provider: 'beta', model: 'beta-1' } })
-    expect(registry.selection()).toEqual({ alias: 'default' as const, provider: 'beta', model: 'beta-1' })
+    const switched = registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
+    expect(switched).toEqual({ ok: true, selection: { choice: 'default', provider: 'beta', model: 'beta-1' } })
+    expect(registry.current()).toEqual({ choice: 'default' as const, provider: 'beta', model: 'beta-1' })
 
     // 调用方**一字未改**——还是同一个 registry、同一个 stream 调用
     expect(await ask(registry, 'alpha-1')).toEqual({ text: '乙', model: 'beta-1' })
@@ -153,13 +153,13 @@ describe('注册表 · 切换', () => {
     expect(seen.at(-1)?.model).toBe('beta-1')
   })
 
-  test('`use({ model })` → 留在这家，换模型（同一端点跑另一个模型）', async () => {
+  test('提交同连接的新组合后使用新型号', async () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    expect(registry.use({ alias: 'default', model: 'alpha-turbo' })).toEqual({
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-turbo' })).toEqual({
       ok: true,
-      selection: { alias: 'default', provider: 'alpha', model: 'alpha-turbo' },
+      selection: { choice: 'default', provider: 'alpha', model: 'alpha-turbo' },
     })
 
     await ask(registry, 'alpha-1')
@@ -173,9 +173,9 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    expect(registry.use({ alias: 'default', provider: 'beta', model: 'beta-large' })).toEqual({
+    expect(registry.use({ choice: 'default', provider: 'beta', model: 'beta-large' })).toEqual({
       ok: true,
-      selection: { alias: 'default', provider: 'beta', model: 'beta-large' },
+      selection: { choice: 'default', provider: 'beta', model: 'beta-large' },
     })
 
     await ask(registry, 'alpha-1')
@@ -187,11 +187,11 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    registry.use({ alias: 'default', provider: 'beta', model: 'beta-1' })
-    registry.use({ alias: 'default', provider: 'alpha', model: 'alpha-1' })
+    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
+    registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
     await ask(registry, 'alpha-1')
 
-    expect(registry.selection()).toEqual({ alias: 'default' as const, provider: 'alpha', model: 'alpha-1' })
+    expect(registry.current()).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1' })
     expect(seen[0]?.url.startsWith('https://alpha.example')).toBe(true)
   })
 
@@ -199,12 +199,12 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    registry.use({ alias: 'default', provider: 'beta', model: 'beta-1' })
+    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
 
     // 同一次调用里的消息照旧原样送出去——注册表只换下游，不碰消息
     const { result } = await drainStream(
       registry.stream({
-        model: 'alpha-1',
+
         messages: [
           { role: 'system', content: '你是 Magic Code' },
           { role: 'user', content: '第一轮' },
@@ -226,34 +226,34 @@ describe('注册表 · 切换', () => {
 describe('注册表 · 切不动就不动', () => {
   test('未知条目 → 不成功，缘由点名已注册的条目（打错字时当场看得见有哪些）', () => {
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { apiKeys: { alpha: 'ka', beta: 'kb' } })
-    const before = registry.selection()
+    const before = registry.current()
 
-    const result = registry.use({ alias: 'default', provider: 'betta' })
+    const result = registry.use({ choice: 'default', provider: 'betta', model: 'test' })
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toContain('未知供应商「betta」——已注册：alpha / beta')
-    expect(registry.selection()).toBe(before)
+    expect(registry.current()).toBe(before)
   })
 
   test('两件都不给 → 不成功（不知道要换成什么就不猜）', () => {
     const registry = registryOf({ alpha: ALPHA }, { apiKeys: { alpha: 'ka' } })
 
-    expect(registry.use({}).ok).toBe(false)
-    expect(registry.use({ alias: 'default', provider: '  ', model: '' }).ok).toBe(false)
-    expect(registry.selection()).toEqual({ alias: 'default', provider: 'alpha', model: 'alpha-1' })
+    expect(registry.use({} as import('@magic/contracts').AgentModelConfig).ok).toBe(false)
+    expect(registry.use({ choice: 'default', provider: '  ', model: '' }).ok).toBe(false)
+    expect(registry.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
   })
 
   test('切到一半失败不留痕——失败一次之后，原先的选中照旧生效', async () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    expect(registry.use({ alias: 'default', provider: 'beta', model: 'beta-1' })).toEqual({
+    expect(registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })).toEqual({
       ok: true,
-      selection: { alias: 'default', provider: 'beta', model: 'beta-1' },
+      selection: { choice: 'default', provider: 'beta', model: 'beta-1' },
     })
     // 两条切不动的路：名字不认识 · 什么都没给
-    expect(registry.use({ alias: 'default', provider: 'beta-draft' }).ok).toBe(false)
-    expect(registry.use({ alias: 'default', model: '  ' }).ok).toBe(false)
+    expect(registry.use({ choice: 'default', provider: 'beta-draft', model: 'test' }).ok).toBe(false)
+    expect(registry.use({ choice: 'default', provider: 'beta', model: '  ' }).ok).toBe(false)
 
     await ask(registry, 'alpha-1')
     expect(seen[0]?.url.startsWith('https://beta.example')).toBe(true)
@@ -274,11 +274,11 @@ describe('注册表 · 每条目各归其位', () => {
     )
 
     const first = await drainStream(
-      registry.stream({ model: 'alpha-1', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
-    registry.use({ alias: 'default', provider: 'beta', model: 'beta-1' })
+    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
     const second = await drainStream(
-      registry.stream({ model: 'alpha-1', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
 
     expect(seen.map((request) => request.authorization)).toEqual([
@@ -326,18 +326,18 @@ describe('注册表 · 每条目各归其位', () => {
       { fetch: scripted, apiKeys: { alpha: 'ka', local: 'kl' } },
     )
 
-    registry.use({ alias: 'default', provider: 'local', model: 'my-local-llama' })
+    registry.use({ choice: 'default', provider: 'local', model: 'my-local-llama' })
     const { result } = await drainStream(
-      registry.stream({ model: 'alpha-1', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
 
     expect(result.thinking).toBe('想想')
     expect(result.text).toBe('正文里说一句  就完')
 
     // 同一个模型名在**没有覆盖位**的条目下不切（判据 ③：皆未命中＝不猜不切）
-    registry.use({ alias: 'default', provider: 'alpha', model: 'my-local-llama' })
+    registry.use({ choice: 'default', provider: 'alpha', model: 'my-local-llama' })
     const plain = await drainStream(
-      registry.stream({ model: 'my-local-llama', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
     expect(plain.result.text).toBe('正文里说一句 <think>想想</think> 就完')
     expect(plain.result.thinking).toBe('')
@@ -372,13 +372,13 @@ describe('注册表 · 每条目各归其位', () => {
       { fetch: scripted, apiKeys: { alpha: 'ka' } },
     )
 
-    expect(registry.use({ alias: 'default', provider: 'alpha', model: 'acme-reasoner-v9' }).ok).toBe(true)
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'acme-reasoner-v9' }).ok).toBe(true)
     const first = await drainStream(
-      registry.stream({ model: 'acme-reasoner-v9', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
     expect(first.result).toMatchObject({ thinking: '', text: '<think>想</think>正文' })
     const second = await drainStream(
-      registry.stream({ model: 'acme-reasoner-v9', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
     expect(second.result).toMatchObject({ thinking: '', text: '<think>想</think>正文' })
   })
@@ -443,4 +443,16 @@ describe('U37 · 能力读数', () => {
 
     expect(registry.capabilityOf('alpha', 'alpha-2')).toBeUndefined()
   })
+})
+
+
+test('请求中间件不能覆盖绑定的实际型号', async () => {
+  const { fetch, seen } = splitEndpoint()
+  const registry = registryOf({ alpha: ALPHA }, {
+    fetch, apiKeys: { alpha: 'a' },
+    middleware: [{ name: 'attempt-model-override', transformRequest: request => ({ ...request, model: 'injected' }) }],
+  })
+  const result = await ask(registry, 'also-injected')
+  expect(result.model).toBe('alpha-1')
+  expect(seen[0]?.model).toBe('alpha-1')
 })

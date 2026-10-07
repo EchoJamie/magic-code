@@ -1,3 +1,4 @@
+import { reasoningFailure } from './selection.ts'
 /**
  * 网关装配 —— 配置 + 取件层 + 归一 + 中间件位（技术方案 · 模型策略 · 接缝自留）。
  *
@@ -35,7 +36,7 @@ import type { FetchLike } from './ai-sdk.ts'
 import { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 import { toKernelEvents } from './normalize.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
-import { withTransientRetry } from './retry.ts'
+import { normalizeRetryPolicy, withTransientRetry } from './retry.ts'
 import { ownOf, resolveContextWindow } from './capacity.ts'
 import { vendorIds, vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
@@ -99,15 +100,7 @@ export function resolveApiKey(input: {
 
 // —— 生效的规格与特征（用户覆盖 → 该家适配的缺项补充 → 未知）——
 
-/**
- * 该模型的**用户明确覆盖**——两处合成一处：
- *
- * - **新形态** `modelOverrides[<精确模型 id>]`（按精确 id 查，最高优先级）；
- * - **旧形态** `traits` / `contextWindow` 两个平铺键——**只在它就是这条连接
- *   `model` 那一个时**算数（设计：旧的声明属于「这一条 ＋ 它的模型」两件；
- *   同条目换到别的模型时不跟过去）；
- * - 其余一切 → `undefined`（**不知道就是不知道**，不按型号名猜）。
- */
+/** 覆盖只属于目标连接与精确型号，不随切换继承。 */
 function overrideOf(config: ProviderConfig, model: string): ProviderModelOverride | undefined {
   return config.modelOverrides === undefined ? undefined : ownOf(config.modelOverrides, model)
 }
@@ -253,6 +246,8 @@ export function effectiveSpecOf(input: {
 export type ModelGatewayOptions = {
   /** 供应商 id——`providers.<id>` 的键（也是环境变量回退名的来源）。 */
   readonly providerId: string
+  readonly model: string
+  readonly reasoning?: import('@magic/contracts').ReasoningSetting
   /** 已解析的供应商条目（共享语言 `ProviderConfig`——含 `traits` 覆盖位）。 */
   readonly config: ProviderConfig
   /** 中间件链（数组由外到内）——阶段 1 只留位，缺省为空。 */
@@ -297,11 +292,10 @@ export type ModelGatewayOptions = {
  *
  * 缺 key 在**此处**抛 `MissingApiKeyError`（启动期就能报，不留到第一次调用）。
  *
- * **模型名取自请求**（`req.model`）：配置条目的 `model` 是该供应商的默认，
- * 请求可覆盖——运行时切换（U17）的落点。特征标记也随之按请求的模型名裁定。
+ * 型号在构造时绑定，业务请求不能更换目标。每次请求捕获一份有效规格与思考设置。
  */
 export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
-  const { providerId, config } = options
+  const { providerId, config, model } = options
   const apiKey = resolveApiKey({
     providerId,
     config,
@@ -331,22 +325,6 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     )
   }
 
-  /**
-   * **解析一次有效规格**（见 `effectiveSpecOf`）——**调用方必须捕获它**：
-   * 出站输出、`model.call.start`、`model.usage`、重试**共用同一份**。
-   *
-   * ⚠️ 反复调用它会各解析一次（中途缓存/配置一变就不一致）——独立复核的真反例：
-   * 出站按新的 4000、分母按旧的 2000 算，两者相加超过窗口。故 `stream` 里只调一次。
-   */
-  const specOf = (model: string): EffectiveSpec =>
-    effectiveSpecOf({
-      model,
-      config,
-      adapter,
-      known: options.modelInfoOf?.(model),
-      fallbackOutputTokens: options.maxCompletionTokens,
-    })
-
   const streamVendor = createVendorStreamer({
     providerId,
     baseURL,
@@ -355,36 +333,36 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     fetch: options.fetch,
   })
   const middleware = options.middleware ?? []
-
-  // 瞬时档的退避重试（技术方案 · 错误分档）——在**归一之下**：内核只看得见最终那一次尝试，
-  // 好消息是重试的痕迹有两条出口：结果上的 `attempts`（可断）与 `model.retry` 事件（可看）
-  let attempts = 0
-  const streamRetrying = withTransientRetry(streamVendor, {
-    policy: options.retry,
-    sleep: options.sleep,
-    onAttempt: (attempt) => {
-      attempts = attempt
-    },
-    // 退避期间**屏上要有话说**（原先这里静默，用户只看见界面一动不动）——
-    // 那块 `retry` 信号骑马过流，由归一铸成 `model.retry`（见 `retry.ts` 的那一处 yield）
-  })
+  const retryPolicy = normalizeRetryPolicy(options.retry)
 
   // 返回类型即 `ModelGateway`——`extends ModelGatewayPort` 处已由 tsc 钉住结构兼容（见 `call.ts`）
   return {
     stream(request: ModelRequest, streamOptions?: ModelStreamOptions): ModelStream {
       // 上下文取「中间件链之前」的原始请求——改写是对账对象，不是判据基线
-      const context: ModelCallContext = { provider: providerId, model: request.model, request }
+      const context: ModelCallContext = { provider: providerId, model, request }
       const effective = applyRequestMiddleware(middleware, request, context)
 
       // **本次请求的规格：解析一次、就地捕获**（U41 返修 · 独立复核的真反例）——
       // 出站输出、`model.call.start`、`model.usage`、重试**全用这一份**；解析之后
       // 缓存 / 配置再怎么变，也影响不到已经在飞的那一趟。
-      const spec = specOf(effective.model)
+      const known = options.modelInfoOf?.(model)
+      const spec = effectiveSpecOf({ model, config, adapter, known, fallbackOutputTokens: options.maxCompletionTokens })
+      const requestedReasoning = streamOptions?.reasoning ?? options.reasoning
+      const reasoning = requestedReasoning === undefined ? undefined : { ...requestedReasoning }
+      const failure = effectiveCapabilitiesOf(model, config, known)?.chat === false
+        ? `模型「${model}」不支持对话` : reasoningFailure(config, model, reasoning, known)
+      let attempts = 0
+      const streamRetrying = withTransientRetry(streamVendor, {
+        policy: retryPolicy, sleep: options.sleep, onAttempt: attempt => { attempts = attempt },
+      })
+      const parts = failure === undefined
+        ? streamRetrying({ ...effective, model }, { ...streamOptions, reasoning }, spec.maxOutputTokens)
+        : (async function* () { throw new Error(failure) })()
 
       const { events, result } = toKernelEvents(
-        streamRetrying(effective, streamOptions, spec.maxOutputTokens),
+        parts,
         {
-          model: effective.model,
+          model,
           // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
           provider: providerId,
           // 窗长随**用量**上报（分母跟着分子走）——**有效输入预算**，与出站同一份解析

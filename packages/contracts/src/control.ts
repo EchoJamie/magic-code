@@ -14,7 +14,7 @@ import type { StatusLineConfig } from './config.ts'
 import type { InputRefPlace } from './entries.ts'
 import type { Decision } from './events.ts'
 import type { BlobRef, DecisionId, SessionId } from './ids.ts'
-import type { ModelAlias, ReasoningSetting } from './model.ts'
+import type { ModelChoice, ReasoningSetting } from './model.ts'
 import type { CollaborationCommand } from './collaboration-control.ts'
 
 /**
@@ -171,7 +171,7 @@ export type TurnInterrupt = {
  * ＝留在这家换模型 · 都给＝一起换 · **都不给＝不晓得更成什么**（如实报，不猜）。
  */
 export type ModelSwitchRequest = {
-  readonly alias?: ModelAlias
+  readonly choice?: ModelChoice
   readonly reasoning?: ReasoningSetting
 }
 
@@ -312,9 +312,9 @@ export type ProviderRemove = {
  * 走谁、**不写配置**；这一条写配置、**不改当前**。两个动作各有各的时机与后果，
  * 混成一条会让人分不清「我刚才改的是这次还是以后」。
  */
-export type ModelAliasSet = { readonly type: 'model.alias.set' } & ModelAliasRequest
-export type ModelAliasRequest = {
-  readonly alias: ModelAlias
+export type ModelConfigure = { readonly type: 'model.configure' } & ModelConfigureRequest
+export type ModelConfigureRequest = {
+  readonly choice: ModelChoice
   readonly provider: string
   readonly model: string
   /** 首次明确保存 Default 时初始化尚未配置的档位。 */
@@ -529,7 +529,7 @@ export type ImageExport = {
 
 /**
  * 命令目录（首站 ＋ 阶段 2 的 `model.switch` / 会话四支 / 读侧两支 ＋ U22 的授权两支
- * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U113 的 `model.alias.set` ＋ U107 的剪贴板取图
+ * ＋ U33 的技能目录一支 ＋ U39 的外部服务器两支 ＋ U113 的 `model.configure` ＋ U107 的剪贴板取图
  * ＋ U110 的导出原图）
  * ——外壳发往内核的全部消息。
  */
@@ -544,7 +544,7 @@ export type Command =
   | HistoryRead
   | ModelList
   | ModelRefresh
-  | ModelAliasSet
+  | ModelConfigure
   | ProviderList
   | ProviderSave
   | ProviderRemove

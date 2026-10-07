@@ -43,7 +43,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
           if (request.action !== 'spawn' && request.action !== 'consult') throw new Error('这条会话尚未展开协作')
           // 配置未通过时尚无实际派生，原会话仍保持普通工作。
           initialModel = await deps.resolveModel({ defaults: actor.model,
-            ...(request.action === 'consult' ? { model: { alias: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
+            ...(request.action === 'consult' ? { model: { choice: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
               ...(request.role === undefined ? {} : { role: request.role }),
               ...(request.model === undefined ? {} : { model: request.model }),
             }),
@@ -75,7 +75,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
               break
             }
             const model = initialModel ?? await deps.resolveModel({ defaults: collaboration.defaultModel,
-              ...(request.action === 'consult' ? { model: { alias: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
+              ...(request.action === 'consult' ? { model: { choice: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
                 ...(request.role === undefined ? {} : { role: request.role }),
                 ...(request.model === undefined ? {} : { model: request.model }),
               }),
@@ -86,7 +86,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
                 name: '咨询 Arcane', role: '', purpose: 'consultation' as const, responsibility: '只读查证并提供建议，原执行者负责核验和实施',
                 scope: request.question, body: [{ kind: 'text' as const, text: request.question }, ...(request.body ?? [])],
               } : { name: request.name, role: request.role ?? '', responsibility: request.responsibility, scope: request.scope,
-                body: request.modelReason === undefined ? request.body : [...request.body, { kind: 'text' as const, text: `模型选择：${model.alias[0]!.toUpperCase() + model.alias.slice(1)}；任务理由：${request.modelReason}` }],
+                body: request.modelReason === undefined ? request.body : [...request.body, { kind: 'text' as const, text: `模型选择：${model.choice[0]!.toUpperCase() + model.choice.slice(1)}；任务理由：${request.modelReason}` }],
               }), model, source, authorization, ...scope,
             })
             if (consulting) {

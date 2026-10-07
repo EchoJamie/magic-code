@@ -41,7 +41,7 @@ const used = () => event('model.usage', { inputTokens: 3_100, outputTokens: 6 })
 
 /** 一次**真跑**——分母随之落定（`inputBudget` 就是那一刻的有效输入预算）。 */
 const ran = (model: string, provider: string, inputBudget?: number) =>
-  event('model.call.start', { alias: 'default',
+  event('model.call.start', { choice: 'default',
     model,
     provider,
     ...(inputBudget === undefined ? {} : { inputBudget }),
@@ -80,15 +80,15 @@ async function main(): Promise<void> {
     await save(out, '02-known-M3', shell)
 
     // 换到**另一已知**：切换事件自己带着新模型的预算（204_800 ⇒ `205k`）
-    feed(event('model.switched', { alias: 'default', ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 204_800 }))
+    feed(event('model.switched', { choice: 'default', ok: true, provider: 'mm2', model: 'MiniMax-M2', inputBudget: 204_800 }))
     await save(out, '03-switched-known-M2', shell)
 
     // 换到**用户覆盖过**的那一档（131_072 ⇒ `131k`）
-    feed(event('model.switched', { alias: 'default', ok: true, provider: 'mm3', model: 'mini-declared', inputBudget: 131_072 }))
+    feed(event('model.switched', { choice: 'default', ok: true, provider: 'mm3', model: 'mini-declared', inputBudget: 131_072 }))
     await save(out, '04-switched-declared', shell)
 
     // 换到**未知**（自建 llama：内核不带这一位 ⇒ 分母**清空**，不沿用上一个）
-    feed(event('model.switched', { alias: 'default', ok: true, provider: 'local', model: 'my-local-llama' }))
+    feed(event('model.switched', { choice: 'default', ok: true, provider: 'local', model: 'my-local-llama' }))
     await save(out, '05-switched-unknown', shell)
 
     // 真跑一个新模型：请求开始那一刻分母就位（不必等整轮收束）

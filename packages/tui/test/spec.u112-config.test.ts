@@ -32,7 +32,7 @@ function openConfig(over: { readonly statusLine?: { cells: readonly string[]; co
   stage.feed([
     event('model.catalog', {
       entries: [{ provider: 'minimax', name: '个人版', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, }],
-      current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+      current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
     }),
     event('grants.catalog', {
       workspace: ROOT,

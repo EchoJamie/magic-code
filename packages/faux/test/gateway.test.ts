@@ -25,7 +25,7 @@ import type { FauxTurn } from '../src/index.ts'
 
 /** 请求——Faux 不看内容（脚本说了算），给一个最小合法形态即可。 */
 const REQUEST: ModelRequest = {
-  model: 'faux-1',
+
   messages: [{ role: 'user', content: '你好' }],
 }
 
@@ -254,7 +254,7 @@ describe('请求留痕', () => {
     await drainStream(gateway.stream(REQUEST))
     await drainStream(
       gateway.stream({
-        model: 'faux-1',
+
         messages: [
           ...REQUEST.messages,
           { role: 'assistant', content: '', toolCalls: [{ id: 'call_1', name: 'exec', args: {} }] },
@@ -276,7 +276,7 @@ describe('请求留痕', () => {
 
     const a = await drainStream(gateway.stream(REQUEST))
     const b = await drainStream(
-      gateway.stream({ model: '完全不同的模型名', messages: [{ role: 'user', content: '别的' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '别的' }] }),
     )
 
     expect(shape(a.events)).toEqual(shape(b.events))

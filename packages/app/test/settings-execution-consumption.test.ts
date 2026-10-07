@@ -60,7 +60,7 @@ test('保存权限规则只影响下次装配，撤销真实授权影响现有�
   const tool = { kind: 'tool' as const, name: 'web_fetch', args: { url: 'https://example.com/u116', prompt: '提炼受控页面' } }
   const text = { kind: 'text' as const, text: '受控结果', chunks: 1, chunkDelayMs: 5 }
   const fixture = startFixture({ turns: [tool, text, tool, text, text, tool, text, text, tool, text] })
-  const stage = makeStage({ config: { providers: { local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: 'U116_FAKE_ONLY' } }, modelAliases: { default: { provider: 'local', model: 'entry' }, cantrip: { provider: 'local', model: 'distill' } } } })
+  const stage = makeStage({ config: { providers: { local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: 'U116_FAKE_ONLY' } }, models: { default: { provider: 'local', model: 'entry' }, cantrip: { provider: 'local', model: 'distill' } } } })
   const assemblies: ReturnType<typeof stage.assemble>[] = []
   let fetched = 0
   const webSource = { fetchPage: async (url: string) => { fetched++; return { ok: true as const, url, status: 200, bytes: 20, body: '<p>U116 受控页面</p>', contentType: 'text/html' } } }

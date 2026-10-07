@@ -365,18 +365,18 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
    */
   test('模型给的**声明原形绝对路径**通得到真文件（U27——多根激活的那个坑）', async () => {
     const real = tempDir('magic-u27-real-')
-    const alias = join(tempDir('magic-u27-alias-'), 'proj')
-    symlinkSync(real, alias)
+    const choice = join(tempDir('magic-u27-choice-'), 'proj')
+    symlinkSync(real, choice)
     mkdirSync(join(real, 'sub'))
     writeFileSync(join(real, 'sub', 'note.txt'), 'non-canonical-ok\n')
 
     try {
-      const stage = makeStage({ config: { workspaceRoots: [alias] } })
+      const stage = makeStage({ config: { workspaceRoots: [choice] } })
       try {
         const assembly = stage.assemble({
           turns: [
             // 路径取**声明原形**（用户写在配置里的那个写法）——只比规范形时这里判越界
-            { toolCalls: [{ name: 'read', args: { path: join(alias, 'sub', 'note.txt') } }] },
+            { toolCalls: [{ name: 'read', args: { path: join(choice, 'sub', 'note.txt') } }] },
             { text: '读到了' },
           ],
         })
@@ -395,7 +395,7 @@ describe('执行域——单根＝启动目录（缺省）／多根＝配置接�
       }
     } finally {
       removeDir(real)
-      removeDir(alias)
+      removeDir(choice)
     }
   })
 

@@ -9,12 +9,12 @@ struct ModelSettingsPage: View {
         VStack(alignment: .leading, spacing: 22) {
             SettingsCard(title: "Default") {
                 Text("普通新工作的默认选择；与三个能力档位分别保存。").foregroundStyle(.secondary).font(.callout)
-                AliasEditor(model: model, snapshot: snapshot, draft: alias("default"), drafts: drafts, alias: "default")
-            }.id("aliases")
+                ModelChoiceEditor(model: model, snapshot: snapshot, draft: choice("default"), drafts: drafts, choice: "default")
+            }.id("configuredModels")
             SettingsCard(title: "能力档位") {
                 ForEach(["cantrip", "spell", "arcane"], id: \.self) { name in
                     DisclosureGroup {
-                        AliasEditor(model: model, snapshot: snapshot, draft: alias(name), drafts: drafts, alias: name)
+                        ModelChoiceEditor(model: model, snapshot: snapshot, draft: choice(name), drafts: drafts, choice: name)
                     } label: {
                         HStack { Text(name.capitalized).font(.headline); Spacer(); Text(mapping(name)).foregroundStyle(.secondary).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true) }
                     }
@@ -58,14 +58,14 @@ struct ModelSettingsPage: View {
             Button("取消", role: .cancel) { remove = nil }
         }
     }
-    private func alias(_ name: String) -> SettingsDraft {
-        var value = snapshot.configuration["modelAliases"][name].object
-        value["type"] = .string("model.alias.set"); value["alias"] = .string(name)
-        if name == "default" && snapshot.configuration["modelAliases"]["default"] == .null { value["initialize"] = .bool(true) }
-        return drafts.draft("alias-\(name)", .object(value), stamp: snapshot.stamp)
+    private func choice(_ name: String) -> SettingsDraft {
+        var value = snapshot.configuration["models"][name].object
+        value["type"] = .string("model.configure"); value["choice"] = .string(name)
+        if name == "default" && snapshot.configuration["models"]["default"] == .null { value["initialize"] = .bool(true) }
+        return drafts.draft("choice-\(name)", .object(value), stamp: snapshot.stamp)
     }
     private func mapping(_ name: String) -> String {
-        let mapping = snapshot.configuration["modelAliases"][name]
+        let mapping = snapshot.configuration["models"][name]
         return mapping["model"].text.isEmpty ? "未配置" : "\(mapping["provider"].text) / \(mapping["model"].text)"
     }
     private func providerDraft(_ id: String) -> SettingsDraft {
@@ -84,11 +84,11 @@ struct ModelSettingsPage: View {
     }
 }
 
-struct AliasEditor: View {
+struct ModelChoiceEditor: View {
     @ObservedObject var model: AppModel
     let snapshot: SettingsSnapshot
     @ObservedObject var draft: SettingsDraft
-    let drafts: SettingsDrafts, alias: String
+    let drafts: SettingsDrafts, choice: String
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker("连接", selection: draft.field("provider")) {
@@ -104,13 +104,13 @@ struct AliasEditor: View {
                 }
             }
             SettingText(title: "精确型号", value: draft.field("model"))
-            if alias == "default" && snapshot.configuration["modelAliases"]["default"] == .null {
+            if choice == "default" && snapshot.configuration["models"]["default"] == .null {
                 Toggle("同时用此型号初始化尚未配置的三个档位", isOn: draft.flag("initialize", default: false))
                 Text("已有独立映射保留。之后调整 Default 不会带动其他档位。").font(.caption).foregroundStyle(.secondary)
             }
-            DraftFooter(model: model, draft: draft, key: "alias-\(alias)", boundary: "之后解析时采用；已有 Agent 保持原来的实际组合。", cancel: { drafts.discard("alias-\(alias)") })
-            if snapshot.configuration["modelAliases"][alias] != .null {
-                Button("清除这项映射", role: .destructive) { model.applySettings(.object(["type": .string("model.alias.clear"), "alias": .string(alias)]), stamp: snapshot.stamp, key: "alias-\(alias)") }.disabled(model.settingsBusy)
+            DraftFooter(model: model, draft: draft, key: "choice-\(choice)", boundary: "之后解析时采用；已有 Agent 保持原来的实际组合。", cancel: { drafts.discard("choice-\(choice)") })
+            if snapshot.configuration["models"][choice] != .null {
+                Button("清除这项映射", role: .destructive) { model.applySettings(.object(["type": .string("model.clear"), "choice": .string(choice)]), stamp: snapshot.stamp, key: "choice-\(choice)") }.disabled(model.settingsBusy)
             }
         }.padding(.vertical, 8)
         .onChange(of: draft.value["provider"]) { _, _ in draft.put("model", .string("")) }

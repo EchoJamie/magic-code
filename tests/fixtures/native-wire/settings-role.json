@@ -15,7 +15,7 @@
         "instructions": "只读查证",
         "tools": [],
         "model": {
-          "alias": "arcane",
+          "choice": "arcane",
           "reasoning": {
             "mode": "off"
           }

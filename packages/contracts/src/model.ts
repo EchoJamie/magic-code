@@ -323,6 +323,4 @@ export type ProviderModelOverride = {
 }
 
 /** 工作选择标识；实际连接与型号只在配置和运行事实中出现。 */
-export type ModelAlias = 'default' | 'cantrip' | 'spell' | 'arcane'
-export type ModelMapping = { readonly provider: string; readonly model: string }
-export type ModelAliases = Readonly<Partial<Record<ModelAlias, ModelMapping>>>
+export type ModelChoice = 'default' | 'cantrip' | 'spell' | 'arcane'

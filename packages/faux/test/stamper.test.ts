@@ -84,7 +84,7 @@ describe('观察面与消费姿势', () => {
   test('stamped 按铸造序留痕——含信封（断言不必另拼）', () => {
     const stamper = makeTestStamper()
 
-    stamper.stamp('model.call.start', { alias: 'default', model: 'faux-1' })
+    stamper.stamp('model.call.start', { choice: 'default', model: 'faux-1' })
     stamper.stamp('model.call.end', {})
 
     expect(stamper.stamped.map((e) => e.kind)).toEqual(['model.call.start', 'model.call.end'])

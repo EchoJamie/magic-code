@@ -41,7 +41,7 @@ function stageOn(
 ): Stage {
   return makeStage({
     config: {
-      modelAliases: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: MODEL}},
+      models: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: MODEL}},
       providers: {
         local: { vendor: options.vendor ?? 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
@@ -118,7 +118,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
 
       await handle.submit('第一件事')
       // 中途换模型（换的是接缝下游，对话域不知道发生过切换——照旧把开局那个名字送出去）
-      expect(assembly.switchModel({ alias: 'spell' }).ok).toBe(true)
+      expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
       await handle.submit('第二件事')
 
       const chats = chatsOf(fixture)

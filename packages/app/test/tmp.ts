@@ -41,7 +41,7 @@ export function magicAt(home: string): MagicHome {
 /** 一份能用的配置（形制照冻结的字面）——各用例按需改字段。 */
 export function validConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    modelAliases: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(alias => [alias, { provider: 'minimax', model: 'MiniMax-M3' }])),
+    models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(choice => [choice, { provider: 'minimax', model: 'MiniMax-M3' }])),
     providers: {
       minimax: {
         baseURL: 'https://api.minimaxi.com/v1',

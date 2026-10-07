@@ -1,6 +1,6 @@
 import type { DiagnosticsChange } from './diagnostics.ts'
 import type { AgentRoleConfig, StatusLineConfig } from './config.ts'
-import type { ProviderSaveRequest, ModelAliasRequest } from './control.ts'
+import type { ProviderSaveRequest, ModelConfigureRequest } from './control.ts'
 import type { McpServerConfig } from './mcp.ts'
 import type { ProviderModelOverride } from './model.ts'
 
@@ -9,8 +9,8 @@ export type SettingsAction =
   | ({ readonly type: 'diagnostics.set'; readonly source?: 'app' | 'cli' } & DiagnosticsChange)
   | ({ readonly type: 'provider.save' } & ProviderSaveRequest)
   | { readonly type: 'provider.remove'; readonly provider: string }
-  | ({ readonly type: 'model.alias.set' } & ModelAliasRequest)
-  | { readonly type: 'model.alias.clear'; readonly alias: string }
+  | ({ readonly type: 'model.configure' } & ModelConfigureRequest)
+  | { readonly type: 'model.clear'; readonly choice: string }
   | { readonly type: 'model.override'; readonly provider: string; readonly model: string; readonly override: ProviderModelOverride | null }
   | { readonly type: 'model.refresh'; readonly provider: string }
   | { readonly type: 'prefs.set'; readonly statusLine?: StatusLineConfig; readonly reducedMotion?: boolean }

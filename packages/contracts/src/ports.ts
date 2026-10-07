@@ -30,7 +30,7 @@ import type { CollaborationRecords } from './collaboration.ts'
 
 import type {
   Command,
-  ModelAliasRequest,
+  ModelConfigureRequest,
   ModelSwitchRequest,
   PrefsSetRequest,
   ProviderSaveRequest,
@@ -1285,7 +1285,6 @@ export type ModelMessage =
 
 /** 模型请求（内核侧请求形制）。 */
 export type ModelRequest = {
-  readonly model: string
   readonly messages: readonly ModelMessage[]
   readonly tools?: readonly ToolSpec[]
 }
@@ -1732,7 +1731,7 @@ export type CommandRoutes = {
    * 与 `onModelSwitch` 的分别：那条改**当下**走谁（不写盘），这条写**配置里的默认**；
    * 两条**不做同一件事**，也不互相代劳。
    */
-  onModelAliasSet(request: ModelAliasRequest): void
+  onModelConfigure(request: ModelConfigureRequest): void
 
   /**
    * **管理面的连接一览**（U41）→ **装配**（它握着配置与凭据的读取）。
@@ -1972,7 +1971,6 @@ export const TOOLSET_V1 = [
 /** 压缩调用在开始时取得的独立模型；容量与配置来处都属于这次解析。 */
 export type CompressionModel = {
   readonly gateway: ModelGateway
-  readonly model: string
   readonly inputBudget?: number
   readonly location?: string
 }

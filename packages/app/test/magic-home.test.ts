@@ -116,7 +116,7 @@ function plantTree(
   },
 ): string {
   const body = validConfig({
-    modelAliases: {default: {provider: over.provider, model: over.model}, cantrip: {provider: over.provider, model: over.model}, spell: {provider: over.provider, model: over.model}, arcane: {provider: over.provider, model: over.model}},
+    models: {default: {provider: over.provider, model: over.model}, cantrip: {provider: over.provider, model: over.model}, spell: {provider: over.provider, model: over.model}, arcane: {provider: over.provider, model: over.model}},
     providers: {
       [over.provider]: { vendor: 'minimax', baseURL: over.baseURL ?? 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
     },
@@ -322,7 +322,7 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
     const room = makeRoom()
     try {
       const config = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', config: {
-        modelAliases: { default: { provider: 'fresh', model: 'NEW-MODEL' }, cantrip: { provider: 'spare', model: 'SPARE-MODEL' } },
+        models: { default: { provider: 'fresh', model: 'NEW-MODEL' }, cantrip: { provider: 'spare', model: 'SPARE-MODEL' } },
         providers: {
           fresh: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
           spare: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1' },

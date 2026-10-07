@@ -245,7 +245,7 @@ if (import.meta.main) {
   const sandbox = createSandbox({
     baseURL: fixture.baseURL,
     config: {
-      modelAliases: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: "small", model: DISTILL_MODEL}, spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
+      models: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: "small", model: DISTILL_MODEL}, spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
         local: { vendor: 'minimax', baseURL: fixture.baseURL, apiKey: 'sk-fake-u78' },
         small: { vendor: 'minimax', baseURL: fixture.baseURL, apiKey: 'sk-fake-u78', name: DISTILL_CONNECTION },

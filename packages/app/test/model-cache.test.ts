@@ -338,7 +338,7 @@ describe('真装配 · 认证轮换', () => {
     writeFileSync(
       path,
       JSON.stringify({
-        modelAliases: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
+        models: {default: {provider: "ds", model: 'deepseek-flash'}, cantrip: {provider: "ds", model: 'deepseek-flash'}, spell: {provider: "ds", model: 'deepseek-flash'}, arcane: {provider: "ds", model: 'deepseek-flash'}},
         providers: {
           ds: { vendor: 'deepseek', baseURL: 'http://fixture.invalid', apiKey: 'fake-old' },
         },

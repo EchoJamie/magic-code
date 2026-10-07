@@ -97,9 +97,9 @@ describe('协作记录 · 身份与来源', () => {
       expect(retried.agent.agentId).toBe(a.agent.agentId)
       expect(f.store.hasSession('uncreated')).toBe(false)
       expect(f.records.listMembers(f.collaboration.collaborationId)).toHaveLength(2)
-      f.records.updateAgent(f.coordinator.agentId, { name: 'renamed', model: { alias: 'default' as const, provider: 'p2', model: 'm2' } })
+      f.records.updateAgent(f.coordinator.agentId, { name: 'renamed', model: { choice: 'default' as const, provider: 'p2', model: 'm2' } })
       expect(f.records.getCollaboration(f.collaboration.collaborationId)?.defaultModel).toEqual(model)
-      f.records.updateDefaultModel(f.collaboration.collaborationId, { alias: 'default', provider: 'p3', model: 'm3' })
+      f.records.updateDefaultModel(f.collaboration.collaborationId, { choice: 'default', provider: 'p3', model: 'm3' })
       const other = createRecordsStore({ dataDir: f.dir, workspace: ['/different'] })
       try {
         expect(other.collaboration.agentForSession('origin')?.agentId).toBe(f.coordinator.agentId)

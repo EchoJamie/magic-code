@@ -5,7 +5,7 @@
  * 而「事后往接缝里塞横切」要改接缝本身。U17（模型扩展）起按需落实现。
  *
  * 两个挂点对应两类横切：
- * - `transformRequest`——**改写**（改提示 / 加参数 / 换模型名），请求方向；
+ * - `transformRequest`——**改写**（改提示 / 工具定义），请求方向；
  * - `transformEvents`——**观察与改写**（日志 / 用量统计 / 过滤增量），事件方向。
  *
  * 次序语义：数组**由外到内**——`[a, b]` 时 a 是外层。
@@ -19,7 +19,7 @@ import type { KernelEvent, ModelRequest } from '@magic/contracts'
 export type ModelCallContext = {
   /** 供应商 id（配置 `providers.<id>` 的键）。 */
   readonly provider: string
-  /** 模型名（**生效**的那个——请求里给的）。 */
+  /** 网关已绑定的实际型号。 */
   readonly model: string
   /** 中间件链**之前**的原始请求（免受改写影响，便于对账）。 */
   readonly request: ModelRequest

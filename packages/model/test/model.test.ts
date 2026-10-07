@@ -682,12 +682,12 @@ const CONFIG = {
 
 describe('密钥纪律', () => {
   test('缺 key 在构造期就报——消息给的是环境变量名，不是 key', () => {
-    expect(() => createModelGateway({ providerId: 'minimax', config: CONFIG, env: {}, stamper: testStamper() })).toThrow(
+    expect(() => createModelGateway({ model: CONFIG.model, providerId: 'minimax', config: CONFIG, env: {}, stamper: testStamper() })).toThrow(
       MissingApiKeyError,
     )
 
     try {
-      createModelGateway({ providerId: 'minimax', config: CONFIG, env: {}, stamper: testStamper() })
+      createModelGateway({ model: CONFIG.model, providerId: 'minimax', config: CONFIG, env: {}, stamper: testStamper() })
     } catch (error) {
       const fault = error as MissingApiKeyError
       expect(fault.envVar).toBe('MAGIC_MINIMAX_API_KEY')
@@ -810,7 +810,7 @@ describe('中间件位', () => {
 
   test('数组由外到内：请求方向先列先见，事件方向先列包住后列', async () => {
     trace.length = 0
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -820,7 +820,7 @@ describe('中间件位', () => {
     })
 
     const { events } = await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(trace).toEqual([
@@ -835,7 +835,7 @@ describe('中间件位', () => {
   })
 
   test('无中间件时事件原样通过', async () => {
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -844,7 +844,7 @@ describe('中间件位', () => {
     })
 
     const { events } = await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     const stamper = testStamper()
@@ -868,7 +868,7 @@ describe('中间件位', () => {
       })
     }) as unknown as typeof globalThis.fetch
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -887,7 +887,7 @@ describe('中间件位', () => {
 
     // 流会因缺 finish_reason 而报错——此处只关心请求体
     await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(body?.messages[0]).toEqual({ role: 'system', content: '改写过的系统提示' })
@@ -945,7 +945,7 @@ describe('调用设置与容量（U41 返修）', () => {
         chunk({ choices: [], usage: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 } }),
       ),
     )
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: model,
       providerId: 'ds',
       stamper: testStamper(),
       config,
@@ -954,7 +954,7 @@ describe('调用设置与容量（U41 返修）', () => {
       env: {},
     })
     const { events } = await drain(
-      gateway.stream({ model, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
     return {
       body: seen[0]?.body as Record<string, unknown>,
@@ -1022,7 +1022,7 @@ describe('调用设置与容量（U41 返修）', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'known',
       providerId: 'ds',
       stamper: testStamper(),
       config: { vendor: 'deepseek', apiKey: 'test-key' },
@@ -1036,7 +1036,7 @@ describe('调用设置与容量（U41 返修）', () => {
     })
 
     const { events } = await drain(
-      gateway.stream({ model: 'known', messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     // **只解析一次**（那一趟里出站 / start / usage / 重试共用它）
@@ -1077,10 +1077,10 @@ describe('调用设置与容量（U41 返修）', () => {
 
     // 注册表那一格：**它本来就对**（漏的是往网关那一跳）
     expect(registry.capacityOf('ds', 'known')?.inputBudget).toBe(8_000)
-    expect(registry.use({ alias: 'default', provider: 'ds', model: 'known' }).ok).toBe(true)
+    expect(registry.use({ choice: 'default', provider: 'ds', model: 'known' }).ok).toBe(true)
 
     const { events } = await drain(
-      registry.stream({ model: 'known', messages: [{ role: 'user', content: '嗨' }] }),
+      registry.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     const body = seen[0]?.body as Record<string, unknown>
@@ -1094,20 +1094,20 @@ describe('调用设置与容量（U41 返修）', () => {
     expect(usage?.kind === 'model.usage' ? usage.data.contextWindow : undefined).toBe(8_000)
   })
 
-  test('请求体改写**按适配分**：DeepSeek 用标准 `max_tokens`，兼容接入才走旧改写', async () => {
+  test('请求体改写只归具体适配，通用接入保留标准参数', async () => {
     // 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody` —— DeepSeek 没定义
     // 就回退到了 MiniMax 的改写，`max_tokens` 被顶成 `max_completion_tokens`。
     const official = await callOnce({ vendor: 'deepseek', apiKey: 'test-key' }, 'deepseek-flash')
     expect(official.body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
     expect(official.body['max_completion_tokens']).toBeUndefined()
 
-    // **反例**：兼容接入（没有适配）仍走原来那条 MiniMax 改写——旧能力不删
+    // 通用接入不从型号名推断供应商，即使型号是 MiniMax 也不套用其改写。
     const compatible = await callOnce(
       { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       'MiniMax-M3',
     )
-    expect(compatible.body['max_completion_tokens']).toBe(MAX_COMPLETION_TOKENS)
-    expect(compatible.body['max_tokens']).toBeUndefined()
+    expect(compatible.body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
+    expect(compatible.body['max_completion_tokens']).toBeUndefined()
   })
 })
 
@@ -1133,7 +1133,7 @@ describe('思考的工具往返（U41）', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'deepseek-flash',
       providerId: 'ds',
       stamper: testStamper(),
       config: { vendor: 'deepseek', apiKey: 'test-key' },
@@ -1144,7 +1144,7 @@ describe('思考的工具往返（U41）', () => {
 
     await drain(
       gateway.stream({
-        model: 'deepseek-flash',
+
         messages: [
           { role: 'user', content: '读一下那个文件' },
           {
@@ -1174,7 +1174,7 @@ describe('思考的工具往返（U41）', () => {
     )
 
     // 兼容接入（没有 `vendor`）——原协议原样：多出来的那一位**不转发**
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'MiniMax-M3',
       providerId: 'mm',
       stamper: testStamper(),
       config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
@@ -1185,7 +1185,7 @@ describe('思考的工具往返（U41）', () => {
 
     await drain(
       gateway.stream({
-        model: 'MiniMax-M3',
+
         messages: [
           { role: 'user', content: '嗨' },
           {
@@ -1221,7 +1221,7 @@ describe('思考的工具往返（U41）', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'deepseek-flash',
       providerId: 'ds',
       stamper: testStamper(),
       config: { vendor: 'deepseek', apiKey: 'test-key' },
@@ -1232,7 +1232,7 @@ describe('思考的工具往返（U41）', () => {
 
     await drain(
       gateway.stream({
-        model: 'deepseek-flash',
+
         messages: [
           { role: 'user', content: '接着做' },
           // ⚠️ 这一条就是 D45 的真 offender：有工具调用、**载荷里没有思考**
@@ -1278,7 +1278,7 @@ describe('思考的工具往返（U41）', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'deepseek-flash',
       providerId: 'ds',
       stamper: testStamper(),
       config: { vendor: 'deepseek', apiKey: 'test-key' },
@@ -1292,7 +1292,7 @@ describe('思考的工具往返（U41）', () => {
 
     await drain(
       gateway.stream({
-        model: 'deepseek-flash',
+
         messages: [{ role: 'user', content: '接着做' }, material],
       }),
     )
@@ -1317,7 +1317,7 @@ describe('思考的工具往返（U41）', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'MiniMax-M3',
       providerId: 'mm',
       stamper: testStamper(),
       config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
@@ -1328,7 +1328,7 @@ describe('思考的工具往返（U41）', () => {
 
     await drain(
       gateway.stream({
-        model: 'MiniMax-M3',
+
         messages: [
           { role: 'user', content: '嗨' },
           {
@@ -1362,7 +1362,7 @@ describe('假端点回环 · 流式事件序列', () => {
         chunk({ choices: [], usage: { prompt_tokens: 12_400, completion_tokens: 40, total_tokens: 12_440 } }),
       )
 
-    const declared = createModelGateway({
+    const declared = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       // 条目声明了窗长（配置加键——窗长的真来处，见 `ProviderConfig.contextWindow`）
@@ -1373,7 +1373,7 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const withWindow = await drain(
-      declared.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      declared.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
     expect(withWindow.events.filter((event) => event.kind === 'model.usage').map((event) => event.data)).toEqual([
       { inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, contextWindow: 195_904 },
@@ -1381,7 +1381,7 @@ describe('假端点回环 · 流式事件序列', () => {
     // 聚合结果**不动**——窗长是「这次调用之外」的东西，不是用量的一部分
     expect(withWindow.result.usage).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440 })
 
-    const silent = createModelGateway({
+    const silent = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG, // 没声明窗长
@@ -1391,7 +1391,7 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const withoutWindow = await drain(
-      silent.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      silent.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
     const usage = withoutWindow.events.find((event) => event.kind === 'model.usage')
     // **U41 改锚**：这一位以前「只有条目声明了才有」；现在说的是**有效容量**——
@@ -1402,7 +1402,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     // **反例**（改了这处行为的对照）：**不在补充表里**的模型照旧**没有这一位**——
     // 「不知道就是不知道」那一半没松（app 的读数用例里那条「乙」是同一个反例）。
-    const unknown = createModelGateway({
+    const unknown = createModelGateway({ model: 'some-unlisted-model',
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1411,7 +1411,7 @@ describe('假端点回环 · 流式事件序列', () => {
       env: {},
     })
     const unknownCall = await drain(
-      unknown.stream({ model: 'some-unlisted-model', messages: [{ role: 'user', content: '嗨' }] }),
+      unknown.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
     const unknownUsage = unknownCall.events.find((event) => event.kind === 'model.usage')
     expect('contextWindow' in (unknownUsage?.data ?? {})).toBe(false)
@@ -1428,7 +1428,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1439,7 +1439,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const { events, result } = await drain(
       gateway.stream({
-        model: MINIMAX_MODEL,
+
         messages: [
           { role: 'system', content: '你是 Magic Code' },
           { role: 'user', content: '打个招呼' },
@@ -1469,15 +1469,15 @@ describe('假端点回环 · 流式事件序列', () => {
     expect(result.finishReason).toBe('stop')
     expect(result.error).toBeUndefined()
 
-    // 请求侧：端点 / 鉴权 / MiniMax 参数改写
+    // 请求侧：端点 / 鉴权 / 通用参数
     expect(seen).toHaveLength(1)
     expect(seen[0]?.url).toBe('https://api.minimaxi.com/v1/chat/completions')
     expect(seen[0]?.authorization).toBe('Bearer test-key')
     expect(seen[0]?.body.model).toBe(MINIMAX_MODEL)
     expect(seen[0]?.body.stream).toBe(true)
-    // 已弃用的 max_tokens 不出现在请求体里，改用 max_completion_tokens
-    expect(seen[0]?.body).not.toHaveProperty('max_tokens')
-    expect(seen[0]?.body.max_completion_tokens).toBe(MAX_COMPLETION_TOKENS)
+    // 未配置供应商适配，不因型号或地址含 MiniMax 就改写参数。
+    expect(seen[0]?.body).not.toHaveProperty('max_completion_tokens')
+    expect(seen[0]?.body.max_tokens).toBe(MAX_COMPLETION_TOKENS)
     expect(seen[0]?.body.stream_options).toEqual({ include_usage: true })
     // 系统消息经 instructions 汇入提示（SDK 不接受 messages 里的 system 角色），
     // 落到线上仍是首条 system 消息——段序不变
@@ -1495,7 +1495,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1506,7 +1506,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     await drain(
       gateway.stream({
-        model: MINIMAX_MODEL,
+
         messages: [
           { role: 'system', content: '身份段' },
           { role: 'system', content: '工具段' },
@@ -1529,7 +1529,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1540,7 +1540,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     await drain(
       gateway.stream({
-        model: MINIMAX_MODEL,
+
         messages: [
           { role: 'user', content: '列目录' },
           {
@@ -1576,7 +1576,7 @@ describe('假端点回环 · 流式事件序列', () => {
       sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1587,7 +1587,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     await drain(
       gateway.stream({
-        model: MINIMAX_MODEL,
+
         messages: [
           { role: 'user', content: '跑一下' },
           {
@@ -1642,7 +1642,7 @@ describe('假端点回环 · 流式事件序列', () => {
       ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1662,7 +1662,7 @@ describe('假端点回环 · 流式事件序列', () => {
 
     const { events, result } = await drain(
       gateway.stream({
-        model: MINIMAX_MODEL,
+
         messages: [{ role: 'user', content: '列一下目录' }],
         tools: TOOLS,
       }),
@@ -1702,7 +1702,7 @@ describe('假端点回环 · 流式事件序列', () => {
         ),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1712,7 +1712,7 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const { events, result } = await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(events[0]?.kind).toBe('model.call.start')
@@ -1730,7 +1730,7 @@ describe('假端点回环 · 流式事件序列', () => {
         }),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1740,7 +1740,7 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const { result } = await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(result.error?.tier).toBe('transient')
@@ -1752,7 +1752,7 @@ describe('假端点回环 · 流式事件序列', () => {
       sse(chunk({ choices: [{ index: 0, delta: { content: '嗨' } }] })),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1761,7 +1761,7 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(seen[0]?.authorization).toBe('Bearer env-key-123')
@@ -1772,7 +1772,7 @@ describe('假端点回环 · 流式事件序列', () => {
       sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: 'MiniMax-M4',
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1782,7 +1782,7 @@ describe('假端点回环 · 流式事件序列', () => {
     })
 
     const { events } = await drain(
-      gateway.stream({ model: 'MiniMax-M4', messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     expect(seen[0]?.body.model).toBe('MiniMax-M4')
@@ -1835,7 +1835,7 @@ describe('端口形态', () => {
     )
 
     const injected = testStamper('session-of-assembly', 42)
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: injected,
       config: CONFIG,
@@ -1845,7 +1845,7 @@ describe('端口形态', () => {
     })
 
     const { events } = await drain(
-      gateway.stream({ model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] }),
+      gateway.stream({  messages: [{ role: 'user', content: '嗨' }] }),
     )
 
     // 每一条事件都盖着装配给的那一套——含首条与末条
@@ -1884,7 +1884,7 @@ describe('端口形态', () => {
       },
     }
 
-    const { events } = await drain(faux.stream({ model: 'faux', messages: [] }))
+    const { events } = await drain(faux.stream({  messages: [] }))
     expect(payloads(events)).toEqual(
       payloads([modelCallStart(stamper, 'faux'), modelDelta(stamper, 'text', '假的'), modelCallEnd(stamper)]),
     )
@@ -1892,9 +1892,9 @@ describe('端口形态', () => {
 
   test('消费者按契约端口取用——只见 stream(req, opts) → { events; result }', () => {
     // 类型层面：`createModelGateway` 的返回可赋给契约端口（`@magic/contracts` 的 `ModelGateway`）
-    const gateway = createModelGateway({ providerId: 'minimax', config: CONFIG, apiKey: 'k', env: {}, stamper: testStamper() })
+    const gateway = createModelGateway({ model: MINIMAX_MODEL, providerId: 'minimax', config: CONFIG, apiKey: 'k', env: {}, stamper: testStamper() })
     const stream = gateway.stream(
-      { model: MINIMAX_MODEL, messages: [{ role: 'user', content: '嗨' }] },
+      {  messages: [{ role: 'user', content: '嗨' }] },
       { signal: new AbortController().signal },
     )
 
@@ -1913,7 +1913,7 @@ describe('消息装配', () => {
       sse(chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })),
     )
 
-    const gateway = createModelGateway({
+    const gateway = createModelGateway({ model: MINIMAX_MODEL,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1929,7 +1929,7 @@ describe('消息装配', () => {
       { role: 'tool', callId: 'c1', name: 'ls', ok: true, output: 'a.ts' },
     ]
 
-    const { events } = await drain(gateway.stream({ model: MINIMAX_MODEL, messages }))
+    const { events } = await drain(gateway.stream({  messages }))
 
     expect(events.at(-1)?.kind).toBe('model.call.end')
   })
@@ -1951,7 +1951,7 @@ describe('U37 · 图片输入：出站请求体里的图像部件', () => {
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 
   function gatewayWith(fetch: typeof globalThis.fetch) {
-    return createModelGateway({
+    return createModelGateway({ model: CONFIG.model,
       providerId: 'minimax',
       stamper: testStamper(),
       config: CONFIG,
@@ -1977,7 +1977,7 @@ describe('U37 · 图片输入：出站请求体里的图像部件', () => {
 
     await drain(
       gatewayWith(fetch).stream({
-        model: MINIMAX_MODEL,
+
         messages: [
           { role: 'user', content: [{ type: 'image', mime: 'image/png', data: PNG }] },
         ],
@@ -2005,7 +2005,7 @@ describe('U37 · 图片输入：出站请求体里的图像部件', () => {
 
     await drain(
       gatewayWith(fetch).stream({
-        model: MINIMAX_MODEL,
+
         messages: [
           {
             role: 'user',
@@ -2037,7 +2037,7 @@ describe('U37 · 图片输入：出站请求体里的图像部件', () => {
 
     await drain(
       gatewayWith(fetch).stream({
-        model: MINIMAX_MODEL,
+
         messages: [{ role: 'user', content: '就一句话' }],
       }),
     )

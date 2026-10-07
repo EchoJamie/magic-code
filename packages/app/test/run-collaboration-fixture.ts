@@ -58,7 +58,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     }
   } })
   const configPath = join(magic.base, 'config.json')
-  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], modelAliases: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
+  writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
     providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' } },
   }))
   const paths = runPathsOf(magic, dataDir, tmpdir())
@@ -172,5 +172,5 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
 }
 
 export const spawnMember: ModelReply = { tool: 'agent_spawn', args: { operationId: 'spawn-member', name: '实现', responsibility: '独立检查回调', scope: '回调兼容',
-  body: [{ kind: 'text', text: '核对回调兼容；先判断是否接受，问题明确回报入口。' }], model: { alias: 'spell' }, modelReason: '独立执行回调兼容检查' } }
+  body: [{ kind: 'text', text: '核对回调兼容；先判断是否接受，问题明确回报入口。' }], model: { choice: 'spell' }, modelReason: '独立执行回调兼容检查' } }
 export const requestText = (call: HttpCall | undefined): string => JSON.stringify(call?.body['messages'])

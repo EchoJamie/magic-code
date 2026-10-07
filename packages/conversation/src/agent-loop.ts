@@ -120,8 +120,6 @@ export type LoopRuntime = {
   readonly collaboration?: CollaborationBoundary | undefined
   /** 会话——条目按会话读（信封的 `session` 由铸造器持，两处同源）。 */
   readonly session: SessionId
-  /** 模型名——随每次调用送模型域（`ModelRequest.model`）。 */
-  readonly model: string
   /** 系统提示词全文——已由提示词部件装配好（本文件不认知段结构）。 */
   readonly systemPrompt: string
   readonly gateway: ModelGateway
@@ -648,9 +646,7 @@ async function loadRefs(
  * - 「支持」⇒ 放行；
  * - 「不支持」⇒ 拒绝，并**指出两条出路**（换模型 / 把图去掉）。
  *
- * ⚠️ **缘由里不点模型名**：本域手上那个 `runtime.model` 是**开局时那一个**（模型域那侧
- * 中途换过的话，它已经不新了），而探针问的是**此刻**——两者一旦不同，这句话就成了
- * 「编出一个当下不成立的事实」。**拿不准的不说**：改用 `/model` 指路（用户在那儿看得见
+ * 本域不持有实际型号；拒绝原因通过统一能力读数给出，设置入口可查看实际选择。
  * 此刻是谁），缘由本身照样说清了是哪一处出的问题。
  */
 function imageRefusal(
@@ -764,7 +760,7 @@ async function runTurn(
 
       if (signal.aborted || runtime.collaboration?.admit() !== undefined) return close(runtime, 'aborted', false)
       const stream = gateway.stream(
-        { model: runtime.model, messages, tools: tools.definitions() },
+        { messages, tools: tools.definitions() },
         { signal },
       )
 

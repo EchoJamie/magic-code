@@ -104,7 +104,7 @@ function stage(): {
 
   const configPath = writeConfig(
     root,
-    validConfig({ dataDir: join(root, 'data'), modelAliases: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: TWO_PROVIDERS }),
+    validConfig({ dataDir: join(root, 'data'), models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}}, providers: TWO_PROVIDERS }),
   )
 
   return {
@@ -157,9 +157,9 @@ describe('运行时切换 · 会话中途', () => {
 
       await handle.submit('记住一个数：17')
       // **会话中途**——什么都没重建：同一个 assembly、同一个会话、同一张库
-      expect(assembly.switchModel({ alias: 'cantrip' })).toEqual({
+      expect(assembly.switchModel({ choice: 'cantrip' })).toEqual({
         ok: true,
-        selection: { alias: 'cantrip', provider: 'beta', model: 'beta-1' },
+        selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1' },
       })
       await handle.submit('我刚才让你记的数是多少')
 
@@ -220,7 +220,7 @@ describe('运行时切换 · 会话中途', () => {
       await handle.submit('第一轮')
       const beforeSwitch = JSON.stringify(seen[0]?.messages)
 
-      assembly.switchModel({ alias: 'cantrip' })
+      assembly.switchModel({ choice: 'cantrip' })
       await handle.submit('第一轮')
 
       // 两轮的上下文同形（第二条请求＝同样的消息 ＋ 更长的历史）——切换动的是接缝下游
@@ -249,12 +249,12 @@ describe('运行时切换 · 脚本步骤', () => {
       const assembly = land.assemble({ modelFetch: fetch })
       const handle = await runShellScript(
         assembly.shell,
-        { inputs: ['第一轮', { switch: { alias: 'cantrip' } }, '第二轮'] },
+        { inputs: ['第一轮', { switch: { choice: 'cantrip' } }, '第二轮'] },
         { onSwitch: request => assembly.switchModel(request) },
       )
 
       expect(handle.switches).toEqual([
-        { request: { alias: 'cantrip' }, selection: { alias: 'cantrip', provider: 'beta', model: 'beta-1' } },
+        { request: { choice: 'cantrip' }, selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1' } },
       ])
       expect(seen.map((request) => request.model)).toEqual(['alpha-1', 'beta-1'])
       expect(startModels(handle.events)).toEqual(['alpha-1', 'beta-1'])
@@ -288,7 +288,7 @@ describe('运行时切换 · 脚本步骤', () => {
       const assembly = land.assemble({ modelFetch: fetch })
       const handle = await runShellScript(
         assembly.shell,
-        { inputs: ['第一轮', { switch: { alias: 'cantrip' } }, '第二轮'] },
+        { inputs: ['第一轮', { switch: { choice: 'cantrip' } }, '第二轮'] },
         scriptOptions(assembly, () => {}),
       )
 
@@ -297,7 +297,7 @@ describe('运行时切换 · 脚本步骤', () => {
       expect(switched).toHaveLength(1)
       expect(switched[0]?.kind === 'model.switched' ? switched[0].data : undefined).toEqual({
         ok: true,
-        alias: 'cantrip',
+        choice: 'cantrip',
         provider: 'beta',
         model: 'beta-1',
       })
@@ -320,7 +320,7 @@ describe('运行时切换 · 脚本步骤', () => {
       await expect(
         runShellScript(
           assembly.shell,
-          { inputs: ['第一轮', { switch: { alias: 'nowhere' as never } }, '第二轮'] },
+          { inputs: ['第一轮', { switch: { choice: 'nowhere' as never } }, '第二轮'] },
           { onSwitch: request => assembly.switchModel(request) },
         ),
       ).rejects.toThrow(/换模型不成功.*未知模型选择/)
@@ -341,7 +341,7 @@ describe('运行时切换 · 脚本步骤', () => {
       const assembly = land.assemble({ modelFetch: fetch })
 
       await expect(
-        runShellScript(assembly.shell, { inputs: [{ switch: { alias: 'cantrip' } }] }),
+        runShellScript(assembly.shell, { inputs: [{ switch: { choice: 'cantrip' } }] }),
       ).rejects.toThrow(/没接「换模型」的落点/)
 
       assembly.close()
@@ -400,7 +400,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       const handle = attachShell(assembly.shell)
       await handle.submit('起个头')
 
-      assembly.shell.send({ type: 'model.switch', alias: 'cantrip' })
+      assembly.shell.send({ type: 'model.switch', choice: 'cantrip' })
       off()
       handle.dispose()
       assembly.close()
@@ -409,7 +409,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       expect(switched).toHaveLength(1)
       expect(switched[0]?.kind === 'model.switched' ? switched[0].data : undefined).toEqual({
         ok: true,
-        alias: 'cantrip',
+        choice: 'cantrip',
         provider: 'beta',
         model: 'beta-1',
       })
@@ -432,7 +432,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       const handle = attachShell(assembly.shell)
       await handle.submit('起个头') // 同上：先有会话
 
-      assembly.shell.send({ type: 'model.switch', alias: 'nowhere' as never })
+      assembly.shell.send({ type: 'model.switch', choice: 'nowhere' as never })
       off()
       handle.dispose()
       assembly.close()
@@ -446,7 +446,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       expect(events.map((event) => event.kind)).not.toContain('error')
 
       // 没成 ＝ 原选原样保留（切不动就不动）：注册表仍指 alpha
-      expect(assembly.models?.selection()).toEqual({ alias: 'default', provider: 'alpha', model: 'alpha-1' })
+      expect(assembly.models?.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
     } finally {
       land.dispose()
     }

@@ -191,7 +191,7 @@ test('U115：咨询在途映射稳定，下次新咨询读取新映射，主 rea
     const main = f.store.collaboration.getAgent(f.collaboration()!.coordinatorId)!
     f.store.collaboration.updateAgent(main.agentId, { model: { ...main.model, reasoning: { mode: 'off' } } })
     const config = JSON.parse(readFileSync(configPath, 'utf8'))
-    config.modelAliases.arcane = { provider: 'second', model: 'changed-model' }
+    config.models.arcane = { provider: 'second', model: 'changed-model' }
     config.providers.second = { ...config.providers.controlled, vendor: 'minimax' }
     writeFileSync(configPath, JSON.stringify(config))
     pending.release()
@@ -201,11 +201,11 @@ test('U115：咨询在途映射稳定，下次新咨询读取新映射，主 rea
     await f.wait('新映射经真实工具往返完成', () => f.store.collaboration.listDelegations(f.collaboration()!.collaborationId).some(d => f.store.collaboration.getAgent(d.assigneeId)?.model.model === 'changed-model' && d.deliveryMessageId !== undefined) || f.errors.length > 0)
     const advisors = f.members().filter(one => one.purpose === 'consultation')
     expect(advisors.map(one => one.model)).toEqual([
-      { alias: 'arcane', provider: 'controlled', model: 'descendant-model', reasoning: { mode: 'default' } },
-      { alias: 'arcane', provider: 'second', model: 'changed-model', reasoning: { mode: 'default' } },
+      { choice: 'arcane', provider: 'controlled', model: 'descendant-model', reasoning: { mode: 'default' } },
+      { choice: 'arcane', provider: 'second', model: 'changed-model', reasoning: { mode: 'default' } },
     ])
     expect(f.requests('changed-model')[0]?.body.thinking).not.toEqual({ type: 'disabled' })
-    expect(f.store.collaboration.getAgent(main.agentId)!.model.alias).toBe('default')
+    expect(f.store.collaboration.getAgent(main.agentId)!.model.choice).toBe('default')
     expect(f.errors).toEqual([])
   } finally { pending.release(); await f.close() }
 }, 20000)
@@ -217,11 +217,11 @@ test('U115：缺 Arcane 配置或思考不支持在模型调用前拒绝，不�
   const path = join(f.magic.base, 'config.json')
   try {
     const config = JSON.parse(readFileSync(path, 'utf8'))
-    delete config.modelAliases.arcane
+    delete config.models.arcane
     writeFileSync(path, JSON.stringify(config))
     f.shell.key({ kind: 'paste', text: '咨询前必须有配置' }); f.shell.key({ kind: 'enter' })
     await f.wait('配置错误返回原模型', () => f.requests().length >= 2)
-    config.modelAliases.arcane = { provider: 'controlled', model: 'descendant-model' }
+    config.models.arcane = { provider: 'controlled', model: 'descendant-model' }
     writeFileSync(path, JSON.stringify(config))
     await f.wait('原轮结束', () => f.requests().length >= 3)
     expect(f.requests('descendant-model')).toHaveLength(0)
@@ -304,7 +304,7 @@ test('U115：主模型与Arcane同实际型号仍创建独立上下文，咨询�
   }, { allowAll: true })
   const path = join(f.magic.base, 'config.json')
   const config = JSON.parse(readFileSync(path, 'utf8'))
-  config.modelAliases.arcane = config.modelAliases.default
+  config.models.arcane = config.models.default
   writeFileSync(path, JSON.stringify(config))
   try {
     f.shell.key({ kind: 'paste', text: 'SAME-MODEL-UNRELATED-HISTORY-887' }); f.shell.key({ kind: 'enter' })

@@ -62,7 +62,7 @@ function testStamper(): EventStamper {
 
 /** 造一条连接上的网关——**写死的模型名与被测的那一件无关**（用例钉的是构造入参那一个）。 */
 function distillerOn(model: string, fetch: typeof globalThis.fetch) {
-  const gateway = createModelGateway({
+  const gateway = createModelGateway({ model,
     providerId: 'ds',
     stamper: testStamper(),
     config: { vendor: 'deepseek', apiKey: 'test-key' },
@@ -70,7 +70,7 @@ function distillerOn(model: string, fetch: typeof globalThis.fetch) {
     env: {},
   })
 
-  return createPageDistiller({ gateway, model })
+  return createPageDistiller({ gateway,  })
 }
 
 const PAGE = '# 定价\n\n标准版每月 12 元。'

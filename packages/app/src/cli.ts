@@ -4,7 +4,7 @@ import type { DiagnosticsChange } from '@magic/contracts'
 /** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接所属 App。 */
 
 import { homedir } from 'node:os'
-import type { KernelEvent, RulesLoad, ModelAlias, ModelSwitchRequest } from '@magic/contracts'
+import type { KernelEvent, RulesLoad, ModelChoice, ModelSwitchRequest } from '@magic/contracts'
 import { resolveMagicHome, SOFTWARE_VERSION } from '@magic/contracts'
 import type { ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
@@ -88,7 +88,7 @@ export function parseArgs(argv: readonly string[]): Args {
   const diagnostics = parseDiagnosticsArgs(argv)
   let script: string | undefined
   let check = false
-  let model: ModelAlias | undefined
+  let model: ModelChoice | undefined
   let session: string | undefined
   let allowAll = false
   let openRequest: string | undefined
@@ -128,7 +128,7 @@ export function parseArgs(argv: readonly string[]): Args {
     if (arg === '--model') {
       const value = valueOf('--model', i)
       if (!['default', 'cantrip', 'spell', 'arcane'].includes(value)) throw new Error('--model 只能选择 default / cantrip / spell / arcane；请在 /model 配置实际型号')
-      model = value as ModelAlias
+      model = value as ModelChoice
       i += 1
       continue
     }
@@ -156,7 +156,7 @@ export function parseArgs(argv: readonly string[]): Args {
     script,
     session,
     ...(allowAll ? { allowAll: true } : {}),
-    ...(model === undefined ? {} : { switch: { alias: model } }),
+    ...(model === undefined ? {} : { switch: { choice: model } }),
   }
 }
 
@@ -202,7 +202,7 @@ async function offlineCheck(args: Args): Promise<number> {
   const loaded = loadConfig({ magic })
   const workspace = workspaceOf(loaded, process.cwd())
   const roots = workspace.roots()
-  const chosen = args.switch === undefined ? undefined : resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: args.switch })
+  const chosen = args.switch === undefined ? undefined : resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: args.switch })
   if (args.switch !== undefined && (chosen === undefined || !chosen.ok)) {
     console.error(`换模型不成功：${chosen === undefined ? '尚未配置可用的供应商' : chosen.reason}`)
     return 1
@@ -515,7 +515,7 @@ async function runTerminal(args: Args): Promise<number> {
     const { readModelInfo, terminalOptions, terminalConnection } = await import('./run/terminal.ts')
     workspaceOf(loaded, process.cwd())
     if (args.switch !== undefined) {
-      const applied = resolveModelChoice({ providers: loaded.config.providers, aliases: loaded.config.modelAliases, config: args.switch })
+      const applied = resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: args.switch })
       if (applied === undefined || !applied.ok) {
         console.error(`换模型不成功：${applied === undefined ? '尚未配置可用的供应商' : applied.reason}`)
         return 1

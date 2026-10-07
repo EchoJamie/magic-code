@@ -4,7 +4,7 @@ import { latch, spawnMember, type ModelReply } from './run-collaboration-fixture
 import { alive, stopRuntime, type StopRuntime } from './run-collaboration-stop-fixture.ts'
 
 const delivery = { conclusion: 'LATE_DELIVERY_ORIGINAL_CONCLUSION', artifacts: ['local-result.txt'], verified: ['受控本地验证'], unresolved: ['待入口复核'] }
-const spawnDescendant: ModelReply = { tool: 'agent_spawn', args: { operationId: 'spawn-descendant', name: '后代 B', responsibility: '独立核对细节', scope: '回调细节', body: [{ kind: 'text', text: '核对细节后回报 A' }], model: { alias: 'arcane' }, modelReason: '复杂细节需要独立核对' } }
+const spawnDescendant: ModelReply = { tool: 'agent_spawn', args: { operationId: 'spawn-descendant', name: '后代 B', responsibility: '独立核对细节', scope: '回调细节', body: [{ kind: 'text', text: '核对细节后回报 A' }], model: { choice: 'arcane' }, modelReason: '复杂细节需要独立核对' } }
 const memberOf = (f: StopRuntime) => f.members().find(one => one.model.model === 'member-model')!
 const delegationOf = (f: StopRuntime) => f.delegations().find(one => one.assigneeId === memberOf(f)?.agentId)!
 

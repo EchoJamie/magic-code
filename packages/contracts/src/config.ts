@@ -11,7 +11,7 @@ import type { LogLevel } from './diagnostics.ts'
  */
 
 import type { McpConfig } from './mcp.ts'
-import type { ModelAliases, ProviderModelOverride } from './model.ts'
+import type { ModelRef, ProviderModelOverride } from './model.ts'
 import type { ModelSwitchRequest } from './control.ts'
 
 /**
@@ -258,7 +258,12 @@ export type MagicConfig = {
   readonly debugMode?: boolean
   readonly logLevel?: LogLevel
   readonly agentRoles?: Readonly<Record<string, AgentRoleConfig>>
-  readonly modelAliases?: ModelAliases
+  readonly models?: {
+    readonly default?: ModelRef
+    readonly cantrip?: ModelRef
+    readonly spell?: ModelRef
+    readonly arcane?: ModelRef
+  }
   readonly providers: Readonly<Record<string, ProviderConfig>>
   readonly dataDir: string
   /** 权限段（阶段 2）——见 `PermissionsConfig`。 */

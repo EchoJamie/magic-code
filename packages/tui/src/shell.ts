@@ -22,7 +22,7 @@ import { decisionActions } from './components/decision.ts'
 import { composerLayout } from './components/composer.ts'
 import { dirname, join } from 'node:path'
 import { MAGIC_DIR, apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
-import type { ModelAlias } from '@magic/contracts'
+import type { ModelChoice } from '@magic/contracts'
 
 import type {
   AgentId,
@@ -416,7 +416,7 @@ type PendingPicker =
    * **等「取网页用的模型」那一次保存的回话**（U78）——与 `'model'` 分开：那一样是等
    * 一屏新读数（回去铺列表），这一样是等**一次动作的结果**（收起抽屉、留一行回执）。
    */
-  | 'aliasSave'
+  | 'modelSave'
 
 /**
  * `/config` 开屏要问的那三份读数——**一份都不能少**（少一份，那一格就成了「还没问到」）。
@@ -911,7 +911,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   /** 映射编辑取全局配置；工作选择与思考取对应 Agent 的有效组合。 */
   const scopeCurrent = (): ModelRef | null =>
-    modelScope !== 'session' ? view.aliases[modelScope] ?? null
+    modelScope !== 'session' ? view.configuredModels[modelScope] ?? null
       : collaborationModel !== null
         ? (collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model) ?? null
         : view.modelCurrent
@@ -1668,11 +1668,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     //    ——设计：「刷新只更新信息，**不抢走列表当前焦点**、不清草稿、不写回默认」。
     //    故重铺要保住当前选中那一行（`refreshModelPicker` 里做），且**不关抽屉**。
     if (event.kind === 'model.catalog') {
-      if (waiting === 'aliasSave') {
+      if (waiting === 'modelSave') {
         // 映射保存只给回执；首次明确开始在成功回执后应用 Default。
         waiting = null
         modelScope = 'session'
-        if (startOnAliasSave && event.data.note?.startsWith('已保存') === true) send({ type: 'model.switch', alias: 'default' })
+        if (startOnAliasSave && event.data.note?.startsWith('已保存') === true) send({ type: 'model.switch', choice: 'default' })
         startOnAliasSave = false
         if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
       } else if (waiting === 'model') {
@@ -2929,12 +2929,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     : view.collaboration?.members.find(one => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'
 
   const modelPickerHint = (note: string): string => {
-    if (modelScope === 'default' && view.aliases.default === undefined) return [
+    if (modelScope === 'default' && view.configuredModels.default === undefined) return [
       '使用此模型开始：设为默认，并先用于尚未配置的三个能力档位，之后可分别调整', note,
     ].filter(Boolean).join('\n')
-    const same = modelScope === 'session' && view.aliases.cantrip !== undefined
-      && view.aliases.spell?.provider === view.aliases.cantrip.provider && view.aliases.spell?.model === view.aliases.cantrip.model
-      && view.aliases.arcane?.provider === view.aliases.cantrip.provider && view.aliases.arcane?.model === view.aliases.cantrip.model
+    const same = modelScope === 'session' && view.configuredModels.cantrip !== undefined
+      && view.configuredModels.spell?.provider === view.configuredModels.cantrip.provider && view.configuredModels.spell?.model === view.configuredModels.cantrip.model
+      && view.configuredModels.arcane?.provider === view.configuredModels.cantrip.provider && view.configuredModels.arcane?.model === view.configuredModels.cantrip.model
     return [modelHint(view.models, note || undefined, modelScope),
       modelScope === 'session' ? `模型选择与思考设置作用于：${modelTarget()}；映射编辑是全局配置` : '',
       same ? '当前三个档位使用同一模型' : '',
@@ -2943,7 +2943,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
   const openModelPicker = (note: string): void => {
     // 设置与工作选择共用读数；实际型号只在映射编辑层出现。
-    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.aliases, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
+    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
 
     commit(
       openPicker(view, {
@@ -2979,7 +2979,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       return
     }
     if (view.dock.picker.source === 'model-choice') {
-      const rows = modelChoiceRows(view.aliases, scopeCurrent())
+      const rows = modelChoiceRows(view.configuredModels, scopeCurrent())
       commit({ ...view, dock: { ...view.dock, picker: { ...view.dock.picker, rows } } })
       return
     }
@@ -2988,7 +2988,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
     const held = picked(view)?.pick
     // 重铺与铺**同一份读数、同一句话**（U78）——不然刷新一次那一屏就换了个人说话
-    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.aliases, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
+    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
     const hint = modelPickerHint(note)
 
     if (rows.length === 0) {
@@ -4834,10 +4834,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
       // 工作选择只发档位；实际组合由执行侧读取配置解析。
       if (view.dock.picker.source === 'model-choice') {
-        const alias = row.value as ModelAlias
-        if (view.aliases[alias] === undefined) { commit(appendReceipt(view, `${modelLabel(alias)} 尚未配置；请在 /model 的模型档位或默认模型中设置`)); return NONE }
-        if (collaborationModel !== null) send({ type: 'collaboration.configure', ...collaborationModel, model: { alias } })
-        else send({ type: 'model.switch', alias })
+        const choice = row.value as ModelChoice
+        if (view.configuredModels[choice] === undefined) { commit(appendReceipt(view, `${modelLabel(choice)} 尚未配置；请在 /model 的模型档位或默认模型中设置`)); return NONE }
+        if (collaborationModel !== null) send({ type: 'collaboration.configure', ...collaborationModel, model: { choice } })
+        else send({ type: 'model.switch', choice })
         collaborationModel = null
         modelScope = 'session'
         commit(closePicker(view))
@@ -4847,13 +4847,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
       if (view.dock.picker.source === 'model') {
         if (row.value.startsWith('edit:')) {
           enterLayer()
-          modelScope = row.value.slice(5) as ModelAlias
+          modelScope = row.value.slice(5) as ModelChoice
           openModelPicker('')
           return NONE
         }
         if (row.value === 'choose') {
           enterLayer()
-          commit(openPicker(view, { source: 'model-choice', selected: 0, rows: modelChoiceRows(view.aliases, scopeCurrent()), hint: `作用对象：${modelTarget()}；选定只影响此对象，思考等级独立。` }))
+          commit(openPicker(view, { source: 'model-choice', selected: 0, rows: modelChoiceRows(view.configuredModels, scopeCurrent()), hint: `作用对象：${modelTarget()}；选定只影响此对象，思考等级独立。` }))
           return NONE
         }
         if (row.value === 'reasoning') {
@@ -4868,11 +4868,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
 
         // 保存配置与应用工作选择是两个动作；首次明确开始才同时应用 Default。
         if (modelScope !== 'session') {
-          const alias = modelScope
-          const first = alias === 'default' && view.aliases.default === undefined
+          const choice = modelScope
+          const first = choice === 'default' && view.configuredModels.default === undefined
           startOnAliasSave = first
-          send({ type: 'model.alias.set', alias, provider: row.pick.provider, model: row.pick.model, ...(first ? { initialize: true } : {}) })
-          waiting = 'aliasSave'
+          send({ type: 'model.configure', choice, provider: row.pick.provider, model: row.pick.model, ...(first ? { initialize: true } : {}) })
+          waiting = 'modelSave'
           commit(closePicker(view))
         }
         return NONE

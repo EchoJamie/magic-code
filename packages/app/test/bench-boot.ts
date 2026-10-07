@@ -94,7 +94,7 @@ export async function bootOnce(): Promise<BootStages> {
   writeFileSync(
     configPath,
     JSON.stringify({
-      modelAliases: {default: {provider: "bench", model: 'm'}, cantrip: {provider: "bench", model: 'm'}, spell: {provider: "bench", model: 'm'}, arcane: {provider: "bench", model: 'm'}},
+      models: {default: {provider: "bench", model: 'm'}, cantrip: {provider: "bench", model: 'm'}, spell: {provider: "bench", model: 'm'}, arcane: {provider: "bench", model: 'm'}},
       providers: { bench: { vendor: 'minimax', baseURL: 'http://127.0.0.1:1/v1', apiKey: 'sk-bench-not-used' } },
       dataDir: join(root, 'data'),
     }),

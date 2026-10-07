@@ -101,7 +101,7 @@ function waitIdle(handle: ShellHandle, times: number): Promise<void> {
 function realGateway(): { readonly make: (stamper: EventStamper) => ModelGateway; readonly bodies: string[] } {
   const bodies: string[] = []
   const make = (stamper: EventStamper): ModelGateway =>
-    createModelGateway({
+    createModelGateway({ model: 'test-model',
       providerId: 'test',
       config: { baseURL: 'http://test.invalid/v1', apiKey: 'fake-test-key' },
       env: {},

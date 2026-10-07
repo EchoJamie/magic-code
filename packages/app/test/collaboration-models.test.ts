@@ -48,16 +48,16 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
     missing: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/missing` },
   }
   const configPath = join(magic.base, 'config.json')
-  const config = { dataDir, providers, modelAliases: {default: {provider: "missing", model: 'missing'}, cantrip: {provider: "ds", model: 'entry-model'}, spell: {provider: "mm", model: 'member-model'}, arcane: {provider: "ds", model: 'role-default-must-not-replace-member'}}, workspaceRoots: [changed], agentRoles: { reader: {
+  const config = { dataDir, providers, models: {default: {provider: "missing", model: 'missing'}, cantrip: {provider: "ds", model: 'entry-model'}, spell: {provider: "mm", model: 'member-model'}, arcane: {provider: "ds", model: 'role-default-must-not-replace-member'}}, workspaceRoots: [changed], agentRoles: { reader: {
     name: '只读审查', instructions: 'ROLE_INSTRUCTIONS', guidanceFiles: [guide], skills: ['review'], tools: ['read'],
-    model: { alias: 'arcane', reasoning: { mode: 'level' as const, level: 'high' } }, ...rolePatch,
+    model: { choice: 'arcane', reasoning: { mode: 'level' as const, level: 'high' } }, ...rolePatch,
   } } }
   writeFileSync(configPath, JSON.stringify(config))
   const store = createRecordsStore({ dataDir, workspace: [realpathSync(workspace)] })
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '原始目标' }, at: 1 }) }
-  const coordinator = store.collaboration.registerAgent({ operationId: 'register', sessionId: 'origin', name: '入口', role: '', model: { alias: 'default', provider: 'ds', model: 'entry-model', reasoning: { mode: 'off' } }, at: 2 })
+  const coordinator = store.collaboration.registerAgent({ operationId: 'register', sessionId: 'origin', name: '入口', role: '', model: { choice: 'default', provider: 'ds', model: 'entry-model', reasoning: { mode: 'off' } }, at: 2 })
   const collaboration = store.collaboration.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
-  const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { alias: 'default', provider: 'mm', model: 'member-model', reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
+  const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'default', provider: 'mm', model: 'member-model', reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
   store.collaboration.respondToDelegation(agent.agentId, { operationId: 'accept', delegationId: delegation.delegationId, response: 'accept', at: 5 })
   const open = (session = 'member', coordinate = true, collaborationChanged?: () => void) => assemble({
     cwd: changed, session, magic, config: loadConfig({ path: configPath, magic }), allowAll: true,
@@ -133,7 +133,7 @@ describe('成员主机装配', () => {
     const f = setup()
     const peer = f.store.collaboration.spawn(f.coordinator.agentId, {
       operationId: 'spawn-peer', sessionId: 'peer', name: '另一成员', role: 'reader', responsibility: '独立审查',
-      model: { alias: 'default', provider: 'ds', model: 'peer-model', reasoning: { mode: 'level', level: 'high' } },
+      model: { choice: 'default', provider: 'ds', model: 'peer-model', reasoning: { mode: 'level', level: 'high' } },
       body: [{ kind: 'text', text: '检查另一部分' }], scope: '只读工作',
       source: f.collaboration.origin, authorization: [f.collaboration.origin], at: 6,
     })
@@ -156,7 +156,7 @@ describe('成员主机装配', () => {
       expect(initialB.body['reasoning_effort']).toBe('high')
       expect(texts(initialA)).not.toContain('FIRST_MEMBER_B')
       expect(texts(initialB)).not.toContain('FIRST_MEMBER_A')
-      expect(first.applyModel({ alias: 'spell', provider: 'ds', model: 'switched-member', reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
+      expect(first.applyModel({ choice: 'spell', provider: 'ds', model: 'switched-member', reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
       await Promise.all([a.submit('AFTER_SWITCH_A', 3000), b.submit('AFTER_SWITCH_B', 3000)])
       expect(f.seen.find(one => one.body['model'] === 'switched-member')?.body['reasoning_effort']).toBe('low')
       expect(f.seen.findLast(one => one.body['model'] === 'peer-model')?.body['reasoning_effort']).toBe('high')
@@ -209,10 +209,10 @@ describe('成员主机装配', () => {
       }
       const update = app.records.collaboration.updateAgent
       app.records.collaboration.updateAgent = () => { throw new Error('模拟持久更新失败') }
-      expect(app.applyModel({ alias: 'default', provider: 'ds', model: 'another', reasoning: { mode: 'off' } }).ok).toBe(false)
+      expect(app.applyModel({ choice: 'default', provider: 'ds', model: 'another', reasoning: { mode: 'off' } }).ok).toBe(false)
       expect(app.models).toBe(before)
       app.records.collaboration.updateAgent = update
-      const changed = { alias: 'default' as const, provider: 'ds', model: 'another', reasoning: { mode: 'off' as const } }
+      const changed = { choice: 'default' as const, provider: 'ds', model: 'another', reasoning: { mode: 'off' as const } }
       expect(app.applyModel(changed).ok).toBe(true)
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(changed)
       app.close()
@@ -223,7 +223,7 @@ describe('成员主机装配', () => {
       app.close()
       app = f.open('origin')
       await app.ready(); await app.boot()
-      expect(app.applyModel({ alias: 'spell', provider: 'mm', model: 'entry-changed' }).ok).toBe(true)
+      expect(app.applyModel({ choice: 'spell', provider: 'mm', model: 'entry-changed' }).ok).toBe(true)
       expect(f.store.collaboration.getAgent(f.coordinator.agentId)?.model.model).toBe('entry-changed')
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(changed)
       expect(f.store.collaboration.getCollaboration(f.collaboration.collaborationId)?.defaultModel).toEqual(f.collaboration.defaultModel)
@@ -237,7 +237,7 @@ describe('成员主机装配', () => {
     const shell = attachShell(app.shell)
     try {
       await app.ready(); await app.boot()
-      const model = { alias: 'default' as const, provider: 'ds', model: 'committed', reasoning: { mode: 'off' as const } }
+      const model = { choice: 'default' as const, provider: 'ds', model: 'committed', reasoning: { mode: 'off' as const } }
       expect(app.applyModel(model)).toEqual({ ok: true, selection: model })
       expect(app.models?.current()).toEqual(model)
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(model)
@@ -429,14 +429,14 @@ describe('manager 模型预检只读已有缓存', () => {
       const cache = createFileModelInfoCache(f.dataDir)
       const snapshot: ModelInfoSnapshot = { provider: 'ds', scope: `deepseek@${f.providers.ds.baseURL}`, fetchedAt: 1, models: [{ id: 'cached', reasoning: { levels: ['low'], disable: false } }] }
       const configuration = JSON.parse(readFileSync(f.configPath, 'utf8'))
-      configuration.modelAliases.default = { provider: 'ds', model: 'cached' }
+      configuration.models.default = { provider: 'ds', model: 'cached' }
       writeFileSync(f.configPath, JSON.stringify(configuration))
       await cache.replace(snapshot, cacheAccessFor({ provider: 'ds', configPath: f.configPath, apiKey: f.providers.ds.apiKey, processToken: 'test' }))
-      const defaults = { alias: 'default' as const, provider: 'ds', model: 'cached', reasoning: { mode: 'level' as const, level: 'high' } }
+      const defaults = { choice: 'default' as const, provider: 'ds', model: 'cached', reasoning: { mode: 'level' as const, level: 'high' } }
       await expect(resolveManagedModel({ magic: f.magic, defaults })).rejects.toThrow('不支持思考档位')
       expect(await resolveManagedModel({ magic: f.magic, defaults, model: { reasoning: { mode: 'level', level: 'low' } } })).toEqual({ ...defaults, reasoning: { mode: 'level', level: 'low' } })
       await expect(resolveManagedModel({ magic: f.magic, defaults, role: 'unknown' })).rejects.toThrow('未知角色')
-      await expect(resolveManagedModel({ magic: f.magic, defaults, model: { alias: 'spell', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
+      await expect(resolveManagedModel({ magic: f.magic, defaults, model: { choice: 'spell', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
       f.store.collaboration.updateAgent(f.agent.agentId, { model: defaults })
       const app = f.open()
       try { await expect(app.ready()).rejects.toThrow('不支持思考档位') }

@@ -12,8 +12,8 @@ describe('App 发现与显式打开', () => {
       const helper = join(g.app, 'Contents/Helpers/magic-runtime')
       mkdirSync(dirname(helper), { recursive: true })
       writeFileSync(helper, 'isolated executable fixture')
-      const alias = join(g.root, 'magic')
-      symlinkSync(helper, alias)
+      const choice = join(g.root, 'magic')
+      symlinkSync(helper, choice)
       // 原预期 → 新预期：原来按 bundle id 带不带 `.dev` **在两个目录之间分叉**
       // （带 Dev 的那个名字 / 不带的那一个）；U109 起**不再分叉**——两种身份都落在
       // **同一个**「Magic Code」下。依据：用户 2026-09-30 口径（代码里不留这种标记）。
@@ -22,7 +22,7 @@ describe('App 发现与显式打开', () => {
       const seen: string[] = []
       for (const development of [false, true]) {
         writeFileSync(join(g.app, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.magiccode.app${development ? '.dev' : ''}</string></dict></plist>`)
-        const location = locateHost({ home: g.home, standalone: true, executable: alias, appPath: '/wrong.app', discoveryPath: '/wrong.json' })
+        const location = locateHost({ home: g.home, standalone: true, executable: choice, appPath: '/wrong.app', discoveryPath: '/wrong.json' })
         expect(location.app).toBe(realpathSync(g.app))
         expect(location.source).toBe(realpathSync(helper))
         expect(location.discoveryPath).toBe(hostDiscoveryPath(g.home))

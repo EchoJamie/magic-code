@@ -217,7 +217,7 @@ const LS_OUTPUT = [
 function historyShown(app: ReturnType<typeof live>): void {
   app.feed([
     state(SESSION, [{ id: SESSION, title: '记录查询优化' }]),
-    event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
+    event('model.call.start', { choice: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
     event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
   ])
   app.type('看看这个工作区里有什么')
@@ -300,7 +300,7 @@ describe('场景 3 · 工作中（流式）', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '时区修正' }]),
-      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { choice: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('turn.start', {}),
     ])
     app.type('把 src/utils/date.ts 的时区处理改成本地时区')
@@ -498,7 +498,7 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
     const app = live()
     app.feed([
       state(SESSION, [{ id: SESSION, title: '修复时区处理…' }]),
-      event('model.call.start', { alias: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
+      event('model.call.start', { choice: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
     ])
     app.type('/model ')
     app.key(ENTER)
@@ -512,7 +512,7 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
           { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
           { provider: 'minimax-m2', cache: { snapshot: { provider: 'minimax-m2', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M2' }] } }, },
         ],
-        current: { alias: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+        current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     ])
 
@@ -543,7 +543,7 @@ describe('场景 11 · `/help`（纯输出型）', () => {
   test('输出进记录区（dim 块）；**命令本身不回显**', () => {
     const app = live()
     app.feed([state(SESSION, [{ id: SESSION, title: '时区修正' }])])
-    app.feed([event('model.switched', { alias: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' })])
+    app.feed([event('model.switched', { choice: 'default', ok: true, provider: 'minimax-m2', model: 'MiniMax-M2' })])
     app.type('/help ')
     app.key(ENTER)
 

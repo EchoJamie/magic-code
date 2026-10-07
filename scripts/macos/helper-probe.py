@@ -47,7 +47,7 @@ def probe(helper):
             base = Path(root)
             (base / '.magic').mkdir(mode=0o700)
             (base / '.magic/config.json').write_text(json.dumps({
-                'dataDir': str(base / 'data'), 'workspaceRoots': [root], 'modelAliases': {alias: {'provider': 'local', 'model': 'probe'} for alias in ['default', 'cantrip', 'spell', 'arcane']},
+                'dataDir': str(base / 'data'), 'workspaceRoots': [root], 'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']},
                 'providers': {'local': {'baseURL': f'http://127.0.0.1:{server.server_port}/v1',
                     'apiKey': 'synthetic-probe-key', 'vendor': 'deepseek'}}}))
             script = base / 'probe.json'

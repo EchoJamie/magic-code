@@ -17,7 +17,7 @@ export function collaborationStage(options: ShellOptions = {}) {
   const shell = createShell({ ...spy.transport, send(command) {
     spy.transport.send(command)
     if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaborationDetail(command.member)))
-    if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], aliases: { default: { provider: 'local', model: 'mini' } }, current: { alias: 'default' as const, provider: 'local', model: 'mini' } }))
+    if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { choice: 'default' as const, provider: 'local', model: 'mini' } }))
   } }, options)
   shells.push(shell)
   spy.emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', title: '修复回调', at: 0 }, { id: 'member', at: 0 }] }))
@@ -161,7 +161,7 @@ test('配置复用选择器：成员与后续派生默认分别送命令，不�
   expect(app.screen()).toContain('模型选择与思考设置作用于：实现')
   for (let i = 0; i < 4; i++) app.key('down')
   app.key('enter'); app.key('enter')
-  expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker', model: { alias: 'default' } })
+  expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker', model: { choice: 'default' } })
   app.key('tab'); app.pick('default-model'); for (let i = 0; i < 4; i++) app.key('down'); app.key('enter'); app.key('enter')
   const command = app.spy.commands.at(-1)
   expect(command?.type).toBe('collaboration.configure')
@@ -173,7 +173,7 @@ test('从成员设置编辑全局档位时，焦点和当前标记取该映射�
   const app = collaborationStage()
   app.member(); app.pick('member-model')
   const mapping = { provider: 'local', model: 'deepseek-reasoner' }
-  app.spy.emit(event('model.catalog', { aliases: { cantrip: mapping }, entries: [{ provider: 'local', cache: { snapshot: {
+  app.spy.emit(event('model.catalog', { configuredModels: { cantrip: mapping }, entries: [{ provider: 'local', cache: { snapshot: {
     provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: 'mini' }, { id: 'deepseek-reasoner' }],
   } } }] }))
   app.pick('edit:cantrip')
@@ -183,7 +183,7 @@ test('从成员设置编辑全局档位时，焦点和当前标记取该映射�
   expect(dock.picker.rows[dock.picker.selected]?.pick).toEqual(mapping)
   expect(dock.picker.rows.find(row => row.current)?.pick).toEqual(mapping)
   app.key('enter')
-  expect(app.spy.commands.at(-1)).toEqual({ type: 'model.alias.set', alias: 'cantrip', ...mapping })
+  expect(app.spy.commands.at(-1)).toEqual({ type: 'model.configure', choice: 'cantrip', ...mapping })
 })
 
 test('不同成员审批逐份排队；重复通知与重复按键不重复裁决；答完返回阅读位置', () => {
@@ -232,7 +232,7 @@ test('成员记录刷新保持阅读位置；配置目录刷新保持成员作�
   app.key('left'); app.pick('member-model')
   app.pick('refresh')
   expect(app.spy.commands.at(-1)).toEqual({ type: 'model.refresh' })
-  app.spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], aliases: { default: { provider: 'local', model: 'mini' } }, current: { alias: 'default' as const, provider: 'other', model: 'main' } }))
+  app.spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { choice: 'default' as const, provider: 'other', model: 'main' } }))
   expect(app.screen()).toContain('模型选择与思考设置作用于：实现')
   app.pick('choose'); app.pick('default')
   expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker' })

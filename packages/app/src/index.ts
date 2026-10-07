@@ -39,7 +39,7 @@ export type { ConfigFingerprint } from './cache-access.ts'
 // —— 模型信息缓存与配置保存（U41）——
 
 export { MODEL_CACHE_DIR, createFileModelInfoCache } from './model-cache.ts'
-export { editConfigFile, removeProvider, saveProvider, setModelAlias } from './config-save.ts'
+export { editConfigFile, removeProvider, saveProvider, configureModel } from './config-save.ts'
 export type { EditConfigInput, SaveOutcome } from './config-save.ts'
 
 // —— 外壳位（真外壳归 U09）——

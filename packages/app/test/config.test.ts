@@ -34,13 +34,13 @@ function loadFrom(
 }
 
 describe('形制照读（字面冻结）', () => {
-  test('三件落地——defaultProvider / providers / dataDir', () => {
+  test('三件落地——models / providers / dataDir', () => {
     const loaded = loadFrom(validConfig())
 
     expect(loaded.providerId).toBe('minimax')
     // `provider` 可缺（U41：还没配过缺省连接的配置就是这样）——本用例的配置里它该在，
     // 故 `!` 是断言本身的一部分，不是绕过检查
-    expect(loaded.config.modelAliases?.default?.model).toBe('MiniMax-M3')
+    expect(loaded.config.models?.default?.model).toBe('MiniMax-M3')
     expect(loaded.provider!.baseURL).toBe('https://api.minimaxi.com/v1')
     expect(Object.keys(loaded.config.providers)).toEqual(['minimax'])
   })
@@ -306,6 +306,11 @@ describe('报错取「一声响」（不静默兜底）', () => {
     expect(() => loadFrom('{ 这不是 JSON }')).toThrow(/不是合法 JSON/)
   })
 
+  test('旧别名集合明确拒绝，固定档位不接受任意名称', () => {
+    expect(() => loadFrom(validConfig({ modelAliases: { default: { provider: 'minimax', model: 'MiniMax-M3' } } }))).toThrow(/modelAliases 已移除/)
+    expect(() => loadFrom(validConfig({ models: { custom: { provider: 'minimax', model: 'MiniMax-M3' } } }))).toThrow(/custom/)
+  })
+
   test('旧 defaultProvider 字段明确拒绝', () => {
     expect(() => loadFrom(validConfig({ defaultProvider: 'ghost' }))).toThrow(
       /defaultProvider 已移除/,
@@ -315,7 +320,7 @@ describe('报错取「一声响」（不静默兜底）', () => {
   test('字段缺 / 空 / 类型不对——逐条点名到字段', () => {
     const cases: readonly [unknown, RegExp][] = [
       [validConfig({ defaultProvider: '' }), /defaultProvider 已移除/],
-      [validConfig({ providers: {} }), /modelAliases.default.provider 指向未知连接/],
+      [validConfig({ providers: {} }), /models.default.provider 指向未知连接/],
       // U41 改判这两条的期望文案——**原锚**：「缺 `baseURL` / 缺 `model` ⇒ 各报一句
       // 『须是非空字符串』」；**为何变**：两条接入路径的必填项不同了——有 `vendor` 的连接
       // 由适配给地址、型号来自接口，两者都可省；没有 `vendor` 的兼容接入两者仍必给，
@@ -646,10 +651,10 @@ describe('智能体角色配置', () => {
     const dir = tempDir('magic-role-config-')
     try {
       const path = writeConfig(dir, { providers: { ds: { vendor: 'deepseek' } }, agentRoles: { reviewer: {
-        name: '审查', instructions: '只给有证据的发现', guidanceFiles: ['rules/review.md', '~/shared.md'], skills: ['code-review'], tools: ['read'], model: { alias: 'cantrip', reasoning: { mode: 'off' } },
+        name: '审查', instructions: '只给有证据的发现', guidanceFiles: ['rules/review.md', '~/shared.md'], skills: ['code-review'], tools: ['read'], model: { choice: 'cantrip', reasoning: { mode: 'off' } },
       } } })
       const loaded = loadConfig({ path, magic: magicAt(HOME) })
-      expect(loaded.config.agentRoles?.['reviewer']).toEqual({ name: '审查', instructions: '只给有证据的发现', guidanceFiles: [join(dir, 'rules/review.md'), join(HOME, 'shared.md')], skills: ['code-review'], tools: ['read'], model: { alias: 'cantrip', reasoning: { mode: 'off' } } })
+      expect(loaded.config.agentRoles?.['reviewer']).toEqual({ name: '审查', instructions: '只给有证据的发现', guidanceFiles: [join(dir, 'rules/review.md'), join(HOME, 'shared.md')], skills: ['code-review'], tools: ['read'], model: { choice: 'cantrip', reasoning: { mode: 'off' } } })
     } finally { removeDir(dir) }
   })
 

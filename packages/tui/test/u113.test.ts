@@ -2,12 +2,12 @@ import { expect, test } from 'bun:test'
 import { createStage } from './screen.ts'
 import { event } from './events.ts'
 const pair = { provider: 'local', model: 'deepseek-chat' }
-const aliases = { default: pair, cantrip: pair, spell: pair, arcane: pair }
+const configuredModels = { default: pair, cantrip: pair, spell: pair, arcane: pair }
 const entries = [{ provider: 'local', vendor: 'deepseek', cache: { snapshot: { provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: pair.model, reasoning: { levels: ['low', 'high'], disable: true } }] } } }]
 function settings(configured = true) {
   const stage = createStage()
   stage.type('/model '); stage.press({ kind: 'enter' })
-  stage.feed([event('model.catalog', { entries, aliases: configured ? aliases : {}, ...(configured ? { current: { alias: 'default', ...pair } as const } : {}) })])
+  stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { choice: 'default', ...pair } as const } : {}) })])
   return stage
 }
 function pick(stage: ReturnType<typeof createStage>, value: string) {
@@ -28,7 +28,7 @@ test('Default 与三档分开；只在映射编辑层列实际型号，思考不
   expect(picker(stage).rows.slice(0, 6).map(row => row.value)).toEqual(['edit:default','edit:cantrip','edit:spell','edit:arcane','choose','reasoning'])
   expect(picker(stage).hint).toContain('当前三个档位使用同一模型')
   pick(stage, 'edit:cantrip'); stage.press({ kind: 'enter' })
-  expect(stage.commands().at(-1)).toEqual({ type: 'model.alias.set', alias: 'cantrip', ...pair })
+  expect(stage.commands().at(-1)).toEqual({ type: 'model.configure', choice: 'cantrip', ...pair })
   expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
 })
 test('首次明确使用才初始化；保存成功回执后才应用 Default，失败不报成功', () => {
@@ -36,12 +36,12 @@ test('首次明确使用才初始化；保存成功回执后才应用 Default，
   pick(stage, 'edit:default')
   expect(picker(stage).hint).toContain('使用此模型开始')
   stage.press({ kind: 'enter' })
-  expect(stage.commands().at(-1)).toEqual({ type: 'model.alias.set', alias: 'default', ...pair, initialize: true })
+  expect(stage.commands().at(-1)).toEqual({ type: 'model.configure', choice: 'default', ...pair, initialize: true })
   expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
-  stage.feed([event('model.catalog', { entries, aliases, note: '已保存 Default' })])
-  expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', alias: 'default' })
+  stage.feed([event('model.catalog', { entries, configuredModels, note: '已保存 Default' })])
+  expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', choice: 'default' })
   const failed = settings(false); pick(failed, 'edit:default'); failed.press({ kind: 'enter' })
-  failed.feed([event('model.catalog', { entries, aliases: {}, note: '配置保存失败' })])
+  failed.feed([event('model.catalog', { entries, configuredModels: {}, note: '配置保存失败' })])
   expect(failed.commands().some(one => one.type === 'model.switch')).toBe(false)
 })
 test('工作选择只列四个配置来源；缺档位仍可见、拒绝时不给执行命令', () => {
