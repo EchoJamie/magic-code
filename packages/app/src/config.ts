@@ -639,10 +639,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
 export function parseConfig(parsed: unknown, path: string, magic: MagicHome): LoadedConfig {
   const home = magic.home
   const raw = asObject(parsed, path, '配置根')
-
-  for (const key of ['defaultProvider', 'webFetch', 'modelAliases']) {
-    if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${key} 已移除；请在 models 配置 Default 与模型档位`)
-  }
+  // 顶层多出来的键不是错误——本函数只管自己消费的部分,不认识的键一律不读不校。
 
   const providersRaw = raw['providers'] === undefined ? {} : asObject(raw['providers'], path, 'providers')
   const providers: Record<string, ProviderConfig> = {}
