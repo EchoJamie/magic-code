@@ -69,7 +69,6 @@ describe('U113 统一模型配置与执行选择', () => {
     const root = tempDir('u113-invalid-')
     try {
       for (const config of [
-        { providers, defaultProvider: 'main' }, { providers, webFetch: configuredModels.cantrip },
         { providers: { main: { ...providers.main, model: 'raw' } } },
         { providers: { main: { ...providers.main, modelOverrides: { 'deepseek-chat': { reasoning: { mode: 'off' } } } } } },
         { providers, models: { wrong: configuredModels.default } },

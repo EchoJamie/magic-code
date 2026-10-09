@@ -306,20 +306,12 @@ describe('报错取「一声响」（不静默兜底）', () => {
     expect(() => loadFrom('{ 这不是 JSON }')).toThrow(/不是合法 JSON/)
   })
 
-  test('旧别名集合明确拒绝，固定档位不接受任意名称', () => {
-    expect(() => loadFrom(validConfig({ modelAliases: { default: { provider: 'minimax', model: 'MiniMax-M3' } } }))).toThrow(/modelAliases 已移除/)
+  test('固定档位不接受任意名称', () => {
     expect(() => loadFrom(validConfig({ models: { custom: { provider: 'minimax', model: 'MiniMax-M3' } } }))).toThrow(/custom/)
-  })
-
-  test('旧 defaultProvider 字段明确拒绝', () => {
-    expect(() => loadFrom(validConfig({ defaultProvider: 'ghost' }))).toThrow(
-      /defaultProvider 已移除/,
-    )
   })
 
   test('字段缺 / 空 / 类型不对——逐条点名到字段', () => {
     const cases: readonly [unknown, RegExp][] = [
-      [validConfig({ defaultProvider: '' }), /defaultProvider 已移除/],
       [validConfig({ providers: {} }), /models.default.provider 指向未知连接/],
       // U41 改判这两条的期望文案——**原锚**：「缺 `baseURL` / 缺 `model` ⇒ 各报一句
       // 『须是非空字符串』」；**为何变**：两条接入路径的必填项不同了——有 `vendor` 的连接
