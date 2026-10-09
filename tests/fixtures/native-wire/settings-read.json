@@ -5,6 +5,6 @@
     "t": "native.settings.read",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data"
+    "base": "/tmp/synthetic"
   }
 }

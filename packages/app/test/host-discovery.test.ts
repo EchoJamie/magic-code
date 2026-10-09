@@ -33,7 +33,7 @@ describe('App 发现与显式打开', () => {
       const moved = join(g.root, 'Moved.app')
       renameSync(g.app, moved)
       expect(locateHost({ home: g.home, standalone: true, executable: join(moved, 'Contents/Helpers/magic-runtime') }).app).toBe(moved)
-      expect(() => locateHost({ standalone: true, executable: process.execPath })).toThrow('CLI 不在所属 App')
+      expect(() => locateHost({ home: g.home, standalone: true, executable: process.execPath })).toThrow('CLI 不在所属 App')
     } finally { g.close() }
   })
 
@@ -43,7 +43,7 @@ describe('App 发现与显式打开', () => {
       const location = locateHost({ home: g.home })
       expect(readHostDiscovery(location)).toBeUndefined()
       g.publish({ ...g.discovery, base: 'relative' })
-      expect(() => readHostDiscovery(location)).toThrow('base 必须是绝对路径')
+      expect(() => readHostDiscovery(location)).toThrow('服务身份不完整')
       writeFileSync(g.discoveryPath, '{broken')
       expect(() => readHostDiscovery(location)).toThrow('不是有效 JSON')
       expect(readFileSync(g.discoveryPath, 'utf8')).toBe('{broken')
@@ -58,7 +58,7 @@ describe('App 发现与显式打开', () => {
       const selected = selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: {} })
       expect(selected.magic.base).toBe(g.base)
       expect(selected.loaded.path).toBe(join(g.base, 'config.json'))
-      expect(selected.loaded.config.dataDir).toBe(g.dataDir)
+      expect(selected.loaded.config).not.toHaveProperty('dataDir')
       for (const configured of ['selected', dirname(g.base), '  selected/  ']) {
         expect(selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: configured } }).magic.base).toBe(g.base)
       }
@@ -67,8 +67,8 @@ describe('App 发现与显式打开', () => {
       // 报的是**真正被比的那一位**。依据：U109 裁决（守卫只比 `dataDir`）。
       // **没变弱**：两条判据仍是「以那个理由拒绝」，且报出的正是**判据本身**——原来那两半里
       // 有一半（基础目录）根本不该参与比较。
-      expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('CLI 数据目录=')
-      expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('App 数据目录=')
+      expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('CLI 基础目录=')
+      expect(() => selectedHostConfig(g.discovery, { home: g.home, cwd: g.root, env: { MAGIC_HOME: 'elsewhere' } })).toThrow('App 基础目录=')
     } finally { g.close() }
   })
 
@@ -129,7 +129,6 @@ describe('App 发现与显式打开', () => {
         [{ protocol: 100 }, '协议或软件版本不匹配'],
         [{ source: '/another/runtime' }, '软件来源不匹配'],
         [{ app: join(g.root, 'Other.app') }, '另一 App'],
-        [{ dataDir: join(g.root, 'other-data') }, '数据实例不匹配'],
       ] as const) {
         g.publish({ ...g.discovery, ...change })
         await expect(connectApp(options)).rejects.toThrow(message)
@@ -172,7 +171,7 @@ test('留屏明确重开时先核原数据实例，差异不发送hello/session�
   try {
     await expect(reopenApp({
       home: g.home, appPath: g.app, env: {}, connect: { session: 'same-looking-id' },
-      expectedInstance: { base: '/previous/.magic', dataDir: '/previous/data' },
+      expectedInstance: { base: '/previous/.magic' },
       openApplication: async () => { opened = true },
     })).rejects.toThrow('App 数据实例已改变')
     expect(opened).toBe(false)

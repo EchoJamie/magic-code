@@ -123,7 +123,7 @@ export async function bootOnce(): Promise<BootStages> {
     const stdout = new FakeTty()
     const stdin = new FakeStdin()
 
-    await runTui({
+    await runTui({ magicBase: '/test/.magic',
       transport: assembly.shell,
       stdout: stdout as unknown as NodeJS.WriteStream,
       stdin: stdin as unknown as NodeJS.ReadStream,

@@ -23,7 +23,7 @@ const SCREEN = { columns: 100, rows: 40 } as const
 const AT = 1_700_000_000_000
 
 const spy = createSpyTransport()
-const shell = createShell(spy.transport)
+const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
 for (const char of '看看这个文件') shell.key({ kind: 'char', char })
 shell.key({ kind: 'enter' })
 spy.emit(event('turn.start', {}, { id: 40 }))
@@ -34,7 +34,7 @@ const running = (await show([shell.getView()], SCREEN, AT + 71 + 1_400)).screen.
 
 const done = (() => {
   const spy2 = createSpyTransport()
-  const shell2 = createShell(spy2.transport)
+  const shell2 = createShell(spy2.transport, { magicBase: '/test/.magic' })
   for (const char of '看看这个文件') shell2.key({ kind: 'char', char })
   shell2.key({ kind: 'enter' })
   spy2.emit(event('turn.start', {}, { id: 40 }))
@@ -49,7 +49,7 @@ const finished = (await show([done.getView()], SCREEN, null)).screen.lines.join(
 
 const broken = (() => {
   const spy4 = createSpyTransport()
-  const shell4 = createShell(spy4.transport)
+  const shell4 = createShell(spy4.transport, { magicBase: '/test/.magic' })
   spy4.emit(event('tool.call', { name: 'exec', args: { cmd: 'make test' } }, { id: 71 }))
   spy4.emit(event('tool.result', { call: 71, ok: false, output: { text: '没有这个目标' } }, { id: 72 }))
 
@@ -60,7 +60,7 @@ const failed = (await show([broken.getView()], SCREEN, null)).screen.lines.join(
 
 const held = (() => {
   const spy3 = createSpyTransport()
-  const shell3 = createShell(spy3.transport)
+  const shell3 = createShell(spy3.transport, { magicBase: '/test/.magic' })
   spy3.emit(event('tool.call', { name: 'write', args: { path: 'a.ts' } }, { id: 71 }))
   spy3.emit(
     event('tool.decision.request', { call: 71, name: 'write', material: '整写文件 a.ts', weight: 'heavy' }, { id: 88 }),

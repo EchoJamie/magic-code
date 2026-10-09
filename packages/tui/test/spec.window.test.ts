@@ -33,9 +33,9 @@ import { show } from './screen.ts'
 const WIDE = { columns: 200, rows: 40 } as const
 
 /** 起一个真壳（开机那一格按用例给），并把「投事件 → 读屏」两件包好。 */
-function stage(seeded: ShellOptions = {}) {
+function stage(seeded: Omit<ShellOptions, 'magicBase'> = {}) {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, seeded)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', ...seeded })
 
   return {
     shell,

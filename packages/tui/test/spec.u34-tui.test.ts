@@ -385,7 +385,7 @@ const TIMEOUT_MS = 2000
 /** 起一个**活壳**（真 `TuiApp`）——按键按字节写进 Ink 的 stdin，走完整的那一跳。 */
 function liveApp() {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
   const ui = render(h(TuiApp, { shell }))
 
   const waitFor = async (predicate: () => boolean, label: string): Promise<void> => {

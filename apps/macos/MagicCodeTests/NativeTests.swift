@@ -10,7 +10,7 @@ final class NativeTests: XCTestCase {
         XCTAssertThrowsError(try Diagnostics.arguments(["--debug", "--no-debug"]))
         XCTAssertThrowsError(try Diagnostics.arguments(["--log-level"]))
         XCTAssertThrowsError(try Diagnostics.arguments(["--log-level", "verbose"]))
-        let message = HostResponse.diagnostics(request: "one", value: Diagnostics(debugMode: false, logLevel: .trace), dataDir: "/instance")
+        let message = HostResponse.diagnostics(request: "one", value: Diagnostics(debugMode: false, logLevel: .trace), base: "/instance")
         XCTAssertEqual(try JSONDecoder().decode(HostResponse.self, from: JSONEncoder().encode(message)), message)
         let ack = HostRequest.diagnosticsApplied(request: "one", error: nil)
         XCTAssertEqual(try JSONDecoder().decode(HostRequest.self, from: JSONEncoder().encode(ack)), ack)
@@ -190,7 +190,7 @@ final class NativeTests: XCTestCase {
     func testNotificationCoalescingPriorityAndStableIDs() throws {
         let first = try work(); let notice = try XCTUnwrap(first.notices.first)
         var batch = NoticeBatch(); batch.add(work: first, notice: notice); batch.add(work: first, notice: notice)
-        let deliveries = batch.take(dataDir: "/tmp/data")
+        let deliveries = batch.take(base: "/tmp/data")
         XCTAssertEqual(deliveries.count, 1); XCTAssertEqual(deliveries[0].ids, [notice.id])
         XCTAssertTrue(deliveries[0].body.contains("答复")); XCTAssertFalse(deliveries[0].body.contains(notice.detail!))
         XCTAssertTrue(batch.pending.isEmpty)
@@ -198,7 +198,7 @@ final class NativeTests: XCTestCase {
         let second = try changed(first, ["session": "second"])
         let done2 = AttentionItem(id: "done-two", session: second.session, kind: .done, at: 2, detail: nil, unread: true, delivered: false, fact: "event:2")
         batch.add(work: first, notice: done); batch.add(work: second, notice: done2)
-        let summary = batch.take(dataDir: "/tmp/data")
+        let summary = batch.take(base: "/tmp/data")
         XCTAssertEqual(summary.count, 1); XCTAssertEqual(summary[0].routes.count, 2); XCTAssertEqual(Set(summary[0].ids), [done.id, done2.id])
     }
     func testCommandPreservesArgumentsAndWorkspace() throws {
@@ -207,7 +207,7 @@ final class NativeTests: XCTestCase {
         let helper = room.appendingPathComponent("magic ' 中文")
         try PrivateFiles.write(Data("#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"${MAGIC_HOME-unset}\" \"$@\"\n".utf8), to: helper, mode: 0o700)
         let session = "session '; echo injected; #"
-        for base in [room.appendingPathComponent("实例 ' \" $(echo injected) 空格"), nil] as [URL?] {
+        for base in [room.appendingPathComponent("实例 ' \" $(echo injected) 空格"), room] {
             let command = TerminalCommand.make(helper: helper, workspace: workspace, base: base, session: session, request: nil)
             let process = Process(); let output = Pipe()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh"); process.arguments = ["-f", "-c", command]; process.standardOutput = output
@@ -216,13 +216,13 @@ final class NativeTests: XCTestCase {
             try process.run(); process.waitUntilExit()
             let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             XCTAssertEqual(process.terminationStatus, 0)
-            XCTAssertEqual(text.split(separator: "\n").map(String.init), [workspace.path, base?.path ?? "unset", "resume", session])
+            XCTAssertEqual(text.split(separator: "\n").map(String.init), [workspace.path, base.path, "resume", session])
         }
     }
     func testDefaultInstalledResumeCommandKeepsOnlyRequiredLocation() {
         let command = TerminalCommand.make(helper: URL(fileURLWithPath: "/Users/example/.local/bin/magic"),
-            workspace: URL(fileURLWithPath: "/Users/example/project"), base: nil, session: "session-one", request: nil)
-        XCTAssertEqual(command, "cd -- '/Users/example/project' && /usr/bin/env -u MAGIC_HOME '/Users/example/.local/bin/magic' resume 'session-one'")
+            workspace: URL(fileURLWithPath: "/Users/example/project"), base: URL(fileURLWithPath: "/Users/example"), session: "session-one", request: nil)
+        XCTAssertEqual(command, "cd -- '/Users/example/project' && MAGIC_HOME='/Users/example' '/Users/example/.local/bin/magic' resume 'session-one'")
     }
     @MainActor func testTerminalNeedsMatchingAttachmentAndDeduplicates() throws {
         let root = try temp(); let launcher = TerminalLauncher(directory: root.appendingPathComponent("terminal"))
@@ -313,7 +313,7 @@ final class NativeTests: XCTestCase {
         try welcomeBarrier(model, room)
         try observerCommand(room, ["disconnect": true])
         try await eventually { if case .fault = model.phase { return true }; return false }
-        model.notifications.openRoutes?([NoticeRoute(dataDir: identity.dataDir, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
+        model.notifications.openRoutes?([NoticeRoute(base: identity.base, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
         try await eventually { model.terminal.pending["new-draft"] == nil }
         XCTAssertEqual(model.phase, .ready, "故障自动重连的 welcome 后匹配 attached 已处理，应恢复 ready")
         if model.isCurrent { try await eventually { model.selectedNotice?.id == "notice-completed" } }
@@ -509,7 +509,7 @@ final class NativeTests: XCTestCase {
     @MainActor func testAppModelDefersNotificationThenInspectsProcessedItem() async throws {
         let (model, room) = try controlledModel(options: ["notice": true])
         var opened = 0; model.terminal.openFile = { _, completion in opened += 1; completion(nil) }
-        model.notifications.openRoutes?([NoticeRoute(dataDir: room.appendingPathComponent("data").path, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
+        model.notifications.openRoutes?([NoticeRoute(base: room.appendingPathComponent(".magic").path, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
         XCTAssertNil(model.actionMessage); XCTAssertEqual(opened, 0)
         model.start(); try await eventually { model.selectedNotice?.id == "notice-completed" }
         XCTAssertEqual(opened, 0); XCTAssertTrue(model.terminal.pending.isEmpty)
@@ -524,7 +524,7 @@ final class NativeTests: XCTestCase {
     @MainActor func testAppModelCrossInstanceNotificationNeverSwitchesOrOpens() async throws {
         let (model, room) = try controlledModel(options: ["notice": true])
         var opened = 0; model.terminal.openFile = { _, completion in opened += 1; completion(nil) }
-        let route = NoticeRoute(dataDir: "/tmp/another-instance", session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])
+        let route = NoticeRoute(base: "/tmp/another-instance", session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])
         model.openNotification(route)
         XCTAssertNil(model.actionMessage)
         model.start(); try await eventually { model.actionMessage?.contains("另一数据位置") == true }
@@ -532,6 +532,48 @@ final class NativeTests: XCTestCase {
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" })
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
         try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/appmodel-notice-cross-instance.json"))
+    }
+    @MainActor func testD55NoticeAliasSurvivesServiceRestartAndOldShapeIsIgnored() async throws {
+        let (model, room) = try controlledModel(options: ["notice": true])
+        defer { model.systemQuit {} }
+        let storage = room.appendingPathComponent("store"), alias = room.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: room.appendingPathComponent(".magic"), withDestinationURL: storage)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: storage)
+        let route = NoticeRoute(base: alias.path, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])
+        let old = "[{\"dataDir\":\"\(storage.path)\",\"session\":\"session-completed\",\"ids\":[\"notice-completed\"],\"facts\":[\"event:1\"]}]"
+        XCTAssertEqual(NotificationCoordinator.decodeRoutes(["routes": old]), [])
+        let encoded = String(decoding: try JSONEncoder().encode([route]), as: UTF8.self)
+        XCTAssertEqual(NotificationCoordinator.decodeRoutes(["routes": encoded]), [route])
+        model.start(); try await eventually { model.isCurrent }
+        let identity = try XCTUnwrap(model.identity)
+        XCTAssertEqual(identity, ServiceIdentity(protocol: identity.protocol, version: identity.version, source: identity.source,
+            hostInstance: identity.hostInstance, serviceInstance: identity.serviceInstance, base: alias.path))
+        XCTAssertNotEqual(identity, ServiceIdentity(protocol: identity.protocol, version: identity.version, source: identity.source,
+            hostInstance: identity.hostInstance, serviceInstance: "old-service", base: alias.path))
+        let service = model.identity?.serviceInstance
+        model.openNotification(route)
+        try await eventually { model.selectedNotice?.id == "notice-completed" }
+        model.changeBase(room)
+        try await eventually { model.isCurrent && model.identity?.serviceInstance != service }
+        model.openNotification(route)
+        try await eventually { model.selectedNotice?.id == "notice-completed" }
+        XCTAssertEqual(model.selectedBase, room)
+        XCTAssertTrue(model.terminal.pending.isEmpty)
+        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
+    }
+    @MainActor func testD55ResponsibilityRefusesBaseChange() async throws {
+        let busy = try changed(work(), ["state": "running", "affected": true])
+        let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(busy))]])
+        defer { model.systemQuit {} }
+        model.start(); try await eventually { model.isCurrent }
+        let identity = model.identity
+        model.changeBase(room.appendingPathComponent("another"))
+        XCTAssertEqual(model.identity, identity); XCTAssertEqual(model.selectedBase, room)
+        XCTAssertTrue(model.actionMessage?.contains("无法切换基础路径") == true)
+        XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
+        var finished = false; model.systemQuit { finished = true }; try await eventually { finished }
     }
     @MainActor func testAppModelRecoversCoreOnlyOnceWithoutReplayingWork() async throws {
         let (model, room) = try controlledModel(options: ["crash": true])
@@ -673,11 +715,11 @@ final class NativeTests: XCTestCase {
     }
     @MainActor func testNotificationReconcilesSystemDeliveryAcrossRestart() async throws {
         let work = try work(); let notice = try XCTUnwrap(work.notices.first)
-        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", dataDir: "/tmp/data")
+        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", base: "/tmp/data")
         var sent = 0; var delivered: [String] = []
-        let notifications = NotificationCoordinator(send: { _ in sent += 1 }, existing: { [notice.id] })
+        let notifications = NotificationCoordinator(send: { _ in sent += 1 }, existing: { _ in [notice.id] })
         notifications.enabled = true; notifications.enabledSince = 0; notifications.delivered = { delivered += $0 }
-        notifications.prepare(dataDir: identity.dataDir)
+        notifications.prepare(base: identity.base)
         await notifications.reconcile()
         notifications.observe(NativeProjection(serviceInstance: "s", revision: 1, accepting: true, works: [work]), identity: identity)
         try await Task.sleep(for: .milliseconds(2100))
@@ -800,7 +842,7 @@ final class NativeTests: XCTestCase {
             .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .light),
             name: "quit-impact-list", size: NSSize(width: 360, height: 300), appearance: .aqua)
         model.notificationRoutes = busy.filter { $0.state != .unknown }.map {
-            NoticeRoute(dataDir: model.identity!.dataDir, session: $0.session, ids: ["frame-\($0.session)"], facts: ["event:frame"])
+            NoticeRoute(base: model.identity!.base, session: $0.session, ids: ["frame-\($0.session)"], facts: ["event:frame"])
         }
         try await capture(NoticeWindow(model: model).environment(\.colorScheme, .light), name: "notice-selection", size: NSSize(width: 420, height: 470), appearance: .aqua)
         model.phase = .fault("连接已断开，重试后核对当前状态。")
@@ -890,7 +932,7 @@ final class NativeTests: XCTestCase {
     }
     @MainActor func testNotificationCollectorTwoSecondsAndReadCancellation() async throws {
         let first = try work()
-        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", dataDir: "/tmp/data")
+        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", base: "/tmp/data")
         let now = Date().timeIntervalSince1970 * 1000
         func row(id: String, unread: Bool = true) throws -> NativeWork {
             let notice = AttentionItem(id: id, session: first.session, kind: .needsYou, at: now, detail: nil, unread: unread, delivered: false, fact: "event:\(id)")

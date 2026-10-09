@@ -27,7 +27,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { KernelEvent, ProviderConfig } from '@magic/contracts'
 import { resolveMagicHome } from '@magic/contracts'
-import { assemble, loadConfig, runShellScript } from '../src/index.ts'
+import { assemble, runShellScript } from '../src/index.ts'
 
 // —— 入参 ——
 
@@ -155,16 +155,16 @@ mkdirSync(workspace, { recursive: true })
 
 const sandbox = '/tmp/magic-u97-sandbox'
 rmSync(sandbox, { recursive: true, force: true })
-mkdirSync(sandbox, { recursive: true })
+const magic = resolveMagicHome({}, sandbox)
+mkdirSync(magic.base, { recursive: true })
 
-const configPath = join(sandbox, 'config.json')
+const configPath = join(magic.base, 'config.json')
 writeFileSync(
   configPath,
   JSON.stringify(
     {
       defaultProvider: 'p',
       providers: { p: provider() },
-      dataDir: join(sandbox, 'data'),
     },
     null,
     2,
@@ -176,15 +176,12 @@ console.log('magic —— 压缩出站请求体探针（U97）')
 console.log(`  连接 ${VENDOR} · 模型 ${MODEL} · 会话那一档 ${SESSION}`)
 console.log(`  请求体落点 ${OUT}`)
 
-const magic = resolveMagicHome({}, sandbox)
 const vendor = fakeVendor()
 
 const assembly = assemble({
   cwd: workspace,
   magic,
-  config: loadConfig({ path: configPath, magic }),
   modelFetch: vendor.fetch,
-  grantsFile: join(sandbox, 'grants.json'),
   prompt: { platform: 'darwin', date: '2026-09-26' },
   // 阈值压到 0 —— **降的是阈值，不是机制**（同 compact-probe 那条注）。
   // ⚠️ 两个数都要压：**模型信息声明了窗长时走占比**（MiniMax 有内置窗长）、

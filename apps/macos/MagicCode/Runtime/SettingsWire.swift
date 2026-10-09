@@ -34,7 +34,6 @@ indirect enum SettingsValue: Codable, Hashable {
 struct SettingsSnapshot: Codable, Equatable {
     let preview: SettingsValue
     let configPath: String
-    let dataDir: String
     let base: String
     let stamp: String?
     let configuration: SettingsValue
@@ -83,7 +82,6 @@ extension SettingsValue {
         case "role.remove": return text("id")
         case "workspace.set": return self["roots"] == .null || strings("roots")
         case "permissions.set": if case .array = self["rules"] { return true }; return false
-        case "data.set": return self["directory"] == .null || text("directory")
         case "grants.revoke": return text("workspace") && (self["grantStamp"] == .null || text("grantStamp")) && (v["index"] == nil || self["index"].number.map { $0 >= 0 && $0.rounded() == $0 } == true)
         default: return false
         }
@@ -94,11 +92,11 @@ extension SettingsValue {
     }
 }
 extension SettingsSnapshot {
-    private enum Keys: String, CodingKey { case preview, configPath, dataDir, base, stamp, configuration, catalog, vendors, sources, grants, grantStamp, grantProblem, mcp, canChangeData }
+    private enum Keys: String, CodingKey { case preview, configPath, base, stamp, configuration, catalog, vendors, sources, grants, grantStamp, grantProblem, mcp, canChangeData }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         preview = try c.decode(SettingsValue.self, forKey: .preview)
-        configPath = try c.decode(String.self, forKey: .configPath); dataDir = try c.decode(String.self, forKey: .dataDir); base = try c.decode(String.self, forKey: .base)
+        configPath = try c.decode(String.self, forKey: .configPath); base = try c.decode(String.self, forKey: .base)
         stamp = try c.decode(String?.self, forKey: .stamp); grantStamp = try c.decode(String?.self, forKey: .grantStamp)
         configuration = try c.decode(SettingsValue.self, forKey: .configuration)
         catalog = try c.decode([SettingsValue].self, forKey: .catalog); vendors = try c.decode([SettingsValue].self, forKey: .vendors); sources = try c.decode([SettingsValue].self, forKey: .sources)
@@ -108,7 +106,7 @@ extension SettingsSnapshot {
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
-        try c.encode(preview, forKey: .preview); try c.encode(configPath, forKey: .configPath); try c.encode(dataDir, forKey: .dataDir); try c.encode(base, forKey: .base)
+        try c.encode(preview, forKey: .preview); try c.encode(configPath, forKey: .configPath); try c.encode(base, forKey: .base)
         try c.encode(stamp, forKey: .stamp); try c.encode(grantStamp, forKey: .grantStamp); try c.encode(configuration, forKey: .configuration)
         try c.encode(catalog, forKey: .catalog); try c.encode(vendors, forKey: .vendors); try c.encode(sources, forKey: .sources); try c.encode(grants, forKey: .grants); try c.encode(mcp, forKey: .mcp)
         try c.encode(canChangeData, forKey: .canChangeData); try c.encodeIfPresent(grantProblem, forKey: .grantProblem)

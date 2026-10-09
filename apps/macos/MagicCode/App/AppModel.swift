@@ -50,6 +50,7 @@ import ServiceManagement
     @Published private(set) var systemTestAuthorization = Set<String>()
     #endif
     @Published private(set) var selectedBase: URL?
+    var effectiveBase: URL { selectedBase ?? userHome }
     let appURL: URL
     let helperURL: URL
     let userHome: URL
@@ -246,7 +247,7 @@ import ServiceManagement
             let fixture = appURL.appendingPathComponent("Contents/Resources/controlled-helper.py")
             if systemTestRoot != nil, FileManager.default.fileExists(atPath: fixture.path) { manager = fixture }
             #endif
-            try process.start(helper: manager, app: appURL, instance: instance, base: selectedBase, home: userHome, environment: environment, diagnosticsArguments: diagnosticsArguments)
+            try process.start(helper: manager, app: appURL, instance: instance, base: effectiveBase, home: userHome, environment: environment, diagnosticsArguments: diagnosticsArguments)
             diagnosticsArguments = []
             startupTimeout = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(20)) } catch { return }
@@ -259,14 +260,14 @@ import ServiceManagement
     private func receiveHost(_ response: HostResponse) {
         validationEvent("host.response", detail: String(describing: response))
         switch response {
-        case .diagnostics(let request, let value, let dataDir):
+        case .diagnostics(let request, let value, let base):
             let changed = diagnostics.debugMode != value.debugMode
             diagnostics = value
-            logDirectory = URL(fileURLWithPath: dataDir).appendingPathComponent("logs").path
+            logDirectory = URL(fileURLWithPath: base).appendingPathComponent("logs").path
             if changed { if value.debugMode { showDebugWindow?() } else { hideDebugWindow?() } }
             let owner = host
             fileLog.identify(host: hostInstance, service: identity?.serviceInstance)
-            fileLog.configure(dataDir: dataDir, level: value.logLevel) { [weak self, weak owner] problem in
+            fileLog.configure(dataDir: base, level: value.logLevel) { [weak self, weak owner] problem in
                 guard let self, self.host === owner else { return }
                 self.logProblem = problem
                 owner?.send(.diagnosticsApplied(request: request, error: problem))
@@ -276,6 +277,8 @@ import ServiceManagement
             guard identity.hostInstance == hostInstance,
                   identity.protocol == expectedProtocol,
                   identity.version == expectedVersion,
+                  URL(fileURLWithPath: identity.base).resolvingSymlinksInPath().path == URL(fileURLWithPath: base).resolvingSymlinksInPath().path,
+                  URL(fileURLWithPath: base).resolvingSymlinksInPath().path == effectiveBase.appendingPathComponent(".magic").resolvingSymlinksInPath().path,
                   URL(fileURLWithPath: identity.source).resolvingSymlinksInPath() == helperURL else {
                 phase = .fault("内置核心与 App 的身份或版本不匹配"); host?.closeLifetime(); return
             }
@@ -325,7 +328,7 @@ import ServiceManagement
             apply(projection)
             // A valid handshake restores the connection even when its snapshot is unchanged.
             if shutdownRequest == nil, let current = self.projection { phase = current.accepting ? .ready : .stopping }
-            notifications.prepare(dataDir: received.dataDir)
+            notifications.prepare(base: received.base)
             Task {
                 await notifications.reconcile()
                 guard self.identity == received else { return }
@@ -335,9 +338,9 @@ import ServiceManagement
                 else if !deferredNoticeRoutes.isEmpty { notificationRoutes = deferredNoticeRoutes; showNotificationWindow?() }
                 deferredNoticeRoutes = []
             }
-        case .settingsResult(let request, let service, let dataDir, let snapshot, let error, let note):
+        case .settingsResult(let request, let service, let base, let snapshot, let error, let note):
             guard let pending = settingsRequests[request], pending.identity == identity,
-                  service == pending.identity.serviceInstance, dataDir == pending.identity.dataDir else { return }
+                  service == pending.identity.serviceInstance, URL(fileURLWithPath: base).resolvingSymlinksInPath().path == URL(fileURLWithPath: pending.identity.base).resolvingSymlinksInPath().path else { return }
             settingsRequests.removeValue(forKey: request)
             settingsBusy = !settingsRequests.isEmpty
             settingsError = error; settingsNote = note
@@ -377,7 +380,7 @@ import ServiceManagement
         guard isCurrent, let identity else { return }
         let request = UUID().uuidString
         settingsRequests[request] = (identity, nil); settingsBusy = true; settingsError = nil
-        observer?.send(.settingsRead(request: request, serviceInstance: identity.serviceInstance, dataDir: identity.dataDir, preview: preview))
+        observer?.send(.settingsRead(request: request, serviceInstance: identity.serviceInstance, base: identity.base, preview: preview))
         expireSettings(request)
     }
     func applySettings(_ action: SettingsValue, stamp: String?, key: String) {
@@ -385,7 +388,7 @@ import ServiceManagement
         let request = UUID().uuidString
         settingsRequests[request] = (identity, key); settingsBusy = true; settingsError = nil; settingsNote = nil; settingsSavedKey = nil
         fileLog.write(.debug, "settings.apply", request: request)
-        observer?.send(.settingsApply(request: request, serviceInstance: identity.serviceInstance, dataDir: identity.dataDir, stamp: stamp, action: action))
+        observer?.send(.settingsApply(request: request, serviceInstance: identity.serviceInstance, base: identity.base, stamp: stamp, action: action))
         expireSettings(request)
     }
     private func expireSettings(_ request: String) {
@@ -585,13 +588,13 @@ import ServiceManagement
     }
     func newTerminal() {
         guard isCurrent else { actionMessage = "核心尚未就绪"; return }
-        terminal.open(helper: helperURL, workspace: projectDirectory ?? userHome, base: selectedBase)
+        terminal.open(helper: helperURL, workspace: projectDirectory ?? userHome, base: effectiveBase)
     }
     func resumeCommand(_ work: NativeWork) -> String {
         let link = URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic")
         let executable = (try? CLIInstallation.belongs(link, helper: helperURL)) == true ? link : helperURL
         return TerminalCommand.make(helper: executable, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome,
-                                    base: selectedBase, session: work.session, request: nil)
+                                    base: effectiveBase, session: work.session, request: nil)
     }
     func copyCommand(_ work: NativeWork) {
         terminal.copy(resumeCommand(work))
@@ -599,15 +602,15 @@ import ServiceManagement
     }
     func openNotification(_ route: NoticeRoute) {
         guard isCurrent else { deferredNoticeRoutes.append(route); return }
-        guard route.dataDir == identity?.dataDir else {
-            actionMessage = "此通知属于另一数据位置：\(route.dataDir)。请在设置中明确切换后查看。"; showNotificationWindow?(); return
+        guard let identity, URL(fileURLWithPath: route.base).resolvingSymlinksInPath().path == URL(fileURLWithPath: identity.base).resolvingSymlinksInPath().path else {
+            actionMessage = "此通知属于另一数据位置：\(route.base)。请在设置中明确切换后查看。"; showNotificationWindow?(); return
         }
         guard let work = works.first(where: { $0.id == route.session }) else { actionMessage = "此通知的工作已不可达。"; return }
         inspect(work, notice: route.ids.first)
         showNotificationWindow?()
     }
     func changeBase(_ base: URL?) {
-        guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换数据目录。"; return }
+        guard isCurrent, affected.isEmpty else { actionMessage = "仍有在途工作或状态待确认，无法切换基础路径。"; return }
         switching = true; switchBase = base; confirmQuit()
     }
     /// 「提醒我」这一下：存的**是我们的偏好**（系统拒绝也照存，那是用户的意图本身）。

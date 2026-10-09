@@ -10,13 +10,13 @@ import { magicAt, tempDir, removeDir } from './tmp.ts'
 test('持久执行身份：未核销代次不受最近历史条数截断，重启核对仍保留原 token', async () => {
   const root = tempDir('collaboration-recovery-record-')
   const magic = magicAt(root)
-  const dataDir = `${root}/data`
-  const paths = runPathsOf(magic, dataDir, tmpdir())
+  const dataDir = magic.base
+  const paths = runPathsOf(magic, tmpdir())
   const store = createRecordsStore({ dataDir, workspace: [root] })
   const sessions = Array.from({ length: STORED_RUNS_LIMIT + 1 }, (_, index) => `work-${index}`)
   for (const session of sessions) store.setSessionTitle(session, session, Date.now())
   const launches: ExecutorRequest[] = []
-  const started = await startManager({ paths, dataDir, magic, stopGraceMs: 10, stopKillMs: 10,
+  const started = await startManager({ paths, magic, stopGraceMs: 10, stopKillMs: 10,
     launch: { spawn(request) {
       launches.push(request)
       let exit = (_reason: string) => {}

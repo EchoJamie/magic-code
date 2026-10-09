@@ -41,7 +41,7 @@ import { createCollaborationBoundary } from './collaboration-boundary.ts'
  */
 
 import { accessSync, constants, statSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
   AgentModelConfig,
@@ -91,7 +91,6 @@ import {
   GRANTS_FILE_NAME,
   TRANSIENT_EVENT_KINDS,
   expandHome,
-  resolveMagicHome,
 } from '@magic/contracts'
 import { createActions } from '@magic/actions'
 import type { SessionPorts } from '@magic/actions'
@@ -233,18 +232,11 @@ export type AssembleOptions = {
   /**
    * **授权文件的落点**——缺省 `<基础目录>/grants.json`（`~` 在此展开）。
    *
-   * ⚠️ **不跟 `dataDir` 走**：它是**授权**的落点，与 `config.json` 一样住基础目录
-   * （`dataDir` 是**记录**的落点，可被用户指到别处）。给这个覆盖位是为了测试能指到临时目录。
+   * 与 config.json 同属基础目录；覆盖参数只供显式注入使用。
    */
   readonly grantsFile?: string | undefined
-  /**
-   * **统一基础路径**（契约 `MagicHome`：家目录 ＋ Magic 基础目录）——**装配只解析这一处**，
-   * 配置加载 / 授权落点 / 用户技能三件共用同一个结果（U42）。
-   *
-   * 缺省按启动环境现解析（`MAGIC_HOME` → 家目录，其下追加 `.magic`）。给这个口的有两处：
-   * **测试沙地**（指一块自己的基址，免得去摸开发者真那份）与**入口**（可显式定死一份）。
-   */
-  readonly magic?: MagicHome | undefined
+  /** 入口已确定的系统家目录与 Magic 基础目录；装配不读取环境补位置。 */
+  readonly magic: MagicHome
   /**
    * **外部工具（MCP）两条上限的覆盖位**（U38）——连接 / 发现与一次调用各一道（毫秒）。
    *
@@ -603,16 +595,15 @@ function localDate(at: Timestamp): string {
  * 不判断（那是各域）。反过来说，凡在此处出现的 `if`，都该先问一句「这判断归谁」。
  */
 export function assemble(options: AssembleOptions): Assembly {
-  // **统一基础路径在装配根解析一次**（U42）——配置、授权、用户技能三件都从这里取，
-  // 不在各域各拼一遍「家目录 ＋ `.magic`」（设计明文：各域只接收已解析路径）。
-  const magic = options.magic ?? resolveMagicHome(process.env, homedir())
+  // 入口拥有位置选择权；装配与下游共用传入结果。
+  const magic = options.magic
   const loaded = options.config ?? loadConfig({ magic })
   const now = options.now ?? Date.now
   const startup = options.session
   // 先读持久身份，再建立执行边界。此查询不创建会话，也不采信后来变更的全局根。
   const savedAgent = (() => {
     if (startup === undefined) return undefined
-    const lookup = createRecordsStore({ dataDir: loaded.config.dataDir, workspace: [options.cwd] })
+    const lookup = createRecordsStore({ dataDir: magic.base, workspace: [options.cwd] })
     try { return lookup.collaboration.agentForSession(startup) }
     finally { lookup.close() }
   })()
@@ -642,7 +633,7 @@ export function assemble(options: AssembleOptions): Assembly {
    *
    * 设计明写它**落在工作区之外**（运行目录下）：落在工作区里会被当成项目文件，
    * 也会被后续的 `ls` / `grep` 撞上。故这里现算一次运行目录（`runPathsOf` —— 与终端 /
-   * 管理者算的是**同一个键**：同一 dataDir 算到同一处），其下的 `bg/` 就是它。
+   * 管理者算的是**同一个键**：同一规范化基础目录算到同一处），其下的 `bg/` 就是它。
    *
    * ⚠️ **算不出就不接这一形**（而不是编一个落点）：`runPathsOf` 只在那条 socket 路径
    * 两处都放不下时才抛——那时终端与管理者也起不来（同一个键）。此处**如实降级**
@@ -650,7 +641,7 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const backgroundDir = ((): string | undefined => {
     try {
-      return backgroundOutputDirOf(runPathsOf(magic, loaded.config.dataDir, tmpdir()))
+      return backgroundOutputDirOf(runPathsOf(magic, tmpdir()))
     } catch {
       return undefined
     }
@@ -1001,7 +992,7 @@ export function assemble(options: AssembleOptions): Assembly {
   // 工作区是**进程级**的（配置在则整组接管、缺省则启动目录），同进程开的会话同属一个
   // ——这与「归属随记录持久」不冲突：库里那一列只在建行那一次写，此后谁开都改不动。
   const recordsStore = createRecordsStore({
-    dataDir: loaded.config.dataDir,
+    dataDir: magic.base,
     workspace: workspace.roots(),
   })
   /**
@@ -1093,7 +1084,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * `onChange`：取到新列表 / 这次没取成 ⇒ **再发一屏 `model.catalog`**。
    * 还没有会话时没有信封可铸，那次不发——`/model` 按下去会现问一次，不会丢。
    */
-  const modelCache = createFileModelInfoCache(loaded.config.dataDir)
+  const modelCache = createFileModelInfoCache(magic.base)
 
   /**
    * 本进程的唯一值——**环境变量来源**那支身份用（`persistent: false`，不落盘）。

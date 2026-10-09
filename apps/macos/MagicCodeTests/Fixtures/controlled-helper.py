@@ -12,7 +12,7 @@ base = Path(os.environ['MAGIC_HOME'])
 options = json.loads((base / 'control.json').read_text())
 host = sys.argv[sys.argv.index('--host-instance') + 1]
 identity = {'protocol': 1, 'version': '0.0.0', 'source': options.get('source', os.path.realpath(sys.argv[0])),
-            'hostInstance': host, 'serviceInstance': 'controlled-' + host, 'dataDir': str(base / 'data')}
+            'hostInstance': host, 'serviceInstance': 'controlled-' + host, 'base': str(base / '.magic')}
 endpoint = '/tmp/magic-native-' + host[:12] + '.sock'
 mutex = threading.Lock()
 clients = []

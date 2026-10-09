@@ -8,7 +8,7 @@ import { saveDiagnostics } from '../src/diagnostics.ts'
 import { DiagnosticLog } from '../src/diagnostic-log.ts'
 import { configStamp } from '../src/cache-access.ts'
 import { cliGround } from './resident-cli-fixture.ts'
-const settingsAction = (action: unknown) => decodeNativeMessage({ t: 'native.settings.apply', request: 'test', serviceInstance: 'service', dataDir: '/instance', stamp: null, action }) !== undefined
+const settingsAction = (action: unknown) => decodeNativeMessage({ t: 'native.settings.apply', request: 'test', serviceInstance: 'service', base: '/instance', stamp: null, action }) !== undefined
 const cleanups: (() => void)[] = []
 afterEach(() => { while (cleanups.length) cleanups.pop()!() })
 function setup() { const g = cliGround(); cleanups.push(g.close); return { ...g, magic: { base: g.base, home: g.home }, path: join(g.base, 'config.json') } }
@@ -23,7 +23,7 @@ test('诊断默认值只读；显式两项原子保存，独立关闭模式保�
   expect(diagnosticsOf(loadConfig({ magic: g.magic }).config)).toEqual({ debugMode: false, logLevel: 'trace' })
   expect(JSON.parse(readFileSync(g.path, 'utf8'))).toMatchObject({ untouched: 'keep', dataDir: g.dataDir, providers: { ds: { apiKey: 'PRIVATE_SENTINEL' } } })
   expect(statSync(g.path).mode & 0o777).toBe(0o600)
-  expect(readdirSync(g.dataDir)).toEqual([])
+  expect(readdirSync(g.dataDir)).toEqual(['config.json'])
 })
 test('坏参数、冲突和外部修改均不半保存；help 不执行设置，check 拒绝设置', () => {
   const g = setup(), original = readFileSync(g.path, 'utf8')
@@ -38,7 +38,7 @@ test('诊断协议拒绝坏值与空动作，真实值可往返', () => {
   expect(settingsAction({ type: 'diagnostics.set' })).toBe(false)
   expect(settingsAction({ type: 'diagnostics.set', logLevel: 'verbose' })).toBe(false)
   expect(settingsAction({ type: 'diagnostics.set', debugMode: false, logLevel: 'trace' })).toBe(true)
-  const message = { t: 'host.diagnostics', request: 'one', value: { debugMode: true, logLevel: 'debug' }, dataDir: '/instance' } as const
+  const message = { t: 'host.diagnostics', request: 'one', value: { debugMode: true, logLevel: 'debug' }, base: '/instance' } as const
   expect(decodeNativeMessage(message)).toEqual(message)
   expect(decodeNativeMessage({ ...message, value: { debugMode: 'true', logLevel: 'debug' } })).toBeUndefined()
 })
@@ -72,7 +72,7 @@ test('运行实例从同一 socket 修改，App 确认失败仍如实保存；�
   const { runPathsOf } = await import('../src/run/paths.ts')
   const { applyHostDiagnostics } = await import('../src/run/diagnostics-client.ts')
   const g = setup(); let fail = false; const received: unknown[] = []
-  const started = await startManager({ magic: g.magic, dataDir: g.dataDir, paths: runPathsOf(g.magic, g.dataDir, g.root),
+  const started = await startManager({ magic: g.magic, paths: runPathsOf(g.magic, g.root),
     launch: { spawn() { throw new Error('诊断设置不应启动执行者') } },
     diagnosticsChanged: async value => { received.push(value); if (fail) throw new Error('unconfirmed') },
   })

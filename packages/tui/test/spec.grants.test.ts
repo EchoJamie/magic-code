@@ -49,7 +49,7 @@ function catalog(over: Partial<EventDataOf['grants.catalog']> = {}): EventDataOf
 /** 起一个壳 ＋ 间谍传输。 */
 function live(receipts?: readonly string[]) {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, receipts === undefined ? {} : { receipts })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', receipts })
 
   return {
     shell,

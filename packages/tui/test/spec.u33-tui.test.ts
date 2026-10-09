@@ -496,7 +496,7 @@ describe('U33 · 提交与失败保稿', () => {
       },
     }
 
-    const shell = createShell(transport as never)
+    const shell = createShell(transport as never, { magicBase: '/test/.magic' })
     for (const char of '照它做') shell.key({ kind: 'char', char })
     shell.key({ kind: 'enter' })
 

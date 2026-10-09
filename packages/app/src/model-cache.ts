@@ -2,7 +2,7 @@
  * 模型信息缓存 —— 盘上那一份（U41 · 装配根提供 `ModelInfoCache` 端口的实现）。
  *
  * 出处：设计 · 模型与上下文「数据与持久化」：
- * 「`app` 提供 `<dataDir>/cache/models/` 下独立连接文件的实现：安全编码文件名 ·
+ * 「`app` 提供 `<magic.base>/cache/models/` 下独立连接文件的实现：安全编码文件名 ·
  * 仅本用户读写 · 临时文件后原子替换。缓存损坏可丢弃重取，不新增数据库、迁移账或版本对照系统。」
  *
  * ## 按「连接 ＋ 接入身份」隔离存储（缓存接口裁决）
@@ -31,7 +31,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, write
 import { join } from 'node:path'
 import type { ModelCacheAccess, ModelInfo, ModelInfoCache, ModelInfoSnapshot } from '@magic/contracts'
 
-/** 缓存目录名（相对数据目录）——`<dataDir>/cache/models/`。 */
+/** 缓存目录名（相对数据目录）——`<magic.base>/cache/models/`。 */
 export const MODEL_CACHE_DIR = join('cache', 'models')
 
 /** 等锁的上限与自旋间隔——等不到就**抛出**（清除/写入失败要可见，不吞）。 */

@@ -210,7 +210,7 @@ async function typeLine(session: UiSession, text: string): Promise<void> {
  */
 function outputPathOf(sandbox: Sandbox, id = 'bg-1'): string {
   const magic: MagicHome = { home: sandbox.home, base: join(sandbox.home, '.magic') }
-  return join(backgroundOutputDirOf(runPathsOf(magic, sandbox.dataDir, tmpdir())), `${id}.log`)
+  return join(backgroundOutputDirOf(runPathsOf(magic, tmpdir())), `${id}.log`)
 }
 
 // ══ 那一趟真 PTY ══════════════════════════════════════════════════════

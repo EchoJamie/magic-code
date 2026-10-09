@@ -195,19 +195,12 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     // <id>`），不追加常驻状态栏」。判据落在 `leavingNote` 上——**它不经记录区**
     // （那里的行会按列数**硬折行**，而这一句是要整行复制去敲的：硬折行之后复制到的东西
     // 里带着换行，粘进终端就断了）。它由 `app.ts` **直接写字节**出去、交给终端软折行。
-    expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 接回来：magic resume \'s1\'')
+    expect(stage.shell.getView().leavingNote).toBe("· 转到后台了 · 接回来：MAGIC_HOME='/test' magic resume 's1'")
   })
 
-  /**
-   * **非默认落点要带 `MAGIC_HOME`**（U100 · `resumeCommandOf`）——设计那句「按实际配置保留
-   * 必要启动参数」：不带的话，用户复制到**另一个终端**会接到 `~/.magic` 那个库，
-   * 会话不在，报「没有这条会话」。
-   *
-   * 三条：**默认那一形一字不加** · **非默认那一形带上根目录** ·
-   * **路径按 POSIX 单引号包住**（有空格也照敲不误）。
-   */
-  describe('接回入口按落点写（默认简短 / 非默认带 MAGIC_HOME）', () => {
-    const resumeLineOf = (options: { readonly home?: string; readonly magicBase?: string }): string => {
+  // D55：默认和自定义位置均显式绑定父目录，不受目标终端环境影响。
+  describe('接回入口显式保留选定位置', () => {
+    const resumeLineOf = (options: { readonly home?: string; readonly magicBase: string }): string => {
       const stage = createStage({ stop: () => {}, ...options })
       withSession(stage)
       stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
@@ -219,9 +212,9 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       return stage.shell.getView().leavingNote ?? ''
     }
 
-    test('**默认落点**（`<家>/.magic`）⇒ 清除目标终端可能继承的 MAGIC_HOME', () => {
+    test('**默认落点**（`<家>/.magic`）⇒ 显式覆盖目标终端继承的 MAGIC_HOME', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/Users/someone/.magic' })).toBe(
-        '· 转到后台了 · 接回来：/usr/bin/env -u MAGIC_HOME magic resume \'s1\'',
+        "· 转到后台了 · 接回来：MAGIC_HOME='/Users/someone' magic resume 's1'",
       )
     })
 
@@ -237,9 +230,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       )
     })
 
-    test('**落点不知道**（用例 / 演示没给）⇒ 不编一个 `MAGIC_HOME`', () => {
-      expect(resumeLineOf({})).toBe('· 转到后台了 · 接回来：magic resume \'s1\'')
-    })
+
   })
 
   /**
@@ -268,7 +259,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       // 活跃位到了 ⇒ 接着把刚才那一下办完
       stage.feed([event('session.state', { active: 's9', sessions: [{ id: 's9', at: 0, title: '甲的事' }] })])
       expect(stage.shell.getView().leaving).toBe(true)
-      expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 接回来：magic resume \'s9\'')
+      expect(stage.shell.getView().leavingNote).toBe("· 转到后台了 · 接回来：MAGIC_HOME='/test' magic resume 's9'")
     })
 
     test('那一轮收场了、会话始终没来 ⇒ 如实说「没有可接的入口」（不假报成功）', () => {

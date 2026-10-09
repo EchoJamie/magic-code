@@ -23,22 +23,22 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { connectManager } from '../src/run/client.ts'
 import { startManager } from '../src/run/manager.ts'
 import type { ExecutorLauncher, ExecutorRequest, Manager, SpawnedExecutor } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
-import { removeDir, tempDir } from './tmp.ts'
+import { removeDir } from './tmp.ts'
 
 type Ground = { readonly root: string; readonly home: string; readonly base: string; readonly dataDir: string; readonly tmp: string }
 
 /** 一块沙地：家目录 / 基础目录 / 数据目录 / 临时目录四面各一处。 */
 function ground(name: string): Ground {
-  const root = tempDir(`magic-u73-wire-${name}-`)
+  const root = mkdtempSync(`/tmp/magic-u73-wire-${name}-`)
   const home = join(root, 'home')
   const base = join(root, 'base')
-  const dataDir = join(root, 'data')
+  const dataDir = base
   const tmp = join(root, 'tmp')
   for (const dir of [home, base, dataDir, tmp]) mkdirSync(dir, { recursive: true })
 
@@ -77,10 +77,9 @@ async function spawnedWith(connect: { allowAll?: boolean; switch?: { choice: 'de
   let client: Awaited<ReturnType<typeof connectManager>> | undefined
 
   try {
-    const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+    const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
     const started = await startManager({
       paths,
-      dataDir: g.dataDir,
       magic: { home: g.home, base: g.base },
       launch: launcher,
       probeIntervalMs: 60,

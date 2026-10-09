@@ -161,7 +161,7 @@ function checkFactual(text: string, what: string): void {
 /** 后台那条命令的输出文件路径——按产品自己的那两件算（同 `frames-u70-tui.ts`）。 */
 function outputPathOf(sandbox: Sandbox, id = 'bg-1'): string {
   const magic: MagicHome = { home: sandbox.home, base: join(sandbox.home, '.magic') }
-  return join(backgroundOutputDirOf(runPathsOf(magic, sandbox.dataDir, tmpdir())), `${id}.log`)
+  return join(backgroundOutputDirOf(runPathsOf(magic, tmpdir())), `${id}.log`)
 }
 
 /** 敲一行字并**等它真出现在屏上**（文本与回车分两次写——挤在一次里会丢键）。 */

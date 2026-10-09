@@ -13,7 +13,7 @@
  * 不能真等到 12 万 token（那要烧掉一整本书）。**降的是阈值，不是机制**：
  * 触发判据、摘要生成、装配换头走的都是生产那一套代码。
  *
- * 数据落点：**另起一个临时 dataDir**（不碰 `~/.magic/records.db`）——探针反复跑，
+ * 数据落点：**另起一套临时 Magic 目录**（不碰 `~/.magic/records.db`）——探针反复跑，
  * 不该往用户的记录里掺沙子。供应商与 key 照读真配置。
  *
  * 跑法：
@@ -22,12 +22,12 @@
  */
 
 import { Database } from 'bun:sqlite'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { KernelEvent } from '@magic/contracts'
 import { resolveMagicHome } from '@magic/contracts'
-import { assemble, loadConfig, runShellScript } from '../src/index.ts'
+import { assemble, runShellScript } from '../src/index.ts'
 
 // —— 入参 ——
 
@@ -62,22 +62,19 @@ const home = process.env['HOME'] ?? homedir()
 // 不再写死 `~/.magic`；下面那趟装配也照同一个基址解析（本探针自己造的那一块沙地另算）。
 const magic = resolveMagicHome(process.env, home)
 const sandbox = mkdtempSync(join(process.env['TMPDIR'] ?? '/tmp', 'magic-compact-'))
-const configPath = join(sandbox, 'config.json')
+const at = resolveMagicHome({}, sandbox)
+mkdirSync(at.base, { recursive: true })
+const configPath = join(at.base, 'config.json')
 const raw = JSON.parse(readFileSync(join(magic.base, 'config.json'), 'utf8')) as Record<string, unknown>
-writeFileSync(configPath, JSON.stringify({ ...raw, dataDir: join(sandbox, 'data') }, null, 2))
+writeFileSync(configPath, JSON.stringify(raw, null, 2))
 
 console.log('magic —— 上下文压缩探针')
 console.log(`  阈值 ${AT} token · 近段 ${NEAR} 条（生产缺省：12 万 / 20 条）`)
-console.log(`  数据落点 ${join(sandbox, 'data')}（临时，不碰 ~/.magic）`)
-
-// 这一趟装配的基址＝**沙地**（`~` 一律展开到它、授权与技能也落在它底下）——
-// 探针反复跑，不往用户真那份里掺沙子（同上面临时 `dataDir` 的那条理由）。
-const at = resolveMagicHome({}, sandbox)
+console.log(`  数据落点 ${join(sandbox, '.magic')}（临时，不碰 ~/.magic）`)
 
 const assembly = assemble({
   cwd: process.cwd(),
   magic: at,
-  config: loadConfig({ path: configPath, magic: at }),
   context: { compactAtTokens: AT, nearEntries: NEAR },
 })
 
@@ -150,7 +147,7 @@ try {
 
 // —— 帧 ②：直读记录库（不经 API 回读）——
 
-const db = new Database(join(sandbox, 'data', 'records.db'), { readonly: true })
+const db = new Database(join(at.base, 'records.db'), { readonly: true })
 const entries = db
   .query<{ id: number; kind: string; content_text: string | null; content_blob: string | null }, []>(
     'SELECT id, kind, content_text, content_blob FROM entries ORDER BY id',

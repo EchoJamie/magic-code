@@ -35,7 +35,7 @@ final class ObserverConnection {
                 let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
                 read.setEventHandler { [weak self] in self?.readAvailable() }
                 source = read; read.resume()
-                write(.hello(role: "observer", protocol: identity.protocol, version: identity.version, source: identity.source, dataDir: identity.dataDir))
+                write(.hello(role: "observer", protocol: identity.protocol, version: identity.version, source: identity.source, base: identity.base))
             } catch { fail(error.localizedDescription) }
         }
     }

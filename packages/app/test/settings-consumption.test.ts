@@ -1,12 +1,11 @@
 import { expect, test } from 'bun:test'
-import { join } from 'node:path'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import type { NativeResponse, SettingsAction } from '@magic/contracts'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
 import { collaborationRuntime, latch, spawnMember } from './run-collaboration-fixture.ts'
 
 // 保存走真实原生入口；消费走真实 manager / executor / 成员创建和本地 HTTP。
-test('原生保存后新成员采用新档位与独立思考，入口和已有成员保留；真实执行责任拒改数据', async () => {
+test('原生保存后新成员采用新档位与独立思考，入口和已有成员保留；真实执行责任阻止实例切换', async () => {
   const held = latch(), newHeld = latch()
   const f = await collaborationRuntime('u116-settings-consumption', async call => {
     if (call.model === 'member-model') { await held.promise; return { text: '原成员保留原组合' } }
@@ -18,7 +17,7 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
   const identity = f.manager.identity
   const link = linkOf<NativeResponse>(await Bun.connect({ unix: f.manager.socketPath, socket: socketHandlers() }) as never)
   const responses: NativeResponse[] = []; link.onMessage(v => responses.push(v))
-  const target = { serviceInstance: identity.serviceInstance, dataDir: identity.dataDir }
+  const target = { serviceInstance: identity.serviceInstance, base: identity.base }
   let stamp: string | null = null
   async function request(action?: SettingsAction) {
     const request = crypto.randomUUID()
@@ -29,16 +28,13 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
     return result
   }
   try {
-    link.send({ t: 'hello', role: 'observer', protocol: identity.protocol, version: identity.version, source: identity.source, dataDir: identity.dataDir })
+    link.send({ t: 'hello', role: 'observer', protocol: identity.protocol, version: identity.version, source: identity.source, base: identity.base })
     await f.wait('观察握手', () => responses.some(v => v.t === 'native.welcome'))
     expect((await request()).snapshot?.mcp).toEqual([]); expect(f.manager.executors()).toEqual([])
     f.client.send({ type: 'input.submit', text: '先委派一个独立成员。' })
     await f.wait('原成员正在调用', () => f.requests('member-model').length === 1 && f.member() !== undefined)
     const oldMember = f.member()!
     expect((await request()).snapshot?.canChangeData).toBe(false)
-    const configPath = join(f.magic.base, 'config.json'), before = readFileSync(configPath, 'utf8')
-    expect((await request({ type: 'data.set', directory: join(f.root, 'other-data') })).error).toContain('执行责任')
-    expect(readFileSync(configPath, 'utf8')).toBe(before)
     expect((await request({ type: 'model.configure', choice: 'spell', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
     expect((await request({ type: 'model.configure', choice: 'default', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
     expect((await request({ type: 'role.save', id: 'reviewer', role: { name: '审查者', instructions: '根据实际依据审查', tools: [], model: { choice: 'spell', reasoning: { mode: 'off' } } } })).error).toBeUndefined()
@@ -59,6 +55,6 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
     expect(f.requests('member-model')).toHaveLength(1); expect(f.requests('entry-model').length).toBeGreaterThanOrEqual(3)
     expect(f.store.collaboration.getAgent(f.collaboration()!.coordinatorId)?.model.model).toBe('entry-model')
     const evidence = process.env['MAGIC_SETTINGS_EVIDENCE']
-    if (evidence) writeFileSync(evidence, JSON.stringify({ entry: 'native.settings.apply → manager → actual member executor → local HTTP', existingModel: current.model, newModel: fresh.model, requests: f.calls.map(({model,body}) => ({model, thinking:body.thinking, reasoning_effort:body.reasoning_effort, toolCount:Array.isArray(body.tools)?body.tools.length:0})), dataChangeRejected:true, preferencesAdopted:true }, null, 2))
+    if (evidence) writeFileSync(evidence, JSON.stringify({ entry: 'native.settings.apply → manager → actual member executor → local HTTP', existingModel: current.model, newModel: fresh.model, requests: f.calls.map(({model,body}) => ({model, thinking:body.thinking, reasoning_effort:body.reasoning_effort, toolCount:Array.isArray(body.tools)?body.tools.length:0})), baseChangeBlocked:true, preferencesAdopted:true }, null, 2))
   } finally { held.release(); newHeld.release(); link.close(); await f.close() }
 }, 30000)

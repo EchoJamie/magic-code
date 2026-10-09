@@ -5,13 +5,13 @@
     "t": "native.settings.apply",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data",
     "stamp": null,
     "action": {
       "type": "provider.save",
       "provider": "one",
       "vendor": "deepseek",
       "apiKey": "synthetic-new-input"
-    }
+    },
+    "base": "/tmp/synthetic"
   }
 }

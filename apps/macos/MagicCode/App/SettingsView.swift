@@ -26,7 +26,7 @@ struct SettingsSearchItem: Identifiable {
         .init(id: "status", category: "terminal", title: "状态行与动效", words: "会话名 模型 思考 上下文 工作区 颜色 顺序 减少动效"),
         .init(id: "notifications", category: "app", title: "启动与提醒", words: "登录 通知 系统设置"),
         .init(id: "cli", category: "app", title: "终端命令与新草稿项目", words: "安装 CLI magic PATH 项目 路径"),
-        .init(id: "data", category: "advanced", title: "实例与数据位置", words: "配置文件 基础路径 dataDir 目录 位置"),
+        .init(id: "data", category: "advanced", title: "实例与数据位置", words: "配置文件 基础路径 目录 位置"),
         .init(id: "roots", category: "advanced", title: "工作区根", words: "workspaceRoots 根目录"),
         .init(id: "permissions", category: "advanced", title: "权限规则与已有授权", words: "permissions rules grants 查看 撤销 授权"),
         .init(id: "diagnostics", category: "advanced", title: "诊断与系统集成", words: "版本 调试 debug 日志 log trace info warn error 移除 卸载")

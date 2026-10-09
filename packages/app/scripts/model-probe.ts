@@ -21,6 +21,9 @@
  * （`--fast` ＝把退避压到 50ms 起步，只验次序不验时长）。
  */
 
+import { homedir } from 'node:os'
+import { resolve } from 'node:path'
+import { resolveMagicHome } from '@magic/contracts'
 import type { ModelErrorTier, ModelRequest, ProviderConfig } from '@magic/contracts'
 import { createModelRegistry } from '@magic/model'
 import type { RetryPolicy } from '@magic/model'
@@ -215,7 +218,8 @@ async function probeNetwork(): Promise<Reading> {
 // ═══════════════════════════════════════════════════════════════════════
 
 async function probeTerminal(): Promise<Reading> {
-  const loaded = loadConfig()
+  const selected = resolveMagicHome(process.env, homedir())
+  const loaded = loadConfig({ magic: { ...selected, base: resolve(selected.base) } })
   const { baseURL } = loaded.provider
   const model = 'MiniMax-No-Such-Model'
 

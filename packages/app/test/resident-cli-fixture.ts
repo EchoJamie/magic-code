@@ -24,14 +24,14 @@ export function cliGround() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mc-cli-')))
   const home = join(root, 'home')
   const base = join(root, 'selected/.magic')
-  const dataDir = join(root, 'data')
+  const dataDir = base
   const app = join(root, 'Magic ; test.app')
   for (const path of [home, base, dataDir, app]) mkdirSync(path, { recursive: true })
-  writeFileSync(join(base, 'config.json'), JSON.stringify({ providers: {}, dataDir }))
+  writeFileSync(join(base, 'config.json'), JSON.stringify({ providers: {} }))
   const discoveryPath = hostDiscoveryPath(home)
   const identity: ServiceIdentity = {
     protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source: softwareSource(),
-    hostInstance: 'host-one', serviceInstance: 'service-one', dataDir,
+    hostInstance: 'host-one', serviceInstance: 'service-one', base,
   }
   const discovery: HostDiscovery = { ...identity, app, base, socket: join(root, 's.sock') }
   return {
@@ -50,7 +50,7 @@ export function fakeApp(
   const messages: ClientToManager[] = []
   const links: Link<ClientToManager>[] = []
   const welcome: Extract<ManagerToClient, { t: 'welcome' }> = {
-    t: 'welcome', identity: ground.identity, conn: 1, dataDir: ground.dataDir,
+    t: 'welcome', identity: ground.identity, conn: 1, base: ground.base,
     mcp: [], runs: [], notices: [{ id: 'unread', session: 'real-session', kind: 'needs-you', at: 1, unread: true }],
   }
   const server = Bun.listen({

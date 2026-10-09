@@ -474,7 +474,7 @@ describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前
 
       const assembly = stage.assemble({ turns: [{ text: '好。' }, { text: '好。' }] })
       // **真外壳**（TUI 的 `createShell`）＋ 真装配：键进外壳，命令经控制面进内核
-      const shell = createShell(assembly.shell)
+      const shell = createShell(assembly.shell, { magicBase: '/test/.magic' })
       const view = (): ReturnType<typeof shell.getView> => shell.getView()
       /** 候选行数（抽屉开着才有）。 */
       const candidateRows = (): number => {
@@ -582,7 +582,7 @@ describe('U36 · 输入历史：召回整份草稿，重新提交时才读当前
     const stage = makeStage()
     try {
       const assembly = stage.assemble({ turns: [{ text: '好。' }] })
-      const shell = createShell(assembly.shell)
+      const shell = createShell(assembly.shell, { magicBase: '/test/.magic' })
 
       for (const char of '就是一句话') shell.key({ kind: 'char', char })
       shell.key({ kind: 'enter' })
@@ -609,7 +609,7 @@ describe('U36 · 粘进来的一段原文照收（Tab 与多行都留着）', ()
       const pasted = 'if ready:\n\tprint(1)\nleft\tright'
 
       const assembly = stage.assemble({ turns: [{ text: '好。' }] })
-      const shell = createShell(assembly.shell)
+      const shell = createShell(assembly.shell, { magicBase: '/test/.magic' })
 
       // 真外壳里的粘贴那一跳（`TuiApp` 把 bracketed paste 收成 `{kind:'paste'}`）
       shell.key({ kind: 'paste', text: pasted })

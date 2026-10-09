@@ -22,8 +22,8 @@ async function until(check: () => boolean): Promise<void> {
 test('socket先断、执行者真退出、自有组最后回收：只有全部确证才回done', async () => {
   const root = mkdtempSync(join(tmpdir(), 'resident-reclaim-order-'))
   const magic = resolveMagicHome({}, root)
-  const dataDir = join(root, 'data')
-  const paths = runPathsOf(magic, dataDir, tmpdir())
+  const dataDir = magic.base
+  const paths = runPathsOf(magic, tmpdir())
   const store = createRecordsStore({ dataDir, workspace: [root] })
   store.setSessionTitle('ordered', '退出次序', 1)
   const trace: unknown[] = []
@@ -40,7 +40,7 @@ test('socket先断、执行者真退出、自有组最后回收：只有全部�
   await ownedReader.read(); ownedReader.releaseLock()
   const startedAt = startTimeOf(owned.pid)
   if (startedAt === undefined) throw new Error('自有组身份不可读')
-  const started = await startManager({ paths, dataDir, magic, stopGraceMs: 500, stopKillMs: 500,
+  const started = await startManager({ paths, magic, stopGraceMs: 500, stopKillMs: 500,
     launch: { spawn(input) {
       request = input
       ready = false; exited = false; terminated = false

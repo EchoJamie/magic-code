@@ -12,13 +12,13 @@ import { collaborationDetail, collaborationFixture } from './collaboration-fixtu
 
 const shells: Shell[] = []
 afterEach(() => { for (const shell of shells.splice(0)) shell.dispose() })
-export function collaborationStage(options: ShellOptions = {}) {
+export function collaborationStage(options: Omit<ShellOptions, 'magicBase'> = {}) {
   const spy = createSpyTransport()
   const shell = createShell({ ...spy.transport, send(command) {
     spy.transport.send(command)
     if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaborationDetail(command.member)))
     if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { choice: 'default' as const, provider: 'local', model: 'mini' } }))
-  } }, options)
+  } }, { magicBase: '/test/.magic', ...options })
   shells.push(shell)
   spy.emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', title: '修复回调', at: 0 }, { id: 'member', at: 0 }] }))
   spy.emit(event('collaboration.view', collaborationFixture))
@@ -210,7 +210,7 @@ test('不同成员审批逐份排队；重复通知与重复按键不重复裁�
 
 test('等待查询时取消保留草稿，晚到快照不重新打开成员界面', () => {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
   shells.push(shell)
   spy.emit(event('session.state', { active: 'origin', sessions: [] }))
   spy.emit(event('collaboration.view', collaborationFixture))
@@ -251,7 +251,7 @@ test('成员增量不混入原会话；换会话后旧协作快照不串线', ()
 
 test('第二个窗口先收到协作快照时，随后入口 session.state 不能误当成员事件丢掉', () => {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
   shells.push(shell)
   spy.emit(event('collaboration.view', collaborationFixture))
   spy.emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', at: 0 }] }, { session: 'origin' }))

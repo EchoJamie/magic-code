@@ -105,9 +105,9 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // 而它们是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何命令问得到。
     // 这一层手上本来就有（`inputs.loaded` / `inputs.magic`，见本文件头注那张表最后一行），
     // 故是**转手**、不是新读一遍盘。家目录只用来把屏上的路径缩成 `~/…`——不参与任何解析。
-    dataDir: loaded.config.dataDir,
+    dataDir: inputs.magic.base,
     home: inputs.magic.home,
-    // **Magic 的落点**（U100）——转后台那一条接回入口靠它判「要不要带 MAGIC_HOME」
+    // 选定的 .magic 路径——接回命令始终显式携带其父目录。
     // （非默认落点不带的话，用户复制到别的终端会接到另一个库）
     magicBase: inputs.magic.base,
     receipts: startupReceipts(inputs),
@@ -231,7 +231,7 @@ export type RegistryInputs = {
  * **读不到就是读不到**（没有那份文件 / 读不懂 / 认证走环境变量 ⇒ `undefined`，
  * 屏上照旧只报已用量——**不编**）· **不触发刷新**（`read` 是纯读，见 `model-cache.ts`）。
  */
-export async function readModelInfo(loaded: LoadedConfig): Promise<ModelInfoLookup | undefined> {
+export async function readModelInfo(loaded: LoadedConfig, magic: MagicHome): Promise<ModelInfoLookup | undefined> {
   const provider = loaded.providerId
   if (provider === undefined) return undefined
 
@@ -246,7 +246,7 @@ export async function readModelInfo(loaded: LoadedConfig): Promise<ModelInfoLook
   })
   if (!access.persistent) return undefined // 环境变量来路：盘上根本没有它那一份
 
-  const cache = createFileModelInfoCache(loaded.config.dataDir)
+  const cache = createFileModelInfoCache(magic.base)
   let snapshot: ModelInfoSnapshot | undefined
   try {
     snapshot = await cache.read(provider, access)
@@ -388,7 +388,7 @@ export function terminalConnection(
   }
   const client: ManagerClient = {
     get conn() { return current.conn },
-    get dataDir() { return current.dataDir },
+    get base() { return current.base },
     get identity() { return current.identity },
     get mcp() { return current.mcp },
     get unread() { return current.unread },

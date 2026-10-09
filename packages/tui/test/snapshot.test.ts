@@ -164,7 +164,7 @@ function screen(shell: ReturnType<typeof createShell>, columns = COLUMNS, rows =
 /** 起壳 ＋ 取景把手。 */
 function live() {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
 
   return {
     shell,

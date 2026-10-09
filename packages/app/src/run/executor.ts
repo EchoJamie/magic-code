@@ -163,11 +163,11 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   try {
     const magic = options.magic
     let config = loadConfig({ magic })
-    diagnosticLog = new DiagnosticLog('executor', config.config.dataDir, diagnosticsOf(config.config).logLevel)
+    diagnosticLog = new DiagnosticLog('executor', options.magic.base, diagnosticsOf(config.config).logLevel)
     diagnosticLog.write('info', 'executor.started', options.session === null ? {} : { session: options.session })
     let cwd = options.cwd
     if (options.session !== null) {
-      const records = createRecordsStore({ dataDir: config.config.dataDir, workspace: [] })
+      const records = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
       try {
         const session = (await records.listSessions()).find((one) => one.id === options.session)
         if (session === undefined) throw new Error('会话已不可达')

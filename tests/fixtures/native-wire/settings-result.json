@@ -5,11 +5,9 @@
     "t": "native.settings.result",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data",
     "snapshot": {
       "preview": {},
       "configPath": "/tmp/synthetic/config.json",
-      "dataDir": "/tmp/synthetic/data",
       "base": "/tmp/synthetic",
       "stamp": null,
       "configuration": {},
@@ -21,6 +19,7 @@
       "mcp": [],
       "canChangeData": true
     },
-    "note": "已保存"
+    "note": "已保存",
+    "base": "/tmp/synthetic"
   }
 }

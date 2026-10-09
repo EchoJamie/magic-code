@@ -1,3 +1,4 @@
+import { normalizeDataDir } from './paths.ts'
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
 import type { SettingsAction, SettingsSnapshot, SettingsPreview } from '@magic/contracts'
 import type { RecordsStore } from '@magic/records'
@@ -75,7 +76,7 @@ export function createNativeServer(options: NativeServerOptions) {
       if (raw.t === 'hello' && raw.role === 'observer') {
         if (observers.has(link)) return true
         const identity = options.identity
-        if (raw.protocol !== identity.protocol || raw.version !== identity.version || raw.source !== identity.source || raw.dataDir !== identity.dataDir) {
+        if (raw.protocol !== identity.protocol || raw.version !== identity.version || raw.source !== identity.source || normalizeDataDir(raw.base) !== normalizeDataDir(identity.base)) {
           link.send({ t: 'native.error', reason: 'App 与服务的版本、来源或数据位置不同，请退出原 App 后重试' })
           link.close()
           return true
@@ -95,9 +96,9 @@ export function createNativeServer(options: NativeServerOptions) {
       switch (message.t) {
         case 'native.settings.read': case 'native.settings.apply': {
           options.record?.('debug', message.t, message.request)
-          const target = { request: message.request, serviceInstance: options.identity.serviceInstance, dataDir: options.identity.dataDir }
+          const target = { request: message.request, serviceInstance: options.identity.serviceInstance, base: options.identity.base }
           const failure = (error: string): NativeResponse => { options.record?.('warn', 'native.settings.failed', message.request); return { t: 'native.settings.result', ...target, error } }
-          if (closed || !options.accepting() || message.serviceInstance !== options.identity.serviceInstance || message.dataDir !== options.identity.dataDir) {
+          if (closed || !options.accepting() || message.serviceInstance !== options.identity.serviceInstance || normalizeDataDir(message.base) !== normalizeDataDir(options.identity.base)) {
             link.send(failure('服务身份已改变或正在退出，请重新读取')); break
           }
           const owned = settingsRequests.get(link) ?? new Map<string, { signature: string; result: Promise<NativeResponse> }>()

@@ -17,13 +17,13 @@ import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import type { KernelEvent } from '@magic/contracts'
 import type { PathLike } from 'node:fs'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { connectManager } from '../src/run/client.ts'
 import { readRecord, startManager } from '../src/run/manager.ts'
 import type { ExecutorLauncher, Manager } from '../src/run/manager.ts'
 import { normalizeDataDir, runPathsOf } from '../src/run/paths.ts'
-import { removeDir, tempDir } from './tmp.ts'
+import { removeDir } from './tmp.ts'
 
 /** 这一段用不到执行者——真起执行者的是第二段那几条用例。 */
 const UNUSED_LAUNCHER: ExecutorLauncher = {
@@ -43,10 +43,10 @@ type Ground = {
 }
 
 function ground(name: string): Ground {
-  const root = tempDir(`magic-run-${name}-`)
+  const root = mkdtempSync(`/tmp/magic-run-${name}-`)
   const home = join(root, 'home')
   const base = join(root, 'base')
-  const dataDir = join(root, 'data')
+  const dataDir = base
   const tmp = join(root, 'tmp')
   for (const dir of [home, base, dataDir, tmp]) mkdirSync(dir, { recursive: true })
 
@@ -63,8 +63,7 @@ function ground(name: string): Ground {
 /** 在一块沙地上立一个管理者——顺手把「收摊」挂上，免得用例忘一处就留一个占着路径的进程。 */
 async function standUp(g: Ground, launch: ExecutorLauncher = UNUSED_LAUNCHER): Promise<Manager> {
   const started = await startManager({
-    paths: runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp),
-    dataDir: g.dataDir,
+    paths: runPathsOf({ home: g.home, base: g.base }, g.tmp),
     magic: { home: g.home, base: g.base },
     launch,
   })
@@ -119,8 +118,10 @@ test('U114 空态界面设置由管理者实际保存；不建执行者或会话
 describe('U48-S1 · 一个数据目录只有一个管理者', () => {
   test('七个真进程同时抢——正好一个当上，其余六个认出现有的那一个', async () => {
     const g = ground('race')
-    const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+    const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
     const child = join(import.meta.dir, 'run-manager-child.ts')
+    const alias = join(g.root, 'alias-' + 'x'.repeat(140))
+    symlinkSync(g.base, alias, 'dir')
 
     const children: ReturnType<typeof Bun.spawn>[] = []
     try {
@@ -133,8 +134,7 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
               process.execPath,
               child,
               g.home,
-              g.base,
-              g.dataDir,
+              i % 2 === 0 ? g.base : alias,
               g.tmp,
               join(g.root, `ready-${i}`),
               join(g.root, 'go'),
@@ -179,11 +179,10 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
     const g = ground('second')
     try {
       const first = await standUp(g)
-      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
 
       const again = await startManager({
         paths,
-        dataDir: g.dataDir,
         magic: { home: g.home, base: g.base },
         launch: UNUSED_LAUNCHER,
       })
@@ -200,7 +199,7 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
     }
   })
 
-  test('不同数据目录各一摊——两个管理者并存', async () => {
+  test('不同基础目录各一摊——两个管理者并存', async () => {
     const g = ground('two')
     const other = join(g.root, 'data-2')
     mkdirSync(other, { recursive: true })
@@ -208,9 +207,8 @@ describe('U48-S1 · 一个数据目录只有一个管理者', () => {
     try {
       const a = await standUp(g)
       const b = await startManager({
-        paths: runPathsOf({ home: g.home, base: g.base }, other, g.tmp),
-        dataDir: other,
-        magic: { home: g.home, base: g.base },
+        paths: runPathsOf({ home: g.home, base: other }, g.tmp),
+        magic: { home: g.home, base: other },
         launch: UNUSED_LAUNCHER,
       })
 
@@ -235,7 +233,7 @@ describe('U48-S1 · 客户端连得上、说得清自己连的是谁', () => {
       const client = await connectManager(manager.socketPath)
 
       expect(client).toBeDefined()
-      expect(client?.dataDir).toBe(g.dataDir)
+      expect(client?.base).toBe(g.dataDir)
       expect(client?.conn).toBe(1)
       expect(manager.clients()).toBe(1)
 
@@ -253,7 +251,7 @@ describe('U48-S1 · 客户端连得上、说得清自己连的是谁', () => {
   test('没人 listen 时连不上——如实返回「没有」，不抛', async () => {
     const g = ground('nobody')
     try {
-      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
       expect(await connectManager(paths.socket)).toBeUndefined()
     } finally {
       g.dispose()
@@ -265,7 +263,7 @@ describe('U48-S1 · 收摊与尸首', () => {
   test('收摊之后路径干净，下一个随即能立起来', async () => {
     const g = ground('clean')
     try {
-      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
       const first = await standUp(g)
       expect(existsSync(paths.socket)).toBe(true)
       expect(readRecord(paths)?.pid).toBe(first.record.pid)
@@ -290,7 +288,7 @@ describe('U48-S1 · 收摊与尸首', () => {
   test('宿主退出：只断开连接，不再往窗口发那条纯退出回执', async () => {
     const g = ground('exit')
     try {
-      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
       const manager = await standUp(g)
       const client = await connectManager(paths.socket, { cwd: g.root, label: '窗口' })
       if (client === undefined) throw new Error('连不上管理者')
@@ -315,14 +313,13 @@ describe('U48-S1 · 收摊与尸首', () => {
   test('路径上是尸首（进程没了、socket 文件还在）时清得掉', async () => {
     const g = ground('stale')
     try {
-      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
       mkdirSync(paths.dir, { recursive: true })
       // 上一次被 SIGKILL 之后的样子：路径上留着个连不上的东西
       writeFileSync(paths.socket, '尸首')
 
       const started = await startManager({
         paths,
-        dataDir: g.dataDir,
         magic: { home: g.home, base: g.base },
         launch: UNUSED_LAUNCHER,
       })
@@ -342,7 +339,7 @@ describe('U48-S1 · 本机 socket 限该用户访问', () => {
     const g = ground('mode')
     try {
       const manager = await standUp(g)
-      const paths = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
+      const paths = runPathsOf({ home: g.home, base: g.base }, g.tmp)
 
       // **目录那道门是本体**：socket 文件自己的权限位在 BSD 上不生效，
       // 而「关在一个只许本人进入的目录里」是各平台都成立的同一件事（见 `paths.ts`）。
@@ -363,7 +360,7 @@ describe('U48-S1 · 规范化（同一处必须算成同一处）', () => {
     try {
       const real = normalizeDataDir(g.dataDir)
       expect(normalizeDataDir(`${g.dataDir}/`)).toBe(real)
-      expect(normalizeDataDir(join(g.dataDir, '..', 'data'))).toBe(real)
+      expect(normalizeDataDir(join(g.dataDir, '..', 'base'))).toBe(real)
       expect(normalizeDataDir(join(g.dataDir, 'not-yet', '..'))).toBe(real)
 
       // 还不存在的目录：**最近的已存在祖先**取真路径 ＋ 余下的原样拼回
@@ -372,8 +369,8 @@ describe('U48-S1 · 规范化（同一处必须算成同一处）', () => {
       )
 
       // 同一处 ⇒ 同一份路径（并发的唯一性建在这上面）
-      const one = runPathsOf({ home: g.home, base: g.base }, g.dataDir, g.tmp)
-      const two = runPathsOf({ home: g.home, base: g.base }, `${g.dataDir}/`, g.tmp)
+      const one = runPathsOf({ home: g.home, base: g.base }, g.tmp)
+      const two = runPathsOf({ home: g.home, base: `${g.base}/` }, g.tmp)
       expect(one.socket).toBe(two.socket)
     } finally {
       g.dispose()
@@ -404,3 +401,57 @@ async function settle(prefix: string, count: number, timeoutMs: number, what: st
 function modeOf(path: PathLike): number {
   return statSync(path).mode & 0o777
 }
+
+
+describe('基础目录的规范化身份决定运行目录', () => {
+  test('长短别名与 .magic 符号链接共用运行目录；首次未建目录保持同一身份', () => {
+    const root = mkdtempSync('/tmp/magic-d55-')
+    try {
+      const home = root
+      const real = join(root, 'store')
+      mkdirSync(real)
+      const longAlias = join(root, 'alias-' + 'x'.repeat(150))
+      const selected = join(root, '.magic')
+      symlinkSync(real, longAlias, 'dir')
+      symlinkSync(real, selected, 'dir')
+      const expected = runPathsOf({ home, base: real }, root)
+      expect(expected.dir.startsWith(normalizeDataDir(real) + '/run/')).toBe(true)
+      for (const base of [longAlias, selected, real + '/', normalizeDataDir(real)]) {
+        expect(runPathsOf({ home, base }, root)).toEqual(expected)
+      }
+      const pending = join(real, 'first', '.magic')
+      const before = runPathsOf({ home, base: pending }, root)
+      expect(existsSync(pending)).toBe(false)
+      expect(runPathsOf({ home, base: join(longAlias, 'first', '.magic') }, root)).toEqual(before)
+      mkdirSync(pending, { recursive: true })
+      expect(runPathsOf({ home, base: pending }, root)).toEqual(before)
+      expect(runPathsOf({ home, base: join(real, 'other', '.magic') }, root)).not.toEqual(before)
+    } finally { removeDir(root) }
+  })
+
+  test('/var 与 /private/var 的首次目录共用同一运行身份', () => {
+    if (process.platform !== 'darwin') return
+    const root = mkdtempSync('/var/tmp/magic-d55-')
+    try {
+      const base = join(root, 'first', '.magic')
+      const canonical = '/private' + base
+      const paths = runPathsOf({ home: root, base }, '/tmp')
+      expect(runPathsOf({ home: root, base: canonical }, '/tmp')).toEqual(paths)
+      mkdirSync(base, { recursive: true })
+      expect(runPathsOf({ home: root, base }, '/tmp')).toEqual(paths)
+    } finally { removeDir(root) }
+  })
+
+  test('实体过长时所有别名都选同一临时运行目录', () => {
+    const root = mkdtempSync('/tmp/magic-d55-')
+    try {
+      const base = join(root, 'deep-' + 'x'.repeat(140), '.magic')
+      mkdirSync(base, { recursive: true })
+      const alias = join(root, 'short')
+      symlinkSync(base, alias, 'dir')
+      const canonical = runPathsOf({ home: root, base }, root)
+      expect(canonical.dir.startsWith(join(root, 'magic-run-'))).toBe(true)
+      expect(runPathsOf({ home: root, base: alias }, root)).toEqual(canonical)
+    } finally { removeDir(root) }
+  })
+})

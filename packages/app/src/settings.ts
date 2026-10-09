@@ -36,17 +36,15 @@ export function createSettings(context: SettingsContext) {
   const processToken = crypto.randomUUID()
   let currentLoaded: LoadedConfig | undefined
   let info: ModelInfoService | undefined
-  let cacheDir: string | undefined
   function modelInfo(loaded: LoadedConfig): ModelInfoService {
     if (info !== undefined && currentLoaded !== undefined) for (const [provider, config] of Object.entries(currentLoaded.config.providers)) {
       if (connectionScopeChanged(config, loaded.config.providers[provider])) info.drop(provider)
     }
     currentLoaded = loaded
-    if (info === undefined || cacheDir !== loaded.config.dataDir) {
-      cacheDir = loaded.config.dataDir
+    if (info === undefined) {
       info = createModelInfoService({ connections: () => Object.entries(currentLoaded!.config.providers).map(([providerId, config]) => ({
         ...resolveConnection({ providerId, config }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, processToken }),
-      })), cache: createFileModelInfoCache(cacheDir), now: context.now ?? Date.now, fetch: globalThis.fetch })
+      })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: globalThis.fetch })
     }
     return info
   }
@@ -68,7 +66,7 @@ export function createSettings(context: SettingsContext) {
       providers, models: config.models ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
-      permissions: config.permissions ?? {}, ...(raw.dataDir === undefined ? {} : { dataDir: raw.dataDir }),
+      permissions: config.permissions ?? {},
       statusLine: config.statusLine ?? { cells: ['session', 'context'], color: true }, motion: config.motion ?? {},
     }
     const sources = ['rules.sources', 'rules.linkSources', 'skills.sources'].flatMap(source => {
@@ -81,7 +79,7 @@ export function createSettings(context: SettingsContext) {
         return { source, path, resolved, ...(problem === undefined ? {} : { problem }) }
       })
     })
-    const reader = await readModelCatalog(loaded, undefined, undefined, context.now ?? Date.now, modelInfo(loaded))
+    const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, modelInfo(loaded))
     const catalog = providerCatalog(reader).entries
     const grantStamp = configStamp(grantPath)
     const grants = loadGrants(grantPath)
@@ -91,7 +89,7 @@ export function createSettings(context: SettingsContext) {
     if (configStamp(configPath) !== stamp) throw new Error('配置在读取期间已改变，请重新读取')
     return {
       preview: statusLinePreview(preview?.statusLine ?? config.statusLine ?? { cells: ['session', 'context'] }, preview?.columns ?? 80, preview?.reducedMotion ?? config.motion?.reduced === true),
-      configPath, dataDir: config.dataDir, base: context.magic.base, stamp, configuration, catalog,
+      configPath, base: context.magic.base, stamp, configuration, catalog,
       vendors: vendorCatalog(), sources,
       grants: Object.entries(grants.file.workspaces).map(([workspace, entries]) => ({ workspace, entries })),
       grantStamp,
@@ -111,7 +109,7 @@ export function createSettings(context: SettingsContext) {
     await currentInfo.warmup()
     const snapshots = Object.entries(loaded.config.providers).map(([provider, config]) => ({ provider, config, snapshot: currentInfo.peek(provider).snapshot }))
     if (action.type === 'role.save' && action.role.model !== undefined) {
-      const reader = await readModelCatalog(loaded, undefined, undefined, context.now ?? Date.now, currentInfo)
+      const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, currentInfo)
       const choice = resolveModelChoice({ providers: loaded.config.providers, configuredModels: loaded.config.models, config: action.role.model,
         modelInfoOf: (provider, model) => reader.read(provider).snapshot?.models.find(info => info.id === model) })
       if (!choice.ok) throw new Error(`角色模型设置：${choice.reason}`)
@@ -153,7 +151,6 @@ export function createSettings(context: SettingsContext) {
         return '已撤销授权；配置权限规则另行管理'
       }
       default: {
-        if (action.type === 'data.set' && !await context.canChangeData()) throw new Error('当前实例仍有执行责任，数据位置未改动')
         outcome = editConfigFile({ ...input, update(raw) {
           const next = { ...raw }
           switch (action.type) {
@@ -185,7 +182,6 @@ export function createSettings(context: SettingsContext) {
             }
             case 'workspace.set': if (action.roots === null) delete next.workspaceRoots; else next.workspaceRoots = action.roots; break
             case 'permissions.set': next.permissions = { ...book(raw.permissions), rules: action.rules }; break
-            case 'data.set': if (action.directory === null) delete next.dataDir; else next.dataDir = action.directory; break
           }
           return { ok: true, raw: next }
         } })
@@ -193,15 +189,14 @@ export function createSettings(context: SettingsContext) {
     }
     if (!outcome.ok) throw new Error(outcome.reason)
     const reloaded = loadConfig({ magic: context.magic })
-    const modelCache = createFileModelInfoCache(loaded.config.dataDir)
+    const modelCache = createFileModelInfoCache(context.magic.base)
     for (const { provider, config, snapshot } of snapshots) {
-      if (snapshot !== undefined && reloaded.config.dataDir === loaded.config.dataDir && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
+      if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
         await modelCache.replace(snapshot, cacheAccessFor({ provider, configPath, apiKey: reloaded.config.providers[provider]?.apiKey, processToken }))
       }
     }
     modelInfo(reloaded)
     if (action.type === 'prefs.set') await context.preferencesChanged()
-    if (action.type === 'data.set') return '已保存；关闭并重新打开此实例后采用。原数据保留'
     if (action.type.startsWith('model.') || action.type.startsWith('provider.')) return '已保存；之后解析模型配置时采用，已有 Agent 的选择保留'
     if (action.type.startsWith('role.')) return '已保存；后续创建采用，已有成员保留'
     if (action.type === 'prefs.set') return '已保存；已向当前终端受理呈现偏好，计时继续'

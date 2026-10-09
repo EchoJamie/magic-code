@@ -9,22 +9,16 @@ struct AdvancedSettingsPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             SettingsCard(title: "当前实例与路径") {
-                SettingsPath(label: "基础路径", path: model.selectedBase?.path ?? model.userHome.path) { model.terminal.copy(model.selectedBase?.path ?? model.userHome.path) }
+                SettingsPath(label: "基础路径", path: model.effectiveBase.path) { model.terminal.copy(model.effectiveBase.path) }
                 SettingsPath(label: "配置文件", path: snapshot.configPath) { model.terminal.copy(snapshot.configPath) }
-                SettingsPath(label: "当前运行数据", path: model.identity?.dataDir ?? snapshot.dataDir) { model.terminal.copy(model.identity?.dataDir ?? snapshot.dataDir) }
                 Text("服务实例：\(model.identity?.serviceInstance ?? "等待就绪")").font(.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 Button("定位配置文件") { revealSettingPath(snapshot.configPath) }
-                Text("基础路径下使用 .magic；不要把 .magic 本身再选作基础路径。切换不搬迁数据。").font(.caption).foregroundStyle(.secondary)
+                Text("配置与数据共同使用基础路径下的 .magic；不要把 .magic 本身再选作基础路径。切换不搬迁数据。").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("选择基础目录…") { settingsDirectory { model.changeBase($0) } }
                     Button("恢复默认位置") { model.changeBase(nil) }
                 }.disabled(!model.isCurrent || !snapshot.canChangeData || !model.affected.isEmpty)
-                if let current = model.identity?.dataDir, URL(fileURLWithPath: current).resolvingSymlinksInPath() != URL(fileURLWithPath: snapshot.dataDir).resolvingSymlinksInPath() {
-                    Button("重新打开此实例，采用已保存的数据位置") { model.changeBase(model.selectedBase) }
-                        .disabled(!model.isCurrent || !snapshot.canChangeData || !model.affected.isEmpty)
-                }
                 if !snapshot.canChangeData { Text("此实例仍有执行责任，不能切换数据位置。").foregroundStyle(.secondary).font(.caption) }
-                DataDirectoryEditor(model: model, snapshot: snapshot, drafts: drafts, draft: drafts.draft("data-directory", .object(["directory": snapshot.configuration["dataDir"]]), stamp: snapshot.stamp))
             }.id("data")
             SettingsCard(title: "工作区根") {
                 RootEditor(model: model, snapshot: snapshot, drafts: drafts, draft: drafts.draft("roots", .object(["roots": snapshot.configuration["workspaceRoots"]]), stamp: snapshot.stamp))
@@ -83,18 +77,6 @@ struct AdvancedSettingsPage: View {
             Button("撤销", role: .destructive) { if let action = revoke { model.applySettings(action, stamp: snapshot.stamp, key: "revoke-grant") }; revoke = nil }
             Button("取消", role: .cancel) { revoke = nil }
         }
-    }
-}
-struct DataDirectoryEditor: View {
-    @ObservedObject var model: AppModel
-    let snapshot: SettingsSnapshot
-    let drafts: SettingsDrafts
-    @ObservedObject var draft: SettingsDraft
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SettingText(title: "自定义数据目录（留空使用基础目录）", value: draft.field("directory"), multiline: true)
-            DraftFooter(model: model, draft: draft, key: "data-directory", boundary: "无执行责任才能保存。下次打开实例时采用，原数据保留，不搬迁记录。", cancel: { drafts.discard("data-directory") }, action: { .object(["type": .string("data.set"), "directory": draft.value["directory"].text.isEmpty ? .null : draft.value["directory"]]) })
-        }.disabled(!snapshot.canChangeData)
     }
 }
 struct RootEditor: View {

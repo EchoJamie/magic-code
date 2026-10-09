@@ -1,5 +1,4 @@
 import { readFileSync, realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome } from '@magic/contracts'
 import type { HostDiscovery, MagicHome, ServiceIdentity } from '@magic/contracts'
@@ -8,7 +7,7 @@ import { normalizeDataDir } from './paths.ts'
 import { softwareSource } from './runtime-launch.ts'
 
 export type HostLocationOptions = {
-  readonly home?: string
+  readonly home: string
   readonly executable?: string
   readonly standalone?: boolean
   /** 仅供源码开发与隔离测试显式指定；生产从 executable 反推所属 App。 */
@@ -33,8 +32,8 @@ export function hostDiscoveryPath(home: string): string {
 }
 
 /** 先解 executable 的符号链接，禁止按 App 名称搜索或猜另一份安装。 */
-export function locateHost(options: HostLocationOptions = {}): HostLocation {
-  const home = options.home ?? homedir()
+export function locateHost(options: HostLocationOptions): HostLocation {
+  const home = options.home
   if (!(options.standalone ?? Bun.isStandaloneExecutable)) {
     return {
       home,
@@ -71,13 +70,13 @@ export function assertHostIdentity(
   if (identity.source !== expected.source) {
     throw new Error(`Magic Code 软件来源不匹配：CLI=${expected.source}，App=${identity.source}；请退出原 App 后再打开此版本`)
   }
-  if (typeof identity.dataDir !== 'string' || !isAbsolute(identity.dataDir) ||
+  if (typeof identity.base !== 'string' || !isAbsolute(identity.base) ||
       typeof identity.hostInstance !== 'string' || identity.hostInstance === '' ||
       typeof identity.serviceInstance !== 'string' || identity.serviceInstance === '') {
     throw new Error('Magic Code 服务身份不完整：缺少数据实例、宿主或服务代次')
   }
-  if (expected.dataDir !== undefined && identity.dataDir !== expected.dataDir) {
-    throw new Error(`Magic Code 数据实例不匹配：CLI=${expected.dataDir}，App=${identity.dataDir}；请在 App 设置中明确切换数据目录`)
+  if (expected.base !== undefined && normalizeDataDir(identity.base) !== normalizeDataDir(expected.base)) {
+    throw new Error(`Magic Code 数据实例不匹配：CLI=${expected.base}，App=${identity.base}；请在 App 设置中明确切换基础路径`)
   }
   if ((expected.hostInstance !== undefined && identity.hostInstance !== expected.hostInstance) ||
       (expected.serviceInstance !== undefined && identity.serviceInstance !== expected.serviceInstance)) {
@@ -103,7 +102,7 @@ export function readHostDiscovery(location: HostLocation): HostDiscovery | undef
   }
   const found = value as HostDiscovery
   assertHostIdentity(found, { source: location.source })
-  for (const key of ['socket', 'base', 'app'] as const) {
+  for (const key of ['socket', 'app'] as const) {
     if (typeof found[key] !== 'string' || !isAbsolute(found[key])) {
       throw new Error(`App 发现文件 ${key} 必须是绝对路径：${location.discoveryPath}`)
     }
@@ -123,21 +122,13 @@ export function selectedHostConfig(
   const base = explicit
     ? resolve(options.cwd, resolveMagicHome(options.env, options.home).base)
     : discovery.base
-  const magic = { home: options.home, base: normalizeDataDir(base) }
-  const loaded = loadConfig({ magic })
-  const dataDir = normalizeDataDir(resolve(options.cwd, loaded.config.dataDir))
-  // **只比「数据实例」——即 `dataDir`**（U109 收窄）。设计写的是「**数据实例**」与「**数据目录**」
-  // （`设计/会话与运行管理`：「常驻方案的生产 App 同时承载一个选定数据实例；**CLI 显式目录须与之
-  // 匹配**，不能为不匹配目录另起 detached 后台」；「显式使用**不同数据目录**的 Magic 实例不伪称
-  // 已被一个列表全局发现」）。**基础目录不在其列**：它管的是配置 / 授权 / 技能，不是那份数据；
-  // 再比 base 就等于给守卫加了设计没要求的一半，会把「**非默认 `MAGIC_HOME`、但 dataDir 一致**」
-  // 这种**合法**情形也挡掉——那明明是同一个数据实例。
-  if (dataDir !== discovery.dataDir) {
+  const magic = { home: options.home, base }
+  if (normalizeDataDir(base) !== normalizeDataDir(discovery.base)) {
     throw new Error(
-      `Magic Code 数据实例不匹配：CLI 数据目录=${dataDir}；` +
-      `App 数据目录=${discovery.dataDir}。` +
-      '请在 App 设置中明确切换数据目录，或取消本次 MAGIC_HOME 后重试',
+      `Magic Code 数据实例不匹配：CLI 基础目录=${base}；` +
+      `App 基础目录=${discovery.base}。` +
+      '请在 App 设置中明确切换基础路径，或取消本次 MAGIC_HOME 后重试',
     )
   }
-  return { magic, loaded: { ...loaded, config: { ...loaded.config, dataDir } } }
+  return { magic, loaded: loadConfig({ magic }) }
 }

@@ -70,7 +70,7 @@ def run_case(app, room, output, session):
             ready = wait_for(lambda: next((e for e in events if e.get('event') == 'app.ready'), None))
             discovery = json.loads(Path(ready['host']).read_text())
             assert Path(ready['host']).is_relative_to(room), 'discovery escaped validation home'
-            assert discovery['app'] == str(app) and discovery['dataDir'].startswith(str(room) + '/')
+            assert discovery['app'] == str(app) and discovery['base'].startswith(str(room) + '/')
             manager = json.loads((Path(discovery['socket']).parent / 'manager.json').read_text())['pid']
             if session:
                 command = wait_for(lambda: next((e for e in events if e.get('event') == 'resume.command'), None))['detail']
@@ -149,7 +149,7 @@ def run(plan, output):
         for case in ['draft', 'resume']:
             room = root / case; room.mkdir(mode=0o700)
             evidence = output / case; evidence.mkdir(parents=True, exist_ok=True)
-            write(room / '.magic/config.json', {'dataDir': str(room / 'data'), 'workspaceRoots': [str(room)],
+            write(room / '.magic/config.json', {'workspaceRoots': [str(room)],
                   'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
                   'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}})
             session = None

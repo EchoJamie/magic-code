@@ -42,7 +42,7 @@ def probe(app, output):
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         (room / '.magic').mkdir()
-        (room / '.magic/config.json').write_text(json.dumps({'dataDir': str(room / 'data'), 'workspaceRoots': [str(room)],
+        (room / '.magic/config.json').write_text(json.dumps({'workspaceRoots': [str(room)],
             'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
             'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}}))
         env = {'HOME': str(room), 'MAGIC_HOME': str(room), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}

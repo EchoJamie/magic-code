@@ -20,8 +20,8 @@
 
 import { decisionActions } from './components/decision.ts'
 import { composerLayout } from './components/composer.ts'
-import { dirname, join } from 'node:path'
-import { MAGIC_DIR, apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
+import { dirname } from 'node:path'
+import { apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
 import type { ModelChoice } from '@magic/contracts'
 
 import type {
@@ -519,32 +519,12 @@ export type ShellOptions = {
    * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗（「拿不到的不编」——同 `contextWindow`）。
    */
   readonly workspaceRoots?: readonly string[] | undefined
-  /**
-   * **数据目录**（U71 · `/config` 第 4 项那一格）——配置 `dataDir` 的落点，**已解析的绝对路径**。
-   *
-   * 为什么要从外面递：它是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何一条读侧
-   * 命令答得出来——而窗口这一侧本来就「读配置只为呈现」（见 `packages/app/src/run/terminal.ts`
-   * 那张表）。**不给＝那一格空着**（「拿不到的不编」，同 `contextWindow` / `workspaceRoots`）。
-   */
+  /** 基础目录派生的实际数据目录，仅用于设置回显。 */
   readonly dataDir?: string | undefined
-  /**
-   * **系统家目录**（U71）——**只用来把屏上的路径缩成 `~/…`**（`/config` 那一行右边还摆着
-   * 别的字，一长串 `/Users/<谁>/…` 会把值那一格撑满）。
-   *
-   * **不给＝照原样写绝对路径**（缩不了就不缩，不编一个家目录出来）。
-   *
-   * ⚠️ **U100 起它还多一件差事**：判「这一摊的 Magic 落点是不是默认那一个」
-   * （见 `resumeCommandOf`——转后台留的接回入口要按它决定带不带 `MAGIC_HOME`）。
-   */
+  /** 系统家目录，只用于将显示路径缩成 ~/…，不参与位置选择。 */
   readonly home?: string | undefined
-  /**
-   * **Magic 的落点**（U100 · `MagicHome.base`，即 `~/.magic` 或 `$MAGIC_HOME/.magic`）。
-   *
-   * 只有一件差事：**转后台时那条接回入口要写得能真接回同一个库**（见 `resumeCommandOf`）。
-   * 不给＝不知道（用例 / 演示）⇒ 那条只写短的那一形（`magic resume <id>`，
-   * 那就是默认落在 `~/.magic` 的用户要敲的）。
-   */
-  readonly magicBase?: string | undefined
+  /** 入口选定的绝对 .magic 路径；保留符号链接写法，用其父目录生成接回命令。 */
+  readonly magicBase: string
   /**
    * **状态行放哪几格**（U112 · `MagicConfig.statusLine` 原样带进来）。
    *
@@ -740,7 +720,7 @@ export function bodyOf(draft: string, refs: readonly DraftRef[]): string {
 }
 
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
-export function createShell(transport: ControlTransport, options: ShellOptions = {}): Shell {
+export function createShell(transport: ControlTransport, options: ShellOptions): Shell {
   const watchers = new Set<() => void>()
   const booting = options.inputReady === false
 
@@ -3939,30 +3919,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions =
     return row.startedAt === bound.runStartedAt
   }
 
-  /**
-   * **接回来该敲什么**（U100）——设计：「转后台成功离开时，留一条**可复制的接回入口**
-   * （沿用 `magic resume <id>`；**按实际配置保留必要启动参数**）」。
-   *
-   * ## 「必要启动参数」是什么
-   *
-   * 这一摊的**库在哪儿**由 Magic 的落点定（`MagicHome.base` ＝ `~/.magic` 或
-   * `$MAGIC_HOME/.magic`，配置与数据目录都从它推）。换了终端之后默认那一格会变回
-   * `~/.magic`——**非默认的那一形必须把 `MAGIC_HOME` 带上**，否则用户复制过去接到的是
-   * **另一个库**（会话不在、报「没有这条会话」）。
-   *
-   * - **默认那一形**（`base` ＝ `<家目录>/.magic`）⇒ 清除目标终端可能设置的 `MAGIC_HOME`；
-   * - **非默认那一形** ⇒ 前置 `MAGIC_HOME=<根>`：`resolveMagicHome` 的算式是
-   *   `base ＝ <根>/.magic`，故**根就是 `base` 的上一级**（`dirname`，不是拿字符串切）；
-   * - **落点不知道**（用例 / 演示没给 `magicBase`）⇒ 只写短的那一句（**不编一个 `MAGIC_HOME`**）。
-   *
-   * 🔒 **那一格是要整行复制去敲的**，故路径按 POSIX 写法**单引号包住**（内部的 `'` 用
-   * `'\''` 收尾再接回去）——路径里有空格或引号也照敲不误。
-   */
+  /** 接回固定携带所选父目录，覆盖目标终端的环境；路径沿 POSIX 单引号引用。 */
   const resumeCommandOf = (session: SessionId): string => {
-    const base = options.magicBase
-    const home = options.home
-    const instance = base === undefined ? '' : home !== undefined && base === join(home, MAGIC_DIR)
-      ? '/usr/bin/env -u MAGIC_HOME ' : `MAGIC_HOME=${shellQuote(dirname(base))} `
+    const instance = `MAGIC_HOME=${shellQuote(dirname(options.magicBase))} `
     const workspace = view.catalog.find(one => one.id === session)?.workspace?.[0] ?? options.workspaceRoots?.[0]
     const cwd = workspace === undefined ? '' : `cd -- ${shellQuote(workspace)} && `
     return `${cwd}${instance}magic resume ${shellQuote(session)}`

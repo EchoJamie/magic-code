@@ -15,12 +15,12 @@ const ui = await createUiSession({fixture,sandbox,columns:200,rows:40,argv:['--a
 const identity = host.discovery
 const link = linkOf<NativeResponse>(await Bun.connect({unix:identity.socket,socket:socketHandlers()}) as never)
 const responses:NativeResponse[]=[];link.onMessage(v=>responses.push(v))
-const target={serviceInstance:identity.serviceInstance,dataDir:identity.dataDir}
+const target={serviceInstance:identity.serviceInstance,base:identity.base}
 let stamp:string|null=null
 async function until(ok:()=>boolean){const end=Date.now()+10000;while(!ok()){if(Date.now()>end)throw new Error('原生偏好结果超时');await Bun.sleep(20)}}
 async function settings(action?:SettingsAction){const request=crypto.randomUUID();link.send(action?{t:'native.settings.apply',...target,request,stamp,action}:{t:'native.settings.read',...target,request});await until(()=>responses.some(v=>v.t==='native.settings.result'&&v.request===request));const result=responses.find((v):v is Extract<NativeResponse,{t:'native.settings.result'}>=>v.t==='native.settings.result'&&v.request===request)!;assert(!result.error,result.error ?? "设置结果");stamp=result.snapshot!.stamp;return result.snapshot!}
 try {
- link.send({t:'hello',role:'observer',protocol:identity.protocol,version:identity.version,source:identity.source,dataDir:identity.dataDir});await until(()=>responses.some(v=>v.t==='native.welcome'))
+ link.send({t:'hello',role:'observer',protocol:identity.protocol,version:identity.version,source:identity.source,base:identity.base});await until(()=>responses.some(v=>v.t==='native.welcome'))
  await settings()
  const initial=await ui.capture({label:'00-空值整格省略'});const initialStatus=statusLineOf(initial.lines);assert(initialStatus.includes('空闲'));assert(!initialStatus.includes('Default'));assert(!initialStatus.includes('思考·'));assert(!/\d+k\/\d+k/.test(initialStatus))
  await ui.send('先取得真实用量');await ui.key('enter');await ui.wait({text:'U116_WARMUP'});await ui.wait({text:'○ 空闲'})

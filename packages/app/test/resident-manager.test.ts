@@ -19,8 +19,8 @@ async function waitFor(check: () => boolean) {
 function ground() {
   const root = mkdtempSync(join(tmpdir(), 'resident-manager-'))
   const magic = resolveMagicHome({}, root)
-  const dataDir = join(root, 'data')
-  return { root, magic, dataDir, paths: runPathsOf(magic, dataDir, tmpdir()) }
+  const dataDir = magic.base
+  return { root, magic, dataDir, paths: runPathsOf(magic, tmpdir()) }
 }
 
 for (const recognition of ['bound', 'event.session', 'session.state.active'] as const) {

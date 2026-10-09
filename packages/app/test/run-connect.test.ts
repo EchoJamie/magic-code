@@ -101,7 +101,7 @@ for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'eof']
         // 先重开本测试宿主，再触发恢复；不调用系统 open，不接触已安装 App。
         host = await startHost()
         expect(host.discovery.base).toBe(oldHost.discovery.base)
-        expect(host.discovery.dataDir).toBe(oldHost.discovery.dataDir)
+        expect(host.discovery.base).toBe(oldHost.discovery.base)
         expect(host.discovery.serviceInstance).not.toBe(oldHost.discovery.serviceInstance)
         expect(host.pid).not.toBe(oldHost.pid)
         if (action === 'Ctrl+R') await ui.send(CTRL_R)

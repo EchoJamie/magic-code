@@ -18,7 +18,7 @@ import type { ModelSwitchRequest } from './control.ts'
  * **Magic 基础目录的末段名**（U42）——统一基础路径 ＝ `<MAGIC_HOME 或 $HOME>` ＋ 它。
  *
  * 这一串是**布局**（「Magic 的东西都在 `.magic` 底下」），不是某个绝对路径：
- * 绝对路径只有一处算得出来（`resolveMagicHome`）。
+ * 由入口调用 `resolveMagicHome` 解析，再按发起 cwd 确定绝对路径。
  */
 export const MAGIC_DIR = '.magic'
 
@@ -63,12 +63,12 @@ export type MagicHome = {
 
 /**
  * **统一基础路径的解析出口**（U42 · 设计「命令行与配置 · MAGIC_HOME：统一基础路径」）——
- * 全仓**只此一处**拼这个路径。
+ * 由读取环境或已保存选择的入口调用，下游只接收结果。
  *
  * - `MAGIC_HOME` 给了（非空）就用它，否则用家目录；两种情形下**都在其下追加 `.magic`**；
  * - `MAGIC_HOME` 里的前导 `~` 照全仓那把尺子展开（`expandHome`）——手写在环境里的路径
  *   与手写在配置里的路径用**同一个**展开器，不然 `MAGIC_HOME=~/x` 会在 cwd 下造一个
- *   名叫 `~` 的目录且不报错（`dataDir` 踩过的那个坑）；
+ *   名叫 `~` 的目录且不报错；
  * - **不读 `process.env`、不取 `os.homedir()`**：环境与家目录由调用方给（契约层保持
  *   无依赖，同 `expandHome`）。app 在**读配置之前**解析一次，此后各域只收已解析的路径
  *   （设计明文：不各建一套解析或回退机制）。
@@ -205,7 +205,7 @@ export type WorkspaceRoots = readonly string[]
  * **键缺省 ＝ 一个都没有**——行为与不写这两格之前一字不变。
  *
  * **形制**：字符串数组，每项是**绝对路径**（文件或目录；前导 `~` 由加载器展开，
- * 同 `dataDir` / `workspaceRoots`）。`sources` 点名的目录按规则目录扫（其下 `*.md` 递归）、
+ * 同 `workspaceRoots`）。`sources` 点名的目录按规则目录扫（其下 `*.md` 递归）、
  * 点名的文件就是一份规则文档；`linkSources` 点名的目录＝它**底下**的链接都放行、
  * 点名的文件＝就那一个。
  *
@@ -236,7 +236,7 @@ export type RulesConfig = {
  * **不改变**任何工具能不能碰它（两个技能目录里的脚本照旧走各自的权限边界）。
  */
 export type SkillsConfig = {
-  /** 补充的技能目录（绝对路径；前导 `~` 由加载器展开，同 `dataDir` / `workspaceRoots`）。 */
+  /** 补充的技能目录（绝对路径；前导 `~` 由加载器展开，同 `workspaceRoots`）。 */
   readonly sources?: readonly string[]
 }
 
@@ -265,7 +265,6 @@ export type MagicConfig = {
     readonly arcane?: ModelRef
   }
   readonly providers: Readonly<Record<string, ProviderConfig>>
-  readonly dataDir: string
   /** 权限段（阶段 2）——见 `PermissionsConfig`。 */
   readonly permissions?: PermissionsConfig
   /** 工作区根列表（阶段 3）——见 `WorkspaceRoots`；**键缺省＝启动目录单根**。 */
@@ -360,13 +359,7 @@ export function apiKeyEnvVarOf(providerId: string): string {
  * **前导 `~` 展开**（家目录）——在**加载时**展开；无 `~` 即字面路径。
  * 运行时库（`Bun.file` / `node:fs` / `bun:sqlite`）**不展开 `~`**（且写侧静默），故这一步须显式做。
  *
- * 家目录由调用方注入（配置加载器取 `node:os` 的 `homedir()`）——契约层保持无依赖。
- *
- * **名字是 `expandHome`，不是 `expandDataDir`**（U28 改名）：射程从一开始就是「前导 `~`
- * 展开」这件事本身，而用它的**不止 `dataDir`**——工作区根（U27）与 Magic 基础目录
- * （`MAGIC_HOME`，U42）走的是**同一个**展开器（「一处展开，四处同理」）。
- * 旧名是它的出身（最早只为 `dataDir` 写），留着会让读的人以为「这函数只管数据目录」，
- * 于是别处再写一套更宽的规则——**名字与射程错位**，迟早分叉（`U27` 备案 1）。
+ * 家目录由入口注入；工作区、材料来源与 MAGIC_HOME 共用这一展开规则。
  */
 export function expandHome(raw: string, home: string): string {
   if (raw === '~') return home

@@ -32,7 +32,7 @@ import type {
 import { probeMcp } from './preflight.ts'
 import type { McpProbeRow } from './wire.ts'
 import { createRecordsStore } from '@magic/records'
-import { ensureRunDir, tightenSocket } from './paths.ts'
+import { ensureRunDir, tightenSocket, normalizeDataDir } from './paths.ts'
 import type { RunPaths } from './paths.ts'
 import { linkOf, socketHandlers } from './wire.ts'
 import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
@@ -183,8 +183,6 @@ export type ManagerOptions = {
 
   /** 这一摊运行的三条路径（`runPathsOf` 算出来的）。 */
   readonly paths: RunPaths
-  /** 数据目录的规范形——写进自报的那一份里，也是发给执行者的那一份的来处。 */
-  readonly dataDir: string
   /** 起执行者的方式——见 `ExecutorLauncher`。 */
   readonly launch: ExecutorLauncher
   /**
@@ -445,7 +443,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    */
   let store: ReturnType<typeof createRecordsStore>
   try {
-    store = createRecordsStore({ dataDir: options.dataDir, workspace: [] })
+    store = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
   } catch (error) {
     options.log?.(`库迁移没成：${String(error)}`)
     return undefined
@@ -467,14 +465,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   const identity: ServiceIdentity = {
     protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source: softwareSource(),
     hostInstance: options.hostInstance ?? crypto.randomUUID(),
-    serviceInstance: crypto.randomUUID(), dataDir: options.dataDir,
+    serviceInstance: crypto.randomUUID(), base: options.magic.base,
   }
-  const diagnosticLog = new DiagnosticLog('manager', options.dataDir, diagnosticsOf(loadConfig({ magic: options.magic }).config).logLevel)
+  const diagnosticLog = new DiagnosticLog('manager', options.magic.base, diagnosticsOf(loadConfig({ magic: options.magic }).config).logLevel)
   diagnosticLog.write('info', 'manager.started', identity)
   const record: ManagerRecord = {
     pid: process.pid,
     at: now(),
-    dataDir: options.dataDir,
+    dataDir: normalizeDataDir(options.magic.base),
     socket: paths.socket,
     v: RECORD_VERSION,
   }
@@ -852,7 +850,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             t: 'welcome',
             identity,
             conn: conn.id,
-            dataDir: options.dataDir,
+            base: options.magic.base,
             // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
             mcp: probed,
             // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
@@ -877,7 +875,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             t: 'welcome',
             identity,
             conn: conn.id,
-            dataDir: options.dataDir,
+            base: options.magic.base,
             mcp: probed,
             // 开屏那张摘要据它说「这一摊有几项在跑」——**接上就读得到**，不必先问一次
             runs: rows(),

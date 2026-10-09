@@ -21,7 +21,7 @@ test('设置保存的根与三类材料由下次真实装配消费，旧根与�
   }
   const old = stage.assemble({ turns: [{ toolCalls: [{ name: 'read', args: { path: 'note.txt' } }] }, { text: '旧工作读完' }] })
   let next: ReturnType<typeof stage.assemble> | undefined
-  const settings = createSettings({ magic: { ...magicAt(stage.root), base: stage.root }, cwd: stage.workspace, store: old.records, mcp: [], canChangeData: () => false, mcpWorks: async () => [], preferencesChanged: async () => {}, grantsChanged: async () => {}, reconnect: async () => { throw new Error('没有目标') } })
+  const settings = createSettings({ magic: magicAt(stage.root), cwd: stage.workspace, store: old.records, mcp: [], canChangeData: () => false, mcpWorks: async () => [], preferencesChanged: async () => {}, grantsChanged: async () => {}, reconnect: async () => { throw new Error('没有目标') } })
   const save = async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp)
   try {
     await save({ type: 'workspace.set', roots: [root] })
@@ -64,10 +64,10 @@ test('保存权限规则只影响下次装配，撤销真实授权影响现有�
   const assemblies: ReturnType<typeof stage.assemble>[] = []
   let fetched = 0
   const webSource = { fetchPage: async (url: string) => { fetched++; return { ok: true as const, url, status: 200, bytes: 20, body: '<p>U116 受控页面</p>', contentType: 'text/html' } } }
-  const grantsFile = join(stage.root, 'grants.json')
+  const grantsFile = join(magicAt(stage.root).base, 'grants.json')
   const make = () => { const assembly = stage.assemble({ modelGateway: undefined, webSource, grantsFile }); assemblies.push(assembly); return assembly }
   const old = make()
-  const settings = createSettings({ magic: { ...magicAt(stage.root), base: stage.root }, cwd: stage.workspace, store: old.records, mcp: [], canChangeData: () => false, mcpWorks: async () => [], preferencesChanged: async () => {}, grantsChanged: async () => { assemblies.forEach(a => a.refreshSettings()) }, reconnect: async () => { throw new Error('没有目标') } })
+  const settings = createSettings({ magic: magicAt(stage.root), cwd: stage.workspace, store: old.records, mcp: [], canChangeData: () => false, mcpWorks: async () => [], preferencesChanged: async () => {}, grantsChanged: async () => { assemblies.forEach(a => a.refreshSettings()) }, reconnect: async () => { throw new Error('没有目标') } })
   const save = async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp)
   async function run(assembly: ReturnType<typeof make>, ask: boolean) {
     const events: KernelEvent[] = []

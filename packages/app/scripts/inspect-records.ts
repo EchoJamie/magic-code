@@ -3,7 +3,7 @@
  * 验收查询脚本 —— **直读记录库**（阶段 1 的验收读法：技术方案 · 记录 · 存储）。
  *
  * 「交代一件事，它跑一条命令，记录里看得到全过程」——本脚本就是**读那个记录**的眼睛：
- * 拿裸 `bun:sqlite` 打开配置里那个 `dataDir` 下的 `records.db`（默认＝**统一基础路径**
+ * 拿裸 `bun:sqlite` 打开选定基础目录下的 `records.db`（默认＝**统一基础路径**
  * 下的 `<基础目录>/records.db`，即不设 `MAGIC_HOME` 时的 `~/.magic/records.db`），
  * 把事件流与会话条目摊开给人看。
  * **不经记录域的 API**——正是要证明「库在那儿、谁都读得动」，而不是「经我们的代码才看得见」。
@@ -15,16 +15,15 @@
  *   bun packages/app/scripts/inspect-records.ts                 # 最近一个会话
  *   bun packages/app/scripts/inspect-records.ts --session <id>
  *   bun packages/app/scripts/inspect-records.ts --sessions      # 只列会话
- *   bun packages/app/scripts/inspect-records.ts --db <path>     # 指认库文件（默认按配置找）
+ *   bun packages/app/scripts/inspect-records.ts --db <path>     # 指认库文件（默认按基础路径找）
  */
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { expandHome, TRANSIENT_EVENT_KINDS } from '@magic/contracts'
+import { join, resolve } from 'node:path'
+import { expandHome, resolveMagicHome, TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 import { homedir } from 'node:os'
 import { DATABASE_FILE } from '@magic/records'
-import { loadConfig } from '../src/index.ts'
 
 // —— 入参 ——
 
@@ -41,11 +40,10 @@ const USAGE = `magic 记录库查询 —— 直读记录库
   inspect-records.ts                 列会话 + 最近一个会话的全过程
   inspect-records.ts --sessions      只列会话
   inspect-records.ts --session <id>  指定会话
-  inspect-records.ts --db <路径>     指认库文件（默认按配置的 dataDir 找）
+  inspect-records.ts --db <路径>     指认库文件（默认按基础路径找）
 
-默认那条路问的是配置：读 Magic 基础目录下的 config.json（不设 MAGIC_HOME 时就是
-~/.magic/config.json），再取它里面 dataDir 那一格——与 magic 自己用同一份配置，
-故不会看错地方。数据落在别处时用 --db 指认。
+默认读取 <MAGIC_HOME 或系统家目录>/.magic/records.db。
+需要检查其它库文件时用 --db 明确指认；不读取旧 dataDir 配置。
 `
 
 function parseArgs(argv: readonly string[]): Args {
@@ -76,20 +74,12 @@ function parseArgs(argv: readonly string[]): Args {
 
 // —— 落点 ——
 
-/**
- * 库文件在哪——默认**问配置**（与运行时同一个来处，故不会看错地方）；
- * 文件名取自记录域公开的常量（`DATABASE_FILE`），不在 app 里重写一份字面量。
- *
- * `loadConfig()` 不带参数时走**统一基础路径**（U42：`MAGIC_HOME` 指到别处就读那一处）
- * ——脚本因此与主程序看同一个地方，不必自己拼一遍家目录。
- * `--db` 给的路径**照字面**（`~` 展开到真家目录）：那是「我明确要读这一个文件」，
- * 不再替用户改道。
- */
+/** 排障入口显式解析位置；--db 仍可点名一个只读库文件。 */
 function resolveDatabasePath(explicit: string | undefined): string {
-  if (explicit !== undefined) return expandHome(explicit, homedir())
-
-  const loaded = loadConfig()
-  return join(loaded.config.dataDir, DATABASE_FILE)
+  const home = homedir()
+  if (explicit !== undefined) return resolve(expandHome(explicit, home))
+  const magic = resolveMagicHome(process.env, home)
+  return resolve(magic.base, DATABASE_FILE)
 }
 
 // —— 行形态（列名即落盘形态）——

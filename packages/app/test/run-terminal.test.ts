@@ -1,7 +1,7 @@
 /** 真 PTY 客户端经专用 stdin 测试宿主接入；关闭窗口不结束 App 所属核心。 */
 
 import { describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPathsOf } from '../src/run/paths.ts'
@@ -21,7 +21,7 @@ function runArtifacts(prefix: string): string {
 }
 
 function pathsOf(sandbox: Sandbox): ReturnType<typeof runPathsOf> {
-  return runPathsOf({ home: sandbox.home, base: join(sandbox.home, '.magic') }, sandbox.dataDir, tmpdir())
+  return runPathsOf({ home: sandbox.home, base: join(sandbox.home, '.magic') }, tmpdir())
 }
 
 async function waitFor(
@@ -682,16 +682,13 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
    * **接回入口要真敲得响**（U100 · 设计「按实际配置保留必要启动参数」）——
    * **非默认落点**那一形：把屏上印的那一行**原样取下来、真敲一遍**，接回**同一个库**。
    *
-   * 为什么非要用非默认落点走一遍：默认那一形（`magic resume <id>`）在换了终端之后
-   * 仍然落在 `~/.magic`，**看不出差别**；而 `MAGIC_HOME` 指向别处时，少了那个前缀就会
-   * 接到另一个库（会话不在）。故这一条：
-   *
-   * ① 起一扇窗，`MAGIC_HOME` 指向**沙地里的另一处**（配置抄一份过去）；
+   * D55：命令一律携带已选父目录；本例还覆盖 .magic 本身是符号链接。
+   * ① 起一扇窗，`MAGIC_HOME` 指向与所选实例相同实体的另一条路径；
    * ② 从「转到后台」那一刻的屏上**取出**那一行（`接回来：` 之后那一段就是用户要复制的）；
    * ③ 造一个 `magic` 可执行（PATH 里的 shim，转真的 `cli.ts`），**`sh -c` 原样跑它**；
    * ④ 判据：接回**同一条会话**（记录区铺着原来那一句）· 模型**没被再问一遍**。
    */
-  test('转后台留的接回入口：**照那一行真敲一遍**，接回同一个库（非默认 `MAGIC_HOME`）', async () => {
+  test.each([false, true])('转后台留的接回入口：照那一行真敲一遍，接回同一个库（自定义符号链接位置=%s）', async (alias) => {
     const runs = tempDir('magic-u100-resume-runs-')
     const fixture = startFixture({ turns: [{ kind: 'text', text: '第一句答复。' }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
@@ -699,25 +696,15 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
     let second: UiSession | undefined
 
     try {
-      // ① **非默认落点，但同一个数据实例**（U109 按设计收窄后的口径）：
-      //    `MAGIC_HOME` 指到别处（`$MAGIC_HOME/.magic` ≠ 家目录下那一个），
-      //    而那一份配置里的 **`dataDir` 与 App 的一致** ⇒ 它就是**同一个数据实例**，
-      //    应当照常接回。
-      //
-      //    原预期 → 新预期：原来是「`MAGIC_HOME` 与 `dataDir` **两处都**换成别的、
-      //    仍然接得上」；现在是「**换了 `MAGIC_HOME`、但 `dataDir` 一致**才接得上」。
-      //    依据：`设计/会话与运行管理`「常驻方案的生产 App 同时承载一个选定数据实例；
-      //    **CLI 显式目录须与之匹配**」——守卫比的是**数据实例（`dataDir`）**，
-      //    **基础目录不在其列**（它管配置/授权/技能，不是那份数据）。
-      //    非法那一半（`dataDir` 不同 ⇒ 拒绝）另立一条用例，见下。
-      const alt = join(sandbox.root, 'alt-home')
-      mkdirSync(join(alt, '.magic'), { recursive: true })
-      const config = JSON.parse(readFileSync(join(sandbox.home, '.magic', 'config.json'), 'utf8')) as Record<string, unknown>
-      writeFileSync(
-        join(alt, '.magic', 'config.json'),
-        JSON.stringify(config, null, 2),
-        'utf8',
-      )
+      // .magic 本身链接到末段不叫 .magic 的实体；命令必须保留选择路径的父目录。
+      const alt = alias ? join(sandbox.root, 'alt-home') : sandbox.home
+      if (alias) {
+        const store = join(sandbox.root, 'store')
+        renameSync(join(sandbox.home, '.magic'), store)
+        symlinkSync(store, join(sandbox.home, '.magic'), 'dir')
+        mkdirSync(alt)
+        symlinkSync(store, join(alt, '.magic'), 'dir')
+      }
 
       first = await createUiSession({
         label: '接回入口', artifacts: runs, sandbox, fixture, env: { MAGIC_HOME: alt },
@@ -734,18 +721,9 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await first.wait({ text: '接回来：' }, { timeoutMs: 10_000 })
       const shown = await first.capture({ label: '转后台留的接回入口（非默认 MAGIC_HOME）' })
 
-      // ⚠️ **这一句超过终端宽度时 Ink 会折行**（真换行 ＋ 续行缩进两格）——照屏上那一行取，
-      //    取到的是**前 100 列**（实测：前半截看着对、路径被腰斩）。故先把折行接回去
-      //    （`joinWrapped`），拿到的就是**那一条逻辑行**。
-      //    ⚠️ 折行本身是**产品的一条限度**：路径长过终端宽度时，整段复制会把换行带进去
-      //    （短路径不受影响）——记在回报的「未验 / 限度」里。
+      // 终端按宽度软折行；从完整输出取逻辑行，随后另核原始字节没有硬换行。
       const copy = joinWrapped(first.rawText(), '接回来：').split('接回来：')[1] ?? ''
-      // 原预期 → 新预期：原来比的是**字面**路径（测试给的 `/var/folders/…`），现在比**规范化后**
-      // 的路径（`/private/var/folders/…`）。依据：协作线的 `host-discovery`（`normalizeDataDir`）
-      // ——同一份代码里 socket 路径也按规范化取键（「两个写法必须落在同一把锁上」）。
-      // **没变弱**：判据仍是「那一行必须带上 `MAGIC_HOME` 且指向 alt」，
-      // 只是把「字面相同」换成「**指向同一个目录**」——后者更强（认的是目录，不是写法）。
-      expect(copy).toBe(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${realpathSync(alt)}' magic resume '${sessionIdOf(sandbox)}'`)
+      expect(copy).toBe(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${alt}' magic resume '${sessionIdOf(sandbox)}'`)
 
       // ③ **它得是「屏上原样可复制」的一条**（规划裁决点名的那一条）——
       //    判据**落在字节上**，不是靠测试把这行接回来：
@@ -767,7 +745,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // **走了之后那一行还在屏上**（用户就是在这时候去复制它的）——它写在那一帧**之上**，
       // Ink 收摊擦的是它自己那一帧，不碰已经写出去的那一行
       const afterExit = await first.capture({ label: '退出之后那一行还在' })
-      expect(afterExit.lines.some((text) => text.includes('magic resume'))).toBe(true)
+      expect(afterExit.lines.join('').includes('magic resume')).toBe(true)
       first = undefined
 
       // ③ 造一个 `magic`（PATH 里的 shim ⇒ 真的那个 cli.ts），**把那一行原样交给 sh**
@@ -777,24 +755,13 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       writeFileSync(shim, `#!/bin/sh\nexec ${process.execPath} ${join(REPO_ROOT, 'packages/app/src/cli.ts')} "$@"\n`, 'utf8')
       chmodSync(shim, 0o755)
 
-      // ⚠️ **这一扇窗的底环境里没有 `MAGIC_HOME`**（「复制到另一个终端」的原样）：
-      //    它按默认落点走（家目录下那一份配置 ⇒ 另一个库）。**不带它，判据才成立**——
-      //    底环境里也塞一个 `MAGIC_HOME` 的话，命令里那一段前缀就算失效也照样接得上
-      //    （环境把它兜住了，实测被点出来过）。
-      //
-      // ⚠️ **原先这里有一道「那个默认库里必须没有这条会话」的前置**（用来排除「接上的其实是
-      //    别处的同一条」）。U109 收窄守卫之后**它不再成立也不需要**：`alt` 与 App
-      //    **同一个 `dataDir`** ⇒ 本来就是**同一个数据实例**，谈不上「别处」。
-      //    它原来守的那件事（**不匹配的目录要拒绝**）现在由**守卫自己**承担，
-      //    并另立一条用例（见本文件「数据实例不匹配 ⇒ 拒绝」）。
-
       second = await createUiSession({
         label: '照那一行接回来',
         artifacts: runs,
         sandbox,
         fixture,
         command: ['sh', '-c', copy],
-        env: { PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+        env: { PATH: `${bin}:${process.env['PATH'] ?? ''}`, MAGIC_HOME: join(sandbox.root, 'wrong-instance') },
         skipReady: true,
       })
 
@@ -809,11 +776,6 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await second.close({ graceMs: 5_000 })
       second = undefined
 
-      // ⚠️ **原先这里还有一条反面**：同一条命令**摘掉 `MAGIC_HOME=` 前缀**，在那个默认库上
-      //    接不上——它守的是「④接上了是**那一段前缀**挣来的」。收窄守卫之后这条**不成立**：
-      //    `alt` 与 App 同一个 `dataDir`，前缀摘掉接的也还是**同一个数据实例**。
-      //    它原先的「反面」角色由**新立的那条**（`dataDir` 不同 ⇒ 守卫拒绝，且带改前红）接过，
-      //    那条比它更直：不再靠「前缀在不在」间接证明，而是直接判「不匹配的目录一律拒绝」。
     } finally {
       await first?.close().catch(() => {})
       await second?.close().catch(() => {})
@@ -861,7 +823,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // **写的是真命令**（带着那一条会话的 id），不是「没有可接的入口」那一句
       const id = sessionIdOf(sandbox)
       expect(id).not.toBe('')
-      expect(stripAnsi(raw)).toContain(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${realpathSync(sandbox.home)}' magic resume '${id}'`)
+      expect(stripAnsi(raw)).toContain(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${sandbox.home}' magic resume '${id}'`)
       expect(raw).not.toContain('没有可接的入口')
     } finally {
       await window?.close().catch(() => {})

@@ -30,7 +30,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   const root = realpathSync(tempDir('magic-stop-'))
   const magic = magicAt(root)
   const workspace = join(root, 'workspace')
-  const dataDir = join(root, 'data')
+  const dataDir = magic.base
   for (const dir of [magic.base, workspace, dataDir]) mkdirSync(dir, { recursive: true })
   const journal: { order: number; at: number; kind: string; data: unknown }[] = []
   const mark = (kind: string, data: unknown = undefined) => {
@@ -62,7 +62,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
     providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-stop-only' } },
   }))
-  const paths = runPathsOf(magic, dataDir, tmpdir())
+  const paths = runPathsOf(magic, tmpdir())
   const proxyPath = join(paths.dir, 's.sock')
   mkdirSync(paths.dir, { recursive: true })
   const proxy = createServer(front => {
@@ -127,7 +127,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   })
   await new Promise<void>((resolve, reject) => { proxy.once('error', reject); proxy.listen(proxyPath, resolve) })
   const launcher = createProcessLauncher()
-  const started = await startManager({ paths, dataDir, magic, stopGraceMs: 3000, stopKillMs: 1000, launch: { spawn(request) {
+  const started = await startManager({ paths, magic, stopGraceMs: 3000, stopKillMs: 1000, launch: { spawn(request) {
     const row: Launch = { gen: request.gen, tokenHash: tokenHash(request.token), session: request.session, owned: [] }
     tokens.set(request.token, row)
     const child = launcher.spawn({ ...request, socket: proxyPath })

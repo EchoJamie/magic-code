@@ -50,7 +50,7 @@ export type Stage = {
  * （真 SDK ＋ 注入 fetch，无网络）要拿它换掉——真实模型域与 Faux 的首事件时序不同，
  * 而那正是要咬的地方。沙地、家目录、授权文件照旧全在临时目录里。
  */
-export type StageAssembleOptions = Omit<AssembleOptions, 'cwd' | 'config'> & {
+export type StageAssembleOptions = Omit<AssembleOptions, 'cwd' | 'config' | 'magic'> & {
   readonly turns?: readonly FauxTurn[]
   /** 每步之间的等待（毫秒）——测中断时给消费方留窗口。 */
   readonly stepDelayMs?: number
@@ -64,9 +64,10 @@ export type StageOptions = {
 
 export function makeStage(options: StageOptions = {}): Stage {
   const root = tempDir('magic-app-')
-  const dataDir = join(root, 'data')
+  const dataDir = magicAt(root).base
   const workspace = join(root, 'ws')
-  const configPath = writeConfig(root, validConfig({ dataDir, ...options.config }))
+  mkdirSync(dataDir, { recursive: true })
+  const configPath = writeConfig(dataDir, validConfig(options.config))
   const models: FauxGateway[] = []
 
   // 工作区根须**已存在**（工作区构造取 realpath——宁可在装配期响亮失败）

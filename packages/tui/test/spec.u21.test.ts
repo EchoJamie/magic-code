@@ -172,7 +172,7 @@ function countingShell(): {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-  })
+  }, { magicBase: '/test/.magic' })
 
   let count = 0
   shell.subscribe(() => {

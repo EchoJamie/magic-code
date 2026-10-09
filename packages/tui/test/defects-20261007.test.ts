@@ -9,7 +9,7 @@ const ask = (id = 12, call = 11) => event('tool.decision.request', { call, name:
 const answers = (spy: ReturnType<typeof createSpyTransport>) => spy.commands.filter(one => one.type === 'decision.answer')
 
 test('审批直接展开，无预选；文字、粘贴、连续 Enter 不批准；队列逐条重置选择', () => {
- const spy=createSpyTransport(), shell=createShell(spy.transport)
+ const spy=createSpyTransport(), shell=createShell(spy.transport, { magicBase: '/test/.magic' })
  shell.key({kind:'paste',text:'draft'});shell.key({kind:'left'})
  spy.emit(ask());spy.emit(ask(22,21))
  expect(shell.getView().dock.kind).toBe('decision')
@@ -29,7 +29,7 @@ test('审批直接展开，无预选；文字、粘贴、连续 Enter 不批准�
  shell.dispose()
 })
 test('Esc 归还草稿且待决策可见；另一窗口答复后卡失效', async () => {
- const spy=createSpyTransport(), shell=createShell(spy.transport)
+ const spy=createSpyTransport(), shell=createShell(spy.transport, { magicBase: '/test/.magic' })
  shell.key({kind:'paste',text:'draft'});spy.emit(ask());shell.key({kind:'escape'})
  expect(shell.getView().draft).toBe('draft')
  for(const columns of [200,100]) {
@@ -43,7 +43,7 @@ test('Esc 归还草稿且待决策可见；另一窗口答复后卡失效', asyn
  expect(shell.getView().pendingDecision).toBeUndefined();shell.dispose()
 })
 test('长材料按窗口预算翻页，操作可见，队列身份不变',()=>{
- const spy=createSpyTransport(),shell=createShell(spy.transport)
+ const spy=createSpyTransport(),shell=createShell(spy.transport, { magicBase: '/test/.magic' })
  spy.emit(event('tool.decision.request',{call:11,name:'write',material:Array.from({length:200},(_,i)=>`line ${i}`).join('\n'),weight:'heavy'},{id:12}))
  const dock=shell.getView().dock;if(dock.kind!=='decision')throw Error('missing')
  for(const columns of [200,100]) {
@@ -58,7 +58,7 @@ test('长材料按窗口预算翻页，操作可见，队列身份不变',()=>{
 })
 test('生产 disconnected 可本地 /connect；重复请求合并，重连不发草稿，旧审批失效',async()=>{
  const spy=createSpyTransport();let opens=0,done=()=>{}
- const shell=createShell(spy.transport,{reopen:()=>{opens++;return new Promise<void>(resolve=>{done=resolve})}})
+ const shell=createShell(spy.transport,{ magicBase: '/test/.magic',reopen:()=>{opens++;return new Promise<void>(resolve=>{done=resolve})}})
  spy.emit(ask());shell.disconnected('fixture')
  expect(shell.getView().status.state).toBe('lost');expect(shell.getView().pendingDecision).toBeUndefined()
  shell.key(enter);expect(shell.getView().flash).toContain('连接已断开')
@@ -71,7 +71,7 @@ test('生产 disconnected 可本地 /connect；重复请求合并，重连不发
 })
 test('Esc 主输入复用 run stop；审批/补全先返回，草稿保留，未伪报停止',()=>{
  const spy=createSpyTransport(),stops:unknown[]=[]
- const shell=createShell(spy.transport,{stop:(...args)=>stops.push(args)})
+ const shell=createShell(spy.transport,{ magicBase: '/test/.magic',stop:(...args)=>stops.push(args)})
  spy.emit(event('session.state',{active:'test',sessions:[]}));spy.emit(event('turn.start',{}))
  shell.key({kind:'paste',text:'draft'});spy.emit(ask());shell.key({kind:'escape'})
  expect(stops).toHaveLength(0);shell.key({kind:'escape'})
@@ -85,7 +85,7 @@ test('具体事项到达不标已读；真实 Ink 输出完成才回传成员事
  const {FakeStdin,FakeTty}=await import('./terminal.ts')
  let notify:(notice:import('@magic/contracts').RunNotice)=>void=()=>{}
  const marks:(readonly string[])[]=[],spy=createSpyTransport()
- const shell=createShell(spy.transport,{notices:listener=>{notify=listener},markRead:ids=>marks.push(ids),receipts:['离开期间有待处理事项']})
+ const shell=createShell(spy.transport,{ magicBase: '/test/.magic',notices:listener=>{notify=listener},markRead:ids=>marks.push(ids),receipts:['离开期间有待处理事项']})
  const notice={id:'member:needs-you:12',session:'member',kind:'needs-you' as const,detail:'写入 review.txt，等待明确确认',at:1,unread:true}
  notify(notice);expect(marks).toHaveLength(0)
  const stdout=new FakeTty(100,40)

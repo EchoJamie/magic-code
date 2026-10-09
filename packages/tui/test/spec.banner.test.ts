@@ -65,7 +65,7 @@ describe('① 窗口够宽 ⇒ 块字版', () => {
 
 describe('④ 记录区最前面 · 启动印一次', () => {
   test('`settled[0]` 就是字标——**记录区的最前面**那一块', () => {
-    const shell = createShell(createSpyTransport().transport)
+    const shell = createShell(createSpyTransport().transport, { magicBase: '/test/.magic' })
 
     expect(shell.getView().settled[0]?.kind).toBe('banner')
   })
@@ -198,7 +198,7 @@ describe('⑥ 配色', () => {
   })
 
   test('**无色终端整块用默认前景**——一个色码都不发，名字仍然完整', async () => {
-    const view = createShell(createSpyTransport().transport).getView()
+    const view = createShell(createSpyTransport().transport, { magicBase: '/test/.magic' }).getView()
     const bytes = await bytesAt(view, 100, 0)
 
     expect(bytes).not.toMatch(/\u001b\[[0-9;]*m/) // 一条 SGR 都没有 ⇒ 落到默认前景
@@ -207,7 +207,7 @@ describe('⑥ 配色', () => {
   })
 
   test('两档**分得开**——有色的那串字节与无色那串不是一回事（D17 那条教训的反面）', async () => {
-    const view = createShell(createSpyTransport().transport).getView()
+    const view = createShell(createSpyTransport().transport, { magicBase: '/test/.magic' }).getView()
     const colored = await bytesAt(view, 100, 3)
     const dull = await bytesAt(view, 100, 0)
 

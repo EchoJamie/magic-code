@@ -4103,7 +4103,7 @@ function mcpToolCount(server: McpCatalog['servers'][number]): string {
  * 少一行，绝不拿一个拼出来的路径顶上。
  */
 export type ConfigPaths = {
-  /** 数据目录（配置 `dataDir` 的落点 · 已解析的绝对路径）。 */
+  /** 数据目录（由选定基础目录派生的绝对路径）。 */
   readonly dataDir?: string | undefined
   /** 系统家目录——**只用来把屏上的路径缩成 `~/…`**（长路径在那一行里放不下）。 */
   readonly home?: string | undefined

@@ -23,7 +23,7 @@ if (process.argv.includes('--fixture')) {
       if (command.type === 'decision.answer') emit(event('tool.decision', { call: 500, decision: command.decision, decider: 'user', elapsedMs: 100 }, { session: 'member' }))
     },
   }
-  const handle = await runTui({ transport, boot: async () => {
+  const handle = await runTui({ magicBase: '/test/.magic', transport, boot: async () => {
     emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', title: '修复支付回调', at: 0 }] }))
     emit(event('collaboration.view', collaborationFixture))
   } })

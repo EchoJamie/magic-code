@@ -30,7 +30,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { KernelEvent, ProviderConfig, WebSource, PageFetch } from '@magic/contracts'
 import { resolveMagicHome } from '@magic/contracts'
-import { assemble, loadConfig, runShellScript } from '../src/index.ts'
+import { assemble, runShellScript } from '../src/index.ts'
 
 // —— 入参 ——
 
@@ -196,7 +196,8 @@ mkdirSync(workspace, { recursive: true })
 
 const sandbox = '/tmp/magic-u99-sandbox'
 rmSync(sandbox, { recursive: true, force: true })
-mkdirSync(sandbox, { recursive: true })
+const magic = resolveMagicHome({}, sandbox)
+mkdirSync(magic.base, { recursive: true })
 
 const providers: Record<string, ProviderConfig> = {
   p: providerOf(VENDOR, SESSION_MODEL),
@@ -204,7 +205,7 @@ const providers: Record<string, ProviderConfig> = {
 const distillProvider = DISTILL_VENDOR === 'same' ? 'p' : 'd'
 if (DISTILL_VENDOR !== 'same') providers['d'] = providerOf(DISTILL_VENDOR, DISTILL_MODEL)
 
-const configPath = join(sandbox, 'config.json')
+const configPath = join(magic.base, 'config.json')
 writeFileSync(
   configPath,
   JSON.stringify(
@@ -212,7 +213,6 @@ writeFileSync(
       defaultProvider: 'p',
       providers,
       webFetch: { provider: distillProvider, model: DISTILL_MODEL },
-      dataDir: join(sandbox, 'data'),
     },
     null,
     2,
@@ -225,7 +225,6 @@ console.log(`  会话连接 ${VENDOR} · 模型 ${SESSION_MODEL} · 会话那一
 console.log(`  提炼连接 ${DISTILL_VENDOR} · 模型 ${DISTILL_MODEL}`)
 console.log(`  请求体落点 ${OUT}`)
 
-const magic = resolveMagicHome({}, sandbox)
 const vendor = fakeVendor()
 
 /** 取回面替身——不出网，直接给 markdown。 */
@@ -244,10 +243,8 @@ const web: WebSource = {
 const assembly = assemble({
   cwd: workspace,
   magic,
-  config: loadConfig({ path: configPath, magic }),
   modelFetch: vendor.fetch,
   webSource: web,
-  grantsFile: join(sandbox, 'grants.json'),
   prompt: { platform: 'darwin', date: '2026-09-26' },
 })
 

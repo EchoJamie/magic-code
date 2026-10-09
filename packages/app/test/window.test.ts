@@ -130,7 +130,7 @@ function shellOf(assembly: Assembly) {
   // ⚠️ **旧链已撤**（U41 返修 · 本轮）：外壳不再拿窗长表自己查「换过模型之后」的分母
   // ——那是事件自带的 `inputBudget`（`model.switched` / `model.call.start`，
   // 与 `Assembly.contextWindow` / `model.catalog.currentInputBudget` 同源）。
-  return createShell(assembly.shell, { contextWindow: options.contextWindow })
+  return createShell(assembly.shell, { magicBase: '/test/.magic', contextWindow: options.contextWindow })
 }
 
 /** 一次真调用（让链上有会话——`model.switched` 要落在会话上）。 */

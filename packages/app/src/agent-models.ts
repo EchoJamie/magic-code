@@ -97,7 +97,7 @@ async function managedModelContext(magic: MagicHome) {
       ...resolveConnection({ providerId, config }),
       access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
     })),
-    cache: createFileModelInfoCache(loaded.config.dataDir), now: Date.now,
+    cache: createFileModelInfoCache(magic.base), now: Date.now,
     fetch: async () => { throw new Error('配置预检不允许联网') },
   })
   await info.warmup()

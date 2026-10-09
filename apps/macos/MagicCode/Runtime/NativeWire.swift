@@ -7,7 +7,12 @@ struct ServiceIdentity: Codable, Equatable {
     let source: String
     let hostInstance: String
     let serviceInstance: String
-    let dataDir: String
+    let base: String
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.protocol == rhs.protocol && lhs.version == rhs.version && lhs.source == rhs.source &&
+        lhs.hostInstance == rhs.hostInstance && lhs.serviceInstance == rhs.serviceInstance &&
+        URL(fileURLWithPath: lhs.base).resolvingSymlinksInPath().path == URL(fileURLWithPath: rhs.base).resolvingSymlinksInPath().path
+    }
 }
 struct HostDiscovery: Codable, Equatable {
     let `protocol`: Int
@@ -15,14 +20,13 @@ struct HostDiscovery: Codable, Equatable {
     let source: String
     let hostInstance: String
     let serviceInstance: String
-    let dataDir: String
     let socket: String
     let base: String
     let app: String
     init(identity: ServiceIdentity, socket: String, base: String, app: String) {
         self.protocol = identity.protocol; version = identity.version; source = identity.source
         hostInstance = identity.hostInstance; serviceInstance = identity.serviceInstance
-        dataDir = identity.dataDir; self.socket = socket; self.base = base; self.app = app
+        self.socket = socket; self.base = base; self.app = app
     }
 }
 enum RunState: String, Codable { case running, waiting, stopping, stopped, idle, unknown }
@@ -121,22 +125,22 @@ struct NativeProjection: Codable, Equatable {
 }
 
 enum NativeRequest: Codable, Equatable {
-    case hello(role: String, protocol: Int, version: String, source: String, dataDir: String)
+    case hello(role: String, protocol: Int, version: String, source: String, base: String)
     case refresh
-    case settingsRead(request: String, serviceInstance: String, dataDir: String, preview: SettingsValue?)
-    case settingsApply(request: String, serviceInstance: String, dataDir: String, stamp: String?, action: SettingsValue)
+    case settingsRead(request: String, serviceInstance: String, base: String, preview: SettingsValue?)
+    case settingsApply(request: String, serviceInstance: String, base: String, stamp: String?, action: SettingsValue)
     case inspect(request: String, session: String, notice: String?)
     case stop(request: String, serviceInstance: String, session: String, gen: Int)
     case read(ids: [String])
     case delivered(ids: [String])
     case presence(session: String, ids: [String], focused: Bool)
-    private enum Keys: String, CodingKey { case t, role, `protocol`, version, source, dataDir, request, session, notice, serviceInstance, gen, ids, focused, stamp, action, preview }
+    private enum Keys: String, CodingKey { case t, role, `protocol`, version, source, base, request, session, notice, serviceInstance, gen, ids, focused, stamp, action, preview }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
-        case "hello": self = .hello(role: try c.decode(String.self, forKey: .role), protocol: try c.decode(Int.self, forKey: .protocol), version: try c.decode(String.self, forKey: .version), source: try c.decode(String.self, forKey: .source), dataDir: try c.decode(String.self, forKey: .dataDir))
-        case "native.settings.read": self = .settingsRead(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), dataDir: try c.decode(String.self, forKey: .dataDir), preview: try c.decodeOptional(SettingsValue.self, forKey: .preview))
-        case "native.settings.apply": self = .settingsApply(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), dataDir: try c.decode(String.self, forKey: .dataDir), stamp: try c.decode(String?.self, forKey: .stamp), action: try c.decode(SettingsValue.self, forKey: .action))
+        case "hello": self = .hello(role: try c.decode(String.self, forKey: .role), protocol: try c.decode(Int.self, forKey: .protocol), version: try c.decode(String.self, forKey: .version), source: try c.decode(String.self, forKey: .source), base: try c.decode(String.self, forKey: .base))
+        case "native.settings.read": self = .settingsRead(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), base: try c.decode(String.self, forKey: .base), preview: try c.decodeOptional(SettingsValue.self, forKey: .preview))
+        case "native.settings.apply": self = .settingsApply(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), base: try c.decode(String.self, forKey: .base), stamp: try c.decode(String?.self, forKey: .stamp), action: try c.decode(SettingsValue.self, forKey: .action))
         case "native.refresh": self = .refresh
         case "native.inspect": self = .inspect(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), notice: try c.decodeOptional(String.self, forKey: .notice))
         case "native.stop": self = .stop(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), session: try c.decode(String.self, forKey: .session), gen: try c.decode(Int.self, forKey: .gen))
@@ -152,19 +156,19 @@ enum NativeRequest: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         switch self {
-        case let .hello(role, `protocol`, version, source, dataDir):
+        case let .hello(role, `protocol`, version, source, base):
             try c.encode("hello", forKey: .t)
             try c.encode(role, forKey: .role)
             try c.encode(`protocol`, forKey: .protocol)
             try c.encode(version, forKey: .version)
             try c.encode(source, forKey: .source)
-            try c.encode(dataDir, forKey: .dataDir)
-        case let .settingsRead(request, serviceInstance, dataDir, preview):
+            try c.encode(base, forKey: .base)
+        case let .settingsRead(request, serviceInstance, base, preview):
             try c.encode("native.settings.read", forKey: .t); try c.encode(request, forKey: .request); try c.encodeIfPresent(preview, forKey: .preview)
-            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(dataDir, forKey: .dataDir)
-        case let .settingsApply(request, serviceInstance, dataDir, stamp, action):
+            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(base, forKey: .base)
+        case let .settingsApply(request, serviceInstance, base, stamp, action):
             try c.encode("native.settings.apply", forKey: .t); try c.encode(request, forKey: .request)
-            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(dataDir, forKey: .dataDir)
+            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(base, forKey: .base)
             try c.encode(stamp, forKey: .stamp); try c.encode(action, forKey: .action)
         case .refresh:
             try c.encode("native.refresh", forKey: .t)
@@ -200,9 +204,9 @@ enum NativeResponse: Codable, Equatable {
     case inspected(request: String, work: NativeWork?, error: String?)
     case stopped(request: String, session: String, phase: StopPhase, note: String?)
     case attached(request: String, session: String?)
-    case settingsResult(request: String, serviceInstance: String, dataDir: String, snapshot: SettingsSnapshot?, error: String?, note: String?)
+    case settingsResult(request: String, serviceInstance: String, base: String, snapshot: SettingsSnapshot?, error: String?, note: String?)
     case error(reason: String)
-    private enum Keys: String, CodingKey { case t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, dataDir, snapshot }
+    private enum Keys: String, CodingKey { case t, identity, projection, request, work, error, session, phase, note, reason, serviceInstance, base, snapshot }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
@@ -211,7 +215,7 @@ enum NativeResponse: Codable, Equatable {
         case "native.inspected": self = .inspected(request: try c.decode(String.self, forKey: .request), work: try c.decodeOptional(NativeWork.self, forKey: .work), error: try c.decodeOptional(String.self, forKey: .error))
         case "native.stopped": self = .stopped(request: try c.decode(String.self, forKey: .request), session: try c.decode(String.self, forKey: .session), phase: try c.decode(StopPhase.self, forKey: .phase), note: try c.decodeOptional(String.self, forKey: .note))
         case "native.attached": self = .attached(request: try c.decode(String.self, forKey: .request), session: try c.decode(String?.self, forKey: .session))
-        case "native.settings.result": self = .settingsResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), dataDir: try c.decode(String.self, forKey: .dataDir), snapshot: try c.decodeOptional(SettingsSnapshot.self, forKey: .snapshot), error: try c.decodeOptional(String.self, forKey: .error), note: try c.decodeOptional(String.self, forKey: .note))
+        case "native.settings.result": self = .settingsResult(request: try c.decode(String.self, forKey: .request), serviceInstance: try c.decode(String.self, forKey: .serviceInstance), base: try c.decode(String.self, forKey: .base), snapshot: try c.decodeOptional(SettingsSnapshot.self, forKey: .snapshot), error: try c.decodeOptional(String.self, forKey: .error), note: try c.decodeOptional(String.self, forKey: .note))
         case "native.error": self = .error(reason: try c.decode(String.self, forKey: .reason))
         default: throw DecodingError.dataCorruptedError(forKey: .t, in: c, debugDescription: "不支持的协议消息")
         }
@@ -245,9 +249,9 @@ enum NativeResponse: Codable, Equatable {
             try c.encode("native.attached", forKey: .t)
             try c.encode(request, forKey: .request)
             try c.encode(session, forKey: .session)
-        case let .settingsResult(request, serviceInstance, dataDir, snapshot, error, note):
+        case let .settingsResult(request, serviceInstance, base, snapshot, error, note):
             try c.encode("native.settings.result", forKey: .t); try c.encode(request, forKey: .request)
-            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(dataDir, forKey: .dataDir)
+            try c.encode(serviceInstance, forKey: .serviceInstance); try c.encode(base, forKey: .base)
             try c.encodeIfPresent(snapshot, forKey: .snapshot); try c.encodeIfPresent(error, forKey: .error); try c.encodeIfPresent(note, forKey: .note)
         case let .error(reason):
             try c.encode("native.error", forKey: .t)
@@ -281,15 +285,15 @@ enum HostRequest: Codable, Equatable {
 }
 
 enum HostResponse: Codable, Equatable {
-    case diagnostics(request: String, value: Diagnostics, dataDir: String)
+    case diagnostics(request: String, value: Diagnostics, base: String)
     case ready(identity: ServiceIdentity, socket: String, base: String, config: String)
     case stopped(request: String?)
     case error(reason: String)
-    private enum Keys: String, CodingKey { case t, identity, socket, base, config, request, reason, value, dataDir }
+    private enum Keys: String, CodingKey { case t, identity, socket, base, config, request, reason, value }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .t) {
-        case "host.diagnostics": self = .diagnostics(request: try c.decode(String.self, forKey: .request), value: try c.decode(Diagnostics.self, forKey: .value), dataDir: try c.decode(String.self, forKey: .dataDir))
+        case "host.diagnostics": self = .diagnostics(request: try c.decode(String.self, forKey: .request), value: try c.decode(Diagnostics.self, forKey: .value), base: try c.decode(String.self, forKey: .base))
         case "host.ready": self = .ready(identity: try c.decode(ServiceIdentity.self, forKey: .identity), socket: try c.decode(String.self, forKey: .socket), base: try c.decode(String.self, forKey: .base), config: try c.decode(String.self, forKey: .config))
         case "host.stopped": self = .stopped(request: try c.decodeOptional(String.self, forKey: .request))
         case "host.error": self = .error(reason: try c.decode(String.self, forKey: .reason))
@@ -299,8 +303,8 @@ enum HostResponse: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         switch self {
-        case let .diagnostics(request, value, dataDir):
-            try c.encode("host.diagnostics", forKey: .t); try c.encode(request, forKey: .request); try c.encode(value, forKey: .value); try c.encode(dataDir, forKey: .dataDir)
+        case let .diagnostics(request, value, base):
+            try c.encode("host.diagnostics", forKey: .t); try c.encode(request, forKey: .request); try c.encode(value, forKey: .value); try c.encode(base, forKey: .base)
         case let .ready(identity, socket, base, config):
             try c.encode("host.ready", forKey: .t)
             try c.encode(identity, forKey: .identity)

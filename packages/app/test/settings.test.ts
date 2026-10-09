@@ -99,7 +99,7 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   await expect(g.apply({ type: 'sources.set', source: 'rules.sources', paths: ['relative'] })).rejects.toThrow('绝对路径')
   expect(readFileSync(g.config, 'utf8')).toBe(before)
   g.responsibility(true)
-  await expect(g.apply({ type: 'data.set', directory: join(g.root, 'new-data') })).rejects.toThrow('执行责任')
+  expect((await g.settings.read()).canChangeData).toBe(false)
   expect(readFileSync(g.config, 'utf8')).toBe(before)
   g.responsibility(false)
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' }); await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-chat' })
@@ -109,7 +109,7 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   await g.apply({ type: 'role.save', id: 'a', role: { name: '角色', instructions: '只读' } })
   expect(loadConfig({ magic: g.context.magic }).config.agentRoles?.a?.tools).toBeUndefined()
   await g.apply({ type: 'model.clear', choice: 'default' }); await g.apply({ type: 'provider.remove', provider: 'ds' })
-  await g.apply({ type: 'data.set', directory: join(g.root, 'new-data') }); expect(loadConfig({ magic: g.context.magic }).config.dataDir).toBe(join(g.root, 'new-data'))
+  expect((await g.settings.read()).canChangeData).toBe(true)
 })
 
 test('授权撤销比较真实文件身份，重读后撤销且回读同一事实', async () => {
@@ -146,4 +146,19 @@ test('自由 ID 和敏感名称按自己的键保存，不命中对象原型', a
   await g.apply({ type: 'mcp.save', name: 'local', server: { command: '/SENTINEL_NEVER_RUN' }, secrets: JSON.parse('{"__proto__":"SENTINEL_PROTO"}') })
   expect(JSON.stringify(g.raw())).toContain('SENTINEL_PROTO')
   expect(JSON.stringify(await g.settings.read())).not.toContain('SENTINEL_PROTO')
+})
+
+
+test('残留 dataDir 无论类型都不出现在设置中，保存其它字段保留原始键', async () => {
+  for (const dataDir of ['/obsolete', 7, null, { old: true }]) {
+    const g = setup()
+    writeFileSync(g.config, JSON.stringify({ providers: {}, dataDir, unrelated: { keep: true } }))
+    const snapshot = await g.settings.read()
+    expect(snapshot.base).toBe(g.base)
+    expect(snapshot.configuration).not.toHaveProperty('dataDir')
+    await g.apply({ type: 'prefs.set', reducedMotion: true })
+    const saved = JSON.parse(readFileSync(g.config, 'utf8'))
+    expect(saved.dataDir).toEqual(dataDir)
+    expect(saved.unrelated).toEqual({ keep: true })
+  }
 })

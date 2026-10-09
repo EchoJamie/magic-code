@@ -11,7 +11,7 @@ import { cliGround, waitFor } from './resident-cli-fixture.ts'
 
 test('真实原生socket保存、两观察入口冲突与TUI双向事实；不产生工作或执行者', async () => {
   const g = cliGround(), magic = { base: g.base, home: g.home }, path = join(g.base, 'config.json')
-  const started = await startManager({ paths: runPathsOf(magic, g.dataDir, g.root), magic, dataDir: g.dataDir, launch: { spawn() { throw new Error('设置不应启动执行者') } } })
+  const started = await startManager({ paths: runPathsOf(magic, g.root), magic, launch: { spawn() { throw new Error('设置不应启动执行者') } } })
   if (started.role !== 'manager') throw new Error('管理者未启动')
   const manager = started.manager, store = createRecordsStore({ dataDir: g.dataDir, workspace: [] })
   const one = linkOf<NativeResponse>(await Bun.connect({ unix: manager.socketPath, socket: socketHandlers() }) as never)
@@ -22,8 +22,8 @@ test('真实原生socket保存、两观察入口冲突与TUI双向事实；不�
   if (!client) throw new Error('TUI连接失败')
   const events: KernelEvent[] = []; client.onEvent(e => events.push(e))
   const identity = manager.identity
-  const hello: NativeRequest = { t: 'hello', role: 'observer', protocol: identity.protocol, version: identity.version, source: identity.source, dataDir: identity.dataDir }
-  const target = { serviceInstance: identity.serviceInstance, dataDir: identity.dataDir }
+  const hello: NativeRequest = { t: 'hello', role: 'observer', protocol: identity.protocol, version: identity.version, source: identity.source, base: identity.base }
+  const target = { serviceInstance: identity.serviceInstance, base: identity.base }
   function result(id: string, all = received) { return all.find((v): v is Extract<NativeResponse, { t: 'native.settings.result' }> => v.t === 'native.settings.result' && v.request === id) }
   try {
     one.send(hello); two.send(hello); await waitFor(() => received.some(v => v.t === 'native.welcome') && other.some(v => v.t === 'native.welcome'))

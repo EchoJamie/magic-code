@@ -17,7 +17,7 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   const magic = magicAt(root)
   const workspace = join(root, 'original')
   const changed = join(root, 'changed')
-  const dataDir = join(root, 'records')
+  const dataDir = magic.base
   const guide = join(root, 'guidance.md')
   const skillDir = join(workspace, '.magic', 'skills', 'review')
   for (const dir of [magic.base, workspace, changed, skillDir]) mkdirSync(dir, { recursive: true })

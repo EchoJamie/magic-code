@@ -1,3 +1,4 @@
+import { normalizeDataDir } from './paths.ts'
 /** 终端连接：核对 App 身份、缓存接入快照，转交真实消息；不创建会话或自动重开 App。 */
 import type { Socket } from 'bun'
 import type {
@@ -26,7 +27,7 @@ export type StopReport = {
 
 export type ManagerClient = {
   readonly conn: number
-  readonly dataDir: string
+  readonly base: string
   readonly identity: ServiceIdentity
   readonly mcp: readonly McpProbeRow[]
   gen(): number | null
@@ -171,7 +172,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
       ...(options.environment === undefined ? {} : { environment: executionEnvironment(options.environment) }),
     }, options.timeoutMs ?? 30_000)
     assertHostIdentity(welcome.identity, expected)
-    if (welcome.dataDir !== welcome.identity.dataDir) throw new Error('Magic Code welcome 的数据目录与服务身份不一致')
+    if (normalizeDataDir(welcome.base) !== normalizeDataDir(welcome.identity.base)) throw new Error('Magic Code welcome 的数据目录与服务身份不一致')
     if (welcome.refuse !== undefined) throw new ManagerRefused(welcome.refuse)
   } catch (error) {
     link.close()
@@ -179,7 +180,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   }
 
   return {
-    conn: welcome.conn, dataDir: welcome.dataDir, identity: welcome.identity,
+    conn: welcome.conn, base: welcome.base, identity: welcome.identity,
     mcp: welcome.mcp, unread: welcome.notices,
     gen: () => gen,
     runs: () => runRows,

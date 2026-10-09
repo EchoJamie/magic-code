@@ -5,7 +5,7 @@ import { createSpyTransport } from './fakes.ts'
 import { event } from './events.ts'
 const s=createSpyTransport(), probe='WIDTH_PROBE_'+'a'.repeat(110)
 const emit=(e:KernelEvent)=>s.emit({...e,at:Date.now()})
-const tui=await runTui({transport:s.transport,reducedMotion:true,boot:async()=>{
+const tui=await runTui({ magicBase: '/test/.magic',transport:s.transport,reducedMotion:true,boot:async()=>{
  emit(event('session.state',{active:'session-test',sessions:[{id:'session-test',at:0}]}))
  emit(event('model.delta',{channel:'thinking',text:probe}))
  for(const [index,state] of (['ok','failed','rejected'] as const).entries()) {

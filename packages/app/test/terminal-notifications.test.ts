@@ -18,15 +18,15 @@ async function until(check: () => boolean) {
 test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查看与宿主换代', async () => {
   const root = mkdtempSync(join(tmpdir(), 'terminal-notices-'))
   const magic = resolveMagicHome({}, root)
-  const dataDir = join(root, 'data')
+  const dataDir = magic.base
   const store = createRecordsStore({ dataDir, workspace: [root] })
   for (const session of ['a', 'b']) {
     store.setSessionTitle(session, session, 1)
     store.attention.put({ id: `${session}:done:1`, session, kind: 'done', at: 1,
       fact: '1', unread: true, delivered: false })
   }
-  const paths = runPathsOf(magic, dataDir, tmpdir())
-  const options = { magic, dataDir, paths, launch: { spawn() { throw new Error('查看完成会话不能起执行者') } } }
+  const paths = runPathsOf(magic, tmpdir())
+  const options = { magic, paths, launch: { spawn() { throw new Error('查看完成会话不能起执行者') } } }
   const started = await startManager(options)
   if (started.role !== 'manager') throw new Error('没有启动受控管理者')
   let manager = started.manager

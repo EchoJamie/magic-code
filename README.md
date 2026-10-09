@@ -17,7 +17,7 @@ open '.artifacts/macos/Magic Code.app'
 
 测试副本使用独立 bundle 身份、发现目录与隔离数据目录（按固定验证根隔离）。源码 CLI 只连接同源测试宿主；日常使用 App 内置的命令，在设置里选择安装目录后安装 `magic` 链接。登录时打开与系统通知默认关闭，通知权限仅由设置里的明确启用动作申请。
 
-基础目录下使用 `.magic` 保存配置；已选数据实例由 App 发布。显式 `MAGIC_HOME` 与当前实例不一致会拒绝连接，切换须在 App 无在途责任时完成。握手、状态汇总与历史查看均不标读、不起执行者。
+所选基础路径下的 `.magic` 共同保存配置、记录、blob、授权、日志、缓存与 Magic 用户技能；已选实例由 App 发布。旧 `dataDir` 键作为未知配置忽略，不迁移或删除旧数据。显式 `MAGIC_HOME` 与当前实例不一致会拒绝连接，切换须在 App 无在途责任时完成。握手、状态汇总与历史查看均不标读、不起执行者。
 
 `bun run check` 检查 TypeScript；`bun run check:macos` 重建签名开发包、运行 Swift 测试与隔离 App 联验；`bun run check:all` 执行两侧检查。默认测试不弹系统通知、不启用登录项、不安装用户命令链接。开发构建采用本机 ad-hoc 签名；公开 Release 需显式 Developer ID 与公证配置，参见 `scripts/macos/build.sh`。
 
@@ -32,7 +32,7 @@ magic --no-debug --log-level info
 
 App 可执行文件同样接受这些参数。显式参数保存当前实例 `config.json` 的 `debugMode` / `logLevel`，无参数沿用保存值；与 `--check` 不能组合。调试模式不改变数据、凭据、工作区或操作权限，Release 同样支持。
 
-日志写入当前实际数据目录的 `logs/`，设置中可复制路径或在 Finder 打开。App、管理者和执行者各写 JSONL 文件，等级为 `error / warn / info / debug / trace`。只记录结构化事件和已有标识，不复制凭据、对话或工具正文。单文件 10 MiB，目录保留目标 100 MiB，活动文件优先保留；退出排空最多等待两秒。
+日志写入所选 `.magic` 目录下的 `logs/`，设置中可复制路径或在 Finder 打开。App、管理者和执行者各写 JSONL 文件，等级为 `error / warn / info / debug / trace`。只记录结构化事件和已有标识，不复制凭据、对话或工具正文。单文件 10 MiB，目录保留目标 100 MiB，活动文件优先保留；退出排空最多等待两秒。
 
 ## 开发
 

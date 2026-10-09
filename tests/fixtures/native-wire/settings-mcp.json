@@ -5,7 +5,6 @@
     "t": "native.settings.apply",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data",
     "stamp": null,
     "action": {
       "type": "mcp.save",
@@ -21,6 +20,7 @@
         "OLD": null,
         "NEW": "synthetic-new-input"
       }
-    }
+    },
+    "base": "/tmp/synthetic"
   }
 }

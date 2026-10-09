@@ -5,13 +5,13 @@
     "t": "native.settings.read",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data",
     "preview": {
       "statusLine": {
         "cells": []
       },
       "columns": 0,
       "reducedMotion": true
-    }
+    },
+    "base": "/tmp/synthetic"
   }
 }

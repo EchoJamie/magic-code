@@ -49,7 +49,6 @@ export function validConfig(overrides: Record<string, unknown> = {}): Record<str
         vendor: 'minimax',
       },
     },
-    dataDir: '~/.magic',
     ...overrides,
   }
 }

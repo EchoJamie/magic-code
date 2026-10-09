@@ -2,7 +2,7 @@ import Foundation
 import UserNotifications
 
 struct NoticeRoute: Codable, Equatable {
-    let dataDir: String
+    let base: String
     let session: String
     let ids: [String]
     let facts: [String]
@@ -22,7 +22,8 @@ struct NoticeBatch {
     mutating func add(work: NativeWork, notice: AttentionItem) { pending[notice.id] = (work, notice) }
     mutating func retain(_ ids: Set<String>) { pending = pending.filter { ids.contains($0.key) } }
     mutating func remove(_ ids: Set<String>) { pending = pending.filter { !ids.contains($0.key) } }
-    mutating func take(dataDir: String) -> [NoticeDelivery] {
+    mutating func take(base: String) -> [NoticeDelivery] {
+        let base = URL(fileURLWithPath: base).resolvingSymlinksInPath().path
         defer { pending.removeAll() }
         let rows = Dictionary(grouping: pending.values, by: { $0.0.session })
         var urgent: [NoticeDelivery] = []
@@ -31,18 +32,18 @@ struct NoticeBatch {
             let notices = rows[session]!.sorted { $0.1.at < $1.1.at }
             let important = notices.filter { $0.1.kind != .done }
             if let last = important.last {
-                urgent.append(NoticeDelivery(identifier: "work:\(dataDir):\(session)", title: last.0.title,
+                urgent.append(NoticeDelivery(identifier: "work:\(base):\(session)", title: last.0.title,
                     subtitle: last.0.project, body: last.1.kind == .needsYou ? "需要你的答复，请在终端查看" : "工作遇到问题，请查看当前状态",
-                    routes: [NoticeRoute(dataDir: dataDir, session: session, ids: notices.map { $0.1.id }, facts: notices.map { $0.1.fact })]))
+                    routes: [NoticeRoute(base: base, session: session, ids: notices.map { $0.1.id }, facts: notices.map { $0.1.fact })]))
             } else { completed += notices }
         }
         if completed.count == 1, let one = completed.first {
             urgent.append(NoticeDelivery(identifier: "fact:\(one.1.id)", title: one.0.title, subtitle: one.0.project,
-                body: "结果已可查看", routes: [NoticeRoute(dataDir: dataDir, session: one.0.session, ids: [one.1.id], facts: [one.1.fact])]))
+                body: "结果已可查看", routes: [NoticeRoute(base: base, session: one.0.session, ids: [one.1.id], facts: [one.1.fact])]))
         } else if !completed.isEmpty {
             let routes = Dictionary(grouping: completed, by: { $0.0.session }).keys.sorted().map { session in
                 let rows = completed.filter { $0.0.session == session }
-                return NoticeRoute(dataDir: dataDir, session: session, ids: rows.map { $0.1.id }, facts: rows.map { $0.1.fact })
+                return NoticeRoute(base: base, session: session, ids: rows.map { $0.1.id }, facts: rows.map { $0.1.fact })
             }
             urgent.append(NoticeDelivery(identifier: "results:\(completed.map { $0.1.id }.sorted().joined(separator: ":"))",
                 title: "\(routes.count) 项工作有新结果", subtitle: "Magic Code", body: "打开查看工作与结果", routes: routes))
@@ -65,11 +66,11 @@ struct NoticeBatch {
     private var seen = Set<String>()
     private var batch = NoticeBatch()
     private var timer: Task<Void, Never>?
-    private var dataDir: String?
+    private var base: String?
     private var serviceInstance: String?
     private let center: UNUserNotificationCenter?
     private let sendDelivery: (NoticeDelivery) async throws -> Void
-    private let existingIDs: () async -> [String]
+    private let existingIDs: (String) async -> [String]
     // The authorization surface is a pair of closures: production reads them from the system center,
     // the collector port (no center) is driven by its caller.
     private var statusProvider: () async -> UNAuthorizationStatus
@@ -85,10 +86,10 @@ struct NoticeBatch {
             content.userInfo = ["routes": String(decoding: try JSONEncoder().encode(delivery.routes), as: UTF8.self)]
             try await center.add(UNNotificationRequest(identifier: delivery.identifier, content: content, trigger: nil))
         }
-        existingIDs = {
+        existingIDs = { base in
             let sent = await center.deliveredNotifications().map(\.request)
             let pending = await center.pendingNotificationRequests()
-            return (sent + pending).flatMap { Self.decodeRoutes($0.content.userInfo).flatMap(\.ids) }
+            return (sent + pending).flatMap { Self.decodeRoutes($0.content.userInfo).filter { URL(fileURLWithPath: $0.base).resolvingSymlinksInPath().path == base }.flatMap(\.ids) }
         }
         super.init(); center.delegate = self
     }
@@ -99,7 +100,7 @@ struct NoticeBatch {
         ], intentIdentifiers: [], options: [])])
     }
     // Collector used by native tests; it cannot reach the system notification center.
-    init(send: @escaping (NoticeDelivery) async throws -> Void, existing: @escaping () async -> [String] = { [] },
+    init(send: @escaping (NoticeDelivery) async throws -> Void, existing: @escaping (String) async -> [String] = { _ in [] },
          status: @escaping () async -> UNAuthorizationStatus = { .authorized },
          request: @escaping () async throws -> Bool = { false }) {
         center = nil; sendDelivery = send; existingIDs = existing
@@ -146,16 +147,18 @@ struct NoticeBatch {
         } catch { failure?(error.localizedDescription); return false }
     }
     func reconcile() async {
-        guard enabled else { return }
-        let ids = await existingIDs()
+        guard enabled, let base else { return }
+        let ids = await existingIDs(base)
+        guard self.base == base else { return }
         seen.formUnion(ids); batch.remove(Set(ids)); if !ids.isEmpty { delivered?(ids) }
     }
-    func prepare(dataDir: String) {
-        guard self.dataDir != dataDir else { return }
-        timer?.cancel(); timer = nil; batch = NoticeBatch(); seen = []; self.dataDir = dataDir
+    func prepare(base: String) {
+        let base = URL(fileURLWithPath: base).resolvingSymlinksInPath().path
+        guard self.base != base else { return }
+        timer?.cancel(); timer = nil; batch = NoticeBatch(); seen = []; self.base = base
     }
     func observe(_ projection: NativeProjection, identity: ServiceIdentity) {
-        prepare(dataDir: identity.dataDir)
+        prepare(base: identity.base)
         if serviceInstance != nil, serviceInstance != identity.serviceInstance {
             timer?.cancel(); timer = nil; batch = NoticeBatch(); seen = []
         }
@@ -197,13 +200,13 @@ struct NoticeBatch {
             if let currentWorks = self.currentWorks {
                 let sessions = Array(Set(candidates.pending.values.map { $0.0.session }))
                 let works = await currentWorks(sessions)
-                guard !Task.isCancelled, self.dataDir == identity.dataDir,
+                guard !Task.isCancelled, self.base == URL(fileURLWithPath: identity.base).resolvingSymlinksInPath().path,
                       self.serviceInstance == identity.serviceInstance else { return }
                 let eligible = self.candidateIDs(works)
                 self.seen.subtract(Set(candidates.pending.keys).subtracting(eligible))
                 candidates.retain(eligible)
             }
-            for delivery in candidates.take(dataDir: identity.dataDir) {
+            for delivery in candidates.take(base: identity.base) {
                 do {
                     #if DEBUG
                     if self.deliveryAudit?(delivery) == false { self.failure?("系统验收尚未授权或已达到本轮次数上限"); continue }
@@ -231,14 +234,18 @@ struct NoticeBatch {
         center?.removePendingNotificationRequests(withIdentifiers: identifiers)
         center?.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
-    private static func decodeRoutes(_ info: [AnyHashable: Any]) -> [NoticeRoute] {
+    static func decodeRoutes(_ info: [AnyHashable: Any]) -> [NoticeRoute] {
         guard let json = info["routes"] as? String else { return [] }
         return (try? JSONDecoder().decode([NoticeRoute].self, from: Data(json.utf8))) ?? []
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                            withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
-        Task { @MainActor in self.openRoutes?(Self.decodeRoutes(info)); completionHandler() }
+        Task { @MainActor in
+            let routes = Self.decodeRoutes(info)
+            if !routes.isEmpty { self.openRoutes?(routes) }
+            completionHandler()
+        }
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {

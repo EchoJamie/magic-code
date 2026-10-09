@@ -31,7 +31,7 @@ for (const how of ['shutdown', 'eof'] as const) {
       const ready = messages.find((one) => one.t === 'host.ready')!
       if (ready.t !== 'host.ready') throw new Error('未就绪')
       expect(ready.identity.hostInstance).toBe('isolated-host')
-      expect(ready.identity.dataDir.startsWith(root) || ready.identity.dataDir.startsWith('/private' + root)).toBe(true)
+      expect(ready.identity.base.startsWith(root) || ready.identity.base.startsWith('/private' + root)).toBe(true)
       expect(existsSync(ready.socket)).toBe(true)
       expect(child.exitCode).toBeNull()
       if (how === 'shutdown') child.stdin.write(JSON.stringify({ t: 'host.shutdown', request: 'quit-one' }) + '\n')

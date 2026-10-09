@@ -110,7 +110,7 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
    * 而它当场读成「什么都没发生」。
    */
   const bare = options.provider === 'none'
-  const dataDir = bare ? join(home, MAGIC_DIR) : join(root, 'data')
+  const dataDir = join(home, MAGIC_DIR)
 
   try {
     for (const dir of [join(home, MAGIC_DIR), workspace, dataDir]) mkdirSync(dir, { recursive: true })
@@ -129,7 +129,6 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
             },
           },
           // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿
-          dataDir,
           ...options.config,
         }),
       )

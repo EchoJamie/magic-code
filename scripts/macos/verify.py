@@ -61,14 +61,14 @@ def verify(app, output):
                     manager_pid = manager['pid']
                     assert running(manager_pid)
                     assert discovery['app'] == str(app)
-                    assert discovery['dataDir'].startswith(room)
+                    assert discovery['base'].startswith(room)
                     assert discovery_path.stat().st_mode & 0o777 == 0o600
                     # A real read-only observer proves protocol and zero-session idle state.
                     if scenario == 'force-kill':
                         observer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                         observer.settimeout(5)
                         observer.connect(discovery['socket'])
-                        observer.sendall((json.dumps({'t': 'hello', 'role': 'observer', **{k: discovery[k] for k in ['protocol', 'version', 'source', 'dataDir']}})+'\n').encode())
+                        observer.sendall((json.dumps({'t': 'hello', 'role': 'observer', **{k: discovery[k] for k in ['protocol', 'version', 'source', 'base']}})+'\n').encode())
                         welcome = json.loads(observer.makefile('rb').readline())
                         assert welcome['t'] == 'native.welcome' and welcome['projection']['works'] == []
                         process.kill()

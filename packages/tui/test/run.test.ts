@@ -19,7 +19,7 @@ describe('启动前置', () => {
 
     // 前置检查停在任何 `await` 之前——故这里断言的是**当场抛**（不是「以后拒绝」）
     expect(() =>
-      runTui({ transport: spy.transport, stdin: fakeStdin(false), stdout: fakeStdout() }),
+      runTui({ magicBase: '/test/.magic', transport: spy.transport, stdin: fakeStdin(false), stdout: fakeStdout() }),
     ).toThrow(/终端/)
   })
 })

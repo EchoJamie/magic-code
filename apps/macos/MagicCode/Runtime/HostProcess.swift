@@ -15,13 +15,12 @@ final class HostProcess {
     var exited: ((Int32) -> Void)?
     var diagnostic: ((String) -> Void)?
 
-    func start(helper: URL, app: URL, instance: String, base: URL?, home: URL, environment: [String: String], diagnosticsArguments: [String] = []) throws {
+    func start(helper: URL, app: URL, instance: String, base: URL, home: URL, environment: [String: String], diagnosticsArguments: [String] = []) throws {
         process.executableURL = helper
         process.arguments = ["--internal-manager", "--host-instance", instance, "--app", app.path] + diagnosticsArguments
         process.currentDirectoryURL = home
         var env = environment
-        env.removeValue(forKey: "MAGIC_HOME")
-        if let base { env["MAGIC_HOME"] = base.path }
+        env["MAGIC_HOME"] = base.path
         process.environment = env
         process.standardInput = input; process.standardOutput = output; process.standardError = diagnostics
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETFD, FD_CLOEXEC)

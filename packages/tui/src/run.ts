@@ -59,10 +59,10 @@ export type RunTuiOptions = {
   /** **系统家目录**（U71 · 只用来把屏上的路径缩成 `~/…`）。见 `ShellOptions.home`。 */
   readonly home?: string | undefined
   /**
-   * **Magic 的落点**（U100 · `MagicHome.base`）——转后台留接回入口时按它决定带不带
-   * `MAGIC_HOME`。见 `ShellOptions.magicBase`。
+   * **Magic 的落点**（U100 · `MagicHome.base`）——转后台留接回入口时明确携带
+   * 其父目录为 `MAGIC_HOME`。见 `ShellOptions.magicBase`。
    */
-  readonly magicBase?: string | undefined
+  readonly magicBase: string
   /**
    * **启动那几句要说的话**（U22 · 审计第 13 条）——装配把话备好（`Assembly.notices`：
    * 被拒的权限规则 / 授权文件读不懂），外壳开局落成记录区里的一行回执。

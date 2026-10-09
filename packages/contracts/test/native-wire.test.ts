@@ -12,3 +12,11 @@ for (const file of readdirSync(directory).filter((name) => name.endsWith('.json'
     if (fixture.valid) expect(JSON.parse(JSON.stringify(value))).toEqual(fixture.message)
   })
 }
+
+
+test('旧 dataDir 协议与已撤除的 data.set 动作不再解码', () => {
+  const hello = { t: 'hello', role: 'observer', protocol: 1, version: '0.1.0', source: '/helper', dataDir: '/old' }
+  expect(decodeNativeMessage(hello)).toBeUndefined()
+  expect(decodeHostDiscovery({ ...hello, hostInstance: 'host', serviceInstance: 'service', socket: '/s', app: '/app' })).toBeUndefined()
+  expect(decodeNativeMessage({ t: 'native.settings.apply', request: 'r', serviceInstance: 's', base: '/profile/.magic', stamp: null, action: { type: 'data.set', directory: '/other' } })).toBeUndefined()
+})

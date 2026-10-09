@@ -123,7 +123,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     expect(f.store.collaboration.listWaits(work.collaborationId)[0]?.state).toBe('interrupted')
 
     const launch = createProcessLauncher()
-    const started = await startManager({ paths: runPathsOf(f.magic, f.dataDir, tmpdir()), dataDir: f.dataDir, magic: f.magic,
+    const started = await startManager({ paths: runPathsOf(f.magic, tmpdir()), magic: f.magic,
       launch: { spawn(request) { const process = launch.spawn(request); process.onExit(reason => exits.push({ pid: process.pid, reason })); return process } },
       stopGraceMs: 1000, stopKillMs: 1000 })
     if (started.role !== 'manager') throw new Error('新宿主没有启动')
@@ -156,6 +156,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     expect(reopened.executors()).toEqual([])
     expect(f.store.collaboration.getAgent(member.agentId)?.reachability).toBe('suspended')
 
+    await f.wait('窗口收到原执行代次核销后再交代', () => client.gen() === null)
     const input = 'REOPEN_EXPLICIT_INPUT：继续原工作核对，不另开会话。'
     client.send({ type: 'input.submit', text: input, ref: 'reopen-input' })
     await f.wait('接回后的明确输入返回原窗口接收回执', () => events.some(event => event.kind === 'input.settled' && event.data.ref === 'reopen-input'))

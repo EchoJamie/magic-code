@@ -108,7 +108,7 @@ export type ManagerToClient =
       /** 这条连接的编号（诊断用——线上不长住任何用户可见的东西）。 */
       readonly conn: number
       /** 数据目录的规范形（管理者就是按它认的自己这一摊）。 */
-      readonly dataDir: string
+      readonly base: string
       /**
        * **这一摊的外部工具预检读数**（U48 第六段）——管理者启动时那一趟探针的结论。
        *

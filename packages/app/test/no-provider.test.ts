@@ -29,7 +29,7 @@ describe('装置 · 沙地能造空配置的实例', () => {
       expect(loaded.providerId).toBeUndefined()
       expect(Object.keys(loaded.config.providers)).toEqual([])
       // 数据目录回落到基础目录（配置里那一行本来就没写）——沙地照实跟它对齐
-      expect(loaded.config.dataDir).toBe(sandbox.dataDir)
+      expect(loaded.config).not.toHaveProperty('dataDir')
       expect(sandbox.dataDir).toBe(`${sandbox.home}/.magic`)
     } finally {
       sandbox.dispose()
@@ -61,7 +61,7 @@ describe('装置 · 沙地能造空配置的实例', () => {
 
       const loaded = loadConfig({ path: sandbox.configPath, magic: magicAt(sandbox.home) })
       expect(loaded.providerId).toBe('local')
-      expect(sandbox.dataDir).not.toBe(`${sandbox.home}/.magic`)
+      expect(sandbox.dataDir).toBe(`${sandbox.home}/.magic`)
     } finally {
       sandbox.dispose()
     }

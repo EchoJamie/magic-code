@@ -66,7 +66,7 @@ async function waitForFrame(
 /** 起一个活壳：外壳 ＋ 间谍传输（可按需投事件）。 */
 function liveApp() {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
   const ui = render(h(TuiApp, { shell }))
 
   /** 等 Ink 真正接管 stdin——`useInput` 的 effect 先于 App 挂监听，故 `readable` 在监听上，两个都就位了。 */

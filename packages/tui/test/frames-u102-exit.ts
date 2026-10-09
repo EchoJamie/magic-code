@@ -51,7 +51,7 @@ async function main(): Promise<void> {
 
   const spy = createSpyTransport()
   let say: (text: string) => void = () => {}
-  const shell = createShell(spy.transport, { lines: (listener) => { say = listener } })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', lines: (listener) => { say = listener } })
   for (const char of '继续之前先检查') shell.key({ kind: 'char', char })
 
   try {

@@ -57,7 +57,7 @@ describe('resident-cli 客户端握手与纯观察', () => {
     })
     try {
       const client = (await connectManager(g.discovery.socket))!
-      const shell = createShell(clientTransport(client))
+      const shell = createShell(clientTransport(client), { magicBase: '/test/.magic' })
       await waitFor(() => shell.getView().sessionId === 'real-session')
       expect(JSON.stringify(shell.getView())).toContain('初次历史内容不会丢失')
       shell.dispose()
@@ -85,12 +85,12 @@ describe('resident-cli 客户端握手与纯观察', () => {
     } finally { server.close(); g.close() }
   })
 
-  test('身份协议/版本/source/dataDir/宿主/服务代次必须匹配；welcome 两份 dataDir 不许自相矛盾', async () => {
+  test('身份协议/版本/source/base/宿主/服务代次必须匹配；welcome 两份 base 不许自相矛盾', async () => {
     for (const [patch, error] of [
       [{ protocol: 999 }, '协议或软件版本不匹配'],
       [{ version: 'wrong' }, '协议或软件版本不匹配'],
       [{ source: '/different/runtime' }, '软件来源不匹配'],
-      [{ dataDir: '/different/data' }, '数据实例不匹配'],
+      [{ base: '/different/data' }, '数据实例不匹配'],
       [{ hostInstance: 'new-host' }, '宿主/服务代次不一致'],
       [{ serviceInstance: 'new-service' }, '宿主/服务代次不一致'],
     ] as const) {
@@ -101,7 +101,7 @@ describe('resident-cli 客户端握手与纯观察', () => {
       } finally { server.close(); g.close() }
     }
     const g = cliGround()
-    const server = fakeApp(g, (link) => link.send({ ...server.welcome, dataDir: '/other-data' }))
+    const server = fakeApp(g, (link) => link.send({ ...server.welcome, base: '/other-data' }))
     try {
       await expect(connectManager(g.discovery.socket)).rejects.toThrow('welcome 的数据目录与服务身份不一致')
     } finally { server.close(); g.close() }
@@ -202,7 +202,7 @@ test('detached只核销executor；稳定连接仅明确reopen，新client接全�
       return (await connectManager(b.discovery.socket, { session }))!
     })
     const options = terminalOptions({ client: connection.client, loaded: initial.loaded, magic: initial.magic, cwd: a.root, reopen: connection.reopen })
-    const shell = createShell(options.transport, { detached: options.detached, reopen: options.reopen })
+    const shell = createShell(options.transport, { magicBase: '/test/.magic', detached: options.detached, reopen: options.reopen })
     options.onGone?.(() => shell.hostGone())
     const detaches: string[] = []
     connection.client.onDetached((why) => detaches.push(why))
@@ -263,7 +263,7 @@ test('同gen真实target认领保留快照缓存、Shell历史与草稿；客户
   const client = (await connectManager(g.discovery.socket))!
   const targets: (string | null)[] = []
   const snapshot: RunSnapshot = { watermark: 10, turnOpen: true, text: '正在输出的正文', tools: [], decisions: [] }
-  const shell = createShell(clientTransport(client), { resumed: { subscribe: (listener) => client.onResumed(listener) } })
+  const shell = createShell(clientTransport(client), { magicBase: '/test/.magic', resumed: { subscribe: (listener) => client.onResumed(listener) } })
   client.onTarget((session) => targets.push(session))
   try {
     const link = server.links[0]!

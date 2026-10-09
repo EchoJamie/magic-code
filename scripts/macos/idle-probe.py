@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='magic-native-idle-') as temporary:
             duplicate.kill(); duplicate.wait(timeout=5)
             assert running(manager), 'duplicate exit stopped the real host'
             observer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); observer.settimeout(5); observer.connect(discovery['socket'])
-            observer.sendall((json.dumps({'t': 'hello', 'role': 'observer', **{k: discovery[k] for k in ['protocol', 'version', 'source', 'dataDir']}}) + '\n').encode())
+            observer.sendall((json.dumps({'t': 'hello', 'role': 'observer', **{k: discovery[k] for k in ['protocol', 'version', 'source', 'base']}}) + '\n').encode())
             stream = observer.makefile('rb'); welcome = json.loads(stream.readline())
             assert welcome['t'] == 'native.welcome' and welcome['projection']['works'] == []
             started = time.monotonic(); initial = {pid: cpu(pid) for pid in [process.pid, manager]}; samples = []

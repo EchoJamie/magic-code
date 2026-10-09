@@ -67,7 +67,7 @@ async function main(): Promise<void> {
 
   const spy = createSpyTransport()
   // 开机那一格：外壳还不知道模型名（装配按缺省连接给的读数）
-  const shell = createShell(spy.transport, { contextWindow: 1_000_000 })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', contextWindow: 1_000_000 })
   const feed = (...events: Parameters<typeof spy.emit>[0][]): void => {
     for (const item of events) spy.emit(item)
   }

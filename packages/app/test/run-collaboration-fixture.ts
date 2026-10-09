@@ -25,7 +25,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const root = realpathSync(tempDir('magic-collab-run-'))
   const magic = magicAt(root)
   const workspace = join(root, 'workspace')
-  const dataDir = join(root, 'data')
+  const dataDir = magic.base
   for (const dir of [magic.base, workspace, dataDir]) mkdirSync(dir, { recursive: true })
   const calls: HttpCall[] = []
   const errors: string[] = []
@@ -61,9 +61,9 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
     providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' } },
   }))
-  const paths = runPathsOf(magic, dataDir, tmpdir())
+  const paths = runPathsOf(magic, tmpdir())
   const launcher = createProcessLauncher()
-  const started = await startManager({ paths, dataDir, magic, launch: { spawn(request) {
+  const started = await startManager({ paths, magic, launch: { spawn(request) {
     const child = launcher.spawn({ ...request, ...(options.allowAll === true ? { allowAll: true } : {}) })
     if (process.env['MAGIC_COLLAB_RUN_EVIDENCE']) {
       const identity = Bun.spawnSync(['/bin/ps', '-p', String(child.pid), '-o', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().replace(/--token \S+/g, '--token [redacted]')

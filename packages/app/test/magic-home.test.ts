@@ -95,16 +95,7 @@ async function runCli(options: {
   return { stdout, stderr, exitCode }
 }
 
-/**
- * 摆一棵「Magic 的树」——`<root>/.magic/config.json` ＋（可选）另指的 `dataDir`。
- *
- * `dataDir` 默认**把键拿掉**（＝缺省＝基础目录）：那正是 U42 之后最常见的形态，也是本文件
- * 最想验的那一条。要写别的落点就传 `dataDir`（含「写死老地方」那种旧形制）。
- *
- * ⚠️ `validConfig` 自带的 `dataDir: '~/.magic'` 要**删掉**——留着它就变成「旧形制」了，
- * 这一组用例嘴上说的「缺省」与实际写下的那份配置对不上（两种写法最后都落在基础目录，
- * 故门照绿、只是验错了东西：判据得咬住它自称的那一条）。
- */
+/** 隔离实例树；dataDir 仅作为被忽略的历史输入。 */
 function plantTree(
   root: string,
   over: {
@@ -171,7 +162,7 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       const oldConfig = plantTree(room.home, { provider: 'old', model: 'OLD-MODEL' })
       const dataDir = join(room.base, 'selected-data')
       mkdirSync(dataDir)
-      // 只报告配置里的数据落点，不打开数据库；哨兵不是有效 SQLite。
+      // 历史独立目录保留哨兵，不被采用或打开。
       writeFileSync(join(dataDir, 'records.db'), 'offline-check-must-not-open-this-database')
       const newConfig = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', dataDir })
       plantSkill(room.home, 'old-skill', '老树里那一份')
@@ -194,7 +185,7 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       expect(result.stdout).toContain(newConfig)
       expect(result.stdout).not.toContain(oldConfig)
       // 数据 / 授权都从新基址派生
-      expect(result.stdout).toContain(`数据落点　${dataDir}`)
+      expect(result.stdout).toContain(`数据落点　${join(room.base, '.magic')}`)
       expect(result.stdout).toContain(join(room.base, '.magic', 'grants.json'))
       expect(result.stdout).toContain('授权　　　1 条（本工作区）')
       // 供应商与用户技能也取自新树（老树那两样一个字都不该露头）
@@ -210,6 +201,19 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
     } finally {
       room.dispose()
     }
+  })
+
+  test('相对 MAGIC_HOME 在入口按 cwd 固定为绝对目录，残留非法旧键不阻断只读检查', async () => {
+    const room = makeRoom()
+    try {
+      plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', config: { dataDir: { invalid: true } } })
+      const before = snapshot(room.base)
+      const result = await runCli({ room, magic: '../base', args: ['--check'] })
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain(`数据落点　${join(realpathSync(room.ws), '..', 'base', '.magic')}`)
+      expect(snapshot(room.base)).toEqual(before)
+      expect(existsSync(join(room.home, 'Library/Application Support/Magic Code/runtime/host.json'))).toBe(false)
+    } finally { room.dispose() }
   })
 
   test('dataDir 缺省＝基础目录——离线检查报告新落点，两棵树均不建库或blob', async () => {

@@ -1,32 +1,4 @@
-/**
- * **运行目录**（U48）——管理者 · 执行者 · 客户端三方的**会合点**。
- *
- * 解决的是「谁在管、去哪儿找它」这一件事：管理者在这一处留下它的本机 socket，
- * 执行者与终端窗口都按**同一个键**算到同一条路径，于是不必问谁要地址。
- *
- * ## 键为什么是「规范化 dataDir」而不是基础目录
- *
- * 设计明文：**同一用户、同一规范化 dataDir 只有一个**。基础目录（`<MAGIC_HOME>/.magic`）
- * 管的是配置 / 授权 / 技能，而**运行**这件事的范围由数据目录定——两个 Magic 实例
- * 配置同一份 `config.json`、却各指一个 dataDir 时，它们是两摊互不相干的运行
- * （设计 · 会话与运行管理：「显式使用不同数据目录的 Magic 实例不伪称已被一个列表
- * 全局发现」）。
- *
- * 故运行目录 ＝ `<基础目录>/run/<dataDir 的指纹>/`——**同一个 dataDir 算到同一处**，
- * 不同 dataDir 各一摊。用指纹而不是把整条路径拼进去，是为了 socket 路径的长度：
- * `sun_path` 在 macOS 上是 104 字节、Linux 108，而 dataDir 可以很深
- * （用例的临时目录就已经到七十几字符了）。
- *
- * ## 规范化到什么程度
- *
- * `realpath` 一跳到**所有软链接之外**的那条真路径——`/var` 与 `/private/var`、
- * 符号链接、尾随 `/` 三种写法都要收进**同一个键**（U47 那把锁按规范化文件路径取键，
- * 是同一条由头：两个写法必须落在同一把锁上，否则「只有一个管理者」当场不成立）。
- *
- * ⚠️ 目录**可能还不存在**（首次启动，dataDir 由记录域自己 mkdir）——`realpath` 对
- * 不存在的路径会抛，故这里退到「最近的已存在祖先 ＋ 余下的相对段」：
- * 前者取真路径，后者原样拼回。这样 `/tmp/x/../y` 与 `/tmp/y` 也归一到一处。
- */
+/** 运行目录由规范化基础目录派生；路径别名共用 socket、锁与登记。 */
 
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, realpathSync } from 'node:fs'
@@ -62,7 +34,7 @@ export class SocketPathTooLong extends Error {
   ) {
     super(
       `本机 socket 路径太长（${Buffer.byteLength(socketPath)} 字节 > ${limit}）：${socketPath}——` +
-        '数据目录太深了（Unix socket 路径有 104 字节的硬上限），把 dataDir 挪浅一点',
+        '数据目录太深了（Unix socket 路径有 104 字节的硬上限），把基础路径选浅一点',
     )
     this.name = 'SocketPathTooLong'
   }
@@ -109,7 +81,7 @@ export function normalizeDataDir(dataDir: string): string {
   }
 }
 
-/** 规范化数据目录的**指纹**（运行目录那一层目录名）——同一 dataDir ⇒ 同一指纹。 */
+/** 规范化基础目录的**指纹**（运行目录那一层目录名）。 */
 export function fingerprintOf(normalizedDataDir: string): string {
   return createHash('sha256').update(normalizedDataDir).digest('hex').slice(0, 10)
 }
@@ -127,9 +99,10 @@ export function fingerprintOf(normalizedDataDir: string): string {
  *
  * @param tmpdir 系统临时目录——由调用方给（app 是能读环境的层，本文件不读 `process.env`）
  */
-export function runPathsOf(magic: MagicHome, dataDir: string, tmpdir: string): RunPaths {
-  const key = fingerprintOf(normalizeDataDir(dataDir))
-  const preferred = pathsIn(join(magic.base, RUN_DIR_NAME, key))
+export function runPathsOf(magic: MagicHome, tmpdir: string): RunPaths {
+  const base = normalizeDataDir(magic.base)
+  const key = fingerprintOf(base)
+  const preferred = pathsIn(join(base, RUN_DIR_NAME, key))
   if (fits(preferred.socket)) return preferred
 
   const fallback = pathsIn(join(tmpdir, `magic-run-${key}`))
@@ -145,7 +118,7 @@ export function runPathsOf(magic: MagicHome, dataDir: string, tmpdir: string): R
  * （**运行目录**下）」。落在这里另有两件顺带的好处：
  * - **权限同源**——运行目录是 `0700`（见 `ensureRunDir`），输出可能带着命令吐出来的
  *   任何东西（含密钥一类），不该比它更宽；
- * - **同一 dataDir 算到同一处**——与 socket / 运行登记 / 未读事项同一个键（见文件头注）。
+ * - **同一规范化基础目录算到同一处**——与 socket / 运行登记 / 未读事项同一个键（见文件头注）。
  *
  * ⚠️ **名字由本文件一处定义**：输出目录与 `exec` 的那一边（装配算、沙箱认）说的是
  * 同一处，两处各拼一遍字符串迟早对不上。

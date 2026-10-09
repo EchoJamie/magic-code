@@ -64,17 +64,16 @@ describe('resident-cli 短路径与终端接回参数', () => {
     const choice = join(g.root, 'choice')
     symlinkSync(g.root, choice, 'dir')
     const aliasBase = join(choice, 'selected/.magic')
-    const aliasData = join(choice, 'data')
     const opened: string[] = []
     try {
       // 首连规范化 base，发现文件仍保留声明写法，复现真实 /var 与 /private/var 差异。
       g.publish({ ...g.discovery, base: aliasBase })
       const first = await connectTerminal(parseArgs(['resume', 'session-existing']), { home: g.home, env: {} })
-      expect(first.magic.base).toBe(g.base)
+      expect(first.magic.base).toBe(aliasBase)
       first.client.close()
       const again = await reopenApp({
         home: g.home, env: {}, appPath: g.app,
-        expectedInstance: { base: first.magic.base, dataDir: first.client.dataDir },
+        expectedInstance: { base: first.magic.base },
         connect: { session: 'session-existing' },
         openApplication: async app => { opened.push(app) },
       })
@@ -83,7 +82,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
       g.publish()
       const canonical = await reopenApp({
         home: g.home, env: {}, appPath: g.app,
-        expectedInstance: { base: aliasBase, dataDir: aliasData },
+        expectedInstance: { base: aliasBase },
         connect: { session: 'session-existing' },
         openApplication: async app => { opened.push(app) },
       })
@@ -105,8 +104,8 @@ describe('resident-cli 短路径与终端接回参数', () => {
     try {
       g.publish()
       for (const expectedInstance of [
-        { base: otherBase, dataDir: g.dataDir },
-        { base: g.base, dataDir: otherData },
+        { base: otherBase },
+        { base: otherData },
       ]) {
         await expect(reopenApp({
           home: g.home, env: {}, appPath: g.app, expectedInstance,
@@ -173,7 +172,7 @@ async function runWith(
 function stageWithConfig(overrides: Record<string, unknown> = {}): { home: string; dataDir: string } {
   const home = tempDir('magic-cli-')
   mkdirSync(join(home, '.magic'), { recursive: true })
-  const dataDir = join(home, 'data')
+  const dataDir = join(home, '.magic')
   writeConfig(join(home, '.magic'), validConfig({ dataDir, ...overrides }))
   return { home, dataDir }
 }
@@ -255,7 +254,7 @@ describe('入口 magic', () => {
     const { home, dataDir } = (() => {
       const home = tempDir('magic-cli-')
       mkdirSync(join(home, '.magic'), { recursive: true })
-      const dataDir = join(home, 'data')
+      const dataDir = join(home, '.magic')
       writeConfig(join(home, '.magic'), validConfig({ dataDir }))
       return { home, dataDir }
     })()

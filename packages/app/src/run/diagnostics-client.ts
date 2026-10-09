@@ -1,3 +1,4 @@
+import { normalizeDataDir } from './paths.ts'
 import type { DiagnosticsChange, HostDiscovery, NativeResponse } from '@magic/contracts'
 import { assertHostIdentity } from './host-discovery.ts'
 import { linkOf, socketHandlers } from './wire.ts'
@@ -16,16 +17,16 @@ export async function applyHostDiagnostics(discovery: HostDiscovery, change: Dia
       if (message.t === 'native.error') { finish(new Error(message.reason)); return }
       if (message.t === 'native.welcome') {
         try { assertHostIdentity(message.identity, discovery) } catch (error) { finish(error as Error); return }
-        link.send({ t: 'native.settings.read', request: read, serviceInstance: discovery.serviceInstance, dataDir: discovery.dataDir })
-      } else if (message.t === 'native.settings.result' && message.serviceInstance === discovery.serviceInstance && message.dataDir === discovery.dataDir) {
+        link.send({ t: 'native.settings.read', request: read, serviceInstance: discovery.serviceInstance, base: discovery.base })
+      } else if (message.t === 'native.settings.result' && message.serviceInstance === discovery.serviceInstance && normalizeDataDir(message.base) === normalizeDataDir(discovery.base)) {
         if (message.request !== read && message.request !== apply) return
         if (message.error) { finish(new Error(message.error)); return }
         if (message.request === read && message.snapshot) {
           saving = true
-          link.send({ t: 'native.settings.apply', request: apply, serviceInstance: discovery.serviceInstance, dataDir: discovery.dataDir, stamp: message.snapshot.stamp, action: { type: 'diagnostics.set', source, ...change } })
+          link.send({ t: 'native.settings.apply', request: apply, serviceInstance: discovery.serviceInstance, base: discovery.base, stamp: message.snapshot.stamp, action: { type: 'diagnostics.set', source, ...change } })
         } else if (message.request === apply) finish(undefined, message.note)
       }
     })
-    link.send({ t: 'hello', role: 'observer', protocol: discovery.protocol, version: discovery.version, source: discovery.source, dataDir: discovery.dataDir })
+    link.send({ t: 'hello', role: 'observer', protocol: discovery.protocol, version: discovery.version, source: discovery.source, base: discovery.base })
   })
 }

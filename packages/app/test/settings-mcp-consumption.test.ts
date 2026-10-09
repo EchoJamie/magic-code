@@ -13,7 +13,7 @@ test('原生设置动作保存 stdio/HTTP，下次真装配采用，旧工作不
   const child = Bun.spawn([process.execPath,httpFile],{env:{...process.env,FAKE_MCP_HTTP_PORT:'0',FAKE_MCP_HTTP_LOG:httpLog},stdin:'ignore',stdout:'pipe',stderr:'ignore'})
   const reader=child.stdout.getReader();const first=await reader.read();const port=JSON.parse(new TextDecoder().decode(first.value)).port as number;reader.releaseLock()
   const old=stage.assemble({turns:[{toolCalls:[{name:'mcp__local__echo',args:{text:'旧工作仍能使用原stdio'}}]},{text:'旧工作完成'}]})
-  const settings=createSettings({magic:{...magicAt(stage.root),base:stage.configPath.slice(0,-"/config.json".length)},cwd:stage.workspace,store:old.records,mcp:[],canChangeData:()=>false,mcpWorks:async()=>[],preferencesChanged:async()=>{},grantsChanged:async()=>{},reconnect:async()=>{throw new Error('无目标')}})
+  const settings=createSettings({magic:magicAt(stage.root),cwd:stage.workspace,store:old.records,mcp:[],canChangeData:()=>false,mcpWorks:async()=>[],preferencesChanged:async()=>{},grantsChanged:async()=>{},reconnect:async()=>{throw new Error('无目标')}})
   let next:ReturnType<typeof stage.assemble>|undefined, configured:ReturnType<typeof stage.assemble>|undefined
   try {
     const save=async(action:Parameters<typeof settings.apply>[0])=>settings.apply(action,(await settings.read()).stamp)

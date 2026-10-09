@@ -30,7 +30,7 @@ import { createSpyTransport } from './fakes.ts'
 /** 起一个**按了闸**的壳（`boot` 还没跑完的那种）。 */
 function held() {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, { inputReady: false })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', inputReady: false })
 
   return {
     shell,
@@ -120,7 +120,7 @@ describe('③ 右位提示说「启动中」', () => {
 
   test('**不设闸的调用方**（缺省）一开局就是常态提示——闸只落在要等 `boot` 的那条路上', () => {
     const spy = createSpyTransport()
-    const shell = createShell(spy.transport)
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
 
     expect(shell.getView().status.hint).toBe(HINT_IDLE)
   })

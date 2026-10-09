@@ -15,9 +15,9 @@ import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 
 /** 起一个壳 ＋ 间谍传输（`options` 给「停止那条线」这类外部来路——缺省＝一个都不接）。 */
-function live(options: ShellOptions = {}) {
+function live(options: Omit<ShellOptions, 'magicBase'> = {}) {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, options)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', ...options })
 
   return {
     shell,
@@ -508,7 +508,7 @@ describe('选择器（`/resume` · `/model`）', () => {
       },
     }
 
-    const shell = createShell(transport as never)
+    const shell = createShell(transport as never, { magicBase: '/test/.magic' })
     for (const char of '/model ') shell.key({ kind: 'char', char })
     shell.key({ kind: 'enter' })
 

@@ -2,11 +2,12 @@ import { diagnosticsOf, decodeNativeMessage, type Diagnostics } from '@magic/con
 import { parseDiagnosticsArgs, saveDiagnostics } from '../diagnostics.ts'
 import { fstatSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
+import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { resolveMagicHome } from '@magic/contracts'
 import type { HostResponse } from '@magic/contracts'
 import { loadConfig, type LoadedConfig } from '../config.ts'
-import { normalizeDataDir, runPathsOf } from './paths.ts'
+import { runPathsOf } from './paths.ts'
 import { createProcessLauncher } from './launch.ts'
 import { startManager } from './manager.ts'
 
@@ -23,19 +24,18 @@ export async function runHostedManager(argv: readonly string[]): Promise<number>
     send({ t: 'host.error', reason: '核心须由 App 的专用生命管道启动' })
     return 1
   }
-  const magic = resolveMagicHome(process.env, homedir())
+  const selected = resolveMagicHome(process.env, homedir())
+  const magic = { ...selected, base: resolve(selected.base) }
   let loaded: LoadedConfig
-  let dataDir: string
   try {
     loaded = loadConfig({ magic })
     const change = parseDiagnosticsArgs(argv)
     if (change) { saveDiagnostics(magic, change, loaded.stamp ?? null); loaded = loadConfig({ magic }) }
-    dataDir = normalizeDataDir(loaded.config.dataDir)
   } catch (error) {
     send({ t: 'host.error', reason: error instanceof Error ? error.message : String(error) })
     return 1
   }
-  const paths = runPathsOf(magic, dataDir, tmpdir())
+  const paths = runPathsOf(magic, tmpdir())
   let hostGone = false
   let shutdown: (() => void) | undefined
   let request: string | undefined
@@ -45,7 +45,7 @@ export async function runHostedManager(argv: readonly string[]): Promise<number>
     const id = crypto.randomUUID()
     const timer = setTimeout(() => { pending.delete(id); reject(new Error('App 未确认')) }, 5_000)
     pending.set(id, { resolve: () => { clearTimeout(timer); resolve() }, reject: () => { clearTimeout(timer); reject(new Error('App 未确认')) } })
-    send({ t: 'host.diagnostics', request: id, value, dataDir })
+    send({ t: 'host.diagnostics', request: id, value, base: magic.base })
   })
   input.on('close', () => { hostGone = true; for (const reply of pending.values()) reply.reject(); pending.clear(); shutdown?.() })
   input.on('line', (line) => {
@@ -61,7 +61,7 @@ export async function runHostedManager(argv: readonly string[]): Promise<number>
   void diagnosticsChanged(diagnosticsOf(loaded.config)).catch(() => {})
   const started = await startManager({
     diagnosticsChanged,
-    paths, dataDir, magic, hostInstance,
+    paths, magic, hostInstance,
     launch: createProcessLauncher({ stderr: 'inherit' }),
     mcp: loaded.config.mcp?.servers ?? {},
     log: (line) => process.stderr.write(`[${hostInstance}] ${line}\n`),

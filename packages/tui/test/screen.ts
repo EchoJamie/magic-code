@@ -395,7 +395,7 @@ export function createStage(options: StageOptions = {}): Stage {
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,
     home: options.home,
-    magicBase: options.magicBase,
+    magicBase: options.magicBase ?? '/test/.magic',
     statusLine: options.statusLine,
     reducedMotion: options.reducedMotion,
     ...(options.inputReady === undefined ? {} : { inputReady: options.inputReady }),

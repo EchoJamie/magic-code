@@ -13,7 +13,7 @@
  * 父进程「等 stdout 到头再读」会当场挂死（第一版就是这么挂的）。落文件之后父进程
  * 按「文件出现没有」收，与那个进程还开不开着 stdout 再无关系。
  *
- * 用法：`bun run-manager-child.ts <home> <base> <dataDir> <tmpdir> <ready> <go> <result>`
+ * 用法：`bun run-manager-child.ts <home> <base> <tmpdir> <ready> <go> <result>`
  */
 
 import { existsSync, writeFileSync } from 'node:fs'
@@ -21,17 +21,16 @@ import { createProcessLauncher } from '../src/run/launch.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { startManager } from '../src/run/manager.ts'
 
-const [home, base, dataDir, tmpdir, readyFile, goFile, resultFile] = process.argv.slice(2)
+const [home, base, tmpdir, readyFile, goFile, resultFile] = process.argv.slice(2)
 if (
   home === undefined ||
   base === undefined ||
-  dataDir === undefined ||
   tmpdir === undefined ||
   readyFile === undefined ||
   goFile === undefined ||
   resultFile === undefined
 ) {
-  throw new Error('用法：run-manager-child.ts <home> <base> <dataDir> <tmpdir> <ready> <go> <result>')
+  throw new Error('用法：run-manager-child.ts <home> <base> <tmpdir> <ready> <go> <result>')
 }
 
 /**
@@ -40,12 +39,12 @@ if (
  */
 const launch = createProcessLauncher()
 
-const paths = runPathsOf({ home, base }, dataDir, tmpdir)
+const paths = runPathsOf({ home, base }, tmpdir)
 
 writeFileSync(readyFile, '')
 while (!existsSync(goFile)) Bun.sleepSync(1) // 栅栏——等到一声令下
 
-const started = await startManager({ paths, dataDir, magic: { home, base }, launch })
+const started = await startManager({ paths, magic: { home, base }, launch })
 
 if (started.role !== 'manager') {
   writeFileSync(resultFile, JSON.stringify({ role: started.role, socket: paths.socket }))

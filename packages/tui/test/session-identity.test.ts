@@ -6,7 +6,7 @@ import { createSpyTransport } from './fakes.ts'
 
 test('首条已落账输入确认会话；清空不保留空 ID，也不读取空历史', () => {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
   try {
     spy.emit(event('message.user', { entry: 1 }, { session: 'persisted' }))
     expect(shell.getView().sessionId).toBe('persisted')
@@ -37,7 +37,7 @@ for (const acknowledged of [false, true]) {
   test(`执行者退出：${acknowledged ? '已接收输入不重复恢复' : '未接收输入回到草稿'}`, () => {
     const spy = createSpyTransport()
     let detached: () => void = () => {}
-    const shell = createShell(spy.transport, { detached: listener => { detached = () => listener('启动失败') } })
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: listener => { detached = () => listener('启动失败') } })
     try {
       shell.key({ kind: 'char', char: '待提交的输入' })
       shell.key({ kind: 'enter' })
@@ -53,7 +53,7 @@ for (const acknowledged of [false, true]) {
 test('执行者退出不覆盖后来编辑的新稿', () => {
   const spy = createSpyTransport()
   let detached: () => void = () => {}
-  const shell = createShell(spy.transport, { detached: listener => { detached = () => listener('启动失败') } })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: listener => { detached = () => listener('启动失败') } })
   try {
     shell.key({ kind: 'char', char: '旧输入' })
     shell.key({ kind: 'enter' })

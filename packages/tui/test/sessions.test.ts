@@ -25,7 +25,7 @@ const ROWS = 40
 
 function live() {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic' })
 
   return {
     spy,
@@ -58,7 +58,7 @@ describe('会话目录（选择器）', () => {
     app.shell.key({ kind: 'char', char: '/' })
 
     // 直接开选择器（键位细节在 shell.test.ts）
-    const opened = createShell(createSpyTransport().transport)
+    const opened = createShell(createSpyTransport().transport, { magicBase: '/test/.magic' })
     opened.key({ kind: 'char', char: '/' })
     void opened
 

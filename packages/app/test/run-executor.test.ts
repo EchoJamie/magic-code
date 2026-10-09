@@ -48,7 +48,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
   const root = tempDir(`magic-exec-${name}-`)
   const home = join(root, 'home')
   const base = join(root, 'base')
-  const dataDir = join(root, 'data')
+  const dataDir = base
   const ws = join(root, 'ws')
   for (const dir of [home, base, dataDir, ws]) mkdirSync(dir, { recursive: true })
 
@@ -83,7 +83,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
     dispose: async () => {
       await fixture.stop()
       // 运行目录可能在沙地外那一支（上面那个 fallback），一并收掉
-      removeDir(runPathsOf({ home, base }, dataDir, tmpdir()).dir)
+      removeDir(runPathsOf({ home, base }, tmpdir()).dir)
       removeDir(root)
     },
   }
@@ -92,8 +92,7 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
 /** 立一个管理者——收尾挂在 `finally` 里（见各条用例），免得留一个占着路径的进程。 */
 async function standUp(g: Ground, overrides: Record<string, unknown> = {}): Promise<Manager> {
   const started = await startManager({
-    paths: runPathsOf(g.magic, g.dataDir, g.tmp),
-    dataDir: g.dataDir,
+    paths: runPathsOf(g.magic, g.tmp),
     magic: g.magic,
     launch: { spawn(request) { return createProcessLauncher().spawn({ ...request, environment: g.environment }) } },
     ...overrides,
@@ -568,7 +567,7 @@ describe('U48-S4 · 收缩与异常', () => {
       await manager.waitUntilExit()
 
       // 退出是「收干净了」：socket 摘掉、自报那一份也清了
-      const paths = runPathsOf(g.magic, g.dataDir, g.tmp)
+      const paths = runPathsOf(g.magic, g.tmp)
       expect(existsSync(paths.socket)).toBe(false)
       expect(existsSync(paths.record)).toBe(false)
     } finally {
@@ -610,7 +609,7 @@ describe('U48-S4 · 收缩与异常', () => {
 
   test('管理者被杀——执行者经生命连接自行停止、不留残余', async () => {
     const g = ground('orphan')
-    const paths = runPathsOf(g.magic, g.dataDir, g.tmp)
+    const paths = runPathsOf(g.magic, g.tmp)
     const child = join(import.meta.dir, 'run-manager-child.ts')
 
     const managerChild = Bun.spawn(
@@ -619,7 +618,6 @@ describe('U48-S4 · 收缩与异常', () => {
         child,
         g.magic.home,
         g.magic.base,
-        g.dataDir,
         g.tmp,
         join(g.root, 'ready'),
         join(g.root, 'go'),
@@ -661,7 +659,6 @@ describe('U48-S4 · 收缩与异常', () => {
       // 路径上是尸首（没有收尾就没有清理）——**下一个随即能立起来**（第一段那条纪律）
       const again = await startManager({
         paths,
-        dataDir: g.dataDir,
         magic: g.magic,
         launch: createProcessLauncher(),
       })

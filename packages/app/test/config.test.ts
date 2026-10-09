@@ -10,13 +10,10 @@ import { describe, expect, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CONFIG_FILE_NAME, MAGIC_DIR, apiKeyEnvVarOf, resolveMagicHome } from '@magic/contracts'
-import { createRecordsStore } from '@magic/records'
 import { ConfigError, describeConfig, loadConfig } from '../src/index.ts'
 import { magicAt, removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
 
 /** 家目录——注入值（契约层的展开函数不读环境，故由调用方给）。 */
-/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件量的是数据落点，与归属无关。 */
-const ROOTS = ['/work/alpha']
 
 const HOME = '/home/tester'
 
@@ -137,78 +134,20 @@ describe('形制照读（字面冻结）', () => {
   })
 })
 
-describe('dataDir 解析', () => {
-  test('前导 `~` 在加载时展开', () => {
-    const loaded = loadFrom(validConfig({ dataDir: '~/.magic' }))
-    expect(loaded.config.dataDir).toBe(join(HOME, '.magic'))
-    expect(loaded.config.dataDir).not.toContain('~')
-  })
-
-  test('`~` 独用＝家目录本身', () => {
-    expect(loadFrom(validConfig({ dataDir: '~' })).config.dataDir).toBe(HOME)
-  })
-
-  test('无 `~` 即字面路径（不猜、不拼）', () => {
-    expect(loadFrom(validConfig({ dataDir: '/var/tmp/magic' })).config.dataDir).toBe(
-      '/var/tmp/magic',
-    )
-    expect(loadFrom(validConfig({ dataDir: './rel' })).config.dataDir).toBe('./rel')
-  })
-
-  /**
-   * **原锚**：`expect(DEFAULT_DATA_DIR).toBe('~/.magic')`——缺省值那时是契约里的一串字面路径。
-   *
-   * **为何变**（U42）：缺省不再是「写死的 `~/.magic`」，而是**基础目录本身**——同一个字面
-   * 路径在 `MAGIC_HOME` 指到别处时会把人带回旧目录，正是要撤掉的那一类。
-   *
-   * **新锚**：缺省＝基础目录；不设 `MAGIC_HOME` 时仍是 `${HOME}/.magic`（旧行为一字不变），
-   * 指了就落在指的那处。
-   */
-  test('dataDir 缺省——基础目录本身', () => {
-    const body = validConfig()
-    delete body['dataDir']
-
-    expect(loadFrom(body).config.dataDir).toBe(join(HOME, '.magic'))
-
-    const elsewhere = { home: HOME, base: '/tmp/magic-home-elsewhere/.magic' }
-    expect(loadFrom(body, { magic: elsewhere }).config.dataDir).toBe(elsewhere.base)
-  })
-
-  test('展开**必须**在交给记录域之前——原样交过去会被拒（跨域对证）', () => {
-    const dir = tempDir('magic-config-')
-    try {
-      // 家目录＝真目录，故展开后的落点是能真建的（沙地量，不碰真 ~/.magic）
-      const loaded = loadConfig({
-        path: writeConfig(dir, validConfig({ dataDir: '~/magic-data' })),
-        magic: magicAt(dir),
-      })
-      expect(loaded.config.dataDir).toBe(join(dir, 'magic-data'))
-
-      // 加载器展开后的值：记录域收下
-      const store = createRecordsStore({ dataDir: loaded.config.dataDir, workspace: ROOTS })
-      expect(store.paths.database).toBe(join(dir, 'magic-data/records.db'))
-      store.close()
-
-      // 字面 `~` 直通：记录域当场拒（它不展开——展开归加载器）
-      expect(() => createRecordsStore({ dataDir: '~/.magic', workspace: ROOTS })).toThrow(/不展开/)
-    } finally {
-      removeDir(dir)
-    }
-  })
+describe('残留 dataDir 不参与配置行为', () => {
+  for (const raw of [undefined, '~/.magic', '~/.magic/records', '/another/place', './relative', '', 7, null, { directory: 'old' }]) {
+    test(`忽略旧值 ${JSON.stringify(raw)}`, () => {
+      const magic = { home: HOME, base: '/tmp/selected/.magic' }
+      const loaded = loadFrom(validConfig({ dataDir: raw }), { magic })
+      expect(loaded.config).not.toHaveProperty('dataDir')
+      expect(loaded.config.providers).toEqual(loadFrom(validConfig(), { magic }).config.providers)
+    })
+  }
 })
 
-/**
- * U42 · **MAGIC_HOME：统一基础路径** —— 判据：**不设变量一字不变 · 设了全落在新目录 ·
- * 旧配置写死 `~/.magic` 也不构成例外 · 别的路径原义**。
- *
- * 本文件钉的是**解析与加载**那一层（基础目录怎么算出来、`dataDir` 怎么归位）；
- * 装配与真 CLI 那一层（授权文件 / 用户技能 / 读写落点）钉在 `magic-home.test.ts`。
- */
 describe('MAGIC_HOME：统一基础路径（U42）', () => {
   const ENV = { MAGIC_HOME: '/tmp/magic-test' }
   const ELSEWHERE = resolveMagicHome(ENV, HOME)
-  const dirOf = (raw: string): string =>
-    loadFrom(validConfig({ dataDir: raw }), { magic: ELSEWHERE }).config.dataDir
 
   test('不设变量——基础目录＝家目录下的 .magic（旧行为一字不变）', () => {
     const magic = resolveMagicHome({}, HOME)
@@ -241,32 +180,6 @@ describe('MAGIC_HOME：统一基础路径（U42）', () => {
     expect(loadConfig({ magic: ELSEWHERE }).path).toBe('/tmp/magic-test/.magic/config.json')
   })
 
-  test('dataDir 写死旧落点**不构成例外**——`~/.magic` 及其子路径归到基础目录', () => {
-    expect(dirOf('~/.magic')).toBe(ELSEWHERE.base)
-    expect(dirOf('~/.magic/')).toBe(ELSEWHERE.base) // 尾随斜杠同义
-    expect(dirOf('~/.magic/data')).toBe(join(ELSEWHERE.base, 'data'))
-    // **写全了的绝对路径**同样归位——「写死就绕得过」不是一条路
-    expect(dirOf(join(HOME, '.magic'))).toBe(ELSEWHERE.base)
-    expect(dirOf(join(HOME, '.magic', 'data', 'blobs'))).toBe(join(ELSEWHERE.base, 'data/blobs'))
-  })
-
-  test('**别的路径原义**——归位只认旧那一棵树（这处修法在相反情形下仍成立）', () => {
-    // 用户自己另指的落点照旧：`~` 展开到**家**，不展开到 `MAGIC_HOME`
-    expect(dirOf('~/other')).toBe(join(HOME, 'other'))
-    expect(dirOf('/var/tmp/data')).toBe('/var/tmp/data')
-    expect(dirOf('~')).toBe(HOME)
-    expect(dirOf('./rel')).toBe('./rel')
-    // 同前缀的**别的目录**不许误伤（判据是「落在旧那一棵树之下」，不是「以那串开头」）
-    expect(dirOf('~/.magicX')).toBe(join(HOME, '.magicX'))
-    expect(dirOf(join(HOME, 'x', '.magic'))).toBe(join(HOME, 'x', '.magic'))
-  })
-
-  test('不设变量时归位是**零变化**——同一份旧配置，展开结果与从前逐字相同', () => {
-    expect(loadFrom(validConfig({ dataDir: '~/.magic' })).config.dataDir).toBe(join(HOME, '.magic'))
-    expect(loadFrom(validConfig({ dataDir: '~/.magic/records' })).config.dataDir)
-      .toBe(join(HOME, '.magic/records'))
-  })
-
   test('配置里的**其它** `~` 不与基础目录相干——工作区根照旧展开到家', () => {
     const loaded = loadFrom(validConfig({ workspaceRoots: ['~/work'] }), { magic: ELSEWHERE })
 
@@ -294,7 +207,7 @@ describe('报错取「一声响」（不静默兜底）', () => {
       expect(loaded.providerId).toBeUndefined()
       expect(loaded.provider).toBeUndefined()
       // 数据目录仍按契约的缺省给（空配置也落得了账）——U42 起是**基础目录本身**
-      expect(loaded.config.dataDir).toBe(join(HOME, '.magic'))
+      expect(loaded.config).not.toHaveProperty('dataDir')
 
 
     } finally {
@@ -359,7 +272,6 @@ describe('报错取「一声响」（不静默兜底）', () => {
         }),
         /providers\.minimax\.modelOverrides\.m\.limits\.maxContextTokens 须是正整数/,
       ],
-      [validConfig({ dataDir: 7 }), /dataDir 须是非空字符串/],
       [[1, 2, 3], /配置根 须是对象/],
     ]
 

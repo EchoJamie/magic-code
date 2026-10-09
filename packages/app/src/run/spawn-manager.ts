@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import type { DiagnosticsChange } from '@magic/contracts'
 import { applyHostDiagnostics } from './diagnostics-client.ts'
 /** CLI 只连接 App 所属服务；仅用户主动打开/重开时可以通过 LaunchServices 打开 App。 */
@@ -7,13 +8,13 @@ import { connectManager, executionEnvironment, type ConnectOptions, type Manager
 import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
 import { normalizeDataDir } from './paths.ts'
 
-export type AppConnectionOptions = HostLocationOptions & {
+export type AppConnectionOptions = Omit<HostLocationOptions, 'home'> & { readonly home?: string } & {
   readonly diagnostics?: DiagnosticsChange
 
   /** 缺省是被动观察，绝不打开 App。 */
   readonly intent?: 'observe' | 'open'
   /** 留屏重连须仍属原数据实例；在发送 hello/session 之前核对。 */
-  readonly expectedInstance?: Pick<HostDiscovery, 'base' | 'dataDir'>
+  readonly expectedInstance?: Pick<HostDiscovery, 'base'>
   readonly connect?: ConnectOptions
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly timeoutMs?: number
@@ -43,7 +44,7 @@ export async function openApplication(app: string): Promise<void> {
 }
 
 export async function connectApp(options: AppConnectionOptions = {}): Promise<AppConnection> {
-  const location = locateHost(options)
+  const location = locateHost({ ...options, home: options.home ?? homedir() })
   const active = options.intent === 'open'
   const env = options.env ?? process.env
   const cwd = options.connect?.cwd ?? process.cwd()
@@ -55,9 +56,8 @@ export async function connectApp(options: AppConnectionOptions = {}): Promise<Ap
     const discovery = readHostDiscovery(location)
     if (discovery === undefined) return undefined
     if (options.expectedInstance !== undefined &&
-      (normalizeDataDir(discovery.base) !== normalizeDataDir(options.expectedInstance.base) ||
-        normalizeDataDir(discovery.dataDir) !== normalizeDataDir(options.expectedInstance.dataDir))) {
-      throw new Error(`App 数据实例已改变：原基础目录 ${options.expectedInstance.base}，数据 ${options.expectedInstance.dataDir}；当前基础目录 ${discovery.base}，数据 ${discovery.dataDir}。请在 App 设置切回原实例再重开`)
+      normalizeDataDir(discovery.base) !== normalizeDataDir(options.expectedInstance.base)) {
+      throw new Error(`App 数据实例已改变：原基础目录 ${options.expectedInstance.base}；当前基础目录 ${discovery.base}。请在 App 设置切回原实例再重开`)
     }
     const selected = selectedHostConfig(discovery, { home: location.home, cwd, env })
     const client = await connectManager(discovery.socket, {

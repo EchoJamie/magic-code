@@ -45,7 +45,7 @@ function ground(name: string): Ground {
   const root = tempDir(`magic-runs-${name}-`)
   const home = join(root, 'home')
   const base = join(root, 'base')
-  const dataDir = join(root, 'data')
+  const dataDir = base
   const ws = join(root, 'ws')
   for (const dir of [home, base, dataDir, ws]) mkdirSync(dir, { recursive: true })
 
@@ -66,7 +66,7 @@ function ground(name: string): Ground {
     tmp: tmpdir(),
     ws,
     dispose: () => {
-      removeDir(runPathsOf({ home, base }, dataDir, tmpdir()).dir)
+      removeDir(runPathsOf({ home, base }, tmpdir()).dir)
       removeDir(root)
     },
   }
@@ -139,8 +139,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
   }
 
   const started = await startManager({
-    paths: runPathsOf(g.magic, g.dataDir, g.tmp),
-    dataDir: g.dataDir,
+    paths: runPathsOf(g.magic, g.tmp),
     magic: g.magic,
     launch: launcher,
     // 生命探测调快（那一跳顺带重推运行事实、也顺带核对「待确认」那些）
@@ -591,7 +590,7 @@ describe('U49 · 登记落盘与重启核对', () => {
   test('上一次留下的一代：进程还在 ⇒ 状态待确认且不许重开；进程没了 ⇒ 已停止', async () => {
     const g = ground('restart')
     seed(g, ['s-alive', 's-dead'])
-    const paths = runPathsOf(g.magic, g.dataDir, g.tmp)
+    const paths = runPathsOf(g.magic, g.tmp)
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 })
 
     // 一条**确实活着**的进程（拿真 pid 当「上一代还没走」的替身）
@@ -679,7 +678,7 @@ describe('U49 · 登记落盘与重启核对', () => {
   test('这一趟的登记会落盘——下一次启动读得到「上一次有哪几代」', async () => {
     const g = ground('persist')
     seed(g, ['s-persist'])
-    const paths = runPathsOf(g.magic, g.dataDir, g.tmp)
+    const paths = runPathsOf(g.magic, g.tmp)
     const b = await bench(g)
     const client = await open(g, b.manager)
 

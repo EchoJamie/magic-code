@@ -136,7 +136,7 @@ export async function query(command: Command, context: ObservationContext): Prom
 
   const loaded = loadConfig({ magic: context.magic })
   if (command.type === 'model.list' || command.type === 'provider.list') {
-    const reader = await readModelCatalog(loaded, context.selection, context.switch, now)
+    const reader = await readModelCatalog(loaded, context.magic, context.selection, context.switch, now)
     return command.type === 'model.list'
       ? stamp('model.catalog', modelCatalog(reader, loaded.config.models))
       : stamp('provider.catalog', providerCatalog(reader))
@@ -159,7 +159,7 @@ export async function query(command: Command, context: ObservationContext): Prom
   return undefined
 }
 
-export async function readModelCatalog(loaded: LoadedConfig, selection: ModelSelectionRef | undefined, request: ModelSwitchRequest | undefined, now: () => number, providedInfo?: ModelInfoService): Promise<ModelCatalogReader> {
+export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, selection: ModelSelectionRef | undefined, request: ModelSwitchRequest | undefined, now: () => number, providedInfo?: ModelInfoService): Promise<ModelCatalogReader> {
   const providers = loaded.config.providers
   const processToken = crypto.randomUUID()
   const info = providedInfo ?? createModelInfoService({
@@ -167,7 +167,7 @@ export async function readModelCatalog(loaded: LoadedConfig, selection: ModelSel
       ...resolveConnection({ providerId, config }),
       access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
     })),
-    cache: createFileModelInfoCache(loaded.config.dataDir), now, fetch: globalThis.fetch,
+    cache: createFileModelInfoCache(magic.base), now, fetch: globalThis.fetch,
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
   const picked = resolveModelChoice({ providers, configuredModels: loaded.config.models, defaults: selection,

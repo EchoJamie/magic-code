@@ -510,11 +510,10 @@ export function rememberTravelsThroughBothPorts(): void {
 
 /** 权限段——`MagicConfig.permissions.rules` 是阶段 2 的加键（缺省＝无规则＝一律问）。 */
 export function configCarriesPermissionRules(): void {
-  const bare: MagicConfig = { models: {}, providers: {}, dataDir: '/tmp' }
+  const bare: MagicConfig = { models: {}, providers: {} }
   const withRules: MagicConfig = {
     models: {},
     providers: {},
-    dataDir: '/tmp',
     // 条目形态**不在这里复述**——权威是权限域的 `parseRules`（故此处是原值，交它解析）
     permissions: { rules: [{ tool: 'exec', op: 'read' }] },
   }

@@ -22,14 +22,12 @@ export type SettingsAction =
   | { readonly type: 'role.remove'; readonly id: string }
   | { readonly type: 'workspace.set'; readonly roots: readonly string[] | null }
   | { readonly type: 'permissions.set'; readonly rules: readonly unknown[] }
-  | { readonly type: 'data.set'; readonly directory: string | null }
   | { readonly type: 'grants.revoke'; readonly workspace: string; readonly index?: number; readonly grantStamp: string | null }
 
 /** configuration 仅包含已知可编辑字段，凭据值绝不返回。 */
 export type SettingsSnapshot = {
   readonly preview: Readonly<Record<string, unknown>>
   readonly configPath: string
-  readonly dataDir: string
   readonly base: string
   readonly stamp: string | null
   readonly configuration: Readonly<Record<string, unknown>>

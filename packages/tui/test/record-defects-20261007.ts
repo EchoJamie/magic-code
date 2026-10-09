@@ -22,7 +22,7 @@ const write=stdout.write
 stdout.write=(chunk:string)=>{chunks.push([(performance.now()-started)/1000,'o',chunk]);return write(chunk)}
 const spy=createSpyTransport(), marks:string[][]=[]
 let notice: (one:RunNotice)=>void=()=>{}
-const shell=createShell(spy.transport,{reducedMotion:mode==='reduced',markRead:ids=>marks.push([...ids]),notices:listener=>{notice=listener}})
+const shell=createShell(spy.transport,{ magicBase: '/test/.magic',reducedMotion:mode==='reduced',markRead:ids=>marks.push([...ids]),notices:listener=>{notice=listener}})
 const app=render(h(TuiApp,{shell}),{stdout:stdout as unknown as NodeJS.WriteStream,stdin:stdin as unknown as NodeJS.ReadStream,maxFps:0,exitOnCtrlC:false,patchConsole:false})
 const phases:{name:string;at:number;bytes:number}[]=[]
 async function phase(name:string,ms:number){await app.waitUntilRenderFlush();phases.push({name,at:(performance.now()-started)/1000,bytes:stdout.bytes().length});await Bun.sleep(ms);await app.waitUntilRenderFlush();const screen=await screenOf(stdout.bytes(),{columns,rows});writeFileSync(join(out,`${mode}-${columns}-${name}.txt`),screen.lines.join('\n'))}

@@ -6,7 +6,7 @@ import { event } from './events.ts'
 test('执行者已核销后撤去失效裁决，归还草稿并保留记录', () => {
   const spy = createSpyTransport()
   let detached: (why: string) => void = () => {}
-  const shell = createShell(spy.transport, { detached: (listener) => { detached = listener } })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: (listener) => { detached = listener } })
   for (const char of '未发送草稿') shell.key({ kind: 'char', char })
   spy.emit(event('turn.start', {}))
   spy.emit(event('tool.call', { name: 'exec', args: { cmd: 'echo fixture' } }, { id: 71 }))
@@ -23,7 +23,7 @@ test('执行者已核销后撤去失效裁决，归还草稿并保留记录', ()
 test('App退出留屏且不自动重开，明确ctrl+r成功后仍不自动发送草稿', async () => {
   const spy = createSpyTransport()
   let opens = 0
-  const shell = createShell(spy.transport, { reopen: async () => { opens++ } })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', reopen: async () => { opens++ } })
   for (const char of '继续之前先检查') shell.key({ kind: 'char', char })
   spy.emit(event('input.pasted', { image: { mime: 'image/png', name: '隔离引用', label: '隔离引用', bytes: 67, blob: 'fixture-ref' } }))
   spy.emit(event('plan.changed', { entry: 1, plan: { steps: [{ text: '保留原计划', status: 'in_progress' }], notes: '' } }))
@@ -55,7 +55,7 @@ test('App退出留屏且不自动重开，明确ctrl+r成功后仍不自动发�
 test('U114 执行者收束不收走本地阅读层，也不把已记录命令误还为未发送稿', () => {
   const spy = createSpyTransport()
   let detach: (why: string) => void = () => {}
-  const shell = createShell(spy.transport, { detached: listener => { detach = listener } })
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: listener => { detach = listener } })
   shell.releaseInput()
   shell.key({kind:'paste',text:'/resume '})
   shell.key({kind:'enter'})

@@ -5,7 +5,6 @@
     "t": "native.settings.apply",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data",
     "stamp": null,
     "action": {
       "type": "prefs.set",
@@ -15,6 +14,7 @@
           "model"
         ]
       }
-    }
+    },
+    "base": "/tmp/synthetic"
   }
 }

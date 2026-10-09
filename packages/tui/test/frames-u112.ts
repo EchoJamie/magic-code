@@ -123,10 +123,10 @@ const ENOUGH: readonly KernelEvent[] = [
 function live(
   sayText: string,
   events: readonly KernelEvent[],
-  options: Parameters<typeof createShell>[1] = {},
+  options: Omit<Parameters<typeof createShell>[1], 'magicBase'> = {},
 ): Shell {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, options)
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic', ...options })
   for (const char of sayText) shell.key({ kind: 'char', char })
   shell.key({ kind: 'enter' })
   for (const item of events) spy.emit(item)
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
 
   // **有格不可用**：挑了三格，可这三格此刻都拿不到值（还没跑过任何一次调用 ⇒ 没有模型、
   // 没有用量；也没给工作区）⇒ **整格省掉**（不占位、不显示空值）
-  const missing = createShell(createSpyTransport().transport, {
+  const missing = createShell(createSpyTransport().transport, { magicBase: '/test/.magic',
     statusLine: { cells: ['workspace', 'model', 'reasoning', 'context', 'session'] },
   })
   await save(out, '07-状态行-有格不可用', missing.getView())
@@ -219,7 +219,7 @@ async function main(): Promise<void> {
 
   const rebuiltSpy = createSpyTransport()
   const configSpy = createSpyTransport()
-  const config = createShell(configSpy.transport, { workspaceRoots: ['/Users/who/code/magic-code'] })
+  const config = createShell(configSpy.transport, { magicBase: '/test/.magic', workspaceRoots: ['/Users/who/code/magic-code'] })
   for (const char of '/config') config.key({ kind: 'char', char })
   config.key({ kind: 'enter' })
   for (const item of [
@@ -288,7 +288,7 @@ async function main(): Promise<void> {
   //
   // 走**重建**那一路（收拢发生在读历史铺屏时）：喂够 6 组工具往返，末尾 5 组照旧逐条、
   // 更早的那一组并成一行。
-  const rebuilt = createShell(rebuiltSpy.transport)
+  const rebuilt = createShell(rebuiltSpy.transport, { magicBase: '/test/.magic' })
   rebuilt.key({ kind: 'enter' })
   rebuiltSpy.emit(
     event('session.history', {

@@ -66,7 +66,7 @@ function has(shot: Capture, needle: string): boolean {
 /** 那一摊的路径（`runs.json`）——按产品自己那两件算，不照目录结构猜。 */
 function pathsOf(sandbox: Sandbox): MagicHome & { readonly runs: string } {
   const magic: MagicHome = { home: sandbox.home, base: join(sandbox.home, '.magic') }
-  return Object.assign(magic, runPathsOf(magic, sandbox.dataDir, tmpdir()))
+  return Object.assign(magic, runPathsOf(magic, tmpdir()))
 }
 
 /** 等一个条件成立（20 秒上界）——**轮询是用例的事**，产品那几跳都是事件驱动的。 */

@@ -189,7 +189,7 @@ export type StreamResult = {
 
 export async function streamBench(spec: StreamSpec): Promise<StreamResult> {
   const kernel = programmable()
-  const shell = createShell(kernel.transport)
+  const shell = createShell(kernel.transport, { magicBase: '/test/.magic' })
   const stdout = new StampedTty(spec.columns, spec.rows)
   const stdin = new FakeStdin()
 

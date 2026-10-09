@@ -5,11 +5,11 @@
     "t": "native.settings.apply",
     "request": "settings-one",
     "serviceInstance": "service-one",
-    "dataDir": "/tmp/synthetic/data",
     "action": {
       "type": "sources.set",
       "source": "skills.sources",
       "paths": []
-    }
+    },
+    "base": "/tmp/synthetic"
   }
 }

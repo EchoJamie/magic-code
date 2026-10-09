@@ -50,7 +50,7 @@ function ground(name: string): Ground {
   const root = tempDir(`magic-stop-${name}-`)
   const home = join(root, 'home')
   const base = join(root, 'base')
-  const dataDir = join(root, 'data')
+  const dataDir = base
   const ws = join(root, 'ws')
   for (const dir of [home, base, dataDir, ws]) mkdirSync(dir, { recursive: true })
 
@@ -70,7 +70,7 @@ function ground(name: string): Ground {
     tmp: tmpdir(),
     ws,
     dispose: () => {
-      removeDir(runPathsOf({ home, base }, dataDir, tmpdir()).dir)
+      removeDir(runPathsOf({ home, base }, tmpdir()).dir)
       removeDir(root)
     },
   }
@@ -142,8 +142,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
   }
 
   const started = await startManager({
-    paths: runPathsOf(g.magic, g.dataDir, g.tmp),
-    dataDir: g.dataDir,
+    paths: runPathsOf(g.magic, g.tmp),
     magic: g.magic,
     launch: launcher,
     probeIntervalMs: 50,
@@ -460,7 +459,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
       // 那一下会把「账还没到、执行者已经没了」照进来（实测在整门上栽过一次）
       await waitFor('账到了管理者手上', () => {
         try {
-          return readFileSync(runPathsOf(g.magic, g.dataDir, tmpdir()).runs, 'utf8').includes(String(ours.pid))
+          return readFileSync(runPathsOf(g.magic, tmpdir()).runs, 'utf8').includes(String(ours.pid))
         } catch {
           return false
         }
@@ -507,7 +506,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
       ])
       await waitFor('账到了管理者手上', () => {
         try {
-          return readFileSync(runPathsOf(g.magic, g.dataDir, tmpdir()).runs, 'utf8').includes(String(neighbour.pid))
+          return readFileSync(runPathsOf(g.magic, tmpdir()).runs, 'utf8').includes(String(neighbour.pid))
         } catch {
           return false
         }
@@ -1038,7 +1037,7 @@ describe('U50 · 重启核对里的句柄身份', () => {
   test('盘上那一代：号被复用了（启动时刻对不上）⇒ 已停止，不再钉在「待确认」', async () => {
     const g = ground('identity')
     seed(g, ['s-alive', 's-reused'])
-    const paths = runPathsOf(g.magic, g.dataDir, g.tmp)
+    const paths = runPathsOf(g.magic, g.tmp)
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 })
 
     // 一个**真活着**的进程（拿真 pid 当「那个号上有人」）

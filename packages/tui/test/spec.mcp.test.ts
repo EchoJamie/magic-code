@@ -44,7 +44,7 @@ function catalog(over: Partial<EventDataOf['mcp.catalog']> = {}): EventDataOf['m
 /** 起一个壳 ＋ 间谍传输。 */
 function live() {
   const spy = createSpyTransport()
-  const shell = createShell(spy.transport, {})
+  const shell = createShell(spy.transport, { magicBase: '/test/.magic',})
 
   return {
     shell,

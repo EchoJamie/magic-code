@@ -5,6 +5,7 @@ import type { DiagnosticsChange } from '@magic/contracts'
 
 import { homedir } from 'node:os'
 import type { KernelEvent, RulesLoad, ModelChoice, ModelSwitchRequest } from '@magic/contracts'
+import { resolve } from 'node:path'
 import { resolveMagicHome, SOFTWARE_VERSION } from '@magic/contracts'
 import type { ModelSwitchResult } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
@@ -198,7 +199,8 @@ async function offlineCheck(args: Args): Promise<number> {
   const { createSkills, createProjectRules } = await import('@magic/execution')
   const { skillsCatalog, readGrantView } = await import('./run/observation.ts')
   const { parseRules } = await import('@magic/permission')
-  const magic = resolveMagicHome(process.env, homedir())
+  const selected = resolveMagicHome(process.env, homedir())
+  const magic = { ...selected, base: resolve(selected.base) }
   const loaded = loadConfig({ magic })
   const workspace = workspaceOf(loaded, process.cwd())
   const roots = workspace.roots()
@@ -214,7 +216,7 @@ async function offlineCheck(args: Args): Promise<number> {
   const rules = parseRules(loaded.config.permissions?.rules ?? [])
   console.log('magic —— 离线配置检查')
   console.log(`  ${describeConfig(loaded)}`)
-  console.log(`  数据落点　${loaded.config.dataDir}`)
+  console.log(`  数据落点　${magic.base}`)
   console.log(`  工作区根　${roots.join(' · ')}`)
   const providers = Object.entries(loaded.config.providers).map(([id, provider]) => `${id}（${provider.name ?? id}）`)
   const current = chosen?.ok ? `${chosen.selection.provider}（${chosen.selection.model}）` : (loaded.providerId ?? '未选供应商')
@@ -303,7 +305,8 @@ export function tuiOptions(assembly: Assembly): RunTuiOptions {
     // 是**启动那一刻定下的**（配置 ＋ `MAGIC_HOME`），没有任何命令问得到：故与工作区根
     // 一样，从装配这一侧**递值**（窗口那一侧的同一条，见 `run/terminal.ts`）。
     // 家目录只用来把屏上的路径缩成 `~/…`（省那一格的地方）——**不参与任何解析**。
-    dataDir: assembly.config.config.dataDir,
+    dataDir: assembly.magic.base,
+    magicBase: assembly.magic.base,
     home: assembly.magic.home,
     // 启动那几句（U22 · 审计第 13 条）：解析从严（读不懂的规则 / 授权**不生效**）原先
     // 只有 `--check` 会说，走 TUI 这条路**一声不响**。话由装配备好（`Assembly.notices`）、
@@ -521,11 +524,11 @@ async function runTerminal(args: Args): Promise<number> {
         return 1
       }
     }
-    const modelInfo = await readModelInfo(loaded)
+    const modelInfo = await readModelInfo(loaded, magic)
     const { runTui } = await import('@magic/tui')
     const { reopenApp } = await import('./run/spawn-manager.ts')
     const connection = terminalConnection(client, async (session) => {
-      const reopened = await reopenApp({ expectedInstance: { base: magic.base, dataDir: client.dataDir }, connect: {
+      const reopened = await reopenApp({ expectedInstance: { base: magic.base }, connect: {
         cwd: process.cwd(), label: 'terminal',
         ...(session === undefined ? {} : { session }),
         ...(args.switch === undefined ? {} : { switch: args.switch }),
@@ -565,7 +568,7 @@ async function main(): Promise<number> {
       const home = at < 0 ? undefined : argv[at + 1]
       const { locateHost, readHostDiscovery } = await import('./run/host-discovery.ts')
       const { applyHostDiagnostics } = await import('./run/diagnostics-client.ts')
-      const found = readHostDiscovery(locateHost(home === undefined ? {} : { home }))
+      const found = readHostDiscovery(locateHost({ home: home ?? homedir() }))
       if (!found) throw new Error('所属 App 尚未就绪，未修改设置')
       console.error(await applyHostDiagnostics(found, change, 'app'))
       return 0

@@ -2,7 +2,6 @@ import { isLogLevel } from '@magic/contracts'
 
 
 import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { configStamp } from './cache-access.ts'
 import { dirname, resolve } from 'node:path'
 import type {
@@ -27,9 +26,7 @@ import {
   apiKeyEnvVarOf,
   CONFIG_FILE_NAME,
   expandHome,
-  MAGIC_DIR,
   MCP_NAME_SEPARATOR,
-  resolveMagicHome,
 } from '@magic/contracts'
 
 /** 配置加载失败——CLI 捕它、打印消息、退场（不带栈：这不是程序 bug，是配置的事）。 */
@@ -47,7 +44,7 @@ export class ConfigError extends Error {
 export type LoadedConfig = {
   /** 实际读的配置文件（已展开的绝对路径）——自检报告与报错都用它。 */
   readonly path: string
-  /** 形制原样（`dataDir` 已展开）。 */
+  /** 已校验的配置；路径使用入口给定的家目录展开。 */
   readonly config: MagicConfig
 
   readonly providerId?: string
@@ -63,14 +60,8 @@ export type LoadedConfig = {
 export type LoadConfigOptions = {
   /** 配置文件路径（可含前导 `~`）——缺省 `<基础目录>/config.json`。 */
   readonly path?: string
-  /**
-   * **统一基础路径**（契约 `MagicHome`：家目录 ＋ Magic 基础目录）。
-   * 缺省按启动环境现解析（`MAGIC_HOME` → 家目录，其下追加 `.magic`）。
-   *
-   * 给这个口是为了**测试与脚本**能指一块自己的沙地（照 `path` 的先例）；
-   * 产品路径上只有装配根调它一次，故这里是「拿到已解析的路径」，不另做一套解析。
-   */
-  readonly magic?: MagicHome | undefined
+  /** 入口已确定的系统家目录与 Magic 实际目录。 */
+  readonly magic: MagicHome
 }
 
 /** 报错一律点名到字段（`path → providers.minimax.model`），省得用户对着整份 JSON 找。 */
@@ -320,38 +311,6 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
 }
 
 /**
- * **`dataDir` 的落地**（U42）——两步：**展开前导 `~`** ＋ **旧落点归位**。
- *
- * 归位那一步（设计明文：「指向原 `~/.magic` 及其子目录的 Magic 数据路径统一按下节基础路径
- * 解析，**不能因写在旧配置中而绕过 `MAGIC_HOME`**；指向其它目录的自定义数据路径保持原义」）：
- *
- * - `~/.magic` 本身 → **基础目录**（不设 `MAGIC_HOME` 时两者本就同一条，故这是零变化）；
- * - `~/.magic/data` 这类子路径 → 基础目录下**同样的相对位置**（`<基础目录>/data`）；
- * - **别处照旧**：`~/work` 还是用户家的 `work`、`/var/tmp/x` 还是那条绝对路径
- *   ——`MAGIC_HOME` 换的是 **Magic 自己的落点**，不是家目录（设计里与「不修改系统 HOME」
- *   同一条理由）。
- *
- * ⚠️ **判据是「展开之后落在旧 `.magic` 之下」，不是「字符串以 `~/.magic` 开头」**：
- * 拿字面串比对的话，`/Users/me/.magic` 这种**写全了的绝对路径**会从旁边溜过去——那正是
- * 「写死了就绕得过」的一种。子路径那一支比较时带上 `/`（`${old}/`），故 `~/.magicX`
- * 这类**同前缀的别的目录**不会被误伤。
- *
- * 只对 `dataDir` 做这一步：其余几处（工作区根 / 规约与技能的来源）点的是**用户的东西**，
- * 不是 Magic 的数据目录——给它们也套一层归位，等于把用户指到别处的路径悄悄改道。
- */
-function asDataDir(raw: string, magic: MagicHome): string {
-  const expanded = expandHome(raw, magic.home)
-  const old = `${magic.home}/${MAGIC_DIR}`
-
-  if (expanded === old) return magic.base
-  if (!expanded.startsWith(`${old}/`)) return expanded
-
-  // 分隔斜杠归一：`~/.magic/`（尾随）与 `~/.magic//data`（重复）都落成基础目录那一支的写法
-  const tail = expanded.slice(old.length).replace(/^\/+/, '')
-  return tail === '' ? magic.base : `${magic.base}/${tail}`
-}
-
-/**
  * 工作区根列表（阶段 3 加键）——判形制（须是非空字符串的数组）＋ **展开前导 `~`**。
  *
  * **语义（绝对 / 存在 / 是目录 / 重复）不在这里判**：那要碰 fs，且**根的身份**
@@ -363,12 +322,7 @@ function asDataDir(raw: string, magic: MagicHome): string {
  * 而展开后仍非绝对者（`relative/nope`）照旧交给执行域拒（`workspace.test.ts` 有相对的用例）。
  * 分工没变：此处只把用户写的那串**变成它指的那个路径**。
  *
- * **`~` 展开（U27 · `U18` 待决 3）**——**与 `dataDir` 同源：同一个展开器**
- * （契约 `expandHome`——它原先叫 `expandDataDir`，射程却一直是「前导 `~` 展开」
- * 这件事本身：`dataDir` 与工作区根共用它，U28 按射程改了名）。
- * 由头：根是**用户手写在配置文件里**的路径——手写就会写 `~/work`，而当相对路径拒只会
- * 让人困惑。落点也照 `dataDir`：**加载器展开、加载后即为字面路径**（执行域不展开，
- * 「`~` 不是绝对路径」那条规矩没动）。
+ * 前导 ~ 在加载时按入口传入的系统家目录展开；执行域只接收字面路径。
  */
 function asWorkspaceRoots(value: unknown, path: string, home: string): readonly string[] {
   if (!Array.isArray(value)) {
@@ -586,19 +540,9 @@ function asMotion(value: unknown, path: string): MotionConfig {
   return raw['reduced'] === undefined ? {} : { reduced: raw['reduced'] as boolean }
 }
 
-/**
- * 读并校验配置文件。
- *
- * 形制字面冻结（技术方案 · 配置与密钥）——**`dataDir` 缺省**由加载器补**基础目录**；
- * 其余键缺省即报错（首站形制里它们不是可选的）。
- *
- * **`workspaceRoots` 是唯一「缺省＝有效行为」的新键**——缺省 → 装配根回落启动目录
- * （阶段 1 姿态）；**键在即接管**（见契约 `WorkspaceRoots`：不再并入启动目录）。
- */
-export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
-  // **统一基础路径在这一步解析**（U42）——读配置**之前**，且只在这里解析一次
-  // （设计明文：app 在读取配置之前统一解析基础目录，各域只接收已解析路径）。
-  const magic = options.magic ?? resolveMagicHome(process.env, homedir())
+/** 读取并校验配置；位置由入口传入，未知顶层键不参与行为。 */
+export function loadConfig(options: LoadConfigOptions): LoadedConfig {
+  const magic = options.magic
   /** 家目录——用户写的 `~/…` 展开到它（**不是**基础目录：`MAGIC_HOME` 不改写系统家目录）。 */
   const home = magic.home
   const path = expandHome(options.path ?? `${magic.base}/${CONFIG_FILE_NAME}`, home)
@@ -613,8 +557,7 @@ export function loadConfig(options: LoadConfigOptions = {}): LoadedConfig {
     // （文件根本没有）：空配置照常返回，用户接上供应商时**保存**才创建它。
     // 别的读失败（权限 / 是个目录…）照旧报——那不是「还没配」，那是真有问题。
     if ((error as { code?: string }).code === 'ENOENT') {
-      // 数据目录按**基础目录**给（U42：不再是那个字面量常量——空配置也落得了账）
-      return { path, config: { providers: {}, dataDir: magic.base }, stamp: null }
+      return { path, config: { providers: {} }, stamp: null }
 
     }
     const reason = error instanceof Error ? error.message : String(error)
@@ -651,12 +594,6 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   const providerId = configuredModels?.default?.provider
   const provider = providerId === undefined ? undefined : providers[providerId]
   const agentRoles = raw['agentRoles'] === undefined ? undefined : asAgentRoles(raw['agentRoles'], path, home)
-
-  // 前导 `~` 在此展开（记录域拒收 `~`——见文件头注）＋ 旧落点归位（U42，见 `asDataDir` 头注）
-  const dataDir = asDataDir(
-    raw['dataDir'] === undefined ? magic.base : asText(raw['dataDir'], path, 'dataDir'),
-    magic,
-  )
 
   // 权限段（阶段 2）：`rules` 的值**原样带过**——条目形态的权威是权限域的 `parseRules`
   // （连「整个值不是数组」都由它给缘由），故加载器**不在这里另做一套校验**，只把它递下去。
@@ -709,7 +646,6 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
     config: {
       ...(configuredModels === undefined ? {} : { models: configuredModels }),
       providers,
-      dataDir,
       ...(permissions === undefined ? {} : { permissions: { rules: permissions['rules'] } }),
       ...(workspaceRoots === undefined ? {} : { workspaceRoots }),
       ...(ruleSources === undefined && ruleLinkSources === undefined
@@ -743,7 +679,7 @@ export function describeConfig(loaded: LoadedConfig): string {
     const count = Object.keys(loaded.config.providers).length
     const connections =
       count === 0 ? '还没有接入任何供应商' : `已接入 ${count} 条连接，还没选定默认`
-    return `配置 ${loaded.path} · ${connections} · 数据目录 ${loaded.config.dataDir}`
+    return `配置 ${loaded.path} · ${connections}`
   }
 
   const keyFrom = loaded.provider.apiKey?.trim()
@@ -754,6 +690,6 @@ export function describeConfig(loaded: LoadedConfig): string {
 
   return (
     `配置 ${loaded.path} · 供应商 ${loaded.providerId}${model}` +
-    ` · key 取自${keyFrom} · 数据目录 ${loaded.config.dataDir}`
+    ` · key 取自${keyFrom}`
   )
 }
