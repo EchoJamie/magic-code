@@ -145,10 +145,10 @@ export async function query(command: Command, context: ObservationContext): Prom
   // 观察已选会话时沿用记录归属；空白窗口使用当前工作区配置。
   const saved = context.session == null ? undefined : (await context.store.listSessions()).find((row) => row.id === context.session)?.workspace
   const workspace = saved === undefined ? workspaceOf(loaded, context.cwd) : createWorkspaceService({ roots: saved })
-  if (command.type === 'skills.list') return stamp('skills.catalog', skillsCatalog(createSkills({
+  if (command.type === 'skills.list') return stamp('skills.catalog', skillsCatalog((await createSkills({
     workspace, magicBase: context.magic.base, home: context.magic.home,
     sources: loaded.config.skills?.sources ?? [],
-  }).discover()))
+  }).discover())))
   if (command.type === 'paths.list') return stamp('paths.catalog', await pathsCatalog(createMaterials({ workspace }), command.query))
   if (command.type === 'grants.list') {
     const file = readGrantView(context.magic, workspace, now)

@@ -1,0 +1,9 @@
+{
+  "family": "NativeResponse",
+  "valid": false,
+  "message": {
+    "t": "native.engine.result",
+    "request": "r",
+    "phase": "wrong"
+  }
+}

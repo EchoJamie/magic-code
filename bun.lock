@@ -40,6 +40,7 @@
         "@magic/records": "workspace:*",
         "@magic/tools": "workspace:*",
         "@magic/tui": "workspace:*",
+        "undici": "7.29.1",
       },
       "devDependencies": {
         "@magic/faux": "workspace:*",
@@ -86,6 +87,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@magic/contracts": "workspace:*",
+        "@magic/execution": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.30.0",
       },
     },
@@ -145,6 +147,9 @@
         "react": "^19.0.0",
       },
     },
+  },
+  "patchedDependencies": {
+    "undici@7.29.1": "patches/undici@7.29.1.patch",
   },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.82", "https://registry.npmmirror.com/@ai-sdk/gateway/-/gateway-4.0.82.tgz", { "dependencies": { "@ai-sdk/provider": "4.0.15", "@ai-sdk/provider-utils": "5.0.41", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-WbRChvbJY2zf0qBxFu6UENi0p69fPzP7lKViNTIp3gr76w9bLUFvV5fTXS5uGPqDOkzlTIuAkqWxYNayEBSn6Q=="],

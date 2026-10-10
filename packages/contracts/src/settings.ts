@@ -16,7 +16,6 @@ export type SettingsAction =
   | { readonly type: 'prefs.set'; readonly statusLine?: StatusLineConfig; readonly reducedMotion?: boolean }
   | { readonly type: 'mcp.save'; readonly name: string; readonly server: McpServerConfig; readonly secrets: Readonly<Record<string, string | null>> }
   | { readonly type: 'mcp.remove'; readonly name: string }
-  | { readonly type: 'mcp.reconnect'; readonly name: string; readonly session: string; readonly gen: number }
   | { readonly type: 'sources.set'; readonly source: 'rules.sources' | 'rules.linkSources' | 'skills.sources'; readonly paths: readonly string[] }
   | { readonly type: 'role.save'; readonly id: string; readonly role: AgentRoleConfig }
   | { readonly type: 'role.remove'; readonly id: string }
@@ -37,8 +36,7 @@ export type SettingsSnapshot = {
   readonly grants: readonly { readonly workspace: string; readonly entries: readonly unknown[] }[]
   readonly grantStamp: string | null
   readonly grantProblem?: string
-  readonly mcp: readonly { readonly session: string; readonly gen: number | null; readonly servers: readonly unknown[] }[]
-  readonly canChangeData: boolean
+
 }
 
 export type SettingsPreview = { readonly statusLine: StatusLineConfig; readonly columns: number; readonly reducedMotion: boolean }

@@ -46,7 +46,7 @@ def prepare(output):
     plist.write_bytes(plistlib.dumps(info))
     write(root / 'control.json', {'systemTest': True, 'source': str(app / 'Contents/Helpers/magic-runtime'), 'works': []})
     with (output / 'signature.log').open('w') as log:
-        subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--sign', '-', str(app)], stdout=log, stderr=log, check=True)
+        subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--sign', os.environ.get('MAGIC_SIGN_IDENTITY', 'Apple Development: echojamieee@outlook.com (9JHY98AJMC)'), str(app)], stdout=log, stderr=log, check=True)
         subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], stdout=log, stderr=log, check=True)
     write(output / 'manifest.json', {'app': str(app), 'bundle': bundle, 'root': str(root),
           'defaultCapabilities': [], 'realSystemActionsAuthorized': False, 'controlledHost': True,

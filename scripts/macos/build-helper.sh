@@ -5,6 +5,6 @@ OUTPUT="${1:-$ROOT/.artifacts/macos/magic-runtime}"
 mkdir -p "$(dirname "$OUTPUT")"
 cd "$ROOT"
 bun scripts/macos/build-helper.mjs "$OUTPUT"
-codesign --force --options runtime --timestamp=none --sign "${MAGIC_SIGN_IDENTITY:--}" \
+codesign --force --options runtime --timestamp=none --sign "${MAGIC_SIGN_IDENTITY:-Apple Development: echojamieee@outlook.com (9JHY98AJMC)}" \
   --entitlements apps/macos/MagicCode/Resources/Helper.entitlements "$OUTPUT"
 codesign --verify --strict --verbose=2 "$OUTPUT"

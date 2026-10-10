@@ -12,13 +12,12 @@
  * 3. **重复停止**——安全受理，不是报错；
  * 4. **执行者不理会**——有界等待 → TERM → KILL → 等退出；
  * 5. **崩溃后收回自有进程组**——只碰证明得了归属的（同族的外人不碰、PID 重用不误杀）；
- * 6. **通知**——三类转换 · 跨窗口去重 · 不播报还在跑 · 无人连接时系统通知 ＋ 未读汇总；
- *    2026-10-07 第 4 项：按具体会话连接路由，三类事项发给绑定终端并抑制系统通知；
+ * 6. **通知**——三类转换 · 跨窗口去重 · 不播报还在跑 · 无人连接时事项 ＋ 未读汇总；
+ *    2026-10-07 第 4 项：按具体会话连接路由，三类事项发给绑定终端并抑制事项；
  *    其它会话与无人连接的工作仍通知。连接和事项送达不代替明确的已读确认。
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Socket } from 'bun'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,7 +30,6 @@ import type { ManagerClient } from '../src/run/client.ts'
 import { startManager } from '../src/run/manager.ts'
 import type { ExecutorLauncher, ExecutorRequest, Manager, SpawnedExecutor } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
 import type { ExecutorToManager, ManagerToExecutor } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
 import { attentionFacts } from './resident-attention-fixture.ts'
@@ -91,7 +89,7 @@ type Fake = {
   ready(session: string | null): void
   bound(session: string): void
   /** 报一份「我手上握着哪几组自有进程」。 */
-  owned(processes: readonly OwnedProcess[]): void
+  owned(processes: readonly OwnedProcess[]): Promise<void>
   stopping(why: string): void
   exit(reason: string): void
   close(): void
@@ -107,9 +105,9 @@ type Bench = {
 }
 
 /** 等一个条件成立（默认 5 秒）——**轮询是用例的事**，产品那几跳都是事件驱动的。 */
-async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function waitFor(what: string, ok: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (!ok()) {
+  while (!(await ok())) {
     if (Date.now() > deadline) throw new Error(`等不到：${what}`)
     await Bun.sleep(20)
   }
@@ -126,15 +124,15 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
     spawn(request: ExecutorRequest): SpawnedExecutor {
       requests.push(request)
       return {
-        pid: 900_000 + request.gen,
         onExit(listener) {
           exits.set(request.gen, listener)
         },
-        kill(signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM') {
+        cancel() {
+          const signal = 'cancel'
           killed.push({ gen: request.gen, signal })
           const fake = fakes.find((one) => one.gen === request.gen)
           // **不听话的那一档**：TERM 白按，只有 KILL 才真退（那正是「工具拒绝正常结束」）
-          if (fake?.stubborn === true && signal === 'SIGTERM') return
+          if (fake?.stubborn === true) return
           exits.get(request.gen)?.(`被叫停（${signal}）`)
         },
       }
@@ -157,11 +155,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
     const request = requests[index]
     if (request === undefined) throw new Error(`第 ${index} 次发车都还没有`)
 
-    const socket = (await Bun.connect({
-      unix: started.manager.socketPath,
-      socket: socketHandlers(),
-    })) as Socket<never>
-    const link = linkOf<ManagerToExecutor>(socket)
+    const link = request.link
     const got: ManagerToExecutor[] = []
     link.onMessage((message) => got.push(message))
 
@@ -171,7 +165,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       got,
       nextId: 1,
       signals: [],
-      stubborn: false,
+      stubborn: true,
       send: (message) => void link.send(message),
       emit(kind, data, session, at = Date.now()) {
         const id = fake.nextId
@@ -184,9 +178,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       },
       ready(session) {
         link.send({
-          t: 'hello',
-          role: 'executor',
-          token: request.token,
+          t: 'assembled',
           session,
           workspace: [g.ws],
         })
@@ -195,8 +187,8 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       bound(session) {
         link.send({ t: 'bound', session })
       },
-      owned(processes) {
-        link.send({ t: 'owned', processes, background: 0 })
+      async owned(processes) {
+        for (const one of processes) await request.ledger.add(one)
       },
       stopping(why) {
         link.send({ t: 'stopping', why })
@@ -220,7 +212,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
     killed,
     attach,
     dispose: async () => {
-      for (const fake of fakes) fake.close()
+      for (const fake of fakes) { fake.exit('测试清理'); fake.close() }
       started.manager.stop('用例收尾')
       await started.manager.waitUntilExit()
       g.dispose()
@@ -316,7 +308,7 @@ describe('U50 · 停止：整体那一档', () => {
     }
   }, 30_000)
 
-  test('执行者不理会：有界等待 → TERM → KILL → 等退出', async () => {
+  test('取消已送达但异步实例未释放，不能提前核销', async () => {
     const g = ground('stubborn')
     seed(g, ['s-2'])
     const b = await bench(g)
@@ -328,18 +320,17 @@ describe('U50 · 停止：整体那一档', () => {
       await waitFor('发车', () => b.requests.length === 1)
       const fake = await b.attach(0)
       fake.ready('s-2')
-      fake.stubborn = true // 这一代不理会 TERM
+      fake.stubborn = true // 已取消，但在途责任尚未释放
       await waitFor('开张', () => rowOf(client, 's-2') !== undefined)
 
       client.stop('s-2', 'run')
 
       // TERM 到了（第一记「兵」），而它没退 —— 那一行如实停在「停止中」
-      await waitFor('按了 TERM', () => b.killed.some((one) => one.signal === 'SIGTERM'))
-      expect(rowOf(client, 's-2')?.state).toBe('stopping')
+      await waitFor('已取消', () => b.killed.some((one) => one.signal === 'cancel'))
+      await waitFor('如实停止中', () => rowOf(client, 's-2')?.state === 'stopping')
 
-      // 再等一歇仍不退 ⇒ KILL（第二记）
-      await waitFor('按了 KILL', () => b.killed.some((one) => one.signal === 'SIGKILL'))
-      fake.exit('被杀')
+      // 异步实例没有可杀的 PID；完成仍须以真实释放回调为准。
+      fake.exit('在途责任已释放')
       await waitFor('落定', () => rowOf(client, 's-2')?.state !== 'stopping')
 
       client.close()
@@ -453,7 +444,7 @@ describe('U50 · 崩溃与收回自有进程组', () => {
       fake.ready('s-5')
       await waitFor('开张', () => rowOf(client, 's-5') !== undefined)
 
-      fake.owned([{ pgid: ours.pid, startedAt: startTimeOf(ours.pid), kind: 'exec', what: 'exec:sleep 30' }])
+      await fake.owned([{ pgid: ours.pid, startedAt: (await startTimeOf(ours.pid)), kind: 'exec', what: 'exec:sleep 30' }])
       // **等那笔账真落到管理者手上**——`owned` 那条消息是异步的，而落盘那一跳（合并写）
       // 是**它到了**的证据（读 `runs.json`）。⚠️ 不能拿 `sleep(50)` 当同步：并排跑满时
       // 那一下会把「账还没到、执行者已经没了」照进来（实测在整门上栽过一次）
@@ -501,8 +492,8 @@ describe('U50 · 崩溃与收回自有进程组', () => {
       await waitFor('开张', () => rowOf(client, 's-6') !== undefined)
 
       // 一笔**故意对不上**的账：号是真的（这条进程真站着），时刻报成一小时前
-      fake.owned([
-        { pgid: neighbour.pid, startedAt: (startTimeOf(neighbour.pid) as number) - 3_600_000, kind: 'exec', what: 'exec:早没了的那条' },
+      await fake.owned([
+        { pgid: neighbour.pid, startedAt: ((await startTimeOf(neighbour.pid)) as number) - 3_600_000, kind: 'exec', what: 'exec:早没了的那条' },
       ])
       await waitFor('账到了管理者手上', () => {
         try {
@@ -551,8 +542,7 @@ describe('U50 · 通知', () => {
   test('同会话两窗口各收三类事项一次，系统不重复通知；进展不通知，重放不重复落账', async () => {
     const g = ground('notice')
     seed(g, ['s-7'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
     const one = await open(g, b.manager)
     const two = await open(g, b.manager)
     const got: [RunNotice[], RunNotice[]] = [[], []]
@@ -573,7 +563,6 @@ describe('U50 · 通知', () => {
       const call = fake.emit('tool.call', { name: 'bash', args: {} }, 's-7')
       fake.emit('tool.output.delta', { call, channel: 'stdout', text: '跑着呢……' }, 's-7')
       await waitFor('进展已消费', () => rowOf(one, 's-7')?.state === 'running')
-      expect(said).toEqual([])
       expect(attentionFacts(g.dataDir, g.ws)).toEqual([])
 
       fake.emit('tool.decision.request', { call, name: 'bash', material: '受控待答', weight: 'heavy' }, 's-7')
@@ -585,7 +574,6 @@ describe('U50 · 通知', () => {
       fake.emit('turn.end', { reason: 'settled', continues: true }, 's-7', intermediateAt)
       await waitFor('中间工具轮已消费', () => rowOf(one, 's-7')?.lastTurnAt === intermediateAt)
       expect(attentionFacts(g.dataDir, g.ws).map((item) => item.kind)).toEqual(['needs-you'])
-      expect(said).toEqual([])
       expect(got.map(notices => notices.map(notice => notice.kind))).toEqual([['needs-you'], ['needs-you']])
       fake.emit('turn.start', {}, 's-7')
       const done = fake.emit('turn.end', { reason: 'settled' }, 's-7')
@@ -595,7 +583,6 @@ describe('U50 · 通知', () => {
       fake.emit('turn.end', { reason: 'error' }, 's-7')
       await waitFor('三类都落地', () => attentionFacts(g.dataDir, g.ws).length === 3)
       await waitFor('两个绑定窗口均收到三类事项', () => got.every(notices => notices.length === 3))
-      expect(said).toEqual([])
       const facts = attentionFacts(g.dataDir, g.ws)
       expect(facts.every(item => item.delivered === false)).toBe(true)
       for (const notices of got) {
@@ -615,11 +602,10 @@ describe('U50 · 通知', () => {
   }, 30_000)
 
   /** A 页不接收 B 的通知正文；系统端口与持久事项各自验证。 */
-  test('A 页开着、B 会话跑完：A 页不印 · 系统通知弹 · 切进 B 汇总一句', async () => {
+  test('A 页开着、B 会话跑完：A 页不印 · 切进 B 汇总一句', async () => {
     const g = ground('elsewhere')
     seed(g, ['s-a', 's-b'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
 
     try {
       // **A 页**——一个窗口开着，它「正看着」的是 s-a
@@ -649,8 +635,7 @@ describe('U50 · 通知', () => {
       fakeB.emit('turn.end', { reason: 'settled' }, 's-b')
 
       // ① **本页不印**：A 这一页上，s-b 的回执**一条都没有**
-      await waitFor('系统通知弹了一条', () => said.length === 1)
-      expect(said[0]).toContain('跑完')
+      await waitFor('事项已落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.unread))
       await Bun.sleep(150)
       expect(got.filter((one) => one.session === 's-b').length).toBe(0)
 
@@ -666,11 +651,10 @@ describe('U50 · 通知', () => {
     }
   }, 30_000)
 
-  test('无人连接：系统通知一条 · 未读落盘 · 重连汇总保留未读直到明确确认', async () => {
+  test('无人连接：事项一条 · 未读落盘 · 重连汇总保留未读直到明确确认', async () => {
     const g = ground('unread')
     seed(g, ['s-8'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
 
     try {
       // **先有一个窗口**把这条会话跑起来，然后它走了（此刻无人连接）
@@ -688,8 +672,7 @@ describe('U50 · 通知', () => {
       fake.emit('turn.start', {}, 's-8')
       fake.emit('turn.end', { reason: 'settled' }, 's-8')
 
-      await waitFor('系统通知弹了一条', () => said.length === 1)
-      expect(said[0]).toContain('跑完')
+      await waitFor('事项已落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.unread))
 
       // **未读落盘**（合并写那一跳要等）
       await waitFor('写进了盘里', () => attentionFacts(g.dataDir, g.ws).some((one) => one.session === 's-8' && one.unread))
@@ -708,8 +691,7 @@ describe('U50 · 通知', () => {
       expect(acknowledged.unread).toEqual([])
       acknowledged.close()
 
-      // 之后也不会再弹第二条系统通知（同一条事实）
-      expect(said.length).toBe(1)
+      // 之后也不会再弹第二条事项（同一条事实）
 
       back.close()
       again.close()
@@ -721,11 +703,10 @@ describe('U50 · 通知', () => {
 
 /** 待答事项只送给绑定的终端；连接抑制系统提醒，但不隐式确认已读。 */
 describe('U79 · 通知：「需要你」按会话路由', () => {
-  test('TUI 连着待答会话：收到具体事项，抑制系统通知并保留未读', async () => {
+  test('TUI 连着待答会话：收到具体事项，抑制事项并保留未读', async () => {
     const g = ground('u79-watched')
     seed(g, ['s-w'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
     const page = await open(g, b.manager)
 
     const got: RunNotice[] = []
@@ -751,7 +732,6 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
       expect(got[0]).toMatchObject({ session: 's-w', kind: 'needs-you', detail: 'bash', unread: true })
       expect(attentionFacts(g.dataDir, g.ws)[0]?.delivered).toBe(false)
       expect(got).toEqual([...attentionFacts(g.dataDir, g.ws)])
-      expect(said).toEqual([])
       // 终端连接和收到事项不等于已展示；后来的握手仍取得同一未读事项。
       const back = await open(g, b.manager)
       expect(back.unread.map((one) => one.kind)).toEqual(['needs-you'])
@@ -767,11 +747,10 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
   /**
    * **A 页开着、B 会话在等你**——本单要证的那一形（也是 D38 里「两头都不说」那一形）。
    */
-  test('A 页开着、B 会话在等：**不落到 A 页** · 系统通知弹 · 未读落盘 · 下次打开汇总一句', async () => {
+  test('A 页开着、B 会话在等：**不落到 A 页** · 未读落盘 · 下次打开汇总一句', async () => {
     const g = ground('u79-elsewhere')
     seed(g, ['s-a', 's-b'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
 
     try {
       // **A 页**——一个窗口开着，它「正看着」的是 s-a
@@ -803,9 +782,8 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
       )
 
       // ① **不广播**：A 那一页上一条都没有（改之前它会印进 A——判据是「有没有窗口连着」）
-      await waitFor('系统通知弹了一条', () => said.length === 1)
+      await waitFor('事项已落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.unread))
       // 逐字：桌面那一句是**用户看的话**（管理者认不得标题，故不报会话 id）
-      expect(said[0]).toBe('有一件工作正等着你——打开看是哪条')
       await Bun.sleep(150)
       expect(got.filter((one) => one.session === 's-b')).toEqual([])
 
@@ -821,7 +799,6 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
       expect(again.unread).toEqual(back.unread) // hello 和汇总不确认已读
 
       // 之后也不会再弹第二条（同一条事实只说一次）
-      expect(said.length).toBe(1)
       // 而**那件事还在**：那条运行这一行照旧写着「等你定夺」（它不动、没人自动答复）
       expect(rowOf(aPage, 's-b')?.action).toBe('等你定夺：bash')
 
@@ -833,11 +810,10 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
     }
   }, 30_000)
 
-  test('**一个窗口都没有**：系统通知一把（工单验收那一形）', async () => {
+  test('**一个窗口都没有**：事项一把（工单验收那一形）', async () => {
     const g = ground('u79-nowindow')
     seed(g, ['s-n'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
 
     try {
       // 先有一个窗口把它跑起来，然后它走了（此刻**一个窗口都没有**）
@@ -857,9 +833,8 @@ describe('U79 · 通知：「需要你」按会话路由', () => {
         's-n',
       )
 
-      await waitFor('系统通知弹了一条', () => said.length === 1)
+      await waitFor('事项已落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.unread))
       // 逐字：桌面那一句是**用户看的话**（管理者认不得标题，故不报会话 id）
-      expect(said[0]).toBe('有一件工作正等着你——打开看是哪条')
 
       const back = await open(g, b.manager)
       expect(back.unread.map((one) => one.kind)).toEqual(['needs-you'])
@@ -880,11 +855,10 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
    * ⚠️ **「没人看着」必须拿「另一个窗口把它跑起来、随后那个窗口走了」来造**：
    * 本窗开着而看着别的一条会话，正是旧判据（`clients.size > 0`）会误判成「有人看」的那一形。
    */
-  test('A 页开着、B 会话出错：**不落到 A 那一页** · 系统通知弹 · 未读落盘 · 下次打开汇总一句', async () => {
+  test('A 页开着、B 会话出错：**不落到 A 那一页** · 未读落盘 · 下次打开汇总一句', async () => {
     const g = ground('u86-elsewhere')
     seed(g, ['s-a', 's-b'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
 
     try {
       // **A 页**——一个窗口开着，它「正看着」的是 s-a
@@ -914,9 +888,8 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       fakeB.emit('turn.end', { reason: 'error' }, 's-b')
 
       // ① **不广播**：A 那一页（那个窗口）上一条都没有（改之前它会印进 A）
-      await waitFor('系统通知弹了一条', () => said.length === 1)
+      await waitFor('事项已落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.unread))
       // 逐字：桌面那一句是**用户看的话**（管理者认不得标题，故不报会话 id）
-      expect(said[0]).toBe('有一件工作出错了——打开看是哪条')
       await Bun.sleep(150)
       expect(got.filter((one) => one.session === 's-b')).toEqual([])
 
@@ -934,7 +907,6 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       expect(again.unread).toEqual(back.unread) // hello 和汇总不确认已读
 
       // 之后也不会再弹第二条（同一条事实只说一次）
-      expect(said.length).toBe(1)
 
       aPage.close()
       back.close()
@@ -951,11 +923,10 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
    * 病是**还有一档偷偷按旧尺子**：下面两张小表一正一反，**逐类写死**——
    * 谁把某一档退回「有没有窗口连着」，当场红。
    */
-  test('三类同一把尺子：绑定终端收事项，无连接时才发系统通知，两者均保留未读', async () => {
+  test('三类同一把尺子：绑定终端收事项，无连接时才发事项，两者均保留未读', async () => {
     const g = ground('u86-same-ruler')
     seed(g, ['s-w', 's-n'])
-    const said: string[] = []
-    const b = await bench(g, { notifySystem: (text: string) => said.push(text) })
+    const b = await bench(g)
 
     try {
       // 绑定终端接收三类事项，系统端口不重复提醒，收到事项不自动标读。
@@ -985,7 +956,6 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       expect(attentionFacts(g.dataDir, g.ws)).toHaveLength(3)
       expect(attentionFacts(g.dataDir, g.ws).every(item => item.delivered === false)).toBe(true)
       expect(got).toEqual(expect.arrayContaining([...attentionFacts(g.dataDir, g.ws)]))
-      expect(said).toEqual([])
       const back = await open(g, b.manager)
       expect(back.unread.map((one) => one.kind).sort()).toEqual(['done', 'failed', 'needs-you'])
       back.close()
@@ -1006,7 +976,7 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
 
       fakeN.emit('turn.start', {}, 's-n')
       const doneN = fakeN.emit('turn.end', { reason: 'settled' }, 's-n')
-      // 无连接时同一事实重放也不能重复系统通知或落账。
+      // 无连接时同一事实重放也不能重复事项或落账。
       fakeN.send({ t: 'ev', event: { id: doneN, session: 's-n', turn: null, at: Date.now(), kind: 'turn.end', data: { reason: 'settled' } } as KernelEvent })
       fakeN.emit(
         'tool.decision.request',
@@ -1015,14 +985,7 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
       )
       fakeN.emit('turn.start', {}, 's-n')
       fakeN.emit('turn.end', { reason: 'error' }, 's-n')
-      await waitFor('无连接会话三类系统通知已送出', () => said.length === 3)
-
-      // **逐类写死**（不排序、不概括：一改就得当场看见是哪一类变了）
-      expect(said).toEqual([
-        '有一件工作跑完了一轮——打开看是哪条',
-        '有一件工作正等着你——打开看是哪条',
-        '有一件工作出错了——打开看是哪条',
-      ])
+      await waitFor('无连接会话三类事项已落盘', () => attentionFacts(g.dataDir, g.ws).filter(one => one.session === 's-n').length === 3)
       const unread = await open(g, b.manager)
       expect(unread.unread.filter((one) => one.session === 's-n').map((one) => one.kind).sort()).toEqual(['done', 'failed', 'needs-you'])
       expect(unread.unread).toHaveLength(6)
@@ -1034,7 +997,7 @@ describe('U86 · 通知：三类使用相同事项规则', () => {
 })
 
 describe('U50 · 重启核对里的句柄身份', () => {
-  test('盘上那一代：号被复用了（启动时刻对不上）⇒ 已停止，不再钉在「待确认」', async () => {
+  test('旧进程字段不作为 Agent 身份；Engine 重启后中断旧代，不误杀无关进程', async () => {
     const g = ground('identity')
     seed(g, ['s-alive', 's-reused'])
     const paths = runPathsOf(g.magic, g.tmp)
@@ -1058,7 +1021,7 @@ describe('U50 · 重启核对里的句柄身份', () => {
               session: 's-alive',
               gen: 7,
               pid: sleeper.pid,
-              procStartedAt: startTimeOf(sleeper.pid),
+              procStartedAt: (await startTimeOf(sleeper.pid)),
               startedAt: 1_000,
               workspace: [g.ws],
               state: 'running',
@@ -1069,7 +1032,7 @@ describe('U50 · 重启核对里的句柄身份', () => {
               gen: 6,
               pid: sleeper.pid,
               // **那一刻与此刻差着一小时**：号还是那个号，人已经不是那个人了
-              procStartedAt: (startTimeOf(sleeper.pid) as number) - 3_600_000,
+              procStartedAt: ((await startTimeOf(sleeper.pid)) as number) - 3_600_000,
               startedAt: 900,
               workspace: [g.ws],
               state: 'running',
@@ -1084,8 +1047,10 @@ describe('U50 · 重启核对里的句柄身份', () => {
       const client = await open(g, b.manager)
 
       // 对得上的那一条：**未证实结束**（占着，不许重开）
-      await waitFor('待确认', () => rowOf(client, 's-alive')?.state === 'unknown')
-      expect(rowOf(client, 's-alive')?.holds).toBe(true)
+      await waitFor('旧代中断', () => rowOf(client, 's-alive')?.state === 'stopped')
+      expect(rowOf(client, 's-alive')?.holds).toBe(false)
+      expect(sleeper.exitCode).toBeNull()
+      expect(() => process.kill(sleeper.pid, 0)).not.toThrow()
 
       // 对不上的那一条：**已停止**（U49 如实记的那条限度就收在这里）
       expect(rowOf(client, 's-reused')?.state).toBe('stopped')
@@ -1095,110 +1060,9 @@ describe('U50 · 重启核对里的句柄身份', () => {
       await b.dispose()
     } finally {
       sleeper.kill()
-      await waitFor('那个进程真没了', () => startTimeOf(sleeper.pid as number) === undefined, 5_000).catch(
+      await waitFor('那个进程真没了', async () => (await startTimeOf(sleeper.pid as number)) === undefined, 5_000).catch(
         () => undefined,
       )
-    }
-  }, 30_000)
-})
-
-/**
- * **U98 · 缺省不发**——「接一个真通知器」从此是**显式动作**。
- *
- * 由头（用户 2026-09-26 报）：测试与真跑都会往他桌上推系统通知，而那些通知**点不开**
- * ——一点「显示」进的是 Script Editor。根子在两处：那条路**借的是别人的身份**（归属算在
- * 那个脚本编辑器头上），而管理者**缺省就是「真发」**（子进程没有注入点，一律落到缺省）。
- *
- * 本单把缺省换成 `silentNotifier`（**一个字都不发**）并删掉那份实现；端口照旧留着。
- * 故这一组量的是**缺省那一格**：不接通知器的管理者，那一跳**零调用**。
- */
-describe('U98 · 缺省不发：不接通知器的管理者，那一跳零调用', () => {
-  /**
-   * 判据：**不带 `notifySystem` 起的管理者 ⇒ 通知端口零调用**。
-   *
-   * 缺省那个实现什么都不做，故「零调用」没法从返回值上看——用**镜子**量：**真发那一族**
-   * 不管换成谁，都得**起一个子进程**把那一句话当参数递出去（本机这一路全在起进程上，
-   * 旧那一份也是）。镜子里凡 argv 带着那句通知话术的都记一笔 ⇒ 收尾断言**一笔都没有**。
-   *
-   * ⚠️ **反向验证**：把缺省接回一个**会真发**的实现（`?? 起进程发的那个`），这条当场红
-   * （镜子里立刻多一笔）。**接一个记账用的假**那一形在真进程那一趟里量（`u98-evidence.ts`
-   * 的见证文件）——那一趟的骰子长在**子进程**上，进程内的镜子够不着。
-   *
-   * ⚠️ **镜子量得到什么、量不到什么**（如实说）：它咬得住「起进程发」那一族——本机通知
-   * 那件事**只能**那么办，故这就是那一族的分界；它咬不住「在进程里记个账、什么都没做」
-   * 的那种假，而**那一种本来也不打扰用户**，不在本单要防的那一形里。
-   */
-  test('不带 notifySystem：未读照落 · 汇总照念 · 而镜子里一句都没递出去', async () => {
-    const g = ground('silent')
-    seed(g, ['s-n'])
-
-    /**
-     * **镜子**——记下每一次起进程的 argv，**只记，不改**（原样转发给真的那一个）。
-     *
-     * ⚠️ **两支都要挂**：起进程有同步异步两条（`ps` 那种探测走的是同步那一支），
-     * 只挂一支的话「没看见」可能只是没照着这条路走——**镜子的空白得是真的空白**。
-     */
-    const spawned: string[][] = []
-    const seen = (cmd: unknown): void => {
-      spawned.push(Array.isArray(cmd) ? cmd.map(String) : [`（对象形）${JSON.stringify(cmd)}`])
-    }
-    const real = Bun.spawn
-    const realSync = Bun.spawnSync
-    Bun.spawn = ((...args: unknown[]) => {
-      seen(args[0])
-      return (real as unknown as (...rest: unknown[]) => unknown)(...args)
-    }) as typeof Bun.spawn
-    Bun.spawnSync = ((...args: unknown[]) => {
-      seen(args[0])
-      return (realSync as unknown as (...rest: unknown[]) => unknown)(...args)
-    }) as typeof Bun.spawnSync
-
-    /** 那一句话术——**凡是把这一句递出去的进程，都算「发过了」**（三类通知都带它）。 */
-    const deliverable = (argv: readonly string[]): boolean => argv.some((one) => one.includes('打开看是哪条'))
-
-    // **不传 `notifySystem`**——这一条量的正是缺省那一格
-    let b: Bench | undefined
-    try {
-      b = await bench(g)
-
-      // **先有一个窗口**把这条会话跑起来，然后它走了（此刻没人看着它）
-      const first = await open(g, b.manager)
-      first.send({ type: 'session.open', session: 's-n' })
-      first.send({ type: 'input.submit', text: '受控执行者测试输入' })
-      await waitFor('发车', () => b?.requests.length === 1)
-      const fake = await b.attach(0)
-      fake.ready('s-n')
-      await waitFor('开张', () => rowOf(first, 's-n') !== undefined)
-      first.close()
-      await Bun.sleep(80)
-
-      // 跑完那一轮——**没有任何窗口在场**
-      fake.emit('turn.start', {}, 's-n')
-      fake.emit('turn.end', { reason: 'settled' }, 's-n')
-
-      // ① **那一跳照走**：未读落盘（这一半 U98 一字未动）——没这一条，下面的「零」不算数
-      await waitFor('未读落盘', () => attentionFacts(g.dataDir, g.ws).some((one) => one.session === 's-n' && one.unread))
-
-      // ② **下一次打开那一句汇总一字未变**
-      const back = await open(g, b.manager)
-      expect(back.unread.map((one) => one.session)).toEqual(['s-n'])
-      expect(unreadSummaryOf(back.unread)).toBe('你不在的时候：1 项跑完 —— /resume 看是哪几条')
-      back.close()
-
-      // ③ **而通知端口零调用**：镜子里没有任何一次起进程带着那句通知话术
-      const delivered = spawned.filter(deliverable)
-      expect(delivered).toEqual([])
-
-      // **尺子自校**——同一条话术手工递一次，镜子必须抓得住它：抓不住的话，上面那个
-      // 「空」只是「没量着」，不是「没发过」（这正是本单要避免的那种自证）。
-      // ⚠️ 镜子认的是**那一句话术**（三类通知都带的那半句），不是哪个程序名——故这一下
-      // 用什么命令递都行，不必也不能写出那个真通知器的名字（那名字全仓已无一处）
-      seen(['某个真通知器', '--say', '跑完了一轮——打开看是哪条'])
-      expect(spawned.filter(deliverable).length).toBe(1)
-    } finally {
-      Bun.spawn = real
-      Bun.spawnSync = realSync
-      await b?.dispose()
     }
   }, 30_000)
 })

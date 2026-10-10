@@ -135,6 +135,7 @@ function makeInstance(session: SessionId): FakeInstance {
       submit: (input) => {
         calls.push(`submit:${input.text}`)
       },
+      shutdown: async () => {},
       interrupt: () => {
         calls.push('interrupt')
       },

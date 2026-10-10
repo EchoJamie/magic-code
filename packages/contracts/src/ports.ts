@@ -608,10 +608,7 @@ export type RulesLoad = {
  *   的一层；
  * - **谁来源、允许读哪些**归装配：用户显式配置的补充来源随构造入参进实现。
  *
- * **同步**——读的是一棵小文件树（目录规约 ＋ 规则文档），量与配置加载（`loadFileSync`）、
- * 工作区根注册（`realpathSync`）同类；同步换来的是装配期就能给读数与诊断，不必为此把
- * 提示词装配整条链改成异步。**限度如实记**：它在模型调用与工具预查两处各跑一次，
- * 故实现侧必须有**上限**兜底（超限报 `problems`，不静默截）。
+ * 文件读取异步完成，按文件检查取消；超限报 `problems`，不静默截断。
  *
  * **只读**——本端口不写盘、不改任何东西；来源是**只读材料**，与「工作区执行范围」是
  * 两份互不相干的东西（能从这儿读到，不等于能对它执行工具）。
@@ -629,7 +626,7 @@ export interface ProjectRules {
    * （`cd src && ./build.sh` 就是现成的反例）。故 `exec` 一类没有路径参数的调用，其范围
    * 按**执行 cwd**（＝工作区默认根）算——那几条根一级的规约在会话开局就已经送达了。
    */
-  load(targets: readonly string[]): RulesLoad
+  load(targets: readonly string[], signal?: AbortSignal): Promise<RulesLoad>
 }
 
 // —— 技能（U33）——
@@ -793,10 +790,7 @@ export type SkillRead =
  *   读取面只有两处（**已发现身份的**技能目录，与它**来源内**的相对引用）。
  *   一个越出技能目录的引用（`../..`、绝对路径）不是「读不到」，是**不许读**。
  *
- * ## 同步
- *
- * 理由同 `ProjectRules`：读的是小文件树，且发现面在**装配系统提示词的同一处**要结果
- * （那条链是同步的），同步换来的是不必把提示词装配整条改成异步。
+ * 文件读取异步完成，取消在继续扫描下一项前生效。
  */
 export interface Skills {
   /**
@@ -804,7 +798,7 @@ export interface Skills {
    *
    * 每次调用现扫：目录名与 `SKILL.md` 的 front-matter 就是全部代价，量级同配置加载。
    */
-  discover(): SkillCatalog
+  discover(signal?: AbortSignal): Promise<SkillCatalog>
 
   /**
    * 取**主文**（`SKILL.md` 正文）——按身份（名称 ＋ 真路径）归位。
@@ -813,7 +807,7 @@ export interface Skills {
    * 而「不能静默选错技能」要求给的是**明确的身份**。找不到那一对（改名 / 删除 /
    * 来源变了）＝ `ok: false`，**不退回同名项**。
    */
-  readMain(name: string, path: string): SkillRead
+  readMain(name: string, path: string, signal?: AbortSignal): Promise<SkillRead>
 
   /**
    * 取**来源内的引用**（`references/x.md`、`REFERENCE.md`…）——相对技能目录。
@@ -821,7 +815,7 @@ export interface Skills {
    * `relative` 必须是**相对路径且落在技能目录内**：绝对路径、`..` 越出、经软链接绕出去，
    * 一律拒绝（那是「越出技能来源」，仍经各自边界——不因为它在技能里就放行）。
    */
-  readReference(name: string, path: string, relative: string): SkillRead
+  readReference(name: string, path: string, relative: string, signal?: AbortSignal): Promise<SkillRead>
 }
 
 // —— 材料（文件 / 目录引用 · U36）——
@@ -1845,6 +1839,8 @@ export type CommandRoutes = {
  * 控制传输 · **外壳侧**一端——首站同进程直连；跨进程（第二站）/ 跨设备（第三站）接同一接口。
  */
 export type ControlTransport = {
+  /** 由当前入口直接完成、无需运行连接的配置动作。 */
+  readonly offlineCommands?: readonly Command['type'][]
   send(command: Command): void
   /** 订阅事件；返回**退订**。 */
   subscribe(listener: (event: KernelEvent) => void): () => void

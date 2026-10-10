@@ -68,14 +68,6 @@ import {
 export const DATABASE_FILE = 'records.db'
 
 /**
- * 写撞上时等多久（毫秒）——**有界**（见 `PRAGMA busy_timeout` 那一段）。
- *
- * 取 5 秒的由头：跨执行者的相撞窗口是**微秒级**的（一条语句那么长），5 秒是它的六个数量级
- * ——真实相撞都在头几毫秒里让开；真等到 5 秒，那是对面卡住或死了，那时**抛**比**等**正确。
- */
-const BUSY_TIMEOUT_MS = 5_000
-
-/**
  * 分页读的块大小——**keyset 分页**（按 id 往后挪），不用活游标：
  * `bun:sqlite` 的 `.iterate()` 在迭代期间独占连接，而「读日志」与「写日志」
  * 在同一个连接上交替（循环边读边写）——块读每块一条语句、取完即散，没有这个互斥。
@@ -247,7 +239,9 @@ export type RecordsStore = {
    * 两处都指向 `runRecoveryScan` 一处实现——形态漂不了。
    */
   recoveryScan(session: SessionId): Promise<RecoveryScan>
-  /** 关连接（blob 无需收尾）。 */
+  /** 共享同一连接与编号空间；视图释放不关闭 Engine 的连接。 */
+  forWorkspace(workspace: readonly string[]): RecordsStore
+  /** 仅连接所有者关闭数据库。 */
   close(): void
   /** 落点（验收查询脚本 / 装配期日志用）。 */
   readonly paths: { readonly database: string; readonly blobs: string }
@@ -262,28 +256,27 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
   const databasePath = join(dataDir, DATABASE_FILE)
   const db = new Database(databasePath, { create: true })
-  // **等一会儿，别当场报错**（U47）——**必须是第一条**：多执行者共用一份库之后，
-  // 开库这一跳自己就是一次写（切 journal 模式 / 建表 / 写 `user_version`），SQLite 默认
-  // 立刻回 `SQLITE_BUSY`，八个执行者同时开库会有七个连门都进不来。留一个上界，到点仍
-  // 拿不到才抛——**有界等待**，不是无限等。单进程下没有相撞，故这一条不改变现有行为。
-  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
-  // WAL ＋ NORMAL：读者不挡写者（循环边写边读）；应用崩溃不丢已提交（「崩溃 / 重启后的重建依据」）。
-  enableWal(db)
-  db.exec('PRAGMA synchronous = NORMAL')
-  initSchema(db, databasePath)
-
-  initInputSchema(db)
-  initCollaborationSchema(db)
+  try {
+    db.exec('PRAGMA busy_timeout = 0')
+    db.exec('PRAGMA journal_mode = WAL')
+    db.exec('PRAGMA synchronous = NORMAL')
+    initSchema(db, databasePath)
+    initInputSchema(db)
+    initCollaborationSchema(db)
+  } catch (error) { db.close(); throw error }
   const ids = createIdSpace(db)
-  const collaboration = createCollaborationRecords(db, options.workspace, ids)
   const blobs = createBlobStore(blobsDir)
   const attention = createAttentionStore(db)
 
+  return view(options.workspace, true)
+
+  function view(workspace: readonly string[], owner = false): RecordsStore {
+    const collaboration = createCollaborationRecords(db, workspace, ids)
   // —— 语句（`query` 走缓存；参数一律具名，免得列序漂移悄悄错位）——
   //
   // 首写即建会话（D5：会话在首条消息时才建立）——**工作区就在这一句里锚下**，此后
   // `DO NOTHING`：换目录再开同一会话，那一次写入碰不到这一列（归属在建立时定死）。
-  const workspaceColumn = JSON.stringify(options.workspace)
+  const workspaceColumn = JSON.stringify(workspace)
   const ensureSession = db.query<never, [string, number, string]>(
     `INSERT INTO ${SESSIONS_TABLE} (id, at, ${SESSION_WORKSPACE_COLUMN}) VALUES (?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
@@ -384,6 +377,7 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
       const last = rows.at(-1)
       if (last === undefined || rows.length < READ_CHUNK) return
       after = last.id
+      await new Promise<void>(resolve => setImmediate(resolve))
     }
   }
 
@@ -524,9 +518,11 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     appendEvent: (event) => appendEvent(event.session, event),
     recoveryScan: runRecoveryScan,
 
+    forWorkspace: workspace => view(workspace),
     close(): void {
-      db.close()
+      if (owner) db.close()
     },
+  }
   }
 }
 
@@ -549,32 +545,6 @@ function assertPlainDataDir(dataDir: string): string {
     )
   }
   return dataDir
-}
-
-/**
- * **切到 WAL**——带一次**有界重试**（U47）。
- *
- * ⚠️ 这一跳不吃 `busy_timeout`（实测：八个执行者同时开一份**新库**时，
- * `PRAGMA journal_mode = WAL` 照旧当场抛 `SQLITE_BUSY`，等待时间形同虚设）——切日志模式
- * 要的是**独占**，而 SQLite 在拿不到独占时直接回错，不走那条忙等回调。它偏偏又是**开库的
- * 第一步**：这一步过不去，第二个执行者连门都进不来。
- *
- * 故自己重试：已经是 WAL 的（重试的第二趟）这一句当场就成，不白折腾；到点仍拿不到就抛
- * ——**有界**，不无限等。单进程下第一次就成，这段一行都不多走。
- */
-function enableWal(db: Database): void {
-  const deadline = Date.now() + BUSY_TIMEOUT_MS
-  for (;;) {
-    try {
-      db.exec('PRAGMA journal_mode = WAL')
-      return
-    } catch (error) {
-      // `bun:sqlite` 的错误带 SQLite 的代号（非忙的错当场抛，不吞）
-      if ((error as { code?: string }).code !== 'SQLITE_BUSY') throw error
-      if (Date.now() >= deadline) throw error
-      Bun.sleepSync(2)
-    }
-  }
 }
 
 /** 会话 id 是事件分束的键——空串不是会话。 */

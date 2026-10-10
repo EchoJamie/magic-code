@@ -23,9 +23,9 @@ export function parseDiagnosticsArgs(argv: readonly string[]): DiagnosticsChange
     ...(debugMode === undefined ? {} : { debugMode }), ...(logLevel === undefined ? {} : { logLevel }),
   }
 }
-export function saveDiagnostics(magic: MagicHome, change: DiagnosticsChange, stamp: string | null): Diagnostics {
+export async function saveDiagnostics(magic: MagicHome, change: DiagnosticsChange, stamp: string | null): Promise<Diagnostics> {
   const path = `${magic.base}/config.json`
-  const outcome = editConfigFile({ path, expectedStamp: stamp, validate: raw => { parseConfig(raw, path, magic) }, update: raw => ({ ok: true, raw: { ...raw, ...(change.debugMode === undefined ? {} : { debugMode: change.debugMode }), ...(change.logLevel === undefined ? {} : { logLevel: change.logLevel }) } }) })
+  const outcome = await editConfigFile({ path, expectedStamp: stamp, validate: raw => { parseConfig(raw, path, magic) }, update: raw => ({ ok: true, raw: { ...raw, ...(change.debugMode === undefined ? {} : { debugMode: change.debugMode }), ...(change.logLevel === undefined ? {} : { logLevel: change.logLevel }) } }) })
   if (!outcome.ok) throw new Error(outcome.reason)
   return diagnosticsOf(loadConfig({ magic }).config)
 }

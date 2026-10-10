@@ -34,7 +34,7 @@ export interface PermissionGate extends PermissionGatePort {
    * 第三参是**结构超集**（契约端口两参照常工作，同 U07 之例）：`options.remember` ＝
    * 外壳的第三个按钮**「总是允许」**——**这个工作区**此后**同类**不再问（见 `ResolveOptions`）。
    */
-  resolve(requestId: DecisionId, decision: Decision, options?: ResolveOptions): void
+  resolve(requestId: DecisionId, decision: Decision, options?: ResolveOptions): Promise<void>
   /** **放行区那一笔账**（`B10` 口径的原料）——本实例走过的裁决分布，见 `GateTally`。 */
   tally(): GateTally
   /**
@@ -107,7 +107,8 @@ export type PermissionGateOptions = {
    * 由装配从配置文件读来、经 `parseRules` 校验后注入（本域不碰文件系统，也不写回）。
    * **缺省＝无规则**：那便是阶段 1 的姿态——每个调用都问。
    */
-  readonly rules?: readonly PermissionRule[] | undefined
+  readonly rules?: readonly PermissionRule[] | (() => readonly PermissionRule[]) | undefined
+  readonly refreshGrants?: (() => void) | undefined
   /**
    * **授权账本**——「总是允许」点出来的那一类（**工作区级** · U22 迁移的落点）。
    *
@@ -147,6 +148,7 @@ type Pending = {
    */
   readonly rememberable: boolean
   readonly settle: (decision: Decision) => void
+  readonly signal: AbortSignal | undefined
   readonly cleanup: () => void
 }
 
@@ -228,7 +230,8 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       }
       // **优先级链的次序就在这两行**：手写规则在前、点出来的授权在后
       //（项目规约那一格**留缝不实现**——它要在两者之间，见文件头注那条链）
-      const configured = matchRule(rules, face, ctx)
+      options.refreshGrants?.()
+      const configured = matchRule(typeof rules === 'function' ? rules() : rules, face, ctx)
       const granted = configured === undefined ? matchRule(grants.rules(), face, ctx) : undefined
       const hit = configured ?? granted
 
@@ -283,6 +286,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
           grant: grantOf(face),
           // 外部操作不给「总是允许」——连记都不记（见 `Pending.rememberable`）
           rememberable: external !== true && landings.every((landing) => landing.inside),
+          signal,
           cleanup: () => signal?.removeEventListener('abort', cancel),
           settle,
         })
@@ -295,7 +299,7 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       return answered
     },
 
-    resolve(requestId, decision, options) {
+    async resolve(requestId, decision, options) {
       const question = pending.get(requestId)
       // 陌生 id（迟到 / 重复 / 伪造）＝忽略——不抛、不猜、不改写
       if (question === undefined) return
@@ -307,8 +311,11 @@ export function createPermissionGate(options: PermissionGateOptions): Permission
       // **外部操作不记**（`rememberable`）——它的效果不由本机裁定，一条「同类自动放行」
       // 记不下那个判断；这一步与外壳给不给 `a` 无关，是记账那一处自己的口径。
       if (question.rememberable && options?.remember === true && decision === 'approve') {
-        grants.remember(question.grant)
+        try { await grants.remember(question.grant) }
+        catch (error) { question.settle('reject'); throw error }
       }
+
+      if (question.signal?.aborted) decision = 'reject'
 
       // 裁决只走事件、不入条目（技术方案 · 领域划分 · 权限域）；耗时＝本域开始处理 → 答复（度量埋点）
       sink.emit(

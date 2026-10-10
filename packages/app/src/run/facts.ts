@@ -34,7 +34,6 @@
  */
 
 import type { KernelEvent, OwnedProcess, RunRow, RunState, TurnEndReason } from '@magic/contracts'
-import { PROCESS_START_TOLERANCE_MS } from '@magic/execution'
 
 /**
  * 这一代是怎么收的。
@@ -66,7 +65,6 @@ export type RunRecord = {
   /** 工作区整组根（执行者报的；还没报＝空数组）。 */
   workspace: readonly string[]
   /** 进程号——**仅作诊断与重启核对**，一个界面都不印它（设计：「不把 PID 常驻」）。 */
-  pid: number | undefined
   /**
    * **那个进程自己**是什么时候起的（`ps` 读出来，毫秒）——身份核对的那一位（U50）。
    *
@@ -76,7 +74,6 @@ export type RunRecord = {
    *
    * `undefined` ＝ 读不到（`ps` 不可用一类）——那一档退回 U49 的保守：按「还在」算。
    */
-  procStartedAt: number | undefined
   /**
    * **这一代手上握着的自有进程组**（U50）——由执行者报来（`wire.ts` 的 `owned`）。
    *
@@ -152,9 +149,6 @@ export function newRunRecord(input: {
   readonly session: string | null
   readonly startedAt: number
   readonly explicit: boolean
-  readonly pid: number | undefined
-  /** 那个进程自己的启动时刻（`ps` 读的）——读不到就缺席（见 `RunRecord.procStartedAt`）。 */
-  readonly procStartedAt?: number | undefined
 }): RunRecord {
   return {
     gen: input.gen,
@@ -163,8 +157,6 @@ export function newRunRecord(input: {
     startedAt: input.startedAt,
     explicit: input.explicit,
     workspace: [],
-    pid: input.pid,
-    procStartedAt: input.procStartedAt,
     owned: [],
     reclaimNote: undefined,
     reclaimPending: false,
@@ -491,16 +483,11 @@ export function backgroundOf(record: RunRecord): number {
  * 一条会话留一条：这一代结束之后它留作「最近一次运行」——列表要的正是「当前/最近状态」。
  */
 export type StoredRun = {
-  readonly session: string
+  readonly session: string | null
   readonly gen: number
   /** 该代执行身份，关联协作调用；与进程记录一起保留供重启核对。 */
   readonly executionId?: string
-  readonly pid?: number
-  /**
-   * 那个进程自己的启动时刻（U50）——重启核对拿它与 `pid` 一起判「还是不是当初那一代」。
-   * 缺省＝当年读不到（`ps` 不可用）——那一档退回 U49 的保守（按「还在」算）。
-   */
-  readonly procStartedAt?: number
+  /** Agent 运行建立的时刻；工具进程身份保存在 owned。 */
   readonly startedAt: number
   readonly workspace: readonly string[]
   readonly state: RunState
@@ -557,53 +544,10 @@ export function alive(pid: number): boolean {
   }
 }
 
-/**
- * **那个号上站着的还是当初那一个吗**（U50）——`pid` 与它的启动时刻两位合判。
- *
- * 三条：
- * - **号都没了** ⇒ 不是（最干脆的一档）；
- * - **时刻对得上** ⇒ 是；
- * - **时刻读不到**（当年没记下，或此刻 `ps` 不给）⇒ **算「是」**——保守那一支是「按还在
- *   算」（拿不准的宁可占着这条会话，也不放一个新的出来跟它抢同一条）。
- *
- * ⚠️ 与 `@magic/execution` 的 `sameProcess` **方向相反**：那一个用在「要不要发信号」上，
- * 读不到一律**不杀**；这一个用在「它还在不在」上，读不到一律**按在算**。两条的方向都是
- * 「拿不准的别动手」，落点不同（一个是不杀别人，一个是不放行重开）。
- */
-export function holdsPid(
-  record: {
-    readonly pid?: number | undefined
-    readonly procStartedAt?: number | undefined
-  },
-  startedAtOf: ((pid: number) => number | undefined) | undefined,
-): boolean {
-  if (record.pid === undefined || !alive(record.pid)) return false
-  if (record.procStartedAt === undefined || startedAtOf === undefined) return true
-
-  const seen = startedAtOf(record.pid)
-  if (seen === undefined) return true
-  return Math.abs(record.procStartedAt - seen) <= PROCESS_START_TOLERANCE_MS
-}
-
-/**
- * **重启核对**——盘上那一份说的事，今天还成不成立。
- *
- * 两条判据，各对一种实情：
- * - **进程还在** ⇒ 上一代**尚未证实结束**：控制连接已经随管理者一起没了，而它自己还在
- *   （执行者的生命连接那条路是自停，但**那是它的动作，不是我们的证明**）⇒ 状态待确认，
- *   且**占着这条会话**；
- * - **进程没了** ⇒ 它与自有资源已经核销，而且是从**上一次管理者的意外退出**里没的
- *   ⇒ 已停止 · 异常退出。这不是猜：设计写着「管理者异常退出 ⇒ 执行者收到断开后自行停止」，
- *   而我们**没有它的收场回执**，故按异常记，不冒充正常收束。
- *
- * `state` 是读数，idle 也可能仍有活执行者。只有 `ended` 落下的 `why` / `kind`
- * 才确认当时已经退出；缺少结束事实就核对 PID 身份，不能提前核销或放行后继。
- */
+/** Engine 重启后旧 Agent 已中断；工具责任仍按 owned 核对，等待用户明确继续。 */
 export function reconcile(
   stored: StoredRun,
   now: number,
-  /** 读一个进程自己的启动时刻（`ps`）——缺省不读，见下。 */
-  startedAtOf?: ((pid: number) => number | undefined) | undefined,
 ): RunRecord {
   const record = newRunRecord({
     gen: stored.gen,
@@ -611,8 +555,6 @@ export function reconcile(
     session: stored.session,
     startedAt: stored.startedAt,
     explicit: false,
-    pid: stored.pid,
-    procStartedAt: stored.procStartedAt,
   })
   record.workspace = stored.workspace
   record.owned = stored.owned ?? []
@@ -635,19 +577,7 @@ export function reconcile(
     return record
   }
 
-  // 盘上那一条说的还不是「结束了」——那今天还成不成立，**由进程在不在说了算**
-  //
-  // ⚠️ **「在不在」是两问**（U50）：号还在，且**那个号上站着的还是当初那一个**
-  // （判据见 `holdsPid`）。只问前一半的话，一个复用了同一个号的无关进程会让这条会话永远
-  // 停在「状态待确认」——那正是 U49 如实记下的那条限度。
-  if (holdsPid(stored, startedAtOf)) {
-    record.stopping = stored.state === 'stopping'
-    record.state = runStateOf(record)
-    record.since = stored.since
-    return record
-  }
-
-  record.ended = { at: now, why: '上一次管理者退出之后它就没了', kind: 'crashed' }
+  record.ended = { at: now, why: 'Engine 中断，等待明确继续', kind: 'crashed' }
   record.state = 'stopped'
   record.since = stored.since
   return record
@@ -655,13 +585,10 @@ export function reconcile(
 
 /** 一条记录 → 落盘形（**未开张的执行者不落**——它还没有会话可挂）。 */
 export function storedRunOf(record: RunRecord): StoredRun | undefined {
-  if (record.session === null) return undefined
   return {
     session: record.session,
     gen: record.gen,
     ...(record.executionId === undefined ? {} : { executionId: record.executionId }),
-    ...(record.pid === undefined ? {} : { pid: record.pid }),
-    ...(record.procStartedAt === undefined ? {} : { procStartedAt: record.procStartedAt }),
     startedAt: record.startedAt,
     workspace: record.workspace,
     state: record.state,

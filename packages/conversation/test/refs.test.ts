@@ -44,9 +44,9 @@ const REVIEW: Skill = {
 function stubSkills(name = 'review'): Skills {
   const skill = { ...REVIEW, name }
   return {
-    discover: (): SkillCatalog => ({ skills: [skill], problems: [] }),
-    readMain: (): SkillRead => ({ ok: true, material: { skill, text: '逐条核对清单。' } }),
-    readReference: () => ({ ok: false, reason: '没用到' }),
+    discover: async (): Promise<SkillCatalog> => ({ skills: [skill], problems: [] }),
+    readMain: async (): Promise<SkillRead> => ({ ok: true, material: { skill, text: '逐条核对清单。' } }),
+    readReference: async () => ({ ok: false, reason: '没用到' }),
   }
 }
 
@@ -188,9 +188,9 @@ describe('U36 · 送达：按位置取齐', () => {
 
   test('技能取不到同一条出口（**不换同名项**）', async () => {
     const skills: Skills = {
-      discover: () => ({ skills: [], problems: [] }),
-      readMain: () => ({ ok: false, reason: '技能「review」在 /ws/.magic/skills/review 上不再成立' }),
-      readReference: () => ({ ok: false, reason: '没用到' }),
+      discover: async () => ({ skills: [], problems: [] }),
+      readMain: async () => ({ ok: false, reason: '技能「review」在 /ws/.magic/skills/review 上不再成立' }),
+      readReference: async () => ({ ok: false, reason: '没用到' }),
     }
 
     const loaded = await createRefDelivery({ skills }).load([skillRef(0)])

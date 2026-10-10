@@ -1,0 +1,38 @@
+diff --git a/lib/web/fetch/index.js b/lib/web/fetch/index.js
+index 8aa86ff60ee2833fcc1dbefa0dec665f88728cb3..756b9cca9879cedc44e0c458979db34359af15d4 100644
+--- a/lib/web/fetch/index.js
++++ b/lib/web/fetch/index.js
+@@ -359,7 +359,7 @@ function abortFetch (p, request, responseObject, error, controller /* undici-spe
+ 
+   // 5. If response’s body is not null and is readable, then error response’s
+   // body with error.
+-  if (response.body?.stream != null && isReadable(response.body.stream)) {
++  if (response.body?.stream != null) {
+     controller.error(error)
+   }
+ }
+@@ -2121,18 +2121,14 @@ async function httpNetworkFetch (
+       //    deserialize a serialized abort reason given fetchParams’s
+       //    controller’s serialized abort reason and an
+       //    implementation-defined realm.
+-      if (isReadable(stream)) {
+-        fetchParams.controller.controller.error(
+-          fetchParams.controller.serializedAbortReason
+-        )
+-      }
++      fetchParams.controller.controller.error(
++        fetchParams.controller.serializedAbortReason
++      )
+     } else {
+       // 3. Otherwise, if stream is readable, error stream with a TypeError.
+-      if (isReadable(stream)) {
+-        fetchParams.controller.controller.error(new TypeError('terminated', {
+-          cause: isErrorLike(reason) ? reason : undefined
+-        }))
+-      }
++      fetchParams.controller.controller.error(new TypeError('terminated', {
++        cause: isErrorLike(reason) ? reason : undefined
++      }))
+     }
+ 
+     // 4. If connection uses HTTP/2, then transmit an RST_STREAM frame.

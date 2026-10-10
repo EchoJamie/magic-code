@@ -245,7 +245,7 @@ export async function agentLoop(
   accepted?: (entry:RecordId)=>void|Promise<void>,
 ): Promise<InputOutcome> {
   if(signal.aborted)return 'aborted'
-  const prepared = await prepareInput(runtime, input, accepted)
+  const prepared = await prepareInput(runtime, input, accepted, signal)
   if (prepared === undefined) return 'rejected'
   const announce = createAnnouncer(runtime, prepared.skills)
 
@@ -266,7 +266,9 @@ export async function prepareInput(
   runtime: LoopRuntime,
   input: UserInput | undefined,
   accepted?: (entry: RecordId) => void|Promise<void>,
+  signal?: AbortSignal,
 ): Promise<{ refs: readonly InputRefEntry[]; skills: readonly UsedSkill[] } | undefined> {
+  signal?.throwIfAborted()
   const stored = input?.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
   if (input?.ref !== undefined && stored?.state !== 'pending') return undefined
   if (stored !== undefined) input = stored.input
@@ -284,7 +286,7 @@ export async function prepareInput(
   // （见函数头注）。旧形（`skills`，无位置）走另一条老路：材料统一前置、照旧落旧键。
   const refs = input?.refs ?? []
   const selected = input?.skills ?? []
-  const delivery = await loadRefs(runtime, refs)
+  const delivery = await loadRefs(runtime, refs, signal)
   if (!delivery.ok) {
     // 材料取不到＝这一份输入**没进会话**：配对一次 false（说得出是哪一份、为什么）
     refuse(runtime, input, delivery.reason)
@@ -307,13 +309,14 @@ export async function prepareInput(
         ? // **没接技能来源**（这次装配压根没装）不是「当作没有技能照跑」——
           // 那正是「丢掉技能后继续这条显式调用」，故与取不到同一条出口
           { ok: false as const, reason: '这次装配没有接技能来源——选定的技能取不了，所以这一条没跑' }
-        : runtime.skills.load(selected)
+        : (await runtime.skills.load(selected, signal))
 
   if (!legacy.ok) {
     refuse(runtime, input, legacy.reason)
     return undefined
   }
 
+  signal?.throwIfAborted()
   try {
     // 用户输入落账——**轮外**（信封 `turn` 为 `null`：输入先于轮）
     //
@@ -333,7 +336,7 @@ export async function prepareInput(
       if (entryId === undefined) {
         const latest = input.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)
         return latest?.state === 'pending' && latest.revision !== stored?.revision
-          ? prepareInput(runtime, latest.input, accepted) : undefined
+          ? prepareInput(runtime, latest.input, accepted, signal) : undefined
       }
       runtime.sink.emit(runtime.stamper.stamp('message.user', { entry: entryId }))
       if(input.ref!==undefined)runtime.sink.emit(runtime.stamper.stamp('input.pending',{inputs:runtime.records.inputs.list()}))
@@ -521,12 +524,12 @@ const RESPONSE_EVENTS: ReadonlySet<EventKind> = new Set<EventKind>([
  *
  * 拆成几个小函数只是为了让下面那行读得出来「谁先谁后」；三处都**不接线就原样交回**。
  */
-function withRules(runtime: LoopRuntime): string {
-  return runtime.rules?.promptFor(runtime.systemPrompt) ?? runtime.systemPrompt
+async function withRules(runtime: LoopRuntime, signal: AbortSignal): Promise<string> {
+  return (await runtime.rules?.promptFor(runtime.systemPrompt, signal)) ?? runtime.systemPrompt
 }
 
-function withSkills(runtime: LoopRuntime, base: string): string {
-  return runtime.skills?.promptFor(base) ?? base
+async function withSkills(runtime: LoopRuntime, base: string, signal: AbortSignal): Promise<string> {
+  return (await runtime.skills?.promptFor(base, signal)) ?? base
 }
 
 /**
@@ -628,13 +631,14 @@ function createAnnouncer(runtime: LoopRuntime, selected: readonly UsedSkill[]): 
 async function loadRefs(
   runtime: LoopRuntime,
   refs: readonly InputRef[],
+  signal?: AbortSignal,
 ): Promise<{ readonly ok: true; readonly refs: readonly InputRefEntry[] } | { readonly ok: false; readonly reason: string }> {
   if (refs.length === 0) return { ok: true, refs: [] }
   if (runtime.refs === undefined) {
     return { ok: false, reason: '这次装配没有接材料来源——交代里的引用取不了，所以这一条没跑' }
   }
 
-  return runtime.refs.load(refs)
+  return (await runtime.refs.load(refs, signal))
 }
 
 /**
@@ -752,7 +756,7 @@ async function runTurn(
         // 都现取现接：改过的、跑完的，下一趟就是新的。次序＝环境块 → 规约块 → 技能目录块
         // → 后台命令块（见 `prompt/skills.ts` / `prompt/background.ts`）；
         // 规约那一趟还顺带记账「这一趟送出去哪几版」（预查据它判「拦不拦」）
-        systemPrompt: await collaborationPrompt(withBackground(runtime, withSkills(runtime, withRules(runtime))), runtime.collaboration),
+        systemPrompt: await collaborationPrompt(withBackground(runtime, (await withSkills(runtime, (await withRules(runtime, signal)), signal))), runtime.collaboration),
         blobTextLimit: runtime.blobTextLimit,
         // 近段条数取压缩器那个数（没接压缩器＝按缺省认，与策略缺省同源）
         nearEntries: runtime.compact?.nearEntries ?? DEFAULT_NEAR_ENTRIES,
@@ -877,7 +881,7 @@ async function runTurn(
     //
     // 三选一（`PreflightResult`）：放行 / 需重审 / **材料超限、这批停在这儿**。
     // 后两种都**不执行**，但**回填的话不同**——超限那种要让模型去告诉用户，不是重提。
-    const check = runtime.rules?.preflight(calls) ?? { kind: 'pass' as const }
+    const check = (await runtime.rules?.preflight(calls, signal)) ?? { kind: 'pass' as const }
     const heldText =
       check.kind === 'review'
         ? needsReviewText(check.blocking)

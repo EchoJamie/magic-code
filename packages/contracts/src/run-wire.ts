@@ -9,7 +9,6 @@ import type {
   KernelEvent,
   McpConnectionState,
   ModelSwitchRequest,
-  OwnedProcess,
   RunNotice,
   RunRow,
   RunSnapshot,
@@ -44,7 +43,6 @@ export type ClientToManager =
       readonly version: string
       readonly source: string
       readonly openRequest?: string
-      readonly environment?: Readonly<Record<string, string>>
       readonly label?: string
       /**
        * **显式接续**那条会话（`magic resume <id>`，U25 的恢复入口）。
@@ -85,7 +83,7 @@ export type ClientToManager =
       readonly cwd: string
     }
   /** `gen` ＝ 这个窗口认的执行者代次（`null` ＝ 还没认过任何一代）。 */
-  | { readonly t: 'cmd'; readonly gen: number | null; readonly cmd: Command }
+  | { readonly t: 'cmd'; readonly gen: number | null; readonly cmd: Command; readonly environment?: Readonly<Record<string, string>> }
   /**
    * **停止某一条运行**（U50）——**止于管理者**，不转给执行者（它不是内核命令）。
    *
@@ -208,10 +206,7 @@ export type ExecutorToManager =
   | { readonly t: 'collaboration.changed' }
   | { readonly t: 'collaboration.configured'; readonly requestId: string; readonly result: { readonly ok: true } | { readonly ok: false; readonly reason: string } }
   | {
-      readonly t: 'hello'
-      readonly role: 'executor'
-      /** 管理者发车时给的令牌——认它是「我叫起来的那一个」。 */
-      readonly token: string
+      readonly t: 'assembled'
       /** **开工那条会话**（显式接续时就有）；`null` ＝ 还没开张（首条消息按下回车才建立，D5）。 */
       readonly session: string | null
       /** 工作区整组根（规范形 · 声明序）——登记里要它。 */
@@ -225,19 +220,6 @@ export type ExecutorToManager =
    */
   | { readonly t: 'ready' }
   | { readonly t: 'ev'; readonly event: KernelEvent }
-  | { readonly t: 'pong'; readonly seq: number }
-  /**
-   * **我手上握着哪几组自有进程**（U50）——「执行者崩溃或被杀 ⇒ 管理者收回**已登记**
-   * 自有进程组」那句里的**已登记**就是这一条（说出去了才算登记）。
-   *
-   * 三条口径与账一致（见契约 `ProcessLedger`）：**一组一笔**（不数进程树）· **带身份**
-   * （`startedAt`，号会被回收再分配）· **只报我们起的**（`exec` 的命令与 MCP 的 stdio
-   * 服务器；HTTP 连接与用户自己的服务从来不进这本账）。
-   *
-   * ⚠️ **它是「全量」不是「增量」**：账变了就报当下这一刻的全部——增量要配对，一条丢了
-   * 就永远差一笔；全量最坏是白报一次（管理者按最后一次覆盖）。
-   */
-  | { readonly t: 'owned'; readonly processes: readonly OwnedProcess[]; readonly background: number }
   /** **跑起来之后才开张**（D5 那条路）——补一条登记，管理者据以把它挂到会话名下。 */
   | { readonly t: 'bound'; readonly session: string }
   /**
@@ -276,7 +258,6 @@ export type ManagerToExecutor =
   | { readonly t: 'collaboration.configure'; readonly requestId: string; readonly model: AgentModelConfig }
   | { readonly t: 'collaboration.input'; readonly input: UserInput; readonly shared: boolean }
   | { readonly t: 'cmd'; readonly cmd: Command }
-  | { readonly t: 'ping'; readonly seq: number }
   /** **要一份接回快照**——管理者在把某个窗口挂到这一代上时发（见 `ManagerToClient` 的 `resumed`）。 */
   | { readonly t: 'snapshot'; readonly seq: number }
   | { readonly t: 'bye'; readonly why: string }

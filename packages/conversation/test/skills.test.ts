@@ -46,9 +46,9 @@ function stubSkills(
   catalog: SkillCatalog = { skills: [PDF], problems: [] },
 ): Skills {
   return {
-    discover: () => catalog,
-    readMain: read,
-    readReference: () => ({ ok: false, reason: '没用到' }),
+    discover: async () => catalog,
+    readMain: async (name, path) => read(name, path),
+    readReference: async () => ({ ok: false, reason: '没用到' }),
   }
 }
 
@@ -98,7 +98,7 @@ describe('U33 · 装配：材料随它那一条交代进上下文', () => {
 // ══ 送达 ═════════════════════════════════════════════════════════════
 
 describe('U33 · 送达：取主文', () => {
-  test('按**身份**取（名字 ＋ 来源路径两件都给来源口）', () => {
+  test('按**身份**取（名字 ＋ 来源路径两件都给来源口）', async () => {
     const asked: string[] = []
     const delivery = createSkillsDelivery(
       stubSkills((name, path) => {
@@ -107,7 +107,7 @@ describe('U33 · 送达：取主文', () => {
       }),
     )
 
-    const load = delivery.load([{ name: 'pdf', path: PDF.path }])
+    const load = (await delivery.load([{ name: 'pdf', path: PDF.path }]))
 
     expect(load).toEqual({
       ok: true,
@@ -116,22 +116,22 @@ describe('U33 · 送达：取主文', () => {
     expect(asked).toEqual([`pdf@${PDF.path}`])
   })
 
-  test('一条取不到——**整条失败**（不换同名项、不跳过它继续）', () => {
+  test('一条取不到——**整条失败**（不换同名项、不跳过它继续）', async () => {
     const delivery = createSkillsDelivery(
       stubSkills(() => ({ ok: false, reason: '来源 /ws/.magic/skills/pdf 上已经没有「pdf」了' })),
     )
 
-    const load = delivery.load([{ name: 'pdf', path: PDF.path }])
+    const load = (await delivery.load([{ name: 'pdf', path: PDF.path }]))
 
     expect(load.ok).toBe(false)
     if (load.ok) return
     expect(load.reason).toContain('pdf')
   })
 
-  test('目录（仅元数据）接在系统提示词末尾；一个技能都没有就不接', () => {
+  test('目录（仅元数据）接在系统提示词末尾；一个技能都没有就不接', async () => {
     const delivery = createSkillsDelivery(stubSkills())
 
-    const withCatalog = delivery.promptFor(SYSTEM)
+    const withCatalog = (await delivery.promptFor(SYSTEM))
     expect(withCatalog.startsWith(SYSTEM)).toBe(true)
     expect(withCatalog).toContain('## 可用技能')
     expect(withCatalog).toContain('`pdf`')
@@ -140,7 +140,7 @@ describe('U33 · 送达：取主文', () => {
     expect(withCatalog).not.toContain('先数页数')
 
     const empty = createSkillsDelivery(stubSkills(undefined, { skills: [], problems: [] }))
-    expect(empty.promptFor(SYSTEM)).toBe(SYSTEM)
+    expect((await empty.promptFor(SYSTEM))).toBe(SYSTEM)
   })
 })
 

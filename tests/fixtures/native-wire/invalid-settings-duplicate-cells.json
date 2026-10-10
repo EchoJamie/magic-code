@@ -1,10 +1,8 @@
 {
-  "family": "NativeRequest",
+  "family": "SettingsRequest",
   "valid": false,
   "message": {
-    "t": "native.settings.apply",
     "request": "settings-one",
-    "serviceInstance": "service-one",
     "stamp": null,
     "action": {
       "type": "prefs.set",
@@ -15,6 +13,8 @@
         ]
       }
     },
-    "base": "/tmp/synthetic"
+    "base": "/tmp/synthetic",
+    "configPath": "/tmp/synthetic/config.json",
+    "home": "/tmp/synthetic"
   }
 }

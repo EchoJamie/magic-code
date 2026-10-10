@@ -47,6 +47,7 @@ export type ControlHubFace = {
   attach(transport: KernelTransport): void
   /** 广播入口（契约 `EventSink`）——装配扇出把事件送到此处，再推给传输的对端。 */
   emit(event: KernelEvent): void
+  shutdown(): Promise<void>
 }
 
 /**
@@ -55,12 +56,15 @@ export type ControlHubFace = {
  * 装配顺序（装配视图 5）：**先 `bind` 路由、再 `attach` 传输、最后才放开输入**——
  * 反了就是用户输入无声丢失（丢弃语义不排队，见文件头注）。
  */
-export function createControlHub(): ControlHubFace {
+export function createControlHub(onError?: (error: unknown) => void): ControlHubFace {
+  const flights = new Set<Promise<void>>()
+  const failures: unknown[] = []
+  let closed = false
   let routes: ControlRoutes | undefined
   let link: { readonly transport: KernelTransport; readonly off: Unsubscribe } | undefined
 
   /** 命令 → 路由——未装路由＝丢弃（与无订阅方同一条纪律：不排队、不假装收下）。 */
-  const route = (command: Command): void => {
+  const route = (command: Command): unknown => {
     const target = routes
     if (target === undefined) return
 
@@ -70,123 +74,99 @@ export function createControlHub(): ControlHubFace {
       case 'collaboration.stop':
       case 'collaboration.resume':
       case 'collaboration.configure':
-        target.onCollaboration?.(command)
-        return
+        return target.onCollaboration?.(command)
       case 'input.manage':
-        target.onInputManage?.(command)
-        return
+        return target.onInputManage?.(command)
       case 'input.submit':
-        target.onInput(command)
-        return
+        return target.onInput(command)
       case 'turn.interrupt':
-        target.onInterrupt()
-        return
+        return target.onInterrupt()
       case 'decision.answer':
         // 配对键＝请求事件 id，原样交给权限域——此处不解释、不改写。
         // `remember`（「总是允许」）也**原样转手**：它是答复上的位，翻译归权限域
         // （控制域翻一道＝两处各有一套语义，迟早分叉）。
-        target.onDecision(command.id, command.decision, { remember: command.remember })
-        return
+        return target.onDecision(command.id, command.decision, { remember: command.remember })
       case 'model.switch':
         // 换模型——原样转手给装配（它握着注册表）。本域**不知道换得成换不成**：
         // 「切不动就不动」的判别式处置归装配，路由只负责把话带到（同 `onDecision` 的姿势）。
-        { const { type, ...request } = command; target.onModelSwitch(request) }
-        return
+        { const { type, ...request } = command; return target.onModelSwitch(request) }
       case 'session.list':
       case 'session.new':
       case 'session.open':
       case 'session.rename':
         // 会话四支——原样转手给**对话域**（它才是会话的持有者）。
         // 本域不认识会话、也不知道开得成开不成，与 `model.switch` 同一姿势。
-        target.onSession(command)
-        return
+        return target.onSession(command)
       case 'history.read':
         // 读侧命令——**原样转手**给对话域（会话与条目归它）。答复走事件（`session.history`）
         // ——命令面只发不收，本域也不读条目（它够不着记录域，这正是读面走控制面的由头）。
-        target.onHistoryRead(command.session)
-        return
+        return target.onHistoryRead(command.session)
       case 'model.list':
         // 模型条目表（读侧）——**原样转手**给**装配**（注册表在它手上）。本域不认识注册表、
         // 也不知道有哪些条目；答复走事件（`model.catalog`，不落库）——命令面只发不收。
-        target.onModelList()
-        return
+        return target.onModelList()
       case 'grants.list':
         // 授权名录（读侧）——**原样转手**给**装配**（`grants.json` 的读写都在它那一层，
       // 域不碰文件系统）。本域不认识授权，答复走事件（`grants.catalog`，不落库）。
-        target.onGrantsList()
-        return
+        return target.onGrantsList()
       case 'skills.list':
         // 技能目录（读侧 · U33）——**原样转手**给**装配**（执行域的发现面在它手里，
         // 同 `model.list` 之于注册表）。本域不认识技能，答复走事件
         // （`skills.catalog`，不落库）——命令面只发不收。
-        target.onSkillList()
-        return
+        return target.onSkillList()
       case 'paths.list':
         // 路径候选（读侧 · U36）——**原样转手**给**装配**（执行域的路径面在它手里，
         // 同 `skills.list`）。本域不认识文件系统，答复走事件（`paths.catalog`，不落库）。
-        target.onPathList(command.query)
-        return
+        return target.onPathList(command.query)
       case 'paths.identify':
         // 认一认选定的那一条（U62 · 图片的名字）——同一条路（执行域的路径面在装配手里）。
         // 本域不认识文件系统，**也不判里外**：`external` 是用户选定那一刻的事实，
         // 原样带过去（同 `decision.answer` 的 `remember` 之例：控制域只带话，不翻译）。
         // 答复走事件（`paths.identified`，不落库）。
-        target.onPathIdentify(command.path, command.external)
-        return
+        return target.onPathIdentify(command.path, command.external)
       case 'input.paste':
         // 把剪贴板里的图取进来（U107）——同一条路（剪贴板那一跳在装配手里）。
         // 本域不认识剪贴板，也不读字节：**原样转手**，答复走事件（`input.pasted`，不落库）。
-        target.onInputPaste()
-        return
+        return target.onInputPaste()
       case 'image.export':
         // 导出原图（U110）——**原样转手**给**对话域**（记录里那份字节归它读，落盘那一步
         // 经装配注入的写口完成；同 `attachments.export` 当年的站位）。本域不认识记录、
         // 也读不了字节，答复走事件（`image.exported`，不落库）。
-        target.onImageExport(command.blob, command.name, command.mime)
-        return
+        return target.onImageExport(command.blob, command.name, command.mime)
       case 'mcp.list':
         // 外部服务器的一屏（读侧 · U39）——**原样转手**给**装配**（那一束连接是它编排的，
         // 同 `model.list` 之于注册表）。本域不认识 MCP，答复走事件（`mcp.catalog`，不落库）。
-        target.onMcpList()
-        return
+        return target.onMcpList()
       case 'mcp.reconnect':
         // 显式重连——同一条路（连接归装配）。**不在这里判服务器名认不认得**：
         // 名字是配置里的身份，只有装配那份配置说了算（同 `grants.revoke` 的缺省之例）。
-        target.onMcpReconnect(command.server)
-        return
+        return target.onMcpReconnect(command.server)
       case 'grants.revoke':
         // 撤销——同一条路（落盘归装配）。**不在这里解释 `workspace` / `index` 的缺省**：
         // 「缺省＝本工作区」「缺省＝整节」是**授权落点**的语义，归装配那一侧（同 `decision.answer`
         // 的 `remember` 之例：控制域只带话，不翻译）。
-        target.onGrantsRevoke(command.workspace, command.index)
-        return
+        return target.onGrantsRevoke(command.workspace, command.index)
       case 'model.refresh':
         // 显式刷新模型信息（U41）——**原样转手**给**装配**（模型信息缓存与在途获取在它那一层，
         // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
-        target.onModelRefresh(command.provider)
-        return
+        return target.onModelRefresh(command.provider)
       case 'model.configure':
-        target.onModelConfigure(command)
-        return
+        return target.onModelConfigure(command)
       case 'prefs.set':
         // 界面的两格偏好（U112）——写配置里 `statusLine` / `motion` 那两格。控制域只带话：
         // 校验与落盘都在装配（同 `webfetch.set` 的站位）。
         // ⚠️ **它连一条会话、一件工具都不碰**：改的只是「这一屏长什么样」。
-        target.onPrefsSet(command)
-        return
+        return target.onPrefsSet(command)
       case 'provider.list':
         // 管理面的连接一览（U41 读侧）——**归装配**（配置与凭据的读取都在它那一层，
         // 同 `grants.list` 之于授权文件）。答复走事件（`provider.catalog`，不落库）。
-        target.onProviderList()
-        return
+        return target.onProviderList()
       case 'provider.save':
         // 接入 / 改名 / 更新认证 / 改地址共一个动作（U41）——落盘归装配。
         // **凭据不在这里留痕**：只带话（同 `input.submit` 的姿势）。
-        target.onProviderSave(command)
-        return
+        return target.onProviderSave(command)
       case 'provider.remove':
-        target.onProviderRemove(command.provider)
-        return
+        return target.onProviderRemove(command.provider)
       default: {
         // **穷尽性**（U41 补）——契约加了命令而这里忘了接，过去是**静默丢弃**：
         // 实测 `model.default.set` 发出去一点回声都没有，用例干等三秒才超时。
@@ -204,7 +184,23 @@ export function createControlHub(): ControlHubFace {
     },
     attach(transport) {
       link?.off() // 二次接入＝换传输：先摘旧的，不留两条链路
-      link = { transport, off: transport.subscribe(route) }
+      link = { transport, off: transport.subscribe(command => {
+        if (closed) return
+        let flight: Promise<void>
+        const failed = (error: unknown): void => {
+          try { if (onError) onError(error); else failures.push(error) } catch (reportError) { failures.push(reportError) }
+        }
+        try { flight = Promise.resolve(route(command)).then(() => undefined, failed) }
+        catch (error) { failed(error); return }
+        flights.add(flight)
+        void flight.then(() => flights.delete(flight))
+      }) }
+    },
+    async shutdown() {
+      closed = true
+      link?.off()
+      await Promise.all([...flights])
+      if (failures.length) throw new AggregateError(failures.splice(0), '控制操作失败')
     },
     emit(event) {
       // 未接传输＝丢弃（Emitter 语义）；投递前的可序列化校验在传输那侧

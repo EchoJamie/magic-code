@@ -11,7 +11,7 @@ const root=REPO_ROOT
 for(const before of (process.argv.includes('--current-only') ? [false] : [true,false])){
  const fixture=startFixture({turns:[{kind:'text',text:'BASELINE_HISTORY_REPLY',chunks:1,chunkDelayMs:10},{kind:'tool',name:'exec',args:{cmd:'chmod 700 approved.sh'}},{kind:'text',text:'AFTER_APPROVAL',chunks:1,chunkDelayMs:10}]})
  const sandbox=createSandbox({baseURL:fixture.baseURL});writeFileSync(join(sandbox.workspace,'approved.sh'),'#!/bin/sh\n')
- commitGrants(sandbox.grantsPath,[{kind:'grant',workspace:realpathSync(sandbox.workspace),grant:{tool:'exec',path:'**',op:'read',grantedAt:Date.now()}}])
+ ;(await commitGrants(sandbox.grantsPath,[{kind:'grant',workspace:realpathSync(sandbox.workspace),grant:{tool:'exec',path:'**',op:'read',grantedAt:Date.now()}}]))
  const host=await startResidentHost(sandbox,root+'/.ui-runs/u114/comparison-host-'+Date.now(),before?root+'/.ui-runs/u114-baseline/packages/app/src/cli.ts':root+'/packages/app/src/cli.ts')
  const ui=await createUiSession({fixture,sandbox,columns:200,rows:40,label:`U114-${before?'修前':'修后'}-核心对照`,artifacts:root+'/.ui-runs/u114',...(before?{checkout:root+'/.ui-runs/u114-baseline'}: {})})
  const key=async(k:Parameters<typeof ui.key>[0])=>{await ui.key(k);await Bun.sleep(100)}

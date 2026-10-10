@@ -20,7 +20,7 @@ test('持久执行身份：未核销代次不受最近历史条数截断，重�
     launch: { spawn(request) {
       launches.push(request)
       let exit = (_reason: string) => {}
-      return { pid: undefined, onExit(callback) { exit = callback }, kill() { exit('登记装置退出') } }
+      return { onExit(callback) { exit = callback }, cancel() { exit('登记装置退出') } }
     } },
   })
   if (started.role !== 'manager') throw new Error('管理者未启动')
@@ -38,8 +38,8 @@ test('持久执行身份：未核销代次不受最近历史条数截断，重�
     expect(persisted).toHaveLength(sessions.length)
     for (const launch of launches) {
       const run = persisted.find(run => run.session === launch.session)!
-      expect(run.executionId).toBe(launch.token)
-      expect(reconcile(run, Date.now()).executionId).toBe(launch.token)
+      expect(run.executionId).toBe(launch.executionId)
+      expect(reconcile(run, Date.now()).executionId).toBe(launch.executionId)
     }
   } finally {
     for (const client of clients) client.close()

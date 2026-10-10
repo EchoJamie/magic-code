@@ -356,7 +356,7 @@ describe('U28 · 历史累计（跨会话那笔账）', () => {
 })
 
 describe('U22 · 启动那几句（审计第 13 条）', () => {
-  test('被拒的权限规则**进记录区一行回执**——`Assembly.notices` 里备着那句话', () => {
+  test('被拒的权限规则**进记录区一行回执**——`Assembly.notices` 里备着那句话', async () => {
     const stage = makeStage({
       config: { permissions: { rules: [{ tool: 'read', pth: 'src/**' }] } },
     })
@@ -367,9 +367,9 @@ describe('U22 · 启动那几句（审计第 13 条）', () => {
       expect(assembly.rejectedRules).toHaveLength(1)
       expect(assembly.rejectedRules[0]?.reason).toContain('pth')
       // 而那句话**也备给了外壳**（原先只有 `--check` 会说，走 TUI 一声不响 ✗）
-      expect(assembly.notices).toHaveLength(1)
-      expect(assembly.notices[0]).toContain('读不懂')
-      expect(assembly.notices[0]).toContain('--check')
+      expect((await assembly.notices())).toHaveLength(1)
+      expect((await assembly.notices())[0]).toContain('读不懂')
+      expect((await assembly.notices())[0]).toContain('--check')
 
       assembly.close()
     } finally {
@@ -377,11 +377,11 @@ describe('U22 · 启动那几句（审计第 13 条）', () => {
     }
   })
 
-  test('一切正常时**一句都不说**——`notices` 是空数组（空态不是「没事找话说」）', () => {
+  test('一切正常时**一句都不说**——`notices` 是空数组（空态不是「没事找话说」）', async () => {
     const stage = makeStage()
     try {
       const assembly = stage.assemble({ grantsFile: grantsPathOf(stage) })
-      expect(assembly.notices).toEqual([])
+      expect((await assembly.notices())).toEqual([])
       assembly.close()
     } finally {
       stage.dispose()

@@ -433,10 +433,10 @@ describe('manager 模型预检只读已有缓存', () => {
       writeFileSync(f.configPath, JSON.stringify(configuration))
       await cache.replace(snapshot, cacheAccessFor({ provider: 'ds', configPath: f.configPath, apiKey: f.providers.ds.apiKey, processToken: 'test' }))
       const defaults = { choice: 'default' as const, provider: 'ds', model: 'cached', reasoning: { mode: 'level' as const, level: 'high' } }
-      await expect(resolveManagedModel({ magic: f.magic, defaults })).rejects.toThrow('不支持思考档位')
-      expect(await resolveManagedModel({ magic: f.magic, defaults, model: { reasoning: { mode: 'level', level: 'low' } } })).toEqual({ ...defaults, reasoning: { mode: 'level', level: 'low' } })
-      await expect(resolveManagedModel({ magic: f.magic, defaults, role: 'unknown' })).rejects.toThrow('未知角色')
-      await expect(resolveManagedModel({ magic: f.magic, defaults, model: { choice: 'spell', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
+      await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults })).rejects.toThrow('不支持思考档位')
+      expect(await resolveManagedModel({ environment: {}, magic: f.magic, defaults, model: { reasoning: { mode: 'level', level: 'low' } } })).toEqual({ ...defaults, reasoning: { mode: 'level', level: 'low' } })
+      await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults, role: 'unknown' })).rejects.toThrow('未知角色')
+      await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults, model: { choice: 'spell', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
       f.store.collaboration.updateAgent(f.agent.agentId, { model: defaults })
       const app = f.open()
       try { await expect(app.ready()).rejects.toThrow('不支持思考档位') }

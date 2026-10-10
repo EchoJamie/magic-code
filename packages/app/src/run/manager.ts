@@ -1,8 +1,9 @@
+import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
 import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
 import { DiagnosticLog } from '../diagnostic-log.ts'
 import { createManagedCollaboration } from './collaboration.ts'
 import { loadConfig } from '../config.ts'
-import { createSettings } from '../settings.ts'
+import { watchConfig } from '../config-watch.ts'
 import { setPrefs } from '../config-save.ts'
 import { captureCollaborationNative, mergeCollaborationNative, type CollaborationNativeGroup } from './collaboration-native.ts'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
@@ -29,17 +30,15 @@ import type {
   StopPhase,
   StopScope,
 } from '@magic/contracts'
-import { probeMcp } from './preflight.ts'
 import type { McpProbeRow } from './wire.ts'
-import { createRecordsStore } from '@magic/records'
+import { createRecordsStore, type RecordsStore } from '@magic/records'
 import { ensureRunDir, tightenSocket, normalizeDataDir } from './paths.ts'
 import type { RunPaths } from './paths.ts'
-import { linkOf, socketHandlers } from './wire.ts'
+import { linkOf, socketHandlers, localLinks } from './wire.ts'
 import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 import {
   actionOf,
   endKindOf,
-  holdsPid,
   isProgress,
   newRunRecord,
   progressOf,
@@ -62,9 +61,9 @@ import { projectWorks } from './native-projection.ts'
 import { query as observe } from './observation.ts'
 import { readSessionCatalog, readSessionDisplayHistory } from '@magic/conversation'
 import type { Entry } from '@magic/contracts'
-import { silentNotifier } from './system-notify.ts'
-import type { SystemNotifier } from './system-notify.ts'
-import { reapOwned, startTimeOf } from '@magic/execution'
+import { createProcessLedger } from '@magic/execution'
+import { createAgentLauncher } from './launch.ts'
+import type { ProcessLedger } from '@magic/contracts'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {
@@ -86,7 +85,7 @@ type ClientConn = {
   readonly link: Link<ClientToManager>
   /** 它认的执行者代次（`0` ＝ 还没认过任何一代）。 */
   gen: number
-  readonly environment: Readonly<Record<string, string>>
+  environment: Readonly<Record<string, string>>
   readRevision: number
   readingSession: string | null
   /** 启动目录——按它起执行者（工作区默认根的缺省，见 `wire.ts` 的 `hello.cwd`）。 */
@@ -144,10 +143,12 @@ type ClientConn = {
  * （`liveOf(session)` 是按会话找的，而起新的之前先问它），故不可能有两个同时推同一条。
  */
 type Executor = {
+  readonly ledger: ProcessLedger
+  readonly network: WorkEnvironment
   /** **代次**——管理者发的号，一条会话换一个执行者就换一代（U48 第三段按它判过期）。 */
   readonly gen: number
   /** 发车时给的令牌——认「这条连上来的是我叫起来的那一个」。 */
-  readonly token: string
+  readonly executionId: string
   /** **显式接续**起的那一代（发车时就带着会话号）；`false` ＝ 还没开张（D5）。 */
   readonly explicit: boolean
   /** **运行事实**（U49）——会话 / 状态 / 进展 / 待答项全在这一格里，判定见 `facts.ts`。 */
@@ -161,8 +162,6 @@ type Executor = {
   /** 盯着它的窗口连接号——事件按这一份广播。 */
   readonly watchers: Set<number>
   /** 上一次听见它（`pong` / 任何一条消息）——诊断与生命探测用。 */
-  lastSeen: number
-  pingSeq: number
   /** 快照的号（U49）——一问一答按它对上。 */
   snapSeq: number
   /** 发出去还没回来的那几个快照，各是给哪个窗口的（`seq → conn.id`）。 */
@@ -170,9 +169,8 @@ type Executor = {
 }
 
 export type ManagerOptions = {
-  readonly diagnosticsChanged?: (value: Diagnostics) => Promise<void>
-
-  readonly hostInstance?: string
+  readonly beforeExit?: () => Promise<void>
+  readonly engineState?: (state: 'stopping' | 'stopped' | 'failed', request: string, error?: string) => Promise<void>
   readonly lifecycle?: {
     /** 同步持久关闭协作准入；先于任何执行收尾。 */
     readonly closeAdmission: () => void
@@ -184,7 +182,7 @@ export type ManagerOptions = {
   /** 这一摊运行的三条路径（`runPathsOf` 算出来的）。 */
   readonly paths: RunPaths
   /** 起执行者的方式——见 `ExecutorLauncher`。 */
-  readonly launch: ExecutorLauncher
+  readonly launch?: ExecutorLauncher
   /**
    * **统一基础路径**——执行者按它读配置（配置 / 授权 / 技能都从它派生，U42）。
    *
@@ -216,22 +214,6 @@ export type ManagerOptions = {
   readonly stopGraceMs?: number | undefined
   /** 停止时 TERM 之后再等多久才 KILL（毫秒）——缺省三秒；见 `STOP_KILL_MS`。 */
   readonly stopKillMs?: number | undefined
-  /**
-   * **没人看着那条会话时怎么弹系统通知**——缺省 `silentNotifier`（**一个字都不发**）。
-   *
-   * ⚠️ **接一个真通知器是「谁要发谁自己接」**（U98）：缺省**没有真发这回事**，不是
-   * 「真发着、只是关得掉」。由头见 `./system-notify.ts` 的文件头——今天**一处都不接**，
-   * 因为那条路借的是别人的身份（归属算在 Script Editor 头上，用户点了进不去）。
-   *
-   * ⚠️ **判据是「有没有窗口正看着这条会话」，不是「有没有窗口连着」**（三类同此，
-   * 见 `notify` 的注）：A 页开着而 B 那件事发生时，这一跳**照走**——至于走成什么，
-   * 由这一格接的是谁说了算（缺省什么都不做）。
-   *
-   * 收成端口是为了用例：一条**记账用的**假 notifier 接在这儿，「没人看着才发、一条事实
-   * 只发一次」这两条判据照样量得到，而**跑一趟用例在用户屏幕上蹦几十条通知**那种事
-   * 从一开始就不会发生（缺省就不发）。
-   */
-  readonly notifySystem?: SystemNotifier | undefined
   /** 诊断——缺省不打印（**这条线上不写业务日志**）。 */
   readonly log?: ((line: string) => void) | undefined
 }
@@ -249,12 +231,13 @@ export type ExecutorLauncher = {
 
 /** 开一个执行者时给它的那几件——「哪一代、哪条会话、在哪个工作区、用哪份配置」。 */
 export type ExecutorRequest = {
-  readonly environment?: Readonly<Record<string, string>>
+  readonly network: WorkEnvironment
+  readonly environment: Readonly<Record<string, string>>
 
   /** **代次**——管理者发的号。 */
   readonly gen: number
   /** 发车令牌——它连上来时按这个认。 */
-  readonly token: string
+  readonly executionId: string
   /** 开工那条会话（显式接续时就有）；`null` ＝ 让它自己开张（D5）。 */
   readonly session: string | null
   /** **启动目录**——工作区默认根（配置没写 `workspaceRoots` 时就是它）。 */
@@ -262,7 +245,9 @@ export type ExecutorRequest = {
   /** 统一基础路径——执行者按它读配置。 */
   readonly magic: MagicHome
   /** 管理者监听的那条 socket——执行者要连它。 */
-  readonly socket: string
+  readonly link: Link<ManagerToExecutor>
+  readonly records: RecordsStore
+  readonly ledger: ProcessLedger
   /**
    * **开局的换模型请求**——窗口 `hello` 里带的那一个，随「为它起的那一代」落地。
    *
@@ -277,19 +262,10 @@ export type ExecutorRequest = {
   readonly allowAll?: boolean | undefined
 }
 
-/** 一个真起了的进程——管理者只管「它还活着没有、叫它退它退不退」。 */
+/** 一个 Agent 实例的取消与完成。资源收尾完成之后才发完成通知。 */
 export type SpawnedExecutor = {
-  /** 进程号——**仅作诊断**（用户按会话 / 工作操作，不按 PID）。 */
-  readonly pid: number | undefined
-  /** 子进程退出了（正常 / 被杀 / 起不来）——**「自有子进程退出」那一路**。 */
   onExit(listener: (reason: string) => void): void
-  /**
-   * 叫它退——先礼（`bye` 走连接）后兵（这里是兵）。
-   *
-   * U50 起可以点名哪一记「兵」：停止那一条路照设计那一句走
-   * 「**有界等待 → TERM → KILL → 等待退出**」（缺省仍是 TERM——收摊那一跳一字未动）。
-   */
-  kill(signal?: 'SIGTERM' | 'SIGKILL'): void
+  cancel(): void
 }
 
 /**
@@ -306,7 +282,7 @@ export type Manager = {
   /** 挂着的客户端连接数。 */
   clients(): number
   /** 这一摊里活着的执行者（按会话归）。 */
-  executors(): readonly { readonly session: string | null; readonly gen: number; readonly pid: number | undefined }[]
+  executors(): readonly { readonly session: string | null; readonly gen: number }[]
   /**
    * **这一摊此刻的运行事实**（U49）——与推给窗口的那一份**同一处产出**（`rows()`）。
    *
@@ -384,7 +360,7 @@ export async function startManager(options: ManagerOptions): Promise<StartResult
   ensureRunDir(paths.dir)
 
   for (let attempt = 0; attempt < BIND_ATTEMPTS; attempt += 1) {
-    const bound = bindManager(options, now)
+    const bound = await bindManager(options, now)
     if (bound !== undefined) return { role: 'manager', manager: bound }
 
     // bind 没成——**先问「是不是有人在」**，问到就连接它，一句都不清
@@ -401,7 +377,7 @@ export async function startManager(options: ManagerOptions): Promise<StartResult
 }
 
 /** bind 成了就返回一个立好的管理者；没成返回 `undefined`（判归属的那三步在调用方）。 */
-function bindManager(options: ManagerOptions, now: () => number): Manager | undefined {
+async function bindManager(options: ManagerOptions, now: () => number): Promise<Manager | undefined> {
   const { paths } = options
   const probeIntervalMs = options.probeIntervalMs ?? PROBE_INTERVAL_MS
   const stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS
@@ -410,7 +386,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   const clients = new Map<number, ClientConn>()
   const executors = new Set<Executor>()
   /** 待认领的执行者——按令牌找（它连上来时给的正是那个令牌）。 */
-  const awaiting = new Map<string, Executor>()
   /**
    * **已经不在跑的那些运行**（U49）——按会话留一条「最近一次运行」。
    *
@@ -422,6 +397,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
   let nextConn = 1
   let nextGen = 1
+  let available = false
   let stopped = false
   /**
    * 手上那份库连接关了没有——**收摊那一路还要读运行事实**（`rows()` 按目录说话那一跳
@@ -441,33 +417,31 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 开不动库就**别当管理者**：连库都带不起来的进程，起执行者也只是把同一件事故
    * 推迟到别人那儿炸。
    */
-  let store: ReturnType<typeof createRecordsStore>
-  try {
-    store = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
-  } catch (error) {
-    options.log?.(`库迁移没成：${String(error)}`)
-    return undefined
-  }
-
+  // 先独占控制端点，再打开唯一记录连接；并发入口不同时迁移 SQLite。
   let server: ReturnType<typeof Bun.listen>
   try {
-    server = Bun.listen({
-      unix: paths.socket,
-      socket: socketHandlers((socket) => accept(socket as Socket<unknown>)),
-    })
-  } catch {
-    store.close()
-    return undefined
+    server = Bun.listen({ unix: paths.socket, socket: socketHandlers(socket => accept(socket as Socket<unknown>)) })
+  } catch { return undefined }
+  let store: ReturnType<typeof createRecordsStore>
+  let savedRuns: readonly StoredRun[]
+  let initialConfig: ReturnType<typeof loadConfig>
+  try {
+    savedRuns = readRuns(paths)
+    initialConfig = loadConfig({ magic: options.magic })
+    store = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
+  } catch (error) {
+    server.stop(true)
+    clearStale(paths.socket)
+    throw new Error(`记录库不可用：${String(error)}`)
   }
 
   tightenSocket(paths.socket)
 
   const identity: ServiceIdentity = {
     protocol: NATIVE_PROTOCOL, version: SOFTWARE_VERSION, source: softwareSource(),
-    hostInstance: options.hostInstance ?? crypto.randomUUID(),
     serviceInstance: crypto.randomUUID(), base: options.magic.base,
   }
-  const diagnosticLog = new DiagnosticLog('manager', options.magic.base, diagnosticsOf(loadConfig({ magic: options.magic }).config).logLevel)
+  const diagnosticLog = new DiagnosticLog('manager', options.magic.base, diagnosticsOf(initialConfig.config).logLevel)
   diagnosticLog.write('info', 'manager.started', identity)
   const record: ManagerRecord = {
     pid: process.pid,
@@ -478,15 +452,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   }
   writeRecord(paths, record)
 
-  // **重启核对**（U49 立、U50 补上「句柄身份」那一半）：上一次留下的那几代，今天还成不成立
-  // ——逐条读、逐条判（判据在 `facts.ts` 的 `reconcile`/`holdsPid`）。读不动就当没有：
-  // 这份文件是**诊断品**，它坏了不该拦住启动（同 `manager.json` 那条口径）。
-  //
-  // U50 补的那一半：判「还在不在」时**连它的启动时刻一起核**（`startTimeOf`）——一个
-  // 复用了同一个号的无关进程从此骗不过去（U49 如实记过的那条限度收在这一跳上）。
-  for (const stored of readRuns(paths)) {
-    const record = reconcile(stored, now(), startTimeOf)
-    lastRuns.set(record.session as string, record)
+  // 旧 Agent 已随 Engine 退出，持久工具责任在开放准入前逐项核对。
+  for (const stored of savedRuns) {
+    const record = reconcile(stored, now())
+    lastRuns.set(record.session ?? record.executionId!, record)
 
     // **上一代留下的自有进程组**（U50）：已经证实不在的那些，照登记收回来——它当年
     // 多半没跑完收尾那两跳（管理者异常退出那条路），起的进程就成了没人认领的后台。
@@ -498,30 +467,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     }
   }
 
-  /**
-   * **外部工具预检**（U48 第六段）——**连接 → 报状态 → 断开**，一趟，挂在管理者的启动上。
-   *
-   * 三条都是从「它是探针不是工具连接」来的（设计 · MCP 接入 · 服务启动时的预检）：
-   * - **不为它单起后台**：就在这个进程里跑，跑完就收——它不另起执行者、不建会话；
-   * - **不持有工具、不供会话使用**：读数只上「服务状态」那一格（`welcome.mcp`），
-   *   工具表交给谁这个问题**根本不出现在这一路上**；
-   * - **不断路**：探针失败不影响管理者起得来（连不上的那几台落成 `unavailable` 的读数）。
-   *
-   * ⚠️ **窗口是「等它落定」而不是「拿到半份」**：`accept` 那一头把 `welcome` 押在这条
-   * promise 上（见下）。押的代价是第一个窗口多等这一趟——而那与今天一样
-   * （`cli.ts` 起外壳之前本来就要 `await assembly.ready()`）。
-   */
-  let mcpCatalog: readonly McpCatalogRow[] = []
-  const preflight = probeMcp({
-    servers: options.mcp ?? {},
-    onCatalog: (rows) => { mcpCatalog = rows },
-    ...(options.mcpConnectTimeoutMs === undefined
-      ? {}
-      : { connectTimeoutMs: options.mcpConnectTimeoutMs }),
-    ...(options.log === undefined ? {} : { log: options.log }),
-  })
-  /** 预检的读数——它是**服务状态**，窗口接上就读得到（`welcome.mcp`）。 */
-  let probed: readonly McpProbeRow[] = []
+  // 尚无工作环境时只列配置；连接与归属登记在工作装配时完成。
+  const mcpCatalog: readonly McpCatalogRow[] = Object.entries(options.mcp ?? {}).map(([server, config]) => ({
+    server, transport: 'url' in config ? 'http' : 'stdio', state: { status: 'idle' }, tools: [], rejected: [],
+  }))
+  const probed: readonly McpProbeRow[] = mcpCatalog.map(row => ({ server: row.server, state: row.state, rejected: 0 }))
 
   // —— 运行事实：一处产出、两处用（推给窗口 ＋ 落盘）——
 
@@ -532,12 +482,28 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 「最近一次运行」（**最近**）。同一条会话两头都有时**以活着的为准**（那才是现况）。
    * 还没开张的执行者（`session === null`）没有会话可挂，故不入表——**列表按会话说话**。
    */
+  const environments = new Map<string, WorkEnvironment>()
+  const closingEnvironments = new Set<Promise<void>>()
+  const workRoot = (session: string): string => store.collaboration.collaborationForSession(session)?.originSessionId ?? session
+  const environmentFor = (session: string): WorkEnvironment | undefined => environments.get(workRoot(session))
+  function releaseEnvironments(): void {
+    for (const [root, network] of environments) {
+      if ([...executors].some(one => one.network === network)) continue
+      const work = store.collaboration.collaborationForSession(root)
+      if (work?.state === 'open' || work?.state === 'closing') continue
+      if ([...lastRuns.values()].some(run => run.session !== null && workRoot(run.session) === root && (run.owned.length > 0 || run.reclaimPending))) continue
+      environments.delete(root)
+      const closing = network.close()
+      closingEnvironments.add(closing)
+      void closing.then(() => closingEnvironments.delete(closing), error => options.log?.(`工作网络连接尚未收妥：${String(error)}`))
+    }
+  }
   const collaborationInputs = new Map<string, { conn: ClientConn; session: string; target: string; ref?: string }>()
   const collaborationDecisions = new Map<number, Extract<KernelEvent, { kind: 'tool.decision.request' }>>()
   const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
   const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
   const collaboration = createManagedCollaboration({
-    store, magic: options.magic, now, accepting: () => !stopped,
+    store, magic: options.magic, now, environment: session => environmentFor(session)?.env ?? {}, accepting: () => !stopped,
     start: startMember,
     wake: session => { const live = liveOf(session); if (live !== undefined) send(live, { t: 'collaboration.wake' }) },
     cancel: cancelMembers,
@@ -559,11 +525,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     runs: () => [...executors].map(e => runRowOf(e.run)),
     decisions: session => liveOf(session)?.run.decisions.size ?? 0,
     changed: () => {
+      releaseEnvironments()
       native.changed();for(const conn of clients.values())void publishCollaboration(conn)
       for(const executor of executors){const session=executor.run.session;if(session!==null&&store.serviceFor(session).inputs.list().some(one=>one.state==='pending'&&one.purpose==='next'))send(executor,{t:'collaboration.wake'})}
     },
   })
-  void collaboration.recover()
+  const recovering = collaboration.recover()
 
   async function startMember(agent: AgentIdentity): Promise<void> {
     if (stopped) throw new Error('管理者正在退出')
@@ -756,7 +723,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (!immediate) {
       saveTimer = setTimeout(() => {
         saveTimer = undefined
-        saveRuns(true)
+        try { saveRuns(true) } catch (error) { options.log?.(`运行状态保存失败：${String(error)}`); diagnosticLog.write('error', 'runs.save.failed', identity) }
       }, RUNS_SAVE_MS)
       saveTimer.unref?.()
       return
@@ -779,14 +746,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   /** 一摊运行的那几件工具——`stop` 与各自的收尾都要它们，故在闭包里立。 */
   const manager: Manager = {
     identity,
-    ready: async () => { probed = await preflight },
+    ready: async () => {},
     record,
     socketPath: paths.socket,
     clients: () => clients.size,
     executors: () =>
       [...executors]
         .filter((one) => one.run.ended === undefined)
-        .map((one) => ({ session: one.run.session, gen: one.gen, pid: one.run.pid })),
+        .map((one) => ({ session: one.run.session, gen: one.gen })),
     runs: () => rows(),
     stop,
     waitUntilExit: () => exited,
@@ -800,12 +767,13 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    */
   function accept(socket: Socket<unknown>): void {
     const link = linkOf<Wire>(socket)
+    if (!available) { link.close(); return }
     /** 这条连接立起来的时候是谁的——`hello` 那一刻定下，之后不再变。 */
     let greeted = false
     let client: ClientConn | undefined
-    let executor: Executor | undefined
 
     link.onMessage((message) => {
+      try {
       if (message.t === 'hello') {
         if (greeted) { link.close(); return }
         greeted = true
@@ -813,11 +781,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       if (native.receive(link, message)) return
       if (message.t === 'hello' && message.role === 'observer') return
       if (message.t === 'hello') {
-        if (message.role === 'executor') {
-          executor = adopt(message)
-          return
-        }
-
         if (stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); link.close(); return }
         if (message.protocol !== identity.protocol || message.version !== identity.version || message.source !== identity.source) {
           link.send({ t: 'line', text: 'App 与终端版本或来源不同，请退出原版后重试' }); link.close(); return
@@ -827,8 +790,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
           link: link as unknown as Link<ClientToManager>,
           gen: 0,
           selectedSession: message.session ?? null,
-          environment: Object.fromEntries(Object.entries(message.environment ?? {}).filter(([key, value]) =>
-            /^(PATH|SHELL|LANG|LC_[A-Z_]+|TERM|COLORTERM)$/.test(key) && typeof value === 'string')),
+          environment: {},
           readRevision: 0,
           readingSession: null,
           cwd: message.cwd,
@@ -866,11 +828,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
 
         clients.set(conn.id, conn)
 
-        // **押在预检上**（见 `preflight` 那一跳的注）：窗口接上就能读到结论，
-        // 且读到的**一定是落定后的那一份**——半份读数比晚一会儿更坏（用户据此以为通了）。
-        void preflight.then((mcpRows) => {
-          probed = mcpRows
-          if (link.closed) return
           link.send({
             t: 'welcome',
             identity,
@@ -883,7 +840,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
             notices: store.attention.list().filter((one) => one.unread),
           })
           if (message.openRequest !== undefined) native.attached(message.openRequest, message.session ?? null)
-        })
 
         // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
         if (message.session !== undefined) {
@@ -895,53 +851,24 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       if (client !== undefined) {
         if (stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); return }
         if (message.t === 'read') { store.attention.markRead(message.ids); native.changed() }
-        if (message.t === 'cmd' && 'gen' in message) onCommand(client, message.gen, message.cmd)
+        if (message.t === 'cmd' && 'gen' in message) {
+          if (message.environment !== undefined) client.environment = Object.freeze({ ...message.environment })
+          onCommand(client, message.gen, message.cmd)
+        }
         // **停止**（U50）止于管理者——它不是内核命令，故不转给执行者（见 `wire.ts`）
         if (message.t === 'stop') stopRun(client, message.session, message.scope)
         if (message.t === 'bye') dropClient(client.id)
         return
       }
 
-      // 走到这儿＝这条连接立起来时说的是执行者那一路（`hello` 那一刻定下的，之后不变），
-      // 故收下的是执行者那一族
-      if (executor !== undefined) onExecutorMessage(executor, message as ExecutorToManager)
-    })
-
-    link.onClose(() => {
-      if (client !== undefined) dropClient(client.id)
-      if (executor !== undefined && executor.run.ended === undefined) {
-        if (executor.spawned.pid === undefined) retire(executor, '连接断了')
-        else { executor.run.connected = false; executor.spawned.kill('SIGTERM'); escalateStop(executor); pushRuns() }
+      } catch (error) {
+        link.send({ t: 'line', text: `操作未完成：${String(error)}` })
+        diagnosticLog.write('error', 'client.operation.failed', identity)
       }
     })
-
-    /** 认领一条执行者连接——令牌对上哪一代就是哪一代。 */
-    function adopt(message: Extract<ExecutorToManager, { t: 'hello' }>): Executor | undefined {
-      const found = awaiting.get(message.token)
-      if (found === undefined) {
-        // 令牌不认（上一代留下的 / 别的摊调错门了）：**不留一条无人负责的连接**
-        link.send({ t: 'bye', why: '这个令牌不对应任何一代执行者' })
-        link.close()
-        return undefined
-      }
-
-      awaiting.delete(message.token)
-      found.link = link as unknown as Link<ExecutorToManager>
-      if (message.session != null && store.hasSession(message.session)) {
-        found.run.session = message.session
-      }
-      found.run.workspace = message.workspace
-      found.run.everConnected = true
-      found.run.connected = true
-      found.lastSeen = now()
-      refresh(found.run, now())
-      // 认领的这一刻补一条「现在有几个人看你」——`bind` 那一次发的时候它还没连上来
-      // （`link` 是空的），而它接下来的收缩判据正需要这个数。
-      saveRuns()
-      pushRuns()
-      return found
-    }
+    link.onClose(() => { if (client !== undefined) dropClient(client.id) })
   }
+
 
   function dropClient(id: number): void {
     const conn = clients.get(id)
@@ -962,7 +889,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   /**
    * **留着的那些「刚刚发生的事」**——开头先读盘上那一份（上一次管理者离开时留下的未读）。
    */
-  const notifySystem = options.notifySystem ?? silentNotifier
   const stopReports = new Map<number, (phase: StopPhase, note?: string) => void>()
   let nextStopRequest = -1
   let nextStopGeneration = 1
@@ -1041,42 +967,41 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         ...affected,
       ]
   }
-  let appliedDiagnostics: Diagnostics | undefined
-  let diagnosticsNote = ''
-  const settings = createSettings({
-    diagnosticsChanged: async (value, source) => {
-      if (appliedDiagnostics?.debugMode === value.debugMode && appliedDiagnostics.logLevel === value.logLevel) return diagnosticsNote
-      diagnosticLog.setLevel(value.logLevel)
-      diagnosticLog.write('info', 'diagnostics.applied', { ...identity, ...value, ...(source ? { settingSource: source } : {}), ...(appliedDiagnostics ? { previousDebugMode: appliedDiagnostics.debugMode, previousLogLevel: appliedDiagnostics.logLevel } : {}) })
-      const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
-      const targets = ['App', ...current.map(executor => `执行者第 ${executor.gen} 代`)]
-      const replies = await Promise.allSettled([options.diagnosticsChanged?.(value) ?? Promise.resolve(), ...current.map(executor => settingsToExecutor(executor, undefined, false, value))])
-      await diagnosticLog.flush()
-      const pending = replies.flatMap((reply, i) => reply.status === 'rejected' ? [targets[i]!] : [])
-      if (diagnosticLog.problem) pending.push('管理者日志写入')
-      appliedDiagnostics = pending.length ? undefined : value
-      diagnosticsNote = pending.length ? `已保存，部分运行进程尚未确认生效：${pending.join('、')}` : '诊断设置已保存并生效'
-      return diagnosticsNote
-    },
-    magic: options.magic, cwd: options.magic.home, store, mcp: [], now,
-    canChangeData: async () => !(await nativeWorks()).some(work => work.affected) && executors.size === 0,
-    mcpWorks: async () => {
+  const runtime = {
+    read: async () => {
       const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
       await Promise.all(current.map(executor => settingsToExecutor(executor, undefined, true)))
-      return current.flatMap(executor => executor.run.session === null ? [] : [{
-      session: executor.run.session, gen: workStopGeneration(executor.run.session), servers: executorSettings.get(executor) ?? [],
-    }])
+      return {
+        canChangeData: !(await nativeWorks()).some(work => work.affected) && executors.size === 0,
+        mcp: current.flatMap(executor => executor.run.session === null ? [] : [{
+          session: executor.run.session, gen: workStopGeneration(executor.run.session), servers: executorSettings.get(executor) ?? [],
+        }]),
+      }
     },
-    preferencesChanged: async () => { await Promise.all([...executors].map(executor => settingsToExecutor(executor))); publishPreferences() },
-    grantsChanged: async () => { await Promise.all([...executors].map(executor => settingsToExecutor(executor))) },
-    reconnect: async (session, gen, name) => {
+    reconnect: async (session: string, gen: number, name: string) => {
       const executor = liveOf(session)
       if (executor === undefined || workStopGeneration(session) !== gen || executor.run.stopping) throw new Error('该工作已结束或换代，未重连')
       return settingsToExecutor(executor, name)
     },
-  })
+  }
+  let configuration: { stamp: string | null; error?: string } = { stamp: null }
   const native = createNativeServer({
-    identity, store, accepting: () => !stopped, settings,
+    configuration: () => configuration,
+    identity, store, accepting: () => !stopped, runtime,
+    async engineStop(request, idleOnly) {
+      // 核责任与关闭准入之间没有 await，新提交不能穿过实例切换。
+      if (idleOnly) {
+        const sessions = await store.listSessions()
+        const groups = captureCollaborationNative(store.collaboration, sessions.map(session => session.id))
+        if (executors.size > 0 || [...lastRuns.values()].some(run => run.owned.length > 0 || run.ended === undefined) || mergeCollaborationNative([], groups).some(work => work.affected)) throw new Error('仍有所属工作责任，不能切换基础路径')
+      }
+      const completion = beginStop('停止 Magic Engine')
+      return (async () => {
+        await options.engineState?.('stopping', request)
+        try { await completion; await options.engineState?.('stopped', request) }
+        catch (error) { await options.engineState?.('failed', request, String(error)); throw error }
+      })()
+    },
     record: (level, event, request) => diagnosticLog.write(level, event, { ...identity, request }),
     works: nativeWorks,
     stop(session, gen, report) {
@@ -1095,6 +1020,24 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     ...(options.log === undefined ? {} : { log: options.log }),
   })
 
+  const closeConfigWatch = watchConfig(`${options.magic.base}/config.json`, () => loadConfig({ magic: options.magic }), async loaded => {
+    const diagnostics = diagnosticsOf(loaded.config)
+    diagnosticLog.setLevel(diagnostics.logLevel)
+    const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
+    await Promise.all(current.map(async executor => {
+      await settingsToExecutor(executor, undefined, false, diagnostics)
+      await settingsToExecutor(executor)
+    }))
+    publishPreferences()
+    configuration = { stamp: loaded.stamp ?? null }
+    native.changed()
+  }, error => {
+    configuration = { ...configuration, error: String(error) }
+    native.changed()
+    diagnosticLog.write('error', 'configuration.apply.failed', identity)
+    options.log?.(`配置采用失败：${String(error)}`)
+  })
+
   function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string): void {
     const work = store.collaboration.collaborationForSession(session)
     // 成员结束由协调者汇总；待裁决保留原始会话身份，原生投影负责归入原工作。
@@ -1108,20 +1051,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     const terminals = terminalClients(session)
     for (const conn of terminals) conn.link.send({ t: 'notice', notice })
     native.changed()
-    if (terminals.length === 0 && !native.isPresent(work?.originSessionId ?? session, id)) {
-      notifySystem(`${noticeWord(kind)}——打开看是哪条`)
-    }
-  }
-
-  function noticeWord(kind: NoticeKind): string {
-    switch (kind) {
-      case 'done':
-        return '有一件工作跑完了一轮'
-      case 'failed':
-        return '有一件工作出错了'
-      case 'needs-you':
-        return '有一件工作正等着你'
-    }
   }
 
   /** 等待者绑定具体执行者代次，旧代异步核销不能兑现同会话的后继代。 */
@@ -1298,22 +1227,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * ——「不误杀」比「这一次停成」重要（设计：「拿不准的不编」，且非 Magic 创建的进程不被
    * 停止动作误杀）。
    */
-  async function reclaimStale(session: string, record: RunRecord): Promise<void> {
-    const outcome =
-      record.pid === undefined
-        ? ({ kind: 'gone' } as const)
-        : await reapOwned({ pgid: record.pid, startedAt: record.procStartedAt, what: '执行者' })
-
-    if (outcome.kind === 'stranger' || outcome.kind === 'unprovable' || outcome.kind === 'left') {
-      const waiting = stopWaiters.get(record)
-      stopWaiters.delete(record)
-      for (const id of waiting?.conns ?? []) {
-        reportStop(id, session, 'run', 'unconfirmed', outcome.note)
-      }
-      return
-    }
-
-    // 进程真没了 ⇒ 那一刻才是「核销」
+  async function reclaimStale(_session: string, record: RunRecord): Promise<void> {
     record.ended = { at: now(), why: '停止：照登记收回（它当时已经联系不上）', kind: 'crashed' }
     record.stopping = false
     record.reclaimPending = record.owned.length > 0
@@ -1333,26 +1247,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 而**不谎报已停**。
    */
   function escalateStop(executor: Executor): void {
-    const deadline = now() + stopGraceMs
-    const timer = setInterval(() => {
-      if (executor.run.ended !== undefined || stopped) {
-        clearInterval(timer)
-        return
-      }
-      if (now() < deadline) return
-      clearInterval(timer)
-
-      options.log?.(`第 ${executor.gen} 代没理会停止——按下去了`)
-      executor.spawned.kill('SIGTERM')
-
-      const later = setTimeout(() => {
-        if (executor.run.ended !== undefined) return
-        options.log?.(`第 ${executor.gen} 代 TERM 之后还没退——KILL`)
-        executor.spawned.kill('SIGKILL')
-      }, stopKillMs)
-      later.unref?.()
-    }, 100)
-    timer.unref?.()
+    executor.spawned.cancel()
   }
 
   // —— 命令：路由 ——
@@ -1406,7 +1301,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     finally { if (conn.readRevision === revision) conn.readingSession = null }
   }
 
-  function onCommand(conn: ClientConn, gen: number | null, command: Command): void {
+  async function onCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
     if (command.type === 'history.read') {
       const session = command.session ?? conn.selectedSession
       if (session !== null && session !== undefined) void readHistory(conn, session)
@@ -1417,7 +1312,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     if (command.type === 'prefs.set') {
       try {
         const loaded = loadConfig({ magic: options.magic })
-        const outcome = setPrefs({ path: loaded.path, expectedStamp: loaded.stamp, request: command })
+        const outcome = await setPrefs({ path: loaded.path, expectedStamp: loaded.stamp, request: command })
         if (outcome.ok) publishPreferences(conn)
         const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
         const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效'].filter(Boolean).join(' · ')
@@ -1476,6 +1371,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     }
 
     if (command.type.startsWith('collaboration.')) {
+      if (conn.selectedSession !== null && (command.type === 'collaboration.resume' || command.type === 'collaboration.input') && environmentFor(conn.selectedSession) === undefined) environments.set(workRoot(conn.selectedSession), createWorkEnvironment(conn.environment))
       void collaborationCommand(conn, command as CollaborationCommand)
       return
     }
@@ -1497,7 +1393,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         if(row?.state!=='pending'||row.revision!==command.revision)note='输入已消费或已改变，未继续'
         else if(work?.state==='stopped')note='这份工作已停止，请先明确继续工作'
         else {
-          const executor=liveOf(session)??spawn({session,explicit:true,cwd:member?.workspace[0]??conn.cwd})
+          const executor=liveOf(session)??spawn({session,explicit:true,cwd:member?.workspace[0]??conn.cwd,environment:conn.environment})
           if(executor===undefined)note='当前执行者不可用，输入保留'
           else {
             if (member === undefined) bind(conn, executor)
@@ -1515,6 +1411,33 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     }
     if (activeCollaboration !== undefined && command.type === 'turn.interrupt') {
       void collaborationCommand(conn, { type: 'collaboration.stop' })
+      return
+    }
+
+    // 已完成工作的短暂收缩余量不属于执行责任；下一次明确输入先收妥旧实例，
+    // 再按发起终端的环境建立下一代。后台工具、队列及协作责任仍沿用原环境。
+    const previous = conn.target
+    if (command.type === 'input.submit' && previous?.run.session != null && activeCollaboration === undefined &&
+        previous.run.lastTurn !== undefined && !previous.run.busy && !previous.run.turnActive &&
+        previous.run.background === 0 && previous.run.decisions.size === 0 &&
+        !store.serviceFor(previous.run.session).inputs.list().some(input => input.state === 'pending')) {
+      const selected = conn.selectedSession
+      // 该输入由管理者等待接续，不属于旧 Agent；旧实例释放不能给它发送拒收回执。
+      previous.watchers.delete(conn.id)
+      conn.target = undefined
+      conn.awaiting = null
+      conn.buffered = []
+      const closed = new Promise<boolean>(resolve => {
+        const timer = setTimeout(() => resolve(false), 15000)
+        previous.spawned.onExit(() => { clearTimeout(timer); resolve(true) })
+      })
+      send(previous, { t: 'bye', why: '已完成工作，释放旧环境后继续' })
+      if (!await closed || stopped || conn.selectedSession !== selected) {
+        conn.link.send({ t: 'ev', gen: null, event: { id: 0, session: selected ?? '', turn: null, at: now(),
+          kind: 'input.settled', data: { ok: false, ref: command.ref, reason: '旧工作收尾未确认或入口已改变，未受理新输入' } } })
+        return
+      }
+      await onCommand(conn, null, command)
       return
     }
 
@@ -1606,7 +1529,7 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       const spawned = spawn({
         session,
         explicit: true,
-        cwd: conn.cwd,
+        cwd: conn.cwd, environment: conn.environment,
         ...(conn.switch === undefined ? {} : { switch: conn.switch }),
         ...(conn.allowAll === true ? { allowAll: true } : {}),
       })
@@ -1639,16 +1562,10 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       conn.link.send({ t: 'line', text: '该会话已不可达，未切换当前工作。' })
       return
     }
-    const command: Command = { type: 'session.open', session }
-
     const live = liveOf(session)
     if (live !== undefined) {
       bind(conn, live)
-      // 它已经在那条会话上——`session.open` 过去是**无事**（内核不报）。
-      // 故这里补一条 `session.list`：那一条**一定会**报一次状态，窗口据此重画、
-      // 选择器据以合上。两句都发，是为了「换到了」这件事在屏上**有回声**。
-      deliver(live, command)
-      deliver(live, { type: 'session.list' })
+      void catalog(conn).then(() => readHistory(conn, session)).then(() => publishCollaboration(conn))
       return
     }
 
@@ -1753,68 +1670,83 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     readonly switch?: ModelSwitchRequest | undefined
     readonly allowAll?: boolean | undefined
   }): Executor | undefined {
+    const root = input.session === null ? undefined : workRoot(input.session)
+    let network: WorkEnvironment
+    try { network = (root === undefined ? undefined : environments.get(root)) ?? createWorkEnvironment(input.environment ?? {}) }
+    catch (error) { options.log?.(`工作网络配置不可用：${String(error)}`); return undefined }
     const gen = nextGen
     nextGen += 1
-    const token = `${gen}-${crypto.randomUUID()}`
-
+    const executionId = `${gen}-${crypto.randomUUID()}`
+    const [link, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
+    const ledger = createProcessLedger(owned => {
+      executor.run.owned = owned
+      executor.run.background = owned.filter(one => one.kind === 'background').length
+      refresh(executor.run, now())
+      saveRuns(true)
+      pushRuns()
+    })
     let spawned: SpawnedExecutor
     try {
-      spawned = options.launch.spawn({
-        gen,
-        token,
-        environment: input.environment,
-        session: input.session,
-        cwd: input.cwd,
-        magic: options.magic,
-        socket: paths.socket,
+      spawned = (options.launch ?? createAgentLauncher()).spawn({
+        gen, executionId, network, environment: network.env,
+        session: input.session, cwd: input.cwd, magic: options.magic,
+        link: agentLink, records: store, ledger,
         ...(input.switch === undefined ? {} : { switch: input.switch }),
         ...(input.allowAll === true ? { allowAll: true } : {}),
       })
     } catch (error) {
-      options.log?.(`起执行者不成：${String(error)}`)
+      options.log?.(`装配 Agent 不成：${String(error)}`)
+      if (![...environments.values()].includes(network)) {
+        const closing = network.close()
+        closingEnvironments.add(closing)
+        void closing.then(() => closingEnvironments.delete(closing), error => options.log?.(String(error)))
+      }
       return undefined
     }
 
     const executor: Executor = {
+      ledger, network,
       gen,
-      token,
+      executionId,
       explicit: input.explicit,
       run: newRunRecord({
         gen,
-        executionId: token,
+        executionId,
         session: input.session,
         startedAt: now(),
         explicit: input.explicit,
-        pid: spawned.pid,
-        // **身份那一位当场读**（U50）：那一刻它就站在眼前，是唯一读得准的时候；
-        // 重启核对与生命探测拿它判「还是不是这一代」（读不到就缺席，那一档退回保守）
-        procStartedAt: spawned.pid === undefined ? undefined : startTimeOf(spawned.pid),
       }),
       spawned,
       exited: false,
-      link: undefined,
+      link,
       queued: [],
       watchers: new Set(),
-      lastSeen: now(),
-      pingSeq: 0,
       snapSeq: 0,
       asking: new Map(),
     }
 
+    environments.set(root ?? executionId, network)
     executors.add(executor)
-    awaiting.set(token, executor)
+    const failed = (error: unknown) => {
+      executor.run.stopping = true
+      executor.run.reclaimNote = `工作记录处理失败：${String(error)}`
+      for (const watcher of executor.watchers) clients.get(watcher)?.link.send({ t: 'line', text: executor.run.reclaimNote })
+      executor.spawned.cancel()
+      diagnosticLog.write('error', 'executor.record.failed', { ...identity, run: String(gen) })
+    }
+    link.onMessage(message => { try { onExecutorMessage(executor, message) } catch (error) { failed(error) } })
 
     spawned.onExit((reason) => {
       executor.exited = true
       for (const [request, pending] of settingsReplies) if (pending.executor === executor) {
         settingsReplies.delete(request); pending.reject(new Error('执行者已退出，设置受理未确认；请重新读取'))
       }
-      retire(executor, reason)
+      try { retire(executor, reason) } catch (error) { failed(error) }
     })
 
     diagnosticLog.write('info', 'executor.started', { ...identity, run: String(gen), ...(input.session === null ? {} : { session: input.session }) })
-    options.log?.(`起了执行者 第 ${gen} 代 pid=${spawned.pid ?? '?'} 会话=${input.session ?? '（还没开张）'}`)
-    saveRuns(true)
+    options.log?.(`起了执行者 第 ${gen} 代 会话=${input.session ?? '（还没开张）'}`)
+    try { saveRuns(true) } catch (error) { failed(error); return undefined }
     pushRuns()
     return executor
   }
@@ -1846,7 +1778,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   // —— 执行者那一路 ——
 
   function onExecutorMessage(executor: Executor, message: ExecutorToManager): void {
-    executor.lastSeen = now()
 
     switch (message.t) {
       case 'collaboration.request': {
@@ -1868,8 +1799,14 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       case 'collaboration.changed':
         collaboration.changed()
         return
-      case 'hello':
-        // 认领在 `adopt` 里做了（那是**连接**那一跳的事）；这里只补一次登记
+      case 'assembled':
+        if (message.session !== null && store.hasSession(message.session)) executor.run.session = message.session
+        executor.run.workspace = message.workspace
+        executor.run.everConnected = true
+        executor.run.connected = true
+        refresh(executor.run, now())
+        saveRuns(true)
+        pushRuns()
         return
       case 'ready': {
         const waiting = readyWaiters.get(executor.gen)
@@ -1904,19 +1841,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
         saveRuns(true)
         pushRuns()
         return
-      /**
-       * **它手上握着哪几组自有进程**（U50）——照单收下（全量，按最后一次覆盖）。
-       *
-       * 这一步只落账、不上屏（进程号不进任何读数——设计「不把 PID 常驻」），故**不推
-       * 运行事实**；落盘则要（管理者自己没了那条路上，新一代照盘上这一份收）。
-       */
-      case 'owned':
-        executor.run.owned = message.processes
-        executor.run.background = message.background
-        refresh(executor.run, now())
-        saveRuns()
-        pushRuns()
-        return
       case 'settings.synced': {
         diagnosticLog.write(message.error ? 'warn' : 'debug', 'settings.ack', { ...identity, request: message.request, run: String(executor.gen) })
         executorSettings.set(executor, message.mcp)
@@ -1926,8 +1850,6 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       }
       case 'ev':
         onEvent(executor, message.event)
-        return
-      case 'pong':
         return
       case 'done':
         if (!executor.run.ready) {
@@ -1967,11 +1889,12 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     const report = await reclaim(record.owned)
     const note = reclaimNoteOf(report)
     if (record.ended === undefined) return note
+    record.owned = report.remaining
     record.reclaimPending = false
     record.reclaimNote = note
     refresh(record, now())
     if (note !== undefined) options.log?.(`收回第 ${record.gen} 代的自有进程组：${note}`)
-    saveRuns()
+    saveRuns(true)
     pushRuns()
     return note
   }
@@ -2027,6 +1950,8 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    */
   function rememberSession(executor: Executor, session: string | null): void {
     if (session === null) return
+    environments.delete(executor.executionId)
+    environments.set(workRoot(session), executor.network)
     for (const id of executor.watchers) {
       const conn = clients.get(id)
       if (conn !== undefined && conn.target === executor && conn.selectedSession !== session) {
@@ -2230,12 +2155,11 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     const ready = readyWaiters.get(executor.gen)
     if (ready !== undefined) { clearTimeout(ready.timer); readyWaiters.delete(executor.gen); ready.reject(new Error(reason)) }
     executors.delete(executor)
-    awaiting.delete(executor.token)
     executor.queued = []
     executor.asking.clear()
 
     // **留一条「最近一次运行」**——列表上「当前/最近状态」那一格要它
-    if (executor.run.session !== null) lastRuns.set(executor.run.session, executor.run)
+    lastRuns.set(executor.run.session ?? executor.executionId, executor.run)
 
     for (const id of [...executor.watchers]) {
       const conn = clients.get(id)
@@ -2303,53 +2227,18 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
    * 那句缘由跟着回执一起出去（`reclaim.ts`），**不伪报取消成功**。
    */
   function afterEnd(run: RunRecord): void {
+    releaseEnvironments()
     if (run.owned.length === 0) {
       settleStop(run)
       return
     }
-    void reclaimRun(run).then((note) => settleStop(run, note))
+    void reclaimRun(run).then((note) => { releaseEnvironments(); settleStop(run, note) })
   }
 
   /** 生命探测——**只看「连还通不通」**，不看它在不在干活（长测试静默照样是活的）。 */
   const probe = setInterval(() => {
-    for (const executor of [...executors]) {
-      if (executor.run.ended !== undefined || executor.link === undefined) continue
-      executor.pingSeq += 1
-      executor.link.send({ t: 'ping', seq: executor.pingSeq })
-    }
-
-    /**
-     * **重启核对出来的那些「待确认」也要往下走**（U49）。
-     *
-     * 那些记录说的是「上一次管理者退出时它还在」——而它多半正在收尾，几秒后就没了。
-     * 不往下走的话，那一条会话会**永远**停在「状态待确认」（用户看得见，却什么也没发生）。
-     * 判据仍是**事实**：它那个进程还在不在。
-     *
-     * ⚠️ **「在不在」是两问**（U50）：号在，且那个号上站着的还是当初那一个（`holdsPid`）
-     * ——只问前一半的话，一个复用了同一个号的无关进程会把这条会话永远钉在「待确认」上
-     * （U49 如实记过的那条限度）。
-     *
-     * ⚠️ **只查我们记过号的那些**（不是扫全机 PID）——与设计那条一致：生命探测
-     * 「不扫描全机 PID、不以 CPU 阈值自动杀进程」。
-     */
-    let moved = false
-    for (const [session, run] of lastRuns) {
-      if (run.ended !== undefined || run.stopping) continue
-      if (liveOf(session) !== undefined) continue
-      if (holdsPid(run, startTimeOf)) continue
-
-      run.ended = { at: now(), why: '它已经不在了', kind: 'crashed' }
-      refresh(run, now())
-      moved = true
-      // 落定为「异常退出」的这一刻，顺带把它的自有进程组收回来（U50）＋回那一拍
-      afterEnd(run)
-    }
-    if (moved) saveRuns()
-    // **顺带把运行事实重推一次**（U49）——同一趟「有限频率」，为的是「多久了」那一格。
-    //
-    // 由头：长测试**没有输出、没有事件**，而列表上「已跑 3 分 12 秒」这件事仍在变。
-    // 不推的话那一格就冻在开列表那一刻（用户看着它，它却不动）。这不是心跳伪装进展
-    // ——推的是**时长事实**，一个字都没说「它在干活」（`progress` 只由业务里程碑更新）。
+    for (const executor of executors) executor.ledger.list()
+    releaseEnvironments()
     pushRuns()
   }, probeIntervalMs)
   probe.unref?.()
@@ -2357,28 +2246,29 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
   let shutdownInFlight: Promise<void> | undefined
   let admissionClosed = false
   function stop(why: string): void {
-    if (storeClosed || shutdownInFlight !== undefined) return
-    // 拒绝新执行立即生效；持久门失败仍须在下次停止时重试。
-    stopped = true
-    clearInterval(probe)
-    if (pushTimer !== undefined) clearTimeout(pushTimer)
-    native.changed()
-    if (!admissionClosed) {
-      try {
-        collaboration.shutdown(why)
-        options.lifecycle?.closeAdmission()
-        admissionClosed = true
-      } catch (error) {
-        options.onShutdownError?.(`关闭工作准入失败：${String(error)}`)
-        return
-      }
-    }
-    shutdownInFlight = shutdown(why).catch((error) => {
+    void beginStop(why).catch(error => {
       const reason = `未能确认全部工作已停止：${String(error)}`
       options.log?.(reason)
       diagnosticLog.write('error', 'manager.shutdown.failed', identity)
       options.onShutdownError?.(reason)
-    }).finally(() => { shutdownInFlight = undefined })
+    })
+  }
+  function beginStop(why: string): Promise<void> {
+    if (storeClosed) return Promise.resolve()
+    if (shutdownInFlight !== undefined) return shutdownInFlight
+    stopped = true
+    clearInterval(probe)
+    if (pushTimer !== undefined) clearTimeout(pushTimer)
+    native.changed()
+    try {
+      if (!admissionClosed) {
+        collaboration.shutdown(why)
+        options.lifecycle?.closeAdmission()
+        admissionClosed = true
+      }
+    } catch (error) { return Promise.reject(error) }
+    shutdownInFlight = shutdown(why).finally(() => { shutdownInFlight = undefined })
+    return shutdownInFlight
   }
 
   async function shutdown(why: string): Promise<void> {
@@ -2403,9 +2293,9 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
       while (owned.some((one) => !one.exited && one.run.ended === undefined) && Date.now() < deadline) await Bun.sleep(25)
     }
     await until(stopGraceMs)
-    for (const one of owned) if (!one.exited && one.run.ended === undefined) one.spawned.kill('SIGTERM')
+    for (const one of owned) if (!one.exited && one.run.ended === undefined) one.spawned.cancel()
     await until(stopKillMs)
-    for (const one of owned) if (!one.exited && one.run.ended === undefined) one.spawned.kill('SIGKILL')
+    for (const one of owned) if (!one.exited && one.run.ended === undefined) one.spawned.cancel()
     await until(stopKillMs)
     if (owned.some((one) => !one.exited && one.run.ended === undefined)) throw new Error('仍有执行资源未核销')
     await Promise.all([...reclaiming.values()])
@@ -2420,13 +2310,16 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     }
     const extensionError = await extensionResult
     if (extensionError !== undefined) throw new Error(extensionError)
-    await preflight
+    await Promise.all([...environments.values()].map(network => network.close()))
+    await Promise.all([...closingEnvironments])
+    environments.clear()
     if (saveTimer !== undefined) clearTimeout(saveTimer)
     saveRuns(true)
     // 收摊只断连接。原先还给每个窗口补一句「Magic Code 已退出」——那一行没有别处没有的信息：
     // 同一件事底栏已经说了（还多给 ctrl+r / ctrl+c 两个入口），留稿说明另说一件事。
     for (const conn of clients.values()) conn.link.close()
     clients.clear()
+    await closeConfigWatch()
     native.close()
     server.stop(true)
     clearRecord(paths)
@@ -2435,10 +2328,17 @@ function bindManager(options: ManagerOptions, now: () => number): Manager | unde
     options.log?.(`管理者收摊（${why}）`)
     diagnosticLog.write('info', 'manager.stopped', identity)
     await diagnosticLog.close()
+    await options.beforeExit?.()
     settle()
   }
 
-  for (const run of lastRuns.values()) if (run.ended !== undefined) afterEnd(run)
+  await recovering
+  await Promise.all([...lastRuns.values()].map(async run => {
+    if (run.ended === undefined) return
+    const note = run.owned.length > 0 ? await reclaimRun(run) : undefined
+    settleStop(run, note)
+  }))
+  available = true
   options.log?.(`管理者就位 pid=${manager.record.pid} socket=${paths.socket}`)
   return manager
 }
@@ -2494,39 +2394,33 @@ function clearRecord(paths: RunPaths): void {
   }
 }
 
-/**
- * 读上一次留下的那份运行登记——**读不懂＝没有**（同 `manager.json` 那条口径）。
- *
- * 一处**逐条**校验：这份文件是诊断品，不是权威状态，坏了不该拦住启动；但读进来的
- * 每一条都得是像样的（按会话、代次、时刻），否则「重启核对」会拿着半截记录乱判。
- */
+/** 持久工具归属；存在但格式无效时拒绝启动，不能把未读懂的责任当作不存在。 */
 export function readRuns(paths: RunPaths): readonly StoredRun[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(readFileSync(paths.runs, 'utf8'))
-  } catch {
-    return []
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error(`运行归属记录不可读：${paths.runs}`, { cause: error })
   }
 
-  if (typeof parsed !== 'object' || parsed === null) return []
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('运行归属记录形状无效')
   const runs = (parsed as Partial<StoredRuns>).runs
-  if (!Array.isArray(runs)) return []
+  if (!Array.isArray(runs)) throw new Error('运行归属记录缺少 runs')
 
   const kept: StoredRun[] = []
   for (const one of runs) {
-    if (typeof one !== 'object' || one === null) continue
+    if (typeof one !== 'object' || one === null) throw new Error('运行归属条目无效')
     const run = one as Partial<StoredRun>
-    if (typeof run.session !== 'string' || run.session === '') continue
-    if (typeof run.gen !== 'number' || typeof run.startedAt !== 'number') continue
-    if (!Array.isArray(run.workspace)) continue
+    if (run.session !== null && (typeof run.session !== 'string' || run.session === '')) throw new Error('运行归属缺少会话身份')
+    if (typeof run.gen !== 'number' || typeof run.startedAt !== 'number') throw new Error('运行归属代次无效')
+    if (!Array.isArray(run.workspace) || !run.workspace.every(root => typeof root === 'string')) throw new Error('运行归属工作区无效')
 
     const owned = ownedOf(run.owned)
     kept.push({
       session: run.session,
       gen: run.gen,
       ...(typeof run.executionId === 'string' ? { executionId: run.executionId } : {}),
-      ...(typeof run.pid === 'number' ? { pid: run.pid } : {}),
-      ...(typeof run.procStartedAt === 'number' ? { procStartedAt: run.procStartedAt } : {}),
       startedAt: run.startedAt,
       workspace: run.workspace,
       state: run.state ?? 'idle',
@@ -2547,17 +2441,18 @@ export function readRuns(paths: RunPaths): readonly StoredRun[] {
  * 一条一条校验（`noticeOf`）：坏一条丢一条，其余照收——它是便条，不是权威状态。
  */
 function ownedOf(raw: unknown): readonly OwnedProcess[] | undefined {
-  if (!Array.isArray(raw)) return undefined
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) throw new Error('工具归属账无效')
 
   const kept: OwnedProcess[] = []
   for (const one of raw) {
-    if (typeof one !== 'object' || one === null) continue
+    if (typeof one !== 'object' || one === null) throw new Error('工具归属条目无效')
     const group = one as Partial<OwnedProcess>
-    if (typeof group.pgid !== 'number' || !Number.isInteger(group.pgid) || group.pgid <= 0) continue
-    if (typeof group.what !== 'string') continue
+    if (typeof group.pgid !== 'number' || !Number.isInteger(group.pgid) || group.pgid <= 0) throw new Error('工具归属进程组无效')
+    if (typeof group.what !== 'string') throw new Error('工具归属名称无效')
     // `kind` 是三位里的一个——**认不出的整条丢**（拿不准的那一组不当数：它的用途是
     // 「这条会话还有没有后台命令在跑」，猜一个只会让那句实话变成假话）
-    if (group.kind !== 'exec' && group.kind !== 'background' && group.kind !== 'mcp') continue
+    if (group.kind !== 'exec' && group.kind !== 'background' && group.kind !== 'mcp') throw new Error('工具归属种类无效')
     kept.push({
       pgid: group.pgid,
       startedAt: typeof group.startedAt === 'number' ? group.startedAt : undefined,
@@ -2576,13 +2471,14 @@ function ownedOf(raw: unknown): readonly OwnedProcess[] | undefined {
  * 少一条诊断；而这一份**重启时要逐条读**——写一半被看见就是拿着半截记录乱判。
  * 临时文件先写、再换名，读到的要么是上一份完整的、要么是这一份完整的。
  */
-function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
+export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
   const body: StoredRuns = { v: RUNS_VERSION, at, runs }
   const temp = `${paths.runs}.tmp-${process.pid}`
   try {
     writeFileSync(temp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
     renameSync(temp, paths.runs)
-  } catch {
-    // 写不下去只影响重启核对的那一份取材——它为这个把管理者拦下来说不过去
+  } catch (error) {
+    try { unlinkSync(temp) } catch {}
+    throw new Error(`运行归属登记失败：${String(error)}`)
   }
 }

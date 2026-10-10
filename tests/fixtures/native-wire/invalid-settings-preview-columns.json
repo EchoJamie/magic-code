@@ -1,10 +1,8 @@
 {
-  "family": "NativeRequest",
+  "family": "SettingsRequest",
   "valid": false,
   "message": {
-    "t": "native.settings.read",
     "request": "settings-one",
-    "serviceInstance": "service-one",
     "preview": {
       "statusLine": {
         "cells": []
@@ -12,6 +10,8 @@
       "columns": 0,
       "reducedMotion": true
     },
-    "base": "/tmp/synthetic"
+    "base": "/tmp/synthetic",
+    "configPath": "/tmp/synthetic/config.json",
+    "home": "/tmp/synthetic"
   }
 }

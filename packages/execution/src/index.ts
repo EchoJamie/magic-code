@@ -82,3 +82,5 @@ export {
   WEB_FETCH_TIMEOUT_MS,
 } from './web.ts'
 export type { WebSourceOptions } from './web.ts'
+
+export { spawnOwned } from './process.ts'

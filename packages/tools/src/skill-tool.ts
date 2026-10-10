@@ -99,7 +99,7 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
       danger: { level: 'light' },
     },
 
-    run(args): ToolRunResult {
+    async run(args, ctx): Promise<ToolRunResult> {
       const name = args['name']
       if (!isText(name)) return refused('参数错误：name 须为非空字符串')
 
@@ -109,13 +109,13 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
       }
 
       // 身份由**这一趟的发现结果**给（名字 → 那一份的真路径）；没有这个名字就照实说
-      const target = resolve(skills, name)
+      const target = (await resolve(skills, name, ctx.signal))
       if (typeof target === 'string') return refused(target)
 
       const read: SkillRead =
         relative === undefined
-          ? skills.readMain(target.name, target.path)
-          : skills.readReference(target.name, target.path, relative)
+          ? (await skills.readMain(target.name, target.path, ctx.signal))
+          : (await skills.readReference(target.name, target.path, relative, ctx.signal))
 
       if (!read.ok) return refused(read.reason)
 
@@ -138,12 +138,13 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
  * 这里也就只剩「有 / 没有」。**不保留那条判定当死代码**：真出现同名的清单，
  * 取的是**靠前那一份**（发现层的次序），此处不另立一套。
  */
-function resolve(
+async function resolve(
   skills: Skills,
   name: string,
-): { readonly name: string; readonly path: string } | string {
+  signal?: AbortSignal,
+): Promise<{ readonly name: string; readonly path: string } | string> {
   // **一次发现，两处用**（挑与报）——现扫本就是每次调用的代价，别为了报错再扫一遍
-  const catalog = skills.discover().skills
+  const catalog = (await skills.discover(signal)).skills
   const found = catalog.find((skill) => skill.name === name)
   if (found !== undefined) return { name, path: found.path }
 

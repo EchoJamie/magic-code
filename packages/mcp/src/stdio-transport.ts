@@ -1,3 +1,4 @@
+import { spawnOwned } from '@magic/execution'
 /**
  * 自有 stdio 传输 —— **归属在启动那一刻就定死**（U38 返工 A 补正）。
  *
@@ -21,7 +22,7 @@
  * 只做「进程 ＋ 两根管子的接法」，协议一件不碰：
  * - **分帧与编解码**取官方 `shared/stdio`（`ReadBuffer` / `serializeMessage`——含最大缓冲上限）；
  * - **协议状态机 · 握手 · 分页**全在官方 `Client` 那一侧（本层只实现它要的 `Transport` 三件）；
- * - **环境**取官方 `client/stdio` 的 `getDefaultEnvironment()`（只带 PATH / HOME 一类，
+ * - **环境**取官方 `client/stdio` 的 `DEFAULT_INHERITED_ENV_VARS()`（只带 PATH / HOME 一类，
  *   用户凭据不外溢——与原来那支传输同一把尺子）；
  * - **不碰 SDK 私有字段**（原来那条路要读 `transport.pid`，SDK 一改就悄悄失效）。
  *
@@ -35,7 +36,7 @@
  * （`detached` 保证它自成一组）。外部无关进程不在组里，扫不到也杀不着。
  */
 
-import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { DEFAULT_INHERITED_ENV_VARS } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import type { ProcessLedger } from '@magic/contracts'
@@ -52,6 +53,10 @@ const GROUP_KILL_GRACE_MS = 1_000
 const POLL_MS = 25
 
 export type OwnedStdioOptions = {
+  readonly environment?: Readonly<Record<string, string>>
+  readonly cwd?: string
+  readonly signal?: AbortSignal
+
   readonly command: string
   readonly args?: readonly string[]
   /** 追加给子进程的环境（密钥从这儿进）——在官方默认环境之上。 */
@@ -85,6 +90,9 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
   let pgid: number | undefined
   let closing: Promise<string | undefined> | undefined
   let closed = false
+  const lifetime = new AbortController()
+  const signal = options.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal
+  let starting: Promise<void> | undefined
   const buffer = new ReadBuffer()
 
   const transport: OwnedStdioTransport = {
@@ -97,31 +105,11 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
       return pgid
     },
 
-    async start(): Promise<void> {
-      if (child !== undefined) throw new Error('这条传输已经起过了')
-
-      const spawned = Bun.spawn([options.command, ...(options.args ?? [])], {
-        // 默认环境（PATH / HOME 一类）＋ 配置里那几个——**用户凭据不外溢**
-        env: { ...getDefaultEnvironment(), ...options.env },
-        stdin: 'pipe',
-        stdout: 'pipe',
-        // TUI 在跑：子进程的 stderr 一行都不能漏到这块屏上（同原传输那一跳）
-        stderr: 'ignore',
-        // **自成进程组**：组长 ＝ 子进程 pid，此后它拉起的一切都在这个组里（见文件头注）
-        detached: true,
-      })
-
-      child = spawned
-      pgid = spawned.pid
-
-      // **记账**（U50）：这一组归我们的执行者——执行者要是被杀了，收尾这一段跑不到，
-      // 那时只有账上这一笔能把它找回来（见 `OwnedStdioOptions.ledger`）。
-      options.ledger?.add({ pgid: spawned.pid, kind: 'mcp', what: `mcp:${options.command}` })
-
-      void pump(spawned)
-      void watchExit(spawned)
+    start(): Promise<void> {
+      if (starting) throw new Error('这条传输已经起过了')
+      starting = start()
+      return starting
     },
-
     async send(message: JSONRPCMessage): Promise<void> {
       const sink = child?.stdin
       if (sink === undefined) throw new Error('这条连接已经关了——没有可写的 stdin')
@@ -140,6 +128,22 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
   }
 
   /** 读 stdout → 分帧 → 交 `onmessage`（分帧与校验都在官方 `ReadBuffer` 里）。 */
+  async function start(): Promise<void> {
+    const environment = options.environment ?? process.env
+    const inherited = Object.fromEntries(DEFAULT_INHERITED_ENV_VARS.flatMap(key => {
+      const value = environment[key]
+      return value === undefined || value.startsWith('()') ? [] : [[key, value]]
+    }))
+    const { process: spawned } = await spawnOwned([options.command, ...(options.args ?? [])], {
+      cwd: options.cwd, env: { ...inherited, ...options.env }, signal, ledger: options.ledger,
+      stdout: 'pipe', stderr: 'ignore', keepStdin: true, kind: 'mcp', what: `mcp:${options.command}`,
+    })
+    child = spawned
+    pgid = spawned.pid
+    void pump(spawned)
+    void watchExit(spawned)
+  }
+
   async function pump(spawned: Bun.Subprocess<'pipe', 'pipe', 'ignore'>): Promise<void> {
     const reader = spawned.stdout.getReader()
 
@@ -188,6 +192,8 @@ export function createOwnedStdioTransport(options: OwnedStdioOptions): OwnedStdi
   }
 
   async function closeOnce(): Promise<string | undefined> {
+    lifetime.abort()
+    await starting?.catch(() => {})
     const spawned = child
     if (spawned === undefined) {
       // 没起过 / 已经收过：**组还在就再确认一次**（组长崩了但组员还在的那种局面）

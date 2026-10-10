@@ -27,8 +27,10 @@ struct McpSettingsPage: View {
                 ]), stamp: snapshot.stamp), name: name) { drafts.mcpEditor = nil }
             }
             Divider(); Text("工作中的连接状态").font(.headline)
-            if snapshot.mcp.isEmpty { Text("当前没有可查询的活动工作。配置条目不代表已连接。").font(.caption).foregroundStyle(.secondary) }
-            ForEach(snapshot.mcp, id: \.self) { work in
+            if let error = model.runtimeSettingsError { Text(error).font(.caption).foregroundStyle(.secondary) }
+            Button("刷新运行状态") { model.readRuntimeSettings() }.disabled(!model.isCurrent)
+            if model.runtimeMcp.isEmpty { Text("当前没有可查询的活动工作。配置条目不代表已连接。").font(.caption).foregroundStyle(.secondary) }
+            ForEach(model.runtimeMcp, id: \.self) { work in
                 Text("工作：\(work["session"].text)").font(.caption).textSelection(.enabled)
                 ForEach(work["servers"].array, id: \.self) { server in
                     HStack(alignment: .top) {
@@ -38,8 +40,8 @@ struct McpSettingsPage: View {
                         }
                         Spacer()
                         Button("重连此工作") {
-                            model.applySettings(.object(["type": .string("mcp.reconnect"), "name": server["server"], "session": work["session"], "gen": work["gen"]]), stamp: snapshot.stamp, key: "reconnect")
-                        }.disabled(model.settingsBusy || work["gen"] == .null)
+                            model.reconnectMcp(session: work["session"].text, gen: Int(work["gen"].number ?? -1), name: server["server"].text)
+                        }.disabled(!model.isCurrent || work["gen"] == .null)
                     }
                 }
             }

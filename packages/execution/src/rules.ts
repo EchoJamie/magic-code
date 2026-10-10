@@ -51,7 +51,7 @@ import type {
   WorkspaceService,
 } from '@magic/contracts'
 import type { Dirent } from 'node:fs'
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, sep } from 'node:path'
 import { expandPatterns, matchesPattern } from './patterns.ts'
 import { isInside } from './workspace.ts'
@@ -79,6 +79,7 @@ export const DEFAULT_RULES_LIMITS: RulesLimits = {
 /** 装配期构造入参——根视图 ＋ 用户显式点名的补充来源 ＋ 上限覆盖位（测试用）。 */
 export type RulesOptions = {
   /** 工作区（根的**两张表**都在它手上——落点判定与执行域同源）。 */
+  readonly signal?: AbortSignal
   readonly workspace: WorkspaceService
   /**
    * **用户显式配置**的补充来源（`rules.sources`，`~` 已由配置加载器展开）——
@@ -187,7 +188,7 @@ type SourceBook = 'sources' | 'linkSources'
  *   底下那一摊一份都没看过；⚠️ 只认 `rules.sources` 那一本，`linkSources` 是许可、
  *   不算材料，见那条注）。
  */
-type Marks = { truncated: boolean }
+type Marks = { truncated: boolean; signal: AbortSignal | undefined }
 
 /** 一个目标路径归位后的三件——它归哪条根、真身该怎么写、相对根是什么。 */
 type Place = {
@@ -207,15 +208,16 @@ export function createProjectRules(options: RulesOptions): ProjectRules {
   const limits: RulesLimits = { ...DEFAULT_RULES_LIMITS, ...options.limits }
 
   return {
-    load: (targets: readonly string[]): RulesLoad => load(options, limits, targets),
+    load: async (targets, signal) => await load(options, limits, targets, signal),
   }
 }
 
-function load(
+async function load(
   options: RulesOptions,
   limits: RulesLimits,
   targets: readonly string[],
-): RulesLoad {
+  signal?: AbortSignal,
+): Promise<RulesLoad> {
   const workspace = options.workspace
   const roots = workspace.roots()
   const declared = workspace.declaredRoots()
@@ -227,11 +229,12 @@ function load(
    * ⚠️ **它得先于下面两处归位**（2026-09-20 五轮裁）：`resolveSources` 也是扫描入口之一
    * （用户点名的来源没归位成功＝那一摊从没看过），故那两处要能在它归位时就地置位。
    */
-  const marks: Marks = { truncated: false }
+  const marks: Marks = { truncated: false, signal: options.signal === undefined ? signal : signal === undefined ? options.signal : AbortSignal.any([options.signal, signal]) }
+  marks.signal?.throwIfAborted()
   /** 补充来源（**读进来**的那一份名册）——它们同时也是「允许读」的一处。 */
-  const sources = resolveSources(options.sources ?? [], 'sources', problems, marks)
+  const sources = (await resolveSources(options.sources ?? [], 'sources', problems, marks))
   /** 放行名册（**只放行、不加载正文**）——跟出去之后读到的是什么就还是什么。 */
-  const linkSources = resolveSources(options.linkSources ?? [], 'linkSources', problems, marks)
+  const linkSources = (await resolveSources(options.linkSources ?? [], 'linkSources', problems, marks))
   /** 白名单本体——**递归下探前先问它**：一份都不读的地方，连目录都不进（见 `walk`）。 */
   const allowed = (real: string): boolean =>
     isAllowed(real, roots, declared, [...sources, ...linkSources])
@@ -239,48 +242,48 @@ function load(
   const directoryDocs = memoDirectoryDocs(problems)
 
   // ① 各根一级——目录规约 ＋ 两个规则目录（无条件的那几条在会话开局就进上下文）
-  roots.forEach((root, index) => {
-    candidates.push(...directoryDocs(root, root, index))
+  for (const [index, root] of roots.entries()) {
+    candidates.push(...(await directoryDocs(root, root, index)))
     for (const { segment, kind } of RULES_DIRS) {
       candidates.push(
-        ...scanRulesDir(join(root, segment, 'rules'), root, kind, index, problems, allowed, marks),
+        ...(await scanRulesDir(join(root, segment, 'rules'), root, kind, index, problems, allowed, marks)),
       )
     }
-  })
+  }
 
   // ② 操作目标的**祖先目录**——「近目录约定仅细化其子树」，故只沿目标往上走，不横着扫
   const places: Place[] = []
   for (const raw of targets) {
-    const place = placeTarget(raw, workspace, roots, declared)
+    const place = (await placeTarget(raw, workspace, roots, declared))
     if (place === undefined) continue
     places.push(place)
 
-    for (const dir of ancestorDirs(place.absolute, place.root)) {
-      candidates.push(...directoryDocs(dir, place.root, roots.indexOf(place.root)))
+    for (const dir of (await ancestorDirs(place.absolute, place.root))) {
+      candidates.push(...(await directoryDocs(dir, place.root, roots.indexOf(place.root))))
     }
   }
 
   // ③ 补充来源——用户点名的才读（根外那些也由此有了一条名正言顺的路）
   for (const source of sources) {
-    candidates.push(...scanSource(source, roots, roots.length, problems, marks))
+    candidates.push(...(await scanSource(source, roots, roots.length, problems, marks)))
   }
 
-  return select({ candidates, places, limits, problems, allowed, marks })
+  return (await select({ candidates, places, limits, problems, allowed, marks }))
 }
 
 // ══ ① 目录规约 ════════════════════════════════════════════════════════
 
-type DirectoryDocs = (dir: string, root: string, rootIndex: number) => readonly Candidate[]
+type DirectoryDocs = (dir: string, root: string, rootIndex: number) => Promise<readonly Candidate[]>
 
 /** 同一个目录只判一次——根一级与某个目标的祖先目录常常撞上同一处。 */
 function memoDirectoryDocs(problems: RulesProblem[]): DirectoryDocs {
   const memo = new Map<string, readonly Candidate[]>()
 
-  return (dir, root, rootIndex) => {
+  return async (dir, root, rootIndex) => {
     const cached = memo.get(dir)
     if (cached !== undefined) return cached
 
-    const found = directoryDocsOf(dir, root, rootIndex, problems)
+    const found = (await directoryDocsOf(dir, root, rootIndex, problems))
     memo.set(dir, found)
     return found
   }
@@ -290,12 +293,12 @@ function memoDirectoryDocs(problems: RulesProblem[]): DirectoryDocs {
  * 某个目录的目录规约——`AGENTS.md` 优先；两条入口指同一份实体时只读一次；
  * 两份**不同实体**时采 AGENTS，并把落选的那份**说出来**（不静默混成一份）。
  */
-function directoryDocsOf(
+async function directoryDocsOf(
   dir: string,
   root: string,
   rootIndex: number,
   problems: RulesProblem[],
-): readonly Candidate[] {
+): Promise<readonly Candidate[]> {
   const present: {
     readonly name: string
     readonly file: string
@@ -305,7 +308,7 @@ function directoryDocsOf(
 
   for (const name of DIRECTORY_DOCS) {
     const file = join(dir, name)
-    const presence = presenceOf(file)
+    const presence = (await presenceOf(file))
     if (presence.kind === 'absent') continue
     present.push({ name, file, kind: name === 'AGENTS.md' ? 'agents' : 'claude-md', presence })
   }
@@ -342,7 +345,7 @@ function directoryDocsOf(
   const second = present[1] as (typeof present)[number]
 
   // **软链接指同实体**——两个入口指着一份文件，只读一次（`first` 是 AGENTS 那一头）
-  if (sameFile(first.file, second.file)) {
+  if ((await sameFile(first.file, second.file))) {
     return [candidateOf(first.kind, first.file, root, dir, rootIndex, said(first.name))]
   }
 
@@ -378,16 +381,16 @@ type Presence =
   | { readonly kind: 'file' | 'absent' }
   | { readonly kind: 'unreadable'; readonly reason: string }
 
-function presenceOf(path: string): Presence {
+async function presenceOf(path: string): Promise<Presence> {
   try {
     // `lstat`（**不跟链接**）：断链在这儿照样是个「项在」，那正是要害
-    if (lstatSync(path).isDirectory()) return { kind: 'absent' }
+    if ((await (await lstat(path)).isDirectory())) return { kind: 'absent' }
   } catch {
     return { kind: 'absent' } // 项都不在
   }
 
   try {
-    return statSync(path).isFile() ? { kind: 'file' } : { kind: 'absent' }
+    return (await stat(path)).isFile() ? { kind: 'file' } : { kind: 'absent' }
   } catch (error) {
     return { kind: 'unreadable', reason: reasonOf(error) }
   }
@@ -422,7 +425,7 @@ function candidateOf(
  *
  * 目录不存在＝正常（多数项目只有一个入口，甚至一个都没有），不出声。
  */
-function scanRulesDir(
+async function scanRulesDir(
   dir: string,
   root: string,
   kind: ProjectRule['kind'],
@@ -430,17 +433,17 @@ function scanRulesDir(
   problems: RulesProblem[],
   allowed: (real: string) => boolean,
   marks: Marks,
-): readonly Candidate[] {
+): Promise<readonly Candidate[]> {
   // **目录存在判断也是扫描入口**（2026-09-20 四轮裁）：`.magic` 那一层不可读时，旧写法
   // `isDirectory` 把「看不成的目录」答成「没有这个目录」——整棵原生规则树一份都没看过，
   // 而它与「这个项目压根没有 `.magic/rules`」长得一模一样。**不存在的照旧正常**
   // （多数项目就没有这一处），看不成的报出来并置完整性位。
-  const isDir = tryLook(dir, '目录读不动', () => statSync(dir).isDirectory(), problems, marks)
+  const isDir = (await tryLook(dir, '目录读不动', async () => (await (await stat(dir)).isDirectory()), problems, marks))
   if (isDir.kind !== 'ok' || !isDir.value) return []
 
   const label = relativeTo(root, dir)
 
-  return walkMarkdown(dir, allowed, problems, marks).map((file) =>
+  return (await walkMarkdown(dir, allowed, problems, marks)).map((file) =>
     candidateOf(
       kind,
       file,
@@ -469,19 +472,19 @@ function scanRulesDir(
  * 排序（名字序）在这里就定下：文件系统返回的次序不作保证，两趟读出两种次序会让同一批
  * 材料在系统提示词里换个排法——**判「送过没有」比的是材料本身、不比次序**，但摆出来得是稳的。
  */
-function walkMarkdown(
+async function walkMarkdown(
   dir: string,
   allowed: (real: string) => boolean,
   problems: RulesProblem[],
   marks: Marks,
-): readonly string[] {
+): Promise<readonly string[]> {
   const found: string[] = []
-  walk(dir, found, new Set<string>(), problems, allowed, marks)
+  await walk(dir, found, new Set<string>(), problems, allowed, marks)
 
   return found.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
 }
 
-function walk(
+async function walk(
   dir: string,
   found: string[],
   visited: Set<string>,
@@ -489,7 +492,7 @@ function walk(
   allowed: (real: string) => boolean,
   marks: Marks,
   depth = 0,
-): void {
+): Promise<void> {
   // 环之外还有一层兜底：链接可以让目录无限深，别把调用栈吃掉
   if (depth > 32) {
     problems.push({ path: dir, kind: 'error', message: '目录层级过深（超过 32 层）——已停在这一层，不再往下' })
@@ -503,7 +506,7 @@ function walk(
   // **真实路径解析同样是扫描入口**，且正是本轮的复现点（2026-09-20 四轮裁）：Bun 的
   // `realpath` 对**读不进去的目录**直接 `EACCES`（Node 不——本机实测 Node 给得出真路径），
   // 旧写法在这儿静默 `return`，于是 `locked` 那一摊**整个消失得无声无息**。
-  const resolved = tryLook(dir, '目录读不动', () => realpathSync(dir), problems, marks)
+  const resolved = (await tryLook(dir, '目录读不动', async () => (await realpath(dir)), problems, marks))
   if (resolved.kind !== 'ok') return
   const real = resolved.value
 
@@ -532,18 +535,19 @@ function walk(
   // **读条目也是扫描入口**（2026-09-20 四轮裁）：旧写法只报一句错就 `return`——底下那一摊
   // 一份都没看过，而 `documents` 里压根看不出少了什么。「报得出错」与「回来的是不是全的」
   // 是两件事，故这一支与层级到顶**同一个出口**（`marks`）。
-  const read = tryLook(dir, '目录读不动', () => readdirSync(dir, { withFileTypes: true }), problems, marks)
+  const read = (await tryLook(dir, '目录读不动', async () => (await readdir(dir, { withFileTypes: true })), problems, marks))
   if (read.kind !== 'ok') return
   const entries: Dirent[] = read.value
 
   for (const entry of entries) {
+    marks.signal?.throwIfAborted()
     const child = join(dir, entry.name)
 
     // 类型按 `stat` 判（**跟链接**）——Dirent 的类型位对符号链接既非目录也非文件
     let kind: 'file' | 'directory' | 'other' = 'other'
     try {
-      const info = statSync(child)
-      kind = info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other'
+      const info = (await stat(child))
+      kind = (await info.isDirectory()) ? 'directory' : info.isFile() ? 'file' : 'other'
     } catch (error) {
       // **文件项在、目标取不到**（断链 / 目标没了 / 没权限）——`*.md` 照样收成候选，
       // 并**明确报出来**（2026-09-20 二轮裁，改了旧口径）。
@@ -573,7 +577,7 @@ function walk(
       continue
     }
 
-    if (kind === 'directory') walk(child, found, visited, problems, allowed, marks, depth + 1)
+    if (kind === 'directory') (await walk(child, found, visited, problems, allowed, marks, depth + 1))
     else if (kind === 'file' && entry.name.endsWith('.md')) found.push(child)
   }
 }
@@ -604,17 +608,18 @@ function walk(
  * （这条路可以跟出去），许可成不成立由链接那一头说话（`isAllowed` / `walk` 的白名单），
  * **一条没用上的许可归位不成，不改变这一趟的材料全不全**，故只报、不置位。
  */
-function resolveSources(
+async function resolveSources(
   raw: readonly string[],
   book: SourceBook,
   problems: RulesProblem[],
   marks: Marks,
-): readonly Source[] {
+): Promise<readonly Source[]> {
   const resolved: Source[] = []
   /** 这一本名册的条目**没归位成功**时算不算「材料不全」——由头见上面那段注。 */
   const material = book === 'sources'
 
-  raw.forEach((entry, index) => {
+  for (const [index, entry] of raw.entries()) {
+    marks.signal?.throwIfAborted()
     const at = `rules.${book} 第 ${index + 1} 条`
 
     if (!isAbsolute(entry)) {
@@ -627,25 +632,25 @@ function resolveSources(
       // 连猜都猜不了**（相对串指哪儿取决于进程在哪儿启动）。报的是「怎么写才合格」，
       // 不是「那儿没有东西」——故与下面两支同一个出口。
       if (material) marks.truncated = true
-      return
+      continue
     }
 
     let real: string
     try {
-      real = realpathSync(entry)
+      real = (await realpath(entry))
     } catch (error) {
       problems.push({ path: entry, kind: 'error', message: `${at}不存在或不可达——${reasonOf(error)}` })
       if (material) marks.truncated = true
-      return
+      continue
     }
 
     try {
-      resolved.push({ real, isDir: statSync(real).isDirectory() })
+      resolved.push({ real, isDir: (await (await stat(real)).isDirectory()) })
     } catch (error) {
       problems.push({ path: entry, kind: 'error', message: `${at}取不到状态——${reasonOf(error)}` })
       if (material) marks.truncated = true
     }
-  })
+  }
 
   return resolved
 }
@@ -656,17 +661,17 @@ function resolveSources(
  * **落点照旧要报**：落在某条根内就归那条根（作用域说得清）；根外的是**用户点名的全局来源**
  * （`root` / `scope` 为 `null`）——那是「用户说了要读」，不是「Magic 替它猜了个作用域」。
  */
-function scanSource(
+async function scanSource(
   source: Source,
   roots: readonly string[],
   rootIndex: number,
   problems: RulesProblem[],
   marks: Marks,
-): readonly Candidate[] {
+): Promise<readonly Candidate[]> {
   const home = roots.find((root) => isInside(source.real, root)) ?? null
   // 用户点名的这一处**连同它底下**都算允许读——这正是不落根内的补充来源存在的理由
   const inside = (real: string): boolean => isInside(real, source.real)
-  const files = source.isDir ? walkMarkdown(source.real, inside, problems, marks) : [source.real]
+  const files = source.isDir ? (await walkMarkdown(source.real, inside, problems, marks)) : [source.real]
 
   return files.map((file) => {
     const name = home === null ? file : relativeTo(home, file)
@@ -676,14 +681,14 @@ function scanSource(
 
 // ══ ④ 去重 → 读 → 解析 → 条件过滤 ════════════════════════════════════
 
-function select(input: {
+async function select(input: {
   readonly candidates: readonly Candidate[]
   readonly places: readonly Place[]
   readonly limits: RulesLimits
   readonly problems: RulesProblem[]
   readonly allowed: (real: string) => boolean
   readonly marks: Marks
-}): RulesLoad {
+}): Promise<RulesLoad> {
   const { candidates, places, limits, problems, allowed, marks } = input
   const loaded: Loaded[] = []
   /** 物理同源去重——**真路径 ＋ 实际范围**（见 `identityOf`：范围不同＝两条）。 */
@@ -716,11 +721,13 @@ function select(input: {
    */
   const nativeKeys = new Set<string>()
   for (const candidate of candidates) {
+    marks.signal?.throwIfAborted()
     if (candidate.kind !== 'magic-rules' || candidate.ruleKey === null) continue
     nativeKeys.add(`${candidate.root ?? ''} ${candidate.ruleKey}`)
   }
 
   for (const candidate of candidates) {
+    marks.signal?.throwIfAborted()
     if (loaded.length >= limits.maxDocuments) {
       problems.push({
         path: candidate.file,
@@ -733,7 +740,7 @@ function select(input: {
 
     let real: string
     try {
-      real = realpathSync(candidate.file)
+      real = (await realpath(candidate.file))
     } catch (error) {
       // **取不到真身**——目录规约「多半目录都没有」不是错：那种情形压根成不了候选；断链那两种
       // （规则文档在 `walk` 那一支、目录规约在 `directoryDocsOf` 那一支）由**发现面各自报过了**，
@@ -813,7 +820,7 @@ function select(input: {
 
     let size: number
     try {
-      size = statSync(real).size
+      size = (await stat(real)).size
     } catch (error) {
       // 真身取到了、状态却读不出来——同一条政策：报出来 ＋ 认「读不完整」（上面那一支的注）
       problems.push({ path: candidate.file, kind: 'error', message: `这一份读不动（取不到状态）——${reasonOf(error)}` })
@@ -840,7 +847,7 @@ function select(input: {
 
     let text: string
     try {
-      text = readFileSync(real, 'utf8')
+      text = (await readFile(real, 'utf8'))
     } catch (error) {
       // **读不出来**（权限 / 设备 / 半途被删）——同一条政策：报具体诊断 ＋ 认「读不完整」
       problems.push({ path: candidate.file, kind: 'error', message: `读不到：${reasonOf(error)}` })
@@ -1096,9 +1103,9 @@ function placeTarget(
  * **只走到根为止**：根之外的家目录 / 上级仓库不是这个工作区的规约面——那是「读任意文件」
  * 那条路的入口，不是「按目录就近取约定」。
  */
-function ancestorDirs(absolute: string, root: string): readonly string[] {
+async function ancestorDirs(absolute: string, root: string): Promise<readonly string[]> {
   const chain: string[] = []
-  let current = isDirectory(absolute) ? absolute : dirname(absolute)
+  let current = (await isDirectory(absolute)) ? absolute : dirname(absolute)
 
   for (let guard = 0; guard < 256; guard += 1) {
     if (!isInside(current, root)) break
@@ -1173,15 +1180,15 @@ type Looked<T> =
  * 读不懂 · 单份超限 · 白名单外的链接 · 同一处进来两遍——那些是「这一份这么办」，
  * 报出来、照旧往下走（白名单那条是产品策略，出口是配 `linkSources`，三轮已裁不停批）。
  */
-function tryLook<T>(
+async function tryLook<T>(
   at: string,
   what: string,
-  attempt: () => T,
+  attempt: () => Promise<T>,
   problems: RulesProblem[],
   marks: Marks,
-): Looked<T> {
+): Promise<Looked<T>> {
   try {
-    return { kind: 'ok', value: attempt() }
+    return { kind: 'ok', value: await attempt() }
   } catch (error) {
     if (gone(error)) return { kind: 'absent' }
     unscanned(problems, marks, at, what, error)
@@ -1206,26 +1213,26 @@ function unscanned(problems: RulesProblem[], marks: Marks, at: string, what: str
   marks.truncated = true
 }
 
-function tryRealpath(path: string): string | undefined {
+async function tryRealpath(path: string): Promise<string | undefined> {
   try {
-    return realpathSync(path)
+    return (await realpath(path))
   } catch {
     return undefined
   }
 }
 
-function isDirectory(path: string): boolean {
+async function isDirectory(path: string): Promise<boolean> {
   try {
-    return statSync(path).isDirectory()
+    return (await (await stat(path)).isDirectory())
   } catch {
     return false
   }
 }
 
 /** 两条路径是不是同一份文件（软链接指同实体）。 */
-function sameFile(left: string, right: string): boolean {
-  const leftReal = tryRealpath(left)
-  const rightReal = tryRealpath(right)
+async function sameFile(left: string, right: string): Promise<boolean> {
+  const leftReal = (await tryRealpath(left))
+  const rightReal = (await tryRealpath(right))
 
   return leftReal !== undefined && leftReal === rightReal
 }

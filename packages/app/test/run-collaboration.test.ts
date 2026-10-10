@@ -32,8 +32,8 @@ for (const response of ['clarify', 'reject', 'accept'] as const) {
       expect(f.requests()).toHaveLength(2)
       const processes = f.manager.executors()
       expect(processes).toHaveLength(2)
-      expect(new Set(processes.map(one => one.pid)).size).toBe(2)
-      expect(processes.every(one => one.pid !== undefined && one.pid !== process.pid)).toBe(true)
+      expect(new Set(processes.map(one => one.gen)).size).toBe(2)
+      expect(processes.every(one => one.gen !== undefined)).toBe(true)
       memberReply.release()
       await f.wait('成员响应落库', () => f.delegation()?.state === (response === 'accept' ? 'accepted' : response === 'clarify' ? 'clarification' : 'rejected'))
       if (response === 'accept') {
@@ -193,7 +193,7 @@ test('真实入口 detached 后根窗口保留成员审批、目标及草稿，�
     const dock = f.shell.getView().dock
     if (dock.kind !== 'decision') throw new Error('成员审批没有展示')
     rootReply.release()
-    await f.wait('入口真实退出且窗口收到 detached', () => detached.length > 0 && f.processExits.some(one => one.pid === root.pid)
+    await f.wait('入口真实退出且窗口收到 detached', () => detached.length > 0 && f.agentExits.some(one => one.gen === root.gen)
       && !f.manager.executors().some(one => one.session === origin))
     expect(f.manager.clients()).toBe(1)
     expect(f.shell.getView().sessionId).toBe(origin)
@@ -308,7 +308,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
       f.manager.runs().find(one => one.session === f.session())?.state === 'idle')
     const member = f.member()!
     const origin = f.session()!
-    const pids = f.manager.executors().map(one => one.pid)
+    const pids = f.manager.executors().map(one => one.gen)
     expect(pids).toHaveLength(2)
     memberReply.release()
     await f.wait('close 后入口实际请求最终正文', () => f.requests().length === 5)
@@ -320,7 +320,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
     expect(f.delegation()?.state).toBe('received')
     expect(f.delegation()?.receivedAt).toBeDefined()
     expect(f.collaboration()?.state).toBe('closing')
-    expect(f.manager.executors().map(one => one.pid)).toEqual(pids)
+    expect(f.manager.executors().map(one => one.gen)).toEqual(pids)
     expect(f.closedViews).toEqual([])
 
     finalReply.release()
@@ -350,7 +350,7 @@ test('显式正常收尾：收下成员交付后仍能写最终正文，资源�
     expect(f.errors).toEqual([])
     expect(f.events.filter(one => one.kind === 'error')).toEqual([])
     // 按收到 closed 当时的退出事实裁决，不能用随后到达的 onExit 掩盖提前闭合。
-    expect(f.closedViews.every(view => view.livePids.length === 0 && pids.every(pid => view.exitedPids.includes(pid)))).toBe(true)
+    expect(f.closedViews.every(view => view.liveGenerations.length === 0 && pids.every(pid => view.exitedGenerations.includes(pid)))).toBe(true)
   } finally { memberReply.release(); finalReply.release(); await f.close() }
 }, 30000)
 
@@ -446,11 +446,10 @@ for (const response of ['clarify', 'reject'] as const) {
       const identity = f.manager.identity
       const waiting = f.store.collaboration.listWaits(work.collaborationId)[0]!
       const original = f.manager.executors().find(one => one.session === work.originSessionId)!
-      expect(original.pid).toBeDefined()
-      expect(original.pid).not.toBe(process.pid)
+      expect(original.gen).toBeDefined()
       f.closeWindows()
       await f.wait('全部窗口关闭且入口真实 onExit 后已无 executor', () => f.manager.clients() === 0 &&
-        f.processExits.some(one => one.pid === original.pid) && !f.manager.executors().some(one => one.session === work.originSessionId))
+        f.agentExits.some(one => one.gen === original.gen) && !f.manager.executors().some(one => one.session === work.originSessionId))
       expect(f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)?.state).toBe('waiting')
       await Bun.sleep(350)
       expect(f.requests()).toHaveLength(2)
@@ -460,8 +459,8 @@ for (const response of ['clarify', 'reject'] as const) {
       await f.wait('无窗口的同一宿主启动新代入口 HTTP', () => f.requests().length >= 3)
       const resumed = f.manager.executors().find(one => one.session === work.originSessionId)!
       expect(resumed.gen).not.toBe(original.gen)
-      expect(resumed.pid).toBeDefined()
-      expect(resumed.pid).not.toBe(original.pid)
+      expect(resumed.gen).toBeDefined()
+      expect(resumed.gen).not.toBe(original.gen)
       expect(f.manager.identity).toEqual(identity)
       expect(f.manager.clients()).toBe(0)
       expect(requestText(f.requests()[2])).toContain(reason)
@@ -473,7 +472,7 @@ for (const response of ['clarify', 'reject'] as const) {
       rootReply.release()
       await f.wait('新代入口最终正文持久化', async () => (await Array.fromAsync(f.store.readEntries(work.originSessionId)))
         .some(one => one.kind === 'assistant' && 'text' in one.content && one.content.text === finalText))
-      await f.wait('新代入口结束后也实际释放', () => f.processExits.some(one => one.pid === resumed.pid) &&
+      await f.wait('新代入口结束后也实际释放', () => f.agentExits.some(one => one.gen === resumed.gen) &&
         !f.manager.executors().some(one => one.session === work.originSessionId))
       expect(f.requests()).toHaveLength(3)
       expect(f.manager.clients()).toBe(0)
@@ -530,13 +529,13 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
     expect(requestText(f.requests()[2])).toContain(inform)
     expect(f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)?.state).toBe('waiting')
     const original = f.manager.executors().find(one => one.session === work.originSessionId)!
-    expect(original.pid).toBeDefined()
+    expect(original.gen).toBeDefined()
     const before = f.commands.length
     // U100 起 `Shell.hangUp` 已删（终端离开不再问外壳——那一问没有了对象）。
     // 「离开只脱离、不中断工作」这条判据改由**真实关窗**来验；不冒充 PTY SIGHUP 或 App 包关窗。
     f.closeWindows()
     closingReply.release()
-    await f.wait('窗口关闭且原入口真实退出后无 executor', () => f.manager.clients() === 0 && f.processExits.some(one => one.pid === original.pid)
+    await f.wait('窗口关闭且原入口真实退出后无 executor', () => f.manager.clients() === 0 && f.agentExits.some(one => one.gen === original.gen)
       && !f.manager.executors().some(one => one.session === work.originSessionId))
     expect({ commands: f.commands.slice(before), collaboration: f.collaboration()?.state,
       wait: f.store.collaboration.listWaits(work.collaborationId).find(one => one.waitId === waiting.waitId)?.state })
@@ -547,8 +546,8 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
     await f.wait('成员回应使无窗口入口发起新代 HTTP', () => f.requests().length >= 4)
     const resumed = f.manager.executors().find(one => one.session === work.originSessionId)!
     expect(resumed.gen).not.toBe(original.gen)
-    expect(resumed.pid).toBeDefined()
-    expect(resumed.pid).not.toBe(original.pid)
+    expect(resumed.gen).toBeDefined()
+    expect(resumed.gen).not.toBe(original.gen)
     expect(f.manager.identity).toEqual(identity)
     expect(f.manager.clients()).toBe(0)
     expect(requestText(f.requests()[3])).toContain(reason)
@@ -558,7 +557,7 @@ test('生产 shell.hangUp 关窗不停止协作：持久 wait 保留，成员回
     expect(handled.handledAt).toBeDefined()
     expect(Date.now()).toBeLessThan(deadline)
     resumedReply.release()
-    await f.wait('新代入口正文落库且真实释放', async () => f.processExits.some(one => one.pid === resumed.pid)
+    await f.wait('新代入口正文落库且真实释放', async () => f.agentExits.some(one => one.gen === resumed.gen)
       && !f.manager.executors().some(one => one.session === work.originSessionId)
       && (await Array.fromAsync(f.store.readEntries(work.originSessionId))).some(one => one.kind === 'assistant' && 'text' in one.content && one.content.text === finalText))
     expect(f.requests()).toHaveLength(4)

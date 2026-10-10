@@ -75,19 +75,20 @@ export type ReapOutcome =
  *
  * 固定英文与 UTC：不同进程的时区设置不能改变同一进程身份。
  */
-export function startTimeOf(pid: number): number | undefined {
+export async function startTimeOf(pid: number): Promise<number | undefined> {
   if (!Number.isInteger(pid) || pid <= 0) return undefined
 
   let out: Uint8Array
   try {
-    const done = Bun.spawnSync(['ps', '-o', 'lstart=', '-p', String(pid)], {
+    const done = Bun.spawn(['/bin/ps', '-o', 'lstart=', '-p', String(pid)], {
       stdout: 'pipe',
       stderr: 'ignore',
       stdin: 'ignore',
       env: { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
     })
-    if (done.exitCode !== 0) return undefined
-    out = done.stdout
+    const output = new Response(done.stdout).arrayBuffer()
+    if (await done.exited !== 0) return undefined
+    out = new Uint8Array(await output)
   } catch {
     // `ps` 都没有（极简容器一类）——判不了身份，如实按「读不到」办
     return undefined
@@ -179,7 +180,7 @@ export async function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Prom
   const { pgid, what } = handle
 
   // ① **先核对身份**——这一步之前一个信号都不许发
-  const now = startTimeOf(pgid)
+  const now = await startTimeOf(pgid)
   if (now === undefined) {
     // 组长不在了：组里还有没有剩的，**证实不了**
     return groupAlive(pgid)
@@ -220,7 +221,7 @@ export async function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Prom
  *   再读，读到的可能是别人（也正是 `stranger` 那一档要防的）。
  * - **`list` 顺手摘掉没了的**：见契约 `ProcessLedger` 的注（账随生死走）。
  */
-export function createProcessLedger(): ProcessLedger {
+export function createProcessLedger(persist?: (owned: readonly OwnedProcess[]) => void): ProcessLedger {
   const open = new Map<number, OwnedProcess>()
   const listeners: (() => void)[] = []
 
@@ -236,14 +237,16 @@ export function createProcessLedger(): ProcessLedger {
   }
 
   return {
-    add(input) {
-      const startedAt = startTimeOf(input.pgid)
+    async add(input) {
+      const startedAt = input.startedAt ?? await startTimeOf(input.pgid)
+      if (startedAt === undefined) throw new Error(`无法核对工具进程 ${input.pgid} 的启动身份，未放行`)
       open.set(input.pgid, {
         pgid: input.pgid,
         startedAt,
         kind: input.kind,
         what: input.what,
       })
+      persist?.([...open.values()])
       announce()
     },
     onChange(listener) {
@@ -251,10 +254,13 @@ export function createProcessLedger(): ProcessLedger {
     },
     list() {
       // ⚠️ 摘的条件是「组没了」，不是「组长没了」——组长先走、组员还活着的组照旧在账上
+      let changed = false
       for (const pgid of [...open.keys()]) {
-        if (!groupAlive(pgid)) open.delete(pgid)
+        if (!groupAlive(pgid)) { open.delete(pgid); changed = true }
       }
-      return [...open.values()]
+      const owned = [...open.values()]
+      if (changed) { persist?.(owned); announce() }
+      return owned
     },
   }
 }

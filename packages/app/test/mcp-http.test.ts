@@ -477,7 +477,7 @@ describe('关闭与隔离', () => {
       // 密钥不进模型请求 / 事件 / 开屏那几句 / 查询读数（**一处都不许漏**）
       expect(JSON.stringify(lastModel(stage).requests)).not.toContain(sentinel)
       expect(JSON.stringify(shell.events)).not.toContain(sentinel)
-      expect(JSON.stringify(assembly.notices)).not.toContain(sentinel)
+      expect(JSON.stringify((await assembly.notices()))).not.toContain(sentinel)
       expect(JSON.stringify(assembly.mcpServers())).not.toContain(sentinel)
 
       await assembly.shutdown()

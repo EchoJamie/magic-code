@@ -76,14 +76,14 @@ describe('建立时锚定——本进程的工作区进记录域', () => {
 })
 
 describe('外壳那一跳——同样的工作区进 `runTui`', () => {
-  test('`tuiOptions` 带着工作区（列表按工作区分组要用它认「别的项目」）', () => {
+  test('`tuiOptions` 带着工作区（列表按工作区分组要用它认「别的项目」）', async () => {
     const stage = makeStage()
 
     try {
       const assembly = stage.assemble()
 
-      expect(tuiOptions(assembly).workspaceRoots).toEqual(assembly.workspaceRoots)
-      expect(tuiOptions(assembly).workspaceRoots).toEqual([realpathSync(stage.workspace)])
+      expect((await tuiOptions(assembly)).workspaceRoots).toEqual(assembly.workspaceRoots)
+      expect((await tuiOptions(assembly)).workspaceRoots).toEqual([realpathSync(stage.workspace)])
 
       assembly.close()
     } finally {

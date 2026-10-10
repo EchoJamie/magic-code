@@ -35,7 +35,7 @@ struct ModelSettingsPage: View {
                             Button("编辑") { drafts.providerEditor = id }
                             Button("移除", role: .destructive) { remove = id }
                         }
-                        HStack { Button("刷新模型列表") { model.applySettings(.object(["type": .string("model.refresh"), "provider": .string(id)]), stamp: snapshot.stamp, key: "refresh-\(id)") }.disabled(model.settingsBusy || !model.isCurrent)
+                        HStack { Button("刷新模型列表") { model.applySettings(.object(["type": .string("model.refresh"), "provider": .string(id)]), stamp: snapshot.stamp, key: "refresh-\(id)") }.disabled(model.settingsBusy)
                             Button("规格与覆盖…") { drafts.overrideProvider = id }
                         }
                         let cache = snapshot.catalog.first { $0["provider"].text == id }?["cache"] ?? .null

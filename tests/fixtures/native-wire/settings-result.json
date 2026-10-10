@@ -1,10 +1,8 @@
 {
-  "family": "NativeResponse",
+  "family": "SettingsResult",
   "valid": true,
   "message": {
-    "t": "native.settings.result",
     "request": "settings-one",
-    "serviceInstance": "service-one",
     "snapshot": {
       "preview": {},
       "configPath": "/tmp/synthetic/config.json",
@@ -15,11 +13,11 @@
       "vendors": [],
       "sources": [],
       "grants": [],
-      "grantStamp": null,
-      "mcp": [],
-      "canChangeData": true
+      "grantStamp": null
     },
     "note": "已保存",
-    "base": "/tmp/synthetic"
+    "base": "/tmp/synthetic",
+    "configPath": "/tmp/synthetic/config.json",
+    "saved": true
   }
 }

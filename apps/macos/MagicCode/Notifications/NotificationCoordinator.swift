@@ -148,14 +148,23 @@ struct NoticeBatch {
     }
     func reconcile() async {
         guard enabled, let base else { return }
+        let acknowledge = delivered
         let ids = await existingIDs(base)
         guard self.base == base else { return }
-        seen.formUnion(ids); batch.remove(Set(ids)); if !ids.isEmpty { delivered?(ids) }
+        seen.formUnion(ids); batch.remove(Set(ids)); if !ids.isEmpty { acknowledge?(ids) }
     }
     func prepare(base: String) {
         let base = URL(fileURLWithPath: base).resolvingSymlinksInPath().path
         guard self.base != base else { return }
         timer?.cancel(); timer = nil; batch = NoticeBatch(); seen = []; self.base = base
+    }
+    func disconnect() {
+        timer?.cancel(); timer = nil; batch = NoticeBatch(); serviceInstance = nil
+    }
+    func beginConnection(_ projection: NativeProjection, identity: ServiceIdentity) {
+        disconnect(); prepare(base: identity.base)
+        serviceInstance = identity.serviceInstance
+        seen = Set(projection.works.flatMap { $0.notices.map(\.id) })
     }
     func observe(_ projection: NativeProjection, identity: ServiceIdentity) {
         prepare(base: identity.base)
@@ -181,6 +190,7 @@ struct NoticeBatch {
     }
     private func schedule(_ identity: ServiceIdentity) {
         guard enabled || awaitingRequest, timer == nil, !batch.pending.isEmpty else { return }
+        let acknowledge = delivered
         timer = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             guard let self else { return }
@@ -207,12 +217,13 @@ struct NoticeBatch {
                 candidates.retain(eligible)
             }
             for delivery in candidates.take(base: identity.base) {
+                guard !Task.isCancelled, self.serviceInstance == identity.serviceInstance else { return }
                 do {
                     #if DEBUG
                     if self.deliveryAudit?(delivery) == false { self.failure?("系统验收尚未授权或已达到本轮次数上限"); continue }
                     #endif
                     try await self.sendDelivery(delivery)
-                    self.delivered?(delivery.ids)
+                    acknowledge?(delivery.ids)
                 } catch { self.failure?("通知未送达：\(error.localizedDescription)") }
             }
         }

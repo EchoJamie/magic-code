@@ -13,10 +13,10 @@ import re
 import signal
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from probe_host import isolated_host
+from verify import isolated_app, stop_engine
 
 
 def write(path, value):
@@ -124,13 +124,12 @@ def run_case(app, room, output, session):
             if process.poll() is None: process.kill(); process.wait(timeout=5)
             thread.join(timeout=2)
             if manager:
-                try: wait_for(lambda: manager not in process_table(), seconds=10)
-                except TimeoutError: raise RuntimeError('manager remained after isolated App EOF')
+                assert manager in process_table(), 'App exit stopped Engine'
+                stop_engine(app, room)
 
 
 def run(plan, output):
-    app = Path(plan['app']).resolve(); root = Path(plan['root']).resolve()
-    assert root.name.startswith('magic-terminal-system-') and root.parent == Path('/private/tmp'), root
+    app = Path(plan['app']).resolve()
     assert app.name == 'Magic Code.app', 'only the isolated Debug lifecycle supports this driver'
     calls = []
     class Model(http.server.BaseHTTPRequestHandler):
@@ -147,25 +146,25 @@ def run(plan, output):
     results = []
     try:
         for case in ['draft', 'resume']:
-            room = root / case; room.mkdir(mode=0o700)
-            evidence = output / case; evidence.mkdir(parents=True, exist_ok=True)
-            write(room / '.magic/config.json', {'workspaceRoots': [str(room)],
-                  'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
-                  'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}})
-            session = None
-            if case == 'resume':
-                seed = room / 'seed.json'; write(seed, {'inputs': ['只回复隔离终端接回验收已完成。'], 'decisions': []})
-                env = {'HOME': str(room), 'MAGIC_HOME': str(room), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'zh_CN.UTF-8'}
-                with isolated_host(app / "Contents/Helpers/magic-runtime", room, env):
-                    completed = subprocess.run([str(app / 'Contents/Helpers/magic-runtime'), '--script', str(seed)],
-                                           cwd=room, env=env, capture_output=True, text=True, timeout=40)
-                (evidence / 'seed.stdout.log').write_text(completed.stdout)
-                (evidence / 'seed.stderr.log').write_text(completed.stderr)
-                assert completed.returncode == 0 and calls, 'isolated session seed failed'
-                match = re.search(r'—— 会话 (\S+) ·', completed.stdout)
-                assert match and match[1] != '未建立', 'seed did not identify a persisted session'
-                session = match[1]
-            results.append(run_case(app, room, evidence, session))
+            with isolated_app(Path(plan['app']).resolve()) as (app, room):
+                evidence = output / case; evidence.mkdir(parents=True, exist_ok=True)
+                write(room / '.magic/config.json', {'workspaceRoots': [str(room)],
+                      'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']}, 'providers': {'local': {'vendor': 'deepseek', 'apiKey': 'synthetic-only',
+                      'baseURL': f'http://127.0.0.1:{server.server_port}/v1'}}})
+                session = None
+                if case == 'resume':
+                    seed = room / 'seed.json'; write(seed, {'inputs': ['只回复隔离终端接回验收已完成。'], 'decisions': []})
+                    env = {'HOME': str(room), 'MAGIC_HOME': str(room), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'zh_CN.UTF-8'}
+                    with isolated_host(app / "Contents/Helpers/magic-runtime", room, env):
+                        completed = subprocess.run([str(app / 'Contents/Helpers/magic-runtime'), '--script', str(seed)],
+                                               cwd=room, env=env, capture_output=True, text=True, timeout=40)
+                    (evidence / 'seed.stdout.log').write_text(completed.stdout)
+                    (evidence / 'seed.stderr.log').write_text(completed.stderr)
+                    assert completed.returncode == 0 and calls, 'isolated session seed failed'
+                    match = re.search(r'—— 会话 (\S+) ·', completed.stdout)
+                    assert match and match[1] != '未建立', 'seed did not identify a persisted session'
+                    session = match[1]
+                results.append(run_case(app, room, evidence, session))
         write(output / 'summary.json', {'results': results, 'loopbackModelRequests': len(calls), 'plan': plan})
     finally:
         server.shutdown(); server.server_close()
@@ -181,7 +180,7 @@ if __name__ == '__main__':
     path = output / 'plan.json'
     if options.prepare:
         assert not path.exists(), 'preserve the prior test plan; use a fresh output directory'
-        write(path, {'app': str(Path(options.app).resolve()), 'root': str(Path(tempfile.mkdtemp(prefix='magic-terminal-system-', dir='/tmp')).resolve()),
+        write(path, {'app': str(Path(options.app).resolve()),
                      'state': 'prepared-only', 'realTerminalOpened': False, 'notificationsRequested': False})
         print(path)
     else: run(json.loads(path.read_text()), output)

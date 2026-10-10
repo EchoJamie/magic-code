@@ -1,5 +1,3 @@
-import type { Diagnostics } from './diagnostics.ts'
-import type { SettingsAction, SettingsSnapshot, SettingsPreview } from './settings.ts'
 import type { RunNotice, RunState, StopPhase } from './runs.ts'
 
 /** App、CLI、内核同版发布。只认这一版，不协商或保留旧解码器。 */
@@ -10,7 +8,6 @@ export type ServiceIdentity = {
   readonly protocol: number
   readonly version: string
   readonly source: string
-  readonly hostInstance: string
   readonly serviceInstance: string
   readonly base: string
 }
@@ -52,13 +49,15 @@ export type NativeProjection = {
   readonly revision: number
   readonly accepting: boolean
   readonly works: readonly NativeWork[]
+  readonly configuration?: { readonly stamp: string | null; readonly error?: string }
 }
 
 export type NativeRequest =
   | { readonly t: 'hello'; readonly role: 'observer'; readonly protocol: number; readonly version: string; readonly source: string; readonly base: string }
+  | { readonly t: 'native.engine.stop'; readonly request: string; readonly identity: ServiceIdentity; readonly idleOnly?: boolean }
   | { readonly t: 'native.refresh' }
-  | { readonly t: 'native.settings.read'; readonly request: string; readonly serviceInstance: string; readonly base: string; readonly preview?: SettingsPreview }
-  | { readonly t: 'native.settings.apply'; readonly request: string; readonly serviceInstance: string; readonly base: string; readonly stamp: string | null; readonly action: SettingsAction }
+  | { readonly t: 'native.runtime.read'; readonly request: string }
+  | { readonly t: 'native.runtime.reconnect'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly gen: number; readonly name: string }
   | { readonly t: 'native.inspect'; readonly request: string; readonly session: string; readonly notice?: string }
   | { readonly t: 'native.stop'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly gen: number }
   | { readonly t: 'native.read'; readonly ids: readonly string[] }
@@ -71,20 +70,19 @@ export type NativeResponse =
   | { readonly t: 'native.inspected'; readonly request: string; readonly work?: NativeWork; readonly error?: string }
   | { readonly t: 'native.stopped'; readonly request: string; readonly session: string; readonly phase: StopPhase; readonly note?: string }
   | { readonly t: 'native.attached'; readonly request: string; readonly session: string | null }
-  | { readonly t: 'native.settings.result'; readonly request: string; readonly serviceInstance: string; readonly base: string; readonly snapshot?: SettingsSnapshot; readonly error?: string; readonly note?: string }
+  | { readonly t: 'native.runtime.result'; readonly request: string; readonly serviceInstance: string; readonly mcp?: readonly { readonly session: string; readonly gen: number | null; readonly servers: readonly unknown[] }[]; readonly canChangeData?: boolean; readonly error?: string; readonly note?: string }
+  | { readonly t: 'native.engine.result'; readonly request: string; readonly phase: 'accepted' | 'done' | 'failed'; readonly error?: string }
   | { readonly t: 'native.error'; readonly reason: string }
 
-/** 仅继承的宿主 stdin/stdout 使用；普通 socket 无宿主提权入口。 */
-export type HostRequest = { readonly t: 'host.shutdown'; readonly request: string }
-  | { readonly t: 'host.diagnostics.applied'; readonly request: string; readonly error?: string }
-export type HostResponse =
-  | { readonly t: 'host.diagnostics'; readonly request: string; readonly value: Diagnostics; readonly base: string }
-  | { readonly t: 'host.ready'; readonly identity: ServiceIdentity; readonly socket: string; readonly base: string; readonly config: string }
-  | { readonly t: 'host.stopped'; readonly request?: string }
-  | { readonly t: 'host.error'; readonly reason: string }
-
-/** 发现文件不含凭据、正文；由宿主就绪后原子发布。 */
+/** 当前 Engine 及最后一次生命周期结果；文件存在不代表在线。 */
+export type EnginePhase = 'starting' | 'ready' | 'stopping' | 'stopped' | 'unreachable' | 'failed'
 export type HostDiscovery = ServiceIdentity & {
   readonly socket: string
   readonly app: string
+  readonly lifecycle: string
+  readonly pid?: number
+  readonly startedAt?: number
+  readonly state: EnginePhase
+  readonly request?: string
+  readonly error?: string
 }

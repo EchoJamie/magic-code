@@ -1391,7 +1391,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // **放开输入之前一律不受理**（见 `Shell.releaseInput`）——命令进内核＝让内核干活，
     // 而 `boot`（装载 ＋ 恢复）还没跑完。丢弃＋出声由调用方给（`submit` 那一处），
     // 这儿是兜底：别的路径（选择器 / 裁决）此刻本就不该有，有也一并拦下。
-    if (!ready || !connected) return
+    if (!ready) return
+    if (!connected && !transport.offlineCommands?.includes(command.type)) {
+      commit(appendReceipt(view, 'Engine 未连接，这项运行操作暂不可用。')); return
+    }
     transport.send(command.type==='input.manage'&&view.inputMember!==undefined?{...command,member:view.inputMember}:command)
   }
 
@@ -1407,7 +1410,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // —— 事件 ——
 
   const onEvent = (event: KernelEvent): void => {
-    if (disposed || (!connected && !reopening)) return
+    if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'grants.catalog'].includes(event.kind))) return
 
     if(lastSubmit?.local===true && (('ok' in event.data&&event.data.ok===false)||(event.kind==='session.state'&&event.data.note!==undefined)))settleDraft(lastSubmit.ref,true)
 
@@ -3515,6 +3518,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
 
   const sendInput = (text: string, refs: readonly DraftRef[]): ShellEffect => {
+    if (!connected) { commit(appendReceipt(view, 'Engine 未连接，草稿未发送。')); return NONE }
     submits += 1
     const ref = crypto.randomUUID()
     lastSubmit = { ref, text, refs }
@@ -4164,7 +4168,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       commit({ ...view, draft: '', caret: 0, refs: [], completion: null })
       return reconnect()
     }
-    if (!connected && input.kind === 'enter') {
+    if (!connected && input.kind === 'enter' && view.dock.kind === 'input' && !view.draft.trim().startsWith('/')) {
       commit({ ...view, flash: '连接已断开，草稿未发送。输入 /connect 或按 Ctrl+R 重连。' })
       return NONE
     }
@@ -4539,14 +4543,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const submit = (): ShellEffect => {
     // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
     if (!ready) return bootRefusal()
-    // **连接断了也不收**（U100）——这一句发不出去。**草稿留着**（连接回来/重开还能接着用），
-    // 当场说一句：不静默吞掉（那是「按了没反应」里最坏的一种）
-    if (view.status.state === 'lost') {
-      // **草稿一个字不动**（那条判据是「草稿与记录必须实际保留」——回执只是说一句，
-      // 不碰草稿、不落记录）。不静默吞掉：那是「按了没反应」里最坏的一种
-      commit(appendReceipt(view, '连接已断开，暂时发不出这一句。'))
-      return NONE
-    }
     if (view.dock.kind === 'decision') return answer()
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
     if (view.dock.kind === 'prompt') return submitAsk()
@@ -4922,7 +4918,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const ref=crypto.randomUUID()
         lastSubmit={ref,text,refs:placed,caret:view.caret,local:true}
         const input={text,refs:wire(placed),local:true as const,ref}
-        send(view.inputMember===undefined?{type:'input.submit',...input}:{type:'collaboration.input',member:view.inputMember,input})
+        if (connected) send(view.inputMember===undefined?{type:'input.submit',...input}:{type:'collaboration.input',member:view.inputMember,input})
         const echoed = settle(appendEcho(view, text, userImages(placed)))
         const { next, commands, leaving } = runSlash(echoed, text)
         const failed=!leaving&&commands.length===0&&([...next.settled,...next.rows].at(-1)?.kind==='receipt'||next.flash!==null&&next.flash!==view.flash)

@@ -15,17 +15,18 @@
     "records": "bun run scripts/inspect-records.ts"
   },
   "dependencies": {
-    "@magic/mcp": "workspace:*",
     "@magic/actions": "workspace:*",
     "@magic/contracts": "workspace:*",
     "@magic/control": "workspace:*",
     "@magic/conversation": "workspace:*",
     "@magic/execution": "workspace:*",
+    "@magic/mcp": "workspace:*",
     "@magic/model": "workspace:*",
     "@magic/permission": "workspace:*",
     "@magic/records": "workspace:*",
     "@magic/tools": "workspace:*",
-    "@magic/tui": "workspace:*"
+    "@magic/tui": "workspace:*",
+    "undici": "7.29.1"
   },
   "devDependencies": {
     "@magic/faux": "workspace:*",

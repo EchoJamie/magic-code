@@ -17,7 +17,7 @@ const fixture=startFixture({turns:[
 ]})
 const sandbox=createSandbox({baseURL:fixture.baseURL})
 writeFileSync(join(sandbox.workspace,'approved.sh'),'#!/bin/sh\n')
-assert.equal(commitGrants(sandbox.grantsPath,[{kind:'grant',workspace:realpathSync(sandbox.workspace),grant:{tool:'exec',path:'**',op:'read',grantedAt:Date.now()}}]).ok,true)
+assert.equal((await commitGrants(sandbox.grantsPath,[{kind:'grant',workspace:realpathSync(sandbox.workspace),grant:{tool:'exec',path:'**',op:'read',grantedAt:Date.now()}}])).ok,true)
 const host=await startResidentHost(sandbox, REPO_ROOT + '/.ui-runs/u114/flow-host-'+Date.now())
 const ui=await createUiSession({fixture,sandbox,columns:200,rows:40,label:'U114-连续功能验收',artifacts:REPO_ROOT + '/.ui-runs/u114'})
 const key=async(k:Parameters<typeof ui.key>[0])=>{await ui.key(k);await Bun.sleep(60)}

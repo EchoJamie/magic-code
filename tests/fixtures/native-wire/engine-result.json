@@ -1,0 +1,10 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.engine.result",
+    "request": "r",
+    "phase": "failed",
+    "error": "未能收尾"
+  }
+}

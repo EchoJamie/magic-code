@@ -39,10 +39,8 @@ const PACKAGE_TABLE: Record<string, readonly string[]> = {
   '@magic/records': ['@magic/contracts'],
   '@magic/model': ['@magic/contracts'],
   '@magic/tools': ['@magic/contracts'],
-  // **MCP 适配器**（U38）——外部工具客户端。它**不是域**：实现的是契约里的连接端口
-  // （`McpConnection`），客户端藏在它后面。故与各域同一条纪律：**只依赖契约**
-  // （U39 的 Streamable HTTP 是同一端口的另一个实现，加在这儿的是实现不是域）。
-  '@magic/mcp': ['@magic/contracts'],
+  // MCP stdio 与 Shell 共用 execution 的登记后放行边界，协议仍由 MCP 独立实现。
+  '@magic/mcp': ['@magic/contracts', '@magic/execution'],
   '@magic/permission': ['@magic/contracts'],
   '@magic/execution': ['@magic/contracts'],
   '@magic/control': ['@magic/contracts'],
@@ -84,6 +82,7 @@ const ASSEMBLY_PACKAGE = '@magic/app'
 
 /** 许可外部库（技术方案 · 工程结构 · 包表的「依赖」列）——非 `@magic` 的运行时依赖。 */
 const ALLOWED_EXTERNAL: Record<string, readonly string[]> = {
+  '@magic/app': ['undici'],
   '@magic/model': ['ai', '@ai-sdk/openai-compatible'],
   // `@magic/mcp`——**官方 MCP SDK**（不手写协议栈：设计把「按规范核对官方实现」写成明文）。
   // 选它、以及它与设计所引规范修订版的版本关系，见 `packages/mcp/src/index.ts` 头注。

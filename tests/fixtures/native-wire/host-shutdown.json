@@ -1,8 +1,0 @@
-{
-  "family": "HostRequest",
-  "valid": true,
-  "message": {
-    "t": "host.shutdown",
-    "request": "request-one"
-  }
-}

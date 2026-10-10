@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { KernelEvent, NativeResponse, RunSnapshot, Wire } from '@magic/contracts'
 import { resolveMagicHome } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
+import { spawnOwned, reapOwned } from '@magic/execution'
 import { startManager, type ManagerOptions, type ExecutorRequest } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { connectManager } from '../src/run/client.ts'
@@ -32,7 +33,7 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
       launch: { spawn(request) {
         launches.push(request)
         let end = (_reason: string) => {}
-        return { pid: undefined, onExit(callback) { end = callback }, kill() { end('测试执行者核销') } }
+        return { onExit(callback) { end = callback }, cancel() { end('测试执行者核销') } }
       } },
     }
     const started = await startManager(options)
@@ -59,11 +60,11 @@ for (const recognition of ['bound', 'event.session', 'session.state.active'] as 
       expect(launches[0]!.session).toBeNull()
       const gen = launches[0]!.gen
       expect(targets).toEqual([{ session: null, gen }])
-      executor = linkOf(await Bun.connect({ unix: g.paths.socket, socket: socketHandlers() }) as never)
+      executor = launches[0]!.link
       const requests: Wire[] = []
       executor.onMessage((message) => requests.push(message))
       // bound 路也覆盖 hello 已认领 run.session、但窗口仍只知道 null 的次序。
-      executor.send({ t: 'hello', role: 'executor', token: launches[0]!.token,
+      executor.send({ t: 'assembled',
         session: recognition === 'bound' ? 'actual-session' : null, workspace: [g.root] })
       executor.send({ t: 'ready' })
       await waitFor(() => requests.some((message) => message.t === 'snapshot'))
@@ -130,7 +131,7 @@ test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，�
     launch: { spawn(request) {
       launches.push(request)
       let end = (_reason: string) => {}
-      return { pid: undefined, onExit(callback) { end = callback }, kill() { end('已核销') } }
+      return { onExit(callback) { end = callback }, cancel() { end('已核销') } }
     } },
   })
   if (started.role !== 'manager') throw new Error('启动失败')
@@ -141,8 +142,8 @@ test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，�
   try {
     left.send({ type: 'input.submit', text: '开始' })
     await waitFor(() => launches.length === 1)
-    executor = linkOf(await Bun.connect({ unix: g.paths.socket, socket: socketHandlers() }) as never)
-    executor.send({ t: 'hello', role: 'executor', token: launches[0]!.token, session: 'old', workspace: [g.root] })
+    executor = launches[0]!.link
+    executor.send({ t: 'assembled', session: 'old', workspace: [g.root] })
     executor.send({ t: 'ready' })
     right = (await connectManager(g.paths.socket, { session: 'old' }))!
     const leftTargets: (string | null)[] = [], rightTargets: (string | null)[] = []
@@ -176,8 +177,7 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
   let end: (reason: string) => void = () => {}
   const started = await startManager({ ...g, stopGraceMs: 50, stopKillMs: 50,
     launch: { spawn(request) { launches.push(request); return {
-      pid: undefined,
-      onExit(callback) { end = callback }, kill() { end('测试执行者退出') },
+      onExit(callback) { end = callback }, cancel() { end('测试执行者退出') },
     } } },
   })
   if (started.role !== 'manager') throw new Error('启动失败')
@@ -192,10 +192,10 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
     native.send({ t: 'hello', role: 'observer', ...manager.identity })
     client?.send({ type: 'input.submit', text: '第一轮' })
     await waitFor(() => launches.length === 1)
-    executor = linkOf(await Bun.connect({ unix: g.paths.socket, socket: socketHandlers() }) as never)
+    executor = launches[0]!.link
     const messages: Wire[] = []
     executor.onMessage((one) => messages.push(one))
-    executor.send({ t: 'hello', role: 'executor', token: launches[0]!.token, session: 'work', workspace: [g.root] })
+    executor.send({ t: 'assembled', session: 'work', workspace: [g.root] })
     executor.send({ t: 'bound', session: 'work' }); executor.send({ t: 'ready' })
     await waitFor(() => messages.some((one) => one.t === 'cmd' && one.cmd.type === 'input.submit'))
     native.send({ t: 'native.refresh' })
@@ -282,6 +282,7 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
   if (started.role !== 'manager') throw new Error('启动失败')
   try {
     started.manager.stop('第一次')
+    await waitFor(() => faults.length > 0)
     expect(faults[0]).toContain('controlled-write-failure')
     expect(drains).toBe(0)
     await expect(connectManager(g.paths.socket, { timeoutMs: 100 })).rejects.toThrow('正在退出')
@@ -292,41 +293,33 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
   } finally { rmSync(g.root, { recursive: true, force: true }) }
 })
 
- test('扩展收尾挂起不阻挡真实执行资源 TERM/KILL，也不伪报退出完成', async () => {
+ test('扩展收尾挂起不阻挡 Agent 取消与真实工具回收，也不伪报退出完成', async () => {
   const g = ground()
   let release: () => void = () => {}
   const extension = new Promise<void>((resolve) => { release = resolve })
-  let child: ReturnType<typeof Bun.spawn> | undefined
-  const signals: string[] = []
+  let child: Awaited<ReturnType<typeof spawnOwned<'ignore', 'ignore'>>> | undefined
   const faults: string[] = []
-  const launch: ManagerOptions['launch'] = {
-    spawn() {
-      child = Bun.spawn(['/bin/sh', '-c', 'trap "" TERM; exec /bin/sleep 300'], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
-      const process = child
-      return {
-        pid: process.pid,
-        onExit(callback) { void process.exited.then(() => callback('真实子进程已退出')) },
-        kill(signal = 'SIGTERM') { signals.push(signal); process.kill(signal) },
-      }
-    },
-  }
-  const started = await startManager({ ...g, launch, stopGraceMs: 30, stopKillMs: 30,
+  const started = await startManager({ ...g, stopGraceMs: 600, stopKillMs: 600,
+    launch: { spawn(request) {
+      let end = (_reason: string) => {}
+      const ready = spawnOwned(['/bin/sleep', '300'], { stdout: 'ignore', stderr: 'ignore', ledger: request.ledger, kind: 'exec', what: '隔离测试工具' }).then(value => { child = value })
+      return { onExit(callback) { end = callback }, cancel() {
+        void ready.then(async () => { for (const one of request.ledger.list()) await reapOwned(one); end('工具已收回') })
+      } }
+    } },
     lifecycle: { closeAdmission() {}, shutdown: () => extension, affected: async () => [] },
-    onShutdownError: (reason) => faults.push(reason),
+    onShutdownError: reason => faults.push(reason),
   })
   if (started.role !== 'manager') throw new Error('启动失败')
   let exited = false
   void started.manager.waitUntilExit().then(() => { exited = true })
+  const client = await connectManager(g.paths.socket)
   try {
-    const client = await connectManager(g.paths.socket)
     client?.send({ type: 'input.submit', text: '隔离测试' })
     await waitFor(() => child !== undefined)
     started.manager.stop('测试退出')
     await waitFor(() => faults.length > 0)
-    expect(await child!.exited).toBe(137)
-    expect(child?.signalCode).toBe('SIGKILL')
-    expect(signals).toContain('SIGTERM')
-    expect(signals).toContain('SIGKILL')
+    await child!.process.exited
     expect(exited).toBe(false)
     expect(faults[0]).toContain('协作收尾尚未确认')
     release()
@@ -334,10 +327,8 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
     started.manager.stop('重试确认')
     await started.manager.waitUntilExit()
     expect(exited).toBe(true)
-    client?.close()
   } finally {
-    release()
-    if (child && child.exitCode === null) { child.kill('SIGKILL'); await child.exited }
+    release(); client?.close()
     started.manager.stop('测试清理'); await started.manager.waitUntilExit()
     rmSync(g.root, { recursive: true, force: true })
   }

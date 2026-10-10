@@ -33,13 +33,13 @@ import { withSkillsCatalog } from './prompt/skills.ts'
 /** 一次技能送达——本对象**不存状态**（目录每次现扫、主文每次现读，同执行域那一条）。 */
 export type SkillsDelivery = {
   /** 一次模型调用前：把当前技能目录（**只有名称与描述**）接上系统提示词。 */
-  readonly promptFor: (base: string) => string
+  readonly promptFor: (base: string, signal?: AbortSignal) => Promise<string>
   /**
    * 按选定身份取主文——**按绑定时序**，逐个取。
    *
    * 一个取不到就整条失败：材料是**成套**的，送半套等于把用户的话执行了一半。
    */
-  readonly load: (refs: readonly SkillRef[]) => SkillLoad
+  readonly load: (refs: readonly SkillRef[], signal?: AbortSignal) => Promise<SkillLoad>
 }
 
 /** 取主文的结果——判别式（失败位借 `SkillRead` 的措辞：指得出是谁、为什么）。 */
@@ -50,13 +50,13 @@ export type SkillLoad =
 /** 造一份技能送达（`skills` 端口由装配给——它是执行域的实现）。 */
 export function createSkillsDelivery(skills: Skills): SkillsDelivery {
   return {
-    promptFor: (base: string): string => withSkillsCatalog(base, skills.discover()),
+    promptFor: async (base: string, signal?: AbortSignal): Promise<string> => withSkillsCatalog(base, (await skills.discover(signal))),
 
-    load: (refs: readonly SkillRef[]): SkillLoad => {
+    load: async (refs: readonly SkillRef[], signal?: AbortSignal): Promise<SkillLoad> => {
       const used: UsedSkillEntry[] = []
 
       for (const ref of refs) {
-        const read: SkillRead = skills.readMain(ref.name, ref.path)
+        const read: SkillRead = (await skills.readMain(ref.name, ref.path, signal))
         if (!read.ok) return { ok: false, reason: read.reason }
 
         used.push({

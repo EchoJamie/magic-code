@@ -51,7 +51,7 @@ describe('App 连接上的脚本入口', () => {
       const child = Bun.spawn([process.execPath, CLI, '--script', script], { cwd: sandbox.workspace, env: sandbox.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
       const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
       expect(code).toBe(1)
-      expect(stderr).toContain('源码模式请先显式启动同来源的原生 App 宿主')
+      expect(stderr).toContain('源码入口须明确指定同来源的原生包')
       expect(fixture.requests()).toHaveLength(0)
       expect(existsSync(join(sandbox.dataDir, 'records.db'))).toBe(false)
     } finally { await fixture.stop(); await sandbox.dispose() }

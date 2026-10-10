@@ -1,8 +1,8 @@
-import { describe, expect, spyOn, test } from 'bun:test'
-import { mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { locateHost, readHostDiscovery, selectedHostConfig, hostDiscoveryPath } from '../src/run/host-discovery.ts'
-import { connectApp, openApplication, reopenApp } from '../src/run/spawn-manager.ts'
+import { connectApp, reopenApp } from '../src/run/spawn-manager.ts'
 import { cliGround, fakeApp } from './resident-cli-fixture.ts'
 
 describe('App 发现与显式打开', () => {
@@ -72,109 +72,97 @@ describe('App 发现与显式打开', () => {
     } finally { g.close() }
   })
 
-  test('主动打开首次找不到服务时只打开自身 App，等新发布记录并核对真实 welcome', async () => {
-    const g = cliGround()
+  test('主动入口先读取选择，再通过同包控制启动 Engine，已有连接直接复用', async () => {
+    const g = cliGround(), actions: string[] = []
     let server: ReturnType<typeof fakeApp> | undefined
-    const opened: string[] = []
+    const control = async (action: 'status' | 'start' | 'stop') => {
+      actions.push(action)
+      if (action === 'status') return { state: 'stopped' as const, base: g.base }
+      server = fakeApp(g); g.publish()
+      return { state: 'ready' as const, base: g.base, record: g.discovery }
+    }
     try {
-      const connected = await connectApp({
-        home: g.home, appPath: g.app, intent: 'open', env: {},
-        openApplication: async (app) => { opened.push(app); server = fakeApp(g); g.publish() },
-      })
-      expect(opened).toEqual([g.app])
-      expect(connected.magic.base).toBe(g.base)
-      expect(connected.client.identity).toEqual(g.identity)
-      connected.client.close()
-      const again = await reopenApp({ home: g.home, appPath: g.app, env: {}, openApplication: async (app) => { opened.push(app) } })
+      const first = await connectApp({ home: g.home, appPath: g.app, intent: 'open', env: {}, control })
+      expect(first.client.identity).toEqual(g.identity); first.client.close()
+      const again = await reopenApp({ home: g.home, appPath: g.app, env: {}, control })
       again.client.close()
-      expect(opened).toEqual([g.app])
+      expect(actions).toEqual(['status', 'start'])
     } finally { server?.close(); g.close() }
   })
-
-  test('状态读取和旧 TUI 被动重连不打开 App；stale 文件不证明服务仍在', async () => {
-    const g = cliGround()
-    let opens = 0
-    const options = { home: g.home, appPath: g.app, env: {}, openApplication: async () => { opens++ } }
-    const server = fakeApp(g)
+  test('被动连接只查询状态，残留记录不能证明在线', async () => {
+    const g = cliGround(), actions: string[] = []
     try {
       g.publish()
-      const connection = await connectApp(options)
-      connection.client.close()
-      server.close()
-      await expect(connectApp(options)).rejects.toThrow('发现记录已过期或服务不可达')
-      await expect(connectApp(options)).rejects.toThrow('被动连接不会打开')
-      expect(opens).toBe(0)
+      await expect(connectApp({ home: g.home, env: {}, control: async action => {
+        actions.push(action); return { state: 'unreachable', base: g.base, record: g.discovery }
+      } })).rejects.toThrow('刷新与重连不会启动')
+      expect(actions).toEqual(['status'])
       expect(JSON.parse(readFileSync(g.discoveryPath, 'utf8'))).toEqual(g.discovery)
-    } finally { server.close(); g.close() }
-  })
-
-  test('源码模式没有显式可用宿主就报错，不启动备用后台；open 成功但服务未就绪也具体失败', async () => {
-    const g = cliGround()
-    let opens = 0
-    try {
-      await expect(connectApp({ home: g.home, intent: 'open', env: {}, openApplication: async () => { opens++ } })).rejects.toThrow('源码模式请先显式启动')
-      expect(opens).toBe(0)
-      await expect(connectApp({ home: g.home, intent: 'open', appPath: g.app, env: {}, timeoutMs: 15, openApplication: async () => { opens++ } })).rejects.toThrow('未能在 15ms 内连接就绪服务')
-      expect(opens).toBe(1)
     } finally { g.close() }
   })
-
-  test('版本/source/App/数据实例不符直接报差异，不连接别处或再次打开', async () => {
-    const g = cliGround()
-    let opens = 0
+  test('未发布发现记录时也先核终端显式实例，差异不启动 Engine', async () => {
+    const g = cliGround(), actions: string[] = []
     try {
-      const options = { home: g.home, appPath: g.app, intent: 'open' as const, env: {}, openApplication: async () => { opens++ } }
-      for (const [change, message] of [
-        [{ version: 'different' }, '版本不匹配'],
-        [{ protocol: 100 }, '协议或软件版本不匹配'],
-        [{ source: '/another/runtime' }, '软件来源不匹配'],
+      await expect(connectApp({ home: g.home, intent: 'open', env: { MAGIC_HOME: join(g.root, 'other') }, control: async action => {
+        actions.push(action); return { state: 'stopped', base: g.base }
+      } })).rejects.toThrow('数据实例不匹配')
+      expect(actions).toEqual(['status'])
+      await expect(connectApp({ home: g.home, intent: 'open', env: {} })).rejects.toThrow('须明确指定同来源的原生包')
+    } finally { g.close() }
+  })
+  test('版本、来源和原数据实例变化在握手前拒绝', async () => {
+    const g = cliGround(), server = fakeApp(g)
+    try {
+      for (const [change, reason] of [
+        [{ version: 'other' }, '版本不匹配'], [{ source: '/another/runtime' }, '来源不匹配'],
         [{ app: join(g.root, 'Other.app') }, '另一 App'],
       ] as const) {
         g.publish({ ...g.discovery, ...change })
-        await expect(connectApp(options)).rejects.toThrow(message)
+        await expect(connectApp({ home: g.home, appPath: g.app, env: {} })).rejects.toThrow(reason)
       }
       g.publish()
-      await expect(connectApp({ ...options, env: { MAGIC_HOME: join(g.root, 'other') } })).rejects.toThrow('请在 App 设置中明确切换')
-      expect(opens).toBe(0)
-    } finally { g.close() }
-  })
-
-  test('握手 line 后关闭保留正在退出/身份拒绝的原因，主动入口也不再次 open', async () => {
-    const g = cliGround()
-    let opens = 0
-    const server = fakeApp(g, (link) => { link.send({ t: 'line', text: 'Magic Code 正在退出：拒绝新接入' }); link.close() })
-    try {
-      g.publish()
-      await expect(connectApp({ home: g.home, appPath: g.app, intent: 'open', env: {}, openApplication: async () => { opens++ } })).rejects.toThrow('正在退出：拒绝新接入')
-      expect(opens).toBe(0)
+      await expect(reopenApp({ home: g.home, env: {}, expectedInstance: { base: '/previous/.magic' } })).rejects.toThrow('数据实例已改变')
+      expect(server.messages).toEqual([])
     } finally { server.close(); g.close() }
   })
-
-  test('/usr/bin/open 按绝对路径参数调用，无 shell、无 -n 多实例参数，失败带回原因', async () => {
-    const calls: unknown[] = []
-    const spawn = spyOn(Bun, 'spawn').mockImplementation(((command: unknown) => {
-      calls.push(command)
-      return { exited: Promise.resolve(1), stderr: new Response('controlled open failure').body, kill() {} }
-    }) as typeof Bun.spawn)
+  test('握手中明确拒绝新准入的原因保留，不再次启动', async () => {
+    const g = cliGround(), server = fakeApp(g, link => { link.send({ t: 'line', text: '正在停止：拒绝新接入' }); link.close() })
     try {
-      await expect(openApplication('/isolated/Magic ; test.app')).rejects.toThrow('controlled open failure')
-      expect(calls).toEqual([['/usr/bin/open', '/isolated/Magic ; test.app']])
-    } finally { spawn.mockRestore() }
+      g.publish()
+      await expect(connectApp({ home: g.home, intent: 'open', env: {} })).rejects.toThrow('正在停止：拒绝新接入')
+    } finally { server.close(); g.close() }
   })
 })
 
-test('留屏明确重开时先核原数据实例，差异不发送hello/session也不打开App', async () => {
-  const g = cliGround()
-  const server = fakeApp(g)
-  let opened = false
-  g.publish()
+
+test('终端发起者退出不挂断已开始的短时 Engine 控制', async () => {
+  const g = cliGround(), native = join(g.app, 'Contents/MacOS/control')
+  const marker = join(g.root, 'accepted'), release = join(g.root, 'release'), done = join(g.root, 'done')
+  mkdirSync(dirname(native), { recursive: true })
+  writeFileSync(join(g.app, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.magiccode.controlled.dev</string><key>CFBundleExecutable</key><string>control</string></dict></plist>')
+  writeFileSync(native, `#!/usr/bin/python3
+import os,time,json
+from pathlib import Path
+Path(${JSON.stringify(marker)}).write_text(str(os.getpid()))
+while not Path(${JSON.stringify(release)}).exists(): time.sleep(.01)
+Path(${JSON.stringify(done)}).write_text('finished')
+`, { mode: 0o700 })
+  const source = new URL('../src/run/spawn-manager.ts', import.meta.url).pathname
+  const parent = Bun.spawn([process.execPath, '-e', `import {controlEngine} from ${JSON.stringify(source)}; await controlEngine('stop', ${JSON.stringify({ home: g.home, appPath: g.app, env: {} })})`], { detached: true, stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+  let controller: number | undefined
+  const until = async (check: () => boolean) => { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error('短控制状态未到'); await Bun.sleep(10) } }
   try {
-    await expect(reopenApp({
-      home: g.home, appPath: g.app, env: {}, connect: { session: 'same-looking-id' },
-      expectedInstance: { base: '/previous/.magic' },
-      openApplication: async () => { opened = true },
-    })).rejects.toThrow('App 数据实例已改变')
-    expect(opened).toBe(false)
-    expect(server.messages).toEqual([])
-  } finally { server.close(); g.close() }
-})
+    await until(() => existsSync(marker)); controller = Number(readFileSync(marker, 'utf8'))
+    const group = Number(Bun.spawnSync(['/bin/ps', '-o', 'pgid=', '-p', String(controller)]).stdout.toString().trim())
+    expect(group).not.toBe(parent.pid)
+    process.kill(-parent.pid, 'SIGHUP'); await parent.exited
+    expect(() => process.kill(controller!, 0)).not.toThrow()
+    writeFileSync(release, 'continue')
+    await until(() => existsSync(done))
+    expect(readFileSync(done, 'utf8')).toBe('finished')
+  } finally {
+    if (parent.exitCode === null) { parent.kill('SIGKILL'); await parent.exited }
+    if (controller) { try { process.kill(controller, 'SIGKILL') } catch {} }
+    g.close()
+  }
+}, 10000)

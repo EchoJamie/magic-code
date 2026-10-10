@@ -629,7 +629,7 @@ describe('「总是允许」——落点是工作区', () => {
     await s.through(fetchTo('https://example.com/a'), 'approve', true)
     expect((await s.through(fetchTo('https://example.com/b'))).asked).toBe(false)
 
-    expect(book.revoke(book.workspace, 0)).toBe(true)
+    expect((await book.revoke(book.workspace, 0))).toBe(true)
     expect((await s.through(fetchTo('https://example.com/c'))).asked).toBe(true)
   })
 })

@@ -306,7 +306,7 @@ describe('读数 3 · 模型条目表', () => {
       const assembly = land.assemble({ modelFetch: endpoint() })
       const handle = attachShell(assembly.shell)
 
-      expect(chooseConfiguredModel(assembly, 'beta-x').ok).toBe(true)
+      expect((await chooseConfiguredModel(assembly, 'beta-x')).ok).toBe(true)
 
       const catalog = await askCatalog(handle)
       // 选中**未必是表里的某一行**——表说的是「每条连接默认用谁」，选中说的是「此刻用谁」
@@ -420,14 +420,14 @@ describe('读数 3 · 模型条目表', () => {
 // 故分母只从配置读。
 
 describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
-  test('缺省条目声明了窗长 ⇒ 起外壳的入参里带着它（不必等 `/model`）', () => {
+  test('缺省条目声明了窗长 ⇒ 起外壳的入参里带着它（不必等 `/model`）', async () => {
     const land = stage()
 
     try {
       // 缺省＝alpha（夹具里它声明了 `contextWindow: 200_000`）
       const assembly = land.assemble({ modelFetch: endpoint() })
 
-      expect(tuiOptions(assembly).contextWindow).toBe(195_904)
+      expect((await tuiOptions(assembly)).contextWindow).toBe(195_904)
 
       assembly.close()
     } finally {
@@ -444,7 +444,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
    * ⚠️ 这一条钉的是**装配给的数**；屏幕那一侧（换过模型之后分母跟不跟得上、同名模型
    * 跨条目串不串味）是另一笔账，归 `window.test.ts`（U30）——**别拿这条当那边也验过了**。
    */
-  test('换到没声明窗长的那条 ⇒ `null`（回退成只报已用量——不编一个总量出来）', () => {
+  test('换到没声明窗长的那条 ⇒ `null`（回退成只报已用量——不编一个总量出来）', async () => {
     const land = stage()
 
     try {
@@ -452,7 +452,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
       const switched = assembly.switchModel({ choice: 'cantrip' })
       expect(switched.ok).toBe(true)
 
-      expect(tuiOptions(assembly).contextWindow).toBeNull()
+      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -460,7 +460,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
     }
   })
 
-  test('注册表缺席（替身网关）⇒ `null`（同「拿不到就不编」）', () => {
+  test('注册表缺席（替身网关）⇒ `null`（同「拿不到就不编」）', async () => {
     const land = stage()
 
     try {
@@ -468,7 +468,7 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
         modelGateway: (stamper) => createFauxGateway({ stamper, turns: [] }),
       })
 
-      expect(tuiOptions(assembly).contextWindow).toBeNull()
+      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -478,10 +478,10 @@ describe('读数 1 · ④ 的分母在**开机**那一刻就有', () => {
 })
 
 /** 能力回归通过真实配置编辑后明确选择；原始型号不进入执行请求。 */
-function chooseConfiguredModel(assembly: Assembly, model: string) {
+async function chooseConfiguredModel(assembly: Assembly, model: string) {
   const provider = assembly.models?.current()?.provider
   if (provider === undefined) throw new Error('没有当前连接')
-  const saved = configureModel({ path: assembly.config.path, request: { choice: 'spell', provider, model } })
+  const saved = (await configureModel({ path: assembly.config.path, request: { choice: 'spell', provider, model } }))
   if (!saved.ok) throw new Error(saved.reason)
   return assembly.switchModel({ choice: 'spell' })
 }

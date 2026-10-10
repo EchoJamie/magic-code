@@ -18,12 +18,9 @@ function setup() {
   mkdirSync(workspace)
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [] })
   cleanups.push(() => { store.close(); g.close() })
-  let responsibility = false, preferences = 0, grants = 0
-  const context: SettingsContext = { magic: { base: g.base, home: g.home }, cwd: workspace, store, mcp: [],
-    canChangeData: () => !responsibility, mcpWorks: async () => [], preferencesChanged: async () => { preferences++ },
-    reconnect: async () => { throw new Error('没有活动工作，未重连') }, grantsChanged: async () => { grants++ } }
+  const context: SettingsContext = { magic: { base: g.base, home: g.home }, environment: {}, fetch: globalThis.fetch }
   const settings = createSettings(context)
-  return { ...g, workspace, config, store, settings, context, responsibility: (value: boolean) => { responsibility = value }, preferences: () => preferences, grants: () => grants,
+  return { ...g, workspace, config, store, settings, context,
     apply: async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp),
     raw: () => JSON.parse(readFileSync(config, 'utf8')) as Record<string, unknown> }
 }
@@ -50,12 +47,12 @@ test('七类设置的实际配置消费：连接/映射/材料/角色/根/权限
   expect(config.agentRoles?.reviewer?.tools).toEqual([])
   const workspace = createWorkspaceService({ roots: config.workspaceRoots! })
   expect(workspace.defaultRoot()).toBe(g.workspace)
-  expect(createSkills({ workspace, home: g.home, magicBase: g.base, sources: config.skills!.sources! }).discover().skills.some(s => s.name === 'demo')).toBe(true)
+  expect((await createSkills({ workspace, home: g.home, magicBase: g.base, sources: config.skills!.sources! }).discover()).skills.some(s => s.name === 'demo')).toBe(true)
   const snapshot = await g.settings.read()
   expect(snapshot.sources).toHaveLength(3); expect(snapshot.sources[0]?.problem).toBeDefined()
   expect(snapshot.configuration).not.toHaveProperty('untouched'); expect(g.raw().untouched).toEqual({ keep: 1 })
   expect(JSON.stringify(snapshot)).not.toContain('SENTINEL_PROVIDER_KEY')
-  expect(statSync(g.config).mode & 0o777).toBe(0o600); expect(g.preferences()).toBe(1); expect(await g.store.listSessions()).toEqual([])
+  expect(statSync(g.config).mode & 0o777).toBe(0o600);; expect(await g.store.listSessions()).toEqual([])
 })
 
 test('MCP 值只进不出，保留/替换/清除区分，浏览不执行命令', async () => {
@@ -89,7 +86,7 @@ test('首次文件新建/同mtime内容外改/两入口旧快照/损坏JSON均�
   const path = join(g.base, 'new.json')
   const missing = null
   writeFileSync(path, '{}')
-  expect(saveProvider({ path, expectedStamp: missing, request: { provider: 'ds', vendor: 'deepseek' } }).ok).toBe(false)
+  expect((await saveProvider({ path, expectedStamp: missing, request: { provider: 'ds', vendor: 'deepseek' } })).ok).toBe(false)
 })
 
 test('无效字段与数据责任拒写；角色工具缺省/空列表、清除默认与移除引用不混', async () => {
@@ -98,10 +95,8 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   await expect(g.apply({ type: 'permissions.set', rules: [{ tool: 'read', op: 'NOT_AN_OP' }] })).rejects.toThrow('permissions.rules')
   await expect(g.apply({ type: 'sources.set', source: 'rules.sources', paths: ['relative'] })).rejects.toThrow('绝对路径')
   expect(readFileSync(g.config, 'utf8')).toBe(before)
-  g.responsibility(true)
-  expect((await g.settings.read()).canChangeData).toBe(false)
+  expect('canChangeData' in await g.settings.read()).toBe(false)
   expect(readFileSync(g.config, 'utf8')).toBe(before)
-  g.responsibility(false)
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' }); await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-chat' })
   await expect(g.apply({ type: 'provider.remove', provider: 'ds' })).rejects.toThrow('引用')
   await g.apply({ type: 'role.save', id: 'a', role: { name: '角色', instructions: '只读', tools: [] } })
@@ -109,7 +104,7 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   await g.apply({ type: 'role.save', id: 'a', role: { name: '角色', instructions: '只读' } })
   expect(loadConfig({ magic: g.context.magic }).config.agentRoles?.a?.tools).toBeUndefined()
   await g.apply({ type: 'model.clear', choice: 'default' }); await g.apply({ type: 'provider.remove', provider: 'ds' })
-  expect((await g.settings.read()).canChangeData).toBe(true)
+  expect('canChangeData' in await g.settings.read()).toBe(false)
 })
 
 test('授权撤销比较真实文件身份，重读后撤销且回读同一事实', async () => {
@@ -120,7 +115,7 @@ test('授权撤销比较真实文件身份，重读后撤销且回读同一事�
   await expect(g.apply({ type: 'grants.revoke', workspace: g.workspace, index: 0, grantStamp: snapshot.grantStamp })).rejects.toThrow('授权已改变')
   const fresh = await g.settings.read()
   await g.apply({ type: 'grants.revoke', workspace: g.workspace, index: 1, grantStamp: fresh.grantStamp })
-  const current = await g.settings.read(); expect(current.grants[0]?.entries).toHaveLength(1); expect(g.grants()).toBe(1)
+  const current = await g.settings.read(); expect(current.grants[0]?.entries).toHaveLength(1);
   const ledger = createGrantLedger({ workspace: g.workspace }); ledger.replace({ version: 1, workspaces: { [g.workspace]: [{ tool: 'read', grantedAt: 1 }] } }); expect(ledger.rules()).toHaveLength(1)
   ledger.replace({ version: 1, workspaces: {} }); expect(ledger.rules()).toEqual([])
 })

@@ -22,5 +22,8 @@
   "devDependencies": {
     "@types/bun": "^1.2.0",
     "typescript": "^5.7.0"
+  },
+  "patchedDependencies": {
+    "undici@7.29.1": "patches/undici@7.29.1.patch"
   }
 }

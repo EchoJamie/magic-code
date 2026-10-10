@@ -44,7 +44,7 @@ writeFileSync(readyFile, '')
 while (!existsSync(goFile)) Bun.sleepSync(1) // 栅栏——等到一声令下
 
 for (let i = 0; i < count; i += 1) {
-  commitGrants(grantsPath, [{ kind: 'grant', workspace, grant: ruleOf(i) }])
+  ;(await commitGrants(grantsPath, [{ kind: 'grant', workspace, grant: ruleOf(i) }]))
 }
 
 console.log(JSON.stringify({ who, done: count }))

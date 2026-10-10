@@ -1,6 +1,5 @@
 import { normalizeDataDir } from './paths.ts'
 import type { NativeProjection, NativeRequest, NativeResponse, NativeWork, ServiceIdentity, StopPhase, Wire } from '@magic/contracts'
-import type { SettingsAction, SettingsSnapshot, SettingsPreview } from '@magic/contracts'
 import type { RecordsStore } from '@magic/records'
 import type { Link } from './wire.ts'
 
@@ -10,12 +9,14 @@ export type NativeServerOptions = {
   readonly store: RecordsStore
   readonly accepting: () => boolean
   readonly works: () => Promise<readonly NativeWork[]>
+  readonly configuration?: () => NativeProjection['configuration']
+  readonly engineStop?: (request: string, idleOnly: boolean) => Promise<void>
   readonly stop: (session: string, gen: number, report: (phase: StopPhase, note?: string) => void) => void
-  readonly settings?: { read(preview?: SettingsPreview): Promise<SettingsSnapshot>; apply(action: SettingsAction, stamp: string | null): Promise<string> }
+  readonly runtime?: { read(): Promise<Pick<Extract<NativeResponse, { t: 'native.runtime.result' }>, 'mcp' | 'canChangeData'>>; reconnect(session: string, gen: number, name: string): Promise<string> }
   readonly log?: (message: string) => void
 }
 
-/** 窄原生协议适配器，宿主控制刻意不在 socket 上。 */
+/** 工作观察与 Engine 控制共用已核验身份的连接。 */
 export function createNativeServer(options: NativeServerOptions) {
   const observers = new Set<Link>()
   const presence = new Map<Link, { session: string; ids: readonly string[] }>()
@@ -24,8 +25,8 @@ export function createNativeServer(options: NativeServerOptions) {
   let dirty = false
   let closed = false
   let snapshots: Promise<unknown> = Promise.resolve()
-  let settingsQueue: Promise<void> = Promise.resolve()
-  const settingsRequests = new Map<Link, Map<string, { signature: string; result: Promise<NativeResponse> }>>()
+  const runtimeRequests = new Map<Link, Map<string, { signature: string; result: Promise<NativeResponse> }>>()
+  const engineStops = new Map<string, { signature: string; result: Promise<NativeResponse> }>()
   const stops = new Map<string, {
     readonly session: string; readonly gen: number; readonly service: string; readonly links: Set<Link>
     response?: Extract<NativeResponse, { t: 'native.stopped' }>
@@ -37,6 +38,7 @@ export function createNativeServer(options: NativeServerOptions) {
       revision: ++revision,
       accepting: options.accepting(),
       works: await options.works(),
+      ...(options.configuration ? { configuration: options.configuration() } : {}),
     }))
     snapshots = next.catch(() => {})
     return next
@@ -60,8 +62,6 @@ export function createNativeServer(options: NativeServerOptions) {
 
   return {
     changed,
-    isPresent: (session: string, id: string): boolean =>
-      [...presence.values()].some((one) => one.session === session && one.ids.includes(id)),
     attached(request: string, session: string | null): void {
       for (const link of observers) link.send({ t: 'native.attached', request, session })
     },
@@ -83,7 +83,7 @@ export function createNativeServer(options: NativeServerOptions) {
         }
         observers.add(link)
         link.onClose(() => {
-          observers.delete(link); presence.delete(link); settingsRequests.delete(link)
+          observers.delete(link); presence.delete(link); runtimeRequests.delete(link)
           for (const stop of stops.values()) stop.links.delete(link)
         })
         void snapshot().then((projection) => {
@@ -94,35 +94,51 @@ export function createNativeServer(options: NativeServerOptions) {
       if (!observers.has(link)) return false
       const message = raw as NativeRequest
       switch (message.t) {
-        case 'native.settings.read': case 'native.settings.apply': {
-          options.record?.('debug', message.t, message.request)
-          const target = { request: message.request, serviceInstance: options.identity.serviceInstance, base: options.identity.base }
-          const failure = (error: string): NativeResponse => { options.record?.('warn', 'native.settings.failed', message.request); return { t: 'native.settings.result', ...target, error } }
-          if (closed || !options.accepting() || message.serviceInstance !== options.identity.serviceInstance || normalizeDataDir(message.base) !== normalizeDataDir(options.identity.base)) {
-            link.send(failure('服务身份已改变或正在退出，请重新读取')); break
+        case 'native.engine.stop': {
+          const failed = (error: string): NativeResponse => ({ t: 'native.engine.result', request: message.request, phase: 'failed', error })
+          const signature = JSON.stringify(message)
+          const previous = engineStops.get(message.request)
+          if (previous) {
+            if (previous.signature !== signature) link.send(failed('请求标识已用于另一动作'))
+            else void previous.result.then(result => link.send(result))
+            break
           }
-          const owned = settingsRequests.get(link) ?? new Map<string, { signature: string; result: Promise<NativeResponse> }>()
-          settingsRequests.set(link, owned)
+          const target = message.identity, current = options.identity
+          if (target.protocol !== current.protocol || target.version !== current.version || target.source !== current.source || target.base !== current.base || target.serviceInstance !== current.serviceInstance || !options.engineStop) {
+            link.send(failed('Engine 身份已改变，未停止当前服务')); break
+          }
+          // 动作的生命周期属于 Engine，不随本连接关闭取消。
+          const result = options.engineStop(message.request, message.idleOnly === true).then(
+            (): NativeResponse => ({ t: 'native.engine.result', request: message.request, phase: 'done' }),
+            (error: unknown): NativeResponse => failed(String(error)),
+          )
+          engineStops.set(message.request, { signature, result })
+          link.send({ t: 'native.engine.result', request: message.request, phase: 'accepted' })
+          void result.then(response => link.send(response))
+          break
+        }
+        case 'native.runtime.read': case 'native.runtime.reconnect': {
+          const target = { t: 'native.runtime.result' as const, request: message.request, serviceInstance: options.identity.serviceInstance }
+          const failure = (error: string): NativeResponse => ({ ...target, error })
+          if (closed || !options.accepting() || (message.t === 'native.runtime.reconnect' && message.serviceInstance !== options.identity.serviceInstance)) {
+            link.send(failure('Engine 已换代或正在停止，请刷新状态')); break
+          }
+          const owned = runtimeRequests.get(link) ?? new Map<string, { signature: string; result: Promise<NativeResponse> }>()
+          runtimeRequests.set(link, owned)
           const signature = JSON.stringify(message)
           const previous = owned.get(message.request)
           if (previous !== undefined) {
-            if (previous.signature !== signature) link.send(failure('请求标识已用于另一设置动作，请重新读取'))
+            if (previous.signature !== signature) link.send(failure('请求标识已用于另一动作'))
             else void previous.result.then(result => { if (!link.closed) link.send(result) })
             break
           }
-          const result = settingsQueue.then(async (): Promise<NativeResponse> => {
-            if (closed || link.closed || !options.accepting()) return failure('连接已断开或服务正在退出，请重新读取')
-            if (options.settings === undefined) return failure('设置服务不可用')
-            let note: string | undefined
+          const result = (async (): Promise<NativeResponse> => {
             try {
-              note = message.t === 'native.settings.apply' ? await options.settings.apply(message.action, message.stamp) : undefined
-              const snapshot = await options.settings.read(message.t === 'native.settings.read' ? message.preview : undefined)
-              if (closed || link.closed || !options.accepting()) return failure('保存结果尚未确认，请重新读取')
-              options.record?.('debug', 'native.settings.result', message.request)
-              return { t: 'native.settings.result', ...target, snapshot, ...(note === undefined ? {} : { note }) }
-            } catch (error) { return failure(note !== undefined ? `${note}；设置快照未能读取，请重新读取` : error instanceof Error ? error.message : '设置操作失败，请重新读取后重试') }
-          })
-          settingsQueue = result.then(() => {})
+              if (!options.runtime) return failure('运行状态不可用')
+              const note = message.t === 'native.runtime.reconnect' ? await options.runtime.reconnect(message.session, message.gen, message.name) : undefined
+              return { ...target, ...await options.runtime.read(), ...(note === undefined ? {} : { note }) }
+            } catch (error) { return failure(error instanceof Error ? error.message : String(error)) }
+          })()
           owned.set(message.request, { signature, result })
           void result.then(response => { if (!link.closed) link.send(response) })
           break

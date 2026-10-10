@@ -171,15 +171,15 @@ function sectionKeyOf(stage: Stage): string {
 // ══ ① 写入口那一层：读不懂 ⇒ 一个字都不写 ══════════════════════════════════
 
 describe('D31 · `commitGrants` 撞上读不懂的文件', () => {
-  test('截断的文件 ＋ 一次写入 ⇒ **逐字节未动**（修前是「只剩这一次写进去的那一条」）', () => {
+  test('截断的文件 ＋ 一次写入 ⇒ **逐字节未动**（修前是「只剩这一次写进去的那一条」）', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
       const before = writeTruncated(stage, '/work/proj')
 
-      const done = commitGrants(path, [
+      const done = (await commitGrants(path, [
         { kind: 'grant', workspace: '/work/proj', grant: { tool: 'exec', grantedAt: 2 } },
-      ])
+      ]))
 
       expect(done.ok).toBe(false)
       expect(done.ok === false && done.reason).toContain('不是合法 JSON')
@@ -190,7 +190,7 @@ describe('D31 · `commitGrants` 撞上读不懂的文件', () => {
     }
   })
 
-  test('`version` 不认也走这一支——那是**将来的**内核写的，本轮读不懂', () => {
+  test('`version` 不认也走这一支——那是**将来的**内核写的，本轮读不懂', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
@@ -198,9 +198,9 @@ describe('D31 · `commitGrants` 撞上读不懂的文件', () => {
       const before = JSON.stringify({ version: 99, workspaces: { '/work/proj': [] } })
       writeFileSync(path, before)
 
-      const done = commitGrants(path, [
+      const done = (await commitGrants(path, [
         { kind: 'grant', workspace: '/work/proj', grant: { tool: 'exec', grantedAt: 2 } },
-      ])
+      ]))
 
       expect(done.ok).toBe(false)
       expect(done.ok === false && done.reason).toContain('99')
@@ -210,13 +210,13 @@ describe('D31 · `commitGrants` 撞上读不懂的文件', () => {
     }
   })
 
-  test('**文件不在**不是这一支——第一次用没有它就是常态，照写', () => {
+  test('**文件不在**不是这一支——第一次用没有它就是常态，照写', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
-      const done = commitGrants(path, [
+      const done = (await commitGrants(path, [
         { kind: 'grant', workspace: '/work/proj', grant: { tool: 'exec', grantedAt: 2 } },
-      ])
+      ]))
 
       expect(done.ok).toBe(true)
       const file = JSON.parse(readFileSync(path, 'utf8')) as {
@@ -228,7 +228,7 @@ describe('D31 · `commitGrants` 撞上读不懂的文件', () => {
     }
   })
 
-  test('**个别条目**读不懂不是这一支——文件整体读得懂，该落的改动照落', () => {
+  test('**个别条目**读不懂不是这一支——文件整体读得懂，该落的改动照落', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
@@ -244,9 +244,9 @@ describe('D31 · `commitGrants` 撞上读不懂的文件', () => {
         }),
       )
 
-      const done = commitGrants(path, [
+      const done = (await commitGrants(path, [
         { kind: 'grant', workspace: '/work/proj', grant: { tool: 'exec', grantedAt: 2 } },
-      ])
+      ]))
 
       expect(done.ok).toBe(true)
       const file = JSON.parse(readFileSync(path, 'utf8')) as {
@@ -302,7 +302,7 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
         grantsFile: grantsPathOf(stage),
         turns: [DELETE_TURN, { text: '好' }],
       })
-      const said = assembly.notices
+      const said = (await assembly.notices())
 
       expect(said).toHaveLength(1) // 授权这一摊只说一句
       expect(said[0]).toContain(grantsPathOf(stage)) // 哪个文件
@@ -317,7 +317,7 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
 
       // **还是那一句**（不是「每次写都刷」一句新的）
-      expect(assembly.notices).toEqual(said)
+      expect((await assembly.notices())).toEqual(said)
 
       shell.dispose()
       assembly.close()
@@ -432,7 +432,7 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
         turns: [WEB_TURN, { text: '好' }],
       })
       expect(fixed.grantsUnreadable).toBeUndefined()
-      expect(fixed.notices).toEqual([])
+      expect((await fixed.notices())).toEqual([])
 
       const shell = bareShell(fixed)
       shell.send({ type: 'input.submit', text: '再跑一下' })

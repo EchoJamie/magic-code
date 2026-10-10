@@ -30,6 +30,39 @@ const T0 = 1_700_000_000_000
 const ALPHA = '/work/alpha'
 const BETA = '/work/beta'
 
+test('Engine 的工作区视图共用编号与连接；关闭一个视图不关闭其它视图', async () => {
+  const dir = tempDataDir()
+  const owner = createRecordsStore({ dataDir: dir, workspace: [] })
+  try {
+    const alpha = owner.forWorkspace([ALPHA])
+    const beta = owner.forWorkspace([BETA])
+    const a = alpha.serviceFor(A)
+    const b = beta.serviceFor(B)
+    const first = a.nextId()
+    expect(b.nextId()).toBe(first + 1)
+    a.appendEntry(userEntry('alpha', T0))
+    alpha.close()
+    b.appendEntry(userEntry('beta', T0 + 1))
+    expect((await owner.listSessions()).map(row => row.workspace).sort()).toEqual([[ALPHA], [BETA]])
+  } finally { owner.close(); removeDataDir(dir) }
+})
+
+test('外部写锁立即返回操作失败；释放后不重放失败的输入', async () => {
+  const dir = tempDataDir()
+  const owner = createRecordsStore({ dataDir: dir, workspace: [ALPHA] })
+  const other = new Database(databasePathOf(dir))
+  try {
+    other.exec('BEGIN IMMEDIATE')
+    const started = performance.now()
+    expect(() => owner.serviceFor(A).appendEntry(userEntry('blocked', T0))).toThrow()
+    expect(performance.now() - started).toBeLessThan(200)
+    other.exec('ROLLBACK')
+    expect(await owner.listSessions()).toHaveLength(0)
+    owner.serviceFor(B).appendEntry(userEntry('accepted', T0 + 1))
+    expect((await owner.listSessions()).map(row => row.id)).toEqual([B])
+  } finally { other.close(); owner.close(); removeDataDir(dir) }
+})
+
 /** 一条用户条目——会话「落过账」的最小证据（建立由它触发）。 */
 function userEntry(text: string, at: number): NewEntry {
   return { kind: 'user', content: { text }, at }

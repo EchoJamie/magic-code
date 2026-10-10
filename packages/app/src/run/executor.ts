@@ -1,45 +1,8 @@
+import type { WorkEnvironment } from '../work-environment.ts'
 import { diagnosticsOf, validDiagnosticsChange } from '@magic/contracts'
 import { DiagnosticLog } from '../diagnostic-log.ts'
-/**
- * **执行者**（U48）——一条会话的推进由它一个进程独扛。
- *
- * 设计（会话与运行管理 · 本机执行结构）：
- *
- * > **执行者**：同一 Agent 的活跃会话推进**只持有一个工作进程**，复用现有内核、应用动作、
- * > 工作区和记录端口。拆进程用于**失败隔离与明确的资源归属**，不是「一条消息起一个进程」。
- *
- * ## 它凭什么这么薄
- *
- * 因为**内核一行都没改**：`assemble()` 照旧装配五步、照旧经同进程传输把「外壳侧一端」
- * 交出来。执行者拿的正是那一端（`assembly.shell`），只做**一座桥**——那边连着管理者，
- * 这边连着内核：
- *
- * ```
- *   管理者 ──cmd──▶ 执行者 ──shell.send──▶ [同进程通道] ──▶ 内核各域
- *   管理者 ◀──ev─── 执行者 ◀─subscribe──── [同进程通道] ◀── 内核各域
- * ```
- *
- * 于是「拆分」这件事的全部代价就落在这一个文件上：**多一跳进程边界，别处零改动**。
- * 这不是省事——「复用现有内核、应用动作、工作区和记录端口」是设计的明文。
- *
- * ## 生命周期里那三跳
- *
- * 1. **装配**（读配置 · 造各域）——同步，与今天的进程内启动同一条路；
- * 2. **发现 ＋ 恢复**（`ready()` ＋ `boot()`）——异步且有界；这一跳跑完才发 `ready`，
- *    在那之前管理者攒下的命令**一条都不发**（发了就是「用户敲了没反应」）；
- * 3. **桥梁架起来之后**才是「放开输入」。
- *
- * ## 收摊
- *
- * 三条路都汇到同一处：管理者说 `bye`、**连接断了**（管理者没了 / 被杀了）、收到信号。
- * 收尾照既有的两跳（先等外部服务器释放、再关库——`cli.ts` 那条 finally 的顺序）。
- *
- * ⚠️ **断了就自己停**是设计里的一条硬要求：「管理者异常退出 ⇒ 执行者通过**专用生命
- * 连接**收到断开后自行停止并释放资源，不变成无人负责的后台」。这条连接就是那条生命
- * 连接——管理者一死，OS 把它那一头的 socket 收掉，这里当场读到断开。
- */
-
-import { createRecordsStore } from '@magic/records'
+import type { RecordsStore } from '@magic/records'
+import type { ProcessLedger } from '@magic/contracts'
 
 import type {
   CollaborationReply,
@@ -53,7 +16,6 @@ import { assemble } from '../assembly.ts'
 import type { Assembly } from '../assembly.ts'
 import { loadConfig } from '../config.ts'
 import { isProgress, progressOf, tailOf } from './facts.ts'
-import { linkOf, socketHandlers } from './wire.ts'
 import type { ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 
 /**
@@ -78,14 +40,6 @@ const SNAPSHOT_OUTPUT_LINES = 20
 /** 攒一条工具输出时留多少字符——**先按字符封顶**（长测试一行能吐几十万字符）。 */
 const SNAPSHOT_OUTPUT_CHARS = 4_000
 
-/**
- * 上报自有进程组前的合并窗（毫秒）——见那份登记的注。
- *
- * 取一百毫秒：它只该合并掉「同一次动作连着起几组」那种连发，**不该**把一个真起的进程
- * 压到看不见——执行者被杀与它起一个进程之间通常隔着秒级，故这一窗的两端都够。
- */
-const OWNED_REPORT_MS = 100
-
 /** 在飞的一条工具调用——输出按末尾一截攒，快照时再切成行。 */
 type LiveTool = {
   readonly call: number
@@ -96,10 +50,13 @@ type LiveTool = {
 }
 
 export type ExecutorOptions = {
-  /** 管理者监听的那条 socket。 */
-  readonly socket: string
-  /** 管理者发车时给的令牌——认它是「我叫起来的那一个」。 */
-  readonly token: string
+  readonly network: WorkEnvironment
+  readonly link: Link<ManagerToExecutor>
+  readonly executionId: string
+  readonly records: RecordsStore
+  readonly ledger: ProcessLedger
+  readonly environment: Readonly<Record<string, string>>
+  readonly signal: AbortSignal
   /** **显式接续**那条会话（`magic resume` 同义物）；`null` ＝ 还没开张（D5）。 */
   readonly session: string | null
   /** **启动目录**——窗口在哪儿起的（配置没写 `workspaceRoots` 时它就是默认根）。 */
@@ -128,7 +85,6 @@ export type ExecutorOptions = {
 /** 收场——`runExecutor` 的几种结局，交回给入口去定退出码。 */
 export type ExecutorOutcome =
   | { readonly kind: 'ok' }
-  | { readonly kind: 'no-manager' }
   | { readonly kind: 'failed'; readonly reason: string }
 
 /**
@@ -137,16 +93,10 @@ export type ExecutorOutcome =
  * 返回时**保证**收尾两跳已经走过（外部服务器释放 ＋ 关库）：调用方随即可以退进程。
  */
 export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOutcome> {
-  const connected = await connect(options.socket)
-  if (connected === undefined) {
-    // 连不上＝管理者已经不在了（起车与连上之间那一小段里被杀了）。
-    // **不自己另起一个**：执行者从不自立门户，这是「不变成无人负责的后台」的起点。
-    return { kind: 'no-manager' }
-  }
-
-  // 显式收成非空的那个类型——下面几处闭包（收缩、收摊）都要用它，而收窄进不去闭包
-  const link: Link<ManagerToExecutor> = connected
-
+  const lifetime = new AbortController()
+  const signal = AbortSignal.any([lifetime.signal, options.signal])
+  const link = options.link
+  const disconnected = new Promise<void>(resolve => link.onClose(() => resolve()))
   const requests = new Map<string, (reply: CollaborationReply) => void>()
   link.onMessage(message => {
     if (message.t !== 'collaboration.reply') return
@@ -167,18 +117,19 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     diagnosticLog.write('info', 'executor.started', options.session === null ? {} : { session: options.session })
     let cwd = options.cwd
     if (options.session !== null) {
-      const records = createRecordsStore({ dataDir: options.magic.base, workspace: [] })
-      try {
+      const records = options.records
+      {
         const session = (await records.listSessions()).find((one) => one.id === options.session)
         if (session === undefined) throw new Error('会话已不可达')
         if (session.workspace !== undefined && session.workspace.length > 0) {
           cwd = session.workspace[0]!
           config = { ...config, config: { ...config.config, workspaceRoots: session.workspace } }
         }
-      } finally { records.close() }
+      }
     }
     assembly = assemble({
-      executionId: options.token,
+      executionId: options.executionId,
+      records: options.records, ledger: options.ledger, environment: options.environment, network: options.network, signal,
       collaborationChanged: () => { link.send({ t: 'collaboration.changed' }) },
       collaboration: (_session, request) => new Promise(resolve => {
         const requestId = crypto.randomUUID()
@@ -199,7 +150,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     // 失败也先用启动令牌登记，管理者才能把具体原因回传给所属终端。
-    link.send({ t: 'hello', role: 'executor', token: options.token,
+    link.send({ t: 'assembled',
       session: options.session, workspace: [] })
     link.send({ t: 'done', why: `装配没成：${reason}` })
     link.close()
@@ -218,7 +169,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   if (options.switch !== undefined) {
     const result = assembly.switchModel(options.switch)
     if (!result.ok) {
-      link.send({ t: 'hello', role: 'executor', token: options.token, session: options.session, workspace: [] })
+      link.send({ t: 'assembled', session: options.session, workspace: [] })
       link.send({ t: 'done', why: result.reason })
       await assembly.shutdown()
       assembly.close()
@@ -231,9 +182,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
   // **登记**（`hello`）在装配之后发：工作区整组根是装配才算得出来的
   // （配置里的 `workspaceRoots` 或启动目录，判断归执行域）——登记里要它。
   link.send({
-    t: 'hello',
-    role: 'executor',
-    token: options.token,
+    t: 'assembled',
     session: options.session,
     workspace: assembly.workspaceRoots,
   })
@@ -463,15 +412,31 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       // **持久化状态后释放**（设计 · 收缩）：收尾那两跳里就有「把没落完的落完」
       // ——故它是释放，不是丢下。
       link.send({ t: 'done', why: '没有在途调用、后台命令或待答项' })
-      void closeOut('当前工作已结束').then(() => process.exit(0))
+      void closeOut('当前工作已结束')
     }, SHRINK_SETTLE_MS)
   }
 
   /** 收摊只走一遍——断开来一次、`bye` 来一次，两条路汇到这儿。 */
+  const inFlight = new Set<Promise<void>>()
+  function trackOperation(operation: Promise<unknown>): void {
+    const pending = operation.then(() => {}, error => {
+      link.send({ t: 'done', why: `操作失败：${error instanceof Error ? error.message : String(error)}` })
+      queueMicrotask(() => { void closeOut('本项操作失败') })
+    }).finally(() => inFlight.delete(pending))
+    inFlight.add(pending)
+  }
   let closing = false
-  const closeOut = async (why: string): Promise<void> => {
-    if (closing) return
+  let closingTask: Promise<void> | undefined
+  let initialization = Promise.resolve()
+  let off = () => {}
+  const closeOut = (why: string): Promise<void> => closingTask ??= closeOnce(why).catch(error => {
+    closingTask = undefined
+    link.send({ t: 'stopping', why: `未完成收尾：${error instanceof Error ? error.message : String(error)}` })
+  })
+  const closeOnce = async (why: string): Promise<void> => {
     closing = true
+    lifetime.abort()
+    if (shrinkTimer !== undefined) clearTimeout(shrinkTimer)
     options.log?.(`执行者收摊（${why}）`)
 
     /**
@@ -484,85 +449,50 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
      */
     link.send({ t: 'stopping', why })
 
-    // 两跳的顺序照 `cli.ts` 那条先例：**先等外部服务器释放，再关库**——
-    // 反过来的话，还活着的工具调用会写进一个已经关掉的事务。
-    try {
-      await assembly.shutdown()
-    } finally {
-      assembly.close()
-      diagnosticLog?.write('info', 'executor.stopped')
-      await diagnosticLog?.close()
-    }
+    await initialization.catch(() => undefined)
+    await Promise.all([assembly.shutdown(), ...inFlight])
+    off()
+    assembly.close()
+    diagnosticLog?.write('info', 'executor.stopped')
+    await diagnosticLog?.close()
     link.close()
   }
 
-  /**
-   * **自有进程组的登记**（U50）——账变了就报当下这一刻的全量。
-   *
-   * 为什么要报：执行者**被杀**时它自己跑不到收尾那两跳（「关外部服务器」在
-   * `assembly.shutdown()` 里），那时只有管理者手上这一份登记能把它起的那些进程收回来
-   * （设计：「执行者崩溃或被杀 ⇒ 管理者收回独占权与**已登记**自有进程组」）。
-   *
-   * 两条实现上的取舍：
-   * - **合并一小窗**（`OWNED_REPORT_MS`）：一条命令起手就是一笔，逐笔报是白报（一场会话
-   *   里跑几百条命令是常事），而窗只有几十毫秒——真被杀时最多晚报这一窗；
-   * - **与上一份一样就不发**：账没变时重复报只是噪音（管理者按最后一次覆盖）。
-   */
-  let ownedSent = ''
-  let ownedTimer: ReturnType<typeof setTimeout> | undefined
-  const reportOwned = (): void => {
-    if (closing) return
-    const processes = assembly.ledger.list()
-    const background = assembly.background?.running().length ?? 0
-    const serialized = JSON.stringify({ processes, background })
-    if (serialized === ownedSent) return
-    ownedSent = serialized
-    link.send({ t: 'owned', processes, background })
-  }
-  assembly.ledger.onChange(() => {
-    if (ownedTimer !== undefined) return
-    ownedTimer = setTimeout(() => {
-      ownedTimer = undefined
-      reportOwned()
-    }, OWNED_REPORT_MS)
-    ownedTimer.unref?.()
-  })
-  // 起手先报一次（空账也报）：这一代「手上握着什么」是管理者要知道的第一件事
-  reportOwned()
-
   link.onMessage((message: ManagerToExecutor) => {
     diagnosticLog?.write('trace', `control.${message.t}`)
-    switch (message.t) {
+    try { switch (message.t) {
       case 'settings.inspect':
         link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }); return
       case 'diagnostics.sync':
         if (!validDiagnosticsChange(message.value)) { link.send({ t: 'settings.synced', request: message.request, error: '诊断设置无效', mcp: assembly.mcpServers() }); return }
         diagnosticLog?.setLevel(message.value.logLevel)
         diagnosticLog?.write('info', 'diagnostics.applied', { request: message.request })
-        void diagnosticLog?.flush().then(() => link.send({ t: 'settings.synced', request: message.request, ...(diagnosticLog?.problem ? { error: diagnosticLog.problem } : {}), mcp: assembly.mcpServers() }))
+        if (diagnosticLog) trackOperation(diagnosticLog.flush().then(() => link.send({ t: 'settings.synced', request: message.request, ...(diagnosticLog?.problem ? { error: diagnosticLog.problem } : {}), mcp: assembly.mcpServers() })))
         return
       case 'settings.sync':
         try { assembly.refreshSettings(); link.send({ t: 'settings.synced', request: message.request, mcp: assembly.mcpServers() }) }
         catch { link.send({ t: 'settings.synced', request: message.request, error: '无法受理当前设置，请重新读取', mcp: assembly.mcpServers() }) }
         return
       case 'settings.reconnect':
-        void assembly.reconnectMcp(message.server).then(note => link.send({ t: 'settings.synced', request: message.request, note, mcp: assembly.mcpServers() }))
-          .catch(() => link.send({ t: 'settings.synced', request: message.request, error: '重连失败', mcp: assembly.mcpServers() }))
+        if (closing) return
+        trackOperation(assembly.reconnectMcp(message.server).then(note => link.send({ t: 'settings.synced', request: message.request, note, mcp: assembly.mcpServers() }))
+          .catch(() => link.send({ t: 'settings.synced', request: message.request, error: '重连失败', mcp: assembly.mcpServers() })))
         return
       case 'collaboration.configure':
+        if (closing) return
         link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.applyModel(message.model) })
         return
       case 'collaboration.input':
-        void assembly.supplementCollaboration(message.input, message.shared)
+        if (closing) return
+        trackOperation(assembly.supplementCollaboration(message.input, message.shared))
         return
       case 'collaboration.wake':
+        if (closing) return
         assembly.wakeCollaboration()
         return
       case 'cmd':
+        if (closing) return
         assembly.shell.send(message.cmd)
-        return
-      case 'ping':
-        link.send({ t: 'pong', seq: message.seq })
         return
       /**
        * **接回快照**（U49）——**当场答，中间一步都不 await**。
@@ -579,7 +509,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         return
       default:
         return
-    }
+    } } catch (error) { trackOperation(Promise.reject(error)) }
   })
 
   link.onClose(() => {
@@ -588,64 +518,34 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
     void closeOut('管理者不在了')
   })
 
-  // 信号：管理者先礼（`bye`）后兵（SIGTERM）里的「兵」那一下。挂了处理器之后信号
-  // 不再杀进程，故必须真走到 `closeOut` —— 否则就成了「按下去不动」。
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => {
-      void closeOut(`收到 ${signal}`).then(() => process.exit(0))
-    })
+  const cancel = () => { void closeOut('停止当前工作') }
+  options.signal.addEventListener('abort', cancel, { once: true })
+  if (options.signal.aborted) cancel()
+
+  if (!closing) {
+    initialization = (async () => {
+      await assembly.ready()
+      if (closing) return
+      off = assembly.shell.subscribe((event: KernelEvent) => {
+        track(event)
+        link.send({ t: 'ev', event })
+        considerShrink()
+      })
+      await assembly.boot()
+      if (closing) return
+      link.send({ t: 'ready' } satisfies ExecutorToManager)
+      considerShrink()
+    })()
+    try { await initialization }
+    catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      diagnosticLog?.write('error', 'executor.initialization.failed')
+      link.send({ t: 'done', why: reason })
+      await closeOut(reason)
+    }
   }
-
-  // **发现那一跳**（配置里的外部服务器）＋ **启动流转**（恢复：给了 `magic resume` 才跑）。
-  // 两者都在「放开输入」之前——设计明文：「首轮模型请求前完成发现」；
-  // 恢复要发事件，而订阅在下面才架上，故 `boot` 排在订阅之后。
-  try {
-    await assembly.ready()
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    diagnosticLog?.write('error', 'executor.discovery.failed')
-    await closeOut(`发现那一跳没成：${reason}`)
-    return { kind: 'failed', reason }
-  }
-
-  // **订阅架在恢复之前**：恢复要发事件（技术方案 · 控制域：无订阅方时事件丢）
-  const off = assembly.shell.subscribe((event: KernelEvent) => {
-    track(event)
-    reportOwned()
-    link.send({ t: 'ev', event })
-    considerShrink()
-  })
-
-  try {
-    await assembly.boot()
-  } catch (error) {
-    off()
-    const reason = error instanceof Error ? error.message : String(error)
-    diagnosticLog?.write('error', 'executor.recovery.failed')
-    await closeOut(`恢复没跑完：${reason}`)
-    return { kind: 'failed', reason }
-  }
-
-  // **放开输入**——到这一跳为止攒在管理者手里的命令，从这儿开始一条一条进来
-  link.send({ t: 'ready' } satisfies ExecutorToManager)
-  considerShrink()
-
-  await new Promise<void>((resolve) => {
-    const done = (): void => resolve()
-    link.onClose(done)
-    process.once('beforeExit', done)
-  })
-
-  await closeOut('收到收摊指示')
+  await disconnected
+  options.signal.removeEventListener('abort', cancel)
+  await closingTask
   return { kind: 'ok' }
-}
-
-/** 连管理者——连不上返回 `undefined`（**不重试**：执行者是管理者叫起来的，它不该赖着找）。 */
-async function connect(socketPath: string) {
-  try {
-    const socket = await Bun.connect({ unix: socketPath, socket: socketHandlers() })
-    return linkOf<ManagerToExecutor>(socket as never)
-  } catch {
-    return undefined
-  }
 }

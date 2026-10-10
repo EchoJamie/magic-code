@@ -77,13 +77,13 @@ export type PreflightResult =
  */
 export type RulesDelivery = {
   /** 一次模型调用前：把当前作用域（＋被钉住的目标）的规约接上，并替换「最近送达」那一本账。 */
-  readonly promptFor: (base: string) => string
+  readonly promptFor: (base: string, signal?: AbortSignal) => Promise<string>
   /**
    * 一批工具执行前：这一批能不能动手。
    *
    * **查的是这一批的全部目标**（不是被历史缓存裁过的那些——见 `pinned` 与 `MAX_SCOPE_TARGETS`）。
    */
-  readonly preflight: (calls: readonly ToolCall[]) => PreflightResult
+  readonly preflight: (calls: readonly ToolCall[], signal?: AbortSignal) => Promise<PreflightResult>
 }
 
 /**
@@ -150,8 +150,8 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
   ]
 
   return {
-    promptFor: (base: string): string => {
-      const load = rules.load(requestedTargets())
+    promptFor: async (base: string, signal?: AbortSignal): Promise<string> => {
+      const load = (await rules.load(requestedTargets(), signal))
       // **先清后填**——这本账说的是「最近这一次请求里有什么」，不是「历来送过什么」。
       // 填进去的就是**马上要递上去的那一份材料**（同一个 `load` 的产物，不是另算的一串号）。
       deliveredNow = load.documents
@@ -159,12 +159,12 @@ export function createRulesDelivery(rules: ProjectRules): RulesDelivery {
       return withProjectRules(base, load)
     },
 
-    preflight: (calls: readonly ToolCall[]): PreflightResult => {
+    preflight: async (calls: readonly ToolCall[], signal?: AbortSignal): Promise<PreflightResult> => {
       const batch = calls.flatMap(targetsOf)
       // **查这一批的全部目标**（＋这一趟请求带的那一拨），不先裁再查：
       // 先裁再查＝「这一批里被裁掉的那几个目标」的规约压根没人看（首轮实测：同批 65 次写、
       // 第一个目标有规约，全部写成功、任何请求都没收到那份规约）。
-      const load = rules.load([...requestedTargets(), ...batch])
+      const load = (await rules.load([...requestedTargets(), ...batch], signal))
 
       // **没读完整先判，且单独判**（2026-09-20 二轮裁；四轮把触发说全）——`truncated` 说的是
       // 「**回来那份不是全的**」，而没进来的那几份**压根不在 `documents` 里**，故「blocking 为空」

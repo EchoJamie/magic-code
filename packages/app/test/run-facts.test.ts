@@ -37,7 +37,6 @@ function record(over: Partial<RunRecord> = {}): RunRecord {
     session: 's-1',
     startedAt: 1_000,
     explicit: true,
-    pid: 4_242,
   })
   // 多数用例要的是「已经起来的、安安静静的那一代」——发车时那两格（在跑 / 正在支起来）
   // 由各支自己按需要覆盖
@@ -167,7 +166,7 @@ describe('U49 · 六行状态逐行对事实', () => {
   })
 
   test('发车到 `ready` 之间算执行中——它不是「空闲」', () => {
-    const starting = newRunRecord({ gen: 2, session: 's-2', startedAt: 10, explicit: false, pid: 5 })
+    const starting = newRunRecord({ gen: 2, session: 's-2', startedAt: 10, explicit: false })
     expect(runStateOf(starting)).toBe('running')
     expect(starting.action).toBe('正在起执行者')
 
@@ -216,12 +215,11 @@ describe('U49 · 谁占着那条会话', () => {
 })
 
 describe('U49 · 重启核对', () => {
-  test('进程还在 ⇒ 状态待确认（占着这条会话）', () => {
+  test('Engine 重启后旧 Agent 已中断，等待明确继续', () => {
     const back = reconcile(
       {
         session: 's-1',
         gen: 3,
-        pid: process.pid, // 一个**确实活着**的进程（本进程）
         startedAt: 1_000,
         workspace: ['/w'],
         state: 'running',
@@ -230,9 +228,9 @@ describe('U49 · 重启核对', () => {
       9_000,
     )
 
-    expect(back.state).toBe('unknown')
-    expect(back.ended).toBeUndefined()
-    expect(blocksNewRun(back.state)).toBe(true)
+    expect(back.state).toBe('stopped')
+    expect(back.ended?.kind).toBe('crashed')
+    expect(blocksNewRun(back.state)).toBe(false)
   })
 
   test('进程没了 ⇒ 已停止 · 异常退出（不伪报正常收束）', () => {
@@ -240,7 +238,6 @@ describe('U49 · 重启核对', () => {
       {
         session: 's-1',
         gen: 3,
-        pid: 2 ** 30, // 这个号不会有活进程（超出 pid 上限）
         startedAt: 1_000,
         workspace: ['/w'],
         state: 'running',
@@ -250,7 +247,7 @@ describe('U49 · 重启核对', () => {
     )
 
     expect(gone.state).toBe('stopped')
-    expect(stopReasonOf(gone)).toContain('异常退出')
+    expect(stopReasonOf(gone)).toContain('Engine 中断')
   })
 
   test('盘上已经写着「结束了」的——不回翻成待确认', () => {
@@ -258,7 +255,6 @@ describe('U49 · 重启核对', () => {
       {
         session: 's-1',
         gen: 3,
-        pid: process.pid,
         startedAt: 1_000,
         workspace: ['/w'],
         state: 'idle',

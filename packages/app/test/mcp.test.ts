@@ -282,7 +282,7 @@ describe('名字与重名的收口（返工 B · 独立验收问题 5 / 6）', (
       expect(dup?.rejected.map((one) => one.tool)).toEqual(['echo', 'echo'])
 
       // ② 开屏那一句：点名到服务器与件数（用户不会只看到「少了几件」）
-      const said = assembly.notices.join('\n')
+      const said = (await assembly.notices()).join('\n')
       expect(said).toContain('「bad」有 1 件工具没能收下')
       expect(said).toContain('「dup」有 2 件工具没能收下')
 
@@ -475,7 +475,7 @@ describe('失败路径', () => {
       expect(views.find((view) => view.server === 'broken')?.state.status).toBe('unavailable')
 
       // 开屏那几句话里点名到它（`/mcp` 那一屏归 U39，U38 至少要说得出来）
-      expect(assembly.notices.join('\n')).toContain('broken')
+      expect((await assembly.notices()).join('\n')).toContain('broken')
 
       // 内置工具照常：这一轮 `exec` 走的是**名单里**那条（删除）——照旧问一次，
       // 批准之后就真跑（U76 起不问的只是判轻的那些）
@@ -823,7 +823,7 @@ describe('关闭与隔离', () => {
       expect(text).not.toContain(sentinel)
       // 事件与开屏那几句话里也没有
       expect(JSON.stringify(shell.events)).not.toContain(sentinel)
-      expect(JSON.stringify(assembly.notices)).not.toContain(sentinel)
+      expect(JSON.stringify((await assembly.notices()))).not.toContain(sentinel)
       expect(JSON.stringify(assembly.mcpServers())).not.toContain(sentinel)
 
       shell.dispose()

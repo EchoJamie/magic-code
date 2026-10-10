@@ -15,7 +15,6 @@ export function settingsAction(v: unknown): boolean {
     case 'prefs.set': return optional(v.reducedMotion, x => typeof x === 'boolean') && optional(v.statusLine, x => object(x) && Array.isArray(x.cells) && x.cells.every(c => ['session', 'model', 'reasoning', 'context', 'workspace'].includes(String(c))) && new Set(x.cells).size === x.cells.length && optional(x.color, c => typeof c === 'boolean'))
     case 'mcp.save': return text(v.name) && object(v.server) && Object.keys(v.server).every(k => Object.hasOwn(v.server as object, 'url') ? k === 'url' : ['command', 'args'].includes(k)) && (Object.hasOwn(v.server, 'url') ? text(v.server.url) : text(v.server.command) && optional(v.server.args, x => Array.isArray(x) && x.every(a => typeof a === 'string'))) && object(v.secrets) && Object.values(v.secrets).every(x => x === null || typeof x === 'string')
     case 'mcp.remove': return text(v.name)
-    case 'mcp.reconnect': return text(v.name) && text(v.session) && typeof v.gen === 'number' && Number.isInteger(v.gen) && v.gen >= 0
     case 'sources.set': return ['rules.sources', 'rules.linkSources', 'skills.sources'].includes(String(v.source)) && strings(v.paths)
     case 'role.save': return text(v.id) && object(v.role)
     case 'role.remove': return text(v.id)
@@ -26,5 +25,15 @@ export function settingsAction(v: unknown): boolean {
   }
 }
 export function settingsSnapshot(v: unknown): boolean {
-  return object(v) && text(v.configPath) && text(v.base) && (v.stamp === null || text(v.stamp)) && object(v.configuration) && object(v.preview) && ['catalog', 'vendors', 'sources', 'grants', 'mcp'].every(k => Array.isArray(v[k])) && (v.grantStamp === null || text(v.grantStamp)) && typeof v.canChangeData === 'boolean'
+  return object(v) && text(v.configPath) && text(v.base) && (v.stamp === null || text(v.stamp)) && object(v.configuration) && object(v.preview) && ['catalog', 'vendors', 'sources', 'grants'].every(k => Array.isArray(v[k])) && (v.grantStamp === null || text(v.grantStamp))
+}
+
+export function settingsRequest(v: unknown): boolean {
+  return object(v) && ['request', 'home', 'base', 'configPath'].every(k => text(v[k])) &&
+    optional(v.action, x => settingsAction(x) && (v.stamp === null || typeof v.stamp === 'string')) &&
+    optional(v.preview, x => object(x) && Number.isInteger(x.columns) && (x.columns as number) >= 20 && (x.columns as number) <= 300 && typeof x.reducedMotion === 'boolean' && settingsAction({ type: 'prefs.set', statusLine: x.statusLine }))
+}
+export function settingsResult(v: unknown): boolean {
+  return object(v) && ['request', 'base', 'configPath'].every(k => text(v[k])) && typeof v.saved === 'boolean' &&
+    optional(v.snapshot, settingsSnapshot) && optional(v.error, x => typeof x === 'string') && optional(v.note, x => typeof x === 'string') && (v.snapshot !== undefined || v.error !== undefined)
 }

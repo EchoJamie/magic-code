@@ -79,3 +79,12 @@ final class ObserverConnection {
     func close() { queue.async { [self] in finish() } }
     deinit { if fd >= 0 { Darwin.close(fd) } }
 }
+
+// 模态面板与系统退出等待期间也必须能处理连接完成。
+enum MainRunLoop {
+    static let modal = RunLoop.Mode("NSModalPanelRunLoopMode")
+    static func deliver(_ body: @escaping () -> Void) {
+        RunLoop.main.perform(inModes: [.default, .common, modal, RunLoop.Mode("NSEventTrackingRunLoopMode")], block: body)
+        CFRunLoopWakeUp(CFRunLoopGetMain())
+    }
+}

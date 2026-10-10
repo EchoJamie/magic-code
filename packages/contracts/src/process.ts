@@ -89,7 +89,7 @@ export interface ProcessLedger {
    * 读取组长的启动时刻是**记账的一部分**（不是可选的锦上添花）：这一位缺了，收尾那一跳
    * 就证明不了归属，只能不动它。故实现要在**组长还在的时候**读它——那一刻就在眼前。
    */
-  add(input: { readonly pgid: number; readonly kind: OwnedProcess['kind']; readonly what: string }): void
+  add(input: { readonly pgid: number; readonly startedAt?: number; readonly kind: OwnedProcess['kind']; readonly what: string }): Promise<void>
   /** 此刻还活着的那些（顺手摘掉已经没了的）。 */
   list(): readonly OwnedProcess[]
   /**

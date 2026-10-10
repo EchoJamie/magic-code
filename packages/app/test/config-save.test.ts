@@ -18,13 +18,13 @@ const PROVIDERS_OF = (path: string): Record<string, Record<string, unknown>> =>
   READ(path)['providers'] as Record<string, Record<string, unknown>>
 
 describe('保存一条连接', () => {
-  test('首次（还没有那份文件）能接上——写出来的东西**读得回来**', () => {
+  test('首次（还没有那份文件）能接上——写出来的东西**读得回来**', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = join(dir, 'config.json')
 
       expect(
-        saveProvider({ path, request: { provider: 'ds', vendor: 'deepseek', apiKey: 'sk-x' } }),
+        (await saveProvider({ path, request: { provider: 'ds', vendor: 'deepseek', apiKey: 'sk-x' } })),
       ).toEqual({ ok: true })
 
       // 同一把尺子读回来：一次配置加载应当接受它
@@ -37,7 +37,7 @@ describe('保存一条连接', () => {
     }
   })
 
-  test('**只改点名的字段**：改名字不动凭据、不动别条连接', () => {
+  test('**只改点名的字段**：改名字不动凭据、不动别条连接', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
@@ -49,7 +49,7 @@ describe('保存一条连接', () => {
         dataDir: '~/.magic',
       })
 
-      expect(saveProvider({ path, request: { provider: 'a', name: '我的那条' } })).toEqual({
+      expect((await saveProvider({ path, request: { provider: 'a', name: '我的那条' } }))).toEqual({
         ok: true,
       })
 
@@ -66,14 +66,14 @@ describe('保存一条连接', () => {
     }
   })
 
-  test('给空串 ⇒ **清掉那一位**（明确要抹掉）；凭据给空串即回到环境变量回退', () => {
+  test('给空串 ⇒ **清掉那一位**（明确要抹掉）；凭据给空串即回到环境变量回退', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
         providers: { a: { vendor: 'deepseek', apiKey: 'sk-x', name: '旧名' } },
       })
 
-      saveProvider({ path, request: { provider: 'a', name: '', apiKey: '' } })
+      ;(await saveProvider({ path, request: { provider: 'a', name: '', apiKey: '' } }))
 
       const entry = PROVIDERS_OF(path)['a'] ?? {}
       expect('name' in entry).toBe(false)
@@ -84,7 +84,7 @@ describe('保存一条连接', () => {
     }
   })
 
-  test('**保留无关项**：权限 / MCP / 未知键原样带过（只有 `providers` 被动过）', () => {
+  test('**保留无关项**：权限 / MCP / 未知键原样带过（只有 `providers` 被动过）', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
@@ -95,7 +95,7 @@ describe('保存一条连接', () => {
         某个以后才认得的键: { 原样: true },
       })
 
-      saveProvider({ path, request: { provider: 'a', vendor: 'deepseek' } })
+      ;(await saveProvider({ path, request: { provider: 'a', vendor: 'deepseek' } }))
 
       const raw = READ(path)
       expect(raw['permissions']).toEqual({ rules: [{ tool: 'read', path: 'src/**', op: 'allow' }] })
@@ -107,11 +107,11 @@ describe('保存一条连接', () => {
     }
   })
 
-  test('文件权限 600（缓存与配置都只有本用户读得了）', () => {
+  test('文件权限 600（缓存与配置都只有本用户读得了）', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: {} })
-      saveProvider({ path, request: { provider: 'a', vendor: 'deepseek' } })
+      ;(await saveProvider({ path, request: { provider: 'a', vendor: 'deepseek' } }))
 
       // 只比权限那几位（掩码之外的位随平台而异）
       expect(statSync(path).mode & 0o777).toBe(0o600)
@@ -122,13 +122,13 @@ describe('保存一条连接', () => {
 })
 
 describe('拒写的两种情形', () => {
-  test('坏内容 ⇒ 拒写并点名（**不当空配置覆盖**）', () => {
+  test('坏内容 ⇒ 拒写并点名（**不当空配置覆盖**）', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = join(dir, 'config.json')
       writeFileSync(path, '{ 这不是 JSON }', 'utf8')
 
-      const outcome = saveProvider({ path, request: { provider: 'a', vendor: 'deepseek' } })
+      const outcome = (await saveProvider({ path, request: { provider: 'a', vendor: 'deepseek' } }))
       expect(outcome.ok).toBe(false)
       expect(outcome.ok === false && outcome.reason).toMatch(/不是合法 JSON/)
       // 原文件**一个字节没动**
@@ -138,7 +138,7 @@ describe('拒写的两种情形', () => {
     }
   })
 
-  test('外部改过（文件指纹变了）⇒ 拒写，提示重新载入（不拿陈旧整份覆盖）', () => {
+  test('外部改过（文件指纹变了）⇒ 拒写，提示重新载入（不拿陈旧整份覆盖）', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } } })
@@ -147,11 +147,11 @@ describe('拒写的两种情形', () => {
       // 模拟「用户在编辑器里改过」——mtime 变了
       writeFileSync(path, `${readFileSync(path, 'utf8')}\n`, 'utf8')
 
-      const outcome = saveProvider({
+      const outcome = (await saveProvider({
         path,
         expectedStamp: loaded.stamp,
         request: { provider: 'b', vendor: 'deepseek' },
-      })
+      }))
       expect(outcome.ok).toBe(false)
       expect(outcome.ok === false && outcome.reason).toMatch(/已被修改/)
     } finally {
@@ -159,18 +159,18 @@ describe('拒写的两种情形', () => {
     }
   })
 
-  test('mtime 一致时照写（比对本身不该误伤正常保存）', () => {
+  test('mtime 一致时照写（比对本身不该误伤正常保存）', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } } })
       const loaded = loadConfig({ path, magic: magicAt(dir) })
 
       expect(
-        saveProvider({
+        (await saveProvider({
           path,
           expectedStamp: loaded.stamp,
           request: { provider: 'a', name: '改个名' },
-        }),
+        })),
       ).toEqual({ ok: true })
     } finally {
       removeDir(dir)
@@ -179,21 +179,21 @@ describe('拒写的两种情形', () => {
 })
 
 describe('移除与设为默认', () => {
-  test('仍被映射引用时拒绝移除；显式清除后可删，其他映射不变', () => {
+  test('仍被映射引用时拒绝移除；显式清除后可删，其他映射不变', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { models: { default: { provider: 'a', model: 'm1' }, spell: { provider: 'b', model: 'm2' } }, providers: { a: { vendor: 'deepseek' }, b: { vendor: 'minimax' } } })
       const before = readFileSync(path, 'utf8')
-      expect(removeProvider({ path, provider: 'a' }).ok).toBe(false)
+      expect((await removeProvider({ path, provider: 'a' })).ok).toBe(false)
       expect(readFileSync(path, 'utf8')).toBe(before)
       writeFileSync(path, JSON.stringify({ ...READ(path), models: { spell: { provider: 'b', model: 'm2' } } }))
-      expect(removeProvider({ path, provider: 'a' })).toEqual({ ok: true })
+      expect((await removeProvider({ path, provider: 'a' }))).toEqual({ ok: true })
       expect(Object.keys(PROVIDERS_OF(path))).toEqual(['b'])
       expect(READ(path)['models']).toEqual({ spell: { provider: 'b', model: 'm2' } })
     } finally { removeDir(dir) }
   })
 
-  test('删**最后一条**（它同时是默认）：删得掉——删到空是一条正经状态', () => {
+  test('删**最后一条**（它同时是默认）：删得掉——删到空是一条正经状态', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, {
@@ -201,7 +201,7 @@ describe('移除与设为默认', () => {
         providers: { only: { vendor: 'deepseek' } },
       })
 
-      expect(removeProvider({ path, provider: 'only' })).toEqual({ ok: true })
+      expect((await removeProvider({ path, provider: 'only' }))).toEqual({ ok: true })
       expect(READ(path)).toEqual({ providers: {}, models: {} })
       // 空配置**读得回来**（U41 起 `providers` / `defaultProvider` 都可缺）
       const loaded = loadConfig({ path, magic: magicAt(dir) })
@@ -212,12 +212,12 @@ describe('移除与设为默认', () => {
     }
   })
 
-  test('没有那条连接：照旧拒（这不是「删得掉删不掉」的事，是它压根不在）', () => {
+  test('没有那条连接：照旧拒（这不是「删得掉删不掉」的事，是它压根不在）', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } } })
 
-      const refused = removeProvider({ path, provider: 'nope' })
+      const refused = (await removeProvider({ path, provider: 'nope' }))
       expect(refused.ok).toBe(false)
       expect(refused.ok === false && refused.reason).toMatch(/没有「nope」这条连接/)
       expect(Object.keys(PROVIDERS_OF(path))).toEqual(['a'])
@@ -226,34 +226,34 @@ describe('移除与设为默认', () => {
     }
   })
 
-  test('保存 Default 只改映射；接入、覆盖和其他档位保持原样', () => {
+  test('保存 Default 只改映射；接入、覆盖和其他档位保持原样', async () => {
     const dir = tempDir('magic-save-')
     try {
       const provider = { vendor: 'deepseek', modelOverrides: { old: { limits: { maxInputTokens: 128 } } } }
       const path = writeConfig(dir, { providers: { a: provider }, models: { cantrip: { provider: 'a', model: 'old' } } })
-      expect(configureModel({ path, request: { choice: 'default', provider: 'a', model: 'new' } })).toEqual({ ok: true })
+      expect((await configureModel({ path, request: { choice: 'default', provider: 'a', model: 'new' } }))).toEqual({ ok: true })
       expect(PROVIDERS_OF(path)['a']).toEqual(provider)
       expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'new' }, cantrip: { provider: 'a', model: 'old' } })
     } finally { removeDir(dir) }
   })
 
-  test('保存 Cantrip 不改 Default；不在连接上写型号或思考设置', () => {
+  test('保存 Cantrip 不改 Default；不在连接上写型号或思考设置', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: { a: { vendor: 'deepseek' } }, models: { default: { provider: 'a', model: 'main' } } })
-      expect(configureModel({ path, request: { choice: 'cantrip', provider: 'a', model: 'aux' } })).toEqual({ ok: true })
+      expect((await configureModel({ path, request: { choice: 'cantrip', provider: 'a', model: 'aux' } }))).toEqual({ ok: true })
       expect(READ(path)['models']).toEqual({ default: { provider: 'a', model: 'main' }, cantrip: { provider: 'a', model: 'aux' } })
       expect(PROVIDERS_OF(path)['a']).toEqual({ vendor: 'deepseek' })
       expect(READ(path)['webFetch']).toBeUndefined()
     } finally { removeDir(dir) }
   })
 
-  test('不存在的接入不能保存为档位，原文件不变', () => {
+  test('不存在的接入不能保存为档位，原文件不变', async () => {
     const dir = tempDir('magic-save-')
     try {
       const path = writeConfig(dir, { providers: {} })
       const before = readFileSync(path, 'utf8')
-      expect(configureModel({ path, request: { choice: 'spell', provider: 'ghost', model: 'raw' } }).ok).toBe(false)
+      expect((await configureModel({ path, request: { choice: 'spell', provider: 'ghost', model: 'raw' } })).ok).toBe(false)
       expect(readFileSync(path, 'utf8')).toBe(before)
     } finally { removeDir(dir) }
   })

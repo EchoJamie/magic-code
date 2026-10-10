@@ -141,9 +141,9 @@ function book(file?: GrantsFile, now = (): number => NOW, onChange?: (edit: Gran
 }
 
 describe('账本 · 记（`a`）', () => {
-  test('记一条——进名录，带上「什么时候点的」', () => {
+  test('记一条——进名录，带上「什么时候点的」', async () => {
     const ledger = book()
-    ledger.remember({ tool: 'exec', op: ['read'] })
+    await ledger.remember({ tool: 'exec', op: ['read'] })
 
     // `rules()` 给的是**授权本身**（规则的超集：三格 ＋ 记账）——闸门拿它做匹配，
     // 只读前三格；记账那几位不参与判定（`matchRule` 一个都不看）
@@ -155,30 +155,30 @@ describe('账本 · 记（`a`）', () => {
     expect(ledger.view()[0]?.lastHitAt).toBeUndefined()
   })
 
-  test('同形的再记一遍＝**不入册**（用户的话说过了，不必说两遍）', () => {
+  test('同形的再记一遍＝**不入册**（用户的话说过了，不必说两遍）', async () => {
     const ledger = book()
-    ledger.remember({ tool: 'exec', op: ['read'] })
-    ledger.remember({ tool: 'exec', op: ['read'] })
+    await ledger.remember({ tool: 'exec', op: ['read'] })
+    await ledger.remember({ tool: 'exec', op: ['read'] })
 
     expect(ledger.view()).toHaveLength(1)
   })
 
-  test('记新的一条报 `grant` 缘由——**装配据以立刻落盘**', () => {
+  test('记新的一条报 `grant` 缘由——**装配据以立刻落盘**', async () => {
     const seen: string[] = []
     const ledger = book(undefined, () => NOW, (edit) => void seen.push(edit.kind))
 
-    ledger.remember({ tool: 'read' })
-    ledger.remember({ tool: 'read' }) // 重复的不报（什么都没变）
+    await ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'read' }) // 重复的不报（什么都没变）
 
     expect(seen).toEqual(['grant'])
   })
 })
 
 describe('账本 · 命中记账（久未命中的原料）', () => {
-  test('命中一次——次数 ＋1、最近时刻刷新', () => {
+  test('命中一次——次数 ＋1、最近时刻刷新', async () => {
     let at = NOW
     const ledger = book(undefined, () => at)
-    ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'read' })
 
     at = NOW + 5_000
     ledger.hit({ tool: 'read' })
@@ -189,9 +189,9 @@ describe('账本 · 命中记账（久未命中的原料）', () => {
     expect(ledger.view()[0]?.lastHitAt).toBe(NOW + 9_000)
   })
 
-  test('不在册的命中＝**什么都不做**（报信的人搞错了，不替它补一条）', () => {
+  test('不在册的命中＝**什么都不做**（报信的人搞错了，不替它补一条）', async () => {
     const ledger = book()
-    ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'read' })
     ledger.hit({ tool: 'exec' })
 
     expect(ledger.view()).toHaveLength(1)
@@ -199,11 +199,11 @@ describe('账本 · 命中记账（久未命中的原料）', () => {
     expect(ledger.view()[0]?.hits).toBeUndefined()
   })
 
-  test('命中报 `hit` 缘由——**攒着，不立刻落盘**（见 app 侧的接线）', () => {
+  test('命中报 `hit` 缘由——**攒着，不立刻落盘**（见 app 侧的接线）', async () => {
     const seen: string[] = []
     const ledger = book(undefined, () => NOW, (edit) => void seen.push(edit.kind))
 
-    ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'read' })
     ledger.hit({ tool: 'read' })
 
     expect(seen).toEqual(['grant', 'hit'])
@@ -211,36 +211,36 @@ describe('账本 · 命中记账（久未命中的原料）', () => {
 })
 
 describe('账本 · 撤销（`/grants` 那两件里的第二件）', () => {
-  test('撤一条——名录里没了，报 `revoke` 缘由', () => {
+  test('撤一条——名录里没了，报 `revoke` 缘由', async () => {
     const seen: string[] = []
     const ledger = book(undefined, () => NOW, (edit) => void seen.push(edit.kind))
-    ledger.remember({ tool: 'read' })
-    ledger.remember({ tool: 'grep' })
+    await ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'grep' })
 
-    expect(ledger.revoke(HERE, 0)).toBe(true)
+    expect((await ledger.revoke(HERE, 0))).toBe(true)
     expect(ledger.view().map((row) => row.describe)).toEqual(['工具 grep × 根内 × 任意操作'])
     expect(seen.at(-1)).toBe('revoke')
   })
 
-  test('越界 / 那一节不在——`false`，**不抛也不新建节**', () => {
+  test('越界 / 那一节不在——`false`，**不抛也不新建节**', async () => {
     const ledger = book()
-    ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'read' })
 
-    expect(ledger.revoke(HERE, 5)).toBe(false)
-    expect(ledger.revoke('/work/elsewhere', 0)).toBe(false)
+    expect((await ledger.revoke(HERE, 5))).toBe(false)
+    expect((await ledger.revoke('/work/elsewhere', 0))).toBe(false)
     expect(ledger.sections()).toEqual([HERE]) // 没被「撤一条」顺手造出一节来
     expect(ledger.view()).toHaveLength(1)
   })
 
-  test('**整节撤掉**（陈旧节那条路）——返回撤掉几条', () => {
+  test('**整节撤掉**（陈旧节那条路）——返回撤掉几条', async () => {
     const ledger = book({
       version: 1,
       workspaces: { [HERE]: [{ tool: 'a', grantedAt: 1 }], '/work/gone': [{ tool: 'b', grantedAt: 1 }] },
     })
 
-    expect(ledger.dropSection('/work/gone')).toBe(1)
+    expect((await ledger.dropSection('/work/gone'))).toBe(1)
     expect(ledger.sections()).toEqual([HERE])
-    expect(ledger.dropSection('/work/gone')).toBe(0) // 再来一次＝零条（已不在）
+    expect((await ledger.dropSection('/work/gone'))).toBe(0) // 再来一次＝零条（已不在）
   })
 })
 
@@ -277,25 +277,25 @@ describe('账本 · 陈旧（久未命中）', () => {
 })
 
 describe('账本 · 快照（落盘那一份）', () => {
-  test('空节**不留**——撤销掉最后一条＝那一节也没了', () => {
+  test('空节**不留**——撤销掉最后一条＝那一节也没了', async () => {
     const ledger = book({
       version: 1,
       workspaces: { [HERE]: [{ tool: 'read', grantedAt: 1 }], '/work/gone': [{ tool: 'grep', grantedAt: 1 }] },
     })
 
-    ledger.revoke(HERE, 0)
+    await ledger.revoke(HERE, 0)
     expect(Object.keys(ledger.snapshot().workspaces)).toEqual(['/work/gone'])
 
-    ledger.dropSection('/work/gone')
+    await ledger.dropSection('/work/gone')
     expect(ledger.snapshot().workspaces).toEqual({})
   })
 
-  test('快照是**副本**——拿去落盘之后，账本再变也不会改到那一份', () => {
+  test('快照是**副本**——拿去落盘之后，账本再变也不会改到那一份', async () => {
     const ledger = book()
-    ledger.remember({ tool: 'read' })
+    await ledger.remember({ tool: 'read' })
 
     const taken = ledger.snapshot()
-    ledger.remember({ tool: 'grep' })
+    await ledger.remember({ tool: 'grep' })
 
     expect(taken.workspaces[HERE]).toHaveLength(1)
     expect(ledger.snapshot().workspaces[HERE]).toHaveLength(2)

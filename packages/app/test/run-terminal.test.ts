@@ -45,7 +45,7 @@ async function straysIn(sandbox: Sandbox): Promise<{ managers: string[]; executo
     .map((line) => line.replace(/--token \S+/gu, '--token [test-token]'))
 
   return {
-    managers: lines.filter((line) => line.includes('internal-manager')),
+    managers: lines.filter((line) => line.includes('internal-engine')),
     executors: lines.filter((line) => line.includes('internal-executor')),
   }
 }
@@ -156,7 +156,7 @@ describe('U48-S5 · 终端是客户端', () => {
     }
   }, 60_000)
 
-    test('配了连不上的外部工具：那句话在开屏上（管理者给的），而空窗口仍没有执行者', async () => {
+    test('空窗口只读配置，不启动外部工具或 Agent', async () => {
     const runs = runArtifacts('magic-u48-preflight-runs-')
     const fixture = startFixture({ turns: [] })
     const sandbox = createSandbox({
@@ -169,16 +169,8 @@ describe('U48-S5 · 终端是客户端', () => {
     try {
       window = await createUiSession({ label: '预检', artifacts: runs, sandbox, fixture })
 
-      const boot = await window.capture({ label: '开屏' })
-      // 三件与 `Assembly.notices` 那句**同词**（判据的锚就是它）
-      expect(boot.text).toContain('broken')
-      expect(boot.text).toContain('连不上')
-      expect(boot.text).toContain('外部工具服务器')
-
-      // **一个执行者都没有**——预检不另起后台，也没有会话（首条消息才开张）。
-      // 管理者在（它本来就在，预检就挂在它的启动上），故这里数的是**执行者**
-      expect((await straysIn(sandbox)).executors).toEqual([])
-
+      expect(host.executorStarts()).toBe(0)
+      expect(fixture.requests()).toHaveLength(0)
       const db = readDatabase(join(sandbox.dataDir, 'records.db'))
       try {
         expect(db.sessions.length).toBe(0)
@@ -319,7 +311,7 @@ describe('U48-S5 · 终端是客户端', () => {
         await window.wait({ text: 'MODEL_BEFORE_DROP_A_' }, { timeoutMs: 20_000 })
         await window.capture({ label: '模型在途，尚未关窗' })
         const before = { facts: facts(), processes: await straysIn(sandbox) }
-        expect(before.processes.executors).toHaveLength(1)
+        expect(host.executorStarts()).toBe(1)
         expect(before.facts.events.filter((event) => event.kind === 'turn.end')).toHaveLength(0)
         const pid = window.pid
         const at = Date.now()
@@ -332,7 +324,7 @@ describe('U48-S5 · 终端是客户端', () => {
         writeFileSync(join(runs, 'departure.json'), JSON.stringify({ leave, pid, elapsedMs: Date.now() - at, exit: closed.exit, before, after }, null, 2))
         expect(closed.exit).toEqual({ code: 0, signal: null, by: 'app' })
         expect(after.facts.events.filter((event) => event.kind === 'turn.end')).toHaveLength(0)
-        expect(after.processes.executors).toEqual(before.processes.executors)
+        expect(host.executorStarts()).toBe(1)
         expect(existsSync(pathsOf(sandbox).socket)).toBe(true)
         await waitFor('关窗后原请求完整落账', () => facts().events.some((event) => event.kind === 'turn.end'), 20_000)
         const completed = facts()
@@ -584,7 +576,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       window = await createUiSession({ label: '停后台', artifacts: runs, sandbox, fixture })
 
       await window.send('起一条后台命令', { until: { text: '起一条后台命令' }, timeoutMs: 10_000 })
-      await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 30_000 })
+      await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 8_000 })
 
       // **那一组真站起来了**（先确认它起得来——否则「停掉了」是空判）
       await waitFor('那条后台进程站起来', async () => (await pidsOf(MARK)).length > 0, 20_000)
@@ -849,7 +841,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       window = await createUiSession({ label: '只剩后台', artifacts: runs, sandbox, fixture })
 
       await window.send('起一条后台命令', { until: { text: '起一条后台命令' }, timeoutMs: 10_000 })
-      await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 30_000 })
+      await window.key('enter', { until: { text: '交出去了。' }, timeoutMs: 8_000 })
       await waitFor('那条后台进程站起来', async () => (await pidsOf(MARK)).length > 0, 20_000)
 
       // ⚠️ **等不了「○ 空闲」**——U100 起，只剩后台命令那一形在运行事实里**就是「执行中」**

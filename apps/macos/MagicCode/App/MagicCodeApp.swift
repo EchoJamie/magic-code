@@ -2,7 +2,25 @@ import SwiftUI
 import AppKit
 import Combine
 
-@main struct MagicCodeApp: App {
+@main enum MagicCodeEntry {
+    static func main() {
+        if CommandLine.arguments.dropFirst().first == "--internal-engine-control" {
+            signal(SIGPIPE, SIG_IGN)
+            do {
+                let result = try EngineControl.perform(Array(CommandLine.arguments.dropFirst(2)))
+                FileHandle.standardOutput.write(try JSONEncoder().encode(result) + Data([10]))
+                exit(result.state == "failed" ? 1 : 0)
+            } catch {
+                let result = EngineControlResult(state: "failed", base: nil, alive: nil, record: nil, error: error.localizedDescription)
+                if let data = try? JSONEncoder().encode(result) { FileHandle.standardOutput.write(data + Data([10])) }
+                exit(1)
+            }
+        }
+        MagicCodeApp.main()
+    }
+}
+
+struct MagicCodeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model: AppModel
     init() {
@@ -13,13 +31,13 @@ import Combine
         }
         #if DEBUG
         let fixedRoot = AppModel.systemTestRoot(bundle: .main)
-        if Bundle.main.bundleIdentifier?.hasPrefix("com.magiccode.validation.") == true, fixedRoot == nil {
-            FileHandle.standardError.write(Data("系统验收隔离根无效，拒绝启动\n".utf8)); exit(78)
-        }
         let root = fixedRoot ?? args.firstIndex(of: "--validation-root").flatMap { args.indices.contains($0 + 1) ? URL(fileURLWithPath: args[$0 + 1]) : nil }
         #else
         let root: URL? = nil
         #endif
+        if Bundle.main.bundleIdentifier?.hasPrefix("com.magiccode.validation.") == true, root == nil {
+            FileHandle.standardError.write(Data("系统验收隔离根无效，拒绝启动\n".utf8)); exit(78)
+        }
         let diagnosticArgs: [String]
         do { diagnosticArgs = try Diagnostics.arguments(args) }
         catch { FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8)); exit(64) }
@@ -34,7 +52,7 @@ import Combine
                 Button("打开调试窗口") { model.showDebugWindow?() }.padding()
             } else { StatusPanel(model: model) }
         } label: {
-            MenuBarMark(state: model.menuBarState).accessibilityLabel("Magic Code，\(model.summary)")
+            MenuBarMark(state: model.menuBarState).accessibilityLabel("Magic Code，\(model.summary)").modifier(SettingsLaunch())
         }.menuBarExtraStyle(.window)
         // 设置窗口是**长期窗口**：它在 ⇒ App 是 `.regular`（Dock 有图标、Cmd+Tab 切得到）。标记不占位置。
         Settings { SettingsView(model: model).background(LongLivedWindowMarker()) }
@@ -164,12 +182,6 @@ import Combine
                 else { NSApp.terminate(nil) }
             }
         }
-        // SwiftUI's panel can be closed when Quit comes from the system. Show the same
-        // confirmation in an AppKit sheet only for a real user termination request.
-        if Self.model?.showQuitConfirmation == true, Self.model?.presentQuitAlert() == false {
-            awaitingTerminationReply = false
-            return .terminateCancel
-        }
         return .terminateLater
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -187,25 +199,6 @@ extension AppDelegate {
     }
     #endif
 }
-
-extension AppModel {
-    func presentQuitAlert() -> Bool {
-        let alert = makeQuitAlert()
-        NSApp.activate(ignoringOtherApps: true)
-        // NSAlert's default button consumes Escape before cancelOperation on the tested macOS.
-        let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.window === alert.window, event.keyCode == 53,
-                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
-            alert.buttons[0].performClick(nil)
-            return nil
-        }
-        defer { if let escape { NSEvent.removeMonitor(escape) } }
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn { confirmQuit(); return true }
-        cancelQuit(); return false
-    }
-}
-
 
 @MainActor private final class DebugWorkWindow: NSObject, NSWindowDelegate {
     private let model: AppModel
@@ -230,4 +223,15 @@ extension AppModel {
     func windowWillClose(_ notification: Notification) { model.panelVisibility(false, surface: .debug); model.setDebugWindowVisible(false) }
     func windowDidMiniaturize(_ notification: Notification) { model.panelVisibility(false, surface: .debug) }
     func windowDidDeminiaturize(_ notification: Notification) { model.panelVisibility(true, surface: .debug) }
+}
+
+private struct SettingsLaunch: ViewModifier {
+    @Environment(\.openSettings) private var openSettings
+    @State private var opened = false
+    func body(content: Content) -> some View {
+        content.task {
+            guard !opened, CommandLine.arguments.contains("--settings") else { return }
+            opened = true; openSettings(); NSApp.activate(ignoringOtherApps: true)
+        }
+    }
 }

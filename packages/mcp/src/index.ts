@@ -2,8 +2,7 @@
  * `@magic/mcp` —— **MCP 客户端适配器**。
  *
  * 本包**不是域**：它实现契约里的连接端口（`McpConnection`），把客户端藏在适配器之后。
- * 依赖纪律与各域同一条：**只依赖 `@magic/contracts`** ＋ 官方 SDK
- * （`test/scaffold.test.ts` 的两张表里都登了记）。
+ * 协议取官方 SDK；stdio 工具启动复用 execution 的登记后放行边界。
  *
  * 两种接入、一条链：**stdio**（`stdio.ts`，自有进程组）与 **Streamable HTTP**（`http.ts`）
  * 各只答「怎么造一条传输、起不来怎么说、它自己没了怎么说」，发现 / 调用 / 结果 / 状态 /
@@ -66,6 +65,11 @@ export type McpServers = {
 }
 
 export type McpServersOptions = {
+  readonly fetch?: (input: string | URL, init?: RequestInit) => Promise<Response>
+  readonly environment?: Readonly<Record<string, string>>
+  readonly cwd?: string
+  readonly signal?: AbortSignal
+
   /** 配置里的那一段（`mcp.servers`）——**一个条目一条连接**；空＝一条都没有。 */
   readonly servers: Readonly<Record<string, McpServerConfig>>
   /** 连接 / 发现的上限（毫秒）——缺省 `MCP_CONNECT_TIMEOUT_MS`。 */
@@ -100,10 +104,11 @@ export function createMcpServers(options: McpServersOptions): McpServers {
     }
 
     return isHttpConfig(config)
-      ? createHttpConnection({ ...shared, config })
+      ? createHttpConnection({ ...shared, config, fetch: options.fetch, signal: options.signal })
       : createStdioConnection({
           ...shared,
           config,
+          environment: options.environment, cwd: options.cwd, signal: options.signal,
           ...(options.ledger === undefined ? {} : { ledger: options.ledger }),
         })
   })

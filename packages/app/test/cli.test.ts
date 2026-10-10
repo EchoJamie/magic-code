@@ -46,7 +46,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
       const parsed = parseArgs(['resume', 'session-real', '--open-request', request, '--model', 'spell', '--allow-all'])
       const connection = await connectTerminal(parsed, { home: g.home, env: { PATH: '/work/bin', API_KEY: 'do-not-send' } })
       const hello = server.messages.find((message) => message.t === 'hello')!
-      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { choice: 'spell' }, allowAll: true, environment: { PATH: '/work/bin' } })
+      expect(hello).toMatchObject({ t: 'hello', session: 'session-real', openRequest: request, switch: { choice: 'spell' }, allowAll: true })
       expect(JSON.stringify(hello)).not.toContain('do-not-send')
       connection.client.close()
 
@@ -75,7 +75,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
         home: g.home, env: {}, appPath: g.app,
         expectedInstance: { base: first.magic.base },
         connect: { session: 'session-existing' },
-        openApplication: async app => { opened.push(app) },
+        control: async action => { opened.push(action); return { state: 'ready', base: g.base, record: g.discovery } },
       })
       again.client.close()
       // 反向写法与数据目录软链接也按相同规则归一，不维护另一套比较分支。
@@ -84,7 +84,7 @@ describe('resident-cli 短路径与终端接回参数', () => {
         home: g.home, env: {}, appPath: g.app,
         expectedInstance: { base: aliasBase },
         connect: { session: 'session-existing' },
-        openApplication: async app => { opened.push(app) },
+        control: async action => { opened.push(action); return { state: 'ready', base: g.base, record: g.discovery } },
       })
       canonical.client.close()
       const requests = server.messages.filter(message => message.t !== 'bye')
@@ -110,8 +110,8 @@ describe('resident-cli 短路径与终端接回参数', () => {
         await expect(reopenApp({
           home: g.home, env: {}, appPath: g.app, expectedInstance,
           connect: { session: 'session-existing' },
-          openApplication: async app => { opened.push(app) },
-        })).rejects.toThrow('App 数据实例已改变')
+          control: async action => { opened.push(action); return { state: 'ready', base: g.base, record: g.discovery } },
+        })).rejects.toThrow('数据实例已改变')
       }
       expect(server.messages).toEqual([])
       expect(opened).toEqual([])

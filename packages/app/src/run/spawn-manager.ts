@@ -1,98 +1,77 @@
 import { homedir } from 'node:os'
-import type { DiagnosticsChange } from '@magic/contracts'
+import { join, resolve } from 'node:path'
+import { NATIVE_PROTOCOL, SOFTWARE_VERSION, resolveMagicHome, type DiagnosticsChange, type HostDiscovery, type MagicHome } from '@magic/contracts'
 import { applyHostDiagnostics } from './diagnostics-client.ts'
-/** CLI 只连接 App 所属服务；仅用户主动打开/重开时可以通过 LaunchServices 打开 App。 */
-import type { HostDiscovery, MagicHome } from '@magic/contracts'
 import type { LoadedConfig } from '../config.ts'
 import { connectManager, executionEnvironment, type ConnectOptions, type ManagerClient } from './client.ts'
 import { locateHost, readHostDiscovery, selectedHostConfig, type HostLocationOptions } from './host-discovery.ts'
 import { normalizeDataDir } from './paths.ts'
+import type { EngineResult } from './engine-call.ts'
 
 export type AppConnectionOptions = Omit<HostLocationOptions, 'home'> & { readonly home?: string } & {
   readonly diagnostics?: DiagnosticsChange
-
-  /** 缺省是被动观察，绝不打开 App。 */
   readonly intent?: 'observe' | 'open'
-  /** 留屏重连须仍属原数据实例；在发送 hello/session 之前核对。 */
   readonly expectedInstance?: Pick<HostDiscovery, 'base'>
   readonly connect?: ConnectOptions
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly timeoutMs?: number
-  /** 隔离测试收集启动动作；生产使用 /usr/bin/open 的参数数组。 */
-  readonly openApplication?: (app: string) => Promise<void>
+  readonly control?: (action: 'status' | 'start' | 'stop') => Promise<EngineResult>
 }
+export type AppConnection = { readonly client: ManagerClient; readonly discovery: HostDiscovery; readonly magic: MagicHome; readonly loaded: LoadedConfig }
 
-export type AppConnection = {
-  readonly client: ManagerClient
-  readonly discovery: HostDiscovery
-  readonly magic: MagicHome
-  readonly loaded: LoadedConfig
+/** 同包原生短入口，绝不通过 LaunchServices 打开图形 App。 */
+export async function controlEngine(action: 'status' | 'start' | 'stop', options: HostLocationOptions & { readonly env?: Readonly<Record<string, string | undefined>>; readonly cwd?: string }): Promise<EngineResult> {
+  const location = locateHost(options)
+  if (!location.app) throw new Error('源码入口须明确指定同来源的原生包，才能操作当前登录会话的 Engine')
+  const plist = Bun.spawnSync(['/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleExecutable', join(location.app, 'Contents/Info.plist')], { stdout: 'pipe', stderr: 'pipe' })
+  const name = plist.stdout.toString().trim()
+  if (plist.exitCode !== 0 || !name || name.includes('/')) throw new Error('所属 App 的平台入口无效')
+  const env = options.env ?? process.env
+  const requestedBase = env.MAGIC_HOME?.trim() ? resolveMagicHome({ ...env, MAGIC_HOME: resolve(options.cwd ?? process.cwd(), env.MAGIC_HOME.trim()) }, location.home).base : undefined
+  const args = [join(location.app, 'Contents/MacOS', name), '--internal-engine-control', action, '--request', crypto.randomUUID()]
+  if (requestedBase) args.push('--base', requestedBase)
+  if (location.home !== homedir()) args.push('--validation-root', location.home)
+  // 明确停止一经发起便独立收尾；关闭发起终端不能把短控制进程一并挂断。
+  const child = Bun.spawn(args, { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', detached: true })
+  const output = new Response(child.stdout).text(), errors = new Response(child.stderr).text()
+  const code = await child.exited
+  const result = JSON.parse(await output) as EngineResult
+  if (code !== 0) throw new Error(result.error ?? (await errors).trim() ?? 'Engine 控制失败')
+  return result
 }
-
-export async function openApplication(app: string): Promise<void> {
-  const child = Bun.spawn(['/usr/bin/open', app], {
-    stdin: 'ignore', stdout: 'ignore', stderr: 'pipe',
-  })
-  const errors = new Response(child.stderr).text()
-  const timer = setTimeout(() => child.kill(), 5_000)
-  try {
-    const code = await child.exited
-    if (code !== 0) throw new Error(`无法打开 App ${app}：${(await errors).trim() || `open 退出码 ${code}`}`)
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 export async function connectApp(options: AppConnectionOptions = {}): Promise<AppConnection> {
   const location = locateHost({ ...options, home: options.home ?? homedir() })
-  const active = options.intent === 'open'
-  const env = options.env ?? process.env
-  const cwd = options.connect?.cwd ?? process.cwd()
-  const timeoutMs = options.timeoutMs ?? 8_000
-  const deadline = Date.now() + timeoutMs
-  let reason = `App 尚未发布就绪记录：${location.discoveryPath}`
-
-  const attempt = async (): Promise<AppConnection | undefined> => {
-    const discovery = readHostDiscovery(location)
-    if (discovery === undefined) return undefined
-    if (options.expectedInstance !== undefined &&
-      normalizeDataDir(discovery.base) !== normalizeDataDir(options.expectedInstance.base)) {
-      throw new Error(`App 数据实例已改变：原基础目录 ${options.expectedInstance.base}；当前基础目录 ${discovery.base}。请在 App 设置切回原实例再重开`)
-    }
-    const selected = selectedHostConfig(discovery, { home: location.home, cwd, env })
-    const client = await connectManager(discovery.socket, {
-      ...options.connect,
-      expectedIdentity: discovery,
-      environment: active ? executionEnvironment(env) : undefined,
-      timeoutMs: Math.max(1, Math.min(options.connect?.timeoutMs ?? timeoutMs, deadline - Date.now())),
-    })
-    if (client === undefined) {
-      reason = `App 发现记录已过期或服务不可达：${discovery.socket}`
-      return undefined
-    }
+  const control = options.control ?? (action => controlEngine(action, { ...options, home: location.home }))
+  const env = options.env ?? process.env, cwd = options.connect?.cwd ?? process.cwd()
+  const attach = async (discovery: HostDiscovery): Promise<AppConnection | undefined> => {
+    if (options.expectedInstance && normalizeDataDir(options.expectedInstance.base) !== normalizeDataDir(discovery.base)) throw new Error('数据实例已改变，请明确切回原实例后重连')
+    const config = selectedHostConfig(discovery, { home: location.home, cwd, env })
+    const client = await connectManager(discovery.socket, { ...options.connect, expectedIdentity: discovery,
+      environment: executionEnvironment(env), timeoutMs: options.timeoutMs ?? 1500 })
+    if (!client) return undefined
     if (options.diagnostics) {
-      try { const note = await applyHostDiagnostics(discovery, options.diagnostics); process.stderr.write(`${note}\n`) } catch (error) { client.close(); throw error }
+      try { process.stderr.write(`${await applyHostDiagnostics(discovery, options.diagnostics, 'cli', location.home, env)}\n`) }
+      catch (error) { client.close(); throw error }
     }
-    return { client, discovery, ...selected }
+    return { client, discovery, ...config }
   }
-
-  const existing = await attempt()
-  if (existing !== undefined) return existing
-  if (!active) throw new Error(`${reason}；被动连接不会打开 Magic Code`)
-  if (location.app === undefined) {
-    throw new Error(`${reason}；源码模式请先显式启动同来源的原生 App 宿主`)
+  const found = readHostDiscovery(location)
+  if (found) {
+    const existing = await attach(found)
+    if (existing) return existing
   }
-
-  await (options.openApplication ?? openApplication)(location.app)
-  do {
-    const connected = await attempt()
-    if (connected !== undefined) return connected
-    await Bun.sleep(Math.min(25, Math.max(0, deadline - Date.now())))
-  } while (Date.now() < deadline)
-  throw new Error(`已请求打开 ${location.app}，但未能在 ${timeoutMs}ms 内连接就绪服务：${reason}`)
+  const selected = await control('status')
+  const explicit = env.MAGIC_HOME?.trim() ? resolveMagicHome({ ...env, MAGIC_HOME: resolve(cwd, env.MAGIC_HOME.trim()) }, location.home).base : undefined
+  if (explicit !== undefined && normalizeDataDir(explicit) !== normalizeDataDir(selected.base)) throw new Error(`数据实例不匹配：终端=${explicit}；当前选择=${selected.base}`)
+  if (options.expectedInstance && normalizeDataDir(options.expectedInstance.base) !== normalizeDataDir(selected.base)) throw new Error('数据实例已改变，请明确切回原实例后重连')
+  const current = selected.state === 'ready' || options.intent !== 'open' ? selected : await control('start')
+  const discovery = current.record
+  if (current.state !== 'ready' || !discovery) throw new Error(current.error ?? `Magic Engine ${current.state}；刷新与重连不会启动它`)
+  if (discovery.protocol !== NATIVE_PROTOCOL || discovery.version !== SOFTWARE_VERSION) throw new Error('Engine 版本不匹配')
+  const connected = await attach(discovery)
+  if (!connected) throw new Error('Magic Engine 控制连接不可达')
+  return connected
 }
-
-/** 供后续 TUI“重新打开 Magic Code”明确动作调用；自动重连仍调用 connectApp 的缺省观察模式。 */
 export function reopenApp(options: Omit<AppConnectionOptions, 'intent'> = {}): Promise<AppConnection> {
   return connectApp({ ...options, intent: 'open' })
 }

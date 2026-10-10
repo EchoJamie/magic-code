@@ -42,7 +42,7 @@ const USER_AGENT = 'magic/0.0 (+https://github.com/EchoJamie/magic-code)'
 
 export type WebSourceOptions = {
   /** 取件实现——缺省全局 `fetch`（用例里换成桩，不出网）。 */
-  readonly fetch?: typeof fetch | undefined
+  readonly fetch?: ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>) | undefined
   readonly timeoutMs?: number | undefined
   readonly maxBytes?: number | undefined
 }

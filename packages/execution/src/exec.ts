@@ -1,3 +1,5 @@
+import { spawnOwned } from './process.ts'
+import { groupAlive, signalGroup } from './groups.ts'
 /**
  * 进程级执行原语——`exec` 的实现体（技术方案 · 执行 · 首站实现）。
  *
@@ -56,16 +58,19 @@ const NEVER = new Promise<never>(() => undefined)
  * 命令起的后台孙进程一并收走。组不可达（已收干净 / 平台不给组）时退回直接收子进程。
  * `SIGKILL` 不可捕获——`trap` 挡不住，语义才闭合。
  */
-function killTree(proc: Bun.Subprocess): void {
-  try {
-    process.kill(-proc.pid, 'SIGKILL')
-  } catch {
-    try {
-      proc.kill('SIGKILL')
-    } catch {
-      // 已经死透了——无事可做
-    }
+async function killTree(proc: Bun.Subprocess): Promise<void> {
+  const wait = async (ms: number) => {
+    const until = Date.now() + ms
+    while (groupAlive(proc.pid) && Date.now() < until) await Bun.sleep(20)
   }
+  await wait(500)
+  if (!groupAlive(proc.pid)) return
+  signalGroup(proc.pid, 'SIGTERM')
+  await wait(1500)
+  if (!groupAlive(proc.pid)) return
+  signalGroup(proc.pid, 'SIGKILL')
+  await wait(1500)
+  if (groupAlive(proc.pid)) throw new Error(`工具进程组 ${proc.pid} 尚未收妥`)
 }
 
 /** 一道流的读取产物。 */
@@ -79,6 +84,8 @@ type OutputSink = (delta: OutputDelta) => void
 
 /** 一次执行的进程侧入参——cwd 已是绝对路径（路径问题归 `sandbox.ts`）。 */
 export type CommandOptions = {
+  readonly env?: Readonly<Record<string, string>>
+
   readonly cwd: string
   /**
    * 超时上界——**`null` ＝ 不设上界**（一直等，本文件不立计时器）。缺省常量已撤（见上）。
@@ -263,16 +270,15 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
     return { ok: true, exit: KILLED_EXIT, stdout: '', stderr: '' }
   }
 
-  let proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>
+  let proc: Bun.Subprocess<'pipe', 'pipe', 'pipe'>
 
   try {
-    proc = Bun.spawn([SHELL, '-c', cmd], {
-      cwd: options.cwd,
-      stdin: 'ignore', // 不给命令喂宿主 stdin——交互式命令即得 EOF，不悬着等输入
-      stdout: 'pipe',
-      stderr: 'pipe',
-      detached: true, // 自成进程组：收命时按组收（见文件头注）
+    const started = await spawnOwned([SHELL, '-c', cmd], {
+      cwd: options.cwd, env: options.env, signal: options.signal, ledger: options.ledger,
+      stdout: 'pipe', stderr: 'pipe', kind: 'exec',
+      what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
     })
+    proc = started.process
   } catch (error) {
     // 报文里点出 cwd——`Bun.spawn` 的 ENOENT 指向可执行名（`posix_spawn 'sh'`），
     // 而真凶多半是 cwd 不存在 / 不可达；不点出来，排障得反推
@@ -286,16 +292,14 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
   // **记账**（U50）：起来的这一组归谁——组长就是刚起来的那个（`detached` 保证）。
   // 记在这一跳（spawn 成功之后、干活之前）：账上多一条不碍事，少一条就没人在收尾时
   // 找得到它。什么时候摘由账自己判（组没了就摘，见 `groups.ts`）。
-  options.ledger?.add({
-    pgid: proc.pid,
-    kind: 'exec',
-    what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
-  })
 
-  // 取消——信号一响就按组收命。**不另立分支**：收命后 `proc.exited` 自然落定 137，
-  // 走的是「命令跑了 · exit≠0」那条正道（取消不是沙箱级失败，见上）。
-  const onAbort = (): void => killTree(proc)
+  let cleanup: Promise<void> | undefined
+  const stop = (): Promise<void> => cleanup ??= killTree(proc)
+  let aborted: () => void = () => {}
+  const cancellation = new Promise<void>(resolve => { aborted = resolve })
+  const onAbort = (): void => { aborted() }
   options.signal?.addEventListener('abort', onAbort, { once: true })
+  if (options.signal?.aborted) onAbort()
 
   // 读流与「等进程退出」并行——不先排空管道，写得多一点的命令会卡在写满的管道上
   const stdoutTask = drain(proc.stdout, 'stdout', options.onOutput, options.maxOutputBytes)
@@ -323,7 +327,7 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
     // 竞速位的三种落定：退出码（数字）、超时令牌（对象，见 `TimeoutToken`）、以及永不落定。
     let outcome: number | TimeoutToken
     try {
-      outcome = await Promise.race([proc.exited, deadline, drained.then(() => NEVER)])
+      outcome = await Promise.race([proc.exited, deadline, drained.then(() => NEVER), cancellation.then(async () => { await stop(); return await proc.exited })])
     } finally {
       clearTimeout(timer) // 进程已落定——别让计时器吊着事件循环
       options.signal?.removeEventListener('abort', onAbort) // 摘监听——信号常比单次执行长寿
@@ -334,7 +338,7 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
       // 真在做，副作用可能已经发生。故这一支**照正常那一支把两道流带回**：收尸时
       // `stdoutTask` / `stderrTask` 本来就排空到 EOF（`await proc.exited` 之后 `drained`
       // 已是可取的终值），原先只是**没把值带出来**——D39 丢的就是这一份。
-      killTree(proc)
+      await stop()
       await proc.exited // 收尸
       const [stdout, stderr] = await drained // 排空，不留悬着的读
       return {
@@ -362,7 +366,7 @@ export async function runCommand(cmd: string, options: CommandOptions): Promise<
     // 走到这里＝**沙箱自身出了岔子**（不是命令失败，也不是三例沙箱级失败）：
     // 多半是消费方回调抛错。两条纪律——**不吞**（消费者自己的 bug 该响）、
     // **不留孤儿**（抛出去之前把命令连孙进程收干净）。
-    killTree(proc)
+    await stop()
     await proc.exited.catch(() => undefined)
     throw error
   }

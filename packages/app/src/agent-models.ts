@@ -72,11 +72,12 @@ export function validateSelection(input: { readonly models: ModelRegistry; reado
 /** manager 预检只读配置与匹配接入身份的缓存，不联网。 */
 export async function resolveManagedModel(input: {
   readonly magic: MagicHome
+  readonly environment: Readonly<Record<string, string>>
   readonly defaults: AgentModelConfig
   readonly role?: string
   readonly model?: ModelSwitchRequest
 }): Promise<AgentModelConfig> {
-  const { loaded, info } = await managedModelContext(input.magic)
+  const { loaded, info } = await managedModelContext(input.magic, input.environment)
   const role = input.role === undefined ? undefined : loaded.config.agentRoles?.[input.role]
   if (input.role !== undefined && (!Object.hasOwn(loaded.config.agentRoles ?? {}, input.role) || role === undefined)) throw new Error(`未知角色「${input.role}」`)
   const resolved = resolveModelChoice({
@@ -85,16 +86,16 @@ export async function resolveManagedModel(input: {
     modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model),
   })
   if (!resolved.ok) throw new Error(resolved.reason)
-  resolveApiKey({ providerId: resolved.selection.provider, config: loaded.config.providers[resolved.selection.provider]!, env: process.env, configPath: loaded.path })
+  resolveApiKey({ providerId: resolved.selection.provider, config: loaded.config.providers[resolved.selection.provider]!, env: input.environment, configPath: loaded.path })
   return resolved.selection
 }
 
-async function managedModelContext(magic: MagicHome) {
+async function managedModelContext(magic: MagicHome, environment: Readonly<Record<string, string>>) {
   const loaded = loadConfig({ magic })
   const processToken = crypto.randomUUID()
   const info = createModelInfoService({
     connections: () => Object.entries(loaded.config.providers).map(([providerId, config]) => ({
-      ...resolveConnection({ providerId, config }),
+      ...resolveConnection({ providerId, config, env: environment }),
       access: cacheAccessFor({ provider: providerId, configPath: loaded.path, apiKey: config.apiKey, processToken }),
     })),
     cache: createFileModelInfoCache(magic.base), now: Date.now,
@@ -105,8 +106,8 @@ async function managedModelContext(magic: MagicHome) {
 }
 
 /** 协调者只读已配置的档位及已知能力；不发分类或模型请求。 */
-export async function managedModelChoices(magic: MagicHome) {
-  const { loaded, info } = await managedModelContext(magic)
+export async function managedModelChoices(magic: MagicHome, environment: Readonly<Record<string, string>>) {
+  const { loaded, info } = await managedModelContext(magic, environment)
   return (['default', 'cantrip', 'spell', 'arcane'] as const).map(choice => {
     const mapping = loaded.config.models?.[choice]
     if (mapping === undefined) return { choice, configured: false }

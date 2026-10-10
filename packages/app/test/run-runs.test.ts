@@ -16,7 +16,6 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { Socket } from 'bun'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,9 +26,9 @@ import type { ManagerClient } from '../src/run/client.ts'
 import { startManager } from '../src/run/manager.ts'
 import type { ExecutorLauncher, ExecutorRequest, Manager, SpawnedExecutor } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
-import { linkOf, socketHandlers } from '../src/run/wire.ts'
 import type { ExecutorToManager, ManagerToExecutor } from '@magic/contracts'
 import { removeDir, tempDir } from './tmp.ts'
+import { attentionFacts } from './resident-attention-fixture.ts'
 
 /** 一块沙地——形制与 `run-executor.test.ts` 那一处同（两处各是一片独立沙地，不共用状态）。 */
 type Ground = {
@@ -127,11 +126,10 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       requests.push(request)
       return {
         // 假进程号：只作诊断（这一支里没人按 PID 找它）——取一段不会撞上真进程的号
-        pid: 900_000 + request.gen,
         onExit(listener) {
           exits.set(request.gen, listener)
         },
-        kill() {
+        cancel() {
           exits.get(request.gen)?.('被叫停')
         },
       }
@@ -153,11 +151,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
     const request = requests[index]
     if (request === undefined) throw new Error(`第 ${index} 次发车都还没有`)
 
-    const socket = (await Bun.connect({
-      unix: manager.socketPath,
-      socket: socketHandlers(),
-    })) as Socket<never>
-    const link = linkOf<ManagerToExecutor>(socket)
+    const link = request.link
     const got: ManagerToExecutor[] = []
     link.onMessage((message) => got.push(message))
 
@@ -178,7 +172,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
         return fake.emit('tool.call', { name, args: {} }, session)
       },
       ready(session) {
-        link.send({ t: 'hello', role: 'executor', token: request.token, session, workspace: [g.ws] })
+        link.send({ t: 'assembled', session, workspace: [g.ws] })
         link.send({ t: 'ready' })
       },
       stopping(why) {
@@ -587,93 +581,27 @@ describe('U49 · `/clear` 是这个窗口的', () => {
 })
 
 describe('U49 · 登记落盘与重启核对', () => {
-  test('上一次留下的一代：进程还在 ⇒ 状态待确认且不许重开；进程没了 ⇒ 已停止', async () => {
+  test('Engine 重启后旧 Agent 标为中断；接回只读，明确输入才创建新代', async () => {
     const g = ground('restart')
-    seed(g, ['s-alive', 's-dead'])
+    seed(g, ['s-old'])
     const paths = runPathsOf(g.magic, g.tmp)
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 })
-
-    // 一条**确实活着**的进程（拿真 pid 当「上一代还没走」的替身）
-    const sleeper = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 60_000)'], {
-      stdin: 'ignore',
-      stdout: 'ignore',
-      stderr: 'ignore',
-    })
-
-    // 上一次留下的登记：一条还在跑的、一条早就没了的
-    writeFileSync(
-      paths.runs,
-      `${JSON.stringify({
-        v: 1,
-        at: 1,
-        runs: [
-          {
-            session: 's-alive',
-            gen: 7,
-            pid: sleeper.pid,
-            startedAt: 1_000,
-            workspace: [g.ws],
-            state: 'running',
-            since: 1_100,
-          },
-          {
-            session: 's-dead',
-            gen: 6,
-            pid: 2 ** 30,
-            startedAt: 900,
-            workspace: [g.ws],
-            state: 'running',
-            since: 950,
-          },
-        ],
-      })}\n`,
-      { mode: 0o600 },
-    )
-
-    const b = await bench(g)
-    const client = await open(g, b.manager)
-
+    writeFileSync(paths.runs, JSON.stringify({ v: 1, at: 1, runs: [{ session: 's-old', gen: 7, startedAt: 1000,
+      workspace: [g.ws], state: 'running', since: 1100 }] }), { mode: 0o600 })
+    const b = await bench(g), client = await open(g, b.manager)
     try {
-      // **进程还在** ⇒ 未证实结束
-      await waitFor('待确认', () => rowOf(client, 's-alive')?.state === 'unknown')
-      expect(rowOf(client, 's-alive')?.holds).toBe(true)
-      expect(rowOf(client, 's-dead')?.state).toBe('stopped')
-
-      // 失联时仍可只读历史；下一次明确输入才受独占门保护。
-      const lines: string[] = []
-      client.onLine((text) => lines.push(text))
-      const before = b.requests.length
+      await waitFor('旧代已中断', () => rowOf(client, 's-old')?.state === 'stopped')
+      expect(rowOf(client, 's-old')?.holds).toBe(false)
       let historyDone = false
-      client.onEvent((event) => { if (event.kind === 'session.history' && event.data.done) historyDone = true })
-      client.send({ type: 'session.open', session: 's-alive' })
-      await waitFor('失联历史只读完成', () => historyDone)
-      expect(lines).toEqual([])
-      expect(b.requests).toHaveLength(before)
-      client.send({ type: 'input.submit', text: '未核销期间不得重新执行' })
-      // 原预期 → 新预期：原来是组合线那句「上一次工作尚未核销，当前记录仍可查看……」，
-      // 现在是 U100 那句「……上一次那条执行者还没有证实结束（它可能正在收尾）……
-      // 同一个会话不能同时起两个」（同一件事：独占未核销 ⇒ 拒）。
-      // 依据 U100（`held` 那道守卫）；**没变弱**：这条只换措辞，
-      // 紧接着那条「一代都没多起」（`b.requests.length === before`）行为判据原样在。
-      await waitFor('执行被拒且有话说', () => lines.some((text) => text.includes('还没有证实结束')))
-      expect(b.requests.length).toBe(before) // 一代都没多起
-
-      // 那个进程走了 ⇒ 那一代真的结束了（生命探测那一跳核对出来的）
-      sleeper.kill()
-      await waitFor('落定为已停止', () => rowOf(client, 's-alive')?.state === 'stopped', 10_000)
-      expect(rowOf(client, 's-alive')?.holds).toBe(false)
-
-      // 现在可以接着开了
-      client.send({ type: 'session.open', session: 's-alive' })
-      client.send({ type: 'input.submit', text: '受控执行者测试输入' })
-      await waitFor('这回起得来', () => b.requests.length === before + 1)
-
-      client.close()
-    } finally {
-      sleeper.kill()
-      await b.dispose()
-    }
-  }, 30_000)
+      client.onEvent(event => { if (event.kind === 'session.history' && event.data.done) historyDone = true })
+      client.send({ type: 'session.open', session: 's-old' })
+      await waitFor('历史只读完成', () => historyDone)
+      expect(b.requests).toHaveLength(0)
+      client.send({ type: 'input.submit', text: '明确继续' })
+      await waitFor('创建新代', () => b.requests.length === 1)
+      expect(b.requests[0]?.session).toBe('s-old')
+    } finally { client.close(); await b.dispose() }
+  }, 30000)
 
   test('这一趟的登记会落盘——下一次启动读得到「上一次有哪几代」', async () => {
     const g = ground('persist')
@@ -709,11 +637,10 @@ describe('U49 · 登记落盘与重启核对', () => {
   }, 30_000)
 })
 
-test('同会话终端接收具体事项，不重复系统提醒；其他会话与最后连接离开后照常提醒', async () => {
+test('同会话终端接收具体事项；离线事项持久保留且未投递', async () => {
   const g = ground('notification-routing')
   seed(g, ['a', 'b'])
-  const sent: string[] = []
-  const b = await bench(g, { notifySystem: (text: string) => sent.push(text) })
+  const b = await bench(g)
   const a = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'a' }))!
   const other = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'b' }))!
   const notices: string[] = []
@@ -725,22 +652,24 @@ test('同会话终端接收具体事项，不重复系统提醒；其他会话�
     const first = await b.attach(b.requests.findIndex(request => request.session === 'a'))
     const second = await b.attach(b.requests.findIndex(request => request.session === 'b'))
     first.ready('a'); second.ready('b')
+    first.emit('turn.start', {}, 'a')
     first.emit('turn.end', { reason: 'settled' }, 'a')
     await waitFor('终端显示结果事项', () => notices.length === 1)
-    expect(sent).toHaveLength(0)
     other.close()
     await Bun.sleep(20)
+    second.emit('turn.start', {}, 'b')
     second.emit('turn.end', { reason: 'error' }, 'b')
-    await waitFor('B 无连接仍提醒', () => sent.length === 1)
+    await waitFor('B 离线事项落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.session === 'b'))
     const twin = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'a' }))!
     twin.close()
     await Bun.sleep(20)
     first.emit('tool.decision.request', { call: 3, name: 'write', material: '写文件', weight: 'heavy' }, 'a')
     await waitFor('剩余窗口显示待答', () => notices.length === 2)
-    expect(sent).toHaveLength(1)
     a.close()
     await Bun.sleep(20)
+    first.emit('turn.start', {}, 'a')
     first.emit('turn.end', { reason: 'error' }, 'a')
-    await waitFor('最后一条连接离开后提醒', () => sent.length === 2)
+    await waitFor('最后连接离开后的事项落盘', () => attentionFacts(g.dataDir, g.ws).filter(one => one.session === 'a').length === 3)
+    expect(attentionFacts(g.dataDir, g.ws).every(one => !one.delivered)).toBe(true)
   } finally { a.close(); other.close(); await b.dispose() }
-})
+}, 30000)

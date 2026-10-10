@@ -14,8 +14,8 @@ async function waitFor(check: () => boolean) {
   }
 }
 
-for (const how of ['shutdown', 'eof'] as const) {
-  test(`有待答责任时 App ${how}：真实执行者与宿主全退，旧客户端不能留下后台`, async () => {
+for (const how of ['shutdown', 'signal'] as const) {
+  test(`有待答责任时明确停止 Engine ${how}：Agent 与资源收妥后关闭连接`, async () => {
     const fixture = startFixture({ turns: [{ kind: 'tool', name: 'exec', args: { cmd: 'chmod 755 .' } }] })
     const sandbox = createSandbox({ baseURL: fixture.baseURL })
     let host: Awaited<ReturnType<typeof startResidentHost>> | undefined
@@ -27,24 +27,19 @@ for (const how of ['shutdown', 'eof'] as const) {
       client!.send({ type: 'input.submit', text: '受控待答，不批准工具' })
       await waitFor(() => client!.runs().some((row) => row.state === 'waiting'))
       const runs = join(dirname(host.discovery.socket), 'runs.json')
-      let executor: number | undefined
       await waitFor(() => {
         if (!existsSync(runs)) return false
-        const registry = JSON.parse(readFileSync(runs, 'utf8')) as { runs: { pid?: number; state: string }[] }
-        executor = registry.runs.find((row) => row.state === 'waiting')?.pid
-        return executor !== undefined
+        const registry = JSON.parse(readFileSync(runs, 'utf8')) as { runs: { gen: number; state: string }[] }
+        return registry.runs.some(row => row.state === 'waiting' && row.gen > 0)
       })
-      expect(alive(executor!)).toBe(true)
       expect(host.executorStarts()).toBe(1)
       expect(fixture.requests().filter((one) => one.path.endsWith('/chat/completions'))).toHaveLength(1)
       const pid = host.pid
       const socket = host.discovery.socket
       await host.close(how)
-      expect(alive(executor!)).toBe(false)
       expect(alive(pid)).toBe(false)
       expect(client!.closed).toBe(true)
       expect(existsSync(socket)).toBe(false)
-      console.log(`有责宿主 ${how} 证据：${host.evidence}`)
     } finally {
       client?.close()
       try { await host?.close() } finally {

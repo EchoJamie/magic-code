@@ -8,12 +8,46 @@ import sys
 import threading
 import time
 
-base = Path(os.environ['MAGIC_HOME'])
+import subprocess
+import uuid
+
+base = Path(sys.argv[sys.argv.index('--validation-root') + 1])
 options = json.loads((base / 'control.json').read_text())
-host = sys.argv[sys.argv.index('--host-instance') + 1]
-identity = {'protocol': 1, 'version': '0.0.0', 'source': options.get('source', os.path.realpath(sys.argv[0])),
-            'hostInstance': host, 'serviceInstance': 'controlled-' + host, 'base': str(base / '.magic')}
+state_file = base / 'engine.json'
+if sys.argv[1] == '--internal-engine-control':
+    action = sys.argv[2]
+    def status():
+        return json.loads(state_file.read_text()) if state_file.exists() else {'state': 'stopped', 'base': str(base / '.magic'), 'alive': False}
+    current = status()
+    if action == 'start' and current['state'] == 'stopped':
+        (base / 'stop-request').unlink(missing_ok=True)
+        subprocess.Popen([sys.executable, sys.argv[0], '--serve', '--validation-root', str(base)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + 5
+        while current['state'] != 'ready' and time.monotonic() < deadline:
+            time.sleep(.01); current = status()
+    elif action == 'switch':
+        if any(work.get('affected') for work in options.get('works', [])):
+            current = {**current, 'state': 'failed', 'error': '仍有所属工作责任，无法切换基础路径'}
+    elif action in ['stop', 'remove'] and current.get('alive'):
+        request = sys.argv[sys.argv.index('--request') + 1]
+        if options.get('stop') == 'error' and not (base / 'failed-once').exists():
+            (base / 'failed-once').touch()
+            current = {**current, 'state': 'failed', 'error': '受控核销失败'}
+        else:
+            (base / 'stop-request').write_text(request)
+            deadline = time.monotonic() + 5
+            while current['state'] != 'stopped' and time.monotonic() < deadline:
+                time.sleep(.01); current = status()
+    print(json.dumps(current)); sys.exit(0)
+host = str(uuid.uuid4())
+app = Path(sys.argv[0]).resolve().parents[2]
+identity = {'protocol': 1, 'version': '0.0.0', 'source': options.get('source', str(app / 'Contents/Helpers/magic-runtime')),
+            'serviceInstance': 'controlled-' + host, 'base': str(base / '.magic')}
 endpoint = '/tmp/magic-native-' + host[:12] + '.sock'
+record = {**identity, 'socket': endpoint, 'app': str(app), 'lifecycle': host, 'state': 'ready', 'pid': os.getpid()}
+def publish(state):
+    value = {'state': state, 'base': identity['base'], 'alive': state != 'stopped', 'record': {**record, 'state': state}}
+    temporary = base / 'engine.tmp'; temporary.write_text(json.dumps(value)); os.replace(temporary, state_file)
 mutex = threading.Lock()
 clients = []
 accepting = True
@@ -128,33 +162,16 @@ def watch_control():
 
 if options.get('systemTest') or options.get('observerControl'): threading.Thread(target=watch_control, daemon=True).start()
 trace('started', identity=identity)
+publish('ready')
 try:
-    time.sleep(0.1)
-    emit({'t': 'host.ready', 'identity': identity, 'socket': endpoint,
-          'base': str(base / '.magic'), 'config': str(base / '.magic/config.json')})
-    if options.get('crash'):
-        time.sleep(0.1)
-        sys.exit(1)
-    count = 0
-    for line in sys.stdin:
-        message = json.loads(line)
-        if message['t'] != 'host.shutdown': continue
-        count += 1
-        accepting = False
-        trace('shutdown', message=message, accepting=accepting)
-        for client in clients: send(client, {'t': 'native.projection', 'projection': projection()})
-        if options.get('stop') == 'crash': sys.exit(1)
-        if count == 1 and options.get('stop') in ['error', 'timeout']:
-            if options['stop'] == 'error': emit({'t': 'host.error', 'reason': '受控核销未确认，允许重试'})
-            continue
-        emit({'t': 'host.stopped', 'request': message['request']})
-        trace('stopped-sent')
-        if options.get('stop') == 'ack-crash': sys.exit(1)
-        if options.get('gateExit'):
-            deadline = time.monotonic() + 8
-            while not (base / 'allow-exit').exists() and time.monotonic() < deadline: time.sleep(0.01)
-        break
+    while not (base / 'stop-request').exists(): time.sleep(.01)
+    trace('shutdown', message={'request': (base / 'stop-request').read_text()})
+    accepting = False
 finally:
     server.close()
+    for client in clients:
+        try: client.shutdown(socket.SHUT_RDWR)
+        except OSError: pass
     os.unlink(endpoint)
+    publish('stopped')
     trace('exiting')

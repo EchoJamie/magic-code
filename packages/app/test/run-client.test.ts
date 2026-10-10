@@ -91,8 +91,7 @@ describe('resident-cli 客户端握手与纯观察', () => {
       [{ version: 'wrong' }, '协议或软件版本不匹配'],
       [{ source: '/different/runtime' }, '软件来源不匹配'],
       [{ base: '/different/data' }, '数据实例不匹配'],
-      [{ hostInstance: 'new-host' }, '宿主/服务代次不一致'],
-      [{ serviceInstance: 'new-service' }, '宿主/服务代次不一致'],
+      [{ serviceInstance: 'new-service' }, 'Engine 代次不一致'],
     ] as const) {
       const g = cliGround()
       const server = fakeApp(g, (link) => link.send({ ...server.welcome, identity: { ...g.identity, ...patch } }))
@@ -136,17 +135,17 @@ describe('resident-cli 客户端握手与纯观察', () => {
     } finally { server.close(); g.close() }
   })
 
-  test('环境只有必要白名单；观察接入不带 environment，握手/summary 不发 read', async () => {
+  test('完整工作环境仅随明确输入传入；观察接入不带 environment，握手/summary 不发 read', async () => {
     const g = cliGround()
     const server = fakeApp(g)
     const env = { PATH: '/work/bin', SHELL: '/bin/zsh', LANG: 'zh_CN.UTF-8', LC_CTYPE: 'UTF-8', LC_SECRET: 'secret', API_KEY: 'secret', HOME: '/private-home', MAGIC_HOME: undefined }
     try {
-      expect(executionEnvironment(env)).toEqual({ PATH: '/work/bin', SHELL: '/bin/zsh', LANG: 'zh_CN.UTF-8', LC_CTYPE: 'UTF-8' })
+      expect(executionEnvironment(env)).toEqual({ PATH: '/work/bin', SHELL: '/bin/zsh', LANG: 'zh_CN.UTF-8', LC_CTYPE: 'UTF-8', LC_SECRET: 'secret', API_KEY: 'secret', HOME: '/private-home' })
       g.publish()
       const passive = await connectApp({ home: g.home, env, connect: { environment: env } })
-      const options = terminalOptions({ client: passive.client, loaded: passive.loaded, magic: passive.magic, cwd: g.root })
+      const options = (await terminalOptions({ client: passive.client, loaded: passive.loaded, magic: passive.magic, cwd: g.root }))
       expect(options.receipts?.join(' ')).toContain('1')
-      const configured = terminalOptions({ client: passive.client, loaded: { ...passive.loaded, config: { ...passive.loaded.config, motion: { reduced: true }, statusLine: { cells: [], color: false } } }, magic: passive.magic, cwd: g.root })
+      const configured = (await terminalOptions({ client: passive.client, loaded: { ...passive.loaded, config: { ...passive.loaded.config, motion: { reduced: true }, statusLine: { cells: [], color: false } } }, magic: passive.magic, cwd: g.root }))
       expect(configured.reducedMotion).toBe(true)
       expect(configured.statusLine).toEqual({ cells: [], color: false })
       expect(server.messages[0]).not.toHaveProperty('environment')
@@ -158,7 +157,10 @@ describe('resident-cli 客户端握手与纯观察', () => {
 
       const active = await connectApp({ home: g.home, env, intent: 'open' })
       const hello = server.messages.filter((message) => message.t === 'hello').at(-1)!
-      expect(hello.environment).toEqual(executionEnvironment(env))
+      expect(hello).not.toHaveProperty('environment')
+      active.client.send({ type: 'input.submit', text: '明确发起工作' })
+      await waitFor(() => server.messages.some(message => message.t === 'cmd'))
+      expect(server.messages.find(message => message.t === 'cmd')).toMatchObject({ environment: executionEnvironment(env) })
       expect(JSON.stringify(hello)).not.toContain('secret')
       active.client.close()
     } finally { server.close(); g.close() }
@@ -201,7 +203,7 @@ test('detached只核销executor；稳定连接仅明确reopen，新client接全�
       expect(session).toBe('real-session')
       return (await connectManager(b.discovery.socket, { session }))!
     })
-    const options = terminalOptions({ client: connection.client, loaded: initial.loaded, magic: initial.magic, cwd: a.root, reopen: connection.reopen })
+    const options = (await terminalOptions({ client: connection.client, loaded: initial.loaded, magic: initial.magic, cwd: a.root, reopen: connection.reopen }))
     const shell = createShell(options.transport, { magicBase: '/test/.magic', detached: options.detached, reopen: options.reopen })
     options.onGone?.(() => shell.hostGone())
     const detaches: string[] = []

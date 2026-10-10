@@ -51,7 +51,7 @@ import type {
 /** 引用送达——本对象**不存状态**（材料每趟现读，同执行域那一条）。 */
 export type RefDelivery = {
   /** 把引用表取齐——**按位置排好**，或整条失败（见文件头注）。 */
-  readonly load: (refs: readonly InputRef[]) => Promise<RefLoad>
+  readonly load: (refs: readonly InputRef[], signal?: AbortSignal) => Promise<RefLoad>
 }
 
 /** 取齐的结果——判别式（失败位指得出**是哪一份**、为什么）。 */
@@ -79,16 +79,16 @@ export function createRefDelivery(sources: {
    * 这一趟读它是为了**校验**：这个技能还在不在、主文读不读得出来（取不到＝整条不跑，
    * 与「不换同名项、不忽略那一处继续」同一条出口）。模型要正文，自己用 `skill` 工具取。
    */
-  function readSkill(
-    ref: Extract<InputRef, { kind: 'skill' }>,
+  async function readSkill(
+    ref: Extract<InputRef, { kind: 'skill' }>, signal?: AbortSignal,
   ):
-    | { readonly ok: true; readonly entry: Extract<InputRefEntry, { kind: 'skill' }> }
-    | { readonly ok: false; readonly reason: string } {
+    Promise<| { readonly ok: true; readonly entry: Extract<InputRefEntry, { kind: 'skill' }> }
+    | { readonly ok: false; readonly reason: string }> {
     if (sources.skills === undefined) {
       return { ok: false, reason: '这次装配没有接技能来源——选定的技能取不了，所以这一条没跑' }
     }
 
-    const read: SkillRead = sources.skills.readMain(ref.name, ref.source)
+    const read: SkillRead = (await sources.skills.readMain(ref.name, ref.source, signal))
     if (!read.ok) return { ok: false, reason: read.reason }
 
     return {
@@ -191,7 +191,7 @@ export function createRefDelivery(sources: {
   }
 
   return {
-    async load(refs: readonly InputRef[]): Promise<RefLoad> {
+    async load(refs: readonly InputRef[], signal?: AbortSignal): Promise<RefLoad> {
       // 按位置排——**只排序，不改次序**（见文件头注）
       const ordered = [...refs].sort((left, right) => left.at - right.at)
 
@@ -221,7 +221,7 @@ export function createRefDelivery(sources: {
 
       for (const ref of ordered) {
         if (ref.kind === 'skill') {
-          const read = readSkill(ref)
+          const read = (await readSkill(ref, signal))
           if (!read.ok) return { ok: false, reason: read.reason }
           refs2.push(read.entry)
           continue

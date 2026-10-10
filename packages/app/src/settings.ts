@@ -1,14 +1,14 @@
-import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
+import { diagnosticsOf, type MagicHome } from '@magic/contracts'
 import { saveDiagnostics } from './diagnostics.ts'
 import { statusLinePreview } from '@magic/tui'
 /** 原生设置的应用动作；复用配置解析、保存、缓存和授权，不装配工作。 */
 import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
-import type { SettingsAction, SettingsSnapshot, SettingsPreview } from '@magic/contracts'
+import type { SettingsAction, SettingsSnapshot, SettingsPreview, ModelSelectionRef, ModelSwitchRequest } from '@magic/contracts'
 import { expandHome, GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { createWorkspaceService } from '@magic/execution'
 import { parseRules } from '@magic/permission'
-import type { ModelInfoService } from '@magic/model'
+import type { FetchLike, ModelInfoService } from '@magic/model'
 import { createModelInfoService, resolveConnection, vendorCatalog } from '@magic/model'
 import { loadConfig, parseConfig, type LoadedConfig } from './config.ts'
 import { editConfigFile, saveProvider, removeProvider, configureModel, setPrefs } from './config-save.ts'
@@ -17,16 +17,11 @@ import { createFileModelInfoCache } from './model-cache.ts'
 import { cacheAccessFor, connectionScopeChanged, configStamp } from './cache-access.ts'
 import { resolveModelChoice } from './agent-models.ts'
 import { providerCatalog, readModelCatalog } from './run/observation.ts'
-import type { ObservationContext } from './run/observation.ts'
-
-export type SettingsContext = ObservationContext & {
-  readonly diagnosticsChanged?: (value: Diagnostics, source?: 'app' | 'cli' | 'config') => Promise<string>
-
-  readonly canChangeData: () => boolean | Promise<boolean>
-  readonly mcpWorks: () => Promise<SettingsSnapshot['mcp']>
-  readonly preferencesChanged: () => Promise<void>
-  readonly reconnect: (session: string, gen: number, name: string) => Promise<string>
-  readonly grantsChanged: (workspace: string) => Promise<void>
+export type SettingsContext = {
+  readonly magic: MagicHome
+  readonly environment: Readonly<Record<string, string | undefined>>
+  readonly fetch: FetchLike
+  readonly now?: () => number
 }
 const book = (v: unknown): Record<string, unknown> => Object.assign(Object.create(null), typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {})
 
@@ -43,8 +38,8 @@ export function createSettings(context: SettingsContext) {
     currentLoaded = loaded
     if (info === undefined) {
       info = createModelInfoService({ connections: () => Object.entries(currentLoaded!.config.providers).map(([providerId, config]) => ({
-        ...resolveConnection({ providerId, config }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, processToken }),
-      })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: globalThis.fetch })
+        ...resolveConnection({ providerId, config, env: context.environment }), access: cacheAccessFor({ provider: providerId, configPath, apiKey: config.apiKey, processToken }),
+      })), cache: createFileModelInfoCache(context.magic.base), now: context.now ?? Date.now, fetch: context.fetch })
     }
     return info
   }
@@ -52,9 +47,8 @@ export function createSettings(context: SettingsContext) {
     const stamp = configStamp(configPath)
     const loaded = loadConfig({ magic: context.magic })
     const config = loaded.config
-    const diagnosticsNote = await context.diagnosticsChanged?.(diagnosticsOf(config), 'config')
     const providers = Object.fromEntries(Object.entries(config.providers).map(([id, { apiKey, ...entry }]) => [id, {
-      ...entry, keyConfigured: !!apiKey?.trim(), keySource: apiKey?.trim() ? 'config' : process.env[apiKeyEnvVarOf(id)]?.trim() ? 'env' : 'missing',
+      ...entry, keyConfigured: !!apiKey?.trim(), keySource: apiKey?.trim() ? 'config' : context.environment[apiKeyEnvVarOf(id)]?.trim() ? 'env' : 'missing',
     }]))
     const servers = Object.fromEntries(Object.entries(config.mcp?.servers ?? {}).map(([name, server]) => {
       if ('url' in server) return [name, { url: server.url, secretNames: Object.keys(server.headers ?? {}) }]
@@ -62,7 +56,7 @@ export function createSettings(context: SettingsContext) {
     }))
     const raw = stamp === null ? {} : book(JSON.parse(readFileSync(configPath, 'utf8')))
     const configuration = {
-      ...diagnosticsOf(config), diagnosticsNote,
+      ...diagnosticsOf(config),
       providers, models: config.models ?? {}, agentRoles: raw.agentRoles ?? {},
       mcp: { servers }, rules: raw.rules ?? {}, skills: raw.skills ?? {},
       ...(raw.workspaceRoots === undefined ? {} : { workspaceRoots: raw.workspaceRoots }),
@@ -80,11 +74,9 @@ export function createSettings(context: SettingsContext) {
       })
     })
     const reader = await readModelCatalog(loaded, context.magic, undefined, undefined, context.now ?? Date.now, modelInfo(loaded))
-    const catalog = providerCatalog(reader).entries
+    const catalog = providerCatalog({ ...reader, env: context.environment }).entries
     const grantStamp = configStamp(grantPath)
     const grants = loadGrants(grantPath)
-    const mcp = await context.mcpWorks()
-    const canChangeData = await context.canChangeData()
     if (configStamp(grantPath) !== grantStamp) throw new Error('授权在读取期间已改变，请重新读取')
     if (configStamp(configPath) !== stamp) throw new Error('配置在读取期间已改变，请重新读取')
     return {
@@ -94,7 +86,6 @@ export function createSettings(context: SettingsContext) {
       grants: Object.entries(grants.file.workspaces).map(([workspace, entries]) => ({ workspace, entries })),
       grantStamp,
       ...(grants.unreadable === undefined && grants.rejected.length === 0 ? {} : { grantProblem: '授权文件存在无法读取的内容，请定位文件修复' }),
-      mcp, canChangeData,
     }
   }
   async function apply(action: SettingsAction, stamp: string | null): Promise<string> {
@@ -102,8 +93,8 @@ export function createSettings(context: SettingsContext) {
     const loaded = loadConfig({ magic: context.magic })
     if (action.type === 'diagnostics.set') {
       const { type, source, ...change } = action
-      const value = saveDiagnostics(context.magic, change, stamp)
-      return await context.diagnosticsChanged?.(value, source ?? 'app') ?? '诊断设置已保存'
+      await saveDiagnostics(context.magic, change, stamp)
+      return '诊断设置已保存；运行中的入口随后采用，离线入口下次启动采用'
     }
     const currentInfo = modelInfo(loaded)
     await currentInfo.warmup()
@@ -116,7 +107,7 @@ export function createSettings(context: SettingsContext) {
     }
     const validate = (raw: Record<string, unknown>) => {
       const config = parseConfig(raw, configPath, context.magic).config
-      for (const [id, configEntry] of Object.entries(config.providers)) resolveConnection({ providerId: id, config: configEntry })
+      for (const [id, configEntry] of Object.entries(config.providers)) resolveConnection({ providerId: id, config: configEntry, env: context.environment })
       if (action.type === 'workspace.set' && config.workspaceRoots !== undefined) createWorkspaceService({ roots: config.workspaceRoots })
       if (action.type === 'permissions.set') {
         const rejected = parseRules(config.permissions?.rules).rejected
@@ -125,12 +116,12 @@ export function createSettings(context: SettingsContext) {
       if (action.type === 'sources.set') for (const path of action.paths) if (!isAbsolute(expandHome(path, context.magic.home))) throw new Error(`${action.source}：须使用绝对路径或 ~ 开头的路径`)
     }
     const input = { path: configPath, expectedStamp: stamp, validate }
-    let outcome: ReturnType<typeof editConfigFile>
+    let outcome: Awaited<ReturnType<typeof editConfigFile>>
     switch (action.type) {
-      case 'provider.save': outcome = saveProvider({ ...input, request: action }); break
-      case 'provider.remove': outcome = removeProvider({ ...input, provider: action.provider }); break
-      case 'model.configure': outcome = configureModel({ ...input, request: action }); break
-      case 'prefs.set': outcome = setPrefs({ ...input, request: action }); break
+      case 'provider.save': outcome = await saveProvider({ ...input, request: action }); break
+      case 'provider.remove': outcome = await removeProvider({ ...input, provider: action.provider }); break
+      case 'model.configure': outcome = await configureModel({ ...input, request: action }); break
+      case 'prefs.set': outcome = await setPrefs({ ...input, request: action }); break
       case 'model.refresh': {
         const providers = loaded.config.providers
         if (!providers[action.provider]) throw new Error('连接已不存在，请重新读取')
@@ -138,20 +129,18 @@ export function createSettings(context: SettingsContext) {
         if (result.failure) throw new Error('模型列表刷新失败，请检查连接与认证')
         return '模型列表已刷新；未发起模型调用'
       }
-      case 'mcp.reconnect': return context.reconnect(action.session, action.gen, action.name)
       case 'grants.revoke': {
         if (configStamp(grantPath) !== action.grantStamp) throw new Error('授权已改变，请重新读取后再撤销')
         const loadedGrants = loadGrants(grantPath)
         if (loadedGrants.unreadable !== undefined) throw new Error('授权文件不可读取，未做修改')
         const rule = action.index === undefined ? undefined : loadedGrants.file.workspaces[action.workspace]?.[action.index]
         if (action.index !== undefined && rule === undefined) throw new Error('该授权已不存在，请重新读取')
-        outcome = commitGrants(grantPath, rule === undefined ? [{ kind: 'section', workspace: action.workspace }] : [{ kind: 'revoke', workspace: action.workspace, index: action.index!, rule }], () => configStamp(grantPath) === action.grantStamp)
+        outcome = await commitGrants(grantPath, rule === undefined ? [{ kind: 'section', workspace: action.workspace }] : [{ kind: 'revoke', workspace: action.workspace, index: action.index!, rule }], () => configStamp(grantPath) === action.grantStamp)
         if (!outcome.ok) throw new Error(outcome.reason)
-        await context.grantsChanged(action.workspace)
         return '已撤销授权；配置权限规则另行管理'
       }
       default: {
-        outcome = editConfigFile({ ...input, update(raw) {
+        outcome = await editConfigFile({ ...input, update(raw) {
           const next = { ...raw }
           switch (action.type) {
             case 'model.clear': { const configuredModels = book(raw.models); delete configuredModels[action.choice]; next.models = configuredModels; break }
@@ -188,6 +177,8 @@ export function createSettings(context: SettingsContext) {
       }
     }
     if (!outcome.ok) throw new Error(outcome.reason)
+    let cacheNote = ''
+    try {
     const reloaded = loadConfig({ magic: context.magic })
     const modelCache = createFileModelInfoCache(context.magic.base)
     for (const { provider, config, snapshot } of snapshots) {
@@ -196,11 +187,16 @@ export function createSettings(context: SettingsContext) {
       }
     }
     modelInfo(reloaded)
-    if (action.type === 'prefs.set') await context.preferencesChanged()
-    if (action.type.startsWith('model.') || action.type.startsWith('provider.')) return '已保存；之后解析模型配置时采用，已有 Agent 的选择保留'
+    } catch (error) { cacheNote = `；模型缓存未能更新：${error instanceof Error ? error.message : String(error)}` }
+    if (action.type.startsWith('model.') || action.type.startsWith('provider.')) return '已保存；之后解析模型配置时采用，已有 Agent 的选择保留' + cacheNote
     if (action.type.startsWith('role.')) return '已保存；后续创建采用，已有成员保留'
-    if (action.type === 'prefs.set') return '已保存；已向当前终端受理呈现偏好，计时继续'
+    if (action.type === 'prefs.set') return '已保存；运行中的入口随后采用，离线入口下次启动采用'
     return '已保存；下次装配时采用，已有工作保持原配置'
   }
-  return { read, apply }
+  async function catalog(selection?: ModelSelectionRef, request?: ModelSwitchRequest) {
+    const loaded = loadConfig({ magic: context.magic })
+    const reader = await readModelCatalog(loaded, context.magic, selection, request, context.now ?? Date.now, modelInfo(loaded))
+    return { ...reader, env: context.environment }
+  }
+  return { read, apply, catalog }
 }

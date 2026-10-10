@@ -1,3 +1,4 @@
+import { runSettingsCall } from '../src/settings-call.ts'
 import { expect, test } from 'bun:test'
 import { writeFileSync } from 'node:fs'
 import type { NativeResponse, SettingsAction } from '@magic/contracts'
@@ -17,29 +18,28 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
   const identity = f.manager.identity
   const link = linkOf<NativeResponse>(await Bun.connect({ unix: f.manager.socketPath, socket: socketHandlers() }) as never)
   const responses: NativeResponse[] = []; link.onMessage(v => responses.push(v))
-  const target = { serviceInstance: identity.serviceInstance, base: identity.base }
   let stamp: string | null = null
   async function request(action?: SettingsAction) {
     const request = crypto.randomUUID()
-    link.send(action ? { t: 'native.settings.apply', request, ...target, stamp, action } : { t: 'native.settings.read', request, ...target })
-    await f.wait('设置结果', () => responses.some(v => v.t === 'native.settings.result' && v.request === request))
-    const result = responses.find((v): v is Extract<NativeResponse, { t: 'native.settings.result' }> => v.t === 'native.settings.result' && v.request === request)!
+    const result = await runSettingsCall({ request, home: f.root, base: identity.base, configPath: identity.base + '/config.json', ...(action ? { stamp, action } : {}) }, {})
     if (result.snapshot) stamp = result.snapshot.stamp
     return result
   }
   try {
     link.send({ t: 'hello', role: 'observer', protocol: identity.protocol, version: identity.version, source: identity.source, base: identity.base })
     await f.wait('观察握手', () => responses.some(v => v.t === 'native.welcome'))
-    expect((await request()).snapshot?.mcp).toEqual([]); expect(f.manager.executors()).toEqual([])
+    expect((await request()).snapshot).toBeDefined(); expect(f.manager.executors()).toEqual([])
     f.client.send({ type: 'input.submit', text: '先委派一个独立成员。' })
     await f.wait('原成员正在调用', () => f.requests('member-model').length === 1 && f.member() !== undefined)
     const oldMember = f.member()!
-    expect((await request()).snapshot?.canChangeData).toBe(false)
+    const runtimeRequest = crypto.randomUUID()
+    link.send({ t: 'native.runtime.read', request: runtimeRequest })
+    await f.wait('运行责任', () => responses.some(v => v.t === 'native.runtime.result' && v.request === runtimeRequest && v.canChangeData === false))
     expect((await request({ type: 'model.configure', choice: 'spell', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
     expect((await request({ type: 'model.configure', choice: 'default', provider: 'controlled', model: 'descendant-model' })).error).toBeUndefined()
     expect((await request({ type: 'role.save', id: 'reviewer', role: { name: '审查者', instructions: '根据实际依据审查', tools: [], model: { choice: 'spell', reasoning: { mode: 'off' } } } })).error).toBeUndefined()
     expect((await request({ type: 'prefs.set', reducedMotion: true })).error).toBeUndefined()
-    expect(f.events.some(e => e.kind === 'prefs.state' && e.data.reducedMotion)).toBe(true)
+    await f.wait('动态偏好采用', () => f.events.some(e => e.kind === 'prefs.state' && e.data.reducedMotion))
     const current = f.store.collaboration.getAgent(oldMember.agentId)!
     expect(current.model.model).toBe('member-model'); expect(current.model.choice).toBe('spell')
     expect(f.requests('descendant-model')).toHaveLength(0)

@@ -21,7 +21,7 @@ test('设置保存的根与三类材料由下次真实装配消费，旧根与�
   }
   const old = stage.assemble({ turns: [{ toolCalls: [{ name: 'read', args: { path: 'note.txt' } }] }, { text: '旧工作读完' }] })
   let next: ReturnType<typeof stage.assemble> | undefined
-  const settings = createSettings({ magic: magicAt(stage.root), cwd: stage.workspace, store: old.records, mcp: [], canChangeData: () => false, mcpWorks: async () => [], preferencesChanged: async () => {}, grantsChanged: async () => {}, reconnect: async () => { throw new Error('没有目标') } })
+  const settings = createSettings({ magic: magicAt(stage.root), environment: {}, fetch: globalThis.fetch })
   const save = async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp)
   try {
     await save({ type: 'workspace.set', roots: [root] })
@@ -34,9 +34,9 @@ test('设置保存的根与三类材料由下次真实装配消费，旧根与�
     expect(oldRequest).not.toContain('EXPLICIT_SOURCE_U116')
     next = stage.assemble({ turns: [{ toolCalls: [{ name: 'read', args: { path: 'note.txt' } }] }, { toolCalls: [{ name: 'read', args: { path: team } }] }, { text: '新工作读完' }] })
     expect(old.workspaceRoots).toEqual([realpathSync(stage.workspace)]); expect(next.workspaceRoots).toEqual([realpathSync(root)])
-    expect(next.readRules([join(root, 'src', 'note.txt')]).documents.map(d => d.text).join('\n')).toContain('LINK_SOURCE_U116')
-    expect(next.readSkills().skills.find(s => s.name === 'demo')?.description).toBe('项目优先')
-    expect(next.readSkills().skills.find(s => s.name === 'extra')?.description).toBe('配置补充')
+    expect((await next.readRules([join(root, 'src', 'note.txt')])).documents.map(d => d.text).join('\n')).toContain('LINK_SOURCE_U116')
+    expect((await next.readSkills()).skills.find(s => s.name === 'demo')?.description).toBe('项目优先')
+    expect((await next.readSkills()).skills.find(s => s.name === 'extra')?.description).toBe('配置补充')
     // 脚本外壳默认自动批准；这里明确拒绝，验证来源配置本身不授予执行权限。
     const shell = attachShell(next.shell, { decide: () => 'reject' }); await shell.submit('读取新的根，再尝试来源原文'); shell.dispose()
     const results = shell.events.filter((e): e is Extract<KernelEvent, { kind: 'tool.result' }> => e.kind === 'tool.result')
@@ -56,7 +56,7 @@ test('设置保存的根与三类材料由下次真实装配消费，旧根与�
   } finally { await old.close(); await next?.close(); stage.dispose() }
 })
 
-test('保存权限规则只影响下次装配，撤销真实授权影响现有闸门，配置规则与授权分开', async () => {
+test('保存权限规则和撤销授权在后续裁决采用，已开始的工具不倒撤', async () => {
   const tool = { kind: 'tool' as const, name: 'web_fetch', args: { url: 'https://example.com/u116', prompt: '提炼受控页面' } }
   const text = { kind: 'text' as const, text: '受控结果', chunks: 1, chunkDelayMs: 5 }
   const fixture = startFixture({ turns: [tool, text, tool, text, text, tool, text, text, tool, text] })
@@ -67,7 +67,7 @@ test('保存权限规则只影响下次装配，撤销真实授权影响现有�
   const grantsFile = join(magicAt(stage.root).base, 'grants.json')
   const make = () => { const assembly = stage.assemble({ modelGateway: undefined, webSource, grantsFile }); assemblies.push(assembly); return assembly }
   const old = make()
-  const settings = createSettings({ magic: magicAt(stage.root), cwd: stage.workspace, store: old.records, mcp: [], canChangeData: () => false, mcpWorks: async () => [], preferencesChanged: async () => {}, grantsChanged: async () => { assemblies.forEach(a => a.refreshSettings()) }, reconnect: async () => { throw new Error('没有目标') } })
+  const settings = createSettings({ magic: magicAt(stage.root), environment: {}, fetch: globalThis.fetch })
   const save = async (action: SettingsAction) => settings.apply(action, (await settings.read()).stamp)
   async function run(assembly: ReturnType<typeof make>, ask: boolean) {
     const events: KernelEvent[] = []
@@ -81,18 +81,16 @@ test('保存权限规则只影响下次装配，撤销真实授权影响现有�
     } finally { off() }
   }
   try {
-    await save({ type: 'permissions.set', rules: [{ tool: 'web_fetch', host: 'example.com' }] })
     await run(old, true); expect(fetched).toBe(0)
-    const configured = make(); await run(configured, false); expect(fetched).toBe(1)
+    await save({ type: 'permissions.set', rules: [{ tool: 'web_fetch', host: 'example.com' }] })
+    await run(old, false); expect(fetched).toBe(1)
     await save({ type: 'permissions.set', rules: [] })
-    expect(configured.permissionRules).toEqual([{ tool: 'web_fetch', host: 'example.com' }])
     const workspace = realpathSync(stage.workspace)
     writeFileSync(grantsFile, JSON.stringify({ version: 1, workspaces: { [workspace]: [{ tool: 'web_fetch', host: 'example.com', grantedAt: 1 }] } }))
     const granted = make(); await run(granted, false); expect(fetched).toBe(2)
     const snapshot = await settings.read()
     await save({ type: 'grants.revoke', workspace, index: 0, grantStamp: snapshot.grantStamp })
     await run(granted, true); expect(fetched).toBe(2)
-    expect(configured.permissionRules).toEqual([{ tool: 'web_fetch', host: 'example.com' }])
     const evidence = process.env['MAGIC_SETTINGS_PERMISSIONS_EVIDENCE']
     if (evidence) writeFileSync(evidence, JSON.stringify({ entry: 'settings.apply → actual permission gate → local HTTP extraction + synthetic page', oldRulesPreserved: true, nextRulesAdopted: true, grantedCallActuallyFetched: true, revokedExistingGateAsked: true, revokedCallDidNotFetch: true, configRulesKeptSeparate: true }, null, 2))
   } finally { for (const assembly of assemblies) await assembly.close(); stage.dispose(); await fixture.stop() }

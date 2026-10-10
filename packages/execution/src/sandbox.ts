@@ -26,6 +26,8 @@ import { assertIdentity } from './workspace.ts'
 
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type SandboxOptions = {
+  readonly env?: Readonly<Record<string, string>>
+
   /** 工作区端口提供路径事实与默认根。 */
   readonly workspace: WorkspaceService
   /**
@@ -112,6 +114,7 @@ export function createSandbox(options: SandboxOptions): Sandbox {
             return { ok: false, reason: 'spawn', message: error instanceof Error ? error.message : String(error) }
           }
           return runCommand(cmd, {
+            env: options.env,
             cwd,
             timeoutMs: timeoutBoundOf(opts.timeoutMs),
             maxOutputBytes: positiveOr(opts.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES),

@@ -1,10 +1,8 @@
 {
-  "family": "NativeRequest",
+  "family": "SettingsRequest",
   "valid": true,
   "message": {
-    "t": "native.settings.apply",
     "request": "settings-one",
-    "serviceInstance": "service-one",
     "stamp": null,
     "action": {
       "type": "role.save",
@@ -21,6 +19,8 @@
         }
       }
     },
-    "base": "/tmp/synthetic"
+    "base": "/tmp/synthetic",
+    "configPath": "/tmp/synthetic/config.json",
+    "home": "/tmp/synthetic"
   }
 }

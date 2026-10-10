@@ -28,7 +28,7 @@ async function projectionOf(discovery: HostDiscovery): Promise<NativeProjection>
   } finally { link.close() }
 }
 
-for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'eof'] as const) {
+for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'signal'] as const) {
   const homeForm = canonicalHome ? 'realpath' : 'declared'
   test(`${homeForm} HOME / ${how} 后同一 CLI 的 Ctrl+R 与 /connect 恢复原会话，保留草稿/历史/计划且不执行`, async () => {
     const evidenceRoot = process.env['MAGIC_CONNECT_EVIDENCE']
@@ -91,7 +91,7 @@ for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'eof']
         const stopped = JSON.parse(readFileSync(join(oldHost.evidence, 'host.json'), 'utf8'))
         expect(stopped.code).toBe(0)
         expect(stopped.alreadyGone).toBe(false)
-        expect(stopped.messages.some((m: { t: string }) => m.t === 'host.stopped')).toBe(true)
+        expect(stopped.state.state === 'stopped').toBe(true)
         if (action === 'Ctrl+R') {
           expect(lost.text).toContain(draft)
           await ui.key('enter')

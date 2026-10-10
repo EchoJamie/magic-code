@@ -84,7 +84,7 @@ import type {
   WorkspaceService,
 } from '@magic/contracts'
 import type { Dirent } from 'node:fs'
-import { closeSync, openSync, readSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { open, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, normalize } from 'node:path'
 import { isInside } from './workspace.ts'
 
@@ -131,6 +131,7 @@ export const DEFAULT_SKILL_LIMITS: SkillLimits = {
 /** 装配期构造入参——根视图 ＋ 用户那两处 ＋ 用户点名的补充目录 ＋ 上限覆盖位（测试用）。 */
 export type SkillsOptions = {
   /** 工作区（项目那一类来源的来处）。 */
+  readonly signal?: AbortSignal
   readonly workspace: WorkspaceService
   /**
    * **Magic 基础目录**（U42）——用户那一类里**原生那处**的来处（`<基础目录>/skills`）。
@@ -208,16 +209,18 @@ type FoundSkill = {
 export function createSkills(options: SkillsOptions): Skills {
   const limits: SkillLimits = { ...DEFAULT_SKILL_LIMITS, ...options.limits }
 
+  const context = (signal?: AbortSignal): SkillsOptions => ({ ...options,
+    ...(signal === undefined ? {} : { signal: options.signal === undefined ? signal : AbortSignal.any([options.signal, signal]) }) })
   return {
-    discover: (): SkillCatalog => discover(options, limits),
-    readMain: (name, path) => readAt(options, limits, name, path, undefined),
-    readReference: (name, path, relative) => readAt(options, limits, name, path, relative),
+    discover: async (signal) => await discover(context(signal), limits),
+    readMain: async (name, path, signal) => await readAt(context(signal), limits, name, path, undefined),
+    readReference: async (name, path, relative, signal) => await readAt(context(signal), limits, name, path, relative),
   }
 }
 
 // ══ 发现 ══════════════════════════════════════════════════════════════
 
-function discover(options: SkillsOptions, limits: SkillLimits): SkillCatalog {
+async function discover(options: SkillsOptions, limits: SkillLimits): Promise<SkillCatalog> {
   const skills: Skill[] = []
   const problems: SkillProblem[] = []
   /** 物理同源去重——真路径为键（软链接指同一个目录的两条入口只算一个实体）。 */
@@ -234,7 +237,9 @@ function discover(options: SkillsOptions, limits: SkillLimits): SkillCatalog {
   let skipped = 0
 
   for (const at of sourceDirs(options)) {
-    for (const candidate of childrenOf(at, problems)) {
+    options.signal?.throwIfAborted()
+    for (const candidate of (await childrenOf(at, problems, options.signal))) {
+      options.signal?.throwIfAborted()
       if (seen.has(candidate.dir)) continue
       // **先去重再判上限**：同一个实体经两处进来只算一个，不该占两个名额
       seen.add(candidate.dir)
@@ -244,7 +249,8 @@ function discover(options: SkillsOptions, limits: SkillLimits): SkillCatalog {
         continue
       }
 
-      const one = readOne(candidate.dir, candidate.place, at, problems, limits)
+      options.signal?.throwIfAborted()
+    const one = (await readOne(candidate.dir, candidate.place, at, problems, limits))
       // 读不懂的那一份**不占名字**：它没被认下，同名的下一份照样可以顶上来
       if (one === undefined) continue
       if (kept.has(one.name)) continue
@@ -326,17 +332,17 @@ function byDirectoryName(left: Dirent, right: Dirent): number {
  * 「来源目录不在」**默认那几处不报**（多数项目没有 `.magic/skills`，每次开屏报一句是噪音）；
  * **用户点名的那几处要报**——他写了那一行，就该知道自己写的指到哪儿了。
  */
-function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly FoundSkill[] {
+async function childrenOf(at: SourceDir, problems: SkillProblem[], signal?: AbortSignal): Promise<readonly FoundSkill[]> {
   // **点名的目录自己也可能是那份技能**（用户写的是 `…/my-skill`，不是「一摞」）——
   // 只对 `configured` 那一类成立：默认那几处（`.magic/skills` 等）是**容器**，
   // 它们自己不是技能（在那儿躺一份 `SKILL.md` 只是摆错了地方，不该被当成一个技能认下）。
   // 位置留空：这一处**就是**那份技能，说「它在 xx 目录下」是句废话（`sourceLabelOf` 那一头
   // 据此不补后缀）。
-  if (at.named && isFile(join(at.dir, SKILL_FILE))) return [{ dir: realpathOf(at.dir), place: '' }]
+  if (at.named && (await isFile(join(at.dir, SKILL_FILE)))) return [{ dir: (await realpathOf(at.dir)), place: '' }]
 
   let entries: Dirent[]
   try {
-    entries = readdirSync(at.dir, { withFileTypes: true })
+    entries = (await readdir(at.dir, { withFileTypes: true }))
   } catch (error) {
     const code = (error as { code?: string }).code
     if (code === 'ENOENT' || code === 'ENOTDIR') {
@@ -359,6 +365,7 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly FoundSkil
 
   const found: FoundSkill[] = []
   for (const entry of entries.sort(byDirectoryName)) {
+    signal?.throwIfAborted()
     if (entry.name.startsWith('.')) continue
 
     const child = join(at.dir, entry.name)
@@ -366,13 +373,13 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly FoundSkil
     try {
       // 软链接**跟出去**（规范里技能目录常常是指向别处的一份共享技能）——跟到哪儿，
       // 那儿就是只读来源；这**不**扩大执行范围（能不能对它跑工具是另一件事）
-      real = realpathSync(child)
+      real = (await realpath(child))
     } catch (error) {
       problems.push({ path: child, kind: 'error', message: `这一项的真身读不出来——${reasonOf(error)}` })
       continue
     }
 
-    if (!isDir(real)) {
+    if (!(await isDir(real))) {
       problems.push({
         path: child,
         kind: 'error',
@@ -398,15 +405,15 @@ function childrenOf(at: SourceDir, problems: SkillProblem[]): readonly FoundSkil
  * 「读不懂的不生效」是同一条口径（项目规约那边也是）：一份读不懂的技能照收下来，
  * 模型会按一个**内核都没看明白**的东西干活——那比不收更坏。
  */
-function readOne(
+async function readOne(
   dir: string,
   place: string,
   at: SourceDir,
   problems: SkillProblem[],
   limits: SkillLimits,
-): Skill | undefined {
+): Promise<Skill | undefined> {
   const file = join(dir, SKILL_FILE)
-  const head = readHead(file, limits, problems)
+  const head = (await readHead(file, limits, problems))
   if (head === undefined) return undefined
 
   const front = splitFrontMatter(head)
@@ -516,17 +523,17 @@ function sourceLabelOf(
  * **`ENOENT` 与「读不动」分开措辞**：前者是最常见的一种手误（技能目录里没有 `SKILL.md`），
  * 说「读不出来（ENOENT: no such file…）」让人去猜系统调用的意思，不如直说。
  */
-function readHead(file: string, limits: SkillLimits, problems: SkillProblem[]): string | undefined {
+async function readHead(file: string, limits: SkillLimits, problems: SkillProblem[]): Promise<string | undefined> {
   try {
     // **只读这么多**（不是「整份读进来再切片」）：一份 100 MB 的 `SKILL.md` 也在这一步只花
     // 8 KiB ——上限的意义是**代价有界**，切片做不到这件事
     const buffer = new Uint8Array(limits.maxMetadataBytes)
-    const handle = openSync(file, 'r')
+    const handle = (await open(file, 'r'))
     let bytes: number
     try {
-      bytes = readSync(handle, buffer, 0, buffer.length, 0)
+      bytes = (await handle.read(buffer, 0, buffer.length, 0)).bytesRead
     } finally {
-      closeSync(handle)
+      await handle.close()
     }
     return new TextDecoder().decode(buffer.subarray(0, bytes))
   } catch (error) {
@@ -557,18 +564,18 @@ function readHead(file: string, limits: SkillLimits, problems: SkillProblem[]): 
  * 任何一步不过都走 `ok: false`（**判别式，不抛**）——失败是正常结果的一种，
  * 由对话侧决定「这一次交代不跑」。
  */
-function readAt(
+async function readAt(
   options: SkillsOptions,
   limits: SkillLimits,
   name: string,
   path: string,
   relative: string | undefined,
-): SkillRead {
+): Promise<SkillRead> {
   // **归位＝这一趟的发现结果里有一条身份就是它**（见 `locate`）。判据不是「路径长什么样」，
   // 而是「发现面认不认这一处」——目录软链接（发现返回的是真身）、直接点名的单技能目录
   // （发现返回的就是它自己）因此在两条路上身份一致；而来源之外的任意路径，**发现面压根
   // 不会返回它**，故照样进不来。
-  const skill = locate(options, limits, path)
+  const skill = (await locate(options, limits, path))
   if (skill === undefined) {
     return { ok: false, reason: `技能「${name}」的来源没了（${path}）——请重新选择技能` }
   }
@@ -581,7 +588,7 @@ function readAt(
 
   const dir = skill.path
 
-  const file = relative === undefined ? join(dir, SKILL_FILE) : within(dir, relative)
+  const file = relative === undefined ? join(dir, SKILL_FILE) : (await within(dir, relative))
   if (file === undefined) {
     return {
       ok: false,
@@ -591,7 +598,7 @@ function readAt(
     }
   }
 
-  const read = readMaterial(file, limits)
+  const read = (await readMaterial(file, limits))
   if (!read.ok) return read
 
   // 主文＝**去掉 front-matter 的正文**（那段元数据不进上下文，同项目规约那一条）。
@@ -640,16 +647,16 @@ function readAt(
  * 别名因此照旧走得通；取不到真身（目录没了）时退回原串比，**自然就找不到**
  * ——那正是「来源没了」该有的结果。
  */
-function locate(options: SkillsOptions, limits: SkillLimits, path: string): Skill | undefined {
-  const real = realpathOf(path)
+async function locate(options: SkillsOptions, limits: SkillLimits, path: string): Promise<Skill | undefined> {
+  const real = (await realpathOf(path))
 
-  return discover(options, limits).skills.find((skill) => skill.path === real)
+  return (await discover(options, limits)).skills.find((skill) => skill.path === real)
 }
 
 /** `realpath`，取不到就给回原串（比较用——取不到本身就是「不匹配」）。 */
-function realpathOf(path: string): string {
+async function realpathOf(path: string): Promise<string> {
   try {
-    return realpathSync(path)
+    return (await realpath(path))
   } catch {
     return path
   }
@@ -666,23 +673,23 @@ function realpathOf(path: string): string {
  * 取不到真身（不存在 / 坏链接）＝ `undefined`，与越界走同一个出口——
  * 对话侧要的都是「这份引用没取到」，措辞由上面 `readAt` 给。
  */
-function within(dir: string, relative: string): string | undefined {
+async function within(dir: string, relative: string): Promise<string | undefined> {
   if (isAbsolute(relative)) return undefined
 
   const lexical = normalize(join(dir, relative))
   if (!isInside(lexical, dir) || lexical === dir) return undefined
 
-  const real = realpathOf(lexical)
-  if (!isInside(real, dir) || !isFile(real)) return undefined
+  const real = (await realpathOf(lexical))
+  if (!isInside(real, dir) || !(await isFile(real))) return undefined
 
   return real
 }
 
 /** 读一份材料正文——读不动 / 太大都是**明确失败**（不抛、不截）。 */
-function readMaterial(file: string, limits: SkillLimits): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string } {
+async function readMaterial(file: string, limits: SkillLimits): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string }> {
   let bytes: number
   try {
-    bytes = statSync(file).size
+    bytes = (await stat(file)).size
   } catch (error) {
     return { ok: false, reason: `${file} 读不出来——${reasonOf(error)}` }
   }
@@ -695,7 +702,7 @@ function readMaterial(file: string, limits: SkillLimits): { readonly ok: true; r
   }
 
   try {
-    return { ok: true, text: readFileSync(file, { encoding: 'utf8', flag: 'r' }) }
+    return { ok: true, text: (await readFile(file, { encoding: 'utf8', flag: 'r' })) }
   } catch (error) {
     return { ok: false, reason: `${file} 读不出来——${reasonOf(error)}` }
   }
@@ -780,17 +787,17 @@ export function splitFrontMatter(text: string): FrontMatter {
 
 // —— 小件 ——
 
-function isDir(path: string): boolean {
+async function isDir(path: string): Promise<boolean> {
   try {
-    return statSync(path).isDirectory()
+    return (await stat(path)).isDirectory()
   } catch {
     return false
   }
 }
 
-function isFile(path: string): boolean {
+async function isFile(path: string): Promise<boolean> {
   try {
-    return statSync(path).isFile()
+    return (await (await stat(path)).isFile())
   } catch {
     return false
   }

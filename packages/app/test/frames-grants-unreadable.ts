@@ -157,7 +157,7 @@ if (import.meta.main) {
     const { runTui } = await import('@magic/tui')
 
     const handle = await runTui({
-      ...tuiOptions(assembly),
+      ...(await tuiOptions(assembly)),
       stdin: stdin as unknown as NodeJS.ReadStream,
       stdout: tty as unknown as NodeJS.WriteStream,
     })

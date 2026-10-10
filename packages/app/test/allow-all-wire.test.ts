@@ -66,9 +66,8 @@ async function spawnedWith(connect: { allowAll?: boolean; switch?: { choice: 'de
     spawn(request: ExecutorRequest): SpawnedExecutor {
       requests.push(request)
       return {
-        pid: undefined,
         onExit(listener) { exit = listener },
-        kill() { exit?.('测试执行者收到终止') },
+        cancel() { exit?.('测试执行者收到终止') },
       }
     },
   }

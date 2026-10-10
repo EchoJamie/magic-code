@@ -33,6 +33,84 @@ import { createSandbox, createWorkspaceService } from '../src/index.ts'
 // ⚠️ 从 `sandbox.ts` 直接取那一格归一的函数（它不是包的公开面，见那一处的注——U79 为
 // 「缺省 ⇒ 无上界」这条规则露出来的那一面）；测试直接 import 源文件是同仓既有的走法。
 import { timeoutBoundOf } from '../src/sandbox.ts'
+import { spawnOwned } from '../src/process.ts'
+
+test('工具必须先登记再执行；登记失败与屏障期间取消不产生副作用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'magic-barrier-'))
+  try {
+    for (const mode of ['saved', 'failed', 'cancelled'] as const) {
+      const signal = new AbortController()
+      let release!: () => void
+      let registered!: () => void
+      const registration = new Promise<void>(done => { registered = done })
+      const barrier = new Promise<void>(done => { release = done })
+      const marker = join(root, mode)
+      const starting = spawnOwned(['/bin/sh', '-c', 'printf started > "$1"', 'test', marker], {
+        cwd: root, stdout: 'ignore', stderr: 'ignore', kind: 'exec', what: 'barrier test', signal: signal.signal,
+        ledger: {
+          async add(identity) {
+            expect(identity.startedAt).toBeNumber()
+            registered()
+            await barrier
+            if (mode === 'failed') throw new Error('归属落账失败')
+          },
+          list: () => [], onChange: () => {},
+        },
+      })
+      await registration
+      expect(existsSync(marker)).toBe(false)
+      if (mode === 'cancelled') signal.abort(new Error('停止当前工作'))
+      release()
+      if (mode === 'saved') {
+        const child = await starting
+        expect(await child.process.exited).toBe(0)
+        expect(existsSync(marker)).toBe(true)
+      } else {
+        await expect(starting).rejects.toThrow(mode === 'failed' ? '归属落账失败' : '停止当前工作')
+        expect(existsSync(marker)).toBe(false)
+      }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('登记屏障尚未放行时执行进程消失，工具随 stdin EOF 退出且没有副作用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'magic-barrier-parent-')), marker = join(root, 'executed')
+  const source = new URL('../src/process.ts', import.meta.url).pathname
+  const parent = Bun.spawn([process.execPath, '-e', `
+    import { spawnOwned } from ${JSON.stringify(source)};
+    await spawnOwned(['/bin/sh', '-c', 'echo executed > "$1"', 'tool', ${JSON.stringify(marker)}], {
+      stdout: 'ignore', stderr: 'ignore', kind: 'exec', what: 'barrier',
+      ledger: { async add(identity) { console.log(JSON.stringify(identity)); await new Promise(() => {}); }, list: () => [], onChange() {} }
+    });`], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  let pid: number | undefined
+  try {
+    const reader = parent.stdout.getReader()
+    pid = JSON.parse(new TextDecoder().decode((await reader.read()).value)).pgid; reader.releaseLock()
+    expect(existsSync(marker)).toBe(false)
+    parent.kill('SIGKILL'); await parent.exited
+    const end = Date.now() + 5000
+    const alive = () => { try { process.kill(pid!, 0); return true } catch { return false } }
+    while (alive() && Date.now() < end) await Bun.sleep(10)
+    expect(alive()).toBe(false); expect(existsSync(marker)).toBe(false)
+  } finally {
+    if (parent.exitCode === null) { parent.kill('SIGKILL'); await parent.exited }
+    if (pid) { try { process.kill(-pid, 'SIGKILL') } catch {} }
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 10000)
+
+test('启动屏障不污染 stdio 首条输入，普通工具收到 EOF', async () => {
+  const interactive = await spawnOwned(['/bin/cat'], {
+    stdout: 'pipe', stderr: 'ignore', keepStdin: true, kind: 'mcp', what: 'protocol input',
+  })
+  interactive.process.stdin.write('{"jsonrpc":"2.0","id":1}\n')
+  interactive.process.stdin.end()
+  expect(await new Response(interactive.process.stdout).text()).toBe('{"jsonrpc":"2.0","id":1}\n')
+  expect(await interactive.process.exited).toBe(0)
+  const ordinary = await spawnOwned(['/bin/cat'], { stdout: 'pipe', stderr: 'ignore', kind: 'exec', what: 'EOF' })
+  expect(await new Response(ordinary.process.stdout).text()).toBe('')
+  expect(await ordinary.process.exited).toBe(0)
+})
 
 // —— 夹具 ——
 
@@ -614,7 +692,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
     expect(elapsed).toBeLessThan(3000)
   })
 
-  test('取消姿态＝命令被信号终止（ok:true · exit 137）——不是沙箱级失败', async () => {
+  test('取消先尝试 TERM，返回实际退出码', async () => {
     const { box } = freshSandbox()
     const controller = new AbortController()
 
@@ -622,7 +700,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
     setTimeout(() => controller.abort(), 200)
     const result = await pending
 
-    expect(streamsOf(result).exit).toBe(137) // 被 SIGKILL 收命的退出码
+    expect(streamsOf(result).exit).toBe(143) // TERM 完成收尾，无须 KILL
     expect(controller.signal.aborted).toBe(true) // ← 取消的事实由调用方这一侧判定
   })
 

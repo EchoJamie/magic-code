@@ -14,8 +14,7 @@ export function wireOf(line: string): Wire | undefined {
     if (t.startsWith('native.') || one.role === 'observer') return decodeNativeMessage(one) as Wire | undefined
     if (t === 'hello') {
       if (one.role === 'client' && (typeof one.cwd !== 'string' || typeof one.protocol !== 'number' || typeof one.version !== 'string' || typeof one.source !== 'string')) return undefined
-      if (one.role === 'executor' && typeof one.token !== 'string') return undefined
-      if (one.role !== 'client' && one.role !== 'executor') return undefined
+      if (one.role !== 'client') return undefined
     }
     if (t === 'cmd' && (typeof one.cmd !== 'object' || one.cmd === null || typeof (one.cmd as { type?: unknown }).type !== 'string')) return undefined
     if (t === 'read' && (!Array.isArray(one.ids) || !one.ids.every((id) => typeof id === 'string'))) return undefined
@@ -269,4 +268,28 @@ export function socketHandlers(onOpen?: (socket: Socket<LinkSlot>) => void) {
       socket.data?.gone?.(error)
     },
   }
+}
+
+/** Engine 内部通道，不建立 socket、生命握手或心跳。 */
+export function localLinks<A extends Wire, B extends Wire>(): [Link<A>, Link<B>] {
+  let closed = false
+  const listeners: ((message: Wire) => void)[][] = [[], []]
+  const closers: (() => void)[] = []
+  const endpoint = (side: number): Link => ({
+    get closed() { return closed },
+    send(message) {
+      if (closed) return false
+      for (const listener of [...listeners[1 - side]!]) listener(message)
+      return true
+    },
+    onMessage(listener) { listeners[side]!.push(listener) },
+    onClose(listener) { if (closed) listener(); else closers.push(listener) },
+    close() {
+      if (closed) return
+      closed = true
+      for (const listener of closers.splice(0)) listener()
+      listeners[0] = []; listeners[1] = []
+    },
+  })
+  return [endpoint(0) as Link<A>, endpoint(1) as Link<B>]
 }

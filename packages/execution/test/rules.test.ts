@@ -64,11 +64,25 @@ function saidSomething(load: RulesLoad, fragment: string): boolean {
   return load.problems.some((problem) => problem.message.includes(fragment))
 }
 
+test('规约扫描让出控制面，取消后不继续扫描', async () => {
+  const box = sandbox()
+  try {
+    for (let index = 0; index < 100; index++) put(box.at, `.magic/rules/${index}.md`, 'rule')
+    const cancel = new AbortController()
+    const reading = rulesOf([box.at]).load([], cancel.signal)
+    let controlRan = false
+    setImmediate(() => { controlRan = true; cancel.abort(new Error('停止扫描')) })
+    await expect(reading).rejects.toThrow('停止扫描')
+    expect(controlRan).toBe(true)
+    expect((await rulesOf([box.at]).load([])).documents.length).toBeGreaterThan(0)
+  } finally { box.dispose() }
+})
+
 describe('没有规约时——原行为一字不动', () => {
-  test('空工作区：没有文档，也没有问题（不是「读失败」，是本来就没有）', () => {
+  test('空工作区：没有文档，也没有问题（不是「读失败」，是本来就没有）', async () => {
     const box = sandbox()
     try {
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toEqual([])
       expect(load.problems).toEqual([])
@@ -77,12 +91,12 @@ describe('没有规约时——原行为一字不动', () => {
     }
   })
 
-  test('没有目标时，带 paths 的规则不送（那一趟只取「根一级」）', () => {
+  test('没有目标时，带 paths 的规则不送（那一趟只取「根一级」）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/ts.md', '---\npaths:\n  - "src/**"\n---\n只对 src 生效')
 
-      expect(rulesOf([box.at]).load([]).documents).toEqual([])
+      expect((await rulesOf([box.at]).load([])).documents).toEqual([])
     } finally {
       box.dispose()
     }
@@ -90,11 +104,11 @@ describe('没有规约时——原行为一字不动', () => {
 })
 
 describe('目录规约——根与目标祖先目录', () => {
-  test('根级 AGENTS.md 在无目标时就在（首次模型调用前载入）', () => {
+  test('根级 AGENTS.md 在无目标时就在（首次模型调用前载入）', async () => {
     const box = sandbox()
     try {
       put(box.at, 'AGENTS.md', '本项目一律中文')
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual(['agents:AGENTS.md'])
       expect(load.documents[0]?.text).toBe('本项目一律中文')
@@ -105,16 +119,16 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('子目录 AGENTS.md 只在**目标落进它子树**时才进来（近目录约定细化其子树）', () => {
+  test('子目录 AGENTS.md 只在**目标落进它子树**时才进来（近目录约定细化其子树）', async () => {
     const box = sandbox()
     try {
       put(box.at, 'AGENTS.md', '根：一律中文')
       put(box.at, 'src/AGENTS.md', 'src：先跑 bun run check')
 
-      const outside = rulesOf([box.at]).load(['README.md'])
+      const outside = (await rulesOf([box.at]).load(['README.md']))
       expect(namesOf(outside)).toEqual(['agents:AGENTS.md'])
 
-      const inside = rulesOf([box.at]).load(['src/a.ts'])
+      const inside = (await rulesOf([box.at]).load(['src/a.ts']))
       expect(namesOf(inside)).toEqual(['agents:AGENTS.md', `agents:src${'/'}AGENTS.md`])
       expect(ruleNamed(inside, `src${'/'}AGENTS.md`).text).toBe('src：先跑 bun run check')
     } finally {
@@ -122,23 +136,23 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('目标是目录时从它自己起算（`ls src` 也拿得到 src/AGENTS.md）', () => {
+  test('目标是目录时从它自己起算（`ls src` 也拿得到 src/AGENTS.md）', async () => {
     const box = sandbox()
     try {
       put(box.at, 'src/AGENTS.md', 'src：先跑校验')
       mkdirSync(join(box.at, 'src'), { recursive: true })
 
-      expect(namesOf(rulesOf([box.at]).load(['src']))).toContain(`agents:src${'/'}AGENTS.md`)
+      expect(namesOf((await rulesOf([box.at]).load(['src'])))).toContain(`agents:src${'/'}AGENTS.md`)
     } finally {
       box.dispose()
     }
   })
 
-  test('同目录没有 AGENTS.md 时回退 CLAUDE.md', () => {
+  test('同目录没有 AGENTS.md 时回退 CLAUDE.md', async () => {
     const box = sandbox()
     try {
       put(box.at, 'CLAUDE.md', '兼容入口')
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual(['claude-md:CLAUDE.md'])
       expect(load.problems).toEqual([])
@@ -147,13 +161,13 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('**同目录 AGENTS.md 断链**：原生照样占住这个名字，不静默回退 CLAUDE.md', () => {
+  test('**同目录 AGENTS.md 断链**：原生照样占住这个名字，不静默回退 CLAUDE.md', async () => {
     const box = sandbox()
     try {
       put(box.at, 'src/CLAUDE.md', '兼容那份不该顶上来')
       symlinkSync(join(box.at, 'missing.md'), join(box.at, 'src/AGENTS.md'))
 
-      const load = rulesOf([box.at]).load(['src/a.ts'])
+      const load = (await rulesOf([box.at]).load(['src/a.ts']))
 
       // 这个名字归 AGENTS.md——**按文件项在不在判**，不按能不能读判：断链是「这一份出了错」，
       // 不是「没写这一份」。兼容那份因此进不来（与 `.magic/rules` 原生断链同一条规矩）
@@ -166,13 +180,13 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('**软链接指同实体**：两个入口一份文件，只入一次', () => {
+  test('**软链接指同实体**：两个入口一份文件，只入一次', async () => {
     const box = sandbox()
     try {
       put(box.at, 'AGENTS.md', '一份实体两个名字')
       symlinkSync(join(box.at, 'AGENTS.md'), join(box.at, 'CLAUDE.md'))
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toHaveLength(1)
       expect(load.problems).toEqual([]) // 同实体不是取舍，没什么可说的
@@ -181,13 +195,13 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('**同目录两份不同实体**：采用 AGENTS.md，并说清落选的那份怎么才能读', () => {
+  test('**同目录两份不同实体**：采用 AGENTS.md，并说清落选的那份怎么才能读', async () => {
     const box = sandbox()
     try {
       put(box.at, 'AGENTS.md', '甲')
       put(box.at, 'CLAUDE.md', '乙')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual(['agents:AGENTS.md'])
       expect(ruleNamed(load, 'AGENTS.md').text).toBe('甲')
@@ -199,13 +213,13 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('同目录两份不同实体 + 用户点名了 CLAUDE.md ⇒ 两份都读得进来', () => {
+  test('同目录两份不同实体 + 用户点名了 CLAUDE.md ⇒ 两份都读得进来', async () => {
     const box = sandbox()
     try {
       put(box.at, 'AGENTS.md', '甲')
       const claude = put(box.at, 'CLAUDE.md', '乙')
 
-      const load = rulesOf([box.at], [claude]).load([])
+      const load = (await rulesOf([box.at], [claude]).load([]))
 
       expect(namesOf(load)).toEqual(['agents:AGENTS.md', `source:CLAUDE.md`])
       expect(ruleNamed(load, 'CLAUDE.md').text).toBe('乙')
@@ -214,7 +228,7 @@ describe('目录规约——根与目标祖先目录', () => {
     }
   })
 
-  test('**只走到根为止**——根之外的家目录规约不是这个工作区的规约面', () => {
+  test('**只走到根为止**——根之外的家目录规约不是这个工作区的规约面', async () => {
     const box = sandbox()
     try {
       const root = join(box.at, 'proj')
@@ -222,7 +236,7 @@ describe('目录规约——根与目标祖先目录', () => {
       put(box.at, 'AGENTS.md', '外面那份：不该进来')
       put(root, 'AGENTS.md', '里面那份：该进来')
 
-      const load = rulesOf([root]).load(['a.ts'])
+      const load = (await rulesOf([root]).load(['a.ts']))
 
       expect(namesOf(load)).toEqual(['agents:AGENTS.md'])
       expect(ruleNamed(load, 'AGENTS.md').text).toBe('里面那份：该进来')
@@ -233,11 +247,11 @@ describe('目录规约——根与目标祖先目录', () => {
 })
 
 describe('原生规则 —— .magic/rules 无条件与条件', () => {
-  test('纯 Markdown 无条件规则：无目标也在（根一级）', () => {
+  test('纯 Markdown 无条件规则：无目标也在（根一级）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/style.md', '提交信息用中文')
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}style.md`])
       expect(ruleNamed(load, `.magic${'/'}rules${'/'}style.md`).text).toBe('提交信息用中文')
@@ -248,27 +262,27 @@ describe('原生规则 —— .magic/rules 无条件与条件', () => {
     }
   })
 
-  test('条件规则：命中送、不命中不送', () => {
+  test('条件规则：命中送、不命中不送', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/ts.md', '---\npaths:\n  - "src/**/*.ts"\n---\nts 那摊的约定')
 
-      const missed = rulesOf([box.at]).load(['docs/readme.md'])
+      const missed = (await rulesOf([box.at]).load(['docs/readme.md']))
       expect(missed.documents).toEqual([])
 
-      const hit = rulesOf([box.at]).load(['src/a.ts'])
+      const hit = (await rulesOf([box.at]).load(['src/a.ts']))
       expect(namesOf(hit)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ts.md`])
     } finally {
       box.dispose()
     }
   })
 
-  test('**规则子目录是组织方式**——路径基准仍是所属项目根', () => {
+  test('**规则子目录是组织方式**——路径基准仍是所属项目根', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/web/react.md', '---\npaths:\n  - "web/**/*.tsx"\n---\n前端约定')
 
-      const load = rulesOf([box.at]).load(['web/app/page.tsx'])
+      const load = (await rulesOf([box.at]).load(['web/app/page.tsx']))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}web${'/'}react.md`])
     } finally {
@@ -276,7 +290,7 @@ describe('原生规则 —— .magic/rules 无条件与条件', () => {
     }
   })
 
-  test('模式：`**` 跨段 · `*` 段内 · `?` 单字符 · 多模式取并 · 大括号展开', () => {
+  test('模式：`**` 跨段 · `*` 段内 · `?` 单字符 · 多模式取并 · 大括号展开', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/deep.md', '---\npaths:\n  - "src/**/*.ts"\n---\n深处')
@@ -284,32 +298,32 @@ describe('原生规则 —— .magic/rules 无条件与条件', () => {
       put(box.at, '.magic/rules/brace.md', '---\npaths:\n  - "lib/*.{ts,tsx}"\n---\n大括号')
       put(box.at, '.magic/rules/many.md', '---\npaths:\n  - "api/**"\n  - "cli/**"\n---\n多模式')
 
-      const names = (target: string): readonly string[] => namesOf(rulesOf([box.at]).load([target]))
+      const names = async (target: string): Promise<readonly string[]> => namesOf((await rulesOf([box.at]).load([target])))
 
       // `**` 之后的斜杠表示「零层或多层目录」——`src/a.ts` 一层都没有也要命中
-      expect(names('src/a.ts')).toContain(`magic-rules:.magic${'/'}rules${'/'}deep.md`)
-      expect(names('src/x/y/a.ts')).toContain(`magic-rules:.magic${'/'}rules${'/'}deep.md`)
+      expect((await names('src/a.ts'))).toContain(`magic-rules:.magic${'/'}rules${'/'}deep.md`)
+      expect((await names('src/x/y/a.ts'))).toContain(`magic-rules:.magic${'/'}rules${'/'}deep.md`)
       // `*` 不跨段
-      expect(names('note.md')).toContain(`magic-rules:.magic${'/'}rules${'/'}one.md`)
-      expect(names('docs/note.md')).not.toContain(`magic-rules:.magic${'/'}rules${'/'}one.md`)
+      expect((await names('note.md'))).toContain(`magic-rules:.magic${'/'}rules${'/'}one.md`)
+      expect((await names('docs/note.md'))).not.toContain(`magic-rules:.magic${'/'}rules${'/'}one.md`)
       // 大括号
-      expect(names('lib/a.tsx')).toContain(`magic-rules:.magic${'/'}rules${'/'}brace.md`)
-      expect(names('lib/a.js')).not.toContain(`magic-rules:.magic${'/'}rules${'/'}brace.md`)
+      expect((await names('lib/a.tsx'))).toContain(`magic-rules:.magic${'/'}rules${'/'}brace.md`)
+      expect((await names('lib/a.js'))).not.toContain(`magic-rules:.magic${'/'}rules${'/'}brace.md`)
       // 多模式取并
-      expect(names('api/x.ts')).toContain(`magic-rules:.magic${'/'}rules${'/'}many.md`)
-      expect(names('cli/x.ts')).toContain(`magic-rules:.magic${'/'}rules${'/'}many.md`)
+      expect((await names('api/x.ts'))).toContain(`magic-rules:.magic${'/'}rules${'/'}many.md`)
+      expect((await names('cli/x.ts'))).toContain(`magic-rules:.magic${'/'}rules${'/'}many.md`)
     } finally {
       box.dispose()
     }
   })
 
-  test('无 paths 与空 paths 是两回事：不写＝无条件；空列表＝读不懂，**不加载**', () => {
+  test('无 paths 与空 paths 是两回事：不写＝无条件；空列表＝读不懂，**不加载**', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/always.md', '无条件的')
       put(box.at, '.magic/rules/empty.md', '---\npaths:\n---\n不该生效')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}always.md`])
       expect(saidSomething(load, '空列表')).toBe(true)
@@ -331,12 +345,12 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
   ]
 
   for (const probe of cases) {
-    test(`坏 front-matter（${probe.label}）——不加载，且指出缘由`, () => {
+    test(`坏 front-matter（${probe.label}）——不加载，且指出缘由`, async () => {
       const box = sandbox()
       try {
         put(box.at, '.magic/rules/bad.md', `---\n${probe.front}\n---\n正文`)
 
-        const load = rulesOf([box.at]).load(['src/a.ts'])
+        const load = (await rulesOf([box.at]).load(['src/a.ts']))
 
         expect(load.documents).toEqual([])
         expect(saidSomething(load, probe.fragment)).toBe(true)
@@ -346,13 +360,13 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     })
   }
 
-  test('**合法的 inline 列表照收**（手写词法把它拒了——2026-09-20 换成内置解析器）', () => {
+  test('**合法的 inline 列表照收**（手写词法把它拒了——2026-09-20 换成内置解析器）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/inline.md', '---\npaths: ["src/**", "lib/*.ts"]\n---\ninline 写法')
       put(box.at, '.magic/rules/flow.md', '---\npaths:\n  - \'lib/**\' # 单引号也是合法 YAML\n---\n单引导')
 
-      const load = rulesOf([box.at]).load(['src/a.ts', 'lib/b.ts'])
+      const load = (await rulesOf([box.at]).load(['src/a.ts', 'lib/b.ts']))
 
       expect(namesOf(load)).toEqual([
         `magic-rules:.magic${'/'}rules${'/'}flow.md`,
@@ -364,12 +378,12 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('**没闭合的引号**明确报错（手写词法会把它当内容收下：模式带着半截引号去匹配）', () => {
+  test('**没闭合的引号**明确报错（手写词法会把它当内容收下：模式带着半截引号去匹配）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/broken.md', '---\npaths:\n  - "src/**\n---\n少一个引号')
 
-      const load = rulesOf([box.at]).load(['src/a.ts'])
+      const load = (await rulesOf([box.at]).load(['src/a.ts']))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, 'YAML')).toBe(true)
@@ -378,12 +392,12 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('**没闭合的 front-matter**明确报错（旧口径是「当它不存在、整篇按正文收下」）', () => {
+  test('**没闭合的 front-matter**明确报错（旧口径是「当它不存在、整篇按正文收下」）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/unclosed.md', '---\npaths:\n  - "src/**"\n正文，收尾那条 --- 忘了写')
 
-      const load = rulesOf([box.at]).load(['src/a.ts'])
+      const load = (await rulesOf([box.at]).load(['src/a.ts']))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, '没闭合')).toBe(true)
@@ -392,13 +406,13 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('`paths:` 后面什么都不写（YAML 读成 null）＝空列表，与 `paths: []` 同一句话', () => {
+  test('`paths:` 后面什么都不写（YAML 读成 null）＝空列表，与 `paths: []` 同一句话', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/nil.md', '---\npaths:\n---\n正文')
       put(box.at, '.magic/rules/empty.md', '---\npaths: []\n---\n正文')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toEqual([])
       expect(load.problems.filter((problem) => problem.message.includes('空列表'))).toHaveLength(2)
@@ -407,7 +421,7 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('展开过多——报出来，**不**悄悄砍成前几条', () => {
+  test('展开过多——报出来，**不**悄悄砍成前几条', async () => {
     const box = sandbox()
     try {
       put(
@@ -416,7 +430,7 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
         '---\npaths:\n  - "{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}/**"\n---\n爆炸',
       )
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, '展开')).toBe(true)
@@ -426,14 +440,14 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('**组数过多**：在展开**之前**就退回——深度优先的展开会先把栈坐穿', () => {
+  test('**组数过多**：在展开**之前**就退回——深度优先的展开会先把栈坐穿', async () => {
     const box = sandbox()
     try {
       // 24000 组 × 5 字符 ≈ 120KB，**还在单份 128KB 上限之内**——故这不是「文档太大」，
       // 是「递归太深」。组数上限若在展开之后才判，这一条会崩在栈上（不是红，是崩）
       put(box.at, '.magic/rules/deep.md', `---\npaths:\n  - "${'{a,b}'.repeat(24000)}"\n---\n深`)
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, '组')).toBe(true)
@@ -442,30 +456,30 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('**同层的多组大括号**照常展开（`src/{a,b}/*.{ts,tsx}` 是两组，不是嵌套）', () => {
+  test('**同层的多组大括号**照常展开（`src/{a,b}/*.{ts,tsx}` 是两组，不是嵌套）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/two.md', '---\npaths:\n  - "lib/{a,b}/*.{ts,tsx}"\n---\n两组')
 
-      expect(namesOf(rulesOf([box.at]).load(['lib/a/x.ts']))).toEqual([
+      expect(namesOf((await rulesOf([box.at]).load(['lib/a/x.ts'])))).toEqual([
         `magic-rules:.magic${'/'}rules${'/'}two.md`,
       ])
-      expect(namesOf(rulesOf([box.at]).load(['lib/b/y.tsx']))).toEqual([
+      expect(namesOf((await rulesOf([box.at]).load(['lib/b/y.tsx'])))).toEqual([
         `magic-rules:.magic${'/'}rules${'/'}two.md`,
       ])
-      expect(rulesOf([box.at]).load(['lib/c/y.ts']).documents).toEqual([])
+      expect((await rulesOf([box.at]).load(['lib/c/y.ts'])).documents).toEqual([])
     } finally {
       box.dispose()
     }
   })
 
-  test('坏 front-matter 的对象是**那一份**，不是整棵树（其余照常进来）', () => {
+  test('坏 front-matter 的对象是**那一份**，不是整棵树（其余照常进来）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/good.md', '好的那份')
       put(box.at, '.magic/rules/bad.md', '---\npaths:\n  - "/abs/**"\n---\n坏的')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}good.md`])
       expect(load.problems).toHaveLength(1)
@@ -474,12 +488,12 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('正文里的 `---` 分隔线不算 front-matter（没有闭合就不切）', () => {
+  test('正文里的 `---` 分隔线不算 front-matter（没有闭合就不切）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/doc.md', '开头\n\n---\n\n下面还是正文')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents[0]?.text).toBe('开头\n\n---\n\n下面还是正文')
       expect(load.problems).toEqual([])
@@ -488,12 +502,12 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('目录规约**整篇照收**——它的头部不按 front-matter 切', () => {
+  test('目录规约**整篇照收**——它的头部不按 front-matter 切', async () => {
     const box = sandbox()
     try {
       put(box.at, 'AGENTS.md', '---\npaths:\n  - "src/**"\n---\n正文')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toHaveLength(1)
       expect(load.documents[0]?.text).toContain('paths:')
@@ -502,13 +516,13 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
     }
   })
 
-  test('注释与引号——`#` 在引号里是内容，在空白后才是注释', () => {
+  test('注释与引号——`#` 在引号里是内容，在空白后才是注释', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/quoted.md', '---\n# 说明\npaths:\n  - "a#b/**" # 行尾注释\n---\n带井号')
       put(box.at, 'a#b/x.md', '目标')
 
-      const load = rulesOf([box.at]).load(['a#b/x.md'])
+      const load = (await rulesOf([box.at]).load(['a#b/x.md']))
 
       expect(namesOf(load)).toContain(`magic-rules:.magic${'/'}rules${'/'}quoted.md`)
     } finally {
@@ -518,7 +532,7 @@ describe('读不懂的——不扩大为全匹配，且说得出为什么', () =
 })
 
 describe('物理去重 —— 范围不同就是两条', () => {
-  test('同一份文件经两处进来、管两摊 ⇒ **两条**（首轮按真路径一刀切，src 那条整个消失）', () => {
+  test('同一份文件经两处进来、管两摊 ⇒ **两条**（首轮按真路径一刀切，src 那条整个消失）', async () => {
     const box = sandbox()
     try {
       // 根 AGENTS.md 与 src/AGENTS.md 都软链到同一份团队规约——常见的组织方式
@@ -527,7 +541,7 @@ describe('物理去重 —— 范围不同就是两条', () => {
       symlinkSync(shared, join(box.at, 'AGENTS.md'))
       symlinkSync(shared, join(box.at, 'src/AGENTS.md'))
 
-      const load = rulesOf([box.at], undefined, [shared]).load(['src/a.ts'])
+      const load = (await rulesOf([box.at], undefined, [shared]).load(['src/a.ts']))
 
       expect(load.documents.map((rule) => rule.name)).toEqual(['AGENTS.md', `src${sep}AGENTS.md`])
       // **两份是不同的材料**：正文一模一样，但管的地方不同 ⇒ 名与作用范围各是一样
@@ -544,13 +558,13 @@ describe('物理去重 —— 范围不同就是两条', () => {
 })
 
 describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
-  test('`.claude/rules` 与原生同形：无条件与条件都认', () => {
+  test('`.claude/rules` 与原生同形：无条件与条件都认', async () => {
     const box = sandbox()
     try {
       put(box.at, '.claude/rules/always.md', '兼容的：无条件')
       put(box.at, '.claude/rules/ts.md', '---\npaths:\n  - "src/**/*.ts"\n---\n兼容的：条件')
 
-      const load = rulesOf([box.at]).load(['src/a.ts'])
+      const load = (await rulesOf([box.at]).load(['src/a.ts']))
 
       expect(namesOf(load)).toEqual([
         `claude-rules:.claude${'/'}rules${'/'}always.md`,
@@ -561,13 +575,13 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('**同根同相对规则名，Magic 优先**——落选的那份报出来', () => {
+  test('**同根同相对规则名，Magic 优先**——落选的那份报出来', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/style.md', '原生那份')
       put(box.at, '.claude/rules/style.md', '兼容那份')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}style.md`])
       expect(ruleNamed(load, `.magic${'/'}rules${'/'}style.md`).text).toBe('原生那份')
@@ -577,7 +591,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('原生那份**读不懂**时，兼容那份也不许接管（占位在解析之前就定了）', () => {
+  test('原生那份**读不懂**时，兼容那份也不许接管（占位在解析之前就定了）', async () => {
     const box = sandbox()
     try {
       // 原生这条的 paths 写坏了（出根）⇒ 它自己不加载；但**这个名字已经归它**——
@@ -585,7 +599,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
       put(box.at, '.magic/rules/same.md', '---\npaths:\n  - "../bad/**"\n---\n原生那份')
       put(box.at, '.claude/rules/same.md', '兼容那份不该赢')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toEqual([]) // 两条都没进来
       expect(saidSomething(load, '原生优先')).toBe(true) // 兼容那条：说得清为什么
@@ -595,7 +609,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('原生那份**不可读**时，兼容那份也不许接管', () => {
+  test('原生那份**不可读**时，兼容那份也不许接管', async () => {
     const box = sandbox()
     try {
       // 原生那份链到工作区之外（没配来源 ⇒ 读不到）——占位照旧归它
@@ -605,7 +619,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
       symlinkSync(outside, join(root, '.magic/rules/same.md'))
       put(root, '.claude/rules/same.md', '兼容那份不该赢')
 
-      const load = rulesOf([root]).load([])
+      const load = (await rulesOf([root]).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, '原生优先')).toBe(true)
@@ -615,7 +629,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('原生那份**是断链**时，兼容那份也不许接管；断链本身明确报问题（二轮退回第二条）', () => {
+  test('原生那份**是断链**时，兼容那份也不许接管；断链本身明确报问题（二轮退回第二条）', async () => {
     const box = sandbox()
     try {
       // 软链指着**不存在**的目标：文件项在、目标取不到（与上一条不同——那条目标是真的）
@@ -623,7 +637,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
       symlinkSync(join(box.at, 'missing.md'), join(box.at, '.magic/rules/same.md'))
       put(box.at, '.claude/rules/same.md', '兼容那份不该赢')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       // 二轮实测的洞：walk 在 `statSync` 失败那一支直接 `continue` ⇒ 它**连候选都不是**
       // ⇒ 这个名字不归原生 ⇒ 兼容那份**实际接管**且 `problems` 为空（静默回退）
@@ -635,14 +649,14 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('原生与兼容**是同一个实体**时，兼容那份也不许接管', () => {
+  test('原生与兼容**是同一个实体**时，兼容那份也不许接管', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/shared.md', '同一份实体')
       mkdirSync(join(box.at, '.claude', 'rules'), { recursive: true })
       symlinkSync(join(box.at, '.magic/rules/shared.md'), join(box.at, '.claude/rules/shared.md'))
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       // 只有原生那一条（兼容那条被占位挡下，不是被物理去重悄悄吞掉）
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}shared.md`])
@@ -652,13 +666,13 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('**相对规则名不同就分别加载**——不是「同名才共存」', () => {
+  test('**相对规则名不同就分别加载**——不是「同名才共存」', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/a.md', '原生的 a')
       put(box.at, '.claude/rules/b.md', '兼容的 b')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       // 同深度按**来源序**（原生在前）摆——不是按目录名字母序（`.claude` 恰好排在前面）
       expect(namesOf(load)).toEqual([
@@ -670,7 +684,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
     }
   })
 
-  test('**物理同源**（软链接指同一份）只注入一次——原生那一头赢，且**有交代**', () => {
+  test('**物理同源**（软链接指同一份）只注入一次——原生那一头赢，且**有交代**', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/shared.md', '同一份实体')
@@ -680,7 +694,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
         join(box.at, '.claude/rules/shared.md'),
       )
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}shared.md`])
       // 原锚：`problems` 为空（同实体被物理去重**悄悄**吞掉）。为何变（2026-09-20 裁）：
@@ -695,7 +709,7 @@ describe('Claude 兼容入口 —— 同一套机制，原生优先', () => {
 })
 
 describe('只读来源的边界 —— 不因它是个链接就自动可读', () => {
-  test('指向工作区之外的符号链接：**不加载**，并说清出口在哪', () => {
+  test('指向工作区之外的符号链接：**不加载**，并说清出口在哪', async () => {
     const box = sandbox()
     try {
       const root = join(box.at, 'proj')
@@ -703,7 +717,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
       mkdirSync(join(root, '.magic/rules'), { recursive: true })
       symlinkSync(outside, join(root, '.magic/rules/linked.md'))
 
-      const load = rulesOf([root]).load([])
+      const load = (await rulesOf([root]).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, '工作区之外')).toBe(true)
@@ -716,7 +730,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('linkSources 点了名 ⇒ 链接跟得出去，**作用范围照旧是链接所在的那一处**', () => {
+  test('linkSources 点了名 ⇒ 链接跟得出去，**作用范围照旧是链接所在的那一处**', async () => {
     const box = sandbox()
     try {
       const root = join(box.at, 'proj')
@@ -724,7 +738,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
       mkdirSync(join(root, '.magic/rules'), { recursive: true })
       symlinkSync(outside, join(root, '.magic/rules/linked.md'))
 
-      const load = rulesOf([root], undefined, [outside]).load([])
+      const load = (await rulesOf([root], undefined, [outside]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}linked.md`])
       expect(ruleNamed(load, `.magic${'/'}rules${'/'}linked.md`).text).toBe('外面的东西')
@@ -736,7 +750,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('child 目录里的 AGENTS.md 软链到根外 ⇒ 规约**保持 src 作用域**，不变成开局全局规约', () => {
+  test('child 目录里的 AGENTS.md 软链到根外 ⇒ 规约**保持 src 作用域**，不变成开局全局规约', async () => {
     const box = sandbox()
     try {
       const root = join(box.at, 'proj')
@@ -745,7 +759,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
       symlinkSync(outside, join(root, 'src/AGENTS.md'))
 
       // 没放行：读不到（且说得出为什么）
-      const denied = rulesOf([root]).load([])
+      const denied = (await rulesOf([root]).load([]))
       expect(denied.documents).toEqual([])
 
       // 放行之后：**开局那一趟（无目标）不带它**——它只管 src
@@ -753,10 +767,10 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
         workspace: createWorkspaceService({ roots: [root] }),
         linkSources: [outside],
       })
-      expect(rules.load([]).documents).toEqual([])
+      expect((await rules.load([])).documents).toEqual([])
 
       // 碰 src 时它才进来，而且**根与作用目录都是 src 那一处**（不是真身所在的根外）
-      const scoped = rules.load(['src/a.ts']).documents
+      const scoped = (await rules.load(['src/a.ts'])).documents
       expect(scoped.map((rule) => rule.name)).toEqual([`src${sep}AGENTS.md`])
       expect(scoped[0]?.scope).toBe(join(realpathSync(root), 'src'))
       expect(scoped[0]?.root).toBe(realpathSync(root))
@@ -765,14 +779,14 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('sources 点名一份根外文件 ⇒ **正文读进来**（kind=source，不分根）', () => {
+  test('sources 点名一份根外文件 ⇒ **正文读进来**（kind=source，不分根）', async () => {
     const box = sandbox()
     try {
       const root = join(box.at, 'proj')
       const outside = put(box.at, 'outside/team.md', '用户点名要读的')
       mkdirSync(root, { recursive: true })
 
-      const load = rulesOf([root], [outside]).load([])
+      const load = (await rulesOf([root], [outside]).load([]))
 
       // 抬头一律报**真路径**（`realpath` 之后）——本机 `/var/…` 实为 `/private/var/…`
       expect(namesOf(load)).toEqual([`source:${realpathSync(outside)}`])
@@ -783,7 +797,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('补充来源是**目录**时递归其下 `*.md`；是文件时就是一份', () => {
+  test('补充来源是**目录**时递归其下 `*.md`；是文件时就是一份', async () => {
     const box = sandbox()
     try {
       const shared = join(box.at, 'shared')
@@ -791,7 +805,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
       put(shared, 'deep/b.md', '乙')
       const single = put(box.at, 'single.md', '丙')
 
-      const load = rulesOf([box.at], [shared, single]).load([])
+      const load = (await rulesOf([box.at], [shared, single]).load([]))
 
       // 抬头一律**相对所属根**（同其余来源的口径）——补充来源若落在某条根内，也照这条
       expect(namesOf(load)).toEqual([
@@ -806,10 +820,10 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('补充来源写**相对路径**＝拒（与工作区根同一条规矩：基准是进程当前目录）', () => {
+  test('补充来源写**相对路径**＝拒（与工作区根同一条规矩：基准是进程当前目录）', async () => {
     const box = sandbox()
     try {
-      const load = rulesOf([box.at], ['shared/rules']).load([])
+      const load = (await rulesOf([box.at], ['shared/rules']).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, '绝对路径')).toBe(true)
@@ -818,10 +832,10 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('补充来源不存在——报出来（不静默当作「没有」），**且认「读不完整」**', () => {
+  test('补充来源不存在——报出来（不静默当作「没有」），**且认「读不完整」**', async () => {
     const box = sandbox()
     try {
-      const load = rulesOf([box.at], [join(box.at, 'nowhere')]).load([])
+      const load = (await rulesOf([box.at], [join(box.at, 'nowhere')]).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, 'rules.sources')).toBe(true)
@@ -837,7 +851,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('指向工作区之外的**目录**符号链接：连进都不进（不是逐文件略过——广度没有兜底）', () => {
+  test('指向工作区之外的**目录**符号链接：连进都不进（不是逐文件略过——广度没有兜底）', async () => {
     const box = sandbox()
     try {
       const root = join(box.at, 'proj')
@@ -848,7 +862,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
       mkdirSync(join(root, '.magic/rules'), { recursive: true })
       symlinkSync(outside, join(root, '.magic/rules/linked'))
 
-      const load = rulesOf([root]).load([])
+      const load = (await rulesOf([root]).load([]))
 
       expect(load.documents).toEqual([])
       // **按目录报一次**，不是按文件报两次——说明压根没往里边走
@@ -860,14 +874,14 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
     }
   })
 
-  test('目录循环——诊断说得出绕回哪儿，且**转得出来**（不挂）', () => {
+  test('目录循环——诊断说得出绕回哪儿，且**转得出来**（不挂）', async () => {
     const box = sandbox()
     try {
       const rulesDir = join(box.at, '.magic/rules')
       put(box.at, '.magic/rules/a.md', '一份')
       symlinkSync(rulesDir, join(rulesDir, 'loop'))
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}a.md`])
       expect(saidSomething(load, '目录循环')).toBe(true)
@@ -878,7 +892,7 @@ describe('只读来源的边界 —— 不因它是个链接就自动可读', ()
 })
 
 describe('根是文件系统顶（`/`）——相对写法不吃字符', () => {
-  test('`paths` 按「根相对」写对的照旧命中（吃了首字符就会**静默**一条都不中）', () => {
+  test('`paths` 按「根相对」写对的照旧命中（吃了首字符就会**静默**一条都不中）', async () => {
     const box = sandbox()
     try {
       const real = realpathSync(box.at)
@@ -888,7 +902,7 @@ describe('根是文件系统顶（`/`）——相对写法不吃字符', () => {
       const head = real.split(sep).filter((part) => part !== '').slice(0, 2).join('/')
       const shared = put(box.at, 'shared/deep.md', `---\npaths:\n  - "${head}/**"\n---\n顶层根`)
 
-      const load = rulesOf(['/'], [shared]).load([join(real, 'a.ts')])
+      const load = (await rulesOf(['/'], [shared]).load([join(real, 'a.ts')]))
 
       expect(namesOf(load)).toEqual([`source:${real.slice(1)}${sep}shared${sep}deep.md`])
     } finally {
@@ -898,7 +912,7 @@ describe('根是文件系统顶（`/`）——相对写法不吃字符', () => {
 })
 
 describe('多根 —— 各自的作用域，不互相顶替', () => {
-  test('两条根各有各的规约，各标各的根（不把甲根的说成乙根的）', () => {
+  test('两条根各有各的规约，各标各的根（不把甲根的说成乙根的）', async () => {
     const box = sandbox()
     try {
       const first = join(box.at, 'a')
@@ -910,7 +924,7 @@ describe('多根 —— 各自的作用域，不互相顶替', () => {
       put(first, '.magic/rules/native.md', '甲根的原生规则')
       put(second, '.magic/rules/native.md', '乙根的原生规则')
 
-      const load = rulesOf([first, second]).load([])
+      const load = (await rulesOf([first, second]).load([]))
 
       // 摆法是**一个根一块**（抬头已标明根）——「甲根那一摊」连着摆才看得出是一摊
       expect(load.documents.map((rule) => [rule.root, rule.text])).toEqual([
@@ -924,7 +938,7 @@ describe('多根 —— 各自的作用域，不互相顶替', () => {
     }
   })
 
-  test('甲根的条件规则不因乙根的目标而触发', () => {
+  test('甲根的条件规则不因乙根的目标而触发', async () => {
     const box = sandbox()
     try {
       const first = join(box.at, 'a')
@@ -933,17 +947,17 @@ describe('多根 —— 各自的作用域，不互相顶替', () => {
       mkdirSync(join(second, 'src'), { recursive: true })
       put(first, '.magic/rules/ts.md', '---\npaths:\n  - "src/**"\n---\n甲根的 ts 规则')
 
-      const inSecond = rulesOf([first, second]).load([join(second, 'src/x.ts')])
+      const inSecond = (await rulesOf([first, second]).load([join(second, 'src/x.ts')]))
       expect(inSecond.documents).toEqual([])
 
-      const inFirst = rulesOf([first, second]).load([join(first, 'src/x.ts')])
+      const inFirst = (await rulesOf([first, second]).load([join(first, 'src/x.ts')]))
       expect(namesOf(inFirst)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ts.md`])
     } finally {
       box.dispose()
     }
   })
 
-  test('**声明原形**下的目标也认得出来（用户写 `/tmp/…`、真身 `/private/tmp/…`）', () => {
+  test('**声明原形**下的目标也认得出来（用户写 `/tmp/…`、真身 `/private/tmp/…`）', async () => {
     const box = sandbox()
     try {
       const root = realpathSync(box.at)
@@ -954,7 +968,7 @@ describe('多根 —— 各自的作用域，不互相顶替', () => {
       const workspace = createWorkspaceService({ roots: [box.at] })
       const declared = workspace.declaredRoots()[0] as string
 
-      const load = createProjectRules({ workspace }).load([join(declared, 'src/x.ts')])
+      const load = (await createProjectRules({ workspace }).load([join(declared, 'src/x.ts')]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ts.md`])
     } finally {
@@ -964,16 +978,16 @@ describe('多根 —— 各自的作用域，不互相顶替', () => {
 })
 
 describe('上限 —— 超了报出来，不静默截', () => {
-  test('单份过大：不加载，且报出实际大小', () => {
+  test('单份过大：不加载，且报出实际大小', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/big.md', 'x'.repeat(2048))
       put(box.at, '.magic/rules/small.md', '小的')
 
-      const load = createProjectRules({
+      const load = (await createProjectRules({
         workspace: createWorkspaceService({ roots: [box.at] }),
         limits: { maxDocumentBytes: 1024 },
-      }).load([])
+      }).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}small.md`])
       expect(saidSomething(load, '超过单份上限')).toBe(true)
@@ -982,17 +996,17 @@ describe('上限 —— 超了报出来，不静默截', () => {
     }
   })
 
-  test('份数上限：到此为止，且明说「从这一份起不再加载」', () => {
+  test('份数上限：到此为止，且明说「从这一份起不再加载」', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/a.md', '甲')
       put(box.at, '.magic/rules/b.md', '乙')
       put(box.at, '.magic/rules/c.md', '丙')
 
-      const load = createProjectRules({
+      const load = (await createProjectRules({
         workspace: createWorkspaceService({ roots: [box.at] }),
         limits: { maxDocuments: 2 },
-      }).load([])
+      }).load([]))
 
       expect(load.documents).toHaveLength(2)
       expect(saidSomething(load, '上限 2')).toBe(true)
@@ -1004,13 +1018,13 @@ describe('上限 —— 超了报出来，不静默截', () => {
     }
   })
 
-  test('**扫描层级被截断**：没检查到的那一摊也进 `truncated`（只报错不足以证明覆盖）', () => {
+  test('**扫描层级被截断**：没检查到的那一摊也进 `truncated`（只报错不足以证明覆盖）', async () => {
     const box = sandbox()
     try {
       const deep = Array.from({ length: 40 }, (_, index) => `d${index}`).join(sep)
       put(box.at, `.magic/rules/${deep}/deep.md`, '深处那份')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([])
       expect(saidSomething(load, '目录层级过深')).toBe(true)
@@ -1022,13 +1036,13 @@ describe('上限 —— 超了报出来，不静默截', () => {
     }
   })
 
-  test('**没到上限就是全的**（`truncated` 为假——不误报）', () => {
+  test('**没到上限就是全的**（`truncated` 为假——不误报）', async () => {
     const box = sandbox()
     try {
       put(box.at, '.magic/rules/a.md', '甲')
       put(box.at, '.magic/rules/b.md', '乙')
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents).toHaveLength(2)
       expect(load.truncated).toBe(false)
@@ -1048,7 +1062,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
    * （Node 不——本机实测 Node 给得出真路径），旧写法在那儿静默 `return`。同形的还有三处：
    * `<root>/.magic` 的存在判断 · `readdir` 只报错不置位 · 非 `*.md` 项取不到状态时不出声。
    */
-  test('规则目录**读不动**：报具体诊断 ＋ 置 `truncated`（同树读得动的照常进来）', () => {
+  test('规则目录**读不动**：报具体诊断 ＋ 置 `truncated`（同树读得动的照常进来）', async () => {
     const box = sandbox()
     const locked = join(box.at, '.magic/rules/locked')
     try {
@@ -1056,7 +1070,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
       put(box.at, '.magic/rules/locked/required.md', '底下这份——一次都没看过')
       chmodSync(locked, 0)
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ok.md`])
       expect(saidSomething(load, '目录读不动')).toBe(true)
@@ -1068,14 +1082,14 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
     }
   })
 
-  test('`.magic` 那一层读不动（**目录存在判断**那个入口）：同样报 ＋ 置位', () => {
+  test('`.magic` 那一层读不动（**目录存在判断**那个入口）：同样报 ＋ 置位', async () => {
     const box = sandbox()
     const magic = join(box.at, '.magic')
     try {
       put(box.at, '.magic/rules/a.md', '甲')
       chmodSync(magic, 0)
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(load)).toEqual([])
       expect(saidSomething(load, '目录读不动')).toBe(true)
@@ -1088,7 +1102,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
     }
   })
 
-  test('单份 `*.md` 读不动（文件 000）：报出来 ＋ 置位——**「读不出来」不停在静默里**', () => {
+  test('单份 `*.md` 读不动（文件 000）：报出来 ＋ 置位——**「读不出来」不停在静默里**', async () => {
     const box = sandbox()
     const secret = join(box.at, '.magic/rules/secret.md')
     try {
@@ -1096,7 +1110,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
       put(box.at, '.magic/rules/ok.md', '这份读得动')
       chmodSync(secret, 0)
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       // 读得动的照常进来（只报读不动的那一份）
       expect(namesOf(load)).toEqual([`magic-rules:.magic${'/'}rules${'/'}ok.md`])
@@ -1111,7 +1125,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
     }
   })
 
-  test('名字不带 `.md` 的项取不到状态（可能是个目录）：报 ＋ 置位，不「跳过就算」', () => {
+  test('名字不带 `.md` 的项取不到状态（可能是个目录）：报 ＋ 置位，不「跳过就算」', async () => {
     const box = sandbox()
     const inner = mkdtempSync(join(tmpdir(), 'magic-rules-inner-'))
     const wall = join(inner, 'wall')
@@ -1121,7 +1135,7 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
       symlinkSync(join(wall, 'sub'), join(box.at, '.magic/rules/shared'))
       chmodSync(wall, 0)
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       // **不是 `*.md` 不等于不是个目录**：这一项要是指向目录的链接，底下照样可能有一摊规则
       expect(saidSomething(load, '这一项读不动')).toBe(true)
@@ -1133,19 +1147,19 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
     }
   })
 
-  test('两边对照：可选目录**压根没有** ＝ 不出声；断链的 `*.md` ＝ 报出来但**不停批**（二轮口径）', () => {
+  test('两边对照：可选目录**压根没有** ＝ 不出声；断链的 `*.md` ＝ 报出来但**不停批**（二轮口径）', async () => {
     const box = sandbox()
     try {
       put(box.at, 'src/a.ts', 'x')
 
-      const plain = rulesOf([box.at]).load([])
+      const plain = (await rulesOf([box.at]).load([]))
       expect(plain.problems).toEqual([])
       expect(plain.truncated).toBe(false)
 
       mkdirSync(join(box.at, '.magic/rules'), { recursive: true })
       symlinkSync(join(box.at, 'nowhere.md'), join(box.at, '.magic/rules/gone.md'))
 
-      const broken = rulesOf([box.at]).load([])
+      const broken = (await rulesOf([box.at]).load([]))
       expect(saidSomething(broken, '这一份取不到')).toBe(true)
       // **断链是「那儿没有东西」**——底下没有可以没看过的东西，故照旧不停批（二轮裁）
       expect(broken.truncated).toBe(false)
@@ -1154,16 +1168,16 @@ describe('扫描入口「没看成」——不静默、且不许声称完整（2
     }
   })
 
-  test('**读回来就照常**：权限恢复 ⇒ 那份规约进 `documents`、`truncated` 落回假', () => {
+  test('**读回来就照常**：权限恢复 ⇒ 那份规约进 `documents`、`truncated` 落回假', async () => {
     const box = sandbox()
     const locked = join(box.at, '.magic/rules/locked')
     try {
       put(box.at, '.magic/rules/locked/required.md', 'REQUIRED')
       chmodSync(locked, 0)
-      expect(rulesOf([box.at]).load([]).truncated).toBe(true)
+      expect((await rulesOf([box.at]).load([])).truncated).toBe(true)
 
       chmodSync(locked, 0o700)
-      const back = rulesOf([box.at]).load([])
+      const back = (await rulesOf([box.at]).load([]))
 
       expect(namesOf(back)).toEqual([`magic-rules:.magic${'/'}rules${'/'}locked${'/'}required.md`])
       expect(back.truncated).toBe(false)
@@ -1186,7 +1200,7 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
    * ⚠️ 只有 `sources`（用户要求**加载**的材料）在这一条线上；`linkSources` 是**许可**，
    * 见本块最后那条对照。
    */
-  test('`rules.sources` 点名的目录**读不动**：报具体诊断 ＋ 置位——不是「先把它丢掉再说齐全」', () => {
+  test('`rules.sources` 点名的目录**读不动**：报具体诊断 ＋ 置位——不是「先把它丢掉再说齐全」', async () => {
     const box = sandbox()
     const shared = join(box.at, 'shared')
     const root = join(box.at, 'proj')
@@ -1195,7 +1209,7 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
       mkdirSync(root, { recursive: true })
       chmodSync(shared, 0)
 
-      const load = rulesOf([root], [shared]).load([])
+      const load = (await rulesOf([root], [shared]).load([]))
 
       expect(load.documents).toEqual([])
       expect(saidSomething(load, 'rules.sources')).toBe(true)
@@ -1208,7 +1222,7 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
     }
   })
 
-  test('**读回来就照常**：来源权限恢复 ⇒ 那份规约进 `documents`、`truncated` 落回假（不缓存失败）', () => {
+  test('**读回来就照常**：来源权限恢复 ⇒ 那份规约进 `documents`、`truncated` 落回假（不缓存失败）', async () => {
     const box = sandbox()
     const shared = join(box.at, 'shared')
     const root = join(box.at, 'proj')
@@ -1218,10 +1232,10 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
       chmodSync(shared, 0)
 
       // 归位是**每一次 `load()` 现做**的：上一趟读不成不落下任何「永久缺失」的账
-      expect(rulesOf([root], [shared]).load([]).truncated).toBe(true)
+      expect((await rulesOf([root], [shared]).load([])).truncated).toBe(true)
 
       chmodSync(shared, 0o700)
-      const back = rulesOf([root], [shared]).load([])
+      const back = (await rulesOf([root], [shared]).load([]))
 
       // 点子**根外**（本轮的复现点）：抬头报的是真路径——它不属于任何一条根，也就不该被
       // 说成某条根底下的相对写法（`scanSource` 那支：落不到根内就报真身）
@@ -1236,15 +1250,15 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
     }
   })
 
-  test('**归位不成的两种写法都在这一条线上**：指不出真身（不存在）· 写法被拒（相对路径）', () => {
+  test('**归位不成的两种写法都在这一条线上**：指不出真身（不存在）· 写法被拒（相对路径）', async () => {
     const box = sandbox()
     try {
-      const missing = rulesOf([box.at], [join(box.at, 'nowhere')]).load([])
+      const missing = (await rulesOf([box.at], [join(box.at, 'nowhere')]).load([]))
       expect(missing.truncated).toBe(true)
 
       // 「可选目录压根没有」照旧正常（见本文件那条两边对照），**用户点名的这一种不算**：
       // 它点的是「这份材料要读进来」，而我们连它指哪儿都定不下来（相对串的基准是进程当前目录）
-      const relative = rulesOf([box.at], ['shared/rules']).load([])
+      const relative = (await rulesOf([box.at], ['shared/rules']).load([]))
       expect(saidSomething(relative, '绝对路径')).toBe(true)
       expect(relative.truncated).toBe(true)
     } finally {
@@ -1252,14 +1266,14 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
     }
   })
 
-  test('对照：`linkSources` 里一条**没用上的许可**归位不成 ⇒ 报出来，但**不停批**（五轮明裁）', () => {
+  test('对照：`linkSources` 里一条**没用上的许可**归位不成 ⇒ 报出来，但**不停批**（五轮明裁）', async () => {
     const box = sandbox()
     const permit = join(box.at, 'permit')
     try {
       mkdirSync(permit, { recursive: true })
       chmodSync(permit, 0)
 
-      const load = rulesOf([box.at], undefined, [permit]).load([])
+      const load = (await rulesOf([box.at], undefined, [permit]).load([]))
 
       // 报是照报（用户看得见自己写的那一行没生效）
       expect(saidSomething(load, 'rules.linkSources')).toBe(true)
@@ -1276,27 +1290,27 @@ describe('用户点名要加载的来源没归位成功 —— 同一个根因�
 })
 
 describe('材料 —— 读的是当前那份文件，身份就是来源与范围', () => {
-  test('没改就一样 · 改一个字就是新的 · `paths` 改了也另是一份', () => {
+  test('没改就一样 · 改一个字就是新的 · `paths` 改了也另是一份', async () => {
     const box = sandbox()
     try {
       const file = join(box.at, 'AGENTS.md')
       put(box.at, 'AGENTS.md', '甲')
-      const first = rulesOf([box.at]).load([]).documents[0]
+      const first = (await rulesOf([box.at]).load([])).documents[0]
 
       // 同一份没改 ⇒ 两次读到的材料逐字一样（下游「送过就不重拦」全靠这个相等）
-      expect(rulesOf([box.at]).load([]).documents[0]?.text).toBe(first?.text)
+      expect((await rulesOf([box.at]).load([])).documents[0]?.text).toBe(first?.text)
       // 而它是**文件里那一段**本身——不是摘要、不是编号（材料按实际文本走）
       expect(first?.text).toBe('甲')
 
       writeFileSync(file, '乙', 'utf8')
-      expect(rulesOf([box.at]).load([]).documents[0]?.text).toBe('乙')
+      expect((await rulesOf([box.at]).load([])).documents[0]?.text).toBe('乙')
 
       put(box.at, '.magic/rules/ts.md', '---\npaths:\n  - "src/**"\n---\n正文')
-      const narrow = rulesOf([box.at]).load(['src/a.ts']).documents.find(
+      const narrow = (await rulesOf([box.at]).load(['src/a.ts'])).documents.find(
         (rule) => rule.kind === 'magic-rules',
       )
       put(box.at, '.magic/rules/ts.md', '---\npaths:\n  - "lib/**"\n---\n正文')
-      const other = rulesOf([box.at]).load(['lib/a.ts']).documents.find(
+      const other = (await rulesOf([box.at]).load(['lib/a.ts'])).documents.find(
         (rule) => rule.kind === 'magic-rules',
       )
 
@@ -1309,7 +1323,7 @@ describe('材料 —— 读的是当前那份文件，身份就是来源与范�
     }
   })
 
-  test('**正文一模一样的两个文件是两份材料**（范围也是这一份的一部分）', () => {
+  test('**正文一模一样的两个文件是两份材料**（范围也是这一份的一部分）', async () => {
     const box = sandbox()
     try {
       // 同一套约定按目录铺开——复制粘贴起手最常见的写法
@@ -1317,7 +1331,7 @@ describe('材料 —— 读的是当前那份文件，身份就是来源与范�
       put(box.at, 'AGENTS.md', same)
       put(box.at, 'src/AGENTS.md', same)
 
-      const load = rulesOf([box.at]).load(['src/a.ts'])
+      const load = (await rulesOf([box.at]).load(['src/a.ts']))
       const [root, sub] = load.documents
 
       expect(load.documents).toHaveLength(2)
@@ -1333,14 +1347,14 @@ describe('材料 —— 读的是当前那份文件，身份就是来源与范�
     }
   })
 
-  test('`path` 报的是**真路径**（软链接那头归到它自己）', () => {
+  test('`path` 报的是**真路径**（软链接那头归到它自己）', async () => {
     const box = sandbox()
     try {
       const real = put(box.at, 'real.md', '真身')
       mkdirSync(join(box.at, '.magic/rules'), { recursive: true })
       symlinkSync(real, join(box.at, '.magic/rules/alias.md'))
 
-      const load = rulesOf([box.at]).load([])
+      const load = (await rulesOf([box.at]).load([]))
 
       expect(load.documents[0]?.path).toBe(realpathSync(real))
     } finally {

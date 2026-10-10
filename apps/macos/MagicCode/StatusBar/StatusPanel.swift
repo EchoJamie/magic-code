@@ -11,7 +11,7 @@ struct StatusPanel: View {
     private var rows: [NativeWork] { WorkGroup.allCases.flatMap { model.list.rows($0, works: model.works) } }
     private var stale: Bool {
         guard model.projection != nil else { return false }
-        switch model.phase { case .starting, .fault: return true; default: return false }
+        switch model.phase { case .starting, .stopped, .unreachable, .fault: return true; default: return false }
     }
     private var connectionSummary: String {
         guard stale else { return model.summary }
@@ -57,7 +57,7 @@ struct StatusPanel: View {
                                 }
                             }
                             if model.works.count > rows.count {
-                                Button("在终端查看全部") { model.newTerminal() }.buttonStyle(.link).disabled(!model.isCurrent)
+                                Button("在终端查看全部") { model.newTerminal() }.buttonStyle(.link)
                                     .help("在终端使用 /resume 查看全部工作")
                             }
                         }.scrollTargetLayout()
@@ -76,9 +76,15 @@ struct StatusPanel: View {
                 if !rows.isEmpty { Divider() }
                 if model.diagnostics.debugMode && surface == .menu { Button("打开调试窗口") { model.showDebugWindow?() } }
                 HStack {
-                    Button("打开终端") { model.newTerminal() }.disabled(!model.isCurrent)
+                    Button("打开终端") { model.newTerminal() }
                     Spacer()
-                    Menu { Button("退出 Magic Code…") { NSApp.terminate(nil) } } label: { Image(systemName: "ellipsis") }
+                    Menu {
+                        Button("刷新 Engine 状态") { model.refreshAfterWake() }.disabled(model.engineBusy)
+                        Button("启动 Engine") { model.startEngine() }.disabled(model.engineBusy || model.isCurrent || model.phase == .stopping)
+                        Button("停止 Engine…", role: .destructive) { model.presentEngineStopAlert() }.disabled(model.engineBusy || model.phase == .stopped)
+                        Divider()
+                        Button("退出 Magic Code") { NSApp.terminate(nil) }
+                    } label: { Image(systemName: "ellipsis") }
                         .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("更多操作")
                 }
             }
@@ -364,12 +370,17 @@ struct FullPath: View {
 }
 
 extension AppModel {
-    func makeQuitAlert() -> NSAlert {
+    func presentEngineStopAlert() {
+        let alert = makeEngineStopAlert()
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn { confirmEngineStop() }
+    }
+    func makeEngineStopAlert() -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = affected.isEmpty ? "工作状态尚未确认，仍要退出 Magic Code？" : "退出将停止 \(affected.count) 项工作"
-        alert.informativeText = "确认工作已停止后退出。未确认时，App 会保持打开。"
+        alert.messageText = "停止 Magic Engine？"
+        alert.informativeText = "将停止全部后台工作并收回所属工具。退出 App 不会停止 Engine。"
         let cancel = alert.addButton(withTitle: "取消")
-        let stop = alert.addButton(withTitle: "停止并退出")
+        let stop = alert.addButton(withTitle: "停止 Engine")
         stop.hasDestructiveAction = true
         stop.keyEquivalent = ""
         if !affected.isEmpty {

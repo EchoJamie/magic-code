@@ -1,11 +1,11 @@
 {
-  "family": "NativeResponse",
+  "family": "SettingsResult",
   "valid": true,
   "message": {
-    "t": "native.settings.result",
     "request": "settings-one",
-    "serviceInstance": "service-one",
     "error": "配置已改变，请重新读取",
-    "base": "/tmp/synthetic"
+    "base": "/tmp/synthetic",
+    "configPath": "/tmp/synthetic/config.json",
+    "saved": false
   }
 }

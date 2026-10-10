@@ -48,14 +48,14 @@ function endpoint(options: { failure?: boolean; summaryFailure?: 'auth' | 'netwo
 }
 
 describe('U113 统一模型配置与执行选择', () => {
-  test('首次初始化只填缺失档位；日后改 Default 不连改三档，无模型调用', () => {
+  test('首次初始化只填缺失档位；日后改 Default 不连改三档，无模型调用', async () => {
     const root = tempDir('u113-save-')
     try {
       const path = writeConfig(root, { providers, models: { arcane: configuredModels.arcane }, permissions: { rules: [] }, marker: '保留' })
-      expect(configureModel({ path, request: { choice: 'default', provider: 'main', model: 'deepseek-chat', initialize: true } })).toEqual({ ok: true })
+      expect((await configureModel({ path, request: { choice: 'default', provider: 'main', model: 'deepseek-chat', initialize: true } }))).toEqual({ ok: true })
       const first = JSON.parse(readFileSync(path, 'utf8'))
       expect(first.models).toEqual({ default: configuredModels.default, cantrip: configuredModels.default, spell: configuredModels.default, arcane: configuredModels.arcane })
-      expect(configureModel({ path, request: { choice: 'default', provider: 'aux', model: 'other' } })).toEqual({ ok: true })
+      expect((await configureModel({ path, request: { choice: 'default', provider: 'aux', model: 'other' } }))).toEqual({ ok: true })
       const saved = JSON.parse(readFileSync(path, 'utf8'))
       expect(saved.models.default).toEqual({ provider: 'aux', model: 'other' })
       expect(saved.models.cantrip).toEqual(configuredModels.default)
@@ -65,7 +65,7 @@ describe('U113 统一模型配置与执行选择', () => {
     } finally { removeDir(root) }
   })
 
-  test('配置损坏和旧来源明确拒绝，不覆盖、不迁移', () => {
+  test('配置损坏和旧来源明确拒绝，不覆盖、不迁移', async () => {
     const root = tempDir('u113-invalid-')
     try {
       for (const config of [
@@ -81,7 +81,7 @@ describe('U113 统一模型配置与执行选择', () => {
         expect(readFileSync(path, 'utf8')).toBe(before)
       }
       const path = writeConfig(root, { providers, models: [] })
-      expect(configureModel({ path, request: { choice: 'default', ...configuredModels.default! } }).ok).toBe(false)
+      expect((await configureModel({ path, request: { choice: 'default', ...configuredModels.default! } })).ok).toBe(false)
     } finally { removeDir(root) }
   })
 

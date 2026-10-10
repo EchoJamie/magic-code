@@ -10,6 +10,7 @@ import { managedModelChoices, resolveManagedModel } from '../agent-models.ts'
 export type CollaborationHost = {
   readonly store: RecordsStore
   readonly magic: MagicHome
+  readonly environment: (session: string) => Readonly<Record<string, string>>
   readonly now: () => number
   readonly accepting: () => boolean
   readonly start: (agent: AgentIdentity) => Promise<void>
@@ -31,12 +32,12 @@ export function createManagedCollaboration(host: CollaborationHost) {
   const finishing = new Set<string>()
   const actions = createCollaborationActions({
     records, now: host.now,
-    modelChoices: () => managedModelChoices(host.magic),
+    modelChoices: session => managedModelChoices(host.magic, host.environment(session)),
     origin: async actor => {
       for await (const entry of host.store.readEntries(actor.sessionId)) if (entry.kind === 'user') return { sessionId: actor.sessionId, entryId: entry.id }
       throw new Error('找不到这份工作的原始用户交代')
     },
-    resolveModel: input => resolveManagedModel({ magic: host.magic, ...input }),
+    resolveModel: input => resolveManagedModel({ magic: host.magic, environment: host.environment(input.session), ...input }),
     start: async agent => {
       if (closing || !host.accepting()) throw new Error('宿主正在退出')
       await host.start(agent)
@@ -246,7 +247,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
           const actor = command.member === undefined ? undefined : records.listMembers(collaboration.collaborationId).find(a => a.agentId === command.member)
           if (command.member !== undefined && actor === undefined) throw new Error('成员不属于当前工作')
           if (actor?.purpose === 'consultation') throw new Error('咨询固定使用启动时解析的 Arcane，不开放成员换模')
-          const selection = await resolveManagedModel({ magic: host.magic, defaults: actor?.model ?? collaboration.defaultModel, model: command.model })
+          const selection = await resolveManagedModel({ magic: host.magic, environment: host.environment(collaboration.originSessionId), defaults: actor?.model ?? collaboration.defaultModel, model: command.model })
           if (actor === undefined) records.updateDefaultModel(collaboration.collaborationId, selection)
           else { await host.configure(actor.sessionId, selection); records.updateAgent(actor.agentId, { model: selection }) }
           break

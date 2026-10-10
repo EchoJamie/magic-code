@@ -23,6 +23,7 @@ const USAGE = `magic —— 软件工程智能体
   magic [选项]
   magic resume <id> [选项]
   magic help
+  magic engine status|start|stop
 
 选项：
   -h, --help          显示帮助
@@ -32,7 +33,7 @@ const USAGE = `magic —— 软件工程智能体
   --debug             保存并开启调试模式
   --no-debug          保存并关闭调试模式
   --log-level <level> 保存日志等级：error / warn / info / debug / trace
-  --check             离线检查配置与工作区，不连接 App
+  --check             离线检查配置与工作区
   --script <file>     运行 JSON 脚本，输出 JSONL 事件与摘要
 
 模型选择：default / cantrip / spell / arcane
@@ -225,14 +226,14 @@ async function offlineCheck(args: Args): Promise<number> {
   console.log(`  权限规则　${rules.rules.length} 条 · 被拒 ${rules.rejected.length} 条`)
   for (const problem of rules.rejected) console.log(`             第 ${problem.index + 1} 条：${problem.reason}`)
   if (args.session !== undefined) console.log(`  会话请求　${args.session}（离线检查不连接或校验会话）`)
-  const projectRules = createProjectRules({ workspace, sources: loaded.config.rules?.sources ?? [], linkSources: loaded.config.rules?.linkSources ?? [] }).load([])
+  const projectRules = (await createProjectRules({ workspace, sources: loaded.config.rules?.sources ?? [], linkSources: loaded.config.rules?.linkSources ?? [] }).load([]))
   console.log(`  项目规约　${describeProjectRules(projectRules)}`)
   const grants = readGrantView(magic, workspace)
   console.log(`  授权　　　${grants.unreadable === undefined
     ? `${grants.view.grants.length} 条（本工作区） · ${grants.path}${grants.view.stale.length === 0 ? '' : ` · 陈旧的节 ${grants.view.stale.length} 个（/grants 里撤）`}`
     : `读不懂（本次不加载、也不会写它）：${grants.unreadable} · ${grants.path}`}`)
   if (grants.note !== undefined) console.log(`             ${grants.note}`)
-  const skills = skillsCatalog(createSkills({ workspace, magicBase: magic.base, home: magic.home, sources: loaded.config.skills?.sources ?? [] }).discover())
+  const skills = skillsCatalog((await createSkills({ workspace, magicBase: magic.base, home: magic.home, sources: loaded.config.skills?.sources ?? [] }).discover()))
   console.log(`  技能　　　${skills.skills.length === 0 ? '无（放 .magic/skills/<名称>/SKILL.md 就来）' : skills.skills.map((one) => `${one.name}（${one.label}）`).join(' · ')}`)
   if (skills.problems.length > 0) console.log(`             有 ${skills.problems.length} 个没读进来`)
   for (const problem of skills.problems) console.log(`             ${problem.path}\n             ${problem.message}`)
@@ -289,7 +290,7 @@ function describeProjectRules(load: RulesLoad): string {
  * 会在没会话时 `session.new`（要开一张空壳才盖得出信封），与 D5「空手打开不占存储」相抵。
  * 条目没声明、内置表也不认得 ⇒ `null` ⇒ 屏上只报已用量——**不编**。
  */
-export function tuiOptions(assembly: Assembly): RunTuiOptions {
+export async function tuiOptions(assembly: Assembly): Promise<RunTuiOptions> {
   return {
     transport: assembly.shell,
     boot: () => assembly.boot(),
@@ -311,7 +312,7 @@ export function tuiOptions(assembly: Assembly): RunTuiOptions {
     // 启动那几句（U22 · 审计第 13 条）：解析从严（读不懂的规则 / 授权**不生效**）原先
     // 只有 `--check` 会说，走 TUI 这条路**一声不响**。话由装配备好（`Assembly.notices`）、
     // 外壳落成记录区的一行回执——**空数组＝启动一句多余的话都不说**。
-    receipts: assembly.notices,
+    receipts: await assembly.notices(),
   }
 }
 
@@ -365,22 +366,18 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
   let switches = 0
   let disconnected: Error | undefined
   let rejectPending: ((error: Error) => void) | undefined
-  let needsExecutor = false
   client.onClose((error) => {
     disconnected = error ?? new Error('Magic Code 已退出，脚本已断开')
     rejectPending?.(disconnected)
   })
-  client.onDetached((why) => { if (needsExecutor) rejectPending?.(new Error(why)) })
   client.onLine((line) => rejectPending?.(new Error(line)))
-  const waitEvent = (matches: (event: KernelEvent) => boolean, execution = false): Promise<KernelEvent> => {
+  const waitEvent = (matches: (event: KernelEvent) => boolean): Promise<KernelEvent> => {
     if (disconnected !== undefined) return Promise.reject(disconnected)
     return new Promise((resolve, reject) => {
-      needsExecutor = execution
       const finish = (event: KernelEvent | Error): void => {
         off()
         clearTimeout(timer)
         rejectPending = undefined
-        needsExecutor = false
         if (event instanceof Error) reject(event)
         else resolve(event)
       }
@@ -393,7 +390,7 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
   try {
     for (const step of script.inputs) {
       if (typeof step !== 'string' && 'switch' in step) {
-        const result = waitEvent((event) => event.kind === 'model.switched', true)
+        const result = waitEvent((event) => event.kind === 'model.switched')
         client.send({ type: 'model.switch', ...step.switch })
         const event = await result
         if (event.kind !== 'model.switched') throw new Error('换模型未返回结果')
@@ -412,7 +409,7 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
           session = event.session
         }
         return accepted && event.kind === 'turn.end' && !event.data.continues && event.session === session
-      }, true)
+      })
       client.send({ type: 'input.submit', ...input, ref })
       const event = await completed
       if (event.kind === 'input.settled' && !event.data.ok) throw new Error(event.data.reason)
@@ -433,61 +430,6 @@ export async function runAppScript(args: Args & { readonly script: string }, opt
     handle.dispose()
     client.close()
   }
-}
-
-/**
- * **执行者那一支**（U48）——`magic --internal-executor …`。
- *
- * ⚠️ **不是产品命令**：用户敲不出来（`--help` 里一个字都没有），也没有任何一条产品路径
- * 需要它。它是**管理者与执行者之间的私约**——管理者按这几个参数起进程，进程照它连回去
- * （见 `./run/launch.ts` 与 `./run/executor.ts`）。与 `ui.ts` 那条「研发设施不是产品命令」
- * 同一条口径：**别把它写进 USAGE**。
- *
- * 返回 `undefined` ＝ 「这不是执行者那一支」，`main` 接着按普通入口走。
- */
-async function runExecutorMode(argv: readonly string[]): Promise<number | undefined> {
-  if (argv[0] !== '--internal-executor') return undefined
-
-  const valueOf = (flag: string): string | undefined => {
-    const at = argv.indexOf(flag)
-    return at === -1 ? undefined : argv[at + 1]
-  }
-
-  const socket = argv[1]
-  const token = valueOf('--token')
-  // 管理者—执行者私约；普通 CLI 的 parseArgs 不接受这个选项。
-  const session = valueOf('--session')
-  const cwd = valueOf('--cwd')
-  const magicHome = valueOf('--magic-home')
-  const magicBase = valueOf('--magic-base')
-
-  if (
-    socket === undefined ||
-    token === undefined ||
-    session === undefined ||
-    cwd === undefined ||
-    magicHome === undefined ||
-    magicBase === undefined
-  ) {
-    console.error('执行者入参不全——这条入口由管理者调用，不手工跑（见 packages/app/src/run/launch.ts）')
-    return 1
-  }
-
-  const { runExecutor } = await import('./run/executor.ts')
-  const raw = valueOf('--switch')
-  const outcome = await runExecutor({
-    socket,
-    token,
-    session: session === '-' ? null : session,
-    cwd,
-    magic: { home: magicHome, base: magicBase },
-    ...(raw === undefined ? {} : { switch: JSON.parse(raw) as ModelSwitchRequest }),
-    // **全放行**（U73）——无值的一个开关（`launch.ts` 的 `--allow-all`）。
-    // 它是**私约里的那一半**：用户那一侧的名字与说法写在 `USAGE`，用户敲不出来这一支。
-    ...(argv.includes('--allow-all') ? { allowAll: true } : {}),
-  })
-
-  return outcome.kind === 'ok' ? 0 : 1
 }
 
 /** 主动终端接入；测试可显式注入沙地发现/App 路径，产品不增加第二种后台模式。 */
@@ -526,9 +468,9 @@ async function runTerminal(args: Args): Promise<number> {
     }
     const modelInfo = await readModelInfo(loaded, magic)
     const { runTui } = await import('@magic/tui')
-    const { reopenApp } = await import('./run/spawn-manager.ts')
+    const { connectApp } = await import('./run/spawn-manager.ts')
     const connection = terminalConnection(client, async (session) => {
-      const reopened = await reopenApp({ expectedInstance: { base: magic.base }, connect: {
+      const reopened = await connectApp({ intent: 'observe', expectedInstance: { base: magic.base }, connect: {
         cwd: process.cwd(), label: 'terminal',
         ...(session === undefined ? {} : { session }),
         ...(args.switch === undefined ? {} : { switch: args.switch }),
@@ -537,12 +479,12 @@ async function runTerminal(args: Args): Promise<number> {
       return reopened.client
     }, args.session)
     closingClient = connection.client
-    const tui = await runTui(terminalOptions({
+    const tui = await runTui((await terminalOptions({
       client: connection.client, reopen: connection.reopen, loaded, magic, cwd: process.cwd(),
       ...(args.switch === undefined ? {} : { switch: args.switch }),
       ...(args.session === undefined ? {} : { session: args.session }),
       ...(modelInfo === undefined ? {} : { modelInfo }),
-    }))
+    })))
     await tui.waitUntilExit()
     return 0
   } finally {
@@ -550,36 +492,48 @@ async function runTerminal(args: Args): Promise<number> {
   }
 }
 
-/** 内部管理者入口只能由 App 的专用生命管道调用。 */
+/** launchd 启动的 Engine 入口，生命周期独立于图形 App。 */
 async function runManagerMode(argv: readonly string[]): Promise<number | undefined> {
-  if (argv[0] !== '--internal-manager') return undefined
+  if (argv[0] !== '--internal-engine') return undefined
 
-  const { runHostedManager } = await import('./run/host-runtime.ts')
-  return runHostedManager(argv.slice(1))
+  const { runEngine } = await import('./run/host-runtime.ts')
+  try { return await runEngine(argv.slice(1)) }
+  catch (error) { console.error(`Engine 启动失败：${String(error)}`); return 0 }
 }
 
 async function main(): Promise<number> {
-  if (process.argv[2] === '--internal-diagnostics') {
+  if (process.argv[2] === 'engine') {
+    const action = process.argv[3]
+    if (!['status', 'start', 'stop'].includes(action ?? '') || process.argv.length !== 4) { console.error('用法：magic engine status|start|stop'); return 1 }
     try {
-      const argv = process.argv.slice(3)
-      const change = parseDiagnosticsArgs(argv)
-      if (!change) throw new Error('缺少诊断设置')
-      const at = argv.indexOf('--home')
-      const home = at < 0 ? undefined : argv[at + 1]
-      const { locateHost, readHostDiscovery } = await import('./run/host-discovery.ts')
-      const { applyHostDiagnostics } = await import('./run/diagnostics-client.ts')
-      const found = readHostDiscovery(locateHost({ home: home ?? homedir() }))
-      if (!found) throw new Error('所属 App 尚未就绪，未修改设置')
-      console.error(await applyHostDiagnostics(found, change, 'app'))
+      const { controlEngine } = await import('./run/spawn-manager.ts')
+      const result = await controlEngine(action as 'status' | 'start' | 'stop', { home: homedir() })
+      console.log(`Magic Engine：${result.state}${result.error ? `（${result.error}）` : ''}\n数据实例：${result.base}`)
+      return result.state === 'failed' || result.state === 'unreachable' ? 1 : 0
+    } catch (error) { console.error(String(error)); return 1 }
+  }
+  if (process.argv[2] === '--internal-engine-call') {
+    try {
+      const { engineCall } = await import('./run/engine-call.ts')
+      console.log(JSON.stringify(await engineCall(JSON.parse(await Bun.stdin.text()))))
       return 0
-    } catch (error) { console.error(error instanceof Error ? error.message : '诊断设置未确认'); return 1 }
+    } catch (error) { console.log(JSON.stringify({ state: 'failed', error: String(error) })); return 1 }
+  }
+  if (process.argv[2] === '--internal-settings') {
+    try {
+      const { runSettingsCall } = await import('./settings-call.ts')
+      const result = await runSettingsCall(JSON.parse(await Bun.stdin.text()), process.env)
+      process.stdout.write(`${JSON.stringify(result)}\n`)
+      return 0
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify({ saved: false, error: error instanceof Error ? error.message : String(error) })}\n`)
+      return 1
+    }
   }
   // **内部那两支先走**（U48）——它们不认 `--help` 那一族，也不该被 `parseArgs` 拦下
   const asManager = await runManagerMode(process.argv.slice(2))
   if (asManager !== undefined) return asManager
 
-  const asExecutor = await runExecutorMode(process.argv.slice(2))
-  if (asExecutor !== undefined) return asExecutor
 
   let args: Args
   try {

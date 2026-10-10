@@ -544,17 +544,9 @@ const mcpApproval: Scenario = {
       ...where(options),
     })
 
-    const boot = await broken.capture({ label: '连不上：起手那一句' })
-    ui.check(boot.text.includes('broken'), '连不上的那台服务器被点了名', '锚＝配置里的条目名')
-    ui.check(boot.text.includes('连不上'), '起手那一行说了「连不上」', '锚＝装配的 notice 措辞')
-    ui.check(
-      boot.text.includes('外部工具服务器'),
-      '那句话指着外部工具说的（不是别的告警）',
-      '',
-    )
-
+    const boot = await broken.capture({ label: '空入口不启动外部工具' })
+    ui.check(!boot.text.includes('连不上'), '空入口只读取配置，不预启动外部工具', '')
     await broken.send('跑个内置的')
-    // 内置 chmod 走重档审批，等待无预选面板。
     await broken.key('enter', { until: { text: COPY.decideHint }, timeoutMs: 10_000 })
     await broken.key('down'); await broken.key('enter', { until: { text: TOOL_DONE }, timeoutMs: 10_000 })
     const ran = await broken.capture({ label: '内置工具照常' })
@@ -563,6 +555,12 @@ const mcpApproval: Scenario = {
       '单连接失败不拖垮内置工具（内置那件照跑）',
       `锚＝头一行「▸ … ✓」＋ 下一行「<耗时> · 内置照常」`,
     )
+    await broken.wait({ text: '○ 空闲' }, { timeoutMs: 10000 })
+    await broken.send('/mcp ')
+    await broken.key('enter', { until: { text: 'broken' }, timeoutMs: 10000 })
+    const connected = await broken.capture({ label: '查看失败的外部连接' })
+    ui.check(connected.text.includes('broken'), '运行目录点名失败服务器', '配置里的条目名')
+    await broken.key('esc')
     await broken.close()
 
     // —— 第三幕：**服务器自己还带了一层**（普通后代）——

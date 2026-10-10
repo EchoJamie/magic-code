@@ -1,3 +1,4 @@
+import { spawnOwned } from './process.ts'
 import { assertIdentity } from './workspace.ts'
 /**
  * **后台运行登记**（U70）——`exec` 的「后台」那一形的实现体。
@@ -49,7 +50,7 @@ import type {
   ProcessLedger,
   WorkspaceService,
 } from '@magic/contracts'
-import { reapOwned, startTimeOf } from './groups.ts'
+import { reapOwned } from './groups.ts'
 
 /** 跑命令的宿主 shell——与 `exec.ts` 同一句（`-c` 取一条命令行）。 */
 const SHELL = 'sh'
@@ -78,6 +79,9 @@ const KEPT_FINISHED = 32
 
 /** 装配期构造入参（技术方案 · 领域划分 · 装配视图 2：执行域——工作区根注册）。 */
 export type BackgroundOptions = {
+  readonly env?: Readonly<Record<string, string>>
+  readonly signal?: AbortSignal
+
   /**
    * **输出落在哪儿**——**工作区之外**（`MAGIC_HOME` 的运行目录下，由装配算好递进来）。
    *
@@ -99,7 +103,7 @@ type Run = {
   readonly outputPath: string
   readonly pgid: number
   readonly startedAt: number | undefined
-  readonly proc: Bun.Subprocess<'ignore', number, number>
+  readonly proc: Bun.Subprocess<'pipe', number, number>
   /** 它已经落定了没有（落定之后这一条转进 `finished`，停它只会得到「本来就结束了」）。 */
   done: boolean
   /** **正在被停**（`stop` 动的手）——那个退出不是它自己跑完的，回执上要说得出来。 */
@@ -186,15 +190,16 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
         return { ok: false, reason: `开不了输出文件（${outputPath}）：${reasonOf(error)}` }
       }
 
-      let proc: Bun.Subprocess<'ignore', number, number>
+      let startedAt: number
+      let proc: Bun.Subprocess<'pipe', number, number>
       try {
-        proc = Bun.spawn([SHELL, '-c', cmd], {
-          cwd,
-          stdin: 'ignore', // 交互式命令即得 EOF，不悬着等一个永远不来的输入
-          stdout: fd,
-          stderr: fd,
-          detached: true, // 自成进程组：停的时候按组停（见文件头注）
+        const started = await spawnOwned([SHELL, '-c', cmd], {
+          cwd, env: options.env, signal: options.signal, ledger: options.ledger,
+          stdout: fd, stderr: fd, kind: 'background',
+          what: `exec(bg):${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
         })
+        proc = started.process
+        startedAt = started.startedAt
       } catch (error) {
         closeQuietly(fd)
         // 报文里点出 cwd——同 `exec.ts` 那一处（ENOENT 指向 `sh`，而真凶多半是 cwd）
@@ -211,7 +216,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
         outputPath,
         pgid,
         // **记账那一刻**读一次组长身份——等收尾再读，读到的可能是别人（PID 重用）
-        startedAt: startTimeOf(pgid),
+        startedAt,
         proc,
         done: false,
         stopping: false,
@@ -221,13 +226,6 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
 
       // 记账（U50）——**后台进程尤其要记**：它比发起它的那一轮活得久，
       // 执行者被杀时正是「没人认领的后台」最容易出现的那一形
-      options.ledger?.add({
-        pgid,
-        kind: 'background',
-        what: `exec(bg):${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
-      })
-
-      // **它真退出的那一刻**——唯一的结束信号（见文件头注：不据「输出安静了」判）
       void proc.exited.then(
         (exit) => settle(run, exit),
         // `exited` 本身抛（极罕见：平台不给退出码）——按**读不到**处置，不编一个 0 出来

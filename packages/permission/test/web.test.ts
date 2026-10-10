@@ -111,7 +111,7 @@ describe('U72 · 「总是允许」按域名给', () => {
     readonly grants: ReturnType<typeof ledger>
     readonly gate: ReturnType<typeof createPermissionGate>
     asked(url: string): number
-    answer(remember: boolean): void
+    answer(remember: boolean): Promise<void>
   } {
     const h = harness()
     const grants = ledger()
@@ -126,21 +126,21 @@ describe('U72 · 「总是允许」按域名给', () => {
         void gate.decide(fetchCall(url), context(), 1).catch(() => {})
         return h.countOf('tool.decision.request') - before
       },
-      answer(remember) {
+      async answer(remember) {
         const request = h.eventsOf('tool.decision.request').at(-1)
         if (request === undefined) throw new Error('还没问过')
-        gate.resolve(request.id, 'approve', { remember })
+        await gate.resolve(request.id, 'approve', { remember })
       },
     }
   }
 
-  test('拨 `a` 之后：**同域名不再问**，**别的域名照问**', () => {
+  test('拨 `a` 之后：**同域名不再问**，**别的域名照问**', async () => {
     const { grants, asked, answer } = asker()
 
     // 第一趟：问了——这就是「必闸」在行为上的样子（默认没有一处自动放行）
     expect(asked('https://example.com/a')).toBe(1)
 
-    answer(true)
+    await answer(true)
     // ⚠️ 授权里**必须带域名**：少了它这一条会覆盖任意域名（那正是工单要挡的那件事）
     expect(grants.rules().map(({ tool, op, host }) => ({ tool, op, host }))).toEqual([
       { tool: 'web_fetch', op: ['outbound'], host: 'example.com' },
@@ -150,20 +150,20 @@ describe('U72 · 「总是允许」按域名给', () => {
     expect(asked('https://other.example/x')).toBe(1) // 别的域名：照问
   })
 
-  test('子域也算别的域名（授权是精确那一个，不是那一家）', () => {
+  test('子域也算别的域名（授权是精确那一个，不是那一家）', async () => {
     const { asked, answer } = asker()
 
     expect(asked('https://example.com/a')).toBe(1)
-    answer(true)
+    await answer(true)
 
     expect(asked('https://www.example.com/a')).toBe(1)
   })
 
-  test('取不得的地址：卡上**没有域名**，那一下「总是允许」也开不了任何门', () => {
+  test('取不得的地址：卡上**没有域名**，那一下「总是允许」也开不了任何门', async () => {
     const { asked, answer } = asker()
 
     expect(asked('https://intranet/wiki')).toBe(1)
-    answer(true)
+    await answer(true)
 
     // 无论答的是「批准」还是「总是允许」，下一趟照旧问——没有域名可记
     expect(asked('https://intranet/wiki')).toBe(1)

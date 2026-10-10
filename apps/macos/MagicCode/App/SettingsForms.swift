@@ -84,7 +84,7 @@ struct DraftFooter: View {
                 Button("保存") {
                     if let action { if let value = action() { model.applySettings(value, stamp: draft.stamp, key: key) } }
                     else { model.applySettings(draft.value, stamp: draft.stamp, key: key) }
-                }.buttonStyle(.borderedProminent).disabled(!model.isCurrent || model.settingsBusy).accessibilityIdentifier("settings-save-\(key)")
+                }.buttonStyle(.borderedProminent).disabled(model.settingsBusy).accessibilityIdentifier("settings-save-\(key)")
                 Button("取消", action: cancel).disabled(model.settingsBusy)
                 if draft.stamp != model.settingsSnapshot?.stamp {
                     Button("采用新配置基线，保留输入") { draft.stamp = model.settingsSnapshot?.stamp; draft.objectWillChange.send() }.disabled(model.settingsBusy)

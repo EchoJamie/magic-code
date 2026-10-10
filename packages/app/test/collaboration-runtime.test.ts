@@ -46,7 +46,7 @@ for (const response of ['clarify', 'reject'] as const) test(`入口已让出且�
   const child = f.spawn('child')
   let root: ConversationSession
   let requests = 0
-  const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: session => { if (session === 'origin') root.wake() },
     cancel: async () => undefined, input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
@@ -86,7 +86,7 @@ test('普通accept回执不唤起空闲入口，不产生模型请求', async ()
   const f = fixture()
   const child = f.spawn('child')
   let rootWakes = 0
-  const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: session => { if (session === 'origin') rootWakes++ },
     cancel: async () => undefined, input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
@@ -102,7 +102,7 @@ test('未登记wait的空闲入口也处理拒绝决定；普通accept和重复�
   const rejected = f.spawn('rejected-child')
   const accepted = f.spawn('accepted-child')
   let root: ConversationSession
-  const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: session => { if (session === 'origin') root.wake() },
     cancel: async () => undefined, input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
@@ -144,7 +144,7 @@ test('协作汇总实际模型用量：成员未报告的调用不补零、不�
   f.store.appendEvent({ ...stamper.stamp('model.call.start', { choice: 'default', model: 'entry-model' }), session: 'origin' })
   f.store.appendEvent({ ...stamper.stamp('model.usage', { inputTokens: 12, outputTokens: 4, totalTokens: 16 }), session: 'origin' })
   f.store.appendEvent({ ...stamper.stamp('model.call.start', { choice: 'default', model: 'member-model' }), session: child.agent.sessionId })
-  const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: () => undefined, cancel: async () => undefined,
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
@@ -161,7 +161,7 @@ test('整体显式收尾要等资源确认；失败保留closing，可重试且�
   f.records.respondToDelegation(child.agent.agentId, { operationId: 'decline', at: 10, delegationId: child.delegation.delegationId, response: 'reject', reason: '不需要此部分' })
   f.records.beginClosing(f.collaboration.collaborationId, 11)
   let cancelled = 0
-  const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: () => undefined,
     cancel: async () => { cancelled++; if (cancelled === 1) throw new Error('自有资源未确认') },
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
@@ -241,7 +241,7 @@ test('有效等待期间收到新交代，协调者仍可执行点名停止', as
 
 test('旧代资源核销重试仅结算该代 token，不结束后继执行记录', () => {
   const f = fixture()
-  const managed = createManagedCollaboration({ store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
+  const managed = createManagedCollaboration({ environment: () => ({}), store: f.store, magic: { home: f.dir, base: f.dir }, now: Date.now,
     accepting: () => true, start: async () => undefined, wake: () => undefined, cancel: async () => undefined,
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })

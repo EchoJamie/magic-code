@@ -1,8 +1,0 @@
-{
-  "family": "HostResponse",
-  "valid": true,
-  "message": {
-    "t": "host.error",
-    "reason": "停止未确认"
-  }
-}

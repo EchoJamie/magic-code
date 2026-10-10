@@ -26,6 +26,10 @@ import { createOwnedStdioTransport } from './stdio-transport.ts'
 const SERVER_GONE = '服务器退出了'
 
 export type StdioConnectionOptions = {
+  readonly environment?: Readonly<Record<string, string>>
+  readonly cwd?: string
+  readonly signal?: AbortSignal
+
   readonly server: string
   readonly config: McpStdioConfig
   readonly connectTimeoutMs?: number
@@ -53,6 +57,7 @@ export function createStdioConnection(options: StdioConnectionOptions): StdioCon
       open: (): OwnedTransport =>
         createOwnedStdioTransport({
           command: config.command,
+          environment: options.environment, cwd: options.cwd, signal: options.signal,
           ...(config.args === undefined ? {} : { args: [...config.args] }),
           ...(config.env === undefined ? {} : { env: { ...config.env } }),
           ...(options.ledger === undefined ? {} : { ledger: options.ledger }),

@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { UiWaitTimeout, createUiSession, rawBytesOf, type UiSession } from './ui/driver.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
 import { hostDiscoveryPath } from '../src/run/host-discovery.ts'
-import type { HostResponse } from '@magic/contracts'
+import type { HostDiscovery } from '@magic/contracts'
 import { createSandbox } from './ui/sandbox.ts'
 import { startFixture } from './ui/fixture.ts'
 import { createControl } from './ui/control.ts'
@@ -192,11 +192,11 @@ describe('U40 · 工具自证', () => {
 
     // 应用：进程没了（`kill(pid, 0)` 抛 ＝ 确实不在了）
     expect(() => process.kill(session.pid, 0)).toThrow()
-    const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number; messages: HostResponse[] }
+    const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number; state: HostDiscovery }
     expect(host.code).toBe(0)
-    expect(host.messages.some((message) => message.t === 'host.stopped')).toBe(true)
+    expect(host.state.state === 'stopped').toBe(true)
     expect(() => process.kill(host.pid, 0)).toThrow()
-    expect(existsSync(hostDiscoveryPath(session.facts().home))).toBe(false)
+    expect(existsSync(session.facts().home)).toBe(false)
 
     // 端点：连不上了（端口真释放）
     const fixture = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as {
@@ -303,7 +303,7 @@ describe('常驻测试宿主的归属', () => {
     const runs = tempDir('magic-u40-host-failure-')
     const checkout = tempDir('magic-u40-missing-checkout-')
     try {
-      await expect(createUiSession({ artifacts: runs, checkout, turns: HELLO })).rejects.toThrow('隔离宿主未就绪')
+      await expect(createUiSession({ artifacts: runs, checkout, turns: HELLO })).rejects.toThrow('隔离 Engine 未就绪')
       const runDir = join(runs, readdirSync(runs)[0]!)
       const info = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8')) as { outcome: string; app: { home: string }; fixture: { port: number } }
       const host = JSON.parse(readFileSync(join(runDir, 'host/host.json'), 'utf8')) as { pid: number; code: number }

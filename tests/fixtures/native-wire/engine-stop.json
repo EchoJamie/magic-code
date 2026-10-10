@@ -1,0 +1,16 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.engine.stop",
+    "request": "r",
+    "identity": {
+      "protocol": 1,
+      "version": "0.0.0",
+      "source": "/helper",
+      "serviceInstance": "service-one",
+      "base": "/tmp/synthetic"
+    },
+    "idleOnly": true
+  }
+}

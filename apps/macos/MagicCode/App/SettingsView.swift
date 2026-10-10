@@ -71,9 +71,10 @@ struct SettingsView: View {
                     Button("搜索设置") { searchFocused = true }.keyboardShortcut("f", modifiers: .command).hidden().frame(width: 0, height: 0)
                     if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).accessibilityLabel("清除搜索") }
                     Button { model.readSettings() } label: { Image(systemName: "arrow.clockwise") }
-                        .disabled(!model.isCurrent || model.settingsBusy).help("重新读取当前配置；保留未提交草稿")
+                        .disabled(model.settingsBusy).help("重新读取当前配置；保留未提交草稿")
                     if model.settingsBusy { ProgressView().controlSize(.small) }
                 }.padding(16).background(Color(nsColor: .controlBackgroundColor))
+                Text(model.configurationStatus).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 8)
                 Divider()
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -99,7 +100,7 @@ struct SettingsView: View {
                                     }
                                 } else {
                                     Text(model.isCurrent ? "正在读取配置…" : "服务尚未就绪。就绪后可读取与编辑配置。")
-                                    Button("重新读取") { model.readSettings() }.disabled(!model.isCurrent || model.settingsBusy)
+                                    Button("重新读取") { model.readSettings() }.disabled(model.settingsBusy)
                                 }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(24)

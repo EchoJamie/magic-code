@@ -125,8 +125,8 @@ function stage(): {
  * 分母改由**有效输入预算**一处给（`Assembly.contextWindow` 与 `model.catalog` 的
  * `contextWindow` 同一份解析，见 `ModelRegistry.capacityOf`）。
  */
-function shellOf(assembly: Assembly) {
-  const options = tuiOptions(assembly)
+async function shellOf(assembly: Assembly) {
+  const options = (await tuiOptions(assembly))
   // ⚠️ **旧链已撤**（U41 返修 · 本轮）：外壳不再拿窗长表自己查「换过模型之后」的分母
   // ——那是事件自带的 `inputBudget`（`model.switched` / `model.call.start`，
   // 与 `Assembly.contextWindow` / `model.catalog.currentInputBudget` 同源）。
@@ -154,13 +154,13 @@ describe('U30 · 开机那一格的分母', () => {
    * 不是供应商最大输出规格是否已知」）。**原锚**是「内置表命中 ⇒ 报 1M」；
    * **为何变**：分母要与出站请求、用量事件、压缩同一份解析；**新锚**：联合窗口 − 本次输出。
    */
-  test('**已知模型**：配置里没声明，也有分母（内置表命中 ⇒ M3 的联合窗口）', () => {
+  test('**已知模型**：配置里没声明，也有分母（内置表命中 ⇒ M3 的联合窗口）', async () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
       // 这份配置只写了 endpoint / key / 模型名——窗长是我们已知的客观属性
-      expect(tuiOptions(assembly).contextWindow).toBe(1_000_000 - RESERVED_OUTPUT)
+      expect((await tuiOptions(assembly)).contextWindow).toBe(1_000_000 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -168,14 +168,14 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('**用户声明的压过内置**：声明了 32768 ⇒ 分母是它预留后的数（不是内置的 204800）', () => {
+  test('**用户声明的压过内置**：声明了 32768 ⇒ 分母是它预留后的数（不是内置的 204800）', async () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
 
-      expect(tuiOptions(assembly).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
+      expect((await tuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -183,14 +183,14 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('**未知模型**：`null`——不编、不含糊匹配（自建 llama 就是你自己的事）', () => {
+  test('**未知模型**：`null`——不编、不含糊匹配（自建 llama 就是你自己的事）', async () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
       expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
 
-      expect(tuiOptions(assembly).contextWindow).toBeNull()
+      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -208,7 +208,7 @@ describe('U30 · 开机那一格的分母', () => {
    * **U41 返修改锚**：从「查表」改成「问外壳那一格」——同一个判据（各是各的），
    * 换到现在唯一的那个读面上订（撤链之后表没了，口径没变）。
    */
-  test('同名模型两条目：声明**不串味**——各是各的', () => {
+  test('同名模型两条目：声明**不串味**——各是各的', async () => {
     const land = stage()
 
     try {
@@ -216,10 +216,10 @@ describe('U30 · 开机那一格的分母', () => {
 
       // 声明的那条：用它声明的数；同名模型的另一条：内置表那个数
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
-      expect(tuiOptions(assembly).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
+      expect((await tuiOptions(assembly)).contextWindow).toBe(32_768 - RESERVED_OUTPUT)
 
       expect(assembly.switchModel({ choice: 'arcane' }).ok).toBe(true)
-      expect(tuiOptions(assembly).contextWindow).toBe(204_800 - RESERVED_OUTPUT)
+      expect((await tuiOptions(assembly)).contextWindow).toBe(204_800 - RESERVED_OUTPUT)
 
       assembly.close()
     } finally {
@@ -227,7 +227,7 @@ describe('U30 · 开机那一格的分母', () => {
     }
   })
 
-  test('注册表缺席（替身网关）⇒ `null`——与「不知道」同一条口径', () => {
+  test('注册表缺席（替身网关）⇒ `null`——与「不知道」同一条口径', async () => {
     const land = stage()
 
     try {
@@ -235,7 +235,7 @@ describe('U30 · 开机那一格的分母', () => {
         modelGateway: (stamper) => createFauxGateway({ stamper, turns: [] }),
       })
 
-      expect(tuiOptions(assembly).contextWindow).toBeNull()
+      expect((await tuiOptions(assembly)).contextWindow).toBeNull()
 
       assembly.close()
     } finally {
@@ -254,7 +254,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       // 跑过一句之后 ③④ 都有数（M3 ⇒ 1M）
@@ -283,7 +283,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       // 声明的那条（32768）
@@ -308,7 +308,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       expect(assembly.switchModel({ choice: 'ghost' as never }).ok).toBe(false)
@@ -329,7 +329,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       expect(assembly.switchModel({ choice: 'spell' }).ok).toBe(true)
@@ -351,15 +351,15 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       // 同一条目换到另一个模型——它自己的窗长（内置 204800），不是 M3 的 1M
-      expect(chooseConfiguredModel(assembly, 'MiniMax-M2.5').ok).toBe(true)
+      expect((await chooseConfiguredModel(assembly, 'MiniMax-M2.5')).ok).toBe(true)
       expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
       // 换到表里没有的模型名 ⇒ 不知道（同条目那个数也不顶上去）
-      expect(chooseConfiguredModel(assembly, 'MiniMax-M9').ok).toBe(true)
+      expect((await chooseConfiguredModel(assembly, 'MiniMax-M9')).ok).toBe(true)
       expect(shell.getView().status.window).toBeNull()
 
       shell.dispose()
@@ -374,7 +374,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
 
       // 还没有会话就换——注册表照换，但**没有可落账之处 ⇒ 不发事件**（内核的明写规矩）
       expect(assembly.switchModel({ choice: 'cantrip' }).ok).toBe(true)
@@ -404,7 +404,7 @@ describe('U30 · 换过模型之后的分母', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       // 条目名落在原型上：如实报未知，读数原样
@@ -416,7 +416,7 @@ describe('U30 · 换过模型之后的分母', () => {
       expect(shell.getView().status.model).toBe('Default')
 
       // 模型名落在原型上：换是换了（同条目换模型），分母**没有**——不留原型上那个东西
-      expect(chooseConfiguredModel(assembly, 'toString').ok).toBe(true)
+      expect((await chooseConfiguredModel(assembly, 'toString')).ok).toBe(true)
       expect(shell.getView().status.model).toBe('Spell')
       expect(shell.getView().status.window).toBeNull()
       expect(usageLabel(shell.getView().status.usage, shell.getView().status.window)).toBe('3.1k')
@@ -428,12 +428,12 @@ describe('U30 · 换过模型之后的分母', () => {
     }
   })
 
-  test('**开机空态**：还没有用量就不报用量——不写一个伪造的 `0/…`', () => {
+  test('**开机空态**：还没有用量就不报用量——不写一个伪造的 `0/…`', async () => {
     const land = stage()
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       const status = shell.getView().status
 
       // 分母在（1M），但分子还没有 ⇒ ④ 整格不出现（`usageLabel` 直接返回 null）
@@ -579,7 +579,7 @@ describe('U30 · 真 `runTui` 那条路（接线在不在）', () => {
       const { runTui } = await import('@magic/tui')
 
       const handle = await runTui({
-        ...tuiOptions(assembly),
+        ...(await tuiOptions(assembly)),
         stdin: stdin as unknown as NodeJS.ReadStream,
         stdout: tty as unknown as NodeJS.WriteStream,
       })
@@ -634,7 +634,7 @@ describe('U30 · 事件面（不顺带扩张）', () => {
 
     try {
       const assembly = land.assemble()
-      const shell = shellOf(assembly)
+      const shell = (await shellOf(assembly))
       await warm(assembly)
 
       const handle = attachShell(assembly.shell)
@@ -660,10 +660,10 @@ describe('U30 · 事件面（不顺带扩张）', () => {
 })
 
 /** 能力回归通过真实配置编辑后明确选择；原始型号不进入执行请求。 */
-function chooseConfiguredModel(assembly: Assembly, model: string) {
+async function chooseConfiguredModel(assembly: Assembly, model: string) {
   const provider = assembly.models?.current()?.provider
   if (provider === undefined) throw new Error('没有当前连接')
-  const saved = configureModel({ path: assembly.config.path, request: { choice: 'spell', provider, model } })
+  const saved = (await configureModel({ path: assembly.config.path, request: { choice: 'spell', provider, model } }))
   if (!saved.ok) throw new Error(saved.reason)
   return assembly.switchModel({ choice: 'spell' })
 }

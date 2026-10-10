@@ -85,7 +85,7 @@ test('具体事项实际呈现才已读，握手/历史/汇总不消费未读，
     await window.key('enter')
     await window.wait({ text: '停了' }, { timeoutMs: 30_000 })
     const stopped = readDatabase(join(sandbox.dataDir, 'records.db'))
-    try { expect(stopped.events.filter(event => event.kind === 'tool.decision')).toHaveLength(0) } finally { stopped.close() }
+    try { expect(stopped.events.filter(event => event.kind === 'tool.decision' && JSON.parse(event.data).decider === 'user')).toHaveLength(0) } finally { stopped.close() }
     await window.send('第五条：展示失败')
     await window.key('enter')
     await window.wait({ text: '模型错误' })

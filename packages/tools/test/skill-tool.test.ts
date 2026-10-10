@@ -32,12 +32,12 @@ function stubSkills(skills: readonly Skill[], read?: (name: string, path: string
   const asked: string[] = []
 
   const port: Skills = {
-    discover: (): SkillCatalog => ({ skills: [...skills], problems: [] }),
-    readMain: (name, path) => {
+    discover: async (): Promise<SkillCatalog> => ({ skills: [...skills], problems: [] }),
+    readMain: async (name, path) => {
       asked.push(`main:${name}@${path}`)
       return read?.(name, path) ?? { ok: true, material: { skill: PDF, text: '主文正文' } }
     },
-    readReference: (name, path, relative) => {
+    readReference: async (name, path, relative) => {
       asked.push(`ref:${name}@${path}/${relative}`)
       return read?.(name, path, relative) ?? { ok: true, material: { skill: PDF, text: '引用正文' } }
     },

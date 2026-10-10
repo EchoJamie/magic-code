@@ -22,7 +22,7 @@ for (const completed of [false, true]) test(`U115：宿主恢复 ${completed ? '
   if (completed) rec.appendEvent({ kind: 'turn.end', data: { reason: 'settled' }, id: rec.nextId(), session: 'advisor', turn: 1, at: 3 })
   let starts = 0
   let wakes = 0
-  const host = createManagedCollaboration({ store, magic: { home: dir, base: dir }, now: Date.now, accepting: () => true,
+  const host = createManagedCollaboration({ environment: () => ({}), store, magic: { home: dir, base: dir }, now: Date.now, accepting: () => true,
     start: async () => { starts++ }, wake: () => { wakes++ }, cancel: async () => undefined, input() {}, configure: async () => undefined,
     runs: () => [], decisions: () => 0, changed() {} })
   try {

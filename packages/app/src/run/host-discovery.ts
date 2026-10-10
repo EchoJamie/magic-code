@@ -59,7 +59,7 @@ export function locateHost(options: HostLocationOptions): HostLocation {
   return { home, source, app, discoveryPath: hostDiscoveryPath(home) }
 }
 
-/** 同版、同来源、同数据实例；有发现记录时还必须是同一宿主和服务代次。 */
+/** 同版、同来源、同数据实例；有发现记录时还必须是同一Engine 代次。 */
 export function assertHostIdentity(
   identity: ServiceIdentity,
   expected: Pick<ServiceIdentity, 'source'> & Partial<ServiceIdentity>,
@@ -71,20 +71,18 @@ export function assertHostIdentity(
     throw new Error(`Magic Code 软件来源不匹配：CLI=${expected.source}，App=${identity.source}；请退出原 App 后再打开此版本`)
   }
   if (typeof identity.base !== 'string' || !isAbsolute(identity.base) ||
-      typeof identity.hostInstance !== 'string' || identity.hostInstance === '' ||
       typeof identity.serviceInstance !== 'string' || identity.serviceInstance === '') {
-    throw new Error('Magic Code 服务身份不完整：缺少数据实例、宿主或服务代次')
+    throw new Error('Magic Code 服务身份不完整：缺少数据实例、Engine 代次')
   }
   if (expected.base !== undefined && normalizeDataDir(identity.base) !== normalizeDataDir(expected.base)) {
     throw new Error(`Magic Code 数据实例不匹配：CLI=${expected.base}，App=${identity.base}；请在 App 设置中明确切换基础路径`)
   }
-  if ((expected.hostInstance !== undefined && identity.hostInstance !== expected.hostInstance) ||
-      (expected.serviceInstance !== undefined && identity.serviceInstance !== expected.serviceInstance)) {
-    throw new Error('Magic Code 发现记录与当前宿主/服务代次不一致；请重新连接当前 App')
+  if (expected.serviceInstance !== undefined && identity.serviceInstance !== expected.serviceInstance) {
+    throw new Error('Magic Code 发现记录与当前 Engine 代次不一致；请重新连接当前 App')
   }
 }
 
-/** 只读取 App 原子发布的发现文件；文件存在不代表服务还活着。 */
+/** 只读取 Engine 原子发布的发现文件；文件存在不代表服务还活着。 */
 export function readHostDiscovery(location: HostLocation): HostDiscovery | undefined {
   let raw: string
   try {

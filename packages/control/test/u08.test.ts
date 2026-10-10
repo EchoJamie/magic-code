@@ -38,6 +38,25 @@ import {
 import type { ControlRoutes } from '../src/index.ts'
 import { TRANSIENT_EVENT_KINDS } from '@magic/contracts'
 
+test('关闭控制面停止新准入，并等在途异步操作落定', async () => {
+  const { kernel, shell } = createInProcessTransportPair()
+  const hub = createControlHub()
+  let release!: () => void
+  let calls = 0
+  hub.bind(routesWith({ onModelList: () => { calls++; return new Promise<void>(done => { release = done }) } }))
+  hub.attach(kernel)
+  shell.send({ type: 'model.list' })
+  let closed = false
+  const ending = hub.shutdown().then(() => { closed = true })
+  shell.send({ type: 'model.list' })
+  await Promise.resolve()
+  expect(calls).toBe(1)
+  expect(closed).toBe(false)
+  release()
+  await ending
+  expect(closed).toBe(true)
+})
+
 // —— 类型层探针（tsc 校验；`bun test` 只剥类型，不做检查）——
 
 /** 命令按 `type` 收窄——裁决答复的配对键是 `id`。 */

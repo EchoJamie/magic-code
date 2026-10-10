@@ -348,6 +348,7 @@ export type McpCatalogRow = {
   /** 哪一种接入——两种传输的读数在同一张表里，这一格说明它是怎么连的。 */
   readonly transport: 'stdio' | 'http'
   readonly state:
+    | { readonly status: 'idle' }
     | { readonly status: 'connecting' }
     | { readonly status: 'available' }
     /** 不可用**带缘由**（一句人读得懂的话：起不来 / 连不上 / 不支持的版本或认证）。 */
@@ -874,7 +875,7 @@ export type EventDataOf = {
      * `tool.decision`（裁者在事件上、分得开「没问」与「秒批」）——那条路归记录域，
      * **U28 起接上了**（见下 `history`）。
      */
-    readonly decisions: {
+    readonly decisions?: {
       readonly total: number
       readonly uncovered: number
       readonly vetoed: number
@@ -891,7 +892,7 @@ export type EventDataOf = {
      * **两格都可为 0**（还没走过裁决 / 库里那几条会话没记归属）——外壳**据此不报**，
      * 不拿 0% 占位。
      */
-    readonly history: DecisionHistory
+    readonly history?: DecisionHistory
     /** 一句话说明——只在有事要说时给（读不懂的条目 / 一条授权都没有 / 文件没读到）。 */
     readonly note?: string
   }

@@ -63,20 +63,20 @@ export type ConnectOptions = {
   readonly timeoutMs?: number | undefined
 }
 
-const EXECUTION_ENV = [
-  'PATH', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LC_COLLATE', 'LC_MESSAGES',
-  'LC_MONETARY', 'LC_NUMERIC', 'LC_TIME', 'LC_ADDRESS', 'LC_IDENTIFICATION',
-  'LC_MEASUREMENT', 'LC_NAME', 'LC_PAPER', 'LC_TELEPHONE',
-] as const
-
 export function executionEnvironment(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
-  const selected: Record<string, string> = {}
-  for (const key of EXECUTION_ENV) if (env[key] !== undefined) selected[key] = env[key]
-  return selected
+  return Object.freeze(Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')))
+}
+
+function establishesWork(cmd: Command): boolean {
+  return (cmd.type === 'input.submit' && cmd.local !== true)
+    || (cmd.type === 'collaboration.input' && cmd.input.local !== true)
+    || cmd.type === 'collaboration.resume'
+    || (cmd.type === 'input.manage' && cmd.action === 'continue')
 }
 
 /** 无监听端点返回 undefined；握手拒绝、身份不符和超时均具体报错，不能冒充离线重开 App。 */
 export async function connectManager(socketPath: string, options: ConnectOptions = {}): Promise<ManagerClient | undefined> {
+  const environment = executionEnvironment(options.environment ?? process.env)
   let socket: Socket<unknown>
   try {
     socket = (await Bun.connect({ unix: socketPath, socket: socketHandlers() })) as Socket<unknown>
@@ -169,7 +169,6 @@ export async function connectManager(socketPath: string, options: ConnectOptions
       ...(options.session === undefined ? {} : { session: options.session }),
       ...(options.switch === undefined ? {} : { switch: options.switch }),
       ...(options.allowAll === true ? { allowAll: true } : {}),
-      ...(options.environment === undefined ? {} : { environment: executionEnvironment(options.environment) }),
     }, options.timeoutMs ?? 30_000)
     assertHostIdentity(welcome.identity, expected)
     if (normalizeDataDir(welcome.base) !== normalizeDataDir(welcome.identity.base)) throw new Error('Magic Code welcome 的数据目录与服务身份不一致')
@@ -225,7 +224,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
     onStopped: (listener) => { stoppedListeners.push(listener) },
     onLine: (listener) => { lineListeners.push(listener) },
     onClose: (listener) => { link.onClose((error) => listener(error ?? closeError)) },
-    send: (cmd) => { link.send({ t: 'cmd', gen, cmd }) },
+    send: (cmd) => { link.send({ t: 'cmd', gen, cmd, ...(establishesWork(cmd) ? { environment } : {}) }) },
     stop: (session, scope) => { link.send({ t: 'stop', session, scope }) },
     markRead(ids) { if (ids.length > 0) link.send({ t: 'read', ids }) },
     close() {

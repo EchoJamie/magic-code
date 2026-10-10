@@ -379,7 +379,7 @@ export type GrantLedgerOptions = {
    * ⚠️ 报的是 `GrantEdit`（一项增删），**不是整份快照**（U47）：报整份，调用方就只能整份
    * 覆写，两个执行者各持旧账本时后落盘的会把前一个的改动抹掉。见 `GrantEdit`。
    */
-  readonly onChange?: ((edit: GrantEdit) => void) | undefined
+  readonly onChange?: ((edit: GrantEdit) => void | Promise<void>) | undefined
 }
 
 /**
@@ -397,7 +397,7 @@ export type GrantLedger = {
   /** 从已解析的当前文件受理授权事实；不触发写回。 */
   replace(file: GrantsFile): void
   /** 记一条（`a` 批准）——已有同形的**不重复入册**（用户的话说过了，不必说两遍）。 */
-  remember(rule: PermissionRule): void
+  remember(rule: PermissionRule): Promise<void>
   /** 命中一次——记上次数与时刻（**久未命中**那条判据的原料）。 */
   hit(rule: PermissionRule): void
   /**
@@ -407,9 +407,9 @@ export type GrantLedger = {
    * 而名录里除了本工作区，还有陈旧节的入口——传错节＝撤错东西，不该靠缺省值猜。
    * 越界 / 那节不在＝`false`，不抛。
    */
-  revoke(section: string, index: number): boolean
+  revoke(section: string, index: number): Promise<boolean>
   /** **整节撤掉**（陈旧节那条路——路径已不在）——返回撤掉了几条。 */
-  dropSection(section: string): number
+  dropSection(section: string): Promise<number>
   /** 全部节名（含本工作区）——装配据以探「哪些已不在」。 */
   sections(): readonly string[]
   /** `/grants` 要的那一份（本工作区，声明序）——`stale` 在这里算好。 */
@@ -456,12 +456,12 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
     replace(file) { sections.clear(); for (const [key, entries] of Object.entries(file.workspaces)) sections.set(key, [...entries]) },
     sections: () => [...sections.keys()],
 
-    remember(rule) {
+    async remember(rule) {
       const grants = mine()
       if (grants.some((seen) => sameRule(seen, rule))) return // 同形的已在册——不必说两遍
       const grant: Grant = { ...rule, grantedAt: now() }
-      grants.push(grant)
-      options.onChange?.({ kind: 'grant', workspace, grant: { ...grant } })
+      await options.onChange?.({ kind: 'grant', workspace, grant: { ...grant } })
+      if (!mine().some(seen => sameRule(seen, rule))) mine().push(grant)
     },
 
     hit(rule) {
@@ -480,23 +480,23 @@ export function createGrantLedger(options: GrantLedgerOptions): GrantLedger {
       })
     },
 
-    revoke(section, index) {
+    async revoke(section, index) {
       // **不新建节**（与 `remember` / `hit` 不同）：撤一条不存在的＝没撤成，不该顺手造一节
       const grants = sections.get(section)
       if (grants === undefined || index < 0 || index >= grants.length) return false
       const [removed] = grants.splice(index, 1)
       // 报的是**撤掉的那一条**（三格身份）——`splice` 之后就拿不到它了
       if (removed !== undefined) {
-        options.onChange?.({ kind: 'revoke', workspace: section, index, rule: removed })
+        await options.onChange?.({ kind: 'revoke', workspace: section, index, rule: removed })
       }
       return true
     },
 
-    dropSection(section) {
+    async dropSection(section) {
       const grants = sections.get(section)
       if (grants === undefined) return 0
       sections.delete(section)
-      options.onChange?.({ kind: 'section', workspace: section })
+      await options.onChange?.({ kind: 'section', workspace: section })
       return grants.length
     },
 

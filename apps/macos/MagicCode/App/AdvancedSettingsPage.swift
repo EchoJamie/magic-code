@@ -17,8 +17,8 @@ struct AdvancedSettingsPage: View {
                 HStack {
                     Button("选择基础目录…") { settingsDirectory { model.changeBase($0) } }
                     Button("恢复默认位置") { model.changeBase(nil) }
-                }.disabled(!model.isCurrent || !snapshot.canChangeData || !model.affected.isEmpty)
-                if !snapshot.canChangeData { Text("此实例仍有执行责任，不能切换数据位置。").foregroundStyle(.secondary).font(.caption) }
+                }.disabled(model.engineBusy || (model.isCurrent && !model.canChangeData))
+                if !model.canChangeData { Text("此实例仍有执行责任，不能切换数据位置。").foregroundStyle(.secondary).font(.caption) }
             }.id("data")
             SettingsCard(title: "工作区根") {
                 RootEditor(model: model, snapshot: snapshot, drafts: drafts, draft: drafts.draft("roots", .object(["roots": snapshot.configuration["workspaceRoots"]]), stamp: snapshot.stamp))

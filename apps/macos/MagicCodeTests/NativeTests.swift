@@ -5,15 +5,59 @@ import SwiftUI
 import UserNotifications
 
 final class NativeTests: XCTestCase {
+    func testPlatformLifecycleSerializesStartsAndPreservesSwitchResult() throws {
+        let room = try temp(), fixture = try EnginePlatformFixture(root: room)
+        let arguments = ["start", "--validation-root", room.path]
+        let finished = expectation(description: "concurrent starts"); finished.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            DispatchQueue.global().async {
+                do {
+                    let result = try EngineControl.perform(arguments, bundle: fixture.bundle, execute: fixture.execute)
+                    XCTAssertEqual(result.state, "ready")
+                } catch { XCTFail(String(describing: error)) }
+                finished.fulfill()
+            }
+        }
+        wait(for: [finished], timeout: 5)
+        XCTAssertEqual(fixture.bootstraps, 1)
+        let plist = try XCTUnwrap(fixture.definition)
+        XCTAssertEqual(plist["Label"] as? String, "com.magiccode.platformtest.engine")
+        XCTAssertEqual((plist["KeepAlive"] as? [String: Bool])?["SuccessfulExit"], false)
+        XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
+        XCTAssertEqual(plist["WorkingDirectory"] as? String, room.path)
+        XCTAssertNil(plist["EnvironmentVariables"])
+        let program = try XCTUnwrap(plist["ProgramArguments"] as? [String])
+        XCTAssertEqual(program[1], "--internal-engine")
+        XCTAssertTrue(program.contains("--lifecycle"))
+
+        let next = room.appendingPathComponent("next")
+        fixture.busy = true
+        let blocked = try EngineControl.perform(["switch", "--parent", next.path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
+        XCTAssertEqual(blocked.state, "failed"); XCTAssertEqual(blocked.base, room.appendingPathComponent(".magic").path)
+        XCTAssertEqual(fixture.bootstraps, 1)
+        fixture.busy = false; fixture.failBootstrap = true
+        let failed = try EngineControl.perform(["switch", "--parent", next.path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
+        XCTAssertEqual(failed.state, "failed"); XCTAssertEqual(failed.base, next.appendingPathComponent(".magic").path)
+        let queried = try EngineControl.perform(["status", "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
+        XCTAssertEqual(queried.base, failed.base); XCTAssertEqual(fixture.bootstraps, 2)
+        fixture.failBootstrap = false
+        let restarted = try EngineControl.perform(arguments, bundle: fixture.bundle, execute: fixture.execute)
+        XCTAssertEqual(restarted.state, "ready"); XCTAssertEqual(restarted.base, failed.base)
+        let stopped = try EngineControl.perform(["stop", "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
+        XCTAssertEqual(stopped.state, "stopped")
+        let last = room.appendingPathComponent("last")
+        let offline = try EngineControl.perform(["switch", "--parent", last.path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute)
+        XCTAssertEqual(offline.state, "stopped"); XCTAssertEqual(fixture.bootstraps, 3)
+        XCTAssertThrowsError(try EngineControl.perform(["start", "--base", room.appendingPathComponent(".magic").path, "--validation-root", room.path], bundle: fixture.bundle, execute: fixture.execute))
+        XCTAssertEqual(fixture.bootstraps, 3)
+    }
+
     func testDiagnosticsArgumentsAndWireAreIndependentOfBuildMode() throws {
         XCTAssertEqual(try Diagnostics.arguments(["--debug", "--log-level", "trace"]), ["--debug", "--log-level", "trace"])
         XCTAssertThrowsError(try Diagnostics.arguments(["--debug", "--no-debug"]))
         XCTAssertThrowsError(try Diagnostics.arguments(["--log-level"]))
         XCTAssertThrowsError(try Diagnostics.arguments(["--log-level", "verbose"]))
-        let message = HostResponse.diagnostics(request: "one", value: Diagnostics(debugMode: false, logLevel: .trace), base: "/instance")
-        XCTAssertEqual(try JSONDecoder().decode(HostResponse.self, from: JSONEncoder().encode(message)), message)
-        let ack = HostRequest.diagnosticsApplied(request: "one", error: nil)
-        XCTAssertEqual(try JSONDecoder().decode(HostRequest.self, from: JSONEncoder().encode(ack)), ack)
+
     }
     @MainActor func testDebugSurfaceIgnoresLateMenuDisappearance() throws {
         let (model, _) = try controlledModel(options: [:])
@@ -109,7 +153,7 @@ final class NativeTests: XCTestCase {
         XCTAssertNil(model.selected); XCTAssertNil(model.selectedNotice)
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
         try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/u117-late-inspections.json"))
-        var finished = false; model.requestQuit { finished = true }; if model.showQuitConfirmation { model.confirmQuit() }; try await eventually { finished }
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
     @MainActor func testRemovedTargetAndStaleStopDoNotChangeWorkIdentity() async throws {
         let base = try work()
@@ -146,8 +190,14 @@ final class NativeTests: XCTestCase {
                 switch row["family"] as! String {
                 case "NativeRequest": return try recode(NativeRequest.self)
                 case "NativeResponse": return try recode(NativeResponse.self)
-                case "HostRequest": return try recode(HostRequest.self)
-                case "HostResponse": return try recode(HostResponse.self)
+                case "SettingsRequest":
+                    let value = try JSONDecoder().decode(SettingsValue.self, from: data)
+                    guard value.validSettingsRequest else { throw WireError.invalid("设置请求无效") }
+                    return try JSONEncoder().encode(value)
+                case "SettingsResult":
+                    let value = try JSONDecoder().decode(SettingsCallResult.self, from: data)
+                    guard value.request != nil, value.base != nil, value.configPath != nil, value.snapshot != nil || value.error != nil else { throw WireError.invalid("设置结果无效") }
+                    return data
                 case "HostDiscovery": return try recode(HostDiscovery.self)
                 default: throw WireError.invalid("未知 fixture family")
                 }
@@ -164,16 +214,12 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(lines.count, 2)
         XCTAssertEqual(try JSONDecoder().decode(NativeResponse.self, from: lines[0]), .error(reason: "中文"))
     }
-    func testPublicationLockPrivacyAndGenerationRemoval() throws {
-        let directory = try temp().appendingPathComponent("runtime")
-        let first = HostPublication(directory: directory); try first.acquire()
-        let second = HostPublication(directory: directory); XCTAssertThrowsError(try second.acquire())
-        let discovery = try JSONDecoder().decode(HostDiscovery.self, from: fixture("discovery"))
-        try first.publish(discovery)
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: first.file.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        first.remove(host: "some-other-host"); XCTAssertTrue(FileManager.default.fileExists(atPath: first.file.path))
-        first.remove(host: discovery.hostInstance, service: discovery.serviceInstance)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: first.file.path))
+    func testPrivateAtomicFileWrite() throws {
+        let file = try temp().appendingPathComponent("runtime/state.json")
+        try PrivateFiles.write(Data("one".utf8), to: file)
+        try PrivateFiles.write(Data("two".utf8), to: file)
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "two")
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
     func testStableGroupsAndRecentTen() throws {
         let initial = try work(); var list = WorkList()
@@ -266,15 +312,20 @@ final class NativeTests: XCTestCase {
         try CLIInstallation.remove(link: link, helper: helper); XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
         XCTAssertThrowsError(try CLIInstallation.install(helper: helper, at: link, app: URL(fileURLWithPath: "/Volumes/Magic Code/App.app")))
     }
-    @MainActor func testSignedHelperNativeHandshakeInspectAndShutdown() async throws { try await hostRoundTrip(eof: false) }
-    @MainActor private func controlledModel(options: [String: Any], timeout: TimeInterval = 15, notifications: NotificationCoordinator? = nil) throws -> (AppModel, URL) {
+    @MainActor func testSignedHelperNativeHandshakeInspectAndShutdown() async throws { try await hostRoundTrip() }
+    @MainActor private func controlledModel(options: [String: Any], notifications: NotificationCoordinator? = nil) throws -> (AppModel, URL) {
         let room = try temp(); let app = room.appendingPathComponent("Controlled.app")
         let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
         try PrivateFiles.write(Data(contentsOf: root.appendingPathComponent("apps/macos/MagicCodeTests/Fixtures/controlled-helper.py")), to: helper, mode: 0o700)
-        let plist: [String: Any] = ["CFBundleIdentifier": "com.magiccode.controlled.dev", "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "unused", "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1]
+        let controller = app.appendingPathComponent("Contents/MacOS/control")
+        try PrivateFiles.write(Data(contentsOf: helper), to: controller, mode: 0o700)
+        addTeardownBlock {
+            _ = try? EngineControl.execute(controller, ["--internal-engine-control", "stop", "--validation-root", room.path, "--request", UUID().uuidString])
+        }
+        let plist: [String: Any] = ["CFBundleIdentifier": "com.magiccode.controlled.dev", "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "control", "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1]
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
         try JSONSerialization.data(withJSONObject: options).write(to: room.appendingPathComponent("control.json"))
-        let model = AppModel(appURL: app, validationRoot: room, notificationPort: notifications ?? NotificationCoordinator(send: { _ in XCTFail("不得发系统通知") }), shutdownTimeout: timeout)
+        let model = AppModel(appURL: app, validationRoot: room, notificationPort: notifications ?? NotificationCoordinator(send: { _ in XCTFail("不得发系统通知") }))
         model.terminal.copyText = { _ in }
         model.terminal.openFile = { _, completion in completion(nil) }
         return (model, room)
@@ -306,27 +357,27 @@ final class NativeTests: XCTestCase {
         model.start(); try await eventually { model.isCurrent }
         let identity = try XCTUnwrap(model.identity); let original = model.projection
         try welcomeBarrier(model, room)
-        model.refreshAfterWake(); XCTAssertEqual(model.phase, .starting)
+        model.refreshAfterWake()
         try await eventually { model.terminal.pending["new-draft"] == nil }
         XCTAssertEqual(model.phase, .ready, "同连接 welcome 后的匹配 attached 已被 AppModel 处理，应恢复 ready")
         XCTAssertEqual(model.projection, original)
         try welcomeBarrier(model, room)
         try observerCommand(room, ["disconnect": true])
-        try await eventually { if case .fault = model.phase { return true }; return false }
+        try await eventually { model.phase == .unreachable }
         model.notifications.openRoutes?([NoticeRoute(base: identity.base, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
         try await eventually { model.terminal.pending["new-draft"] == nil }
         XCTAssertEqual(model.phase, .ready, "故障自动重连的 welcome 后匹配 attached 已处理，应恢复 ready")
         if model.isCurrent { try await eventually { model.selectedNotice?.id == "notice-completed" } }
         try welcomeBarrier(model, room)
         try observerCommand(room, ["disconnect": true])
-        try await eventually { if case .fault = model.phase { return true }; return false }
+        try await eventually { model.phase == .unreachable }
         model.retry()
         try await eventually { model.terminal.pending["new-draft"] == nil }
         XCTAssertEqual(model.phase, .ready)
         XCTAssertEqual(model.identity, identity); XCTAssertEqual(model.projection, original)
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "cmd" })
-        var finished = false; model.requestQuit { finished = true }; if model.showQuitConfirmation { model.confirmQuit() }; try await eventually { finished }
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
         try JSONSerialization.data(withJSONObject: ["states": states, "trace": traces(room)], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/reconnect.json"))
     }
     @MainActor func testAppModelWelcomeKeepsNewerProjectionAndRejectsWrongService() async throws {
@@ -342,10 +393,10 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(model.projection?.revision, 9); XCTAssertEqual(model.projection?.accepting, false)
         let encodedIdentity = try JSONSerialization.jsonObject(with: JSONEncoder().encode(identity))
         try observerCommand(room, ["message": ["t": "native.welcome", "identity": encodedIdentity, "projection": ["serviceInstance": "another-service", "revision": 10, "accepting": true, "works": []]]])
-        try await eventually { if case .fault = model.phase { return true }; return false }
+        try await eventually { model.phase == .fault("连接的核心身份已改变") }
         XCTAssertFalse(model.isCurrent); XCTAssertEqual(model.projection?.revision, 9)
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
-        var finished = false; model.requestQuit { finished = true }; if model.showQuitConfirmation { model.confirmQuit() }; try await eventually { finished }
+        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
         try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/reconnect-negative.json"))
     }
     @MainActor func testPlainInspectDoesNotAcknowledgeUnpresentedNotices() async throws {
@@ -431,7 +482,7 @@ final class NativeTests: XCTestCase {
             try await eventually { model.actionMessage != nil }
             XCTAssertNil(model.selectedNotice)
             XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
-            var finished = false; model.requestQuit { finished = true }; if model.showQuitConfirmation { model.confirmQuit() }; try await eventually { finished }
+            var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
             try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/notice-reject-\(mismatch).json"))
         }
     }
@@ -456,55 +507,31 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "shutdown" }.count, 1)
         try JSONSerialization.data(withJSONObject: ["attempts": attempts, "cleanExitCallbacks": finished, "trace": traces(room)], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/integration-removal-retry.json"))
     }
-    @MainActor func testStoppedAcknowledgementWithExitOneNeverCompletesQuit() async throws {
-        let (model, room) = try controlledModel(options: ["stop": "ack-crash"])
-        var unconfirmed = 0; var finished = 0; model.onUnconfirmedShutdown = { unconfirmed += 1 }
+    @MainActor func testAppExitLeavesEngineAndNewAppReusesIt() async throws {
+        let (model, room) = try controlledModel(options: [:])
         model.start(); try await eventually { model.isCurrent }
-        model.requestQuit { finished += 1 }; try await eventually { unconfirmed > 0 }
-        model.retry(); model.requestQuit { finished += 1 }
-        XCTAssertEqual(finished, 0); XCTAssertFalse(model.isCurrent)
+        let identity = model.identity
+        var finished = false
+        model.requestQuit { finished = true }; try await eventually { finished }
+        let result = try await EngineControl.run(app: model.appURL, action: "status", home: room)
+        XCTAssertEqual(result.state, "ready"); XCTAssertEqual(result.record?.identity, identity)
+        XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
+        let second = AppModel(appURL: model.appURL, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in }))
+        second.start(); try await eventually { second.isCurrent }
+        XCTAssertEqual(second.identity, identity)
+        second.confirmEngineStop(); try await eventually { second.phase == .stopped }
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/stop-ack-exit-one.json"))
+        second.requestQuit {}
     }
-    @MainActor func testAppModelRetriesSameStopAfterHostError() async throws { try await retryStop(reason: "error") }
-    @MainActor func testAppModelRetriesSameStopAfterTimeout() async throws { try await retryStop(reason: "timeout") }
-    @MainActor private func retryStop(reason: String) async throws {
-        let (model, room) = try controlledModel(options: ["stop": reason, "gateExit": true], timeout: 0.15)
-        var unconfirmed = 0; model.onUnconfirmedShutdown = { unconfirmed += 1 }
+    @MainActor func testExplicitStopCanRetryAfterFailure() async throws {
+        let (model, room) = try controlledModel(options: ["stop": "error"])
         model.start(); try await eventually { model.isCurrent }
-        let identity = try XCTUnwrap(model.identity)
-        var finished = 0
-        model.requestQuit { finished += 1 }
+        model.confirmEngineStop()
         try await eventually { if case .fault = model.phase { return true }; return false }
-        XCTAssertEqual(finished, 0); XCTAssertEqual(model.projection?.accepting, false); XCTAssertGreaterThan(unconfirmed, 0)
-        model.refreshAfterWake()
-        if case .fault = model.phase {} else { XCTFail("收尾责任未完成，唤醒不可重开准入") }
-        if reason == "timeout" { model.requestQuit { finished += 1 } } else { model.retry() }
-        try await eventually { self.traces(room).contains { $0["event"] as? String == "stopped-sent" } }
-        XCTAssertEqual(finished, 0, "host.stopped 但进程未退出，不能报告退出完成")
-        XCTAssertEqual(model.identity, identity); XCTAssertEqual(model.projection?.accepting, false)
-        let requests = traces(room).filter { $0["event"] as? String == "shutdown" }.compactMap { ($0["message"] as? [String: Any])?["request"] as? String }
-        XCTAssertEqual(requests.count, 2); XCTAssertEqual(Set(requests).count, 1)
-        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
-        try Data().write(to: room.appendingPathComponent("allow-exit"))
-        try await eventually { finished == 1 }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: model.publication.file.path))
-        let evidence = root.appendingPathComponent(".artifacts/macos/appmodel-stop-\(reason).json")
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: evidence)
-    }
-    @MainActor func testUnconfirmedHostExitNeverBecomesCleanExit() async throws {
-        let (model, room) = try controlledModel(options: ["stop": "crash"])
-        var unconfirmed = 0; var finished = 0
-        model.onUnconfirmedShutdown = { unconfirmed += 1 }
-        model.start(); try await eventually { model.isCurrent }
-        model.requestQuit { finished += 1 }
-        try await eventually { unconfirmed > 0 }
-        model.retry()
-        model.systemQuit { finished += 1 }
-        XCTAssertEqual(finished, 0)
-        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
-        if case .fault = model.phase {} else { XCTFail("缺核销确认不可退出或重启") }
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/appmodel-stop-crash.json"))
+        XCTAssertFalse(model.engineBusy)
+        model.confirmEngineStop(); try await eventually { model.phase == .stopped }
+        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "shutdown" }.count, 1)
+        model.requestQuit {}
     }
     @MainActor func testAppModelDefersNotificationThenInspectsProcessedItem() async throws {
         let (model, room) = try controlledModel(options: ["notice": true])
@@ -548,14 +575,14 @@ final class NativeTests: XCTestCase {
         model.start(); try await eventually { model.isCurrent }
         let identity = try XCTUnwrap(model.identity)
         XCTAssertEqual(identity, ServiceIdentity(protocol: identity.protocol, version: identity.version, source: identity.source,
-            hostInstance: identity.hostInstance, serviceInstance: identity.serviceInstance, base: alias.path))
+            serviceInstance: identity.serviceInstance, base: alias.path))
         XCTAssertNotEqual(identity, ServiceIdentity(protocol: identity.protocol, version: identity.version, source: identity.source,
-            hostInstance: identity.hostInstance, serviceInstance: "old-service", base: alias.path))
+            serviceInstance: "old-service", base: alias.path))
         let service = model.identity?.serviceInstance
         model.openNotification(route)
         try await eventually { model.selectedNotice?.id == "notice-completed" }
-        model.changeBase(room)
-        try await eventually { model.isCurrent && model.identity?.serviceInstance != service }
+        model.confirmEngineStop(); try await eventually { model.phase == .stopped }
+        model.startEngine(); try await eventually { model.isCurrent && model.identity?.serviceInstance != service }
         model.openNotification(route)
         try await eventually { model.selectedNotice?.id == "notice-completed" }
         XCTAssertEqual(model.selectedBase, room)
@@ -570,20 +597,19 @@ final class NativeTests: XCTestCase {
         model.start(); try await eventually { model.isCurrent }
         let identity = model.identity
         model.changeBase(room.appendingPathComponent("another"))
+        try await eventually { !model.engineBusy }
         XCTAssertEqual(model.identity, identity); XCTAssertEqual(model.selectedBase, room)
         XCTAssertTrue(model.actionMessage?.contains("无法切换基础路径") == true)
         XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
         var finished = false; model.systemQuit { finished = true }; try await eventually { finished }
     }
-    @MainActor func testAppModelRecoversCoreOnlyOnceWithoutReplayingWork() async throws {
-        let (model, room) = try controlledModel(options: ["crash": true])
-        model.start()
-        try await eventually { if case .fault(let text) = model.phase { return text.contains("恢复失败") }; return false }
-        let launches = traces(room).filter { $0["event"] as? String == "started" }
-        XCTAssertEqual(launches.count, 2)
-        let instances = launches.compactMap { ($0["identity"] as? [String: Any])?["hostInstance"] as? String }
-        XCTAssertEqual(Set(instances).count, 2)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "cmd" })
+    @MainActor func testPassiveRefreshDoesNotRestartStoppedEngine() async throws {
+        let (model, room) = try controlledModel(options: [:])
+        model.start(); try await eventually { model.isCurrent }
+        _ = try await EngineControl.run(app: model.appURL, action: "stop", home: room)
+        model.refreshAfterWake(); try await eventually { model.phase == .stopped }
+        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
+        model.requestQuit {}
     }
     @MainActor func testWorkResumeOnlyCopiesAndKeepsInstanceAndWorkspace() async throws {
         let (model, room) = try controlledModel(options: ["notice": true])
@@ -620,9 +646,11 @@ final class NativeTests: XCTestCase {
         let raw = try [a, b].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
         var sent: [NoticeDelivery] = []
         let collector = NotificationCoordinator(send: { sent.append($0) })
-        let (model, _) = try controlledModel(options: ["works": raw], notifications: collector)
+        let (model, room) = try controlledModel(options: ["works": [], "observerControl": true], notifications: collector)
         defer { model.systemQuit {} }
         model.start(); try await eventually { model.isCurrent }
+        try JSONSerialization.data(withJSONObject: ["works": raw, "observerControl": true]).write(to: room.appendingPathComponent("control.json"), options: .atomic)
+        try await eventually { model.works.count == 2 }
         model.inspect(b)
         collector.enabledSince = 0
         collector.observe(try XCTUnwrap(model.projection), identity: try XCTUnwrap(model.identity))
@@ -639,11 +667,10 @@ final class NativeTests: XCTestCase {
         let latest = try JSONSerialization.jsonObject(with: JSONEncoder().encode(bound))
         var sent: [NoticeDelivery] = []
         let collector = NotificationCoordinator(send: { sent.append($0) })
-        let (model, room) = try controlledModel(options: ["works": [raw], "inspectWork": latest], notifications: collector)
+        let (model, room) = try controlledModel(options: ["works": [], "inspectWork": latest, "observerControl": true], notifications: collector)
         defer { model.systemQuit {} }
         model.start(); try await eventually { model.isCurrent }
-        collector.enabledSince = 0
-        collector.observe(try XCTUnwrap(model.projection), identity: try XCTUnwrap(model.identity))
+        try JSONSerialization.data(withJSONObject: ["works": [raw], "inspectWork": latest, "observerControl": true]).write(to: room.appendingPathComponent("control.json"), options: .atomic)
         try await eventually { self.traces(room).contains { $0["event"] as? String == "inspected-sent" } }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(sent.isEmpty)
@@ -658,7 +685,8 @@ final class NativeTests: XCTestCase {
             let collector = NotificationCoordinator(send: { sent.append($0) })
             let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
             let options: [String: Any] = ["works": [raw], "inspectGate": true, "observerControl": true]
-            let (model, room) = try controlledModel(options: options, notifications: collector)
+            var initial = options; initial["works"] = []
+            let (model, room) = try controlledModel(options: initial, notifications: collector)
             defer { model.systemQuit {} }
             let refresh = try XCTUnwrap(collector.currentWorks)
             var replies: [[NativeWork]] = []
@@ -666,8 +694,7 @@ final class NativeTests: XCTestCase {
                 let reply = await refresh(sessions); replies.append(reply); return reply
             }
             model.start(); try await eventually { model.isCurrent }
-            collector.enabledSince = 0
-            collector.observe(try XCTUnwrap(model.projection), identity: try XCTUnwrap(model.identity))
+            try JSONSerialization.data(withJSONObject: options).write(to: room.appendingPathComponent("control.json"), options: .atomic)
             try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
             let request = try XCTUnwrap(traces(room).compactMap { $0["message"] as? [String: Any] }.first { $0["t"] as? String == "native.inspect" }?["request"] as? String)
             if disconnect {
@@ -715,7 +742,7 @@ final class NativeTests: XCTestCase {
     }
     @MainActor func testNotificationReconcilesSystemDeliveryAcrossRestart() async throws {
         let work = try work(); let notice = try XCTUnwrap(work.notices.first)
-        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", base: "/tmp/data")
+        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", serviceInstance: "s", base: "/tmp/data")
         var sent = 0; var delivered: [String] = []
         let notifications = NotificationCoordinator(send: { _ in sent += 1 }, existing: { _ in [notice.id] })
         notifications.enabled = true; notifications.enabledSince = 0; notifications.delivered = { delivered += $0 }
@@ -834,8 +861,8 @@ final class NativeTests: XCTestCase {
             XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
             try JSONSerialization.data(withJSONObject: ["scrollY": scroll.contentView.bounds.origin.y, "viewportBottom": scroll.contentView.bounds.maxY, "documentBottom": document.bounds.maxY, "evidence": "offscreen geometry only; real menu-bar and keyboard operation remains unverified"], options: [.prettyPrinted, .sortedKeys]).write(to: directory.deletingLastPathComponent().appendingPathComponent("scroll-status.json"))
         }
-        let quitAlert = model.makeQuitAlert()
-        XCTAssertEqual(quitAlert.buttons.map(\.title), ["取消", "停止并退出"])
+        let quitAlert = model.makeEngineStopAlert()
+        XCTAssertEqual(quitAlert.buttons.map(\.title), ["取消", "停止 Engine"])
         XCTAssertEqual(quitAlert.buttons.first?.keyEquivalent, "\r")
         XCTAssertEqual(quitAlert.buttons.last?.keyEquivalent, "")
         try await capture(QuitImpactList(affected: model.affected)
@@ -930,9 +957,29 @@ final class NativeTests: XCTestCase {
         try await row(.aqua, name: "u103-menu-bar-light")
         try await row(.darkAqua, name: "u103-menu-bar-dark")
     }
+    @MainActor func testReconnectSeedsUnreadFactsAndCancelsOfflineBatch() async throws {
+        let first = try work()
+        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", serviceInstance: "s", base: "/tmp/data")
+        func projection(_ ids: [String], revision: Int) throws -> NativeProjection {
+            let notices = ids.map { AttentionItem(id: $0, session: first.session, kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: $0) }
+            return NativeProjection(serviceInstance: "s", revision: revision, accepting: true, works: [try changed(first, ["notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(notices))])])
+        }
+        var sent: [NoticeDelivery] = []
+        let notifications = NotificationCoordinator(send: { sent.append($0) })
+        notifications.enabled = true; notifications.enabledSince = 0
+        notifications.beginConnection(try projection(["old"], revision: 1), identity: identity)
+        notifications.observe(try projection(["old", "queued"], revision: 2), identity: identity)
+        notifications.disconnect()
+        notifications.beginConnection(try projection(["old", "queued", "offline"], revision: 3), identity: identity)
+        notifications.observe(try projection(["old", "queued", "offline"], revision: 4), identity: identity)
+        try await Task.sleep(for: .milliseconds(2100)); XCTAssertTrue(sent.isEmpty)
+        notifications.observe(try projection(["old", "queued", "offline", "live"], revision: 5), identity: identity)
+        try await Task.sleep(for: .milliseconds(2100)); XCTAssertEqual(sent.count, 1)
+        notifications.disconnect()
+    }
     @MainActor func testNotificationCollectorTwoSecondsAndReadCancellation() async throws {
         let first = try work()
-        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", hostInstance: "h", serviceInstance: "s", base: "/tmp/data")
+        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", serviceInstance: "s", base: "/tmp/data")
         let now = Date().timeIntervalSince1970 * 1000
         func row(id: String, unread: Bool = true) throws -> NativeWork {
             let notice = AttentionItem(id: id, session: first.session, kind: .needsYou, at: now, detail: nil, unread: unread, delivered: false, fact: "event:\(id)")
@@ -956,7 +1003,6 @@ final class NativeTests: XCTestCase {
         notifications.observe(NativeProjection(serviceInstance: "s", revision: 5, accepting: true, works: [try row(id: "second")]), identity: identity)
         XCTAssertEqual(sent.count, 1, "投递事实去重，不调用业务已读")
     }
-    @MainActor func testLifetimeEOFNotHeldByOtherChild() async throws { try await hostRoundTrip(eof: true) }
 
     // MARK: U102 · 三条发现的判据（只调用修前已存在的 API，红必须是行为红）
 
@@ -979,7 +1025,12 @@ final class NativeTests: XCTestCase {
         let app = room.appendingPathComponent("Magic Code 系统验收.app")
         let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
         try PrivateFiles.write(Data(contentsOf: root.appendingPathComponent("apps/macos/MagicCodeTests/Fixtures/controlled-helper.py")), to: helper, mode: 0o700)
-        let plist: [String: Any] = ["CFBundleIdentifier": bundle, "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "unused",
+        let controller = app.appendingPathComponent("Contents/MacOS/control")
+        try PrivateFiles.write(Data(contentsOf: helper), to: controller, mode: 0o700)
+        addTeardownBlock {
+            _ = try? EngineControl.execute(controller, ["--internal-engine-control", "stop", "--validation-root", room.path, "--request", UUID().uuidString])
+        }
+        let plist: [String: Any] = ["CFBundleIdentifier": bundle, "CFBundleShortVersionString": "0.0.0", "CFBundleExecutable": "control",
                                     "CFBundlePackageType": "APPL", "MagicProtocolVersion": 1, "MagicSystemTestRoot": room.path]
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
         var control: [String: Any] = ["systemTest": true, "source": helper.path, "works": []]
@@ -989,7 +1040,7 @@ final class NativeTests: XCTestCase {
         // 旧版本才会存这份「App 自己的开没开」；本轮起 App 不许再读它。
         if let legacyPreference { UserDefaults(suiteName: "MagicCode.Validation.\(room.lastPathComponent)")?.set(legacyPreference, forKey: "notificationsEnabled") }
         let port = NotificationCoordinator(send: { delivery in send(delivery) }, status: status, request: request)
-        return (AppModel(appURL: app, validationRoot: room, notificationPort: port, shutdownTimeout: 15), room)
+        return (AppModel(appURL: app, validationRoot: room, notificationPort: port), room)
     }
 
     /// 一条「刚发生」的未读事实（`at` 取当前时刻，才过得了启用时刻那道门）。
@@ -1238,7 +1289,6 @@ final class NativeTests: XCTestCase {
         let app = root.appendingPathComponent(".artifacts/macos/Magic Code.app")
         let room = try temp()
         let model = AppModel(appURL: app, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("设置不得发送通知") }))
-        model.start(); try await eventually { model.isCurrent }
         defer { model.requestQuit {} }
         model.readSettings(); try await eventually { model.settingsSnapshot != nil && !model.settingsBusy }
         let first = try XCTUnwrap(model.settingsSnapshot)
@@ -1338,49 +1388,38 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
-    @MainActor private func hostRoundTrip(eof: Bool) async throws {
-        let app = root.appendingPathComponent(".artifacts/macos/Magic Code.app"); let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
-        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path), "先运行 scripts/macos/build.sh")
-        let room = try temp(); let process = HostProcess(); let observer = ObserverConnection()
-        let ready = expectation(description: "host.ready"); let welcome = expectation(description: "native.welcome")
-        let inspected = expectation(description: "read-only missing record"); let stopped = expectation(description: "host.stopped")
-        let exited = expectation(description: "manager process exited"); let instance = UUID().uuidString
-        var receivedReady = false; var receivedStopped = false
-        process.received = { response in
-            switch response {
-            case .diagnostics(let request, _, _): process.send(.diagnosticsApplied(request: request, error: nil))
-            case .ready(let identity, let socket, let base, let config):
-                XCTAssertEqual(identity.hostInstance, instance)
-                XCTAssertEqual(URL(fileURLWithPath: identity.source).resolvingSymlinksInPath(), helper.resolvingSymlinksInPath())
-                XCTAssertTrue(base.hasPrefix(room.path)); XCTAssertTrue(config.hasPrefix(room.path))
-                receivedReady = true; ready.fulfill(); observer.connect(path: socket, identity: identity)
-            case .stopped(let request):
-                XCTAssertEqual(request, eof ? nil : "shutdown-test"); receivedStopped = true; stopped.fulfill()
-            case .error(let reason): XCTFail(reason)
-            }
-        }
+    @MainActor private func hostRoundTrip() async throws {
+        let app = root.appendingPathComponent(".artifacts/macos/Magic Code.app")
+        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path))
+        let room = try temp(), discovery = room.appendingPathComponent("engine.json")
+        let process = Process(); process.executableURL = helper
+        process.arguments = ["--internal-engine", "--home", room.path, "--parent", room.path, "--source", helper.path, "--app", app.path, "--discovery", discovery.path, "--lifecycle", UUID().uuidString]
+        process.environment = ["HOME": room.path, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
+        var record: HostDiscovery?
+        try await eventually { record = (try? Data(contentsOf: discovery)).flatMap { try? JSONDecoder().decode(HostDiscovery.self, from: $0) }; return record?.state == "ready" }
+        let current = try XCTUnwrap(record)
+        let observer = ObserverConnection(); defer { observer.close() }
+        let welcome = expectation(description: "native.welcome"), inspected = expectation(description: "inspection")
         observer.receive = { response in
             switch response {
             case .welcome(_, let projection):
-                XCTAssertTrue(projection.works.isEmpty); XCTAssertTrue(projection.accepting); welcome.fulfill()
-                observer.send(.inspect(request: "inspect-test", session: "absent", notice: nil))
-            case .inspected(let request, let work, let error):
-                XCTAssertEqual(request, "inspect-test"); XCTAssertNil(work); XCTAssertNotNil(error); inspected.fulfill()
+                XCTAssertTrue(projection.works.isEmpty); welcome.fulfill()
+                observer.send(.inspect(request: "i", session: "absent", notice: nil))
+            case .inspected(_, let work, let error): XCTAssertNil(work); XCTAssertNotNil(error); inspected.fulfill()
             default: break
             }
         }
-        process.exited = { code in XCTAssertEqual(code, 0); XCTAssertTrue(receivedStopped); exited.fulfill() }
-        try process.start(helper: helper, app: app, instance: instance, base: room, home: room,
-                          environment: ["HOME": room.path, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"])
-        defer { observer.close(); process.closeLifetime(); if process.process.isRunning { process.process.terminate() } }
-        await fulfillment(of: [ready, welcome, inspected], timeout: 12); XCTAssertTrue(receivedReady)
-        let unrelated = Process(); unrelated.executableURL = URL(fileURLWithPath: "/bin/sleep"); unrelated.arguments = ["10"]
-        if eof { try unrelated.run() }
-        defer { if unrelated.isRunning { unrelated.terminate(); unrelated.waitUntilExit() } }
-        if eof { process.closeLifetime() } else { process.shutdown(request: "shutdown-test") }
-        await fulfillment(of: [stopped, exited], timeout: 5)
-        if eof { XCTAssertTrue(unrelated.isRunning, "另一个后代还活着，但不能持有宿主生命写端") }
-        XCTAssertFalse(process.process.isRunning)
+        observer.connect(path: current.socket, identity: current.identity)
+        await fulfillment(of: [welcome, inspected], timeout: 5)
+        XCTAssertTrue(process.isRunning, "stdin 关闭不结束 Engine")
+        observer.send(.engineStop(request: "stop-test", identity: current.identity, idleOnly: nil))
+        try await eventually { !process.isRunning }
+        let stopped = try JSONDecoder().decode(HostDiscovery.self, from: Data(contentsOf: discovery))
+        XCTAssertEqual(stopped.state, "stopped"); XCTAssertEqual(process.terminationStatus, 0)
     }
 
     /// 记录真实策略调用序列的替身：`current` 回放最后一次，`apply` 追加一次。
@@ -1466,5 +1505,55 @@ final class NativeTests: XCTestCase {
         policy.settle(reason: "close")
         XCTAssertEqual(spy.log.last, .accessory, "关掉设置窗口 ⇒ 回菜单栏形态")
         window.orderOut(nil)
+    }
+}
+
+/// 只替换短进程边界；平台锁、plist、实例选择与失败提交走正式实现。
+private final class EnginePlatformFixture: @unchecked Sendable {
+    let bundle: Bundle
+    var busy = false
+    var failBootstrap = false
+    var bootstraps = 0
+    var definition: [String: Any]?
+    private var states: [String: String] = [:]
+    private var parent = ""
+    init(root: URL) throws {
+        let app = root.appendingPathComponent("Platform.app"), contents = app.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let info = ["CFBundleIdentifier": "com.magiccode.platformtest", "CFBundlePackageType": "APPL", "CFBundleExecutable": "control"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
+        bundle = try XCTUnwrap(Bundle(url: app))
+    }
+    func execute(_ executable: URL, _ arguments: [String], _ input: Data?) throws -> (Int32, Data) {
+        if executable.path == "/bin/launchctl" {
+            if arguments[0] == "bootout" {
+                XCTAssertEqual(arguments[1], "gui/\(getuid())/com.magiccode.platformtest.engine")
+                return (ESRCH, Data())
+            }
+            XCTAssertEqual(arguments[0], "bootstrap"); XCTAssertEqual(arguments[1], "gui/\(getuid())")
+            bootstraps += 1
+            definition = try PropertyListSerialization.propertyList(from: Data(contentsOf: URL(fileURLWithPath: arguments[2])), format: nil) as? [String: Any]
+            if failBootstrap { return (5, Data()) }
+            states[parent] = "ready"; return (0, Data())
+        }
+        XCTAssertEqual(executable.lastPathComponent, "magic-runtime")
+        XCTAssertEqual(arguments, ["--internal-engine-call"])
+        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(input)) as? [String: Any])
+        parent = try XCTUnwrap(request["parent"] as? String)
+        let action = try XCTUnwrap(request["action"] as? String)
+        switch action {
+        case "prepare": states[parent] = "starting"
+        case "stop":
+            if busy && request["idleOnly"] as? Bool == true {
+                return (0, try JSONEncoder().encode(EngineControlResult(state: "failed", base: parent + "/.magic", alive: true, record: nil, error: "仍有工作")))
+            }
+            states[parent] = "stopped"
+        case "fail-start": states[parent] = "failed"
+        case "status": break
+        default: XCTFail("unexpected \(action)")
+        }
+        let state = states[parent] ?? "stopped"
+        let record = HostDiscovery(protocol: 1, version: "0.1.0", source: executable.path, serviceInstance: "test-generation", socket: parent + "/test.sock", base: parent + "/.magic", app: bundle.bundleURL.path, lifecycle: "test-lifecycle", pid: nil, startedAt: nil, state: state, request: nil, error: nil)
+        return (0, try JSONEncoder().encode(EngineControlResult(state: state, base: record.base, alive: state == "ready", record: record, error: nil)))
     }
 }

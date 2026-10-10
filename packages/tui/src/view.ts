@@ -3984,7 +3984,7 @@ export function grantsHint(catalog: GrantsCatalog): string {
       ? `本工作区（${catalog.workspace}）还没有授权——批准时按 a 就是记一条`
       : '↑↓ 选择 · Enter 查看详情 · Esc 返回'
 
-  return [`${head} · ${frictionLabel(catalog.decisions)}`, historyLabel(catalog.history)]
+  return [catalog.decisions ? `${head} · ${frictionLabel(catalog.decisions)}` : head, historyLabel(catalog.history)]
     .filter((line) => line !== undefined)
     .join('\n')
 }
@@ -4078,6 +4078,8 @@ function mcpServerHint(catalog: McpCatalog, who: string): string {
 /** 状态那一格——**连接中 / 可用 / 不可用**（不可用时缘由交给 `hint`）。 */
 function mcpStateLabel(server: McpCatalog['servers'][number]): string {
   switch (server.state.status) {
+    case 'idle':
+      return '未连接'
     case 'connecting':
       return '还在连'
     case 'available':
@@ -4421,7 +4423,7 @@ export function configPathLines(paths: ConfigPaths): readonly string[] {
  * 两个数只差否决那一格——对用户是同一个体验，对规则作者不是一件事。**分母是 0 就不报**
  * （「0 次裁决」不是一个占比，报它等于编一个 0%）。
  */
-function frictionLabel(decisions: GrantsCatalog['decisions']): string {
+function frictionLabel(decisions: NonNullable<GrantsCatalog['decisions']>): string {
   const { total, uncovered, vetoed } = decisions
   if (total === 0) return '本会话还没走过裁决'
 
@@ -4446,6 +4448,7 @@ function frictionLabel(decisions: GrantsCatalog['decisions']): string {
  * **没走过裁决就不报**（同 `frictionLabel`：0 次不是一个占比）——历史为空时这行整个不给。
  */
 function historyLabel(history: GrantsCatalog['history']): string | undefined {
+  if (history === undefined) return undefined
   const { total, auto, kernel } = history
   if (total === 0) return undefined
 

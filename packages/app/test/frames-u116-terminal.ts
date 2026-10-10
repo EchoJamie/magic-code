@@ -1,3 +1,4 @@
+import { runSettingsCall } from '../src/settings-call.ts'
 import { strict as assert } from 'node:assert'
 import { writeFileSync } from 'node:fs'
 import type { NativeResponse, SettingsAction } from '@magic/contracts'
@@ -15,10 +16,13 @@ const ui = await createUiSession({fixture,sandbox,columns:200,rows:40,argv:['--a
 const identity = host.discovery
 const link = linkOf<NativeResponse>(await Bun.connect({unix:identity.socket,socket:socketHandlers()}) as never)
 const responses:NativeResponse[]=[];link.onMessage(v=>responses.push(v))
-const target={serviceInstance:identity.serviceInstance,base:identity.base}
 let stamp:string|null=null
 async function until(ok:()=>boolean){const end=Date.now()+10000;while(!ok()){if(Date.now()>end)throw new Error('原生偏好结果超时');await Bun.sleep(20)}}
-async function settings(action?:SettingsAction){const request=crypto.randomUUID();link.send(action?{t:'native.settings.apply',...target,request,stamp,action}:{t:'native.settings.read',...target,request});await until(()=>responses.some(v=>v.t==='native.settings.result'&&v.request===request));const result=responses.find((v):v is Extract<NativeResponse,{t:'native.settings.result'}>=>v.t==='native.settings.result'&&v.request===request)!;assert(!result.error,result.error ?? "设置结果");stamp=result.snapshot!.stamp;return result.snapshot!}
+async function settings(action?: SettingsAction) {
+ const result = await runSettingsCall({ request: crypto.randomUUID(), home: sandbox.home, base: identity.base, configPath: identity.base + '/config.json', ...(action ? { stamp, action } : {}) }, {})
+ assert(!result.error, result.error ?? '设置结果'); stamp = result.snapshot!.stamp; return result.snapshot!
+}
+
 try {
  link.send({t:'hello',role:'observer',protocol:identity.protocol,version:identity.version,source:identity.source,base:identity.base});await until(()=>responses.some(v=>v.t==='native.welcome'))
  await settings()

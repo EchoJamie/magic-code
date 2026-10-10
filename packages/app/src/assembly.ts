@@ -1,3 +1,4 @@
+import { createWorkEnvironment, type WorkEnvironment } from './work-environment.ts'
 import type { MagicConfig } from '@magic/contracts'
 import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
 import { createCollaborationBoundary } from './collaboration-boundary.ts'
@@ -117,6 +118,7 @@ import {
   createWorkspaceService,
   imageBytesOf,
   readClipboardImage,
+  reapOwned,
 } from '@magic/execution'
 import type {
   FetchLike,
@@ -173,6 +175,13 @@ export type EnvironmentVars = {
 
 /** 装配入参——一切「从外面拿的」都经此进来（测试与入口复用同一条路径）。 */
 export type AssembleOptions = {
+  readonly ledger?: ProcessLedger
+  readonly environment?: Readonly<Record<string, string>>
+  readonly network?: WorkEnvironment
+  readonly signal?: AbortSignal
+
+  readonly records?: RecordsStore
+
   readonly collaboration?: ((session: SessionId, request: CollaborationRequest) => Promise<CollaborationReply>) | undefined
   readonly collaborationChanged?: (() => void) | undefined
   readonly executionId?: string | undefined
@@ -202,7 +211,7 @@ export type AssembleOptions = {
    */
   readonly modelFetch?: FetchLike | undefined
   /**
-   * **取回面的注入出口**（U72）——缺省＝真出网（`createWebSource()`，走全局 `fetch`）。
+   * **取回面的注入出口**（U72）——缺省＝真出网（`createWebSource({ fetch: network.fetch })`，走全局 `fetch`）。
    *
    * 用途与 `modelFetch` 一字不差：让装配层用例能拿**真工具 · 真闸门 · 真分发的整条链**
    * 跑，而把**唯一那一跳出网**换成替身（判据要的是「取回来的那一页怎么变成答案」，
@@ -399,7 +408,7 @@ export type Assembly = {
    * 落定的事，而 `assemble()` 是同步的。故这一位现读（调用方在 `ready()` 之后取，拿到的是
    * 落定后的说法）；「首轮模型请求前完成发现」那条纪律由 `ready()` 保证，不靠这一位。
    */
-  readonly notices: readonly string[]
+  notices(): Promise<readonly string[]>
   /**
    * **外部服务器的一屏**（U38）——每条连接的当下状态与工具表（`--check` 那一行读它；
    * **U39 的 `/mcp` 也接在这一处**：查询面一处产出，两处说同一句话）。
@@ -448,7 +457,7 @@ export type Assembly = {
    * **现读而不是取装配那一刻的快照**：规约是随用户编辑变的文件，「自检」这件事的意义正在于
    * 「现在这会儿是什么样」。参数与 `ProjectRules.load` 同形——给目标就按目标算。
    */
-  readonly readRules: (targets?: readonly string[]) => RulesLoad
+  readonly readRules: (targets?: readonly string[]) => Promise<RulesLoad>
   /**
    * **技能目录的按需读数**（U33）——现读一次「都发现了哪些、有哪些没读进来」，
    * 连**没进来的那些**一起交回（`--check` 那一行从这儿来）。
@@ -457,7 +466,7 @@ export type Assembly = {
    * **没有「只报一部分」那种形态**：发现面是**一层子目录**，读得到的就是全的
    * （与规约的按目标筛选不同——技能不按目标适用，它是一份清单）。
    */
-  readonly readSkills: () => SkillCatalog
+  readonly readSkills: () => Promise<SkillCatalog>
   /**
    * 工作区**注册根列表**（阶段 3 多根）——执行域构造时逐条取的 `realpath`，**不是**入参原值：
    * macOS 上 `/var/…` 实为 `/private/var/…`，提示词与沙箱都该说**真路径**这同一个。
@@ -596,6 +605,11 @@ function localDate(at: Timestamp): string {
  */
 export function assemble(options: AssembleOptions): Assembly {
   // 入口拥有位置选择权；装配与下游共用传入结果。
+  const network = options.network ?? createWorkEnvironment(options.environment ?? process.env)
+  const environment = network.env
+  const fetch: FetchLike = (input, init) => (options.modelFetch ?? network.fetch)(input, { ...init, signal: init?.signal == null ? signal : AbortSignal.any([signal, init.signal]) })
+  const lifetime = new AbortController()
+  const signal = options.signal === undefined ? lifetime.signal : AbortSignal.any([lifetime.signal, options.signal])
   const magic = options.magic
   const loaded = options.config ?? loadConfig({ magic })
   const now = options.now ?? Date.now
@@ -603,9 +617,9 @@ export function assemble(options: AssembleOptions): Assembly {
   // 先读持久身份，再建立执行边界。此查询不创建会话，也不采信后来变更的全局根。
   const savedAgent = (() => {
     if (startup === undefined) return undefined
-    const lookup = createRecordsStore({ dataDir: magic.base, workspace: [options.cwd] })
+    const lookup = options.records ?? createRecordsStore({ dataDir: magic.base, workspace: [options.cwd] })
     try { return lookup.collaboration.agentForSession(startup) }
-    finally { lookup.close() }
+    finally { if (!options.records) lookup.close() }
   })()
 
   // ── 2 构造各域实现 ────────────────────────────────────────────────
@@ -626,7 +640,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 有人知道（设计：「执行者崩溃或被杀 ⇒ 管理者收回……**已登记**自有进程组」）。账跟着
    * **执行者这一代**走（执行者是一个进程，账就是它这一个进程的），由它上报给管理者。
    */
-  const ledger = createProcessLedger()
+  const ledger = options.ledger ?? createProcessLedger()
 
   /**
    * **后台命令的输出落点**（U70）——`exec` 的后台那一形把输出写在这儿。
@@ -650,7 +664,7 @@ export function assemble(options: AssembleOptions): Assembly {
   const backgroundRuns =
     backgroundDir === undefined
       ? undefined
-      : createBackgroundRuns({ dir: backgroundDir, workspace, ledger })
+      : createBackgroundRuns({ dir: backgroundDir, workspace, ledger, env: environment, signal })
 
   /**
    * **哪条会话交出去的**（U89）——一条会话一份「它起过的那些 id」。
@@ -706,6 +720,7 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   const sandbox = createSandbox({
+    env: environment,
     workspace,
     ledger,
   })
@@ -723,6 +738,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 它是实现级常量的装配期覆盖，同 `context` 那个先例）。
    */
   const mcp: McpServers = createMcpServers({
+    environment, cwd: workspace.defaultRoot(), signal, fetch: network.fetch,
     servers: savedAgent?.purpose === 'consultation' ? {} : loaded.config.mcp?.servers ?? {},
     // **同一本账**（U50）——stdio 那几条服务器的进程组也记进去（见 `ledger` 的注）
     ledger,
@@ -753,6 +769,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * 「什么时候送、送哪些」归对话域（它才知道这一轮在动哪儿）。
    */
   const projectRules = createProjectRules({
+    signal,
     workspace,
     sources: loaded.config.rules?.sources ?? [],
     // 两张名册两件事（契约 `RulesConfig`）：`sources` 读进来，`linkSources` 只放行链接
@@ -774,6 +791,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * （见 `SkillsOptions` 的注）。
    */
   const skills = createSkills({
+    signal,
     workspace,
     magicBase: magic.base,
     home: magic.home,
@@ -838,6 +856,15 @@ export function assemble(options: AssembleOptions): Assembly {
    * 会中途撤的话，行为就成了「改对的那一刻起、之前攒的改动一起落盘」，那是一句说不清的话。
    */
   let grantsUnreadable = loadedGrants.unreadable
+  let grantsStamp = configStampOf(grantsPath)
+  function refreshGrants(): void {
+    const stamp = configStampOf(grantsPath)
+    if (stamp === grantsStamp) return
+    const latest = loadGrants(grantsPath)
+    grants.replace(latest.file)
+    grantsUnreadable = latest.unreadable
+    grantsStamp = stamp
+  }
 
   /**
    * 攒着没落的**命中记账**（U47）——收尾时补一次（见 `close`）。
@@ -864,62 +891,30 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   let grantsWriteError: string | undefined
 
-  /**
-   * **上次没写进盘**的那些改动（按序）——下一次落盘（含收尾那一跳）一并重试。
-   *
-   * 改动是**幂等**的（加一条会去重、撤一条找不到就跳过），故重来一次不会把什么写坏；
-   * 而「不攒」的话，一次没写成就真没了（`/grants` 里那句告警是实话，但本可以不成真）。
-   */
-  let unsettled: GrantEdit[] = []
-
-  /**
-   * **落盘那一跳**（U47）——把这次攒下的改动交出去，由 `commitGrants` 做
-   * 「拿短独占锁 → 读**当前**内容 → 应用这一项 → 原子保存」。
-   *
-   * 为什么不是「把账本那份快照写出去」：两个执行者各持旧账本，整份覆写会抹掉对方刚落的
-   * 改动、并让**已经撤销的**授权复活（撤销是安全动作，失灵比丢一条授权重）。详见
-   * `./grants-file.ts` 的「并发」那一段。
-   *
-   * 写盘**不抛进裁决回路**：这一跳在 `resolve()` 的调用栈里（用户在按 `a`），抛上去会炸掉
-   * 外壳的按键处理——而「授权没记住」不是那一刻该打断用户的事。失败方向安全：**最坏丢一次
-   * 授权**（内存里仍生效），下一回 `/grants` 里说清楚。
-   *
-   * **没写成的攒到下一次**（见 `unsettled`）——改动是**幂等**的（加一条会去重、撤一条找
-   * 不到就跳过），故重来一次不会写坏什么，而这一跳原先那份整份快照**本来**也是这个效果
-   * （它一写就把账本整个写出去，上次没落成的自然跟着落地）。
-   *
-   * ## 读不懂就一个字都不写（D31）
-   *
-   * 文件读不懂时**连试都不试**：不落盘、不攒、不报「没写成」。
-   *
-   * - **不落盘**——盘上那份东西里有什么我们不知道，写下去＝拿空账本抹掉用户的授权。
-   *   这一条在写入口（`commitGrants`）另钉了一道，不指望调用方记得（见下 `ok: false`）。
-   * - **不攒**——攒着＝每按一次 `a` 都重试一次同一面墙；而「改对文件之后攒着的一起落盘」
-   *   不是本单要的行为（恢复看**下一次启动**，见 `grantsUnreadable`）。
-   * - **不报「没写成」**——它不是失败，是本单定的规矩。要说的话是**开机那一行**
-   *   （`grantsNotes`），**只说一次**，而不是每次按 `a` 都往屏上刷一句。
-   */
-  const persistGrants = (edits: readonly GrantEdit[]): void => {
+  // 同一实例按序写授权，跨实例由文件锁收束；失败不重放旧授权。
+  let grantsFlight = Promise.resolve()
+  const persistGrants = (edits: readonly GrantEdit[]): Promise<void> => {
+    grantsFlight = grantsFlight.catch(() => undefined).then(() => writeGrants(edits))
+    return grantsFlight
+  }
+  const writeGrants = async (edits: readonly GrantEdit[]): Promise<void> => {
     if (edits.length === 0 || grantsUnreadable !== undefined) return
 
-    const all = [...unsettled, ...edits]
 
     try {
-      const done = commitGrants(grantsPath, all)
+      const done = await commitGrants(grantsPath, edits)
       if (!done.ok) {
         // **会话中途它才读不懂**（启动时读得懂、盘上那份后来被写坏了）：这一跳现读现发现。
         // 立起闸、并**丢掉攒着的那些**（理由同上面「不攒」）——从这一刻起本次会话不再写它。
         grantsUnreadable = done.reason
-        unsettled = []
         return
       }
 
-      unsettled = []
       grantsWriteError = undefined
     } catch (error) {
-      unsettled = all
       const reason = error instanceof Error ? error.message : String(error)
-      grantsWriteError = `授权没能写进 ${grantsPath}（${reason}）——本次仍在生效，但重启动就没了`
+      grantsWriteError = `授权没能写进 ${grantsPath}（${reason}）——本次保存未完成`
+      throw error
     }
   }
 
@@ -934,7 +929,7 @@ export function assemble(options: AssembleOptions): Assembly {
     workspace: workspace.defaultRoot(),
     file: loadedGrants.file,
     now,
-    onChange: (edit: GrantEdit) => {
+    onChange: async (edit: GrantEdit) => {
       // **授权的新增 / 撤销＝立刻落盘**：那份文件存在的理由就是它们，攒着＝掉电丢授权。
       // **命中记账＝攒着**：每一次自动放行都写盘是白烧 io，而掉电丢的只是统计（不是授权）。
       //
@@ -945,7 +940,7 @@ export function assemble(options: AssembleOptions): Assembly {
         return
       }
 
-      persistGrants([...drainHits(), edit])
+      await persistGrants([...drainHits(), edit])
     },
   })
 
@@ -991,7 +986,7 @@ export function assemble(options: AssembleOptions): Assembly {
   // 多根工作区日后恢复就重建不回去（那一列正是为「回到原位」立的）。
   // 工作区是**进程级**的（配置在则整组接管、缺省则启动目录），同进程开的会话同属一个
   // ——这与「归属随记录持久」不冲突：库里那一列只在建行那一次写，此后谁开都改不动。
-  const recordsStore = createRecordsStore({
+  const recordsStore = options.records?.forWorkspace(workspace.roots()) ?? createRecordsStore({
     dataDir: magic.base,
     workspace: workspace.roots(),
   })
@@ -1010,7 +1005,10 @@ export function assemble(options: AssembleOptions): Assembly {
 
   // ── 4 控制域 ＋ 扇出 ──────────────────────────────────────────────
   // 扇出在代码里先立：它没有依赖，而各域都要它（编号是概念次序，见文件头注）
-  const hub = createControlHub()
+  const hub = createControlHub(error => {
+    if (activeStamper === undefined) throw error
+    sink.emit(activeStamper.stamp('error', { message: `控制操作失败：${error instanceof Error ? error.message : String(error)}` }))
+  })
   const sink: EventSink = {
     emit(event) {
       // ① 控制广播**全部**（含瞬时增量——渲染要实时）
@@ -1171,7 +1169,7 @@ export function assemble(options: AssembleOptions): Assembly {
       syncProviderBook()
 
       return Object.entries(providerBook).map(([id, config]) => {
-        const resolved = resolveConnection({ providerId: id, config })
+        const resolved = resolveConnection({ providerId: id, config, env: environment })
         // **合成接入身份**（U41 返修）：契约资料（`ModelCacheAccess`）由本线算、
         // 连接资料由 `resolveConnection` 给——两件一起交给域（新缓存实现直接消费它）。
         // 先落到变量再返回：这是**结构兼容**的合成，不是另立一份影子类型。
@@ -1180,7 +1178,7 @@ export function assemble(options: AssembleOptions): Assembly {
       })
     },
     cache: modelCache,
-    fetch: options.modelFetch ?? (globalThis.fetch as FetchLike),
+    fetch,
     now,
     onChange: () => {
       if (chain === undefined) return
@@ -1206,7 +1204,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const registry = createModelRegistry({
       providers: providerBook,
       stamper: forwardStamper,
-      fetch: options.modelFetch,
+      fetch, env: environment,
       // 缺 key 那句提示要**指对地方**（U42）：配置文件的落点随 `MAGIC_HOME` 走，
       // 模型域自己拼不出来——实际读的那一份只有这里知道（`loaded.path`）。
       configPath: loaded.path,
@@ -1229,19 +1227,19 @@ export function assemble(options: AssembleOptions): Assembly {
   const cantrip = () => {
     syncProviderBook()
     return bindModelChoice({ configuredModels, request: { choice: 'cantrip', reasoning: { mode: 'off' } },
-      options: { providers: providerBook, stamper: forwardStamper, fetch: options.modelFetch,
+      options: { providers: providerBook, stamper: forwardStamper, fetch, env: environment,
         configPath: loaded.path, modelInfoOf: knownModelOf } })
   }
 
   const webFetchTool = defineWebFetchTool({
-    web: options.webSource ?? createWebSource(),
+    web: options.webSource ?? createWebSource({ fetch: network.fetch }),
     distiller: () => {
       syncProviderBook()
       if (configuredModels?.cantrip === undefined) return undefined
       try { return createPageDistiller(cantrip()) }
       catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
-        return { distill: () => Promise.resolve({ ok: false as const, kind: 'failed' as const, reason }) }
+        return { distill: async () => ({ ok: false as const, kind: 'failed' as const, reason }) }
       }
     },
   })
@@ -1337,7 +1335,8 @@ export function assemble(options: AssembleOptions): Assembly {
       sink,
       stamper,
       now,
-      rules: [...parsedRules.rules, ...planRules],
+      rules: () => [...parseRules(loadConfig({ path: loaded.path, magic }).config.permissions?.rules ?? []).rules, ...planRules],
+      refreshGrants,
       grants,
       // **内核自己那处**（U80）——读类调用认它作「不算越界」，于是「本工作区总是允许 read」
       // 那一类规则（缺省路径＝根内）盖得住那个输出文件（见 `PermissionGateOptions.readOnlyDirs`）。
@@ -1402,8 +1401,8 @@ export function assemble(options: AssembleOptions): Assembly {
       workspace,
       gate: {
         ...gate,
-        decide: (call, context, ref) => toolVisible(call.name) && (!consulting || call.external === undefined)
-          ? gate.decide(call, context, ref) : Promise.resolve('reject'),
+        decide: (call, context, ref, callSignal) => toolVisible(call.name) && (!consulting || call.external === undefined)
+          ? gate.decide(call, context, ref, callSignal === undefined ? signal : AbortSignal.any([signal, callSignal])) : Promise.resolve('reject'),
       },
       sink,
       stamper,
@@ -1434,7 +1433,7 @@ export function assemble(options: AssembleOptions): Assembly {
       //
       // ⚠️ **探一次就够**：它在进程活着的时候不会变（把 `trash` 装上也得到下次启动）——
       // 而"探得准"比"探得勤"要紧（工单：**不许假装它一定在**）。
-      trashAvailable: commandOnPath('trash'),
+      trashAvailable: commandOnPath('trash', environment),
 
       /**
        * **后台那一形**（U70）——**按会话绑好**的一道门面。
@@ -1496,15 +1495,15 @@ export function assemble(options: AssembleOptions): Assembly {
     }
     // 复用规约读取与送达预查：每次请求、工具批次都读取当前材料，不建立内容快照。
     const roleRules: ProjectRules = {
-      load(targets) {
+      async load(targets, operationSignal) {
         validateRoleTools()
         const role = consulting ? originRole : currentRole()
         const actor = recordsStore.collaboration.agentForSession(session)
-        const base = role?.guidanceFiles === undefined ? projectRules.load(targets) : createProjectRules({
+        const base = role?.guidanceFiles === undefined ? (await projectRules.load(targets, operationSignal)) : (await createProjectRules({
           workspace,
           sources: [...(loaded.config.rules?.sources ?? []), ...role.guidanceFiles],
           linkSources: loaded.config.rules?.linkSources ?? [],
-        }).load(targets)
+        }).load(targets, operationSignal))
         if (role?.guidanceFiles?.length && (base.truncated || base.problems.some(problem => problem.kind === 'error'))) {
           throw new Error(`角色指导文件未完整加载：${base.problems.map(problem => `${problem.path}：${problem.message}`).join('；')}`)
         }
@@ -1514,12 +1513,12 @@ export function assemble(options: AssembleOptions): Assembly {
         })
         if (role !== undefined) add(`${loaded.path}#agentRoles.${consulting ? origin!.role : actor!.role}`, `角色：${role.name}`, role.instructions)
         if (actor?.responsibility) add(`agent:${actor.agentId}`, '本次职责', actor.responsibility)
-        const catalog = role?.skills?.length ? skills.discover().skills : []
+        const catalog = role?.skills?.length ? (await skills.discover(operationSignal)).skills : []
         for (const reference of role?.skills ?? []) {
           const matches = catalog.filter(skill => skill.path === reference || skill.name === reference)
           if (matches.length !== 1) throw new Error(`角色技能「${reference}」${matches.length === 0 ? '未知或不可达' : '有多个来源，请使用明确路径'}`)
           const skill = matches[0]!
-          const read = skills.readMain(skill.name, skill.path)
+          const read = (await skills.readMain(skill.name, skill.path, operationSignal))
           if (!read.ok) throw new Error(`角色技能「${reference}」不可读：${read.reason}`)
           add(join(skill.path, 'SKILL.md'), `角色技能：${skill.name}（${skill.label}）`, read.material.text)
         }
@@ -1869,7 +1868,7 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const listSkills = async (): Promise<void> => {
     if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-    sink.emit(requireActiveStamper().stamp('skills.catalog', skillCatalogOf()))
+    sink.emit(requireActiveStamper().stamp('skills.catalog', (await skillCatalogOf())))
   }
 
   /**
@@ -2023,7 +2022,7 @@ export function assemble(options: AssembleOptions): Assembly {
     )
   }
 
-  const skillCatalogOf = (): EventDataOf['skills.catalog'] => skillsCatalog(skills.discover())
+  const skillCatalogOf = async (): Promise<EventDataOf['skills.catalog']> => skillsCatalog((await skills.discover()))
 
   /**
    * 模型条目表 —— 注册表 → 契约载荷。
@@ -2091,11 +2090,11 @@ export function assemble(options: AssembleOptions): Assembly {
    * 撤完**再回一份名录**（同一个 kind）：外壳据以刷新抽屉，并把 `note` 那一句留成一行回执
    * ——这正是「撤销＝选定即撤 ＋ 一行回执」那一句规格的落点。
    */
-  const revokeGrants = (section?: string, index?: number): void => {
+  const revokeGrants = async (section?: string, index?: number): Promise<void> => {
     const target = section ?? workspace.defaultRoot()
 
     if (index === undefined) {
-      const dropped = grants.dropSection(target)
+      const dropped = await grants.dropSection(target)
       listGrants(
         dropped === 0
           ? `没撤成：${target} 那一节不在名录里`
@@ -2109,7 +2108,7 @@ export function assemble(options: AssembleOptions): Assembly {
     // 撤别处（陈旧节那条路走的是 index 缺省，到不了这里）时如实说「那一条」而不编名字
     const named =
       target === workspace.defaultRoot() ? grants.view()[index]?.describe : undefined
-    const done = grants.revoke(target, index)
+    const done = await grants.revoke(target, index)
 
     listGrants(done ? `已撤销：${named ?? '那一条'}` : '没撤成：那一条已经不在了')
   }
@@ -2159,10 +2158,10 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /** 项目规约的按需读数——见 `Assembly.readRules`。 */
-  const readRules = (targets: readonly string[] = []): RulesLoad => (chain?.roleRules ?? projectRules).load(targets)
+  const readRules = async (targets: readonly string[] = []): Promise<RulesLoad> => (await (chain?.roleRules ?? projectRules).load(targets))
 
   /** 技能目录的按需读数——见 `Assembly.readSkills`。 */
-  const readSkills = (): SkillCatalog => skills.discover()
+  const readSkills = async (): Promise<SkillCatalog> => (await skills.discover())
 
   /** 纯目录投影与常驻观察面共用；活跃执行者仍提供真实内存选中与缓存。 */
   const catalogReader = (registry: ModelRegistry | undefined): ModelCatalogReader => {
@@ -2232,7 +2231,7 @@ export function assemble(options: AssembleOptions): Assembly {
     try {
       syncProviderBook()
       const snapshots = Object.entries(providerBook).map(([provider, config]) => ({ provider, config, snapshot: modelInfo.peek(provider).snapshot }))
-      const outcome = configureModel({ path: loaded.path,
+      const outcome = await configureModel({ path: loaded.path,
         expectedStamp: configStamp, request })
       if (!outcome.ok) { void listModels(outcome.reason); return }
       const reloaded = loadConfig({ path: loaded.path, magic })
@@ -2252,8 +2251,8 @@ export function assemble(options: AssembleOptions): Assembly {
     }
   }
 
-  const setPrefsCommand = (request: PrefsSetRequest): void => {
-    const outcome = setPrefs({
+  const setPrefsCommand = async (request: PrefsSetRequest): Promise<void> => {
+    const outcome = await setPrefs({
       path: loaded.path,
       expectedStamp: configStamp,
       request,
@@ -2297,7 +2296,7 @@ export function assemble(options: AssembleOptions): Assembly {
     /** 清除旧缓存的回话（没成才有）——与重建的回话合成一句交给答复。 */
     let cleared: string | undefined
 
-    const outcome = saveProvider({
+    const outcome = await saveProvider({
       path: loaded.path,
       expectedStamp: configStamp,
       request,
@@ -2358,7 +2357,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const removedTarget =
       removed === undefined ? undefined : { provider, access: cacheAccessOf(provider, removed) }
 
-    const outcome = removeProvider({
+    const outcome = await removeProvider({
       path: loaded.path,
       expectedStamp: configStamp,
       provider,
@@ -2403,21 +2402,21 @@ export function assemble(options: AssembleOptions): Assembly {
     // 答复**原样转手**（含「总是允许」位）——装配不解释它，落地归权限域。
     // 闸门**按会话各一份**（在途询问与裁决的账各归各的），故取当下这束的；
     // 而它记下的授权进的是**工作区级**账本（跨会话那个），两者不是一回事
-    onDecision: (id, decision, opts) => active().gate.resolve(id, decision, opts),
+    onDecision: async (id, decision, opts) => (await active().gate.resolve(id, decision, opts)),
     // 换模型（阶段 2）——**判别式处置**（技术方案 · 领域划分：「切不动就不动」）
     onModelSwitch: (request) => switchModel(request),
     // 会话四支（U16）——**原样转手**给对话域（它才是会话的持有者）
-    onSession: (command) => void conversation.handle(command),
+    onSession: (command) => conversation.handle(command),
     // 读侧命令——**原样转手**给对话域（会话与条目归它）；答复走事件（`session.history`）
-    onHistoryRead: (session) => void conversation.readHistory(session),
+    onHistoryRead: (session) => conversation.readHistory(session),
     // 模型条目表（读侧）——**归装配**（注册表在它手上，同 `model.switched` 的产出路径）；
     // 答复走事件（`model.catalog`，不落库）
     onModelList: () => listModels(),
     // 供应商与模型管理（U41）——**归装配**（配置的读写 · 缓存的落点都在它这一层，
     // 域不碰文件系统；同 `grants.list` 之于授权文件）。前三条答复走 `provider.catalog`、
     // 后两条走 `model.catalog`（用户按一下就该看到那一屏的新样子）。
-    onModelRefresh: (provider) => void refreshModels(provider),
-    onModelConfigure: (request) => void setAliasModel(request),
+    onModelRefresh: (provider) => refreshModels(provider),
+    onModelConfigure: (request) => setAliasModel(request),
     // 「取网页」的提炼模型（U78）——同一条路（写盘归装配）——答复也走 `model.catalog`
     // 界面那两格（U112）——同一条路（写盘归装配）——答复走 `prefs.state`
     // （带上**落定之后**那两份，外壳据它把屏上那两格摆成真的样子）
@@ -2434,18 +2433,18 @@ export function assemble(options: AssembleOptions): Assembly {
     onSkillList: () => listSkills(),
     // 路径候选（读侧 · U36）——**归装配**（它握着执行域的路径面，同技能目录那一处）；
     // 答复走事件（`paths.catalog`，不落库）。**异步**：它要真去看一眼目录。
-    onPathList: (query) => void listPaths(query),
+    onPathList: (query) => listPaths(query),
     // 认一认选定的那一条（U62 · 图片的名字）——**归装配**（同 `onPathList`：执行域的
     // 路径面在它手里），而落 blob 那一步经**记录域**的公开面（写权唯一归它）。
     // 答复走事件（`paths.identified`，不落库）。**异步**：它真要读一次内容。
-    onPathIdentify: (path, external) => void identifyPath(path, external),
+    onPathIdentify: (path, external) => identifyPath(path, external),
     // 剪贴板取图（U107）——**归装配**（同 `onPathIdentify` 的站位：执行域那面在它手里），
     // 而落 blob 那一步同样经**记录域**的公开面。答复走事件（`input.pasted`，不落库）。
     // **异步**：它要 spawn 一条系统命令、还要读回一个临时文件。
-    onInputPaste: () => void pasteClipboardImage(),
+    onInputPaste: () => pasteClipboardImage(),
     // 导出原图（U110）——**归对话域**（记录里那份字节归它读，落盘那一步经上面那个写口完成）；
     // 答复走事件（`image.exported`，不落库）。本域不认识记录，原样转手。
-    onImageExport: (blob, name, mime) => void conversation.exportImage(blob, name, mime),
+    onImageExport: (blob, name, mime) => conversation.exportImage(blob, name, mime),
     // 外部服务器（读侧 ＋ 显式重连 · U39）——**归装配**（那一束连接是它编排的，同
     // `model.list` 之于注册表）；答复走事件（`mcp.catalog`，不落库）
     onMcpList: () => listMcp(),
@@ -2461,7 +2460,7 @@ export function assemble(options: AssembleOptions): Assembly {
       const current = loadConfig({ path: loaded.path, magic })
       statusLineConfig = current.config.statusLine
       reducedMotion = current.config.motion?.reduced === true
-      grants.replace(loadGrants(grantsPath).file)
+      refreshGrants()
       pendingHits.clear()
     },
     reconnectMcp,
@@ -2497,12 +2496,12 @@ export function assemble(options: AssembleOptions): Assembly {
     readSkills,
     // **现读**（见 `Assembly.notices` 的注）：外部服务器连不上那一条要等 `ready()` 才落定，
     // 而这一位在放开输入之前（`boot`）与自检（`--check`）两处都会被读——快照会在前一处漏话。
-    get notices(): readonly string[] {
+    async notices(): Promise<readonly string[]> {
       return noticesOf(
         parsedRules.rejected,
         grantsNotes(),
         loaded.path,
-        readRules().problems,
+        (await readRules()).problems,
         mcp.connections,
       )
     },
@@ -2521,7 +2520,24 @@ export function assemble(options: AssembleOptions): Assembly {
       await mcp.ready()
     },
     // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍
-    shutdown: () => mcp.shutdown(),
+    shutdown: async () => {
+      lifetime.abort()
+      const results = await Promise.allSettled([
+        hub.shutdown(), chain?.service.shutdown(), mcp.shutdown(),
+        ...(backgroundRuns?.running().map(async run => {
+          const stopped = await backgroundRuns.stop(run.id)
+          if (!stopped.ok) throw new Error(stopped.reason)
+        }) ?? []),
+      ])
+      for (const owned of ledger.list()) {
+        const result = await reapOwned(owned)
+        if (result.kind !== 'gone' && result.kind !== 'reaped') throw new Error(result.note)
+      }
+      await persistGrants(drainHits())
+      if (options.network === undefined) await network.close()
+      const failures = results.filter((one): one is PromiseRejectedResult => one.status === 'rejected')
+      if (failures.length) throw new AggregateError(failures.map(one => one.reason), '执行实例未完成收尾')
+    },
     // 自有进程组那一本账（见 `Assembly.ledger`）——账自己摘掉已经没了的那些
     ledger,
     // 后台运行的登记（见 `Assembly.background`）——**「按 id 停」今天没有用户入口**
@@ -2541,22 +2557,11 @@ export function assemble(options: AssembleOptions): Assembly {
     // **跑的是应用层的用例**（U25）：① 在途识别 ②③④ 处置 ⑤ 上下文由条目重建 ＋ 界面重建展示，
     // 全在 `@magic/actions` 那一处编排。回到 `Promise<void>`：报告是应用层的形态，
     // 要看细节请直接调 `actions.recover`（本函数只担保「跑完了」）。
-    boot: () =>
-      startup === undefined ? Promise.resolve() : actions.recover(actionPorts()).then(() => undefined),
+    boot: async () =>
+      startup === undefined ? (await Promise.resolve()) : actions.recover(actionPorts()).then(() => undefined),
     close: () => {
-      // 攒着的记账（命中统计）在这儿补落一次——**授权本身早写过了**（`onChange` 那条路），
-      // 故这里失败也只是统计没落上（抛就抛出去：收尾那条路上没人能应答它，静默吞掉反而
-      // 让人以为写成了）。
-      //
-      // ⚠️ 补落的仍是**改动**（一项记账），不是账本快照（U47）：这一趟里别的执行者若撤销过
-      // 某条授权，这一跳只找得到在册的那些、找不到就跳过——不会把它写回来。
-      persistGrants(drainHits())
       chain = undefined
       recordsStore.close()
-      // **发起**外部服务器的释放（不等：收尾这一跳是同步的，等它要 `await shutdown()`）。
-      // 放在最后：先落自己的账，再去收子进程。忘了 await 也不至于把它们留下——
-      // 这一下已经把「关 stdin」按下去了（服务器收到 EOF 就自己退，那是规范里的头号信号）。
-      void mcp.shutdown()
     },
   }
 }
@@ -2764,8 +2769,8 @@ function isDirectory(path: string): boolean {
  * - **拿不准就站"没有"那一边**（读不到 `PATH` / 目录读不动 ⇒ `false`）：
  *   **指一个跑不了的命令比不指更坏**（工单明文），故这一边错得起。
  */
-function commandOnPath(name: string): boolean {
-  const path = process.env['PATH']
+function commandOnPath(name: string, environment = process.env): boolean {
+  const path = environment['PATH']
   if (path === undefined) return false
 
   for (const dir of path.split(':')) {

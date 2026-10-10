@@ -210,6 +210,7 @@ export type McpConfig = {
  * 单条失败**不拖垮内置工具**——它的工具不出现在工具表里，其余照常。
  */
 export type McpConnectionState =
+  | { readonly status: 'idle' }
   | { readonly status: 'connecting' }
   | { readonly status: 'available' }
   | { readonly status: 'unavailable'; readonly reason: string }

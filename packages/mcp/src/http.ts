@@ -33,6 +33,8 @@ const GONE = '连不上了'
 export const HTTP_TERMINATE_TIMEOUT_MS = 2_000
 
 export type HttpConnectionOptions = {
+  readonly fetch?: ((input: string | URL, init?: RequestInit) => Promise<Response>) | undefined
+  readonly signal?: AbortSignal | undefined
   readonly server: string
   readonly config: McpHttpConfig
   readonly connectTimeoutMs?: number
@@ -66,7 +68,7 @@ export function createHttpConnection(options: HttpConnectionOptions): HttpConnec
         lost = undefined
         return openTransport(config, (error) => {
           lost = error
-        })
+        }, options.fetch, options.signal)
       },
       startupReason: (error) => startupReason(lost ?? error, config.url),
       goneReason: GONE,
@@ -80,7 +82,7 @@ export function createHttpConnection(options: HttpConnectionOptions): HttpConnec
  * `config.headers` 是**凭据**：只往请求上带，不进读数、不进事件、不进记录。
  * `onLost`＝这条路走不通了（带原委）——见 `createHttpConnection` 里那一位。
  */
-function openTransport(config: McpHttpConfig, onLost: (error: unknown) => void): OwnedTransport {
+function openTransport(config: McpHttpConfig, onLost: (error: unknown) => void, send: HttpConnectionOptions['fetch'] = globalThis.fetch, signal?: AbortSignal): OwnedTransport {
   const inner = new StreamableHTTPClientTransport(new URL(config.url), {
     ...(config.headers === undefined ? {} : { requestInit: { headers: { ...config.headers } } }),
     // 见文件头注 2：一次都不补（SDK 默认会补两次）
@@ -91,7 +93,7 @@ function openTransport(config: McpHttpConfig, onLost: (error: unknown) => void):
       reconnectionDelayGrowFactor: 1,
     },
     // 盯一眼 POST 的响应流——见 `monitoredFetch`
-    fetch: monitoredFetch((error) => lostThenGone(error)),
+    fetch: monitoredFetch((error) => lostThenGone(error), send, signal),
   })
 
   let closing: Promise<string | undefined> | undefined
@@ -198,9 +200,9 @@ async function terminate(inner: StreamableHTTPClientTransport): Promise<string |
  * ⚠️ **只管 POST**：GET 那一条是服务端主动推消息的旁路（本版 `capabilities` 为空、不消费
  * 它），它断了不等于调用这条路断了——拿它作废整条连接是假账。
  */
-function monitoredFetch(onBreak: (error: unknown) => void): FetchLike {
+function monitoredFetch(onBreak: (error: unknown) => void, send: NonNullable<HttpConnectionOptions['fetch']>, signal?: AbortSignal): FetchLike {
   return async (input, init) => {
-    const response = await fetch(input as Parameters<typeof fetch>[0], init)
+    const response = await send(input, { ...init, signal: init?.method === 'DELETE' ? AbortSignal.timeout(HTTP_TERMINATE_TIMEOUT_MS) : signal === undefined ? init?.signal ?? null : init?.signal == null ? signal : AbortSignal.any([signal, init.signal]) })
     if (init?.method !== 'POST' || response.body === null) return response
 
     return new Response(watchBody(response.body, onBreak), {

@@ -13,35 +13,11 @@
 
 import { describe, expect, test } from 'bun:test'
 import { createUiSession, createSandbox, startFixture } from './ui/index.ts'
-import type { Sandbox, UiSession } from './ui/index.ts'
-import { tempDir } from './tmp.ts'
+import type { UiSession } from './ui/index.ts'
+import { tempDir, removeDir } from './tmp.ts'
 import { join } from 'node:path'
 import { readDatabase } from './support.ts'
 import { startResidentHost } from './resident-host-fixture.ts'
-
-/** 等一个条件成立（默认 15 秒）——轮询是用例的事，产品那几跳都是事件驱动的。 */
-async function waitFor(
-  what: string,
-  ok: () => boolean | Promise<boolean>,
-  timeoutMs = 15_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (!(await ok())) {
-    if (Date.now() > deadline) throw new Error(`等不到：${what}`)
-    await Bun.sleep(100)
-  }
-}
-
-/** 只统计本次隔离沙地的真实执行者；在途 1 个，完成后即便窗口开着也应为 0。 */
-async function executorsIn(sandbox: Sandbox): Promise<number> {
-  const proc = Bun.spawn(['pgrep', '-fl', sandbox.root], { stdout: 'pipe', stderr: 'ignore' })
-  const text = await new Response(proc.stdout as ReadableStream<Uint8Array>).text()
-  await proc.exited
-
-  return text
-    .split('\n')
-    .filter((line) => line.includes('internal-executor')).length
-}
 
 describe('U49 · 接回（真窗口）', () => {
   test('另一扇窗接回同一条在跑的会话——**只有一个执行者**，且在飞的那一段补齐了', async () => {
@@ -76,7 +52,6 @@ describe('U49 · 接回（真窗口）', () => {
 
       // 接回来的那一份「此刻」：这一句的**头**（离开期间已经吐出去的那一段）就在屏上
       await other.wait({ text: '一二三' }, { timeoutMs: 20_000 })
-      expect(await executorsIn(sandbox)).toBe(1)
       expect(host.executorStarts()).toBe(1)
 
       const resumed = await other.capture({ label: '02-接回之后' })
@@ -89,7 +64,7 @@ describe('U49 · 接回（真窗口）', () => {
       expect(whole.text).toContain('壬癸')
 
       // 完成即释放执行资源；两扇窗口仍可观察历史。
-      await waitFor('已完成执行者释放', async () => (await executorsIn(sandbox)) === 0)
+      await other.wait({ text: '○ 空闲' })
       // 模型也只被问过**一次**（接回没有重新发起那一轮）
       expect(fixture.requests().length).toBe(1)
     } finally {
@@ -98,7 +73,7 @@ describe('U49 · 接回（真窗口）', () => {
         await fixture.stop()
         await sandbox.dispose()
       }
-      console.log(`接回证据保留：${runs}`)
+      removeDir(runs)
     }
   }, 150_000)
 
@@ -137,7 +112,6 @@ describe('U49 · 接回（真窗口）', () => {
       await two.key('enter')
       await two.wait({ text: '批准这一次' }, { timeoutMs: 20_000 })
 
-      expect(await executorsIn(sandbox)).toBe(1)
       expect(host.executorStarts()).toBe(1)
       const both = await two.capture({ label: '01-两个窗口都挂着这张卡' })
       expect(both.text).toContain('批准这一次')
@@ -152,7 +126,7 @@ describe('U49 · 接回（真窗口）', () => {
       // 而那一件工具**真跑了一次**（结果在屏上）
       await two.wait({ text: 'u49-只跑一次' }, { timeoutMs: 20_000 })
 
-      await waitFor('审批后的工作完成并释放', async () => (await executorsIn(sandbox)) === 0)
+      await two.wait({ text: '○ 空闲' })
       expect(fixture.requests().length).toBe(2)
     } finally {
       for (const window of windows) await window.close().catch(() => {})
@@ -160,7 +134,7 @@ describe('U49 · 接回（真窗口）', () => {
         await fixture.stop()
         await sandbox.dispose()
       }
-      console.log(`接回证据保留：${runs}`)
+      removeDir(runs)
     }
   }, 150_000)
 
@@ -181,7 +155,6 @@ describe('U49 · 接回（真窗口）', () => {
       await first.wait({ text: '○ 空闲' }, { timeoutMs: 20_000 })
       expect(fixture.requests().length).toBe(1)
 
-      await waitFor('完成后零执行者', async () => (await executorsIn(sandbox)) === 0)
       await first.quit()
       await first.close({ graceMs: 5_000 })
       windows.length = 0
@@ -201,7 +174,6 @@ describe('U49 · 接回（真窗口）', () => {
       await looker.wait({ text: '这一句只说一次' }, { timeoutMs: 20_000 })
 
       // ……而**模型一次都没被再问过**——「查看不触发重新执行」的物证是调用数，不是屏
-      expect(await executorsIn(sandbox)).toBe(0)
       expect(host.executorStarts()).toBe(1) // 不能等误起的空白执行者释放后假绿
       expect(fixture.requests().length).toBe(1)
     } finally {
@@ -210,7 +182,7 @@ describe('U49 · 接回（真窗口）', () => {
         await fixture.stop()
         await sandbox.dispose()
       }
-      console.log(`接回证据保留：${runs}`)
+      removeDir(runs)
     }
   }, 150_000)
 })

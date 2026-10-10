@@ -1,4 +1,4 @@
-/** 真 manager/socket/子进程 executor；只有模型 HTTP 响应受控。 */
+/** 真 manager/socket/进程内 Agent；只有模型 HTTP 响应受控。 */
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -6,7 +6,7 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { createShell } from '@magic/tui'
 import { connectManager } from '../src/run/client.ts'
-import { createProcessLauncher } from '../src/run/launch.ts'
+import { createAgentLauncher } from '../src/run/launch.ts'
 import { startManager } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { terminalOptions } from '../src/run/terminal.ts'
@@ -32,9 +32,9 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   const events: KernelEvent[] = []
   const commands: Command[] = []
   const lines: string[] = []
-  const processStarts: { pid: number | undefined; session: string | null; at: number; identity: string }[] = []
-  const processExits: { pid: number | undefined; at: number; reason: string }[] = []
-  const closedViews: { at: number; livePids: (number | undefined)[]; exitedPids: (number | undefined)[] }[] = []
+  const agentStarts: { gen: number; session: string | null; at: number }[] = []
+  const agentExits: { gen: number; at: number; reason: string }[] = []
+  const closedViews: { at: number; liveGenerations: number[]; exitedGenerations: number[] }[] = []
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     try {
       if (request.method === 'GET') return Response.json({ data: [{ id: 'entry-model' }, { id: 'member-model' }, { id: 'descendant-model' }] })
@@ -62,14 +62,11 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' } },
   }))
   const paths = runPathsOf(magic, tmpdir())
-  const launcher = createProcessLauncher()
+  const launcher = createAgentLauncher()
   const started = await startManager({ paths, magic, launch: { spawn(request) {
     const child = launcher.spawn({ ...request, ...(options.allowAll === true ? { allowAll: true } : {}) })
-    if (process.env['MAGIC_COLLAB_RUN_EVIDENCE']) {
-      const identity = Bun.spawnSync(['/bin/ps', '-p', String(child.pid), '-o', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().replace(/--token \S+/g, '--token [redacted]')
-      processStarts.push({ pid: child.pid, session: request.session, at: Date.now(), identity })
-    }
-    child.onExit(reason => processExits.push({ pid: child.pid, at: Date.now(), reason }))
+    agentStarts.push({ gen: request.gen, session: request.session, at: Date.now() })
+    child.onExit(reason => agentExits.push({ gen: request.gen, at: Date.now(), reason }))
     return child
   } },
     stopGraceMs: 1000, stopKillMs: 1000 })
@@ -82,7 +79,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     manager.stop('连接失败'); await manager.waitUntilExit(); store.close(); server.stop(true); removeDir(root)
     throw new Error('客户端连不上管理者')
   }
-  const terminal = terminalOptions({ client, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }) })
+  const terminal = (await terminalOptions({ client, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }) }))
   const transport = terminal.transport
   const shell = createShell({ ...transport, send(command) { commands.push(command); transport.send(command) } }, terminal)
   terminal.onGone?.(() => shell.hostGone())
@@ -92,7 +89,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
   client.onEvent(item => {
     events.push(item)
     if (item.kind === 'collaboration.view' && item.data.collaboration?.state === 'closed') {
-      closedViews.push({ at: Date.now(), livePids: manager.executors().map(one => one.pid), exitedPids: processExits.map(one => one.pid) })
+      closedViews.push({ at: Date.now(), liveGenerations: manager.executors().map(one => one.gen), exitedGenerations: agentExits.map(one => one.gen) })
     }
     // 测试用户仅批准控制工具，普通工具仍由测试步骤明确裁决。
     if (item.kind === 'tool.decision.request' && item.data.name.startsWith('agent_') && !answered.has(item.id)) {
@@ -124,7 +121,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     shell.dispose(); client.close()
     for (const window of windows) { window.shell.dispose(); window.client.close() }
   }
-  return { root, magic, workspace, dataDir, calls, errors, events, commands, lines, processExits, closedViews, manager, store, client, shell, closeWindows,
+  return { root, magic, workspace, dataDir, calls, errors, events, commands, lines, agentExits, closedViews, manager, store, client, shell, closeWindows,
     session, collaboration, members, member, delegation, wait, pick,
     requests: (model = 'entry-model') => calls.filter(call => call.model === model),
     async openMember(target = shell) {
@@ -141,7 +138,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       if (another === undefined) throw new Error('第二个 TUI 连不上同一管理者')
       const commands: Command[] = []
       const events: KernelEvent[] = []
-      const options = terminalOptions({ client: another, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }), session: session()! })
+      const options = (await terminalOptions({ client: another, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }), session: session()! }))
       const transport = options.transport
       const shell = createShell({ ...transport, send(command) { commands.push(command); transport.send(command) } }, options)
       options.onGone?.(() => shell.hostGone())
@@ -160,9 +157,9 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
       const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
       if (evidence) {
         const dir = resolve(evidence); mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, events, commands, errors, lines, processExits, closedViews,
+        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-socket-executor-controlled-http', allowAll: options.allowAll === true, calls, events, commands, errors, lines, agentExits, closedViews,
           windows: windows.map(window => ({ conn: window.client.conn, events: window.events, commands: window.commands })),
-          processStarts, globalRemainingForSandbox: Bun.spawnSync(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().split('\n').filter(line => line.includes(root)).map(line => line.replace(/--token \S+/g, '--token [redacted]')),
+          agentStarts, remainingToolProcesses: Bun.spawnSync(['/bin/ps', '-axo', 'pid=,ppid=,pgid=,lstart=,args=']).stdout.toString().split('\n').filter(line => line.includes(root)).map(line => line.replace(/--token \S+/g, '--token [redacted]')),
           inputFacts:members().map(member=>({session:member.sessionId,inputs:store.serviceFor(member.sessionId).inputs.list()})), remainingExecutors: manager.executors(), socket: manager.socketPath }, null, 2))
       }
       store.close(); server.stop(true)

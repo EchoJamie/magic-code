@@ -82,7 +82,7 @@ function load(
 
 /** 规约来源桩——本域只认端口；「从哪儿读出来这些」不是它的事。 */
 function stubRules(answer: (targets: readonly string[]) => RulesLoad): ProjectRules {
-  return { load: answer }
+  return { load: async targets => answer(targets) }
 }
 
 /**
@@ -434,7 +434,7 @@ describe('目标预查 —— 拦在副作用之前', () => {
     expect(systemOf(stage, 2)).toContain('src 的约定')
   })
 
-  test('**正文一样、范围不同的两份是两份材料**：送过一份不等于另一份也送过', () => {
+  test('**正文一样、范围不同的两份是两份材料**：送过一份不等于另一份也送过', async () => {
     // 同一套约定按目录铺开（复制粘贴起手最常见的写法）：正文两字不差，管的地方不同。
     // 判「送过没有」若只看正文，送过根那份就等于说子目录那份也送过了——那份约束
     // **一次都不会送到**，而用户以为 `src` 有一份（这正是删掉版本号后最容易漏的一处）。
@@ -448,21 +448,21 @@ describe('目标预查 —— 拦在副作用之前', () => {
     )
 
     // 会话开局只送根一级：进请求的是**根那份**
-    delivery.promptFor('')
+    await delivery.promptFor('')
 
     // 碰 `src` 的目标：子目录那份还没送过 ⇒ 拦（blocking 只报它——根那份刚送过）
     const batch = [{ id: 'a', name: 'write', args: { path: 'src/a.ts' } }]
-    expect(delivery.preflight(batch)).toEqual({
+    expect((await delivery.preflight(batch))).toEqual({
       kind: 'review',
       blocking: [expect.objectContaining({ name: 'src/AGENTS.md' })],
     })
 
     // 重审那一趟请求带着 `src` 的目标（钉住的），两份都送到 ⇒ 重提照常执行
-    delivery.promptFor('')
-    expect(delivery.preflight(batch)).toEqual({ kind: 'pass' })
+    await delivery.promptFor('')
+    expect((await delivery.preflight(batch))).toEqual({ kind: 'pass' })
   })
 
-  test('**条件变了、正文一字未动**：送到模型的适用面不一样 ⇒ 也是另一份材料', () => {
+  test('**条件变了、正文一字未动**：送到模型的适用面不一样 ⇒ 也是另一份材料', async () => {
     // 「只在 src/** 上适用」与「只在 src/**、lib/** 上适用」是两句不同的话——后者适用范围
     // 更宽，而它**不在 `text` 里**（正文摘掉了 front-matter）。只比正文就会漏掉这一次重审。
     const narrow = doc('.magic/rules/style.md', '一律中文', '/w', ['src/**'])
@@ -471,12 +471,12 @@ describe('目标预查 —— 拦在副作用之前', () => {
     const delivery = createRulesDelivery(stubRules(() => load([current])))
 
     expect(narrow.text).toBe(wide.text) // 正文确实一字未动，变的只有条件
-    delivery.promptFor('')
+    await delivery.promptFor('')
     const batch = [{ id: 'a', name: 'write', args: { path: 'src/a.ts' } }]
-    expect(delivery.preflight(batch)).toEqual({ kind: 'pass' }) // 同一份材料：不拦
+    expect((await delivery.preflight(batch))).toEqual({ kind: 'pass' }) // 同一份材料：不拦
 
     current = wide // 用户给这条规则多加了一段适用路径
-    expect(delivery.preflight(batch)).toEqual({
+    expect((await delivery.preflight(batch))).toEqual({
       kind: 'review',
       blocking: [expect.objectContaining({ name: '.magic/rules/style.md' })],
     })
@@ -603,7 +603,7 @@ describe('预查不妨碍既有的控制流', () => {
     expect(kindsOf(stage)).toEqual([]) // 已中止的执行不再消费输入。
   })
 
-  test('**历史**作用域有上界（先进先出）——长会话不会把碰过的每一个目录都攒着', () => {
+  test('**历史**作用域有上界（先进先出）——长会话不会把碰过的每一个目录都攒着', async () => {
     /** 每次 `load` 被问了哪些目标——分两拨记：预查那一趟与**下一次请求**那一趟。 */
     let asked: readonly string[] = []
     const delivery = createRulesDelivery(
@@ -624,17 +624,17 @@ describe('预查不妨碍既有的控制流', () => {
 
     // **预查查的是这一批的全部目标**（2026-09-20 裁：先查完整当前批，不先裁再查）——
     // 首轮实测：同批 65 次写、第一个目标有规约，全部写成功且任何请求都没收到那份规约
-    delivery.preflight(calls)
+    await delivery.preflight(calls)
     expect(asked).toHaveLength(MAX_SCOPE_TARGETS + 10)
 
     // 而**下一次请求**（历史那一截）照旧有界：最早的 10 个目标已经出队
-    delivery.promptFor('')
+    await delivery.promptFor('')
     expect(asked).toHaveLength(MAX_SCOPE_TARGETS)
     expect(asked).not.toContain('d0/x.ts') // 最早那个已出队
     expect(asked).toContain(`d${MAX_SCOPE_TARGETS + 9}/x.ts`) // 最近这个在
   })
 
-  test('**被拦批的目标被钉住**：下一次请求一定带上它们的规约（不先裁再送＝不转圈）', () => {
+  test('**被拦批的目标被钉住**：下一次请求一定带上它们的规约（不先裁再送＝不转圈）', async () => {
     /** 只有 `src` 有规约——其余目标什么都读不出来。 */
     const delivery = createRulesDelivery(
       stubRules((targets) =>
@@ -645,8 +645,8 @@ describe('预查不妨碍既有的控制流', () => {
     )
 
     // 先让历史作用域被 64 个别的目标填满（`src` 不在其中）
-    delivery.promptFor('')
-    delivery.preflight(
+    await delivery.promptFor('')
+    await delivery.preflight(
       Array.from({ length: MAX_SCOPE_TARGETS }, (_unused, index) => ({
         id: `c${index}`,
         name: 'write',
@@ -656,7 +656,7 @@ describe('预查不妨碍既有的控制流', () => {
 
     // 现在提一个 src 的目标：这一批必须被拦（它的规约还没送达）
     const batch = [{ id: 'x', name: 'write', args: { path: 'src/a.ts' } }]
-    expect(delivery.preflight(batch)).toEqual({
+    expect((await delivery.preflight(batch))).toEqual({
       kind: 'review',
       blocking: [expect.objectContaining({ name: 'src/AGENTS.md' })],
     })
@@ -670,8 +670,8 @@ describe('预查不妨碍既有的控制流', () => {
         return load([])
       }),
     )
-    probing.preflight(batch)
-    probing.promptFor('')
+    await probing.preflight(batch)
+    await probing.promptFor('')
     expect(asked.at(-1)).toContain('src/a.ts')
 
     // 送达之后重提 ⇒ 放行（重审后只执行一次）
@@ -680,34 +680,34 @@ describe('预查不妨碍既有的控制流', () => {
         targets.includes('src/a.ts') ? load([doc('src/AGENTS.md', 'src 的约定')]) : load([]),
       ),
     )
-    after.promptFor('')
-    expect(after.preflight(batch).kind).toBe('review')
-    after.promptFor('') // 重审那一趟请求——规约真送出去了
-    expect(after.preflight(batch)).toEqual({ kind: 'pass' })
+    await after.promptFor('')
+    expect((await after.preflight(batch)).kind).toBe('review')
+    await after.promptFor('') // 重审那一趟请求——规约真送出去了
+    expect((await after.preflight(batch))).toEqual({ kind: 'pass' })
   })
 
-  test('**送达＝最近一次请求里有它**：被挤出之后重访，照样拦（首轮是永久账，直接放行）', () => {
+  test('**送达＝最近一次请求里有它**：被挤出之后重访，照样拦（首轮是永久账，直接放行）', async () => {
     const withGuard = (targets: readonly string[]): RulesLoad =>
       targets.includes('guard/f.ts') ? load([doc('guard/AGENTS.md', 'guard 的约定')]) : load([])
     const delivery = createRulesDelivery(stubRules(withGuard))
 
-    delivery.promptFor('')
-    expect(delivery.preflight([{ id: 'a', name: 'write', args: { path: 'guard/f.ts' } }]).kind).toBe('review')
-    delivery.promptFor('') // 规约送达
-    expect(delivery.preflight([{ id: 'a', name: 'write', args: { path: 'guard/f.ts' } }])).toEqual({ kind: 'pass' })
+    await delivery.promptFor('')
+    expect((await delivery.preflight([{ id: 'a', name: 'write', args: { path: 'guard/f.ts' } }])).kind).toBe('review')
+    await delivery.promptFor('') // 规约送达
+    expect((await delivery.preflight([{ id: 'a', name: 'write', args: { path: 'guard/f.ts' } }]))).toEqual({ kind: 'pass' })
 
     // 64 个新目标把它挤出**历史**作用域 ⇒ 下一次请求里**没有它了**
-    delivery.preflight(
+    await delivery.preflight(
       Array.from({ length: MAX_SCOPE_TARGETS }, (_unused, index) => ({
         id: `p${index}`,
         name: 'write',
         args: { path: `plain/f${index}.ts` },
       })),
     )
-    expect(delivery.promptFor('')).not.toContain('guard 的约定')
+    expect((await delivery.promptFor(''))).not.toContain('guard 的约定')
 
     // 于是回头再碰 guard：**必须再拦一次**——因为当下这次请求里确实没有那份规约
-    expect(delivery.preflight([{ id: 'b', name: 'write', args: { path: 'guard/f.ts' } }]).kind).toBe('review')
+    expect((await delivery.preflight([{ id: 'b', name: 'write', args: { path: 'guard/f.ts' } }])).kind).toBe('review')
   })
 
   test('**材料没读完整**：这一批停住，回填**不谎称「已送入上下文」**且不让模型重提', async () => {

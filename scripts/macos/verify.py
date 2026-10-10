@@ -4,7 +4,10 @@ import json
 import os
 from pathlib import Path
 import selectors
-import signal
+import plistlib
+import shutil
+import uuid
+from contextlib import contextmanager
 import socket
 import subprocess
 import sys
@@ -41,58 +44,78 @@ def running(pid):
         return False
 
 
-def verify(app, output):
+def prepare_app(source, room):
+    """Create a reviewable copy without launching or registering it."""
+    room = room.resolve()
+    assert room.parent == Path('/private/tmp') and room.name.startswith('magic-system-test-')
+    app = room / 'Magic Code.app'
+    shutil.copytree(source, app)
+    info = app / 'Contents/Info.plist'
+    data = plistlib.loads(info.read_bytes())
+    data['CFBundleIdentifier'] = 'com.magiccode.validation.' + uuid.uuid4().hex + '.dev'
+    data['MagicSystemTestRoot'] = str(room)
+    info.write_bytes(plistlib.dumps(data))
+    assert not (app / 'Contents/Resources/controlled-helper.py').exists(), 'real Engine required'
+    subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--sign',
+                    os.environ.get('MAGIC_SIGN_IDENTITY', 'Apple Development: echojamieee@outlook.com (9JHY98AJMC)'), str(app)], check=True)
+    return app
+
+
+@contextmanager
+def isolated_app(source):
+    """Unique bundle/launchd identity; callers authorize system use."""
+    with tempfile.TemporaryDirectory(prefix='magic-system-test-', dir='/tmp') as temporary:
+        room = Path(temporary).resolve()
+        app = prepare_app(source, room)
+        try:
+            yield app, room
+        finally:
+            stop_engine(app, room)
+
+
+def environment(room):
+    return {'HOME': str(room), 'MAGIC_HOME': str(room), 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}
+
+
+def stop_engine(app, room):
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    assert info['CFBundleIdentifier'].startswith('com.magiccode.validation.') and info['MagicSystemTestRoot'] == str(room)
+    result = subprocess.run([str(app / 'Contents/MacOS/MagicCode'), '--internal-engine-control', 'stop', '--validation-root', str(room)],
+                            env=environment(room), cwd=room, capture_output=True, text=True, timeout=40)
+    assert result.returncode == 0 and json.loads(result.stdout)['state'] == 'stopped', result.stdout + result.stderr
+
+
+def verify(source):
     evidence = []
-    for scenario in ['shutdown', 'force-kill']:
-        with tempfile.TemporaryDirectory(prefix='magic-native-verify-') as room:
-            room = str(Path(room).resolve())
-            env = {'HOME': room, 'MAGIC_HOME': room, 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}
-            args = [str(app / 'Contents/MacOS/MagicCode'), '--validation-root', room]
+    with isolated_app(source) as (app, room):
+        for scenario in ['shutdown', 'force-kill']:
+            args = [str(app / 'Contents/MacOS/MagicCode')]
             if scenario == 'shutdown': args.append('--validation-quit')
-            manager_pid = None
-            error_path = output / f'app-{scenario}.stderr.log'
-            with error_path.open('w') as stderr:
-                process = subprocess.Popen(args, env=env, cwd=room, stdout=subprocess.PIPE, stderr=stderr)
+            with (room / 'app.stderr.log').open('w') as stderr:
+                process = subprocess.Popen(args, env=environment(room), cwd=room, stdout=subprocess.PIPE, stderr=stderr)
+                second = None
                 try:
                     event = wait_line(process)
                     discovery_path = Path(event['host'])
                     discovery = json.loads(discovery_path.read_text())
-                    manager = json.loads((Path(discovery['socket']).parent / 'manager.json').read_text())
-                    manager_pid = manager['pid']
-                    assert running(manager_pid)
-                    assert discovery['app'] == str(app)
-                    assert discovery['base'].startswith(room)
+                    engine = discovery['pid']
+                    assert running(engine) and discovery['app'] == str(app)
+                    assert discovery['base'].startswith(str(room) + '/')
                     assert discovery_path.stat().st_mode & 0o777 == 0o600
-                    # A real read-only observer proves protocol and zero-session idle state.
-                    if scenario == 'force-kill':
-                        observer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        observer.settimeout(5)
-                        observer.connect(discovery['socket'])
-                        observer.sendall((json.dumps({'t': 'hello', 'role': 'observer', **{k: discovery[k] for k in ['protocol', 'version', 'source', 'base']}})+'\n').encode())
-                        welcome = json.loads(observer.makefile('rb').readline())
-                        assert welcome['t'] == 'native.welcome' and welcome['projection']['works'] == []
-                        process.kill()
-                        process.wait(timeout=5)
-                        deadline = time.monotonic() + 10
-                        while running(manager_pid) and time.monotonic() < deadline:
-                            time.sleep(0.05)
-                        observer.close()
-                    else:
-                        assert process.wait(timeout=15) == 0
-                        assert not discovery_path.exists(), 'normal quit must remove only its generation'
-                    assert not running(manager_pid), 'manager survived App lifetime EOF'
-                    evidence.append({'scenario': scenario, 'appPID': process.pid, 'managerPID': manager_pid,
-                                     'managerExited': True, 'privateDiscovery': True, 'isolatedData': True})
+                    if scenario == 'force-kill': process.kill()
+                    process.wait(timeout=15)
+                    assert running(engine), 'App exit stopped Engine'
+                    second = subprocess.Popen([str(app / 'Contents/MacOS/MagicCode')], env=environment(room), cwd=room, stdout=subprocess.PIPE, stderr=stderr)
+                    next_record = json.loads(Path(wait_line(second)['host']).read_text())
+                    assert next_record['pid'] == engine and next_record['serviceInstance'] == discovery['serviceInstance']
+                    stop_engine(app, room)
+                    assert not running(engine), 'explicit Engine stop did not finish'
+                    evidence.append({'scenario': scenario, 'appExitPreservedEngine': True, 'reopenReusedEngine': True, 'explicitStopFinished': True})
                 finally:
-                    if process.poll() is None:
-                        process.kill(); process.wait(timeout=5)
-                    output.joinpath(f'app-{scenario}.stdout.log').write_bytes(process.stdout.read())
-                    # Cleanup only a PID started and recorded by this isolated harness.
-                    if manager_pid and running(manager_pid):
-                        os.kill(manager_pid, signal.SIGTERM)
-    output.joinpath('native-lifecycle.json').write_text(json.dumps(evidence, indent=2)+'\n')
+                    for child in [process, second]:
+                        if child and child.poll() is None: child.kill(); child.wait(timeout=5)
     print(json.dumps(evidence))
 
 
 if __name__ == '__main__':
-    verify(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
+    verify(Path(sys.argv[1]).resolve())

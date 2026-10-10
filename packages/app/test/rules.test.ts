@@ -642,8 +642,8 @@ describe('真装配 · 原生与兼容', () => {
 
       // 落选那份**查得着**，但**不是错误、不在启动报警**（2026-09-20 裁）：
       // 「原生优先」是产品按设计做的取舍，为它每次开屏报一句就是噪音
-      expect(assembly.notices.join(' ')).toBe('')
-      const problems = assembly.readRules().problems
+      expect((await assembly.notices()).join(' ')).toBe('')
+      const problems = (await assembly.readRules()).problems
       expect(problems.map((problem) => problem.message).join(' ')).toContain('原生优先')
       expect(problems.map((problem) => problem.kind)).toEqual(['choice'])
 
@@ -665,7 +665,7 @@ describe('真装配 · 原生与兼容', () => {
       shell.dispose()
 
       expect(systemOf(stage, 0)).not.toContain('这条读不懂')
-      expect(assembly.notices.join(' ')).toContain('项目规约里有 1 条没能加载')
+      expect((await assembly.notices()).join(' ')).toContain('项目规约里有 1 条没能加载')
 
       assembly.close()
     } finally {
@@ -728,7 +728,7 @@ describe('真装配 · 用户显式配置的补充来源', () => {
 
         expect(systemOf(stage, 0).includes('共享的一份规约')).toBe(withSource)
         if (!withSource) {
-          expect(assembly.readRules().problems.map((p) => p.message).join(' ')).toContain(
+          expect((await assembly.readRules()).problems.map((p) => p.message).join(' ')).toContain(
             '工作区之外',
           )
         }
@@ -742,7 +742,7 @@ describe('真装配 · 用户显式配置的补充来源', () => {
     }
   })
 
-  test('配置里写了补充来源却**接不上**＝静默失效——加载器真把它带过来了', () => {
+  test('配置里写了补充来源却**接不上**＝静默失效——加载器真把它带过来了', async () => {
     const stage = makeStage({ config: { rules: { sources: ['/nope/not-here'] } } })
 
     try {
@@ -750,7 +750,7 @@ describe('真装配 · 用户显式配置的补充来源', () => {
 
       // 来源存在与否是执行域的事（会报出来），**键有没有被接住**是加载器的事——
       // 这一条咬的是后者：配置里那串真的到了装配（漏带的话这里会是空数组，且不报错）
-      expect(assembly.readRules().problems.map((p) => p.path)).toContain('/nope/not-here')
+      expect((await assembly.readRules()).problems.map((p) => p.path)).toContain('/nope/not-here')
 
       assembly.close()
     } finally {

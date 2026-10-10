@@ -46,8 +46,7 @@ async function ready(f: StopRuntime): Promise<readonly OwnedProcess[]> {
     expect(alive(process.pgid)).toBe(true)
   }
   expect(f.launches).toHaveLength(2)
-  expect(new Set(f.launches.map(one => one.pid)).size).toBe(2)
-  expect(f.launches.every(one => one.pid !== undefined && one.pid !== process.pid)).toBe(true)
+  expect(new Set(f.launches.map(one => one.gen)).size).toBe(2)
   f.mark('barrier-ready', { members: f.members(), delegations: f.delegations(), owned })
   await f.openStop()
   return owned
@@ -76,10 +75,9 @@ async function reclaimed(f: StopRuntime, owned: readonly OwnedProcess[], atStop:
     owned.every(one => !alive(one.pgid) && !alive(-one.pgid)))
   for (const launched of f.launches) {
     expect(launched.exited).toBeDefined()
-    expect(alive(launched.pid!)).toBe(false)
     expect(f.members().some(one => one.sessionId === launched.session)).toBe(true)
     const persisted = f.storedRuns().find(one => one.gen === launched.gen)!
-    expect(persisted).toMatchObject({ pid: launched.pid, session: launched.session, tokenHash: launched.tokenHash })
+    expect(persisted).toMatchObject({ session: launched.session, tokenHash: launched.tokenHash })
     expect(persisted.kind).toBeDefined()
     expect(persisted.why).toBeDefined()
     expect(f.manager.runs().find(one => one.session === launched.session)?.holds).toBe(false)
@@ -170,9 +168,7 @@ test('后代已登记、真实启动并持有后台进程后整体 stop：入口
     expect(descendant.createdBy).toBe(memberOf(f).agentId)
     expect(f.collaboration()?.state).toBe('open')
     expect(f.launches).toHaveLength(3)
-    expect(new Set(f.launches.map(one => one.pid)).size).toBe(3)
-    expect(launched.pid).toBeDefined()
-    expect(alive(launched.pid!)).toBe(true)
+    expect(new Set(f.launches.map(one => one.gen)).size).toBe(3)
     expect(launched.exited).toBeUndefined()
     const owned = [...ownedA, ...launched.owned.map(one => ({ ...one }))]
     for (const one of owned) {
@@ -232,7 +228,7 @@ test('executor 已发出的交付 RPC 在 stop 后经原通道处理：保存原
     expect(packet.message.request).toEqual({ action: 'deliver', operationId: 'inflight-delivery', delegation: delegationOf(f).delegationId, ...delivery })
     const owner = f.launches.find(one => one.gen === packet.gen)!
     expect(owner.session).toBe(memberOf(f).sessionId)
-    expect(alive(owner.pid!)).toBe(true)
+    expect(owner.exited).toBeUndefined()
     f.pick('stop-work')
     const stop = await stopped(f)
     expect(packet.order).toBeLessThan(stop.order)

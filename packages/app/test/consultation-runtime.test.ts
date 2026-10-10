@@ -266,21 +266,21 @@ test('U115：运行中纠正到安全边界，历史保留旧证据，原工作�
   } finally { resume.release(); await f.close() }
 }, 20000)
 
-test('U115：顾问 executor 异常退出主动报未完成，不重发咨询，原工作仍能接住', async () => {
+test('U115：顾问模型流失败主动报未完成，不重发咨询，原工作仍能接住', async () => {
   const pending = latch()
   const f = await collaborationRuntime('u115-crash', async call => {
     if (call.model === 'entry-model') return call.index === 0 ? consult : { text: '收到未完成原因，保留原工作责任。' }
-    await pending.promise; return { text: '不该采纳的迟到内容' }
+    await pending.promise; return { text: '', malformed: true }
   }, { allowAll: true })
   try {
     f.shell.key({ kind: 'paste', text: '先查证' }); f.shell.key({ kind: 'enter' })
     await f.wait('顾问实际调用', () => f.requests('descendant-model').length === 1)
     const executor = f.manager.executors().find(one => one.session === f.member()!.sessionId)!
-    process.kill(executor.pid!, 'SIGKILL')
-    await f.wait('中断回报与进程核销', () => f.delegation()?.deliveryMessageId !== undefined && f.processExits.some(one => one.pid === executor.pid))
+    pending.release()
+    await f.wait('中断回报与进程核销', () => f.delegation()?.deliveryMessageId !== undefined && f.agentExits.some(one => one.gen === executor.gen))
     expect(f.delegation()?.reason).toContain('咨询未完成')
     expect(f.requests('descendant-model')).toHaveLength(1)
-    expect(f.manager.executors().some(one => one.pid === executor.pid)).toBe(false)
+    expect(f.manager.executors().some(one => one.gen === executor.gen)).toBe(false)
   } finally { pending.release(); await f.close() }
 }, 15000)
 

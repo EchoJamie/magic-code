@@ -37,10 +37,10 @@ struct TerminalPreferencesEditor: View {
             SettingsCard(title: "颜色与动效") {
                 Toggle("状态行上色", isOn: Binding(get: { colorEnabled }, set: { value in
                     model.applySettings(.object(["type": .string("prefs.set"), "statusLine": .object(["cells": snapshot.configuration["statusLine"]["cells"], "color": .bool(value)])]), stamp: snapshot.stamp, key: "terminal-color")
-                })).disabled(model.settingsBusy || !model.isCurrent)
+                })).disabled(model.settingsBusy)
                 Toggle("减少动效", isOn: Binding(get: { reduced }, set: { value in
                     model.applySettings(.object(["type": .string("prefs.set"), "reducedMotion": .bool(value)]), stamp: snapshot.stamp, key: "terminal-motion")
-                })).disabled(model.settingsBusy || !model.isCurrent)
+                })).disabled(model.settingsBusy)
                 Text("开关保存成功后回显。减少动效停止亮度变化，耗时读数仍然更新。").font(.caption).foregroundStyle(.secondary)
             }
             SettingsCard(title: "示例预览") {

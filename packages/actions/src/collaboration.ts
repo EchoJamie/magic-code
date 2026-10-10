@@ -4,11 +4,11 @@ import type {
 } from '@magic/contracts'
 
 export type CollaborationActionsDeps = {
-  readonly modelChoices?: () => Promise<unknown>
+  readonly modelChoices?: (session: string) => Promise<unknown>
   readonly records: CollaborationRecords
   readonly now: () => number
   readonly origin: (agent: AgentIdentity) => Promise<EntryReference>
-  readonly resolveModel: (input: { readonly defaults: AgentModelConfig; readonly role?: string; readonly model?: ModelSwitchRequest }) => Promise<AgentModelConfig>
+  readonly resolveModel: (input: { readonly session: string; readonly defaults: AgentModelConfig; readonly role?: string; readonly model?: ModelSwitchRequest }) => Promise<AgentModelConfig>
   /** 已登记身份后才启动，启动失败必须可查。 */
   readonly start: (agent: AgentIdentity) => Promise<void>
   readonly wake: (agentId: AgentId) => void
@@ -30,7 +30,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         let collaboration = actor.collaborationId === undefined ? undefined : records.getCollaboration(actor.collaborationId)
         let initialModel: AgentModelConfig | undefined
         if (request.action === 'list') {
-          const choices = await deps.modelChoices?.()
+          const choices = await deps.modelChoices?.(actor.sessionId)
           return { ok: true, value: collaboration === undefined ? { self: actor, members: [], choices } : {
             self: actor, choices,
             collaboration,
@@ -42,7 +42,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
         if (collaboration === undefined) {
           if (request.action !== 'spawn' && request.action !== 'consult') throw new Error('这条会话尚未展开协作')
           // 配置未通过时尚无实际派生，原会话仍保持普通工作。
-          initialModel = await deps.resolveModel({ defaults: actor.model,
+          initialModel = await deps.resolveModel({ session: actor.sessionId, defaults: actor.model,
             ...(request.action === 'consult' ? { model: { choice: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
               ...(request.role === undefined ? {} : { role: request.role }),
               ...(request.model === undefined ? {} : { model: request.model }),
@@ -74,7 +74,7 @@ export function createCollaborationActions(deps: CollaborationActionsDeps) {
               value = consulting ? { consultationId: delegation.delegationId, advisorAgentId: agent.agentId, state: delegation.state } : { agent, delegation }
               break
             }
-            const model = initialModel ?? await deps.resolveModel({ defaults: collaboration.defaultModel,
+            const model = initialModel ?? await deps.resolveModel({ session: actor.sessionId, defaults: collaboration.defaultModel,
               ...(request.action === 'consult' ? { model: { choice: 'arcane', reasoning: request.reasoning ?? { mode: 'default' } } as ModelSwitchRequest } : {
                 ...(request.role === undefined ? {} : { role: request.role }),
                 ...(request.model === undefined ? {} : { model: request.model }),

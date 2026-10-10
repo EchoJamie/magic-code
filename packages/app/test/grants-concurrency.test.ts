@@ -307,7 +307,7 @@ describe('U47 · 授权文件：撤销不得被复活', () => {
       expect(idsIn(path, section)).toEqual(['web_fetch:outbound'])
 
       // **另一处撤掉它**（并发的第二个写入者——走的就是落盘那一跳）
-      commitGrants(path, [{ kind: 'revoke', workspace: section, index: 0, rule: gone }])
+      ;(await commitGrants(path, [{ kind: 'revoke', workspace: section, index: 0, rule: gone }]))
       expect(stored(path).workspaces[section]).toBeUndefined()
 
       // 持旧账本的那一方**再写一次**（换一条规则）——它内存里那条 G1 不许跟着回来
@@ -397,7 +397,7 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
     }
   }, 120_000)
 
-  test('拿不到锁**有界等待**并给出具体原因——不静默失败、不无限等', () => {
+  test('拿不到锁**有界等待**并给出具体原因——不静默失败、不无限等', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
@@ -409,9 +409,9 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
       const started = Date.now()
       let thrown: Error | undefined
       try {
-        commitGrants(path, [
+        ;(await commitGrants(path, [
           { kind: 'grant', workspace: '/work/w', grant: { tool: 'exec', grantedAt: 1 } },
-        ])
+        ]))
       } catch (error) {
         thrown = error as Error
       }
@@ -429,7 +429,7 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
     }
   }, 30_000)
 
-  test('锁键是**规范化文件路径**——同一份文件的两个写法锁在同一把锁上', () => {
+  test('锁键是**规范化文件路径**——同一份文件的两个写法锁在同一把锁上', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
@@ -447,9 +447,9 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
       // 从**另一个写法**进来——字符串上完全是两个路径，锁的却是同一把
       let thrown: Error | undefined
       try {
-        commitGrants(join(alias, 'grants.json'), [
+        ;(await commitGrants(join(alias, 'grants.json'), [
           { kind: 'grant', workspace: '/work/w', grant: { tool: 'exec', grantedAt: 1 } },
-        ])
+        ]))
       } catch (error) {
         thrown = error as Error
       }
@@ -461,7 +461,7 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
     }
   }, 30_000)
 
-  test('写不成的那一次**不丢**——下一次落盘把它一并带上', async () => {
+  test('授权保存失败拒绝该次持久放行，后续保存不得重放失败授权', async () => {
     const stage = makeStage()
     try {
       const path = grantsPathOf(stage)
@@ -490,9 +490,9 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
       shell.answer(shell.requests[1] as number, { remember: true })
       await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '第二轮跑完')
 
-      // **第一轮那条也在**——没写成的攒到了下一次，不是丢了
+      // 第一轮失败不应在后续无关保存中复活。
       const section = assembly.workspaceRoots[0] as string
-      expect(idsIn(path, section)).toEqual(['exec:system', 'write:overwrite'])
+      expect(idsIn(path, section)).toEqual(['write:overwrite'])
 
       shell.dispose()
       assembly.close()
@@ -516,9 +516,9 @@ describe('U47 · 授权文件：真进程并发（锁本身在这里被测）', 
       const old = new Date(Date.now() - 60_000)
       utimesSync(lock, old, old) // 也很久没动过了——两个条件齐
 
-      commitGrants(path, [
+      ;(await commitGrants(path, [
         { kind: 'grant', workspace: '/work/w', grant: { tool: 'exec', grantedAt: 1 } },
-      ])
+      ]))
 
       expect(stored(path).workspaces['/work/w']).toHaveLength(1)
       expect(existsSync(lock)).toBe(false) // 清掉了，没留在盘上

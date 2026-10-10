@@ -184,6 +184,7 @@ export type ConversationSession = {
   manage(command: InputManage): void
   submit(input: UserInput): void
   interrupt(): void
+  shutdown(): Promise<void>
   /** 重建这条会话的现场——装载 ＋ 认下水位于开工位（见 `RebuildHandoff`）。 */
   rebuild(handoff: RebuildHandoff): RebuildReport
   /** 正在干活（一轮在跑 / 排队中的交代还在）——主面据以「忙时切不动」。 */
@@ -210,6 +211,8 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   let turnSeq = 0
   let started = false
   let running = false
+  let closed = false
+  let flight: Promise<void> = Promise.resolve()
   /** 在途工作的中止手柄——`interrupt` 的唯一着力点（空闲时为 `undefined`）。 */
   let current: AbortController | undefined
   /**
@@ -230,7 +233,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       let changed = false
       for (const next of supplements.splice(0)) {
         try {
-          const prepared = await prepareInput(runtime, next.input, entry => deps.collaboration?.userInput?.(entry, next.shared))
+          const prepared = await prepareInput(runtime, next.input, entry => deps.collaboration?.userInput?.(entry, next.shared), current?.signal)
           changed ||= prepared !== undefined
         } finally { next.done() }
       }
@@ -346,7 +349,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
 
     try {
       for (;;) {
-        if (pending.length === 0) break
+        if (closed || controller.signal.aborted || pending.length === 0) break
         const first=pending[0]?.input
         if (waitingForDelegations(first)) break
         const queued = pending.shift()!
@@ -386,7 +389,14 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     }
   }
 
+  function startDrain(): void {
+    // 保存已处理拒绝的 Promise，关闭实例时等待它落定。
+    flight = drain().catch(error => { failure = error })
+  }
+  let failure: unknown
+
   function enqueue(input:UserInput,shared:boolean,done:()=>void=()=>{}):void {
+      if (closed) { done(); return }
       const durable = {...input,ref:input.ref??crypto.randomUUID()}
       try {
         const existing = deps.records.inputs.get(durable.ref)
@@ -396,7 +406,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         if (existing !== undefined) { done(); return }
         if (running && row.purpose==='current') supplements.push({input:row.input,shared,done})
         else pending.push({input:row.input,shared,done})
-        if (!running) void drain()
+        if (!running) startDrain()
       } catch(error) {
         sink.emit(stamper.stamp('input.settled',{ref:durable.ref,ok:false,reason:`受理失败：${messageOf(error)}`}))
         done()
@@ -404,10 +414,10 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
   }
 
   function wake(): void {
-    if (deps.collaboration === undefined || pending.some(one=>one.input===undefined) || current?.signal.aborted===true) return
+    if (closed || deps.collaboration === undefined || pending.some(one=>one.input===undefined) || current?.signal.aborted===true) return
     if (!running && waitingForDelegations(pending[0]?.input)) return
     pending.unshift({input:undefined,shared:false})
-    if (!running) void drain()
+    if (!running) startDrain()
   }
   function waitingForDelegations(input:UserInput|undefined):boolean {
     if(input?.purpose!=='next')return false
@@ -424,18 +434,20 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     wake,
 
     manage(command) {
+      if (closed) return
       const inputs = deps.records.inputs
       let note: string | undefined
       if (command.action === 'edit') note = inputs.edit(command.ref, command.revision, command.input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
       if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
       if (command.action === 'continue') {
         const row = inputs.get(command.ref)
-        if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running) void drain() }
+        if (row?.state === 'pending' && row.revision === command.revision) { inputs.hold(row.ref,undefined); pending.push({input:row.input,shared:false}); if (!running) startDrain() }
         else note = '输入已消费或已改变，未继续'
       }
       sink.emit(stamper.stamp('input.pending', {inputs:inputs.list(),...(note===undefined?{}:{note})}))
     },
     submit(input: UserInput): void {
+      if (closed) return
       if (input.local === true) {
         sink.emit(stamper.stamp('input.local',{text:input.text,refs:input.refs??[],ref:input.ref??crypto.randomUUID()}))
         return
@@ -448,6 +460,14 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
       // 「停下」就是停下——排队那几条**保留并标为未执行**（U50 · 见 `holdQueued`）：
       // 不丢、不接着跑、逐条说清它们还没轮到
       holdQueued()
+    },
+
+    async shutdown() {
+      closed = true
+      current?.abort()
+      holdQueued()
+      await flight
+      if (failure !== undefined) throw failure
     },
 
     busy: () => running || pending.length > 0,

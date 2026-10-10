@@ -17,7 +17,7 @@
  */
 
 import { existsSync, writeFileSync } from 'node:fs'
-import { createProcessLauncher } from '../src/run/launch.ts'
+import { createAgentLauncher } from '../src/run/launch.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { startManager } from '../src/run/manager.ts'
 
@@ -37,7 +37,7 @@ if (
  * **真起进程**的启动器——竞争那一组没有命令过去，故一个执行者都不会起来；
  * 用它是因为「管理者被杀 ⇒ 执行者自行停止」那一条要有真子进程才证得了。
  */
-const launch = createProcessLauncher()
+const launch = createAgentLauncher()
 
 const paths = runPathsOf({ home, base }, tmpdir)
 

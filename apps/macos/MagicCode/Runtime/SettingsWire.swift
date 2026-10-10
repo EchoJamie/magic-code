@@ -1,5 +1,37 @@
 import Foundation
 
+struct SettingsCallResult: Decodable {
+    let request: String?
+    let base: String?
+    let configPath: String?
+    let saved: Bool
+    let note: String?
+    let snapshot: SettingsSnapshot?
+    let error: String?
+}
+
+enum SettingsCall {
+    static func run(helper: URL, request: SettingsValue, environment: [String: String]) async throws -> SettingsCallResult {
+        let data = try JSONEncoder().encode(request)
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let process = Process(), input = Pipe(), output = Pipe()
+                    process.executableURL = helper; process.arguments = ["--internal-settings"]
+                    process.environment = environment
+                    process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+                    try process.run()
+                    try input.fileHandleForReading.close(); try output.fileHandleForWriting.close()
+                    try input.fileHandleForWriting.write(contentsOf: data); try input.fileHandleForWriting.close()
+                    let result = output.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    continuation.resume(returning: try JSONDecoder().decode(SettingsCallResult.self, from: result))
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+}
+
 /// 仅用于原生协议值适配；用户编辑的是各页字段，不是 JSON。
 indirect enum SettingsValue: Codable, Hashable {
     case object([String: SettingsValue]), array([SettingsValue]), string(String), number(Double), bool(Bool), null
@@ -43,8 +75,6 @@ struct SettingsSnapshot: Codable, Equatable {
     let grants: [SettingsValue]
     let grantStamp: String?
     let grantProblem: String?
-    let mcp: [SettingsValue]
-    let canChangeData: Bool
 }
 
 extension SettingsValue {
@@ -76,7 +106,6 @@ extension SettingsValue {
                 && (server["url"] == .null ? !server["command"].text.isEmpty && (server.object["args"] == nil || { if case .array(let values) = server["args"] { return values.allSatisfy { if case .string = $0 { return true }; return false } }; return false }()) : !server["url"].text.isEmpty)
             return text("name") && object("server") && validServer && object("secrets") && self["secrets"].object.values.allSatisfy { if $0 == .null { return true }; if case .string = $0 { return true }; return false }
         case "mcp.remove": return text("name")
-        case "mcp.reconnect": return text("name") && text("session") && self["gen"].number.map { $0 >= 0 && $0.rounded() == $0 } == true
         case "sources.set": return ["rules.sources", "rules.linkSources", "skills.sources"].contains(self["source"].text) && strings("paths")
         case "role.save": return text("id") && object("role")
         case "role.remove": return text("id")
@@ -92,7 +121,7 @@ extension SettingsValue {
     }
 }
 extension SettingsSnapshot {
-    private enum Keys: String, CodingKey { case preview, configPath, base, stamp, configuration, catalog, vendors, sources, grants, grantStamp, grantProblem, mcp, canChangeData }
+    private enum Keys: String, CodingKey { case preview, configPath, base, stamp, configuration, catalog, vendors, sources, grants, grantStamp, grantProblem }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         preview = try c.decode(SettingsValue.self, forKey: .preview)
@@ -100,7 +129,7 @@ extension SettingsSnapshot {
         stamp = try c.decode(String?.self, forKey: .stamp); grantStamp = try c.decode(String?.self, forKey: .grantStamp)
         configuration = try c.decode(SettingsValue.self, forKey: .configuration)
         catalog = try c.decode([SettingsValue].self, forKey: .catalog); vendors = try c.decode([SettingsValue].self, forKey: .vendors); sources = try c.decode([SettingsValue].self, forKey: .sources)
-        grants = try c.decode([SettingsValue].self, forKey: .grants); mcp = try c.decode([SettingsValue].self, forKey: .mcp); canChangeData = try c.decode(Bool.self, forKey: .canChangeData)
+        grants = try c.decode([SettingsValue].self, forKey: .grants)
         grantProblem = c.contains(.grantProblem) ? try c.decode(String.self, forKey: .grantProblem) : nil
         guard case .object = configuration, case .object = preview else { throw WireError.invalid("设置快照必须包含已知配置与预览对象") }
     }
@@ -108,7 +137,18 @@ extension SettingsSnapshot {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(preview, forKey: .preview); try c.encode(configPath, forKey: .configPath); try c.encode(base, forKey: .base)
         try c.encode(stamp, forKey: .stamp); try c.encode(grantStamp, forKey: .grantStamp); try c.encode(configuration, forKey: .configuration)
-        try c.encode(catalog, forKey: .catalog); try c.encode(vendors, forKey: .vendors); try c.encode(sources, forKey: .sources); try c.encode(grants, forKey: .grants); try c.encode(mcp, forKey: .mcp)
-        try c.encode(canChangeData, forKey: .canChangeData); try c.encodeIfPresent(grantProblem, forKey: .grantProblem)
+        try c.encode(catalog, forKey: .catalog); try c.encode(vendors, forKey: .vendors); try c.encode(sources, forKey: .sources); try c.encode(grants, forKey: .grants)
+        try c.encodeIfPresent(grantProblem, forKey: .grantProblem)
+    }
+}
+
+extension SettingsValue {
+    var validSettingsRequest: Bool {
+        let fields = object
+        guard ["request", "home", "base", "configPath"].allSatisfy({ !self[$0].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return false }
+        if let action = fields["action"] {
+            guard action.validSettingsAction, let stamp = fields["stamp"], stamp == .null || { if case .string = stamp { return true }; return false }() else { return false }
+        }
+        return fields["preview"] == nil || self["preview"].validSettingsPreview
     }
 }

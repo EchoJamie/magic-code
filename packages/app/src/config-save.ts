@@ -73,9 +73,9 @@ function readRaw(path: string): Edit {
  *
  * 写用**临时文件 ＋ rename**：读到的要么是旧的完整内容、要么是新的完整内容。
  */
-export function editConfigFile(input: EditConfigInput): SaveOutcome {
-  let lock: ReturnType<typeof acquireFileLock>
-  try { lock = acquireFileLock(input.path) } catch { return { ok: false, reason: '配置文件正在写入或不可写，请稍后重试' } }
+export async function editConfigFile(input: EditConfigInput): Promise<SaveOutcome> {
+  let lock: Awaited<ReturnType<typeof acquireFileLock>>
+  try { lock = await acquireFileLock(input.path) } catch { return { ok: false, reason: '配置文件正在写入或不可写，请稍后重试' } }
   try { return editLocked(input) } catch { return { ok: false, reason: '配置文件无法读取或写入，请检查路径与权限后重试' } } finally { lock.release() }
 }
 
@@ -131,12 +131,12 @@ function entryOf(providers: Record<string, unknown>, id: string): Record<string,
  *
  * ⚠️ **不猜供应商**：`vendor` 认不出由模型域报（这里只管写进去）。
  */
-export function saveProvider(input: {
+export async function saveProvider(input: {
   readonly path: string
   readonly expectedStamp?: string | null
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: ProviderSaveRequest
-}): SaveOutcome {
+}): Promise<SaveOutcome> {
   return editConfigFile({
     path: input.path,
     ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
@@ -166,12 +166,12 @@ export function saveProvider(input: {
 }
 
 
-export function removeProvider(input: {
+export async function removeProvider(input: {
   readonly path: string
   readonly expectedStamp?: string | null
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly provider: string
-}): SaveOutcome {
+}): Promise<SaveOutcome> {
   return editConfigFile({
     path: input.path,
     ...(input.expectedStamp === undefined ? {} : { expectedStamp: input.expectedStamp }),
@@ -193,12 +193,12 @@ export function removeProvider(input: {
 }
 
 /** 保存独立映射；首次初始化只填尚未设置的三档。 */
-export function configureModel(input: {
+export async function configureModel(input: {
   readonly path: string
   readonly expectedStamp?: string | null
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: ModelConfigureRequest
-}): SaveOutcome {
+}): Promise<SaveOutcome> {
   const { choice, provider, model, initialize } = input.request
   if (!['default', 'cantrip', 'spell', 'arcane'].includes(choice)) return { ok: false, reason: '未知模型选择' }
   if (typeof model !== 'string' || model.trim() === '') return { ok: false, reason: '请选择实际型号' }
@@ -226,12 +226,12 @@ export function configureModel(input: {
   })
 }
 
-export function setPrefs(input: {
+export async function setPrefs(input: {
   readonly path: string
   readonly expectedStamp?: string | null
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: PrefsSetRequest
-}): SaveOutcome {
+}): Promise<SaveOutcome> {
   const { statusLine, reducedMotion } = input.request
 
   return editConfigFile({

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import type { KernelEvent, NativeResponse, NativeWork } from '@magic/contracts'
 import { linkOf, socketHandlers } from '../src/run/wire.ts'
 import { startManager, type Manager } from '../src/run/manager.ts'
-import { createProcessLauncher } from '../src/run/launch.ts'
+import { createAgentLauncher } from '../src/run/launch.ts'
 import { connectManager } from '../src/run/client.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { terminalConnection } from '../src/run/terminal.ts'
@@ -38,7 +38,7 @@ test('真实原生协作投影：入口释放仍一工作一行，成员审批�
     f.shell.key({ kind: 'paste', text: '分出核对工作，等成员结果。' }); f.shell.key({ kind: 'enter' })
     await f.wait('入口真实释放且成员请求仍在途', () => f.member() !== undefined && f.requests().length === 2 &&
       f.store.collaboration.listWaits(f.collaboration()!.collaborationId).some(wait => wait.state === 'waiting') &&
-      !f.manager.executors().some(executor => executor.session === f.session()) && f.processExits.length > 0)
+      !f.manager.executors().some(executor => executor.session === f.session()) && f.agentExits.length > 0)
     const origin = f.session()!
     native.send({ t: 'hello', role: 'observer', ...f.manager.identity })
     await f.wait('整项原生投影', () => works().length > 0)
@@ -64,7 +64,7 @@ test('真实原生协作投影：入口释放仍一工作一行，成员审批�
     native.send({ t: 'native.stop', request: 'current', serviceInstance: f.manager.identity.serviceInstance, session: origin, gen: works()[0]!.gen! })
     await f.wait('整体真实资源退出后已停', () => responses.some(one => one.t === 'native.stopped' && one.request === 'current' && one.phase === 'done'))
     expect(f.manager.executors()).toEqual([])
-    expect(f.processExits).toHaveLength(2)
+    expect(f.agentExits).toHaveLength(2)
     expect(f.collaboration()!.state).toBe('stopped')
     expect(f.store.collaboration.listExecutions(f.collaboration()!.collaborationId).every(call => call.state === 'finished')).toBe(true)
     expect(f.requests()).toHaveLength(2)
@@ -103,7 +103,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
   const client = connection.client
   const targets: { session: string | null; gen: number | null }[] = []
   client.onTarget(session => targets.push({ session, gen: client.gen() }))
-  const exits: { pid: number | undefined; reason: string }[] = []
+  const exits: { gen: number; reason: string }[] = []
   try {
     f.shell.key({ kind: 'paste', text: '派出核对后等待成员结果。' }); f.shell.key({ kind: 'enter' })
     await f.wait('旧宿主持久等待已建立', () => f.collaboration() !== undefined &&
@@ -117,14 +117,14 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     await f.manager.waitUntilExit()
     await f.wait('旧客户端收到宿主关闭', () => client.closed)
     expect(f.manager.executors()).toEqual([])
-    expect(f.processExits).toHaveLength(2)
+    expect(f.agentExits).toHaveLength(2)
     expect(f.store.collaboration.getCollaboration(work.collaborationId)?.state).toBe('stopped')
     expect(f.store.collaboration.listExecutions(work.collaborationId).every(call => call.state === 'finished')).toBe(true)
     expect(f.store.collaboration.listWaits(work.collaborationId)[0]?.state).toBe('interrupted')
 
-    const launch = createProcessLauncher()
+    const launch = createAgentLauncher()
     const started = await startManager({ paths: runPathsOf(f.magic, tmpdir()), magic: f.magic,
-      launch: { spawn(request) { const process = launch.spawn(request); process.onExit(reason => exits.push({ pid: process.pid, reason })); return process } },
+      launch: { spawn(request) { const process = launch.spawn(request); process.onExit(reason => exits.push({ gen: request.gen, reason })); return process } },
       stopGraceMs: 1000, stopKillMs: 1000 })
     if (started.role !== 'manager') throw new Error('新宿主没有启动')
     reopened = started.manager
@@ -170,7 +170,7 @@ test('真实宿主退出再开：target 接回原工作，只读不执行；明�
     expect((await f.store.listSessions()).map(session => session.id).sort()).toEqual([origin, member.sessionId].sort())
     expect(f.store.collaboration.collaborationForSession(origin)?.collaborationId).toBe(work.collaborationId)
     expect(f.requests('member-model')).toHaveLength(1)
-    expect(new Set(exits.map(exit => exit.pid)).size).toBe(2)
+    expect(new Set(exits.map(exit => exit.gen)).size).toBe(2)
     expect(f.errors).toEqual([])
     const evidence = process.env['MAGIC_COLLAB_RUN_EVIDENCE']
     if (evidence) { const dir = resolve(evidence); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'host-reopen-result.json'), JSON.stringify({

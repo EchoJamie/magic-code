@@ -1,7 +1,6 @@
-/** 停止回环专用：生产 manager/launcher/executor，原认证连接上的透明字节屏障。 */
+/** 停止回环专用：生产 manager/launcher/executor，进程内原始消息连接的顺序屏障。 */
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { connect, createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { Command, KernelEvent, OwnedProcess } from '@magic/contracts'
@@ -10,15 +9,15 @@ import { createShell } from '@magic/tui'
 import { loadConfig } from '../src/config.ts'
 import { connectManager } from '../src/run/client.ts'
 import type { StoredRuns } from '../src/run/facts.ts'
-import { createProcessLauncher } from '../src/run/launch.ts'
+import { createAgentLauncher } from '../src/run/launch.ts'
 import { startManager } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { terminalOptions } from '../src/run/terminal.ts'
-import type { ExecutorToManager, ManagerToExecutor } from '../src/run/wire.ts'
+import type { ExecutorToManager, ManagerToExecutor, Link } from '../src/run/wire.ts'
 import { magicAt, removeDir, tempDir } from './tmp.ts'
 import type { HttpCall, ModelReply } from './run-collaboration-fixture.ts'
 
-type Launch = { gen: number; tokenHash: string; pid?: number; session: string | null; exited?: { order: number; reason: string }; owned: readonly OwnedProcess[] }
+type Launch = { gen: number; tokenHash: string; session: string | null; exited?: { order: number; reason: string }; owned: readonly OwnedProcess[] }
 type Packet = { order: number; gen: number; direction: 'executor-to-manager' | 'manager-to-executor'; message: ExecutorToManager | ManagerToExecutor; forwarded?: number }
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex')
 export function alive(pid: number): boolean {
@@ -40,9 +39,6 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   }
   const calls: HttpCall[] = [], events: KernelEvent[] = [], commands: Command[] = [], errors: string[] = []
   const launches: Launch[] = [], packets: Packet[] = []
-  const tokens = new Map<string, Launch>() // 只认生产启动器的原 token，证据不输出凭据。
-  const sockets = new Set<Socket>()
-  let closing = false
   let gated: { packet: Packet; releaseRequest(): void; releaseControl(): void } | undefined
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const body = await request.json() as Record<string, unknown>
@@ -63,88 +59,55 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
     providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-stop-only' } },
   }))
   const paths = runPathsOf(magic, tmpdir())
-  const proxyPath = join(paths.dir, 's.sock')
-  mkdirSync(paths.dir, { recursive: true })
-  const proxy = createServer(front => {
-    const back = connect(paths.socket)
-    sockets.add(front); sockets.add(back)
-    let owner: Launch | undefined
+  const launcher = createAgentLauncher()
+  const started = await startManager({ paths, magic, stopGraceMs: 3000, stopKillMs: 1000, launch: { spawn(request) {
+    const row: Launch = { gen: request.gen, tokenHash: tokenHash(request.executionId), session: request.session, owned: [] }
+    launches.push(row)
     let holdRequest = false, holdControl = false
-    const queues = { request: [] as { raw: string; packet?: Packet }[], control: [] as { raw: string; packet?: Packet }[] }
-    const forward = (socket: Socket, row: { raw: string; packet?: Packet }) => {
-      if (row.packet) row.packet.forwarded = mark('wire-forwarded', { packet: row.packet.order })
-      socket.write(row.raw) // 转发原字节，不重造请求、不改变单方向顺序。
-    }
+    const queues = { request: [] as (() => void)[], control: [] as (() => void)[] }
     const release = (direction: 'request' | 'control') => {
       if (direction === 'request') holdRequest = false; else holdControl = false
-      const destination = direction === 'request' ? back : front
-      for (const row of queues[direction].splice(0)) forward(destination, row)
+      for (const forward of queues[direction].splice(0)) forward()
     }
-    const receive = (socket: Socket, direction: 'executor-to-manager' | 'manager-to-executor') => {
-      let pending = ''
-      socket.setEncoding('utf8')
-      socket.on('data', text => {
-        pending += text
-        while (pending.includes('\n')) {
-          const end = pending.indexOf('\n') + 1
-          const raw = pending.slice(0, end); pending = pending.slice(end)
-          const message = JSON.parse(raw) as ExecutorToManager | ManagerToExecutor
-          if (message.t === 'hello' && direction === 'executor-to-manager') {
-            owner = tokens.get(message.token)
-            if (owner === undefined) throw new Error('屏障连接不属于本测试生产启动的 executor')
-            mark('authenticated-original-channel', { gen: owner.gen, pid: owner.pid, session: owner.session })
-          }
-          const packet = owner === undefined || message.t === 'hello' ? undefined : {
-            order: mark('wire-received', { gen: owner.gen, direction, type: message.t }), gen: owner.gen, direction, message,
-          }
-          if (packet) packets.push(packet)
-          if (owner && direction === 'executor-to-manager') {
-            if (message.t === 'bound') owner.session = message.session
-            if (owner.session === null && message.t === 'ev' && message.event.session !== null) {
-              owner.session = message.event.session
-              mark('session-from-original-event', { gen: owner.gen, pid: owner.pid, session: owner.session, packet: packet?.order })
-            }
-            if (message.t === 'owned') owner.owned = message.processes
-            if (holdDelivery && gated === undefined && message.t === 'collaboration.request' && message.request.action === 'deliver') {
-              if (packet === undefined) throw new Error('交付没有生产身份')
-              holdRequest = true; holdControl = true
-              gated = { packet, releaseRequest: () => release('request'), releaseControl: () => release('control') }
-              mark('delivery-rpc-held', { gen: owner.gen, pid: owner.pid, session: owner.session, packet: packet.order })
-            }
-          }
-          const row = { raw, packet }
-          if (direction === 'executor-to-manager') {
-            if (holdRequest) queues.request.push(row); else forward(back, row)
-          } else if (holdControl) queues.control.push(row); else forward(front, row)
+    const receive = (message: ExecutorToManager | ManagerToExecutor, direction: Packet['direction'], send: () => void) => {
+      const packet: Packet = { order: mark('wire-received', { gen: row.gen, direction, type: message.t }), gen: row.gen, direction, message }
+      packets.push(packet)
+      if (direction === 'executor-to-manager') {
+        if (message.t === 'bound') row.session = message.session
+        if (row.session === null && message.t === 'ev' && message.event.session !== null) row.session = message.event.session
+        if (holdDelivery && gated === undefined && message.t === 'collaboration.request' && message.request.action === 'deliver') {
+          holdRequest = true; holdControl = true
+          gated = { packet, releaseRequest: () => release('request'), releaseControl: () => release('control') }
+          mark('delivery-rpc-held', { gen: row.gen, session: row.session, packet: packet.order })
         }
-      })
+      }
+      const forward = () => { packet.forwarded = mark('wire-forwarded', { packet: packet.order }); send() }
+      if (direction === 'executor-to-manager' ? holdRequest : holdControl) queues[direction === 'executor-to-manager' ? 'request' : 'control'].push(forward)
+      else forward()
     }
-    receive(front, 'executor-to-manager'); receive(back, 'manager-to-executor')
-    for (const [socket, peer] of [[front, back], [back, front]] as const) {
-      socket.on('error', error => { if (!closing) mark('socket-error', { gen: owner?.gen, message: String(error) }) })
-      socket.on('close', () => { sockets.delete(socket); peer.end() })
+    const link: Link<ManagerToExecutor> = {
+      get closed() { return request.link.closed },
+      close: () => request.link.close(), onClose: listener => request.link.onClose(listener),
+      onMessage: listener => request.link.onMessage(message => receive(message, 'manager-to-executor', () => listener(message))),
+      send(message) { receive(message as ExecutorToManager, 'executor-to-manager', () => request.link.send(message)); return !request.link.closed },
     }
-  })
-  await new Promise<void>((resolve, reject) => { proxy.once('error', reject); proxy.listen(proxyPath, resolve) })
-  const launcher = createProcessLauncher()
-  const started = await startManager({ paths, magic, stopGraceMs: 3000, stopKillMs: 1000, launch: { spawn(request) {
-    const row: Launch = { gen: request.gen, tokenHash: tokenHash(request.token), session: request.session, owned: [] }
-    tokens.set(request.token, row)
-    const child = launcher.spawn({ ...request, socket: proxyPath })
-    row.pid = child.pid; launches.push(row)
-    mark('executor-spawned', { gen: row.gen, pid: row.pid, session: row.session })
-    child.onExit(reason => { row.exited = { order: mark('executor-onExit', { gen: row.gen, pid: row.pid, session: row.session, reason }), reason } })
-    return child
+    const ledger = { ...request.ledger,
+      async add(input: Parameters<typeof request.ledger.add>[0]) { await request.ledger.add(input); row.owned = request.ledger.list() },
+    }
+    const agent = launcher.spawn({ ...request, link, ledger })
+    mark('agent-started', { gen: row.gen, session: row.session })
+    agent.onExit(reason => { row.exited = { order: mark('agent-onExit', { gen: row.gen, session: row.session, reason }), reason } })
+    return agent
   } } })
   if (started.role !== 'manager') {
-    proxy.close(); server.stop(true); removeDir(paths.dir); removeDir(root)
+    server.stop(true); removeDir(paths.dir); removeDir(root)
     throw new Error(`管理者未启动：${started.role}`)
   }
   const manager = started.manager
   const store = createRecordsStore({ dataDir, workspace: [workspace] })
   const client = await connectManager(manager.socketPath, { cwd: workspace, label: name, expectedIdentity: manager.identity, environment: process.env })
   if (client === undefined) throw new Error('停止测试客户端连接失败')
-  const terminal = terminalOptions({ client, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }) })
+  const terminal = (await terminalOptions({ client, cwd: workspace, magic, loaded: loadConfig({ path: configPath, magic }) }))
   const shell = createShell({ ...terminal.transport, send(command) { commands.push(command); terminal.transport.send(command) } }, terminal)
   terminal.onGone?.(() => shell.hostGone())
   client.onEvent(event => {
@@ -192,14 +155,11 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
       gated?.releaseRequest(); gated?.releaseControl()
       const beforeCleanup = await this.snapshot()
       shell.dispose(); client.close(); manager.stop('停止回环测试清场'); await manager.waitUntilExit()
-      closing = true
-      for (const socket of sockets) socket.destroy()
-      await new Promise<void>(resolve => proxy.close(() => resolve()))
       server.stop(true)
       const evidence = process.env['MAGIC_COLLAB_STOP_EVIDENCE']
       if (evidence) {
         const dir = resolve(evidence); mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-original-authenticated-socket-production-executor-controlled-http', calls, events, commands, errors, launches, packets, journal, beforeCleanup, remainingAfterCleanup: manager.executors() }, null, 2))
+        writeFileSync(join(dir, `${name}.json`), JSON.stringify({ proof: 'real-manager-local-agent-link-controlled-http', calls, events, commands, errors, launches, packets, journal, beforeCleanup, remainingAfterCleanup: manager.executors() }, null, 2))
       }
       store.close(); removeDir(paths.dir); removeDir(root)
     },

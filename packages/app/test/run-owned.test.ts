@@ -48,9 +48,9 @@ function spawnGroup(script: string): { readonly pid: number; kill(): void } {
 }
 
 /** 等一个条件成立（默认 5 秒）——轮询是用例的事。 */
-async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function waitFor(what: string, ok: () => boolean | Promise<boolean>, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (!ok()) {
+  while (!(await ok())) {
     if (Date.now() > deadline) throw new Error(`等不到：${what}`)
     await Bun.sleep(20)
   }
@@ -60,11 +60,11 @@ describe('U50 · 自有进程的账与收尾', () => {
   test('同一真实进程：测试宿主与独立执行进程读取相同启动时刻', async () => {
     const group = spawnGroup('sleep 30')
     try {
-      const parent = startTimeOf(group.pid)
+      const parent = (await startTimeOf(group.pid))
       expect(parent).toBeDefined()
       const source = new URL('../../execution/src/groups.ts', import.meta.url).pathname
       const child = Bun.spawn([process.execPath, '-e',
-        `import { startTimeOf } from ${JSON.stringify(source)}; console.log(startTimeOf(${group.pid}))`,
+        `import { startTimeOf } from ${JSON.stringify(source)}; console.log(await startTimeOf(${group.pid}))`,
       ], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
       const output = new Response(child.stdout).text()
       const errors = new Response(child.stderr).text()
@@ -83,7 +83,7 @@ describe('U50 · 自有进程的账与收尾', () => {
     const group = spawnGroup('sleep 30')
 
     try {
-      ledger.add({ pgid: group.pid, kind: 'exec', what: 'exec:sleep 30' })
+      await ledger.add({ pgid: group.pid, kind: 'exec', what: 'exec:sleep 30' })
       const [one] = ledger.list()
 
       expect(one?.pgid).toBe(group.pid)
@@ -91,7 +91,7 @@ describe('U50 · 自有进程的账与收尾', () => {
       // **身份那一位不是空的**——收尾时全靠它（读不到就证明不了归属）
       expect(typeof one?.startedAt).toBe('number')
       // 与操作系统自己说的对得上
-      expect(one?.startedAt).toBe(startTimeOf(group.pid) as number)
+      expect(one?.startedAt).toBe((await startTimeOf(group.pid)) as number)
     } finally {
       group.kill()
     }
@@ -107,7 +107,7 @@ describe('U50 · 自有进程的账与收尾', () => {
     try {
       // 等它把 trap 挂上（不然 TERM 可能赶在 trap 之前到，那一枪就白打了）
       await Bun.sleep(200)
-      const handle = { pgid: shouty.pid, startedAt: startTimeOf(shouty.pid), what: 'exec:trap TERM' }
+      const handle = { pgid: shouty.pid, startedAt: (await startTimeOf(shouty.pid)), what: 'exec:trap TERM' }
 
       const outcome = await reapOwned(handle, { settleMs: 100, termMs: 300, killMs: 2_000 })
 
@@ -129,7 +129,7 @@ describe('U50 · 自有进程的账与收尾', () => {
       // 一小时前——那正是「号被回收再分配」在现场的样子
       const stale = {
         pgid: alive.pid,
-        startedAt: (startTimeOf(alive.pid) as number) - 3_600_000,
+        startedAt: ((await startTimeOf(alive.pid)) as number) - 3_600_000,
         kind: 'exec',
         what: 'exec:早就不在的那一条',
       }
@@ -138,7 +138,7 @@ describe('U50 · 自有进程的账与收尾', () => {
 
       expect(outcome.kind).toBe('stranger')
       // 判据与现场一致，且**人还活着**（误杀就是在这儿发生的）
-      expect(sameProcess(stale, startTimeOf(alive.pid))).toBe(false)
+      expect(sameProcess(stale, (await startTimeOf(alive.pid)))).toBe(false)
       expect(groupAlive(alive.pid)).toBe(true)
     } finally {
       alive.kill()
@@ -151,7 +151,7 @@ describe('U50 · 自有进程的账与收尾', () => {
     const groupPid = orphaned.pid
 
     try {
-      await waitFor('组长退了', () => startTimeOf(groupPid) === undefined)
+      await waitFor('组长退了', async () => (await startTimeOf(groupPid)) === undefined)
       expect(groupAlive(groupPid)).toBe(true) // 组还在（孙子那一支）
 
       const outcome = await reapOwned(

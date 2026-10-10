@@ -1,10 +1,8 @@
-"""Private stdin host for signed helper probes; never asks LaunchServices to start an App."""
+"""Direct isolated Engine for compiled helper checks; no launchd or graphical App."""
 from contextlib import contextmanager
 import json
-from pathlib import Path
-import plistlib
-import queue
 import subprocess
+import time
 import threading
 import uuid
 
@@ -12,40 +10,35 @@ import uuid
 @contextmanager
 def isolated_host(helper, room, env):
     app = helper.parent.parent.parent
-    bundle = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleIdentifier']
-    host = str(uuid.uuid4())
-    # U109 起只有一个名字（不再按 bundle 后缀分叉）
-    discovery = room / 'Library/Application Support' / 'Magic Code' / 'runtime/host.json'
-    events = queue.Queue()
-    with (room / 'probe-host.stderr.log').open('w') as error:
-        process = subprocess.Popen([str(helper), '--internal-manager', '--host-instance', host, '--app', str(app)],
-            cwd=room, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error, text=True)
-        def collect():
-            for line in process.stdout:
-                message = json.loads(line)
-                if message['t'] == 'host.diagnostics':
-                    process.stdin.write(json.dumps({'t': 'host.diagnostics.applied', 'request': message['request']}) + '\n')
-                    process.stdin.flush()
-                else:
-                    events.put(message)
-        reader = threading.Thread(target=collect, daemon=True); reader.start()
+    discovery = room / 'Library/Application Support/Magic Code/runtime/host.json'
+    identity = {'home': str(room), 'parent': str(room), 'source': str(helper),
+                'app': str(app), 'discovery': str(discovery)}
+    with (room / 'engine.stderr.log').open('w') as error:
+        process = subprocess.Popen([str(helper), '--internal-engine', '--home', str(room),
+            '--parent', str(room), '--source', str(helper), '--app', str(app),
+            '--discovery', str(discovery), '--lifecycle', str(uuid.uuid4())],
+            cwd=room, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=error)
+        threading.Thread(target=process.wait, daemon=True).start()
+        record = None
         try:
-            ready = events.get(timeout=20)
-            assert ready['t'] == 'host.ready', ready
-            assert ready['identity']['hostInstance'] == host and ready['identity']['source'] == str(helper)
-            discovery.parent.mkdir(parents=True, mode=0o700)
-            discovery.write_text(json.dumps({**ready['identity'], 'socket': ready['socket'], 'base': ready['base'], 'app': str(app)}))
-            discovery.chmod(0o600)
-            yield ready
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if discovery.exists():
+                    record = json.loads(discovery.read_text())
+                    if record['state'] == 'ready': break
+                if process.poll() is not None: raise RuntimeError('isolated Engine exited before ready')
+                time.sleep(0.025)
+            assert record and record['state'] == 'ready' and record['pid'] == process.pid, record
+            yield record
         finally:
-            # Pipe EOF is the host's real lifetime boundary, even after a failed probe.
-            process.stdin.close()
             try:
-                assert process.wait(timeout=20) == 0, 'probe host failed to reclaim its work'
-                reader.join(timeout=2)
-                stopped = []
-                while not events.empty(): stopped.append(events.get_nowait())
-                assert any(event['t'] == 'host.stopped' for event in stopped), stopped
+                if discovery.exists():
+                    record = json.loads(discovery.read_text())
+                    request = {**identity, 'action': 'stop' if process.poll() is None else 'reclaim',
+                               'request': 'probe-close', 'expected': record}
+                    result = subprocess.run([str(helper), '--internal-engine-call'], input=json.dumps(request),
+                        text=True, capture_output=True, env=env, cwd=room, timeout=55)
+                    assert result.returncode == 0 and json.loads(result.stdout)['state'] == 'stopped', result.stdout + result.stderr
+                assert process.wait(timeout=20) == 0, 'isolated Engine failed to reclaim its work'
             finally:
                 if process.poll() is None: process.kill(); process.wait(timeout=5)
-                if discovery.exists() and json.loads(discovery.read_text())['hostInstance'] == host: discovery.unlink()

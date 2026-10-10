@@ -13,7 +13,7 @@ if (process.argv.includes('--terminal')) {
   const input = JSON.parse(process.argv[process.argv.indexOf('--terminal') + 1]!)
   const client = await connectManager(input.socket, { cwd: input.cwd, session: input.session, label: 'U115 真终端', expectedIdentity: input.identity, environment: process.env })
   if (!client) throw new Error('连接失败')
-  const handle = await runTui(terminalOptions({ client, cwd: input.cwd, magic: input.magic, loaded: loadConfig({ magic: input.magic }), session: input.session }))
+  const handle = await runTui((await terminalOptions({ client, cwd: input.cwd, magic: input.magic, loaded: loadConfig({ magic: input.magic }), session: input.session })))
   try { await handle.waitUntilExit() } catch (error) { writeFileSync(join(input.cwd, 'terminal-error.txt'), String(error)); throw error } finally { client.close() }
 } else {
   const out = resolve(process.argv[process.argv.indexOf('--out') + 1] ?? '.ui-runs/u115')
@@ -126,7 +126,7 @@ if (process.argv.includes('--terminal')) {
     advisor.release(); failure.release()
     const report = ui === undefined ? undefined : await ui.close()
     await f.close()
-    writeFileSync(join(out, 'result.json'), JSON.stringify({ proof: 'real-runTui-PTY-manager-socket-executor-controlled-http', captures, returns, cancellations, report, calls: f.calls, processExits: f.processExits }, null, 2))
+    writeFileSync(join(out, 'result.json'), JSON.stringify({ proof: 'real-runTui-PTY-manager-socket-executor-controlled-http', captures, returns, cancellations, report, calls: f.calls, agentExits: f.agentExits }, null, 2))
     console.log(JSON.stringify({ out, captures: captures.length, report }))
   }
 }

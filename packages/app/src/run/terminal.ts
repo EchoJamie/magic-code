@@ -1,3 +1,4 @@
+import { terminalSettings } from './terminal-settings.ts'
 /**
  * **终端这一端**（U48）——把一条到管理者的连接，接成外壳要的那几件。
  *
@@ -86,11 +87,11 @@ export type ModelInfoLookup = (provider: string, model: string) => ModelInfo | u
  * 顺序纪律（技术方案 · 控制域：无订阅方时命令丢弃）在这里与同进程时**一字不差**：
  * `createShell` 构造即订阅，而「放开输入」是它之后的事。
  */
-export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
+export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOptions> {
   const { client, loaded, cwd } = inputs
 
   return {
-    transport: clientTransport(client),
+    transport: terminalSettings(clientTransport(client), inputs.magic, workspaceOf(loaded, cwd), inputs.switch),
     statusLine: loaded.config.statusLine,
     reducedMotion: loaded.config.motion?.reduced === true,
     detached: (listener) => client.onDetached(listener),
@@ -110,7 +111,7 @@ export function terminalOptions(inputs: TerminalInputs): RunTuiOptions {
     // 选定的 .magic 路径——接回命令始终显式携带其父目录。
     // （非默认落点不带的话，用户复制到别的终端会接到另一个库）
     magicBase: inputs.magic.base,
-    receipts: startupReceipts(inputs),
+    receipts: (await startupReceipts(inputs)),
     // **运行事实**（U49）——管理者推来的那一份：`/resume` 每一行的状态据它，
     // 而开屏那张摘要也从它数（外壳自己在构造那一刻取一次初值，见 `ShellOptions.runs`）。
     runs: {
@@ -292,7 +293,7 @@ function startupContextWindow(inputs: TerminalInputs): number | null {
  *
  * ⚠️ **授权文件读不懂那一句不在**：它要碰授权文件，而那归执行者。
  */
-function startupReceipts(inputs: TerminalInputs): readonly string[] {
+async function startupReceipts(inputs: TerminalInputs): Promise<readonly string[]> {
   const { client, loaded, cwd } = inputs
   const said: string[] = [...mcpNoticesOf(client.mcp)]
 
@@ -344,12 +345,12 @@ function startupReceipts(inputs: TerminalInputs): readonly string[] {
   // 项目规约**只数「坏了」那一类**（取舍那类是产品按设计做的选择，报它就成了噪音
   // ——口径与 `Assembly.notices` 逐字同）
   try {
-    const broken = createProjectRules({
+    const broken = (await createProjectRules({
       workspace: workspaceOf(loaded, cwd),
       sources: loaded.config.rules?.sources ?? [],
       linkSources: loaded.config.rules?.linkSources ?? [],
     })
-      .load([])
+      .load([]))
       .problems.filter((problem) => problem.kind === 'error')
 
     if (broken.length > 0) said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
