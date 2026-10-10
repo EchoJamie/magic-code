@@ -42,7 +42,9 @@ def process_table():
 
 
 def cli_pid(table, helper, request):
-    matches = [pid for pid, row in table.items() if row['command'].startswith(str(helper) + ' ') and '--open-request ' + request in row['command']]
+    suffix = ' --open-request ' + request
+    matches = [pid for pid, row in table.items() if suffix in row['command'] and
+               Path(row['command'].split(suffix)[0]).resolve() == helper.resolve()]
     assert len(matches) <= 1, 'duplicate CLI for one open request'
     return matches[0] if matches else None
 
@@ -85,7 +87,7 @@ def run_case(app, room, output, session):
                 return result
             context_path = wait_for(lambda: next(iter((room / 'terminal-evidence').glob('*/context.json')), None))
             context = json.loads(context_path.read_text()); request = context['request']
-            assert context['home'] == str(room) and context['session'] == session and context['helper'] == str(helper)
+            assert Path(context['home']).resolve() == room and context['session'] == session and Path(context['helper']).resolve() == helper.resolve()
             opened = wait_for(lambda: next((e for e in events if e.get('event') == 'terminal.opened'), None))
             assert 'reused=false' in opened['detail'], 'Terminal reused an existing instance'
             terminal = int(re.search(r'pid=(\d+)', opened['detail'])[1])

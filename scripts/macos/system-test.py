@@ -44,7 +44,8 @@ def prepare(output):
     info.update({'CFBundleIdentifier': bundle, 'CFBundleName': display,
                  'CFBundleDisplayName': display, 'MagicSystemTestRoot': str(root)})
     plist.write_bytes(plistlib.dumps(info))
-    write(root / 'control.json', {'systemTest': True, 'source': str(app / 'Contents/Helpers/magic-runtime'), 'works': []})
+    write(root / 'control.json', {'systemTest': True, 'version': info['CFBundleShortVersionString'],
+                                'source': str(app / 'Contents/Helpers/magic-runtime'), 'works': []})
     with (output / 'signature.log').open('w') as log:
         subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--sign', os.environ.get('MAGIC_SIGN_IDENTITY', 'Apple Development: echojamieee@outlook.com (9JHY98AJMC)'), str(app)], stdout=log, stderr=log, check=True)
         subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], stdout=log, stderr=log, check=True)

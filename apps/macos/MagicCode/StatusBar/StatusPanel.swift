@@ -18,6 +18,16 @@ struct StatusPanel: View {
         if case .starting = model.phase { return "正在连接 · 以下为上次快照" }
         return "连接中断 · 以下为上次快照"
     }
+    private var engineStatus: String {
+        switch model.phase {
+        case .starting: "正在启动"
+        case .ready: "运行中"
+        case .stopping: "正在停止"
+        case .stopped: "已停止"
+        case .unreachable: "无法连接"
+        case .fault: "启动或运行失败"
+        }
+    }
     private var width: CGFloat { min(380, (NSScreen.main?.visibleFrame.width ?? 1024) - 32) }
     private var scrollLimit: CGFloat { max(120, min(520, (NSScreen.main?.visibleFrame.height ?? 720) - 240)) }
     var body: some View {
@@ -42,8 +52,23 @@ struct StatusPanel: View {
                     Button("设置", systemImage: "gearshape") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
                         .labelStyle(.iconOnly).help("打开设置").accessibilityLabel("打开 Magic Code 设置")
                 }
-                Text(connectionSummary)
-                    .font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("status-summary")
+                HStack {
+                    Text("Magic Engine · \(engineStatus)").font(.subheadline)
+                    Spacer()
+                    switch model.phase {
+                    case .starting, .stopping: ProgressView().controlSize(.small)
+                    case .ready, .unreachable:
+                        Button("停止 Magic Engine…") { model.presentEngineStopAlert() }.disabled(model.engineBusy)
+                    case .stopped:
+                        Button("启动 Magic Engine") { model.startEngine() }.disabled(model.engineBusy)
+                    case .fault:
+                        Button("重试启动") { model.startEngine() }.disabled(model.engineBusy)
+                    }
+                }.accessibilityIdentifier("engine-status")
+                if model.isCurrent || stale {
+                    Text(connectionSummary)
+                        .font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("status-summary")
+                }
                 if !rows.isEmpty {
                     PanelScroll(limit: scrollLimit, initialHeight: CGFloat(rows.count) * 90 + 80, position: $listPosition) {
                         VStack(alignment: .leading, spacing: 14) {
@@ -65,8 +90,7 @@ struct StatusPanel: View {
                     .onAppear { focused = listFocus ?? rows.first?.id }
                 }
                 if case .fault(let reason) = model.phase {
-                    if stale { Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Button("重试连接") { model.retry() }
+                    Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
             if let message = model.inspectionMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
@@ -80,8 +104,9 @@ struct StatusPanel: View {
                     Spacer()
                     Menu {
                         Button("刷新 Engine 状态") { model.refreshAfterWake() }.disabled(model.engineBusy)
-                        Button("启动 Engine") { model.startEngine() }.disabled(model.engineBusy || model.isCurrent || model.phase == .stopping)
-                        Button("停止 Engine…", role: .destructive) { model.presentEngineStopAlert() }.disabled(model.engineBusy || model.phase == .stopped)
+                        if case .fault = model.phase {
+                            Button("停止 Magic Engine…", role: .destructive) { model.presentEngineStopAlert() }.disabled(model.engineBusy)
+                        }
                         Divider()
                         Button("退出 Magic Code") { NSApp.terminate(nil) }
                     } label: { Image(systemName: "ellipsis") }

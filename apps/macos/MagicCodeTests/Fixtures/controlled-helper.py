@@ -41,7 +41,7 @@ if sys.argv[1] == '--internal-engine-control':
     print(json.dumps(current)); sys.exit(0)
 host = str(uuid.uuid4())
 app = Path(sys.argv[0]).resolve().parents[2]
-identity = {'protocol': 1, 'version': '0.0.0', 'source': options.get('source', str(app / 'Contents/Helpers/magic-runtime')),
+identity = {'protocol': 1, 'version': options.get('version', '0.0.0'), 'source': options.get('source', str(app / 'Contents/Helpers/magic-runtime')),
             'serviceInstance': 'controlled-' + host, 'base': str(base / '.magic')}
 endpoint = '/tmp/magic-native-' + host[:12] + '.sock'
 record = {**identity, 'socket': endpoint, 'app': str(app), 'lifecycle': host, 'state': 'ready', 'pid': os.getpid()}

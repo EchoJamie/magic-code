@@ -11,14 +11,14 @@ struct AdvancedSettingsPage: View {
             SettingsCard(title: "当前实例与路径") {
                 SettingsPath(label: "基础路径", path: model.effectiveBase.path) { model.terminal.copy(model.effectiveBase.path) }
                 SettingsPath(label: "配置文件", path: snapshot.configPath) { model.terminal.copy(snapshot.configPath) }
-                Text("服务实例：\(model.identity?.serviceInstance ?? "等待就绪")").font(.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Text("服务实例：\(model.identity?.serviceInstance ?? "未连接")").font(.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 Button("定位配置文件") { revealSettingPath(snapshot.configPath) }
                 Text("配置与数据共同使用基础路径下的 .magic；不要把 .magic 本身再选作基础路径。切换不搬迁数据。").font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("选择基础目录…") { settingsDirectory { model.changeBase($0) } }
                     Button("恢复默认位置") { model.changeBase(nil) }
                 }.disabled(model.engineBusy || (model.isCurrent && !model.canChangeData))
-                if !model.canChangeData { Text("此实例仍有执行责任，不能切换数据位置。").foregroundStyle(.secondary).font(.caption) }
+                if !model.canChangeData { Text("切换前需确认 Engine 已停止，或没有所属工作责任。").foregroundStyle(.secondary).font(.caption) }
             }.id("data")
             SettingsCard(title: "工作区根") {
                 RootEditor(model: model, snapshot: snapshot, drafts: drafts, draft: drafts.draft("roots", .object(["roots": snapshot.configuration["workspaceRoots"]]), stamp: snapshot.stamp))

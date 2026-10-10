@@ -51,8 +51,11 @@ enum EngineControl {
                         execute: (URL, [String], Data?) throws -> (Int32, Data) = EngineControl.execute) throws -> EngineControlResult {
         func value(_ name: String) -> String? { arguments.firstIndex(of: name).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } }
         guard let action = arguments.first, ["status", "start", "stop", "switch", "remove"].contains(action) else { throw WireError.invalid("无效 Engine 动作") }
-        let app = bundle.bundleURL.resolvingSymlinksInPath()
-        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime").resolvingSymlinksInPath()
+        // 与 runtime 的 realpath 使用同一身份；Foundation 会把 /private/tmp 缩回 /tmp。
+        guard let path = realpath(bundle.bundleURL.path, nil) else { throw POSIXError(.ENOENT) }
+        defer { free(path) }
+        let app = URL(fileURLWithPath: String(cString: path))
+        let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
         #if DEBUG
         let validation = AppModel.systemTestRoot(bundle: bundle) ?? value("--validation-root").map { URL(fileURLWithPath: $0) }
         #else

@@ -1133,11 +1133,13 @@ final class NativeTests: XCTestCase {
         var status: UNAuthorizationStatus = .notDetermined
         var requested = 0
         var sent: [NoticeDelivery] = []
-        let (model, _) = try systemTestModel(status: { status }, request: { requested += 1; status = .authorized; return true },
-                                             options: ["works": [try freshNoticeRow("first")]], send: { sent.append($0) })
+        let (model, room) = try systemTestModel(status: { status }, request: { requested += 1; status = .authorized; return true },
+                                             options: ["works": []], send: { sent.append($0) })
         model.start(); try await eventually { model.isCurrent }
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(requested, 0, "首次打开不弹权限框")
+        try JSONSerialization.data(withJSONObject: ["works": [try freshNoticeRow("first")]])
+            .write(to: room.appendingPathComponent("control.json"), options: .atomic)
         try await Task.sleep(for: .seconds(2.4))
         XCTAssertEqual(requested, 1, "第一次真要提醒时就地请求一次（系统框只在第一次调用时出现）")
         XCTAssertEqual(sent.count, 1, "允许了就投出去")
@@ -1339,10 +1341,7 @@ final class NativeTests: XCTestCase {
         scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom - scroll.contentView.bounds.height)); scroll.reflectScrolledClipView(scroll.contentView)
         try await saveFrame(small, name: "u116-advanced-small-bottom-dark")
         XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); small.close()
-        let natural = NSHostingController(rootView: SettingsView(model: model))
-        let fitting = natural.view.fittingSize
-        XCTAssertGreaterThanOrEqual(fitting.width, 650); XCTAssertGreaterThanOrEqual(fitting.height, 600)
-        XCTAssertLessThanOrEqual(fitting.width, 1200); XCTAssertLessThanOrEqual(fitting.height, 900)
+        try await eventually { !model.settingsBusy }
         let before = snapshot.stamp
         var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: snapshot.configPath))) as? [String: Any])
         raw["motion"] = ["reduced": true]
@@ -1383,6 +1382,10 @@ final class NativeTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: snapshot.configPath)), broken)
         }
         try saved.write(to: URL(fileURLWithPath: snapshot.configPath))
+        let natural = NSHostingController(rootView: SettingsView(model: model))
+        let fitting = natural.view.fittingSize
+        XCTAssertGreaterThanOrEqual(fitting.width, 650); XCTAssertGreaterThanOrEqual(fitting.height, 600)
+        XCTAssertLessThanOrEqual(fitting.width, 1200); XCTAssertLessThanOrEqual(fitting.height, 900)
         let evidence: [String: Any] = ["source": "signed embedded helper + native SettingsView", "works": model.works.count, "sensitiveRead": false, "naturalWidth": fitting.width, "naturalHeight": fitting.height, "frames": geometry]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/u116-settings-native.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
