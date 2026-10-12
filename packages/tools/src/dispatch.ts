@@ -16,10 +16,7 @@
  * **本域不自造补充**：`content` 与 `tool.result` 事件的 `output` **同物**（同一个值），
  * `callRef` 与传给闸门的 `callRef` **同一次调用的同一个 id**——两处都由这里一次算出。
  *
- * 三处判断，各有理由（都写在下面对应位置）：
- * - **每个调用都问闸门**——包括未注册的工具名与解析不出的参数。不给「这些不必问」的
- *   分支，就少一条能被误用的岔路；权限域的机械分析本就把「表外 / 解析不出」归入从严
- *   （U07 判据 5），那条路正是为它们留的。代价是偶尔问一次跑不了的调用——比漏问安全。
+ * 无效工具与参数在权限判断之前回填失败，不产生授权事实。
  * - **入口即中止则连问都不问**——用户刚按了 Ctrl-C，再弹一个「要不要跑 rm -rf」是骚扰，
  *   答复也只会落到一个已经结束的轮上。与沙箱「已中止的信号不启动进程」同一姿势。
  * - **闸门在途被中止则不再等**（U07 备案把这一环交给本域：`invoke` 的 `signal` 竞速）。
@@ -153,13 +150,11 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
   /** ③ 执行——交执行体；执行体抛了也归失败（不炸调用方）。 */
   const execute = async (
     call: ToolCall,
-    definition: ToolDefinition | undefined,
+    definition: ToolDefinition,
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
     target?: ResolvedPath,
   ): Promise<ToolRunResult> => {
-    if (call.invalid === true) return refused(OUTPUT_INVALID_ARGS)
-    if (definition === undefined) return refused(unknownToolOutput(call.name))
 
     let finish: (() => void) | undefined
     const binding = target === undefined ? undefined : options.sandbox.bindTarget?.(target, call.name)
@@ -191,16 +186,30 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
     callRef: RecordId,
     opts: ToolInvokeOptions,
     onOutput: (delta: OutputDelta) => void,
-    target?: ResolvedPath,
+    resolvedTarget: (target: ResolvedPath) => void,
   ): Promise<ToolRunResult> => {
-    // 入口即中止——不问、不跑（理由见文件头注）
     if (opts.signal?.aborted === true) return refused(OUTPUT_CANCELED_BEFORE_RUN)
+    if (definition === undefined) return refused(unknownToolOutput(call.name))
+    if (call.invalid === true || typeof call.args !== 'object' || call.args === null || Array.isArray(call.args)) return refused(OUTPUT_INVALID_ARGS)
+    try { call = { ...call, args: definition.prepare(call.args) } }
+    catch (error) { return refused(reasonOf(error)) }
+    if (opts.signal?.aborted) return refused(OUTPUT_CANCELED_BEFORE_RUN)
+    let target: ResolvedPath | undefined
+    // 已准备的参数与固定目标同时用于审批和执行。
+    if (definition.external === undefined) {
+      const key = call.name === 'exec' ? 'cwd'
+        : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
+      if (key !== undefined) {
+        target = options.workspace.resolve((call.args[key] as string | undefined) ?? '.')
+        call = { ...call, args: { ...call.args, [key]: target.absolute } }
+        resolvedTarget(target)
+      }
+    }
 
     // **问之前先附上注册表给的身份**（U38）——外部工具的真实来源只认这一处：
     // 定义里写着它属于哪条服务器，模型参数里的自报一概不作数（见契约 `ToolCall.external`）。
     // 查表在询问之前做，是这一步唯一挪动过的东西：查表**没有副作用**，而闸门要的正是它。
-    const asked: ToolCall =
-      definition?.external === undefined ? call : { ...call, external: definition.external }
+    const asked: ToolCall = { ...call, external: definition.external }
 
     const decision = await raceAbort(options.gate.decide(asked, contextOf(), callRef, opts.signal), opts.signal)
     if (decision === ABORTED) return refused(OUTPUT_CANCELED_BEFORE_RUN)
@@ -219,7 +228,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       )
     }
 
-    return execute(call, definition, opts, onOutput, target)
+    return execute(asked, definition, opts, onOutput, target)
   }
 
   return {
@@ -245,18 +254,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
       try {
         // 先固定本次参数和真实目标；审批期间调用方或符号链接变化不能换掉执行目标。
         call = { ...call, args: structuredClone(call.args) }
-        if (definition?.external === undefined && call.invalid !== true) {
-          const key = call.name === 'exec' ? 'cwd'
-            : ['read', 'write', 'edit', 'ls', 'grep', 'glob'].includes(call.name) ? 'path' : undefined
-          if (key !== undefined) {
-            const given = call.args[key]
-            if ((typeof given === 'string' && given.trim() !== '') || (given === undefined && !['read', 'write', 'edit'].includes(call.name))) {
-              target = options.workspace.resolve((given as string | undefined) ?? '.')
-              call = { ...call, args: { ...call.args, [key]: target.absolute } }
-            }
-          }
-        }
-        outcome = await settle(call, definition, callRef, opts, onOutput, target)
+        outcome = await settle(call, definition, callRef, opts, onOutput, resolved => { target = resolved })
       } catch (error) {
         outcome = refused(crashedOutput(reasonOf(error)))
       }

@@ -162,6 +162,11 @@ server.setRequestHandler(ListToolsRequestSchema, async (request) => {
   if (DELAY_MS > 0) await Bun.sleep(DELAY_MS)
   const cursor = (request.params as { cursor?: string } | undefined)?.cursor
 
+  if (MODE === 'schema') return { tools: [
+    { name: 'echo', inputSchema: { $id: 'shared', type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } },
+    { name: 'number', inputSchema: { $id: 'shared', type: 'object', properties: { count: { type: 'number' }, note: { type: 'string', default: 'must-not-insert' } }, required: ['count'], additionalProperties: false } },
+    { name: 'broken', inputSchema: { type: 'object', $ref: 'https://example.invalid/no-remote-schema' } },
+  ] }
   if (MODE === 'badname') {
     // **名字带控制字节**——独立验收的固定反例：换行 ＋ `│ 批准全部` 能伪造审批文字。
     // 合法的那两件照常在（拒的是这一件，不是这台服务器）

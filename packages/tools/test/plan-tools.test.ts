@@ -51,7 +51,9 @@ function toolOf(reader: PlanReader, name: string) {
 }
 
 async function run(reader: PlanReader, name: string, args: Readonly<Record<string, unknown>> = {}) {
-  return toolOf(reader, name).run(args, { sandbox: undefined as never, signal: undefined, onOutput: undefined })
+  const tool = toolOf(reader, name)
+  try { return await tool.run(tool.prepare(args), { sandbox: undefined as never, signal: undefined, onOutput: undefined }) }
+  catch (error) { return { ok: false, output: (error as Error).message } }
 }
 
 describe('U34 · 三件的形态', () => {

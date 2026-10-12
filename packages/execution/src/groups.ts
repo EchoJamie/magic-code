@@ -173,7 +173,19 @@ export type ReapTarget = {
  * ⚠️ **收没收到如实说**：`left` 那一支要带一句人话（回执与诊断都读它），不许拿一句
  * 空话冒充「已经收干净」。
  */
-export async function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Promise<ReapOutcome> {
+const reaping = new Map<string, Promise<ReapOutcome>>()
+
+/** 同一身份同时触发的超时、实例收尾和管理者回收共用一次信号序列。 */
+export function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Promise<ReapOutcome> {
+  const key = `${handle.pgid}:${handle.startedAt}`
+  const active = reaping.get(key)
+  if (active !== undefined) return active
+  const pending = reapOnce(handle, times).finally(() => { reaping.delete(key) })
+  reaping.set(key, pending)
+  return pending
+}
+
+async function reapOnce(handle: ReapTarget, times: ReapTimes): Promise<ReapOutcome> {
   const settleMs = times.settleMs ?? DEFAULT_SETTLE_MS
   const termMs = times.termMs ?? DEFAULT_TERM_MS
   const killMs = times.killMs ?? DEFAULT_KILL_MS
@@ -202,15 +214,27 @@ export async function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Prom
   await untilGroupGone(pgid, settleMs)
   if (!groupAlive(pgid)) return { kind: 'reaped' }
 
+  const beforeTerm = await identityFailure(handle)
+  if (beforeTerm !== undefined) return beforeTerm
   signalGroup(pgid, 'SIGTERM')
   await untilGroupGone(pgid, termMs)
   if (!groupAlive(pgid)) return { kind: 'reaped' }
 
+  const beforeKill = await identityFailure(handle)
+  if (beforeKill !== undefined) return beforeKill
   signalGroup(pgid, 'SIGKILL')
   await untilGroupGone(pgid, killMs)
   return groupAlive(pgid)
     ? { kind: 'left', note: `进程组 ${pgid}（${what}）TERM、KILL 之后还站着——没有收干净` }
     : { kind: 'reaped' }
+}
+
+async function identityFailure(handle: ReapTarget): Promise<ReapOutcome | undefined> {
+  const current = await startTimeOf(handle.pgid)
+  if (!groupAlive(handle.pgid)) return { kind: 'gone' }
+  if (current === undefined) return { kind: 'unprovable', note: `进程组 ${handle.pgid} 的组长身份不可核实，资源未核销` }
+  if (!sameProcess(handle, current)) return { kind: 'stranger', note: `进程组 ${handle.pgid} 的组长身份已改变，未发送信号` }
+  return undefined
 }
 
 /**
@@ -224,6 +248,8 @@ export async function reapOwned(handle: ReapTarget, times: ReapTimes = {}): Prom
 export function createProcessLedger(persist?: (owned: readonly OwnedProcess[]) => void): ProcessLedger {
   const open = new Map<number, OwnedProcess>()
   const listeners: (() => void)[] = []
+  let closed = false
+  const starting = new Set<Promise<void>>()
 
   /** 喊一声「账变了」——**不让一个听者把记这笔账的路带偏**（同 `Link.send` 那条口径）。 */
   const announce = (): void => {
@@ -237,9 +263,20 @@ export function createProcessLedger(persist?: (owned: readonly OwnedProcess[]) =
   }
 
   return {
+    beginSpawn() {
+      if (closed) throw new Error('执行实例已停止接收新进程')
+      const pending = Promise.withResolvers<void>()
+      starting.add(pending.promise)
+      return () => { starting.delete(pending.promise); pending.resolve() }
+    },
+    async close() {
+      closed = true
+      await Promise.all([...starting])
+    },
     async add(input) {
       const startedAt = input.startedAt ?? await startTimeOf(input.pgid)
       if (startedAt === undefined) throw new Error(`无法核对工具进程 ${input.pgid} 的启动身份，未放行`)
+      if (closed) throw new Error('执行实例已停止接收新进程')
       open.set(input.pgid, {
         pgid: input.pgid,
         startedAt,

@@ -660,7 +660,10 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
    */
   test.each([false, true])('转后台留的接回入口：照那一行真敲一遍，接回同一个库（自定义符号链接位置=%s）', async (alias) => {
     const runs = tempDir('magic-u100-resume-runs-')
-    const fixture = startFixture({ turns: [{ kind: 'text', text: '第一句答复。' }] })
+    const fixture = startFixture({ turns: [
+      { kind: 'tool', name: 'exec', args: { cmd: 'sleep 60', background: true } },
+      { kind: 'text', text: '第一句答复。' },
+    ] })
     const base = createSandbox({ baseURL: fixture.baseURL })
     const sandbox = { ...base, workspace: join(base.root, "work 'space") }
     mkdirSync(sandbox.workspace)
@@ -687,7 +690,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await first.wait({ text: '○ 空闲' }, { timeoutMs: 25_000 })
       const asked = fixture.requests().length
 
-      // ② 转后台 ⇒ 那一行上屏
+      // ② 回复已结束，托管命令仍在运行；转后台 ⇒ 那一行上屏。
       await first.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
       await first.key('down')
       await first.key('enter')
@@ -733,7 +736,8 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       // **查看不触发重新执行**：模型一次都没被再问（物证是调用数，不是屏）
       expect(fixture.requests().length).toBe(asked)
 
-      await second.quit()
+      await second.send('/exit ', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
+      await second.key('enter', { until: { text: '停了' }, timeoutMs: 20_000 })
       await second.close({ graceMs: 5_000 })
       second = undefined
 

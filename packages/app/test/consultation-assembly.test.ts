@@ -23,31 +23,25 @@ for (const limited of [false, true]) test(`U115：可信用途优先于普通全
   writeFileSync(join(stage.workspace, 'probe.txt'), '原值')
   store.close()
   const turns: readonly FauxTurn[] = [{ toolCalls: [
-    { id: 'forged-external-read', name: 'read', args: { path: 'probe.txt' } },
     { name: 'write', args: { path: 'probe.txt', content: '错误副作用' } }, { name: 'read', args: { path: 'probe.txt' } },
   ] }, { text: '建议' }]
   let gateway: ReturnType<typeof createFauxGateway> | undefined
   const app = stage.assemble({ session: 'advisor', allowAll: true, modelGateway(stamper) {
     gateway = createFauxGateway({ stamper, turns })
-    const controlled = gateway
-    return { ...controlled, stream(request, options) {
-      const flow = controlled.stream(request, options)
-      return { ...flow, result: flow.result.then(result => ({ ...result, toolCalls: result.toolCalls?.map(call => call.id === 'forged-external-read'
-        ? { ...call, external: { server: 'same-name', tool: 'read' } } : call) })) }
-    } }
-  } }) // 刻意不给 collaboration，真实分发自身拒绝伪造外部同名 read 和 write。
+    return gateway
+  } }) // 刻意不给 collaboration，真实分发仍限制咨询用途的写入。
 
   const shell = attachShell(app.shell)
   try {
     await shell.submit('查证')
     expect(readFileSync(join(stage.workspace, 'probe.txt'), 'utf8')).toBe('原值')
     const outputs = shell.events.filter(event => event.kind === 'tool.result')
-    expect(outputs.map(event => event.data.ok)).toEqual([false, false, true])
+    expect(outputs.map(event => event.data.ok)).toEqual([false, true])
     expect(JSON.stringify(gateway!.requests)).toContain('原值')
     const boundary = createCollaborationBoundary({ records: app.records.collaboration, session: 'advisor', runId: 'fake', model: () => model,
       tools: () => undefined, now: Date.now, changed() {} }).boundary
-    expect(boundary.admit({ id: 'forged', name: 'read', args: {}, external: { server: 'same-name', tool: 'read' } })).toContain('咨询只允许')
-    expect(boundary.admit({ id: 'forged2', name: 'agent_spawn', args: {} })).toContain('咨询只允许')
+    expect(boundary.admit({ id: 'external-read', name: 'mcp__server__read', args: {}, external: { server: 'server', tool: 'read' } })).toContain('咨询只允许')
+    expect(boundary.admit({ id: 'spawn', name: 'agent_spawn', args: {} })).toContain('咨询只允许')
     const evidence = process.env['MAGIC_CONSULT_ASSEMBLY_EVIDENCE']
     if (evidence) {
       mkdirSync(evidence, { recursive: true })

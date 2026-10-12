@@ -1363,8 +1363,9 @@ const exitCommand: Scenario = {
     })
 
     await busy.send('说一句长话', { until: { text: ' › 说一句长话' }, timeoutMs: 15_000 })
-    // 锚状态行那句「ctrl+c 停或离开」＝**这一轮真在跑**（它在工作中那一格才出现）
+    // 等待输入受理和模型正文开始返回，再验证工作中的停止。
     await busy.key('enter', { until: { text: 'ctrl+c 停或离开' }, timeoutMs: 25_000 })
+    await busy.wait({ text: '正文先' }, { timeoutMs: 25_000 })
 
     await busy.send('/exit ', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await busy.key('enter')

@@ -32,7 +32,7 @@ import {
   externalPartNote,
   externalRefusedOutput,
 } from './messages.ts'
-import type { ToolDefinition } from './registry.ts'
+import { defineTool, type ToolDefinition } from './registry.ts'
 import { refused } from './toolkit.ts'
 
 /**
@@ -48,11 +48,19 @@ export function defineMcpTools(connection: McpConnection): readonly ToolDefiniti
   for (const tool of connection.tools()) {
     const external = { server: connection.server, tool: tool.name }
 
-    definitions.push({
+    definitions.push(defineTool({
       spec: specOf(external.server, tool.name, tool.description, tool.parameters),
       external,
-      run: (args, ctx) => call(connection, tool.name, args, ctx.signal),
-    })
+      ...(tool.unavailable === undefined ? {} : { unavailable: tool.unavailable }),
+      prepare(args) {
+        const problem = tool.validate(args)
+        if (problem !== undefined) throw new Error(problem)
+        return args
+      },
+      run: (args, ctx) => connection.tools().includes(tool)
+        ? call(connection, tool.name, args, ctx.signal)
+        : refused(externalNotSentOutput('工具注册或连接已变化，请重新发起调用')),
+    }))
   }
 
   return definitions

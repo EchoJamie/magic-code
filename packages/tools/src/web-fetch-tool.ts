@@ -40,14 +40,9 @@ import type { PageDistiller, WebSource } from '@magic/contracts'
 import { WEB_CACHE_TTL_MS, webTargetOf } from '@magic/contracts'
 import { isText } from './args.ts'
 import { htmlToMarkdown } from './html.ts'
+import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused } from './toolkit.ts'
-
-/** 页面正文交给提炼模型的上限（字符）——超出只取前一段**并明说**（见回执那几行）。 */
-export const WEB_PAGE_MAX_CHARS = 100_000
-
-/** 提炼出来的答案的上限（字符）——这一件的全部意义是**省上下文**，答案也得有界。 */
-export const WEB_ANSWER_MAX_CHARS = 20_000
 
 /** 缓存条数上限——**短时缓存**，不是资料库（见 `cacheOf`）。 */
 export const WEB_CACHE_MAX_ENTRIES = 32
@@ -120,7 +115,6 @@ type CachedPage = {
   readonly url: string
   readonly status: number
   readonly bytes: number
-  readonly chars: number
   readonly title?: string
   readonly markdown: string
 }
@@ -192,7 +186,6 @@ export function defineWebFetchTool(deps: WebFetchDeps): ToolDefinition {
       url: fetched.url,
       status: fetched.status,
       bytes: fetched.bytes,
-      chars: fetched.body.length,
       ...(looksHtml ? htmlToMarkdown(fetched.body) : { markdown: fetched.body }),
     }
 
@@ -206,7 +199,7 @@ export function defineWebFetchTool(deps: WebFetchDeps): ToolDefinition {
     return { ok: true, page, hit: false }
   }
 
-  return {
+  return defineTool({
     spec: {
       name: 'web_fetch',
       summary: '取网页（取回 → 按问题提炼 → 只回答案）',
@@ -216,17 +209,20 @@ export function defineWebFetchTool(deps: WebFetchDeps): ToolDefinition {
       danger: { level: 'gated', reason: 'outbound' },
     },
 
-    async run(args, ctx): Promise<ToolRunResult> {
+    prepare(args) {
       const url = args['url']
-      if (!isText(url)) return refused('参数错误：url 须为非空字符串')
+      if (!isText(url)) throw new Error('参数错误：url 须为非空字符串')
 
       const prompt = args['prompt']
-      if (!isText(prompt)) return refused('参数错误：prompt 须为非空字符串')
+      if (!isText(prompt)) throw new Error('参数错误：prompt 须为非空字符串')
 
       // **发请求之前就拒**（设计明写）——本机地址 / 无点主机名 / 非 http(s) 一律取不得
       const target = webTargetOf(url)
-      if (!target.ok) return refused(target.reason)
+      if (!target.ok) throw new Error(target.reason)
 
+      return { url: target.url, prompt }
+    },
+    async run({ url, prompt }, ctx): Promise<ToolRunResult> {
       // ⚠️ **没配提炼模型：这一轮停住**（工单第 5 条）——拦在**取回之前**：
       // 这一趟注定提炼不了，那一次取网就不必发出去（既省一次对外请求，也不必先让人
       // 批一张注定跑不出结果的卡）。`halt` 让循环**不开下一轮**：模型看得到这句话，
@@ -236,7 +232,7 @@ export function defineWebFetchTool(deps: WebFetchDeps): ToolDefinition {
 
       const started = now()
 
-      const got = await pageOf(target.url, ctx.signal)
+      const got = await pageOf(url, ctx.signal)
       if (!got.ok) return refused(got.output)
 
       const { page, hit } = got
@@ -248,11 +244,10 @@ export function defineWebFetchTool(deps: WebFetchDeps): ToolDefinition {
         )
       }
 
-      const over = body.length > WEB_PAGE_MAX_CHARS
       const distilled = await distiller.distill(
         {
           url: page.url,
-          page: over ? body.slice(0, WEB_PAGE_MAX_CHARS) : body,
+          page: body,
           prompt,
         },
         ctx.signal === undefined ? {} : { signal: ctx.signal },
@@ -271,11 +266,10 @@ export function defineWebFetchTool(deps: WebFetchDeps): ToolDefinition {
           elapsedMs: now() - started,
           model: distilled.model,
           answer: distilled.answer,
-          over,
         }),
       }
     },
-  }
+  })
 }
 
 /**
@@ -300,28 +294,23 @@ function compose(input: {
   readonly elapsedMs: number
   readonly model: string
   readonly answer: string
-  readonly over: boolean
 }): string {
-  const { page, hit, elapsedMs, model, answer, over } = input
+  const { page, hit, elapsedMs, model, answer } = input
 
   // 命中不报取回耗时——那一刻没有取回这回事（见 `pageOf`）
   const retrieval = hit
     ? `${page.url} · ${page.status} · ${formatBytes(page.bytes)} · 缓存命中（${WEB_CACHE_TTL_MS / 60_000} 分钟内取过，没有再取）`
     : `${page.url} · ${page.status} · ${formatBytes(page.bytes)} · ${formatMs(elapsedMs)}`
 
-  const truncated = answer.length > WEB_ANSWER_MAX_CHARS
-  const body = truncated ? answer.slice(0, WEB_ANSWER_MAX_CHARS) : answer
-
   return [
-    `取回 ${retrieval}${over ? ` · 正文超长，只把前 ${WEB_PAGE_MAX_CHARS} 字交给提炼` : ''}`,
+    `取回 ${retrieval}`,
     // 收据第二行——**「这是什么」**：哪个模型提炼的、以及那句要紧的分寸
     `提炼 按你问的那件事挑出的答案 · 不是原文 · 模型 ${model}`,
     // 收据第三行——**「它答不了什么」**：与上一行各说一件事，不是重复（那一条是说清
     // 「这是提炼」，这一条是说清「提炼可能漏」——「没问到 ≠ 没有」正是这一处）
     '没问到的这一页未必没有；要看原文，用 exec ＋ curl 取。',
     '',
-    body,
-    ...(truncated ? ['', `[答案超长，已截到 ${WEB_ANSWER_MAX_CHARS} 字]`] : []),
+    answer,
   ].join('\n')
 }
 

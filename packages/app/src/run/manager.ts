@@ -557,7 +557,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         readyWaiters.delete(executor.gen)
         executor.run.stopping = true
         send(executor, { t: 'bye', why: '成员启动超时' })
-        escalateStop(executor)
+        void escalateStop(executor)
         reject(new Error('成员启动未就绪，正在回收'))
       }, 30_000)
       readyWaiters.set(executor.gen, { resolve, reject, timer })
@@ -1187,8 +1187,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       deliver(live, { type: 'turn.interrupt' })
       // ② 再叫它收尾（`bye`＝执行者那条「把资源退干净再走」的路）
       send(live, { t: 'bye', why: '收到停止' })
-      // ③ 有界：到点还没退，照「先礼后兵」往下推（TERM → 再等 → KILL → 等退出）
-      escalateStop(live)
+      // ③ 同时回收该代资源，并有界等待异步实例关闭确认。
+      void escalateStop(live)
       return
     }
 
@@ -1240,15 +1240,35 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     settleStop(record, note)
   }
 
-  /**
-   * **先礼后兵的那条路**（U50 · 设计「有界等待 → TERM → KILL → 等待退出」）。
-   *
-   * 礼已经给过了（`bye` 走连接）。到点还没退 ⇒ 一记 TERM；再等 `stopKillMs` 还没退 ⇒ KILL。
-   * 两记都发出去之后**不再等**：那一代照旧停在「停止中」（事实如此——它确实还没退），
-   * 而**不谎报已停**。
-   */
-  function escalateStop(executor: Executor): void {
+  const stoppingTasks = new WeakMap<Executor, Promise<void>>()
+
+  /** Agent 在共享 Engine 内：只回收目标代登记资源，等待该实例关闭确认。 */
+  function escalateStop(executor: Executor): Promise<void> {
+    const existing = stoppingTasks.get(executor)
+    if (existing !== undefined) return existing
+    const closingStarts = executor.ledger.close?.()
     executor.spawned.cancel()
+    const pending = (async () => {
+      let note: string | undefined
+      try {
+        await reclaimRun(executor.run)
+        await closingStarts
+        note = await reclaimRun(executor.run)
+      } catch (error) { note = String(error) }
+      const deadline = Date.now() + stopGraceMs + 2 * stopKillMs
+      while (!executor.exited && executor.run.ended === undefined && Date.now() < deadline) await Bun.sleep(25)
+      if (!executor.exited && executor.run.ended === undefined) {
+        note ??= '执行实例关闭尚未确认，未终止共享 Engine'
+        executor.run.reclaimPending = true
+        executor.run.reclaimNote = note
+        refresh(executor.run, now())
+        saveRuns(true)
+        pushRuns()
+        settleStop(executor.run, note)
+      }
+    })().finally(() => stoppingTasks.delete(executor))
+    stoppingTasks.set(executor, pending)
+    return pending
   }
 
   // —— 命令：路由 ——
@@ -2233,10 +2253,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
    */
   function afterEnd(run: RunRecord): void {
     releaseEnvironments()
-    if (run.owned.length === 0) {
-      settleStop(run)
-      return
-    }
     void reclaimRun(run).then((note) => { releaseEnvironments(); settleStop(run, note) })
   }
 
@@ -2293,15 +2309,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         extensionTimer = setTimeout(() => resolve('协作收尾尚未确认'), stopGraceMs + 2 * stopKillMs)
       }),
     ]).finally(() => { if (extensionTimer !== undefined) clearTimeout(extensionTimer) })
-    const until = async (ms: number): Promise<void> => {
-      const deadline = Date.now() + ms
-      while (owned.some((one) => !one.exited && one.run.ended === undefined) && Date.now() < deadline) await Bun.sleep(25)
-    }
-    await until(stopGraceMs)
-    for (const one of owned) if (!one.exited && one.run.ended === undefined) one.spawned.cancel()
-    await until(stopKillMs)
-    for (const one of owned) if (!one.exited && one.run.ended === undefined) one.spawned.cancel()
-    await until(stopKillMs)
+    await Promise.all(owned.map(executor => escalateStop(executor)))
     if (owned.some((one) => !one.exited && one.run.ended === undefined)) throw new Error('仍有执行资源未核销')
     await Promise.all([...reclaiming.values()])
     for (const run of lastRuns.values()) {

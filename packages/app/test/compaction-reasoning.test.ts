@@ -1,4 +1,4 @@
-/** U113：辅助调用固定 Cantrip，关闭思考且与主选择隔离。 */
+/** U113：辅助调用固定 Cantrip，按能力选择思考且与主选择隔离。 */
 
 import { describe, expect, test } from 'bun:test'
 import { attachShell } from '../src/index.ts'
@@ -6,6 +6,10 @@ import { eventsOfKind, makeStage, readDatabase, type Stage } from './support.ts'
 import { FAKE_API_KEY } from './ui/sandbox.ts'
 import { startFixture } from './ui/fixture.ts'
 import type { Fixture, FixtureRequest, FixtureTurn } from './ui/fixture.ts'
+import type { ProviderConfig } from '@magic/contracts'
+import { makeTestStamper } from '@magic/faux'
+import { createPageDistiller } from '@magic/model'
+import { bindModelChoice } from '../src/agent-models.ts'
 
 const MODEL = 'deepseek-flash'
 
@@ -37,11 +41,11 @@ function chatsOf(fixture: Fixture): readonly FixtureRequest[] {
  */
 function stageOn(
   fixture: Fixture,
-  options: { readonly vendor?: string } = {},
+  options: { readonly vendor?: string; readonly model?: string } = {},
 ): Stage {
   return makeStage({
     config: {
-      models: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: MODEL}},
+      models: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: options.model ?? MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: MODEL}},
       providers: {
         local: { vendor: options.vendor ?? 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
@@ -173,9 +177,9 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
     }
   })
 
-  test('② 反面·MiniMax：未支持关闭思考 ⇒ 本次压缩明确失败、不发摘要请求', async () => {
+  test.each(['deepseek-flash', 'MiniMax-M2.7-highspeed'])('② MiniMax %s 使用默认思考，同一 Cantrip 正常压缩', async model => {
     const fixture = startFixture({ model: MODEL, turns: turnsOf() })
-    const stage = stageOn(fixture, { vendor: 'minimax' })
+    const stage = stageOn(fixture, { vendor: 'minimax', model })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
     try {
@@ -185,13 +189,14 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       await handle.submit('第一件事')
       await handle.submit('第二件事')
 
-      expect(chatsOf(fixture).filter(isCompaction)).toEqual([])
-      expect(eventsOfKind(handle.events, 'context.compacted')).toEqual([])
-      const errors = eventsOfKind(handle.events, 'error').map(event => event.data.message).join('\n')
-      expect(errors).toContain('思考能力未知，只能使用模型默认')
-      expect(errors).toContain('原始记录已保留')
+      const requests = chatsOf(fixture).filter(isCompaction)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.body['model']).toBe(model)
+      expect(requests[0]?.body['thinking']).toBeUndefined()
+      expect(requests[0]?.body['reasoning_effort']).toBeUndefined()
+      expect(eventsOfKind(handle.events, 'context.compacted')).toHaveLength(1)
       const db = readDatabase(assembly.paths.database)
-      expect(db.entries.filter(entry => entry.kind === 'summary')).toEqual([])
+      expect(db.entries.filter(entry => entry.kind === 'summary')).toHaveLength(1)
       expect(db.entries.filter(entry => entry.kind === 'user')).toHaveLength(2)
       db.close()
     } finally {
@@ -226,7 +231,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       expect(endings.length).toBeGreaterThan(0)
       expect(endings.every((reason) => reason === 'settled')).toBe(true)
 
-      // 一次失败**够不着**连败上限（缺省 3）——不报 error，也不写坏摘要
+      // 具体失败即时提示一次，不写坏摘要。
       expect(eventsOfKind(handle.events, 'error').map(event => event.data.message).join('\n')).toContain("Unsupported parameter: 'thinking'")
       expect(eventsOfKind(handle.events, 'context.compacted')).toEqual([])
 
@@ -242,5 +247,49 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       await fixture.stop()
       stage.dispose()
     }
+  })
+})
+
+describe('D56 · 内务绑定与提炼出站', () => {
+  test.each(['minimax', 'unmapped'])('%s：默认思考只发一次，正文分离且保留页面代码', async kind => {
+    const fixture = startFixture({ turns: [{ kind: 'text', reasoning: '内部提炼思考', text: '使用 <think>code</think>，版本 2。', chunks: 1, chunkDelayMs: 0 }] })
+    try {
+      const model = 'MiniMax-M2.7-highspeed'
+      const config: ProviderConfig = { apiKey: FAKE_API_KEY, baseURL: fixture.baseURL,
+        ...(kind === 'minimax' ? { vendor: 'minimax' } : { modelOverrides: { [model]: { reasoningSupport: { disable: true } } } }),
+      }
+      const bound = bindModelChoice({ options: { providers: { local: config }, stamper: makeTestStamper(), env: {} },
+        configuredModels: { cantrip: { provider: 'local', model } }, request: { choice: 'cantrip' } })
+      if ('failure' in bound) throw new Error(bound.failure)
+      const outcome = await createPageDistiller({ gateway: bound.gateway }).distill({ url: 'https://example.com/doc', page: '版本 2，代码 <think>code</think>', prompt: '版本与代码是什么？' }, {})
+      expect(outcome).toMatchObject({ ok: true, answer: '使用 <think>code</think>，版本 2。' })
+      const requests = chatsOf(fixture)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.body['model']).toBe(model)
+      expect(requests[0]?.body['thinking']).toBeUndefined()
+      expect(requests[0]?.body['tools']).toBeUndefined()
+    } finally { await fixture.stop() }
+  })
+
+  test('绑定后改连接配置，已绑定请求稳定，下一次使用新配置', async () => {
+    const a = startFixture({ turns: [{ kind: 'text', text: 'A', chunks: 1, chunkDelayMs: 0 }] })
+    const b = startFixture({ turns: [{ kind: 'text', text: 'B', chunks: 1, chunkDelayMs: 0 }] })
+    try {
+      const config = { vendor: 'minimax', apiKey: FAKE_API_KEY, baseURL: a.baseURL }
+      const options = { providers: { local: config }, stamper: makeTestStamper(), env: {} }
+      const bind = () => bindModelChoice({ options, configuredModels: { cantrip: { provider: 'local', model: 'MiniMax-M2.7-highspeed' } }, request: { choice: 'cantrip' } })
+      const first = bind()
+      config.baseURL = b.baseURL
+      const second = bind()
+      if ('failure' in first || 'failure' in second) throw new Error('绑定失败')
+      for (const bound of [first, second]) {
+        const stream = bound.gateway.stream({ messages: [{ role: 'user', content: '摘要' }] }, {})
+        for await (const _ of stream.events) { /* 完整消费 */ }
+        expect((await stream.result).complete).toBe(true)
+      }
+      expect(chatsOf(a)).toHaveLength(1)
+      expect(chatsOf(b)).toHaveLength(1)
+      expect(first.identity).not.toBe(second.identity)
+    } finally { await a.stop(); await b.stop() }
   })
 })

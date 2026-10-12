@@ -42,6 +42,7 @@ import type {
   PlanStep,
 } from '@magic/contracts'
 import { isText } from './args.ts'
+import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused, reasonOf } from './toolkit.ts'
 
@@ -129,7 +130,7 @@ export const PLAN_UPDATE_PARAMETERS = {
             '辅助笔记：目标、关键约束、已确认事实、未解决问题与回查线索；没有就留空串',
         },
       },
-      required: ['steps', 'notes'],
+      required: ['steps'],
       additionalProperties: false,
     },
   },
@@ -275,7 +276,7 @@ export function definePlanTools(reader: PlanReader): readonly ToolDefinition[] {
 }
 
 function readTool(reader: PlanReader): ToolDefinition {
-  return {
+  return defineTool({
     spec: {
       name: PLAN_READ_TOOL,
       summary: '取当前会话的计划笔记（目标、步骤清单与辅助笔记）',
@@ -283,6 +284,7 @@ function readTool(reader: PlanReader): ToolDefinition {
       danger: { level: 'light' },
     },
 
+    prepare: args => args,
     async run(): Promise<ToolRunResult> {
       try {
         return { ok: true, output: readReceipt(await reader.readPlan()) }
@@ -290,11 +292,11 @@ function readTool(reader: PlanReader): ToolDefinition {
         return refused(`计划读取失败：${reasonOf(error)}`)
       }
     },
-  }
+  })
 }
 
 function updateTool(): ToolDefinition {
-  return {
+  return defineTool({
     spec: {
       name: PLAN_UPDATE_TOOL,
       summary: '整体替换当前计划笔记，或清空它（只保存判断，不控制执行）',
@@ -302,25 +304,14 @@ function updateTool(): ToolDefinition {
       danger: { level: 'light' },
     },
 
-    run(args): ToolRunResult {
-      // **`undefined` 与 `null` 分得开**：没给这一位＝调用不成立（模式要求必填）；
-      // 给了 `null` 才是「清空」（`in` 判在场——`args['plan'] === undefined` 会把两者混成一件）
-      if (!('plan' in args)) {
-        return refused('参数错误：要更新就给 plan（对象），要清空就给 plan: null')
-      }
-
-      const raw = args['plan']
-      if (raw === null) {
-        return {
-          ok: true,
-          output: '计划笔记已清空。过程仍在会话记录里（history_read 可回查，排障时用得上）。',
-          plan: null,
-        }
-      }
-
-      const parsed = planOf(raw)
-      if (typeof parsed === 'string') return refused(parsed)
-
+    prepare(args) {
+      if (!('plan' in args)) throw new Error('参数错误：要更新就给 plan（对象），要清空就给 plan: null')
+      const parsed = args.plan === null ? null : planOf(args.plan)
+      if (typeof parsed === 'string') throw new Error(parsed)
+      return { plan: parsed }
+    },
+    run({ plan: parsed }): ToolRunResult {
+      if (parsed === null) return { ok: true, output: '计划笔记已清空。过程仍在会话记录里（history_read 可回查，排障时用得上）。', plan: null }
       return {
         ok: true,
         // **回执里带上完整正文**：它是模型此后判断「手上有没有最新计划」的那一份
@@ -329,7 +320,7 @@ function updateTool(): ToolDefinition {
         plan: parsed,
       }
     },
-  }
+  })
 }
 
 /**
@@ -385,7 +376,7 @@ function planOf(raw: unknown): PlanNote | string {
 }
 
 function historyTool(reader: PlanReader): ToolDefinition {
-  return {
+  return defineTool({
     spec: {
       name: HISTORY_READ_TOOL,
       summary: '读当前会话的一段实际记录（默认从当前上下文之前翻起）',
@@ -393,17 +384,19 @@ function historyTool(reader: PlanReader): ToolDefinition {
       danger: { level: 'light' },
     },
 
-    async run(args): Promise<ToolRunResult> {
+    prepare(args) {
       const query = historyQueryOf(args)
-      if (typeof query === 'string') return refused(query)
-
+      if (typeof query === 'string') throw new Error(query)
+      return { ...query }
+    },
+    async run(query): Promise<ToolRunResult> {
       try {
         return { ok: true, output: historyReceipt(await reader.readHistory(query)) }
       } catch (error) {
         return refused(`历史读取失败：${reasonOf(error)}`)
       }
     },
-  }
+  })
 }
 
 /** 参数 → 定位（两种定位不混用；错用**说清**而不是静默挑一个——见契约 `HistoryQuery`）。 */

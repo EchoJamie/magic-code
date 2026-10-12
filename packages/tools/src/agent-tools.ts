@@ -1,5 +1,5 @@
 import type { CollaborationClient, CollaborationRequest, MessagePart } from '@magic/contracts'
-import type { ToolDefinition } from './registry.ts'
+import { defineTool, type ToolDefinition } from './registry.ts'
 
 export const AGENT_TOOL_NAMES = ['agent_list', 'agent_spawn', 'agent_message', 'agent_wait', 'agent_control', 'consult_arcane'] as const
 const text = { type: 'string', minLength: 1 } as const
@@ -32,7 +32,8 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
         return { action: 'spawn', operationId: required(args, 'operationId'), name: required(args, 'name'), responsibility: required(args, 'responsibility'), scope: required(args, 'scope'), body: body(args.body),
           ...(optional(args, 'role') === undefined ? {} : { role: optional(args, 'role')! }),
           ...(optional(args, 'modelReason') === undefined ? {} : { modelReason: optional(args, 'modelReason') }),
-          ...(model === undefined ? {} : { model: model as Extract<CollaborationRequest, { action: 'spawn' }>['model'] }),
+          ...(model === undefined ? {} : { model: { ...(model.choice === undefined ? {} : { choice: model.choice }),
+            ...(model.reasoning === undefined ? {} : { reasoning: reasoning(model.reasoning) }) } }),
         } as CollaborationRequest
       }),
     tool('agent_message', '同工作成员的通信：已有discussionRoot可省recipients，默认送该讨论参与者；新问题明确点名，不广播全体。询问/告知不抢占工作；委派需明确接受；结果包含结论、产物、验证及未解决项。已接收不等于已纳入请求或接受。',
@@ -56,11 +57,16 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
   ]
 
   function tool(name: string, summary: string, properties: Record<string, unknown>, requiredFields: readonly string[], parse: (args: Readonly<Record<string, unknown>>) => CollaborationRequest): ToolDefinition {
-    return { spec: { name, summary, parameters: { type: 'object', properties, required: requiredFields, additionalProperties: false }, danger: { level: 'light' } },
-      async run(args) {
+    return defineTool({ spec: { name, summary, parameters: { type: 'object', properties, required: requiredFields, additionalProperties: false }, danger: { level: 'light' } },
+      prepare(args) {
+        if (Object.keys(args).some(key => !Object.hasOwn(properties, key))) throw new Error('包含未声明参数；身份、授权和工作区不能由消息指定')
+        for (const key of ['startDiscussion', 'discussion']) {
+          if (args[key] !== undefined && typeof args[key] !== 'boolean') throw new Error(`${key} 须是布尔值`)
+        }
+        return parse(args)
+      },
+      async run(request) {
         try {
-          if (Object.keys(args).some(key => !Object.hasOwn(properties, key))) throw new Error('包含未声明参数；身份、授权和工作区不能由消息指定')
-          const request = parse(args)
           const reply = await client.request(request)
           return reply.ok ? { ok: true, output: (request.action === 'consult' ? '咨询受理回执（不表示顾问已完成）：\n' : '') + JSON.stringify(reply.value),
             ...(request.action === 'wait' && object(reply.value) && reply.value.ok === true
@@ -68,7 +74,7 @@ export function defineAgentTools(client: CollaborationClient): readonly ToolDefi
           } : { ok: false, output: reply.reason }
         } catch (error) { return { ok: false, output: error instanceof Error ? error.message : String(error) } }
       },
-    }
+    })
   }
 }
 

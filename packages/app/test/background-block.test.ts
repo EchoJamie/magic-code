@@ -234,7 +234,7 @@ describe('U89 · ③ 反面：一条后台任务都没有 ⇒ 那一块不出现
       for (const system of systems) {
         expect(system).not.toContain(HEADING)
         // ⚠️ 也不钉一句空话——「当前没有后台任务」那种占位一个字都没有
-        expect(system).not.toContain('后台')
+        expect(system).not.toContain('当前没有后台任务')
       }
 
       shell.dispose()

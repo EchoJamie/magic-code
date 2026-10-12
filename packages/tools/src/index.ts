@@ -83,7 +83,4 @@ export { definePlanTools, PLAN_TOOL_NAMES } from './plan-tools.ts'
 export { defineWebFetchTool } from './web-fetch-tool.ts'
 export type { WebFetchDeps } from './web-fetch-tool.ts'
 
-/** 网页正文 → markdown 的上限（回执要报的那个数）——装配与用例都读它一处。 */
-export { WEB_PAGE_MAX_CHARS } from './web-fetch-tool.ts'
-
 export { AGENT_TOOL_NAMES, defineAgentTools } from './agent-tools.ts'

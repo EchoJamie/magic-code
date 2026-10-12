@@ -89,7 +89,7 @@ describe('真实权限 → 工具 → 文件执行：一次决断', () => {
     writeFileSync(join(f.outside, 'a.txt'), 'needle')
     symlinkSync(f.root, join(f.outside, 'link'))
     writeFileSync(join(f.root, 'secret.txt'), 'needle-secret')
-    const run = f.runtime.invoke(call(name, { path: f.outside, pattern: name === 'glob' ? '**/*.txt' : 'needle' }), {})
+    const run = f.runtime.invoke(call(name, { path: f.outside, ...(name === 'ls' ? {} : { pattern: name === 'glob' ? '**/*.txt' : 'needle' }) }), {})
     f.gate.resolve((await f.request()).id, 'approve')
     const result = await run
     expect(result.ok).toBe(true)
@@ -159,7 +159,7 @@ describe('真实权限 → 工具 → 文件执行：一次决断', () => {
     const f = fixture()
     const target = join(f.outside, 'a'), other = join(f.outside, 'b')
     writeFileSync(target, 'before'); writeFileSync(other, 'secret')
-    const run = f.runtime.invoke(call(name, { path: target, content: 'bad', old: 'secret', new: 'bad' }), {})
+    const run = f.runtime.invoke(call(name, { path: target, ...(name === 'write' ? { content: 'bad' } : name === 'edit' ? { old: 'secret', new: 'bad' } : {}) }), {})
     const req = await f.request()
     unlinkSync(target); symlinkSync(other, target)
     f.gate.resolve(req.id, 'approve')

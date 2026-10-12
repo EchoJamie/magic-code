@@ -83,6 +83,10 @@ export type OwnedProcess = {
  * ——一场会话里跑几百条命令是常事，账却只该有「此刻还站着的那几个」。
  */
 export interface ProcessLedger {
+  /** 启动前占位；关闭准入后拒绝新启动，完成登记或回收后释放占位。 */
+  beginSpawn?(): () => void
+  /** 同步关闭新启动准入，并等待已进入启动屏障的操作结束。 */
+  close?(): Promise<void>
   /**
    * 记一笔——`pgid` ＝ 刚 spawn 出来的那个进程组，`kind` ＋ `what` ＝ 谁起的。
    *

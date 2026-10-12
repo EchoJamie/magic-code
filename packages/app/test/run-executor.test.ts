@@ -674,3 +674,29 @@ test('配置文件争锁与大输出期间仍能查询并独立停止另一工�
     await manager.waitUntilExit(); await g.dispose()
   }
 }, 15000)
+
+test('D57 · 客户端整项停止覆盖主命令退出后的管道等待，队列不再启动', async () => {
+  const g = ground('pipe-stop', 'settled', [{ kind: 'tool', name: 'exec', args: {
+    cmd: 'cd /tmp && /bin/sleep 30 >/dev/null 2>&1 & echo parent-done',
+  } }])
+  const manager = await standUp(g)
+  const client = await open(g, manager, 'pipe-stop')
+  let parentDone = false
+  let stopped = false
+  client.onEvent(event => {
+    if (event.kind === 'tool.output.delta' && event.data.text.includes('parent-done')) parentDone = true
+  })
+  client.onStopped(report => { if (report.phase === 'done') stopped = true })
+  try {
+    client.send({ type: 'input.submit', text: '运行受控管道命令' })
+    await waitFor('主命令输出已到达', () => parentDone)
+    const session = manager.runs()[0]!.session!
+    client.send({ type: 'input.submit', text: '此排队输入不得启动' })
+    client.stop(session, 'run')
+    await waitFor('实例和资源核销，停止回执完成', () => stopped && manager.executors().length === 0)
+    expect(manager.runs().find(row => row.session === session)?.state).toBe('stopped')
+    expect(g.fixture.requests().filter(request => request.path.endsWith('/chat/completions'))).toHaveLength(1)
+  } finally {
+    client.close(); manager.stop('测试结束'); await manager.waitUntilExit(); await g.dispose()
+  }
+}, 15_000)

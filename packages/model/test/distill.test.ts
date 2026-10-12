@@ -108,9 +108,35 @@ describe('U72 · 提炼面', () => {
     // 页面与问题真的进了请求——「按问题提炼」那一半的来处
     const messages = body['messages'] as { role: string; content: string }[]
     expect(messages[0]?.role).toBe('system')
-    expect(messages[0]?.content).toContain('只依据下面这一页的正文')
-    expect(messages.at(-1)?.content).toContain('标准版多少钱？')
-    expect(messages.at(-1)?.content).toContain('标准版每月 12 元。')
+    expect(messages[0]?.content).toContain('只依据提供的内容')
+    expect(messages[1]?.content).toContain('标准版多少钱？')
+    expect(messages.slice(2, -1).map(message => message.content).join('')).toContain('标准版每月 12 元。')
+    expect(messages.at(-1)?.content).toContain('页面正文已全部提供')
+  })
+
+  test.each(['```', '~~~~'])('正文按结构组成连续用户消息，一次提炼且原文无损（围栏 %s）', async fence => {
+    const code = `${fence}text\n${'长代码行'.repeat(30_000)}\n\n# 这是代码，不是章节\n${fence}\n\n`
+    const list = '- 第一项\n\n  第一项的补充条件。\n\n- 第二项\n\n'
+    const table = '| 模式 | 超时 |\n| --- | --- |\n| 托管 | 10 秒 |\n\n'
+    const sections = ['# 说明\n\n第一段正文。\n\n', code, list, table, '## 例外\n\n页面尾部：只支持 TLS。\n']
+    const page = sections.join('')
+    const { fetch, seen } = capture(() => sse(
+      chunk('提炼型号', { choices: [{ index: 0, delta: { content: '托管模式 10 秒，且只支持 TLS。' } }] }),
+      chunk('提炼型号', { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+    ))
+
+    const result = await distillerOn('提炼型号', fetch).distill({
+      url: 'https://example.com/long', page, prompt: '托管模式有什么条件？',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(seen).toHaveLength(1)
+    const messages = seen[0]?.body['messages'] as { role: string; content: string }[]
+    expect(messages.slice(1).every(message => message.role === 'user')).toBe(true)
+    const segments = messages.slice(2, -1).map(message => message.content.replace(/^页面正文（Markdown，第 \d+\/\d+ 段）：\n/u, ''))
+    expect(segments).toEqual(sections)
+    expect(segments.join('')).toBe(page)
+    expect(messages.at(-1)?.content).toContain('一次性回答')
   })
 
   test('② 端点硬塞一次工具调用：那一笔没有下文——只有一次请求，也长不出第二轮', async () => {
@@ -146,7 +172,7 @@ describe('U72 · 提炼面', () => {
 
     // 只有工具调用、一个字的正文都没有 ⇒ **空答案＝坏答案**（不落一条空回复给读的人）
     expect(outcome.ok).toBe(false)
-    if (!outcome.ok) expect(outcome.reason).toContain('没有给出答案正文')
+    if (!outcome.ok) expect(outcome.reason).toContain('没走完')
   })
 
   test('③ 端点报错 ⇒ 一次**普通失败**（照实带缘由，不吞）', async () => {
@@ -170,4 +196,18 @@ describe('U72 · 提炼面', () => {
       expect(outcome.reason).toContain('余额不足')
     }
   })
+})
+
+test.each([
+  { content: '', reasoning_content: '只有思考', finish: 'stop' },
+  { content: '  ', reasoning_content: '', finish: 'stop' },
+  { content: '半截答案', reasoning_content: '思考', finish: 'length' },
+])('D56 · 空正文或未完整结束均不交付提炼答案：%j', async sample => {
+  const { fetch } = capture(() => sse(
+    chunk('提炼型号', { choices: [{ index: 0, delta: { role: 'assistant', content: sample.content, reasoning_content: sample.reasoning_content } }] }),
+    chunk('提炼型号', { choices: [{ index: 0, delta: {}, finish_reason: sample.finish }] }),
+  ))
+  const result = await distillerOn('提炼型号', fetch).distill({ url: 'https://example.com', page: PAGE, prompt: '价格？' })
+  expect(result.ok).toBe(false)
+  expect('answer' in result).toBe(false)
 })

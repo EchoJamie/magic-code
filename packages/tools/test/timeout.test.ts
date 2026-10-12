@@ -94,7 +94,7 @@ describe('U69 · 超时与取消同一口径', () => {
     const canceled = makeToolDeps({
       exec: () => {
         controller.abort()
-        return { ok: true, exit: 137, stdout: '半截', stderr: '' }
+        return { ok: false, reason: 'canceled', message: '命令已取消', cleanup: { confirmed: true }, stdout: '半截', stderr: '' }
       },
     })
 

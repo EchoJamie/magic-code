@@ -22,6 +22,7 @@ function pokeTool(log: string[]): ToolDefinition {
       parameters: { type: 'object', properties: { who: { type: 'string' } } },
       danger: { level: 'light' },
     },
+    prepare: args => args,
     run: (args) => {
       log.push(String(args.who))
       return Promise.resolve({ ok: true, output: '戳了' })
@@ -149,7 +150,8 @@ describe('U06 · 定义与注册', () => {
         tools: [
           {
             spec: { name: '', summary: '无名', parameters: {}, danger: { level: 'light' } },
-            run: () => Promise.resolve({ ok: true, output: '' }),
+            prepare: args => args,
+    run: () => Promise.resolve({ ok: true, output: '' }),
           },
         ],
       }),

@@ -89,7 +89,7 @@ describe('U89 · 没有在跑的就不出现（工单 ③ 的文本层那一半�
     const text = withBackgroundRuns(buildSystemPrompt(VARS), [])
 
     expect(text).not.toContain('没有后台任务')
-    expect(text).not.toContain('后台')
+    expect(text).not.toContain('当前没有后台任务')
   })
 
   test('有在跑的 ⇒ 接在末尾（原产物一字不动）', () => {

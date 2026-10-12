@@ -81,6 +81,10 @@ export type ToolRunResult = {
 /** 一条工具定义——规格（送模型）＋ 执行体（经沙箱）。 */
 export type ToolDefinition = {
   readonly spec: ToolSpec
+  /** 保留不可用原因供旧调用回填，但不把不可调用的 schema 发给模型。 */
+  readonly unavailable?: string
+  /** 纯参数准备；失败抛字段级错误。分发在解析目标与审批之前调用且只调用一次。 */
+  readonly prepare: (args: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>
   readonly run: (
     args: Readonly<Record<string, unknown>>,
     ctx: ToolRunContext,
@@ -93,6 +97,24 @@ export type ToolDefinition = {
    * 来源，而不是模型参数里的自报。执行体那一侧看不见它（`run` 只收 `args`）。
    */
   readonly external?: ExternalToolRef
+}
+
+/** 在定义处保留解析后的参数类型；run 只接收本定义 prepare 的成功结果。 */
+export function defineTool<A extends Readonly<Record<string, unknown>>>(definition: Omit<ToolDefinition, 'prepare' | 'run'> & {
+  readonly prepare: (args: Readonly<Record<string, unknown>>) => A
+  readonly run: (args: A, ctx: ToolRunContext) => ToolRunResult | Promise<ToolRunResult>
+}): ToolDefinition {
+  return { ...definition,
+    prepare(args) {
+      const prepared = definition.prepare(args)
+      const schema = definition.spec.parameters
+      if (schema.additionalProperties === false && typeof schema.properties === 'object' && schema.properties !== null) {
+        for (const key of Object.keys(args)) if (!Object.hasOwn(schema.properties, key)) throw new Error(`参数错误：未声明字段 ${key}`)
+      }
+      return prepared
+    },
+    run: (args, ctx) => definition.run(args as A, ctx),
+  }
 }
 
 /** 注册表——定义随每次调用送模型的来处（`definitions()`）。 */
@@ -122,7 +144,7 @@ export function createRegistry(definitions: readonly ToolDefinition[]): ToolRegi
   }
 
   return {
-    definitions: [...table.values()].map((definition) => definition.spec),
+    definitions: [...table.values()].filter(definition => definition.unavailable === undefined).map((definition) => definition.spec),
     get: (name) => table.get(name),
   }
 }

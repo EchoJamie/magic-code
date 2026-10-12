@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { EventDataOf, EventKind, KernelEvent } from '@magic/contracts'
 import { ConfigError, attachShell, createStamper } from '../src/index.ts'
@@ -22,7 +22,17 @@ describe('顺序纪律——先接订阅、后放开输入', () => {
 
       // ① 装配完成、**还没订阅**——此刻放开输入
       assembly.shell.send({ type: 'input.submit', text: '早了一步' })
-      await Bun.sleep(50)
+      const deadline = Date.now() + 3000
+      for (;;) {
+        if (existsSync(assembly.paths.database)) {
+          const records = readDatabase(assembly.paths.database)
+          const ended = records.events.some(event => event.kind === 'turn.end')
+          records.close()
+          if (ended) break
+        }
+        if (Date.now() >= deadline) throw new Error('未订阅回合未结束')
+        await Bun.sleep(5)
+      }
 
       // ② 这才订阅——前面那一轮的推送已经飘走了（不是排队等着）
       const shell = attachShell(assembly.shell)

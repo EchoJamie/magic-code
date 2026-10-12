@@ -439,3 +439,23 @@ describe('判据 4 · 取输出——既有 `read` 读得到，写 / 列 / 匹�
     expect((await box.read(path)).content).toBe('output')
   })
 })
+
+
+describe('D57 · 后台 id 随整个组存活', () => {
+  test('主命令先退出时仍可按 id 停止后代，结束回报只发一次', async () => {
+    const land = freshLand()
+    const { runs, ledger } = runsOn(land)
+    const finishes: BackgroundFinish[] = []
+    const started = startedOf(await runs.start('sleep 30 & echo parent-done; exit 7', { onFinish: finish => finishes.push(finish) }))
+    try {
+      await until(() => readFileSync(started.outputPath, 'utf8').includes('parent-done'))
+      expect(runs.running().map(one => one.id)).toEqual([started.id])
+      expect(finishes).toEqual([])
+      expect((await runs.stop(started.id)).ok).toBe(true)
+      await until(() => finishes.length > 0)
+      expect(finishes).toHaveLength(1)
+      expect(finishes[0]).toMatchObject({ exit: 7, ok: false, stopped: true })
+      expect(ledger.list()).toEqual([])
+    } finally { await runs.stop(started.id) }
+  })
+})

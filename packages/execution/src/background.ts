@@ -154,7 +154,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
         id: run.id,
         command: run.command,
         outputPath: run.outputPath,
-        ok: exit === 0,
+        ok: exit === 0 && !run.stopping,
         exit,
         ...(run.stopping ? { stopped: true as const } : {}),
       })
@@ -191,6 +191,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
       }
 
       let startedAt: number
+      let commandExited: Promise<number | null>
       let proc: Bun.Subprocess<'pipe', number, number>
       try {
         const started = await spawnOwned([SHELL, '-c', cmd], {
@@ -200,6 +201,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
         })
         proc = started.process
         startedAt = started.startedAt
+        commandExited = started.commandExited
       } catch (error) {
         closeQuietly(fd)
         // 报文里点出 cwd——同 `exec.ts` 那一处（ENOENT 指向 `sh`，而真凶多半是 cwd）
@@ -226,8 +228,8 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
 
       // 记账（U50）——**后台进程尤其要记**：它比发起它的那一轮活得久，
       // 执行者被杀时正是「没人认领的后台」最容易出现的那一形
-      void proc.exited.then(
-        (exit) => settle(run, exit),
+      void Promise.all([commandExited, proc.exited]).then(
+        ([exit]) => settle(run, exit),
         // `exited` 本身抛（极罕见：平台不给退出码）——按**读不到**处置，不编一个 0 出来
         () => settle(run, null),
       )

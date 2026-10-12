@@ -41,11 +41,12 @@ import {
   backgroundStartFailed,
   OUTPUT_BACKGROUND_UNSUPPORTED,
   OUTPUT_CANCELED_RUNNING,
+  execTimedOutOutput,
   OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT,
   OUTPUT_EXEC_BAD_TIMEOUT,
   OUTPUT_EXEC_NO_CMD,
-  execTimedOutOutput,
 } from './messages.ts'
+import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.ts'
 import { refused, rowOf } from './toolkit.ts'
 
@@ -74,9 +75,11 @@ export const EXEC_MAX_OUTPUT_BYTES = 64 * 1024
 export const EXEC_PARAMETERS = {
   type: 'object',
   properties: {
-    cwd: { type: 'string', description: '工作目录；缺省为工作区默认根，工作区外须授权。' },
+    cwd: { type: 'string', minLength: 1, pattern: '\\S', description: '工作目录；缺省为工作区默认根，工作区外须授权。' },
     cmd: {
       type: 'string',
+      minLength: 1,
+      pattern: '\\S',
       description: '要执行的命令（经 shell 解释；工作目录＝工作区默认根）',
     },
     /**
@@ -88,6 +91,7 @@ export const EXEC_PARAMETERS = {
      */
     timeoutMs: {
       type: ['number', 'null'],
+      exclusiveMinimum: 0,
       // 描述是**给模型读的说明书**（同 `file-tools.ts` 那一节的口径：它就是「这个键怎么用」），
       // 故与其余七件的描述同一副行文——**不夹 Markdown 记号**（星号会原样落到模型那边）。
       description:
@@ -127,8 +131,8 @@ const EXEC_PARAMETERS_WITH_BACKGROUND = {
     background: {
       type: 'boolean',
       description:
-        '交出去、不占着这一轮（dev server / watch / 长时间构建那一类）。' +
-        '立刻回一个 id 与输出文件路径，命令接着跑；要看进展就用 read 读那个文件。' +
+        '需跨后续工具调用持续运行的 dev server / watch 使用 background:true；命令本身保持前台，不加 nohup 或末尾 &。' +
+        '立刻回 id 与输出路径，仅表示已受理；另用有明确超时的健康检查确认启动。日志按需要用 read、tail、grep 或 sed 读取。' +
         '它跑完时会有一条消息带那个路径回来——不要轮着读它等结束。' +
         '这一形没有超时；要当场等结果的命令别用它。缺省＝跟前台一样。',
     },
@@ -151,56 +155,18 @@ const EXEC_PARAMETERS_WITH_BACKGROUND = {
  * 它**不区分**「跑了但没成」与「压根没跑」——那件事由 `reason` 说，措辞遂分两支
  * （见下面的注释）。把两者合成一句话，就是 D39 那个坑。
  */
-function composeOutcome(result: ExecResult, signal: AbortSignal | undefined): ToolRunResult {
-  // **没跑成**是启动失败（含目标改变）——进程压根没起来，故没有输出、也没有耗时可言。
-  // 超时**不在其列**：它跑了、被掐断了（见下），与启动失败不是一回事（「命令跑过的结果与
-  // 调用不成立分开」）——原先它跟着这一支走，于是被说成「未能执行」，D39 就是这儿来的。
-  if (!result.ok && result.reason !== 'timeout') {
-    return { ok: false, output: `exec 未能执行（${result.reason}）：${result.message}` }
-  }
-
-  // 正文**两支组装同一份**：跑过的命令，无论收尾是「跑完」还是「被掐断」，
-  // 它已经说出来的话都照原样带上（`ok:true` 与超时两支的 `stdout` / `stderr` 同形同口径）。
-  // ⚠️ **截断那句不在这儿**（U93）——原先这里缀一条 `[输出已截断（上限 N 字节）]`，
-  // 而 U93 起沙箱**头尾都留**、并在**省略处**写明「省了多少 ＋ 怎么看全」（`exec.ts` 的
-  // `truncationNote`，照 U82 那段省略说明的形状）。再缀一条就是**同一件事说两遍**
-  // （那条注还落在正文末尾——读起来像「尾巴也被砍了」，与事实相反）。
-  // 每道流各管各的那一句：stdout 截了写在 stdout 的省略处，stderr 截了写在 stderr 里。
+function composeOutcome(result: ExecResult): ToolRunResult {
+  if (!result.ok && result.reason === 'spawn') return refused(`exec 未能执行（spawn）：${result.message}`)
   const blocks: string[] = []
+  if (!result.ok) {
+    blocks.push(result.reason === 'timeout' && result.cleanup?.confirmed !== false ? execTimedOutOutput(result.timeoutMs)
+      : result.reason === 'canceled' && result.cleanup.confirmed ? OUTPUT_CANCELED_RUNNING : result.message)
+    if (result.outputIncomplete) blocks.push('输出未收全；以下仅为已读取内容')
+  }
   if (result.stdout !== '') blocks.push(result.stdout)
   if (result.stderr !== '') blocks.push(`[stderr]\n${result.stderr}`)
-  const body = blocks.join('\n')
-
-  // 超时——**与取消同一口径**：抬头说「跑过了、被掐断」，已有输出照常带回。
-  //
-  // 这一支**排在取消之前**，两条互斥由**构造**保证：`reason:'timeout'` 只可能来自沙箱那条
-  // 自持计时器，而取消那一路沙箱报的是 `ok:true · exit 137`（永远走不到这里）。于是
-  // **同一次 `Ctrl+C` 又赶上到点**时，说出来的也只会是其中一句，不会两句打架。
-  //
-  // 不用沙箱那句 `message`（「命令超时（Nms）未完成——已终止」）：它与抬头**同一件事**，
-  // 再说一遍就是重复；抬头要的那个数直接取自结果里**真报了的那条上界**。
-  // 这一支同样**不带 `[exit N]`**——退出码（137）是收命的产物，不是命令自己跑出来的结果。
-  if (!result.ok) {
-    const head = execTimedOutOutput(result.timeoutMs)
-    return { ok: false, output: body === '' ? head : `${head}\n${body}` }
-  }
-
-  // 取消事实由**调用方自持的 signal** 判定（U05 口径：三个 reason 都是「沙箱坏了」，
-  // 取消不是——不挤进 reason，故在这里据 signal 归位）。命令已经产出的输出照常带回。
-  //
-  // 这一支**不带 `[exit N]`**：退出码是信号的产物（137），抬头的「已取消」已经把事实
-  // 说全了——再摆一个退出码只会让模型以为「命令跑完了、失败在 137」。两支互斥之下，
-  // 正文里的元信息始终只说模型推不出来的那一件。
-  if (signal?.aborted === true) {
-    return {
-      ok: false,
-      output: body === '' ? OUTPUT_CANCELED_RUNNING : `${OUTPUT_CANCELED_RUNNING}\n${body}`,
-    }
-  }
-
-  if (result.exit !== 0) blocks.push(`[exit ${result.exit}]`)
-
-  return { ok: result.exit === 0, output: blocks.join('\n') }
+  if (result.ok && result.exit !== 0) blocks.push(`[exit ${result.exit}]`)
+  return { ok: result.ok && result.exit === 0, output: blocks.join('\n') }
 }
 
 /**
@@ -243,50 +209,27 @@ function readTimeout(value: unknown): { readonly ms: number | null } | { readonl
 /** 造 `exec` 的工具定义。 */
 export function defineExecTool(): ToolDefinition {
   const row = rowOf('exec')
-
-  return {
-    spec: {
-      name: row.name,
-      summary: row.summary,
-      parameters: EXEC_PARAMETERS_WITH_BACKGROUND,
-      danger: row.danger,
-    },
-
-    async run(args, ctx): Promise<ToolRunResult> {
+  return defineTool({
+    spec: { name: row.name, summary: row.summary, parameters: EXEC_PARAMETERS_WITH_BACKGROUND, danger: row.danger },
+    prepare(args) {
       const cmd = args.cmd
-      if (typeof cmd !== 'string' || cmd.trim() === '') {
-        return { ok: false, output: OUTPUT_EXEC_NO_CMD }
-      }
-
+      if (typeof cmd !== 'string' || cmd.trim() === '') throw new Error(OUTPUT_EXEC_NO_CMD)
       const timeout = readTimeout(args.timeoutMs)
-      if ('bad' in timeout) return { ok: false, output: OUTPUT_EXEC_BAD_TIMEOUT }
-
-      // **后台那一形**（U70）——交出去就回，不占着这一轮。
-      //
-      // 判据是 `=== true`：`background` 只在「要这一形」时给得成真；写成别的（字符串 /
-      // 数字 / 缺席）一律按**前台**走 —— 前台是这一形之外的老路，一个字都不动。
-      //
-      // ⚠️ **闸门照走**：这一支在 `run` 里，而 `run` 只可能在闸门批准之后被调到
-      // （分发：闸门在执行路径内、不可绕过）——后台**不是**绕过裁决的口子。
-      //
-      // ⚠️ **与 `timeoutMs` 互斥**：这一形不读它（交出去就没有「等它多久」了）——
-      // 一起给＝参数错，**不静默丢**（U69 集成时定）。
-      if (args['background'] === true) {
-        if (timeout.ms !== null) return { ok: false, output: OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT }
-        return startBackground(cmd, ctx, typeof args['cwd'] === 'string' ? args['cwd'] : undefined)
-      }
-
-      const result = await ctx.sandbox.exec(cmd, {
-        ...(typeof args['cwd'] === 'string' ? { cwd: args['cwd'] } : {}),
-        // **不填就是 null**——不是「让沙箱自己看着办」：沙箱那一侧缺省也是无上界，
-        // 但把话说明白，读的人不必再翻一层才知道这一趟到底设没设上界。
-        timeoutMs: timeout.ms,
-        maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
-        onOutput: ctx.onOutput,
-        signal: ctx.signal,
-      })
-
-      return composeOutcome(result, ctx.signal)
+      if ('bad' in timeout) throw new Error(OUTPUT_EXEC_BAD_TIMEOUT)
+      const cwd = args.cwd
+      if (cwd !== undefined && (typeof cwd !== 'string' || cwd.trim() === '')) throw new Error('参数错误：cwd 须为非空字符串')
+      const background = args.background
+      if (background !== undefined && typeof background !== 'boolean') throw new Error('参数错误：background 须为布尔值')
+      if (background === true && timeout.ms !== null) throw new Error(OUTPUT_EXEC_BACKGROUND_WITH_TIMEOUT)
+      return { cmd, cwd, background, timeoutMs: timeout.ms }
     },
-  }
+    async run(args, ctx): Promise<ToolRunResult> {
+      if (args.background === true) return startBackground(args.cmd, ctx, args.cwd)
+      const result = await ctx.sandbox.exec(args.cmd, {
+        cwd: args.cwd, timeoutMs: args.timeoutMs, maxOutputBytes: EXEC_MAX_OUTPUT_BYTES,
+        onOutput: ctx.onOutput, signal: ctx.signal,
+      })
+      return composeOutcome(result)
+    },
+  })
 }

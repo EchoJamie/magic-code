@@ -131,14 +131,15 @@ describe('U70 · 前台那一形一字不动', () => {
     expect(fake.started).toEqual([])
   })
 
-  test('`background` 给成假值（false / 非布尔）⇒ 照前台走，不猜', async () => {
+  test('background:false 走前台，非布尔值在授权前失败', async () => {
     const fake = fakeRuns()
     const deps = makeToolDeps({ background: fake.runs })
 
     await deps.runtime.invoke({ id: 'c1', name: 'exec', args: { cmd: 'a', background: false } }, {})
     await deps.runtime.invoke({ id: 'c2', name: 'exec', args: { cmd: 'b', background: 'yes' } }, {})
 
-    expect(deps.sandbox.execs.map((one) => one.cmd)).toEqual(['a', 'b'])
+    expect(deps.sandbox.execs.map((one) => one.cmd)).toEqual(['a'])
+    expect(deps.gate.requests).toHaveLength(1)
     expect(fake.started).toEqual([])
   })
 

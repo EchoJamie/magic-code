@@ -227,6 +227,9 @@ export type McpToolInfo = {
   readonly description?: string
   /** 参数模式（MCP 的 `inputSchema` 就是 JSON Schema——原样带过，不翻译、不校验）。 */
   readonly parameters: JsonSchema
+  /** 本次注册 schema 的本地纯校验；不修改参数、不请求远端。 */
+  readonly validate: (args: Readonly<Record<string, unknown>>) => string | undefined
+  readonly unavailable?: string
 }
 
 /**
