@@ -295,11 +295,11 @@ describe('展开 / 折叠', () => {
     await push([
       event('model.delta', { channel: 'thinking', text: '第一行想法\n第二行想法' }),
     ])
-    await app.waitForFrame((frame) => frame.includes('（思考）'))
+    await app.waitForFrame((frame) => frame.includes('│ '))
 
     // **内联这一半**：折一行就是折一行——全文**不在**主屏上（U110：`ctrl+o` 不再就地展开）
     const inline = app.frame()
-    expect(inline).toContain('（思考）第一行想法')
+    expect(inline).toContain('│ 第一行想法')
     expect(inline).not.toContain('第二行想法')
 
     // **那一屏**：同一份记录，按展开态画——全文在那儿

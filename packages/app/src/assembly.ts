@@ -1073,6 +1073,7 @@ export function assemble(options: AssembleOptions): Assembly {
   let configuredModels: MagicConfig['models'] = loaded.config.models
 
   let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
+  let turnDuration = loaded.config.turnDuration ?? 'elapsed'
   let reducedMotion = loaded.config.motion?.reduced === true
 
 
@@ -1226,7 +1227,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
   const cantrip = () => {
     syncProviderBook()
-    return bindModelChoice({ configuredModels, request: { choice: 'cantrip', reasoning: { mode: 'off' } },
+    return bindModelChoice({ configuredModels, request: { choice: 'cantrip' },
       options: { providers: providerBook, stamper: forwardStamper, fetch, env: environment,
         configPath: loaded.path, modelInfoOf: knownModelOf } })
   }
@@ -1236,7 +1237,11 @@ export function assemble(options: AssembleOptions): Assembly {
     distiller: () => {
       syncProviderBook()
       if (configuredModels?.cantrip === undefined) return undefined
-      try { return createPageDistiller(cantrip()) }
+      try {
+        const selected = cantrip()
+        if ('failure' in selected) throw new Error(selected.failure)
+        return createPageDistiller(selected)
+      }
       catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         return { distill: async () => ({ ok: false as const, kind: 'failed' as const, reason }) }
@@ -1394,6 +1399,7 @@ export function assemble(options: AssembleOptions): Assembly {
     }
     const rawTools = createToolRuntime({
       beginExecution: (call) => {
+        signal.throwIfAborted()
         if (!toolVisible(call.name) || (consulting && call.external !== undefined)) throw new Error(`当前执行者没有开放工具 ${call.name}`)
         return coordination?.begin(call) ?? (() => undefined)
       },
@@ -2264,16 +2270,18 @@ export function assemble(options: AssembleOptions): Assembly {
       // 保存成功后更新这两项读数。
       if (request.statusLine !== undefined) statusLineConfig = request.statusLine
       if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
+      if (request.turnDuration !== undefined) turnDuration = request.turnDuration
     }
 
     const changed: string[] = []
     if (request.statusLine !== undefined) changed.push('状态行')
     if (request.reducedMotion !== undefined) changed.push('动效')
+    if (request.turnDuration !== undefined) changed.push('本轮耗时')
 
     sink.emit(
       requireActiveStamper().stamp('prefs.state', {
         ...(statusLineConfig === undefined ? {} : { statusLine: statusLineConfig }),
-        reducedMotion,
+        reducedMotion, turnDuration,
         note: outcome.ok
           ? `已更新：${changed.join(' · ')}`
           : `${changed.join(' · ')}没改成——${outcome.reason}`,
@@ -2460,6 +2468,7 @@ export function assemble(options: AssembleOptions): Assembly {
     refreshSettings() {
       const current = loadConfig({ path: loaded.path, magic })
       statusLineConfig = current.config.statusLine
+      turnDuration = current.config.turnDuration ?? 'elapsed'
       reducedMotion = current.config.motion?.reduced === true
       refreshGrants()
       pendingHits.clear()
@@ -2522,18 +2531,25 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     // 释放自有子进程（见 `Assembly.shutdown`）——幂等，收尾路径可以走两遍
     shutdown: async () => {
+      const startsClosed = ledger.close?.()
       lifetime.abort()
+      const reap = async () => {
+        const reclaim = async () => {
+          const results = await Promise.all(ledger.list().map(owned => reapOwned(owned)))
+          for (const result of results) if (result.kind !== 'gone' && result.kind !== 'reaped') throw new Error(result.note)
+        }
+        // 在等服务/工具退出之前开始回收；迟到登记在启动屏障关闭后再次接住。
+        await reclaim()
+        await startsClosed
+        await reclaim()
+      }
       const results = await Promise.allSettled([
-        hub.shutdown(), chain?.service.shutdown(), mcp.shutdown(),
+        reap(), hub.shutdown(), chain?.service.shutdown(), mcp.shutdown(),
         ...(backgroundRuns?.running().map(async run => {
           const stopped = await backgroundRuns.stop(run.id)
           if (!stopped.ok) throw new Error(stopped.reason)
         }) ?? []),
       ])
-      for (const owned of ledger.list()) {
-        const result = await reapOwned(owned)
-        if (result.kind !== 'gone' && result.kind !== 'reaped') throw new Error(result.note)
-      }
       await persistGrants(drainHits())
       if (options.network === undefined) await network.close()
       const failures = results.filter((one): one is PromiseRejectedResult => one.status === 'rejected')

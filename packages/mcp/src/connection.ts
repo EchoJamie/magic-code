@@ -1,3 +1,4 @@
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv'
 /**
  * 连接内核 —— **两种传输共用的一条链**。
  *
@@ -450,11 +451,25 @@ function toolsOf(listed: readonly { name: string; description?: string; inputSch
     if (typeof tool.name !== 'string' || tool.name.trim() === '') continue // 无名工具不可调用
 
     const description = typeof tool.description === 'string' ? tool.description : undefined
+    const parameters = asSchema(tool.inputSchema)
+    let validate: McpToolInfo['validate']
+    let unavailable: string | undefined
+    try {
+      // 每件注册独立编译，外部 $id 不跨工具或连接共享；SDK 默认不转换类型、补值或删字段。
+      const check = new AjvJsonSchemaValidator().getValidator(parameters)
+      validate = args => {
+        const result = check(args)
+        return result.valid ? undefined : `参数错误：${result.errorMessage}`
+      }
+    } catch (error) {
+      unavailable = `工具参数 schema 无法编译：${reasonOf(error)}`
+      validate = () => unavailable
+    }
     tools.push({
       name: tool.name,
       ...(description === undefined ? {} : { description }),
       // 参数模式原样带过（MCP 的 inputSchema 就是 JSON Schema）；服务器没给＝空对象模式
-      parameters: asSchema(tool.inputSchema),
+      parameters, validate, ...(unavailable === undefined ? {} : { unavailable }),
     })
   }
 

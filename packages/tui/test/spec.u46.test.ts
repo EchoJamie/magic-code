@@ -210,6 +210,9 @@ describe('两次之间**任何别的输入** ⇒ 那一行没了、也不再退�
     expect(stage.shell.getView().exitArmed).toBe(false)
     // **也不接受「再按一次」了**：再按一下只是**重新起算**，不是退出
     expect(stage.press(ARM).exit).toBe(false)
+    expect(stage.shell.getView().exitArmed).toBe(false)
+    expect(stage.shell.getView().draft).toBe('')
+    expect(stage.press(ARM).exit).toBe(false)
     expect(stage.shell.getView().exitArmed).toBe(true)
   })
 
@@ -229,6 +232,7 @@ describe('两次之间**任何别的输入** ⇒ 那一行没了、也不再退�
     stage.press(ARM)
     await sleep(EXIT_ARM_MS / 2) // 老的那支钟走了一半
     stage.type('甲') // 清掉（连钟一起）
+    stage.press(ARM) // U125：先清空草稿，不计双按退出
     stage.press(ARM) // 重新挂上——这一支钟是**新起的**
 
     // 老钟的到点时刻（第一下之后 1.5s）落在这一段里；而新钟（第二下之后 1.5s）还没到

@@ -49,7 +49,8 @@ function stubSkills(skills: readonly Skill[], read?: (name: string, path: string
 /** 跑一次工具调用——返回面向模型的那份文本。 */
 async function run(port: Skills, args: Readonly<Record<string, unknown>>) {
   const tool = defineSkillTool(port)
-  return tool.run(args, { sandbox: undefined as never, signal: undefined, onOutput: undefined })
+  try { return await tool.run(tool.prepare(args), { sandbox: undefined as never, signal: undefined, onOutput: undefined }) }
+  catch (error) { return { ok: false, output: (error as Error).message } }
 }
 
 describe('U33 · skill 工具', () => {
@@ -97,12 +98,11 @@ describe('U33 · skill 工具', () => {
    * **参数表里没有 `source` 这一格**（U58 收掉的那一个）：多给的键不当回事——
    * 读的东西仍由**发现结果**定，模型编一个路径进来也不认。
    */
-  test('多给一个 `source` 也不作数——按名字归位（读哪儿由发现结果定）', async () => {
+  test('未声明的 source 直接报参数错误，不读取其他来源', async () => {
     const { port, asked } = stubSkills([PDF])
 
-    await run(port, { name: 'pdf', source: '/elsewhere/pdf' })
-
-    expect(asked).toEqual(['main:pdf@/sk/pdf'])
+    expect((await run(port, { name: 'pdf', source: '/elsewhere/pdf' })).ok).toBe(false)
+    expect(asked).toEqual([])
   })
 
   test('没有这个技能：回填列出可用的（空清单时说清「这次一个都没发现」）', async () => {

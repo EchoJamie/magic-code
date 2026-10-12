@@ -104,6 +104,6 @@ test('恢复命令保留原工作区与实例，session 及路径单引号完整
  spy.emit(event('session.state',{active:id,sessions:[{ archived: false,id,at:0,workspace:[workspace]}]}))
  spy.emit(event('turn.start',{}));shell.key({kind:'ctrl+c'});shell.key({kind:'down'});shell.key(enter)
  const quote=(text:string)=>"'"+text.replaceAll("'","'\\''")+"'"
- expect(shell.getView().leavingNote).toBe(`· 转到后台了 · 接回来：cd -- ${quote(workspace)} && MAGIC_HOME=${quote("/tmp/实例's")} magic resume ${quote(id)}`)
+ expect(shell.exitNote()).toBe(`恢复此会话：\ncd -- ${quote(workspace)} && MAGIC_HOME=${quote("/tmp/实例's")} magic resume ${quote(id)}`)
  shell.dispose()
 })

@@ -43,9 +43,10 @@ describe('U123 会话整理', () => {
     a.key('enter')
     expect(a.spy.commands.at(-1)).toEqual({ type: 'history.read', session: archived.id })
     expect(a.picker().reader?.title).toContain('已归档')
-    a.spy.emit(event('session.history', { session: archived.id, entries: [{ id: 1, at: 1, kind: 'assistant', content: { text: '保存的历史' } }], inputs: [event('input.local', { text: '/rename 旧工作', refs: [], ref: 'local-history' })], done: true }))
+    a.spy.emit(event('session.history', { session: archived.id, entries: [{ id: 1, at: 1, kind: 'assistant', content: { text: '保存的历史' } }], inputs: [event('input.local', { text: '/rename 旧工作', refs: [], ref: 'local-history' })], timing: [event('turn.start', {}, { id: 10, session: archived.id }), event('turn.end', { reason: 'settled' }, { id: 1010, session: archived.id })], done: true }))
     expect(JSON.stringify(a.picker().reader?.rows)).toContain('保存的历史')
     expect(JSON.stringify(a.picker().reader?.rows)).toContain('/rename 旧工作')
+    expect(a.picker().reader?.rows.find(row => row.kind === 'round')).toMatchObject({ kind: 'round', timing: { end: 1_700_000_001_010 } })
     expect(a.shell.getView().sessionId).toBe(current.id)
     a.shell.key({ kind: 'readerTop', top: 3 }); a.key('escape')
     expect(a.picker().source).toBe('session')
@@ -90,6 +91,7 @@ describe('U123 会话整理', () => {
     const original = { draft: a.shell.getView().draft, refs: a.shell.getView().refs, caret: a.shell.getView().caret }
     a.key('escape')
     a.spy.emit(event('session.changed', { session: current.id, archived: true, canArchive: false, terminalOpen: true }))
+    expect(a.shell.exitNote()).toBeNull()
     const count = a.spy.commands.length
     a.key('enter'); a.shell.key({ kind: 'char', char: '不能编辑' }); a.key('backspace')
     expect(a.spy.commands.length).toBe(count)
@@ -100,6 +102,7 @@ describe('U123 会话整理', () => {
     a.spy.emit(event('session.changed', { session: current.id, archived: false, canArchive: true, terminalOpen: true }))
     a.spy.emit(event('session.managed', { session: current.id, action: 'restore', ok: true, archived: false }))
     expect(a.shell.getView().dock.kind).toBe('input')
+    expect(a.shell.exitNote()).toContain('magic resume')
     expect({ draft: a.shell.getView().draft, refs: a.shell.getView().refs, caret: a.shell.getView().caret }).toEqual(original)
     expect(a.spy.commands.some(command => command.type === 'input.submit')).toBe(false)
     a.shell.key({ kind: 'char', char: '继续' })
@@ -144,6 +147,17 @@ describe('U123 会话整理', () => {
     b.spy.emit(event('session.changed', { session: current.id, archived: true, canArchive: false, terminalOpen: true }))
     expect(b.picker().rows.map(row => row.value)).not.toContain('rename')
     b.shell.dispose()
+  })
+
+  test.each([true, false])('本地改名以管理回执决定临时草稿批次是否清除：ok=%s', (ok) => {
+    const a = setup()
+    a.shell.key({ kind: 'paste', text: '临时稿' }); a.key('ctrl+c')
+    a.shell.key({ kind: 'paste', text: '/rename 新名' }); a.key('enter')
+    expect(a.spy.commands.at(-1)).toEqual({ type: 'session.rename', session: current.id, title: '新名' })
+    a.spy.emit(event('session.managed', { session: current.id, action: 'rename', ok, ...(ok ? {} : { error: '写入失败' }) }))
+    a.key('up')
+    expect(a.shell.getView().draft).toBe(ok ? '/rename 新名' : '临时稿')
+    a.shell.dispose()
   })
 
 })

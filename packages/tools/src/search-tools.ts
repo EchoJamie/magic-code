@@ -20,6 +20,7 @@ import {
   OUTPUT_PATTERN_REQUIRED,
   searchFailedOutput,
 } from './messages.ts'
+import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunContext, ToolRunResult } from './registry.ts'
 import { refused, reasonOf, rowOf } from './toolkit.ts'
 
@@ -115,15 +116,11 @@ function composeLs(entries: readonly ListEntry[]): string {
 
 /** `grep` / `glob` 的执行体只差一个判别式——同一条路。 */
 async function runSearch(
-  args: Readonly<Record<string, unknown>>,
+  args: { readonly pattern: string; readonly path: string | undefined },
   ctx: ToolRunContext,
   mode: 'grep' | 'glob',
 ): Promise<ToolRunResult> {
-  const pattern = args['pattern']
-  if (!isText(pattern)) return refused(OUTPUT_PATTERN_REQUIRED)
-
-  const scope = args['path']
-  if (scope !== undefined && !isText(scope)) return refused(OUTPUT_PATH_REQUIRED)
+  const { pattern, path: scope } = args
 
   try {
     const hits = await ctx.sandbox.match(pattern, {
@@ -138,37 +135,56 @@ async function runSearch(
   }
 }
 
+function prepareSearch(args: Readonly<Record<string, unknown>>) {
+  const pattern = args['pattern']
+  if (!isText(pattern)) throw new Error(OUTPUT_PATTERN_REQUIRED)
+
+  const scope = args['path']
+  if (scope !== undefined && !isText(scope)) throw new Error(OUTPUT_PATH_REQUIRED)
+
+  return { pattern, path: scope }
+}
+
 /** 造 `grep` 的工具定义。 */
 export function defineGrepTool(): ToolDefinition {
   const row = rowOf('grep')
 
-  return {
+  return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: GREP_PARAMETERS, danger: row.danger },
+    prepare(args) {
+      const parsed = prepareSearch(args)
+      try { new RegExp(parsed.pattern) } catch { throw new Error('参数错误：pattern 须为有效的 JavaScript 正则') }
+      return parsed
+    },
     run: (args, ctx) => runSearch(args, ctx, 'grep'),
-  }
+  })
 }
 
 /** 造 `glob` 的工具定义。 */
 export function defineGlobTool(): ToolDefinition {
   const row = rowOf('glob')
 
-  return {
+  return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: GLOB_PARAMETERS, danger: row.danger },
+    prepare: prepareSearch,
     run: (args, ctx) => runSearch(args, ctx, 'glob'),
-  }
+  })
 }
 
 /** 造 `ls` 的工具定义。 */
 export function defineLsTool(): ToolDefinition {
   const row = rowOf('ls')
 
-  return {
+  return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: LS_PARAMETERS, danger: row.danger },
 
-    async run(args, ctx): Promise<ToolRunResult> {
+    prepare(args) {
       const scope = args['path']
-      if (scope !== undefined && !isText(scope)) return refused(OUTPUT_PATH_REQUIRED)
+      if (scope !== undefined && !isText(scope)) throw new Error(OUTPUT_PATH_REQUIRED)
 
+      return { path: scope }
+    },
+    async run({ path: scope }, ctx): Promise<ToolRunResult> {
       try {
         // 缺省＝工作区默认根——「.」按默认根解析（与沙箱 `match` 的起点缺省同一姿势）
         return { ok: true, output: composeLs(await ctx.sandbox.list(scope ?? '.')) }
@@ -179,5 +195,5 @@ export function defineLsTool(): ToolDefinition {
         return refused(reasonOf(error))
       }
     },
-  }
+  })
 }

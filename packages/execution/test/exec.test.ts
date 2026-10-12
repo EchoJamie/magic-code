@@ -34,6 +34,8 @@ import { createSandbox, createWorkspaceService } from '../src/index.ts'
 // 「缺省 ⇒ 无上界」这条规则露出来的那一面）；测试直接 import 源文件是同仓既有的走法。
 import { timeoutBoundOf } from '../src/sandbox.ts'
 import { spawnOwned } from '../src/process.ts'
+import { runCommand } from '../src/exec.ts'
+import { createProcessLedger, groupAlive, reapOwned, startTimeOf } from '../src/groups.ts'
 
 test('工具必须先登记再执行；登记失败与屏障期间取消不产生副作用', async () => {
   const root = mkdtempSync(join(tmpdir(), 'magic-barrier-'))
@@ -692,7 +694,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
     expect(elapsed).toBeLessThan(3000)
   })
 
-  test('取消先尝试 TERM，返回实际退出码', async () => {
+  test('取消先尝试 TERM，结果明确携带取消和清理事实', async () => {
     const { box } = freshSandbox()
     const controller = new AbortController()
 
@@ -700,8 +702,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
     setTimeout(() => controller.abort(), 200)
     const result = await pending
 
-    expect(streamsOf(result).exit).toBe(143) // TERM 完成收尾，无须 KILL
-    expect(controller.signal.aborted).toBe(true) // ← 取消的事实由调用方这一侧判定
+    expect(result).toMatchObject({ ok: false, reason: 'canceled', cleanup: { confirmed: true } })
   })
 
   test('取消**连孙进程一起收**——不留一窝孤儿', async () => {
@@ -725,8 +726,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
 
     const result = await box.exec(`touch ${marker}`, { signal: controller.signal })
 
-    expect(result.ok).toBe(true)
-    expect(streamsOf(result).exit).toBe(137)
+    expect(result).toMatchObject({ ok: false, reason: 'spawn' })
     expect(existsSync(marker)).toBe(false)
   })
 
@@ -740,7 +740,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
 
     const timedOutResult = await box.exec('sleep 5', { timeoutMs: 200 })
 
-    expect(canceledResult.ok).toBe(true) // 命令跑了、被信号收掉
+    expect(canceledResult).toMatchObject({ ok: false, reason: 'canceled' })
     expect(failureOf(timedOutResult).reason).toBe('timeout') // 沙箱叫停的
   })
 
@@ -757,7 +757,7 @@ describe('判据 5 · 取消——中止在途，返回不抛', () => {
     const result = await pending
 
     // 被收命不等于白跑——「事先说出来的话」不该因为收尾仓促而丢
-    expect(streamsOf(result).stdout).toBe('hello')
+    expect(result).toMatchObject({ ok: false, reason: 'canceled', stdout: 'hello' })
     expect(deltas.map((delta) => delta.text).join('')).toBe('hello')
   })
 
@@ -935,15 +935,123 @@ describe('消费者回调的错——不静默，也不留孤儿', () => {
     // 后台子壳写在**输出之前**：本用例的回调在首个 chunk 上就炸，收命发生在毫秒级——
     // 而 `sh` fork 出后台子壳也要几毫秒，先 fork 后输出才让「收命时子壳已在组内」成为
     // 确定性事实（实测：反过来写会撞上 fork 窗口，子壳逃逸——见回报·已知限度一）。
-    await expect(
-      box.exec(`(sleep 1; touch ${marker}) & printf tick; sleep 5`, {
-        onOutput: () => {
-          throw new Error('消费者炸了')
-        },
-      }),
-    ).rejects.toThrow('消费者炸了')
+    const result = await box.exec(`(sleep 1; touch ${marker}) & printf tick; sleep 5`, {
+      onOutput: () => { throw new Error('消费者炸了') },
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'cleanup', stdout: 'tick', cleanup: { confirmed: true } })
+    if (!result.ok) expect(result.message).toContain('消费者炸了')
 
     await new Promise((resolve) => setTimeout(resolve, 1200))
     expect(existsSync(marker)).toBe(false) // 抛出去也得把进程收拾干净
   })
+})
+
+
+describe('D57 · 命令退出与进程组寿命分离', () => {
+  const options = { cwd: '/tmp', timeoutMs: null, maxOutputBytes: 1024 } as const
+  const inherited = 'cd /tmp && /bin/sleep 30 >/dev/null 2>&1 & echo parent-done'
+
+  test('原触发结构：主 shell 已退，超时仍覆盖双流 EOF 等待', async () => {
+    const ledger = createProcessLedger()
+    const result = await runCommand(inherited, { ...options, timeoutMs: 200, ledger })
+    expect(result).toMatchObject({ ok: false, reason: 'timeout', stdout: 'parent-done\n', cleanup: { confirmed: true } })
+    expect(ledger.list()).toEqual([])
+  })
+
+  test('同一结构不设时限，主命令退出后仍可取消', async () => {
+    const ledger = createProcessLedger()
+    const controller = new AbortController()
+    const result = await runCommand(inherited, { ...options, ledger, signal: controller.signal,
+      onOutput: delta => { if (delta.text.includes('parent-done')) controller.abort() },
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'canceled', stdout: 'parent-done\n', cleanup: { confirmed: true } })
+    expect(ledger.list()).toEqual([])
+  })
+
+  test('完整重定向的后台后代不阻塞工具返回，资源仍有可核组长', async () => {
+    const ledger = createProcessLedger()
+    try {
+      const result = await runCommand('(cd /tmp && /bin/sleep 30) >/dev/null 2>&1 & echo parent-done', { ...options, ledger })
+      expect(result).toMatchObject({ ok: true, exit: 0, stdout: 'parent-done\n' })
+      const owned = ledger.list()
+      expect(owned).toHaveLength(1)
+      expect(await startTimeOf(owned[0]!.pgid)).toBe(owned[0]!.startedAt)
+    } finally { await Promise.all(ledger.list().map(owned => reapOwned(owned))) }
+    expect(ledger.list()).toEqual([])
+  })
+
+  test('后代忽略 TERM 时，组长身份保留到 KILL 升级；重复回收共用一趟', async () => {
+    const child = await spawnOwned(['/bin/sh', '-c', "trap '' TERM; echo ready; while :; do sleep 1; done"], {
+      cwd: '/tmp', stdout: 'pipe', stderr: 'pipe', kind: 'exec', what: 'D57 TERM test',
+    })
+    const reader = child.process.stdout.getReader()
+    await reader.read()
+    reader.releaseLock()
+    const target = { pgid: child.process.pid, startedAt: child.startedAt, what: 'D57 TERM test' }
+    const first = reapOwned(target, { settleMs: 0, termMs: 100, killMs: 1000 })
+    expect(reapOwned(target)).toBe(first)
+    expect((await first).kind).toBe('reaped')
+    await child.process.exited
+    expect(groupAlive(child.process.pid)).toBe(false)
+  })
+
+  test('关闭宿主控制通道后，包装回收自己的组', async () => {
+    const child = await spawnOwned(['/bin/sh', '-c', "trap '' TERM; echo ready; sleep 30"], {
+      cwd: '/tmp', stdout: 'pipe', stderr: 'pipe', kind: 'exec', what: 'D57 owner EOF test',
+    })
+    const reader = child.process.stdout.getReader()
+    await reader.read()
+    reader.releaseLock()
+    child.process.stdin.end()
+    await child.process.exited
+    expect(groupAlive(child.process.pid)).toBe(false)
+  })
+
+  test('身份不符不发信号；实际归属仍可正常回收', async () => {
+    const child = await spawnOwned(['/bin/sleep', '30'], { stdout: 'ignore', stderr: 'ignore', kind: 'exec', what: 'D57 identity test' })
+    const target = { pgid: child.process.pid, startedAt: child.startedAt, what: 'D57 identity test' }
+    try {
+      expect((await reapOwned({ ...target, startedAt: child.startedAt - 10_000 })).kind).toBe('stranger')
+      expect(groupAlive(child.process.pid)).toBe(true)
+    } finally { await reapOwned(target, { settleMs: 0 }) }
+  })
+
+  test('组长被外部强杀时返回未确认与已读输出，不无限等待后代管道', async () => {
+    const ledger = createProcessLedger()
+    let killed = false
+    const result = await runCommand('echo ready; sleep 1.5', { ...options, ledger,
+      onOutput: delta => {
+        if (!killed && delta.text.includes('ready')) {
+          killed = true
+          process.kill(ledger.list()[0]!.pgid, 'SIGKILL')
+        }
+      },
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'cleanup', stdout: 'ready\n', cleanup: { confirmed: false }, outputIncomplete: true })
+    const deadline = Date.now() + 3000
+    while (ledger.list().length && Date.now() < deadline) await Bun.sleep(20)
+    expect(ledger.list()).toEqual([])
+  })
+})
+
+test('D57 · 停止关闭准入时，在途登记不能放行用户命令', async () => {
+  const { root } = freshSandbox()
+  const marker = join(root, 'must-not-start')
+  const ledger = createProcessLedger()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const blockedLedger = { ...ledger, async add(input: Parameters<typeof ledger.add>[0]) {
+    entered.resolve(); await release.promise; await ledger.add(input)
+  } }
+  const started = spawnOwned(['/bin/sh', '-c', `touch '${marker}'`], {
+    stdout: 'ignore', stderr: 'ignore', ledger: blockedLedger, kind: 'exec', what: 'D57 spawn barrier',
+  }).then(() => false, () => true)
+  await entered.promise
+  const closed = ledger.close!()
+  release.resolve()
+  expect(await started).toBe(true)
+  await closed
+  expect(existsSync(marker)).toBe(false)
+  expect(ledger.list()).toEqual([])
+  await expect(spawnOwned(['/bin/true'], { stdout: 'ignore', stderr: 'ignore', ledger, kind: 'exec', what: 'late' })).rejects.toThrow()
 })

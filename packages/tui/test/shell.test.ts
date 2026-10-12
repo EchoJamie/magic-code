@@ -545,7 +545,10 @@ describe('Ctrl+C（空闲按两次退出 · 有在途工作开三选）', () => 
     expect(idle.view().exitArmed).toBe(false)
     expect(idle.view().draft).toBe('甲') // 那一个字正常落进草稿
 
-    // 那一下**不作数**：再按一次只是重新挂上，不是退出
+    // U125：有稿先清空；清稿不计入双按退出。
+    expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(false)
+    expect(idle.view().draft).toBe('')
+    expect(idle.view().exitArmed).toBe(false)
     expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(false)
     expect(idle.view().exitArmed).toBe(true)
     expect(idle.press({ kind: 'ctrl+c' }).exit).toBe(true)

@@ -63,7 +63,7 @@ describe('U06 · 取消', () => {
       exec: (_cmd, opts) => {
         opts.onOutput?.({ channel: 'stdout', text: '半截' })
         controller.abort() // 命令在途时被叫停
-        return { ok: true, exit: 137, stdout: '半截', stderr: '' }
+        return { ok: false, reason: 'canceled', message: '命令已取消', cleanup: { confirmed: true }, stdout: '半截', stderr: '' }
       },
     })
 

@@ -1,3 +1,5 @@
+import { roundDuration, durationText } from '../round.ts'
+import { breathColor, breathOf } from '../motion.ts'
 /**
  * 外壳 · 一屏（缺陷轮 III）——**内联渲染**下的三带结构。
  *
@@ -36,7 +38,7 @@ import { planBudgetOf, planBlockOf, planScrolled } from '../plan.ts'
 import type { PlanBlock } from '../plan.ts'
 import type { Shell, ShellKey } from '../shell.ts'
 import type { CompletionState, LogRow, ShellView } from '../view.ts'
-import { HINT_EXIT_ARMED, hasRunningThinking, hasRunningTool, statusLineCellsOf, statusLineColorOf } from '../view.ts'
+import { HINT_EXIT_ARMED, hasRunningTool, statusLineCellsOf, statusLineColorOf } from '../view.ts'
 import { Composer, PLACEHOLDER_LOST, clip, draftHeight, inkWidth, placeholderOf, type ComposerTone } from './composer.ts'
 import { DecisionCard, decisionLayout } from './decision.ts'
 import { LogRowView, needsSpacer, rowLines, spacerEnd, spacerWalk } from './log.ts'
@@ -130,8 +132,8 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
   // **U34 起，这一段余量还要再分一次**（活动区 ↔ 步骤清单）：先保证交互区，再给当前
   // 回复留够（`PLAN_KEEP_LINES`），剩下的才是清单的——分法与折行都在 `planBlockOf` 一处
   // （`liveLayoutOf` 就干这一件），故「账 4 行、屏 5 行」那号事不会在清单这儿重演。
-  const { plan, rest } = liveLayoutOf(view, columns, rows)
-  const liveBudget = Math.max(0, rest - plan.height)
+  const { plan, rest, roundHeight, planGap, dockRows } = liveLayoutOf(view, columns, rows)
+  const liveBudget = Math.max(0, rest - plan.height - roundHeight - planGap)
   const live = liveAreaOf(view, columns, liveBudget)
 
   // **字标在放不下的宽度上要「一行都不占」**（设计 · 极窄：「不印，优先保证正文与输入空间」）。
@@ -192,6 +194,7 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
           lost: view.status.state === 'lost',
           // **减少动效**（U112）——行尾那一位不呼吸（读数照走，见 `LogRowProps.still`）
           still: view.reducedMotion,
+          turnDuration: view.turnDuration,
           // ⚠️ 问的是 **`items`**（真印出来的那一列），不是 `view.settled`：极窄那一档
           // 字标被摘掉之后，两者差着一位——拿 `settled` 索引会让每条的「上一条」都错位一格
           // （该有分段的地方时有时无）。`items === view.settled` 时不差分毫。
@@ -223,15 +226,18 @@ export function AppView({ view, columns, rows, now = null, pulseAt = null }: App
         // 账还按旧值算（矮窗上真光标高一行）
         lost: view.status.state === 'lost',
         now,
+        turnDuration: view.turnDuration,
         still: view.reducedMotion,
       }),
     ),
-    // 计划仍使用原高度预算，只移到记录与输入的分隔线上方。
+    ...(roundHeight === 0 ? [] : [h(RoundLine, { key: 'round', view, columns, now, before: roundHeight === 3, after: roundHeight >= 2 })]),
+    ...(planGap === 2 || (planGap === 1 && plan.height === 0) ? [h(Text, { key: 'plan-gap' }, ' ')] : []),
+    // 计划与本轮行均计入活动区预算。
     ...(plan.height === 0
       ? []
-      : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? motionNow : null })]),
+      : [h(PlanList, { key: 'plan', block: plan, now: breathingOf(view, plan) ? motionNow : null }), ...(planGap > 0 ? [h(Text, { key: 'plan-after' }, ' ')] : [])]),
     separatorOf(columns, 'rule:record'),
-    h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, rows)),
+    h(Box, { key: 'dock', flexDirection: 'column' }, ...dockOf(view, columns, dockRows)),
     // **下面这一条**（U45 加 · **U59 挪**）——**输入区与状态行之间**的界。状态行之下**不再有线**。
     //
     // ⚠️ **U45 把它加错了位置**：加在状态行**之下**，成了「把输入行 ＋ 状态行框起来」——
@@ -467,17 +473,40 @@ export function liveLayoutOf(
   view: ShellView,
   columns: number,
   rows: number,
-): { readonly plan: PlanBlock; readonly rest: number } {
-  const rest = Math.max(0, rows - 1 - chromeHeightOf(view) - dockHeightOf(view, columns, rows))
+): { readonly plan: PlanBlock; readonly rest: number; readonly roundHeight: number; readonly planGap: number; readonly dockRows: number } {
+  const active = view.round !== null && view.round.end === null
+  const dockRows = active ? Math.max(4, rows - 3) : rows
+  const rest = Math.max(0, rows - 1 - chromeHeightOf(view) - dockHeightOf(view, columns, dockRows))
+  const priorContent = view.rows.length > 0 || (view.settled.length > 0 && view.settled.at(-1)?.kind !== 'banner')
+  const roundHeight = active && rest > 0 ? (rest >= 5 ? (priorContent ? 3 : 2) : 1) : 0
   const plan = planBlockOf({
-    plan: view.plan.plan,
-    collapsed: view.planCollapsed,
-    top: view.planTop,
-    columns,
-    budget: planBudgetOf(rest),
+    plan: view.plan.plan, collapsed: view.planCollapsed, top: view.planTop, columns,
+    budget: planBudgetOf(Math.max(0, rest - roundHeight - 2)),
   })
+  const planGap = plan.height > 0 ? (roundHeight >= 2 || !priorContent ? 1 : 2)
+    : !active && view.settled.at(-1)?.kind === 'round' && rest > 0 ? 1 : 0
+  return { plan, rest, roundHeight, planGap, dockRows }
+}
 
-  return { plan, rest }
+export function roundLineText(view: ShellView, now: number | null): string | null {
+  const round = view.round
+  if (round === null || round.end !== null) return null
+  const run = view.runs.find(one => one.session === view.sessionId)
+  if (view.status.state === 'lost' || run?.state === 'unknown' || run?.state === 'stopped' || run?.state === 'idle') return '■ 本轮状态待确认'
+  const elapsed = roundDuration(round, view.turnDuration, now)
+  const clock = elapsed === null ? '' : ` · ${durationText(elapsed)}${view.turnDuration === 'active' ? '（不含等待）' : ''}`
+  if (run?.state === 'stopping') return `■ 正在停止${clock}`
+  if (round.waiting.length > 0) return `◊ 等待你${clock}`
+  return `● thinking...${elapsed === null ? '' : ` ${Math.floor(elapsed / 1000)}s${view.turnDuration === 'active' ? '（不含等待）' : ''}`}`
+}
+
+function RoundLine({ view, columns, now, before, after }: { view: ShellView; columns: number; now: number | null; before: boolean; after: boolean }): ReactElement {
+  const text = roundLineText(view, now) ?? ''
+  const moving = text.startsWith('●') && !view.reducedMotion && now !== null
+  return h(Box, { flexDirection: 'column' },
+    ...(before ? [h(Text, { key: 'before' }, ' ')] : []),
+    h(Text, { key: 'line', color: PALETTE.faint }, h(Text, { color: moving ? breathColor(PALETTE.dim, breathOf(now)) : PALETTE.dim }, text.slice(0, 1)), clip(text.slice(1), Math.max(0, columns - 1))),
+    ...(after ? [h(Text, { key: 'after' }, ' ')] : []))
 }
 
 /**
@@ -612,7 +641,7 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
   return [
     ...(view.completion === null
       ? []
-      : [h(Completion, { key: 'completion', completion: view.completion, columns })]),
+      : [h(Completion, { key: 'completion', completion: view.completion, columns, size: completionLines(view, rows) })]),
     // ⚠️ **U36 起没有「草稿材料」那一行**（U33 的 `SkillLine` 已删）：材料就写在正文里
     // （`@src/login.ts` / `/review`），**原位**那一段自己就是凭据——旁边再列一行「待发送」，
     // 等于同一件事说两遍，而删了正文那处材料还在（暗带）。见 `ShellView.refs` 那条注。
@@ -641,14 +670,17 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
 function Completion({
   completion,
   columns,
+  size,
 }: {
   readonly completion: CompletionState
   readonly columns: number
+  readonly size: number
 }): ReactElement {
   return h(
     Box,
     { flexDirection: 'column' },
-    ...completion.candidates.map((candidate, index) => {
+    ...completion.candidates.slice(Math.max(0, completion.selected - size + 1), Math.max(0, completion.selected - size + 1) + size).map((candidate, offset) => {
+      const index = Math.max(0, completion.selected - size + 1) + offset
       const marker = index === completion.selected ? '› ' : '  '
       // 这一栏没有内边距：整行就是屏宽 —— 扣掉标记（2 列）与名字、以及中间那个全角空格（2 列）
       const room = Math.max(0, columns - 4 - inkWidth(candidate.name))
@@ -716,7 +748,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
   const flash = view.flash === null ? 0 : 1
   // ⚠️ **待确认的那一行不在这一笔账里**（U68）：它画在**状态行之下**，已不属交互区
   //    ——它的那一行归 `chromeHeightOf`（那才是「活动区之外的全部固定行」那一笔）。
-  const completing = completionLines(view)
+  const completing = completionLines(view, rows)
   if (view.archived && view.dock.kind === 'input') return 1 + flash
 
   if (view.dock.kind === 'decision') {
@@ -795,8 +827,8 @@ export function chromeHeightOf(view: ShellView): number {
 }
 
 /** 自动补全的候选行数（D12）——零条时不出。 */
-function completionLines(view: ShellView): number {
-  return view.completion === null ? 0 : view.completion.candidates.length
+function completionLines(view: ShellView, rows: number): number {
+  return view.completion === null ? 0 : Math.min(view.completion.candidates.length, Math.max(1, Math.floor(rows / 2) - 2))
 }
 
 // —— 活壳 ——
@@ -914,26 +946,11 @@ function useFlipOnNewPage(shell: Shell, rows: number, inScreen: RefObject<boolea
   }, [shell, write, inScreen])
 }
 
-/**
- * **临走那一句写出去**（U100）——见 `TuiApp` 里调用处那一段。
- *
- * 写成 hook 是为了**只写一次**（`view.leavingNote` 一旦置上就不会变，但 React 会重渲染）。
- */
-function useLeavingNote(view: ShellView, write: (text: string) => void): void {
-  const done = useRef(false)
-
-  useEffect(() => {
-    if (done.current || view.leavingNote === null) return
-    done.current = true
-    write(`${view.leavingNote}\n`)
-  }, [view.leavingNote, write])
-}
-
 export function TuiApp({ shell }: TuiAppProps) {
   const view = useSyncExternalStore(shell.subscribe, shell.getView)
   const { columns, rows } = useWindowSize()
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
-  const { write, stdout } = useStdout()
+  const { stdout } = useStdout()
   const { stdin } = useStdin()
   // 清单那一块与铺屏同取一处（`liveLayoutOf`）——钟据它判「看不看得见」，
   // 清单翻页据它算「一页到哪」（见下）
@@ -957,14 +974,10 @@ export function TuiApp({ shell }: TuiAppProps) {
   const pulseAt = useWaitingPulse(view.status.state, view.reducedMotion)
   const pulsing = pulseAt !== null && Date.now() - pulseAt < PULSE_MS
 
-  /**
-   * **在流的那段思考也要钟**（U112 追加）——两个用处，缺一不可：
-   * - **计时**（`（思考 12s）`）要一个走着的「此刻」——这是**事实**，**减少动效也照走**；
-   * - **动效**（那一行在呼吸）——这一条才看减少动效（由 `still` 传给渲染层，见 `AppView`）。
-   */
+  // 整轮耗时、工具和计划复用按需时钟；减少动效仅关闭动画。
   const ticking =
     view.status.state !== 'lost' &&
-    ((view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running'&&row.awaitingDecision!==true) || hasRunningThinking(view) || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) )) || pulsing)
+    ((view.round !== null && view.round.end === null) || (view.status.state !== 'waiting' && (view.rows.some(row=>row.kind==='tool'&&row.state==='running'&&row.awaitingDecision!==true) || (!view.reducedMotion && (view.status.state==='working'||view.status.state==='retrying')) || breathingOf(view, plan) )) || pulsing)
   const now = useLiveClock(ticking)
 
   /**
@@ -1033,6 +1046,7 @@ export function TuiApp({ shell }: TuiAppProps) {
         top = await runScreen({
           stdin,
           stdout,
+          turnDuration: () => shell.getView().turnDuration,
           // **每次重画问一次**（不是开屏时抓一份）：流式进来的新行据此上屏
           read: () => {
             const latest = shell.getView()
@@ -1071,15 +1085,6 @@ export function TuiApp({ shell }: TuiAppProps) {
     })
   }
 
-  /**
-   * **临走在终端上留的那一句**（U100 · 「转到后台」那一支）——**直接写字节**，不经 Ink 的
-   * 排版：记录区里的行会**按列数硬折行**（真换行），而这一句是要**整行复制去敲的命令**
-   * （见 `ShellView.leavingNote` 那一段）。交给**终端自己软折行**，整行选中复制才拿得到
-   * 完整的一条。
-   *
-   * ⚠️ **写的时机在 `exit()` 之前**（那一个 useEffect 排在下一条），且**只写一次**——
-   * 与翻页那一手同一个姿势（`useStdout().write` 是 Ink 给「在帧之外写东西」开的那道门）。
-   */
   const readerKey = view.dock.kind === 'picker' ? view.dock.picker.reader?.key : undefined
   useEffect(() => {
     if (inScreen.current) return
@@ -1093,7 +1098,6 @@ export function TuiApp({ shell }: TuiAppProps) {
     } else if (readerKey !== undefined) openScreen()
   }, [view.dock, readerKey])
 
-  useLeavingNote(view, write)
 
   /**
    * **`/exit` 放行了 ⇒ 收摊**（U52）——**不在按键那一刻**（那一下只是把停止的意图发出去），

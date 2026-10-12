@@ -195,7 +195,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     // <id>`），不追加常驻状态栏」。判据落在 `leavingNote` 上——**它不经记录区**
     // （那里的行会按列数**硬折行**，而这一句是要整行复制去敲的：硬折行之后复制到的东西
     // 里带着换行，粘进终端就断了）。它由 `app.ts` **直接写字节**出去、交给终端软折行。
-    expect(stage.shell.getView().leavingNote).toBe("· 转到后台了 · 接回来：MAGIC_HOME='/test' magic resume 's1'")
+    expect(stage.shell.exitNote()).toBe("恢复此会话：\nMAGIC_HOME='/test' magic resume 's1'")
   })
 
   // D55：默认和自定义位置均显式绑定父目录，不受目标终端环境影响。
@@ -209,24 +209,24 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       stage.press({ kind: 'down' })
       stage.press(ENTER)
 
-      return stage.shell.getView().leavingNote ?? ''
+      return stage.shell.exitNote() ?? ''
     }
 
     test('**默认落点**（`<家>/.magic`）⇒ 显式覆盖目标终端继承的 MAGIC_HOME', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/Users/someone/.magic' })).toBe(
-        "· 转到后台了 · 接回来：MAGIC_HOME='/Users/someone' magic resume 's1'",
+        "恢复此会话：\nMAGIC_HOME='/Users/someone' magic resume 's1'",
       )
     })
 
     test('**非默认落点** ⇒ 带上 `MAGIC_HOME=<根>`（根 ＝ `base` 的上一级）', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/tmp/another-place/.magic' })).toBe(
-        "· 转到后台了 · 接回来：MAGIC_HOME='/tmp/another-place' magic resume \'s1\'",
+        "恢复此会话：\nMAGIC_HOME='/tmp/another-place' magic resume \'s1\'",
       )
     })
 
     test('路径里有空格 ⇒ 单引号包住（整行复制照敲不误）', () => {
       expect(resumeLineOf({ home: '/Users/someone', magicBase: '/tmp/my magic dir/.magic' })).toBe(
-        "· 转到后台了 · 接回来：MAGIC_HOME='/tmp/my magic dir' magic resume \'s1\'",
+        "恢复此会话：\nMAGIC_HOME='/tmp/my magic dir' magic resume \'s1\'",
       )
     })
 
@@ -254,12 +254,12 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
 
       // **不退**：还没认出来就没有可接的入口
       expect(stage.shell.getView().leaving).toBe(false)
-      expect(stage.shell.getView().leavingNote).toBeNull()
+      expect(stage.shell.exitNote()).toBeNull()
 
       // 活跃位到了 ⇒ 接着把刚才那一下办完
       stage.feed([event('session.state', { active: 's9', sessions: [{ archived: false, id: 's9', at: 0, title: '甲的事' }] })])
       expect(stage.shell.getView().leaving).toBe(true)
-      expect(stage.shell.getView().leavingNote).toBe("· 转到后台了 · 接回来：MAGIC_HOME='/test' magic resume 's9'")
+      expect(stage.shell.exitNote()).toBe("恢复此会话：\nMAGIC_HOME='/test' magic resume 's9'")
     })
 
     test('那一轮收场了、会话始终没来 ⇒ 如实说「没有可接的入口」（不假报成功）', () => {
@@ -270,7 +270,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
 
       stage.feed([event('turn.end', { reason: 'settled' })])
       expect(stage.shell.getView().leaving).toBe(true)
-      expect(stage.shell.getView().leavingNote).toBe('· 转到后台了 · 这一趟没有落成会话，没有可接的入口')
+      expect(stage.shell.exitNote()).toBeNull()
     })
   })
 
@@ -464,6 +464,8 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       expect(stage.stops()).toEqual([])
       expect(stage.commands()).toEqual([])
       expect(stage.press(ARM).exit).toBe(false)
+      expect(stage.shell.getView().exitArmed).toBe(false) // 先清空归还的草稿
+      expect(stage.press(ARM).exit).toBe(false)
       expect(stage.shell.getView().exitArmed).toBe(true) // **离开**那条路（不是又进三选）
     })
 
@@ -539,6 +541,8 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       expect(view.stashed).toBeNull()
       expect(view.status.state).toBe('idle')
       expect(stage.commands()).toEqual([])
+      expect(stage.press(ARM).exit).toBe(false)
+      expect(stage.shell.getView().exitArmed).toBe(false) // 先清空归还的草稿
       expect(stage.press(ARM).exit).toBe(false)
       expect(stage.shell.getView().exitArmed).toBe(true) // 离开那条路
     })

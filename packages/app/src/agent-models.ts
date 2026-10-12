@@ -1,4 +1,5 @@
-import type { MagicConfig } from '@magic/contracts'
+import { createHash } from 'node:crypto'
+import { apiKeyEnvVarOf, type MagicConfig } from '@magic/contracts'
 import type { AgentModelConfig, AgentRoleConfig, MagicHome, ModelSwitchRequest, ProviderConfig } from '@magic/contracts'
 import { createModelInfoService, createModelRegistry, createModelGateway, modelSpecOf, resolveConnection, resolveApiKey, selectModel } from '@magic/model'
 import type { ModelRegistry, ModelRegistryOptions, ModelSelection, ModelSwitchResult } from '@magic/model'
@@ -119,20 +120,31 @@ export async function managedModelChoices(magic: MagicHome, environment: Readonl
   })
 }
 
-/** 独立辅助调用：解析一次档位，捕获同一份连接与模型信息，不借主工作选中态。 */
+/** 独立内务调用：先验证默认组合，再按实际能力及适配选择是否关闭思考。 */
 export function bindModelChoice(input: {
   readonly options: ModelRegistryOptions
   readonly configuredModels: MagicConfig['models']
   readonly request: ModelSwitchRequest
-}) {
-  const resolved = resolveModelChoice({ ...input.options, configuredModels: input.configuredModels, config: input.request })
-  if (!resolved.ok) throw new Error(resolved.reason)
-  const chosen = resolved.selection
-  const config = input.options.providers[chosen.provider]!
-  const known = input.options.modelInfoOf?.(chosen.provider, chosen.model)
-  const gateway = createModelGateway({ ...input.options, providerId: chosen.provider,
-    model: chosen.model, reasoning: chosen.reasoning, config,
-    apiKey: input.options.apiKeys?.[chosen.provider], modelInfoOf: () => known })
-  return { gateway, inputBudget: modelSpecOf(config, chosen.model, known)?.inputBudget,
-    location: `${input.options.configPath} → providers.${chosen.provider}.modelOverrides.${chosen.model}.limits` }
+}): import('@magic/contracts').CompressionPreparation {
+  const mapping = input.configuredModels?.[input.request.choice ?? 'cantrip']
+  const config = mapping === undefined ? undefined : input.options.providers[mapping.provider]
+  const known = structuredClone(mapping === undefined ? undefined : input.options.modelInfoOf?.(mapping.provider, mapping.model))
+  // 仅供本会话内比较；不向事件或记录输出连接凭据。
+  const identity = createHash('sha256').update(JSON.stringify([mapping, config, known,
+    mapping === undefined ? undefined : input.options.apiKeys?.[mapping.provider], mapping === undefined ? undefined : (input.options.env ?? process.env)[apiKeyEnvVarOf(mapping.provider)]])).digest('hex')
+  try {
+    const resolved = resolveModelChoice({ ...input.options, configuredModels: input.configuredModels,
+      config: { ...input.request, reasoning: { mode: 'default' } } })
+    if (!resolved.ok) return { failure: resolved.reason, identity }
+    const off = selectModel(input.options, { ...resolved.selection, reasoning: { mode: 'off' } })
+    const chosen = off.ok ? off.selection : resolved.selection
+    const captured = structuredClone(config!)
+    const gateway = createModelGateway({ ...input.options, providerId: chosen.provider,
+      model: chosen.model, reasoning: chosen.reasoning, config: captured,
+      apiKey: input.options.apiKeys?.[chosen.provider], modelInfoOf: () => known })
+    return { gateway, identity, inputBudget: modelSpecOf(captured, chosen.model, known)?.inputBudget,
+      location: `${input.options.configPath} → providers.${chosen.provider}.modelOverrides.${chosen.model}.limits` }
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error), identity }
+  }
 }

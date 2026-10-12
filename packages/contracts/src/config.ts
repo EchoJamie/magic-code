@@ -287,6 +287,7 @@ export type MagicConfig = {
   /**
    * **状态行放哪几格**（U112）——见 `StatusLineConfig`。**键缺省＝默认那条**（不配也能用）。
    */
+  readonly turnDuration?: TurnDurationMode
   readonly statusLine?: StatusLineConfig
   /**
    * **界面动效**（U112）——见 `MotionConfig`。**键缺省＝按常态（有动效）**。
@@ -366,3 +367,6 @@ export function expandHome(raw: string, home: string): string {
   if (raw.startsWith('~/')) return home + raw.slice(1)
   return raw
 }
+
+/** TUI 一轮执行耗时的显示口径。 */
+export type TurnDurationMode = 'elapsed' | 'active'

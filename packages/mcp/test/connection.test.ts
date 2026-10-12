@@ -109,7 +109,7 @@ describe('发现', () => {
 
     // 发现的结果只有三件——annotations 那一套压根不过这一层（审批口径由工具域定死）
     expect(annotated).toBeDefined()
-    expect(Object.keys(annotated ?? {})).toEqual(['name', 'description', 'parameters'])
+    expect(Object.keys(annotated ?? {})).toEqual(['name', 'description', 'parameters', 'validate'])
 
     await connection.close()
   })
@@ -573,3 +573,28 @@ async function waitGone(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
 }
+
+
+test('D58 · SDK schema 校验不改参数、不按外部 id 串用，坏 schema 不影响其他工具', async () => {
+  const { connection, log } = await connect({}, { mode: 'schema' })
+  try {
+    expect(connection.state.status).toBe('available')
+    const [echo, number, broken] = connection.tools()
+    expect(echo!.validate({})).toContain('text')
+    expect(echo!.validate({ text: 'ok' })).toBeUndefined()
+    const args = { count: '3' }
+    expect(number!.validate(args)).toBeString()
+    expect(args).toEqual({ count: '3' })
+    const valid = { count: 3 }
+    expect(number!.validate(valid)).toBeUndefined()
+    expect(valid).toEqual({ count: 3 })
+    expect(number!.validate({ count: 3, extra: true })).toBeString()
+    expect(broken!.unavailable).toContain('无法编译')
+    expect(broken!.validate({})).toContain('无法编译')
+    expect(callsOf(log)).toEqual([])
+    const before = echo
+    await connection.reconnect()
+    expect(connection.tools()[0]).not.toBe(before)
+    expect(connection.tools()[0]!.validate({})).toContain('text')
+  } finally { await connection.close() }
+})

@@ -87,17 +87,18 @@ describe('U13 · grep', () => {
     expect(result.output.endsWith(`[命中达到上限 ${SEARCH_MAX_RESULTS}——可能还有更多]`)).toBe(true)
   })
 
-  test('沙箱失败（正则无效 / 起点不存在）→ ok:false ＋ 原委', async () => {
+  test('无效正则在审批前报参数错误', async () => {
     const failing = {
       ...makeFauxSandbox(),
       match: () => Promise.reject(new Error('正则无效（alpha(）：Invalid regular expression')),
     }
-    const { runtime } = makeToolDeps({ sandbox: failing })
+    const { runtime, gate } = makeToolDeps({ sandbox: failing })
 
     const result = await runtime.invoke({ id: 'c1', name: 'grep', args: { pattern: 'alpha(' } }, {})
 
     expect(result.ok).toBe(false)
-    expect(result.output).toBe('搜索失败：正则无效（alpha(）：Invalid regular expression')
+    expect(result.output).toBe('参数错误：pattern 须为有效的 JavaScript 正则')
+    expect(gate.requests).toHaveLength(0)
   })
 
   test('参数错误：pattern 与 path 各有说法，都不碰沙箱', async () => {

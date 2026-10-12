@@ -202,7 +202,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
     }
   }, 30_000)
 
-  test('② 反面·MiniMax：未支持关闭思考 ⇒ 明确报失败、不发提炼请求', async () => {
+  test('② MiniMax 能力未知时使用默认思考，同一 Cantrip 完成提炼', async () => {
     const fixture = startFixture({ model: SESSION_MODEL, turns: turnsOf() })
     // 会话走 DeepSeek、**提炼走它自己那一条（MiniMax）**——顺手把「走的是哪条连接」也钉住
     const stage = stageOn(fixture, { vendor: 'deepseek', distillVendor: 'minimax' })
@@ -213,11 +213,14 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
       await runOneFetch(handle, 1, '查一下它的定价')
 
-      expect(distillOf(fixture)).toBeUndefined()
+      const request = distillOf(fixture)
+      expect(request).toBeDefined()
+      expect(request?.body['thinking']).toBeUndefined()
+      expect(request?.body['reasoning_effort']).toBeUndefined()
       const results = JSON.stringify(eventsOfKind(handle.events, 'tool.result').map(event => event.data.output))
-      expect(results).toContain('思考能力未知，只能使用模型默认')
-      expect(results).toContain('提炼没成')
-      expect(chatsOf(fixture).every(one => one.body['model'] === SESSION_MODEL)).toBe(true)
+      expect(results).toContain('12')
+      expect(results).not.toContain('提炼没成')
+      expect(chatsOf(fixture).filter(one => one !== request).every(one => one.body['model'] === SESSION_MODEL)).toBe(true)
     } finally {
       assembly?.close()
       await fixture.stop()

@@ -77,7 +77,6 @@ export type { ClipboardImage } from './clipboard.ts'
  */
 export {
   createWebSource,
-  WEB_FETCH_MAX_BYTES,
   WEB_FETCH_MAX_REDIRECTS,
   WEB_FETCH_TIMEOUT_MS,
 } from './web.ts'

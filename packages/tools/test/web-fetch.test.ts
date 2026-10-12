@@ -163,6 +163,23 @@ describe('U72 · web_fetch ① 成的那一趟', () => {
     expect(got.output).not.toContain('# 定价') // 连转出来的整页也不在
   })
 
+  test('超过十万字符的正文及缓存命中仍完整参与提炼，长答案尾部完整回传', async () => {
+    const body = `${'背景内容。'.repeat(25_000)}\n页面末尾例外：托管模式仅支持 TLS。`
+    const answer = `${'相关说明。'.repeat(5_000)}\n结论的必要条件：仅支持 TLS。`
+    const web = fakeWeb((url) => okPage(url, body))
+    const distiller = fakeDistiller(answer)
+    const { deps } = toolWith({ web, distiller })
+
+    for (const prompt of ['适用条件是什么？', '有哪些例外？']) {
+      const got = await callWebFetch(deps, { url: 'https://example.com/long', prompt })
+      expect(got.ok).toBe(true)
+      expect(got.output.endsWith(answer)).toBe(true)
+    }
+
+    expect(web.asked).toHaveLength(1)
+    expect(distiller.asked.map((input) => input.page)).toEqual([body, body])
+  })
+
   test('参数错：url / prompt 缺一即拒（不问取回面）', async () => {
     const web = fakeWeb((url) => okPage(url))
     const { deps } = toolWith({ web, distiller: fakeDistiller() })

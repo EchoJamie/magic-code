@@ -70,7 +70,7 @@ export type ConversationDeps = {
   readonly session: SessionId
   /** 提示词运行时注入值（`cwd` / `platform` / `date`）——**缺项在构造期就报错**。 */
   readonly prompt: PromptVars
-  readonly compression?: () => import('@magic/contracts').CompressionModel
+  readonly compression?: () => import('@magic/contracts').CompressionPreparation
   readonly gateway: ModelGateway
   readonly tools: ToolRuntime
   readonly records: RecordsService
@@ -260,7 +260,6 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
     nearEntries: policy.nearEntries,
     compactAtFraction: policy.compactAtFraction,
     compactAtTokens: policy.compactAtTokens,
-    compactFailureLimit: policy.compactFailureLimit,
   })
 
   /**

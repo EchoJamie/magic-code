@@ -98,7 +98,7 @@ export const execTimedOutOutput = (boundMs: number): string =>
 export const OUTPUT_INVALID_ARGS = '参数解析不出——未执行'
 
 /** `exec` 的命令字段取不到（键名锚定单一键 `cmd`——写错的键名不该被猜中）。 */
-export const OUTPUT_EXEC_NO_CMD = '参数错误：cmd 须为非空字符串'
+export const OUTPUT_EXEC_NO_CMD = '参数错误：cmd 须为非空字符串；命令字段为 cmd'
 
 // —— `exec` 的后台那一形（U70）——
 

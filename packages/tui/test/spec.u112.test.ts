@@ -70,8 +70,8 @@ describe('记号 · 身份与状态两维（U112）', () => {
 
     expect(frame.has('⏺')).toBe(false)
     // **顶格**：两行都在第 1 列起（记号一去，垫它的那两格也跟着去）
-    expect(frame.cellsOf(frame.rowOf('第一行的话'))[0]?.text).toBe('第')
-    expect(frame.cellsOf(frame.rowOf('第二行的话'))[0]?.text).toBe('第')
+    expect(frame.cellsOf(frame.rowOf('第一行的话'))[2]?.text).toBe('第')
+    expect(frame.cellsOf(frame.rowOf('第二行的话'))[2]?.text).toBe('第')
   })
 
   test('工具行＝`▸ ✓ 工具名(关键参数)`——身份、**状态位紧挨着它**、名字；**不贴原始 JSON**', async () => {

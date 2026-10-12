@@ -639,6 +639,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
   const statusLine = raw['statusLine'] === undefined ? undefined : asStatusLine(raw['statusLine'], path)
   if (raw.debugMode !== undefined && typeof raw.debugMode !== 'boolean') throw new ConfigError(path, 'debugMode 须是布尔值')
   if (raw.logLevel !== undefined && !isLogLevel(raw.logLevel)) throw new ConfigError(path, 'logLevel 须是 error / warn / info / debug / trace')
+  if (raw.turnDuration !== undefined && raw.turnDuration !== 'elapsed' && raw.turnDuration !== 'active') throw new ConfigError(path, 'turnDuration 须是 elapsed / active')
   const motion = raw['motion'] === undefined ? undefined : asMotion(raw['motion'], path)
 
   return {
@@ -663,6 +664,7 @@ export function parseConfig(parsed: unknown, path: string, magic: MagicHome): Lo
       ...(raw.debugMode === undefined ? {} : { debugMode: raw.debugMode as boolean }),
       ...(raw.logLevel === undefined ? {} : { logLevel: raw.logLevel as import('@magic/contracts').LogLevel }),
       ...(motion === undefined ? {} : { motion }),
+      ...(raw.turnDuration === undefined ? {} : { turnDuration: raw.turnDuration as 'elapsed' | 'active' }),
     },
     providerId,
     provider,

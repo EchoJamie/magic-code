@@ -65,7 +65,7 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     try {
       if (command.type === 'prefs.set') {
         const config = loadConfig({ magic }).config
-        emit('prefs.state', { statusLine: config.statusLine, reducedMotion: config.motion?.reduced === true, note })
+        emit('prefs.state', { statusLine: config.statusLine, turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true, note })
       } else if (command.type === 'grants.list' || command.type === 'grants.revoke') {
           const path = `${magic.base}/grants.json`, before = configStamp(path)
           const local = readGrantView(magic, grants ? createWorkspaceService({ roots: [grants.workspace] }) : workspace)

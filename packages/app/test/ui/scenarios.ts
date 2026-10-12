@@ -214,13 +214,11 @@ const bootInputExit: Scenario = {
     await session.key('enter', { until: { text: '收到，我在。' }, timeoutMs: 4_000 })
     const answered = await session.capture({ label: '回话之后' })
     ui.check(answered.text.includes('› 你好'), '记录区留下了这次交代', '')
-    // ⚠️ **U112**：助手那一行的 `⏺ ` 记号没了、正文**顶格**（设计 ·「符号 ＋ 动效：一套」
-    //    那张表：助手在说话那一行的身份是「（无记号）」）。判的那件事一字未变——
-    //    **答复那一行在记录区里、且就是它那几个字**：故仍钉住**整行**（顶格、无前导记号）。
+    // U125：助手正文与用户正文从第 2 列开始。
     ui.check(
-      answered.lines.some((line) => line.startsWith('收到，我在。')),
+      answered.lines.some((line) => line.startsWith('  收到，我在。')),
       '记录区留下了模型的答复',
-      '锚＝助手正文（U112 起无记号、顶格）',
+      '锚＝助手正文（无记号、两格缩进）',
     )
 
     // —— 清空草稿（退格删光，回到占位语）——
@@ -1365,8 +1363,9 @@ const exitCommand: Scenario = {
     })
 
     await busy.send('说一句长话', { until: { text: ' › 说一句长话' }, timeoutMs: 15_000 })
-    // 锚状态行那句「ctrl+c 停或离开」＝**这一轮真在跑**（它在工作中那一格才出现）
+    // 等待输入受理和模型正文开始返回，再验证工作中的停止。
     await busy.key('enter', { until: { text: 'ctrl+c 停或离开' }, timeoutMs: 25_000 })
+    await busy.wait({ text: '正文先' }, { timeoutMs: 25_000 })
 
     await busy.send('/exit ', { until: { text: ' › /exit' }, timeoutMs: 15_000 })
     await busy.key('enter')

@@ -128,18 +128,18 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
     expect(result?.data.call).toBe(deps.sink.byKind('tool.call')[0]?.id)
   })
 
-  test('未注册的工具 → 照样过闸门（不留暗路），批准后以失败回填、不抛', async () => {
+  test('未注册的工具直接失败，不创建授权', async () => {
     const deps = makeToolDeps()
 
     const outcome = await deps.runtime.invoke({ id: 'c1', name: 'nope', args: {} }, {})
 
-    expect(deps.gate.requests).toHaveLength(1)
+    expect(deps.gate.requests).toHaveLength(0)
     expect(outcome.ok).toBe(false)
     expect(outcome.output).toContain('未注册')
     expect(deps.sink.byKind('tool.result')[0]?.data.call).toBe(outcome.callRef)
   })
 
-  test('参数解析不出（call.invalid）→ 照样过闸门，批准后以失败回填', async () => {
+  test('参数解析不出直接失败，不创建授权', async () => {
     const deps = makeToolDeps()
 
     const outcome = await deps.runtime.invoke(
@@ -147,13 +147,13 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
       {},
     )
 
-    expect(deps.gate.requests).toHaveLength(1)
+    expect(deps.gate.requests).toHaveLength(0)
     expect(deps.sandbox.execs).toHaveLength(0) // 解析不出的调用不执行
     expect(outcome.ok).toBe(false)
     expect(outcome.output).toContain('参数解析不出')
   })
 
-  test('「每个调用都问」是硬规矩——四个分支逐个过闸门各一次', async () => {
+  test('只有合法调用进入唯一权限闸门', async () => {
     const cases = [
       { id: 'c1', name: 'exec', args: { cmd: 'ls' } },
       { id: 'c2', name: 'nope', args: {} },
@@ -164,7 +164,7 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
     for (const call of cases) {
       const deps = makeToolDeps()
       await deps.runtime.invoke(call, {})
-      expect(deps.gate.requests).toHaveLength(1)
+      expect(deps.gate.requests).toHaveLength(call.id === 'c1' ? 1 : 0)
     }
   })
 
@@ -173,7 +173,8 @@ describe('U06 · 分发回环：请求 → 闸门 → 执行 → 结果', () => 
       tools: [
         {
           spec: { name: 'boom', summary: '炸', parameters: {}, danger: { level: 'light' } },
-          run: () => {
+          prepare: args => args,
+    run: () => {
             throw new Error('执行体炸了')
           },
         },
@@ -324,5 +325,52 @@ describe('U77 · 内核拒的那一笔：回执指路（用户拒的那一笔照
     // 首行同时带上「为什么」与「用什么」——屏上那一行取的就是它
     expect(first).toContain('不可逆')
     expect(first).toContain('trash')
+  })
+})
+
+
+describe('D58 · 无效调用不产生授权与执行', () => {
+  test('错误字段、参数形态、类型和组合均直接回填失败，原始调用与结果配对', async () => {
+    const cases = [
+      ['exec', { command: 'echo wrong' }], ['exec', {}], ['exec', { cmd: '  ' }], ['exec', { cmd: 1 }],
+      ...[0, -1, '5', false, Infinity].map(timeoutMs => ['exec', { cmd: 'echo test', timeoutMs }]),
+      ['exec', { cmd: 'echo test', cwd: '' }], ['exec', { cmd: 'echo test', cwd: 3 }],
+      ['exec', { cmd: 'echo test', background: 'true' }], ['exec', { cmd: 'echo test', background: true, timeoutMs: 3 }],
+      ['exec', null], ['exec', []], ['exec', 'bad'], ['missing', {}],
+      ['read', {}], ['write', { path: 'file', content: 3 }], ['edit', { path: 'file', old: 'text', new: 3 }],
+      ['grep', { pattern: '[' }], ['ls', { path: false }],
+    ] as const
+    for (const [name, args] of cases) {
+      const deps = makeToolDeps()
+      const outcome = await deps.runtime.invoke({ id: 'invalid', name: name as string, args: args as never }, {})
+      expect(outcome.ok).toBe(false)
+      expect(deps.gate.requests).toHaveLength(0)
+      expect(deps.sandbox.execs).toHaveLength(0)
+      expect(deps.sink.byKind('tool.call')).toHaveLength(1)
+      expect(deps.sink.byKind('tool.result')).toHaveLength(1)
+      expect(deps.sink.byKind('tool.result')[0]?.data.call).toBe(outcome.callRef)
+    }
+  })
+
+  test('审批期间外部修改原参数，执行仍消费已批准的命令', async () => {
+    const args = { cmd: 'echo approved' }
+    const deps = makeToolDeps({ decider: () => { args.cmd = 'echo changed'; return 'approve' } })
+    const outcome = await deps.runtime.invoke({ id: 'one', name: 'exec', args }, {})
+    expect(outcome.ok).toBe(true)
+    expect(deps.sandbox.execs[0]?.cmd).toBe('echo approved')
+    expect(deps.gate.requests).toHaveLength(1)
+  })
+
+  test('准备时到达取消，既不审批也不执行', async () => {
+    const controller = new AbortController()
+    let ran = false
+    const deps = makeToolDeps({ tools: [{
+      spec: { name: 'prepared', summary: '', parameters: {}, danger: { level: 'light' } },
+      prepare(args) { controller.abort(); return args },
+      run() { ran = true; return { ok: true, output: '' } },
+    }] })
+    expect((await deps.runtime.invoke({ id: 'one', name: 'prepared', args: {} }, { signal: controller.signal })).ok).toBe(false)
+    expect(deps.gate.requests).toHaveLength(0)
+    expect(ran).toBe(false)
   })
 })

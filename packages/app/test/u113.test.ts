@@ -212,7 +212,8 @@ describe('U113 统一模型配置与执行选择', () => {
       while (!wire.seen.some(one => one.url.includes('aux.example'))) { if (Date.now() > until) throw new Error('摘要未出站'); await Bun.sleep(5) }
       shell.send({ type: 'turn.interrupt' })
       await pending
-      expect(eventsOfKind(shell.events, 'error').map(one => one.data.message).join('\n')).toContain('上下文压缩已取消，原始记录已保留')
+      expect(eventsOfKind(shell.events, 'error')).toEqual([])
+      expect(eventsOfKind(shell.events, 'turn.end').at(-1)?.data.reason).toBe('aborted')
       const db = readDatabase(app.paths.database)
       expect(db.entries.filter(one => one.kind === 'summary')).toEqual([])
       expect(db.entries.filter(one => one.kind === 'user')).toHaveLength(2)

@@ -1005,16 +1005,9 @@ export type PageFetchOk = {
   readonly status: number
   /** 正文字节数——回执要报它（**响应体的字节**，不是转出来那份 markdown 的长度）。 */
   readonly bytes: number
-  /** 正文原文（HTML / 纯文本；**转 markdown 是工具那一侧的事**）。 */
+  /** 完整响应正文（HTML / 纯文本；转 markdown 是工具那一侧的事）；读取未完成应返回失败。 */
   readonly body: string
   readonly contentType?: string
-  /**
-   * **响应体超长，只读到了上限那一截**——`bytes` 是**读到的那部分**，不是页面的全部。
-   *
-   * 单列一位而不是让调用方拿 `bytes` 去比上限：**上限归实现定**（换一个实现就换一个数），
-   * 而「这一份是不是全的」是调用方要说给模型听的一句实话（少读了还说「就这些」是最坏的一种）。
-   */
-  readonly truncated?: true
 }
 
 export type PageFetchFailure = {
@@ -1538,6 +1531,8 @@ export type ExecResult =
   | {
       readonly ok: false
       readonly reason: 'timeout'
+      readonly cleanup?: { readonly confirmed: boolean; readonly note?: string }
+      readonly outputIncomplete?: boolean
       readonly message: string
       /**
        * **真报了的那条上界**——报文里那个数的**唯一出处**（调用方自己记的那份可能与之不符：
@@ -1552,7 +1547,17 @@ export type ExecResult =
     }
   | {
       readonly ok: false
-      readonly reason: Exclude<ExecFailureReason, 'timeout'>
+      readonly reason: 'canceled' | 'cleanup'
+      readonly message: string
+      readonly stdout: string
+      readonly stderr: string
+      readonly truncated?: boolean
+      readonly outputIncomplete?: boolean
+      readonly cleanup: { readonly confirmed: boolean; readonly note?: string }
+    }
+  | {
+      readonly ok: false
+      readonly reason: 'spawn'
       readonly message: string
     }
 
@@ -1560,6 +1565,8 @@ export type ExecResult =
 export type ExecFailureReason =
   | 'timeout' // 超时
   | 'spawn' // 启动失败
+  | 'canceled'
+  | 'cleanup'
 
 /**
  * `exec` 选项——cwd 约束 · 流式回调 · 取消 · 超时 / 输出上限。
@@ -1949,7 +1956,7 @@ export type ToolSetRow = Omit<ToolSpec, 'parameters'>
 export const TOOLSET_V1 = [
   {
     name: 'exec',
-    summary: '命令执行（经沙箱 · 工作目录约束）',
+    summary: '命令执行；dev server/watch 用 background:true，命令不加 nohup 或末尾 &，启动与健康检查分开',
     danger: { level: 'by-call', note: '按命令解析' },
   },
   { name: 'read', summary: '读文件（超长截断）', danger: { level: 'light' } },
@@ -1965,7 +1972,9 @@ export const TOOLSET_V1 = [
 ] as const satisfies readonly ToolSetRow[]
 
 /** 压缩调用在开始时取得的独立模型；容量与配置来处都属于这次解析。 */
+export type CompressionPreparation = CompressionModel | { readonly failure: string; readonly identity: string }
 export type CompressionModel = {
+  readonly identity?: string
   readonly gateway: ModelGateway
   readonly inputBudget?: number
   readonly location?: string

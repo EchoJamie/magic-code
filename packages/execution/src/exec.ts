@@ -1,82 +1,22 @@
 import { spawnOwned } from './process.ts'
-import { groupAlive, signalGroup } from './groups.ts'
-/**
- * 进程级执行原语——`exec` 的实现体（技术方案 · 执行 · 首站实现）。
- *
- * **首站取薄隔离**（技术方案 · 执行 · 隔离姿态）——工作目录约束 ＋ 权限闸门（闸门在工具域，
- * 不在此）；本文件只管「把一条命令跑起来、看着它、把它收干净」。
- *
- * 与端口的分工：`sandbox.ts` 管**路径与工作区**（已裁定 cwd 与目标身份核对），
- * 本文件只看**进程**（启动 · 流 · 超时 · 取消）——cwd 进来时已是绝对路径。
- *
- * 三条实测来的形态决定（U01 契约层审查 M1/M2 实测 ＋ 本轮探针复验）：
- * - **经 shell 跑**（`sh -c`）——「命令不存在」于是成为 **exit 127**（命令失败），
- *   而不是 `Bun.spawn` 对不存在可执行文件直接抛的 ENOENT（那是**启动失败**）。
- *   两者必须分属两界：前者 `ok:true` · exit≠0，后者 `ok:false` · `reason:'spawn'`。
- * - **自成进程组**（`detached`）——超时 / 取消按**组**收，连命令起的孙进程一起，
- *   不留给用户一窝逃逸的孤儿（实测：只杀直接子进程时 `sleep` 会活下来）。
- * - **`SIGKILL` 收命**——实测 `SIGTERM` 可被命令 `trap` 掉：忽略 TERM 的命令会照常跑完
- *   甚至 exit 0，于是「已超时 / 已取消」会被报成成功。SIGKILL 不可捕获，语义才闭合。
- *
- * ⚠️ **超时没有缺省常量了**（U69）——原先这里有一个 `DEFAULT_TIMEOUT_MS = 120_000`，
- * 谁不显式给就套上它。撤掉的理由是它**替所有命令回答了一个没有全局答案的问题**：
- * 「这条命令该等多久」只有发起那件事的人知道（`ls` 与一次构建不是一回事）。
- * 留一个常量当兜底，就是留着 D39 那个坑——120 秒一刀切掐掉正当的长活
- * （2026-09-25 实测：`swift package resolve` 跑到 123.5 秒被掐，而它真在下载依赖）。
- * 现在**缺省 ＝ 不设上界**（一直等）；上界由调用方按手上的事给（设计 · 工具执行与权限）。
- * 一道来的还有**输出**：超时那一支不再是「没跑成」，它**把两道流带回**——命令跑过了
- * （见下面 `TimeoutToken` 与那一支的注）。
- */
+import { reapOwned } from './groups.ts'
+/** 前台命令完成须同时取得业务退出码与双流 EOF；超时和取消覆盖整个等待。 */
 
 import type { ExecResult, OutputDelta, ProcessLedger } from '@magic/contracts'
 
 /** 输出上限缺省——字节；**每道流各自计**（见 `sandbox.ts` 头注的取舍说明）。 */
 export const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024
 
-/** 按信号终止的退出码（SIGKILL＝128+9）。 */
-export const KILLED_EXIT = 137
-
 /** 跑命令的宿主 shell——`-c` 取一条命令行。 */
 const SHELL = 'sh'
 
-/**
- * 超时令牌——私有哨兵，**载着真报了的那条上界**（毫秒）。
- *
- * 两件事合成一个值：**退出码是数字，令牌是对象**，两者在 `race` 里不会撞车（哨兵不变的那条）；
- * 令牌**带着那一条上界**，于是报文与 `timeoutMs` 都从**报了的那个数**取，
- * 不必拿调用方自己记的那份来对——两处各记一份，迟早有对不上的那天。
- */
-type TimeoutToken = { readonly boundMs: number }
-
-/** 永不落定的 Promise——竞速位上的「本条件不参与裁决」（只让失败冒头，不让成功抢先）。 */
 const NEVER = new Promise<never>(() => undefined)
-
-/**
- * 按**进程组**收命。
- *
- * 子进程以 `detached` 自成一组（组长 pid ＝ 子进程 pid），故 `-pid` 即整组——
- * 命令起的后台孙进程一并收走。组不可达（已收干净 / 平台不给组）时退回直接收子进程。
- * `SIGKILL` 不可捕获——`trap` 挡不住，语义才闭合。
- */
-async function killTree(proc: Bun.Subprocess): Promise<void> {
-  const wait = async (ms: number) => {
-    const until = Date.now() + ms
-    while (groupAlive(proc.pid) && Date.now() < until) await Bun.sleep(20)
-  }
-  await wait(500)
-  if (!groupAlive(proc.pid)) return
-  signalGroup(proc.pid, 'SIGTERM')
-  await wait(1500)
-  if (!groupAlive(proc.pid)) return
-  signalGroup(proc.pid, 'SIGKILL')
-  await wait(1500)
-  if (groupAlive(proc.pid)) throw new Error(`工具进程组 ${proc.pid} 尚未收妥`)
-}
 
 /** 一道流的读取产物。 */
 type StreamDrain = {
   readonly text: string
   readonly truncated: boolean
+  readonly incomplete: boolean
 }
 
 /** 增量出口（契约 `ExecOptions.onOutput` 的形态）。 */
@@ -143,11 +83,19 @@ async function drain(
   channel: OutputDelta['channel'],
   sink: OutputSink | undefined,
   cap: number,
+  signal: AbortSignal,
+  failed: (error: unknown) => void,
 ): Promise<StreamDrain> {
   const reader = stream.getReader()
   const decoder = new TextDecoder()
   let text = ''
   let seen = 0
+  let incomplete = false
+  let output = sink
+  const canceled = Promise.withResolvers<{ done: true; value: undefined } | { done: false; value: Uint8Array }>()
+  const cancel = () => { incomplete = true; canceled.resolve({ done: true, value: undefined }); void reader.cancel().catch(() => {}) }
+  signal.addEventListener('abort', cancel, { once: true })
+  if (signal.aborted) cancel()
 
   // 上限里面的两段。`cap` 理应恒为正（`sandbox.ts` 的 `positiveOr` 兜着），
   // 但本函数是导出面的下一层、谁直连都可能——故两段都夹在 0 以上，别让负数变成抛。
@@ -160,7 +108,7 @@ async function drain(
   const emit = (chunk: string): void => {
     if (chunk.length === 0) return
     text += chunk
-    sink?.({ channel, text: chunk })
+    try { output?.({ channel, text: chunk }) } catch (error) { output = undefined; failed(error) }
   }
 
   /** 往尾巴缓冲里续一段——**只留最后 `tailCap` 字节**（更早的丢掉：它们是中段）。 */
@@ -182,23 +130,29 @@ async function drain(
     tailLen += piece.length
   }
 
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), canceled.promise])
+      if (done) break
 
-    // 上限**按字节**记（`maxOutputBytes` 是字节）——超出部分不留，但**照读不辍**：
-    // 停手会让管道写满，命令卡在写不动上，那就不是「截断」而是「挂死」了。
-    seen += value.length
+      // 上限**按字节**记（`maxOutputBytes` 是字节）——超出部分不留，但**照读不辍**：
+      // 停手会让管道写满，命令卡在写不动上，那就不是「截断」而是「挂死」了。
+      seen += value.length
 
-    let rest = value
-    if (headDone < headCap) {
-      const room = headCap - headDone
-      const part = value.length <= room ? value : value.subarray(0, room)
-      headDone += part.length
-      if (part.length > 0) emit(decoder.decode(part, { stream: true }))
-      rest = value.subarray(part.length)
+      let rest = value
+      if (headDone < headCap) {
+        const room = headCap - headDone
+        const part = value.length <= room ? value : value.subarray(0, room)
+        headDone += part.length
+        if (part.length > 0) emit(decoder.decode(part, { stream: true }))
+        rest = value.subarray(part.length)
+      }
+      keepTail(rest)
     }
-    keepTail(rest)
+
+  } catch (error) { incomplete = true; failed(error) } finally {
+    signal.removeEventListener('abort', cancel)
+    reader.releaseLock()
   }
 
   // 缓冲里那一段的**绝对起点**（它在整条流里的字节位置）——据它认出头之后还该补多少。
@@ -211,13 +165,13 @@ async function drain(
     if (afterHead.length > 0) emit(decoder.decode(afterHead, { stream: true }))
     emit(decoder.decode())
 
-    return { text, truncated: false }
+    return { text, truncated: false, incomplete }
   }
 
   emit(`${text.endsWith('\n') ? '' : '\n'}${truncationNote(seen - cap, seen, headCap, tailCap)}\n`)
   emit(decodeFromCharStart(afterHead))
 
-  return { text, truncated: true }
+  return { text, truncated: true, incomplete }
 }
 
 /**
@@ -263,111 +217,63 @@ function decodeFromCharStart(bytes: Uint8Array): string {
  * （含 exit 非 0），沙箱级失败给 `ok:false` ＋ `reason`。
  */
 export async function runCommand(cmd: string, options: CommandOptions): Promise<ExecResult> {
-  // 已中止的信号——**不启动进程**：取消＝「别跑」，不是「跑起来再杀」。
-  // 返回值与「跑到一半被取消」同形（见 `ExecResult` 那一处的取舍说明）：
-  // 究竟跑没跑过，由调用方自持的 `signal.aborted` 与既有输出共同表述。
-  if (options.signal?.aborted === true) {
-    return { ok: true, exit: KILLED_EXIT, stdout: '', stderr: '' }
-  }
-
-  let proc: Bun.Subprocess<'pipe', 'pipe', 'pipe'>
-
+  const began = Date.now()
+  if (options.signal?.aborted) return { ok: false, reason: 'spawn', message: '命令已取消，未执行' }
+  let started: Awaited<ReturnType<typeof spawnOwned<'pipe', 'pipe'>>>
   try {
-    const started = await spawnOwned([SHELL, '-c', cmd], {
+    started = await spawnOwned([SHELL, '-c', cmd], {
       cwd: options.cwd, env: options.env, signal: options.signal, ledger: options.ledger,
       stdout: 'pipe', stderr: 'pipe', kind: 'exec',
       what: `exec:${cmd.split('\n', 1)[0]?.trim().slice(0, LEDGER_WHAT_CHARS) ?? ''}`,
     })
-    proc = started.process
   } catch (error) {
-    // 报文里点出 cwd——`Bun.spawn` 的 ENOENT 指向可执行名（`posix_spawn 'sh'`），
-    // 而真凶多半是 cwd 不存在 / 不可达；不点出来，排障得反推
-    return {
-      ok: false,
-      reason: 'spawn',
-      message: `启动失败（cwd: ${options.cwd}）：${error instanceof Error ? error.message : String(error)}`,
-    }
+    return { ok: false, reason: 'spawn', message: `启动失败（cwd: ${options.cwd}）：${error instanceof Error ? error.message : String(error)}` }
   }
-
-  // **记账**（U50）：起来的这一组归谁——组长就是刚起来的那个（`detached` 保证）。
-  // 记在这一跳（spawn 成功之后、干活之前）：账上多一条不碍事，少一条就没人在收尾时
-  // 找得到它。什么时候摘由账自己判（组没了就摘，见 `groups.ts`）。
-
-  let cleanup: Promise<void> | undefined
-  const stop = (): Promise<void> => cleanup ??= killTree(proc)
-  let aborted: () => void = () => {}
-  const cancellation = new Promise<void>(resolve => { aborted = resolve })
-  const onAbort = (): void => { aborted() }
+  const proc = started.process
+  const canceled = Promise.withResolvers<{ kind: 'canceled' }>()
+  const onAbort = () => canceled.resolve({ kind: 'canceled' })
   options.signal?.addEventListener('abort', onAbort, { once: true })
   if (options.signal?.aborted) onAbort()
-
-  // 读流与「等进程退出」并行——不先排空管道，写得多一点的命令会卡在写满的管道上
-  const stdoutTask = drain(proc.stdout, 'stdout', options.onOutput, options.maxOutputBytes)
-  const stderrTask = drain(proc.stderr, 'stderr', options.onOutput, options.maxOutputBytes)
-
-  // 超时＝自持计时器 ＋ 哨兵，**不从退出码反推**：命令自己死成 137（`kill -9 $$`）
-  // 与「被我们超时收掉」同码不同界，靠退出码猜必然混为一类。
-  //
-  // **有上界才立计时器**：`null` ＝ 不设上界，此时竞速位上放「永不落定」——
-  // 一则不白养一个定时器，二则语义就写在脸上：这一路**没有**会到点的那个东西。
-  const bound = options.timeoutMs
+  const readFailure = Promise.withResolvers<{ kind: 'cleanup'; error: unknown }>()
+  const readers = new AbortController()
+  const failed = (error: unknown) => readFailure.resolve({ kind: 'cleanup', error })
+  const drained = Promise.all([
+    drain(proc.stdout, 'stdout', options.onOutput, options.maxOutputBytes, readers.signal, failed),
+    drain(proc.stderr, 'stderr', options.onOutput, options.maxOutputBytes, readers.signal, failed),
+  ])
   let timer: ReturnType<typeof setTimeout> | undefined
-  const deadline: Promise<TimeoutToken> =
-    bound === null
-      ? NEVER
-      : new Promise((markTimeout) => {
-          timer = setTimeout(() => markTimeout({ boundMs: bound }), bound)
-        })
-
-  // 读流若**自己坏掉**（消费方回调抛错一类），必须当场浮上来——否则要等命令跑完
-  // 才发作：既白等一场，又漏掉收命（`NEVER` 让「正常读完」不参与裁决，只让失败冒头）。
-  const drained = Promise.all([stdoutTask, stderrTask])
-
+  const bound = options.timeoutMs
+  const deadline = bound === null ? NEVER : new Promise<{ kind: 'timeout' }>(resolve => {
+    timer = setTimeout(() => resolve({ kind: 'timeout' }), Math.max(0, bound - (Date.now() - began)))
+  })
+  const completed = started.commandExited.then(async exit => exit === null
+    ? { kind: 'cleanup' as const, error: new Error('命令退出码控制通道提前关闭') }
+    : { kind: 'finished' as const, exit, output: await drained })
   try {
-    // 竞速位的三种落定：退出码（数字）、超时令牌（对象，见 `TimeoutToken`）、以及永不落定。
-    let outcome: number | TimeoutToken
-    try {
-      outcome = await Promise.race([proc.exited, deadline, drained.then(() => NEVER), cancellation.then(async () => { await stop(); return await proc.exited })])
-    } finally {
-      clearTimeout(timer) // 进程已落定——别让计时器吊着事件循环
-      options.signal?.removeEventListener('abort', onAbort) // 摘监听——信号常比单次执行长寿
+    const outcome = await Promise.race([completed, deadline, canceled.promise, readFailure.promise])
+    if (outcome.kind === 'finished' && outcome.exit !== null) {
+      const [stdout, stderr] = outcome.output
+      return { ok: true, exit: outcome.exit, stdout: stdout.text, stderr: stderr.text,
+        ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}) }
     }
-
-    if (typeof outcome === 'object') {
-      // **超时不是「没执行」**（设计：命令跑过的结果与调用不成立分开）——命令跑了 123.5 秒、
-      // 真在做，副作用可能已经发生。故这一支**照正常那一支把两道流带回**：收尸时
-      // `stdoutTask` / `stderrTask` 本来就排空到 EOF（`await proc.exited` 之后 `drained`
-      // 已是可取的终值），原先只是**没把值带出来**——D39 丢的就是这一份。
-      await stop()
-      await proc.exited // 收尸
-      const [stdout, stderr] = await drained // 排空，不留悬着的读
-      return {
-        ok: false,
-        reason: 'timeout',
-        message: `命令超时（${outcome.boundMs}ms）未完成——已终止`,
-        timeoutMs: outcome.boundMs,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}),
-      }
-    }
-
+    const reaped = await reapOwned({ pgid: proc.pid, startedAt: started.startedAt, what: 'exec' })
+    const confirmed = reaped.kind === 'reaped' || reaped.kind === 'gone'
+    const cleanup = { confirmed, ...('note' in reaped ? { note: reaped.note } : {}) }
+    let drainTimer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([drained, new Promise<void>(resolve => {
+      drainTimer = setTimeout(() => { readers.abort(); resolve() }, 500)
+    })])
+    clearTimeout(drainTimer)
     const [stdout, stderr] = await drained
-
-    return {
-      ok: true,
-      exit: outcome,
-      stdout: stdout.text,
-      stderr: stderr.text,
-      // 字段缺席＝没截（缺省态不占位，事件信封序列化后也干净）
+    const output = { stdout: stdout.text, stderr: stderr.text, cleanup,
       ...(stdout.truncated || stderr.truncated ? { truncated: true } : {}),
-    }
-  } catch (error) {
-    // 走到这里＝**沙箱自身出了岔子**（不是命令失败，也不是三例沙箱级失败）：
-    // 多半是消费方回调抛错。两条纪律——**不吞**（消费者自己的 bug 该响）、
-    // **不留孤儿**（抛出去之前把命令连孙进程收干净）。
-    await stop()
-    await proc.exited.catch(() => undefined)
-    throw error
+      ...(stdout.incomplete || stderr.incomplete ? { outputIncomplete: true } : {}) }
+    const ending = confirmed ? '自有进程组已退出' : `资源未核销：${cleanup.note}`
+    if (outcome.kind === 'timeout') return { ok: false, reason: 'timeout', timeoutMs: bound!, message: `命令超时（${bound}ms）；${ending}`, ...output }
+    if (outcome.kind === 'canceled') return { ok: false, reason: 'canceled', message: `命令已取消；${ending}`, ...output }
+    return { ok: false, reason: 'cleanup', message: `命令输出或控制通道异常${outcome.kind === 'cleanup' ? `：${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}` : ''}；${ending}`, ...output }
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', onAbort)
   }
 }

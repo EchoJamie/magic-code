@@ -450,8 +450,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
      */
     link.send({ t: 'stopping', why })
 
-    await initialization.catch(() => undefined)
-    await Promise.all([assembly.shutdown(), ...inFlight])
+    await Promise.all([assembly.shutdown(), initialization.catch(() => undefined), ...inFlight])
     off()
     assembly.close()
     diagnosticLog?.write('info', 'executor.stopped')

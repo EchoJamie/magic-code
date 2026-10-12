@@ -257,14 +257,14 @@ export function makeLoopRuntime(stage: Stage, overrides: Partial<LoopRuntime> = 
  */
 export function makeCompactor(
   stage: Stage,
-  options: { readonly policy?: Partial<ContextPolicy> } = {},
+  options: { readonly policy?: Partial<ContextPolicy>; readonly compression?: () => import('@magic/contracts').CompressionPreparation } = {},
 ): Compactor {
   const policy: ContextPolicy = { ...DEFAULT_CONTEXT_POLICY, ...options.policy }
 
   return createCompactor({
     records: stage.records,
     session: DEFAULT_TEST_SESSION,
-    compression: () => ({ gateway: stage.gateway }),
+    compression: options.compression ?? (() => ({ gateway: stage.gateway })),
     sink: stage.sink,
     stamper: stage.stamper,
     now: () => FIXED_AT,
@@ -273,7 +273,6 @@ export function makeCompactor(
     nearEntries: policy.nearEntries,
     compactAtFraction: policy.compactAtFraction,
     compactAtTokens: policy.compactAtTokens,
-    compactFailureLimit: policy.compactFailureLimit,
   })
 }
 

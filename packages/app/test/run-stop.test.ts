@@ -311,6 +311,7 @@ describe('U50 · 停止：整体那一档', () => {
     seed(g, ['s-2'])
     const b = await bench(g)
     const client = await open(g, b.manager)
+    const taps = tapsOf(client)
 
     try {
       client.send({ type: 'session.open', session: 's-2' })
@@ -326,6 +327,8 @@ describe('U50 · 停止：整体那一档', () => {
       // TERM 到了（第一记「兵」），而它没退 —— 那一行如实停在「停止中」
       await waitFor('已取消', () => b.killed.some((one) => one.signal === 'cancel'))
       await waitFor('如实停止中', () => rowOf(client, 's-2')?.state === 'stopping')
+      await waitFor('有界返回未确认', () => taps.some(one => one.phase === 'unconfirmed'))
+      expect(taps.some(one => one.phase === 'done')).toBe(false)
 
       // 异步实例没有可杀的 PID；完成仍须以真实释放回调为准。
       fake.exit('在途责任已释放')

@@ -335,6 +335,7 @@ export type PrefsSet = { readonly type: 'prefs.set' } & PrefsSetRequest
  */
 export type PrefsSetRequest = {
   readonly statusLine?: StatusLineConfig
+  readonly turnDuration?: import('./config.ts').TurnDurationMode
   readonly reducedMotion?: boolean
 }
 

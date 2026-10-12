@@ -232,7 +232,7 @@ export async function setPrefs(input: {
   readonly validate?: (raw: Record<string, unknown>) => void
   readonly request: PrefsSetRequest
 }): Promise<SaveOutcome> {
-  const { statusLine, reducedMotion } = input.request
+  const { statusLine, reducedMotion, turnDuration } = input.request
 
   return editConfigFile({
     path: input.path,
@@ -251,6 +251,8 @@ export async function setPrefs(input: {
       // 动效那一段**只留它自己那一格**：`reduced: false` 是「没开」，与「没配过」同义
       // ⇒ 那一格**不留**（写一个 `false` 进去，配置里就多一句从来不生效的话）。
       // 整段因此空了就**把这一段摘掉**（同上：不留空壳）。
+      if (turnDuration === 'active') next['turnDuration'] = turnDuration
+      else if (turnDuration === 'elapsed') delete next['turnDuration']
       if (reducedMotion !== undefined) {
         if (reducedMotion) next['motion'] = { reduced: true }
         else delete next['motion']

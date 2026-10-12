@@ -36,6 +36,7 @@ import {
   OUTPUT_READ_TRUNCATED,
   writeDoneOutput,
 } from './messages.ts'
+import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused, reasonOf, rowOf } from './toolkit.ts'
 
@@ -83,13 +84,16 @@ function composeRead(result: ReadResult): string {
 export function defineReadTool(): ToolDefinition {
   const row = rowOf('read')
 
-  return {
+  return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: READ_PARAMETERS, danger: row.danger },
 
-    async run(args, ctx): Promise<ToolRunResult> {
+    prepare(args) {
       const path = args['path']
-      if (!isText(path)) return refused(OUTPUT_PATH_REQUIRED)
+      if (!isText(path)) throw new Error(OUTPUT_PATH_REQUIRED)
 
+      return { path }
+    },
+    async run({ path }, ctx): Promise<ToolRunResult> {
       try {
         return { ok: true, output: composeRead(await ctx.sandbox.read(path)) }
       } catch (error) {
@@ -98,7 +102,7 @@ export function defineReadTool(): ToolDefinition {
         return refused(reasonOf(error))
       }
     },
-  }
+  })
 }
 
 // ══ write ═════════════════════════════════════════════════════════════
@@ -132,17 +136,20 @@ export const WRITE_PARAMETERS = {
 export function defineWriteTool(): ToolDefinition {
   const row = rowOf('write')
 
-  return {
+  return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: WRITE_PARAMETERS, danger: row.danger },
 
-    async run(args, ctx): Promise<ToolRunResult> {
+    prepare(args) {
       const path = args['path']
-      if (!isText(path)) return refused(OUTPUT_PATH_REQUIRED)
+      if (!isText(path)) throw new Error(OUTPUT_PATH_REQUIRED)
 
       const content = args['content']
       // 空串合法（写空文件）——故判据是「是不是字符串」，不是「非空」
-      if (typeof content !== 'string') return refused(OUTPUT_CONTENT_REQUIRED)
+      if (typeof content !== 'string') throw new Error(OUTPUT_CONTENT_REQUIRED)
 
+      return { path, content }
+    },
+    async run({ path, content }, ctx): Promise<ToolRunResult> {
       try {
         await ctx.sandbox.write(path, { text: content })
         return { ok: true, output: writeDoneOutput(path, byteLength(content)) }
@@ -151,7 +158,7 @@ export function defineWriteTool(): ToolDefinition {
         return refused(reasonOf(error))
       }
     },
-  }
+  })
 }
 
 // ══ edit ══════════════════════════════════════════════════════════════
@@ -211,20 +218,23 @@ function replaceOnce(text: string, needle: string, replacement: string, index: n
 export function defineEditTool(): ToolDefinition {
   const row = rowOf('edit')
 
-  return {
+  return defineTool({
     spec: { name: row.name, summary: row.summary, parameters: EDIT_PARAMETERS, danger: row.danger },
 
-    async run(args, ctx): Promise<ToolRunResult> {
+    prepare(args) {
       const path = args['path']
-      if (!isText(path)) return refused(OUTPUT_PATH_REQUIRED)
+      if (!isText(path)) throw new Error(OUTPUT_PATH_REQUIRED)
 
       const old = args['old']
-      if (!isText(old)) return refused(OUTPUT_OLD_REQUIRED)
+      if (!isText(old)) throw new Error(OUTPUT_OLD_REQUIRED)
 
       const replacement = args['new']
-      if (typeof replacement !== 'string') return refused(OUTPUT_NEW_REQUIRED)
-      if (replacement === old) return refused(OUTPUT_EDIT_SAME)
+      if (typeof replacement !== 'string') throw new Error(OUTPUT_NEW_REQUIRED)
+      if (replacement === old) throw new Error(OUTPUT_EDIT_SAME)
 
+      return { path, old, new: replacement }
+    },
+    async run({ path, old, new: replacement }, ctx): Promise<ToolRunResult> {
       try {
         // 显式放大读取上限（沙箱缺省 64 KiB 对源码文件偏小）——见 EDIT_MAX_READ_BYTES
         const current = await ctx.sandbox.read(path, { maxBytes: EDIT_MAX_READ_BYTES })
@@ -258,5 +268,5 @@ export function defineEditTool(): ToolDefinition {
         return refused(reasonOf(error))
       }
     },
-  }
+  })
 }

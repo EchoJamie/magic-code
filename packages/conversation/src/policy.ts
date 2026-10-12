@@ -37,13 +37,6 @@ export const DEFAULT_COMPACT_AT_FRACTION = 0.8
  */
 export const DEFAULT_COMPACT_AT_TOKENS = 120_000
 
-/**
- * **连续失败上限**——压缩连败这么多次就报一条 `error`（技术方案 · 上下文压缩：
- * 「连续失败 → 报 error」）。报后计数清零：再连败这么多条会再报一次，
- * 既不让失败静默、也不让它每轮刷屏。
- */
-export const DEFAULT_COMPACT_FAILURE_LIMIT = 3
-
 export type ContextPolicy = {
   /** 正文超此长度即转 blob（字符数）——写侧。 */
   readonly blobThreshold: number
@@ -55,8 +48,6 @@ export type ContextPolicy = {
   readonly compactAtTokens: number
   /** 「近段」＝尾部保留原文的条目数（压缩时不动它）——阶段 3。 */
   readonly nearEntries: number
-  /** 压缩连续失败多少次报一条 `error`——阶段 3。 */
-  readonly compactFailureLimit: number
 }
 
 /** 缺省上下文策略——阶段 1 两件 ＋ 阶段 3 压缩四件（只增不改）。 */
@@ -66,5 +57,4 @@ export const DEFAULT_CONTEXT_POLICY: ContextPolicy = {
   compactAtFraction: DEFAULT_COMPACT_AT_FRACTION,
   compactAtTokens: DEFAULT_COMPACT_AT_TOKENS,
   nearEntries: DEFAULT_NEAR_ENTRIES,
-  compactFailureLimit: DEFAULT_COMPACT_FAILURE_LIMIT,
 }

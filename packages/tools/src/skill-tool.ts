@@ -47,6 +47,7 @@
 
 import type { Skill, SkillMaterial, SkillRead, Skills, UsedSkill } from '@magic/contracts'
 import { isText } from './args.ts'
+import { defineTool } from './registry.ts'
 import type { ToolDefinition, ToolRunResult } from './registry.ts'
 import { refused } from './toolkit.ts'
 
@@ -90,7 +91,7 @@ const REFERENCE_HEADING = '技能引用'
  * 两条选用路径读的是同一份「有什么、在哪儿」。
  */
 export function defineSkillTool(skills: Skills): ToolDefinition {
-  return {
+  return defineTool({
     spec: {
       name: 'skill',
       summary: '取技能正文或其引用的文件（只读技能目录）',
@@ -99,15 +100,18 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
       danger: { level: 'light' },
     },
 
-    async run(args, ctx): Promise<ToolRunResult> {
+    prepare(args) {
       const name = args['name']
-      if (!isText(name)) return refused('参数错误：name 须为非空字符串')
+      if (!isText(name)) throw new Error('参数错误：name 须为非空字符串')
 
       const relative = args['relative']
       if (relative !== undefined && !isText(relative)) {
-        return refused('参数错误：relative 须为非空字符串（不给就取主文）')
+        throw new Error('参数错误：relative 须为非空字符串（不给就取主文）')
       }
 
+      return { name, relative }
+    },
+    async run({ name, relative }, ctx): Promise<ToolRunResult> {
       // 身份由**这一趟的发现结果**给（名字 → 那一份的真路径）；没有这个名字就照实说
       const target = (await resolve(skills, name, ctx.signal))
       if (typeof target === 'string') return refused(target)
@@ -127,7 +131,7 @@ export function defineSkillTool(skills: Skills): ToolDefinition {
         ...(relative === undefined ? { skill: usedOf(read.material.skill) } : {}),
       }
     },
-  }
+  })
 }
 
 /**

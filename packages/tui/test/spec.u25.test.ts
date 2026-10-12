@@ -115,7 +115,7 @@ describe('③ 右位提示说「启动中」', () => {
     expect(app.shell.getView().status.hint).toBe(HINT_BOOTING)
 
     app.shell.releaseInput()
-    expect(app.shell.getView().status.hint).toBe(HINT_IDLE)
+    expect(app.shell.getView().status.hint).toBe('/ 命令 · ctrl+c 清空草稿')
   })
 
   test('**不设闸的调用方**（缺省）一开局就是常态提示——闸只落在要等 `boot` 的那条路上', () => {

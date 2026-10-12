@@ -299,7 +299,7 @@ describe('压缩 · 失败不降级（B5）', () => {
    * 规格：「**连续失败 → 报 `error`**」（技术方案 · 上下文压缩）——不静默：
    * 一条会话压不动了，用户得知道它迟早会撞上超限。
    */
-  test('连续失败达上限：报一条 `error`——不聊胜于无地静默', async () => {
+  test('相同暂时失败只提示一次，后续压缩机会仍会重试', async () => {
     const stage = makeStage({
       turns: [
         { text: '答复一', usage: { inputTokens: 100, outputTokens: 5 } },
@@ -312,7 +312,7 @@ describe('压缩 · 失败不降级（B5）', () => {
     seedOldBusiness(stage, 4)
 
     const compact = makeCompactor(stage, {
-      policy: { compactAtTokens: 50, nearEntries: 1, compactFailureLimit: 2 },
+      policy: { compactAtTokens: 50, nearEntries: 1 },
     })
     const runtime = makeLoopRuntime(stage, { compact })
 
@@ -321,7 +321,7 @@ describe('压缩 · 失败不降级（B5）', () => {
     }
 
     const errors = stage.sink.byKind('error')
-    expect(errors).toHaveLength(3)
+    expect(errors).toHaveLength(1)
     expect(errors[0]?.data.message).toContain('压缩')
     expect(errors.every(event => event.data.message.includes('原始记录已保留'))).toBe(true)
 
@@ -406,4 +406,79 @@ describe('U37 · 压缩：图片只报名字，不说话过了', () => {
     // **字节还在**（压缩只动送模型的那一份，记录 append-only）——再要它时取回得来
     expect([...(await stage.records.blobs.get(blob))]).toEqual([...PNG])
   })
+})
+
+
+describe('D56 · 失败恢复与正文边界', () => {
+  test('确定配置失败只提示一次，修正后下一次机会自动恢复', async () => {
+    const stage = makeStage({ turns: [{ thinking: '内部推理', text: '摘要正文' }] })
+    seedOldBusiness(stage, 3)
+    let ready = false
+    const compact = makeCompactor(stage, { policy: { nearEntries: 1 }, compression: () => ready
+      ? { gateway: stage.gateway, identity: 'fixed' }
+      : { failure: 'Cantrip 未配置', identity: 'missing' } })
+    for (let i = 0; i < 4; i++) expect((await compact.run({ trigger: 'threshold' })).ok).toBe(false)
+    expect(stage.gateway.requests).toHaveLength(0)
+    expect(stage.sink.byKind('error')).toHaveLength(1)
+    ready = true
+    expect((await compact.run({ trigger: 'threshold' })).ok).toBe(true)
+    expect(summariesOf(stage)[0]?.content).toEqual({ text: '摘要正文' })
+    expect(stage.sink.byKind('model.delta')).toHaveLength(0)
+  })
+
+  test('本地容量不足不因新增历史而重试或刷屏，提高容量后恢复', async () => {
+    const stage = makeStage({ turns: [{ text: '摘要' }] })
+    seedOldBusiness(stage, 3)
+    let budget = 1
+    const compact = makeCompactor(stage, { policy: { nearEntries: 1 }, compression: () => ({
+      gateway: stage.gateway, identity: `budget:${budget}`, inputBudget: budget,
+    }) })
+    for (let i = 0; i < 3; i++) {
+      expect(await compact.run({ trigger: 'threshold' })).toMatchObject({ ok: false, kind: 'local-capacity' })
+      seedOldBusiness(stage, 1)
+    }
+    expect(stage.gateway.requests).toHaveLength(0)
+    expect(stage.sink.byKind('error')).toHaveLength(1)
+    budget = 100_000
+    expect((await compact.run({ trigger: 'threshold' })).ok).toBe(true)
+    expect(stage.gateway.requests).toHaveLength(1)
+  })
+
+  test('远端超限阻止同材料同绑定重发；材料变化可以重试', async () => {
+    const stage = makeStage({ turns: [{ error: { tier: 'context-limit', message: 'too long' } }, { text: '摘要' }] })
+    seedOldBusiness(stage, 3)
+    const compact = makeCompactor(stage, { policy: { nearEntries: 1 } })
+    await compact.run({ trigger: 'threshold' })
+    expect(await compact.run({ trigger: 'context-limit' })).toMatchObject({ ok: false, kind: 'remote-capacity', canContinue: false })
+    expect(stage.gateway.requests).toHaveLength(1)
+    seedOldBusiness(stage, 1)
+    expect((await compact.run({ trigger: 'threshold' })).ok).toBe(true)
+    expect(stage.gateway.requests).toHaveLength(2)
+  })
+
+  test('只有思考或未正常结束的半截摘要均不落库', async () => {
+    for (const turn of [{ thinking: '只有推理' }, { text: '半截正文', error: { tier: 'terminal' as const, message: 'stream interrupted' } }]) {
+      const stage = makeStage({ turns: [turn] })
+      seedOldBusiness(stage, 3)
+      const compact = makeCompactor(stage, { policy: { nearEntries: 1 } })
+      expect((await compact.run({ trigger: 'threshold' })).ok).toBe(false)
+      expect(summariesOf(stage)).toHaveLength(0)
+      expect(stage.sink.byKind('context.compacted')).toHaveLength(0)
+    }
+  })
+})
+
+test('D56 · 历史思考与供应商回传状态不进入摘要输入，原记录仍保留', async () => {
+  const stage = makeStage({ turns: [{ thinking: '本次摘要思考', text: '摘要正文' }] })
+  stage.records.appendEntry({ kind: 'assistant', content: { text: '已验证结果' }, at: FIXED_AT,
+    payload: { reasoning: '历史秘密思考', reasoningState: { provider: 'sample', model: 'm', details: [{ opaque: '供应商私有状态' }] } },
+  })
+  seedOldBusiness(stage, 2)
+  expect((await makeCompactor(stage, { policy: { nearEntries: 1 } }).run({ trigger: 'threshold' })).ok).toBe(true)
+  const input = JSON.stringify(stage.gateway.requests[0])
+  expect(input).toContain('已验证结果')
+  expect(input).not.toContain('历史秘密思考')
+  expect(input).not.toContain('供应商私有状态')
+  expect(summariesOf(stage)[0]?.content).toEqual({ text: '摘要正文' })
+  expect(JSON.stringify(stage.records.entries[0]?.payload)).toContain('历史秘密思考')
 })

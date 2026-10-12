@@ -3,9 +3,9 @@
  *
  * 出处：设计 · 网页与搜索「两件工具」表的第一行（抓一个 URL）；端口在契约 `ports.ts`。
  * 它落在执行域的理由与沙箱同源：**出网是边界动作**（读文件、起进程、发请求，都是「内核
- * 替模型伸出去的那只手」），三条规矩要在一处写死，而不是让每个调用方各记一遍。
+ * 替模型伸出去的那只手」），网络边界要在一处落实，而不是让每个调用方各记一遍。
  *
- * ## 三条规矩（都在这里，别处不再判一次）
+ * ## 网络边界
  *
  * 1. **只认 http / https，且 `http` 一律升 `https`**、`localhost` 与无点主机名**发请求之前
  *    就拒**——判据是契约的 `webTargetOf`（**再走一遍**：本文件不假设上游替它判过，
@@ -13,9 +13,9 @@
  * 2. **不跟随跨主机重定向**——跳到别的主机就**不跟**，把「从哪跳到哪」交回去
  *    （设计明写：让模型自己再取一次）。跟过去的代价是具体的：**卡上写的那个域名与实际
  *    到达的域名不是一个**，而那张卡正是用户点头的地方。同主机的跳转照跟（`http → https`、
- *    补斜杠那一类换地址不变人），上限几跳，多了就报连不上；
- * 3. **正文有上限**——超了就只读到上限为止并**标出来**（`truncated`）：一页几百 MB 的东西
- *    读进来，这一件「省上下文」的意义就没了。
+ *    补斜杠那一类换地址不变人），上限几跳，多了就报连不上。
+ *
+ * 响应体完整读取后才返回成功；读取失败、超时或取消不返回部分正文。
  *
  * ## 超时：**这一件有缺省上界**（与 `exec` 那条「不设上界」不冲突）
  *
@@ -31,9 +31,6 @@ import { webTargetOf } from '@magic/contracts'
 /** 缺省超时——一次 GET 用不到这么久（见文件头注最后一段）。 */
 export const WEB_FETCH_TIMEOUT_MS = 30_000
 
-/** 正文上限——到这儿就不读了（响应体可能是几百 MB）。 */
-export const WEB_FETCH_MAX_BYTES = 4 * 1024 * 1024
-
 /** 同主机重定向最多跟几跳——跟上界同理，防环。 */
 export const WEB_FETCH_MAX_REDIRECTS = 5
 
@@ -44,13 +41,11 @@ export type WebSourceOptions = {
   /** 取件实现——缺省全局 `fetch`（用例里换成桩，不出网）。 */
   readonly fetch?: ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => Promise<Response>) | undefined
   readonly timeoutMs?: number | undefined
-  readonly maxBytes?: number | undefined
 }
 
 export function createWebSource(options: WebSourceOptions = {}): WebSource {
   const send = options.fetch ?? globalThis.fetch
   const timeoutMs = options.timeoutMs ?? WEB_FETCH_TIMEOUT_MS
-  const maxBytes = options.maxBytes ?? WEB_FETCH_MAX_BYTES
 
   return {
     async fetchPage(raw: string, opts?: { readonly signal?: AbortSignal }): Promise<PageFetch> {
@@ -103,15 +98,19 @@ export function createWebSource(options: WebSourceOptions = {}): WebSource {
             continue
           }
 
-          const read = await readCapped(response, maxBytes)
+          if (response.status === 206) {
+            await response.body?.cancel().catch(() => {})
+            return { ok: false, kind: 'failed', reason: '服务器仅返回部分页面（HTTP 206），无法完整提炼' }
+          }
+
+          const body = await response.arrayBuffer()
 
           return {
             ok: true,
             url: current,
             status: response.status,
-            bytes: read.bytes,
-            body: read.text,
-            ...(read.truncated ? { truncated: true } : {}),
+            bytes: body.byteLength,
+            body: new TextDecoder().decode(body),
             ...(response.headers.get('content-type') === null
               ? {}
               : { contentType: response.headers.get('content-type') as string }),
@@ -132,52 +131,6 @@ export function createWebSource(options: WebSourceOptions = {}): WebSource {
 
 function isRedirect(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308
-}
-
-/**
- * 读响应体，**读到上限就停**（不把几百 MB 拉进来）。
- *
- * ⚠️ 判据是**字节**不是字符（`bytes` 这一格报的也是字节）——多字节字符跨在边界上时，
- * 少读半个字符由 `TextDecoder` 的流式解码兜住（它自己会把不完整的尾巴留到下一块）。
- */
-async function readCapped(
-  response: Response,
-  maxBytes: number,
-): Promise<{ readonly text: string; readonly bytes: number; readonly truncated: boolean }> {
-  const body = response.body
-  if (body === null) return { text: '', bytes: 0, truncated: false }
-
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  const parts: string[] = []
-  let bytes = 0
-  let truncated = false
-
-  try {
-    for (;;) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-
-      const kept = bytes + chunk.value.byteLength <= maxBytes
-        ? chunk.value
-        : chunk.value.subarray(0, Math.max(0, maxBytes - bytes))
-
-      bytes += kept.byteLength
-      parts.push(decoder.decode(kept, { stream: true }))
-
-      if (kept.byteLength < chunk.value.byteLength) {
-        truncated = true
-        break
-      }
-    }
-
-    parts.push(decoder.decode())
-  } finally {
-    // 提前收手时把连接放掉（不 cancel 的话那一路还挂着）
-    if (truncated) await reader.cancel().catch(() => {})
-  }
-
-  return { text: parts.join(''), bytes, truncated }
 }
 
 /** 抛出来的原委——`AbortError` 说人话（它是「超时 / 被掐断」，不是「页面坏了」）。 */

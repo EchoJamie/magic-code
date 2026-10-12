@@ -86,6 +86,7 @@ export function parseScreenKeys(text: string): readonly ScreenKey[] {
 }
 
 export type ScreenHost = {
+  readonly turnDuration?: () => 'elapsed' | 'active'
   readonly stdin: NodeJS.ReadStream
   readonly stdout: NodeJS.WriteStream
   /** 取此刻要画的那些行与尺寸（每次重画问一次——流式进来的新行据此上屏）。 */
@@ -163,7 +164,7 @@ export async function runScreen(host: ScreenHost): Promise<number> {
 
       const { rows, columns, screenRows, pending, title = host.title, notice } = host.read()
       const footer = [...(notice === undefined ? [] : [clip(notice, columns)]), ...(pending === undefined ? [] : decisionLayout(pending, columns, screenRows, false).lines.map(line => ` │ ${line}`))]
-      const body = screenLayout(rows, { columns, screenRows: screenRows - footer.length - (title === undefined ? 0 : 1) })
+      const body = screenLayout(rows, { columns, turnDuration: host.turnDuration?.(), screenRows: screenRows - footer.length - (title === undefined ? 0 : 1) })
       const layout = body
 
       const keys = queued
