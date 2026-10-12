@@ -124,6 +124,7 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
       ...(rootWork?.reason === undefined ? {} : { reason: rootWork.reason }) }
   }
   return {
+    background: rows.some(row => row.background === undefined) ? undefined : rows.reduce((sum, row) => sum + (row.background ?? 0), 0),
     session: root, title: rootWork?.title ?? coordinator?.name ?? '未命名工作',
     workspace: rootWork?.workspace ?? coordinator?.workspace ?? [],
     // 成员代次从不冒充整项工作；manager 用此前同拍捕获的整项版本覆盖这一格。

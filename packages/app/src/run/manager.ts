@@ -1,3 +1,4 @@
+import type { BackgroundView } from '@magic/contracts'
 import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
 import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
 import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
@@ -39,6 +40,7 @@ import { linkOf, socketHandlers, localLinks } from './wire.ts'
 import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 import {
   actionOf,
+  backgroundOf,
   canArchiveRun,
   endKindOf,
   isProgress,
@@ -640,6 +642,43 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       stopExecution({ id }, session, 'run')
     })))
   }
+  function backgroundView(session: string): BackgroundView {
+    const root = workRoot(session)
+    const current = new Map([...lastRuns.values()].map(run => [run.session ?? run.executionId, run]))
+    for (const executor of executors) current.set(executor.run.session ?? executor.executionId, executor.run)
+    const runs = [...current.values()].filter(run => run.session !== null && workRoot(run.session) === root
+      && (run.ended === undefined || run.reclaimPending || run.reclaimNote !== undefined))
+    const commands = runs.flatMap(run => (run.backgroundView?.commands ?? []).filter(command => command.execution === run.executionId && command.session === run.session).map(command => {
+      const member = command.session === root ? undefined : store.collaboration.agentForSession(command.session)
+      return { ...command, ...(member ? { member: member.name, agent: member.agentId } : {}) }
+    })).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0) || `${a.execution}:${a.id}`.localeCompare(`${b.execution}:${b.id}`))
+    return { commands, waiting: runs.flatMap(run => run.backgroundView?.waiting ?? []),
+      ...(runs.some(run => !run.connected || run.backgroundView === undefined || run.reclaimPending || run.reclaimNote !== undefined) ? { unknown: true as const } : {}) }
+  }
+  function publishBackground(conn: ClientConn, result?: BackgroundView['result']): void {
+    if (conn.selectedSession === null || conn.link.closed) return
+    const session = workRoot(conn.selectedSession)
+    conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event: { kind: 'background.state', id: 0, turn: null, at: now(), session,
+      data: { ...backgroundView(session), ...(result ? { result } : {}) } } })
+  }
+  function backgroundCommand(conn: ClientConn, command: Extract<Command, { type: `background.${string}` }>): void {
+    if (command.type === 'background.list') { publishBackground(conn); return }
+    const target = command.target
+    const executor = liveOf(target.session)
+    if (!executor && conn.selectedSession !== null && workRoot(target.session) === workRoot(conn.selectedSession)) {
+      const fact = store.serviceFor(target.session).inputs.get(`background:${target.execution}:${target.id}`)?.input.background
+      if (fact && !('state' in fact)) {
+        publishBackground(conn, { target, outcome: { ok: true, already: true, note: `${target.id} 已经结束`, finish: fact } })
+        return
+      }
+    }
+    const problem = conn.selectedSession === null || workRoot(target.session) !== workRoot(conn.selectedSession)
+      ? '目标不属于当前整件工作'
+      : executor?.executionId !== target.execution ? '执行代次已改变或已经结束'
+      : !executor.run.connected || executor.link?.closed ? '执行实例失联，无法确认命令状态' : undefined
+    if (problem || !executor) { publishBackground(conn, { target, outcome: { ok: false, reason: problem ?? '目标不存在' } }); return }
+    deliver(executor, command)
+  }
   function collaborationEvent(conn: ClientConn, view: CollaborationView): boolean {
     const selected = conn.selectedSession
     if (conn.link.closed || selected == null ||
@@ -651,6 +690,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   }
   async function publishCollaboration(conn: ClientConn): Promise<void> {
     if (stopped || storeClosed) return
+    publishBackground(conn)
     const session = conn.selectedSession
     if (session === undefined || session === null) return
     try {
@@ -758,6 +798,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
 
     native.changed()
+    for (const conn of clients.values()) publishBackground(conn)
     const payload = rows()
     for (const conn of clients.values()) conn.link.send({ t: 'runs', rows: payload })
   }
@@ -1073,6 +1114,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return {
         session, title: s?.title ?? '未命名工作', workspace: s?.workspace ?? run?.workspace ?? [], archived: isArchived(session),
         canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0,
+        background: run?.backgroundUnknown ? undefined : run?.background ?? 0,
         state: run?.state ?? 'idle', since: run?.since ?? s?.at ?? 0, gen: null, affected: run?.holds ?? false,
         ...(run?.reason === undefined ? {} : { reason: run.reason }),
       }
@@ -1081,7 +1123,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const attention = new Set(query.archived ? [] : catalog.filter(session => states.get(session.id)?.affected || terminalClients(session.id).length > 0 || reconcileNotice(session.id)?.unread).map(session => session.id))
     return catalog.filter(s => workRoot(s.id) === s.id && (!query.search || (s.title ?? '').toLocaleLowerCase().includes(query.search.toLocaleLowerCase()))).map(s => {
       const work = states.get(s.id)!
-      return { ...s, state: work.state, canArchive: canArchive(s.id), terminalOpen: terminalClients(s.id).length > 0, ...(work.reason === undefined ? {} : { reason: work.reason }) }
+      return { ...s, background: work.background, state: work.state, canArchive: canArchive(s.id), terminalOpen: terminalClients(s.id).length > 0, ...(work.reason === undefined ? {} : { reason: work.reason }) }
     }).sort((left, right) => {
       const priority = Number(attention.has(right.id)) - Number(attention.has(left.id))
       return priority || right.at - left.at || left.id.localeCompare(right.id)
@@ -1213,9 +1255,11 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         detail = 'text' in entry.content ? entry.content.text : undefined
       }
     }
-    if (stopContent.get(run) !== content || run.lastTurnAt !== at || run.turnActive || run.busy || run.background > 0 || isArchived(session)) return
+    if (stopContent.get(run) !== content || run.lastTurnAt !== at || run.turnActive || run.busy || run.backgroundView?.waiting.length || isArchived(session)) return
     const group = store.collaboration.collaborationForSession(session)
-    if (group !== undefined && kind === 'done' && !canArchive(session)) return
+    if (group !== undefined && kind === 'done' && (group.originSessionId !== session
+      || store.collaboration.listDelegations(group.collaborationId).some(one => !['received', 'rejected', 'cancelled'].includes(one.state))
+      || backgroundView(session).waiting.length > 0)) return
     notify(session, kind, stop.id, detail ?? (kind === 'failed' ? '本轮无法继续，具体错误暂不可用' : '本轮已收束，面向用户的回复暂不可用'),
       { session, event: kind === 'failed' ? content?.event ?? stop.id : stop.id, ...(kind === 'done' && content?.entry !== undefined ? { entry: content.entry } : {}) }, stop.at)
   }
@@ -1509,6 +1553,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     finally { if (root !== undefined) { const count = (admissions.get(root) ?? 1) - 1; if (count === 0) admissions.delete(root); else admissions.set(root,count) } }
   }
   async function acceptCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
+    if (command.type === 'background.list' || command.type === 'background.stop') { backgroundCommand(conn, command); return }
     if (command.type === 'history.read') {
       const session = command.session ?? conn.selectedSession
       if (session !== null && session !== undefined) void readHistory(conn, session)
@@ -1631,7 +1676,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const previous = conn.target
     if (command.type === 'input.submit' && previous?.run.session != null && activeCollaboration === undefined &&
         previous.run.lastTurn !== undefined && !previous.run.busy && !previous.run.turnActive &&
-        previous.run.background === 0 && previous.run.decisions.size === 0 &&
+        backgroundOf(previous.run) === 0 && previous.run.decisions.size === 0 &&
         !store.serviceFor(previous.run.session).inputs.list().some(input => input.state === 'pending')) {
       const selected = conn.selectedSession
       // 该输入由管理者等待接续，不属于旧 Agent；旧实例释放不能给它发送拒收回执。
@@ -1894,7 +1939,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const [link, agentLink] = localLinks<ExecutorToManager, ManagerToExecutor>()
     const ledger = createProcessLedger(owned => {
       executor.run.owned = owned
-      executor.run.background = owned.filter(one => one.kind === 'background').length
       refresh(executor.run, now())
       saveRuns(true)
       pushRuns()
@@ -2184,6 +2228,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
   function onEvent(executor: Executor, event: KernelEvent): void {
     diagnosticLog.write(event.kind === 'error' ? 'error' : 'trace', `kernel.${event.kind}`, { ...identity, run: String(executor.gen), ...(event.session ? { session: event.session } : {}) })
+    if (event.kind === 'background.state') {
+      executor.run.backgroundView = event.data
+      refresh(executor.run, now())
+      pushRuns()
+      for (const conn of clients.values()) if (conn.selectedSession !== null && workRoot(conn.selectedSession) === workRoot(event.session)) publishBackground(conn, event.data.result)
+      return
+    }
     if (event.kind === 'mcp.catalog') executorSettings.set(executor, event.data.servers)
     if (event.kind === 'input.settled' && event.data.ref !== undefined) {
       const owner = collaborationInputs.get(event.data.ref)
@@ -2335,7 +2386,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
     if (shared !== undefined && ['agent.state', 'turn.start', 'turn.end', 'tool.decision.request', 'tool.decision', 'message.assistant', 'message.user', 'model.usage'].includes(event.kind)) {
       collaboration.changed()
-      if (event.kind === 'agent.state' && event.data.state === 'waiting' && event.session === shared.originSessionId) {
+      if (event.kind === 'agent.state' && event.data.state === 'waiting') {
         void collaboration.idle(shared.originSessionId).then(closed => {
           if (closed) void notifyStop(run, event)
         }).catch(error => options.log?.(`协作收尾尚未核实：${String(error)}`))
@@ -2385,7 +2436,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     executor.run.reclaimPending = executor.run.owned.length > 0
     executor.run.connected = false
     executor.run.busy = false
-    executor.run.background = 0
     executor.run.turnActive = false
     executor.run.decisions.clear()
     executor.run.action = undefined

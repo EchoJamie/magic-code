@@ -332,6 +332,7 @@ export async function prepareInput(
         refs: delivery.refs,
         skills: legacy.used,
         ...(input.notice === true ? { notice: true as const } : {}),
+        ...(input.background === undefined ? {} : { background: input.background }),
       })
       if (entryId === undefined) {
         const latest = input.ref === undefined ? undefined : runtime.records.inputs.get(input.ref)

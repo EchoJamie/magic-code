@@ -63,6 +63,7 @@ import { createSkillsDelivery } from './skills.ts'
  * 模型域 / 工具域 / 记录域皆经契约端口）。
  */
 export type ConversationDeps = {
+  readonly onInput?: (input: UserInput) => void
   readonly collaboration?: CollaborationBoundary | undefined
   readonly purpose?: 'consultation' | undefined
   readonly consultationAvailable?: boolean | undefined
@@ -403,6 +404,7 @@ export function createConversationSession(deps: ConversationDeps): ConversationS
         sink.emit(stamper.stamp('input.settled',row.state==='failed'||row.state==='withdrawn'?{ref:durable.ref,ok:false,reason:row.reason??'这条输入已撤回'}:{ref:durable.ref,ok:true,stage:row.state==='included'?'included':'accepted'}))
         sink.emit(stamper.stamp('input.pending',{inputs:deps.records.inputs.list()}))
         if (existing !== undefined) { done(); return }
+        deps.onInput?.(input)
         if (running && row.purpose==='current') supplements.push({input:row.input,shared,done})
         else pending.push({input:row.input,shared,done})
         if (!running) startDrain()

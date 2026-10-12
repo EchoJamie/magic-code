@@ -30,6 +30,7 @@ import type { Unsubscribe } from './transport.ts'
 
 /** 协作命令仍由宿主编排；旧装配可以先只接原有路由。 */
 export type ControlRoutes = CommandRoutes & {
+  onBackground?(command: Extract<Command, { type: `background.${string}` }>): void | Promise<void>
   onCollaboration?(command: Extract<Command, { type: `collaboration.${string}` }>): void
 }
 
@@ -69,6 +70,9 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
     if (target === undefined) return
 
     switch (command.type) {
+      case 'background.list':
+      case 'background.stop':
+        return target.onBackground?.(command)
       case 'collaboration.read':
       case 'collaboration.input':
       case 'collaboration.stop':

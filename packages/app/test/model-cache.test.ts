@@ -414,6 +414,7 @@ describe('真装配 · 认证轮换', () => {
   for (const source of ['终端保存', 'App保存', '外部写入'] as const) {
   for (const outcome of ['成功', '失败'] as const) test(`${source}换认证：新请求不等旧请求，旧认证迟到${outcome}不得污染当前读面`, async () => {
     const s = await staged()
+    await s.command('session.new', 'session.state')
     const registry = s.assembly.models, selection = registry?.current()
     const stale = s.assembly.modelInfo.refresh('ds')
     try {

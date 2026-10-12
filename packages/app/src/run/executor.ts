@@ -533,6 +533,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       })
       await assembly.boot()
       if (closing) return
+      assembly.shell.send({ type: 'background.list' })
       link.send({ t: 'ready' } satisfies ExecutorToManager)
       considerShrink()
     })()

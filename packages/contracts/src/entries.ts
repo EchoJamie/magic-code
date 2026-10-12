@@ -101,6 +101,7 @@ export type PlanSnapshot = {
  * 不带 `call` 引用（同上）。
  */
 export type ToolResultPayload = {
+  readonly background?: import('./ports.ts').BackgroundWait | import('./ports.ts').BackgroundFinish
   readonly ok: boolean
   /** 内联或 blob 引用。 */
   readonly output: Content
@@ -335,6 +336,7 @@ export type UserPayload = {
    * 只是不再冒充用户。
    */
   readonly notice?: true
+  readonly background?: import('./background.ts').BackgroundChange
 }
 
 /**

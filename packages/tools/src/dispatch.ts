@@ -280,6 +280,7 @@ export function createToolRuntime(options: ToolRuntimeOptions): ToolRuntime {
         ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
         // **这一轮停在这儿**（U72）——原样过手（本域不认识「哪一轮」，收束归对话域）
         ...(outcome.halt === true ? { halt: true as const } : {}),
+        ...(outcome.background === undefined ? {} : { background: outcome.background }),
       }
     },
   }

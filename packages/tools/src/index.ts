@@ -84,3 +84,4 @@ export { defineWebFetchTool } from './web-fetch-tool.ts'
 export type { WebFetchDeps } from './web-fetch-tool.ts'
 
 export { AGENT_TOOL_NAMES, defineAgentTools } from './agent-tools.ts'
+export { defineBackgroundTools } from './background-tools.ts'

@@ -139,7 +139,7 @@ export const backgroundStartFailed = (reason: string): string => `没能交出�
  */
 export const backgroundStarted = (id: string, outputPath: string): string =>
   [
-    '已交出去，这一轮不等它——看进展用 read 读下面那个输出文件（跑着的时候读到的是眼下已有的那一段）',
+    '已受理；按需用 read、tail、grep 或 sed 读取输出。启动受理不代表服务健康',
     `〔${id}〕输出文件：${outputPath} —— 跑完会有一条消息带它回来；在那之前别当它已经结束`,
   ].join('\n')
 /**

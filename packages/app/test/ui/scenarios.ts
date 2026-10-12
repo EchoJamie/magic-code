@@ -1402,7 +1402,8 @@ const exitCommand: Scenario = {
     // 不对），故判据照样钉在这儿。
     const leavingStatus = statusLineOf(mid.lines)
     ui.check(!leavingStatus.includes('工作中'), '`/exit` 停完那一格不再写着「工作中」', leavingStatus)
-    // 进程已确认自行退出；退出提示可能覆盖原状态行，不要求终态屏幕继续保留空闲栏。
+    ui.check(leavingStatus.includes(IDLE_STATE) || mid.lines.some(line => line.includes('已停止 · 耗时')),
+      '它收成了那一档：此刻没在跑（退出后的恢复命令可替换状态行）', leavingStatus)
   },
 }
 

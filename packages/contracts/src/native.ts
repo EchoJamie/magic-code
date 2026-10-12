@@ -31,6 +31,8 @@ export type NativeMember = {
 
 /** 服务生成完整投影；UI 只按身份呈现，不从事件重建领域状态。 */
 export type NativeWork = {
+  /** 缺席表示运行快照无效，不能以零代替。 */
+  readonly background?: number
   readonly session: string
   readonly title: string
   readonly workspace: readonly string[]
@@ -56,7 +58,7 @@ export type NativeProjection = {
   readonly configuration?: { readonly stamp: string | null; readonly error?: string }
 }
 
-export type NativeSession = SessionSummary & { readonly state: RunState; readonly canArchive: boolean; readonly terminalOpen: boolean; readonly reason?: string }
+export type NativeSession = SessionSummary & { readonly background?: number; readonly state: RunState; readonly canArchive: boolean; readonly terminalOpen: boolean; readonly reason?: string }
 export type SessionManagement = { readonly session: string; readonly action: 'archive' | 'restore' | 'rename'; readonly title?: string }
 export type SessionManagementResult = SessionManagement & { readonly ok: boolean; readonly archived?: boolean; readonly error?: string }
 

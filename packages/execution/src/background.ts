@@ -108,6 +108,8 @@ type Run = {
   done: boolean
   /** **正在被停**（`stop` 动的手）——那个退出不是它自己跑完的，回执上要说得出来。 */
   stopping: boolean
+  failure?: string
+  readonly at: number
   readonly onFinish: ((finish: BackgroundFinish) => void) | undefined
 }
 
@@ -222,6 +224,7 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
         proc,
         done: false,
         stopping: false,
+        at: Date.now(),
         onFinish: opts?.onFinish,
       }
       live.set(id, run)
@@ -253,6 +256,9 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
         id: run.id,
         command: run.command,
         outputPath: run.outputPath,
+        startedAt: run.at,
+        state: run.failure ? 'unconfirmed' : run.stopping ? 'stopping' : 'running',
+        ...(run.failure ? { reason: run.failure } : {}),
       }))
     },
 
@@ -266,6 +272,8 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
 
       // 标一声：接下来那个退出**不是它自己跑完的**——回执要据实分说（见 `settle`）
       run.stopping = true
+      delete run.failure
+      const failed = (reason: string): BackgroundStop => { run.failure = reason; return { ok: false, reason } }
 
       // **按组收**，走 U50 那套（有界等待 → TERM → 等 → KILL → 等），且**先核对身份**
       // ——号会被系统回收再分配，核对不上就一个信号都不发
@@ -279,13 +287,13 @@ export function createBackgroundRuns(options: BackgroundOptions): BackgroundRuns
           Bun.sleep(2_000).then(() => false),
         ])
         if (!exited) {
-          return { ok: false, reason: `${id} 收到信号之后还没退——没能收干净（${describe(outcome)}）` }
+          return failed(`${id} 收到信号之后还没退——没能收干净（${describe(outcome)}）`)
         }
       }
 
-      if (outcome.kind === 'left') return { ok: false, reason: `${id} 没停掉：${outcome.note}` }
+      if (outcome.kind === 'left') return failed(`${id} 没停掉：${outcome.note}`)
       if (outcome.kind === 'stranger' || outcome.kind === 'unprovable') {
-        return { ok: false, reason: `${id} 没能确认是它：${outcome.note}` }
+        return failed(`${id} 没能确认是它：${outcome.note}`)
       }
       if (outcome.kind === 'gone') {
         // 组本来就没了＝它自己跑完的：把那个标记撤回——**那一声回执不该说成「停的」**

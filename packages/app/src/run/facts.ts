@@ -99,8 +99,8 @@ export type RunRecord = {
   ready: boolean
   /** 手里有活吗——`agent.state` 那一格（与执行者收缩用**同一个判据**）。 */
   busy: boolean
-  /** 执行者实际持有的后台命令数；独立于模型轮。 */
-  background: number
+  /** 执行者的后台快照；列表与数量从同一来源派生。 */
+  backgroundView?: import('@magic/contracts').BackgroundView
   /** 这一轮开着（`turn.start` 之后、`turn.end` 之前）。 */
   turnActive: boolean
   /**
@@ -172,7 +172,6 @@ export function newRunRecord(input: {
      * 于是第二次 `session.open` 被挡回去，而其实什么都没在跑。
      */
     busy: false,
-    background: 0,
     turnActive: false,
     decisions: new Map(),
     resolvedDecisions: new Set(),
@@ -454,6 +453,8 @@ export function runRowOf(record: RunRecord): RunRow {
     ...(record.lastTurn === undefined ? {} : { lastTurn: record.lastTurn }),
     // **还有几条后台命令在跑**（U100）——缺席＝一条都没有（同本类型那条「缺席＝没有这一件」）
     ...(background === 0 ? {} : { background }),
+    ...((record.ended === undefined && (!record.connected || record.backgroundView === undefined)) || record.reclaimPending || record.reclaimNote !== undefined ? { backgroundUnknown: true as const } : {}),
+    ...(record.backgroundView?.waiting.length ? { backgroundWaiting: true as const } : {}),
     workspace: record.workspace,
     holds: blocksNewRun(record.state),
   }
@@ -471,7 +472,7 @@ export function runRowOf(record: RunRecord): RunRow {
 export function backgroundOf(record: RunRecord): number {
   if (record.ended !== undefined) return 0
 
-  return record.owned.filter((one) => one.kind === 'background').length
+  return record.backgroundView?.commands.length ?? record.owned.filter((one) => one.kind === 'background').length
 }
 
 /**
@@ -605,5 +606,5 @@ export function storedRunOf(record: RunRecord): StoredRun | undefined {
 export function canArchiveRun(run: RunRecord): boolean {
   if (run.reclaimPending || run.reclaimNote !== undefined || run.owned.length > 0) return false
   if (run.ended !== undefined) return !blocksNewRun(run.state)
-  return run.ready && run.connected && !run.stopping && !run.busy && !run.turnActive && run.background === 0 && run.decisions.size === 0 && !blocksNewRun(run.state)
+  return run.ready && run.connected && !run.stopping && !run.busy && !run.turnActive && backgroundOf(run) === 0 && run.decisions.size === 0 && !blocksNewRun(run.state)
 }

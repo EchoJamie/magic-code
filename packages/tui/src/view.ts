@@ -558,6 +558,8 @@ export type Picker = {
    * （U22 · B13）、`/skills` 读技能目录（U33）、**`@` 读路径候选**（U36）——**同位置同开合**。
    */
   readonly source:
+    | 'background'
+    | 'background-detail'
     | 'collaboration'
     | 'collaboration-member'
     | 'collaboration-stop'
@@ -720,6 +722,7 @@ export type CommandSpec = {
 export const COMMANDS: readonly CommandSpec[] = [
   { name: '/connect', summary: '重连当前会话并刷新，保留草稿' },
   { name: '/clear', summary: '新建会话并清屏，保留历史记录' },
+  { name: '/ps', summary: '查看协作成员与后台命令' },
   { name: '/resume', summary: '查看记录或接回工作' },
   { name: '/rename', summary: '修改当前会话名称' },
   // U52——**停掉当前这条会话，然后退出界面**。与上面三条**同属「按动作命名」那一族**
@@ -894,7 +897,7 @@ function hintKeepingDock(from: ShellView, next: string): string {
  * 「在不在跑」这一问**答不出来**：拿历史 `working` 当现况是设计明文不许的
  * （「管理者不可达时界面显示失联，不把历史 running 当现况」），说「空闲」则是另一半谎。
  */
-export type StatusState = 'idle' | 'working' | 'waiting' | 'retrying' | 'error' | 'lost'
+export type StatusState = 'background' | 'idle' | 'working' | 'waiting' | 'retrying' | 'error' | 'lost'
 
 /** 空闲态右位提示。 */
 export const HINT_IDLE = '/ 命令 · ctrl+c 退出'
@@ -1183,6 +1186,7 @@ export type ShellView = {
   readonly pendingInputs: readonly StoredInput[]
   readonly inputPurpose: InputPurpose
   readonly collaboration?: CollaborationView
+  readonly background?: import('@magic/contracts').BackgroundView
   readonly inputMember?: AgentId
   /** **本轮**的行——还在流式、还会变（活动区就地重绘）。 */
   readonly rows: readonly LogRow[]
@@ -1867,6 +1871,8 @@ export function reduce(
     // **认出选定那一条的答复**（U62）——`reduce` 这一层**不改视图**：那一处该写成什么样
     // （`Image#N`）是**稿子**的事，由外壳自己按答复改（见 `shell.ts` 的 `identifyPicked`）。
     // 这里只是一条「收下了、别处处置」的出口，不是一个空壳分支。
+    case 'background.state':
+      return { ...view, background: event.data }
     case 'paths.identified':
     case 'collaboration.view':
       return view
@@ -3038,6 +3044,7 @@ export function withDecisionStatus(view: ShellView): ShellView {
  */
 export function stateMark(state: StatusState): string {
   switch (state) {
+    case 'background':
     case 'idle':
       return MARKS.idle
     case 'working':
@@ -3057,6 +3064,8 @@ export function stateMark(state: StatusState): string {
 /** 状态词（五态固定词——原型 · 状态行规格）。 */
 export function stateText(state: StatusState): string {
   switch (state) {
+    case 'background':
+      return '等待后台结果'
     case 'idle':
       return '空闲'
     case 'working':

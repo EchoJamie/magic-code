@@ -246,13 +246,6 @@ describe('U89 · ③ 反面：一条后台任务都没有 ⇒ 那一块不出现
 })
 
 describe('U89 · ④ 反面：每会话一份（A 的在跑命令不进 B 的请求）', () => {
-  /**
-   * 三条链（A → B → 回 A），**每链各起一条自己的**（脚本可重放：头一段恒是同一条后台
-   * 命令，故 A 拿到 `bg-1`、B 拿到 `bg-2`、回 A 那条拿到 `bg-3`）。
-   *
-   * 两向都咬：**B 的请求里没有 A 的**，且**A 的请求里没有 B 的**——单咬一向的话，
-   * 「谁的都不列」也能过。
-   */
   test('A 的与 B 的各是各的；切回 A 还看得见它自己那条；停掉 ⇒ 那一块里就没有它了', async () => {
     const stage = makeStage()
     let reap: (() => Promise<void>) | undefined
@@ -302,21 +295,21 @@ describe('U89 · ④ 反面：每会话一份（A 的在跑命令不进 B 的请
       shell.send({ type: 'session.open', session: a })
       await until(() => eventsOfKind(shell.events, 'session.state').length >= 2)
       await shell.submit('甲再来说一句')
-      await until(() => eventsOfKind(shell.events, 'turn.end').length >= 6)
+      await until(() => eventsOfKind(shell.events, 'turn.end').length >= 5)
 
-      const chainA2 = stage.models[2]
-      if (chainA2 === undefined) throw new Error('切回来该另起一条链')
-      const backInA = systemsOf(chainA2)[1] ?? ''
-      // A 先起的那条（bg-1）**还在**，这一趟 A 自己新起的（bg-3）也在；B 的（bg-2）不在
+      const chainA2 = stage.models[0]
+      expect(stage.models).toHaveLength(2)
+      if (chainA2 === undefined) throw new Error('原会话执行链应保留')
+      const backInA = systemsOf(chainA2)[2] ?? ''
+      // 回到同一会话不会重建执行链或重复启动命令；原有归属仍在。
       expect(blockLine(backInA, 'bg-1')).toContain('sleep 60')
-      expect(blockLine(backInA, 'bg-3')).toContain('sleep 60')
       expect(backInA).not.toContain('bg-2')
 
       // —— 停掉 ⇒ 那一块里就没有它了（②在「被停」这条路上同样成立）——
       const background = assembly.background
       if (background === undefined) throw new Error('这次装配没接后台那一形')
       const before = eventsOfKind(shell.events, 'turn.end').length
-      for (const id of ['bg-1', 'bg-2', 'bg-3']) expect((await background.stop(id)).ok).toBe(true)
+      for (const id of ['bg-1', 'bg-2']) expect((await background.stop(id)).ok).toBe(true)
       await until(() => eventsOfKind(shell.events, 'turn.end').length >= before + 2)
 
       const afterStop = systemsOf(chainA2).at(-1) ?? ''

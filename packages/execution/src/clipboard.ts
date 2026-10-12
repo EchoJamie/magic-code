@@ -246,3 +246,17 @@ function hasCommand(command: string): boolean {
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
+
+/** 本机客户端的显式复制；只通过 stdin 传正文，不拼 shell 命令。 */
+export function writeClipboardText(text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('pbcopy', [], { stdio: ['pipe', 'ignore', 'pipe'], timeout: 5000,
+      env: { ...process.env, LC_CTYPE: 'UTF-8' } })
+    let reason = ''
+    child.stderr.on('data', chunk => { reason += String(chunk) })
+    child.once('error', reject)
+    child.stdin.once('error', reject)
+    child.once('close', code => code === 0 ? resolve() : reject(new Error(reason.trim() || '系统剪贴板写入失败')))
+    child.stdin.end(text)
+  })
+}

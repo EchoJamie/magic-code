@@ -63,6 +63,8 @@ export type RunRow = {
    * 详情（说得出**没停什么**）· 停止之后用户核对「后台那些收干净了没有」。
    */
   readonly background?: number
+  readonly backgroundUnknown?: true
+  readonly backgroundWaiting?: true
   /**
    * **上一轮是怎么收的**（U50）——「上一轮被中断 / 出错了」那一句的取材。
    *

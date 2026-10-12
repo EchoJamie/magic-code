@@ -68,6 +68,9 @@ def probe(app):
                 send({'t': 'cmd', 'gen': None, 'environment': env,
                       'cmd': {'type': 'input.submit', 'text': 'Run the controlled lifecycle probe.'}})
                 assert stream_started.wait(15), 'second model stream did not start'
+                deadline = time.monotonic() + 10
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
                 assert marker.exists(), 'owned tool did not start'
                 tool_pid = int(marker.read_text()); group = os.getpgid(tool_pid)
                 table = subprocess.check_output(['ps', '-axo', 'pid=,pgid='], text=True)

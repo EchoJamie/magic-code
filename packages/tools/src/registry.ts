@@ -76,6 +76,7 @@ export type ToolRunResult = {
    * 见契约 `ToolResult.halt` 那一段（绕道 `exec curl` 会把整件事绕过去）。
    */
   readonly halt?: true
+  readonly background?: import('@magic/contracts').BackgroundWait | import('@magic/contracts').BackgroundFinish
 }
 
 /** 一条工具定义——规格（送模型）＋ 执行体（经沙箱）。 */

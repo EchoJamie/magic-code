@@ -5,6 +5,7 @@ const object = (v: unknown): v is ObjectValue => typeof v === 'object' && v !== 
 const string = (v: unknown): v is string => typeof v === 'string'
 const number = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 const integer = (v: unknown): v is number => number(v) && Number.isSafeInteger(v)
+const background = (v: unknown): boolean => integer(v) && v >= 0
 const strings = (v: unknown): boolean => Array.isArray(v) && v.every(string)
 const optional = (v: unknown, check: (v: unknown) => boolean): boolean => v === undefined || check(v)
 
@@ -19,7 +20,7 @@ export function decodeHostDiscovery(value: unknown): HostDiscovery | undefined {
 }
 function source(v: unknown): boolean { return object(v) && string(v.session) && optional(v.event, integer) && optional(v.entry, integer) }
 function management(v: unknown): boolean { return object(v) && string(v.session) && ['archive','restore','rename'].includes(String(v.action)) && optional(v.title, string) && (v.action !== 'rename' || string(v.title)) }
-function session(v: unknown): boolean { return object(v) && string(v.id) && number(v.at) && typeof v.archived === 'boolean' && typeof v.canArchive === 'boolean' && typeof v.terminalOpen === 'boolean' && optional(v.title,string) && optional(v.workspace,strings) && ['running','waiting','stopping','stopped','idle','unknown'].includes(String(v.state)) }
+function session(v: unknown): boolean { return object(v) && optional(v.background,background) && string(v.id) && number(v.at) && typeof v.archived === 'boolean' && typeof v.canArchive === 'boolean' && typeof v.terminalOpen === 'boolean' && optional(v.title,string) && optional(v.workspace,strings) && ['running','waiting','stopping','stopped','idle','unknown'].includes(String(v.state)) }
 function attention(v: unknown): boolean {
   return object(v) && string(v.id) && string(v.session) && ['done', 'failed', 'needs-you'].includes(String(v.kind)) &&
     number(v.at) && optional(v.detail, string) && typeof v.unread === 'boolean' && typeof v.delivered === 'boolean' && string(v.fact) && optional(v.source, source)
@@ -30,7 +31,7 @@ function member(v: unknown): boolean {
     optional(v.action, string) && optional(v.reason, string)
 }
 function work(v: unknown): boolean {
-  return object(v) && string(v.session) && string(v.title) && strings(v.workspace) &&
+  return object(v) && optional(v.background,background) && string(v.session) && string(v.title) && strings(v.workspace) &&
     ['running', 'waiting', 'stopping', 'stopped', 'idle', 'unknown'].includes(String(v.state)) &&
     optional(v.action, string) && optional(v.reason, string) && number(v.since) && (v.gen === null || integer(v.gen)) &&
     typeof v.affected === 'boolean' && typeof v.archived === 'boolean' && typeof v.canArchive === 'boolean' && typeof v.terminalOpen === 'boolean' && optional(v.currentNotice, attention) && optional(v.members, v => Array.isArray(v) && v.every(member))

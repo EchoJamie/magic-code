@@ -1,6 +1,7 @@
 import { createWorkEnvironment, type WorkEnvironment } from './work-environment.ts'
 import type { MagicConfig } from '@magic/contracts'
 import { CONSULTATION_TOOL_NAMES } from '@magic/contracts'
+import { createBackgroundSession } from './background-session.ts'
 import { createCollaborationBoundary } from './collaboration-boundary.ts'
 /**
  * 装配根 —— 全链的五步（技术方案 · 领域划分 · 装配视图）。
@@ -49,10 +50,8 @@ import type {
   AgentRoleConfig,
   CollaborationReply,
   CollaborationRequest,
-  BackgroundFinish,
-  BackgroundRunning,
+  BackgroundChange,
   BackgroundRuns,
-  BackgroundStartOptions,
   ControlTransport,
   EventDataOf,
   EventKind,
@@ -139,6 +138,7 @@ import { createMcpServers } from '@magic/mcp'
 import type { McpServers } from '@magic/mcp'
 import {
   defineAgentTools,
+  defineBackgroundTools,
   PLAN_TOOL_NAMES,
   createToolRuntime,
   defineMcpTools,
@@ -548,31 +548,9 @@ export function createStamper(input: {
   }
 }
 
-/**
- * **后台命令结束**那一条投给模型的交代（U70）——**两行**：第一行说「怎么了」，
- * 第二行说「输出在哪儿」。
- *
- * 为什么要投这么一条（而不是让模型自己去轮询）：设计 · `exec` 的后台那一形第四格
- * ——「跑完 ⇒ 自动回一条给模型的消息（带那个输出文件路径），**模型自己决定读不读**」。
- * 故这一条只要说全三件（哪一条 · 跑成什么样 · 输出在哪儿）就够，**不替模型下结论**
- * （不判「成功 / 失败该怎么处置」——那是它的活）。
- *
- * ## 措辞：**一律事实陈述**（U81 · 设计 · 提示词与指令 丙）
- *
- * 这一条是**我们投进去的**（不是用户说的、也不是模型自己生成的）——注入的话写成命令式
- * 会触发模型自己的注入防御，**它反而把那段上报给用户**（官方原文：*write the text as
- * factual statements rather than imperative system instructions*）。故第二行**只报
- * 「输出在哪儿」这一件事实**：原先缀着的「要看就用 read 读它」是**吩咐它做事**，撤掉
- * ——读不读由它自己决定，而「那条输出文件用 `read` 读得到」这件事，它在前一步拿到
- * 的那条回执里已经知道了（`@magic/tools` 的 `backgroundStarted`）。
- *
- * 措辞上的另外两处刻意：
- * - **说话人不是用户**——抬头用 `〔…〕` 这种记号（与本仓别处的系统旁注同一族），
- *   而条目载荷另有 `notice` 那一位管着屏上那一行与会话标题（见 `deliverBackgroundDone`）；
- * - **「停掉」与「跑完」分开说**——对用户与模型都不是同一件事（设计 · 停止那一节：
- *   「停了什么、停到哪一步」要说得出来）。
- */
-function backgroundNoticeText(finish: BackgroundFinish): string {
+/** 后台事实只带命令、真实结果和输出路径；内部旁注不冒充用户输入。 */
+function backgroundNoticeText(finish: BackgroundChange): string {
+  if ('state' in finish) return `〔后台命令停止未确认〕${finish.id} · ${finish.command}\n${finish.reason}\n完整输出在 ${finish.outputPath}\n命令仍需确认，不得另起等效命令。`
   const how =
     finish.stopped === true
       ? '后台命令已停掉'
@@ -586,6 +564,8 @@ function backgroundNoticeText(finish: BackgroundFinish): string {
   return [
     `〔${how}〕${finish.id}（${code}）· ${shown}`,
     `完整输出在 ${finish.outputPath}`,
+    ...(finish.reason ? [finish.reason] : []),
+    ...(finish.stoppedBy === 'user' ? ['用户主动停止；不得将此当作普通失败立即重启等效命令。'] : []),
   ].join('\n')
 }
 
@@ -652,9 +632,11 @@ export function assemble(options: AssembleOptions): Assembly {
    * 两处都放不下时才抛——那时终端与管理者也起不来（同一个键）。此处**如实降级**
    * （后台那一形不接，`exec` 的前台那一形照旧），不把启动整条链拖下水。
    */
+  const executionId = options.executionId ?? crypto.randomUUID()
+  const backgroundSessions = new Map<SessionId, ReturnType<typeof createBackgroundSession>>()
   const backgroundDir = ((): string | undefined => {
     try {
-      return backgroundOutputDirOf(runPathsOf(magic, tmpdir()))
+      return `${backgroundOutputDirOf(runPathsOf(magic, tmpdir()))}/${executionId}`
     } catch {
       return undefined
     }
@@ -664,59 +646,6 @@ export function assemble(options: AssembleOptions): Assembly {
     backgroundDir === undefined
       ? undefined
       : createBackgroundRuns({ dir: backgroundDir, workspace, ledger, env: environment, signal })
-
-  /**
-   * **哪条会话交出去的**（U89）——一条会话一份「它起过的那些 id」。
-   *
-   * 为什么要另立这一本：登记（`backgroundRuns`）是**进程级**的——它管着进程，进程比会话
-   * 活得久，故它只知道「哪些还站着」，**不知道那是谁交的**（执行域不认识会话，那正是
-   * `open` 里包那一层门面的理由）。而「还在跑的后台命令」要进的是**某一条会话**的请求 ⇒
-   * 归属这件事只能在这一层记：**谁起，就记在谁名下**。
-   *
-   * 三处分寸：
-   * - **记在装配这一层、按会话 id 键**（不是按链实例）：切走再切回来，同一条会话**还是同一条**
-   *   ——它起的那些命令既没停、也没换主人，回来时就该照样看得见；
-   * - **只记 id，不记别的**：命令与输出路径的真源在登记那一本（`running()` 每次现读）；
-   *   在这儿再抄一份就是第二真源，摘账那一刻必然对不上；
-   * - **结束就忘**（`forgetBackground`）：`onFinish` 只由**真退出**触发（跑完 / 被停），
-   *   故这一忘与「它不在 `running()` 里了」是同一件事的两面，不会各说一套。
-   *
-   * ⚠️ **限度如实记**：登记里那些**不是经这条会话起的**（比如别的窗口那条会话起的），
-   * 这一层压根不知道它们存在——那种漏记的方向是**少报**，不是错报（不会把别人的说成你的）。
-   */
-  const backgroundOwners = new Map<SessionId, Set<string>>()
-
-  /** 记一笔：这条 id 是**这条会话**交出去的。 */
-  const rememberBackground = (session: SessionId, id: string): void => {
-    const mine = backgroundOwners.get(session)
-    if (mine === undefined) backgroundOwners.set(session, new Set([id]))
-    else mine.add(id)
-  }
-
-  /** 忘一笔：它已经结束了（自己跑完 / 被停掉）——那一本空了的会话顺手从表里摘掉。 */
-  const forgetBackground = (session: SessionId, id: string): void => {
-    const mine = backgroundOwners.get(session)
-    if (mine === undefined) return
-
-    mine.delete(id)
-    if (mine.size === 0) backgroundOwners.delete(session)
-  }
-
-  /**
-   * **这条会话此刻还在跑的后台命令**（U89）——交给对话域那份现读（每次请求算一遍）。
-   *
-   * 判据是**两本账的交集**：登记说「此刻哪些还站着」（现读，跑完的当场不在列），
-   * 归属那一本说「哪些是这条会话交的」。任一本说不在，就不进这一块——
-   * 故「跑完了 / 被停了」**下一趟就没有它**（工单反面 ②），别的会话起的不进这一条（反面 ④）。
-   */
-  const runningBackgroundOf = (session: SessionId): readonly BackgroundRunning[] => {
-    if (backgroundRuns === undefined) return []
-
-    const mine = backgroundOwners.get(session)
-    if (mine === undefined || mine.size === 0) return []
-
-    return backgroundRuns.running().filter((run) => mine.has(run.id))
-  }
 
   const sandbox = createSandbox({
     env: environment,
@@ -1028,15 +957,7 @@ export function assemble(options: AssembleOptions): Assembly {
   // （解析从严：读不懂的条目逐个拒收、连同缘由交回，见 `Assembly.rejectedRules`）
   const parsedRules = parseRules(loaded.config.permissions?.rules ?? [])
 
-  /**
-   * **当下的活跃铸造器**——按会话实例各一份（契约 · 信封的归属：上下文 `session` 由
-   * 铸造器持），换会话即换它。
-   *
-   * 注册表却是**进程级**的（选中的供应商 / 模型不该随会话漂——那是用户对「这台机器走谁」
-   * 的选择，不是某条会话的属性），故它拿下面这个**转发铸造器**：盖章时指向**当下**那条。
-   * 转发之所以成立，靠的是**单活跃 ＋ 忙时切不动**（对话域保证）：盖章的那一下，
-   * 当下的活跃会话恒是正在干活的那条。
-   */
+  /** 当前展示会话的控制面事件使用转发铸造器；执行链使用自己的铸造器。 */
   let activeStamper: EventStamper | undefined
   const forwardStamper: EventStamper = {
     stamp: (kind, data) => requireActiveStamper().stamp(kind, data),
@@ -1211,10 +1132,10 @@ export function assemble(options: AssembleOptions): Assembly {
 
   // 模型域：provider 注册表（`providers` 加条目即多一个；`traits` 覆盖位随条目进）
   // **key 在这一步解析**——按条目各解析一次；缺省那条缺 key 即启动期抛（与单供应商时代同）
-  const registryOf = (selection?: AgentModelConfig): ModelRegistry => {
+  const registryOf = (selection?: AgentModelConfig, stamper: EventStamper = forwardStamper): ModelRegistry => {
     const registry = createModelRegistry({
       providers: providerBook,
-      stamper: forwardStamper,
+      stamper,
       fetch, env: environment,
       // 缺 key 那句提示要**指对地方**（U42）：配置文件的落点随 `MAGIC_HOME` 走，
       // 模型域自己拼不出来——实际读的那一份只有这里知道（`loaded.path`）。
@@ -1239,46 +1160,11 @@ export function assemble(options: AssembleOptions): Assembly {
     models = registryOf(initial.ok ? initial.selection : undefined)
   }
 
-  const cantrip = () => {
+  const cantrip = (stamper: EventStamper) => {
     syncProviderBook()
     return bindModelChoice({ configuredModels, request: { choice: 'cantrip' },
-      options: { providers: providerBook, stamper: forwardStamper, fetch, env: environment,
+      options: { providers: providerBook, stamper, fetch, env: environment,
         configPath: loaded.path, modelInfoOf: knownModelOf } })
-  }
-
-  const webFetchTool = defineWebFetchTool({
-    web: options.webSource ?? createWebSource({ fetch: network.fetch }),
-    distiller: () => {
-      syncProviderBook()
-      if (configuredModels?.cantrip === undefined) return undefined
-      try {
-        const selected = cantrip()
-        if ('failure' in selected) throw new Error(selected.failure)
-        return createPageDistiller(selected)
-      }
-      catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        return { distill: async () => ({ ok: false as const, kind: 'failed' as const, reason }) }
-      }
-    },
-  })
-
-  /**
-   * **此刻这个模型吃不吃图**（U37）——三态探针，交给对话域（见 `LoopRuntime.acceptsImages`）。
-   *
-   * 三处合成一处：
-   * - 问**注册表的当下去向**（`current()`，与 `stream()` 真走的那个是同一份读数）；
-   * - 要那份**能力读数**（`capabilityOf`：用户覆盖 → 缓存里的资料）——解析归模型域一处；
-   * - 没依据（没选过模型 / 压根没有注册表）⇒ `undefined`＝**不知道**。
-   *
-   * ⚠️ **每次现算、不缓存**：用户换完模型，下一轮就该按新模型判。且 `models` 这个变量本身
-   * 会在用户明确应用模型或切换会话时更换，读数须取当前注册表。
-   */
-  const currentAcceptsImages = (): boolean | undefined => {
-    const at = models?.current()
-    if (at === undefined) return undefined
-
-    return models?.capabilityOf(at.provider, at.model)?.image
   }
 
 
@@ -1301,8 +1187,9 @@ export function assemble(options: AssembleOptions): Assembly {
     const kept = models?.current()
 
     try {
-      const candidate = registryOf(kept)
+      const candidate = registryOf(kept, chain?.stamper)
       models = candidate
+      if (chain !== undefined) chain.models = candidate
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       return { ok: false, reason: `配置已保存，但这次装配还用不上它：${reason}` }
@@ -1311,8 +1198,9 @@ export function assemble(options: AssembleOptions): Assembly {
     return { ok: true }
   }
 
-  /** 一次「开一条会话」的产物——切换时整束换掉（单活跃：同时只留一束）。 */
+  /** 会话自己的执行链；后台续轮和模型事件始终归属这一条会话。 */
   type Chain = {
+    models: ModelRegistry | undefined
     readonly session: SessionId
     readonly records: RecordsService
     readonly gate: ReturnType<typeof createPermissionGate>
@@ -1323,30 +1211,52 @@ export function assemble(options: AssembleOptions): Assembly {
     readonly stamper: EventStamper
   }
   let chain: Chain | undefined
+  const chains = new Map<SessionId, Chain>()
 
   /**
    * **开一条会话的实例链**（U16）——装配的 `open` 工厂。
    *
    * 换会话＝换这一整束：记录实例 · 铸造器 · **闸门** · 工具域 · 对话实例。
-   * **不缓存**旧束：「一个活跃对话实例」是结构，不是计数。
+   * 已打开的会话保留执行链，切换只改变当前展示。
    *
    * ⚠️ **闸门换了，授权不换**（U22）：闸门按会话各一份（裁决的账、在途询问各归各的），
    * 而**授权账本（`grants`）是工作区级的那一个**、跨会话共用——故「换会话」不再意味着
    * 「把 `a` 记下的东西清零」（技术方案 · 权限「授权的落点」：会话不是信任的边界）。
-   *
-   * ⚠️ 网关（注册表）**不在此列**——见 `forwardStamper` 的注。
    */
   const open = (session: SessionId): SessionInstance => {
+    const previous = chains.get(session)
+    if (previous) { chain = previous; models = previous.models; activeStamper = previous.stamper; return previous }
     const identity = recordsStore.collaboration.agentForSession(session)
     if (identity !== undefined) {
       if (JSON.stringify(identity.workspace) !== JSON.stringify(workspace.roots())) {
         throw new Error('成员工作区与本执行实例不同——须在成员持久工作区接回')
       }
-      if (models !== undefined) models = registryOf(identity.model)
     }
     const consulting = identity?.purpose === 'consultation'
     const records = recordsStore.serviceFor(session)
     const stamper = createStamper({ records, session, now })
+    const sessionModels = models === undefined ? undefined : registryOf(identity?.model ?? models.current(), stamper)
+    const currentAcceptsImages = (): boolean | undefined => {
+      const registry = opened.models
+      const selected = registry?.current()
+      return selected === undefined ? undefined : registry?.capabilityOf(selected.provider, selected.model)?.image
+    }
+    const webFetchTool = defineWebFetchTool({
+      web: options.webSource ?? createWebSource({ fetch: network.fetch }),
+      distiller: () => {
+        syncProviderBook()
+        if (configuredModels?.cantrip === undefined) return undefined
+        try {
+          const selected = cantrip(stamper)
+          if ('failure' in selected) throw new Error(selected.failure)
+          return createPageDistiller(selected)
+        }
+        catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          return { distill: async () => ({ ok: false as const, kind: 'failed' as const, reason }) }
+        }
+      },
+    })
     // 闸门按会话各一份（裁决的账按会话分列），**账本却是工作区级的那一个**（跨会话共用）。
     // **放行规则＝配置里那几条 ＋ 三个内置辅助工具那三条**（U34）——后三条是内存规则
     // （写协作笔记不是需要用户逐次裁决的事），排在手写规则之后（用户的规则先说话）。
@@ -1394,13 +1304,33 @@ export function assemble(options: AssembleOptions): Assembly {
       return role
     }
     const coordination = options.collaboration === undefined ? undefined : createCollaborationBoundary({
-      records: recordsStore.collaboration, session, runId: options.executionId ?? crypto.randomUUID(),
-      model: () => models?.current() as AgentModelConfig | undefined,
+      records: recordsStore.collaboration, session, runId: executionId,
+      model: () => opened.models?.current() as AgentModelConfig | undefined,
       tools: () => currentRole()?.tools,
       now, changed: () => options.collaborationChanged?.(),
     })
+    const background = backgroundRuns === undefined ? undefined : createBackgroundSession({
+      runs: backgroundRuns, session, execution: executionId,
+      begin: () => coordination?.begin({ id: crypto.randomUUID(), name: 'exec', args: { background: true } }) ?? (() => undefined),
+      stopped: () => signal.aborted || coordination?.boundary.admit() !== undefined,
+      changed: view => sink.emit(stamper.stamp('background.state', view)),
+      deliver(finish, ref) {
+        const input = { ref, text: backgroundNoticeText(finish), notice: true as const, background: finish }
+        if (signal.aborted || coordination?.boundary.admit() !== undefined) {
+          records.inputs.accept(input, now())
+          records.inputs.hold(ref, '执行范围已停止；后台终态仅记录')
+        } else {
+          service.submit(input)
+        }
+        const accepted = records.inputs.get(ref) !== undefined
+        if (accepted && !('state' in finish)) sink.emit(stamper.stamp('exec.background.done', finish))
+        return accepted
+      },
+    })
+    if (background) backgroundSessions.set(session, background)
     const agentTools = consulting || options.collaboration === undefined ? [] : defineAgentTools({
       request: (request) => {
+        if (request.action === 'deliver' && (background?.waiting() || records.inputs.list().some(row => row.input.background !== undefined && (row.state === 'pending' || row.state === 'consumed')))) return Promise.resolve({ ok: false as const, reason: '仍有后台结果等待或尚未处理，不能交付最终结果' })
         coordination?.actor()
         return options.collaboration!(session, request)
       },
@@ -1409,7 +1339,7 @@ export function assemble(options: AssembleOptions): Assembly {
     const toolVisible = (name: string): boolean => {
       if (consulting) return CONSULTATION_TOOL_NAMES.includes(name) && (originRole?.tools === undefined || originRole.tools.includes(name))
       const allowed = currentRole()?.tools
-      return allowed === undefined || allowed.includes(name) || (name.startsWith('agent_') && agentTools.some(tool => tool.spec.name === name))
+      return allowed === undefined || allowed.includes(name) || ((name === 'background_stop' || name === 'background_wait') && allowed.includes('exec')) || (name.startsWith('agent_') && agentTools.some(tool => tool.spec.name === name))
     }
     const rawTools = createToolRuntime({
       beginExecution: (call) => {
@@ -1443,7 +1373,7 @@ export function assemble(options: AssembleOptions): Assembly {
       // ④ **取网页**（U72）：出网与提炼两样都不在默认七件的射程里，故从这条出口进来
       //    （造一次、用一路——缓存挂在它身上，见那一件自己的注）。
       tools: () => consulting ? [...planTools.filter(tool => CONSULTATION_TOOL_NAMES.includes(tool.spec.name)), webFetchTool]
-        : [skillTool, ...planTools, webFetchTool, ...mcpTools(), ...agentTools],
+        : [skillTool, ...planTools, webFetchTool, ...mcpTools(), ...agentTools, ...defineBackgroundTools()],
 
       // **这台机器上有没有 `trash`**（U77）——删除那一类被内核拒时，回执据此指路。
       //
@@ -1455,51 +1385,8 @@ export function assemble(options: AssembleOptions): Assembly {
       // 而"探得准"比"探得勤"要紧（工单：**不许假装它一定在**）。
       trashAvailable: commandOnPath('trash', environment),
 
-      /**
-       * **后台那一形**（U70）——**按会话绑好**的一道门面。
-       *
-       * 为什么要在这儿包一层（而不是把登记那一本直接递进去）：登记是**进程级**的
-       * （它管着进程，进程比会话活得久），而「跑完 ⇒ 回一条给模型」要落回**发起它的那条
-       * 会话**——那条线只有装配知道（工具域不认识会话）。故 `start` 在这一层补上
-       * `onFinish` 那一位：谁发起，就回到谁那儿。
-       *
-       * `stop` **原样转手**：停是按 id 停的，与「哪条会话发起的」无关（id 全局唯一）。
-       *
-       * ⚠️ **`start` 与 `onFinish` 两处要顺手记一笔归属**（U89）——交给模型那一块
-       * 「还在跑的后台命令」按会话算，而登记不认识会话（见 `backgroundOwners` 的注）：
-       * 起成了记一笔、结束了（跑完 / 被停）忘一笔。
-       */
-      ...(backgroundRuns === undefined
-        ? {}
-        : {
-            background: {
-              start: async (cmd: string, opts?: BackgroundStartOptions) => {
-                // exec 回执不代表后台退出；沿同一本准入账持有到真实 onFinish。
-                const release = coordination?.begin({ id: crypto.randomUUID(), name: 'exec', args: { cmd, background: true, ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }) } })
-                try {
-                  const started = await backgroundRuns.start(cmd, {
-                    ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }),
-                    ...(opts?.target === undefined ? {} : { target: opts.target }),
-                    onFinish: (finish) => {
-                      release?.()
-                      forgetBackground(session, finish.id)
-                      deliverBackgroundDone(session, finish)
-                    },
-                  })
-                  if (started.ok) rememberBackground(session, started.id)
-                  else release?.()
-                  return started
-                } catch (error) {
-                  release?.()
-                  throw error
-                }
-              },
-              stop: (id: string) => backgroundRuns.stop(id),
-              // **读面照转手**（U89）——一道门面就该与它包的那一件同形；这一条工具域今天
-              // 不读（它只要「起」与「停」），留着是因为**端口上它就在**：少一个会静默换了契约。
-              running: () => backgroundRuns.running(),
-            },
-          }),    })
+      ...(background === undefined ? {} : { background: background.port }),
+    })
     const validateRoleTools = (): void => {
       const known = new Set(rawTools.definitions().map(tool => tool.name))
       for (const name of currentRole()?.tools ?? []) {
@@ -1545,14 +1432,8 @@ export function assemble(options: AssembleOptions): Assembly {
         return { ...base, documents: [...base.documents, ...documents] }
       },
     }
-    // **转发**而不是取值：注册表会在保存配置之后重建（U41），而这一束链是会话级的——
-    // 抓一份快照会让已开的会话一直用旧表（同 `forwardStamper` 那条理由）。
-    //
-    // ⚠️ **只有注册表那一路是转发**：替身网关与缺省桩在开束时**求值一次**——
-    // 替身工厂每次调用都造一个新的（`makeStage` 那个还往数组里记），开一次会话造一个
-    // 是原样，**每次 `stream` 都造**会把它的进度归零（实测：Faux 的固定事件序列永远
-    // 走不到头，用例挂死在等 `turn.end`）。
-    const fixed = models ?? options.modelGateway?.(stamper) ?? missingGateway()
+    // 替身网关每条会话只构造一次；真实网关由本会话的显式换模更新。
+    const fixed = sessionModels ?? options.modelGateway?.(stamper) ?? missingGateway()
     const gateway: ModelGateway = {
       stream: (request, streamOptions) => {
         // 检查最终请求，覆盖经共享约束引入的其他会话图片，不能只检查本次输入 refs。
@@ -1566,7 +1447,7 @@ export function assemble(options: AssembleOptions): Assembly {
           : recordsStore.collaboration.listDelegations(actor.collaborationId)
             .find(one => one.assigneeId === actor.agentId && one.state === 'accepted')
         try {
-          const stream = (models ?? fixed).stream(request, streamOptions)
+          const stream = (opened.models ?? fixed).stream(request, streamOptions)
           let responseText = ''
           const events = (async function* () {
             for await (const event of stream.events) {
@@ -1587,11 +1468,12 @@ export function assemble(options: AssembleOptions): Assembly {
     }
 
     const service = createConversationSession({
+      onInput: () => background?.cancelWait(),
       collaboration: coordination?.boundary,
       purpose: identity?.purpose,
       consultationAvailable: agentTools.length > 0 && toolVisible('consult_arcane'),
       session,
-      compression: options.modelGateway === undefined ? cantrip : () => ({ gateway: fixed }),
+      compression: options.modelGateway === undefined ? () => cantrip(stamper) : () => ({ gateway: fixed }),
       prompt: promptVarsOf(workspace, options, now),
       gateway,
       tools,
@@ -1617,14 +1499,14 @@ export function assemble(options: AssembleOptions): Assembly {
       // 由头：新用户在 0 供应商时发一句，今天会先把那一轮**装模作样地开起来**
       // （状态行「● 工作中」、消息已上屏），再报一句模型错——「装作在跑」比不报更坏。
       //
-      // ⚠️ **读的是 `models?.current()`**（此刻真会走的那个），**不是** Default 映射：
+      // ⚠️ **读的是本会话注册表的 `current()`**（此刻真会走的那个），**不是** Default 映射：
       // 用户在会话里切换过模型时后者还是配置里那条旧的——照它判会把**发得出去**的那一条
       // 也拦下来。`models === undefined`（替身网关 / 用例）⇒ `hasModel` 真 ⇒ **不拦**
       // （那一头压根没有供应商可查，与 `acceptsImages` 的「不知道就照发」同一条口径）。
       submitRefusal: () => {
         const reason = noModelRefusal({
           connections: Object.keys(providerBook).length,
-          hasModel: models === undefined || models.current() !== undefined,
+          hasModel: opened.models === undefined || opened.models.current() !== undefined,
         })
         // ⚠️ **这一条被拦下时稿子不还回输入行**：下一步要敲的是 `/model connect`
         // 那条命令，稿子挡在输入行上它就会接在稿子尾巴上（见 `SubmitRefusal`）。
@@ -1635,19 +1517,22 @@ export function assemble(options: AssembleOptions): Assembly {
       // 对话域把它接成系统提示词的第四个追加块（见 `prompt/background.ts`）。
       // 这次装配没接后台那一形（算不出运行目录）时不给这一位：那一形压根不在，
       // 也就没有「还在跑」可言——不给＝这一块不接线（与恒空的读数同形，但少一条假路）。
-      ...(backgroundRuns === undefined ? {} : { background: () => runningBackgroundOf(session) }),
+      ...(backgroundRuns === undefined ? {} : { background: () => background?.port.running() ?? [] }),
       // ⚠️ **恢复不在这儿接线**（U25）——在途识别与②③④的处置归应用层（`@magic/actions`），
       // 对话域只出重建面（`ConversationService.rebuild`）。见下 `actions`。
     })
 
-    const opened: Chain = { session, records, gate, tools, service, stamper, roleRules }
+    const opened: Chain = { session, records, gate, tools, service, stamper, roleRules, models: sessionModels }
+    chains.set(session, opened)
     chain = opened
+    models = opened.models
     activeStamper = stamper
+    sink.emit(stamper.stamp('background.state', background?.view() ?? { commands: [], waiting: [] }))
     return opened
   }
 
   /**
-   * **应用层的现场束**——**当下那一束**（单活跃：同时只留一束）。
+   * **应用层的现场束**——当前展示会话；其他会话的后台完成仍由各自执行链接收。
    *
    * 取的是 `open` 造出来的**同一个实例**（记录实例 / 工具域 / 铸造器都在 `Chain` 里），
    * 不是另开一套：铸造器按会话实例构造、`id` 取自记录域——两套就是两串 id 打架
@@ -1703,47 +1588,6 @@ export function assemble(options: AssembleOptions): Assembly {
   })
 
   /**
-   * **后台命令跑完了**（U70）——两件事**分开做**（设计明写：那一条发给模型、
-   * 给不给用户看另按通知，别混成一件事做）：
-   *
-   * ① **给屏**——一条 `exec.background.done`（**不落库**）：屏上多一行回执，点名是哪一条、
-   *    跑成什么样、输出在哪儿。用户因此看得见「模型为什么忽然又开口了」。
-   * ② **给模型**——一条**带输出文件路径的交代**投进**它自己那条会话**：模型据此自己决定
-   *    读不读那个文件。它落成一条 `user` 条目，载荷带 `notice`（说话人是内核，不是用户
-   *    ——见契约 `UserPayload.notice`），故标题与屏上那一行都不冒充用户。
-   *
-   * ## 两条分寸
-   *
-   * - **只投给发起它的那条会话**（设计 · 通知：「一件事归它自己那条会话——回执与裁决都只
-   *   落在它说的那条会话里，**不落到别的会话的页上**」）。故这里先问一句「它还是当下
-   *   这条吗」：不是就**什么都不做**——事件会画到别人的页上，投递也会投错地方。
-   *   ⚠️ **限度如实记**：这一形今天做不到「投给一条不在前台的会话」（用户切走了、
-   *   后台命令跑完了）——那需要一个「按会话投递而不上屏」的面，属后面的单
-   *   （`/ps` 那一屏与离开续跑是同一片）。
-   * - **`dev server` 那一形永远不会走到这儿**：登记的 `onFinish` 只在**进程真退出**时响
-   *   （设计：「『输出安静了』不等于『它结束了』」）。
-   *
-   * 函数声明（不写成 `const` 箭头）是为了让上面 `open` 那一处能**先引用后定义**——
-   * 这一跳只可能在装配整条走完之后才被调到（那时每一件都初始化过了）。
-   */
-  function deliverBackgroundDone(session: SessionId, finish: BackgroundFinish): void {
-    if (chain?.session !== session) return
-
-    sink.emit(
-      forwardStamper.stamp('exec.background.done', {
-        id: finish.id,
-        command: finish.command,
-        outputPath: finish.outputPath,
-        ok: finish.ok,
-        exit: finish.exit,
-        ...(finish.stopped === true ? { stopped: true as const } : {}),
-      }),
-    )
-
-    conversation.submit({ text: backgroundNoticeText(finish), notice: true })
-  }
-
-  /**
    * **应用层**（U25）——编排那一层的落地：恢复是它的第一个真用例。
    *
    * 绑三件：**对话域端口**（⑤ 的重建面）· **扇出**（它不自己发事件）· **时钟**。
@@ -1777,7 +1621,7 @@ export function assemble(options: AssembleOptions): Assembly {
    */
   const commitModel = (checked: ModelSwitchResult): ModelSwitchResult => {
     // **还没有会话**（空手打开就 `/model`，第 19 轮起这是常态）——选中**照换**：
-    // 注册表是**进程级**的（选中的供应商不该随会话漂），换完第一条消息就用新条目。
+    // 尚未开会话时保存初始选择，第一条消息按此建立会话自己的注册表。
     //
     // 但**不发事件**：`model.switched` 记的是**会话的可观测事实**，而没有会话就没有
     // 可记之处（信封必带会话 id、铸造器按会话实例构造——`forwardStamper` 会抛）。
@@ -1806,10 +1650,11 @@ export function assemble(options: AssembleOptions): Assembly {
     else if (!checked.ok) result = checked
     else {
       try {
-        const candidate = registryOf(checked.selection)
+        const candidate = registryOf(checked.selection, chain.stamper)
         const identity = recordsStore.collaboration.agentForSession(chain.session)
         // 持久更新失败不发布新网关；入口与成员都只改自己的身份，不碰协作派生默认。
         if (identity !== undefined) recordsStore.collaboration.updateAgent(identity.agentId, { model: checked.selection })
+        chain.models = candidate
         models = candidate
         result = checked
       } catch (error) {
@@ -1821,7 +1666,7 @@ export function assemble(options: AssembleOptions): Assembly {
     // **结果落库**（技术方案 · 记录 · kind 族）：切换是会话的**可观测事实**——
     // `model.call.start` 只说「这次用了谁」，说不出「何时改的、为什么没改成」。
     // 成了＝带上落地后的选中；没成＝原选原样保留（切不动就不动），只说缘由。
-    // 盖章走**转发铸造器**（U16）：注册表是进程级的，事件要落在**当下那条会话**上。
+    // 显式换模只作用于当前会话，结果记到该会话。
     // **落地后的有效输入预算**（U41 返修）——换模型**当下**就要换的那个分母。
     // 未知（那个模型没有窗长依据）时就**不给这一位**：外壳据「在不在」**清空**，
     // 沿用旧模型的容量就是报错一个数。
@@ -1865,8 +1710,7 @@ export function assemble(options: AssembleOptions): Assembly {
   /**
    * 模型条目表 —— 读面的**产出路径**（缺陷 D10 · 第 3 样）。
    *
-   * **为什么要经过一层「借会话」**：信封必带会话（契约 · `EventEnvelope`），而注册表是
-   * **进程级**的（选中的供应商不随会话漂——见 `forwardStamper` 的注）。于是「还没有会话」
+   * **为什么要经过一层「借会话」**：信封必带会话（契约 · `EventEnvelope`）。「还没有会话」
    * 这个**常态**（D4：启动＝新会话，空手打开）也得答得出来：走法照 `session.list` 的
    * 先例——**空手也照答，那一下开一张空壳**（对话域 `current()` 的既有姿势）。
    *
@@ -2361,6 +2205,14 @@ export function assemble(options: AssembleOptions): Assembly {
   hub.bind({
     // 提交输入前也同步一次（裁决：「配置变更时**重取实际连接资料**」——用户改完配置
     // 直接发消息、不看 `/model` 的那条路也要用上新资料）
+    onBackground: async command => {
+      if (command.type === 'background.list') {
+        if (chain) sink.emit(chain.stamper.stamp('background.state', backgroundSessions.get(chain.session)?.view() ?? { commands: [], waiting: [] }))
+      } else {
+        const outcome = command.target.execution !== executionId ? { ok: false as const, reason: '执行代次已改变' } : await backgroundSessions.get(command.target.session)?.stop(command.target.id) ?? { ok: false as const, reason: '目标会话不存在' }
+        if (chain) sink.emit(chain.stamper.stamp('background.state', { ...(backgroundSessions.get(chain.session)?.view() ?? { commands: [], waiting: [] }), result: { target: command.target, outcome } }))
+      }
+    },
     onInputManage: command => conversation.manage(command),
     onInput: (input) => {
       syncProviderBook()
@@ -2434,7 +2286,7 @@ export function assemble(options: AssembleOptions): Assembly {
       pendingHits.clear()
     },
     reconnectMcp,
-    hasPendingInput: () => chain?.service.busy() === true,
+    hasPendingInput: () => [...chains.values()].some(one => one.service.busy()),
     wakeCollaboration: () => chain?.service.wake(),
     supplementCollaboration: async (input, shared) => {
       if (chain === undefined) throw new Error('当前没有已装配的成员会话')
@@ -2504,7 +2356,7 @@ export function assemble(options: AssembleOptions): Assembly {
         await reclaim()
       }
       const results = await Promise.allSettled([
-        reap(), hub.shutdown(), chain?.service.shutdown(), mcp.shutdown(),
+        reap(), hub.shutdown(), ...Array.from(chains.values(), value => value.service.shutdown()), mcp.shutdown(),
         ...(backgroundRuns?.running().map(async run => {
           const stopped = await backgroundRuns.stop(run.id)
           if (!stopped.ok) throw new Error(stopped.reason)
@@ -2517,8 +2369,6 @@ export function assemble(options: AssembleOptions): Assembly {
     },
     // 自有进程组那一本账（见 `Assembly.ledger`）——账自己摘掉已经没了的那些
     ledger,
-    // 后台运行的登记（见 `Assembly.background`）——**「按 id 停」今天没有用户入口**
-    // （`/ps` 那一屏另开一单），验它、以及将来的 `/ps`，都从这一个把手进
     background: backgroundRuns,
     // **当下**那一条的窗（不是装配那一刻的快照）——理由同下面 `session` 那个取值器：
     // `--model` 是**开局就落地**的选中（`cli.ts` 在起外壳之前先跑 `applySwitch`），

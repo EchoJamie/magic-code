@@ -178,6 +178,7 @@ struct StatusPanel: View {
                     Text(work.title.isEmpty ? "未命名工作" : work.title).font(.system(size: 13, weight: .medium)).lineLimit(3)
                     Text(work.currentNotice?.detail ?? "\(stale ? "上次状态：" : "")\(status)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    if let count = stale ? "后台命令数量待确认" : work.backgroundText { Text(count).font(.caption).foregroundStyle(.secondary) }
                     HStack(spacing: 4) {
                         Image(systemName: "folder")
                         Text(work.project).lineLimit(1)

@@ -65,7 +65,7 @@ export type { MaterialsOptions } from './materials.ts'
  * 落一个临时文件、再读回来），域与外壳都不该自己去做这件。剪贴板这一跳与终端无关
  * （终端递不了原始图像），故只能进程直接问系统——见 `clipboard.ts` 头注。
  */
-export { readClipboardImage } from './clipboard.ts'
+export { readClipboardImage, writeClipboardText } from './clipboard.ts'
 export type { ClipboardImage } from './clipboard.ts'
 
 /**

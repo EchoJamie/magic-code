@@ -24,6 +24,7 @@ import type { RunFeed, ResumeFeed, StopReport } from './shell.ts'
 
 /** 启动入参——传输由装配注入；`boot` 是「订阅之后、放开输入之前」那一跳。 */
 export type RunTuiOptions = {
+  readonly copyText?: ShellOptions['copyText']
   readonly detached?: ((listener: (why: string) => void) => void) | undefined
   readonly reopen?: (() => Promise<void>) | undefined
   readonly transport: ControlTransport
@@ -129,6 +130,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
 
   // ④ 的分母（装配给）——没给就是「拿不到」，屏上回退成只报已用量（见 `RunTuiOptions`）
   const shell = createShell(options.transport, {
+    copyText: options.copyText,
     statusLine: options.statusLine,
     reducedMotion: options.reducedMotion,
     turnDuration: options.turnDuration,

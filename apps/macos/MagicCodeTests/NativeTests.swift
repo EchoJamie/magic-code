@@ -292,6 +292,14 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
+    func testBackgroundCountPresentation() throws {
+        let base = try work()
+        XCTAssertEqual(base.backgroundText, "后台命令数量待确认")
+        XCTAssertNil(try changed(base, ["background": 0]).backgroundText)
+        XCTAssertEqual(try changed(base, ["background": 3]).backgroundText, "3 个后台命令运行中")
+        XCTAssertThrowsError(try changed(base, ["background": -1]))
+    }
+
     func testSharedFixturesDecodeAndRoundTrip() throws {
         let files = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("tests/fixtures/native-wire"), includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
         XCTAssertGreaterThanOrEqual(files.count, 37)

@@ -12,6 +12,8 @@ export function createCollaborationBoundary(input: {
   readonly changed: () => void
   readonly now: () => number
 }) {
+  const resourceControl = (name: string) => name === 'background_stop' || name === 'background_wait'
+  const coordinating = (call?: ToolCall) => call === undefined || call.name.startsWith('agent_') || resourceControl(call.name)
   const records = input.records
   let requestedWaits: readonly number[] = []
   const actor = (): AgentIdentity | undefined => {
@@ -66,10 +68,10 @@ export function createCollaborationBoundary(input: {
       if (call !== undefined && state.self.purpose === 'consultation' && (!CONSULTATION_TOOL_NAMES.includes(call.name) || call.external !== undefined)) return `咨询只允许受限只读工具：${call.name}`
       if (call !== undefined && !call.name.startsWith('agent_')) {
         const allowed = input.tools()
-        if (allowed !== undefined && !allowed.includes(call.name)) return `角色没有开放工具 ${call.name}`
+        if (allowed !== undefined && !allowed.includes(call.name) && !(resourceControl(call.name) && allowed.includes('exec'))) return `角色没有开放工具 ${call.name}`
       }
       const decision = records.checkAdmission(state.self.agentId, state.delegation?.delegationId,
-        call === undefined || call.name.startsWith('agent_') ? 'coordination' : 'work')
+        coordinating(call) ? 'coordination' : 'work')
       return decision.allowed ? undefined : decision.reason
     },
     requested(messageIds = []) {
@@ -97,13 +99,13 @@ export function createCollaborationBoundary(input: {
     begin(call?: ToolCall): () => void {
       const state = binding()
       if (state === undefined) return () => undefined
-      if (call !== undefined && !call.name.startsWith('agent_') && records.inbox(state.self.agentId).some(i => i.state === 'pending' && records.readMessage(state.self.agentId, i.messageId)?.purpose !== 'receipt')) throw new Error('等待期间收到新交代；先重新判断，再执行工具')
+      if (call !== undefined && !coordinating(call) && records.inbox(state.self.agentId).some(i => i.state === 'pending' && records.readMessage(state.self.agentId, i.messageId)?.purpose !== 'receipt')) throw new Error('等待期间收到新交代；先重新判断，再执行工具')
       const problem = boundary.admit(call)
       if (problem !== undefined) throw new Error(problem)
       const operationId = `${input.runId}:${crypto.randomUUID()}`
       records.beginExecution(state.self.agentId, { operationId, at: input.now(), runId: input.runId,
         kind: call === undefined ? 'model' : 'tool',
-        mode: call === undefined || call.name.startsWith('agent_') ? 'coordination' : 'work',
+        mode: coordinating(call) ? 'coordination' : 'work',
         ...(state.delegation === undefined ? {} : { delegationId: state.delegation.delegationId }),
       })
       return () => { records.finishExecution(operationId); input.changed() }
