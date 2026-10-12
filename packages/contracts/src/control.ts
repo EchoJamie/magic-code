@@ -194,7 +194,7 @@ export type ModelSwitch = { readonly type: 'model.switch' } & ModelSwitchRequest
 // 与命令面「只发不收」的既有姿势一致。
 
 /** `session.list`——列出会话（外壳要一屏目录时发）。 */
-export type SessionList = { readonly type: 'session.list' }
+export type SessionList = { readonly type: 'session.list'; readonly archived?: boolean }
 
 /** `session.new`——新建一条会话并切过去（产品方案 功能 1：多会话的新建）。 */
 export type SessionNew = { readonly type: 'session.new' }
@@ -222,7 +222,8 @@ export type SessionRename = {
 }
 
 /** 会话命令四支——控制域**原样转手**给对话域（它不认识会话）。 */
-export type SessionCommand = SessionList | SessionNew | SessionOpen | SessionRename
+export type SessionArchive = { readonly type: 'session.archive' | 'session.restore'; readonly session: SessionId }
+export type SessionCommand = SessionList | SessionNew | SessionOpen | SessionRename | SessionArchive
 
 /**
  * `history.read`——**读侧命令**（阶段 2 补 · 技术方案 · 领域划分：「读面走控制面」）。

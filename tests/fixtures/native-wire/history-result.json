@@ -1,0 +1,14 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.history.result",
+    "request": "history",
+    "serviceInstance": "service-one",
+    "session": "s1",
+    "entries": [],
+    "events": [],
+    "currentRequests": [],
+    "done": true
+  }
+}

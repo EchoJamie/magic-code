@@ -61,7 +61,7 @@ import {collaborationDetail,collaborationFixture} from './collaboration-fixture.
 function collaborationStage(consultation=false){
  const view=(data:typeof collaborationFixture)=>({...data,members:data.members.map(one=>one.agent.agentId==='worker'&&consultation?{...one,agent:{...one.agent,purpose:'consultation' as const}}:one)})
  const spy=createSpyTransport(); const shell=createShell({...spy.transport,send(command){spy.transport.send(command);if(command.type==='collaboration.read')spy.emit(event('collaboration.view',view(collaborationDetail(command.member))))}}, { magicBase: '/test/.magic' })
- spy.emit(event('session.state',{active:'origin',sessions:[{id:'origin',at:0},{id:'member',at:0}]}));spy.emit(event('collaboration.view',view(collaborationFixture)))
+ spy.emit(event('session.state',{active:'origin',sessions:[{ archived: false,id:'origin',at:0},{ archived: false,id:'member',at:0}]}));spy.emit(event('collaboration.view',view(collaborationFixture)))
  const key=(kind:'tab'|'enter'|'down'|'escape')=>shell.key({kind})
  const pick=(value:string)=>{const dock=shell.getView().dock;if(dock.kind!=='picker')throw Error('没有选择器');const index=dock.picker.rows.findIndex(row=>row.value===value);if(index<0)throw Error(`没有 ${value}`);for(let i=0;i<(index-dock.picker.selected+dock.picker.rows.length)%dock.picker.rows.length;i++)key('down');key('enter')}
  return {spy,shell,key,pick,member:()=>{key('tab');pick('worker')},text:(text:string)=>shell.key({kind:'paste',text})}

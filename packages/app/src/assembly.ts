@@ -1665,11 +1665,12 @@ export function assemble(options: AssembleOptions): Assembly {
     open,
     // 记录域**读面**（窄口）：会话未定时也要能读（目录 / 首条消息 / 重建展示）
     records: {
-      listSessions: async () => (await recordsStore.listSessions()).filter(row => {
+      listSessions: async query => (await recordsStore.listSessions(query)).filter(row => {
         const collaboration = recordsStore.collaboration.collaborationForSession(row.id)
         return collaboration === undefined || collaboration.originSessionId === row.id
       }),
       readEntries: recordsStore.readEntries,
+      readEntriesBack: recordsStore.readEntriesBack,
       readEvents: session => recordsStore.serviceFor(session).readEvents(session),
       blobs: recordsStore.blobs,
     },

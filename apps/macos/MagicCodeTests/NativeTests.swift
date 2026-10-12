@@ -89,6 +89,7 @@ final class NativeTests: XCTestCase {
         let attributes = try FileManager.default.attributesOfItem(atPath: files[0].path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
+    private var helperApp: URL { ProcessInfo.processInfo.environment["MAGIC_NATIVE_TEST_APP"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent(".artifacts/macos/Magic Code.app") }
     private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
     override func setUpWithError() throws {
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".artifacts/macos/seams"), withIntermediateDirectories: true)
@@ -109,52 +110,20 @@ final class NativeTests: XCTestCase {
     }
     private func changed(_ work: NativeWork, _ changes: [String: Any]) throws -> NativeWork {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(work)) as? [String: Any])
-        changes.forEach { object[$0.key] = $0.value }
+        changes.forEach { if $0.key == "currentNotice", $0.value is NSNull { object.removeValue(forKey: $0.key) } else { object[$0.key] = $0.value } }
         return try JSONDecoder().decode(NativeWork.self, from: JSONSerialization.data(withJSONObject: object))
     }
     func testWorkPresentationKeepsIdleHistorySeparateAndDisambiguatesPaths() throws {
         let base = try work()
-        let idle = try changed(base, ["state": "idle", "action": "", "reason": "", "affected": false, "notices": []])
+        let idle = try changed(base, ["state": "idle", "action": "", "reason": "", "affected": false, "currentNotice": NSNull()])
         XCTAssertEqual(idle.statusText, "当前空闲")
-        let historic = try changed(base, ["state": "running", "notices": [["id": "old", "session": base.session, "kind": "failed", "at": 1, "unread": true, "delivered": false, "fact": "old"]]])
+        let historic = try changed(base, ["state": "running", "currentNotice": ["id": "old", "session": base.session, "kind": "failed", "at": 1, "unread": true, "delivered": false, "fact": "old"]])
         XCTAssertEqual(WorkGroup.of(historic), .running, "历史未读失败不能取代当前运行事实")
         let paths = ["/Users/甲/客户/project", "/Users/乙/客户/project"]
         XCTAssertEqual(WorkList.shortPath(paths[0], among: paths), "…/甲/客户/project")
         XCTAssertEqual(WorkList.shortPath(paths[1], among: paths), "…/乙/客户/project")
     }
-    @MainActor func testInspectionReturnAndLatestIntentRejectLateReplies() async throws {
-        let base = try work()
-        let other = try changed(base, ["session": "other", "notices": [], "title": "另一项工作"])
-        let raw = try [base, other].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
-        let (model, room) = try controlledModel(options: ["works": raw, "inspectGate": true, "observerControl": true])
-        defer { model.systemQuit {} }
-        model.start(); try await eventually { model.isCurrent }
-        model.panelVisibility(true)
-        model.inspect(base, notice: base.notices.first!.id)
-        try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
-        let request = try XCTUnwrap(traces(room).compactMap { $0["message"] as? [String: Any] }.first { $0["t"] as? String == "native.inspect" }?["request"] as? String)
-        model.inspect(other)
-        let service = try XCTUnwrap(model.identity).serviceInstance
-        try observerCommand(room, ["messages": [
-            ["t": "native.inspected", "request": request, "work": raw[0]],
-            ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 20, "accepting": true, "works": raw]],
-        ]])
-        try await eventually { model.projection?.revision == 20 }
-        XCTAssertEqual(model.selected, other.id); XCTAssertNil(model.selectedNotice)
-        model.leaveDetail()
-        try Data().write(to: room.appendingPathComponent("allow-inspect"))
-        // Same-connection attached is a receive barrier behind the delayed inspection.
-        model.terminal.openFile = { _, completion in completion(nil) }
-        model.terminal.open(helper: model.helperURL, workspace: room, base: room)
-        let pending = try XCTUnwrap(model.terminal.pending["new-draft"])
-        try await eventually { self.traces(room).filter { $0["event"] as? String == "inspected-sent" }.count == 1 }
-        try observerCommand(room, ["message": ["t": "native.attached", "request": pending.request, "session": NSNull()]])
-        try await eventually { model.terminal.pending["new-draft"] == nil }
-        XCTAssertNil(model.selected); XCTAssertNil(model.selectedNotice)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/u117-late-inspections.json"))
-        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-    }
+
     @MainActor func testRemovedTargetAndStaleStopDoNotChangeWorkIdentity() async throws {
         let base = try work()
         let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(base))], "observerControl": true])
@@ -171,9 +140,8 @@ final class NativeTests: XCTestCase {
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.stop" })
         try observerCommand(room, ["message": ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 11, "accepting": true, "works": []]]])
         try await eventually { model.projection?.revision == 11 }
-        XCTAssertEqual(model.selected, base.id, "移除时不能暗换另一项工作")
-        XCTAssertNil(model.selectedNotice)
-        XCTAssertTrue(model.actionMessage?.contains("不可达") == true)
+        XCTAssertNil(model.selected, "移除后返回列表，由视图保留相邻焦点")
+        XCTAssertNil(model.sessions.route)
         model.leaveDetail(); XCTAssertNil(model.selected)
         try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/u117-stale-stop-removal.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
@@ -221,32 +189,19 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "two")
         XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
-    func testStableGroupsAndRecentTen() throws {
+    func testStableGroupsAndAllOpenedWork() throws {
         let initial = try work(); var list = WorkList()
-        let recent = try (0..<14).map { try changed(initial, ["session": "r\($0)", "state": "idle", "affected": false, "notices": [], "since": $0]) }
+        let recent = try (0..<14).map { try changed(initial, ["session": "r\($0)", "state": "idle", "affected": false, "currentNotice": NSNull(), "since": $0]) }
         list.update([initial] + recent, interacting: false)
-        XCTAssertEqual(list.rows(.recent, works: [initial] + recent).count, 10)
-        let updated = try changed(initial, ["state": "running", "since": 999, "notices": []])
+        XCTAssertEqual(list.rows(.recent, works: [initial] + recent).count, 14)
+        let updated = try changed(initial, ["state": "running", "since": 999, "currentNotice": NSNull()])
         list.update([updated] + recent, interacting: true)
         XCTAssertEqual(list.rows(.needsYou, works: [updated] + recent).first?.state, .running)
         list.update([updated] + recent, interacting: false)
         XCTAssertTrue(list.rows(.needsYou, works: [updated] + recent).isEmpty)
         XCTAssertEqual(list.rows(.running, works: [updated] + recent).first?.id, initial.id)
     }
-    func testNotificationCoalescingPriorityAndStableIDs() throws {
-        let first = try work(); let notice = try XCTUnwrap(first.notices.first)
-        var batch = NoticeBatch(); batch.add(work: first, notice: notice); batch.add(work: first, notice: notice)
-        let deliveries = batch.take(base: "/tmp/data")
-        XCTAssertEqual(deliveries.count, 1); XCTAssertEqual(deliveries[0].ids, [notice.id])
-        XCTAssertTrue(deliveries[0].body.contains("答复")); XCTAssertFalse(deliveries[0].body.contains(notice.detail!))
-        XCTAssertTrue(batch.pending.isEmpty)
-        let done = AttentionItem(id: "done-one", session: first.session, kind: .done, at: 1, detail: nil, unread: true, delivered: false, fact: "event:1")
-        let second = try changed(first, ["session": "second"])
-        let done2 = AttentionItem(id: "done-two", session: second.session, kind: .done, at: 2, detail: nil, unread: true, delivered: false, fact: "event:2")
-        batch.add(work: first, notice: done); batch.add(work: second, notice: done2)
-        let summary = batch.take(base: "/tmp/data")
-        XCTAssertEqual(summary.count, 1); XCTAssertEqual(summary[0].routes.count, 2); XCTAssertEqual(Set(summary[0].ids), [done.id, done2.id])
-    }
+
     func testCommandPreservesArgumentsAndWorkspace() throws {
         let room = try temp(); let workspace = room.appendingPathComponent("项目 ' \" $() 空格")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
@@ -364,10 +319,8 @@ final class NativeTests: XCTestCase {
         try welcomeBarrier(model, room)
         try observerCommand(room, ["disconnect": true])
         try await eventually { model.phase == .unreachable }
-        model.notifications.openRoutes?([NoticeRoute(base: identity.base, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
         try await eventually { model.terminal.pending["new-draft"] == nil }
         XCTAssertEqual(model.phase, .ready, "故障自动重连的 welcome 后匹配 attached 已处理，应恢复 ready")
-        if model.isCurrent { try await eventually { model.selectedNotice?.id == "notice-completed" } }
         try welcomeBarrier(model, room)
         try observerCommand(room, ["disconnect": true])
         try await eventually { model.phase == .unreachable }
@@ -399,93 +352,7 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
         try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/reconnect-negative.json"))
     }
-    @MainActor func testPlainInspectDoesNotAcknowledgeUnpresentedNotices() async throws {
-        let base = try work()
-        func item(_ id: String, kind: NoticeKind) -> AttentionItem {
-            AttentionItem(id: id, session: base.session, kind: kind, at: 1, detail: nil, unread: true, delivered: false, fact: "event:\(id)")
-        }
-        let historical = [item("historic-empty-answer", kind: .done), item("historic-failure", kind: .failed)]
-        let initial = try changed(base, ["state": "idle", "affected": false, "gen": NSNull(), "notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(historical))])
-        let arrived = item("arrived-after-inspect", kind: .done)
-        let returned = try changed(initial, ["notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(historical + [arrived]))])
-        let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(initial))], "observerControl": true])
-        defer { model.systemQuit {} }
-        model.terminal.openFile = { _, completion in completion(nil) }
-        model.start(); try await eventually { model.isCurrent }
-        model.panelVisibility(true); model.inspect(initial)
-        XCTAssertEqual(model.selected, initial.id)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" }, "详情摘要直接使用现有投影，不再发多余的普通 inspect")
-        let service = try XCTUnwrap(model.identity).serviceInstance
-        try observerCommand(room, ["message": ["t": "native.projection", "projection": ["serviceInstance": service, "revision": 10, "accepting": true, "works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(returned))]]]])
-        try await eventually { model.projection?.revision == 10 }
-        XCTAssertEqual(model.works.first?.notices.count, 3)
-        XCTAssertNil(model.selectedNotice)
-        let reads = traces(room).compactMap { $0["message"] as? [String: Any] }.filter { $0["t"] as? String == "native.read" }
-        XCTAssertTrue(reads.isEmpty, "查询和动态投影都不能批量确认未展开的事项")
-        model.copyCommand(initial)
-        XCTAssertTrue(model.terminal.pending.isEmpty)
-        XCTAssertEqual(model.actionMessage, "已复制")
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" }, "复制命令不能批量已读")
-        try JSONSerialization.data(withJSONObject: ["trace": traces(room), "readRequests": reads], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/plain-inspect-read.json"))
-        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-    }
-    @MainActor func testSpecificNoticeAcknowledgesOnlyRequestedIDAcrossRace() async throws {
-        let base = try work()
-        func item(_ id: String, session: String, detail: String?) -> AttentionItem {
-            AttentionItem(id: id, session: session, kind: .done, at: 1, detail: detail, unread: true, delivered: false, fact: "event:\(id)")
-        }
-        let chosen = item("chosen-empty-answer", session: base.session, detail: "")
-        let old = item("unopened-old-answer", session: base.session, detail: "旧答复")
-        let arrived = item("arrived-after-request", session: base.session, detail: "新答复")
-        func row(_ notices: [AttentionItem], session: String) throws -> NativeWork {
-            try changed(base, ["session": session, "state": "idle", "affected": false, "gen": NSNull(), "notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(notices))])
-        }
-        let initial = try row([chosen, old], session: base.session)
-        let returned = try row([chosen, old, arrived], session: base.session)
-        let other = try row([item("other-work-unread", session: "other-work", detail: "另一个工作")], session: "other-work")
-        let works = try [initial, other].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
-        let (model, room) = try controlledModel(options: ["systemTest": true, "works": works, "inspectGate": true, "inspectWork": JSONSerialization.jsonObject(with: JSONEncoder().encode(returned))])
-        model.start(); try await eventually { model.isCurrent }
-        model.panelVisibility(true)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
-        model.inspect(initial, notice: chosen.id)
-        try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
-        try Data().write(to: room.appendingPathComponent("allow-inspect"))
-        try await eventually { model.selectedNotice?.id == chosen.id }
-        model.noticePresented(chosen.id, visible: false)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" }, "查询返回尚未展示具体事项，不能确认已读")
-        model.noticePresented(chosen.id)
-        try await eventually { model.works.first?.notices.first?.unread == false }
-        XCTAssertEqual(model.selectedNotice?.id, chosen.id)
-        XCTAssertEqual(Set(model.works.flatMap(\.notices).filter(\.unread).map(\.id)), [old.id, arrived.id, "other-work-unread"])
-        let reads = traces(room).compactMap { $0["message"] as? [String: Any] }.filter { $0["t"] as? String == "native.read" }
-        XCTAssertEqual(reads.count, 1); XCTAssertEqual(reads.first?["ids"] as? [String], [chosen.id])
-        model.noticePresented(chosen.id, visible: false)
-        try await eventually { self.traces(room).compactMap { $0["message"] as? [String: Any] }.last { $0["t"] as? String == "native.presence" }?["focused"] as? Bool == false }
-        try JSONSerialization.data(withJSONObject: ["trace": traces(room), "persistentControl": JSONSerialization.jsonObject(with: Data(contentsOf: room.appendingPathComponent("control.json")))], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/specific-notice-race.json"))
-        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-    }
-    @MainActor func testSpecificNoticeRejectsMismatchedReturnedTarget() async throws {
-        let base = try work(); let item = try XCTUnwrap(base.notices.first)
-        for mismatch in ["work", "missing-notice", "notice-session"] {
-            var changes: [String: Any] = [:]
-            if mismatch == "work" { changes["session"] = "other-work" }
-            if mismatch == "missing-notice" { changes["notices"] = [] }
-            if mismatch == "notice-session" {
-                var wrong = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any]); wrong["session"] = "other-work"; changes["notices"] = [wrong]
-            }
-            let response = try changed(base, changes)
-            let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(base))], "inspectGate": true, "uncheckedInspect": true, "inspectWork": JSONSerialization.jsonObject(with: JSONEncoder().encode(response))])
-            try Data().write(to: room.appendingPathComponent("allow-inspect"))
-            model.start(); try await eventually { model.isCurrent }
-            model.inspect(base, notice: item.id)
-            try await eventually { model.actionMessage != nil }
-            XCTAssertNil(model.selectedNotice)
-            XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
-            var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-            try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/notice-reject-\(mismatch).json"))
-        }
-    }
+
     @MainActor func testConfirmedHostExitRetriesOnlyFailedIntegrationRemoval() async throws {
         let (model, room) = try controlledModel(options: [:])
         let link = URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic")
@@ -533,63 +400,7 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "shutdown" }.count, 1)
         model.requestQuit {}
     }
-    @MainActor func testAppModelDefersNotificationThenInspectsProcessedItem() async throws {
-        let (model, room) = try controlledModel(options: ["notice": true])
-        var opened = 0; model.terminal.openFile = { _, completion in opened += 1; completion(nil) }
-        model.notifications.openRoutes?([NoticeRoute(base: room.appendingPathComponent(".magic").path, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])])
-        XCTAssertNil(model.actionMessage); XCTAssertEqual(opened, 0)
-        model.start(); try await eventually { model.selectedNotice?.id == "notice-completed" }
-        XCTAssertEqual(opened, 0); XCTAssertTrue(model.terminal.pending.isEmpty)
-        XCTAssertEqual(model.selected, "session-completed"); XCTAssertEqual(model.works.first?.state, .idle)
-        let inspect = traces(room).filter { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" }
-        XCTAssertEqual(inspect.count, 1)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" }, "通知接回没有展示事项正文，不能确认已读")
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.stop" })
-        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/appmodel-notice-processed.json"))
-    }
-    @MainActor func testAppModelCrossInstanceNotificationNeverSwitchesOrOpens() async throws {
-        let (model, room) = try controlledModel(options: ["notice": true])
-        var opened = 0; model.terminal.openFile = { _, completion in opened += 1; completion(nil) }
-        let route = NoticeRoute(base: "/tmp/another-instance", session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])
-        model.openNotification(route)
-        XCTAssertNil(model.actionMessage)
-        model.start(); try await eventually { model.actionMessage?.contains("另一数据位置") == true }
-        XCTAssertEqual(opened, 0); XCTAssertEqual(model.selectedBase, room)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" })
-        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/appmodel-notice-cross-instance.json"))
-    }
-    @MainActor func testD55NoticeAliasSurvivesServiceRestartAndOldShapeIsIgnored() async throws {
-        let (model, room) = try controlledModel(options: ["notice": true])
-        defer { model.systemQuit {} }
-        let storage = room.appendingPathComponent("store"), alias = room.appendingPathComponent("alias")
-        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        try FileManager.default.createSymbolicLink(at: room.appendingPathComponent(".magic"), withDestinationURL: storage)
-        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: storage)
-        let route = NoticeRoute(base: alias.path, session: "session-completed", ids: ["notice-completed"], facts: ["event:1"])
-        let old = "[{\"dataDir\":\"\(storage.path)\",\"session\":\"session-completed\",\"ids\":[\"notice-completed\"],\"facts\":[\"event:1\"]}]"
-        XCTAssertEqual(NotificationCoordinator.decodeRoutes(["routes": old]), [])
-        let encoded = String(decoding: try JSONEncoder().encode([route]), as: UTF8.self)
-        XCTAssertEqual(NotificationCoordinator.decodeRoutes(["routes": encoded]), [route])
-        model.start(); try await eventually { model.isCurrent }
-        let identity = try XCTUnwrap(model.identity)
-        XCTAssertEqual(identity, ServiceIdentity(protocol: identity.protocol, version: identity.version, source: identity.source,
-            serviceInstance: identity.serviceInstance, base: alias.path))
-        XCTAssertNotEqual(identity, ServiceIdentity(protocol: identity.protocol, version: identity.version, source: identity.source,
-            serviceInstance: "old-service", base: alias.path))
-        let service = model.identity?.serviceInstance
-        model.openNotification(route)
-        try await eventually { model.selectedNotice?.id == "notice-completed" }
-        model.confirmEngineStop(); try await eventually { model.phase == .stopped }
-        model.startEngine(); try await eventually { model.isCurrent && model.identity?.serviceInstance != service }
-        model.openNotification(route)
-        try await eventually { model.selectedNotice?.id == "notice-completed" }
-        XCTAssertEqual(model.selectedBase, room)
-        XCTAssertTrue(model.terminal.pending.isEmpty)
-        XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.read" })
-        var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-    }
+
     @MainActor func testD55ResponsibilityRefusesBaseChange() async throws {
         let busy = try changed(work(), ["state": "running", "affected": true])
         let (model, room) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(busy))]])
@@ -635,123 +446,7 @@ final class NativeTests: XCTestCase {
         XCTAssertTrue(installed.contains("\(TerminalCommand.quote(link.path)) resume "))
         XCTAssertFalse(installed.contains("Contents/Helpers/magic-runtime"))
     }
-    @MainActor func testNoticeRefreshFiltersOnlyBoundItemsAndKeepsDetail() async throws {
-        let base = try work()
-        func row(_ session: String, _ notices: [String], bound: [String]) throws -> NativeWork {
-            try changed(base, ["session": session, "state": "idle", "affected": false, "gen": NSNull(), "terminalNoticeIds": bound,
-                "notices": notices.map { ["id": $0, "session": session, "kind": "done", "at": Date().timeIntervalSince1970 * 1000 + 1000, "unread": true, "delivered": false, "fact": $0] }])
-        }
-        let a = try row("A", ["A-bound", "A-unbound"], bound: ["A-bound"])
-        let b = try row("B", ["B-free"], bound: [])
-        let raw = try [a, b].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
-        var sent: [NoticeDelivery] = []
-        let collector = NotificationCoordinator(send: { sent.append($0) })
-        let (model, room) = try controlledModel(options: ["works": [], "observerControl": true], notifications: collector)
-        defer { model.systemQuit {} }
-        model.start(); try await eventually { model.isCurrent }
-        try JSONSerialization.data(withJSONObject: ["works": raw, "observerControl": true]).write(to: room.appendingPathComponent("control.json"), options: .atomic)
-        try await eventually { model.works.count == 2 }
-        model.inspect(b)
-        collector.enabledSince = 0
-        collector.observe(try XCTUnwrap(model.projection), identity: try XCTUnwrap(model.identity))
-        try await eventually { !sent.isEmpty }
-        XCTAssertEqual(Set(sent.flatMap(\.ids)), ["A-unbound", "B-free"])
-        XCTAssertEqual(model.selected, "B"); XCTAssertNil(model.selectedNotice)
-    }
-    @MainActor func testNoticeBatchRefreshSeesBindingBeforeDelivery() async throws {
-        let base = try work()
-        let fresh = try changed(base, ["terminalNoticeIds": [], "state": "idle", "affected": false, "gen": NSNull(),
-            "notices": [["id": "race", "session": base.session, "kind": "done", "at": Date().timeIntervalSince1970 * 1000 + 1000, "unread": true, "delivered": false, "fact": "race"]]])
-        let bound = try changed(fresh, ["terminalNoticeIds": ["race"]])
-        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
-        let latest = try JSONSerialization.jsonObject(with: JSONEncoder().encode(bound))
-        var sent: [NoticeDelivery] = []
-        let collector = NotificationCoordinator(send: { sent.append($0) })
-        let (model, room) = try controlledModel(options: ["works": [], "inspectWork": latest, "observerControl": true], notifications: collector)
-        defer { model.systemQuit {} }
-        model.start(); try await eventually { model.isCurrent }
-        try JSONSerialization.data(withJSONObject: ["works": [raw], "inspectWork": latest, "observerControl": true]).write(to: room.appendingPathComponent("control.json"), options: .atomic)
-        try await eventually { self.traces(room).contains { $0["event"] as? String == "inspected-sent" } }
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertTrue(sent.isEmpty)
-        XCTAssertNil(model.selected); XCTAssertNil(model.selectedNotice)
-    }
-    @MainActor func testNoticeRefreshDisconnectAndTimeoutIgnoreLateReplies() async throws {
-        for disconnect in [false, true] {
-            let base = try work()
-            let fresh = try changed(base, ["terminalNoticeIds": [], "state": "idle", "affected": false, "gen": NSNull(),
-                "notices": [["id": "late", "session": base.session, "kind": "done", "at": Date().timeIntervalSince1970 * 1000 + 1000, "unread": true, "delivered": false, "fact": "late"]]])
-            var sent: [NoticeDelivery] = []
-            let collector = NotificationCoordinator(send: { sent.append($0) })
-            let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
-            let options: [String: Any] = ["works": [raw], "inspectGate": true, "observerControl": true]
-            var initial = options; initial["works"] = []
-            let (model, room) = try controlledModel(options: initial, notifications: collector)
-            defer { model.systemQuit {} }
-            let refresh = try XCTUnwrap(collector.currentWorks)
-            var replies: [[NativeWork]] = []
-            collector.currentWorks = { sessions in
-                let reply = await refresh(sessions); replies.append(reply); return reply
-            }
-            model.start(); try await eventually { model.isCurrent }
-            try JSONSerialization.data(withJSONObject: options).write(to: room.appendingPathComponent("control.json"), options: .atomic)
-            try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
-            let request = try XCTUnwrap(traces(room).compactMap { $0["message"] as? [String: Any] }.first { $0["t"] as? String == "native.inspect" }?["request"] as? String)
-            if disconnect {
-                try observerCommand(room, ["disconnect": true])
-                try await eventually { !model.isCurrent }
-                try await eventually { !replies.isEmpty }
-                XCTAssertEqual(replies.first, [])
-                // A later welcome may schedule a fresh batch. Its new inspection sees the binding;
-                // the obsolete response below must never stand in for that fresh inspection.
-                var latest = options
-                latest["inspectWork"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(changed(fresh, ["terminalNoticeIds": ["late"]])))
-                try JSONSerialization.data(withJSONObject: latest).write(to: room.appendingPathComponent("control.json"), options: .atomic)
-                try await eventually { model.isCurrent }
-                try observerCommand(room, ["message": ["t": "native.inspected", "request": request, "work": raw]])
-            } else {
-                try await eventually { !replies.isEmpty }
-                XCTAssertEqual(replies.first, [], "超时必须完成等待并返回空候选")
-            }
-            try Data().write(to: room.appendingPathComponent("allow-inspect"))
-            try await eventually { self.traces(room).contains { $0["event"] as? String == "inspected-sent" } }
-            try await Task.sleep(for: .milliseconds(2300))
-            XCTAssertTrue(sent.isEmpty, "disconnect=\(disconnect), replies=\(replies.count)")
-            XCTAssertNil(model.selectedNotice)
-        }
-    }
-    @MainActor func testNoticeRefreshRejectsChangedServiceAndCompletesWait() async throws {
-        let base = try work()
-        let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(base))
-        let (model, room) = try controlledModel(options: ["works": [raw], "inspectGate": true, "observerControl": true])
-        defer { model.systemQuit {} }
-        model.start(); try await eventually { model.isCurrent }
-        model.inspect(base)
-        var result: [NativeWork]?
-        let waiting = Task { result = await model.notifications.currentWorks?([base.session]) }
-        try await eventually { self.traces(room).contains { $0["event"] as? String == "inspect-waiting" } }
-        let identity = try XCTUnwrap(model.identity)
-        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(identity))
-        try observerCommand(room, ["message": ["t": "native.welcome", "identity": encoded,
-            "projection": ["serviceInstance": "obsolete-service", "revision": 20, "accepting": true, "works": [raw]]]])
-        try await eventually { result != nil }
-        XCTAssertEqual(result, []); XCTAssertFalse(model.isCurrent)
-        XCTAssertEqual(model.selected, base.id); XCTAssertNil(model.selectedNotice)
-        try Data().write(to: room.appendingPathComponent("allow-inspect"))
-        await waiting.value
-    }
-    @MainActor func testNotificationReconcilesSystemDeliveryAcrossRestart() async throws {
-        let work = try work(); let notice = try XCTUnwrap(work.notices.first)
-        let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", serviceInstance: "s", base: "/tmp/data")
-        var sent = 0; var delivered: [String] = []
-        let notifications = NotificationCoordinator(send: { _ in sent += 1 }, existing: { _ in [notice.id] })
-        notifications.enabled = true; notifications.enabledSince = 0; notifications.delivered = { delivered += $0 }
-        notifications.prepare(base: identity.base)
-        await notifications.reconcile()
-        notifications.observe(NativeProjection(serviceInstance: "s", revision: 1, accepting: true, works: [work]), identity: identity)
-        try await Task.sleep(for: .milliseconds(2100))
-        XCTAssertEqual(sent, 0); XCTAssertEqual(delivered, [notice.id])
-    }
+
     @MainActor func testStatusPanelNaturalWindowKeepsRecentWorkVisible() async throws {
         _ = NSApplication.shared
         let (model, _) = try controlledModel(options: ["notice": true])
@@ -789,12 +484,12 @@ final class NativeTests: XCTestCase {
     @MainActor func testNativeFramesLightDarkBusyIdleAndFailure() async throws {
         _ = NSApplication.shared
         let base = try work()
-        let first = try changed(base, ["notices": [["id": "notice-one", "session": base.session, "kind": "needs-you", "at": 1, "unread": true, "delivered": false, "fact": "event:42",
-            "detail": String(repeating: "需要确认写入工作区外的完整路径，以及此次操作的影响范围。长说明必须能完整查看，不能把主要接回动作挤出面板。\n\n", count: 12)]]])
+        let first = try changed(base, ["currentNotice": ["id": "notice-one", "session": base.session, "kind": "needs-you", "at": 1, "unread": true, "delivered": false, "fact": "event:42",
+            "detail": String(repeating: "需要确认写入工作区外的完整路径，以及此次操作的影响范围。长说明必须能完整查看，不能把主要接回动作挤出面板。\n\n", count: 12)]])
         let busy = try [first,
-            changed(first, ["session": "running", "state": "running", "action": "正在运行测试", "workspace": ["/tmp/另一个同名项目/项目"], "notices": []]),
-            changed(first, ["session": "unknown", "state": "unknown", "action": "等待核对实际状态", "gen": NSNull(), "notices": []]),
-            changed(first, ["session": "result", "state": "idle", "action": "结果可查看", "gen": NSNull(), "affected": false, "notices": []])]
+            changed(first, ["session": "running", "state": "running", "action": "正在运行测试", "workspace": ["/tmp/另一个同名项目/项目"], "currentNotice": NSNull()]),
+            changed(first, ["session": "unknown", "state": "unknown", "action": "等待核对实际状态", "gen": NSNull(), "currentNotice": NSNull()]),
+            changed(first, ["session": "result", "state": "idle", "action": "结果可查看", "gen": NSNull(), "affected": false, "currentNotice": NSNull()])]
         let raw = try busy.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
         let (model, _) = try controlledModel(options: ["works": raw])
         model.start(); try await eventually { model.isCurrent }
@@ -843,7 +538,7 @@ final class NativeTests: XCTestCase {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
         }
         func scrollBottom(_ window: NSWindow) throws -> NSScrollView {
-            let scroll = try XCTUnwrap(scrollViews(try XCTUnwrap(window.contentView)).first { ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height })
+            let scroll = try XCTUnwrap(scrollViews(try XCTUnwrap(window.contentView)).last { $0.documentView != nil })
             let height = try XCTUnwrap(scroll.documentView).bounds.height
             scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, height - scroll.contentView.bounds.height)))
             scroll.reflectScrolledClipView(scroll.contentView)
@@ -851,16 +546,8 @@ final class NativeTests: XCTestCase {
         }
         try await capture(StatusPanel(model: model).environment(\.colorScheme, .light), name: "busy-light", appearance: .aqua)
         try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "busy-dark", appearance: .darkAqua)
-        model.inspect(first, notice: "notice-one"); try await eventually { model.selectedNotice?.id == "notice-one" }
+        model.inspect(first)
         try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "detail-dark", appearance: .darkAqua)
-        model.inspect(first, notice: "notice-one"); try await eventually { model.selectedNotice?.id == "notice-one" }
-        try await capture(StatusPanel(model: model).environment(\.colorScheme, .dark), name: "detail-bottom-dark", appearance: .darkAqua) { window in
-            let scroll = try scrollBottom(window)
-            try await Task.sleep(for: .milliseconds(100))
-            let document = try XCTUnwrap(scroll.documentView)
-            XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
-            try JSONSerialization.data(withJSONObject: ["scrollY": scroll.contentView.bounds.origin.y, "viewportBottom": scroll.contentView.bounds.maxY, "documentBottom": document.bounds.maxY, "evidence": "offscreen geometry only; real menu-bar and keyboard operation remains unverified"], options: [.prettyPrinted, .sortedKeys]).write(to: directory.deletingLastPathComponent().appendingPathComponent("scroll-status.json"))
-        }
         let quitAlert = model.makeEngineStopAlert()
         XCTAssertEqual(quitAlert.buttons.map(\.title), ["取消", "停止 Engine"])
         XCTAssertEqual(quitAlert.buttons.first?.keyEquivalent, "\r")
@@ -868,10 +555,6 @@ final class NativeTests: XCTestCase {
         try await capture(QuitImpactList(affected: model.affected)
             .background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .light),
             name: "quit-impact-list", size: NSSize(width: 360, height: 300), appearance: .aqua)
-        model.notificationRoutes = busy.filter { $0.state != .unknown }.map {
-            NoticeRoute(base: model.identity!.base, session: $0.session, ids: ["frame-\($0.session)"], facts: ["event:frame"])
-        }
-        try await capture(NoticeWindow(model: model).environment(\.colorScheme, .light), name: "notice-selection", size: NSSize(width: 420, height: 470), appearance: .aqua)
         model.phase = .fault("连接已断开，重试后核对当前状态。")
         try await capture(StatusPanel(model: model).environment(\.colorScheme, .light), name: "failure", appearance: .aqua)
         model.phase = .ready
@@ -886,7 +569,7 @@ final class NativeTests: XCTestCase {
             let scroll = try scrollBottom(window)
             try await Task.sleep(for: .milliseconds(100))
             let document = try XCTUnwrap(scroll.documentView)
-            XCTAssertEqual(scroll.contentView.bounds.maxY, document.bounds.maxY, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.maxY + 1, document.bounds.maxY)
             var copied: String?; idle.terminal.copyText = { copied = $0 }
             idle.terminal.copy(idle.cliDirectory); XCTAssertEqual(copied, idle.cliDirectory)
             try JSONSerialization.data(withJSONObject: ["scrollY": scroll.contentView.bounds.origin.y, "viewportBottom": scroll.contentView.bounds.maxY, "documentBottom": document.bounds.maxY, "copiedPath": copied ?? "", "evidence": "offscreen geometry and copy port; real App AX recorded separately"], options: [.prettyPrinted, .sortedKeys]).write(to: directory.deletingLastPathComponent().appendingPathComponent("scroll-settings.json"))
@@ -902,12 +585,12 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(idle.menuBarState, .idle, "没有工作就是空闲静态")
 
         let running = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
-            try changed(first, ["session": "running", "state": "running", "action": "正在运行测试", "notices": []])))
+            try changed(first, ["session": "running", "state": "running", "action": "正在运行测试", "currentNotice": NSNull()])))
         let (active, _) = try controlledModel(options: ["works": [running]])
         active.start(); try await eventually { active.isCurrent }
         XCTAssertEqual(active.menuBarState, .active, "有受影响的工作就是执行中")
 
-        let waiting = try JSONSerialization.jsonObject(with: JSONEncoder().encode(try changed(first, ["notices": []])))
+        let waiting = try JSONSerialization.jsonObject(with: JSONEncoder().encode(try changed(first, ["currentNotice": NSNull()])))
         let (attention, _) = try controlledModel(options: ["works": [waiting]])
         attention.start(); try await eventually { attention.isCurrent }
         XCTAssertEqual(attention.menuBarState, .attention, "等答复就是需要你")
@@ -961,8 +644,8 @@ final class NativeTests: XCTestCase {
         let first = try work()
         let identity = ServiceIdentity(protocol: 1, version: "0.0.0", source: "/tmp/helper", serviceInstance: "s", base: "/tmp/data")
         func projection(_ ids: [String], revision: Int) throws -> NativeProjection {
-            let notices = ids.map { AttentionItem(id: $0, session: first.session, kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: $0) }
-            return NativeProjection(serviceInstance: "s", revision: revision, accepting: true, works: [try changed(first, ["notices": JSONSerialization.jsonObject(with: JSONEncoder().encode(notices))])])
+            let notice = AttentionItem(id: ids.last!, session: first.session, kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: ids.last!)
+            return NativeProjection(serviceInstance: "s", revision: revision, accepting: true, works: [try changed(first, ["currentNotice": JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))])])
         }
         var sent: [NoticeDelivery] = []
         let notifications = NotificationCoordinator(send: { sent.append($0) })
@@ -983,7 +666,7 @@ final class NativeTests: XCTestCase {
         let now = Date().timeIntervalSince1970 * 1000
         func row(id: String, unread: Bool = true) throws -> NativeWork {
             let notice = AttentionItem(id: id, session: first.session, kind: .needsYou, at: now, detail: nil, unread: unread, delivered: false, fact: "event:\(id)")
-            return try changed(first, ["notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))]])
+            return try changed(first, ["currentNotice": JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))])
         }
         var sent: [NoticeDelivery] = []; var acknowledged: [String] = []
         let notifications = NotificationCoordinator(send: { sent.append($0) })
@@ -1048,7 +731,7 @@ final class NativeTests: XCTestCase {
         let notice = AttentionItem(id: id, session: "s-\(id)", kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil,
                                    unread: true, delivered: false, fact: "event:\(id)")
         let work = try changed(try work(), ["session": "s-\(id)", "state": "idle", "affected": false,
-                                             "notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))]])
+                                             "currentNotice": JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))])
         return try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(work)) as? [String: Any])
     }
 
@@ -1077,15 +760,17 @@ final class NativeTests: XCTestCase {
         return found
     }
 
-    @MainActor private func saveFrame(_ window: NSWindow, name: String) async throws {
+    @MainActor private func saveFrame(_ window: NSWindow, name: String, offscreen: Bool = true) async throws {
         let directory = root.appendingPathComponent(".artifacts/macos/frames")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let view = try XCTUnwrap(window.contentView)
-        // 控件（开关）的新状态要等窗口被 order 进来才与平台视图同步；窗口始终停在屏幕外。
-        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
-        window.orderBack(nil)
-        defer { window.orderOut(nil) }
-        XCTAssertLessThan(window.frame.maxX, 0, "验收窗口不得移到用户桌面")
+        // 离屏托管视图先同步平台控件；真实有标题窗口保留位置与可见生命周期。
+        if offscreen {
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            window.orderBack(nil)
+            XCTAssertLessThan(window.frame.maxX, 0, "验收窗口不得移到用户桌面")
+        } else { XCTAssertTrue(window.isVisible) }
+        defer { if offscreen { window.orderOut(nil) } }
         try await Task.sleep(for: .milliseconds(350))
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
         let capturedAt = Date().timeIntervalSince1970
@@ -1095,7 +780,7 @@ final class NativeTests: XCTestCase {
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: directory.appendingPathComponent(name + ".png"))
         if name.hasPrefix("u116-") {
-            let app = Bundle(url: root.appendingPathComponent(".artifacts/macos/Magic Code.app"))
+            let app = Bundle(url: helperApp)
             let facts: [String: Any] = ["at": capturedAt, "appearance": capturedAppearance, "width": view.bounds.width, "height": view.bounds.height, "version": app?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知", "source": "offscreen native NSHostingController"]
             try JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent(name + ".metadata.json"))
         }
@@ -1237,7 +922,7 @@ final class NativeTests: XCTestCase {
         try await eventually { model.notifications.enabled }
         let notice = AttentionItem(id: "after-allow", session: "s-after", kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: "event:after-allow")
         let row = try changed(try work(), ["session": "s-after", "state": "idle", "affected": false,
-                                           "notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))]])
+                                           "currentNotice": JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))])
         try pushWorks([row], to: room)
         try await Task.sleep(for: .seconds(2.6))
         XCTAssertEqual(sent.count, 1, "系统一允许，新事实就该能送达，不需要用户再点")
@@ -1251,7 +936,7 @@ final class NativeTests: XCTestCase {
         var sent: [NoticeDelivery] = []
         let old = AttentionItem(id: "before-allow", session: "s-old", kind: .done, at: Date().timeIntervalSince1970 * 1000, detail: nil, unread: true, delivered: false, fact: "event:before-allow")
         let row = try changed(try work(), ["session": "s-old", "state": "idle", "affected": false,
-                                           "notices": [JSONSerialization.jsonObject(with: JSONEncoder().encode(old))]])
+                                           "currentNotice": JSONSerialization.jsonObject(with: JSONEncoder().encode(old))])
         let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(row)) as? [String: Any] ?? [:]
         let (model, _) = try systemTestModel(status: { status }, options: ["works": [raw]], send: { sent.append($0) })
         model.start(); try await eventually { model.isCurrent }
@@ -1286,9 +971,109 @@ final class NativeTests: XCTestCase {
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
+    @MainActor func testCLIInstallationCommitsCandidateOnlyAfterSuccess() throws {
+        let room = try temp()
+        let model = AppModel(appURL: helperApp, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("安装命令不得发送通知") }))
+        defer { model.requestQuit {} }
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: "\(room.path)/MagicCode.Validation"))
+        let original = model.cliDirectory
+        model.installCLI()
+        XCTAssertEqual(preferences.string(forKey: "cliDirectory"), original)
+        XCTAssertTrue(try CLIInstallation.belongs(URL(fileURLWithPath: original).appendingPathComponent("magic"), helper: model.helperURL))
+
+        let blocked = room.appendingPathComponent("occupied-bin")
+        let sentinel = Data("user-owned command".utf8)
+        try PrivateFiles.write(sentinel, to: blocked.appendingPathComponent("magic"), mode: 0o600)
+        model.installCLI(at: blocked.path)
+        XCTAssertEqual(model.cliDirectory, original, "安装失败不能替换当前目录")
+        XCTAssertEqual(preferences.string(forKey: "cliDirectory"), original, "安装失败不能持久化候选目录")
+        XCTAssertTrue(model.actionMessage?.contains("已被占用") == true)
+        XCTAssertEqual(try Data(contentsOf: blocked.appendingPathComponent("magic")), sentinel)
+        XCTAssertTrue(try CLIInstallation.belongs(URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic"), helper: model.helperURL))
+
+        let candidate = room.appendingPathComponent("new-bin")
+        model.installCLI(at: candidate.path)
+        XCTAssertEqual(model.cliDirectory, candidate.path)
+        XCTAssertEqual(preferences.string(forKey: "cliDirectory"), candidate.path)
+        XCTAssertTrue(try CLIInstallation.belongs(candidate.appendingPathComponent("magic"), helper: model.helperURL))
+    }
+
+    @MainActor func testSettingsWriteReceiptsSurviveQueuedReadsAndConflictRecovery() async throws {
+        let room = try temp()
+        let model = AppModel(appURL: helperApp, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("设置不得发送通知") }))
+        defer { model.requestQuit {} }
+        model.readSettings(); try await eventually { !model.settingsBusy }
+        let initial = try XCTUnwrap(model.settingsSnapshot)
+        let action: SettingsValue = .object(["type": .string("prefs.set"), "reducedMotion": .bool(true)])
+        model.applySettings(action, stamp: initial.stamp, key: "receipt-success")
+        XCTAssertTrue(model.settingsBusy)
+        // 同一 MainActor 回合内排队，确定刷新发生在写调用完成之后。
+        model.readSettings()
+        try await eventually { !model.settingsBusy }
+        XCTAssertEqual(model.settingsSavedKey, "receipt-success", "排队读取不能吞掉弹窗用于关闭的保存标记")
+        XCTAssertNotNil(model.settingsNote)
+        XCTAssertNil(model.settingsError)
+        XCTAssertEqual(model.settingsSnapshot?.configuration["motion"]["reduced"], .bool(true))
+
+        let saved = try XCTUnwrap(model.settingsSnapshot)
+        let path = URL(fileURLWithPath: saved.configPath)
+        try Data("{\"motion\":{\"reduced\":false}}".utf8).write(to: path)
+        model.applySettings(action, stamp: saved.stamp, key: "receipt-conflict")
+        model.readSettings()
+        try await eventually { !model.settingsBusy }
+        let conflict = try XCTUnwrap(model.settingsError)
+        XCTAssertTrue(conflict.contains("配置已被修改"), conflict)
+        XCTAssertNil(model.settingsSavedKey)
+        XCTAssertNil(model.settingsNote)
+        let refreshed = try XCTUnwrap(model.settingsSnapshot)
+        XCTAssertNotEqual(refreshed.stamp, saved.stamp, "保留写失败时仍须刷新配置基线")
+        XCTAssertEqual(refreshed.configuration["motion"]["reduced"], .bool(false))
+        model.readSettings(); try await eventually { !model.settingsBusy }
+        XCTAssertEqual(model.settingsError, conflict, "后续读取不能冒充写失败已经解决")
+
+        model.applySettings(action, stamp: refreshed.stamp, key: "receipt-recovered")
+        XCTAssertNil(model.settingsSavedKey, "新操作须先清除旧成功标记")
+        model.readSettings()
+        try await eventually { !model.settingsBusy }
+        XCTAssertNil(model.settingsError)
+        XCTAssertEqual(model.settingsSavedKey, "receipt-recovered")
+        XCTAssertEqual(model.settingsSnapshot?.configuration["motion"]["reduced"], .bool(true))
+    }
+
+    @MainActor func testSettingsReadFailureClearsAfterConfigurationRepair() async throws {
+        let room = try temp()
+        let model = AppModel(appURL: helperApp, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("设置不得发送通知") }))
+        defer { model.requestQuit {} }
+        let path = room.appendingPathComponent(".magic/config.json")
+        try PrivateFiles.write(Data("{".utf8), to: path, mode: 0o600)
+        model.readSettings(); try await eventually { !model.settingsBusy }
+        XCTAssertNotNil(model.settingsError)
+        XCTAssertNil(model.settingsSnapshot)
+        try Data("{}".utf8).write(to: path)
+        model.readSettings(); try await eventually { !model.settingsBusy }
+        XCTAssertNil(model.settingsError, "修复配置后成功重读应清除原读失败")
+        let snapshot = try XCTUnwrap(model.settingsSnapshot)
+
+        model.applySettings(.object(["type": .string("prefs.set"), "reducedMotion": .bool(true)]), stamp: snapshot.stamp, key: "before-read-failure")
+        try await eventually { !model.settingsBusy }
+        XCTAssertNil(model.settingsError)
+        XCTAssertEqual(model.settingsSavedKey, "before-read-failure")
+        let valid = try Data(contentsOf: path)
+        let note = try XCTUnwrap(model.settingsNote)
+        try Data("{".utf8).write(to: path)
+        model.readSettings(); try await eventually { !model.settingsBusy }
+        XCTAssertNotNil(model.settingsError, "已有保存回执不能隐藏后续读取失败")
+        XCTAssertEqual(model.settingsSavedKey, "before-read-failure")
+        try valid.write(to: path)
+        model.readSettings(); try await eventually { !model.settingsBusy }
+        XCTAssertNil(model.settingsError, "读错误不能无限保留")
+        XCTAssertEqual(model.settingsSavedKey, "before-read-failure")
+        XCTAssertEqual(model.settingsNote, note)
+    }
+
     @MainActor func testU116RealHelperSettingsAndSevenNativePages() async throws {
         _ = NSApplication.shared
-        let app = root.appendingPathComponent(".artifacts/macos/Magic Code.app")
+        let app = helperApp
         let room = try temp()
         let model = AppModel(appURL: app, validationRoot: room, notificationPort: NotificationCoordinator(send: { _ in XCTFail("设置不得发送通知") }))
         defer { model.requestQuit {} }
@@ -1383,16 +1168,16 @@ final class NativeTests: XCTestCase {
         }
         try saved.write(to: URL(fileURLWithPath: snapshot.configPath))
         let natural = NSHostingController(rootView: SettingsView(model: model))
-        let fitting = natural.view.fittingSize
-        XCTAssertGreaterThanOrEqual(fitting.width, 650); XCTAssertGreaterThanOrEqual(fitting.height, 600)
-        XCTAssertLessThanOrEqual(fitting.width, 1200); XCTAssertLessThanOrEqual(fitting.height, 900)
+        // 设置是可嵌入页面；零尺寸提案检查页面下限，默认窗口大小由 MainWindowController 负责。
+        let fitting = natural.sizeThatFits(in: .zero)
+        XCTAssertEqual(fitting.width, 460, accuracy: 1); XCTAssertEqual(fitting.height, 420, accuracy: 1)
         let evidence: [String: Any] = ["source": "signed embedded helper + native SettingsView", "works": model.works.count, "sensitiveRead": false, "naturalWidth": fitting.width, "naturalHeight": fitting.height, "frames": geometry]
         try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/u116-settings-native.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
     @MainActor private func hostRoundTrip() async throws {
-        let app = root.appendingPathComponent(".artifacts/macos/Magic Code.app")
+        let app = helperApp
         let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path))
         let room = try temp(), discovery = room.appendingPathComponent("engine.json")
@@ -1440,6 +1225,19 @@ final class NativeTests: XCTestCase {
         return window
     }
 
+    // XCTest 不运行 NSApplication.run；等待真实焦点/关闭事件时需要分发 AppKit 事件并完成一轮布局。
+    @MainActor private func appKitEventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            while let event = NSApp.nextEvent(matching: .any, until: .distantPast, inMode: .default, dequeue: true) {
+                NSApp.sendEvent(event)
+            }
+            NSApp.updateWindows()
+            try await Task.sleep(for: .milliseconds(10))
+        } while !condition() && Date() < deadline
+        XCTAssertTrue(condition(), "没有观察到所需 AppKit 状态", file: file, line: line)
+    }
+
     /// 长期窗口在前台存在 ⇒ `.regular`（Dock 有图标、Cmd+Tab 切得到）；全部关掉 ⇒ 回 `.accessory`。
     /// 策略没变就不该再调一次——重复结算不是一次切换。
     @MainActor func testLongLivedWindowDrivesActivationPolicyBothWays() async throws {
@@ -1460,22 +1258,110 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(policy.presentCount, 0)
     }
 
-    /// 关掉设置窗口走的是 **order out**，不是 close：AppKit 不为它发通知，只有 `isVisible` 会变。
-    /// 真出现、真 order out（台账里就该一条 regular、一条 accessory）。
-    @MainActor func testOrderingOutTheSettingsWindowReturnsToAccessory() async throws {
+    @MainActor func testMainWindowReusesSessionSettingsAndNotificationEntrancesWithoutStoppingEngine() async throws {
         _ = NSApplication.shared
+        // PolicySpy 只记录产品策略；允许测试进程自身激活，结束后恢复其原始策略。
+        let activationPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        XCTAssertEqual(NSApp.activationPolicy(), .accessory)
+        defer { NSApp.setActivationPolicy(activationPolicy) }
+        if !NSRunningApplication.current.isFinishedLaunching { NSApp.finishLaunching() }
+        try await appKitEventually { NSRunningApplication.current.activationPolicy == .accessory }
+        let (model, room) = try controlledModel(options: [:])
+        let controller = MainWindowController(model: model)
+        model.showMainWindow = { [weak controller] in controller?.show() }
         let policy = LongLivedWindows.shared, spy = PolicySpy()
         let real = (policy.current, policy.apply); spy.install(policy)
-        addTeardownBlock { policy.current = real.0; policy.apply = real.1 }
-        let window = offscreenWindow(titled: "设置")
-        window.contentViewController = NSHostingController(rootView: Color.clear.frame(width: 10, height: 10).background(LongLivedWindowMarker()))
-        window.orderBack(nil)
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(spy.log.last, .regular, "窗口出现 ⇒ Dock 图标与 Cmd+Tab")
-        window.orderOut(nil)          // SwiftUI 的 Settings 窗口「关掉」就是这个
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(spy.log.last, .accessory, "窗口不在了 ⇒ 回菜单栏形态：图标不能留在 Dock 里")
+        defer {
+            controller.window?.close(); controller.window?.contentViewController = nil
+            controller.window?.delegate = nil; model.showMainWindow = nil
+            model.requestQuit {}
+            policy.current = real.0; policy.apply = real.1
+        }
+        model.start(); try await eventually { model.isCurrent }
+        let identity = try XCTUnwrap(model.identity)
+        XCTAssertNil(controller.window)
+        model.manageSessions()
+        let window = try XCTUnwrap(controller.window)
+        window.animationBehavior = .none
+        try await appKitEventually {
+            window.isVisible && window.isKeyWindow && NSApp.isActive && policy.presentCount == 1
+                && window.contentMinSize.width >= 460 && window.contentMinSize.height >= 480
+        }
+        XCTAssertTrue(window.contentViewController is NSHostingController<MainWindowView>)
+        let content = try XCTUnwrap(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        XCTAssertEqual(content.bounds.width, 1000, accuracy: 1)
+        XCTAssertEqual(content.bounds.height, 760, accuracy: 1)
+        XCTAssertLessThanOrEqual(window.contentMinSize.width, content.bounds.width)
+        XCTAssertLessThanOrEqual(window.contentMinSize.height, content.bounds.height)
+        XCTAssertEqual(spy.log.last, .regular)
+        let visiblePolicyLog = spy.log
+
+        model.manageSettings()
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        XCTAssertTrue(controller.window === window)
+        XCTAssertEqual(model.mainPage, .settings)
+        model.manageSessions()
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        XCTAssertTrue(controller.window === window)
+        XCTAssertEqual(model.mainPage, .sessions)
+        model.manageSettings()
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        let route = NoticeRoute(base: identity.base, serviceInstance: identity.serviceInstance, session: "one", notice: reason())
+        model.notifications.openRoute?(route)
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        XCTAssertTrue(controller.window === window)
+        XCTAssertEqual(model.mainPage, .sessions)
+        XCTAssertEqual(model.sessions.route, route, "通知入口必须将来源交给同一窗口里的会话页")
+        XCTAssertEqual(policy.presentCount, 1)
+        XCTAssertEqual(spy.log, visiblePolicyLog, "内部切页不反复切换 Dock 策略")
+
+        window.close()
+        try await appKitEventually { !window.isVisible && !window.isKeyWindow && spy.log.last == .accessory }
         XCTAssertEqual(policy.presentCount, 0)
+        let status = try await EngineControl.run(app: model.appURL, action: "status", home: room)
+        XCTAssertEqual(status.state, "ready")
+        XCTAssertEqual(status.record?.identity, identity, "关闭主窗口保留同一 Engine 实例")
+        XCTAssertFalse(traces(room).contains { $0["event"] as? String == "shutdown" })
+        model.manageSettings()
+        try await appKitEventually { window.isVisible && window.isKeyWindow && NSApp.isActive && spy.log.last == .regular }
+        XCTAssertTrue(controller.window === window, "关闭后从设置入口重开仍复用原窗口")
+        XCTAssertEqual(spy.log.last, .regular)
+        XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
+        try await eventually { !model.settingsBusy }
+
+        // 只缩小一次；切页与后续布局都不得抬高最小尺寸或把窗口撑回去。
+        window.setContentSize(NSSize(width: 460, height: 480))
+        func assertCompactLayout() {
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            let rect = window.contentRect(forFrameRect: window.frame)
+            XCTAssertEqual(rect.width, 460, accuracy: 1); XCTAssertEqual(rect.height, 480, accuracy: 1)
+            XCTAssertEqual(content.bounds.width, 460, accuracy: 1); XCTAssertEqual(content.bounds.height, 480, accuracy: 1)
+            XCTAssertEqual(window.contentMinSize.width, 460, accuracy: 1)
+            XCTAssertEqual(window.contentMinSize.height, 480, accuracy: 1)
+            func checkViewport(_ view: NSView) {
+                guard !view.isHiddenOrHasHiddenAncestor else { return }
+                if let scroll = view as? NSScrollView {
+                    let viewport = scroll.contentView.convert(scroll.contentView.bounds, to: content)
+                    XCTAssertTrue(content.bounds.insetBy(dx: -1, dy: -1).contains(viewport), "可见滚动视口不得超出主窗口内容区：\(viewport)")
+                    return // 滚动正文可以超出视口，不将正常滚动误判为越界。
+                }
+                view.subviews.forEach(checkViewport)
+            }
+            checkViewport(content)
+        }
+        model.rememberSettingsCategory("app")
+        for (page, name) in [(AppModel.MainPage.sessions, "sessions"), (.settings, "settings")] {
+            model.selectMainPage(page)
+            try await saveFrame(window, name: "u123-main-compact-\(name)", offscreen: false)
+            assertCompactLayout()
+            XCTAssertTrue(controller.window === window)
+        }
+        model.selectMainPage(.sessions)
+        window.orderBack(nil)
+        await Task.yield()
+        assertCompactLayout()
     }
 
     /// 反向判据：没有长期窗口时，一扇**没登记**的窗口出现（菜单栏那块瞬时面板就是这种口径）不该改策略。
@@ -1491,23 +1377,77 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(policy.presentCount, 0)
     }
 
-    /// 设置窗口那一侧的接线：内容里挂 `LongLivedWindowMarker` 的窗口，出现即登记 ⇒ 切 `.regular`。
-    /// 真窗口 ＋ 真托管视图；策略闭包换成替身，不动测试进程自己的策略。
-    @MainActor func testSettingsMarkerRegistersItsWindow() async throws {
+    @MainActor func testMainWindowHiddenSessionsDoNotReadSourcesAndKeepBrowsingState() async throws {
         _ = NSApplication.shared
+        let activationPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        XCTAssertEqual(NSApp.activationPolicy(), .accessory)
+        defer { NSApp.setActivationPolicy(activationPolicy) }
+        if !NSRunningApplication.current.isFinishedLaunching { NSApp.finishLaunching() }
+        try await appKitEventually { NSRunningApplication.current.activationPolicy == .accessory }
+        let (model, _) = try controlledModel(options: [:])
+        let notice = reason(), work = try reasonWork(notice), messages = NativeMessages()
+        let sessions = model.sessions
+        sessions.send = { messages.requests.append($0) }
+        sessions.connect(identity: testIdentity, current: true, works: [work])
+        sessions.open(); try catalog(sessions, messages, [sessionRow()])
+        sessions.selection = ["one"]; sessions.choose(); sessions.history()
+        try history(sessions, messages, entries: [entry()])
+        sessions.search = "会话"; sessions.workspace = ["/tmp/项目"]
+        // 正文已加载但历史折叠；本测试显式驱动来源可见回调，避免滚动布局提前标读。
+        XCTAssertFalse(sessions.historyExpanded)
+        let controller = MainWindowController(model: model)
+        model.showMainWindow = { [weak controller] in controller?.show() }
         let policy = LongLivedWindows.shared, spy = PolicySpy()
         let real = (policy.current, policy.apply); spy.install(policy)
-        addTeardownBlock { policy.current = real.0; policy.apply = real.1 }
-        let window = offscreenWindow(titled: "设置")
-        window.contentViewController = NSHostingController(rootView: Color.clear.frame(width: 10, height: 10).background(LongLivedWindowMarker()))
-        XCTAssertEqual(policy.presentCount, 0, "窗口还没出现")
-        window.orderBack(nil)
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(spy.log.last, .regular, "设置窗口出现 ⇒ Dock 图标与 Cmd+Tab")
+        let other = offscreenWindow(titled: "Magic Code")
+        other.animationBehavior = .none
+        defer {
+            other.close(); controller.window?.close(); controller.window?.contentViewController = nil
+            controller.window?.delegate = nil; model.showMainWindow = nil
+            model.requestQuit {}
+            policy.current = real.0; policy.apply = real.1
+        }
+        model.manageSessions()
+        let window = try XCTUnwrap(controller.window)
+        window.animationBehavior = .none
+        try await appKitEventually { window.isVisible && window.isKeyWindow && NSApp.isActive }
+        try catalog(sessions, messages, [sessionRow()])
+        other.makeKeyAndOrderFront(nil)
+        try await appKitEventually { other.isKeyWindow && !window.isKeyWindow && NSApp.isActive }
+        sessions.sourceVisible(notice.id, entry: 1, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "另一个同名窗口获得焦点不能激活会话读面")
+
+        model.manageSettings()
+        try await appKitEventually { window.isVisible && window.isKeyWindow && NSApp.isActive }
+        model.selectMainPage(.sessions)
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        XCTAssertTrue(messages.reads.isEmpty, "切回会话不能沿用切页前的来源可见缓存")
+        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
+        model.manageSettings()
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        sessions.sourceVisible(notice.id, entry: 1, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "设置页可见时，即使收到会话来源可见回调也不得标读")
+        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
+        let historyRequests = messages.requests.filter { if case .history = $0 { return true }; return false }.count
+        model.selectMainPage(.sessions)
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        XCTAssertTrue(controller.window === window)
+        XCTAssertEqual(sessions.search, "会话"); XCTAssertEqual(sessions.workspace, ["/tmp/项目"])
+        XCTAssertEqual(sessions.selection, ["one"])
+        XCTAssertEqual(sessions.entries.map(\.text), ["保存的完整回复"])
+        XCTAssertEqual(messages.requests.filter { if case .history = $0 { return true }; return false }.count, historyRequests)
+        if case .sessions(_, let archived, let workspace, let search) = messages.requests.last {
+            XCTAssertEqual(archived, false); XCTAssertEqual(workspace, ["/tmp/项目"]); XCTAssertEqual(search, "会话")
+        } else { XCTFail("切回会话应按保留的筛选重新查询目录") }
+        XCTAssertTrue(messages.reads.isEmpty, "隐藏页迟到的正向回调不得缓存到切回后确认")
+        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
+        sessions.sourceVisible(notice.id, entry: 1, visible: true)
+        XCTAssertEqual(messages.reads, [[notice.id]], "主窗口会话页在前台且来源可见时才标读")
         window.close()
-        policy.settle(reason: "close")
-        XCTAssertEqual(spy.log.last, .accessory, "关掉设置窗口 ⇒ 回菜单栏形态")
-        window.orderOut(nil)
+        try await appKitEventually { !window.isVisible && !window.isKeyWindow }
+        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
+        try await eventually { !model.settingsBusy }
     }
 }
 
@@ -1558,5 +1498,344 @@ private final class EnginePlatformFixture: @unchecked Sendable {
         let state = states[parent] ?? "stopped"
         let record = HostDiscovery(protocol: 1, version: "0.1.0", source: executable.path, serviceInstance: "test-generation", socket: parent + "/test.sock", base: parent + "/.magic", app: bundle.bundleURL.path, lifecycle: "test-lifecycle", pid: nil, startedAt: nil, state: state, request: nil, error: nil)
         return (0, try JSONEncoder().encode(EngineControlResult(state: state, base: record.base, alive: state == "ready", record: record, error: nil)))
+    }
+}
+
+private final class NativeMessages {
+    var requests: [NativeRequest] = []
+    var catalog: String? { requests.reversed().compactMap { if case .sessions(let request, _, _, _) = $0 { return request }; return nil }.first }
+    var history: String? { requests.reversed().compactMap { if case .history(let request, _, _, _) = $0 { return request }; return nil }.first }
+    var inspect: String? { requests.reversed().compactMap { if case .inspect(let request, _, _) = $0 { return request }; return nil }.first }
+    var reads: [[String]] { requests.compactMap { if case .read(_, let ids) = $0 { return ids }; return nil } }
+}
+
+extension NativeTests {
+    private var testIdentity: ServiceIdentity { ServiceIdentity(protocol: 1, version: "0.1.0", source: "/tmp/helper", serviceInstance: "generation", base: "/tmp/native-data") }
+    private func sessionRow(_ id: String = "one", archived: Bool = false, canArchive: Bool = true) -> NativeSession {
+        NativeSession(id: id, title: "会话 \(id)", at: 1, workspace: ["/tmp/项目"], archived: archived, canArchive: canArchive,
+                      terminalOpen: false, state: canArchive ? .idle : .running, reason: nil, recentInput: "最近交代", recentProgress: "保存的进展")
+    }
+    private func reason(_ id: String = "source-one", session: String = "one", entry: Int? = 1, event: Int? = nil) -> AttentionItem {
+        AttentionItem(id: id, session: session, kind: .done, at: Date().timeIntervalSince1970 * 1000,
+                      detail: "这是实际回复，保留中文组合字符 👩🏽‍💻", unread: true, delivered: false, fact: "event:\(id)",
+                      source: AttentionSource(session: session, event: event, entry: entry))
+    }
+    private func reasonWork(_ notice: AttentionItem, archived: Bool = false, terminalOpen: Bool = false) throws -> NativeWork {
+        try changed(work(), ["session": notice.session, "state": "idle", "affected": false, "gen": NSNull(),
+                            "archived": archived, "canArchive": !archived, "terminalOpen": terminalOpen,
+                            "currentNotice": JSONSerialization.jsonObject(with: JSONEncoder().encode(notice))])
+    }
+    @MainActor private func browser(works: [NativeWork] = []) -> (SessionBrowserModel, NativeMessages) {
+        let model = SessionBrowserModel(), messages = NativeMessages()
+        model.send = { messages.requests.append($0) }
+        model.connect(identity: testIdentity, current: true, works: works)
+        model.open()
+        return (model, messages)
+    }
+    @MainActor private func catalog(_ model: SessionBrowserModel, _ messages: NativeMessages, _ rows: [NativeSession]) throws {
+        model.receive(.sessionsResult(request: try XCTUnwrap(messages.catalog), serviceInstance: testIdentity.serviceInstance, sessions: rows, error: nil))
+    }
+    @MainActor private func history(_ model: SessionBrowserModel, _ messages: NativeMessages, entries: [HistoryEntry], events: [HistoryEvent] = [], currentRequests: [HistoryEvent] = [], next: Int? = nil, done: Bool = true) throws {
+        model.receive(.historyResult(request: try XCTUnwrap(messages.history), serviceInstance: testIdentity.serviceInstance,
+            session: model.selected?.id ?? model.route!.session, entries: entries, events: events, currentRequests: currentRequests, next: next, done: done, error: nil))
+    }
+    private func entry(_ id: Int = 1, text: String = "保存的完整回复") -> HistoryEntry {
+        HistoryEntry(id: id, kind: "assistant", content: .object(["text": .string(text)]), payload: nil, at: 1, source: nil)
+    }
+    @MainActor func testCompactSessionNavigationRequiresExplicitOpenAndReopensNotice() throws {
+        let notice = reason(), work = try reasonWork(notice)
+        let (model, messages) = browser(works: [work])
+        try catalog(model, messages, [sessionRow(), sessionRow("two")])
+        model.selection = ["one"]; model.choose()
+        XCTAssertFalse(model.compactDetail, "选中行与刷新选择不得自动离开窄窗列表")
+        model.selection = ["one", "two"]; model.choose()
+        XCTAssertFalse(model.compactDetail, "多选仍留在列表")
+        model.showDetail("one")
+        XCTAssertTrue(model.compactDetail)
+        XCTAssertEqual(model.selection, ["one"])
+        model.showCatalog()
+        XCTAssertFalse(model.compactDetail)
+        XCTAssertEqual(model.selection, ["one"], "返回列表保留当前选中项")
+        model.choose()
+        XCTAssertFalse(model.compactDetail)
+        model.showDetail()
+        XCTAssertTrue(model.compactDetail, "显式打开可继续使用保留的选择")
+
+        let route = NoticeRoute(base: testIdentity.base, serviceInstance: testIdentity.serviceInstance, session: "one", notice: notice)
+        model.open(route: route)
+        XCTAssertTrue(model.compactDetail)
+        model.showCatalog(); model.choose()
+        XCTAssertFalse(model.compactDetail)
+        XCTAssertEqual(model.selection, ["one"])
+        model.open(route: route)
+        XCTAssertTrue(model.compactDetail, "再次打开同一提醒也应恢复详情，不依赖 notice ID 变化")
+        XCTAssertEqual(model.route, route)
+        XCTAssertTrue(messages.reads.isEmpty, "导航本身不是来源已读")
+    }
+    @MainActor func testCurrentRequestSourceAcknowledgesOnlyWhileVisibleInForeground() throws {
+        let notice = reason(entry: nil, event: 8), work = try reasonWork(notice)
+        let (model, messages) = browser(works: [work])
+        try catalog(model, messages, [sessionRow()])
+        model.selection = ["one"]; model.choose(); model.showDetail(); model.history()
+        let event = HistoryEvent(turn: nil, id: 8, session: "one", at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
+        try history(model, messages, entries: [], currentRequests: [event])
+        XCTAssertTrue(model.events.isEmpty, "当前待答来源不依赖历史 events 重复提供")
+        XCTAssertEqual(model.currentRequests, [event])
+        model.windowActive(true)
+        XCTAssertTrue(messages.reads.isEmpty, "只收到待答内容不能标读")
+        model.sourceVisible("another-notice", event: 8, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "其他提醒的可见回调不能标读当前提醒")
+        model.windowActive(false)
+        model.sourceVisible(notice.id, event: 8, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "后台可见不标读")
+        model.sourceVisible(notice.id, event: 8, visible: false)
+        model.windowActive(true)
+        XCTAssertTrue(messages.reads.isEmpty, "回到前台时来源已离开视口，不得补标")
+        model.sourceVisible(notice.id, event: 8, visible: true)
+        XCTAssertEqual(messages.reads, [[notice.id]])
+        if case .read(let service, let ids) = messages.requests.last {
+            XCTAssertEqual(service, testIdentity.serviceInstance); XCTAssertEqual(ids, [notice.id])
+        } else { XCTFail("实际可见的当前待答来源应发送标读请求") }
+        model.sourceVisible(notice.id, event: 8, visible: true)
+        model.windowActive(false); model.windowActive(true)
+        XCTAssertEqual(messages.reads.count, 1, "同一来源的重复可见与前台事件不重复标读")
+    }
+    @MainActor func testCurrentRequestSourceRejectsMismatchEntryShortcutAndOldInstance() throws {
+        let cases: [(label: String, eventID: Int, session: String, entryID: Int?, service: String)] = [
+            ("不同事件", 9, "one", nil, testIdentity.serviceInstance),
+            ("不同会话", 8, "two", nil, testIdentity.serviceInstance),
+            ("entry 优先", 8, "one", 1, testIdentity.serviceInstance),
+            ("旧实例", 8, "one", nil, "older-generation")
+        ]
+        for scenario in cases {
+            let notice = reason(entry: scenario.entryID, event: 8), work = try reasonWork(notice)
+            let (model, messages) = browser(works: [work])
+            model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: scenario.service, session: "one", notice: notice))
+            model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: work, error: nil))
+            try catalog(model, messages, [sessionRow()])
+            let event = HistoryEvent(turn: nil, id: scenario.eventID, session: scenario.session, at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
+            try history(model, messages, entries: scenario.entryID.map { [entry($0)] } ?? [], currentRequests: [event])
+            XCTAssertTrue(model.events.isEmpty)
+            model.windowActive(true)
+            model.sourceVisible(notice.id, event: 8, visible: true)
+            XCTAssertTrue(messages.reads.isEmpty, "\(scenario.label)不能通过当前待答事件误标")
+            if let entryID = scenario.entryID {
+                model.sourceVisible(notice.id, entry: entryID, visible: true)
+                XCTAssertEqual(messages.reads, [[notice.id]], "有 entry 时须看到对应正文才标读")
+            }
+        }
+    }
+    @MainActor func testSessionViewsKeepFiltersSelectionAndResumeReading() throws {
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow()])
+        model.selection = ["one"]; model.choose(); model.historyExpanded = true; model.history()
+        try history(model, messages, entries: [entry()])
+        model.search = "会话"; model.workspace = ["/tmp/项目"]
+        model.switchView(true)
+        try catalog(model, messages, [sessionRow("archived", archived: true)])
+        model.selection = ["archived"]; model.choose()
+        model.switchView(false)
+        XCTAssertEqual(model.selection, ["one"])
+        let previousRequests = messages.requests.count
+        try catalog(model, messages, [sessionRow()])
+        XCTAssertGreaterThan(messages.requests.count, previousRequests, "同身份重返普通视图仍应读取所选历史")
+        XCTAssertEqual(model.search, "会话"); XCTAssertEqual(model.workspace, ["/tmp/项目"])
+        XCTAssertEqual(model.selected?.id, "one")
+        XCTAssertTrue(messages.reads.isEmpty)
+    }
+    @MainActor func testSessionLateQueriesAndOfflineWritesDoNotChangeAuthority() throws {
+        let (model, messages) = browser()
+        let old = try XCTUnwrap(messages.catalog)
+        model.search = "新搜索"; model.refresh()
+        model.receive(.sessionsResult(request: old, serviceInstance: testIdentity.serviceInstance, sessions: [sessionRow("old")], error: nil))
+        XCTAssertTrue(model.rows.isEmpty)
+        try catalog(model, messages, [sessionRow()])
+        model.disconnect()
+        let before = messages.requests.count
+        model.refresh(); model.manage([SessionManagement(session: "one", action: "archive")]); model.history()
+        XCTAssertEqual(messages.requests.count, before)
+        XCTAssertEqual(model.rows.first?.id, "one", "断线保留旧快照")
+    }
+    @MainActor func testSessionBatchKeepsPartialFailuresAndRestoresSeparately() throws {
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow(), sessionRow("two"), sessionRow("running", canArchive: false)])
+        model.selection = ["one", "two", "running"]
+        XCTAssertEqual(Set(model.eligible.map(\.id)), ["one", "two"])
+        let items = model.eligible.map { SessionManagement(session: $0.id, action: "archive") }
+        model.manage(items, request: "batch"); let before = messages.requests.count
+        model.manage(items, request: "duplicate"); XCTAssertEqual(messages.requests.count, before)
+        model.receive(.managed(request: "batch", serviceInstance: testIdentity.serviceInstance, results: [
+            SessionManagementResult(session: "one", action: "archive", title: nil, ok: true, archived: true, error: nil),
+            SessionManagementResult(session: "two", action: "archive", title: nil, ok: false, archived: nil, error: "另一入口刚开始执行")]))
+        try catalog(model, messages, [sessionRow("two", canArchive: false), sessionRow("running", canArchive: false)])
+        XCTAssertEqual(model.selection, ["two"]); XCTAssertTrue(model.operationMessage?.contains("刚开始执行") == true)
+        model.refresh(); try catalog(model, messages, [sessionRow("two", canArchive: false)])
+        XCTAssertTrue(model.operationMessage?.contains("刚开始执行") == true, "刷新不能抹掉操作错误")
+        model.switchView(true); try catalog(model, messages, [sessionRow("one", archived: true)])
+        model.selection = ["one"]; model.search = "会话"; model.workspace = ["/tmp/项目"]
+        var copied = 0; model.copy = { _ in copied += 1 }
+        model.copySelected(); XCTAssertEqual(copied, 0)
+        model.manage([SessionManagement(session: "one", action: "restore")], request: "restore")
+        model.receive(.managed(request: "restore", serviceInstance: testIdentity.serviceInstance, results: [SessionManagementResult(session: "one", action: "restore", title: nil, ok: true, archived: false, error: nil)]))
+        try catalog(model, messages, [sessionRow()])
+        XCTAssertFalse(model.archived); XCTAssertEqual(model.selection, ["one"]); XCTAssertEqual(copied, 0)
+        XCTAssertEqual(model.search, "会话"); XCTAssertEqual(model.workspace, ["/tmp/项目"])
+        model.copySelected(); XCTAssertEqual(copied, 1); XCTAssertTrue(messages.reads.isEmpty)
+    }
+    @MainActor func testRenameFailurePreservesInputAndArchivedHasNoRename() throws {
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow()]); model.selection = ["one"]; model.rename = "保留输入 👩🏽‍💻"
+        model.manage([SessionManagement(session: "one", action: "rename", title: model.rename)], request: "rename")
+        model.receive(.managed(request: "rename", serviceInstance: testIdentity.serviceInstance, results: [SessionManagementResult(session: "one", action: "rename", title: model.rename, ok: false, archived: nil, error: "已归档，请先恢复")]))
+        XCTAssertEqual(model.rename, "保留输入 👩🏽‍💻"); XCTAssertTrue(model.operationMessage?.contains("先恢复") == true)
+    }
+    @MainActor func testOldNotificationReadsOriginalSourceAndKeepsNewestState() throws {
+        let old = reason("old", entry: 1, event: 2), new = reason("new", entry: 3)
+        let current = try reasonWork(new)
+        let (model, messages) = browser(works: [current])
+        let route = NoticeRoute(base: testIdentity.base, serviceInstance: testIdentity.serviceInstance, session: "one", notice: old)
+        model.search = "挡住目标"; model.workspace = ["/elsewhere"]
+        model.open(route: route)
+        XCTAssertEqual(model.search, ""); XCTAssertTrue(model.workspace.isEmpty)
+        if case .inspect(_, let session, let notice) = messages.requests.last { XCTAssertEqual(session, "one"); XCTAssertNil(notice) }
+        else { XCTFail("来源状态必须按会话独立读取") }
+        model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: current, error: nil))
+        try catalog(model, messages, [sessionRow()])
+        let event = HistoryEvent(turn: nil, id: 2, session: "one", at: 1, kind: "turn.end", data: .object([:]))
+        try history(model, messages, entries: [entry()], events: [event])
+        model.windowActive(true)
+        model.sourceVisible(old.id, event: 2, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "有 entry 的来源不能因 turn.end 事件可见就已读")
+        model.sourceVisible(old.id, entry: 1, visible: true)
+        XCTAssertEqual(messages.reads, [["old"]]); XCTAssertFalse(model.routeIsCurrent)
+        XCTAssertEqual(model.detailWork?.currentNotice?.id, "new")
+        let archived = try reasonWork(new, archived: true)
+        model.connect(identity: testIdentity, current: true, works: [])
+        model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: archived, error: nil))
+        try catalog(model, messages, [])
+        XCTAssertEqual(model.selected?.id, "one"); XCTAssertTrue(model.selected?.archived == true)
+        XCTAssertEqual(model.entries.first?.text, "保存的完整回复", "通知退出和归档不移走已阅读正文")
+        XCTAssertEqual(model.route, route)
+    }
+    @MainActor func testSourceNeedsForegroundAndMatchingVisibleContentAndGeneration() throws {
+        let notice = reason(entry: nil, event: 8), work = try reasonWork(notice)
+        let (model, messages) = browser(works: [work])
+        model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: "older-generation", session: "one", notice: notice))
+        model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: work, error: nil))
+        try catalog(model, messages, [sessionRow()])
+        let event = HistoryEvent(turn: nil, id: 8, session: "one", at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
+        try history(model, messages, entries: [], events: [event])
+        model.windowActive(true); model.sourceVisible(notice.id, event: 8, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "旧实例来源可读，但不能回执到新实例")
+        model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: testIdentity.serviceInstance, session: "one", notice: notice))
+        model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: work, error: nil))
+        try history(model, messages, entries: [], events: [event])
+        model.windowActive(false); model.sourceVisible(notice.id, event: 8, visible: true)
+        XCTAssertTrue(messages.reads.isEmpty)
+        model.windowActive(true); XCTAssertEqual(messages.reads, [[notice.id]])
+        model.sourceVisible(notice.id, event: 8, visible: true); XCTAssertEqual(messages.reads.count, 1)
+    }
+    @MainActor func testNotificationCrossBaseKeepsTargetWithoutQueryOrSwitch() throws {
+        let (model, messages) = browser(); let before = messages.requests.count
+        let route = NoticeRoute(base: "/another-instance", serviceInstance: "other", session: "one", notice: reason())
+        model.open(route: route)
+        XCTAssertEqual(model.route, route); XCTAssertEqual(messages.requests.count, before)
+        XCTAssertTrue(model.historyError?.contains("另一数据位置") == true)
+    }
+    @MainActor func testNativeHistoryPagesKeepContentAndRejectLateSelectionReplies() throws {
+        let (model, messages) = browser()
+        try catalog(model, messages, [sessionRow(), sessionRow("two")])
+        model.selection = ["one"]; model.choose(); model.history()
+        try history(model, messages, entries: [entry()], next: 1, done: false)
+        model.history()
+        if case .history(_, let session, let after, _) = messages.requests.last { XCTAssertEqual(session, "one"); XCTAssertEqual(after, 1) }
+        else { XCTFail("没有分页请求") }
+        let late = try XCTUnwrap(messages.history)
+        model.selection = ["two"]; model.choose()
+        model.receive(.historyResult(request: late, serviceInstance: testIdentity.serviceInstance, session: "one", entries: [entry(2)], events: [], currentRequests: [], next: nil, done: true, error: nil))
+        XCTAssertTrue(model.entries.isEmpty)
+        XCTAssertTrue(messages.reads.isEmpty)
+    }
+    func testNotificationPayloadKeepsSourceAndStableSessionDeliveryIdentity() throws {
+        let first = reason("old"), second = reason("new")
+        let a = NoticeDelivery(work: try reasonWork(first), notice: first, identity: testIdentity)
+        let b = NoticeDelivery(work: try reasonWork(second), notice: second, identity: testIdentity)
+        XCTAssertEqual(a.identifier, b.identifier); XCTAssertNotEqual(a.route.notice.id, b.route.notice.id)
+        XCTAssertEqual(a.body, first.detail); XCTAssertEqual(a.route.notice.source, first.source)
+        let info: [AnyHashable: Any] = ["route": String(decoding: try JSONEncoder().encode(a.route), as: UTF8.self)]
+        XCTAssertEqual(NotificationCoordinator.decodeRoute(info), a.route)
+    }
+    @MainActor func testNotificationSourceReplacementWithdrawsOldEvenWhenUpdateFails() async throws {
+        var deliveries: [NoticeDelivery] = [], removed: [String] = [], acknowledged: [String] = []
+        var fail = false
+        let port = NotificationCoordinator(send: { delivery in if fail { throw WireError.invalid("拒绝投递") }; deliveries.append(delivery) }, remove: { removed += $0 })
+        var failures: [String] = []; port.failure = { failures.append($0) }; port.delivered = { acknowledged += $0 }
+        port.enabled = true; port.enabledSince = 0
+        port.beginConnection(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 1, accepting: true, works: []), identity: testIdentity)
+        let first = try reasonWork(reason("old"))
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 2, accepting: true, works: [first]), identity: testIdentity)
+        try await eventually({ deliveries.count == 1 })
+        fail = true
+        let replacement = try reasonWork(reason("new"))
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 3, accepting: true, works: [replacement]), identity: testIdentity)
+        XCTAssertEqual(removed, [deliveries[0].identifier], "更新投递前先撤下过期来源")
+        try await eventually({ !failures.isEmpty })
+        XCTAssertEqual(acknowledged, ["old"]); XCTAssertEqual(deliveries.count, 1)
+        port.disconnect()
+    }
+    @MainActor func testTerminalFirstDepartureCanNotifyButReturnWithdrawsWithoutRedelivery() async throws {
+        var deliveries: [NoticeDelivery] = [], removed: [String] = []
+        let port = NotificationCoordinator(send: { deliveries.append($0) }, remove: { removed += $0 })
+        port.enabled = true; port.enabledSince = 0
+        port.beginConnection(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 1, accepting: true, works: []), identity: testIdentity)
+        let notice = reason(), bound = try reasonWork(notice, terminalOpen: true), detached = try reasonWork(notice)
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 2, accepting: true, works: [bound]), identity: testIdentity)
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 3, accepting: true, works: [detached]), identity: testIdentity)
+        try await eventually({ deliveries.count == 1 })
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 4, accepting: true, works: [bound]), identity: testIdentity)
+        XCTAssertEqual(removed, [deliveries[0].identifier])
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 5, accepting: true, works: [detached]), identity: testIdentity)
+        try await Task.sleep(for: .milliseconds(2100)); XCTAssertEqual(deliveries.count, 1)
+        port.disconnect()
+    }
+    @MainActor func testDeliveryAcceptedAfterTerminalReturnIsWithdrawnWithoutReceipt() async throws {
+        var pending: CheckedContinuation<Void, Never>?, removed: [String] = [], receipts: [String] = []
+        let port = NotificationCoordinator(send: { _ in await withCheckedContinuation { pending = $0 } }, remove: { removed += $0 })
+        port.enabled = true; port.enabledSince = 0; port.delivered = { receipts += $0 }
+        port.beginConnection(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 1, accepting: true, works: []), identity: testIdentity)
+        let notice = reason(), first = try reasonWork(notice)
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 2, accepting: true, works: [first]), identity: testIdentity)
+        try await eventually({ pending != nil })
+        port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 3, accepting: true, works: [try reasonWork(notice, terminalOpen: true)]), identity: testIdentity)
+        pending?.resume(); pending = nil
+        try await eventually({ !removed.isEmpty }); XCTAssertTrue(receipts.isEmpty)
+        port.disconnect()
+    }
+    @MainActor func testPreDeliveryInspectRejectsChangedReasonArchiveAndBinding() async throws {
+        for target in ["changed", "archived", "bound"] {
+            var deliveries = 0, inspected = 0
+            let port = NotificationCoordinator(send: { _ in deliveries += 1 })
+            port.enabled = true; port.enabledSince = 0
+            let notice = reason(), candidate = try reasonWork(notice)
+            let refreshed = try reasonWork(target == "changed" ? reason("new") : notice, archived: target == "archived", terminalOpen: target == "bound")
+            port.currentWorks = { sessions in inspected += 1; XCTAssertEqual(sessions, ["one"]); return [refreshed] }
+            port.beginConnection(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 1, accepting: true, works: []), identity: testIdentity)
+            port.observe(NativeProjection(serviceInstance: testIdentity.serviceInstance, revision: 2, accepting: true, works: [candidate]), identity: testIdentity)
+            try await eventually({ inspected == 1 }); XCTAssertEqual(deliveries, 0, target)
+            port.disconnect()
+        }
+    }
+    @MainActor func testSessionWindowNativeLightDarkAndNarrowLayout() async throws {
+        _ = NSApplication.shared
+        let (model, messages) = browser()
+        model.open(); try catalog(model, messages, [sessionRow(), sessionRow("中文很长的名称 👩🏽‍💻 é 不拆分组合字符")])
+        for (width, appearance) in [(980.0, NSAppearance.Name.aqua), (460.0, .darkAqua)] {
+            let window = try await hostView(SessionWindow(model: model), size: NSSize(width: width, height: 620), appearance: appearance)
+            defer { window.close() }
+            let view = try XCTUnwrap(window.contentView)
+            view.layoutSubtreeIfNeeded()
+            XCTAssertEqual(view.bounds.width, width, accuracy: 1)
+            try await saveFrame(window, name: "u123-session-\(Int(width))")
+        }
     }
 }

@@ -74,7 +74,7 @@ describe('状态行 · 栏位固定', () => {
   test('左半各格**次序恒定**——① 状态 · ② 会话 · 上下文占用', async () => {
     const stage = createStage()
     stage.feed([
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
+      event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '记录查询优化' }] }),
       event('model.call.start', { choice: 'default', model: 'MiniMax-M3', provider: 'minimax' }),
       event('model.usage', { inputTokens: 3100, outputTokens: 40 }),
     ])
@@ -341,8 +341,8 @@ describe('slash 的两种走法', () => {
       event('session.state', {
         active: 's1',
         sessions: [
-          { id: 's1', at: 0, title: '记录查询优化' },
-          { id: 's2', at: 0, title: '修复时区处理' },
+          { archived: false, id: 's1', at: 0, title: '记录查询优化' },
+          { archived: false, id: 's2', at: 0, title: '修复时区处理' },
         ],
       }),
     ])
@@ -353,8 +353,8 @@ describe('slash 的两种走法', () => {
       event('session.state', {
         active: 's1',
         sessions: [
-          { id: 's1', at: 0, title: '记录查询优化' },
-          { id: 's2', at: 0, title: '修复时区处理' },
+          { archived: false, id: 's1', at: 0, title: '记录查询优化' },
+          { archived: false, id: 's2', at: 0, title: '修复时区处理' },
         ],
       }),
     ])
@@ -373,7 +373,7 @@ describe('slash 的两种走法', () => {
     // 落在这一屏上（设计明文），抽屉一开就接管输入——不报出来用户只能自己撞，撞不出回声
     // ⚠️ U61（选择器的「层」与一套栈）在这一句里加了 `← 退`——与 `esc 收起` 成对报出
     //    （设计：`←` 弹一层、`esc` 全收，两个动作两个键）。
-    expect(frame.dock.map(line => line.text).join('\n')).toContain('↑↓ 选择 · Enter 接回 · 打字筛选 · Tab 换范围 · Esc 返回')
+    expect(frame.dock.map(line => line.text).join('\n')).toContain('↑↓ 选择 · 打字筛选 · Ctrl+G 操作 · Esc 返回')
     expect(frame.statusLine).not.toContain('Esc 返回')
   })
 
@@ -417,8 +417,8 @@ describe('slash 的两种走法', () => {
       event('session.state', {
         active: 's1',
         sessions: [
-          { id: 's1', at: 0, title: '记录查询优化' },
-          { id: 's2', at: 0, title: '修复时区处理' },
+          { archived: false, id: 's1', at: 0, title: '记录查询优化' },
+          { archived: false, id: 's2', at: 0, title: '修复时区处理' },
         ],
       }),
     ]
@@ -440,8 +440,8 @@ describe('slash 的两种走法', () => {
       event('session.state', {
         active: 's2',
         sessions: [
-          { id: 's1', at: 0, title: '记录查询优化' },
-          { id: 's2', at: 0, title: '修复时区处理' },
+          { archived: false, id: 's1', at: 0, title: '记录查询优化' },
+          { archived: false, id: 's2', at: 0, title: '修复时区处理' },
         ],
       }),
     ])
@@ -456,7 +456,7 @@ describe('slash 的两种走法', () => {
   test('`esc` 取消——**不留痕迹**（记录区与回执都没有）', async () => {
     const stage = createStage()
     const catalog = [
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '记录查询优化' }] }),
+      event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '记录查询优化' }] }),
     ]
     stage.feed(catalog)
     stage.type('/resume ')

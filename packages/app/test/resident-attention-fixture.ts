@@ -6,7 +6,7 @@ import type { AttentionItem } from '@magic/contracts'
 export function attentionFacts(dataDir: string, _workspace: string): readonly AttentionItem[] {
   const db = new Database(join(dataDir, 'records.db'), { readonly: true })
   try {
-    return (db.query('SELECT * FROM attention_items ORDER BY at, id').all() as (Omit<AttentionItem, 'unread' | 'delivered' | 'detail'> & { unread: number; delivered: number; detail: string | null })[])
-      .map(({ unread, delivered, detail, ...row }) => ({ ...row, unread: unread === 1, delivered: delivered === 1, ...(detail === null ? {} : { detail }) }))
+    return (db.query('SELECT * FROM attention_items ORDER BY at, id').all() as (Omit<AttentionItem, 'unread' | 'delivered' | 'detail' | 'source'> & { unread: number; delivered: number; detail: string | null; source: string | null })[])
+      .map(({ unread, delivered, detail, source, ...row }) => ({ ...row, unread: unread === 1, delivered: delivered === 1, ...(detail === null ? {} : { detail }), ...(source === null ? {} : { source: JSON.parse(source) }) }))
   } finally { db.close() }
 }

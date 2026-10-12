@@ -28,7 +28,7 @@ const WIDE = { columns: 200, rows: 40 } as const
 /** 起一个壳，并投一条会话状态（② 有标题——多数用例的底子）。 */
 function live(): Stage {
   const stage = createStage()
-  stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '时区修正' }] })])
+  stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '时区修正' }] })])
 
   return stage
 }

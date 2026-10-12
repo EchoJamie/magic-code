@@ -1,20 +1,4 @@
-/**
- * U26 · 记录库 —— **会话归属工作区**（`workspace` 列 · 建立时锚定 · 顺序迁移）。
- *
- * 出处：`项目字典.md` · Workspace / Session（2026-09-19 改）——**一个会话属于一个工作区**，
- * 归属在**建立时锚定 · 随记录持久**（**恢复据此回到原位**：崩溃 / 关掉后重建时，工作区由
- * 记录给出，不由「当下的启动目录」临时决定）；`技术方案.md` · 记录 · 存储
- * （「全局单库、**会话自带工作区关联**」）· 记录 · schema 演进（冻结点＝阶段 2 末，
- * 此后走**顺序迁移**）。
- *
- * ⚠️ **工作区是「≥ 1 条根的联合作用域」**（词典 · Workspace；`U18` 多根已落地）——
- * 故锚下的是**整组根**（绝对路径 · 声明序），不是单取默认根：只记默认根的话，
- * 多根工作区在恢复时就**重建不回去**，而「回到原位」正是这一列存在的理由。
- *
- * 两族：
- * - **归属**——建立时写、此后不变、老会话缺席（不编）；
- * - **迁移**——既有库**真跑一遍**（不许只测新库）：列到位 · 数据一件不丢 · 版本号推进。
- */
+/** 工作区身份保持完整根组，改变会话管理属性不改变归属。 */
 
 import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
@@ -129,12 +113,11 @@ describe('归属（建立时锚定 · 随记录持久）', () => {
     }
   })
 
-  test('列加上之前落账的会话**没有归属**——缺席，不编一个', async () => {
+  test('只命名尚未写内容的会话没有归属，不从当前工作区猜测', async () => {
     const dir = tempDataDir()
     try {
-      makeLegacyDatabase(dir, A, T0)
-
       const store = createRecordsStore({ dataDir: dir, workspace: [ALPHA] })
+      store.setSessionTitle(A, '只命名', T0)
       const listed = await store.listSessions()
 
       // 键不在（与 `title` 的缺席同法：缺席可辨，拿「当下的启动目录」顶上不可辨）
@@ -148,73 +131,7 @@ describe('归属（建立时锚定 · 随记录持久）', () => {
   })
 })
 
-describe('顺序迁移（冻结点已过——既有库照开，不许重建库）', () => {
-  test('既有库真跑一遍：`workspace` 列到位 · 老数据一件不丢 · 版本号 0 → 1', async () => {
-    const dir = tempDataDir()
-    const legacyEntryId = 7
-    try {
-      makeLegacyDatabase(dir, A, T0, { entryId: legacyEntryId })
-
-      // 开库**不许抛**（既有库是要接着用的，不是要删的）
-      const store = createRecordsStore({ dataDir: dir, workspace: [ALPHA] })
-      expect((await store.listSessions()).map((row) => [row.id, row.at])).toEqual([[A, T0]])
-
-      // 老数据一件不丢——条目读得回来
-      const replayed: string[] = []
-      for await (const entry of store.readEntries(A)) {
-        replayed.push('text' in entry.content ? entry.content.text : '')
-      }
-      expect(replayed).toEqual(['老库里的那条'])
-
-      // 迁移之后新写的会话带上归属（列是真在用的，不只是加上了）
-      store.serviceFor(B).appendEntry(userEntry('迁移之后新开的', T0 + 1))
-      expect((await store.listSessions()).find((row) => row.id === B)?.workspace).toEqual([ALPHA])
-      store.close()
-
-      const db = new Database(databasePathOf(dir))
-      try {
-        expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
-          user_version: RECORD_SCHEMA_VERSION,
-        })
-        expect(RECORD_SCHEMA_VERSION).toBe(1) // 「冻结点已过」的那一步：0 → 1
-        // 老行**没有被凭空补上归属**——迁移只加列，不猜数据
-        expect(rawSessions(dir)).toEqual([
-          { id: A, workspace: null },
-          { id: B, workspace: JSON.stringify([ALPHA]) },
-        ])
-      } finally {
-        db.close()
-      }
-    } finally {
-      removeDataDir(dir)
-    }
-  })
-
-  test('更老的库（连 `title` 都还没有）也同样一步到当前形状', async () => {
-    const dir = tempDataDir()
-    try {
-      // 阶段 1 的样子：sessions 只有 id / at
-      makeLegacyDatabase(dir, A, T0, { title: false })
-
-      const store = createRecordsStore({ dataDir: dir, workspace: [ALPHA] })
-      store.setSessionTitle(A, '补列之后照样能改', T0 + 1)
-      expect((await store.listSessions())[0]?.title).toBe('补列之后照样能改')
-      expect((await store.listSessions())[0]?.workspace).toBeUndefined()
-      store.close()
-
-      const db = new Database(databasePathOf(dir))
-      const names = db
-        .query<{ name: string }, []>('PRAGMA table_info(sessions)')
-        .all()
-        .map((row) => row.name)
-      db.close()
-      expect(names.filter((name) => name === 'title').length).toBe(1)
-      expect(names.filter((name) => name === 'workspace').length).toBe(1)
-    } finally {
-      removeDataDir(dir)
-    }
-  })
-
+describe('当前结构', () => {
   test('新库不欠迁移——建库即当前形状（版本号＝契约常量，两列齐）', async () => {
     const dir = tempDataDir()
     try {
@@ -231,7 +148,7 @@ describe('顺序迁移（冻结点已过——既有库照开，不许重建库�
             .query<{ name: string }, []>('PRAGMA table_info(sessions)')
             .all()
             .map((row) => row.name),
-        ).toEqual(['id', 'at', 'title', 'workspace'])
+        ).toEqual(['id', 'at', 'title', 'workspace', 'archived'])
       } finally {
         db.close()
       }
@@ -240,57 +157,3 @@ describe('顺序迁移（冻结点已过——既有库照开，不许重建库�
     }
   })
 })
-
-/**
- * **老库的忠实样本**——照当时的 DDL 手工建（迁移只能在真既有库上验，测试用 fs 不受守护拦）。
- *
- * `title` 那位收两形：阶段 1 的库（只有 id / at）与 U16 之后的库（有 title、版本号**仍是 0**
- * ——那一列当时走的是「补齐」，不是顺序迁移）。两种都是**版本 0 的既有库**。
- */
-function makeLegacyDatabase(
-  dir: string,
-  session: string,
-  at: number,
-  extra: { readonly entryId?: number; readonly title?: boolean } = {},
-): void {
-  const withTitle = extra.title ?? true
-  const db = new Database(databasePathOf(dir), { create: true })
-
-  db.exec(
-    withTitle
-      ? 'CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL, title TEXT)'
-      : 'CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL)',
-  )
-  db.exec(`INSERT INTO sessions (id, at) VALUES ('${session}', ${at})`)
-
-  db.exec(`CREATE TABLE entries (
-    id            INTEGER PRIMARY KEY,
-    session       TEXT    NOT NULL,
-    kind          TEXT    NOT NULL,
-    content_kind  TEXT    NOT NULL,
-    content_text  TEXT,
-    content_blob  TEXT,
-    payload       TEXT,
-    at            INTEGER NOT NULL,
-    source        TEXT
-  )`)
-  db.exec(`CREATE TABLE events (
-    id       INTEGER PRIMARY KEY,
-    session  TEXT    NOT NULL,
-    turn     INTEGER,
-    at       INTEGER NOT NULL,
-    kind     TEXT    NOT NULL,
-    data     TEXT    NOT NULL
-  )`)
-  db.exec('CREATE TABLE records_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-
-  if (extra.entryId !== undefined) {
-    db.exec(
-      `INSERT INTO entries (id, session, kind, content_kind, content_text, at)
-       VALUES (${extra.entryId}, '${session}', 'user', 'text', '老库里的那条', ${at + 1})`,
-    )
-  }
-
-  db.exec('PRAGMA user_version = 0')
-  db.close()
-}

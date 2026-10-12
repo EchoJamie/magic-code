@@ -186,7 +186,7 @@ describe('④ 一页一个页头（换会话那条路）', () => {
   test('**接续**（开局就有历史）：字标只一份——历史填的是开局那一页', async () => {
     const stage = createStage()
     const views = takes(stage, [
-      () => stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })]),
+      () => stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })]),
       () => stage.feed([event('session.history', { session: 's1', entries: 甲, done: true })]),
     ])
     const frame = await show(views, WIDE)
@@ -198,9 +198,9 @@ describe('④ 一页一个页头（换会话那条路）', () => {
   test('**切一次不新增**：切之前 1 份、切之后**仍是 1 份**（新页有行、没有字标）', async () => {
     const stage = createStage()
     const views = takes(stage, [
-      () => stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })]),
+      () => stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })]),
       () => stage.feed([event('session.history', { session: 's1', entries: 甲, done: true })]),
-      () => stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] })]),
+      () => stage.feed([event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0, title: '乙的事' }] })]),
       () => stage.feed([event('session.history', { session: 's2', entries: 乙, done: true })]),
     ])
 
@@ -217,7 +217,7 @@ describe('④ 一页一个页头（换会话那条路）', () => {
   test('**来回切**：切几次都只是开机那一份（而每一页的行各印各的）', async () => {
     const stage = createStage()
     const step = (id: string, title: string): (() => void) => () => {
-      stage.feed([event('session.state', { active: id, sessions: [{ id, at: 0, title }] })])
+      stage.feed([event('session.state', { active: id, sessions: [{ archived: false, id, at: 0, title }] })])
     }
     const views = takes(stage, [
       step('s1', '甲的事'),

@@ -1,0 +1,20 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.session.manage",
+    "request": "archive",
+    "serviceInstance": "service-one",
+    "items": [
+      {
+        "session": "s1",
+        "action": "archive"
+      },
+      {
+        "session": "s2",
+        "action": "rename",
+        "title": "新标题"
+      }
+    ]
+  }
+}

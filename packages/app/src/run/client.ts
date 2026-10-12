@@ -51,6 +51,8 @@ export type ManagerClient = {
 }
 
 export type ConnectOptions = {
+  /** 原终端断线后只读重绑；不授予归档会话输入资格。 */
+  readonly reattach?: boolean
   readonly openRequest?: string
   readonly expectedIdentity?: ServiceIdentity
   /** 只有明确工作接入才传；本层仍收窄白名单，不传播凭据。 */
@@ -167,6 +169,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
       ...(options.openRequest === undefined ? {} : { openRequest: options.openRequest }),
       ...(options.label === undefined ? {} : { label: options.label }),
       ...(options.session === undefined ? {} : { session: options.session }),
+      ...(options.reattach === true ? { reattach: true } : {}),
       ...(options.switch === undefined ? {} : { switch: options.switch }),
       ...(options.allowAll === true ? { allowAll: true } : {}),
     }, options.timeoutMs ?? 30_000)

@@ -52,7 +52,7 @@ const BUSY_NOTE = '正在跑一轮——先 Ctrl+C 中断，再切会话（同�
 function busy(active: string): KernelEvent {
   return event('session.state', {
     active,
-    sessions: [{ id: 's1', at: 0, title: '甲的事' }],
+    sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }],
     note: BUSY_NOTE,
   })
 }
@@ -62,8 +62,8 @@ function catalog(active: string): KernelEvent {
   return event('session.state', {
     active,
     sessions: [
-      { id: 's1', at: 0, title: '甲的事' },
-      { id: 's2', at: 0, title: '乙的事' },
+      { archived: false, id: 's1', at: 0, title: '甲的事' },
+      { archived: false, id: 's2', at: 0, title: '乙的事' },
     ],
   })
 }

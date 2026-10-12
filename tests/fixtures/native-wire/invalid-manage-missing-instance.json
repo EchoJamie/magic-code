@@ -1,0 +1,9 @@
+{
+  "family": "NativeRequest",
+  "valid": false,
+  "message": {
+    "t": "native.session.manage",
+    "request": "archive",
+    "items": []
+  }
+}

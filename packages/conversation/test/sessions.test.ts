@@ -28,7 +28,7 @@ import { DEFAULT_TEST_SESSION, makeFauxSink } from '@magic/faux'
 import type { FauxSink } from '@magic/faux'
 import type { ConversationSession, RebuildReport } from '../src/service.ts'
 import type { SessionInstance } from '../src/sessions.ts'
-import { HISTORY_CHUNK, TITLE_LIMIT, createConversationService } from '../src/sessions.ts'
+import { HISTORY_CHUNK, TITLE_LIMIT, createConversationService, readSessionCatalog, summarize } from '../src/sessions.ts'
 
 const T0 = 1_700_000_000_000
 const A = 's-alpha'
@@ -84,6 +84,7 @@ function makeLedger(rows: readonly LedgerRow[]): Ledger {
         .filter((id, index, all) => all.indexOf(id) === index)
         .map((id) => ({
           id,
+          archived: false,
           at: times.get(id) ?? T0,
           ...(titles.has(id) ? { title: titles.get(id) as string } : {}),
         }))
@@ -576,6 +577,7 @@ describe('读面（history.read）——重建展示的条目块', () => {
       open: (session) => makeInstance(session),
       records: {
         listSessions: async () => [],
+        readEntriesBack: async () => [],
         readEvents: async function* () {},
         readEntries: (): AsyncIterable<Entry> =>
           (async function* (): AsyncIterable<Entry> {
@@ -624,4 +626,31 @@ describe('读面（history.read）——重建展示的条目块', () => {
     expect(sink.byKind('session.history')).toEqual([])
     expect(host.active()).toBeUndefined() // 读一下不该把会话开出来
   })
+})
+
+
+test('U123 名称截断按完整字素，不切 emoji、ZWJ 与组合字符', () => {
+  expect(summarize(`${'中'.repeat(19)}👩‍💻尾`, 20)).toBe(`${'中'.repeat(19)}👩‍💻…`)
+  expect(summarize(`${'a'.repeat(19)}e\u0301尾`, 20)).toBe(`${'a'.repeat(19)}e\u0301…`)
+  expect(summarize('👩‍💻e\u0301', 2)).toBe('👩‍💻e\u0301')
+})
+
+test('U123 目录先筛元数据；默认标题首条即停，近期摘要只读尾页所需 blob', async () => {
+  let forward = 0, backward = 0
+  const blobs: string[] = []
+  const tail: Entry[] = Array.from({ length: 50 }, (_, index) => ({ id: 950 + index, kind: 'assistant', content: { blob: `old-${index}` }, at: index }))
+  tail[48] = { id: 998, kind: 'user', content: { text: '最近交代' }, at: 998 }
+  tail[49] = { id: 999, kind: 'assistant', content: { blob: 'latest' }, at: 999 }
+  const query = { archived: false, ids: ['selected'], workspace: ['/selected'] }
+  const rows = await readSessionCatalog({
+    async listSessions(actual) { expect(actual).toEqual(query); return [{ id: 'selected', at: 999, archived: false }] },
+    async *readEntries(session) { expect(session).toBe('selected'); forward++; yield { id: 1, kind: 'user', content: { text: '第一条交代' }, at: 1 }; throw new Error('默认标题不应继续展开全文') },
+    async readEntriesBack(session, before, limit) { expect(session).toBe('selected'); expect(before).toBeUndefined(); expect(limit).toBe(HISTORY_CHUNK); backward++; return tail },
+    async *readEvents() {},
+    blobs: { async put() { return 'unused' }, async get(id) { blobs.push(id); if (id !== 'latest') throw new Error('不应加载旧全文'); return new TextEncoder().encode('最近进展') } },
+  }, undefined, query)
+  expect(rows[0]).toMatchObject({ title: '第一条交代', recentInput: '最近交代', recentProgress: '最近进展' })
+  expect(forward).toBe(1)
+  expect(backward).toBe(1)
+  expect(blobs).toEqual(['latest'])
 })

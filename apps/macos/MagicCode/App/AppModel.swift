@@ -3,6 +3,8 @@ import Combine
 import ServiceManagement
 
 @MainActor final class AppModel: ObservableObject {
+    enum MainPage: Hashable { case sessions, settings }
+    @Published private(set) var mainPage: MainPage = .sessions
     enum Phase: Equatable {
         case starting, ready, stopping, stopped, unreachable, fault(String)
         var text: String {
@@ -16,6 +18,7 @@ import ServiceManagement
     @Published private(set) var settingsError: String?
     @Published private(set) var settingsNote: String?
     @Published private(set) var settingsSavedKey: String?
+    private var settingsErrorFromWrite = false
     @Published var settingsCategory = "models"
     private var queuedSettingsPreview: SettingsValue?
     @Published private(set) var runtimeMcp: [SettingsValue] = []
@@ -27,12 +30,10 @@ import ServiceManagement
     @Published private(set) var projection: NativeProjection?
     @Published private(set) var list = WorkList()
     @Published private(set) var selected: String?
-    @Published private(set) var selectedNotice: AttentionItem?
-    private var visibleNoticeID: String?
+    let sessions = SessionBrowserModel()
     @Published var actionMessage: String?
     struct StopTarget { let work: NativeWork; let identity: ServiceIdentity }
     @Published var stopTarget: StopTarget?
-    @Published var notificationRoutes: [NoticeRoute] = []
     @Published private(set) var diagnostics = Diagnostics.defaults
     @Published private(set) var logDirectory = ""
     @Published private(set) var logProblem: String?
@@ -76,12 +77,10 @@ import ServiceManagement
     }
     private var panelVisible = false
     private var noticeInspections: [String: (session: String, identity: ServiceIdentity, continuation: CheckedContinuation<NativeWork?, Never>)] = [:]
-    @Published private var pendingInspection: (request: String, session: String, notice: String?, identity: ServiceIdentity)?
     private var stoppingRequests: [String: String] = [:]
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempts = 0
     private var notificationGeneration: String?
-    private var deferredNoticeRoutes: [NoticeRoute] = []
     private var cleanExit: (() -> Void)?
     private var removingIntegration = false
     private let expectedVersion: String
@@ -117,18 +116,19 @@ import ServiceManagement
         notifications = notificationPort ?? NotificationCoordinator()
         fileLog.changed = { [weak self] problem in self?.logProblem = problem }
         notifications.preference = notificationsEnabled
-        notifications.userLooking = { [weak self] session, id in
-            self?.panelVisible == true && NSApp?.isActive == true && self?.selected == session && self?.selectedNotice?.id == id && self?.visibleNoticeID == id
+        sessions.send = { [weak self] request in self?.observer?.send(request) }
+        sessions.copy = { [weak self] session in
+            guard let self else { return }
+            let link = URL(fileURLWithPath: self.cliDirectory).appendingPathComponent("magic")
+            let executable = (try? CLIInstallation.belongs(link, helper: self.helperURL)) == true ? link : self.helperURL
+            self.terminal.copy(TerminalCommand.make(helper: executable,
+                workspace: session.workspace?.first.map { URL(fileURLWithPath: $0) } ?? self.userHome,
+                base: self.effectiveBase, session: session.id, request: nil))
         }
+        notifications.userLooking = { [weak self] session, id in self?.sessions.isPresenting(session: session, notice: id) == true }
         notifications.currentWorks = { [weak self] sessions in await self?.currentNoticeWorks(sessions) ?? [] }
         notifications.failure = { [weak self] text in self?.actionMessage = text }
-        notifications.openRoutes = { [weak self] routes in
-            guard let self else { return }
-            NSApp?.activate(ignoringOtherApps: true)
-            if !self.isCurrent { self.deferredNoticeRoutes += routes; return }
-            if routes.count == 1, let route = routes.first { self.openNotification(route) }
-            else { self.notificationRoutes = routes; self.actionMessage = "请在通知事项窗口选择要查看的工作"; self.showNotificationWindow?() }
-        }
+        notifications.openRoute = { [weak self] route in self?.openNotification(route) }
         #if DEBUG
         if let validationRoot {
             terminal.validationHome = validationRoot
@@ -157,14 +157,11 @@ import ServiceManagement
         }
         #endif
     }
-    var showNotificationWindow: (() -> Void)?
+    var showMainWindow: (() -> Void)?
     var onUnconfirmedShutdown: (() -> Void)?
     var affected: [NativeWork] { projection?.works.filter(\.affected) ?? [] }
     var works: [NativeWork] { projection?.works ?? [] }
     var isCurrent: Bool { phase == .ready && projection != nil }
-    var inspectionMessage: String? {
-        pendingInspection == nil ? nil : "正在读取事项…"
-    }
     var appVersion: String { expectedVersion }
     var summary: String {
         guard isCurrent else { return phase.text }
@@ -188,9 +185,6 @@ import ServiceManagement
                 tokens.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor in self?.refreshAfterWake() }
                 })
-                tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-                    Task { @MainActor in self?.presence(focused: false) }
-                })
             }
             // 启动时就按系统实际状态对齐一次投递门（App 不再存自己的「开没开」）。
             Task { @MainActor in await self.refreshNotifications() }
@@ -199,7 +193,7 @@ import ServiceManagement
             tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    if !self.isValidation { self.refreshLogin(); self.presence(focused: true) }
+                    if !self.isValidation { self.refreshLogin() }
                     await self.refreshNotifications()
                 }
             })
@@ -283,9 +277,10 @@ import ServiceManagement
             apply(projection)
             // A valid handshake restores the connection even when its snapshot is unchanged.
             if shutdownRequest == nil, let current = self.projection { phase = current.accepting ? .ready : .stopping }
+            sessions.connect(identity: received, current: isCurrent, works: self.projection?.works ?? [])
             notifications.delivered = { [weak self] ids in
                 guard let self, self.identity == received else { return }
-                self.observer?.send(.delivered(ids: ids))
+                self.observer?.send(.delivered(serviceInstance: received.serviceInstance, ids: ids))
             }
             notifications.beginConnection(projection, identity: received)
             notificationGeneration = received.serviceInstance
@@ -293,9 +288,6 @@ import ServiceManagement
                 await notifications.reconcile()
                 guard self.identity == received else { return }
 
-                if deferredNoticeRoutes.count == 1, let route = deferredNoticeRoutes.first { openNotification(route) }
-                else if !deferredNoticeRoutes.isEmpty { notificationRoutes = deferredNoticeRoutes; showNotificationWindow?() }
-                deferredNoticeRoutes = []
             }
         case .runtimeResult(let request, let service, let mcp, let canChange, let error, let note):
             guard runtimeRequest == request, service == identity?.serviceInstance else { return }
@@ -304,21 +296,15 @@ import ServiceManagement
             if let canChange { canChangeData = canChange }
             if let note { actionMessage = note }
         case .projection(let projection): apply(projection)
-        case .inspected(let request, let work, let error):
+        case .inspected(let request, let work, _):
             if let pending = noticeInspections.removeValue(forKey: request) {
                 pending.continuation.resume(returning: isCurrent && pending.identity == identity && work?.session == pending.session ? work : nil)
                 return
             }
-            guard let intent = pendingInspection, intent.request == request,
-                  intent.identity == identity, isCurrent else { return }
-            pendingInspection = nil
-            guard selected == intent.session else { return }
-            guard let work, work.session == intent.session, works.contains(where: { $0.id == work.id }) else {
-                actionMessage = error ?? "这项工作已不可达，请返回列表。"; return
-            }
-            let notice = intent.notice.flatMap { id in work.notices.first { $0.id == id && $0.session == intent.session } }
-            guard intent.notice == nil || notice != nil else { actionMessage = "这条事项已不可达，请刷新后查看。"; return }
-            selectedNotice = notice
+            sessions.receive(response)
+        case .sessionsResult, .historyResult: sessions.receive(response)
+        case .managed:
+            sessions.receive(response); actionMessage = sessions.operationMessage; observer?.send(.refresh)
         case .stopped(let request, let session, let phase, let note):
             guard stoppingRequests[request] == session else { return }
             actionMessage = note ?? (phase == .accepted ? "正在停止任务…" : phase == .done ? "任务已停止" : "尚未确认停止，请查看当前状态")
@@ -340,8 +326,10 @@ import ServiceManagement
     }
     func applySettings(_ action: SettingsValue, stamp: String?, key: String) {
         guard !settingsBusy else { return }
+        settingsError = nil; settingsErrorFromWrite = false; settingsNote = nil; settingsSavedKey = nil
         guard let snapshot = settingsSnapshot,
               URL(fileURLWithPath: snapshot.base).resolvingSymlinksInPath() == effectiveBase.appendingPathComponent(".magic").resolvingSymlinksInPath() else {
+            settingsErrorFromWrite = true
             settingsError = "所选数据位置已改变，请重新读取；输入已保留"; return
         }
         callSettings(action: action, stamp: stamp, key: key, preview: nil)
@@ -353,7 +341,7 @@ import ServiceManagement
         var fields: [String: SettingsValue] = ["request": .string(request), "home": .string(userHome.path), "base": .string(base), "configPath": .string(path)]
         if let action { fields["action"] = action; fields["stamp"] = stamp.map(SettingsValue.string) ?? .null }
         if let preview { fields["preview"] = preview }
-        settingsBusy = true; settingsError = nil; settingsNote = nil; settingsSavedKey = nil
+        settingsBusy = true
         var environment = ProcessInfo.processInfo.environment
         if isValidation { environment = ["HOME": userHome.path, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"] }
         Task {
@@ -368,8 +356,15 @@ import ServiceManagement
                 let result = try await SettingsCall.run(helper: helperURL, request: .object(fields), environment: environment)
                 guard result.request == request, result.base == base, result.configPath == path else { throw WireError.invalid(result.error ?? "设置返回的目标不一致") }
                 guard effectiveBase.appendingPathComponent(".magic").path == base else { throw WireError.invalid("所选数据位置已改变；原位置的结果未应用到新页面，请重新读取") }
-                settingsError = result.error; settingsNote = result.note
-                if result.saved { settingsSavedKey = key }
+                // 刷新可修复读失败，但不能覆盖尚需用户处理的写失败或保存回执。
+                if action != nil || settingsError == nil || !settingsErrorFromWrite {
+                    settingsError = result.error
+                    settingsErrorFromWrite = action != nil && !result.saved && result.error != nil
+                }
+                if action != nil {
+                    settingsNote = result.note
+                    settingsSavedKey = result.saved ? key : nil
+                }
                 if let snapshot = result.snapshot {
                     settingsSnapshot = snapshot; configPath = snapshot.configPath
                     applyDiagnostics(snapshot)
@@ -382,7 +377,12 @@ import ServiceManagement
                         Task { @MainActor in self.applySettings(.object(action), stamp: snapshot.stamp, key: "diagnostics") }
                     }
                 }
-            } catch { settingsError = error.localizedDescription }
+            } catch {
+                if action != nil || settingsError == nil || !settingsErrorFromWrite {
+                    settingsError = error.localizedDescription
+                    settingsErrorFromWrite = action != nil
+                }
+            }
         }
     }
     private func applyDiagnostics(_ snapshot: SettingsSnapshot) {
@@ -409,17 +409,12 @@ import ServiceManagement
     private func apply(_ value: NativeProjection) {
         guard value.serviceInstance == identity?.serviceInstance else { return }
         if let old = projection, old.serviceInstance == value.serviceInstance, old.revision >= value.revision { return }
-        if let selected, !value.works.contains(where: { $0.id == selected }) {
-            presence(focused: false); pendingInspection = nil; selectedNotice = nil
-            actionMessage = "这项工作已不可达，请返回列表。"
-        }
-        if let notice = selectedNotice, let work = value.works.first(where: { $0.id == selected }) {
-            selectedNotice = work.notices.first { $0.id == notice.id }
-        }
+        if let selected, !value.works.contains(where: { $0.id == selected }) { self.selected = nil }
         let configurationChanged = projection?.configuration != value.configuration
         projection = value
         if configurationChanged { readSettings() }
         list.update(value.works, interacting: panelVisible)
+        sessions.connect(identity: identity, current: value.accepting, works: value.works)
         if shutdownRequest == nil { phase = value.accepting ? .ready : .stopping }
         if let identity, notificationGeneration == identity.serviceInstance { notifications.observe(value, identity: identity) }
     }
@@ -453,19 +448,18 @@ import ServiceManagement
     enum PanelSurface { case menu, debug }
     func setDebugWindowVisible(_ visible: Bool) {
         guard debugWindowVisible != visible else { return }
-        presence(focused: false); panelVisible = false; leaveDetail()
+        panelVisible = false; leaveDetail()
         debugWindowVisible = visible
         fileLog.write(.debug, visible ? "window.debug.opened" : "window.debug.closed")
     }
     func panelVisibility(_ visible: Bool, surface: PanelSurface = .menu) {
         guard surface == (debugWindowVisible ? .debug : .menu) else { return }
         panelVisible = visible; list.update(works, interacting: visible)
-        if !visible { leaveDetail() } else { presence(focused: NSApp?.isActive == true) }
+        if !visible { leaveDetail() }
     }
     func leaveDetail() {
         fileLog.write(.debug, "work.detail.closed")
-        presence(focused: false)
-        pendingInspection = nil; selected = nil; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil; stopTarget = nil
+        selected = nil; actionMessage = nil; stopTarget = nil
     }
     private func cancelNoticeInspections() {
         let pending = noticeInspections.values
@@ -493,42 +487,24 @@ import ServiceManagement
     }
     private func disconnectInspection() {
         cancelNoticeInspections()
-        presence(focused: false)
-        pendingInspection = nil; selectedNotice = nil; visibleNoticeID = nil; stopTarget = nil
+        sessions.disconnect(); stopTarget = nil
     }
-    func inspect(_ work: NativeWork, notice: String? = nil) {
-        fileLog.write(.debug, "work.inspected")
-        // The current projection already contains the detail summary. Navigation needs no request.
-        if notice == nil {
-            presence(focused: false); pendingInspection = nil
-            selected = work.id; selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil
-            return
-        }
-        guard isCurrent, let identity else { actionMessage = "状态尚未核对，请重试连接。"; return }
-        if let pending = pendingInspection, pending.session == work.session, pending.notice == notice { return }
-        presence(focused: false); selectedNotice = nil; visibleNoticeID = nil; actionMessage = nil
-        selected = work.id
+    func inspect(_ work: NativeWork) { selected = work.id; actionMessage = nil }
+    func selectMainPage(_ page: MainPage) {
+        mainPage = page
+        if page == .sessions { sessions.open() } else { sessions.close() }
+    }
+    func openMainWindow(_ page: MainPage) { selectMainPage(page); showMainWindow?() }
+    func manageSessions() { openMainWindow(.sessions) }
+    func manageSettings() { openMainWindow(.settings) }
+    func viewReason(_ work: NativeWork) {
+        guard let identity, let notice = work.currentNotice else { return }
+        openNotification(NoticeRoute(base: identity.base, serviceInstance: identity.serviceInstance, session: work.session, notice: notice))
+    }
+    func archive(_ work: NativeWork) {
+        guard isCurrent, work.canArchive, identity != nil else { return }
         let request = UUID().uuidString
-        pendingInspection = (request, work.session, notice, identity)
-        observer?.send(.inspect(request: request, session: work.session, notice: notice))
-    }
-    /// Selection is an intent; only content inside the scroll viewport counts as presented.
-    func noticePresented(_ id: String, visible: Bool = true) {
-        if !visible {
-            guard visibleNoticeID == id else { return }
-            presence(focused: false); visibleNoticeID = nil
-            return
-        }
-        guard panelVisible, isCurrent, let notice = selectedNotice, notice.id == id,
-              notice.session == selected else { return }
-        visibleNoticeID = id
-        if notice.unread { observer?.send(.read(ids: [notice.id])) }
-        presence(focused: NSApp?.isActive == true)
-    }
-    private func presence(focused: Bool) {
-        guard let selected else { return }
-        let ids = selectedNotice?.id == visibleNoticeID ? visibleNoticeID.map { [$0] } ?? [] : []
-        observer?.send(.presence(session: selected, ids: ids, focused: focused && panelVisible))
+        sessions.manage([SessionManagement(session: work.session, action: "archive")], request: request)
     }
     func newTerminal() {
         terminal.open(helper: helperURL, workspace: projectDirectory ?? userHome, base: effectiveBase)
@@ -544,13 +520,7 @@ import ServiceManagement
         actionMessage = "已复制"
     }
     func openNotification(_ route: NoticeRoute) {
-        guard isCurrent else { deferredNoticeRoutes.append(route); return }
-        guard let identity, URL(fileURLWithPath: route.base).resolvingSymlinksInPath().path == URL(fileURLWithPath: identity.base).resolvingSymlinksInPath().path else {
-            actionMessage = "此通知属于另一数据位置：\(route.base)。请在设置中明确切换后查看。"; showNotificationWindow?(); return
-        }
-        guard let work = works.first(where: { $0.id == route.session }) else { actionMessage = "此通知的工作已不可达。"; return }
-        inspect(work, notice: route.ids.first)
-        showNotificationWindow?()
+        sessions.open(route: route); mainPage = .sessions; showMainWindow?()
     }
     func changeBase(_ base: URL?) { engine("switch", parent: base ?? userHome) }
     /// 「提醒我」这一下：存的**是我们的偏好**（系统拒绝也照存，那是用户的意图本身）。
@@ -598,9 +568,11 @@ import ServiceManagement
         do { if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }; refreshLogin() }
         catch { actionMessage = error.localizedDescription; refreshLogin() }
     }
-    func installCLI() {
+    func installCLI(at directory: String? = nil) {
+        let candidate = directory ?? cliDirectory
         do {
-            try CLIInstallation.install(helper: helperURL, at: URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic"), app: appURL)
+            try CLIInstallation.install(helper: helperURL, at: URL(fileURLWithPath: candidate).appendingPathComponent("magic"), app: appURL)
+            cliDirectory = candidate
             defaults.set(cliDirectory, forKey: "cliDirectory"); actionMessage = "终端命令已安装：\(cliDirectory)/magic"
         } catch { actionMessage = error.localizedDescription }
     }
@@ -665,7 +637,7 @@ extension AppModel {
         let value: [String: Any] = ["bundle": Bundle(url: appURL)?.bundleIdentifier ?? "", "root": root.path,
             "phase": String(describing: phase), "isCurrent": isCurrent,
             "serviceInstance": identity?.serviceInstance ?? "",
-            "revision": projection?.revision ?? -1, "selectedSession": selected ?? "", "selectedNotice": selectedNotice?.id ?? "",
+            "revision": projection?.revision ?? -1, "selectedSession": selected ?? "", "selectedNotice": sessions.route?.notice.id ?? "",
             "loginStatus": loginStatus.rawValue, "loginWritesAllowed": canChangeLogin,
             "notificationAuthorization": notifications.authorization, "notificationWritesAllowed": canChangeNotifications,
             "notificationAuthorizationStatus": notifications.authorizationStatus.rawValue,

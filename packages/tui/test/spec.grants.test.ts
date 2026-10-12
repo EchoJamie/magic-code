@@ -337,7 +337,7 @@ describe('启动回执 —— 解析从严要让用户看得见', () => {
     app.shell.readHistory()
 
     // 重建（`session.history` 收齐那一跳）会把屏上痕迹换掉
-    app.spy.emit(event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] }))
+    app.spy.emit(event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] }))
     app.spy.emit(event('session.history', { session: 's1', entries: [], done: true }))
 
     expect(app.rows().map((row) => (row.kind === 'receipt' ? row.text : row.kind))).toEqual([NOTICE])
@@ -345,9 +345,9 @@ describe('启动回执 —— 解析从严要让用户看得见', () => {
 
   test('换一次会话不重复开屏说明', () => {
     const app = live([NOTICE])
-    app.spy.emit(event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0 }] }))
+    app.spy.emit(event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0 }] }))
     app.spy.emit(event('session.history', { session: 's1', entries: [], done: true }))
-    app.spy.emit(event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0 }] }))
+    app.spy.emit(event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0 }] }))
     app.spy.emit(event('session.history', { session: 's2', entries: [], done: true }))
 
     expect(app.rows()).toEqual([])

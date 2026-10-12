@@ -448,7 +448,11 @@ describe('U48-S4 · 收缩与异常', () => {
       const final = observations[1]!.event
       const attention = attentionFacts(g.dataDir, g.ws)
       expect(attention).toHaveLength(1)
-      expect(attention[0]).toMatchObject({ session: final.session, fact: String(final.id), kind: 'done', unread: true, delivered: false })
+      expect(attention[0]).toMatchObject({
+        session: final.session, fact: String(final.id), kind: 'done', unread: true, delivered: false,
+        detail: '工具结果已收到，这才是本次交代的最终结果。',
+        source: { session: final.session, event: final.id, entry: expect.any(Number) },
+      })
       expect(terminalNotices).toEqual([...attention])
       expect(client.closed).toBe(false)
       expect(client.gen()).toBeNull()

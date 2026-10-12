@@ -157,6 +157,8 @@ export type ShellKey =
   /** `shift+回车`——**换行**（原型 · 键盘：`回车` 发送 · `shift+回车` 换行）。 */
   | { readonly kind: 'newline' }
   | { readonly kind: 'tab' }
+  | { readonly kind: 'shift+tab' }
+  | { readonly kind: 'ctrl+g' }
   | { readonly kind: 'backspace' }
   /** 光标键（U31）——插入点左右挪一个**字素**（中文 / emoji 不切坏）。 */
   | { readonly kind: 'left' }
@@ -719,6 +721,12 @@ export function bodyOf(draft: string, refs: readonly DraftRef[]): string {
   return out + draft.slice(cursor)
 }
 
+/** 当前正文与目录预览共用保存历史的条目投影，保留本地命令记录。 */
+function historyEntries(data: Extract<KernelEvent, { kind: 'session.history' }>['data']): Entry[] {
+  return [...data.entries, ...(data.inputs ?? []).map(event => ({ id: event.id, kind: 'user' as const, at: event.at,
+    content: { text: event.data.text }, payload: { local: true as const, inputRefs: event.data.refs } }))]
+}
+
 /** 建会话壳——**构造即订阅**（先接订阅、后放开输入）。 */
 export function createShell(transport: ControlTransport, options: ShellOptions): Shell {
   const watchers = new Set<() => void>()
@@ -961,6 +969,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (layer.dock.kind === 'picker') {
       commit(openPicker(view, layer.dock.picker))
+      if (layer.dock.picker.source === 'session') refreshSessionPicker()
+      if (layer.dock.picker.source === 'session-actions' && sessionTarget !== undefined) showSessionActions(sessionTarget, false)
       return
     }
     if (layer.dock.kind === 'prompt' && layer.asking !== null) {
@@ -1395,6 +1405,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (!connected && !transport.offlineCommands?.includes(command.type)) {
       commit(appendReceipt(view, 'Engine 未连接，这项运行操作暂不可用。')); return
     }
+    if (view.archived && (command.type === 'input.submit' && command.local !== true || ['collaboration.input', 'collaboration.resume', 'decision.answer'].includes(command.type) || command.type === 'input.manage' && command.action === 'continue')) {
+      commit({ ...view, flash: '会话已归档，请明确恢复后继续' }); return
+    }
     transport.send(command.type==='input.manage'&&view.inputMember!==undefined?{...command,member:view.inputMember}:command)
   }
 
@@ -1412,6 +1425,41 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const onEvent = (event: KernelEvent): void => {
     if (disposed || (!connected && !reopening && !['model.catalog', 'provider.catalog', 'prefs.state', 'grants.catalog'].includes(event.kind))) return
 
+    if (event.kind === 'session.state' && event.data.note === undefined && view.flash === '正在读取会话目录…') commit({ ...view, flash: null })
+    if (event.kind === 'session.state' && (waiting === 'session' || view.dock.kind === 'picker' && view.dock.picker.source === 'session') && turn === null) {
+      if (event.data.note !== undefined) {
+        if (waiting === 'session') { waiting = null; openSessionPicker() }
+        commit({ ...view, flash: `${event.data.note} · Enter 重试` }); return
+      }
+    }
+    if (event.kind === 'session.changed') {
+      const next = reduce(view, event)
+      commit(next.archived && next.dock.kind === 'decision' ? undock(next) : next)
+      refreshSessionPicker()
+      if (view.dock.kind === 'picker' && view.dock.picker.source === 'session-actions' && sessionTarget === event.data.session) {
+        showSessionActions(sessionTarget, false)
+      }
+      return
+    }
+    if (event.kind === 'session.managed') {
+      if (event.data.session !== sessionTarget || managementPending === null) {
+        if (event.data.action === 'rename') {
+          if (!event.data.ok) { if (lastSubmit?.local === true) settleDraft(lastSubmit.ref, true); commit({ ...view, flash: event.data.error ?? '改名失败' }) }
+          else send({ type: 'session.list', archived: sessionArchived })
+        }
+        return
+      }
+      managementPending = null
+      if (!event.data.ok) { commit({ ...view, flash: event.data.error ?? '会话操作失败，请重试' }); return }
+      commit({ ...view, flash: null })
+      if (event.data.action === 'rename') { asking = null; popLayer(); popLayer() }
+      else {
+        if (view.dock.kind === 'picker' && view.dock.picker.source === 'session-actions') popLayer()
+        if (event.data.action === 'restore') { sessionArchived = false; sessionFocus = event.data.session }
+      }
+      querySessions()
+      return
+    }
     if(lastSubmit?.local===true && (('ok' in event.data&&event.data.ok===false)||(event.kind==='session.state'&&event.data.note!==undefined)))settleDraft(lastSubmit.ref,true)
 
     if(event.kind==='input.pending'){const target=view.inputMember===undefined?view.sessionId:view.collaboration?.members.find(one=>one.agent.agentId===view.inputMember)?.agent.sessionId;if(target!=null&&event.session!==target)return;commit({...view,pendingInputs:event.data.inputs});if(view.dock.kind==='picker'&&view.dock.picker.source==='input-pending')openPendingInputs();if(event.data.note!==undefined)commit(appendReceipt(view,event.data.note));return}
@@ -1460,6 +1508,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       && event.kind !== 'tool.decision.request' && event.kind !== 'tool.decision' && event.kind !== 'input.settled') return
 
     if (event.kind === 'session.history') {
+      if (preview?.session === event.data.session) {
+        if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'session-history') { if (event.data.done) preview = null; return }
+        if (event.data.error !== undefined) { commit({ ...view, flash: `${event.data.error} · Enter 重试` }); preview = null; return }
+        preview.entries.push(...historyEntries(event.data))
+        preview.entries.sort((a, b) => a.at - b.at || a.id - b.id)
+        const picker = view.dock.picker
+        const rebuilt = rebuild(createView(), preview.entries)
+        commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!,
+          title: picker.reader!.title.replace(' · 正在读取', event.data.done ? '' : ' · 正在读取'), rows: [...rebuilt.settled, ...rebuilt.rows] } } } })
+        if (event.data.done) preview = null
+        return
+      }
       accumulate(event.data)
       return
     }
@@ -1581,7 +1641,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (waiting === 'session') {
         waiting = null
         openSessionPicker()
-      }
+      } else refreshSessionPicker()
 
       // **内核有话要说**（U44）——`note` 这一格原先**没有出口**：忙时挡回的那条路
       //（`BUSY_NOTE`：正在跑一轮，切不动）屏上零输出，用户按下去像按在空气上。
@@ -1788,8 +1848,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       rebuildEntries = []
     }
 
-    const local = (data.inputs??[]).map(event => ({id:event.id,kind:'user' as const,at:event.at,content:{text:event.data.text},payload:{local:true as const,inputRefs:event.data.refs}}))
-    rebuildEntries = [...rebuildEntries, ...data.entries, ...local]
+    rebuildEntries = [...rebuildEntries, ...historyEntries(data)]
     if (!data.done) return
 
     rebuildEntries = [...rebuildEntries].sort((a,b)=>a.at-b.at||a.id-b.id)
@@ -1868,11 +1927,47 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   let sessionScope: SessionScope = 'all'
   let sessionQuery = ''
+  let sessionArchived = false
+  let sessionFocus: string | undefined
+  const sessionPositions = new Map<boolean, { id?: string; selected: number; detailTop?: number }>()
+  let sessionTarget: string | undefined
+  let managementPending: 'session.archive' | 'session.restore' | 'session.rename' | null = null
+  let preview: { session: string; entries: Entry[] } | null = null
+
+  const querySessions = (): void => { commit({ ...view, flash: '正在读取会话目录…' }); send({ type: 'session.list', archived: sessionArchived }) }
+  const showSessionHistory = (session: string): void => {
+    preview = { session, entries: [] }
+    enterLayer()
+    const archived = view.catalog.find(one => one.id === session)?.archived ?? (session === view.sessionId && view.archived)
+    commit(openPicker(view, { source: 'session-history', rows: [], selected: 0,
+      reader: { key: `session:${session}`, title: `${nameOfSession(session)}${archived ? ' · 已归档' : ''} · 正在读取`, rows: [], top: reading.get(`session:${session}`) ?? 0 } }))
+    send({ type: 'history.read', session })
+  }
+  const showSessionActions = (session: string, push = true): void => {
+    sessionTarget = session
+    const item = view.catalog.find(one => one.id === session)
+    const archived = item?.archived ?? (session === view.sessionId && view.archived)
+    const keep = push ? undefined : picked(view)?.value
+    const rows = [collaborationRow('history', '查看记录'), ...(archived ? [] : [collaborationRow('rename', '改名')]),
+      ...(archived ? [collaborationRow('restore', '恢复', '恢复后需另行接回或发送')] : connected && item?.canArchive === true ? [collaborationRow('archive', '归档')] : []),
+      ...(session === view.sessionId && archived ? [collaborationRow('draft', '查看／复制原草稿'), collaborationRow('sessions', '/resume · 切换其他会话')] : [])]
+    if (push) enterLayer()
+    commit(openPicker(view, { source: 'session-actions', title: `${nameOfSession(session)}${archived ? ' · 已归档' : ''}`,
+      selected: Math.max(0, rows.findIndex(row => row.value === keep)), rows, hint: '↑↓ 选择 · Enter 执行 · Esc 返回' }))
+  }
+  const manageSession = (type: 'session.archive' | 'session.restore'): void => {
+    if (sessionTarget === undefined || managementPending !== null) return
+    if (!connected) { commit({ ...view, flash: 'Engine 未连接，请先 Ctrl+R 重连' }); return }
+    managementPending = type
+    commit({ ...view, flash: '正在保存…' })
+    send({ type, session: sessionTarget })
+  }
+
 
   /** 那一屏的行（**一处算**——开、筛、运行事实变了这三条路都走它）。 */
   const sessionPickerRows = (): readonly PickerRow[] =>
     sessionRows({
-      catalog: view.catalog.filter((session) => session.id === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === session.id)),
+      catalog: view.catalog.filter(session => session.archived === sessionArchived).filter((session) => session.id === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === session.id)),
       active: view.sessionId,
       here: options.workspaceRoots,
       runs: view.runs.filter((run) => run.session === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === run.session)),
@@ -1894,7 +1989,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 只说一半的话，用户看着一张短表不知道另一半去哪了（收窄的那一条最常见）
     const head = [
       sessionQuery === '' ? '' : `筛选「${sessionQuery}」`,
-      `范围：${sessionScope==='here'?'本工作区':'全部工作'} · 筛词：${sessionQuery||'无'}`,
+      `${sessionArchived ? '已归档' : '普通'} · ${sessionScope==='here'?'本工作区':'全部工作区'} · Tab 换范围 · Shift+Tab 换视图`,
       view.collaboration?.collaboration !== undefined && selected?.value === view.sessionId ? '→ 查看本次协作' : '',
     ]
       .filter((piece) => piece !== '')
@@ -1965,6 +2060,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 不是一条该被记住的偏好——下次打开时用户要的是全貌，而全貌第一条正是「需要你」）
     sessionScope = 'all'
     sessionQuery = ''
+    sessionArchived = false
+    sessionPositions.clear()
+    sessionFocus = undefined
 
     const rows = sessionPickerRows()
     const hint = sessionPickerHint(rows)
@@ -1972,7 +2070,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit(
       openPicker(view, {
         source: 'session',
-        title: '找工作并接回',
+        title: sessionArchived ? '已归档 · Enter 查看记录' : '普通 · Enter 接回',
         // 选中项＝**当前那条**——分组之后行序变了，故在**分好组的行**里找它。
         // 空列表仍保留范围、筛词与返回入口。
         selected: Math.max(0, rows.findIndex((row) => row.value === view.sessionId)),
@@ -1996,8 +2094,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     const picker = view.dock.picker
     const rows = sessionPickerRows()
-    const keep = picker.rows[picker.selected]?.value
+    const keep = sessionFocus ?? picker.rows[picker.selected]?.value
     const found = rows.findIndex((row) => row.value === keep)
+    if (found !== -1) sessionFocus = undefined
     const hint = sessionPickerHint(rows)
 
     commit({
@@ -2007,7 +2106,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         picker: {
           ...picker,
           source: 'session',
-          title: '找工作并接回',
+          title: sessionArchived ? '已归档 · Enter 查看记录' : '普通 · Enter 接回',
           rows,
           selected: found === -1 ? Math.min(picker.selected, Math.max(0, rows.length - 1)) : found,
           filter: sessionQuery,
@@ -2741,6 +2840,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (held === null) return NONE
 
     const command = held.submit(held.value)
+    if (command?.type === 'session.rename' && sessionTarget === command.session) {
+      if (managementPending !== null) return NONE
+      if (!connected) { commit({ ...view, flash: 'Engine 未连接，请先 Ctrl+R 重连' }); return NONE }
+      if (held.value.trim() === '') { commit({ ...view, flash: '名称不能为空' }); return NONE }
+      managementPending = command.type
+      commit({ ...view, flash: '正在保存…' })
+      send(command)
+      return NONE
+    }
     asking = null
     commit(closePrompt(view))
     if (command !== null) send(command)
@@ -3263,6 +3371,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    *   而「交出去那一份等着认领」也就此作罢（稿子已经不是交出去时那一份了）。
    */
   const identifyPicked = (data: Extract<KernelEvent, { kind: 'paths.identified' }>['data']): void => {
+    if (view.archived) return
     const image = data.image
     if (image === undefined) return
     // 稿子里已经没有那一处了（答复后到：用户删了它 / 已经交出去了）⇒ 连号都不取
@@ -3460,6 +3569,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     //    往草稿里插 7 个字之后那个区间就偏了——用户接着选定一条，替换掉的是**别处**的文字。
     //
     // 故这一档**明说**（不静默）：图取到了，但此刻那一栏占着，收起再按一次就行。
+    if (view.archived) return
     if (view.dock.kind === 'picker') {
       if (data.image !== undefined || data.problem !== undefined) {
         commit(appendReceipt(view, '剪贴板里那一张取到了，但这一栏开着没收——收起之后再按一次 ctrl+v。'))
@@ -3560,6 +3670,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    * 那句话说的是「**输入位置**」，不是「材料在原交代里的位置」）。
    */
   const attachMaterial = (material: UserImage): void => {
+    if (view.archived) return
     const at = Math.max(0, Math.min(view.caret, view.draft.length))
 
     commit(
@@ -4163,7 +4274,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const key = (input: ShellKey): ShellEffect => {
     if(input.kind!=='up'&&input.kind!=='down')verticalColumn=null
     if (disposed) return NONE
-    if (input.kind === 'ctrl+r') return reconnect()
+    if (input.kind === 'ctrl+r') { managementPending = null; return reconnect() }
+    if (managementPending !== null && input.kind !== 'ctrl+c') return NONE
+    if (input.kind === 'enter' && view.dock.kind === 'picker' && view.dock.picker.source === 'session' && view.flash?.endsWith(' · Enter 重试')) { querySessions(); return NONE }
+    if (input.kind === 'ctrl+g') {
+      if (view.dock.kind === 'picker' && view.dock.picker.source === 'session') {
+        const row = picked(view); if (row !== undefined) showSessionActions(row.value)
+      } else if (view.archived && view.dock.kind === 'input' && view.sessionId !== null) showSessionActions(view.sessionId)
+      return NONE
+    }
+    if (view.archived && view.dock.kind === 'input') {
+      if (input.kind === 'char' && input.char.startsWith('/')) {
+        openAsk({ label: '只读会话命令', secret: false, value: input.char, caret: input.char.length, placeholder: '/resume',
+          submit: value => { if (value.trim() === '/resume') { waiting = 'session'; sessionArchived = false; return { type: 'session.list', archived: false } }; return null } })
+        return NONE
+      }
+      if (!['ctrl+c', 'ctrl+o', 'escape', 'planTop', 'ctrl+t'].includes(input.kind)) {
+        commit({ ...view, flash: '已归档，原草稿保留。Ctrl+G 查看草稿或明确恢复；/resume 切换会话。' }); return NONE
+      }
+    }
     if (input.kind === 'enter' && view.dock.kind === 'input' && view.draft.trim() === '/connect') {
       commit({ ...view, draft: '', caret: 0, refs: [], completion: null })
       return reconnect()
@@ -4205,6 +4334,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         commit({ ...view, dock: { kind: 'picker', picker: { ...picker, reader: { ...picker.reader!, top: Math.max(0, input.top) } } } })
       }
       return NONE
+    }
+    if (view.dock.kind === 'picker' && view.dock.picker.source === 'session-history' && input.kind === 'enter' && view.flash !== null) {
+      const session = view.dock.picker.reader!.key.slice('session:'.length)
+      preview = { session, entries: [] }; commit({ ...view, flash: null }); send({ type: 'history.read', session }); return NONE
     }
     if (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined
       && !['left', 'escape', 'ctrl+c', 'memberInput', 'memberMenu', 'ctrl+o', 'tab'].includes(input.kind)) return NONE
@@ -4387,6 +4520,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
+      case 'shift+tab':
+        if (view.dock.kind === 'picker' && view.dock.picker.source === 'session') {
+          const picker = view.dock.picker
+          sessionPositions.set(sessionArchived, { id: picker.rows[picker.selected]?.value, selected: picker.selected, detailTop: picker.detailTop })
+          sessionArchived = !sessionArchived
+          const position = sessionPositions.get(sessionArchived)
+          sessionFocus = position?.id
+          commit({ ...view, dock: { kind: 'picker', picker: { ...picker, selected: position?.selected ?? 0, detailTop: position?.detailTop ?? 0 } } })
+          refreshSessionPicker()
+          querySessions()
+        }
+        return NONE
       case 'tab':
         if (decisions.size > 0 && ((view.dock.kind === 'input' && view.completion === null) || (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined))) { openDecision(); return NONE }
         // `Tab` 补全（原型 · 场景 11）；没有候选时什么也不做（Tab 不当正文）
@@ -4543,6 +4688,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const submit = (): ShellEffect => {
     // **启动中不收**（技术方案 · 装配视图第 5 步：以 `boot` 完成为界）——草稿留着
     if (!ready) return bootRefusal()
+    if (view.archived && (view.dock.kind === 'input' || view.dock.kind === 'decision')) { commit({ ...view, flash: '会话已归档，请明确恢复后继续' }); return NONE }
     if (view.dock.kind === 'decision') return answer()
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
     if (view.dock.kind === 'prompt') return submitAsk()
@@ -4550,6 +4696,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.dock.kind === 'picker') {
       const row = picked(view)
       if (row === undefined) return NONE
+      if (view.dock.picker.source === 'session-actions') {
+        if (sessionTarget === undefined) return NONE
+        if (row.value === 'history') showSessionHistory(sessionTarget)
+        else if (row.value === 'archive' || row.value === 'restore') manageSession(row.value === 'archive' ? 'session.archive' : 'session.restore')
+        else if (row.value === 'rename') {
+          const session = sessionTarget, title = nameOfSession(session)
+          enterLayer()
+          openAsk({ label: '会话名称', secret: false, value: title, caret: title.length, placeholder: '名称', submit: value => ({ type: 'session.rename', session, title: value.trim() }) })
+        } else if (row.value === 'draft') {
+          openRecords(`draft:${sessionTarget}`, '原草稿 · 只读，可用终端选择复制', [{ kind: 'user', key: `draft:${sessionTarget}`, text: view.draft, echoed: true, images: userImages(view.refs) }])
+        } else if (row.value === 'sessions') { popLayer(); waiting = 'session'; send({ type: 'session.list', archived: false }) }
+        return NONE
+      }
       if (view.dock.picker.source === 'input-purpose') {
         if (row.value === 'pending') {
           manageInput({type:'input.manage',action:'list'})
@@ -4664,6 +4823,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
       // `/resume` 那一屏：选定＝切过去。
       if (view.dock.picker.source === 'session') {
+        if (sessionArchived) { showSessionHistory(row.value); return NONE }
         // **选的是当下这条**：什么都没发生——内核那一边 `switchTo` 也知道是同一条、
         // 一个事件都不发（见 `conversation` 的 `run`）。故回执**这一侧当场给**
         // （等答复就是白等），页也不翻（没换记录区，翻了反而是「凭空清一屏」）。

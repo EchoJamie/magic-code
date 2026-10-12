@@ -250,8 +250,8 @@ describe('判据 1 · 落取回环', () => {
       // **为何变**：U26 给摘要加了 `workspace`（会话归属工作区）——行多了一键。
       // **新锚**：同一条规格，**全等照旧**（不放宽成「只看 id 与 at」——那正是判据定松）。
       expect(await store.listSessions()).toEqual([
-        { id: OTHER_SESSION, at: T0 + 20, workspace: ROOTS },
-        { id: SESSION, at: T0 + 10, workspace: ROOTS },
+        { id: OTHER_SESSION, at: T0 + 20, workspace: ROOTS, archived: false },
+        { id: SESSION, at: T0 + 10, workspace: ROOTS, archived: false },
       ])
       expect(await store.serviceFor('s-0003').listSessions()).toEqual(
         await store.listSessions(),

@@ -1,0 +1,14 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.history",
+    "request": "history",
+    "session": "s1",
+    "after": 20,
+    "source": {
+      "session": "member",
+      "event": 42
+    }
+  }
+}

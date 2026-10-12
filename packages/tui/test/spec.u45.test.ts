@@ -60,7 +60,7 @@ const rulesOf = (frame: Frame): readonly number[] =>
 const state = (active: string, note?: string) =>
   event('session.state', {
     active,
-    sessions: [{ id: active, at: 0, title: '甲的事' }],
+    sessions: [{ archived: false, id: active, at: 0, title: '甲的事' }],
     ...(note === undefined ? {} : { note }),
   })
 
@@ -238,7 +238,7 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
     const stage = createStage()
     stage.type('/resume ')
     stage.press(ENTER)
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
 
     expect(stage.shell.getView().dock.kind).toBe('picker') // 防空转：真开着
     三块分得开(await stage.screen(WIDE), '选择器', '甲的事')

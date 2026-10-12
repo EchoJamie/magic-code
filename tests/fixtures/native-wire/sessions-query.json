@@ -1,0 +1,13 @@
+{
+  "family": "NativeRequest",
+  "valid": true,
+  "message": {
+    "t": "native.sessions",
+    "request": "directory",
+    "archived": false,
+    "workspace": [
+      "/tmp/project-one"
+    ],
+    "search": "会话"
+  }
+}

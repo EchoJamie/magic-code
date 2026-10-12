@@ -414,7 +414,12 @@ export type EntryRange = {
  * TODO(规划侧)：形态未定；占位为 id + 标题 + 时间
  * （技术方案 · 会话与多会话：标题＝首条消息摘要、可改）。
  */
+export type SessionQuery = { readonly archived?: boolean; readonly ids?: readonly string[]; readonly workspace?: readonly string[] }
+
 export type SessionSummary = {
+  readonly archived: boolean
+  readonly canArchive?: boolean
+  readonly terminalOpen?: boolean
   readonly recentInput?: string
   readonly recentProgress?: string
   readonly id: SessionId

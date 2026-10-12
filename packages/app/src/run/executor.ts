@@ -121,6 +121,7 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
       {
         const session = (await records.listSessions()).find((one) => one.id === options.session)
         if (session === undefined) throw new Error('会话已不可达')
+        if (records.isSessionArchived(options.session)) throw new Error('会话已归档，请先明确恢复')
         if (session.workspace !== undefined && session.workspace.length > 0) {
           cwd = session.workspace[0]!
           config = { ...config, config: { ...config.config, workspaceRoots: session.workspace } }
@@ -483,11 +484,11 @@ export async function runExecutor(options: ExecutorOptions): Promise<ExecutorOut
         link.send({ t: 'collaboration.configured', requestId: message.requestId, result: assembly.applyModel(message.model) })
         return
       case 'collaboration.input':
-        if (closing) return
+        if (closing || (options.session !== null && options.records.isSessionArchived(options.session))) return
         trackOperation(assembly.supplementCollaboration(message.input, message.shared))
         return
       case 'collaboration.wake':
-        if (closing) return
+        if (closing || (options.session !== null && options.records.isSessionArchived(options.session))) return
         assembly.wakeCollaboration()
         return
       case 'cmd':

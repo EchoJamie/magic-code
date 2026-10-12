@@ -53,7 +53,7 @@ const run = (id: string, state: RunState, over: Partial<RunRow> = {}): RunRow =>
   ...over,
 })
 
-const session = (id: string, title: string): SessionSummary => ({ id, title, at: 1_000, workspace: HERE })
+const session = (id: string, title: string): SessionSummary => ({ archived: false, id, title, at: 1_000, workspace: HERE })
 
 /** 一份手搭的视图——只改这一格要验的那几处。 */
 const at = (status: Partial<ShellStatus>, over: Partial<ShellView> = {}): ShellView => ({

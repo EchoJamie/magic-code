@@ -35,7 +35,7 @@ const state = (active: string, rows: readonly Row[]) =>
   event('session.state', {
     active,
     sessions: rows.map(
-      (row): SessionSummary => ({
+      (row): SessionSummary => ({ archived: false,
         id: row.id,
         at: 0,
         ...(row.title === undefined ? {} : { title: row.title }),

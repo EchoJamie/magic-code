@@ -143,9 +143,9 @@ function mergeGroup(group: CollaborationNativeGroup, bySession: ReadonlyMap<Sess
         }),
       }
     }),
-    notices: rows.flatMap(row => row.notices.map(notice => notice.session === root ? notice : {
-      ...notice, session: root, detail: memberDetail(notice.session, notice.detail ?? ''),
-    })).sort((left, right) => left.at - right.at || left.id.localeCompare(right.id)),
-    terminalNoticeIds: rows.flatMap(row => row.terminalNoticeIds ?? []),
+    archived: rootWork?.archived ?? false,
+    canArchive: rootWork?.canArchive === true && !status.affected,
+    terminalOpen: rows.some(row => row.terminalOpen),
+    ...(rootWork?.currentNotice === undefined ? {} : { currentNotice: rootWork.currentNotice }),
   }
 }

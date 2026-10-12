@@ -679,6 +679,8 @@ describe('事件契约', () => {
       // 重放读条目就说得清「当时跑过哪条后台命令、结局如何」，不必再存一遍屏上的话。
       'exec.background.done',
       'session.state',
+      'session.changed',
+      'session.managed',
       'collaboration.view',
       // 第 19 轮：读面答复同列——它是**读出来的**（条目本就在库里），
       // 落库＝把同一段内容存第二遍；重放要的是「发生过什么」，不是「某人问过一次」
@@ -752,13 +754,13 @@ describe('事件契约', () => {
     expect(TRANSIENT_EVENT_KINDS).not.toContain('model.switched')
   })
 
-  test('schema 版本自始写入（当前＝1）', () => {
+  test('schema 当前结构版本为 2', () => {
     // **原锚**（U02）：「自始写入（v0）」——冻结那一刻的形状就是 0。
     // **为何变**：U26 给 `sessions` 加了 `workspace` 列（会话归属工作区），而冻结点
     //   已过 ⇒ 走**顺序迁移**（0 → 1）：版本号得往前推一位，迁移链才有得走
     //   （迁移的落地与真跑见 `@magic/records` · `test/workspace.test.ts`）。
     // **新锚**：同一条规格（版本号是**写进库的**、不是摆设），值随形状走——**字面一个没松**。
-    expect(RECORD_SCHEMA_VERSION).toBe(1)
+    expect(RECORD_SCHEMA_VERSION).toBe(2)
   })
 })
 
@@ -868,8 +870,8 @@ describe('会话契约（阶段 2 · U16 · 只增不改）', () => {
     const state: EventDataOf['session.state'] = {
       active: 's1',
       sessions: [
-        { id: 's1', title: '看看工作区里有什么', at: 1 },
-        { id: 's2', at: 2 },
+        { id: 's1', archived: false, title: '看看工作区里有什么', at: 1 },
+        { id: 's2', archived: false, at: 2 },
       ],
     }
 

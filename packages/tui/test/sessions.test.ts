@@ -47,7 +47,7 @@ const SESSION = 'sess-1'
 const state = (active: string, rows: readonly { id: string; title?: string }[]) =>
   event('session.state', {
     active,
-    sessions: rows.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
+    sessions: rows.map((row) => ({ archived: false, id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
   })
 
 describe('会话目录（选择器）', () => {

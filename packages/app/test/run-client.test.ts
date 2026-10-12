@@ -9,7 +9,7 @@ import { cliGround, fakeApp, waitFor } from './resident-cli-fixture.ts'
 function initialEvents(): KernelEvent[] {
   return [
     { id: 0, session: 'real-session', turn: null, at: 1, kind: 'session.state',
-      data: { active: 'real-session', sessions: [{ id: 'real-session', at: 1, title: '工作' }] } },
+      data: { active: 'real-session', sessions: [{ archived: false, id: 'real-session', at: 1, title: '工作' }] } },
     { id: 0, session: 'real-session', turn: null, at: 1, kind: 'session.history',
       data: { session: 'real-session', entries: [{ id: 1, kind: 'assistant', at: 1, content: { text: '初次历史内容不会丢失' } }], done: true } },
   ]
@@ -289,4 +289,20 @@ test('同gen真实target认领保留快照缓存、Shell历史与草稿；客户
     expect(server.messages.filter((message) => message.t === 'cmd').map(message=>message.cmd)).toEqual([{type:'history.read',session:'real-session'}])
     expect(server.messages.some((message) => message.t === 'read')).toBe(false)
   } finally { shell.dispose(); client.close(); server.close(); g.close() }
+})
+
+
+test('原终端重绑显式携 reattach；在线刷新仅读目录与历史，不隐式 session.open', async () => {
+  const g = cliGround(), server = fakeApp(g)
+  try {
+    const client = (await connectManager(g.discovery.socket, { session: 'archived', reattach: true }))!
+    expect(server.messages.find(message => message.t === 'hello')).toMatchObject({ session: 'archived', reattach: true })
+    const connection = terminalConnection(client, async () => { throw new Error('在线无需另连') }, 'archived')
+    await connection.reopen()
+    await waitFor(() => server.messages.filter(message => message.t === 'cmd').length === 2)
+    expect(server.messages.filter(message => message.t === 'cmd').map(message => message.cmd)).toEqual([
+      { type: 'session.list' }, { type: 'history.read', session: 'archived' },
+    ])
+    connection.client.close()
+  } finally { server.close(); g.close() }
 })

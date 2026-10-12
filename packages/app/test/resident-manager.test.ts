@@ -149,6 +149,7 @@ test('窗口切走后旧执行者迟到 bound/event 只更新当前 watchers，�
     const leftTargets: (string | null)[] = [], rightTargets: (string | null)[] = []
     left.onTarget((session) => leftTargets.push(session))
     right.onTarget((session) => rightTargets.push(session))
+    executor.send({ t: 'ev', event: { id: 1, session: 'old', turn: null, at: 1, kind: 'agent.state', data: { state: 'waiting' } } })
     left.send({ type: 'session.open', session: 'chosen' })
     await waitFor(() => leftTargets.at(-1) === 'chosen' && rightTargets.at(-1) === 'old')
     leftTargets.length = 0; rightTargets.length = 0
@@ -231,7 +232,9 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
   const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.root] })
   store.setSessionTitle('session-a', '同名工作', 1)
   store.attention.put({ id: 'one', session: 'session-a', kind: 'needs-you', at: 2, fact: 'event:1', unread: true, delivered: false })
-  store.attention.put({ id: 'two', session: 'session-a', kind: 'done', at: 3, fact: 'event:2', unread: true, delivered: false })
+  const stopEvent = { id: store.serviceFor('session-a').nextId(), session: 'session-a', turn: 1, at: 3, kind: 'turn.end' as const, data: { reason: 'settled' as const } }
+  store.appendEvent(stopEvent)
+  store.attention.put({ id: 'two', session: 'session-a', source: { session: 'session-a', event: stopEvent.id }, kind: 'done', at: 3, fact: String(stopEvent.id), unread: true, delivered: false })
   let spawns = 0
   const started = await startManager({ ...g, launch: { spawn() { spawns++; throw new Error('观察不执行') } } })
   if (started.role !== 'manager') throw new Error('启动失败')
@@ -245,22 +248,22 @@ test('原生停止绑定当前输入代次，旧菜单不误停下一轮，同�
     await waitFor(() => received.some((one) => one.t === 'native.welcome'))
     for (let i = 0; i < 3; i++) {
       const client = await connectManager(g.paths.socket, { session: 'session-a' })
-      expect(client?.unread.map((one) => one.id)).toEqual(['one', 'two'])
+      expect(client?.unread.map((one) => one.id)).toEqual(['two'])
       client?.send({ type: 'session.list' })
       client?.send({ type: 'history.read', session: 'session-a' })
       client?.close()
     }
     link.send({ t: 'native.inspect', request: 'read-barrier', session: 'session-a' })
     await waitFor(() => received.some((one) => one.t === 'native.inspected'))
-    expect(store.attention.list().map((one) => [one.unread, one.delivered])).toEqual([[true, false], [true, false]])
+    expect(store.attention.list().map((one) => [one.unread, one.delivered])).toEqual([[true, false]])
     expect(spawns).toBe(0)
     expect(manager.executors()).toHaveLength(0)
-    link.send({ t: 'native.read', ids: ['one'] })
-    link.send({ t: 'native.delivered', ids: ['two'] })
+    link.send({ t: 'native.read', serviceInstance: manager.identity.serviceInstance, ids: ['one'] })
+    link.send({ t: 'native.delivered', serviceInstance: manager.identity.serviceInstance, ids: ['two'] })
     link.send({ t: 'native.inspect', request: 'ack-barrier', session: 'session-a' })
     await waitFor(() => received.some((one) => one.t === 'native.inspected' && one.request === 'ack-barrier'))
-    expect(store.attention.list().map((one) => [one.unread, one.delivered])).toEqual([[false, false], [true, true]])
-    expect(store.attention.list()[0]?.kind).toBe('needs-you')
+    expect(store.attention.list().map((one) => [one.unread, one.delivered])).toEqual([[true, true]])
+    expect(store.attention.list()[0]?.kind).toBe('done')
   } finally {
     link.close(); manager.stop('测试宿主退出'); await manager.waitUntilExit(); store.close()
     rmSync(g.root, { recursive: true, force: true })

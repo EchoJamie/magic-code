@@ -164,8 +164,8 @@ describe('真光标 · 抽屉接管与关闭', () => {
     event('session.state', {
       active: 's1',
       sessions: [
-        { id: 's1', at: 0, title: '记录查询优化' },
-        { id: 's2', at: 0, title: '修复时区处理' },
+        { archived: false, id: 's1', at: 0, title: '记录查询优化' },
+        { archived: false, id: 's2', at: 0, title: '修复时区处理' },
       ],
     }),
   ]

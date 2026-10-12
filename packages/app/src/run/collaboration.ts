@@ -40,6 +40,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
     resolveModel: input => resolveManagedModel({ magic: host.magic, environment: host.environment(input.session), ...input }),
     start: async agent => {
       if (closing || !host.accepting()) throw new Error('宿主正在退出')
+      if (host.store.isSessionArchived(agent.sessionId)) throw new Error('会话已归档，请先明确恢复')
       await host.start(agent)
     },
     wake,
@@ -77,7 +78,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
   }
 
   function admission(agent: AgentIdentity): boolean {
-    if (closing || !host.accepting() || agent.collaborationId === undefined) return false
+    if (closing || !host.accepting() || host.store.isSessionArchived(agent.sessionId) || agent.collaborationId === undefined) return false
     const active = records.listDelegations(agent.collaborationId).find(d => d.assigneeId === agent.agentId && d.state === 'accepted')
     return records.checkAdmission(agent.agentId, active?.delegationId, 'coordination').allowed
   }
@@ -210,12 +211,14 @@ export function createManagedCollaboration(host: CollaborationHost) {
       const agent = records.agentForSession(session)
       if (agent === undefined) return { ok: false, reason: '执行连接尚未绑定 Agent 身份' }
       if ((closing || !host.accepting()) && request.action !== 'deliver' && request.action !== 'read') return { ok: false, reason: '宿主正在退出' }
+      if (host.store.isSessionArchived(session) && request.action !== 'deliver' && request.action !== 'read') return { ok: false, reason: '会话已归档，请先明确恢复' }
       return actions.request(agent.agentId, request)
     },
     async command(session: string, command: CollaborationCommand): Promise<CollaborationView> {
       const collaboration = records.collaborationForSession(session)
       if (command.type === 'collaboration.read') return view(session, command.member)
       if (collaboration === undefined) throw new Error('当前会话尚未展开协作')
+      if (host.store.isSessionArchived(session)) throw new Error('会话已归档，请先明确恢复')
       if (closing || !host.accepting()) throw new Error('宿主正在退出')
       switch (command.type) {
         case 'collaboration.input': {

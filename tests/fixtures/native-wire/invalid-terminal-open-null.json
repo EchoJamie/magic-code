@@ -18,10 +18,9 @@
           "since": 1790400000000,
           "gen": null,
           "affected": false,
-          "notices": [],
-          "terminalNoticeIds": [
-            3
-          ]
+          "archived": false,
+          "canArchive": true,
+          "terminalOpen": null
         }
       ]
     }

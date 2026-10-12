@@ -33,7 +33,7 @@ import type { Cell, Frame } from './screen.ts'
 /** 起一个壳，并投一条会话状态（② 有标题、目录非空——多数用例的底子）。 */
 function live() {
   const stage = createStage()
-  stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '时区修正' }] })])
+  stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '时区修正' }] })])
 
   return stage
 }
@@ -476,7 +476,7 @@ describe('记录区的三类行（后两类不重建）', () => {
       { id: 1, kind: 'user', content: { text: '看看有什么' }, at: 0 },
       { id: 2, kind: 'assistant', content: { text: '好。' }, at: 1 },
     ]
-    stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] })])
+    stage.feed([event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0, title: '乙的事' }] })])
     stage.feed([event('session.history', { session: 's2', entries, done: true })])
 
     const after = await stage.screen()

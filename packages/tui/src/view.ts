@@ -561,6 +561,8 @@ export type Picker = {
     | 'collaboration-records'
     | 'collaboration-discussions'
     | 'session'
+    | 'session-actions'
+    | 'session-history'
     | 'model'
     | 'region'
     | 'grants'
@@ -936,7 +938,7 @@ export const HINT_PICKER_READ = '↑↓ 选择 · ← / Esc 返回'
  * 由头与上一条同：键位提示得**对得上键位**。这一屏收了「名称搜索」与「当前工作区/全部」
  * 两件（设计明文），不报出来用户就只能自己撞——而抽屉一开就把输入接管了，撞也撞不出回声。
  */
-export const HINT_PICKER_SESSION = '↑↓ 选择 · Enter 接回 · 打字筛选 · Tab 换范围 · Esc 返回'
+export const HINT_PICKER_SESSION = '↑↓ 选择 · 打字筛选 · Ctrl+G 操作 · Esc 返回'
 
 /** 设置筛词原位编辑；Esc 退当前层。 */
 export const HINT_PICKER_CONFIG = '↑↓ 选择 · 输入筛词 · Esc 返回'
@@ -1276,6 +1278,8 @@ export type ShellView = {
    * 造它的地方只有一处：三选里的「转到后台」（那一支要留**可复制的接回入口**，设计明文）。
    */
   readonly leavingNote: string | null
+  /** 当前绑定会话的 Engine 归档投影，目录筛选不改变此事实。 */
+  readonly archived: boolean
   /** 当前会话 id（还没有会话＝`null`）。 */
   readonly sessionId: SessionId | null
   /** 会话目录（`session.list` 的答复）。 */
@@ -1489,6 +1493,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     leaving: false,
     // 还没有要走时留的那一句（U100）
     leavingNote: null,
+    archived: false,
     sessionId: null,
     catalog: [],
     runs: [],
@@ -1787,6 +1792,11 @@ export function reduce(
 
       return withPlan(view, event.data.entry, event.data.plan)
 
+    case 'session.managed':
+      return view
+    case 'session.changed':
+      return { ...view, archived: event.data.session === view.sessionId || event.data.session === view.collaboration?.originSession ? event.data.archived : view.archived,
+        catalog: view.catalog.map(one => one.id === event.data.session ? { ...one, ...event.data } : one) }
     case 'session.state':
       return reduceSessionState(view, event.data, options.turn ?? null)
 
@@ -2212,11 +2222,12 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
   const active = data.active || null
   const switched = view.sessionId !== null && view.sessionId !== active
   const turned = data.note === undefined && (turn === 'new' || (turn === 'open' ? view.sessionId !== active : switched))
-  const title = data.sessions.find((row) => row.id === data.active)?.title ?? null
+  const title = data.sessions.find((row) => row.id === data.active)?.title ?? (active === view.sessionId ? view.status.session : null)
 
   const base: ShellView = {
     ...view,
     sessionId: active,
+    archived: data.sessions.find(row => row.id === active)?.archived ?? (active === view.sessionId && view.archived),
     catalog: data.sessions,
     status: { ...view.status, session: title },
   }
@@ -3356,7 +3367,7 @@ function metaOf(row: RunRow | undefined, options: { readonly grouped: boolean; r
   return runStateLabel(row.state)
 }
 
-function sessionDetails(session:SessionSummary):readonly string[]{return [`工作区：${session.workspace?.join(' · ')??'未记录'}`,`最近交代：${session.recentInput??'未记录'}`,`进展：${session.recentProgress??'未记录'}`]}
+function sessionDetails(session:SessionSummary):readonly string[]{return [`会话：${session.title ?? '（无标题）'}`,`状态：${session.archived ? '已归档' : session.terminalOpen ? '终端已打开' : '普通'}`,`工作区：${session.workspace?.join(' · ')??'未记录'}`,`最近交代：${session.recentInput??'未记录'}`,`进展：${session.recentProgress??'未记录'}`]}
 
 export function sessionRows(input: SessionListInput): readonly PickerRow[] {
   const { catalog, active, here, runs, scope, query } = input

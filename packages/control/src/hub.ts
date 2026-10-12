@@ -93,6 +93,8 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
       case 'session.list':
       case 'session.new':
       case 'session.open':
+      case 'session.archive':
+      case 'session.restore':
       case 'session.rename':
         // 会话四支——原样转手给**对话域**（它才是会话的持有者）。
         // 本域不认识会话、也不知道开得成开不成，与 `model.switch` 同一姿势。

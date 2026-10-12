@@ -89,7 +89,7 @@ export type ScreenHost = {
   readonly stdin: NodeJS.ReadStream
   readonly stdout: NodeJS.WriteStream
   /** 取此刻要画的那些行与尺寸（每次重画问一次——流式进来的新行据此上屏）。 */
-  readonly read: () => { readonly rows: readonly LogRow[]; readonly columns: number; readonly screenRows: number; readonly pending?: PendingDecision | undefined }
+  readonly read: () => { readonly rows: readonly LogRow[]; readonly columns: number; readonly screenRows: number; readonly pending?: PendingDecision | undefined; readonly title?: string | undefined; readonly notice?: string | undefined }
   /** 底下那些变了就叫一声（可省）——**叫不叫只影响新内容几时上屏**，不影响键。 */
   /** 主界面需要呈现决策时，归还终端并保留阅读位置。 */
   readonly interrupted?: (() => boolean) | undefined
@@ -98,6 +98,7 @@ export type ScreenHost = {
   readonly subscribe?: ((listener: () => void) => () => void) | undefined
   /** 开屏时从第几行起（阅读位置记着——设计：「退出保留原来的阅读位置」）。 */
   readonly title?: string
+  readonly retry?: (() => void) | undefined
   readonly memberAction?: ((kind: 'input' | 'menu', top:number) => void) | undefined
   readonly startTop?: number | undefined
   /**
@@ -160,15 +161,16 @@ export async function runScreen(host: ScreenHost): Promise<number> {
       dirty = false
       if (host.interrupted?.()) break
 
-      const { rows, columns, screenRows, pending } = host.read()
-      const footer = pending === undefined ? [] : decisionLayout(pending, columns, screenRows, false).lines.map(line => ` │ ${line}`)
-      const body = screenLayout(rows, { columns, screenRows: screenRows - footer.length - (host.title === undefined ? 0 : 1) })
+      const { rows, columns, screenRows, pending, title = host.title, notice } = host.read()
+      const footer = [...(notice === undefined ? [] : [clip(notice, columns)]), ...(pending === undefined ? [] : decisionLayout(pending, columns, screenRows, false).lines.map(line => ` │ ${line}`))]
+      const body = screenLayout(rows, { columns, screenRows: screenRows - footer.length - (title === undefined ? 0 : 1) })
       const layout = body
 
       const keys = queued
       queued = []
 
       for (const key of keys) {
+        if (key.kind === 'accept' && notice !== undefined && host.retry !== undefined && state.asking === null && state.picked === null) { host.retry(); break }
         if (key.kind === 'tab' && pending !== undefined) { host.decide?.(); break }
         if (host.memberAction !== undefined && state.asking === null && state.picked === null && key.kind === 'text' && (key.text === 'i' || key.text === 'm')) { host.memberAction(key.text === 'i' ? 'input' : 'menu', state.top); closing = true; break }
         const step = screenKey(state, key, layout)
@@ -192,7 +194,7 @@ export async function runScreen(host: ScreenHost): Promise<number> {
 
       if (host.interrupted?.()) break
       const frame = screenFrame({ layout, state, columns, footer, hits: matchesOf(layout.lines, state.term),...(host.memberAction===undefined?{}:{hint:'↑↓ / PgUp PgDn · / 搜索 · i 补充 · m 操作 · Esc 返回'}) })
-      stdout.write(host.title === undefined ? frame : `\x1b[H\x1b[0m${clip(host.title, columns)}\x1b[K\r\n` + frame.slice(3) )
+      stdout.write(title === undefined ? frame : `\x1b[H\x1b[0m${clip(title, columns)}\x1b[K\r\n` + frame.slice(3) )
 
       // 按过键（或按键那会儿底下又变了）⇒ 立刻再走一圈；否则等下一个动静
       if (dirty || queued.length > 0) continue

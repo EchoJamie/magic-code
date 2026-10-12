@@ -35,7 +35,7 @@ const docked = (frame: Frame, needle: string): boolean =>
 
 const HERE = ['/w/mine']
 
-const session = (id: string, title: string, workspace?: readonly string[]): SessionSummary => ({
+const session = (id: string, title: string, workspace?: readonly string[]): SessionSummary => ({ archived: false,
   id,
   title,
   at: 1_000,

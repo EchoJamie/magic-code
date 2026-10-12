@@ -1,0 +1,23 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.sessions.result",
+    "request": "directory",
+    "serviceInstance": "service-one",
+    "sessions": [
+      {
+        "id": "s1",
+        "at": 20,
+        "title": "会话",
+        "workspace": [
+          "/tmp/project-one"
+        ],
+        "archived": false,
+        "canArchive": true,
+        "terminalOpen": false,
+        "state": "idle"
+      }
+    ]
+  }
+}

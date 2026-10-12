@@ -52,11 +52,13 @@ struct MagicCodeApp: App {
                 Button("打开调试窗口") { model.showDebugWindow?() }.padding()
             } else { StatusPanel(model: model) }
         } label: {
-            MenuBarMark(state: model.menuBarState).accessibilityLabel("Magic Code，\(model.summary)").modifier(SettingsLaunch())
+            MenuBarMark(state: model.menuBarState).accessibilityLabel("Magic Code，\(model.summary)")
         }.menuBarExtraStyle(.window)
-        // 设置窗口是**长期窗口**：它在 ⇒ App 是 `.regular`（Dock 有图标、Cmd+Tab 切得到）。标记不占位置。
-        Settings { SettingsView(model: model).background(LongLivedWindowMarker()) }
-            .defaultSize(SettingsView.defaultSize)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") { model.manageSettings() }.keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
 
@@ -66,7 +68,8 @@ struct MagicCodeApp: App {
     private var awaitingTerminationReply = false
     private var powerOff: NSObjectProtocol?
     private var validation: AnyCancellable?
-    private var noticeWindow: NSWindow?
+    private var mainWindow: MainWindowController?
+    private var validationWindow: NSWindow?
     private var debugWindow: DebugWorkWindow?
     #if DEBUG
     private var systemTestTimer: Timer?
@@ -74,24 +77,18 @@ struct MagicCodeApp: App {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         // 缺省是菜单栏形态（无 Dock 图标、不进 Cmd+Tab）。**策略只在 `LongLivedWindows` 一处改**：
-        // 这里只结算一次——长期窗口（设置窗口、通知/事项定位窗口）还没出现时它落的正是 `.accessory`。
+        // 这里只结算一次——主窗口还没出现时它落的正是 `.accessory`。
         LongLivedWindows.shared.settle(reason: "launch")
         Self.model?.onUnconfirmedShutdown = { [weak self] in
             guard let self, self.awaitingTerminationReply else { return }
             self.awaitingTerminationReply = false
             NSApp.reply(toApplicationShouldTerminate: false)
         }
-        Self.model?.showNotificationWindow = { [weak self] in
-            guard let self, let model = Self.model else { return }
-            if self.noticeWindow == nil {
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 300), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-                window.title = "Magic Code 通知事项"; window.isReleasedWhenClosed = false
-                window.contentViewController = NSHostingController(rootView: NoticeWindow(model: model))
-                window.center(); self.noticeWindow = window
-                // 定位窗口也是长期窗口：它在 ⇒ 有 Dock 图标、Cmd+Tab 切得到。
-                LongLivedWindows.shared.register(window)
-            }
-            self.noticeWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        if let model = Self.model {
+            let controller = MainWindowController(model: model)
+            mainWindow = controller
+            model.showMainWindow = { [weak controller] in controller?.show() }
+            if CommandLine.arguments.contains("--settings") { model.manageSettings() }
         }
         #if DEBUG
         if let model = Self.model, model.isValidation {
@@ -110,7 +107,7 @@ struct MagicCodeApp: App {
                         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 650), styleMask: [.titled, .closable], backing: .buffered, defer: false)
                         window.title = "Magic Code 隔离界面验收"; window.isReleasedWhenClosed = false
                         window.contentViewController = NSHostingController(rootView: StatusPanel(model: model).frame(height: 650))
-                        window.center(); window.orderBack(nil); self?.noticeWindow = window
+                        window.center(); window.orderBack(nil); self?.validationWindow = window
                     }
                     // 策略台账跟着事件流出去（隔离验收时才有）：一闪而过的那一下也要留痕。
                     LongLivedWindows.shared.record = { model.validationEvent("activation-policy", detail: $0) }
@@ -185,7 +182,9 @@ struct MagicCodeApp: App {
         return .terminateLater
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { true }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if let window = mainWindow?.window, window.isVisible || window.isMiniaturized, let model = Self.model { model.openMainWindow(model.mainPage) }; return true
+    }
 }
 
 extension AppDelegate {
@@ -223,15 +222,4 @@ extension AppDelegate {
     func windowWillClose(_ notification: Notification) { model.panelVisibility(false, surface: .debug); model.setDebugWindowVisible(false) }
     func windowDidMiniaturize(_ notification: Notification) { model.panelVisibility(false, surface: .debug) }
     func windowDidDeminiaturize(_ notification: Notification) { model.panelVisibility(true, surface: .debug) }
-}
-
-private struct SettingsLaunch: ViewModifier {
-    @Environment(\.openSettings) private var openSettings
-    @State private var opened = false
-    func body(content: Content) -> some View {
-        content.task {
-            guard !opened, CommandLine.arguments.contains("--settings") else { return }
-            opened = true; openSettings(); NSApp.activate(ignoringOtherApps: true)
-        }
-    }
 }

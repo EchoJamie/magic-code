@@ -170,7 +170,9 @@ describe('判据 3 · 不落库清单', () => {
       'plan.changed',
       'prefs.state',
       'provider.catalog',
+      'session.changed',
       'session.history',
+      'session.managed',
       'session.state',
       'skill.used',
       'skills.catalog',
@@ -231,6 +233,19 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
     }
   })
 
+  test('无表但已有版本的数据库不可当新库重建，拒绝后原字节不变', () => {
+    const dir = tempDataDir()
+    try {
+      const path = databasePathOf(dir)
+      const db = new Database(path)
+      db.exec(`PRAGMA user_version = ${RECORD_SCHEMA_VERSION + 1}`)
+      db.close()
+      const before = readFileSync(path)
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow(/较本程序新/)
+      expect(readFileSync(path)).toEqual(before)
+    } finally { removeDataDir(dir) }
+  })
+
   test('重开连接续写：旧行原样（append-only 不回改）· 新号更大', async () => {
     const dir = tempDataDir()
     const T1 = T0 + 1
@@ -271,7 +286,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
     // ——续写那一次**碰不到它**（`ON CONFLICT DO NOTHING`），故重开仍是首写锚下的那一组；
     // **新锚**：同一条规格（不重复 · 行原样），**全等照旧**。
     expect(await secondRun.listSessions()).toEqual([
-      { id: SESSION, at: T1 + 1, workspace: ROOTS },
+      { id: SESSION, at: T1 + 100, workspace: ROOTS, archived: false },
     ])
 
     secondRun.close()

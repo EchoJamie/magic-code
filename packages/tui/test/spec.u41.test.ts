@@ -936,6 +936,7 @@ describe('⑦ 选择器**高度有界**（设计 · 终端交互：高度有界 
       event('session.state', {
         active: 's-0',
         sessions: Array.from({ length: 20 }, (_unused, at) => ({
+          archived: false,
           id: `s-${at}`,
           title: `会话 ${at}`,
           at: 1_700_000_000_000 + at,

@@ -38,6 +38,7 @@ import { linkOf, socketHandlers, localLinks } from './wire.ts'
 import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
 import {
   actionOf,
+  canArchiveRun,
   endKindOf,
   isProgress,
   newRunRecord,
@@ -54,12 +55,12 @@ import { RUNS_VERSION, STORED_RUNS_LIMIT } from './facts.ts'
 import { reclaim, reclaimNoteOf } from './reclaim.ts'
 import { noticeKey } from './notices.ts'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
-import type { NativeWork, ServiceIdentity, Wire } from '@magic/contracts'
+import type { AttentionItem, NativeWork, NativeSession, SessionManagement, SessionManagementResult, ServiceIdentity, Wire } from '@magic/contracts'
 import { softwareSource } from './runtime-launch.ts'
 import { createNativeServer } from './native-server.ts'
 import { projectWorks } from './native-projection.ts'
 import { query as observe } from './observation.ts'
-import { readSessionCatalog, readSessionDisplayHistory } from '@magic/conversation'
+import { readSessionCatalog, readSessionDisplayHistory, summarize } from '@magic/conversation'
 import type { Entry } from '@magic/contracts'
 import { createProcessLedger } from '@magic/execution'
 import { createAgentLauncher } from './launch.ts'
@@ -485,6 +486,58 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   const environments = new Map<string, WorkEnvironment>()
   const closingEnvironments = new Set<Promise<void>>()
   const workRoot = (session: string): string => store.collaboration.collaborationForSession(session)?.originSessionId ?? session
+  const ARCHIVED_NOTE = '会话已归档，请在会话管理或 /resume 的已归档列表中恢复'
+  const admissions = new Map<string, number>()
+  const isArchived = (session: string): boolean => store.isSessionArchived(workRoot(session))
+  function canArchive(session: string): boolean {
+    const root = workRoot(session)
+    if (!store.hasSession(root) || isArchived(root) || (admissions.get(root) ?? 0) > 0) return false
+    const group = captureCollaborationNative(store.collaboration, [root]).groups[0]
+    const members = new Set([root, ...(group?.members.map(member => member.sessionId) ?? [])])
+    for (const member of members) {
+      const executor = liveOf(member)
+      const run = executor?.run ?? lastRuns.get(member)
+      if (run !== undefined && !canArchiveRun(run)) return false
+      if (executor !== undefined && (executor.queued.length > 0 || store.serviceFor(member).inputs.list().some(input => input.state === 'pending' && input.reason === undefined))) return false
+    }
+    if (group !== undefined) {
+      if (group.executions.some(e => e.state !== 'finished')) return false
+      if (group.collaboration.state === 'open' || group.collaboration.state === 'closing') {
+        if (group.collaboration.state === 'closing' || group.members.some(m => m.reachability === 'suspended') || group.waits.some(w => w.state === 'waiting')) return false
+        if (group.delegations.some(d => !['received','rejected','cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))) return false
+        if (group.members.some(member => store.collaboration.inbox(member.agentId).some(item => item.state === 'pending' && store.collaboration.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt'))) return false
+      }
+    }
+    return true
+  }
+  function manageSession(item: SessionManagement): SessionManagementResult {
+    const session = workRoot(item.session)
+    try {
+      if (stopped) throw new Error('Engine 正在停止，请稍后重试')
+      if (!store.hasSession(item.session) || !store.hasSession(session)) throw new Error('会话已不可达')
+      if (item.action === 'rename') {
+        if (isArchived(session)) throw new Error('会话已归档，请先恢复后再改名')
+        const title = summarize(item.title ?? '')
+        if (title === undefined) throw new Error('会话名称不能为空')
+        store.setSessionTitle(session, title, now())
+      } else {
+        const archived = item.action === 'archive'
+        if (isArchived(session) !== archived) {
+          if (archived && !canArchive(session)) throw new Error('工作仍在执行、等待输入消费或资源状态待确认，暂不能归档')
+          // 资格核定到持久提交不让出事件循环，与输入受理共用 Engine 顺序。
+          store.setSessionArchived(session, archived)
+          if (archived) {
+            store.attention.clear(session)
+            for (const executor of executors) if (executor.run.session !== null && workRoot(executor.run.session) === session) stopContent.delete(executor.run)
+          }
+        }
+      }
+      const data = { session, archived: isArchived(session), canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0 }
+      for (const conn of clients.values()) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data } })
+      native.changed()
+      return { ...item, session, ok: true, archived: data.archived }
+    } catch (error) { return { ...item, session, ok: false, error: error instanceof Error ? error.message : String(error) } }
+  }
   const environmentFor = (session: string): WorkEnvironment | undefined => environments.get(workRoot(session))
   function releaseEnvironments(): void {
     for (const [root, network] of environments) {
@@ -505,11 +558,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   const collaboration = createManagedCollaboration({
     store, magic: options.magic, now, environment: session => environmentFor(session)?.env ?? {}, accepting: () => !stopped,
     start: startMember,
-    wake: session => { const live = liveOf(session); if (live !== undefined) send(live, { t: 'collaboration.wake' }) },
+    wake: session => { if (isArchived(session)) return; const live = liveOf(session); if (live !== undefined) send(live, { t: 'collaboration.wake' }) },
     cancel: cancelMembers,
     input: (session, input, shared) => {
+      if (isArchived(session)) throw new Error(ARCHIVED_NOTE)
       const live = liveOf(session)
       if (live === undefined || live.link === undefined || live.link.closed) throw new Error('输入目标已失联')
+      live.run.busy = true
+      refresh(live.run, now())
+      clearTurnNotice(session)
       stopGenerations.set(live.run, nextStopGeneration++)
       send(live, { t: 'collaboration.input', input, shared })
     },
@@ -527,18 +584,20 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     changed: () => {
       releaseEnvironments()
       native.changed();for(const conn of clients.values())void publishCollaboration(conn)
-      for(const executor of executors){const session=executor.run.session;if(session!==null&&store.serviceFor(session).inputs.list().some(one=>one.state==='pending'&&one.purpose==='next'))send(executor,{t:'collaboration.wake'})}
+      for(const executor of executors){const session=executor.run.session;if(session!==null&&!isArchived(session)&&store.serviceFor(session).inputs.list().some(one=>one.state==='pending'&&one.purpose==='next'))send(executor,{t:'collaboration.wake'})}
     },
   })
   const recovering = collaboration.recover()
 
   async function startMember(agent: AgentIdentity): Promise<void> {
     if (stopped) throw new Error('管理者正在退出')
+    if (isArchived(agent.sessionId)) throw new Error(ARCHIVED_NOTE)
     let existing = liveOf(agent.sessionId)
     if (existing?.run.stopping) { await cancelMembers([agent.sessionId]); existing = liveOf(agent.sessionId) }
     const previous = lastRuns.get(agent.sessionId)
     if (existing === undefined && previous !== undefined && (previous.ended === undefined || previous.reclaimPending || previous.reclaimNote !== undefined)) throw new Error('该成员上一代资源仍待核实')
     if (stopped) throw new Error('管理者正在退出')
+    if (isArchived(agent.sessionId)) throw new Error(ARCHIVED_NOTE)
     const executor = existing ?? spawn({ session: agent.sessionId, explicit: true,
       cwd: agent.workspace[0] ?? '' })
     if (executor === undefined) throw new Error('无法启动成员执行者')
@@ -807,7 +866,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         // **`magic resume` 那道校验**（U28 · 台账随批小修 8）——库里没有这条就**回绝**，
         // 不静默开一条空的。由管理者做，因为**只有它手上开着库**（窗口那一侧按设计
         // 不开库）；报的那句话与今天逐字同形，故「打错一个字母」这条路一处未变。
-        if (message.session !== undefined && !store.hasSession(message.session)) {
+        if (message.session !== undefined && (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))) {
           link.send({
             t: 'welcome',
             identity,
@@ -818,7 +877,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
             // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
             runs: [],
             notices: [],
-            refuse:
+            refuse: isArchived(message.session) ? ARCHIVED_NOTE :
               `没有这条会话：${message.session}——` +
               `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
           })
@@ -843,7 +902,11 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
         // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
         if (message.session !== undefined) {
-          retarget(conn, message.session)
+          if (message.reattach && isArchived(message.session)) {
+            conn.link.send({ t: 'target', gen: null, session: message.session })
+            void catalog(conn).then(() => readHistory(conn, message.session!))
+            native.changed()
+          } else retarget(conn, message.session)
         }
         return
       }
@@ -943,29 +1006,85 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   function terminalClients(session: string): ClientConn[] {
     const origin = store.collaboration.collaborationForSession(session)?.originSessionId ?? session
     return [...clients.values()].filter(conn => !conn.link.closed &&
-      (conn.selectedSession === session || conn.selectedSession === origin))
+      (conn.selectedSession !== null && workRoot(conn.selectedSession) === origin))
+  }
+  function currentRequests(session: string): readonly Extract<KernelEvent, { kind: 'tool.decision.request' }>[] {
+    const root = workRoot(session)
+    return [...collaborationDecisions.values()].filter(event => workRoot(event.session) === root && liveOf(event.session)?.run.decisions.has(event.id))
+  }
+  /** 当前提醒只能引用原事实；旧通知行本身不能证明还有一个停点。 */
+  function reconcileNotice(session: string): AttentionItem | undefined {
+    const root = workRoot(session)
+    const notice = store.attention.list({ sessions: [root] })[0]
+    if (notice === undefined) return undefined
+    const source = notice.source ?? (/^\d+$/.test(notice.fact) ? { session: root, event: Number(notice.fact) } : undefined)
+    const event = source?.event === undefined ? undefined : store.readEvent(source.session, source.event)
+    const boundary = source === undefined ? undefined : store.latestEvent(source.session, ['turn.start', 'turn.end', 'message.user'])
+    let valid = !isArchived(root) && source !== undefined && workRoot(source.session) === root
+    if (notice.kind === 'needs-you') valid &&= event?.kind === 'tool.decision.request' && liveOf(source!.session)?.run.decisions.has(event.id) === true
+    else if (notice.kind === 'done') valid &&= event?.kind === 'turn.end' && event.data.reason === 'settled' && !event.data.continues && boundary?.id === event.id && canArchive(root)
+    else if (event !== undefined) valid &&= (event.kind === 'error' || event.kind === 'model.error' || event.kind === 'turn.end') && boundary?.kind === 'turn.end' && boundary.data.reason === 'error' && (event.turn === boundary.turn || event.id === boundary.id)
+    else {
+      const run = lastRuns.get(source?.session ?? root) ?? liveOf(root)?.run
+      valid &&= run?.ended?.kind === 'crashed' && notice.fact === `${run.gen}@${run.ended.at}`
+    }
+    if (!valid) { store.attention.clear(root); return undefined }
+    if (notice.source === undefined && source !== undefined) {
+      const current = { ...notice, source }
+      store.attention.clear(root)
+      store.attention.put(current)
+      return current
+    }
+    return notice
   }
   async function nativeWorks(): Promise<readonly NativeWork[]> {
-      const sessions = await store.listSessions()
-      const runs = rows()
-      const snapshot = captureCollaborationNative(store.collaboration, sessions.map(session => session.id))
-      const generations = new Map<string, number | null>()
-      for (const group of snapshot.groups) {
-        const gen = workStopGeneration(group.collaboration.originSessionId, group)
-        generations.set(group.collaboration.originSessionId, gen)
-        for (const member of group.members) generations.set(member.sessionId, gen)
+    const metadata = await store.listSessions({ archived: false })
+    const allGroups = captureCollaborationNative(store.collaboration, metadata.map(session => session.id))
+    for (const notice of store.attention.list()) reconcileNotice(notice.session)
+    const runs = rows()
+    const candidates = [...new Set([
+      ...runs.filter(run => run.holds).map(run => run.session),
+      ...mergeCollaborationNative([], allGroups).filter(work => work.affected).map(work => work.session),
+      ...store.attention.list({ unread: true }).map(notice => notice.session),
+      ...[...clients.values()].flatMap(conn => conn.link.closed || conn.selectedSession === null ? [] : [conn.selectedSession]),
+    ])]
+    const snapshot = captureCollaborationNative(store.collaboration, candidates)
+    const generations = new Map(snapshot.sessions.map(session => [session, workStopGeneration(workRoot(session))]))
+    const works = await projectWorks(store, runs, session => generations.get(session) ?? null, {
+      candidates: snapshot.sessions, terminalOpen: session => terminalClients(session).length > 0, canArchive,
+    })
+    const affected = await (options.lifecycle?.affected() ?? Promise.resolve([]))
+    return [...mergeCollaborationNative(works, snapshot).map(work => ({ ...work,
+      archived: isArchived(work.session), canArchive: canArchive(work.session), terminalOpen: terminalClients(work.session).length > 0,
+      gen: generations.get(work.session) ?? null,
+    })).filter(work => !work.archived && (work.affected || work.terminalOpen || work.currentNotice?.unread)), ...affected]
+  }
+  async function nativeSessions(query: { archived?: boolean; workspace?: readonly string[]; search?: string; ids?: readonly string[] }): Promise<readonly NativeSession[]> {
+    const metadata = await store.listSessions({ archived: query.archived ?? false, ...(query.ids === undefined ? {} : { ids: query.ids }), ...(query.workspace === undefined ? {} : { workspace: query.workspace }) })
+    const roots = metadata.filter(session => workRoot(session.id) === session.id).map(session => session.id)
+    const catalog = await readSessionCatalog(store, undefined, { ids: roots })
+    const runs = rows()
+    const snapshot = captureCollaborationNative(store.collaboration, catalog.map(s => s.id))
+    const summaries = new Map(catalog.map(session => [session.id, session]))
+    const raw: NativeWork[] = snapshot.sessions.map(session => {
+      const s = summaries.get(session)
+      const run = runs.find(r => r.session === session)
+      return {
+        session, title: s?.title ?? '未命名工作', workspace: s?.workspace ?? run?.workspace ?? [], archived: isArchived(session),
+        canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0,
+        state: run?.state ?? 'idle', since: run?.since ?? s?.at ?? 0, gen: null, affected: run?.holds ?? false,
+        ...(run?.reason === undefined ? {} : { reason: run.reason }),
       }
-      for (const session of snapshot.sessions) if (!generations.has(session)) generations.set(session, workStopGeneration(session))
-      const works = await projectWorks(store, runs, session => generations.get(session) ?? null)
-      const affected = await (options.lifecycle?.affected() ?? Promise.resolve([]))
-      // 异步读取完成后才取实际连接，成员的具体事项在合并前按原会话判断。
-      const routed = works.map(work => ({ ...work,
-        terminalNoticeIds: work.notices.filter(notice => terminalClients(notice.session).length > 0).map(notice => notice.id),
-      }))
-      return [
-        ...mergeCollaborationNative(routed, snapshot).map(work => ({ ...work, gen: generations.get(work.session) ?? null })),
-        ...affected,
-      ]
+    })
+    const states = new Map(mergeCollaborationNative(raw, snapshot).map(w => [w.session,w]))
+    const attention = new Set(query.archived ? [] : catalog.filter(session => states.get(session.id)?.affected || terminalClients(session.id).length > 0 || reconcileNotice(session.id)?.unread).map(session => session.id))
+    return catalog.filter(s => workRoot(s.id) === s.id && (!query.search || (s.title ?? '').toLocaleLowerCase().includes(query.search.toLocaleLowerCase()))).map(s => {
+      const work = states.get(s.id)!
+      return { ...s, state: work.state, canArchive: canArchive(s.id), terminalOpen: terminalClients(s.id).length > 0, ...(work.reason === undefined ? {} : { reason: work.reason }) }
+    }).sort((left, right) => {
+      const priority = Number(attention.has(right.id)) - Number(attention.has(left.id))
+      return priority || right.at - left.at || left.id.localeCompare(right.id)
+    })
   }
   const runtime = {
     read: async () => {
@@ -1004,6 +1123,25 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     },
     record: (level, event, request) => diagnosticLog.write(level, event, { ...identity, request }),
     works: nativeWorks,
+    sessions: nativeSessions,
+    manage: manageSession,
+    currentRequests,
+    async inspect(session) {
+      if (!store.hasSession(session)) return undefined
+      const root = workRoot(session)
+      const summary = (await nativeSessions({ ids: [root], archived: isArchived(root) }))[0]
+      if (summary === undefined) return undefined
+      const notice = reconcileNotice(root)
+      const run = liveOf(root)?.run ?? lastRuns.get(root)
+      return {
+        session: root, title: summary.title ?? '未命名工作', workspace: summary.workspace ?? [],
+        archived: summary.archived, canArchive: summary.canArchive, terminalOpen: summary.terminalOpen,
+        state: summary.state, since: run?.since ?? summary.at, gen: workStopGeneration(root),
+        affected: !summary.archived && !summary.canArchive,
+        ...(summary.reason === undefined ? {} : { reason: summary.reason }),
+        ...(notice === undefined ? {} : { currentNotice: notice }),
+      }
+    },
     stop(session, gen, report) {
       if (workStopGeneration(session) !== gen) {
         report('unconfirmed', '目标已经结束或换代，请刷新当前状态')
@@ -1038,19 +1176,47 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     options.log?.(`配置采用失败：${String(error)}`)
   })
 
-  function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string): void {
-    const work = store.collaboration.collaborationForSession(session)
-    // 成员结束由协调者汇总；待裁决保留原始会话身份，原生投影负责归入原工作。
-    if (work !== undefined && session !== work.originSessionId && kind !== 'needs-you') return
-    const id = noticeKey(session, kind, fact)
+  function clearTurnNotice(session: string): void {
+    const root = workRoot(session)
+    const current = store.attention.list({ sessions: [root] })[0]
+    if (current?.kind === 'needs-you' && current.source?.session !== session) return
+    store.attention.clear(root)
+  }
+  // 只保存当前轮的来源引用，正文在实际停点按该条目读取。
+  const stopContent = new WeakMap<RunRecord, { entry?: number; event?: number; error?: string; stop?: KernelEvent }>()
+  function notify(session: string, kind: NoticeKind, fact: string | number, detail?: string, source?: { session: string; event?: number; entry?: number }, at = now()): void {
+    const root = workRoot(session)
+    if (isArchived(root)) return
+    if (session !== root && kind !== 'needs-you') return
+    const origin = source ?? { session, ...(typeof fact === 'number' ? { event: fact } : {}) }
     const notice = {
-      id, session, kind, fact: String(fact), at: now(), unread: true, delivered: false,
-      ...(detail === undefined ? {} : { detail }),
+      id: noticeKey(session, kind, fact), session: root, source: origin, kind, fact: String(fact), at, unread: true, delivered: false,
+      detail: `${session === root ? '' : `${store.collaboration.agentForSession(session)?.name ?? '成员'}：`}${summarize(detail ?? '本轮已收束，原内容暂不可用', 500) ?? ''}`,
     }
     if (!store.attention.put(notice)) return
-    const terminals = terminalClients(session)
-    for (const conn of terminals) conn.link.send({ t: 'notice', notice })
+    for (const conn of terminalClients(root)) conn.link.send({ t: 'notice', notice })
     native.changed()
+  }
+  async function notifyStop(run: RunRecord, event: KernelEvent): Promise<void> {
+    const session = run.session
+    if (session === null || (run.lastTurn !== 'settled' && run.lastTurn !== 'error')) return
+    if (event.kind === 'turn.end' && event.data.continues) return
+    const content = stopContent.get(run)
+    const stop = content?.stop ?? event
+    if (stop.kind === 'turn.end' && stop.data.continues) return
+    const at = run.lastTurnAt
+    const kind = run.lastTurn === 'error' ? 'failed' : 'done'
+    let detail = content?.error
+    if (kind === 'done' && content?.entry !== undefined) {
+      for await (const entry of readSessionDisplayHistory(store, session, { from: content.entry, to: content.entry })) {
+        detail = 'text' in entry.content ? entry.content.text : undefined
+      }
+    }
+    if (stopContent.get(run) !== content || run.lastTurnAt !== at || run.turnActive || run.busy || run.background > 0 || isArchived(session)) return
+    const group = store.collaboration.collaborationForSession(session)
+    if (group !== undefined && kind === 'done' && !canArchive(session)) return
+    notify(session, kind, stop.id, detail ?? (kind === 'failed' ? '本轮无法继续，具体错误暂不可用' : '本轮已收束，面向用户的回复暂不可用'),
+      { session, event: kind === 'failed' ? content?.event ?? stop.id : stop.id, ...(kind === 'done' && content?.entry !== undefined ? { entry: content.entry } : {}) }, stop.at)
   }
 
   /** 等待者绑定具体执行者代次，旧代异步核销不能兑现同会话的后继代。 */
@@ -1136,6 +1302,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         reportStop(conn.id, session, scope, 'unconfirmed', '此成员没有当前委派，无法推断停止范围')
         return
       }
+      store.attention.clear(workRoot(session))
       reportStop(conn.id, session, scope, 'accepted')
       void collaboration.command(work.originSessionId, { type: 'collaboration.stop', ...(delegation === undefined ? {} : { delegation }) }).then(
         () => reportStop(conn.id, session, scope, 'done'),
@@ -1264,20 +1431,21 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
    * 拒绝是**有回声**的（一句 `line`）：静默丢弃会让窗口对着一个不动的屏发呆，
    * 而「我这条为什么不生效」正是那一刻唯一要答的问题。
    */
-  async function catalog(conn: ClientConn): Promise<void> {
+  async function catalog(conn: ClientConn, archived = false): Promise<void> {
     try {
-    const sessions = await readSessionCatalog(store)
+    const sessions = await nativeSessions({ archived })
     if (conn.link.closed) return
     conn.link.send({ t: 'ev', gen: null, event: {
       id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.state',
       data: { active: conn.selectedSession ?? '', sessions },
     } })
+    if (conn.selectedSession !== null) { const session = conn.selectedSession; conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data: { session: workRoot(session), archived: isArchived(session), canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0 } } }) }
     if (conn.selectedSession !== null) conn.link.send({t:'ev',gen:null,event:{id:0,turn:null,at:now(),session:conn.selectedSession,kind:'input.pending',data:{inputs:store.serviceFor(conn.selectedSession).inputs.list()}}})
-    } catch { if (!conn.link.closed) conn.link.send({ t: 'line', text: '无法读取会话目录' }) }
+    } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session: conn.selectedSession ?? '', kind: 'session.state', data: { active: conn.selectedSession ?? '', sessions: [], note: '无法读取会话目录' } } }) }
   }
 
   async function readHistory(conn: ClientConn, session: string): Promise<void> {
-    if (session !== conn.selectedSession || !store.hasSession(session)) return
+    if (!store.hasSession(session)) { conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '会话已不可达' } } }); return }
     if (conn.readingSession === session) return
     conn.readingSession = session
     const revision = ++conn.readRevision
@@ -1292,22 +1460,41 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       entries = []
     }
     for await (const entry of readSessionDisplayHistory(store,session)) {
-      if (conn.link.closed || revision !== conn.readRevision || session !== conn.selectedSession) return
+      if (conn.link.closed || revision !== conn.readRevision) return
       entries.push(entry)
       if (entries.length === 50) send(false)
     }
-    if (!conn.link.closed && revision === conn.readRevision && session === conn.selectedSession) send(true)
-    } catch { if (!conn.link.closed) conn.link.send({ t: 'line', text: '无法读取会话记录' }) }
+    if (!conn.link.closed && revision === conn.readRevision) send(true)
+    } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '无法读取会话记录' } } }) }
     finally { if (conn.readRevision === revision) conn.readingSession = null }
   }
 
   async function onCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
+    const session = conn.selectedSession
+    const execution = command.type === 'input.submit' || command.type === 'decision.answer' || command.type === 'collaboration.input' || command.type === 'collaboration.resume' || (command.type === 'input.manage' && command.action !== 'list')
+    if (session !== null && execution && isArchived(session)) {
+      const input = command.type === 'input.submit' ? command : command.type === 'collaboration.input' ? command.input : undefined
+      if (input !== undefined) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'input.settled', data: { ok: false, ref: input.ref, reason: ARCHIVED_NOTE } } })
+      else conn.link.send({ t: 'line', text: ARCHIVED_NOTE })
+      return
+    }
+    const root = session !== null && execution ? workRoot(session) : undefined
+    if (root !== undefined) admissions.set(root, (admissions.get(root) ?? 0) + 1)
+    try { await acceptCommand(conn, gen, command) }
+    finally { if (root !== undefined) { const count = (admissions.get(root) ?? 1) - 1; if (count === 0) admissions.delete(root); else admissions.set(root,count) } }
+  }
+  async function acceptCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
     if (command.type === 'history.read') {
       const session = command.session ?? conn.selectedSession
       if (session !== null && session !== undefined) void readHistory(conn, session)
       return
     }
-    if (command.type === 'session.list') { void catalog(conn); return }
+    if (command.type === 'session.list') { void catalog(conn, command.archived ?? false); return }
+    if (command.type === 'session.archive' || command.type === 'session.restore' || command.type === 'session.rename') {
+      const result = manageSession({ session: command.session, action: command.type === 'session.archive' ? 'archive' : command.type === 'session.restore' ? 'restore' : 'rename', ...('title' in command ? { title: command.title } : {}) })
+      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: result.session, kind: 'session.managed', data: result } })
+      return
+    }
     // 界面偏好只写配置，不依附一代任务执行者，也不创建会话。
     if (command.type === 'prefs.set') {
       try {
@@ -1372,7 +1559,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     if (command.type.startsWith('collaboration.')) {
       if (conn.selectedSession !== null && (command.type === 'collaboration.resume' || command.type === 'collaboration.input') && environmentFor(conn.selectedSession) === undefined) environments.set(workRoot(conn.selectedSession), createWorkEnvironment(conn.environment))
-      void collaborationCommand(conn, command as CollaborationCommand)
+      await collaborationCommand(conn, command as CollaborationCommand)
       return
     }
     if (command.type === 'session.new') conn.collaborationMember = undefined
@@ -1406,7 +1593,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return
     }
     if (activeCollaboration !== undefined && command.type === 'input.submit') {
-      void collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
+      await collaborationCommand(conn, { type: 'collaboration.input', input: command, shared: true })
       return
     }
     if (activeCollaboration !== undefined && command.type === 'turn.interrupt') {
@@ -1557,6 +1744,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   /** 接回已有会话；查看历史不触发执行，明确输入才启动下一代。 */
   function retarget(conn: ClientConn, session: string): void {
+    if (isArchived(session)) { conn.link.send({ t: 'line', text: ARCHIVED_NOTE }); return }
     const current = conn.target
     if (!store.hasSession(session)) {
       conn.link.send({ t: 'line', text: '该会话已不可达，未切换当前工作。' })
@@ -1670,6 +1858,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     readonly switch?: ModelSwitchRequest | undefined
     readonly allowAll?: boolean | undefined
   }): Executor | undefined {
+    if (input.session !== null && isArchived(input.session)) return undefined
     const root = input.session === null ? undefined : workRoot(input.session)
     let network: WorkEnvironment
     try { network = (root === undefined ? undefined : environments.get(root)) ?? createWorkEnvironment(input.environment ?? {}) }
@@ -1771,7 +1960,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   /** 送一条**命令**——`send` 的那一层皮（读起来仍是「送一条命令」）。 */
   function deliver(executor: Executor, command: Command): void {
     // 旧菜单观察到的责任在下一次输入受理时失效，即使复用同一执行者也不能误停下一轮。
-    if (command.type === 'input.submit') stopGenerations.set(executor.run, nextStopGeneration++)
+    if (command.type === 'input.submit' || (command.type === 'input.manage' && command.action === 'continue')) {
+      executor.run.busy = true
+      refresh(executor.run, now())
+      stopGenerations.set(executor.run, nextStopGeneration++)
+      if (executor.run.session !== null) clearTurnNotice(executor.run.session)
+    }
+    if (command.type === 'turn.interrupt' && executor.run.session !== null) clearTurnNotice(executor.run.session)
     send(executor, { t: 'cmd', cmd: command })
   }
 
@@ -2005,14 +2200,27 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     switch (event.kind) {
       case 'agent.state':
         run.busy = event.data.state !== 'waiting'
+        if (!run.busy && stopContent.get(run)?.stop !== undefined) queueMicrotask(() => { void notifyStop(run, stopContent.get(run)!.stop!).catch(error => options.log?.(String(error))) })
         break
       case 'turn.start':
+        stopContent.set(run, {})
+        if (run.session !== null) clearTurnNotice(run.session)
         stopGenerations.set(run, nextStopGeneration++)
         run.turnActive = true
         // 新的一轮开始 ⇒ 上一轮那些「已答复」的记账清掉（它们只在本轮之内管用）
         run.resolvedDecisions.clear()
         break
+      case 'message.assistant':
+        stopContent.set(run, { ...stopContent.get(run), entry: event.data.entry })
+        break
+      case 'error':
+        stopContent.set(run, { ...stopContent.get(run), event: event.id, error: event.data.message })
+        break
+      case 'model.error':
+        if (event.data.tier !== 'transient') stopContent.set(run, { ...stopContent.get(run), event: event.id, error: event.data.message })
+        break
       case 'turn.end':
+        stopContent.set(run, { ...stopContent.get(run), stop: event })
         run.turnActive = false
         run.lastTurn = event.data.reason
         run.lastTurnAt = event.at
@@ -2026,16 +2234,22 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
          * 弹一条「它停了」等于拿通知复述他本人。而设计那三类里本来也没有它。
          */
         if (run.session !== null) {
-          if (event.data.reason === 'settled' && !event.data.continues && store.collaboration.collaborationForSession(run.session) === undefined) notify(run.session, 'done', event.id)
-          if (event.data.reason === 'error') notify(run.session, 'failed', event.id, '这一轮出错了')
+          const current = store.attention.list({ sessions: [workRoot(run.session)] })[0]
+          // 同一停点重放保留已读与送达事实；新一轮仍由 turn.start 清除旧原因。
+          if (current?.source?.session !== event.session || current.fact !== String(event.id)) clearTurnNotice(run.session)
+          if (!event.data.continues && (event.data.reason === 'settled' || event.data.reason === 'error')) queueMicrotask(() => { void notifyStop(run, event).catch(error => options.log?.(`当前原因读取失败：${String(error)}`)) })
         }
         break
       case 'tool.decision.request':
         run.decisions.set(event.id, event.data.call)
         // **第三类：需要你**（U50）——那正是他不在的时候会卡住的那一件
-        if (run.session !== null) notify(run.session, 'needs-you', event.id, event.data.name)
+        if (run.session !== null) notify(run.session, 'needs-you', event.id, event.data.material || event.data.name, { session: run.session, event: event.id }, event.at)
         break
       case 'tool.decision': {
+        if (run.session !== null) {
+          const current = store.attention.list({ sessions: [workRoot(run.session)] })[0]
+          if (current?.source?.session === run.session && run.decisions.get(current.source.event ?? -1) === event.data.call) store.attention.clear(workRoot(run.session))
+        }
         // 答复落地——请求那一条从「挂着」挪到「已处理」（晚到的答复据此被认出来）
         for (const [id, call] of run.decisions) {
           if (call === event.data.call) {
@@ -2098,7 +2312,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       collaboration.changed()
       if (event.kind === 'agent.state' && event.data.state === 'waiting' && event.session === shared.originSessionId) {
         void collaboration.idle(shared.originSessionId).then(closed => {
-          if (closed) notify(shared.originSessionId, 'done', event.id)
+          if (closed) void notifyStop(run, event)
         }).catch(error => options.log?.(`协作收尾尚未核实：${String(error)}`))
       }
     }

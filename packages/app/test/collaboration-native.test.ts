@@ -29,7 +29,7 @@ function fixture() {
 
 function work(session: string, patch: Partial<NativeWork> = {}): NativeWork {
   return { session, title: session === 'origin' ? '整项工作' : '独立工作', workspace: ['/root'],
-    state: 'idle', since: 10, gen: null, affected: false, notices: [], ...patch }
+    state: 'idle', since: 10, gen: null, affected: false, archived: false, canArchive: false, terminalOpen: false, ...patch }
 }
 function notice(session: string, patch: Partial<AttentionItem> = {}): AttentionItem {
   return { id: `notice:${session}`, session, kind: 'needs-you', at: 20, fact: 'event:42',
@@ -56,7 +56,7 @@ describe('协作 Native 整项工作投影', () => {
       plain, work('origin', { gen: 7 }), work(another.agent.sessionId),
     ], snapshot)
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toEqual(work('origin', { state: 'running', action: '实现成员：运行测试', affected: true, gen: 7, since: 12, terminalNoticeIds: [], members: [
+    expect(rows[0]).toEqual(work('origin', { state: 'running', action: '实现成员：运行测试', affected: true, gen: 7, since: 12, members: [
       { session: 'origin', name: '协调', state: 'idle' },
       { session: child.agent.sessionId, name: '实现成员', state: 'running', action: '运行测试' },
       { session: another.agent.sessionId, name: '审查', state: 'idle' },
@@ -83,29 +83,17 @@ describe('协作 Native 整项工作投影', () => {
       .toMatchObject({ state: 'unknown', reason: '成员状态待核实' })
   })
 
-  test('旧成员事项归根保留名字、原因和事实；新归根事项不重复加成员标签，读取不改持久标记', () => {
+  test('当前原因只由根持有，成员来源保留；归并不重造历史提醒', () => {
     const child = f.spawn('member-session-secret')
-    const old = notice(child.agent.sessionId, { unread: false, delivered: true })
-    const root = notice('origin', { id: 'root-item', at: 19, detail: '实现成员：另一项审批' })
-    f.store.attention.put(old)
-    f.store.attention.put(root)
-    const rows = [work('origin', { notices: [root], state: 'running', affected: true }),
-      work(child.agent.sessionId, { state: 'waiting', action: '批准执行测试', affected: true, notices: [old] })]
-    const before = structuredClone(rows)
+    const current = notice('origin', { id: 'root-item', source: { session: child.agent.sessionId, event: 42 }, detail: '实现成员：批准执行测试' })
+    const rows = [work('origin', { currentNotice: current, state: 'running', affected: true }),
+      work(child.agent.sessionId, { state: 'waiting', terminalOpen: true, action: '批准执行测试', affected: true })]
     const merged = mergeCollaborationNative(rows, f.snapshot())[0]!
-    expect(merged).toMatchObject({ session: 'origin', state: 'waiting', action: '实现成员：批准执行测试', affected: true })
-    expect(merged.notices).toEqual([root, { ...old, session: 'origin', detail: '实现成员：批准执行测试' }])
-    expect(merged.notices.map(item => item.detail).join('\n')).not.toContain(child.agent.sessionId)
-    expect(rows).toEqual(before)
-    expect(f.store.attention.list()).toEqual([root, old])
-    // 历史事项不能制造仍有效的用户待答项。
+    expect(merged).toMatchObject({ session: 'origin', state: 'waiting', affected: true, terminalOpen: true, canArchive: false })
+    expect(merged.currentNotice).toEqual(current)
+    expect(merged.currentNotice?.source?.session).toBe(child.agent.sessionId)
+    expect('notices' in merged).toBe(false)
     expect(mergeCollaborationNative(rows.map(row => ({ ...row, state: 'idle' as const })), f.snapshot())[0]?.state).toBe('idle')
-  })
-
-  test('无原因的成员事项只显示名字，不打印会话技术 ID', () => {
-    const child = f.spawn('technical-session')
-    const { detail: _detail, ...withoutDetail } = notice(child.agent.sessionId)
-    expect(mergeCollaborationNative([work(child.agent.sessionId, { notices: [withoutDetail] })], f.snapshot())[0]?.notices[0]?.detail).toBe('实现成员')
   })
 
   test('有效 wait 没有 executor 仍 affected；期限只能由持久终态解除，不靠投影时钟猜测', () => {
@@ -145,7 +133,7 @@ describe('协作 Native 整项工作投影', () => {
     const delivered = mergeCollaborationNative(idle, f.snapshot())[0]!
     expect(delivered.affected).toBe(true)
     expect(delivered.reason).not.toBe('已收尾')
-    expect(delivered.notices).toEqual([])
+    expect(delivered.currentNotice).toBeUndefined()
     f.records.receiveDelivery(f.coordinator.agentId, child.delegation.delegationId, 12)
     expect(mergeCollaborationNative(idle, f.snapshot())[0]?.affected).toBe(false)
     f.records.beginClosing(f.collaboration.collaborationId, 13)
@@ -158,7 +146,7 @@ describe('协作 Native 整项工作投影', () => {
     expect(f.records.closeCollaboration(f.collaboration.collaborationId, 15).closed).toBe(true)
     const row = mergeCollaborationNative([work('origin', { state: 'stopped', reason: '资源释放', gen: 7 }),
       work('child', { state: 'stopped' })], f.snapshot())[0]!
-    expect(row).toMatchObject({ state: 'idle', affected: false, reason: '已收尾', gen: 7, notices: [] })
+    expect(row).toMatchObject({ state: 'idle', affected: false, reason: '已收尾', gen: 7 })
     expect(row.action).toBeUndefined()
   })
 
@@ -221,17 +209,17 @@ describe('协作 Native 整项工作投影', () => {
     const snapshot = f.snapshot(origin.sessionId)
     expect(snapshot.groups).toHaveLength(2)
     const rows = mergeCollaborationNative([work('origin'), work('child', { state: 'running', affected: true }),
-      work(origin.sessionId), work(other.agent.sessionId, { state: 'waiting', affected: true, notices: [notice(other.agent.sessionId)] })], snapshot)
+      work(origin.sessionId, { currentNotice: notice(origin.sessionId, { source: { session: other.agent.sessionId, event: 42 } }) }), work(other.agent.sessionId, { state: 'waiting', affected: true })], snapshot)
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toMatchObject({ session: 'origin', state: 'running', notices: [] })
+    expect(rows[0]).toMatchObject({ session: 'origin', state: 'running' })
     expect(rows[1]).toMatchObject({ session: origin.sessionId, state: 'waiting' })
-    expect(rows[1]?.notices[0]).toMatchObject({ session: origin.sessionId, detail: '实现成员：批准执行测试' })
+    expect(rows[1]?.currentNotice?.source?.session).toBe(other.agent.sessionId)
   })
 
   test('异步目录期间新增成员、事项和停止换代，归并仍只使用原快照、原 runs 与原 gen', async () => {
     const child = f.spawn('child')
     f.respond(child, 'accept')
-    const oldNotice = notice('child')
+    const oldNotice = notice('origin', { source: { session: 'child', event: 42 } })
     f.store.attention.put(oldNotice)
     const snapshot = f.snapshot()
     let release!: () => void
@@ -253,7 +241,7 @@ describe('协作 Native 整项工作投影', () => {
     const rows = mergeCollaborationNative(await pending, snapshot)
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ session: 'origin', state: 'running', action: '实现成员：旧轮测试', affected: true, gen: 7 })
-    expect(rows[0]?.notices).toEqual([{ ...oldNotice, session: 'origin', detail: '实现成员：批准执行测试' }])
+    expect(rows[0]?.currentNotice).toEqual(oldNotice)
     expect(snapshot.groups[0]?.collaboration.state).toBe('open')
     expect(snapshot.groups[0]?.members).toHaveLength(2)
     expect(f.snapshot().groups[0]?.members).toHaveLength(3)

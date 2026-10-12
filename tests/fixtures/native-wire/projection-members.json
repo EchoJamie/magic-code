@@ -18,7 +18,6 @@
           "since": 1790400000000,
           "gen": 3,
           "affected": true,
-          "notices": [],
           "members": [
             {
               "session": "session-one",
@@ -37,7 +36,10 @@
               "state": "unknown",
               "reason": "成员连接待核实"
             }
-          ]
+          ],
+          "archived": false,
+          "canArchive": false,
+          "terminalOpen": false
         }
       ]
     }

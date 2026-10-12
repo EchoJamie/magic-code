@@ -537,18 +537,35 @@ describe('入口 magic · 接续（`resume` · U25 恢复入口）', () => {
     }
   })
 
-    test('离线检查不声称校验过会话，也不创建同名会话', async () => {
+    test('离线检查报告无记录，也不创建同名会话', async () => {
     const { home } = stageWithConfig()
 
     try {
       const result = await run(home, '--check', 'resume', 's-typo')
 
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('s-typo（离线检查不连接或校验会话）')
+      expect(result.stdout).toContain('s-typo（未找到保存记录）')
       expect(existsSync(join(home, 'data/records.db'))).toBe(false)
     } finally {
       removeDir(home)
     }
+  })
+
+  test('--check 可读归档状态，不恢复或改写记录', async () => {
+    const { home, dataDir } = stageWithConfig()
+    const store = createRecordsStore({ dataDir, workspace: [home] })
+    store.setSessionTitle('archived-work', '原记录', Date.now())
+    store.setSessionArchived('archived-work', true)
+    store.close()
+    const database = join(dataDir, 'records.db')
+    const before = readFileSync(database)
+    try {
+      const result = await run(home, 'resume', 'archived-work', '--check')
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('已归档；需明确恢复后才能接回')
+      expect(readFileSync(database)).toEqual(before)
+      expect(existsSync(join(dataDir, 'run'))).toBe(false)
+    } finally { removeDir(home) }
   })
 
   test('选项缺值——退 1（`resume --check` 这类笔误不被当成 id）', async () => {

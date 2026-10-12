@@ -1,3 +1,5 @@
+import type { KernelEvent } from './events.ts'
+import type { Entry, SessionSummary } from './entries.ts'
 import type { RunNotice, RunState, StopPhase } from './runs.ts'
 
 /** App、CLI、内核同版发布。只认这一版，不协商或保留旧解码器。 */
@@ -15,6 +17,7 @@ export type ServiceIdentity = {
 export type AttentionItem = RunNotice & {
   readonly delivered: boolean
   readonly fact: string
+  readonly source?: { readonly session: string; readonly event?: number; readonly entry?: number }
 }
 
 /** 同拍捕获的只读成员摘要；不含全文、模型配置或执行入口。 */
@@ -38,9 +41,10 @@ export type NativeWork = {
   /** 当前停止目标的代次；新执行/新一轮输入使旧目标失效，与服务身份共同核对。 */
   readonly gen: number | null
   readonly affected: boolean
-  readonly notices: readonly AttentionItem[]
-  /** 由当前有效终端绑定派生；只决定提醒去向，不表示已读或已投递。 */
-  readonly terminalNoticeIds?: readonly string[]
+  readonly archived: boolean
+  readonly canArchive: boolean
+  readonly terminalOpen: boolean
+  readonly currentNotice?: AttentionItem
   readonly members?: readonly NativeMember[]
 }
 
@@ -52,7 +56,14 @@ export type NativeProjection = {
   readonly configuration?: { readonly stamp: string | null; readonly error?: string }
 }
 
+export type NativeSession = SessionSummary & { readonly state: RunState; readonly canArchive: boolean; readonly terminalOpen: boolean; readonly reason?: string }
+export type SessionManagement = { readonly session: string; readonly action: 'archive' | 'restore' | 'rename'; readonly title?: string }
+export type SessionManagementResult = SessionManagement & { readonly ok: boolean; readonly archived?: boolean; readonly error?: string }
+
 export type NativeRequest =
+  | { readonly t: 'native.sessions'; readonly request: string; readonly archived?: boolean; readonly workspace?: readonly string[]; readonly search?: string }
+  | { readonly t: 'native.history'; readonly request: string; readonly session: string; readonly after?: number; readonly source?: AttentionItem['source'] }
+  | { readonly t: 'native.session.manage'; readonly request: string; readonly serviceInstance: string; readonly items: readonly SessionManagement[] }
   | { readonly t: 'hello'; readonly role: 'observer'; readonly protocol: number; readonly version: string; readonly source: string; readonly base: string }
   | { readonly t: 'native.engine.stop'; readonly request: string; readonly identity: ServiceIdentity; readonly idleOnly?: boolean }
   | { readonly t: 'native.refresh' }
@@ -60,11 +71,13 @@ export type NativeRequest =
   | { readonly t: 'native.runtime.reconnect'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly gen: number; readonly name: string }
   | { readonly t: 'native.inspect'; readonly request: string; readonly session: string; readonly notice?: string }
   | { readonly t: 'native.stop'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly gen: number }
-  | { readonly t: 'native.read'; readonly ids: readonly string[] }
-  | { readonly t: 'native.delivered'; readonly ids: readonly string[] }
-  | { readonly t: 'native.presence'; readonly session: string; readonly ids: readonly string[]; readonly focused: boolean }
+  | { readonly t: 'native.read'; readonly serviceInstance: string; readonly ids: readonly string[] }
+  | { readonly t: 'native.delivered'; readonly serviceInstance: string; readonly ids: readonly string[] }
 
 export type NativeResponse =
+  | { readonly t: 'native.sessions.result'; readonly request: string; readonly serviceInstance: string; readonly sessions?: readonly NativeSession[]; readonly error?: string }
+  | { readonly t: 'native.history.result'; readonly request: string; readonly serviceInstance: string; readonly session: string; readonly entries?: readonly Entry[]; readonly events?: readonly KernelEvent[]; readonly currentRequests?: readonly Extract<KernelEvent, { kind: 'tool.decision.request' }>[]; readonly next?: number; readonly done: boolean; readonly error?: string }
+  | { readonly t: 'native.session.managed'; readonly request: string; readonly serviceInstance: string; readonly results: readonly SessionManagementResult[] }
   | { readonly t: 'native.welcome'; readonly identity: ServiceIdentity; readonly projection: NativeProjection }
   | { readonly t: 'native.projection'; readonly projection: NativeProjection }
   | { readonly t: 'native.inspected'; readonly request: string; readonly work?: NativeWork; readonly error?: string }

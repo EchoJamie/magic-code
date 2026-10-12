@@ -24,7 +24,7 @@
  * 不出去的：库表形态 · SQL · id 预留水位 · 引用格式（`BlobRef` 对消费者不透明）。
  */
 
-export { createRecordsStore, DATABASE_FILE } from './store.ts'
+export { createRecordsStore, readSessionSummary, DATABASE_FILE } from './store.ts'
 export type { RecordsStore, RecordsStoreOptions } from './store.ts'
 export type { AttentionStore } from './attention.ts'
 

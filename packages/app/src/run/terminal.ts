@@ -416,8 +416,8 @@ export function terminalConnection(
       if (closed) return Promise.reject(new Error('终端已经关闭'))
       if (reopening !== undefined) return reopening
       if (!current.closed) {
-        if (selected !== undefined) current.send({ type: 'session.open', session: selected })
-        else current.send({ type: 'session.list' })
+        current.send({ type: 'session.list' })
+        if (selected !== undefined) current.send({ type: 'history.read', session: selected })
         return Promise.resolve()
       }
       reopening = (async () => {

@@ -415,7 +415,7 @@ describe('会话与重建', () => {
   const state = (active: string, sessions: readonly { id: string; title?: string }[]) =>
     event('session.state', {
       active,
-      sessions: sessions.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
+      sessions: sessions.map((row) => ({ archived: false, id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
     })
 
   test('目录与当前会话落进视图——② 显示标题', () => {

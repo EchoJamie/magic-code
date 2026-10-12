@@ -82,8 +82,6 @@ type Fake = {
   readonly request: ExecutorRequest
   /** 管理者送到这一头的东西（按到达序）——命令与快照请求都在里头。 */
   readonly got: ManagerToExecutor[]
-  /** 这一头发出去的事件 id 水位（与记录域同一条纪律：单调递增）。 */
-  nextId: number
   send(message: ExecutorToManager): void
   /** 一条内核事件——返回它的 id。 */
   emit(kind: EventKind, data: unknown, session: string | null, at?: number): number
@@ -117,6 +115,7 @@ async function waitFor(what: string, ok: () => boolean, timeoutMs = 5_000): Prom
 
 /** 立一摊：真管理者 ＋ 假执行者。 */
 async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promise<Bench> {
+  const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
   const requests: ExecutorRequest[] = []
   const exits = new Map<number, (reason: string) => void>()
   const fakes: Fake[] = []
@@ -159,12 +158,11 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       gen: request.gen,
       request,
       got,
-      nextId: 1,
       send: (message) => void link.send(message),
       emit(kind, data, session, at = Date.now()) {
-        const id = fake.nextId
-        fake.nextId += 1
+        const id = store.serviceFor(session ?? '').nextId()
         const event = { id, session: session ?? '', turn: null, at, kind, data } as KernelEvent
+        store.appendEvent(event)
         link.send({ t: 'ev', event })
         return id
       },
@@ -199,6 +197,7 @@ async function bench(g: Ground, overrides: Record<string, unknown> = {}): Promis
       for (const fake of fakes) fake.close()
       manager.stop('用例收尾')
       await manager.waitUntilExit()
+      store.close()
       g.dispose()
     },
   }
@@ -654,22 +653,31 @@ test('同会话终端接收具体事项；离线事项持久保留且未投递',
     first.ready('a'); second.ready('b')
     first.emit('turn.start', {}, 'a')
     first.emit('turn.end', { reason: 'settled' }, 'a')
+    first.emit('agent.state', { state: 'waiting' }, 'a')
     await waitFor('终端显示结果事项', () => notices.length === 1)
     other.close()
-    await Bun.sleep(20)
+    await waitFor('B 终端已脱离', () => b.manager.clients() === 1)
     second.emit('turn.start', {}, 'b')
     second.emit('turn.end', { reason: 'error' }, 'b')
+    second.emit('agent.state', { state: 'waiting' }, 'b')
     await waitFor('B 离线事项落盘', () => attentionFacts(g.dataDir, g.ws).some(one => one.session === 'b'))
     const twin = (await connectManager(b.manager.socketPath, { cwd: g.ws, session: 'a' }))!
     twin.close()
-    await Bun.sleep(20)
+    await waitFor('A 的第二窗口已脱离', () => b.manager.clients() === 1)
+    first.emit('turn.start', {}, 'a')
+    first.emit('agent.state', { state: 'resumed' }, 'a')
     first.emit('tool.decision.request', { call: 3, name: 'write', material: '写文件', weight: 'heavy' }, 'a')
     await waitFor('剩余窗口显示待答', () => notices.length === 2)
+    expect(attentionFacts(g.dataDir, g.ws).filter(one => one.session === 'a').map(one => one.kind)).toEqual(['needs-you'])
     a.close()
-    await Bun.sleep(20)
-    first.emit('turn.start', {}, 'a')
+    await waitFor('A 最后窗口已脱离', () => b.manager.clients() === 0)
     first.emit('turn.end', { reason: 'error' }, 'a')
-    await waitFor('最后连接离开后的事项落盘', () => attentionFacts(g.dataDir, g.ws).filter(one => one.session === 'a').length === 3)
+    first.emit('agent.state', { state: 'waiting' }, 'a')
+    await waitFor('最后连接离开后的当前事项落盘', () => attentionFacts(g.dataDir, g.ws).find(one => one.session === 'a')?.kind === 'failed')
+    expect(attentionFacts(g.dataDir, g.ws).map(one => ({ session: one.session, kind: one.kind, unread: one.unread }))).toEqual([
+      { session: 'b', kind: 'failed', unread: true }, { session: 'a', kind: 'failed', unread: true },
+    ])
+    expect(notices).toHaveLength(2)
     expect(attentionFacts(g.dataDir, g.ws).every(one => !one.delivered)).toBe(true)
   } finally { a.close(); other.close(); await b.dispose() }
 }, 30000)

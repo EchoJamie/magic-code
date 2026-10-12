@@ -335,7 +335,7 @@ describe('选择器（`/resume` · `/model`）', () => {
   const state = (active: string, rows: readonly { id: string; title?: string }[]) =>
     event('session.state', {
       active,
-      sessions: rows.map((row) => ({ id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
+      sessions: rows.map((row) => ({ archived: false, id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
     })
 
   test('`/resume` 回车后：目录到手才开选择器，记录区仍不进东西', () => {
@@ -400,7 +400,7 @@ describe('选择器（`/resume` · `/model`）', () => {
     app.spy.emit(
       event('session.state', {
         active: 's1',
-        sessions: [{ id: 's1', at: 0, title: '甲的事' }],
+        sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }],
         note: '正在跑一轮——先 Ctrl+C 中断，再切会话（同一时刻只有一个活跃会话）',
       }),
     )
@@ -632,7 +632,7 @@ describe('/exit（停掉这条会话，然后退出界面）', () => {
 
   /** 一条会话在场（`session.state` 把活跃位定下来）。 */
   function withSession(app: ReturnType<typeof live>, id = 's1'): void {
-    app.spy.emit(event('session.state', { active: id, sessions: [{ id, at: 0, title: '甲的事' }] }))
+    app.spy.emit(event('session.state', { active: id, sessions: [{ archived: false, id, at: 0, title: '甲的事' }] }))
   }
 
   /**
@@ -762,7 +762,7 @@ describe('/exit（停掉这条会话，然后退出界面）', () => {
 
     // 活跃位到了（这一声答复把会话 id 带出来）⇒ 接着把刚才那一下办完
     app.spy.emit(
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
+      event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] }),
     )
     expect(wire.asked).toEqual([{ session: 's1', scope: 'run' }])
 
@@ -789,7 +789,7 @@ describe('/exit（停掉这条会话，然后退出界面）', () => {
 
     // 而且**不会**在后来的那一条上补一刀
     app.spy.emit(
-      event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] }),
+      event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0, title: '乙的事' }] }),
     )
     expect(wire.asked).toEqual([])
   })
@@ -860,14 +860,14 @@ describe('重建（`session.history` 分块）', () => {
     const app = live()
 
     app.spy.emit(state1('s1'))
-    app.spy.emit(event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0 }] }))
+    app.spy.emit(event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0 }] }))
 
     expect(app.commands()).toContainEqual({ type: 'history.read', session: 's2' })
   })
 })
 
 function state1(active: string) {
-  return event('session.state', { active, sessions: [{ id: active, at: 0 }] })
+  return event('session.state', { active, sessions: [{ archived: false, id: active, at: 0 }] })
 }
 
 // ══ 补：会话命令与粘贴的其余分支 ═════════════════════════════════════
@@ -906,7 +906,7 @@ describe('会话命令的其余分支', () => {
   test('`/rename <文本>`——发 `session.rename`（带上当下那条的 id）', () => {
     const app = live()
     app.spy.emit(
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
+      event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] }),
     )
 
     app.type('/rename 换个名字')

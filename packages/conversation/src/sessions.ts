@@ -45,6 +45,7 @@ import type {
   SessionCommand,
   SessionId,
   SessionSummary,
+  SessionQuery,
   Timestamp,
 } from '@magic/contracts'
 import { noticeOf } from './context.ts'
@@ -62,8 +63,9 @@ export const TITLE_LIMIT = 20
  * 窄口另让「会话面只读记录、不写」这件事在类型上看得见。
  */
 export type SessionRecordsFace = {
-  listSessions(): Promise<readonly SessionSummary[]>
+  listSessions(query?: SessionQuery): Promise<readonly SessionSummary[]>
   readEntries(session: SessionId, range?: EntryRange): AsyncIterable<Entry>
+  readEntriesBack(session: SessionId, before: number | undefined, limit: number): Promise<readonly Entry[]>
   readEvents(session: SessionId): AsyncIterable<KernelEvent>
   readonly blobs: BlobStore
 }
@@ -278,7 +280,7 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
       return
     }
 
-    await announce(renameTo(command.session, command.title))
+    if (command.type === 'session.rename') await announce(renameTo(command.session, command.title))
   }
 
   /**
@@ -440,7 +442,8 @@ export function summarize(text: string, limit: number = TITLE_LIMIT): string | u
   const flat = text.replace(/\s+/g, ' ').trim()
   if (flat === '') return undefined
 
-  return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`
+  const segments = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(flat)].map(part => part.segment)
+  return segments.length <= limit ? flat : `${segments.slice(0, limit).join('')}…`
 }
 
 function messageOf(error: unknown): string {
@@ -448,25 +451,42 @@ function messageOf(error: unknown): string {
 }
 
 /** 同一份只读目录供执行内核与常驻管理者使用，标题规则不在展示适配器重造。 */
-export async function readSessionCatalog(records: SessionRecordsFace, limit = TITLE_LIMIT): Promise<readonly SessionSummary[]> {
-  const rows = await records.listSessions()
-  return Promise.all(rows.map(async (row) => {
-    let title=row.title,recentInput:string|undefined,recentProgress:string|undefined
-    for await(const entry of records.readEntries(row.id)){
-      if(entry.kind==='user'&&(noticeOf(entry.payload)||(entry.payload as {local?:true}|undefined)?.local===true))continue
-      if(!['user','assistant','tool-result'].includes(entry.kind))continue
-      const text='text' in entry.content?entry.content.text:new TextDecoder().decode(await records.blobs.get(entry.content.blob))
-      if(entry.kind==='user'){title??=summarize(text,limit);recentInput=text}
-      else if(text.trim()!=='')recentProgress=text
+export async function readSessionCatalog(records: SessionRecordsFace, limit = TITLE_LIMIT, query: SessionQuery = { archived: false }): Promise<readonly SessionSummary[]> {
+  const rows = await records.listSessions(query)
+  const userEntry = (entry: Entry) => entry.kind === 'user' && !noticeOf(entry.payload) && (entry.payload as { local?: true } | undefined)?.local !== true
+  const textOf = async (entry: Entry) => 'text' in entry.content ? entry.content.text : new TextDecoder().decode(await records.blobs.get(entry.content.blob))
+  return Promise.all(rows.map(async row => {
+    let title = row.title, recentInput: string | undefined, recentProgress: string | undefined
+    // 默认标题只取首条真实用户交代，已命名会话不再正序读历史。
+    if (title === undefined) for await (const entry of records.readEntries(row.id)) {
+      if (!userEntry(entry)) continue
+      title = summarize(await textOf(entry), limit)
+      if (title !== undefined) break
     }
-    return {...row,...(title===undefined?{}:{title}),...(recentInput===undefined?{}:{recentInput}),...(recentProgress===undefined?{}:{recentProgress})}
+    let before: number | undefined
+    while (recentInput === undefined || recentProgress === undefined) {
+      const entries = await records.readEntriesBack(row.id, before, HISTORY_CHUNK)
+      if (entries.length === 0) break
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index]!
+        if (recentInput === undefined && userEntry(entry)) recentInput = await textOf(entry)
+        else if (recentProgress === undefined && (entry.kind === 'assistant' || entry.kind === 'tool-result')) {
+          const text = await textOf(entry)
+          if (text.trim() !== '') recentProgress = text
+        }
+        if (recentInput !== undefined && recentProgress !== undefined) break
+      }
+      if (entries.length < HISTORY_CHUNK) break
+      before = entries[0]!.id
+    }
+    return { ...row, ...(title === undefined ? {} : { title }), ...(recentInput === undefined ? {} : { recentInput }), ...(recentProgress === undefined ? {} : { recentProgress }) }
   }))
 }
 
 /** 显式历史阅读展开记录正文和完整工具输出，不改变模型装配的有界读取。 */
-export async function* readSessionDisplayHistory(records:Pick<SessionRecordsFace,'readEntries'|'blobs'>,session:SessionId):AsyncIterable<Entry> {
+export async function* readSessionDisplayHistory(records:Pick<SessionRecordsFace,'readEntries'|'blobs'>,session:SessionId,range?:EntryRange):AsyncIterable<Entry> {
   const text=async(content:import('@magic/contracts').Content)=>'text' in content?content:{text:new TextDecoder().decode(await records.blobs.get(content.blob))}
-  for await(const entry of records.readEntries(session)) {
+  for await(const entry of records.readEntries(session,range)) {
     const content=await text(entry.content)
     const payload=entry.kind==='tool-result'?entry.payload as ToolResultPayload|undefined:undefined
     yield {...entry,content,...(payload===undefined?{}:{payload:{...payload,output:await text(payload.output)}})}

@@ -142,6 +142,8 @@ export type EventKind =
   | 'provider.catalog'
   // session——会话面（阶段 2 · U16）：此刻有哪些会话、当前在哪条；**不落库**
   | 'session.state'
+  | 'session.changed'
+  | 'session.managed'
   | 'collaboration.view'
   // 控制 · 会话——外壳**重建展示**的条目块（读侧命令的答复）；**不落库**
   | 'session.history'
@@ -626,6 +628,7 @@ export type EventDataOf = {
   // **分块**推：长会话一次塞一个事件＝一个巨型载荷；块大小**实现级**。末块 `done: true`。
   // **不落库**：它是**读出来的**（条目本来就在库里），落库＝把同一段内容存第二遍。
   'session.history': {
+    readonly error?: string
     /** 这批条目属于哪条会话——外壳据以丢弃**切走之后才到**的块（分块会跨切换）。 */
     readonly session: SessionId
     /** 这一块（按条目序；块与块之间拼起来即全日志）。 */
@@ -831,6 +834,8 @@ export type EventDataOf = {
   // 外壳问一次（`session.list`）、内核切一条（`session.new` / `session.open`）都回这一条
   // ——三处各立一个 kind 只会让渲染侧写三遍同一段（列表 ＋ 当前）。
   'collaboration.view': CollaborationView
+  'session.managed': { readonly session: SessionId; readonly action: 'archive' | 'restore' | 'rename'; readonly ok: boolean; readonly archived?: boolean; readonly error?: string }
+  'session.changed': { readonly session: SessionId; readonly archived: boolean; readonly canArchive: boolean; readonly terminalOpen: boolean }
   'session.state': {
     /** 当前活跃会话（**单活跃**——同一时刻只有一条）。 */
     readonly active: SessionId
@@ -1123,6 +1128,8 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 而重放要的从来不是快照——是过程（谁切到了哪条）。落库只会把同一张表存 N 遍，
   // 且重放时越读越乱（旧快照会把新快照盖回去）。
   'session.state',
+  'session.changed',
+  'session.managed',
   'collaboration.view',
   // 读面答复同列的理由（第 19 轮）：它是**读出来的**——条目本来就在库里，
   // 落库＝把同一段内容存第二遍（长会话还会把库撑成两倍）。重放要的是「发生过什么」，
@@ -1204,4 +1211,4 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
  * **版本 1**（U26）——`sessions` 加 `workspace` 列（会话归属工作区）：
  * **冻结点已过，走顺序迁移**——既有库照开、数据一件不丢、**不许重建库**。
  */
-export const RECORD_SCHEMA_VERSION = 1
+export const RECORD_SCHEMA_VERSION = 2

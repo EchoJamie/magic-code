@@ -28,7 +28,7 @@ import { createStage, showScreen } from './screen.ts'
 /** 起一个壳，并投一条会话状态（与 `spec.log.test.ts` 同一份底子）。 */
 function live() {
   const stage = createStage()
-  stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '时区修正' }] })])
+  stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '时区修正' }] })])
 
   return stage
 }

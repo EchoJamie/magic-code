@@ -66,9 +66,9 @@ def emit(message):
 
 def work():
     return {'session': 'session-completed', 'title': '已经处理的事项', 'workspace': [str(base)],
-            'state': 'idle', 'since': 1, 'gen': None, 'affected': False,
-            'notices': [{'id': 'notice-completed', 'session': 'session-completed', 'kind': 'done',
-                         'at': 1, 'unread': False, 'delivered': True, 'fact': 'event:1'}]}
+            'state': 'idle', 'since': 1, 'gen': None, 'affected': False, 'archived': False, 'canArchive': True, 'terminalOpen': False,
+            'currentNotice': {'id': 'notice-completed', 'session': 'session-completed', 'kind': 'done',
+                         'at': 1, 'unread': False, 'delivered': True, 'fact': 'event:1', 'source': {'session': 'session-completed', 'entry': 1}}}
 
 
 def projection():
@@ -95,6 +95,29 @@ def observe(client):
                 send(client, {'t': 'native.welcome', 'identity': identity, 'projection': value})
                 barrier = base / 'welcome-barrier.json'
                 if barrier.exists(): send(client, {'t': 'native.attached', **json.loads(barrier.read_text())})
+            elif message['t'] == 'native.sessions':
+                rows = options.get('works', [work()] if options.get('notice') else [])
+                sessions = [{'id': row['session'], 'title': row['title'], 'at': row['since'], 'workspace': row['workspace'],
+                             'state': row['state'], 'archived': row['archived'], 'canArchive': row['canArchive'], 'terminalOpen': row['terminalOpen']}
+                            for row in rows if row['archived'] == message.get('archived', False)
+                            and message.get('search', '').lower() in row['title'].lower()
+                            and (not message.get('workspace') or message['workspace'] == row['workspace'])]
+                send(client, {'t': 'native.sessions.result', 'request': message['request'], 'serviceInstance': identity['serviceInstance'], 'sessions': sessions})
+            elif message['t'] == 'native.history':
+                send(client, {'t': 'native.history.result', 'request': message['request'], 'serviceInstance': identity['serviceInstance'], 'session': message['session'],
+                              'entries': options.get('entries', [{'id': 1, 'kind': 'assistant', 'content': {'text': '保存的完整回复'}, 'at': 1}]), 'events': options.get('events', []), 'done': True})
+            elif message['t'] == 'native.session.manage':
+                results = []
+                rows = options.get('works', [])
+                for item in message['items']:
+                    row = next((row for row in rows if row['session'] == item['session']), None)
+                    ok = row is not None and message['serviceInstance'] == identity['serviceInstance']
+                    if ok and item['action'] == 'archive': ok = row['canArchive']
+                    if ok:
+                        if item['action'] == 'rename': row['title'] = item['title']
+                        else: row['archived'] = item['action'] == 'archive'
+                    results.append({**item, 'ok': ok, **({'archived': row['archived']} if ok else {'error': '资格已变化'})})
+                send(client, {'t': 'native.session.managed', 'request': message['request'], 'serviceInstance': identity['serviceInstance'], 'results': results})
             elif message['t'] == 'native.inspect':
                 target = next((row for row in options.get('works', [work()]) if row['session'] == message['session']), None)
                 if options.get('inspectGate'):
@@ -107,7 +130,7 @@ def observe(client):
                         temporary = base / 'control-inspect.json'
                         temporary.write_text(json.dumps(options)); os.replace(temporary, base / 'control.json')
                 target = options.get('inspectWork', target)
-                if target and (options.get('uncheckedInspect') or message.get('notice') is None or any(n['id'] == message['notice'] for n in target['notices'])):
+                if target and (options.get('uncheckedInspect') or message.get('notice') is None or target.get('currentNotice', {}).get('id') == message['notice']):
                     send(client, {'t': 'native.inspected', 'request': message['request'], 'work': target})
                     trace('inspected-sent', request=message['request'])
                 else:
@@ -116,8 +139,8 @@ def observe(client):
             elif message['t'] in ['native.read', 'native.delivered'] and options.get('systemTest'):
                 key = 'unread' if message['t'] == 'native.read' else 'delivered'
                 for row in options.get('works', []):
-                    for notice in row['notices']:
-                        if notice['id'] in message['ids']: notice[key] = key == 'delivered'
+                    notice = row.get('currentNotice')
+                    if notice and notice['id'] in message['ids']: notice[key] = key == 'delivered'
                 temporary = base / 'control-ack.json'
                 temporary.write_text(json.dumps(options)); os.replace(temporary, base / 'control.json')
                 for observer in clients: send(observer, {'t': 'native.projection', 'projection': projection()})

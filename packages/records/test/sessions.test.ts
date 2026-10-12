@@ -1,20 +1,3 @@
-/**
- * U16 · 记录库 —— **会话面**（标题列 · 最近会话 · 老库补列）。
- *
- * 出处：技术方案 · 会话与多会话（「标题＝首条消息摘要、**可改**」）· 记录 schema v0。
- *
- * 三件：
- * ① `sessions` 加 `title` 列——**改过的标题**存这儿（默认标题由对话域按首条消息现算，
- *    不落库：那是派生物，存两份迟早分叉）；
- * ② `latestSession()`——启动流转「接着最近一条」的取材口；
- * ③ **老库**（加列之前建的）**就地补列**——不丢数据。
- *    加列是**结构增列的补齐**（幂等探测）。⚠️ U16 时它「不动 `user_version`」；**U26 起
- *    收进了迁移链的第一步**（`workspace` 列与它同一步，0 → 1），版本号随之前推
- *    ——见 `src/schema.ts` · `MIGRATIONS`。
- *
- * 扫描面：测试用 fs 不受守护拦（守护面＝各包 `src/`）——老库要**手工建**才造得出。
- */
-
 import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { RECORD_SCHEMA_VERSION } from '@magic/contracts'
@@ -106,78 +89,31 @@ describe('最近会话（启动流转的取材口）', () => {
   })
 })
 
-describe('老库补列（加列之前的库照开）', () => {
-  /** 照**加列之前**的 DDL 手工建一个库——老库的忠实样本。 */
-  function makeLegacyDatabase(dir: string, session: string, at: number): void {
-    const db = new Database(databasePathOf(dir), { create: true })
-    db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL)')
-    db.exec(`INSERT INTO sessions (id, at) VALUES ('${session}', ${at})`)
-    db.exec('PRAGMA user_version = 0')
-    db.close()
-  }
-
-  test('老库就地补列——数据不丢、标题可写、版本号推到当前', async () => {
+describe('schema 边界', () => {
+  test('旧结构明确拒开，不迁移、不删除或重建内容', () => {
     const dir = tempDataDir()
     try {
-      makeLegacyDatabase(dir, A, T0)
-
-      // 开库不该抛（加列之前建的库照开——「重建路径可用」的另一半：**不逼人删库**）
-      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
-      const listed = await store.listSessions()
-      expect(listed.map((row) => [row.id, row.at])).toEqual([[A, T0]])
-
-      store.setSessionTitle(A, '补列之后照样能改', T0 + 1)
-      expect((await store.listSessions())[0]?.title).toBe('补列之后照样能改')
-      store.close()
-
-      // **原锚**（U16）：`user_version` 不动（＝0）——「这不是顺序迁移，只是把缺的列补上」。
-      // **为何变**：U26 给 `sessions` 又加了一列（`workspace`），冻结点已过 ⇒ 那两处补齐
-      //   收进了**迁移链的第一步**（0 → 1），版本号随之前推——「补齐」与「顺序迁移」不再是
-      //   两件事（见 `src/schema.ts` · `MIGRATIONS`）。
-      // **新锚**：老库照开、数据不丢（上面那三条不变），**版本号推到当前**——跑的正是那条链。
-      const db = new Database(databasePathOf(dir))
-      expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(
-        RECORD_SCHEMA_VERSION,
-      )
+      const db = new Database(databasePathOf(dir), { create: true })
+      db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL)')
+      db.query('INSERT INTO sessions VALUES (?, ?)').run(A, T0)
       db.close()
-    } finally {
-      removeDataDir(dir)
-    }
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('不自动迁移或重建')
+      const original = new Database(databasePathOf(dir), { readonly: true })
+      try {
+        expect(original.query('SELECT * FROM sessions').all()).toEqual([{ id: A, at: T0 }])
+        expect(original.query('PRAGMA table_info(sessions)').all().map((row: any) => row.name)).toEqual(['id', 'at'])
+        expect(original.query('PRAGMA user_version').get()).toEqual({ user_version: 0 })
+      } finally { original.close() }
+    } finally { removeDataDir(dir) }
   })
-
-  test('补列幂等——旧库开两次不多补、不报错', async () => {
+  test('即使版本相同，缺字段也拒开', () => {
     const dir = tempDataDir()
     try {
-      makeLegacyDatabase(dir, A, T0)
-
-      createRecordsStore({ dataDir: dir, workspace: ROOTS }).close()
-      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
-      expect(store.latestSession()).toBe(A)
-      store.close()
-
-      // 列只有一个 title——补列语句没有跑第二遍（真跑第二遍 SQLite 会抛 duplicate column）
-      const db = new Database(databasePathOf(dir))
-      const names = db
-        .query<{ name: string }, []>('PRAGMA table_info(sessions)')
-        .all()
-        .map((row) => row.name)
+      const db = new Database(databasePathOf(dir), { create: true })
+      db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL)')
+      db.exec(`PRAGMA user_version=${RECORD_SCHEMA_VERSION}`)
       db.close()
-      expect(names.filter((name) => name === 'title').length).toBe(1)
-    } finally {
-      removeDataDir(dir)
-    }
-  })
-
-  test('重建路径——空目录建新库，标题列即到位', async () => {
-    const dir = tempDataDir()
-    try {
-      const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
-      store.serviceFor(A).appendEntry(userEntry('头一件', T0))
-      store.setSessionTitle(A, '甲', T0 + 1)
-      expect((await store.listSessions())[0]?.title).toBe('甲')
-      store.close()
-    } finally {
-      removeDataDir(dir)
-    }
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('结构不符')
+    } finally { removeDataDir(dir) }
   })
 })

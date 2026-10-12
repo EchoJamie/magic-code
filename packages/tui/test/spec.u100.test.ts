@@ -33,7 +33,7 @@ const ENTER = { kind: 'enter' } as const
  * 没到），那一档另有一条用例（`waitsForSession`）管着，这一节量的是**常态**。
  */
 const withSession = (stage: Stage, id = 's1'): Stage => {
-  stage.feed([event('session.state', { active: id, sessions: [{ id, at: 0, title: '甲的事' }] })])
+  stage.feed([event('session.state', { active: id, sessions: [{ archived: false, id, at: 0, title: '甲的事' }] })])
   ;(stage.spy.commands as Command[]).splice(0)
 
   return stage
@@ -203,7 +203,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     const resumeLineOf = (options: { readonly home?: string; readonly magicBase: string }): string => {
       const stage = createStage({ stop: () => {}, ...options })
       withSession(stage)
-      stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+      stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
       stage.feed([event('turn.start', {})])
       stage.press(ARM)
       stage.press({ kind: 'down' })
@@ -257,7 +257,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
       expect(stage.shell.getView().leavingNote).toBeNull()
 
       // 活跃位到了 ⇒ 接着把刚才那一下办完
-      stage.feed([event('session.state', { active: 's9', sessions: [{ id: 's9', at: 0, title: '甲的事' }] })])
+      stage.feed([event('session.state', { active: 's9', sessions: [{ archived: false, id: 's9', at: 0, title: '甲的事' }] })])
       expect(stage.shell.getView().leaving).toBe(true)
       expect(stage.shell.getView().leavingNote).toBe("· 转到后台了 · 接回来：MAGIC_HOME='/test' magic resume 's9'")
     })
@@ -285,14 +285,14 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
   describe('新开三选恒选第一项', () => {
     const withList = (selected: number): Stage => {
       const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow()]) })
-      stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+      stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
       // 开 `/resume` 那张列表，把选中挪到第 N 条
       stage.type('/resume ')
       stage.press(ENTER)
       stage.feed([
         event('session.state', {
           active: 's1',
-          sessions: ['s1', 's2', 's3', 's4'].map((id, at) => ({ id, at: 4 - at, title: id })),
+          sessions: ['s1', 's2', 's3', 's4'].map((id, at) => ({ archived: false, id, at: 4 - at, title: id })),
         }),
       ])
       for (let at = 0; at < selected; at += 1) stage.press({ kind: 'down' })
@@ -353,7 +353,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     const withRunningTool = (): { stage: Stage; push: (rows: readonly RunRow[]) => void } => {
       const feed = createRunsFeed([runRow({ state: 'running' })])
       const stage = createStage({ stop: () => {}, runsFeed: feed })
-      stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+      stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
       stage.feed([
         event('message.user', { entry: 101 }, { id: 101 }),
         event('turn.start', {}),
@@ -439,7 +439,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     const parked = (): { stage: Stage; push: (rows: readonly RunRow[]) => void } => {
       const feed = createRunsFeed([runRow({ state: 'waiting' })])
       const stage = createStage({ stop: () => {}, runsFeed: feed })
-      stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+      stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
       // **卡之前**录一段独立、未提交的草稿（卡接管时收进 `stashed`）
       stage.type('半截草稿')
       stage.feed([
@@ -575,7 +575,7 @@ describe('工作中按 Ctrl+C ⇒ 开「当前任务去向」三选（打开本�
     // ⚠️ 这一台**故意不给** `stop`（`createStage` 缺省就是没有）
     const stage = createStage()
     stage.feed([
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] }),
+      event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] }),
       event('tool.call', { name: '跑测试', args: {} }, { id: 71 }),
       event('turn.start', {}),
     ])
@@ -754,7 +754,7 @@ describe('绑定与竞态：旧菜单不许停新工作', () => {
     busy(stage)
     stage.press(ARM)
 
-    stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙的事' }] })])
+    stage.feed([event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0, title: '乙的事' }] })])
     stage.press(ENTER)
 
     expect(stage.stops()).toEqual([])
@@ -780,7 +780,7 @@ describe('绑定与竞态：旧菜单不许停新工作', () => {
 describe('只剩后台命令 ⇒ 照样给三选', () => {
   const backgroundOnly = (): Stage => {
     const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow({ background: 1 })]) })
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
     // 这一屏自己那一套事件**一件都没有**：不在跑模型、不在跑工具、没有卡
     stage.feed([event('turn.end', { reason: 'settled' })])
 
@@ -799,7 +799,7 @@ describe('只剩后台命令 ⇒ 照样给三选', () => {
 
   test('后台命令跑完之后（那一格没了）⇒ 回到「按两次退出」', () => {
     const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow({ background: 1 })]) })
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
     stage.pushRuns([runRow({ state: 'idle' })]) // 它退了
 
     expect(stage.press(ARM).exit).toBe(false)
@@ -816,7 +816,7 @@ describe('只剩后台命令 ⇒ 照样给三选', () => {
 describe('连接断了 ⇒ 留在界面如实说', () => {
   const lost = (): Stage => {
     const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow()]) })
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
     stage.feed([event('turn.start', {})])
     stage.shell.disconnected()
 
@@ -854,7 +854,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
   test('那一代核销了 ⇒ 悬着的卡作废（否则「按两次 ctrl+c 离开」这条路走不掉）', async () => {
     const feed = createRunsFeed([runRow({ state: 'waiting' })])
     const stage = createStage({ stop: () => {}, runsFeed: feed })
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
     stage.feed([
       event('message.user', { entry: 101 }, { id: 101 }),
       event('turn.start', {}),
@@ -882,7 +882,7 @@ describe('连接断了 ⇒ 留在界面如实说', () => {
 
   test('正等着走的那一趟（`/exit`）**不放行**，如实说「停止尚未确认」', async () => {
     const stage = createStage({ stop: () => {}, runsFeed: createRunsFeed([runRow()]) })
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲的事' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲的事' }] })])
     stage.type('/exit ')
     stage.press(ENTER)
     expect(stage.shell.getView().leaving).toBe(false)

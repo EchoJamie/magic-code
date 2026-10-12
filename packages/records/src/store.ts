@@ -33,7 +33,7 @@ import { createCollaborationRecords } from './collaboration.ts'
  */
 
 import { Database } from 'bun:sqlite'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   BlobStore,
@@ -41,12 +41,14 @@ import type {
   Entry,
   EntryRange,
   EventDataOf,
+  EventKind,
   KernelEvent,
   NewEntry,
   RecordId,
   RecordsService,
   SessionId,
   SessionSummary,
+  SessionQuery,
   Timestamp,
 } from '@magic/contracts'
 import { BLOBS_DIR, createBlobStore } from './blobs.ts'
@@ -61,6 +63,7 @@ import {
   SESSIONS_TABLE,
   SESSION_WORKSPACE_COLUMN,
   initSchema,
+  assertCurrentSchema,
   type NamedParams,
 } from './schema.ts'
 
@@ -81,14 +84,21 @@ type SessionRow = {
   readonly at: number
   readonly title: string | null
   readonly workspace: string | null
+  readonly archived: number
 }
 
 /**
  * 会话的两个查询**共用一个序**（`at` 降序、同刻按 id 升序）——`listSessions` 与
  * `latestSession` 各写一份的话，启动落点与列表头名迟早分叉。
  */
-function sessionSelect(): string {
-  return `SELECT id, at, title, workspace FROM ${SESSIONS_TABLE} ORDER BY at DESC, id ASC`
+function sessionSelect(where = ''): string {
+  return `SELECT s.id, COALESCE((SELECT MAX(e.at) FROM ${ENTRIES_TABLE} e WHERE e.session=s.id), s.at) AS at,
+    s.title, s.workspace, COALESCE(root.archived, s.archived) AS archived
+    FROM ${SESSIONS_TABLE} s
+    LEFT JOIN collaboration_agents agent ON agent.session=s.id
+    LEFT JOIN collaborations collaboration ON collaboration.id=agent.collaboration
+    LEFT JOIN ${SESSIONS_TABLE} root ON root.id=collaboration.origin_session
+    ${where} ORDER BY at DESC, s.id ASC`
 }
 
 /** 行 → 摘要：标题 / 工作区**缺席即不给键**（不是空串 / 空数组——缺席可辨，空值不可辨）。 */
@@ -96,9 +106,26 @@ function summaryOf(row: SessionRow): SessionSummary {
   return {
     id: row.id,
     at: row.at,
+    archived: row.archived === 1,
     ...(row.title === null ? {} : { title: row.title }),
     ...(row.workspace === null ? {} : { workspace: parseWorkspace(row.workspace) }),
   }
+}
+
+/** CLI --check 只读单项元数据，不创建目录、库或执行者。 */
+export function readSessionSummary(dataDir: string, session: SessionId): SessionSummary | undefined {
+  assertSessionId(session)
+  const path = join(assertPlainDataDir(dataDir), DATABASE_FILE)
+  try { statSync(path) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  const db = new Database(path, { readonly: true })
+  try {
+    assertCurrentSchema(db, path)
+    const row = db.query<SessionRow, [string]>(sessionSelect('WHERE s.id=?')).get(session)
+    return row === null ? undefined : summaryOf(row)
+  } finally { db.close() }
 }
 
 /** 工作区列的落盘形态＝JSON 一列（同 `events.data` 的姿势）——读回即那组根。 */
@@ -165,7 +192,7 @@ export type RecordsStore = {
    * （它是记录域内部键，契约里对消费者不透明）。会话未定时取回正文要用它（读面同例）。
    */
   readonly blobs: BlobStore
-  listSessions(): Promise<readonly SessionSummary[]>
+  listSessions(query?: SessionQuery): Promise<readonly SessionSummary[]>
   /**
    * **裁决的历史累计**（U28 · `B10` 口径的跨会话面）——本工作区的会话们走过的全部裁决，
    * 按 `decider` 分成两格（见 `DecisionHistory`）。
@@ -196,6 +223,8 @@ export type RecordsStore = {
    * 校验放在**入口**（报错不降级），此处只答「在不在」，**不判该不该**。
    */
   hasSession(session: SessionId): boolean
+  isSessionArchived(session: SessionId): boolean
+  setSessionArchived(session: SessionId, archived: boolean): void
   /**
    * **最近一条会话**——启动流转「接着最近一条」的取材口（U16）；库里没有会话则 `undefined`。
    *
@@ -216,6 +245,8 @@ export type RecordsStore = {
    * （跨会话串线即拒）——域内调用者用那条更严；扇出这条按信封走，天然不会串。
    */
   readEvents(session: SessionId): AsyncIterable<KernelEvent>
+  readEvent(session: SessionId, id: RecordId): KernelEvent | undefined
+  latestEvent(session: SessionId, kinds: readonly EventKind[]): KernelEvent | undefined
   appendEvent(event: KernelEvent): void
   /**
    * **写会话标题**（U16 · 技术方案 · 会话与多会话：标题可改）——
@@ -252,18 +283,18 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
   mkdirSync(dataDir, { recursive: true })
 
   const blobsDir = join(dataDir, BLOBS_DIR)
-  mkdirSync(blobsDir, { recursive: true })
 
   const databasePath = join(dataDir, DATABASE_FILE)
   const db = new Database(databasePath, { create: true })
   try {
     db.exec('PRAGMA busy_timeout = 0')
+    initSchema(db, databasePath)
     db.exec('PRAGMA journal_mode = WAL')
     db.exec('PRAGMA synchronous = NORMAL')
-    initSchema(db, databasePath)
     initInputSchema(db)
     initCollaborationSchema(db)
   } catch (error) { db.close(); throw error }
+  mkdirSync(blobsDir, { recursive: true })
   const ids = createIdSpace(db)
   const blobs = createBlobStore(blobsDir)
   const attention = createAttentionStore(db)
@@ -321,11 +352,26 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
       WHERE kind = 'tool.decision'
         AND session IN (SELECT id FROM ${SESSIONS_TABLE} WHERE ${SESSION_WORKSPACE_COLUMN} = ?)`,
   )
-  const selectSessions = db.query<SessionRow, []>(sessionSelect())
   const selectSessionExists = db.query<{ one: number }, [string]>(
     `SELECT 1 AS one FROM ${SESSIONS_TABLE} WHERE id = ? LIMIT 1`,
   )
-  const selectLatest = db.query<{ id: string }, []>(`${sessionSelect()} LIMIT 1`)
+  const selectLatest = db.query<{ id: string }, []>(`${sessionSelect('WHERE COALESCE(root.archived, s.archived)=0')} LIMIT 1`)
+  const selectArchiveRoot = db.query<{ id: string; archived: number }, [string]>(`
+    SELECT COALESCE(root.id, s.id) AS id, COALESCE(root.archived, s.archived) AS archived
+    FROM ${SESSIONS_TABLE} s
+    LEFT JOIN collaboration_agents agent ON agent.session=s.id
+    LEFT JOIN collaborations collaboration ON collaboration.id=agent.collaboration
+    LEFT JOIN ${SESSIONS_TABLE} root ON root.id=collaboration.origin_session
+    WHERE s.id=?`)
+  const updateArchived = db.query<never, [number, string]>(`UPDATE ${SESSIONS_TABLE} SET archived=? WHERE id=?`)
+  const setSessionArchived = db.transaction((session: SessionId, archived: boolean): void => {
+    const root = selectArchiveRoot.get(session)
+    if (root === null) throw new Error('会话不存在，无法整理')
+    if (root.archived !== Number(archived)) updateArchived.run(Number(archived), root.id)
+  })
+  function isSessionArchived(session: SessionId): boolean {
+    return selectArchiveRoot.get(session)?.archived === 1
+  }
   // 改名：有行即就地更新，没行即建行（`at` ＝改名那一刻——建行不另取时钟，用调用方给的）
   const upsertTitle = db.query<never, [string, number, string]>(
     `INSERT INTO ${SESSIONS_TABLE} (id, at, title) VALUES (?, ?, ?)
@@ -423,9 +469,50 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     )
   }
 
+  function readEvent(session: SessionId, id: RecordId): KernelEvent | undefined {
+    const row = db.query<EventRow, [string, number]>(
+      `SELECT id, session, turn, at, kind, data FROM ${EVENTS_TABLE} WHERE session=? AND id=?`,
+    ).get(session, id)
+    return row === null ? undefined : eventOfRow(row)
+  }
+
+  function latestEvent(session: SessionId, kinds: readonly EventKind[]): KernelEvent | undefined {
+    if (kinds.length === 0) return undefined
+    const params: NamedParams = { $session: session }
+    const names = kinds.map((kind, index) => {
+      const name = `$kind${index}`
+      params[name] = kind
+      return name
+    })
+    const row = db.query<EventRow, [NamedParams]>(
+      `SELECT id, session, turn, at, kind, data FROM ${EVENTS_TABLE}
+       WHERE session=$session AND kind IN (${names.join(',')}) ORDER BY id DESC LIMIT 1`,
+    ).get(params)
+    return row === null ? undefined : eventOfRow(row)
+  }
+
   /** 会话列表——写入过的会话各现一次，最近在前（同刻按 id 定序，结果稳定）。 */
-  async function listSessions(): Promise<readonly SessionSummary[]> {
-    return selectSessions.all().map(summaryOf)
+  async function listSessions(query: SessionQuery = {}): Promise<readonly SessionSummary[]> {
+    if (query.ids?.length === 0) return []
+    const clauses: string[] = []
+    const params: NamedParams = {}
+    if (query.archived !== undefined) {
+      clauses.push('COALESCE(root.archived, s.archived)=$archived')
+      params.$archived = Number(query.archived)
+    }
+    if (query.workspace !== undefined) {
+      clauses.push('s.workspace=$workspace')
+      params.$workspace = JSON.stringify(query.workspace)
+    }
+    if (query.ids !== undefined) {
+      clauses.push(`s.id IN (${query.ids.map((id, index) => {
+        const key = `$id${index}`
+        params[key] = id
+        return key
+      }).join(',')})`)
+    }
+    const where = clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`
+    return db.query<SessionRow, [NamedParams]>(sessionSelect(where)).all(params).map(summaryOf)
   }
 
   /** 最近一条——与 `listSessions()` 同序（见端口注：两处一个序，启动落点才与列表头名一致）。 */
@@ -507,6 +594,8 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
 
     readEntries,
     readEvents,
+    readEvent,
+    latestEvent,
     readEntriesBack,
     blobs,
 
@@ -514,6 +603,8 @@ export function createRecordsStore(options: RecordsStoreOptions): RecordsStore {
     latestSession,
     decisionHistory,
     hasSession,
+    isSessionArchived,
+    setSessionArchived: (session, archived) => setSessionArchived.immediate(session, archived),
     setSessionTitle,
     appendEvent: (event) => appendEvent(event.session, event),
     recoveryScan: runRecoveryScan,

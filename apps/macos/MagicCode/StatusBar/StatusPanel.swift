@@ -4,7 +4,6 @@ struct StatusPanel: View {
     @ObservedObject var model: AppModel
     var surface: AppModel.PanelSurface = .menu
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openSettings) private var openSettings
     @FocusState private var focused: String?
     @State private var listFocus: String?
     @State private var listPosition = ScrollPosition(idType: String.self)
@@ -46,26 +45,26 @@ struct StatusPanel: View {
                     Text("返回列表查看其他工作。").foregroundStyle(.secondary)
                 }
             } else {
-                HStack {
-                    Text("Magic Code").font(.headline)
+                HStack(spacing: 12) {
+                    MagicBrandIcon(size: 40)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Magic Code").font(.system(size: 15, weight: .semibold))
+                        Label("Engine · \(engineStatus)", systemImage: model.isCurrent ? "circle.fill" : "circle")
+                            .font(.system(size: 11)).foregroundStyle(model.isCurrent ? Color.green : .secondary)
+                    }
                     Spacer()
-                    Button("设置", systemImage: "gearshape") { openSettings(); NSApp.activate(ignoringOtherApps: true) }
+                    Button("设置", systemImage: "gearshape") { model.manageSettings(); dismiss() }
                         .labelStyle(.iconOnly).help("打开设置").accessibilityLabel("打开 Magic Code 设置")
                 }
-                HStack {
-                    Text("Magic Engine · \(engineStatus)").font(.subheadline)
-                    Spacer()
+                Group {
                     switch model.phase {
-                    case .starting, .stopping: ProgressView().controlSize(.small)
-                    case .ready, .unreachable:
-                        Button("停止 Magic Engine…") { model.presentEngineStopAlert() }.disabled(model.engineBusy)
-                    case .stopped:
-                        Button("启动 Magic Engine") { model.startEngine() }.disabled(model.engineBusy)
-                    case .fault:
-                        Button("重试启动") { model.startEngine() }.disabled(model.engineBusy)
+                    case .starting, .stopping: HStack { ProgressView().controlSize(.small); Text(engineStatus).font(.caption).foregroundStyle(.secondary) }
+                    case .stopped: Button("启动 Magic Engine", systemImage: "power") { model.startEngine() }.disabled(model.engineBusy)
+                    case .fault: Button("重试启动", systemImage: "arrow.clockwise") { model.startEngine() }.disabled(model.engineBusy)
+                    default: EmptyView()
                     }
                 }.accessibilityIdentifier("engine-status")
-                if model.isCurrent || stale {
+                if (model.isCurrent && !rows.isEmpty) || stale {
                     Text(connectionSummary)
                         .font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("status-summary")
                 }
@@ -75,36 +74,42 @@ struct StatusPanel: View {
                             ForEach(WorkGroup.allCases) { group in
                                 let works = model.list.rows(group, works: model.works)
                                 if !works.isEmpty {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(group.title).font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 7) {
+                                        HStack {
+                                            Text(group.title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                                            Spacer()
+                                            Text("\(works.count)").font(.system(size: 11)).foregroundStyle(.tertiary)
+                                        }.padding(.horizontal, 2)
                                         ForEach(works) { work in row(work).id(work.id) }
                                     }
                                 }
                             }
-                            if model.works.count > rows.count {
-                                Button("在终端查看全部") { model.newTerminal() }.buttonStyle(.link)
-                                    .help("在终端使用 /resume 查看全部工作")
-                            }
                         }.scrollTargetLayout()
                     }
-                    .onAppear { focused = listFocus ?? rows.first?.id }
+                    .onAppear { focused = listFocus }
+                }
+                if rows.isEmpty && model.isCurrent {
+                    VStack(spacing: 10) {
+                        MagicIcon(name: "checkmark", size: 44)
+                        Text("当前没有需要关注的工作").font(.callout).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity).padding(.vertical, 24)
                 }
                 if case .fault(let reason) = model.phase {
                     Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
-            if let message = model.inspectionMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
             if let message = model.actionMessage { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             TerminalStatus(terminal: model.terminal)
             if model.selected == nil {
                 if !rows.isEmpty { Divider() }
                 if model.diagnostics.debugMode && surface == .menu { Button("打开调试窗口") { model.showDebugWindow?() } }
                 HStack {
-                    Button("打开终端") { model.newTerminal() }
+                    Button("管理会话", systemImage: "rectangle.split.2x1") { model.manageSessions(); dismiss() }.buttonStyle(.borderedProminent)
+                    Button("打开终端", systemImage: "terminal") { model.newTerminal() }
                     Spacer()
                     Menu {
                         Button("刷新 Engine 状态") { model.refreshAfterWake() }.disabled(model.engineBusy)
-                        if case .fault = model.phase {
+                        if model.phase != .stopped {
                             Button("停止 Magic Engine…", role: .destructive) { model.presentEngineStopAlert() }.disabled(model.engineBusy)
                         }
                         Divider()
@@ -114,7 +119,7 @@ struct StatusPanel: View {
                 }
             }
         }
-        .padding(16).frame(width: width).background(.background)
+        .padding(18).frame(width: width).background(MagicStyle.canvas).tint(MagicStyle.accent)
         .onAppear { model.panelVisibility(true, surface: surface) }
         .onDisappear { model.panelVisibility(false, surface: surface) }
         .onChange(of: model.selected) { old, selected in
@@ -153,6 +158,7 @@ struct StatusPanel: View {
     private func workMenu(_ work: NativeWork) -> some View {
         Menu {
             Button("复制接回命令") { model.copyCommand(work) }
+            if work.canArchive { Button("归档") { model.archive(work) }.disabled(!model.isCurrent || model.sessions.busy) }
             if work.affected {
                 Button("停止任务…", role: .destructive) { model.prepareStop(work) }.disabled(!model.isCurrent || work.gen == nil)
             }
@@ -163,14 +169,22 @@ struct StatusPanel: View {
         let explanation = work.statusText
         let status = work.state == .unknown && explanation != work.state.title ? "状态待确认 · \(explanation)" : work.statusText
         return Button { model.inspect(work) } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Text(work.state.mark).foregroundStyle(work.state == .waiting ? Color.accentColor : .secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(work.title.isEmpty ? "未命名工作" : work.title).fontWeight(.medium).lineLimit(3)
-                    Text("\(work.project) · \(stale ? "上次状态：" : "")\(status)")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    if work.notices.contains(where: { $0.kind == .failed && $0.unread }) {
-                        Text("▲ 有未读的问题事项").font(.caption).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: work.state.symbol).font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(work.state.color).frame(width: 28, height: 28)
+                    .background(work.state.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 7) {
+                    if work.state == .waiting { MagicBadge(text: "等待你的答复") }
+                    Text(work.title.isEmpty ? "未命名工作" : work.title).font(.system(size: 13, weight: .medium)).lineLimit(3)
+                    Text(work.currentNotice?.detail ?? "\(stale ? "上次状态：" : "")\(status)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                        Text(work.project).lineLimit(1)
+                        if work.terminalOpen { Text("· 终端已打开") }
+                    }.font(.system(size: 11)).foregroundStyle(.secondary)
+                    if work.currentNotice?.kind == .failed {
+                        Text("▲ 当前有待查看的问题").font(.caption).foregroundStyle(.secondary)
                     }
                     if model.works.contains(where: { $0.id != work.id && $0.title == work.title && $0.project == work.project }),
                        let path = work.workspace.first {
@@ -179,7 +193,7 @@ struct StatusPanel: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-            }.padding(.vertical, 8).padding(.horizontal, 6).contentShape(Rectangle())
+            }.padding(12).contentShape(Rectangle())
         }.buttonStyle(WorkRowStyle(focused: focused == work.id)).focused($focused, equals: work.id)
             .accessibilityLabel("\(work.title)，\(work.project)，\(stale ? "上次状态：" : "")\(status)")
             .accessibilityIdentifier("work-\(work.id)").accessibilityHint("查看详情和接回命令")
@@ -199,8 +213,10 @@ private struct WorkRowFeedback<Content: View>: View {
     let focused: Bool
     @State private var hovered = false
     var body: some View {
-        content.background(focused ? Color.accentColor.opacity(0.12) : hovered ? Color.primary.opacity(0.05) : .clear,
-                           in: RoundedRectangle(cornerRadius: 6)).onHover { hovered = $0 }
+        content.background(focused ? MagicStyle.accent.opacity(0.12) : hovered ? MagicStyle.subtle : MagicStyle.surface,
+                           in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused ? MagicStyle.accent.opacity(0.5) : MagicStyle.border))
+            .onHover { hovered = $0 }
     }
 }
 
@@ -236,48 +252,32 @@ private struct WorkDetail: View {
         PanelScroll(limit: limit, initialHeight: 300) {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(work.title.isEmpty ? "未命名工作" : work.title).font(.headline).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    Text(work.title.isEmpty ? "未命名工作" : work.title).font(.system(size: 20, weight: .semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     Text(work.project).font(.subheadline).foregroundStyle(.secondary)
-                    Text("\(work.state.mark) \(stale ? "上次状态：" : "")\(work.state.title)").font(.subheadline)
+                    MagicBadge(text: "\(stale ? "上次状态：" : "")\(work.state.title)", color: work.state.color)
                     if work.statusText != work.state.title { Text(work.statusText).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled) }
                     if [.unknown, .stopping, .stopped].contains(work.state), let reason = work.reason,
                        !reason.isEmpty, reason != work.statusText, reason != work.state.title {
                         Text(reason).font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     }
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("在你的终端执行以下命令接回对话").font(.caption).foregroundStyle(.secondary)
+                SettingsCard(title: "接回对话") {
+                    Text("复制后，在你的终端执行以下命令。").font(.caption).foregroundStyle(.secondary)
                     Text(model.resumeCommand(work)).font(.system(.caption, design: .monospaced))
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                         .accessibilityIdentifier("work-resume-command")
-                    Button("复制接回命令") { model.copyCommand(work) }
+                    Button("复制接回命令", systemImage: "doc.on.doc") { model.copyCommand(work) }.buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("copy-work-resume-command")
                 }
-                if !work.notices.isEmpty || !work.workspace.isEmpty || work.members != nil {
+                if work.currentNotice != nil || !work.workspace.isEmpty || work.members != nil {
                     VStack(alignment: .leading, spacing: 16) {
-                        if !work.notices.isEmpty {
-                            Text("相关事项").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-                            ForEach(work.notices) { notice in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Button { model.inspect(work, notice: notice.id) } label: {
-                                        HStack {
-                                            Text(notice.kind.title).fontWeight(.medium)
-                                            Spacer()
-                                            Text(notice.unread ? "未读" : "已读").foregroundStyle(.secondary)
-                                            Image(systemName: model.selectedNotice?.id == notice.id ? "chevron.down" : "chevron.right")
-                                        }.font(.callout).contentShape(Rectangle())
-                                    }.buttonStyle(.plain).disabled(!model.isCurrent)
-                                        .accessibilityIdentifier("notice-\(notice.id)")
-                                        .accessibilityHint("查看这条事项；仅确认这一条已读")
-                                    if model.selectedNotice?.id == notice.id, let shown = model.selectedNotice {
-                                        Text(shown.detail.flatMap { $0.isEmpty ? nil : $0 } ?? "这条事项没有附加说明。")
-                                            .font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                                            .accessibilityIdentifier("notice-content-\(notice.id)")
-                                            .onScrollVisibilityChange(threshold: 0.01) { visible in model.noticePresented(shown.id, visible: visible) }
-                                    }
-                                }
+                        if let notice = work.currentNotice {
+                            SettingsCard(title: notice.kind.title) {
+                                Text(notice.detail ?? work.statusText).font(.callout).lineSpacing(3).lineLimit(4)
+                                Button("查看完整内容", systemImage: "arrow.up.right") { model.viewReason(work) }.disabled(!model.isCurrent)
                             }
                         }
+                        if work.terminalOpen { Text("已在终端打开").foregroundStyle(.secondary) }
                         if let members = work.members, !members.isEmpty {
                             DisclosureGroup("协作成员（\(members.count)）", isExpanded: $membersExpanded) {
                                 VStack(alignment: .leading, spacing: 12) {
@@ -309,7 +309,9 @@ private struct WorkDetail: View {
 private extension NoticeKind {
     var title: String { switch self { case .done: "结果可查看"; case .failed: "工作遇到问题"; case .needsYou: "答复事项" } }
 }
-private extension RunState {
+extension RunState {
+    var symbol: String { switch self { case .running: "arrow.trianglehead.2.clockwise.rotate.90"; case .waiting: "hand.raised"; case .stopping: "pause"; case .stopped: "stop"; case .idle: "checkmark"; case .unknown: "exclamationmark" } }
+    var color: Color { switch self { case .waiting: MagicStyle.accent; case .running: .blue; case .idle: .green; case .unknown: .orange; case .stopped, .stopping: .secondary } }
     var title: String { switch self { case .running: "正在执行"; case .waiting: "等待你的答复"; case .stopping: "正在停止"; case .stopped: "已停止"; case .idle: "当前空闲"; case .unknown: "状态待确认" } }
     var mark: String { switch self { case .running: "●"; case .waiting: "◊"; case .stopping: "●"; case .stopped, .idle: "○"; case .unknown: "■" } }
 }
@@ -323,41 +325,6 @@ struct TerminalStatus: View {
                 if let command = terminal.fallbackCommand { Button("复制命令") { terminal.copy(command) }.font(.caption) }
             }
         }
-    }
-}
-
-struct NoticeWindow: View {
-    @ObservedObject var model: AppModel
-    var body: some View {
-        if model.selected != nil {
-            StatusPanel(model: model)
-        } else { routes }
-    }
-    private var routes: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("通知事项").font(.title2)
-            Text("选择一项，查看工作详情和接回命令").font(.subheadline).foregroundStyle(.secondary)
-            if let message = model.actionMessage { Text(message).textSelection(.enabled) }
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(Array(model.notificationRoutes.enumerated()), id: \.offset) { _, route in
-                        let work = model.works.first { $0.session == route.session }
-                        Button { model.openNotification(route) } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(work?.title ?? "查看这条通知的工作").fontWeight(.medium).lineLimit(2)
-                                    Text(work?.statusText ?? "打开后核对实际状态").font(.caption).foregroundStyle(.secondary)
-                                    if let path = work?.workspace.first {
-                                        Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
-                                    }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                                Image(systemName: "chevron.right").foregroundStyle(.secondary)
-                            }.padding(12).contentShape(Rectangle())
-                        }.buttonStyle(.plain).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-            }
-        }.padding(20).frame(minWidth: 380, minHeight: 200).background(.background)
     }
 }
 

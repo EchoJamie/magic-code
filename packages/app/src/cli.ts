@@ -225,7 +225,11 @@ async function offlineCheck(args: Args): Promise<number> {
   console.log(`  供应商表　${providers.length} 条——${providers.join(' · ')} · 当前走 ${current}`)
   console.log(`  权限规则　${rules.rules.length} 条 · 被拒 ${rules.rejected.length} 条`)
   for (const problem of rules.rejected) console.log(`             第 ${problem.index + 1} 条：${problem.reason}`)
-  if (args.session !== undefined) console.log(`  会话请求　${args.session}（离线检查不连接或校验会话）`)
+  if (args.session !== undefined) {
+    const { readSessionSummary } = await import('@magic/records')
+    const session = readSessionSummary(magic.base, args.session)
+    console.log(`  会话请求　${args.session}（${session === undefined ? '未找到保存记录' : session.archived ? '已归档；需明确恢复后才能接回' : '普通；只读检查未接回'}）`)
+  }
   const projectRules = (await createProjectRules({ workspace, sources: loaded.config.rules?.sources ?? [], linkSources: loaded.config.rules?.linkSources ?? [] }).load([]))
   console.log(`  项目规约　${describeProjectRules(projectRules)}`)
   const grants = readGrantView(magic, workspace)
@@ -471,7 +475,7 @@ async function runTerminal(args: Args): Promise<number> {
     const { connectApp } = await import('./run/spawn-manager.ts')
     const connection = terminalConnection(client, async (session) => {
       const reopened = await connectApp({ intent: 'observe', expectedInstance: { base: magic.base }, connect: {
-        cwd: process.cwd(), label: 'terminal',
+        cwd: process.cwd(), label: 'terminal', reattach: true,
         ...(session === undefined ? {} : { session }),
         ...(args.switch === undefined ? {} : { switch: args.switch }),
         ...(args.allowAll === true ? { allowAll: true } : {}),

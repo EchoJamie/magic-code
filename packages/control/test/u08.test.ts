@@ -97,6 +97,8 @@ export function commandSubjectOf(command: Command): string {
     case 'session.list':
     case 'session.new':
     case 'session.open':
+    case 'session.archive':
+    case 'session.restore':
     case 'session.rename':
       // U16 会话四支
       return `会话命令：${command.type}`
@@ -161,6 +163,10 @@ export function commandSubjectOf(command: Command): string {
       return '新会话'
     case 'session.open':
       return `开会话：${command.session}`
+    case 'session.archive':
+      return `归档会话：${command.session}`
+    case 'session.restore':
+      return `恢复会话：${command.session}`
     case 'session.rename':
       return `改会话名：${command.session} → ${command.title}`
   }
@@ -497,6 +503,8 @@ describe('命令进——外壳 → 内核', () => {
     shell.send({ type: 'session.new' })
     shell.send({ type: 'session.open', session: 's-beta' })
     shell.send({ type: 'session.rename', session: 's-beta', title: '换了个名字' })
+    shell.send({ type: 'session.archive', session: 's-beta' })
+    shell.send({ type: 'session.restore', session: 's-beta' })
 
     // 一字不改地到达——控制域**不做翻译**（同 `remember` 与 `model.switch` 的姿势）
     expect(seen).toEqual([
@@ -504,6 +512,8 @@ describe('命令进——外壳 → 内核', () => {
       { type: 'session.new' },
       { type: 'session.open', session: 's-beta' },
       { type: 'session.rename', session: 's-beta', title: '换了个名字' },
+      { type: 'session.archive', session: 's-beta' },
+      { type: 'session.restore', session: 's-beta' },
     ])
   })
 

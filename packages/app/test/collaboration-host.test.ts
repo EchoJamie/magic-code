@@ -50,10 +50,10 @@ test('真实原生协作投影：入口释放仍一工作一行，成员审批�
     await f.wait('成员真实审批', () => f.events.some(event => event.kind === 'tool.decision.request' && event.data.name === 'exec'))
     const approval = f.events.find(event => event.kind === 'tool.decision.request' && event.data.name === 'exec')!
     native.send({ t: 'native.refresh' })
-    await f.wait('成员审批在原工作待答', () => works()[0]?.notices.some(notice => notice.kind === 'needs-you' && notice.fact === String(approval.id)) === true)
+    await f.wait('成员审批在原工作待答', () => works()[0]?.currentNotice?.kind === 'needs-you' && works()[0]?.currentNotice?.fact === String(approval.id))
     expect(works()).toHaveLength(1)
     expect(works()[0]).toMatchObject({ session: origin, state: 'waiting', affected: true })
-    const notice = works()[0]!.notices.find(notice => notice.fact === String(approval.id))!
+    const notice = works()[0]!.currentNotice!
     expect(notice.session).toBe(origin)
     expect(notice.detail).toContain(f.member()!.name)
     expect(works()[0]!.gen).not.toBe(oldGen)

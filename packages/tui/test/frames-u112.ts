@@ -111,7 +111,7 @@ async function saveScreen(out: string, name: string, view: ShellView): Promise<v
 
 /** 一屏的底子：会话已开、这一轮在跑、答复已经吐了一句。 */
 const ENOUGH: readonly KernelEvent[] = [
-  event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '改时区' }] }),
+  event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '改时区' }] }),
   event('turn.start', {}, { id: 40 }),
   event('model.delta', { channel: 'text', text: '我先看一眼这个文件。' }, { id: 41 }),
 ]

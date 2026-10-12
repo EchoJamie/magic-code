@@ -600,3 +600,10 @@ export function storedRunOf(record: RunRecord): StoredRun | undefined {
     ...(record.owned.length === 0 ? {} : { owned: record.owned }),
   }
 }
+
+/** 归档只看实际执行与资源责任；已结束代的历史裁决不阻塞整理。 */
+export function canArchiveRun(run: RunRecord): boolean {
+  if (run.reclaimPending || run.reclaimNote !== undefined || run.owned.length > 0) return false
+  if (run.ended !== undefined) return !blocksNewRun(run.state)
+  return run.ready && run.connected && !run.stopping && !run.busy && !run.turnActive && run.background === 0 && run.decisions.size === 0 && !blocksNewRun(run.state)
+}

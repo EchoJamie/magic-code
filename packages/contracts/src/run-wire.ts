@@ -51,6 +51,7 @@ export type ClientToManager =
        * ——界面一起来就该落在那条会话上（开屏、读历史、恢复都在它上面）。晚一步说，
        * 那几件都得先问一句「我到哪条会话上」，多一次往返还多一个中间态。
        */
+      readonly reattach?: boolean
       readonly session?: string
       /**
        * **开局的换模型请求**（`--model`）。

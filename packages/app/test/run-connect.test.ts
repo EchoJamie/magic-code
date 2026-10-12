@@ -134,7 +134,7 @@ for (const canonicalHome of [false, true]) for (const how of ['shutdown', 'signa
         const projection = await projectionOf(host.discovery)
         const work = projection.works.find(work => work.session === before.sessions[0]!.id)
         checkpoints.push({ phase: action, oldHost: oldHost.discovery, newHost: host.discovery, executorStarts: host.executorStarts(), database: after, projection })
-        expect(work?.terminalNoticeIds?.length).toBeGreaterThan(0)
+        expect(work?.terminalOpen).toBe(true)
       }
       // 历史中的断线记录可以保留；输入区的当前提示不能仍声称连接已断开。
       expect(staleDisconnectFlashes).toEqual([])

@@ -18,14 +18,16 @@
           "since": 1790400000000,
           "gen": 3,
           "affected": true,
-          "notices": [],
           "members": [
             {
               "session": "member",
               "name": 4,
               "state": "idle"
             }
-          ]
+          ],
+          "archived": false,
+          "canArchive": false,
+          "terminalOpen": false
         }
       ]
     }

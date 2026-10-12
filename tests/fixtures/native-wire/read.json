@@ -5,6 +5,7 @@
     "t": "native.read",
     "ids": [
       "notice-one"
-    ]
+    ],
+    "serviceInstance": "service-one"
   }
 }

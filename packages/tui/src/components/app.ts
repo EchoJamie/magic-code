@@ -607,6 +607,8 @@ function dockContentOf(view: ShellView, columns: number, rows: number): readonly
     ]
   }
 
+  if (view.archived) return [h(Text, { key: 'archived', color: PALETTE.warn }, clip('已归档 · Ctrl+G 恢复／查看原草稿 · /resume 切换会话 · Ctrl+O 查看记录', columns)), ...flash]
+
   return [
     ...(view.completion === null
       ? []
@@ -715,6 +717,7 @@ function dockContentHeightOf(view: ShellView, columns: number, rows: number): nu
   // ⚠️ **待确认的那一行不在这一笔账里**（U68）：它画在**状态行之下**，已不属交互区
   //    ——它的那一行归 `chromeHeightOf`（那才是「活动区之外的全部固定行」那一笔）。
   const completing = completionLines(view)
+  if (view.archived && view.dock.kind === 'input') return 1 + flash
 
   if (view.dock.kind === 'decision') {
     return decisionLayout(view.dock.pending, columns, rows).lines.length + flash
@@ -1037,7 +1040,9 @@ export function TuiApp({ shell }: TuiAppProps) {
               rows: reader === undefined ? [...latest.settled, ...latest.rows] : latest.dock.kind === 'picker' ? latest.dock.picker.reader?.rows ?? reader.rows : reader.rows,
               columns: stdout.columns ?? columns,
               screenRows: stdout.rows ?? rows,
-              pending: latest.pendingDecision,
+              pending: latest.archived ? undefined : latest.pendingDecision,
+              title: reader === undefined ? latest.status.session ?? '当前工作' : latest.dock.kind === 'picker' ? latest.dock.picker.reader?.title : reader.title,
+              notice: latest.flash ?? undefined,
             }
           },
           subscribe: shell.subscribe,
@@ -1045,6 +1050,7 @@ export function TuiApp({ shell }: TuiAppProps) {
           decide: () => { shell.key({kind:'tab'}) },
           startTop: top,
           title: reader?.title ?? shell.getView().status.session ?? '当前工作',
+          retry: reader?.key.startsWith('session:') ? () => { shell.key({ kind: 'enter' }) } : undefined,
           memberAction: reader?.key.endsWith(':records') === true ? (kind, top) => { action = true; shell.key({kind:'readerTop',top}); shell.key({kind:kind === 'input' ? 'memberInput' : 'memberMenu'}) } : undefined,
           // **加入本次输入**（U110）——放回稿子是外壳的事（编号、引用表、插入点都在它手上）；
           // 那一屏自己就此退出（`screen.ts` 那一支），回来就是接着打字
@@ -1174,6 +1180,7 @@ export function toShellKeys(
   if (key.ctrl === true && input === 'p') return [{ kind: 'ctrl+p' }]
   if (key.ctrl === true && input === 'n') return [{ kind: 'ctrl+n' }]
   if (key.ctrl === true && input === 'c') return [{ kind: 'ctrl+c' }]
+  if (key.ctrl === true && input === 'g') return [{ kind: 'ctrl+g' }]
   if (key.ctrl === true && input === 'o') return [{ kind: 'ctrl+o' }]
   if (key.ctrl === true && input === 'r') return [{ kind: 'ctrl+r' }]
   // `Ctrl T`——收起/展开当前清单（U34）。两条来路同形：裸控制码 `\x14`（Ink 解成
@@ -1195,7 +1202,7 @@ export function toShellKeys(
   //    故这一对必须在它**之前**认下来（早先正是漏在这儿：屏上按下去什么都不发生）。
   if (key.ctrl === true && input === 'a') return [{ kind: 'lineStart' }]
   if (key.ctrl === true && input === 'e') return [{ kind: 'lineEnd' }]
-  if (key.tab === true) return [{ kind: 'tab' }]
+  if (key.tab === true) return [{ kind: key.shift === true ? 'shift+tab' : 'tab' }]
 
   // **`shift+回车` ＝ 换行**（原型 · 键盘）。两条来路都要认（这就是「两条来路」那件事）：
   // ① **kitty 键盘协议**（`run.ts` 开了）——终端把它报成独立的 `CSI 13;2u`，

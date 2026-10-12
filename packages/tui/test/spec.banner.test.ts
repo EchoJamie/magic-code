@@ -72,7 +72,7 @@ describe('④ 记录区最前面 · 启动印一次', () => {
 
   test('**印一次**——一整趟跑下来，记录区里只有一行字标', () => {
     const stage = createStage()
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
     stage.type('跑一下')
     stage.press({ kind: 'enter' })
     stage.feed([
@@ -91,7 +91,7 @@ describe('④ 记录区最前面 · 启动印一次', () => {
 
   test('**内联随内容滚动**——内容一多，字标滚进 scrollback，不再占着窗口', async () => {
     const stage = createStage()
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '长会话' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '长会话' }] })])
     const entries: Entry[] = Array.from({ length: 40 }, (_unused, index) => ({
       id: index + 1,
       kind: 'user' as const,
@@ -115,7 +115,7 @@ describe('④ 记录区最前面 · 启动印一次', () => {
 describe('⑤ 接续（重建）之后仍在最前面', () => {
   test('`session.history` 收齐 ⇒ `rebuild` 换掉整个记录区——**字标要回来**', () => {
     const stage = createStage()
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
 
     const entries: Entry[] = [
       { id: 1, kind: 'user', content: { text: '看看有什么' }, at: 0 },
@@ -141,9 +141,9 @@ describe('⑤ 接续（重建）之后仍在最前面', () => {
     //    单帧取景只看得到「这一页里有没有字标」——那正是本单要它没有的那一件
     //    （`describe('④')` 里「内联随内容滚动」那条同此：时机类的话只在帧序里现形）
     const views: ShellView[] = [stage.shell.getView()]
-    stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] })])
+    stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] })])
     views.push(stage.shell.getView())
-    stage.feed([event('session.state', { active: 's2', sessions: [{ id: 's2', at: 0, title: '乙' }] })])
+    stage.feed([event('session.state', { active: 's2', sessions: [{ archived: false, id: 's2', at: 0, title: '乙' }] })])
     views.push(stage.shell.getView())
 
     const view = stage.shell.getView()

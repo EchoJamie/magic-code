@@ -23,6 +23,7 @@ describe('公开面', () => {
       'createPlanReader',
       'readSessionCatalog',
       'readSessionDisplayHistory',
+      'summarize',
     ])
   })
 
@@ -51,7 +52,6 @@ describe('公开面', () => {
       'agentLoop', // 主循环
       'pairingKeyOf',
       'DEFAULT_CONTEXT_POLICY',
-      'summarize', // 标题的裁法（域内件——默认标题与改名共用一套，不对外承诺措辞）
       'TITLE_LIMIT',
       // U34：计划那几件里**只有读面出去**（`createPlanReader`）——窗口算术、材料拼装、
       // 计划字段的收窄都是域内件，域外要的是「读得到」，不是「怎么读的」

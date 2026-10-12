@@ -3,12 +3,12 @@ import Foundation
 enum WorkGroup: Int, CaseIterable, Identifiable {
     case needsYou, uncertain, running, recent
     var id: Int { rawValue }
-    var title: String { ["需要你", "异常 / 状态待确认", "进行中", "最近工作"][rawValue] }
+    var title: String { ["需要你", "异常 / 状态待确认", "进行中", "待确认 / 已打开"][rawValue] }
     static func of(_ work: NativeWork) -> WorkGroup {
         if work.state == .waiting { return .needsYou }
         if work.state == .unknown { return .uncertain }
         if work.affected || work.state == .running || work.state == .stopping { return .running }
-        if work.notices.contains(where: { $0.kind == .failed && $0.unread }) { return .uncertain }
+        if work.currentNotice?.kind == .failed { return .uncertain }
         return .recent
     }
 }
@@ -39,6 +39,6 @@ struct WorkList {
     func rows(_ group: WorkGroup, works: [NativeWork]) -> [NativeWork] {
         let byID = Dictionary(works.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let rows = order.compactMap { id in groups[id] == group ? byID[id] : nil }
-        return group == .recent ? Array(rows.prefix(10)) : rows
+        return rows
     }
 }

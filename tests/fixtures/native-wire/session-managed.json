@@ -1,0 +1,24 @@
+{
+  "family": "NativeResponse",
+  "valid": true,
+  "message": {
+    "t": "native.session.managed",
+    "request": "archive",
+    "serviceInstance": "service-one",
+    "results": [
+      {
+        "session": "s1",
+        "action": "archive",
+        "ok": true,
+        "archived": true
+      },
+      {
+        "session": "s2",
+        "action": "rename",
+        "title": "新标题",
+        "ok": false,
+        "error": "工作状态已改变"
+      }
+    ]
+  }
+}

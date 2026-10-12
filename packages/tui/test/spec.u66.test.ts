@@ -33,7 +33,7 @@ const WIDE = { columns: 200, rows: 40 } as const
 /** 起一个壳（带会话标题——多数用例的底子，同 `spec.u20` 的 `live`）。 */
 function live(): Stage {
   const stage = createStage()
-  stage.feed([event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '时区修正' }] })])
+  stage.feed([event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '时区修正' }] })])
 
   return stage
 }

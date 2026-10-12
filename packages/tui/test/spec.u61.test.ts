@@ -445,7 +445,7 @@ describe('⑤ 一级的选择器：`←` 就是收起', () => {
     stage.type('/resume ')
     stage.press(ENTER)
     stage.feed([
-      event('session.state', { active: 's1', sessions: [{ id: 's1', at: 0, title: '甲' }] }),
+      event('session.state', { active: 's1', sessions: [{ archived: false, id: 's1', at: 0, title: '甲' }] }),
     ])
 
     expect(pickerOf(stage)?.source).toBe('session')

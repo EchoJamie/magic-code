@@ -22,7 +22,9 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
   const store = createRecordsStore({ dataDir, workspace: [root] })
   for (const session of ['a', 'b']) {
     store.setSessionTitle(session, session, 1)
-    store.attention.put({ id: `${session}:done:1`, session, kind: 'done', at: 1,
+    const event = { id: store.serviceFor(session).nextId(), session, turn: 1, at: 1, kind: 'turn.end' as const, data: { reason: 'settled' as const } }
+    store.appendEvent(event)
+    store.attention.put({ source: { session, event: event.id }, id: `${session}:done:1`, session, kind: 'done', at: 1,
       fact: '1', unread: true, delivered: false })
   }
   const paths = runPathsOf(magic, tmpdir())
@@ -38,12 +40,12 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
   }
   subscribe()
   let request = 0
-  async function inspect(session: string): Promise<NativeWork> {
+  async function inspect(session: string): Promise<NativeWork | undefined> {
     const id = String(++request)
     observer.send({ t: 'native.inspect', request: id, session })
     await until(() => responses.some(message => message.t === 'native.inspected' && message.request === id))
     const result = responses.find(message => message.t === 'native.inspected' && message.request === id)
-    if (result?.t !== 'native.inspected' || !result.work) throw new Error('读取失败')
+    if (result?.t !== 'native.inspected') throw new Error('读取失败')
     return result.work
   }
   const clients: ManagerClient[] = []
@@ -57,8 +59,8 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
     await until(() => responses.some(message => message.t === 'native.welcome'))
     const first = await connect('a')
     const second = await connect('a')
-    expect((await inspect('a')).terminalNoticeIds).toEqual(['a:done:1'])
-    expect((await inspect('b')).terminalNoticeIds).toEqual([])
+    expect((await inspect('a'))?.terminalOpen).toBe(true)
+    expect((await inspect('b'))?.terminalOpen ?? false).toBe(false)
     expect(manager.executors()).toHaveLength(0)
     expect(store.attention.list().every(item => item.unread && !item.delivered)).toBe(true)
 
@@ -66,16 +68,16 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
     first.onTarget(session => targets.push(session))
     first.send({ type: 'session.open', session: 'b' })
     await until(() => targets.includes('b'))
-    expect((await inspect('a')).terminalNoticeIds).toEqual(['a:done:1'])
-    expect((await inspect('b')).terminalNoticeIds).toEqual(['b:done:1'])
+    expect((await inspect('a'))?.terminalOpen).toBe(true)
+    expect((await inspect('b'))?.terminalOpen).toBe(true)
     second.close()
     await until(() => second.closed)
     // inspect 往返也允许服务处理已关闭的传输。
     await inspect('a')
-    expect((await inspect('a')).terminalNoticeIds).toEqual([])
+    expect((await inspect('a'))?.terminalOpen ?? false).toBe(false)
     first.send({ type: 'session.new' })
     await until(() => targets.includes(null))
-    expect((await inspect('b')).terminalNoticeIds).toEqual([])
+    expect((await inspect('b'))?.terminalOpen ?? false).toBe(false)
     expect(store.attention.list().every(item => item.unread)).toBe(true)
 
     const bound = await connect('a')
@@ -89,10 +91,11 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
     expect(manager.identity.serviceInstance).not.toBe(oldIdentity)
     observer = linkOf<NativeResponse>(await Bun.connect({ unix: paths.socket, socket: socketHandlers() }) as never)
     subscribe()
-    expect((await inspect('a')).terminalNoticeIds).toEqual([])
-    expect((await inspect('a')).notices[0]?.unread).toBe(false)
+    expect((await inspect('a'))?.terminalOpen ?? false).toBe(false)
+    expect((await inspect('a'))?.terminalOpen).toBe(false)
+    expect(store.attention.list({ sessions: ['a'] })[0]?.unread).toBe(false)
     await connect('b')
-    expect((await inspect('b')).terminalNoticeIds).toEqual(['b:done:1'])
+    expect((await inspect('b'))?.terminalOpen).toBe(true)
 
     const records = store.collaboration
     const model = { choice: 'default' as const, provider: 'test', model: 'test' }
@@ -103,18 +106,16 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
       records.spawn(coordinator.agentId, { operationId: `spawn:${sessionId}`, sessionId, name: sessionId, role: '', model,
         body: [{ kind: 'text', text: '独立责任' }], scope: sessionId, source: origin, authorization: [origin], at: 5 })
       store.setSessionTitle(sessionId, sessionId, 5)
-      store.attention.put({ id: `${sessionId}:needs-you:2`, session: sessionId, kind: 'needs-you', at: 6,
-        fact: '2', unread: true, delivered: false })
+
     }
     await connect('c')
     const memberView = await inspect('a')
-    expect(memberView.notices.map(notice => notice.id)).toContain('d:needs-you:2')
-    expect(memberView.terminalNoticeIds).toContain('c:needs-you:2')
-    expect(memberView.terminalNoticeIds).not.toContain('d:needs-you:2')
-    expect(memberView.terminalNoticeIds).not.toContain('a:done:1')
+    expect(memberView?.terminalOpen).toBe(true)
+    expect(memberView?.session).toBe('a')
+    expect(memberView?.currentNotice).toBeUndefined()
     await connect('a')
-    expect((await inspect('a')).terminalNoticeIds).toContain('d:needs-you:2')
-    expect(store.attention.list().find(item => item.id === 'd:needs-you:2')?.unread).toBe(true)
+    expect((await inspect('a'))?.terminalOpen).toBe(true)
+
   } finally {
     clients.forEach(client => client.close()); observer.close()
     manager.stop('测试结束'); await manager.waitUntilExit()

@@ -24,7 +24,7 @@ if (process.argv.includes('--fixture')) {
     },
   }
   const handle = await runTui({ magicBase: '/test/.magic', transport, boot: async () => {
-    emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', title: '修复支付回调', at: 0 }] }))
+    emit(event('session.state', { active: 'origin', sessions: [{ id: 'origin', title: '修复支付回调', at: 0, archived: false }] }))
     emit(event('collaboration.view', collaborationFixture))
   } })
   await handle.waitUntilExit()
