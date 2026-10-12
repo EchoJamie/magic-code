@@ -32,8 +32,8 @@ const ALPHA_KEY = 'sk-alpha-abcdefghijklmnop'
 const BETA_KEY = 'sk-beta-abcdefghijklmnop'
 
 const TWO_PROVIDERS = {
-  alpha: { vendor: 'minimax', baseURL: 'https://alpha.example/v1', apiKey: ALPHA_KEY },
-  beta: { vendor: 'minimax', baseURL: 'https://beta.example/v1', apiKey: BETA_KEY },
+  alpha: { protocol: 'chat-completions' as const, baseURL: 'https://alpha.example/v1', apiKey: ALPHA_KEY },
+  beta: { protocol: 'chat-completions' as const, baseURL: 'https://beta.example/v1', apiKey: BETA_KEY },
 }
 
 type Seen = {
@@ -159,7 +159,7 @@ describe('运行时切换 · 会话中途', () => {
       // **会话中途**——什么都没重建：同一个 assembly、同一个会话、同一张库
       expect(assembly.switchModel({ choice: 'cantrip' })).toEqual({
         ok: true,
-        selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1' },
+        selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
       })
       await handle.submit('我刚才让你记的数是多少')
 
@@ -254,7 +254,7 @@ describe('运行时切换 · 脚本步骤', () => {
       )
 
       expect(handle.switches).toEqual([
-        { request: { choice: 'cantrip' }, selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1' } },
+        { request: { choice: 'cantrip' }, selection: { choice: 'cantrip', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' } },
       ])
       expect(seen.map((request) => request.model)).toEqual(['alpha-1', 'beta-1'])
       expect(startModels(handle.events)).toEqual(['alpha-1', 'beta-1'])
@@ -299,7 +299,7 @@ describe('运行时切换 · 脚本步骤', () => {
         ok: true,
         choice: 'cantrip',
         provider: 'beta',
-        model: 'beta-1',
+        model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1',
       })
       expect(handle.switches).toHaveLength(1) // 驱动侧那份自记仍在（两处记的不是一件事）
 
@@ -411,7 +411,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
         ok: true,
         choice: 'cantrip',
         provider: 'beta',
-        model: 'beta-1',
+        model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1',
       })
       // **不借 `error` 兜底**（那条的语义留给「内核自身异常」）
       expect(events.map((event) => event.kind)).not.toContain('error')
@@ -446,7 +446,7 @@ describe('运行时切换 · 命令面（补锚：结果即事件）', () => {
       expect(events.map((event) => event.kind)).not.toContain('error')
 
       // 没成 ＝ 原选原样保留（切不动就不动）：注册表仍指 alpha
-      expect(assembly.models?.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
+      expect(assembly.models?.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
     } finally {
       land.dispose()
     }

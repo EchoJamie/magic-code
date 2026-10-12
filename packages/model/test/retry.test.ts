@@ -30,7 +30,8 @@ import { retryAfterMsOf, withTransientRetry } from '../src/retry.ts'
 
 type Part = TextStreamPart<ToolSet>
 
-const CONFIG = { baseURL: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' } as const
+const CONFIG = {
+  protocol: 'chat-completions', baseURL: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' } as const
 
 /** 每次尝试的延迟记账——注入 `sleep` 用（测试不真等）。 */
 function recorder(): { readonly delays: number[]; readonly sleep: Sleeper } {

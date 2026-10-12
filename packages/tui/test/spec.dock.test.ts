@@ -110,7 +110,7 @@ describe('状态行 · 栏位固定', () => {
           { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } },  },
           { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, },
         ],
-        current: { choice: 'default' as const, provider: 'minimax', model: 'deepseek-reasoner' },
+        current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'deepseek-reasoner' },
         currentInputBudget: 200_000,
       }),
     ])
@@ -126,7 +126,7 @@ describe('状态行 · 栏位固定', () => {
     stage.feed([
       event('model.catalog', {
         entries: [{ provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, }],
-        current: { choice: 'default' as const, provider: 'local', model: 'qwen3' },
+        current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'local', model: 'qwen3' },
       }),
     ])
 

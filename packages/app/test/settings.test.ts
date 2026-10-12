@@ -29,9 +29,9 @@ test('七类设置的实际配置消费：连接/映射/材料/角色/根/权限
   const g = setup()
   writeFileSync(g.config, JSON.stringify({ dataDir: g.dataDir, untouched: { keep: 1 } }))
   await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek', apiKey: 'SENTINEL_PROVIDER_KEY' })
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-chat', initialize: true })
-  await g.apply({ type: 'model.configure', choice: 'arcane', provider: 'ds', model: 'deepseek-reasoner' })
-  await g.apply({ type: 'model.override', provider: 'ds', model: 'deepseek-chat', override: { limits: { maxContextTokens: 256000 }, capabilities: { image: false } } })
+  await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro', initialize: true })
+  await g.apply({ type: 'model.configure', choice: 'arcane', provider: 'ds', model: 'deepseek-flash' })
+  await g.apply({ type: 'model.override', provider: 'ds', model: 'deepseek-v4-pro', override: { limits: { maxContextTokens: 256000 }, capabilities: { image: false } } })
   await g.apply({ type: 'role.save', id: 'reviewer', role: { name: '审查者', instructions: '只读审查', tools: [], model: { choice: 'arcane', reasoning: { mode: 'default' } } } })
   await g.apply({ type: 'sources.set', source: 'rules.sources', paths: [join(g.workspace, 'team.md')] })
   await g.apply({ type: 'sources.set', source: 'rules.linkSources', paths: [g.workspace] })
@@ -41,9 +41,9 @@ test('七类设置的实际配置消费：连接/映射/材料/角色/根/权限
   await g.apply({ type: 'permissions.set', rules: [{ tool: 'read', path: '**/*.md', op: 'read' }] })
   await g.apply({ type: 'prefs.set', statusLine: { cells: ['workspace', 'model', 'reasoning', 'context', 'session'], color: false }, reducedMotion: true })
   const loaded = loadConfig({ magic: g.context.magic }), config = loaded.config
-  expect(config.models?.default?.model).toBe('deepseek-chat'); expect(config.models?.spell?.model).toBe('deepseek-chat'); expect(config.models?.arcane?.model).toBe('deepseek-reasoner')
+  expect(config.models?.default?.model).toBe('deepseek-v4-pro'); expect(config.models?.spell?.model).toBe('deepseek-v4-pro'); expect(config.models?.arcane?.model).toBe('deepseek-flash')
   const picked = resolveModelChoice({ providers: config.providers, configuredModels: config.models, config: config.agentRoles?.reviewer?.model })
-  expect(picked.ok && picked.selection.model).toBe('deepseek-reasoner')
+  expect(picked.ok && picked.selection.model).toBe('deepseek-flash')
   expect(config.agentRoles?.reviewer?.tools).toEqual([])
   const workspace = createWorkspaceService({ roots: config.workspaceRoots! })
   expect(workspace.defaultRoot()).toBe(g.workspace)
@@ -97,7 +97,7 @@ test('无效字段与数据责任拒写；角色工具缺省/空列表、清除�
   expect(readFileSync(g.config, 'utf8')).toBe(before)
   expect('canChangeData' in await g.settings.read()).toBe(false)
   expect(readFileSync(g.config, 'utf8')).toBe(before)
-  await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' }); await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-chat' })
+  await g.apply({ type: 'provider.save', provider: 'ds', vendor: 'deepseek' }); await g.apply({ type: 'model.configure', choice: 'default', provider: 'ds', model: 'deepseek-v4-pro' })
   await expect(g.apply({ type: 'provider.remove', provider: 'ds' })).rejects.toThrow('引用')
   await g.apply({ type: 'role.save', id: 'a', role: { name: '角色', instructions: '只读', tools: [] } })
   expect(loadConfig({ magic: g.context.magic }).config.agentRoles?.a?.tools).toEqual([])
@@ -122,15 +122,15 @@ test('授权撤销比较真实文件身份，重读后撤销且回读同一事�
 
 test('显式刷新真实本地列表，保存映射与偏好后仍能读取缓存；无自动外连', async () => {
   const g = setup(); let requests = 0
-  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() { requests++; return Response.json({ data: [{ id: 'deepseek-chat' }, { id: 'deepseek-reasoner' }] }) } })
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() { requests++; return Response.json({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-flash' }] }) } })
   cleanups.push(() => server.stop(true))
   await g.apply({ type: 'provider.save', provider: 'local', vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'SENTINEL_REFRESH' })
   await g.settings.read(); expect(requests).toBe(0)
   await g.apply({ type: 'model.refresh', provider: 'local' }); expect(requests).toBe(1)
-  expect(JSON.stringify(await g.settings.read())).toContain('deepseek-chat')
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model: 'deepseek-chat' })
+  expect(JSON.stringify(await g.settings.read())).toContain('deepseek-v4-pro')
+  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model: 'deepseek-v4-pro' })
   await g.apply({ type: 'prefs.set', reducedMotion: true })
-  const after = await g.settings.read(); expect(JSON.stringify(after.catalog)).toContain('deepseek-chat'); expect(JSON.stringify(after)).not.toContain('SENTINEL_REFRESH'); expect(requests).toBe(1)
+  const after = await g.settings.read(); expect(JSON.stringify(after.catalog)).toContain('deepseek-v4-pro'); expect(JSON.stringify(after)).not.toContain('SENTINEL_REFRESH'); expect(requests).toBe(1)
 })
 
 

@@ -267,10 +267,11 @@ describe('之二 · 两条分隔线划开哪两块（U59 挪正下沿那条）',
       event('provider.catalog', { entries: [{ provider: 'personal', name: '个人号' }], vendors: [] }),
     ])
     stage.press(ENTER) // 进这条连接
-    stage.press(ENTER) // 第一行＝改名
+    stage.press(ENTER) // 编辑连接
+    stage.press(ENTER) // 名称
 
     expect(stage.shell.getView().dock.kind).toBe('prompt') // 防空转：真到了小输入那一屏
-    三块分得开(await stage.screen(WIDE), '本地小输入', '新名字')
+    三块分得开(await stage.screen(WIDE), '本地小输入', '名称')
   })
 
   test('**两条之外不多线**：记录区里没有、那两条之外也没有', async () => {

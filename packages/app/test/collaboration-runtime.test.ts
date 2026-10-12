@@ -13,7 +13,7 @@ function fixture() {
   const store = createRecordsStore({ dataDir: dir, workspace: [dir] })
   const records = store.collaboration
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '同一件工作' }, at: 1 }) }
-  const model = { choice: 'default' as const, provider: 'controlled', model: 'test' }
+  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'controlled', model: 'test' }
   const coordinator = records.registerAgent({ operationId: 'identity', sessionId: 'origin', name: '入口', role: '', model, at: 2 })
   const collaboration = records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
   return { dir, store, records, coordinator, collaboration,

@@ -75,7 +75,7 @@ test('两个真实终端共享 Engine；网络、工具与 MCP 环境隔离，�
     ] }))
   }
   const config = JSON.parse(readFileSync(sandbox.configPath, 'utf8'))
-  config.providers.local = { vendor: 'minimax', baseURL: 'http://work.test/v1' }
+  config.providers.local = { protocol: 'chat-completions', baseURL: 'http://work.test/v1' }
   config.mcp = { servers: { local: { command: 'mcp-probe' }, remote: { url: 'http://work.test/mcp' } } }
   writeFileSync(sandbox.configPath, JSON.stringify(config))
   const host = await startResidentHost({ ...sandbox, env: { ...sandbox.env, MAGIC_LOCAL_API_KEY: 'engine', WORK_MARK: 'engine', NODE_EXTRA_CA_CERTS: cert, http_proxy: 'http://127.0.0.1:1', no_proxy: '' } })

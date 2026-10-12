@@ -125,7 +125,7 @@ export function createSandbox(options: SandboxOptions = {}): Sandbox {
             local: {
               baseURL: options.baseURL ?? DEAD_BASE_URL,
               apiKey: FAKE_API_KEY,
-              vendor: 'minimax',
+              vendor: 'minimax', protocol: 'chat-completions',
             },
           },
           // 数据目录**写绝对路径**（不写 `~`）：这块沙地里的路径一眼看得出落在哪儿

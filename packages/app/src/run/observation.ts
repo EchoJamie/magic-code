@@ -11,7 +11,7 @@ import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
 import { createGrantLedger } from '@magic/permission'
 import type { ModelInfoService } from '@magic/model'
-import { createModelInfoService, modelSpecOf, resolveConnection, vendorCatalog } from '@magic/model'
+import { createModelInfoService, effectiveReasoningSupportOf, modelSpecOf, resolveConnection, vendorCatalog } from '@magic/model'
 import type { RecordsStore } from '@magic/records'
 import { cacheAccessFor } from '../cache-access.ts'
 import { resolveModelChoice } from '../agent-models.ts'
@@ -30,6 +30,7 @@ export function workspaceOf(loaded: LoadedConfig, cwd: string): WorkspaceService
 /** assembly 与观察面共用投影；调用者提供真实内存读数或纯缓存读数。 */
 export type ModelCatalogReader = {
   readonly providers: Readonly<Record<string, ProviderConfig>>
+  readonly configuredModels?: MagicConfig['models']
   readonly entries: readonly { readonly id: string; readonly model?: string }[]
   readonly current?: ModelSelectionRef
   readonly read: (provider: string) => ModelInfoRead
@@ -41,15 +42,31 @@ export function modelCatalogRows(reader: ModelCatalogReader): readonly ModelCata
   return reader.entries.map((entry) => {
     const config = reader.providers[entry.id]
     const fromEnv = (reader.env ?? process.env)[apiKeyEnvVarOf(entry.id)]
-    const keySource = config?.apiKey?.trim() ? 'config' : fromEnv?.trim() ? 'env' : undefined
+    const keySource = config?.auth === 'none' ? 'none' : config?.apiKey?.trim() ? 'config' : fromEnv?.trim() ? 'env' : undefined
     const budget = entry.model === undefined ? undefined : reader.inputBudget(entry.id, entry.model)
     const cache = reader.read(entry.id)
+    const modelIds = new Set([
+      ...(cache.snapshot?.models.map(model => model.id) ?? []), ...Object.keys(config?.modelOverrides ?? {}),
+      ...Object.values(reader.configuredModels ?? {}).filter(mapping => mapping.provider === entry.id).map(mapping => mapping.model),
+      ...(reader.current?.provider === entry.id ? [reader.current.model] : []),
+    ])
+    const effectiveReasoning = Object.fromEntries([...modelIds].flatMap(model => {
+      if (config === undefined) return []
+      const effective = reader.current?.provider === entry.id && reader.current.model === model
+        ? { ...config, protocol: reader.current.protocol } : config
+      const support = effectiveReasoningSupportOf(effective, model, cache.snapshot?.models.find(info => info.id === model))
+      return support === undefined ? [] : [[model, support]]
+    }))
     return {
       provider: entry.id,
+      ...(Object.keys(effectiveReasoning).length === 0 ? {} : { effectiveReasoning }),
       ...(config?.name === undefined ? {} : { name: config.name }),
       ...(config?.vendor === undefined ? {} : { vendor: config.vendor }),
       ...(config?.region === undefined ? {} : { region: config.region }),
       ...(config?.baseURL === undefined ? {} : { baseURL: config.baseURL }),
+      ...(config?.protocol === undefined ? {} : { protocol: config.protocol }),
+      ...(config?.auth === undefined ? {} : { auth: config.auth }),
+      ...(config?.modelOverrides === undefined ? {} : { modelOverrides: config.modelOverrides }),
       ...(entry.model === undefined ? {} : { model: entry.model }),
       ...(keySource === undefined ? {} : { keySource }),
       ...(budget === undefined ? {} : { contextWindow: budget }),
@@ -170,12 +187,13 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
     cache: createFileModelInfoCache(magic.base), now, fetch: globalThis.fetch,
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
-  const picked = resolveModelChoice({ providers, configuredModels: loaded.config.models, defaults: selection,
+  const picked = request === undefined && selection !== undefined ? { ok: true as const, selection } : resolveModelChoice({ providers, configuredModels: loaded.config.models, defaults: selection,
     config: request, modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model) })
   if (request !== undefined && !picked.ok) throw new Error(picked.reason)
   const current = picked.ok ? picked.selection : undefined
   return {
     providers,
+    configuredModels: loaded.config.models,
     entries: Object.keys(providers).map(id => ({ id })),
     ...(current === undefined ? {} : { current }),
     read: (provider) => info.peek(provider),

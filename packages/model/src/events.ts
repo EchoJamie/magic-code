@@ -33,9 +33,11 @@ export function modelCallStart(
   /** **这次调用的有效输入预算**（U41 返修）——与 `model.usage.contextWindow` 同一个数，
    *  只是更早给（见契约 `model.call.start` 的那一位）。缺省＝不知道，不给这一位。 */
   inputBudget?: number,
+  source?: import('@magic/contracts').ModelSource,
 ): KernelEvent {
   return stamper.stamp('model.call.start', {
     model,
+    ...source,
     ...(provider === undefined ? {} : { provider }),
     ...(inputBudget === undefined ? {} : { inputBudget }),
   })

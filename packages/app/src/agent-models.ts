@@ -17,7 +17,7 @@ export function resolveModelChoice(input: {
   readonly config?: ModelSwitchRequest
   readonly modelInfoOf?: ModelRegistryOptions['modelInfoOf']
 }): ModelSwitchResult {
-  let selection = input.defaults
+  let selection: Parameters<typeof selectModel>[1] | undefined = input.defaults
   if (input.newAgent && selection !== undefined) {
     const mapping = input.configuredModels?.[selection.choice]
     selection = mapping === undefined ? undefined : {

@@ -231,9 +231,12 @@ export function isAssistantPayload(payload: unknown): payload is AssistantPayloa
   if (typeof payload['reasoning'] !== 'string') return false
   const state = payload['reasoningState']
   if (state === undefined) return true // 旧记录
-  if (!isRecord(state) || Object.keys(state).some(key => !['provider', 'model', 'details'].includes(key))) return false
+  if (!isRecord(state) || Object.keys(state).some(key => !['provider', 'model', 'protocol', 'endpoint', 'details', 'items'].includes(key))) return false
   return typeof state['provider'] === 'string' && state['provider'].length > 0
     && typeof state['model'] === 'string' && state['model'].length > 0
+    && (state['protocol'] === undefined && state['endpoint'] === undefined
+      || ['responses', 'messages', 'chat-completions'].includes(String(state['protocol'])) && typeof state['endpoint'] === 'string' && state['endpoint'].length > 0)
+    && (state['items'] === undefined || Array.isArray(state['items']) && state['items'].every(isRecord))
     && (state['details'] === undefined || (Array.isArray(state['details']) && state['details'].every(isRecord)))
 }
 

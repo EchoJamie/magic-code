@@ -66,12 +66,10 @@ import type {
   McpToolRejection,
   ModelCacheAccess,
   ModelInfo,
-  ModelConfigureRequest,
   ModelGateway,
   ModelSwitchRequest,
   ProviderConfig,
   PrefsSetRequest,
-  ProviderSaveRequest,
   ProjectRule,
   ProjectRules,
   ProcessLedger,
@@ -152,10 +150,11 @@ import type { ToolDefinition } from '@magic/tools'
 import type { LoadedConfig } from './config.ts'
 import { loadConfig } from './config.ts'
 import { bindModelChoice, resolveModelChoice, validateSelection } from './agent-models.ts'
-import { removeProvider, saveProvider, configureModel, setPrefs } from './config-save.ts'
+import { removeProvider, setPrefs } from './config-save.ts'
+import { createSettings } from './settings.ts'
 import { saveImageFile } from './image-file.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
-import { cacheAccessFor, configStamp as configStampOf, connectionScopeChanged } from './cache-access.ts'
+import { cacheAccessFor, connectionScopeChanged, configStamp as configStampOf } from './cache-access.ts'
 import { createFileModelInfoCache } from './model-cache.ts'
 import { backgroundOutputDirOf, runPathsOf } from './run/paths.ts'
 import { grantsCatalog, grantsTrouble, mcpCatalog, modelCatalog, pathsCatalog, providerCatalog, skillsCatalog, workspaceOf } from './run/observation.ts'
@@ -1151,17 +1150,28 @@ export function assemble(options: AssembleOptions): Assembly {
    * **新文件**算了 ⇒ 拿旧凭据的请求贴上新范围。
    *
    * 判据用**同一份配置指纹**（与接入身份同源）：变了才重读，没变就一次 `statSync` 走人。
-   * 坏配置阻止后续解析；已开始的请求继续使用其快照。仅连接变化重建注册表。
+   * 坏配置阻止后续解析；已有 Agent 保留捕获的连接，明确选模才重新绑定。
    */
-  const syncProviderBook = (): void => {
+  const syncProviderBook = (): Promise<string | undefined> | undefined => {
     const stamp = configStampOf(loaded.path)
     if (stamp === configStamp) return
     const reloaded = loadConfig({ path: loaded.path, magic })
-    const connectionsChanged = JSON.stringify(providerBook) !== JSON.stringify(reloaded.config.providers)
+    const previous = providerBook
     providerBook = reloaded.config.providers
     configuredModels = reloaded.config.models
     configStamp = stamp
-    if (connectionsChanged) rebuildRegistry()
+    // 先发布新快照，避免 drop 读取连接时重入；同步作废在途位，异步收妥缓存文件。
+    const dropped = Object.entries(previous)
+      .filter(([provider, config]) => connectionScopeChanged(config, providerBook[provider]))
+      .map(async ([provider]) => {
+        try { await modelInfo.drop(provider) }
+        catch (error) {
+          const note = `模型缓存未能更新：${error instanceof Error ? error.message : String(error)}`
+          if (activeStamper !== undefined) sink.emit(activeStamper.stamp('error', { message: note }))
+          return note
+        }
+      })
+    return Promise.all(dropped).then(notes => twoNotes(...notes))
   }
 
   const modelInfo: ModelInfoService = createModelInfoService({
@@ -1213,6 +1223,7 @@ export function assemble(options: AssembleOptions): Assembly {
       modelInfoOf: knownModelOf,
     })
     if (selection !== undefined) {
+      if (selection.protocol === undefined || selection.endpoint === undefined) throw new Error('该工作保存的模型组合缺少协议或服务地址来源，无法可靠接回；历史记录已保留')
       const result = registry.use(selection)
       if (!result.ok) throw new Error(result.reason)
     }
@@ -1221,6 +1232,9 @@ export function assemble(options: AssembleOptions): Assembly {
 
   let models: ModelRegistry | undefined
   if (options.modelGateway === undefined) {
+    if (startup !== undefined && savedAgent === undefined) {
+      throw new Error('该工作缺少已保存的模型组合，无法可靠接回；历史记录已保留')
+    }
     const initial = savedAgent === undefined ? resolveModelChoice({ providers: providerBook, configuredModels: configuredModels, modelInfoOf: knownModelOf }) : { ok: true as const, selection: savedAgent.model }
     models = registryOf(initial.ok ? initial.selection : undefined)
   }
@@ -1258,7 +1272,7 @@ export function assemble(options: AssembleOptions): Assembly {
    * - 没依据（没选过模型 / 压根没有注册表）⇒ `undefined`＝**不知道**。
    *
    * ⚠️ **每次现算、不缓存**：用户换完模型，下一轮就该按新模型判。且 `models` 这个变量本身
-   * 会在保存配置之后被换掉（`rebuildRegistry`），快照会一直指着旧那一张。
+   * 会在用户明确应用模型或切换会话时更换，读数须取当前注册表。
    */
   const currentAcceptsImages = (): boolean | undefined => {
     const at = models?.current()
@@ -1269,7 +1283,7 @@ export function assemble(options: AssembleOptions): Assembly {
 
 
   /**
-   * **按当下的连接资料重建注册表**（保存之后）。
+   * **删除供应商后按剩余连接重建注册表**。
    *
    * 不成（新连接缺 key / 缺省指向了不存在的连接）时**保留原来那一张**：
    * 配置已经落盘了，这一次装配用不上它——如实说一句，别把装配整个带崩。
@@ -1771,7 +1785,13 @@ export function assemble(options: AssembleOptions): Assembly {
     // ⚠️ 代价如实记：这一下（含「条目名写错」）在屏上**没有回声**——见回报「待决」。
     if (chain === undefined) {
       if (models === undefined) return { ok: false, reason: NO_REGISTRY }
-      return checked.ok ? models.use(checked.selection) : checked
+      if (!checked.ok) return checked
+      try {
+        models = registryOf(checked.selection)
+        return checked
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+      }
     }
 
     // 注册表缺席（注入了替身网关）＝如实报「这批装配换不了模型」——同样是一条**切换结果**
@@ -1817,6 +1837,8 @@ export function assemble(options: AssembleOptions): Assembly {
             ...(result.selection.reasoning === undefined ? {} : { reasoning: result.selection.reasoning }),
             provider: result.selection.provider,
             model: result.selection.model,
+            protocol: result.selection.protocol,
+            endpoint: result.selection.endpoint,
             ...(budget === undefined ? {} : { inputBudget: budget }),
           })
         : forwardStamper.stamp('model.switched', { ok: false, reason: result.reason }),
@@ -1856,10 +1878,11 @@ export function assemble(options: AssembleOptions): Assembly {
    * 读数（`providers` 可以一条都没有），两者混作一谈会让外壳把「没有注册表」显示成
    * 「一条都没有」。
    */
-  const listModels = async (note?: string): Promise<void> => {
+  const listModels = async (note?: string, saved?: boolean): Promise<void> => {
     if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
     const catalog = catalogOf(models)
-    sink.emit(requireActiveStamper().stamp('model.catalog', note === undefined ? catalog : { ...catalog, note }))
+    sink.emit(requireActiveStamper().stamp('model.catalog', { ...catalog, stamp: configStamp,
+      ...(note === undefined ? {} : { note }), ...(saved === undefined ? {} : { saved }) }))
   }
 
   /**
@@ -2176,7 +2199,8 @@ export function assemble(options: AssembleOptions): Assembly {
     const current = registry?.current()
     return {
       providers: providerBook,
-      entries: registry?.list() ?? [],
+      configuredModels,
+      entries: Object.keys(providerBook).map(id => ({ id })),
       ...(current === undefined ? {} : { current }),
       read: (provider) => modelInfo.read(provider),
       inputBudget: (provider, model) => registry?.capacityOf(provider, model)?.inputBudget,
@@ -2194,9 +2218,9 @@ export function assemble(options: AssembleOptions): Assembly {
    * 走法照 `listModels`：**空手打开也照答**（那一下开一张空壳；原因与姿势见它那段注）。
    * 读的是**配置**（连接的身份与设置）——已在手上，不必再问谁要。
    */
-  const listProviders = async (note?: string): Promise<void> => {
+  const listProviders = async (note?: string, saved?: boolean): Promise<void> => {
     if (conversation.active() === undefined) await conversation.handle({ type: 'session.new' })
-    sink.emit(requireActiveStamper().stamp('provider.catalog', providerCatalogOf(note)))
+    sink.emit(requireActiveStamper().stamp('provider.catalog', { ...providerCatalogOf(note), stamp: configStamp, ...(saved === undefined ? {} : { saved }) }))
   }
 
 
@@ -2230,32 +2254,21 @@ export function assemble(options: AssembleOptions): Assembly {
   }
 
   /**
-   * 保存 Default 或能力档位映射，与 `model.switch` 的当前工作选择分开。
-   *
-   * 写盘成功才更新映射；当前 Agent 的有效选择不随保存改变。
+   * 保存供应商、模型信息与档位映射，成功后同步配置读面。
+   * 当前 Agent 的有效选择仍只由明确应用动作改变。
    */
-  const setAliasModel = async (request: ModelConfigureRequest): Promise<void> => {
+  const saveModelSettings = async (action: Extract<import('@magic/contracts').SettingsAction, { type: 'provider.save' | 'model.configure' | 'model.override' }>): Promise<void> => {
+    let note: string
+    let saved = false
     try {
-      syncProviderBook()
-      const snapshots = Object.entries(providerBook).map(([provider, config]) => ({ provider, config, snapshot: modelInfo.peek(provider).snapshot }))
-      const outcome = await configureModel({ path: loaded.path,
-        expectedStamp: configStamp, request })
-      if (!outcome.ok) { void listModels(outcome.reason); return }
-      const reloaded = loadConfig({ path: loaded.path, magic })
-      configStamp = reloaded.stamp ?? null
-      configuredModels = reloaded.config.models
-      // 映射编辑不改变认证；仅将相同接入身份的已有资料移到保存后的缓存范围。
-      for (const { provider, config, snapshot } of snapshots) {
-        if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
-          await modelCache.replace(snapshot, cacheAccessOf(provider, reloaded.config.providers[provider]))
-        }
-      }
+      const expected = 'expectedStamp' in action && action.expectedStamp !== undefined ? action.expectedStamp : configStamp
+      note = await createSettings({ magic, configPath: loaded.path, environment, fetch, now }).apply(action, expected)
+      saved = true
+      note = twoNotes(note, await syncProviderBook())!
       await modelInfo.warmup()
-      // 保存映射不切换当前 Agent；没有有效选择的首次设置仍等明确应用动作。
-      void listModels(`已保存 ${request.choice[0]!.toUpperCase() + request.choice.slice(1)}`)
-    } catch (error) {
-      void listModels(`模型设置未完成：${error instanceof Error ? error.message : String(error)}`)
-    }
+    } catch (error) { note = error instanceof Error ? error.message : String(error) }
+    if (action.type === 'provider.save') await listProviders(note, saved)
+    else await listModels(note, saved)
   }
 
   const setPrefsCommand = async (request: PrefsSetRequest): Promise<void> => {
@@ -2287,60 +2300,6 @@ export function assemble(options: AssembleOptions): Assembly {
           : `${changed.join(' · ')}没改成——${outcome.reason}`,
       }),
     )
-  }
-
-  /**
-   * 回执里那一对怎么念——**与 `/config` 那一行同一个取法**（模型名取缓存里的显示名、
-   * 连接名取 `name ?? id`）：两处各取一套的话，屏上那一行会与刚做完的那一下对不上。
-   * 缓存里没有它（兼容接入 / 还没取过列表）⇒ **照实报精确 id**，不拿别的顶上。
-   */
-  const saveProviderCommand = async (request: ProviderSaveRequest): Promise<void> => {
-    const before = providerBook[request.provider]
-    // **旧范围**的身份——在保存**之前**算：保存之后配置文件的指纹自己就变了，
-    // 那时再算出来的是新范围（拿它去清旧那份就清错了）
-    const beforeTarget =
-      before === undefined
-        ? undefined
-        : { provider: request.provider, access: cacheAccessOf(request.provider, before) }
-    /** 清除旧缓存的回话（没成才有）——与重建的回话合成一句交给答复。 */
-    let cleared: string | undefined
-
-    const outcome = await saveProvider({
-      path: loaded.path,
-      expectedStamp: configStamp,
-      request,
-    })
-    if (!outcome.ok) {
-      listProviders(outcome.reason)
-      return
-    }
-
-    configStamp = configStampOf(loaded.path)
-
-    let reloaded: LoadedConfig
-    try {
-      // 重读用的还是**同一个基础路径**（U42：`magic` 在这一处已解析好，不另拼家目录）
-      reloaded = loadConfig({ path: loaded.path, magic })
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      listProviders(`配置已写盘，但读不回来：${reason}`)
-      return
-    }
-
-    providerBook = reloaded.config.providers
-    // 「取网页」的提炼模型同理（U72）——保存之后立刻对得上，不必重启
-    configuredModels = reloaded.config.models
-
-    // **认证或接入范围改变 ⇒ 废弃该连接的旧缓存及在途获取**（设计明文）
-    if (connectionScopeChanged(before, providerBook[request.provider])) {
-      modelInfo.drop(request.provider)
-      // **清除旧范围那一份**（裁决：`drop` 明确指定身份，碰不到别的范围）。
-      // ⚠️ **失败要可见**：不 `void` 掉——接住它，写进这次答复（清除失败不吞）
-      cleared = await dropCacheQuietly(beforeTarget)
-    }
-
-    const rebuilt = rebuildRegistry()
-    listProviders(twoNotes(rebuilt.ok ? undefined : rebuilt.reason, cleared))
   }
 
   /**
@@ -2425,13 +2384,14 @@ export function assemble(options: AssembleOptions): Assembly {
     // 域不碰文件系统；同 `grants.list` 之于授权文件）。前三条答复走 `provider.catalog`、
     // 后两条走 `model.catalog`（用户按一下就该看到那一屏的新样子）。
     onModelRefresh: (provider) => refreshModels(provider),
-    onModelConfigure: (request) => setAliasModel(request),
+    onModelConfigure: (request) => saveModelSettings({ ...request, type: 'model.configure' }),
+    onModelOverride: (request) => saveModelSettings(request),
     // 「取网页」的提炼模型（U78）——同一条路（写盘归装配）——答复也走 `model.catalog`
     // 界面那两格（U112）——同一条路（写盘归装配）——答复走 `prefs.state`
     // （带上**落定之后**那两份，外壳据它把屏上那两格摆成真的样子）
     onPrefsSet: (request) => setPrefsCommand(request),
     onProviderList: () => listProviders(),
-    onProviderSave: (request) => saveProviderCommand(request),
+    onProviderSave: (request) => saveModelSettings({ ...request, type: 'provider.save' }),
     onProviderRemove: (provider) => removeProviderCommand(provider),
 
     // 授权名录 ＋ 撤销（U22）——**归装配**（`grants.json` 的读写都在它这一层，域不碰文件系统）

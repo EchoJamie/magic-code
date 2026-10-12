@@ -75,7 +75,7 @@ test('可识别配置错误记录失败并正常退出，设置及状态入口�
 test('单 Run 身份无法核实时保留资源责任，独立工作仍能执行；故障解除后可收妥', async () => {
   const tool = Bun.spawn(['/bin/sleep', '30'], { detached: true, stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
   const model = startFixture({ turns: [{ kind: 'text', text: '独立工作完成' }] })
-  const config = JSON.stringify({ models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(tier => [tier, { provider: 'local', model: 'probe' }])), providers: { local: { vendor: 'minimax', apiKey: 'synthetic', baseURL: model.baseURL } } })
+  const config = JSON.stringify({ models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(tier => [tier, { provider: 'local', model: 'probe' }])), providers: { local: { protocol: 'chat-completions', apiKey: 'synthetic', baseURL: model.baseURL } } })
   const f = await fixture(config, async home => {
     const magic = resolveMagicHome({}, home), store = createRecordsStore({ dataDir: magic.base, workspace: [home] })
     store.setSessionTitle('held-run', '尚有责任', Date.now()); store.close()
@@ -107,7 +107,7 @@ test('单 Run 身份无法核实时保留资源责任，独立工作仍能执行
 test('实例切换的空闲停止与新输入两种顺序：已有责任拒绝切换，准入关闭后不执行新工作', async () => {
   for (const inputFirst of [true, false]) {
     const model = startFixture({ turns: [{ kind: 'text', text: '保持在途', chunks: 20, chunkDelayMs: 500 }] })
-    const config = JSON.stringify({ models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(tier => [tier, { provider: 'local', model: 'probe' }])), providers: { local: { vendor: 'minimax', apiKey: 'synthetic', baseURL: model.baseURL } } })
+    const config = JSON.stringify({ models: Object.fromEntries(['default', 'cantrip', 'spell', 'arcane'].map(tier => [tier, { provider: 'local', model: 'probe' }])), providers: { local: { protocol: 'chat-completions', apiKey: 'synthetic', baseURL: model.baseURL } } })
     const f = await fixture(config)
     let client: Awaited<ReturnType<typeof connectManager>>
     try {

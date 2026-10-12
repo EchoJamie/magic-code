@@ -471,7 +471,7 @@ describe('D56 · 失败恢复与正文边界', () => {
 test('D56 · 历史思考与供应商回传状态不进入摘要输入，原记录仍保留', async () => {
   const stage = makeStage({ turns: [{ thinking: '本次摘要思考', text: '摘要正文' }] })
   stage.records.appendEntry({ kind: 'assistant', content: { text: '已验证结果' }, at: FIXED_AT,
-    payload: { reasoning: '历史秘密思考', reasoningState: { provider: 'sample', model: 'm', details: [{ opaque: '供应商私有状态' }] } },
+    payload: { reasoning: '历史秘密思考', reasoningState: { protocol: 'chat-completions', endpoint: 'https://models.example/v1', provider: 'sample', model: 'm', details: [{ opaque: '供应商私有状态' }] } },
   })
   seedOldBusiness(stage, 2)
   expect((await makeCompactor(stage, { policy: { nearEntries: 1 } }).run({ trigger: 'threshold' })).ok).toBe(true)

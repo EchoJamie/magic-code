@@ -99,6 +99,7 @@ describe('容量裁定 · 声明 → 内置表 → 未知', () => {
         'MiniMax-M2.7',
         'MiniMax-M2.7-highspeed',
         'MiniMax-M3',
+        'MiniMax-M3.1-Flash-Preview',
       ].sort(),
     )
   })

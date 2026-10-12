@@ -192,6 +192,10 @@ export type OutputDelta = {
  * 缓存（`cache.snapshot.models`），配置里的 `model` 只是**用户默认选择**，可以没有。
  */
 export type ModelCatalogRow = {
+  readonly effectiveReasoning?: Readonly<Record<string, import('./model.ts').ReasoningSupport>>
+  readonly protocol?: import('./model.ts').ModelProtocol
+  readonly auth?: import('./model.ts').ProviderAuth
+  readonly modelOverrides?: Readonly<Record<string, import('./model.ts').ProviderModelOverride>>
   /** `providers` 的键（**连接 id**）——不是供应商细节，是「哪一格」。 */
   readonly provider: string
   /** 连接可读名（`providers.<id>.name`）——缺省＝用 id。 */
@@ -215,7 +219,7 @@ export type ModelCatalogRow = {
    * ⚠️ **给的是来处，不是凭据**：两处都没有（这条连接还没有可用认证）就不给这一位。
    * 管理页据它说「认证：配置文件 / 环境变量」，而不是含糊的「已设置」。
    */
-  readonly keySource?: 'config' | 'env'
+  readonly keySource?: 'config' | 'env' | 'none'
   /** 该连接**模型信息缓存**的读数——见 `ModelInfoRead`。 */
   readonly cache?: ModelInfoRead
 
@@ -371,7 +375,7 @@ export type McpCatalogRow = {
  * 与 `ModelCatalogRow` 分开：选中**未必是表里的某一行**——`model.switch { model }`
  * 可以在同一格上换成本格默认之外的模型，那时选中仍成立，但表里那一行的 `model` 不变。
  */
-export type ModelSelectionRef = {
+export type ModelSelectionRef = import('./model.ts').ModelSource & {
   readonly reasoning?: ReasoningSetting
   readonly choice: ModelChoice
   readonly provider: string
@@ -402,6 +406,8 @@ export type EventDataOf = {
   'message.assistant': { readonly entry: RecordId }
   // model——调用级
   'model.call.start': {
+    readonly protocol?: import('./model.ts').ModelProtocol
+    readonly endpoint?: string
     readonly choice?: ModelChoice
     readonly model: string
     /**
@@ -645,6 +651,8 @@ export type EventDataOf = {
   // 说不出「何时改的、为什么没改成」；而用户命令不成立**不是内核异常**，
   // 混进 `error` 会污染观测（那一条的语义专留给「内核自身异常」）。
   'model.switched': {
+    readonly protocol?: import('./model.ts').ModelProtocol
+    readonly endpoint?: string
     readonly choice?: ModelChoice
     readonly reasoning?: ReasoningSetting
     /** 换成了没有。`false` 时**原选原样保留**（切不动就不动）——`reason` 说为什么。 */
@@ -784,6 +792,8 @@ export type EventDataOf = {
   // **不落库**：它是**读出来的**（注册表本来就在内存里），落库＝把同一张表存 N 遍
   // （照 `session.history` 同一条理由）。
   'model.catalog': {
+    readonly saved?: boolean
+    readonly stamp?: string | null
     /** 配置里的**全部**连接（配置顺序）。空表 ＋ `note` ＝ 这次装配没有注册表。 */
     readonly entries: readonly ModelCatalogRow[]
     /**
@@ -814,6 +824,8 @@ export type EventDataOf = {
   // 的姿势——动作的**结果**就是那一屏的新状态，不另立一条「保存成功」）。
   // **不落库**：与 `model.catalog` 同一条——它是**读出来的**（配置本来就在盘上）。
   'provider.catalog': {
+    readonly saved?: boolean
+    readonly stamp?: string | null
     /** 连接一览（配置顺序）——与 `model.catalog` 的 `entries` **同一行形态**。 */
     readonly entries: readonly ModelCatalogRow[]
     /**

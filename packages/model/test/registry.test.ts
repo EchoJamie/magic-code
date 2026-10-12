@@ -27,8 +27,8 @@ import {
 // 夹具 —— 两个条目（甲 / 乙），各在各的端点上
 // ═══════════════════════════════════════════════════════════════════════
 
-const ALPHA: ProviderConfig = { vendor: 'minimax', baseURL: 'https://alpha.example/v1' }
-const BETA: ProviderConfig = { vendor: 'minimax', baseURL: 'https://beta.example/v1' }
+const ALPHA: ProviderConfig = { protocol: 'chat-completions', baseURL: 'https://alpha.example/v1' }
+const BETA: ProviderConfig = { protocol: 'chat-completions', baseURL: 'https://beta.example/v1' }
 
 type Seen = { url: string; model: string; authorization: string | null }
 
@@ -80,7 +80,7 @@ function registryOf(
     env: {},
     ...options,
   })
-  registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
+  registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
   return registry
 }
 
@@ -117,7 +117,7 @@ describe('注册表 · 注册', () => {
   test('构造只读注册表不解析 key；提交实际组合时缺 key 才拒绝', () => {
     const registry = createModelRegistry({ providers: { alpha: ALPHA }, stamper: makeTestStamper(), env: {} })
     expect(registry.current()).toBeUndefined()
-    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' }).ok).toBe(false)
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' }).ok).toBe(false)
     expect(registry.current()).toBeUndefined()
   })
 })
@@ -140,9 +140,9 @@ describe('注册表 · 切换', () => {
 
     expect(await ask(registry, 'alpha-1')).toEqual({ text: '甲', model: 'alpha-1' })
 
-    const switched = registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
-    expect(switched).toEqual({ ok: true, selection: { choice: 'default', provider: 'beta', model: 'beta-1' } })
-    expect(registry.current()).toEqual({ choice: 'default' as const, provider: 'beta', model: 'beta-1' })
+    const switched = registry.use({ choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
+    expect(switched).toEqual({ ok: true, selection: { choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' } })
+    expect(registry.current()).toEqual({ choice: 'default' as const, provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
 
     // 调用方**一字未改**——还是同一个 registry、同一个 stream 调用
     expect(await ask(registry, 'alpha-1')).toEqual({ text: '乙', model: 'beta-1' })
@@ -157,9 +157,9 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-turbo' })).toEqual({
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-turbo', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })).toEqual({
       ok: true,
-      selection: { choice: 'default', provider: 'alpha', model: 'alpha-turbo' },
+      selection: { choice: 'default', provider: 'alpha', model: 'alpha-turbo', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' },
     })
 
     await ask(registry, 'alpha-1')
@@ -173,9 +173,9 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    expect(registry.use({ choice: 'default', provider: 'beta', model: 'beta-large' })).toEqual({
+    expect(registry.use({ choice: 'default', provider: 'beta', model: 'beta-large', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })).toEqual({
       ok: true,
-      selection: { choice: 'default', provider: 'beta', model: 'beta-large' },
+      selection: { choice: 'default', provider: 'beta', model: 'beta-large', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
     })
 
     await ask(registry, 'alpha-1')
@@ -187,11 +187,11 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
-    registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
+    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
+    registry.use({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
     await ask(registry, 'alpha-1')
 
-    expect(registry.current()).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1' })
+    expect(registry.current()).toEqual({ choice: 'default' as const, provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
     expect(seen[0]?.url.startsWith('https://alpha.example')).toBe(true)
   })
 
@@ -199,7 +199,7 @@ describe('注册表 · 切换', () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
+    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
 
     // 同一次调用里的消息照旧原样送出去——注册表只换下游，不碰消息
     const { result } = await drainStream(
@@ -240,20 +240,20 @@ describe('注册表 · 切不动就不动', () => {
 
     expect(registry.use({} as import('@magic/contracts').AgentModelConfig).ok).toBe(false)
     expect(registry.use({ choice: 'default', provider: '  ', model: '' }).ok).toBe(false)
-    expect(registry.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1' })
+    expect(registry.current()).toEqual({ choice: 'default', provider: 'alpha', model: 'alpha-1', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
   })
 
   test('切到一半失败不留痕——失败一次之后，原先的选中照旧生效', async () => {
     const { fetch, seen } = splitEndpoint()
     const registry = registryOf({ alpha: ALPHA, beta: BETA }, { fetch, apiKeys: { alpha: 'ka', beta: 'kb' } })
 
-    expect(registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })).toEqual({
+    expect(registry.use({ choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })).toEqual({
       ok: true,
-      selection: { choice: 'default', provider: 'beta', model: 'beta-1' },
+      selection: { choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' },
     })
     // 两条切不动的路：名字不认识 · 什么都没给
     expect(registry.use({ choice: 'default', provider: 'beta-draft', model: 'test' }).ok).toBe(false)
-    expect(registry.use({ choice: 'default', provider: 'beta', model: '  ' }).ok).toBe(false)
+    expect(registry.use({ choice: 'default', provider: 'beta', model: '  ', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' }).ok).toBe(false)
 
     await ask(registry, 'alpha-1')
     expect(seen[0]?.url.startsWith('https://beta.example')).toBe(true)
@@ -276,7 +276,7 @@ describe('注册表 · 每条目各归其位', () => {
     const first = await drainStream(
       registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
-    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1' })
+    registry.use({ choice: 'default', provider: 'beta', model: 'beta-1', protocol: 'chat-completions', endpoint: 'https://beta.example/v1' })
     const second = await drainStream(
       registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
@@ -322,7 +322,7 @@ describe('注册表 · 每条目各归其位', () => {
 
     // 乙家是个表外模型（内置表不认），靠**条目自己的覆盖位**声明「思考内嵌在正文里」
     const registry = registryOf(
-      { alpha: ALPHA, local: { baseURL: BETA.baseURL, modelOverrides: { 'my-local-llama': { traits: { inlineThinking: { tag: 'think' } } } } } },
+      { alpha: ALPHA, local: { protocol: 'chat-completions', baseURL: BETA.baseURL, modelOverrides: { 'my-local-llama': { traits: { inlineThinking: { tag: 'think' } } } } } },
       { fetch: scripted, apiKeys: { alpha: 'ka', local: 'kl' } },
     )
 
@@ -335,7 +335,7 @@ describe('注册表 · 每条目各归其位', () => {
     expect(result.text).toBe('正文里说一句  就完')
 
     // 同一个模型名在**没有覆盖位**的条目下不切（判据 ③：皆未命中＝不猜不切）
-    registry.use({ choice: 'default', provider: 'alpha', model: 'my-local-llama' })
+    registry.use({ choice: 'default', provider: 'alpha', model: 'my-local-llama', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' })
     const plain = await drainStream(
       registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )
@@ -368,11 +368,11 @@ describe('注册表 · 每条目各归其位', () => {
       )) as unknown as typeof globalThis.fetch
 
     const registry = registryOf(
-      { alpha: { baseURL: ALPHA.baseURL } },
+      { alpha: { protocol: 'chat-completions', baseURL: ALPHA.baseURL } },
       { fetch: scripted, apiKeys: { alpha: 'ka' } },
     )
 
-    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'acme-reasoner-v9' }).ok).toBe(true)
+    expect(registry.use({ choice: 'default', provider: 'alpha', model: 'acme-reasoner-v9', protocol: 'chat-completions', endpoint: 'https://alpha.example/v1' }).ok).toBe(true)
     const first = await drainStream(
       registry.stream({ messages: [{ role: 'user', content: '嗨' }] } as import('@magic/contracts').ModelRequest),
     )

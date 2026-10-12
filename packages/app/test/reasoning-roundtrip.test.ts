@@ -17,7 +17,7 @@ test('分离思考经真实记录库、工具回填和会话重建后逐字段�
   const build = () => {
     const sink = makeFauxSink()
     const stamper = makeTestStamper({ session: 's1' })
-    const gateway = createModelGateway({ model: 'MiniMax-M3', providerId: 'minimax', config: { vendor: 'minimax' }, apiKey: 'test', stamper,
+    const gateway = createModelGateway({ model: 'MiniMax-M3', providerId: 'minimax', config: { vendor: 'minimax', protocol: 'chat-completions' }, apiKey: 'test', stamper,
       fetch: async (_url, init) => {
         const body = JSON.parse(String(init?.body))
         requests.push(body)
@@ -58,7 +58,7 @@ test('分离思考经真实记录库、工具回填和会话重建后逐字段�
     const entries: Entry[] = []
     for await (const entry of store.readEntries('s1')) entries.push(entry)
     const assistants = entries.filter(e => e.kind === 'assistant')
-    expect(assistants[0]?.payload).toEqual({ reasoning: '先读文件', reasoningState: { provider: 'minimax', model, details: [expected] } })
+    expect(assistants[0]?.payload).toEqual({ reasoning: '先读文件', reasoningState: { protocol: 'chat-completions', endpoint: 'https://api.minimax.cn/v1', provider: 'minimax', model, details: [expected] } })
     expect(assistants[1]?.content).toEqual({ text: bodyText })
     const liveText = first.sink.byKind('model.delta').filter(e => e.data.channel === 'text').map(e => 'text' in e.data ? e.data.text : '').join('')
     expect(liveText).toBe(bodyText)

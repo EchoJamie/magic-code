@@ -10,7 +10,7 @@ import ServiceManagement
     func field(_ key: String) -> Binding<String> { Binding(get: { self.value[key].text }, set: { self.put(key, .string($0)) }) }
     func flag(_ key: String, default fallback: Bool = false) -> Binding<Bool> { Binding(get: { self.value[key] == .null ? fallback : self.value[key].flag }, set: { self.put(key, .bool($0)) }) }
     func strings(_ key: String) -> Binding<[String]> { Binding(get: { self.value[key].array.map(\.text) }, set: { self.put(key, .strings($0)) }) }
-    func put(_ key: String, _ value: SettingsValue) { var next = self.value.object; if value == .null { next.removeValue(forKey: key) } else { next[key] = value }; self.value = .object(next) }
+    func put(_ key: String, _ value: SettingsValue, preserveNull: Bool = false) { var next = self.value.object; if value == .null && !preserveNull { next.removeValue(forKey: key) } else { next[key] = value }; self.value = .object(next) }
 }
 @MainActor final class SettingsDrafts: ObservableObject {
     @Published var mcpEditor: String?

@@ -284,6 +284,9 @@ export type ProviderSave = { readonly type: 'provider.save' } & ProviderSaveRequ
 
 /** `provider.save` 的负载——命令负载与路由入参同一形态（同 `ModelSwitchRequest` 之例）。 */
 export type ProviderSaveRequest = {
+  readonly expectedStamp?: string | null
+  readonly protocol?: import('./model.ts').ModelProtocol | null
+  readonly auth?: import('./model.ts').ProviderAuth
   /** 连接 id（`providers` 的键）——新建时就是用户起的那一个。 */
   readonly provider: string
   /** 内置供应商适配名——**只在接入 / 更换供应商时给**；认不出就不猜（不换适配）。 */
@@ -315,6 +318,7 @@ export type ProviderRemove = {
  */
 export type ModelConfigure = { readonly type: 'model.configure' } & ModelConfigureRequest
 export type ModelConfigureRequest = {
+  readonly expectedStamp?: string | null
   readonly choice: ModelChoice
   readonly provider: string
   readonly model: string
@@ -547,6 +551,7 @@ export type Command =
   | ModelList
   | ModelRefresh
   | ModelConfigure
+  | { readonly type: 'model.override'; readonly expectedStamp?: string | null; readonly provider: string; readonly model: string; readonly override: import('./model.ts').ProviderModelOverride | null }
   | ProviderList
   | ProviderSave
   | ProviderRemove

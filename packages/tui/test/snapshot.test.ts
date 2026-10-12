@@ -512,7 +512,7 @@ describe('场景 10 · `/model`（同一处、同一开合）', () => {
           { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
           { provider: 'minimax-m2', cache: { snapshot: { provider: 'minimax-m2', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M2' }] } }, },
         ],
-        current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+        current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     ])
 

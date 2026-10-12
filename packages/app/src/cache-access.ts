@@ -136,5 +136,5 @@ export function modelCacheAccessOf(input: {
 
 /** 修改非接入字段时可复用原缓存；认证/供应商/地址/区域改变必须失效。 */
 export function connectionScopeChanged(before: ProviderConfig | undefined, after: ProviderConfig | undefined): boolean {
-  return before === undefined || after === undefined || before.vendor !== after.vendor || before.baseURL !== after.baseURL || before.region !== after.region || before.apiKey !== after.apiKey
+  return before === undefined || after === undefined || before.vendor !== after.vendor || before.baseURL !== after.baseURL || before.region !== after.region || before.apiKey !== after.apiKey || before.protocol !== after.protocol || before.auth !== after.auth
 }

@@ -12,7 +12,7 @@ for (const limited of [false, true]) test(`U115：可信用途优先于普通全
     origin: { name: '发起角色', instructions: '查证', ...(limited ? { tools: ['read'] } : {}) } } } })
   const store = createRecordsStore({ dataDir: stage.dataDir, workspace: [realpathSync(stage.workspace)] })
   const r = store.collaboration
-  const model = { choice: 'default' as const, provider: 'test', model: 'test' }
+  const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
   const entryId = store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '用户原工作' }, at: 1 })
   const root = r.registerAgent({ operationId: 'root', sessionId: 'origin', name: '原工作', role: 'origin', model, at: 1 })
   const origin = { sessionId: 'origin', entryId }

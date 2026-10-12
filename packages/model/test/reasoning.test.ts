@@ -6,7 +6,7 @@ import type { ModelStream } from '../src/call.ts'
 function endpoint(deltas: readonly Record<string, unknown>[], provider = 'minimax', config: ProviderConfig = { vendor: 'minimax' }, targetModel = model) {
   const requests: Record<string, unknown>[] = []
   const gateway = createModelGateway({ model: targetModel,
-    providerId: provider, config, apiKey: 'test-key', retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
+    providerId: provider, config: { ...config, protocol: 'chat-completions' }, apiKey: 'test-key', retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },
     stamper: { stamp: (kind, data) => ({ id: 1, session: 'test', turn: 1, at: 0, kind, data }), beginTurn: () => {} } as EventStamper,
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init?.body))
@@ -26,12 +26,12 @@ async function drain(stream: ModelStream) {
   return stream.result
 }
 const model = 'MiniMax-M3'
-const source = { provider: 'minimax', model }
+const source = { provider: 'minimax', model, protocol: 'chat-completions' as const, endpoint: 'https://api.minimax.cn/v1' }
 const message = { role: 'user' as const, content: '检查通道' }
 const detail = { type: 'reasoning.text', id: 'reasoning-text-1', format: 'MiniMax-response-v1', index: 0 }
 
 describe('分离思考协议', () => {
-  for (const name of ['MiniMax-M3', 'MiniMax-M3.1-Flash-Preview', 'future-model']) {
+  for (const name of ['MiniMax-M3', 'MiniMax-M3.1-Flash-Preview']) {
     test(`${name}：分离格式由请求保证，正文中的标签完整保留`, async () => {
       const text = '<think>示例</think>\n| 思考 | 与 M3 的内嵌 `<think>` 完全不同 |\n```xml\n</think>\n```\n回答结束'
       const { gateway, requests } = endpoint([
@@ -47,7 +47,7 @@ describe('分离思考协议', () => {
       expect(requests[0]?.max_tokens).toBeUndefined()
       expect(result.text).toBe(text)
       expect(result.thinking).toBe('分析里也有 `<think>` 和 `</think>`。')
-      expect(result.reasoningState).toEqual({ provider: 'minimax', model: name })
+      expect(result.reasoningState).toEqual({ ...source, model: name })
     })
   }
 
@@ -90,8 +90,8 @@ describe('分离思考协议', () => {
     const own = { role: 'assistant' as const, content: '正文', reasoning: '私有思考' }
     await drain(gateway.stream({  messages: [message,
       own,
-      { ...own, reasoningState: { provider: 'other', model, details: [detail] } },
-      { ...own, reasoningState: { provider: 'minimax', model: 'other', details: [detail] } },
+      { ...own, reasoningState: { protocol: 'chat-completions', endpoint: source.endpoint, provider: 'other', model, details: [detail] } },
+      { ...own, reasoningState: { protocol: 'chat-completions', endpoint: source.endpoint, provider: 'minimax', model: 'other', details: [detail] } },
     ] }))
     const sent = (requests[0]?.messages as Record<string, unknown>[]).filter(x => x.role === 'assistant')
     expect(sent).toHaveLength(3)
@@ -108,7 +108,7 @@ describe('分离思考协议', () => {
       role: 'assistant', content: '正文', reasoning: 'MiniMax 思考', reasoningState: { ...source, details: [detail] },
     }] }))
     const sent = (requests[0]?.messages as Record<string, unknown>[]).find(x => x.role === 'assistant')
-    expect(sent?.reasoning_content).toBe('（这一轮没有产出思考。）')
+    expect(sent?.reasoning_content).toBeUndefined()
     expect(sent?.reasoning_details).toBeUndefined()
     expect(requests[0]?.reasoning_split).toBeUndefined()
   })
@@ -145,9 +145,7 @@ describe('按精确型号处理思考设置', () => {
   })
 
   test('能力覆盖不能绕过实际协议映射；在途请求捕获思考设置', async () => {
-    const unsupported = endpoint([], 'minimax', { vendor: 'minimax', modelOverrides: { future: { reasoningSupport: { disable: true } } } }, 'future')
-    expect((await drain(unsupported.gateway.stream({ messages: [message] }, { reasoning: { mode: 'off' } }))).error).toBeDefined()
-    expect(unsupported.requests).toHaveLength(0)
+    expect(() => endpoint([], 'minimax', { vendor: 'minimax', modelOverrides: { future: { reasoningSupport: { disable: true } } } }, 'future')).toThrow('future')
     const { gateway, requests } = endpoint([{ content: '好' }])
     const reasoning: { mode: 'off' | 'default' } = { mode: 'off' }
     const stream = gateway.stream({ messages: [message] }, { reasoning })

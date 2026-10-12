@@ -21,7 +21,7 @@ export interface ModelRegistry extends ModelGateway {
   capabilityOf(provider: string, model: string): ModelCapabilities | undefined
   current(): ModelSelection | undefined
   has(id: string): boolean
-  use(selection: ModelSelection): ModelSwitchResult
+  use(selection: Omit<ModelSelection, 'protocol' | 'endpoint'> & Partial<import('@magic/contracts').ModelSource>): ModelSwitchResult
 }
 
 function errorStream(stamper: EventStamper, model: string, message: string): ModelStream {
@@ -87,7 +87,7 @@ export type ModelRegistryOptions = {
 
 export function createModelRegistry(options: ModelRegistryOptions): ModelRegistry {
   const { providers, stamper } = options
-  let active: { readonly selection: ModelSelection; readonly gateway: ModelGateway } | undefined
+  let active: { readonly selection: ModelSelection; readonly gateway: ModelGateway; readonly spec: EffectiveSpec; readonly capabilities: ModelCapabilities | undefined } | undefined
   const adapterFor = (id: string): VendorAdapter | undefined => {
     const vendor = ownOf(providers, id)?.vendor
     return vendor === undefined ? undefined : vendorOf(vendor)
@@ -99,6 +99,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     has: id => ownOf(providers, id) !== undefined,
 
     capacityOf(provider, model): EffectiveSpec | undefined {
+      if (active?.selection.provider === provider && active.selection.model === model) return active.spec
       const config = ownOf(providers, provider)
       return config === undefined ? undefined : effectiveSpecOf({
         model, config, adapter: adapterFor(provider), known: options.modelInfoOf?.(provider, model),
@@ -107,6 +108,7 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
     },
 
     capabilityOf(provider, model): ModelCapabilities | undefined {
+      if (active?.selection.provider === provider && active.selection.model === model) return active.capabilities
       const config = ownOf(providers, provider)
       return config === undefined ? undefined : effectiveCapabilitiesOf(model, config, options.modelInfoOf?.(provider, model))
     },
@@ -116,13 +118,17 @@ export function createModelRegistry(options: ModelRegistryOptions): ModelRegistr
       if (!checked.ok) return checked
       const chosen = checked.selection
       try {
+        const config = structuredClone({ ...providers[chosen.provider]!, protocol: chosen.protocol })
+        const known = structuredClone(options.modelInfoOf?.(chosen.provider, chosen.model))
+        const spec = effectiveSpecOf({ model: chosen.model, config, adapter: adapterFor(chosen.provider), known, fallbackOutputTokens: options.maxCompletionTokens })
+        const capabilities = effectiveCapabilitiesOf(chosen.model, config, known)
         const gateway = createModelGateway({
           ...options, providerId: chosen.provider, model: chosen.model, reasoning: chosen.reasoning,
-          config: providers[chosen.provider]!, apiKey: options.apiKeys?.[chosen.provider],
-          modelInfoOf: model => options.modelInfoOf?.(chosen.provider, model),
+          config, apiKey: options.apiKeys?.[chosen.provider],
+          modelInfoOf: () => known,
         })
         // 凭据、能力和网关构造全部成功才提交；一份状态同时持有目标和调用端口。
-        active = { selection: chosen, gateway }
+        active = { selection: chosen, gateway, spec: Object.freeze(spec), capabilities: capabilities === undefined ? undefined : Object.freeze(capabilities) }
         return checked
       } catch (error) {
         return { ok: false, reason: error instanceof Error ? error.message : String(error) }

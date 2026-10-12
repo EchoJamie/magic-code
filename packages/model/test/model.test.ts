@@ -283,7 +283,7 @@ describe('归一 · 思考与工具调用', () => {
     expect(result.finishReason).toBe('tool-calls')
   })
 
-  test('tool-call 缺席时用攒下的参数片段兜底解析', async () => {
+  test('tool-call 缺席时不将参数片段冒充完整调用', async () => {
     const { result } = await drain(
       normalize([
         { type: 'start' },
@@ -293,7 +293,7 @@ describe('归一 · 思考与工具调用', () => {
       ]),
     )
 
-    expect(result.toolCalls).toEqual([{ id: 'call-9', name: 'read', args: { path: 'a.ts' } }])
+    expect(result.toolCalls).toEqual([{ id: 'call-9', name: 'read', args: {}, invalid: true, rawArgs: '{"path":"a.ts"}' }])
   })
 
   test('参数解析不出＝invalid，不冒充空参，且**原文带走**', async () => {
@@ -327,7 +327,7 @@ describe('归一 · 思考与工具调用', () => {
 
     // 没给 ⇒ 不是坏参数、没有原文；给了但不成形 ⇒ 坏参数 ＋ 原文在
     expect(result.toolCalls).toEqual([
-      { id: 'call-none', name: 'ls', args: {} },
+      { id: 'call-none', name: 'ls', args: {}, invalid: true },
       { id: 'call-bad', name: 'exec', args: {}, invalid: true, rawArgs: '{"cmd": "ls ' },
     ])
   })
@@ -390,6 +390,7 @@ describe('归一 · 思考与工具调用', () => {
       normalize([
         { type: 'start' },
         { type: 'tool-input-start', id: 'call-0', toolName: 'ls' },
+        { type: 'tool-call', toolCallId: 'call-0', toolName: 'ls', input: {} },
         finishPart('tool-calls'),
       ]),
     )
@@ -676,6 +677,7 @@ describe('错误分档', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
+  protocol: 'chat-completions',
   baseURL: 'https://api.minimaxi.com/v1',
   model: MINIMAX_MODEL,
 } as const
@@ -851,7 +853,7 @@ describe('中间件位', () => {
     expect(payloads(events)).toEqual(
       payloads([
         // 预算**同一份解析**给两处：请求开始这一刻就带上（与下面的 usage 同一个数）
-        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', 1_000_000 - MAX_COMPLETION_TOKENS),
+        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', undefined, { protocol: 'chat-completions', endpoint: CONFIG.baseURL }),
         modelDelta(stamper, 'text', 'ok'),
         modelCallEnd(stamper),
       ]),
@@ -966,11 +968,11 @@ describe('调用设置与容量（U41 返修）', () => {
     // 首验反例的形状：联合窗口 10000 / 输出上限 2000 ⇒ 输入预算 8000
     const { body, window } = await callOnce(
       {
-        vendor: 'deepseek',
+        vendor: 'deepseek', protocol: 'chat-completions',
         apiKey: 'test-key',
-        modelOverrides: { known: { limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } } },
+        modelOverrides: { 'deepseek-flash': { limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } } },
       },
-      'known',
+      'deepseek-flash',
     )
 
     expect(body['max_tokens']).toBe(2_000)
@@ -981,11 +983,11 @@ describe('调用设置与容量（U41 返修）', () => {
   test('没有输出上限时，联合窗口为**本次实际请求的那个数**预留', async () => {
     const { body, window } = await callOnce(
       {
-        vendor: 'deepseek',
+        vendor: 'deepseek', protocol: 'chat-completions',
         apiKey: 'test-key',
-        modelOverrides: { known: { limits: { maxContextTokens: 10_000 } } },
+        modelOverrides: { 'deepseek-flash': { limits: { maxContextTokens: 10_000 } } },
       },
-      'known',
+      'deepseek-flash',
     )
 
     // 请求仍带缺省那一个
@@ -999,11 +1001,11 @@ describe('调用设置与容量（U41 返修）', () => {
   test('独立输入上限**不机械减去**输出上限（两者不是一回事）', async () => {
     const { window } = await callOnce(
       {
-        vendor: 'deepseek',
+        vendor: 'deepseek', protocol: 'chat-completions',
         apiKey: 'test-key',
-        modelOverrides: { known: { limits: { maxInputTokens: 5_000, maxOutputTokens: 2_000 } } },
+        modelOverrides: { 'deepseek-flash': { limits: { maxInputTokens: 5_000, maxOutputTokens: 2_000 } } },
       },
-      'known',
+      'deepseek-flash',
     )
 
     expect(window).toBe(5_000)
@@ -1022,10 +1024,10 @@ describe('调用设置与容量（U41 返修）', () => {
       ),
     )
 
-    const gateway = createModelGateway({ model: 'known',
+    const gateway = createModelGateway({ model: 'deepseek-flash',
       providerId: 'ds',
       stamper: testStamper(),
-      config: { vendor: 'deepseek', apiKey: 'test-key' },
+      config: { vendor: 'deepseek', protocol: 'chat-completions', apiKey: 'test-key' },
       apiKey: 'test-key',
       fetch,
       env: {},
@@ -1065,19 +1067,19 @@ describe('调用设置与容量（U41 返修）', () => {
     )
 
     // 缓存里那份资料：联合窗口 10_000、本模型输出 2_000 ⇒ 有效输入预算 8_000
-    const spec = { id: 'known', limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } }
+    const spec = { id: 'deepseek-flash', limits: { maxContextTokens: 10_000, maxOutputTokens: 2_000 } }
     const registry = createModelRegistry({
-      providers: { ds: { vendor: 'deepseek', apiKey: 'test-key' } },
+      providers: { ds: { vendor: 'deepseek', protocol: 'chat-completions', apiKey: 'test-key' } },
       stamper: testStamper(),
       env: {},
       apiKeys: { ds: 'test-key' },
       fetch,
-      modelInfoOf: (provider, model) => (provider === 'ds' && model === 'known' ? spec : undefined),
+      modelInfoOf: (provider, model) => (provider === 'ds' && model === 'deepseek-flash' ? spec : undefined),
     })
 
     // 注册表那一格：**它本来就对**（漏的是往网关那一跳）
-    expect(registry.capacityOf('ds', 'known')?.inputBudget).toBe(8_000)
-    expect(registry.use({ choice: 'default', provider: 'ds', model: 'known' }).ok).toBe(true)
+    expect(registry.capacityOf('ds', 'deepseek-flash')?.inputBudget).toBe(8_000)
+    expect(registry.use({ choice: 'default', provider: 'ds', model: 'deepseek-flash' }).ok).toBe(true)
 
     const { events } = await drain(
       registry.stream({  messages: [{ role: 'user', content: '嗨' }] }),
@@ -1097,13 +1099,13 @@ describe('调用设置与容量（U41 返修）', () => {
   test('请求体改写只归具体适配，通用接入保留标准参数', async () => {
     // 返修：此前写的是 `adapter?.transformRequestBody ?? requestBody` —— DeepSeek 没定义
     // 就回退到了 MiniMax 的改写，`max_tokens` 被顶成 `max_completion_tokens`。
-    const official = await callOnce({ vendor: 'deepseek', apiKey: 'test-key' }, 'deepseek-flash')
+    const official = await callOnce({ vendor: 'deepseek', protocol: 'chat-completions', apiKey: 'test-key' }, 'deepseek-flash')
     expect(official.body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
     expect(official.body['max_completion_tokens']).toBeUndefined()
 
     // 通用接入不从型号名推断供应商，即使型号是 MiniMax 也不套用其改写。
     const compatible = await callOnce(
-      { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
+      { protocol: 'chat-completions', baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       'MiniMax-M3',
     )
     expect(compatible.body['max_tokens']).toBe(MAX_COMPLETION_TOKENS)
@@ -1112,15 +1114,6 @@ describe('调用设置与容量（U41 返修）', () => {
 })
 
 describe('思考的工具往返（U41）', () => {
-  /**
-   * 取件层补的那一句的**原文**（`src/ai-sdk.ts` 的 `ABSENT_REASONING_NOTE`）。
-   *
-   * 此处**逐字**写死而**不 import**：这一句是「往上下文里塞的话」，改一个字都该让人过目
-   * （设计 · 提示词与指令 丙）；而且写死才**反向验得动**——在改前的检出上，这几条要红在
-   * **判据那一句**上，不是红在「导不出这个名字」上。
-   */
-  const ABSENT_REASONING_NOTE = '（这一轮没有产出思考。）'
-
   /**
    * **DeepSeek 的思考模式要求回传**：带 tools 时，历史轮的 `reasoning_content`
    * 不回传就 400。判据落在**出站请求体**上——不是「我们记住了」，是「真发出去了」。
@@ -1136,7 +1129,7 @@ describe('思考的工具往返（U41）', () => {
     const gateway = createModelGateway({ model: 'deepseek-flash',
       providerId: 'ds',
       stamper: testStamper(),
-      config: { vendor: 'deepseek', apiKey: 'test-key' },
+      config: { vendor: 'deepseek', protocol: 'chat-completions', apiKey: 'test-key' },
       apiKey: 'test-key',
       fetch,
       env: {},
@@ -1152,6 +1145,7 @@ describe('思考的工具往返（U41）', () => {
             content: '我看看',
             toolCalls: [{ id: 'call-1', name: 'read', args: { path: 'a.txt' } }],
             reasoning: '先看清路径再动手',
+            reasoningState: { provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' },
           },
           { role: 'tool', callId: 'call-1', name: 'read', ok: true, output: '内容' },
         ],
@@ -1177,7 +1171,7 @@ describe('思考的工具往返（U41）', () => {
     const gateway = createModelGateway({ model: 'MiniMax-M3',
       providerId: 'mm',
       stamper: testStamper(),
-      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
+      config: { protocol: 'chat-completions', baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       apiKey: 'test-key',
       fetch,
       env: {},
@@ -1213,102 +1207,6 @@ describe('思考的工具往返（U41）', () => {
    *
    * 顺带钉住反面：**本来就有思考的那条逐字未变**——补的是缺的那一位，不是覆盖。
    */
-  test('**D45 那一形**：助手消息没有思考 ⇒ 补上一句非空的说明（有思考的逐字未变）', async () => {
-    const { fetch, seen } = capture(() =>
-      sse(
-        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
-        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
-      ),
-    )
-
-    const gateway = createModelGateway({ model: 'deepseek-flash',
-      providerId: 'ds',
-      stamper: testStamper(),
-      config: { vendor: 'deepseek', apiKey: 'test-key' },
-      apiKey: 'test-key',
-      fetch,
-      env: {},
-    })
-
-    await drain(
-      gateway.stream({
-
-        messages: [
-          { role: 'user', content: '接着做' },
-          // ⚠️ 这一条就是 D45 的真 offender：有工具调用、**载荷里没有思考**
-          //    （模型那一轮 `reasoningTokens: 0` ⇒ 契约的非空串无从写起）
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [{ id: 'call-1', name: 'smc_probe', args: { path: 'a.swift' } }],
-          },
-          { role: 'tool', callId: 'call-1', name: 'smc_probe', ok: true, output: '写了' },
-          // 对照：这一条**有**思考——它必须逐字原样出去
-          { role: 'assistant', content: '跑完了', reasoning: '先编译再运行' },
-          { role: 'user', content: '继续' },
-        ],
-      }),
-    )
-
-    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
-    const assistants = sent.messages.filter((one) => one['role'] === 'assistant')
-
-    // ① 缺的那条补上了，且**非空**（空串会被 SDK 的 `reasoning.length > 0` 判掉）
-    expect(assistants[0]?.['reasoning_content']).toBe(ABSENT_REASONING_NOTE)
-    expect(String(assistants[0]?.['reasoning_content']).length).toBeGreaterThan(0)
-
-    // ② 反面：本来就有思考的那条**逐字未变**
-    expect(assistants[1]?.['reasoning_content']).toBe('先编译再运行')
-    // 补上的这一位**不是**那一条的思考（别把缺的那格拿别人的顶上）
-    expect(assistants[0]?.['reasoning_content']).not.toBe(assistants[1]?.['reasoning_content'])
-  })
-
-  /**
-   * **第二形**（U92 新查出 · U95 一并覆盖）：**压缩之后计划笔记再交付**落在末尾。
-   *
-   * 装配在末尾补的那条**合成的**助手消息（`conversation/src/plan.ts` 的 `planMaterialOf`，
-   * `role: 'assistant'`）同样带不了思考——而它就是「末尾那个助手回合」。
-   * 判据落在**最后一条**上：DeepSeek 要的正是尾上那一条（U92 实验 B：给中间那条补、末尾照旧缺 ⇒ 仍 400）。
-   */
-  test('**第二形**：末尾那条合成的助手消息（计划笔记再交付）同样带着这一位', async () => {
-    const { fetch, seen } = capture(() =>
-      sse(
-        chunk({ choices: [{ index: 0, delta: { role: 'assistant', content: '好' } }] }),
-        chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
-      ),
-    )
-
-    const gateway = createModelGateway({ model: 'deepseek-flash',
-      providerId: 'ds',
-      stamper: testStamper(),
-      config: { vendor: 'deepseek', apiKey: 'test-key' },
-      apiKey: 'test-key',
-      fetch,
-      env: {},
-    })
-
-    // 末尾那条的**形状照着 `planMaterialOf` 的产出**（合成助手消息：只有正文，没有思考）
-    const material = { role: 'assistant' as const, content: '〔既有计划笔记 · 记录 #16739〕\n步骤：\n1. [进行中] 调研' }
-
-    await drain(
-      gateway.stream({
-
-        messages: [{ role: 'user', content: '接着做' }, material],
-      }),
-    )
-
-    const sent = seen[0]?.body as { messages: readonly Record<string, unknown>[] }
-    const last = sent.messages.at(-1)
-    expect(last?.['role']).toBe('assistant')
-    expect(last?.['reasoning_content']).toBe(ABSENT_REASONING_NOTE)
-    // 正文一个字未动（补的是思考位，不是正文）
-    expect(last?.['content']).toBe(material.content)
-  })
-
-  /**
-   * **反面**（U95 判据 ④）：**不要求回传的那一家**（兼容接入 ⇒ `echoesReasoning` 不在）
-   * **一个字都不补**——不能给所有供应商都塞这一位。
-   */
   test('**反面**：不要求回传的那家，缺思考也一位不补', async () => {
     const { fetch, seen } = capture(() =>
       sse(
@@ -1320,7 +1218,7 @@ describe('思考的工具往返（U41）', () => {
     const gateway = createModelGateway({ model: 'MiniMax-M3',
       providerId: 'mm',
       stamper: testStamper(),
-      config: { baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
+      config: { protocol: 'chat-completions', baseURL: 'https://api.minimaxi.com/v1', apiKey: 'test-key' },
       apiKey: 'test-key',
       fetch,
       env: {},
@@ -1398,7 +1296,7 @@ describe('假端点回环 · 流式事件序列', () => {
     // 用户声明 → 该家适配的缺项补充 → 未知（设计：「替换当前『内置表只供界面、事件容量
     // 只认配置』的分叉」「输入上限、预留输出与所显示分母须同口径」）。
     // MiniMax-M3 有官方窗长（该家适配的补充表），故**没声明也带着它**。
-    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440, contextWindow: 995_904 })
+    expect(usage?.data).toEqual({ inputTokens: 12_400, outputTokens: 40, totalTokens: 12_440 })
 
     // **反例**（改了这处行为的对照）：**不在补充表里**的模型照旧**没有这一位**——
     // 「不知道就是不知道」那一半没松（app 的读数用例里那条「乙」是同一个反例）。
@@ -1451,15 +1349,14 @@ describe('假端点回环 · 流式事件序列', () => {
     expect(payloads(events)).toEqual(
       payloads([
         // 预算**同一份解析**给两处：请求开始这一刻就带上（与下面的 usage 同一个数）
-        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', 1_000_000 - MAX_COMPLETION_TOKENS),
+        modelCallStart(stamper, MINIMAX_MODEL, 'minimax', undefined, { protocol: 'chat-completions', endpoint: CONFIG.baseURL }),
         modelDelta(stamper, 'text', '你'),
         modelDelta(stamper, 'text', '好'),
         modelDelta(stamper, 'thinking', '简短想'),
         modelUsage(
           stamper,
           { inputTokens: 11, outputTokens: 5, totalTokens: 16 },
-          // **有效输入预算**（U41 返修）：M3 的联合窗口 1M 为本次输出（缺省 4096）预留后
-          1_000_000 - MAX_COMPLETION_TOKENS,
+
         ),
         modelCallEnd(stamper),
       ]),

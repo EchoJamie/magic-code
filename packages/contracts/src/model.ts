@@ -68,6 +68,7 @@ export type VendorInfo = {
   readonly label: string
   /** 官方区域——**第一项是缺省**（不选区域时用它）。空数组不会出现。 */
   readonly regions: readonly VendorRegion[]
+  readonly protocols: readonly VendorProtocol[]
 }
 
 
@@ -116,6 +117,7 @@ export type ModelCapabilities = {
    * 反过来把未知当「不支持」拦下来，等于凭空禁掉一批其实能看图的模型。
    */
   readonly image?: boolean
+  readonly tools?: boolean
 }
 
 /**
@@ -140,6 +142,7 @@ export type ReasoningSetting =
  * （实际请求与服务端结果仍要验）。
  */
 export type ReasoningSupport = {
+  readonly default?: 'on' | 'off'
   /** 支持的档位值（**不假设同一套低/中/高**）。 */
   readonly levels?: readonly string[]
   /** 支持的预算范围（token）；只给一头也是合法的。 */
@@ -324,3 +327,9 @@ export type ProviderModelOverride = {
 
 /** 工作选择标识；实际连接与型号只在配置和运行事实中出现。 */
 export type ModelChoice = 'default' | 'cantrip' | 'spell' | 'arcane'
+
+/** 已解析的协议与无凭据服务来源；历史缺项必须保留未知，不按当前默认补写。 */
+export type ModelProtocol = 'responses' | 'messages' | 'chat-completions'
+export type ProviderAuth = 'none' | 'bearer' | 'api-key'
+export type ModelSource = { readonly protocol: ModelProtocol; readonly endpoint: string }
+export type VendorProtocol = { readonly id: ModelProtocol; readonly label: string; readonly models: readonly string[] }

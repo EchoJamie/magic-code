@@ -11,7 +11,7 @@ import type { LogLevel } from './diagnostics.ts'
  */
 
 import type { McpConfig } from './mcp.ts'
-import type { ModelRef, ProviderModelOverride } from './model.ts'
+import type { ModelRef, ProviderModelOverride, ModelProtocol, ProviderAuth } from './model.ts'
 import type { ModelSwitchRequest } from './control.ts'
 
 /**
@@ -95,8 +95,8 @@ export function resolveMagicHome(
 
  * 供应商条目（`providers.<id>`——`<id>` 是**用户连接**的 id，任意命名）。
  *
- * **一个连接 ≠ 一个型号**（U41 改形）：`model` 是**用户默认选择**，不是它支持的模型全集
- * ——型号来自供应商接口的缓存（见 `model.ts`）。故本条目**可以只有一个 `vendor`**：
+ * 连接不固定型号；工作映射另存于 `models`，型号可来自远端列表或用户手填。
+ * 官方连接可先只保存 `vendor`：
  *
  * ```json
  * { "providers": { "deepseek": { "vendor": "deepseek" } } }
@@ -105,14 +105,16 @@ export function resolveMagicHome(
  * 两条接入路径同处一表：
  * - **官方适配**（有 `vendor`）——认证方式、官方地址、列表/详情接口、调用协议与令牌口径
  *   由内置适配提供（首批 `minimax` / `deepseek`）；`baseURL` 只在**明确需要**时写；
- * - **旧兼容**（无 `vendor`）——照旧 `baseURL` ＋ `model` 走原协议，**不猜域名、不把它
- *   当成官方适配已经可用**（设计 · 命令行与配置「旧配置兼容与保存」）。
+ * - **自定义**（无 `vendor`）——使用必填 `baseURL` 与所选协议；缺省协议为 Responses，
+ *   不根据域名或型号套用官方适配。
  */
 export type ProviderConfig = {
+  readonly protocol?: ModelProtocol
+  readonly auth?: ProviderAuth
   /**
    * **内置供应商适配名**——新建官方连接必有；首批 `minimax` / `deepseek`。
    *
-   * ⚠️ 不从用户起的 id 或未知 URL **猜**供应商：认不出就是没有这一位（＝兼容接入）。
+   * 不从用户起的 id 或 URL 猜供应商；没有此字段即自定义接入。
    */
   readonly vendor?: string
   /** 可读连接名——缺省＝用 id。**改名保留 id**（id 是引用键，不是给人看的）。 */
@@ -120,12 +122,12 @@ export type ProviderConfig = {
   /** 该供应商支持的**官方区域**——可读标识，由适配解释成具体地址。 */
   readonly region?: string
   /**
-   * 明确设置的高级地址——**常规 URL 由适配提供**，本键只在明确需要时写。
+   * 自定义连接的必填基础前缀；官方地址由适配提供，显式值只作地址覆盖。
    *
    * ⚠️ 地址变化是**接入范围变化**（旧缓存随之废弃），**不自动迁移密钥**。
    */
   readonly baseURL?: string
-  /** 空 / 缺省 → 回退环境变量（见 `apiKeyEnvVarOf`）；**永不入记录 / 事件**。 */
+  /** 需认证时空值回退连接环境变量；auth=none 不读凭据。永不入记录或事件。 */
   readonly apiKey?: string
   /**
    * 按**精确模型 id** 的少量必要覆盖——不作为模型注册要求。

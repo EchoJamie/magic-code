@@ -22,6 +22,7 @@ import type {
   ModelFinishReason,
   ModelTraits,
   ModelUsage,
+  ModelSource,
   ReasoningState,
   ToolCall,
 } from '@magic/contracts'
@@ -63,7 +64,7 @@ export type RetryStreamPart = {
  */
 export type VendorStreamPart = TextStreamPart<ToolSet> | RetryStreamPart
 
-export type NormalizeOptions = {
+export type NormalizeOptions = Partial<ModelSource> & {
   /** 模型名——写进 `model.call.start`。 */
   readonly model: string
   /**
@@ -109,6 +110,9 @@ type PendingToolCall = {
 }
 
 type NormalizeState = {
+  readonly source: ModelSource | undefined
+  readonly reasoningItems: Map<string | number, Record<string, unknown>>
+  rawTerminal?: boolean
   readonly model: string
   readonly provider: string | undefined
   /** 这次调用的有效输入预算（见 `NormalizeOptions.inputBudget`）。 */
@@ -143,6 +147,8 @@ function createSplitter(options: NormalizeOptions): TextSplitter {
 function createState(options: NormalizeOptions): NormalizeState {
   return {
     model: options.model,
+    source: options.protocol !== undefined && options.endpoint !== undefined ? { protocol: options.protocol, endpoint: options.endpoint } : undefined,
+    reasoningItems: new Map(),
     provider: options.provider,
     inputBudget: options.inputBudget,
     secret: options.secret,
@@ -317,6 +323,9 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
     }
 
     // —— 思考 ——
+    case 'raw': {
+      return consumeRaw(part.rawValue, state)
+    }
     case 'reasoning-delta': {
       state.thinking += part.text
       return [modelDelta(state.stamper, 'thinking', part.text)]
@@ -367,13 +376,14 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
     // —— 收束 ——
     case 'finish-step': {
       // 取件层单次调用只走一步；这里保留供应商原始用量（SDK 总计会丢失 raw）。
-      state.usage = toUsage(part.usage) ?? state.usage
+      if (state.rawTerminal === undefined) state.usage = toUsage(part.usage) ?? state.usage
       const details = part.providerMetadata?.['magicReasoning']?.['details']
       if (Array.isArray(details)) state.reasoningDetails = details as NonNullable<ReasoningState['details']>
       return []
     }
     case 'finish': {
-      state.usage ??= toUsage(part.totalUsage)
+      if (state.rawTerminal === false) throw new Error('模型流未收到协议结束标记，工具调用未完成')
+      if (state.rawTerminal === undefined) state.usage ??= toUsage(part.totalUsage)
       state.finishReason = toFinishReason(part.finishReason)
       // 收束前先吐残片——否则标签尾部的半截留在切分器里，正文截掉一截
       const events: KernelEvent[] = flushText(state)
@@ -426,12 +436,61 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
     case 'file':
     case 'reasoning-file':
     case 'custom':
-    case 'raw':
       return []
 
     default:
       return []
   }
+}
+
+function nativeUsage(raw: Record<string, unknown>, protocol: ModelSource['protocol'] | undefined, previous: ModelUsage | undefined): ModelUsage | undefined {
+  const output: Record<string, number> = { ...previous }
+  const put = (key: string, value: unknown) => { if (typeof value === 'number' && Number.isFinite(value) && value >= 0) output[key] = value }
+  const record = (value: unknown): Record<string, unknown> => typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+  put('inputTokens', raw[protocol === 'chat-completions' || protocol === undefined ? 'prompt_tokens' : 'input_tokens'])
+  put('outputTokens', raw[protocol === 'chat-completions' || protocol === undefined ? 'completion_tokens' : 'output_tokens'])
+  put('cacheReadTokens', protocol === 'messages' ? raw.cache_read_input_tokens : record(raw[protocol === 'responses' ? 'input_tokens_details' : 'prompt_tokens_details']).cached_tokens)
+  put('cacheWriteTokens', raw.cache_creation_input_tokens)
+  put('reasoningTokens', protocol === 'messages' ? record(raw.output_tokens_details).thinking_tokens : record(raw[protocol === 'responses' ? 'output_tokens_details' : 'completion_tokens_details']).reasoning_tokens)
+  // Anthropic input_tokens excludes caches; canonical input includes all explicitly reported components.
+  if (protocol === 'messages' && typeof raw.input_tokens === 'number') {
+    output.inputTokens = raw.input_tokens + (typeof raw.cache_read_input_tokens === 'number' ? raw.cache_read_input_tokens : 0) + (typeof raw.cache_creation_input_tokens === 'number' ? raw.cache_creation_input_tokens : 0)
+  }
+  if (output.inputTokens !== undefined && output.outputTokens !== undefined) output.totalTokens = output.inputTokens + output.outputTokens
+  put('totalTokens', raw.total_tokens)
+  return Object.keys(output).length ? output : undefined
+}
+
+/** 私有协议项原样持有；SDK 未识别的 Responses 明文思考事件在此归一。 */
+function consumeRaw(raw: unknown, state: NormalizeState): KernelEvent[] {
+  if (raw === null || typeof raw !== 'object') return []
+  const value = raw as Record<string, any>
+  if (state.source === undefined) return []
+  state.rawTerminal ??= false
+  const protocol = state.source?.protocol
+  const usage = protocol === 'responses' ? value.response?.usage : protocol === 'messages' ? value.usage ?? value.message?.usage : value.usage
+  if (usage !== undefined && usage !== null) state.usage = nativeUsage(usage, protocol, state.usage)
+  if (state.source?.protocol === 'responses') {
+    if (['response.completed', 'response.incomplete', 'response.failed'].includes(value.type)) state.rawTerminal = true
+    if (value.type === 'response.output_item.done' && value.item?.type === 'reasoning') {
+      state.reasoningItems.set(value.output_index, structuredClone(value.item))
+    }
+    if (value.type === 'response.reasoning_text.delta' && typeof value.delta === 'string') {
+      state.thinking += value.delta
+      return [modelDelta(state.stamper, 'thinking', value.delta)]
+    }
+  } else if (state.source?.protocol === 'messages') {
+    if (value.type === 'message_stop') state.rawTerminal = true
+    if (value.type === 'content_block_start' && ['thinking', 'redacted_thinking'].includes(value.content_block?.type)) {
+      state.reasoningItems.set(value.index, structuredClone(value.content_block))
+    }
+    const item = state.reasoningItems.get(value.index)
+    if (item && value.type === 'content_block_delta') {
+      if (value.delta?.type === 'thinking_delta') item.thinking = String(item.thinking ?? '') + value.delta.thinking
+      if (value.delta?.type === 'signature_delta') item.signature = String(item.signature ?? '') + value.delta.signature
+    }
+  } else if (value.choices?.some((c: { finish_reason?: string | null }) => c.finish_reason != null)) state.rawTerminal = true
+  return []
 }
 
 // —— 落定 ——
@@ -446,52 +505,14 @@ function consume(part: VendorStreamPart, state: NormalizeState): KernelEvent[] {
  *    且**把那段原文一并带走**——这正是它跟②在记录里分得开的那一格。
  */
 function settleToolCalls(state: NormalizeState): ToolCall[] {
-  const calls: ToolCall[] = []
-  for (const call of state.pending.values()) {
-    if (call.args !== undefined) {
-      calls.push(
-        call.invalid
-          ? { ...rawFieldOf(call.raw), id: call.id, name: call.name, args: call.args, invalid: true }
-          : { id: call.id, name: call.name, args: call.args },
-      )
-      continue
-    }
-    if (call.argsRaw.length === 0) {
-      calls.push({ id: call.id, name: call.name, args: {} })
-      continue
-    }
-    try {
-      const parsed: unknown = JSON.parse(call.argsRaw)
-      const { args, invalid } = toArgs(parsed)
-      calls.push(
-        invalid
-          ? {
-              ...rawFieldOf(rawOf(state, call.argsRaw, parsed)),
-              id: call.id,
-              name: call.name,
-              args,
-              invalid: true,
-            }
-          : { id: call.id, name: call.name, args },
-      )
-    } catch {
-      // 断在半路——**这一串就是原文**（收口这一步是它唯一的去处）
-      calls.push({
-        ...rawFieldOf(rawOf(state, call.argsRaw, undefined)),
-        id: call.id,
-        name: call.name,
-        args: {},
-        invalid: true,
-      })
-    }
-  }
-  return calls
+  return [...state.pending.values()].map(call => {
+    const invalid = call.invalid || state.error !== undefined || state.aborted || !state.complete
+      || call.args === undefined || !['stop', 'tool-calls'].includes(state.finishReason ?? '')
+    return { id: call.id, name: call.name, args: call.args ?? {},
+      ...(invalid ? { invalid: true, ...rawFieldOf(call.raw ?? rawOf(state, call.argsRaw, undefined)) } : {}) }
+  })
 }
 
-/**
- * 「有原文才带这一位」——`ToolCall.rawArgs` 是可缺位（**只增不改**：不给就与加它之前
- * 逐字同形）。判 `undefined`（不在场），不判真假：空串也是一段原文（模型真给了个空串）。
- */
 function rawFieldOf(raw: string | undefined): { rawArgs?: string } {
   return raw === undefined ? {} : { rawArgs: raw }
 }
@@ -501,10 +522,12 @@ function snapshot(state: NormalizeState): ModelCallResult {
     model: state.model,
     text: state.text,
     thinking: state.thinking,
-    ...(state.provider !== undefined && (state.thinking.length > 0 || state.reasoningDetails !== undefined)
+    ...(state.provider !== undefined && state.source !== undefined && (state.thinking.length > 0 || state.reasoningDetails !== undefined || state.reasoningItems.size > 0)
       ? { reasoningState: {
           provider: state.provider,
           model: state.model,
+          ...state.source,
+          ...(state.reasoningItems.size ? { items: [...state.reasoningItems.values()] } : {}),
           ...(state.reasoningDetails === undefined ? {} : { details: state.reasoningDetails }),
         } }
       : {}),
@@ -538,7 +561,7 @@ export function toKernelEvents(
 
   async function* pump(): AsyncGenerator<KernelEvent> {
     try {
-      yield modelCallStart(state.stamper, state.model, state.provider, state.inputBudget)
+      yield modelCallStart(state.stamper, state.model, state.provider, state.inputBudget, state.source)
 
       for await (const part of parts) {
         for (const event of consume(part, state)) yield event
@@ -547,6 +570,7 @@ export function toKernelEvents(
 
       // 走到这里＝流已定论（收束 / 出错 / 中断皆算）。消费方提前 break 则到不了此行，
       // `complete` 留 false——这正是它与「被掐断」的区别。
+      if (!state.closed) throw new Error('模型流未完整结束')
       state.complete = true
     } catch (error) {
       state.complete = true

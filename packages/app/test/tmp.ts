@@ -47,6 +47,7 @@ export function validConfig(overrides: Record<string, unknown> = {}): Record<str
         baseURL: 'https://api.minimaxi.com/v1',
         apiKey: 'sk-test-not-a-real-key',
         vendor: 'minimax',
+        protocol: 'chat-completions',
       },
     },
     ...overrides,

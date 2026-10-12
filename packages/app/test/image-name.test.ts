@@ -103,7 +103,7 @@ function realGateway(): { readonly make: (stamper: EventStamper) => ModelGateway
   const make = (stamper: EventStamper): ModelGateway =>
     createModelGateway({ model: 'test-model',
       providerId: 'test',
-      config: { baseURL: 'http://test.invalid/v1', apiKey: 'fake-test-key' },
+      config: { protocol: 'chat-completions', baseURL: 'http://test.invalid/v1', apiKey: 'fake-test-key' },
       env: {},
       stamper,
       retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },

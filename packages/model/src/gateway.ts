@@ -37,8 +37,8 @@ import { applyEventMiddleware, applyRequestMiddleware } from './middleware.ts'
 import { toKernelEvents } from './normalize.ts'
 import type { RetryPolicy, Sleeper } from './retry.ts'
 import { normalizeRetryPolicy, withTransientRetry } from './retry.ts'
-import { ownOf, resolveContextWindow } from './capacity.ts'
-import { vendorIds, vendorOf } from './vendors.ts'
+import { ownOf } from './capacity.ts'
+import { vendorIds, vendorOf, resolveModelSource, authOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
 
 // —— 缺 key ——
@@ -85,6 +85,7 @@ export function resolveApiKey(input: {
   /** 实际读的那一份配置文件——只用于**缺 key 那句提示**（见 `MissingApiKeyError`）。 */
   readonly configPath?: string | undefined
 }): string {
+  if (input.config.auth === 'none') return ''
   const explicit = input.explicit?.trim()
   if (explicit !== undefined && explicit.length > 0) return explicit
 
@@ -134,10 +135,7 @@ function effectiveLimits(
   // `supplement` 的契约是「**API 给了的不覆盖**」，故把缓存里那份喂进去即已含它
   const supplemented =
     adapter === undefined
-      ? ((): ModelLimits | undefined => {
-          const window = resolveContextWindow(model)
-          return window === undefined ? undefined : { maxContextTokens: window }
-        })()
+      ? known?.limits
       : adapter.supplement(known ?? { id: model }).limits
 
   const merged: ModelLimits = { ...supplemented, ...known?.limits, ...override }
@@ -159,6 +157,7 @@ export function effectiveCapabilitiesOf(
   known: ModelInfo | undefined,
 ): ModelCapabilities | undefined {
   const merged: ModelCapabilities = {
+    ...(config.vendor === undefined ? {} : vendorOf(config.vendor)?.supplement(known ?? { id: model }).capabilities),
     ...known?.capabilities,
     ...overrideOf(config, model)?.capabilities,
   }
@@ -314,20 +313,13 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     )
   }
 
-  // **地址**：官方适配按区域给（`baseURL` 明确写了就用它）；兼容接入用配置里那个。
-  // 两个都没有＝这条连接不知道该往哪儿发——启动期就报（不留到第一次调用）
-  const baseURL = adapter === undefined ? config.baseURL : adapter.baseURLOf(config)
-  if (baseURL === undefined) {
-    throw new Error(
-      adapter === undefined
-        ? `连接「${providerId}」没有服务地址——请写 baseURL（或改用内置供应商）`
-        : `连接「${providerId}」的供应商「${adapter.id}」没有区域「${config.region ?? ''}」的地址`,
-    )
-  }
-
+  const source = resolveModelSource(config, model)
+  const baseURL = source.endpoint
   const streamVendor = createVendorStreamer({
     providerId,
     baseURL,
+    protocol: source.protocol,
+    auth: authOf(config, source.protocol),
     apiKey,
     adapter,
     fetch: options.fetch,
@@ -349,7 +341,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       const spec = effectiveSpecOf({ model, config, adapter, known, fallbackOutputTokens: options.maxCompletionTokens })
       const requestedReasoning = streamOptions?.reasoning ?? options.reasoning
       const reasoning = requestedReasoning === undefined ? undefined : { ...requestedReasoning }
-      const failure = effectiveCapabilitiesOf(model, config, known)?.chat === false
+      const capabilities = effectiveCapabilitiesOf(model, config, known)
+      const hasImage = effective.messages.some(message => message.role === 'user' && typeof message.content !== 'string' && message.content.some(part => part.type === 'image'))
+      const failure = hasImage && capabilities?.image === false ? `模型「${model}」不支持图片输入` : effective.tools?.length && capabilities?.tools === false ? `模型「${model}」不支持工具调用` : capabilities?.chat === false
         ? `模型「${model}」不支持对话` : reasoningFailure(config, model, reasoning, known)
       let attempts = 0
       const streamRetrying = withTransientRetry(streamVendor, {
@@ -363,6 +357,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         parts,
         {
           model,
+          ...source,
           // 条目名随事件上报——外壳状态行据以显示「当前供应商」（本条即当前这一格）
           provider: providerId,
           // 窗长随**用量**上报（分母跟着分子走）——**有效输入预算**，与出站同一份解析

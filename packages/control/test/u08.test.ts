@@ -141,6 +141,7 @@ export function commandSubjectOf(command: Command): string {
     case 'model.refresh':
       // U41 显式刷新——绕开有效期，明确要求现在就取一趟
       return `刷新模型信息：${command.provider ?? '（当前那条）'}`
+    case 'model.override': return '保存模型信息'
     case 'model.configure':
       // U41 设为默认——写**配置里的默认选择**（与 `model.switch` 改当下那一件分开）
       return `设为默认：${command.provider} / ${command.model}`
@@ -226,6 +227,7 @@ export function hubFaceRealizesPort(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelConfigure: () => undefined,
+    onModelOverride: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -266,6 +268,7 @@ export function routesAreContractShape(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelConfigure: () => undefined,
+    onModelOverride: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -309,6 +312,7 @@ function routesWith(overrides: Partial<ControlRoutes>): ControlRoutes {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelConfigure: () => undefined,
+    onModelOverride: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,

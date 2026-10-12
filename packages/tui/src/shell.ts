@@ -1,3 +1,5 @@
+import { effectiveProtocol, editorRows, modelEditor, modelOverride, providerEditor, providerRequest, protocolLabel } from './model-editor.ts'
+import type { ModelEditor } from './model-editor.ts'
 import { foldRound } from './round.ts'
 /**
  * 外壳 · 会话壳（缺陷轮 II 重画）——**只认控制面**。
@@ -22,7 +24,7 @@ import { foldRound } from './round.ts'
 import { decisionActions } from './components/decision.ts'
 import { composerLayout } from './components/composer.ts'
 import { dirname } from 'node:path'
-import { apiKeyEnvVarOf, sanitizeForDisplay } from '@magic/contracts'
+import { sanitizeForDisplay } from '@magic/contracts'
 import type { ModelChoice } from '@magic/contracts'
 
 import type {
@@ -35,8 +37,6 @@ import type {
   KernelEvent,
   ModelInfo,
   ModelRef,
-  VendorInfo,
-  VendorRegion,
   ReasoningSetting,
   RunNotice,
   SessionId,
@@ -106,9 +106,7 @@ import {
   runSummary,
   skillHint,
   skillRows,
-  authLabelOf,
   cacheLabelOf,
-  regionRows,
   vendorRows,
   closePrompt,
   dayLabel,
@@ -459,6 +457,8 @@ type Ask = {
   readonly note?: string
   /** 回车时**要发什么**——`null` ＝ 什么都不发（只是收起来）。 */
   readonly submit: (value: string) => Command | null
+  readonly local?: (value: string) => void
+  readonly change?: (value: string) => void
 }
 
 /**
@@ -890,14 +890,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   let turn: { readonly kind: PageTurn; readonly label: string | null } | null = null
 
-  /**
-   * **一次等着答复的动作意图**（U41）——`provider.save` 之后的回话到了要接着做的那件事
-   * （「确认后保存连接并获取列表」：保存完顺手去取一次模型列表）。
-   *
-   * 为什么需要它：契约把「保存 / 移除的结果」定成**回话**（`provider.catalog` 带 `note`），
-   * 而不是命令上的返回值——而外壳要按**这一次动作**决定下一步。认不回是哪一次就不接。
-   */
-  let awaiting: 'connect' | 'edit' | null = null
+  /** 编辑开始时捕获配置版本；异步回执只结束对应草稿。 */
+  let catalogStamp: string | null | undefined
+  let vendorQuery = false
+  let mappingStamp: string | null | undefined
+  let editor: (ModelEditor & { stamp?: string | null }) | null = null
+  let savingEditor: (ModelEditor & { stamp?: string | null }) | null = null
+  const editorDrafts = new Map<string, ModelEditor & { stamp?: string | null }>()
 
   /**
    * **管理明细正说着哪一条连接**（U41）——空串＝没在明细那一屏。
@@ -994,6 +993,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (layer.dock.kind === 'picker') {
       commit(openPicker(view, layer.dock.picker))
+      if (layer.dock.picker.source === 'model-editor') showEditor()
       if (layer.dock.picker.source === 'session') refreshSessionPicker()
       if (layer.dock.picker.source === 'session-actions' && sessionTarget !== undefined) showSessionActions(sessionTarget, false)
       return
@@ -1747,11 +1747,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     //    ——设计：「刷新只更新信息，**不抢走列表当前焦点**、不清草稿、不写回默认」。
     //    故重铺要保住当前选中那一行（`refreshModelPicker` 里做），且**不关抽屉**。
     if (event.kind === 'model.catalog') {
-      if (waiting === 'modelSave') {
+      catalogStamp = event.data.stamp
+      if (savingEditor?.kind === 'model' && event.data.saved !== undefined) settleEditor(event.data.saved, event.data.note)
+      if (waiting === 'modelSave' && event.data.saved !== undefined) {
         // 映射保存只给回执；首次明确开始在成功回执后应用 Default。
         waiting = null
-        modelScope = 'session'
-        if (startOnAliasSave && event.data.note?.startsWith('已保存') === true) send({ type: 'model.switch', choice: 'default' })
+        if (event.data.saved === true) { modelScope = 'session'; commit(closePicker(view)) }
+        if (startOnAliasSave && event.data.saved === true) send({ type: 'model.switch', choice: 'default' })
         startOnAliasSave = false
         if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
       } else if (waiting === 'model') {
@@ -1768,9 +1770,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // ① 正等「接入」的第一步 ⇒ 开「挑一家」那一屏；
     // ② 正等「管理」 ⇒ 开连接一览那一屏；
     // ③ 都不是 ⇒ 这是**保存 / 移除之后的回话**：留一行回执（有话说时）、照新一览重铺，
-    //    而接入那一路还接着办一件收尾的事——**保存成功就去取一次模型列表**
-    //    （设计：「确认后保存连接并获取列表」）。
     if (event.kind === 'provider.catalog') {
+      catalogStamp = event.data.stamp
+      if (editor?.kind === 'model') {
+        editor.vendor = view.vendors.find(one => one.vendor === editor?.original?.vendor)
+        if (view.dock.kind === 'picker' && view.dock.picker.source === 'model-editor') showEditor()
+      }
+      refreshModelPicker('')
+      if (savingEditor !== null && (savingEditor.kind === 'provider' || event.data.saved === false) && event.data.saved !== undefined) settleEditor(event.data.saved, event.data.note)
       // ⚠️ **这一跳是「打开选择器」＝进一层**（U61）：`enterLayer()` 只在**底下那一屏还在**
       //    时才压栈——从入口行点进来时它把 `/model` 那张列表压住（`←` 退得回去），
       //    从命令行打进来时底下就是输入行，它什么都不做（`←` 那一下便是收起）。
@@ -1785,11 +1792,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       } else {
         if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
         refreshManagePicker()
-        if (awaiting === 'connect') {
-          awaiting = null
-          waiting = 'model'
-          send({ type: 'model.list' })
-        }
+
       }
     }
 
@@ -2528,10 +2531,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // —— 模型详情 / 思考设置（U41）——
 
   /** 这一条模型在手上的资料（缓存里那一条；`undefined` ＝ 缓存里没有它）。 */
-  const infoOf = (pick: ModelRef): ModelInfo | undefined =>
-    view.models
-      .find((one) => one.provider === pick.provider)
-      ?.cache?.snapshot?.models.find((one) => one.id === pick.model)
+  const infoOf = (pick: ModelRef): ModelInfo | undefined => {
+    const entry = view.models.find(one => one.provider === pick.provider)
+    const info = entry?.cache?.snapshot?.models.find(one => one.id === pick.model)
+    const override = entry?.modelOverrides?.[pick.model]
+    if (override === undefined) return info
+    return { ...info, id: pick.model, limits: { ...info?.limits, ...override.limits }, capabilities: { ...info?.capabilities, ...override.capabilities }, ...(override.reasoningSupport === undefined ? {} : { reasoning: override.reasoningSupport }) }
+  }
 
   /**
    * **模型详情那一屏**——两条动作（思考设置 / 设为默认），资料写在下方那行说明里。
@@ -2543,6 +2549,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const entry = view.models.find((one) => one.provider === pick.provider)
     const info = infoOf(pick)
     const limits = info?.limits
+    const protocol = effectiveProtocol(entry, view.vendors.find(one => one.vendor === entry?.vendor), pick.model)
     const spec =
       limits === undefined
         ? '规格：供应商没给'
@@ -2561,6 +2568,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       ...(info?.name === undefined ? [] : [`显示名 ${info.name}`]),
       ...(info?.description === undefined ? [] : [info.description]),
       spec,
+      `协议：${protocol === undefined ? '尚未核实此型号的支持范围' : protocolLabel(protocol)}`,
+      entry?.modelOverrides?.[pick.model] === undefined ? '信息来源：供应商信息；缺项未知' : '信息来源：用户填写优先于供应商信息',
       `缓存：${
         entry?.cache?.snapshot === undefined
           ? '还没取过这一条的模型列表'
@@ -2573,15 +2582,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       openPicker(view, {
         source: 'model-detail',
         selected: 0,
-        rows: [{ label: '返回型号列表', meta: '', value: 'back', current: false, oneLine: true }],
+        rows: [{ label: '编辑模型信息', meta: '用户填写优先；留空恢复来源', value: 'edit-info', current: false, oneLine: true }, { label: '返回型号列表', meta: '', value: 'back', current: false, oneLine: true }],
         hint: lines.join('\n'),
       }),
     )
+    requestVendorInfo(pick)
   }
+
+  const requestVendorInfo = (pick: ModelRef): void => {
+    const vendor = view.models.find(one => one.provider === pick.provider)?.vendor
+    if (!vendorQuery && vendor !== undefined && !view.vendors.some(one => one.vendor === vendor)) {
+      vendorQuery = true; send({ type: 'provider.list' })
+    }
+  }
+  const reasoningSupportOf = (pick: ModelRef) =>
+    view.models.find(one => one.provider === pick.provider)?.effectiveReasoning?.[pick.model]
 
   /** 思考那一屏——**行由能力描述长出来**（见 `reasoningRows`），说明照实说清它声明了什么。 */
   const openReasoningPicker = (pick: ModelRef): void => {
-    const support = infoOf(pick)?.reasoning
+    const support = reasoningSupportOf(pick)
     const rows = reasoningRows(support, reasoningOf(pick) ?? null)
 
     commit(
@@ -2594,81 +2613,25 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     )
   }
 
-  /**
-   * 管理明细上那四件动作（U41）。
-   *
-   * 三处分寸：
-   * - **改名 / 更新认证** 都借本地小输入那一屏（`openAsk`）——一件**一次设置**，
-   *   不走草稿那条路（那条是给模型的交代）；
-   * - **留空的分寸各不相同**（故各写各的说明）：新名字留空＝**取消**（空名字不是一个名字）；
-   *   密钥留空＝**清除**（设计明文：「回到环境变量回退」）；
-   * - **移除只发一条命令**：引用检查归内核（设计：「移除前列出默认/角色/活跃使用引用；
-   *   有引用先替换或取消，不静默级联删除」）——它拒绝时把缘由写进回话的 `note`，
-   *   外壳照印，不在这儿预判。
-   */
+  const applyReasoning = (setting: ReasoningSetting): void => {
+    const target = collaborationModel
+    collaborationModel = null
+    commit(closePicker(closePrompt(view)))
+    if (target !== null) send({ type: 'collaboration.configure', ...target, model: { reasoning: setting } })
+    else send({ type: 'model.switch', reasoning: setting })
+  }
+
+  /** 接入字段集中编辑；刷新与移除仍是独立动作。 */
   const manageAction = (value: string): void => {
     const entry = view.models.find((one) => one.provider === manageAt)
     if (entry === undefined) return
 
-    if (value === 'rename') {
-      const now = entry.name ?? entry.provider
-      enterLayer() // 进「问新名字」那一屏（U61）——`←` 退回管理明细
-      openAsk({
-        label: '新名字',
-        secret: false,
-        value: now,
-        caret: now.length,
-        placeholder: '连接名',
-        note: `连接 id 仍是「${entry.provider}」——改名不动引用`,
-        submit: (name) => {
-          const trimmed = name.trim()
-          awaiting = 'edit' // 回话到了重铺这一屏（改名不动模型列表，故不去拉它）
-
-          return trimmed === '' ? null : { type: 'provider.save', provider: entry.provider, name: trimmed }
-        },
-      })
-      return
+    if (value === 'edit') {
+      const vendor = view.vendors.find(one => one.vendor === entry.vendor)
+      if (entry.vendor !== undefined && vendor === undefined) { commit(appendReceipt(view, '供应商协议资料尚未加载，请重新打开管理连接')); return }
+      enterLayer(); openEditor(providerEditor(entry.provider, vendor, entry)); return
     }
-
-    if (value === 'key') {
-      enterLayer() // 进「问密钥」那一屏（U61）——`←` 退回管理明细
-      openAsk({
-        label: '密钥',
-        secret: true,
-        value: '',
-        caret: 0,
-        placeholder: '粘贴或输入新密钥',
-        note: '回车＝换掉 · 留空＝清除（回到环境变量回退）',
-        submit: (key) => {
-          awaiting = 'edit'
-
-          return { type: 'provider.save', provider: entry.provider, apiKey: key }
-        },
-      })
-      return
-    }
-
-    if (value === 'address') {
-      // **高级地址**（设计 · 命令行与配置：「通常不填 URL……**高级地址只在明确需要时编辑**」）
-      // ——它此前没有落点，而「接一条自己那台兼容端点 / 受控端点」正需要它。
-      // ⚠️ 地址是**接入范围**的一部分：改它＝这条连接换了地方（内核据此废弃旧缓存，
-      //    「改变服务地址/认证范围须明确影响该连接」），故留空＝**回到官方地址**，不是「不改」。
-      enterLayer() // 进「问地址」那一屏（U61）——`←` 退回管理明细
-      openAsk({
-        label: '高级地址',
-        secret: false,
-        value: entry.baseURL ?? '',
-        caret: (entry.baseURL ?? '').length,
-        placeholder: 'https://…（留空＝按官方地址）',
-        note: '留空＝回到适配给的官方地址 · 改地址会作废这条连接的模型缓存',
-        submit: (address) => {
-          awaiting = 'edit'
-
-          return { type: 'provider.save', provider: entry.provider, baseURL: address.trim() }
-        },
-      })
-      return
-    }
+    if (value === 'manual') { enterLayer(); openModelEditor(entry.provider); return }
 
     if (value === 'refresh') {
       send({ type: 'model.refresh', provider: entry.provider })
@@ -2748,22 +2711,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         source: 'provider-detail',
         selected: 0,
         rows: [
-          {
-            label: '改名',
-            meta: `现在是「${entry.name ?? entry.provider}」`,
-            current: false,
-            value: 'rename',
-            oneLine: true,
-          },
-          { label: '更新认证', meta: authLabelOf(entry), current: false, value: 'key', oneLine: true },
-          {
-            label: '高级地址',
-            // 写明了就报它；没写＝**按官方地址**（适配给的，不在这儿拼一份）
-            meta: entry.baseURL ?? '按官方地址（适配给的）',
-            current: false,
-            value: 'address',
-            oneLine: true,
-          },
+          { label: '编辑连接', meta: protocolLabel(entry.protocol ?? ''), current: false, value: 'edit', oneLine: true },
+          { label: '手动填写模型', meta: '无需列表或详情接口', current: false, value: 'manual', oneLine: true },
           {
             label: '刷新这一条',
             meta: cacheLabelOf(entry),
@@ -2811,6 +2760,78 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 输入却不给东西可点（打不了字、没得选，看着就是卡死——`openPicker` 那条 P0 的由来）
       commit(closePicker(view))
     }
+  }
+
+  const openModelEditor = (provider: string, model = ''): void => {
+    const entry = view.models.find(one => one.provider === provider)
+    openEditor(modelEditor(provider, model, entry?.modelOverrides?.[model], entry, view.vendors.find(one => one.vendor === entry?.vendor)))
+    requestVendorInfo({ provider, model })
+  }
+  const editorKey = (draft: ModelEditor): string => `${draft.kind}:${draft.provider}:${draft.model ?? ''}`
+  const openEditor = (draft: ModelEditor): void => {
+    editor = editorDrafts.get(editorKey(draft)) ?? { ...draft, stamp: catalogStamp }
+    editor.models = [...new Set([...Object.values(view.configuredModels).filter(one => one.provider === draft.provider).map(one => one.model), ...Object.keys(draft.original?.modelOverrides ?? {}), ...(draft.original?.cache?.snapshot?.models.map(one => one.id) ?? [])])]
+    editorDrafts.set(editorKey(editor), editor)
+    showEditor()
+  }
+  const showEditor = (): void => {
+    if (editor === null) return
+    const focused = view.dock.kind === 'picker' && view.dock.picker.source === 'model-editor' ? view.dock.picker.rows[view.dock.picker.selected]?.value : undefined
+    const rows = editorRows(editor)
+    const selected = Math.max(0, rows.findIndex(one => one.value === focused))
+    commit(openPicker(view, { source: 'model-editor', selected, rows, hint: [
+      editor.kind === 'provider' ? `连接 ${editor.provider} · 确认后一次保存` : `连接 ${editor.provider} · 原始型号原样发送；信息可留空`,
+      editor.kind === 'model' ? `协议：${protocolLabel(effectiveProtocol(editor.original, editor.vendor, editor.values.model ?? '') ?? '')}；填写能力不代表调用已验证` : '',
+      editor.kind === 'provider' && !editor.vendor && editor.original && editor.values.baseURL !== editor.original.baseURL ? '地址已改变：请重新填服务凭据或选择无需认证' : '',
+      editor.note ?? '',
+    ].filter(Boolean).join('\n') }))
+  }
+  const settleEditor = (saved: boolean, note?: string): void => {
+    const held = savingEditor
+    if (held === null) return
+    savingEditor = null
+    held.pending = false
+    held.note = note ?? (saved ? '已保存' : '保存失败；草稿已保留')
+    const visible = editor === held && view.dock.kind === 'picker' && view.dock.picker.source === 'model-editor'
+    if (!saved) { if (visible) showEditor(); return }
+    editorDrafts.delete(editorKey(held))
+    held.values.apiKey = ''
+    if (!visible) return
+    editor = null
+    popLayer()
+    if (held.kind === 'provider') openManageDetail(held.provider)
+    else openModelPicker(note ?? '已保存模型信息；选择型号以设置映射')
+  }
+  const editorAction = (key: string): void => {
+    const held = editor
+    if (held === null || held.pending) return
+    if (key === 'cancel') { popLayer(); return }
+    if (key === 'expand') { held.expanded = !held.expanded; showEditor(); return }
+    if (key === 'save' || key === 'remove-override') {
+      if (savingEditor !== null) { held.note = '上一笔保存尚未完成，请稍后重试'; showEditor(); return }
+      try {
+        const command: Command = held.kind === 'provider'
+          ? { type: 'provider.save', ...providerRequest(held), expectedStamp: held.stamp }
+          : { type: 'model.override', provider: held.provider, model: held.values.model!, override: key === 'remove-override' ? null : modelOverride(held), expectedStamp: held.stamp }
+        savingEditor = held; held.pending = true; held.note = '正在保存…'; showEditor(); send(command)
+      } catch (error) { held.note = error instanceof Error ? error.message : '保存失败'; showEditor() }
+      return
+    }
+    const field = held.fields.find(one => one.key === key)
+    if (field === undefined) return
+    if (field.choices !== undefined) {
+      held.changed?.add(key)
+      const at = field.choices.findIndex(one => one.id === held.values[key])
+      held.values[key] = field.choices[(at + 1) % field.choices.length]!.id
+      if (key === 'protocol' && held.vendor === undefined && !held.changed?.has('auth') && held.original?.auth === undefined) held.values.auth = held.values.protocol === 'messages' ? 'api-key' : 'bearer'
+      showEditor(); return
+    }
+    enterLayer()
+    openAsk({ label: field.label, secret: field.secret ?? false, value: held.values[key] ?? '', caret: (held.values[key] ?? '').length,
+      placeholder: field.key === 'model' ? '服务要求的原始 model 标识' : field.key === 'baseURL' ? 'http://localhost:端口/服务前缀' : '留空保持未知或恢复来源',
+      note: field.secret ? '隐藏输入；不进入会话或输入历史' : '回车返回编辑页；最后点击保存',
+      submit: () => null, change: value => { held.changed?.add(key); held.values[key] = value }, local: value => { held.changed?.add(key); held.values[key] = value; popLayer(); showEditor() },
+    })
   }
 
   // —— 本地小输入（U41）：改名 / 密钥那一类 ——
@@ -2863,6 +2884,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const held = asking
     if (held === null) return
 
+    held.change?.(value)
     asking = { ...held, value, caret: Math.max(0, Math.min(caret, value.length)) }
     commit(withAskView(asking))
   }
@@ -2877,6 +2899,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const held = asking
     if (held === null) return NONE
 
+    if (held.local !== undefined) { held.local(held.value); return NONE }
     const command = held.submit(held.value)
     if (command?.type === 'session.rename' && sessionTarget === command.session) {
       if (managementPending !== null) return NONE
@@ -2976,81 +2999,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
   }
 
-  /**
-   * 接入第一步：**挑一家**——名单来自调用线的查询出口（`provider.catalog` 答复里那一格），
-   * **壳里不留一份**（工单：「官方信息由适配统一提供，不能让界面维护第二份表」）。
-   *
-   * 取不到那一格时（本分支现在正是这样：那一笔依赖调用线的 `vendors.ts` 与装配接线，
-   * 落不到这里）**如实说一句**——0 行的抽屉接管着输入却不给东西可点，那是死胡同
-   * （`openPicker` 那条 P0）。
-   */
+  /** 官方名单由适配提供；自定义入口始终可用。 */
   const openVendorPicker = (): void => {
     commit(
       openPicker(view, {
         source: 'vendor',
         selected: 0,
-        rows: vendorRows(view.vendors),
-        hint: '接上之后就能从它的接口取模型列表——不用逐个型号登记',
+        rows: [...vendorRows(view.vendors), { label: '自定义', meta: '本机、局域网或远端服务', value: 'custom', current: false, oneLine: true }],
+        hint: '选择供应商；没有模型列表也可以手动填写原始型号',
       }),
     )
-  }
-
-  /**
-   * 接入第二步（**只在真有得选时才开**）：**挑官方区域**。
-   *
-   * 一家只有一个区域时不问——那一步没有选择可言（「一屏上的每一格，问它影响用户的
-   * 哪个动作」）。区域与地址都来自适配（`VendorRegion`），界面只显示、不拼。
-   */
-  const openRegionPicker = (vendor: VendorInfo): void => {
-    commit(
-      openPicker(view, {
-        source: 'region',
-        // 落在**缺省**那一项上（约定：`regions[0]` 是缺省）
-        selected: 0,
-        rows: regionRows(vendor),
-        hint: `${vendor.label}：选一个官方区域（地址由适配给出，通常不必自己填）`,
-      }),
-    )
-  }
-
-  /**
-   * 接入第二步：**问密钥**（隐藏输入）。
-   *
-   * 三条分寸都在这一屏上：
-   * - **不回显**（`secret`）——屏上只见圆点，值只在壳里；
-   * - **可以留空**：设计「认证使用独立的隐藏输入**或既有环境变量引用**」——留空＝不往配置里
-   *   写凭据，走 `MAGIC_<连接 id>_API_KEY` 回退（那一行的说明把这句写出来，指到具体那个名字）；
-   * - **保存之后顺手取一次列表**（设计：「确认后保存连接并获取列表」）——见 `awaiting`。
-   */
-  const askKeyFor = (vendor: VendorInfo, region: VendorRegion | undefined): void => {
-    const id = freeIdOf(vendor.vendor)
-
-    openAsk({
-      label: '密钥',
-      secret: true,
-      value: '',
-      caret: 0,
-      placeholder: '粘贴或输入密钥',
-      // 交代清楚「这一下存的是什么」：哪一家、哪个区域、凭据从哪儿来。
-      // ⚠️ 说明里报的区域**用「这一次会用的那一个」**（没得选时就是缺省那一项），
-      //    而写进配置的只在**真选过**时给（`region` 缺省＝用缺省那项，见下面的展开）
-      note: [
-        `回车＝保存 ${vendor.label} · ${(region ?? vendor.regions[0])?.label ?? '默认区域'}`,
-        `留空＝改用环境变量 ${apiKeyEnvVarOf(id)}`,
-      ].join(' · '),
-      submit: (value) => {
-        awaiting = 'connect'
-
-        return {
-          type: 'provider.save',
-          provider: id,
-          vendor: vendor.vendor,
-          // **选了才写**（约定：不写 region＝用缺省那一项）——只有一个区域时没得选，故不写
-          ...(region === undefined ? {} : { region: region.id }),
-          ...(value === '' ? {} : { apiKey: value }),
-        }
-      },
-    })
   }
 
   const modelTarget = (): string => collaborationModel === null ? '当前工作'
@@ -3072,7 +3030,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   const openModelPicker = (note: string): void => {
     // 设置与工作选择共用读数；实际型号只在映射编辑层出现。
-    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
+    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent(), view.configuredModels)
 
     commit(
       openPicker(view, {
@@ -3117,7 +3075,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     const held = picked(view)?.pick
     // 重铺与铺**同一份读数、同一句话**（U78）——不然刷新一次那一屏就换了个人说话
-    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent())
+    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent(), view.configuredModels)
     const hint = modelPickerHint(note)
 
     if (rows.length === 0) {
@@ -4930,26 +4888,32 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 实际型号详情只读；思考从当前工作/成员设置入口调整。
       if (view.dock.picker.source === 'model-detail') {
         if (row.value === 'back') { popLayer(); return NONE }
+        if (row.value === 'edit-info') { enterLayer(); openModelEditor(detailAt.provider, detailAt.model) }
         return NONE
       }
 
       // 思考那一屏（U41）：选定＝**把这一条用到当前模型上**（`model.switch` 带 `reasoning`）
       if (view.dock.picker.source === 'model-reasoning') {
-        const setting = row.reasoning
-        if (setting === undefined) return NONE // 不该有这种行（行是 `reasoningRows` 铺的）
-
-        if (collaborationModel !== null) {
-          const target = collaborationModel
-          collaborationModel = null
-          commit(closePicker(view))
-          send({ type: 'collaboration.configure', ...target, model: { reasoning: setting } })
+        if (row.value === 'budget') {
+          const budget = reasoningSupportOf(detailAt)?.budget
+          if (budget === undefined) return NONE
+          const current = reasoningOf(detailAt)
+          const value = current?.mode === 'budget' ? String(current.budgetTokens) : ''
+          enterLayer()
+          openAsk({ label: '思考 token 预算', secret: false, value, caret: value.length, placeholder: '正整数',
+            note: `范围：${budget.minTokens ?? '未声明下限'} ～ ${budget.maxTokens ?? '未声明上限'}；回车应用到${modelTarget()}`,
+            submit: () => null, local: text => {
+              const tokens = Number(text)
+              if (!Number.isSafeInteger(tokens) || tokens <= 0 || (budget.minTokens !== undefined && tokens < budget.minTokens) || (budget.maxTokens !== undefined && tokens > budget.maxTokens)) {
+                if (asking !== null) { asking = { ...asking, note: '预算须为支持范围内的正整数；输入已保留' }; commit(withAskView(asking)) }
+                return
+              }
+              asking = null; applyReasoning({ mode: 'budget', budgetTokens: tokens })
+            },
+          })
           return NONE
         }
-        send({
-          type: 'model.switch',
-          reasoning: setting,
-        })
-        commit(closePicker(view))
+        if (row.reasoning !== undefined) applyReasoning(row.reasoning)
         return NONE
       }
 
@@ -4966,33 +4930,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
-      // 供应商那一屏（U41 · 接入第一步）：选定＝**接着问区域**（有得选时）或**直接问密钥**
+      if (view.dock.picker.source === 'model-editor') { editorAction(row.value); return NONE }
+      if (view.dock.picker.source === 'model-manual') { enterLayer(); openModelEditor(row.value); return NONE }
       if (view.dock.picker.source === 'vendor') {
-        const pickedVendor = view.vendors.find((one) => one.vendor === row.value)
-        if (pickedVendor === undefined) return NONE // 名单里没有这一家（不该有这种行）
-
-        // **接入那一路是「一步接一步」的每一屏都算一层**（U61）：这里要么进区域那一屏、
-        // 要么直接进问密钥那一屏——两条都是进一层，故先压栈再开（选错家想重选就回得来）。
-        enterLayer()
-        if (pickedVendor.regions.length > 1) openRegionPicker(pickedVendor)
-        else askKeyFor(pickedVendor, undefined) // 没得选 ⇒ 不写 `region`（约定：缺省那项）
-
-        return NONE
-      }
-
-      // 区域那一屏（接入第二步）：选定＝接着问密钥，区域随这一条连接一起存
-      if (view.dock.picker.source === 'region') {
-        const pickedVendor = view.vendors.find((one) =>
-          one.regions.some((region) => region.id === row.value),
-        )
-        const region = pickedVendor?.regions.find((one) => one.id === row.value)
-        if (pickedVendor === undefined || region === undefined) return NONE
-
-        // ⚠️ **这一跳是本单的要害**（U61）：问密钥那一屏是**本地小输入**，不是选择器——
-        //    它照样是一层（设计：栈的单位是「那一屏」，不是「那个选择器」）。
-        enterLayer()
-        askKeyFor(pickedVendor, region)
-        return NONE
+        const vendor = view.vendors.find(one => one.vendor === row.value)
+        if (row.value !== 'custom' && vendor === undefined) return NONE
+        enterLayer(); openEditor(providerEditor(freeIdOf(row.value), vendor)); return NONE
       }
 
       // 工作选择只发档位；实际组合由执行侧读取配置解析。
@@ -5010,6 +4953,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (view.dock.picker.source === 'model') {
         if (row.value.startsWith('edit:')) {
           enterLayer()
+          mappingStamp = catalogStamp
           modelScope = row.value.slice(5) as ModelChoice
           openModelPicker('')
           return NONE
@@ -5027,16 +4971,20 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           openReasoningPicker(chosen)
           return NONE
         }
+        if (row.value === 'manual') {
+          enterLayer(); commit(openPicker(view, { source: 'model-manual', selected: 0, rows: view.models.map(one => ({ label: one.name ?? one.provider, value: one.provider, meta: '手动填写原始型号', current: false, oneLine: true })), hint: '选择模型所属连接' })); return NONE
+        }
         if (row.pick === undefined) return modelAction(row.value)
 
         // 保存配置与应用工作选择是两个动作；首次明确开始才同时应用 Default。
         if (modelScope !== 'session') {
+          if (waiting === 'modelSave') return NONE
           const choice = modelScope
           const first = choice === 'default' && view.configuredModels.default === undefined
           startOnAliasSave = first
-          send({ type: 'model.configure', choice, provider: row.pick.provider, model: row.pick.model, ...(first ? { initialize: true } : {}) })
           waiting = 'modelSave'
-          commit(closePicker(view))
+          send({ type: 'model.configure', expectedStamp: mappingStamp, choice, provider: row.pick.provider, model: row.pick.model, ...(first ? { initialize: true } : {}) })
+          // 保存回执到达前保留选择与页面。
         }
         return NONE
       }
@@ -5531,6 +5479,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     dispose: () => {
       disposed = true
+      editorDrafts.clear(); editor = null; savingEditor = null; asking = null; layers = []
       if (pending !== undefined) clearTimeout(pending)
       pending = undefined
       // 「再按一次」那道门的钟（U68）——收摊之后它再来一下只是白叫醒一个没人看的屏

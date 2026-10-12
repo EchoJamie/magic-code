@@ -18,6 +18,36 @@ const PROVIDERS_OF = (path: string): Record<string, Record<string, unknown>> =>
   READ(path)['providers'] as Record<string, Record<string, unknown>>
 
 describe('保存一条连接', () => {
+  test('自定义协议与认证可保存；改名保留自动协议，清除显式选择不改凭据', async () => {
+    const dir = tempDir('magic-save-')
+    try {
+      const path = join(dir, 'config.json')
+      expect(await saveProvider({ path, request: { provider: 'local', baseURL: 'http://127.0.0.1:9000/prefix', protocol: 'responses', auth: 'none' } })).toEqual({ ok: true })
+      const local = loadConfig({ path, magic: magicAt(dir) }).config.providers.local!
+      expect(local).toMatchObject({ protocol: 'responses', auth: 'none', baseURL: 'http://127.0.0.1:9000/prefix' })
+      expect(local.vendor).toBeUndefined()
+      await saveProvider({ path, request: { provider: 'official', vendor: 'minimax', apiKey: 'private' } })
+      await saveProvider({ path, request: { provider: 'official', name: '工作连接' } })
+      expect(PROVIDERS_OF(path).official).not.toHaveProperty('protocol')
+      await saveProvider({ path, request: { provider: 'official', protocol: 'messages' } })
+      await saveProvider({ path, request: { provider: 'official', protocol: null } })
+      expect(PROVIDERS_OF(path).official).toEqual({ vendor: 'minimax', apiKey: 'private', name: '工作连接' })
+    } finally { removeDir(dir) }
+  })
+
+  test('更换服务地址须重新明确认证，拒绝时保留完整旧配置', async () => {
+    const dir = tempDir('magic-save-')
+    try {
+      const path = join(dir, 'config.json')
+      await saveProvider({ path, request: { provider: 'local', baseURL: 'https://first.example/v1', auth: 'bearer', apiKey: 'first-secret' } })
+      const before = readFileSync(path, 'utf8')
+      expect((await saveProvider({ path, request: { provider: 'local', baseURL: 'https://second.example/v1' } })).ok).toBe(false)
+      expect(readFileSync(path, 'utf8')).toBe(before)
+      expect(await saveProvider({ path, request: { provider: 'local', baseURL: 'https://second.example/v1', auth: 'none', apiKey: '' } })).toEqual({ ok: true })
+      expect(PROVIDERS_OF(path).local).toEqual({ baseURL: 'https://second.example/v1', auth: 'none' })
+    } finally { removeDir(dir) }
+  })
+
   test('首次（还没有那份文件）能接上——写出来的东西**读得回来**', async () => {
     const dir = tempDir('magic-save-')
     try {

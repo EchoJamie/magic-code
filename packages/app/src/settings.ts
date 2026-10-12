@@ -9,7 +9,7 @@ import { expandHome, GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { createWorkspaceService } from '@magic/execution'
 import { parseRules } from '@magic/permission'
 import type { FetchLike, ModelInfoService } from '@magic/model'
-import { createModelInfoService, resolveConnection, vendorCatalog } from '@magic/model'
+import { createModelInfoService, resolveConnection, selectModel, vendorCatalog } from '@magic/model'
 import { loadConfig, parseConfig, type LoadedConfig } from './config.ts'
 import { editConfigFile, saveProvider, removeProvider, configureModel, setPrefs } from './config-save.ts'
 import { commitGrants, loadGrants } from './grants-file.ts'
@@ -19,6 +19,7 @@ import { resolveModelChoice } from './agent-models.ts'
 import { providerCatalog, readModelCatalog } from './run/observation.ts'
 export type SettingsContext = {
   readonly magic: MagicHome
+  readonly configPath?: string
   readonly environment: Readonly<Record<string, string | undefined>>
   readonly fetch: FetchLike
   readonly now?: () => number
@@ -26,7 +27,7 @@ export type SettingsContext = {
 const book = (v: unknown): Record<string, unknown> => Object.assign(Object.create(null), typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {})
 
 export function createSettings(context: SettingsContext) {
-  const configPath = `${context.magic.base}/config.json`
+  const configPath = context.configPath ?? `${context.magic.base}/config.json`
   const grantPath = `${context.magic.base}/${GRANTS_FILE_NAME}`
   const processToken = crypto.randomUUID()
   let currentLoaded: LoadedConfig | undefined
@@ -45,10 +46,10 @@ export function createSettings(context: SettingsContext) {
   }
   async function read(preview?: SettingsPreview): Promise<SettingsSnapshot> {
     const stamp = configStamp(configPath)
-    const loaded = loadConfig({ magic: context.magic })
+    const loaded = loadConfig({ magic: context.magic, path: configPath })
     const config = loaded.config
     const providers = Object.fromEntries(Object.entries(config.providers).map(([id, { apiKey, ...entry }]) => [id, {
-      ...entry, keyConfigured: !!apiKey?.trim(), keySource: apiKey?.trim() ? 'config' : context.environment[apiKeyEnvVarOf(id)]?.trim() ? 'env' : 'missing',
+      ...entry, keyConfigured: entry.auth !== 'none' && !!apiKey?.trim(), keySource: entry.auth === 'none' ? 'none' : apiKey?.trim() ? 'config' : context.environment[apiKeyEnvVarOf(id)]?.trim() ? 'env' : 'missing',
     }]))
     const servers = Object.fromEntries(Object.entries(config.mcp?.servers ?? {}).map(([name, server]) => {
       if ('url' in server) return [name, { url: server.url, secretNames: Object.keys(server.headers ?? {}) }]
@@ -90,7 +91,7 @@ export function createSettings(context: SettingsContext) {
   }
   async function apply(action: SettingsAction, stamp: string | null): Promise<string> {
     if (configStamp(configPath) !== stamp) throw new Error('配置已被修改，请重新读取后再保存；输入已保留')
-    const loaded = loadConfig({ magic: context.magic })
+    const loaded = loadConfig({ magic: context.magic, path: configPath })
     if (action.type === 'diagnostics.set') {
       const { type, source, ...change } = action
       await saveDiagnostics(context.magic, change, stamp)
@@ -108,6 +109,17 @@ export function createSettings(context: SettingsContext) {
     const validate = (raw: Record<string, unknown>) => {
       const config = parseConfig(raw, configPath, context.magic).config
       for (const [id, configEntry] of Object.entries(config.providers)) resolveConnection({ providerId: id, config: configEntry, env: context.environment })
+      if (action.type === 'provider.save' || action.type === 'model.configure') {
+        for (const [choice, mapping] of Object.entries(config.models ?? {})) {
+          if (mapping.provider !== action.provider) continue
+          const selected = selectModel({ providers: config.providers }, { choice: choice as import('@magic/contracts').ModelChoice, ...mapping })
+          if (!selected.ok) throw new Error(selected.reason)
+        }
+        if (action.type === 'provider.save') for (const model of Object.keys(config.providers[action.provider]?.modelOverrides ?? {})) {
+          const selected = selectModel({ providers: config.providers }, { choice: 'default', provider: action.provider, model })
+          if (!selected.ok) throw new Error(selected.reason)
+        }
+      }
       if (action.type === 'workspace.set' && config.workspaceRoots !== undefined) createWorkspaceService({ roots: config.workspaceRoots })
       if (action.type === 'permissions.set') {
         const rejected = parseRules(config.permissions?.rules).rejected
@@ -179,7 +191,7 @@ export function createSettings(context: SettingsContext) {
     if (!outcome.ok) throw new Error(outcome.reason)
     let cacheNote = ''
     try {
-    const reloaded = loadConfig({ magic: context.magic })
+    const reloaded = loadConfig({ magic: context.magic, path: configPath })
     const modelCache = createFileModelInfoCache(context.magic.base)
     for (const { provider, config, snapshot } of snapshots) {
       if (snapshot !== undefined && !connectionScopeChanged(config, reloaded.config.providers[provider])) {
@@ -194,9 +206,10 @@ export function createSettings(context: SettingsContext) {
     return '已保存；下次装配时采用，已有工作保持原配置'
   }
   async function catalog(selection?: ModelSelectionRef, request?: ModelSwitchRequest) {
-    const loaded = loadConfig({ magic: context.magic })
+    const loaded = loadConfig({ magic: context.magic, path: configPath })
     const reader = await readModelCatalog(loaded, context.magic, selection, request, context.now ?? Date.now, modelInfo(loaded))
-    return { ...reader, env: context.environment }
+    if (configStamp(configPath) !== loaded.stamp) throw new Error('配置在读取期间已改变，请重新读取')
+    return { ...reader, env: context.environment, stamp: loaded.stamp ?? null, configuredModels: loaded.config.models }
   }
   return { read, apply, catalog }
 }

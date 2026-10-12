@@ -17,7 +17,7 @@ export function collaborationStage(options: Omit<ShellOptions, 'magicBase'> = {}
   const shell = createShell({ ...spy.transport, send(command) {
     spy.transport.send(command)
     if (command.type === 'collaboration.read') spy.emit(event('collaboration.view', collaborationDetail(command.member)))
-    if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { choice: 'default' as const, provider: 'local', model: 'mini' } }))
+    if (command.type === 'model.list') spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'local', model: 'mini' } }))
   } }, { magicBase: '/test/.magic', ...options })
   shells.push(shell)
   spy.emit(event('session.state', { active: 'origin', sessions: [{ archived: false, id: 'origin', title: '修复回调', at: 0 }, { archived: false, id: 'member', at: 0 }] }))
@@ -232,7 +232,7 @@ test('成员记录刷新保持阅读位置；配置目录刷新保持成员作�
   app.key('left'); app.pick('member-model')
   app.pick('refresh')
   expect(app.spy.commands.at(-1)).toEqual({ type: 'model.refresh' })
-  app.spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { choice: 'default' as const, provider: 'other', model: 'main' } }))
+  app.spy.emit(event('model.catalog', { entries: [{ provider: 'local' }], configuredModels: { default: { provider: 'local', model: 'mini' } }, current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'other', model: 'main' } }))
   expect(app.screen()).toContain('模型选择与思考设置作用于：实现')
   app.pick('choose'); app.pick('default')
   expect(app.spy.commands.at(-1)).toMatchObject({ type: 'collaboration.configure', member: 'worker' })

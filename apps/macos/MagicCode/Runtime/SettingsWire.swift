@@ -85,7 +85,10 @@ extension SettingsValue {
         func object(_ key: String) -> Bool { if case .object = self[key] { return true }; return false }
         func strings(_ key: String) -> Bool { if case .array(let values) = self[key] { return values.allSatisfy { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }; return false }
         switch type {
-        case "provider.save": return text("provider") && ["vendor", "name", "region", "baseURL", "apiKey"].allSatisfy { key in if v[key] == nil { return true }; if case .string = self[key] { return true }; return false }
+        case "provider.save": return text("provider")
+            && (v["protocol"] == nil || self["protocol"] == .null || ["responses", "messages", "chat-completions"].contains(self["protocol"].text))
+            && (v["auth"] == nil || ["none", "bearer", "api-key"].contains(self["auth"].text))
+            && ["vendor", "name", "region", "baseURL", "apiKey"].allSatisfy { key in if v[key] == nil { return true }; if case .string = self[key] { return true }; return false }
         case "provider.remove", "model.refresh": return text("provider")
         case "model.configure": return ["default", "cantrip", "spell", "arcane"].contains(self["choice"].text) && text("provider") && text("model") && (v["initialize"] == nil || self["initialize"] == .bool(true) || self["initialize"] == .bool(false))
         case "model.clear": return ["default", "cantrip", "spell", "arcane"].contains(self["choice"].text)

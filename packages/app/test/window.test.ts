@@ -53,14 +53,14 @@ const KEY = 'sk-u30-not-a-real-key'
  * - `local` —— 表外模型（自建 llama），没声明 ⇒ **不知道**（分母 `null`）。
  */
 const PROVIDERS = {
-  mm: { vendor: 'minimax', baseURL: 'https://mm.example/v1', apiKey: KEY },
-  mm2: { vendor: 'minimax', baseURL: 'https://mm2.example/v1', apiKey: KEY, modelOverrides: { ['MiniMax-M2']: {limits: {maxContextTokens: 32_768}} } },
-  local: { vendor: 'minimax', baseURL: 'https://local.example/v1', apiKey: KEY },
+  mm: { vendor: 'minimax', protocol: 'chat-completions', baseURL: 'https://mm.example/v1', apiKey: KEY },
+  mm2: { vendor: 'minimax', protocol: 'chat-completions', baseURL: 'https://mm2.example/v1', apiKey: KEY, modelOverrides: { ['MiniMax-M2']: {limits: {maxContextTokens: 32_768}} } },
+  local: { protocol: 'chat-completions', baseURL: 'https://local.example/v1', apiKey: KEY },
   /**
    * **同名模型的另一条**（`mm2` 挂的也是 `MiniMax-M2`）——规划侧点名的那一形：
    * 合法的两个端点可以给同名模型不同的窗长，声明**不许串到这一条头上**。
    */
-  'mm-same': { vendor: 'minimax', baseURL: 'https://mm-same.example/v1', apiKey: KEY },
+  'mm-same': { vendor: 'minimax', protocol: 'chat-completions', baseURL: 'https://mm-same.example/v1', apiKey: KEY },
 }
 
 /** 假端点：一路顺风（内容固定、每次回用量）——只为让「真调用 → 有会话」这条链走通。 */
@@ -358,9 +358,9 @@ describe('U30 · 换过模型之后的分母', () => {
       expect((await chooseConfiguredModel(assembly, 'MiniMax-M2.5')).ok).toBe(true)
       expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
-      // 换到表里没有的模型名 ⇒ 不知道（同条目那个数也不顶上去）
-      expect((await chooseConfiguredModel(assembly, 'MiniMax-M9')).ok).toBe(true)
-      expect(shell.getView().status.window).toBeNull()
+      // 官方未核实型号不能应用；失败保留当前已知型号与容量。
+      expect((await chooseConfiguredModel(assembly, 'MiniMax-M9')).ok).toBe(false)
+      expect(shell.getView().status.window).toBe(204_800 - RESERVED_OUTPUT)
 
       shell.dispose()
       assembly.close()
@@ -399,7 +399,7 @@ describe('U30 · 换过模型之后的分母', () => {
    * - 条目名 `'toString'` ⇒ **未知供应商**（不是把原型上那个东西当配置去解 key）、切不动就不动；
    * - 模型名 `'toString'`（同条目只换模型）⇒ 分母**干净地没有**（不是原型上那个函数）。
    */
-  test('`toString` 这类条目名 ⇒ 未知供应商；这类模型名 ⇒ 分母干净地没有', async () => {
+  test('原型名不能作为选择或官方型号，失败保留当前模型和分母', async () => {
     const land = stage()
 
     try {
@@ -415,11 +415,11 @@ describe('U30 · 换过模型之后的分母', () => {
       expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
       expect(shell.getView().status.model).toBe('Default')
 
-      // 模型名落在原型上：换是换了（同条目换模型），分母**没有**——不留原型上那个东西
-      expect((await chooseConfiguredModel(assembly, 'toString')).ok).toBe(true)
-      expect(shell.getView().status.model).toBe('Spell')
-      expect(shell.getView().status.window).toBeNull()
-      expect(usageLabel(shell.getView().status.usage, shell.getView().status.window)).toBe('3.1k')
+      // 官方型号同样只认精确支持表，不读取原型属性。
+      expect((await chooseConfiguredModel(assembly, 'toString')).ok).toBe(false)
+      expect(shell.getView().status.model).toBe('Default')
+      expect(shell.getView().status.window).toBe(1_000_000 - RESERVED_OUTPUT)
+      expect(usageLabel(shell.getView().status.usage, shell.getView().status.window)).toBe('3.1k/996k')
 
       shell.dispose()
       assembly.close()

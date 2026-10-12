@@ -2,7 +2,7 @@
 import type { AgentId, CollaborationId, DelegationId, MessageId, OperationId, RecordId, SessionId, Timestamp, WaitId } from './ids.ts'
 import type { ModelChoice, ReasoningSetting } from './model.ts'
 
-export type AgentModelConfig = { readonly choice: ModelChoice; readonly provider: string; readonly model: string; readonly reasoning?: ReasoningSetting }
+export type AgentModelConfig = import('./model.ts').ModelSource & { readonly choice: ModelChoice; readonly provider: string; readonly model: string; readonly reasoning?: ReasoningSetting }
 export type EntryReference = { readonly sessionId: SessionId; readonly entryId: RecordId }
 export type AgentReachability = 'active' | 'suspended' | 'historical'
 export type AgentIdentity = {

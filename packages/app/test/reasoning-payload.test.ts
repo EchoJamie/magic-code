@@ -66,11 +66,12 @@ function sendAndWait(shell: ShellHandle, text: string): Promise<void> {
  * 使用当前产品支持的两种官方适配：DeepSeek 与 MiniMax。
  */
 function stageOn(fixture: Fixture, options: { readonly vendor: string }): Stage {
+  const model = options.vendor === 'minimax' ? 'MiniMax-M3' : MODEL
   return makeStage({
     config: {
-      models: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: MODEL}, spell: {provider: "local", model: MODEL}, arcane: {provider: "local", model: MODEL}},
+      models: {default: {provider: "local", model}, cantrip: {provider: "local", model}, spell: {provider: "local", model}, arcane: {provider: "local", model}},
       providers: {
-        local: { vendor: options.vendor, baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+        local: { vendor: options.vendor, protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })
@@ -126,7 +127,7 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
       // ② **读得回来**：条目里那份思考就是端点回的那份（逐字），正文另存（载荷不重复它）
       const landed = assistantRows(assembly.paths.database)
       expect(landed).toHaveLength(1)
-      expect(landed[0]?.payload).toEqual({ reasoning: REASONING, reasoningState: { provider: 'local', model: MODEL } })
+      expect(landed[0]?.payload).toEqual({ reasoning: REASONING, reasoningState: { provider: 'local', model: MODEL, protocol: 'chat-completions', endpoint: fixture.baseURL } })
       expect(landed[0]?.text).toBe(REPLY)
 
       // —— 第二轮：那一份要随历史轮回传 ——
@@ -145,7 +146,7 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
 
   test('MiniMax：同源的实际思考经记录后原样回传', async () => {
     const fixture = startFixture({
-      model: MODEL,
+      model: 'MiniMax-M3',
       turns: [
         { kind: 'text', text: REPLY, reasoning: REASONING },
         { kind: 'text', text: '好，接着来。' },
@@ -162,7 +163,7 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
       await sendAndWait(handle, '接着做')
 
       // 条目里**照旧留着**那份思考（记录域与供应商无关：如实留痕）
-      expect(assistantRows(assembly.paths.database)[0]?.payload).toEqual({ reasoning: REASONING, reasoningState: { provider: 'local', model: MODEL } })
+      expect(assistantRows(assembly.paths.database)[0]?.payload).toEqual({ reasoning: REASONING, reasoningState: { provider: 'local', model: 'MiniMax-M3', protocol: 'chat-completions', endpoint: fixture.baseURL } })
 
       // 同源且实际收到的思考进入下一次请求；跨来源隔离由模型域反例覆盖
       const chats = chatsOf(fixture)
@@ -177,32 +178,15 @@ describe('U64 · 思考那一轮：落得进去 · 读得回来 · 下一轮回�
 })
 
 /**
- * U95 · **D45 的真正修法**：末尾那个助手回合**必须带着这一位出门**。
- *
- * 上面那一组验的是「有思考时回不回传」；这一组验的是**没有思考时**——而 D45 恰恰是这一形：
- * 那一轮 DeepSeek **压根没产出思考**（`reasoningTokens: 0`），载荷按契约整个键不写，
- * 于是回传时拿不出东西、对面 400（成因由 U92 查穿）。
- *
- * ## 判据落在**出站请求体**上（不是条目、也不是我们记不记得）
- *
- * 补的那一位必须**非空**：`@ai-sdk/openai-compatible` 写这一格的条件是
- * `reasoning.length > 0`——空串会被整键丢掉，等于没补（U92 实验 A ④）。
- * 故这里除了逐字对那一句，还**单独钉一次「非空」**：只对逐字的话，把那一句改成空串
- * 会连判据一起绿过去。
- *
- * ⚠️ **补的是说明、不是思考**（不许编造模型想过什么）——原文见 `EXPECTED_NOTE` 那条注。
+ * DeepSeek 带 tools 时须回传实际 reasoning_content（包括未调用工具的历史轮）。
+ * 官方未规定用人工说明替代缺失思考；这个受控用例只验证不编造载荷，
+ * 不证明真实服务端接受缺失字段：https://api-docs.deepseek.com/guides/thinking_mode
  */
-describe('U95 · 没有思考的那一轮：要求回传的那家补上一句说明', () => {
-  /**
-   * 取件层补的那一句的**原文**（`packages/model/src/ai-sdk.ts` 的 `ABSENT_REASONING_NOTE`）。
-   * 此处**逐字**写死：它是「往上下文里塞的话」，改一个字都该让人过目（设计 · 提示词与指令 丙）。
-   */
-  const EXPECTED_NOTE = '（这一轮没有产出思考。）'
-
-  test('模型这一轮没产出思考——下一次请求里那条助手消息带着补上的这一位（非空）', async () => {
+describe('没有思考的那一轮：不编造思考载荷', () => {
+  test('DeepSeek 未返回思考——记录和下一次请求均不注入人工说明', async () => {
     const fixture = startFixture({
       model: MODEL,
-      // ⚠️ 剧本**不给 `reasoning`**——正是 D45 那一形（模型没产出思考）
+      // 受控响应不返回 reasoning_content。
       turns: [
         { kind: 'text', text: REPLY },
         { kind: 'text', text: '好，接着来。' },
@@ -223,9 +207,7 @@ describe('U95 · 没有思考的那一轮：要求回传的那家补上一句说
 
       const chats = chatsOf(fixture)
       expect(chats).toHaveLength(2)
-      // **要害**：出站体里那一位补上了，且**非空**（空串会被 SDK 整键丢掉）
-      expect(chats[1]?.assistantReasoning).toBe(EXPECTED_NOTE)
-      expect((chats[1]?.assistantReasoning ?? '').length).toBeGreaterThan(0)
+      expect(chats[1]?.assistantReasoning).toBeUndefined()
     } finally {
       assembly?.close()
       await fixture.stop()
@@ -235,7 +217,7 @@ describe('U95 · 没有思考的那一轮：要求回传的那家补上一句说
 
   test('MiniMax：没有思考时不补说明字段', async () => {
     const fixture = startFixture({
-      model: MODEL,
+      model: 'MiniMax-M3',
       turns: [
         { kind: 'text', text: REPLY },
         { kind: 'text', text: '好，接着来。' },

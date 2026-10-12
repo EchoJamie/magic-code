@@ -192,7 +192,7 @@ test('U115：咨询在途映射稳定，下次新咨询读取新映射，主 rea
     f.store.collaboration.updateAgent(main.agentId, { model: { ...main.model, reasoning: { mode: 'off' } } })
     const config = JSON.parse(readFileSync(configPath, 'utf8'))
     config.models.arcane = { provider: 'second', model: 'changed-model' }
-    config.providers.second = { ...config.providers.controlled, vendor: 'minimax' }
+    config.providers.second = { ...config.providers.controlled }
     writeFileSync(configPath, JSON.stringify(config))
     pending.release()
     await f.wait('旧咨询多轮完成与主模型自动核收', () => f.delegation()?.deliveryMessageId !== undefined && f.requests().length >= 4)
@@ -201,8 +201,8 @@ test('U115：咨询在途映射稳定，下次新咨询读取新映射，主 rea
     await f.wait('新映射经真实工具往返完成', () => f.store.collaboration.listDelegations(f.collaboration()!.collaborationId).some(d => f.store.collaboration.getAgent(d.assigneeId)?.model.model === 'changed-model' && d.deliveryMessageId !== undefined) || f.errors.length > 0)
     const advisors = f.members().filter(one => one.purpose === 'consultation')
     expect(advisors.map(one => one.model)).toEqual([
-      { choice: 'arcane', provider: 'controlled', model: 'descendant-model', reasoning: { mode: 'default' } },
-      { choice: 'arcane', provider: 'second', model: 'changed-model', reasoning: { mode: 'default' } },
+      { choice: 'arcane', provider: 'controlled', model: 'descendant-model', protocol: 'chat-completions', endpoint: config.providers.controlled.baseURL, reasoning: { mode: 'default' } },
+      { choice: 'arcane', provider: 'second', model: 'changed-model', protocol: 'chat-completions', endpoint: config.providers.second.baseURL, reasoning: { mode: 'default' } },
     ])
     expect(f.requests('changed-model')[0]?.body.thinking).not.toEqual({ type: 'disabled' })
     expect(f.store.collaboration.getAgent(main.agentId)!.model.choice).toBe('default')

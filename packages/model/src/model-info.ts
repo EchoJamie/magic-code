@@ -49,7 +49,7 @@ import type {
 } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import { effectiveSpecOf, resolveApiKey } from './gateway.ts'
-import { vendorOf } from './vendors.ts'
+import { normalizeBaseURL, vendorOf } from './vendors.ts'
 import type { VendorAdapter } from './vendors.ts'
 
 /** 默认有效期——24 小时（设计：默认有效期 24 小时）。 */
@@ -102,10 +102,10 @@ export function resolveConnection(input: {
   const { providerId, config } = input
   const adapter = config.vendor === undefined ? undefined : vendorOf(config.vendor)
 
-  // 地址：官方适配按区域给；兼容接入用配置里那个。都没有就空串——
-  // 「没有地址」的报错留给调用那条路（`gateway.ts` 启动期一声响），这里如实空着
-  const baseURL =
-    adapter === undefined ? (config.baseURL ?? '') : (adapter.baseURLOf(config) ?? '')
+  // 列表使用官方 Chat 地址，与推理协议独立；显式地址采用调用入口的同一校验。
+  // 未解析出地址仍如实留空，保留信息服务对未配置连接的既有读面。
+  const base = adapter === undefined ? config.baseURL : adapter.baseURLOf(config, 'chat-completions')
+  const baseURL = base === undefined ? '' : normalizeBaseURL(base)
 
   let apiKey: string | undefined
   try {
@@ -212,8 +212,8 @@ function adapterOf(config: ProviderConfig): VendorAdapter | undefined {
  * 它管的是「这份列表说的是哪个范围」：换了供应商或换了地址就是另一个范围，
  * 旧快照即刻作废。`baseURL` 为空串的历史写法也照收（那仍是一个明确的取值）。
  */
-function scopeOf(adapter: VendorAdapter, baseURL: string): string {
-  return `${adapter.id}@${baseURL}`
+function scopeOf(adapter: VendorAdapter, baseURL: string, protocol?: ProviderConfig['protocol']): string {
+  return `${adapter.id}@${baseURL}#${protocol ?? 'auto'}`
 }
 
 /**
@@ -254,7 +254,10 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
     options.connections().find((one) => one.id === providerId)
 
   const readOf = (providerId: string): ModelInfoRead => {
-    const snapshot = snapshots.get(snapshotKeyOf(providerId, connectionOf(providerId)?.access?.id))
+    const connection = connectionOf(providerId)
+    const adapter = connection === undefined ? undefined : adapterOf(connection.config)
+    const stored = snapshots.get(snapshotKeyOf(providerId, connection?.access?.id))
+    const snapshot = connection !== undefined && adapter !== undefined && stored?.scope === scopeOf(adapter, connection.baseURL, connection.config.protocol) ? stored : undefined
     const failure = failures.get(providerId)
     const refreshing = inflight.has(providerId)
 
@@ -276,8 +279,8 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
     const failure = failures.get(providerId)
     if (failure !== undefined && options.now() - failure.at < cooldownMs) return false
 
-    const snapshot = snapshots.get(snapshotKeyOf(providerId, connectionOf(providerId)?.access?.id))
-    return snapshot === undefined || options.now() - snapshot.fetchedAt > ttlMs
+    const read = readOf(providerId)
+    return read.snapshot === undefined || read.stale === true
   }
 
   /**
@@ -298,7 +301,7 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
       // 兼容接入没有自动列表能力——**不发请求**，也不报错（设计：不假称已支持）
       if (adapter === undefined) return
 
-      const scope = scopeOf(adapter, connection.baseURL)
+      const scope = scopeOf(adapter, connection.baseURL, connection.config.protocol)
       // **获取时捕获该身份**：发布前拿它跟**现取的**核一次——这一趟用的是哪份接入，
       // 只有发起时那个连接资料说得准
       const access = connection.access
@@ -328,7 +331,7 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
             ? undefined
             : (() => {
                 const now = adapterOf(current.config)
-                return now === undefined ? undefined : scopeOf(now, current.baseURL)
+                return now === undefined ? undefined : scopeOf(now, current.baseURL, current.config.protocol)
               })()
 
         if (currentScope !== scope) return
@@ -339,8 +342,8 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
           scope,
           // **成功取得的时刻**（设计原义）——不是发起时刻，也不拿它冒充有效范围
           fetchedAt: options.now(),
-          // 补充在**归一之后**：API 给了的字段一律不覆盖（补充排在它之后）
-          models: listed.map((info) => adapter.supplement(info)),
+          // 缓存只保存供应商原始归一资料；协议相关补充在有效组合的读面计算。
+          models: listed,
         }
 
         snapshots.set(snapshotKeyOf(id, access?.id), snapshot)
@@ -384,7 +387,7 @@ export function createModelInfoService(options: ModelInfoServiceOptions): ModelI
         // 上一轮改了地址却没删成的（跨进程改的 / 上次崩在删之前），在这里挡住
         const adapter = adapterOf(connection.config)
         if (adapter === undefined) continue
-        if (stored.scope !== scopeOf(adapter, connection.baseURL)) continue
+        if (stored.scope !== scopeOf(adapter, connection.baseURL, connection.config.protocol)) continue
 
         snapshots.set(snapshotKeyOf(connection.id, connection.access.id), stored)
       }

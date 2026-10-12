@@ -25,7 +25,11 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     }
     session = event.session
     if (event.kind === 'model.catalog') selection = event.data.current
-    if (event.kind === 'model.switched' && event.data.ok && event.data.provider && event.data.model) selection = { choice: event.data.choice ?? selection?.choice ?? 'default', provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) }
+    if (event.kind === 'model.switched' && event.data.ok && event.data.provider && event.data.model && event.data.protocol && event.data.endpoint) selection = {
+      choice: event.data.choice ?? selection?.choice ?? 'default', provider: event.data.provider, model: event.data.model,
+      protocol: event.data.protocol, endpoint: event.data.endpoint,
+      ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }),
+    }
     if (event.kind === 'grants.catalog') {
       const path = `${magic.base}/grants.json`, before = configStamp(path)
       const local = readGrantView(magic, createWorkspaceService({ roots: [event.data.workspace] }))
@@ -40,15 +44,16 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
     const event = { id: 0, turn: null, at: Date.now(), session, kind, data } as KernelEvent
     for (const listener of listeners) listener(event)
   }
-  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.refresh', 'prefs.set', 'grants.list', 'grants.revoke'])
+  const local = new Set<Command['type']>(['model.list', 'provider.list', 'provider.save', 'provider.remove', 'model.configure', 'model.override', 'model.refresh', 'prefs.set', 'grants.list', 'grants.revoke'])
   async function handle(command: Command) {
     const network = createWorkEnvironment(environment)
     const settings = createSettings({ magic, environment: network.env, fetch: network.fetch })
     let note: string | undefined
+    let saved: boolean | undefined
     try {
       let action: SettingsAction | undefined
       switch (command.type) {
-        case 'provider.save': case 'provider.remove': case 'model.configure': case 'prefs.set': action = command; break
+        case 'provider.save': case 'provider.remove': case 'model.configure': case 'model.override': case 'prefs.set': action = command; break
         case 'model.refresh': {
           const provider = command.provider ?? selection?.provider ?? loadConfig({ magic }).config.models?.default?.provider
           if (!provider) throw new Error('尚未选择可刷新的供应商')
@@ -60,8 +65,13 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
           action = { ...command, workspace, grantStamp }; break
         }
       }
-      if (action) note = await settings.apply(action, configStamp(`${magic.base}/config.json`))
-    } catch (error) { note = error instanceof Error ? error.message : String(error) }
+      if (action) {
+        const expected = 'expectedStamp' in command && command.expectedStamp !== undefined
+          ? command.expectedStamp : configStamp(`${magic.base}/config.json`)
+        note = await settings.apply(action, expected)
+        saved = true
+      }
+    } catch (error) { saved = false; note = error instanceof Error ? error.message : String(error) }
     try {
       if (command.type === 'prefs.set') {
         const config = loadConfig({ magic }).config
@@ -77,12 +87,13 @@ export function terminalSettings(transport: ControlTransport, magic: MagicHome, 
           emit('grants.catalog', grants)
       } else {
         const reader = await settings.catalog(selection, selection ? undefined : initial)
-        if (command.type.startsWith('provider.')) emit('provider.catalog', providerCatalog(reader, note))
-        else emit('model.catalog', { ...modelCatalog(reader, loadConfig({ magic }).config.models), ...(note === undefined ? {} : { note }) })
+        const result = { stamp: reader.stamp, ...(saved === undefined ? {} : { saved }) }
+        if (command.type.startsWith('provider.')) emit('provider.catalog', { ...providerCatalog(reader, note), ...result })
+        else emit('model.catalog', { ...modelCatalog(reader, reader.configuredModels), ...result, ...(note === undefined ? {} : { note }) })
       }
     } catch (error) {
       const failure = [note, error instanceof Error ? error.message : String(error)].filter(Boolean).join('；')
-      emit('provider.catalog', { entries: [], vendors: [], note: failure })
+      emit('provider.catalog', { entries: [], vendors: [], note: failure, saved: false })
     } finally { await network.close() }
   }
   return {

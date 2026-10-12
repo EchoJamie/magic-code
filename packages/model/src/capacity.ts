@@ -39,6 +39,7 @@
 export const MODEL_CONTEXT_BUILTIN: Readonly<Record<string, number>> = {
   // 旗舰（2026-09-20 官方表）：1,000,000 token 上下文
   'MiniMax-M3': 1_000_000,
+  'MiniMax-M3.1-Flash-Preview': 1_000_000,
   // M2 及同家变体——官方表**逐行**都给 204,800（变体是精确 id，不是家族匹配）
   'MiniMax-M2.7': 204_800,
   'MiniMax-M2.7-highspeed': 204_800,

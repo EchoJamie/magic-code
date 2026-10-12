@@ -222,7 +222,7 @@ test('协作归档按根原子核资格，成员执行未收尾阻塞；恢复�
   const f = await fixture()
   try {
     const records = f.store.collaboration
-    const model = { choice: 'default' as const, provider: 'test', model: 'test' }
+    const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
     const origin = { sessionId: 'a', entryId: f.store.serviceFor('a').appendEntry({ kind: 'user', content: { text: '根交代' }, at: 2 }) }
     const coordinator = records.registerAgent({ operationId: 'root', sessionId: 'a', name: '协调', role: '', model, at: 3 })
     const work = records.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 4 })
@@ -280,7 +280,7 @@ test('普通目录当前关注优先，归档目录按内容时间；开放协�
     await until(() => f.launches.length === 1)
     f.ready()
     const records = f.store.collaboration
-    const model = { choice: 'default' as const, provider: 'test', model: 'test' }
+    const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test' }
     const origin = { sessionId: 'a', entryId: f.store.serviceFor('a').appendEntry({ kind: 'user', content: { text: '独立协调' }, at: Date.now() }) }
     const agent = records.registerAgent({ operationId: 'root', sessionId: 'a', name: '协调', role: '', model, at: Date.now() })
     const work = records.openCollaboration(agent.agentId, { operationId: 'open', origin, at: Date.now() })

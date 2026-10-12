@@ -1742,6 +1742,7 @@ export type CommandRoutes = {
    */
   onProviderList(): void
   /** **保存一条连接**（接入 / 改名 / 更新认证 / 改地址）→ 装配（写盘归它）。 */
+  onModelOverride(request: Extract<import('./control.ts').Command, { type: 'model.override' }>): void | Promise<void>
   onProviderSave(request: ProviderSaveRequest): void
   /** **移除一条连接** → 装配（写盘归它；有引用时的处置见 `ProviderRemove`）。 */
   onProviderRemove(provider: string): void

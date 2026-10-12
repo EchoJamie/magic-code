@@ -65,7 +65,7 @@ function distillerOn(model: string, fetch: typeof globalThis.fetch) {
   const gateway = createModelGateway({ model,
     providerId: 'ds',
     stamper: testStamper(),
-    config: { vendor: 'deepseek', apiKey: 'test-key' },
+    config: { baseURL: 'https://local.test/v1', protocol: 'chat-completions', apiKey: 'test-key' },
     fetch: fetch as never,
     env: {},
   })

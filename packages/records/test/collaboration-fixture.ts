@@ -2,7 +2,7 @@ import type { AgentIdentity, MessagePart } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
 import { removeDataDir, tempDataDir } from './tmp.ts'
 
-export const model = { choice: 'default' as const, provider: 'test', model: 'test-model' }
+export const model = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'test', model: 'test-model' }
 export const body = (text: string): readonly MessagePart[] => [{ kind: 'text', text }]
 export function fixture() {
   const dir = tempDataDir()

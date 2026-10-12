@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentModelConfig, AgentRoleConfig, CollaborationReply, ModelInfoSnapshot } from '@magic/contracts'
@@ -43,9 +44,9 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
     return new Response(chunk(delta) + chunk({}, tool ? 'tool_calls' : 'stop') + usageChunk + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
   } })
   const providers = {
-    ds: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/ds`, apiKey: 'local-only-ds' },
-    mm: { vendor: 'minimax', baseURL: `http://127.0.0.1:${server.port}/mm`, apiKey: 'local-only-mm', ...(image === undefined ? {} : { modelOverrides: { 'member-model': { capabilities: { image } } } }) },
-    missing: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/missing` },
+    ds: { protocol: 'chat-completions' as const, baseURL: `http://127.0.0.1:${server.port}/ds`, apiKey: 'local-only-ds', modelOverrides: Object.fromEntries(['entry-model', 'peer-model', 'switched-member', 'another', 'committed'].map(model => [model, { reasoningSupport: { levels: ['low', 'high'], disable: true } }])) },
+    mm: { protocol: 'chat-completions' as const, baseURL: `http://127.0.0.1:${server.port}/mm`, apiKey: 'local-only-mm', ...(image === undefined ? {} : { modelOverrides: { 'member-model': { capabilities: { image } } } }) },
+    missing: { protocol: 'chat-completions' as const, baseURL: `http://127.0.0.1:${server.port}/missing` },
   }
   const configPath = join(magic.base, 'config.json')
   const config = { dataDir, providers, models: {default: {provider: "missing", model: 'missing'}, cantrip: {provider: "ds", model: 'entry-model'}, spell: {provider: "mm", model: 'member-model'}, arcane: {provider: "ds", model: 'role-default-must-not-replace-member'}}, workspaceRoots: [changed], agentRoles: { reader: {
@@ -55,9 +56,9 @@ function setup(rolePatch: Partial<AgentRoleConfig> = {}, image?: boolean) {
   writeFileSync(configPath, JSON.stringify(config))
   const store = createRecordsStore({ dataDir, workspace: [realpathSync(workspace)] })
   const origin = { sessionId: 'origin', entryId: store.serviceFor('origin').appendEntry({ kind: 'user', content: { text: '原始目标' }, at: 1 }) }
-  const coordinator = store.collaboration.registerAgent({ operationId: 'register', sessionId: 'origin', name: '入口', role: '', model: { choice: 'default', provider: 'ds', model: 'entry-model', reasoning: { mode: 'off' } }, at: 2 })
+  const coordinator = store.collaboration.registerAgent({ operationId: 'register', sessionId: 'origin', name: '入口', role: '', model: { choice: 'default', provider: 'ds', model: 'entry-model', protocol: 'chat-completions', endpoint: providers.ds.baseURL, reasoning: { mode: 'off' } }, at: 2 })
   const collaboration = store.collaboration.openCollaboration(coordinator.agentId, { operationId: 'open', origin, at: 3 })
-  const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'default', provider: 'mm', model: 'member-model', reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
+  const { agent, delegation } = store.collaboration.spawn(coordinator.agentId, { operationId: 'spawn', sessionId: 'member', name: '成员', role: 'reader', responsibility: 'PERSISTED_RESPONSIBILITY', model: { choice: 'default', provider: 'mm', model: 'member-model', protocol: 'chat-completions', endpoint: providers.mm.baseURL, reasoning: { mode: 'default' } }, body: [{ kind: 'text', text: '按职责审查' }], scope: '只读工作', source: origin, authorization: [origin], at: 4 })
   store.collaboration.respondToDelegation(agent.agentId, { operationId: 'accept', delegationId: delegation.delegationId, response: 'accept', at: 5 })
   const open = (session = 'member', coordinate = true, collaborationChanged?: () => void) => assemble({
     cwd: changed, session, magic, config: loadConfig({ path: configPath, magic }), allowAll: true,
@@ -114,6 +115,70 @@ describe('成员主机装配', () => {
     } finally { shell.dispose(); app.close(); f.close() }
   })
 
+  test('接回使用已保存协议；服务地址改变时拒绝且保留原记录', async () => {
+    const f = setup()
+    try {
+      writeFileSync(f.configPath, JSON.stringify({ ...f.config, providers: { ...f.providers, mm: { ...f.providers.mm, protocol: 'responses' } } }))
+      const app = f.open(), shell = attachShell(app.shell)
+      try {
+        await app.ready(); await app.boot()
+        expect(app.models?.current()).toEqual(f.agent.model)
+        await shell.submit('沿保存的 Chat 协议继续', 3000)
+        expect(f.seen[0]?.route).toBe('/mm/chat/completions')
+        expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(f.agent.model)
+      } finally { shell.dispose(); app.close() }
+      const calls = f.seen.length
+      writeFileSync(f.configPath, JSON.stringify({ ...f.config, providers: { ...f.providers, mm: { ...f.providers.mm, baseURL: `${f.providers.mm.baseURL}/changed` } } }))
+      expect(() => { const changed = f.open(); changed.close() }).toThrow('已保存的服务地址与当前连接不同')
+      expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(f.agent.model)
+      expect(f.seen).toHaveLength(calls)
+    } finally { f.close() }
+  })
+
+  for (const missing of ['protocol', 'endpoint', 'protocol+endpoint', 'Agent'] as const) {
+    test(`旧记录缺少 ${missing} 时拒绝接回，数据库字节、条目和元数据不变且不出站`, () => {
+      const f = setup()
+      const db = new Database(f.store.paths.database)
+      try {
+        const session = missing === 'Agent' ? 'legacy-without-agent' : 'member'
+        f.store.serviceFor(session).appendEntry({ kind: 'user', content: { text: '保留旧工作原文' }, at: 10 })
+        f.store.setSessionTitle(session, '旧工作标题', 11)
+        f.store.setSessionArchived(session, true)
+        if (missing === 'Agent') {
+          expect(f.store.collaboration.agentForSession(session)).toBeUndefined()
+        } else {
+          const row = db.query<{ data: string }, [string]>('SELECT data FROM collaboration_agents WHERE session = ?').get(session)!
+          const legacy = JSON.parse(row.data)
+          if (missing !== 'endpoint') delete legacy.model.protocol
+          if (missing !== 'protocol') delete legacy.model.endpoint
+          db.query('UPDATE collaboration_agents SET data = ? WHERE session = ?').run(JSON.stringify(legacy, null, 2), session)
+        }
+        // 新默认本身有效，也不能据此补造旧工作的模型来源。
+        writeFileSync(f.configPath, JSON.stringify({ ...f.config, models: { ...f.config.models, default: { provider: 'ds', model: 'entry-model' } } }))
+        const snapshot = () => ({
+          entries: db.query('SELECT * FROM entries ORDER BY id').all(),
+          sessions: db.query('SELECT * FROM sessions ORDER BY id').all(),
+          agents: db.query('SELECT * FROM collaboration_agents ORDER BY id').all(),
+          metadata: db.query('SELECT * FROM records_meta ORDER BY key').all(),
+        })
+        const before = snapshot(), bytes = db.serialize(), config = readFileSync(f.configPath)
+        let requests = 0
+        expect(() => {
+          const app = assemble({ cwd: f.changed, session, magic: f.magic, records: f.store,
+            config: loadConfig({ path: f.configPath, magic: f.magic }),
+            modelFetch: (input, init) => { requests++; return fetch(input, init) },
+          })
+          app.close()
+        }).toThrow(missing === 'Agent' ? '缺少已保存的模型组合' : '缺少协议或服务地址来源')
+        expect(snapshot()).toEqual(before)
+        expect(db.serialize().equals(bytes)).toBe(true)
+        expect(readFileSync(f.configPath)).toEqual(config)
+        expect(requests).toBe(0)
+        expect(f.seen).toEqual([])
+      } finally { db.close(); f.close() }
+    })
+  }
+
   test('即使绕过协作循环准入和 allowAll，隐藏的 write 也不能执行', async () => {
     const f = setup()
     const app = f.open('member', false)
@@ -133,7 +198,7 @@ describe('成员主机装配', () => {
     const f = setup()
     const peer = f.store.collaboration.spawn(f.coordinator.agentId, {
       operationId: 'spawn-peer', sessionId: 'peer', name: '另一成员', role: 'reader', responsibility: '独立审查',
-      model: { choice: 'default', provider: 'ds', model: 'peer-model', reasoning: { mode: 'level', level: 'high' } },
+      model: { choice: 'default', provider: 'ds', model: 'peer-model', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level', level: 'high' } },
       body: [{ kind: 'text', text: '检查另一部分' }], scope: '只读工作',
       source: f.collaboration.origin, authorization: [f.collaboration.origin], at: 6,
     })
@@ -156,7 +221,7 @@ describe('成员主机装配', () => {
       expect(initialB.body['reasoning_effort']).toBe('high')
       expect(texts(initialA)).not.toContain('FIRST_MEMBER_B')
       expect(texts(initialB)).not.toContain('FIRST_MEMBER_A')
-      expect(first.applyModel({ choice: 'spell', provider: 'ds', model: 'switched-member', reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
+      expect(first.applyModel({ choice: 'spell', provider: 'ds', model: 'switched-member', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
       await Promise.all([a.submit('AFTER_SWITCH_A', 3000), b.submit('AFTER_SWITCH_B', 3000)])
       expect(f.seen.find(one => one.body['model'] === 'switched-member')?.body['reasoning_effort']).toBe('low')
       expect(f.seen.findLast(one => one.body['model'] === 'peer-model')?.body['reasoning_effort']).toBe('high')
@@ -209,10 +274,10 @@ describe('成员主机装配', () => {
       }
       const update = app.records.collaboration.updateAgent
       app.records.collaboration.updateAgent = () => { throw new Error('模拟持久更新失败') }
-      expect(app.applyModel({ choice: 'default', provider: 'ds', model: 'another', reasoning: { mode: 'off' } }).ok).toBe(false)
+      expect(app.applyModel({ choice: 'default', provider: 'ds', model: 'another', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' } }).ok).toBe(false)
       expect(app.models).toBe(before)
       app.records.collaboration.updateAgent = update
-      const changed = { choice: 'default' as const, provider: 'ds', model: 'another', reasoning: { mode: 'off' as const } }
+      const changed = { choice: 'default' as const, provider: 'ds', model: 'another', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' as const } }
       expect(app.applyModel(changed).ok).toBe(true)
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(changed)
       app.close()
@@ -223,7 +288,7 @@ describe('成员主机装配', () => {
       app.close()
       app = f.open('origin')
       await app.ready(); await app.boot()
-      expect(app.applyModel({ choice: 'spell', provider: 'mm', model: 'entry-changed' }).ok).toBe(true)
+      expect(app.applyModel({ choice: 'spell', provider: 'mm', model: 'entry-changed', protocol: 'chat-completions', endpoint: f.providers.mm.baseURL }).ok).toBe(true)
       expect(f.store.collaboration.getAgent(f.coordinator.agentId)?.model.model).toBe('entry-changed')
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(changed)
       expect(f.store.collaboration.getCollaboration(f.collaboration.collaborationId)?.defaultModel).toEqual(f.collaboration.defaultModel)
@@ -237,7 +302,7 @@ describe('成员主机装配', () => {
     const shell = attachShell(app.shell)
     try {
       await app.ready(); await app.boot()
-      const model = { choice: 'default' as const, provider: 'ds', model: 'committed', reasoning: { mode: 'off' as const } }
+      const model = { choice: 'default' as const, provider: 'ds', model: 'committed', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'off' as const } }
       expect(app.applyModel(model)).toEqual({ ok: true, selection: model })
       expect(app.models?.current()).toEqual(model)
       expect(f.store.collaboration.getAgent(f.agent.agentId)?.model).toEqual(model)
@@ -427,12 +492,14 @@ describe('manager 模型预检只读已有缓存', () => {
     const f = setup()
     try {
       const cache = createFileModelInfoCache(f.dataDir)
-      const snapshot: ModelInfoSnapshot = { provider: 'ds', scope: `deepseek@${f.providers.ds.baseURL}`, fetchedAt: 1, models: [{ id: 'cached', reasoning: { levels: ['low'], disable: false } }] }
+      const config = { vendor: 'deepseek', protocol: 'chat-completions' as const, baseURL: f.providers.ds.baseURL, apiKey: f.providers.ds.apiKey }
+      const snapshot: ModelInfoSnapshot = { provider: 'ds', scope: `deepseek@${config.baseURL}#chat-completions`, fetchedAt: 1, models: [{ id: 'deepseek-flash', reasoning: { levels: ['low'], disable: false } }] }
       const configuration = JSON.parse(readFileSync(f.configPath, 'utf8'))
-      configuration.models.default = { provider: 'ds', model: 'cached' }
+      configuration.providers.ds = config
+      configuration.models.default = { provider: 'ds', model: 'deepseek-flash' }
       writeFileSync(f.configPath, JSON.stringify(configuration))
       await cache.replace(snapshot, cacheAccessFor({ provider: 'ds', configPath: f.configPath, apiKey: f.providers.ds.apiKey, processToken: 'test' }))
-      const defaults = { choice: 'default' as const, provider: 'ds', model: 'cached', reasoning: { mode: 'level' as const, level: 'high' } }
+      const defaults = { choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: f.providers.ds.baseURL, reasoning: { mode: 'level' as const, level: 'high' } }
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults })).rejects.toThrow('不支持思考档位')
       expect(await resolveManagedModel({ environment: {}, magic: f.magic, defaults, model: { reasoning: { mode: 'level', level: 'low' } } })).toEqual({ ...defaults, reasoning: { mode: 'level', level: 'low' } })
       await expect(resolveManagedModel({ environment: {}, magic: f.magic, defaults, role: 'unknown' })).rejects.toThrow('未知角色')

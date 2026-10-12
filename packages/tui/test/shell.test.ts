@@ -449,7 +449,7 @@ describe('选择器（`/resume` · `/model`）', () => {
           { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
           { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } }, },
         ],
-        current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+        current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     )
 
@@ -495,7 +495,7 @@ describe('选择器（`/resume` · `/model`）', () => {
               { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } }, },
               { provider: 'minimax-m2', cache: { snapshot: { provider: 'minimax-m2', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M2' }] } }, },
             ],
-            current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+            current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
             // 分母随答复来（U41 返修：按 `current` 算的那一格，不从默认行推算）
             currentInputBudget: 200_000,
           })
@@ -977,7 +977,7 @@ describe('选择器选定模型', () => {
       event('model.catalog', {
         entries: [{ provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'test', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } } }],
         configuredModels: { default: { provider: 'minimax', model: 'MiniMax-M3' } },
-        current: { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
+        current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' },
       }),
     )
     for (let i = 0; i < 4; i++) app.press({ kind: 'down' })

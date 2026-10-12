@@ -10,9 +10,9 @@ import { startFixture } from './ui/fixture.ts'
 import type { Fixture, FixtureRequest } from './ui/fixture.ts'
 
 /** 会话那一条连接上的模型。 */
-const SESSION_MODEL = 'MiniMax-M3'
+const SESSION_MODEL = 'deepseek-flash'
 /** 「取网页用的模型」——**另一条**（判据要的是「它跟当前会话那个是两个」）。 */
-const DISTILL_MODEL = 'distill-small'
+const DISTILL_MODEL = 'deepseek-v4-pro'
 
 /** 那一页的 HTML——页面原文里有一句**只在原文里**的话（判据靠它认「原文进没进上下文」）。 */
 const PAGE_HTML =
@@ -48,7 +48,7 @@ function stageOn(fixture: Fixture, options: { readonly configured: boolean }) {
     config: {
       models: {default: {provider: "local", model: SESSION_MODEL}, ...(options.configured ? { cantrip: {provider: 'local', model: DISTILL_MODEL} } : {}), spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
-        local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+        local: { vendor: 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })
@@ -299,7 +299,8 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
       const saved = catalogs(handle)[1]
       expect(saved?.data.configuredModels?.cantrip).toEqual({ provider: 'local', model: DISTILL_MODEL })
       // 回执那句话（屏上那一行）在答复里
-      expect(saved?.data.note).toBe('已保存 Cantrip')
+      expect(saved?.data.saved).toBe(true)
+      expect(saved?.data.note).toContain('已有 Agent 的选择保留')
       // 盘上真的写了那一格，且**没碰别的键**
       const onDisk = JSON.parse(readFileSync(stage.configPath, 'utf8')) as {
         readonly models?: { readonly cantrip?: unknown; readonly default?: unknown }
@@ -373,7 +374,7 @@ describe('U78 · 照报错那句走一遍：配上之后**不用重启**就通�
 // ══ 助手 ══════════════════════════════════════════════════════════════
 
 /** 收过的 `model.catalog` 答复（`/model` 那一行读的就是它上面那一格）。 */
-function catalogs(handle: ShellHandle): readonly { readonly data: { readonly configuredModels?: { readonly cantrip?: unknown }; readonly note?: string } }[] {
+function catalogs(handle: ShellHandle) {
   return eventsOfKind(handle.events, 'model.catalog')
 }
 

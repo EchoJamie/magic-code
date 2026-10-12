@@ -1201,7 +1201,7 @@ function realGateway(options: {
   const make = (stamper: EventStamper): ModelGateway =>
     createModelGateway({ model: 'test-model',
       providerId: 'test',
-      config: { baseURL: 'http://test.invalid/v1', apiKey: 'fake-test-key' },
+      config: { protocol: 'chat-completions', baseURL: 'http://test.invalid/v1', apiKey: 'fake-test-key' },
       env: {},
       stamper,
       maxCompletionTokens: options.localError === true ? -1 : 8192,

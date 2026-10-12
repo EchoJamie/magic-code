@@ -350,6 +350,11 @@ describe('判据 1 · 落取回环', () => {
       // 不是杂物抽屉——多一个键、换个类型、给个空对象，**一条都不放行**。
       const reasoning = { reasoning: '先看清路径再动手' }
       records.appendEntry({ kind: 'assistant', content: { text: '看完了' }, at, payload: reasoning })
+      const protocolReasoning: AssistantPayload = { reasoning: '', reasoningState: {
+        provider: 'local', model: 'm', protocol: 'responses', endpoint: 'http://localhost:9000/api',
+        items: [{ type: 'reasoning', id: 'r1', encrypted_content: 'opaque-state', summary: [] }],
+      } }
+      records.appendEntry({ kind: 'assistant', content: { text: '工具前的正文' }, at, payload: protocolReasoning })
       // 不带载荷的 `assistant` 照旧（**既有条目一字不动**：旧写入路径产出的行与新路径逐字同形）
       records.appendEntry({ kind: 'assistant', content: { text: '没有思考的一轮' }, at })
 
@@ -361,6 +366,9 @@ describe('判据 1 · 落取回环', () => {
         { reasoning: '想过了', reasoningState: { provider: 'mm', model: '', details: [] } },
         { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', details: ['bad'] } },
         { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', extra: 1 } },
+        { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', protocol: 'responses' } },
+        { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', protocol: 'invalid', endpoint: 'https://example.com', items: [] } },
+        { reasoning: '想过了', reasoningState: { provider: 'mm', model: 'm', items: ['invalid'] } },
         { reasoning: '想过了', extra: 1 }, // 多带一位：只许 `reasoning` 这一个键
       ]) {
         expect(() =>
@@ -377,8 +385,8 @@ describe('判据 1 · 落取回环', () => {
       const afterAssistant: Entry[] = []
       for await (const entry of records.readEntries(SESSION)) afterAssistant.push(entry)
       const landed = afterAssistant.filter((entry) => entry.kind === 'assistant')
-      expect(landed.map((entry) => entry.payload)).toEqual([reasoning, undefined])
-      expect(landed.map((entry) => entry.content)).toEqual([{ text: '看完了' }, { text: '没有思考的一轮' }])
+      expect(landed.map((entry) => entry.payload)).toEqual([reasoning, protocolReasoning, undefined])
+      expect(landed.map((entry) => entry.content)).toEqual([{ text: '看完了' }, { text: '工具前的正文' }, { text: '没有思考的一轮' }])
       expect(() =>
         records.appendEntry({
           kind: 'tool-result',

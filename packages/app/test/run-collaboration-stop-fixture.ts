@@ -56,7 +56,7 @@ export async function stopRuntime(name: string, respond: (call: HttpCall) => Mod
   } })
   const configPath = join(magic.base, 'config.json')
   writeFileSync(configPath, JSON.stringify({ dataDir, workspaceRoots: [workspace], models: {default: {provider: "controlled", model: 'entry-model'}, cantrip: {provider: "controlled", model: 'entry-model'}, spell: {provider: "controlled", model: 'member-model'}, arcane: {provider: "controlled", model: 'descendant-model'}},
-    providers: { controlled: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-stop-only' } },
+    providers: { controlled: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['entry-model', 'member-model', 'descendant-model'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-stop-only' } },
   }))
   const paths = runPathsOf(magic, tmpdir())
   const launcher = createAgentLauncher()

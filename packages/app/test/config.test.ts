@@ -226,18 +226,13 @@ describe('报错取「一声响」（不静默兜底）', () => {
   test('字段缺 / 空 / 类型不对——逐条点名到字段', () => {
     const cases: readonly [unknown, RegExp][] = [
       [validConfig({ providers: {} }), /models.default.provider 指向未知连接/],
-      // U41 改判这两条的期望文案——**原锚**：「缺 `baseURL` / 缺 `model` ⇒ 各报一句
-      // 『须是非空字符串』」；**为何变**：两条接入路径的必填项不同了——有 `vendor` 的连接
-      // 由适配给地址、型号来自接口，两者都可省；没有 `vendor` 的兼容接入两者仍必给，
-      // 但缺的是「接入方式没说清」而不是「这个字段类型不对」；**新锚**：兼容接入缺哪一件
-      // 就报哪一件缺（并指出两条路怎么走），报错仍**点名到字段**、仍**不降级**。
       [
         validConfig({ providers: { minimax: { vendor: '' } } }),
         /providers\.minimax\.vendor/,
       ],
       [
-        validConfig({ providers: { minimax: { baseURL: 'https://x/v1' } } }),
-        /providers\.minimax\.vendor/,
+        validConfig({ providers: { minimax: { baseURL: 'https://x/v1', protocol: 'completions' } } }),
+        /providers\.minimax\.protocol/,
       ],
       [
         validConfig({
@@ -578,7 +573,7 @@ describe('智能体角色配置', () => {
   })
 
   test('精确型号思考能力覆盖可表达关闭、档位和预算范围；错误范围拒绝', () => {
-    const override = { reasoningSupport: { disable: false, levels: ['high'], budget: { minTokens: 128, maxTokens: 512 } }, capabilities: { chat: true } }
+    const override = { reasoningSupport: { default: 'on' as const, disable: false, levels: ['high'], budget: { minTokens: 128, maxTokens: 512 } }, capabilities: { chat: true } }
     const loaded = loadFrom({ providers: { ds: { vendor: 'deepseek', modelOverrides: { same: override } } } })
     expect(loaded.config.providers['ds']?.modelOverrides?.['same']).toEqual(override)
     expect(() => loadFrom({ providers: { ds: { vendor: 'deepseek', modelOverrides: { same: { reasoningSupport: { budget: { minTokens: 512, maxTokens: 128 } } } } } } })).toThrow('最小值不能大于最大值')

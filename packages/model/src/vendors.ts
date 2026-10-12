@@ -21,9 +21,12 @@
  */
 
 import type { JSONValue } from 'ai'
-import type { MetadataExtractor } from '@ai-sdk/openai-compatible'
 import type {
   ModelInfo,
+  ModelProtocol,
+  ModelSource,
+  ProviderAuth,
+  VendorProtocol,
   ProviderConfig,
   ReasoningSetting,
   ReasoningSupport,
@@ -32,7 +35,6 @@ import type {
 } from '@magic/contracts'
 import type { FetchLike } from './ai-sdk.ts'
 import { MODEL_CONTEXT_BUILTIN } from './capacity.ts'
-import { MINIMAX_REASONING_METADATA } from './reasoning-metadata.ts'
 
 /** 发一次请求要的东西——地址与凭据由**连接**给定（适配不猜、不存）。 */
 export type VendorRequestContext = {
@@ -92,11 +94,12 @@ export type VendorAdapter = {
    * 数组而不是字典：**次序本身是信息**（缺省那一个），且界面要照序铺行。
    */
   readonly regions: readonly VendorRegion[]
+  readonly protocols: readonly VendorProtocol[]
   /**
    * 解析这条连接该走的基址——明确写了 `baseURL` 就用它（「高级地址只在明确需要时编辑」），
    * 否则按区域取官方地址；**认不出返回 `undefined`**（调用方报错，不猜）。
    */
-  baseURLOf(config: ProviderConfig): string | undefined
+  baseURLOf(config: ProviderConfig, protocol?: ModelProtocol): string | undefined
   /** **取完整列表**——分页全部成功才返回（见 `collectPages`）。 */
   listModels(ctx: VendorRequestContext): Promise<readonly ModelInfo[]>
   /**
@@ -109,17 +112,8 @@ export type VendorAdapter = {
     ctx: VendorRequestContext,
     modelId: string,
   ): Promise<Pick<ModelInfo, 'id' | 'name' | 'description' | 'capabilities' | 'limits' | 'reasoning'> | undefined>
-  /**
-   * **助手消息里的思考要回传**——该供应商的协议要求（DeepSeek 的思考模式在带 tools 时
-   * 不回传历史轮的 `reasoning_content` 就 400）。true 保留缺失说明，available 只回传实有字段。
-   * **没有这一位＝不带**：
-   * 思考是**这一家这一个模型**的私有协议内容，不转发给其它供应商（设计明文）。
-   */
-  readonly echoesReasoning?: true | 'available' | undefined
   /** 请求明确采用分离格式，content 不再经过内嵌标签切分。 */
   readonly separatesReasoning?: boolean
-  /** SDK 未直接承载的供应商回传数据。 */
-  readonly metadataExtractor?: MetadataExtractor
   /**
    * **请求体改写**（该供应商已知的参数名差异）——没有这一位就原样发。
    *
@@ -134,7 +128,7 @@ export type VendorAdapter = {
    *
    * 优先级里它排在「供应商 API 当前有效信息」**之后**：API 给了的字段一律不覆盖。
    */
-  supplement(info: ModelInfo): ModelInfo
+  supplement(info: ModelInfo, protocol?: ModelProtocol): ModelInfo
   /**
    * 思考设置 → **该供应商的原生请求参数**；不是它支持的形态 ⇒ 报缺口（**不发假参数**）。
    *
@@ -148,56 +142,51 @@ export type VendorAdapter = {
   reasoningOf(
     setting: ReasoningSetting,
     model: string,
+    protocol?: ModelProtocol,
   ): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined
 }
 
 // —— 列表响应归一（两家共用的那半：`{ object: 'list', data: [{ id, … }] }`）——
 
-/**
- * 把 `{ data: [...] }` 归一成模型信息——**`id` 必要，规格有的才收**。
- *
- * ## 收哪些、不收哪些
- *
- * **收「调用真用得到」的那几格**。今天只有一格：`max_output_tokens`（U91）——
- * 它进 `limits.maxOutputTokens`，再由网关落到请求体的输出上限。
- * 立这条判据的由头（U91 实测）：**供应商确实会把它连列表一起给**，而此前这里把它
- * 整格丢掉了，输出上限只能一路落回取件层那个常量（4096）。
- *
- * 其余一律不收（`created` / `owned_by` / `name` / `context_window` / `input_modalities`…）：
- * 那些既不调用也不呈现，收了只会让人以为「这些字段一直有」。规格与能力里**没被收的那几格**
- * 照旧走 `supplement`（适配按官方出处补）或详情——**本函数不替它们编**。
- *
- * ## 读不懂就不给这一位
- *
- * `max_output_tokens` **是正整数才算数**（同「零 / 非法规格不当作无限大」那条口径）：
- * 字符串、0、负数、小数一律**当作没给**——宁可让输出上限落回兜底那个数，
- * 也不拿一个读不懂的值去发请求。
- *
- * ⚠️ **两家给的不一样**（2026-09-26 实测 `GET /models`）：DeepSeek 逐模型给
- * `max_output_tokens`；MiniMax 的列表与详情**都只有四个字段**（`id`/`object`/`created`/`owned_by`）
- * ——它那条路压根没有这一格可取，故照旧走兜底（见 `ai-sdk.ts` 的 `MAX_COMPLETION_TOKENS`）。
- */
+/** 列表中已有明确语义且被消费的信息；缺失或无效字段保持未知。 */
 function toModelsOf(body: unknown): readonly ModelInfo[] {
-  if (typeof body !== 'object' || body === null) throw new Error('模型列表不是对象')
-  const data = (body as { data?: unknown }).data
+  const record = (v: unknown): Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {}
+  const data = record(body).data
   if (!Array.isArray(data)) throw new Error('模型列表里没有 data 数组')
-
-  const models: ModelInfo[] = []
-  for (const one of data) {
-    if (typeof one !== 'object' || one === null) continue
-    const id = (one as { id?: unknown }).id
-    // **id 是调用时要送的那个名字**——不是字符串就跳过（收了也用不了）
-    if (typeof id !== 'string' || id.length === 0) continue
-
-    const raw = (one as { max_output_tokens?: unknown }).max_output_tokens
-    const maxOutput = typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : undefined
-
-    models.push({
-      id,
-      ...(maxOutput === undefined ? {} : { limits: { maxOutputTokens: maxOutput } }),
-    })
-  }
-  return models
+  return data.flatMap(value => {
+    const raw = record(value)
+    if (typeof raw.id !== 'string' || raw.id.length === 0) return []
+    const limits: Record<string, number> = {}
+    for (const [source, target] of [['max_input_tokens', 'maxInputTokens'], ['max_output_tokens', 'maxOutputTokens'], ['context_window', 'maxContextTokens']] as const) {
+      const v = raw[source]
+      if (typeof v === 'number' && Number.isSafeInteger(v) && v > 0) limits[target] = v
+    }
+    const capabilities: Record<string, boolean> = {}
+    const declared = record(raw.capabilities)
+    for (const key of ['chat', 'image', 'tools']) if (typeof declared[key] === 'boolean') capabilities[key] = declared[key]
+    if (Array.isArray(raw.input_modalities) && raw.input_modalities.every(v => typeof v === 'string')) capabilities.image ??= raw.input_modalities.includes('image')
+    const source = record(raw.reasoning)
+    const levels = source.levels ?? record(raw.effort).supported_levels
+    const reasoning: ReasoningSupport = {
+      ...(typeof source.disable === 'boolean' ? { disable: source.disable } : {}),
+      ...(source.default === 'on' || source.default === 'off' ? { default: source.default } : {}),
+      ...(Array.isArray(levels) && levels.every(v => typeof v === 'string' && v.length) ? { levels: levels as string[] } : {}),
+    }
+    const budget = record(source.budget)
+    const min = budget.min_tokens, max = budget.max_tokens
+    const valid = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0
+    const budgetInfo = valid(min) && valid(max) && min > max ? undefined : {
+      ...(valid(min) ? { minTokens: min } : {}), ...(valid(max) ? { maxTokens: max } : {}),
+    }
+    return [{ id: raw.id,
+      ...(typeof raw.name === 'string' ? { name: raw.name } : {}),
+      ...(typeof raw.description === 'string' ? { description: raw.description } : {}),
+      ...(Object.keys(limits).length ? { limits } : {}),
+      ...(Object.keys(capabilities).length ? { capabilities } : {}),
+      ...(Object.keys(reasoning).length || (budgetInfo && Object.keys(budgetInfo).length)
+        ? { reasoning: { ...reasoning, ...(budgetInfo && Object.keys(budgetInfo).length ? { budget: budgetInfo } : {}) } } : {}),
+    }]
+  })
 }
 
 /** 发一次 GET，回 JSON——失败当场抛（**带状态码，不带响应正文里的凭据**）。 */
@@ -212,6 +201,39 @@ async function getJson(ctx: VendorRequestContext, path: string): Promise<unknown
     throw new Error(`取模型列表失败（HTTP ${response.status}）`)
   }
   return response.json()
+}
+
+export const PROTOCOLS = [
+  { id: 'responses', label: 'Responses' },
+  { id: 'messages', label: 'Anthropic Messages' },
+  { id: 'chat-completions', label: 'Chat Completions' },
+] as const
+const MINIMAX_MODELS = ['MiniMax-M3.1-Flash-Preview', 'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2.1', 'MiniMax-M2.1-highspeed', 'MiniMax-M2']
+
+/** 连接保存与调用来源共用的地址规则；保留基础路径，仅移除末尾斜杠。 */
+export function normalizeBaseURL(base: string): string {
+  const endpoint = new URL(base)
+  // href 同时覆盖空查询/片段分隔符（URL.search/hash 对单独的 ?/# 返回空串）。
+  if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.href.includes('?') || endpoint.href.includes('#')) throw new Error('基础地址须为无凭据、查询参数和片段的 HTTP/HTTPS URL')
+  return endpoint.href.replace(/\/+$/, '')
+}
+
+/** 只校验和解析，不读凭据、不访问网络。显式协议不支持时绝不降级。 */
+export function resolveModelSource(config: ProviderConfig, model: string): ModelSource {
+  const adapter = config.vendor === undefined ? undefined : vendorOf(config.vendor)
+  if (config.vendor !== undefined && adapter === undefined) throw new Error(`未知供应商适配「${config.vendor}」`)
+  const supported = adapter?.protocols.filter(p => p.models.includes(model))
+  const protocol = config.protocol ?? (adapter === undefined ? 'responses' : supported?.[0]?.id)
+  if (protocol === undefined || (supported !== undefined && !supported.some(p => p.id === protocol))) {
+    throw new Error(`模型「${model}」不支持${config.protocol === undefined ? '已核实的官方协议' : `协议「${config.protocol}」`}；请核对精确型号`)
+  }
+  const base = adapter === undefined ? config.baseURL : adapter.baseURLOf(config, protocol)
+  if (!base) throw new Error('连接没有有效服务地址或官方区域')
+  return { protocol, endpoint: normalizeBaseURL(base) }
+}
+
+export function authOf(config: ProviderConfig, protocol: ModelProtocol): ProviderAuth {
+  return config.auth ?? (protocol === 'messages' ? 'api-key' : 'bearer')
 }
 
 // —— MiniMax ——
@@ -229,14 +251,15 @@ export const MINIMAX_VENDOR: VendorAdapter = {
   id: 'minimax',
   label: 'MiniMax',
   separatesReasoning: true,
-  echoesReasoning: 'available',
-  metadataExtractor: MINIMAX_REASONING_METADATA,
   // ⚠️ 这是**新建官方连接**的地址（文档给的 `api.minimax.cn`）；旧兼容连接用的
   // `api.minimaxi.com` 一个字不动——那是另一条路，不因域名变化自动迁移凭据
+  protocols: PROTOCOLS.map(p => ({ ...p, models: MINIMAX_MODELS })),
   regions: [{ id: 'cn', label: '中国大陆', baseURL: 'https://api.minimax.cn/v1' }],
 
-  baseURLOf(config) {
-    return resolveBaseURL(this.regions, config)
+  baseURLOf(config, protocol = config.protocol ?? 'chat-completions') {
+    const base = resolveBaseURL(this.regions, config)
+    if (config.baseURL !== undefined || protocol !== 'messages' || base === undefined) return base
+    return base.replace(/\/v1$/, '') + '/anthropic/v1'
   },
 
   async listModels(ctx) {
@@ -266,17 +289,18 @@ export const MINIMAX_VENDOR: VendorAdapter = {
   },
 
   /** 只补精确型号的已知容量；通道格式由适配的请求参数决定。 */
-  supplement(info) {
+  supplement(info, protocol = 'chat-completions') {
     const window = Object.hasOwn(MODEL_CONTEXT_BUILTIN, info.id)
       ? MODEL_CONTEXT_BUILTIN[info.id]
       : undefined
 
     return {
       ...info,
-      ...(info.reasoning !== undefined ? {} : info.id === 'MiniMax-M3' ? { reasoning: { disable: true } }
-        : info.id === 'MiniMax-M3.1-Flash-Preview' ? { reasoning: { disable: false, levels: ['low', 'medium', 'high', 'xhigh', 'max'] } }
+      ...(MINIMAX_MODELS.includes(info.id) ? { capabilities: { chat: true, tools: true, image: ['MiniMax-M3', 'MiniMax-M3.1-Flash-Preview'].includes(info.id), ...info.capabilities } } : {}),
+      ...(info.reasoning !== undefined ? {} : info.id === 'MiniMax-M3' ? { reasoning: { disable: true, default: protocol === 'chat-completions' ? 'on' : 'off' } }
+        : info.id === 'MiniMax-M3.1-Flash-Preview' ? { reasoning: { default: 'on', disable: false, levels: ['low', 'medium', 'high', 'xhigh', 'max'] } }
         : ['MiniMax-M2', 'MiniMax-M2.1', 'MiniMax-M2.1-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'].includes(info.id)
-          ? { reasoning: { disable: false } } : {}),
+          ? { reasoning: { default: 'on', disable: false } } : {}),
       // API 给了的字段一律不覆盖（补充排在它之后）
       ...(info.limits === undefined && window === undefined
         ? {}
@@ -285,11 +309,11 @@ export const MINIMAX_VENDOR: VendorAdapter = {
   },
 
   /** 格式分离不等于关闭思考；按实际型号支持的控制参数映射。 */
-  reasoningOf(setting, model): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
+  reasoningOf(setting, model, protocol = 'chat-completions'): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
     if (setting.mode === 'default') return undefined
-    if (model === 'MiniMax-M3' && setting.mode === 'off') return { params: { thinking: { type: 'disabled' } } }
+    if (model === 'MiniMax-M3' && setting.mode === 'off') return { params: protocol === 'responses' ? { reasoningEffort: 'none' } : { thinking: { type: 'disabled' } } }
     if (model === 'MiniMax-M3.1-Flash-Preview' && setting.mode === 'level'
-      && ['low', 'medium', 'high', 'xhigh', 'max'].includes(setting.level)) return { params: { reasoningEffort: setting.level } }
+      && ['low', 'medium', 'high', 'xhigh', 'max'].includes(setting.level)) return { params: protocol === 'messages' ? { effort: setting.level } : { reasoningEffort: setting.level } }
     return { gap: `当前 MiniMax 模型「${model}」不支持该思考设置` }
   },
 }
@@ -297,32 +321,22 @@ export const MINIMAX_VENDOR: VendorAdapter = {
 // —— DeepSeek ——
 
 /**
- * DeepSeek 开放平台（官方文档 2026-09-23）：
- * - 列表 `GET /models`（**无分页、无详情接口**）；
- * - 故本适配**不实现 `retrieveModel`**：不拼造详情 URL（设计明文）；
- * - **容量不给这一位**：官方**价目表**写「1M」上下文 /「384K」输出，`K` / `M` 的单位
- *   无从判定（`1,000,000` 还是 `1,048,576`？）——与 `capacity.ts` 拒收 MiniMax `M2-her`
- *   那条「64 K」同一条判据：**说不准的数不上屏**，落到未知就如实未知。
- *
- *   ⚠️ **U91 实测更正**（2026-09-26）：**列表接口自己给得出整数**——逐模型有
- *   `context_window` 与 `max_output_tokens`（如 `deepseek-flash`：1048576 / 393216）。
- *   故「说不准」这条**只对价目表那句话成立**，接口给的那两个数是**准的**：
- *   本单收 `max_output_tokens`（见 `toModelsOf`）；`context_window` 仍不收——
- *   那是另一格（进的是分母与压缩阈值），不在本单射程。
- *
- * 思考模式（`guides/thinking_mode`，2026-09-23）：`thinking.type = enabled|disabled`、
- * 档位 `reasoning_effort = low|high|max`、**默认开启且默认 high**、**无 token 预算参数**。
+ * DeepSeek：列表 GET /models，无分页、无详情接口。
+ * 精确整数容量来自接口；价目表的 K/M 单位不明确，不据此补数值。
+ * 官方思考控制支持开关与 low/high/max，默认开启，无 token 预算参数。
  */
 export const DEEPSEEK_VENDOR: VendorAdapter = {
   id: 'deepseek',
   label: 'DeepSeek',
+  protocols: PROTOCOLS.map(p => ({ ...p, models: p.id === 'responses' ? ['deepseek-flash'] : ['deepseek-flash', 'deepseek-v4-pro'] })),
   regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
   // 思考模式的工具往返要求把历史轮的 `reasoning_content` 原样回传（官方文档明文）
-  echoesReasoning: true,
   separatesReasoning: true,
 
-  baseURLOf(config) {
-    return resolveBaseURL(this.regions, config)
+  baseURLOf(config, protocol = config.protocol ?? 'chat-completions') {
+    const base = resolveBaseURL(this.regions, config)
+    if (config.baseURL !== undefined || protocol !== 'messages' || base === undefined) return base
+    return base.replace(/\/v1$/, '') + '/anthropic/v1'
   },
 
   async listModels(ctx) {
@@ -330,23 +344,14 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
     return collectPages(() => Promise.resolve({ models: toModelsOf(body) }))
   },
 
-  /**
-   * 缺项补充——**思考能力的依据来自官方文档**（`guides/thinking_mode`，2026-09-23）：
-   * 开关 `thinking.type = enabled|disabled`、档位 `reasoning_effort = low|high|max`、
-   * **没有 token 预算参数**。**列表接口不给思考能力**（那几格它没有），故这份能力
-   * 只能由适配补（设计：「必要缺项按官方资料补充」）。
-   *
-   * 容量**不补**：价目表那两句「1M / 384K」的 `K`/`M` 单位无从判定（同 `capacity.ts`
-   * 拒收 MiniMax「64 K」那条判据）——**补缺项要有出处，不能拿说不准的数顶上**。
-   *
-   * ⚠️ **U91 起有一格不从这里来**：`max_output_tokens` **由接口自己给**，归一那一跳
-   * 就收了（见 `toModelsOf`）——`supplement` 的契约是「补 API **没给**的」，故它不碰。
-   */
+  /** 仅给已知精确型号补官方思考与工具能力；接口现值优先，容量只收接口整数。 */
   supplement(info) {
+    if (!['deepseek-flash', 'deepseek-v4-pro'].includes(info.id)) return info
     return {
       ...info,
       // API 给了的不覆盖（补充排在供应商当前信息之后）
       ...(info.reasoning === undefined ? { reasoning: REASONING_SUPPORT } : {}),
+      capabilities: { chat: true, tools: true, image: info.id === 'deepseek-flash', ...info.capabilities },
     }
   },
 
@@ -358,16 +363,16 @@ export const DEEPSEEK_VENDOR: VendorAdapter = {
    * - `level` ⇒ `reasoning_effort`（官方只认 low / high / max——**其余档位报缺口**）；
    * - `budget` ⇒ **报缺口**：官方没有 token 预算参数，不能拿一个不存在的参数去凑。
    */
-  reasoningOf(setting): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
+  reasoningOf(setting, _model, protocol = 'chat-completions'): { readonly params: Record<string, JSONValue> } | { readonly gap: string } | undefined {
     switch (setting.mode) {
       case 'default':
         return undefined
       case 'off':
         // 官方支持的明确关闭（与 `default` 不是一回事：那是「说了别想」）
-        return { params: { thinking: { type: 'disabled' } } }
+        return { params: protocol === 'responses' ? { reasoningEffort: 'none' } : { thinking: { type: 'disabled' } } }
       case 'level':
         return setting.level === 'low' || setting.level === 'high' || setting.level === 'max'
-          ? { params: { reasoningEffort: setting.level } }
+          ? { params: protocol === 'messages' ? { thinking: { type: 'enabled' }, effort: setting.level } : protocol === 'responses' ? { reasoningEffort: setting.level } : { thinking: { type: 'enabled' }, reasoningEffort: setting.level } }
           : { gap: `DeepSeek 的思考档位只有 low / high / max——不认识「${setting.level}」` }
       case 'budget':
         return { gap: 'DeepSeek 官方没有思考预算（token）参数——只能选档位或用它的默认' }
@@ -391,6 +396,7 @@ function resolveBaseURL(
 
 /** DeepSeek 的思考能力（官方文档 2026-09-23）——全线模型同一套，故是适配级的常量。 */
 const REASONING_SUPPORT: ReasoningSupport = {
+  default: 'on',
   levels: ['low', 'high', 'max'],
   disable: true,
 }
@@ -429,5 +435,21 @@ export function vendorCatalog(): readonly VendorInfo[] {
     vendor: adapter.id,
     label: adapter.label,
     regions: adapter.regions,
+    protocols: adapter.protocols,
   }))
+}
+
+/** 仅开放三协议已有明确表达的设置，不由用户能力声明生成私有参数。 */
+export function reasoningParams(adapter: VendorAdapter | undefined, setting: ReasoningSetting | undefined, model: string, protocol: ModelProtocol): ReturnType<VendorAdapter['reasoningOf']> {
+  if (setting === undefined || setting.mode === 'default') return undefined
+  if (adapter !== undefined) return adapter.reasoningOf(setting, model, protocol)
+  if (protocol === 'messages') {
+    if (setting.mode === 'off') return { params: { thinking: { type: 'disabled' } } }
+    if (setting.mode === 'budget') return { params: { thinking: { type: 'enabled', budgetTokens: setting.budgetTokens } } }
+    if (['low', 'medium', 'high', 'xhigh', 'max'].includes(setting.level)) return { params: { thinking: { type: 'adaptive' }, effort: setting.level } }
+  } else {
+    if (setting.mode === 'off') return { params: { reasoningEffort: 'none' } }
+    if (setting.mode === 'level' && ['minimal', 'low', 'medium', 'high', 'xhigh'].includes(setting.level)) return { params: { reasoningEffort: setting.level } }
+  }
+  return { gap: `协议「${protocol}」无法表达该思考设置` }
 }

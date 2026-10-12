@@ -55,7 +55,7 @@ export type { FetchLike } from './ai-sdk.ts'
 // —— ①之二 多条目的注册表 ＋ 运行时切换（技术方案 · 模型策略 · 切换）——
 
 export { createModelRegistry } from './registry.ts'
-export { selectModel } from './selection.ts'
+export { selectModel, effectiveReasoningSupportOf } from './selection.ts'
 export type {
   ModelRegistry,
   ModelRegistryOptions,
@@ -74,7 +74,7 @@ export { createModelInfoService, resolveConnection, modelSpecOf } from './model-
 
 // 内置供应商与官方区域的**读面**（U41 返修）——界面「接入」时据此列；
 // 适配本身仍不上公开面（出去的是归一后的 `VendorInfo`，见 `vendors.ts`）
-export { vendorCatalog } from './vendors.ts'
+export { vendorCatalog, resolveModelSource, authOf, PROTOCOLS } from './vendors.ts'
 export type { ModelConnection, ModelInfoService, ModelInfoServiceOptions } from './model-info.ts'
 export { MODEL_INFO_FAILURE_COOLDOWN_MS, MODEL_INFO_TTL_MS } from './model-info.ts'
 

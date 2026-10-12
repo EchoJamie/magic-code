@@ -155,6 +155,14 @@ export async function saveProvider(input: {
       put('vendor', input.request.vendor)
       put('name', input.request.name)
       put('region', input.request.region)
+      if (input.request.protocol === null) delete entry['protocol']
+      else put('protocol', input.request.protocol)
+      put('auth', input.request.auth)
+      const changedAddress = input.request.baseURL !== undefined && input.request.baseURL !== (entry['baseURL'] ?? '')
+      if (changedAddress && Object.hasOwn(providers, input.request.provider) && entry['auth'] !== 'none' && !input.request.apiKey?.trim()) {
+        return { ok: false, reason: '服务地址已改变，请重新填写该服务的凭据，或明确选择无需认证；原配置未改动' }
+      }
+      if (changedAddress && entry['auth'] === 'none') delete entry['apiKey']
       put('baseURL', input.request.baseURL)
       // 凭据：缺省不动（改名不该抹掉 key）；空串 ＝ 清除（回到环境变量回退）
       put('apiKey', input.request.apiKey)

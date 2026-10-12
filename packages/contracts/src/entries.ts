@@ -358,7 +358,9 @@ export type AssistantPayload = {
 }
 
 /** 仅回传给同一连接、同一模型；details 原样存储，不参与正文显示。 */
-export type ReasoningState = {
+export type ReasoningState = import('./model.ts').ModelSource & {
+  /** 原协议 reasoning 项或 thinking 块；仅在相同来源回传。 */
+  readonly items?: readonly Readonly<Record<string, unknown>>[]
   readonly provider: string
   readonly model: string
   readonly details?: readonly Readonly<Record<string, unknown>>[]

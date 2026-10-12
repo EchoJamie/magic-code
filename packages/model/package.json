@@ -9,6 +9,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "4.0.54",
+    "@ai-sdk/openai": "4.0.67",
     "@ai-sdk/openai-compatible": "3.0.49",
     "@magic/contracts": "workspace:*",
     "ai": "7.0.102"

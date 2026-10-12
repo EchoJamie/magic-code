@@ -5,9 +5,10 @@ const strings = (v: unknown) => Array.isArray(v) && v.every(text)
 const optional = (v: unknown, check: (v: unknown) => boolean) => v === undefined || check(v)
 export function settingsAction(v: unknown): boolean {
   if (!object(v)) return false
+  if (!optional(v.expectedStamp, x => x === null || typeof x === 'string')) return false
   switch (v.type) {
     case 'diagnostics.set': return optional(v.source, x => x === 'app' || x === 'cli') && validDiagnosticsChange(v)
-    case 'provider.save': return text(v.provider) && ['vendor', 'name', 'region', 'baseURL', 'apiKey'].every(k => optional(v[k], x => typeof x === 'string'))
+    case 'provider.save': return optional(v.protocol, x => x === null || ['responses', 'messages', 'chat-completions'].includes(String(x))) && optional(v.auth, x => ['none', 'bearer', 'api-key'].includes(String(x))) && text(v.provider) && ['vendor', 'name', 'region', 'baseURL', 'apiKey'].every(k => optional(v[k], x => typeof x === 'string'))
     case 'provider.remove': case 'model.refresh': return text(v.provider)
     case 'model.configure': return ['default', 'cantrip', 'spell', 'arcane'].includes(String(v.choice)) && text(v.provider) && text(v.model) && optional(v.initialize, x => typeof x === 'boolean')
     case 'model.clear': return ['default', 'cantrip', 'spell', 'arcane'].includes(String(v.choice))

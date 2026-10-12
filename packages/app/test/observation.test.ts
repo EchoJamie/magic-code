@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'n
 import { join } from 'node:path'
 import type { Command, EventDataOf, EventKind, ProviderConfig } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
-import { modelSpecOf, resolveConnection } from '@magic/model'
+import { modelSpecOf } from '@magic/model'
 import { cacheAccessFor } from '../src/cache-access.ts'
 import { createFileModelInfoCache } from '../src/model-cache.ts'
 import { query, type ObservationContext } from '../src/run/observation.ts'
@@ -42,7 +42,7 @@ function bytesUnder(path: string): Record<string, string> {
 describe('无执行者的真实只读目录', () => {
   test('七类查询不联网/不派生进程/不写文件、不建session、不消耗未读；缺key仍能展示配置', async () => {
     const g = ground()
-    g.configure({ ds: { vendor: 'deepseek' } }, { models: { default: { provider: 'ds', model: 'deepseek-chat' } } })
+    g.configure({ ds: { vendor: 'deepseek' } }, { models: { default: { provider: 'ds', model: 'deepseek-flash' } } })
     const skillDir = join(g.workspace, '.magic/skills/local')
     mkdirSync(skillDir, { recursive: true })
     writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: local\ndescription: 本地真实技能\n---\n正文不进入目录\n')
@@ -59,7 +59,7 @@ describe('无执行者的真实只读目录', () => {
     try {
       const models = await answer({ type: 'model.list' }, g.context, 'model.catalog')
       expect(models.entries.map((row) => row.provider)).toEqual(['ds'])
-      expect(models.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-chat' })
+      expect(models.current).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'responses', endpoint: 'https://api.deepseek.com' })
       const providers = await answer({ type: 'provider.list' }, g.context, 'provider.catalog')
       expect(providers.vendors.length).toBeGreaterThan(0)
       expect(providers.entries).toEqual(models.entries)
@@ -85,17 +85,17 @@ describe('无执行者的真实只读目录', () => {
   test('缓存按原接入身份与scope读取，过期照实标记；pure peek不隐式refresh，预算同域判定', async () => {
     const g = ground()
     const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'test-secret' }
-    g.configure({ ds: config }, { models: { default: { provider: 'ds', model: 'catalog-only' } } })
+    g.configure({ ds: config }, { models: { default: { provider: 'ds', model: 'deepseek-flash' } } })
     const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
     const cache = createFileModelInfoCache(g.dataDir)
-    const snapshot = { provider: 'ds', scope: `deepseek@${resolveConnection({ providerId: 'ds', config }).baseURL}`, fetchedAt: 1,
-      models: [{ id: 'catalog-only', limits: { maxInputTokens: 12_000, maxOutputTokens: 1_000 } }] }
+    const snapshot = { provider: 'ds', scope: 'deepseek@https://api.deepseek.com#auto', fetchedAt: 1,
+      models: [{ id: 'deepseek-flash', limits: { maxInputTokens: 12_000, maxOutputTokens: 1_000 } }] }
     await cache.replace(snapshot, access)
     const fetch = spyOn(globalThis, 'fetch').mockImplementation((() => { throw new Error('不能refresh') }) as unknown as typeof globalThis.fetch)
     try {
       const catalog = await answer({ type: 'model.list' }, g.context, 'model.catalog')
       expect(catalog.entries[0]?.cache).toEqual({ snapshot, stale: true })
-      expect(catalog.currentInputBudget).toBe(modelSpecOf(config, 'catalog-only', snapshot.models[0]).inputBudget)
+      expect(catalog.currentInputBudget).toBe(modelSpecOf(config, 'deepseek-flash', snapshot.models[0]).inputBudget)
       expect(catalog.currentInputBudget).toBe(12_000)
       expect(JSON.stringify(catalog)).not.toContain('test-secret')
       await cache.replace({ ...snapshot, scope: 'another-region', fetchedAt: 2 }, access)
@@ -107,9 +107,9 @@ describe('无执行者的真实只读目录', () => {
 
   test('只给provider/只给model复用域内选择，缺默认与非法选择具体失败；配置与技能每次现读', async () => {
     const g = ground()
-    g.configure({ a: { vendor: 'minimax', baseURL: 'http://unreachable' }, b: { vendor: 'minimax', baseURL: 'http://unreachable' } }, { models: { default: { provider: 'a', model: 'first' }, cantrip: { provider: 'b', model: 'second' }, spell: { provider: 'a', model: 'alternate' } } })
-    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { choice: 'cantrip' } }, 'model.catalog')).current).toEqual({ choice: 'cantrip' as const, provider: 'b', model: 'second' })
-    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { choice: 'spell' } }, 'model.catalog')).current).toEqual({ choice: 'spell' as const, provider: 'a', model: 'alternate' })
+    g.configure({ a: { protocol: 'chat-completions', baseURL: 'http://unreachable' }, b: { protocol: 'chat-completions', baseURL: 'http://unreachable' } }, { models: { default: { provider: 'a', model: 'first' }, cantrip: { provider: 'b', model: 'second' }, spell: { provider: 'a', model: 'alternate' } } })
+    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { choice: 'cantrip' } }, 'model.catalog')).current).toEqual({ choice: 'cantrip' as const, provider: 'b', model: 'second', protocol: 'chat-completions', endpoint: 'http://unreachable' })
+    expect((await answer({ type: 'model.list' }, { ...g.context, switch: { choice: 'spell' } }, 'model.catalog')).current).toEqual({ choice: 'spell' as const, provider: 'a', model: 'alternate', protocol: 'chat-completions', endpoint: 'http://unreachable' })
     await expect(query({ type: 'model.list' }, { ...g.context, switch: { choice: 'arcane' } })).rejects.toThrow('尚未配置')
     g.configure({ b: { vendor: 'deepseek' } })
     expect((await answer({ type: 'model.list' }, g.context, 'model.catalog')).current).toBeUndefined()
@@ -126,14 +126,14 @@ describe('无执行者的真实只读目录', () => {
 
   test('观察面切换按目标缓存拒绝不支持档位，换供应商或型号不沿用旧思考；不联网或改原选择', async () => {
     const g = ground()
-    const config: ProviderConfig = { vendor: 'deepseek', apiKey: 'local-cache-test' }
-    g.configure({ ds: config, mm: { vendor: 'minimax' } }, { models: { default: { provider: 'ds', model: 'same' }, cantrip: { provider: 'mm', model: 'same' }, spell: { provider: 'ds', model: 'other' } } })
+    const config: ProviderConfig = { vendor: 'deepseek', protocol: 'chat-completions', apiKey: 'local-cache-test' }
+    g.configure({ ds: config, mm: { protocol: 'chat-completions', baseURL: 'http://unreachable/mm' } }, { models: { default: { provider: 'ds', model: 'deepseek-flash' }, cantrip: { provider: 'mm', model: 'deepseek-flash' }, spell: { provider: 'ds', model: 'deepseek-v4-pro' } } })
     const cache = createFileModelInfoCache(g.dataDir)
     const access = cacheAccessFor({ provider: 'ds', configPath: join(g.base, 'config.json'), apiKey: config.apiKey, processToken: 'test' })
-    await cache.replace({ provider: 'ds', scope: `deepseek@${resolveConnection({ providerId: 'ds', config }).baseURL}`, fetchedAt: 1,
-      models: [{ id: 'same', reasoning: { levels: ['low'], disable: false } }],
+    await cache.replace({ provider: 'ds', scope: 'deepseek@https://api.deepseek.com#chat-completions', fetchedAt: 1,
+      models: [{ id: 'deepseek-flash', reasoning: { levels: ['low'], disable: false } }],
     }, access)
-    const selection = { choice: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'low' } }
+    const selection = { choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: 'https://api.deepseek.com', reasoning: { mode: 'level' as const, level: 'low' } }
     const context = { ...g.context, selection }
     const before = bytesUnder(g.root)
     const fetch = spyOn(globalThis, 'fetch').mockImplementation((() => { throw new Error('观察切换不能联网') }) as unknown as typeof globalThis.fetch)
@@ -142,9 +142,9 @@ describe('无执行者的真实只读目录', () => {
       await expect(query({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'off' } } })).rejects.toThrow('未声明支持关闭')
       await expect(query({ type: 'model.list' }, { ...context, switch: { choice: 'cantrip', reasoning: { mode: 'off' } } })).rejects.toThrow('未知')
       expect((await answer({ type: 'model.list' }, { ...context, switch: { reasoning: { mode: 'level', level: 'low' } } }, 'model.catalog')).current).toEqual(selection)
-      expect((await answer({ type: 'model.list' }, { ...context, switch: { choice: 'cantrip' } }, 'model.catalog')).current).toEqual({ choice: 'cantrip' as const, provider: 'mm', model: 'same' })
-      expect((await answer({ type: 'model.list' }, { ...context, switch: { choice: 'spell' } }, 'model.catalog')).current).toEqual({ choice: 'spell' as const, provider: 'ds', model: 'other' })
-      expect(selection).toEqual({ choice: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level', level: 'low' } })
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { choice: 'cantrip' } }, 'model.catalog')).current).toEqual({ choice: 'cantrip' as const, provider: 'mm', model: 'deepseek-flash', protocol: 'chat-completions', endpoint: 'http://unreachable/mm' })
+      expect((await answer({ type: 'model.list' }, { ...context, switch: { choice: 'spell' } }, 'model.catalog')).current).toEqual({ choice: 'spell' as const, provider: 'ds', model: 'deepseek-v4-pro', protocol: 'chat-completions', endpoint: 'https://api.deepseek.com' })
+      expect(selection).toEqual({ choice: 'default' as const, provider: 'ds', model: 'deepseek-flash', protocol: 'chat-completions' as const, endpoint: 'https://api.deepseek.com', reasoning: { mode: 'level', level: 'low' } })
       expect((await answer({ type: 'model.list' }, context, 'model.catalog')).current).toEqual(selection)
       expect(bytesUnder(g.root)).toEqual(before)
       expect(fetch).not.toHaveBeenCalled()

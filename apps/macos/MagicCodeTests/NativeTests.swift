@@ -5,6 +5,151 @@ import SwiftUI
 import UserNotifications
 
 final class NativeTests: XCTestCase {
+    private func u126Snapshot() -> SettingsSnapshot {
+        SettingsSnapshot(preview: .object([:]), configPath: "/fixture/config.json", base: "/fixture", stamp: "before",
+            configuration: .object([
+                "providers": .object([
+                    "official": .object(["vendor": .string("fixture"), "name": .string("官方测试连接")]),
+                    "locked": .object(["vendor": .string("fixture"), "protocol": .string("messages")]),
+                    "local": .object(["baseURL": .string("http://localhost:8000/custom/v1"), "protocol": .string("responses"), "auth": .string("bearer")])
+                ]),
+                "models": .object(["default": .object(["provider": .string("official"), "model": .string("exact-model")])])
+            ]), catalog: [], vendors: [.object([
+                "vendor": .string("fixture"), "label": .string("测试供应商"),
+                "regions": .array([.object(["id": .string("test"), "label": .string("测试区域"), "baseURL": .string("https://official.invalid/private-path")])]),
+                "protocols": .array([
+                    .object(["id": .string("chat-completions"), "label": .string("Chat Completions"), "models": .strings(["exact-model"])]),
+                    .object(["id": .string("responses"), "label": .string("Responses"), "models": .strings(["exact-model"])]),
+                    .object(["id": .string("messages"), "label": .string("Anthropic Messages"), "models": .strings(["other-model"])])
+                ])
+            ])], sources: [], grants: [], grantStamp: nil, grantProblem: nil)
+    }
+
+    @MainActor func testU126OfficialAutomaticProtocolSurvivesCredentialEditsAndReset() throws {
+        let snapshot = u126Snapshot()
+        let draft = SettingsDraft(providerFormValue(id: "official", snapshot: snapshot), stamp: snapshot.stamp)
+        draft.put("name", .string("改名")); draft.put("apiKey", .string("fixture-secret"))
+        let action = providerFormAction(draft.value)
+        XCTAssertNil(action.object["protocol"], "改名或改密钥不得锁定自动协议")
+        XCTAssertNil(action.object["baseURL"]); XCTAssertNil(action.object["auth"])
+        XCTAssertTrue(action.validSettingsAction)
+        draft.put("keyAction", .string("keep"))
+        XCTAssertNil(providerFormAction(draft.value).object["keyAction"])
+        XCTAssertEqual(modelProtocolName(provider: draft.value, model: "exact-model", vendors: snapshot.vendors), "Responses")
+        XCTAssertEqual(modelProtocolName(provider: draft.value, model: "other-model", vendors: snapshot.vendors), "Anthropic Messages")
+        XCTAssertTrue(modelProtocolName(provider: draft.value, model: "unknown-model", vendors: snapshot.vendors).hasPrefix("未知"))
+        XCTAssertEqual(providerProtocolOptions(snapshot.vendors[0]).map { $0["id"].text }, ["responses", "messages", "chat-completions"])
+        draft.put("protocol", .string("messages"))
+        XCTAssertTrue(providerFormProblem(draft.value, snapshot: snapshot)?.contains("exact-model") == true)
+        draft.put("protocol", .null, preserveNull: true)
+        XCTAssertEqual(providerFormAction(draft.value).object["protocol"], .null)
+        XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
+        let data = try JSONEncoder().encode(providerFormAction(draft.value))
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"protocol\":null"))
+        XCTAssertEqual(providerFormValue(id: "locked", snapshot: snapshot)["protocol"], .string("messages"))
+    }
+
+    @MainActor func testU126CustomAuthenticationAddressAndWireValidation() {
+        let snapshot = u126Snapshot()
+        let draft = SettingsDraft(providerFormValue(id: "local", snapshot: snapshot), stamp: snapshot.stamp)
+        XCTAssertEqual(draft.value["protocol"], .string("responses"))
+        XCTAssertNil(providerFormAction(draft.value).object["vendor"])
+        XCTAssertNil(providerFormAction(draft.value).object["region"])
+        XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
+        draft.put("baseURL", .string("http://192.168.1.10:9000/deployment/v2"))
+        XCTAssertNotNil(providerFormProblem(draft.value, snapshot: snapshot))
+        draft.put("apiKey", .string("new-service-secret"))
+        XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
+        draft.put("auth", .string("none"))
+        XCTAssertNil(providerFormAction(draft.value).object["apiKey"])
+        XCTAssertNil(providerFormProblem(draft.value, snapshot: snapshot))
+        XCTAssertEqual(providerFormAction(draft.value)["baseURL"], draft.value["baseURL"])
+        for protocolID in ["responses", "messages", "chat-completions"] {
+            for auth in ["none", "bearer", "api-key"] {
+                draft.put("protocol", .string(protocolID)); draft.put("auth", .string(auth))
+                XCTAssertTrue(providerFormAction(draft.value).validSettingsAction)
+            }
+        }
+        XCTAssertEqual(providerDefaultAuth("responses"), "bearer")
+        XCTAssertEqual(providerDefaultAuth("messages"), "api-key")
+        XCTAssertEqual(providerDefaultAuth("chat-completions"), "bearer")
+        draft.put("protocol", .string("completions")); XCTAssertFalse(draft.value.validSettingsAction)
+        draft.put("protocol", .null, preserveNull: true); draft.put("auth", .string("unknown")); XCTAssertFalse(draft.value.validSettingsAction)
+        draft.put("baseURL", .string("file:///tmp/model")); XCTAssertNotNil(providerFormProblem(draft.value, snapshot: snapshot))
+    }
+
+    @MainActor func testU126ModelInformationPreservesUnknownAndDraftAcrossConflicts() {
+        let drafts = SettingsDrafts(), initial: SettingsValue = .object([:])
+        let draft = drafts.draft("override-local-原始型号", initial, stamp: "before")
+        XCTAssertNil(modelInformationProblem(draft.value))
+        draft.put("capabilities", .object(["image": .bool(false), "tools": .bool(true)]))
+        draft.put("limits", .object(["maxInputTokens": .number(12000), "maxOutputTokens": .number(8000), "maxContextTokens": .number(16000)]))
+        draft.put("reasoningSupport", .object(["disable": .bool(true), "levels": .strings(["low", "high"]), "budget": .object([:])]))
+        XCTAssertNil(modelInformationProblem(draft.value), "输入与输出上限不相加推断联合窗口")
+        let reopened = drafts.draft("override-local-原始型号", .object(["limits": .object(["maxInputTokens": .number(999)])]), stamp: "other-write")
+        XCTAssertTrue(reopened === draft); XCTAssertEqual(reopened.stamp, "before")
+        XCTAssertEqual(reopened.value["capabilities"]["image"], .bool(false))
+        XCTAssertEqual(reopened.value["capabilities"]["tools"], .bool(true))
+        XCTAssertEqual(reopened.value["capabilities"]["chat"], .null)
+        XCTAssertEqual(reopened.value["reasoningSupport"]["budget"], .object([:]))
+        for invalid: SettingsValue in [.number(0), .number(-1), .number(1.5), .string("abc"), .number(.infinity)] {
+            draft.put("limits", .object(["maxInputTokens": invalid])); XCTAssertNotNil(modelInformationProblem(draft.value))
+        }
+        draft.put("limits", .null)
+        draft.put("reasoningSupport", .object(["budget": .object(["minTokens": .number(200), "maxTokens": .number(100)])]))
+        XCTAssertNotNil(modelInformationProblem(draft.value))
+        draft.put("reasoningSupport", .null); XCTAssertNil(modelInformationProblem(draft.value))
+        XCTAssertEqual(draft.value["limits"], .null)
+        let action = SettingsValue.object(["type": .string("model.override"), "provider": .string("local"), "model": .string("原始型号/Case-Sensitive"), "override": draft.value])
+        XCTAssertTrue(action.validSettingsAction); XCTAssertEqual(action["model"].text, "原始型号/Case-Sensitive")
+    }
+
+    @MainActor func testU126NativeEditorsRenderWithoutModelCalls() async throws {
+        _ = NSApplication.shared
+        let room = try temp(), snapshot = u126Snapshot(), drafts = SettingsDrafts()
+        let model = AppModel(appURL: room.appendingPathComponent("NoHelper.app"), validationRoot: room,
+                             notificationPort: NotificationCoordinator(send: { _ in XCTFail("设置不发送通知") }))
+        func allViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(allViews) }
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            for id in ["official", "local", ""] {
+                let draft = SettingsDraft(providerFormValue(id: id, snapshot: snapshot), stamp: snapshot.stamp)
+                if id == "local" { draft.put("auth", .string("none")) }
+                let editor = ProviderEditor(model: model, snapshot: snapshot, drafts: drafts, draft: draft, id: id, close: {})
+                let window = try await hostView(editor, size: NSSize(width: 580, height: 680), appearance: appearance)
+                defer { window.close() }
+                let view = try XCTUnwrap(window.contentView)
+                view.layoutSubtreeIfNeeded()
+                let fields = allViews(view).compactMap { $0 as? NSTextField }
+                XCTAssertFalse(fields.contains { $0.stringValue.contains("official.invalid") })
+                XCTAssertEqual(fields.contains { $0 is NSSecureTextField }, id.isEmpty, "新密钥使用隐藏输入，保留密钥及无需认证时不显示输入")
+                if id == "local" { XCTAssertTrue(fields.contains { $0.stringValue == "http://localhost:8000/custom/v1" }) }
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                XCTAssertGreaterThan(try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).count, 2000)
+                XCTAssertFalse(model.settingsBusy); XCTAssertNil(model.settingsError)
+                XCTAssertTrue(model.works.isEmpty)
+            }
+        }
+        let draft = SettingsDraft(.object(["capabilities": .object(["tools": .bool(true)])]), stamp: snapshot.stamp)
+        let window = try await hostView(OverrideForm(model: model, snapshot: snapshot, drafts: drafts, draft: draft, provider: "local", selected: String(repeating: "很长的精确中文型号/", count: 10), close: {}, reselect: {}), size: NSSize(width: 580, height: 680), appearance: .darkAqua)
+        defer { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        XCTAssertEqual(content.bounds.width, 580)
+        XCTAssertGreaterThanOrEqual(allViews(content).compactMap { $0 as? NSTextField }.count, 3, "展开后可编辑三个独立容量")
+        let scroll = try XCTUnwrap(allViews(content).compactMap { $0 as? NSScrollView }.first { ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height })
+        let bottom = try XCTUnwrap(scroll.documentView).bounds.height
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom - scroll.contentView.bounds.height)); scroll.reflectScrolledClipView(scroll.contentView)
+        XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1)
+        let identifier = String(repeating: "原始中文型号/", count: 10) + "Case-Sensitive"
+        let choice = SettingsDraft(.object(["type": .string("model.configure"), "choice": .string("default"), "provider": .string("local"), "model": .string(identifier), "initialize": .bool(true)]), stamp: snapshot.stamp)
+        let choiceWindow = try await hostView(ModelChoiceEditor(model: model, snapshot: snapshot, draft: choice, drafts: drafts, choice: "default", close: {}), size: NSSize(width: 580, height: 680), appearance: .aqua)
+        defer { choiceWindow.close() }
+        XCTAssertTrue(allViews(choiceWindow.contentView!).compactMap { $0 as? NSTextField }.contains { $0.stringValue == identifier })
+        XCTAssertEqual(choice.value["model"].text, identifier)
+        XCTAssertTrue(choice.value["initialize"].flag)
+        XCTAssertFalse(model.settingsBusy); XCTAssertNil(model.settingsError)
+    }
+
     func testPlatformLifecycleSerializesStartsAndPreservesSwitchResult() throws {
         let room = try temp(), fixture = try EnginePlatformFixture(root: room)
         let arguments = ["start", "--validation-root", room.path]
@@ -1095,7 +1240,7 @@ final class NativeTests: XCTestCase {
             XCTAssertEqual(model.settingsSavedKey, key)
         }
         try await save(.object(["type": .string("provider.save"), "provider": .string("local"), "vendor": .string("deepseek"), "name": .string("本地受控连接 · 很长的中文名称用于核对设置布局"), "baseURL": .string("http://127.0.0.1:1/v1"), "apiKey": .string("SENTINEL_U116_SWIFT")]), key: "provider-local")
-        try await save(.object(["type": .string("model.configure"), "choice": .string("default"), "provider": .string("local"), "model": .string("deepseek-chat"), "initialize": .bool(true)]), key: "choice-default")
+        try await save(.object(["type": .string("model.configure"), "choice": .string("default"), "provider": .string("local"), "model": .string("deepseek-flash"), "initialize": .bool(true)]), key: "choice-default")
         try await save(.object(["type": .string("mcp.save"), "name": .string("local-tools"), "server": .object(["command": .string("/SENTINEL_NEVER_RUN"), "args": .strings(["很长的独立参数，用于核对原生列表保留完整内容", "--next"])]), "secrets": .object(["API_TOKEN": .string("SENTINEL_U116_MCP")])]), key: "mcp-local")
         try await save(.object(["type": .string("role.save"), "id": .string("review"), "role": .object(["name": .string("独立审查成员"), "instructions": .string("只根据可核对的依据给出结果。很长的中文职责用于核对换行和层级。"), "tools": .array([]), "model": .object(["choice": .string("default"), "reasoning": .object(["mode": .string("off")])])])]), key: "role-review")
         for source in ["rules.sources", "rules.linkSources", "skills.sources"] {

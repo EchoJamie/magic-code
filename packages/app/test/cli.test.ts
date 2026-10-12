@@ -394,8 +394,8 @@ function twoProviders(): Record<string, unknown> {
   return {
     models: {default: {provider: "alpha", model: 'alpha-1'}, cantrip: {provider: "beta", model: 'beta-1'}, spell: {provider: "alpha", model: 'alpha-1'}, arcane: {provider: "alpha", model: 'alpha-1'}},
     providers: {
-      alpha: { vendor: 'minimax', baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12' },
-      beta: { vendor: 'minimax', baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12' },
+      alpha: { protocol: 'chat-completions', baseURL: 'https://alpha.example/v1', apiKey: 'sk-alpha-key12' },
+      beta: { protocol: 'chat-completions', baseURL: 'https://beta.example/v1', apiKey: 'sk-beta-key12' },
     },
   }
 }

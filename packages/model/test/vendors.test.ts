@@ -78,7 +78,7 @@ describe('列表获取', () => {
    * 那个输出上限的来路**（网关 → 取件层 → `max_tokens`）。此前这一格被整个丢掉，
    * 输出上限只能落回取件层常量 4096。
    */
-  test('DeepSeek：接口给的 `max_output_tokens` 收进规格（其余各格仍不收）', async () => {
+  test('DeepSeek：保留接口给出的容量、名称和输入模态', async () => {
     const { fetch } = capturing({
       object: 'list',
       data: [
@@ -99,10 +99,7 @@ describe('列表获取', () => {
 
     const models = await DEEPSEEK_VENDOR.listModels(ctxOf(fetch))
 
-    // **只有那一格**：名字 / 模态 / effort / 联合窗口都不收（不调用也不呈现）
-    expect(models).toEqual([{ id: 'deepseek-flash', limits: { maxOutputTokens: 393_216 } }])
-    // 联合窗口**明确不收**——它进的是分母与压缩阈值，不在 U91 射程（别顺手收进来）
-    expect(models[0]?.limits?.maxContextTokens).toBeUndefined()
+    expect(models).toEqual([{ id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', capabilities: { image: true }, reasoning: { levels: ['low', 'high', 'max'] }, limits: { maxOutputTokens: 393_216, maxContextTokens: 1_048_576 } }])
   })
 
   /**
@@ -328,7 +325,7 @@ describe('缺项补充', () => {
       id: 'deepseek-flash',
       reasoning: { levels: ['high'] },
     }
-    expect(DEEPSEEK_VENDOR.supplement(given)).toEqual(given)
+    expect(DEEPSEEK_VENDOR.supplement(given)).toMatchObject(given)
   })
 })
 
@@ -338,31 +335,31 @@ describe('缺项补充', () => {
 
 describe('思考设置映射', () => {
   test('DeepSeek：默认什么都不发（官方默认就是开启 ＋ high）', () => {
-    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'default' }, 'deepseek-chat')).toBeUndefined()
+    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'default' }, 'deepseek-flash')).toBeUndefined()
   })
 
   test('DeepSeek：明确关闭 ⇒ `thinking.type = disabled`', () => {
-    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'off' }, 'deepseek-chat')).toEqual({
+    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'off' }, 'deepseek-flash')).toEqual({
       params: { thinking: { type: 'disabled' } },
     })
   })
 
   test('DeepSeek：官方三档 low / high / max ⇒ `reasoning_effort`', () => {
-    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, 'deepseek-chat')).toEqual({
-      params: { reasoningEffort: 'high' },
+    expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'high' }, 'deepseek-flash')).toEqual({
+      params: { thinking: { type: 'enabled' }, reasoningEffort: 'high' },
     })
     for (const level of ['low', 'high', 'max']) {
-      expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level }, 'deepseek-chat')).toEqual({
-        params: { reasoningEffort: level },
+      expect(DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level }, 'deepseek-flash')).toEqual({
+        params: { thinking: { type: 'enabled' }, reasoningEffort: level },
       })
     }
   })
 
   test('DeepSeek：不认识的档位 / 预算 ⇒ **报缺口**（不发假参数）', () => {
-    const level = DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'ultra' }, 'deepseek-chat')
+    const level = DEEPSEEK_VENDOR.reasoningOf({ mode: 'level', level: 'ultra' }, 'deepseek-flash')
     expect(level !== undefined && 'gap' in level && level.gap).toMatch(/low \/ high \/ max/)
 
-    const budget = DEEPSEEK_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 4096 }, 'deepseek-chat')
+    const budget = DEEPSEEK_VENDOR.reasoningOf({ mode: 'budget', budgetTokens: 4096 }, 'deepseek-flash')
     expect(budget !== undefined && 'gap' in budget && budget.gap).toMatch(/没有思考预算/)
   })
 

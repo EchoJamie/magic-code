@@ -21,6 +21,8 @@ import type {
   ReasoningSupport,
   ModelTraits,
   ModelChoice,
+  ModelProtocol,
+  ProviderAuth,
 } from '@magic/contracts'
 import {
   apiKeyEnvVarOf,
@@ -148,6 +150,8 @@ function asTextList(value: unknown, path: string, field: string): string[] {
 function asReasoningSupport(value: unknown, path: string, field: string): ReasoningSupport {
   const raw = asObject(value, path, field)
   const levels = raw['levels'] === undefined ? undefined : asTextList(raw['levels'], path, `${field}.levels`)
+  const defaultMode = raw['default']
+  if (defaultMode !== undefined && defaultMode !== 'on' && defaultMode !== 'off') throw new ConfigError(path, `${field}.default 须是 on 或 off`)
   const disable = raw['disable']
   if (disable !== undefined && typeof disable !== 'boolean') {
     throw new ConfigError(path, `${field}.disable 须是布尔值`)
@@ -166,6 +170,7 @@ function asReasoningSupport(value: unknown, path: string, field: string): Reason
     }
   }
   return {
+    ...(defaultMode === undefined ? {} : { default: defaultMode }),
     ...(levels === undefined ? {} : { levels }),
     ...(disable === undefined ? {} : { disable }),
     ...(budget === undefined ? {} : { budget }),
@@ -229,6 +234,10 @@ function asLimits(value: unknown, path: string, field: string): ModelLimits {
   const maxInputTokens = pick('maxInputTokens')
   const maxOutputTokens = pick('maxOutputTokens')
   const maxContextTokens = pick('maxContextTokens')
+  if (maxContextTokens !== undefined && ((maxInputTokens !== undefined && maxInputTokens > maxContextTokens)
+    || (maxOutputTokens !== undefined && maxOutputTokens > maxContextTokens))) {
+    throw new ConfigError(path, `${field} 的输入或输出上限不能大于联合上下文窗口`)
+  }
 
   return {
     ...(maxInputTokens === undefined ? {} : { maxInputTokens }),
@@ -252,6 +261,7 @@ function asModelOverrides(
   const overrides: Record<string, ProviderModelOverride> = Object.create(null)
 
   for (const [id, entry] of Object.entries(raw)) {
+    asText(id, path, `${field} 的原始型号`)
     const one = asObject(entry, path, `${field}.${id}`)
     if (Object.hasOwn(one, 'reasoning')) throw new ConfigError(path, `${field}.${id}.reasoning 已移除；思考设置请用于 Agent 或角色选择`)
     const limits = one['limits'] === undefined ? undefined : asLimits(one['limits'], path, `${field}.${id}.limits`)
@@ -261,7 +271,7 @@ function asModelOverrides(
     if (one['capabilities'] !== undefined) {
       const given = asObject(one['capabilities'], path, `${field}.${id}.capabilities`)
       for (const key of Object.keys(given)) {
-        if (!['chat', 'image'].includes(key) || typeof given[key] !== 'boolean') {
+        if (!['chat', 'image', 'tools'].includes(key) || typeof given[key] !== 'boolean') {
           throw new ConfigError(path, `${field}.${id}.capabilities.${key} 须是已知能力的布尔值`)
         }
       }
@@ -291,8 +301,16 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
   for (const key of ['model', 'reasoning', 'traits', 'contextWindow']) {
     if (Object.hasOwn(raw, key)) throw new ConfigError(path, `${field}.${key} 已移除；模型选择请配置 models，规格请配置 modelOverrides`)
   }
-  const vendor = asText(raw['vendor'], path, `${field}.vendor`)
-  const baseURL = asOptionalText(raw['baseURL'], path, `${field}.baseURL`)
+  const vendor = asOptionalText(raw['vendor'], path, `${field}.vendor`)
+  const protocol = asOptionalText(raw['protocol'], path, `${field}.protocol`)
+  if (protocol !== undefined && !['responses', 'messages', 'chat-completions'].includes(protocol)) {
+    throw new ConfigError(path, `${field}.protocol 须为 responses、messages 或 chat-completions`)
+  }
+  const auth = asOptionalText(raw['auth'], path, `${field}.auth`)
+  if (auth !== undefined && !['none', 'bearer', 'api-key'].includes(auth)) {
+    throw new ConfigError(path, `${field}.auth 须为 none、bearer 或 api-key`)
+  }
+  const baseURL = vendor === undefined ? asText(raw['baseURL'], path, `${field}.baseURL`) : asOptionalText(raw['baseURL'], path, `${field}.baseURL`)
   const name = asOptionalText(raw['name'], path, `${field}.name`)
   const region = asOptionalText(raw['region'], path, `${field}.region`)
   const modelOverrides =
@@ -302,6 +320,8 @@ function asProvider(value: unknown, path: string, field: string): ProviderConfig
 
   return {
     ...(vendor === undefined ? {} : { vendor }),
+    ...(protocol === undefined ? {} : { protocol: protocol as ModelProtocol }),
+    ...(auth === undefined ? {} : { auth: auth as ProviderAuth }),
     ...(name === undefined ? {} : { name }),
     ...(region === undefined ? {} : { region }),
     ...(baseURL === undefined ? {} : { baseURL }),

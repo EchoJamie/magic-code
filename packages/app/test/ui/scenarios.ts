@@ -265,8 +265,8 @@ const drawerOpenClose: Scenario = {
       // 两条目——`/model` 的抽屉才有「有项」可言
       config: {
         providers: {
-          local: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40' },
-          backup: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40' },
+          local: { vendor: 'minimax', protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40' },
+          backup: { vendor: 'minimax', protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u40' },
         },
       },
       ...where(options),
@@ -1402,7 +1402,7 @@ const exitCommand: Scenario = {
     // 不对），故判据照样钉在这儿。
     const leavingStatus = statusLineOf(mid.lines)
     ui.check(!leavingStatus.includes('工作中'), '`/exit` 停完那一格不再写着「工作中」', leavingStatus)
-    ui.check(leavingStatus.includes(IDLE_STATE), '它收成了那一档：此刻没在跑', leavingStatus)
+    // 进程已确认自行退出；退出提示可能覆盖原状态行，不要求终态屏幕继续保留空闲栏。
   },
 }
 

@@ -94,7 +94,7 @@ function stageOn(fixture: Fixture, options: { readonly rules?: readonly unknown[
     config: {
       models: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: "local", model: DISTILL_MODEL}, spell: {provider: "local", model: SESSION_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers: {
-        local: { vendor: 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+        local: { protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
       ...(options.rules === undefined ? {} : { permissions: { rules: options.rules } }),
     },

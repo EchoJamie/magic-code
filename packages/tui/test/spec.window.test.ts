@@ -194,7 +194,7 @@ describe('`model.catalog` 那一格', () => {
 
         },
       ],
-      current: { choice: 'default' as const, provider: 'ds', model: 'deepseek-reasoner' },
+      current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'ds', model: 'deepseek-reasoner' },
       ...(currentInputBudget === undefined ? {} : { currentInputBudget }),
     })
 

@@ -75,6 +75,7 @@ const VENDORS: readonly VendorInfo[] = [
   {
     vendor: 'minimax',
     label: 'MiniMax',
+    protocols: [{ id: 'responses', label: 'Responses', models: ['MiniMax-M3'] }],
     regions: [
       { id: 'cn', label: '中国大陆', baseURL: 'https://api.minimaxi.com/v1' },
       { id: 'global', label: '国际', baseURL: 'https://api.minimax.chat/v1' },
@@ -83,6 +84,7 @@ const VENDORS: readonly VendorInfo[] = [
   {
     vendor: 'deepseek',
     label: 'DeepSeek',
+    protocols: [{ id: 'chat-completions', label: 'Chat Completions', models: ['deepseek-chat'] }],
     regions: [{ id: 'official', label: '官方', baseURL: 'https://api.deepseek.com' }],
   },
 ]
@@ -127,96 +129,24 @@ function atKeyPrompt(stage: Stage): void {
   stage.press(ENTER)
   feedProviders(stage)
   stage.press(ENTER) // MiniMax（两个区域）
-  stage.press(ENTER) // 中国大陆（缺省那一项）
+  const keyAt = pickerOf(stage)!.rows.findIndex(one => one.value === 'apiKey')
+  for (let i = 0; i < keyAt; i++) stage.press(DOWN)
+  stage.press(ENTER)
 }
 
 // ══ 一 · 接入那一路：一步接一步的每一屏都是层（本单的要害）═════════════
 
-describe('① 接入那一趟：「问密钥 →「←」→ 选区域 →「←」→ 选供应商」', () => {
-  test('**本地小输入也是层**——问密钥那一屏按 `←` 退回选区域，再按退回选供应商', () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
-
-    expect(dockOf(stage).kind).toBe('prompt')
-    expect(promptLabelOf(stage)).toContain('密钥')
-
-    stage.press(ESC)
-    expect(pickerOf(stage)?.source).toBe('region')
-    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['中国大陆', '国际'])
-
-    stage.press(LEFT)
-    expect(pickerOf(stage)?.source).toBe('vendor')
-    expect(pickerOf(stage)?.rows.map((row) => row.label)).toEqual(['MiniMax', 'DeepSeek'])
-  })
-
-  test('再按一次（底下就是输入行了）⇒ **收起**——与 `esc` 同效', () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
-
-    stage.press(ESC)
-    stage.press(LEFT)
-    expect(dockOf(stage).kind).toBe('picker') // 还在选供应商那一屏
-
-    stage.press(LEFT)
-    expect(dockOf(stage).kind).toBe('input') // 弹到空 ＝ 收起
-  })
-
-  test('弹回来**回到原处**：上一层的光标位置与草稿照旧', () => {
-    const stage = createStage()
-    stage.type('/model connect')
-    stage.press(ENTER)
-    feedProviders(stage)
-    stage.press(ENTER) // 选供应商那一屏：MiniMax（头一项）
-    stage.press(DOWN) // 选区域那一屏挪到第二项（国际）
-    stage.press(ENTER)
-
-    expect(dockOf(stage).kind).toBe('prompt')
-    const paper = paperOf(stage)
-
-    stage.press(ESC)
-    // 区域那一屏的焦点**还在原来那一项**（不是重开一次回到第一项）
-    expect(pickerOf(stage)?.source).toBe('region')
-    expect(pickerOf(stage)?.selected).toBe(1)
-
-    stage.press(LEFT)
-    // 供应商那一屏同理（它当时停在头一项，回来还停在头一项）
-    expect(pickerOf(stage)?.source).toBe('vendor')
-    expect(pickerOf(stage)?.selected).toBe(0)
-    // 草稿那三格一次都没被动过
-    expect(paperOf(stage)).toEqual(paper)
-  })
-
-  test('**一家只有一个区域**那条（不经过区域那一屏）也回得去', () => {
-    // 由头：「凡是存在多级的 slash，一律走这一套」——多级里少走一屏的那一支照样是层。
-    const stage = createStage()
-    stage.type('/model connect')
-    stage.press(ENTER)
-    feedProviders(stage)
-    stage.press(DOWN) // DeepSeek（只有一个区域）
-    stage.press(ENTER)
-
-    expect(dockOf(stage).kind).toBe('prompt') // 直接到密钥那一屏
-
-    stage.press(ESC)
-    expect(pickerOf(stage)?.source).toBe('vendor')
-    expect(pickerOf(stage)?.selected).toBe(1)
-  })
-
-  test('弹回来之后再选定一次 ⇒ **照旧往下走**（栈不是死的：上一层还能再进）', () => {
-    const stage = createStage()
-    atKeyPrompt(stage)
-
-    stage.press(ESC) // 回选区域
-    stage.press(LEFT) // 回选供应商
-    stage.press(ENTER) // 再挑 MiniMax
-
-    expect(pickerOf(stage)?.source).toBe('region')
-    stage.press(ENTER)
-    expect(dockOf(stage).kind).toBe('prompt') // 又回到问密钥那一屏
+describe('① 接入编辑的返回栈', () => {
+  test('隐藏输入 → 编辑表单 → 供应商 → 正文；字段草稿保留', () => {
+    const stage = createStage(); atKeyPrompt(stage); type(stage, 'sk-draft')
+    stage.press(ESC); expect(pickerOf(stage)?.source).toBe('model-editor')
+    stage.press(LEFT); expect(pickerOf(stage)?.source).toBe('vendor')
+    stage.press(ENTER); expect(pickerOf(stage)?.source).toBe('model-editor')
+    expect(pickerOf(stage)?.rows.find(one => one.value === 'apiKey')?.meta).toContain('隐藏')
+    stage.press(LEFT); stage.press(LEFT); expect(dockOf(stage).kind).toBe('input')
+    expect(stage.commands().some(one => one.type === 'provider.save')).toBe(false)
   })
 })
-
-// ══ 二 · `/model` 详情那一层（`→` 看详情）════════════════════════════
 
 describe('② `/model`：`→` 看详情 · 详情里进思考那一屏', () => {
   const two = [
@@ -231,7 +161,7 @@ describe('② `/model`：`→` 看详情 · 详情里进思考那一屏', () => 
     stage.press(RIGHT)
     expect(pickerOf(stage)?.source).toBe('model-detail')
 
-    expect(pickerOf(stage)?.rows.map(row => row.value)).toEqual(['back'])
+    expect(pickerOf(stage)?.rows.map(row => row.value)).toEqual(['edit-info', 'back'])
 
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model')
@@ -264,7 +194,7 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
     // 由头：设计把 `/model` 的层级写成「**列表 → 详情 → 接入**：供应商 → 区域 → 密钥」，
     // 而「进一层」那一句里头一条就是**打开选择器**——从列表里点开的这一屏，照样是一层。
     const stage = createStage()
-    openModel(stage, connected, 1) // 挪到入口行「连接供应商」
+    openModel(stage, connected, 2) // 挪到入口行「连接供应商」
 
     stage.press(ENTER) // 选定 ⇒ 把 `provider.list` 发出去（**列表先留在屏上**，见下一条）
     feedProviders(stage, connected)
@@ -272,7 +202,7 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
     expect(pickerOf(stage)?.source).toBe('vendor')
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model') // 退回列表
-    expect(pickerOf(stage)?.selected).toBe(1) // 焦点照旧
+    expect(pickerOf(stage)?.selected).toBe(2) // 焦点照旧
 
     stage.press(LEFT)
     expect(pickerOf(stage)?.source).toBe('model')
@@ -282,7 +212,7 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
   test('「管理连接」那一趟同理：一览 →「←」回列表', () => {
     const stage = createStage()
-    openModel(stage, connected, 2) // 入口行「管理连接」
+    openModel(stage, connected, 3) // 入口行「管理连接」
 
     stage.press(ENTER)
     feedProviders(stage, connected)
@@ -294,7 +224,7 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
   test('**刷新模型**那一条不算一层——它回来照旧是这一屏（就地重铺，栈里不叠两份）', () => {
     const stage = createStage()
-    openModel(stage, connected, 3) // 入口行「刷新模型」
+    openModel(stage, connected, 4) // 入口行「刷新模型」
 
     stage.press(ENTER)
     stage.feed([event('model.catalog', { entries: connected })])
@@ -308,7 +238,7 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
   test('**入口行那一跳不闪输入行**——等答复那几毫秒里，屏上留的是刚才那一屏', () => {
     const stage = createStage()
-    openModel(stage, connected, 1)
+    openModel(stage, connected, 2)
 
     stage.press(ENTER)
 
@@ -317,7 +247,7 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
   test('这一趟中途 `esc` ⇒ 一按到底（栈也一起清）', () => {
     const stage = createStage()
-    openModel(stage, connected, 1)
+    openModel(stage, connected, 2)
     stage.press(ENTER)
     feedProviders(stage, connected)
     expect(pickerOf(stage)?.source).toBe('vendor')
@@ -335,53 +265,17 @@ describe('②b `/model` 列表里点「连接供应商 / 管理连接」——�
 
 // ══ 三 · `/model manage` 那一趟（明细 → 本地小输入）═════════════════
 
-describe('③ `/model manage`：一览 → 明细 → 问一件小事那一屏', () => {
-  const connected = [conn('personal', { name: '个人号', model: 'MiniMax-M3' })]
-
-  function atManagePrompt(stage: Stage, row = 0): void {
-    stage.type('/model manage')
-    stage.press(ENTER)
-    feedProviders(stage, connected)
-    stage.press(ENTER) // 进这一条的明细
-    for (let step = 0; step < row; step += 1) stage.press(DOWN)
-    stage.press(ENTER) // 选定那一件动作（改名 / 更新认证 / 高级地址）
-  }
-
-  test('改名那一屏按 `←` 退回明细，再按退回一览，再按收起', () => {
-    const stage = createStage()
-    atManagePrompt(stage, 0)
-    expect(promptLabelOf(stage)).toBe('新名字')
-
-    stage.press(ESC)
-    expect(pickerOf(stage)?.source).toBe('provider-detail')
-
-    stage.press(LEFT)
-    expect(pickerOf(stage)?.source).toBe('provider')
-
-    stage.press(LEFT)
-    expect(dockOf(stage).kind).toBe('input')
-  })
-
-  test('**更新认证**（密钥）那一屏同理——它是本地小输入，也是一层', () => {
-    const stage = createStage()
-    atManagePrompt(stage, 1)
-    expect(promptLabelOf(stage)).toContain('密钥')
-
-    stage.press(ESC)
-    expect(pickerOf(stage)?.source).toBe('provider-detail')
-  })
-
-  test('**高级地址**那一屏同理', () => {
-    const stage = createStage()
-    atManagePrompt(stage, 2)
-    expect(promptLabelOf(stage)).toBe('高级地址')
-
-    stage.press(ESC)
-    expect(pickerOf(stage)?.source).toBe('provider-detail')
+describe('③ 管理连接编辑的返回栈', () => {
+  test('名称输入 → 编辑 → 明细 → 一览 → 正文', () => {
+    const stage = createStage(); stage.type('/model manage'); stage.press(ENTER)
+    feedProviders(stage, [conn('personal', { name: '个人号' })]); stage.press(ENTER); stage.press(ENTER); stage.press(ENTER)
+    expect(promptLabelOf(stage)).toBe('名称')
+    stage.press(ESC); expect(pickerOf(stage)?.source).toBe('model-editor')
+    stage.press(LEFT); expect(pickerOf(stage)?.source).toBe('provider-detail')
+    stage.press(LEFT); expect(pickerOf(stage)?.source).toBe('provider')
+    stage.press(LEFT); expect(dockOf(stage).kind).toBe('input')
   })
 })
-
-// ══ 四 · `/config`：门 → 那一项自己那一屏（另一条多级的）══════════════
 
 describe('④ `/config`：门 → 进那一项自己那一屏', () => {
   /** 一条连接、一个模型——「模型与连接」那一格要的是**此刻走哪一条**。 */
@@ -400,7 +294,7 @@ describe('④ `/config`：门 → 进那一项自己那一屏', () => {
       } satisfies ModelInfoRead,
     },
   ]
-  const CURRENT = { choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' }
+  const CURRENT = { protocol: 'chat-completions' as const, endpoint: 'https://fixture.invalid/v1', choice: 'default' as const, provider: 'minimax', model: 'MiniMax-M3' }
 
   /** 开那一扇门：打 `/config` ＋ 回车 → 内核回三份读数（U71）。 */
   function openConfig(stage: Stage): void {
@@ -551,7 +445,7 @@ describe('⑥ Esc 逐层返回，正文 Esc 保留原稿', () => {
     type(stage, 'sk-secret')
     stage.press(LEFT)
     expect(dockOf(stage).kind).toBe('prompt')
-    stage.press(ESC); expect(pickerOf(stage)?.source).toBe('region')
+    stage.press(ESC); expect(pickerOf(stage)?.source).toBe('model-editor')
     stage.press(ESC); expect(pickerOf(stage)?.source).toBe('vendor')
     stage.press(ESC); expect(dockOf(stage).kind).toBe('input')
     expect(paperOf(stage)).toEqual(paper)

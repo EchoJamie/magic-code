@@ -12,7 +12,9 @@ import type { Fixture, FixtureRequest, FixtureTurn } from './ui/fixture.ts'
 /** 会话那一条连接上的模型。 */
 const SESSION_MODEL = 'deepseek-flash'
 /** 「取网页用的模型」——**另一条**（判据 ④ 要的就是「它跟会话那个是两个」）。 */
-const DISTILL_MODEL = 'deepseek-distill-small'
+const DISTILL_MODEL = 'deepseek-v4-pro'
+const MINIMAX_DISTILL_MODEL = 'MiniMax-M2.7-highspeed'
+const SWITCHED_MODEL = 'session-switched'
 
 /** 那一页的 markdown（取回面替身直接给 md，绕开 HTML 转换那一跳）。 */
 const PAGE = '# 定价\n\n标准版每月 12 元。\n\n内部备注：这一段只在原文里。'
@@ -49,18 +51,21 @@ function fakeWeb(body = PAGE): WebSource & { readonly asked: string[] } {
 function stageOn(
   fixture: Fixture,
   options: {
-    /** 会话那条连接的适配（不给 ＝兼容接入）。 */
+    /** 会话那条连接的适配（不给 ＝ DeepSeek）。 */
     readonly vendor?: string
     /** 提炼那条连接的适配（给了就另起一条连接）。 */
     readonly distillVendor?: string
   } = {},
 ) {
   const providers: Record<string, Record<string, unknown>> = {
-    local: { vendor: options.vendor ?? 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+    local: { vendor: options.vendor ?? 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+    switched: { protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY,
+      modelOverrides: { [SWITCHED_MODEL]: { capabilities: { tools: true } } } },
   }
   if (options.distillVendor !== undefined) {
     providers['distill'] = {
       vendor: options.distillVendor,
+      protocol: 'chat-completions',
       baseURL: fixture.baseURL,
       apiKey: FAKE_API_KEY,
     }
@@ -68,7 +73,7 @@ function stageOn(
 
   return makeStage({
     config: {
-      models: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: DISTILL_MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: SESSION_MODEL}},
+      models: {default: {provider: "local", model: SESSION_MODEL}, cantrip: {provider: options.distillVendor === undefined ? 'local' : 'distill', model: options.distillVendor === 'minimax' ? MINIMAX_DISTILL_MODEL : DISTILL_MODEL}, spell: {provider: 'switched', model: SWITCHED_MODEL}, arcane: {provider: "local", model: SESSION_MODEL}},
       providers,
 
     },
@@ -94,8 +99,8 @@ function chatsOf(fixture: Fixture): readonly FixtureRequest[] {
  *
  * 不按序认的理由：本单要判的正是「它用的是它自己那一条模型」，序认不出来这件事。
  */
-function distillOf(fixture: Fixture): FixtureRequest | undefined {
-  return chatsOf(fixture).find((request) => request.body['model'] === DISTILL_MODEL)
+function distillOf(fixture: Fixture, model = DISTILL_MODEL): FixtureRequest | undefined {
+  return chatsOf(fixture).find((request) => request.body['model'] === model)
 }
 
 /**
@@ -188,7 +193,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
       const chats = chatsOf(fixture)
       // 会话那几次**真跟过去了**（反证：这一换是生效的，不是本用例自己没换动）
       const sessionModels = chats.filter((one) => one.body['model'] !== DISTILL_MODEL)
-      expect(sessionModels.some((one) => one.body['model'] === 'deepseek-v4-pro')).toBe(true)
+      expect(sessionModels.some((one) => one.body['model'] === SWITCHED_MODEL)).toBe(true)
 
       // **提炼仍用它自己那一条**：两次提炼送的都是配置里那个名字，一次都没漂
       const distilled = chats.filter((one) => one.body['model'] === DISTILL_MODEL)
@@ -202,7 +207,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
     }
   }, 30_000)
 
-  test('② MiniMax 能力未知时使用默认思考，同一 Cantrip 完成提炼', async () => {
+  test('② MiniMax 不支持关闭思考时使用默认思考，同一 Cantrip 完成提炼', async () => {
     const fixture = startFixture({ model: SESSION_MODEL, turns: turnsOf() })
     // 会话走 DeepSeek、**提炼走它自己那一条（MiniMax）**——顺手把「走的是哪条连接」也钉住
     const stage = stageOn(fixture, { vendor: 'deepseek', distillVendor: 'minimax' })
@@ -213,7 +218,7 @@ describe('U99 · 提炼那一次调用带上了「关思考」', () => {
       const handle = attachShell(assembly.shell)
       await runOneFetch(handle, 1, '查一下它的定价')
 
-      const request = distillOf(fixture)
+      const request = distillOf(fixture, MINIMAX_DISTILL_MODEL)
       expect(request).toBeDefined()
       expect(request?.body['thinking']).toBeUndefined()
       expect(request?.body['reasoning_effort']).toBeUndefined()

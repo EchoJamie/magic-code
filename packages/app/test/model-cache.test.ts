@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import type { ModelCacheAccess, ModelInfoSnapshot } from '@magic/contracts'
 import { assemble, attachShell, loadConfig } from '../src/index.ts'
 import { MODEL_CACHE_DIR, createFileModelInfoCache } from '../src/model-cache.ts'
+import { createSettings } from '../src/settings.ts'
 import { magicAt } from './tmp.ts'
 
 /** 一个接入身份——测试里的假值（真身份由装配按认证来源算，见回报）。 */
@@ -350,12 +351,12 @@ describe('真装配 · 认证轮换', () => {
     const gate = new Promise<Response>((resolve) => {
       release = resolve
     })
-    let calls = 0
-    const modelFetch = async (url: unknown) => {
+    const authorization: (string | null)[] = []
+    const modelFetch = async (url: unknown, init?: RequestInit) => {
       if (String(url).endsWith('/models')) {
-        calls += 1
+        authorization.push(new Headers(init?.headers).get('authorization'))
         // 第一趟（旧认证）挂住；换过认证之后再来的那趟立即回
-        if (calls === 1) return gate
+        if (authorization.length === 1) return gate
         return Response.json({ object: 'list', data: [{ id: 'AFTER-ROTATION', object: 'model' }] })
       }
       return new Response('{}', { status: 200 })
@@ -386,6 +387,20 @@ describe('真装配 · 认证轮换', () => {
     return {
       assembly,
       root,
+      authorization,
+      async rotate(source: '终端保存' | 'App保存' | '外部写入') {
+        if (source === '终端保存') {
+          const saved = await command('provider.save', 'provider.catalog', { provider: 'ds', apiKey: 'fake-new' })
+          expect(saved.saved).toBe(true)
+        } else if (source === 'App保存') {
+          const settings = createSettings({ magic: magicAt(root), configPath: path, environment: {}, fetch: modelFetch })
+          await settings.apply({ type: 'provider.save', provider: 'ds', apiKey: 'fake-new' }, (await settings.read()).stamp)
+        } else {
+          const config = JSON.parse(readFileSync(path, 'utf8'))
+          config.providers.ds.apiKey = 'fake-new'
+          writeFileSync(path, JSON.stringify(config))
+        }
+      },
       command,
       release: (r: Response) => release(r),
       close() {
@@ -396,17 +411,13 @@ describe('真装配 · 认证轮换', () => {
     }
   }
 
-  /**
-   * ⚠️ **待装配接线，这条现在必红**：装配还没把接入身份接上——
-   * `assembly.ts` 的 `resolveConnection({ providerId, config })` 不传 `access`，
-   * 而 `modelCache.drop(request.provider)` 仍按**旧签名**只传一个参数（运行到就 TypeError）。
-   * 两处都在**调用线**的文件里，本线不改；**如实留红，不拿它凑绿**。
-   */
-  test('【待装配接线】换认证：旧认证那趟的迟到列表不得留在读面', async () => {
+  for (const source of ['终端保存', 'App保存', '外部写入'] as const) {
+  for (const outcome of ['成功', '失败'] as const) test(`${source}换认证：新请求不等旧请求，旧认证迟到${outcome}不得污染当前读面`, async () => {
     const s = await staged()
+    const registry = s.assembly.models, selection = registry?.current()
+    const stale = s.assembly.modelInfo.refresh('ds')
     try {
-      const stale = s.assembly.modelInfo.refresh('ds') // 旧认证发起一趟（挂住）
-      await Bun.sleep(20)
+      expect(s.authorization).toEqual(['Bearer fake-old'])
 
       // **前半截直接看得见**：装配在保存认证时到底调没调 `drop`。
       // 少了这一句，「旧那份没复活」也可能只是恰巧——把前提当结论用是这一轮的老毛病
@@ -417,22 +428,34 @@ describe('真装配 · 认证轮换', () => {
         return original.call(s.assembly.modelInfo, id)
       }
 
-      // 用户在这中间换了认证 —— 走**真实**的保存路径
-      await s.command('provider.save', 'provider.catalog', { provider: 'ds', apiKey: 'fake-new' })
+      await s.rotate(source)
+      const fresh = s.assembly.modelInfo.refresh('ds')
+      // 旧响应仍扣在屏障内，新认证必须已有自己的请求，不能复用旧在途位。
+      expect(s.authorization).toEqual(['Bearer fake-old', 'Bearer fake-new'])
       expect(dropped).toBeGreaterThan(0)
+      const current = await fresh
+      expect(current.snapshot?.models.map(one => one.id)).toEqual(['AFTER-ROTATION'])
+      expect(current.failure).toBeUndefined()
 
-      s.release(Response.json({ object: 'list', data: [{ id: 'OLD-RANGE-ONLY', object: 'model' }] }))
+      s.release(outcome === '成功'
+        ? Response.json({ object: 'list', data: [{ id: 'OLD-RANGE-ONLY', object: 'model' }] })
+        : new Response('old authentication failed', { status: 401 }))
       await stale
-      await Bun.sleep(10)
 
-      // 判据不看「有没有快照」——这一读自己会为新认证再发起一趟（那是正确行为），
-      // 拿它当判据会把两件事混起来。看的是：**旧认证那份在不在**
-      const ids = s.assembly.modelInfo.read('ds').snapshot?.models.map((one) => one.id) ?? []
-      expect(ids).not.toContain('OLD-RANGE-ONLY')
+      const after = s.assembly.modelInfo.read('ds')
+      expect(after.snapshot).toEqual(current.snapshot)
+      expect(after.snapshot?.models.map(one => one.id)).not.toContain('OLD-RANGE-ONLY')
+      expect(after.failure).toBeUndefined()
+      expect(s.authorization).toEqual(['Bearer fake-old', 'Bearer fake-new'])
+      expect(s.assembly.models).toBe(registry)
+      expect(s.assembly.models?.current()).toEqual(selection)
     } finally {
+      s.release(Response.json({ data: [] }))
+      await stale
       s.close()
     }
   })
+  }
 })
 
 describe('跨进程 · 真进程真文件', () => {

@@ -49,7 +49,7 @@ test('原生保存后新成员采用新档位与独立思考，入口和已有�
     const fresh = f.members().find(one => one.role === 'reviewer')!
     expect(fresh.model.choice).toBe('spell'); expect(fresh.model.reasoning).toEqual({ mode: 'off' })
     const body = f.requests('descendant-model')[0]!.body
-    expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.reasoning_effort).toBe('none')
     const toolNames = (body.tools as { function: { name: string } }[]).map(tool => tool.function.name)
     expect(toolNames).toEqual(['agent_list', 'agent_spawn', 'agent_message', 'agent_wait', 'agent_control']) // 协作通信保留，普通执行工具全部收窄。
     expect(f.requests('member-model')).toHaveLength(1); expect(f.requests('entry-model').length).toBeGreaterThanOrEqual(3)

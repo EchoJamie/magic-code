@@ -567,7 +567,6 @@ export type Picker = {
     | 'session-actions'
     | 'session-history'
     | 'model'
-    | 'region'
     | 'grants'
     | 'input-purpose'
     | 'input-pending'
@@ -580,6 +579,8 @@ export type Picker = {
     | 'vendor'
     | 'provider'
     | 'provider-detail'
+    | 'model-editor'
+    | 'model-manual'
     | 'model-choice'
     | 'model-detail'
     | 'model-reasoning'
@@ -1726,7 +1727,7 @@ export function reduce(
       // **不沿用换之前那个模型的容量**）。**没换成＝原样不动**（切不动就不动）。
       return appendReceipt(
         event.data.ok && event.data.model !== undefined
-          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.choice === undefined ? view.modelCurrent : { choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
+          ? patchStatus({ ...view, modelCurrent: event.data.provider === undefined || event.data.choice === undefined || event.data.protocol === undefined || event.data.endpoint === undefined ? view.modelCurrent : { protocol: event.data.protocol, endpoint: event.data.endpoint, choice: event.data.choice, provider: event.data.provider, model: event.data.model, ...(event.data.reasoning === undefined ? {} : { reasoning: event.data.reasoning }) } }, {
               model: event.data.choice === undefined ? view.status.model : modelLabel(event.data.choice),
               window: event.data.inputBudget ?? null,
             })
@@ -3565,21 +3566,10 @@ export function vendorRows(vendors: readonly VendorInfo[]): readonly PickerRow[]
   return vendors.map((one) => ({
     label: one.label,
     // 副文案**留空**：连接 id 就是它的名字（`MiniMax` / `minimax` 只差大小写）——
-    // 再报一遍是同一条信息说两遍。有区域可选时，选择在下一步（见 `regionRows`）。
+    // 区域与协议在连接编辑页集中选择。
     meta: '',
     current: false,
     value: one.vendor,
-    oneLine: true,
-  }))
-}
-
-/** **挑区域**那一屏的行（接入第二步，只在真有得选时开）——区域名 ＋ 它指向的官方地址。 */
-export function regionRows(vendor: VendorInfo): readonly PickerRow[] {
-  return vendor.regions.map((region) => ({
-    label: region.label,
-    meta: region.baseURL,
-    current: false,
-    value: region.id,
     oneLine: true,
   }))
 }
@@ -3625,13 +3615,14 @@ export function modelChoiceRows(configuredModels: NonNullable<MagicConfig['model
 export function modelRows(
   entries: readonly ModelCatalogRow[],
   current: ModelRef | null,
+  configuredModels: NonNullable<MagicConfig['models']> = {},
 ): readonly PickerRow[] {
   const rows: PickerRow[] = []
 
   for (const entry of entries) {
     const connection = entry.name ?? entry.provider
 
-    for (const one of modelsOf(entry, current)) {
+    for (const one of modelsOf(entry, current, Object.values(configuredModels))) {
       rows.push({
         label: one.info.name ?? one.info.id,
         // 连接名打头（窄窗先保住它——同名模型靠它分辨），其后才是补充的那几格
@@ -3647,7 +3638,7 @@ export function modelRows(
     }
   }
 
-  return [...rows, ...modelActionRows(entries)]
+  return [...rows, ...(entries.length ? [{ label: '手动填写模型', meta: '无需列表命中', value: 'manual', current: false, oneLine: true }] : []), ...modelActionRows(entries)]
 }
 
 /**
@@ -3701,12 +3692,14 @@ export function modelActionRows(entries: readonly ModelCatalogRow[]): readonly P
 function modelsOf(
   entry: ModelCatalogRow,
   current: ModelRef | null,
+  configured: readonly ModelRef[] = [],
 ): readonly { readonly info: ModelInfo; readonly cached: boolean }[] {
   const cached = (entry.cache?.snapshot?.models ?? []).filter(
     // **列表取舍**：明确说了「不适用于对话」的不混入（`false` 才排除；**未知照列**）
     (one) => one.capabilities?.chat !== false,
   )
-  const out = cached.map((info) => ({ info, cached: true }))
+  const manual = Object.keys(entry.modelOverrides ?? {}).filter(id => !cached.some(one => one.id === id)).map(id => ({ id }))
+  const out = [...cached, ...manual].map((info) => ({ info, cached: true }))
   const has = (id: string): boolean => out.some((one) => one.info.id === id)
 
   // ② **实际当前那条**——同上，一条都不能丢（设计：「模型不在最新列表时，已有选择仍明确
@@ -3715,6 +3708,9 @@ function modelsOf(
     out.push({ info: { id: current.model }, cached: false })
   }
 
+  for (const ref of configured) {
+    if (ref.provider === entry.provider && !has(ref.model)) out.push({ info: { id: ref.model }, cached: false })
+  }
   return out
 }
 
@@ -3747,6 +3743,7 @@ export function manageMetaOf(entry: ModelCatalogRow): string {
  * 两处都没有（这条连接还没有可用认证）＝**如实说没有**。
  */
 export function authLabelOf(entry: ModelCatalogRow): string {
+  if (entry.auth === 'none') return '认证：无需认证'
   if (entry.keySource === 'config') return '认证：配置文件'
   if (entry.keySource === 'env') return `认证：环境变量 ${apiKeyEnvVarOf(entry.provider)}`
 
@@ -3784,8 +3781,7 @@ export function cacheLabelOf(entry: ModelCatalogRow): string {
  * - `模型默认` —— 永远有（它是「不发送任何思考参数」，不需要模型声明什么）；
  * - `明确关闭` —— **只在 `disable === true` 时给**（关闭与默认不是一回事：那是「说了别想」）；
  * - 档位 —— 由 `levels` 逐条给（**不假设同一套低/中/高**）；
- * - 预算 —— 本轮**不给**（要一个数值输入 + 范围校验，取舍见回报）；
- *   能力里只声明了预算而没有档位的模型，这一屏就只有「模型默认」。
+ * - 预算 —— 打开数值输入，按声明范围校验后应用。
  *
  * `current` ＝ 此刻这一条生效的设置——标出「正在用」那一格（没有＝模型默认）。
  */
@@ -3832,6 +3828,7 @@ export function reasoningRows(
     })
   }
 
+  if (support?.budget !== undefined) rows.push({ label: '指定 token 预算', meta: setting.mode === 'budget' ? String(setting.budgetTokens) : '输入范围内的正整数', current: setting.mode === 'budget', value: 'budget', oneLine: true })
   return rows
 }
 
@@ -3842,7 +3839,7 @@ export function reasoningHint(support: ReasoningSupport | undefined): string {
   const parts: string[] = []
   if (support.levels !== undefined && support.levels.length > 0) parts.push(`${support.levels.length} 个档位`)
   if (support.disable === true) parts.push('可明确关闭')
-  if (support.budget !== undefined) parts.push('支持 token 预算（本版本还没做）')
+  if (support.budget !== undefined) parts.push(`token 预算 ${support.budget.minTokens ?? '未声明下限'} ～ ${support.budget.maxTokens ?? '未声明上限'}`)
 
   return parts.length === 0
     ? '这个模型没有声明思考档位——只能按模型默认用'

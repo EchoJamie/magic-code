@@ -3,11 +3,11 @@ import { createStage } from './screen.ts'
 import { event } from './events.ts'
 const pair = { provider: 'local', model: 'deepseek-chat' }
 const configuredModels = { default: pair, cantrip: pair, spell: pair, arcane: pair }
-const entries = [{ provider: 'local', vendor: 'deepseek', cache: { snapshot: { provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: pair.model, reasoning: { levels: ['low', 'high'], disable: true } }] } } }]
+const entries = [{ effectiveReasoning: { [pair.model]: { levels: ['low', 'high'], disable: true } }, provider: 'local', vendor: 'deepseek', cache: { snapshot: { provider: 'local', scope: 'test', fetchedAt: 1, models: [{ id: pair.model, reasoning: { levels: ['low', 'high'], disable: true } }] } } }]
 function settings(configured = true) {
   const stage = createStage()
   stage.type('/model '); stage.press({ kind: 'enter' })
-  stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { choice: 'default', ...pair } as const } : {}) })])
+  stage.feed([event('model.catalog', { entries, configuredModels: configured ? configuredModels : {}, ...(configured ? { current: { protocol: 'chat-completions', endpoint: 'https://fixture.invalid/v1', choice: 'default', ...pair } as const } : {}) })])
   return stage
 }
 function pick(stage: ReturnType<typeof createStage>, value: string) {
@@ -38,7 +38,7 @@ test('首次明确使用才初始化；保存成功回执后才应用 Default，
   stage.press({ kind: 'enter' })
   expect(stage.commands().at(-1)).toEqual({ type: 'model.configure', choice: 'default', ...pair, initialize: true })
   expect(stage.commands().some(one => one.type === 'model.switch')).toBe(false)
-  stage.feed([event('model.catalog', { entries, configuredModels, note: '已保存 Default' })])
+  stage.feed([event('model.catalog', { entries, configuredModels, note: '已保存 Default', saved: true })])
   expect(stage.commands().at(-1)).toEqual({ type: 'model.switch', choice: 'default' })
   const failed = settings(false); pick(failed, 'edit:default'); failed.press({ kind: 'enter' })
   failed.feed([event('model.catalog', { entries, configuredModels: {}, note: '配置保存失败' })])

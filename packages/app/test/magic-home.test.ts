@@ -109,7 +109,7 @@ function plantTree(
   const body = validConfig({
     models: {default: {provider: over.provider, model: over.model}, cantrip: {provider: over.provider, model: over.model}, spell: {provider: over.provider, model: over.model}, arcane: {provider: over.provider, model: over.model}},
     providers: {
-      [over.provider]: { vendor: 'minimax', baseURL: over.baseURL ?? 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
+      [over.provider]: { protocol: 'chat-completions', baseURL: over.baseURL ?? 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
     },
     ...(over.dataDir === undefined ? {} : { dataDir: over.dataDir }),
     ...over.config,
@@ -299,7 +299,7 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       plantTree(room.base, {
         provider: 'fresh',
         model: 'NEW-MODEL',
-        config: { providers: { fresh: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1' } } },
+        config: { providers: { fresh: { protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1' } } },
       })
 
       const result = await runCli({ room, magic: room.base, args: ['--check'] })
@@ -328,8 +328,8 @@ describe('U42 · MAGIC_HOME 下的真 CLI', () => {
       const config = plantTree(room.base, { provider: 'fresh', model: 'NEW-MODEL', config: {
         models: { default: { provider: 'fresh', model: 'NEW-MODEL' }, cantrip: { provider: 'spare', model: 'SPARE-MODEL' } },
         providers: {
-          fresh: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
-          spare: { vendor: 'minimax', baseURL: 'http://127.0.0.1:9/v1' },
+          fresh: { protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1', apiKey: 'sk-fake-u42-not-a-real-key' },
+          spare: { protocol: 'chat-completions', baseURL: 'http://127.0.0.1:9/v1' },
         },
       } })
       const before = snapshot(room.base)

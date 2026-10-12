@@ -19,14 +19,14 @@ function endpoint() {
     return new Response(`data: ${JSON.stringify({ id: 'local', object: 'chat.completion.chunk', created: 1, model: body['model'], choices: [{ index: 0, delta }] })}\n\ndata: ${JSON.stringify({ id: 'local', object: 'chat.completion.chunk', created: 1, model: body['model'], choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } })
   } })
   const providers: Record<string, ProviderConfig> = {
-    ds: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/ds`, apiKey: 'local-ds-test' },
-    mm: { vendor: 'minimax', baseURL: `http://127.0.0.1:${server.port}/mm`, apiKey: 'local-mm-test' },
-    missing: { vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/missing` },
+    ds: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['same', 'hold', 'reject', 'alternate', 'next'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/ds`, apiKey: 'local-ds-test' },
+    mm: { protocol: 'chat-completions', baseURL: `http://127.0.0.1:${server.port}/mm`, apiKey: 'local-mm-test' },
+    missing: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['same', 'hold', 'reject', 'alternate', 'next'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/missing` },
   }
   const configuredModels = { default: { provider: 'ds', model: 'same' }, cantrip: { provider: 'mm', model: 'same' }, spell: { provider: 'missing', model: 'same' }, arcane: { provider: 'ds', model: 'hold' } }
   return { seen, providers, configuredModels, held, entered, close() { held.resolve(); server.stop(true) } }
 }
-const defaults = { choice: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'high' } }
+const defaults = { protocol: 'chat-completions' as const, endpoint: 'https://models.example/v1', choice: 'default' as const, provider: 'ds', model: 'same', reasoning: { mode: 'level' as const, level: 'high' } }
 const reviewer: AgentRoleConfig = { name: '审查', instructions: '只给证据和结论', model: { reasoning: { mode: 'off' } } }
 const request = { model: 'ignored-by-registry', messages: [{ role: 'user' as const, content: '受控端点测试' }] }
 
@@ -67,7 +67,7 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
       expect(first.map(one => one.result.usage?.totalTokens)).toEqual([12, 12])
       const ds = e.seen.find(one => one.route.startsWith('/ds'))!
       const mm = e.seen.find(one => one.route.startsWith('/mm'))!
-      expect(ds.body['thinking']).toEqual({ type: 'disabled' })
+      expect(ds.body['reasoning_effort']).toBe('none')
       expect(mm.body['thinking']).toBeUndefined()
       expect(mm.body['reasoning_effort']).toBeUndefined()
       const before = a.models.current()
@@ -78,7 +78,7 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
       expect(a.models.use({ ...a.models.current()!, choice: 'default', reasoning: { mode: 'level', level: 'low' } }).ok).toBe(true)
       await Promise.all([drainStream(a.models.stream(request)), drainStream(b.models.stream(request))])
       expect(e.seen.findLast(one => one.route.startsWith('/ds'))!.body['reasoning_effort']).toBe('low')
-      expect(b.models.current()).toEqual({ choice: 'cantrip' as const, provider: 'mm', model: 'same', reasoning: { mode: 'default' } })
+      expect(b.models.current()).toEqual({ choice: 'cantrip' as const, provider: 'mm', model: 'same', protocol: 'chat-completions', endpoint: e.providers.mm!.baseURL!, reasoning: { mode: 'default' } })
       expect(a.models.use({ choice: 'default', provider: 'mm', model: 'alternate' }).ok).toBe(true)
       await drainStream(a.models.stream(request))
       expect(e.seen.at(-1)?.body['model']).toBe('alternate')
@@ -108,7 +108,7 @@ describe('本地 HTTP：成员独立配置与真实出站', () => {
       expect(e.seen[0]?.body['model']).toBe('hold')
       expect(e.seen[0]?.body['reasoning_effort']).toBe('high')
       expect(e.seen.at(-1)?.body['model']).toBe('next')
-      expect(e.seen.at(-1)?.body['thinking']).toEqual({ type: 'disabled' })
+      expect(e.seen.at(-1)?.body['reasoning_effort']).toBe('none')
     } finally { e.close() }
   })
 

@@ -152,6 +152,8 @@ export function createControlHub(onError?: (error: unknown) => void): ControlHub
         // 显式刷新模型信息（U41）——**原样转手**给**装配**（模型信息缓存与在途获取在它那一层，
         // 同 `model.list` 之于注册表）。缺省那条连接由装配按「当下选中」解释，本域不猜。
         return target.onModelRefresh(command.provider)
+      case 'model.override':
+        return target.onModelOverride(command)
       case 'model.configure':
         return target.onModelConfigure(command)
       case 'prefs.set':

@@ -6,10 +6,46 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { ModelInfoCache, ModelInfoSnapshot } from '@magic/contracts'
+import type { ModelInfoCache, ModelInfoSnapshot, ProviderConfig } from '@magic/contracts'
 import type { FetchLike } from '../src/index.ts'
-import { createModelInfoService } from '../src/index.ts'
+import { createModelInfoService, resolveConnection, resolveModelSource } from '../src/index.ts'
 import type { ModelConnection } from '../src/index.ts'
+
+describe('连接与调用共用地址校验（纯解析，无请求）', () => {
+  test('未映射型号的连接也拒绝查询、片段、凭据及无效 URL', () => {
+    for (const baseURL of [
+      'https://local/v1?key=secret', 'https://local/v1#fragment',
+      'https://local/v1?', 'https://local/v1#',
+      'https://user:secret@local/v1', 'https://user@local/v1', 'https://:secret@local/v1',
+      'file:///tmp/model', 'not-a-url', '',
+    ]) {
+      const config: ProviderConfig = { baseURL, auth: 'none' }
+      expect(() => resolveConnection({ providerId: 'local', config, env: {} })).toThrow()
+      expect(() => resolveModelSource(config, 'exact')).toThrow()
+    }
+  })
+
+  test('两入口保留基础路径并给出一致归一结果', () => {
+    for (const [baseURL, expected] of [
+      ['HTTPS://LOCAL:443/custom/v9///', 'https://local/custom/v9'],
+      ['http://[::1]:9000/custom/v2/', 'http://[::1]:9000/custom/v2'],
+      ['https://local/a%3Fb%23c/', 'https://local/a%3Fb%23c'],
+    ]) {
+      const config: ProviderConfig = { baseURL: baseURL!, auth: 'none' }
+      expect(resolveConnection({ providerId: 'local', config, env: {} }).baseURL).toBe(expected!)
+      expect(resolveModelSource(config, 'exact').endpoint).toBe(expected!)
+    }
+  })
+
+  test('官方列表地址保持 Chat 入口，不随推理协议切到 Messages', () => {
+    for (const protocol of ['responses', 'messages', 'chat-completions'] as const) {
+      expect(resolveConnection({ providerId: 'ds', config: { vendor: 'deepseek', protocol, auth: 'none' }, env: {} }).baseURL).toBe('https://api.deepseek.com')
+      expect(resolveConnection({ providerId: 'mm', config: { vendor: 'minimax', protocol, auth: 'none' }, env: {} }).baseURL).toBe('https://api.minimax.cn/v1')
+    }
+    expect(resolveModelSource({ vendor: 'deepseek', protocol: 'messages' }, 'deepseek-flash').endpoint).toBe('https://api.deepseek.com/anthropic/v1')
+    expect(() => resolveConnection({ providerId: 'ds', config: { vendor: 'deepseek', baseURL: 'https://local/v1?secret' }, env: {} })).toThrow()
+  })
+})
 
 /** 等后台那一趟跑完（服务里的获取是 `void` 出去的，读面不等它）。 */
 const settle = (): Promise<void> => Bun.sleep(5)
@@ -312,7 +348,7 @@ describe('范围与迟到结果', () => {
     const cache = memoryCache()
     cache.stored.set('ds', {
       provider: 'ds',
-      scope: 'deepseek@https://api.deepseek.com',
+      scope: 'deepseek@https://api.deepseek.com#auto',
       fetchedAt: 1_000,
       models: [{ id: 'ON-DISK' }],
     })
@@ -339,7 +375,7 @@ describe('范围与迟到结果', () => {
     const cache = memoryCache()
     cache.stored.set('ds', {
       provider: 'ds',
-      scope: 'deepseek@https://api.deepseek.com',
+      scope: 'deepseek@https://api.deepseek.com#auto',
       fetchedAt: 999,
       models: [{ id: 'from-disk' }],
     })
@@ -474,7 +510,7 @@ describe('warmup · 核范围', () => {
     const cache = memoryCache()
     cache.stored.set('ds', {
       provider: 'ds',
-      scope: 'deepseek@https://old.example', // 与当前连接的官方地址不是一个范围
+      scope: 'deepseek@https://old.example#auto', // 与当前连接的官方地址不是一个范围
       fetchedAt: 999,
       models: [{ id: 'OLD-ENDPOINT-ONLY' }],
     })
@@ -498,7 +534,7 @@ describe('warmup · 核范围', () => {
     const cache = memoryCache()
     cache.stored.set('ds', {
       provider: 'ds',
-      scope: 'deepseek@https://api.deepseek.com', // 与当前连接同一个范围
+      scope: 'deepseek@https://api.deepseek.com#auto', // 与当前连接同一个范围
       fetchedAt: 999,
       models: [{ id: 'from-disk' }],
     })
@@ -550,4 +586,27 @@ describe('失败缘由 · 脱敏', () => {
 
     expect(service.read('ds').failure?.reason).toContain('网络断了')
   })
+})
+
+test('同身份切换协议不复用缓存，自动列表保留原始资料，不混入协议默认', async () => {
+  const counter = { calls: 0 }
+  const first = connectionOf({ config: { vendor: 'minimax', protocol: 'responses' }, baseURL: 'https://api.minimax.cn/v1' })
+  const { service, setConnections } = stage({ connections: [first], fetch: listFetch(['MiniMax-M3'], counter) })
+  await service.refresh('ds')
+  expect(service.peek('ds').snapshot?.models).toEqual([{ id: 'MiniMax-M3' }])
+  setConnections([{ ...first, config: { vendor: 'minimax', protocol: 'chat-completions' } }])
+  expect(service.peek('ds').snapshot).toBeUndefined()
+  await service.refresh('ds')
+  expect(counter.calls).toBe(2)
+  expect(service.peek('ds').snapshot?.scope).toEndWith('#chat-completions')
+})
+
+test('无列表接口的自定义接入不自动发现或记录后台失败', async () => {
+  let calls = 0
+  const local = connectionOf({ config: { baseURL: 'http://local/v1', protocol: 'messages', auth: 'none' }, baseURL: 'http://local/v1', apiKey: undefined })
+  const { service } = stage({ connections: [local], fetch: async () => { calls++; throw new Error('no discovery') } })
+  expect(service.canFetch('ds')).toBe(false)
+  expect(service.read('ds')).toEqual({})
+  expect(await service.refresh('ds')).toEqual({})
+  expect(calls).toBe(0)
 })

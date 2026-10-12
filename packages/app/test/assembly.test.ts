@@ -28,7 +28,7 @@ describe('顺序纪律——先接订阅、后放开输入', () => {
           const records = readDatabase(assembly.paths.database)
           const ended = records.events.some(event => event.kind === 'turn.end')
           records.close()
-          if (ended) break
+          if (ended && !assembly.hasPendingInput()) break
         }
         if (Date.now() >= deadline) throw new Error('未订阅回合未结束')
         await Bun.sleep(5)

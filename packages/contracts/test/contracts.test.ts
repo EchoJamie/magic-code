@@ -451,6 +451,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelConfigure: () => undefined,
+    onModelOverride: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -475,6 +476,7 @@ export function rememberTravelsThroughBothPorts(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelConfigure: () => undefined,
+    onModelOverride: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -554,6 +556,7 @@ export function routesCarryModelSwitch(): void {
     onModelList: () => undefined,
     onModelRefresh: () => undefined,
     onModelConfigure: () => undefined,
+    onModelOverride: () => undefined,
     onProviderList: () => undefined,
     onProviderSave: () => undefined,
     onProviderRemove: () => undefined,
@@ -625,7 +628,7 @@ export function readoutsShape(): void {
       { provider: 'minimax', cache: { snapshot: { provider: 'minimax', scope: 'fixture', fetchedAt: 1, models: [{ id: 'MiniMax-M3' }] } },  },
       { provider: 'local', cache: { snapshot: { provider: 'local', scope: 'fixture', fetchedAt: 1, models: [{ id: 'qwen3' }] } },  },
     ],
-    current: { choice: 'default' as const, provider: 'local', model: 'qwen3' },
+    current: { choice: 'default' as const, provider: 'local', model: 'qwen3', protocol: 'responses', endpoint: 'http://localhost:8000/v1' },
   }
   // 没有注册表的那一次装配——空表 ＋ 一句说明（空表本身合法，两者不混作一谈）
   const empty: EventDataOf['model.catalog'] = { entries: [], note: '本次装配没有供应商注册表' }

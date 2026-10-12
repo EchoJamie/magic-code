@@ -34,7 +34,7 @@ import { makeStage, readDatabase, type RawDatabase, type Stage } from './support
 const STAND: Record<string, unknown> = {
   models: {default: {provider: "deepseek", model: 'deepseek-flash'}, cantrip: {provider: "deepseek", model: 'deepseek-flash'}, spell: {provider: "deepseek", model: 'deepseek-flash'}, arcane: {provider: "deepseek", model: 'deepseek-flash'}},
   providers: {
-    deepseek: { vendor: 'minimax', baseURL: 'http://test.invalid/v1', apiKey: 'sk-test-not-a-real-key' },
+    deepseek: { vendor: 'deepseek', protocol: 'chat-completions', baseURL: 'http://test.invalid/v1', apiKey: 'sk-test-not-a-real-key' },
   },
 }
 
@@ -65,7 +65,7 @@ function probeGateway(): {
   const make = (stamper: EventStamper): ModelGateway =>
     createModelGateway({ model: 'deepseek-flash',
       providerId: 'deepseek',
-      config: { baseURL: 'http://test.invalid/v1', vendor: 'deepseek', apiKey: PROBE_KEY },
+      config: { baseURL: 'http://test.invalid/v1', vendor: 'deepseek', protocol: 'chat-completions', apiKey: PROBE_KEY },
       env: {},
       stamper,
       retry: { maxAttempts: 1, baseDelayMs: 0, maxDelayMs: 0 },

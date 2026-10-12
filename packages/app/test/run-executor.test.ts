@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRecordsStore } from '@magic/records'
@@ -47,7 +47,10 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
     join(base, 'config.json'),
     JSON.stringify({
       models: {default: {provider: "x", model: 'm'}, cantrip: {provider: "x", model: 'm'}, spell: {provider: "x", model: 'm'}, arcane: {provider: "x", model: 'm'}},
-      providers: { x: { vendor: 'minimax', baseURL: fixture.baseURL, apiKey: 'sk-test' } },
+      providers: { x: {
+        protocol: 'chat-completions', auth: 'bearer', baseURL: fixture.baseURL, apiKey: 'sk-test',
+        modelOverrides: { m: { capabilities: { tools: true } } },
+      } },
       dataDir,
     }),
   )
@@ -70,6 +73,19 @@ function ground(name: string, mode: 'held' | 'settled' | 'background' | 'backgro
       removeDir(root)
     },
   }
+}
+
+/** 预建可接回的工作：会话与 Agent 保存同一受控模型组合。 */
+function seedSession(g: Ground, session: string, title: string): void {
+  const records = createRecordsStore({ dataDir: g.dataDir, workspace: [realpathSync(g.ws)] })
+  try {
+    const at = Date.now()
+    records.collaboration.registerAgent({
+      operationId: `seed-${session}`, sessionId: session, name: title, role: '', at,
+      model: { choice: 'default', provider: 'x', model: 'm', protocol: 'chat-completions', endpoint: g.fixture.baseURL },
+    })
+    records.setSessionTitle(session, title, at)
+  } finally { records.close() }
 }
 
 /** 立一个管理者——收尾挂在 `finally` 里（见各条用例），免得留一个占着路径的进程。 */
@@ -245,9 +261,7 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
 
       const first = await open(g, manager, 'a')
       clients.push(first)
-      const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
-      records.setSessionTitle(session, '并发接回', Date.now())
-      records.close()
+      seedSession(g, session, '并发接回')
       first.send({ type: 'session.open', session })
       await submitAndWait(first, '受控待答', '第一代待答', () => manager.runs().some((row) => row.session === session && row.state === 'waiting'))
       const original = manager.executors()[0]!
@@ -290,9 +304,7 @@ describe('U48-S2 · 一个窗口一条执行者', () => {
       client.onEvent((event) => { if (event.kind === 'turn.end' && event.data.reason === 'settled') completed += 1 })
 
       const sessions = ['aaaaaaaa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000002'] as const
-      const records = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
-      for (const session of sessions) records.setSessionTitle(session, session, Date.now())
-      records.close()
+      for (const session of sessions) seedSession(g, session, session)
       client.send({ type: 'session.open', session: sessions[0] })
       // 工具调用和工具回填后的文本各有一条 turn.end；两轮都结束才是本次输入收束。
       await submitAndWait(client, '运行隔离后台命令', '输入已收束而后台责任仍在', () => completed === 2 && manager.runs().some((row) => row.session === sessions[0] && row.lastTurn === 'settled' && row.state === 'running' && row.background === 1))
@@ -379,9 +391,7 @@ describe('U49 · 停止中那一行（真进程 · 真窗口那一瞬）', () =>
   test('管理者收摊那一刻：那一行是「停止中」——已受理，资源尚未全退', async () => {
     const g = ground('stopping')
     // 真会话（列表按目录说话：库里点得出的会话才有那一行）
-    const store = createRecordsStore({ dataDir: g.dataDir, workspace: [g.ws] })
-    store.setSessionTitle(SESSION, '收摊那条', Date.now())
-    store.close()
+    seedSession(g, SESSION, '收摊那条')
 
     const manager = await standUp(g)
 

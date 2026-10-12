@@ -43,11 +43,12 @@ function stageOn(
   fixture: Fixture,
   options: { readonly vendor?: string; readonly model?: string } = {},
 ): Stage {
+  const model = options.model ?? MODEL
   return makeStage({
     config: {
-      models: {default: {provider: "local", model: MODEL}, cantrip: {provider: "local", model: options.model ?? MODEL}, spell: {provider: "local", model: "deepseek-v4-pro"}, arcane: {provider: "local", model: MODEL}},
+      models: {default: {provider: "local", model}, cantrip: {provider: "local", model}, spell: {provider: "local", model: options.vendor === 'minimax' ? model : 'deepseek-v4-pro'}, arcane: {provider: "local", model}},
       providers: {
-        local: { vendor: options.vendor ?? 'deepseek', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
+        local: { vendor: options.vendor ?? 'deepseek', protocol: 'chat-completions', baseURL: fixture.baseURL, apiKey: FAKE_API_KEY },
       },
     },
   })
@@ -130,7 +131,7 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
       const loop = chats.filter((one) => !isCompaction(one))
       expect(compact.length).toBeGreaterThan(0)
 
-      // **当前那个**：压缩那次送的就是换过之后的模型名（与它后面那几次循环同一个）
+      // 主循环切换生效，压缩仍保持 Cantrip 的型号。
       const current = loop.at(-1)?.body['model']
       expect(current).toBe('deepseek-v4-pro')
       for (const one of compact) expect(one.body['model']).toBe(MODEL)
@@ -177,8 +178,8 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
     }
   })
 
-  test.each(['deepseek-flash', 'MiniMax-M2.7-highspeed'])('② MiniMax %s 使用默认思考，同一 Cantrip 正常压缩', async model => {
-    const fixture = startFixture({ model: MODEL, turns: turnsOf() })
+  test.each(['MiniMax-M2.7', 'MiniMax-M2.7-highspeed'])('② MiniMax %s 使用默认思考，同一 Cantrip 正常压缩', async model => {
+    const fixture = startFixture({ model, turns: turnsOf() })
     const stage = stageOn(fixture, { vendor: 'minimax', model })
     let assembly: ReturnType<Stage['assemble']> | undefined
 
@@ -251,12 +252,12 @@ describe('U97 · 压缩那一次调用带上了「关思考」', () => {
 })
 
 describe('D56 · 内务绑定与提炼出站', () => {
-  test.each(['minimax', 'unmapped'])('%s：默认思考只发一次，正文分离且保留页面代码', async kind => {
+  test.each(['minimax', 'custom'])('%s：默认思考只发一次，正文分离且保留页面代码', async kind => {
     const fixture = startFixture({ turns: [{ kind: 'text', reasoning: '内部提炼思考', text: '使用 <think>code</think>，版本 2。', chunks: 1, chunkDelayMs: 0 }] })
     try {
-      const model = 'MiniMax-M2.7-highspeed'
-      const config: ProviderConfig = { apiKey: FAKE_API_KEY, baseURL: fixture.baseURL,
-        ...(kind === 'minimax' ? { vendor: 'minimax' } : { modelOverrides: { [model]: { reasoningSupport: { disable: true } } } }),
+      const model = kind === 'minimax' ? 'MiniMax-M2.7-highspeed' : 'custom-distill'
+      const config: ProviderConfig = { protocol: 'chat-completions', apiKey: FAKE_API_KEY, baseURL: fixture.baseURL,
+        ...(kind === 'minimax' ? { vendor: 'minimax' } : { modelOverrides: { [model]: { reasoningSupport: { default: 'on', disable: false } } } }),
       }
       const bound = bindModelChoice({ options: { providers: { local: config }, stamper: makeTestStamper(), env: {} },
         configuredModels: { cantrip: { provider: 'local', model } }, request: { choice: 'cantrip' } })
@@ -267,6 +268,7 @@ describe('D56 · 内务绑定与提炼出站', () => {
       expect(requests).toHaveLength(1)
       expect(requests[0]?.body['model']).toBe(model)
       expect(requests[0]?.body['thinking']).toBeUndefined()
+      expect(requests[0]?.body['reasoning_effort']).toBeUndefined()
       expect(requests[0]?.body['tools']).toBeUndefined()
     } finally { await fixture.stop() }
   })
@@ -275,7 +277,7 @@ describe('D56 · 内务绑定与提炼出站', () => {
     const a = startFixture({ turns: [{ kind: 'text', text: 'A', chunks: 1, chunkDelayMs: 0 }] })
     const b = startFixture({ turns: [{ kind: 'text', text: 'B', chunks: 1, chunkDelayMs: 0 }] })
     try {
-      const config = { vendor: 'minimax', apiKey: FAKE_API_KEY, baseURL: a.baseURL }
+      const config = { vendor: 'minimax', protocol: 'chat-completions', apiKey: FAKE_API_KEY, baseURL: a.baseURL } satisfies ProviderConfig
       const options = { providers: { local: config }, stamper: makeTestStamper(), env: {} }
       const bind = () => bindModelChoice({ options, configuredModels: { cantrip: { provider: 'local', model: 'MiniMax-M2.7-highspeed' } }, request: { choice: 'cantrip' } })
       const first = bind()
