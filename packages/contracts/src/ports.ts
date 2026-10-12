@@ -340,6 +340,9 @@ export interface Sandbox {
  * 两者不是同一件事，硬套一个形态就得给每个字段编一个「后台时它是什么意思」。
  */
 export type BackgroundFinish = {
+  readonly reason?: string
+  readonly stoppedBy?: 'model' | 'user' | 'scope'
+
   /** 那条运行的 id（发起时回执上给过的那一个）。 */
   readonly id: string
   /** 交出去的那条命令（回执上照原样给一眼）。 */
@@ -364,6 +367,9 @@ export type BackgroundFinish = {
  * 这一位说的是「它**此刻还站着**」——两件事，一个说结局、一个说现状。
  */
 export type BackgroundRunning = {
+  readonly state?: 'running' | 'stopping' | 'unconfirmed'
+  readonly reason?: string
+  readonly startedAt?: number
   /** 发起时回执上给过的那个 id（`bg-N`）。 */
   readonly id: string
   /** 交出去的那条命令原文（照原样，不加工——加工在显示那一侧）。 */
@@ -423,6 +429,8 @@ export interface BackgroundRuns {
    * 「本来就已经结束了」「认不出这个 id」。收不干净时**如实说**，不拿一句「已停止」冒充。
    */
   stop(id: string): Promise<BackgroundStop>
+  /** 会话绑定端口登记等待；执行层不负责模型循环。 */
+  wait?(ids: readonly string[]): BackgroundWait
 }
 
 /** `BackgroundRuns.start` 的入参。 */
@@ -454,13 +462,18 @@ export type BackgroundStart =
   | { readonly ok: false; readonly reason: string }
 
 /** `BackgroundRuns.stop` 的产物——「停掉了什么」要说得出来。 */
+export type BackgroundWait =
+  | { readonly ok: false; readonly reason: string }
+  | { readonly ok: true; readonly state: 'waiting'; readonly ids: readonly string[] }
+  | { readonly ok: true; readonly state: 'changed'; readonly results: readonly BackgroundFinish[] }
+
 export type BackgroundStop =
   /**
    * 收干净了。`note` 是给人看的一句。
    * `already` ＝**它本来就结束了**（本次没有动它）——「停在已经结束的东西上」不是失败，
    * 但与「是我收掉的」不是一回事，故分开说。
    */
-  | { readonly ok: true; readonly note: string; readonly already?: true }
+  | { readonly ok: true; readonly note: string; readonly already?: true; readonly finish?: BackgroundFinish }
   | { readonly ok: false; readonly reason: string }
 
 /** 工具域 / 装配 → 执行域。 */
@@ -1475,6 +1488,7 @@ export type ToolResult = {
    * 依据自有别处——那条工具结果条目就在记录里，说得出同一件事。
    */
   readonly halt?: true
+  readonly background?: BackgroundWait | BackgroundFinish
 }
 
 // —— 权限域 ——

@@ -85,6 +85,7 @@ struct NativeMember: Codable, Equatable, Identifiable {
     }
 }
 struct NativeWork: Codable, Equatable, Identifiable {
+    let background: Int?
     let session: String
     let title: String
     let workspace: [String]
@@ -99,9 +100,11 @@ struct NativeWork: Codable, Equatable, Identifiable {
     let terminalOpen: Bool
     let currentNotice: AttentionItem?
     let members: [NativeMember]?
-    private enum Keys: String, CodingKey { case session, title, workspace, state, action, reason, since, gen, affected, archived, canArchive, terminalOpen, currentNotice, members }
+    private enum Keys: String, CodingKey { case background, session, title, workspace, state, action, reason, since, gen, affected, archived, canArchive, terminalOpen, currentNotice, members }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
+        background = try c.decodeOptional(Int.self, forKey: .background)
+        if let background, background < 0 { throw DecodingError.dataCorruptedError(forKey: .background, in: c, debugDescription: "后台命令数量无效") }
         session = try c.decode(String.self, forKey: .session)
         title = try c.decode(String.self, forKey: .title)
         workspace = try c.decode([String].self, forKey: .workspace)
@@ -119,6 +122,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
+        try c.encodeIfPresent(background, forKey: .background)
         try c.encode(session, forKey: .session)
         try c.encode(title, forKey: .title)
         try c.encode(workspace, forKey: .workspace)
@@ -134,6 +138,7 @@ struct NativeWork: Codable, Equatable, Identifiable {
         try c.encodeIfPresent(currentNotice, forKey: .currentNotice)
         try c.encodeIfPresent(members, forKey: .members)
     }
+    var backgroundText: String? { background.map { $0 > 0 ? "\($0) 个后台命令运行中" : nil } ?? "后台命令数量待确认" }
     var id: String { session }
     var project: String { workspace.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "未选项目" }
     var statusText: String {
@@ -396,6 +401,8 @@ extension AttentionItem {
 }
 
 struct NativeSession: Codable, Equatable, Identifiable {
+    var background: Int? = nil
+    var backgroundText: String? { background.map { $0 > 0 ? "\($0) 个后台命令运行中" : nil } ?? "后台命令数量待确认" }
     let id: String
     let title: String?
     let at: Double

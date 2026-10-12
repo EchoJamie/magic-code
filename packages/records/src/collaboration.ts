@@ -121,7 +121,10 @@ export function createCollaborationRecords(db: Database, workspace: readonly str
   }
   function createMessage(actor: string, input: Omit<AgentMessage, 'messageId' | 'collaborationId' | 'senderId' | 'withdrawn'>, late = false, root = false): AgentMessage {
     const c = scopeFor(actor)
-    if (!late) canAct(actor, c)
+    if (!late) {
+      const admission = api.checkAdmission(actor, undefined, 'coordination')
+      if (!admission.allowed) throw new Error(admission.reason)
+    }
     validBody(input.body, c, actor)
     const recipients = [...new Set(input.recipients)]
     if (!recipients.length) throw new Error('explicit recipients required')

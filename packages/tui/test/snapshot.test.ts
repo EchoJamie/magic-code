@@ -1146,11 +1146,12 @@ describe('slash 候选（D12 · 纯函数级）', () => {
       '/skills',
       '/status',
       '/grants',
+      '/ps',
       '/resume',
     ])
     // U52——打到一半就认出来（`/ex` 只可能是 `/exit`：别的名里一个 `x` 都没有）
     expect(matchCommands('/ex').map((row) => row.name)).toEqual(['/exit'])
-    expect(matchCommands('/').map((row) => row.name)).toHaveLength(12) // 全列（真存在的十一条）
+    expect(matchCommands('/').map((row) => row.name)).toHaveLength(13)
     expect(matchCommands('看下目录')).toEqual([]) // 不是 slash——不出候选
   })
 

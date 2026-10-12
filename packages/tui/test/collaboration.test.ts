@@ -108,7 +108,7 @@ test('浏览成员不改输入，不打开成员会话；完整记录与讨论�
   app.key('escape')
   expect(app.shell.getView().settled).toBe(originRows)
   expect(app.shell.getView().draft).toBe('整体草稿')
-  expect(app.spy.commands.every((command) => command.type === 'collaboration.read' || command.type === 'history.read')).toBe(true)
+  expect(app.spy.commands.every((command) => command.type === 'collaboration.read' || command.type === 'history.read' || command.type === 'background.list')).toBe(true)
 })
 
 test('显式切输入保存整体与成员各自草稿、引用和光标；局部输入不会进入整体日志', () => {

@@ -167,6 +167,12 @@ test('整体显式收尾要等资源确认；失败保留closing，可重试且�
     input: () => undefined, configure: async () => undefined, runs: () => [], decisions: () => 0, changed: () => undefined,
   })
   try {
+    expect(await managed.idle('origin')).toBe(false)
+    expect(cancelled).toBe(0)
+    for (const member of f.records.listMembers(f.collaboration.collaborationId)) {
+      const inbox = f.records.consumeInbox(member.agentId, 12)
+      f.records.markIncluded(member.agentId, inbox.map(one => one.messageId), 13)
+    }
     await expect(managed.idle('origin')).rejects.toThrow('自有资源未确认')
     expect(f.records.getCollaboration(f.collaboration.collaborationId)?.state).toBe('closing')
     expect(await managed.idle('origin')).toBe(true)

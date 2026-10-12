@@ -678,6 +678,7 @@ describe('事件契约', () => {
       // 同一件事的**依据**在条目里（那条 `user` 条目，载荷带 `notice`）：
       // 重放读条目就说得清「当时跑过哪条后台命令、结局如何」，不必再存一遍屏上的话。
       'exec.background.done',
+      'background.state',
       'session.state',
       'session.changed',
       'session.managed',

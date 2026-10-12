@@ -4,6 +4,7 @@ import type { DiagnosticsChange } from '@magic/contracts'
 /** CLI：help/version/离线 check 是只读短路径；交互与脚本均连接所属 App。 */
 
 import { homedir } from 'node:os'
+import { writeClipboardText } from '@magic/execution'
 import type { KernelEvent, RulesLoad, ModelChoice, ModelSwitchRequest } from '@magic/contracts'
 import { resolve } from 'node:path'
 import { resolveMagicHome, SOFTWARE_VERSION } from '@magic/contracts'
@@ -297,6 +298,7 @@ function describeProjectRules(load: RulesLoad): string {
 export async function tuiOptions(assembly: Assembly): Promise<RunTuiOptions> {
   return {
     transport: assembly.shell,
+    copyText: writeClipboardText,
     boot: () => assembly.boot(),
     // 开机那一刻的读数（外壳那时还不知道模型名）。**此后**每一次切换 / 调用的分母不走这儿
     // ——由事件自带（`model.switched` / `model.call.start` 的 `inputBudget`，U41 返修：

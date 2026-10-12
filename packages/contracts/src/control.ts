@@ -124,6 +124,7 @@ export type UserInput = {
    * ⚠️ **它不是权限或校验上的「免检」标记**：内容一样进上下文、一样落账。
    */
   readonly notice?: true
+  readonly background?: import('./background.ts').BackgroundChange
 }
 
 /**
@@ -535,7 +536,7 @@ export type ImageExport = {
  * ＋ U110 的导出原图）
  * ——外壳发往内核的全部消息。
  */
-export type Command =
+export type Command = import('./background.ts').BackgroundCommandRequest
   | CollaborationCommand
   | InputSubmit
   | InputManage

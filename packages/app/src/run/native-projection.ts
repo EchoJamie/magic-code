@@ -31,6 +31,7 @@ export async function projectWorks(
     const notice = notices.get(session.id)
     return {
       session: session.id,
+      background: run?.backgroundUnknown ? undefined : run?.background ?? 0,
       title: session.title || '未命名工作',
       workspace: session.workspace ?? run?.workspace ?? [],
       state: run?.state ?? 'idle',
@@ -38,7 +39,7 @@ export async function projectWorks(
       ...state,
       archived: session.archived,
       affected: run !== undefined && (['running', 'waiting', 'stopping', 'unknown'].includes(run.state) || (run.background ?? 0) > 0),
-      ...(run?.action === undefined ? {} : { action: run.action }),
+      ...(run?.backgroundWaiting ? { action: '等待后台结果' } : run?.action === undefined ? {} : { action: run.action }),
       ...(run?.reason === undefined ? {} : { reason: run.reason }),
       ...(notice === undefined ? {} : { currentNotice: notice }),
     }

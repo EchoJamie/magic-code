@@ -31,7 +31,7 @@ import type {
   ModelSwitchRequest,
 } from '@magic/contracts'
 import { parseRules } from '@magic/permission'
-import { createProjectRules } from '@magic/execution'
+import { createProjectRules, writeClipboardText } from '@magic/execution'
 import { createModelRegistry } from '@magic/model'
 import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
@@ -91,6 +91,7 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
   const { client, loaded, cwd } = inputs
 
   return {
+    copyText: writeClipboardText,
     transport: terminalSettings(clientTransport(client), inputs.magic, workspaceOf(loaded, cwd), inputs.switch),
     statusLine: loaded.config.statusLine,
     turnDuration: loaded.config.turnDuration ?? 'elapsed', reducedMotion: loaded.config.motion?.reduced === true,

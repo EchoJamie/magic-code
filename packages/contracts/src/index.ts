@@ -45,3 +45,4 @@ export * from "./settings.ts"
 export * from './diagnostics.ts'
 
 export { settingsAction, settingsSnapshot, settingsRequest, settingsResult } from './settings-codec.ts'
+export type { BackgroundChange, BackgroundTarget, BackgroundCommand, BackgroundView, BackgroundCommandRequest } from './background.ts'

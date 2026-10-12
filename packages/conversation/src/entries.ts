@@ -98,6 +98,7 @@ export type ToolOutcome = {
    * `runTurn` 收口时决定**还开不开下一轮**。
    */
   readonly halt?: true
+  readonly background?: import('@magic/contracts').BackgroundWait | import('@magic/contracts').BackgroundFinish
 }
 
 /** 端口结果 → 落账形态——两样输出各取各的，改名不改义。 */
@@ -114,6 +115,7 @@ export function toolOutcomeOf(result: ToolResult): ToolOutcome {
     ...(result.read === undefined ? {} : { read: result.read }),
     // 这一轮停在这儿（U72）——同一条（判 `true`：这一位是**声明**，不是可假的值）
     ...(result.halt === true ? { halt: true as const } : {}),
+    ...(result.background === undefined ? {} : { background: result.background }),
   }
 }
 
@@ -165,6 +167,7 @@ export async function appendUserEntry(
      * 会话标题与屏上那一行因此都不会把它当成用户的话（见契约 `UserPayload.notice`）。
      */
     readonly notice?: true
+    readonly background?: import('@magic/contracts').BackgroundChange
     readonly ref?: string
     readonly revision?: number
     readonly admit?: () => string | undefined
@@ -173,12 +176,13 @@ export async function appendUserEntry(
   const refs = input.refs ?? []
   const skills = input.skills ?? []
   const payload =
-    refs.length === 0 && skills.length === 0 && input.notice !== true
+    refs.length === 0 && skills.length === 0 && input.notice !== true && input.background === undefined
       ? undefined
       : {
           ...(refs.length === 0 ? {} : { refs }),
           ...(skills.length === 0 ? {} : { skills }),
           ...(input.notice === true ? { notice: true as const } : {}),
+          ...(input.background === undefined ? {} : { background: input.background }),
         }
 
   const entry = {
@@ -224,6 +228,7 @@ export function appendToolResultEntry(log: EntryLog, outcome: ToolOutcome): Reco
       output: outcome.content,
       ...(outcome.skill === undefined ? {} : { skill: outcome.skill }),
       ...(outcome.plan === undefined ? {} : { plan: outcome.plan }),
+      ...(outcome.background === undefined ? {} : { background: outcome.background }),
       ...(outcome.notExecuted === undefined ? {} : { notExecuted: outcome.notExecuted }),
     },
     at: log.now(),

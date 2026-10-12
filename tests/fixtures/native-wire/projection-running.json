@@ -20,7 +20,8 @@
           "affected": true,
           "archived": false,
           "canArchive": false,
-          "terminalOpen": false
+          "terminalOpen": false,
+          "background": 3
         }
       ]
     }

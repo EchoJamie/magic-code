@@ -62,12 +62,13 @@ describe('顺序纪律——先接订阅、后放开输入', () => {
       const assembly = stage.assemble()
       const shell = attachShell(assembly.shell)
 
-      // 装配本身一条都没发；第一条事件是首次开工的 `agent.start`（不是「迟到的某条」）
+      // 装配不发事件；首次提交可先发布只读后台快照，输入仍先受理再开工。
       expect(shell.events).toHaveLength(0)
 
       await shell.submit('第一条')
-      expect(shell.events[0]?.kind).toBe('input.settled')
-      expect(shell.events[0]?.kind==='input.settled'&&shell.events[0].data.stage).toBe('accepted')
+      const first = shell.events.find(event => event.kind !== 'background.state')
+      expect(first?.kind).toBe('input.settled')
+      expect(first?.kind === 'input.settled' && first.data.stage).toBe('accepted')
 
       shell.dispose()
       assembly.close()
@@ -101,7 +102,7 @@ describe('扇出——控制广播全部、记录落持久类', () => {
         expect(stored).not.toContain('model.delta')
         expect(stored).not.toContain('tool.output.delta')
         // 且**逐条对齐**订阅侧减掉瞬时类——不多不少、次序不移
-        expect(stored).toEqual(trail.filter((k) => !['model.delta','tool.output.delta','input.pending','input.settled'].includes(k)))
+        expect(stored).toEqual(trail.filter((k) => !['background.state','model.delta','tool.output.delta','input.pending','input.settled'].includes(k)))
       } finally {
         raw.close()
       }
@@ -122,7 +123,7 @@ describe('扇出——控制广播全部、记录落持久类', () => {
       assembly.close()
 
       const durable = shell.events.filter(
-        (event) => !['model.delta','tool.output.delta','input.pending','input.settled'].includes(event.kind),
+        (event) => !['background.state','model.delta','tool.output.delta','input.pending','input.settled'].includes(event.kind),
       )
 
       const raw = readDatabase(assembly.paths.database)

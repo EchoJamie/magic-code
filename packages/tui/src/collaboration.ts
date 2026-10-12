@@ -25,6 +25,7 @@ export function memberState(member: CollaborationMemberView): string {
   if (member.waiting?.state === 'waiting') return `等待：${member.waiting.expectation}`
   if (member.waiting?.state === 'expired') return `等待超时：${member.waiting.expectation}`
   if (member.delegation?.state === 'clarification') return `需要澄清：${member.delegation.reason ?? member.delegation.scope}`
+  if (member.runtime?.backgroundWaiting) return '等待后台结果'
   if (member.runtime?.state === 'running') return member.runtime.action ?? '执行中'
   if (member.runtime?.state === 'unknown') return '运行情况待核实'
   if (member.runtime?.state === 'stopped') return `已停止${member.runtime.reason ? `：${member.runtime.reason}` : ''}`
@@ -41,9 +42,9 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
   const state = snapshot.collaboration.state
   if (state === 'closed') return `${label} · 已收尾，结果可查看`
   const members = snapshot.members.filter(one => !consultationEnded(one))
-  const running = members.filter((one) => one.runtime?.state === 'running').length
+  const running = members.filter((one) => one.runtime?.state === 'running' && !one.runtime.backgroundWaiting && (!one.runtime.background || one.runtime.action !== undefined)).length
   const needs = members.filter((one) => one.pendingDecisions > 0 || one.delegation?.state === 'clarification')
-  const waiting = members.filter((one) => one.waiting?.state === 'waiting').length
+  const waiting = members.filter((one) => one.waiting?.state === 'waiting' || one.runtime?.backgroundWaiting).length
   const stopping = members.some((one) => one.runtime?.state === 'stopping')
   const blocked = members.filter((one) => one.agent.reachability === 'suspended' || one.waiting?.state === 'expired' || one.runtime?.state === 'unknown' || one.runtime?.lastTurn === 'error' || one.delegation?.state === 'rejected')
   const coordinator = members.find((one) => one.agent.agentId === snapshot.collaboration?.coordinatorId)
@@ -62,21 +63,25 @@ export function collaborationSummary(snapshot: CollaborationView | undefined): s
 
 export function collaborationHeader(view: ShellView): readonly string[] {
   const summary = collaborationSummary(view.collaboration)
-  if (summary === undefined) return []
+  const background = view.background?.unknown ? ['后台命令数量待确认 · /ps'] : view.background?.commands.length ? [`${view.background.commands.length} 个后台命令运行中 · /ps`] : []
+  if (summary === undefined) return background
   const target = view.collaboration?.members.find((one) => one.agent.agentId === view.inputMember)
-  return [summary, clean(`输入给：${view.inputMember === undefined ? '整件工作（共同补充）' : target?.agent.name ?? '成员已不可用'}${view.dock.kind === 'input' ? ' · Tab 查看工作详情' : ''}`)]
+  return [...background, summary, clean(`输入给：${view.inputMember === undefined ? '整件工作（共同补充）' : target?.agent.name ?? '成员已不可用'}${view.dock.kind === 'input' ? ' · Tab 查看工作详情' : ''}`)]
 }
 
 /** 仅投影屏上的整体状态；控制范围仍由明确命令决定。 */
 export function collaborationStatus(view: ShellView): ShellStatus {
-  if (view.collaboration?.collaboration === undefined || view.dock.kind === 'decision') return view.status
+  if (view.dock.kind === 'decision' || view.status.state === 'lost') return view.status
+  const waiting = (view.background?.waiting.length ?? 0) > 0
+  const status: ShellStatus = waiting ? { ...view.status, state: 'background', amount: null } : view.status
+  if (view.collaboration?.collaboration === undefined) return status
   const members = view.collaboration.members.filter(one => !consultationEnded(one))
   const needs = members.reduce((sum, member) => sum + member.pendingDecisions, 0)
   if (needs > 0) return { ...view.status, state: 'waiting', amount: `${needs} 项` }
-  if (members.some((member) => member.runtime?.state === 'running' || member.runtime?.state === 'stopping' || member.waiting?.state === 'waiting')) {
+  if (members.some((member) => (member.runtime?.state === 'running' && !member.runtime.backgroundWaiting && (!member.runtime.background || member.runtime.action !== undefined)) || member.runtime?.state === 'stopping' || (member.waiting?.state === 'waiting' && !waiting))) {
     return { ...view.status, state: 'working', amount: null }
   }
-  return view.status
+  return status
 }
 
 export function memberRows(snapshot: CollaborationView): readonly PickerRow[] {

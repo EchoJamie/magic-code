@@ -157,8 +157,8 @@ describe('切换续跑（退出条件：A 记得自己的、不知道 B 的）',
       await nextState(handle)
       await handle.submit('甲这边还有一句')
 
-      // 切回 A 时新开的那个网关（每开一条会话造一个）——最近一个就是 A 的
-      const gateway = stage.models.at(-1)
+      // 同一会话复用执行链，后台完成仍能回到原归属。
+      const gateway = stage.models[0]
       const messages = gateway?.requests.at(-1)?.messages ?? []
       const said = messages.map(textOf).join('\n')
 

@@ -197,7 +197,11 @@ export function createManagedCollaboration(host: CollaborationHost) {
       // 收齐结果且工作调用已结算后才释放空闲宿主资源；闭合事实要晚于资源确证。
       const unresolved = records.listDelegations(work.collaborationId).some(d =>
         !['received', 'rejected', 'cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))
-      if (unresolved || records.listExecutions(work.collaborationId).some(e => e.state !== 'finished')) return false
+      if (unresolved || records.listExecutions(work.collaborationId).some(e => e.state !== 'finished')
+        || host.runs().some(run => records.agentForSession(run.session)?.collaborationId === work.collaborationId && ((run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
+        || records.listMembers(work.collaborationId).some(member =>
+          host.store.serviceFor(member.sessionId).inputs.list().some(row => (row.state === 'pending' || row.state === 'consumed') && row.reason === undefined)
+          || records.inbox(member.agentId).some(item => (item.state === 'pending' || item.state === 'consumed') && item.includedAt === undefined && records.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt'))) return false
       finishing.add(work.collaborationId)
       try {
         await host.cancel(records.listMembers(work.collaborationId).map(a => a.sessionId))

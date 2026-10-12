@@ -78,6 +78,8 @@ export function commandNarrowsByType(): void {
 /** 命令目录穷尽——新增 kind 时此处缺返回，tsc 报错。 */
 export function commandSubjectOf(command: Command): string {
   switch (command.type) {
+    case 'background.list':
+    case 'background.stop':
     case 'collaboration.read':
     case 'collaboration.input':
     case 'collaboration.stop':

@@ -313,6 +313,9 @@ export function analyze(
       return analyzeSkill(call, ctx)
     case 'web_fetch':
       return analyzeWebFetch(call, ctx)
+    case 'background_stop':
+    case 'background_wait':
+      return { weight: 'light', material: '仅控制本会话持有的后台命令。', ops: ['read'], landings: [] }
     case 'consult_arcane':
       return { weight: 'light', material: '向已配置的 Arcane 提交具体问题与相关材料，后台只读查证；许可与工作区由宿主绑定。', ops: ['read'], landings: [] }
     case 'plan_read':

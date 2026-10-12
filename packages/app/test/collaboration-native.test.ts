@@ -28,7 +28,7 @@ function fixture() {
 }
 
 function work(session: string, patch: Partial<NativeWork> = {}): NativeWork {
-  return { session, title: session === 'origin' ? '整项工作' : '独立工作', workspace: ['/root'],
+  return { background: 0, session, title: session === 'origin' ? '整项工作' : '独立工作', workspace: ['/root'],
     state: 'idle', since: 10, gen: null, affected: false, archived: false, canArchive: false, terminalOpen: false, ...patch }
 }
 function notice(session: string, patch: Partial<AttentionItem> = {}): AttentionItem {
@@ -247,4 +247,15 @@ describe('协作 Native 整项工作投影', () => {
     expect(f.snapshot().groups[0]?.members).toHaveLength(3)
     expect(f.snapshot().groups[0]?.collaboration.state).toBe('stopped')
   })
+})
+
+test('App 后台数按工作合并且同一成员不重复计数；任一未知时整体未知', () => {
+  const f = fixture()
+  try {
+    f.spawn('member-a', '同名'); f.spawn('member-b', '同名')
+    const snapshot = f.snapshot('member-a', 'member-b')
+    const rows = [work('origin', { background: 1 }), work('member-a', { background: 2 }), work('member-b', { background: 3 })]
+    expect(mergeCollaborationNative([...rows, rows[1]!], snapshot)[0]?.background).toBe(6)
+    expect(mergeCollaborationNative([rows[0]!, { ...rows[1]!, background: undefined }, rows[2]!], snapshot)[0]?.background).toBeUndefined()
+  } finally { f.close() }
 })

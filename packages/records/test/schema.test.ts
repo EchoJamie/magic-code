@@ -151,6 +151,7 @@ describe('判据 3 · 不落库清单', () => {
     // **当前**：U111 撤掉 U37 那条 ＋ U110 补回导出那条 ＋ 本单这条。
 
     expect([...TRANSIENT_EVENT_KINDS].sort()).toEqual([
+      'background.state',
       'collaboration.view',
       'exec.background.done',
       'grants.catalog',

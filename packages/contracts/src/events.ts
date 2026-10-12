@@ -124,6 +124,7 @@ export type EventKind =
   | 'tool.output.delta'
   // exec · 后台——**交出去的那条命令跑完了**（U70）；**不落库**
   | 'exec.background.done'
+  | 'background.state'
   // model · 会话——换模型的**结果**（用户命令）；**落库**
   | 'model.switched'
   // skill——**技能材料真的送进了模型**（U33）；**不落库**（依据在条目载荷里）
@@ -585,6 +586,7 @@ export type EventDataOf = {
    * - **给屏**的就是这一条：`· 后台命令结束了…` 那一行回执。它**不落库**——「当时屏上
    *   闪了一句什么」不是重放要的东西，那件事另有痕（上面那条条目）。
    */
+  'background.state': import('./background.ts').BackgroundView
   'exec.background.done': {
     // 不落库——实时订阅专用
     /** 那条运行的 id（回执上点名用它；停也按它停）。 */
@@ -1128,6 +1130,7 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   // 落进会话了（那条 `user` 条目，载荷带 `notice`），落库＝把同一件事存第二遍。
   // 重放要的是「当时跑过哪些后台命令、结果如何」（读条目就有），不是「屏上闪了一句什么」。
   'exec.background.done',
+  'background.state',
   // 会话状态同列的理由：它是「此刻有哪些会话、当前在哪条」的**快照**，
   // 而重放要的从来不是快照——是过程（谁切到了哪条）。落库只会把同一张表存 N 遍，
   // 且重放时越读越乱（旧快照会把新快照盖回去）。

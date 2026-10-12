@@ -189,6 +189,7 @@ export function isToolResultPayload(payload: unknown): payload is ToolResultPayl
   // 计划更新那一位（U34）——**只增不改的兼容位**：给了就得是那一份（或 `null` ＝ 清空），
   // 没给照旧什么都不多。与 `user` 条目那条硬闸同一个姿势：**放行两种形状，不是放行一切形状**
   // （计划笔记是模型据以接着干活的那份，形状坏了读侧就只能猜）。
+  if (payload['background'] !== undefined && !isBackgroundResult(payload['background'])) return false
   const plan = payload['plan']
   return plan === undefined || plan === null || isPlanNote(plan)
 }
@@ -261,7 +262,7 @@ export function isContent(value: unknown): value is Content {
  */
 export function isUserPayload(payload: unknown): payload is UserPayload {
   if (!isRecord(payload)) return false
-  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs' && key !== 'notice')) {
+  if (Object.keys(payload).some((key) => key !== 'skills' && key !== 'refs' && key !== 'notice' && key !== 'background')) {
     return false
   }
 
@@ -274,6 +275,8 @@ export function isUserPayload(payload: unknown): payload is UserPayload {
   // `notice`（U70）——**说话人**的标记（内核自己投的那一条：后台命令结束）。
   // 只有 `true` 这一种写法：写 `false` 是「说了但没带」的两种说法并存，同 `ToolResultPayload`
   // 那里 `notExecuted` 的口径（「没这一位」本身就是一条信息）。
+  const background = payload['background']
+  if (background !== undefined && (payload['notice'] !== true || !isBackgroundChange(background))) return false
   const notice = payload['notice']
   if (notice !== undefined && notice !== true) return false
 
@@ -339,6 +342,27 @@ function isInputRefs(refs: unknown): boolean {
 
     return kind !== 'skill' || typeof item['name'] === 'string'
   })
+}
+
+function isBackgroundFinish(value: unknown): boolean {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.command === 'string' && typeof value.outputPath === 'string'
+    && typeof value.ok === 'boolean' && (value.exit === null || Number.isInteger(value.exit))
+    && (value.stopped === undefined || value.stopped === true)
+    && (value.reason === undefined || typeof value.reason === 'string')
+    && (value.stoppedBy === undefined || ['model', 'user', 'scope'].includes(String(value.stoppedBy)))
+}
+function isBackgroundChange(value: unknown): boolean {
+  return isBackgroundFinish(value) || (isRecord(value) && value.state === 'unconfirmed' && typeof value.id === 'string'
+    && typeof value.command === 'string' && typeof value.outputPath === 'string' && typeof value.reason === 'string'
+    && ['model', 'user'].includes(String(value.stoppedBy)))
+}
+function isBackgroundResult(value: unknown): boolean {
+  if (isBackgroundFinish(value)) return true
+  if (!isRecord(value)) return false
+  if (value.ok === false) return typeof value.reason === 'string'
+  if (value.ok !== true) return false
+  if (value.state === 'changed') return Array.isArray(value.results) && value.results.every(isBackgroundFinish)
+  return value.state === 'waiting' && Array.isArray(value.ids) && value.ids.length > 0 && value.ids.every(id => typeof id === 'string' && id.length > 0)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

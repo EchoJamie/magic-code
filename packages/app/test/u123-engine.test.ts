@@ -254,9 +254,9 @@ test('归档资格保留后台、未知与资源收尾保护；已结束的失�
   run.ready = true; run.connected = true; run.everConnected = true; run.busy = false
   refresh(run, 2)
   expect(canArchiveRun(run)).toBe(true)
-  run.background = 1; refresh(run, 3)
+  run.owned = [{ pgid: 4242, startedAt: 1, kind: 'background', what: '后台测试' }]; refresh(run, 3)
   expect(canArchiveRun(run)).toBe(false)
-  run.background = 0; run.reclaimPending = true; refresh(run, 4)
+  run.owned = []; run.reclaimPending = true; refresh(run, 4)
   expect(canArchiveRun(run)).toBe(false)
   run.reclaimPending = false; run.state = 'unknown'
   expect(canArchiveRun(run)).toBe(false)

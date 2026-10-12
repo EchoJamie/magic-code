@@ -45,7 +45,7 @@ import AppKit
         guard selection.count == 1 else { return nil }
         if let row = rows.first(where: { selection.contains($0.id) }) { return row }
         guard let route, selection.contains(route.session), let work = detailWork else { return nil }
-        return NativeSession(id: work.session, title: work.title, at: work.since, workspace: work.workspace,
+        return NativeSession(background: work.background, id: work.session, title: work.title, at: work.since, workspace: work.workspace,
             archived: work.archived, canArchive: work.canArchive, terminalOpen: work.terminalOpen, state: work.state,
             reason: work.reason, recentInput: nil, recentProgress: nil)
     }
@@ -303,6 +303,7 @@ struct SessionWindow: View {
                             Image(systemName: row.archived ? "archivebox" : row.state.symbol).foregroundStyle(row.archived ? .secondary : row.state.color)
                             Text(row.displayTitle).font(.system(size: 13, weight: .medium)).lineLimit(2)
                         }
+                        if let count = model.online ? row.backgroundText : "后台命令数量待确认" { Text(count).font(.caption).foregroundStyle(.secondary) }
                         if let preview = row.recentProgress ?? row.recentInput { Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                         HStack(spacing: 4) {
                             Image(systemName: "folder")

@@ -322,7 +322,7 @@ describe('判据 5 · 读面——只列此刻真没退出的', () => {
     const live = runs.running()
 
     expect(live).toEqual([
-      { id: started.id, command: 'sleep 30', outputPath: started.outputPath },
+      { id: started.id, command: 'sleep 30', outputPath: started.outputPath, state: 'running', startedAt: expect.any(Number) },
     ])
 
     await runs.stop(started.id)

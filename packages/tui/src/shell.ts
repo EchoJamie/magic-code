@@ -1,3 +1,5 @@
+import { backgroundKey, backgroundPicker, backgroundDetail } from './background.ts'
+import type { BackgroundCommand, BackgroundView } from '@magic/contracts'
 import { foldRound } from './round.ts'
 /**
  * 外壳 · 会话壳（缺陷轮 II 重画）——**只认控制面**。
@@ -500,6 +502,7 @@ function shellQuote(text: string): string {
 }
 
 export type ShellOptions = {
+  readonly copyText?: ((text: string) => Promise<void>) | undefined
   readonly detached?: ((listener: (why: string) => void) => void) | undefined
   readonly reopen?: (() => Promise<void>) | undefined
   /**
@@ -994,6 +997,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (layer.dock.kind === 'picker') {
       commit(openPicker(view, layer.dock.picker))
+      if (layer.dock.picker.source === 'background') openBackground(layer.dock.picker.rows[layer.dock.picker.selected]?.value)
+      if (layer.dock.picker.source === 'collaboration') openCollaboration(layer.dock.picker.rows[layer.dock.picker.selected]?.value)
       if (layer.dock.picker.source === 'session') refreshSessionPicker()
       if (layer.dock.picker.source === 'session-actions' && sessionTarget !== undefined) showSessionActions(sessionTarget, false)
       return
@@ -1497,6 +1502,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if(lastSubmit?.local===true && (('ok' in event.data&&event.data.ok===false)||(event.kind==='session.state'&&event.data.note!==undefined)))settleDraft(lastSubmit.ref,true)
 
     if(event.kind==='input.pending'){const target=view.inputMember===undefined?view.sessionId:view.collaboration?.members.find(one=>one.agent.agentId===view.inputMember)?.agent.sessionId;if(target!=null&&event.session!==target)return;commit({...view,pendingInputs:event.data.inputs});if(view.dock.kind==='picker'&&view.dock.picker.source==='input-pending')openPendingInputs();if(event.data.note!==undefined)commit(appendReceipt(view,event.data.note));return}
+    if (event.kind === 'background.state') {
+      if (view.sessionId !== null && event.session !== view.sessionId) return
+      const picker = view.dock.kind === 'picker' ? view.dock.picker : undefined
+      if (backgroundAt && event.data.result && backgroundKey(event.data.result.target) === backgroundKey(backgroundAt.command)) backgroundAt.result = event.data.result
+      commit({ ...view, background: event.data })
+      if (picker?.source === 'background') openBackground(picker.rows[picker.selected]?.value)
+      else if (picker?.source === 'background-detail' && backgroundAt) showBackgroundDetail(picker.rows[picker.selected]?.value, picker.detailTop)
+      return
+    }
     if (event.kind === 'collaboration.view') {
       const data = event.data
       if (view.sessionId !== null && data.originSession !== view.sessionId) return
@@ -1512,9 +1526,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       const requested = collaborationQuery
       if (requested !== null && requested.member === data.selectedMember) {
         collaborationQuery = null
-        if (data.collaboration === undefined) {
-          commit(said(view, data.note ?? '这件工作尚未展开协作'))
-        } else if (requested.member === undefined) openCollaboration()
+        if (requested.member === undefined) { if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'background') openCollaboration() }
         else {
           const member = data.members.find(one => one.agent.agentId === requested.member)
           collaborationAt = requested.member
@@ -1663,6 +1675,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (before !== (event.data.active||null)) {
         collaborationQuery = null
         collaborationAt = undefined
+        backgroundAt = undefined
+        psPositions.clear()
         collaborationModel = null
         const sameCollaboration = prior.collaboration?.originSession === event.data.active
         if (!sameCollaboration) memberViews.clear()
@@ -1671,7 +1685,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         if(saved!==undefined)for(const [member,context] of saved.members)inputContexts.set(member,context)
         history=saved?.current.history??[];historyAt=saved?.current.historyAt??-1;browsing=saved?.current.browsing??null;lastSubmit=saved?.current.lastSubmit??null
         if (!sameCollaboration) { decisions.clear(); answeredDecisions.clear(); decisionReturn = null }
-        commit({...view,collaboration:sameCollaboration ? prior.collaboration : undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0})
+        commit({...view,background:undefined,collaboration:sameCollaboration ? prior.collaboration : undefined,inputMember:saved?.member,inputPurpose:saved?.purpose??'current',draft:saved?.current.draft??'',refs:saved?.current.refs??[],caret:saved?.current.caret??0})
         if (event.data.active !== '') readHistory(event.data.active)
       }
       if (waiting === 'session') {
@@ -3468,17 +3482,38 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
   const openCollaboration = (selected?: string): void => {
     const snapshot = view.collaboration
-    if (snapshot?.collaboration === undefined) return
     collaborationAt = undefined
     const rows = [
-      ...memberRows(snapshot),
-      collaborationRow('whole', '向整件工作补充', '恢复整体草稿；共同要求送达相关成员'),
+      ...(snapshot?.collaboration ? memberRows(snapshot) : []),
+      ...(snapshot?.collaboration ? [collaborationRow('whole', '向整件工作补充', '恢复整体草稿；共同要求送达相关成员'),
       collaborationRow('constraints', '共同补充的带入情况'),
       collaborationRow('default-model', '后续派生的默认模型', '按需配置'),
       collaborationRow('stop-work', '停止整件工作', '覆盖全部成员及继续委派'),
-      ...(snapshot.collaboration.state === 'stopped' ? [collaborationRow('resume-work', '明确继续整件工作', '先核对停点')] : []),
+      ...(snapshot.collaboration.state === 'stopped' ? [collaborationRow('resume-work', '明确继续整件工作', '先核对停点')] : [])] : []),
     ]
-    showCollaborationPicker('collaboration', rows, '查看记录不改变输入目标', selected)
+    commit(openPicker(view, { source: 'collaboration', title: '[协作成员]  │  后台命令', rows, selected: Math.max(0, rows.findIndex(row => row.value === selected)), hint: `${snapshot?.collaboration ? '查看记录不改变输入目标' : '没有协作成员'}\nTab/Shift+Tab 切换 · ↑↓ 选择 · Enter 查看 · Esc 返回` }))
+  }
+  const psPositions = new Map<string, { selected?: string; detailTop?: number }>()
+  let backgroundAt: { command: BackgroundCommand; result?: BackgroundView['result'] } | undefined
+  const openBackground = (selected?: string): void => {
+    commit(openPicker(view, backgroundPicker(view.background, selected)))
+  }
+  const showBackgroundDetail = (selected?: string, detailTop?: number): void => {
+    if (!backgroundAt) return
+    const picker = backgroundDetail(backgroundAt.command, view.background, backgroundAt.result)
+    commit(openPicker(view, { ...picker, selected: Math.max(0, picker.rows.findIndex(row => row.value === selected)), ...(detailTop === undefined ? {} : { detailTop }) }))
+  }
+  const switchPs = (): boolean => {
+    if (view.dock.kind !== 'picker' || !['background', 'collaboration'].includes(view.dock.picker.source)) return false
+    const picker = view.dock.picker
+    psPositions.set(picker.source, { selected: picker.rows[picker.selected]?.value, detailTop: picker.detailTop })
+    const source = picker.source === 'background' ? 'collaboration' : 'background'
+    const position = psPositions.get(source)
+    if (source === 'background') openBackground(position?.selected)
+    else openCollaboration(position?.selected)
+    send({ type: 'background.list' })
+    if (source === 'collaboration') send({ type: 'collaboration.read' })
+    return true
   }
   const openMember = (member: AgentId, selected?: string): void => {
     const snapshot = view.collaboration
@@ -3495,8 +3530,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     ], `${found.agent.name} · ${found.agent.purpose === 'consultation' ? '只读咨询' : found.agent.role} · ${memberState(found)} · ${found.delegation?.scope ?? '协调与整合'}`, selected)
   }
   const readCollaboration = (member?: AgentId): void => {
-    if (collaborationQuery !== null) return
-    if (member === undefined) enterLayer()
+    if (member === undefined) { enterLayer(); openCollaboration(); send({ type: 'background.list' }) }
     collaborationQuery = member === undefined ? {} : { member }
     send({ type: 'collaboration.read', ...(member === undefined ? {} : { member }) })
   }
@@ -4286,6 +4320,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const disconnect = (why?: string): void => {
     if (disposed || !connected) return
     connected = false
+    view = { ...view, background: { commands: view.background?.commands ?? [], waiting: [], unknown: true } }
     const unconfirmed = new Set([...view.settled, ...view.rows].filter(row => row.kind === 'user' && row.inputState === '提交中').map(row => row.kind === 'user' ? row.inputRef : undefined))
     if (lastSubmit !== null && unconfirmed.has(lastSubmit.ref)) settleDraft(lastSubmit.ref, true)
     const mark = (row: import('./view.ts').LogRow) => row.kind === 'user' && unconfirmed.has(row.inputRef) ? { ...row, inputState: '未确认接收（连接已断开）' } : row
@@ -4561,6 +4596,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
 
       case 'shift+tab':
+        if (switchPs()) return NONE
         if (view.dock.kind === 'picker' && view.dock.picker.source === 'session') {
           const picker = view.dock.picker
           sessionPositions.set(sessionArchived, { id: picker.rows[picker.selected]?.value, selected: picker.selected, detailTop: picker.detailTop })
@@ -4573,6 +4609,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         }
         return NONE
       case 'tab':
+        if (switchPs()) return NONE
         if (view.dock.kind === 'input' && historyAt !== -1) { historyAt = -1; browsing = null; draft(view); if (view.completion !== null) return NONE }
         if (decisions.size > 0 && ((view.dock.kind === 'input' && view.completion === null) || (view.dock.kind === 'picker' && view.dock.picker.reader !== undefined))) { openDecision(); return NONE }
         // `Tab` 补全（原型 · 场景 11）；没有候选时什么也不做（Tab 不当正文）
@@ -4589,7 +4626,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           return NONE
         }
         if (view.completion !== null) pickCompletion()
-        else if (view.collaboration?.collaboration !== undefined) readCollaboration()
+        else if (view.collaboration?.collaboration !== undefined || view.background !== undefined) readCollaboration()
         return NONE
 
       // —— 停止（U50）：`/resume` 那一屏的两个键，各对应设计里那两档「明确选择的」范围 ——
@@ -4740,6 +4777,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.dock.kind === 'picker') {
       const row = picked(view)
       if (row === undefined) return NONE
+      if (view.dock.picker.source === 'background') {
+        const command = view.background?.commands.find(one => backgroundKey(one) === row.value)
+        if (command) { enterLayer(); backgroundAt = { command }; showBackgroundDetail() }
+        return NONE
+      }
+      if (view.dock.picker.source === 'background-detail' && backgroundAt) {
+        if (row.value === 'back') popLayer()
+        else if (row.value === 'copy') {
+          const copying = options.copyText?.(backgroundAt.command.outputPath) ?? Promise.reject(new Error('本机剪贴板未接入'))
+          void copying.then(() => { if (!disposed) commit(appendReceipt(view, '已复制完整输出路径')) },
+            error => { if (!disposed) commit(appendReceipt(view, `复制失败：${String(error)}`)) })
+        }
+        else if (row.value === 'stop') {
+          const { execution, session, id } = backgroundAt.command
+          send({ type: 'background.stop', target: { execution, session, id } })
+        }
+        return NONE
+      }
       if (view.dock.picker.source === 'session-actions') {
         if (sessionTarget === undefined) return NONE
         if (row.value === 'history') showSessionHistory(sessionTarget)
@@ -5056,6 +5111,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
+    if (text.trim() === '/ps') {
+      const { next, commands } = runSlash(view, text.trim())
+      draft(next)
+      for (const command of commands) send(command)
+      return NONE
+    }
+
     if (text.startsWith('/')) {
       const word = text.split(/\s+/)[0] ?? ''
 
@@ -5255,6 +5317,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 两者都不算「文案」（`label` 仍旧是 `null`，回执那一格一个字都不添）。
       turn = { kind: 'new', label: null }
       return only(cleared, { type: 'session.new' })
+    }
+
+    if (word === '/ps') {
+      if (arg) return only(appendReceipt(cleared, '用法：/ps'))
+      collaborationQuery = {}
+      return only(openPicker(cleared, { source: 'collaboration', title: '[协作成员]  │  后台命令', rows: [], selected: 0, hint: '正在读取 · Tab/Shift+Tab 切换 · Esc 返回' }), { type: 'collaboration.read' }, { type: 'background.list' })
     }
 
     if (word === '/resume') {
