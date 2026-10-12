@@ -442,28 +442,6 @@ describe('U53 · `resume` 接续（真窗口）', () => {
  * | **只剩后台命令** | `ctrl+c` 给的是**三选**（不是「再按一次退出」）——设计：「后台命令仍在执行……也属于有在途工作」 |
  */
 /**
- * **把被折行的那一句接回一整行**（U100 取证用）——从含 `from` 的那一行起，把**续行**
- * （缩进两格、不带标记）一路接上；色码一并剥掉。
- *
- * ⚠️ 它是**取证的尺子**，不是产品行为：产品那边折行是 Ink 按终端宽度做的（真换行）。
- */
-function joinWrapped(raw: string, from: string): string {
-  const strip = (text: string): string => text.replace(/\u001b\[[0-9;]*m/gu, '')
-  const lines = raw.split(/\r?\n/u).map(strip)
-  const at = lines.findIndex((line) => line.includes(from))
-  if (at === -1) return ''
-
-  let said = lines[at] ?? ''
-  for (let next = at + 1; next < lines.length; next += 1) {
-    const line = lines[next] ?? ''
-    if (!/^ {2}\S/u.test(line)) break
-    said += line.trimStart()
-  }
-
-  return said
-}
-
-/**
  * **剥掉 SGR 色码**（取证用）——`\u001b[…m` 那几段；其余字节原样。
  *
  * 为什么不直接比字符串：这一条要量的正是**字节里有没有换行**（见那一处判据的注）。
@@ -676,20 +654,23 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
    *
    * D55：命令一律携带已选父目录；本例还覆盖 .magic 本身是符号链接。
    * ① 起一扇窗，`MAGIC_HOME` 指向与所选实例相同实体的另一条路径；
-   * ② 从「转到后台」那一刻的屏上**取出**那一行（`接回来：` 之后那一段就是用户要复制的）；
+   * ② 从「转到后台」那一刻的屏上**取出**那一行（`恢复此会话：` 的下一行就是用户要复制的）；
    * ③ 造一个 `magic` 可执行（PATH 里的 shim，转真的 `cli.ts`），**`sh -c` 原样跑它**；
    * ④ 判据：接回**同一条会话**（记录区铺着原来那一句）· 模型**没被再问一遍**。
    */
   test.each([false, true])('转后台留的接回入口：照那一行真敲一遍，接回同一个库（自定义符号链接位置=%s）', async (alias) => {
     const runs = tempDir('magic-u100-resume-runs-')
     const fixture = startFixture({ turns: [{ kind: 'text', text: '第一句答复。' }] })
-    const sandbox = createSandbox({ baseURL: fixture.baseURL })
+    const base = createSandbox({ baseURL: fixture.baseURL })
+    const sandbox = { ...base, workspace: join(base.root, "work 'space") }
+    mkdirSync(sandbox.workspace)
+    const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`
     let first: UiSession | undefined
     let second: UiSession | undefined
 
     try {
       // .magic 本身链接到末段不叫 .magic 的实体；命令必须保留选择路径的父目录。
-      const alt = alias ? join(sandbox.root, 'alt-home') : sandbox.home
+      const alt = alias ? join(sandbox.root, "alt 'home") : sandbox.home
       if (alias) {
         const store = join(sandbox.root, 'store')
         renameSync(join(sandbox.home, '.magic'), store)
@@ -710,27 +691,14 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await first.key('ctrl+c', { until: { text: '当前任务' }, timeoutMs: 15_000 })
       await first.key('down')
       await first.key('enter')
-      await first.wait({ text: '接回来：' }, { timeoutMs: 10_000 })
-      const shown = await first.capture({ label: '转后台留的接回入口（非默认 MAGIC_HOME）' })
-
-      // 终端按宽度软折行；从完整输出取逻辑行，随后另核原始字节没有硬换行。
-      const copy = joinWrapped(first.rawText(), '接回来：').split('接回来：')[1] ?? ''
-      expect(copy).toBe(`cd -- '${realpathSync(sandbox.workspace)}' && MAGIC_HOME='${alt}' magic resume '${sessionIdOf(sandbox)}'`)
-
-      // ③ **它得是「屏上原样可复制」的一条**（规划裁决点名的那一条）——
-      //    判据**落在字节上**，不是靠测试把这行接回来：
-      //    这一句**不进记录区**（那里的行由 `log.ts` 按列数**硬折行**——真换行，复制到的东西
-      //    里带着换行 ＋ 续行缩进，粘进终端就断成两条），而是由 `app.ts` **直接写字节**出去、
-      //    交给**终端软折行**（软折行在终端看来仍是同一逻辑行 ⇒ 整行选中复制拿到的是完整的）。
-      //    故这里要证的是：**那一串字节里没有换行**（`\n` 之前就是整条命令）。
+      await first.wait({ text: '恢复此会话：' }, { timeoutMs: 10_000 })
+      const shown = await first.capture({ label: '退出后的恢复命令' })
       const stream = first.rawText()
-      const at = stream.lastIndexOf('接回来：') + '接回来：'.length
-      const bytes = stream.slice(at, stream.indexOf('\n', at))
-      // **两个都要**：① 那一段字节里没有换行（真折行的话这里就有）；
-      // ② 剥掉色码之后**就是那整条命令**（末尾那格是 Ink 的收尾样式，`trimEnd` 掉）
-      expect(bytes).not.toContain('\n')
-      expect(stripAnsi(bytes).trimEnd()).toBe(copy)
-      expect(shown.text).toContain('转到后台了 · 接回来：') // 而屏上（可见的那些行）照旧有它
+      const copy = stripAnsi(stream.split('恢复此会话：')[1]?.split('\n')[1] ?? '').trimEnd()
+      expect(copy).toBe(`cd -- ${quote(realpathSync(sandbox.workspace))} && MAGIC_HOME=${quote(alt)} magic resume ${quote(sessionIdOf(sandbox))}`)
+      expect(stream.split('恢复此会话：')).toHaveLength(2)
+      expect(stream.lastIndexOf('恢复此会话：')).toBeGreaterThan(stream.lastIndexOf('\x1b[?2004l'))
+      expect(shown.text).toContain('恢复此会话：')
 
       const gone = await first.close({ graceMs: 8_000 })
       expect(gone.exit.by).toBe('app')
@@ -761,6 +729,7 @@ describe('U100 · 停止、后台命令与接着交代（真窗口）', () => {
       await second.wait({ text: '第一句答复。' }, { timeoutMs: 30_000 })
       const back = await second.capture({ label: '照那一行接回来的那一屏' })
       expect(back.lines.some((text) => text.includes('› 第一句'))).toBe(true)
+      expect(back.text).toContain('结束于')
       // **查看不触发重新执行**：模型一次都没被再问（物证是调用数，不是屏）
       expect(fixture.requests().length).toBe(asked)
 

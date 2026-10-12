@@ -630,6 +630,8 @@ export type EventDataOf = {
     readonly session: SessionId
     /** 这一块（按条目序；块与块之间拼起来即全日志）。 */
     readonly entries: readonly Entry[]
+    /** 已持久化的轮边界与用户审批事实；缺席不补猜计时。 */
+    readonly timing?: readonly TurnTimingEvent[]
     /** 本地命令的持久事件，仅供历史显示与召回。 */
     readonly inputs?: readonly Extract<KernelEvent, { kind: 'input.local' }>[]
     /** **末块**为 `true`——外壳据此知道重建收尾了。 */
@@ -1059,6 +1061,8 @@ export type EventDataOf = {
   'prefs.state': {
     /** 状态行那一行怎么摆（`MagicConfig.statusLine`）——缺省＝还没配过（默认那条）。 */
     readonly statusLine?: StatusLineConfig
+    /** 本轮耗时显示口径；缺省为完整经过时间。 */
+    readonly turnDuration?: import('./config.ts').TurnDurationMode
     /** 减少动效（`MagicConfig.motion.reduced`）——缺省＝没开。 */
     readonly reducedMotion?: boolean
     /** 一句话说明——只在有事要说时给（没写成的缘由 / 写成了哪几格）。 */
@@ -1205,3 +1209,9 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
  * **冻结点已过，走顺序迁移**——既有库照开、数据一件不丢、**不许重建库**。
  */
 export const RECORD_SCHEMA_VERSION = 1
+
+/** 整轮耗时所需的原始事实；显示侧与记录读取共用这一边界。 */
+export type TurnTimingEvent = Extract<KernelEvent, { kind: 'turn.start' | 'turn.end' | 'tool.decision.request' | 'tool.decision' }>
+export function isTurnTimingEvent(event: KernelEvent): event is TurnTimingEvent {
+  return event.kind === 'turn.start' || event.kind === 'turn.end' || event.kind === 'tool.decision.request' || event.kind === 'tool.decision'
+}

@@ -93,7 +93,7 @@ export async function terminalOptions(inputs: TerminalInputs): Promise<RunTuiOpt
   return {
     transport: terminalSettings(clientTransport(client), inputs.magic, workspaceOf(loaded, cwd), inputs.switch),
     statusLine: loaded.config.statusLine,
-    reducedMotion: loaded.config.motion?.reduced === true,
+    turnDuration: loaded.config.turnDuration ?? 'elapsed', reducedMotion: loaded.config.motion?.reduced === true,
     detached: (listener) => client.onDetached(listener),
     ...(inputs.reopen === undefined ? {} : { reopen: inputs.reopen }),
     // **没有 `boot`**：恢复是**执行者**那一头的事（它在装配之后、收第一条命令之前跑完）。

@@ -1,3 +1,4 @@
+import { roundSummary } from '../round.ts'
 import { clip, inkWidth } from './composer.ts'
 /**
  * 记录区（缺陷轮 III）——**内联渲染**下的纯日志。
@@ -107,6 +108,7 @@ export type LogRowProps = {
    * 缺省 `null` ＝**没有钟**：那就照旧报「运行中」，**不编一个秒数**（拿不到的不编）。
    * 钟由活壳（`TuiApp`）给；取景与快照不给 ⇒ 帧是确定的。
    */
+  readonly turnDuration?: 'elapsed' | 'active'
   readonly now?: number | null
   /**
    * **减少动效**（U112）——`true` ＝ 状态那一位**不呼吸**（画原色、定住）。
@@ -131,8 +133,9 @@ export function LogRowView({
   now = null,
   lost = false,
   still = false,
+  turnDuration = 'elapsed',
 }: LogRowProps): ReactElement {
-  const all = rowLines(row, { columns, expanded, spaced, now, lost, still })
+  const all = rowLines(row, { columns, expanded, spaced, now, lost, still, turnDuration })
   // 头一条超预算时只画末尾那几行（`skip` 见 props；0 时**原样交那一份**——它是缓存里的数组）
   const lines = skip > 0 ? all.slice(skip) : all
 
@@ -183,7 +186,8 @@ export function rowLines(
     readonly columns: number
     readonly expanded: boolean
     readonly spaced?: boolean
-    readonly now?: number | null
+    readonly turnDuration?: 'elapsed' | 'active'
+  readonly now?: number | null
     /** **与管理者断了**（U100）——由 `view.status.state === 'lost'` 给（见 `toolLines` 的注）。 */
     readonly lost?: boolean
     /** **减少动效**（U112）——见 `LogRowProps.still`。 */
@@ -195,7 +199,7 @@ export function rowLines(
   if (hit !== undefined && hit.key === key) return hit.lines
 
   const body = rowBody(row, options)
-  const lines = options.spaced === true ? [SPACER, ...body] : body
+  const lines = options.spaced === true && body.length > 0 ? [SPACER, ...body] : body
 
   rowCache.set(row, { key, lines })
 
@@ -222,11 +226,12 @@ function cacheKeyOf(options: {
   readonly columns: number
   readonly expanded: boolean
   readonly spaced?: boolean
+  readonly turnDuration?: 'elapsed' | 'active'
   readonly now?: number | null
   readonly lost?: boolean
   readonly still?: boolean
 }): string {
-  return `${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}:${options.lost === true ? 1 : 0}:${options.still === true ? 1 : 0}`
+  return `${options.turnDuration ?? 'elapsed'}:${options.columns}:${options.expanded ? 1 : 0}:${options.spaced === true ? 1 : 0}:${options.now ?? -1}:${options.lost === true ? 1 : 0}:${options.still === true ? 1 : 0}`
 }
 
 type RowCache = { readonly key: string; readonly lines: readonly LogLine[] }
@@ -331,12 +336,7 @@ function appendLines(into: LogLine[], lines: readonly LogLine[]): void {
  * 也按它编（`r:a:${at}`）。用相对下标会让增量之后**同一个 `key` 指到不同的行**，
  * React 那侧就要错位。
  *
- * ⚠️ **U112 起正文没有记号、也顶格**（设计 ·「符号 ＋ 动效：一套」那张表：助手在说话
- * 那一行的身份是「（无记号）」）：原先首行挂 `⏺ `、续行缩两格，都是在衬那个记号；记号一去，
- * 那两格就得**一起**去掉——不然首行顶格、续行缩两格，同一句话读着像两段。
- *
- * 靠什么与「你的交代」分开：**`›` 那个记号**在用户那一行上（顶格）＋ 用户行整行淡青底。
- * 两条都在，故正文这一侧不用再带任何东西。
+ * 正文统一从第 2 列开始；Markdown 自身的代码及列表缩进叠加在此基线上。
  */
 function wrapAssistant(
   lines: readonly MdLine[],
@@ -350,9 +350,9 @@ function wrapAssistant(
     const line = lines[at] as MdLine
     appendLines(
       out,
-      wrapSegments(line.segments, columns, {
+      wrapSegments(line.segments.length === 0 ? [] : [seg(INDENT), ...line.segments], columns, {
         key: `r:a:${at}`,
-        hang: line.hang ?? '',
+        hang: INDENT + (line.hang ?? ''),
         bodyColor: PALETTE.fg,
       }),
     )
@@ -431,6 +431,8 @@ function blockOf(row: LogRow): string | undefined {
     // 自成一档而不是按行认（`t:<key>`）：设计说的是「**那一段**」——同一条思考（连着的
     // 几行都是它）是一块，块内紧凑。正文与思考**交替**时才分行（见 `appendText`），
     // 那几行之间本来就隔着助手行，各归各的块。
+    case 'round':
+      return 'round'
     case 'thinking':
       return 'thinking'
     // **连续的工具行算一个工具组**（相邻才比较 ⇒ 挨着的两条工具行＝同一组）——单条调用、
@@ -578,7 +580,8 @@ export function logLines(
   options: {
     readonly columns: number
     readonly expanded: boolean
-    readonly now?: number | null
+    readonly turnDuration?: 'elapsed' | 'active'
+  readonly now?: number | null
     readonly lost?: boolean
     /** **减少动效**（U112）——见 `LogRowProps.still`。 */
     readonly still?: boolean
@@ -596,7 +599,8 @@ function rowBody(
   options: {
     readonly columns: number
     readonly expanded: boolean
-    readonly now?: number | null
+    readonly turnDuration?: 'elapsed' | 'active'
+  readonly now?: number | null
     /** **与管理者断了**（U100）——见 `toolLines` 那一处注。 */
     readonly lost?: boolean
     /** **减少动效**（U112）——见 `LogRowProps.still`。 */
@@ -606,6 +610,10 @@ function rowBody(
   const { columns, expanded } = options
 
   switch (row.kind) {
+    case 'round': {
+      const text = roundSummary(row.timing, options.turnDuration ?? 'elapsed')
+      return text === null ? [] : wrapSegments([seg(INDENT + text, PALETTE.faint)], columns, { key: row.key, hang: INDENT })
+    }
     /**
      * **启动字标**（品牌视觉 · TUI Banner）——记录区最前面那一块，启动印一次。
      *
@@ -699,32 +707,13 @@ function rowBody(
     }
 
     case 'thinking': {
-      const lines = textOfLines(trimBlank(row.text)).filter((line) => line.trim() !== '')
-      if (lines.length === 0) return [] // 空思考不渲染
-
-      // **展开那一支不动**（U112 追加 · ④「全文不丢」）：进查看那一屏仍是整段铺开。
-      // 计时那三格只管折叠态那一行（那一行才是「此刻」的一部分）。
-      if (expanded) {
-        return lines.flatMap((line, at) =>
-          wrapSegments([seg(at === 0 ? '（思考）' : '', PALETTE.faint), seg(line, PALETTE.faint)], columns, {
-            key: `r:t:${at}`,
-            hang: INDENT,
-          }),
-        )
-      }
-
-      // —— 折叠态：`（思考 12s）` 那一行 ＋ 它的动效（U112 追加）——
-      //
-      // 那一行本来就只有一行，这一单给它补两件：**计时**与**动效**（用户 2026-10-01 定，
-      // 照参照面）。两件各说各的：**计时是事实**（这一段流了多久），**动效是「正在发生」**
-      // （还在吐字）。故两者的存活条件不同——见 `thinkingLabel`。
-      const label = thinkingLabel(row, options.now ?? null, options.still === true)
-
-      return wrapSegments(
-        [seg(label.text, label.color), seg(clip(lines[0] ?? '', Math.max(0, columns - displayWidth(label.text))), PALETTE.faint)],
-        columns,
-        { key: 'r:t', hang: INDENT },
-      )
+      const lines = textOfLines(trimBlank(row.text))
+      if (!lines.some(line => line.trim() !== '')) return []
+      const body = expanded ? lines : [clip(lines.find(line => line.trim() !== '') ?? '', Math.max(0, columns - 2))]
+      return body.flatMap((line, at) => wrap(line, Math.max(1, columns - 2)).map((text, part) => ({
+        key: `r:t:${at}:${part}`,
+        segments: [seg(`${MARKS.card} ${text}`, PALETTE.faint)],
+      })))
     }
 
     case 'tool':
@@ -937,62 +926,6 @@ function statusBit(
   const verdict = verdictOf(row, expanded)
 
   return { mark: verdict.mark, color: verdict.color }
-}
-
-/**
- * **思考那一行为首那一段**（U112 追加）——`（思考 12s）`，**形如**用户给的那一形。
- *
- * 三件事各自的条件（用户 2026-10-01 的三条）：
- *
- * | 那一格 | 条件 | 由头 |
- * | --- | --- | --- |
- * | **计时**（`12s`） | 有起点、且**有一个「此刻」**（`now` 非空）——**不看动不动** | **时间是事实，不是动画**（用户原话）⇒ 减少动效照走 |
- * | **动**（呼吸） | **还在流**（`row.flowing`）**且**没有开减少动效**（`still === false`）**且**有钟 | 「表示『正在发生』的那一行可以动」；**成/收梢 ⇒ 定住** |
- * | 词「思考」 | 总是 | 身份那一维（设计：留文字最保真） |
- *
- * ⚠️ **拿不到的不编**（项目那条老规矩）：没有起点（**接回**重放的那一段）就**不报数**，
- * 只写「（思考）」；没有钟（取景与快照不给）同样不报数——那一行不会因为「此刻不知道」
- * 就编一个 0s 出来。
- *
- * ⚠️ **动效挂在整段标签上**（「动效就挂在那一行上」），且用的是**这一套里唯一的那个动**
- * （弱 → 亮 → 弱的呼吸，见 `motion.ts`）：设计给思考段写的「`⋯` 可逐点滚动」是**另一回事**
- * （那是**窄窗**那一档的**身份**写法，本单没动它）。一处动效一套——这是本单立的规矩。
- */
-function thinkingLabel(
-  row: Extract<LogRow, { kind: 'thinking' }>,
-  now: number | null,
-  still: boolean,
-): { readonly text: string; readonly color: string } {
-  const clock = thinkingClock(row, now)
-
-  if (clock === null) return { text: '（思考）', color: PALETTE.faint }
-
-  const moving = row.flowing && !still && now !== null
-
-  return {
-    text: `（思考 ${clock}）`,
-    color: moving ? breathColor(PALETTE.faint, breathOf(now)) : PALETTE.faint,
-  }
-}
-
-/**
- * 那一段思考**流了多久**——`(还在流 ? 此刻 : 最后吐字那一刻) − 起算那一刻`。
- *
- * **只算那一段真的在流的时间**（用户 2026-10-01 的口径，与工具行那条同一个精神）：
- * 起算是**第一条**思考增量，终点是**最后一条**——中间在等模型的那几秒不算。
- *
- * 拿不到就跑不出数（`null`）：没有起点（接回）、没有终点（一条增量都没记下）、
- * 或者没有钟（`now` 为空而它还在流）——**不编**。
- */
-function thinkingClock(row: Extract<LogRow, { kind: 'thinking' }>, now: number | null): string | null {
-  const from = row.startedAt
-  const to = row.flowing ? now : row.lastAt
-
-  if (from === null || to === null) return null
-
-  const elapsed = to - from
-
-  return elapsed < 0 ? null : durationLabel(elapsed)
 }
 
 /** 结果行那半句——按**形态**出（见 `toolLines` 的头注）。`mark` 上**头一行的行尾**。 */

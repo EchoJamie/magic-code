@@ -113,8 +113,9 @@ function streaming(body: string, thinking: string): Painted {
       { marker: '› ', text: UTTERANCE },
       // 思考那一行 **U112 起带计时**（`（思考 12s）…`）——故认它要认**前半截**：
       // 写全 `（思考）` 的话，带上计时那一形一个都认不出来（而旧标本里写的正是全的）。
-      { marker: '（思考', text: thinking },
-      { marker: headOf(body), text: body, legacy: ['⏺ '] },
+      { marker: '│ ', text: thinking, legacy: ['（思考'] },
+      { marker: '  ' + headOf(body), text: body, legacy: ['⏺ ', headOf(body)] },
+      { marker: '● thinking...', text: 'thinking...' },
     ],
   }
 }
@@ -150,7 +151,8 @@ function shortTurn(): Painted {
       { marker: '› ', text: UTTERANCE },
       // 助手那一行**没有记号**了（U112）——按正文开头认（见 `headOf` 的注）；
       // `legacy` 是给改前录的那几份标本留的旧写法（见 `EntrySpec.legacy`）
-      { marker: headOf(body), text: body, legacy: ['⏺ '] },
+      { marker: '  ' + headOf(body), text: body, legacy: ['⏺ ', headOf(body)] },
+      { marker: '● thinking...', text: 'thinking...' },
     ],
   }
 }

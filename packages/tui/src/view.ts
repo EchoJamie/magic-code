@@ -1,3 +1,5 @@
+import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
+import { foldRound, type RoundTiming } from './round.ts'
 import type { MagicConfig } from '@magic/contracts'
 import type {StoredInput,InputPurpose} from '@magic/contracts'
 /**
@@ -128,6 +130,7 @@ export type UserImage = {
 }
 
 export type LogRow =
+  | { readonly kind: 'round'; readonly key: string; readonly timing: RoundTiming }
   // —— 会话内容（落库 · 可重建）——
   | {
       readonly kind: 'user'
@@ -1171,6 +1174,7 @@ export type Stashed = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  readonly round: RoundTiming | null
   /** 从现有审批队列投影；Esc 返回后仍可见。 */
   readonly pendingDecision?: PendingDecision | undefined
   readonly pendingInputs: readonly StoredInput[]
@@ -1264,18 +1268,6 @@ export type ShellView = {
    * 这一格是 `/exit` 的**等**（等的是「资源真退了」那条事实，不是「再按一下」）。
    */
   readonly leaving: boolean
-  /**
-   * **临走在终端上留的那一句**（U100）——`null` ＝ 没有。
-   *
-   * ⚠️ **为什么不放记录区**：记录区里的行由 `log.ts` **按列数硬折行**（真换行）——
-   * 而这一句是**要用户整行复制去敲的命令**：硬折行之后复制到的东西里带着换行 ＋ 续行缩进，
-   * 粘进终端就断成两条（实测：路径被腰斩、后半截自成一行）。故它**直接写字节**出去，
-   * 由**终端自己软折行**（软折行在终端看来仍是**同一逻辑行**，整行选中复制拿到的就是完整的
-   * 那一条）——见 `components/app.ts` 的 `useLeavingNote`。
-   *
-   * 造它的地方只有一处：三选里的「转到后台」（那一支要留**可复制的接回入口**，设计明文）。
-   */
-  readonly leavingNote: string | null
   /** 当前会话 id（还没有会话＝`null`）。 */
   readonly sessionId: SessionId | null
   /** 会话目录（`session.list` 的答复）。 */
@@ -1429,6 +1421,7 @@ export type ShellView = {
    * ⚠️ **只管动效、不管读数**：秒数照旧走（那是一个**读数**，停掉就是把屏上那句话弄成假的）。
    * 缺省 `false`（照常动）。
    */
+  readonly turnDuration: 'elapsed' | 'active'
   readonly reducedMotion: boolean
   /**
    * **这一摊在哪个工作区**（U112）——状态行「工作区」那一格的字。
@@ -1451,12 +1444,14 @@ export type ShellView = {
  */
 export type CreateViewInput = {
   readonly statusLine?: StatusLineConfig | undefined
+  readonly turnDuration?: 'elapsed' | 'active' | undefined
   readonly reducedMotion?: boolean | undefined
   readonly workspace?: string | null | undefined
 }
 
 export function createView(input: CreateViewInput = {}): ShellView {
   return {
+    round: null,
     rows: [],
     settled: [],
     // 开机那一页（此后每换一条会话 ＋1——见 `ShellView.page`）
@@ -1488,7 +1483,6 @@ export function createView(input: CreateViewInput = {}): ShellView {
     // `/exit` 还没喊过（U52）
     leaving: false,
     // 还没有要走时留的那一句（U100）
-    leavingNote: null,
     sessionId: null,
     catalog: [],
     runs: [],
@@ -1509,6 +1503,7 @@ export function createView(input: CreateViewInput = {}): ShellView {
     taskEntry: null,
     // **开机那三格**（U112）——配置里读到什么就是什么；没读到＝缺省（默认那条 / 照常动 / 不知道）
     statusLine: input.statusLine,
+    turnDuration: input.turnDuration ?? 'elapsed',
     reducedMotion: input.reducedMotion === true,
     workspace: input.workspace ?? null,
   }
@@ -1637,8 +1632,12 @@ export type PageTurn = 'new' | 'open'
 export function reduce(
   view: ShellView,
   event: KernelEvent,
-  options: { readonly turn?: PageTurn | null } = {},
+  options: { readonly turn?: PageTurn | null; readonly timing?: boolean } = {},
 ): ShellView {
+  if (options.timing !== false && isTurnTimingEvent(event) && (view.sessionId === null || event.session === view.sessionId)) {
+    const round = foldRound(view.round, event)
+    view = { ...view, round }
+  }
   switch (event.kind) {
     case 'model.delta':
       return reduceDelta(view, event.id, event.data, event.at)
@@ -1677,12 +1676,15 @@ export function reduce(
     case 'turn.end':
       // 轮收束 ⇒ ① 悬着的裁决作废（那件工具跑不成了）：**撤卡 ＋ 归还草稿**；
       //           ② 本轮的**行定局**——交给 `Static` 写一次，此后不再重绘（D11 护栏）
-      const settled = settle(undock(view))
+      const final = !event.data.continues && view.round?.end !== null && view.round !== null
+        && ![...view.settled, ...view.rows].some(row => row.key === view.round?.key)
+        ? { ...view, rows: [...view.rows, { kind: 'round' as const, key: view.round.key, timing: view.round }] } : view
+      const settled = settle(undock(final))
       return patchStatus(settled, {
-        state: event.data.reason === 'error' ? 'error' : 'idle',
+        state: event.data.continues ? 'working' : event.data.reason === 'error' ? 'error' : 'idle',
         amount: null,
         // ⚠️ `undock` 在前：卡收了之后 `dock` 回到输入行 ⇒ 这一格**才**归本状态
-        hint: hintKeepingDock(settled, HINT_IDLE),
+        hint: hintKeepingDock(settled, event.data.continues ? HINT_WORKING : HINT_IDLE),
       })
 
     case 'agent.state':
@@ -1965,17 +1967,6 @@ function closeThinking(view: ShellView): ShellView {
   return replaceLast(view, { ...last, flowing: false })
 }
 
-/**
- * 屏上**有没有一段正在流的思考**（U112）——两个用处，与 `hasRunningTool` 那条一模一样：
- * ① 活壳那支按需的钟要不要醒着（计时在走）；② 那一段要不要动。
- *
- * ⚠️ **只看 `rows`**（还在变的那些）——已定局的行进了 `<Static>`，写一次就不再重绘，
- * 拿它去驱动动效等于对着空气画（同 `breathingOf` 那条「只看真画出来的那几行」）。
- */
-export function hasRunningThinking(view: ShellView): boolean {
-  return view.rows.some((row) => row.kind === 'thinking' && row.flowing)
-}
-
 /** 工具调用增量——按供应商侧调用 id 分组；无 id 时并进最老的未配对工具行。 */
 function appendToolFragment(
   view: ShellView,
@@ -2243,6 +2234,7 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
   const after = turned
     ? {
         ...base,
+        round: null,
         rows: [],
         // **开一条新的 ⇒ 这一页从字标起**（幂等：`bannerFirst` 先把已有的滤掉再放一个）。
         // 别的路（`/resume`）给的是空的一页——**别在这儿替它补一个**。
@@ -2431,15 +2423,28 @@ function appendSettled(view: ShellView, row: LogRow): ShellView {
  * 而这一跳是「往**已经开着的那一页**里填历史」——页号一动，`Static` 就重挂、这一页整批行
  * 又写一遍（甲→乙一次切换实测 4 份字标，就是这么来的）。**别在这一处动页号。**
  */
-export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean } = {}): ShellView {
+export function rebuild(view: ShellView, entries: readonly Entry[], options: { readonly collapseTools?: boolean; readonly timing?: readonly TurnTimingEvent[] } = {}): ShellView {
   // **计划那一份也从这同一批条目里取**（U34）：切会话 / 重开之后清单要跟着回来，
   // 而它一直是会话记录的一部分（设计：读取、呈现与上下文同读这份来源）。
   const plan = planFromEntries(entries)
   const fresh = plan.entry !== null && (view.plan.entry === null || plan.entry > view.plan.entry)
 
+  let round: RoundTiming | null = null
+  const rounds: RoundTiming[] = []
+  for (const event of options.timing ?? []) {
+    const next = foldRound(round, event)
+    if (next !== null && next !== round && next.end !== null) rounds.push(next)
+    round = next
+  }
+  // 读历史期间新到的事实不能被较旧的读面水位覆盖。
+  if (view.round !== null && (round === null || view.round.lastId > round.lastId)) round = view.round
+  for (const row of [...view.settled, ...view.rows]) {
+    if (row.kind === 'round' && !rounds.some(one => one.key === row.key)) rounds.push(row.timing)
+  }
   return {
     ...view,
-    settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools)],
+    settled: [...pageHeaderOf(view), ...rebuildRows(entries, options.collapseTools, rounds)],
+    round,
     rows: [],
     // **比手上的新才落**——这一趟读库比实时事件慢，晚到的那一份旧内容不许把
     // 已经上屏的新计划（或清空）盖回去（与 `withPlan` 同一把尺子）。
@@ -2455,12 +2460,16 @@ export function rebuild(view: ShellView, entries: readonly Entry[], options: { r
  * 「末尾 `RECENT_GROUPS` 组展开」——最近那几组工具保持逐条行，更早的组并成摘要
  * （原型 · 场景 12；收的判据见 `collapseToolGroups`）。
  */
-function rebuildRows(entries: readonly Entry[], collapseTools = true): readonly LogRow[] {
+function rebuildRows(entries: readonly Entry[], collapseTools = true, rounds: readonly RoundTiming[] = []): readonly LogRow[] {
   const rows: LogRow[] = []
   /** 待配对的那条工具行在 `rows` 里的下标（`-1` ＝ 没有）。 */
   let pendingAt = -1
 
-  for (const entry of entries) {
+  const timeline = [...entries, ...rounds.map(timing => ({ kind: 'round' as const, id: timing.lastId, timing }))].sort((a, b) => a.id - b.id)
+  for (const entry of timeline) {
+    if (entry.kind === 'round') {
+      rows.push({ kind: 'round', key: entry.timing.key, timing: entry.timing }); pendingAt = -1; continue
+    }
     if (entry.kind === 'tool-call') {
       const payload = entry.payload as { readonly name?: string; readonly args?: unknown } | undefined
       rows.push({
@@ -4117,7 +4126,7 @@ export type ConfigPaths = {
 export type ConfigItem = {
   /** 选定之后进哪一项——落在 `PickerRow.value` 上（与 `modelActionRows` 同一姿势）。 */
   readonly key: 'model' | 'grants'
-     | 'mcp' | 'paths' | 'statusLine' | 'motion'
+     | 'mcp' | 'paths' | 'statusLine' | 'motion' | 'turnDuration'
   readonly name: string
 }
 
@@ -4145,6 +4154,7 @@ export const CONFIG_ITEMS: readonly ConfigItem[] = [
   //   （没有可进的入口），仍旧垫底。
   { key: 'statusLine', name: '状态行' },
   { key: 'motion', name: '减少动效' },
+  { key: 'turnDuration', name: '本轮耗时' },
   { key: 'paths', name: '数据目录与工作区根' },
 ]
 
@@ -4262,6 +4272,7 @@ export function configRows(input: {
   readonly mcp: McpCatalog | null
   /** 状态行那两格（U112）——`undefined` ＝ 还没配过（默认那条）。 */
   readonly statusLine: StatusLineConfig | undefined
+  readonly turnDuration?: 'elapsed' | 'active'
   readonly reducedMotion: boolean
   /** 正在筛的词——空串＝全表。 */
   readonly filter: string
@@ -4273,13 +4284,14 @@ export function configRows(input: {
     paths: configPathsValue(input.paths),
     statusLine: configStatusLineValue(input.statusLine),
     motion: input.reducedMotion ? '已开' : '已关',
+    turnDuration: input.turnDuration === 'active' ? '扣除等待用户' : '完整经过时间',
   }
 
   const needle = input.filter.trim().toLowerCase()
 
   return CONFIG_ITEMS.filter((item) => hits(needle, item.name, values[item.key])).map((item) => ({
     label: paddedLabel(item.name),
-    meta: `${values[item.key]} · ${item.key==='motion'?'Enter 切换':item.key==='paths'?'Enter 查看路径':'Enter 进入'}`,
+    meta: `${values[item.key]} · ${(item.key==='motion'||item.key==='turnDuration')?'Enter 切换':item.key==='paths'?'Enter 查看路径':'Enter 进入'}`,
     // 这一屏没有「当前那一条」这回事（四行都是入口，不是候选项）
     current: false,
     value: item.key,

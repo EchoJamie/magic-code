@@ -147,8 +147,8 @@ describe('U85 · 甲 · 清单与滚动记录分得开', () => {
     const withPlan = await stage.screen({ columns: 200, rows: 40 })
 
     // 上沿线**还在原来那一行**（清单没把它往下推——它现在画在线的这一侧）
-    expect(rulesOf(withPlan)[0]).toBe((rulesOf(bare)[0] ?? 0) + 1)
-    expect(withPlan.record.filter(line => !line.text.includes('一步')).map((line) => line.text)).toEqual(bare.record.map((line) => line.text))
+    expect(rulesOf(withPlan)[0]).toBe((rulesOf(bare)[0] ?? 0) + 2)
+    expect(withPlan.record.filter(line => !line.text.includes('一步')).map((line) => line.text)).toEqual([...bare.record.map((line) => line.text), ''])
     expect(nonBlank(withPlan)).toBe(nonBlank(bare) + 1)
   })
 

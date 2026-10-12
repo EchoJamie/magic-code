@@ -13,7 +13,7 @@ export type SettingsAction =
   | { readonly type: 'model.clear'; readonly choice: string }
   | { readonly type: 'model.override'; readonly provider: string; readonly model: string; readonly override: ProviderModelOverride | null }
   | { readonly type: 'model.refresh'; readonly provider: string }
-  | { readonly type: 'prefs.set'; readonly statusLine?: StatusLineConfig; readonly reducedMotion?: boolean }
+  | { readonly type: 'prefs.set'; readonly statusLine?: StatusLineConfig; readonly reducedMotion?: boolean; readonly turnDuration?: import('./config.ts').TurnDurationMode }
   | { readonly type: 'mcp.save'; readonly name: string; readonly server: McpServerConfig; readonly secrets: Readonly<Record<string, string | null>> }
   | { readonly type: 'mcp.remove'; readonly name: string }
   | { readonly type: 'sources.set'; readonly source: 'rules.sources' | 'rules.linkSources' | 'skills.sources'; readonly paths: readonly string[] }

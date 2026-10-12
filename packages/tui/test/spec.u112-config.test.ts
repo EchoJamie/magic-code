@@ -101,6 +101,7 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
       '外部工具',
       '状态行',
       '减少动效',
+      '本轮耗时',
       '数据目录与工作区根',
     ])
     // **明写「默认」**：「你没配」与「你配的正好等于默认」在这一格上分得开
@@ -188,4 +189,34 @@ describe('状态行可配 · 入口走 /config（U112）', () => {
 
     expect(rowsOf(stage).find((row) => row.label.trim() === '状态行')?.meta).toBe('模型 · 会话名 · Enter 进入')
   })
+})
+
+
+test('U125 本轮耗时沿 prefs 回执切换，保存失败保持原口径', () => {
+  const stage = openConfig()
+  enter(stage, '本轮耗时')
+  expect(sent(stage)).toEqual({ type: 'prefs.set', turnDuration: 'active' })
+  expect(stage.shell.getView().turnDuration).toBe('elapsed')
+  stage.feed([event('prefs.state', { turnDuration: 'elapsed', note: '保存失败' })])
+  expect(stage.shell.getView().turnDuration).toBe('elapsed')
+  enter(stage, '本轮耗时')
+  stage.feed([event('prefs.state', { turnDuration: 'active' })])
+  expect(rowsOf(stage).find(row => row.value === 'turnDuration')?.meta).toBe('扣除等待用户 · Enter 切换')
+  enter(stage, '本轮耗时')
+  expect(sent(stage)).toEqual({ type: 'prefs.set', turnDuration: 'elapsed' })
+  stage.shell.dispose()
+})
+
+
+test('U125 配置读数按种类到齐，重复授权回话不提前开屏、不关闭配置', () => {
+  const stage = createStage()
+  stage.type('/config '); stage.press({kind:'enter'})
+  const grants = event('grants.catalog', {workspace:ROOT, grants:[], stale:[], decisions:{total:0,uncovered:0,vetoed:0}, history:{total:0,auto:0,kernel:0}})
+  stage.feed([event('model.catalog',{entries:[]}), grants, grants])
+  expect(stage.shell.getView().dock.kind).toBe('input')
+  stage.feed([event('mcp.catalog',{servers:[]})])
+  expect(rowsOf(stage).some(row=>row.value==='turnDuration')).toBe(true)
+  stage.feed([grants])
+  expect(rowsOf(stage).some(row=>row.value==='turnDuration')).toBe(true)
+  stage.shell.dispose()
 })

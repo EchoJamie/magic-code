@@ -175,7 +175,7 @@ export async function showScreen(
   state: ScreenState = screenOpened(),
 ): Promise<Frame> {
   const rows = [...view.settled, ...view.rows]
-  const layout = screenLayout(rows, { columns: options.columns, screenRows: options.rows })
+  const layout = screenLayout(rows, { columns: options.columns, screenRows: options.rows, turnDuration: view.turnDuration })
   const bytes = screenFrame({ layout, state, columns: options.columns, hits: matchesOf(layout.lines, state.term) })
 
   return frameOf(await screenCells(bytes, options), options.columns)

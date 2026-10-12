@@ -179,6 +179,7 @@ describe('`/config` · 开屏', () => {
       '外部工具',
       '状态行', // U112 加的两行（状态行可配 · 减少动效）——都排在末行那份账之前
       '减少动效',
+      '本轮耗时',
       '数据目录与工作区根',
     ])
     expect(statusHintOf(stage)).toBe('')
@@ -273,7 +274,7 @@ describe('`/config` · 筛', () => {
     expect(hintOf(stage)).toBe('筛选「授」——接着打收窄，退格删一个字\n↑↓ 选择 · 输入筛词 · Esc 返回')
     stage.press(BACKSPACE)
 
-    expect(labelsOf(stage)).toHaveLength(6)
+    expect(labelsOf(stage)).toHaveLength(7)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
     expect(statusHintOf(stage)).toBe('') // 抽屉照旧开着
   })
@@ -301,7 +302,7 @@ describe('`/config` · 筛', () => {
 
     // 再开一次 ⇒ 全表（开一屏就是一屏新的，筛词不跟着活下来）
     open(stage)
-    expect(labelsOf(stage)).toHaveLength(6)
+    expect(labelsOf(stage)).toHaveLength(7)
     expect(hintOf(stage)).toBe(HINT_PICKER_CONFIG)
   })
 })
@@ -355,7 +356,7 @@ describe('`/config` · 选中即进那一屏', () => {
   test('「数据目录与工作区根」⇒ 自己那一屏：一块输出，报的是**没缩过的全路径**', () => {
     const stage = live()
     open(stage)
-    for (let step = 0; step < 5; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
+    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
     stage.press(ENTER)
 
     // 收屏（回输入行），记录区里留一块
@@ -373,7 +374,7 @@ describe('`/config` · 选中即进那一屏', () => {
     // 列表那一格报个数（一格里摆不下两条全路径），它自己那一屏逐条写全
     expect(valueOf(stage, '数据目录与工作区根')).toBe('~/.magic · 2 个根 · Enter 查看路径')
 
-    for (let step = 0; step < 5; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
+    for (let step = 0; step < 6; step += 1) stage.press(DOWN) // 末行（U112 起是第 7 行）
     stage.press(ENTER)
     expect(pickerOf(stage)?.detail).toEqual([
       `  数据目录　${DATA_DIR}`,
@@ -391,7 +392,7 @@ describe('`/config` · 选中即进那一屏', () => {
 
     stage.press(LEFT)
     expect(pickerOf(stage)).toEqual(expect.objectContaining({ source: 'config' }))
-    expect(labelsOf(stage)).toHaveLength(6)
+    expect(labelsOf(stage)).toHaveLength(7)
   })
 })
 
@@ -447,7 +448,7 @@ describe('`/config` · 那一格写什么（纯函数）', () => {
   })
 
   test('筛词空＝全表（七行）；筛不中＝空表（退到空就是全表）', () => {
-    expect(configRows(base)).toHaveLength(6)
+    expect(configRows(base)).toHaveLength(7)
     expect(configRows({ ...base, filter: '没有这一项' })).toEqual([])
   })
 

@@ -1,3 +1,4 @@
+import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
 import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
 import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
 import { DiagnosticLog } from '../diagnostic-log.ts'
@@ -936,7 +937,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   function publishPreferences(except?: ClientConn): void {
     const config = loadConfig({ magic: options.magic }).config
     for (const conn of clients.values()) if (conn !== except) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
-      ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), reducedMotion: config.motion?.reduced === true,
+      ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
     } } })
   }
   /** 连接真源仍是 clients；执行者结束不影响正在查看该会话的终端。 */
@@ -1284,10 +1285,14 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     try {
     let entries: Entry[] = []
     const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
-    for await (const event of store.serviceFor(session).readEvents(session)) if(event.kind==='input.local') inputs.push(event)
+    const timing: TurnTimingEvent[] = []
+    for await (const event of store.serviceFor(session).readEvents(session)) {
+      if(event.kind==='input.local') inputs.push(event)
+      if(isTurnTimingEvent(event)) timing.push(event)
+    }
     const send = (done: boolean): void => {
       conn.link.send({ t: 'ev', gen: null, event: {
-        id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done?{inputs}:{}) },
+        id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done?{inputs,timing}:{}) },
       } })
       entries = []
     }
@@ -1315,10 +1320,10 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         const outcome = await setPrefs({ path: loaded.path, expectedStamp: loaded.stamp, request: command })
         if (outcome.ok) publishPreferences(conn)
         const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
-        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效'].filter(Boolean).join(' · ')
+        const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效', command.turnDuration === undefined ? '' : '本轮耗时'].filter(Boolean).join(' · ')
         conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
           ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }),
-          reducedMotion: config.motion?.reduced === true,
+          turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
           note: outcome.ok ? `已更新：${changed}` : `${changed}没改成——${outcome.reason}`,
         } } })
       } catch (error) { conn.link.send({ t: 'line', text: `界面设置没改成：${error instanceof Error ? error.message : String(error)}` }) }

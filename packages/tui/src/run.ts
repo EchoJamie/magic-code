@@ -43,6 +43,7 @@ export type RunTuiOptions = {
    * 另有一条来路：`/model` 跑过一次之后由 `model.catalog` 定（那一路要**换过模型**才对得上）。
    */
   readonly statusLine?: ShellOptions['statusLine']
+  readonly turnDuration?: 'elapsed' | 'active' | undefined
   readonly reducedMotion?: boolean | undefined
   readonly contextWindow?: number | null | undefined
   /**
@@ -130,6 +131,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   const shell = createShell(options.transport, {
     statusLine: options.statusLine,
     reducedMotion: options.reducedMotion,
+    turnDuration: options.turnDuration,
     contextWindow: options.contextWindow ?? null,
     workspaceRoots: options.workspaceRoots,
     dataDir: options.dataDir,
@@ -199,6 +201,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
   // ⚠️ **`unmounted` 那道闸不能省**：`end` 与 `close` 前后脚（实测 1ms 内），信号还可能再来
   //    一下——`app.unmount()` 只该走一次（重入会让 Ink 抛「已经卸载」一类的话，把真因盖掉）。
   let unmounted = false
+  let terminalGone = false
 
   /** 真收摊——**只走一遍**（`unmounted` 守门）。 */
   const closeOut = (): void => {
@@ -216,6 +219,7 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
    * 只是给旧分工留个壳）。断流这一跳从此只剩：**终端这一头没人了 ⇒ 收摊**。
    */
   const onTerminalGone = (): void => {
+    terminalGone = true
     closeOut()
   }
 
@@ -261,10 +265,16 @@ export async function runTui(options: RunTuiOptions): Promise<TuiHandle> {
     throw error
   }
 
+  let exitPrinted = false
   return {
     waitUntilExit: async () => {
       try {
         await app.waitUntilExit()
+        if (!terminalGone && !exitPrinted) {
+          exitPrinted = true
+          const note = shell.exitNote()
+          if (note !== null) stdout.write(`\n${note}\n`)
+        }
       } finally {
         unhook()
         shell.dispose()

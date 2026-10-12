@@ -899,7 +899,7 @@ describe('D14 · 记录区渲染 Markdown', () => {
     const texts = textsOf(lines)
 
     // ⚠️ **U112 换锚**：助手正文的 `⏺ ` 标记退场 ⇒ 正文**顶格**（原锚首行以 `⏺ ` 起头）。
-    expect(texts).toEqual(['这是 Magic Code 的 验收脚本'])
+    expect(texts).toEqual(['  这是 Magic Code 的 验收脚本'])
     expect(texts.join('')).not.toContain('**')
     expect(texts.join('')).not.toContain('`')
 
@@ -919,7 +919,7 @@ describe('D14 · 记录区渲染 Markdown', () => {
     //    （原锚：正文与所有折行从第 3 列起，markdown 自己的缩进叠在那 2 列基线上）——
     //    现在**正文从第 1 列起**，hang 只剩 markdown 自己那份（代码块 2 列、列表符号照原样）。
     //    **一致悬挂这条规格本身没变**（首行与续行同一起点），变的是那个起点。
-    expect(texts).toEqual(['这一段在说什么', '', '  const a = 1', '', '- 第一条', '1. 有序'])
+    expect(texts).toEqual(['  这一段在说什么', '', '    const a = 1', '', '  - 第一条', '  1. 有序'])
     expect(texts.join('\n')).not.toContain('```')
     expect(texts.join('\n')).not.toContain('#')
   })
@@ -931,18 +931,18 @@ describe('D14 · 记录区渲染 Markdown', () => {
     //    标记整个退场之后那条断言恒真（量不出东西）⇒ 改成量**它原来想问的那件事**：
     //    正文行**顶格起**（不带任何前缀格），而续行只按**这一行自己的**悬挂缩进挂。
     expect(texts).toHaveLength(2)
-    expect(texts[0]?.startsWith('1. 甲')).toBe(true) // 第 1 列就是正文（没有标记那两格）
+    expect(texts[0]?.startsWith('  1. 甲')).toBe(true) // 第 1 列就是正文（没有标记那两格）
     // D20：助手基线 0 列 ＋ 列表「按标记宽度」（`1. ` ＝ 3 列）⇒ 续行从第 4 列起。
-    expect(texts[1]?.startsWith('   ')).toBe(true)
-    expect(texts[1]?.startsWith('    ')).toBe(false)
+    expect(texts[1]?.startsWith('     ')).toBe(true)
+    expect(texts[1]?.startsWith('      ')).toBe(false)
   })
 
   test('**流式中间帧**——未闭合的 `**` / 反引号 / 围栏**先按字面**（不闪不跳）', () => {
     // 「未闭合的先按字面」是 D14 定死的那条细节（**现在还钉它**）；
     // 非首行的悬挂归 D20（U112 后基线是 0 列，hang 只剩 markdown 自己那份）。
-    expect(textsOf(bodyOf('这是 **Magic Co'))).toEqual(['这是 **Magic Co'])
-    expect(textsOf(bodyOf('跑 `m02-real'))).toEqual(['跑 `m02-real'])
-    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['```ts', 'const a = 1'])
+    expect(textsOf(bodyOf('这是 **Magic Co'))).toEqual(['  这是 **Magic Co'])
+    expect(textsOf(bodyOf('跑 `m02-real'))).toEqual(['  跑 `m02-real'])
+    expect(textsOf(bodyOf('```ts\nconst a = 1'))).toEqual(['  ```ts', '  const a = 1'])
   })
 
   test('**整屏取景**——帧上见不到 `**` 与反引号（D14 的现象本身）', () => {
@@ -1015,7 +1015,7 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
   // ⚠️ **U112 换锚**：助手正文基线由 2 列改成 **0 列**（`⏺ ` 标记退场，正文**顶格**）。
   //    D20 那条规格本身（**首行与所有折行同一起点、一致悬挂**）一字未改——变的是起点。
   test('D20 · 助手正文**每一行都从第 1 列起**（一致悬挂）', () => {
-    expect(textsOf(bodyOf('第一行\n第二行\n第三行'))).toEqual(['第一行', '第二行', '第三行'])
+    expect(textsOf(bodyOf('第一行\n第二行\n第三行'))).toEqual(['  第一行', '  第二行', '  第三行'])
   })
 
   test('D20 · 用户消息的折行同样悬挂（`› ` 也占 2 列）', () => {
@@ -1028,11 +1028,11 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
   })
 
   test('D20 · 代码块挂在基线上（U112 后基线 0 ＋ 它自己的缩进 2）', () => {
-    expect(textsOf(bodyOf('看：\n\n```\nx\n```'))).toEqual(['看：', '', '  x'])
+    expect(textsOf(bodyOf('看：\n\n```\nx\n```'))).toEqual(['  看：', '', '    x'])
   })
 
   test('D19 · 正文**内部**的段落空行一条不删（「首尾裁、中间留」）', () => {
-    expect(textsOf(bodyOf('甲\n\n乙\n\n丙'))).toEqual(['甲', '', '乙', '', '丙'])
+    expect(textsOf(bodyOf('甲\n\n乙\n\n丙'))).toEqual(['  甲', '', '  乙', '', '  丙'])
   })
 
   test('D19 · 段落空行**在屏上真的占一行**（走真 Ink，不是纯函数）', () => {
@@ -1046,10 +1046,10 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
     //    **新锚**：**从正文那一行起**往下数——不数死偏移，字标占几行（随宽度变）都不影响这条。
     // ⚠️ **U112 换锚**：正文顶格了（`⏺ ` 退场）⇒ 锚由 `⏺ 甲` 变 `甲`、续行由 `  乙` 变 `乙`。
     //    这一条钉的东西（**段落空行在屏上真的占一行**）一字未变。
-    const at = lines.indexOf('甲')
+    const at = lines.indexOf('  甲')
     expect(at).toBeGreaterThanOrEqual(0)
     expect(lines[at + 1]?.trim()).toBe('') // 空行**在**
-    expect(lines[at + 2]).toBe('乙')
+    expect(lines[at + 2]).toBe('  乙')
   })
 
   test('**分段行**（用户消息之前那一行）真的占一行——空段那条路的哨兵（原型 · 密度）', () => {
@@ -1084,7 +1084,7 @@ describe('D18 / D19 / D20（缺陷轮 VI）', () => {
   })
 
   test('D19 · 首尾的空行仍然不渲染（那是模型的格式噪声）', () => {
-    expect(textsOf(bodyOf('\n\n甲乙\n\n'))).toEqual(['甲乙'])
+    expect(textsOf(bodyOf('\n\n甲乙\n\n'))).toEqual(['  甲乙'])
   })
 })
 
@@ -1211,7 +1211,7 @@ describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', ()
 
     // 只有一条显示行带正文；且它**就是正文本身**（U112 后正文顶格，不再带 `⏺ ` 标记）
     expect(reply).toHaveLength(1)
-    expect(reply[0]?.segments.map((piece) => piece.text).join('')).toBe('甲乙丙丁')
+    expect(reply[0]?.segments.map((piece) => piece.text).join('')).toBe('  甲乙丙丁')
     // 首尾的空行**不渲染**（密度）
     // ⚠️ **U67 补一句「不是分段那一行」**（`line.spacer !== true`）：这一句问的是**正文里**
     //    有没有空行（D13 的形），而**分段行**（块与块之间那一行）本来就是一条空行、且
@@ -1230,7 +1230,7 @@ describe('D13 · 首行不吞换行（正文以 `\\n\\n` 开头那一形）', ()
     const lines = logLines(app.shell.getView().rows, { columns: 96, expanded: false })
     const texts = lines.map((line) => line.segments.map((piece) => piece.text).join(''))
 
-    expect(texts[0]).toBe('第一段')
+    expect(texts[0]).toBe('  第一段')
     expect(texts.some((line) => line.includes('第二段'))).toBe(true)
   })
 })

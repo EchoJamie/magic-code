@@ -73,7 +73,7 @@ export type ScreenLayout = {
  */
 export function screenLayout(
   rows: readonly LogRow[],
-  options: { readonly columns: number; readonly screenRows: number },
+  options: { readonly columns: number; readonly screenRows: number; readonly turnDuration?: 'elapsed' | 'active' | undefined },
 ): ScreenLayout {
   const columns = Math.max(4, options.columns)
   const screenRows = options.screenRows
@@ -89,7 +89,7 @@ export function screenLayout(
     if (row.kind === 'user' && rowDrawn(row, true)) turns.push(lines.length + (spaced ? 1 : 0))
     // ⚠️ 直接问 `rowLines`（带上**整列**那趟走出来的 `spaced`）——`logLines([row])` 会**自己
     //    再走一遍单条的分段账**（单条恒为「不留」），那样块与块之间那一整行就全没了。
-    lines.push(...rowLines(row, { columns, expanded: true, spaced }))
+    lines.push(...rowLines(row, { columns, expanded: true, spaced, turnDuration: options.turnDuration }))
 
     // **材料行**（U110）——紧跟在它那条交代后面（「材料按它在交代里的原位置出现」：
     // 每一处在正文里的位置由那句原话自己写着，这一行是**对那一处的认领**）。

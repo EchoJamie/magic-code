@@ -1073,6 +1073,7 @@ export function assemble(options: AssembleOptions): Assembly {
   let configuredModels: MagicConfig['models'] = loaded.config.models
 
   let statusLineConfig: StatusLineConfig | undefined = loaded.config.statusLine
+  let turnDuration = loaded.config.turnDuration ?? 'elapsed'
   let reducedMotion = loaded.config.motion?.reduced === true
 
 
@@ -2263,16 +2264,18 @@ export function assemble(options: AssembleOptions): Assembly {
       // 保存成功后更新这两项读数。
       if (request.statusLine !== undefined) statusLineConfig = request.statusLine
       if (request.reducedMotion !== undefined) reducedMotion = request.reducedMotion
+      if (request.turnDuration !== undefined) turnDuration = request.turnDuration
     }
 
     const changed: string[] = []
     if (request.statusLine !== undefined) changed.push('状态行')
     if (request.reducedMotion !== undefined) changed.push('动效')
+    if (request.turnDuration !== undefined) changed.push('本轮耗时')
 
     sink.emit(
       requireActiveStamper().stamp('prefs.state', {
         ...(statusLineConfig === undefined ? {} : { statusLine: statusLineConfig }),
-        reducedMotion,
+        reducedMotion, turnDuration,
         note: outcome.ok
           ? `已更新：${changed.join(' · ')}`
           : `${changed.join(' · ')}没改成——${outcome.reason}`,
@@ -2459,6 +2462,7 @@ export function assemble(options: AssembleOptions): Assembly {
     refreshSettings() {
       const current = loadConfig({ path: loaded.path, magic })
       statusLineConfig = current.config.statusLine
+      turnDuration = current.config.turnDuration ?? 'elapsed'
       reducedMotion = current.config.motion?.reduced === true
       refreshGrants()
       pendingHits.clear()

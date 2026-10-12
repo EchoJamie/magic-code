@@ -92,7 +92,7 @@ describe('组件规格 · 行的标记与颜色', () => {
 
     const frame = await stage.screen()
 
-    expect(cellAt(frame, '我先列一下。', 0)).toMatchObject({ text: '我', fg: null }) // 第 1 格就是正文
+    expect(cellAt(frame, '我先列一下。', 2)).toMatchObject({ text: '我', fg: null }) // 第 1 格就是正文
     // 「正文原色」＝**不染色**（不上任何语义色）
     expect(bodyCells(frame, '我先列一下。').every((cell) => cell.fg === null)).toBe(true)
   })
@@ -272,10 +272,10 @@ describe('标记与悬挂缩进（原型只画了单行，这条补上）', () =
     const tail = frame.textAt(head + 1)
 
     // 首行：正文就在第 1 列（行首没有标记占位）
-    expect(frame.textAt(head).startsWith('甲')).toBe(true)
+    expect(frame.textAt(head).startsWith('  甲')).toBe(true)
     // 折行：也从第 1 列起，一格不差
-    expect(tail.startsWith('甲')).toBe(true)
-    expect(tail.startsWith(' 甲')).toBe(false)
+    expect(tail.startsWith('  甲')).toBe(true)
+    expect(tail.startsWith('   甲')).toBe(false)
   })
 
   test('用户——`› ` 同样占 2 列 ⇒ 折行也从第 3 列起', async () => {
@@ -379,7 +379,7 @@ describe('密度（记录区不靠空行分层）', () => {
     //    真跑时发现「我输入之后与模型回复之间没有空行」）。**新锚**：把「之间」补全之后
     //    每一处交界各一行——`›` 与 `⏺` 之间、`⏺` 与下一条 `›` 之间。
     // ⚠️ **U112**：助手那两条正文不再带 `⏺ `（正文顶格）——空行那几笔一字未动。
-    expect(texts).toEqual(['› 第一句', '', '答一', '', '› 第二句', '', '答二'])
+    expect(texts).toEqual(['› 第一句', '', '  答一', '', '› 第二句', '', '  答二'])
   })
 
   test('**用户之后直接是工具**（U67 · 模型一句话都没说就调工具）——照样留一行', async () => {
@@ -414,7 +414,7 @@ describe('密度（记录区不靠空行分层）', () => {
 
     // ⚠️ 同上一处：`record` → `content`（原锚 / 为何变 / 新锚 见上）——这一句问的是「思考占几行」
     const folded = await stage.screen()
-    expect(folded.content.map((line) => line.text)).toEqual(['（思考）第一行'])
+    expect(folded.content.map((line) => line.text)).toEqual(['│ 第一行'])
 
     // ⚠️ **U110 起「展开」在查看那一屏上**（内联那一半恒折一行）——那三行去那一屏看。
     //    这一屏的排法与内联那一条**同一支**（`rowLines` 的展开态），故「几行、哪几行」
@@ -422,9 +422,9 @@ describe('密度（记录区不靠空行分层）', () => {
     const opened = await showScreen(stage.shell.getView())
     // 用 `screen.lines` ＋ 按锚点切片（不是 `content`——那一屏没有那两条线，切法不适用）
     const rows = opened.screen.lines.map((line) => line.trim())
-    const at = rows.indexOf('（思考）第一行')
+    const at = rows.indexOf('│ 第一行')
 
-    expect(rows.slice(at, at + 3)).toEqual(['（思考）第一行', '第二行', '第三行'])
+    expect(rows.slice(at, at + 3)).toEqual(['│ 第一行', '│ 第二行', '│ 第三行'])
   })
 
   test('**空内容不渲染**——只发工具调用、不吐正文的那一轮不出一行', async () => {
@@ -486,7 +486,7 @@ describe('记录区的三类行（后两类不重建）', () => {
     //    字标是装帧、不在会话内容里
     // U67：两条之间那一整行照留（重建回来的是**两块**，不是一段）
     // U112：助手那条正文不再带 `⏺ `（正文顶格）
-    expect(after.content.map((line) => line.text)).toEqual(['› 看看有什么', '', '好。']) // 会话内容回来了
+    expect(after.content.map((line) => line.text)).toEqual(['› 看看有什么', '', '  好。']) // 会话内容回来了
     expect(after.has('使用帮助')).toBe(false) // 命令输出：屏上痕迹，不重建
     expect(after.has('已选择')).toBe(false) // 命令回执：屏上痕迹，不重建
   })

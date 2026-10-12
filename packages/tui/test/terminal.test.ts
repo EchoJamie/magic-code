@@ -24,7 +24,8 @@ function entriesOf(fixture: string): readonly EntrySpec[] {
   const scenario = scenarioOf(fixture)
   if (scenario === undefined) throw new Error(`标本 ${fixture} 没有对应的场景——取不到原文账单`)
 
-  return scenario.entries
+  // 历史标本录制于整轮 loading 引入之前；保留原有内容判据。
+  return scenario.entries.filter(entry => entry.marker !== '● thinking...')
 }
 
 // —— 终端层自身：它得真会看屏 ——

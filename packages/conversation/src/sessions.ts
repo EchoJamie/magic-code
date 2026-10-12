@@ -1,3 +1,4 @@
+import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
 import type { InputManage } from '@magic/contracts'
 /**
  * **会话主面** —— `ConversationService` 的落地（技术方案 · 会话与多会话）。
@@ -309,11 +310,15 @@ export function createConversationService(deps: SessionHostDeps): SessionHost {
     }
 
     const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
-    for await (const event of deps.records.readEvents(target)) if(event.kind==='input.local')inputs.push(event)
+    const timing: TurnTimingEvent[] = []
+    for await (const event of deps.records.readEvents(target)) {
+      if(event.kind==='input.local') inputs.push(event)
+      if(isTurnTimingEvent(event)) timing.push(event)
+    }
 
     // 末块：`done: true`（一条都没有时也发——「这条会话是空的」是要说清楚的事实，
     // 否则外壳等不到收尾，屏上永远停在「正在重建」）
-    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs }))
+    deps.sink.emit(stamper.stamp('session.history', { session: target, entries: batch, done: true, inputs, timing }))
     void seen
   }
 
