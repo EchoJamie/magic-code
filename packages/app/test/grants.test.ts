@@ -46,8 +46,6 @@ import { eventsOfKind, makeStage, type Stage } from './support.ts'
 const WEB_FETCH_TURN = {
   toolCalls: [{ name: 'web_fetch', args: { url: 'https://example.com/a', prompt: '看什么' } }],
 }
-/** 一条必闸命令——`rm` 归删除（不可逆），且工作区外／内都入必闸清单。 */
-const GATED_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
 
 /** 裸接控制面——订阅事件 ＋ 按需答复。 */
 function bareShell(assembly: Assembly) {
@@ -109,14 +107,6 @@ function writeGrants(stage: Stage, file: unknown): void {
   const path = grantsPathOf(stage)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, JSON.stringify(file))
-}
-
-/** 分节键＝**默认根的规范形**——沙地路径在 macOS 上多半不是规范形，故先装配一次问它。 */
-function sectionKeyOf(stage: Stage): string {
-  const probe = stage.assemble({ grantsFile: grantsPathOf(stage) })
-  const key = probe.workspaceRoots[0] as string
-  probe.close()
-  return key
 }
 
 /**
@@ -183,7 +173,7 @@ describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话�
       finish(first.assembly, first.shell)
 
       // 第二趟：**新装配**（＝关掉再开）——同一份 grants.json，同一个工作区
-      const second = stage.assemble({ grantsFile: grantsPathOf(stage) })
+      const second = stage.assemble({ grantsFile: grantsPathOf(stage), turns: [WEB_FETCH_TURN, { text: '好' }] })
       const shell2 = bareShell(second)
       second.shell.send({ type: 'input.submit', text: '再跑一下' })
       await until(() => eventsOfKind(shell2.events, 'tool.result').length >= 1, '第二趟跑完')
@@ -193,28 +183,6 @@ describe('U22 · 「总是允许」的落点＝工作区（落盘 ＋ 跨会话�
         'auto',
       ])
       finish(second, shell2)
-    } finally {
-      stage.dispose()
-    }
-  })
-
-  test('**必闸禁区凌驾其上**——最宽的授权也放不出必闸类（照样问，且说得出为什么）', async () => {
-    const stage = makeStage()
-    try {
-      // 照着**最宽的攻法**写一条授权：任意工具 × 任意路径 × 任意操作
-      const key = sectionKeyOf(stage)
-      writeGrants(stage, { version: 1, workspaces: { [key]: [{ tool: '*', grantedAt: 1 }] } })
-
-      const { assembly, shell } = await askOnce(stage, [GATED_TURN, { text: '没删' }])
-
-      // 必闸类**照样弹卡**——授权命中了也没用（清单即禁区）
-      expect(shell.requests).toHaveLength(1)
-      expect(eventsOfKind(shell.events, 'tool.decision.request')[0]?.data.material).toContain('禁区')
-      expect(eventsOfKind(shell.events, 'tool.decision.request')[0]?.data.weight).toBe('heavy')
-
-      shell.answer(shell.requests[0] as number)
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '跑完')
-      finish(assembly, shell)
     } finally {
       stage.dispose()
     }

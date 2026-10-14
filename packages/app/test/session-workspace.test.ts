@@ -34,7 +34,7 @@ describe('建立时锚定——本进程的工作区进记录域', () => {
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble()
+      const assembly = stage.assemble({ turns: [{ text: '好' }] })
       const shell = attachShell(assembly.shell)
 
       await shell.submit('看看这个工作区里有什么')
@@ -54,7 +54,7 @@ describe('建立时锚定——本进程的工作区进记录域', () => {
     const stage = makeStage({ config: { workspaceRoots: [first, second] } })
 
     try {
-      const assembly = stage.assemble()
+      const assembly = stage.assemble({ turns: [{ text: '好' }] })
       const shell = attachShell(assembly.shell)
 
       await shell.submit('多根之下的一件事')
@@ -80,7 +80,7 @@ describe('外壳那一跳——同样的工作区进 `runTui`', () => {
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble()
+      const assembly = stage.assemble({ turns: [{ text: '好' }] })
 
       expect((await tuiOptions(assembly)).workspaceRoots).toEqual(assembly.workspaceRoots)
       expect((await tuiOptions(assembly)).workspaceRoots).toEqual([realpathSync(stage.workspace)])

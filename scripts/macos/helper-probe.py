@@ -49,7 +49,7 @@ def probe(helper):
             (base / '.magic/config.json').write_text(json.dumps({
                 'workspaceRoots': [root], 'models': {choice: {'provider': 'local', 'model': 'probe'} for choice in ['default', 'cantrip', 'spell', 'arcane']},
                 'providers': {'local': {'baseURL': f'http://127.0.0.1:{server.server_port}/v1',
-                    'apiKey': 'synthetic-probe-key', 'vendor': 'deepseek'}}}))
+                    'apiKey': 'synthetic-probe-key', 'protocol': 'chat-completions'}}}))
             script = base / 'probe.json'
             script.write_text(json.dumps({'inputs': ['Run the controlled native helper probe.'], 'decisions': []}))
             env = {'HOME': root, 'MAGIC_HOME': root, 'PATH': '/usr/bin:/bin', 'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8'}

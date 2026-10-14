@@ -109,6 +109,7 @@ const TEST_ONLY_DEP = '@magic/faux'
 
 /** blobs 落点的唯一主人（U02 判据 2 · 仓库级不变量）——其余包不得出现 `blobs/` 字面量。 */
 const BLOB_OWNER_PACKAGE = '@magic/records'
+const BLOB_PATH = /(^|\/)blobs(\/|$)/
 
 /** 文件相对包根的**面**——依赖纪律按面分（与 fs 纪律只扫 `src/` 同一条分面原则）。 */
 function faceOf(relativeToPackage: string): 'src' | 'test' | 'other' {
@@ -420,7 +421,7 @@ async function blobPathOffendersOf(): Promise<string[]> {
 
       const absolute = join(PACKAGES_DIR, dir, file)
       for (const literal of stringLiteralsOf(absolute, readFileSync(absolute, 'utf8'))) {
-        if (/(^|\/)blobs(\/|$)/.test(literal)) {
+        if (BLOB_PATH.test(literal)) {
           offenders.push(`${name}/${file} → ${JSON.stringify(literal)}`)
         }
       }
@@ -629,12 +630,11 @@ describe('blobs 落点（仓库级不变量 · U02 判据 2 并入）', () => {
   })
 
   test('越界判定——认 `blobs/` 与 `~/.magic/blobs`，不误伤近形名', () => {
-    const pattern = /(^|\/)blobs(\/|$)/
-    expect(pattern.test('blobs/x')).toBe(true)
-    expect(pattern.test('/home/u/.magic/blobs')).toBe(true)
-    expect(pattern.test('/home/u/.magic/blobs/abc')).toBe(true)
-    expect(pattern.test('/home/u/.magic/blobstore')).toBe(false)
-    expect(pattern.test('/home/u/blobx')).toBe(false)
+    expect(BLOB_PATH.test('blobs/x')).toBe(true)
+    expect(BLOB_PATH.test('/home/u/.magic/blobs')).toBe(true)
+    expect(BLOB_PATH.test('/home/u/.magic/blobs/abc')).toBe(true)
+    expect(BLOB_PATH.test('/home/u/.magic/blobstore')).toBe(false)
+    expect(BLOB_PATH.test('/home/u/blobx')).toBe(false)
   })
 })
 
@@ -804,19 +804,10 @@ describe('fs 触达提取（反向用例）', () => {
 
   test('fs 许可清单——只放 records / execution', () => {
     expect(FS_ALLOWED_PACKAGES).toEqual(['@magic/records', '@magic/execution'])
-    expect(FS_ALLOWED_PACKAGES).not.toContain('@magic/model')
-    expect(FS_ALLOWED_PACKAGES).not.toContain('@magic/contracts')
   })
 
   test('非内核包清单——外壳 · 装配根 · 测试层（扫描面收窄的锚）', () => {
     expect(NON_KERNEL_PACKAGES).toEqual(['@magic/tui', '@magic/app', '@magic/faux'])
-    // 域包一个都不许溜进这道豁免——否则扫描面会被悄悄挖空
-    for (const domain of Object.keys(PACKAGE_TABLE)) {
-      if (domain === ASSEMBLY_PACKAGE || domain === '@magic/tui' || domain === '@magic/faux') {
-        continue
-      }
-      expect(NON_KERNEL_PACKAGES).not.toContain(domain)
-    }
   })
 })
 

@@ -12,7 +12,7 @@
 import { describe, expect, test } from 'bun:test'
 import { existsSync, readFileSync } from 'node:fs'
 import { loadConfig } from '../src/index.ts'
-import { noModelAdvice, noModelNotice, noModelRefusal, providerRemovedNote } from '../src/assembly.ts'
+import { noModelAdvice, noModelRefusal, providerRemovedNote } from '../src/run/observation.ts'
 import { createSandbox } from './ui/sandbox.ts'
 import { magicAt } from './tmp.ts'
 
@@ -77,26 +77,16 @@ describe('那几句话', () => {
 
   test('发得出去时**一个字都不说**（三处都是）', () => {
     expect(noModelAdvice(READY)).toBeUndefined()
-    expect(noModelNotice(READY)).toBeUndefined()
     expect(noModelRefusal(READY)).toBeUndefined()
     expect(providerRemovedNote('a', READY)).toBe('「a」已断开')
   })
 
-  test('**缺什么 · 怎么接**：两形分开说（合成一句就得含糊）', () => {
-    expect(noModelAdvice(UNCONFIGURED)).toContain('还没有接上供应商')
-    expect(noModelAdvice(UNCONFIGURED)).toContain('/model connect')
-    expect(noModelAdvice(UNSELECTED)).toContain('还没有选好走哪个模型')
-    expect(noModelAdvice(UNSELECTED)).toContain('/model 挑一个')
-    // **不说错话**：有连接时不许说「还没接供应商」
-    expect(noModelAdvice(UNSELECTED)).not.toContain('还没有接上供应商')
-  })
-
   test('启动提示使用可直接执行的接入命令，不引用旧列表顺序', () => {
-    expect(noModelNotice(UNCONFIGURED)).toBe(
+    expect(noModelAdvice(UNCONFIGURED)).toBe(
       '还没有接上供应商——敲 /model connect 接一条',
     )
     // 另一形没有「第一条就是它」那半（那一屏铺的是连接本身，不是接供应商那一行）
-    expect(noModelNotice(UNSELECTED)).toBe('还没有选好走哪个模型——敲 /model 挑一个')
+    expect(noModelAdvice(UNSELECTED)).toBe('还没有选好走哪个模型——敲 /model 挑一个')
   })
 
   test('**提交被拦那一句**多一件「稿子去哪儿了」', () => {
@@ -122,8 +112,8 @@ describe('那几句话', () => {
 
   test('那几句里**没有内部词**（架构词 / 包名 / 字段名一律不留）', () => {
     const said = [
-      noModelNotice(UNCONFIGURED),
-      noModelNotice(UNSELECTED),
+      noModelAdvice(UNCONFIGURED),
+      noModelAdvice(UNSELECTED),
       noModelRefusal(UNCONFIGURED),
       noModelRefusal(UNSELECTED),
       providerRemovedNote('local', UNCONFIGURED),

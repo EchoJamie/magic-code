@@ -13,7 +13,7 @@
  * ⚠️ **反向不成立**——本包是测试层：**任何域的生产代码都不得 import 本包**（守护拦截）。
  * 这里没有生产逻辑，只有假模型与桩。
  *
- * 用法（骨架见 `test/skeleton.test.ts`）：
+ * 用法（行为测试见 `test/gateway.test.ts` 与 `test/stubs.test.ts`）：
  * ```ts
  * const stamper = makeTestStamper()
  * const gateway = createFauxGateway({

@@ -40,7 +40,7 @@ const viewed = (events: readonly Parameters<typeof reduce>[1][], from: ShellView
  * **为何变**：字标现在恒在 `settled[0]`（启动印一次，见 `src/banner.ts`）；
  * **新锚**是把那一行滤掉：本文件断言的全是**记录区的内容与骨架**
  * （「进了什么 / 重建回来什么 / 会话之间怎么切」），字标是**开局就在那儿**的装帧、
- * 不属于任何一条会话内容——它自己的判据在 `spec.banner.test.ts`。
+ * 不属于任何一条会话内容——它自己的判据在 `banner.test.ts`。
  * 不滤的话，「记录区什么都不进」那类句子全要被一个恒在的装饰行顶红。
  */
 const onScreen = (view: ShellView): readonly LogRow[] =>

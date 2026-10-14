@@ -120,20 +120,6 @@ test('授权撤销比较真实文件身份，重读后撤销且回读同一事�
   ledger.replace({ version: 1, workspaces: {} }); expect(ledger.rules()).toEqual([])
 })
 
-test('显式刷新真实本地列表，保存映射与偏好后仍能读取缓存；无自动外连', async () => {
-  const g = setup(); let requests = 0
-  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() { requests++; return Response.json({ data: [{ id: 'deepseek-v4-pro' }, { id: 'deepseek-flash' }] }) } })
-  cleanups.push(() => server.stop(true))
-  await g.apply({ type: 'provider.save', provider: 'local', vendor: 'deepseek', baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'SENTINEL_REFRESH' })
-  await g.settings.read(); expect(requests).toBe(0)
-  await g.apply({ type: 'model.refresh', provider: 'local' }); expect(requests).toBe(1)
-  expect(JSON.stringify(await g.settings.read())).toContain('deepseek-v4-pro')
-  await g.apply({ type: 'model.configure', choice: 'default', provider: 'local', model: 'deepseek-v4-pro' })
-  await g.apply({ type: 'prefs.set', reducedMotion: true })
-  const after = await g.settings.read(); expect(JSON.stringify(after.catalog)).toContain('deepseek-v4-pro'); expect(JSON.stringify(after)).not.toContain('SENTINEL_REFRESH'); expect(requests).toBe(1)
-})
-
-
 test('自由 ID 和敏感名称按自己的键保存，不命中对象原型', async () => {
   const g = setup()
   await g.apply({ type: 'role.save', id: '__proto__', role: { name: '原型同名角色', instructions: '按明确 ID 查询', tools: [] } })
@@ -142,7 +128,6 @@ test('自由 ID 和敏感名称按自己的键保存，不命中对象原型', a
   expect(JSON.stringify(g.raw())).toContain('SENTINEL_PROTO')
   expect(JSON.stringify(await g.settings.read())).not.toContain('SENTINEL_PROTO')
 })
-
 
 test('残留 dataDir 无论类型都不出现在设置中，保存其它字段保留原始键', async () => {
   for (const dataDir of ['/obsolete', 7, null, { old: true }]) {
@@ -157,7 +142,6 @@ test('残留 dataDir 无论类型都不出现在设置中，保存其它字段�
     expect(saved.unrelated).toEqual({ keep: true })
   }
 })
-
 
 test('U125 耗时口径沿配置保存重开，恢复默认删除显式键且保留其他设置', async () => {
   const g = setup()

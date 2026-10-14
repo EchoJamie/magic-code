@@ -556,7 +556,7 @@ async function typeLine(session: UiSession, text: string, shown = text): Promise
  * 由头：共用驱动的键位是**闭集**（`UI_KEYS`，不认识的名字当场报错），而本轮对它的改动
  * 只允许「沙地复用」那一处（工单）。故这几个字节走 `send` 写进**同一个 stdin**——
  * 与手按发的是同一个字节，既没绕开驱动、也没给驱动加键。清单那几个键的**语义**
- * 另有 `packages/tui/test/spec.u34-tui.test.ts` 在真按键路径上钉着。
+ * 另有 `packages/tui/test/plan-interaction.test.ts` 在真按键路径上钉着。
  */
 async function pressBytes(session: UiSession, bytes: string, until: WaitCondition): Promise<void> {
   await session.send(bytes, { until, timeoutMs: 10_000 })

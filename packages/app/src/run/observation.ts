@@ -1,20 +1,39 @@
-import type { MagicConfig } from '@magic/contracts'
+import type { MagicConfig, McpConnection, RulesProblem } from '@magic/contracts'
+import type { RuleProblem } from '@magic/permission'
 /** 常驻核心的只读控制面：只取配置、目录、缓存和记录，不装配执行者或连接外部服务。 */
-import { statSync } from 'node:fs'
-import { join } from 'node:path'
 import type {
-  Command, DecisionHistory, EventDataOf, EventKind, KernelEvent, MagicHome,
-  Materials, McpCatalogRow, ModelCatalogRow, ModelInfoRead, ModelSelectionRef,
-  ModelSwitchRequest, ProviderConfig, SkillCatalog, WorkspaceService,
+  Command,
+  DecisionHistory,
+  EventDataOf,
+  EventKind,
+  KernelEvent,
+  MagicHome,
+  Materials,
+  McpCatalogRow,
+  ModelCatalogRow,
+  ModelInfoRead,
+  ModelSelectionRef,
+  ModelSwitchRequest,
+  ProviderConfig,
+  SkillCatalog,
+  WorkspaceService,
 } from '@magic/contracts'
 import { GRANTS_FILE_NAME, apiKeyEnvVarOf } from '@magic/contracts'
 import { DEFAULT_CANDIDATES, createMaterials, createSkills, createWorkspaceService } from '@magic/execution'
-import { createGrantLedger } from '@magic/permission'
 import type { ModelInfoService } from '@magic/model'
-import { createModelInfoService, effectiveReasoningSupportOf, modelSpecOf, resolveConnection, vendorCatalog } from '@magic/model'
+import {
+  createModelInfoService,
+  effectiveReasoningSupportOf,
+  modelSpecOf,
+  resolveConnection,
+  vendorCatalog,
+} from '@magic/model'
+import { createGrantLedger } from '@magic/permission'
 import type { RecordsStore } from '@magic/records'
-import { cacheAccessFor } from '../cache-access.ts'
+import { statSync } from 'node:fs'
+import { join } from 'node:path'
 import { resolveModelChoice } from '../agent-models.ts'
+import { cacheAccessFor } from '../cache-access.ts'
 import { ConfigError, loadConfig, type LoadedConfig } from '../config.ts'
 import { loadGrants } from '../grants-file.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
@@ -187,8 +206,10 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
     cache: createFileModelInfoCache(magic.base), now, fetch: globalThis.fetch,
   })
   await info.warmup() // 仅读缓存并核接入范围；peek 不会触发刷新。
-  const picked = request === undefined && selection !== undefined ? { ok: true as const, selection } : resolveModelChoice({ providers, configuredModels: loaded.config.models, defaults: selection,
-    config: request, modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model) })
+  const picked = request === undefined && selection !== undefined ? { ok: true as const, selection } : resolveModelChoice({
+    providers, configuredModels: loaded.config.models, defaults: selection,
+    config: request, modelInfoOf: (provider, model) => info.peek(provider).snapshot?.models.find(one => one.id === model)
+  })
   if (request !== undefined && !picked.ok) throw new Error(picked.reason)
   const current = picked.ok ? picked.selection : undefined
   return {
@@ -208,8 +229,104 @@ export async function readModelCatalog(loaded: LoadedConfig, magic: MagicHome, s
 export function readGrantView(magic: MagicHome, workspace: WorkspaceService, now = Date.now) {
   const file = loadGrants(join(magic.base, GRANTS_FILE_NAME))
   const grants = createGrantLedger({ workspace: workspace.defaultRoot(), file: file.file, now })
-  return { ...file, view: {
-    workspace: workspace.defaultRoot(), grants: grants.view(),
-    stale: grants.sections().filter((path) => { try { return !statSync(path).isDirectory() } catch { return true } }),
-  } }
+  return {
+    ...file, view: {
+      workspace: workspace.defaultRoot(), grants: grants.view(),
+      stale: grants.sections().filter((path) => { try { return !statSync(path).isDirectory() } catch { return true } }),
+    }
+  }
+}
+
+export function mcpNoticesOf(
+  rows: readonly {
+    readonly server: string
+    readonly state: { readonly status: string; readonly reason?: string | undefined }
+    readonly rejected: number
+  }[],
+): readonly string[] {
+  const said: string[] = []
+
+  // 连不上的那几条**各说一句**（不与别的并成一句：这一条要能一眼看出是哪台服务器）
+  for (const row of rows) {
+    if (row.state.status !== 'unavailable') continue
+    said.push(
+      `外部工具服务器「${row.server}」连不上：${row.state.reason ?? '未说缘由'}` +
+      '——本次它的工具不可用（内置工具不受影响）',
+    )
+  }
+  for (const row of rows) {
+    if (row.rejected === 0) continue
+    said.push(
+      `外部工具服务器「${row.server}」有 ${row.rejected} 件工具没能收下` +
+      '——名字不合规或与同台重名（`--check` 看缘由）',
+    )
+  }
+
+  return said
+}
+
+export function noModelAdvice(input: {
+  /** 配好的连接条数（**不是**「缺省是谁」——两者答的是不同的问题）。 */
+  readonly connections: number
+  /** 此刻真会走的那一条定下来了没有（注册表的 `current()`，不是配置里的缺省）。 */
+  readonly hasModel: boolean
+}): string | undefined {
+  if (input.hasModel) return undefined
+  if (input.connections === 0) return '还没有接上供应商——敲 /model connect 接一条'
+
+  return '还没有选好走哪个模型——敲 /model 挑一个'
+}
+
+export function noModelRefusal(input: {
+  readonly connections: number
+  readonly hasModel: boolean
+}): string | undefined {
+  const advice = noModelAdvice(input)
+  if (advice === undefined) return undefined
+
+  return `${advice}（原稿在 ↑ 里）`
+}
+
+export function providerRemovedNote(
+  provider: string,
+  state: { readonly connections: number; readonly hasModel: boolean },
+): string {
+  const advice = noModelAdvice(state)
+
+  return advice === undefined ? `「${provider}」已断开` : `「${provider}」已断开，${advice}`
+}
+
+export function noticesOf(
+  rejectedRules: readonly RuleProblem[],
+  grantsNotes: readonly string[],
+  configPath: string,
+  rulesProblems: readonly RulesProblem[],
+  connections: readonly McpConnection[],
+): readonly string[] {
+  const said: string[] = []
+
+  if (rejectedRules.length > 0) {
+    said.push(
+      `配置里有 ${rejectedRules.length} 条权限规则读不懂（未生效）——${configPath}（\`--check\` 看缘由）`,
+    )
+  }
+  // **只数「坏了」那一类**（2026-09-20 裁）：取舍那类（原生顶掉同名的兼容规则、AGENTS
+  // 顶掉 CLAUDE）是**产品按设计做的选择**——为它每次开屏报一句就是噪音，而它**不是故障**。
+  // 用户要查「我写的那份为什么没在管」，`--check` 里逐条列着（口径同权限规则那句）。
+  const broken = rulesProblems.filter((problem) => problem.kind === 'error')
+  if (broken.length > 0) {
+    said.push(`项目规约里有 ${broken.length} 条没能加载（\`--check\` 看缘由）`)
+  }
+  said.push(
+    ...mcpNoticesOf(
+      connections.map((connection) => ({
+        server: connection.server,
+        state: connection.state,
+        rejected: connection.rejected.length,
+      })),
+    ),
+  )
+  said.push(...grantsNotes)
+
+  return said
 }

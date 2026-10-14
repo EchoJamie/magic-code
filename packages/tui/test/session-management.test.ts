@@ -24,7 +24,7 @@ function setup() {
   return { spy, shell, key, state, open, picker, choose }
 }
 
-describe('U123 会话整理', () => {
+describe('会话整理', () => {
   test('Shift+Tab 与 Ctrl+G 使用独立键，不抢 Tab 与普通文字', () => {
     expect(toShellKeys('', { tab: true, shift: true })).toEqual([{ kind: 'shift+tab' }])
     expect(toShellKeys('', { tab: true })).toEqual([{ kind: 'tab' }])

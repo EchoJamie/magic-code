@@ -153,7 +153,7 @@ describe('输入行', () => {
 })
 
 describe('审批答复（接管）', () => {
-  test('提示出现 → **接管**（卡与底行在、输入行收走）；按 `y` 作答', async () => {
+  test('审批接管后选择批准，再按 Enter 作答', async () => {
     const { app, commands, push } = liveApp()
 
     // 先等首帧落上再投事件（Ink 接管 stdin 之前投的事件不会丢——视图是外壳的；

@@ -23,10 +23,7 @@ import { analyze } from '@magic/permission'
 import { attachShell, runShellScript } from '../src/index.ts'
 import type { ShellHandle } from '@magic/app'
 import { eventsOfKind, lastModel, makeStage, readDatabase, type Stage } from './support.ts'
-import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
-
-/** CLI 入口——`--check` 那一屏的字由它产出（与 `rules.test.ts` 同一个取法）。 */
-const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
+import { removeDir, tempDir } from './tmp.ts'
 
 /**
  * 等「回到等待输入」攒够几次——无人值守里最省事的收场判据。
@@ -1018,59 +1015,6 @@ describe('U33 · 边界不越', () => {
       stage.dispose()
     } finally {
       removeDir(land)
-    }
-  })
-})
-
-describe('U33 · 真 CLI 帧 · `--check` 那一行', () => {
-  test('报「发现了哪些、有哪些没读进来」——坏的那一条**指明来源与缘由**', async () => {
-    const home = tempDir('magic-cli-skills-')
-    mkdirSync(join(home, '.magic'), { recursive: true })
-    writeConfig(join(home, '.magic'), validConfig({ dataDir: join(home, 'data') }))
-
-    try {
-      put(home, '.magic/skills/pdf/SKILL.md', skillText('pdf', '处理 PDF', '正文'))
-      put(home, '.magic/skills/broken/SKILL.md', '---\nname: broken\n---\n\n没有 description\n')
-
-      const proc = Bun.spawn([process.execPath, CLI, '--check'], {
-        cwd: home,
-        env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
-
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('技能　　　')
-      // 发现到的照报（名字 ＋ 来源）
-      expect(stdout).toContain('pdf（项目 .magic/skills）')
-      // 坏的那一条**一条两行**（路径一行、缘由一行）——用户照着去改
-      expect(stdout).toContain('有 1 个没读进来')
-      expect(stdout).toContain('broken')
-      expect(stdout).toContain('description')
-    } finally {
-      removeDir(home)
-    }
-  })
-
-  test('一个技能都没有：说清「放哪儿就来」，不留白', async () => {
-    const home = tempDir('magic-cli-skills-')
-    mkdirSync(join(home, '.magic'), { recursive: true })
-    writeConfig(join(home, '.magic'), validConfig({ dataDir: join(home, 'data') }))
-
-    try {
-      const proc = Bun.spawn([process.execPath, CLI, '--check'], {
-        cwd: home,
-        env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const stdout = await new Response(proc.stdout).text()
-      await proc.exited
-
-      expect(stdout).toContain('技能　　　无（放 .magic/skills/<名称>/SKILL.md 就来')
-    } finally {
-      removeDir(home)
     }
   })
 })

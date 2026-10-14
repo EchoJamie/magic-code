@@ -2,7 +2,7 @@
  * **留帧装置**（外壳那半）——「④ 的分母」那几屏，存成可核对的帧。
  *
  * `bun test` 不收它（文件名不是 `*.test.ts`）。用途只有一个：**外观那一关看帧**——
- * 判据（数字对不对、清没清）归 `spec.window.test.ts` / `packages/app/test/window.test.ts`，
+ * 判据（数字对不对、清没清）归 `context-window.test.ts` / `packages/app/test/window.test.ts`，
  * 这里把**用户看得见的那一屏**落成文本与字节，好让人**从上到下一行行读**
  * （`AGENTS.md`·工作模式：「看图」是四项）。
  *

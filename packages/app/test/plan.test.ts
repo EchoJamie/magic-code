@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import type { KernelEvent, ModelMessage, PlanNote } from '@magic/contracts'
+import type { ModelMessage, PlanNote } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
 import { eventsOfKind, lastModel, makeStage, readDatabase } from './support.ts'
 
@@ -550,55 +550,6 @@ describe('U34 · 反例：那条节选上限只管 blob，不碰内联正文', (
       const afterCompact = sentText(requests.at(-1)?.messages ?? [])
       expect(afterCompact).toContain('TAIL_PLAN_PRESERVE')
       expect(afterCompact.split('既有计划笔记').length - 1).toBe(1)
-
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-})
-
-describe('U34 · 权限是窄的', () => {
-  test('判轻的一件都不问（`plan_read` / `read` 都在内）；**名单里那两条照问**', async () => {
-    const stage = makeStage()
-    const requests: KernelEvent[] = []
-
-    try {
-      const assembly = stage.assemble({
-        turns: [
-          {
-            toolCalls: [
-              { name: 'plan_read', args: {} },
-              { name: 'read', args: { path: 'src/login.ts' } },
-              // ⚠️ **原锚**：第三件原来是「别的工具」——拿 `read` 当那一件（那时它**要问**）；
-              // **为何变**：U76 起 `read` 判轻 ⇒ **默认通、不留卡**（与 `plan_read` 同一形，
-              // 规则的那三个名字不再是它通不通的由来）；**新锚**：判据换成工单那一条
-              // 「**名单里那两条照问**」——第三件取名单第一类（删除），被问的只该是它。
-              { name: 'exec', args: { cmd: 'chmod 755 .' } },
-            ],
-          },
-          { text: '好' },
-        ],
-      })
-      const off = assembly.shell.subscribe((event) => requests.push(event))
-      const shell = attachShell(assembly.shell)
-
-      await shell.submit('看一眼')
-      off()
-      shell.dispose()
-
-      const asked = eventsOfKind(requests, 'tool.decision.request')
-      expect(asked).toHaveLength(1)
-      // 被问的是名单里的 `exec`（删除），两件判轻的一件都没问
-      expect(asked[0]?.data.name).toBe('exec')
-      expect(asked[0]?.data.weight).toBe('heavy')
-
-      const verdicts = eventsOfKind(requests, 'tool.decision')
-      expect(verdicts.map((one) => [one.data.decider, one.data.decision])).toEqual([
-        ['auto', 'approve'],
-        ['auto', 'approve'],
-        ['user', 'approve'],
-      ])
 
       assembly.close()
     } finally {

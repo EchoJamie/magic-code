@@ -1,6 +1,5 @@
 import XCTest
 import AppKit
-import Combine
 import SwiftUI
 import UserNotifications
 
@@ -236,9 +235,6 @@ final class NativeTests: XCTestCase {
     }
     private var helperApp: URL { ProcessInfo.processInfo.environment["MAGIC_NATIVE_TEST_APP"].map { URL(fileURLWithPath: $0) } ?? root.appendingPathComponent(".artifacts/macos/Magic Code.app") }
     private var root: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
-    override func setUpWithError() throws {
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".artifacts/macos/seams"), withIntermediateDirectories: true)
-    }
     private func temp() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -288,7 +284,6 @@ final class NativeTests: XCTestCase {
         XCTAssertNil(model.selected, "移除后返回列表，由视图保留相邻焦点")
         XCTAssertNil(model.sessions.route)
         model.leaveDetail(); XCTAssertNil(model.selected)
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/u117-stale-stop-removal.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
@@ -460,7 +455,6 @@ final class NativeTests: XCTestCase {
     }
     @MainActor func testAppModelSameRevisionWelcomeRecoversWithoutNewHost() async throws {
         let (model, room) = try controlledModel(options: ["revision": 7, "notice": true, "observerControl": true])
-        var states: [String] = []; let token = model.$phase.sink { states.append(String(describing: $0)) }; defer { token.cancel() }
         model.terminal.openFile = { _, completion in completion(nil) }
         model.start(); try await eventually { model.isCurrent }
         let identity = try XCTUnwrap(model.identity); let original = model.projection
@@ -484,7 +478,6 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "cmd" })
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-        try JSONSerialization.data(withJSONObject: ["states": states, "trace": traces(room)], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/reconnect.json"))
     }
     @MainActor func testAppModelWelcomeKeepsNewerProjectionAndRejectsWrongService() async throws {
         let (model, room) = try controlledModel(options: ["revision": 7, "observerControl": true])
@@ -503,7 +496,6 @@ final class NativeTests: XCTestCase {
         XCTAssertFalse(model.isCurrent); XCTAssertEqual(model.projection?.revision, 9)
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
-        try JSONSerialization.data(withJSONObject: traces(room), options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/reconnect-negative.json"))
     }
 
     @MainActor func testConfirmedHostExitRetriesOnlyFailedIntegrationRemoval() async throws {
@@ -525,7 +517,6 @@ final class NativeTests: XCTestCase {
         XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "shutdown" }.count, 1)
-        try JSONSerialization.data(withJSONObject: ["attempts": attempts, "cleanExitCallbacks": finished, "trace": traces(room)], options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/seams/integration-removal-retry.json"))
     }
     @MainActor func testAppExitLeavesEngineAndNewAppReusesIt() async throws {
         let (model, room) = try controlledModel(options: [:])
@@ -620,14 +611,9 @@ final class NativeTests: XCTestCase {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
         }
         let scroll = try XCTUnwrap(scrollViews(controller.view).first)
-        let evidence: [String: Any] = ["windowHeight": window.contentLayoutRect.height,
-            "listViewportHeight": scroll.contentView.bounds.height, "recentCount": model.list.rows(.recent, works: model.works).count]
-        try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys])
-            .write(to: root.appendingPathComponent(".artifacts/macos/panel-natural-size.json"))
         let bitmap = try XCTUnwrap(controller.view.bitmapImageRepForCachingDisplay(in: controller.view.bounds))
         controller.view.cacheDisplay(in: controller.view.bounds, to: bitmap)
-        try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            .write(to: root.appendingPathComponent(".artifacts/macos/panel-natural-size.png"))
+        XCTAssertNotNil(bitmap.representation(using: .png, properties: [:]))
         XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.height, 44, "自然尺寸必须保留可操作的完整工作行")
         XCTAssertEqual(scroll.contentView.bounds.height, try XCTUnwrap(scroll.documentView).bounds.height, accuracy: 1,
                        "单行列表按内容自然取高，不留旧的固定最小高度，也不截断行内容")
@@ -646,10 +632,7 @@ final class NativeTests: XCTestCase {
         let raw = try busy.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
         let (model, _) = try controlledModel(options: ["works": raw])
         model.start(); try await eventually { model.isCurrent }
-        let directory = root.appendingPathComponent(".artifacts/macos/frames")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var frameMetadata: [[String: Any]] = []
-        func save(_ window: NSWindow, name: String) async throws {
+        func assertRender(_ window: NSWindow, name: String) async throws {
             XCTAssertFalse(window.isVisible, "原生帧必须离屏，不弹出真实窗口")
             let view = try XCTUnwrap(window.contentView)
             try await Task.sleep(for: .milliseconds(250))
@@ -657,15 +640,7 @@ final class NativeTests: XCTestCase {
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
             view.cacheDisplay(in: view.bounds, to: bitmap)
             let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            try png.write(to: directory.appendingPathComponent(name + ".png"))
-            frameMetadata.append(["name": name, "width": view.bounds.width, "height": view.bounds.height,
-                                  "appearance": window.appearance?.name.rawValue ?? "system", "selected": model.selected ?? "",
-                                  "capturedAt": ISO8601DateFormatter().string(from: Date()), "offscreen": true,
-                                  "screenVisibleWidth": NSScreen.main?.visibleFrame.width ?? 0,
-                                  "screenVisibleHeight": NSScreen.main?.visibleFrame.height ?? 0])
-            try JSONSerialization.data(withJSONObject: frameMetadata, options: [.prettyPrinted, .sortedKeys])
-                .write(to: directory.deletingLastPathComponent().appendingPathComponent("native-frames.json"))
-            XCTAssertGreaterThan(png.count, 2000)
+            XCTAssertGreaterThan(png.count, 2000, name)
             window.close()
             // Let the old panel unmount before the next explicit navigation intent.
             try await Task.sleep(for: .milliseconds(100))
@@ -685,7 +660,7 @@ final class NativeTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(250))
                 try await exercise(window)
             }
-            try await save(window, name: name)
+            try await assertRender(window, name: name)
         }
         func scrollViews(_ view: NSView) -> [NSScrollView] {
             (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrollViews)
@@ -725,7 +700,6 @@ final class NativeTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.maxY + 1, document.bounds.maxY)
             var copied: String?; idle.terminal.copyText = { copied = $0 }
             idle.terminal.copy(idle.cliDirectory); XCTAssertEqual(copied, idle.cliDirectory)
-            try JSONSerialization.data(withJSONObject: ["scrollY": scroll.contentView.bounds.origin.y, "viewportBottom": scroll.contentView.bounds.maxY, "documentBottom": document.bounds.maxY, "copiedPath": copied ?? "", "evidence": "offscreen geometry and copy port; real App AX recorded separately"], options: [.prettyPrinted, .sortedKeys]).write(to: directory.deletingLastPathComponent().appendingPathComponent("scroll-settings.json"))
         }
         var idleFinished = false; idle.requestQuit { idleFinished = true }; try await eventually { idleFinished }
     }
@@ -758,8 +732,6 @@ final class NativeTests: XCTestCase {
         // 下面这套帧走的是跟产品同一条取图路径（`Bundle(for:)` 取的同一支 Assets.xcassets，
         // 测试 target 也挂着它）。别改回「测试自己从仓库注入一支文件」——那跟产品不是同一条路，
         // U103 那版「真机什么都不画」的缺陷就是这么被离屏帧放过去的。
-        let directory = root.appendingPathComponent(".artifacts/macos/frames")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let states: [(MenuBarState, String)] = [(.idle, "空闲静态"), (.active, "有执行"), (.attention, "需要你或异常")]
         func row(_ appearance: NSAppearance.Name, name: String) async throws {
             let dark = appearance == .darkAqua
@@ -786,8 +758,7 @@ final class NativeTests: XCTestCase {
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
             view.cacheDisplay(in: view.bounds, to: bitmap)
             let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            try png.write(to: directory.appendingPathComponent(name + ".png"))
-            XCTAssertGreaterThan(png.count, 2000)
+            XCTAssertGreaterThan(png.count, 2000, name)
             window.close()
         }
         try await row(.aqua, name: "u103-menu-bar-light")
@@ -913,9 +884,7 @@ final class NativeTests: XCTestCase {
         return found
     }
 
-    @MainActor private func saveFrame(_ window: NSWindow, name: String, offscreen: Bool = true) async throws {
-        let directory = root.appendingPathComponent(".artifacts/macos/frames")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    @MainActor private func assertFrameRender(_ window: NSWindow, name: String, offscreen: Bool = true) async throws {
         let view = try XCTUnwrap(window.contentView)
         // 离屏托管视图先同步平台控件；真实有标题窗口保留位置与可见生命周期。
         if offscreen {
@@ -926,22 +895,14 @@ final class NativeTests: XCTestCase {
         defer { if offscreen { window.orderOut(nil) } }
         try await Task.sleep(for: .milliseconds(350))
         view.layoutSubtreeIfNeeded(); view.displayIfNeeded()
-        let capturedAt = Date().timeIntervalSince1970
-        let capturedAppearance = window.effectiveAppearance.name.rawValue
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-        try png.write(to: directory.appendingPathComponent(name + ".png"))
-        if name.hasPrefix("u116-") {
-            let app = Bundle(url: helperApp)
-            let facts: [String: Any] = ["at": capturedAt, "appearance": capturedAppearance, "width": view.bounds.width, "height": view.bounds.height, "version": app?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知", "source": "offscreen native NSHostingController"]
-            try JSONSerialization.data(withJSONObject: facts, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent(name + ".metadata.json"))
-        }
-        XCTAssertGreaterThan(png.count, 2000)
+        XCTAssertGreaterThan(png.count, 2000, name)
     }
 
     /// 五态表（设计正文·通知节）：偏好默认开；系统那一格**只在受阻时出现**，各带一条路。
-    /// 表里「那一行出不出」只能看帧（harness 数不出 SwiftUI 子视图）；这里钉住可程序化的那半边。
+    /// 验证默认开关和五态渲染；具体文案与可见布局仍需产品验收。
     @MainActor func testPreferenceDefaultsOnAndSystemRowOnlyWhenBlocked() async throws {
         _ = NSApplication.shared
         var status: UNAuthorizationStatus = .notDetermined
@@ -952,16 +913,16 @@ final class NativeTests: XCTestCase {
         let window = try await hostView(SettingsView(model: model), size: NSSize(width: 800, height: 680), appearance: .aqua)
         defer { window.close() }
         XCTAssertEqual(switches(in: window).count, 2, "两个开关：登录项与「提醒我」")
-        // 五态各留一帧（表的五行）
-        try await saveFrame(window, name: "u102-五态-开-未问过")
+        // 五态均验证实际原生渲染。
+        try await assertFrameRender(window, name: "u102-五态-开-未问过")
         status = .authorized; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-五态-开-已允许")
+        try await assertFrameRender(window, name: "u102-五态-开-已允许")
         status = .denied; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-五态-开-已拒绝")
+        try await assertFrameRender(window, name: "u102-五态-开-已拒绝")
         status = .provisional; await model.notifications.refreshAuthorization(); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-五态-开-静默送达")
+        try await assertFrameRender(window, name: "u102-五态-开-静默送达")
         await model.setNotifications(false); try await Task.sleep(for: .milliseconds(250))
-        try await saveFrame(window, name: "u102-五态-关-任意")
+        try await assertFrameRender(window, name: "u102-五态-关-任意")
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
@@ -1112,14 +1073,14 @@ final class NativeTests: XCTestCase {
         let allowed = model.notifications.authorization
         model.rememberSettingsCategory("app")
         let window = try await hostView(SettingsView(model: model), size: NSSize(width: 800, height: 680), appearance: .aqua)
-        try await saveFrame(window, name: "u102-authorization-authorized")
+        try await assertFrameRender(window, name: "u102-authorization-authorized")
         status = .provisional
         await model.notifications.refreshAuthorization()
         XCTAssertEqual(model.notifications.authorizationStatus, .provisional)
         let quiet = model.notifications.authorization
         XCTAssertNotEqual(quiet, allowed, "静默送达与正常允许不得显示成同一句")
         XCTAssertTrue(quiet.contains("静默"), "静默送达要说明只进通知中心、不弹横幅")
-        try await saveFrame(window, name: "u102-authorization-provisional")
+        try await assertFrameRender(window, name: "u102-authorization-provisional")
         window.close()
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
@@ -1235,11 +1196,11 @@ final class NativeTests: XCTestCase {
         XCTAssertNil(first.stamp); XCTAssertTrue(model.works.isEmpty)
         XCTAssertTrue(first.configuration["providers"].object.isEmpty)
         let empty = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
-        try await saveFrame(empty, name: "u116-models-empty-light"); empty.close()
+        try await assertFrameRender(empty, name: "u116-models-empty-light"); empty.close()
         for category in SettingsCategory.all where category.id != "models" {
             model.rememberSettingsCategory(category.id)
             let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
-            try await saveFrame(window, name: "u116-\(category.id)-empty-light"); window.close()
+            try await assertFrameRender(window, name: "u116-\(category.id)-empty-light"); window.close()
         }
         func save(_ action: SettingsValue, key: String) async throws {
             model.applySettings(action, stamp: model.settingsSnapshot?.stamp, key: key)
@@ -1260,24 +1221,22 @@ final class NativeTests: XCTestCase {
         XCTAssertFalse(encoded.contains("SENTINEL_U116_SWIFT")); XCTAssertFalse(encoded.contains("SENTINEL_U116_MCP"))
         XCTAssertTrue(model.works.isEmpty)
         XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: snapshot.configPath)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        var geometry: [[String: Any]] = []
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             for category in SettingsCategory.all {
                 model.rememberSettingsCategory(category.id)
                 let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: appearance)
-                try await saveFrame(window, name: "u116-\(category.id)-\(appearance == .aqua ? "light" : "dark")")
-                geometry.append(["category": category.id, "appearance": window.effectiveAppearance.name.rawValue, "width": window.contentView!.bounds.width, "height": window.contentView!.bounds.height, "at": Date().timeIntervalSince1970])
+                try await assertFrameRender(window, name: "u116-\(category.id)-\(appearance == .aqua ? "light" : "dark")")
                 window.close()
             }
         }
         model.rememberSettingsCategory("advanced")
         let small = try await hostView(SettingsView(model: model), size: NSSize(width: 650, height: 600), appearance: .darkAqua)
-        try await saveFrame(small, name: "u116-advanced-small-dark")
+        try await assertFrameRender(small, name: "u116-advanced-small-dark")
         func scrolls(_ view: NSView) -> [NSScrollView] { (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap(scrolls) }
         let scroll = try XCTUnwrap(scrolls(small.contentView!).filter { $0.bounds.width > 300 && ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height }.first)
         let bottom = try XCTUnwrap(scroll.documentView).bounds.height
         scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom - scroll.contentView.bounds.height)); scroll.reflectScrolledClipView(scroll.contentView)
-        try await saveFrame(small, name: "u116-advanced-small-bottom-dark")
+        try await assertFrameRender(small, name: "u116-advanced-small-bottom-dark")
         XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); small.close()
         try await eventually { !model.settingsBusy }
         let before = snapshot.stamp
@@ -1291,7 +1250,7 @@ final class NativeTests: XCTestCase {
         try await eventually { !model.settingsBusy }
         model.applySettings(.object(["type": .string("workspace.set"), "roots": .strings(["/SENTINEL_MISSING_ROOT"])]), stamp: model.settingsSnapshot?.stamp, key: "invalid")
         try await eventually { !model.settingsBusy }; XCTAssertNotNil(model.settingsError)
-        try await saveFrame(error, name: "u116-advanced-field-error-light"); error.close()
+        try await assertFrameRender(error, name: "u116-advanced-field-error-light"); error.close()
         let drafts = SettingsDrafts()
         let long = "很长的中文职责与完整路径用于核对原生编辑器换行。" + String(repeating: "实际编辑输入仍应可见可取消。", count: 10)
         let mcpDraft = SettingsDraft(.object(["name": .string("local-tools"), "transport": .string("stdio"), "command": .string(room.appendingPathComponent(long).path), "args": .strings(Array(repeating: long, count: 4)), "secretRows": .array([.object(["name": .string("API_TOKEN"), "mode": .string("keep"), "value": .string("")])])]), stamp: snapshot.stamp)
@@ -1301,11 +1260,11 @@ final class NativeTests: XCTestCase {
             for (index, editor) in editors.enumerated() {
                 let window = try await hostView(ScrollView { editor.padding(24) }.frame(width: 650, height: 400).background(Color(nsColor: .controlBackgroundColor)).tint(.blue), size: NSSize(width: 650, height: 400), appearance: appearance)
                 let name = "u116-\(index == 0 ? "tools" : "roles")-long-editor-\(appearance == .aqua ? "light" : "dark")"
-                try await saveFrame(window, name: name)
+                try await assertFrameRender(window, name: name)
                 let scroll = try XCTUnwrap(scrolls(window.contentView!).first { ($0.documentView?.bounds.height ?? 0) > $0.contentView.bounds.height })
                 let bottom = try XCTUnwrap(scroll.documentView).bounds.height
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom - scroll.contentView.bounds.height)); scroll.reflectScrolledClipView(scroll.contentView)
-                try await saveFrame(window, name: name + "-bottom"); XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); window.close()
+                try await assertFrameRender(window, name: name + "-bottom"); XCTAssertEqual(scroll.contentView.bounds.maxY, bottom, accuracy: 1); window.close()
             }
         }
         let saved = try Data(contentsOf: URL(fileURLWithPath: snapshot.configPath))
@@ -1316,7 +1275,7 @@ final class NativeTests: XCTestCase {
             let window = try await hostView(SettingsView(model: model), size: NSSize(width: 1000, height: 860), appearance: .aqua)
             try await eventually { !model.settingsBusy && model.settingsError != nil }
             XCTAssertFalse(model.settingsError!.contains("SENTINEL_U116_BROKEN"))
-            try await saveFrame(window, name: "u116-\(category.id)-read-error-light"); window.close()
+            try await assertFrameRender(window, name: "u116-\(category.id)-read-error-light"); window.close()
             XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: snapshot.configPath)), broken)
         }
         try saved.write(to: URL(fileURLWithPath: snapshot.configPath))
@@ -1324,25 +1283,29 @@ final class NativeTests: XCTestCase {
         // 设置是可嵌入页面；零尺寸提案检查页面下限，默认窗口大小由 MainWindowController 负责。
         let fitting = natural.sizeThatFits(in: .zero)
         XCTAssertEqual(fitting.width, 460, accuracy: 1); XCTAssertEqual(fitting.height, 420, accuracy: 1)
-        let evidence: [String: Any] = ["source": "signed embedded helper + native SettingsView", "works": model.works.count, "sensitiveRead": false, "naturalWidth": fitting.width, "naturalHeight": fitting.height, "frames": geometry]
-        try JSONSerialization.data(withJSONObject: evidence, options: [.prettyPrinted, .sortedKeys]).write(to: root.appendingPathComponent(".artifacts/macos/u116-settings-native.json"))
         var finished = false; model.requestQuit { finished = true }; try await eventually { finished }
     }
 
     @MainActor private func hostRoundTrip() async throws {
         let app = helperApp
         let helper = app.appendingPathComponent("Contents/Helpers/magic-runtime")
+        // 与 Engine 的 realpath 身份一致；Foundation 会把 /private/var 缩回 /var。
+        let sourcePath = try XCTUnwrap(realpath(helper.path, nil)); defer { free(sourcePath) }
+        let source = String(cString: sourcePath)
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper.path))
         let room = try temp(), discovery = room.appendingPathComponent("engine.json")
+        let errors = room.appendingPathComponent("helper.stderr")
+        try PrivateFiles.write(Data(), to: errors)
+        let errorLog = try FileHandle(forWritingTo: errors); defer { try? errorLog.close() }
         let process = Process(); process.executableURL = helper
-        process.arguments = ["--internal-engine", "--home", room.path, "--parent", room.path, "--source", helper.path, "--app", app.path, "--discovery", discovery.path, "--lifecycle", UUID().uuidString]
+        process.arguments = ["--internal-engine", "--home", room.path, "--parent", room.path, "--source", source, "--app", app.path, "--discovery", discovery.path, "--lifecycle", UUID().uuidString]
         process.environment = ["HOME": room.path, "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
-        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice; process.standardError = errorLog
         try process.run()
         defer { if process.isRunning { process.terminate(); process.waitUntilExit() } }
         var record: HostDiscovery?
         try await eventually { record = (try? Data(contentsOf: discovery)).flatMap { try? JSONDecoder().decode(HostDiscovery.self, from: $0) }; return record?.state == "ready" }
-        let current = try XCTUnwrap(record)
+        let current = try XCTUnwrap(record, "Engine 未发布发现记录：pid=\(process.processIdentifier)，exit=\(process.isRunning ? "running" : String(process.terminationStatus))，stderr=\((try? String(contentsOf: errors, encoding: .utf8)) ?? "")")
         let observer = ObserverConnection(); defer { observer.close() }
         let welcome = expectation(description: "native.welcome"), inspected = expectation(description: "inspection")
         observer.receive = { response in
@@ -1507,7 +1470,7 @@ final class NativeTests: XCTestCase {
         model.rememberSettingsCategory("app")
         for (page, name) in [(AppModel.MainPage.sessions, "sessions"), (.settings, "settings")] {
             model.selectMainPage(page)
-            try await saveFrame(window, name: "u123-main-compact-\(name)", offscreen: false)
+            try await assertFrameRender(window, name: "u123-main-compact-\(name)", offscreen: false)
             assertCompactLayout()
             XCTAssertTrue(controller.window === window)
         }
@@ -1988,7 +1951,7 @@ extension NativeTests {
             let view = try XCTUnwrap(window.contentView)
             view.layoutSubtreeIfNeeded()
             XCTAssertEqual(view.bounds.width, width, accuracy: 1)
-            try await saveFrame(window, name: "u123-session-\(Int(width))")
+            try await assertFrameRender(window, name: "u123-session-\(Int(width))")
         }
     }
 }

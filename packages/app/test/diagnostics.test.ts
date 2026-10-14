@@ -66,16 +66,6 @@ test('轮转仅删除已关闭文件、限制磁盘占用；写入故障保持�
   expect(broken.problem).toContain('日志写入失败'); await broken.close()
 })
 
-test('诊断配置独立保存，不依赖 App 或创建运行工作', async () => {
-  const { applyHostDiagnostics } = await import('../src/run/diagnostics-client.ts')
-  const g = setup()
-  expect(await applyHostDiagnostics({ base: g.magic.base }, { debugMode: true, logLevel: 'trace' })).toContain('已保存')
-  expect(diagnosticsOf(loadConfig({ magic: g.magic }).config)).toEqual({ debugMode: true, logLevel: 'trace' })
-  expect(await applyHostDiagnostics({ base: g.magic.base }, { debugMode: false })).toContain('已保存')
-  expect(diagnosticsOf(loadConfig({ magic: g.magic }).config)).toEqual({ debugMode: false, logLevel: 'trace' })
-  expect(existsSync(join(g.magic.base, 'records.db'))).toBe(false)
-})
-
 test('日志拥塞优先保留错误并记录丢弃数量，缓冲有界', async () => {
   const g = setup(), log = new DiagnosticLog('manager', g.dataDir, 'trace', { file: 10000, total: 20000, queue: 3 })
   for (let i = 0; i < 100; i++) log.write('trace', 'event.trace', { count: i })

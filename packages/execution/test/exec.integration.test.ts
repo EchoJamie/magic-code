@@ -1,0 +1,994 @@
+/**
+ * U05 · 沙箱 `exec`（阶段 1 唯一实装的沙箱原语）——验收判据 1–5。
+ *
+ * 六条判据中与本文件相关者（工作分解 · 验收判据）：
+ * 1. **回环**——常规命令 → `ok:true` · exit=0 · stdout 正确；exit 非 0 命令 → `ok:true` · exit≠0；
+ * 2. **流式**——`onOutput` 按序收到 stdout / stderr 增量（拼接与终值一致；截断时到上限为止）；
+ * 3. **超限**——超 `maxOutputBytes` → `truncated` ＋ **头尾各留一半**（U93 改的口径：
+ *    原先只留头，结论在尾部的那一类够不着；见「判据 3」那一节的头注）；
+ * 4. **失败三例**——timeout / cwd 越界（**进程不启动**）/ 启动失败——各归 `reason`；
+ * 5. **取消**——`opts.signal` 中止在途 → **返回不抛**。
+ *
+ * ⚠️ **U69 改了口径的两处**（本文件跟着改，见各自的注）：
+ * ① **超时那一支带上已产出的输出**（D39：它跑了、被掐断，不是「没执行」）；
+ * ② **超时没有缺省常量了**——不设 ＝ 无上界（旧常量 120 秒已撤，见下面「无上界」那一节）。
+ *
+ * 两条实测教训（U01 契约层审查 M1 / M2 的实测，本文件沿用）：
+ * - 「命令不存在」＝ **exit 127**（经 shell），**不是**沙箱级失败——别与启动失败混为一类；
+ * - `Bun.spawn` 对不存在的**可执行文件**直接抛 ENOENT / cwd 不存在同样抛——**抛**才是启动失败。
+ *
+ * **多根（U18）**另有一节——判据「`exec` 的 `cwd` 解析与 `WorkspaceService.resolve` **同源**」
+ * （技术方案 · 执行 · 工作区）：沙箱侧不另写一份路径规则，故多根下三条路径
+ * （相对 / 绝对落任一根 / 越界）在此**实测**——同源若破，那一节当场红。
+ *
+ * 测试用 fs 不受守护拦（守护面收窄至各包 `src/`）——夹具照用临时目录。
+ */
+
+import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, rmSync, symlinkSync, realpathSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
+import type { ExecResult, OutputDelta, Sandbox } from '@magic/contracts'
+import { createSandbox, createWorkspaceService } from '../src/index.ts'
+// ⚠️ 从 `sandbox.ts` 直接取那一格归一的函数（它不是包的公开面，见那一处的注——U79 为
+// 「缺省 ⇒ 无上界」这条规则露出来的那一面）；测试直接 import 源文件是同仓既有的走法。
+
+import { spawnOwned } from '../src/process.ts'
+import { runCommand } from '../src/exec.ts'
+import { createProcessLedger, groupAlive, reapOwned, startTimeOf } from '../src/groups.ts'
+
+test('工具必须先登记再执行；登记失败与屏障期间取消不产生副作用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'magic-barrier-'))
+  try {
+    for (const mode of ['saved', 'failed', 'cancelled'] as const) {
+      const signal = new AbortController()
+      let release!: () => void
+      let registered!: () => void
+      const registration = new Promise<void>(done => { registered = done })
+      const barrier = new Promise<void>(done => { release = done })
+      const marker = join(root, mode)
+      const starting = spawnOwned(['/bin/sh', '-c', 'printf started > "$1"', 'test', marker], {
+        cwd: root, stdout: 'ignore', stderr: 'ignore', kind: 'exec', what: 'barrier test', signal: signal.signal,
+        ledger: {
+          async add(identity) {
+            expect(identity.startedAt).toBeNumber()
+            registered()
+            await barrier
+            if (mode === 'failed') throw new Error('归属落账失败')
+          },
+          list: () => [], onChange: () => {},
+        },
+      })
+      await registration
+      expect(existsSync(marker)).toBe(false)
+      if (mode === 'cancelled') signal.abort(new Error('停止当前工作'))
+      release()
+      if (mode === 'saved') {
+        const child = await starting
+        expect(await child.process.exited).toBe(0)
+        expect(existsSync(marker)).toBe(true)
+      } else {
+        await expect(starting).rejects.toThrow(mode === 'failed' ? '归属落账失败' : '停止当前工作')
+        expect(existsSync(marker)).toBe(false)
+      }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('登记屏障尚未放行时执行进程消失，工具随 stdin EOF 退出且没有副作用', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'magic-barrier-parent-')), marker = join(root, 'executed')
+  const source = new URL('../src/process.ts', import.meta.url).pathname
+  const parent = Bun.spawn([process.execPath, '-e', `
+    import { spawnOwned } from ${JSON.stringify(source)};
+    await spawnOwned(['/bin/sh', '-c', 'echo executed > "$1"', 'tool', ${JSON.stringify(marker)}], {
+      stdout: 'ignore', stderr: 'ignore', kind: 'exec', what: 'barrier',
+      ledger: { async add(identity) { console.log(JSON.stringify(identity)); await new Promise(() => {}); }, list: () => [], onChange() {} }
+    });`], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  let pid: number | undefined
+  try {
+    const reader = parent.stdout.getReader()
+    pid = JSON.parse(new TextDecoder().decode((await reader.read()).value)).pgid; reader.releaseLock()
+    expect(existsSync(marker)).toBe(false)
+    parent.kill('SIGKILL'); await parent.exited
+    const end = Date.now() + 5000
+    const alive = () => { try { process.kill(pid!, 0); return true } catch { return false } }
+    while (alive() && Date.now() < end) await Bun.sleep(10)
+    expect(alive()).toBe(false); expect(existsSync(marker)).toBe(false)
+  } finally {
+    if (parent.exitCode === null) { parent.kill('SIGKILL'); await parent.exited }
+    if (pid) { try { process.kill(-pid, 'SIGKILL') } catch {} }
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 10000)
+
+test('启动屏障不污染 stdio 首条输入，普通工具收到 EOF', async () => {
+  const interactive = await spawnOwned(['/bin/cat'], {
+    stdout: 'pipe', stderr: 'ignore', keepStdin: true, kind: 'mcp', what: 'protocol input',
+  })
+  interactive.process.stdin.write('{"jsonrpc":"2.0","id":1}\n')
+  interactive.process.stdin.end()
+  expect(await new Response(interactive.process.stdout).text()).toBe('{"jsonrpc":"2.0","id":1}\n')
+  expect(await interactive.process.exited).toBe(0)
+  const ordinary = await spawnOwned(['/bin/cat'], { stdout: 'pipe', stderr: 'ignore', kind: 'exec', what: 'EOF' })
+  expect(await new Response(ordinary.process.stdout).text()).toBe('')
+  expect(await ordinary.process.exited).toBe(0)
+})
+
+// —— 夹具 ——
+
+const roots: string[] = []
+
+/** 造一个真临时目录当真工作区（调用方负责清理）。 */
+function freshRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'magic-exec-'))
+  roots.push(root)
+  return root
+}
+
+/** 造一个落在默认根上的沙箱，返回沙箱与其（规范化后的）根。 */
+function sandboxOn(root: string): { box: Sandbox; root: string } {
+  const workspace = createWorkspaceService({ roots: [root] })
+  return { box: createSandbox({ workspace }), root: workspace.defaultRoot() }
+}
+
+/** 造一个**多条根**的沙箱——`defaultRoot()` ＝ 列表第一项（技术方案 · 执行 · 工作区）。 */
+function sandboxOnAll(raw: readonly string[]): { box: Sandbox; roots: readonly string[] } {
+  const workspace = createWorkspaceService({ roots: raw })
+  return { box: createSandbox({ workspace }), roots: workspace.roots() }
+}
+
+/** 取规范化后的第 n 条根——索引位在 `noUncheckedIndexedAccess` 下带 `undefined`。 */
+function nth(roots: readonly string[], index: number): string {
+  const root = roots[index]
+  if (root === undefined) throw new Error(`第 ${index + 1} 条根缺席——夹具出问题了`)
+  return root
+}
+
+/** 一步到位：新根 ＋ 新沙箱。 */
+function freshSandbox(): { box: Sandbox; root: string } {
+  return sandboxOn(freshRoot())
+}
+
+/** 取 `ok:true` 分支——失败分支直接判死，避免静默拿空串（顺带把判别联合收窄给 tsc）。 */
+function okOf(result: ExecResult): Extract<ExecResult, { ok: true }> {
+  if (!result.ok) throw new Error(`期望命令跑过（ok:true），实为沙箱失败：${result.reason}`)
+  return result
+}
+
+/** 收结果里的 stdout / stderr。 */
+function streamsOf(result: ExecResult): { stdout: string; stderr: string; exit: number } {
+  const { stdout, stderr, exit } = okOf(result)
+  return { stdout, stderr, exit }
+}
+
+// 收尾——测试进程退出前清掉临时目录（失败时也清）
+process.on('exit', () => {
+  for (const root of roots) {
+    try {
+      rmSync(root, { recursive: true, force: true })
+    } catch {
+      // 清理失败不影响判定
+    }
+  }
+})
+
+// —— 类型层探针（tsc 校验；`bun test` 只剥类型，不做检查）——
+type _FaceMatchesPort = ReturnType<typeof createSandbox> extends Sandbox ? true : never
+const _faceProbe: _FaceMatchesPort = true
+void _faceProbe
+
+// ══ 判据 1 · 回环 ═════════════════════════════════════════════════════
+
+describe('判据 1 · 回环——命令跑了', () => {
+  test('常规命令 → ok:true · exit=0 · stdout 正确', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('echo hello', {})
+
+    expect(result.ok).toBe(true)
+    const { stdout, exit } = streamsOf(result)
+    expect(exit).toBe(0)
+    expect(stdout).toBe('hello\n')
+  })
+
+  test('stderr 单独成道——不混进 stdout', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('echo out; echo err >&2', {})
+
+    const { stdout, stderr } = streamsOf(result)
+    expect(stdout).toBe('out\n')
+    expect(stderr).toBe('err\n')
+  })
+
+  test('exit 非 0 命令 → ok:true · exit≠0（**命令失败不是沙箱失败**）', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('exit 3', {})
+
+    expect(result.ok).toBe(true)
+    expect(streamsOf(result).exit).toBe(3)
+  })
+
+  test('「命令不存在」＝ exit 127——命令失败，不是沙箱级失败', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('definitely-not-a-command-xyz', {})
+
+    expect(result.ok).toBe(true) // ← 关键区分：沙箱没坏，是命令没找着
+    const { exit, stderr } = streamsOf(result)
+    expect(exit).toBe(127)
+    expect(stderr).toContain('not found')
+  })
+
+  test('cwd 缺省＝默认根（启动目录）', async () => {
+    const { box, root } = freshSandbox()
+
+    const result = await box.exec('pwd', {})
+
+    // macOS 上 /tmp 一类符号链接经规范化后 `pwd` 与根同形
+    expect(streamsOf(result).stdout.trim()).toBe(root)
+  })
+
+  test('cwd 显式给出（根内相对路径）＝在该目录里跑', async () => {
+    const { box, root } = freshSandbox()
+    writeFileSync(join(root, 'marker.txt'), 'x')
+
+    const result = await box.exec('ls', { cwd: '.' })
+
+    expect(streamsOf(result).stdout).toContain('marker.txt')
+  })
+})
+
+/**
+ * U18 · **多根下的 `cwd`**——技术方案 · 执行：「`exec` 的 `cwd` 解析与
+ * `WorkspaceService.resolve` **同源**」。
+ *
+ * 这是**实测**不是复述：同源若破，这一节当场红——沙箱认一套根、解析认另一套。
+ * 沙箱侧不另写一份路径规则（`sandbox.ts` 只调 `workspace.resolve` / `defaultRoot`），
+ * 故此处咬住的是「那条路真的接上了」：**进程真起来、真在认的那条根里跑**。
+ */
+describe('多根——cwd 与 `resolve` 同源', () => {
+  test('cwd 缺省＝**默认根**（列表第一项）——不是第二根', async () => {
+    const [first, second] = [freshRoot(), freshRoot()]
+    const { box, roots: real } = sandboxOnAll([first, second])
+
+    expect(streamsOf(await box.exec('pwd', {})).stdout.trim()).toBe(nth(real, 0))
+    expect(streamsOf(await box.exec('pwd', {})).stdout.trim()).not.toBe(nth(real, 1))
+  })
+
+  test('cwd 给相对路径＝落默认根（不落第二根）', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    writeFileSync(join(nth(real, 0), 'in-first.txt'), 'x')
+
+    const result = await box.exec('ls', { cwd: '.' })
+
+    expect(streamsOf(result).stdout).toContain('in-first.txt')
+  })
+
+  test('cwd 给**第二根的绝对路径**＝通过，且真在该根里跑（多根的主要收益）', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    writeFileSync(join(nth(real, 1), 'in-second.txt'), 'x')
+
+    const result = await box.exec('pwd', { cwd: nth(real, 1) })
+
+    expect(streamsOf(result).stdout.trim()).toBe(nth(real, 1))
+    // 相对这个 cwd 的命令也落在第二根（pwd 对了不代表 shell 真在那儿跑，故再落一个文件）
+    writeFileSync(join(nth(real, 1), 'also-here.txt'), 'x')
+    expect(streamsOf(await box.exec('ls', { cwd: nth(real, 1) })).stdout)
+      .toContain('also-here.txt')
+  })
+
+  test('已裁决的根外 cwd 可以启动，执行原语不再判断根内外', async () => {
+    const { box } = sandboxOnAll([freshRoot(), freshRoot()])
+    const outside = realpathSync(freshRoot())
+    expect(streamsOf(await box.exec('pwd', { cwd: outside })).stdout.trim()).toBe(outside)
+  })
+
+  test('cwd 给**声明原形**（非规范形）＝通过，且真在该根里跑（U27）', async () => {
+    // 由头（U27 · `U18` 待决 4）：根记**两张表**（`realpath` 与声明原形）。`exec` 的 cwd
+    // 与 `resolve` 同源 ⇒ 沙箱这一跳也得认声明原形，不然就是「解析器认、进程不认」那半边。
+    // ⚠️ 模型手上**没有** `cwd` 参数（参数键只锚了 `cmd`）——故这一跳走的是内部调用者，
+    // 而「同源」这条判据不因调用者是谁而放宽。
+    const target = freshRoot()
+    const alias = join(freshRoot(), 'proj')
+    symlinkSync(target, alias)
+    writeFileSync(join(target, 'in-alias.txt'), 'x')
+
+    const { box } = sandboxOn(alias)
+
+    // 声明原形当 cwd：只比规范形时这里是 `out-of-bounds`（进程不启动）
+    expect(streamsOf(await box.exec('ls', { cwd: alias })).stdout).toContain('in-alias.txt')
+    // 缺省 cwd（＝默认根，规范形）照旧是同一个目录——两张表说的是同一处
+    expect(streamsOf(await box.exec('ls', {})).stdout).toContain('in-alias.txt')
+  })
+
+  test('cwd 经 `..` **落进另一条根**＝通过，真在那条根里跑（同 `resolve`）', async () => {
+    // ⚠️ 别读成「多根下 cwd 也锁死在默认根」——**边界是全根之并**（同 `resolve`，
+    // 与权限域 `landPath` 同源）。这条正是「同源」的实测：沙箱若另认一套，此处当场红。
+    const [b1, b2] = [freshRoot(), freshRoot()]
+    const { box, roots: real } = sandboxOnAll([b1, b2])
+
+    const result = await box.exec('pwd', { cwd: `../${basename(nth(real, 1))}` })
+
+    expect(streamsOf(result).stdout.trim()).toBe(nth(real, 1))
+  })
+
+  test('已裁决的相对 cwd 可以落在根外', async () => {
+    const { box, roots: real } = sandboxOnAll([freshRoot(), freshRoot()])
+    expect(streamsOf(await box.exec('pwd', { cwd: '..' })).stdout.trim()).toBe(join(nth(real, 0), '..'))
+  })
+})
+
+// ══ 判据 2 · 流式 ═════════════════════════════════════════════════════
+
+describe('判据 2 · 流式——增量实时到达', () => {
+  test('增量**实时**到——不是跑完才一次性给（首段早于终局数百毫秒）', async () => {
+    const { box } = freshSandbox()
+    const deltas: OutputDelta[] = []
+    let firstDeltaAt = 0
+
+    const started = Date.now()
+    const result = await box.exec('printf A; sleep 0.3; printf B', {
+      onOutput: (delta) => {
+        firstDeltaAt ||= Date.now() - started
+        deltas.push(delta)
+      },
+    })
+
+    expect(deltas.map((delta) => delta.text).join('')).toBe('AB')
+    expect(streamsOf(result).stdout).toBe('AB')
+    // 首段在命令仍在睡（≈300ms）时就已到手——否则增量语义形同虚设
+    expect(firstDeltaAt).toBeGreaterThan(0)
+    expect(firstDeltaAt).toBeLessThan(250)
+  })
+
+  test('按序——分次写出的 stdout 增量顺序与拼接收束后一致', async () => {
+    const { box } = freshSandbox()
+    const deltas: OutputDelta[] = []
+
+    const result = await box.exec('printf 1; sleep 0.15; printf 2; sleep 0.15; printf 3', {
+      onOutput: (delta) => deltas.push(delta),
+    })
+
+    const text = deltas.filter((delta) => delta.channel === 'stdout').map((delta) => delta.text)
+    expect(text.join('')).toBe('123')
+    expect(text.length).toBeGreaterThan(1) // 确为增量，不是一整块
+    expect(text.join('')).toBe(streamsOf(result).stdout) // 拼接 ＝ 终值
+  })
+
+  test('两道流各归各的 `channel`——拼接各自等于终值', async () => {
+    const { box } = freshSandbox()
+    const deltas: OutputDelta[] = []
+
+    const result = await box.exec(
+      'printf o1; printf e1 >&2; sleep 0.15; printf o2; printf e2 >&2',
+      { onOutput: (delta) => deltas.push(delta) },
+    )
+
+    const onChannel = (channel: OutputDelta['channel']): string =>
+      deltas.filter((delta) => delta.channel === channel).map((delta) => delta.text).join('')
+
+    const { stdout, stderr } = streamsOf(result)
+    expect(onChannel('stdout')).toBe(stdout)
+    expect(onChannel('stderr')).toBe(stderr)
+    expect(stdout).toBe('o1o2')
+    expect(stderr).toBe('e1e2')
+  })
+
+  test('不给 `onOutput` 照常跑（回调是可选位）', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('echo quiet', {})
+
+    expect(streamsOf(result).stdout).toBe('quiet\n')
+  })
+
+  test('多字节字符跨块——增量拼接不产生乱码（解码按流式续接）', async () => {
+    const { box } = freshSandbox()
+    const deltas: OutputDelta[] = []
+
+    // 1.5KB 中文：足以跨多次读取（每次 read 的块边界不保证落在字符边界上）
+    const result = await box.exec('printf "中%.0s" $(seq 1 500)', {
+      onOutput: (delta) => deltas.push(delta),
+    })
+
+    const joined = deltas.map((delta) => delta.text).join('')
+    expect(joined).toBe(streamsOf(result).stdout)
+    expect(joined).not.toContain('�')
+    expect(joined).toHaveLength(500)
+  })
+})
+
+// ══ 判据 3 · 超限 ═════════════════════════════════════════════════════
+
+/**
+ * ⚠️ **U93 改了口径**：越过上限时**头尾都留**（各半），中段省掉并在**省略处**写明。
+ * 原先是 `value.subarray(0, room)`——**只留开头**，于是「结论在尾部」的那一类
+ * （构建日志的报错 · 测试报告的失败清单）到不了模型手里（`D40` 现场）。
+ *
+ * ⚠️ **上限那个数一个字没动**（工单明文）：`CAP` 还是那个 `CAP`，改的是「留哪一头」。
+ */
+const bodyOf = (stdout: string): string => {
+  const at = stdout.indexOf('…（截断：')
+  if (at === -1) return stdout
+
+  const end = stdout.indexOf('\n', at)
+
+  // 说明与正文之间那个换行是说明自己带的（头已以换行收尾时就不重复加）——故一并去掉，
+  // 留下的就是**头 ＋ 尾**两段原文。
+  return `${stdout.slice(0, at).replace(/\n$/, '')}${end === -1 ? '' : stdout.slice(end + 1)}`
+}
+
+describe('判据 3 · 超限——头尾都留（U93）', () => {
+  const CAP = 64
+
+  test('超 `maxOutputBytes` → `truncated` ＋ **头尾各留一半**', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 500)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBe(true)
+    expect(result.stdout).toContain('…（截断：') // 省略处有记号
+    expect(bodyOf(result.stdout)).toBe('A'.repeat(CAP)) // 头 ＋ 尾 ＝ 上限，一个字节不多
+    expect(result.stdout.startsWith('A'.repeat(CAP / 2))).toBe(true) // 头上那半是原文
+    expect(result.stdout.endsWith('A'.repeat(CAP / 2))).toBe(true) // 尾巴那半也是
+  })
+
+  test('**尾部才有结论**的输出——结论进得了这一份（`D40` 的要害）', async () => {
+    const { box } = freshSandbox()
+
+    // 头是噪声、结论在末尾——只留头的那一版正好把它丢掉
+    const result = await box.exec('seq 1 5000 | sed "s/^/noise-/"; echo 结论在这', {
+      maxOutputBytes: 1024,
+    })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBe(true)
+    expect(result.stdout.startsWith('noise-1\n')).toBe(true) // 头在
+    expect(result.stdout.endsWith('结论在这\n')).toBe(true) // 尾也在
+  })
+
+  test('省略说明——**说得出省了多少 ＋ 怎么看全**', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 500)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.stdout).toContain('中间省略 436 字节') // 500 − 64，省掉的那个数
+    expect(result.stdout).toContain('原文共 500 字节')
+    expect(result.stdout).toContain('开头 32 字节')
+    expect(result.stdout).toContain('结尾 32 字节')
+    // 指路：**光截不指路**＝把「这里还有」变成一句没法行动的话
+    expect(result.stdout).toContain('要看全')
+    expect(result.stdout).toContain('read')
+  })
+
+  test('未超上限 → 不设 `truncated`（字段缺席＝没截）· 全文完好', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 10)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBeUndefined()
+    expect(result.stdout).toBe('A'.repeat(10))
+  })
+
+  test('恰好等于上限 → 不算截断（边界不多不少）', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 64)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBeUndefined()
+    expect(result.stdout).toHaveLength(CAP)
+  })
+
+  test('上限**之内**不切中段——`CAP/2` 与 `CAP` 之间的那一段整份送来', async () => {
+    const { box } = freshSandbox()
+
+    // 50 字节 < 64：头那一半（32）之外还剩 18 字节——它们是**尾那份缓冲**兜的，
+    // 到头来没越上限，就得原样补吐出去（不许凭空少一截）
+    const result = await box.exec('printf "A%.0s" $(seq 1 50)', { maxOutputBytes: CAP })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBeUndefined()
+    expect(result.stdout).toBe('A'.repeat(50))
+  })
+
+  test('截断时增量拼接 ＝ 终值（**这条一条没破**）——头尾与说明都在增量里', async () => {
+    const { box } = freshSandbox()
+    const deltas: OutputDelta[] = []
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 500)', {
+      maxOutputBytes: CAP,
+      onOutput: (delta) => deltas.push(delta),
+    })
+
+    const joined = deltas.map((delta) => delta.text).join('')
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(joined).toBe(result.stdout)
+    expect(joined).toContain('…（截断：') // 屏幕上看到的也是同一份（含说明）
+  })
+
+  test('**每道流各自计**——stdout 截了不牵连 stderr', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf "A%.0s" $(seq 1 500); printf "E%.0s" $(seq 1 3) >&2', {
+      maxOutputBytes: CAP,
+    })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBe(true)
+    expect(bodyOf(result.stdout)).toBe('A'.repeat(CAP))
+    expect(result.stderr).toBe('EEE') // 另一道流完好，也没有被塞进说明
+  })
+
+  test('多字节——切在字符中间**不吐乱码**（半片丢掉，不编造替换符）', async () => {
+    const { box } = freshSandbox()
+
+    // 「中」＝ 3 字节；上限 10 ＝ 头 5（1 整字 ＋ 2 字节残片）＋ 尾 5（从那半片之后接上）
+    const result = await box.exec('printf "中%.0s" $(seq 1 20)', { maxOutputBytes: 10 })
+
+    if (!result.ok) throw new Error('期望命令跑过')
+    expect(result.truncated).toBe(true)
+    expect(result.stdout).not.toContain('�') // 两处半片都不编造
+    expect(bodyOf(result.stdout)).toBe('中中') // 头尾各一个**整字**
+    expect(result.stdout.startsWith('中')).toBe(true)
+    expect(result.stdout.endsWith('中')).toBe(true)
+  })
+
+  test('大输出不卡死——命令写 5MB、上限 1KB，仍照常收束（读干不辍）', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('yes x | head -c 5000000; echo DONE >&2', {
+      maxOutputBytes: 1024,
+      timeoutMs: 20_000,
+    })
+
+    const { stdout, stderr, exit } = streamsOf(result)
+    expect(exit).toBe(0) // 没被截断这件事拖死
+    expect(okOf(result).truncated).toBe(true)
+    expect(bodyOf(stdout).length).toBeLessThanOrEqual(1024) // 头 ＋ 尾 不越上限
+    expect(stdout.startsWith('x\n')).toBe(true)
+    expect(stdout.endsWith('x\n')).toBe(true)
+    expect(stderr).toBe('DONE\n') // 排空到 EOF，命令的收尾输出照样收得到
+  })
+})
+
+// ══ 判据 4 · 失败三例 ═════════════════════════════════════════════════
+
+/** 断死一例沙箱级失败——顺带把 `reason` 的**排他性**钉住（不许拿别的原因顶账）。 */
+function failureOf(result: ExecResult): { reason: string; message: string } {
+  if (result.ok) throw new Error(`期望沙箱级失败（ok:false），实为命令跑过：exit=${result.exit}`)
+  return { reason: result.reason, message: result.message }
+}
+
+/** 取**超时**那一支（U69）——另两支没有输出可谈，故单拎一个收窄助手。 */
+function timedOutOf(result: ExecResult): Extract<ExecResult, { ok: false; reason: 'timeout' }> {
+  if (result.ok || result.reason !== 'timeout') {
+    const what = result.ok ? `命令跑过（exit=${result.exit}）` : `reason=${result.reason}`
+    throw new Error(`期望超时（ok:false · reason:'timeout'），实为${what}`)
+  }
+  return result
+}
+
+describe('判据 4 · 失败三例——各归 `reason`', () => {
+  test('超时 → `reason: timeout`（不把 SIGKILL 的 137 当答案）', async () => {
+    const { box } = freshSandbox()
+
+    const started = Date.now()
+    const result = await box.exec('sleep 5', { timeoutMs: 300 })
+    const elapsed = Date.now() - started
+
+    expect(failureOf(result).reason).toBe('timeout')
+    expect(elapsed).toBeLessThan(3000) // 真收命了，不是等它自己睡醒
+  })
+
+  test('超时那一支**带上已产出的输出**（U69）——收尸排空时值不该丢', async () => {
+    const { box } = freshSandbox()
+
+    // 先吐两行、再拖到超时。命令**跑过了**这件事，`stdout` / `stderr` 就是它的物证。
+    const result = await box.exec('printf 半截; printf 警告 >&2; sleep 5', { timeoutMs: 300 })
+
+    expect(failureOf(result).reason).toBe('timeout')
+    const timed = timedOutOf(result)
+    expect(timed.stdout).toBe('半截')
+    expect(timed.stderr).toBe('警告')
+    // 上界也带出来——工具域那一边的抬头要的是**真报了的那条**，不是它自己记的
+    expect(timed.timeoutMs).toBe(300)
+  })
+
+  test('超时**连命令起的孙进程一起收**——不留一窝孤儿', async () => {
+    const { box, root } = freshSandbox()
+    const marker = join(root, 'escaped.txt')
+
+    // 后台子壳 1 秒后落一个文件；若不按进程组收，超时杀掉的只是直接子进程
+    const result = await box.exec(`(sleep 1; touch ${marker}) & sleep 5`, { timeoutMs: 300 })
+
+    expect(failureOf(result).reason).toBe('timeout')
+    await new Promise((resolve) => setTimeout(resolve, 1200)) // 熬过后台子壳本该落文件的那一刻
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  test('根外 cwd 的实际启动错误归 spawn，不生成第二次权限拒绝', async () => {
+    const { box } = freshSandbox()
+    expect(failureOf(await box.exec('pwd', { cwd: join(freshRoot(), 'missing') })).reason).toBe('spawn')
+  })
+
+  test('cwd 经 .. 返回实际命令结果', async () => {
+    const { box } = freshSandbox()
+    expect(streamsOf(await box.exec('echo hi', { cwd: '..' })).stdout.trim()).toBe('hi')
+  })
+
+  test('启动失败（cwd 在根内但不存在）→ `reason: spawn`，且点出 cwd', async () => {
+    const { box, root } = freshSandbox()
+
+    const result = await box.exec('echo hi', { cwd: 'no-such-dir' })
+
+    expect(failureOf(result).reason).toBe('spawn')
+    // Bun 的 ENOENT 文案指向可执行名（`posix_spawn 'sh'`），真凶通常是 cwd——
+    // 报文里补上 cwd，排障才不必反推
+    expect(failureOf(result).message).toContain(join(root, 'no-such-dir'))
+  })
+})
+
+describe('判据 4 · 两条实测陷阱——别混为一类', () => {
+
+  test('命令**自己**死成 137 ≠ 超时（不从退出码反推沙箱级失败）', async () => {
+    const { box } = freshSandbox()
+
+    const selfKilled = await box.exec('kill -9 $$', { timeoutMs: 5000 })
+    const timedOut = await box.exec('sleep 5', { timeoutMs: 300 })
+
+    // 同一个 137，两界分明：一个是命令失败（ok:true），一个是沙箱级失败（ok:false）
+    expect(streamsOf(selfKilled).exit).toBe(137)
+    expect(failureOf(timedOut).reason).toBe('timeout')
+  })
+})
+
+// ══ 判据 5 · 取消 ═════════════════════════════════════════════════════
+//
+// 返回形态的取舍（本单元自决 · 已随回报备案，见 `回报/U05.md`·待决一）：
+// 冻契约的 `ExecFailureReason` 只有 timeout / out-of-bounds / spawn **三例**，
+// **没有取消位**——而三例都是「沙箱级失败」。取消不是沙箱坏了，是调用方叫停，
+// 故不挤进 `reason`（挤进去就是拿别人的名分顶账）：取消按**命令被信号终止**返回
+// `ok: true` ＋ exit 137（SIGKILL），**取消这件事由调用方自持的 `signal` 判定**——
+// 信息不丢：`signal.aborted` 就是那条判据。超时则相反（调用方推不出），故归 `reason`。
+
+describe('判据 5 · 取消——中止在途，返回不抛', () => {
+  test('`signal` 中止在途 → 返回（不抛）· 且不再等命令自然结束', async () => {
+    const { box } = freshSandbox()
+    const controller = new AbortController()
+
+    const started = Date.now()
+    const pending = box.exec('sleep 5', { signal: controller.signal })
+    setTimeout(() => controller.abort(), 200)
+    const result = await pending // ← 若抛，本行即失败
+    const elapsed = Date.now() - started
+
+    expect(result, '取消＝返回值，不是异常').toBeDefined()
+    expect(typeof result.ok).toBe('boolean')
+    expect(elapsed).toBeLessThan(3000)
+  })
+
+  test('取消先尝试 TERM，结果明确携带取消和清理事实', async () => {
+    const { box } = freshSandbox()
+    const controller = new AbortController()
+
+    const pending = box.exec('sleep 5', { signal: controller.signal })
+    setTimeout(() => controller.abort(), 200)
+    const result = await pending
+
+    expect(result).toMatchObject({ ok: false, reason: 'canceled', cleanup: { confirmed: true } })
+  })
+
+  test('取消**连孙进程一起收**——不留一窝孤儿', async () => {
+    const { box, root } = freshSandbox()
+    const marker = join(root, 'escaped-by-cancel.txt')
+    const controller = new AbortController()
+
+    const pending = box.exec(`(sleep 1; touch ${marker}) & sleep 5`, { signal: controller.signal })
+    setTimeout(() => controller.abort(), 200)
+    await pending
+
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  test('已中止的信号 → **不启动进程**（副作用不发生）', async () => {
+    const { box, root } = freshSandbox()
+    const marker = join(root, 'never-ran.txt')
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await box.exec(`touch ${marker}`, { signal: controller.signal })
+
+    expect(result).toMatchObject({ ok: false, reason: 'spawn' })
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  test('取消 ≠ 超时——同一批 `sleep 5`，两界分明', async () => {
+    const { box } = freshSandbox()
+    const controller = new AbortController()
+
+    const canceled = box.exec('sleep 5', { signal: controller.signal })
+    setTimeout(() => controller.abort(), 200)
+    const canceledResult = await canceled
+
+    const timedOutResult = await box.exec('sleep 5', { timeoutMs: 200 })
+
+    expect(canceledResult).toMatchObject({ ok: false, reason: 'canceled' })
+    expect(failureOf(timedOutResult).reason).toBe('timeout') // 沙箱叫停的
+  })
+
+  test('取消前已产出的输出照常带回——增量已实时到手，终值也在', async () => {
+    const { box } = freshSandbox()
+    const controller = new AbortController()
+    const deltas: OutputDelta[] = []
+
+    const pending = box.exec('printf hello; sleep 5', {
+      signal: controller.signal,
+      onOutput: (delta) => deltas.push(delta),
+    })
+    setTimeout(() => controller.abort(), 300)
+    const result = await pending
+
+    // 被收命不等于白跑——「事先说出来的话」不该因为收尾仓促而丢
+    expect(result).toMatchObject({ ok: false, reason: 'canceled', stdout: 'hello' })
+    expect(deltas.map((delta) => delta.text).join('')).toBe('hello')
+  })
+
+  test('跑完的命令不受信号影响——事后中止不该误伤已终局的结果', async () => {
+    const { box } = freshSandbox()
+    const controller = new AbortController()
+
+    const result = await box.exec('echo ok', { signal: controller.signal })
+    controller.abort() // 事后再中止
+
+    expect(streamsOf(result).exit).toBe(0)
+    expect(streamsOf(result).stdout).toBe('ok\n')
+  })
+})
+
+describe('选项韧性——非法值不悄悄变成另一种语义', () => {
+  test('`maxOutputBytes: NaN` 不把输出截光（回落实现常量）', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf hello', { maxOutputBytes: Number.NaN })
+
+    // NaN 会让「剩余额度」恒为假——不管住就是「全都截掉」，且没有任何报错
+    expect(streamsOf(result).stdout).toBe('hello')
+    expect(okOf(result).truncated).toBeUndefined()
+  })
+
+  // ⚠️ **这两条 U69 改了口径**：旧口径是「一个写错的数 ⇒ 回落 120 秒那个实现常量」，
+  // 现在那个常量撤了（见下「无上界」那一节），一个写错的数落到**无上界**——
+  // 宁可多等，不可误掐：一个写错的数不该把一条正在下载依赖的命令收掉。
+  //
+  // ⚠️ **这里咬得到什么、咬不到什么，写明白**：下面两条量的是「**不是立刻超时**」——
+  // 一条写错的数不该把命令收掉（若谁把非法值归一成 `0` 毫秒，这两条当场红）。
+  // 而「它与『不设』是同一条路」那一半，**便宜的判据咬不到**：两者只在 120 秒之后才分岔，
+  // 量它就得再跑一次两分钟（真跑用例在下「无上界」那一节，走的是**不设**那一条路；
+  // 给非法值也配一趟两分钟，多验的只是同一件事）。故那一半由
+  // `sandbox.ts`·`timeoutBoundOf` 的实现与注释兜着，**不谎称用例钉住了它**。
+  // 模型那一侧够不着这里——工具域的参数校验在更外面就把写错的值拦下了。
+  test('`timeoutMs: NaN` 不立刻收命，也不当成一个上界', async () => {
+    const { box } = freshSandbox()
+
+    const result = await box.exec('printf done', { timeoutMs: Number.NaN })
+
+    expect(streamsOf(result).exit).toBe(0)
+    expect(streamsOf(result).stdout).toBe('done')
+  })
+
+  test('`timeoutMs: 0` / 负数不能变成「立刻超时」——命令照跑完', async () => {
+    const { box } = freshSandbox()
+
+    const zero = await box.exec('printf a', { timeoutMs: 0 })
+    const negative = await box.exec('printf b', { timeoutMs: -1 })
+
+    expect(streamsOf(zero).exit).toBe(0)
+    expect(streamsOf(zero).stdout).toBe('a')
+    expect(streamsOf(negative).exit).toBe(0)
+    expect(streamsOf(negative).stdout).toBe('b')
+  })
+})
+
+// ══ U69 · 无上界（不设＝一直等） ═══════════════════════════════════════
+//
+// 用户 2026-09-25 定：**超时是调用方给的一个量，不是系统常量**；不设＝一直等。
+// 旧常量（`DEFAULT_TIMEOUT_MS = 120_000`）已撤——它 120 秒一刀切掐掉过正当的长活
+// （实测：`swift package resolve` 跑到 123.5 秒被掐，而它真在下载依赖）。
+//
+// ⚠️ **U79 把这条用例的形态改了**（原文：贴着旧常量真睡 121 秒 ⇒ **门贵约两分钟**，
+// 且**实测 flake 过一次**）：改成**注入一个小上界**，两件事在同一条判据里咬住——
+//
+// ① **给了上界它真掐，且掐的就是我们给的那一个**：`timeoutMs: BOUND` 对一条比 `BOUND`
+//    长的活当场收命，报出来的 `timeoutMs` 逐字是 `BOUND`——「**上界是我们给的那个**」
+//    （`ExecResult` 那一格本就是为此立的：报文里那个数的**唯一出处**）；
+// ② **不传就没有上界**：**同样长**的那一条活跑到自己结束、输出完好——
+//    「**它活过了那个上界**」这条判据**没有被删掉**，只是换了尺子：拿**同一个样本里
+//    当场证明真会掐人**的那个数当尺，而不是拿墙上的钟（从前量的是 `elapsed > 120_000`）。
+//
+// ⚠️ **`LONG` 不随 `BOUND` 走**（两个都是写死的短数）——这正是**反证**成立的那一手：
+// 把 `BOUND` 改回旧常量（`120_000`）⇒ ① 那条**当场红**（同一条只有 `LONG` 长的活不会被
+// 120 秒掐到，`failureOf` 那一跳直接抛），**而且不必真等两分钟**。
+//
+// ⚠️ **代价写明白**：这样改之后，「**有人把旧常量当兜底加回来**」这一半，上面那条**咬不到**
+// （那条活只有 1.2 秒，120 秒的兜底碰不到它）。那一半改由**下一节那条归一的判据**咬
+// （`timeoutBoundOf`：缺省 / `null` / 写错的数 ⇒ `null`）——**当场红，不等**。
+
+describe('U69 · 无上界——不设就是不设，跑到它自己结束', () => {
+  /**
+   * 用例**注入的小上界**（毫秒）——旧常量（120 秒）的替身。
+   *
+   * 两条路都用它当尺子：**显式给出去**的那一条要被它掐住，**不传**的那一条要活过它。
+   */
+  const BOUND = 400
+  /** 那条「长活」的长度——**比 `BOUND` 长一截、与它不联动**（见文件头「反证」那条注）。 */
+  const LONG = 1_200
+
+  test(
+    '**给了上界就掐（掐的就是我们给的那个）** · **不传就活过它**自己结束',
+    async () => {
+      const { box } = freshSandbox()
+
+      // ① 同一个上界**显式给出去**：同长度的活当场被收，且报出来的就是它
+      const killed = await box.exec(`sleep ${LONG / 1_000}`, { timeoutMs: BOUND })
+      const hit = timedOutOf(killed)
+      // 「上界是我们给的那个」——不是旧常量、也不是别的什么数
+      expect(hit.timeoutMs).toBe(BOUND)
+
+      // ② **不传**：同样长的活跑到自己结束——上界那一档真的不存在
+      const survived = await box.exec(`sleep ${LONG / 1_000} && printf survived`, {})
+      expect(okOf(survived).exit).toBe(0)
+      expect(streamsOf(survived).stdout).toBe('survived')
+    },
+    20_000, // 用例自身的上限——两跳加起来约 1.6 秒，留足余量
+  )
+
+  test('显式写 `null` 与**不写**是同一条路（那一档要有个看得见的写法）', async () => {
+    const { box } = freshSandbox()
+
+    // 两条都**短**（不重复上面那一趟）：咬的是「两者都＝无上界」——
+    // 若 `null` 被当成「没给」而回落到某个常量，它与不写就不是同一条路了；
+    // 若被当成 `0`（「立刻超时」），下面第一条当场红。
+    const explicit = await box.exec('printf a', { timeoutMs: null })
+    const omitted = await box.exec('printf b', {})
+
+    expect(streamsOf(explicit).exit).toBe(0)
+    expect(streamsOf(explicit).stdout).toBe('a')
+    expect(streamsOf(omitted).exit).toBe(0)
+    expect(streamsOf(omitted).stdout).toBe('b')
+  })
+})
+
+describe('消费者回调的错——不静默，也不留孤儿', () => {
+  test('`onOutput` 抛错：异常上抛（消费者自己的 bug 不吞），且命令被收走', async () => {
+    const { box, root } = freshSandbox()
+    const marker = join(root, 'leaked.txt')
+
+    // 后台子壳写在**输出之前**：本用例的回调在首个 chunk 上就炸，收命发生在毫秒级——
+    // 而 `sh` fork 出后台子壳也要几毫秒，先 fork 后输出才让「收命时子壳已在组内」成为
+    // 确定性事实（实测：反过来写会撞上 fork 窗口，子壳逃逸——见回报·已知限度一）。
+    const result = await box.exec(`(sleep 1; touch ${marker}) & printf tick; sleep 5`, {
+      onOutput: () => { throw new Error('消费者炸了') },
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'cleanup', stdout: 'tick', cleanup: { confirmed: true } })
+    if (!result.ok) expect(result.message).toContain('消费者炸了')
+
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    expect(existsSync(marker)).toBe(false) // 抛出去也得把进程收拾干净
+  })
+})
+
+describe('D57 · 命令退出与进程组寿命分离', () => {
+  const options = { cwd: '/tmp', timeoutMs: null, maxOutputBytes: 1024 } as const
+  const inherited = 'cd /tmp && /bin/sleep 30 >/dev/null 2>&1 & echo parent-done'
+
+  test('原触发结构：主 shell 已退，超时仍覆盖双流 EOF 等待', async () => {
+    const ledger = createProcessLedger()
+    const result = await runCommand(inherited, { ...options, timeoutMs: 200, ledger })
+    expect(result).toMatchObject({ ok: false, reason: 'timeout', stdout: 'parent-done\n', cleanup: { confirmed: true } })
+    expect(ledger.list()).toEqual([])
+  })
+
+  test('同一结构不设时限，主命令退出后仍可取消', async () => {
+    const ledger = createProcessLedger()
+    const controller = new AbortController()
+    const result = await runCommand(inherited, { ...options, ledger, signal: controller.signal,
+      onOutput: delta => { if (delta.text.includes('parent-done')) controller.abort() },
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'canceled', stdout: 'parent-done\n', cleanup: { confirmed: true } })
+    expect(ledger.list()).toEqual([])
+  })
+
+  test('完整重定向的后台后代不阻塞工具返回，资源仍有可核组长', async () => {
+    const ledger = createProcessLedger()
+    try {
+      const result = await runCommand('(cd /tmp && /bin/sleep 30) >/dev/null 2>&1 & echo parent-done', { ...options, ledger })
+      expect(result).toMatchObject({ ok: true, exit: 0, stdout: 'parent-done\n' })
+      const owned = ledger.list()
+      expect(owned).toHaveLength(1)
+      expect(await startTimeOf(owned[0]!.pgid)).toBe(owned[0]!.startedAt)
+    } finally { await Promise.all(ledger.list().map(owned => reapOwned(owned))) }
+    expect(ledger.list()).toEqual([])
+  })
+
+  test('后代忽略 TERM 时，组长身份保留到 KILL 升级；重复回收共用一趟', async () => {
+    const child = await spawnOwned(['/bin/sh', '-c', "trap '' TERM; echo ready; while :; do sleep 1; done"], {
+      cwd: '/tmp', stdout: 'pipe', stderr: 'pipe', kind: 'exec', what: 'D57 TERM test',
+    })
+    const reader = child.process.stdout.getReader()
+    await reader.read()
+    reader.releaseLock()
+    const target = { pgid: child.process.pid, startedAt: child.startedAt, what: 'D57 TERM test' }
+    const first = reapOwned(target, { settleMs: 0, termMs: 100, killMs: 1000 })
+    expect(reapOwned(target)).toBe(first)
+    expect((await first).kind).toBe('reaped')
+    await child.process.exited
+    expect(groupAlive(child.process.pid)).toBe(false)
+  })
+
+  test('关闭宿主控制通道后，包装回收自己的组', async () => {
+    const child = await spawnOwned(['/bin/sh', '-c', "trap '' TERM; echo ready; sleep 30"], {
+      cwd: '/tmp', stdout: 'pipe', stderr: 'pipe', kind: 'exec', what: 'D57 owner EOF test',
+    })
+    const reader = child.process.stdout.getReader()
+    await reader.read()
+    reader.releaseLock()
+    child.process.stdin.end()
+    await child.process.exited
+    expect(groupAlive(child.process.pid)).toBe(false)
+  })
+
+  test('身份不符不发信号；实际归属仍可正常回收', async () => {
+    const child = await spawnOwned(['/bin/sleep', '30'], { stdout: 'ignore', stderr: 'ignore', kind: 'exec', what: 'D57 identity test' })
+    const target = { pgid: child.process.pid, startedAt: child.startedAt, what: 'D57 identity test' }
+    try {
+      expect((await reapOwned({ ...target, startedAt: child.startedAt - 10_000 })).kind).toBe('stranger')
+      expect(groupAlive(child.process.pid)).toBe(true)
+    } finally { await reapOwned(target, { settleMs: 0 }) }
+  })
+
+  test('组长被外部强杀时返回未确认与已读输出，不无限等待后代管道', async () => {
+    const ledger = createProcessLedger()
+    let killed = false
+    const result = await runCommand('echo ready; sleep 1.5', { ...options, ledger,
+      onOutput: delta => {
+        if (!killed && delta.text.includes('ready')) {
+          killed = true
+          process.kill(ledger.list()[0]!.pgid, 'SIGKILL')
+        }
+      },
+    })
+    expect(result).toMatchObject({ ok: false, reason: 'cleanup', stdout: 'ready\n', cleanup: { confirmed: false }, outputIncomplete: true })
+    const deadline = Date.now() + 3000
+    while (ledger.list().length && Date.now() < deadline) await Bun.sleep(20)
+    expect(ledger.list()).toEqual([])
+  })
+})
+
+test('D57 · 停止关闭准入时，在途登记不能放行用户命令', async () => {
+  const { root } = freshSandbox()
+  const marker = join(root, 'must-not-start')
+  const ledger = createProcessLedger()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const blockedLedger = { ...ledger, async add(input: Parameters<typeof ledger.add>[0]) {
+    entered.resolve(); await release.promise; await ledger.add(input)
+  } }
+  const started = spawnOwned(['/bin/sh', '-c', `touch '${marker}'`], {
+    stdout: 'ignore', stderr: 'ignore', ledger: blockedLedger, kind: 'exec', what: 'D57 spawn barrier',
+  }).then(() => false, () => true)
+  await entered.promise
+  const closed = ledger.close!()
+  release.resolve()
+  expect(await started).toBe(true)
+  await closed
+  expect(existsSync(marker)).toBe(false)
+  expect(ledger.list()).toEqual([])
+  await expect(spawnOwned(['/bin/true'], { stdout: 'ignore', stderr: 'ignore', ledger, kind: 'exec', what: 'late' })).rejects.toThrow()
+})

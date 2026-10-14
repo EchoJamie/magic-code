@@ -1,33 +1,14 @@
-import { effectiveProtocol, editorRows, modelEditor, modelOverride, providerEditor, providerRequest, protocolLabel } from './model-editor.ts'
-import type { ModelEditor } from './model-editor.ts'
-import { backgroundKey, backgroundPicker, backgroundDetail } from './background.ts'
 import type { BackgroundCommand, BackgroundView } from '@magic/contracts'
+import { backgroundDetail, backgroundKey, backgroundPicker } from './background.ts'
+import { createModelSettings, type ModelNavigation } from './model-settings.ts'
+import { createPrompt, type Ask } from './prompt.ts'
 import { foldRound } from './round.ts'
-/**
- * 外壳 · 会话壳（缺陷轮 II 重画）——**只认控制面**。
- *
- * 一件：把注入的 `ControlTransport`（外壳侧一端，装配注入）接成「事件 → 视图 ＋ 键 → 命令」
- * 的一条线。**键位语义全在这层**（`key()` 收一个按键、改视图、必要时发命令）——
- * 组件只把 Ink 的键喂进来、把模型画出来。好处：接管 / 草稿 / 选择器这些规矩**不起终端就能测**。
- *
- * 四条纪律（原型 · 交互逻辑）：
- * ① **先接订阅、后放开输入**（构造即订阅）；
- * ② **slash 原稿**——已提交命令进入输入记录与召回；本地执行结果不进模型上下文；
- * ③ **审批直接展开**——保留草稿；明确选择后 Enter 作答，Esc 返回原处·
- *    **不静默吞键**（只认 y/a/n ＋ 全局 ctrl+c，其余忽略但当场说一句；粘贴一律拒）；
- * ④ **重建**（缺陷 D1）——`session.history` 分块收、收齐了按块重建记录区（**收拢**）。
- *
- * ⚠️ **`ctrl+c` 两种走法**（U100）——**这条按「这条会话手上有没有事」分，不按「屏上有没有字」**：
- * **有**（在途工作或待答）⇒ 开「当前任务去向」那三选（**打开本身不停、不暂停、不退出**）；
- * **没有** ⇒ 沿用 1 秒内按两次退出。故「按一下退不掉」不再等于「它在跑」——那个问题由
- * 三选自己答（见 `openTaskMenu` / `taskAction`）。
- */
+import { createSessionPicker } from './session-picker.ts'
 
-import { decisionActions } from './components/decision.ts'
-import { composerLayout } from './components/composer.ts'
-import { dirname } from 'node:path'
 import { sanitizeForDisplay } from '@magic/contracts'
-import type { ModelChoice } from '@magic/contracts'
+import { dirname } from 'node:path'
+import { composerLayout } from './components/composer.ts'
+import { decisionActions } from './components/decision.ts'
 
 import type {
   AgentId,
@@ -37,10 +18,10 @@ import type {
   Entry,
   EventKind,
   KernelEvent,
-  ModelInfo,
-  ModelRef,
-  ReasoningSetting,
+  RecordId,
   RunNotice,
+  RunRow,
+  RunSnapshot,
   SessionId,
   SkillCatalogRow,
   StatusLineCell,
@@ -49,86 +30,15 @@ import type {
   StopScope,
 } from '@magic/contracts'
 import {
-  COMMANDS,
-  HINT_BOOTING,
-  HINT_COMPLETION,
-  HINT_IDLE,
-  HINT_LOST,
-  HINT_WORKING,
-  MAX_CANDIDATES,
-  activeWordOf,
-  appendEcho,
-  appendOutput,
-  appendPageNote,
-  appendReceipt,
-  userImages,
-  closePicker,
-  configReasoningOf,
-  createView,
-  matchCommands,
-  movePicker,
-  openPicker,
-  pathHint,
-  pathRows,
-  resolveSkill,
-  sessionHint,
-  // **配置一览（U71）**——四行怎么铺、筛词怎么说、第 4 项那一屏报什么，都在 `view.ts` 一处
-  // （这一层只管开屏 / 重铺 / 选定之后进哪儿）
-  configHint,
-  configPathLines,
-  configRows,
-  grantsHint,
-  grantsRows,
-  hasPlan,
-  hasRunningTool,
-  mcpHint,
-  mcpRows,
-  mcpToolRows,
-  modelHint,
-  modelRows,
-  modelSettingsRows,
-  modelChoiceRows,
-  modelLabel,
-  reasoningHint,
-  reasoningRows,
-  reasoningText,
-  STATUS_LINE_DEFAULT,
-  statusLineColorOf,
-  statusLineHint,
-  statusLineRows,
-  STATUSLINE_COLOR_ACTION,
-  workspaceLabelOf,
-  sessionRows,
-  settle,
-  undock,
-  applyResume,
-  finishExecution,
-  inActiveSection,
-  runDetail,
-  runSummary,
-  skillHint,
-  skillRows,
-  cacheLabelOf,
-  vendorRows,
-  closePrompt,
-  dayLabel,
-  manageMetaOf,
-  openPrompt,
-  picked,
-  rebuild,
-  noticeReceiptOf,
-  reduce,
-  STOP_KEYS_HINT,
-  stopReceiptOf,
-  withBanner,
-  withDecisionStatus,
-  withContextWindow,
-  // **运行事实收尾状态行那一格**（U54）——构造与推来那两跳都走它（见 `withRunFacts`）
-  withRunFacts,
-  // **状态行那一格**（U100：失联那一档要改它）——`patchStatus` 是 view 那一侧的口子
-  patchStatus,
-} from './view.ts'
-import type { Dock, ModelScope, PageTurn, Picker, PickerRow, SessionScope } from './view.ts'
+  collaborationRow,
+  delegationState,
+  discussionRecords,
+  memberRecords,
+  memberRows,
+  memberState,
+} from './collaboration.ts'
+import { lineSpan, stepLeft, stepRight } from './components/composer.ts'
+import type { DraftRef } from './components/inline.ts'
 import {
   backspaceRange,
   deleteRange,
@@ -144,139 +54,68 @@ import {
   stepRightOver,
   wire,
 } from './components/inline.ts'
-import type { DraftRef } from './components/inline.ts'
-import type { PromptState, ShellView, UserImage } from './view.ts'
-import type { RecordId, RunRow, RunSnapshot } from '@magic/contracts'
-import { leftSpan, lineSpan, rightSpan, stepLeft, stepRight } from './components/composer.ts'
-import { isPrintable, tokenLabel, usageLabel } from './components/lines.ts'
-import { collaborationRow, memberRows, memberState, memberRecords, discussionRecords, delegationState } from './collaboration.ts'
+import { usageLabel } from './components/lines.ts'
+import type { Dock, PageTurn, Picker, PickerRow, ShellView, UserImage } from './view.ts'
+import {
+  COMMANDS,
+  HINT_BOOTING,
+  HINT_COMPLETION,
+  HINT_IDLE,
+  HINT_LOST,
+  HINT_WORKING,
+  MAX_CANDIDATES,
+  activeWordOf,
+  appendEcho,
+  appendOutput,
+  appendPageNote,
+  appendReceipt,
+  applyResume,
+  closePicker,
+  closePrompt,
+  createView,
+  finishExecution,
+  hasPlan,
+  hasRunningTool,
+  matchCommands,
+  movePicker,
+  noticeReceiptOf,
+  openPicker,
+  openPrompt,
+  patchStatus,
+  picked,
+  rebuild,
+  reduce,
+  settle,
+  stopReceiptOf,
+  undock,
+  userImages,
+  withBanner,
+  withContextWindow,
+  withDecisionStatus,
+  withRunFacts,
+  workspaceLabelOf,
+} from './view.ts'
+import {
+  STATUSLINE_COLOR_ACTION,
+  STATUS_LINE_DEFAULT,
+  configHint,
+  configPathLines,
+  configRows,
+  statusLineColorOf,
+  statusLineHint,
+  statusLineRows,
+} from './view/config.ts'
+import { grantsHint, grantsRows } from './view/grants.ts'
+import { pathHint, pathRows, resolveSkill, skillHint, skillRows } from './view/materials.ts'
+import { mcpHint, mcpRows, mcpToolRows } from './view/mcp.ts'
+import { configReasoningOf, reasoningText } from './view/models.ts'
+import { runSummary } from './view/sessions.ts'
 
-/** 外壳认得的按键——组件把 Ink 的 `(input, key)` 收窄成这个（多出来的都算 `other`）。 */
-export type ShellKey =
-  | { readonly kind: 'char'; readonly char: string }
-  | { readonly kind: 'enter' }
-  /** `shift+回车`——**换行**（原型 · 键盘：`回车` 发送 · `shift+回车` 换行）。 */
-  | { readonly kind: 'newline' }
-  | { readonly kind: 'tab' }
-  | { readonly kind: 'shift+tab' }
-  | { readonly kind: 'ctrl+g' }
-  | { readonly kind: 'backspace' }
-  /** 光标键（U31）——插入点左右挪一个**字素**（中文 / emoji 不切坏）。 */
-  | { readonly kind: 'left' }
-  | { readonly kind: 'right' }
-  /**
-   * **行首 / 行末**（`ctrl+a` / `ctrl+e` · U85）——插入点所在那一**行**的两端。
-   *
-   * 「行」是**逻辑行**（`\n` 划界），不是屏上折出来的视觉行（由头见 `components/composer.ts`
-   * 的 `lineSpan`）。与左右键同一条规矩：**只挪插入点、草稿一个字不动**——故它也走 `commit`
-   * 而不是 `edit`（后者会把翻历史那一格归位）。
-   */
-  | { readonly kind: 'lineStart' }
-  | { readonly kind: 'lineEnd' }
-  /** `delete`（前向删除）——删插入点**右边**那一个字素。 */
-  | { readonly kind: 'delete' }
-  | { readonly kind: 'escape' }
-  | { readonly kind: 'ctrl+p' }
-  | { readonly kind: 'ctrl+n' }
-  | { readonly kind: 'pickerDetailTop'; readonly top: number }
-  | { readonly kind: 'memberInput' }
-  | { readonly kind: 'memberMenu' }
-  | { readonly kind: 'alt+enter' }
-  | { readonly kind: 'up'; readonly columns?: number }
-  | { readonly kind: 'down'; readonly columns?: number }
-  /**
-   * **`Ctrl+C`**——这一屏**唯一一个按「这条会话手上有没有事」分岔的键**（U100）：
-   * **有**（在途工作或待答）⇒ 开「当前任务去向」三选，**打开本身不停、不退出**；
-   * **没有** ⇒ 沿用 1 秒内按两次退出（U46 · U68）。
-   *
-   * ⚠️ 它是**全局键**：接管着（裁决卡占屏）、本地小输入开着、选择器开着，它都在外壳手上
-   * （见 `key()` 里那两道门）——「一条本地小输入不该把退出挡住」那条仍旧成立。
-   */
-  | { readonly kind: 'ctrl+c' }
-  | { readonly kind: 'ctrl+o' }
-  | { readonly kind: 'ctrl+r' }
-  /**
-   * **`Ctrl T`**——收起/展开当前清单（U34）。
-   *
-   * 设计 · 任务推进：「`Ctrl T` 保留主动收起/展开当前清单的能力，默认仍为展开，
-   * 不成为看计划的必经步骤」。**只改本地视图**——不发模型请求、不动草稿与引用、
-   * 不动插入点、也不动输入历史（故它走 `commit` 而不是 `edit`：后者会把翻历史那一格归位）。
-   */
-  | { readonly kind: 'ctrl+t' }
-  /**
-   * **`Ctrl X`**——停**选中的那一条运行**（U50 · **整体**那一档）。
-   *
-   * 由头（设计 · 会话与运行管理）：「会话/成员详情选择停止」（**按明确选择的整体或局部
-   * 范围编排**）。会话列表就是「详情」入口，故两个范围各有一个键——**这一条是整体**：
-   * 收这条运行的全部资源（在途 ＋ 自有进程组），执行者随后退出。
-   */
-  | { readonly kind: 'ctrl+x' }
-  /**
-   * **`Ctrl W`**——**只停这一轮**（U50 · **局部**那一档）。
-   *
-   * 与上一条分开是有由头的：设计把「中断这一轮」与「停这件事」当两件事写（一个是局部
-   * 原语，一个要「全部相关成员及递归分发」），且明写「**不能把局部成功显示为整体成功**」
-   * ——两个范围共用一个键，用户就没法表达他要哪一个。
-   */
-  | { readonly kind: 'ctrl+w' }
-  /**
-   * **`Ctrl V`——把剪贴板里的图取进来**（U107）。
-   *
-   * ## 为什么图片要另有一个键，而文字粘贴不用
-   *
-   * 文字走的是**终端那条信道**（bracketed paste，见 `kind: 'paste'`）——终端把剪贴板的
-   * **文本**交过来。图像**没有这条通道**：paste 是文本通道，而 `Cmd+V` 那一下还被
-   * **终端自己**接走（ghostty 的默认配就是 `keybind = super+v=paste_from_clipboard`，
-   * 应用根本收不到那一次按键）。所以图像只能**进程自己去问系统剪贴板**
-   * （`execution/clipboard.ts`），而问的那一下得有个**应用收得到的按键**——就是这一个。
-   *
-   * ## 为什么是 `ctrl+v`
-   *
-   * 它是这个动作在别处的老面孔（Claude Code 的 footer 就写着 `Image in clipboard ·
-   * ctrl+v to paste`），而 `cmd+v` 那一支**拿不到**（被终端接走了，见上）。
-   * 这一屏此前没占它（`ctrl+v` 原先落到「没人接的键」那一支）。
-   *
-   * ⚠️ **它不发按键本身，发一条命令**（`input.paste`）——外壳看不见剪贴板，
-   * 也不该替内核猜一个（同 `paths.list` 那条「拿不到的不编」）。
-   */
-  | { readonly kind: 'ctrl+v' }
-  /**
-   * **清单翻页**——把行视口挪到第 `top` 行（U34）。
-   *
-   * ⚠️ **收的是「到哪一行」而不是「翻几行」**：一页 ＝ 屏上放得下的那几行，而**列数、
-   * 终端高度、交互区的高度账只有渲染那一层有**。故目标位置由渲染层按手里那一窗算好
-   * （`plan.ts` 的 `planScrolled`：夹在两头之间），外壳只存不猜——同一条「拿不到的不编」。
-   */
-  | { readonly kind: 'decisionTop'; readonly top: number }
-  | { readonly kind: 'planTop'; readonly top: number }
-  | { readonly kind: 'readerTop'; readonly top: number }
-  | { readonly kind: 'paste'; readonly text: string }
-  | { readonly kind: 'other'; readonly label: string }
+export type { ShellKey } from './input.ts'
+import type { ShellKey } from './input.ts'
 
-/**
- * 「再按一次」那道门**开着多久**（毫秒 · U68）。
- *
- * 到点就**撤掉那一行、同时取消那次监听**——此后再按是**新的一次**（重新挂上），
- * 不是「接着上一次」。
- *
- * ⚠️ **一秒**（2026-09-25 用户真跑之后从 1.5 秒缩到 1 秒）——设计那一节写的时限
- * 随之改成 1 秒。它是**那一刻回执**：一次按下的确认，一秒足够看清。
- *
- * ⚠️ **它为什么该有时限**（U68 推翻了 U46 的「不加时限」）：按三分类——
- * **配置不回显 · 状态可常驻 · 刚发生的事 ⇒ 那一刻回执**——「你按了一次 Ctrl+C」是
- * **刚发生的事**，那就该是**那一刻回执**（过一会儿自己撤），不是常驻一格。
- * 原先那条理由（「加了就是『按了没反应』的变体」）**把归类的错当成了交互的错**：
- * 加时限不是「没反应」，是「回执该有的样子」。
- */
 export const EXIT_ARM_MS = 1_000
 
-/**
- * 按键的结果——**都由组件去做**（外壳不碰终端，也不碰那一屏怎么画）。
- *
- * - `exit`：真退出；
- * - `screen`：**开查看那一屏**（U110）——那是 `ctrl+o` 的事，而备用屏、raw mode、键
- *   全归 `components/app.ts` ＋ `src/screen.ts` 那一半（外壳这一层够不着终端）。
- */
 export type ShellEffect = { readonly exit: boolean; readonly screen?: boolean }
 
 const NONE: ShellEffect = { exit: false }
@@ -304,40 +143,12 @@ export type Shell = {
   hostGone(): void
   /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
   readHistory(session?: SessionId): void
-  /**
-   * **与运行管理者的连接断了**（U100）——`why` 是连接那一头的说法（可省）。
-   *
-   * 三件事，一件都不能省（设计：「控制连接已失联……**如实留在界面说明**，不能伪报
-   * 转后台成功或已停止」）：
-   *
-   * - **留在界面**：不自动退场（旧写法是「外面那一头没了 ⇒ 窗口自己退」，U100 撤了）；
-   * - **如实说**：落一行回执说清「此后收不到实况、命令也发不出去」，状态行那一格改成
-   *   「■ 状态待确认」——**不把历史 `working` 当现况**（那一格不能再说「工作中」）；
-   * - **正等着走的那一趟**（`/exit` / 「停止并退出」）**不放行**：等的那一拍永远不会来了，
-   *   悄悄走出去就是「伪报已停止」。如实说一句，留下的那扇门是 `ctrl+c`。
-   */
+
   presented(ids: readonly string[]): void
   disconnected(why?: string): void
-  /**
-   * **加入本次输入**（U110 · 查看那一屏的 `Enter`）——把历史里那一张图**放回输入行**。
-   *
-   * 三条与当年 `/attachments` 那条「加入本次输入」逐条相同（裁定：这两件事变成
-   * 「那一行上的动作」，动作本身不变）：
-   * - **复用记录里的字节**（`blob`）——**不回头找原路径**（源文件可能早删了）；
-   * - **不发送**：放回输入行而已，发不发由用户回车决定；
-   * - **插在插入点上**（设计 · 文件与图片：「在打开查询前的输入位置插入引用……不一律追加到
-     末尾」）——那一屏只读，故「进屏前那个插入点」就是此刻的 `view.caret`。
-   *
-   * 编号仍归稿子那一侧发（`imageNumberOf`，按内容身份）：同一张图放两次拿到同一个号。
-   */
+
   attachMaterial(material: UserImage): void
-  /**
-   * **导出原图**（U110 · 查看那一屏的 `e`）——发一条命令，字节与落点都不归外壳。
-   *
-   * 外壳只把「哪一张」交出去（`blob` ＋ 人读那两格）：**字节在内核那一侧**
-   * （记录里那份 blob），**落点归装配**（唯一命名 · 不覆盖 · 不自动打开）。答复走事件
-   * （`image.exported`），落成记录区里的一行回执——那一屏画的正是那条记录，故它也看得见。
-   */
+
   exportMaterial(material: UserImage): void
   /** 收摊——退订传输、清订阅者。 */
   dispose(): void
@@ -393,34 +204,20 @@ function statusLines(view: ShellView): readonly string[] {
 
 const STATUS_TITLE = '此刻'
 
-/**
- * **状态行配置那一屏的抬头**（U112）——画在候选**之上**那一行（同 `/task` 那一屏的姿势）。
- *
- * 它答的是这一屏的第一个问题：**你在配什么**。「状态行」三个字不够——用户要的是
- * 「这一行放哪几格」，而那几格在下面列着（`statusLineRows`）。
- */
 const STATUSLINE_TITLE = '状态行放哪几格'
 
 /**
- * 一次「等内核回话再开选择器」的意图——`/resume` · `/model` · `/grants` · `/skills` 各一种。
+ * 模型之外的「等内核回话再开选择器」意图；模型入口由 model-settings 自持。
  *
  * ⚠️ **`'config'` 是唯一一个等三份答复的**（见 `configPending`）：那一屏的四行里三行的
  * 当前值各有自己的读侧命令，缺一份那一格就只能写「还没问到」。
  */
 type PendingPicker =
   | 'session'
-  | 'model'
   | 'grants'
   | 'skills'
   | 'mcp'
-  | 'connect'
-  | 'manage'
   | 'config'
-  /**
-   * **等「取网页用的模型」那一次保存的回话**（U78）——与 `'model'` 分开：那一样是等
-   * 一屏新读数（回去铺列表），这一样是等**一次动作的结果**（收起抽屉、留一行回执）。
-   */
-  | 'modelSave'
 
 /**
  * `/config` 开屏要问的那三份读数——**一份都不能少**（少一份，那一格就成了「还没问到」）。
@@ -438,65 +235,17 @@ const CONFIG_READINGS: readonly {
   { command: { type: 'mcp.list' }, event: 'mcp.catalog' },
 ]
 
-
-/**
- * 一次**本地小输入**（U41）——问一件小事、收一行字（改名 / 密钥那一类）。
- *
- * 与草稿那份输入的分野（见 `Dock` 里 `prompt` 那一支）：那一路提交出去的是**交代**，
- * 这一路是**一次设置**——不进记录、不给模型看、不进输入历史。
- */
-type Ask = {
-  /** 问的是什么——一行标签（密钥那一路会自动补上「输入不回显」）。 */
-  readonly label: string
-  /** 隐藏输入（密钥）：屏上只见圆点，真值只在壳里。 */
-  readonly secret: boolean
-  /** 初始值（改名时给现名；密钥一律空串）。 */
-  readonly value: string
-  readonly caret: number
-  /** 空着时那一行的占位（一句实话）。 */
-  readonly placeholder: string
-  /** 底下那行补充说明（可省）。 */
-  readonly note?: string
-  /** 回车时**要发什么**——`null` ＝ 什么都不发（只是收起来）。 */
-  readonly submit: (value: string) => Command | null
-  readonly local?: (value: string) => void
-  readonly change?: (value: string) => void
-}
-
-/**
- * **一屏**——`←` 弹回来要照原样摆回去的那一份（U61）。
- *
- * 设计 · 终端交互：「**选择器是「层」，一套栈管所有**」——Esc 退一层，纯列表 ← 同样返回；
- * 可编辑字段的 ← 移动光标。⚠️ **栈的单位是「那一屏」，不是「那个选择器」**：接入那一路是
- * 「选供应商 → 选区域 → 问密钥」，**选择器与本地小输入交替**，它们都是层。
- *
- * 装的就是「把这一屏重新摆出来」所需的全部：
- * - `dock`——这一屏本身（行、选中、筛词、锚点都在 `Picker` 里；`prompt` 那一支在下面另说）；
- * - `manageAt` / `detailAt`——**明细那一屏的主语**。它们住在壳里而不在
- *   视图里（同 `Dock` 那条由头：拿不到的不编、结构不从字面反推），故弹回来时得一起还；
- * - `asking`——本地小输入**问的是什么**。⚠️ 与视图里那一份（圆点）不同，这一份带着
- *   用户敲进去的**真值**（密钥也走它）——它只在壳手上，弹回来还给壳。
- */
 type Layer = {
   readonly dock: Dock
-  readonly manageAt: string
-  readonly detailAt: ModelRef
+  readonly model: ModelNavigation
   readonly asking: Ask | null
   readonly collaborationAt?: AgentId
-  readonly collaborationModel: { readonly member?: AgentId } | null
-  readonly modelScope: ModelScope
   readonly draft: string; readonly caret: number; readonly refs: readonly DraftRef[]
   readonly inputPurpose: ShellView['inputPurpose']
 }
 
 /** 建壳的入参（都可省——省了＝按「拿不到」办）。 */
-/**
- * **一个路径交给 shell 时要怎么包**（U100）——POSIX 写法：单引号包住，内部每个 `'` 写成
- * `'\''`（收尾、接一个转义的引号、再开一个）。
- *
- * 由头：接回入口那一行是**要用户整行复制去敲的**——路径里带空格 / 引号时，裸着写就散成
- * 两个词（敲下去接到别处，或者干脆报错）。它只处理这一层，**不做别的加工**。
- */
+
 function shellQuote(text: string): string {
   return `'${text.replaceAll("'", "'\\''")}'`
 }
@@ -505,26 +254,9 @@ export type ShellOptions = {
   readonly copyText?: ((text: string) => Promise<void>) | undefined
   readonly detached?: ((listener: (why: string) => void) => void) | undefined
   readonly reopen?: (() => Promise<void>) | undefined
-  /**
-   * **上下文窗总量**（U20 · 差距 5）——状态行 ④ 的**开机那一格**分母（`12.4k/200k`）。
-   *
-   * 装配把**当下那一条的**数递进来（`Assembly.contextWindow`：配置声明或内置表，
-   * 见 `resolveContextWindow`）；拿不到／没声明就不给 ⇒ `null` ⇒ 屏上只报已用量
-   * ——不编、不猜、不改事件契约（见 `withContextWindow`）。
-   *
-   * ⚠️ 只管**开机那一刻**：外壳那时还不知道模型名。此后的分母归**事件**
-   * （`model.switched` / `model.call.start` 各自带着那一刻的有效输入预算，U41 返修）。
-   */
+
   readonly contextWindow?: number | null | undefined
-  /**
-   * **本进程的工作区**（U26）——`/resume` 那一屏据它认「哪个是别的项目」
-   * （分组头永远都有；**压暗**只落在判得实的那些：工作区记着、且与这一组不同）。
-   *
-   * 装配把执行域的 `roots()` 递进来（`realpath` 后的规范形 · 声明序）——与记录域
-   * 构造时交出去的是**同一个值**：一头锚进记录、一头用于认路，两处同源。
-   *
-   * **不给＝不知道自己在哪儿** ⇒ 一组都不压暗（「拿不到的不编」——同 `contextWindow`）。
-   */
+
   readonly workspaceRoots?: readonly string[] | undefined
   /** 基础目录派生的实际数据目录，仅用于设置回显。 */
   readonly dataDir?: string | undefined
@@ -532,96 +264,36 @@ export type ShellOptions = {
   readonly home?: string | undefined
   /** 入口选定的绝对 .magic 路径；保留符号链接写法，用其父目录生成接回命令。 */
   readonly magicBase: string
-  /**
-   * **状态行放哪几格**（U112 · `MagicConfig.statusLine` 原样带进来）。
-   *
-   * 与 `dataDir` / `workspaceRoots` 同一条姿势：**启动那一刻定下的那几格**由外面递
-   * ——窗口这一侧读配置只为呈现（见 `packages/app/src/run/terminal.ts` 那张表）。
-   * **不给＝还没配过** ⇒ 屏上走默认那条（`STATUS_LINE_DEFAULT`）。
-   *
-   * ⚠️ 此后**由外壳自己改**（`/config` 里那两格 → `prefs.set` → 回话到了落进视图）：
-   * 这一格只是**开机那一份**，不是唯一的真源。
-   */
+
   readonly statusLine?: StatusLineConfig | undefined
   /** 整轮耗时的显示口径；缺省为完整经过时间。 */
   readonly turnDuration?: 'elapsed' | 'active' | undefined
-  /** **减少动效**（U112 · `MagicConfig.motion.reduced`）——不给＝没开。同上：开机那一份。 */
+
   readonly reducedMotion?: boolean | undefined
-  /**
-   * **受理输入了没有**——缺省 `true`（不设闸）。
-   *
-   * 「放开输入」以 `boot` **完成为界**（技术方案 · 装配视图第 5 步 · U25 收敛）：
-   * 起真外壳时先给 `false`，`boot` 跑完再 `releaseInput()`。不设闸的调用方
-   * （不跑 `boot` 的测试 / 演示）照旧一挂载就能提交。
-   */
+
   readonly inputReady?: boolean | undefined
-  /**
-   * **启动那几句要说的话**（U22 · 审计第 13 条）——开局进记录区，一行回执。
-   *
-   * 由头：解析从严（读不懂的规则 / 授权**不生效**）原先**只有 `--check` 会说**，
-   * 走 TUI 这条路时**一声不响**。装配把话备好（`Assembly.notices`），外壳只负责说。
-   *
-   * 开屏时只印一次，并作为当前页头保留到历史重建完成。
-   */
+
   readonly receipts?: readonly string[] | undefined
-  /**
-   * **运行事实的来路**（U49）——「谁在跑、什么状态」由管理者**推**来（不必问）。
-   *
-   * 为什么走一条**独立于事件**的路：它是**服务状态**（管理者手上的事实），不是内核事件
-   * ——内核一个字都不背运行管理（设计 · 本机执行结构）。混进事件面就是拿内核的语言
-   * 说管理面的话，两边迟早各说一套。
-   *
-   * **不给**（用例 / 演示）⇒ 那一屏照旧只有目录，一行状态都不标——「拿不到的不编」。
-   */
+
   readonly runs?: RunFeed | undefined
-  /**
-   * **接回快照的来路**（U49）——挂到某一代上之后，管理者取来那一代的「此刻」。
-   *
-   * **不给** ⇒ 接回那一手不做（照旧只铺记录里的历史）。
-   */
+
   readonly resumed?: ResumeFeed | undefined
   /**
    * **这一趟开局就接的那条会话**（`resume <id>`）——只作开屏那张摘要的排除项
    * （设计：摘要说的是**其他**活跃工作，而这条正是用户为它来的）。
    */
   readonly openingSession?: string | undefined
-  /**
-   * **停一条运行**（U50）——整体（`run`）或局部（`turn`），**由用户明确选择**。
-   *
-   * 由外层转给本机管理者（窗口这一侧不做判断：谁是管理者、那一代还在不在，都不归它知道）。
-   * **不给**（用例 / 演示）⇒ 那一屏的停止键收起（按下去只落一句「这儿停不了」）。
-   */
+
   readonly stop?: ((session: SessionId, scope: StopScope) => void) | undefined
-  /**
-   * **停止走到了哪一拍**（U50）——受理 / 已核销 / 没能证实，各落一行回执。
-   *
-   * 报的是**结构化**的（哪一条、哪一档、哪一拍），**话由这一层拼**——因为那句话要带上
-   * 会话的标题，而标题只有这一层手上有（目录在这儿）。
-   */
+
   readonly stopped?: ((listener: (report: StopReport) => void) => void) | undefined
-  /**
-   * **管理者说的一句给人看的话**（U50 接上）——代次过期、它要收摊、那一代收摊了……
-   *
-   * ⚠️ 这一条**原先是断的**（U48 起了线、U49 没用上）：管理者说了话，屏上一行都没有。
-   * 停止那条路正要靠它（「没切到」「起不了执行者」那几句都在这一条上）。
-   */
+
   readonly lines?: ((listener: (text: string) => void) => void) | undefined
-  /**
-   * **刚刚发生了一件事**（U50）——完成 / 失败 / 需要你，三类之外没有（见 `RunNotice`）。
-   *
-   * 与 `stopped` 分开：那一条是**用户自己按的**那一下的回执，这一条是**他没看着的时候**
-   * 发生的事——两件事的读者心情都不一样（一个在等结果，一个刚回来）。
-   */
+
   readonly markRead?: ((ids: readonly string[]) => void) | undefined
   readonly notices?: ((listener: (notice: RunNotice) => void) => void) | undefined
 }
 
-/**
- * **停止走到了哪一拍**（U50）——与 `@magic/app` 那一侧同形（那边是产出方）。
- *
- * 契约里没有它：它是**管理者 ↔ 外壳**之间的运行管理读数，不是内核的语言（同 `RunRow`）。
- * 两处各写一个形状会分叉，故这一份是**照抄那边那条消息**的最小形（字段一字不差）。
- */
 export type StopReport = {
   readonly session: SessionId
   readonly scope: StopScope
@@ -629,18 +301,11 @@ export type StopReport = {
   readonly note?: string
 }
 
-/**
- * **运行事实的来路**（U49）——当下那一份 ＋ 变化时的通知。
- *
- * 两件都要：`current()` 给「现在就打开列表」那一刻的读数（不等下一次变化），
- * `subscribe` 给此后的变化。
- */
 export type RunFeed = {
   readonly current: () => readonly RunRow[]
   readonly subscribe: (listener: (rows: readonly RunRow[]) => void) => void
 }
 
-/** **接回快照的来路**（U49）——`gen` 是这份快照出自哪一代（诊断与配对用）。 */
 export type ResumeFeed = {
   readonly subscribe: (listener: (gen: number, snapshot: RunSnapshot) => void) => void
 }
@@ -680,14 +345,6 @@ const STREAM_WINDOW_MS = 16
 const STREAMING: ReadonlySet<EventKind> = new Set<EventKind>(['model.delta', 'tool.output.delta'])
 
 /**
- * 草稿上还剩下多少**不是引用**的文字（去掉引用那几段之后）。
- *
- * 它答一个问题：这一条按得下去吗。设计：「正文或附件任一非空即可提交」——
- * 而**只有引用、一个字都没有**的那一份不算交代（「/review」自己不是一个任务）。
- * U33 时这条判据写作 `body === ''`（剥掉斜杠词之后）；U36 起引用留在正文里，
- * 故按**引用的位置**把那几段挖掉，剩下的才是「用户要说的话」。
- */
-/**
  * 一句交代里**用户说的话**——去掉已有的引用区间，再去掉句首那个还没绑上的技能名。
  *
  * 与 `bodyOf` 分开的理由：句首那个斜杠词**此刻还不是引用**（用户正按回车让它变成引用），
@@ -700,16 +357,6 @@ export function spokenOf(draft: string, refs: readonly DraftRef[], word: string)
   return spoken.startsWith(word) ? spoken.slice(word.length) : spoken
 }
 
-/**
- * **这一条按得下去吗**——设计：「正文或附件任一非空即可提交」。
- *
- * 三条：
- * - **有正文**（去掉引用之后还有别的话）⇒ 发；
- * - **只有文件 / 目录引用** ⇒ 也发——那正是「读这份材料」这件事本身（设计明写：纯附件也能提交）；
- * - **只有技能引用**（或句首一个还没成引用的 `/名称`）⇒ **不发**：技能说的是「怎么做」，
- *   它不指一个对象。一条只有「按这个做法」而没有「做什么」的交代，内核那边落下的会是一条
- *   「用户什么都没说、但带了份材料」的条目——那不是交代（U33 那条判据的延续）。
- */
 export function submittable(draft: string, refs: readonly DraftRef[]): boolean {
   if (bodyOf(draft, refs).trim() !== '') return true
 
@@ -752,8 +399,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   let view = withBanner(
     withContextWindow(
       createView({
-        // **那三格开机就定**（U112）——配置里读到什么就是什么；没读到＝缺省
-        // （默认那条 / 照常动 / 不知道自己在哪个工作区），不在这里猜
+
         statusLine: options.statusLine,
         reducedMotion: options.reducedMotion,
         turnDuration: options.turnDuration,
@@ -766,22 +412,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   // 开屏说明属于这一页的页头。历史到达时保留原位置，避免 Static 跳过首条正文。
   for (const text of options.receipts ?? []) view = appendPageNote(view, text)
 
-  /**
-   * 运行事实（U49）——接上那一份当下读数；此后由管理者推着走（下面那一段订阅）。
-   *
-   * ⚠️ **与「启动那几句」不同**：它**不进记录区**（不是回执），只是视图里的一格——
-   * 列表每次现读它。摘要那一行才落记录（而且只落一次，见下）。
-   */
   view = withRunFacts(view, options.runs?.current() ?? [])
 
-  // **开屏那张摘要**（U49 · 设计：「首页仅在**确有其他活跃工作**时出现一次摘要，例如
-  // 『2 项执行中 · 1 项需要你』，指向列表，**不反复刷屏**」）。
-  //
-  // 三处分寸都在这一跳上：
-  // - **一次**——它是一条回执（落进记录区、此后随页面走），不是状态行那种常驻读数；
-  // - **确有**——一条活跃的都没有就一个字都不说（空白开一条新的时屏上不该多一行）；
-  // - **其他**——这一趟开局就接的那条会话（`resume`）不算「别的活跃工作」：
-  //   用户正是为它来的。
   {
     const summary = runSummary(view.runs, options.openingSession)
     if (summary !== undefined) view = appendPageNote(view, summary)
@@ -845,7 +477,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   let rebuildFor: SessionId | null = null
   let rebuildEntries: Entry[] = []
 
-  /** 等回话的选择器意图（`/resume` / `/model` / `/grants` / `/skills` 各问一次）。 */
+  /** 模型之外的选择器等待意图；新的读侧入口会撤销旧模型开页意图。 */
   let waiting: PendingPicker | null = null
 
   /**
@@ -861,61 +493,30 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   let configPending = new Set<KernelEvent['kind']>()
 
-  /**
-   * **这一屏正在筛的词**（U71）——同 `/resume` 的 `sessionQuery`：只留在这一屏，
-   * **不写进草稿**（它不是用户那句交代的一部分，与 `@` 那一段不同，见 `Picker.anchor`）。
-   *
-   * 开一屏就是一屏新的（`openConfigPicker` 里清零）：筛词是「我这一次找哪一项」的临时状态，
-   * 不是一条该被记住的偏好。
-   */
   let configQuery = ''
 
-  /**
-   * **一次换页动作发出去了、还在等答复**（U44）——`/clear` 或 `/resume` 选定某条。`null` ＝ 没在等。
-   *
-   * `kind` 说的是**这一跳是哪一种**（U45 · `PageTurn`）——它决定**这一页带不带字标**：
-   * `'new'`（`/clear`＝开一条新的）**印**、`'open'`（`/resume`＝翻回已有的一页）**不印**。
-   * `label` 是回执要带的名字：`/resume` 那条是**那一条的名字**，`/clear` 一个字都不说，
-   * 故为 `null`。
-   *
-   * 它管两件（都按**真实结果**办，见 `onEvent` 里那一支）：
-   * - **这一页要不要翻、翻成哪一副面孔**——归约据它把 `null → 头一条` 也算成换页，
-   *   并按 `kind` 决定种不种字标（由头见 `reduceSessionState`）；
-   * - **要不要说一句**——`/resume` 说 `· 已切到 <名字>`；`/clear` **一个字都不说**
-   *   （回执就是清屏本身，设计 · 命令行与配置）。
-   *
-   * 与 `waiting` 分开：那个管的是「答复到了开哪一扇抽屉」，这个管的是这一跳的收场。
-   * 也**只认自己发出去的那一条**——外来的 `session.state`（别的面开了会话）不该跟着翻页。
-   *
-   * ⚠️ **回执从「选定那一刻」挪到「答复到了」**（U44）：翻页把可见屏清掉——**在这一跳
-   * 之前**留的那行字会被一并推进 scrollback，新那一页的界上就**没有它**了。挪到答复这一侧，
-   * 它才是**新页自己的**头一行；顺带也就按真实结果说话（内核忙时切不动，那时不该说「已切到」）。
-   */
   let turn: { readonly kind: PageTurn; readonly label: string | null } | null = null
 
-  /** 编辑开始时捕获配置版本；异步回执只结束对应草稿。 */
-  let catalogStamp: string | null | undefined
-  let vendorQuery = false
-  let mappingStamp: string | null | undefined
-  let editor: (ModelEditor & { stamp?: string | null }) | null = null
-  let savingEditor: (ModelEditor & { stamp?: string | null }) | null = null
-  const editorDrafts = new Map<string, ModelEditor & { stamp?: string | null }>()
+  const directory = createSessionPicker({
+    get view() { return { catalog: view.catalog, runs: view.runs, sessionId: view.sessionId, collaboration: view.collaboration } },
+    get picker() { return view.dock.kind === 'picker' && view.dock.picker.source === 'session' ? { ...view.dock.picker, source: 'session' as const } : null },
+    workspaceRoots: options.workspaceRoots,
+    present: picker => commit(openPicker(view, picker)),
+    notify: flash => commit({ ...view, flash }),
+    send: command => send(command),
+  })
 
-  /**
-   * **管理明细正说着哪一条连接**（U41）——空串＝没在明细那一屏。
-   *
-   * 由 `submit` 进那一屏时写下、由重铺那一处读它：明细是「**某一条连接**的一屏」，
-   * 而这一位就是「哪一条」——同 `/mcp <名字>` 的 `mcpServer`（不靠行内容反推）。
-   */
-  let manageAt = ''
+  const models = createModelSettings({
+    get view() { return { models: view.models, vendors: view.vendors, modelCurrent: view.modelCurrent, configuredModels: view.configuredModels, collaboration: view.collaboration } },
+    get picker() { return view.dock.kind === 'picker' ? view.dock.picker : null },
+    present: picker => commit(picker === null ? closePicker(closePrompt(view)) : openPicker(view, picker)),
+    receipt: text => commit(appendReceipt(view, text)),
+    send: command => send(command),
+    enterLayer: () => enterLayer(),
+    popLayer: () => popLayer(),
+    get prompt() { return prompt },
+  })
 
-  /** **详情那一屏正说着哪一条模型**（U41）——与 `manageAt` 同一条由头（明细得有主语）。 */
-  let detailAt: ModelRef = { provider: '', model: '' }
-
-
-  let modelScope: ModelScope = 'session'
-  let startOnAliasSave = false
-  let collaborationModel: { readonly member?: AgentId } | null = null
   let collaborationAt: AgentId | undefined
   let collaborationQuery: { readonly member?: AgentId } | null = null
   const memberViews = new Map<AgentId, CollaborationView>()
@@ -924,34 +525,21 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   const answeredDecisions = new Set<RecordId>()
   let decisionReturn: { readonly dock: Dock; readonly layers: readonly Layer[]; readonly status: ShellView['status'] } | null = null
 
-  /** 映射编辑取全局配置；工作选择与思考取对应 Agent 的有效组合。 */
-  const scopeCurrent = (): ModelRef | null =>
-    modelScope !== 'session' ? view.configuredModels[modelScope] ?? null
-      : collaborationModel !== null
-        ? (collaborationModel.member === undefined ? view.collaboration?.collaboration?.defaultModel : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.model) ?? null
-        : view.modelCurrent
-
-  const reasoningOf = (pick: ModelRef): ReasoningSetting | undefined => {
-    const current = scopeCurrent()
-    return current?.provider === pick.provider && current.model === pick.model && 'reasoning' in current ? current.reasoning as ReasoningSetting : undefined
-  }
-
-  /** 状态行沿有效选择更新思考读数；未声明时整格省掉。 */
-  const syncReasoning = (): void => {
-    const pick = view.modelCurrent
-    const setting = pick === null ? undefined : reasoningOf(pick) ?? configReasoningOf(view)
-    const text = setting === undefined ? null : reasoningText(setting)
-
-    if (text !== view.status.reasoning) commit(patchStatus(view, { reasoning: text }))
-  }
-
-  /**
-   * **正在问的一件小事**（U41）——改名 / 密钥那一类，`null` ＝ 没在问。
-   *
-   * ⚠️ **值存在这里、不在视图里**（见 `PromptState` 的注）：密钥进不了视图对象，
-   * 也就进不了渲染、取帧与快照；`submit` 那一格是外壳自己按用途给的（一次设置要发什么命令）。
-   */
-  let asking: Ask | null = null
+  const prompt = createPrompt({
+    present: state => commit(state === null ? closePrompt(view) : openPrompt(view, state)),
+    send: command => send(command),
+    popLayer: () => popLayer(),
+    onSubmit: (command, value) => {
+      if (command.type !== 'session.rename' || sessionTarget !== command.session) return false
+      if (managementPending !== null) return true
+      if (!connected) { commit({ ...view, flash: 'Engine 未连接，请先 Ctrl+R 重连' }); return true }
+      if (value.trim() === '') { commit({ ...view, flash: '名称不能为空' }); return true }
+      managementPending = command.type
+      commit({ ...view, flash: '正在保存…' })
+      send(command)
+      return true
+    },
+  })
 
   /** 临时层保存进入时的输入、目标和字段；Esc 逐层恢复。 */
   let layers: readonly Layer[] = []
@@ -960,12 +548,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   /** 此刻这一屏——收进栈里的那一份（见 `Layer`）。 */
   const layerNow = (): Layer => ({
     dock: view.dock,
-    manageAt,
-    detailAt,
-    asking,
+    model: models.snapshot(),
+    asking: prompt.snapshot(),
     collaborationAt,
-    collaborationModel,
-    modelScope,
     draft:view.draft, caret:view.caret, refs:view.refs, inputPurpose:view.inputPurpose,
   })
 
@@ -985,68 +570,35 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   /** 把栈里那一层照原样摆回来——**光标位置、草稿与选区照旧**（草稿那三格压根没动过）。 */
   const restoreLayer = (layer: Layer): void => {
-    manageAt = layer.manageAt
-    detailAt = layer.detailAt
-    asking = layer.asking
+    models.restore(layer.model)
+    prompt.restore(layer.asking)
     collaborationAt = layer.collaborationAt
-    collaborationModel = layer.collaborationModel
-    modelScope = layer.modelScope
     view = {...view,draft:layer.draft,caret:layer.caret,refs:layer.refs,inputPurpose:layer.inputPurpose}
     if(layer.dock.kind==='input'){commit({...view,dock:layer.dock});return}
 
     if (layer.dock.kind === 'picker') {
       commit(openPicker(view, layer.dock.picker))
-      if (layer.dock.picker.source === 'model-editor') showEditor()
+      if (layer.dock.picker.source === 'model-editor') models.showEditor()
       if (layer.dock.picker.source === 'background') openBackground(layer.dock.picker.rows[layer.dock.picker.selected]?.value)
       if (layer.dock.picker.source === 'collaboration') openCollaboration(layer.dock.picker.rows[layer.dock.picker.selected]?.value)
-      if (layer.dock.picker.source === 'session') refreshSessionPicker()
+      if (layer.dock.picker.source === 'session') directory.refresh()
       if (layer.dock.picker.source === 'session-actions' && sessionTarget !== undefined) showSessionActions(sessionTarget, false)
       return
     }
     if (layer.dock.kind === 'prompt' && layer.asking !== null) {
-      commit(openPrompt(view, promptViewOf(layer.asking)))
+      prompt.show()
       return
     }
-    /**
-     * **裁决卡也能是一层**（U100）——有在途工作时按 `ctrl+c`，开的是「任务去向」那一屏，
-     * 而它底下**正压着一张裁决卡**（待答那一形）。`esc 返回` / `←` 得把那张卡照原样摆回来
-     * （设计：「Esc 后原有草稿、引用、光标与审批恢复」）。
-     *
-     * ⚠️ **不是「什么都收掉」**：卡不是用户打开的屏，是这个会话此刻的状态——收掉它等于
-     * 替用户拒了一次审批（「关闭窗口不自动批准」同理）。故它按**一层**对待，**由上面那一跳
-     * 摆回来**（压栈在 `openTaskMenu`）。
-     *
-     * ⚠️ **`withDecisionStatus` 不能省**：状态行那一格（`● 等你定夺` ＋ 件数 ＋ 键位）归它，
-     * 少了这一步，卡回来了而状态行还停在「○ 空闲」（同一屏两句话打架）。
-     * ⚠️ **不走 `takeOver`**：草稿早在卡第一次接管时就收进 `stashed` 了，这里只是把卡摆回来
-     * ——再收一次是空转（`stashed !== null` 时它本来也直接返回）。
-     */
+
     if (layer.dock.kind === 'decision') {
-      /**
-       * **过期的卡不许复活**（U100 合前复核 · 返修二）——两条都在探针上实测过：
-       *
-       * | 那一路 | 会出什么事 |
-       * | --- | --- |
-       * | **那一代已核销**（运行事实说 `stopped`） | 卡回来、状态还是「等你定夺」，而那件工具早没了；再按 `ctrl+c` 又进三选，**回不到空闲那条退出路** |
-       * | **连接断了**（`lost`） | 卡回来、状态从「状态待确认」被改回「等你定夺」——**失联被当成还能答**，而实际连接没恢复 |
-       *
-       * 两条的处置**同一处、同一法**：把这一层**丢掉**，并**归还草稿**（复用 `undock`
-       * 那条既有机制——草稿是卡接管时收进 `stashed` 的）；「已核销」那一档顺手把本轮的行
-       * 一起定局（那一代没了，行再也不会变）。
-       *
-       * ⚠️ **`lost` 那一档不动状态那一格**：它照旧是「状态待确认」——**失联不是已停止**，
-       * 也不是「还能答」。也不发任何命令：不向内核代答、不替用户取消那张可能还有效的审批。
-       */
+
       const run = view.sessionId === null ? undefined : view.runs.find((one) => one.session === view.sessionId)
       const gone = run?.state === 'stopped'
       const lost = view.status.state === 'lost'
 
       if (gone || lost || !decisions.has(layer.dock.pending.id)) {
         const back = undock({ ...view, dock: layer.dock })
-        // ⚠️ **失联优先**（U100 合前复核补）：两件同时为真时（那一代核销了、连接也断了），
-        // 走的是 `lost` 那一条——**状态那一格照旧「状态待确认」**，不许被改成空闲
-        // （「失联」不是「已停止」，更不是「能接着打字」；改回去会让输入行重新许一个
-        // 兑现不了的承诺）。行照旧定局：那一代没了，行再也不会变。
+
         const settled = gone ? settle(back) : back
         commit(lost ? settled : patchStatus(settled, { state: 'idle', amount: null, hint: HINT_IDLE }))
         return
@@ -1066,12 +618,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   const collapseDock = (): void => {
     collaborationQuery = null
-    collaborationModel = null
+    models.clearTarget()
     if (view.dock.kind === 'picker') {
       commit(closePicker(view))
       return
     }
-    if (view.dock.kind === 'prompt') closeAsk()
+    if (view.dock.kind === 'prompt') prompt.close()
   }
 
   /**
@@ -1099,46 +651,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   let mcpServer = ''
 
-  /**
-   * `/skills <词>` 的**预置筛词**——只在「等技能目录」那一趟有效（答复到了交给抽屉）。
-   *
-   * （U57 时它还有第二个来路：「同名直达分不出唯一」那一支也拿技能名当筛词开同一扇抽屉。
-   * 同名在发现那一层只剩一条之后，那一支没了，这一格只剩 `/skills <词>` 一处用。）
-   */
   let skillSeed = ''
 
-  /**
-   * **`/exit` 正等着哪一条会话停下来**（U52）——`null` ＝ 没在等。
-   *
-   * 认的是**两样都对上**（会话 ＋ 整体那一档）：正等着的时候，别的窗口停的、或者同一
-   * 会话的局部那一档（`turn`）的报告不该把我放走——放早了就是「资源还没确认退出，
-   * 界面已经没了」，正是设计那句「不是发出去就走」要防的。
-   *
-   * 放行之后**当场清空**（`null`）：一条会话只放行一次，此后别的报告与这一趟无关。
-   */
   let exitWait: SessionId | null = null
 
-  /**
-   * **选了一件「要落到某条会话上」的动作，而这条会话还没认出来**（U52 · U100 加宽）
-   * ——把意图挂上，等活跃位一到再办。
-   *
-   * 撞见它的窗口（真 PTY 上量到）：窗口刚开张、**首条消息正跑着**的那几百毫秒里，
-   * 外壳手上还没有会话 id——`session.state`（活跃位那一条）还没到。而 `/exit` 与
-   * 「停止任务」要停的正是「当前这条会话」：认不出是哪一条就停不了。
-   *
-   * 两条来路各一档（`'exit'`＝`/exit` 与三选里的「停止并退出」· `'stop'`＝三选里的
-   * 「停止任务」），**办的事只差最后那一步**（停完走不走）：前一条停在 `stopForExit`，
-   * 后一条就停在 `options.stop` 那一跳。**机制只有一条**——两处各挂一个布尔迟早分家
-   * （一处记得清、一处忘了清，症状是「过了很久才突然停一条用户早就不打算停的会话」）。
-   *
-   * ⚠️ **此刻不能降级成「只离开」**（那正是这一单要补的那个缺：工作中退出＝真停），
-   * 也不猜一条（猜错就是停错了别人的运行）。故只挂一个「等」——那一声答复一到，
-   * 照常停、停了再走（见 `onEvent` 里 `session.state` 那一支的收尾）。
-   *
-   * 它**不带时限**：等的是「这一轮正在跑」这个事实所依附的那一条会话，而那一轮还在跑，
-   * 那一份事实就一定会到。真要半路不想走了，`ctrl+c` 那扇门一直开着（空闲时两下、有在途时
-   * 三选里那一项）。**那一轮真收场了它自己撤**（同 `onEvent` 里 `turn.end` 那一跳）。
-   */
   let waitsForSession: 'exit' | 'stop' | 'background' | null = null
 
   /**
@@ -1168,21 +684,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     readonly refs: readonly DraftRef[]
   } | null = null
 
-  /**
-   * **这一段输入里图片的名字表**（U62）——**内容身份 → 编号**（`Image#N` 那个 `N`）。
-   *
-   * 三条都写在这一处：
-   * - **身份是内容**（字节的 sha256），不是名字、也不是路径——图不一定来自文件
-   *   （剪贴板来的就没有文件），拿文件名当身份，同名不同内容的两张就分不开；
-   * - **一段输入内**：所以它是一段草稿的表，交出去（`sendInput` 清稿）就重置——
-   *   下一段输入从 `Image#1` 重新数；
-   * - **同一份内容恒是同一个名字**：同一张图引用两次得到同一个号（不然模型以为那是两张），
-   *   两张不同的图得到两个号。
-   *
-   * ⚠️ **编号不回收**：把 `Image#1` 那一处删掉之后，再来一张新图拿的是**下一个号**，
-   * 不是 1。回收会撞上「用户已经在正文里写了『看 Image#1』」那件事——名字是给人和模型
-   * **指认**用的，改一个已经说出口的名字比多号一个更坏。
-   */
   let imageNames = new Map<string, number>()
 
   /**
@@ -1256,9 +757,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const next = !connected
       ? { ...input, status: { ...input.status, hint: reopening ? '正在重新打开 Magic Code' : HINT_LOST } }
       : ready ? input : { ...input, status: { ...input.status, hint: HINT_BOOTING } }
-    // **回了输入行 ⇒ 屏的栈清空**（U61）——栈里装的是「还在底下的那几屏」，而屏全收起来
-    // 之后它们已经没有主语了。这是**唯一的收口**（视图的每一处改动都经这里），
-    // 故 `esc` 那条路不必另写一句：它收起屏、dock 一回到 `input`，栈自然跟着空。
+
     if (next.dock.kind === 'input' && editingPending===null) layers = []
     if (next.dock.kind === 'picker' && next.dock.picker.reader !== undefined) {
       reading.set(next.dock.picker.reader.key, next.dock.picker.reader.top)
@@ -1278,20 +777,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
   }
 
-  /**
-   * 草稿变了 ⇒ **重算候选**（D12：打 `/` 即出、边打边筛）。
-   * 一个口子管全部改草稿的地方——省得每处各刷一次（迟早漏一处）。
-   *
-   * **技能名也在候选里**（U33）：目录取自视图里那一份最近问回来的
-   * （`skills.catalog` 的答复——问的时机见 `askSkills` 与 `/skills`）。没问过就是空数组：
-   * 候选里少几条技能名而已，内置那五条照旧 ✓（拿不到的不编，也不因此挡路）。
-   */
   const withCompletion = (next: ShellView): ShellView => {
     if (next.dock.kind !== 'input' || historyAt !== -1) return { ...next, completion: null }
 
-    // 候选按**插入点正打着的那个斜杠词**筛（U36：`/<名称>` 在任何词边界都唤起候选——
-    // 「先读 @需求.md，再按 /review」里的 `/review` 正是在句中被选进来的）。
-    // 内置命令只在这一词位于草稿最前时才列（它们是整行的操作入口，不写在句子中间）。
     const at = activeWordOf(next.draft, next.caret)
     const found = matchCommands(at?.word ?? '', next.skills?.skills ?? [], at?.atStart ?? true)
     // **封顶在列、报数在右位**（见 `MAX_CANDIDATES`）：截掉几条不静默——状态行说得出
@@ -1333,42 +821,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   /** 改草稿的统一入口。 */
   const draft = (next: ShellView): void => commit(withCompletion(next))
 
-  /**
-   * **人改草稿**的统一入口（打字 / 退格 / 粘贴 / 换行）——比 `draft()` 多一件事：
-   * **把翻历史的游标归位**。
-   *
-   * 由头（U20 · 差距 4）：`↑` 翻出一条旧话之后接着改它，再按 `↑` 应当**从末尾重新翻**
-   * （改过的那条不是历史里的那一条了）。不归位的话游标停在历史中间，
-   * 再按 `↑` 只会往回退一格——甚至顶到头上什么都不动（「按了没反应」）。
-   * `recallHistory` 自己要设游标，故它走 `draft()`，不走这里。
-   */
   const edit = (next: ShellView): void => {
     historyAt = -1
     // 人一动草稿，**屏上这一份**就是他的原稿了——先前收着的那份不要了（再翻 `↑` 时重收）
     browsing = null
-    // **动过草稿就不再认领那一份**（U33）——「失败不覆盖用户后来编辑的新稿」全在这一行：
-    // 认领（`restoreDraft`）只在「交出去之后一个字都没动」时才发生。提交那一跳不走这里
-    // （它清草稿走的是 `draft`），故刚交出去的那一份还认领得回来。
+
     lastSubmit = null
     draft(next)
     askSkills(next)
   }
 
-  /**
-   * **技能名问一次**（每个壳一次）——草稿一成了 `/` 开头的，就问一遍目录（U33）。
-   *
-   * 问来的那一份就是输入行候选的取材（见 `withCompletion`）：`/ui` 能筛出 `/ui-review`
-   * 全靠它。时机取「打 `/` 那一下」而不是「外壳一造好就问」——这样问的时机与用它的时机
-   * 是同一件事（也就没有「开屏白扫一遍目录树，整场没人打斜杠」）。
-   *
-   * ⚠️ **放开输入之前不问**（`ready`）：那会儿命令进不去内核（`send` 直接丢），
-   * 而标记一置上就再没有第二次——候选里会一直少着技能名那几条。故等 `ready` 再说，
-   * 那一刻草稿还在（打字本来就不受闸），下一次按字补问。
-   */
   const askSkills = (from: ShellView): void => {
     if (skillsAsked || !ready) return
-    // 插入点正打着一个**斜杠词**就问——不限于句首（U36：`/<名称>` 在任何词边界都唤起候选，
-    // 句中那个 `/review` 正是要从候选里选进来的那一个）。
+
     const word = activeWordOf(from.draft, from.caret)?.word
     if (word === undefined || !word.startsWith('/')) return
 
@@ -1376,12 +841,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     send({ type: 'skills.list' })
   }
 
-  /**
-   * 插入点（U31）——**唯一的「光标在哪」**：草稿里的一个下标。
-   *
-   * 读的时候一律夹回 `[0, 草稿长]`：手搭出来的视图（用例 / 标本）可能只给了草稿、
-   * 没给插入点（那是 0），夹一道就总有个定义。
-   */
   const caretAt = (): number => Math.max(0, Math.min(view.caret, view.draft.length))
 
   /**
@@ -1467,14 +926,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind === 'session.state' && event.data.note === undefined && view.flash === '正在读取会话目录…') commit({ ...view, flash: null })
     if (event.kind === 'session.state' && (waiting === 'session' || view.dock.kind === 'picker' && view.dock.picker.source === 'session') && turn === null) {
       if (event.data.note !== undefined) {
-        if (waiting === 'session') { waiting = null; openSessionPicker() }
+        if (waiting === 'session') { waiting = null; directory.open() }
         commit({ ...view, flash: `${event.data.note} · Enter 重试` }); return
       }
     }
     if (event.kind === 'session.changed') {
       const next = reduce(view, event)
       commit(next.archived && next.dock.kind === 'decision' ? undock(next) : next)
-      refreshSessionPicker()
+      directory.refresh()
       if (view.dock.kind === 'picker' && view.dock.picker.source === 'session-actions' && sessionTarget === event.data.session) {
         showSessionActions(sessionTarget, false)
       }
@@ -1484,19 +943,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       if (event.data.session !== sessionTarget || managementPending === null) {
         if (event.data.action === 'rename') {
           if (!event.data.ok) { if (lastSubmit?.local === true) settleDraft(lastSubmit.ref, true); commit({ ...view, flash: event.data.error ?? '改名失败' }) }
-          else send({ type: 'session.list', archived: sessionArchived })
+          else send({ type: 'session.list', archived: directory.archived })
         }
         return
       }
       managementPending = null
       if (!event.data.ok) { commit({ ...view, flash: event.data.error ?? '会话操作失败，请重试' }); return }
       commit({ ...view, flash: null })
-      if (event.data.action === 'rename') { asking = null; popLayer(); popLayer() }
+      if (event.data.action === 'rename') { prompt.clear(); popLayer(); popLayer() }
       else {
         if (view.dock.kind === 'picker' && view.dock.picker.source === 'session-actions') popLayer()
-        if (event.data.action === 'restore') { sessionArchived = false; sessionFocus = event.data.session }
+        if (event.data.action === 'restore') { directory.restored(event.data.session) }
       }
-      querySessions()
+      directory.query()
       return
     }
     if(lastSubmit?.local===true && (('ok' in event.data&&event.data.ok===false)||(event.kind==='session.state'&&event.data.note!==undefined)))settleDraft(lastSubmit.ref,true)
@@ -1586,24 +1045,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const before = view.sessionId
     const prior = view
     if(event.kind==='session.state'&&event.data.active!==before)workContexts.set(before,{member:view.inputMember,current:currentInput(view),members:new Map(inputContexts),purpose:view.inputPurpose})
-    // 流式增量按帧合批；其余一律当场（判据见 `STREAMING` 的注）
-    //
-    // ⚠️ `turn` **只在这一声答复是换页那一跳时**给（`turn` 是刚发出去、还没收场的那一次）：
-    //    它管两格——「`null → 头一条` 也算换页」（由头见 `reduceSessionState`）与
-    //    **这一页带不带字标**（U45：`'new'` 印 / `'open'` 不印）。
-    //    给宽了，「问一次目录」开出来的空壳会话也会把屏翻掉。
 
-    /**
-     * **裁决落地 / 轮收束 ⇒ 屏栈里那张卡的快照作废**（U100 合前复核 · 返修二补）。
-     *
-     * 由头：菜单把卡罩住时，`undock`（`view.ts`）**只撤当前那一屏**——`dock` 不是 decision
-     * 就直接返回 ✗。于是这一份**快照没人撤**：裁决已经答过（甚至那一轮都收完了、运行都空闲了），
-     * `esc` 一返回还是把那张旧卡摆回来、状态改回「等你定夺」✗。
-     *
-     * 故**从产生处撤**：这两条事件正是设计点名的「悬着的裁决作废」那两拍——
-     * `tool.decision`（有人答了，可能是别的窗口）/ `turn.end`（轮收束）。
-     * 撤的是**屏栈里的卡快照**，不动别的层（同一份交代跨模型轮时菜单照旧在——它不由这里管）。
-     */
     if (event.kind === 'tool.decision' || event.kind === 'turn.end') {
       // **先把那一张摆回 `dock`**（若它正被菜单罩在下面）：下面那条常规 `reduce` 走的就是
       // 它的老路——`undock` **归还草稿**、清掉「等你答」那一笔、按结果换状态行。
@@ -1629,16 +1071,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (event.kind==='tool.decision' && decisions.size===0 && reduced.status.state==='waiting')
       reduced=patchStatus(reduced,{state:'working',amount:null,hint:reduced.dock.kind==='input'?HINT_WORKING:reduced.status.hint})
     commit(reduced, STREAMING.has(event.kind))
-    // **思考档那一格跟着走**（U112）——`model.catalog` 一改 `modelCurrent`，它就得重算
-    // （换模型换了档位／新模型没有这一档），见 `syncReasoning` 的注。
-    syncReasoning()
+
+    const reasoning = configReasoningOf(view.modelCurrent)
+    const reasoningLabel = reasoning === undefined ? null : reasoningText(reasoning)
+    if (view.status.reasoning !== reasoningLabel) commit(patchStatus(view, { reasoning: reasoningLabel }))
     if(prior.dock.kind==='decision'&&((event.kind==='tool.decision'&&prior.dock.pending.call===event.data.call)||(event.kind==='turn.end'&&!decisions.has(prior.dock.pending.id)))){ returnDecision(); openDecision() }
 
-    // **`/config` 那三份读数**（U71）——三份都到齐了才开屏（由头见 `configPending` 那段注）。
-    //
-    // ⚠️ **不 `return`**：下面那几支各有自己的一点活（授权文件读不懂那句、重连回执那一句
-    // 都挂在各自那一支上），这一跳只管**开屏**——它不该把别人的话吞掉。
-    // ⚠️ **排在 `reduce` 之后**：开屏要的那三格刚由 `reduce` 落进视图。
     if (waiting === 'config' && CONFIG_READINGS.some((one) => one.event === event.kind)) {
       configPending.delete(event.kind)
       if (configPending.size === 0) {
@@ -1647,16 +1085,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
     }
 
-    /**
-     * **界面那两格的回话**（U112）——`prefs.set` 写盘的结果。
-     *
-     * 三件：
-     * - **回话是权威的**（报的是落定之后那一份）：写不成时（配置文件被外面改过 · 坏 JSON）
-     *   把屏上那两格**摆回真的样子**——不是把用户刚才点的那个当成成了；
-     * - **那一屏照旧开着**：连勾几格是常态，回一次话就收起来会把人赶出去。故就地重铺
-     *   （状态行那一屏 / `/config` 那一屏各按各的重铺）；
-     * - **`note` 落一行回执**（成了说改了哪几格、没成说为什么）——静默吞掉是最难查的那一形。
-     */
     if (event.kind === 'prefs.state') {
       const held = view.dock.kind === 'picker' ? view.dock.picker.source : null
       commit({
@@ -1671,13 +1099,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
 
     if (event.kind === 'session.state') {
-      // 换了会话 ⇒ 记录区已清空（`reduce` 里做）＋ 主动读一次历史（D1：换一条＝换一屏）
+
       if (before !== (event.data.active||null)) {
         collaborationQuery = null
         collaborationAt = undefined
         backgroundAt = undefined
         psPositions.clear()
-        collaborationModel = null
+        models.clearTarget()
         const sameCollaboration = prior.collaboration?.originSession === event.data.active
         if (!sameCollaboration) memberViews.clear()
         inputContexts.clear()
@@ -1690,29 +1118,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
       if (waiting === 'session') {
         waiting = null
-        openSessionPicker()
-      } else refreshSessionPicker()
+        directory.open()
+      } else directory.refresh()
 
-      // **内核有话要说**（U44）——`note` 这一格原先**没有出口**：忙时挡回的那条路
-      //（`BUSY_NOTE`：正在跑一轮，切不动）屏上零输出，用户按下去像按在空气上。
-      // 照既有回执的形制落一行（不新造块）。
-      //
-      // ⚠️ **有话说就不再说「已切到」**：`note` 到了＝这一跳**没成**（活跃位没动），
-      // 那时再补一句「已切到」就是自己打自己（下面那一支据此让位）。
       if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
 
-      // 换页那一跳的收场 ⇒ **按真实结果**留一行回执（`/clear` 一个字都不留）。
-      //
-      // ⚠️ **在答复这一侧发、不在选定那一侧发**（U44 改；由头见 `turn` 那段注）：
-      // 翻页在**页号一变**的那一瞬就把可见屏清了（渲染层干的，见 `components/app.ts`），
-      // 选定那一刻留的字会被推走。判据是「活跃位换没换」这一格——与上面 `readHistory`
-      // 同一把尺子。
-      //
-      // ⚠️ **走 `appendPageNote` 而不是 `appendReceipt`**（U44）：这一行是**新那一页的界**
-      // ——`/resume` 翻回的那一页不印字标（U45），顶上那行就是它。故它得与字标同一格：
-      // `rebuild` 随后铺历史时**要把它留在最前面**（`pageHeaderOf` 按 key 认它），
-      // 不然头一行记录会被 `<Static>` 的游标跳过（那一页凭空少一行）。
-      //（`/clear` 那一路 `kind` 是 `'new'`、`label` 是 `null` ⇒ 走不进来：那一页的界是字标。）
       if (turn !== null) {
         const label = turn.label
         turn = null
@@ -1721,9 +1131,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         }
       }
 
-      // **正等着「这条会话是哪一条」**（U52 · U100 加宽）——活跃位一到，接着把那一件办掉
-      // （见 `waitsForSession` 那一格的注）。**只在这一声答复真把活跃位带出来时**才办：
-      // `note` 到了＝这一跳没成（活跃位没动），那不算认出来了。
       if (waitsForSession !== null && view.sessionId !== null && event.data.note === undefined) {
         const waiting = waitsForSession
         waitsForSession = null
@@ -1733,16 +1140,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
     }
 
-    // **那一道闸跟着它等的那一轮走**（U52）——这一轮收场了、会话 id 始终没来 ⇒ 已经没有
-    // 可停的东西了。两条来路各按自己的收法办：
-    // - **`/exit`（含「停止并退出」）**：照「真·空手开机」办，**直接走**；
-    // - **「停止任务」**：它本来就是「停掉、留下」——没有可停的东西就**什么都不做**
-    //   （屏上不留话：那是**没发生过**的事，印一句「没停成」反倒是在报一件没发生的事）。
-    //
-    // ⚠️ **不带这一条，那道闸就是个会活过头的东西**：用户不再等它（敲了别的、又回来做了
-    // 点别的）时，它会在**下一次**活跃位到达时把一条**他不打算停的**会话停掉。带上它之后
-    // 这道闸只在「那一轮还在跑」期间有效——而那一轮在跑时，这一屏**切不动会话**
-    // （忙时 `/resume` / `/clear` 被内核挡回），故它等的那一条只可能是它原来那一条。
     if (waitsForSession !== null && event.kind === 'turn.end' && view.sessionId === null) {
       const waiting = waitsForSession
       waitsForSession = null
@@ -1755,59 +1152,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }
     }
 
-    // 连接一览回来了 ⇒ 两件（U41）：
-    // ① **正等着开抽屉**（`/model` 那条路）：开；0 行时 `openPicker` 会把说明落成一行回执；
-    // ② **抽屉已经开着**（`/model refresh` 那一路，或刷新回来的第二屏）：**就地重铺**
-    //    ——设计：「刷新只更新信息，**不抢走列表当前焦点**、不清草稿、不写回默认」。
-    //    故重铺要保住当前选中那一行（`refreshModelPicker` 里做），且**不关抽屉**。
-    if (event.kind === 'model.catalog') {
-      catalogStamp = event.data.stamp
-      if (savingEditor?.kind === 'model' && event.data.saved !== undefined) settleEditor(event.data.saved, event.data.note)
-      if (waiting === 'modelSave' && event.data.saved !== undefined) {
-        // 映射保存只给回执；首次明确开始在成功回执后应用 Default。
-        waiting = null
-        if (event.data.saved === true) { modelScope = 'session'; commit(closePicker(view)) }
-        if (startOnAliasSave && event.data.saved === true) send({ type: 'model.switch', choice: 'default' })
-        startOnAliasSave = false
-        if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
-      } else if (waiting === 'model') {
-        waiting = null
-        openModelPicker(event.data.note ?? '')
-      } else {
-        // 两处都试：各自只认自己那一扇开着（刷新模型那一屏 / 管理那两屏上刚发起的「刷新这一条」）
-        refreshModelPicker(event.data.note ?? '')
-        refreshManagePicker()
-      }
-    }
-
-    // 连接一览 / 保存回话回来了（U41）——三路分得开，按**在等什么**判（不认字面）：
-    // ① 正等「接入」的第一步 ⇒ 开「挑一家」那一屏；
-    // ② 正等「管理」 ⇒ 开连接一览那一屏；
-    // ③ 都不是 ⇒ 这是**保存 / 移除之后的回话**：留一行回执（有话说时）、照新一览重铺，
-    if (event.kind === 'provider.catalog') {
-      catalogStamp = event.data.stamp
-      if (editor?.kind === 'model') {
-        editor.vendor = view.vendors.find(one => one.vendor === editor?.original?.vendor)
-        if (view.dock.kind === 'picker' && view.dock.picker.source === 'model-editor') showEditor()
-      }
-      refreshModelPicker('')
-      if (savingEditor !== null && (savingEditor.kind === 'provider' || event.data.saved === false) && event.data.saved !== undefined) settleEditor(event.data.saved, event.data.note)
-      // ⚠️ **这一跳是「打开选择器」＝进一层**（U61）：`enterLayer()` 只在**底下那一屏还在**
-      //    时才压栈——从入口行点进来时它把 `/model` 那张列表压住（`←` 退得回去），
-      //    从命令行打进来时底下就是输入行，它什么都不做（`←` 那一下便是收起）。
-      if (waiting === 'connect') {
-        waiting = null
-        enterLayer()
-        openVendorPicker()
-      } else if (waiting === 'manage') {
-        waiting = null
-        enterLayer()
-        openManagePicker(event.data.note ?? '')
-      } else {
-        if (event.data.note !== undefined) commit(appendReceipt(view, event.data.note))
-        refreshManagePicker()
-
-      }
+    if (event.kind === 'model.catalog' || event.kind === 'provider.catalog') {
+      models.receive(event)
     }
 
     // 技能目录回来了 ⇒ 两件。
@@ -1829,32 +1175,15 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     // 答复可能后到——先到的那一份不该盖掉用户已经改过的查询）。
     if (event.kind === 'paths.catalog') refreshPaths()
 
-    // 选定那一条认出来了（U62）⇒ **是图就把那一处改写成 `Image#N`**（见 `identifyPicked`）。
     if (event.kind === 'paths.identified') identifyPicked(event.data)
 
-    // 剪贴板那一张回来了（U107）⇒ **在插入点放一处 `Image#N`**，或者**落一句回执**
-    // 说清为什么没取到（见 `pastedClipboard`）。
     if (event.kind === 'input.pasted') pastedClipboard(event.data)
 
-    // 提交**没收下** ⇒ 按原 pairing 键认下那一份草稿（U33）。回执那半行由 `reduce` 落
-    // （「没送出：…」），这里只管草稿那几件——正文 · 插入点 · 它里面的引用。
-    // ⚠️ **不还回输入行的那一种也要走这一趟**：配对键得收掉，不然那一份永远等着认领的
-    // 稿子会在用户改完草稿再回来时被认错（见 `settleDraft`）。
     if (event.kind === 'input.settled') acceptBatch(event.data.ref, event.data.ok)
     if (event.kind === 'input.settled' && event.data.stage !== 'accepted') {
       settleDraft(event.data.ref, !event.data.ok && event.data.keepDraft !== false)
     }
-    /**
-     * **首条交代开张之后，把目录取回来一次**（U50）。
-     *
-     * 由头：会话是**首条消息**那一刻才建的，而目录（`session.state` 带的 `sessions`）
-     * 只在**会话命令**那几支上发——于是这条新会话的**标题**在窗口这一侧一直缺席，直到
-     * 下一次 `/resume`。而通知那几行回执要拿标题说话（「「<标题>」那一轮跑完了」），
-     * 缺席就只剩一个 id——那是**内部东西漏到屏上**，最不该有的一种漏。
-     *
-     * ⚠️ **不是每一条交代都问**：只在「这一条是新开张的」时候值得（`ok:true` 且目录里
-     * 还没有它）——不然每发一句就多一趟往返，而那一趟什么新东西都没带回来。
-     */
+
     if (event.kind === 'input.settled' && event.data.ok && event.session !== '') {
       if (!view.catalog.some((one) => one.id === event.session)) send({ type: 'session.list' })
     }
@@ -1917,23 +1246,12 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit({ ...rebuilt, rows: [...rebuilt.rows, ...unconfirmed] })
     rebuildFor = null
     rebuildEntries = []
-    // **接回来的那一段画在历史之后**（U49）——早一步画会被这一跳的 `rebuild` 抹掉
+
     drawResumed()
   }
 
   const unsubscribeTransport = transport.subscribe(onEvent)
 
-  /**
-   * **接回的那一份快照**（U49）——**先收着，等记录区铺完再画**。
-   *
-   * 两件在次序上咬着的：① 快照说的是「此刻」——比记录里任何一条都新，故它必须画在
-   * 历史**之后**（不然会被 `rebuild` 一并抹去）；② 而历史是**随后**一趟才回来的
-   * （`session.open` → `session.state` → `history.read` → `session.history`）。
-   * 故它到这儿先进暂存格，`accumulate` 那一跳铺完历史立刻叫我（`drawResumed`）。
-   *
-   * ⚠️ **没人叫就自己画**（`resumed` 一到而当时并没有重建在跑）——那种情形下没有
-   * 「等」的理由：它就是一个当场要画的东西。
-   */
   let pendingResume: RunSnapshot | null = null
   /** 那一份暂存的快照最多等多久（毫秒）——见 `drawResumed`。 */
   const RESUME_SETTLE_MS = 300
@@ -1973,22 +1291,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
   // —— 选择器 ——
 
-  /**
-   * **`/resume` 那一屏自己的两格**（U49）——筛选（当前工作区 / 全部）与搜索词。
-   *
-   * 它们**只活在这一屏开着的时候**（收起即重置）：那是「我这一次要找哪一条」的临时状态，
-   * 不是一条该被记住的偏好——下次打开时用户要的是全貌（而全貌里第一条正是「需要你」）。
-   */
-  let sessionScope: SessionScope = 'all'
-  let sessionQuery = ''
-  let sessionArchived = false
-  let sessionFocus: string | undefined
-  const sessionPositions = new Map<boolean, { id?: string; selected: number; detailTop?: number }>()
   let sessionTarget: string | undefined
   let managementPending: 'session.archive' | 'session.restore' | 'session.rename' | null = null
   let preview: { session: string; entries: Entry[] } | null = null
 
-  const querySessions = (): void => { commit({ ...view, flash: '正在读取会话目录…' }); send({ type: 'session.list', archived: sessionArchived }) }
   const showSessionHistory = (session: string): void => {
     preview = { session, entries: [] }
     enterLayer()
@@ -2017,70 +1323,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     send({ type, session: sessionTarget })
   }
 
-
-  /** 那一屏的行（**一处算**——开、筛、运行事实变了这三条路都走它）。 */
-  const sessionPickerRows = (): readonly PickerRow[] =>
-    sessionRows({
-      catalog: view.catalog.filter(session => session.archived === sessionArchived).filter((session) => session.id === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === session.id)),
-      active: view.sessionId,
-      here: options.workspaceRoots,
-      runs: view.runs.filter((run) => run.session === view.collaboration?.originSession || !view.collaboration?.members.some((one) => one.agent.sessionId === run.session)),
-      scope: sessionScope,
-      query: sessionQuery,
-    })
-
-  /**
-   * 抽屉下方那一行说明（U49）——**选中那一条的执行详情**（设计：「长信息放选中详情」
-   * 与「执行详情给当前动作、开始时间、最近一次可确认进展与输出」）。
-   *
-   * 没有运行事实的那一条（历史里从没在这一次运行里跑过的会话）**不编详情**，
-   * 退回既有的那句话（「这儿是哪儿」/ 空态）。
-   */
-  const sessionPickerHint = (rows: readonly PickerRow[]): string | undefined => {
-    const selected = rows[view.dock.kind === 'picker' ? view.dock.picker.selected : 0]
-    const run = selected === undefined ? undefined : view.runs.find((one) => one.session === selected.value)
-    // 两件**各说各的**，故都在：筛的是什么（筛词）与**这一屏收窄到哪儿**（范围）。
-    // 只说一半的话，用户看着一张短表不知道另一半去哪了（收窄的那一条最常见）
-    const head = [
-      sessionQuery === '' ? '' : `筛选「${sessionQuery}」`,
-      `${sessionArchived ? '已归档' : '普通'} · ${sessionScope==='here'?'本工作区':'全部工作区'} · Tab 换范围 · Shift+Tab 换视图`,
-      view.collaboration?.collaboration !== undefined && selected?.value === view.sessionId ? '→ 查看本次协作' : '',
-    ]
-      .filter((piece) => piece !== '')
-      .join(' · ')
-
-    if (run !== undefined) {
-      // 活跃那一段里，状态与动作都已经在「组头 ＋ 副文案」上了——详情只补别处没说过的
-      const detail = runDetail(run, Date.now(), { inActiveSection: inActiveSection(run.state) })
-      // **这一条真能停**才报停止那两个键（U50 · 低频操作按需出现）：报在详情这一行，
-      // 不挤状态行右位（那一行放不下就整段不出现，见 `STOP_KEYS_HINT` 的注）
-      const actions = inActiveSection(run.state) ? STOP_KEYS_HINT : ''
-      return [head, detail, actions].filter((piece) => piece !== '').join(' · ')
-    }
-
-    // 空态优先（「还没有会话」比「这儿是哪儿」更该先知道）；否则本工作区一条都没有时
-    // 报一句「这儿是哪儿」——整表皆暗时那是唯一说得通的话（U27）
-    const tail =
-      rows.length === 0
-        ? view.catalog.length===0?'工作目录为空——交代一句就开张':sessionQuery!==''?'没有名称匹配——修改筛词':'本范围没有工作——Tab 切换范围'
-        : sessionHint(view.catalog, options.workspaceRoots)
-
-    const said = [head, tail].filter((piece) => piece !== undefined && piece !== '').join(' · ')
-    // **一句都没有就不给这一格**（`undefined`，不是空串）：空串会照样占一行
-    // ——屏上凭空多一条空白（真帧上量出来的）
-    return said === '' ? undefined : said
-  }
-
-  /**
-   * **停选中的那一条**（U50）——`ctrl+x` ＝ 整体（这条运行）· `ctrl+w` ＝ 局部（这一轮）。
-   *
-   * 设计那句「会话/成员详情选择停止」在这里落成两个键：**范围由用户明确选择**，而这一层
-   * 只做两件——把选的是哪一条读出来、把它交出去。**一个判断都不做**：那条运行是死是活、
-   * 该不该核销、收没收到，全归本机管理者（它手上才有那一摊的运行事实）。
-   *
-   * 回执**不在这里落**（那是 `options.stopped` 的事）：按下的这一刻还什么都不知道，
-   * 当场说一句「已停止」正是设计要防的那种谎话（「资源确认退出后才报已停止」）。
-   */
   const askStop = (scope: StopScope): ShellEffect => {
     if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'session') return NONE
 
@@ -2097,80 +1339,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return NONE
   }
 
-  /**
-   * **这条会话在目录里叫什么**（U50）——回执那一行要带上标题。
-   *
-   * ⚠️ **认不得就不拿 id 顶**：会话 id 是内部的一半（UUID），把它印到屏上是最坏的一种
-   * 「实现细节漏出去」。认不得就说**用户视角的那一句**（「你这条会话」/「另一条会话」）
-   * ——少一点信息，但一个字都不编。
-   */
   const nameOfSession = (session: SessionId): string =>
     view.catalog.find((one) => one.id === session)?.title ??
     (session === view.sessionId ? '你这条会话' : '另一条会话')
-
-  /** `/resume`——目录已到手，开它（行：活跃在前、再按工作区分组，见 `sessionRows`）。 */
-  const openSessionPicker = (): void => {
-    // **开一屏就是一屏新的**：筛词与范围从零起（它们是「我这一次要找哪一条」的临时状态，
-    // 不是一条该被记住的偏好——下次打开时用户要的是全貌，而全貌第一条正是「需要你」）
-    sessionScope = 'all'
-    sessionQuery = ''
-    sessionArchived = false
-    sessionPositions.clear()
-    sessionFocus = undefined
-
-    const rows = sessionPickerRows()
-    const hint = sessionPickerHint(rows)
-
-    commit(
-      openPicker(view, {
-        source: 'session',
-        title: sessionArchived ? '已归档 · Enter 查看记录' : '普通 · Enter 接回',
-        // 选中项＝**当前那条**——分组之后行序变了，故在**分好组的行**里找它。
-        // 空列表仍保留范围、筛词与返回入口。
-        selected: Math.max(0, rows.findIndex((row) => row.value === view.sessionId)),
-        rows,
-        filter: sessionQuery,
-        ...(hint === undefined ? {} : { hint }),
-      }),
-    )
-  }
-
-  /**
-   * **这一屏开着的时候，行与详情就地重铺**（U49）——两处都调它：
-   *
-   * - **筛选 / 搜索**（用户刚敲了一个字）：行跟着变，**选中项尽量留在原来那一条上**
-   *   （能留住就留住——用户是在找它）；
-   * - **运行事实变了**（管理者推来新的一份）：状态与详情跟着变。⚠️ 这一条是那张表的
-   *   用处所在——**列表开着不动，也能看见「它刚变成需要你了」**。
-   */
-  const refreshSessionPicker = (): void => {
-    if (view.dock.kind !== 'picker' || view.dock.picker.source !== 'session') return
-
-    const picker = view.dock.picker
-    const rows = sessionPickerRows()
-    const keep = sessionFocus ?? picker.rows[picker.selected]?.value
-    const found = rows.findIndex((row) => row.value === keep)
-    if (found !== -1) sessionFocus = undefined
-    const hint = sessionPickerHint(rows)
-
-    commit({
-      ...view,
-      dock: {
-        kind: 'picker',
-        picker: {
-          ...picker,
-          source: 'session',
-          title: sessionArchived ? '已归档 · Enter 查看记录' : '普通 · Enter 接回',
-          rows,
-          selected: found === -1 ? Math.min(picker.selected, Math.max(0, rows.length - 1)) : found,
-          filter: sessionQuery,
-          ...(hint === undefined ? {} : { hint }),
-        },
-      },
-    })
-  }
-
-  // —— U49：运行事实与接回快照的订阅（**构造即接**，与技术方案 · 控制域同一条纪律）——
 
   /**
    * **运行事实变了**——落进视图，顺手把开着的那一屏就地重铺。
@@ -2180,10 +1351,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    */
   options.runs?.subscribe((rows) => {
     if (disposed) return
-    // **收下那一份事实，顺手把状态行那一格收尾**（U54）——见 `withRunFacts`：那一格答的是
-    // 「这条会话此刻在不在跑」，而**只有管理者说得出来**（停这个动作从它那一头发起，
-    // 执行者退场之后没人再报 `turn.end`——外壳那一头于是没有下文，那一格就永远停在
-    // 「● 工作中」，与回执那句「停了」在同一屏上打架）。
+
     const prior = view.dock
     for (const [id, request] of decisions) {
       if (rows.some(row => row.session === (view.collaboration?.members.some(member => member.agent.sessionId === request.session) ? request.session : view.sessionId) && row.state === 'stopped')) {
@@ -2193,10 +1361,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
     commit(withRunFacts(view, rows))
     if (prior.kind === 'decision' && !decisions.has(prior.pending.id)) { returnDecision(); openDecision() }
-    refreshSessionPicker()
+    directory.refresh()
   })
-
-  // —— U50：停止那一族（回执 · 管理者说的话）——
 
   /**
    * **停止走到了哪一拍**——落一行回执，**话在这一层拼**（它要带上那条会话的标题，
@@ -2218,15 +1384,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }),
     )
 
-    // **正等着走的那一趟**（`/exit` 与三选里的「停止并退出」）——**只有 `done` 放行**：
-    //
-    // - `done`——**资源确认退出了**，这才是「等了再退」等的那个事实；
-    // - `unconfirmed`——到点还没收完。**不放行**（U100 改判，原锚：「如实说一句，也照样
-    //   放行」）：规划裁决写着「**停止未完成时留在界面如实说明；不得自动退场**」——那一步
-    //   没停下就走人，屏上留下的就是一句已经不作数的「正在停…」，而用户走出门时以为停了。
-    //   此刻该说的是实话（上面那一行已经落了「没能停掉…」＋ 缘由），要只离开另有一扇门：
-    //   三选里的「转到后台」（它不假装停过）。
-    // - `accepted`——更不放行：它只是「受理了」，此刻走出门就是「发出去就走」。
     const go =
       exitWait !== null && report.session === exitWait && report.scope === 'run' && report.phase === 'done'
 
@@ -2234,12 +1391,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit(go ? { ...said, leaving: true } : said)
   })
 
-  /**
-   * **管理者说了一句给人看的话**——落一行回执（U50 把这条线接上）。
-   *
-   * 由头：U48 就把这条线架起来了（`client.onLine`），可**屏上一行都没有**——管理者说的
-   * 「这一代已经过去了」「起不了执行者」全落在空气里。停止那条路正要靠它。
-   */
   options.lines?.((text) => {
     if (disposed) return
     commit(appendReceipt(view, text))
@@ -2298,13 +1449,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (held?.local !== true) settleDraft(held?.ref, true)
   })
 
-  /**
-   * `/grants`（U22 · B13）——名录已到手，开抽屉：**与 `/resume` · `/model` 同位置同开合**
-   * （左下，`esc` 收起**不留痕迹**）。
-   *
-   * 选中项从 0 起（每次开都从头）——授权是**要撤的东西**，不是「当前在哪条」，
-   * 没有一条该被预先选中。
-   */
   const openGrantsPicker = (catalog: ShellView['grants']): void => {
     // 名录没到手＝不该走到这儿（开抽屉那条路先问后开）；照防御性办：什么都不开
     if (catalog === null) return
@@ -2353,16 +1497,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     })
   }
 
-  /**
-   * `/mcp`（U39）——一屏已到手，开抽屉：**与 `/grants` 同位置同开合**（左下，`esc` 收起
-   * 不留痕迹）。
-   *
-   * `who` 空串＝**总览**（一台一台列，状态 ＋ 件数）；给了名字＝**那一台的明细**
-   * （工具名 ＋ 状态，不可用的缘由与拒收的那些在下方那行说明里）。
-   *
-   * 0 行那两路（一台都没配 / 点了名却不在读数里）由 `openPicker` 按既有规矩办：
-   * 那行说明落成记录区的一行回执，**不接管输入**。
-   */
   const openMcpPicker = (who: string): void => {
     const catalog = view.mcp
     if (catalog === null) return // 一屏没到手＝不该走到这儿（开抽屉那条路先问后开）
@@ -2410,8 +1544,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     })
   }
 
-  // —— 配置一览（U71 · `/config`）——
-
   /**
    * **`/config` 的取材**——**一处取**（开屏与每次重铺共用一份，免得两处取成两样）。
    *
@@ -2427,11 +1559,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     },
     models: view.models,
     current: view.modelCurrent,
-    // 「取网页用的模型」那一格（U78）——与 `current` 同一个来处（`model.catalog`），
-    // 但**各是各的**：那是当前会话走谁，这一位是那一件工具用谁（空着＝还没配）
+
     grants: view.grants,
     mcp: view.mcp,
-    // 这一屏长什么样（U112）——两格都在视图里（开机那份配置 ＋ 改过之后那份）
+
     statusLine: view.statusLine,
     reducedMotion: view.reducedMotion,
     turnDuration: view.turnDuration,
@@ -2468,12 +1599,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    * ——0 行在筛的时候**是一个回答**（「没有这一项」），而用户手上那几个动作一个不少
    * （接着打、退格、`esc`）。那一句回答由 `configHint` 写在列表下方。
    */
-  /**
-   * **「状态行」那一屏**（U112）——`/config` 里那一行进得来的**下一层**。
-   *
-   * 行怎么铺、说明怎么写都在 `view.ts` 一处（`statusLineRows` / `statusLineHint`）；
-   * 这一层只管开屏、重铺、以及「选定之后发什么」。
-   */
+
   const openStatusLinePicker = (selected = 0): void => {
     const rows = statusLineRows({ config: view.statusLine })
 
@@ -2517,7 +1643,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     changeStatusLine({ ...config, cells })
   }
 
-  /** **减少动效**开关（U112）——回车即切（两态的东西不另开一屏）。 */
   const toggleReducedMotion = (): void => {
     const next = !view.reducedMotion
     send({ type: 'prefs.set', reducedMotion: next })
@@ -2542,602 +1667,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     )
   }
 
-  // —— 模型详情 / 思考设置（U41）——
-
-  /** 这一条模型在手上的资料（缓存里那一条；`undefined` ＝ 缓存里没有它）。 */
-  const infoOf = (pick: ModelRef): ModelInfo | undefined => {
-    const entry = view.models.find(one => one.provider === pick.provider)
-    const info = entry?.cache?.snapshot?.models.find(one => one.id === pick.model)
-    const override = entry?.modelOverrides?.[pick.model]
-    if (override === undefined) return info
-    return { ...info, id: pick.model, limits: { ...info?.limits, ...override.limits }, capabilities: { ...info?.capabilities, ...override.capabilities }, ...(override.reasoningSupport === undefined ? {} : { reasoning: override.reasoningSupport }) }
-  }
-
-  /**
-   * **模型详情那一屏**——两条动作（思考设置 / 设为默认），资料写在下方那行说明里。
-   *
-   * 资料那几行都是**手上有才报**（规格 / 描述 / 缓存时间）：拿不到的不编——
-   * 与状态行 ④ 那条「分母拿不到就不显示」是同一条规矩。
-   */
-  const openModelDetail = (pick: ModelRef): void => {
-    const entry = view.models.find((one) => one.provider === pick.provider)
-    const info = infoOf(pick)
-    const limits = info?.limits
-    const protocol = effectiveProtocol(entry, view.vendors.find(one => one.vendor === entry?.vendor), pick.model)
-    const spec =
-      limits === undefined
-        ? '规格：供应商没给'
-        : `规格：${
-            [
-              limits.maxInputTokens === undefined ? null : `输入 ${tokenLabel(limits.maxInputTokens)}`,
-              limits.maxOutputTokens === undefined ? null : `输出 ${tokenLabel(limits.maxOutputTokens)}`,
-              limits.maxContextTokens === undefined ? null : `窗口 ${tokenLabel(limits.maxContextTokens)}`,
-            ]
-              .filter((one): one is string => one !== null)
-              .join(' · ') || '供应商没给'
-          }`
-
-    const lines = [
-      `${pick.model}　@ ${entry?.name ?? pick.provider}`,
-      ...(info?.name === undefined ? [] : [`显示名 ${info.name}`]),
-      ...(info?.description === undefined ? [] : [info.description]),
-      spec,
-      `协议：${protocol === undefined ? '尚未核实此型号的支持范围' : protocolLabel(protocol)}`,
-      entry?.modelOverrides?.[pick.model] === undefined ? '信息来源：供应商信息；缺项未知' : '信息来源：用户填写优先于供应商信息',
-      `缓存：${
-        entry?.cache?.snapshot === undefined
-          ? '还没取过这一条的模型列表'
-          : `${dayLabel(entry.cache.snapshot.fetchedAt)} 取的`
-      }`,
-    ]
-
-    detailAt = pick
-    commit(
-      openPicker(view, {
-        source: 'model-detail',
-        selected: 0,
-        rows: [{ label: '编辑模型信息', meta: '用户填写优先；留空恢复来源', value: 'edit-info', current: false, oneLine: true }, { label: '返回型号列表', meta: '', value: 'back', current: false, oneLine: true }],
-        hint: lines.join('\n'),
-      }),
-    )
-    requestVendorInfo(pick)
-  }
-
-  const requestVendorInfo = (pick: ModelRef): void => {
-    const vendor = view.models.find(one => one.provider === pick.provider)?.vendor
-    if (!vendorQuery && vendor !== undefined && !view.vendors.some(one => one.vendor === vendor)) {
-      vendorQuery = true; send({ type: 'provider.list' })
-    }
-  }
-  const reasoningSupportOf = (pick: ModelRef) =>
-    view.models.find(one => one.provider === pick.provider)?.effectiveReasoning?.[pick.model]
-
-  /** 思考那一屏——**行由能力描述长出来**（见 `reasoningRows`），说明照实说清它声明了什么。 */
-  const openReasoningPicker = (pick: ModelRef): void => {
-    const support = reasoningSupportOf(pick)
-    const rows = reasoningRows(support, reasoningOf(pick) ?? null)
-
-    commit(
-      openPicker(view, {
-        source: 'model-reasoning',
-        selected: Math.max(0, rows.findIndex((row) => row.current)),
-        rows,
-        hint: [reasoningHint(support), collaborationModel === null ? '回车＝把这一条用到当前模型上' : `回车＝保存到${collaborationModel.member === undefined ? '后续派生默认' : view.collaboration?.members.find((one) => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'}`].join('\n'),
-      }),
-    )
-  }
-
-  const applyReasoning = (setting: ReasoningSetting): void => {
-    const target = collaborationModel
-    collaborationModel = null
-    commit(closePicker(closePrompt(view)))
-    if (target !== null) send({ type: 'collaboration.configure', ...target, model: { reasoning: setting } })
-    else send({ type: 'model.switch', reasoning: setting })
-  }
-
-  /** 接入字段集中编辑；刷新与移除仍是独立动作。 */
-  const manageAction = (value: string): void => {
-    const entry = view.models.find((one) => one.provider === manageAt)
-    if (entry === undefined) return
-
-    if (value === 'edit') {
-      const vendor = view.vendors.find(one => one.vendor === entry.vendor)
-      if (entry.vendor !== undefined && vendor === undefined) { commit(appendReceipt(view, '供应商协议资料尚未加载，请重新打开管理连接')); return }
-      enterLayer(); openEditor(providerEditor(entry.provider, vendor, entry)); return
-    }
-    if (value === 'manual') { enterLayer(); openModelEditor(entry.provider); return }
-
-    if (value === 'refresh') {
-      send({ type: 'model.refresh', provider: entry.provider })
-      return
-    }
-
-    if (value === 'remove') {
-      send({ type: 'provider.remove', provider: entry.provider })
-    }
-  }
-
-  /**
-   * **`/model` 末尾那几条入口行**（U41 返修）——与 slash 子命令**共用同一段动作**。
-   *
-   * 由头：`/model connect` 那几条子命令留着**兼容**（首验要求「已有子命令的兼容性不借此
-   * 任意破坏」），而入口行才是正身；两处各写一套「点了之后干什么」，改一处漏一处。
-   * 故入口行把词喂给**同一个 `runSlash`**——动作只有一处。
-   */
-  const modelAction = (value: string): ShellEffect => {
-    const word =
-      value === 'connect' ? '/model connect' : value === 'manage' ? '/model manage' : '/model refresh'
-    const { next, commands } = runSlash(view, word)
-
-    // ⚠️ **这一屏先不关**（U61）：这一跳只是**把命令发出去**，答复一到就接着开下一屏
-    //    （挑一家 / 连接一览）——那一下才是「进一层」，压栈就发生在答复那一头
-    //    （`provider.catalog` 那两处 `enterLayer()`）。关上再开的话，中间那一跳
-    //    会把 dock 打回输入行，栈跟着被清（「回输入行就清空」那条）——列表就压不住了。
-    //
-    //    顺带也更好看：答复那几毫秒里屏上留的是**刚才那一屏**，而不是闪一下输入行。
-    // ⚠️ **刷新那一条不受影响**：它回来照旧是**这一屏**（就棫重铺），答复那一头不压栈。
-    commit(next)
-    for (const command of commands) send(command)
-
-    return NONE
-  }
-
-  // —— 管理连接（U41 · `/model manage`）——
-
-  /** `/model manage` 的第一步：**连接一览**（同一份行，取材就是 `view.models`）。 */
-  const openManagePicker = (note: string): void => {
-    const rows = view.models.map((entry) => ({
-      label: entry.name ?? entry.provider,
-      meta: manageMetaOf(entry),
-      current: false,
-
-      value: entry.provider,
-      oneLine: true,
-    }))
-
-    const lines = [
-      rows.length === 0 ? '还没有接上任何供应商——/model connect 接一条' : '回车＝管理这一条',
-      ...(note === '' ? [] : [note]),
-    ]
-
-    commit(openPicker(view, { source: 'provider', selected: 0, rows, hint: lines.join('\n') }))
-  }
-
-  /**
-   * 管理第二步：**这一条能做那几件**（改名 / 更新认证 / 刷新 / 移除）。
-   *
-   * 连接自己的那几格（id · 供应商 · 区域 · 地址 · 模型 · 缓存）写在**下方那行说明**里——
-   * 它们是**查阅**用的，不占候选格（一屏上的每一格都得影响用户的动作）。
-   */
-  const openManageDetail = (who: string): void => {
-    const entry = view.models.find((one) => one.provider === who)
-    if (entry === undefined) return // 一览里没有这一条＝不该走到这儿
-
-    manageAt = who
-
-    // 说明只放**行上没说过的**：连接 id（行上给的是**名字**，id 才是身份）与默认模型。
-    // ⚠️ 缓存状态与地址**不在这儿重复**——「刷新这一条」「高级地址」那两行的副文案就是它们
-    //（一屏上的每一格都得说别处没说的；这条第一版两处各报了一遍）。
-    const lines = [`连接 ${entry.provider}`]
-
-    commit(
-      openPicker(view, {
-        source: 'provider-detail',
-        selected: 0,
-        rows: [
-          { label: '编辑连接', meta: protocolLabel(entry.protocol ?? ''), current: false, value: 'edit', oneLine: true },
-          { label: '手动填写模型', meta: '无需列表或详情接口', current: false, value: 'manual', oneLine: true },
-          {
-            label: '刷新这一条',
-            meta: cacheLabelOf(entry),
-            current: false,
-            value: 'refresh',
-            oneLine: true,
-          },
-          {
-            label: '移除这条连接',
-            meta: '已发生的记录不随它删除',
-            current: false,
-            value: 'remove',
-            oneLine: true,
-          },
-        ],
-        hint: lines.join('\n'),
-      }),
-    )
-  }
-
-  /**
-   * 保存 / 移除 / 刷新之后**照新的读面重铺**（抽屉还开着才动它，收起时就只留那一行回执）。
-   *
-   * 重铺哪一屏由**当下开着的那一扇**说了算（加上 `manageAt` 那位：管理明细是**某一条连接**的
-   * 一屏）——不靠行内容反推（那要靠字面比较，改一句话就静默失配）。
-   *
-   * 连接**没了**（刚移除掉）就退回一览：明细说的是那一条，它不在了，这一屏就立不住。
-   */
-  const refreshManagePicker = (): void => {
-    if (view.dock.kind !== 'picker') return
-
-    if (view.dock.picker.source === 'provider') {
-      openManagePicker('')
-      return
-    }
-
-    if (view.dock.picker.source === 'provider-detail') {
-      if (view.models.some((one) => one.provider === manageAt)) {
-        openManageDetail(manageAt)
-        return
-      }
-
-      // 这一条没了（刚移除掉）⇒ **把这一屏收起**，退回输入行——明细说的是那一条，
-      // 它不在了，这一屏就没有主语了。⚠️ 不改成「开一张空的一览」：0 行的抽屉接管着
-      // 输入却不给东西可点（打不了字、没得选，看着就是卡死——`openPicker` 那条 P0 的由来）
-      commit(closePicker(view))
-    }
-  }
-
-  const openModelEditor = (provider: string, model = ''): void => {
-    const entry = view.models.find(one => one.provider === provider)
-    openEditor(modelEditor(provider, model, entry?.modelOverrides?.[model], entry, view.vendors.find(one => one.vendor === entry?.vendor)))
-    requestVendorInfo({ provider, model })
-  }
-  const editorKey = (draft: ModelEditor): string => `${draft.kind}:${draft.provider}:${draft.model ?? ''}`
-  const openEditor = (draft: ModelEditor): void => {
-    editor = editorDrafts.get(editorKey(draft)) ?? { ...draft, stamp: catalogStamp }
-    editor.models = [...new Set([...Object.values(view.configuredModels).filter(one => one.provider === draft.provider).map(one => one.model), ...Object.keys(draft.original?.modelOverrides ?? {}), ...(draft.original?.cache?.snapshot?.models.map(one => one.id) ?? [])])]
-    editorDrafts.set(editorKey(editor), editor)
-    showEditor()
-  }
-  const showEditor = (): void => {
-    if (editor === null) return
-    const focused = view.dock.kind === 'picker' && view.dock.picker.source === 'model-editor' ? view.dock.picker.rows[view.dock.picker.selected]?.value : undefined
-    const rows = editorRows(editor)
-    const selected = Math.max(0, rows.findIndex(one => one.value === focused))
-    commit(openPicker(view, { source: 'model-editor', selected, rows, hint: [
-      editor.kind === 'provider' ? `连接 ${editor.provider} · 确认后一次保存` : `连接 ${editor.provider} · 原始型号原样发送；信息可留空`,
-      editor.kind === 'model' ? `协议：${protocolLabel(effectiveProtocol(editor.original, editor.vendor, editor.values.model ?? '') ?? '')}；填写能力不代表调用已验证` : '',
-      editor.kind === 'provider' && !editor.vendor && editor.original && editor.values.baseURL !== editor.original.baseURL ? '地址已改变：请重新填服务凭据或选择无需认证' : '',
-      editor.note ?? '',
-    ].filter(Boolean).join('\n') }))
-  }
-  const settleEditor = (saved: boolean, note?: string): void => {
-    const held = savingEditor
-    if (held === null) return
-    savingEditor = null
-    held.pending = false
-    held.note = note ?? (saved ? '已保存' : '保存失败；草稿已保留')
-    const visible = editor === held && view.dock.kind === 'picker' && view.dock.picker.source === 'model-editor'
-    if (!saved) { if (visible) showEditor(); return }
-    editorDrafts.delete(editorKey(held))
-    held.values.apiKey = ''
-    if (!visible) return
-    editor = null
-    popLayer()
-    if (held.kind === 'provider') openManageDetail(held.provider)
-    else openModelPicker(note ?? '已保存模型信息；选择型号以设置映射')
-  }
-  const editorAction = (key: string): void => {
-    const held = editor
-    if (held === null || held.pending) return
-    if (key === 'cancel') { popLayer(); return }
-    if (key === 'expand') { held.expanded = !held.expanded; showEditor(); return }
-    if (key === 'save' || key === 'remove-override') {
-      if (savingEditor !== null) { held.note = '上一笔保存尚未完成，请稍后重试'; showEditor(); return }
-      try {
-        const command: Command = held.kind === 'provider'
-          ? { type: 'provider.save', ...providerRequest(held), expectedStamp: held.stamp }
-          : { type: 'model.override', provider: held.provider, model: held.values.model!, override: key === 'remove-override' ? null : modelOverride(held), expectedStamp: held.stamp }
-        savingEditor = held; held.pending = true; held.note = '正在保存…'; showEditor(); send(command)
-      } catch (error) { held.note = error instanceof Error ? error.message : '保存失败'; showEditor() }
-      return
-    }
-    const field = held.fields.find(one => one.key === key)
-    if (field === undefined) return
-    if (field.choices !== undefined) {
-      held.changed?.add(key)
-      const at = field.choices.findIndex(one => one.id === held.values[key])
-      held.values[key] = field.choices[(at + 1) % field.choices.length]!.id
-      if (key === 'protocol' && held.vendor === undefined && !held.changed?.has('auth') && held.original?.auth === undefined) held.values.auth = held.values.protocol === 'messages' ? 'api-key' : 'bearer'
-      showEditor(); return
-    }
-    enterLayer()
-    openAsk({ label: field.label, secret: field.secret ?? false, value: held.values[key] ?? '', caret: (held.values[key] ?? '').length,
-      placeholder: field.key === 'model' ? '服务要求的原始 model 标识' : field.key === 'baseURL' ? 'http://localhost:端口/服务前缀' : '留空保持未知或恢复来源',
-      note: field.secret ? '隐藏输入；不进入会话或输入历史' : '回车返回编辑页；最后点击保存',
-      submit: () => null, change: value => { held.changed?.add(key); held.values[key] = value }, local: value => { held.changed?.add(key); held.values[key] = value; popLayer(); showEditor() },
-    })
-  }
-
-  // —— 本地小输入（U41）：改名 / 密钥那一类 ——
-  //
-  // 这一小段是**一切本地小输入的共用出口**：`openAsk` 接管输入行、`askKey` 认那几个编辑键、
-  // 回车交给问的人那一格 `submit`（一次设置要发什么命令）、`esc` 收回**不留痕迹**。
-  // 密钥那一路另有一条硬规矩：**值只在壳里**（视图拿到的是圆点，见 `PromptState` 的注）。
-
-  /** 一次小输入要画的几格——密钥那一路在这儿换成圆点（真值不出去）。 */
-  const promptViewOf = (ask: Ask): PromptState => {
-    if (!ask.secret) {
-      return {
-        label: ask.label,
-        display: ask.value,
-        caret: ask.caret,
-        placeholder: ask.placeholder,
-        ...(ask.note === undefined ? {} : { note: ask.note }),
-      }
-    }
-
-    return {
-      // 「输入不回显」是**这一屏的事实**，写在标签上——用户得知道自己打的字为什么看不见
-      label: `${ask.label}（输入不回显）`,
-      display: '•'.repeat([...ask.value].length),
-      // 圆点一字符一格：插入点按**码点**数，与画出来的那一串同尺
-      caret: [...ask.value.slice(0, ask.caret)].length,
-      placeholder: ask.placeholder,
-      ...(ask.note === undefined ? {} : { note: ask.note }),
-    }
-  }
-
-  /** 视图里那一份（派生：值在 `asking`，屏上那一份按它算出来）。 */
-  const withAskView = (ask: Ask): ShellView => ({
-    ...view,
-    dock: { kind: 'prompt', prompt: promptViewOf(ask) },
-  })
-
-  const openAsk = (ask: Ask): void => {
-    asking = ask
-    commit(openPrompt(view, promptViewOf(ask)))
-  }
-
-  const closeAsk = (): void => {
-    asking = null
-    commit(closePrompt(view))
-  }
-
-  /** 编辑当前这一份小输入（值一变就重画——视图那一份是**派生**的，不另存）。 */
-  const editAsk = (value: string, caret: number): void => {
-    const held = asking
-    if (held === null) return
-
-    held.change?.(value)
-    asking = { ...held, value, caret: Math.max(0, Math.min(caret, value.length)) }
-    commit(withAskView(asking))
-  }
-
-  /**
-   * 按下回车——**交回给问的人**：`submit` 给一条命令就发出去，给 `null` 就只是收起来。
-   *
-   * ⚠️ **先落地、后发命令**（那条老次序）：进程内传输是同步直连的，反过来的话这次
-   * `commit` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
-   */
-  const submitAsk = (): ShellEffect => {
-    const held = asking
-    if (held === null) return NONE
-
-    if (held.local !== undefined) { held.local(held.value); return NONE }
-    const command = held.submit(held.value)
-    if (command?.type === 'session.rename' && sessionTarget === command.session) {
-      if (managementPending !== null) return NONE
-      if (!connected) { commit({ ...view, flash: 'Engine 未连接，请先 Ctrl+R 重连' }); return NONE }
-      if (held.value.trim() === '') { commit({ ...view, flash: '名称不能为空' }); return NONE }
-      managementPending = command.type
-      commit({ ...view, flash: '正在保存…' })
-      send(command)
-      return NONE
-    }
-    asking = null
-    commit(closePrompt(view))
-    if (command !== null) send(command)
-
-    return NONE
-  }
-
-  /** 小输入那几键——只认**单行编辑**该认的那些（没有换行、没有历史、没有候选）。 */
-  const askKey = (input: ShellKey): ShellEffect => {
-    const held = asking
-    if (held === null) return NONE
-
-    switch (input.kind) {
-      case 'char':
-        if (!isPrintable(input.char)) return NONE
-        editAsk(
-          held.value.slice(0, held.caret) + input.char + held.value.slice(held.caret),
-          held.caret + input.char.length,
-        )
-        return NONE
-
-      case 'backspace': {
-        const [from, to] = leftSpan(held.value, held.caret)
-        if (from === to) return NONE
-        editAsk(held.value.slice(0, from) + held.value.slice(to), from)
-        return NONE
-      }
-
-      case 'delete': {
-        const [from, to] = rightSpan(held.value, held.caret)
-        if (from === to) return NONE
-        editAsk(held.value.slice(0, from) + held.value.slice(to), from)
-        return NONE
-      }
-
-      // ⚠️ **`←` 不在这一屏了**（U61）：接管屏里它一律是「弹一层」——归 `key()` 那道门
-      //（在选择器 / 本地小输入上收口），到不了这里。`→` 照旧：它是**这一行字里**的移动，
-      // 而这一屏没有「进一层」可言（同别的抽屉「没有详情就不报那个键」那条口径）。
-      case 'right':
-        editAsk(held.value, stepRight(held.value, held.caret))
-        return NONE
-
-      case 'paste': {
-        // **单行**：控制字符（含换行、Tab）不收——粘一串**带尾换行**的密钥是常事，
-        // 而那一个换行落进值里就是一条查不出来的错（屏上是圆点，看不出多了一格）
-        const text = [...input.text].filter((char) => isPrintable(char)).join('')
-        if (text === '') return NONE
-        editAsk(
-          held.value.slice(0, held.caret) + text + held.value.slice(held.caret),
-          held.caret + text.length,
-        )
-        return NONE
-      }
-
-      case 'left':
-        editAsk(held.value, stepLeft(held.value, held.caret))
-        return NONE
-
-      case 'escape':
-        popLayer()
-        return NONE
-
-      case 'enter':
-        return submitAsk()
-
-      // 上下键 / Tab / 换行在这一屏没有活——**什么都不做**（不当正文，也不装作有别的用法）
-      default:
-        return NONE
-    }
-  }
-
-  // —— 接入供应商（U41 · `/model connect`）——
-
-  /**
-   * **取一个还没被占的连接 id**——拿供应商名打底，撞了就加序号。
-   *
-   * 为什么要这一步：契约的 `provider.save`「在**已有 id** 上给 ＝ 改那一条」——同一个 id
-   * 再存一次是**改写**，不是新建。故接新连接之前先算一个空的（一览在手上：`view.models`）。
-   */
-  const freeIdOf = (vendor: string): string => {
-    const taken = new Set(view.models.map((entry) => entry.provider))
-    if (!taken.has(vendor)) return vendor
-
-    for (let at = 2; ; at += 1) {
-      const next = `${vendor}-${at}`
-      if (!taken.has(next)) return next
-    }
-  }
-
-  /** 官方名单由适配提供；自定义入口始终可用。 */
-  const openVendorPicker = (): void => {
-    commit(
-      openPicker(view, {
-        source: 'vendor',
-        selected: 0,
-        rows: [...vendorRows(view.vendors), { label: '自定义', meta: '本机、局域网或远端服务', value: 'custom', current: false, oneLine: true }],
-        hint: '选择供应商；没有模型列表也可以手动填写原始型号',
-      }),
-    )
-  }
-
-  const modelTarget = (): string => collaborationModel === null ? '当前工作'
-    : collaborationModel.member === undefined ? '后续派生默认'
-    : view.collaboration?.members.find(one => one.agent.agentId === collaborationModel?.member)?.agent.name ?? '该成员'
-
-  const modelPickerHint = (note: string): string => {
-    if (modelScope === 'default' && view.configuredModels.default === undefined) return [
-      '使用此模型开始：设为默认，并先用于尚未配置的三个能力档位，之后可分别调整', note,
-    ].filter(Boolean).join('\n')
-    const same = modelScope === 'session' && view.configuredModels.cantrip !== undefined
-      && view.configuredModels.spell?.provider === view.configuredModels.cantrip.provider && view.configuredModels.spell?.model === view.configuredModels.cantrip.model
-      && view.configuredModels.arcane?.provider === view.configuredModels.cantrip.provider && view.configuredModels.arcane?.model === view.configuredModels.cantrip.model
-    return [modelHint(view.models, note || undefined, modelScope),
-      modelScope === 'session' ? `模型选择与思考设置作用于：${modelTarget()}；映射编辑是全局配置` : '',
-      same ? '当前三个档位使用同一模型' : '',
-    ].filter(Boolean).join('\n')
-  }
-
-  const openModelPicker = (note: string): void => {
-    // 设置与工作选择共用读数；实际型号只在映射编辑层出现。
-    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent(), view.configuredModels)
-
-    commit(
-      openPicker(view, {
-        source: 'model',
-        // 落在**此刻会走的那一条**上（没有去向就从头起——不拿首项冒充当前）
-        selected: Math.max(0, rows.findIndex((row) => row.current)),
-        rows,
-        hint: modelPickerHint(note),
-      }),
-    )
-  }
-
-  /**
-   * **就地重铺**（U41 · 刷新那一路）——设计：「刷新只更新信息，**不抢走列表当前焦点**、
-   * 不清草稿、不写回默认」。
-   *
-   * 重铺＝换掉行与说明，**选中那条按身份（连接 ＋ 模型）认回来**：列表顺序变了、新增了几条、
-   * 甚至当前那条挪了位置，用户手上那一下都不该被抢走。
-   *
-   * 0 行照 `refreshGrantsPicker` 那条老规矩办：**收起抽屉**（0 行的抽屉接管着输入却不给
-   * 东西可点——打不了字、没得选，看着就是卡死），内核那句说明落成记录区一行回执。
-   */
-  const refreshModelPicker = (note: string): void => {
-    if (view.dock.kind !== 'picker') return
-
-    // 详情 / 思考两屏的资料也来自这一份读数（规格 · 缓存时间 · 思考能力）——照旧的读数重铺
-    if (view.dock.picker.source === 'model-detail') {
-      openModelDetail(detailAt)
-      return
-    }
-    if (view.dock.picker.source === 'model-reasoning') {
-      openReasoningPicker(detailAt)
-      return
-    }
-    if (view.dock.picker.source === 'model-choice') {
-      const rows = modelChoiceRows(view.configuredModels, scopeCurrent())
-      commit({ ...view, dock: { ...view.dock, picker: { ...view.dock.picker, rows } } })
-      return
-    }
-
-    if (view.dock.picker.source !== 'model') return
-
-    const held = picked(view)?.pick
-    // 重铺与铺**同一份读数、同一句话**（U78）——不然刷新一次那一屏就换了个人说话
-    const rows = modelScope === 'session' ? modelSettingsRows(view.models, view.configuredModels, scopeCurrent(), modelTarget()) : modelRows(view.models, scopeCurrent(), view.configuredModels)
-    const hint = modelPickerHint(note)
-
-    if (rows.length === 0) {
-      commit(closePicker(view))
-      if (hint !== '') commit(appendReceipt(view, hint))
-      return
-    }
-
-    const at =
-      held === undefined
-        ? view.dock.picker.selected
-        : rows.findIndex((row) => row.pick?.provider === held.provider && row.pick.model === held.model)
-
-    commit({
-      ...view,
-      dock: {
-        kind: 'picker',
-        picker: {
-          ...view.dock.picker,
-          rows,
-          // 认不回来（那条模型从列表里没了）⇒ **夹回范围内**，不跳远、也不越界
-          selected: Math.min(
-            Math.max(0, at === -1 ? view.dock.picker.selected : at),
-            rows.length - 1,
-          ),
-          hint,
-        },
-      },
-    })
-  }
-
-  // —— 技能（U33 · 终端入口）——
-
-  /**
-   * **`/skills` 的抽屉**——行：名称 ＋ 来源 ＋ 简述（见 `skillRows`）。
-   *
-   * `filter` 一变就整个重铺（打字筛、退格放宽、同名直达那一路拿名字当筛词）——
-   * 一处铺行，三种来路共用，不各写一遍。
-   *
-   * 取材是**视图里那一份目录**（`view.skills`）：`/skills` 每次都发一次 `skills.list`
-   * 现问，故这一屏说的就是那一下的现况（技能是随用户编辑变的目录）。
-   *
-   * 空名录仍展示原因与返回入口。
-   *
-   * 取材是**视图里那一份目录**（`view.skills`），不再有第二份取材（U57 那个 `skillScope`
-   * 随「同名 ⇒ 展开候选」一起退回：候选栏上停哪一条、那一屏就停在谁头上，都得有名有姓的
-   * 一对同名才谈得上，而**同名在发现那一层只剩一条**了）。
-   */
   const openSkillsPicker = (
     filter: string,
     anchor: { readonly start: number; readonly end: number },
@@ -3159,15 +1688,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     )
   }
 
-  /**
-   * **选定一份技能 ⇒ 在它该在的位置放进一句引用**（U36）。
-   *
-   * 三件同时成立才是对的：
-   * - **不加载主文、不发模型请求**（带的是身份：名字 ＋ 真路径），真实提交那一刻内核才按身份取；
-   * - **不发送**（按回车确认一个选择，不该顺手把草稿发出去）；
-   * - **插在打开列表前那个位置**（`anchor`）——不移到开头、也不一律追加到末尾
-   *   （设计 · 技能调用：「选定后在打开选择器前的输入位置插入技能引用」）。
-   */
   const bindSkill = (skill: SkillCatalogRow, anchor: { readonly start: number; readonly end: number }): void => {
     const marker = `/${skill.name}`
 
@@ -3184,8 +1704,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       }),
     )
   }
-
-  // —— 路径（U36 · 正文里的 `@`）——
 
   /**
    * **开 `@` 那一栏**——`anchor` 是「那一段查询」在草稿里的范围（选定即替换它）。
@@ -3282,23 +1800,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     askPaths(text)
   }
 
-  /**
-   * `Enter`（`@` 那一栏）——**选定即把引用放进正文原处**。
-   *
-   * 替换掉的是**整段查询**（从 `@` 到用户打到的位置）：设计 · 文件与图片
-   * 「选定后收起候选，在查询原处留下文件/目录引用，其余正文不动；不追加独立附件行」。
-   *
-   * ## 文件再问一句「它是什么」（U62）
-   *
-   * 目录到此为止（`@src/` 就是它该有的样子）。**文件**多走一趟 `paths.identify`：
-   * 它可能**是一张图**，而图片那一处的写法是**编号**（`Image#N`）——不是路径，也不用文件名。
-   * 这一问要读一次内容，故只在**选定之后**发（设计：「选定才是用户的动作」）。
-   *
-   * ⚠️ **先落稿、后问**（次序是刻意的，与 `input.submit` 那条同）：答复回来时那一处引用
-   * 得**已经在稿子里**——改名那一步是在原处替换（`retype`），不是另插一处。
-   * 问不出来（不是图 / 读不了 / 不在了）⇒ 什么都不发生：那一处**照旧是 `@路径`**
-   * （真到提交那一刻取不到，由那一条如实报错）。
-   */
   const pickPath = (): void => {
     const anchor = view.dock.kind === 'picker' ? view.dock.picker.anchor : undefined
     const row = picked(view)
@@ -3367,19 +1868,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     send({ type: 'paths.list', query })
   }
 
-  /**
-   * **选定那一条认出来了**（U62）——是图就把那一处**在原处**改成 `Image#N`。
-   *
-   * 四条分寸：
-   * - **没认出图 ⇒ 什么都不做**：那一处照旧是 `@路径`（设计：不假装有文件名——
-   *   一份读不出图的文件本来就没有「图片的名字」可言），也不在选入的时候就先报一串；
-   * - **认的是路径**（答复原样回声）⇒ 改的是**稿子里 `source` 正是它**的那几处：
-   *   同一份文件选进来两次，两处一起改，而它们**共用同一个编号**（同内容同名字）；
-   * - **已经不在稿子里的**（答复后到，用户已经删了那一段 / 已经交出去了）⇒ 无一处可改，
-   *   `retype` 原样还回来，这里也就不动（不新插、不复活）；
-   * - 走 `edit`（人动草稿那条口）而不是 `commit`：这确实是**改草稿**——历史游标该归位，
-   *   而「交出去那一份等着认领」也就此作罢（稿子已经不是交出去时那一份了）。
-   */
   const identifyPicked = (data: Extract<KernelEvent, { kind: 'paths.identified' }>['data']): void => {
     if (view.archived) return
     const image = data.image
@@ -3499,10 +1987,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
   }
   const configureCollaboration = (member?: AgentId): void => {
     enterLayer()
-    collaborationModel = member === undefined ? {} : { member }
-    modelScope = 'session'
-    waiting = 'model'
-    send({ type: 'model.list' })
+    models.target(member)
+    waiting = null
+    send(models.request('model'))
   }
   const collaborationAction = (row: PickerRow): void => {
     const snapshot = view.collaboration
@@ -3561,44 +2048,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
   }
 
-  /**
-   * **剪贴板那一张到了**（U107）——`input.paste` 的答复，三支各办各的：
-   * **抽屉开着**（答复在路上时那一栏才开）⇒ 不插、明说；**取到了** ⇒ 插一处 `Image#N`；
-   * **没取到** ⇒ 落一句回执。
-   *
-   * ## 取到了：在**插入点**放一处 `Image#N`
-   *
-   * 位置就是**当下那个插入点**——用户按那一下的时候字打在哪，这一处就落在哪
-   * （与 `@` 那一栏「在打开查询前的输入位置插入引用」同一条分寸；这边没有那一栏，
-   * 锚点就是插入点本身）。
-   *
-   * 编号仍归**稿子那一侧**发（`imageNumberOf`，按**内容身份**）——这里一个字都不另算：
-   * 同一张图从剪贴板贴两次、或与 `@` 选进来的同一张并用，拿到的都是同一个号
-   * （身份是字节的 sha256，与它从哪来无关——设计 · 文件与图片 ·「图片的身份与名字」）。
-   *
-   * ⚠️ **一处**（不是一处加一条回执）：贴成功是**看得见**的——那一处 `Image#N` 就落在
-   * 插入点上。设计把回执留给「刚发生、屏上没别处说得出」的事（见 `appendReceipt`），
-   * 而这一件屏上正说着。
-   *
-   * ## 没取到：落一行**回执**，说明发生了什么
-   *
-   * 剪贴板空 / 只有文本 / 这台机器上取不了——**这一格必须说**：用户按下的就是
-   * 「把剪贴板里的图取进来」，取不到**就是这件事的结果本身**，一声不响他只会以为按漏了
-   * （设计明文「不许静默失败」）。话由内核备好（它才认得出剪贴板里是什么），这里只负责说。
-   *
-   * ⚠️ **既没图也没话 ⇒ 什么都不做**：那是契约上不该出现的一形，屏上不替它编一句
-   * （同「拿不到的不编」）。
-   */
   const pastedClipboard = (data: Extract<KernelEvent, { kind: 'input.pasted' }>['data']): void => {
-    // ⚠️ **抽屉开着时，答复也不收**（合前自查补的一档）。
-    //
-    // 按下去那一下不收是上面 `case 'ctrl+v'` 管的；可这一条**是异步答复**——用户完全
-    // 可能在答复回来之前把 `@` 那一栏打开。那一刻要是照插，两件坏事一起发生：
-    // ① 与「抽屉开着时粘贴一律不收」那条规矩自相矛盾（同一件事两条口径）；
-    // ② 更要害的是**锚点会错**：路径那一栏记着「打开它时草稿的哪一段」是自己的查询，
-    //    往草稿里插 7 个字之后那个区间就偏了——用户接着选定一条，替换掉的是**别处**的文字。
-    //
-    // 故这一档**明说**（不静默）：图取到了，但此刻那一栏占着，收起再按一次就行。
+
     if (view.archived) return
     if (view.dock.kind === 'picker') {
       if (data.image !== undefined || data.problem !== undefined) {
@@ -3635,16 +2086,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     editAt(next.draft, next.caret, next.refs)
   }
 
-  /**
-   * **一次提交**（U33 起，U36 改形）——正文 ＋ 它里面的引用 ＋ 配对键，三件一起交给内核。
-   *
-   * 三条写在一处：
-   * - **正文原样**（引用那几个字**留在原处**、**内部换行留着**）——前后文字指向哪件事，
-   *   靠的就是这个次序；`/clear`、绝对路径写在正文里仍只是正文（不递归解析斜杠）；
-   * - **引用随这一份**（`refs`）：每处带**位置 ＋ 身份**，内核按身份取材料，取不到就
-   *   **这一条不跑**（不换同名项、不忽略它继续）——文件读不了与技能取不到同一条出口；
-   * - **配对键**（`ref`）：`input.settled` 按它认回这份草稿（失败时原样还回来，见 `restoreDraft`）。
-   */
   const rememberInput = (text: string, refs: readonly DraftRef[]): void => {
     const firstCleared = history.findIndex(entry => entry.cleared !== undefined)
     history.splice(firstCleared === -1 ? history.length : firstCleared, 0, { text, refs })
@@ -3668,18 +2109,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     const purpose = view.inputPurpose
 
     const cleared: ShellView = { ...view, draft: '', caret: 0, refs: [], inputPurpose:'current' }
-    // **这一段输入到此为止，编号也归零**（U62）：`Image#N` 是**一段输入内**的编号，
-    // 下一段交代从 `Image#1` 重新数（留着上一段的号只会让新的一句里平地冒出个 `Image#4`）。
-    // ⚠️ 失败还稿那一路（`settleDraft`）会整份把引用摆回来，编号在那时**认回来**
-    // （见 `adoptImageNames`）——这里先清掉不会让还回来的那几个名字撞号。
+
     imageNames = new Map()
     // 历史记的是**整份草稿**：正文 ＋ 它里面的引用（位置与身份都在，见 `HistoryEntry`）——
     // `↑` 翻回来的是**当时那一句**，接着改、再发一次都不必重选。
     // 每次明确提交都记一次，召回与取消不另记。
     rememberInput(text, refs)
 
-    // ⚠️ **先落地、后发命令**（D23 那条次序）——进程内传输是同步直连的，
-    // 反过来的话这次 `draft()` 拿的是发命令**之前**的快照，会把答复刚写进去的东西盖掉。
     const echoed = view.inputMember === undefined ? appendEcho(cleared,text,userImages(refs)) : cleared
     draft({...echoed,rows:echoed.rows.map((row,index)=>row.kind==='user'&&index===echoed.rows.length-1?{...row,inputRef:ref,inputState:'提交中'}:row)})
     const input = { text, ref, purpose, ...(refs.length === 0 ? {} : { refs: wire(refs) }) }
@@ -3689,19 +2125,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return NONE
   }
 
-  /**
-   * **加入本次输入**（U110）——见 `Shell.attachMaterial` 那一段。
-   *
-   * ⚠️ **位置是「插入点」**（设计 · 文件与图片：「**在打开查询前的输入位置插入引用**……
-   * **不一律追加到末尾**」）——即**进那一屏之前输入行里那个插入点**。
-   *
-   * 那一趟里稿子与插入点**一动不动**（那一屏只读；`view.caret` 就是进屏前那一个），
-   * 故这里直接取当下的 `view.caret`：**插在它那儿，插入点落到新引用之后**（`replaceWith`
-   * 那一支的规矩，与 `@` / 剪贴板那两条同一条）。
-   *
-   * ⚠️ **不是那条引用当年在这句话里的偏移**（本单第一版这么读过——规划侧按设计原文纠正：
-   * 那句话说的是「**输入位置**」，不是「材料在原交代里的位置」）。
-   */
   const attachMaterial = (material: UserImage): void => {
     if (view.archived) return
     const at = Math.max(0, Math.min(view.caret, view.draft.length))
@@ -3729,7 +2152,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     )
   }
 
-  /** **导出原图**（U110）——见 `Shell.exportMaterial` 那一段。只发一条命令，不碰字节。 */
   const exportMaterial = (material: UserImage): void => {
     send({ type: 'image.export', blob: material.blob, name: material.name, mime: material.mime })
   }
@@ -3795,25 +2217,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return view.runs.find((one) => one.session === id)?.state
   }
 
-  /**
-   * **这条会话手上还有没有事**（U100）——设计那一句「有在途工作或待答事项」的落点。
-   *
-   * 四条来路，缺一条就有一种「明明还在跑，`ctrl+c` 却只给『再按一次退出』」：
-   * - **这一轮在跑**（模型在途 / 工具在跑 · 含挂着卡那一笔，见 `working`）；
-   * - **审批还挂着**（接管着那一屏）——同上，它算在途；
-   * - **运行事实说它在跑**（`running` / `waiting` / `stopping`）——**这条兜的是外壳看不见的那些**：
-   *   别的窗口起的活、以及**只剩后台命令**那一形（后台命令「不占着这一轮」，故外壳自己的
-   *   状态行那会儿是空闲；可它确实是这条会话的工作，`/resume` 那一行也照实报着）。
-   *
-   * ⚠️ **只问这一条会话**（`view.sessionId`）——设计：「只有其他会话在跑时也只退出当前界面」。
-   * ⚠️ **只作判据，不作承诺**：它答的是「要不要给用户那三选」，不答「停得掉什么」——
-   * 后者归管理者（见 `taskAction` 那一跳）。
-   */
   const inFlight = (): boolean => {
-    // **失联之后不答这一问**（U100）——设计：「不把历史 running 当现况」。此刻手上这份
-    // 运行事实是**断线前那一刻**的，拿它说「有在途工作」就是拿旧读数当现况；而说「没有」
-    // 是另一半谎。故这一格返回假，`ctrl+c` 回到**空闲那条路**（按两次离开）——那是这一屏
-    // 此刻唯一说得出、也做得到的事（「如实留在界面说明」见 `disconnected`）。
+
     if (view.status.state === 'lost') return false
     if (working() || decisions.size > 0 || view.dock.kind === 'decision') return true
 
@@ -3844,14 +2249,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.exitArmed) commit({ ...view, exitArmed: false })
   }
 
-  /**
-   * **挂上那道门 ＋ 起钟**（U68）——第一下按 Ctrl+C 走的就是这一跳。
-   *
-   * 钟到点干两件：**撤掉那一行** · **取消这一次监听**（`exitArmed` 落回假 ⇒ 下一次按
-   * 从头算）。两件其实是同一件：那一道门的状态就是 `exitArmed` 这一格。
-   *
-   * ⚠️ `unref`：测试 / 演示里不该因为一支钟把进程多拽住 1.5 秒（同 `holdResumed` 那一处）。
-   */
   const armExit = (): void => {
     stopExitClock()
     commit({ ...view, exitArmed: true })
@@ -3863,32 +2260,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     exitArmTimer.unref?.()
   }
 
-  /**
-   * Ctrl+C——**两种走法**（U100 · 设计「离开、停止与异常退出」那张表）。
-   *
-   * | 这一下的时候 | 走法 |
-   * | --- | --- |
-   * | **有在途工作或待答**（`inFlight`） | **开三选**（停止任务 / 转到后台 / 停止并退出）——**打开本身不停、不暂停、不退出** |
-   * | 手上没事 | **空闲**那条：按两次才走（U46 · U68 加了时限） |
-   *
-   * ## 空闲那条（一个字没改）
-   *
-   * 第一下**不退出**，只把那一行挂上（`HINT_EXIT_ARMED`）**并起 1 秒的钟**；钟内再按一下
-   * 才放行。两条清理由：**到点**（`armExit` 里那支钟，那一行自己撤、再按是新的一次）·
-   * **任何别的输入**（`key` 兜着，见那一处）。两者都收在 `disarmExit` 一处——「那一行还在
-   * 不在」与「那一下算不算数」是**同一格**，两处各清各的迟早分开（只撤了行、监听还挂着，
-   * 就会「看不见那一行却一按就退」）。
-   *
-   * ## 有在途那条为什么**不再当场发中断**（这一单拆掉的那个耦合）
-   *
-   * 旧写法是「工作中那一下＝替用户发 `turn.interrupt`」——**替用户做了决定**：那条路
-   * 「停掉这一轮」与「离开、让它继续跑」被压成了同一个键，而用户此刻要的往往正是后者
-   * （关个窗口去干别的）。而它们**是两件事**（设计的三个选项就是这么分的）。故这一跳
-   * 只把问题摆出来；**停与不停由用户在那一屏上明确选**（`taskAction`）。
-   *
-   * ⚠️ **那一道门也当场撤掉**（挂着的 `exitArmed` ＋ 它的钟）：它说的是「再按一次就退出」，
-   * 而这一下之后屏上换的是三选——留着它就是一句不再为真的话，再按一下还会退。
-   */
   const exitOrInterrupt = (): ShellEffect => {
     // **菜单正中开着**（三选已经摆在那儿）——再按 `ctrl+c` 只**返回**，不隐式执行任何一项
     // （设计明文：「菜单中再按 Ctrl+C 也只返回，不隐式执行任何一项；没有倒计时或自动确认」）。
@@ -3913,37 +2284,19 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return EXIT
   }
 
-  /**
-   * **这一屏的三个选项**（U100）——顺序固定（设计那张表），**行不随运行事实重铺**：
-   * 它们说的是「接下来怎么办」，不是「此刻哪儿在跑」（那件事归状态行与 `/resume`）。
-   *
-   * ⚠️ **`value` 是动作名**（不是会话 id）：选定之后要落到哪条会话上，由 `taskMenu` 那一格
-   * 记着（**打开那一刻**绑定的那一条）——把会话 id 塞进行里，就等于让「停谁」跟着一行字走，
-   * 而用户按 `↑↓` 时它是不动的（两件东西混在一个字符串里，迟早分家）。
-   */
   const TASK_ROWS: readonly PickerRow[] = [
     {
       label: '停止任务',
       meta: '停止当前任务，留在 Magic',
       current: false,
       value: 'stop',
-      // **担保一行**（U100）——这三行的简述是**定长**的（设计写死的那几句），
-      // 而它们在窄窗里会折行：折一行就比高度账多占一行（U31 那一族的老账，界面上表现为
-      // 真光标高一行）。`oneLine` 正是为这个给的（超宽在渲染层截断加 `…`），
-      // 且它截的次序合设计那条「窄窗先保住名称、再截断简述」——动作名一个字都不动。
+
       oneLine: true,
     },
     { label: '转到后台', meta: '退出界面，任务继续运行', current: false, value: 'background', oneLine: true },
     { label: '停止并退出', meta: '停止当前任务并退出 Magic', current: false, value: 'stop-exit', oneLine: true },
   ]
 
-  /**
-   * **这一屏要画的那份选择器**（U100）——开它、以及被卡顶掉之后**留在上面**两处共用。
-   *
-   * 标题按**此刻的事实**挑（设计：标题用「当前任务仍在运行」，待答时改「当前任务正在等待你」）。
-   * `selected` 由调用方给：菜单被顶掉又摆回来时，**焦点要留在用户原来那一格**上
-   * （那是他刚挪到的，不是这一屏新开的）。
-   */
   const taskPickerOf = (asked: boolean, selected = 0): Picker => ({
     source: 'task',
     title: asked ? '当前任务正在等待你' : '当前任务仍在运行',
@@ -3955,25 +2308,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
    * **这一屏正开着吗**——`dock` 是唯一真源（`taskMenu` 只是「打开那一刻绑定的是哪条」）。
    */
 
-  /**
-   * **打开时绑定的那一件工作**（U100）——`null` ＝ 三选没开着。
-   *
-   * 设计：「选项绑定打开时的**当前会话与运行**；执行前再核对，**目标已结束或更换则收起
-   * 菜单，不误停下一轮**」。三格加一个布尔，各认一件：
-   *
-   * - `session`——打开那一刻的当前会话（可能是 `null`：首条消息正跑着、外壳还没认出它是
-   *   哪一条，同 `beginExit` 踩过的那个窗口）；
-   * - `turnSeq`——打开那一刻是**第几轮**（本窗口的单调计数）。它管**同一条会话的下一轮**：
-   *   那一轮跑完了、新的一轮又起来了，菜单绝不能把那件新活当成旧活停掉；
-   * - `runStartedAt` / `lastTurnAt`——那**一代运行的身份**与**上一轮收束的时刻**
-   *   （管理者推来的运行事实）。它俩管**跨窗口**那一半：别的窗口把这一代收了又起了新的
-   *   一代（`startedAt` 变），或者这一代被停、被换了（那一行整条换了）。
-   * - `asked`——打开那一刻**是不是待答**。只用于**标题**（「当前任务正在等待你」那一版）：
-   *   菜单一开，`dock` 就从裁决卡换成了选择器，那件事于是不能再从 `view.dock` 读。
-   *
-   * ⚠️ **几格都要**：少 `turnSeq` 就漏「同一代里的下一轮」（那一代的 `startedAt` 没变）；
-   * 少运行事实两格就漏「别的窗口换了局面」而本窗口收不到内核事件的那些形。
-   */
   let taskMenu: {
     readonly session: SessionId | null
     readonly taskEntry: RecordId | null
@@ -3981,21 +2315,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     readonly asked: boolean
   } | null = null
 
-  /**
-   * **开三选**（U100）——`ctrl+c` 在有在途工作时走的就是这一跳。
-   *
-   * 三件要分开说：
-   *
-   * ① **打开不改变执行**：这里只动 `dock` 与那行键位提示（`openPicker` 干的），
-   *    一个命令都不发、一个计时器都不挂——**没有倒计时、没有自动确认**。
-   * ② **把当前那一屏收进栈**（U61 的栈，单位是「那一屏」）：待答时它就是**上一层**，
-   *    `esc 返回` / `←` 要能照原样摆回来（设计：「Esc 后原有草稿、引用、光标与审批恢复」）。
-   *    从**输入行**开的没有上一层（栈底就是输入行）——不压，`esc` 那一下便是回输入行
-   *    （与 `enterLayer` 同一条规矩）。
-   * ③ **标题按打开那一刻的事实挑**（设计：标题用「当前任务仍在运行」，待答时改
-   *    「当前任务正在等待你」）：那一刻之后卡要是被别的窗口答了，这一屏**整个会被撤掉**
-   *    （答复那一跳走 `undock`，`dock` 回输入行、栈随之清空）——故它不会挂着一句过期的标题。
-   */
   const openTaskMenu = (): void => {
     if (view.dock.kind === 'picker' && view.dock.picker.source === 'task') return
 
@@ -4011,47 +2330,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (asked) layers = [...layers, layerNow()]
     else enterLayer()
 
-    // ⚠️ **恒选第一项**（U100 合前复核 · 返修一）：这里原先跟着 `view.dock.picker.selected`
-    // 走——那把**别的列表**（`/resume` 里挪到第 3 条）的索引带进了这张菜单，回车于是落在
-    // 第 3 项（「停止并退出」）上。**三选是新开的一屏，它自己的选中项从 0 起**
-    // （`taskPickerOf` 的缺省）；同一菜单刷新才保留本屏焦点。
     commit(openPicker(view, taskPickerOf(asked || decisions.size > 0)))
   }
 
-  /**
-   * **收起三选、回到原处**（U100）——`esc` / `←` / 菜单里再按一下 `ctrl+c` 三条都走它。
-   *
-   * 「原处」＝**打开它之前那一屏**：待答那一张卡照原样摆回来（它一直在栈里，见 `openTaskMenu`），
-   * 否则回输入行。⚠️ **不是「什么都收掉」**：那一张卡不是用户打开的屏，是这个会话此刻的
-   * 状态——收掉它等于**替用户拒了一次审批**（设计：「关闭窗口不自动批准」，同理，返回也不批）。
-   *
-   * `popLayer` 就是这一件（有上一层摆回来、没有便收起），故这里不另写一套——**一处口径**。
-   */
   const closeTaskMenu = (): void => {
     taskMenu = null
     popLayer()
   }
 
-  /**
-   * **打开那一刻绑的那件活还在不在**（U100）——设计：「选项绑定打开时的当前会话与运行；
-   * 执行前再核对，目标已结束或更换则收起菜单，不误停下一轮」。
-   *
-   * 三问，缺一问就漏一形（问的都是**事实**，不看任何一句文案）：
-   *
-   * | 问 | 挡住的形 |
-   * | --- | --- |
-   * | **手上还有没有事**（`inFlight`） | 原活自己收场了（办完了 / 被别的窗口停了） |
-   * | **还是不是原来那一条会话** | 别的窗口把它切走了、本窗 `/resume` 换了一条 |
-   * | **还是不是原来那一份交代**（`taskEntry`） | 用户（本窗口或别的窗口）**又交办了一件新事**——旧菜单不许停新活 |
-   * | **还是不是原来那一代运行**（`startedAt`） | 别的窗口把这一代收了又起了新的 |
-   *
-   * ⚠️ **判据是「一份交代」，不是「一轮」**：同一份交代里模型要跑好几轮（模型 → 工具 →
-   * 模型…，每轮都有 `turn.start` / `turn.end`），**那中间菜单照旧得管用**——用户按 `ctrl+c`
-   * 要停的就是这件事。拿「轮」当边界会把下一次模型请求当成「换了任务」（实测栽过：
-   * 菜单在工具跑完那一刻自己失效，用户按下去什么也没发生）。
-   * ⚠️ **会话 id 由 `null` 变成有不算换**：那是首条消息开张那一瞬——外壳刚认出它是哪一条
-   * （与 `beginExit` 踩过的是同一个窗口），要停的正是它。
-   */
   const stillBound = (bound: typeof taskMenu): boolean => {
     if (bound === null) return true // 手搭的视图 / 不是从菜单进来的——没绑过，不拦
 
@@ -4075,75 +2361,16 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return `${cwd}${instance}magic resume ${shellQuote(session)}`
   }
 
-  /**
-   * **三选里选定了一件**（U100）——`stop` / `background` / `stop-exit`。三支各走各的来路：
-   *
-   * | 选定 | 走哪条 |
-   * | --- | --- |
-   * | 停止任务 | `options.stop(<这条>, 'run')`——**U50 交付的那条停止通路**（整体那一档），界面留下 |
-   * | 转到后台 | **一条命令都不发**：只置 `leaving`，界面退出、连接断开 |
-   * | 停止并退出 | `beginExit()`——`/exit` 那一条（**同一档**，停到核销之后才走） |
-   *
-   * ## 两项停止**同一档**（2026-09-26 规划裁决）
-   *
-   * 设计那张表的「范围相同」是**工作范围**上的同一：两项都停**当前会话**的在途模型、工具
-   * **与后台命令**，也就是说都取**整体**那一档。差别只在**停完之后走不走**。
-   *
-   * ⚠️ **局部那一档（`turn`）不能拿来顶替**：它只往那一代送一句 `turn.interrupt` 就回
-   * 「done」——**那不是「资源确已停止」**，也收不走后台命令（那些进程不占着那一轮）。
-   * 拿它冒充「停掉了」，正是设计不许的那种报法。
-   *
-   * ⚠️ **「整体停下之后就接不回这条会话」曾经是真的**（`retire` 会把窗口的目标清掉，
-   * 下一条输入于是开了**一条新会话**）——**那是要修的那个毛病，不是将就它的理由**：
-   * 本单在管理者那一头改了（`ClientConn.selectedSession` ＋ `onCommand` 那条「认着会话就
-   * 接着它走」的兜底）。于是「停掉、留在界面、接着交代」是同一条记录往下走。
-   *
-   * ## 三处共同的纪律
-   *
-   * ① **先核对目标，再动手**（设计：「选项绑定打开时的当前会话与运行；执行前再核对，
-   *    目标已结束或更换则收起菜单，不误停下一轮」）——见下面那一段的三种核对。
-   * ② **发出去就走 ≠ 有回执**：两支停止**都不在这里报「停了」**——回执归 `stopped` 那条线
-   *    （U50：受理 / 已核销 / 没能证实三拍）。这一层多说一个字就是「同一条事实说两遍」。
-   * ③ **不过 `exitWait`**（那一格）：「停止任务」与「停止并退出」走同一档停止，可**只后者
-   *    等它停完再走**——`exitWait` 是「等着走」的意思，挂错了那一格，选「留在 Magic」
-   *    反而会退出界面。
-   *
-   * ## 「转到后台」为什么不发命令
-   *
-   * 设计：「**只断开当前界面**；沿同一条运行继续模型、工具和结果记录，不重开、不重发用户输入」。
-   * 而「断开」这件事**已经发生在外壳退出那一刻**（`cli.ts` 收掉自己那条连接）——管理者那一头
-   * 收的是**观察者**（`manager.ts` 的 `dropClient`：最后一个看客走了**不是「停」**，执行者照跑）。
-   * 故这一支**一个命令都不发**：发一条「转后台」反倒要另立一种运行状态，那正是本单不许新造的
-   * 东西（设计：「不新增后台任务实体、第二套运行登记」）。
-   */
   const taskAction = (value: string): ShellEffect => {
     const bound = taskMenu
     // 无论走哪一支，这一屏都算答完了（下面两支停止的「话」由 `stopped` 那条线说）
     taskMenu = null
 
-    // **执行前再核对**（设计明文）——三件各答一个问题，缺一件都会误停：
-    //
-    // - **手上还有没有事**：没有 ⇒ 那一轮自己跑完了（或别的窗口把它停了）。此刻再停就是
-    //   **停一个已经不在的东西**。菜单收起、**一个字都不说**——那是「什么都没发生」，
-    //   一句回执只会让人以为停过一次；
-    // - **还是不是原来那一条会话**：别的窗口把它切走了 / 本窗 `/resume` 换了一条 ⇒ 停下一条
-    //   是**停错人**。同样收起。⚠️ **会话 id 由 `null` 变成有不算换**：那是首条消息开张那一瞬
-    //   ——外壳刚认出它是哪一条（与 `beginExit` 踩过的是同一个窗口），要停的正是它；
-    // - **还是不是原来那一件活**（U100 补）：`turnSeq`（本窗口那一轮）与运行事实那两格
-    //   （`startedAt` / `lastTurnAt`，跨窗口那一半）**都要一样**。这一格挡的是设计点名的
-    //   那件事：**菜单开着的时候原活收了、同一条会话又起了下一轮（或换了新的一代），
-    //   旧菜单不能停新工作**。
     if (!stillBound(bound)) {
       closeTaskMenu()
       return NONE
     }
 
-    // ① **停止任务**——停**整体那一档**（在途模型、工具、后台命令），**界面留下**：
-    //    记录与草稿一个字不动，接着交代是**同一条会话**往下走（管理者那一头的
-    //    `selectedSession` 兜底，见 `taskAction` 上面那一段）。
-    //
-    //    ⚠️ **回执说得出「停到什么程度」**：整体那一档走 U50 那三拍
-    //    （「正在停」→「停了」/「没能停掉」）——与「停止并退出」逐字同形，因为**它就是同一件事**。
     if (value === 'stop') {
       closeTaskMenu()
       if (options.stop === undefined) {
@@ -4181,40 +2408,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
-    // ③ **停止并退出**——**复用 `/exit` 那一条**（U52：停到核销之后才走，停不掉如实说）。
-    //    这一支什么都不用另写：核销的判断、放行、`unconfirmed` 那一档的实话全在它里面。
     closeTaskMenu()
     return beginExit()
   }
 
-  /**
-   * **`/exit` 那一下**（U52）——**先停掉当前这条会话，资源确认退出之后再退界面**。
-   *
-   * ## 为什么是「停」而不只是「关」
-   *
-   * 2026-09-24 用户裁：TUI 与服务已经分开（U48），`/exit` 是**明确说出口的动作**
-   * （与「按两次」那条同源：打出来的词就是有意的），故它承载得了更强的语义——
-   * **「这条我不做了」**。两个动作于是各管各的：
-   *
-   * | 动作 | 语义 |
-   * | --- | --- |
-   * | `/exit` | **停掉当前会话，然后退出界面** |
-   * | Ctrl+C 两次 | **只离开**，工作继续 |
-   *
-   * 顺带把「服务侧怎么退出」答了：**逐条停 ⇒ 没有执行者 ⇒ 管理者自己收缩**（那条规则
-   * 早就有），**不另造一个「服务退出」的开关**。
-   *
-   * ## 三件不许（工单「要做对的几件」）
-   *
-   * - **不另造一条停止通路**：走的就是 U50 交付的那个入口（`options.stop` ＋ 整体那一档
-   *   `run`），连回执都是 `stopped` 那条线拼好的（`正在停「X」` / `「X」停了`）——
-   *   这一处**一个字都不多说**（同一条事实说两遍是设计明防的）。
-   * - **不是发出去就走**：**这一跳不退**。放行在 `stopped` 那一头——`done` 才置
-   *   `view.leaving`（设计：「资源确认退出后才报已停止」）。
-   * - **不谎称已停**：停不掉那一拍（`unconfirmed`）照实说，也**照样放行**——到点还没
-   *   收完就如实说「还没收完」，但不把用户**卡在这儿**。他要是只想离开，另一扇门
-   *   （Ctrl+C 两次）一直开着；而这一条已经说过实话了。
-   */
   const beginExit = (): ShellEffect => {
     const target = view.sessionId
 
@@ -4226,13 +2423,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
-    // ② **还没有会话**。两件要分开：
-    //
-    // - **窗内没有这一轮在跑** ⇒ 真·空手开机：没有可停的东西，直接走；
-    // - **有这一轮在跑** ⇒ 这条会话**才刚开张、外壳还没认出它是哪一条**（`session.state`
-    //   那一声答复还没到——U44 起就记着这件事：首条消息开张时外壳收不到它，`/clear`
-    //   那一跳踩过同一个窗口）。此刻**不能降级成「只离开」**：那正是这一单要补的那个缺
-    //   （工作中退出＝真停）。故把意图挂上，那一声答复一到就接着办（见 `onEvent`）。
     if (target === null) {
       if (inFlight()) waitsForSession = 'exit'
       else commit({ ...view, leaving: true })
@@ -4248,12 +2438,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit({ ...view, leaving: true })
   }
 
-  /**
-   * **停这一条，然后等着走**（U52）——`beginExit` 与「等会话认出来」那一路共用。
-   *
-   * 认的是「会话 ＋ 整体那一档」两样都对上：正等着的时候，别的窗口停的、或者同一会话
-   * 局部那一档（`turn`）的报告，都不该把我放走。
-   */
   const stopForExit = (target: SessionId): void => {
     exitWait = target
     options.stop?.(target, 'run')
@@ -4299,7 +2483,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (disposed) return NONE
     if (input.kind === 'ctrl+r') { managementPending = null; return reconnect() }
     if (managementPending !== null && input.kind !== 'ctrl+c') return NONE
-    if (input.kind === 'enter' && view.dock.kind === 'picker' && view.dock.picker.source === 'session' && view.flash?.endsWith(' · Enter 重试')) { querySessions(); return NONE }
+    if (input.kind === 'enter' && view.dock.kind === 'picker' && view.dock.picker.source === 'session' && view.flash?.endsWith(' · Enter 重试')) { directory.query(); return NONE }
     if (input.kind === 'ctrl+g') {
       if (view.dock.kind === 'picker' && view.dock.picker.source === 'session') {
         const row = picked(view); if (row !== undefined) showSessionActions(row.value)
@@ -4308,8 +2492,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
     if (view.archived && view.dock.kind === 'input') {
       if (input.kind === 'char' && input.char.startsWith('/')) {
-        openAsk({ label: '只读会话命令', secret: false, value: input.char, caret: input.char.length, placeholder: '/resume',
-          submit: value => { if (value.trim() === '/resume') { waiting = 'session'; sessionArchived = false; return { type: 'session.list', archived: false } }; return null } })
+        prompt.open({ label: '只读会话命令', secret: false, value: input.char, caret: input.char.length, placeholder: '/resume',
+          submit: value => { if (value.trim() === '/resume') { models.cancelOpen(); waiting = 'session'; directory.ordinary(); return { type: 'session.list', archived: false } }; return null } })
         return NONE
       }
       if (!['ctrl+c', 'ctrl+o', 'escape', 'planTop', 'ctrl+t'].includes(input.kind)) {
@@ -4325,17 +2509,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
-    // **别的输入把那一行收掉**（U46）——用户又不想走了。
-    //
-    // 收口就这一处：`HINT_EXIT_ARMED` 那一行说的是「再按一次」，而**任何别的输入**都
-    // 说明他不是要退出（敲字 / 翻历史 / 开选择器 / 移动插入点…）——留着它就是一句
-    // 不再为真的话，再按一下还会走。`ctrl+c` 那一支不走这里：它自己管（第一下挂上、
-    // 第二下走），故那一下不会被自己的清理抹掉。
-    //
-    // ⚠️ **钟也一起收**（U68）：只撤行、不收钟的话，那支钟到点还会把**后来重新挂上的**
-    //    那一次误撤掉（`disarmExit` 一处管两件）。
-    //
-    // ⚠️ 先 `commit` 再往下走：`view` 是本闭包里的 `let`，下面各支读到的就是清过的那一份。
     if (input.kind !== 'ctrl+c') disarmExit()
     if (input.kind === 'escape' && collaborationQuery !== null) {
       collaborationQuery = null
@@ -4384,7 +2557,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           editAt(view.draft.slice(0,start)+next+view.draft.slice(anchor.end),start+at,insertText(removeRange(view.refs,start,anchor.end),start,next.length))
           reopenPaths({start:anchor.start,end:start+next.length},next);askPaths(next)
         }else if(picker.source==='skills')openSkillsPicker(next,picker.anchor??{start:0,end:0})
-        else if(picker.source==='session'){sessionQuery=next;refreshSessionPicker()}
+        else if(picker.source==='session'){directory.filter(next)}
         else {configQuery=next;refreshConfigPicker()}
         if(view.dock.kind==='picker')commit({...view,dock:{kind:'picker',picker:{...view.dock.picker,filterCaret:at}}})
         return NONE
@@ -4397,9 +2570,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return NONE
     }
 
-    // **本地小输入开着的时候，键归它**（U41）——但 `ctrl+c` 是全局的（空闲＝退出、
-    // 工作中＝中断），故它照旧落下去走 `exitOrInterrupt`：一条本地小输入不该把退出挡住。
-    if (view.dock.kind === 'prompt' && input.kind !== 'ctrl+c') return askKey(input)
+    if (view.dock.kind === 'prompt' && input.kind !== 'ctrl+c') { prompt.key(input); return NONE }
 
     switch (input.kind) {
       case 'ctrl+c':
@@ -4414,11 +2585,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         }
         return exitOrInterrupt()
 
-      // `ctrl+o`——**开查看那一屏**（U110 · 设计 · 终端交互「查看：另开一屏」）。
-      //
-      // ⚠️ **它不再是「就地展开」那个切换**（内联那一半已撤）：那条路**物理上做不到**——
-      // 画过的行落在 `<Static>` 里、写一次就不再重绘，定局之后按下去等于没按（设计
-      // 「明确不做的三件」第 ① 条）。要看全量，去那一屏（`src/transcript.ts`）。
       case 'ctrl+p':
       case 'ctrl+n':
         if (view.dock.kind === 'input') recallHistory(input.kind === 'ctrl+p' ? -1 : 1)
@@ -4440,10 +2606,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       case 'ctrl+o':
         return OPEN_SCREEN
 
-      // `Ctrl T`——收起/展开当前清单（U34）。**只改本地视图**：不发送、不碰草稿。
-      // 没有清单时不切（切了也没人看得见，而「默认展开」是设计明写的——别让它悄悄
-      // 变成一个「下次建立计划就收着」的埋伏）。接管（裁决）期间照旧管用：它不经过
-      // 输入框，也不是答复键，挡它没有理由。
       case 'ctrl+t':
         if (!hasPlan(view)) return NONE
         commit({ ...view, planCollapsed: !view.planCollapsed })
@@ -4477,10 +2639,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         insertAt(input.text)
         return NONE
 
-      // **`Ctrl V`——取剪贴板里的图**（U107）。分寸与上面那条文本 `paste` **逐条相同**
-      // （同一件事的两条信道，屏上的规矩不该分家）：接管着不收、抽屉开着不收。
-      // 差别只在最后一步——它发一条命令让**内核**去问系统剪贴板，然后等 `input.pasted`
-      // 回来（取不到就说一句，见 `pastedClipboard`）。**不发按键本身、也不自己读剪贴板**。
       case 'ctrl+v':
         if (view.dock.kind === 'decision') {
           commit(said(view, '先答复——此刻贴不了图（这一轮在等你）。答完接着贴。'))
@@ -4493,8 +2651,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       case 'escape':
         if(editingPending!==null){const pending=editingPending;editingPending=null;restoreLayer(pending.back);return NONE}
         if (view.dock.kind === 'picker') {
-          // **任务去向那一屏：`esc` ＝ 返回**（U100 · 设计：「↑↓ 移动，Enter 确认，Esc 返回」）
-          // ——回到**打开它之前那个地方**：待答那一张卡照原样摆回来（在栈里），否则回输入行。
+
           if (view.dock.picker.source === 'task') {
             closeTaskMenu()
             return NONE
@@ -4556,14 +2713,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       case 'shift+tab':
         if (switchPs()) return NONE
         if (view.dock.kind === 'picker' && view.dock.picker.source === 'session') {
-          const picker = view.dock.picker
-          sessionPositions.set(sessionArchived, { id: picker.rows[picker.selected]?.value, selected: picker.selected, detailTop: picker.detailTop })
-          sessionArchived = !sessionArchived
-          const position = sessionPositions.get(sessionArchived)
-          sessionFocus = position?.id
-          commit({ ...view, dock: { kind: 'picker', picker: { ...picker, selected: position?.selected ?? 0, detailTop: position?.detailTop ?? 0 } } })
-          refreshSessionPicker()
-          querySessions()
+          directory.toggleArchived()
         }
         return NONE
       case 'tab':
@@ -4574,12 +2724,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         if (view.dock.kind === 'picker') {
           // 路径那一栏里 `Tab` ＝ **把选中的那一条补进查询**（目录则再往里看一层）
           if (view.dock.picker.source === 'paths') tabPath()
-          // **`/resume` 那一屏**（U49）——`Tab` ＝ **只看本工作区 / 全部**（设计：
-          // 「提供当前工作区/全部的筛选」）。切换**不关抽屉、不丢搜索词**：用户是在
-          // 「同一件事换个看法」，不是在换一件事。
+
           if (view.dock.picker.source === 'session') {
-            sessionScope = sessionScope === 'all' ? 'here' : 'all'
-            refreshSessionPicker()
+            directory.toggleScope()
           }
           return NONE
         }
@@ -4587,7 +2734,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         else if (view.collaboration?.collaboration !== undefined || view.background !== undefined) readCollaboration()
         return NONE
 
-      // —— 停止（U50）：`/resume` 那一屏的两个键，各对应设计里那两档「明确选择的」范围 ——
       case 'ctrl+x':
         return askStop('run')
 
@@ -4597,8 +2743,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       case 'enter':
         return submit()
 
-      // ⚠️ **接管屏（选择器 / 本地小输入）到不了这一支**——上面那道门已经把
-      //    「`←` 弹一层」收走了（U61）。这里只剩**草稿那一头**：真移插入点。
       case 'left':
         if (view.dock.kind === 'decision') return refuse('左移')
         // 明确移动插入点后退出历史浏览，回到文字编辑。
@@ -4611,19 +2755,13 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         if (view.dock.kind === 'decision') return refuse('右移')
         if (view.dock.kind === 'picker') {
           if (view.dock.picker.source === 'session' && picked(view)?.value === view.sessionId) { readCollaboration(); return NONE }
-          // **`→` ＝ 看这一条的详情**（U41）——只有模型那一屏给了这个键（别的抽屉没有「详情」
-          // 这回事，故它们的左右照旧什么都不做，见列表下方那行说明）
-          //
-          // ⚠️ **取网页那一趟不给**（U78）：详情那一屏的两条动作（思考设置 / 设为默认）
-          // 都是**当前会话**那一摊的事，在这一趟里一个都不该做——摆着就是两条会走错的岔路。
-          // 那一屏的说明里也**不报这个键**（按下去没反应比不报更坏，见 `modelHint`）。
-          if (view.dock.picker.source === 'model' && modelScope !== 'session') {
+
+          if (view.dock.picker.source === 'model' && models.snapshot().modelScope !== 'session') {
             const pick = picked(view)?.pick
-            // `→` 看详情＝**进一层**（U61：设计「进一层：打开选择器 · `→` 看详情 ·
-            // 接入那种一步接一步的每一屏——都算」）——`←` 退回列表，焦点照旧那一格
+
             if (pick !== undefined) {
               enterLayer()
-              openModelDetail(pick)
+              models.openDetail(pick)
             }
           }
           return NONE
@@ -4632,13 +2770,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         draft({ ...view, caret: stepRightOver(view.refs, view.draft, caretAt()) })
         return NONE
 
-      // **行首 / 行末**（U85）——`ctrl+a` / `ctrl+e`：插入点跳到**所在那一行**的两端。
-      //
-      // 三条与左右键同源的分寸（各写各的就会走成两副面孔）：
-      // ① **草稿一个字都不动**（只挪插入点）⇒ 不走 `edit()`：翻出来的历史还认得上一条；
-      // ② **接管（裁决）期间不静默吞**——说一句，同 `←` / `→`；
-      // ③ **选择器开着时什么都不做**：那一屏的键归屏（`←` 是弹一层、`→` 是看详情），
-      //    行首行末在那儿没有活——**不越过屏去动后面那份草稿**。
       case 'lineStart':
       case 'lineEnd': {
         const to = input.kind === 'lineStart' ? '行首' : '行末'
@@ -4730,7 +2861,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (view.archived && (view.dock.kind === 'input' || view.dock.kind === 'decision')) { commit({ ...view, flash: '会话已归档，请明确恢复后继续' }); return NONE }
     if (view.dock.kind === 'decision') return answer()
     // 本地小输入开着 ⇒ 回车是**把它交出去**（不是发交代——那一路归 `input.submit`）
-    if (view.dock.kind === 'prompt') return submitAsk()
+    if (view.dock.kind === 'prompt') { prompt.submit(); return NONE }
 
     if (view.dock.kind === 'picker') {
       const row = picked(view)
@@ -4760,10 +2891,10 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         else if (row.value === 'rename') {
           const session = sessionTarget, title = nameOfSession(session)
           enterLayer()
-          openAsk({ label: '会话名称', secret: false, value: title, caret: title.length, placeholder: '名称', submit: value => ({ type: 'session.rename', session, title: value.trim() }) })
+          prompt.open({ label: '会话名称', secret: false, value: title, caret: title.length, placeholder: '名称', submit: value => ({ type: 'session.rename', session, title: value.trim() }) })
         } else if (row.value === 'draft') {
           openRecords(`draft:${sessionTarget}`, '原草稿 · 只读，可用终端选择复制', [{ kind: 'user', key: `draft:${sessionTarget}`, text: view.draft, echoed: true, images: userImages(view.refs) }])
-        } else if (row.value === 'sessions') { popLayer(); waiting = 'session'; send({ type: 'session.list', archived: false }) }
+        } else if (row.value === 'sessions') { popLayer(); models.cancelOpen(); waiting = 'session'; send({ type: 'session.list', archived: false }) }
         return NONE
       }
       if (view.dock.picker.source === 'input-purpose') {
@@ -4798,40 +2929,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
-      // **当前任务去向**（U100）——三选选定了一件。摆在三处之前（它那三行的 `value`
-      // 不是任何一份读数的键，落到下面任何一支都是**按别人的规程**处置一件本地的事）。
       if (view.dock.picker.source === 'task') return taskAction(row.value)
 
-      // **配置一览**（U71）——选定＝**进那一项自己那一屏**。
-      //
-      // ⚠️ **这一条不重造任何一件交互**（设计：「不在 `/config` 里重造一遍」）：前三项
-      //    各把**那一条读侧命令原样发出去**，答复到了走的是**与直接打那条 slash 一模一样**
-      //    的那几支（`onEvent` 里的 `openModelPicker` / `openGrantsPicker` / `openMcpPicker`）
-      //    ——故屏上「逐字同形」不是靠照抄，是**同一条路**。
-      //
-      // ⚠️ **进那一项＝进一层**（U61：栈的单位是「那一屏」）：`←` 退回这一屏接着挑。
-      //    从输入行打 `/model` 时这一跳不压栈（栈底就是输入行）——两处的差别只在**回来的
-      //    地方不一样**，那一屏本身一个字都不差。
       if (view.dock.picker.source === 'config') {
         if (row.value === 'model') {
           // 共用 /model 设置入口，工作选择的作用对象为当前会话。
-          modelScope = 'session'
+          models.sessionScope()
           enterLayer()
-          waiting = 'model'
-          send({ type: 'model.list' })
+          waiting = null
+          send(models.request('model'))
           return NONE
         }
 
-        // **状态行**（U112）——**进它自己那一屏**（挑哪几格、什么顺序、上不上色）。
-        // 那一屏读的就是**视图里那两格**（开机那份配置 ＋ 改过之后那份），不另问读数
-        // （没有一条命令答得出来——那两格是**这一屏长什么样**，不是会话的什么事实）。
         if (row.value === 'statusLine') {
           enterLayer()
           openStatusLinePicker()
           return NONE
         }
 
-        // **减少动效**（U112）——两态的东西**回车即切**，不另开一屏（「给一个设定」）
         if (row.value === 'turnDuration') {
           send({ type: 'prefs.set', turnDuration: view.turnDuration === 'active' ? 'elapsed' : 'active' })
           return NONE
@@ -4846,6 +2961,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
         if (row.value === 'grants') {
           enterLayer()
+          models.cancelOpen()
           waiting = 'grants'
           send({ type: 'grants.list' })
           return NONE
@@ -4853,6 +2969,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
         if (row.value === 'mcp') {
           enterLayer()
+          models.cancelOpen()
           waiting = 'mcp'
           mcpServer = '' // 总览那一屏（`/mcp` 无参）——不是某一台的明细
           send({ type: 'mcp.list' })
@@ -4875,8 +2992,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
-      // **状态行那一屏**（U112）：选定＝放上 / 拿下**这一格**（`颜色` 那一行是切换上色）。
-      // ⚠️ **不关抽屉**：连勾几格是常态，关掉就得从头开一遍（同 `/grants` 那条姿势）。
       if (view.dock.picker.source === 'statusline') {
         toggleStatusLine(row.value)
         return NONE
@@ -4884,7 +2999,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
       // `/resume` 那一屏：选定＝切过去。
       if (view.dock.picker.source === 'session') {
-        if (sessionArchived) { showSessionHistory(row.value); return NONE }
+        if (directory.archived) { showSessionHistory(row.value); return NONE }
         // **选的是当下这条**：什么都没发生——内核那一边 `switchTo` 也知道是同一条、
         // 一个事件都不发（见 `conversation` 的 `run`）。故回执**这一侧当场给**
         // （等答复就是白等），页也不翻（没换记录区，翻了反而是「凭空清一屏」）。
@@ -4893,10 +3008,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
           return NONE
         }
 
-        // **换一条**：回执与翻页都在**答复**那一侧落（见 `turn` 那段注）——
-        // 这一侧只管把意图记下、把抽屉收起。
-        // **翻回已有的一页**（`'open'`）⇒ 那一页**不印字标**（U45）：它马上有记录铺出来，
-        // 顶上那行 `· 已切到 <名字>` 就是它的界。
         turn = { kind: 'open', label: row.label }
         send({ type: 'session.open', session: row.value })
         commit(closePicker(view))
@@ -4918,16 +3029,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
-      // `@` 那一栏（U36）：选定＝**把引用放进正文原处**（不发送、不读材料——
-      // 材料到提交那一刻才读，见 `pickPath`）。
       if (view.dock.picker.source === 'paths') {
         pickPath()
         return NONE
       }
 
-      // 技能抽屉（U33/U36）：选定＝**在打开列表前那个位置放一句技能引用**
-      // （不发送、不加载主文）。找不着那一份＝目录在抽屉开着的时候被换掉了，照实收起、
-      // 什么都不放（不拿一个编出来的身份凑数）。
       if (view.dock.picker.source === 'skills') {
         const chosen = view.skills?.skills.find((one) => one.path === row.value)
         if (chosen === undefined) return (commit(closePicker(view)), NONE)
@@ -4936,113 +3042,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         return NONE
       }
 
-      // 外部服务器那一屏（U39）：**纯读**——回车不改变任何东西（重连是另一条命令，
-      // 明写 `/mcp reconnect <名字>`）。留着这一支是**必须**的：不然它会落到下面的换模型上。
       if (view.dock.picker.source === 'mcp') return NONE
 
-      // 实际型号详情只读；思考从当前工作/成员设置入口调整。
-      if (view.dock.picker.source === 'model-detail') {
-        if (row.value === 'back') { popLayer(); return NONE }
-        if (row.value === 'edit-info') { enterLayer(); openModelEditor(detailAt.provider, detailAt.model) }
-        return NONE
-      }
-
-      // 思考那一屏（U41）：选定＝**把这一条用到当前模型上**（`model.switch` 带 `reasoning`）
-      if (view.dock.picker.source === 'model-reasoning') {
-        if (row.value === 'budget') {
-          const budget = reasoningSupportOf(detailAt)?.budget
-          if (budget === undefined) return NONE
-          const current = reasoningOf(detailAt)
-          const value = current?.mode === 'budget' ? String(current.budgetTokens) : ''
-          enterLayer()
-          openAsk({ label: '思考 token 预算', secret: false, value, caret: value.length, placeholder: '正整数',
-            note: `范围：${budget.minTokens ?? '未声明下限'} ～ ${budget.maxTokens ?? '未声明上限'}；回车应用到${modelTarget()}`,
-            submit: () => null, local: text => {
-              const tokens = Number(text)
-              if (!Number.isSafeInteger(tokens) || tokens <= 0 || (budget.minTokens !== undefined && tokens < budget.minTokens) || (budget.maxTokens !== undefined && tokens > budget.maxTokens)) {
-                if (asking !== null) { asking = { ...asking, note: '预算须为支持范围内的正整数；输入已保留' }; commit(withAskView(asking)) }
-                return
-              }
-              asking = null; applyReasoning({ mode: 'budget', budgetTokens: tokens })
-            },
-          })
-          return NONE
-        }
-        if (row.reasoning !== undefined) applyReasoning(row.reasoning)
-        return NONE
-      }
-
-      // 连接一览（U41 · `/model manage` 的第一步）：选定＝**进这一条的管理明细**
-      if (view.dock.picker.source === 'provider') {
-        enterLayer() // 进了明细那一屏（U61）——`←` 退回一览
-        openManageDetail(row.value)
-        return NONE
-      }
-
-      // 管理明细那一屏：四件动作各走各的（★ 都已由内核的**回话**收尾——见 `onEvent`）
-      if (view.dock.picker.source === 'provider-detail') {
-        manageAction(row.value)
-        return NONE
-      }
-
-      if (view.dock.picker.source === 'model-editor') { editorAction(row.value); return NONE }
-      if (view.dock.picker.source === 'model-manual') { enterLayer(); openModelEditor(row.value); return NONE }
-      if (view.dock.picker.source === 'vendor') {
-        const vendor = view.vendors.find(one => one.vendor === row.value)
-        if (row.value !== 'custom' && vendor === undefined) return NONE
-        enterLayer(); openEditor(providerEditor(freeIdOf(row.value), vendor)); return NONE
-      }
-
-      // 工作选择只发档位；实际组合由执行侧读取配置解析。
-      if (view.dock.picker.source === 'model-choice') {
-        const choice = row.value as ModelChoice
-        if (view.configuredModels[choice] === undefined) { commit(appendReceipt(view, `${modelLabel(choice)} 尚未配置；请在 /model 的模型档位或默认模型中设置`)); return NONE }
-        if (collaborationModel !== null) send({ type: 'collaboration.configure', ...collaborationModel, model: { choice } })
-        else send({ type: 'model.switch', choice })
-        collaborationModel = null
-        modelScope = 'session'
-        commit(closePicker(view))
-        return NONE
-      }
-
-      if (view.dock.picker.source === 'model') {
-        if (row.value.startsWith('edit:')) {
-          enterLayer()
-          mappingStamp = catalogStamp
-          modelScope = row.value.slice(5) as ModelChoice
-          openModelPicker('')
-          return NONE
-        }
-        if (row.value === 'choose') {
-          enterLayer()
-          commit(openPicker(view, { source: 'model-choice', selected: 0, rows: modelChoiceRows(view.configuredModels, scopeCurrent()), hint: `作用对象：${modelTarget()}；选定只影响此对象，思考等级独立。` }))
-          return NONE
-        }
-        if (row.value === 'reasoning') {
-          const chosen = scopeCurrent()
-          if (chosen === null) { commit(appendReceipt(view, '请先配置并选择默认模型或模型档位')); return NONE }
-          detailAt = chosen
-          enterLayer()
-          openReasoningPicker(chosen)
-          return NONE
-        }
-        if (row.value === 'manual') {
-          enterLayer(); commit(openPicker(view, { source: 'model-manual', selected: 0, rows: view.models.map(one => ({ label: one.name ?? one.provider, value: one.provider, meta: '手动填写原始型号', current: false, oneLine: true })), hint: '选择模型所属连接' })); return NONE
-        }
-        if (row.pick === undefined) return modelAction(row.value)
-
-        // 保存配置与应用工作选择是两个动作；首次明确开始才同时应用 Default。
-        if (modelScope !== 'session') {
-          if (waiting === 'modelSave') return NONE
-          const choice = modelScope
-          const first = choice === 'default' && view.configuredModels.default === undefined
-          startOnAliasSave = first
-          waiting = 'modelSave'
-          send({ type: 'model.configure', expectedStamp: mappingStamp, choice, provider: row.pick.provider, model: row.pick.model, ...(first ? { initialize: true } : {}) })
-          // 保存回执到达前保留选择与页面。
-        }
-        return NONE
-      }
+      if (models.select(row)) return NONE
 
       return NONE // 认不出的来路（不该走到这儿）——**什么都不做**，不拿它当换模型
     }
@@ -5069,23 +3071,8 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (text.startsWith('/')) {
       const word = text.split(/\s+/)[0] ?? ''
 
-      // **技能直达 ＞ 不认得的命令**（U33）：内置那几条**先让给 slash**（工单：内置命令
-      // 保留含义，同名技能仍能从 `/skills` 选），其余 `/名字` 才按技能名解析。
-      //
-      // ⚠️ **U36：名称不再被剥掉**——`/review 检查 @src/login.ts` 原样是提交内容，
-      // 那一处引用**就排在句首**（`marker` ＝ `/review`），随正文一起进模型请求。
       if (!COMMANDS.some((command) => command.name === word)) {
-        // ⚠️ **句首这个词上已经贴着一处绑好的引用 ⇒ 这一下就是提交**（U57 修 D32 第 4 步）。
-        //
-        // 当初这一行在「同名 ⇒ 展开候选」那一支里：名字分不出唯一时那一支会**再展开一遍
-        // 选择器**，把用户刚挑好的那一处引用吃掉——请求一条都发不出去，而屏上看着像发出去了
-        // （「按了没反应」最难查的那一形）。
-        //
-        // **U58 之后同名不再并存**（发现那一层只留一条，见 `skills.ts`）⇒ 那一支没了，
-        // 这一行也就不该再挂在它底下：它守的本来就不是「同名」，而是一条**独立的不变量**——
-        // 来源**用户已经指明过**（引用是带身份的），回车不该再问一遍。故提到这一层来，
-        // 与「分不分得出唯一」无关。（`submittable` 已经在上面拦掉了「只有引用、没有交代」
-        // 那一形，故这里走到的一定是有正话说的一次提交。）
+
         if (refStartingAt(placed, 0) !== undefined) return sendInput(text, placed)
 
         const hit = resolveSkill(word.slice(1), view.skills?.skills ?? [])
@@ -5162,17 +3149,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     return sendInput(text, placed)
   }
 
-  /**
-   * **候选里选定一条**（`Tab` 与「回车先选定」共用）。
-   *
-   * 两种归宿，按那一行是什么分：
-   * - **内置命令** ⇒ 照旧补全文字（它是整行的操作入口，补完接着打参数）；
-   * - **技能名** ⇒ **在词的原处放一句技能引用**（U36：带身份，不再只是几个字）。
-   *
-   * ⚠️ U57 那一手（同名 ⇒ 把候选栏上停的那一条原样带到「按来源挑一份」那一屏）随
-   * 2026-09-25 的裁定退回：**同名在发现那一层只剩一条**，候选栏上一个名字也只剩一条行，
-   * 「挑哪一份」这件事不再存在——选定就是选定，没有第二跳。
-   */
   const pickCompletion = (): void => {
     const completion = view.completion
     const row = completion?.candidates[completion.selected]
@@ -5237,16 +3213,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     if (word === '/help') return only(appendOutput(cleared, HELP_TITLE, HELP_LINES))
     if (word === '/status') return only(appendOutput(cleared, STATUS_TITLE, statusLines(from)))
 
-    // —— 交互配置型：记录区什么都不进 ——
-    //
-    // **会话那三条按动作命名**（U44 · 设计 · 命令行与配置）：`/session` 整条撤掉、不留别名
-    // ——留了，那条实体入口就还在（这一改就成了改名字，不是改入口）。三条各自的性质：
-    // `/clear` 清屏 ＋ 开一条新的（**回执就是清屏本身**，不另发文案）· `/resume` 回到之前
-    // 某一条（空着回车＝列出可选）· `/rename <文本>` 改当下这条的名字。
-    //
-    // ⚠️ **这一族的意图每一条都重判一遍**：上一句留下的旗子不许落到下一句头上——
-    // 故 `turn` 只在**真发得出那一跳**时置上（`/clear` 不带参数、`/resume` 真选定了一条），
-    // 认不出的写法这一侧就回绝了，一个旗子都不留。
     if (word === '/clear') {
       // 开一条新的——**清屏由内核那一声答复触发**（页号一变，渲染层就翻页，见
       // `components/app.ts`）：这一侧只发命令。内核忙时会把它挡回（`BUSY_NOTE`），
@@ -5257,12 +3223,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       // 「同一入口下挂动作」的姿势留给 `/model`）。多写的词照 `submit` 那一侧的老规矩
       // 如实回一句，不当交代发出去。
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/clear（不带参数）'))
-      // **一个字都不发**（回执就是清屏本身）——故 `label` 为 `null`：那一跳只翻页、不落字。
-      //
-      // ⚠️ **不是「一个字都不印」**（U45）：字标照种——`'new'` 那一格说的正是
-      // 「这一页是**开一条新的**」。清屏说的是「旧的走了」，字标补的是另一半「新的来了」；
-      // 少了它，这一屏只剩分隔线、输入行、状态行贴在屏顶，**看着像故障，不像开张**。
-      // 两者都不算「文案」（`label` 仍旧是 `null`，回执那一格一个字都不添）。
+
       turn = { kind: 'new', label: null }
       return only(cleared, { type: 'session.new' })
     }
@@ -5275,6 +3236,7 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
 
     if (word === '/resume') {
       if (arg === '') {
+        models.cancelOpen()
         waiting = 'session'
         return only(cleared, { type: 'session.list' })
       }
@@ -5297,20 +3259,6 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return only(cleared, { type: 'session.rename', session: from.sessionId, title })
     }
 
-    // `/exit`（U52 · 设计 · 命令行与配置的会话入口表 ＋ 会话与运行管理的「离开、停止与
-    // 异常退出」）——**停掉当前这条会话，资源确认退出之后才退界面**。
-    //
-    // ⚠️ **不挂 `exitArmed`**（那条是指向 Ctrl+C 的）。「按两次」那道门的由头是**同一个键
-    // 在同一个状态下有时一次有时两次，用户没法预期**——`ctrl+c` 在「工作中＝中断／空闲＝
-    // 退出」之间跳才需要它；`/exit` 是**打出来的词**，本来就已经是「有意的」，再要两下
-    // 只是白费（设计原文）。它**补的正是那个缺**：想退出时，`ctrl+c` 在工作中只会中断，
-    // 而「这条我不做了」此前没有说出口的地方。
-    //
-    // ⚠️ **这一跳只把意图带出去**（`leaving: true`），**退出不在这儿发生**：停一条会话要
-    // 等管理者那条编排走完（`done` 才放行，见 `beginExit`）。
-    //
-    // ⚠️ **不带参数**（同 `/clear` 的姿势）：`/exit` 是个动作，不是一族动作的入口。
-    // 多写的词如实回一句——**不静默吞**，也不当交代发出去。
     if (word === '/exit') {
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/exit（不带参数）'))
       // 本地这一下只有一个意图：停掉这条、然后走。**当场不留回执**——「停哪一条」那句话
@@ -5319,85 +3267,37 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       return { next: cleared, commands: [], leaving: true }
     }
 
-    // `/skills`（U33）——**交互配置型**：记录区什么都不进，只在左下开抽屉。
-    // 与 `/model` 同一姿势：**先问一次目录**（答复是 `skills.catalog`），外壳据它铺行。
-    // `/skills <词>` 拿那一段当预置筛词（敲完就直接筛到你说的那个词上）。
     if (word === '/skills') {
+      models.cancelOpen()
       waiting = 'skills'
       skillSeed = arg
       return only(cleared, { type: 'skills.list' })
     }
 
-    // `/config`（U71 · 设计 · 命令行与配置「一个看得到『现在配成什么样』的入口」）——
-    // **交互配置型**：记录区什么都不进，只在左下开一屏（四行：可配项 ＋ 它的当前值）。
-    //
-    // ⚠️ **三份读数一起问、齐了才开**（见 `configPending`）：四行里三行的当前值各有自己的
-    //    读侧命令，缺哪一份那一格就只能写「还没问到」——而「不进去就知道现在是什么」
-    //    正是这一屏的全部理由。
-    //
-    // ⚠️ **这一条自己不铺行、更不重造任何一件交互**：选中哪一行，就把那一条读侧命令
-    //    **原样发出去**（与直接打 `/model` / `/grants` / `/mcp` 走同一条路，见 `submit`
-    //    那一支）——设计：「选中之后进到它们本来的那一屏，行为逐字同形」。
     if (word === '/config') {
       if (arg !== '') return only(appendReceipt(cleared, '认得的用法：/config（不带参数）'))
+      models.cancelOpen()
       waiting = 'config'
       configPending = new Set(CONFIG_READINGS.map(one => one.event))
       return only(cleared, ...CONFIG_READINGS.map((one) => one.command))
     }
 
-    // `/model`（U41 改形）——**交互配置型**：主体是模型选择，另三个动作沿它展开
-    // （设计：「不再新增一组按内部能力命名的 slash 命令」——动作挂在同一个入口下，
-    // 写法照 `/mcp reconnect` 的既有姿势）。
     if (word === '/model') {
-      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') collaborationModel = null
-      // **这一趟挑的是谁**（U78）：在模型那一屏里按动作（「刷新模型」那一行）＝**留在同一趟**
-      // ——它是那一屏的原地重铺，不该把作用对象换了；从输入行打 `/model` ＝**当前会话那一趟**
-      // 从输入行进入时不沿用上一屏留下的设置作用对象。
-      modelScope =
-        from.dock.kind === 'picker' && from.dock.picker.source === 'model' ? modelScope : 'session'
+      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') models.clearTarget()
 
-      // **刷新**：显式意图可绕过时效（设计 · 刷新）。`provider` 缺省＝当前选中那条连接。
-      // ⚠️ 按**完整命令词**认（同 `/mcp reconnect` 那条注：连接 id 可以长成 `refresh-2`）
+      if (from.dock.kind !== 'picker' || from.dock.picker.source !== 'model') models.sessionScope()
+
+      // 先登记开页意图，外层落下草稿后再发送；同步回执不能被旧视图覆盖。
+      waiting = null
       if (arg === 'refresh' || arg.startsWith('refresh ')) {
-        const who = arg.slice('refresh'.length).trim()
-        waiting = 'model'
-        // 先回旧缓存那一屏、刷新完成再回一屏（契约这么定的）——两趟都归 `model.catalog`
-        return only(cleared, who === '' ? { type: 'model.refresh' } : { type: 'model.refresh', provider: who })
+        return only(cleared, models.request('refresh', arg.slice('refresh'.length).trim()))
       }
+      if (arg === 'connect' || arg === 'manage') return only(cleared, models.request(arg))
+      if (arg === '') return only(cleared, models.request('model'))
 
-      // 不带参数 ⇒ **问一次连接一览**（读侧命令 `model.list`）：答复是 `model.catalog`，
-      // 外壳据它铺选择器（连接 ＋ 各自缓存里的模型）并把 ④ 的分母定下来。
-      // ⚠️ 原先是发空参的 `model.switch`、拿**失败的缘由**当列表说明——那不是读面
-      //（以「换失败了」作答，还白落一笔 `model.switched`）。
-      // **接入**：先问一次连接一览（要拿它算一个还没被占的连接 id——见 `freeIdOf`），
-      // 答复到了再开「挑一家」那一屏。
-      if (arg === 'connect') {
-        waiting = 'connect'
-        return only(cleared, { type: 'provider.list' })
-      }
-
-      // **管理**：先问一次连接一览，答复到了开「一览」那一屏（同一份行，两个读面共用）
-      if (arg === 'manage') {
-        waiting = 'manage'
-        return only(cleared, { type: 'provider.list' })
-      }
-
-      if (arg === '') {
-        waiting = 'model'
-        return only(cleared, { type: 'model.list' })
-      }
-
-      // 认不出那个词 ⇒ **如实说一句**（不静默丢，也不当交代发出去）。
-      // ⚠️ U41 起**取消了 `/model <条目>` 那条直达**：列表的取材从「配置条目」换成了
-      // 「模型」——同一个词现在既可能是连接也可能是模型，按字面猜一个再切过去，
-      // 猜错就是「换到了另一个模型上」而用户以为只是敲了个名字。
       return only(appendReceipt(cleared, `认得的用法：/model · /model refresh [连接] · /model connect · /model manage`))
     }
 
-    // `/mcp`（U39）——**纯查询型**：记录区什么都不进，只在左下开抽屉。
-    // 与 `/grants` 同一姿势：**先问一次**（答复是 `mcp.catalog`），外壳据它铺行。
-    // `/mcp <名字>` 看那一台的明细；`/mcp reconnect <名字>` 显式重连（仍走启动授权，
-    // 不重放业务调用）——重连之后答复照走 `mcp.catalog`，那一屏当场说清新状态。
     if (word === '/mcp') {
       // ⚠️ 按**完整命令词**认（`reconnect` / `reconnect <名字>`）：服务器名可以长成
       // `reconnect-db` 那样，`startsWith('reconnect')` 会把 `/mcp reconnect-db` 误当重连指令
@@ -5405,25 +3305,24 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
         const who = arg.slice('reconnect'.length).trim()
         if (who === '') return only(appendReceipt(cleared, '要重连哪一台？`/mcp reconnect <名字>`'))
 
+        models.cancelOpen()
         waiting = 'mcp'
         mcpServer = who
         return only(cleared, { type: 'mcp.reconnect', server: who })
       }
 
+      models.cancelOpen()
       waiting = 'mcp'
       mcpServer = arg
       return only(cleared, { type: 'mcp.list' })
     }
 
-    // `/grants`（U22 · B13）——**交互配置型**：记录区什么都不进，只在左下开抽屉。
-    // 与 `/model` 同一姿势：**先问一次名录**（答复是 `grants.catalog`），外壳据它铺行。
     if (word === '/grants') {
+      models.cancelOpen()
       waiting = 'grants'
       return only(cleared, { type: 'grants.list' })
     }
 
-    // 不认得的 slash——**如实说一句**（别静默丢，也别当交代发给模型）。
-    // 顺口带上 `/skills`：它正是「我明明有个技能叫这个名」时该去的地方（U33）。
     return only(appendReceipt(cleared, `不认得的命令「${word}」——试试 /help，或到 /skills 里找`))
   }
 
@@ -5537,20 +3436,14 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
       commit({ ...view, status: { ...view.status, hint: idleHintOf(view) } })
     },
 
-    /**
-     * 与运行管理者的连接断了（U100）——见 `Shell.disconnected` 那一段的三件事。
-     *
-     * ⚠️ **它不 `dispose()`、也不退订**：连接那一头由 `cli.ts` 收（它收了连接窗口才活到
-     * 用户按离开）。这一跳只改屏上的话与状态那一格。
-     */
     disconnected: disconnect,
 
     dispose: () => {
       disposed = true
-      editorDrafts.clear(); editor = null; savingEditor = null; asking = null; layers = []
+      models.dispose(); prompt.clear(); layers = []
       if (pending !== undefined) clearTimeout(pending)
       pending = undefined
-      // 「再按一次」那道门的钟（U68）——收摊之后它再来一下只是白叫醒一个没人看的屏
+
       stopExitClock()
       unsubscribeTransport()
       watchers.clear()

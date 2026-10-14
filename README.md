@@ -19,7 +19,7 @@ open '.artifacts/macos/Magic Code.app'
 
 所选基础路径下的 `.magic` 共同保存配置、记录、blob、授权、日志、缓存与 Magic 用户技能；已选实例由 App 发布。旧 `dataDir` 键作为未知配置忽略，不迁移或删除旧数据。显式 `MAGIC_HOME` 与当前实例不一致会拒绝连接，切换须在 App 无在途责任时完成。握手、状态汇总与历史查看均不标读、不起执行者。
 
-`bun run check` 检查 TypeScript；`bun run check:macos` 重建签名开发包、运行 Swift 测试与隔离 App 联验；`bun run check:all` 执行两侧检查。默认测试不弹系统通知、不启用登录项、不安装用户命令链接。开发构建采用本机 ad-hoc 签名；公开 Release 需显式 Developer ID 与公证配置，参见 `scripts/macos/build.sh`。
+`bun run check` 执行类型检查与全部 TS 测试；`bun run check:macos` 重建签名开发包、运行 Swift 测试与隔离 App 联验；`bun run check:all` 执行两侧检查。默认测试不弹系统通知、不启用登录项、不安装用户命令链接。开发构建采用本机 ad-hoc 签名；公开 Release 需显式 Developer ID 与公证配置，参见 `scripts/macos/build.sh`。
 
 ## 调试模式与日志
 
@@ -78,9 +78,13 @@ magic --check                   # 离线只读检查配置与路径，不启动 
 magic --script <文件>           # 连接同一 App 跑脚本，打印事件轨迹（JSONL）与摘要
 
 # 开发
-bun run check                   # 质量闸：typecheck + test
+bun run check:commit            # 提交门禁：typecheck + 快速回归
+bun run check                   # 合并回归：typecheck + 全部 TS 测试
 bun run typecheck
-bun test
+bun run test:fast               # 纯逻辑、契约、组件与廉价隔离 I/O
+bun run test:integration        # 真实进程、协议与生命周期
+bun run test:e2e                # 真实 CLI / Engine / PTY 全链路
+bun run test                    # 全部 TS 测试
 
 # 界面验收（研发设施，不是产品命令）
 bun run ui --help               # 它是什么、四条子命令怎么跑
@@ -218,8 +222,11 @@ Magic 能连**你自己配置**的本地 MCP 服务器，把它们的工具交�
 
 ## 质量闸与守护
 
-- **提交前自动跑**——`.githooks/pre-commit`，经 `bun install` 的 prepare 装配 `core.hooksPath`。
-- **校验对象＝暂存内容**——闸把暂存区物化到临时目录再跑，故「暂存到坏版本」会被拦下，未跟踪的本地草稿不会误拦。
+- **提交前自动跑**——`.githooks/pre-commit` 执行 `check:commit`（类型检查、结构守护和快速回归），经 `bun install` 的 prepare 装配 `core.hooksPath`。
+- **校验对象＝暂存内容**——闸把暂存区物化到临时目录，按暂存锁文件离线安装依赖；workspace 链接也指向暂存树，未暂存源码与未跟踪草稿不参与。缓存不足或依赖清单与锁文件不一致时拒绝提交，先核对并运行 `bun install` 准备依赖。
+- **合并前全量回归**——`bun run check` 始终包含全部 TS 测试；PR 检查执行全量 TS 与原生检查。直接合并也须在最终内容上完成相应检查，不能用提交门禁代替。
+- **分类就近维护**——普通 `*.test.ts` 属于快速回归，`*.integration.test.ts` 属于集成，`*.e2e.test.ts` 属于端到端；同文件混合层级按职责拆分。开发时先跑改动相关测试，涉及进程、协议或用户路径即补对应集成或端到端检查。
+- **规范正本**——Obsidian「Magic」的 `Magic Code/设计/技术/架构与边界.md`「代码治理」规定包内职责、拆分判据与测试价值；不按文件行数或测试数量机械拆删。
 - **覆盖范围＝入库目录**——仓库级守护在 `test/`，包级测试在 `packages/<pkg>/test/`；`playground/` 是试跑区，内容不参与（见 `bunfig.toml`）。
 - **仓库级守护**（`test/scaffold.test.ts`）按面分：
   - **依赖纪律**——`src/**` 只许 `@magic/contracts`（＋许可外部库：模型域 → AI SDK · 外壳 → Ink / React）；**`test/**` 额外许可 `@magic/faux`**（`dependencies` 与 `peerDependencies` 同受生产面约束）。

@@ -89,7 +89,7 @@ describe('交代（输入 → input.submit）', () => {
     expect(app.rows()).toEqual([])
   })
 
-  test('退格删一个字符；esc 清草稿（有草稿时不清展开位）', () => {
+  test('退格删一个字符；Esc 保留未发送草稿', () => {
     const app = live()
 
     app.type('abc')
@@ -123,7 +123,7 @@ describe('交代（输入 → input.submit）', () => {
 // ══ slash 两种走法 ═══════════════════════════════════════════════════
 
 describe('slash（纯输出型 / 交互配置型）', () => {
-  test('`/help`——输出进记录区，**命令本身不回显**、不发命令', () => {
+  test('/help 原文作为本地输入记录，帮助结果不发送模型', () => {
     const app = live()
 
     app.type('/help ')
@@ -136,7 +136,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     expect(app.rows()[1]).toMatchObject({ kind: 'output' })
   })
 
-  test('`/resume`——记录区什么都不进，只发 `session.list`', () => {
+  test('/resume 原文记录后查询会话目录', () => {
     const app = live()
 
     app.type('/resume ')
@@ -173,13 +173,13 @@ describe('slash（纯输出型 / 交互配置型）', () => {
   })
 
   /**
-   * 不认得的 slash——**如实说一句**（不发命令、也不当交代发出去）。
+   * 未注册 slash 保持普通正文并提交。
    *
    * ⚠️ **原锚是 `/grants`**（那时内核还没有它，它正是「不认得」的那个例子）。
    * `U22` 到站后 `/grants` **真存在了**，故换一个**真的不认得**的（`/nope`）——
    * 判据本身（说一句、不发命令）一字不改，换的只是那件道具。
    */
-  test('不认得的 slash——**如实说一句**（不发命令、也不当交代发出去）', () => {
+  test('未注册 slash 保持普通正文并提交', () => {
     const app = live()
 
     app.type('/nope')
@@ -188,26 +188,29 @@ describe('slash（纯输出型 / 交互配置型）', () => {
     expect(app.commands()).toEqual([ASK_SKILLS, { type: 'input.submit', text: '/nope', ref: expect.any(String), purpose: 'current' }])
     expect(app.rows().at(-1)).toMatchObject({ kind: 'user', text: '/nope' })
   })
-
-  /**
-   * **命令表里的每一条按下去都有归处**（原型 · 场景 11 的自律：列一个按下去会报错的，
-   * 比不列更坏）。
-   *
-   * 原锚是一条**逐命令点名**的快照式断言（「`/grants` 内核还没有，不列」）——那种写法
-   * 每加一条命令都要人去改测试，而**自律本身**（表里列的＝真认得的）反倒没人钉。
-   * 这里改成**遍历命令表**：新加一条命令而 `runSlash` 没接，这条用例当场红。
-   */
-  test('命令表里的每一条**都认得**——按下去不会得到「不认得的命令」', async () => {
-    const { COMMANDS } = await import('../src/view.ts')
-
-    for (const command of COMMANDS) {
+  test('目录命令明确路由到各自读侧，不将已注册命令作为模型输入', () => {
+    const routes = [
+      ['/resume ', ['session.list']],
+      ['/model ', ['model.list']],
+      ['/grants ', ['grants.list']],
+      ['/skills ', ['skills.list']],
+      ['/mcp ', ['mcp.list']],
+      ['/config ', ['model.list', 'grants.list', 'mcp.list']],
+    ] as const
+    for (const [text, expected] of routes) {
       const app = live()
-      app.type(command.name + ' ')
-      app.press(ENTER)
-
-      const last = app.rows().at(-1)
-      const said = last?.kind === 'receipt' ? last.text : ''
-      expect(said, command.name).not.toContain('不认得的命令')
+      try {
+        // 粘贴整份草稿，排除输入 slash 时另一次候选目录查询。
+        app.press({ kind: 'paste', text })
+        const before = app.commands().length
+        app.press(ENTER)
+        const sent = app.commands().slice(before)
+        expect(sent[0]).toMatchObject({ type: 'input.submit', local: true, text })
+        expect(sent.slice(1).map(command => command.type)).toEqual([...expected])
+        expect(sent.some(command => command.type === 'input.submit' && command.local !== true)).toBe(false)
+      } finally {
+        app.shell.dispose()
+      }
     }
   })
 })
@@ -215,7 +218,7 @@ describe('slash（纯输出型 / 交互配置型）', () => {
 // ══ 接管 ═════════════════════════════════════════════════════════════
 
 describe('接管（裁决挂着时占住输入框）', () => {
-  test('作答 `y` —— 发一次答复，带请求事件 id', () => {
+  test('选中批准后 Enter 发一次答复，带请求事件 id', () => {
     const app = live()
     ask(app)
 
@@ -223,7 +226,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(app.commands()).toEqual([{ type: 'decision.answer', id: 88, decision: 'approve' }])
   })
 
-  test('作答 `a` ——「总是允许」带上 remember 位（轻的那件）', () => {
+  test('选中持久授权后 Enter 带上 remember 位', () => {
     const app = live()
     ask(app, 'light')
 
@@ -294,7 +297,7 @@ describe('接管（裁决挂着时占住输入框）', () => {
     expect(app.view().draft).toBe('') // 那一下没有进草稿
   })
 
-  test('粘贴一律拒并提示；`esc` **无动作**', () => {
+  test('审批不接受粘贴；Esc 返回输入，Tab 可重新进入', () => {
     const app = live()
     ask(app)
 
@@ -338,7 +341,7 @@ describe('选择器（`/resume` · `/model`）', () => {
       sessions: rows.map((row) => ({ archived: false, id: row.id, at: 0, ...(row.title === undefined ? {} : { title: row.title }) })),
     })
 
-  test('`/resume` 回车后：目录到手才开选择器，记录区仍不进东西', () => {
+  test('/resume 记录原文，目录到手后才开选择器', () => {
     const app = live()
 
     app.type('/resume ')
@@ -466,7 +469,7 @@ describe('选择器（`/resume` · `/model`）', () => {
     const rows = dock.kind === 'picker' ? dock.picker.rows.filter((row) => row.pick !== undefined) : []
     expect(rows.map((row) => row.label)).toEqual(['MiniMax-M3', 'qwen3'])
     // 副文案**以连接名打头**（其后可能还有别的话——如「不在最近一次列表里」）；
-    // 断「打头」而不是断整串：那些尾巴是有内容的判据，另外几条在 `spec.u41.test.ts` 里咬
+    // 断「打头」而不是断整串：那些尾巴是有内容的判据，另外几条在 `model-settings.test.ts` 里咬
     expect(rows.map((row) => row.meta.split(' · ')[0])).toEqual(['minimax', 'local'])
   })
 
@@ -574,7 +577,7 @@ describe('Ctrl+C（空闲按两次退出 · 有在途工作开三选）', () => 
    *   门（`exitArmed`）照旧当场撤掉——它说的是「再按一次就退出」，而屏上换的是三选，
    *   留着它就是一句不再为真的话。
    *
-   * ⚠️ 三选那一屏自己的键位（↑↓ / 回车 / esc / 再按 ctrl+c）归 `spec.u46.test.ts` 那一节，
+   * ⚠️ 三选那一屏自己的键位（↑↓ / 回车 / esc / 再按 ctrl+c）归 `idle-exit.test.ts` 那一节，
    * 这里只量「那一下把哪一条路挑起来了」。
    */
   test('挂上之后这一轮又跑起来了 ⇒ 开三选，**不是「第二次按」**（门也当场撤掉）', () => {

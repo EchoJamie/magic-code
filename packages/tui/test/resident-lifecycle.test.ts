@@ -52,7 +52,7 @@ test('App退出留屏且不自动重开，明确ctrl+r成功后仍不自动发�
   shell.dispose()
 })
 
-test('U114 执行者收束不收走本地阅读层，也不把已记录命令误还为未发送稿', () => {
+test('执行者收束不收走本地阅读层，也不把已记录命令误还为未发送稿', () => {
   const spy = createSpyTransport()
   let detach: (why: string) => void = () => {}
   const shell = createShell(spy.transport, { magicBase: '/test/.magic', detached: listener => { detach = listener } })

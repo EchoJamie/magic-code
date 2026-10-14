@@ -16,7 +16,6 @@
  * 还咬一条**含 `search` 的一个都没有**——改个名绕过去也躲不掉（`grep` 搜的是工作区里的
  * 文件内容，名字里没有这两个字，不会误伤）。
  *
- * 用例把那一份清单**印出来**（`[U88]` 那几行）——归档里要的就是这次实读的原文。
  */
 
 import { describe, expect, test } from 'bun:test'
@@ -28,7 +27,7 @@ describe('U88 · 搜索不注册——模型看不见它', () => {
     const stage = makeStage()
 
     try {
-      const assembly = stage.assemble()
+      const assembly = stage.assemble({ turns: [{ text: '好' }] })
       const shell = attachShell(assembly.shell, { timeoutMs: 10_000 })
 
       // 一句即可——本用例要看的是**这一轮发给模型的工具表**，不是它干了什么
@@ -37,11 +36,7 @@ describe('U88 · 搜索不注册——模型看不见它', () => {
 
       const names = (lastModel(stage).requests[0]?.tools ?? []).map((tool) => tool.name)
 
-      // 归档要的那一份原文：此刻这一趟**模型看得见什么**
-      console.log(`[U88] 送给模型的工具清单（${names.length} 件）：`)
-      for (const name of names) console.log(`[U88]   · ${name}`)
       const searched = names.filter((name) => name.includes('search'))
-      console.log(`[U88] 其中名字含 search 的：${searched.length === 0 ? '（无）' : searched.join('、')}`)
 
       expect(names).not.toContain('web_search')
       expect(searched).toEqual([])

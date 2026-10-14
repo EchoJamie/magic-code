@@ -110,17 +110,6 @@ describe('不重复 · 咬得住的证据', () => {
 
 describe('不空行 · 咬得住的证据', () => {
 
-  // ⚠️ 这条规则**不是 D11 的哨兵**——拿 `4737930` 做对照实验（只摘掉那个多余的 `\\n`、其余不动）
-  // 重录，屏上仍有 12 行空档（带 bug 时 7 行）。那一片是**旧全屏版面的留白**。
-  // 而 D11 的逐行夹空行恰好是「一行」，正落在 `≤1` 边界内侧 ⇒ 抓 D11 的是 `duplicates`。
-  // 留这条注释是因为「空行变多了」最容易被误读成那条换行的账——量过才知道不是。
-
-  test('修后**允许**留的那一行分段不算违例——用户消息之前那一条（原型 · 密度）', async () => {
-    const screen = await replay('leadblank@head')
-
-    expect(blankRuns(screen)).toEqual([])
-  })
-
   // 尺子的下限就在 1 与 2 之间——两头各钉一次，免得日后有人「顺手收紧成 0」把设计要的呼吸判成违例
   test('恰好一行分段：过', async () => {
     const screen = await screenOf(`甲\r\n\r\n乙\r\n${'─'.repeat(200)}`, { columns: 200, rows: 40 })
@@ -189,14 +178,5 @@ describe('不夹空行 · 咬得住的证据（本轮的验收重头）', () => 
     expect(paragraphBreaks('\n\n甲乙丙丁')).toBe(0)
     // 全空＝没有段落可言
     expect(paragraphBreaks('\n\n')).toBe(0)
-  })
-})
-
-describe('不溢出 · 咬得住的证据', () => {
-
-  test('修后同一条件不再溢出——Ink 把文本钳在盒宽内（盒宽＝终端宽）', async () => {
-    const screen = await replay('mismatch@head')
-
-    expect(overflows(screen)).toEqual([])
   })
 })

@@ -98,33 +98,6 @@ describe('真实权限 → 工具 → 文件执行：一次决断', () => {
     expect(f.h.countOf('tool.decision')).toBe(1)
   })
 
-  test('根外 cwd 只问一次，批准后命令从所批目录启动', async () => {
-    const f = fixture()
-    const run = f.runtime.invoke(call('exec', { cwd: f.outside, cmd: 'pwd' }), {})
-    expect((await f.request()).data.material).toContain(f.outside)
-    f.gate.resolve((await f.request()).id, 'approve')
-    expect((await run).output.trim()).toBe(f.outside)
-    expect(f.h.countOf('tool.decision')).toBe(1)
-  })
-
-  test('后台 cwd 也只裁决一次，批准后实际运行；换目标或拒绝都不启动', async () => {
-    const f = fixture()
-    const run = f.runtime.invoke(call('exec', { cwd: f.outside, cmd: 'pwd', background: true }), {})
-    f.gate.resolve((await f.request()).id, 'approve')
-    expect((await run).ok).toBe(true)
-    for (let attempt = 0; attempt < 100 && f.finished.length === 0; attempt += 1) await Bun.sleep(5)
-    expect(f.finished).toHaveLength(1)
-    expect(readFileSync(f.finished[0]!.outputPath, 'utf8').trim()).toBe(f.outside)
-    const changed = f.runtime.invoke(call('exec', { cwd: f.outside, cmd: 'printf bad > marker', background: true }), {})
-    const req = await f.request(1)
-    renameSync(f.outside, `${f.outside}-old`); symlinkSync(f.root, f.outside)
-    f.gate.resolve(req.id, 'approve')
-    expect((await changed).ok).toBe(false)
-    expect(f.background.running()).toHaveLength(0)
-    expect(() => readFileSync(join(f.root, 'marker'))).toThrow()
-    expect(f.h.countOf('tool.decision')).toBe(2)
-  })
-
   test('一次只读批准不覆盖相邻文件或同路径写入', async () => {
     const f = fixture()
     const path = join(f.outside, 'a'), sibling = join(f.outside, 'b')

@@ -6,7 +6,7 @@
  * - **身份＝内容**（字节的 sha256）——不靠名字、不靠路径。故这里拿**盘上真字节**去比：
  *   同一个身份就是 `blobs/` 里那一个文件的名字（`records/blobs.ts` 本来就是内容寻址）；
  * - **名字＝一段输入内的编号**（`Image#N`）——它在**稿子**那一侧编（`packages/tui` 的
- *   `spec.u62.test.ts` 走按键验），本文件验的是它**接得上**的那两处：
+ *   `image-references.test.ts` 走按键验），本文件验的是它**接得上**的那两处：
  *   ① 选定那一条问得出**内容身份**（`paths.identify` → `paths.identified`）；
  *   ② 那个身份**真的进了出站请求体**（模型看到的正文写的是编号，抬头也是同一个编号）。
  *
@@ -256,7 +256,7 @@ describe('U62 · 那个身份真的进了出站请求体', () => {
       expect(image).toBeDefined()
       if (image === undefined) return
 
-      // 外壳把那一处写成什么由它自己定（见 `spec.u62.test.ts`）；这里走的是**它交出去的那一份**
+      // 外壳把那一处写成什么由它自己定（见 `image-references.test.ts`）；这里走的是**它交出去的那一份**
       const wire: InputRef = {
         kind: 'image',
         at: 4,

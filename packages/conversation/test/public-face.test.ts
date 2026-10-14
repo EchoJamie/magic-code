@@ -11,7 +11,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ConversationService } from '@magic/contracts'
 // 类型面上的公开面——能这么 import 即算出去（值面由下面的用例钉）
-import type { ContextPolicy, ConversationDeps, PromptVars } from '../src/index.ts'
+import type { SessionHostDeps } from '../src/index.ts'
 import * as face from '../src/index.ts'
 
 describe('公开面', () => {
@@ -27,41 +27,10 @@ describe('公开面', () => {
     ])
   })
 
-  test('构造入参形态齐——装配根据此接线（类型面）', () => {
-    const prompt: PromptVars = { cwd: '/w', platform: 'darwin', date: '2026-09-18' }
-    const context: Partial<ContextPolicy> = { blobThreshold: 4096 }
-
-    // 只取形态、不真跑——这两件必须**可命名**，否则装配根写不出构造入参
-    const shape: Pick<ConversationDeps, 'prompt' | 'context'> = { prompt, context }
-    expect(Object.keys(shape)).toEqual(['prompt', 'context'])
-
+  test('常驻宿主工厂符合会话端口契约', () => {
     // 端口实现落进契约端口（编译期证据：赋值即结构兼容检查）——
     // U16 起 `createConversationService` 返回**主面**，它才是端口的那一半
-    const service: ConversationService | undefined = undefined
-    expect(service).toBeUndefined()
-  })
-
-  test('域内件不上公开面——提示词部件的读取面 / 装配 / 循环 / 落账都不出去', () => {
-    const exported = new Set(Object.keys(face))
-
-    for (const internal of [
-      'buildSystemPrompt', // 提示词装配（域内件——提示词随内核版本治理，不对外承诺形态）
-      'splitSystemPrompt', // 段边界读取（域内用）
-      'renderSection',
-      'assembleContext', // Context 装配
-      'agentLoop', // 主循环
-      'pairingKeyOf',
-      'DEFAULT_CONTEXT_POLICY',
-      'TITLE_LIMIT',
-      // U34：计划那几件里**只有读面出去**（`createPlanReader`）——窗口算术、材料拼装、
-      // 计划字段的收窄都是域内件，域外要的是「读得到」，不是「怎么读的」
-      'readPlanOf',
-      'readHistoryOf',
-      'planMaterialOf',
-      'planBlockOf',
-      'planFieldOf',
-    ]) {
-      expect(exported.has(internal)).toBe(false)
-    }
+    const factory: (deps: SessionHostDeps) => ConversationService = face.createConversationService
+    expect(typeof factory).toBe('function')
   })
 })

@@ -198,7 +198,7 @@ export function createManagedCollaboration(host: CollaborationHost) {
       const unresolved = records.listDelegations(work.collaborationId).some(d =>
         !['received', 'rejected', 'cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))
       if (unresolved || records.listExecutions(work.collaborationId).some(e => e.state !== 'finished')
-        || host.runs().some(run => records.agentForSession(run.session)?.collaborationId === work.collaborationId && ((run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
+        || host.runs().some(run => records.agentForSession(run.session)?.collaborationId === work.collaborationId && (run.holds || (run.background ?? 0) > 0 || run.backgroundUnknown || run.backgroundWaiting))
         || records.listMembers(work.collaborationId).some(member =>
           host.store.serviceFor(member.sessionId).inputs.list().some(row => (row.state === 'pending' || row.state === 'consumed') && row.reason === undefined)
           || records.inbox(member.agentId).some(item => (item.state === 'pending' || item.state === 'consumed') && item.includedAt === undefined && records.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt'))) return false

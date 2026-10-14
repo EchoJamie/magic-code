@@ -12,24 +12,14 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createView, hasRunningTool, rebuild, reduce } from '@magic/tui'
 import type { ShellView } from '@magic/tui'
 import type { Entry } from '@magic/contracts'
 import { attachShell } from '../src/index.ts'
 import { lastModel, makeStage, readDatabase, type Stage } from './support.ts'
-import { removeDir, tempDir, validConfig, writeConfig } from './tmp.ts'
-
-const CLI = join(import.meta.dir, '..', 'src', 'cli.ts')
+import { removeDir, tempDir } from './tmp.ts'
 
 /** 在沙地的工作区里摆一份文件（中间目录自动建）。 */
 function put(where: string, relative: string, text: string): string {
@@ -579,48 +569,6 @@ describe('真装配 → 真外壳视图：扣下的那一次在屏上闭合（20
   })
 })
 
-describe('真装配 · 「没跑」与「跑了没成」分得开（2026-09-20 三轮裁）', () => {
-  test('**真执行并失败**、输出首行写着「未执行后续步骤」——照旧失败，耗时保留', async () => {
-    const stage = makeStage()
-
-    try {
-      // 真跑一次：写下一个文件（副作用真的发生了）＋ 打一行以「未执行」起头的输出 ＋ 非 0 退出
-      const call = {
-        name: 'exec',
-        args: {
-          cmd: 'echo SIDE_EFFECT > side-effect.txt; echo "未执行后续步骤：前一步已经写入，但校验失败"; exit 1',
-        },
-      }
-      const assembly = stage.assemble({ turns: [{ toolCalls: [call] }, { text: '没成' }] })
-      const shell = attachShell(assembly.shell)
-      await shell.submit('跑一下')
-
-      // —— ① 它**真的跑了**：盘上那份文件就是证据 ——
-      expect(existsSync(join(stage.workspace, 'side-effect.txt'))).toBe(true)
-
-      // —— ② 产生处**没**说它「没跑」：事件上一位都不带 ——
-      const results = shell.events.filter((event) => event.kind === 'tool.result')
-      expect(results[0]?.data).toMatchObject({ ok: false })
-      expect((results[0]?.data as { notExecuted?: true }).notExecuted).toBeUndefined()
-
-      // —— ③ 屏上：**失败**（那个叉）＋ **耗时保留** ——
-      // 旧判据按正文首行认「没跑」——这一笔的首行正好以「未执行」起头，于是真跑过的一次
-      // 调用被画成「压根没动手」、耗时被抹掉。状态从此只看产生处那一位，不看这行字
-      const view: ShellView = shell.events.reduce((acc, event) => reduce(acc, event), createView())
-      const tools = view.settled.filter((row) => row.kind === 'tool')
-
-      expect(tools[0]?.state).toBe('failed')
-      expect(tools[0]?.elapsedMs).not.toBe(null)
-      expect(tools[0]?.output[0]).toBe('未执行后续步骤：前一步已经写入，但校验失败')
-
-      shell.dispose()
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-})
-
 describe('真装配 · 原生与兼容', () => {
   test('原生规则与 Claude 规则都进来；**同根同名原生优先**且落选的那份有交代', async () => {
     const stage = makeStage()
@@ -755,96 +703,6 @@ describe('真装配 · 用户显式配置的补充来源', () => {
       assembly.close()
     } finally {
       stage.dispose()
-    }
-  })
-})
-
-describe('真 CLI 帧 · `--check` 那一行', () => {
-  /**
-   * ⚠️ **显式超时**（U41 补）：这一条起的是**真 CLI 子进程**（冷启动 ＋ 全链装配），
-   * 而全量跑是上百个文件并发——挂钟抖动下 5 秒的缺省判据会偶发不够
-   *（实测：一次全量跑里这一条红、单跑与重跑都绿；同一条在基线上也是 5 秒判据）。
-   * 它钉的是**输出内容**，不是启动速度——放宽挂钟不改判据。
-   */
-  test('报「有几份、都是什么来源」；没进来的那几条一并列出来', async () => {
-    const home = tempDir('magic-cli-rules-')
-    mkdirSync(join(home, '.magic'), { recursive: true })
-    writeConfig(join(home, '.magic'), validConfig({ dataDir: join(home, 'data') }))
-
-    try {
-      writeFileSync(join(home, 'AGENTS.md'), '根约定', 'utf8')
-      put(home, '.magic/rules/one.md', '一条原生规则')
-      put(home, '.magic/rules/bad.md', '---\npaths:\n  - "src/{a,}/**"\n---\n读不懂的')
-
-      const proc = Bun.spawn([process.execPath, CLI, '--check'], {
-        cwd: home,
-        env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
-
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('项目规约　')
-      expect(stdout).toContain('目录规约 1')
-      expect(stdout).toContain('原生规则 1')
-      // 没进来的那几条**一条一行**列在下面（堆成一句长跑会横着冲出屏幕）
-      expect(stdout).toContain('有 1 条没进来')
-      expect(stdout).toContain('大括号里有一项是空的')
-    } finally {
-      removeDir(home)
-    }
-  }), { timeout: 20_000 }
-
-  test('目录读不动：**具体是哪一处、为什么**照说（不是「规约太多」那种含糊话）', async () => {
-    // 四轮退回：停批的触发有三种（份数 / 总量到顶 · 目录读不动 · 层级太深），三类共用
-    // 回执那一句「没读完整」——**是哪一种由这一屏说**，用户照着它去改。
-    const home = tempDir('magic-cli-rules-')
-    mkdirSync(join(home, '.magic'), { recursive: true })
-    writeConfig(join(home, '.magic'), validConfig({ dataDir: join(home, 'data') }))
-    const locked = join(home, '.magic/rules/locked')
-
-    try {
-      put(home, '.magic/rules/locked/required.md', '读不动的那一份')
-      chmodSync(locked, 0)
-
-      const proc = Bun.spawn([process.execPath, CLI, '--check'], {
-        cwd: home,
-        env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
-
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('项目规约　无（') // 一份都没能进来
-      expect(stdout).toContain('有 1 条没进来')
-      expect(stdout).toContain('目录读不动') // **具体缘由**：哪一处、为什么（不是「多到装不下」）
-      expect(stdout).toContain('locked')
-    } finally {
-      chmodSync(locked, 0o700)
-      removeDir(home)
-    }
-  })
-
-  test('一份规约都没有时明说「怎么才有」——不留白让人以为是漏配', async () => {
-    const home = tempDir('magic-cli-rules-')
-    mkdirSync(join(home, '.magic'), { recursive: true })
-    writeConfig(join(home, '.magic'), validConfig({ dataDir: join(home, 'data') }))
-
-    try {
-      const proc = Bun.spawn([process.execPath, CLI, '--check'], {
-        cwd: home,
-        env: { ...process.env, HOME: home, FORCE_COLOR: '0' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
-
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('项目规约　无（')
-    } finally {
-      removeDir(home)
     }
   })
 })

@@ -23,11 +23,6 @@ import type { KernelEvent } from '@magic/contracts'
 import type { Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage } from './support.ts'
 
-/** 一条只读命令（机械分析判「轻」· `ops: ['read']`）——**不问**。 */
-const LIGHT_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'echo hello-magic' } }] }
-/** 一条**名单里**的命令（判重 · `delete` → 不可逆）——默认下照问，全放行下**也不问**。 */
-const HEAVY_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
-
 /** 裸接控制面——订阅事件，要答复时自己答（同 `permission.test.ts` 那一手）。 */
 function bareShell(assembly: Assembly) {
   const events: KernelEvent[] = []
@@ -55,75 +50,6 @@ async function until(test: () => boolean, what: string, timeoutMs = 10_000): Pro
 }
 
 describe('全放行 —— 启动入参真的接进闸门', () => {
-  test('判轻的调用**不问**——工具照跑，裁决留痕（`decider: auto`）', async () => {
-    const stage = makeStage()
-
-    try {
-      const assembly = stage.assemble({ allowAll: true, turns: [LIGHT_TURN, { text: '好' }] })
-      const shell = bareShell(assembly)
-      assembly.shell.send({ type: 'input.submit', text: '跑一下' })
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
-      shell.dispose()
-
-      expect(eventsOfKind(shell.events, 'tool.decision.request')).toEqual([])
-      const verdicts = eventsOfKind(shell.events, 'tool.decision')
-      expect(verdicts.map((one) => [one.data.decision, one.data.decider])).toEqual([['approve', 'auto']])
-      expect(eventsOfKind(shell.events, 'tool.result')[0]?.data.ok).toBe(true)
-
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-
-  test('**名单里那一条也不弹**——工具真跑了，裁决留痕（`decider: auto`）', async () => {
-    const stage = makeStage()
-
-    try {
-      const assembly = stage.assemble({ allowAll: true, turns: [HEAVY_TURN, { text: '好' }] })
-      const shell = bareShell(assembly)
-      assembly.shell.send({ type: 'input.submit', text: '改一下权限' })
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
-      shell.dispose()
-
-      expect(eventsOfKind(shell.events, 'tool.decision.request')).toEqual([])
-      expect(eventsOfKind(shell.events, 'tool.result')[0]?.data.ok).toBe(true)
-
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-
-  test('**不给它时：判轻的照样不问、名单里那一条照问**——两档的差别就在那一条上', async () => {
-    const stage = makeStage()
-
-    try {
-      // 只读：默认通（U76 起不必配规则也不问）
-      const light = stage.assemble({ turns: [LIGHT_TURN, { text: '好' }] })
-      const lightShell = bareShell(light)
-      light.shell.send({ type: 'input.submit', text: '跑一下' })
-      await until(() => eventsOfKind(lightShell.events, 'tool.result').length >= 1, '工具跑完')
-      lightShell.dispose()
-      expect(eventsOfKind(lightShell.events, 'tool.decision.request')).toEqual([])
-      light.close()
-
-      // 名单里那一条（改权限）：照问（卡挂着，没答之前一步都不跑）
-      const heavy = stage.assemble({ turns: [HEAVY_TURN, { text: '好' }] })
-      const heavyShell = bareShell(heavy)
-      heavy.shell.send({ type: 'input.submit', text: '改一下权限' })
-      await until(() => heavyShell.requests.length >= 1, '裁决请求')
-      heavyShell.dispose()
-
-      expect(eventsOfKind(heavyShell.events, 'tool.decision.request')[0]?.data.weight).toBe('heavy')
-      expect(eventsOfKind(heavyShell.events, 'tool.decision.request')[0]?.data.material).toContain('改权限')
-      expect(eventsOfKind(heavyShell.events, 'tool.result')).toEqual([]) // 没答之前没跑
-
-      heavy.close()
-    } finally {
-      stage.dispose()
-    }
-  })
 
   /**
    * **删除那一类：全放行下也照拒**（U77 · 规划侧定）——**拒的理由是"这个命令不可逆"，

@@ -93,7 +93,7 @@ async function save(
  * 落一帧**查看那一屏**（U110 起「展开」在那儿）——同一形（txt/ansi/json）。
  *
  * 这一支是给**裁定③那一格**用的：结果正文块与 `diff` 的缩进要**同一级**，
- * 而两者都只在展开之后才画得出来（内联那一半恒折叠，见 `spec.log.test.ts` 那条注）。
+ * 而两者都只在展开之后才画得出来（内联那一半恒折叠，见 `log-presentation.test.ts` 那条注）。
  */
 async function saveScreen(out: string, name: string, view: ShellView): Promise<void> {
   const frame = await showScreen(view)

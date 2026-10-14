@@ -37,7 +37,7 @@ import type { ModelRegistry } from '@magic/model'
 import type { RunTuiOptions } from '@magic/tui'
 import type { ManagerClient } from './client.ts'
 import { unreadSummaryOf } from '@magic/tui'
-import { mcpNoticesOf, noModelNotice, workspaceOf } from '../assembly.ts'
+import { mcpNoticesOf, noModelAdvice, workspaceOf } from './observation.ts'
 import { cacheAccessFor } from '../cache-access.ts'
 import { createFileModelInfoCache } from '../model-cache.ts'
 import { resolveModelChoice } from '../agent-models.ts'
@@ -317,11 +317,11 @@ async function startupReceipts(inputs: TerminalInputs): Promise<readonly string[
    * ⚠️ **「有连接」看的是配置**（`providers` 非空），**不是** `providerId`：后者说的是
    * 「缺省是谁」，两者答的是不同的问题。少了这半，删掉当前那条之后重新打开又会是一片静默。
    *
-   * ⚠️ 话**一字不改地**取自 `noModelNotice`（与提交那一道拦共用「缺什么 · 怎么接」那半句）
+   * ⚠️ 话**一字不改地**取自 `noModelAdvice`（与提交那一道拦共用「缺什么 · 怎么接」那半句）
    * ——同一条事实在两处说成两样，正是「底层换了就放过外观差别」那类毛病。
    * 判据这一侧给的是**开局那一刻的配置**：还没启动过一轮，缺省在就是「有得走」。
    */
-  const noModel = noModelNotice({
+  const noModel = noModelAdvice({
     connections: Object.keys(loaded.config.providers).length,
     hasModel: loaded.providerId !== undefined,
   })

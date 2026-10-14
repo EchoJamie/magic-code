@@ -14,7 +14,14 @@ import { ALLOW_ALL_LABEL, StatusLine } from '../src/components/status.ts'
 import type { StatusLineProps } from '../src/components/status.ts'
 import { createShell } from '../src/shell.ts'
 import type { ShellStatus } from '../src/view.ts'
-import { HINT_IDLE, STATUS_LINE_DEFAULT, createView, patchStatus } from '../src/view.ts'
+import {
+  HINT_IDLE,
+  createView,
+  patchStatus,
+} from '../src/view.ts'
+import {
+  STATUS_LINE_DEFAULT,
+} from '../src/view/config.ts'
 import { event } from './events.ts'
 import { createSpyTransport } from './fakes.ts'
 import { plain, show } from './screen.ts'

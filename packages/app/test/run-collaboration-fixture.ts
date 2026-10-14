@@ -6,7 +6,7 @@ import type { Command, KernelEvent } from '@magic/contracts'
 import { createRecordsStore } from '@magic/records'
 import { createShell } from '@magic/tui'
 import { connectManager } from '../src/run/client.ts'
-import { createAgentLauncher } from '../src/run/launch.ts'
+import { createAgentLauncher, type ExecutorLauncher } from '../src/run/launch.ts'
 import { startManager } from '../src/run/manager.ts'
 import { runPathsOf } from '../src/run/paths.ts'
 import { terminalOptions } from '../src/run/terminal.ts'
@@ -21,7 +21,7 @@ export function latch() {
   return { promise, release }
 }
 
-export async function collaborationRuntime(name: string, respond: (call: HttpCall) => ModelReply | Promise<ModelReply>, options: { readonly allowAll?: true } = {}) {
+export async function collaborationRuntime(name: string, respond: (call: HttpCall) => ModelReply | Promise<ModelReply>, options: { readonly allowAll?: true; readonly launch?: ExecutorLauncher } = {}) {
   const root = realpathSync(tempDir('magic-collab-run-'))
   const magic = magicAt(root)
   const workspace = join(root, 'workspace')
@@ -62,7 +62,7 @@ export async function collaborationRuntime(name: string, respond: (call: HttpCal
     providers: { controlled: { protocol: 'chat-completions', modelOverrides: Object.fromEntries(['entry-model', 'member-model', 'descendant-model', 'changed-model'].map(id => [id, { reasoningSupport: { disable: true, levels: ['low', 'high'] } }])), baseURL: `http://127.0.0.1:${server.port}/v1`, apiKey: 'local-controlled-only' } },
   }))
   const paths = runPathsOf(magic, tmpdir())
-  const launcher = createAgentLauncher()
+  const launcher = options.launch ?? createAgentLauncher()
   const started = await startManager({ paths, magic, launch: { spawn(request) {
     const child = launcher.spawn({ ...request, ...(options.allowAll === true ? { allowAll: true } : {}) })
     agentStarts.push({ gen: request.gen, session: request.session, at: Date.now() })

@@ -1,9 +1,6 @@
 #!/usr/bin/env sh
-# 质量闸（技术方案 · 代码治理）：typecheck + test。
-#
-# 校验对象＝**暂存内容**（即将写进提交的那棵树），不是工作树——把暂存区物化到临时目录
-# 再跑闸，故：暂存到坏版本会被拦下；未跟踪的本地草稿（本就不会入提交）不会误拦。
-# 由 `bun install` 的 prepare 脚本经 core.hooksPath 装配。
+# 提交门禁：暂存树的类型检查、结构守护与快速回归。
+# 完整集成与端到端回归由 bun run check 和 PR 检查执行。
 set -e
 
 snapshot="$(mktemp -d)"
@@ -11,19 +8,11 @@ trap 'rm -rf "$snapshot"' EXIT INT TERM
 
 git checkout-index -a -f --prefix="$snapshot/"
 
-# 依赖不入提交，用工作区的 node_modules 顶上（只读引用）
-if [ ! -d node_modules ]; then
-  echo "质量闸：缺 node_modules——请先跑 bun install" >&2
+cd "$snapshot"
+# 从已有缓存按暂存锁文件安装，使 workspace 链接也属于暂存树。
+# 不联网、不执行 prepare；不能引用工作区 node_modules 中指回源码的链接。
+if ! bun install --offline --frozen-lockfile --ignore-scripts; then
+  echo "质量闸：暂存依赖的离线安装失败；请核对 package.json / bun.lock，并先运行 bun install 准备依赖缓存。" >&2
   exit 1
 fi
-
-ln -s "$PWD/node_modules" "$snapshot/node_modules"
-
-for package_dir in packages/*/; do
-  if [ -d "${package_dir}node_modules" ]; then
-    ln -s "$PWD/${package_dir}node_modules" "$snapshot/${package_dir}node_modules"
-  fi
-done
-
-cd "$snapshot"
-bun run check
+bun run check:commit

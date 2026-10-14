@@ -47,6 +47,8 @@ export type FixtureTurn =
       readonly chunks?: number
       /** 块间延时（毫秒，缺省 120）——真流式是**长出来的**，不是一次性落下来的。 */
       readonly chunkDelayMs?: number
+      /** 正文第 index 块发送前的屏障；用可观察事件放行，不靠固定延时猜时序。 */
+      readonly beforeChunk?: (index: number) => Promise<void>
     }
   | {
       readonly kind: 'tool'
@@ -70,6 +72,8 @@ export type FixtureTurn =
       /** 正文切成几块吐 / 块间延时（同 `text` 那一档的缺省：3 块 · 120ms）。 */
       readonly chunks?: number
       readonly chunkDelayMs?: number
+      /** 正文第 index 块发送前的屏障；用可观察事件放行，不靠固定延时猜时序。 */
+      readonly beforeChunk?: (index: number) => Promise<void>
     }
   | { readonly kind: 'http'; readonly status: number; readonly message: string }
 
@@ -312,6 +316,7 @@ async function streamText(
   chunks: number,
   delayMs: number,
   reasoning?: string,
+  beforeChunk?: (index: number) => Promise<void>,
 ): Promise<void> {
   const size = Math.ceil(text.length / Math.max(1, chunks))
 
@@ -326,6 +331,7 @@ async function streamText(
   }
   push(frame(model, { choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }))
   for (let at = 0; at < text.length; at += size) {
+    await beforeChunk?.(at / size)
     push(frame(model, { choices: [{ index: 0, delta: { content: text.slice(at, at + size) } }] }))
     if (delayMs > 0) await Bun.sleep(delayMs)
   }
@@ -347,7 +353,7 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
       if (turn.kind === 'tool') {
         // **先说那句**（给了才说）——真供应商就是这样：正文分块流完，紧跟着 `tool_calls`
         if (turn.text !== undefined && turn.text !== '') {
-          await streamText(push, model, turn.text, turn.chunks ?? 3, turn.chunkDelayMs ?? 120,turn.reasoning)
+          await streamText(push, model, turn.text, turn.chunks ?? 3, turn.chunkDelayMs ?? 120, turn.reasoning, turn.beforeChunk)
         }
         push(
           frame(model, {
@@ -386,7 +392,7 @@ function streamOf(turn: FixtureTurn, model: string, callIndex: number): Readable
       const chunks = turn.kind === 'text' ? Math.max(1, turn.chunks ?? 3) : 1
       const delayMs = turn.kind === 'text' ? (turn.chunkDelayMs ?? 120) : 0
 
-      await streamText(push, model, text, chunks, delayMs, reasoning)
+      await streamText(push, model, text, chunks, delayMs, reasoning, turn.kind === 'text' ? turn.beforeChunk : undefined)
       push(frame(model, { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }))
       // 用量帧（收尾那一格）——状态行 ④ 的分母/分子据此上屏
       push(

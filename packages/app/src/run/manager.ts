@@ -1,47 +1,59 @@
 import type { BackgroundView } from '@magic/contracts'
-import { isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
-import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
-import { diagnosticsOf, type Diagnostics } from '@magic/contracts'
-import { DiagnosticLog } from '../diagnostic-log.ts'
-import { createManagedCollaboration } from './collaboration.ts'
-import { loadConfig } from '../config.ts'
-import { watchConfig } from '../config-watch.ts'
+import { diagnosticsOf, isTurnTimingEvent, type TurnTimingEvent } from '@magic/contracts'
 import { setPrefs } from '../config-save.ts'
-import { captureCollaborationNative, mergeCollaborationNative, type CollaborationNativeGroup } from './collaboration-native.ts'
+import { watchConfig } from '../config-watch.ts'
+import { loadConfig } from '../config.ts'
+import { DiagnosticLog } from '../diagnostic-log.ts'
+import { createWorkEnvironment, type WorkEnvironment } from '../work-environment.ts'
+import {
+  captureCollaborationNative,
+  mergeCollaborationNative,
+  type CollaborationNativeGroup,
+} from './collaboration-native.ts'
+import { createManagedCollaboration } from './collaboration.ts'
+import { createClientConnections, type ClientConn } from './connections.ts'
+import { createExecutorControl, sendToExecutor as send, type Executor } from './executor-control.ts'
+import { ARCHIVED_NOTE, createSessionManagement } from './session-management.ts'
+import { createRunStops } from './stopping.ts'
 /** App 所属的本机管理者：独占服务、只读观察、按需执行与有责收尾。
  * 记录事实通过 records 端口读取；控制连接本身不创建会话或执行者。
  * 执行者退出与其自有资源核销分开确认，宿主生命管道负责最终收尾。
  */
 
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import type { Socket } from 'bun'
 import type {
   AgentIdentity,
+  AttentionItem,
   CollaborationCommand,
   CollaborationView,
   Command,
+  Entry,
   KernelEvent,
   MagicHome,
-  McpServerConfig,
   McpCatalogRow,
+  McpServerConfig,
   ModelSwitchRequest,
+  NativeSession,
+  NativeWork,
   NoticeKind,
   OwnedProcess,
   RunRow,
-  RunSnapshot,
+  ServiceIdentity,
   StopPhase,
   StopScope,
+  Wire,
 } from '@magic/contracts'
-import type { McpProbeRow } from './wire.ts'
-import { createRecordsStore, type RecordsStore } from '@magic/records'
-import { ensureRunDir, tightenSocket, normalizeDataDir } from './paths.ts'
-import type { RunPaths } from './paths.ts'
-import { linkOf, socketHandlers, localLinks } from './wire.ts'
-import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor } from './wire.ts'
+import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
+import { readSessionCatalog, readSessionDisplayHistory, summarize } from '@magic/conversation'
+import { createProcessLedger } from '@magic/execution'
+import { createRecordsStore } from '@magic/records'
+import type { Socket } from 'bun'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import type { RunRecord, StoredRun, StoredRuns } from './facts.ts'
 import {
+  RUNS_VERSION,
+  STORED_RUNS_LIMIT,
   actionOf,
   backgroundOf,
-  canArchiveRun,
   endKindOf,
   isProgress,
   newRunRecord,
@@ -49,25 +61,20 @@ import {
   reconcile,
   refresh,
   runRowOf,
-  stopReasonOf,
   storedRunOf,
   tailOf,
 } from './facts.ts'
-import type { RunRecord, StoredRun, StoredRuns } from './facts.ts'
-import { RUNS_VERSION, STORED_RUNS_LIMIT } from './facts.ts'
-import { reclaim, reclaimNoteOf } from './reclaim.ts'
-import { noticeKey } from './notices.ts'
-import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
-import type { AttentionItem, NativeWork, NativeSession, SessionManagement, SessionManagementResult, ServiceIdentity, Wire } from '@magic/contracts'
-import { softwareSource } from './runtime-launch.ts'
-import { createNativeServer } from './native-server.ts'
+import { createAgentLauncher, type ExecutorLauncher, type SpawnedExecutor } from './launch.ts'
+export type { ExecutorLauncher, ExecutorRequest, SpawnedExecutor } from './launch.ts'
 import { projectWorks } from './native-projection.ts'
+import { createNativeServer } from './native-server.ts'
+import { noticeKey } from './notices.ts'
 import { query as observe } from './observation.ts'
-import { readSessionCatalog, readSessionDisplayHistory, summarize } from '@magic/conversation'
-import type { Entry } from '@magic/contracts'
-import { createProcessLedger } from '@magic/execution'
-import { createAgentLauncher } from './launch.ts'
-import type { ProcessLedger } from '@magic/contracts'
+import type { RunPaths } from './paths.ts'
+import { ensureRunDir, normalizeDataDir, tightenSocket } from './paths.ts'
+import { softwareSource } from './runtime-launch.ts'
+import type { ClientToManager, ExecutorToManager, Link, ManagerToExecutor, McpProbeRow } from './wire.ts'
+import { linkOf, localLinks, socketHandlers } from './wire.ts'
 
 /** 管理者自报身份的落盘形（`manager.json`）——诊断与重启核对用，**不是**权威状态。 */
 export type ManagerRecord = {
@@ -83,95 +90,6 @@ export type ManagerRecord = {
 const RECORD_VERSION = 1
 
 /** 一条挂着的客户端连接。 */
-type ClientConn = {
-  collaborationMember?: string | undefined
-  readonly id: number
-  readonly link: Link<ClientToManager>
-  /** 它认的执行者代次（`0` ＝ 还没认过任何一代）。 */
-  gen: number
-  environment: Readonly<Record<string, string>>
-  readRevision: number
-  readingSession: string | null
-  /** 启动目录——按它起执行者（工作区默认根的缺省，见 `wire.ts` 的 `hello.cwd`）。 */
-  readonly cwd: string
-  /** 它此刻在跟哪个执行者说话（`undefined` ＝ 还没有目标）。 */
-  target: Executor | undefined
-  /**
-   * **这个窗口此刻认的那条会话**（U100）——`target` 没了之后**它还在**。
-   *
-   * ## 为什么要有这一格
-   *
-   * 「整体停掉一条运行」那一档会把窗口的 `target` 清掉（`retire` 那一跳：「断的是执行者，
-   * 不是界面」）。而清掉之后，用户接着敲的那一句**本该是那条会话的下一轮**——工作停了、
-   * 会话还在（设计：「已停止 · 手动中断 ⇒ 看停点、检查未知效果、**明确继续**」；
-   * 「**明确继续**才建立下一次运行」）。
-   *
-   * 没有这一格时，`onCommand` 的兜底是 `spawnFresh`（`session: null`）——那会**开一条新
-   * 会话**，用户手上的上下文与记录当场断掉。这正是 U100 要拆的第二个耦合：
-   * **「停」不该等于「丢会话」**。
-   *
-   * ## 它怎么变
-   *
-   * - **挂上哪一代就记哪一代那条会话**（`bind`；那一代还没开张时为 `null`）；
-   * - **会话后来才开张**（`bound` 那条消息）时补记；
-   * - **`/clear`（`session.new`）之后清空**——那一下用户要的就是「另起一条」；
-   * - ⚠️ **停掉之后不清**（要留的就是它）；窗口退出去了，这一格跟它一起没。
-   */
-  selectedSession: string | null
-  readonly label: string | undefined
-  /** 开局那条换模型请求（`--model`）——为它起新的一代时带过去。 */
-  readonly switch: ModelSwitchRequest | undefined
-  /**
-   * **全放行**（U73）——这个窗口起手带没带 `--allow-all`；为它起新的一代时带过去。
-   *
-   * 与 `switch` 同一个道理：**只有为这个窗口新起的那一代收它**。挂回一条已经活着的那一代
-   * 时不再 apply——那一代有它自己的那一个（见 `wire.ts` 的 `allowAll`）。
-   */
-  readonly allowAll: boolean | undefined
-  /**
-   * **这个窗口正等着的快照号**（U49）——非 `null` 时进来的事件**先攒着不发**。
-   *
-   * 这一格就是设计那句「**先订阅并缓冲**，或提供原子订阅快照」的落点：窗口一挂到某一代
-   * 上就**已经在收**了，而快照是随后一趟往返才回来的——中间那段的事件若不攒着，
-   * 就正好掉进「快照与订阅之间那条缝」。
-   */
-  awaiting: number | null
-  /** 等着快照的那段时间里攒下的事件（按到达序，放行时按 id 去重、只放水位之后的）。 */
-  buffered: KernelEvent[]
-}
-
-/**
- * **一个执行者的登记**——管理者侧的全部所知。
- *
- * 「同一个执行现场独占推进权」在这一层是**结构上的**：一条会话至多挂一个 `Executor`
- * （`liveOf(session)` 是按会话找的，而起新的之前先问它），故不可能有两个同时推同一条。
- */
-type Executor = {
-  readonly ledger: ProcessLedger
-  readonly network: WorkEnvironment
-  /** **代次**——管理者发的号，一条会话换一个执行者就换一代（U48 第三段按它判过期）。 */
-  readonly gen: number
-  /** 发车时给的令牌——认「这条连上来的是我叫起来的那一个」。 */
-  readonly executionId: string
-  /** **显式接续**起的那一代（发车时就带着会话号）；`false` ＝ 还没开张（D5）。 */
-  readonly explicit: boolean
-  /** **运行事实**（U49）——会话 / 状态 / 进展 / 待答项全在这一格里，判定见 `facts.ts`。 */
-  readonly run: RunRecord
-  readonly spawned: SpawnedExecutor
-  exited: boolean
-  /** 连上之后才有；在那之前它还没开口。 */
-  link: Link<ExecutorToManager> | undefined
-  /** 还没送出去的东西（**先攒后送**：没人接的话发出去就是「敲了没反应」）。 */
-  queued: ManagerToExecutor[]
-  /** 盯着它的窗口连接号——事件按这一份广播。 */
-  readonly watchers: Set<number>
-  /** 上一次听见它（`pong` / 任何一条消息）——诊断与生命探测用。 */
-  /** 快照的号（U49）——一问一答按它对上。 */
-  snapSeq: number
-  /** 发出去还没回来的那几个快照，各是给哪个窗口的（`seq → conn.id`）。 */
-  readonly asking: Map<number, number>
-}
-
 export type ManagerOptions = {
   readonly beforeExit?: () => Promise<void>
   readonly engineState?: (state: 'stopping' | 'stopped' | 'failed', request: string, error?: string) => Promise<void>
@@ -187,20 +105,9 @@ export type ManagerOptions = {
   readonly paths: RunPaths
   /** 起执行者的方式——见 `ExecutorLauncher`。 */
   readonly launch?: ExecutorLauncher
-  /**
-   * **统一基础路径**——执行者按它读配置（配置 / 授权 / 技能都从它派生，U42）。
-   *
-   * ⚠️ **必须显式传**，不靠环境变量：`MAGIC_HOME` 只说得清「Magic 落在哪」，而
-   * `magic.home`（`~/…` 展开到哪）与 `magic.base` 是**两件**——测试沙地把它们指到
-   * 临时目录时，子进程若照环境自己解析一遍，读到的是**开发者真那份**配置。
-   */
+
   readonly magic: MagicHome
-  /**
-   * **外部工具预检要连的那几台**（`mcp.servers` 原样）——缺省一条都没有（空转）。
-   *
-   * 由入口（`cli.ts`）从**它刚读的那份配置**里取：管理者不自己再读一遍配置
-   * ——一处读、两处同一个值，两边才不会各认一份。
-   */
+
   readonly mcp?: Readonly<Record<string, McpServerConfig>> | undefined
   /** 预检的连接上限（毫秒）——缺省＝适配器那个实现级常量；用例把它调小。 */
   readonly mcpConnectTimeoutMs?: number | undefined
@@ -208,68 +115,12 @@ export type ManagerOptions = {
   readonly now?: (() => number) | undefined
   /** 生命探测的间隔（毫秒）——缺省 5 秒；见 `PROBE_INTERVAL_MS`。 */
   readonly probeIntervalMs?: number | undefined
-  /**
-   * **停止时给执行者的宽限**（毫秒）——`bye` 之后等它自己走完收尾那两跳。
-   *
-   * 由头与 `SHUTDOWN_GRACE_MS` 同：那两跳（等外部服务器释放、再关库）本来就有界，
-   * 故这个数取「它们走完还要多久」——MCP 那条路最坏是 2s（等它自己退）＋ 1s（TERM）
-   * ＋ 1s（KILL），加一截余量取八秒。用例把它调小。
-   */
+
   readonly stopGraceMs?: number | undefined
   /** 停止时 TERM 之后再等多久才 KILL（毫秒）——缺省三秒；见 `STOP_KILL_MS`。 */
   readonly stopKillMs?: number | undefined
   /** 诊断——缺省不打印（**这条线上不写业务日志**）。 */
   readonly log?: ((line: string) => void) | undefined
-}
-
-/**
- * 起一个执行者。
- *
- * 收成端口是为了**用例能把真进程换成别的**：多进程的用例贵在「真的分了进程」（那是要证
- * 的东西），而管理者这一层看不见差别——它只要求「有人按 `ExecutorRequest` 起得来、
- * 起得来之后会连上来」。
- */
-export type ExecutorLauncher = {
-  spawn(request: ExecutorRequest): SpawnedExecutor
-}
-
-/** 开一个执行者时给它的那几件——「哪一代、哪条会话、在哪个工作区、用哪份配置」。 */
-export type ExecutorRequest = {
-  readonly network: WorkEnvironment
-  readonly environment: Readonly<Record<string, string>>
-
-  /** **代次**——管理者发的号。 */
-  readonly gen: number
-  /** 发车令牌——它连上来时按这个认。 */
-  readonly executionId: string
-  /** 开工那条会话（显式接续时就有）；`null` ＝ 让它自己开张（D5）。 */
-  readonly session: string | null
-  /** **启动目录**——工作区默认根（配置没写 `workspaceRoots` 时就是它）。 */
-  readonly cwd: string
-  /** 统一基础路径——执行者按它读配置。 */
-  readonly magic: MagicHome
-  /** 管理者监听的那条 socket——执行者要连它。 */
-  readonly link: Link<ManagerToExecutor>
-  readonly records: RecordsStore
-  readonly ledger: ProcessLedger
-  /**
-   * **开局的换模型请求**——窗口 `hello` 里带的那一个，随「为它起的那一代」落地。
-   *
-   * 只有**为这个窗口新起的那一代**收它：接上一代已经在跑的会话时不再 apply（那一代
-   * 有它自己的选中——「模型选择按 Agent 独立装配，不共享可变选择」是设计明文）。
-   */
-  readonly switch?: ModelSwitchRequest | undefined
-  /**
-   * **全放行**（U73）——同上：**只有为这个窗口新起的那一代**收它，且要赶在
-   * **执行者造闸门之前**（那是装配期的事，没有事后改的口）。
-   */
-  readonly allowAll?: boolean | undefined
-}
-
-/** 一个 Agent 实例的取消与完成。资源收尾完成之后才发完成通知。 */
-export type SpawnedExecutor = {
-  onExit(listener: (reason: string) => void): void
-  cancel(): void
 }
 
 /**
@@ -308,55 +159,18 @@ export type StartResult =
 /** 重试次数——「尸首清掉再 bind」那一步；给三次是因为它只该有一次成功或彻底失败。 */
 const BIND_ATTEMPTS = 3
 
-/**
- * 生命探测的间隔（毫秒）——**有限频率、只为识别失联**。
- *
- * 设计明文：「监听自有子进程退出和 IPC 断开；生命探测与业务进展分开。**有限频率**的
- * 连接健康探测**仅用于识别失联**，不扫描全机 PID、不以 CPU 阈值自动杀进程」。
- * 五秒是「人察觉不到、机器也不忙」的那个量级；判据是**连的断没断**，不是「它在不在干活」
- * ——长测试静默十分钟也照样是活的。
- */
 const PROBE_INTERVAL_MS = 5_000
 
-/**
- * 收摊时给执行者的**宽限期**（毫秒）——`bye` 之后等它自己走完收尾那两跳。
- *
- * 两秒是「它手上那两跳要多久」的量级：关外部服务器（关 stdin → 等 → 杀）本来就有界，
- * 关库是一条语句。到点还没退的按「不听话」处理（`kill`）。
- */
-
-
-/**
- * 停止时给执行者的宽限（毫秒）——见 `ManagerOptions.stopGraceMs`。
- *
- * 八秒＝MCP 那条收尾路的最坏情形（等 2s ＋ TERM 1s ＋ KILL 1s）＋ 一截余量。到点还没退的
- * 按「不听话」处理（TERM，再 `STOP_KILL_MS` 仍不退就 KILL）——**先礼不等于无限期地等**。
- */
 const STOP_GRACE_MS = 8_000
 
-/** 停止时那第二记「兵」等多久（毫秒）——TERM 之后仍不退就 KILL。 */
+/** 工具 TERM/KILL 回收各阶段的等待预算。 */
 const STOP_KILL_MS = 3_000
 
-
-
-/**
- * **运行事实变了之后隔多久推一次**（毫秒）。
- *
- * 这一格管的是「同一瞬间连着变好几处」那种情形：一轮里 `agent.state`・`tool.call`・
- * `progress` 会连着翻好几次，逐条推是白推（屏上只画最后那一份）。取一百毫秒：
- * 人眼分不出来，而合并掉的写与推送省下了数量级。
- */
 const RUNS_PUSH_MS = 100
 
 /** 运行登记落盘的合并窗（毫秒）——见 `saveRuns`。 */
 const RUNS_SAVE_MS = 300
 
-/**
- * **立一个管理者，或者认出已经有的那一个**。
- *
- * 返回 `existing` 时调用方该去 `connectManager`（见 `client.ts`）——本函数**不替它连**：
- * 「谁是管理者」与「客户端怎么用这条连接」是两件事，混在一起会让用例没法只验前一件。
- */
 export async function startManager(options: ManagerOptions): Promise<StartResult> {
   const { paths } = options
   const now = options.now ?? Date.now
@@ -387,19 +201,12 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   const stopGraceMs = options.stopGraceMs ?? STOP_GRACE_MS
   const stopKillMs = options.stopKillMs ?? STOP_KILL_MS
 
-  const clients = new Map<number, ClientConn>()
+  const connections = createClientConnections(() => native.changed(), options.log)
+  const { clients, bind, syncTarget, onSnapshot, dropClient } = connections
   const executors = new Set<Executor>()
-  /** 待认领的执行者——按令牌找（它连上来时给的正是那个令牌）。 */
-  /**
-   * **已经不在跑的那些运行**（U49）——按会话留一条「最近一次运行」。
-   *
-   * 两个来处：这一趟里收掉的（`retire`），与**上一次管理者留下的**（`readRuns`）。
-   * 列表上「当前/最近状态」那一格就是它；`ended !== undefined` ＝ 这一条已经结束。
-   */
-  const lastRuns = new Map<string, RunRecord>()
-  const reclaiming = new Map<RunRecord, Promise<string | undefined>>()
 
-  let nextConn = 1
+  const lastRuns = new Map<string, RunRecord>()
+
   let nextGen = 1
   let available = false
   let stopped = false
@@ -408,19 +215,11 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
    * 要查库），而库在收摊的前半段就关了。关了之后**不筛**：那时该照列（拿不到的不编）。
    */
   let storeClosed = false
-  let settle: () => void = () => {}
+  let settle: () => void = () => { }
   const exited = new Promise<void>((resolve) => {
     settle = resolve
   })
 
-  /**
-   * **先把库带过迁移那一跳**（设计明文：「管理者先完成库迁移再启动执行者」）。
-   *
-   * `workspace: []` 是**如实**的：管理者不建会话行，故那个「会话归属哪几条根」
-   * 的参数在这儿没有内容可言——它只在建行那一刻被写进库里（那一步归执行者）。
-   * 开不动库就**别当管理者**：连库都带不起来的进程，起执行者也只是把同一件事故
-   * 推迟到别人那儿炸。
-   */
   // 先独占控制端点，再打开唯一记录连接；并发入口不同时迁移 SQLite。
   let server: ReturnType<typeof Bun.listen>
   try {
@@ -461,9 +260,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const record = reconcile(stored, now())
     lastRuns.set(record.session ?? record.executionId!, record)
 
-    // **上一代留下的自有进程组**（U50）：已经证实不在的那些，照登记收回来——它当年
-    // 多半没跑完收尾那两跳（管理者异常退出那条路），起的进程就成了没人认领的后台。
-    // ⚠️ **只对「证实已结束」的那些动手**：还站着的（状态待确认）照旧一个都不碰。
     if (record.ended !== undefined && record.owned.length > 0) {
       record.reclaimPending = true
       refresh(record, now())
@@ -479,68 +275,26 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   // —— 运行事实：一处产出、两处用（推给窗口 ＋ 落盘）——
 
-  /**
-   * **这一摊此刻的运行事实**——列表与详情要的那一份。
-   *
-   * 两个来处合起来才是「当前/最近」：活着的那些执行者（**当前**），与已经收掉的那些
-   * 「最近一次运行」（**最近**）。同一条会话两头都有时**以活着的为准**（那才是现况）。
-   * 还没开张的执行者（`session === null`）没有会话可挂，故不入表——**列表按会话说话**。
-   */
   const environments = new Map<string, WorkEnvironment>()
   const closingEnvironments = new Set<Promise<void>>()
-  const workRoot = (session: string): string => store.collaboration.collaborationForSession(session)?.originSessionId ?? session
-  const ARCHIVED_NOTE = '会话已归档，请在会话管理或 /resume 的已归档列表中恢复'
-  const admissions = new Map<string, number>()
-  const isArchived = (session: string): boolean => store.isSessionArchived(workRoot(session))
-  function canArchive(session: string): boolean {
-    const root = workRoot(session)
-    if (!store.hasSession(root) || isArchived(root) || (admissions.get(root) ?? 0) > 0) return false
-    const group = captureCollaborationNative(store.collaboration, [root]).groups[0]
-    const members = new Set([root, ...(group?.members.map(member => member.sessionId) ?? [])])
-    for (const member of members) {
-      const executor = liveOf(member)
-      const run = executor?.run ?? lastRuns.get(member)
-      if (run !== undefined && !canArchiveRun(run)) return false
-      if (executor !== undefined && (executor.queued.length > 0 || store.serviceFor(member).inputs.list().some(input => input.state === 'pending' && input.reason === undefined))) return false
-    }
-    if (group !== undefined) {
-      if (group.executions.some(e => e.state !== 'finished')) return false
-      if (group.collaboration.state === 'open' || group.collaboration.state === 'closing') {
-        if (group.collaboration.state === 'closing' || group.members.some(m => m.reachability === 'suspended') || group.waits.some(w => w.state === 'waiting')) return false
-        if (group.delegations.some(d => !['received','rejected','cancelled'].includes(d.state) || (d.deliveryMessageId !== undefined && d.receivedAt === undefined))) return false
-        if (group.members.some(member => store.collaboration.inbox(member.agentId).some(item => item.state === 'pending' && store.collaboration.readMessage(member.agentId, item.messageId)?.purpose !== 'receipt'))) return false
+  const sessions = createSessionManagement({
+    store, now, liveOf, lastRuns, accepting: () => !stopped,
+    terminalOpen: session => terminalClients(session).length > 0,
+    onArchived(session) {
+      for (const executor of executors) {
+        if (executor.run.session !== null && workRoot(executor.run.session) === session) stopContent.delete(executor.run)
       }
-    }
-    return true
-  }
-  function manageSession(item: SessionManagement): SessionManagementResult {
-    const session = workRoot(item.session)
-    try {
-      if (stopped) throw new Error('Engine 正在停止，请稍后重试')
-      if (!store.hasSession(item.session) || !store.hasSession(session)) throw new Error('会话已不可达')
-      if (item.action === 'rename') {
-        if (isArchived(session)) throw new Error('会话已归档，请先恢复后再改名')
-        const title = summarize(item.title ?? '')
-        if (title === undefined) throw new Error('会话名称不能为空')
-        store.setSessionTitle(session, title, now())
-      } else {
-        const archived = item.action === 'archive'
-        if (isArchived(session) !== archived) {
-          if (archived && !canArchive(session)) throw new Error('工作仍在执行、等待输入消费或资源状态待确认，暂不能归档')
-          // 资格核定到持久提交不让出事件循环，与输入受理共用 Engine 顺序。
-          store.setSessionArchived(session, archived)
-          if (archived) {
-            store.attention.clear(session)
-            for (const executor of executors) if (executor.run.session !== null && workRoot(executor.run.session) === session) stopContent.delete(executor.run)
-          }
-        }
-      }
-      const data = { session, archived: isArchived(session), canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0 }
-      for (const conn of clients.values()) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data } })
+    },
+    changed(data) {
+      for (const conn of clients.values()) conn.link.send({
+        t: 'ev', gen: null,
+        event: { id: 0, at: now(), turn: null, session: data.session, kind: 'session.changed', data },
+      })
       native.changed()
-      return { ...item, session, ok: true, archived: data.archived }
-    } catch (error) { return { ...item, session, ok: false, error: error instanceof Error ? error.message : String(error) } }
-  }
+    },
+  })
+  const { workRoot, isArchived, canArchive, manageSession } = sessions
+
   const environmentFor = (session: string): WorkEnvironment | undefined => environments.get(workRoot(session))
   function releaseEnvironments(): void {
     for (const [root, network] of environments) {
@@ -556,8 +310,11 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   }
   const collaborationInputs = new Map<string, { conn: ClientConn; session: string; target: string; ref?: string }>()
   const collaborationDecisions = new Map<number, Extract<KernelEvent, { kind: 'tool.decision.request' }>>()
-  const configurationWaiters = new Map<string, { executor: Executor; resolve: () => void; reject: (error: Error) => void }>()
-  const readyWaiters = new Map<number, { resolve: () => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>()
+  const control = createExecutorControl(executor => {
+    executor.run.stopping = true
+    send(executor, { t: 'bye', why: '成员启动超时' })
+    void escalateStop(executor)
+  })
   const collaboration = createManagedCollaboration({
     store, magic: options.magic, now, environment: session => environmentFor(session)?.env ?? {}, accepting: () => !stopped,
     start: startMember,
@@ -566,7 +323,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     input: (session, input, shared) => {
       if (isArchived(session)) throw new Error(ARCHIVED_NOTE)
       const live = liveOf(session)
-      if (live === undefined || live.link === undefined || live.link.closed) throw new Error('输入目标已失联')
+      if (live === undefined || live.link.closed) throw new Error('输入目标已失联')
       live.run.busy = true
       refresh(live.run, now())
       clearTurnNotice(session)
@@ -576,18 +333,14 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     configure: async (session, model) => {
       const live = liveOf(session)
       if (live === undefined) return
-      await new Promise<void>((resolve, reject) => {
-        const requestId = crypto.randomUUID()
-        configurationWaiters.set(requestId, { executor: live, resolve, reject })
-        send(live, { t: 'collaboration.configure', requestId, model })
-      })
+      await control.configure(live, model)
     },
     runs: () => [...executors].map(e => runRowOf(e.run)),
     decisions: session => liveOf(session)?.run.decisions.size ?? 0,
     changed: () => {
       releaseEnvironments()
-      native.changed();for(const conn of clients.values())void publishCollaboration(conn)
-      for(const executor of executors){const session=executor.run.session;if(session!==null&&!isArchived(session)&&store.serviceFor(session).inputs.list().some(one=>one.state==='pending'&&one.purpose==='next'))send(executor,{t:'collaboration.wake'})}
+      native.changed(); for (const conn of clients.values()) void publishCollaboration(conn)
+      for (const executor of executors) { const session = executor.run.session; if (session !== null && !isArchived(session) && store.serviceFor(session).inputs.list().some(one => one.state === 'pending' && one.purpose === 'next')) send(executor, { t: 'collaboration.wake' }) }
     },
   })
   const recovering = collaboration.recover()
@@ -601,28 +354,14 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     if (existing === undefined && previous !== undefined && (previous.ended === undefined || previous.reclaimPending || previous.reclaimNote !== undefined)) throw new Error('该成员上一代资源仍待核实')
     if (stopped) throw new Error('管理者正在退出')
     if (isArchived(agent.sessionId)) throw new Error(ARCHIVED_NOTE)
-    const executor = existing ?? spawn({ session: agent.sessionId, explicit: true,
-      cwd: agent.workspace[0] ?? '' })
+    const executor = existing ?? spawn({
+      session: agent.sessionId, explicit: true,
+      cwd: agent.workspace[0] ?? ''
+    })
     if (executor === undefined) throw new Error('无法启动成员执行者')
     for (const conn of clients.values()) if (conn.selectedSession === agent.sessionId && conn.target !== executor) bind(conn, executor)
     if (executor.run.ready) return
-    return new Promise((resolve, reject) => {
-      const previous = readyWaiters.get(executor.gen)
-      if (previous !== undefined) {
-        const done = previous.resolve; const failed = previous.reject
-        previous.resolve = () => { done(); resolve() }
-        previous.reject = reason => { failed(reason); reject(reason) }
-        return
-      }
-      const timer = setTimeout(() => {
-        readyWaiters.delete(executor.gen)
-        executor.run.stopping = true
-        send(executor, { t: 'bye', why: '成员启动超时' })
-        void escalateStop(executor)
-        reject(new Error('成员启动未就绪，正在回收'))
-      }, 30_000)
-      readyWaiters.set(executor.gen, { resolve, reject, timer })
-    })
+    return control.waitUntilReady(executor)
   }
   async function cancelMembers(sessions: readonly string[]): Promise<void> {
     await Promise.all(sessions.map(session => new Promise<void>((resolve, reject) => {
@@ -652,14 +391,20 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       const member = command.session === root ? undefined : store.collaboration.agentForSession(command.session)
       return { ...command, ...(member ? { member: member.name, agent: member.agentId } : {}) }
     })).sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0) || `${a.execution}:${a.id}`.localeCompare(`${b.execution}:${b.id}`))
-    return { commands, waiting: runs.flatMap(run => run.backgroundView?.waiting ?? []),
-      ...(runs.some(run => !run.connected || run.backgroundView === undefined || run.reclaimPending || run.reclaimNote !== undefined) ? { unknown: true as const } : {}) }
+    return {
+      commands, waiting: runs.flatMap(run => run.backgroundView?.waiting ?? []),
+      ...(runs.some(run => !run.connected || run.backgroundView === undefined || run.reclaimPending || run.reclaimNote !== undefined) ? { unknown: true as const } : {})
+    }
   }
   function publishBackground(conn: ClientConn, result?: BackgroundView['result']): void {
     if (conn.selectedSession === null || conn.link.closed) return
     const session = workRoot(conn.selectedSession)
-    conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event: { kind: 'background.state', id: 0, turn: null, at: now(), session,
-      data: { ...backgroundView(session), ...(result ? { result } : {}) } } })
+    conn.link.send({
+      t: 'ev', gen: conn.target?.gen ?? null, event: {
+        kind: 'background.state', id: 0, turn: null, at: now(), session,
+        data: { ...backgroundView(session), ...(result ? { result } : {}) }
+      }
+    })
   }
   function backgroundCommand(conn: ClientConn, command: Extract<Command, { type: `background.${string}` }>): void {
     if (command.type === 'background.list') { publishBackground(conn); return }
@@ -675,7 +420,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const problem = conn.selectedSession === null || workRoot(target.session) !== workRoot(conn.selectedSession)
       ? '目标不属于当前整件工作'
       : executor?.executionId !== target.execution ? '执行代次已改变或已经结束'
-      : !executor.run.connected || executor.link?.closed ? '执行实例失联，无法确认命令状态' : undefined
+        : !executor.run.connected || executor.link.closed ? '执行实例失联，无法确认命令状态' : undefined
     if (problem || !executor) { publishBackground(conn, { target, outcome: { ok: false, reason: problem ?? '目标不存在' } }); return }
     deliver(executor, command)
   }
@@ -683,10 +428,12 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const selected = conn.selectedSession
     if (conn.link.closed || selected == null ||
       (store.collaboration.collaborationForSession(selected)?.originSessionId ?? selected) !== view.originSession) return false
-    return conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event: {
-      kind: 'collaboration.view', data: view, session: view.originSession,
-      id: 0, turn: null, at: now(),
-    } })
+    return conn.link.send({
+      t: 'ev', gen: conn.target?.gen ?? null, event: {
+        kind: 'collaboration.view', data: view, session: view.originSession,
+        id: 0, turn: null, at: now(),
+      }
+    })
   }
   async function publishCollaboration(conn: ClientConn): Promise<void> {
     if (stopped || storeClosed) return
@@ -707,7 +454,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   async function collaborationCommand(conn: ClientConn, command: CollaborationCommand): Promise<void> {
     const session = conn.selectedSession
     if (session === undefined || session === null) return
-    if (command.type === 'collaboration.read') conn.collaborationMember = command.member
+    if (command.type === 'collaboration.read') connections.selectMember(conn, command.member)
     let submitted = command
     let inputKey: string | undefined
     if (command.type === 'collaboration.input') {
@@ -730,10 +477,12 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     catch (error) {
       if (command.type === 'collaboration.input') {
         if (inputKey !== undefined) collaborationInputs.delete(inputKey)
-        conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event: {
-          kind: 'input.settled', data: { ok: false, ...(command.input.ref === undefined ? {} : { ref: command.input.ref }), reason: String(error) },
-          session, id: store.serviceFor(session).nextId(), at: now(), turn: null,
-        } })
+        conn.link.send({
+          t: 'ev', gen: conn.target?.gen ?? null, event: {
+            kind: 'input.settled', data: { ok: false, ...(command.input.ref === undefined ? {} : { ref: command.input.ref }), reason: String(error) },
+            session, id: store.serviceFor(session).nextId(), at: now(), turn: null,
+          }
+        })
       }
       collaborationEvent(conn, await collaboration.view(session, conn.collaborationMember, String(error)))
     }
@@ -743,16 +492,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const out: RunRow[] = []
     const live = new Set<string>()
 
-    /**
-     * **列表按目录说话**——只对**库里点得出名**的会话发言。
-     *
-     * 挡的是那一格**空壳**：内核为「要点一次会话面的命令」（`session.list`）开的临时会话
-     * （`conversation` 那一处的 `current()`），它还没有任何条目、**目录里也没有它**。
-     * 让它进这张表，用户会在 `/resume` 里看见一条点不出来、也切不过去的行。
-     * 判据就是「库里有没有这一行」（`hasSession`）——与 `magic resume` 那道校验同一把尺子。
-     *
-     * ⚠️ 首条消息一按下回车它就落账 ⇒ 那一格当场归位（不必等下一次推送）。
-     */
     const known = (session: string): boolean =>
       storeClosed ? true : store.hasSession(session)
 
@@ -774,12 +513,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   /** 这一推的定时器——合并窗见 `RUNS_PUSH_MS`。 */
   let pushTimer: ReturnType<typeof setTimeout> | undefined
 
-  /**
-   * **推运行事实**（合并一次）——窗口不必问，事实变了它自己知道。
-   *
-   * ⚠️ **不逐条推**：这一格最热的是流式输出（`tool.output.delta` 一秒几十条），
-   * 逐条推等于把「进度」变成网络噪音。合并窗之内的变化只落最后那一份。
-   */
   function pushRuns(immediate = false): void {
     if (pushTimer !== undefined) {
       if (!immediate) return
@@ -806,14 +539,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   /** 落盘的合并窗定时器——见 `saveRuns`。 */
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
-  /**
-   * **把登记落盘**（`runs.json`）——重启核对的取材。
-   *
-   * 合并写（`RUNS_SAVE_MS`）：一轮里这几格会连着变好几次，而每一次都写一遍盘是白写
-   * （读的人只看最后那一份）。⚠️ **合并窗的大小就是「管理者被杀时会丢多少登记」**，
-   * 故它取的是一个**诊断可以接受**的量级——这份文件不是权威状态，权威是活着的那几个
-   * `Executor`；丢了它顶多是重启后少认出一条「最近一次运行」。
-   */
   function saveRuns(immediate = false): void {
     if (saveTimer !== undefined) {
       if (!immediate) return
@@ -847,7 +572,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   /** 一摊运行的那几件工具——`stop` 与各自的收尾都要它们，故在闭包里立。 */
   const manager: Manager = {
     identity,
-    ready: async () => {},
+    ready: async () => { },
     record,
     socketPath: paths.socket,
     clients: () => clients.size,
@@ -860,12 +585,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     waitUntilExit: () => exited,
   }
 
-  /**
-   * 接进来一条连接——**先当它是客户端，等它那句 `hello` 再定**。
-   *
-   * 执行者与窗口连的是**同一条 socket**：三者之间只有一条本机路径，谁是谁由 `hello`
-   * 说（而不是「谁先连上」「连的是哪条端口」那种要看别处才知道的判据）。
-   */
   function accept(socket: Socket<unknown>): void {
     const link = linkOf<Wire>(socket)
     if (!available) { link.close(); return }
@@ -875,59 +594,46 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     link.onMessage((message) => {
       try {
-      if (message.t === 'hello') {
-        if (greeted) { link.close(); return }
-        greeted = true
-      }
-      if (native.receive(link, message)) return
-      if (message.t === 'hello' && message.role === 'observer') return
-      if (message.t === 'hello') {
-        if (stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); link.close(); return }
-        if (message.protocol !== identity.protocol || message.version !== identity.version || message.source !== identity.source) {
-          link.send({ t: 'line', text: 'App 与终端版本或来源不同，请退出原版后重试' }); link.close(); return
+        if (message.t === 'hello') {
+          if (greeted) { link.close(); return }
+          greeted = true
         }
-        const conn: ClientConn = {
-          id: nextConn,
-          link: link as unknown as Link<ClientToManager>,
-          gen: 0,
-          selectedSession: message.session ?? null,
-          environment: {},
-          readRevision: 0,
-          readingSession: null,
-          cwd: message.cwd,
-          target: undefined,
-          label: message.label,
-          switch: message.switch,
-          allowAll: message.allowAll,
-          awaiting: null,
-          buffered: [],
-        }
-        nextConn += 1
-        client = conn
-
-        // **`magic resume` 那道校验**（U28 · 台账随批小修 8）——库里没有这条就**回绝**，
-        // 不静默开一条空的。由管理者做，因为**只有它手上开着库**（窗口那一侧按设计
-        // 不开库）；报的那句话与今天逐字同形，故「打错一个字母」这条路一处未变。
-        if (message.session !== undefined && (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))) {
-          link.send({
-            t: 'welcome',
-            identity,
-            conn: conn.id,
-            base: options.magic.base,
-            // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
-            mcp: probed,
-            // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
-            runs: [],
-            notices: [],
-            refuse: isArchived(message.session) ? ARCHIVED_NOTE :
-              `没有这条会话：${message.session}——` +
-              `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
+        if (native.receive(link, message)) return
+        if (message.t === 'hello' && message.role === 'observer') return
+        if (message.t === 'hello') {
+          if (stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); link.close(); return }
+          if (message.protocol !== identity.protocol || message.version !== identity.version || message.source !== identity.source) {
+            link.send({ t: 'line', text: 'App 与终端版本或来源不同，请退出原版后重试' }); link.close(); return
+          }
+          const conn = connections.create({
+            link: link as unknown as Link<ClientToManager>,
+            selectedSession: message.session ?? null,
+            cwd: message.cwd,
+            switch: message.switch,
+            allowAll: message.allowAll,
           })
-          link.close()
-          return
-        }
+          client = conn
 
-        clients.set(conn.id, conn)
+          if (message.session !== undefined && (!store.hasSession(message.session) || (isArchived(message.session) && !message.reattach))) {
+            link.send({
+              t: 'welcome',
+              identity,
+              conn: conn.id,
+              base: options.magic.base,
+              // 回绝这一条不必等预检（它连不上就是连不上，与外部工具无关）
+              mcp: probed,
+              // 这一条**不是给窗口的读数**（连接当场就关了）——给一份空的，形态上照旧
+              runs: [],
+              notices: [],
+              refuse: isArchived(message.session) ? ARCHIVED_NOTE :
+                `没有这条会话：${message.session}——` +
+                `magic resume 收的是会话 id（/resume 那张列表里那串）；库里没有它，本次一步都没走`,
+            })
+            link.close()
+            return
+          }
+
+          connections.accept(conn)
 
           link.send({
             t: 'welcome',
@@ -942,29 +648,28 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
           })
           if (message.openRequest !== undefined) native.attached(message.openRequest, message.session ?? null)
 
-        // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
-        if (message.session !== undefined) {
-          if (message.reattach && isArchived(message.session)) {
-            conn.link.send({ t: 'target', gen: null, session: message.session })
-            void catalog(conn).then(() => readHistory(conn, message.session!))
-            native.changed()
-          } else retarget(conn, message.session)
+          // 已在运行则接回；完成的会话只读历史，直到下一次明确输入。
+          if (message.session !== undefined) {
+            if (message.reattach && isArchived(message.session)) {
+              conn.link.send({ t: 'target', gen: null, session: message.session })
+              void catalog(conn).then(() => readHistory(conn, message.session!))
+              native.changed()
+            } else retarget(conn, message.session)
+          }
+          return
         }
-        return
-      }
 
-      if (client !== undefined) {
-        if (stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); return }
-        if (message.t === 'read') { store.attention.markRead(message.ids); native.changed() }
-        if (message.t === 'cmd' && 'gen' in message) {
-          if (message.environment !== undefined) client.environment = Object.freeze({ ...message.environment })
-          onCommand(client, message.gen, message.cmd)
+        if (client !== undefined) {
+          if (stopped) { link.send({ t: 'line', text: 'Magic Code 正在退出' }); return }
+          if (message.t === 'read') { store.attention.markRead(message.ids); native.changed() }
+          if (message.t === 'cmd' && 'gen' in message) {
+            if (message.environment !== undefined) connections.updateEnvironment(client, message.environment)
+            onCommand(client, message.gen, message.cmd)
+          }
+          if (message.t === 'stop') stopRun(client, message.session, message.scope)
+          if (message.t === 'bye') dropClient(client.id)
+          return
         }
-        // **停止**（U50）止于管理者——它不是内核命令，故不转给执行者（见 `wire.ts`）
-        if (message.t === 'stop') stopRun(client, message.session, message.scope)
-        if (message.t === 'bye') dropClient(client.id)
-        return
-      }
 
       } catch (error) {
         link.send({ t: 'line', text: `操作未完成：${String(error)}` })
@@ -974,26 +679,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     link.onClose(() => { if (client !== undefined) dropClient(client.id) })
   }
 
-
-  function dropClient(id: number): void {
-    const conn = clients.get(id)
-    if (conn === undefined) return
-    clients.delete(id)
-    conn.target?.watchers.delete(id)
-    conn.awaiting = null
-    conn.buffered = []
-    conn.link.close()
-    native.changed()
-    // 最后一个看客走了——**不是「停」**：执行者照跑。收不收它归收缩那条路：
-    // 它自己按「没有连接者 ＋ 没有在途调用或待答项」判（见 `executor.ts` 的收缩那一跳）。
-    options.log?.(`窗口 ${id} 断开（挂着的客户端 ${clients.size}）`)
-  }
-
-  // —— 通知：三类转换（U50）——
-
-  /**
-   * **留着的那些「刚刚发生的事」**——开头先读盘上那一份（上一次管理者离开时留下的未读）。
-   */
   const stopReports = new Map<number, (phase: StopPhase, note?: string) => void>()
   let nextStopRequest = -1
   let nextStopGeneration = 1
@@ -1028,21 +713,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     collaborationStopVersions.set(work.collaborationId, { signature, gen })
     return gen
   }
-  const executorSettings = new Map<Executor, readonly McpCatalogRow[]>()
-  const settingsReplies = new Map<string, { executor: Executor; resolve: (note: string) => void; reject: (error: Error) => void }>()
-  function settingsToExecutor(executor: Executor, server?: string, inspect = false, diagnostics?: Diagnostics): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const request = crypto.randomUUID()
-      const timeout = setTimeout(() => { settingsReplies.delete(request); reject(new Error('执行者未确认设置受理，请重新读取当前事实')) }, diagnostics ? 5_000 : 30_000)
-      settingsReplies.set(request, { executor, resolve: note => { clearTimeout(timeout); resolve(note) }, reject: error => { clearTimeout(timeout); reject(error) } })
-      send(executor, diagnostics ? { t: 'diagnostics.sync', request, value: diagnostics } : inspect ? { t: 'settings.inspect', request } : server === undefined ? { t: 'settings.sync', request } : { t: 'settings.reconnect', request, server })
-    })
-  }
   function publishPreferences(except?: ClientConn): void {
     const config = loadConfig({ magic: options.magic }).config
-    for (const conn of clients.values()) if (conn !== except) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
-      ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
-    } } })
+    for (const conn of clients.values()) if (conn !== except) conn.link.send({
+      t: 'ev', gen: null, event: {
+        id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
+          ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }), turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
+        }
+      }
+    })
   }
   /** 连接真源仍是 clients；执行者结束不影响正在查看该会话的终端。 */
   function terminalClients(session: string): ClientConn[] {
@@ -1096,7 +775,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       candidates: snapshot.sessions, terminalOpen: session => terminalClients(session).length > 0, canArchive,
     })
     const affected = await (options.lifecycle?.affected() ?? Promise.resolve([]))
-    return [...mergeCollaborationNative(works, snapshot).map(work => ({ ...work,
+    return [...mergeCollaborationNative(works, snapshot).map(work => ({
+      ...work,
       archived: isArchived(work.session), canArchive: canArchive(work.session), terminalOpen: terminalClients(work.session).length > 0,
       gen: generations.get(work.session) ?? null,
     })).filter(work => !work.archived && (work.affected || work.terminalOpen || work.currentNotice?.unread)), ...affected]
@@ -1119,7 +799,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         ...(run?.reason === undefined ? {} : { reason: run.reason }),
       }
     })
-    const states = new Map(mergeCollaborationNative(raw, snapshot).map(w => [w.session,w]))
+    const states = new Map(mergeCollaborationNative(raw, snapshot).map(w => [w.session, w]))
     const attention = new Set(query.archived ? [] : catalog.filter(session => states.get(session.id)?.affected || terminalClients(session.id).length > 0 || reconcileNotice(session.id)?.unread).map(session => session.id))
     return catalog.filter(s => workRoot(s.id) === s.id && (!query.search || (s.title ?? '').toLocaleLowerCase().includes(query.search.toLocaleLowerCase()))).map(s => {
       const work = states.get(s.id)!
@@ -1132,18 +812,18 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   const runtime = {
     read: async () => {
       const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
-      await Promise.all(current.map(executor => settingsToExecutor(executor, undefined, true)))
+      await Promise.all(current.map(executor => control.settings(executor, undefined, true)))
       return {
         canChangeData: !(await nativeWorks()).some(work => work.affected) && executors.size === 0,
         mcp: current.flatMap(executor => executor.run.session === null ? [] : [{
-          session: executor.run.session, gen: workStopGeneration(executor.run.session), servers: executorSettings.get(executor) ?? [],
+          session: executor.run.session, gen: workStopGeneration(executor.run.session), servers: control.servers(executor) ?? [],
         }]),
       }
     },
     reconnect: async (session: string, gen: number, name: string) => {
       const executor = liveOf(session)
       if (executor === undefined || workStopGeneration(session) !== gen || executor.run.stopping) throw new Error('该工作已结束或换代，未重连')
-      return settingsToExecutor(executor, name)
+      return control.settings(executor, name)
     },
   }
   let configuration: { stamp: string | null; error?: string } = { stamp: null }
@@ -1206,8 +886,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     diagnosticLog.setLevel(diagnostics.logLevel)
     const current = [...executors].filter(executor => !executor.exited && !executor.run.stopping)
     await Promise.all(current.map(async executor => {
-      await settingsToExecutor(executor, undefined, false, diagnostics)
-      await settingsToExecutor(executor)
+      await control.settings(executor, undefined, false, diagnostics)
+      await control.settings(executor)
     }))
     publishPreferences()
     configuration = { stamp: loaded.stamp ?? null }
@@ -1266,7 +946,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
   /** 等待者绑定具体执行者代次，旧代异步核销不能兑现同会话的后继代。 */
   const settledRuns = new WeakSet<RunRecord>()
-  const stopWaiters = new Map<RunRecord, { readonly conns: Set<number>; readonly scope: StopScope }>()
 
   /** 回一句「停到哪一拍」——按会话 ＋ 范围，话由外壳按它自己的目录拼（见 `wire.ts`）。 */
   function reportStop(
@@ -1287,57 +966,22 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   }
 
   /** 核销之后回「已完成」——**这一拍才算「已停」**（设计：「资源确认退出后才报已停止」）。 */
-  function settleStop(run: RunRecord, note = run.reclaimNote): void {
-    if (note === undefined && run.ended !== undefined && !run.reclaimPending && run.reclaimNote === undefined &&
-      run.session !== null && run.executionId !== undefined && !storeClosed && !settledRuns.has(run)) {
-      void collaboration.executorExited(run.session, run.executionId, run.ended.why,
-        run.ended.kind === 'crashed' && lastRuns.get(run.session) === run && liveOf(run.session) === undefined).catch(error => options.log?.(`中断回报尚未核实：${String(error)}`))
-      settledRuns.add(run)
-    }
-    const waiting = stopWaiters.get(run)
-    if (waiting === undefined || run.session === null) return
-    stopWaiters.delete(run)
-    for (const id of waiting.conns) reportStop(id, run.session, waiting.scope, note === undefined ? 'done' : 'unconfirmed', note)
-  }
+  const runStops = createRunStops({
+    now, liveOf, lastRuns, stopGraceMs, stopKillMs, deliver,
+    reportStop,
+    changed: (immediate = false) => { saveRuns(immediate); pushRuns() },
+    log: options.log,
+    onSettled(run, note) {
+      if (note === undefined && run.ended !== undefined && !run.reclaimPending && run.reclaimNote === undefined &&
+        run.session !== null && run.executionId !== undefined && !storeClosed && !settledRuns.has(run)) {
+        void collaboration.executorExited(run.session, run.executionId, run.ended.why,
+          run.ended.kind === 'crashed' && lastRuns.get(run.session) === run && liveOf(run.session) === undefined).catch(error => options.log?.(`中断回报尚未核实：${String(error)}`))
+        settledRuns.add(run)
+      }
+    },
+  })
+  const { stopExecution, settleStop, reclaimStale, reclaimRun, escalateStop } = runStops
 
-  /** 记下「这个窗口在等这一代执行者的停止结果」。 */
-  function awaitStop(conn: Pick<ClientConn, 'id'>, run: RunRecord, scope: StopScope): void {
-    const waiting = stopWaiters.get(run) ?? { conns: new Set<number>(), scope }
-    waiting.conns.add(conn.id)
-    stopWaiters.set(run, waiting)
-  }
-
-  /**
-   * **停止**（U50）——把「整体 / 局部」那个意图映射成要动的那几条运行，再动手。
-   *
-   * 设计：
-   *
-   * > 会话/成员详情选择停止 ｜ 按明确选择的**整体或局部**范围编排，再对具体 Run 取消
-   * > 模型/工具并收尾；**资源确认退出后**才报已停止，**不把局部成功显示为整体成功**。
-   * >
-   * > 运行层执行具体 Run 的中断与自有工具资源回收；**应用层**……将整体/局部意图映射为
-   * > 正确范围，**不能只中断入口就声称整体已停**。
-   *
-   * ## 范围是怎么映射的
-   *
-   * 两档各映射成「要动的那一组」——**这一处是唯一的映射点**（将来协作的成员范围也加在
-   * 这里，不在 UI、不在内核）：
-   *
-   * | 那一档 | 映射出来的范围 | 动手 |
-   * | --- | --- | --- |
-   * | `turn`（局部） | 这条会话**活着的那一代** | 送一句 `turn.interrupt`——**只收这一轮** |
-   * | `run`（整体） | 活着的那一代 ＋ **没证实结束的那一份记录** | 取消在途 → 收尾 → 核销 → 收回自有进程组 |
-   *
-   * 「整体」那一档把**失联那一份**也算进范围（`lastRuns` 里 `ended` 还没写的那一条）：
-   * 它可能还站着（控制连接断了而进程没死）——那正是「**收回独占权**」要处置的那一格。
-   * 只中断入口那一轮**不算整体已停**：那一档的完成判据是范围内**每一条都核销**。
-   *
-   * ## 三件不许
-   *
-   * - **不报错**：重复停止**安全受理**（已在停 / 早停了，各回一句实话，不是失败）；
-   * - **不误杀**：失联那一代先核对身份（号 ＋ 启动时刻）——**证明不了归属的一个信号都不发**；
-   * - **不冒充**：没证实停掉的说 `unconfirmed`，**不把局部成功显示为整体成功**。
-   */
   function stopRun(conn: Pick<ClientConn, 'id'>, session: string, scope: StopScope): void {
     const work = store.collaboration.collaborationForSession(session)
     if (work !== undefined) {
@@ -1358,184 +1002,51 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     stopExecution(conn, session, scope)
   }
 
-  function stopExecution(conn: Pick<ClientConn, 'id'>, session: string, scope: StopScope): void {
-    const live = liveOf(session)
-    const stale = lastRuns.get(session)
-
-    if (scope === 'turn') {
-      if (live === undefined) {
-        reportStop(
-          conn.id,
-          session,
-          scope,
-          'unconfirmed',
-          '它这会儿没有活着的一代在跑——没有可以中断的那一轮',
-        )
-        return
-      }
-
-      deliver(live, { type: 'turn.interrupt' })
-      // **局部到此为止**：不置 `stopping`、不送 `bye`、不报已停——「那条运行还在」是这一档
-      // 的全部语义（设计：「**不能把局部成功显示为整体成功**」）
-      reportStop(conn.id, session, scope, 'done', '只停了这一轮，那条运行还在（可以接着用）')
-      return
-    }
-
-    // —— 整体：这条运行的全部资源 ＋ 它自己 ——
-
-    if (live !== undefined) {
-      // **受理**（重复停止照收）——「停止中」那一行的事实依据就在这一格
-      const again = live.run.stopping
-      live.run.stopping = true
-      refresh(live.run, now())
-      saveRuns()
-      pushRuns()
-
-      awaitStop(conn, live.run, scope)
-      reportStop(conn.id, session, scope, 'accepted', again ? '它已经在停了——这一下照旧受理' : undefined)
-
-      // ① 先取消在途的模型 / 工具（设计：「对具体 Run **取消模型/工具**并收尾」）
-      deliver(live, { type: 'turn.interrupt' })
-      // ② 再叫它收尾（`bye`＝执行者那条「把资源退干净再走」的路）
-      send(live, { t: 'bye', why: '收到停止' })
-      // ③ 同时回收该代资源，并有界等待异步实例关闭确认。
-      void escalateStop(live)
-      return
-    }
-
-    // **没有活着的一代**——那要看盘上那份记录：
-    if (stale?.ended !== undefined && (stale.reclaimPending || stale.reclaimNote !== undefined)) {
-      awaitStop(conn, stale, scope)
-      reportStop(conn.id, session, scope, 'accepted', '正在核对剩余资源')
-      void reclaimRun(stale).then((note) => settleStop(stale, note))
-      return
-    }
-    if (stale === undefined || stale.ended !== undefined) {
-      // 早就没了（或它压根没跑过）：**重复停止安全受理**，如实说一句就是
-      reportStop(
-        conn.id,
-        session,
-        scope,
-        'done',
-        stale === undefined ? '它这会儿没有在跑的运行' : `它早就停了（${stopReasonOf(stale) ?? '已停止'}）`,
-      )
-      return
-    }
-
-    // **没证实结束的那一份**（失联 / 正在收尾）：照登记收回——**先核对身份，再动手**
-    awaitStop(conn, stale, scope)
-    reportStop(conn.id, session, scope, 'accepted', '它这会儿联系不上——照登记收回它')
-    void reclaimStale(session, stale)
-  }
-
-  /**
-   * **收回一份失联的运行**（U50）——「管理者收回独占权与已登记自有进程组」的那条路。
-   *
-   * 次序两跳，都在**证明归属之后**：
-   * 1. 那个执行者进程自己（号 ＋ 启动时刻对得上才 TERM → 等 → KILL → 等退出）；
-   * 2. 它登记过的自有进程组（`reclaimRun`）。
-   *
-   * 证实不了（号已经被别人用了 / 领头那个不在了）就**一个信号都不发**，回一句 `unconfirmed`
-   * ——「不误杀」比「这一次停成」重要（设计：「拿不准的不编」，且非 Magic 创建的进程不被
-   * 停止动作误杀）。
-   */
-  async function reclaimStale(_session: string, record: RunRecord): Promise<void> {
-    record.ended = { at: now(), why: '停止：照登记收回（它当时已经联系不上）', kind: 'crashed' }
-    record.stopping = false
-    record.reclaimPending = record.owned.length > 0
-    refresh(record, now())
-
-    const note = record.owned.length > 0 ? await reclaimRun(record) : undefined
-    saveRuns()
-    pushRuns()
-    settleStop(record, note)
-  }
-
-  const stoppingTasks = new WeakMap<Executor, Promise<void>>()
-
-  /** Agent 在共享 Engine 内：只回收目标代登记资源，等待该实例关闭确认。 */
-  function escalateStop(executor: Executor): Promise<void> {
-    const existing = stoppingTasks.get(executor)
-    if (existing !== undefined) return existing
-    const closingStarts = executor.ledger.close?.()
-    executor.spawned.cancel()
-    const pending = (async () => {
-      let note: string | undefined
-      try {
-        await reclaimRun(executor.run)
-        await closingStarts
-        note = await reclaimRun(executor.run)
-      } catch (error) { note = String(error) }
-      const deadline = Date.now() + stopGraceMs + 2 * stopKillMs
-      while (!executor.exited && executor.run.ended === undefined && Date.now() < deadline) await Bun.sleep(25)
-      if (!executor.exited && executor.run.ended === undefined) {
-        note ??= '执行实例关闭尚未确认，未终止共享 Engine'
-        executor.run.reclaimPending = true
-        executor.run.reclaimNote = note
-        refresh(executor.run, now())
-        saveRuns(true)
-        pushRuns()
-        settleStop(executor.run, note)
-      }
-    })().finally(() => stoppingTasks.delete(executor))
-    stoppingTasks.set(executor, pending)
-    return pending
-  }
-
   // —— 命令：路由 ——
 
-  /**
-   * 一条命令——**先验代次，再路由**。
-   *
-   * 验代次这一条（设计 · 状态可信度、独占与重新连接 ①：「**过期连接携带旧代次的命令
-   * 一律拒绝**，不能让旧窗口误操作新运行」）落在这里：
-   *
-   * - 带了号 ⇒ 它必须**就是**当下那个目标的号（不是「曾经是」——目标一换，旧号当场作废）；
-   * - 没带号 ⇒ 只收「还没有目标」的那些窗口说的（它还没被指派过，谈不上过期）。
-   *
-   * 拒绝是**有回声**的（一句 `line`）：静默丢弃会让窗口对着一个不动的屏发呆，
-   * 而「我这条为什么不生效」正是那一刻唯一要答的问题。
-   */
   async function catalog(conn: ClientConn, archived = false): Promise<void> {
     try {
-    const sessions = await nativeSessions({ archived })
-    if (conn.link.closed) return
-    conn.link.send({ t: 'ev', gen: null, event: {
-      id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.state',
-      data: { active: conn.selectedSession ?? '', sessions },
-    } })
-    if (conn.selectedSession !== null) { const session = conn.selectedSession; conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data: { session: workRoot(session), archived: isArchived(session), canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0 } } }) }
-    if (conn.selectedSession !== null) conn.link.send({t:'ev',gen:null,event:{id:0,turn:null,at:now(),session:conn.selectedSession,kind:'input.pending',data:{inputs:store.serviceFor(conn.selectedSession).inputs.list()}}})
+      const sessions = await nativeSessions({ archived })
+      if (conn.link.closed) return
+      conn.link.send({
+        t: 'ev', gen: null, event: {
+          id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'session.state',
+          data: { active: conn.selectedSession ?? '', sessions },
+        }
+      })
+      if (conn.selectedSession !== null) { const session = conn.selectedSession; conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.changed', data: { session: workRoot(session), archived: isArchived(session), canArchive: canArchive(session), terminalOpen: terminalClients(session).length > 0 } } }) }
+      if (conn.selectedSession !== null) conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession, kind: 'input.pending', data: { inputs: store.serviceFor(conn.selectedSession).inputs.list() } } })
     } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session: conn.selectedSession ?? '', kind: 'session.state', data: { active: conn.selectedSession ?? '', sessions: [], note: '无法读取会话目录' } } }) }
   }
 
   async function readHistory(conn: ClientConn, session: string): Promise<void> {
     if (!store.hasSession(session)) { conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '会话已不可达' } } }); return }
-    if (conn.readingSession === session) return
-    conn.readingSession = session
-    const revision = ++conn.readRevision
+    const revision = connections.beginHistory(conn, session)
+    if (revision === undefined) return
     try {
-    let entries: Entry[] = []
-    const inputs: Extract<KernelEvent,{kind:'input.local'}>[] = []
-    const timing: TurnTimingEvent[] = []
-    for await (const event of store.serviceFor(session).readEvents(session)) {
-      if(event.kind==='input.local') inputs.push(event)
-      if(isTurnTimingEvent(event)) timing.push(event)
-    }
-    const send = (done: boolean): void => {
-      conn.link.send({ t: 'ev', gen: null, event: {
-        id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done?{inputs,timing}:{}) },
-      } })
-      entries = []
-    }
-    for await (const entry of readSessionDisplayHistory(store,session)) {
-      if (conn.link.closed || revision !== conn.readRevision) return
-      entries.push(entry)
-      if (entries.length === 50) send(false)
-    }
-    if (!conn.link.closed && revision === conn.readRevision) send(true)
+      let entries: Entry[] = []
+      const inputs: Extract<KernelEvent, { kind: 'input.local' }>[] = []
+      const timing: TurnTimingEvent[] = []
+      for await (const event of store.serviceFor(session).readEvents(session)) {
+        if (event.kind === 'input.local') inputs.push(event)
+        if (isTurnTimingEvent(event)) timing.push(event)
+      }
+      const send = (done: boolean): void => {
+        conn.link.send({
+          t: 'ev', gen: null, event: {
+            id: 0, turn: null, at: now(), session, kind: 'session.history', data: { session, entries, done, ...(done ? { inputs, timing } : {}) },
+          }
+        })
+        entries = []
+      }
+      for await (const entry of readSessionDisplayHistory(store, session)) {
+        if (!connections.historyCurrent(conn, revision)) return
+        entries.push(entry)
+        if (entries.length === 50) send(false)
+      }
+      if (connections.historyCurrent(conn, revision)) send(true)
     } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '无法读取会话记录' } } }) }
-    finally { if (conn.readRevision === revision) conn.readingSession = null }
+    finally { connections.finishHistory(conn, revision) }
   }
 
   async function onCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
@@ -1548,9 +1059,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return
     }
     const root = session !== null && execution ? workRoot(session) : undefined
-    if (root !== undefined) admissions.set(root, (admissions.get(root) ?? 0) + 1)
+    const release = root === undefined ? undefined : sessions.admit(root)
     try { await acceptCommand(conn, gen, command) }
-    finally { if (root !== undefined) { const count = (admissions.get(root) ?? 1) - 1; if (count === 0) admissions.delete(root); else admissions.set(root,count) } }
+    finally { release?.() }
   }
   async function acceptCommand(conn: ClientConn, gen: number | null, command: Command): Promise<void> {
     if (command.type === 'background.list' || command.type === 'background.stop') { backgroundCommand(conn, command); return }
@@ -1573,11 +1084,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         if (outcome.ok) publishPreferences(conn)
         const config = outcome.ok ? loadConfig({ magic: options.magic }).config : loaded.config
         const changed = [command.statusLine === undefined ? '' : '状态行', command.reducedMotion === undefined ? '' : '动效', command.turnDuration === undefined ? '' : '本轮耗时'].filter(Boolean).join(' · ')
-        conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
-          ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }),
-          turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
-          note: outcome.ok ? `已更新：${changed}` : `${changed}没改成——${outcome.reason}`,
-        } } })
+        conn.link.send({
+          t: 'ev', gen: null, event: {
+            id: 0, turn: null, at: now(), session: conn.selectedSession ?? '', kind: 'prefs.state', data: {
+              ...(config.statusLine === undefined ? {} : { statusLine: config.statusLine }),
+              turnDuration: config.turnDuration ?? 'elapsed', reducedMotion: config.motion?.reduced === true,
+              note: outcome.ok ? `已更新：${changed}` : `${changed}没改成——${outcome.reason}`,
+            }
+          }
+        })
       } catch (error) { conn.link.send({ t: 'line', text: `界面设置没改成：${error instanceof Error ? error.message : String(error)}` }) }
       return
     }
@@ -1605,7 +1120,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       }
     }
 
-
     if (gen !== null && (conn.target === undefined || gen !== conn.target.gen)) {
       conn.link.send({
         t: 'line',
@@ -1617,13 +1131,13 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return
     }
 
-    const localInput=command.type==='input.submit'&&command.local===true?command:command.type==='collaboration.input'&&command.input.local===true?command.input:undefined
-    if(localInput!==undefined){
-      const origin=conn.selectedSession
-      const work=origin===null?undefined:store.collaboration.collaborationForSession(origin)
-      const member=command.type==='collaboration.input'?command.member:undefined
-      const session=member===undefined?origin:work===undefined?undefined:store.collaboration.listMembers(work.collaborationId).find(one=>one.agentId===member)?.sessionId
-      if(session!=null){const records=store.serviceFor(session);records.appendEvent({session,id:records.nextId(),turn:null,at:now(),kind:'input.local',data:{text:localInput.text,refs:localInput.refs??[],ref:localInput.ref??crypto.randomUUID()}})}
+    const localInput = command.type === 'input.submit' && command.local === true ? command : command.type === 'collaboration.input' && command.input.local === true ? command.input : undefined
+    if (localInput !== undefined) {
+      const origin = conn.selectedSession
+      const work = origin === null ? undefined : store.collaboration.collaborationForSession(origin)
+      const member = command.type === 'collaboration.input' ? command.member : undefined
+      const session = member === undefined ? origin : work === undefined ? undefined : store.collaboration.listMembers(work.collaborationId).find(one => one.agentId === member)?.sessionId
+      if (session != null) { const records = store.serviceFor(session); records.appendEvent({ session, id: records.nextId(), turn: null, at: now(), kind: 'input.local', data: { text: localInput.text, refs: localInput.refs ?? [], ref: localInput.ref ?? crypto.randomUUID() } }) }
       return
     }
 
@@ -1632,34 +1146,34 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       await collaborationCommand(conn, command as CollaborationCommand)
       return
     }
-    if (command.type === 'session.new') conn.collaborationMember = undefined
+    if (command.type === 'session.new') connections.selectMember(conn, undefined)
 
     if (command.type === 'input.manage') {
-      const origin=conn.selectedSession
-      const work=origin===null?undefined:store.collaboration.collaborationForSession(origin)
-      const member=command.member===undefined?undefined:work===undefined?undefined:store.collaboration.listMembers(work.collaborationId).find(one=>one.agentId===command.member)
-      const session=command.member===undefined?origin:member?.sessionId
-      if(session==null){conn.link.send({t:'line',text:'当前输入目标不存在，未修改'});return}
-      if(member?.purpose==='consultation' && command.action!=='list'){conn.link.send({t:'line',text:'咨询详情只供查看；相关纠正请补充给原工作'});return}
-      const inputs=store.serviceFor(session).inputs
-      let note:string|undefined
-      if(command.action==='edit')note=inputs.edit(command.ref,command.revision,command.input)?'已保存未消费输入':'输入已消费或已改变，未修改'
-      if(command.action==='withdraw')note=inputs.withdraw(command.ref,command.revision)?'已撤回未消费输入':'输入已消费或已改变，未撤回'
-      if(command.action==='continue'){
-        const row=inputs.get(command.ref)
-        if(row?.state!=='pending'||row.revision!==command.revision)note='输入已消费或已改变，未继续'
-        else if(work?.state==='stopped')note='这份工作已停止，请先明确继续工作'
+      const origin = conn.selectedSession
+      const work = origin === null ? undefined : store.collaboration.collaborationForSession(origin)
+      const member = command.member === undefined ? undefined : work === undefined ? undefined : store.collaboration.listMembers(work.collaborationId).find(one => one.agentId === command.member)
+      const session = command.member === undefined ? origin : member?.sessionId
+      if (session == null) { conn.link.send({ t: 'line', text: '当前输入目标不存在，未修改' }); return }
+      if (member?.purpose === 'consultation' && command.action !== 'list') { conn.link.send({ t: 'line', text: '咨询详情只供查看；相关纠正请补充给原工作' }); return }
+      const inputs = store.serviceFor(session).inputs
+      let note: string | undefined
+      if (command.action === 'edit') note = inputs.edit(command.ref, command.revision, command.input) ? '已保存未消费输入' : '输入已消费或已改变，未修改'
+      if (command.action === 'withdraw') note = inputs.withdraw(command.ref, command.revision) ? '已撤回未消费输入' : '输入已消费或已改变，未撤回'
+      if (command.action === 'continue') {
+        const row = inputs.get(command.ref)
+        if (row?.state !== 'pending' || row.revision !== command.revision) note = '输入已消费或已改变，未继续'
+        else if (work?.state === 'stopped') note = '这份工作已停止，请先明确继续工作'
         else {
-          const executor=liveOf(session)??spawn({session,explicit:true,cwd:member?.workspace[0]??conn.cwd,environment:conn.environment})
-          if(executor===undefined)note='当前执行者不可用，输入保留'
+          const executor = liveOf(session) ?? spawn({ session, explicit: true, cwd: member?.workspace[0] ?? conn.cwd, environment: conn.environment })
+          if (executor === undefined) note = '当前执行者不可用，输入保留'
           else {
             if (member === undefined) bind(conn, executor)
-            else collaborationInputs.set(row.ref, {conn, session:origin!, target:session, ref:row.ref})
-            deliver(executor,command)
+            else collaborationInputs.set(row.ref, { conn, session: origin!, target: session, ref: row.ref })
+            deliver(executor, command)
           }
         }
       }
-      conn.link.send({t:'ev',gen:null,event:{id:0,turn:null,at:now(),session,kind:'input.pending',data:{inputs:inputs.list(),...(note===undefined?{}:{note})}}})
+      conn.link.send({ t: 'ev', gen: null, event: { id: 0, turn: null, at: now(), session, kind: 'input.pending', data: { inputs: inputs.list(), ...(note === undefined ? {} : { note }) } } })
       return
     }
     if (activeCollaboration !== undefined && command.type === 'input.submit') {
@@ -1675,41 +1189,30 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     // 再按发起终端的环境建立下一代。后台工具、队列及协作责任仍沿用原环境。
     const previous = conn.target
     if (command.type === 'input.submit' && previous?.run.session != null && activeCollaboration === undefined &&
-        previous.run.lastTurn !== undefined && !previous.run.busy && !previous.run.turnActive &&
-        backgroundOf(previous.run) === 0 && previous.run.decisions.size === 0 &&
-        !store.serviceFor(previous.run.session).inputs.list().some(input => input.state === 'pending')) {
+      previous.run.lastTurn !== undefined && !previous.run.busy && !previous.run.turnActive &&
+      backgroundOf(previous.run) === 0 && previous.run.decisions.size === 0 &&
+      !store.serviceFor(previous.run.session).inputs.list().some(input => input.state === 'pending')) {
       const selected = conn.selectedSession
       // 该输入由管理者等待接续，不属于旧 Agent；旧实例释放不能给它发送拒收回执。
-      previous.watchers.delete(conn.id)
-      conn.target = undefined
-      conn.awaiting = null
-      conn.buffered = []
+      connections.unbind(conn)
       const closed = new Promise<boolean>(resolve => {
         const timer = setTimeout(() => resolve(false), 15000)
         previous.spawned.onExit(() => { clearTimeout(timer); resolve(true) })
       })
       send(previous, { t: 'bye', why: '已完成工作，释放旧环境后继续' })
       if (!await closed || stopped || conn.selectedSession !== selected) {
-        conn.link.send({ t: 'ev', gen: null, event: { id: 0, session: selected ?? '', turn: null, at: now(),
-          kind: 'input.settled', data: { ok: false, ref: command.ref, reason: '旧工作收尾未确认或入口已改变，未受理新输入' } } })
+        conn.link.send({
+          t: 'ev', gen: null, event: {
+            id: 0, session: selected ?? '', turn: null, at: now(),
+            kind: 'input.settled', data: { ok: false, ref: command.ref, reason: '旧工作收尾未确认或入口已改变，未受理新输入' }
+          }
+        })
         return
       }
       await onCommand(conn, null, command)
       return
     }
 
-    /**
-     * **裁决答复**那一跳（U49 · 设计 ⑥）——「审批只有一份，第一条有效答复落账后其它窗口
-     * 即时移除；**晚到答复明确已处理**」。
-     *
-     * 「不再次执行工具」那一半是**内核**保的（`gate.resolve` 对陌生 id 直接忽略：
-     * 迟到 / 重复 / 伪造都进不去）。管理者这一跳补的是**那一句话**——晚到的那个窗口
-     * 按了半天没反应，得有人告诉它「这一件已经处理过了」。
-     *
-     * ⚠️ **只在「我们知道它已经答复过」时拦下**：知道才拦，不知道就照原样转过去让内核
-     * 判。反过来（没听说过的就丢掉）会把一条**合法**的答复吞了——那样这一轮就永远卡在
-     * 等答复上，而卡住的那一头没有任何人看得见。
-     */
     if (command.type === 'decision.answer' && conn.target !== undefined) {
       const run = conn.target.run
       if (!run.decisions.has(command.id) && run.resolvedDecisions.has(command.id)) {
@@ -1725,10 +1228,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     // **换目标的只有这两条**（见文件头注）
     if (command.type === 'session.open' || command.type === 'session.new') {
-      // **忙时不动目标**——原样转给当下那一代，由**内核**自己回话
-      // （`BUSY_NOTE`：「正在跑一轮——先 Ctrl+C 中断，再切会话」）。
-      // 这条不让管理者替它换目标，是因为「忙时挡回」是**内核的口径**：拦在这里另起一代，
-      // 就成了「明明在跑，按一下却什么也没发生就换了会话」——那一句该说的话没了。
       if (conn.target !== undefined && conn.target.run.busy) {
         deliver(conn.target, command)
         return
@@ -1740,36 +1239,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       }
 
       // 新对话只是清空连接目标；首条明确输入才启动执行者并创建持久会话。
-      conn.target?.watchers.delete(conn.id)
-      conn.target = undefined
-      conn.selectedSession = null
-      native.changed()
-      conn.gen = 0
-      conn.awaiting = null
-      conn.buffered = []
-      conn.readRevision += 1
-      conn.readingSession = null
-      conn.link.send({ t: 'target', gen: null, session: null })
+      connections.selectSession(conn, null)
       void catalog(conn)
       return
     }
 
-    /**
-     * **没有目标、而这个窗口认着一条会话**（U100）——**接着那一条往下走**，不是开一条新的。
-     *
-     * 这一形就是「刚整体停完」：`retire` 把 `target` 清了（「断的是执行者，不是界面」），
-     * 而那条会话还在库里、`selectedSession` 也还记着。此刻用户敲的字是**那条会话的下一轮**
-     * ——设计那句「已停止 · 手动中断 ⇒ 看停点、检查未知效果、**明确继续**」说的正是它。
-     *
-     * 走的是与 `session.open` **同一条路**（`retarget` 的 open 那一支）：那条路自己会判
-     * 「上一次那一代还没证实结束 ⇒ 拒绝，不重复启动同会话」，也会把命令交给（或起）那一条
-     * 会话的那一代。**不另写一条「重新定位」的通路**——两处各写一遍，判据迟早分家。
-     */
     if (conn.target === undefined && conn.selectedSession !== null) {
       // **用户明确继续 ⇒ 建立下一次运行**（同上面那句设计原文）——走到这一支的就是**一条真交代**：
       // 观察类命令在上面 `history.read` / `session.list` 那两处已经返回，到不了这儿。
       const session = conn.selectedSession
-      // **上一次那一代还没证实结束**（U49）——「失联……不能重复启动同会话」，如实拒绝。
       const held = lastRuns.get(session)
       if (held !== undefined && held.ended === undefined) {
         conn.link.send({
@@ -1815,7 +1293,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
   /** 接回已有会话；查看历史不触发执行，明确输入才启动下一代。 */
   function retarget(conn: ClientConn, session: string): void {
     if (isArchived(session)) { conn.link.send({ t: 'line', text: ARCHIVED_NOTE }); return }
-    const current = conn.target
     if (!store.hasSession(session)) {
       conn.link.send({ t: 'line', text: '该会话已不可达，未切换当前工作。' })
       return
@@ -1827,74 +1304,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       return
     }
 
-    // **查看不触发重新执行**（设计 · 会话与运行管理：「选择已经停止的会话：先看历史和
-    // 停点，**查看不触发重新执行**；用户明确继续才建立下一次运行」）——`session.open` 到
-    // 这一支只把那一页接上来看：置空目标、报同 gen 的 null、读目录与历史。
-    // **起一代留给真交代那一路**（`onCommand` 里「没有目标而认着一条会话」那一支）。
-    current?.watchers.delete(conn.id)
-    conn.target = undefined
-    conn.selectedSession = session
-    native.changed()
-    conn.gen = 0
-    conn.awaiting = null
-    conn.buffered = []
-    conn.link.send({ t: 'target', gen: null, session })
+    connections.selectSession(conn, session)
     void catalog(conn).then(() => readHistory(conn, session)).then(() => publishCollaboration(conn))
-  }
-
-  /**
-   * 把窗口挂到某一代上——**换看客**是这一处的全部动作（旧的那一代照跑）。
-   *
-   * U49 在这一跳上加了**接回**那一手（设计 · 状态可信度、独占与重新连接 ③）：
-   *
-   * > 重连获取同一代次的「快照＋事件水位」，随后续接水位后的消息；**先订阅并缓冲**，
-   * > 或提供原子订阅快照，避免快照与订阅之间丢事件。
-   *
-   * 走的是前者：**挂上去的同一刻**就把这个窗口记进 `watchers`（于是事件开始往它的
-   * 缓冲里落），再向执行者要一份快照；快照回来（带水位）之后**先放快照、再放缓冲里
-   * 水位之后的那几条**。订阅因此不晚于快照，而快照里的东西一定不重复。
-   */
-  function bind(conn: ClientConn, executor: Executor): void {
-    const from = conn.target
-    from?.watchers.delete(conn.id)
-
-    conn.target = executor
-    executor.watchers.add(conn.id)
-    conn.gen = executor.gen
-    // **这个窗口认的是哪条会话**（U100）——那一代还没开张时为 `null`（开张之后由 `onEvent`
-    // 那一跳补记）。⚠️ 它**不随 `retire` 清**：清了就等于「停掉＝丢掉这条会话」
-    // （见 `ClientConn` 那一格）。
-    conn.selectedSession = executor.run.session
-    native.changed()
-
-    conn.link.send({ t: 'target', gen: executor.gen, session: executor.run.session })
-
-    // **先订阅并缓冲**——这一格就是那道缝的补丁（见本函数的注）
-    conn.awaiting = 0
-    conn.buffered = []
-    askSnapshot(executor, conn)
-
-  }
-
-  /** 同一代认领真实会话后同步窗口目标；不重新绑定或重置快照水位。 */
-  function syncTarget(executor: Executor): void {
-    const session = executor.run.session
-    for (const id of executor.watchers) {
-      const conn = clients.get(id)
-      if (conn === undefined || conn.selectedSession === session) continue
-      conn.selectedSession = session
-      native.changed()
-      conn.link.send({ t: 'target', gen: executor.gen, session })
-    }
-  }
-
-  /** 向某一代要一份快照，回来的那一份给这个窗口。 */
-  function askSnapshot(executor: Executor, conn: ClientConn): void {
-    executor.snapSeq += 1
-    const seq = executor.snapSeq
-    conn.awaiting = seq
-    executor.asking.set(seq, conn.id)
-    send(executor, { t: 'snapshot', seq })
   }
 
   function liveOf(session: string): Executor | undefined {
@@ -1966,7 +1377,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       ledger, network,
       gen,
       executionId,
-      explicit: input.explicit,
       run: newRunRecord({
         gen,
         executionId,
@@ -1978,9 +1388,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       exited: false,
       link,
       queued: [],
-      watchers: new Set(),
-      snapSeq: 0,
-      asking: new Map(),
     }
 
     environments.set(root ?? executionId, network)
@@ -1988,7 +1395,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const failed = (error: unknown) => {
       executor.run.stopping = true
       executor.run.reclaimNote = `工作记录处理失败：${String(error)}`
-      for (const watcher of executor.watchers) clients.get(watcher)?.link.send({ t: 'line', text: executor.run.reclaimNote })
+      for (const conn of connections.watching(executor)) conn.link.send({ t: 'line', text: executor.run.reclaimNote })
       executor.spawned.cancel()
       diagnosticLog.write('error', 'executor.record.failed', { ...identity, run: String(gen) })
     }
@@ -1996,9 +1403,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     spawned.onExit((reason) => {
       executor.exited = true
-      for (const [request, pending] of settingsReplies) if (pending.executor === executor) {
-        settingsReplies.delete(request); pending.reject(new Error('执行者已退出，设置受理未确认；请重新读取'))
-      }
+      control.exited(executor)
       try { retire(executor, reason) } catch (error) { failed(error) }
     })
 
@@ -2007,23 +1412,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     try { saveRuns(true) } catch (error) { failed(error); return undefined }
     pushRuns()
     return executor
-  }
-
-  /**
-   * 送一条东西给执行者（命令 / 快照请求）。
-   *
-   * **没 `ready` 就先攒着**：从起进程到能干活那一段（装载 ＋ 发现 ＋ 恢复）是秒级，
-   * 而窗口那边已经在等着了——先送出去只会是「敲了没反应」。攒着的那一份在 `ready`
-   * 到达时按序放行。
-   */
-  function send(executor: Executor, message: ManagerToExecutor): void {
-    if (executor.run.ended !== undefined) return
-
-    if (executor.link === undefined || !executor.run.ready) {
-      executor.queued.push(message)
-      return
-    }
-    executor.link.send(message)
   }
 
   /** 送一条**命令**——`send` 的那一层皮（读起来仍是「送一条命令」）。 */
@@ -2052,14 +1440,9 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         })
         return
       }
-      case 'collaboration.configured': {
-        const pending = configurationWaiters.get(message.requestId)
-        if (pending?.executor !== executor) return
-        configurationWaiters.delete(message.requestId)
-        if (message.result.ok) pending.resolve()
-        else pending.reject(new Error(message.result.reason))
+      case 'collaboration.configured':
+        control.configured(executor, message)
         return
-      }
       case 'collaboration.changed':
         collaboration.changed()
         return
@@ -2073,8 +1456,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         pushRuns()
         return
       case 'ready': {
-        const waiting = readyWaiters.get(executor.gen)
-        if (waiting !== undefined) { clearTimeout(waiting.timer); readyWaiters.delete(executor.gen); waiting.resolve() }
+        control.ready(executor)
         executor.run.ready = true
         // 起来那一刻「正在起执行者」这件事就完了（那一格由 `actionOf` 之外的一处写，
         // 故在这儿清）——`busy` 不动：它说的是**内核**手上有活没有，与本跳无关
@@ -2084,7 +1466,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         executor.queued = []
         for (const one of queued) {
           if (executor.run.ended !== undefined) break
-          executor.link?.send(one)
+          executor.link.send(one)
         }
         saveRuns()
         pushRuns()
@@ -2093,23 +1475,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       case 'bound':
         if (!store.hasSession(message.session)) return
         executor.run.session = message.session
-        // ⚠️ **顺序**：`syncTarget` 的判据是「这个窗口认的会话变了没有」，而 `rememberSession`
-        // 正是把那一格写掉的那一个 ⇒ 它必须**先**跑，否则永远判「没变」、第二个 `target` 不发。
-        // 两件是并列的两件事：一件是把同 gen 的 `target` 通知出去（协作线的机制），
-        // 一件是把窗口认下的会话记下来（U100 的补记）。
         syncTarget(executor)
-        // **窗口认的会话跟着开张的那一条走**（U100）——与 `onEvent` 那一处同一个口子
-        // （产品那条路是从事件里认的；这一条是登记那一层的补记）
-        rememberSession(executor, message.session)
+        bindEnvironment(executor, message.session)
         refresh(executor.run, now())
         saveRuns(true)
         pushRuns()
         return
       case 'settings.synced': {
         diagnosticLog.write(message.error ? 'warn' : 'debug', 'settings.ack', { ...identity, request: message.request, run: String(executor.gen) })
-        executorSettings.set(executor, message.mcp)
-        const pending = settingsReplies.get(message.request)
-        if (pending?.executor === executor) { settingsReplies.delete(message.request); if (message.error !== undefined) pending.reject(new Error(message.error)); else pending.resolve(message.note ?? '已受理设置') }
+        control.synced(executor, message)
         return
       }
       case 'ev':
@@ -2117,7 +1491,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         return
       case 'done':
         if (!executor.run.ready) {
-          for (const id of executor.watchers) clients.get(id)?.link.send({ t: 'line', text: message.why })
+          for (const conn of connections.watching(executor)) conn.link.send({ t: 'line', text: message.why })
         }
         // **自己受理了收摊**——记成「停止中」，核销等进程真退（见 `retire`）
         markStopping(executor, message.why)
@@ -2133,36 +1507,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     }
   }
 
-  /**
-   * **照登记收那一代的自有进程组**（U50）——收完把「没收回来的」写在缘由上。
-   *
-   * 两处调用它：这一趟里没了的（`retire`），与**上一次管理者留下的**（启动核对）。
-   * 两处的判据都一样：**只对已经证实不在了的那一代动手**（见 `reclaim.ts` 的头注）。
-   *
-   * 收尾有界但异步；自有组核销前保持「停止中」，失败保留原因并允许重试。
-   */
-  function reclaimRun(record: RunRecord): Promise<string | undefined> {
-    const existing = reclaiming.get(record)
-    if (existing !== undefined) return existing
-    const pending = performReclaim(record).finally(() => reclaiming.delete(record))
-    reclaiming.set(record, pending)
-    return pending
-  }
-
-  async function performReclaim(record: RunRecord): Promise<string | undefined> {
-    const report = await reclaim(record.owned)
-    const note = reclaimNoteOf(report)
-    if (record.ended === undefined) return note
-    record.owned = report.remaining
-    record.reclaimPending = false
-    record.reclaimNote = note
-    refresh(record, now())
-    if (note !== undefined) options.log?.(`收回第 ${record.gen} 代的自有进程组：${note}`)
-    saveRuns(true)
-    pushRuns()
-    return note
-  }
-
   /** 记下「已受理停止」——**停止中**那一行的来处（`ended` 一到它就跳过去了）。 */
   function markStopping(executor: Executor, why: string): void {
     if (executor.run.ended !== undefined) return
@@ -2173,56 +1517,11 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     pushRuns()
   }
 
-  /**
-   * 快照回来了——**先放快照，再放缓冲里水位之后的那几条**。
-   *
-   * 三处判据：
-   * - **按 `seq` 对上**：回来的那一份属于哪一次请求（同一个窗口可能连着绑过两回）；
-   * - **按 id 去重 ＋ 只放水位之后的**：缓冲里可能混着快照已经含进去的那几条
-   *   （缓冲区比执行者算快照那一刻要早开一步）——设计明文「持久记录按 id 去重」；
-   * - **先去重再排序**：缓冲按到达序，而 id 是排序权威，故放行前按 id 排一遍。
-   */
-  function onSnapshot(executor: Executor, seq: number, snapshot: RunSnapshot): void {
-    const connId = executor.asking.get(seq)
-    executor.asking.delete(seq)
-    if (connId === undefined) return
-
-    const conn = clients.get(connId)
-    if (conn === undefined || conn.awaiting !== seq) return
-
-    conn.awaiting = null
-    conn.link.send({ t: 'resumed', gen: executor.gen, snapshot })
-
-    const seen = new Set<number>()
-    const rest: KernelEvent[] = []
-    for (const event of conn.buffered.sort((left, right) => left.id - right.id)) {
-      if (event.id <= snapshot.watermark || seen.has(event.id)) continue
-      seen.add(event.id)
-      rest.push(event)
-    }
-    conn.buffered = []
-
-    for (const event of rest) conn.link.send({ t: 'ev', gen: executor.gen, event })
-  }
-
-  /**
-   * **这一代此刻认的是哪条会话**（U100）——顺带告诉盯着它的每一个窗口。
-   *
-   * 由头：`retire`（整体停掉）会把窗口的 `target` 清掉，而**那条会话还在**——用户接着敲的
-   * 那一句本该是它的下一轮（`onCommand` 那条兜底就照 `conn.selectedSession` 走）。
-   * 故窗口手上得一直有一份「我认的是哪条会话」，它随**这一代学到的那一条**走。
-   */
-  function rememberSession(executor: Executor, session: string | null): void {
+  function bindEnvironment(executor: Executor, session: string | null): void {
     if (session === null) return
     environments.delete(executor.executionId)
     environments.set(workRoot(session), executor.network)
-    for (const id of executor.watchers) {
-      const conn = clients.get(id)
-      if (conn !== undefined && conn.target === executor && conn.selectedSession !== session) {
-        conn.selectedSession = session
-        native.changed()
-      }
-    }
+
   }
 
   /** 一条内核事件——**广播给盯着这一代的窗口**，顺带把登记里那几格更新到与内核一致。 */
@@ -2235,16 +1534,18 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       for (const conn of clients.values()) if (conn.selectedSession !== null && workRoot(conn.selectedSession) === workRoot(event.session)) publishBackground(conn, event.data.result)
       return
     }
-    if (event.kind === 'mcp.catalog') executorSettings.set(executor, event.data.servers)
+    if (event.kind === 'mcp.catalog') control.observe(executor, event.data.servers)
     if (event.kind === 'input.settled' && event.data.ref !== undefined) {
       const owner = collaborationInputs.get(event.data.ref)
       if (owner !== undefined) {
-        if(event.data.stage!=='accepted')collaborationInputs.delete(event.data.ref)
+        if (event.data.stage !== 'accepted') collaborationInputs.delete(event.data.ref)
         const { ref: _transportRef, ...settled } = event.data
-        owner.conn.link.send({ t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
-          ...event, data: { ...settled, ...(owner.ref === undefined ? {} : { ref: owner.ref }) },
-        } })
-        owner.conn.link.send({t:'ev',gen:null,event:{session:owner.target,id:0,at:now(),turn:null,kind:'input.pending',data:{inputs:store.serviceFor(owner.target).inputs.list()}}})
+        owner.conn.link.send({
+          t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
+            ...event, data: { ...settled, ...(owner.ref === undefined ? {} : { ref: owner.ref }) },
+          }
+        })
+        owner.conn.link.send({ t: 'ev', gen: null, event: { session: owner.target, id: 0, at: now(), turn: null, kind: 'input.pending', data: { inputs: store.serviceFor(owner.target).inputs.list() } } })
         return
       }
     }
@@ -2262,14 +1563,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     } else if (run.session === null && event.session !== '' && store.hasSession(event.session)) {
       run.session = event.session
     }
-    // **这一代认下哪条会话 ⇒ 盯着它的窗口也认下**（U100）——「停掉之后接着敲的那一句是
-    // 这条会话的下一轮」全靠这一格（见 `ClientConn.selectedSession`）。会话是**从事件里认**
-    // 的（上面那一段），故补记也落在这一处：**一处认、一处记**，不另立第二份真源。
-    // ⚠️ 同 `bound` 那一处：`syncTarget` 要**先**跑（它判「认的会话变了没有」，
-    // 而 `rememberSession` 会先把那一格写掉）。
-    // —— 运行事实那几格（U49）——**一处更新，判定在 `facts.ts` ——
     syncTarget(executor)
-    rememberSession(executor, run.session)
+    bindEnvironment(executor, run.session)
 
     if (run.session !== previousSession) saveRuns(true)
 
@@ -2303,12 +1598,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         // **轮收束 ⇒ 悬着的裁决作废**——与执行者那一侧同一条口径（`executor.ts`）：
         // 卡挂着的时候这一轮没结束，故那条「等你」照旧成立。
         run.decisions.clear()
-        /**
-         * **两类转换就在这儿**（U50）：跑完了 / 出错了。
-         *
-         * ⚠️ **`aborted` 不说**——那是用户自己按的中断（`turn.interrupt`），他刚做完这件事，
-         * 弹一条「它停了」等于拿通知复述他本人。而设计那三类里本来也没有它。
-         */
+
         if (run.session !== null) {
           const current = store.attention.list({ sessions: [workRoot(run.session)] })[0]
           // 同一停点重放保留已读与送达事实；新一轮仍由 turn.start 清除旧原因。
@@ -2318,7 +1608,6 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         break
       case 'tool.decision.request':
         run.decisions.set(event.id, event.data.call)
-        // **第三类：需要你**（U50）——那正是他不在的时候会卡住的那一件
         if (run.session !== null) notify(run.session, 'needs-you', event.id, event.data.material || event.data.name, { session: run.session, event: event.id }, event.at)
         break
       case 'tool.decision': {
@@ -2352,16 +1641,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
 
     refresh(run, at)
 
-    for (const id of [...executor.watchers]) {
-      const conn = clients.get(id)
-      if (conn === undefined) continue
-      // 等着快照的那一段：**先攒着**（放行的次序与去重见 `onSnapshot`）
-      if (conn.awaiting !== null) {
-        conn.buffered.push(event)
-        continue
-      }
-      conn.link.send({ t: 'ev', gen: executor.gen, event })
-    }
+    connections.publish(executor, event)
 
     if (event.kind === 'tool.decision.request') collaborationDecisions.set(event.id, event)
     if (event.kind === 'tool.decision') for (const [id, pending] of collaborationDecisions) {
@@ -2374,7 +1654,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const shared = event.session === undefined ? undefined : store.collaboration.collaborationForSession(event.session)
     if (shared !== undefined && (event.kind === 'tool.decision.request' || event.kind === 'tool.decision')) {
       for (const conn of clients.values()) {
-        if (executor.watchers.has(conn.id)) continue
+        if (conn.target === executor) continue
         if ((conn.selectedSession) === shared.originSessionId) conn.link.send({ t: 'ev', gen: conn.target?.gen ?? null, event })
       }
     }
@@ -2397,37 +1677,24 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     pushRuns()
   }
 
-  /**
-   * 核销——自己退了 / 被杀 / 管理者叫停；**只走一遍**。
-   *
-   * U49 把「这一代怎么收的」记进了运行事实（`ended`）：它是**已停止**与**当前空闲**
-   * 那条分水岭（判据见 `facts.ts` 的 `runStateOf`）。三条来路各有各的真相：
-   *
-   * - **自己收的**（收缩那条路，`stopping` 为真）⇒ 上一轮怎么收的说了算：好好收的算
-   *   `normal`（那一行是**当前空闲**），被打断过算 `aborted`（**已停止 · 手动中断**）；
-   * - **被杀 / 连接断了而它没说自己要收** ⇒ `crashed`（**已停止 · 异常退出**）。
-   *   这一条**不猜**：设计写着异常退出那条路「不伪报取消成功」，而我们没有它的收场回执。
-   */
   function retire(executor: Executor, reason: string): void {
     if (executor.run.ended !== undefined) return
     for (const [key, owner] of collaborationInputs) if (owner.target === executor.run.session) {
       collaborationInputs.delete(key)
-      owner.conn.link.send({ t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
-        kind: 'input.settled', data: { ok: false, ...(owner.ref === undefined ? {} : { ref: owner.ref }), reason: '输入目标已退出，未确认接收；原稿保留' },
-        session: owner.session, id: store.serviceFor(owner.session).nextId(), at: now(), turn: null,
-      } })
+      owner.conn.link.send({
+        t: 'ev', gen: owner.conn.target?.gen ?? null, event: {
+          kind: 'input.settled', data: { ok: false, ...(owner.ref === undefined ? {} : { ref: owner.ref }), reason: '输入目标已退出，未确认接收；原稿保留' },
+          session: owner.session, id: store.serviceFor(owner.session).nextId(), at: now(), turn: null,
+        }
+      })
     }
-    for (const [id, pending] of configurationWaiters) if (pending.executor === executor) {
-      configurationWaiters.delete(id)
-      pending.reject(new Error('成员配置结果未确认，原持久配置保留'))
-    }
-
+    control.retire(executor, reason)
 
     const at = now()
     const kind = executor.run.stopping
       ? // **收摊那一刻这一轮还开着**也算被打断（U50）：收尾那两跳可能抢在
-        // `turn.end` 前面，光看 `lastTurn` 会把一次真停读成「当前空闲」
-        endKindOf(executor.run.lastTurn, executor.run.turnActive)
+      // `turn.end` 前面，光看 `lastTurn` 会把一次真停读成「当前空闲」
+      endKindOf(executor.run.lastTurn, executor.run.turnActive)
       : executor.run.lastTurn === 'aborted'
         ? ('aborted' as const)
         : ('crashed' as const)
@@ -2441,60 +1708,20 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     executor.run.action = undefined
     refresh(executor.run, at)
 
-    const ready = readyWaiters.get(executor.gen)
-    if (ready !== undefined) { clearTimeout(ready.timer); readyWaiters.delete(executor.gen); ready.reject(new Error(reason)) }
     executors.delete(executor)
     executor.queued = []
-    executor.asking.clear()
 
     // **留一条「最近一次运行」**——列表上「当前/最近状态」那一格要它
     lastRuns.set(executor.run.session ?? executor.executionId, executor.run)
 
-    for (const id of [...executor.watchers]) {
-      const conn = clients.get(id)
-      if (conn === undefined) continue
-      conn.target = undefined
-      conn.awaiting = null
-      conn.buffered = []
-      // **窗口不是跟着死**：它下一次发命令时管理者会按需要起新的那一代
-      // （见 `onCommand`）——「断的是执行者，不是界面」。
-      //
-      // `detached`（作废旧号）与 `line`（说一句给人听）**两件都要**：前者是**机器**
-      // 要的（不作废的话它下一条命令会被当成过期误操作挡下），后者是**人**要的。
-      conn.link.send({ t: 'detached', why: reason })
-      // ⚠️ **用户自己叫停的那一档不另说这句**（U100）：他刚按过「停止任务」，马上要看到的是
-      // **结果**（`stopped` 那条线拼的「「X」停了」，由 `afterEnd` 紧接着回那一拍）；
-      // 再插一句「它那一代执行者收摊了（连接断了）」是**实现细节**抢先说了话，而且
-      // 与「这个窗口与管理者断了」那句（另一件事）在屏上看起来是一回事（真帧上撞过）。
-      // 异常收（被杀 / 失联）那一档照旧说——那时用户没按过任何东西，得有人告诉他这台怎么了。
-      if (!executor.run.stopping) {
-        conn.link.send({ t: 'line', text: `它那一代执行者收摊了（${reason}）` })
-      }
-    }
-    executor.watchers.clear()
-    executor.link?.close()
+    connections.detach(executor, reason)
+    executor.link.close()
 
     options.log?.(`核销第 ${executor.gen} 代执行者（${reason}）`)
     saveRuns()
-    /**
-     * **核销这一推不经过合并窗**（U54）——它是**终局事实**，而紧接着下面那一跳就要回
-     * 「已停」那一拍（`afterEnd` ⇒ `settleStop`）。
-     *
-     * 两件必须**同一拍出去**：晚 100ms（`RUNS_PUSH_MS`）的话，窗口先收到「停了」、
-     * 屏上那一格却还写着「● 工作中」——**那正是 D34 那一屏**（而且 `/exit` 那条路上
-     * 界面紧接着就收摊，合并窗一到，这一份事实**再也追不上**）。
-     *
-     * ⚠️ 合并窗本是为**流式那一格最热的路**设的（一秒几十条的输出增量），
-     * 一次核销不是那种东西：一条终局事实多推一次，换的是「回执与运行事实同一拍」。
-     */
+
     pushRuns(true)
 
-    /**
-     * **异常退出也是一类转换**（U50）——「失败」。
-     *
-     * 只报 `crashed` 那一档（被杀 / 跑着跑着没了）：正常收摊是「完成」，而**用户自己叫停的**
-     * 那一档（`stopping` 起头的）他刚按过——两档都不在这儿报（见 `notify` 的注）。
-     */
     if (executor.run.ended?.kind === 'crashed' && executor.run.session !== null) {
       notify(
         executor.run.session,
@@ -2504,23 +1731,15 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
       )
     }
 
-    // **收回它的自有进程组 ＋ 回那一拍「已停」**（U50）——见 `afterEnd`
     afterEnd(executor.run)
   }
 
-  /**
-   * **核销之后那一段**（U50）——收资源，然后（有人等着的话）回那一拍「已停」。
-   *
-   * 两处调用它：这一趟里没了的（`retire`）与失联那些落定为「异常退出」的（生命探测）。
-   * 次序是设计那一句「**资源确认退出后**才报已停止」：**收干净了才算停**——收不干净的
-   * 那句缘由跟着回执一起出去（`reclaim.ts`），**不伪报取消成功**。
-   */
   function afterEnd(run: RunRecord): void {
     releaseEnvironments()
     void reclaimRun(run).then((note) => { releaseEnvironments(); settleStop(run, note) })
   }
 
-  /** 生命探测——**只看「连还通不通」**，不看它在不在干活（长测试静默照样是活的）。 */
+  /** 核对工具归属与可释放环境，刷新投影；静默不代表执行结束。 */
   const probe = setInterval(() => {
     for (const executor of executors) executor.ledger.list()
     releaseEnvironments()
@@ -2561,10 +1780,10 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     for (const executor of owned) {
       executor.run.stopping = true
       refresh(executor.run, now())
-      executor.link?.send({ t: 'bye', why })
+      executor.link.send({ t: 'bye', why })
     }
     saveRuns(true)
-    // 扩展收尾与宿主持有资源并行；扩展绝不能阻止 TERM/KILL 升级。
+    // 扩展收尾与所属工具回收并行，扩展不能阻止目标 Agent 取消。
     const extension = Promise.resolve().then(() => options.lifecycle?.shutdown())
     let extensionTimer: ReturnType<typeof setTimeout> | undefined
     const extensionResult = Promise.race([
@@ -2575,11 +1794,10 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     ]).finally(() => { if (extensionTimer !== undefined) clearTimeout(extensionTimer) })
     await Promise.all(owned.map(executor => escalateStop(executor)))
     if (owned.some((one) => !one.exited && one.run.ended === undefined)) throw new Error('仍有执行资源未核销')
-    await Promise.all([...reclaiming.values()])
+    await runStops.drainReclaims()
     for (const run of lastRuns.values()) {
       if (run.ended === undefined) {
-        await reclaimStale(run.session!, run)
-        if (run.ended === undefined) throw new Error('仍有上次运行归属待确认')
+        await reclaimStale(run)
       }
       if (run.owned.length > 0) await reclaimRun(run)
       if (run.reclaimNote !== undefined) throw new Error(run.reclaimNote)
@@ -2592,10 +1810,8 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     environments.clear()
     if (saveTimer !== undefined) clearTimeout(saveTimer)
     saveRuns(true)
-    // 收摊只断连接。原先还给每个窗口补一句「Magic Code 已退出」——那一行没有别处没有的信息：
-    // 同一件事底栏已经说了（还多给 ctrl+r / ctrl+c 两个入口），留稿说明另说一件事。
-    for (const conn of clients.values()) conn.link.close()
-    clients.clear()
+    // 关闭连接后由客户端呈现断线状态，保留其草稿与重连入口。
+    connections.close()
     await closeConfigWatch()
     native.close()
     server.stop(true)
@@ -2705,7 +1921,6 @@ export function readRuns(paths: RunPaths): readonly StoredRun[] {
       ...(run.lastTurn === undefined ? {} : { lastTurn: run.lastTurn }),
       ...(typeof run.why === 'string' ? { why: run.why } : {}),
       ...(run.kind === undefined ? {} : { kind: run.kind }),
-      // **自有进程组那一笔也要读得回来**（U50）——照登记收是重启核对的一半
       ...(owned === undefined ? {} : { owned }),
     })
   }
@@ -2741,13 +1956,6 @@ function ownedOf(raw: unknown): readonly OwnedProcess[] | undefined {
   return kept.length === 0 ? undefined : kept
 }
 
-/**
- * 写那份运行登记——**原子替换**（同目录临时文件 ＋ `rename`）。
- *
- * 为什么不像 `manager.json` 那样直接写：那一份是「一行 JSON」级别的小东西，坏了顶多
- * 少一条诊断；而这一份**重启时要逐条读**——写一半被看见就是拿着半截记录乱判。
- * 临时文件先写、再换名，读到的要么是上一份完整的、要么是这一份完整的。
- */
 export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: number): void {
   const body: StoredRuns = { v: RUNS_VERSION, at, runs }
   const temp = `${paths.runs}.tmp-${process.pid}`
@@ -2755,7 +1963,7 @@ export function writeRuns(paths: RunPaths, runs: readonly StoredRun[], at: numbe
     writeFileSync(temp, `${JSON.stringify(body)}\n`, { mode: 0o600 })
     renameSync(temp, paths.runs)
   } catch (error) {
-    try { unlinkSync(temp) } catch {}
+    try { unlinkSync(temp) } catch { }
     throw new Error(`运行归属登记失败：${String(error)}`)
   }
 }

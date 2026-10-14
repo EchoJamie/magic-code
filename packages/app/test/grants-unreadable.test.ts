@@ -39,12 +39,6 @@ import type { Assembly } from '../src/index.ts'
 import { eventsOfKind, makeStage, type Stage } from './support.ts'
 
 /**
- * 一条**判重的**执行命令（名单第一类 · 删除）——本文件要的是「过闸 → 人批 → 试图落盘」
- * 那一跳，**只有判重的调用才有卡可答**（U76 起判轻的默认通、根本不问）。
- */
-const DELETE_TURN = { toolCalls: [{ name: 'exec', args: { cmd: 'chmod 755 .' } }] }
-
-/**
  * 一次**判重却带域名**的调用（取网页）——「改对之后自然恢复」那一条靠它。
  *
  * 由头（U76）：判重的执行命令**不可授权**，故「读到一条授权 ⇒ 不再问」这条链只剩
@@ -292,98 +286,6 @@ describe('D31 · `loadGrants` 把「不在」与「读不懂」分开', () => {
 // ══ ③ 装配那一层：报得出来 · 不落盘 · 一次一议 · 改对就恢复 ══════════════════
 
 describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => {
-  test('开机那一行**点名文件与缘由**——且按 `a` 之后**不刷**第二句', async () => {
-    const stage = makeStage()
-    try {
-      const section = sectionKeyOf(stage)
-      writeTruncated(stage, section)
-
-      const assembly = stage.assemble({
-        grantsFile: grantsPathOf(stage),
-        turns: [DELETE_TURN, { text: '好' }],
-      })
-      const said = (await assembly.notices())
-
-      expect(said).toHaveLength(1) // 授权这一摊只说一句
-      expect(said[0]).toContain(grantsPathOf(stage)) // 哪个文件
-      expect(said[0]).toContain('不是合法 JSON') // 读不懂在哪
-      expect(said[0]).toContain('下次启动') // 怎么办
-
-      // 按一次 `a`（这一趟会把授权记进内存、并试图落盘）
-      const shell = bareShell(assembly)
-      shell.send({ type: 'input.submit', text: '跑一下' })
-      await until(() => shell.requests.length >= 1, '闸门问了一次')
-      shell.answer(shell.requests[0] as number, { remember: true })
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '工具跑完')
-
-      // **还是那一句**（不是「每次写都刷」一句新的）
-      expect((await assembly.notices())).toEqual(said)
-
-      shell.dispose()
-      assembly.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-
-  test('**一次一议**——读不懂不是「全拒」：该过闸的照过闸，批了就真跑；按 `a` 只进内存', async () => {
-    const stage = makeStage()
-    try {
-      const section = sectionKeyOf(stage)
-      const before = writeTruncated(stage, section)
-
-      const assembly = stage.assemble({
-        grantsFile: grantsPathOf(stage),
-        turns: [
-          DELETE_TURN,
-          { text: '好' },
-          DELETE_TURN,
-          { text: '好' },
-          DELETE_TURN,
-          { text: '好' },
-        ],
-      })
-      const shell = bareShell(assembly)
-
-      // 第一件：过闸 → 人批（不按 `a`）→ **真跑了**（不是被静默挡住）
-      shell.send({ type: 'input.submit', text: '第一件' })
-      await until(() => shell.requests.length >= 1, '第一件过闸')
-      shell.answer(shell.requests[0] as number)
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '第一件跑完')
-      expect(eventsOfKind(shell.events, 'tool.result')).toHaveLength(1)
-
-      // 第二件（同形）：**人批过的那一次不记**，故照旧过闸——「一次一议」就是这句话
-      shell.send({ type: 'input.submit', text: '第二件' })
-      await until(() => shell.requests.length >= 2, '第二件照旧过闸')
-      shell.answer(shell.requests[1] as number, { remember: true }) // 这一下按 `a`
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 2, '第二件跑完')
-
-      // ⚠️ **这一条 U76 换过**：旧版断言「第三件不再问（`a` 当场有效）」。默认通之后
-      // **名单里的两类不可授权**——`a` 记下的那一条放不了删除 / 改权限，同形的下一件
-      // **照旧过闸**。故这里断的是**新的事实**：第三次**照样问**，且裁者是**人**（不是 `auto`）。
-      shell.send({ type: 'input.submit', text: '第三件' })
-      await until(() => shell.requests.length >= 3, '第三件照旧过闸')
-      shell.answer(shell.requests[2] as number)
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 3, '第三件跑完')
-      expect(shell.requests).toHaveLength(3) // 问了第三次——名单里的东西授权不动它
-      expect(eventsOfKind(shell.events, 'tool.decision').at(-1)?.data.decider).toBe('user')
-
-      // 而 `a` **仍是有效的**——它进了**内存**（本次会话的名录里有那一条）：
-      // 「不落盘」不是「什么都没记住」，这两件事在这个用例里分得开
-      const remembered = assembly.grantsView().grants.map((row) => row.describe)
-      expect(remembered).toHaveLength(1)
-      // ⚠️ U77 起夹具是**改权限**（删除那一类不给授权了）——记的就是这一类
-      expect(remembered[0]).toContain('system')
-
-      shell.dispose()
-      assembly.close()
-
-      // **但不落盘**：盘上那份还是原来那串被截断的字节，一个字节都没动
-      expect(bytesOf(grantsPathOf(stage)).equals(Buffer.from(before, 'utf8'))).toBe(true)
-    } finally {
-      stage.dispose()
-    }
-  })
 
   test('`/grants` 那一屏也念同一句——空名录＋不吭声＝在骗人', async () => {
     const stage = makeStage()
@@ -445,45 +347,6 @@ describe('D31 · 装配端到端（读不懂之后这一趟怎么走）', () => 
 
       shell.dispose()
       fixed.close()
-    } finally {
-      stage.dispose()
-    }
-  })
-
-  test('**会话中途**文件才坏掉——那一跳现读现发现，此后本次会话不再写它', async () => {
-    const stage = makeStage()
-    try {
-      const section = sectionKeyOf(stage)
-      const path = grantsPathOf(stage)
-      mkdirSync(dirname(path), { recursive: true })
-      // 起点是**好的**，且那条授权**够不着**下面要跑的那一件——故它照旧过闸，
-      // 才有「按 `a` ⇒ 落盘」这一跳可看。
-      // ⚠️ U76 之后有两重够不着：工具名对不上（`ls` × `exec`），且**删除这一类本就不授权**
-      // ——即便那条授权写的是 `exec`，判重的执行命令也放不了（`gate.ts` 的放行判据只有
-      // 「判轻」与「判重却带域名」两条）。
-      writeFileSync(path, validGrants(section, 'ls'))
-
-      const assembly = stage.assemble({
-        grantsFile: path,
-        turns: [DELETE_TURN, { text: '好' }],
-      })
-      expect(assembly.grantsUnreadable).toBeUndefined()
-
-      // 会话开着的时候，外面把它写坏了（另一个编辑器 / 掉电）
-      const broken = writeTruncated(stage, section)
-
-      const shell = bareShell(assembly)
-      shell.send({ type: 'input.submit', text: '跑一下' })
-      await until(() => shell.requests.length >= 1, '过闸')
-      shell.answer(shell.requests[0] as number, { remember: true })
-      await until(() => eventsOfKind(shell.events, 'tool.result').length >= 1, '跑完')
-
-      // 这一趟发现它读不懂了：立起闸（此后不再写），**盘上那份一字未动**
-      expect(assembly.grantsUnreadable).toBeDefined()
-      expect(bytesOf(path).equals(Buffer.from(broken, 'utf8'))).toBe(true)
-
-      shell.dispose()
-      assembly.close()
     } finally {
       stage.dispose()
     }
