@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { KernelEvent, ManagerToClient, RunSnapshot } from '@magic/contracts'
+import type { KernelEvent, ManagerToClient, RunNotice, RunSnapshot } from '@magic/contracts'
 import { createShell } from '@magic/tui'
 import { connectManager, executionEnvironment } from '../src/run/client.ts'
 import { connectApp } from '../src/run/spawn-manager.ts'
@@ -19,23 +19,30 @@ describe('resident-cli 客户端握手与纯观察', () => {
   test('hello 前接收，welcome 前后 ev/target 缓存至晚订阅，gen=null 的历史查询照发', async () => {
     const g = cliGround()
     const events = initialEvents()
+    const notice: RunNotice = { id: 'replayed', session: 'real-session', kind: 'done', at: 1, unread: true }
     const server = fakeApp(g, (link) => {
       link.send({ t: 'target', gen: null, session: 'real-session' })
       link.send({ t: 'ev', gen: null, event: events[0]! })
       link.send(server.welcome)
       link.send({ t: 'ev', gen: null, event: events[1]! })
+      link.send({ t: 'notice', notice })
     })
     try {
       const client = (await connectManager(g.discovery.socket, { expectedIdentity: g.identity }))!
       await Bun.sleep(5) // 消息已到，但 UI 尚未装配。
       const targets: (string | null)[] = []
       const received: KernelEvent[] = []
+      const notices: RunNotice[] = []
+      client.onNotice(item => notices.push(item))
+      expect(notices).toEqual([])
       client.onTarget((target) => targets.push(target))
       const transport = clientTransport(client)
       const unsubscribe = transport.subscribe((event) => received.push(event))
       expect(received).toEqual([]) // 构造中不进行同步回放。
       await waitFor(() => received.length === 2)
       expect(received).toEqual(events)
+      expect(notices).toEqual([notice])
+      expect(server.messages.filter(message => message.t === 'read')).toEqual([])
       expect(targets).toEqual(['real-session'])
       expect(client.gen()).toBeNull()
       transport.send({ type: 'history.read', session: 'real-session' })

@@ -86,7 +86,6 @@ struct StatusPanel: View {
                             }
                         }.scrollTargetLayout()
                     }
-                    .onAppear { focused = listFocus }
                 }
                 if rows.isEmpty && model.isCurrent {
                     VStack(spacing: 10) {
@@ -119,7 +118,10 @@ struct StatusPanel: View {
         }
         .padding(18).frame(width: width).background(MagicStyle.canvas).tint(MagicStyle.accent)
         .background(InitialContentFocus())
-        .onAppear { model.panelVisibility(true, surface: surface) }
+        .onAppear {
+            focused = nil; listFocus = nil
+            model.panelVisibility(true, surface: surface)
+        }
         .onDisappear { model.panelVisibility(false, surface: surface) }
         .onChange(of: model.selected) { old, selected in
             if old == nil, let selected { listFocus = selected; focused = nil }
@@ -165,17 +167,20 @@ struct StatusPanel: View {
             .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("\(work.title) 更多操作")
     }
     private func row(_ work: NativeWork) -> some View {
+        let resultUnread = WorkGroup.of(work) == .results
         let explanation = work.statusText
         let status = work.state == .unknown && explanation != work.state.title ? "状态待确认 · \(explanation)" : work.statusText
+        let detail = !work.affected && work.currentNotice?.unread == true ? work.currentNotice?.detail : nil
+        let summary = detail ?? (resultUnread ? "工作已结束，结果待查看" : status)
         return Button { model.inspect(work) } label: {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: work.state.symbol).font(.system(size: 15, weight: .medium))
+                Image(systemName: resultUnread ? "doc.text" : work.state.symbol).font(.system(size: 15, weight: .medium))
                     .foregroundStyle(work.state.color).frame(width: 28, height: 28)
                     .background(work.state.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 7) {
                     if work.state == .waiting { MagicBadge(text: "等待你的答复") }
                     Text(work.title.isEmpty ? "未命名工作" : work.title).font(.system(size: 13, weight: .medium)).lineLimit(3)
-                    Text(work.currentNotice?.detail ?? "\(stale ? "上次状态：" : "")\(status)")
+                    Text("\(stale ? "上次状态：" : "")\(summary)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     if let count = stale ? "后台命令数量待确认" : work.backgroundText { Text(count).font(.caption).foregroundStyle(.secondary) }
                     HStack(spacing: 4) {
@@ -183,7 +188,7 @@ struct StatusPanel: View {
                         Text(work.project).lineLimit(1)
                         if work.terminalOpen { Text("· 终端已打开") }
                     }.font(.system(size: 11)).foregroundStyle(.secondary)
-                    if work.currentNotice?.kind == .failed {
+                    if work.currentNotice?.kind == .failed && work.currentNotice?.unread == true {
                         Text("▲ 当前有待查看的问题").font(.caption).foregroundStyle(.secondary)
                     }
                     if model.works.contains(where: { $0.id != work.id && $0.title == work.title && $0.project == work.project }),
@@ -195,7 +200,7 @@ struct StatusPanel: View {
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
             }.padding(12).contentShape(Rectangle())
         }.buttonStyle(WorkRowStyle(focused: focused == work.id)).focused($focused, equals: work.id)
-            .accessibilityLabel("\(work.title)，\(work.project)，\(stale ? "上次状态：" : "")\(status)")
+            .accessibilityLabel("\(work.title)，\(work.project)，\(stale ? "上次状态：" : "")\(summary)")
             .accessibilityIdentifier("work-\(work.id)").accessibilityHint("查看详情和接回命令")
             .onKeyPress(.return) { model.inspect(work); return .handled }
             .onChange(of: focused) { _, id in if id == work.id { listFocus = id } }
@@ -310,8 +315,8 @@ private extension NoticeKind {
     var title: String { switch self { case .done: "结果可查看"; case .failed: "工作遇到问题"; case .needsYou: "答复事项" } }
 }
 extension RunState {
-    var symbol: String { switch self { case .running: "arrow.trianglehead.2.clockwise.rotate.90"; case .waiting: "hand.raised"; case .stopping: "pause"; case .stopped: "stop"; case .idle: "checkmark"; case .unknown: "exclamationmark" } }
-    var color: Color { switch self { case .waiting: MagicStyle.accent; case .running: .blue; case .idle: .green; case .unknown: .orange; case .stopped, .stopping: .secondary } }
+    var symbol: String { switch self { case .running: "arrow.trianglehead.2.clockwise.rotate.90"; case .waiting: "hand.raised"; case .stopping: "pause"; case .stopped: "stop"; case .idle: "circle"; case .unknown: "exclamationmark" } }
+    var color: Color { switch self { case .waiting: MagicStyle.accent; case .running: .blue; case .idle: .secondary; case .unknown: .orange; case .stopped, .stopping: .secondary } }
     var title: String { switch self { case .running: "正在执行"; case .waiting: "等待你的答复"; case .stopping: "正在停止"; case .stopped: "已停止"; case .idle: "当前空闲"; case .unknown: "状态待确认" } }
     var mark: String { switch self { case .running: "●"; case .waiting: "◊"; case .stopping: "●"; case .stopped, .idle: "○"; case .unknown: "■" } }
 }

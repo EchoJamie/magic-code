@@ -1044,7 +1044,11 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
         entries.push(entry)
         if (entries.length === 50) send(false)
       }
-      if (connections.historyCurrent(conn, revision)) send(true)
+      if (connections.historyCurrent(conn, revision)) {
+        send(true)
+        const notice = reconcileNotice(workRoot(session))
+        if (conn.selectedSession === session && notice?.unread) conn.link.send({ t: 'notice', notice })
+      }
     } catch { if (!conn.link.closed) conn.link.send({ t: 'ev', gen: null, event: { id: 0, at: now(), turn: null, session, kind: 'session.history', data: { session, entries: [], done: true, error: '无法读取会话记录' } } }) }
     finally { connections.finishHistory(conn, revision) }
   }

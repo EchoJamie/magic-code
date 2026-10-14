@@ -35,9 +35,9 @@ import AppKit
     private var manageRequest: String?
     private var next: Int?
     private var opened = false
-    private var active = false
-    private var visibleSource: String?
-    private var readSource: String?
+    @Published private(set) var active = false
+    private var visibleNotice: String?
+    private var readNotice: String?
     private var works: [String: NativeWork] = [:]
     private var selectedByView: [Bool: Set<String>] = [:]
     private var selectionAfterRefresh: Set<String>?
@@ -66,27 +66,27 @@ import AppKit
     func disconnect() {
         online = false; loading = false; reading = false; busy = false
         catalogRequest = nil; historyRequest = nil; inspectRequest = nil; manageRequest = nil
-        visibleSource = nil
+        visibleNotice = nil
     }
     func open(route: NoticeRoute? = nil) {
         opened = true
         if let route {
             compactDetail = true
-            self.route = route; readSource = nil; visibleSource = nil; historyExpanded = true
+            self.route = route; readNotice = nil; visibleNotice = nil; historyExpanded = true
             search = ""; workspace = []; selection = [route.session]; selectionAfterRefresh = nil
             entries = []; events = []; currentRequests = []; detailWork = nil; rename = nil; memberSession = nil
             historyRequest = nil; inspectRequest = nil; reading = false; next = nil; done = false; historyError = nil
             locate()
         } else { refresh() }
     }
-    func close() { opened = false; visibleSource = nil; windowActive(false) }
-    func windowActive(_ value: Bool) { active = value; acknowledgeVisibleSource() }
+    func close() { opened = false; visibleNotice = nil; windowActive(false) }
+    func windowActive(_ value: Bool) { active = value; acknowledgeViewedNotice() }
     func showDetail(_ session: String? = nil) {
         if let session { selection = [session] }
         guard !selection.isEmpty else { return }
         compactDetail = true
     }
-    func showCatalog() { compactDetail = false; visibleSource = nil }
+    func showCatalog() { compactDetail = false; visibleNotice = nil }
     func switchView(_ value: Bool) {
         showCatalog()
         selectedByView[archived] = selection
@@ -103,8 +103,8 @@ import AppKit
         if selection.isEmpty { showCatalog() }
         if route != nil && selection == Set([route!.session]) { return }
         if route?.session != selected?.id { route = nil; detailWork = nil }
-        inspectRequest = nil; readSource = nil; memberSession = nil
-        entries = []; events = []; currentRequests = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; rename = nil; visibleSource = nil
+        inspectRequest = nil; readNotice = nil; memberSession = nil
+        entries = []; events = []; currentRequests = []; next = nil; done = false; historyError = nil; historyRequest = nil; reading = false; rename = nil; visibleNotice = nil
         detailWork = selection.count == 1 ? selection.first.flatMap { works[$0] } : nil
         inspectSelection()
         if historyExpanded, selected != nil { history() }
@@ -117,7 +117,7 @@ import AppKit
     }
     func chooseMember(_ session: String?) {
         memberSession = session; route = nil; entries = []; events = []; next = nil; done = false
-        historyRequest = nil; reading = false; visibleSource = nil; readSource = nil; historyExpanded = true
+        historyRequest = nil; reading = false; visibleNotice = nil; readNotice = nil; historyExpanded = true
         history()
     }
     private func inspectSelection() {
@@ -142,22 +142,18 @@ import AppKit
         send?(.manage(request: request, serviceInstance: identity.serviceInstance, items: items)); expire(request)
     }
     func copySelected() { if let selected, !selected.archived, online { copy?(selected); operationMessage = "已复制接回命令" } }
-    func sourceVisible(_ id: String, entry: Int? = nil, event: Int? = nil, visible: Bool) {
-        if !visible { if visibleSource == id { visibleSource = nil }; return }
-        guard opened, let notice = readingNotice, notice.id == id else { return }
-        let available = notice.source?.entry.map { target in entry == target && entries.contains { $0.id == target } }
-            ?? (event == notice.source?.event && (events.contains { $0.id == event && $0.session == notice.source?.session }
-                || currentRequests.contains { $0.id == event && $0.session == notice.source?.session }))
-        guard available else { return }
-        visibleSource = id; acknowledgeVisibleSource()
+    func detailVisible(session: String, visible: Bool) {
+        guard opened, readingSession == session else { return }
+        visibleNotice = visible ? readingNotice?.id : nil
+        acknowledgeViewedNotice()
     }
     func isPresenting(session: String, notice: String) -> Bool {
-        active && visibleSource == notice && readingSession == session && readingNotice?.id == notice
+        opened && online && active && visibleNotice == notice && readingSession == session && readingNotice?.id == notice
     }
-    private func acknowledgeVisibleSource() {
-        guard online, active, let notice = readingNotice, visibleSource == notice.id, let identity,
-              route == nil || route?.serviceInstance == identity.serviceInstance, readSource != notice.id else { return }
-        readSource = notice.id
+    private func acknowledgeViewedNotice() {
+        guard opened, online, active, let notice = readingNotice, notice.unread, visibleNotice == notice.id, let identity,
+              route == nil || route?.serviceInstance == identity.serviceInstance, readNotice != notice.id else { return }
+        readNotice = notice.id
         send?(.read(serviceInstance: identity.serviceInstance, ids: [notice.id]))
     }
     private func expire(_ request: String) {
@@ -419,8 +415,7 @@ struct SessionWindow: View {
                         LazyVStack(alignment: .leading, spacing: 16) {
                             ForEach(model.entries) { entry in
                                 let notice = model.readingNotice
-                                HistoryRow(entry: entry, targeted: notice?.source?.entry == entry.id,
-                                    visible: { value in if let notice, notice.source?.entry == entry.id { model.sourceVisible(notice.id, entry: entry.id, visible: value) } }).id(entry.id)
+                                HistoryRow(entry: entry, targeted: notice?.source?.entry == entry.id).id(entry.id)
                             }
                             if model.reading { ProgressView("正在读取记录…") }
                             else if !model.done { Button("继续读取") { model.history() } }
@@ -428,27 +423,24 @@ struct SessionWindow: View {
                         }.padding(.top, 8)
                     } label: { Label("历史记录", systemImage: "clock.arrow.circlepath").font(.headline).padding(.vertical, 8) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
-            }.onChange(of: model.entries.map(\.id)) { previous, ids in
+            }
+            .onAppear { model.detailVisible(session: row.id, visible: true) }
+            .onDisappear { model.detailVisible(session: row.id, visible: false) }
+            .onChange(of: model.active) { _, active in if active { model.detailVisible(session: row.id, visible: true) } }
+            .onChange(of: model.readingNotice?.id) { _, _ in model.detailVisible(session: row.id, visible: true) }
+            .onChange(of: model.entries.map(\.id)) { previous, ids in
                 if let target = model.route?.notice.source?.entry, !previous.contains(target), ids.contains(target) { proxy.scrollTo(target, anchor: .center) }
             }
         }
     }
     private func eventContent(_ event: HistoryEvent) -> some View {
-        let notice = model.readingNotice
-        return Text(event.text).textSelection(.enabled)
-            .onScrollVisibilityChange(threshold: 0.1) { visible in
-                if let notice, notice.source?.entry == nil,
-                   notice.source?.event == event.id, notice.source?.session == event.session {
-                    model.sourceVisible(notice.id, event: event.id, visible: visible)
-                }
-            }
+        Text(event.text).textSelection(.enabled)
     }
 }
 
 private struct HistoryRow: View {
     let entry: HistoryEntry
     let targeted: Bool
-    let visible: (Bool) -> Void
     @State private var expanded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -461,7 +453,7 @@ private struct HistoryRow: View {
             if entry.kind.hasPrefix("tool-") && !targeted {
                 DisclosureGroup("查看保存的工具内容", isExpanded: $expanded) { Text(entry.text).textSelection(.enabled) }
             } else {
-                Text(entry.text).font(.callout).lineSpacing(4).textSelection(.enabled).onScrollVisibilityChange(threshold: 0.1, visible)
+                Text(entry.text).font(.callout).lineSpacing(4).textSelection(.enabled)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
             .background(targeted ? MagicStyle.accent.opacity(0.08) : MagicStyle.surface, in: RoundedRectangle(cornerRadius: 12))

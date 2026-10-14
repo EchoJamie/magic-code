@@ -95,6 +95,7 @@ export async function connectManager(socketPath: string, options: ConnectOptions
   let runRevision = 0
   let closeError: Error | undefined
   let pendingEvents: { event: KernelEvent; gen: number | null }[] = []
+  let pendingNotices: RunNotice[] | undefined = []
   let eventsReady = false
   const eventListeners: ((event: KernelEvent, gen: number | null) => void)[] = []
   const targetListeners: ((session: string | null) => void)[] = []
@@ -140,7 +141,8 @@ export async function connectManager(socketPath: string, options: ConnectOptions
         for (const listener of [...resumedListeners]) listener(message.gen, message.snapshot)
         return
       case 'notice':
-        for (const listener of [...noticeListeners]) listener(message.notice)
+        if (pendingNotices !== undefined) pendingNotices.push(message.notice)
+        else for (const listener of [...noticeListeners]) listener(message.notice)
         return
       case 'stopped':
         for (const listener of [...stoppedListeners]) {
@@ -223,7 +225,15 @@ export async function connectManager(socketPath: string, options: ConnectOptions
         for (const value of queued) for (const receive of [...eventListeners]) receive(value.event, value.gen)
       })
     },
-    onNotice: (listener) => { noticeListeners.push(listener) },
+    onNotice(listener) {
+      noticeListeners.push(listener)
+      if (noticeListeners.length !== 1) return
+      queueMicrotask(() => {
+        const queued = pendingNotices ?? []
+        pendingNotices = undefined
+        if (!link.closed) for (const notice of queued) for (const receive of [...noticeListeners]) receive(notice)
+      })
+    },
     onStopped: (listener) => { stoppedListeners.push(listener) },
     onLine: (listener) => { lineListeners.push(listener) },
     onClose: (listener) => { link.onClose((error) => listener(error ?? closeError)) },

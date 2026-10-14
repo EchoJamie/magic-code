@@ -258,6 +258,14 @@ final class NativeTests: XCTestCase {
         let base = try work()
         let idle = try changed(base, ["state": "idle", "action": "", "reason": "", "affected": false, "currentNotice": NSNull()])
         XCTAssertEqual(idle.statusText, "当前空闲")
+        XCTAssertNil(WorkGroup.of(try changed(idle, ["terminalOpen": false])))
+        XCTAssertEqual(WorkGroup.of(try changed(idle, ["terminalOpen": true])), .opened)
+        let unread = try reasonWork(reason())
+        XCTAssertEqual(WorkGroup.of(unread), .results)
+        let read = try changed(unread, ["currentNotice": ["id": "read", "session": unread.session, "kind": "done", "at": 1, "unread": false, "delivered": true, "fact": "read"]])
+        XCTAssertNil(WorkGroup.of(read))
+        XCTAssertEqual(WorkGroup.of(try changed(read, ["terminalOpen": true])), .opened)
+        XCTAssertEqual(RunState.idle.symbol, "circle")
         let historic = try changed(base, ["state": "running", "currentNotice": ["id": "old", "session": base.session, "kind": "failed", "at": 1, "unread": true, "delivered": false, "fact": "old"]])
         XCTAssertEqual(WorkGroup.of(historic), .running, "历史未读失败不能取代当前运行事实")
         let paths = ["/Users/甲/客户/project", "/Users/乙/客户/project"]
@@ -337,14 +345,15 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "two")
         XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     }
-    func testStableGroupsAndAllOpenedWork() throws {
+    func testLiveGroupsKeepOrderWithinCurrentState() throws {
         let initial = try work(); var list = WorkList()
-        let recent = try (0..<14).map { try changed(initial, ["session": "r\($0)", "state": "idle", "affected": false, "currentNotice": NSNull(), "since": $0]) }
+        let recent = try (0..<14).map { try changed(initial, ["session": "r\($0)", "state": "idle", "affected": false, "currentNotice": NSNull(), "terminalOpen": true, "since": $0]) }
         list.update([initial] + recent, interacting: false)
-        XCTAssertEqual(list.rows(.recent, works: [initial] + recent).count, 14)
+        XCTAssertEqual(list.rows(.opened, works: [initial] + recent).count, 14)
         let updated = try changed(initial, ["state": "running", "since": 999, "currentNotice": NSNull()])
         list.update([updated] + recent, interacting: true)
-        XCTAssertEqual(list.rows(.needsYou, works: [updated] + recent).first?.state, .running)
+        XCTAssertTrue(list.rows(.needsYou, works: [updated] + recent).isEmpty)
+        XCTAssertEqual(list.rows(.running, works: [updated] + recent).first?.id, initial.id)
         list.update([updated] + recent, interacting: false)
         XCTAssertTrue(list.rows(.needsYou, works: [updated] + recent).isEmpty)
         XCTAssertEqual(list.rows(.running, works: [updated] + recent).first?.id, initial.id)
@@ -548,13 +557,14 @@ final class NativeTests: XCTestCase {
         XCTAssertFalse(installed.contains("Contents/Helpers/magic-runtime"))
     }
 
-    @MainActor func testStatusPanelNaturalWindowKeepsRecentWorkVisible() async throws {
+    @MainActor func testStatusPanelNaturalWindowKeepsUnreadResultVisible() async throws {
         _ = NSApplication.shared
-        let (model, _) = try controlledModel(options: ["notice": true])
+        let item = try reasonWork(reason())
+        let (model, _) = try controlledModel(options: ["works": [JSONSerialization.jsonObject(with: JSONEncoder().encode(item))]])
         defer { model.systemQuit {} }
         model.start(); try await eventually { model.isCurrent }
         XCTAssertEqual(model.works.count, 1)
-        XCTAssertEqual(model.list.rows(.recent, works: model.works).count, 1)
+        XCTAssertEqual(model.list.rows(.results, works: model.works).count, 1)
         let controller = NSHostingController(rootView: StatusPanel(model: model))
         // 菜单栏按内容的自然尺寸开窗；固定 650 高的截图会掩盖滚动区塌陷。
         let size = controller.view.fittingSize
@@ -1450,76 +1460,52 @@ final class NativeTests: XCTestCase {
         XCTAssertEqual(policy.presentCount, 0)
     }
 
-    @MainActor func testMainWindowHiddenSessionsDoNotReadSourcesAndKeepBrowsingState() async throws {
+    @MainActor func testMainWindowReadsViewedSessionButNotHiddenOrBackgroundDetails() async throws {
         _ = NSApplication.shared
         let activationPolicy = NSApp.activationPolicy()
         NSApp.setActivationPolicy(.accessory)
-        XCTAssertEqual(NSApp.activationPolicy(), .accessory)
         defer { NSApp.setActivationPolicy(activationPolicy) }
         if !NSRunningApplication.current.isFinishedLaunching { NSApp.finishLaunching() }
-        try await appKitEventually { NSRunningApplication.current.activationPolicy == .accessory }
         let (model, _) = try controlledModel(options: [:])
         let notice = reason(), work = try reasonWork(notice), messages = NativeMessages()
         let sessions = model.sessions
         sessions.send = { messages.requests.append($0) }
         sessions.connect(identity: testIdentity, current: true, works: [work])
         sessions.open(); try catalog(sessions, messages, [sessionRow()])
-        sessions.selection = ["one"]; sessions.choose(); sessions.history()
-        try history(sessions, messages, entries: [entry()])
-        sessions.search = "会话"; sessions.workspace = ["/tmp/项目"]
-        // 正文已加载但历史折叠；本测试显式驱动来源可见回调，避免滚动布局提前标读。
-        XCTAssertFalse(sessions.historyExpanded)
         let controller = MainWindowController(model: model)
         model.showMainWindow = { [weak controller] in controller?.show() }
-        let policy = LongLivedWindows.shared, spy = PolicySpy()
-        let real = (policy.current, policy.apply); spy.install(policy)
         let other = offscreenWindow(titled: "Magic Code")
-        other.animationBehavior = .none
         defer {
             other.close(); controller.window?.close(); controller.window?.contentViewController = nil
-            controller.window?.delegate = nil; model.showMainWindow = nil
-            model.requestQuit {}
-            policy.current = real.0; policy.apply = real.1
+            controller.window?.delegate = nil; model.showMainWindow = nil; model.requestQuit {}
         }
         model.manageSessions()
         let window = try XCTUnwrap(controller.window)
-        window.animationBehavior = .none
         try await appKitEventually { window.isVisible && window.isKeyWindow && NSApp.isActive }
-        try catalog(sessions, messages, [sessionRow()])
         other.makeKeyAndOrderFront(nil)
-        try await appKitEventually { other.isKeyWindow && !window.isKeyWindow && NSApp.isActive }
-        sessions.sourceVisible(notice.id, entry: 1, visible: true)
-        XCTAssertTrue(messages.reads.isEmpty, "另一个同名窗口获得焦点不能激活会话读面")
-
+        try await appKitEventually { other.isKeyWindow && !window.isKeyWindow }
+        sessions.selection = ["one"]
+        try await appKitEventually { sessions.detailWork?.session == "one" }
+        sessions.detailVisible(session: "one", visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "后台窗口显示详情不标读")
+        model.manageSessions()
+        try await appKitEventually { window.isKeyWindow && NSApp.isActive && messages.reads == [[notice.id]] }
+        XCTAssertFalse(sessions.historyExpanded, "普通会话查看无需展开历史")
+        sessions.search = "会话"; sessions.workspace = ["/tmp/项目"]
         model.manageSettings()
-        try await appKitEventually { window.isVisible && window.isKeyWindow && NSApp.isActive }
-        model.selectMainPage(.sessions)
-        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
-        XCTAssertTrue(messages.reads.isEmpty, "切回会话不能沿用切页前的来源可见缓存")
-        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
-        model.manageSettings()
-        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
-        sessions.sourceVisible(notice.id, entry: 1, visible: true)
-        XCTAssertTrue(messages.reads.isEmpty, "设置页可见时，即使收到会话来源可见回调也不得标读")
-        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
-        let historyRequests = messages.requests.filter { if case .history = $0 { return true }; return false }.count
-        model.selectMainPage(.sessions)
-        try await appKitEventually { window.isKeyWindow && NSApp.isActive }
+        let next = reason("next"), nextWork = try reasonWork(next)
+        sessions.connect(identity: testIdentity, current: true, works: [nextWork])
+        sessions.detailVisible(session: "one", visible: true)
+        XCTAssertEqual(messages.reads, [[notice.id]], "设置页中的隐藏会话不得标读新提醒")
+        XCTAssertFalse(sessions.isPresenting(session: "one", notice: next.id))
+        model.manageSessions()
+        try await appKitEventually { messages.reads == [[notice.id], [next.id]] }
         XCTAssertTrue(controller.window === window)
         XCTAssertEqual(sessions.search, "会话"); XCTAssertEqual(sessions.workspace, ["/tmp/项目"])
         XCTAssertEqual(sessions.selection, ["one"])
-        XCTAssertEqual(sessions.entries.map(\.text), ["保存的完整回复"])
-        XCTAssertEqual(messages.requests.filter { if case .history = $0 { return true }; return false }.count, historyRequests)
-        if case .sessions(_, let archived, let workspace, let search) = messages.requests.last {
-            XCTAssertEqual(archived, false); XCTAssertEqual(workspace, ["/tmp/项目"]); XCTAssertEqual(search, "会话")
-        } else { XCTFail("切回会话应按保留的筛选重新查询目录") }
-        XCTAssertTrue(messages.reads.isEmpty, "隐藏页迟到的正向回调不得缓存到切回后确认")
-        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
-        sessions.sourceVisible(notice.id, entry: 1, visible: true)
-        XCTAssertEqual(messages.reads, [[notice.id]], "主窗口会话页在前台且来源可见时才标读")
         window.close()
         try await appKitEventually { !window.isVisible && !window.isKeyWindow }
-        XCTAssertFalse(sessions.isPresenting(session: "one", notice: notice.id))
+        XCTAssertFalse(sessions.isPresenting(session: "one", notice: next.id))
         try await eventually { !model.settingsBusy }
     }
 }
@@ -1643,60 +1629,43 @@ extension NativeTests {
         model.open(route: route)
         XCTAssertTrue(model.compactDetail, "再次打开同一提醒也应恢复详情，不依赖 notice ID 变化")
         XCTAssertEqual(model.route, route)
-        XCTAssertTrue(messages.reads.isEmpty, "导航本身不是来源已读")
+        XCTAssertTrue(messages.reads.isEmpty, "仅导航状态变化不等于详情已显示")
     }
-    @MainActor func testCurrentRequestSourceAcknowledgesOnlyWhileVisibleInForeground() throws {
-        let notice = reason(entry: nil, event: 8), work = try reasonWork(notice)
+    @MainActor func testOpeningSessionDetailReadsNoticeWithoutExpandingHistory() async throws {
+        for width in [1000.0, 460.0] {
+            let notice = reason(), work = try reasonWork(notice)
+            let (model, messages) = browser(works: [work])
+            try catalog(model, messages, [sessionRow()])
+            model.selection = ["one"]; model.choose()
+            let window = try await hostView(SessionWindow(model: model), size: NSSize(width: width, height: 620), appearance: .darkAqua)
+            defer { window.close() }
+            model.windowActive(true)
+            if width < 700 {
+                XCTAssertTrue(messages.reads.isEmpty, "窄窗仅选中列表行不算打开详情")
+                model.showDetail()
+            }
+            try await eventually { messages.reads == [[notice.id]] }
+            XCTAssertFalse(model.historyExpanded, "查看会话不依赖展开历史或滚动到某条来源")
+        }
+    }
+    @MainActor func testViewedSessionReadsOnlyItsNoticeWithoutSourceAnchorOrApproval() throws {
+        let notice = reason(entry: nil, event: nil), work = try reasonWork(notice)
         let (model, messages) = browser(works: [work])
         try catalog(model, messages, [sessionRow()])
-        model.selection = ["one"]; model.choose(); model.showDetail(); model.history()
-        let event = HistoryEvent(turn: nil, id: 8, session: "one", at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
-        try history(model, messages, entries: [], currentRequests: [event])
-        XCTAssertTrue(model.events.isEmpty, "当前待答来源不依赖历史 events 重复提供")
-        XCTAssertEqual(model.currentRequests, [event])
+        model.selection = ["one"]; model.choose()
         model.windowActive(true)
-        XCTAssertTrue(messages.reads.isEmpty, "只收到待答内容不能标读")
-        model.sourceVisible("another-notice", event: 8, visible: true)
-        XCTAssertTrue(messages.reads.isEmpty, "其他提醒的可见回调不能标读当前提醒")
-        model.windowActive(false)
-        model.sourceVisible(notice.id, event: 8, visible: true)
-        XCTAssertTrue(messages.reads.isEmpty, "后台可见不标读")
-        model.sourceVisible(notice.id, event: 8, visible: false)
+        XCTAssertTrue(messages.reads.isEmpty, "仅目录选择不标读")
+        model.detailVisible(session: "another", visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "其他会话的迟到显示回调不能标读当前会话")
+        model.windowActive(false); model.detailVisible(session: "one", visible: true)
+        XCTAssertTrue(messages.reads.isEmpty, "后台详情不标读")
         model.windowActive(true)
-        XCTAssertTrue(messages.reads.isEmpty, "回到前台时来源已离开视口，不得补标")
-        model.sourceVisible(notice.id, event: 8, visible: true)
         XCTAssertEqual(messages.reads, [[notice.id]])
-        if case .read(let service, let ids) = messages.requests.last {
-            XCTAssertEqual(service, testIdentity.serviceInstance); XCTAssertEqual(ids, [notice.id])
-        } else { XCTFail("实际可见的当前待答来源应发送标读请求") }
-        model.sourceVisible(notice.id, event: 8, visible: true)
-        model.windowActive(false); model.windowActive(true)
-        XCTAssertEqual(messages.reads.count, 1, "同一来源的重复可见与前台事件不重复标读")
-    }
-    @MainActor func testCurrentRequestSourceRejectsMismatchEntryShortcutAndOldInstance() throws {
-        let cases: [(label: String, eventID: Int, session: String, entryID: Int?, service: String)] = [
-            ("不同事件", 9, "one", nil, testIdentity.serviceInstance),
-            ("不同会话", 8, "two", nil, testIdentity.serviceInstance),
-            ("entry 优先", 8, "one", 1, testIdentity.serviceInstance),
-            ("旧实例", 8, "one", nil, "older-generation")
-        ]
-        for scenario in cases {
-            let notice = reason(entry: scenario.entryID, event: 8), work = try reasonWork(notice)
-            let (model, messages) = browser(works: [work])
-            model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: scenario.service, session: "one", notice: notice))
-            model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: work, error: nil))
-            try catalog(model, messages, [sessionRow()])
-            let event = HistoryEvent(turn: nil, id: scenario.eventID, session: scenario.session, at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
-            try history(model, messages, entries: scenario.entryID.map { [entry($0)] } ?? [], currentRequests: [event])
-            XCTAssertTrue(model.events.isEmpty)
-            model.windowActive(true)
-            model.sourceVisible(notice.id, event: 8, visible: true)
-            XCTAssertTrue(messages.reads.isEmpty, "\(scenario.label)不能通过当前待答事件误标")
-            if let entryID = scenario.entryID {
-                model.sourceVisible(notice.id, entry: entryID, visible: true)
-                XCTAssertEqual(messages.reads, [[notice.id]], "有 entry 时须看到对应正文才标读")
-            }
-        }
+        model.detailVisible(session: "one", visible: true)
+        XCTAssertEqual(messages.reads.count, 1)
+        model.close(); model.detailVisible(session: "one", visible: true)
+        XCTAssertFalse(model.isPresenting(session: "one", notice: notice.id))
+        XCTAssertFalse(messages.requests.contains { if case .manage = $0 { return true }; if case .stop = $0 { return true }; return false })
     }
     @MainActor func testSessionViewsKeepFiltersSelectionAndResumeReading() throws {
         let (model, messages) = browser()
@@ -1777,9 +1746,7 @@ extension NativeTests {
         let event = HistoryEvent(turn: nil, id: 2, session: "one", at: 1, kind: "turn.end", data: .object([:]))
         try history(model, messages, entries: [entry()], events: [event])
         model.windowActive(true)
-        model.sourceVisible(old.id, event: 2, visible: true)
-        XCTAssertTrue(messages.reads.isEmpty, "有 entry 的来源不能因 turn.end 事件可见就已读")
-        model.sourceVisible(old.id, entry: 1, visible: true)
+        model.detailVisible(session: "one", visible: true)
         XCTAssertEqual(messages.reads, [["old"]]); XCTAssertFalse(model.routeIsCurrent)
         XCTAssertEqual(model.detailWork?.currentNotice?.id, "new")
         let archived = try reasonWork(new, archived: true)
@@ -1790,7 +1757,7 @@ extension NativeTests {
         XCTAssertEqual(model.entries.first?.text, "保存的完整回复", "通知退出和归档不移走已阅读正文")
         XCTAssertEqual(model.route, route)
     }
-    @MainActor func testSourceNeedsForegroundAndMatchingVisibleContentAndGeneration() throws {
+    @MainActor func testNoticeDetailNeedsForegroundAndMatchingGeneration() throws {
         let notice = reason(entry: nil, event: 8), work = try reasonWork(notice)
         let (model, messages) = browser(works: [work])
         model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: "older-generation", session: "one", notice: notice))
@@ -1798,15 +1765,15 @@ extension NativeTests {
         try catalog(model, messages, [sessionRow()])
         let event = HistoryEvent(turn: nil, id: 8, session: "one", at: 1, kind: "tool.decision.request", data: .object(["material": .string("需要确认的操作")]))
         try history(model, messages, entries: [], events: [event])
-        model.windowActive(true); model.sourceVisible(notice.id, event: 8, visible: true)
+        model.windowActive(true); model.detailVisible(session: "one", visible: true)
         XCTAssertTrue(messages.reads.isEmpty, "旧实例来源可读，但不能回执到新实例")
         model.open(route: NoticeRoute(base: testIdentity.base, serviceInstance: testIdentity.serviceInstance, session: "one", notice: notice))
         model.receive(.inspected(request: try XCTUnwrap(messages.inspect), work: work, error: nil))
         try history(model, messages, entries: [], events: [event])
-        model.windowActive(false); model.sourceVisible(notice.id, event: 8, visible: true)
+        model.windowActive(false); model.detailVisible(session: "one", visible: true)
         XCTAssertTrue(messages.reads.isEmpty)
         model.windowActive(true); XCTAssertEqual(messages.reads, [[notice.id]])
-        model.sourceVisible(notice.id, event: 8, visible: true); XCTAssertEqual(messages.reads.count, 1)
+        model.detailVisible(session: "one", visible: true); XCTAssertEqual(messages.reads.count, 1)
     }
     @MainActor func testNotificationCrossBaseKeepsTargetWithoutQueryOrSwitch() throws {
         let (model, messages) = browser(); let before = messages.requests.count
