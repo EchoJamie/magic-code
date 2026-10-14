@@ -93,8 +93,6 @@ def observe(client):
                 value = projection()
                 trace('welcome-sent', projection=value)
                 send(client, {'t': 'native.welcome', 'identity': identity, 'projection': value})
-                barrier = base / 'welcome-barrier.json'
-                if barrier.exists(): send(client, {'t': 'native.attached', **json.loads(barrier.read_text())})
             elif message['t'] == 'native.sessions':
                 rows = options.get('works', [work()] if options.get('notice') else [])
                 sessions = [{'id': row['session'], 'title': row['title'], 'at': row['since'], 'workspace': row['workspace'],

@@ -63,9 +63,9 @@ App 以 `--validation-root` 隔离启动，装置自己起、自己收（不给 
 
 两条读数口径（实测，别再踩）：`NSRunningApplication.activationPolicy` 是**启动时的快照**，切了策略它不变，不能拿它判；`NSWindow` 的「被 order out」没有通知，只能盯 `isVisible`（KVO）。
 
-## Terminal：f017同版包已实测
+## 历史 Terminal 验收：f017 同版包
 
-生产 TerminalLauncher 有 Debug 限定的隔离录制装置：NSWorkspace 仍打开实际私有 `.command`，CLI 始终是当前 App 的 `Contents/Helpers/magic-runtime`。validation root 来自参数或独立测试 bundle 的固定根，清空继承环境，设置相同临时 HOME/ZDOTDIR、MAGIC_HOME、最小 PATH；用系统 `script` 留本次 PTY 输出。不能只设 MAGIC_HOME，因为 CLI 的固定 host.json 发现根来自 `os.homedir()`。
+以下记录对应已移除的自动启动入口。该版本 TerminalLauncher 使用 Debug 限定的隔离录制装置：NSWorkspace 打开实际私有 `.command`，CLI 始终是当前 App 的 `Contents/Helpers/magic-runtime`。validation root 来自参数或独立测试 bundle 的固定根，清空继承环境，设置相同临时 HOME/ZDOTDIR、MAGIC_HOME、最小 PATH；用系统 `script` 留本次 PTY 输出。不能只设 MAGIC_HOME，因为 CLI 的固定 host.json 发现根来自 `os.homedir()`。
 
 f017包已跑通2例：新草稿（仅 open request、session=null）和一条 loopback 模型生成的已完成会话（session+open request），原件 `terminal-core-f0172b0/`。均等待生产 App observer 收到匹配 `native.attached` 并清掉 Pending；NSWorkspace 回调或 CLI 进程存在都不是成功。helper/native/source-input的确切hash见 `final-artifacts.json`、独立副本 `current-identity.json`。
 

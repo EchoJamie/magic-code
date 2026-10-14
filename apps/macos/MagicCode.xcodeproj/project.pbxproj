@@ -28,7 +28,7 @@ E4E5BA979364B5EF84D0AD22 = { isa = PBXFileReference; lastKnownFileType = sourcec
 6E47F64E21D7D0A878E096D4 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MagicCode/StatusBar/StatusPanel.swift"; sourceTree = "<group>"; };
 A347379FA1298625E81C80D8 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MagicCode/StatusBar/WorkList.swift"; sourceTree = "<group>"; };
 C41D7E2B90A3F5816470D2E1 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MagicCode/StatusBar/MenuBarMark.swift"; sourceTree = "<group>"; };
-86904828F8250BEF557F1FB6 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MagicCode/Terminal/TerminalLauncher.swift"; sourceTree = "<group>"; };
+86904828F8250BEF557F1FB6 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MagicCode/Terminal/TerminalCommand.swift"; sourceTree = "<group>"; };
 E9B658082E76CAB83D6DA842 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MagicCodeTests/NativeTests.swift"; sourceTree = "<group>"; };
 6D795F13C8C22E022040EE00 = { isa = PBXFileReference; explicitFileType = wrapper.application; path = "Magic Code.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 AEAE4B28CDFF08F590396BA5 = { isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = MagicCodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };

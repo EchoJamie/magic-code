@@ -357,7 +357,7 @@ final class NativeTests: XCTestCase {
         try PrivateFiles.write(Data("#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"${MAGIC_HOME-unset}\" \"$@\"\n".utf8), to: helper, mode: 0o700)
         let session = "session '; echo injected; #"
         for base in [room.appendingPathComponent("实例 ' \" $(echo injected) 空格"), room] {
-            let command = TerminalCommand.make(helper: helper, workspace: workspace, base: base, session: session, request: nil)
+            let command = TerminalCommand.make(helper: helper, workspace: workspace, base: base, session: session)
             let process = Process(); let output = Pipe()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh"); process.arguments = ["-f", "-c", command]; process.standardOutput = output
             process.environment = ["MAGIC_HOME": "/wrong-instance", "PATH": "/usr/bin:/bin"]
@@ -370,41 +370,8 @@ final class NativeTests: XCTestCase {
     }
     func testDefaultInstalledResumeCommandKeepsOnlyRequiredLocation() {
         let command = TerminalCommand.make(helper: URL(fileURLWithPath: "/Users/example/.local/bin/magic"),
-            workspace: URL(fileURLWithPath: "/Users/example/project"), base: URL(fileURLWithPath: "/Users/example"), session: "session-one", request: nil)
+            workspace: URL(fileURLWithPath: "/Users/example/project"), base: URL(fileURLWithPath: "/Users/example"), session: "session-one")
         XCTAssertEqual(command, "cd -- '/Users/example/project' && MAGIC_HOME='/Users/example' '/Users/example/.local/bin/magic' resume 'session-one'")
-    }
-    @MainActor func testTerminalNeedsMatchingAttachmentAndDeduplicates() throws {
-        let root = try temp(); let launcher = TerminalLauncher(directory: root.appendingPathComponent("terminal"))
-        var opened: [URL] = []; launcher.openFile = { url, completion in opened.append(url); completion(nil) }
-        for _ in 0..<2 { launcher.open(helper: root.appendingPathComponent("helper"), workspace: root, base: root) }
-        XCTAssertEqual(opened.count, 1)
-        let pending = try XCTUnwrap(launcher.pending["new-draft"])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: pending.file.path))
-        launcher.attached(request: pending.request, session: "wrong"); XCTAssertEqual(launcher.pending.count, 1)
-        launcher.attached(request: pending.request, session: pending.session)
-        XCTAssertTrue(launcher.pending.isEmpty); XCTAssertFalse(FileManager.default.fileExists(atPath: pending.file.path))
-        launcher.open(helper: root.appendingPathComponent("helper"), workspace: root, base: root)
-        XCTAssertEqual(opened.count, 2)
-    }
-    @MainActor func testTerminalValidationCommandIsolatesHomeAndKeepsTTY() throws {
-        let room = try temp(); let launcher = TerminalLauncher(directory: room.appendingPathComponent("commands"))
-        launcher.validationHome = room
-        let helper = room.appendingPathComponent("helper")
-        let received = room.appendingPathComponent("received")
-        let script = "#!/bin/zsh -f\n[[ -t 0 ]] || exit 4\n[[ -z \"$FAKE_SECRET\" ]] || exit 5\nprintf '%s\\n' \"$HOME\" \"$MAGIC_HOME\" \"$PWD\" \"$@\" > \(TerminalCommand.quote(received.path))\n"
-        try PrivateFiles.write(Data(script.utf8), to: helper, mode: 0o700)
-        var file: URL?; launcher.openFile = { url, done in file = url; done(nil) }
-        launcher.open(helper: helper, workspace: room, base: room)
-        let pending = try XCTUnwrap(launcher.pending.values.first)
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        process.arguments = ["-q", room.appendingPathComponent("outer-tty.log").path, "/bin/zsh", "-f", try XCTUnwrap(file).path]
-        process.environment = ["HOME": "/does-not-contain-user-data", "MAGIC_HOME": "/wrong-base", "FAKE_SECRET": "must-not-propagate", "PATH": "/usr/bin:/bin"]
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try process.run(); process.waitUntilExit(); XCTAssertEqual(process.terminationStatus, 0)
-        XCTAssertEqual(try String(contentsOf: received, encoding: .utf8).split(separator: "\n").map(String.init),
-                       [room.path, room.path, room.path, "--open-request", pending.request])
-        XCTAssertEqual(try String(contentsOf: room.appendingPathComponent("terminal-evidence/\(pending.request)/exit-code"), encoding: .utf8), "0\n")
-        XCTAssertTrue(launcher.attached(request: pending.request, session: nil))
     }
     func testCLIConflictAndOwnedRemoval() throws {
         let root = try temp(); let helper = root.appendingPathComponent("App.app/Contents/Helpers/magic-runtime"); let link = root.appendingPathComponent("bin/magic")
@@ -429,8 +396,7 @@ final class NativeTests: XCTestCase {
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: app.appendingPathComponent("Contents/Info.plist"))
         try JSONSerialization.data(withJSONObject: options).write(to: room.appendingPathComponent("control.json"))
         let model = AppModel(appURL: app, validationRoot: room, notificationPort: notifications ?? NotificationCoordinator(send: { _ in XCTFail("不得发系统通知") }))
-        model.terminal.copyText = { _ in }
-        model.terminal.openFile = { _, completion in completion(nil) }
+        model.copyText = { _ in }
         return (model, room)
     }
     @MainActor private func eventually(_ condition: () -> Bool, seconds: Double = 5, file: StaticString = #filePath, line: UInt = #line) async throws {
@@ -445,34 +411,25 @@ final class NativeTests: XCTestCase {
     private func observerCommand(_ room: URL, _ command: [String: Any]) throws {
         try JSONSerialization.data(withJSONObject: command).write(to: room.appendingPathComponent("observer-command.json"), options: .atomic)
     }
-    @MainActor private func welcomeBarrier(_ model: AppModel, _ room: URL) throws {
-        // This pending Terminal collector request is only a FIFO receive barrier;
-        // no actual CLI/session is created by the controlled helper.
-        model.terminal.open(helper: model.helperURL, workspace: room, base: room)
-        let request = try XCTUnwrap(model.terminal.pending["new-draft"])
-        try JSONSerialization.data(withJSONObject: ["request": request.request, "session": NSNull()])
-            .write(to: room.appendingPathComponent("welcome-barrier.json"), options: .atomic)
-    }
     @MainActor func testAppModelSameRevisionWelcomeRecoversWithoutNewHost() async throws {
         let (model, room) = try controlledModel(options: ["revision": 7, "notice": true, "observerControl": true])
-        model.terminal.openFile = { _, completion in completion(nil) }
         model.start(); try await eventually { model.isCurrent }
         let identity = try XCTUnwrap(model.identity); let original = model.projection
-        try welcomeBarrier(model, room)
+        var welcomed = 0
+        let observation = model.$phase.dropFirst().sink { if $0 == .ready { welcomed += 1 } }
+        defer { observation.cancel() }
         model.refreshAfterWake()
-        try await eventually { model.terminal.pending["new-draft"] == nil }
-        XCTAssertEqual(model.phase, .ready, "同连接 welcome 后的匹配 attached 已被 AppModel 处理，应恢复 ready")
+        try await eventually { welcomed >= 1 }
+        XCTAssertEqual(model.phase, .ready, "同连接的新 welcome 已被 AppModel 处理，应恢复 ready")
         XCTAssertEqual(model.projection, original)
-        try welcomeBarrier(model, room)
         try observerCommand(room, ["disconnect": true])
         try await eventually { model.phase == .unreachable }
-        try await eventually { model.terminal.pending["new-draft"] == nil }
-        XCTAssertEqual(model.phase, .ready, "故障自动重连的 welcome 后匹配 attached 已处理，应恢复 ready")
-        try welcomeBarrier(model, room)
+        try await eventually { welcomed >= 2 }
+        XCTAssertEqual(model.phase, .ready, "故障自动重连的新 welcome 已处理，应恢复 ready")
         try observerCommand(room, ["disconnect": true])
         try await eventually { model.phase == .unreachable }
         model.retry()
-        try await eventually { model.terminal.pending["new-draft"] == nil }
+        try await eventually { welcomed >= 3 }
         XCTAssertEqual(model.phase, .ready)
         XCTAssertEqual(model.identity, identity); XCTAssertEqual(model.projection, original)
         XCTAssertEqual(traces(room).filter { $0["event"] as? String == "started" }.count, 1)
@@ -485,9 +442,11 @@ final class NativeTests: XCTestCase {
         let identity = try XCTUnwrap(model.identity)
         try observerCommand(room, ["message": ["t": "native.projection", "projection": ["serviceInstance": identity.serviceInstance, "revision": 9, "accepting": false, "works": []]]])
         try await eventually { model.phase == .stopping }
-        model.terminal.openFile = { _, completion in completion(nil) }
-        try welcomeBarrier(model, room); model.refreshAfterWake()
-        try await eventually { model.terminal.pending["new-draft"] == nil }
+        var welcomed = false
+        let observation = model.$phase.dropFirst().sink { if $0 == .stopping { welcomed = true } }
+        defer { observation.cancel() }
+        model.refreshAfterWake()
+        try await eventually { welcomed }
         XCTAssertEqual(model.phase, .stopping)
         XCTAssertEqual(model.projection?.revision, 9); XCTAssertEqual(model.projection?.accepting, false)
         let encodedIdentity = try JSONSerialization.jsonObject(with: JSONEncoder().encode(identity))
@@ -569,9 +528,8 @@ final class NativeTests: XCTestCase {
     @MainActor func testWorkResumeOnlyCopiesAndKeepsInstanceAndWorkspace() async throws {
         let (model, room) = try controlledModel(options: ["notice": true])
         defer { model.systemQuit {} }
-        var opened = 0; var copies: [String] = []
-        model.terminal.openFile = { _, done in opened += 1; done(nil) }
-        model.terminal.copyText = { copies.append($0) }
+        var copies: [String] = []
+        model.copyText = { copies.append($0) }
         model.start(); try await eventually { model.isCurrent }
         let item = try changed(XCTUnwrap(model.works.first), ["workspace": [room.appendingPathComponent("中文 空格 ' \" $()").path]])
         model.inspect(item)
@@ -581,8 +539,7 @@ final class NativeTests: XCTestCase {
         XCTAssertTrue(command.contains(" resume 'session-completed'"))
         XCTAssertTrue(command.contains(TerminalCommand.quote(item.workspace[0])))
         XCTAssertTrue(command.contains("MAGIC_HOME=\(TerminalCommand.quote(room.path))"))
-        XCTAssertFalse(command.contains("--open-request")); XCTAssertEqual(opened, 0)
-        XCTAssertTrue(model.terminal.pending.isEmpty)
+        XCTAssertFalse(command.contains("--open-request"))
         XCTAssertFalse(traces(room).contains { ($0["message"] as? [String: Any])?["t"] as? String == "native.inspect" })
         let link = URL(fileURLWithPath: model.cliDirectory).appendingPathComponent("magic")
         try CLIInstallation.install(helper: model.helperURL, at: link, app: model.appURL)
@@ -698,8 +655,8 @@ final class NativeTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
             let document = try XCTUnwrap(scroll.documentView)
             XCTAssertGreaterThanOrEqual(scroll.contentView.bounds.maxY + 1, document.bounds.maxY)
-            var copied: String?; idle.terminal.copyText = { copied = $0 }
-            idle.terminal.copy(idle.cliDirectory); XCTAssertEqual(copied, idle.cliDirectory)
+            var copied: String?; idle.copyText = { copied = $0 }
+            idle.copyText(idle.cliDirectory); XCTAssertEqual(copied, idle.cliDirectory)
         }
         var idleFinished = false; idle.requestQuit { idleFinished = true }; try await eventually { idleFinished }
     }

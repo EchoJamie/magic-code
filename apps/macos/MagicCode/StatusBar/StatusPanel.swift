@@ -99,13 +99,11 @@ struct StatusPanel: View {
                 }
             }
             if let message = model.actionMessage { Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-            TerminalStatus(terminal: model.terminal)
             if model.selected == nil {
                 if !rows.isEmpty { Divider() }
                 if model.diagnostics.debugMode && surface == .menu { Button("打开调试窗口") { model.showDebugWindow?() } }
                 HStack {
                     Button("管理会话", systemImage: "rectangle.split.2x1") { model.manageSessions(); dismiss() }.buttonStyle(.borderedProminent)
-                    Button("打开终端", systemImage: "terminal") { model.newTerminal() }
                     Spacer()
                     Menu {
                         Button("刷新 Engine 状态") { model.refreshAfterWake() }.disabled(model.engineBusy)
@@ -120,6 +118,7 @@ struct StatusPanel: View {
             }
         }
         .padding(18).frame(width: width).background(MagicStyle.canvas).tint(MagicStyle.accent)
+        .background(InitialContentFocus())
         .onAppear { model.panelVisibility(true, surface: surface) }
         .onDisappear { model.panelVisibility(false, surface: surface) }
         .onChange(of: model.selected) { old, selected in
@@ -296,7 +295,7 @@ private struct WorkDetail: View {
                         if !work.workspace.isEmpty {
                             DisclosureGroup("工作区路径", isExpanded: $pathsExpanded) {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    ForEach(work.workspace, id: \.self) { path in FullPath(label: "工作区路径", path: path) { model.terminal.copy(path) } }
+                                    ForEach(work.workspace, id: \.self) { path in FullPath(label: "工作区路径", path: path) { model.copyText(path) } }
                                 }.padding(.top, 8)
                             }
                         }
@@ -315,18 +314,6 @@ extension RunState {
     var color: Color { switch self { case .waiting: MagicStyle.accent; case .running: .blue; case .idle: .green; case .unknown: .orange; case .stopped, .stopping: .secondary } }
     var title: String { switch self { case .running: "正在执行"; case .waiting: "等待你的答复"; case .stopping: "正在停止"; case .stopped: "已停止"; case .idle: "当前空闲"; case .unknown: "状态待确认" } }
     var mark: String { switch self { case .running: "●"; case .waiting: "◊"; case .stopping: "●"; case .stopped, .idle: "○"; case .unknown: "■" } }
-}
-
-struct TerminalStatus: View {
-    @ObservedObject var terminal: TerminalLauncher
-    var body: some View {
-        if let message = terminal.message {
-            HStack {
-                Text(message).font(.caption).foregroundStyle(.secondary)
-                if let command = terminal.fallbackCommand { Button("复制命令") { terminal.copy(command) }.font(.caption) }
-            }
-        }
-    }
 }
 
 struct QuitImpactList: View {

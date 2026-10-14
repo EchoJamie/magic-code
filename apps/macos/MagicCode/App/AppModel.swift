@@ -49,7 +49,6 @@ import ServiceManagement
     /// 系统拒绝时它仍可以是开——那是用户的意图本身，不是需要藏起来的第二个真相。
     @Published var notificationsEnabled: Bool
     @Published var cliDirectory: String
-    @Published var projectDirectory: URL?
     #if DEBUG
     @Published private(set) var systemTestAuthorization = Set<String>()
     #endif
@@ -60,7 +59,7 @@ import ServiceManagement
     let userHome: URL
     let isValidation: Bool
     let publication: HostPublication
-    let terminal: TerminalLauncher
+    var copyText: (String) -> Void = { text in NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
     let notifications: NotificationCoordinator
     var removeCLILink: (URL, URL) throws -> Void = { try CLIInstallation.remove(link: $0, helper: $1) }
     private let defaults: UserDefaults
@@ -112,7 +111,6 @@ import ServiceManagement
         notificationsEnabled = defaults.object(forKey: "notificationsEnabled") as? Bool ?? true
         let support = userHome.appendingPathComponent("Library/Application Support/Magic Code/runtime")
         publication = HostPublication(directory: support)
-        terminal = TerminalLauncher(directory: support.appendingPathComponent("terminal"))
         notifications = notificationPort ?? NotificationCoordinator()
         fileLog.changed = { [weak self] problem in self?.logProblem = problem }
         notifications.preference = notificationsEnabled
@@ -121,19 +119,15 @@ import ServiceManagement
             guard let self else { return }
             let link = URL(fileURLWithPath: self.cliDirectory).appendingPathComponent("magic")
             let executable = (try? CLIInstallation.belongs(link, helper: self.helperURL)) == true ? link : self.helperURL
-            self.terminal.copy(TerminalCommand.make(helper: executable,
+            self.copyText(TerminalCommand.make(helper: executable,
                 workspace: session.workspace?.first.map { URL(fileURLWithPath: $0) } ?? self.userHome,
-                base: self.effectiveBase, session: session.id, request: nil))
+                base: self.effectiveBase, session: session.id))
         }
         notifications.userLooking = { [weak self] session, id in self?.sessions.isPresenting(session: session, notice: id) == true }
         notifications.currentWorks = { [weak self] sessions in await self?.currentNoticeWorks(sessions) ?? [] }
         notifications.failure = { [weak self] text in self?.actionMessage = text }
         notifications.openRoute = { [weak self] route in self?.openNotification(route) }
         #if DEBUG
-        if let validationRoot {
-            terminal.validationHome = validationRoot
-            terminal.validationEvent = { [weak self] event, detail in self?.validationEvent(event, detail: detail) }
-        }
         if let root = systemTestRoot {
             refreshSystemTestAuthorization()
             notifications.deliveryAudit = { [weak self] delivery in
@@ -147,12 +141,9 @@ import ServiceManagement
                 do { try PrivateFiles.write(JSONSerialization.data(withJSONObject: requests, options: [.prettyPrinted, .sortedKeys]), to: file); return true }
                 catch { self.actionMessage = error.localizedDescription; return false }
             }
-            // Only the explicitly installed fixture substitutes the Terminal port.
+            // Only the explicitly installed fixture substitutes the clipboard.
             if FileManager.default.fileExists(atPath: appURL.appendingPathComponent("Contents/Resources/controlled-helper.py").path) {
-                terminal.copyText = { [weak self] text in self?.validationEvent("system-test.copy", detail: text) }
-                terminal.openFile = { [weak self] file, completion in
-                    self?.validationEvent("system-test.terminal-request", detail: file.path); completion(nil)
-                }
+                copyText = { [weak self] text in self?.validationEvent("system-test.copy", detail: text) }
             }
         }
         #endif
@@ -177,7 +168,6 @@ import ServiceManagement
     }
 
     func start() {
-        terminal.cleanupExpired()
         engine(CommandLine.arguments.contains("--settings") ? "status" : "start")
         readSettings()
             if !isValidation {
@@ -310,11 +300,7 @@ import ServiceManagement
             actionMessage = note ?? (phase == .accepted ? "正在停止任务…" : phase == .done ? "任务已停止" : "尚未确认停止，请查看当前状态")
             if phase != .accepted { stoppingRequests.removeValue(forKey: request) }
             observer?.send(.refresh)
-        case .attached(let request, let session):
-            if terminal.attached(request: request, session: session) {
-                validationEvent("terminal.attached", detail: "request=\(request), session=\(session ?? "null")")
-            }
-        case .engineResult: break
+        case .attached, .engineResult: break
         case .error(let reason): disconnectInspection(); phase = .fault(reason)
         }
     }
@@ -506,17 +492,14 @@ import ServiceManagement
         let request = UUID().uuidString
         sessions.manage([SessionManagement(session: work.session, action: "archive")], request: request)
     }
-    func newTerminal() {
-        terminal.open(helper: helperURL, workspace: projectDirectory ?? userHome, base: effectiveBase)
-    }
     func resumeCommand(_ work: NativeWork) -> String {
         let link = URL(fileURLWithPath: cliDirectory).appendingPathComponent("magic")
         let executable = (try? CLIInstallation.belongs(link, helper: helperURL)) == true ? link : helperURL
         return TerminalCommand.make(helper: executable, workspace: work.workspace.first.map { URL(fileURLWithPath: $0) } ?? userHome,
-                                    base: effectiveBase, session: work.session, request: nil)
+                                    base: effectiveBase, session: work.session)
     }
     func copyCommand(_ work: NativeWork) {
-        terminal.copy(resumeCommand(work))
+        copyText(resumeCommand(work))
         actionMessage = "已复制"
     }
     func openNotification(_ route: NoticeRoute) {

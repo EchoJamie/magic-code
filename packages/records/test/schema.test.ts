@@ -3,7 +3,7 @@
  *
  * 判据 3：`model.delta` · `tool.output.delta` 不落库（按 `TRANSIENT_EVENT_KINDS`）——
  * 且**别的 kind 照落**（清单是白名单式的排除，不是「什么都不写」）。
- * 判据 4：`user_version` 自始写入；重开连接**续写**（append-only，不回改）。
+ * 判据 4：按实际结构补齐；重开连接**续写**（append-only，不回改）。
  * 判据 6：`dataDir` 的前导 `~` 由**配置加载器**展开，**库不展开**。
  */
 
@@ -13,7 +13,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
-  RECORD_SCHEMA_VERSION,
   TRANSIENT_EVENT_KINDS,
   expandHome,
 } from '@magic/contracts'
@@ -25,7 +24,7 @@ import type {
   KernelEvent,
   RecordId,
 } from '@magic/contracts'
-import { createRecordsStore } from '../src/index.ts'
+import { createRecordsStore, readSessionSummary } from '../src/index.ts'
 import {
   databasePathOf,
   hasTildeDir,
@@ -36,7 +35,7 @@ import {
 const SESSION = 's-schema'
 const T0 = 1_700_000_000_000
 
-/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件量的是库表与版本，与归属无关。 */
+/** 工作区根（U26 起 `createRecordsStore` 必给）——本文件量的是库表结构，与归属无关。 */
 const ROOTS = ['/work/alpha']
 
 /** 条目的内联正文——`Content` 是两选一，测试里按判别取文本（取不到即空串）。 */
@@ -182,8 +181,43 @@ describe('判据 3 · 不落库清单', () => {
   })
 })
 
-describe('判据 4 · schema（版本 · 重开续写）', () => {
-  test('新建即认版本：记录、事项与协作表同库、文件在、版本号＝契约常量', () => {
+describe('判据 4 · schema（结构 · 重开续写）', () => {
+  test('已有记录缺归档和提醒来源字段时补齐，原记录保留并可续写', async () => {
+    const dir = tempDataDir()
+    try {
+      const first = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      const id = first.serviceFor(SESSION).appendEntry({ kind: 'user', content: { text: '保留原记录' }, at: T0 })
+      first.setSessionTitle(SESSION, '原会话', T0)
+      first.attention.put({ id: 'notice', session: SESSION, kind: 'done', fact: '原提醒', at: T0, unread: true, delivered: false })
+      first.close()
+      const old = new Database(databasePathOf(dir))
+      old.exec('ALTER TABLE sessions DROP COLUMN archived; ALTER TABLE attention_items DROP COLUMN source; PRAGMA user_version=1')
+      const entries = old.query('SELECT * FROM entries').all()
+      const attention = old.query('SELECT * FROM attention_items').all()
+      old.close()
+
+      const reopened = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      try {
+        expect(await reopened.listSessions()).toEqual([{ id: SESSION, at: T0, title: '原会话', workspace: ROOTS, archived: false }])
+        expect(reopened.attention.list()).toEqual([{ id: 'notice', session: SESSION, kind: 'done', fact: '原提醒', at: T0, unread: true, delivered: false }])
+        const snapshot = new Database(databasePathOf(dir), { readonly: true })
+        try {
+          expect(snapshot.query('SELECT * FROM entries').all()).toEqual(entries)
+          expect(snapshot.query('SELECT id, session, kind, fact, at, detail, unread, delivered FROM attention_items').all()).toEqual(attention)
+          expect(snapshot.query('PRAGMA user_version').get()).toEqual({ user_version: 1 })
+        } finally { snapshot.close() }
+        expect(reopened.serviceFor(SESSION).appendEntry({ kind: 'assistant', content: { text: '继续写入' }, at: T0 + 1 })).toBeGreaterThan(id)
+      } finally { reopened.close() }
+      expect(readSessionSummary(dir, SESSION)?.title).toBe('原会话')
+      const again = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      try {
+        const texts = []
+        for await (const entry of again.readEntries(SESSION)) texts.push(textOf(entry))
+        expect(texts).toEqual(['保留原记录', '继续写入'])
+      } finally { again.close() }
+    } finally { removeDataDir(dir) }
+  })
+  test('新库包含记录、事项与协作表，不写入 schema 版本号', () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
@@ -208,7 +242,7 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
           'entries', 'events', 'inputs', 'records_meta', 'sessions',
         ])
         expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()).toEqual({
-          user_version: RECORD_SCHEMA_VERSION,
+          user_version: 0,
         })
       } finally {
         db.close()
@@ -218,32 +252,18 @@ describe('判据 4 · schema（版本 · 重开续写）', () => {
     }
   })
 
-  test('库比程序新即拒开（版本协议是活的——不然这列只是摆设）', () => {
+  test.each([1, 2, 99])('历史 user_version=%i 不影响结构完整的库及只读查询', (version) => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      store.serviceFor(SESSION).appendEntry({ kind: 'user', content: { text: '已有内容' }, at: T0 })
       store.close()
-
       const db = new Database(databasePathOf(dir))
-      db.exec(`PRAGMA user_version = ${RECORD_SCHEMA_VERSION + 1}`)
+      db.exec(`PRAGMA user_version = ${version}`)
       db.close()
-
-      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow(/较本程序新/)
-    } finally {
-      removeDataDir(dir)
-    }
-  })
-
-  test('无表但已有版本的数据库不可当新库重建，拒绝后原字节不变', () => {
-    const dir = tempDataDir()
-    try {
-      const path = databasePathOf(dir)
-      const db = new Database(path)
-      db.exec(`PRAGMA user_version = ${RECORD_SCHEMA_VERSION + 1}`)
-      db.close()
-      const before = readFileSync(path)
-      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow(/较本程序新/)
-      expect(readFileSync(path)).toEqual(before)
+      expect(readSessionSummary(dir, SESSION)?.id).toBe(SESSION)
+      const reopened = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+      reopened.close()
     } finally { removeDataDir(dir) }
   })
 

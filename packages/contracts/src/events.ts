@@ -1223,9 +1223,6 @@ export const TRANSIENT_EVENT_KINDS: readonly EventKind[] = [
   'prefs.state',
 ]
 
-/** 版本 2 保存根会话归档状态及当前提醒来源；明确拒绝旧库，不迁移或重建。 */
-export const RECORD_SCHEMA_VERSION = 2
-
 /** 整轮耗时所需的原始事实；显示侧与记录读取共用这一边界。 */
 export type TurnTimingEvent = Extract<KernelEvent, { kind: 'turn.start' | 'turn.end' | 'tool.decision.request' | 'tool.decision' }>
 export function isTurnTimingEvent(event: KernelEvent): event is TurnTimingEvent {

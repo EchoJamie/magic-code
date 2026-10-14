@@ -9,7 +9,7 @@ struct SettingsCategory: Identifiable {
         .init(id: "materials", title: "规则与技能", icon: "doc.text", explanation: "管理补充来源，正文仍保留在原文件。"),
         .init(id: "roles", title: "角色默认", icon: "person.2", explanation: "为协作成员准备职责、参考材料与默认模型。"),
         .init(id: "terminal", title: "终端呈现", icon: "terminal", explanation: "选择状态行字段、顺序、颜色与动效。"),
-        .init(id: "app", title: "应用", icon: "app.badge", explanation: "登录启动、提醒、命令安装与新草稿项目。"),
+        .init(id: "app", title: "应用", icon: "app.badge", explanation: "登录启动、提醒与终端命令安装。"),
         .init(id: "advanced", title: "数据与高级", icon: "externaldrive", explanation: "查看实例与路径，管理工作区、权限及系统集成。")
     ]
 }
@@ -25,7 +25,7 @@ struct SettingsSearchItem: Identifiable {
         .init(id: "roles", category: "roles", title: "成员角色默认", words: "职责 指导 文件 技能 工具 模型 思考 角色"),
         .init(id: "status", category: "terminal", title: "状态行与动效", words: "会话名 模型 思考 上下文 工作区 颜色 顺序 减少动效"),
         .init(id: "notifications", category: "app", title: "启动与提醒", words: "登录 通知 系统设置"),
-        .init(id: "cli", category: "app", title: "终端命令与新草稿项目", words: "安装 CLI magic PATH 项目 路径"),
+        .init(id: "cli", category: "app", title: "终端命令", words: "安装 CLI magic PATH 路径"),
         .init(id: "data", category: "advanced", title: "实例与数据位置", words: "配置文件 基础路径 目录 位置"),
         .init(id: "roots", category: "advanced", title: "工作区根", words: "workspaceRoots 根目录"),
         .init(id: "permissions", category: "advanced", title: "权限规则与已有授权", words: "permissions rules grants 查看 撤销 授权"),

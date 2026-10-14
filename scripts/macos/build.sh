@@ -61,6 +61,6 @@ PY
 mkdir "$TEMP/stage"
 ditto "$APP" "$TEMP/stage/$NAME.app"
 ln -s /Applications "$TEMP/stage/Applications"
-hdiutil create -ov -format UDZO -volname "$NAME" -srcfolder "$TEMP/stage" "$DMG"
+hdiutil create -ov -fs HFS+ -format UDZO -volname "$NAME" -srcfolder "$TEMP/stage" "$DMG"
 COMPLETE=true
 printf 'App: %s\nDMG: %s\n' "$APP" "$DMG"

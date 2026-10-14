@@ -51,7 +51,6 @@ def prepare(output):
         subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(app)], stdout=log, stderr=log, check=True)
     write(output / 'manifest.json', {'app': str(app), 'bundle': bundle, 'root': str(root),
           'defaultCapabilities': [], 'realSystemActionsAuthorized': False, 'controlledHost': True,
-          'terminalClickPort': 'collector; real compiled Terminal chain is verify-terminal.py',
           'nativeExecutableMtime': (native / 'Contents/MacOS/MagicCode').stat().st_mtime,
           'helperMtime': helper.stat().st_mtime})
     print(output / 'manifest.json')

@@ -117,6 +117,7 @@ private struct MainWindowPages: NSViewRepresentable {
             self.window = window
             LongLivedWindows.shared.register(window)
         }
+        if let window, !window.isVisible { window.makeFirstResponder(window.initialFirstResponder) }
         window?.deminiaturize(nil); window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         updateVisibility()

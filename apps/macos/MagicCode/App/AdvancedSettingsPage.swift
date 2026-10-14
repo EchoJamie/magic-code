@@ -14,7 +14,7 @@ struct AdvancedSettingsPage: View {
             SettingsCard(title: "数据位置") {
                 HStack(alignment: .top, spacing: 12) {
                     MagicIcon(name: "externaldrive")
-                    SettingsPath(label: "当前基础目录", path: model.effectiveBase.path) { model.terminal.copy(model.effectiveBase.path) }
+                    SettingsPath(label: "当前基础目录", path: model.effectiveBase.path) { model.copyText(model.effectiveBase.path) }
                     Spacer()
                     Button("管理位置") { editing = .data }
                 }
@@ -114,13 +114,13 @@ private struct DataLocationEditor: View {
     var body: some View {
         SettingsSheet(title: "管理数据位置", subtitle: "当前实例的配置与记录位置", icon: "externaldrive") {
             SettingsCard(title: "当前位置") {
-                SettingsPath(label: "基础目录", path: model.effectiveBase.path) { model.terminal.copy(model.effectiveBase.path) }
-                SettingsPath(label: "配置文件", path: snapshot.configPath) { model.terminal.copy(snapshot.configPath) }
+                SettingsPath(label: "基础目录", path: model.effectiveBase.path) { model.copyText(model.effectiveBase.path) }
+                SettingsPath(label: "配置文件", path: snapshot.configPath) { model.copyText(snapshot.configPath) }
                 Text("服务实例：\(model.identity?.serviceInstance ?? "未连接")").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Button("在 Finder 定位配置文件") { revealSettingPath(snapshot.configPath) }
             }
             SettingsCard(title: "切换基础目录") {
-                SettingsPath(label: "目标目录", path: target.path) { model.terminal.copy(target.path) }
+                SettingsPath(label: "目标目录", path: target.path) { model.copyText(target.path) }
                 HStack {
                     Button("选择目录…") { settingsDirectory { selected = $0 } }
                     Button("使用默认位置") { selected = model.userHome }
@@ -162,7 +162,7 @@ private struct DiagnosticsEditor: View {
                 if !snapshot.configuration["diagnosticsNote"].text.isEmpty { Text(snapshot.configuration["diagnosticsNote"].text).font(.caption).foregroundStyle(.secondary) }
             }
             SettingsCard(title: "日志与窗口") {
-                SettingsPath(label: "日志目录", path: model.logDirectory) { model.terminal.copy(model.logDirectory) }
+                SettingsPath(label: "日志目录", path: model.logDirectory) { model.copyText(model.logDirectory) }
                 HStack {
                     Button("在 Finder 打开日志目录") { NSWorkspace.shared.open(URL(fileURLWithPath: model.logDirectory)) }.disabled(model.logDirectory.isEmpty)
                     if model.diagnostics.debugMode { Button("打开调试窗口") { model.showDebugWindow?() } }
@@ -188,7 +188,7 @@ private struct SavedGrantsEditor: View {
             if snapshot.grants.isEmpty { Text("尚无已保存的授权。").foregroundStyle(.secondary) }
             ForEach(snapshot.grants, id: \.self) { section in
                 SettingsCard(title: "工作区授权") {
-                    SettingsPath(label: "工作区", path: section["workspace"].text) { model.terminal.copy(section["workspace"].text) }
+                    SettingsPath(label: "工作区", path: section["workspace"].text) { model.copyText(section["workspace"].text) }
                     ForEach(section["entries"].array.indices, id: \.self) { index in
                         let grant = section["entries"].array[index]
                         HStack(alignment: .top) {

@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { RECORD_SCHEMA_VERSION } from '@magic/contracts'
+import { readFileSync } from 'node:fs'
 import type { NewEntry } from '@magic/contracts'
-import { createRecordsStore } from '../src/index.ts'
+import { createRecordsStore, readSessionSummary } from '../src/index.ts'
 import { databasePathOf, removeDataDir, tempDataDir } from './tmp.ts'
 
 /** 本文件里那组根——归属与迁移无关，取一件固定的即可（专测见 `workspace.test.ts`）。 */
@@ -90,30 +90,47 @@ describe('最近会话（启动流转的取材口）', () => {
 })
 
 describe('schema 边界', () => {
-  test('旧结构明确拒开，不迁移、不删除或重建内容', () => {
+  test('无法识别的已有库不当新库初始化', () => {
+    const dir = tempDataDir()
+    try {
+      const db = new Database(databasePathOf(dir), { create: true })
+      db.exec('CREATE TABLE unrelated (value TEXT); INSERT INTO unrelated VALUES (\'保留\')')
+      db.close()
+      const before = readFileSync(databasePathOf(dir))
+      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('结构不符')
+      expect(readFileSync(databasePathOf(dir))).toEqual(before)
+    } finally { removeDataDir(dir) }
+  })
+
+  test('早期会话补齐可空字段，不猜测标题或工作区，重复打开保留记录', async () => {
     const dir = tempDataDir()
     try {
       const db = new Database(databasePathOf(dir), { create: true })
       db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL)')
       db.query('INSERT INTO sessions VALUES (?, ?)').run(A, T0)
       db.close()
-      expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('不自动迁移或重建')
-      const original = new Database(databasePathOf(dir), { readonly: true })
-      try {
-        expect(original.query('SELECT * FROM sessions').all()).toEqual([{ id: A, at: T0 }])
-        expect(original.query('PRAGMA table_info(sessions)').all().map((row: any) => row.name)).toEqual(['id', 'at'])
-        expect(original.query('PRAGMA user_version').get()).toEqual({ user_version: 0 })
-      } finally { original.close() }
+      const before = readFileSync(databasePathOf(dir))
+      expect(() => readSessionSummary(dir, A)).toThrow('结构不符')
+      expect(readFileSync(databasePathOf(dir))).toEqual(before)
+      for (let i = 0; i < 2; i++) {
+        const store = createRecordsStore({ dataDir: dir, workspace: ROOTS })
+        try {
+          expect(await store.listSessions()).toEqual([{ id: A, at: T0, archived: false }])
+        } finally { store.close() }
+      }
     } finally { removeDataDir(dir) }
   })
-  test('即使版本相同，缺字段也拒开', () => {
+
+  test('缺少必要原始字段时拒开，事务回滚所有结构补齐且原记录不变', () => {
     const dir = tempDataDir()
     try {
       const db = new Database(databasePathOf(dir), { create: true })
-      db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, at INTEGER NOT NULL)')
-      db.exec(`PRAGMA user_version=${RECORD_SCHEMA_VERSION}`)
+      db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY)')
+      db.query('INSERT INTO sessions VALUES (?)').run(A)
       db.close()
+      const before = readFileSync(databasePathOf(dir))
       expect(() => createRecordsStore({ dataDir: dir, workspace: ROOTS })).toThrow('结构不符')
+      expect(readFileSync(databasePathOf(dir))).toEqual(before)
     } finally { removeDataDir(dir) }
   })
 })

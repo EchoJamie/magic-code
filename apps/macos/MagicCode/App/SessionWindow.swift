@@ -263,6 +263,7 @@ struct SessionWindow: View {
         }
         .frame(minWidth: 460, minHeight: 420)
         .background(MagicStyle.canvas).tint(MagicStyle.accent)
+        .background(InitialContentFocus())
         .onChange(of: model.workspace) { _, _ in model.refresh() }
         .onChange(of: model.search) { _, _ in model.refresh() }
         .onChange(of: model.selection) { _, _ in model.choose() }

@@ -2,7 +2,6 @@
 
 import { describe, expect, test } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { RECORD_SCHEMA_VERSION } from '@magic/contracts'
 import type { NewEntry } from '@magic/contracts'
 import { createRecordsStore } from '../src/index.ts'
 import { databasePathOf, removeDataDir, tempDataDir } from './tmp.ts'
@@ -132,7 +131,7 @@ describe('归属（建立时锚定 · 随记录持久）', () => {
 })
 
 describe('当前结构', () => {
-  test('新库不欠迁移——建库即当前形状（版本号＝契约常量，两列齐）', async () => {
+  test('新库直接包含会话标题、归属与归档字段', async () => {
     const dir = tempDataDir()
     try {
       const store = createRecordsStore({ dataDir: dir, workspace: [ALPHA] })
@@ -140,9 +139,6 @@ describe('当前结构', () => {
 
       const db = new Database(databasePathOf(dir), { readonly: true })
       try {
-        expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(
-          RECORD_SCHEMA_VERSION,
-        )
         expect(
           db
             .query<{ name: string }, []>('PRAGMA table_info(sessions)')

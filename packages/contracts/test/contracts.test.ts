@@ -11,7 +11,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
   DECISION_REQUEST_KIND,
-  RECORD_SCHEMA_VERSION,
   TOOLSET_V1,
   TRANSIENT_EVENT_KINDS,
   apiKeyEnvVarOf,
@@ -756,15 +755,6 @@ describe('事件契约', () => {
     // 与 `model.retry` 恰成对照：那条描述「正在等」（重放无意义），这条是「何时改的、改成了谁」
     // ——回看时正要看它（第 18 轮补锚：`model.call.start` 只说「这次用了谁」）。
     expect(TRANSIENT_EVENT_KINDS).not.toContain('model.switched')
-  })
-
-  test('schema 当前结构版本为 2', () => {
-    // **原锚**（U02）：「自始写入（v0）」——冻结那一刻的形状就是 0。
-    // **为何变**：U26 给 `sessions` 加了 `workspace` 列（会话归属工作区），而冻结点
-    //   已过 ⇒ 走**顺序迁移**（0 → 1）：版本号得往前推一位，迁移链才有得走
-    //   （迁移的落地与真跑见 `@magic/records` · `test/workspace.test.ts`）。
-    // **新锚**：同一条规格（版本号是**写进库的**、不是摆设），值随形状走——**字面一个没松**。
-    expect(RECORD_SCHEMA_VERSION).toBe(2)
   })
 })
 

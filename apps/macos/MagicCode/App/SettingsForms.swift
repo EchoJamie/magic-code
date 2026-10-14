@@ -222,7 +222,7 @@ struct AppSettingsPage: View {
                     }
                 }
             }.id("notifications")
-            SettingsCard(title: "终端与项目") {
+            SettingsCard(title: "终端命令") {
                 HStack(alignment: .top, spacing: 14) {
                     MagicIcon(name: "terminal")
                     VStack(alignment: .leading, spacing: 6) {
@@ -231,15 +231,6 @@ struct AppSettingsPage: View {
                         Text(model.cliDirectory).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     Button("管理命令…") { cliDraft = model.cliDirectory; editingCLI = true }
-                }
-                Divider().padding(.vertical, 4)
-                HStack(alignment: .top, spacing: 14) {
-                    MagicIcon(name: "folder")
-                    VStack(alignment: .leading, spacing: 6) {
-                        SettingsPath(label: "新草稿项目", path: model.projectDirectory?.path ?? model.userHome.path) { model.terminal.copy(model.projectDirectory?.path ?? model.userHome.path) }
-                        Text("从菜单栏打开新终端时使用的项目目录。").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("选择…") { settingsDirectory { model.projectDirectory = $0 } }
                 }
             }.id("cli")
             if let message = model.actionMessage { Text(message).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -254,7 +245,7 @@ struct AppSettingsPage: View {
                 SettingsCard(title: "让终端找到命令") {
                     Text("如果终端提示找不到 magic，将下面一行加入你的 shell 配置。").font(.callout).foregroundStyle(.secondary)
                     Text("export PATH=\(TerminalCommand.quote(cliDraft)):\"$PATH\"").font(.system(.callout, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    Button("复制 PATH 配置") { model.terminal.copy("export PATH=\(TerminalCommand.quote(cliDraft)):\"$PATH\"") }
+                    Button("复制 PATH 配置") { model.copyText("export PATH=\(TerminalCommand.quote(cliDraft)):\"$PATH\"") }
                 }
             } footer: {
                 if let message = model.actionMessage { Label(message, systemImage: "info.circle").font(.callout).textSelection(.enabled) }

@@ -31,7 +31,7 @@ bash scripts/macos/verify.sh
 
 菜单栏面板显示真实 Engine 状态及启停动作，工作列表仍表达各项工作的事实。“停止 Magic Engine…”展示影响清单并默认取消；“退出 Magic Code”只退出图形 App，未保存的设置草稿仍按原规则处理。
 
-长期窗口可见时，`LongLivedWindows` 将 App 切换为 `.regular`，提供 Dock 与 Cmd+Tab；全部关闭后返回菜单栏 `.accessory`。瞬时菜单面板不改变此策略。已有工作展示／复制固定工作区与数据实例的 `magic resume ID`，不自动开终端或继续工作；新草稿通过 Terminal.app 启动真实 TUI。
+长期窗口可见时，`LongLivedWindows` 将 App 切换为 `.regular`，提供 Dock 与 Cmd+Tab；全部关闭后返回菜单栏 `.accessory`。瞬时菜单面板不改变此策略。已有工作展示／复制固定工作区与数据实例的 `magic resume ID`，不自动开终端或继续工作；菜单栏面板不提供终端启动入口，会话窗口保留“复制接回命令”，由用户在所选终端执行。
 
 配置读取、校验和保存通过共享 TS 配置动作完成，不依赖 Engine、不打开业务记录库。保存结果与运行采用分别呈现。实例切换在旧 Engine 内核实无责任并关闭准入，再停止、移除旧任务、提交选择；原先已停止则保持停止，提交后新启动失败保留新选择。
 
@@ -50,7 +50,7 @@ python3 -B scripts/macos/verify.py '/path/to/Debug/Magic Code.app'
 
 `engine-system.py` 检查并发 CLI 启动、异常恢复、旧代请求、非默认实例与可识别启动错误；`verify.py` 检查 App 退出／强杀不停止 Engine、重开复用同代，以及明确停止。`idle-probe.py` 检查真实 App 与独立 Engine 的空闲活动。
 
-`verify-terminal.py --prepare/--run` 检查新草稿的真实 Terminal.app 链路与已有工作的接回命令。`system-test.py` 是使用受控工作事实的通知／登录集成装置，不能作为真实 Engine 托管证据；其系统写操作须有对应授权，步骤见 [SYSTEM_TEST_PLAN.md](SYSTEM_TEST_PLAN.md)。历史验收记录见 [VALIDATION.md](VALIDATION.md)，不代表当前分支已通过系统验收。
+`system-test.py` 是使用受控工作事实的通知／登录集成装置，不能作为真实 Engine 托管证据；其系统写操作须有对应授权，步骤见 [SYSTEM_TEST_PLAN.md](SYSTEM_TEST_PLAN.md)。历史验收记录见 [VALIDATION.md](VALIDATION.md)，不代表当前分支已通过系统验收。
 
 ## Wire
 

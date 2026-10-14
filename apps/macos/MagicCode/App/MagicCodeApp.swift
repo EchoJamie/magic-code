@@ -100,9 +100,6 @@ struct MagicCodeApp: App {
                     if CommandLine.arguments.contains("--validation-quit") {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { NSApp.terminate(nil) }
                     }
-                    if CommandLine.arguments.contains("--validation-open-terminal") {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { model.newTerminal() }
-                    }
                     if CommandLine.arguments.contains("--validation-show-status") {
                         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 650), styleMask: [.titled, .closable], backing: .buffered, defer: false)
                         window.title = "Magic Code 隔离界面验收"; window.isReleasedWhenClosed = false
@@ -111,16 +108,6 @@ struct MagicCodeApp: App {
                     }
                     // 策略台账跟着事件流出去（隔离验收时才有）：一闪而过的那一下也要留痕。
                     LongLivedWindows.shared.record = { model.validationEvent("activation-policy", detail: $0) }
-                    if let index = CommandLine.arguments.firstIndex(of: "--validation-open-session"), CommandLine.arguments.indices.contains(index + 1) {
-                        let session = CommandLine.arguments[index + 1]
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                            guard let work = model.works.first(where: { $0.session == session }) else {
-                                model.validationEvent("terminal.error", detail: "隔离目标不存在：\(session)"); return
-                            }
-                            model.inspect(work)
-                            model.validationEvent("resume.command", detail: model.resumeCommand(work))
-                        }
-                    }
                     self?.validation?.cancel()
                 } else if case .fault(let reason) = phase {
                     let info = ["event": "app.error", "reason": reason]

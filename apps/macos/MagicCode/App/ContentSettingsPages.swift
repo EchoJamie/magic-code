@@ -180,7 +180,7 @@ private struct SourceStatusList: View {
                     Spacer()
                     MagicBadge(text: entry["problem"].text.isEmpty ? "路径已检查" : "需要处理", color: entry["problem"].text.isEmpty ? MagicStyle.accent : .orange)
                 }
-                SettingsPath(label: "解析位置", path: entry["resolved"].text) { model.terminal.copy(entry["resolved"].text) }
+                SettingsPath(label: "解析位置", path: entry["resolved"].text) { model.copyText(entry["resolved"].text) }
                 if !entry["problem"].text.isEmpty { Text(entry["problem"].text).foregroundStyle(.red).font(.caption) }
                 Button("在 Finder 定位") { revealSettingPath(entry["resolved"].text) }.disabled(entry["resolved"].text.isEmpty)
             }
