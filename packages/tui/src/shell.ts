@@ -78,7 +78,7 @@ import {
   hasRunningTool,
   matchCommands,
   movePicker,
-  noticeReceiptOf,
+  presentedNoticeOf,
   openPicker,
   openPrompt,
   patchStatus,
@@ -144,7 +144,7 @@ export type Shell = {
   /** 主动读一次历史（开局接续 / 恢复之后调——重建记录区）。 */
   readHistory(session?: SessionId): void
 
-  presented(ids: readonly string[]): void
+  presented(ids: readonly string[]): boolean
   disconnected(why?: string): void
 
   attachMaterial(material: UserImage): void
@@ -764,9 +764,9 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     }
     const request = decisions.values().next().value
     const member = view.collaboration?.members.find(one => one.agent.sessionId === request?.session && request?.session !== view.sessionId)?.agent.name
-    const pendingDecision = request === undefined ? undefined : { ...request.data, id: request.id, ...(member === undefined ? {} : { member }), submitted: answeredDecisions.has(request.id), position: { index: 1, total: decisions.size } }
+    const pendingDecision = request === undefined ? undefined : { ...request.data, id: request.id, session: request.session, ...(member === undefined ? {} : { member }), submitted: answeredDecisions.has(request.id), position: { index: 1, total: decisions.size } }
     view = { ...next, pendingDecision }
-    if (view.dock.kind === 'decision') view = withDecisionStatus({ ...view, dock: { ...view.dock, pending: { ...view.dock.pending, submitted: answeredDecisions.has(view.dock.pending.id), position: { index: 1, total: decisions.size } } } })
+    if (view.dock.kind === 'decision') view = withDecisionStatus({ ...view, dock: { ...view.dock, pending: { ...view.dock.pending, session: decisions.get(view.dock.pending.id)?.session, submitted: answeredDecisions.has(view.dock.pending.id), position: { index: 1, total: decisions.size } } } })
     if (streaming) notifyCoalesced()
     else {
       if (pending !== undefined) {
@@ -1396,14 +1396,18 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     commit(appendReceipt(view, text))
   })
 
-  // 具体事项进入记录，呈现完成后才回传其 id；欢迎摘要不走这里。
+  // 仅保留当前工作的提醒来源；真实内容呈现后确认，不追加同义摘要。
   options.notices?.((notice) => {
     if (disposed || !notice.unread) return
-    const key = `notice:${notice.id}`
-    if ([...view.settled, ...view.rows].some(row => row.key === key)) return
-    const who = nameOfSession(notice.session)
-    const text = noticeReceiptOf(notice, who) ?? `「${who}」${notice.kind === 'done' ? '本轮已完成' : '需要你决定'}${notice.detail === undefined ? '' : `：${notice.detail}`}`
-    commit({ ...view, settled: [...view.settled, { kind: 'receipt', key, text, noticeId: notice.id }] })
+    if (notice.session !== view.sessionId && notice.session !== view.collaboration?.originSession) return
+    const next = { ...view, notice }
+    // 历史记录不重建错误事件；接回或执行者退出时保留唯一的失败说明。
+    if (notice.kind === 'failed' && presentedNoticeOf(next) === undefined) {
+      commit({ ...next, settled: [...view.settled, { kind: 'receipt', key: `notice:${notice.id}`,
+        text: notice.detail ?? '本轮无法继续，具体错误暂不可用' }] })
+    } else {
+      commit(next)
+    }
   })
 
   /**
@@ -3418,7 +3422,11 @@ export function createShell(transport: ControlTransport, options: ShellOptions):
     },
 
     key,
-    presented: (ids) => { if (!disposed && connected) options.markRead?.(ids) },
+    presented: (ids) => {
+      if (disposed || !connected || options.markRead === undefined) return false
+      options.markRead(ids)
+      return true
+    },
     readHistory,
     attachMaterial,
     exportMaterial,

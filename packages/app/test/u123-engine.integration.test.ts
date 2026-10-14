@@ -168,6 +168,36 @@ test('只读分页和旧通知 inspect 可达普通历史与归档目标，不�
   } finally { await f.close() }
 })
 
+test('三类通知保留长原文、换行及组合字符，不在显示前生成截短摘要', async () => {
+  const f = await fixture()
+  try {
+    const client = await f.connect(), received: import('@magic/contracts').RunNotice[] = []
+    client.onNotice(notice => received.push(notice))
+    client.send({ type: 'input.submit', text: '开始' })
+    await until(() => f.launches.length === 1)
+    f.ready()
+    const text = `第一行\n  ${'保留原文 👩🏽‍💻 e\u0301 '.repeat(100)}\n最后一行：关键说明`
+    f.event('a', 'turn.start', {})
+    const entry = f.store.serviceFor('a').appendEntry({ kind: 'assistant', content: { text }, at: Date.now() })
+    f.event('a', 'message.assistant', { entry })
+    f.event('a', 'turn.end', { reason: 'settled' })
+    f.event('a', 'agent.state', { state: 'waiting' })
+    await until(() => received.some(notice => notice.kind === 'done'))
+    expect(received.at(-1)?.detail).toBe(text)
+    expect(f.store.attention.list()[0]?.detail).toBe(text)
+    f.event('a', 'turn.start', {}, 2)
+    f.event('a', 'tool.decision.request', { call: 101, name: 'exec', material: text, weight: 'heavy' }, 2)
+    await until(() => received.some(notice => notice.kind === 'needs-you'))
+    expect(received.at(-1)?.detail).toBe(text)
+    f.event('a', 'model.error', { tier: 'terminal', message: text }, 2)
+    f.event('a', 'turn.end', { reason: 'error' }, 2)
+    f.event('a', 'agent.state', { state: 'waiting' }, 2)
+    await until(() => received.some(notice => notice.kind === 'failed'))
+    expect(received.at(-1)?.detail).toBe(text)
+    expect(f.store.attention.list()[0]?.detail).toBe(text)
+  } finally { await f.close() }
+})
+
 test('当前通知取真实回复、替换旧来源；新轮及历史失效审批退出，旧呈现不清新原因', async () => {
   const f = await fixture()
   try {

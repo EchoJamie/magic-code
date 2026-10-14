@@ -1,29 +1,11 @@
-/**
- * U74 · **撤掉「那一轮跑完了」回执 ＋ 思考自成一块**（真链路，到屏为止）。
- *
- * `bun test` **收它**（本文件是 `*.test.ts`）——真帧那一趟在
- * `packages/app/test/frames-u74-tui.ts`（真 PTY ＋ 真 CLI）。
- *
- * 两件各咬正反两面：
- *
- * | 件 | 正面 | 反面 |
- * | --- | --- | --- |
- * | ① 「跑完了」那条回执 | `done` **不再产出**任何一行 | `failed` **逐字不变** |
- * | ② 思考自成一块 | `│ …` **上下各留一整行** | 不带思考的那一轮**一字不动**（不白撑一行） |
- *
- * ⚠️ ①②的「落点」「次序」不在这条判据里：①那一件不是「换个地方印」，是**不要了**
- * （「跑完了」那一条**整个撤掉**，2026-09-25 用户定）。
- *
- * ⚠️ **本文件当年那句「`needs-you` 一处没动」已经不再成立**——那一条是 **U79 撤的**
- * （同一个设计格子里的下一行：「需要你」不回执、不广播），本文件那一支跟着改；
- * 那一类自己的正反面判据在 `thinking-and-notices.test.ts`。
- */
+/** 真实终端中的完成呈现与思考布局回归。 */
 
 import { describe, expect, test } from 'bun:test'
 import type { RunNotice } from '@magic/contracts'
-import { noticeReceiptOf } from '../src/view.ts'
 import { event } from './events.ts'
 import { createStage, showScreen } from './screen.ts'
+import { createShell } from '../src/shell.ts'
+import { createSpyTransport } from './fakes.ts'
 
 /** 起一个壳，并投一条会话状态（与 `log-presentation.test.ts` 同一份底子）。 */
 function live() {
@@ -46,22 +28,89 @@ const notice = (kind: RunNotice['kind'], detail?: string): RunNotice => ({
 // ══ ① 「那一轮跑完了」那条回执：**不再产出** ═════════════════════════
 
 describe('「跑完了」那条回执', () => {
-  test('`done` **一个字都不印**（连落点都没有了——不是换个地方印）', () => {
-    expect(noticeReceiptOf(notice('done'), '时区修正')).toBeUndefined()
+  test('阅读屏打开期间不冒认主屏呈现，返回原会话后完成已读确认', async () => {
+    const { render } = await import('ink'), { createElement: h } = await import('react')
+    const { PassThrough } = await import('node:stream')
+    const { TuiApp } = await import('../src/components/app.ts')
+    const { FakeTty } = await import('./terminal.ts')
+    const spy = createSpyTransport(), marks: (readonly string[])[] = []
+    let notify: (notice: RunNotice) => void = () => {}
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic', notices: listener => { notify = listener }, markRead: ids => marks.push(ids), reopen: async () => {} })
+    spy.emit(event('session.state', { active: 's1', sessions: [] }))
+    spy.emit(event('model.delta', { channel: 'text', text: '返回后仍可见的原回复' }, { session: 's1' }))
+    spy.emit(event('message.assistant', { entry: 100 }, { session: 's1' }))
+    spy.emit(event('turn.end', { reason: 'settled' }, { session: 's1' }))
+    const stdout = new FakeTty(100, 40)
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {}, ref() {}, unref() {} })
+    const app = render(h(TuiApp, { shell }), { stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false, maxFps: 0 })
+    const until = async (check: () => boolean) => {
+      const deadline = Date.now() + 1000
+      while (!check() && Date.now() < deadline) await Bun.sleep(5)
+      expect(check()).toBe(true)
+    }
+    try {
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      stdin.write('\u000f')
+      await until(() => stdout.bytes().includes('\u001b[?1049h'))
+      notify({ ...notice('done'), source: { session: 's1', entry: 100 } })
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(marks).toEqual([])
+      stdin.write('\u001b')
+      await until(() => stdout.bytes().includes('\u001b[?1049l'))
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(marks).toEqual([['done:1']])
+      const next = { ...notice('done'), id: 'after-disconnect', source: { session: 's1', entry: 100 } }
+      shell.disconnected('受控断线')
+      notify(next)
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(marks).toEqual([['done:1']])
+      shell.key({ kind: 'ctrl+r' })
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(marks).toEqual([['done:1'], ['after-disconnect']])
+    } finally { app.unmount(); shell.dispose(); stdin.destroy() }
   })
 
-  test('`failed` **逐字不变**（那一类一处没动）', () => {
-    // ⚠️ 逐字写死：这两句是**用户看的话**，改了就得在这儿改——不拿「包含」那种软判据糊过去
-    expect(noticeReceiptOf(notice('failed'), '时区修正')).toBe('「时区修正」出错了')
-    expect(noticeReceiptOf(notice('failed', '这一轮出错了'), '时区修正')).toBe(
-      '「时区修正」出错了：这一轮出错了',
-    )
+  test('实际回复渲染后才确认完成事项；无正文、其他来源和重复通知不误读', async () => {
+    const { render } = await import('ink'), { createElement: h } = await import('react')
+    const { TuiApp } = await import('../src/components/app.ts')
+    const { FakeStdin, FakeTty } = await import('./terminal.ts')
+    const spy = createSpyTransport(), marks: (readonly string[])[] = []
+    let notify: (notice: RunNotice) => void = () => {}
+    const shell = createShell(spy.transport, { magicBase: '/test/.magic', notices: listener => { notify = listener }, markRead: ids => marks.push(ids) })
+    spy.emit(event('session.state', { active: 's1', sessions: [] }))
+    spy.emit(event('model.delta', { channel: 'text', text: '原回复完整保留' }, { session: 's1' }))
+    spy.emit(event('message.assistant', { entry: 100 }, { session: 's1' }))
+    spy.emit(event('turn.end', { reason: 'settled' }, { session: 's1' }))
+    const done: RunNotice = { ...notice('done', '截短的通知摘要…'), source: { session: 's1', entry: 100 } }
+    notify(done)
+    expect(marks).toHaveLength(0)
+    const stdout = new FakeTty(100, 40)
+    const app = render(h(TuiApp, { shell }), { stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: new FakeStdin() as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false, maxFps: 0 })
+    try {
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(stdout.bytes()).toContain('原回复完整保留')
+      expect(stdout.bytes()).not.toContain('本轮已完成')
+      expect(stdout.bytes()).not.toContain('截短的通知摘要')
+      expect(marks).toEqual([[done.id]])
+      notify(done)
+      notify({ ...done, id: 'other-session', session: 's2' })
+      notify({ ...done, id: 'other-source', source: { session: 's2', entry: 100 } })
+      notify({ ...done, id: 'empty-turn', source: { session: 's1', event: 101 } })
+      notify({ ...done, id: 'missing-entry', source: { session: 's1', entry: 102 } })
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(marks).toEqual([[done.id]])
+      spy.emit(event('model.delta', { channel: 'text', text: '下一轮的完整回复' }, { session: 's1' }))
+      spy.emit(event('message.assistant', { entry: 103 }, { session: 's1' }))
+      spy.emit(event('turn.end', { reason: 'settled' }, { session: 's1' }))
+      notify({ ...done, id: 'next-turn', source: { session: 's1', entry: 103 } })
+      await app.waitUntilRenderFlush(); await Bun.sleep(10)
+      expect(marks).toEqual([[done.id], ['next-turn']])
+    } finally { app.unmount(); shell.dispose() }
   })
 
-  test('⚠️ **`needs-you` 当年那一句也不产出了**（U79 改的口径，别把它当成「一字没动」）', () => {
-    expect(noticeReceiptOf(notice('needs-you'), '时区修正')).toBeUndefined()
-    expect(noticeReceiptOf(notice('needs-you', 'exec'), '时区修正')).toBeUndefined()
-  })
+
 })
 
 // ══ ② 思考自成一块：上下各留一整行 ═══════════════════════════════════

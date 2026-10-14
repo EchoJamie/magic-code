@@ -20,7 +20,7 @@ struct NoticeDelivery: Equatable {
     init(work: NativeWork, notice: AttentionItem, identity: ServiceIdentity) {
         identifier = Self.identifier(base: identity.base, session: work.session)
         title = work.title; subtitle = work.project
-        body = String((notice.detail?.isEmpty == false ? notice.detail! : work.statusText).prefix(240))
+        body = notice.detail?.isEmpty == false ? notice.detail! : work.statusText
         route = NoticeRoute(base: identity.base, serviceInstance: identity.serviceInstance, session: work.session, notice: notice)
     }
 }

@@ -47,7 +47,6 @@ export {
   isSessionRow,
   matchCommands,
   movePicker,
-  noticeReceiptOf,
   openPicker,
   picked,
   rebuild,

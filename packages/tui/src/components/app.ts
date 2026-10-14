@@ -43,6 +43,7 @@ import type { CompletionState, LogRow, ShellView } from '../view.ts'
 import {
   HINT_EXIT_ARMED,
   hasRunningTool,
+  presentedNoticeOf,
 } from '../view.ts'
 import {
   statusLineCellsOf,
@@ -996,18 +997,20 @@ export function TuiApp({ shell }: TuiAppProps) {
    */
   const inScreen = useRef(false)
   const presented = useRef(new Set<string>())
-  useEffect(() => {
+  const presentNotice = (shown: ShellView): (() => void) | undefined => {
     if (inScreen.current) return
-    const ids = view.settled.flatMap(row => row.kind === 'receipt' && row.noticeId !== undefined && !presented.current.has(row.noticeId) ? [row.noticeId] : [])
-    if (ids.length === 0) return
+    const id = presentedNoticeOf(shown)
+    if (id === undefined || presented.current.has(id)) return
     let cancelled = false
     void waitUntilRenderFlush().then(() => {
-      if (cancelled || inScreen.current) return
-      shell.presented(ids)
-      for (const id of ids) presented.current.add(id)
+      const current = shell.getView()
+      if (cancelled || inScreen.current || current.page !== shown.page || current.sessionId !== shown.sessionId
+        || presentedNoticeOf(current) !== id || presented.current.has(id)) return
+      if (shell.presented([id])) presented.current.add(id)
     })
     return () => { cancelled = true }
-  }, [view, shell, waitUntilRenderFlush])
+  }
+  useEffect(() => presentNotice(view), [view, shell, waitUntilRenderFlush])
 
   /**
    * **上一趟退出时读到第几行**（设计：「退出保留原来的阅读位置」）——下次开屏从这儿起。
@@ -1091,6 +1094,7 @@ export function TuiApp({ shell }: TuiAppProps) {
       // 返回到另一份阅读层时，须等上一趟终端借用真正结束再打开它。
       const dock = shell.getView().dock
       if (dock.kind === 'picker' && dock.picker.reader !== undefined) openScreen()
+      else presentNotice(shell.getView())
     })
   }
 

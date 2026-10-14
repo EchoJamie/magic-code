@@ -17,7 +17,6 @@ export type ServiceIdentity = {
 export type AttentionItem = RunNotice & {
   readonly delivered: boolean
   readonly fact: string
-  readonly source?: { readonly session: string; readonly event?: number; readonly entry?: number }
 }
 
 /** 同拍捕获的只读成员摘要；不含全文、模型配置或执行入口。 */

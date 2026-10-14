@@ -123,7 +123,7 @@ test('通知按具体会话绑定：切换、clear、多窗口、结束后仍查
   }
 })
 
-test('终端接回显示旧完成提醒后标读，仅影响当前会话，断开后退出状态栏候选', async () => {
+test('终端接回显示原结果后标读，不追加完成回执，仅影响当前会话，断开后退出状态栏候选', async () => {
   const { runTui } = await import('@magic/tui')
   const { clientTransport } = await import('../src/run/terminal.ts')
   const { PassThrough } = await import('node:stream')
@@ -132,7 +132,7 @@ test('终端接回显示旧完成提醒后标读，仅影响当前会话，断�
   const store = createRecordsStore({ dataDir: magic.base, workspace: [root] })
   for (const session of ['a', 'b', 'broken']) {
     const service = store.serviceFor(session)
-    service.appendEntry({ kind: 'assistant', at: 1, content: session === 'broken' ? { blob: 'missing-result' } : { text: `${session} 的完整结果` } })
+    const entry = service.appendEntry({ kind: 'assistant', at: 1, content: session === 'broken' ? { blob: 'missing-result' } : { text: `${session} 的完整结果` } })
     if (session === 'broken') {
       service.appendEntry({ kind: 'user', at: 2, content: { text: '后续交代' } })
       service.appendEntry({ kind: 'assistant', at: 3, content: { text: '摘要仍可读取，较早正文缺失' } })
@@ -140,8 +140,13 @@ test('终端接回显示旧完成提醒后标读，仅影响当前会话，断�
     const id = service.nextId()
     store.appendEvent({ id, session, turn: 1, at: 1, kind: 'turn.end', data: { reason: 'settled' } })
     store.attention.put({ id: `${session}:done`, session, kind: 'done', at: 1, fact: String(id),
-      source: { session, event: id }, unread: true, delivered: false })
+      source: { session, event: id, entry }, unread: true, delivered: false })
   }
+  const failure = store.serviceFor('failed'), error = failure.nextId()
+  store.appendEvent({ id: error, session: 'failed', turn: 1, at: 1, kind: 'error', data: { message: '接回后必须看见的真实失败' } })
+  store.appendEvent({ id: failure.nextId(), session: 'failed', turn: 1, at: 2, kind: 'turn.end', data: { reason: 'error' } })
+  store.attention.put({ id: 'failed:reason', session: 'failed', kind: 'failed', at: 2, fact: String(error),
+    source: { session: 'failed', event: error }, detail: '接回后必须看见的真实失败', unread: true, delivered: false })
   const started = await startManager({ magic, paths, launch: { spawn() { throw new Error('接回查看不得启动模型') } } })
   if (started.role !== 'manager') throw new Error('未启动隔离管理者')
   const client = (await connectManager(paths.socket, { session: 'a' }))!
@@ -160,6 +165,7 @@ test('终端接回显示旧完成提醒后标读，仅影响当前会话，断�
       stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream })
     await until(() => store.attention.list({ sessions: ['a'] })[0]?.unread === false)
     expect(output).toContain('a 的完整结果')
+    expect(output).not.toContain('本轮已完成')
     expect(store.attention.list({ sessions: ['b'] })[0]?.unread).toBe(true)
     client.send({ type: 'session.open', session: 'b' })
     await until(() => store.attention.list({ sessions: ['b'] })[0]?.unread === false)
@@ -169,6 +175,11 @@ test('终端接回显示旧完成提醒后标读，仅影响当前会话，断�
     await until(() => failedHistory.includes('broken'))
     expect(store.attention.list({ sessions: ['broken'] })[0]?.unread).toBe(true)
     expect(notices.some(notice => notice.id === 'broken:done')).toBe(false)
+    client.send({ type: 'session.open', session: 'failed' })
+    await until(() => store.attention.list({ sessions: ['failed'] })[0]?.unread === false)
+    expect(output).toContain('接回后必须看见的真实失败')
+    expect(output).not.toContain('出错了')
+    expect(store.attention.list({ sessions: ['broken'] })[0]?.unread).toBe(true)
     expect(started.manager.executors()).toHaveLength(0)
     client.close()
     const observer = linkOf<NativeResponse>(await Bun.connect({ unix: paths.socket, socket: socketHandlers() }) as never)

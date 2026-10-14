@@ -43,7 +43,7 @@ import type {
   Wire,
 } from '@magic/contracts'
 import { NATIVE_PROTOCOL, SOFTWARE_VERSION } from '@magic/contracts'
-import { readSessionCatalog, readSessionDisplayHistory, summarize } from '@magic/conversation'
+import { readSessionCatalog, readSessionDisplayHistory } from '@magic/conversation'
 import { createProcessLedger } from '@magic/execution'
 import { createRecordsStore } from '@magic/records'
 import type { Socket } from 'bun'
@@ -914,7 +914,7 @@ async function bindManager(options: ManagerOptions, now: () => number): Promise<
     const origin = source ?? { session, ...(typeof fact === 'number' ? { event: fact } : {}) }
     const notice = {
       id: noticeKey(session, kind, fact), session: root, source: origin, kind, fact: String(fact), at, unread: true, delivered: false,
-      detail: `${session === root ? '' : `${store.collaboration.agentForSession(session)?.name ?? '成员'}：`}${summarize(detail ?? '本轮已收束，原内容暂不可用', 500) ?? ''}`,
+      detail: `${session === root ? '' : `${store.collaboration.agentForSession(session)?.name ?? '成员'}：`}${detail ?? '本轮已收束，原内容暂不可用'}`,
     }
     if (!store.attention.put(notice)) return
     for (const conn of terminalClients(root)) conn.link.send({ t: 'notice', notice })

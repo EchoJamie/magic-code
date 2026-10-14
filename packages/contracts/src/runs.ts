@@ -105,12 +105,11 @@ export type RunNotice = {
   readonly session: SessionId
   readonly kind: NoticeKind
   readonly at: number
-  /**
-   * 细节一句（出错的那句话 / 等你定夺的那个名字）——**说给用户的那句话由外壳拼**
-   * （会话标题在它手上），这一格是它拼的时候要的料。
-   */
+  /** 原请求、错误或回复的实际文本；显示端按可用空间布局。 */
   readonly detail?: string
-  /** 尚未经具体事项确认已读；连接或渲染不能替代可靠的在场或明确查看动作。 */
+  /** 原事项的持久化来源；用于核对实际呈现的内容。 */
+  readonly source?: { readonly session: string; readonly event?: number; readonly entry?: number }
+  /** 尚未经具体事项确认已读；连接或查询本身不代表查看。 */
   readonly unread: boolean
 }
 

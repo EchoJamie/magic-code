@@ -94,7 +94,7 @@ export type LogRow =
 
       readonly skills?: readonly UsedSkill[]
     }
-  | { readonly kind: 'assistant'; readonly key: string; readonly text: string }
+  | { readonly kind: 'assistant'; readonly key: string; readonly text: string; readonly entry?: RecordId }
 
   | {
       readonly kind: 'thinking'
@@ -152,7 +152,7 @@ export type LogRow =
    */
   | { readonly kind: 'banner'; readonly key: string }
   | { readonly kind: 'output'; readonly key: string; readonly lines: readonly string[] }
-  | { readonly kind: 'receipt'; readonly key: string; readonly text: string; readonly noticeId?: string }
+  | { readonly kind: 'receipt'; readonly key: string; readonly text: string; readonly source?: RunNotice['source'] }
 
 /**
  * **有没有工具正在跑**（那类行标记是 `⟳`）——两处据它：
@@ -248,6 +248,7 @@ export function planFromEntries(entries: readonly Entry[]): PlanSnapshot {
 
 /** 待答的裁决——**接管输入框**的那一件。 */
 export type PendingDecision = {
+  readonly session?: SessionId
   readonly submitted?: boolean
   readonly selected?: number
   readonly top?: number
@@ -576,17 +577,19 @@ export function stopReceiptOf(input: {
 /** 自动补全右位提示（原型 · 场景 11）。 */
 export const HINT_COMPLETION = '↑↓ 选 · Tab 补全 · esc 收起'
 
-export function noticeReceiptOf(notice: RunNotice, title: string): string | undefined {
-  const who = `「${title}」`
-
-  switch (notice.kind) {
-    case 'done':
-      return undefined
-    case 'failed':
-      return `${who}出错了${notice.detail === undefined ? '' : `：${notice.detail}`}`
-    case 'needs-you':
-      return undefined
+/** 通知只关联当前实际内容，不生成完成／审批回执。 */
+export function presentedNoticeOf(view: ShellView): string | undefined {
+  const notice = view.notice
+  if (!notice?.unread) return
+  const source = notice.source
+  if (notice.kind === 'needs-you') {
+    const pending = view.dock.kind === 'decision' ? view.dock.pending : view.pendingDecision
+    return source?.event !== undefined && pending?.id === source.event && pending.session === source.session ? notice.id : undefined
   }
+  return view.settled.some(row => notice.kind === 'done'
+    ? source?.session === view.sessionId && source.entry !== undefined && row.kind === 'assistant' && row.entry === source.entry && row.text.trim() !== ''
+    : row.kind === 'receipt' && (row.key === `notice:${notice.id}` || (source?.event !== undefined && row.source?.session === source.session && row.source.event === source.event)))
+    ? notice.id : undefined
 }
 
 export function unreadSummaryOf(notices: readonly RunNotice[]): string | undefined {
@@ -655,6 +658,8 @@ export type Stashed = {
 
 /** 一屏的全部状态（记录区 ＋ 左下交互区 ＋ 状态行）。 */
 export type ShellView = {
+  /** Engine 当前提醒的来源；只用于确认对应内容已呈现。 */
+  readonly notice?: RunNotice | undefined
   readonly round: RoundTiming | null
   /** 从现有审批队列投影；Esc 返回后仍可见。 */
   readonly pendingDecision?: PendingDecision | undefined
@@ -864,10 +869,11 @@ export function reduce(
       return reduceUserEntry({ ...view, taskEntry: event.data.entry,
         sessionId: view.sessionId ?? (event.session || null) })
     case 'message.assistant':
-      return view
+      return { ...view, rows: view.rows.map(row => row.kind === 'assistant' && row.entry === undefined
+        ? { ...row, entry: event.data.entry } : row) }
 
     case 'turn.start':
-      return patchStatus({ ...clearFlash(view), turnTools: 0 }, {
+      return patchStatus({ ...clearFlash(view), turnTools: 0, notice: undefined }, {
         state: 'working',
         amount: null,
         hint: hintKeepingDock(view, HINT_WORKING),
@@ -996,11 +1002,11 @@ export function reduce(
 
     case 'model.error':
       return patchStatus(
-        appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`),
+        appendReceipt(view, `模型错误（${tierLabel(event.data.tier)}）：${event.data.message}`, { session: event.session, event: event.id }),
         { state: 'error', amount: null, hint: HINT_IDLE },
       )
     case 'error':
-      return patchStatus(appendReceipt(view, `内核异常：${event.data.message}`), {
+      return patchStatus(appendReceipt(view, `内核异常：${event.data.message}`, { session: event.session, event: event.id }), {
         state: 'error',
         amount: null,
         hint: HINT_IDLE,
@@ -1060,7 +1066,7 @@ function appendText(
 ): ShellView {
   const last = view.rows[view.rows.length - 1]
 
-  if (last?.kind === kind) {
+  if (last?.kind === kind && (last.kind !== 'assistant' || last.entry === undefined)) {
     // **还在流**：起算不动，只把「最后吐字那一刻」往前推（收梢时拿它当终点）
     return replaceLast(
       view,
@@ -1293,6 +1299,7 @@ function reduceSessionState(view: ShellView, data: SessionStateData, turn: PageT
   const base: ShellView = {
     ...view,
     sessionId: active,
+    notice: active === view.sessionId ? view.notice : undefined,
     archived: data.sessions.find(row => row.id === active)?.archived ?? (active === view.sessionId && view.archived),
     catalog: data.sessions,
     status: { ...view.status, session: title },
@@ -1387,8 +1394,8 @@ export function appendEcho(view: ShellView, text: string, images: readonly UserI
   }
 }
 
-export function appendReceipt(view: ShellView, text: string): ShellView {
-  return appendSettled(view, { kind: 'receipt', key: `recpt:${view.settled.length}`, text })
+export function appendReceipt(view: ShellView, text: string, source?: RunNotice['source']): ShellView {
+  return appendSettled(view, { kind: 'receipt', key: `recpt:${view.settled.length}`, text, ...(source === undefined ? {} : { source }) })
 }
 
 /** 一块**命令输出**（dim 块，无标记）。**不落库、不重建**（同回执，进定局那侧）。 */
@@ -1524,7 +1531,7 @@ function rebuildRows(entries: readonly Entry[], collapseTools = true, rounds: re
 
         ...(skills.length === 0 ? {} : { skills }),
       })
-    } else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text })
+    } else if (entry.kind === 'assistant') rows.push({ kind: 'assistant', key: `rb:a:${entry.id}`, text, entry: entry.id })
     else rows.push({ kind: 'receipt', key: `rb:s:${entry.id}`, text: `（摘要）${text}` })
   }
 

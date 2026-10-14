@@ -1804,6 +1804,13 @@ extension NativeTests {
         XCTAssertEqual(a.body, first.detail); XCTAssertEqual(a.route.notice.source, first.source)
         let info: [AnyHashable: Any] = ["route": String(decoding: try JSONEncoder().encode(a.route), as: UTF8.self)]
         XCTAssertEqual(NotificationCoordinator.decodeRoute(info), a.route)
+        let content = "第一行\n  " + String(repeating: "中文 👩🏽‍💻 e\u{301} ", count: 100) + "\n末尾关键说明"
+        for kind in [NoticeKind.done, .needsYou, .failed] {
+            let notice = AttentionItem(id: "long", session: "one", kind: kind, at: 1, detail: content,
+                unread: true, delivered: false, fact: "long", source: first.source)
+            let delivery = NoticeDelivery(work: try reasonWork(notice), notice: notice, identity: testIdentity)
+            XCTAssertEqual(delivery.body, content, "系统负责布局，通知载荷不提前固定截断或压平文本")
+        }
     }
     @MainActor func testNotificationSourceReplacementWithdrawsOldEvenWhenUpdateFails() async throws {
         var deliveries: [NoticeDelivery] = [], removed: [String] = [], acknowledged: [String] = []
